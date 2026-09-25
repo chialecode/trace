@@ -1,0 +1,881 @@
+{
+  "schemaVersion": 1,
+  "updated": "2026-09-25",
+  "purpose": "Planning coverage, not implementation or acceptance results. Full requirement definitions stay in docs/requirements.md.",
+  "requirements": [
+    {
+      "id": "FR-ID-001",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "domain",
+      "acceptance": [
+        "AC-01"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-ID-002",
+      "firstStage": "M1a",
+      "completeStage": "M1b",
+      "designAnchor": "domain",
+      "acceptance": [
+        "AC-01",
+        "AC-02"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-ID-003",
+      "firstStage": "M2",
+      "completeStage": "M2",
+      "designAnchor": "domain",
+      "acceptance": [
+        "AC-01"
+      ],
+      "scopeNote": "按需求正文完整交付，M2 内按反馈再拆可用流程。"
+    },
+    {
+      "id": "FR-ID-004",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "domain",
+      "acceptance": [
+        "AC-13"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-ID-005",
+      "firstStage": "M2",
+      "completeStage": "M2",
+      "designAnchor": "domain",
+      "acceptance": [
+        "AC-01"
+      ],
+      "scopeNote": "按需求正文完整交付，M2 内按反馈再拆可用流程。"
+    },
+    {
+      "id": "FR-SUB-001",
+      "firstStage": "M1a",
+      "completeStage": "M1b",
+      "designAnchor": "scheduler",
+      "acceptance": [
+        "AC-03",
+        "AC-13"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-SUB-002",
+      "firstStage": "M1a",
+      "completeStage": "M1b",
+      "designAnchor": "scheduler",
+      "acceptance": [
+        "AC-03",
+        "AC-23"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-SUB-003",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "scheduler",
+      "acceptance": [
+        "AC-03"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-SUB-004",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "scheduler",
+      "acceptance": [
+        "AC-04"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-SUB-005",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "scheduler",
+      "acceptance": [
+        "AC-13",
+        "AC-19"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-SUB-006",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "scheduler",
+      "acceptance": [
+        "AC-13"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-SUB-007",
+      "firstStage": "M2",
+      "completeStage": "M2",
+      "designAnchor": "scheduler",
+      "acceptance": [
+        "AC-03",
+        "AC-04"
+      ],
+      "scopeNote": "按需求正文完整交付，M2 内按反馈再拆可用流程。"
+    },
+    {
+      "id": "FR-LIVE-001",
+      "firstStage": "M1c",
+      "completeStage": "M1c",
+      "designAnchor": "recording",
+      "acceptance": [
+        "AC-07"
+      ],
+      "scopeNote": "直播在后续增强切片交付，平台及覆盖须独立验证；不能以视频 MVP 通过替代。"
+    },
+    {
+      "id": "FR-LIVE-002",
+      "firstStage": "M1c",
+      "completeStage": "M1c",
+      "designAnchor": "recording",
+      "acceptance": [
+        "AC-07"
+      ],
+      "scopeNote": "直播在后续增强切片交付，平台及覆盖须独立验证；不能以视频 MVP 通过替代。"
+    },
+    {
+      "id": "FR-LIVE-003",
+      "firstStage": "M1c",
+      "completeStage": "M1c",
+      "designAnchor": "recording",
+      "acceptance": [
+        "AC-07"
+      ],
+      "scopeNote": "直播在后续增强切片交付，平台及覆盖须独立验证；不能以视频 MVP 通过替代。"
+    },
+    {
+      "id": "FR-LIVE-004",
+      "firstStage": "M1c",
+      "completeStage": "M1c",
+      "designAnchor": "recording",
+      "acceptance": [
+        "AC-07"
+      ],
+      "scopeNote": "直播在后续增强切片交付，平台及覆盖须独立验证；不能以视频 MVP 通过替代。"
+    },
+    {
+      "id": "FR-LIVE-005",
+      "firstStage": "M1c",
+      "completeStage": "M1c",
+      "designAnchor": "recording",
+      "acceptance": [
+        "AC-07",
+        "AC-12"
+      ],
+      "scopeNote": "直播在后续增强切片交付，平台及覆盖须独立验证；不能以视频 MVP 通过替代。"
+    },
+    {
+      "id": "FR-LIVE-006",
+      "firstStage": "M2",
+      "completeStage": "M2",
+      "designAnchor": "recording",
+      "acceptance": [
+        "AC-07"
+      ],
+      "scopeNote": "按需求正文完整交付，M2 内按反馈再拆可用流程。"
+    },
+    {
+      "id": "FR-AUTH-001",
+      "firstStage": "M1a",
+      "completeStage": "M1b",
+      "designAnchor": "credentials",
+      "acceptance": [
+        "AC-08",
+        "AC-25"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-AUTH-002",
+      "firstStage": "M1a",
+      "completeStage": "M1b",
+      "designAnchor": "credentials",
+      "acceptance": [
+        "AC-08"
+      ],
+      "scopeNote": "M1a 提供视频闭环必需的基础能力检查、重新登录恢复或后台状态/暂停子集；后继阶段补正文全部能力（含自动质量补全或自启动等）。"
+    },
+    {
+      "id": "FR-AUTH-003",
+      "firstStage": "M1a",
+      "completeStage": "M1b",
+      "designAnchor": "credentials",
+      "acceptance": [
+        "AC-08",
+        "AC-09"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-AUTH-004",
+      "firstStage": "M1c",
+      "completeStage": "M1c",
+      "designAnchor": "credentials",
+      "acceptance": [
+        "AC-08"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-AUTH-005",
+      "firstStage": "M1a",
+      "completeStage": "M1c",
+      "designAnchor": "credentials",
+      "acceptance": [
+        "AC-08"
+      ],
+      "scopeNote": "M1a 提供视频闭环必需的基础能力检查、重新登录恢复或后台状态/暂停子集；后继阶段补正文全部能力（含自动质量补全或自启动等）。"
+    },
+    {
+      "id": "FR-AUTH-006",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "credentials",
+      "acceptance": [
+        "AC-25"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-ARC-001",
+      "firstStage": "M1a",
+      "completeStage": "M1b",
+      "designAnchor": "storage",
+      "acceptance": [
+        "AC-02",
+        "AC-16"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-ARC-002",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "storage",
+      "acceptance": [
+        "AC-02"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-ARC-003",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "storage",
+      "acceptance": [
+        "AC-02",
+        "AC-04"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-ARC-004",
+      "firstStage": "M2",
+      "completeStage": "M2",
+      "designAnchor": "import-export",
+      "acceptance": [
+        "AC-14"
+      ],
+      "scopeNote": "按需求正文完整交付，M2 内按反馈再拆可用流程。"
+    },
+    {
+      "id": "FR-ARC-005",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "storage",
+      "acceptance": [
+        "AC-06",
+        "AC-16"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-ARC-006",
+      "firstStage": "M2",
+      "completeStage": "M2",
+      "designAnchor": "quality",
+      "acceptance": [
+        "AC-02",
+        "AC-06"
+      ],
+      "scopeNote": "按需求正文完整交付，M2 内按反馈再拆可用流程。"
+    },
+    {
+      "id": "FR-ARC-007",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "storage",
+      "acceptance": [
+        "AC-05",
+        "AC-12",
+        "AC-19"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-ARC-008",
+      "firstStage": "M2",
+      "completeStage": "M2",
+      "designAnchor": "import-export",
+      "acceptance": [
+        "AC-12",
+        "AC-17"
+      ],
+      "scopeNote": "按需求正文完整交付，M2 内按反馈再拆可用流程。"
+    },
+    {
+      "id": "FR-QUALITY-001",
+      "firstStage": "M1a",
+      "completeStage": "M1c",
+      "designAnchor": "quality",
+      "acceptance": [
+        "AC-06"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-QUALITY-002",
+      "firstStage": "M1c",
+      "completeStage": "M1c",
+      "designAnchor": "quality",
+      "acceptance": [
+        "AC-05",
+        "AC-06",
+        "AC-08"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-QUALITY-003",
+      "firstStage": "M1c",
+      "completeStage": "M1c",
+      "designAnchor": "quality",
+      "acceptance": [
+        "AC-05"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-QUALITY-004",
+      "firstStage": "M1c",
+      "completeStage": "M1c",
+      "designAnchor": "quality",
+      "acceptance": [
+        "AC-06",
+        "AC-07"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-QUALITY-005",
+      "firstStage": "M2",
+      "completeStage": "M2",
+      "designAnchor": "quality",
+      "acceptance": [
+        "AC-05",
+        "AC-06"
+      ],
+      "scopeNote": "按需求正文完整交付，M2 内按反馈再拆可用流程。"
+    },
+    {
+      "id": "FR-BROWSE-001",
+      "firstStage": "M1a",
+      "completeStage": "M1b",
+      "designAnchor": "search",
+      "acceptance": [
+        "AC-01",
+        "AC-02"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-BROWSE-002",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "search",
+      "acceptance": [
+        "AC-01",
+        "AC-07"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-BROWSE-003",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "search",
+      "acceptance": [
+        "AC-15"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-BROWSE-004",
+      "firstStage": "M1b",
+      "completeStage": "M1b",
+      "designAnchor": "search",
+      "acceptance": [
+        "AC-15"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-BROWSE-005",
+      "firstStage": "M1a",
+      "completeStage": "M1b",
+      "designAnchor": "search",
+      "acceptance": [
+        "AC-16"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-BROWSE-006",
+      "firstStage": "M2",
+      "completeStage": "M2",
+      "designAnchor": "search",
+      "acceptance": [
+        "AC-02",
+        "AC-06"
+      ],
+      "scopeNote": "按需求正文完整交付，M2 内按反馈再拆可用流程。"
+    },
+    {
+      "id": "FR-BROWSE-007",
+      "firstStage": "M1a",
+      "completeStage": "M1b",
+      "designAnchor": "search",
+      "acceptance": [
+        "AC-08",
+        "AC-12",
+        "AC-13"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-PLUGIN-001",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "plugins",
+      "acceptance": [
+        "AC-11",
+        "AC-18"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-PLUGIN-002",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "plugins",
+      "acceptance": [
+        "AC-11"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-PLUGIN-003",
+      "firstStage": "M1a",
+      "completeStage": "M1c",
+      "designAnchor": "plugins",
+      "acceptance": [
+        "AC-11"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-PLUGIN-004",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "plugins",
+      "acceptance": [
+        "AC-11"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-PLUGIN-005",
+      "firstStage": "M2",
+      "completeStage": "M2",
+      "designAnchor": "plugins",
+      "acceptance": [
+        "AC-18"
+      ],
+      "scopeNote": "按需求正文完整交付，M2 内按反馈再拆可用流程。"
+    },
+    {
+      "id": "FR-PLUGIN-006",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "plugins",
+      "acceptance": [
+        "AC-11",
+        "AC-16"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-PLUGIN-007",
+      "firstStage": "M2",
+      "completeStage": "M2",
+      "designAnchor": "plugins",
+      "acceptance": [
+        "AC-24"
+      ],
+      "scopeNote": "按需求正文完整交付，M2 内按反馈再拆可用流程。"
+    },
+    {
+      "id": "FR-RUN-001",
+      "firstStage": "M1a",
+      "completeStage": "M1c",
+      "designAnchor": "architecture",
+      "acceptance": [
+        "AC-09",
+        "AC-10"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-RUN-002",
+      "firstStage": "M1a",
+      "completeStage": "M1c",
+      "designAnchor": "architecture",
+      "acceptance": [
+        "AC-09"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-RUN-003",
+      "firstStage": "M1a",
+      "completeStage": "M1b",
+      "designAnchor": "architecture",
+      "acceptance": [
+        "AC-09",
+        "AC-23"
+      ],
+      "scopeNote": "M1a 提供视频闭环必需的基础能力检查、重新登录恢复或后台状态/暂停子集；后继阶段补正文全部能力（含自动质量补全或自启动等）。"
+    },
+    {
+      "id": "FR-RUN-004",
+      "firstStage": "M1a",
+      "completeStage": "M1c",
+      "designAnchor": "architecture",
+      "acceptance": [
+        "AC-12",
+        "AC-23"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-RUN-005",
+      "firstStage": "M1a",
+      "completeStage": "M1c",
+      "designAnchor": "architecture",
+      "acceptance": [
+        "AC-07",
+        "AC-09",
+        "AC-23"
+      ],
+      "scopeNote": "M1a 只交付视频 MVP 适用子集；后继批次补齐正文全部行为，不将部分 AC 记为完整通过。"
+    },
+    {
+      "id": "FR-DATA-001",
+      "firstStage": "M1a",
+      "completeStage": "M1c",
+      "designAnchor": "import-export",
+      "acceptance": [
+        "AC-02",
+        "AC-14",
+        "AC-21"
+      ],
+      "scopeNote": "M1a 提供停订阅、缓存/副本/档案删除范围和共享引用保护；M1c 完成等待回收。原地索引保护从 M2 接入该能力起持续验证，不要求提前实现导入。"
+    },
+    {
+      "id": "FR-DATA-002",
+      "firstStage": "M1a",
+      "completeStage": "M2",
+      "designAnchor": "import-export",
+      "acceptance": [
+        "AC-17",
+        "AC-25"
+      ],
+      "scopeNote": "M1a 提供本地删除范围/引用保护或核心清单及文件导出；M1c 补回收，M2 补原地索引保护/导出交互完整范围。"
+    },
+    {
+      "id": "FR-DATA-003",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "import-export",
+      "acceptance": [
+        "AC-17",
+        "AC-25"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-DATA-004",
+      "firstStage": "M1a",
+      "completeStage": "M1a",
+      "designAnchor": "import-export",
+      "acceptance": [
+        "AC-18"
+      ],
+      "scopeNote": "按正文完成全项，验收逐条注明实际样本与覆盖。"
+    },
+    {
+      "id": "FR-DATA-005",
+      "firstStage": "M1c",
+      "completeStage": "M3",
+      "designAnchor": "import-export",
+      "acceptance": [
+        "AC-05",
+        "AC-21"
+      ],
+      "scopeNote": "M1c 交付删除代次和等待回收；M3 验证旧同步操作不得复活档案。"
+    },
+    {
+      "id": "FR-SYNC-001",
+      "firstStage": "M3",
+      "completeStage": "M3",
+      "designAnchor": "remote-sync",
+      "acceptance": [
+        "AC-20",
+        "AC-22"
+      ],
+      "scopeNote": "远程阶段完整实现；本地阶段不得声称远程已通过。"
+    },
+    {
+      "id": "FR-SYNC-002",
+      "firstStage": "M3",
+      "completeStage": "M3",
+      "designAnchor": "remote-sync",
+      "acceptance": [
+        "AC-22"
+      ],
+      "scopeNote": "远程阶段完整实现；本地阶段不得声称远程已通过。"
+    },
+    {
+      "id": "FR-SYNC-003",
+      "firstStage": "M3",
+      "completeStage": "M3",
+      "designAnchor": "remote-sync",
+      "acceptance": [
+        "AC-20"
+      ],
+      "scopeNote": "远程阶段完整实现；本地阶段不得声称远程已通过。"
+    },
+    {
+      "id": "FR-SYNC-004",
+      "firstStage": "M3",
+      "completeStage": "M3",
+      "designAnchor": "remote-sync",
+      "acceptance": [
+        "AC-20"
+      ],
+      "scopeNote": "远程阶段完整实现；本地阶段不得声称远程已通过。"
+    },
+    {
+      "id": "FR-SYNC-005",
+      "firstStage": "M3",
+      "completeStage": "M3",
+      "designAnchor": "remote-sync",
+      "acceptance": [
+        "AC-20"
+      ],
+      "scopeNote": "远程阶段完整实现；本地阶段不得声称远程已通过。"
+    },
+    {
+      "id": "FR-SYNC-006",
+      "firstStage": "M3",
+      "completeStage": "M3",
+      "designAnchor": "remote-sync",
+      "acceptance": [
+        "AC-21"
+      ],
+      "scopeNote": "远程阶段完整实现；本地阶段不得声称远程已通过。"
+    },
+    {
+      "id": "FR-SYNC-007",
+      "firstStage": "M3",
+      "completeStage": "M3",
+      "designAnchor": "remote-sync",
+      "acceptance": [
+        "AC-20",
+        "AC-21"
+      ],
+      "scopeNote": "远程阶段完整实现；本地阶段不得声称远程已通过。"
+    },
+    {
+      "id": "FR-SYNC-008",
+      "firstStage": "M3",
+      "completeStage": "M3",
+      "designAnchor": "remote-sync",
+      "acceptance": [
+        "AC-22",
+        "AC-25"
+      ],
+      "scopeNote": "远程阶段完整实现；本地阶段不得声称远程已通过。"
+    },
+    {
+      "id": "NFR-REL-001",
+      "firstStage": "M0",
+      "completeStage": "M3",
+      "designAnchor": "storage",
+      "acceptance": [
+        "AC-03",
+        "AC-20"
+      ],
+      "scopeNote": "从首次相关功能接入即约束；完整阶段含原需求的全部适用场景，早期报告仅声明已测子集。"
+    },
+    {
+      "id": "NFR-REL-002",
+      "firstStage": "M0",
+      "completeStage": "M3",
+      "designAnchor": "storage",
+      "acceptance": [
+        "AC-05",
+        "AC-17",
+        "AC-19"
+      ],
+      "scopeNote": "从首次相关功能接入即约束；完整阶段含原需求的全部适用场景，早期报告仅声明已测子集。"
+    },
+    {
+      "id": "NFR-REL-003",
+      "firstStage": "M0",
+      "completeStage": "M3",
+      "designAnchor": "domain",
+      "acceptance": [
+        "AC-04",
+        "AC-13"
+      ],
+      "scopeNote": "从首次相关功能接入即约束；完整阶段含原需求的全部适用场景，早期报告仅声明已测子集。"
+    },
+    {
+      "id": "NFR-PERF-001",
+      "firstStage": "M0",
+      "completeStage": "M1c",
+      "designAnchor": "resources",
+      "acceptance": [
+        "AC-09"
+      ],
+      "scopeNote": "从首次相关功能接入即约束；完整阶段含原需求的全部适用场景，早期报告仅声明已测子集。"
+    },
+    {
+      "id": "NFR-PERF-002",
+      "firstStage": "M0",
+      "completeStage": "M1c",
+      "designAnchor": "resources",
+      "acceptance": [
+        "AC-23"
+      ],
+      "scopeNote": "从首次相关功能接入即约束；完整阶段含原需求的全部适用场景，早期报告仅声明已测子集。"
+    },
+    {
+      "id": "NFR-PERF-003",
+      "firstStage": "M0",
+      "completeStage": "M1c",
+      "designAnchor": "search",
+      "acceptance": [
+        "AC-15"
+      ],
+      "scopeNote": "从首次相关功能接入即约束；完整阶段含原需求的全部适用场景，早期报告仅声明已测子集。"
+    },
+    {
+      "id": "NFR-SEC-001",
+      "firstStage": "M0",
+      "completeStage": "M3",
+      "designAnchor": "credentials",
+      "acceptance": [
+        "AC-25"
+      ],
+      "scopeNote": "从首次相关功能接入即约束；完整阶段含原需求的全部适用场景，早期报告仅声明已测子集。"
+    },
+    {
+      "id": "NFR-SEC-002",
+      "firstStage": "M0",
+      "completeStage": "M3",
+      "designAnchor": "plugins",
+      "acceptance": [
+        "AC-16"
+      ],
+      "scopeNote": "从首次相关功能接入即约束；完整阶段含原需求的全部适用场景，早期报告仅声明已测子集。"
+    },
+    {
+      "id": "NFR-SEC-003",
+      "firstStage": "M0",
+      "completeStage": "M3",
+      "designAnchor": "api",
+      "acceptance": [
+        "AC-10",
+        "AC-22"
+      ],
+      "scopeNote": "从首次相关功能接入即约束；完整阶段含原需求的全部适用场景，早期报告仅声明已测子集。"
+    },
+    {
+      "id": "NFR-COMPAT-001",
+      "firstStage": "M0",
+      "completeStage": "M3",
+      "designAnchor": "architecture",
+      "acceptance": [
+        "AC-09",
+        "AC-10",
+        "AC-22"
+      ],
+      "scopeNote": "从首次相关功能接入即约束；完整阶段含原需求的全部适用场景，早期报告仅声明已测子集。"
+    },
+    {
+      "id": "NFR-DATA-001",
+      "firstStage": "M0",
+      "completeStage": "M3",
+      "designAnchor": "import-export",
+      "acceptance": [
+        "AC-17",
+        "AC-18",
+        "AC-21"
+      ],
+      "scopeNote": "从首次相关功能接入即约束；完整阶段含原需求的全部适用场景，早期报告仅声明已测子集。"
+    },
+    {
+      "id": "NFR-OBS-001",
+      "firstStage": "M0",
+      "completeStage": "M1c",
+      "designAnchor": "observability",
+      "acceptance": [
+        "AC-08",
+        "AC-12",
+        "AC-13",
+        "AC-23"
+      ],
+      "scopeNote": "从首次相关功能接入即约束；完整阶段含原需求的全部适用场景，早期报告仅声明已测子集。"
+    },
+    {
+      "id": "NFR-TEST-001",
+      "firstStage": "M0",
+      "completeStage": "M3",
+      "designAnchor": "verification",
+      "acceptance": [
+        "AC-03",
+        "AC-05",
+        "AC-17",
+        "AC-19"
+      ],
+      "scopeNote": "从首次相关功能接入即约束；完整阶段含原需求的全部适用场景，早期报告仅声明已测子集。"
+    }
+  ]
+}

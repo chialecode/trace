@@ -1,0 +1,414 @@
+{
+  "queried_at_utc": "2026-09-25T14:53:35.436852+00:00",
+  "scope": "General-purpose stack only; site download rules are handled separately.",
+  "limitations": [
+    "Maintenance signals only, not full issue response assessment.",
+    "Repository latest release may refer to a subpackage or preview.",
+    "API license identifier is not a distribution license audit.",
+    "No TRACE integration tests have run."
+  ],
+  "repositories": [
+    {
+      "repository": "tauri-apps/tauri",
+      "url": "https://github.com/tauri-apps/tauri",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "archived": false,
+      "disabled": false,
+      "default_branch": "dev",
+      "pushed_at": "2026-09-25T14:50:02Z",
+      "license_api": "Apache-2.0",
+      "repository_api": "https://api.github.com/repos/tauri-apps/tauri",
+      "latest_commit": {
+        "sha": "e1638c778d9461de3a9569de66d94ad3aae27329",
+        "date": "2026-09-25T14:21:34Z",
+        "url": "https://github.com/tauri-apps/tauri/commit/e1638c778d9461de3a9569de66d94ad3aae27329"
+      },
+      "latest_release": {
+        "tag": "tauri-driver-v3.0.0-alpha.0",
+        "published_at": "2026-09-21T16:15:18Z",
+        "url": "https://github.com/tauri-apps/tauri/releases/tag/tauri-driver-v3.0.0-alpha.0"
+      },
+      "recent_issue_or_pr": [
+        {
+          "number": 15634,
+          "title": "Apply Version Updates From Current Changes",
+          "updated_at": "2026-09-25T14:50:05Z",
+          "state": "open",
+          "url": "https://github.com/tauri-apps/tauri/pull/15634",
+          "type": "pr"
+        },
+        {
+          "number": 15710,
+          "title": "chore(deps): update rust crate windows-registry to 0.100",
+          "updated_at": "2026-09-25T14:25:18Z",
+          "state": "open",
+          "url": "https://github.com/tauri-apps/tauri/pull/15710",
+          "type": "pr"
+        }
+      ]
+    },
+    {
+      "repository": "facebook/react",
+      "url": "https://github.com/facebook/react",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "archived": false,
+      "disabled": false,
+      "default_branch": "main",
+      "pushed_at": "2026-09-25T08:18:17Z",
+      "license_api": "MIT",
+      "repository_api": "https://api.github.com/repos/facebook/react",
+      "latest_commit": {
+        "sha": "d083ec1da1e5252abd3ddfdde6dfbc09701a2c51",
+        "date": "2026-09-22T17:26:59Z",
+        "url": "https://github.com/react/react/commit/d083ec1da1e5252abd3ddfdde6dfbc09701a2c51"
+      },
+      "latest_release": {
+        "tag": "v19.3.0",
+        "published_at": "2026-09-09T18:01:33Z",
+        "url": "https://github.com/react/react/releases/tag/v19.3.0"
+      },
+      "recent_issue_or_pr": [
+        {
+          "number": 37688,
+          "title": "[compiler] Don't treat comparing a ref-reading function as a ref access",
+          "updated_at": "2026-09-25T12:40:29Z",
+          "state": "open",
+          "url": "https://github.com/react/react/pull/37688",
+          "type": "pr"
+        },
+        {
+          "number": 36830,
+          "title": "Bump http-proxy-middleware from 2.0.6 to 2.0.10",
+          "updated_at": "2026-09-25T08:18:19Z",
+          "state": "closed",
+          "url": "https://github.com/react/react/pull/36830",
+          "type": "pr"
+        }
+      ]
+    },
+    {
+      "repository": "vuejs/core",
+      "url": "https://github.com/vuejs/core",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "archived": false,
+      "disabled": false,
+      "default_branch": "main",
+      "pushed_at": "2026-09-25T09:20:48Z",
+      "license_api": "MIT",
+      "repository_api": "https://api.github.com/repos/vuejs/core",
+      "latest_commit": {
+        "sha": "4ab865a848a1da3d10fb674f857e5fff13094644",
+        "date": "2026-09-18T02:59:51Z",
+        "url": "https://github.com/vuejs/core/commit/4ab865a848a1da3d10fb674f857e5fff13094644"
+      },
+      "latest_release": {
+        "tag": "v3.5.43",
+        "published_at": "2026-09-17T08:36:57Z",
+        "url": "https://github.com/vuejs/core/releases/tag/v3.5.43"
+      },
+      "recent_issue_or_pr": [
+        {
+          "number": 15000,
+          "title": "refactor: ESM-only packages (WIP)",
+          "updated_at": "2026-09-25T09:23:29Z",
+          "state": "open",
+          "url": "https://github.com/vuejs/core/pull/15000",
+          "type": "pr"
+        },
+        {
+          "number": 15648,
+          "title": "fix(runtime-vapor): re-sync select v-model when its options change",
+          "updated_at": "2026-09-25T08:28:05Z",
+          "state": "open",
+          "url": "https://github.com/vuejs/core/pull/15648",
+          "type": "pr"
+        }
+      ]
+    },
+    {
+      "repository": "sveltejs/svelte",
+      "url": "https://github.com/sveltejs/svelte",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "archived": false,
+      "disabled": false,
+      "default_branch": "main",
+      "pushed_at": "2026-09-25T08:04:22Z",
+      "license_api": "MIT",
+      "repository_api": "https://api.github.com/repos/sveltejs/svelte",
+      "latest_commit": {
+        "sha": "a956c2bd1fe84eff8e01662b948234c9193c6253",
+        "date": "2026-09-25T02:44:12Z",
+        "url": "https://github.com/sveltejs/svelte/commit/a956c2bd1fe84eff8e01662b948234c9193c6253"
+      },
+      "latest_release": {
+        "tag": "svelte@5.57.1",
+        "published_at": "2026-09-18T23:51:13Z",
+        "url": "https://github.com/sveltejs/svelte/releases/tag/svelte%405.57.1"
+      },
+      "recent_issue_or_pr": [
+        {
+          "number": 18882,
+          "title": "fix: chain upstream plugin sourcemaps whose sources contain full paths",
+          "updated_at": "2026-09-25T12:33:51Z",
+          "state": "open",
+          "url": "https://github.com/sveltejs/svelte/pull/18882",
+          "type": "pr"
+        },
+        {
+          "number": 18873,
+          "title": "fix: error when using `let:` directives on a component with a `children` snippet",
+          "updated_at": "2026-09-25T10:02:35Z",
+          "state": "closed",
+          "url": "https://github.com/sveltejs/svelte/pull/18873",
+          "type": "pr"
+        }
+      ]
+    },
+    {
+      "repository": "vitejs/vite",
+      "url": "https://github.com/vitejs/vite",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "archived": false,
+      "disabled": false,
+      "default_branch": "main",
+      "pushed_at": "2026-09-25T11:01:45Z",
+      "license_api": "MIT",
+      "repository_api": "https://api.github.com/repos/vitejs/vite",
+      "latest_commit": {
+        "sha": "bc598a6a8a6b7d6e157e9f19c16911cff8d2360c",
+        "date": "2026-09-25T08:08:45Z",
+        "url": "https://github.com/vitejs/vite/commit/bc598a6a8a6b7d6e157e9f19c16911cff8d2360c"
+      },
+      "latest_release": {
+        "tag": "v8.3.1",
+        "published_at": "2026-09-24T12:23:55Z",
+        "url": "https://github.com/vitejs/vite/releases/tag/v8.3.1"
+      },
+      "recent_issue_or_pr": [
+        {
+          "number": 23587,
+          "title": "refactor(bundled-dev): serve the rolldown dev runtime as a single file",
+          "updated_at": "2026-09-25T11:25:54Z",
+          "state": "open",
+          "url": "https://github.com/vitejs/vite/pull/23587",
+          "type": "pr"
+        },
+        {
+          "number": 23463,
+          "title": "feat(bundled-dev): support `import.meta.hot.acceptExports`",
+          "updated_at": "2026-09-25T11:01:46Z",
+          "state": "open",
+          "url": "https://github.com/vitejs/vite/pull/23463",
+          "type": "pr"
+        }
+      ]
+    },
+    {
+      "repository": "radix-ui/primitives",
+      "url": "https://github.com/radix-ui/primitives",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "archived": false,
+      "disabled": false,
+      "default_branch": "main",
+      "pushed_at": "2026-08-08T16:39:51Z",
+      "license_api": "MIT",
+      "repository_api": "https://api.github.com/repos/radix-ui/primitives",
+      "latest_commit": {
+        "sha": "f7ecd5ab16f5e1e820eb5786a1419a98a2d594ae",
+        "date": "2026-07-31T21:03:26Z",
+        "url": "https://github.com/radix-ui/primitives/commit/f7ecd5ab16f5e1e820eb5786a1419a98a2d594ae"
+      },
+      "latest_release": {
+        "query_error": "HTTP Error 404: Not Found"
+      },
+      "recent_issue_or_pr": [
+        {
+          "number": 4154,
+          "title": "[Slider] onValueCommit receives the previous render's value when pointerup fires before the last pointermove has rendered",
+          "updated_at": "2026-09-24T22:25:51Z",
+          "state": "closed",
+          "url": "https://github.com/radix-ui/primitives/issues/4154",
+          "type": "issue"
+        },
+        {
+          "number": 4124,
+          "title": "Popover: PopoverContent throws \"Primitive.div failed to slot onto its children\" on mount (React 19)",
+          "updated_at": "2026-09-24T13:37:02Z",
+          "state": "closed",
+          "url": "https://github.com/radix-ui/primitives/issues/4124",
+          "type": "issue"
+        }
+      ]
+    },
+    {
+      "repository": "tailwindlabs/tailwindcss",
+      "url": "https://github.com/tailwindlabs/tailwindcss",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "archived": false,
+      "disabled": false,
+      "default_branch": "main",
+      "pushed_at": "2026-09-25T13:47:42Z",
+      "license_api": "MIT",
+      "repository_api": "https://api.github.com/repos/tailwindlabs/tailwindcss",
+      "latest_commit": {
+        "sha": "9798a8ab5b48abf483c93265f96d499ee3755d4d",
+        "date": "2026-09-25T11:28:27Z",
+        "url": "https://github.com/tailwindlabs/tailwindcss/commit/9798a8ab5b48abf483c93265f96d499ee3755d4d"
+      },
+      "latest_release": {
+        "tag": "v4.3.3",
+        "published_at": "2026-07-16T11:55:08Z",
+        "url": "https://github.com/tailwindlabs/tailwindcss/releases/tag/v4.3.3"
+      },
+      "recent_issue_or_pr": [
+        {
+          "number": 20513,
+          "title": "Improve style invalidation performance of `group-*` and `peer-*` variants",
+          "updated_at": "2026-09-25T13:55:13Z",
+          "state": "open",
+          "url": "https://github.com/tailwindlabs/tailwindcss/pull/20513",
+          "type": "pr"
+        },
+        {
+          "number": 20505,
+          "title": "fix: two comment typos (Succesfully, preceeded)",
+          "updated_at": "2026-09-25T12:22:50Z",
+          "state": "closed",
+          "url": "https://github.com/tailwindlabs/tailwindcss/pull/20505",
+          "type": "pr"
+        }
+      ]
+    },
+    {
+      "repository": "tokio-rs/tokio",
+      "url": "https://github.com/tokio-rs/tokio",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "archived": false,
+      "disabled": false,
+      "default_branch": "master",
+      "pushed_at": "2026-09-25T11:42:40Z",
+      "license_api": "MIT",
+      "repository_api": "https://api.github.com/repos/tokio-rs/tokio",
+      "latest_commit": {
+        "sha": "56afa5107fe7877991a7241e4758b32e049e5848",
+        "date": "2026-09-25T11:42:39Z",
+        "url": "https://github.com/tokio-rs/tokio/commit/56afa5107fe7877991a7241e4758b32e049e5848"
+      },
+      "latest_release": {
+        "tag": "tokio-1.53.1",
+        "published_at": "2026-07-20T17:06:31Z",
+        "url": "https://github.com/tokio-rs/tokio/releases/tag/tokio-1.53.1"
+      },
+      "recent_issue_or_pr": [
+        {
+          "number": 8512,
+          "title": "codec: use memchr and a lookup table in AnyDelimiterCodec",
+          "updated_at": "2026-09-25T14:12:31Z",
+          "state": "open",
+          "url": "https://github.com/tokio-rs/tokio/pull/8512",
+          "type": "pr"
+        },
+        {
+          "number": 8511,
+          "title": "net: saturate TcpSocket listen backlog",
+          "updated_at": "2026-09-25T14:10:09Z",
+          "state": "open",
+          "url": "https://github.com/tokio-rs/tokio/pull/8511",
+          "type": "pr"
+        }
+      ]
+    },
+    {
+      "repository": "launchbadge/sqlx",
+      "url": "https://github.com/launchbadge/sqlx",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "archived": false,
+      "disabled": false,
+      "default_branch": "main",
+      "pushed_at": "2026-09-14T15:02:33Z",
+      "license_api": "Apache-2.0",
+      "repository_api": "https://api.github.com/repos/launchbadge/sqlx",
+      "latest_commit": {
+        "query_error": "HTTP Error 403: rate limit exceeded"
+      },
+      "latest_release": {
+        "query_error": "HTTP Error 403: rate limit exceeded"
+      },
+      "recent_issue_or_pr": {
+        "query_error": "HTTP Error 403: rate limit exceeded"
+      }
+    },
+    {
+      "repository": "rusqlite/rusqlite",
+      "url": "https://github.com/rusqlite/rusqlite",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "archived": false,
+      "disabled": false,
+      "default_branch": "master",
+      "pushed_at": "2026-09-25T11:09:39Z",
+      "license_api": "MIT",
+      "repository_api": "https://api.github.com/repos/rusqlite/rusqlite",
+      "latest_commit": {
+        "query_error": "HTTP Error 403: rate limit exceeded"
+      },
+      "latest_release": {
+        "query_error": "HTTP Error 403: rate limit exceeded"
+      },
+      "recent_issue_or_pr": {
+        "query_error": "HTTP Error 403: rate limit exceeded"
+      }
+    },
+    {
+      "repository": "FFmpeg/FFmpeg",
+      "url": "https://github.com/FFmpeg/FFmpeg",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "archived": false,
+      "disabled": false,
+      "default_branch": "master",
+      "pushed_at": "2026-09-25T12:48:10Z",
+      "license_api": "NOASSERTION",
+      "repository_api": "https://api.github.com/repos/FFmpeg/FFmpeg",
+      "latest_commit": {
+        "query_error": "HTTP Error 403: rate limit exceeded"
+      },
+      "latest_release": {
+        "query_error": "HTTP Error 403: rate limit exceeded"
+      },
+      "recent_issue_or_pr": {
+        "query_error": "HTTP Error 403: rate limit exceeded"
+      }
+    },
+    {
+      "repository": "quickwit-oss/tantivy",
+      "url": "https://github.com/quickwit-oss/tantivy",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "query_error": "HTTP Error 403: rate limit exceeded"
+    },
+    {
+      "repository": "vitest-dev/vitest",
+      "url": "https://github.com/vitest-dev/vitest",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "query_error": "HTTP Error 403: rate limit exceeded"
+    },
+    {
+      "repository": "microsoft/playwright",
+      "url": "https://github.com/microsoft/playwright",
+      "adoption": "unselected",
+      "integration_test": "not-run",
+      "query_error": "HTTP Error 403: rate limit exceeded"
+    }
+  ]
+}

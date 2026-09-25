@@ -1,0 +1,38 @@
+{
+  "executed_at_utc": "2026-09-25T16:39:46.516465+00:00",
+  "scope": "Temporary compatibility smoke: package install, Vue typecheck, Vite production build, SSR component rendering. No Tauri/real browser/Windows IME/site test.",
+  "dependencies": {
+    "vue": "3.5.43",
+    "typescript": "7.0.2",
+    "vite": "8.3.1",
+    "@vitejs/plugin-vue": "6.0.9",
+    "vue-tsc": "3.3.11",
+    "pinia": "4.0.3",
+    "vue-router": "5.3.1",
+    "naive-ui": "2.45.3",
+    "vitest": "5.0.2",
+    "@vue/test-utils": "2.5.1"
+  },
+  "source_files": {
+    "package.json": "{\n  \"name\": \"trace-a-vue-probe\",\n  \"version\": \"0.0.0\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"vue\": \"3.5.43\",\n    \"typescript\": \"7.0.2\",\n    \"vite\": \"8.3.1\",\n    \"@vitejs/plugin-vue\": \"6.0.9\",\n    \"vue-tsc\": \"3.3.11\",\n    \"pinia\": \"4.0.3\",\n    \"vue-router\": \"5.3.1\",\n    \"naive-ui\": \"2.45.3\",\n    \"vitest\": \"5.0.2\",\n    \"@vue/test-utils\": \"2.5.1\"\n  },\n  \"scripts\": {\n    \"typecheck\": \"vue-tsc --noEmit\",\n    \"build\": \"vite build\",\n    \"test\": \"vitest run\"\n  }\n}",
+    "index.html": "<div id=\"app\"></div><script type=\"module\" src=\"/src/main.ts\"></script>",
+    "vite.config.ts": "import {defineConfig} from 'vite'; import vue from '@vitejs/plugin-vue'; export default defineConfig({plugins:[vue()]});",
+    "tsconfig.json": "{\"compilerOptions\": {\"target\": \"ES2022\", \"module\": \"ESNext\", \"moduleResolution\": \"Bundler\", \"strict\": true, \"skipLibCheck\": true, \"lib\": [\"ES2022\", \"DOM\"], \"types\": [\"vite/client\"]}, \"include\": [\"src/**/*.ts\", \"src/**/*.vue\"]}",
+    "src/main.ts": "import {createApp} from 'vue'; import {createPinia} from 'pinia'; import {createRouter,createWebHashHistory} from 'vue-router'; import App from './App.vue'; const router=createRouter({history:createWebHashHistory(),routes:[{path:'/',component:App}]}); createApp(App).use(createPinia()).use(router).mount('#app');",
+    "src/App.vue": "<script setup lang=\"ts\">\nimport {ref} from 'vue'; import {NConfigProvider,NInput,NButton,NDataTable,NTag,zhCN,dateZhCN} from 'naive-ui';\nconst query=ref(''); const columns=[{title:'视频',key:'title'},{title:'状态',key:'status'}];const rows=[{key:'1',title:'中文视频',status:'待验证'}];\n</script><template><NConfigProvider :locale=\"zhCN\" :date-locale=\"dateZhCN\"><NInput v-model:value=\"query\" placeholder=\"搜索\"/><NButton>暂停订阅</NButton><NTag>覆盖未知</NTag><NDataTable :columns=\"columns\" :data=\"rows\"/></NConfigProvider></template>",
+    "probe.test.ts": "import {test,expect} from 'vitest';import {createSSRApp} from 'vue';import {renderToString} from 'vue/server-renderer';import App from './src/App.vue';\ntest('selected Vue and Naive UI render Chinese table and truthful state together',async()=>{const html=await renderToString(createSSRApp(App));expect(html).toContain('中文视频');expect(html).toContain('覆盖未知');expect(html).toContain('暂停订阅');});"
+  },
+  "commands": [
+    {
+      "command": "npm install --ignore-scripts --no-audit --no-fund",
+      "exit_code": 0,
+      "output": "\nadded 141 packages in 48s\n\n"
+    },
+    {
+      "command": "npm run typecheck",
+      "exit_code": 1,
+      "output": "\n> trace-a-vue-probe@0.0.0 typecheck\n> vue-tsc --noEmit\n\n\n<probe>\\node_modules\\vue-tsc\\index.js:68\n                throw err;\n                ^\n\nError [ERR_PACKAGE_PATH_NOT_EXPORTED]: Package subpath './lib/tsc' is not defined by \"exports\" in <probe>\\node_modules\\typescript\\package.json\n    at exportsNotFound (node:internal/modules/esm/resolve:314:10)\n    at packageExportsResolve (node:internal/modules/esm/resolve:662:9)\n    at resolveExports (node:internal/modules/cjs/loader:707:36)\n    at Module._findPath (node:internal/modules/cjs/loader:774:31)\n    at Module._resolveFilename (node:internal/modules/cjs/loader:1502:27)\n    at wrapResolveFilename (node:internal/modules/cjs/loader:1071:27)\n    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1122:12)\n    at require.resolve (node:internal/modules/helpers:171:31)\n    at resolveTscPath (<probe>\\node_modules\\vue-tsc\\index.js:73:43)\n    at main (<probe>\\node_modules\\vue-tsc\\index.js:44:45) {\n  code: 'ERR_PACKAGE_PATH_NOT_EXPORTED'\n}\n\nNode.js v24.19.0\n"
+    }
+  ],
+  "lock_sha256": "64f064fbdc1767a4bbba3e46d36a02150cd77cbc54895b5fbc46bb1a607cd9ab"
+}

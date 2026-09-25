@@ -1,0 +1,225 @@
+{
+  "created_at_utc": "2026-09-25T15:10:59.561657+00:00",
+  "version_basis": "No Git repository exists; final content hashes identify reviewed files.",
+  "excluded": [
+    "docs/evidence/document-check-results.json",
+    "docs/evidence/documentation-source-manifest.json"
+  ],
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "bytes": 4233,
+      "sha256": "9bacbf8f53552f5be86d0bd9a8ef9d68923fb0f88798d54cebc89853a0309e06"
+    },
+    {
+      "path": "CLAUDE.md",
+      "bytes": 11,
+      "sha256": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "bytes": 1393,
+      "sha256": "95cbc1115744a2f2b54fc87cfcc2cc365fd1104d373e0f0e9d7622849d6f550b"
+    },
+    {
+      "path": "DESIGN.md",
+      "bytes": 250,
+      "sha256": "97f08c8358926de5ed87deda9b2dfbeb898efd916e3efee80a1695188d5be9a9"
+    },
+    {
+      "path": "docs/decisions/architecture-decisions.md",
+      "bytes": 3032,
+      "sha256": "4e3ad2596a7b103e76ce14368af3829fe027ef0df8ad0634e1f00fc6023b41d1"
+    },
+    {
+      "path": "docs/decisions/confirmed-decisions.md",
+      "bytes": 2493,
+      "sha256": "14a35619e6e7acd058c5ee2f6e9b65045d818099b8a4afc0a9d69ef75cb25f2a"
+    },
+    {
+      "path": "docs/decisions/open-questions.md",
+      "bytes": 5698,
+      "sha256": "b11869efaf2827659e717a057455e3a1d910670bf4f9bb27758fefd14503a826"
+    },
+    {
+      "path": "docs/decisions/README.md",
+      "bytes": 606,
+      "sha256": "0add4f6aec93171aa2f0eb7cc1180eeb3ac5e9ca396a9e0a6555d0754cd636e0"
+    },
+    {
+      "path": "docs/delivery/m0-m1a-preparation.md",
+      "bytes": 3029,
+      "sha256": "9073037639159b2f939f51995ab0c6341fbfe18fc8f7ea6ccbfef6ad7d6f32db"
+    },
+    {
+      "path": "docs/delivery/requirements-map.json",
+      "bytes": 26110,
+      "sha256": "f8a17cc591a8ce4235dc4593e36d57d5956a26f24ba2dca14ba771dfdb6b0e3b"
+    },
+    {
+      "path": "docs/delivery/roadmap-and-acceptance.md",
+      "bytes": 6379,
+      "sha256": "97e35ed12797f48a94fc015899a89832075a3eb0f41847ac4478fc584fa4ce7d"
+    },
+    {
+      "path": "docs/delivery/status.md",
+      "bytes": 1545,
+      "sha256": "d339f5c684b495930c7a36140ae4b4678b71bad8b7415ff770c19bad935cfdbf"
+    },
+    {
+      "path": "docs/design-rules/DESIGN.md",
+      "bytes": 2554,
+      "sha256": "b8ec63e3bcf2d28df8c68eb417cda3e8d06f5614f3be6f6afd2b631f818c662c"
+    },
+    {
+      "path": "docs/design-rules/README.md",
+      "bytes": 240,
+      "sha256": "da6681b24ff676334b1966cad9ffce8de9af1e1ab55e3b17c395b180ded3bc63"
+    },
+    {
+      "path": "docs/design.md",
+      "bytes": 71659,
+      "sha256": "a27efe6e658f273140e9f122e9d5c828a41be4aad690669b2f7879ecd3e2e3bf"
+    },
+    {
+      "path": "docs/dev-rules/architecture-and-contracts.md",
+      "bytes": 1876,
+      "sha256": "733a41574fd412d5e6a2ac24c921a9a079699e2c6bdceda44c4fda9966137bff"
+    },
+    {
+      "path": "docs/dev-rules/data-and-security.md",
+      "bytes": 1952,
+      "sha256": "3a5ad0103e76d26feb58ad90737c3c6301a6b8e5ac1a9e64ad30f6bf2866ad2d"
+    },
+    {
+      "path": "docs/dev-rules/development-workflow.md",
+      "bytes": 7568,
+      "sha256": "c791384a71a7d7ea793888e8846d9d220313bdf1f5c4578e1ddd812a6bff81cd"
+    },
+    {
+      "path": "docs/dev-rules/open-source-first.md",
+      "bytes": 4208,
+      "sha256": "a140ae5c1781c8c69c6e03e684c5c5e923f16fc7095d3f93d3dd6e082b3b0435"
+    },
+    {
+      "path": "docs/dev-rules/quality-gates.md",
+      "bytes": 3226,
+      "sha256": "75de102b9970c6748f1f1d91409aa5d56154bbef04bda9ca6f76f0c35be55271"
+    },
+    {
+      "path": "docs/dev-rules/README.md",
+      "bytes": 685,
+      "sha256": "31d09097ce15e0294972363b3bab78091872616fa06e2a1cd6bea3f437ebd419"
+    },
+    {
+      "path": "docs/dev-rules/repo-and-environment.md",
+      "bytes": 2029,
+      "sha256": "be9f39d9179a5da70b3a31975af785d6035edbd48702d5fc4a1a1453afda41e5"
+    },
+    {
+      "path": "docs/dev-rules/site-adapters.md",
+      "bytes": 2479,
+      "sha256": "26ade91d2728f15a10a2714ea3dded57e0d5ca79eb5acd76587584812a007fcf"
+    },
+    {
+      "path": "docs/evidence/2026-09-25-documentation-framework.md",
+      "bytes": 3146,
+      "sha256": "cc655968bda751ac115c4ef8afd28e641ec48e57277ad0e1d8832c9999d7d412"
+    },
+    {
+      "path": "docs/evidence/README.md",
+      "bytes": 566,
+      "sha256": "9ea7976fad971e7e42461977c4f643a4f086156badaa862a65b22ca41fe15cd9"
+    },
+    {
+      "path": "docs/governance/compatibility-baseline.json",
+      "bytes": 3606,
+      "sha256": "8c7407aa4061c0ec26cd9de35e4327cebe5d52997ea0ac746b7082fdf5fe5e58"
+    },
+    {
+      "path": "docs/governance/document-registry.json",
+      "bytes": 12975,
+      "sha256": "d1ce12c9510f4bfa094b48be3e42f5a54b62f06aa257fe591a3fa4f8ae0c57c8"
+    },
+    {
+      "path": "docs/governance/documentation-policy.md",
+      "bytes": 5996,
+      "sha256": "3ee23567c7181a1b6812998af85562ae6b6bf3609e860ecd5badfde9185a4bb7"
+    },
+    {
+      "path": "docs/product-rules/core-product-principles.md",
+      "bytes": 1342,
+      "sha256": "5085c9333e39bf640d67f22292c3d6f16577df11ca5faf9943b686310f263bbd"
+    },
+    {
+      "path": "docs/README.md",
+      "bytes": 3190,
+      "sha256": "f10e9bf9ffbfdc91f23d2acd06906476e398c8eaee9ea17b886d01b5a1086c12"
+    },
+    {
+      "path": "docs/requirements.md",
+      "bytes": 38820,
+      "sha256": "769ad4c24c19b34404702407e564288a9d29d32d40344f444d657db7d340d18c"
+    },
+    {
+      "path": "docs/research/open-source-candidates.md",
+      "bytes": 4356,
+      "sha256": "da3df1056e6392d11fd257e3d3ae58c669907cd7b7880a1672349dc12e4e293f"
+    },
+    {
+      "path": "docs/research/open-source-snapshot.json",
+      "bytes": 15228,
+      "sha256": "e718afe07e5e7f0c925f345669c3627a0c20ca487f91d36ed1ee2e7a420e94dc"
+    },
+    {
+      "path": "docs/templates/agent-handoff.md",
+      "bytes": 3391,
+      "sha256": "57ffa5b7d021154c00c1666ca807cbd2930bcbd1aad116b58a4edb679eca19ab"
+    },
+    {
+      "path": "docs/templates/change-proposal.md",
+      "bytes": 1764,
+      "sha256": "d57db1e972097d3bf56c1b1d78bed6d7da055fee9e5b1f79375b1be6368bf212"
+    },
+    {
+      "path": "docs/templates/decision-record.md",
+      "bytes": 1855,
+      "sha256": "5e37cc46b65d62fe558221c143f8e3886862f4fa6b3eadd8642fb6b3336df2b7"
+    },
+    {
+      "path": "docs/templates/module-spec.md",
+      "bytes": 862,
+      "sha256": "492a12a0d33b93330ecbfd59d9a6aedd72e7faeac337e36c2a93673cdfa5ce12"
+    },
+    {
+      "path": "docs/templates/open-source-assessment.md",
+      "bytes": 3000,
+      "sha256": "9cd31bb1414874b819b24597e102ba5d6ea462481fc8bfa4a752376058b97588"
+    },
+    {
+      "path": "docs/templates/README.md",
+      "bytes": 1315,
+      "sha256": "a8f60d2fa8693b2f095f061fad769429a1ba908877811c187f9357ee6c8649db"
+    },
+    {
+      "path": "docs/templates/validation-report.md",
+      "bytes": 2291,
+      "sha256": "25edf444d154291eca62bcface2e8918bf61b8688bddad2e2ed7d80885fe33e6"
+    },
+    {
+      "path": "README.md",
+      "bytes": 1889,
+      "sha256": "c5ad87094a864e3668a9a9150cb89ee4bf5cd2af19bb9919ce4ff034ecd27548"
+    },
+    {
+      "path": "REVIEW.md",
+      "bytes": 3675,
+      "sha256": "09d761afe0e02fca34db717cd8473bf5d138f5c3d45d9bdbd8ecd5c0d0943639"
+    },
+    {
+      "path": "scripts/check_docs.py",
+      "bytes": 8821,
+      "sha256": "904f31a82db493e7d95db75fb7fa28250dd717cc6f1dc438116bf2ed1b23ef35"
+    }
+  ]
+}

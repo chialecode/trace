@@ -1,0 +1,3585 @@
+{
+  "queried_at_utc": "2026-09-25T16:35:36.061011+00:00",
+  "meaning": "Registry stable/latest observations, not dependency-lock or tested compatibility.",
+  "packages": [
+    {
+      "kind": "npm",
+      "name": "vue",
+      "url": "https://registry.npmjs.org/vue",
+      "version": "3.5.43",
+      "published": "2026-09-17T08:39:03.208Z",
+      "license": "MIT",
+      "engines": null,
+      "peer_dependencies": {
+        "typescript": "*"
+      },
+      "repository": {
+        "url": "git+https://github.com/vuejs/core.git",
+        "type": "git"
+      },
+      "integrity": "sha512-o5qZoksdnjIKvW1srZ3ab7pcDNYAerBjRe54D0LBLfRdCYFrSgBHVXokMas35czQc0//lmx4/tuY4ZNQ+Rf2Ng=="
+    },
+    {
+      "kind": "npm",
+      "name": "typescript",
+      "url": "https://registry.npmjs.org/typescript",
+      "version": "7.0.2",
+      "published": "2026-07-08T15:55:18.431Z",
+      "license": "Apache-2.0",
+      "engines": {
+        "node": ">=16.20.0"
+      },
+      "peer_dependencies": null,
+      "repository": {
+        "url": "git+https://github.com/microsoft/TypeScript.git",
+        "type": "git"
+      },
+      "integrity": "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA=="
+    },
+    {
+      "kind": "npm",
+      "name": "vite",
+      "url": "https://registry.npmjs.org/vite",
+      "version": "8.3.1",
+      "published": "2026-09-24T12:26:19.940Z",
+      "license": "MIT",
+      "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+      },
+      "peer_dependencies": {
+        "tsx": "^4.8.1",
+        "jiti": ">=1.21.0",
+        "less": "^4.0.0",
+        "sass": "^1.70.0",
+        "yaml": "^2.4.2",
+        "stylus": ">=0.54.8",
+        "terser": "^5.16.0",
+        "esbuild": "^0.27.0 || ^0.28.0",
+        "sugarss": "^5.0.0",
+        "@types/node": "^20.19.0 || >=22.12.0",
+        "sass-embedded": "^1.70.0",
+        "@vitejs/devtools": "^0.7.1"
+      },
+      "repository": {
+        "url": "git+https://github.com/vitejs/vite.git",
+        "type": "git",
+        "directory": "packages/vite"
+      },
+      "integrity": "sha512-/bvH9E9tmCXRGp2uXY3WbOldqpTwFkbha/8ANaEQ6VkxhH60KyqLwgZq6lG2y+4uT55x9+9eUHMpQ7uGnOCKjA=="
+    },
+    {
+      "kind": "npm",
+      "name": "@vitejs/plugin-vue",
+      "url": "https://registry.npmjs.org/%40vitejs%2Fplugin-vue",
+      "version": "6.0.9",
+      "published": "2026-09-14T07:00:40.002Z",
+      "license": "MIT",
+      "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+      },
+      "peer_dependencies": {
+        "vue": "^3.2.25",
+        "vite": "^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0"
+      },
+      "repository": {
+        "url": "git+https://github.com/vitejs/vite-plugin-vue.git",
+        "type": "git",
+        "directory": "packages/plugin-vue"
+      },
+      "integrity": "sha512-rD/MORlhaZMlXWW0rEn4FB4wMinWC0z/D7Ye160S5+Rs1mC8ZDAdcDp4SjKfUhG5t8q1ktcPVw4xuTkPRlzrSA=="
+    },
+    {
+      "kind": "npm",
+      "name": "vue-tsc",
+      "url": "https://registry.npmjs.org/vue-tsc",
+      "version": "3.3.11",
+      "published": "2026-08-21T10:11:21.360Z",
+      "license": "MIT",
+      "engines": null,
+      "peer_dependencies": {
+        "typescript": ">=5.0.0"
+      },
+      "repository": {
+        "url": "git+https://github.com/vuejs/language-tools.git",
+        "type": "git",
+        "directory": "packages/tsc"
+      },
+      "integrity": "sha512-gOb0B9rtU2+f1dszwPqSH5kAieIF9ReeLhD3kSRNHv5WZZUQz/JdVXW0RTdqhNTMlQkqKzrTTviqKr/4FYZraQ=="
+    },
+    {
+      "kind": "npm",
+      "name": "pinia",
+      "url": "https://registry.npmjs.org/pinia",
+      "version": "4.0.3",
+      "published": "2026-08-12T12:21:06.901Z",
+      "license": "MIT",
+      "engines": null,
+      "peer_dependencies": {
+        "vue": "^3.5.11",
+        "typescript": ">=5.6.0",
+        "@vue/devtools-api": "^8.1.5"
+      },
+      "repository": {
+        "url": "git+https://github.com/vuejs/pinia.git",
+        "type": "git"
+      },
+      "integrity": "sha512-XMQqpvjgG7LMqVhhFUzKLT4KEbsYbfZZ0CZU9PgdFm1O2VKBmIkykL8+SfNhOaT7sR0wT6BEgKT0YNDYWgmVRA=="
+    },
+    {
+      "kind": "npm",
+      "name": "vue-router",
+      "url": "https://registry.npmjs.org/vue-router",
+      "version": "5.3.1",
+      "published": "2026-09-02T12:39:20.761Z",
+      "license": "MIT",
+      "engines": null,
+      "peer_dependencies": {
+        "vue": "^3.5.34 || ^4.0.0",
+        "vite": "^7.3.0 || ^8.0.0",
+        "pinia": "^3.0.4 || ^4.0.2",
+        "@pinia/colada": ">=0.21.2",
+        "@vue/compiler-sfc": "^3.5.34 || ^4.0.0"
+      },
+      "repository": {
+        "url": "git+https://github.com/vuejs/router.git",
+        "type": "git"
+      },
+      "integrity": "sha512-GDBZzgmILxA/kFnkFbJjQZdZ2QQbngnIMMuoUcjhZIfH1RGMaPjPwX5ASnV38qamuA9uhO0RDjSBHTDNG2uXyQ=="
+    },
+    {
+      "kind": "npm",
+      "name": "naive-ui",
+      "url": "https://registry.npmjs.org/naive-ui",
+      "version": "2.45.3",
+      "published": "2026-08-27T20:02:50.366Z",
+      "license": "MIT",
+      "engines": {
+        "node": ">=20"
+      },
+      "peer_dependencies": {
+        "vue": "^3.0.0"
+      },
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/tusen-ai/naive-ui"
+      },
+      "integrity": "sha512-D83gJ+6zUdkQ5DuUbmlfyaM1t8pV5WMPa6KmL9mByqQuiL12qBdA0n/iEIth4dQw1x/duNGpOS2anpt5FKO1kw=="
+    },
+    {
+      "kind": "npm",
+      "name": "element-plus",
+      "url": "https://registry.npmjs.org/element-plus",
+      "version": "2.14.6",
+      "published": "2026-09-18T13:18:22.136Z",
+      "license": "MIT",
+      "engines": null,
+      "peer_dependencies": {
+        "vue": "^3.3.7"
+      },
+      "repository": {
+        "url": "git+https://github.com/element-plus/element-plus.git",
+        "type": "git"
+      },
+      "integrity": "sha512-GH0fMoMgVEKkHimoaKvg5B00NmfPbQ+qxX6/JrO7F+dLAC3atrZr2Y2MoccHMxS22M7QE12/s0DG0Zs49iwJ/A=="
+    },
+    {
+      "kind": "npm",
+      "name": "reka-ui",
+      "url": "https://registry.npmjs.org/reka-ui",
+      "version": "2.10.5",
+      "published": "2026-09-21T13:18:23.018Z",
+      "license": "MIT",
+      "engines": null,
+      "peer_dependencies": {
+        "vue": ">= 3.4.0"
+      },
+      "repository": {
+        "url": "git+https://github.com/unovue/reka-ui.git",
+        "type": "git"
+      },
+      "integrity": "sha512-/8o0y9BThE0hcHKFg+3770tWcJh3qKdOEFxLOPb9HIajXeFoH/J530cZH62jUJunbqwBgpSBL9v7nB8LJ5pDXA=="
+    },
+    {
+      "kind": "npm",
+      "name": "@nuxt/ui",
+      "url": "https://registry.npmjs.org/%40nuxt%2Fui",
+      "version": "4.11.2",
+      "published": "2026-09-22T11:04:16.147Z",
+      "license": "MIT",
+      "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+      },
+      "peer_dependencies": {
+        "ai": "^6 || ^7",
+        "joi": "^18",
+        "yup": "^1.7.0",
+        "zod": "^3.24.0 || ^4",
+        "valibot": "^1",
+        "@tiptap/pm": "^3",
+        "typescript": "^5.6.3 || ^6 || ^7",
+        "vue-router": "^4.5.0 || ^5",
+        "superstruct": "^2",
+        "tailwindcss": "^4",
+        "@tiptap/core": "^3",
+        "@nuxt/content": "^3",
+        "@tiptap/vue-3": "^3",
+        "@inertiajs/vue3": "^2.0.7 || ^3",
+        "@tiptap/markdown": "^3",
+        "@tiptap/suggestion": "^3",
+        "@tiptap/starter-kit": "^3",
+        "@tiptap/extension-code": "^3",
+        "@internationalized/date": "^3",
+        "@tiptap/extension-image": "^3",
+        "@internationalized/number": "^3",
+        "@tiptap/extension-mention": "^3",
+        "@tiptap/extension-node-range": "^3",
+        "@tiptap/extension-bubble-menu": "^3",
+        "@tiptap/extension-drag-handle": "^3",
+        "@tiptap/extension-placeholder": "^3",
+        "@tiptap/extension-collaboration": "^3",
+        "@tiptap/extension-floating-menu": "^3",
+        "@tiptap/extension-horizontal-rule": "^3",
+        "@tiptap/extension-drag-handle-vue-3": "^3"
+      },
+      "repository": {
+        "url": "git+https://github.com/nuxt/ui.git",
+        "type": "git"
+      },
+      "integrity": "sha512-TefoICLKP2xxtA3jsQhNyqwVmgtiRW7UxiJoIl0T8Qu6398X0Nc3Z+jvjYrfa19glEAMTHvsFB0HywSUh56nrQ=="
+    },
+    {
+      "kind": "npm",
+      "name": "tailwindcss",
+      "url": "https://registry.npmjs.org/tailwindcss",
+      "version": "4.3.3",
+      "published": "2026-07-16T12:03:35.267Z",
+      "license": "MIT",
+      "engines": null,
+      "peer_dependencies": null,
+      "repository": {
+        "url": "https://github.com/tailwindlabs/tailwindcss.git",
+        "type": "git",
+        "directory": "packages/tailwindcss"
+      },
+      "integrity": "sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ=="
+    },
+    {
+      "kind": "npm",
+      "name": "vitest",
+      "url": "https://registry.npmjs.org/vitest",
+      "version": "5.0.2",
+      "published": "2026-09-25T09:00:46.560Z",
+      "license": "MIT",
+      "engines": {
+        "node": "^22.12.0 || ^24.0.0 || >=26.0.0"
+      },
+      "peer_dependencies": {
+        "vite": "^6.4.0 || ^7.0.0 || ^8.0.0",
+        "jsdom": "*",
+        "happy-dom": "*",
+        "@vitest/ui": "5.0.2",
+        "@types/node": "^22.0.0 || >=24.0.0",
+        "@edge-runtime/vm": "*",
+        "@opentelemetry/api": "^1.9.0",
+        "@vitest/coverage-v8": "5.0.2",
+        "@vitest/browser-preview": "5.0.2",
+        "@vitest/coverage-istanbul": "5.0.2",
+        "@vitest/browser-playwright": "5.0.2",
+        "@vitest/browser-webdriverio": "^5.0.0-beta.5 || >=5.0.0"
+      },
+      "repository": {
+        "url": "git+https://github.com/vitest-dev/vitest.git",
+        "type": "git",
+        "directory": "packages/vitest"
+      },
+      "integrity": "sha512-7MQrx9pDv5aHiUcovIb/70Ys3tgtkUVgCtledvKdCmEO+/1Dicq5ZqoSxOW034m03oqC+oHOKui2dM6qtMLoJg=="
+    },
+    {
+      "kind": "npm",
+      "name": "@vue/test-utils",
+      "url": "https://registry.npmjs.org/%40vue%2Ftest-utils",
+      "version": "2.5.1",
+      "published": "2026-09-16T09:38:12.951Z",
+      "license": "MIT",
+      "engines": null,
+      "peer_dependencies": {
+        "vue": "3.x",
+        "@vue/compiler-dom": "3.x",
+        "@vue/server-renderer": "3.x"
+      },
+      "repository": {
+        "url": "git+https://github.com/vuejs/test-utils.git",
+        "type": "git"
+      },
+      "integrity": "sha512-V/4a99odJ7hapr0bRt35XxljGk8hefq31gSOnlKTcEq2fUeoj2qb+FcpJYfQu4qfYhW9Ug+O2+CZ3QmZ7gXDzA=="
+    },
+    {
+      "kind": "npm",
+      "name": "@playwright/test",
+      "url": "https://registry.npmjs.org/%40playwright%2Ftest",
+      "version": "1.63.0",
+      "published": "2026-09-04T22:44:00.304Z",
+      "license": "Apache-2.0",
+      "engines": {
+        "node": ">=20"
+      },
+      "peer_dependencies": null,
+      "repository": {
+        "url": "git+https://github.com/microsoft/playwright.git",
+        "type": "git"
+      },
+      "integrity": "sha512-oxMK4vllB9RK5NQ2l1pq1IfOf2AvnEuj/vYGDj0H2nMtmtZpKtCwt/l00GEO6xjGfpBNAvjovvYdCm50dRQkpQ=="
+    },
+    {
+      "kind": "npm",
+      "name": "@tauri-apps/api",
+      "url": "https://registry.npmjs.org/%40tauri-apps%2Fapi",
+      "version": "2.11.1",
+      "published": "2026-06-17T13:41:27.442Z",
+      "license": "Apache-2.0 OR MIT",
+      "engines": null,
+      "peer_dependencies": null,
+      "repository": {
+        "url": "git+https://github.com/tauri-apps/tauri.git",
+        "type": "git"
+      },
+      "integrity": "sha512-M2FPuYND2m+wh5hfW9ZpSdxMPdEJovPBWwoHJmwUpysTYNHaOkVFN419m/K0LIgjb/7KU2vBgsUepJWugQCvAA=="
+    },
+    {
+      "kind": "npm",
+      "name": "@tauri-apps/cli",
+      "url": "https://registry.npmjs.org/%40tauri-apps%2Fcli",
+      "version": "2.11.5",
+      "published": "2026-09-20T00:23:26.432Z",
+      "license": "Apache-2.0 OR MIT",
+      "engines": {
+        "node": ">= 10"
+      },
+      "peer_dependencies": null,
+      "repository": {
+        "url": "git+https://github.com/tauri-apps/tauri.git",
+        "type": "git"
+      },
+      "integrity": "sha512-YbeJ6tctNoo40purO4u3Eeo3RVqmsjJr0NoKQRu+4pvO4gMLzkjta7x0k96SxSLmx+rQ+8um1ThOlw+HLpgFug=="
+    },
+    {
+      "kind": "npm",
+      "name": "pnpm",
+      "url": "https://registry.npmjs.org/pnpm",
+      "version": "12.6.0",
+      "published": "2026-09-22T17:08:08.061Z",
+      "license": "MIT",
+      "engines": {
+        "node": ">=18.*"
+      },
+      "peer_dependencies": null,
+      "repository": {
+        "url": "https://github.com/pnpm/pnpm",
+        "type": "git",
+        "directory": "pnpm/npm/pnpm"
+      },
+      "integrity": "sha512-PvaPlRyxEawgS0paFvCy3fDaVqluBBPoHYVdnwtV75JnFHCQKOHNAMQFwsX7e56OxNxGd3yAXQNzwvL/AP0g7A=="
+    },
+    {
+      "kind": "crate",
+      "name": "tauri",
+      "url": "https://crates.io/api/v1/crates/tauri",
+      "version": "2.11.6",
+      "published": "2026-09-19T23:47:51.959344Z",
+      "updated": "2026-09-21T16:10:24.834741Z",
+      "license": "Apache-2.0 OR MIT",
+      "rust_version": "1.77.2",
+      "repository": "https://github.com/tauri-apps/tauri",
+      "features": {
+        "common-controls-v6": [
+          "tray-icon?/common-controls-v6",
+          "muda/common-controls-v6",
+          "tauri-runtime-wry?/common-controls-v6"
+        ],
+        "compression": [
+          "tauri-macros/compression",
+          "tauri-utils/compression"
+        ],
+        "config-json5": [
+          "tauri-macros/config-json5"
+        ],
+        "config-toml": [
+          "tauri-macros/config-toml"
+        ],
+        "custom-protocol": [
+          "tauri-macros/custom-protocol"
+        ],
+        "dbus": [
+          "tauri-runtime-wry?/dbus"
+        ],
+        "default": [
+          "wry",
+          "compression",
+          "common-controls-v6",
+          "dynamic-acl",
+          "x11",
+          "dbus"
+        ],
+        "devtools": [
+          "tauri-runtime/devtools",
+          "tauri-runtime-wry?/devtools"
+        ],
+        "dynamic-acl": [],
+        "image-ico": [
+          "image/ico"
+        ],
+        "image-png": [
+          "image/png"
+        ],
+        "isolation": [
+          "tauri-utils/isolation",
+          "tauri-macros/isolation",
+          "uuid"
+        ],
+        "linux-libxdo": [
+          "tray-icon/libxdo",
+          "muda/libxdo"
+        ],
+        "macos-private-api": [
+          "tauri-runtime/macos-private-api",
+          "tauri-runtime-wry?/macos-private-api"
+        ],
+        "macos-proxy": [
+          "tauri-runtime-wry?/macos-proxy"
+        ],
+        "native-tls": [
+          "reqwest/native-tls"
+        ],
+        "native-tls-vendored": [
+          "reqwest/native-tls-vendored"
+        ],
+        "objc-exception": [],
+        "process-relaunch-dangerous-allow-symlink-macos": [
+          "tauri-utils/process-relaunch-dangerous-allow-symlink-macos"
+        ],
+        "protocol-asset": [
+          "http-range"
+        ],
+        "rustls-tls": [
+          "reqwest/rustls-no-provider",
+          "dep:rustls"
+        ],
+        "specta": [
+          "dep:specta"
+        ],
+        "test": [],
+        "tracing": [
+          "dep:tracing",
+          "tauri-macros/tracing",
+          "tauri-runtime-wry?/tracing"
+        ],
+        "tray-icon": [
+          "dep:tray-icon"
+        ],
+        "unstable": [
+          "tauri-runtime-wry?/unstable"
+        ],
+        "webview-data-url": [
+          "data-url",
+          "tauri-utils/html-manipulation-2"
+        ],
+        "wry": [
+          "webview2-com",
+          "webkit2gtk",
+          "tauri-runtime-wry"
+        ],
+        "x11": [
+          "tauri-runtime-wry?/x11"
+        ]
+      },
+      "checksum": "6fa5bacdb9bbad5954af3d1bd6cf6ae9192cab1b2e270f4a07f904610b9e85f4"
+    },
+    {
+      "kind": "crate",
+      "name": "tokio",
+      "url": "https://crates.io/api/v1/crates/tokio",
+      "version": "1.53.1",
+      "published": "2026-07-20T17:06:09.996426Z",
+      "updated": "2026-07-20T17:06:09.996426Z",
+      "license": "MIT",
+      "rust_version": "1.71",
+      "repository": "https://github.com/tokio-rs/tokio",
+      "features": {
+        "default": [],
+        "fs": [],
+        "full": [
+          "fs",
+          "io-util",
+          "io-std",
+          "macros",
+          "net",
+          "parking_lot",
+          "process",
+          "rt",
+          "rt-multi-thread",
+          "signal",
+          "sync",
+          "time"
+        ],
+        "io-std": [],
+        "io-uring": [
+          "dep:io-uring",
+          "libc",
+          "mio/os-poll",
+          "mio/os-ext",
+          "dep:slab"
+        ],
+        "io-util": [
+          "bytes"
+        ],
+        "macros": [
+          "tokio-macros"
+        ],
+        "net": [
+          "libc",
+          "mio/os-poll",
+          "mio/os-ext",
+          "mio/net",
+          "socket2",
+          "windows-sys/Win32_Foundation",
+          "windows-sys/Win32_Security",
+          "windows-sys/Win32_Storage_FileSystem",
+          "windows-sys/Win32_System_Pipes",
+          "windows-sys/Win32_System_SystemServices"
+        ],
+        "process": [
+          "bytes",
+          "libc",
+          "mio/os-poll",
+          "mio/os-ext",
+          "mio/net",
+          "signal-hook-registry",
+          "windows-sys/Win32_Foundation",
+          "windows-sys/Win32_System_Threading",
+          "windows-sys/Win32_System_WindowsProgramming"
+        ],
+        "rt": [],
+        "rt-multi-thread": [
+          "rt"
+        ],
+        "schedule-latency": [],
+        "signal": [
+          "libc",
+          "mio/os-poll",
+          "mio/net",
+          "mio/os-ext",
+          "signal-hook-registry",
+          "windows-sys/Win32_Foundation",
+          "windows-sys/Win32_System_Console"
+        ],
+        "sync": [],
+        "taskdump": [
+          "dep:backtrace"
+        ],
+        "test-util": [
+          "rt",
+          "sync",
+          "time"
+        ],
+        "time": []
+      },
+      "checksum": "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+    },
+    {
+      "kind": "crate",
+      "name": "tokio-util",
+      "url": "https://crates.io/api/v1/crates/tokio-util",
+      "version": "0.7.19",
+      "published": "2026-07-21T12:10:46.915710Z",
+      "updated": "2026-07-21T12:10:46.915710Z",
+      "license": "MIT",
+      "rust_version": "1.71",
+      "repository": "https://github.com/tokio-rs/tokio",
+      "features": {
+        "__docs_rs": [
+          "futures-util"
+        ],
+        "codec": [
+          "libc"
+        ],
+        "compat": [
+          "futures-io"
+        ],
+        "default": [],
+        "full": [
+          "codec",
+          "compat",
+          "io-util",
+          "time",
+          "net",
+          "rt",
+          "join-map"
+        ],
+        "io": [],
+        "io-util": [
+          "io",
+          "tokio/rt",
+          "tokio/io-util"
+        ],
+        "join-map": [
+          "rt",
+          "hashbrown"
+        ],
+        "net": [
+          "tokio/net"
+        ],
+        "rt": [
+          "tokio/rt",
+          "tokio/sync",
+          "futures-util"
+        ],
+        "time": [
+          "tokio/time",
+          "slab"
+        ]
+      },
+      "checksum": "494815d09bf52b5548659851081238f0ca39ff638363907596da739561c62c52"
+    },
+    {
+      "kind": "crate",
+      "name": "rusqlite",
+      "url": "https://crates.io/api/v1/crates/rusqlite",
+      "version": "0.40.2",
+      "published": "2026-08-08T14:21:52.570893Z",
+      "updated": "2026-08-08T14:21:52.570893Z",
+      "license": "MIT",
+      "rust_version": null,
+      "repository": "https://github.com/rusqlite/rusqlite",
+      "features": {
+        "array": [
+          "vtab",
+          "pointer"
+        ],
+        "backup": [],
+        "blob": [],
+        "buildtime_bindgen": [
+          "libsqlite3-sys?/buildtime_bindgen",
+          "sqlite-wasm-rs?/bindgen"
+        ],
+        "bundled": [
+          "libsqlite3-sys?/bundled",
+          "modern_sqlite"
+        ],
+        "bundled-full": [
+          "modern-full",
+          "bundled"
+        ],
+        "bundled-sqlcipher": [
+          "libsqlite3-sys?/bundled-sqlcipher",
+          "bundled"
+        ],
+        "bundled-sqlcipher-vendored-openssl": [
+          "libsqlite3-sys?/bundled-sqlcipher-vendored-openssl",
+          "bundled-sqlcipher"
+        ],
+        "bundled-windows": [
+          "libsqlite3-sys?/bundled-windows"
+        ],
+        "cache": [
+          "hashlink"
+        ],
+        "collation": [],
+        "column_decltype": [],
+        "column_metadata": [
+          "libsqlite3-sys?/column_metadata"
+        ],
+        "csvtab": [
+          "csv",
+          "vtab"
+        ],
+        "default": [
+          "cache",
+          "ffi-sqlite-wasm-rs"
+        ],
+        "extra_check": [],
+        "fallible_uint": [],
+        "ffi-sqlite-wasm-rs": [
+          "dep:sqlite-wasm-rs"
+        ],
+        "functions": [],
+        "hooks": [],
+        "i128_blob": [],
+        "in_gecko": [
+          "modern_sqlite",
+          "libsqlite3-sys?/in_gecko"
+        ],
+        "limits": [],
+        "load_extension": [],
+        "loadable_extension": [
+          "libsqlite3-sys?/loadable_extension"
+        ],
+        "modern-full": [
+          "array",
+          "backup",
+          "blob",
+          "modern_sqlite",
+          "chrono",
+          "collation",
+          "column_metadata",
+          "column_decltype",
+          "csvtab",
+          "extra_check",
+          "functions",
+          "hooks",
+          "i128_blob",
+          "jiff",
+          "limits",
+          "load_extension",
+          "serde_json",
+          "serialize",
+          "series",
+          "time",
+          "trace",
+          "unlock_notify",
+          "url",
+          "uuid",
+          "vtab",
+          "window"
+        ],
+        "modern_sqlite": [
+          "libsqlite3-sys?/bundled_bindings"
+        ],
+        "pointer": [],
+        "preupdate_hook": [
+          "libsqlite3-sys?/preupdate_hook",
+          "hooks"
+        ],
+        "serialize": [],
+        "series": [
+          "vtab"
+        ],
+        "session": [
+          "libsqlite3-sys?/session",
+          "hooks"
+        ],
+        "sqlcipher": [
+          "libsqlite3-sys?/sqlcipher"
+        ],
+        "trace": [],
+        "unlock_notify": [
+          "libsqlite3-sys?/unlock_notify"
+        ],
+        "vtab": [],
+        "wasm32-wasi-vfs": [
+          "libsqlite3-sys?/wasm32-wasi-vfs"
+        ],
+        "window": [
+          "functions"
+        ],
+        "with-asan": [
+          "libsqlite3-sys?/with-asan"
+        ]
+      },
+      "checksum": "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
+    },
+    {
+      "kind": "crate",
+      "name": "sqlx",
+      "url": "https://crates.io/api/v1/crates/sqlx",
+      "version": "0.9.0",
+      "published": "2026-05-21T17:35:53.403466Z",
+      "updated": "2026-05-21T17:35:53.403466Z",
+      "license": "MIT OR Apache-2.0",
+      "rust_version": "1.94.0",
+      "repository": "https://github.com/launchbadge/sqlx",
+      "features": {
+        "_rt-async-global-executor": [],
+        "_rt-async-std": [],
+        "_rt-smol": [],
+        "_rt-tokio": [],
+        "_sqlite": [],
+        "_unstable-all-types": [
+          "bigdecimal",
+          "rust_decimal",
+          "json",
+          "time",
+          "chrono",
+          "ipnet",
+          "ipnetwork",
+          "mac_address",
+          "uuid",
+          "bit-vec",
+          "bstr"
+        ],
+        "_unstable-docs": [
+          "all-databases",
+          "_unstable-all-types",
+          "sqlx-sqlite/_unstable-docs"
+        ],
+        "all-databases": [
+          "mysql",
+          "sqlite",
+          "postgres",
+          "any"
+        ],
+        "any": [
+          "sqlx-core/any",
+          "sqlx-mysql?/any",
+          "sqlx-postgres?/any",
+          "sqlx-sqlite?/any"
+        ],
+        "bigdecimal": [
+          "sqlx-core/bigdecimal",
+          "sqlx-macros?/bigdecimal",
+          "sqlx-mysql?/bigdecimal",
+          "sqlx-postgres?/bigdecimal"
+        ],
+        "bit-vec": [
+          "sqlx-core/bit-vec",
+          "sqlx-macros?/bit-vec",
+          "sqlx-postgres?/bit-vec"
+        ],
+        "bstr": [
+          "sqlx-core/bstr"
+        ],
+        "chrono": [
+          "sqlx-core/chrono",
+          "sqlx-macros?/chrono",
+          "sqlx-mysql?/chrono",
+          "sqlx-postgres?/chrono",
+          "sqlx-sqlite?/chrono"
+        ],
+        "default": [
+          "any",
+          "macros",
+          "migrate",
+          "json"
+        ],
+        "derive": [
+          "sqlx-macros/derive"
+        ],
+        "ipnet": [
+          "sqlx-core/ipnet",
+          "sqlx-macros?/ipnet",
+          "sqlx-postgres?/ipnet"
+        ],
+        "ipnetwork": [
+          "sqlx-core/ipnetwork",
+          "sqlx-macros?/ipnetwork",
+          "sqlx-postgres?/ipnetwork"
+        ],
+        "json": [
+          "sqlx-core/json",
+          "sqlx-macros?/json",
+          "sqlx-mysql?/json",
+          "sqlx-postgres?/json",
+          "sqlx-sqlite?/json"
+        ],
+        "mac_address": [
+          "sqlx-core/mac_address",
+          "sqlx-macros?/mac_address",
+          "sqlx-postgres?/mac_address"
+        ],
+        "macros": [
+          "derive",
+          "sqlx-macros/macros",
+          "sqlx-core/offline",
+          "sqlx-mysql?/offline",
+          "sqlx-postgres?/offline",
+          "sqlx-sqlite?/offline"
+        ],
+        "migrate": [
+          "sqlx-core/migrate",
+          "sqlx-macros?/migrate",
+          "sqlx-mysql?/migrate",
+          "sqlx-postgres?/migrate",
+          "sqlx-sqlite?/migrate"
+        ],
+        "mysql": [
+          "sqlx-mysql",
+          "sqlx-macros?/mysql"
+        ],
+        "mysql-rsa": [
+          "mysql",
+          "sqlx-mysql/rsa",
+          "sqlx-macros?/mysql-rsa"
+        ],
+        "postgres": [
+          "sqlx-postgres",
+          "sqlx-macros?/postgres"
+        ],
+        "regexp": [
+          "sqlx-sqlite?/regexp"
+        ],
+        "runtime-async-global-executor": [
+          "_rt-async-global-executor",
+          "sqlx-core/_rt-async-global-executor",
+          "sqlx-macros?/_rt-async-global-executor"
+        ],
+        "runtime-async-std": [
+          "_rt-async-std",
+          "sqlx-core/_rt-async-std",
+          "sqlx-macros?/_rt-async-std"
+        ],
+        "runtime-smol": [
+          "_rt-smol",
+          "sqlx-core/_rt-smol",
+          "sqlx-macros?/_rt-smol"
+        ],
+        "runtime-tokio": [
+          "_rt-tokio",
+          "sqlx-core/_rt-tokio",
+          "sqlx-macros?/_rt-tokio"
+        ],
+        "rust_decimal": [
+          "sqlx-core/rust_decimal",
+          "sqlx-macros?/rust_decimal",
+          "sqlx-mysql?/rust_decimal",
+          "sqlx-postgres?/rust_decimal"
+        ],
+        "sqlite": [
+          "sqlite-bundled",
+          "sqlite-deserialize",
+          "sqlite-load-extension",
+          "sqlite-unlock-notify"
+        ],
+        "sqlite-bundled": [
+          "_sqlite",
+          "sqlx-sqlite/bundled",
+          "sqlx-macros?/sqlite"
+        ],
+        "sqlite-deserialize": [
+          "sqlx-sqlite/deserialize"
+        ],
+        "sqlite-load-extension": [
+          "sqlx-sqlite/load-extension",
+          "sqlx-macros?/sqlite-load-extension"
+        ],
+        "sqlite-preupdate-hook": [
+          "sqlx-sqlite/preupdate-hook"
+        ],
+        "sqlite-unbundled": [
+          "_sqlite",
+          "sqlx-sqlite/unbundled",
+          "sqlx-macros?/sqlite-unbundled"
+        ],
+        "sqlite-unlock-notify": [
+          "sqlx-sqlite/unlock-notify"
+        ],
+        "sqlx-toml": [
+          "sqlx-core/sqlx-toml",
+          "sqlx-macros?/sqlx-toml",
+          "sqlx-sqlite?/sqlx-toml"
+        ],
+        "time": [
+          "sqlx-core/time",
+          "sqlx-macros?/time",
+          "sqlx-mysql?/time",
+          "sqlx-postgres?/time",
+          "sqlx-sqlite?/time"
+        ],
+        "tls-native-tls": [
+          "sqlx-core/_tls-native-tls",
+          "sqlx-macros?/_tls-native-tls"
+        ],
+        "tls-none": [],
+        "tls-rustls": [
+          "tls-rustls-ring"
+        ],
+        "tls-rustls-aws-lc-rs": [
+          "sqlx-core/_tls-rustls-aws-lc-rs",
+          "sqlx-macros?/_tls-rustls-aws-lc-rs"
+        ],
+        "tls-rustls-ring": [
+          "tls-rustls-ring-webpki"
+        ],
+        "tls-rustls-ring-native-roots": [
+          "sqlx-core/_tls-rustls-ring-native-roots",
+          "sqlx-macros?/_tls-rustls-ring-native-roots"
+        ],
+        "tls-rustls-ring-webpki": [
+          "sqlx-core/_tls-rustls-ring-webpki",
+          "sqlx-macros?/_tls-rustls-ring-webpki"
+        ],
+        "uuid": [
+          "sqlx-core/uuid",
+          "sqlx-macros?/uuid",
+          "sqlx-mysql?/uuid",
+          "sqlx-postgres?/uuid",
+          "sqlx-sqlite?/uuid"
+        ]
+      },
+      "checksum": "378620ccc25c62c89d8be1c819e76a88d59bdcc3304733330788948e619bfd71"
+    },
+    {
+      "kind": "crate",
+      "name": "reqwest",
+      "url": "https://crates.io/api/v1/crates/reqwest",
+      "version": "0.13.5",
+      "published": "2026-09-08T20:55:26.479356Z",
+      "updated": "2026-09-08T20:55:26.479356Z",
+      "license": "MIT OR Apache-2.0",
+      "rust_version": "1.85.0",
+      "repository": "https://github.com/seanmonstar/reqwest",
+      "features": {
+        "__native-tls": [
+          "dep:hyper-tls",
+          "dep:native-tls-crate",
+          "__tls",
+          "dep:tokio-native-tls"
+        ],
+        "__native-tls-alpn": [
+          "native-tls-crate?/alpn",
+          "hyper-tls?/alpn"
+        ],
+        "__rustls": [
+          "dep:hyper-rustls",
+          "dep:tokio-rustls",
+          "dep:rustls",
+          "__tls"
+        ],
+        "__rustls-aws-lc-rs": [
+          "hyper-rustls?/aws-lc-rs",
+          "tokio-rustls?/aws-lc-rs",
+          "rustls?/aws-lc-rs",
+          "quinn?/rustls-aws-lc-rs"
+        ],
+        "__tls": [
+          "dep:rustls-pki-types",
+          "tokio/io-util"
+        ],
+        "blocking": [
+          "dep:futures-channel",
+          "futures-channel?/sink",
+          "dep:futures-util",
+          "futures-util?/io",
+          "futures-util?/sink",
+          "tokio/sync"
+        ],
+        "brotli": [
+          "tower-http/decompression-br"
+        ],
+        "charset": [
+          "dep:encoding_rs",
+          "dep:mime"
+        ],
+        "cookies": [
+          "dep:cookie_crate",
+          "dep:cookie_store"
+        ],
+        "default": [
+          "default-tls",
+          "charset",
+          "http2",
+          "system-proxy"
+        ],
+        "default-tls": [
+          "rustls"
+        ],
+        "deflate": [
+          "tower-http/decompression-deflate"
+        ],
+        "form": [
+          "dep:serde",
+          "dep:serde_urlencoded"
+        ],
+        "gzip": [
+          "tower-http/decompression-gzip"
+        ],
+        "hickory-dns": [
+          "dep:hickory-resolver",
+          "dep:once_cell"
+        ],
+        "http2": [
+          "dep:h2",
+          "hyper/http2",
+          "hyper-util/http2",
+          "hyper-rustls?/http2"
+        ],
+        "http3": [
+          "rustls",
+          "dep:h3",
+          "dep:h3-quinn",
+          "dep:quinn",
+          "tokio/macros"
+        ],
+        "json": [
+          "dep:serde",
+          "dep:serde_json"
+        ],
+        "multipart": [
+          "dep:mime_guess",
+          "dep:futures-util"
+        ],
+        "native-tls": [
+          "__native-tls",
+          "__native-tls-alpn"
+        ],
+        "native-tls-no-alpn": [
+          "__native-tls"
+        ],
+        "native-tls-vendored": [
+          "__native-tls",
+          "native-tls-crate?/vendored",
+          "__native-tls-alpn"
+        ],
+        "native-tls-vendored-no-alpn": [
+          "__native-tls",
+          "native-tls-crate?/vendored"
+        ],
+        "query": [
+          "dep:serde",
+          "dep:serde_urlencoded"
+        ],
+        "rustls": [
+          "__rustls-aws-lc-rs",
+          "dep:rustls-platform-verifier",
+          "__rustls"
+        ],
+        "rustls-no-provider": [
+          "dep:rustls-platform-verifier",
+          "__rustls"
+        ],
+        "socks": [],
+        "stream": [
+          "tokio/fs",
+          "dep:futures-util",
+          "dep:tokio-util",
+          "dep:wasm-streams"
+        ],
+        "system-proxy": [
+          "hyper-util/client-proxy-system"
+        ],
+        "zstd": [
+          "tower-http/decompression-zstd"
+        ]
+      },
+      "checksum": "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
+    },
+    {
+      "kind": "crate",
+      "name": "serde",
+      "url": "https://crates.io/api/v1/crates/serde",
+      "version": "1.0.229",
+      "published": "2026-07-18T23:05:13.266456Z",
+      "updated": "2026-07-18T23:05:13.266456Z",
+      "license": "MIT OR Apache-2.0",
+      "rust_version": "1.56",
+      "repository": "https://github.com/serde-rs/serde",
+      "features": {
+        "alloc": [
+          "serde_core/alloc"
+        ],
+        "default": [
+          "std"
+        ],
+        "derive": [
+          "serde_derive"
+        ],
+        "rc": [
+          "serde_core/rc"
+        ],
+        "std": [
+          "serde_core/std"
+        ],
+        "unstable": [
+          "serde_core/unstable"
+        ]
+      },
+      "checksum": "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
+    },
+    {
+      "kind": "crate",
+      "name": "serde_json",
+      "url": "https://crates.io/api/v1/crates/serde_json",
+      "version": "1.0.151",
+      "published": "2026-07-20T05:54:44.078083Z",
+      "updated": "2026-07-20T05:54:44.078083Z",
+      "license": "MIT OR Apache-2.0",
+      "rust_version": "1.71",
+      "repository": "https://github.com/serde-rs/json",
+      "features": {
+        "alloc": [
+          "serde_core/alloc"
+        ],
+        "arbitrary_precision": [],
+        "default": [
+          "std"
+        ],
+        "float_roundtrip": [],
+        "preserve_order": [
+          "indexmap",
+          "std"
+        ],
+        "raw_value": [],
+        "std": [
+          "memchr/std",
+          "serde_core/std"
+        ],
+        "unbounded_depth": []
+      },
+      "checksum": "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+    },
+    {
+      "kind": "crate",
+      "name": "sha2",
+      "url": "https://crates.io/api/v1/crates/sha2",
+      "version": "0.11.0",
+      "published": "2026-03-25T15:05:27.949444Z",
+      "updated": "2026-03-25T15:05:27.949444Z",
+      "license": "MIT OR Apache-2.0",
+      "rust_version": "1.85",
+      "repository": "https://github.com/RustCrypto/hashes",
+      "features": {
+        "alloc": [
+          "digest/alloc"
+        ],
+        "default": [
+          "alloc",
+          "oid"
+        ],
+        "oid": [
+          "digest/oid"
+        ],
+        "zeroize": [
+          "digest/zeroize"
+        ]
+      },
+      "checksum": "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
+    },
+    {
+      "kind": "crate",
+      "name": "tracing",
+      "url": "https://crates.io/api/v1/crates/tracing",
+      "version": "0.1.44",
+      "published": "2025-12-18T14:26:12.360139Z",
+      "updated": "2025-12-18T14:26:12.360139Z",
+      "license": "MIT",
+      "rust_version": "1.65.0",
+      "repository": "https://github.com/tokio-rs/tracing",
+      "features": {
+        "async-await": [],
+        "attributes": [
+          "tracing-attributes"
+        ],
+        "default": [
+          "std",
+          "attributes"
+        ],
+        "log-always": [
+          "log"
+        ],
+        "max_level_debug": [],
+        "max_level_error": [],
+        "max_level_info": [],
+        "max_level_off": [],
+        "max_level_trace": [],
+        "max_level_warn": [],
+        "release_max_level_debug": [],
+        "release_max_level_error": [],
+        "release_max_level_info": [],
+        "release_max_level_off": [],
+        "release_max_level_trace": [],
+        "release_max_level_warn": [],
+        "std": [
+          "tracing-core/std"
+        ],
+        "valuable": [
+          "tracing-core/valuable"
+        ]
+      },
+      "checksum": "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
+    },
+    {
+      "kind": "crate",
+      "name": "tracing-subscriber",
+      "url": "https://crates.io/api/v1/crates/tracing-subscriber",
+      "version": "0.3.23",
+      "published": "2026-03-13T10:04:15.571048Z",
+      "updated": "2026-03-13T10:04:15.571048Z",
+      "license": "MIT",
+      "rust_version": "1.65.0",
+      "repository": "https://github.com/tokio-rs/tracing",
+      "features": {
+        "alloc": [],
+        "ansi": [
+          "fmt",
+          "nu-ansi-term"
+        ],
+        "default": [
+          "smallvec",
+          "fmt",
+          "ansi",
+          "tracing-log",
+          "std"
+        ],
+        "env-filter": [
+          "matchers",
+          "once_cell",
+          "tracing",
+          "std",
+          "thread_local",
+          "dep:regex-automata"
+        ],
+        "fmt": [
+          "registry",
+          "std"
+        ],
+        "json": [
+          "tracing-serde",
+          "serde",
+          "serde_json"
+        ],
+        "local-time": [
+          "time/local-offset"
+        ],
+        "nu-ansi-term": [
+          "dep:nu-ansi-term"
+        ],
+        "regex": [],
+        "registry": [
+          "sharded-slab",
+          "thread_local",
+          "std"
+        ],
+        "std": [
+          "alloc",
+          "tracing-core/std"
+        ],
+        "valuable": [
+          "tracing-core/valuable",
+          "valuable_crate",
+          "valuable-serde",
+          "tracing-serde/valuable"
+        ]
+      },
+      "checksum": "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
+    },
+    {
+      "kind": "crate",
+      "name": "windows",
+      "url": "https://crates.io/api/v1/crates/windows",
+      "version": "0.62.2",
+      "published": "2025-10-06T19:19:49.704461Z",
+      "updated": "2025-10-06T19:19:49.704461Z",
+      "license": "MIT OR Apache-2.0",
+      "rust_version": "1.82",
+      "repository": "https://github.com/microsoft/windows-rs",
+      "features": {
+        "AI": [
+          "Foundation"
+        ],
+        "AI_Actions": [
+          "AI"
+        ],
+        "AI_Actions_Hosting": [
+          "AI_Actions"
+        ],
+        "AI_Actions_Provider": [
+          "AI_Actions"
+        ],
+        "AI_Agents": [
+          "AI"
+        ],
+        "AI_Agents_Mcp": [
+          "AI_Agents"
+        ],
+        "AI_MachineLearning": [
+          "AI"
+        ],
+        "ApplicationModel": [
+          "Foundation"
+        ],
+        "ApplicationModel_Activation": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_AppExtensions": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_AppService": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Appointments": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Appointments_AppointmentsProvider": [
+          "ApplicationModel_Appointments"
+        ],
+        "ApplicationModel_Appointments_DataProvider": [
+          "ApplicationModel_Appointments"
+        ],
+        "ApplicationModel_Background": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Calls": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Calls_Background": [
+          "ApplicationModel_Calls"
+        ],
+        "ApplicationModel_Calls_Provider": [
+          "ApplicationModel_Calls"
+        ],
+        "ApplicationModel_Chat": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_CommunicationBlocking": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Contacts": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Contacts_DataProvider": [
+          "ApplicationModel_Contacts"
+        ],
+        "ApplicationModel_Contacts_Provider": [
+          "ApplicationModel_Contacts"
+        ],
+        "ApplicationModel_ConversationalAgent": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Core": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_DataTransfer": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_DataTransfer_DragDrop": [
+          "ApplicationModel_DataTransfer"
+        ],
+        "ApplicationModel_DataTransfer_DragDrop_Core": [
+          "ApplicationModel_DataTransfer_DragDrop"
+        ],
+        "ApplicationModel_DataTransfer_ShareTarget": [
+          "ApplicationModel_DataTransfer"
+        ],
+        "ApplicationModel_Email": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Email_DataProvider": [
+          "ApplicationModel_Email"
+        ],
+        "ApplicationModel_ExtendedExecution": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_ExtendedExecution_Foreground": [
+          "ApplicationModel_ExtendedExecution"
+        ],
+        "ApplicationModel_Holographic": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_LockScreen": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_PackageExtensions": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Payments": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Payments_Provider": [
+          "ApplicationModel_Payments"
+        ],
+        "ApplicationModel_Preview": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Preview_Holographic": [
+          "ApplicationModel_Preview"
+        ],
+        "ApplicationModel_Preview_InkWorkspace": [
+          "ApplicationModel_Preview"
+        ],
+        "ApplicationModel_Preview_Notes": [
+          "ApplicationModel_Preview"
+        ],
+        "ApplicationModel_Resources": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Resources_Core": [
+          "ApplicationModel_Resources"
+        ],
+        "ApplicationModel_Resources_Management": [
+          "ApplicationModel_Resources"
+        ],
+        "ApplicationModel_Search": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Search_Core": [
+          "ApplicationModel_Search"
+        ],
+        "ApplicationModel_UserActivities": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_UserActivities_Core": [
+          "ApplicationModel_UserActivities"
+        ],
+        "ApplicationModel_UserDataAccounts": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_UserDataAccounts_Provider": [
+          "ApplicationModel_UserDataAccounts"
+        ],
+        "ApplicationModel_UserDataAccounts_SystemAccess": [
+          "ApplicationModel_UserDataAccounts"
+        ],
+        "ApplicationModel_UserDataTasks": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_UserDataTasks_DataProvider": [
+          "ApplicationModel_UserDataTasks"
+        ],
+        "ApplicationModel_VoiceCommands": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Wallet": [
+          "ApplicationModel"
+        ],
+        "ApplicationModel_Wallet_System": [
+          "ApplicationModel_Wallet"
+        ],
+        "Data": [
+          "Foundation"
+        ],
+        "Data_Html": [
+          "Data"
+        ],
+        "Data_Json": [
+          "Data"
+        ],
+        "Data_Pdf": [
+          "Data"
+        ],
+        "Data_Text": [
+          "Data"
+        ],
+        "Data_Xml": [
+          "Data"
+        ],
+        "Data_Xml_Dom": [
+          "Data_Xml"
+        ],
+        "Data_Xml_Xsl": [
+          "Data_Xml"
+        ],
+        "Devices": [
+          "Foundation"
+        ],
+        "Devices_Adc": [
+          "Devices"
+        ],
+        "Devices_Adc_Provider": [
+          "Devices_Adc"
+        ],
+        "Devices_Background": [
+          "Devices"
+        ],
+        "Devices_Bluetooth": [
+          "Devices"
+        ],
+        "Devices_Bluetooth_Advertisement": [
+          "Devices_Bluetooth"
+        ],
+        "Devices_Bluetooth_Background": [
+          "Devices_Bluetooth"
+        ],
+        "Devices_Bluetooth_GenericAttributeProfile": [
+          "Devices_Bluetooth"
+        ],
+        "Devices_Bluetooth_Rfcomm": [
+          "Devices_Bluetooth"
+        ],
+        "Devices_Custom": [
+          "Devices"
+        ],
+        "Devices_Display": [
+          "Devices"
+        ],
+        "Devices_Display_Core": [
+          "Devices_Display"
+        ],
+        "Devices_Enumeration": [
+          "Devices"
+        ],
+        "Devices_Enumeration_Pnp": [
+          "Devices_Enumeration"
+        ],
+        "Devices_Geolocation": [
+          "Devices"
+        ],
+        "Devices_Geolocation_Geofencing": [
+          "Devices_Geolocation"
+        ],
+        "Devices_Geolocation_Provider": [
+          "Devices_Geolocation"
+        ],
+        "Devices_Gpio": [
+          "Devices"
+        ],
+        "Devices_Gpio_Provider": [
+          "Devices_Gpio"
+        ],
+        "Devices_Haptics": [
+          "Devices"
+        ],
+        "Devices_HumanInterfaceDevice": [
+          "Devices"
+        ],
+        "Devices_I2c": [
+          "Devices"
+        ],
+        "Devices_I2c_Provider": [
+          "Devices_I2c"
+        ],
+        "Devices_Input": [
+          "Devices"
+        ],
+        "Devices_Input_Preview": [
+          "Devices_Input"
+        ],
+        "Devices_Lights": [
+          "Devices"
+        ],
+        "Devices_Lights_Effects": [
+          "Devices_Lights"
+        ],
+        "Devices_Midi": [
+          "Devices"
+        ],
+        "Devices_PointOfService": [
+          "Devices"
+        ],
+        "Devices_PointOfService_Provider": [
+          "Devices_PointOfService"
+        ],
+        "Devices_Portable": [
+          "Devices"
+        ],
+        "Devices_Power": [
+          "Devices"
+        ],
+        "Devices_Printers": [
+          "Devices"
+        ],
+        "Devices_Printers_Extensions": [
+          "Devices_Printers"
+        ],
+        "Devices_Pwm": [
+          "Devices"
+        ],
+        "Devices_Pwm_Provider": [
+          "Devices_Pwm"
+        ],
+        "Devices_Radios": [
+          "Devices"
+        ],
+        "Devices_Scanners": [
+          "Devices"
+        ],
+        "Devices_Sensors": [
+          "Devices"
+        ],
+        "Devices_Sensors_Custom": [
+          "Devices_Sensors"
+        ],
+        "Devices_SerialCommunication": [
+          "Devices"
+        ],
+        "Devices_SmartCards": [
+          "Devices"
+        ],
+        "Devices_Sms": [
+          "Devices"
+        ],
+        "Devices_Spi": [
+          "Devices"
+        ],
+        "Devices_Spi_Provider": [
+          "Devices_Spi"
+        ],
+        "Devices_Usb": [
+          "Devices"
+        ],
+        "Devices_WiFi": [
+          "Devices"
+        ],
+        "Devices_WiFiDirect": [
+          "Devices"
+        ],
+        "Devices_WiFiDirect_Services": [
+          "Devices_WiFiDirect"
+        ],
+        "Foundation": [],
+        "Foundation_Collections": [
+          "Foundation"
+        ],
+        "Foundation_Diagnostics": [
+          "Foundation"
+        ],
+        "Foundation_Metadata": [
+          "Foundation"
+        ],
+        "Foundation_Numerics": [
+          "Foundation"
+        ],
+        "Gaming": [
+          "Foundation"
+        ],
+        "Gaming_Input": [
+          "Gaming"
+        ],
+        "Gaming_Input_Custom": [
+          "Gaming_Input"
+        ],
+        "Gaming_Input_ForceFeedback": [
+          "Gaming_Input"
+        ],
+        "Gaming_Input_Preview": [
+          "Gaming_Input"
+        ],
+        "Gaming_Preview": [
+          "Gaming"
+        ],
+        "Gaming_Preview_GamesEnumeration": [
+          "Gaming_Preview"
+        ],
+        "Gaming_UI": [
+          "Gaming"
+        ],
+        "Gaming_XboxLive": [
+          "Gaming"
+        ],
+        "Gaming_XboxLive_Storage": [
+          "Gaming_XboxLive"
+        ],
+        "Globalization": [
+          "Foundation"
+        ],
+        "Globalization_Collation": [
+          "Globalization"
+        ],
+        "Globalization_DateTimeFormatting": [
+          "Globalization"
+        ],
+        "Globalization_Fonts": [
+          "Globalization"
+        ],
+        "Globalization_NumberFormatting": [
+          "Globalization"
+        ],
+        "Globalization_PhoneNumberFormatting": [
+          "Globalization"
+        ],
+        "Graphics": [
+          "Foundation"
+        ],
+        "Graphics_Capture": [
+          "Graphics"
+        ],
+        "Graphics_DirectX": [
+          "Graphics"
+        ],
+        "Graphics_DirectX_Direct3D11": [
+          "Graphics_DirectX"
+        ],
+        "Graphics_Display": [
+          "Graphics"
+        ],
+        "Graphics_Display_Core": [
+          "Graphics_Display"
+        ],
+        "Graphics_Effects": [
+          "Graphics"
+        ],
+        "Graphics_Holographic": [
+          "Graphics"
+        ],
+        "Graphics_Imaging": [
+          "Graphics"
+        ],
+        "Graphics_Printing": [
+          "Graphics"
+        ],
+        "Graphics_Printing3D": [
+          "Graphics"
+        ],
+        "Graphics_Printing_OptionDetails": [
+          "Graphics_Printing"
+        ],
+        "Graphics_Printing_PrintSupport": [
+          "Graphics_Printing"
+        ],
+        "Graphics_Printing_PrintTicket": [
+          "Graphics_Printing"
+        ],
+        "Graphics_Printing_ProtectedPrint": [
+          "Graphics_Printing"
+        ],
+        "Graphics_Printing_Workflow": [
+          "Graphics_Printing"
+        ],
+        "Management": [
+          "Foundation"
+        ],
+        "Management_Core": [
+          "Management"
+        ],
+        "Management_Deployment": [
+          "Management"
+        ],
+        "Management_Deployment_Preview": [
+          "Management_Deployment"
+        ],
+        "Management_Policies": [
+          "Management"
+        ],
+        "Management_Setup": [
+          "Management"
+        ],
+        "Management_Update": [
+          "Management"
+        ],
+        "Management_Workplace": [
+          "Management"
+        ],
+        "Media": [
+          "Foundation"
+        ],
+        "Media_AppBroadcasting": [
+          "Media"
+        ],
+        "Media_AppRecording": [
+          "Media"
+        ],
+        "Media_Audio": [
+          "Media"
+        ],
+        "Media_Capture": [
+          "Media"
+        ],
+        "Media_Capture_Core": [
+          "Media_Capture"
+        ],
+        "Media_Capture_Frames": [
+          "Media_Capture"
+        ],
+        "Media_Casting": [
+          "Media"
+        ],
+        "Media_ClosedCaptioning": [
+          "Media"
+        ],
+        "Media_ContentRestrictions": [
+          "Media"
+        ],
+        "Media_Control": [
+          "Media"
+        ],
+        "Media_Core": [
+          "Media"
+        ],
+        "Media_Core_Preview": [
+          "Media_Core"
+        ],
+        "Media_Devices": [
+          "Media"
+        ],
+        "Media_Devices_Core": [
+          "Media_Devices"
+        ],
+        "Media_DialProtocol": [
+          "Media"
+        ],
+        "Media_Editing": [
+          "Media"
+        ],
+        "Media_Effects": [
+          "Media"
+        ],
+        "Media_FaceAnalysis": [
+          "Media"
+        ],
+        "Media_Import": [
+          "Media"
+        ],
+        "Media_MediaProperties": [
+          "Media"
+        ],
+        "Media_Miracast": [
+          "Media"
+        ],
+        "Media_Ocr": [
+          "Media"
+        ],
+        "Media_PlayTo": [
+          "Media"
+        ],
+        "Media_Playback": [
+          "Media"
+        ],
+        "Media_Playlists": [
+          "Media"
+        ],
+        "Media_Protection": [
+          "Media"
+        ],
+        "Media_Protection_PlayReady": [
+          "Media_Protection"
+        ],
+        "Media_Render": [
+          "Media"
+        ],
+        "Media_SpeechRecognition": [
+          "Media"
+        ],
+        "Media_SpeechSynthesis": [
+          "Media"
+        ],
+        "Media_Streaming": [
+          "Media"
+        ],
+        "Media_Streaming_Adaptive": [
+          "Media_Streaming"
+        ],
+        "Media_Transcoding": [
+          "Media"
+        ],
+        "Networking": [
+          "Foundation"
+        ],
+        "Networking_BackgroundTransfer": [
+          "Networking"
+        ],
+        "Networking_Connectivity": [
+          "Networking"
+        ],
+        "Networking_NetworkOperators": [
+          "Networking"
+        ],
+        "Networking_Proximity": [
+          "Networking"
+        ],
+        "Networking_PushNotifications": [
+          "Networking"
+        ],
+        "Networking_ServiceDiscovery": [
+          "Networking"
+        ],
+        "Networking_ServiceDiscovery_Dnssd": [
+          "Networking_ServiceDiscovery"
+        ],
+        "Networking_Sockets": [
+          "Networking"
+        ],
+        "Networking_Vpn": [
+          "Networking"
+        ],
+        "Networking_XboxLive": [
+          "Networking"
+        ],
+        "Perception": [
+          "Foundation"
+        ],
+        "Perception_Automation": [
+          "Perception"
+        ],
+        "Perception_Automation_Core": [
+          "Perception_Automation"
+        ],
+        "Perception_People": [
+          "Perception"
+        ],
+        "Perception_Spatial": [
+          "Perception"
+        ],
+        "Perception_Spatial_Preview": [
+          "Perception_Spatial"
+        ],
+        "Perception_Spatial_Surfaces": [
+          "Perception_Spatial"
+        ],
+        "Security": [
+          "Foundation"
+        ],
+        "Security_Authentication": [
+          "Security"
+        ],
+        "Security_Authentication_Identity": [
+          "Security_Authentication"
+        ],
+        "Security_Authentication_Identity_Core": [
+          "Security_Authentication_Identity"
+        ],
+        "Security_Authentication_OnlineId": [
+          "Security_Authentication"
+        ],
+        "Security_Authentication_Web": [
+          "Security_Authentication"
+        ],
+        "Security_Authentication_Web_Core": [
+          "Security_Authentication_Web"
+        ],
+        "Security_Authentication_Web_Provider": [
+          "Security_Authentication_Web"
+        ],
+        "Security_Authorization": [
+          "Security"
+        ],
+        "Security_Authorization_AppCapabilityAccess": [
+          "Security_Authorization"
+        ],
+        "Security_Credentials": [
+          "Security"
+        ],
+        "Security_Credentials_UI": [
+          "Security_Credentials"
+        ],
+        "Security_Cryptography": [
+          "Security"
+        ],
+        "Security_Cryptography_Certificates": [
+          "Security_Cryptography"
+        ],
+        "Security_Cryptography_Core": [
+          "Security_Cryptography"
+        ],
+        "Security_Cryptography_DataProtection": [
+          "Security_Cryptography"
+        ],
+        "Security_DataProtection": [
+          "Security"
+        ],
+        "Security_EnterpriseData": [
+          "Security"
+        ],
+        "Security_ExchangeActiveSyncProvisioning": [
+          "Security"
+        ],
+        "Security_Isolation": [
+          "Security"
+        ],
+        "Services": [
+          "Foundation"
+        ],
+        "Services_Maps": [
+          "Services"
+        ],
+        "Services_Maps_Guidance": [
+          "Services_Maps"
+        ],
+        "Services_Maps_LocalSearch": [
+          "Services_Maps"
+        ],
+        "Services_Maps_OfflineMaps": [
+          "Services_Maps"
+        ],
+        "Services_Store": [
+          "Services"
+        ],
+        "Services_TargetedContent": [
+          "Services"
+        ],
+        "Storage": [
+          "Foundation"
+        ],
+        "Storage_AccessCache": [
+          "Storage"
+        ],
+        "Storage_BulkAccess": [
+          "Storage"
+        ],
+        "Storage_Compression": [
+          "Storage"
+        ],
+        "Storage_FileProperties": [
+          "Storage"
+        ],
+        "Storage_Pickers": [
+          "Storage"
+        ],
+        "Storage_Pickers_Provider": [
+          "Storage_Pickers"
+        ],
+        "Storage_Provider": [
+          "Storage"
+        ],
+        "Storage_Search": [
+          "Storage"
+        ],
+        "Storage_Streams": [
+          "Storage"
+        ],
+        "System": [
+          "Foundation"
+        ],
+        "System_Diagnostics": [
+          "System"
+        ],
+        "System_Diagnostics_DevicePortal": [
+          "System_Diagnostics"
+        ],
+        "System_Diagnostics_Telemetry": [
+          "System_Diagnostics"
+        ],
+        "System_Diagnostics_TraceReporting": [
+          "System_Diagnostics"
+        ],
+        "System_Display": [
+          "System"
+        ],
+        "System_Implementation": [
+          "System"
+        ],
+        "System_Implementation_FileExplorer": [
+          "System_Implementation"
+        ],
+        "System_Inventory": [
+          "System"
+        ],
+        "System_Power": [
+          "System"
+        ],
+        "System_Profile": [
+          "System"
+        ],
+        "System_Profile_SystemManufacturers": [
+          "System_Profile"
+        ],
+        "System_RemoteDesktop": [
+          "System"
+        ],
+        "System_RemoteDesktop_Input": [
+          "System_RemoteDesktop"
+        ],
+        "System_RemoteDesktop_Provider": [
+          "System_RemoteDesktop"
+        ],
+        "System_RemoteSystems": [
+          "System"
+        ],
+        "System_Threading": [
+          "System"
+        ],
+        "System_Threading_Core": [
+          "System_Threading"
+        ],
+        "System_Update": [
+          "System"
+        ],
+        "System_UserProfile": [
+          "System"
+        ],
+        "UI": [
+          "Foundation"
+        ],
+        "UI_Accessibility": [
+          "UI"
+        ],
+        "UI_ApplicationSettings": [
+          "UI"
+        ],
+        "UI_Composition": [
+          "UI"
+        ],
+        "UI_Composition_Core": [
+          "UI_Composition"
+        ],
+        "UI_Composition_Desktop": [
+          "UI_Composition"
+        ],
+        "UI_Composition_Diagnostics": [
+          "UI_Composition"
+        ],
+        "UI_Composition_Effects": [
+          "UI_Composition"
+        ],
+        "UI_Composition_Interactions": [
+          "UI_Composition"
+        ],
+        "UI_Composition_Scenes": [
+          "UI_Composition"
+        ],
+        "UI_Core": [
+          "UI"
+        ],
+        "UI_Core_AnimationMetrics": [
+          "UI_Core"
+        ],
+        "UI_Core_Preview": [
+          "UI_Core"
+        ],
+        "UI_Input": [
+          "UI"
+        ],
+        "UI_Input_Core": [
+          "UI_Input"
+        ],
+        "UI_Input_Inking": [
+          "UI_Input"
+        ],
+        "UI_Input_Inking_Analysis": [
+          "UI_Input_Inking"
+        ],
+        "UI_Input_Inking_Core": [
+          "UI_Input_Inking"
+        ],
+        "UI_Input_Inking_Preview": [
+          "UI_Input_Inking"
+        ],
+        "UI_Input_Preview": [
+          "UI_Input"
+        ],
+        "UI_Input_Preview_Injection": [
+          "UI_Input_Preview"
+        ],
+        "UI_Input_Preview_Text": [
+          "UI_Input_Preview"
+        ],
+        "UI_Input_Spatial": [
+          "UI_Input"
+        ],
+        "UI_Notifications": [
+          "UI"
+        ],
+        "UI_Notifications_Management": [
+          "UI_Notifications"
+        ],
+        "UI_Notifications_Preview": [
+          "UI_Notifications"
+        ],
+        "UI_Popups": [
+          "UI"
+        ],
+        "UI_Shell": [
+          "UI"
+        ],
+        "UI_StartScreen": [
+          "UI"
+        ],
+        "UI_Text": [
+          "UI"
+        ],
+        "UI_Text_Core": [
+          "UI_Text"
+        ],
+        "UI_UIAutomation": [
+          "UI"
+        ],
+        "UI_UIAutomation_Core": [
+          "UI_UIAutomation"
+        ],
+        "UI_ViewManagement": [
+          "UI"
+        ],
+        "UI_ViewManagement_Core": [
+          "UI_ViewManagement"
+        ],
+        "UI_WebUI": [
+          "UI"
+        ],
+        "UI_WindowManagement": [
+          "UI"
+        ],
+        "UI_WindowManagement_Preview": [
+          "UI_WindowManagement"
+        ],
+        "Wdk": [
+          "Win32_Foundation"
+        ],
+        "Wdk_Devices": [
+          "Wdk"
+        ],
+        "Wdk_Devices_Bluetooth": [
+          "Wdk_Devices"
+        ],
+        "Wdk_Devices_HumanInterfaceDevice": [
+          "Wdk_Devices"
+        ],
+        "Wdk_Foundation": [
+          "Wdk"
+        ],
+        "Wdk_Graphics": [
+          "Wdk"
+        ],
+        "Wdk_Graphics_Direct3D": [
+          "Wdk_Graphics"
+        ],
+        "Wdk_NetworkManagement": [
+          "Wdk"
+        ],
+        "Wdk_NetworkManagement_Ndis": [
+          "Wdk_NetworkManagement"
+        ],
+        "Wdk_NetworkManagement_WindowsFilteringPlatform": [
+          "Wdk_NetworkManagement"
+        ],
+        "Wdk_Storage": [
+          "Wdk"
+        ],
+        "Wdk_Storage_FileSystem": [
+          "Wdk_Storage"
+        ],
+        "Wdk_Storage_FileSystem_Minifilters": [
+          "Wdk_Storage_FileSystem"
+        ],
+        "Wdk_System": [
+          "Wdk"
+        ],
+        "Wdk_System_IO": [
+          "Wdk_System"
+        ],
+        "Wdk_System_Memory": [
+          "Wdk_System"
+        ],
+        "Wdk_System_OfflineRegistry": [
+          "Wdk_System"
+        ],
+        "Wdk_System_Registry": [
+          "Wdk_System"
+        ],
+        "Wdk_System_SystemInformation": [
+          "Wdk_System"
+        ],
+        "Wdk_System_SystemServices": [
+          "Wdk_System"
+        ],
+        "Wdk_System_Threading": [
+          "Wdk_System"
+        ],
+        "Web": [
+          "Foundation"
+        ],
+        "Web_AtomPub": [
+          "Web"
+        ],
+        "Web_Http": [
+          "Web"
+        ],
+        "Web_Http_Diagnostics": [
+          "Web_Http"
+        ],
+        "Web_Http_Filters": [
+          "Web_Http"
+        ],
+        "Web_Http_Headers": [
+          "Web_Http"
+        ],
+        "Web_Syndication": [
+          "Web"
+        ],
+        "Web_UI": [
+          "Web"
+        ],
+        "Web_UI_Interop": [
+          "Web_UI"
+        ],
+        "Win32": [
+          "Win32_Foundation"
+        ],
+        "Win32_AI": [
+          "Win32"
+        ],
+        "Win32_AI_MachineLearning": [
+          "Win32_AI"
+        ],
+        "Win32_AI_MachineLearning_DirectML": [
+          "Win32_AI_MachineLearning"
+        ],
+        "Win32_AI_MachineLearning_WinML": [
+          "Win32_AI_MachineLearning"
+        ],
+        "Win32_Data": [
+          "Win32"
+        ],
+        "Win32_Data_HtmlHelp": [
+          "Win32_Data"
+        ],
+        "Win32_Data_RightsManagement": [
+          "Win32_Data"
+        ],
+        "Win32_Data_Xml": [
+          "Win32_Data"
+        ],
+        "Win32_Data_Xml_MsXml": [
+          "Win32_Data_Xml"
+        ],
+        "Win32_Data_Xml_XmlLite": [
+          "Win32_Data_Xml"
+        ],
+        "Win32_Devices": [
+          "Win32"
+        ],
+        "Win32_Devices_AllJoyn": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Beep": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_BiometricFramework": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Bluetooth": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Cdrom": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Communication": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_DeviceAccess": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_DeviceAndDriverInstallation": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_DeviceQuery": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Display": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Dvd": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Enumeration": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Enumeration_Pnp": [
+          "Win32_Devices_Enumeration"
+        ],
+        "Win32_Devices_Fax": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_FunctionDiscovery": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Geolocation": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_HumanInterfaceDevice": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_ImageAcquisition": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Nfc": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Nfp": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_PortableDevices": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Properties": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Pwm": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Sensors": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_SerialCommunication": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Tapi": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_Usb": [
+          "Win32_Devices"
+        ],
+        "Win32_Devices_WebServicesOnDevices": [
+          "Win32_Devices"
+        ],
+        "Win32_Foundation": [
+          "Win32"
+        ],
+        "Win32_Gaming": [
+          "Win32"
+        ],
+        "Win32_Globalization": [
+          "Win32"
+        ],
+        "Win32_Graphics": [
+          "Win32"
+        ],
+        "Win32_Graphics_CompositionSwapchain": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_DXCore": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Direct2D": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Direct2D_Common": [
+          "Win32_Graphics_Direct2D"
+        ],
+        "Win32_Graphics_Direct3D": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Direct3D10": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Direct3D11": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Direct3D11on12": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Direct3D12": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Direct3D9": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Direct3D9on12": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Direct3D_Dxc": [
+          "Win32_Graphics_Direct3D"
+        ],
+        "Win32_Graphics_Direct3D_Fxc": [
+          "Win32_Graphics_Direct3D"
+        ],
+        "Win32_Graphics_DirectComposition": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_DirectDraw": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_DirectManipulation": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_DirectWrite": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Dwm": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Dxgi": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Dxgi_Common": [
+          "Win32_Graphics_Dxgi"
+        ],
+        "Win32_Graphics_Gdi": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_GdiPlus": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Hlsl": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Imaging": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Imaging_D2D": [
+          "Win32_Graphics_Imaging"
+        ],
+        "Win32_Graphics_OpenGL": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Printing": [
+          "Win32_Graphics"
+        ],
+        "Win32_Graphics_Printing_PrintTicket": [
+          "Win32_Graphics_Printing"
+        ],
+        "Win32_Management": [
+          "Win32"
+        ],
+        "Win32_Management_MobileDeviceManagementRegistration": [
+          "Win32_Management"
+        ],
+        "Win32_Media": [
+          "Win32"
+        ],
+        "Win32_Media_Audio": [
+          "Win32_Media"
+        ],
+        "Win32_Media_Audio_Apo": [
+          "Win32_Media_Audio"
+        ],
+        "Win32_Media_Audio_DirectMusic": [
+          "Win32_Media_Audio"
+        ],
+        "Win32_Media_Audio_DirectSound": [
+          "Win32_Media_Audio"
+        ],
+        "Win32_Media_Audio_Endpoints": [
+          "Win32_Media_Audio"
+        ],
+        "Win32_Media_Audio_XAudio2": [
+          "Win32_Media_Audio"
+        ],
+        "Win32_Media_DeviceManager": [
+          "Win32_Media"
+        ],
+        "Win32_Media_DirectShow": [
+          "Win32_Media"
+        ],
+        "Win32_Media_DirectShow_Tv": [
+          "Win32_Media_DirectShow"
+        ],
+        "Win32_Media_DirectShow_Xml": [
+          "Win32_Media_DirectShow"
+        ],
+        "Win32_Media_DxMediaObjects": [
+          "Win32_Media"
+        ],
+        "Win32_Media_KernelStreaming": [
+          "Win32_Media"
+        ],
+        "Win32_Media_LibrarySharingServices": [
+          "Win32_Media"
+        ],
+        "Win32_Media_MediaFoundation": [
+          "Win32_Media"
+        ],
+        "Win32_Media_MediaPlayer": [
+          "Win32_Media"
+        ],
+        "Win32_Media_Multimedia": [
+          "Win32_Media"
+        ],
+        "Win32_Media_PictureAcquisition": [
+          "Win32_Media"
+        ],
+        "Win32_Media_Speech": [
+          "Win32_Media"
+        ],
+        "Win32_Media_Streaming": [
+          "Win32_Media"
+        ],
+        "Win32_Media_WindowsMediaFormat": [
+          "Win32_Media"
+        ],
+        "Win32_NetworkManagement": [
+          "Win32"
+        ],
+        "Win32_NetworkManagement_Dhcp": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_Dns": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_InternetConnectionWizard": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_IpHelper": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_MobileBroadband": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_Multicast": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_Ndis": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_NetBios": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_NetManagement": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_NetShell": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_NetworkDiagnosticsFramework": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_NetworkPolicyServer": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_P2P": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_QoS": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_Rras": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_Snmp": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_WNet": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_WebDav": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_WiFi": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_WindowsConnectNow": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_WindowsConnectionManager": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_WindowsFilteringPlatform": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_WindowsFirewall": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_NetworkManagement_WindowsNetworkVirtualization": [
+          "Win32_NetworkManagement"
+        ],
+        "Win32_Networking": [
+          "Win32"
+        ],
+        "Win32_Networking_ActiveDirectory": [
+          "Win32_Networking"
+        ],
+        "Win32_Networking_BackgroundIntelligentTransferService": [
+          "Win32_Networking"
+        ],
+        "Win32_Networking_Clustering": [
+          "Win32_Networking"
+        ],
+        "Win32_Networking_HttpServer": [
+          "Win32_Networking"
+        ],
+        "Win32_Networking_Ldap": [
+          "Win32_Networking"
+        ],
+        "Win32_Networking_NetworkListManager": [
+          "Win32_Networking"
+        ],
+        "Win32_Networking_RemoteDifferentialCompression": [
+          "Win32_Networking"
+        ],
+        "Win32_Networking_WebSocket": [
+          "Win32_Networking"
+        ],
+        "Win32_Networking_WinHttp": [
+          "Win32_Networking"
+        ],
+        "Win32_Networking_WinInet": [
+          "Win32_Networking"
+        ],
+        "Win32_Networking_WinSock": [
+          "Win32_Networking"
+        ],
+        "Win32_Networking_WindowsWebServices": [
+          "Win32_Networking"
+        ],
+        "Win32_Security": [
+          "Win32"
+        ],
+        "Win32_Security_AppLocker": [
+          "Win32_Security"
+        ],
+        "Win32_Security_Authentication": [
+          "Win32_Security"
+        ],
+        "Win32_Security_Authentication_Identity": [
+          "Win32_Security_Authentication"
+        ],
+        "Win32_Security_Authentication_Identity_Provider": [
+          "Win32_Security_Authentication_Identity"
+        ],
+        "Win32_Security_Authorization": [
+          "Win32_Security"
+        ],
+        "Win32_Security_Authorization_UI": [
+          "Win32_Security_Authorization"
+        ],
+        "Win32_Security_ConfigurationSnapin": [
+          "Win32_Security"
+        ],
+        "Win32_Security_Credentials": [
+          "Win32_Security"
+        ],
+        "Win32_Security_Cryptography": [
+          "Win32_Security"
+        ],
+        "Win32_Security_Cryptography_Catalog": [
+          "Win32_Security_Cryptography"
+        ],
+        "Win32_Security_Cryptography_Certificates": [
+          "Win32_Security_Cryptography"
+        ],
+        "Win32_Security_Cryptography_Sip": [
+          "Win32_Security_Cryptography"
+        ],
+        "Win32_Security_Cryptography_UI": [
+          "Win32_Security_Cryptography"
+        ],
+        "Win32_Security_DiagnosticDataQuery": [
+          "Win32_Security"
+        ],
+        "Win32_Security_DirectoryServices": [
+          "Win32_Security"
+        ],
+        "Win32_Security_EnterpriseData": [
+          "Win32_Security"
+        ],
+        "Win32_Security_ExtensibleAuthenticationProtocol": [
+          "Win32_Security"
+        ],
+        "Win32_Security_Isolation": [
+          "Win32_Security"
+        ],
+        "Win32_Security_LicenseProtection": [
+          "Win32_Security"
+        ],
+        "Win32_Security_NetworkAccessProtection": [
+          "Win32_Security"
+        ],
+        "Win32_Security_Tpm": [
+          "Win32_Security"
+        ],
+        "Win32_Security_WinTrust": [
+          "Win32_Security"
+        ],
+        "Win32_Security_WinWlx": [
+          "Win32_Security"
+        ],
+        "Win32_Storage": [
+          "Win32"
+        ],
+        "Win32_Storage_Cabinets": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_CloudFilters": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_Compression": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_DataDeduplication": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_DistributedFileSystem": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_EnhancedStorage": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_FileHistory": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_FileServerResourceManager": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_FileSystem": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_Imapi": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_IndexServer": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_InstallableFileSystems": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_IscsiDisc": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_Jet": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_Nvme": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_OfflineFiles": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_OperationRecorder": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_Packaging": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_Packaging_Appx": [
+          "Win32_Storage_Packaging"
+        ],
+        "Win32_Storage_Packaging_Opc": [
+          "Win32_Storage_Packaging"
+        ],
+        "Win32_Storage_ProjectedFileSystem": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_StructuredStorage": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_Vhd": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_VirtualDiskService": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_Vss": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_Xps": [
+          "Win32_Storage"
+        ],
+        "Win32_Storage_Xps_Printing": [
+          "Win32_Storage_Xps"
+        ],
+        "Win32_System": [
+          "Win32"
+        ],
+        "Win32_System_AddressBook": [
+          "Win32_System"
+        ],
+        "Win32_System_Antimalware": [
+          "Win32_System"
+        ],
+        "Win32_System_ApplicationInstallationAndServicing": [
+          "Win32_System"
+        ],
+        "Win32_System_ApplicationVerifier": [
+          "Win32_System"
+        ],
+        "Win32_System_AssessmentTool": [
+          "Win32_System"
+        ],
+        "Win32_System_ClrHosting": [
+          "Win32_System"
+        ],
+        "Win32_System_Com": [
+          "Win32_System"
+        ],
+        "Win32_System_Com_CallObj": [
+          "Win32_System_Com"
+        ],
+        "Win32_System_Com_ChannelCredentials": [
+          "Win32_System_Com"
+        ],
+        "Win32_System_Com_Events": [
+          "Win32_System_Com"
+        ],
+        "Win32_System_Com_Marshal": [
+          "Win32_System_Com"
+        ],
+        "Win32_System_Com_StructuredStorage": [
+          "Win32_System_Com"
+        ],
+        "Win32_System_Com_UI": [
+          "Win32_System_Com"
+        ],
+        "Win32_System_Com_Urlmon": [
+          "Win32_System_Com"
+        ],
+        "Win32_System_ComponentServices": [
+          "Win32_System"
+        ],
+        "Win32_System_Console": [
+          "Win32_System"
+        ],
+        "Win32_System_Contacts": [
+          "Win32_System"
+        ],
+        "Win32_System_CorrelationVector": [
+          "Win32_System"
+        ],
+        "Win32_System_DataExchange": [
+          "Win32_System"
+        ],
+        "Win32_System_DeploymentServices": [
+          "Win32_System"
+        ],
+        "Win32_System_DesktopSharing": [
+          "Win32_System"
+        ],
+        "Win32_System_DeveloperLicensing": [
+          "Win32_System"
+        ],
+        "Win32_System_Diagnostics": [
+          "Win32_System"
+        ],
+        "Win32_System_Diagnostics_Ceip": [
+          "Win32_System_Diagnostics"
+        ],
+        "Win32_System_Diagnostics_ClrProfiling": [
+          "Win32_System_Diagnostics"
+        ],
+        "Win32_System_Diagnostics_Debug": [
+          "Win32_System_Diagnostics"
+        ],
+        "Win32_System_Diagnostics_Debug_ActiveScript": [
+          "Win32_System_Diagnostics_Debug"
+        ],
+        "Win32_System_Diagnostics_Debug_Extensions": [
+          "Win32_System_Diagnostics_Debug"
+        ],
+        "Win32_System_Diagnostics_Etw": [
+          "Win32_System_Diagnostics"
+        ],
+        "Win32_System_Diagnostics_ProcessSnapshotting": [
+          "Win32_System_Diagnostics"
+        ],
+        "Win32_System_Diagnostics_ToolHelp": [
+          "Win32_System_Diagnostics"
+        ],
+        "Win32_System_Diagnostics_TraceLogging": [
+          "Win32_System_Diagnostics"
+        ],
+        "Win32_System_DistributedTransactionCoordinator": [
+          "Win32_System"
+        ],
+        "Win32_System_Environment": [
+          "Win32_System"
+        ],
+        "Win32_System_ErrorReporting": [
+          "Win32_System"
+        ],
+        "Win32_System_EventCollector": [
+          "Win32_System"
+        ],
+        "Win32_System_EventLog": [
+          "Win32_System"
+        ],
+        "Win32_System_EventNotificationService": [
+          "Win32_System"
+        ],
+        "Win32_System_GroupPolicy": [
+          "Win32_System"
+        ],
+        "Win32_System_HostCompute": [
+          "Win32_System"
+        ],
+        "Win32_System_HostComputeNetwork": [
+          "Win32_System"
+        ],
+        "Win32_System_HostComputeSystem": [
+          "Win32_System"
+        ],
+        "Win32_System_Hypervisor": [
+          "Win32_System"
+        ],
+        "Win32_System_IO": [
+          "Win32_System"
+        ],
+        "Win32_System_Iis": [
+          "Win32_System"
+        ],
+        "Win32_System_Ioctl": [
+          "Win32_System"
+        ],
+        "Win32_System_JobObjects": [
+          "Win32_System"
+        ],
+        "Win32_System_Js": [
+          "Win32_System"
+        ],
+        "Win32_System_Kernel": [
+          "Win32_System"
+        ],
+        "Win32_System_LibraryLoader": [
+          "Win32_System"
+        ],
+        "Win32_System_Mailslots": [
+          "Win32_System"
+        ],
+        "Win32_System_Mapi": [
+          "Win32_System"
+        ],
+        "Win32_System_Memory": [
+          "Win32_System"
+        ],
+        "Win32_System_Memory_NonVolatile": [
+          "Win32_System_Memory"
+        ],
+        "Win32_System_MessageQueuing": [
+          "Win32_System"
+        ],
+        "Win32_System_MixedReality": [
+          "Win32_System"
+        ],
+        "Win32_System_Mmc": [
+          "Win32_System"
+        ],
+        "Win32_System_Ole": [
+          "Win32_System"
+        ],
+        "Win32_System_ParentalControls": [
+          "Win32_System"
+        ],
+        "Win32_System_PasswordManagement": [
+          "Win32_System"
+        ],
+        "Win32_System_Performance": [
+          "Win32_System"
+        ],
+        "Win32_System_Performance_HardwareCounterProfiling": [
+          "Win32_System_Performance"
+        ],
+        "Win32_System_Pipes": [
+          "Win32_System"
+        ],
+        "Win32_System_Power": [
+          "Win32_System"
+        ],
+        "Win32_System_ProcessStatus": [
+          "Win32_System"
+        ],
+        "Win32_System_RealTimeCommunications": [
+          "Win32_System"
+        ],
+        "Win32_System_Recovery": [
+          "Win32_System"
+        ],
+        "Win32_System_Registry": [
+          "Win32_System"
+        ],
+        "Win32_System_RemoteAssistance": [
+          "Win32_System"
+        ],
+        "Win32_System_RemoteDesktop": [
+          "Win32_System"
+        ],
+        "Win32_System_RemoteManagement": [
+          "Win32_System"
+        ],
+        "Win32_System_RestartManager": [
+          "Win32_System"
+        ],
+        "Win32_System_Restore": [
+          "Win32_System"
+        ],
+        "Win32_System_Rpc": [
+          "Win32_System"
+        ],
+        "Win32_System_Search": [
+          "Win32_System"
+        ],
+        "Win32_System_Search_Common": [
+          "Win32_System_Search"
+        ],
+        "Win32_System_SecurityCenter": [
+          "Win32_System"
+        ],
+        "Win32_System_ServerBackup": [
+          "Win32_System"
+        ],
+        "Win32_System_Services": [
+          "Win32_System"
+        ],
+        "Win32_System_SettingsManagementInfrastructure": [
+          "Win32_System"
+        ],
+        "Win32_System_SetupAndMigration": [
+          "Win32_System"
+        ],
+        "Win32_System_Shutdown": [
+          "Win32_System"
+        ],
+        "Win32_System_SideShow": [
+          "Win32_System"
+        ],
+        "Win32_System_StationsAndDesktops": [
+          "Win32_System"
+        ],
+        "Win32_System_SubsystemForLinux": [
+          "Win32_System"
+        ],
+        "Win32_System_SystemInformation": [
+          "Win32_System"
+        ],
+        "Win32_System_SystemServices": [
+          "Win32_System"
+        ],
+        "Win32_System_TaskScheduler": [
+          "Win32_System"
+        ],
+        "Win32_System_Threading": [
+          "Win32_System"
+        ],
+        "Win32_System_Time": [
+          "Win32_System"
+        ],
+        "Win32_System_TpmBaseServices": [
+          "Win32_System"
+        ],
+        "Win32_System_TransactionServer": [
+          "Win32_System"
+        ],
+        "Win32_System_UpdateAgent": [
+          "Win32_System"
+        ],
+        "Win32_System_UpdateAssessment": [
+          "Win32_System"
+        ],
+        "Win32_System_UserAccessLogging": [
+          "Win32_System"
+        ],
+        "Win32_System_Variant": [
+          "Win32_System"
+        ],
+        "Win32_System_VirtualDosMachines": [
+          "Win32_System"
+        ],
+        "Win32_System_WinRT": [
+          "Win32_System"
+        ],
+        "Win32_System_WinRT_AllJoyn": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_Composition": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_CoreInputView": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_Direct3D11": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_Display": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_Graphics": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_Graphics_Capture": [
+          "Win32_System_WinRT_Graphics"
+        ],
+        "Win32_System_WinRT_Graphics_Direct2D": [
+          "Win32_System_WinRT_Graphics"
+        ],
+        "Win32_System_WinRT_Graphics_Imaging": [
+          "Win32_System_WinRT_Graphics"
+        ],
+        "Win32_System_WinRT_Holographic": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_Isolation": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_ML": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_Media": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_Metadata": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_Pdf": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_Printing": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_Shell": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WinRT_Storage": [
+          "Win32_System_WinRT"
+        ],
+        "Win32_System_WindowsProgramming": [
+          "Win32_System"
+        ],
+        "Win32_System_WindowsSync": [
+          "Win32_System"
+        ],
+        "Win32_System_Wmi": [
+          "Win32_System"
+        ],
+        "Win32_UI": [
+          "Win32"
+        ],
+        "Win32_UI_Accessibility": [
+          "Win32_UI"
+        ],
+        "Win32_UI_Animation": [
+          "Win32_UI"
+        ],
+        "Win32_UI_ColorSystem": [
+          "Win32_UI"
+        ],
+        "Win32_UI_Controls": [
+          "Win32_UI"
+        ],
+        "Win32_UI_Controls_Dialogs": [
+          "Win32_UI_Controls"
+        ],
+        "Win32_UI_Controls_RichEdit": [
+          "Win32_UI_Controls"
+        ],
+        "Win32_UI_HiDpi": [
+          "Win32_UI"
+        ],
+        "Win32_UI_Input": [
+          "Win32_UI"
+        ],
+        "Win32_UI_Input_Ime": [
+          "Win32_UI_Input"
+        ],
+        "Win32_UI_Input_Ink": [
+          "Win32_UI_Input"
+        ],
+        "Win32_UI_Input_KeyboardAndMouse": [
+          "Win32_UI_Input"
+        ],
+        "Win32_UI_Input_Pointer": [
+          "Win32_UI_Input"
+        ],
+        "Win32_UI_Input_Radial": [
+          "Win32_UI_Input"
+        ],
+        "Win32_UI_Input_Touch": [
+          "Win32_UI_Input"
+        ],
+        "Win32_UI_Input_XboxController": [
+          "Win32_UI_Input"
+        ],
+        "Win32_UI_InteractionContext": [
+          "Win32_UI"
+        ],
+        "Win32_UI_LegacyWindowsEnvironmentFeatures": [
+          "Win32_UI"
+        ],
+        "Win32_UI_Magnification": [
+          "Win32_UI"
+        ],
+        "Win32_UI_Notifications": [
+          "Win32_UI"
+        ],
+        "Win32_UI_Ribbon": [
+          "Win32_UI"
+        ],
+        "Win32_UI_Shell": [
+          "Win32_UI"
+        ],
+        "Win32_UI_Shell_Common": [
+          "Win32_UI_Shell"
+        ],
+        "Win32_UI_Shell_PropertiesSystem": [
+          "Win32_UI_Shell"
+        ],
+        "Win32_UI_TabletPC": [
+          "Win32_UI"
+        ],
+        "Win32_UI_TextServices": [
+          "Win32_UI"
+        ],
+        "Win32_UI_WindowsAndMessaging": [
+          "Win32_UI"
+        ],
+        "Win32_UI_Wpf": [
+          "Win32_UI"
+        ],
+        "Win32_Web": [
+          "Win32"
+        ],
+        "Win32_Web_InternetExplorer": [
+          "Win32_Web"
+        ],
+        "default": [
+          "std"
+        ],
+        "docs": [],
+        "std": [
+          "windows-collections/std",
+          "windows-core/std",
+          "windows-future/std",
+          "windows-numerics/std"
+        ]
+      },
+      "checksum": "527fadee13e0c05939a6a05d5bd6eec6cd2e3dbd648b9f8e447c6518133d8580"
+    },
+    {
+      "kind": "crate",
+      "name": "keyring",
+      "url": "https://crates.io/api/v1/crates/keyring",
+      "version": "4.2.0",
+      "published": "2026-08-29T23:48:56.175457Z",
+      "updated": "2026-08-29T23:48:56.175457Z",
+      "license": "MIT OR Apache-2.0",
+      "rust_version": "1.88.0",
+      "repository": "https://github.com/open-source-cooperative/keyring-rs",
+      "features": {
+        "cli": [
+          "android-native-keyring-store",
+          "apple-native-keyring-store/keychain",
+          "apple-native-keyring-store/protected",
+          "db-keystore",
+          "dbus-secret-service-keyring-store",
+          "keyring-core/sample",
+          "linux-keyutils-keyring-store",
+          "windows-native-keyring-store",
+          "zbus-secret-service-keyring-store"
+        ],
+        "default": [
+          "v1"
+        ],
+        "v1": [
+          "apple-native-keyring-store/keychain",
+          "windows-native-keyring-store",
+          "zbus-secret-service-keyring-store"
+        ]
+      },
+      "checksum": "2270074a3d26bcac93c1dc5d2845eb4c089e8d761ccf6e0ea266a16004640627"
+    },
+    {
+      "kind": "crate",
+      "name": "uuid",
+      "url": "https://crates.io/api/v1/crates/uuid",
+      "version": "1.26.1",
+      "published": "2026-09-10T00:30:44.938530Z",
+      "updated": "2026-09-10T00:30:44.938530Z",
+      "license": "Apache-2.0 OR MIT",
+      "rust_version": "1.85.0",
+      "repository": "https://github.com/uuid-rs/uuid",
+      "features": {
+        "atomic": [
+          "dep:atomic"
+        ],
+        "borsh": [
+          "dep:borsh",
+          "dep:borsh-derive"
+        ],
+        "default": [
+          "std"
+        ],
+        "fast-rng": [
+          "rng",
+          "dep:rand"
+        ],
+        "js": [
+          "dep:wasm-bindgen",
+          "dep:js-sys"
+        ],
+        "macro-diagnostics": [],
+        "md5": [
+          "dep:md-5"
+        ],
+        "rng": [
+          "dep:getrandom"
+        ],
+        "rng-getrandom": [
+          "rng",
+          "dep:getrandom",
+          "uuid-rng-internal-lib",
+          "uuid-rng-internal-lib/getrandom"
+        ],
+        "rng-rand": [
+          "rng",
+          "dep:rand",
+          "uuid-rng-internal-lib",
+          "uuid-rng-internal-lib/rand"
+        ],
+        "serde": [
+          "dep:serde_core"
+        ],
+        "sha1": [
+          "dep:sha1_smol"
+        ],
+        "std": [
+          "wasm-bindgen?/std",
+          "js-sys?/std"
+        ],
+        "v1": [
+          "atomic"
+        ],
+        "v3": [
+          "md5"
+        ],
+        "v4": [
+          "rng"
+        ],
+        "v5": [
+          "sha1"
+        ],
+        "v6": [
+          "atomic"
+        ],
+        "v7": [
+          "rng"
+        ],
+        "v8": []
+      },
+      "checksum": "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
+    },
+    {
+      "kind": "crate",
+      "name": "url",
+      "url": "https://crates.io/api/v1/crates/url",
+      "version": "2.5.8",
+      "published": "2026-01-05T22:14:31.414927Z",
+      "updated": "2026-01-05T22:14:31.414927Z",
+      "license": "MIT OR Apache-2.0",
+      "rust_version": "1.63",
+      "repository": "https://github.com/servo/rust-url",
+      "features": {
+        "debugger_visualizer": [],
+        "default": [
+          "std"
+        ],
+        "expose_internals": [],
+        "serde": [
+          "dep:serde",
+          "dep:serde_derive"
+        ],
+        "std": [
+          "idna/std",
+          "percent-encoding/std",
+          "form_urlencoded/std",
+          "serde?/std"
+        ]
+      },
+      "checksum": "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+    },
+    {
+      "kind": "crate",
+      "name": "thiserror",
+      "url": "https://crates.io/api/v1/crates/thiserror",
+      "version": "2.0.21",
+      "published": "2026-09-23T20:24:07.771104Z",
+      "updated": "2026-09-23T20:24:07.771104Z",
+      "license": "MIT OR Apache-2.0",
+      "rust_version": "1.77",
+      "repository": "https://github.com/dtolnay/thiserror",
+      "features": {
+        "default": [
+          "std"
+        ],
+        "std": []
+      },
+      "checksum": "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
+    },
+    {
+      "kind": "crate",
+      "name": "fs2",
+      "url": "https://crates.io/api/v1/crates/fs2",
+      "version": "0.4.3",
+      "published": "2018-01-06T20:18:30.565584Z",
+      "updated": "2018-01-06T20:18:30.565584Z",
+      "license": "MIT/Apache-2.0",
+      "rust_version": null,
+      "repository": "https://github.com/danburkert/fs2-rs",
+      "features": {},
+      "checksum": "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+    },
+    {
+      "kind": "crate",
+      "name": "interprocess",
+      "url": "https://crates.io/api/v1/crates/interprocess",
+      "version": "2.4.4",
+      "published": "2026-09-03T21:26:50.759654Z",
+      "updated": "2026-09-03T21:26:50.759654Z",
+      "license": "0BSD OR Apache-2.0",
+      "rust_version": "1.75",
+      "repository": "https://github.com/kotauskas/interprocess",
+      "features": {
+        "async": [
+          "futures-core"
+        ],
+        "default": [],
+        "doc_cfg": [],
+        "tokio": [
+          "dep:tokio",
+          "async"
+        ]
+      },
+      "checksum": "6cb02ffbf25e8ef0f4a95bff054eef75f6d1bf16919474cf2caa63b21997478a"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "queried_at_utc": "2026-09-25T16:46:34.524170+00:00",
+  "sources": [
+    {
+      "id": "wdio_plugin",
+      "url": "https://crates.io/api/v1/crates/tauri-plugin-wdio-webdriver",
+      "version": "1.4.0",
+      "license": "MIT",
+      "published": "2026-09-06T16:39:01.338803Z",
+      "repository": "https://github.com/webdriverio/desktop-mobile"
+    },
+    {
+      "id": "ffmpeg_assets",
+      "url": "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest",
+      "error": "HTTP Error 403: rate limit exceeded"
+    }
+  ]
+}

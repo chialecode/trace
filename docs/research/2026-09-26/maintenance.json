@@ -1,0 +1,525 @@
+{
+  "queried_at_utc": "2026-09-25T16:36:42.032915+00:00",
+  "limitations": "Issue closure samples alone do not prove a fix; full compatibility is untested.",
+  "repositories": [
+    {
+      "repository": "vuejs/core",
+      "url": "https://github.com/vuejs/core",
+      "archived": false,
+      "default_branch": "main",
+      "pushed_at": "2026-09-25T09:20:48Z",
+      "license": "MIT",
+      "commit": {
+        "sha": "4ab865a848a1da3d10fb674f857e5fff13094644",
+        "date": "2026-09-18T02:59:51Z",
+        "message": "fix(suspense): skip rendering async components unmounted while pending",
+        "url": "https://github.com/vuejs/core/commit/4ab865a848a1da3d10fb674f857e5fff13094644"
+      },
+      "issue_samples": [
+        {
+          "number": 15631,
+          "title": "fix(runtime-vapor): patch same-type vnodes passed to a dynamic component",
+          "created_at": "2026-09-24T10:12:32Z",
+          "closed_at": "2026-09-25T06:35:54Z",
+          "updated_at": "2026-09-25T06:35:55Z",
+          "state_reason": null,
+          "url": "https://github.com/vuejs/core/pull/15631",
+          "is_pr": true
+        },
+        {
+          "number": 15644,
+          "title": "refactor(vapor): pass component keys through their creation calls instead of setBlockKey",
+          "created_at": "2026-09-25T05:39:35Z",
+          "closed_at": "2026-09-25T06:22:45Z",
+          "updated_at": "2026-09-25T06:22:47Z",
+          "state_reason": null,
+          "url": "https://github.com/vuejs/core/pull/15644",
+          "is_pr": true
+        }
+      ]
+    },
+    {
+      "repository": "tusen-ai/naive-ui",
+      "url": "https://github.com/tusen-ai/naive-ui",
+      "archived": false,
+      "default_branch": "main",
+      "pushed_at": "2026-08-27T20:03:57Z",
+      "license": "MIT",
+      "commit": {
+        "sha": "42a52e6436b38bed456fee19eb0b89cdcd00fcc2",
+        "date": "2026-08-27T20:02:53Z",
+        "message": "2.45.3",
+        "url": "https://github.com/tusen-ai/naive-ui/commit/42a52e6436b38bed456fee19eb0b89cdcd00fcc2"
+      },
+      "issue_samples": [
+        {
+          "number": 6861,
+          "title": "官方网站挂了吗 项目不维护了？",
+          "created_at": "2025-04-26T13:59:35Z",
+          "closed_at": "2025-04-26T14:22:48Z",
+          "updated_at": "2026-09-23T13:01:38Z",
+          "state_reason": "completed",
+          "url": "https://github.com/tusen-ai/naive-ui/issues/6861",
+          "is_pr": false
+        },
+        {
+          "number": 4487,
+          "title": "feat(Code): add focus-line feature",
+          "created_at": "2023-02-15T14:16:04Z",
+          "closed_at": "2026-09-22T09:01:46Z",
+          "updated_at": "2026-09-22T09:01:46Z",
+          "state_reason": null,
+          "url": "https://github.com/tusen-ai/naive-ui/pull/4487",
+          "is_pr": true
+        }
+      ]
+    },
+    {
+      "repository": "element-plus/element-plus",
+      "url": "https://github.com/element-plus/element-plus",
+      "archived": false,
+      "default_branch": "dev",
+      "pushed_at": "2026-09-25T15:55:49Z",
+      "license": "MIT",
+      "commit": {
+        "sha": "74b292e03c619aac31818f750c73e52cd51c06f4",
+        "date": "2026-09-25T15:54:21Z",
+        "message": "chore(deps): update dependency happy-dom to ^20.14.5 (#24814)",
+        "url": "https://github.com/element-plus/element-plus/commit/74b292e03c619aac31818f750c73e52cd51c06f4"
+      },
+      "issue_samples": [
+        {
+          "number": 24814,
+          "title": "chore(deps): update dependency happy-dom to ^20.14.5",
+          "created_at": "2026-08-30T09:46:10Z",
+          "closed_at": "2026-09-25T15:54:21Z",
+          "updated_at": "2026-09-25T15:54:23Z",
+          "state_reason": null,
+          "url": "https://github.com/element-plus/element-plus/pull/24814",
+          "is_pr": true
+        },
+        {
+          "number": 24922,
+          "title": "chore(deps): update dependency sass-embedded to ^1.105.0",
+          "created_at": "2026-09-25T15:31:55Z",
+          "closed_at": "2026-09-25T15:50:52Z",
+          "updated_at": "2026-09-25T15:52:23Z",
+          "state_reason": null,
+          "url": "https://github.com/element-plus/element-plus/pull/24922",
+          "is_pr": true
+        }
+      ]
+    },
+    {
+      "repository": "unovue/reka-ui",
+      "url": "https://github.com/unovue/reka-ui",
+      "archived": false,
+      "default_branch": "v2",
+      "pushed_at": "2026-09-25T14:38:15Z",
+      "license": "MIT",
+      "commit": {
+        "sha": "8c820da6c8c4f8af6dc80bb7297b36eabb5b6e87",
+        "date": "2026-09-25T14:38:15Z",
+        "message": "fix(Calendar): keep the visible month when modelValue is a new object for the same day (#2961)",
+        "url": "https://github.com/unovue/reka-ui/commit/8c820da6c8c4f8af6dc80bb7297b36eabb5b6e87"
+      },
+      "issue_samples": [
+        {
+          "number": 2960,
+          "title": "[Bug]: Calendar month resets when modelValue is a new object for the same day",
+          "created_at": "2026-09-22T02:52:22Z",
+          "closed_at": "2026-09-25T14:38:17Z",
+          "updated_at": "2026-09-25T14:38:17Z",
+          "state_reason": "completed",
+          "url": "https://github.com/unovue/reka-ui/issues/2960",
+          "is_pr": false
+        },
+        {
+          "number": 2961,
+          "title": "fix(Calendar): keep the visible month when modelValue is a new object for the same day",
+          "created_at": "2026-09-22T03:00:16Z",
+          "closed_at": "2026-09-25T14:38:16Z",
+          "updated_at": "2026-09-25T14:38:16Z",
+          "state_reason": null,
+          "url": "https://github.com/unovue/reka-ui/pull/2961",
+          "is_pr": true
+        }
+      ]
+    },
+    {
+      "repository": "nuxt/ui",
+      "url": "https://github.com/nuxt/ui",
+      "archived": false,
+      "default_branch": "v4",
+      "pushed_at": "2026-09-25T16:24:04Z",
+      "license": "MIT",
+      "commit": {
+        "sha": "12e51704958d5d4d1d1e7dbe5ec1c62b7878a0c6",
+        "date": "2026-09-25T16:00:34Z",
+        "message": "chore(github): report bundle size on pull requests (#7032)",
+        "url": "https://github.com/nuxt/ui/commit/12e51704958d5d4d1d1e7dbe5ec1c62b7878a0c6"
+      },
+      "issue_samples": [
+        {
+          "number": 7032,
+          "title": "chore(github): report bundle size on pull requests",
+          "created_at": "2026-09-25T15:46:41Z",
+          "closed_at": "2026-09-25T16:00:35Z",
+          "updated_at": "2026-09-25T16:00:37Z",
+          "state_reason": null,
+          "url": "https://github.com/nuxt/ui/pull/7032",
+          "is_pr": true
+        },
+        {
+          "number": 5144,
+          "title": "Nested dirty UForm doesn't make it's parent dirty",
+          "created_at": "2025-10-05T16:56:40Z",
+          "closed_at": "2026-09-25T14:20:11Z",
+          "updated_at": "2026-09-25T14:20:11Z",
+          "state_reason": "completed",
+          "url": "https://github.com/nuxt/ui/issues/5144",
+          "is_pr": false
+        }
+      ]
+    },
+    {
+      "repository": "vitejs/vite",
+      "url": "https://github.com/vitejs/vite",
+      "archived": false,
+      "default_branch": "main",
+      "pushed_at": "2026-09-25T11:01:45Z",
+      "license": "MIT",
+      "commit": {
+        "sha": "bc598a6a8a6b7d6e157e9f19c16911cff8d2360c",
+        "date": "2026-09-25T08:08:45Z",
+        "message": "fix(bundled-dev): serve the rolldown runtime from the installed rolldown (#23568)",
+        "url": "https://github.com/vitejs/vite/commit/bc598a6a8a6b7d6e157e9f19c16911cff8d2360c"
+      },
+      "issue_samples": [
+        {
+          "number": 23583,
+          "title": "refactor: use `tinyexec` instead of `cross-spawn`",
+          "created_at": "2026-09-25T05:58:21Z",
+          "closed_at": "2026-09-25T08:05:21Z",
+          "updated_at": "2026-09-25T10:08:49Z",
+          "state_reason": null,
+          "url": "https://github.com/vitejs/vite/pull/23583",
+          "is_pr": true
+        },
+        {
+          "number": 23582,
+          "title": "ci: remove unnecessary step",
+          "created_at": "2026-09-25T05:43:52Z",
+          "closed_at": "2026-09-25T08:06:09Z",
+          "updated_at": "2026-09-25T10:08:31Z",
+          "state_reason": null,
+          "url": "https://github.com/vitejs/vite/pull/23582",
+          "is_pr": true
+        }
+      ]
+    },
+    {
+      "repository": "tauri-apps/tauri",
+      "url": "https://github.com/tauri-apps/tauri",
+      "archived": false,
+      "default_branch": "dev",
+      "pushed_at": "2026-09-25T16:26:36Z",
+      "license": "Apache-2.0",
+      "commit": {
+        "sha": "ff7cd8d863061aaa1c5932062b071db6b17af36e",
+        "date": "2026-09-25T16:22:53Z",
+        "message": "fix(cli): harden updater key generation and signing (#16118)",
+        "url": "https://github.com/tauri-apps/tauri/commit/ff7cd8d863061aaa1c5932062b071db6b17af36e"
+      },
+      "issue_samples": [
+        {
+          "number": 16118,
+          "title": "fix(cli): harden updater key generation and signing",
+          "created_at": "2026-09-23T17:13:54Z",
+          "closed_at": "2026-09-25T16:22:54Z",
+          "updated_at": "2026-09-25T16:22:57Z",
+          "state_reason": null,
+          "url": "https://github.com/tauri-apps/tauri/pull/16118",
+          "is_pr": true
+        },
+        {
+          "number": 16097,
+          "title": "fix(cli): bundle with the target triple resolved from cargo config",
+          "created_at": "2026-09-23T16:30:04Z",
+          "closed_at": "2026-09-25T16:08:31Z",
+          "updated_at": "2026-09-25T16:08:34Z",
+          "state_reason": null,
+          "url": "https://github.com/tauri-apps/tauri/pull/16097",
+          "is_pr": true
+        }
+      ]
+    },
+    {
+      "repository": "rusqlite/rusqlite",
+      "url": "https://github.com/rusqlite/rusqlite",
+      "archived": false,
+      "default_branch": "master",
+      "pushed_at": "2026-09-25T11:09:39Z",
+      "license": "MIT",
+      "commit": {
+        "sha": "91f876c80114122670f455190d03c81d1f78b0af",
+        "date": "2026-09-25T11:09:38Z",
+        "message": "Merge pull request #1910 from LucaCappelletti94/upstream/libsqlite3-sys-openssl-env-rerun",
+        "url": "https://github.com/rusqlite/rusqlite/commit/91f876c80114122670f455190d03c81d1f78b0af"
+      },
+      "issue_samples": [
+        {
+          "number": 1910,
+          "title": "Rerun bundled-sqlcipher build when `OPENSSL_*` env changes",
+          "created_at": "2026-09-25T07:56:16Z",
+          "closed_at": "2026-09-25T11:09:39Z",
+          "updated_at": "2026-09-25T11:09:39Z",
+          "state_reason": null,
+          "url": "https://github.com/rusqlite/rusqlite/pull/1910",
+          "is_pr": true
+        },
+        {
+          "number": 1906,
+          "title": "Relax `sqlite-wasm-rs` version",
+          "created_at": "2026-09-21T09:39:16Z",
+          "closed_at": "2026-09-21T10:45:46Z",
+          "updated_at": "2026-09-21T10:45:46Z",
+          "state_reason": null,
+          "url": "https://github.com/rusqlite/rusqlite/pull/1906",
+          "is_pr": true
+        }
+      ]
+    },
+    {
+      "repository": "launchbadge/sqlx",
+      "url": "https://github.com/launchbadge/sqlx",
+      "archived": false,
+      "default_branch": "main",
+      "pushed_at": "2026-09-14T15:02:33Z",
+      "license": "Apache-2.0",
+      "commit": {
+        "sha": "b54008a329541c0ce230d8b203e0c00fc8e8ea48",
+        "date": "2026-09-14T15:02:32Z",
+        "message": "Add Infinity check functions to `PgInterval` (#4295)",
+        "url": "https://github.com/transact-rs/sqlx/commit/b54008a329541c0ce230d8b203e0c00fc8e8ea48"
+      },
+      "issue_samples": [
+        {
+          "number": 4412,
+          "title": "Drop prepared-statement-cache in postgres upon invalid cached plan",
+          "created_at": "2026-09-16T22:44:28Z",
+          "closed_at": "2026-09-16T22:48:49Z",
+          "updated_at": "2026-09-16T22:48:50Z",
+          "state_reason": null,
+          "url": "https://github.com/transact-rs/sqlx/pull/4412",
+          "is_pr": true
+        },
+        {
+          "number": 3891,
+          "title": "Postgres: Move io to background task.",
+          "created_at": "2025-06-08T13:32:12Z",
+          "closed_at": "2026-09-14T21:45:08Z",
+          "updated_at": "2026-09-16T16:57:56Z",
+          "state_reason": null,
+          "url": "https://github.com/transact-rs/sqlx/pull/3891",
+          "is_pr": true
+        }
+      ]
+    },
+    {
+      "repository": "tokio-rs/tokio",
+      "url": "https://github.com/tokio-rs/tokio",
+      "archived": false,
+      "default_branch": "master",
+      "pushed_at": "2026-09-25T11:42:40Z",
+      "license": "MIT",
+      "commit": {
+        "sha": "56afa5107fe7877991a7241e4758b32e049e5848",
+        "date": "2026-09-25T11:42:39Z",
+        "message": "codec: remove deprecated use std::usize in doctests (#8510)",
+        "url": "https://github.com/tokio-rs/tokio/commit/56afa5107fe7877991a7241e4758b32e049e5848"
+      },
+      "issue_samples": [
+        {
+          "number": 8510,
+          "title": "codec: remove deprecated use std::usize in doctests",
+          "created_at": "2026-09-25T11:18:43Z",
+          "closed_at": "2026-09-25T11:42:40Z",
+          "updated_at": "2026-09-25T11:42:40Z",
+          "state_reason": null,
+          "url": "https://github.com/tokio-rs/tokio/pull/8510",
+          "is_pr": true
+        },
+        {
+          "number": 8503,
+          "title": "Backport #8405 to tokio-1.53.x",
+          "created_at": "2026-09-23T21:38:12Z",
+          "closed_at": "2026-09-25T11:35:03Z",
+          "updated_at": "2026-09-25T11:35:03Z",
+          "state_reason": null,
+          "url": "https://github.com/tokio-rs/tokio/pull/8503",
+          "is_pr": true
+        }
+      ]
+    },
+    {
+      "repository": "vitest-dev/vitest",
+      "url": "https://github.com/vitest-dev/vitest",
+      "archived": false,
+      "default_branch": "main",
+      "pushed_at": "2026-09-25T08:58:42Z",
+      "license": "MIT",
+      "commit": {
+        "sha": "428e2e5043c64635b6b157358bde2fdeaa7b6b3a",
+        "date": "2026-09-25T08:54:07Z",
+        "message": "chore: release v5.0.2 (#11357)",
+        "url": "https://github.com/vitest-dev/vitest/commit/428e2e5043c64635b6b157358bde2fdeaa7b6b3a"
+      },
+      "issue_samples": [
+        {
+          "number": 11357,
+          "title": "chore: release v5.0.2",
+          "created_at": "2026-09-25T08:50:21Z",
+          "closed_at": "2026-09-25T08:54:08Z",
+          "updated_at": "2026-09-25T08:54:09Z",
+          "state_reason": null,
+          "url": "https://github.com/vitest-dev/vitest/pull/11357",
+          "is_pr": true
+        },
+        {
+          "number": 10610,
+          "title": "Updates its own vite peer dependency to >= 8.0.16",
+          "created_at": "2026-06-17T10:16:54Z",
+          "closed_at": "2026-09-25T08:28:05Z",
+          "updated_at": "2026-09-25T08:28:06Z",
+          "state_reason": "completed",
+          "url": "https://github.com/vitest-dev/vitest/issues/10610",
+          "is_pr": false
+        }
+      ]
+    },
+    {
+      "repository": "webdriverio/webdriverio",
+      "url": "https://github.com/webdriverio/webdriverio",
+      "archived": false,
+      "default_branch": "main",
+      "pushed_at": "2026-09-25T16:22:14Z",
+      "license": "MIT",
+      "commit": {
+        "sha": "53421586d7e541a19e7bee806e2fce58fa243dd7",
+        "date": "2026-09-22T22:55:29Z",
+        "message": "fix(webdriverio): respect fetchResponse in mock responses (#15691)",
+        "url": "https://github.com/webdriverio/webdriverio/commit/53421586d7e541a19e7bee806e2fce58fa243dd7"
+      },
+      "issue_samples": [
+        {
+          "number": 15706,
+          "title": "perf: testrunner hot-path wins (mock bench)",
+          "created_at": "2026-09-25T05:08:34Z",
+          "closed_at": "2026-09-25T05:47:32Z",
+          "updated_at": "2026-09-25T05:50:29Z",
+          "state_reason": null,
+          "url": "https://github.com/webdriverio/webdriverio/pull/15706",
+          "is_pr": true
+        },
+        {
+          "number": 15705,
+          "title": "breaking(webdriverio): remove executeAsync and hide switchToFrame",
+          "created_at": "2026-09-25T02:06:19Z",
+          "closed_at": "2026-09-25T05:43:04Z",
+          "updated_at": "2026-09-25T05:43:07Z",
+          "state_reason": null,
+          "url": "https://github.com/webdriverio/webdriverio/pull/15705",
+          "is_pr": true
+        }
+      ]
+    },
+    {
+      "repository": "Nemo2011/bilibili-api",
+      "url": "https://github.com/Nemo2011/bilibili-api",
+      "archived": true,
+      "default_branch": "main",
+      "pushed_at": "2026-07-06T14:00:38Z",
+      "license": null,
+      "commit": {
+        "sha": "3798d3b3bd3c3a93678d5a0367637a19262303ef",
+        "date": "2026-07-06T13:49:41Z",
+        "message": "owari",
+        "url": "https://github.com/Nemo2011/bilibili-api/commit/3798d3b3bd3c3a93678d5a0367637a19262303ef"
+      },
+      "issue_samples": []
+    },
+    {
+      "repository": "SocialSisterYi/bilibili-API-collect",
+      "url": "https://github.com/SocialSisterYi/bilibili-API-collect",
+      "archived": true,
+      "default_branch": "deprecated",
+      "pushed_at": "2026-01-30T09:06:33Z",
+      "license": null,
+      "commit": {
+        "sha": "4c00347d4f3494318903eeb11fb00d7b9c1f8c68",
+        "date": "2026-01-30T09:06:32Z",
+        "message": "Update README",
+        "url": "https://github.com/SocialSisterYi/bilibili-API-collect/commit/4c00347d4f3494318903eeb11fb00d7b9c1f8c68"
+      },
+      "issue_samples": [
+        {
+          "number": 1171,
+          "title": "docs/garb/lottery.md: 补充三个与装扮和收藏集相关的重要接口",
+          "created_at": "2025-01-02T10:57:14Z",
+          "closed_at": "2025-06-01T05:43:45Z",
+          "updated_at": "2026-02-07T20:08:30Z",
+          "state_reason": null,
+          "url": "https://github.com/SocialSisterYi/bilibili-API-collect/pull/1171",
+          "is_pr": true
+        },
+        {
+          "number": 1388,
+          "title": "feat: 补充moonbit语言的wbi签名算法",
+          "created_at": "2025-09-06T08:50:50Z",
+          "closed_at": "2026-01-30T05:43:27Z",
+          "updated_at": "2026-01-30T05:43:27Z",
+          "state_reason": null,
+          "url": "https://github.com/SocialSisterYi/bilibili-API-collect/pull/1388",
+          "is_pr": true
+        }
+      ]
+    },
+    {
+      "repository": "JoeanAmier/TikTokDownloader",
+      "url": "https://github.com/JoeanAmier/TikTokDownloader",
+      "archived": false,
+      "default_branch": "master",
+      "pushed_at": "2026-09-22T13:49:13Z",
+      "license": "GPL-3.0",
+      "commit": {
+        "sha": "473c90ff70c663cfb69310fff2b8d5192f200661",
+        "date": "2026-09-16T12:44:45Z",
+        "message": "docs: Update README.md",
+        "url": "https://github.com/JoeanAmier/TikTokDownloader/commit/473c90ff70c663cfb69310fff2b8d5192f200661"
+      },
+      "issue_samples": [
+        {
+          "number": 807,
+          "title": "feat: add optional post-download transcription (TXT/SRT)",
+          "created_at": "2026-09-22T01:58:09Z",
+          "closed_at": "2026-09-22T13:49:13Z",
+          "updated_at": "2026-09-22T13:49:13Z",
+          "state_reason": null,
+          "url": "https://github.com/JoeanAmier/TikTokDownloader/pull/807",
+          "is_pr": true
+        },
+        {
+          "number": 806,
+          "title": "怎样关闭tiktok功能",
+          "created_at": "2026-09-21T12:25:51Z",
+          "closed_at": "2026-09-21T12:31:36Z",
+          "updated_at": "2026-09-21T12:31:36Z",
+          "state_reason": "completed",
+          "url": "https://github.com/JoeanAmier/TikTokDownloader/issues/806",
+          "is_pr": false
+        }
+      ]
+    }
+  ]
+}

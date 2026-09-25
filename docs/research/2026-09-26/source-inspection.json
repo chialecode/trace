@@ -1,0 +1,597 @@
+{
+  "queried_at_utc": "2026-09-25T16:37:31.254169+00:00",
+  "note": "Sources read only, not copied into implementation; raw upstream text cached outside repository. Branch URLs are mutable; hashes identify inspected content.",
+  "sources": [
+    {
+      "id": "rusqlite_readme",
+      "url": "https://raw.githubusercontent.com/rusqlite/rusqlite/master/README.md",
+      "bytes": 16177,
+      "sha256": "267fd07f013a6cdcd230a6b9b7ed21df1588cc156f0f0bb429d7957274cf3441",
+      "status": "read",
+      "relevant_lines": [
+        {
+          "line": 21,
+          "text": "# `bundled` causes us to automatically compile and link in an up to date"
+        },
+        {
+          "line": 30,
+          "text": "rusqlite = { version = \"0.40.1\", features = [\"bundled\"] }"
+        },
+        {
+          "line": 96,
+          "text": "* [`backup`](https://docs.rs/rusqlite/~0/rusqlite/backup/index.html)"
+        },
+        {
+          "line": 97,
+          "text": "  allows use of SQLite's online backup API."
+        },
+        {
+          "line": 122,
+          "text": "* `bundled` uses a bundled version of SQLite.  This is a good option for cases where linking to SQLite is complicated, such as Windows."
+        },
+        {
+          "line": 123,
+          "text": "* `sqlcipher` looks for the SQLCipher library to link against instead of SQLite. This feature overrides `bundled`."
+        },
+        {
+          "line": 124,
+          "text": "* `bundled-sqlcipher` uses a bundled version of SQLCipher. This searches for and links against a system-installed crypto library to provide the crypto implementation."
+        },
+        {
+          "line": 125,
+          "text": "* `bundled-sqlcipher-vendored-openssl` allows using bundled-sqlcipher with a vendored version of OpenSSL (via the `openssl-sys` crate) as the crypto provider."
+        },
+        {
+          "line": 126,
+          "text": "  - As the name implies this depends on the `bundled-sqlcipher` feature, and automatically turns it on."
+        },
+        {
+          "line": 159,
+          "text": "* If you use the `bundled`, `bundled-sqlcipher`, or `bundled-sqlcipher-vendored-openssl` features, `libsqlite3-sys` will use the"
+        },
+        {
+          "line": 167,
+          "text": "  features = [\"bundled\"]"
+        },
+        {
+          "line": 169,
+          "text": "* When using any of the `bundled` features, the build script will honor `SQLITE_MAX_VARIABLE_NUMBER` and `SQLITE_MAX_EXPR_DEPTH` variables. It will also honor a `LIBSQLITE3_FLAGS` variable, which can have a format like `\"-USQLITE_ALPHA -DSQLITE_BETA SQLITE_GAMMA ...\"`. That would disable the `SQLITE_ALPHA` flag, and set the `SQLITE_BETA` and `SQLIT"
+        },
+        {
+          "line": 170,
+          "text": "* When using `bundled-sqlcipher` (and not also using `bundled-sqlcipher-vendored-openssl`), `libsqlite3-sys` will need to"
+        },
+        {
+          "line": 173,
+          "text": "* When linking against a SQLite (or SQLCipher) library already on the system (so *not* using any of the `bundled` features), you can set the `SQLITE3_LIB_DIR` (or `SQLCIPHER_LIB_DIR`) environment variable to point to a directory containing the library. You can also set the `SQLITE3_INCLUDE_DIR` (or `SQLCIPHER_INCLUDE_DIR`) variable to point to the "
+        },
+        {
+          "line": 206,
+          "text": "If you use any of the `bundled` features, you will get pregenerated bindings for the"
+        },
+        {
+          "line": 207,
+          "text": "bundled version of SQLite/SQLCipher. If you need other specific pregenerated binding"
+        },
+        {
+          "line": 212,
+          "text": "included with the bundled build. You generally should have `buildtime_bindgen`"
+        },
+        {
+          "line": 214,
+          "text": "SQLite you link with in sync with what rusqlite would have bundled, (usually the"
+        },
+        {
+          "line": 223,
+          "text": "`--features bundled`, and `--features \"bundled-full session buildtime_bindgen\"`."
+        },
+        {
+          "line": 225,
+          "text": "If running bindgen is problematic for you, `--features bundled-full` enables"
+        },
+        {
+          "line": 226,
+          "text": "bundled and all features which don't require binding generation, and can be used"
+        },
+        {
+          "line": 232,
+          "text": "- Ensure `cargo clippy --workspace --features bundled` passes without warnings."
+        }
+      ]
+    },
+    {
+      "id": "sqlx_readme",
+      "url": "https://raw.githubusercontent.com/launchbadge/sqlx/main/README.md",
+      "bytes": 18824,
+      "sha256": "0a0e168f0825a07501f4db653090c3cf71c7eceebf23f1e8efa56c5e9676e367",
+      "status": "read",
+      "relevant_lines": [
+        {
+          "line": 68,
+          "text": "SQLx is an async, pure Rust<sub>†</sub> SQL crate featuring compile-time checked queries without a DSL."
+        },
+        {
+          "line": 70,
+          "text": "-   **Truly Asynchronous**. Built from the ground-up using async/await for maximum concurrency."
+        },
+        {
+          "line": 72,
+          "text": "-   **Compile-time checked queries** (if you want). See [SQLx is not an ORM](#sqlx-is-not-an-orm)."
+        },
+        {
+          "line": 74,
+          "text": "-   **Database Agnostic**. Support for [PostgreSQL], [MySQL], [MariaDB], [SQLite]."
+        },
+        {
+          "line": 79,
+          "text": "-   **Runtime Agnostic**. Works on different runtimes ([`async-std`] / [`tokio`] / [`actix`]) and TLS backends ([`native-tls`], [`rustls`])."
+        },
+        {
+          "line": 83,
+          "text": "† The SQLite driver uses the libsqlite3 C library as SQLite is an embedded database (the only way"
+        },
+        {
+          "line": 84,
+          "text": "we could be pure Rust for SQLite is by porting _all_ of SQLite to Rust)."
+        },
+        {
+          "line": 86,
+          "text": "†† SQLx uses `#![forbid(unsafe_code)]` unless the `sqlite` feature is enabled."
+        },
+        {
+          "line": 87,
+          "text": "The SQLite driver directly invokes the SQLite3 API via `libsqlite3-sys`, which requires `unsafe`."
+        },
+        {
+          "line": 92,
+          "text": "[sqlite]: https://sqlite.org/"
+        },
+        {
+          "line": 100,
+          "text": "-   Cross-platform. Being native Rust, SQLx will compile anywhere Rust is supported."
+        },
+        {
+          "line": 104,
+          "text": "-   Row streaming. Data is read asynchronously from the database and decoded on demand."
+        },
+        {
+          "line": 114,
+          "text": "-   Asynchronous notifications using `LISTEN` and `NOTIFY` for [PostgreSQL]."
+        },
+        {
+          "line": 122,
+          "text": "SQLx is compatible with the [`async-std`], [`tokio`], and [`actix`] runtimes; and, the [`native-tls`] and [`rustls`] TLS backends. When adding the dependency, you must choose a runtime feature that is `runtime` + `tls`."
+        },
+        {
+          "line": 124,
+          "text": "[`async-std`]: https://github.com/async-rs/async-std"
+        },
+        {
+          "line": 146,
+          "text": "# async-std (no TLS)"
+        },
+        {
+          "line": 147,
+          "text": "sqlx = { version = \"0.9\", features = [ \"runtime-async-std\" ] }"
+        },
+        {
+          "line": 148,
+          "text": "# async-std + native-tls"
+        },
+        {
+          "line": 149,
+          "text": "sqlx = { version = \"0.9\", features = [ \"runtime-async-std\", \"tls-native-tls\" ] }"
+        },
+        {
+          "line": 150,
+          "text": "# async-std + rustls with ring and WebPKI CA certificates"
+        },
+        {
+          "line": 151,
+          "text": "sqlx = { version = \"0.9\", features = [ \"runtime-async-std\", \"tls-rustls-ring-webpki\" ] }"
+        },
+        {
+          "line": 152,
+          "text": "# async-std + rustls with ring and platform's native CA certificates"
+        }
+      ]
+    },
+    {
+      "id": "bili_readme",
+      "url": "https://raw.githubusercontent.com/Nemo2011/bilibili-api/main/README.md",
+      "bytes": 3963,
+      "sha256": "b9f8d25a6e2c23ee8d1e2084aa89f576c2568c3794b8df603093900ca603ff0a",
+      "status": "read",
+      "relevant_lines": []
+    },
+    {
+      "id": "bili_user",
+      "url": "https://raw.githubusercontent.com/Nemo2011/bilibili-api/main/bilibili_api/user.py",
+      "status": "unavailable",
+      "error": "HTTP Error 404: Not Found"
+    },
+    {
+      "id": "bili_video",
+      "url": "https://raw.githubusercontent.com/Nemo2011/bilibili-api/main/bilibili_api/data/api/video.json",
+      "status": "unavailable",
+      "error": "HTTP Error 404: Not Found"
+    },
+    {
+      "id": "bili_user_api",
+      "url": "https://raw.githubusercontent.com/Nemo2011/bilibili-api/main/bilibili_api/data/api/user.json",
+      "status": "unavailable",
+      "error": "HTTP Error 404: Not Found"
+    },
+    {
+      "id": "bili_playurl_reference",
+      "url": "https://raw.githubusercontent.com/SocialSisterYi/bilibili-API-collect/master/docs/video/videostream_url.md",
+      "status": "unavailable",
+      "error": "HTTP Error 404: Not Found"
+    },
+    {
+      "id": "douyin_readme",
+      "url": "https://raw.githubusercontent.com/JoeanAmier/TikTokDownloader/master/README.md",
+      "bytes": 26981,
+      "sha256": "48201160467508b995f49d760cf02a3dd153ce445d2957d4b400b218af1c2065",
+      "status": "read",
+      "relevant_lines": [
+        {
+          "line": 22,
+          "text": "<p>🔥 抖音 / TikTok 平台作品下载/数据采集工具</p>"
+        },
+        {
+          "line": 39,
+          "text": "<li>✅ 下载抖音账号发布/喜欢/收藏/收藏夹作品</li>"
+        },
+        {
+          "line": 40,
+          "text": "<li>✅ 下载 TikTok 账号发布/喜欢作品</li>"
+        },
+        {
+          "line": 42,
+          "text": "<li>✅ 批量下载链接作品</li>"
+        },
+        {
+          "line": 43,
+          "text": "<li>✅ 多账号批量下载作品</li>"
+        },
+        {
+          "line": 52,
+          "text": "<li>✅ 采集抖音作品评论数据</li>"
+        },
+        {
+          "line": 53,
+          "text": "<li>✅ 下载抖音合集作品</li>"
+        },
+        {
+          "line": 54,
+          "text": "<li>✅ 下载 TikTok 合辑作品</li>"
+        },
+        {
+          "line": 56,
+          "text": "<li>✅ 筛选作品发布时间</li>"
+        },
+        {
+          "line": 57,
+          "text": "<li>✅ 支持账号作品增量下载</li>"
+        },
+        {
+          "line": 61,
+          "text": "<li>✅ 作品统计数据更新</li>"
+        },
+        {
+          "line": 68,
+          "text": "<li>✅ 记录已下载作品 ID</li>"
+        },
+        {
+          "line": 69,
+          "text": "<li>✅ 从浏览器读取 Cookie</li>"
+        },
+        {
+          "line": 71,
+          "text": "<li>✅ 支持多线程下载作品</li>"
+        },
+        {
+          "line": 73,
+          "text": "<li>✅ 自定义规则筛选作品</li>"
+        },
+        {
+          "line": 74,
+          "text": "<li>✅ 按文件夹归档保存作品文件</li>"
+        },
+        {
+          "line": 77,
+          "text": "<li>✅ 监听剪贴板链接下载作品</li>"
+        },
+        {
+          "line": 160,
+          "text": "<li>将 Cookie 信息写入配置文件"
+        },
+        {
+          "line": 161,
+          "text": "<ol><b>手动输入 Cookie</b>"
+        },
+        {
+          "line": 162,
+          "text": "<li>参考 <a href=\"https://github.com/JoeanAmier/TikTokDownloader/blob/master/docs/Cookie%E8%8E%B7%E5%8F%96%E6%95%99%E7%A8%8B.md\">Cookie 提取教程</a>，复制所需 Cookie 至剪贴板</li>"
+        },
+        {
+          "line": 163,
+          "text": "<li>选择 <code>手动输入 Cookie</code> 选项，粘贴 Cookie 内容后按照程序提示操作</li>"
+        },
+        {
+          "line": 165,
+          "text": "<ol><b>从剪贴板读取 Cookie</b>"
+        }
+      ]
+    },
+    {
+      "id": "douyin_account",
+      "url": "https://raw.githubusercontent.com/JoeanAmier/TikTokDownloader/master/src/interface/account.py",
+      "bytes": 8746,
+      "sha256": "fa972c0d0373587bb4a9441d9be7cdc40ab99df15797d03b0e72c2dd5b11ab9a",
+      "status": "read",
+      "relevant_lines": [
+        {
+          "line": 13,
+          "text": "    post_api = f\"{API.domain}aweme/v1/web/aweme/post/\""
+        },
+        {
+          "line": 14,
+          "text": "    favorite_api = f\"{API.domain}aweme/v1/web/aweme/favorite/\""
+        },
+        {
+          "line": 21,
+          "text": "        sec_user_id: str = ...,"
+        },
+        {
+          "line": 32,
+          "text": "        self.sec_user_id = sec_user_id"
+        },
+        {
+          "line": 47,
+          "text": "        data_key: str = \"aweme_list\","
+        },
+        {
+          "line": 49,
+          "text": "        cursor=\"max_cursor\","
+        },
+        {
+          "line": 50,
+          "text": "        has_more=\"has_more\","
+        },
+        {
+          "line": 59,
+          "text": "            self.set_referer(f\"{self.domain}user/{self.sec_user_id}?showTab=like\")"
+        },
+        {
+          "line": 61,
+          "text": "            self.set_referer(f\"{self.domain}user/{self.sec_user_id}\")"
+        },
+        {
+          "line": 71,
+          "text": "                    has_more,"
+        },
+        {
+          "line": 88,
+          "text": "                    has_more,"
+        },
+        {
+          "line": 101,
+          "text": "        data_key: str = \"aweme_list\","
+        },
+        {
+          "line": 103,
+          "text": "        cursor=\"max_cursor\","
+        },
+        {
+          "line": 104,
+          "text": "        has_more=\"has_more\","
+        },
+        {
+          "line": 116,
+          "text": "            has_more,"
+        },
+        {
+          "line": 127,
+          "text": "        data_key: str = \"aweme_list\","
+        },
+        {
+          "line": 129,
+          "text": "        cursor=\"max_cursor\","
+        },
+        {
+          "line": 130,
+          "text": "        has_more=\"has_more\","
+        },
+        {
+          "line": 143,
+          "text": "            has_more,"
+        },
+        {
+          "line": 175,
+          "text": "            \"sec_user_id\": self.sec_user_id,"
+        },
+        {
+          "line": 176,
+          "text": "            \"max_cursor\": self.cursor,"
+        },
+        {
+          "line": 188,
+          "text": "            \"sec_user_id\": self.sec_user_id,"
+        }
+      ]
+    },
+    {
+      "id": "douyin_detail",
+      "url": "https://raw.githubusercontent.com/JoeanAmier/TikTokDownloader/master/src/interface/detail.py",
+      "bytes": 2261,
+      "sha256": "a94b9c81d6ccae098ef6743da746fdee97746cc49554193ff8958c734cd945ba",
+      "status": "read",
+      "relevant_lines": [
+        {
+          "line": 11,
+          "text": "class Detail(API):"
+        },
+        {
+          "line": 17,
+          "text": "        detail_id: str = ...,"
+        },
+        {
+          "line": 20,
+          "text": "        self.detail_id = detail_id"
+        },
+        {
+          "line": 21,
+          "text": "        self.api = f\"{self.domain}aweme/v1/web/aweme/detail/\""
+        },
+        {
+          "line": 28,
+          "text": "            \"aweme_id\": self.detail_id,"
+        },
+        {
+          "line": 37,
+          "text": "        data_key: str = \"aweme_detail\","
+        },
+        {
+          "line": 88,
+          "text": "        i = Detail("
+        },
+        {
+          "line": 90,
+          "text": "            detail_id=\"\","
+        }
+      ]
+    },
+    {
+      "id": "ffmpeg_build_readme",
+      "url": "https://raw.githubusercontent.com/BtbN/FFmpeg-Builds/master/README.md",
+      "bytes": 2759,
+      "sha256": "1ed4437797363166cb9d04b8342987bab307874e2ce238b78bee585d963d92e0",
+      "status": "read",
+      "relevant_lines": [
+        {
+          "line": 58,
+          "text": "* `gpl` Includes all dependencies, even those that require full GPL instead of just LGPL."
+        },
+        {
+          "line": 59,
+          "text": "* `lgpl` Lacking libraries that are GPL-only. Most prominently libx264 and libx265."
+        },
+        {
+          "line": 60,
+          "text": "* `nonfree` Includes fdk-aac in addition to all the dependencies of the gpl variant."
+        },
+        {
+          "line": 61,
+          "text": "* `gpl-shared` Same as gpl, but comes with the libav* family of shared libs instead of pure static executables."
+        },
+        {
+          "line": 62,
+          "text": "* `lgpl-shared` Same again, but with the lgpl set of dependencies."
+        },
+        {
+          "line": 63,
+          "text": "* `nonfree-shared` Same again, but with the nonfree set of dependencies."
+        }
+      ]
+    },
+    {
+      "id": "naive_changelog",
+      "url": "https://raw.githubusercontent.com/tusen-ai/naive-ui/main/CHANGELOG.en-US.md",
+      "bytes": 199750,
+      "sha256": "305571aa2c40d390105064cf4ec2a8eb9355eb71ee4fd55df722ddf9b1f472bb",
+      "status": "read",
+      "relevant_lines": [
+        {
+          "line": 3,
+          "text": "## 2.45.3"
+        },
+        {
+          "line": 5,
+          "text": "### Fixes"
+        },
+        {
+          "line": 7,
+          "text": "- Fix `n-pagination` throwing when jumping from a high page back to page 1."
+        },
+        {
+          "line": 8,
+          "text": "- Fix `n-select`, `n-cascader`, `n-tree-select`, `n-date-picker` and `n-time-picker` throwing an error when focus leaves their menu."
+        },
+        {
+          "line": 9,
+          "text": "- Fix `n-modal`'s `positive-click`/`negative-click`/`close` events not working with `dialog` and `confirm` presets, and `close` firing twice with `card` preset, closes [#8188](https://github.com/tusen-ai/naive-ui/issues/8188)."
+        },
+        {
+          "line": 11,
+          "text": "## 2.45.2"
+        },
+        {
+          "line": 15,
+          "text": "### Fixes"
+        },
+        {
+          "line": 17,
+          "text": "- Fix `n-ellipsis` throwing when clicked without `expand-trigger`."
+        },
+        {
+          "line": 18,
+          "text": "- Fix `n-modal` not closing when clicking the mask."
+        },
+        {
+          "line": 19,
+          "text": "- Fix `n-data-table` resetting header horizontal scroll when data becomes empty."
+        },
+        {
+          "line": 21,
+          "text": "## 2.45.1"
+        },
+        {
+          "line": 25,
+          "text": "### i18n"
+        },
+        {
+          "line": 29,
+          "text": "### Fixes"
+        },
+        {
+          "line": 31,
+          "text": "- Fix `ugCN` locale not being exported."
+        },
+        {
+          "line": 32,
+          "text": "- Fix `n-data-table` and `n-equation` warning `injection \"n-config-provider\" not found` when used without `n-config-provider`."
+        },
+        {
+          "line": 33,
+          "text": "- Fix `useDialog` treating `onPositiveClick`, `onNegativeClick` and `onClose` as arrays, closes [#8186](https://github.com/tusen-ai/naive-ui/issues/8186)."
+        },
+        {
+          "line": 34,
+          "text": "- Fix `useNotification` treating `onClose` as an array."
+        },
+        {
+          "line": 35,
+          "text": "- Fix `n-modal` / `useModal` treating dialog action callbacks as arrays."
+        },
+        {
+          "line": 36,
+          "text": "- Fix `n-dropdown` `on-update:show` being called twice."
+        },
+        {
+          "line": 37,
+          "text": "- Fix `n-data-table` may throw an error when reactivated inside `keep-alive`."
+        },
+        {
+          "line": 39,
+          "text": "## 2.45.0"
+        },
+        {
+          "line": 43,
+          "text": "### Breaking Changes"
+        }
+      ]
+    }
+  ]
+}

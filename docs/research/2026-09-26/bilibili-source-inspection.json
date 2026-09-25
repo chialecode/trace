@@ -1,0 +1,332 @@
+{
+  "queried_at_utc": "2026-09-25T16:44:36.906732+00:00",
+  "commit": "c900777e78796653fdfb00421879b6a802d1eedd",
+  "note": "MIT upstream source inspection for protocol evidence; TRACE real-site tests not-run.",
+  "sources": [
+    {
+      "path": "crates/bili_sync/src/bilibili/submission.rs",
+      "url": "https://raw.githubusercontent.com/amtoaer/bili-sync/c900777e78796653fdfb00421879b6a802d1eedd/crates/bili_sync/src/bilibili/submission.rs",
+      "sha256": "0fe1d2a68a5099ccd4c3dcf4e40a4f4a1683cb25a85311908dfff3c2e5eb2c34",
+      "relevant_lines": [
+        {
+          "line": 35,
+          "text": "                \"https://api.bilibili.com/x/web-interface/card\","
+        },
+        {
+          "line": 45,
+          "text": "            .validate()?;"
+        },
+        {
+          "line": 53,
+          "text": "                \"https://api.bilibili.com/x/space/wbi/arc/search\","
+        },
+        {
+          "line": 66,
+          "text": "            .wbi_sign(MIXIN_KEY.load().as_deref())?"
+        },
+        {
+          "line": 72,
+          "text": "            .validate()"
+        }
+      ]
+    },
+    {
+      "path": "crates/bili_sync/src/adapter/submission.rs",
+      "url": "https://raw.githubusercontent.com/amtoaer/bili-sync/c900777e78796653fdfb00421879b6a802d1eedd/crates/bili_sync/src/adapter/submission.rs",
+      "sha256": "944865443bbbd02fa3b1779b5963b7bc8367c8d38275be920ecdb6152b328433",
+      "relevant_lines": [
+        {
+          "line": 89,
+          "text": "    async fn refresh<'a>("
+        }
+      ]
+    },
+    {
+      "path": "crates/bili_sync/src/bilibili/video.rs",
+      "url": "https://raw.githubusercontent.com/amtoaer/bili-sync/c900777e78796653fdfb00421879b6a802d1eedd/crates/bili_sync/src/bilibili/video.rs",
+      "sha256": "0b5951e777469192f6f227f182f5f8c62ac0e34e7ab6e28cca673fe51845f695",
+      "relevant_lines": [
+        {
+          "line": 53,
+          "text": "                \"https://api.bilibili.com/x/web-interface/wbi/view\","
+        },
+        {
+          "line": 58,
+          "text": "            .wbi_sign(MIXIN_KEY.load().as_deref())?"
+        },
+        {
+          "line": 64,
+          "text": "            .validate()?;"
+        },
+        {
+          "line": 74,
+          "text": "                \"https://api.bilibili.com/x/player/pagelist\","
+        },
+        {
+          "line": 84,
+          "text": "            .validate()?;"
+        },
+        {
+          "line": 93,
+          "text": "                \"https://api.bilibili.com/x/web-interface/view/detail/tag\","
+        },
+        {
+          "line": 103,
+          "text": "            .validate()?;"
+        },
+        {
+          "line": 136,
+          "text": "                \"https://api.bilibili.com/x/v2/dm/wbi/web/seg.so\","
+        },
+        {
+          "line": 141,
+          "text": "            .wbi_sign(MIXIN_KEY.load().as_deref())?"
+        },
+        {
+          "line": 161,
+          "text": "                \"https://api.bilibili.com/x/player/wbi/playurl\","
+        },
+        {
+          "line": 173,
+          "text": "            .wbi_sign(MIXIN_KEY.load().as_deref())?"
+        },
+        {
+          "line": 179,
+          "text": "            .validate()?;"
+        },
+        {
+          "line": 186,
+          "text": "            .request(Method::GET, \"https://api.bilibili.com/x/player/wbi/v2\", self.credential)"
+        },
+        {
+          "line": 190,
+          "text": "            .wbi_sign(MIXIN_KEY.load().as_deref())?"
+        },
+        {
+          "line": 196,
+          "text": "            .validate()?;"
+        }
+      ]
+    },
+    {
+      "path": "crates/bili_sync/src/bilibili/client.rs",
+      "url": "https://raw.githubusercontent.com/amtoaer/bili-sync/c900777e78796653fdfb00421879b6a802d1eedd/crates/bili_sync/src/bilibili/client.rs",
+      "sha256": "2ea140fc2fb148f911b12c386bce99ce5d36e80be765337e1ecd0bddbf41dd4e",
+      "relevant_lines": [
+        {
+          "line": 34,
+          "text": "            header::HeaderValue::from_static(\"https://www.bilibili.com/\"),"
+        },
+        {
+          "line": 55,
+          "text": "                    \"buvid3={}; SESSDATA={}; bili_jct={}; DedeUserID={}\","
+        },
+        {
+          "line": 56,
+          "text": "                    credential.buvid3, credential.sessdata, credential.bili_jct, credential.dedeuserid"
+        },
+        {
+          "line": 141,
+          "text": "    /// 获取 wbi img，用于生成请求签名"
+        },
+        {
+          "line": 142,
+          "text": "    pub async fn wbi_img(&self, credential: &Credential) -> Result<WbiImg> {"
+        },
+        {
+          "line": 143,
+          "text": "        credential.wbi_img(&self.client).await"
+        }
+      ]
+    },
+    {
+      "path": "crates/bili_sync/src/bilibili/credential.rs",
+      "url": "https://raw.githubusercontent.com/amtoaer/bili-sync/c900777e78796653fdfb00421879b6a802d1eedd/crates/bili_sync/src/bilibili/credential.rs",
+      "sha256": "063d034ab23101c517cecc88fd06fa282a797a74c9d9991747055125ed6fbb83",
+      "relevant_lines": [
+        {
+          "line": 28,
+          "text": "pub struct Credential {"
+        },
+        {
+          "line": 31,
+          "text": "    pub buvid3: String,"
+        },
+        {
+          "line": 37,
+          "text": "pub struct WbiImg {"
+        },
+        {
+          "line": 76,
+          "text": "    pub async fn wbi_img(&self, client: &Client) -> Result<WbiImg> {"
+        },
+        {
+          "line": 78,
+          "text": "            .request(Method::GET, \"https://api.bilibili.com/x/web-interface/nav\", Some(self))"
+        },
+        {
+          "line": 84,
+          "text": "            .validate()?;"
+        },
+        {
+          "line": 85,
+          "text": "        Ok(serde_json::from_value(res[\"data\"][\"wbi_img\"].take())?)"
+        },
+        {
+          "line": 92,
+          "text": "                \"https://passport.bilibili.com/x/passport-login/web/qrcode/generate\","
+        },
+        {
+          "line": 100,
+          "text": "            .validate()?;"
+        },
+        {
+          "line": 108,
+          "text": "                \"https://passport.bilibili.com/x/passport-login/web/qrcode/poll\","
+        },
+        {
+          "line": 116,
+          "text": "        let json = resp.json::<serde_json::Value>().await?.validate()?;"
+        },
+        {
+          "line": 122,
+          "text": "                credential.buvid3 = Self::get_buvid3(client).await?;"
+        },
+        {
+          "line": 142,
+          "text": "    /// 获取 buvid3 浏览器指纹"
+        },
+        {
+          "line": 144,
+          "text": "    /// 参考 https://github.com/SocialSisterYi/bilibili-API-collect/blob/master/docs/misc/buvid3_4.md"
+        },
+        {
+          "line": 145,
+          "text": "    async fn get_buvid3(client: &Client) -> Result<String> {"
+        },
+        {
+          "line": 147,
+          "text": "            .request(Method::GET, \"https://api.bilibili.com/x/web-frontend/getbuvid\", None)"
+        },
+        {
+          "line": 153,
+          "text": "            .validate()?;"
+        },
+        {
+          "line": 154,
+          "text": "        resp[\"data\"][\"buvid\"]"
+        },
+        {
+          "line": 156,
+          "text": "            .context(\"missing 'buvid' field in data\")"
+        },
+        {
+          "line": 165,
+          "text": "                \"https://passport.bilibili.com/x/passport-login/web/cookie/info\","
+        },
+        {
+          "line": 173,
+          "text": "            .validate()?;"
+        },
+        {
+          "line": 177,
+          "text": "    pub async fn refresh(&self, client: &Client) -> Result<Self> {"
+        },
+        {
+          "line": 217,
+          "text": "                format!(\"https://www.bilibili.com/correspond/1/{}\", correspond_path).as_str(),"
+        },
+        {
+          "line": 231,
+          "text": "                \"https://passport.bilibili.com/x/passport-login/web/cookie/refresh\","
+        },
+        {
+          "line": 246,
+          "text": "        let json = resp.json::<serde_json::Value>().await?.validate()?;"
+        },
+        {
+          "line": 248,
+          "text": "        credential.buvid3 = self.buvid3.clone();"
+        },
+        {
+          "line": 256,
+          "text": "                \"https://passport.bilibili.com/x/passport-login/web/confirm/refresh\","
+        },
+        {
+          "line": 269,
+          "text": "            .validate()?;"
+        },
+        {
+          "line": 273,
+          "text": "    /// 解析 header 和 json，获取除 buvid3 字段外全部填充的 Credential"
+        },
+        {
+          "line": 382,
+          "text": "        assert!(credential.buvid3.is_empty());"
+        },
+        {
+          "line": 426,
+          "text": "                    println!(\"buvid3: {}\", credential.buvid3);"
+        }
+      ]
+    },
+    {
+      "path": "crates/bili_sync/src/bilibili/analyzer.rs",
+      "url": "https://raw.githubusercontent.com/amtoaer/bili-sync/c900777e78796653fdfb00421879b6a802d1eedd/crates/bili_sync/src/bilibili/analyzer.rs",
+      "sha256": "8cd4201a8b659f742ce8d2279aedf331e1c2ee2642534e6c23b1e3588063b8fb",
+      "relevant_lines": [
+        {
+          "line": 72,
+          "text": "        // https://socialsisteryi.github.io/bilibili-API-collect/docs/video/videostream_url.html#%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81%E4%BB%A3%E7%A0%81"
+        },
+        {
+          "line": 465,
+          "text": "            url: \"https://xy116x207x155x163xy240ey95dy1010y700yy8dxy.mcdn.bilivideo.cn:4483\".to_owned(),"
+        },
+        {
+          "line": 467,
+          "text": "                \"https://upos-sz-mirrorcos.bilivideo.com\".to_owned(),"
+        },
+        {
+          "line": 468,
+          "text": "                \"https://cn-tj-cu-01-11.bilivideo.com\".to_owned(),"
+        },
+        {
+          "line": 469,
+          "text": "                \"https://xxx.v1d.szbdys.com\".to_owned(),"
+        },
+        {
+          "line": 477,
+          "text": "                \"https://upos-sz-mirrorcos.bilivideo.com\","
+        },
+        {
+          "line": 478,
+          "text": "                \"https://cn-tj-cu-01-11.bilivideo.com\","
+        },
+        {
+          "line": 479,
+          "text": "                \"https://xy116x207x155x163xy240ey95dy1010y700yy8dxy.mcdn.bilivideo.cn:4483\","
+        },
+        {
+          "line": 480,
+          "text": "                \"https://xxx.v1d.szbdys.com\""
+        }
+      ]
+    },
+    {
+      "path": "crates/bili_sync/src/bilibili/error.rs",
+      "url": "https://raw.githubusercontent.com/amtoaer/bili-sync/c900777e78796653fdfb00421879b6a802d1eedd/crates/bili_sync/src/bilibili/error.rs",
+      "sha256": "e2aa43c252a6c87bfd911805be873c768494c0b8da1ef8a6885a1b3719e76625",
+      "relevant_lines": [
+        {
+          "line": 16,
+          "text": "    InvalidStatusCode(u16, &'static str),"
+        },
+        {
+          "line": 25,
+          "text": "            BiliError::RiskControlOccurred(_) | BiliError::VideoStreamsEmpty | BiliError::InvalidStatusCode(_, _)"
+        }
+      ]
+    }
+  ]
+}
