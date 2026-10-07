@@ -1,0 +1,79 @@
+{
+  "queried_at": "2026-10-01 (Asia/Shanghai)",
+  "role": "Agent A",
+  "purpose": "OSS-004 Windows FFmpeg/ffprobe asset route; snapshot only, not an installed or bundled asset",
+  "sources": [
+    {
+      "id": "btbn_readme",
+      "url": "https://raw.githubusercontent.com/BtbN/FFmpeg-Builds/master/README.md",
+      "observed": [
+        "Builds run daily at 12:00 UTC and are automatically released on success.",
+        "Release Retention Policy: the last build of each month is kept for two years; the last 14 daily builds are kept.",
+        "lgpl: lacking libraries that are GPL-only, most prominently libx264 and libx265.",
+        "lgpl-shared: same as lgpl but with libav* shared libs instead of static executables.",
+        "Release branches 4.4 ... 9.0 are built in addition to master."
+      ]
+    },
+    {
+      "id": "btbn_repo",
+      "url": "https://api.github.com/repos/BtbN/FFmpeg-Builds",
+      "observed": {"archived": false, "pushed_at": "2026-10-01T00:44:06Z", "build_scripts_license": "MIT"}
+    },
+    {
+      "id": "btbn_release_list",
+      "url": "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=100",
+      "observed": {
+        "release_count": 38,
+        "rolling_tag": "latest (assets overwritten daily; not pinnable)",
+        "daily_tags_kept": "autobuild-2026-09-17 .. autobuild-2026-09-30",
+        "month_end_tags_kept": "autobuild-2024-10-31 .. autobuild-2026-08-31 (one per month)"
+      }
+    },
+    {
+      "id": "btbn_month_end_2026_09",
+      "url": "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/autobuild-2026-09-30-13-08",
+      "assets": [
+        {
+          "name": "ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-shared-9.0.zip",
+          "size_mib": 73.4,
+          "sha256": "7157177b8a6cb2174c1650ba8c71b363f2c78cba5330f88c4c02cf5b2b880646",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-shared-9.0.zip"
+        },
+        {
+          "name": "ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-9.0.zip",
+          "size_mib": 163.6,
+          "sha256": "6b264b9e6019103f601d98c292bd332fd87acf1c5e941ddff4fb71760fe63432"
+        }
+      ],
+      "note": "9.0 release branch snapshot: tag n9.0.2 plus 17 commits; not byte-identical to the official 9.0.2 source release"
+    },
+    {
+      "id": "btbn_month_end_2026_08",
+      "url": "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/autobuild-2026-08-31-13-27",
+      "assets": [
+        {
+          "name": "ffmpeg-n9.0.1-11-ge47273f4d9-win64-lgpl-shared-9.0.zip",
+          "size_bytes": 67201333,
+          "sha256": "83a824f0729a69d143c9865125bb86988a11dd388325f0033711045522068aa0"
+        }
+      ]
+    },
+    {
+      "id": "winget_search",
+      "command": "winget search --id FFmpeg",
+      "observed": {
+        "Gyan.FFmpeg": "9.0.2 (gyan.dev full build, GPL configuration; the old dev machine used 9.0.1-full_build)",
+        "BtbN.FFmpeg.LGPL.Shared.9.0": "9.0.1-20260831",
+        "BtbN.FFmpeg.GPL.9.0": "9.0.1-20260831",
+        "BtbN.FFmpeg.LGPL.8.1": "8.1.2-20260831",
+        "note": "no LGPL static 9.0 package listed; winget installs resolve through PATH and upgrade independently of the repository"
+      }
+    }
+  ],
+  "not_verified": [
+    "archive contents (ffmpeg.exe/ffprobe.exe/DLL set/LICENSE file)",
+    "ffmpeg -version / -buildconf of the pinned asset (absence of --enable-gpl/--enable-nonfree)",
+    "third-party library licenses bundled in the lgpl variant",
+    "fixed-sample regression with TRACE probe/stream-copy paths"
+  ]
+}

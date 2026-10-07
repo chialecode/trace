@@ -1,0 +1,26 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "bvid": "BV1fakeBVfake4",
+    "cid": 4001,
+    "quality": 80,
+    "accept_quality": [80],
+    "dash": {
+      "video": [
+        {
+          "id": 80,
+          "codecid": 7,
+          "codecs": "avc1.640028",
+          "base_url": "https://upos-sz-mirror08c.bilivideo.com/mirror08c/synthetic/silent-avc.m4s",
+          "backup_url": [],
+          "bandwidth": 900000,
+          "width": 1280,
+          "height": 720,
+          "frame_rate": "16000/1000"
+        }
+      ],
+      "audio": []
+    }
+  }
+}

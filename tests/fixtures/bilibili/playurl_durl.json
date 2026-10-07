@@ -1,0 +1,24 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "bvid": "BV1fakeBVfake3",
+    "cid": 3001,
+    "quality": 16,
+    "accept_quality": [16],
+    "durl": [
+      {
+        "size": 2000000,
+        "length": 45000,
+        "url": "https://upos-sz-mirror08c.bilivideo.com/mirror08c/synthetic/seg1.flv",
+        "backup_url": ["https://upos-sz-mirror08h.bilivideo.com/mirror08h/synthetic/seg1.flv"]
+      },
+      {
+        "size": 2000000,
+        "length": 45000,
+        "url": "https://upos-sz-mirror08c.bilivideo.com/mirror08c/synthetic/seg2.flv",
+        "backup_url": []
+      }
+    ]
+  }
+}

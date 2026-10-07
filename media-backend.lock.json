@@ -1,0 +1,9 @@
+{
+  "tag": "autobuild-2026-09-30-13-08",
+  "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-shared-9.0.zip",
+  "sha256": "7157177b8a6cb2174c1650ba8c71b363f2c78cba5330f88c4c02cf5b2b880646",
+  "version": "n9.0.2-17-g2a571b6068-20260930",
+  "variant": "lgpl-shared",
+  "license": "LGPL-3.0-or-later",
+  "source": "https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-09-30-13-08"
+}

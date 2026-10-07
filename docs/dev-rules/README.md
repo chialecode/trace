@@ -9,3 +9,5 @@
 - [数据安全](data-and-security.md)：归档、恢复、凭证和测试数据。
 - [环境与版本](repo-and-environment.md)：实际目录和命令。
 - [质量门禁](quality-gates.md)：当前检查及产品门禁启用条件。
+
+- [本地参考与文件](local-reference-and-files.md)：仓库外索引、未跟踪文件、临时产物、公开检查和清理。

@@ -1,0 +1,27 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "bvid": "BV1fakeBVfake2",
+    "aid": 1000002,
+    "title": "测试视频二（双 P）",
+    "desc": "双 P DASH 投稿",
+    "pubdate": 1702118400,
+    "duration": 600,
+    "pic": "https://i0.hdslb.com/bfs/archive/synthetic-cover-2.jpg",
+    "owner": { "mid": 94697, "name": "合成示例创作者" },
+    "pages": [
+      { "cid": 2001, "page": 1, "part": "第一部分", "duration": 300 },
+      { "cid": 2002, "page": 2, "part": "第二部分", "duration": 300 }
+    ],
+    "stat": {
+      "view": 2000,
+      "danmaku": 10,
+      "reply": 40,
+      "favorite": 60,
+      "coin": 16,
+      "share": 24,
+      "like": 200
+    }
+  }
+}

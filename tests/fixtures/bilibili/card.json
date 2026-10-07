@@ -1,0 +1,13 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "card": {
+      "mid": "94697",
+      "name": "合成示例创作者",
+      "face": "https://i0.hdslb.com/bfs/face/synthetic.jpg",
+      "official_verify": { "type": -1 }
+    },
+    "follower": 12345
+  }
+}

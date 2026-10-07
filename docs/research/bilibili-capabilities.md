@@ -1,6 +1,6 @@
 # 哔哩哔哩视频能力表与 M1a 接入边界
 
-日期：2026-09-26；Agent A 资料/源码审阅。**推荐作为 M1a 首站，TRACE 真实请求、登录、下载均 not-run。** 推荐是实现顺序，不是已支持声明。需求依据 FR-ID、FR-SUB、FR-AUTH、FR-ARC、FR-BROWSE；执行见[唯一计划](../delivery/m0-m1a-execution-plan.md)，未知及实测条件统一在 OSS-007/ACT-002。
+日期：2026-09-26；Agent A 资料/源码审阅，Agent B 于同日回写第 5 节实现状态。**推荐作为 M1a 首站；TRACE 真实请求、登录、下载仍 not-run。** 推荐是实现顺序，不是已支持声明。需求依据 FR-ID、FR-SUB、FR-AUTH、FR-ARC、FR-BROWSE；执行见[当前计划](../delivery/stage-plan.md)，未知及实测条件统一在 OSS-007/ACT-002。
 
 ## 1. 证据与方案
 
@@ -46,3 +46,47 @@ M1a 首站闭环：解析 UP 主 → 创建订阅 → 按选择范围枚举投�
 授权实测至少覆盖两个创作者、单 P/DASH、一个多 P 或明确记录该范围未验证、关闭 GUI 继续、凭证失效/重新验证、已保存内容离线恢复。无法获得其中样本时 ACT-002 保持未完成，相应能力标 not-run；B 继续全部自动工作并提供具体安全配置步骤。真实测试不能用上游工具下载结果或合成 HTTP 成功替代。
 
 B 交付回写本表的 T 证据、支持条件/日期/适配器版本、实际能力与未覆盖项；不能把整个表批量改成“支持”。
+
+<a id="b-实现回写"></a>
+## 5. B 实现回写（2026-09-26，M0/M1a 首轮）
+
+实现位置：`adapters/bilibili/`（独立进程，双向插件协议 0.1），凭据由宿主经 `with_credential` 注入，适配器自身不落盘 Cookie。**本节仍没有任何 T 证据**：下表只记录合成夹具与固定向量的自动验证结果，真实站点请求、登录、下载、风控与播放地址有效期全部 not-run，真实条件与请求预算由 ACT-002 控制。
+
+| 能力 | 实现状态（自动证据） | 仍未验证（T） |
+| --- | --- | --- |
+| 账号身份 | 已实现 mid 与规范主页链接解析，含非法输入拒绝；夹具 `extract_mid_forms` | 真实 `card` 响应、昵称与头像字段的当前结构 |
+| 投稿枚举 | 有界分页 + 游标同页返回；夹具 `enumerate_page_maps_entries_and_cursor` | 页数变化、空页、权限挑战下的真实游标行为 |
+| 正文与多 P | bvid 一致性校验、空页拒绝；每 P 按 cid 建资源组；夹具 `observe_single_p_maps_resources`、`observe_multi_p_maps_group_per_cid`、`observe_rejects_bvid_mismatch_and_empty_pages` | 真实 `view` 字段完整性、aid 双向映射样本 |
+| 媒体解析 | DASH 候选按 AVC 优先/带宽排序，音频候选独立归一；durl 要求全段（显式拒绝只取首段）；夹具 `playurl_dash_prefers_avc_and_maps_audio`、`playurl_durl_requires_all_segments` | 真实 `playurl` 候选分布、备用地址轮换、Range 支持 |
+| 无声与音轨 | DASH 无音频候选 → `audio(required=false)`，不伪造音轨；夹具 `playurl_silent_dash_yields_no_audio_candidate` | 授权无声样本确认“合法无音轨” |
+| 空流/不可用 | 空流映射为来源不可用错误而非成功；夹具 `playurl_empty_flow_is_source_unavailable` | 真实空流与地区限制提示差异 |
+| WBI 与会话 | 独立实现 wbi-v1（64 位置换表、值剔除 `!'()*`、RFC3986 编码、MD5），4 个固定向量 + TTL 缓存门控；夹具 `mixin_key_fixed_vector`、`sign_fixed_vector_basic`、`sign_filters_forbidden_value_chars`、`sign_percent_encodes_unicode_and_space`、`cache_ttl_gates_freshness` | 真实 nav 取 key、key 失效重取一次的行为 |
+| 风控与失败 | 只有 `code==0` 且结构有效才算成功；`data.v_voucher` 即使 code=0 也判为挑战；-101/-412/-352 分别映射鉴权/限流/权限，未知码保持 unknown 不猜测；夹具 `code_zero_without_voucher_is_ok`、`voucher_inside_success_is_challenge`、`known_codes_map_to_proven_classes`、`unknown_code_stays_unknown` | 真实错误码分布与 412/429 触发条件 |
+| 删除/权限变化 | 未实现自动删除判定：单次缺失不改变历史状态（沿用能力表要求） | 删除权威信号本身仍未知 |
+| Cookie/登录 | 宿主提供安全导入与撤销入口（DPAPI vault）；适配器无屏幕码流程 | 扫码辅助、自动刷新（本轮明确不作硬门槛） |
+
+未实现且不属 M1a：番剧/付费/DRM、直播、动态纯图文、收藏整库、评论弹幕、字幕。未复制 bili-sync 等参考实现代码，本轮不产生新的第三方许可义务（见[许可台账](../delivery/dependency-licenses.md)）。
+
+B 需要的现场条件（未满足前保持 not-run）：两个创作者的授权范围、单 P 与一个多 P 样本、登录/失效流程、关闭 GUI 后继续、离线恢复；命令与记录格式见[交付证据](../evidence/2026-09-26-m0-m1a-delivery.md#人工步骤)。
+
+## 6. TRACE-CLOSEOUT-02 回写（2026-10-07，B 自检）
+
+第 5 节保留首轮历史表述；当前音频、分段与状态行为以下表及运行契约为准。F-008/F-009/F-012 的复核状态只在[原审查](../evidence/2026-10-01-m0-m1a-review.md)维护。当前仍无真实 T 证据。
+
+| 范围 | 当前实现与自动证据 | 真实限制 |
+| --- | --- | --- |
+| DASH/必要音轨 | observe 音频 required=true；resolver 明确空音轨/混流且没有独立候选才能免除，核心记录 acquisition_evidence；缺字段不等于无声 | 真实无声/混流样本 not-run；不能把候选为空理解为成功 |
+| durl | 每段独立有序 video_segment，所有必要段齐才 complete；合成闭环断言两个独立对象，FLV 固定样本各自 probe | 不将字节拼接冒充可播合并文件；多段可分别选择播放 |
+| 规格与播放 | 锁定 FFmpeg probe，分轨具备实测后流拷贝到 playback-mux-v1，保留原轨；AVC/AAC 固定测试通过 | 所有真实 codec/播放器环境未验收，外部打开为有约束的备用路径 |
+| 封面/来源 | 解析 view 封面 URL，独立 optional cover 任务保存；卡片及详情用 blob URI；来源打开由核心构造 | 封面失败显示占位，不提升必要媒体完整性 |
+| 获取/恢复 | 流式背压、任务取消/暂停/退出、503 有界重试；403/404/410 有界重解析；无法证明续传身份时重下 | Range/ETag 合成负例通过，真实地址有效期/风控 not-run |
+| 保存与质量 | 使用领域必要资源规则；音频失败为 partial；无质量目标比较为 unknown | 不宣称达到最高质量，不自动升级/删除旧原件 |
+
+本轮实际命令、故障和复验见[B 收尾报告](../delivery/stage-report.md)，真实站点步骤/授权只维护 [ACT-002](../../USER-ACTIONS.md#act-002)。
+
+
+## 7. 分段校验返工（2026-10-07，B）
+
+A 在第 6 节实现上补反例，发现独立段拆分丢弃已知大小（F-008），历史失败见[原审查 §10](../evidence/2026-10-01-m0-m1a-review.md#closeout-failures)。本次生产 resolver 将 durl 每段 size 传入 UrlSet.expected_size；只在所有段大小已知时求可靠总量，未知一段不会丢失其余已知段依据。核心保留每段/整组校验、独立对象和顺序，验证后才贡献 complete；旧协议仅含总大小时仍校验整组。固定夹具补单段缺 size 的未知总量反例，合成源覆盖 8+8 声明与 1+1 实收、不同段大小、仅总量、局部未知和错误摘要。证据见[本轮返工](../delivery/stage-report.md#b-closeout-rework)。
+
+此次没有新增真实 T 证据、第三方依赖或许可义务；实际站点、播放地址和原生媒体体验边界保持既有用户待办，不承诺分段无缝拼接。

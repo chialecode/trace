@@ -15,10 +15,15 @@
 | 网站如何接入 | [站点规则](dev-rules/site-adapters.md) | 抖音/哔哩哔哩单独验证，不预选下载器 |
 | UI 如何设计 | [设计索引](design-rules/README.md)、[设计正本](design-rules/DESIGN.md) | 交互状态、组件、文案与验证 |
 | 先做什么、如何验收 | [路线](delivery/roadmap-and-acceptance.md)、[需求映射](delivery/requirements-map.json) | MVP 切片、完整范围与门槛 |
-| 本轮如何实施 | [准备结果](delivery/m0-m1a-preparation.md)、[唯一长计划](delivery/m0-m1a-execution-plan.md)、[B prompt](delivery/m0-m1a-agent-b-prompt.md) | A已规划，B连续实现至自检修复/打包交付 |
+| 本轮如何实施 | [当前唯一计划](delivery/stage-plan.md)、[B prompt](delivery/stage-plan.md#agent-b-prompt) | 核心收敛与真实 UI 接线；四项返工复审与 Git 收尾见收尾报告 §11～12 |
+| 首轮历史依据 | [准备结果](delivery/m0-m1a-preparation.md)、[旧计划](delivery/m0-m1a-execution-plan.md)、[旧 prompt](delivery/m0-m1a-agent-b-prompt.md) | 原 P/C 契约和历史，不作为当前执行入口 |
+| 本地参考与未跟踪文件 | [本地规则](dev-rules/local-reference-and-files.md) | 索引、建议、日期比较、文件生命周期和公开检查 |
+| 用户需要处理什么 | [用户待办](../USER-ACTIONS.md) | 决定、配置、授权、人工检查的唯一当前状态 |
 | 具体栈与站点边界 | [技术比较](research/2026-09-26-technology-stack.md)、[Bilibili](research/bilibili-capabilities.md)、[Douyin](research/douyin-capabilities.md)、[运行契约](design/m1a-runtime-contracts.md) | 资料事实、选择、已测与待测分开 |
+| 工程命令与版本 | [仓库与环境](dev-rules/repo-and-environment.md#实际版本与命令) | 实际工具链版本、锁定方式与准备/构建/测试/打包命令 |
+| 依赖许可 | [许可台账](delivery/dependency-licenses.md) | 实际锁定依赖的许可清单与强 copyleft 判定 |
 | 双方如何沟通、保留关键内容 | [交接机制](dev-rules/development-workflow.md#handoff-protocol)、[记录职责](governance/documentation-policy.md#project-records) | 长计划、集中交付、双方prompt、文档正本 |
-| 实际完成了什么 | [状态](delivery/status.md)、[证据](evidence/README.md) | 对应版本、环境及范围的事实 |
+| 实际完成了什么 | [状态](delivery/status.md)、[B 收尾报告](delivery/stage-report.md)、[历史证据](evidence/README.md) | 对应版本、环境及范围的事实 |
 | 新材料怎样写 | [模板](templates/README.md) | 按变更规模选择最小材料 |
 
 ## TRACE 领域定位

@@ -1,0 +1,63 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "bvid": "BV1fakeBVfake1",
+    "cid": 1001,
+    "quality": 80,
+    "accept_quality": [80, 64],
+    "support_formats": [
+      { "quality": 80, "format": "hd", "codecs": [] },
+      { "quality": 64, "format": "flv720", "codecs": [] }
+    ],
+    "dash": {
+      "video": [
+        {
+          "id": 64,
+          "codecid": 12,
+          "codecs": "hev1.1.6.L120.90",
+          "base_url": "https://upos-sz-mirror08c.bilivideo.com/mirror08c/synthetic/hevc.m4s",
+          "backup_url": [
+            "https://upos-sz-mirror08h.bilivideo.com/mirror08h/synthetic/hevc.m4s"
+          ],
+          "bandwidth": 2000000,
+          "width": 1920,
+          "height": 1080,
+          "frame_rate": "16000/1000"
+        },
+        {
+          "id": 80,
+          "codecid": 7,
+          "codecs": "avc1.640028",
+          "base_url": "https://upos-sz-mirror08c.bilivideo.com/mirror08c/synthetic/avc.m4s",
+          "backup_url": [
+            "https://upos-sz-mirror08h.bilivideo.com/mirror08h/synthetic/avc.m4s",
+            "https://upos-sz-mirroralib.bilivideo.com/mirroralib/synthetic/avc.m4s"
+          ],
+          "bandwidth": 1500000,
+          "width": 1920,
+          "height": 1080,
+          "frame_rate": "16000/1000"
+        }
+      ],
+      "audio": [
+        {
+          "id": 30216,
+          "codecid": 0,
+          "codecs": "mp4a.40.2",
+          "base_url": "https://upos-sz-mirror08c.bilivideo.com/mirror08c/synthetic/audio-64k.m4s",
+          "backup_url": [],
+          "bandwidth": 66000
+        },
+        {
+          "id": 30280,
+          "codecid": 0,
+          "codecs": "mp4a.40.2",
+          "base_url": "https://upos-sz-mirror08c.bilivideo.com/mirror08c/synthetic/audio-132k.m4s",
+          "backup_url": [],
+          "bandwidth": 132000
+        }
+      ]
+    }
+  }
+}

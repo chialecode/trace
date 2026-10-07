@@ -1,0 +1,16 @@
+{
+  "name": "trace-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=24.12.0"
+  },
+  "scripts": {
+    "dev": "corepack pnpm -C apps/desktop run dev",
+    "build": "corepack pnpm -C apps/desktop run build",
+    "typecheck": "corepack pnpm -C apps/desktop run typecheck",
+    "test": "corepack pnpm -C apps/desktop run test",
+    "tauri": "corepack pnpm -C apps/desktop run tauri"
+  }
+}

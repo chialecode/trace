@@ -7,7 +7,7 @@
       "status": "active",
       "owner": "文档维护者",
       "scope": "导航与适用规则入口",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -25,7 +25,7 @@
       "status": "active",
       "owner": "文档维护者",
       "scope": "导航与适用规则入口",
-      "reviewed": "2026-09-25",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -43,7 +43,7 @@
       "status": "active",
       "owner": "文档维护者",
       "scope": "导航与适用规则入口",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -52,7 +52,7 @@
       "status": "active",
       "owner": "文档维护者",
       "scope": "导航与适用规则入口",
-      "reviewed": "2026-09-25",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -61,7 +61,7 @@
       "status": "active",
       "owner": "文档维护者",
       "scope": "导航与适用规则入口",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -88,7 +88,7 @@
       "status": "active",
       "owner": "技术维护者",
       "scope": "决定来源、理由或集中事项；产品取舍由产品负责人确认",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -97,26 +97,37 @@
       "status": "active",
       "owner": "技术维护者",
       "scope": "决定来源、理由或集中事项；产品取舍由产品负责人确认",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
+    },
+    {
+      "path": "docs/delivery/dependency-licenses.md",
+      "kind": "delivery",
+      "status": "reference",
+      "owner": "技术维护者",
+      "scope": "实际锁定依赖的许可清单与强 copyleft 判定，非法律意见",
+      "reviewed": "2026-09-26",
+      "basis": "DEC-009～013；Agent B M0/M1a 实施与自检"
     },
     {
       "path": "docs/delivery/m0-m1a-agent-b-prompt.md",
       "kind": "delivery",
-      "status": "active",
+      "status": "superseded",
       "owner": "技术维护者",
       "scope": "M0/M1a 首轮规划、具体方案及可审查证据",
-      "reviewed": "2026-09-26",
-      "basis": "DEC-009～013；Agent A 首轮研究与实施规划"
+      "reviewed": "2026-10-07",
+      "basis": "DEC-009～013；Agent A 首轮研究与实施规划",
+      "supersededBy": "docs/delivery/stage-plan.md"
     },
     {
       "path": "docs/delivery/m0-m1a-execution-plan.md",
       "kind": "delivery",
-      "status": "active",
+      "status": "superseded",
       "owner": "技术维护者",
       "scope": "M0/M1a 首轮规划、具体方案及可审查证据",
-      "reviewed": "2026-09-26",
-      "basis": "DEC-009～013；Agent A 首轮研究与实施规划"
+      "reviewed": "2026-10-07",
+      "basis": "DEC-009～013；Agent A 首轮研究与实施规划",
+      "supersededBy": "docs/delivery/stage-plan.md"
     },
     {
       "path": "docs/delivery/m0-m1a-preparation.md",
@@ -133,7 +144,7 @@
       "status": "active",
       "owner": "技术维护者",
       "scope": "阶段切片、进入退出条件或当前执行状态",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -142,7 +153,7 @@
       "status": "active",
       "owner": "技术维护者",
       "scope": "阶段切片、进入退出条件或当前执行状态",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -151,7 +162,7 @@
       "status": "active",
       "owner": "设计维护者",
       "scope": "UI 交互与验证，最终视觉参数仍待方案",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -169,7 +180,7 @@
       "status": "active",
       "owner": "技术维护者",
       "scope": "INV、领域、协议与恢复设计；非实现声明",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -178,7 +189,7 @@
       "status": "active",
       "owner": "技术维护者",
       "scope": "M0/M1a 首轮规划、具体方案及可审查证据",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-009～013；Agent A 首轮研究与实施规划"
     },
     {
@@ -187,7 +198,7 @@
       "status": "active",
       "owner": "技术维护者",
       "scope": "实施触发条件、工程边界与验证",
-      "reviewed": "2026-09-25",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -214,7 +225,7 @@
       "status": "active",
       "owner": "技术维护者",
       "scope": "实施触发条件、工程边界与验证",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -223,7 +234,7 @@
       "status": "active",
       "owner": "技术维护者",
       "scope": "实施触发条件、工程边界与验证",
-      "reviewed": "2026-09-25",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -232,7 +243,7 @@
       "status": "active",
       "owner": "技术维护者",
       "scope": "实施触发条件、工程边界与验证",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -241,7 +252,7 @@
       "status": "active",
       "owner": "技术维护者",
       "scope": "实施触发条件、工程边界与验证",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -250,7 +261,7 @@
       "status": "active",
       "owner": "技术维护者",
       "scope": "实施触发条件、工程边界与验证",
-      "reviewed": "2026-09-25",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -272,12 +283,30 @@
       "basis": "DEC-009～013；Agent A 首轮研究与实施规划"
     },
     {
+      "path": "docs/evidence/2026-09-26-m0-m1a-delivery.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "质量维护者",
+      "scope": "M0/M1a 实施交付的命令、结果、失败与复验记录",
+      "reviewed": "2026-10-01",
+      "basis": "DEC-009～013；Agent B M0/M1a 实施与自检"
+    },
+    {
+      "path": "docs/evidence/2026-10-01-m0-m1a-review.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "质量维护者",
+      "scope": "M0/M1a A 集中复核的复验、发现、直接修复与返工范围",
+      "reviewed": "2026-10-07",
+      "basis": "DEC-009～013；2026-10-01 用户指示开始 A 复核"
+    },
+    {
       "path": "docs/evidence/README.md",
       "kind": "evidence",
       "status": "reference",
       "owner": "质量维护者",
       "scope": "对应版本、环境与范围的实际观测",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -286,7 +315,7 @@
       "status": "active",
       "owner": "文档维护者",
       "scope": "文档职责、状态、变更与追踪",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -304,7 +333,7 @@
       "status": "active",
       "owner": "产品负责人",
       "scope": "FR/NFR/AC 正文；工程数值和默认提案待验证",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -313,8 +342,17 @@
       "status": "reference",
       "owner": "技术维护者",
       "scope": "M0/M1a 首轮规划、具体方案及可审查证据",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-01",
       "basis": "DEC-009～013；Agent A 首轮研究与实施规划"
+    },
+    {
+      "path": "docs/research/2026-10-01-ffmpeg-integration.md",
+      "kind": "research",
+      "status": "reference",
+      "owner": "技术维护者",
+      "scope": "OSS-004 FFmpeg/ffprobe 资产、获取、查找与分发路线的资料判断",
+      "reviewed": "2026-10-01",
+      "basis": "ADR-009、OSS-004；2026-10-01 用户同意写入 OSS-004 并开始 A 复核"
     },
     {
       "path": "docs/research/bilibili-capabilities.md",
@@ -322,7 +360,7 @@
       "status": "reference",
       "owner": "技术维护者",
       "scope": "M0/M1a 首轮规划、具体方案及可审查证据",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-009～013；Agent A 首轮研究与实施规划"
     },
     {
@@ -358,7 +396,7 @@
       "status": "active",
       "owner": "文档维护者",
       "scope": "按需填写的记录格式，不代表已执行",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
     },
     {
@@ -405,6 +443,52 @@
       "scope": "按需填写的记录格式，不代表已执行",
       "reviewed": "2026-09-25",
       "basis": "DEC-001～008；既有需求/设计基线及本次文档治理任务"
+    },
+    {
+      "path": "USER-ACTIONS.md",
+      "kind": "user-actions",
+      "status": "active",
+      "owner": "文档维护者",
+      "scope": "用户需处理的决定、配置、授权与人工检查",
+      "reviewed": "2026-10-07",
+      "basis": "DEC-014～016；本轮用户请求"
+    },
+    {
+      "path": "docs/dev-rules/local-reference-and-files.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "文档维护者",
+      "scope": "本地参考、未跟踪文件与公开检查",
+      "reviewed": "2026-10-07",
+      "basis": "DEC-014～016；本轮用户请求"
+    },
+    {
+      "path": "docs/delivery/stage-plan.md",
+      "kind": "execution-plan",
+      "status": "active",
+      "owner": "技术维护者",
+      "scope": "当前唯一连续实施计划及交接 prompt",
+      "reviewed": "2026-10-07",
+      "basis": "DEC-014～016；本轮用户请求"
+    },
+    {
+      "path": "docs/evidence/2026-10-07-documentation-and-home.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "文档维护者",
+      "scope": "A 文档与主页交付、自审证据和限制",
+      "reviewed": "2026-10-07",
+      "basis": "DEC-014～016；本轮用户请求"
+    },
+    {
+      "path": "docs/delivery/stage-report.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "技术维护者",
+      "scope": "M0 / TRACE-CLOSEOUT-02 实施、A 复审、失败复验、历史归并与保护交接",
+      "reviewed": "2026-10-07",
+      "basis": "用户 B 接手指令；TRACE-CLOSEOUT-02 r1"
     }
-  ]
+  ],
+  "currentPlan": "docs/delivery/stage-plan.md"
 }

@@ -1,0 +1,26 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "bvid": "BV1fakeBVfake1",
+    "aid": 1000001,
+    "title": "测试视频一",
+    "desc": "第一个投稿的完整简介。\n第二行内容。",
+    "pubdate": 1702204800,
+    "duration": 245,
+    "pic": "https://i0.hdslb.com/bfs/archive/synthetic-cover-1.jpg",
+    "owner": { "mid": 94697, "name": "合成示例创作者" },
+    "pages": [
+      { "cid": 1001, "page": 1, "part": "正片", "duration": 245 }
+    ],
+    "stat": {
+      "view": 1000,
+      "danmaku": 5,
+      "reply": 20,
+      "favorite": 30,
+      "coin": 8,
+      "share": 12,
+      "like": 100
+    }
+  }
+}

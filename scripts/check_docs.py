@@ -10,7 +10,8 @@ import re
 import sys
 from urllib.parse import unquote, urlsplit
 
-IGNORED = {'.git', 'node_modules', 'vendor', 'target', 'dist', 'build', '.venv', '__pycache__'}
+IGNORED = {'.git', 'node_modules', 'vendor', 'target', 'dist', 'build', '.venv', '__pycache__',
+           '.local', 'tmp', 'artifacts', 'profiles', 'archives', 'coverage', 'test-results', 'reference'}
 DOC_STATES = {'active', 'draft', 'reference', 'superseded'}
 STAGES = ['M0', 'M1a', 'M1b', 'M1c', 'M2', 'M3']
 
@@ -81,6 +82,13 @@ def validate(root: Path) -> tuple[list[str], dict[str, int]]:
             problem(f'{rel}: personal absolute path')
 
     registry = read_json('docs/governance/document-registry.json')
+    current_plan = registry.get('currentPlan')
+    if not current_plan or current_plan not in docs:
+        problem('registry: currentPlan must point to an existing document')
+    plans = [e for e in registry.get('documents', [])
+             if e.get('kind') == 'execution-plan' and e.get('status') == 'active']
+    if len(plans) != 1 or plans[0].get('path') != current_plan:
+        problem('registry: exactly one active execution-plan must match currentPlan')
     seen: set[str] = set()
     for entry in registry.get('documents', []):
         path = entry.get('path', '')

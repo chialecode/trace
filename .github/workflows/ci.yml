@@ -1,0 +1,32 @@
+name: Repository quality
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-quality:
+    name: repository-quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate documentation
+        run: python3 scripts/check_docs.py
+      - name: Validate public worktree and index
+        run: python3 scripts/check_publication.py
+      - name: Exercise governance failure cases
+        run: python3 -m unittest discover -s scripts/tests
+      # Windows Rust/media/desktop suites remain local stage gates. This job does not claim to run them.

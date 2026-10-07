@@ -1,0 +1,5 @@
+# Cargo 构建产物
+target/
+
+# Tauri 生成的 ACL schema（构建时重建）
+gen/schemas

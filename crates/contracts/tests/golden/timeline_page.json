@@ -1,0 +1,36 @@
+{
+  "items": [
+    {
+      "entry_id": "entry-9007199254740993",
+      "current_revision_id": "revision-1",
+      "title": "合成中文标题",
+      "namespace": "bilibili",
+      "kind": "video",
+      "published_at": null,
+      "published_precision": "unknown",
+      "discovered_at": "2026-10-07T00:00:00Z",
+      "access_state": "unknown",
+      "save_progress": "partial",
+      "quality_state": "unknown",
+      "media_summary": {
+        "video": 1,
+        "audio": 1
+      },
+      "account_id": "a",
+      "account_name": "合成来源",
+      "native_account_key": "123",
+      "profile_url": null,
+      "creator_id": "c",
+      "creator_name": "合成创作者",
+      "source_key": "BV123",
+      "source_url": "https://www.bilibili.com/video/BV123",
+      "cover_blob_id": null
+    }
+  ],
+  "next_cursor": null,
+  "counts": {
+    "global": 65,
+    "filtered": 1,
+    "scope": "all-matching-entries"
+  }
+}

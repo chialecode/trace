@@ -1,0 +1,53 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "list": {
+      "vlist": [
+        {
+          "aid": 1000001,
+          "bvid": "BV1fakeBVfake1",
+          "title": "测试视频一",
+          "description": "第一个投稿的列表摘要",
+          "created": 1702204800,
+          "length": "04:05",
+          "play": 1000,
+          "review": 10,
+          "video_review": 20,
+          "favorites": 30,
+          "mid": 94697,
+          "author": "合成示例创作者"
+        },
+        {
+          "aid": 1000002,
+          "bvid": "BV1fakeBVfake2",
+          "title": "测试视频二（双 P）",
+          "description": "",
+          "created": 1702118400,
+          "length": "10:00",
+          "play": 2000,
+          "review": 20,
+          "video_review": 40,
+          "favorites": 60,
+          "mid": 94697,
+          "author": "合成示例创作者"
+        },
+        {
+          "aid": 1000003,
+          "bvid": "BV1fakeBVfake3",
+          "title": "旧视频（durl 混流）",
+          "description": "较早的投稿",
+          "created": 1702032000,
+          "length": "01:30",
+          "play": 3000,
+          "review": 30,
+          "video_review": 60,
+          "favorites": 90,
+          "mid": 94697,
+          "author": "合成示例创作者"
+        }
+      ]
+    },
+    "page": { "count": 3, "size": 30, "num": 1 }
+  }
+}

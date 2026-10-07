@@ -1,0 +1,20 @@
+{
+  "request_id": "host-req-0001",
+  "ok": true,
+  "result": {
+    "items": [
+      {
+        "native_entry_key": "BV1xx411c7XX",
+        "native_kind": "video",
+        "title": "示例投稿",
+        "published_at": "2026-09-01T08:00:00Z",
+        "published_precision": "source",
+        "pinned": false,
+        "stats": { "view": 9007199254740993 }
+      }
+    ],
+    "next_cursor": "2",
+    "has_more": true,
+    "coverage": { "observed_count": 2, "pages": [1] }
+  }
+}

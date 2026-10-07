@@ -1,0 +1,12 @@
+{
+  "protocol_version": "0.1",
+  "request_id": "host-req-0001",
+  "deadline_ms": 30000,
+  "method": "enumerate",
+  "params": {
+    "native_account_key": "42",
+    "mode": "recent_days",
+    "recent_days": 30,
+    "max_pages": 10
+  }
+}

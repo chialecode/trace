@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "trace:plugin-frame@0.1",
+  "title": "TRACE 插件协议帧",
+  "description": "核心与平台适配器之间双向 4 字节 LE 长度 + UTF-8 JSON 帧。单帧 1 MiB、单页 100 条；媒体字节不经此协议。Rust 结构正本为 trace-contracts::plugin。",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" }
+  ],
+  "$defs": {
+    "request": {
+      "type": "object",
+      "required": ["protocol_version", "request_id", "method"],
+      "properties": {
+        "protocol_version": { "const": "0.1" },
+        "request_id": { "type": "string", "minLength": 1 },
+        "deadline_ms": { "type": "integer", "minimum": 1 },
+        "method": {
+          "enum": [
+            "hello", "resolve_account", "enumerate", "observe", "resolve_media",
+            "probe_auth", "cancel", "shutdown", "proxy.fetch"
+          ]
+        },
+        "params": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "response": {
+      "type": "object",
+      "required": ["request_id", "ok"],
+      "properties": {
+        "request_id": { "type": "string" },
+        "ok": { "type": "boolean" },
+        "result": {},
+        "error": { "$ref": "#/$defs/pluginError" }
+      },
+      "additionalProperties": false
+    },
+    "pluginError": {
+      "type": "object",
+      "required": ["class", "message"],
+      "properties": {
+        "class": {
+          "enum": [
+            "transient_network", "rate_limited", "auth_required", "permission_denied",
+            "capability_lost", "source_unavailable", "source_deleted_confirmed",
+            "unsupported", "schema_changed", "invalid_payload", "plugin_crash",
+            "storage_full", "version_conflict", "cancelled", "unknown"
+          ]
+        },
+        "message": { "type": "string", "maxLength": 500 },
+        "retry_after_ms": { "type": "integer", "minimum": 0 },
+        "details": { "type": "object", "description": "白名单结构化字段，禁止完整响应体" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

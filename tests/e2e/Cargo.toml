@@ -1,0 +1,30 @@
+[package]
+name = "trace-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+# 测试专用 crate：fake adapter 二进制与跨进程集成用例。
+# 不进入发行打包（scripts/package_windows.py 只包含 apps 与 adapters）。
+
+[[bin]]
+name = "trace-fake-adapter"
+path = "src/bin/fake_adapter.rs"
+
+[dependencies]
+trace-core.workspace = true
+trace-domain.workspace = true
+trace-contracts.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+base64.workspace = true
+time.workspace = true
+rusqlite.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

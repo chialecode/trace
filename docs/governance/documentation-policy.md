@@ -12,7 +12,8 @@
 | 技术 | [设计](../design.md) | 不变量、数据语义、协议与恢复 |
 | 实施/UI 规则 | `docs/dev-rules/`、`docs/design-rules/` | 触发条件、开发约束与验证 |
 | 决策 | [有效决定](../decisions/confirmed-decisions.md)、[设计决策台账](../decisions/architecture-decisions.md) | 来源、理由、状态与替代关系 |
-| 当前事项 | [open-questions.md](../decisions/open-questions.md) | Q/OSS/ACT/LOOP 唯一当前状态 |
+| 开发事项 | [open-questions.md](../decisions/open-questions.md) | 开发 Q/OSS/LOOP 与用户事项导航 |
+| 用户事项 | [USER-ACTIONS.md](../../USER-ACTIONS.md) | 用户决定、配置、授权、人工检查的唯一当前状态 |
 | 交付 | [路线](../delivery/roadmap-and-acceptance.md)、[需求映射](../delivery/requirements-map.json)、唯一迭代计划 | 分批范围与门槛 |
 | 事实与研究 | [状态](../delivery/status.md)、`docs/evidence/`、`docs/research/` | 版本、环境、范围与局限 |
 | 模板 | `docs/templates/` | 按需使用的最小记录结构 |
@@ -21,7 +22,7 @@
 
 ## 2. 登记、责任与状态
 
-所有仓库自有 Markdown 登记于 `document-registry.json`，包括根入口及未来模块说明。依赖、第三方 vendor、构建输出与临时测试目录不登记。字段为 `path`、`kind`、`status`、`owner`、`scope`、`reviewed`、`basis`；废弃条目增加 `supersededBy`。
+所有仓库自有 Markdown 登记于 `document-registry.json`，包括根入口及未来模块说明。依赖、第三方 vendor、构建输出与临时测试目录不登记。字段为 `path`、`kind`、`status`、`owner`、`scope`、`reviewed`、`basis`；废弃条目增加 `supersededBy`。顶层 `currentPlan` 指向唯一 `kind=execution-plan/status=active` 文档；历史计划标 superseded/reference。
 
 | 文档状态 | 含义 |
 | --- | --- |
@@ -83,7 +84,15 @@
 | 实际依赖、许可资产、构建/运行/安装/恢复步骤 | 锁文件、B 建立的依赖台账、环境及操作文档 | 首次工程及每次相关变更；真实命令、前提、产物摘要、限制与恢复入口，不把计划命令写成存在 |
 | 实施范围、用例与差异 | 本轮唯一计划 | 长批次开始及影响实施的调整时；计划 ID/修订、基点、工作包/验收和继续边界 |
 | 故障、修复、验证和实际产物 | 版本化证据及交付/审查报告 | 自检/交接/返工时；保存原失败及复验，不以最后通过覆盖历史；敏感样本只保留合成或安全摘要 |
-| 未决/上游/人工/后续循环 | 事项总表 | 发现和解决同批更新；负责人/阻塞动作/关闭条件明确，其余文档引用编号 |
+| 未决/上游/人工/后续循环 | 开发事项总表；用户动作在 USER-ACTIONS | 发现和解决同批更新；负责人/阻塞动作/关闭条件明确，其余文档引用编号 |
 | A/B 当前交接与 prompt | 计划/同轮交付报告，聊天贴可复制文本 | 双方每次结束任务；记录实际基点、报告、问题和验证入口，不能仅靠会话记忆 |
 
 新专题只有确有独立维护职责时才拆文档，登记并从索引/正本可达。已存在正文就补链接和差异，不建竞争副本。当前事实更新当前正本；日期化研究/失败保留为 reference，写明后续替代证据。凭证、真实账户档案、原始敏感响应和本机私有路径不因“保留关键内容”进入 Git。
+
+## 8. 本地与公开资料的边界
+
+按[本地参考与文件规则](../dev-rules/local-reference-and-files.md)发现仓库外索引。参考项目名、私有路径、原始截图、源码摘录与参考关系不进入仓库文档/证据/提交信息。正式依赖与法律归属不受此限制。已有公开的官方技术研究保留来源与法律依据，不以新规则抹去既有事实。
+
+新增/改变的用户动作只在 [USER-ACTIONS](../../USER-ACTIONS.md) 维护当前状态，开发总表保留编号与链接；历史证据保持当时结论。决定仍回写有效决定/需求/契约。
+
+新一轮计划使用固定路径 `docs/delivery/stage-plan.md`；上轮先标替代关系，保留稳定 C/F 引用。整理过程文档前先提炼长期结论到状态、决定、契约和回归测试，并确认 Git 可恢复。没有远端备份、仍被未结审查引用的历史资料本轮不删。证据默认写忽略目录，只有脱敏后必要摘要入库。

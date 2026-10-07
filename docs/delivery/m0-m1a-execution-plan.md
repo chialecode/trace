@@ -1,6 +1,8 @@
 # M0 → M1a 首轮连续实施计划
 
-计划 ID：TRACE-M0-M1A-01；修订 r1；2026-09-26；Agent A。状态：**ready-for-review（计划已形成，可交 B 执行；产品尚未实现）**。这是本轮唯一实施计划；[准备入口](m0-m1a-preparation.md)只作导航，[路线](roadmap-and-acceptance.md)定义里程碑。工作包是依赖顺序与检查位置，不是每包一次审批/交接。
+> 历史计划：2026-10-07 已由 [TRACE-CLOSEOUT-02 r1](stage-plan.md)接续。以下 r1 基线、目录和命令只代表首轮规划事实；P/C 编号保留，不作为当前执行入口。
+
+计划 ID：TRACE-M0-M1A-01；修订 r1；2026-09-26；Agent A。状态：**ready-for-review（计划已形成，可交 B 执行；产品尚未实现）**。这是当时首轮实施计划；[准备入口](m0-m1a-preparation.md)只作导航，[路线](roadmap-and-acceptance.md)定义里程碑。工作包是依赖顺序与检查位置，不是每包一次审批/交接。
 
 ## 1. 要交付的用户结果
 

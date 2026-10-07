@@ -1,0 +1,7 @@
+packages:
+  - apps/desktop
+  - apps/desktop/src-tauri
+minimumReleaseAgeExclude:
+  - '@vitest/mocker@5.0.2'
+  - '@vitest/spy@5.0.2'
+  - vitest@5.0.2

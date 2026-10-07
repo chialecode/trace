@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "trace:control-envelope@0.1",
+  "title": "TRACE 控制协议信封",
+  "description": "GUI/CLI 与 daemon 之间 4 字节 LE 长度 + UTF-8 JSON 帧的应用层结构。Rust 结构正本为 trace-contracts::control；本 schema 为跨语言对齐说明，与黄金样本一同维护。",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" }
+  ],
+  "$defs": {
+    "request": {
+      "type": "object",
+      "required": ["protocol_version", "request_id", "command"],
+      "properties": {
+        "protocol_version": { "const": "0.1" },
+        "request_id": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "pattern": "^[a-z]+(\\.[a-z_]+)+$" },
+        "idempotency_key": { "type": "string", "maxLength": 128 },
+        "if_revision": { "type": "integer", "minimum": 0 },
+        "args": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "response": {
+      "type": "object",
+      "required": ["protocol_version", "request_id", "ok"],
+      "properties": {
+        "protocol_version": { "const": "0.1" },
+        "request_id": { "type": "string" },
+        "ok": { "type": "boolean" },
+        "result": {},
+        "error": { "$ref": "#/$defs/apiError" }
+      },
+      "additionalProperties": false
+    },
+    "apiError": {
+      "type": "object",
+      "required": ["code", "retryable"],
+      "properties": {
+        "code": {
+          "enum": [
+            "invalid_input", "not_found", "version_conflict", "not_ready",
+            "resync_required", "daemon_paused", "auth_required", "rate_limited",
+            "storage_full", "plugin_unavailable", "unsupported", "cancelled", "internal"
+          ]
+        },
+        "retryable": { "type": "boolean" },
+        "user_action": { "type": "string" },
+        "related_ids": { "type": "array", "items": { "type": "string" } },
+        "details": { "type": "object", "description": "仅安全字段；禁止原始响应体/凭证" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

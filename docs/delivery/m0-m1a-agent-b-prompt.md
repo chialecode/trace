@@ -1,5 +1,7 @@
 # M0/M1a：交给 Agent B 的 prompt
 
+> 历史 prompt：已被[当前计划与 B prompt](stage-plan.md#agent-b-prompt)替代。
+
 这是[唯一计划 TRACE-M0-M1A-01 r1](m0-m1a-execution-plan.md)的转交入口，不另维护工作范围。下方路径相对仓库根；B 开始核对实际分支/版本，用户无需重复前端、平台或阶段顺序。
 
 ```text

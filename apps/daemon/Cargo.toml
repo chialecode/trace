@@ -1,0 +1,20 @@
+[package]
+name = "trace-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "trace-daemon"
+path = "src/main.rs"
+
+[dependencies]
+trace-core.workspace = true
+trace-domain.workspace = true
+trace-contracts.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

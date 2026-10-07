@@ -37,3 +37,11 @@
 B 自检、A 技术审查、用户产品验收分别判断；`not-run` 和 `blocked` 不算 passed。局部通过只覆盖该子集。缺实现和自动测试仍由开发者完成；真实账号、体验偏好和不可自动的设备操作才进入 ACT。
 
 当前没有 CI。建立 CI 时复用本地真实检查入口，再记录配置及实际运行证据，不能仅增加说明就声称有门禁。
+
+## 当前增补门禁（2026-10-07）
+
+- `python scripts/check_publication.py`：检查当前公开文件和索引；个人路径、私有文件类别、部分令牌/私钥模式，输出仅路径/规则。忽略文件不读取；图片归属仍须审阅。
+- `python -m unittest discover -s scripts/tests`：隔离副本中的断链/漏登记、无效锚点/多当前计划、需求丢失、暂存泄露与误跟踪私有文件反例。
+- 文档检查要求 `currentPlan` 与唯一 active execution-plan 一致；忽略 `.local/tmp/artifacts/profiles/archives` 等本地产物。
+- 前端变更运行 `python scripts/verify.py --suite desktop`（类型、Vitest、构建）；UI 还检查截图、搜索/筛选/选择、空态、断连、竞态和示例不写 API。含私有画面的截图按[本地规则](local-reference-and-files.md)隔离。
+- 提交前 `git diff --check` 及暂存审阅。纯前端/文档改动不机械重跑未修改 Rust 全套；核心返工按当前计划全量验证。
