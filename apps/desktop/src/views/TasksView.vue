@@ -19,7 +19,8 @@ const items = ref<JobDto[]>([]);
 const loading = ref(false);
 const stateFilter = ref<string | null>(null);
 const typeFilter = ref<string | null>(null);
-let timer: number | undefined;
+let timer: number | undefined;let generation=0;let alive=true;
+const selectedJobs=ref<string[]>([]);
 
 const stateOptions = [
   { label: "全部状态", value: "" },
@@ -37,21 +38,25 @@ const typeOptions = [
   { label: "扫描", value: "scan" },
   { label: "详情观察", value: "observe" },
   { label: "媒体保存", value: "media" },
+  { label: "直播录制", value: "record" },
+  { label: "备份", value: "backup" },
+  { label: "导出", value: "export" },
 ];
 
 async function refresh() {
-  loading.value = true;
+  const current=++generation;loading.value = true;
   try {
-    items.value = (
+    const result = (
       await api.jobList(
         stateFilter.value || undefined,
         typeFilter.value || undefined,
       )
     ).items;
+    if(alive&&current===generation)items.value=result;
   } catch (e) {
-    message.error(String(e));
+    if(alive&&current===generation)message.error(String(e));
   } finally {
-    loading.value = false;
+    if(alive&&current===generation)loading.value = false;
   }
 }
 
@@ -75,7 +80,9 @@ async function cancel(jobId: string) {
   }
 }
 
+async function retrySelected(){try{const result=await api.jobRetryFailed(selectedJobs.value);message.success(`已重新入队 ${result.requeued} 个任务`);selectedJobs.value=[];void refresh();}catch(e){message.error(String(e));}}
 const columns: DataTableColumns<JobDto> = [
+  { type:'selection',disabled:(r)=>!['failed','waiting_retry','waiting_storage','waiting_auth','waiting_plugin','waiting_user'].includes(r.state) },
   { title: "类型", key: "job_type", width: 90 },
   {
     title: "状态",
@@ -120,7 +127,7 @@ onMounted(() => {
   refresh();
   timer = window.setInterval(refresh, 5000);
 });
-onBeforeUnmount(() => window.clearInterval(timer));
+onBeforeUnmount(() => {alive=false;generation++;window.clearInterval(timer);});
 </script>
 
 <template>
@@ -128,18 +135,19 @@ onBeforeUnmount(() => window.clearInterval(timer));
     <div class="toolbar">
       <n-select v-model:value="stateFilter" :options="stateOptions" style="width: 150px" />
       <n-select v-model:value="typeFilter" :options="typeOptions" style="width: 150px" />
-      <n-button type="primary" @click="refresh">刷新</n-button>
+      <n-button type="primary" @click="refresh">刷新</n-button><n-button :disabled="!selectedJobs.length || selectedJobs.length>100" @click="retrySelected">重试所选失败任务</n-button>
     </div>
     <n-alert v-if="items.some((j) => j.state === 'waiting_auth')" type="warning" title="存在等待登录的任务" style="margin-bottom: 12px">
       请到「账号与登录」完成凭证导入或重新验证；任务不会自动更换账号或绕过访问限制。
     </n-alert>
-    <n-data-table :columns="columns" :data="items" :loading="loading" size="small" />
+    <n-data-table v-model:checked-row-keys="selectedJobs" :row-key="(r:JobDto)=>r.job_id" :columns="columns" :data="items" :loading="loading" size="small" />
   </n-card>
 </template>
 
 <style scoped>
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
 }

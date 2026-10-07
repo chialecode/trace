@@ -66,6 +66,23 @@ impl Vault {
     }
 }
 
+/// Resolve the current opaque vault version. IDs remain stable across updates;
+/// backups never include the encrypted bytes or inherited authorization.
+pub async fn load_current(core: &crate::core::Core, id: &str) -> Result<Vec<u8>, CoreError> {
+    let id = id.to_owned();
+    let reference: String = core
+        .db
+        .read(move |c| {
+            Ok(c.query_row(
+                "SELECT vault_ref FROM credentials_state WHERE credential_id=?1",
+                [id],
+                |r| r.get(0),
+            )?)
+        })
+        .await?;
+    core.vault.load(&reference)
+}
+
 #[cfg(windows)]
 fn dpapi_protect(plain: &[u8]) -> Result<Vec<u8>, CoreError> {
     use windows::Win32::Foundation::{HLOCAL, LocalFree};

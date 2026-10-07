@@ -411,3 +411,80 @@ async fn f014_replica_cursor_reaches_beyond_first_sixty_four() {
         .unwrap();
     assert_eq!(state, "absent");
 }
+
+#[tokio::test]
+async fn c07_recovery_bounds_committed_cleanup_writes_and_keeps_objects() {
+    let env = env();
+    let bytes = b"verified bytes remain readable after staging cleanup";
+    let sha = receive_full(&env, "protected", bytes).await;
+    env.store
+        .install_object(&env.db, &OperationId::new("protected"), &sha)
+        .await
+        .unwrap();
+    let staging = env.profile.staging_dir();
+    let existing = staging.join("cleanup-0000");
+    std::fs::create_dir_all(&existing).unwrap();
+    std::fs::write(existing.join("payload"), b"committed leftover").unwrap();
+    env.db.write(move |tx| {
+        tx.execute("UPDATE materializations SET stage='COMMITTED' WHERE operation_id='protected'",[])?;
+        for i in 0..4096 {
+            let op=format!("cleanup-{i:04}");
+            tx.execute("INSERT INTO materializations(operation_id,subject_kind,subject_id,generation,stage,staging_path,created_at,updated_at) VALUES(?1,'live_fragment','historical-fragment',1,'COMMITTED',?2,'t','t')",rusqlite::params![op,staging.join(&op).to_string_lossy()])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    env.db
+        .read(|c| {
+            c.execute_batch("PRAGMA wal_autocheckpoint=0; PRAGMA wal_checkpoint(TRUNCATE);")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let summary = env.store.recover_materializations(&env.db).await.unwrap();
+    let frames: i64 = env
+        .db
+        .read(|c| Ok(c.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |r| r.get(1))?))
+        .await
+        .unwrap();
+    eprintln!(
+        "committed cleanup: {} rows, {frames} WAL frames, {:?}",
+        summary.cleaned_staging,
+        started.elapsed()
+    );
+    assert_eq!(summary.cleaned_staging, 4097);
+    assert!(!existing.exists());
+    assert_eq!(
+        std::fs::read(env.store.object_path(&sha).unwrap()).unwrap(),
+        bytes
+    );
+    let (rows,pending):(i64,i64)=env.db.read(|c|Ok(c.query_row("SELECT count(*),sum(staging_path IS NOT NULL) FROM materializations WHERE stage='COMMITTED'",[],|r|Ok((r.get(0)?,r.get(1)?)))?)).await.unwrap();
+    assert_eq!((rows, pending), (4097, 0));
+    assert_eq!(
+        env.store
+            .recover_materializations(&env.db)
+            .await
+            .unwrap()
+            .cleaned_staging,
+        0
+    );
+    // WAL frames measure durable write amplification, independently of machine
+    // speed. Cleaning an already absent directory must not fsync per old row.
+    assert!(
+        frames > 0 && frames < 2048,
+        "historical cleanup wrote {frames} WAL frames"
+    );
+    let outside = env._dir.path().join("unowned-files");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("preserve"), b"outside the staging root").unwrap();
+    let path = outside.to_string_lossy().to_string();
+    env.db.write(move |tx| {
+        tx.execute("INSERT INTO materializations(operation_id,subject_kind,subject_id,stage,staging_path,created_at,updated_at) VALUES('unowned','live_fragment','history','COMMITTED',?1,'t','t')",[path])?;
+        Ok(())
+    }).await.unwrap();
+    assert!(env.store.recover_materializations(&env.db).await.is_err());
+    assert_eq!(
+        std::fs::read(outside.join("preserve")).unwrap(),
+        b"outside the staging root"
+    );
+}

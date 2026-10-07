@@ -1,5 +1,6 @@
 //! 控制协议 IPC：named pipe 服务端与客户端。
 
+pub mod archive;
 pub mod client;
 pub mod dispatch;
 pub mod server;

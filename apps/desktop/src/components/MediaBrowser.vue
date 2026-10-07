@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { mediaRoleLabel } from '../lib/format';
+import { mediaRoleLabel,formatTime,formatBytes } from '../lib/format';
 import { api, mediaUrl, type MediaDto } from '../lib/api';
+import SubtitleDocument from './SubtitleDocument.vue';
+import {authLabel} from '../lib/acquisition';
+const approved=(m:MediaDto)=>!['pending','rejected'].includes(m.approval_state??'automatic');
 const props = defineProps<{ media: MediaDto[] }>();
 const current = ref('');
 const feedback = ref('');
@@ -10,7 +13,7 @@ const selected = computed(() => props.media.find(m => m.variant_id === current.v
 watch(() => props.media, list => {
   if (list.some(m => m.variant_id === current.value && m.available && m.blob_id)) return;
   const lost = Boolean(current.value);
-  current.value = (list.find(m => m.available && m.representation === 'playback-mux-v1') ?? list.find(m => m.available && m.role !== 'cover'))?.variant_id ?? '';
+  current.value = ([...list].reverse().find(m => approved(m) && m.available && m.representation === 'playback-mux-v1' && m.playback_current !== false) ?? list.find(m => approved(m) && m.available && m.selected && !['cover','recording_source'].includes(m.role)) ?? list.find(m => approved(m) && m.available && !['cover','recording_source'].includes(m.role)))?.variant_id ?? '';
   feedback.value = lost ? '原媒体资源已不可用，请选择可用资源。' : '';
 }, { immediate: true });
 async function openExternal() {
@@ -28,15 +31,17 @@ async function openExternal() {
     <label v-else>媒体资源
       <select v-model="current" aria-label="选择媒体资源" @change="feedback = ''">
         <option value="">选择资源</option>
-        <option v-for="(m,index) in media" :key="m.variant_id ?? m.media_id" :value="m.variant_id ?? ''" :disabled="!m.available || !m.blob_id">{{ mediaRoleLabel(m.role) }} · {{ m.position }} {{ m.available ? '' : '· 文件未保存或缺失' }} {{ index + 1 }}</option>
+        <option v-for="(m,index) in media" :key="m.variant_id ?? m.media_id" :value="m.variant_id ?? ''" :disabled="!m.available || !m.blob_id">{{ mediaRoleLabel(m.role) }} · {{ m.position }} · {{authLabel(m.authentication?.state)}} {{m.approval_state==='pending'?'· 待确认候选':''}} {{ m.available ? '' : '· 文件未保存或缺失' }} {{ index + 1 }}</option>
       </select>
     </label>
+    <p v-if="selected">{{authLabel(selected.authentication?.state)}} · 保存时间 {{formatTime(selected.saved_at)}} · {{formatBytes(selected.size)}} · {{selected.measured_spec ? '已有实际规格记录' : '实际规格未知'}}</p>
     <template v-if="selected?.available && mediaUrl(selected.blob_id)">
       <video v-if="selected.mime?.startsWith('video/')" :key="current" :src="mediaUrl(selected.blob_id)" controls preload="metadata" @error="feedback = '内置播放器无法播放此编码或文件已不可用。可尝试外部打开。'"/>
       <audio v-else-if="selected.mime?.startsWith('audio/')" :key="current" :src="mediaUrl(selected.blob_id)" controls preload="metadata" @error="feedback = '音频无法播放，请尝试外部打开。'"/>
       <img v-else-if="selected.mime?.startsWith('image/')" :src="mediaUrl(selected.blob_id)" alt="已保存图片" @error="feedback = '图片不可用，请刷新档案。'"/>
+      <SubtitleDocument v-else-if="selected.role==='subtitle'" :key="current" :media="selected"/>
       <p v-else>此媒体类型无法在内置播放器中预览。</p>
-      <button class="primary-button" :disabled="opening" @click="openExternal">{{ opening ? '正在校验文件…' : '外部打开已保存媒体' }}</button>
+      <button v-if="selected.mime?.startsWith('video/')||selected.mime?.startsWith('audio/')||selected.mime?.startsWith('image/')" class="primary-button" :disabled="opening" @click="openExternal">{{ opening ? '正在校验文件…' : '外部打开已保存媒体' }}</button>
     </template>
     <p v-if="media.some(m => !m.available)" class="media-note">部分资源未保存或副本缺失；已保存的资源仍可浏览。</p>
     <p v-if="media.some(m => m.role === 'audio')" class="media-note">分轨来源保留独立音频资源，可在上方选择。</p>

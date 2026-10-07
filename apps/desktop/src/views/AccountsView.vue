@@ -25,8 +25,11 @@ const showImport = ref(false);
 const importPlatform = ref("bilibili");
 const importSubject = ref("");
 const importSecret = ref("");
+const updateId=ref<string|null>(null);
+function editCredential(c:CredentialDto){updateId.value=c.credential_id;importPlatform.value=c.platform;importSubject.value=c.subject??'';importSecret.value='';showImport.value=true;}
+function newCredential(){updateId.value=null;importSecret.value='';showImport.value=true;}
 
-const platforms = [{ label: "哔哩哔哩（bilibili）", value: "bilibili" }];
+const platforms = [{ label: "哔哩哔哩（bilibili）", value: "bilibili" },{label:"抖音（douyin）",value:"douyin"}];
 
 async function refresh() {
   loading.value = true;
@@ -45,7 +48,7 @@ async function importCred() {
     return;
   }
   try {
-    const r = await api.credentialImport(
+    const r = updateId.value?await api.credentialUpdate(updateId.value,importSecret.value):await api.credentialImport(
       importPlatform.value,
       importSubject.value || null,
       importSecret.value,
@@ -96,6 +99,8 @@ const columns: DataTableColumns<CredentialDto> = [
       return h(NTag, { type, size: "small" }, { default: () => r.status });
     },
   },
+  {title:"最近验证",key:"validated_at",render:r=>formatTime(r.validated_at??null)},
+  {title:"能力与限制",key:"capability",render:r=>JSON.stringify(r.capability??{status:"unknown"})},
   { title: "创建时间", key: "created_at", width: 170, render: (r) => formatTime(r.created_at) },
   {
     title: "",
@@ -103,6 +108,7 @@ const columns: DataTableColumns<CredentialDto> = [
     width: 160,
     render: (r) =>
       h("div", { class: "row-actions" }, [
+        h(NButton,{size:"small",onClick:()=>editCredential(r)},{default:()=>"更新凭证"}),
         h(NButton, { size: "small", onClick: () => validate(r.credential_id) }, { default: () => "验证" }),
         h(
           NButton,
@@ -123,17 +129,17 @@ onMounted(refresh);
       现场登录与验证需用户自行完成授权。
     </n-alert>
     <template #header-extra>
-      <n-button size="small" type="primary" @click="showImport = true">导入 Cookie</n-button>
+      <n-button size="small" type="primary" @click="newCredential">导入 Cookie</n-button>
     </template>
     <n-data-table :columns="columns" :data="items" :loading="loading" size="small" />
 
-    <n-modal v-model:show="showImport" preset="card" title="导入 Cookie" style="width: 520px">
+    <n-modal v-model:show="showImport" preset="card" :title="updateId?'更新凭证并恢复任务':'导入 Cookie'" style="width: 520px">
       <n-form>
         <n-form-item label="平台">
-          <n-select v-model:value="importPlatform" :options="platforms" />
+          <n-select v-model:value="importPlatform" :disabled="!!updateId" :options="platforms" />
         </n-form-item>
         <n-form-item label="主体（可选，如 UP 主名）">
-          <n-input v-model:value="importSubject" />
+          <n-input v-model:value="importSubject" :disabled="!!updateId" />
         </n-form-item>
         <n-form-item label="Cookie 文本">
           <n-input

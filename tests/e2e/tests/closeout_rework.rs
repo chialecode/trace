@@ -399,16 +399,23 @@ async fn f015_pause_due_running_resume_idempotency_and_restart() {
         .forget();
     let generation: i64 = core
         .db
-        .read(|c| Ok(c.query_row("SELECT target_generation FROM jobs", [], |r| r.get(0))?))
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT target_generation FROM jobs WHERE job_key='scan:s:incremental'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
         .await
         .unwrap();
     enabled(&core, true).await; // Must not revoke/restart an already active scan.
     assert_eq!(
         core.db
-            .read(
-                |c| Ok(c.query_row("SELECT target_generation FROM jobs", [], |r| r
-                    .get::<_, i64>(0))?)
-            )
+            .read(|c| Ok(c.query_row(
+                "SELECT target_generation FROM jobs WHERE job_key='scan:s:incremental'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
             .await
             .unwrap(),
         generation
@@ -438,8 +445,8 @@ async fn f015_pause_due_running_resume_idempotency_and_restart() {
         .db
         .read(|c| {
             Ok((
-                c.query_row("SELECT count(*) FROM jobs", [], |r| r.get(0))?,
-                c.query_row("SELECT attempts FROM jobs", [], |r| r.get(0))?,
+                c.query_row("SELECT count(*) FROM jobs WHERE job_type='scan' AND json_extract(payload,'$.mode')='incremental'", [], |r| r.get(0))?,
+                c.query_row("SELECT attempts FROM jobs WHERE job_key='scan:s:incremental'", [], |r| r.get(0))?,
                 c.query_row("SELECT count(*) FROM entries", [], |r| r.get(0))?,
             ))
         })
@@ -449,6 +456,27 @@ async fn f015_pause_due_running_resume_idempotency_and_restart() {
         facts,
         (1, 2, 0),
         "one scan, preserved failure budget, late page rejected"
+    );
+    // M1 adds an independent deep cursor and archive maintenance. Keep the
+    // original incremental assertions exact and reject any unexplained job.
+    let all_jobs: Vec<(String, String)> = core
+        .db
+        .read(|c| {
+            Ok(
+                c.prepare("SELECT job_key,job_type FROM jobs ORDER BY job_key")?
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        all_jobs,
+        vec![
+            ("quality-maintenance".into(), "quality_maintenance".into()),
+            ("scan:s:deep".into(), "scan".into()),
+            ("scan:s:incremental".into(), "scan".into())
+        ]
     );
     assert!(requests.load(Ordering::SeqCst) >= 2);
     core.shutdown().await;

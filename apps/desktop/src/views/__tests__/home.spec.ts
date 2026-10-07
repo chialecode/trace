@@ -47,6 +47,19 @@ function changeEvent(topic='entry.updated') {
   change?.({event:'trace://change',id:1,payload:{topic,aggregate_id:'e2'}});
 }
 
+it('c11_home_authentication_filter_resets_cursor_and_preserves_media',async()=>{
+  vi.mocked(api.archiveTimeline).mockResolvedValue({items:[{...reworkEntry('same'),authentication:{state:'mixed',states:['anonymous','authenticated']}}],next_cursor:'older',counts:{global:1,filtered:1,scope:'all-matching-entries'}});
+  vi.mocked(api.archiveEntryGet).mockResolvedValue({entry:{},revisions:[],observations:[],media:reworkMedia});
+  const {wrapper}=await setup(false);const player=wrapper.get('video').element as HTMLVideoElement;player.currentTime=12;
+  vi.useFakeTimers();
+  try {
+    await wrapper.get('[aria-label="获取身份"]').setValue('authenticated');await vi.advanceTimersByTimeAsync(300);await flushPromises();
+    expect(api.archiveTimeline).toHaveBeenLastCalledWith(expect.objectContaining({authentication:'authenticated',cursor:undefined}));
+    expect(wrapper.get('video').element).toBe(player);expect(player.currentTime).toBe(12);expect(wrapper.text()).toContain('混合获取身份');
+    await wrapper.get('[aria-label="获取身份"]').setValue('unknown');await vi.advanceTimersByTimeAsync(300);await flushPromises();expect(api.archiveTimeline).toHaveBeenLastCalledWith(expect.objectContaining({authentication:'unknown',cursor:undefined}));
+  } finally {wrapper.unmount();vi.useRealTimers();}
+});
+
 describe('F-016 refresh reconciliation', () => {
   it('retains a still-matching selection that moved outside the loaded sort window', async () => {
     vi.mocked(isTauri).mockReturnValue(true);vi.mocked(listen).mockResolvedValue(vi.fn());
@@ -291,4 +304,19 @@ describe('主页的预览与真实档案边界', () => {
     } finally { vi.useRealTimers(); }
   });
 
+});
+
+it('c08_resource_origin_link_focuses_exact_entry_and_returns_to_timeline',async()=>{
+  vi.mocked(api.archiveTimeline).mockImplementation(async options=>({items:[reworkEntry(options.entryId??'ordinary')],next_cursor:null}));
+  vi.mocked(api.archiveEntryGet).mockResolvedValue({entry:{body:'归档正文'},revisions:[],observations:[],media:[]});
+  const {wrapper,router,store}=await setup(false);
+  store.query='previous filter';
+  vi.useFakeTimers();
+  try{await router.push({path:'/',query:{entry:'stable-source'}});await vi.advanceTimersByTimeAsync(260);await flushPromises();
+    expect(api.archiveTimeline).toHaveBeenLastCalledWith(expect.objectContaining({entryId:'stable-source',query:undefined}));
+    expect(wrapper.text()).toContain('当前定位到指定发布记录');
+    await wrapper.findAll('button').find(b=>b.text()==='返回完整时间线')!.trigger('click');await vi.advanceTimersByTimeAsync(260);await flushPromises();
+    expect(router.currentRoute.value.query.entry).toBeUndefined();
+    expect(api.archiveTimeline).toHaveBeenLastCalledWith(expect.objectContaining({entryId:undefined}));
+  }finally{wrapper.unmount();vi.useRealTimers();}
 });

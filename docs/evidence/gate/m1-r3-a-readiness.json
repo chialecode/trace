@@ -1,0 +1,336 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-09",
+  "role": "Agent A",
+  "plan": "TRACE-M1-01 r3",
+  "stageStatus": "rework-required",
+  "technicalReview": "failed",
+  "productAcceptance": "not-run",
+  "publication": "not-run",
+  "report": "docs/delivery/stage-report.md#m1-real-source-readiness",
+  "findingsCanonical": "docs/delivery/stage-report.md#f-026",
+  "scope": "Real-source feasibility investigation, local WBI repair and r3 implementation handoff. This is not a passed stage bundle or Core/GUI real-site acceptance.",
+  "main": "960984c34487244f31f1238dffc2bd9faaa292e7",
+  "continuationHead": "8f7e2c9f1d4419016e7553790c050a3f0236af9e",
+  "originalBDelivery": "b670e3b7aee88bb72e4369c5d3bab0160c460cf2",
+  "sourceInputsCount": 216,
+  "sourceInputsSha256": "b8f26956b0dd39ae43fe12aad1e06e25dec5f633d1093e2310b8164bc625a5c2",
+  "changedInputs": {
+    "adapters/bilibili/src/handlers.rs": "fd774c826fd615d9488bdac18af28697de239450444c8c7f0e9fd1922a092f65",
+    "adapters/bilibili/src/wbi.rs": "1d15edda79cc46e581b695d2d1058a3d6b04a7c74e9463e53e30c0cc4d4baa8d",
+    "docs/delivery/stage-plan.md": "8e857d41d602009e3390e26f2561921a137f7ecf3182a4bea2c550cc99cbfa44",
+    "docs/requirements.md": "5cb15104a8b474b1c7c0bfa3ffd7385ec318c3250859b637b6f25ed008ea910c",
+    "docs/site-archive-contracts.md": "bb8dfef11ab482bfc198cc16ee2c2b4f0c63e7375fcab348ec6375f00731768c"
+  },
+  "requirements": {
+    "total": 87,
+    "applicable": 68,
+    "laterNotRun": 19,
+    "historicalM1R2ObjectsPreserved": 85
+  },
+  "fixedFinding": "F-026",
+  "remainingFindings": [
+    "F-023",
+    "F-024",
+    "F-025",
+    "F-027",
+    "F-028",
+    "F-029"
+  ],
+  "requestComparisons": [
+    {
+      "run": "bilibili-legacy-default",
+      "status": "failed",
+      "loginProven": null,
+      "httpStatuses": [
+        412
+      ],
+      "reason": "http_access_restricted",
+      "sourceItems": null,
+      "sourceHasMore": null,
+      "note": null
+    },
+    {
+      "run": "bilibili-legacy-browser",
+      "status": "passed",
+      "loginProven": null,
+      "httpStatuses": [
+        200
+      ],
+      "reason": null,
+      "sourceItems": null,
+      "sourceHasMore": null,
+      "note": null
+    },
+    {
+      "run": "douyin-post-original",
+      "status": "failed",
+      "loginProven": true,
+      "httpStatuses": [
+        200,
+        403
+      ],
+      "reason": "uifid_missing",
+      "sourceItems": null,
+      "sourceHasMore": null,
+      "note": null
+    },
+    {
+      "run": "douyin-post-secsdk",
+      "status": "failed",
+      "loginProven": true,
+      "httpStatuses": [
+        200,
+        200
+      ],
+      "reason": "BrokenPipeError",
+      "sourceItems": 20,
+      "sourceHasMore": 1,
+      "note": "HTTP success on post is not production page completion; original oversize-forwarding helper failed"
+    }
+  ],
+  "realSourceSamples": [
+    {
+      "sample": "bilibili-video",
+      "sourceBytes": 349599098,
+      "sourceSha256": "78b85814c51e7afbe867cba4dced7b897d71638a563170a35f27f3af4c2ffe80",
+      "width": 3840,
+      "height": 2160,
+      "frameRate": "1309400/43697",
+      "videoBitrate": "12595216",
+      "audioCodec": "aac",
+      "durationSeconds": "218.559667",
+      "localFullDecodeExitCode": 0,
+      "derived": null
+    },
+    {
+      "sample": "douyin-video",
+      "sourceBytes": 9352828,
+      "sourceSha256": "ccc3d5fa6f1a2e32280640f8a0971808a125cdc86f82865e8d9a71ac955cbb1e",
+      "width": 1080,
+      "height": 1920,
+      "frameRate": "30/1",
+      "videoBitrate": "3208311",
+      "audioCodec": "aac",
+      "durationSeconds": "22.833333",
+      "localFullDecodeExitCode": 0,
+      "derived": null
+    },
+    {
+      "sample": "bilibili-live",
+      "sourceBytes": 20634932,
+      "sourceSha256": "ae2cb7ac4b903da883cea3af7e7ae6e610411a8ee3016c02ce6924cb385e255e",
+      "width": 1920,
+      "height": 1080,
+      "frameRate": "513125/8552",
+      "videoBitrate": "2268792",
+      "audioCodec": "aac",
+      "durationSeconds": "68.435000",
+      "localFullDecodeExitCode": 0,
+      "derived": {
+        "name": "bilibili-live.mp4",
+        "bytes": 20630069,
+        "sha256": "cc689829b6324c2aaedd81ca7acf2b08e556b5ec8a5a217a5f99e31a8f9bbb1c",
+        "operation": "stream copy with normalized timestamps; no reencode"
+      }
+    },
+    {
+      "sample": "douyin-live",
+      "sourceBytes": 160232600,
+      "sourceSha256": "1f2ee34173e6819ab128d6efd6289906f649b819d42b9a458eb3fe33d825d04e",
+      "width": 1920,
+      "height": 1080,
+      "frameRate": "10250/171",
+      "videoBitrate": "20036706",
+      "audioCodec": "aac",
+      "durationSeconds": "62.957000",
+      "localFullDecodeExitCode": 0,
+      "derived": {
+        "name": "douyin-live.mp4",
+        "bytes": 160217514,
+        "sha256": "b4a46b3dc1b5f518fefc7613ecea4b4a346b66c914d5fcbbaccae73608f45ed6",
+        "operation": "stream copy with normalized timestamps; no reencode"
+      }
+    }
+  ],
+  "mediaReceivedBytes": {
+    "bilibili": 370097957,
+    "douyin": 169588348
+  },
+  "mediaCredentialHeadersSent": false,
+  "nativeAudioVideoAcceptance": "not-run",
+  "realCoreGuiChain": "not-run",
+  "oldPackage": {
+    "directory": "dist/trace-0.1.0-windows-x64-m1-r2-2",
+    "files": 23,
+    "bytes": 208475909,
+    "sumsSha256": "b4055f314174e0f7a52c764c6c13813305136d8364bf949b6a1dc6fae67201e8",
+    "unchanged": true,
+    "currentSourceMatch": false
+  },
+  "preservation": {
+    "report13to15": true,
+    "migrations1to4": true,
+    "protectedOriginalTests": true,
+    "act003And004": true,
+    "mainAndBackupRefs": true,
+    "oldPackagesAndFailureEvidence": true
+  },
+  "commands": [
+    {
+      "receipt": "artifacts/a-m1-real-readiness/f026-correct-oracle-baseline.json",
+      "sha256": "58361a2954cbc6809ebdde65c318d1c1afab26e01e4006e266faf2c30cc0d6f4",
+      "exitCode": 101,
+      "caseCount": 1,
+      "passed": 0,
+      "failed": 1,
+      "sourceUnchangedDuringCommand": true,
+      "purpose": "expected failure importing preserved original Git WBI source with correct 32-character oracle"
+    },
+    {
+      "receipt": "artifacts/a-m1-real-readiness/f026-correct-oracle-fixed.json",
+      "sha256": "fc50b3abdc817a6863a0e93d7729ce3783439bf350b73f5fadb45be84c71fef8",
+      "exitCode": 0,
+      "caseCount": 2,
+      "passed": 2,
+      "failed": 0,
+      "sourceUnchangedDuringCommand": true,
+      "purpose": "current source and actual URL construction regression"
+    },
+    {
+      "receipt": "artifacts/a-m1-real-readiness/bilibili-final2.json",
+      "sha256": "d2bbcbde4260c0173ac49e8f9f0b05ec8d1625436ded999d295cdd03ea70ad13",
+      "exitCode": 0,
+      "caseCount": 26,
+      "passed": 26,
+      "failed": 0,
+      "sourceUnchangedDuringCommand": true,
+      "purpose": "current Bilibili adapter tests"
+    },
+    {
+      "receipt": "artifacts/a-m1-real-readiness/production-adapters.json",
+      "sha256": "706edc4ef1921f0f5d95a7b04359c574f823f95951da3611ac1414780992e271",
+      "exitCode": 0,
+      "caseCount": 9,
+      "passed": 9,
+      "failed": 0,
+      "sourceUnchangedDuringCommand": true,
+      "purpose": "unchanged production protocol tests after rebuilt Bilibili adapter"
+    },
+    {
+      "receipt": "artifacts/a-m1-real-readiness/bilibili-build.json",
+      "sha256": "8e43fc457a596c598b50038f73b5be7d4a85406ab648e9abebc9e5346654d167",
+      "exitCode": 0,
+      "caseCount": 0,
+      "passed": 0,
+      "failed": 0,
+      "sourceUnchangedDuringCommand": true,
+      "purpose": "current local Bilibili binary build, not a new package"
+    },
+    {
+      "receipt": "artifacts/a-m1-real-readiness/bilibili-clippy.json",
+      "sha256": "c611b314f4f0913586aca98c4c68fed2dea2ce7f05f84152f47ea4f9ec6f59a4",
+      "exitCode": 0,
+      "caseCount": 0,
+      "passed": 0,
+      "failed": 0,
+      "sourceUnchangedDuringCommand": true,
+      "purpose": "strict Clippy for changed adapter and all its targets"
+    },
+    {
+      "receipt": "artifacts/a-m1-real-readiness/fmt-final2.json",
+      "sha256": "8691a38c966d2c8d2660da6b6519e736de6d49627ad377a5a91b6cb2a342436e",
+      "exitCode": 0,
+      "caseCount": 0,
+      "passed": 0,
+      "failed": 0,
+      "sourceUnchangedDuringCommand": true,
+      "purpose": "workspace format check"
+    },
+    {
+      "receipt": "artifacts/a-m1-real-readiness/integration-probes.json",
+      "sha256": "f56a4394f123e40a1fba4fb136e623ea02cc8fcc7852c77c23f7d9be226c094a",
+      "exitCode": 101,
+      "caseCount": 2,
+      "passed": 0,
+      "failed": 2,
+      "sourceUnchangedDuringCommand": true,
+      "purpose": "two expected failures: current Core host policy and original packaged Douyin page via current bounded Core HTTP"
+    },
+    {
+      "receipt": "artifacts/a-m1-real-readiness/local-saved-media-decode.json",
+      "sha256": "e82bdf01a13415a7aba696bd6c6cc92e1fc85b6ed3d43362845273008dd73945",
+      "exitCode": 0,
+      "caseCount": 0,
+      "passed": 0,
+      "failed": 0,
+      "sourceUnchangedDuringCommand": true,
+      "purpose": "local files and locked original package media tools only; not product acceptance"
+    },
+    {
+      "receipt": "artifacts/a-m1-real-readiness/governance-final.json",
+      "sha256": "5a26b970748b9aace8e2fcc3885197ac3a2f78d92ce5898e49c18c46162f6fbc",
+      "exitCode": 0,
+      "caseCount": 16,
+      "passed": 16,
+      "failed": 0,
+      "sourceUnchangedDuringCommand": true,
+      "purpose": "current A delivery check"
+    },
+    {
+      "receipt": "artifacts/a-m1-real-readiness/old-bundle-check.json",
+      "sha256": "440bcb12081e9a8c6d95bf1f6675a2e1a309d189b876c83073b4222e5ca44f56",
+      "exitCode": 1,
+      "caseCount": 0,
+      "passed": 0,
+      "failed": 0,
+      "sourceUnchangedDuringCommand": true,
+      "purpose": "A delivery check; original stage bundles are expected to reject changed r3 inputs"
+    },
+    {
+      "receipt": "artifacts/a-m1-real-readiness/old-bundle-verify.json",
+      "sha256": "a9af1c1e558568263dbc9992aedccfe393eb82483eab6e3d0472e2f2d67e3a85",
+      "exitCode": 1,
+      "caseCount": 0,
+      "passed": 0,
+      "failed": 0,
+      "sourceUnchangedDuringCommand": true,
+      "purpose": "A delivery check; original stage bundles are expected to reject changed r3 inputs"
+    },
+    {
+      "receipt": "artifacts/a-m1-real-readiness/integration-probes-final.json",
+      "sha256": "882718addadbb487c22f95aa58742e652210e7b821fb91695c0fc057072e0318",
+      "exitCode": 101,
+      "caseCount": 2,
+      "passed": 0,
+      "failed": 2,
+      "sourceUnchangedDuringCommand": true,
+      "purpose": "current A delivery check"
+    }
+  ],
+  "probeInputs": {
+    "artifacts/a-m1-real-readiness/probes/Cargo.toml": "2663b977898631841283734fc856f68ca8dca34b1bdf9b58f1a7e742ce9e4027",
+    "artifacts/a-m1-real-readiness/probes/Cargo.lock": "6684cfdad6ab7f5702fd72cf07a858cfd5e88fa44cb42222d08ef8960ff524f3",
+    "artifacts/a-m1-real-readiness/probes/src/lib.rs": "9df980ffa1a8aaac28d20cadbb38b3ce09428f4d2a6d9746e4791984eedf7ce1",
+    "artifacts/a-m1-real-readiness/wbi-verified-probe/Cargo.toml": "4752b8b2b6af0a866579bd397abe5e3c44b6a936e26a0f5d158e1f45ee2e98d5",
+    "artifacts/a-m1-real-readiness/wbi-verified-probe/Cargo.lock": "2f3752b874ba02c06ae378130d8bd29a208b54374c8c4fa3c58d300ba933414f",
+    "artifacts/a-m1-real-readiness/wbi-verified-probe/src/lib.rs": "fcece1288205c7d2417ca559899dd364335c1f4262406a5d1179f46614d7f393"
+  },
+  "oracleCorrection": {
+    "initialAOracleLength": 33,
+    "correctOracleLength": 32,
+    "originalFailuresPreserved": true,
+    "validEvidence": [
+      "f026-correct-oracle-baseline",
+      "f026-correct-oracle-fixed"
+    ]
+  },
+  "limitations": [
+    "Source download/recording helper is separate from product Core/GUI and uses the original package tools; no new production package built.",
+    "Only specified objects and bounded first-page metadata were requested; no entire-site/history or anonymous-versus-member quality coverage claim.",
+    "The post correction returned HTTP 200 and 20 records but failed the oversized helper transfer; a bounded actual-Core replay separately fails without false completeness.",
+    "Initial helper versions were not all frozen per run; their original logs are preserved without retroactive source binding.",
+    "Current r3 package, full resource benchmark and real production chain await concentrated B implementation; old results cannot be rebound.",
+    "Automated full decode is not native rendering, audible playback, IME, scaling or external-player acceptance."
+  ]
+}

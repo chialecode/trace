@@ -26,6 +26,22 @@ async fn wait_state(core: &Core, expected: &str) {
         if current == expected {
             return;
         }
+        if current == "failed" && Instant::now() >= deadline {
+            let failure: Option<String> = core
+                .db
+                .read(|c| {
+                    Ok(c.query_row(
+                        "SELECT last_error FROM jobs WHERE job_key='window'",
+                        [],
+                        |r| r.get(0),
+                    )?)
+                })
+                .await
+                .unwrap();
+            eprintln!("window job failure class: {failure:?}");
+            let stages=core.db.read(|c|Ok(c.prepare("SELECT subject_id,stage,mime,received_bytes,expected_size FROM materializations")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,i64>(3)?,r.get::<_,Option<i64>>(4)?)))?.collect::<Result<Vec<_>,_>>()?)).await.unwrap();
+            eprintln!("materialization stages: {stages:?}");
+        }
         assert!(
             Instant::now() < deadline,
             "expected {expected}, got {current}"
@@ -49,6 +65,7 @@ async fn f005_f006_f007_task_windows_restart_pause_shutdown_and_cancel() {
         "shutdown",
         "cancel",
     ] {
+        eprintln!("verifying task window: {window}");
         let root = tempfile::tempdir().unwrap();
         let profile = test_profile(root.path(), &trace_e2e::adapter_dir());
         let mut core = Core::open(profile.clone()).await.unwrap();
@@ -78,11 +95,12 @@ async fn f005_f006_f007_task_windows_restart_pause_shutdown_and_cancel() {
                 .remove(0);
             job.mark_running(&core.db).await.unwrap();
             // Must match the resolver representation; detect drift with the assertions below.
+            let bytes = trace_e2e::media_bytes("v-1-p1.bin");
+            let identity = serde_json::json!({"representation":"muxed-v-1-p1","spec":{},"size":bytes.len(),"sha256":null});
             let op = OperationId::new(format!(
                 "mz-m-1-{}",
-                trace_core::config::short_hash("muxed-v-1-p1")
+                trace_core::config::short_hash(&identity.to_string())
             ));
-            let bytes = trace_e2e::media_bytes("v-1-p1.bin");
             let mut writer = core
                 .objects
                 .start_receiving(

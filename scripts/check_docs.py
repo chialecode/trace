@@ -13,7 +13,12 @@ from urllib.parse import unquote, urlsplit
 IGNORED = {'.git', 'node_modules', 'vendor', 'target', 'dist', 'build', '.venv', '__pycache__',
            '.local', 'tmp', 'artifacts', 'profiles', 'archives', 'coverage', 'test-results', 'reference'}
 DOC_STATES = {'active', 'draft', 'reference', 'superseded'}
-STAGES = ['M0', 'M1a', 'M1b', 'M1c', 'M2', 'M3']
+
+
+def stage_number(value: object) -> int | None:
+    if isinstance(value, str) and re.fullmatch(r'M(?:0|[1-9][0-9]*)', value):
+        return int(value[1:])
+    return None
 
 
 def prose(raw: str) -> str:
@@ -82,6 +87,10 @@ def validate(root: Path) -> tuple[list[str], dict[str, int]]:
             problem(f'{rel}: personal absolute path')
 
     registry = read_json('docs/governance/document-registry.json')
+    current_stage = registry.get('currentStage')
+    current_number = stage_number(current_stage)
+    if current_number is None:
+        problem('registry: currentStage must be M followed by a nonnegative integer')
     current_plan = registry.get('currentPlan')
     if not current_plan or current_plan not in docs:
         problem('registry: currentPlan must point to an existing document')
@@ -92,6 +101,13 @@ def validate(root: Path) -> tuple[list[str], dict[str, int]]:
     seen: set[str] = set()
     for entry in registry.get('documents', []):
         path = entry.get('path', '')
+        retirement = entry.get('retireAfter')
+        if retirement is not None:
+            retirement_number = stage_number(retirement)
+            if retirement_number is None:
+                problem(f'{path}: invalid retireAfter stage')
+            elif current_number is not None and current_number > retirement_number and path in docs:
+                problem(f'{path}: expired document must be distilled and retired')
         for key in ('path', 'kind', 'status', 'owner', 'scope', 'reviewed', 'basis'):
             if not isinstance(entry.get(key), str) or not entry[key].strip():
                 problem(f'{path}: missing registry field {key}')
@@ -178,9 +194,10 @@ def validate(root: Path) -> tuple[list[str], dict[str, int]]:
         if rid not in definitions['requirements']:
             problem(f'{rid}: mapping without requirement definition')
         first, complete = row.get('firstStage'), row.get('completeStage')
-        if first not in STAGES or complete not in STAGES:
+        first_number, complete_number = stage_number(first), stage_number(complete)
+        if first_number is None or complete_number is None:
             problem(f'{rid}: invalid delivery stage')
-        elif STAGES.index(first) > STAGES.index(complete):
+        elif first_number > complete_number:
             problem(f'{rid}: first stage after complete stage')
         if row.get('designAnchor') not in anchor_map.get('docs/design.md', set()):
             problem(f'{rid}: invalid design anchor')

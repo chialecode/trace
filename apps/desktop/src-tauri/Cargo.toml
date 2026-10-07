@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [lib]
 name = "trace_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -30,4 +33,4 @@ tracing.workspace = true
 url.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows.workspace = true
+windows = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }

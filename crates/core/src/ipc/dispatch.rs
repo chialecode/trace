@@ -4,11 +4,16 @@ use crate::core::Core;
 use crate::error::CoreError;
 use crate::jobs;
 use base64::Engine as _;
+use rusqlite::OptionalExtension;
+use serde_json::Value;
 use std::sync::Arc;
 use trace_contracts::control as ctl;
 use trace_contracts::control::commands as cmd;
 use trace_contracts::control::{Request, Response};
 use trace_domain::CONTROL_PROTOCOL_VERSION;
+
+// Both the stop operation and its visible draining count use this same scope.
+const PLATFORM_JOB_SCOPE: &str = "(subject_id IN (SELECT credential_id FROM credentials_state WHERE platform=?1) OR subject_id IN (SELECT a.account_id FROM source_accounts a WHERE a.namespace=?1) OR subject_id IN (SELECT e.entry_id FROM entries e WHERE e.namespace=?1 OR e.namespace LIKE ?1||':%') OR subject_id IN (SELECT l.session_id FROM live_sessions l JOIN subscriptions s ON s.subscription_id=l.subscription_id JOIN source_accounts a ON a.account_id=s.account_id WHERE a.namespace=?1 OR a.namespace LIKE ?1||':%') OR subject_id IN (SELECT s.subscription_id FROM subscriptions s JOIN source_accounts a ON a.account_id=s.account_id WHERE a.namespace=?1 OR a.namespace LIKE ?1||':%'))";
 
 pub fn error_response(request_id: &str, e: CoreError) -> Response {
     Response {
@@ -41,6 +46,9 @@ fn is_write(command: &str) -> bool {
             | cmd::ACCOUNT_UPDATE
             | cmd::SUBSCRIPTION_CREATE
             | cmd::SUBSCRIPTION_UPDATE
+            | "archive.delete"
+            | "archive.restore_deleted"
+            | "credential.update"
             | cmd::CREDENTIAL_IMPORT
             | cmd::CREDENTIAL_REVOKE
             | cmd::PLUGIN_SET_STATE
@@ -49,6 +57,15 @@ fn is_write(command: &str) -> bool {
             | cmd::RESTORE_START
             | cmd::DAEMON_PAUSE
             | cmd::DAEMON_SHUTDOWN
+            | "archive.entry.recheck"
+            | "upgrade.decide"
+            | "job.retry_failed"
+            | "quality.configure"
+            | "cache.configure"
+            | "cache.control"
+            | "account.resolve"
+            | "source.confirm"
+            | "source.cancel"
     )
 }
 
@@ -108,14 +125,35 @@ pub async fn dispatch(core: &Arc<Core>, req: Request) -> Response {
 async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, CoreError> {
     let args = req.args.clone();
     match req.command.as_str() {
+        "source.preview" => crate::source_acquisition::preview(core, parse(args)?).await,
+        "source.confirm" => crate::source_acquisition::confirm(core, parse(args)?).await,
+        "source.list" => crate::source_acquisition::list(core).await,
+        "source.cancel" => {
+            crate::source_acquisition::cancel(
+                core,
+                args["request_id"]
+                    .as_str()
+                    .ok_or_else(|| CoreError::InvalidInput("source request ID".into()))?
+                    .to_owned(),
+            )
+            .await
+        }
+
         cmd::DAEMON_STATUS => daemon_status(core).await,
         cmd::DAEMON_PAUSE => {
             let paused: bool = args
                 .get("paused")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            core.paused
-                .store(paused, std::sync::atomic::Ordering::SeqCst);
+            let was_paused = core
+                .paused
+                .swap(paused, std::sync::atomic::Ordering::SeqCst);
+            if paused && !was_paused {
+                core.db.write(|tx|{
+                    tx.execute("UPDATE jobs SET state='queued',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,next_run_at=?1,updated_at=?1 WHERE state IN ('leased','running')",[jobs::now()])?;
+                    Ok(())
+                }).await?;
+            }
             daemon_status(core).await
         }
         cmd::DAEMON_SHUTDOWN => {
@@ -123,9 +161,47 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                 core2.shutdown().await;
-                std::process::exit(0);
             });
             Ok(serde_json::json!({"accepted": true}))
+        }
+        "archive.delete_preview" => {
+            crate::deletion::preview(
+                core,
+                need_str(&args, "entry_id")?,
+                need_str(&args, "scope")?,
+            )
+            .await
+        }
+        "archive.delete" => {
+            crate::deletion::apply(
+                core,
+                need_str(&args, "entry_id")?,
+                need_str(&args, "scope")?,
+                need_str(&args, "token")?,
+            )
+            .await
+        }
+        "archive.restore_deleted" => {
+            crate::deletion::restore(
+                core,
+                need_str(&args, "entry_id")?,
+                args["generation"]
+                    .as_i64()
+                    .ok_or_else(|| CoreError::InvalidInput("deletion generation".into()))?,
+            )
+            .await
+        }
+        "archive.deleted" => {
+            crate::deletion::listing(core, args["after"].as_str().unwrap_or("").to_owned()).await
+        }
+        "health.list" => crate::issues::listing(core).await,
+        "health.refs" => {
+            crate::issues::refs(
+                core,
+                need_str(&args, "issue_key")?,
+                args["after"].as_str().unwrap_or("").to_owned(),
+            )
+            .await
         }
         cmd::CREATOR_CREATE => {
             let a: ctl::CreatorCreateArgs = parse(args)?;
@@ -151,6 +227,15 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
         }
         cmd::CREATOR_UPDATE => {
             let a: ctl::CreatorUpdateArgs = parse(args)?;
+            if a.display_name
+                .as_ref()
+                .is_some_and(|s| s.trim().is_empty() || s.len() > 1024)
+                || a.status
+                    .as_deref()
+                    .is_some_and(|s| !matches!(s, "active" | "archived"))
+            {
+                return Err(CoreError::InvalidInput("creator name/status".into()));
+            }
             let id = a.creator_id.clone();
             let display = a.display_name.clone();
             let aliases = a
@@ -253,6 +338,12 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
             creator["accounts"] = serde_json::Value::Array(accounts);
             Ok(creator)
         }
+        "account.resolve" => crate::accounts::resolve(core, args).await,
+        "account.history" => {
+            let id = need_str(&args, "account_id")?;
+            let before = args["before"].as_i64().unwrap_or(i64::MAX);
+            core.db.read(move|c|{let mut items=c.prepare("SELECT sequence,display_name,observed_at,evidence FROM account_observations WHERE account_id=?1 AND sequence<?2 ORDER BY sequence DESC LIMIT 5")?.query_map(rusqlite::params![id,before],|r|Ok(serde_json::json!({"sequence":r.get::<_,i64>(0)?,"display_name":r.get::<_,Option<String>>(1)?,"observed_at":r.get::<_,String>(2)?,"evidence":serde_json::from_str::<Value>(&r.get::<_,String>(3)?).unwrap_or(Value::Null)})))?.collect::<Result<Vec<_>,_>>()?;let more=items.len()>4;items.truncate(4);let next=if more{items.last().map(|v|v["sequence"].clone())}else{None};Ok(serde_json::json!({"items":items,"next_before":next}))}).await
+        }
         cmd::ACCOUNT_BIND => {
             let a: ctl::AccountBindArgs = parse(args)?;
             let account_id = format!("acc-{}", uuid::Uuid::new_v4());
@@ -337,7 +428,7 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
                     let mut stmt = c.prepare(
                         "SELECT a.account_id, a.namespace, a.native_account_key, a.display_name, a.profile_url,
                                 b.creator_id,
-                                (SELECT count(*) FROM subscriptions s WHERE s.account_id=a.account_id)
+                                (SELECT count(*) FROM subscriptions s WHERE s.account_id=a.account_id AND s.acquisition_kind='subscription')
                          FROM source_accounts a
                          LEFT JOIN account_bindings b ON b.account_id=a.account_id AND b.state='active'
                          WHERE (?1 IS NULL OR b.creator_id = ?1)",
@@ -362,6 +453,19 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
         }
         cmd::SUBSCRIPTION_CREATE => {
             let a: ctl::SubscriptionCreateArgs = parse(args)?;
+            crate::quality::validate_requirement(&a.quality)?;
+            let quality = serde_json::to_string(&a.quality)?;
+            if !["video", "dynamic", "image", "article", "live"].contains(&a.content_type.as_str())
+            {
+                return Err(CoreError::InvalidInput("unsupported content type".into()));
+            }
+            if a.check_interval_seconds
+                .is_some_and(|n| !(5..=86400).contains(&n))
+            {
+                return Err(CoreError::InvalidInput(
+                    "subscription interval outside 5..86400 seconds".into(),
+                ));
+            }
             let sub_id = format!("sub-{}", uuid::Uuid::new_v4());
             let account = a.account_id.clone();
             let content = a.content_type.clone();
@@ -370,45 +474,68 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
             } else {
                 a.range.clone()
             };
+            crate::scan_range::Range::parse(&range, &jobs::now())?;
             let credential = a.credential_id.clone();
-            let interval = a
-                .check_interval_seconds
-                .unwrap_or(crate::config::DEFAULT_CHECK_INTERVAL_SECONDS);
+            let capture_chat = a.capture_chat;
+            let capture_subtitles = a.capture_subtitles;
+            if (capture_chat || capture_subtitles) && content != "live" {
+                return Err(CoreError::InvalidInput(
+                    "chat capture requires live subscription".into(),
+                ));
+            }
+            let interval = a.check_interval_seconds.unwrap_or(if content == "live" {
+                30
+            } else {
+                crate::config::DEFAULT_CHECK_INTERVAL_SECONDS
+            });
             let sub = sub_id.clone();
             let now = jobs::now();
             core.db
                 .write(move |tx| {
+                    if let Some(cid)=&credential {
+                        let compatible:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM credentials_state c JOIN source_accounts a ON a.namespace=c.platform WHERE c.credential_id=?1 AND a.account_id=?2 AND c.status IN ('valid','authenticated'))",rusqlite::params![cid,account],|r|r.get(0))?;
+                        if !compatible{return Err(CoreError::InvalidInput("credential must be valid and belong to the subscription platform".into()));}
+                    }
                     tx.execute(
                         "INSERT INTO subscriptions (subscription_id, account_id, content_type, range_json,
                          credential_id, config_version, state, check_interval_seconds, created_at, updated_at)
                          VALUES (?1,?2,?3,?4,?5,1,'enabled',?6,?7,?7)",
                         rusqlite::params![sub, account, content, range.to_string(), credential, interval, now],
                     )?;
+                    tx.execute("UPDATE subscriptions SET capture_chat=?2,capture_subtitles=?3,quality_json=?4 WHERE subscription_id=?1",rusqlite::params![sub,capture_chat,capture_subtitles,quality])?;
+                    for lane in if content=="live"{vec!["incremental"]}else if range["kind"]!="from_now"{vec!["incremental","history","deep"]}else{vec!["incremental","deep"]}{
+                        tx.execute("INSERT INTO jobs(job_id,job_key,job_type,subject_id,payload,priority,state,created_at,updated_at) VALUES(?1,?2,'scan',?3,?4,?5,'queued',?6,?6)",rusqlite::params![format!("job-{}",uuid::Uuid::new_v4()),format!("scan:{sub}:{lane}"),sub,serde_json::json!({"subscription_id":sub,"mode":lane}).to_string(),if lane=="incremental"{1}else{2},now])?;
+                        if lane=="deep"{tx.execute("UPDATE jobs SET next_run_at=strftime('%Y-%m-%dT%H:%M:%SZ','now','+7 days') WHERE job_key=?1",[format!("scan:{sub}:deep")])?;}
+                    }
                     Ok(())
                 })
                 .await?;
-            // 创建初始扫描任务。
-            let jk = format!("scan:{sub_id}:incremental");
-            jobs::enqueue(
-                &core.db,
-                jk,
-                "scan",
-                &sub_id,
-                serde_json::json!({"subscription_id": sub_id, "mode": "incremental"}),
-                1,
-                1,
-                0,
-            )
-            .await?;
             Ok(serde_json::json!({"subscription_id": sub_id}))
         }
         cmd::SUBSCRIPTION_UPDATE => {
             let a: ctl::SubscriptionUpdateArgs = parse(args)?;
+            if let Some(p) = &a.quality {
+                crate::quality::validate_requirement(p)?;
+            }
+            let quality = a.quality.as_ref().map(serde_json::to_string).transpose()?;
+            let credential = a.credential_id.clone();
+            if a.check_interval_seconds
+                .is_some_and(|n| !(5..=86400).contains(&n))
+            {
+                return Err(CoreError::InvalidInput(
+                    "subscription interval outside 5..86400 seconds".into(),
+                ));
+            }
+            if let Some(range) = &a.range {
+                crate::scan_range::Range::parse(range, &jobs::now())?;
+            }
             let id = a.subscription_id.clone();
             let expected_revision = req.if_revision;
             let range = a.range.clone().map(|v| v.to_string());
             let enabled = a.enabled;
             let interval = a.check_interval_seconds;
+            let capture_chat = a.capture_chat;
+            let capture_subtitles = a.capture_subtitles;
             core.db
                 .write(move |tx| {
                     if let Some(expect) = expected_revision {
@@ -416,11 +543,30 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
                         if current != expect { return Err(CoreError::VersionConflict(format!("subscription {id}"))); }
                     }
 
+                    if let Some(ref cid)=credential {
+                        if !cid.is_empty() {
+                            let compatible:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM credentials_state c JOIN source_accounts a ON a.namespace=c.platform JOIN subscriptions s ON s.account_id=a.account_id WHERE c.credential_id=?1 AND s.subscription_id=?2 AND c.status IN ('valid','authenticated'))",rusqlite::params![cid,id],|r|r.get(0))?;
+                            if !compatible { return Err(CoreError::InvalidInput("credential must be valid and belong to the subscription platform".into())); }
+                        }
+                        tx.execute("UPDATE subscriptions SET credential_id=?2,config_version=config_version+1,updated_at=?3 WHERE subscription_id=?1",rusqlite::params![id,if cid.is_empty(){None}else{Some(cid)},jobs::now()])?;
+                        tx.execute("UPDATE jobs SET state=CASE WHEN state='paused' THEN 'paused' ELSE 'queued' END,target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,next_run_at=?2,updated_at=?2 WHERE json_extract(payload,'$.subscription_id')=?1 AND state!='cancelled' AND job_type IN ('scan','observe','media','record','account_profile','live_auxiliary')",rusqlite::params![id,jobs::now()])?;
+                    }
+                    if let Some(p)=quality {
+                        tx.execute("UPDATE subscriptions SET quality_json=?2,config_version=config_version+1,updated_at=?3 WHERE subscription_id=?1",rusqlite::params![id,p,jobs::now()])?;
+                        tx.execute("UPDATE jobs SET state=CASE WHEN state='paused' THEN 'paused' ELSE 'queued' END,target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,next_run_at=?2 WHERE json_extract(payload,'$.subscription_id')=?1 AND job_type IN ('media','record') AND state!='cancelled'",rusqlite::params![id,jobs::now()])?;
+                    }
                     if let Some(r) = range {
                         tx.execute(
                             "UPDATE subscriptions SET range_json=?2, config_version=config_version+1, updated_at=?3 WHERE subscription_id=?1",
                             rusqlite::params![id, r, jobs::now()],
                         )?;
+                        tx.execute("DELETE FROM scan_checkpoints WHERE subscription_id=?1",[&id])?;
+                        tx.execute("DELETE FROM scan_cursor_visits WHERE subscription_id=?1",[&id])?;
+                        tx.execute("UPDATE jobs SET target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,state='queued',next_run_at=?2,payload=json_remove(payload,'$.cursor') WHERE job_type='scan' AND subject_id=?1",rusqlite::params![id,jobs::now()])?;
+                        let history:bool=tx.query_row("SELECT content_type!='live' AND json_extract(range_json,'$.kind')!='from_now' FROM subscriptions WHERE subscription_id=?1",[&id],|r|r.get(0))?;
+                        if history {
+                            tx.execute("INSERT OR IGNORE INTO jobs(job_id,job_key,job_type,subject_id,payload,priority,state,created_at,updated_at) VALUES(?1,?2,'scan',?3,?4,2,'queued',?5,?5)",rusqlite::params![format!("job-{}",uuid::Uuid::new_v4()),format!("scan:{id}:history"),id,serde_json::json!({"subscription_id":id,"mode":"history"}).to_string(),jobs::now()])?;
+                        }else{tx.execute("UPDATE jobs SET state='cancelled' WHERE job_key=?1",[format!("scan:{id}:history")])?;}
                     }
                     if let Some(e) = enabled {
                         jobs::set_subscription_enabled(tx, &id, e)?;
@@ -431,6 +577,22 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
                             rusqlite::params![id, i, jobs::now()],
                         )?;
                     }
+                    if let Some(capture) = capture_subtitles {
+                        let live:bool=tx.query_row("SELECT content_type='live' FROM subscriptions WHERE subscription_id=?1",[&id],|r|r.get(0))?;
+                        if !live {return Err(CoreError::InvalidInput("subtitle capture requires live subscription".into()));}
+                        tx.execute("UPDATE subscriptions SET capture_subtitles=?2,config_version=config_version+1,updated_at=?3 WHERE subscription_id=?1",rusqlite::params![id,capture,jobs::now()])?;
+                    }
+                    if let Some(capture) = capture_chat {
+                        let live:bool=tx.query_row("SELECT content_type='live' FROM subscriptions WHERE subscription_id=?1",[&id],|r|r.get(0))?;
+                        if !live {return Err(CoreError::InvalidInput("chat capture requires live subscription".into()));}
+                        tx.execute("UPDATE subscriptions SET capture_chat=?2,config_version=config_version+1,updated_at=?3 WHERE subscription_id=?1",rusqlite::params![id,capture,jobs::now()])?;
+                        tx.execute("UPDATE jobs SET state=?2,target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,next_run_at=?3 WHERE job_type='live_auxiliary' AND json_extract(payload,'$.subscription_id')=?1 AND state!='cancelled'",rusqlite::params![id,if capture{"queued"}else{"paused"},jobs::now()])?;
+                    }
+                    jobs::consumers::subscription_changed(tx, &id, credential.is_some() || a.quality.is_some() || a.range.is_some())?;
+                    if let Some(cid)=credential.filter(|v|!v.is_empty()) {
+                        let generation:i64=tx.query_row("SELECT generation FROM credentials_state WHERE credential_id=?1",[&cid],|r|r.get(0))?;
+                        crate::upgrades::schedule(tx,&cid,generation)?;
+                    }
                     Ok(())
                 })
                 .await?;
@@ -439,44 +601,46 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
         cmd::SUBSCRIPTION_CHECK_NOW => {
             let a: ctl::SubscriptionCheckNowArgs = parse(args)?;
             let sub = a.subscription_id.clone();
-            let jk = format!("scan:{sub}:manual:{}", uuid::Uuid::new_v4());
-            let job_id = jobs::enqueue(
-                &core.db,
-                jk,
-                "scan",
-                &sub,
-                serde_json::json!({"subscription_id": sub, "mode": "incremental"}),
-                0,
-                1,
-                0,
-            )
-            .await?;
+            let job_id=core.db.write(move|tx|{
+                let ts=jobs::now();let key=format!("scan:{sub}:incremental");
+                tx.execute("INSERT INTO jobs(job_id,job_key,job_type,subject_id,payload,priority,state,created_at,updated_at) VALUES(?1,?2,'scan',?3,?4,0,'queued',?5,?5) ON CONFLICT(job_key) DO UPDATE SET next_run_at=excluded.updated_at,state='queued' WHERE jobs.state NOT IN ('running','leased','paused','cancelled')",rusqlite::params![format!("job-{}",uuid::Uuid::new_v4()),key,sub,serde_json::json!({"subscription_id":sub,"mode":"incremental"}).to_string(),ts])?;
+                Ok(tx.query_row("SELECT job_id FROM jobs WHERE job_key=?1",[key],|r|r.get::<_,String>(0))?)
+            }).await?;
             Ok(serde_json::json!({"job_id": job_id}))
         }
         cmd::SUBSCRIPTION_LIST => {
             let a: ctl::SubscriptionListArgs = parse(args)?;
             let creator = a.creator_id.clone();
+            let account = a.account_id.clone();
             let items: Vec<serde_json::Value> = core
                 .db
                 .read(move |c| {
                     let mut stmt = c.prepare(
                         "SELECT s.subscription_id, s.account_id, s.content_type, s.range_json, s.state,
-                                s.config_version, s.credential_id, s.updated_at
+                                s.config_version, s.credential_id, s.updated_at, s.capture_chat, s.capture_subtitles,s.quality_json,s.check_interval_seconds,
+                                (SELECT MIN(j.next_run_at) FROM jobs j WHERE j.subject_id=s.subscription_id AND j.job_type='scan' AND j.state NOT IN ('cancelled','paused')),
+                                (SELECT json_group_array(json_object('scan_type',p.scan_type,'coverage',json(p.coverage))) FROM scan_checkpoints p WHERE p.subscription_id=s.subscription_id)
                          FROM subscriptions s
-                         WHERE (?1 IS NULL OR EXISTS (
-                            SELECT 1 FROM account_bindings b WHERE b.account_id=s.account_id AND b.creator_id=?1))",
+                         WHERE s.acquisition_kind='subscription' AND (?1 IS NULL OR EXISTS (
+                            SELECT 1 FROM account_bindings b WHERE b.account_id=s.account_id AND b.creator_id=?1)) AND (?2 IS NULL OR s.account_id=?2)",
                     )?;
                     let rows = stmt
-                        .query_map([creator], |r| {
+                        .query_map(rusqlite::params![creator,account], |r| {
                             Ok(serde_json::json!({
                                 "subscription_id": r.get::<_, String>(0)?,
                                 "account_id": r.get::<_, String>(1)?,
                                 "content_type": r.get::<_, String>(2)?,
-                                "range": r.get::<_, String>(3)?,
+                                "range": r.get::<_, String>(3).ok().and_then(|v|serde_json::from_str::<serde_json::Value>(&v).ok()).unwrap_or_default(),
                                 "state": r.get::<_, String>(4)?,
                                 "config_version": r.get::<_, i64>(5)?,
                                 "credential_id": r.get::<_, Option<String>>(6)?,
                                 "updated_at": r.get::<_, String>(7)?,
+                                "capture_chat": r.get::<_, bool>(8)?,
+                                "capture_subtitles": r.get::<_, bool>(9)?,
+                                "check_interval_seconds":r.get::<_,i64>(11)?,
+                                "next_check_at":r.get::<_,Option<String>>(12)?,
+                                "coverage":r.get::<_,String>(13).ok().and_then(|v|serde_json::from_str::<serde_json::Value>(&v).ok()).unwrap_or_default(),
+                                "quality": r.get::<_,String>(10).ok().and_then(|v|serde_json::from_str::<serde_json::Value>(&v).ok()).unwrap_or_default(),
                             }))
                         })?
                         .collect::<Result<Vec<_>, _>>()?;
@@ -489,121 +653,75 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
             let a: ctl::ArchiveTimelineArgs = parse(args)?;
             crate::feed::query(&core.db, a).await
         }
+        "archive.acquisitions" => crate::acquisitions::list(core, args).await,
+        "upgrade.list" => crate::upgrades::list(core, args).await,
+        "upgrade.resources" => crate::upgrades::resources(core, args).await,
+        "upgrade.decide" => {
+            let choices = if args.get("items").is_some() {
+                parse(args["items"].clone())?
+            } else {
+                vec![parse(args)?]
+            };
+            crate::upgrades::decide(core, choices).await
+        }
 
         cmd::ARCHIVE_ENTRY_GET => {
             let a: ctl::ArchiveEntryGetArgs = parse(args)?;
-            let entry_id = a.entry_id.clone();
-            let detail = core
+            let entry = a.entry_id.clone();
+            let mut result = super::archive::entry(&core.db, a.entry_id).await?;
+            result["authentication"] = core
                 .db
-                .read(move |c| {
-                    let entry: serde_json::Value = c.query_row(
-                        "SELECT e.entry_id, e.namespace, e.native_kind, e.native_entry_key, e.published_at,
-                                e.published_precision, e.first_seen_at
-                         FROM entries e WHERE e.entry_id=?1",
-                        [&entry_id],
-                        |r| {
-                            Ok(serde_json::json!({
-                                "entry_id": r.get::<_, String>(0)?,
-                                "namespace": r.get::<_, String>(1)?,
-                                "kind": r.get::<_, String>(2)?,
-                                "native_key": r.get::<_, String>(3)?,
-                                "published_at": r.get::<_, Option<String>>(4)?,
-                                "published_precision": r.get::<_, Option<String>>(5)?,
-                                "discovered_at": r.get::<_, String>(6)?,
-                            }))
-                        },
-                    )?;
-                    let mut revisions = Vec::new();
-                    let mut stmt = c.prepare(
-                        "SELECT revision_id, title, normalized_body, completeness, observed_at, source_version_evidence
-                         FROM entry_revisions WHERE entry_id=?1 ORDER BY observed_at ASC",
-                    )?;
-                    let rows = stmt
-                        .query_map([&entry_id], |r| {
-                            Ok(serde_json::json!({
-                                "revision_id": r.get::<_, String>(0)?,
-                                "title": r.get::<_, String>(1)?,
-                                "body": r.get::<_, String>(2)?,
-                                "completeness": r.get::<_, String>(3)?,
-                                "observed_at": r.get::<_, String>(4)?,
-                                "evidence": r.get::<_, Option<String>>(5)?,
-                            }))
-                        })?
-                        .collect::<Result<Vec<_>, _>>()?;
-                    revisions.extend(rows);
-                    let mut observations = Vec::new();
-                    let mut stmt = c.prepare(
-                        "SELECT observation_seq, access_state, observed_at, revision_id
-                         FROM source_observations WHERE entry_id=?1 ORDER BY observation_seq ASC",
-                    )?;
-                    let obs = stmt
-                        .query_map([&entry_id], |r| {
-                            Ok(serde_json::json!({
-                                "seq": r.get::<_, i64>(0)?,
-                                "access_state": r.get::<_, String>(1)?,
-                                "observed_at": r.get::<_, String>(2)?,
-                                "revision_id": r.get::<_, Option<String>>(3)?,
-                            }))
-                        })?
-                        .collect::<Result<Vec<_>, _>>()?;
-                    observations.extend(obs);
-                    Ok(serde_json::json!({"entry": entry, "revisions": revisions, "observations": observations}))
-                })
+                .read(move |c| crate::acquisitions::summary(c, &entry))
                 .await?;
-            // 媒体与变体。
-            let media: Vec<serde_json::Value> = core
-                .db
-                .read({
-                    let e = a.entry_id.clone();
-                    move |c| {
-                        let mut stmt = c.prepare(
-                            "SELECT mi.media_id, mi.role, mi.position, mi.title,
-                                    mv.variant_id, mv.source_representation, b.blob_id, b.size,
-                                    mv.claimed_spec, mv.measured_spec, b.mime,
-                                    EXISTS(SELECT 1 FROM replicas rp WHERE rp.blob_id=b.blob_id AND rp.state='verified')
-                             FROM entries e
-                             JOIN entry_revisions r ON r.entry_id = e.entry_id
-                             JOIN media_items mi ON mi.revision_id = r.revision_id
-                             LEFT JOIN media_variants mv ON mv.media_id = mi.media_id
-                             LEFT JOIN blobs b ON b.blob_id = mv.blob_id
-                             WHERE e.entry_id = ?1 AND r.revision_id=(SELECT revision_id FROM entry_revisions WHERE entry_id=?1 ORDER BY (completeness='full') DESC,observed_at DESC LIMIT 1)
-                             ORDER BY mi.position, mi.role",
-                        )?;
-                        let rows = stmt
-                            .query_map([&e], |r| {
-                                Ok(serde_json::json!({
-                                    "media_id": r.get::<_, String>(0)?,
-                                    "role": r.get::<_, String>(1)?,
-                                    "position": r.get::<_, i64>(2)?,
-                                    "title": r.get::<_, Option<String>>(3)?,
-                                    "variant_id": r.get::<_, Option<String>>(4)?,
-                                    "representation": r.get::<_, Option<String>>(5)?,
-                                    "blob_id": r.get::<_, Option<String>>(6)?,
-                                    "size": r.get::<_, Option<i64>>(7)?,
-                                    "claimed_spec": r.get::<_, Option<String>>(8)?,
-                                    "measured_spec": r.get::<_, Option<String>>(9)?,
-                                    "mime": r.get::<_,Option<String>>(10)?,
-                                    "available": r.get::<_,bool>(11)?,
-                                }))
-                            })?
-                            .collect::<Result<Vec<_>, _>>()?;
-                        Ok(rows)
-                    }
-                })
-                .await?;
-            let mut detail = detail;
-            detail["media"] = serde_json::Value::Array(media);
-            detail["entry"]["body"] = detail["revisions"]
-                .as_array()
-                .and_then(|r| {
-                    r.iter()
-                        .rev()
-                        .find(|r| r["completeness"] == "full")
-                        .or_else(|| r.last())
-                })
-                .map(|r| r["body"].clone())
-                .unwrap_or_default();
-            Ok(detail)
+            Ok(result)
+        }
+        "cache.status" => crate::cache::status(&core.db).await,
+        "cache.configure" => {
+            crate::cache::configure(
+                core,
+                args["index_budget_bytes"]
+                    .as_i64()
+                    .ok_or_else(|| CoreError::InvalidInput("index budget".into()))?,
+                args["derived_budget_bytes"]
+                    .as_i64()
+                    .ok_or_else(|| CoreError::InvalidInput("derived budget".into()))?,
+            )
+            .await
+        }
+        "cache.control" => {
+            crate::cache::control(
+                core,
+                args["scope"].as_str().unwrap_or_default().to_owned(),
+                args["rebuild"].as_bool().unwrap_or(false),
+            )
+            .await
+        }
+        "archive.resources" => super::archive::resources(&core.db, parse(args)?).await,
+        "archive.entry.page" => super::archive::page(&core.db, parse(args)?).await,
+        "archive.revision.read" => super::archive::read(&core.db, parse(args)?).await,
+        "archive.observation.read" => {
+            super::archive::observation(
+                &core.db,
+                need_str(&args, "entry_id")?,
+                args["seq"]
+                    .as_i64()
+                    .ok_or_else(|| CoreError::InvalidInput("observation sequence".into()))?,
+                args["offset"].as_u64().unwrap_or(0),
+            )
+            .await
+        }
+        "archive.entry.recheck" => {
+            super::archive::recheck(&core.db, need_str(&args, "entry_id")?).await
+        }
+        "job.retry_failed" => {
+            let ids: Vec<String> = parse(args["job_ids"].clone())?;
+            if ids.is_empty() || ids.len() > 100 {
+                return Err(CoreError::InvalidInput("retry batch size".into()));
+            }
+            let count=core.db.write(move|tx|{let mut count=0;for id in ids {
+                count+=tx.execute("UPDATE jobs SET state='queued',target_generation=target_generation+1,attempts=0,lease_owner=NULL,lease_expires_at=NULL,next_run_at=?2,updated_at=?2 WHERE job_id=?1 AND state IN ('failed','waiting_retry','waiting_storage','waiting_auth','waiting_plugin','waiting_user')",rusqlite::params![id,jobs::now()])?;
+            }Ok(count)}).await?;
+            Ok(serde_json::json!({"requeued":count}))
         }
         cmd::JOB_LIST => {
             let a: ctl::JobListArgs = parse(args)?;
@@ -699,6 +817,7 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
                     if n == 0 {
                         return Err(CoreError::NotFound("retryable job".into()));
                     }
+                    jobs::consumers::retry(tx, &id)?;
                     Ok(())
                 })
                 .await?;
@@ -712,17 +831,7 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
             };
             // 直接取消（不新建目标代次——M1a 无需 Attempt 级取消语义）。
             let id = a.job_id.clone();
-            let cancelled: bool = core
-                .db
-                .write(move |tx| {
-                    let n = tx.execute(
-                        "UPDATE jobs SET state='cancelled', target_generation=target_generation+1, lease_owner=NULL, lease_expires_at=NULL, updated_at=?2
-                         WHERE job_id=?1 AND state NOT IN ('succeeded','failed','cancelled')",
-                        rusqlite::params![id, jobs::now()],
-                    )?;
-                    Ok(n == 1)
-                })
-                .await?;
+            let cancelled: bool = core.db.write(move |tx| jobs::cancel_work(tx, &id)).await?;
             let _ = job;
             Ok(serde_json::json!({"cancelled": cancelled}))
         }
@@ -742,8 +851,8 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
                                 "credential_id": r.get::<_, String>(0)?,
                                 "platform": r.get::<_, String>(1)?,
                                 "subject": r.get::<_, Option<String>>(2)?,
-                                "status": r.get::<_, String>(3)?,
-                                "capability": r.get::<_, String>(4)?,
+                                "status": ({let status=r.get::<_,String>(3)?;if status=="authenticated"{"valid".to_owned()}else{status}}),
+                                "capability": r.get::<_, String>(4).ok().and_then(|v|serde_json::from_str::<serde_json::Value>(&v).ok()).unwrap_or_default(),
                                 "validated_at": r.get::<_, Option<String>>(5)?,
                                 "created_at": r.get::<_, String>(6)?,
                             }))
@@ -775,7 +884,7 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
                 })
                 .await?;
             // 解密入短期缓存供适配器代理使用（仅内存）。
-            core.cache_cookie(&a.platform, a.secret);
+            core.cache_cookie(&format!("{}/{}", a.platform, credential_id), a.secret);
             // 探测能力。
             let validate = dispatch_probe_auth(core, &credential_id, &a.platform).await;
             match validate {
@@ -783,9 +892,40 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
                     serde_json::json!({"credential_id": credential_id, "status": cap.0, "capability": cap.1}),
                 ),
                 Err(e) => Ok(
-                    serde_json::json!({"credential_id": credential_id, "status": "invalid", "error": e.failure_class()}),
+                    serde_json::json!({"credential_id": credential_id, "status": "unknown", "error": e.failure_class()}),
                 ),
             }
+        }
+        "credential.update" => {
+            let id = need_str(&args, "credential_id")?;
+            let secret = args["secret"]
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= 65536)
+                .ok_or_else(|| CoreError::InvalidInput("credential text".into()))?
+                .to_owned();
+            let cid = id.clone();
+            let (platform,old_ref,generation):(String,String,i64)=core.db.read(move|c|Ok(c.query_row("SELECT platform,vault_ref,generation FROM credentials_state WHERE credential_id=?1",[cid],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?)).await?;
+            let new_ref = format!("vault-{}", uuid::Uuid::new_v4());
+            core.vault.store(&new_ref, secret.as_bytes())?;
+            let cid = id.clone();
+            let reference = new_ref.clone();
+            let swapped=core.db.write(move|tx|{
+                let n=tx.execute("UPDATE credentials_state SET vault_ref=?2,generation=generation+1,status='unknown',validated_at=NULL,capability='{}',updated_at=?3 WHERE credential_id=?1 AND generation=?4",rusqlite::params![cid,reference,jobs::now(),generation])?;
+                if n!=1{return Err(CoreError::VersionConflict("credential changed during update".into()));}
+                tx.execute("UPDATE jobs SET state='cancelled',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL WHERE job_type='credential_probe' AND subject_id=?1",[&cid])?;
+                tx.execute("UPDATE jobs SET state='waiting_auth',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,updated_at=?2 WHERE json_extract(payload,'$.subscription_id') IN (SELECT subscription_id FROM subscriptions WHERE credential_id=?1) AND state NOT IN ('cancelled','paused','succeeded')",rusqlite::params![cid,jobs::now()])?;
+                jobs::consumers::credential_changed(tx, &cid, false)?;
+                Ok(())
+            }).await;
+            if let Err(e) = swapped {
+                let _ = core.vault.remove(&new_ref);
+                return Err(e);
+            }
+            core.clear_cookie(&format!("{platform}/{id}"));
+            core.host.kill_session(&format!("{platform}/{id}")).await;
+            core.vault.remove(&old_ref)?;
+            let (status, capability) = dispatch_probe_auth(core, &id, &platform).await?;
+            Ok(serde_json::json!({"credential_id":id,"status":status,"capability":capability}))
         }
         cmd::CREDENTIAL_VALIDATE => {
             let a: ctl::CredentialRefArgs = parse(args)?;
@@ -819,24 +959,41 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
                     })
                     .await?
             };
-            core.vault.remove(&a.credential_id)?;
+            let cid = a.credential_id.clone();
+            let reference: String = core
+                .db
+                .read(move |c| {
+                    Ok(c.query_row(
+                        "SELECT vault_ref FROM credentials_state WHERE credential_id=?1",
+                        [cid],
+                        |r| r.get(0),
+                    )?)
+                })
+                .await?;
             let id = a.credential_id.clone();
             core.db
                 .write(move |tx| {
+                    tx.execute("UPDATE jobs SET state=CASE WHEN job_type='credential_probe' THEN 'cancelled' ELSE 'waiting_auth' END,target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL WHERE (subject_id=?1 AND job_type='credential_probe' OR json_extract(payload,'$.subscription_id') IN (SELECT subscription_id FROM subscriptions WHERE credential_id=?1)) AND state NOT IN ('succeeded','cancelled','paused')",[&id])?;
                     tx.execute(
                         "DELETE FROM credentials_state WHERE credential_id=?1",
                         [&id],
                     )?;
+                    jobs::consumers::credential_changed(tx, &id, false)?;
                     Ok(())
                 })
                 .await?;
-            core.clear_cookie(&platform);
+            core.clear_cookie(&format!("{platform}/{}", a.credential_id));
+            core.host
+                .kill_session(&format!("{platform}/{}", a.credential_id))
+                .await;
             // 撤销使等待凭证的任务进入 waiting_auth（只影响关联工作，不毁历史）。
+            core.vault.remove(&reference)?;
+            let revoked = a.credential_id.clone();
             core.db
-                .write(|tx| {
+                .write(move |tx| {
                     tx.execute(
-                        "UPDATE jobs SET state='waiting_auth', updated_at=?1 WHERE state='waiting_auth' OR (state IN ('queued','waiting_retry') AND job_type IN ('scan','media'))",
-                        [jobs::now()],
+                        "UPDATE jobs SET state='waiting_auth',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,updated_at=?1 WHERE state IN ('queued','leased','running','waiting_retry','waiting_auth') AND (json_extract(payload,'$.subscription_id') IN (SELECT subscription_id FROM subscriptions WHERE credential_id=?2))",
+                        rusqlite::params![jobs::now(),revoked],
                     )?;
                     Ok(())
                 })
@@ -853,6 +1010,7 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
                     let rows = stmt
                         .query_map([], |r| {
                             Ok(ctl::PluginDto {
+                                active_tasks: 0,
                                 plugin_id: r.get(0)?,
                                 platform: r.get(1)?,
                                 version: r.get(2)?,
@@ -869,12 +1027,16 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
                     Ok(rows)
                 })
                 .await?;
-            // 空表时呈现内置适配器注册信息（bilibili）。
+            // Include every registered platform even when only one has saved state.
             let mut items = items;
-            if items.is_empty() {
+            {
                 for spec in crate::pluginhost::default_adapter_specs(&core.profile) {
+                    if items.iter().any(|i| i.plugin_id == spec.plugin_id) {
+                        continue;
+                    }
                     let state = core.host.session_state(&spec.plugin_id).await;
                     items.push(ctl::PluginDto {
+                        active_tasks: 0,
                         plugin_id: spec.plugin_id,
                         platform: spec.platform,
                         version: "0.1.0".into(),
@@ -885,44 +1047,153 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
                             "enumerate".into(),
                             "observe".into(),
                             "resolve_media".into(),
+                            "probe_auth".into(),
+                            "probe_live".into(),
+                            "sample_live_auxiliary".into(),
                         ],
                     });
                 }
             }
+            let active = core.active_jobs.lock().unwrap().clone();
+            let items = core
+                .db
+                .read(move |c| {
+                    for item in &mut items {
+                        let sql = format!("SELECT job_id FROM jobs WHERE {PLATFORM_JOB_SCOPE}");
+                        let ids = c
+                            .prepare(&sql)?
+                            .query_map([&item.platform], |r| r.get::<_, String>(0))?
+                            .collect::<Result<Vec<_>, _>>()?;
+                        item.active_tasks = ids
+                            .iter()
+                            .map(|id| active.get(id).copied().unwrap_or(0))
+                            .sum();
+                        if item.state == "disabled" && item.active_tasks > 0 {
+                            item.state = "stopping".into();
+                        }
+                    }
+                    Ok(items)
+                })
+                .await?;
             Ok(serde_json::json!({ "items": items }))
         }
         cmd::PLUGIN_SET_STATE => {
             let a: ctl::PluginSetStateArgs = parse(args)?;
-            match a.state.as_str() {
-                "enabled" => {
-                    // 重新可用：waiting_plugin 任务复活（停用→启用的恢复路径）。
-                    core.db
-                        .write(|tx| {
-                            tx.execute(
-                                "UPDATE jobs SET state='queued', updated_at=?1 WHERE state='waiting_plugin'",
-                                [jobs::now()],
-                            )?;
-                            Ok(())
-                        })
-                        .await?;
-                }
-                "disabled" => {
-                    core.host.kill_session(&a.plugin_id).await;
-                    core.db
-                        .write(|tx| {
-                            tx.execute(
-                                "UPDATE jobs SET state='waiting_plugin', updated_at=?1 WHERE job_type IN ('scan','observe','media') AND state IN ('queued','leased','running','waiting_retry')",
-                                [jobs::now()],
-                            )?;
-                            Ok(())
-                        })
-                        .await?;
-                }
-                _ => return Err(CoreError::InvalidInput("state".into())),
+            if !matches!(a.state.as_str(), "enabled" | "disabled") {
+                return Err(CoreError::InvalidInput("plugin state".into()));
+            }
+            let enabled = a.state == "enabled";
+            let platform = a.plugin_id.clone();
+            if !crate::pluginhost::default_adapter_specs(&core.profile)
+                .iter()
+                .any(|s| s.platform == platform)
+            {
+                return Err(CoreError::NotFound("plugin".into()));
+            }
+            let host_platform = platform.clone();
+            if enabled {
+                core.host.set_enabled(&platform, true);
+            }
+            core.db.write(move|tx|{
+                let ts=jobs::now();
+                tx.execute("INSERT INTO plugins_state(plugin_id,platform,version,state,protocol,binary_path,enabled,updated_at) VALUES(?1,?1,?2,?3,?4,'',?5,?6) ON CONFLICT(plugin_id) DO UPDATE SET enabled=excluded.enabled,state=excluded.state,updated_at=excluded.updated_at",rusqlite::params![platform,env!("CARGO_PKG_VERSION"),if enabled{"enabled"}else{"disabled"},trace_domain::PLUGIN_PROTOCOL_VERSION,enabled as i64,ts])?;
+                let scope=PLATFORM_JOB_SCOPE;
+                let sql=if enabled{format!("UPDATE jobs SET state='queued',next_run_at=?2,updated_at=?2 WHERE state='waiting_plugin' AND {scope}")}else{format!("UPDATE jobs SET state='waiting_plugin',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,updated_at=?2 WHERE job_type IN ('scan','observe','media','record','account_profile','live_auxiliary','credential_probe','auth_completion') AND state IN ('queued','leased','running','waiting_retry') AND {scope}")};
+                tx.execute(&sql,rusqlite::params![platform,ts])?;
+                Ok(())
+            }).await?;
+            if !enabled {
+                core.host.set_enabled(&host_platform, false);
+                core.host.kill_session(&host_platform).await;
             }
             Ok(serde_json::json!({"ok": true}))
         }
         cmd::STORAGE_USAGE => crate::storage_ops::usage(core).await,
+        "live.fragments" => {
+            let sid = args["session_id"]
+                .as_str()
+                .ok_or_else(|| CoreError::InvalidInput("session identity".into()))?
+                .to_owned();
+            let before = args["before"].as_i64().unwrap_or(i64::MAX);
+            core.db.read(move|c|{
+                let mut items=c.prepare("SELECT f.sequence,f.state,f.start_ms,f.end_ms,f.reason,v.blob_id,b.mime,EXISTS(SELECT 1 FROM replicas rp WHERE rp.blob_id=v.blob_id AND rp.state='verified'),COALESCE(m.acquisition_evidence,'{}'),f.captured_at,v.created_at FROM live_fragments f LEFT JOIN media_items m ON m.media_id=f.media_id LEFT JOIN asset_selections s ON s.media_id=m.media_id LEFT JOIN media_variants v ON v.variant_id=s.variant_id LEFT JOIN blobs b ON b.blob_id=v.blob_id WHERE f.session_id=?1 AND f.sequence<?2 AND COALESCE(m.role,'')!='recording_source' ORDER BY f.sequence DESC LIMIT 101")?.query_map(rusqlite::params![sid,before],|r|Ok(serde_json::json!({"sequence":r.get::<_,i64>(0)?,"state":r.get::<_,String>(1)?,"start_ms":r.get::<_,Option<i64>>(2)?,"end_ms":r.get::<_,Option<i64>>(3)?,"reason":r.get::<_,Option<String>>(4)?,"blob_id":r.get::<_,Option<String>>(5)?,"mime":r.get::<_,Option<String>>(6)?,"available":r.get::<_,bool>(7)?,"quality":r.get::<_,String>(8)?.parse::<serde_json::Value>().unwrap_or_default(),"captured_at":r.get::<_,Option<String>>(9)?,"saved_at":r.get::<_,Option<String>>(10)?})))?.collect::<Result<Vec<_>,_>>()?;
+                for item in &mut items {
+                    let labels=crate::acquisitions::fragment(c,&sid,item["sequence"].as_i64().unwrap_or(0))?;
+                    item["authentication"]=labels["authentication"].clone();item["actual_spec"]=labels["actual_spec"].clone();
+                }
+                let more=items.len()>100;items.truncate(100);let next=more.then(||items.last().unwrap()["sequence"].clone());
+                let total:i64=c.query_row("SELECT count(*) FROM live_fragments f LEFT JOIN media_items m ON m.media_id=f.media_id WHERE f.session_id=?1 AND COALESCE(m.role,'')!='recording_source'",[sid],|r|r.get(0))?;
+                Ok(serde_json::json!({"items":items,"next_before":next,"total":total}))
+            }).await
+        }
+        "quality.pin" => {
+            let _gate = core.archive_access.read().await;
+            let variant = args["variant_id"]
+                .as_str()
+                .ok_or_else(|| CoreError::InvalidInput("variant identity".into()))?
+                .to_owned();
+            let enabled = args["enabled"]
+                .as_bool()
+                .ok_or_else(|| CoreError::InvalidInput("pin state".into()))?;
+            core.db
+                .write(move |tx| crate::quality::pin(tx, &variant, enabled))
+                .await?;
+            Ok(serde_json::json!({"pinned":enabled}))
+        }
+        "quality.recycle" => crate::quality::recycle(core).await,
+        "quality.list" => {
+            crate::quality::listing(
+                core,
+                need_str(&args, "entry_id")?,
+                args["after"].as_i64().unwrap_or(0),
+            )
+            .await
+        }
+        "quality.configure" => {
+            let prefer = args["prefer_fps"]
+                .as_bool()
+                .ok_or_else(|| CoreError::InvalidInput("quality preference".into()))?;
+            let wait = args["wait_seconds"]
+                .as_i64()
+                .filter(|n| (0..=2592000).contains(n))
+                .ok_or_else(|| CoreError::InvalidInput("recycle wait".into()))?;
+            let entry = need_str(&args, "entry_id")?;
+            core.db.write(move|tx|{
+                let policy=serde_json::json!({"prefer_fps":prefer,"wait_seconds":wait,"version":"m1-v1"});
+                tx.execute("INSERT INTO meta(key,value) VALUES('quality_policy',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[policy.to_string()])?;
+                let revision:String=tx.query_row("SELECT revision_id FROM current_entry_revisions WHERE entry_id=?1",[&entry],|r|r.get(0))?;
+                crate::quality::evaluate(tx,&revision,prefer,wait)?;
+                  crate::quality::schedule(tx,true)?;
+                crate::objects::outbox_emit(tx,"entry.quality_changed",&entry,&serde_json::json!({"policy":policy}))?;Ok(())
+            }).await?;
+            Ok(serde_json::json!({"updated":true}))
+        }
+        "live.auxiliary" => {
+            let session = args["session_id"]
+                .as_str()
+                .ok_or_else(|| CoreError::InvalidInput("session id".into()))?
+                .to_owned();
+            crate::recording::auxiliary::page(core, session, args["before"].as_i64()).await
+        }
+        "live.set_recording" => {
+            let sid = args["session_id"]
+                .as_str()
+                .ok_or_else(|| CoreError::InvalidInput("session id".into()))?
+                .to_owned();
+            let enabled = args["enabled"]
+                .as_bool()
+                .ok_or_else(|| CoreError::InvalidInput("recording state".into()))?;
+            let expected = args["generation"].as_i64();
+            core.db.write(move|tx|{
+                let (generation,stopped):(i64,i64)=tx.query_row("SELECT generation,manual_stopped FROM live_sessions WHERE session_id=?1",[&sid],|r|Ok((r.get(0)?,r.get(1)?)))?;
+                if expected.is_some_and(|e|e!=generation){return Err(CoreError::VersionConflict("live session".into()));}
+                if stopped == i64::from(!enabled){return Ok(());}
+                tx.execute("UPDATE live_sessions SET manual_stopped=?2,state=?3,generation=generation+1,stop_reason=?4 WHERE session_id=?1",rusqlite::params![sid,i64::from(!enabled),if enabled{"waiting"}else{"stopping"},if enabled{"manual_start"}else{"manual_stop"}])?;
+                if enabled{tx.execute("UPDATE jobs SET state='queued',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,next_run_at=?2 WHERE job_key=?1",rusqlite::params![format!("record:{sid}"),jobs::now()])?;}
+                crate::objects::outbox_emit(tx,"live.updated",&sid,&serde_json::json!({"recording_enabled":enabled}))?;Ok(())
+            }).await?;
+            Ok(serde_json::json!({"ok":true}))
+        }
         cmd::EXPORT_START => {
             let a: ctl::ExportStartArgs = parse(args)?;
             if a.target_dir.trim().is_empty() {
@@ -1010,24 +1281,14 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
         }
         cmd::ARCHIVE_OPEN_SOURCE => {
             let a: ctl::ArchiveEntryGetArgs = parse(args)?;
-            let (ns, key): (String, String) = core
-                .db
-                .read(move |c| {
-                    Ok(c.query_row(
-                        "SELECT namespace,native_entry_key FROM entries WHERE entry_id=?1",
-                        [a.entry_id],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )?)
-                })
-                .await?;
-            if !ns.starts_with("bilibili") || !key.bytes().all(|b| b.is_ascii_alphanumeric()) {
-                return Err(CoreError::Unsupported("source URL unavailable".into()));
-            }
+            let (ns,kind,key):(String,String,String)=core.db.read(move|c|Ok(c.query_row("SELECT namespace,native_kind,native_entry_key FROM entries WHERE entry_id=?1",[a.entry_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?)).await?;
+            let url = crate::feed::source_url(&ns, &kind, &key)
+                .ok_or_else(|| CoreError::Unsupported("source URL unavailable".into()))?;
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
                 std::process::Command::new("explorer.exe")
-                    .arg(format!("https://www.bilibili.com/video/{key}"))
+                    .arg(url)
                     .creation_flags(0x0800_0000)
                     .spawn()?;
             }
@@ -1041,6 +1302,7 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
             Ok(serde_json::json!({"released":true}))
         }
         cmd::MEDIA_OPEN_EXTERNAL => {
+            let _gate = core.archive_access.read().await;
             let a: ctl::MediaLeaseArgs = parse(args)?;
             let sha = crate::paths::blob_sha(&a.blob_id)?.to_owned();
             let blob = a.blob_id;
@@ -1050,6 +1312,8 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
                 "audio/mp4" => "m4a",
                 "video/webm" => "webm",
                 "video/x-flv" => "flv",
+                "video/mp2t" => "ts",
+                "audio/aac" => "aac",
                 "image/jpeg" => "jpg",
                 "image/png" => "png",
                 "image/webp" => "webp",
@@ -1087,6 +1351,7 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
             Ok(serde_json::json!({"opened":true}))
         }
         cmd::MEDIA_LEASE => {
+            let _gate = core.archive_access.read().await;
             let a: ctl::MediaLeaseArgs = parse(args)?;
             let sha = crate::paths::blob_sha(&a.blob_id)?.to_owned();
             let (size, mime): (i64, Option<String>) = core
@@ -1161,15 +1426,7 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
         }
         cmd::SEARCH_QUERY => {
             let a: ctl::SearchQueryArgs = parse(args)?;
-            let results = crate::search::query(
-                &core.db,
-                &a.query,
-                a.creator_id.as_deref(),
-                a.namespace.as_deref(),
-                a.cursor.as_deref(),
-                a.limit.clamp(1, 200),
-            )
-            .await?;
+            let results = crate::search::query(&core.db, a).await?;
             Ok(serde_json::to_value(results)?)
         }
         other => Err(CoreError::Unsupported(format!("command {other}"))),
@@ -1178,6 +1435,13 @@ async fn execute(core: &Arc<Core>, req: &Request) -> Result<serde_json::Value, C
 
 fn parse<T: serde::de::DeserializeOwned>(args: serde_json::Value) -> Result<T, CoreError> {
     serde_json::from_value(args).map_err(|e| CoreError::InvalidInput(format!("args: {e}")))
+}
+fn need_str(args: &serde_json::Value, key: &str) -> Result<String, CoreError> {
+    args[key]
+        .as_str()
+        .filter(|s| !s.is_empty() && s.len() <= 4096)
+        .map(str::to_owned)
+        .ok_or_else(|| CoreError::InvalidInput(format!("missing {key}")))
 }
 
 async fn daemon_status(core: &Arc<Core>) -> Result<serde_json::Value, CoreError> {
@@ -1188,9 +1452,11 @@ async fn daemon_status(core: &Arc<Core>) -> Result<serde_json::Value, CoreError>
         "instance_id": core.instance_id.as_str(),
         "node_id": core.node_id.as_str(),
         "schema_version": trace_domain::SCHEMA_VERSION,
+        "acquisition_budget":core.http.budget_snapshot(),
         "paused": core.paused.load(std::sync::atomic::Ordering::SeqCst),
         "started_at": core.started_at.rfc3339,
         "job_counts": counts,
+        "budgets":{"metadata_min_interval_ms":core.profile.metadata_interval_ms(),"metadata_jitter_ms":core.profile.metadata_jitter_ms(),"scan_page_budget":core.profile.scan_page_budget(),"live_concurrency":core.profile.live_concurrency.clamp(1,4),"check_jitter_percent":5},
         "storage": usage,
         "media_backend": {
             "ffmpeg": core.media_backend.ffmpeg.as_ref().map(|p| p.to_string_lossy().to_string()),
@@ -1202,32 +1468,24 @@ async fn daemon_status(core: &Arc<Core>) -> Result<serde_json::Value, CoreError>
 
 async fn creator_dto(core: &Arc<Core>, id: &str) -> Result<serde_json::Value, CoreError> {
     let id2 = id.to_string();
-    core.db
-        .read(move |c| {
-            Ok(c.query_row(
-                "SELECT creator_id, display_name, aliases, tags, status, notes, created_at, updated_at,
-                        (SELECT count(*) FROM account_bindings b WHERE b.creator_id=creators.creator_id AND b.state='active'),
-                        (SELECT count(*) FROM entries e JOIN account_bindings b2 ON b2.account_id=e.account_id WHERE b2.creator_id=creators.creator_id)
-                 FROM creators WHERE creator_id=?1",
-                [&id2],
-                |r| {
-                    Ok(serde_json::json!({
-                        "creator_id": r.get::<_, String>(0)?,
-                        "display_name": r.get::<_, String>(1)?,
-                        "aliases": r.get::<_, String>(2)?,
-                        "tags": r.get::<_, String>(3)?,
-                        "status": r.get::<_, String>(4)?,
-                        "notes": r.get::<_, String>(5)?,
-                        "created_at": r.get::<_, String>(6)?,
-                        "updated_at": r.get::<_, String>(7)?,
-                        "account_count": r.get::<_, i64>(8)?,
-                        "entry_count": r.get::<_, i64>(9)?,
-                    }))
-                },
-            )?)
-        })
-        .await
-        .map_err(|_| CoreError::NotFound("creator".into()))
+    core.db.read(move |c| {
+        let dto = c.query_row(
+            "SELECT creator_id, display_name, aliases, tags, status, notes, created_at, updated_at,
+                    (SELECT count(*) FROM account_bindings b WHERE b.creator_id=creators.creator_id AND b.state='active'),
+                    (SELECT count(*) FROM entries e JOIN account_bindings b2 ON b2.account_id=e.account_id WHERE b2.creator_id=creators.creator_id)
+             FROM creators WHERE creator_id=?1", [&id2], |r| {
+                let list = |column: usize| -> rusqlite::Result<Vec<String>> {
+                    let raw: String = r.get(column)?;
+                    serde_json::from_str(&raw).map_err(|error| rusqlite::Error::FromSqlConversionFailure(column,rusqlite::types::Type::Text,Box::new(error)))
+                };
+                Ok(ctl::CreatorDto {
+                    creator_id:r.get(0)?, display_name:r.get(1)?, aliases:list(2)?, tags:list(3)?,
+                    status:r.get(4)?, notes:r.get(5)?, created_at:r.get(6)?, updated_at:r.get(7)?,
+                    account_count:r.get(8)?, entry_count:r.get(9)?,
+                })
+            }).optional()?.ok_or_else(|| CoreError::NotFound("creator".into()))?;
+        Ok(serde_json::to_value(dto)?)
+    }).await
 }
 
 /// 单条内容的正交状态聚合。
@@ -1237,23 +1495,36 @@ pub(crate) fn entry_states_sync(
 ) -> Result<(String, String, String, serde_json::Value), CoreError> {
     // 访问状态：最近观察。
     let access: String = c
-                .query_row(
-                    "SELECT access_state FROM source_observations WHERE entry_id=?1 ORDER BY observation_seq DESC LIMIT 1",
-                    [&e],
-                    |r| r.get(0),
-                )
+                .prepare_cached("SELECT access_state FROM source_observations WHERE entry_id=?1 ORDER BY observation_seq DESC LIMIT 1")
+                .and_then(|mut statement| statement.query_row([&e], |r| r.get(0)))
                 .unwrap_or_else(|_| "unknown".into());
     // 保存程度：必要资源与 verified 副本。
-    let resources = c.prepare("SELECT mi.required, EXISTS(SELECT 1 FROM media_variants mv JOIN replicas r ON r.blob_id=mv.blob_id AND r.state='verified' WHERE mv.media_id=mi.media_id) FROM media_items mi WHERE mi.revision_id=(SELECT revision_id FROM entry_revisions WHERE entry_id=?1 ORDER BY (completeness='full') DESC,observed_at DESC LIMIT 1)")?.query_map([&e],|r|Ok(trace_domain::quality::ResourceSave{required:r.get(0)?,has_verified_blob:r.get(1)?}))?.collect::<Result<Vec<_>,_>>()?;
-    let progress = serde_json::to_value(trace_domain::quality::save_progress(&resources))?
+    let resources = c.prepare_cached("SELECT mi.required, EXISTS(SELECT 1 FROM media_variants mv JOIN replicas r ON r.blob_id=mv.blob_id AND r.state='verified' WHERE mv.media_id=mi.media_id) FROM media_items mi WHERE mi.revision_id=(SELECT revision_id FROM current_entry_revisions WHERE entry_id=?1)")?.query_map([&e],|r|Ok(trace_domain::quality::ResourceSave{required:r.get(0)?,has_verified_blob:r.get(1)?}))?.collect::<Result<Vec<_>,_>>()?;
+    let mut progress = serde_json::to_value(trace_domain::quality::save_progress(&resources))?
         .as_str()
         .unwrap_or("unknown")
         .to_owned();
-    // No persisted target comparison exists yet: measured bytes alone do not establish quality.
-    let quality = "unknown".to_string();
-    let mut stmt = c.prepare(
+    let body_complete: bool=c.prepare_cached("SELECT completeness='full' FROM entry_revisions WHERE entry_id=?1 ORDER BY (completeness='full') DESC,observed_at DESC LIMIT 1").and_then(|mut statement| statement.query_row([e],|r|r.get(0))).unwrap_or(false);
+    let text_kind: bool = c
+        .prepare_cached(
+            "SELECT native_kind IN ('dynamic','opus','article') FROM entries WHERE entry_id=?1",
+        )
+        .and_then(|mut statement| statement.query_row([e], |r| r.get(0)))
+        .unwrap_or(false);
+    if !body_complete && progress == "complete" {
+        progress = "partial".into();
+    }
+    if body_complete && resources.is_empty() && text_kind {
+        progress = "complete".into();
+    }
+    let live_incomplete:bool=c.prepare_cached("SELECT EXISTS(SELECT 1 FROM live_sessions l WHERE l.entry_id=?1 AND (l.state!='sealed' OR EXISTS(SELECT 1 FROM live_fragments f WHERE f.session_id=l.session_id AND f.state NOT IN ('sealed','superseded','source'))))")?.query_row([e],|r|r.get(0))?;
+    if live_incomplete && progress == "complete" {
+        progress = "partial".into();
+    }
+    let quality = crate::quality::state(c, e)?;
+    let mut stmt = c.prepare_cached(
                 "SELECT role, count(*) FROM media_items mi
-                 WHERE mi.revision_id = (SELECT revision_id FROM entry_revisions WHERE entry_id=?1 ORDER BY (completeness='full') DESC, observed_at DESC LIMIT 1)
+                 WHERE mi.revision_id = (SELECT revision_id FROM current_entry_revisions WHERE entry_id=?1)
                  GROUP BY role",
             )?;
     let roles: serde_json::Map<String, serde_json::Value> = stmt
@@ -1281,55 +1552,195 @@ async fn dispatch_probe_auth(
     credential_id: &str,
     platform: &str,
 ) -> Result<(String, serde_json::Value), CoreError> {
+    let result = probe_auth_guarded(core, credential_id, platform, None).await?;
+    let id = credential_id.to_owned();
+    let p = platform.to_owned();
+    core.db.write(move|tx|{
+        // Read the current binding and state in the scheduling transaction: a
+        // simultaneous credential replacement must not inherit an old result.
+        let current=tx.query_row("SELECT generation,status FROM credentials_state WHERE credential_id=?1",[&id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)));
+        let Ok((generation,status))=current else{return Ok(());};
+        if status=="invalid" {return Ok(());}
+        let key=format!("credential-probe:{id}:{generation}");
+        let next=plus_secs(&jobs::now(),if status=="valid"{21600}else{60});
+        tx.execute("INSERT INTO jobs(job_id,job_key,job_type,subject_id,payload,priority,state,next_run_at,created_at,updated_at) VALUES(?1,?2,'credential_probe',?3,?4,2,'queued',?5,?6,?6) ON CONFLICT(job_key) DO UPDATE SET state='queued',next_run_at=excluded.next_run_at WHERE jobs.state NOT IN ('running','leased','cancelled','paused')",rusqlite::params![format!("job-{}",uuid::Uuid::new_v4()),key,id,serde_json::json!({"credential_id":id,"credential_generation":generation,"platform":p}).to_string(),next,jobs::now()])?;Ok(())
+    }).await?;
+    Ok(result)
+}
+
+pub(crate) async fn probe_credential_job(
+    core: &Arc<Core>,
+    job: &jobs::ClaimedJob,
+) -> Result<(), CoreError> {
+    let platform = job.payload["platform"]
+        .as_str()
+        .ok_or_else(|| CoreError::InvalidInput("credential platform".into()))?;
+    core.metadata_pacing(platform).await;
+    let (status, _) =
+        probe_auth_guarded(core, &job.subject_id, platform, Some(job.clone())).await?;
+    match status.as_str() {
+        "valid" => {
+            let j = job.clone();
+            core.db.write(move|tx|{j.check(tx)?;tx.execute("UPDATE jobs SET state='queued',next_run_at=?2,lease_owner=NULL,lease_expires_at=NULL,attempts=0 WHERE job_id=?1",rusqlite::params![j.job_id,plus_secs(&jobs::now(),21600)])?;crate::issues::resolved_job(tx,&j.job_id)?;Ok(())}).await
+        }
+        "invalid" => Err(CoreError::AuthRequired(
+            "credential validation failed".into(),
+        )),
+        _ => {
+            let j = job.clone();
+            core.db.write(move|tx|{j.check(tx)?;let delay=60_i64.saturating_mul(1_i64<<tx.query_row("SELECT attempts FROM jobs WHERE job_id=?1",[&j.job_id],|r|r.get::<_,u32>(0))?.min(6));tx.execute("UPDATE jobs SET state='waiting_retry',next_run_at=?2,lease_owner=NULL,lease_expires_at=NULL,last_error=?3 WHERE job_id=?1",rusqlite::params![j.job_id,plus_secs(&jobs::now(),delay.min(3600)),serde_json::json!({"class":"transient_network","message":"credential validation unavailable"}).to_string()])?;Ok(())}).await
+        }
+    }
+}
+async fn probe_auth_guarded(
+    core: &Arc<Core>,
+    credential_id: &str,
+    platform: &str,
+    guard: Option<jobs::ClaimedJob>,
+) -> Result<(String, serde_json::Value), CoreError> {
+    if core.cancel.is_cancelled() {
+        return Err(CoreError::Cancelled);
+    }
+    if let Some(job) = guard.clone() {
+        core.db.read(move |c| job.check(c)).await?;
+    }
+    let cid = credential_id.to_owned();
+    let (reference, generation): (String, i64) = core
+        .db
+        .read(move |c| {
+            Ok(c.query_row(
+                "SELECT vault_ref,generation FROM credentials_state WHERE credential_id=?1",
+                [cid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .await?;
+    if guard
+        .as_ref()
+        .is_some_and(|j| j.payload["credential_generation"] != generation)
+    {
+        return Err(CoreError::Cancelled);
+    }
+    let secret = String::from_utf8(core.vault.load(&reference)?)
+        .map_err(|_| CoreError::AuthRequired("credential encoding".into()))?;
+    let credential_scope = format!("{credential_id}/g{generation}");
+    core.cache_cookie(&format!("{platform}/{credential_scope}"), secret);
     let result = core
         .host
-        .call(
+        .call_scoped(
             platform,
+            Some(&credential_scope),
             trace_contracts::plugin::methods::PROBE_AUTH,
             serde_json::json!({}),
             Some(20_000),
         )
         .await;
-    let (status, capability) = match &result {
-        Ok(v) => (
-            v.get("state")
-                .and_then(|s| s.as_str())
-                .unwrap_or("unknown")
-                .to_string(),
-            v.get("capability")
-                .cloned()
-                .unwrap_or(serde_json::json!({})),
-        ),
-        Err(e) => (
-            "invalid".to_string(),
-            serde_json::json!({"error": e.failure_class()}),
-        ),
-    };
+    let (status, capability) = classify_auth(&result);
     let id = credential_id.to_string();
     let status2 = status.clone();
     let cap_json = capability.to_string();
     core.db
         .write(move |tx| {
+            if let Some(j)=guard {j.check(tx)?;}
             tx.execute(
-                "UPDATE credentials_state SET status=?2, capability=?3, validated_at=?4, updated_at=?4 WHERE credential_id=?1",
-                rusqlite::params![id, status2, cap_json, jobs::now()],
-            )?;
+                "UPDATE credentials_state SET status=?2, capability=?3, validated_at=?4, updated_at=?4 WHERE credential_id=?1 AND generation=?5",
+                rusqlite::params![id, status2, cap_json, jobs::now(),generation],
+            ).and_then(|n|if n==1{Ok(n)}else{Err(rusqlite::Error::QueryReturnedNoRows)})?;
+            if status2=="invalid" {
+                tx.execute("UPDATE jobs SET state='waiting_auth',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL WHERE json_extract(payload,'$.subscription_id') IN (SELECT subscription_id FROM subscriptions WHERE credential_id=?1) AND state NOT IN ('succeeded','failed','cancelled','paused')",[&id])?;
+                jobs::consumers::credential_changed(tx,&id,false)?;
+            }
             Ok(())
         })
         .await?;
     // 凭证有效：唤醒等待中的任务（重新授权后恢复，FR-AUTH-005）。
     if status == "valid" {
+        let credential = credential_id.to_owned();
         core.db
-            .write(|tx| {
+            .write(move |tx| {
+                let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM credentials_state WHERE credential_id=?1 AND generation=?2 AND status='valid')",rusqlite::params![credential,generation],|r|r.get(0))?;
+                if !valid {return Err(CoreError::Cancelled);}
                 tx.execute(
-                    "UPDATE jobs SET state='queued', next_run_at=?1, updated_at=?1 WHERE state='waiting_auth'",
-                    [jobs::now()],
+                    "UPDATE jobs SET state='queued', next_run_at=?1, updated_at=?1 WHERE state='waiting_auth' AND json_extract(payload,'$.subscription_id') IN (SELECT subscription_id FROM subscriptions WHERE credential_id=?2 AND state='enabled' AND acquisition_kind='subscription')",
+                    rusqlite::params![jobs::now(),credential],
                 )?;
+                jobs::consumers::credential_changed(tx, &credential, true)?;
+                crate::upgrades::schedule(tx,&credential,generation)?;
+                tx.execute("UPDATE jobs SET state='queued',target_generation=target_generation+1,next_run_at=?1,updated_at=?1 WHERE job_type='media' AND state='succeeded' AND json_extract(payload,'$.subscription_id') IN (SELECT subscription_id FROM subscriptions WHERE credential_id=?2 AND state='enabled' AND acquisition_kind='subscription') AND EXISTS(SELECT 1 FROM entry_revisions r JOIN media_items m ON m.revision_id=r.revision_id WHERE r.entry_id=jobs.subject_id AND (json_extract(m.acquisition_evidence,'$.capability_decreased')=1 OR json_extract(m.acquisition_evidence,'$.below_target')=1 OR (json_extract(m.acquisition_evidence,'$.requested_quality.min_height') IS NOT NULL AND NOT EXISTS(SELECT 1 FROM asset_selections x JOIN media_variants v ON v.variant_id=x.variant_id JOIN replicas p ON p.blob_id=v.blob_id AND p.state='verified' WHERE x.media_id=m.media_id AND json_extract(v.measured_spec,'$.height')>=json_extract(m.acquisition_evidence,'$.requested_quality.min_height'))) OR (json_extract(m.acquisition_evidence,'$.requested_quality.min_fps') IS NOT NULL AND NOT EXISTS(SELECT 1 FROM asset_selections x JOIN media_variants v ON v.variant_id=x.variant_id JOIN replicas p ON p.blob_id=v.blob_id AND p.state='verified' WHERE x.media_id=m.media_id AND json_extract(v.measured_spec,'$.fps')>=json_extract(m.acquisition_evidence,'$.requested_quality.min_fps')))))",rusqlite::params![jobs::now(),credential])?;
                 Ok(())
             })
             .await?;
     } else {
-        core.clear_cookie(platform);
+        core.clear_cookie(&format!("{platform}/{credential_id}"));
     }
     Ok((status, capability))
+}
+
+fn classify_auth(result: &Result<serde_json::Value, CoreError>) -> (String, serde_json::Value) {
+    match result {
+        Ok(value) => (
+            match value["state"].as_str() {
+                Some("valid" | "authenticated") => "valid",
+                Some("invalid" | "anonymous") => "invalid",
+                _ => "unknown",
+            }
+            .into(),
+            {
+                let mut capabilities = serde_json::json!({"session_access":if matches!(value["state"].as_str(),Some("valid"|"authenticated")){"valid"}else if matches!(value["state"].as_str(),Some("invalid"|"anonymous")){"invalid"}else{"unknown"},"original_image":"unknown","video_quality":"unknown","membership_content":"unknown","live_access":"unknown"});
+                if let Some(fields) =
+                    trace_contracts::content::safe_metadata(&value["capability"]).as_object()
+                {
+                    capabilities.as_object_mut().unwrap().extend(fields.clone());
+                }
+                capabilities
+            },
+        ),
+        Err(error) => (
+            if matches!(
+                error.failure_class(),
+                trace_domain::errors::FailureClass::AuthRequired
+            ) {
+                "invalid"
+            } else {
+                "unknown"
+            }
+            .into(),
+            serde_json::json!({"error":error.failure_class()}),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+    #[test]
+    fn c06_authentication_is_not_media_permission_or_network_health() {
+        for state in ["valid", "authenticated"] {
+            let (status, cap) = classify_auth(&Ok(
+                serde_json::json!({"state":state,"capability":{"media_access":"unknown","token":"PRIVATE_AUTH_SENTINEL"}}),
+            ));
+            assert_eq!(status, "valid");
+            assert_eq!(cap["media_access"], "unknown");
+            assert!(!cap.to_string().contains("PRIVATE_AUTH_SENTINEL"));
+        }
+        assert_eq!(
+            classify_auth(&Ok(serde_json::json!({"state":"anonymous"}))).0,
+            "invalid"
+        );
+        assert_eq!(
+            classify_auth(&Err(CoreError::Network("offline".into()))).0,
+            "unknown"
+        );
+        assert_eq!(
+            classify_auth(&Err(CoreError::Adapter(
+                trace_domain::errors::FailureClass::PermissionDenied
+            )))
+            .0,
+            "unknown"
+        );
+        assert_eq!(
+            classify_auth(&Err(CoreError::AuthRequired("expired".into()))).0,
+            "invalid"
+        );
+    }
 }

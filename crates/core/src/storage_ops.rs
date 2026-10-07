@@ -9,6 +9,7 @@
 use crate::config::Profile;
 use crate::db::DbHandle;
 use crate::error::CoreError;
+use rusqlite::OptionalExtension;
 use std::io::Read;
 use std::path::Path;
 use trace_domain::time::{TimePrecision, TraceTime};
@@ -37,16 +38,24 @@ pub fn generate_manifest(
     c: &rusqlite::Connection,
     entry_id: &str,
 ) -> Result<Option<serde_json::Value>, CoreError> {
+    revision_manifest(c, entry_id, None)
+}
+
+pub(super) fn revision_manifest(
+    c: &rusqlite::Connection,
+    entry_id: &str,
+    revision_id: Option<&str>,
+) -> Result<Option<serde_json::Value>, CoreError> {
     let row = c
         .query_row(
             "SELECT e.namespace, e.native_kind, e.native_entry_key, a.namespace, a.native_account_key,
-                    r.revision_id, r.title, r.normalized_body, r.observed_at, e.published_at, e.published_precision
+                    r.revision_id, r.title, r.normalized_body, r.observed_at, e.published_at, e.published_precision, r.document_json, r.metadata_json
              FROM entries e
              JOIN entry_revisions r ON r.entry_id = e.entry_id
              JOIN source_accounts a ON a.account_id = e.account_id
-             WHERE e.entry_id = ?1
+             WHERE e.entry_id = ?1 AND r.revision_id=COALESCE(?2,(SELECT revision_id FROM current_entry_revisions WHERE entry_id=?1))
              ORDER BY r.observed_at DESC LIMIT 1",
-            [entry_id],
+            rusqlite::params![entry_id,revision_id],
             |r| {
                 Ok((
                     r.get::<_, String>(0)?,
@@ -60,18 +69,35 @@ pub fn generate_manifest(
                     r.get::<_, String>(8)?,
                     r.get::<_, Option<String>>(9)?,
                     r.get::<_, Option<String>>(10)?,
+                    r.get::<_, String>(11)?,
+                    r.get::<_, String>(12)?,
                 ))
             },
         )
-        .ok();
-    let Some((ns, kind, key, _ans, _ak, rev_id, title, body, observed_at, published_at, precision)) =
-        row
+        .optional()?;
+    let Some((
+        ns,
+        kind,
+        key,
+        account_namespace,
+        account_key,
+        rev_id,
+        title,
+        body,
+        observed_at,
+        published_at,
+        precision,
+        document,
+        metadata,
+    )) = row
     else {
         return Ok(None);
     };
     let mut stmt = c.prepare(
         "SELECT mi.role, mi.position, mi.source_attachment_id, mv.source_representation, b.blob_id, b.size,
-                mv.claimed_spec, mv.measured_spec
+                mv.claimed_spec, mv.measured_spec, b.mime, mi.required,
+                EXISTS(SELECT 1 FROM replicas rp WHERE rp.blob_id=b.blob_id AND rp.state='verified'),
+                EXISTS(SELECT 1 FROM asset_selections s WHERE s.variant_id=mv.variant_id),mi.acquisition_evidence
          FROM media_items mi
          LEFT JOIN media_variants mv ON mv.media_id = mi.media_id
          LEFT JOIN blobs b ON b.blob_id = mv.blob_id
@@ -89,12 +115,18 @@ pub fn generate_manifest(
                 "size": r.get::<_, Option<i64>>(5)?,
                 "claimed_spec": r.get::<_, Option<String>>(6)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or(Value::Null),
                 "measured_spec": r.get::<_, Option<String>>(7)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or(Value::Null),
+                "mime":r.get::<_,Option<String>>(8)?,
+                "required":r.get::<_,bool>(9)?,"available":r.get::<_,bool>(10)?,"selected":r.get::<_,bool>(11)?,
+                "acquisition_evidence":r.get::<_,Option<String>>(12)?.and_then(|s|serde_json::from_str::<Value>(&s).ok()),
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(serde_json::json!({
+        "document":serde_json::from_str::<Value>(&document)?,
+        "metadata":serde_json::from_str::<Value>(&metadata)?,
         "manifest_schema": 1,
         "entry": {"namespace": ns, "kind": kind, "native_key": key},
+        "account":{"namespace":account_namespace,"native_key":account_key},
         "revision": {"id": rev_id, "title": title, "body": body, "observed_at": observed_at},
         "published_at": published_at,
         "published_precision": precision,
@@ -161,7 +193,18 @@ pub async fn backup(
     target_root: &Path,
     include_media: bool,
 ) -> Result<serde_json::Value, CoreError> {
+    backup_guarded(core, target_root, include_media, None).await
+}
+
+pub(crate) async fn backup_guarded(
+    core: &crate::core::Core,
+    target_root: &Path,
+    include_media: bool,
+    guard: Option<crate::jobs::ClaimedJob>,
+) -> Result<serde_json::Value, CoreError> {
+    crate::paths::no_links(target_root)?;
     let backup_id = format!("bk-{}", uuid::Uuid::new_v4());
+    let _gate = core.archive_access.read().await;
     let dir = target_root.join(&backup_id);
     std::fs::create_dir_all(&dir)?;
     // 1) 一致数据库快照。
@@ -191,8 +234,11 @@ pub async fn backup(
                 continue;
             }
             let dst = dir.join("objects").join(sha);
-            std::fs::copy(&src, &dst)?;
-            let copied_sha = hash_file(&dst)?;
+            tokio::fs::copy(&src, &dst).await?;
+            let copy = dst.clone();
+            let copied_sha = tokio::task::spawn_blocking(move || hash_file(&copy))
+                .await
+                .map_err(|_| CoreError::Internal("backup verification task".into()))??;
             objects.push(serde_json::json!({
                 "blob_id": blob_id, "size": size, "included": copied_sha == sha,
             }));
@@ -211,11 +257,19 @@ pub async fn backup(
     });
     let tmp = dir.join("manifest.json.tmp");
     std::fs::write(&tmp, serde_json::to_vec_pretty(&manifest)?)?;
-    std::fs::rename(&tmp, dir.join("manifest.json"))?;
+    core.db
+        .write(move |tx| {
+            if let Some(job) = guard {
+                job.check(tx)?;
+            }
+            std::fs::rename(&tmp, dir.join("manifest.json"))?;
+            Ok(())
+        })
+        .await?;
     Ok(manifest)
 }
 
-async fn snapshot_db(db: &DbHandle, target: &Path) -> Result<(), CoreError> {
+pub(super) async fn snapshot_db(db: &DbHandle, target: &Path) -> Result<(), CoreError> {
     // 经 actor 线程执行在线备份（rusqlite backup API），保证一致性。
     let target = target.to_path_buf();
     db.read(move |src| {
@@ -387,76 +441,7 @@ pub async fn export(
     include_media: bool,
     creator_id: Option<&str>,
 ) -> Result<serde_json::Value, CoreError> {
-    std::fs::create_dir_all(target_dir)?;
-    let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let rows: Vec<(String, String)> = {
-        let creator = creator_id.map(|s| s.to_string());
-        core.db
-            .read(move |c| {
-                let mut stmt = c.prepare(
-                    "SELECT e.entry_id, r.title FROM entries e
-                     JOIN entry_revisions r ON r.entry_id = e.entry_id
-                     WHERE (?1 IS NULL OR EXISTS (
-                        SELECT 1 FROM account_bindings ab WHERE ab.account_id = e.account_id AND ab.creator_id = ?1))
-                     ORDER BY e.entry_id LIMIT 10000",
-                )?;
-                let rows = stmt
-                    .query_map(rusqlite::params![creator], |r| Ok((r.get(0)?, r.get(1)?)))?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(rows)
-            })
-            .await?
-    };
-    let mut items = Vec::new();
-    for (entry_id, title) in &rows {
-        let e = entry_id.clone();
-        let manifest: Option<serde_json::Value> =
-            core.db.read(move |c| generate_manifest(c, &e)).await?;
-        let Some(m) = manifest else { continue };
-        let base = safe_filename(title, entry_id);
-        let mut name = base.clone();
-        let mut i = 1;
-        while used_names.contains(&name.to_lowercase()) {
-            i += 1;
-            name = format!("{base} ({i})");
-        }
-        used_names.insert(name.to_lowercase());
-        let dir = target_dir.join(&name);
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join("archive.json"), serde_json::to_vec_pretty(&m)?)?;
-        if include_media {
-            std::fs::create_dir_all(dir.join("media"))?;
-            if let Some(media) = m["media"].as_array() {
-                for item in media {
-                    if let Some(blob) = item["blob_id"].as_str() {
-                        let sha = crate::paths::blob_sha(blob)?;
-                        let src = core.objects.object_path(sha)?;
-                        if src.exists() {
-                            let ext = ext_for(item["representation"].as_str().unwrap_or("video"));
-                            std::fs::copy(&src, dir.join("media").join(format!("{sha}{ext}")))?;
-                        }
-                    }
-                }
-            }
-        }
-        items.push(serde_json::json!({"entry_id": entry_id, "title": title, "folder": name}));
-    }
-    let report = serde_json::json!({
-        "export_schema": 1,
-        "created_at": now(),
-        "include_media": include_media,
-        "items": items,
-        "credentials": "not-included",
-    });
-    std::fs::write(
-        target_dir.join("export.json"),
-        serde_json::to_vec_pretty(&report)?,
-    )?;
-    Ok(report)
-}
-
-fn ext_for(_repr: &str) -> &'static str {
-    ".mp4"
+    crate::archive_export::export(core, target_dir, include_media, creator_id).await
 }
 
 /// Windows 安全文件名：保留名、非法字符、穿越全部中和（C21/C15）。
@@ -515,6 +500,7 @@ pub async fn usage(core: &crate::core::Core) -> Result<serde_json::Value, CoreEr
         "staging_bytes": staging_bytes,
         "object_count": object_count,
         "free_bytes": free_bytes(&core.profile.archive_root),
+        "reserved_bytes": core.objects.budget.reserve_bytes(&core.profile),
     }))
 }
 
@@ -534,7 +520,7 @@ fn dir_size(p: &Path) -> i64 {
     total
 }
 
-fn free_bytes(p: &Path) -> Option<i64> {
+pub(crate) fn free_bytes(p: &Path) -> Option<i64> {
     #[cfg(windows)]
     {
         use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;

@@ -163,6 +163,7 @@ pub struct MediaSpec {
     pub audio_channels: Option<i64>,
     /// 实际轨道数（无声视频为 0，需证据）。
     pub audio_tracks: Option<i64>,
+    pub subtitle_tracks: Option<i64>,
 }
 
 /// 字节实体：内容寻址，独立于来源与路径（INV-04）。

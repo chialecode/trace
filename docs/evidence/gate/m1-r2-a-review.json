@@ -1,0 +1,494 @@
+{
+  "schemaVersion": 1,
+  "plan": "TRACE-M1-01 r2",
+  "reviewDate": "2026-10-09",
+  "reviewedDelivery": "b670e3b7aee88bb72e4369c5d3bab0160c460cf2",
+  "mainBase": "960984c34487244f31f1238dffc2bd9faaa292e7",
+  "previousAHandoff": "141d261db8569100564b3f88b897ba4ca00b0f61",
+  "stageStatus": "rework-required",
+  "aTechnicalReview": "failed",
+  "bSelfCheck": "passed",
+  "productAcceptance": "not-run",
+  "release": "not-authorized/not-run",
+  "report": "docs/delivery/stage-report.md#a-m1-r2-review",
+  "findingsCanonical": "docs/delivery/stage-report.md#f-023",
+  "reworkPrompt": "docs/delivery/stage-report.md#a-to-b-m1-rework",
+  "sourceInputs": {
+    "count": 216,
+    "sha256": "f8a7d480ddb520d2b52f14f52145c4b1b6f1695b033d7e184a8b8f61140f86b7",
+    "gitDiskReceiptsManifestMatch": true,
+    "normativeInputsChangedByA": false
+  },
+  "bEvidence": {
+    "publicSummary": "docs/evidence/gate/m1-r2-self-check.json",
+    "bundle": "artifacts/b-m1-r2/final-bundle.json",
+    "initialChecks": [
+      {
+        "argv": [
+          "python",
+          "scripts/stage_evidence.py",
+          "check",
+          "artifacts/b-m1-r2/final-bundle.json"
+        ],
+        "exitCode": 0
+      },
+      {
+        "argv": [
+          "python",
+          "scripts/verify.py",
+          "--stage-bundle",
+          "artifacts/b-m1-r2/final-bundle.json"
+        ],
+        "exitCode": 0
+      }
+    ],
+    "uniqueCases": 290,
+    "requiredCases": 133,
+    "original98Retained": true,
+    "originalM1ObjectsPreserved": true,
+    "requirements": {
+      "total": 85,
+      "applicable": 66,
+      "laterNotRun": 19
+    }
+  },
+  "package": {
+    "directory": "dist/trace-0.1.0-windows-x64-m1-r2-2",
+    "files": 23,
+    "bytes": 208475909,
+    "sumsSha256": "b4055f314174e0f7a52c764c6c13813305136d8364bf949b6a1dc6fae67201e8",
+    "manifestSha256": "45a0f6a607be999be0c1d18bbde4df42e107080d67ec6724cce8e3f7ccc1c096",
+    "manifestBuildHeadRemainsActual": true,
+    "rebuiltByA": false
+  },
+  "independentResourceReview": {
+    "result": "passed",
+    "rawSamples": "artifacts/b-m1-r2/measure-final3/resource-samples.json",
+    "rawSamplesSha256": "e12615c7ae788ece5a5ba28deae955e2fc1242e582a90747f0a8345101124a82",
+    "sampleCount": 937,
+    "sampleWindowSeconds": 4684.983999999997,
+    "maxSampleIntervalSeconds": 5.01600000000326,
+    "durationSeconds": 3621.4613974000004,
+    "idleWindowSeconds": 906.1570000000065,
+    "mixedParallelSamples": 352,
+    "simultaneousByteGrowthIntervals": 37,
+    "measurements": {
+      "privateWorkingSet": 199102464,
+      "cpuAllProcesses": 1.9324095023236718,
+      "handles": 3833,
+      "queryP95Ms": 317.72860000000003,
+      "queryP99Ms": 348.28340000000003,
+      "hotQueryP95Ms": 317.8358,
+      "coldQueryP95Ms": 258.7901,
+      "throughputBytes": 15827105203,
+      "queueDepth": 227,
+      "freeDiskBytes": 69786390339584,
+      "idleCpuMeanPct": 0.5123151120089995,
+      "idleMemoryP95MiB": 52.15234375,
+      "recordingOnlyCpuMeanPct": 2.3769164180959375,
+      "recordingOnlyMemoryP95MiB": 61.74609375,
+      "discoveryP95Seconds": 30.581099033355713,
+      "startRecordingP95Seconds": 1.4479906558990479,
+      "guiCloseSeconds": 6.972969871480018,
+      "recoverySeconds": 11.09927659999994
+    },
+    "pureWindowActiveRecordingCounts": {
+      "4": 350
+    },
+    "independentlyRecomputedAllClaimedMetrics": true,
+    "sameGuiInstance": true,
+    "workload": {
+      "bodyMedianChars": 512,
+      "durationSeconds": 3620,
+      "httpLatencyMs": 100,
+      "idleSeconds": 1030,
+      "liveCheckTargets": 20,
+      "mediaMetadata": 500000,
+      "metadataEntries": 100000,
+      "ordinaryCheckTargets": 100,
+      "queryCacheState": "new_core_connection_os_cache_unflushed",
+      "queryPageSize": 50,
+      "seedSeconds": 24.2634857,
+      "streamBytesPerSecond": 1112866
+    },
+    "measureBinariesPreserved": {
+      "artifacts/b-m1-r2/preserved-r1-measure": {
+        "m1_resource_bench.exe": true,
+        "m1_bench_adapter.exe": true
+      },
+      "artifacts/b-m1-r2/preserved-failed-r2-measure": {
+        "m1_resource_bench.exe": true,
+        "m1_bench_adapter.exe": true
+      },
+      "artifacts/b-m1-r2/preserved-second-failed-r2-measure": {
+        "m1_resource_bench.exe": true,
+        "m1_bench_adapter.exe": true
+      },
+      "artifacts/b-m1-r2/preserved-current-r2-measure": {
+        "m1_resource_bench.exe": true,
+        "m1_bench_adapter.exe": true
+      }
+    },
+    "currentMeasureBinariesMatch": true,
+    "formalThresholds": "passed"
+  },
+  "closedOriginalFaults": [
+    "F-019",
+    "F-021",
+    "F-022"
+  ],
+  "preservedClosedFaults": [
+    "F-018",
+    "F-020"
+  ],
+  "newFaults": [
+    {
+      "id": "F-023",
+      "priority": "P1",
+      "status": "open",
+      "probe": "a_completed_shared_consumer_keeps_its_downloaded_upgrade_available",
+      "actual": "Completed pending candidate becomes stale/comparison_scope_changed when another consumer merely becomes runnable.",
+      "expected": "Normal shared execution handoff preserves an otherwise current completed candidate; actual control, identity, revision or selection changes remain fenced.",
+      "locations": [
+        "crates/core/src/jobs/consumers.rs::finish/reconcile",
+        "crates/core/src/upgrades.rs::snapshot/confirmation_current/invalidate_stale"
+      ]
+    },
+    {
+      "id": "F-024",
+      "priority": "P1",
+      "status": "open",
+      "probe": "a_delete_restore_does_not_promote_a_rejected_upgrade_to_selection",
+      "actual": "Copies delete/restore changes selection from low/automatic to high/rejected; quality evaluation leaves it selected.",
+      "expected": "Restore preserves explicit upgrade rejection and selects only eligible resources, or no resource.",
+      "locations": [
+        "crates/core/src/deletion.rs::restore",
+        "crates/core/src/quality.rs::evaluate"
+      ],
+      "limit": "Persistent Core selection verified; old bytes remain; no claim of native rejected-media playback."
+    },
+    {
+      "id": "F-025",
+      "priority": "P1",
+      "status": "open",
+      "probe": "a_prepared_bytes_from_cancelled_job_are_not_ready_for_new_completion",
+      "actual": "Different completion jobs share a materialization operation; ready returns true for the old owner's bytes, commit returns Cancelled, and the new request becomes cancelled.",
+      "expected": "Request-isolated reentrant operation identity and ownership checks; preserve the commit ownership barrier and require independent acquisition evidence.",
+      "locations": [
+        "crates/core/src/core.rs::acquisition_operation/uncommitted_operation",
+        "crates/core/src/objects/mod.rs::ready/start_receiving/commit"
+      ],
+      "limit": "Production identity formula and public object/job APIs, isolated synthetic fixture; not a complete real-site transfer."
+    }
+  ],
+  "independentProbeSource": {
+    "artifacts/a-m1-r2-review/probes/Cargo.toml": "90fb10057142306cd15cc172aca0c3c73d3f476777e71a03042609d93037acb3",
+    "artifacts/a-m1-r2-review/probes/Cargo.lock": "fc9b7059df0247eefe7cb52d98218772639827f149f8e58c52dcacae758ac360",
+    "artifacts/a-m1-r2-review/probes/src/lib.rs": "c099bf0f8643a09952090252f6d6df02842d724ce44e4d403b57f68735526072"
+  },
+  "directedReceipts": [
+    {
+      "path": "artifacts/a-m1-r2-review/f019-original.json",
+      "sha256": "d83aafe5332c1767f99a3657a5ea1cb18b4bcd8446aa2112b15a6680ec7d087b",
+      "id": "a-r2-f019-original",
+      "kind": "report",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "trace-core",
+        "--locked",
+        "overlapping_subscription_can_continue_same_entry_after_owner_pause",
+        "--",
+        "--nocapture"
+      ],
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "cases": [
+        {
+          "id": "rust:trace_core:core::tests::overlapping_subscription_can_continue_same_entry_after_owner_pause",
+          "name": "overlapping_subscription_can_continue_same_entry_after_owner_pause",
+          "status": "passed"
+        }
+      ],
+      "log": "artifacts/a-m1-r2-review/f019-original.log",
+      "logSha256": "0b228d3c4d6e452ca31d03aa7649b410a66390a0c463fb93e9c09430a00a4f04"
+    },
+    {
+      "path": "artifacts/a-m1-r2-review/c11-directed.json",
+      "sha256": "7e70a610db2cf09aa5dff2a0cab79bcc253775ae8ded1ec7b5f2ebfb393021f7",
+      "id": "a-r2-c11-directed",
+      "kind": "report",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "trace-core",
+        "--locked",
+        "c11_",
+        "--",
+        "--nocapture"
+      ],
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "cases": [
+        {
+          "id": "rust:trace_core:jobs::consumers::tests::c11_shared_auth_failure_and_credential_change_do_not_cross_consumers",
+          "name": "c11_shared_auth_failure_and_credential_change_do_not_cross_consumers",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_schema4_migration_unknown_history_and_failure_roll_back_without_rewriting_old_migrations",
+          "name": "c11_schema4_migration_unknown_history_and_failure_roll_back_without_rewriting_old_migrations",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:jobs::consumers::tests::c11_shared_observe_and_media_cover_all_owner_states_and_policies",
+          "name": "c11_shared_observe_and_media_cover_all_owner_states_and_policies",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:jobs::consumers::tests::c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures",
+          "name": "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_login_completion_is_bounded_persistent_deduplicated_and_excludes_live_deleted",
+          "name": "c11_login_completion_is_bounded_persistent_deduplicated_and_excludes_live_deleted",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_authentication_timelines_share_identity_counts_pages_and_immutable_history",
+          "name": "c11_authentication_timelines_share_identity_counts_pages_and_immutable_history",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_legacy_recovery_cache_verification_does_not_invent_acquisition_identity",
+          "name": "c11_legacy_recovery_cache_verification_does_not_invent_acquisition_identity",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_edited_completion_and_variant_labels_are_explicit_without_replacing_history",
+          "name": "c11_edited_completion_and_variant_labels_are_explicit_without_replacing_history",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_incomplete_or_cancelled_candidate_never_borrows_old_required_tracks",
+          "name": "c11_incomplete_or_cancelled_candidate_never_borrows_old_required_tracks",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_identical_bytes_keep_two_authentication_histories_without_false_upgrade",
+          "name": "c11_identical_bytes_keep_two_authentication_histories_without_false_upgrade",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_pending_upgrade_survives_restart_and_anonymous_fallback_has_new_context",
+          "name": "c11_pending_upgrade_survives_restart_and_anonymous_fallback_has_new_context",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_upgrade_accept_reject_keep_both_preserve_old_until_explicit_atomic_decision",
+          "name": "c11_upgrade_accept_reject_keep_both_preserve_old_until_explicit_atomic_decision",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_same_blob_distinct_acquisitions_backup_restore_keep_history_without_credentials",
+          "name": "c11_same_blob_distinct_acquisitions_backup_restore_keep_history_without_credentials",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_restore_invalidates_pending_confirmations_and_retry_finishes_original_acquisition",
+          "name": "c11_restore_invalidates_pending_confirmations_and_retry_finishes_original_acquisition",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_completed_candidate_cancel_and_failed_attempt_keep_old_resources_and_history",
+          "name": "c11_completed_candidate_cancel_and_failed_attempt_keep_old_resources_and_history",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown",
+          "name": "c11_two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_metadata_pacing_fifo_and_urgent_budget_prevent_consumer_starvation",
+          "name": "c11_metadata_pacing_fifo_and_urgent_budget_prevent_consumer_starvation",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_upgrade_stale_confirmations_reject_selection_revision_generations_cancel_and_corruption",
+          "name": "c11_upgrade_stale_confirmations_reject_selection_revision_generations_cancel_and_corruption",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_core:core::acquisition_tests::c11_overlapping_production_subscriptions_keep_authenticated_cdn_history_and_old_selection",
+          "name": "c11_overlapping_production_subscriptions_keep_authenticated_cdn_history_and_old_selection",
+          "status": "passed"
+        }
+      ],
+      "log": "artifacts/a-m1-r2-review/c11-directed.log",
+      "logSha256": "5e852bc1fadd2bfd57b88112adc5e5a8a6684cb0662f6b56488f31b829126d15"
+    },
+    {
+      "path": "artifacts/a-m1-r2-review/query-cost.json",
+      "sha256": "07de9722b5a613a5d4bf3ffe0862a2b56085f9470496c33d85c8407255269cf9",
+      "id": "a-r2-query-cost",
+      "kind": "report",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "trace-core",
+        "--locked",
+        "c08_live_quality_query_ignores_unrelated_recording_fragments",
+        "--",
+        "--nocapture"
+      ],
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "cases": [
+        {
+          "id": "rust:trace_core:quality::tests::c08_live_quality_query_ignores_unrelated_recording_fragments",
+          "name": "c08_live_quality_query_ignores_unrelated_recording_fragments",
+          "status": "passed"
+        }
+      ],
+      "log": "artifacts/a-m1-r2-review/query-cost.log",
+      "logSha256": "6de12afc8248280f24432dad0be54c3f86741a77ab387aace01c18c64b791965"
+    },
+    {
+      "path": "artifacts/a-m1-r2-review/live-auth.json",
+      "sha256": "3282c2d8addde110874830eb2bc17e0a2ebd3d6ca25e4fba8650fa320bdabce8",
+      "id": "a-r2-live-auth",
+      "kind": "report",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "trace-core",
+        "--locked",
+        "c12_fragment_authentication_actual_specs_gaps_restart_export_and_no_backfill",
+        "--",
+        "--nocapture"
+      ],
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "cases": [
+        {
+          "id": "rust:trace_core:recording::tests::c12_fragment_authentication_actual_specs_gaps_restart_export_and_no_backfill",
+          "name": "c12_fragment_authentication_actual_specs_gaps_restart_export_and_no_backfill",
+          "status": "passed"
+        }
+      ],
+      "log": "artifacts/a-m1-r2-review/live-auth.log",
+      "logSha256": "83d8386ea5ff6abce7054eeaddae295361f989de313c3d0c56ae566cd60a0a4f"
+    },
+    {
+      "path": "artifacts/a-m1-r2-review/independent-probes-final2.json",
+      "sha256": "210912e737fdaf19ced525a940431be778fa5360cb6a0a7f5c370aaf9b606f32",
+      "id": "a-r2-independent-probes-final2",
+      "kind": "report",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "artifacts/a-m1-r2-review/probes/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--target-dir",
+        "target",
+        "--no-fail-fast",
+        "--",
+        "--nocapture"
+      ],
+      "exitCode": 101,
+      "sourceUnchanged": true,
+      "cases": [
+        {
+          "id": "rust:trace_a_r2_review_probes:tests::a_prepared_bytes_from_cancelled_job_are_not_ready_for_new_completion",
+          "name": "a_prepared_bytes_from_cancelled_job_are_not_ready_for_new_completion",
+          "status": "failed"
+        },
+        {
+          "id": "rust:trace_a_r2_review_probes:tests::a_completed_shared_consumer_keeps_its_downloaded_upgrade_available",
+          "name": "a_completed_shared_consumer_keeps_its_downloaded_upgrade_available",
+          "status": "failed"
+        },
+        {
+          "id": "rust:trace_a_r2_review_probes:tests::a_delete_restore_does_not_promote_a_rejected_upgrade_to_selection",
+          "name": "a_delete_restore_does_not_promote_a_rejected_upgrade_to_selection",
+          "status": "failed"
+        }
+      ],
+      "log": "artifacts/a-m1-r2-review/independent-probes-final2.log",
+      "logSha256": "ff704c0047685a0222019410128184a5d0e88e45ce14f2d3b90aba506ca70616"
+    }
+  ],
+  "independentAuditFiles": {
+    "artifacts/a-m1-r2-review/baseline_audit.py": "c0ea7e8db50aa6bffc3443be14b135dddd17e7ac855d0248e7a3d604796e2965",
+    "artifacts/a-m1-r2-review/baseline-audit.json": "2b4c673f7d935ed3a9ecea99e10b30caaab8334b360250efeb1ce6fb261ee692",
+    "artifacts/a-m1-r2-review/independent_metrics.py": "212be2a2f76f160478d06943a08bc147f9c434729ffc077d1c024eaea065cdbe",
+    "artifacts/a-m1-r2-review/independent-metrics.json": "482d28eff2cefaf39de9c43838275dfa5f12c08fdcd2bf5b92a499d1496db94d"
+  },
+  "preservation": {
+    "report13To15Bytes": "unchanged",
+    "originalMigrations1To4": "unchanged",
+    "priorRustTests": 202,
+    "identicalBodies": 197,
+    "compatibleOrStrengthenedBodies": 5,
+    "mainOriginalRustTests": 109,
+    "originalTestsNotDeletedSkippedOrWeakened": true,
+    "priorPackagesProfilesFailuresReferencesPreserved": true
+  },
+  "reviewBundle": "artifacts/a-m1-r2-review/final-bundle.json",
+  "expectedReviewBundleResult": "failed",
+  "failureReceiptIncludedAsReport": "a-r2-independent-probes-final2",
+  "limits": [
+    "Zero new real-site requests during this review.",
+    "Previous same-endpoint positive/negative Cookie checks remain valid only for their recorded time and scope; no browser-session extraction.",
+    "Existing Bilibili diagnostic HTTP412 and authenticated Douyin list HTTP403 do not prove empty content, expired credentials, quality limits, or complete history.",
+    "Native playback, sound, IME, scaling, external-player and product acceptance remain not-run.",
+    "No push, PR, merge, publication, subagent or cross-chat message; only review documents amend the unpushed stage commit."
+  ],
+  "aggregationPreflight": {
+    "originalBCheckAfterDocumentEdits": {
+      "exitCode": 1,
+      "error": "stale or incomplete documents",
+      "receipt": "artifacts/a-m1-r2-review/old-bundle-after-docs.json"
+    },
+    "initialAssemblyInputError": {
+      "receipt": "artifacts/a-m1-r2-review/bundle-preview-result.json",
+      "reason": "A supplied the benchmark command receipt instead of the unchanged structured benchmark; original failed output retained."
+    },
+    "correctedAssembly": {
+      "receipt": "artifacts/a-m1-r2-review/bundle-preview2-result.json",
+      "exitCode": 1,
+      "errors": [
+        "failed command a-r2-independent-probes-final2"
+      ],
+      "allOtherEvidenceMatched": true
+    },
+    "documents": {
+      "exitCode": 0,
+      "markdownDocuments": 49,
+      "localLinks": 525,
+      "errors": 0
+    },
+    "publication": {
+      "exitCode": 0,
+      "findings": 0
+    }
+  },
+  "finalClosureReceipts": [
+    "artifacts/a-m1-r2-review/precommit-audit.json",
+    "artifacts/a-m1-r2-review/docs-final.json",
+    "artifacts/a-m1-r2-review/publication-final.json",
+    "artifacts/a-m1-r2-review/diff-final.json",
+    "artifacts/a-m1-r2-review/index-diff-final.json",
+    "artifacts/a-m1-r2-review/final-bundle-result.json",
+    "artifacts/a-m1-r2-review/final-bundle-check.json",
+    "artifacts/a-m1-r2-review/final-bundle-verify.json"
+  ]
+}

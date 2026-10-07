@@ -22,6 +22,7 @@ pub fn mixin_key(img_key: &str, sub_key: &str) -> String {
     MIXIN_KEY_ENC_TAB
         .iter()
         .filter_map(|&i| raw.get(i))
+        .take(32)
         .collect()
 }
 
@@ -64,6 +65,12 @@ pub fn sign(params: &[(String, String)], mixin: &str, wts: u64) -> (String, Stri
     (qs, w_rid)
 }
 
+/// 使用已包含 wts 的规范化查询生成请求地址，签名字段只追加一次。
+pub fn signed_url(base: &str, params: &[(String, String)], mixin: &str, wts: u64) -> String {
+    let (qs, rid) = sign(params, mixin, wts);
+    format!("{base}?{qs}&w_rid={rid}")
+}
+
 /// WBI 密钥缓存（30 分钟 TTL；失效刷新一次）。
 #[derive(Default)]
 pub struct WbiCache {
@@ -92,11 +99,31 @@ mod tests {
     /// 固定向量：社区示例密钥导出的混淆 key。
     const IMG: &str = "7cd084941338484aae1ad9425b84077c";
     const SUB: &str = "4932caff0ff746eab6f01bf08b70ac45";
+    // 保留原 sign() 的任意密钥向量；它不代表 nav 导出的 32 字符密钥。
     const MIXIN: &str = "ea1db124af3c7062474693fa704f4ff8ab4a500c8e7ca0784bf98095b48cd341";
 
     #[test]
     fn mixin_key_fixed_vector() {
-        assert_eq!(mixin_key(IMG, SUB), MIXIN);
+        assert_eq!(mixin_key(IMG, SUB), "ea1db124af3c7062474693fa704f4ff8");
+    }
+
+    #[test]
+    fn c14_signed_url_uses_32_character_key_and_one_timestamp() {
+        let params = vec![
+            ("foo".to_string(), "1".to_string()),
+            ("bar".to_string(), "2".to_string()),
+            ("baz".to_string(), "3".to_string()),
+        ];
+        let url = signed_url(
+            "https://api.bilibili.com/x/space/wbi/arc/search",
+            &params,
+            &mixin_key(IMG, SUB),
+            1_702_204_169,
+        );
+        assert_eq!(
+            url,
+            "https://api.bilibili.com/x/space/wbi/arc/search?bar=2&baz=3&foo=1&wts=1702204169&w_rid=e0ed91b768b58beb346ad3116de6ab68"
+        );
     }
 
     #[test]

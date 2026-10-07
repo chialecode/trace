@@ -20,7 +20,7 @@ ADR-001～012 从原 `docs/design.md` 第 19.1 节迁入，编号不变。这里
 | ADR-014 | 通用技术开源优先，站点规则独立 | 复用成熟能力、关注 TRACE 整合；需维护/许可/场景证据 | accepted；DEC-002/008，2026-09-25 |
 | ADR-015 | 后续 A 规划审核、B 实现，MVP 迭代 | 减少开发来回打断；仍需明确交接和真实证据 | accepted；DEC-003/004/006，2026-09-25 |
 | ADR-016 | Vue/Naive UI/Vite、Tokio/rusqlite、Windows DPAPI/named pipe、Vitest/WDIO 为首轮栈 | [具体比较/许可/版本/替换条件](../research/2026-09-26-technology-stack.md)；TS7 不兼容，TS6 最小试验通过；其余 B 集成实测 | accepted-design，Agent A 授权内技术选择，2026-09-26；不是整个栈已兼容的结论 |
-| ADR-017 | M1a 先 Bilibili 普通投稿视频，Douyin 生产接入 M1b | 当前可读 Rust 参考链路较完整；抖音官方作者授权不覆盖任意账号/媒体需求，社区路线需单独验证；[两站入口](../delivery/m0-m1a-preparation.md) | accepted-design，Agent A 按 DEC-005/008 选择技术顺序，2026-09-26；真实现场 not-run，Q-001 关闭选择部分 |
+| ADR-017 | M1a 先 Bilibili 普通投稿视频，Douyin 生产接入 M1b | 当前可读 Rust 参考链路较完整；抖音官方作者授权不覆盖任意账号/媒体需求，社区路线需单独验证；[两站入口](https://github.com/chialecode/trace/blob/960984c34487244f31f1238dffc2bd9faaa292e7/docs/delivery/m0-m1a-preparation.md) | accepted-design，Agent A 按 DEC-005/008 选择技术顺序，2026-09-26；真实现场 not-run，Q-001 关闭选择部分 |
 | ADR-018 | 长批次计划、仓库交接合同、双方必交 prompt | 减少逐包往返；一份计划/报告和稳定问题编号仍保留真实阻塞与版本证据；[机制](../dev-rules/development-workflow.md#handoff-protocol) | accepted，DEC-010/012/013，2026-09-26；不自动授权子 Agent 或外部消息 |
 
 首轮选择与实测状态分别记录；实际依赖锁和生产能力由 B 交付证实。常规实现选择由技术维护者在授权范围内按证据完成；改变产品语义、分发许可或既有方向才集中请用户处理。重大替代新增 ADR 并标明被替代者，不覆盖旧理由。

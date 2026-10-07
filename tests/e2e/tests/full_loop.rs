@@ -48,7 +48,7 @@ async fn offline_full_loop_scan_observe_media_search_backup_restore() {
     );
 
     let core = Core::open(profile.clone()).await.expect("core open");
-    // 哨兵凭证（C13）：fake 平台无 probe_auth，凭证仅入 vault 与短期缓存。
+    // 哨兵凭证（C13）：合成认证仅用于本地代理，显式关联订阅。
     let sentinel = "SENTINEL-COOKIE-7f3a9-do-not-leak";
     let r = dispatch::dispatch(
         &core,
@@ -60,6 +60,10 @@ async fn offline_full_loop_scan_observe_media_search_backup_restore() {
     )
     .await;
     assert!(r.ok, "credential import failed: {r:?}");
+    let credential_id = r.result.as_ref().unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
     core.start_scheduler();
 
@@ -115,6 +119,7 @@ async fn offline_full_loop_scan_observe_media_search_backup_restore() {
             serde_json::json!({
                 "account_id": account_id,
                 "content_type": "video",
+                "credential_id": credential_id,
                 "range": {"kind": "recent_days", "days": 365},
             }),
             None,

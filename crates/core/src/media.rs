@@ -11,6 +11,9 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use trace_domain::entities::MediaSpec;
 
+// Excludes playlist/concat demuxers even if a downloaded file masquerades as media.
+const LOCAL_FORMATS: &str = "mov,matroska,webm,flv,mpegts,mpegvideo,mp3,aac,ogg,flac,wav,image2,png_pipe,jpeg_pipe,webp_pipe,gif,webvtt";
+
 #[derive(Debug, Clone)]
 pub struct MediaBackend {
     pub ffmpeg: Option<PathBuf>,
@@ -154,6 +157,10 @@ impl MediaBackend {
                     "json",
                     "-show_format",
                     "-show_streams",
+                    "-protocol_whitelist",
+                    "file,pipe",
+                    "-format_whitelist",
+                    LOCAL_FORMATS,
                 ])
                 .arg(path),
             cancel,
@@ -181,7 +188,14 @@ impl MediaBackend {
             .arg("-loglevel")
             .arg("error");
         for i in inputs {
-            cmd.arg("-i").arg(i);
+            cmd.args([
+                "-protocol_whitelist",
+                "file,pipe",
+                "-format_whitelist",
+                LOCAL_FORMATS,
+            ])
+            .arg("-i")
+            .arg(i);
         }
         cmd.arg("-map").arg("0:v:0");
         if inputs.len() > 1 {
@@ -256,6 +270,7 @@ fn parse_probe(json: &Value) -> MediaSpec {
             .and_then(|s| s.parse::<i64>().ok());
     }
     let mut audio_tracks = 0i64;
+    let mut subtitle_tracks = 0i64;
     if let Some(streams) = json.get("streams").and_then(|s| s.as_array()) {
         for s in streams {
             match s.get("codec_type").and_then(|v| v.as_str()) {
@@ -284,11 +299,13 @@ fn parse_probe(json: &Value) -> MediaSpec {
                         spec.audio_channels = s.get("channels").and_then(|v| v.as_i64());
                     }
                 }
+                Some("subtitle") => subtitle_tracks += 1,
                 _ => {}
             }
         }
     }
     spec.audio_tracks = Some(audio_tracks);
+    spec.subtitle_tracks = Some(subtitle_tracks);
     spec
 }
 
@@ -318,6 +335,46 @@ fn which_simple(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn c06_local_backend_rejects_disguised_playlists_without_network() {
+        let backend = MediaBackend::detect(&crate::config::Profile::default()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let file = dir.path().join("media.mp4");
+        let cancel = CancellationToken::new();
+        std::fs::write(
+            &file,
+            format!(
+                "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nhttp://{}/secret\n#EXT-X-ENDLIST\n",
+                listener.local_addr().unwrap()
+            ),
+        )
+        .unwrap();
+        assert!(backend.probe(&file, &cancel).await.is_err());
+        assert!(
+            backend
+                .mux_stream_copy(
+                    std::slice::from_ref(&file),
+                    dir.path().join("out.mp4"),
+                    &cancel
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "FFmpeg/FFprobe must not bypass the controlled proxy"
+        );
+        std::fs::write(
+            &file,
+            "ffconcat version 1.0\nfile 'file:///private-input'\n",
+        )
+        .unwrap();
+        assert!(backend.probe(&file, &cancel).await.is_err());
+    }
 
     #[tokio::test]
     async fn f012_pinned_backend_probes_and_muxes_fixed_avc_aac_samples() {

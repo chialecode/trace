@@ -19,6 +19,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+import time
+import stage_evidence
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -49,9 +51,9 @@ SUITES: dict[str, dict] = {
         "blocked_if_missing": ["cargo"],
     },
     "site": {
-        "desc": "站点适配器：Bilibili 夹具/WBI 固定向量/错误分类",
+        "desc": "生产两站适配器：协议夹具、签名向量与错误分类",
         "covers": ["C25", "C26", "C27", "C28", "C29", "C31"],
-        "cmd": ["cargo", "test", "-p", "trace-adapter-bilibili", "--locked"],
+        "cmd": ["cargo", "test", "-p", "trace-adapter-bilibili", "-p", "trace-adapter-douyin", "--locked"],
         "blocked_if_missing": ["cargo"],
     },
     "resources": {
@@ -76,7 +78,10 @@ def resolve(cmd: list[str]) -> list[str]:
 
 def run(cmd: list[str], cwd: Path) -> tuple[int, str]:
     proc = subprocess.run(resolve(cmd), cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+    output=(proc.stdout or "") + (proc.stderr or "")
+    logs=ROOT/'artifacts'/'m1-verify-commands';logs.mkdir(parents=True,exist_ok=True)
+    log=logs/f'{time.time_ns()}.log';log.write_text(f"$ {' '.join(cmd)}\n{output}\nexitCode={proc.returncode}\n",encoding='utf8')
+    return proc.returncode, f"Complete log: {log.relative_to(ROOT)}\n{output}"
 
 
 def check_resources() -> tuple[str, str]:
@@ -129,7 +134,7 @@ def check_resources() -> tuple[str, str]:
 # 进程级测试通过 target/debug 定位 daemon 与适配器二进制；`cargo test` 不保证
 # 构建其他包的 bin，干净检出必须先构建工作区（2026-10-01 A 复核 F-001）。
 PREBUILD_CMD = ["cargo", "build", "--workspace", "--locked"]
-PREBUILD_ARTIFACTS = ["target/debug/trace-daemon.exe", "target/debug/trace-fake-adapter.exe"]
+PREBUILD_ARTIFACTS = ["target/debug/trace-daemon.exe", "target/debug/trace-fake-adapter.exe", "target/debug/trace-adapter-bilibili.exe", "target/debug/trace-adapter-douyin.exe", "target/debug/m1_frame_probe.exe", "target/debug/m1_host_probe.exe", "target/debug/m1_lifecycle_adapter.exe"]
 _prebuild_result: tuple[int, str] | None = None
 
 
@@ -197,7 +202,13 @@ def main() -> int:
     ap.add_argument("--suite", choices=sorted(SUITES), help="运行单个套件")
     ap.add_argument("--all", action="store_true", help="运行全部套件")
     ap.add_argument("--json", action="store_true", help="输出 JSON 摘要")
+    ap.add_argument("--stage-bundle", type=Path, help="核验 M1 完整阶段证据；缺项/过期/失败均拒绝")
     args = ap.parse_args()
+    if args.stage_bundle:
+        errors=stage_evidence.validate(stage_evidence.read(args.stage_bundle))
+        for error in errors:print('[FAIL]',error)
+        if errors:return 1
+        if not args.suite and not args.all:return 0
     if not args.suite and not args.all:
         ap.print_help()
         return 2

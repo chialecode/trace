@@ -4,9 +4,11 @@
 //! 上限 [`trace_domain::MAX_FRAME_BYTES`]。TypeScript 侧类型由本 crate 导出的
 //! JSON Schema 与黄金样本对齐（tests/golden），不得维护第二套业务模型。
 
+pub mod content;
 pub mod control;
 pub mod events;
 pub mod plugin;
+pub mod plugin_chunks;
 pub mod wire;
 
 /// 供打包/诊断展示的契约版本信息。
@@ -28,3 +30,5 @@ mod tests {
         assert_eq!(v["control_protocol"], "0.1");
     }
 }
+pub mod acquisition;
+pub mod source;

@@ -1,0 +1,3615 @@
+{
+  "schemaVersion": 1,
+  "productSchemaVersion": 5,
+  "plan": "TRACE-M1-01 r2",
+  "role": "Agent B implementation and self-check",
+  "status": "passed",
+  "deliveryProcess": "ready-for-review",
+  "aReview": "not-run",
+  "productAcceptance": "not-run",
+  "realContentValidation": "not-run",
+  "realLoginValidation": "A already verified both supplied sessions; no new real requests by B.",
+  "branch": "codex/m1-two-site-archive",
+  "mainBase": "960984c34487244f31f1238dffc2bd9faaa292e7",
+  "aHandoffBase": "141d261db8569100564b3f88b897ba4ca00b0f61",
+  "originalBR1": "772ab9a6c523a22385f024abafa66aef6ed7f0f1",
+  "finalCommit": "The final delivery message and local git-delivery.json provide the SHA actually read from Git; this summary does not recursively contain its own commit hash.",
+  "report": "docs/delivery/stage-report.md#b-m1-r2-delivery",
+  "sourceInputCount": 216,
+  "sourceFingerprintSha256": "f8a7d480ddb520d2b52f14f52145c4b1b6f1695b033d7e184a8b8f61140f86b7",
+  "sourceFingerprintMethod": "SHA256 of UTF-8 json.dumps(sourceInputs,sort_keys=True,separators=(comma,colon)); final Git blob bytes must equal these frozen inputs.",
+  "sourceInputs": {
+    ".env.example": "e702a234d152e5414eb262ecc02ba855153b36288fa80f747371837bd44a9fcd",
+    "Cargo.lock": "0103983ba94995ac9a3e0fb9239a1eb6acffc17b19781cdea0b5fe7637a92cd9",
+    "Cargo.toml": "e57b9dc6f81130e34bd16c95cd72204b67bc5043ef65436bd6e5e16eadc50707",
+    "adapters/bilibili/Cargo.toml": "48d1b033a24ba8c16fb63fc34638ce694062c6c729225786473d7d6ca3a36d93",
+    "adapters/bilibili/src/api.rs": "30890728d5ff77e1cd983668b3c56b61caf20c43f75719f14364249249d1899b",
+    "adapters/bilibili/src/article.rs": "790a7b6b4cf6729ea04375851ec7fc8563522c7ffafe44f36b43deb9b70ccde5",
+    "adapters/bilibili/src/audio.rs": "9772c8ade1f080d9299a963d98f2e75b6212c3c00ad3b5571ab2e482429b405b",
+    "adapters/bilibili/src/content.rs": "f529bb3732fc99fef1fd2f77fef312a30ab78bf9aae2faa5fc7565d4599f4eac",
+    "adapters/bilibili/src/handlers.rs": "803917eae5e5242b27dc2050e989a58b50031d8aa096073b57046302fde67f55",
+    "adapters/bilibili/src/live.rs": "c0bb5a09d240bb265d6fffd2516f439541c81e9a18bae5166c73060f20c1b2b1",
+    "adapters/bilibili/src/main.rs": "a83e88450be0d97f732e0e5812d7c9327929facc29dd6d267f6065bb6198834e",
+    "adapters/bilibili/src/wbi.rs": "e94b531fd65b54ecfbb913a606b2223d7f8b07fa82d18cbc0613260413b8ffbc",
+    "adapters/common/Cargo.toml": "f442b792c04fe0b80dcc2409f842581110fde7e7c371d4ff79cd8a09f106ae87",
+    "adapters/common/src/document.rs": "d0b608ce90b87ccd7c6cc1a9c37f5033f2226180d767df7f1351615b738c0cdd",
+    "adapters/common/src/lib.rs": "b498873f07f9cd0c1bd72fe77a38d23c65012f6d31de297d3055ae92e342d423",
+    "adapters/common/src/runtime.rs": "b015a6d68907ff34527c450a8a9935605e683a834c455c9addfc3cb91d41db2c",
+    "adapters/douyin/Cargo.toml": "558a0d8fd5f92c55b019f41e937d4a0af440755bd0170cfc6210c63bbe8889c2",
+    "adapters/douyin/NOTICE": "4fd3af92aed108232918ad579eff7d8f85c0c48a8dc90523691d99a0386b6032",
+    "adapters/douyin/src/enumeration.rs": "fe2dea2757ba9fa01e1f1e4edbec5825a678cd65563bb3ec761b8a4bd0feff38",
+    "adapters/douyin/src/live.rs": "18140587dafb73e8bf9fac9c20249fc378047bce5c6c0db7973b26e42e17ca56",
+    "adapters/douyin/src/main.rs": "0813e8230f28e81b7c99b63d8994cb6e22d1445a8c317762bf873c792484f340",
+    "adapters/douyin/src/protocol.rs": "7e94c482ab65579a377676ed921df62046af42fcd5fff5897bad45461fd9e753",
+    "adapters/douyin/src/signature.rs": "bcda3e23eae2adae8581adb8302b71327bd32a35ce1aef0df6f7262f37e6f0f0",
+    "apps/daemon/Cargo.toml": "0a91e3800c7be167a5fe89e8ed4fe245f84b5c03729c90ee07d99feb5b634523",
+    "apps/daemon/src/main.rs": "3d93f7667bfaacd0902fd24769b3c015ee89d3d3e3be880b9735ae24cd22a253",
+    "apps/desktop/index.html": "dac088ccede581a1e8fe31e740f623cd0f6d15cfd3d7fe29b4ecd5a3e8b0b24d",
+    "apps/desktop/package.json": "ebf55565e622f93a9979e0cf5fd4090d0578018a5584b996a69473845c095847",
+    "apps/desktop/reference-assets.ts": "ec16d7003e2165610fabce846c1705412125a97173f58ed41f11d7eab9d270f0",
+    "apps/desktop/src-tauri/.gitignore": "4d2bfd39ac19e5fdc107d8f4cb77fa936a74bdd1e263e6c3fb713a705bdbc2c2",
+    "apps/desktop/src-tauri/Cargo.toml": "266b16a3db21814826b502813b4b4b453e39dd7e6833eccc485fcbccfa91b84a",
+    "apps/desktop/src-tauri/build.rs": "6aeeab41bc35efde4e3c2b644a6248f7fc06d24ae30b75c0d33491cbb0c1fa31",
+    "apps/desktop/src-tauri/icons/icon.ico": "96af0910a99396501ae0f13e8749d63d3f0aa865fab804ecf362f7b7f16a04dd",
+    "apps/desktop/src-tauri/src/commands.rs": "38a02cb8ebe98344d99b9861d688dc4b799648800870ecd3e434b0d637ae5992",
+    "apps/desktop/src-tauri/src/lib.rs": "0012ff3763cc16d0224749922120f14f4b274f2d3481a7383bd7ecd2d87f0a4e",
+    "apps/desktop/src-tauri/src/main.rs": "00942eca6045afdd86fc87b2d96256fcabf1e4121267b3b9d883d2d9d130dcff",
+    "apps/desktop/src-tauri/src/media.rs": "68f269ec6edde24412303f91ce662fe477eb06813dd0b8a5e312b9078684f69d",
+    "apps/desktop/src-tauri/src/state.rs": "4d569768a483ef65465961eaedeb188bf2bbeb56549b8482e8d836dd66d3850c",
+    "apps/desktop/src-tauri/tauri.conf.json": "5acc63c417a952d1e95f0e992c2dee2551dc45aace2a7d59b77bd8875210437e",
+    "apps/desktop/src/App.vue": "f07a72f08f4b85ac3b2c8d600b9f97f6c1bf376364561d928aa8fe14c4da16a1",
+    "apps/desktop/src/components/AccountHistory.vue": "ae05d27908f5b0c1853a83db1a813b5f03af384fb6bf482f70caee0271fa89f9",
+    "apps/desktop/src/components/AcquisitionHistory.vue": "872ab43fdee60f27a1819ffedfe81e7669ad04566ba42741646a2161b87178a0",
+    "apps/desktop/src/components/ArchiveDocument.vue": "62c4040e99b5ea729a5d220d5e95f05213fd1cdd85316798109d6c9e79bceb33",
+    "apps/desktop/src/components/ArchiveHistory.vue": "e53d256d3bb970fc14193673011f55693607ce6a4d7c2427422344a8dccb4a47",
+    "apps/desktop/src/components/ArchiveRemoval.vue": "93ff02a893517ee1675a7fed9572c2357c5510a6b551a673f2049c13fc215c9a",
+    "apps/desktop/src/components/LiveChat.vue": "ad4c8f48a12dbcca9c7a6db007d905eecb6f11cdd0db088906c12187c4eeaca3",
+    "apps/desktop/src/components/LiveRecording.vue": "784d1ead0f855e083224e36a19d23b69e0bdf6b761c575aaa7a1e8be6e13f265",
+    "apps/desktop/src/components/MediaBrowser.vue": "829a9e9f0183bc04cb4464d03f44c45a659072a05980d4b6fa63a6481dbebc24",
+    "apps/desktop/src/components/QualityPanel.vue": "e977a0490137789f4141979932a823b1b50496a0920078013f63b7eef5e025e0",
+    "apps/desktop/src/components/ReferenceArt.vue": "8b328224c95601e688f497e525ca9465be990a044b842e0ada6d5439698c5c29",
+    "apps/desktop/src/components/SubtitleDocument.vue": "46b55f156f79a554657f11bf65e718ee284a5da158e2756d31f1465c3c7200da",
+    "apps/desktop/src/components/TraceIcon.vue": "f2fc53a50479d0019aa55636591546d6d0ba9cd4173a4d7395270aa087564f2e",
+    "apps/desktop/src/components/__tests__/m1-archive.spec.ts": "4e2c50b4e8c3ec5cfe76a2b7d150aa886e3dd70ccec3b106c801116a86ed63b7",
+    "apps/desktop/src/components/__tests__/media.spec.ts": "7425d1a7c6e329399f520bac6e711260032ed868d23bf2a6ed884e55a5e9165a",
+    "apps/desktop/src/lib/__tests__/api.spec.ts": "2879ab8d2bcd6af93dbeae13c85503c854b4af6658cbdd74332bfbc0cb9c0b06",
+    "apps/desktop/src/lib/__tests__/format.spec.ts": "427284725aee87f98543bd222dec5cd733c0558b7022e209139dd5c1b242a41b",
+    "apps/desktop/src/lib/acquisition.ts": "cb240ad9b05015c275d08b155431a9d6c865a198acc066f003859b9e0d97335b",
+    "apps/desktop/src/lib/api.ts": "0c438ff5e14210169800d3e8e3115ae0717f2ad172998b9130e17a697c3e3174",
+    "apps/desktop/src/lib/archive.ts": "183ae3dc747979d8f099119bbef8d6d2124602f2668a58827eadd6492af5ff46",
+    "apps/desktop/src/lib/format.ts": "6e1cf2a16411f9635f0ff10a8ebd8295ade2acae6b98a9e4024e1aa723f0edef",
+    "apps/desktop/src/lib/preview.ts": "ddce330ffb7351c637db37d95aa484fa6e9cd7365d9eaa5f72dd8e9242d6f849",
+    "apps/desktop/src/main.ts": "41cb3103f3d4cc95bc9819715b312015a9ff9dd0aa4ff0a8c3d3fbf6264bd062",
+    "apps/desktop/src/router/index.ts": "9dacccc19ed14f4c6a21c5ccf2441d0d8a24ba38f35bc3425e43b6264aac14df",
+    "apps/desktop/src/stores/theme.ts": "06f1509e0f9111e60a8fd8df57bdc9bf393689da5152392005131c3b2f78dd08",
+    "apps/desktop/src/stores/workspace.ts": "4ce22fda89b8772485829aceca817f5d40f59b786de12405f91228b29503cff3",
+    "apps/desktop/src/styles/home.css": "7e687ca032eef091c1e25822ce3fde46564af38d7b270ce245d55026f873b612",
+    "apps/desktop/src/styles/shell.css": "4502e6f13962841a3a32d956e886fba02eaf9ac903ba2231052f06f8ef7c6f2a",
+    "apps/desktop/src/views/AccountsView.vue": "7ef99f4bd9d9f2fef714cfdb3f3efbd9ac523a418e6187209672007be33701ad",
+    "apps/desktop/src/views/CreatorsView.vue": "b97c72df1db6d18722090b1c36a6fed834d7f499acf3a5d13dac30000bea8026",
+    "apps/desktop/src/views/HomeView.vue": "a8fc7b682ec01d42640150b18bc0cb27eed75065aeb2320582739c600cc5602c",
+    "apps/desktop/src/views/ModulesView.vue": "1b35d764165ec263af550475cbe53e0a6179610de9d70c30996196c174b3a8d5",
+    "apps/desktop/src/views/ResourcesView.vue": "5a9c2cabd3a5be49ac34c39e36d26102feeec14a8c04811ceb6131f780688519",
+    "apps/desktop/src/views/StatusView.vue": "ee01d1d4f08b36bf23485b3b0a7849bac3bab8293f84c39ecf12e54b203bacfa",
+    "apps/desktop/src/views/StorageView.vue": "75a97a0677be6581a3298ca4e4184203412498280e58cf1232f0d392cd1f5cf1",
+    "apps/desktop/src/views/TasksView.vue": "13b54000cd5cae14360aa8be5958334a7f0235640b2338e17bf289fbd99a6f49",
+    "apps/desktop/src/views/TimelineView.vue": "a7c444ef926ec1ffef3e4c7070c1c026312caff98305b25b19988308d983ebd8",
+    "apps/desktop/src/views/UpgradesView.vue": "f5247525e7b9f74f1a3d371eb312fd768741e1c3100b65176dd725ce0c423beb",
+    "apps/desktop/src/views/__tests__/home.spec.ts": "c8a0f342a5d6340bcba6291c8fb00bbc8c36b4f9335d524ff28bb3933cb73968",
+    "apps/desktop/src/views/__tests__/modules.spec.ts": "525ec799912047e55ef8b974b477fdd0cf343af4c87c4d0f78982e86dd18f75f",
+    "apps/desktop/src/views/__tests__/resources.spec.ts": "f1d5a672d49aa7989ab811bcd9df8ce3d7968ea2a4ad6e965fcf36134c5fece0",
+    "apps/desktop/src/views/__tests__/upgrades.spec.ts": "9e8d09ee4e067ff1348432316391377906f0addfc474ee3d9ded1dd6325ea5c0",
+    "apps/desktop/tsconfig.json": "0a156d21b4caf985f3f24383ab322d8b0454156540313264736022272017087a",
+    "apps/desktop/vite.config.ts": "c1c59ee9cd208d8a6cec01ebe2f41c90daa7ec88bb51897dd9c5a9831830af7a",
+    "crates/contracts/Cargo.toml": "001b524376890f336164e5f0bcca81bfbf9e5260a59efdc9d4ef745eee90c08d",
+    "crates/contracts/schema/control-envelope.schema.json": "93db19d0cdf8bff20b9b986dcab56b6003f8bb193a93640497f454703dd5989f",
+    "crates/contracts/schema/plugin-frame.schema.json": "98dfa885aa496ea6b3e291e922c80e32f7a755be9b986c9b43d57ae9bc758304",
+    "crates/contracts/src/acquisition.rs": "0c11498c55789dab8020cb4fc107e2a07d46b6f6b5f2bfe8ab03f88b02f1c934",
+    "crates/contracts/src/content.rs": "eb1c85ae4aefe7873ffe71307407478a7a39341fc9bf77a10d99b865feecdcfc",
+    "crates/contracts/src/control.rs": "d940e977e366dd699371e0b10f5128092c251bc345e7ea60fdf8e43ae937ee0f",
+    "crates/contracts/src/events.rs": "44382960a5c1c36b7532921eb8197c1ce997ef95f9a23be355393a9d0c035a1b",
+    "crates/contracts/src/lib.rs": "7ff8ecb1d5b30ae2dc61ffd8892b2d0b431d582a6f2c2f0f9abb09530174ae6d",
+    "crates/contracts/src/plugin.rs": "915e36febc60f15a46163ce4c96ba3f86d353155d08c51896d50cfee080d4758",
+    "crates/contracts/src/wire.rs": "78fb4eacb163a6659eae1d370b02ed548cf36d347de6a21f3ff98f9cbeb64d90",
+    "crates/contracts/tests/golden.rs": "7a32c2d23d2830030b9587cdc3669de1aa440e283cbf1b032e82587c69b99021",
+    "crates/contracts/tests/golden/control_request_big_null.json": "0f966ac09c47fa405395519564062c93d7736203d083517160e42f13071a5831",
+    "crates/contracts/tests/golden/control_request_success.json": "deb81f252c909f107bdfd87bb745288bbee18b572a4e7a3784bac8c3cd285869",
+    "crates/contracts/tests/golden/control_request_unknown_field.json": "35748b4fbabfebfff134ca7b10da2823cfa1f601c65ebb61ea5e655c15dd79fa",
+    "crates/contracts/tests/golden/control_response_conflict.json": "82f9b95443466c6095f0e901e987f6fae58335b431520792e863b6b7191abd0e",
+    "crates/contracts/tests/golden/control_response_error.json": "ce072670b1b7151e6498c8639681d7641fc54f91f079389690d0a66555e07dab",
+    "crates/contracts/tests/golden/plugin_request_enumerate.json": "4c00b2db2db59052fb8c7cf5afdd1a8be2c444a017d825d742946aa3f3921bf4",
+    "crates/contracts/tests/golden/plugin_response_bigint.json": "e8c1dc3564767c384d023fe4f53071c497c12249e1fcd2f90d0b35ebc90334ec",
+    "crates/contracts/tests/golden/timeline_page.json": "25ed4f696a0247d95f395ae1546967879fbbfbb91462a40cc40f36d316e14387",
+    "crates/core/Cargo.toml": "9b76dba0887519e5350b41b190827cb53dfae3db3d77ee1fa061a1edd9ad309e",
+    "crates/core/src/accounts.rs": "d6cc1c917faf103e56017668e90576cee60a126de78d9e999d49e15080797d4a",
+    "crates/core/src/acquisitions.rs": "2d24a37f68d6e3a9727857aa5f2389902200743a0aad39c120abbfd873f79074",
+    "crates/core/src/archive_export.rs": "47078792b337fe22b7f072204b5a40ff3f495ec14e3f9e5ac32dcac6c601e8ba",
+    "crates/core/src/cache.rs": "11223a66700ba0f7bc74caa439e4c52619f97adf19400a1acd1acc10d9a4e8dc",
+    "crates/core/src/config.rs": "0628f966193ce8a22d0cf024524b330246156e406a5d35d28670636fca118cc6",
+    "crates/core/src/core.rs": "daa3dfa0c30a1c9271f44d0c367bc5ff8b2397b9133de544f28ef3ee3190c7f1",
+    "crates/core/src/core_acquisition_tests.rs": "cdfa6792f179816c3230d60efaee1685e813bbcf6ea71649745512e4caa19cec",
+    "crates/core/src/core_lifecycle_tests.rs": "5eb8cf126a2e404134bf083b7cae0e701079b0983e6f17cfcf67acc4042223b9",
+    "crates/core/src/core_tests.rs": "64c961d356c80922698779f24fb9510d31fee6fac94ff18c91dfc977f7042737",
+    "crates/core/src/core_vertical_tests.rs": "0ac77147671e153287055e46a564c33798e10f60597dd961c85a3161353176f5",
+    "crates/core/src/db/mod.rs": "cd029169dd60d772fae466ee2e485e933add0abcf763aa630ab89d885829d7a4",
+    "crates/core/src/db/schema.rs": "90ac5938ce8c6e17c64d179199e9522b98bcd8baad45083e48237de375b215cf",
+    "crates/core/src/deletion.rs": "abef25c09e46d1edb2b6d135f8ca62b89161677dcb9f82cbf33e26f60b231c8c",
+    "crates/core/src/error.rs": "e397123895d9017cd0400525c4944ef2cf8eea4b231cabc9537a5d3b85e77595",
+    "crates/core/src/events.rs": "94f69d29ae8b98a7425687cbef4c536fb0de30e408d6a4bfdf8952f8d123e273",
+    "crates/core/src/feed.rs": "108cc5d5b671d5e118f86868838621237273a1876dcd6d205c1048974c8d330a",
+    "crates/core/src/ipc/archive.rs": "4a969e58e3df2239252273ddf065e33e0b0b385f1d473edaa2434f318d000c54",
+    "crates/core/src/ipc/client.rs": "101560b0acdab3e387a3dd635e08337722e5242d93bc49f016b1c340de8b561e",
+    "crates/core/src/ipc/dispatch.rs": "ac5404bdfde75ac1b0014415530a22747aad8af3fca7d28acab65120c8099432",
+    "crates/core/src/ipc/mod.rs": "61ccc70d3595967d2bfe9b14fb7b73c2110872fe9bc068f9ab27809a23ac833e",
+    "crates/core/src/ipc/server.rs": "d90d4d5e66a44fa7be444454de59f1d0ecd09cabeba75a48fbf35da93f8719a7",
+    "crates/core/src/issues.rs": "9bfd93d8b17f63525eca6d0cc668b14ccf72c1aa01f7b3b3197be3658a2ca889",
+    "crates/core/src/jobs/consumer_tests.rs": "e29ef57547968f13c382e4c1362ccfc092fcee8b00195b5101865d26f84da4dd",
+    "crates/core/src/jobs/consumers.rs": "2155b0466ab3ded2c6eadc38f6e8db577046c116a5dd2677281d2318c454871a",
+    "crates/core/src/jobs/lease_tests.rs": "fca40562e9c0eb9ccba65f9f46cc6670eedc93686cfea3394c9b3d3f7e6de79a",
+    "crates/core/src/jobs/mod.rs": "24fdaaac4b26930d186a2c8fe9d1a5b27945e1c06f42aab666684c81fdfe485d",
+    "crates/core/src/jobs/scope.rs": "7152e5ef2467440e6ebc631d355cb1b2a6f260d744e857106fe520635f69a0c4",
+    "crates/core/src/lib.rs": "d7aea65cffbc8dc2a4d03105a6318056d8818678fc71a499899f86732f318bc6",
+    "crates/core/src/m1_tests.rs": "2421eebfee3e651d97af2cdacb88095b2517f53c5f636ae81fb308398cf90514",
+    "crates/core/src/media.rs": "8ccd85b8236975d0ac1f007c3e295e8a18b8d6b1c648abeaa4cbf3630281424a",
+    "crates/core/src/objects/mod.rs": "02b0137b817a61c28adfc9c9d57bb962a88d4ba26f865991ee19f0bb30691c12",
+    "crates/core/src/objects/recovery_tests.rs": "31ad7bdffca49a69225761e328c80bd6e17e5933497dd871c8bca6b6a1791e51",
+    "crates/core/src/paths.rs": "4a1f8a4a17bc71ff28b6bd02f1538d799ca2a0c2691f457d0a053ffe44cccab9",
+    "crates/core/src/pluginhost/mod.rs": "ffec082c584f6f0142a94f5845559a2085f83da6e30008d49e072d35fc300bb6",
+    "crates/core/src/quality.rs": "74f130d6f4890744b11420116b1e6a9d2789eb9e46ec19e1d1009a26fa634913",
+    "crates/core/src/recording/auxiliary.rs": "50e30dd082a44f86b6e209e67715fea4f7b3a3b7f7591fa7b97ca6e07e1a1f54",
+    "crates/core/src/recording/flv.rs": "1e8468f816ebbc963a8a6827b78481e60787e44eca57ab013aca633c192e4477",
+    "crates/core/src/recording/hls.rs": "ec7fc0004315855ab379a6662d93d6143e13a040a00f1cb1fbd876e5bf4cf01f",
+    "crates/core/src/recording/mod.rs": "4ec98fc84f74a9ab49164af8c2a373256b6acacae6c4a64b0ffe9df3909dae57",
+    "crates/core/src/recording/subtitles.rs": "4ccf94c254fbf8accae3a78b7193c2597bd891fe9454dbc7ea9dabef28e2ae3b",
+    "crates/core/src/recording/tests.rs": "7a4d39485f9e67ded512bb15ede1abe8f5e075546190124c08fa0d57fdc8b5cc",
+    "crates/core/src/request_budget.rs": "0fb9c0c327445ac44a56f339a9b6176f9c66e909a265ccbcf84283d5cce07b8b",
+    "crates/core/src/scan_range.rs": "2a7ed6ed6b923cccf529694f5cdf7e0691b93113ea50a9cf7c53c67522ab2c08",
+    "crates/core/src/search.rs": "43f209bd4b21d2b10f64cb1c1d5e14892e39367fcdd0b7da112c5e6185c06835",
+    "crates/core/src/site_check.rs": "23e3574a959c683805941a6fe97f051396497df14d5ab0e92384abab384cadd4",
+    "crates/core/src/storage_budget.rs": "0ef4e24b5d3ed40df94ec0257fa672b84319fcdeb2f72127760df5665f551754",
+    "crates/core/src/storage_ops.rs": "04d41bbd98f7d6f11e3f8b5a8a4e62e4fd8be1ed46397e4b494b579502f1d2f4",
+    "crates/core/src/transport.rs": "f0eee9bd844fb41cc81161fd78a051d958865412a54d7a47af78c47daabf77bf",
+    "crates/core/src/upgrades.rs": "4f4786d19af08fc130f404ff4c97e12da9c1accb364430da328b3ebd0f8262e2",
+    "crates/core/src/vault.rs": "9b32054df712af01b18ad32522ab12068e652e6173215b210623046b4a952339",
+    "crates/core/src/windows_integration.rs": "f09c044b1264f78fc8d344b13767627f5dc4d3f1b11aad5c7ff22cd8dc96baf8",
+    "crates/domain/Cargo.toml": "f2072a55994a8347a716d2799420b330b9ceda4332e48912ae79079d031f51c8",
+    "crates/domain/src/entities.rs": "26a44746daadfe84e7b2d0185bd4af678a92a804f2983db8e3ca16e545139690",
+    "crates/domain/src/errors.rs": "9f0c5fbfa129c97500fdff848931099a681c03875dd9c2a5652683f564063de1",
+    "crates/domain/src/ids.rs": "c96b428d64631a7cb92b937c778dd692522b9bcaa186a6685824f1ec748878e6",
+    "crates/domain/src/lib.rs": "7ed1028e8fbecdfc811ee68a1da079b8afe8e98f3a887bb71ba4e70c2d9a9b1a",
+    "crates/domain/src/quality.rs": "d153c9c78917e984967f47c79367af521c81d9080da69a900de8d96c4128c2d1",
+    "crates/domain/src/revision.rs": "a7026dcbfdcfe3026fbd26edcd6c0a76b6cbad4abdc2cb776f14edf97faea447",
+    "crates/domain/src/search.rs": "b2be4fafd8fca63090669623175c15c7fa93c497372f376ae587edd93e96cacb",
+    "crates/domain/src/states.rs": "2a1ce93f9ce2f650ffed3af197931eab65684f548eaf484475c4a586baa67034",
+    "crates/domain/src/time.rs": "98e92c5bf3f6ad73297d47de0152602762d562914cce9014940ea1f964cddd06",
+    "docs/delivery/stage-plan.md": "d5bef7c68696429d4cbcb0155ae02d992619c414f35b8f696e29f13bc4b7631a",
+    "docs/requirements.md": "71d63e8080608f265ffdc526cd825d2dbf35fcd3f0a91b49acddf2ab2de6bed0",
+    "docs/site-archive-contracts.md": "08c50628ee8d43652d854b98bd46c82c984456c24f6d9ca8c5648d31ab4061bf",
+    "media-backend.lock.json": "4feedbc0dcdb6c56944ef8fe84660419f688e10da58ea93e03f802b4038f4730",
+    "package.json": "8881c45cf4766d71dac4090ae67fb61ba280884871520efd335b49782d7aedde",
+    "pnpm-lock.yaml": "9ad35adf6472a828257614f5e3387275a3ed6c69e2b1dcac208e6b7fe6dffc67",
+    "pnpm-workspace.yaml": "aa166ba9408a853bf68aaf001fd237ad478223a0a96f6f2d24f7d815462b9a95",
+    "rust-toolchain.toml": "c910997cb152c6dc8ed13b1fdf9fa28a4ed30d6776123e27dd6170e5c66067a0",
+    "scripts/benchmark_metrics.py": "f232d33329d7f62824b732278492087177322280af48e35a72ff541d03a08abd",
+    "scripts/check_docs.py": "8fcbaa4789f8f73b24ca82fa681d1e786eb14d38d025299d226979fb4cc539cc",
+    "scripts/check_package.py": "5aebd7be29bf06d5af84c683504ccb655a90322f4bf0df91c644e31592f6e8b9",
+    "scripts/check_publication.py": "690b6f55098e8ad64b56be1f00f63f31508280c884c06b8a6deb5740487968d3",
+    "scripts/fetch_media.py": "8ba67a6ae732f394c8b285c34c74cefb865fe4d0f6564b6852f13cb87ed96582",
+    "scripts/gen_licenses.py": "ad67d2ee46dd034d3eede4d37824f7460016bb26c6a31d5c577662e3957890d6",
+    "scripts/measure_m1.py": "f3ff559faa66b115153430b422988369d024469ca3f87b02a5cabedee6cbb3dd",
+    "scripts/package_windows.py": "e667a2b75e67b1d6bea98e9eec014fa8d0c213310a69dfe59d7eae255a74ad5c",
+    "scripts/prepare_site_check.py": "bc01949d8b4dfc0ec8a15d98f2b55de88d2ac38f8fdc7f11ba84475d020b4a51",
+    "scripts/prepare_ui_reference.py": "6435df11662b08bad9d5dabb5c93c20f71db842fc493ce4e304d11c0dc662d85",
+    "scripts/stage_evidence.py": "d014624e630318702b067ac45976536c058658a346ebdce6e9abc104eb867195",
+    "scripts/tests/test_governance.py": "8c3ece47dccb90f8a50f29a5157cf3db534600ed171b4946a92d0249ddac3f17",
+    "scripts/tests/test_site_check_preparation.py": "3ccce0391f119a43979ef236b8753b4535bfd841ac2e24d0e4e1fbe74f4907f2",
+    "scripts/tests/test_stage_evidence.py": "c08b33671d206c514c7d601c20709cfd459814fd3f0d3a9a560660e501b954e9",
+    "scripts/verify.py": "efe28baa9093d902c822f476d6d8b50d553ce39ad5fb46412b70630b5a171d81",
+    "scripts/webview_probe.mjs": "e3dbdc3e72f5c89d77e0f8752316f153e23ad751567fda9f8aa27a8455ad6eab",
+    "scripts/webview_probe.py": "d1561b58e9d60564b6933b2845e0e7392c9ba728e02069c5ffd4fd529f372b66",
+    "scripts/windows_metrics.py": "a49d33627b630e3475d3125b2bbbb168e626b557b6d5c6f2b9f014113624c670",
+    "tests/e2e/Cargo.toml": "f3c948c4db6422d32c101fc4e32c77ca6e9e7d31d31b7801128e2634db77153f",
+    "tests/e2e/src/bin/fake_adapter.rs": "c1f95032b4af7a28f9988ebbab3c299e3cb971e50e3102ee0ba5632efaa36f85",
+    "tests/e2e/src/bin/m1_bench_adapter.rs": "9781d5053013f041b04cfd216fb9060ac0f17f76fe7f2ac687f2965808a99a11",
+    "tests/e2e/src/bin/m1_frame_probe.rs": "e35f9e3167f5d3fb1b579be41d27986f411c147daba6ba779411521e892b95eb",
+    "tests/e2e/src/bin/m1_host_probe.rs": "557ee88757a130cc95b746ba300ce213cff8526f719b97f22666af7da27e6cca",
+    "tests/e2e/src/bin/m1_lifecycle_adapter.rs": "5f838e7c0e78f268c60719c790d8d1d0e25d407d918473caa708a793bb2442e5",
+    "tests/e2e/src/bin/m1_resource_bench.rs": "e1acd1802ddb4bdb11f9982b8d6cf13b22f1c68f58433163500a8bb1aaeec6ef",
+    "tests/e2e/src/bin/m1_windows_probe.rs": "ffddb294fa0f7ed99a0c23ca95babf33fb72e93c50a23a673259ef5e2822327a",
+    "tests/e2e/src/bin/prepare_acceptance.rs": "e7bb108e42e9a8e78cb43f4ba57161749345ba2636f3542074b3f97279849b35",
+    "tests/e2e/src/lib.rs": "f703cfad49113910f6deb17689061d6f053a82998a9fcbe6a72ec551a4c0e225",
+    "tests/e2e/tests/a_review_probes.rs": "32cb922b6f291c6cf3cb22ca54eafea09d7e28cf6c60f56da4e56afd49a5e816",
+    "tests/e2e/tests/closeout_faults.rs": "e1cecab310a0bed845eb08e16146f193a2ce09e4d86197366c2eb9eeab159eff",
+    "tests/e2e/tests/closeout_rework.rs": "b80e2b9f33edaace97a79c63ab02b7c373c66a0339c44360cf09996ccb3c0651",
+    "tests/e2e/tests/daemon_process.rs": "27a5cd25018c13e347e409f05165f66c4f73727b7c1e3904688bf3c32a03a6ee",
+    "tests/e2e/tests/full_loop.rs": "3761162418f1b89ed1c5dd9f54370e38c2fb293f2ba74aa1d4c084d3c9350bbe",
+    "tests/e2e/tests/m1_production_adapters.rs": "701cf2acf9a344b13912427c2a2a7234bb61abe0a4b854968f35d273f27bdf22",
+    "tests/e2e/tests/m1_startup.rs": "40bfccc0cdefaf2ae4311dbe8be8565694090cc62dedade255fb93bd5495f79a",
+    "tests/fixtures/bilibili/arc_search_page1.json": "1c37a3c78c5600b0180267dbd80274282082d1140f2762a901e74c1381c6117d",
+    "tests/fixtures/bilibili/card.json": "7d5fddb073752df89010083682d8af6dc8eb09252476560c01d3d64b02743816",
+    "tests/fixtures/bilibili/error_rate_limit.json": "c62068ed2d2caefe67c3869df7a0ca2785e062b435872f86d84710de5aae9dfe",
+    "tests/fixtures/bilibili/nav.json": "3527b703c6412208edd99ba06c6a6b2511cd1069614add13d12eb8d587795a0c",
+    "tests/fixtures/bilibili/playurl_dash.json": "c4e3ebc76f5abe226c60b138de4ad8ca826e27752992919427126f4a7573ca01",
+    "tests/fixtures/bilibili/playurl_dash_silent.json": "9867ab77838dcbbbc1e7552c7b2510fdbeebc960f865162dd484ec68245c7ce9",
+    "tests/fixtures/bilibili/playurl_durl.json": "3910455b3a92146145b1c44722706e794eee412085e4bfab4d485eaeddc2d1e0",
+    "tests/fixtures/bilibili/playurl_v_voucher.json": "3534da010a04ed37bd5e74dcbc7fec621a1a9d60c97c7fb7b1d3f7f78917182c",
+    "tests/fixtures/bilibili/view_multi.json": "f5e89577296bf937f0fd719087cb6fb8cc5036f49d4c4286e3a0c708a40c9a83",
+    "tests/fixtures/bilibili/view_single.json": "2e87a91abbdec0c968d185da752668a9f16e88cfd308bdf484da3c8a243d2e2c"
+  },
+  "requiredCaseCount": 133,
+  "requiredCaseGroups": {
+    "C01": [
+      "c01_collection_membership_is_preserved_per_entry_observation",
+      "c01_site_check_dry_run_does_not_read_credentials_or_create_output",
+      "c01_range_is_inclusive_and_does_not_infer_order_or_unknown_dates",
+      "c01_a_bogus_fixed_upstream_vector_and_identity_binding",
+      "c01_collections_keep_independent_bounded_cursors_and_reject_incomplete_pages",
+      "c01_pinned_old_video_cannot_hide_later_recent_or_unknown_dates",
+      "c01_profile_scope_transfers_between_enabled_subscriptions_without_late_commit",
+      "c01_c06_validation_counts_each_redirect_and_stops_without_secrets",
+      "c01_site_check_rejects_unbounded_and_write_operations_before_network",
+      "c01_identity_alias_repost_type_collision_and_persistent_cursor_cycle"
+    ],
+    "C02": [
+      "c02_article_ops_preserve_lines_styles_images_and_fail_closed",
+      "c02_article_ops_av_mapping_and_opus_formula_list_production",
+      "c02_summary_promotion_stats_and_atomic_resource_jobs",
+      "c01_c02_douyin_article_account_to_full_document_through_production_process",
+      "c02_bilibili_article_full_body_and_legacy_protocol_defaults",
+      "c02_bilibili_music_cards_require_full_audio_and_preserve_parent_on_trial",
+      "c02_list_images_preserve_text_numbering_and_required_positions",
+      "c02_table_images_preserve_cell_text_positions_and_required_resources",
+      "c02_music_and_motion_edits_change_identity_but_signed_url_rotation_does_not",
+      "c02_gallery_live_photo_required_tracks_and_edit_resources"
+    ],
+    "C03": [
+      "f007_chunked_lengths_and_success_statuses_are_exact",
+      "a_f008_segments_must_keep_declared_size_validation",
+      "f008_segment_sizes_hashes_and_legacy_aggregate_gate_completion",
+      "f007_stream_over_thirty_seconds_and_cancellation",
+      "a_f007_chunked_range_must_reach_declared_total",
+      "declared_douyin_media_length_reaches_candidate",
+      "media_lengths_cover_selected_variant_motion_music_and_invalid_claims"
+    ],
+    "C04": [
+      "c04_strict_quality_gap_survives_recovery_and_fallback_keeps_measured_media",
+      "c04_c07_disk_reserve_tracks_concurrent_minute_and_replacement_peak",
+      "c04_key_none_inheritance_ranges_map_and_discontinuity",
+      "c04_real_ts_ingestion_dedup_and_missing_window_evidence",
+      "c04_flv_partial_tags_corrupt_sizes_and_unbounded_headers",
+      "c04_flv_recording_rotation_clock_codec_sleep_and_disk_full",
+      "c04_closed_capture_four_commit_windows_survive_cancel_and_restart",
+      "c04_local_identity_upgrade_and_new_broadcast_preserve_stop_and_history",
+      "c04_c06_live_auxiliary_dedup_budget_pause_and_secrets",
+      "c04_recording_commit_windows_and_independent_hls_audio"
+    ],
+    "C05": [
+      "c05_notification_fixed_activation_preserves_profile_and_rejects_injection",
+      "c05_background_launcher_double_start_single_daemon_and_invalid_profile",
+      "c05_windows_notification_history_with_suppressed_popup",
+      "c05_startup_quotes_paths_without_shell_execution",
+      "c04_c05_same_session_manual_stop_offline_and_late_generation",
+      "f015_pause_due_running_resume_idempotency_and_restart",
+      "a_u02_subscription_resume_must_resume_scan",
+      "f005_f006_f007_task_windows_restart_pause_shutdown_and_cancel",
+      "c05_local_maintenance_cancellation_and_plugin_independence",
+      "c05_proxy_completion_cannot_cancel_partial_frame_read",
+      "c05_all_job_types_plugin_isolation_and_shutdown_sealing"
+    ],
+    "C06": [
+      "c06_credential_update_rebind_generation_background_retry_and_quality_recovery",
+      "c06_health_merges_related_jobs_recovers_and_preserves_delivery_failures",
+      "c06_authentication_is_not_media_permission_or_network_health",
+      "c06_site_check_budget_applies_to_real_http_redirect_hops",
+      "c06_nested_secrets_and_signed_urls_do_not_reach_archive",
+      "c06_local_backend_rejects_disguised_playlists_without_network",
+      "c06_credential_scopes_and_cross_origin_redirect_strip_headers",
+      "c06_nested_hls_private_network_key_map_and_credential_scopes",
+      "douyin_auth_probe_requires_self_profile_not_guest_uid"
+    ],
+    "C07": [
+      "c07_schema3_source_search_rebuild_preserves_old_body_and_snapshot",
+      "c07_deleted_identity_rescan_and_backup_never_silently_reinclude",
+      "c07_deletion_scopes_stale_preview_shared_bytes_and_explicit_restore",
+      "c07_strict_filters_each_representation_and_requires_all_necessary_media",
+      "c07_schema3_backup_migration_and_failed_migration_rollback",
+      "c07_acquisition_identity_separates_spec_and_integrity_but_not_signed_urls",
+      "c07_export_all_pages_versions_accounts_resources_and_failure_manifest",
+      "c07_real_media_probe_keeps_each_variants_own_spec_and_upgrades_selection",
+      "c07_quality_failure_shared_blob_pins_unique_coverage_and_gc_windows"
+    ],
+    "C08": [
+      "c01_c08_public_search_pages_full_scope_and_creator_edits_keep_identity",
+      "c08_public_search_forwards_shared_scope_and_continuation",
+      "c08_module_stop_shows_draining_until_workers_finish",
+      "c08_playback_cache_clear_rebuild_budget_and_originals",
+      "c08_resource_inventory_pages_variants_missing_copies_and_origins",
+      "c08_resource_library_pages_specs_origin_and_stale_requests",
+      "c08_resource_origin_link_focuses_exact_entry_and_returns_to_timeline",
+      "c08_cache_budget_clear_rebuild_preserves_sources_and_rejects_partial_search",
+      "c08_dates_specs_alias_tags_and_source_links_share_pagination",
+      "c08_quoted_ascii_cjk_trigrams_equal_literal_substrings",
+      "retains a still-matching selection that moved outside the loaded sort window",
+      "retains loaded pages, selected variant, node and playback position across related updates",
+      "switches only after the selected entry leaves the refreshed result and explains the change",
+      "late refresh snapshots and details cannot overwrite a newer refresh or user selection",
+      "A review: unrelated archive events preserve the selected entry and player",
+      "组合筛选不修改原数组，排序只改变结果",
+      "预览搜索、空结果和卡片详情同步",
+      "示例订阅和下载不调用档案 API",
+      "实际空档案没有虚构的数量、作者或已保存文件",
+      "读取失败显示重试，恢复后清除错误",
+      "真实记录显示实际状态，媒体操作不调用不安全路径 API",
+      "侧栏是真实路由，后台状态入口保留",
+      "晚到的旧请求不能覆盖新的搜索结果",
+      "真实订阅失败保留持久状态，成功后重新读取并支持账号组合查询",
+      "卸载后的详情请求不更新页面或发起新写操作",
+      "真实侧栏只提供当前平台，预览平台不成为生产入口",
+      "断连提示和重连快照事件实际刷新，卸载释放监听",
+      "c08_rich_article_text_is_inert_and_preserves_inline_format",
+      "c08_two_site_all_types_filters_pagination_current_revisions_and_ipc",
+      "c08_document_resource_ui_races_and_live_controls",
+      "c08_live_quality_query_ignores_unrelated_recording_fragments"
+    ],
+    "C09": [
+      "c09_packaged_two_site_isolation_and_complete_inventory",
+      "c09_minimized_embedded_webview_close_reconnect_and_full_exit"
+    ],
+    "C10": [
+      "test_rejects_package_manifest_and_build_tampering",
+      "test_rejects_stale_source_missing_failed_duplicate_cases",
+      "test_rejects_missing_package_failed_short_benchmark_and_stale_docs"
+    ],
+    "C11": [
+      "overlapping_subscription_can_continue_same_entry_after_owner_pause",
+      "c11_shared_observe_and_media_cover_all_owner_states_and_policies",
+      "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures",
+      "c11_shared_auth_failure_and_credential_change_do_not_cross_consumers",
+      "c11_upgrade_accept_reject_keep_both_preserve_old_until_explicit_atomic_decision",
+      "c11_upgrade_stale_confirmations_reject_selection_revision_generations_cancel_and_corruption",
+      "c11_incomplete_or_cancelled_candidate_never_borrows_old_required_tracks",
+      "c11_authentication_timelines_share_identity_counts_pages_and_immutable_history",
+      "c11_same_blob_distinct_acquisitions_backup_restore_keep_history_without_credentials",
+      "c11_two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown",
+      "c11_schema4_migration_unknown_history_and_failure_roll_back_without_rewriting_old_migrations",
+      "c11_overlapping_production_subscriptions_keep_authenticated_cdn_history_and_old_selection",
+      "c11_login_completion_is_bounded_persistent_deduplicated_and_excludes_live_deleted",
+      "c11_identical_bytes_keep_two_authentication_histories_without_false_upgrade",
+      "c11_pending_upgrade_survives_restart_and_anonymous_fallback_has_new_context",
+      "c11_completed_candidate_cancel_and_failed_attempt_keep_old_resources_and_history",
+      "c11_edited_completion_and_variant_labels_are_explicit_without_replacing_history",
+      "c11_pending_candidates_never_become_default_playback_and_keep_resource_identity_labels",
+      "c11_acquisition_history_is_lazy_paginated_and_does_not_relabel_old_results",
+      "c11_legacy_recovery_cache_verification_does_not_invent_acquisition_identity",
+      "c11_restore_invalidates_pending_confirmations_and_retry_finishes_original_acquisition",
+      "c11_metadata_pacing_fifo_and_urgent_budget_prevent_consumer_starvation",
+      "c11_upgrade_page_requires_explicit_selection_and_preserves_failed_comparison",
+      "c11_home_authentication_filter_resets_cursor_and_preserves_media"
+    ],
+    "C12": [
+      "c12_fragment_authentication_actual_specs_gaps_restart_export_and_no_backfill",
+      "c12_live_fragment_labels_keep_mixed_unknown_and_actual_bitrate"
+    ],
+    "C13": [
+      "test_missing_credentials_stop_before_any_output",
+      "test_preparation_keeps_secret_out_of_output_and_requires_new_scope",
+      "test_duplicate_and_malformed_inputs_are_rejected",
+      "c13_metadata_403_412_stop_as_access_restrictions_without_empty_success_or_cookie_expiry",
+      "test_r2_contract_requirements_and_configuration_are_required_inputs"
+    ]
+  },
+  "executedCaseCount": 290,
+  "cases": [
+    {
+      "id": "rust:trace_adapter_bilibili:api::tests::known_codes_map_to_proven_classes",
+      "name": "known_codes_map_to_proven_classes",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:api::tests::code_zero_without_voucher_is_ok",
+      "name": "code_zero_without_voucher_is_ok",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:api::tests::unknown_code_stays_unknown",
+      "name": "unknown_code_stays_unknown",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:handlers::tests::f009_audio_waiver_requires_explicit_silent_or_muxed_evidence",
+      "name": "f009_audio_waiver_requires_explicit_silent_or_muxed_evidence",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:live::tests::c04_live_is_distinct_from_replay_unknown_and_missing_stream",
+      "name": "c04_live_is_distinct_from_replay_unknown_and_missing_stream",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:handlers::tests::extract_mid_forms",
+      "name": "extract_mid_forms",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:api::tests::voucher_inside_success_is_challenge",
+      "name": "voucher_inside_success_is_challenge",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:handlers::tests::observe_rejects_bvid_mismatch_and_empty_pages",
+      "name": "observe_rejects_bvid_mismatch_and_empty_pages",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:handlers::tests::c01_pinned_old_video_cannot_hide_later_recent_or_unknown_dates",
+      "name": "c01_pinned_old_video_cannot_hide_later_recent_or_unknown_dates",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:handlers::tests::observe_single_p_maps_resources",
+      "name": "observe_single_p_maps_resources",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:handlers::tests::playurl_durl_requires_all_segments",
+      "name": "playurl_durl_requires_all_segments",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:handlers::tests::playurl_empty_flow_is_source_unavailable",
+      "name": "playurl_empty_flow_is_source_unavailable",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:handlers::tests::playurl_dash_prefers_avc_and_maps_audio",
+      "name": "playurl_dash_prefers_avc_and_maps_audio",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:handlers::tests::playurl_silent_dash_yields_no_audio_candidate",
+      "name": "playurl_silent_dash_yields_no_audio_candidate",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:handlers::tests::wbi_key_from_nav_fixture",
+      "name": "wbi_key_from_nav_fixture",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:live::tests::c04_bilibili_live_auxiliary_is_bounded_history_with_stable_identity",
+      "name": "c04_bilibili_live_auxiliary_is_bounded_history_with_stable_identity",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:handlers::tests::observe_multi_p_maps_group_per_cid",
+      "name": "observe_multi_p_maps_group_per_cid",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:wbi::tests::cache_ttl_gates_freshness",
+      "name": "cache_ttl_gates_freshness",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:wbi::tests::sign_filters_forbidden_value_chars",
+      "name": "sign_filters_forbidden_value_chars",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:article::tests::c02_article_ops_preserve_lines_styles_images_and_fail_closed",
+      "name": "c02_article_ops_preserve_lines_styles_images_and_fail_closed",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:handlers::tests::enumerate_page_maps_entries_and_cursor",
+      "name": "enumerate_page_maps_entries_and_cursor",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:wbi::tests::mixin_key_fixed_vector",
+      "name": "mixin_key_fixed_vector",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:wbi::tests::sign_percent_encodes_unicode_and_space",
+      "name": "sign_percent_encodes_unicode_and_space",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:wbi::tests::sign_fixed_vector_basic",
+      "name": "sign_fixed_vector_basic",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_bilibili:content::tests::c02_opus_thirty_images_and_article_html_preserve_body",
+      "name": "c02_opus_thirty_images_and_article_html_preserve_body",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_douyin:live::tests::c04_douyin_audio_live_and_ended_are_distinct",
+      "name": "c04_douyin_audio_live_and_ended_are_distinct",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_douyin:protocol::acquisition_integrity_tests::declared_douyin_media_length_reaches_candidate",
+      "name": "declared_douyin_media_length_reaches_candidate",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_douyin:enumeration::tests::c01_collections_keep_independent_bounded_cursors_and_reject_incomplete_pages",
+      "name": "c01_collections_keep_independent_bounded_cursors_and_reject_incomplete_pages",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_douyin:protocol::acquisition_integrity_tests::media_lengths_cover_selected_variant_motion_music_and_invalid_claims",
+      "name": "media_lengths_cover_selected_variant_motion_music_and_invalid_claims",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_douyin:protocol::tests::c02_music_and_motion_edits_change_identity_but_signed_url_rotation_does_not",
+      "name": "c02_music_and_motion_edits_change_identity_but_signed_url_rotation_does_not",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_douyin:protocol::tests::c02_nested_gallery_motion_missing_still_and_article_bgm",
+      "name": "c02_nested_gallery_motion_missing_still_and_article_bgm",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_douyin:live::tests::c04_douyin_live_auxiliary_preserves_id_and_rejects_cross_room",
+      "name": "c04_douyin_live_auxiliary_preserves_id_and_rejects_cross_room",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_douyin:protocol::tests::c07_preference_selects_available_stream_and_matching_claims",
+      "name": "c07_preference_selects_available_stream_and_matching_claims",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_douyin:protocol::tests::c01_c02_partial_article_and_empty_pagination_never_claim_completion",
+      "name": "c01_c02_partial_article_and_empty_pagination_never_claim_completion",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_douyin:protocol::tests::c02_article_full_detail_exceeds_summary_and_music_is_not_video",
+      "name": "c02_article_full_detail_exceeds_summary_and_music_is_not_video",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_adapter_douyin:signature::golden::c01_a_bogus_fixed_upstream_vector_and_identity_binding",
+      "name": "c01_a_bogus_fixed_upstream_vector_and_identity_binding",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_contracts:events::tests::seq_is_string_for_js_precision",
+      "name": "seq_is_string_for_js_precision",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_contracts:wire::tests::rejects_overlong_length_before_allocation",
+      "name": "rejects_overlong_length_before_allocation",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_contracts:content::tests::c06_nested_secrets_and_signed_urls_do_not_reach_archive",
+      "name": "c06_nested_secrets_and_signed_urls_do_not_reach_archive",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_contracts:wire::tests::roundtrip_frame",
+      "name": "roundtrip_frame",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_contracts:tests::versions_exposed",
+      "name": "versions_exposed",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_contracts:wire::tests::rejects_overlong_payload_on_encode",
+      "name": "rejects_overlong_payload_on_encode",
+      "status": "passed"
+    },
+    {
+      "id": "rust:golden:control_big_ids_and_nulls",
+      "name": "control_big_ids_and_nulls",
+      "status": "passed"
+    },
+    {
+      "id": "rust:golden:control_request_success_roundtrip",
+      "name": "control_request_success_roundtrip",
+      "status": "passed"
+    },
+    {
+      "id": "rust:golden:control_unknown_optional_field_is_tolerated",
+      "name": "control_unknown_optional_field_is_tolerated",
+      "status": "passed"
+    },
+    {
+      "id": "rust:golden:f008_segment_validation_roundtrip_and_legacy_defaults",
+      "name": "f008_segment_validation_roundtrip_and_legacy_defaults",
+      "status": "passed"
+    },
+    {
+      "id": "rust:golden:control_response_error_and_conflict",
+      "name": "control_response_error_and_conflict",
+      "status": "passed"
+    },
+    {
+      "id": "rust:golden:plugin_error_carries_class_not_raw_body",
+      "name": "plugin_error_carries_class_not_raw_body",
+      "status": "passed"
+    },
+    {
+      "id": "rust:golden:proxy_fetch_params_roundtrip",
+      "name": "proxy_fetch_params_roundtrip",
+      "status": "passed"
+    },
+    {
+      "id": "rust:golden:plugin_request_and_response_roundtrip",
+      "name": "plugin_request_and_response_roundtrip",
+      "status": "passed"
+    },
+    {
+      "id": "rust:golden:u04_timeline_additive_fields_roundtrip_and_legacy_defaults",
+      "name": "u04_timeline_additive_fields_roundtrip_and_legacy_defaults",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:config::tests::layout_separates_state_and_archive",
+      "name": "layout_separates_state_and_archive",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:config::tests::pipe_name_derives_from_archive_and_user_without_paths",
+      "name": "pipe_name_derives_from_archive_and_user_without_paths",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_schema4_migration_unknown_history_and_failure_roll_back_without_rewriting_old_migrations",
+      "name": "c11_schema4_migration_unknown_history_and_failure_roll_back_without_rewriting_old_migrations",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:accounts::tests::c01_profile_scope_transfers_between_enabled_subscriptions_without_late_commit",
+      "name": "c01_profile_scope_transfers_between_enabled_subscriptions_without_late_commit",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_login_completion_is_bounded_persistent_deduplicated_and_excludes_live_deleted",
+      "name": "c11_login_completion_is_bounded_persistent_deduplicated_and_excludes_live_deleted",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::tests::c07_acquisition_identity_separates_spec_and_integrity_but_not_signed_urls",
+      "name": "c07_acquisition_identity_separates_spec_and_integrity_but_not_signed_urls",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_incomplete_or_cancelled_candidate_never_borrows_old_required_tracks",
+      "name": "c11_incomplete_or_cancelled_candidate_never_borrows_old_required_tracks",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_legacy_recovery_cache_verification_does_not_invent_acquisition_identity",
+      "name": "c11_legacy_recovery_cache_verification_does_not_invent_acquisition_identity",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_identical_bytes_keep_two_authentication_histories_without_false_upgrade",
+      "name": "c11_identical_bytes_keep_two_authentication_histories_without_false_upgrade",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_edited_completion_and_variant_labels_are_explicit_without_replacing_history",
+      "name": "c11_edited_completion_and_variant_labels_are_explicit_without_replacing_history",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_authentication_timelines_share_identity_counts_pages_and_immutable_history",
+      "name": "c11_authentication_timelines_share_identity_counts_pages_and_immutable_history",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:db::schema::tests::fts5_trigram_available",
+      "name": "fts5_trigram_available",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:db::schema::tests::migrations_apply_idempotently_and_reject_newer_schema",
+      "name": "migrations_apply_idempotently_and_reject_newer_schema",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:db::tests::concurrent_calls_serialize",
+      "name": "concurrent_calls_serialize",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::tests::c01_collection_membership_is_preserved_per_entry_observation",
+      "name": "c01_collection_membership_is_preserved_per_entry_observation",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:feed::tests::c08_dates_specs_alias_tags_and_source_links_share_pagination",
+      "name": "c08_dates_specs_alias_tags_and_source_links_share_pagination",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:feed::tests::c08_quoted_ascii_cjk_trigrams_equal_literal_substrings",
+      "name": "c08_quoted_ascii_cjk_trigrams_equal_literal_substrings",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:db::tests::write_rolls_back_on_error",
+      "name": "write_rolls_back_on_error",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:ipc::dispatch::auth_tests::c06_authentication_is_not_media_permission_or_network_health",
+      "name": "c06_authentication_is_not_media_permission_or_network_health",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:feed::tests::u04_filters_counts_cursor_unknown_time_and_order_share_scope",
+      "name": "u04_filters_counts_cursor_unknown_time_and_order_share_scope",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:jobs::consumers::tests::c11_shared_auth_failure_and_credential_change_do_not_cross_consumers",
+      "name": "c11_shared_auth_failure_and_credential_change_do_not_cross_consumers",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:ipc::server::framing_tests::f013_fragmented_frame_survives_competing_events",
+      "name": "f013_fragmented_frame_survives_competing_events",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:jobs::consumers::tests::c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures",
+      "name": "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:jobs::consumers::tests::c11_shared_observe_and_media_cover_all_owner_states_and_policies",
+      "name": "c11_shared_observe_and_media_cover_all_owner_states_and_policies",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:jobs::lease_tests::f004_due_retry_is_bounded_and_f005_old_attempt_cannot_finish",
+      "name": "f004_due_retry_is_bounded_and_f005_old_attempt_cannot_finish",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:jobs::lease_tests::f004_three_automatic_retries_then_visible_failure",
+      "name": "f004_three_automatic_retries_then_visible_failure",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:jobs::lease_tests::idempotency_receipt_key_is_unique",
+      "name": "idempotency_receipt_key_is_unique",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:jobs::tests::backoff_grows_and_caps",
+      "name": "backoff_grows_and_caps",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:jobs::tests::sanitize_redacts_urls_and_credentials",
+      "name": "sanitize_redacts_urls_and_credentials",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:jobs::lease_tests::stale_leases_requeue_but_terminal_states_do_not_revive",
+      "name": "stale_leases_requeue_but_terminal_states_do_not_revive",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_pending_upgrade_survives_restart_and_anonymous_fallback_has_new_context",
+      "name": "c11_pending_upgrade_survives_restart_and_anonymous_fallback_has_new_context",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::tests::overlapping_subscription_can_continue_same_entry_after_owner_pause",
+      "name": "overlapping_subscription_can_continue_same_entry_after_owner_pause",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::tests::c07_real_media_probe_keeps_each_variants_own_spec_and_upgrades_selection",
+      "name": "c07_real_media_probe_keeps_each_variants_own_spec_and_upgrades_selection",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::tests::c08_playback_cache_clear_rebuild_budget_and_originals",
+      "name": "c08_playback_cache_clear_rebuild_budget_and_originals",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::tests::c05_metadata_priority_reserves_progress_for_regular_work",
+      "name": "c05_metadata_priority_reserves_progress_for_regular_work",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c01_cursor_cycle_survives_turns_and_range_change_revokes_scan",
+      "name": "c01_cursor_cycle_survives_turns_and_range_change_revokes_scan",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c01_c08_public_search_pages_full_scope_and_creator_edits_keep_identity",
+      "name": "c01_c08_public_search_pages_full_scope_and_creator_edits_keep_identity",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_upgrade_accept_reject_keep_both_preserve_old_until_explicit_atomic_decision",
+      "name": "c11_upgrade_accept_reject_keep_both_preserve_old_until_explicit_atomic_decision",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c01_identity_alias_repost_type_collision_and_persistent_cursor_cycle",
+      "name": "c01_identity_alias_repost_type_collision_and_persistent_cursor_cycle",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::tests::c07_deleted_identity_rescan_and_backup_never_silently_reinclude",
+      "name": "c07_deleted_identity_rescan_and_backup_never_silently_reinclude",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c01_recent_sweep_and_deep_cursor_survive_independently",
+      "name": "c01_recent_sweep_and_deep_cursor_survive_independently",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_restore_invalidates_pending_confirmations_and_retry_finishes_original_acquisition",
+      "name": "c11_restore_invalidates_pending_confirmations_and_retry_finishes_original_acquisition",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_completed_candidate_cancel_and_failed_attempt_keep_old_resources_and_history",
+      "name": "c11_completed_candidate_cancel_and_failed_attempt_keep_old_resources_and_history",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_same_blob_distinct_acquisitions_backup_restore_keep_history_without_credentials",
+      "name": "c11_same_blob_distinct_acquisitions_backup_restore_keep_history_without_credentials",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c07_schema3_backup_migration_and_failed_migration_rollback",
+      "name": "c07_schema3_backup_migration_and_failed_migration_rollback",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c02_summary_promotion_stats_and_atomic_resource_jobs",
+      "name": "c02_summary_promotion_stats_and_atomic_resource_jobs",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c05_immediate_global_resume_revokes_every_old_job_lease",
+      "name": "c05_immediate_global_resume_revokes_every_old_job_lease",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:media::tests::f012_rejects_unverified_backend_before_execution",
+      "name": "f012_rejects_unverified_backend_before_execution",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:media::tests::probe_parser_extracts_specs",
+      "name": "probe_parser_extracts_specs",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:media::tests::silent_video_has_zero_audio_tracks",
+      "name": "silent_video_has_zero_audio_tracks",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:objects::recovery_tests::duplicate_bytes_reuse_and_corrupt_target_isolated",
+      "name": "duplicate_bytes_reuse_and_corrupt_target_isolated",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:objects::recovery_tests::f005_cancelled_and_stale_commit_are_rejected",
+      "name": "f005_cancelled_and_stale_commit_are_rejected",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:objects::recovery_tests::f006_invalid_validation_never_installs_and_can_retry",
+      "name": "f006_invalid_validation_never_installs_and_can_retry",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown",
+      "name": "c11_two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c06_credential_update_rebind_generation_background_retry_and_quality_recovery",
+      "name": "c06_credential_update_rebind_generation_background_retry_and_quality_recovery",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:objects::recovery_tests::f014_replica_cursor_reaches_beyond_first_sixty_four",
+      "name": "f014_replica_cursor_reaches_beyond_first_sixty_four",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:objects::recovery_tests::recovery_matrix_is_reentrant",
+      "name": "recovery_matrix_is_reentrant",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:objects::recovery_tests::f007_checkpoint_resume_hashes_entire_file",
+      "name": "f007_checkpoint_resume_hashes_entire_file",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:objects::recovery_tests::verify_replicas_marks_absent_and_corrupt",
+      "name": "verify_replicas_marks_absent_and_corrupt",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:pluginhost::m1_tests::c05_proxy_completion_cannot_cancel_partial_frame_read",
+      "name": "c05_proxy_completion_cannot_cancel_partial_frame_read",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:pluginhost::m1_tests::c06_credential_scopes_and_cross_origin_redirect_strip_headers",
+      "name": "c06_credential_scopes_and_cross_origin_redirect_strip_headers",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:pluginhost::m1_tests::c06_failure_class_survives_without_untrusted_error_text",
+      "name": "c06_failure_class_survives_without_untrusted_error_text",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:quality::requirement_tests::c07_strict_filters_each_representation_and_requires_all_necessary_media",
+      "name": "c07_strict_filters_each_representation_and_requires_all_necessary_media",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_metadata_pacing_fifo_and_urgent_budget_prevent_consumer_starvation",
+      "name": "c11_metadata_pacing_fifo_and_urgent_budget_prevent_consumer_starvation",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:pluginhost::m1_tests::c05_plugin_process_isolation_and_cancelled_request_cleanup",
+      "name": "c05_plugin_process_isolation_and_cancelled_request_cleanup",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:quality::tests::c08_live_quality_query_ignores_unrelated_recording_fragments",
+      "name": "c08_live_quality_query_ignores_unrelated_recording_fragments",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::flv::tests::c04_flv_partial_tags_corrupt_sizes_and_unbounded_headers",
+      "name": "c04_flv_partial_tags_corrupt_sizes_and_unbounded_headers",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::hls::tests::c04_aes128_known_roundtrip_and_wrong_key",
+      "name": "c04_aes128_known_roundtrip_and_wrong_key",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::hls::tests::c04_key_none_inheritance_ranges_map_and_discontinuity",
+      "name": "c04_key_none_inheritance_ranges_map_and_discontinuity",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::hls::tests::c04_map_keeps_declaration_key_across_segment_key_rotation",
+      "name": "c04_map_keeps_declaration_key_across_segment_key_rotation",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::hls::tests::c04_map_key_respects_tag_order_before_same_segment",
+      "name": "c04_map_key_respects_tag_order_before_same_segment",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::hls::tests::c04_ranges_drm_and_truncated_cipher_fail",
+      "name": "c04_ranges_drm_and_truncated_cipher_fail",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c06_health_merges_related_jobs_recovers_and_preserves_delivery_failures",
+      "name": "c06_health_merges_related_jobs_recovers_and_preserves_delivery_failures",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:pluginhost::m1_tests::c05_slow_proxy_does_not_block_same_scope_responses_and_idle_exit",
+      "name": "c05_slow_proxy_does_not_block_same_scope_responses_and_idle_exit",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c07_deletion_scopes_stale_preview_shared_bytes_and_explicit_restore",
+      "name": "c07_deletion_scopes_stale_preview_shared_bytes_and_explicit_restore",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:archive_export::tests::c07_export_all_pages_versions_accounts_resources_and_failure_manifest",
+      "name": "c07_export_all_pages_versions_accounts_resources_and_failure_manifest",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c08_cache_budget_clear_rebuild_preserves_sources_and_rejects_partial_search",
+      "name": "c08_cache_budget_clear_rebuild_preserves_sources_and_rejects_partial_search",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c08_resource_inventory_pages_variants_missing_copies_and_origins",
+      "name": "c08_resource_inventory_pages_variants_missing_copies_and_origins",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c07_schema3_source_search_rebuild_preserves_old_body_and_snapshot",
+      "name": "c07_schema3_source_search_rebuild_preserves_old_body_and_snapshot",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:media::tests::backend_detection_is_explicit",
+      "name": "backend_detection_is_explicit",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c08_large_revision_history_and_media_have_lossless_bounded_pages",
+      "name": "c08_large_revision_history_and_media_have_lossless_bounded_pages",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:media::tests::c06_local_backend_rejects_disguised_playlists_without_network",
+      "name": "c06_local_backend_rejects_disguised_playlists_without_network",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:scan_range::tests::c01_range_is_inclusive_and_does_not_infer_order_or_unknown_dates",
+      "name": "c01_range_is_inclusive_and_does_not_infer_order_or_unknown_dates",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:search::tests::grams_cover_single_and_double_chars",
+      "name": "grams_cover_single_and_double_chars",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:search::tests::snippet_is_bounded",
+      "name": "snippet_is_bounded",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:site_check::tests::c01_site_check_rejects_unbounded_and_write_operations_before_network",
+      "name": "c01_site_check_rejects_unbounded_and_write_operations_before_network",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:storage_budget::tests::c04_c07_disk_reserve_tracks_concurrent_minute_and_replacement_peak",
+      "name": "c04_c07_disk_reserve_tracks_concurrent_minute_and_replacement_peak",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:m1_tests::c08_two_site_all_types_filters_pagination_current_revisions_and_ipc",
+      "name": "c08_two_site_all_types_filters_pagination_current_revisions_and_ipc",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:media::tests::f012_pinned_backend_probes_and_muxes_fixed_avc_aac_samples",
+      "name": "f012_pinned_backend_probes_and_muxes_fixed_avc_aac_samples",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:quality::tests::c07_quality_failure_shared_blob_pins_unique_coverage_and_gc_windows",
+      "name": "c07_quality_failure_shared_blob_pins_unique_coverage_and_gc_windows",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:transport::fault_tests::c13_metadata_403_412_stop_as_access_restrictions_without_empty_success_or_cookie_expiry",
+      "name": "c13_metadata_403_412_stop_as_access_restrictions_without_empty_success_or_cookie_expiry",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::auxiliary::tests::c04_c06_live_auxiliary_dedup_budget_pause_and_secrets",
+      "name": "c04_c06_live_auxiliary_dedup_budget_pause_and_secrets",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:transport::fault_tests::c06_site_check_budget_applies_to_real_http_redirect_hops",
+      "name": "c06_site_check_budget_applies_to_real_http_redirect_hops",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:transport::fault_tests::f011_redirects_validate_each_host_and_private_address",
+      "name": "f011_redirects_validate_each_host_and_private_address",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:transport::tests::forbidden_ips_cover_private_and_metadata_ranges",
+      "name": "forbidden_ips_cover_private_and_metadata_ranges",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:transport::tests::host_rules_match_suffixes_only",
+      "name": "host_rules_match_suffixes_only",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:transport::tests::test_allowed_hosts_bypass_scheme_and_loopback_only_when_explicit",
+      "name": "test_allowed_hosts_bypass_scheme_and_loopback_only_when_explicit",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:transport::tests::validate_url_rejects_non_https_and_unknown_hosts",
+      "name": "validate_url_rejects_non_https_and_unknown_hosts",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:vault::tests::encrypted_at_rest",
+      "name": "encrypted_at_rest",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:vault::tests::store_load_roundtrip_and_isolated_refs",
+      "name": "store_load_roundtrip_and_isolated_refs",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:vault::tests::vault_dir_acl_is_restricted",
+      "name": "vault_dir_acl_is_restricted",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:windows_integration::tests::c05_notification_fixed_activation_preserves_profile_and_rejects_injection",
+      "name": "c05_notification_fixed_activation_preserves_profile_and_rejects_injection",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:windows_integration::tests::c05_startup_quotes_paths_without_shell_execution",
+      "name": "c05_startup_quotes_paths_without_shell_execution",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::tests::c04_c05_same_session_manual_stop_offline_and_late_generation",
+      "name": "c04_c05_same_session_manual_stop_offline_and_late_generation",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:transport::fault_tests::f007_http_range_resume_checks_identity_and_full_hash",
+      "name": "f007_http_range_resume_checks_identity_and_full_hash",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::tests::c04_local_identity_upgrade_and_new_broadcast_preserve_stop_and_history",
+      "name": "c04_local_identity_upgrade_and_new_broadcast_preserve_stop_and_history",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::tests::c04_real_ts_ingestion_dedup_and_missing_window_evidence",
+      "name": "c04_real_ts_ingestion_dedup_and_missing_window_evidence",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::tests::c06_nested_hls_private_network_key_map_and_credential_scopes",
+      "name": "c06_nested_hls_private_network_key_map_and_credential_scopes",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::tests::c04_strict_quality_gap_survives_recovery_and_fallback_keeps_measured_media",
+      "name": "c04_strict_quality_gap_survives_recovery_and_fallback_keeps_measured_media",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:storage_ops::restore_tests::f002_rejects_malicious_ids_before_writes",
+      "name": "f002_rejects_malicious_ids_before_writes",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::tests::c04_recording_commit_windows_and_independent_hls_audio",
+      "name": "c04_recording_commit_windows_and_independent_hls_audio",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:request_budget::tests::c01_c06_validation_counts_each_redirect_and_stops_without_secrets",
+      "name": "c01_c06_validation_counts_each_redirect_and_stops_without_secrets",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::tests::c04_flv_recording_rotation_clock_codec_sleep_and_disk_full",
+      "name": "c04_flv_recording_rotation_clock_codec_sleep_and_disk_full",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::tests::c04_closed_capture_four_commit_windows_survive_cancel_and_restart",
+      "name": "c04_closed_capture_four_commit_windows_survive_cancel_and_restart",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_overlapping_production_subscriptions_keep_authenticated_cdn_history_and_old_selection",
+      "name": "c11_overlapping_production_subscriptions_keep_authenticated_cdn_history_and_old_selection",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:recording::tests::c12_fragment_authentication_actual_specs_gaps_restart_export_and_no_backfill",
+      "name": "c12_fragment_authentication_actual_specs_gaps_restart_export_and_no_backfill",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:storage_ops::restore_tests::f003_restore_opens_and_marks_omitted_or_corrupt_objects",
+      "name": "f003_restore_opens_and_marks_omitted_or_corrupt_objects",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::acquisition_tests::c11_upgrade_stale_confirmations_reject_selection_revision_generations_cancel_and_corruption",
+      "name": "c11_upgrade_stale_confirmations_reject_selection_revision_generations_cancel_and_corruption",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::lifecycle_tests::c05_local_maintenance_cancellation_and_plugin_independence",
+      "name": "c05_local_maintenance_cancellation_and_plugin_independence",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:transport::fault_tests::f007_stream_over_thirty_seconds_and_cancellation",
+      "name": "f007_stream_over_thirty_seconds_and_cancellation",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::vertical_tests::c02_gallery_live_photo_required_tracks_and_edit_resources",
+      "name": "c02_gallery_live_photo_required_tracks_and_edit_resources",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_core:core::lifecycle_tests::c05_all_job_types_plugin_isolation_and_shutdown_sealing",
+      "name": "c05_all_job_types_plugin_isolation_and_shutdown_sealing",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_desktop_lib:media::tests::f010_ranges_are_bounded_and_suffix_semantics_are_correct",
+      "name": "f010_ranges_are_bounded_and_suffix_semantics_are_correct",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:entities::tests::published_time_is_optional",
+      "name": "published_time_is_optional",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:errors::tests::classification_boundaries",
+      "name": "classification_boundaries",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:entities::tests::revision_serialization_roundtrip",
+      "name": "revision_serialization_roundtrip",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:errors::tests::serde_snake_case",
+      "name": "serde_snake_case",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:ids::tests::generated_ids_are_unique_and_non_empty",
+      "name": "generated_ids_are_unique_and_non_empty",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:ids::tests::id_parse_rejects_empty_and_overlong",
+      "name": "id_parse_rejects_empty_and_overlong",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:ids::tests::namespace_separates_platform_and_instance",
+      "name": "namespace_separates_platform_and_instance",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:quality::tests::all_required_saved_is_complete",
+      "name": "all_required_saved_is_complete",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:quality::tests::audio_failure_keeps_entry_partial_not_complete",
+      "name": "audio_failure_keeps_entry_partial_not_complete",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:quality::tests::nothing_saved_is_pending",
+      "name": "nothing_saved_is_pending",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:quality::tests::unknown_when_no_required_resources_declared",
+      "name": "unknown_when_no_required_resources_declared",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:revision::tests::digest_excludes_stats_and_is_stable",
+      "name": "digest_excludes_stats_and_is_stable",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:revision::tests::body_edit_creates_new_revision_and_revert_reuses",
+      "name": "body_edit_creates_new_revision_and_revert_reuses",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:revision::tests::resource_change_creates_revision",
+      "name": "resource_change_creates_revision",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:revision::tests::stats_change_does_not_create_revision",
+      "name": "stats_change_does_not_create_revision",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:search::tests::fts_quoting_neutralizes_syntax",
+      "name": "fts_quoting_neutralizes_syntax",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:search::tests::like_escape_handles_wildcards",
+      "name": "like_escape_handles_wildcards",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:search::tests::nfc_and_lowercase",
+      "name": "nfc_and_lowercase",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:ids::tests::blob_id_validates_hash_shape",
+      "name": "blob_id_validates_hash_shape",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:revision::tests::summary_never_overwrites_full_revision",
+      "name": "summary_never_overwrites_full_revision",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:states::tests::job_terminal_states_reject_reactivation",
+      "name": "job_terminal_states_reject_reactivation",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:states::tests::serde_uses_snake_case",
+      "name": "serde_uses_snake_case",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:tests::protocol_versions_are_stable_in_m1a",
+      "name": "protocol_versions_are_stable_in_m1a",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:time::tests::roundtrip_and_ordering",
+      "name": "roundtrip_and_ordering",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_domain:time::tests::unknown_time_is_representable",
+      "name": "unknown_time_is_representable",
+      "status": "passed"
+    },
+    {
+      "id": "rust:a_review_probes:a_f007_chunked_range_must_reach_declared_total",
+      "name": "a_f007_chunked_range_must_reach_declared_total",
+      "status": "passed"
+    },
+    {
+      "id": "rust:a_review_probes:a_f008_segments_must_keep_declared_size_validation",
+      "name": "a_f008_segments_must_keep_declared_size_validation",
+      "status": "passed"
+    },
+    {
+      "id": "rust:a_review_probes:a_u02_subscription_resume_must_resume_scan",
+      "name": "a_u02_subscription_resume_must_resume_scan",
+      "status": "passed"
+    },
+    {
+      "id": "rust:closeout_faults:f005_f006_f007_task_windows_restart_pause_shutdown_and_cancel",
+      "name": "f005_f006_f007_task_windows_restart_pause_shutdown_and_cancel",
+      "status": "passed"
+    },
+    {
+      "id": "rust:closeout_rework:f015_pause_due_running_resume_idempotency_and_restart",
+      "name": "f015_pause_due_running_resume_idempotency_and_restart",
+      "status": "passed"
+    },
+    {
+      "id": "rust:closeout_rework:f007_chunked_lengths_and_success_statuses_are_exact",
+      "name": "f007_chunked_lengths_and_success_statuses_are_exact",
+      "status": "passed"
+    },
+    {
+      "id": "rust:closeout_rework:f008_segment_sizes_hashes_and_legacy_aggregate_gate_completion",
+      "name": "f008_segment_sizes_hashes_and_legacy_aggregate_gate_completion",
+      "status": "passed"
+    },
+    {
+      "id": "rust:daemon_process:dual_start_lock_acl_and_clean_shutdown",
+      "name": "dual_start_lock_acl_and_clean_shutdown",
+      "status": "passed"
+    },
+    {
+      "id": "rust:full_loop:offline_full_loop_scan_observe_media_search_backup_restore",
+      "name": "offline_full_loop_scan_observe_media_search_backup_restore",
+      "status": "passed"
+    },
+    {
+      "id": "rust:m1_production_adapters:douyin_auth_probe_requires_self_profile_not_guest_uid",
+      "name": "douyin_auth_probe_requires_self_profile_not_guest_uid",
+      "status": "passed"
+    },
+    {
+      "id": "rust:m1_production_adapters:c02_bilibili_music_cards_require_full_audio_and_preserve_parent_on_trial",
+      "name": "c02_bilibili_music_cards_require_full_audio_and_preserve_parent_on_trial",
+      "status": "passed"
+    },
+    {
+      "id": "rust:m1_production_adapters:c02_bilibili_article_full_body_and_legacy_protocol_defaults",
+      "name": "c02_bilibili_article_full_body_and_legacy_protocol_defaults",
+      "status": "passed"
+    },
+    {
+      "id": "rust:m1_production_adapters:c01_c02_douyin_article_account_to_full_document_through_production_process",
+      "name": "c01_c02_douyin_article_account_to_full_document_through_production_process",
+      "status": "passed"
+    },
+    {
+      "id": "rust:m1_production_adapters:c02_bilibili_opus_video_cards_subtitles_and_failed_repost_preserve_parent",
+      "name": "c02_bilibili_opus_video_cards_subtitles_and_failed_repost_preserve_parent",
+      "status": "passed"
+    },
+    {
+      "id": "rust:m1_production_adapters:c02_article_ops_av_mapping_and_opus_formula_list_production",
+      "name": "c02_article_ops_av_mapping_and_opus_formula_list_production",
+      "status": "passed"
+    },
+    {
+      "id": "rust:m1_production_adapters:c01_collection_enumeration_and_c04_live_auxiliary_through_production_processes",
+      "name": "c01_collection_enumeration_and_c04_live_auxiliary_through_production_processes",
+      "status": "passed"
+    },
+    {
+      "id": "rust:m1_production_adapters:c02_bilibili_collection_membership_and_douyin_motion_production_mapping",
+      "name": "c02_bilibili_collection_membership_and_douyin_motion_production_mapping",
+      "status": "passed"
+    },
+    {
+      "id": "rust:m1_production_adapters:c01_site_check_dry_run_does_not_read_credentials_or_create_output",
+      "name": "c01_site_check_dry_run_does_not_read_credentials_or_create_output",
+      "status": "passed"
+    },
+    {
+      "id": "rust:m1_startup:c05_windows_notification_history_with_suppressed_popup",
+      "name": "c05_windows_notification_history_with_suppressed_popup",
+      "status": "passed"
+    },
+    {
+      "id": "rust:m1_startup:c05_background_launcher_double_start_single_daemon_and_invalid_profile",
+      "name": "c05_background_launcher_double_start_single_daemon_and_invalid_profile",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_site_support:document::tests::c02_list_images_preserve_text_numbering_and_required_positions",
+      "name": "c02_list_images_preserve_text_numbering_and_required_positions",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_site_support:document::tests::c06_html_never_preserves_scripts_remote_attributes_or_css",
+      "name": "c06_html_never_preserves_scripts_remote_attributes_or_css",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_site_support:document::tests::c02_table_images_preserve_cell_text_positions_and_required_resources",
+      "name": "c02_table_images_preserve_cell_text_positions_and_required_resources",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_site_support:document::tests::c02_document_lists_tables_headings_quotes_and_code_keep_semantics",
+      "name": "c02_document_lists_tables_headings_quotes_and_code_keep_semantics",
+      "status": "passed"
+    },
+    {
+      "id": "rust:trace_site_support:document::tests::c02_c06_long_markdown_and_thirty_images_are_inert_and_ordered",
+      "name": "c02_c06_long_markdown_and_thirty_images_are_inert_and_ordered",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/api.spec.ts:api 封装 > c08_public_search_forwards_shared_scope_and_continuation",
+      "name": "c08_public_search_forwards_shared_scope_and_continuation",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/api.spec.ts:api 封装 > 可选参数显式置 null（对齐 Rust Option）",
+      "name": "可选参数显式置 null（对齐 Rust Option）",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/api.spec.ts:api 封装 > 凭证导入传递 secret 而不落地",
+      "name": "凭证导入传递 secret 而不落地",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/api.spec.ts:api 封装 > 订阅范围映射",
+      "name": "订阅范围映射",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/api.spec.ts:api 封装 > 任务列表过滤器可空",
+      "name": "任务列表过滤器可空",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/api.spec.ts:U04 shared Rust/TypeScript timeline sample retains counts, IDs and unknowns",
+      "name": "U04 shared Rust/TypeScript timeline sample retains counts, IDs and unknowns",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/format.spec.ts:状态文案（正交状态分开陈述） > 任务状态映射为中文",
+      "name": "任务状态映射为中文",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/format.spec.ts:状态文案（正交状态分开陈述） > 未知状态原样显示，不猜语义",
+      "name": "未知状态原样显示，不猜语义",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/format.spec.ts:状态文案（正交状态分开陈述） > 可访问性/保存进度/质量互不合并",
+      "name": "可访问性/保存进度/质量互不合并",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/format.spec.ts:状态文案（正交状态分开陈述） > tag 类型：等待登录与失败视觉可区分",
+      "name": "tag 类型：等待登录与失败视觉可区分",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/format.spec.ts:格式化 > 字节数人性化",
+      "name": "字节数人性化",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/format.spec.ts:格式化 > 时间格式化：非法输入原样返回",
+      "name": "时间格式化：非法输入原样返回",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/format.spec.ts:格式化 > 平台命名空间取首段",
+      "name": "平台命名空间取首段",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/lib/__tests__/format.spec.ts:格式化 > 媒体摘要区分无声与未保存",
+      "name": "媒体摘要区分无声与未保存",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/components/__tests__/media.spec.ts:controlled media browsing > uses a blob handle and never accepts a path",
+      "name": "uses a blob handle and never accepts a path",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/components/__tests__/media.spec.ts:controlled media browsing > does not offer a player for absent files and explains unsupported codecs",
+      "name": "does not offer a player for absent files and explains unsupported codecs",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/resources.spec.ts:c08_resource_library_pages_specs_origin_and_stale_requests",
+      "name": "c08_resource_library_pages_specs_origin_and_stale_requests",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/components/__tests__/m1-archive.spec.ts:c08_live_chat_offline_pagination_inert_text_and_stale_session",
+      "name": "c08_live_chat_offline_pagination_inert_text_and_stale_session",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/components/__tests__/m1-archive.spec.ts:c08_document_resource_ui_races_and_live_controls",
+      "name": "c08_document_resource_ui_races_and_live_controls",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/components/__tests__/m1-archive.spec.ts:reads every Unicode chunk and abandons a stale full-document request",
+      "name": "reads every Unicode chunk and abandons a stale full-document request",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/components/__tests__/m1-archive.spec.ts:history bodies are lazy and an inline historical revision remains readable",
+      "name": "history bodies are lazy and an inline historical revision remains readable",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/components/__tests__/m1-archive.spec.ts:c08_account_history_pages_and_source_refresh_reject_old_account_results",
+      "name": "c08_account_history_pages_and_source_refresh_reject_old_account_results",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/components/__tests__/m1-archive.spec.ts:c02_document_lists_tables_and_quotes_render_as_inert_local_semantics",
+      "name": "c02_document_lists_tables_and_quotes_render_as_inert_local_semantics",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/components/__tests__/m1-archive.spec.ts:c08_rich_article_text_is_inert_and_preserves_inline_format",
+      "name": "c08_rich_article_text_is_inert_and_preserves_inline_format",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/modules.spec.ts:c08_module_stop_shows_draining_until_workers_finish",
+      "name": "c08_module_stop_shows_draining_until_workers_finish",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:c11_home_authentication_filter_resets_cursor_and_preserves_media",
+      "name": "c11_home_authentication_filter_resets_cursor_and_preserves_media",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/upgrades.spec.ts:c11_upgrade_page_requires_explicit_selection_and_preserves_failed_comparison",
+      "name": "c11_upgrade_page_requires_explicit_selection_and_preserves_failed_comparison",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/upgrades.spec.ts:c11_pending_candidates_never_become_default_playback_and_keep_resource_identity_labels",
+      "name": "c11_pending_candidates_never_become_default_playback_and_keep_resource_identity_labels",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/upgrades.spec.ts:c11_acquisition_history_is_lazy_paginated_and_does_not_relabel_old_results",
+      "name": "c11_acquisition_history_is_lazy_paginated_and_does_not_relabel_old_results",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/upgrades.spec.ts:c12_live_fragment_labels_keep_mixed_unknown_and_actual_bitrate",
+      "name": "c12_live_fragment_labels_keep_mixed_unknown_and_actual_bitrate",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:F-016 refresh reconciliation > retains a still-matching selection that moved outside the loaded sort window",
+      "name": "retains a still-matching selection that moved outside the loaded sort window",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:F-016 refresh reconciliation > retains loaded pages, selected variant, node and playback position across related updates",
+      "name": "retains loaded pages, selected variant, node and playback position across related updates",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:F-016 refresh reconciliation > switches only after the selected entry leaves the refreshed result and explains the change",
+      "name": "switches only after the selected entry leaves the refreshed result and explains the change",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:F-016 refresh reconciliation > late refresh snapshots and details cannot overwrite a newer refresh or user selection",
+      "name": "late refresh snapshots and details cannot overwrite a newer refresh or user selection",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:A review: unrelated archive events preserve the selected entry and player",
+      "name": "A review: unrelated archive events preserve the selected entry and player",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:主页的预览与真实档案边界 > 组合筛选不修改原数组，排序只改变结果",
+      "name": "组合筛选不修改原数组，排序只改变结果",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:主页的预览与真实档案边界 > 预览搜索、空结果和卡片详情同步",
+      "name": "预览搜索、空结果和卡片详情同步",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:主页的预览与真实档案边界 > 示例订阅和下载不调用档案 API",
+      "name": "示例订阅和下载不调用档案 API",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:主页的预览与真实档案边界 > 实际空档案没有虚构的数量、作者或已保存文件",
+      "name": "实际空档案没有虚构的数量、作者或已保存文件",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:主页的预览与真实档案边界 > 读取失败显示重试，恢复后清除错误",
+      "name": "读取失败显示重试，恢复后清除错误",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:主页的预览与真实档案边界 > 真实记录显示实际状态，媒体操作不调用不安全路径 API",
+      "name": "真实记录显示实际状态，媒体操作不调用不安全路径 API",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:主页的预览与真实档案边界 > 侧栏是真实路由，后台状态入口保留",
+      "name": "侧栏是真实路由，后台状态入口保留",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:主页的预览与真实档案边界 > 晚到的旧请求不能覆盖新的搜索结果",
+      "name": "晚到的旧请求不能覆盖新的搜索结果",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:主页的预览与真实档案边界 > 真实订阅失败保留持久状态，成功后重新读取并支持账号组合查询",
+      "name": "真实订阅失败保留持久状态，成功后重新读取并支持账号组合查询",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:主页的预览与真实档案边界 > 卸载后的详情请求不更新页面或发起新写操作",
+      "name": "卸载后的详情请求不更新页面或发起新写操作",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:主页的预览与真实档案边界 > 真实侧栏只提供当前平台，预览平台不成为生产入口",
+      "name": "真实侧栏只提供当前平台，预览平台不成为生产入口",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:主页的预览与真实档案边界 > 断连提示和重连快照事件实际刷新，卸载释放监听",
+      "name": "断连提示和重连快照事件实际刷新，卸载释放监听",
+      "status": "passed"
+    },
+    {
+      "id": "vitest:src/views/__tests__/home.spec.ts:c08_resource_origin_link_focuses_exact_entry_and_returns_to_timeline",
+      "name": "c08_resource_origin_link_focuses_exact_entry_and_returns_to_timeline",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_governance.GovernanceTests.test_broken_link_and_missing_registry_are_rejected",
+      "name": "test_broken_link_and_missing_registry_are_rejected",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_governance.GovernanceTests.test_competing_plan_and_invalid_anchor_are_rejected",
+      "name": "test_competing_plan_and_invalid_anchor_are_rejected",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_governance.GovernanceTests.test_ignored_files_not_read_but_forced_tracking_is_rejected",
+      "name": "test_ignored_files_not_read_but_forced_tracking_is_rejected",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_governance.GovernanceTests.test_removed_requirement_is_rejected",
+      "name": "test_removed_requirement_is_rejected",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_governance.GovernanceTests.test_requirement_stage_order_and_names_are_checked",
+      "name": "test_requirement_stage_order_and_names_are_checked",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_governance.GovernanceTests.test_stage_retirement_is_numeric_and_rejects_expired_documents",
+      "name": "test_stage_retirement_is_numeric_and_rejects_expired_documents",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_governance.GovernanceTests.test_staged_private_path_stays_detected_after_worktree_fix",
+      "name": "test_staged_private_path_stays_detected_after_worktree_fix",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_site_check_preparation.SiteCheckPreparationTests.test_duplicate_and_malformed_inputs_are_rejected",
+      "name": "test_duplicate_and_malformed_inputs_are_rejected",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_site_check_preparation.SiteCheckPreparationTests.test_missing_credentials_stop_before_any_output",
+      "name": "test_missing_credentials_stop_before_any_output",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_site_check_preparation.SiteCheckPreparationTests.test_preparation_keeps_secret_out_of_output_and_requires_new_scope",
+      "name": "test_preparation_keeps_secret_out_of_output_and_requires_new_scope",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_stage_evidence.StageEvidenceTests.test_r2_contract_requirements_and_configuration_are_required_inputs",
+      "name": "test_r2_contract_requirements_and_configuration_are_required_inputs",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_stage_evidence.StageEvidenceTests.test_rejects_missing_package_failed_short_benchmark_and_stale_docs",
+      "name": "test_rejects_missing_package_failed_short_benchmark_and_stale_docs",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_stage_evidence.StageEvidenceTests.test_rejects_package_manifest_and_build_tampering",
+      "name": "test_rejects_package_manifest_and_build_tampering",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_stage_evidence.StageEvidenceTests.test_rejects_stale_source_missing_failed_duplicate_cases",
+      "name": "test_rejects_stale_source_missing_failed_duplicate_cases",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_stage_evidence.StageEvidenceTests.test_rejects_traversal_absolute_and_linked_evidence",
+      "name": "test_rejects_traversal_absolute_and_linked_evidence",
+      "status": "passed"
+    },
+    {
+      "id": "python:test_stage_evidence.StageEvidenceTests.test_verbose_receipts_preserve_names_and_executable_identity",
+      "name": "test_verbose_receipts_preserve_names_and_executable_identity",
+      "status": "passed"
+    },
+    {
+      "id": "python:__main__.PackageTests.c09_packaged_two_site_isolation_and_complete_inventory",
+      "name": "c09_packaged_two_site_isolation_and_complete_inventory",
+      "status": "passed"
+    },
+    {
+      "id": "python:__main__.PackageTests.c09_minimized_embedded_webview_close_reconnect_and_full_exit",
+      "name": "c09_minimized_embedded_webview_close_reconnect_and_full_exit",
+      "status": "passed"
+    }
+  ],
+  "requirements": {
+    "total": 85,
+    "m1Applicable": 66,
+    "laterScopeNotRun": 19,
+    "mapping": [
+      {
+        "id": "FR-ID-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c01_c08_public_search_pages_full_scope_and_creator_edits_keep_identity",
+          "offline_full_loop_scan_observe_media_search_backup_restore"
+        ],
+        "implementation": [
+          "crates/core/src/ipc/dispatch.rs",
+          "crates/core/src/accounts.rs",
+          "apps/desktop/src/views/CreatorsView.vue"
+        ]
+      },
+      {
+        "id": "FR-ID-002",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c01_identity_alias_repost_type_collision_and_persistent_cursor_cycle",
+          "c01_c08_public_search_pages_full_scope_and_creator_edits_keep_identity"
+        ],
+        "implementation": [
+          "crates/core/src/ipc/dispatch.rs",
+          "crates/core/src/accounts.rs",
+          "apps/desktop/src/views/CreatorsView.vue"
+        ]
+      },
+      {
+        "id": "FR-ID-003",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-ID-004",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c08_two_site_all_types_filters_pagination_current_revisions_and_ipc",
+          "c01_recent_sweep_and_deep_cursor_survive_independently",
+          "c06_health_merges_related_jobs_recovers_and_preserves_delivery_failures"
+        ],
+        "implementation": [
+          "crates/core/src/ipc/dispatch.rs",
+          "crates/core/src/accounts.rs",
+          "apps/desktop/src/views/CreatorsView.vue"
+        ]
+      },
+      {
+        "id": "FR-ID-005",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-SUB-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c06_credential_update_rebind_generation_background_retry_and_quality_recovery",
+          "c01_range_is_inclusive_and_does_not_infer_order_or_unknown_dates",
+          "c01_cursor_cycle_survives_turns_and_range_change_revokes_scan",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures",
+          "c11_metadata_pacing_fifo_and_urgent_budget_prevent_consumer_starvation"
+        ],
+        "implementation": [
+          "crates/core/src/core.rs",
+          "crates/core/src/scan_range.rs",
+          "crates/core/src/jobs/mod.rs",
+          "apps/desktop/src/views/CreatorsView.vue",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-SUB-002",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c01_recent_sweep_and_deep_cursor_survive_independently",
+          "c05_metadata_priority_reserves_progress_for_regular_work",
+          "c05_all_job_types_plugin_isolation_and_shutdown_sealing",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/core/src/core.rs",
+          "crates/core/src/scan_range.rs",
+          "crates/core/src/jobs/mod.rs",
+          "apps/desktop/src/views/CreatorsView.vue",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-SUB-003",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c01_identity_alias_repost_type_collision_and_persistent_cursor_cycle",
+          "c01_cursor_cycle_survives_turns_and_range_change_revokes_scan",
+          "c07_acquisition_identity_separates_spec_and_integrity_but_not_signed_urls",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures",
+          "c11_metadata_pacing_fifo_and_urgent_budget_prevent_consumer_starvation"
+        ],
+        "implementation": [
+          "crates/core/src/core.rs",
+          "crates/core/src/scan_range.rs",
+          "crates/core/src/jobs/mod.rs",
+          "apps/desktop/src/views/CreatorsView.vue",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-SUB-004",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c01_recent_sweep_and_deep_cursor_survive_independently",
+          "c02_summary_promotion_stats_and_atomic_resource_jobs",
+          "c02_gallery_live_photo_required_tracks_and_edit_resources",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures",
+          "c11_metadata_pacing_fifo_and_urgent_budget_prevent_consumer_starvation"
+        ],
+        "implementation": [
+          "crates/core/src/core.rs",
+          "crates/core/src/scan_range.rs",
+          "crates/core/src/jobs/mod.rs",
+          "apps/desktop/src/views/CreatorsView.vue",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-SUB-005",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c02_summary_promotion_stats_and_atomic_resource_jobs",
+          "c02_gallery_live_photo_required_tracks_and_edit_resources",
+          "c08_two_site_all_types_filters_pagination_current_revisions_and_ipc",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/contracts/src/content.rs",
+          "crates/domain/src/revision.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/objects/mod.rs",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-SUB-006",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c02_summary_promotion_stats_and_atomic_resource_jobs",
+          "c01_identity_alias_repost_type_collision_and_persistent_cursor_cycle",
+          "c06_nested_secrets_and_signed_urls_do_not_reach_archive",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/contracts/src/content.rs",
+          "crates/domain/src/revision.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/objects/mod.rs",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-SUB-007",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-LIVE-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c04_local_identity_upgrade_and_new_broadcast_preserve_stop_and_history",
+          "c04_c05_same_session_manual_stop_offline_and_late_generation",
+          "c05_all_job_types_plugin_isolation_and_shutdown_sealing",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/core/src/recording/mod.rs",
+          "adapters/bilibili/src/live.rs",
+          "adapters/douyin/src/live.rs",
+          "apps/desktop/src/components/LiveRecording.vue",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-LIVE-002",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c04_flv_recording_rotation_clock_codec_sleep_and_disk_full",
+          "c04_recording_commit_windows_and_independent_hls_audio",
+          "c08_resource_inventory_pages_variants_missing_copies_and_origins"
+        ],
+        "implementation": [
+          "crates/core/src/recording/mod.rs",
+          "adapters/bilibili/src/live.rs",
+          "adapters/douyin/src/live.rs",
+          "apps/desktop/src/components/LiveRecording.vue"
+        ]
+      },
+      {
+        "id": "FR-LIVE-003",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c04_flv_recording_rotation_clock_codec_sleep_and_disk_full",
+          "c04_recording_commit_windows_and_independent_hls_audio",
+          "c04_closed_capture_four_commit_windows_survive_cancel_and_restart",
+          "recovery_matrix_is_reentrant"
+        ],
+        "implementation": [
+          "crates/core/src/recording/mod.rs",
+          "adapters/bilibili/src/live.rs",
+          "adapters/douyin/src/live.rs",
+          "apps/desktop/src/components/LiveRecording.vue"
+        ]
+      },
+      {
+        "id": "FR-LIVE-004",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c04_flv_recording_rotation_clock_codec_sleep_and_disk_full",
+          "c04_strict_quality_gap_survives_recovery_and_fallback_keeps_measured_media",
+          "c07_quality_failure_shared_blob_pins_unique_coverage_and_gc_windows"
+        ],
+        "implementation": [
+          "crates/core/src/recording/mod.rs",
+          "adapters/bilibili/src/live.rs",
+          "adapters/douyin/src/live.rs",
+          "apps/desktop/src/components/LiveRecording.vue"
+        ]
+      },
+      {
+        "id": "FR-LIVE-005",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c04_c07_disk_reserve_tracks_concurrent_minute_and_replacement_peak",
+          "c05_all_job_types_plugin_isolation_and_shutdown_sealing",
+          "c04_closed_capture_four_commit_windows_survive_cancel_and_restart",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/core/src/recording/mod.rs",
+          "adapters/bilibili/src/live.rs",
+          "adapters/douyin/src/live.rs",
+          "apps/desktop/src/components/LiveRecording.vue",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-LIVE-006",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-AUTH-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c06_credential_update_rebind_generation_background_retry_and_quality_recovery",
+          "c06_authentication_is_not_media_permission_or_network_health",
+          "c01_site_check_dry_run_does_not_read_credentials_or_create_output",
+          "c11_two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown"
+        ],
+        "implementation": [
+          "crates/core/src/vault.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/issues.rs",
+          "apps/desktop/src/views/AccountsView.vue",
+          "crates/core/src/acquisitions.rs"
+        ]
+      },
+      {
+        "id": "FR-AUTH-002",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c06_authentication_is_not_media_permission_or_network_health",
+          "c06_credential_update_rebind_generation_background_retry_and_quality_recovery",
+          "c11_two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown"
+        ],
+        "implementation": [
+          "crates/core/src/vault.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/issues.rs",
+          "apps/desktop/src/views/AccountsView.vue",
+          "crates/core/src/acquisitions.rs"
+        ]
+      },
+      {
+        "id": "FR-AUTH-003",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c06_health_merges_related_jobs_recovers_and_preserves_delivery_failures",
+          "c05_windows_notification_history_with_suppressed_popup",
+          "c05_notification_fixed_activation_preserves_profile_and_rejects_injection",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures",
+          "c11_two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown"
+        ],
+        "implementation": [
+          "crates/core/src/issues.rs",
+          "crates/core/src/windows_integration.rs",
+          "apps/desktop/src-tauri/src/lib.rs",
+          "apps/desktop/src/views/StatusView.vue",
+          "crates/core/src/jobs/consumers.rs",
+          "crates/core/src/acquisitions.rs"
+        ]
+      },
+      {
+        "id": "FR-AUTH-004",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c07_strict_filters_each_representation_and_requires_all_necessary_media",
+          "c04_strict_quality_gap_survives_recovery_and_fallback_keeps_measured_media",
+          "c07_real_media_probe_keeps_each_variants_own_spec_and_upgrades_selection",
+          "c11_two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown"
+        ],
+        "implementation": [
+          "crates/core/src/quality.rs",
+          "crates/core/src/core.rs",
+          "apps/desktop/src/components/QualityPanel.vue",
+          "crates/core/src/acquisitions.rs"
+        ]
+      },
+      {
+        "id": "FR-AUTH-005",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c06_credential_update_rebind_generation_background_retry_and_quality_recovery",
+          "c05_all_job_types_plugin_isolation_and_shutdown_sealing",
+          "c07_real_media_probe_keeps_each_variants_own_spec_and_upgrades_selection",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures",
+          "c11_two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown"
+        ],
+        "implementation": [
+          "crates/core/src/vault.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/issues.rs",
+          "apps/desktop/src/views/AccountsView.vue",
+          "crates/core/src/jobs/consumers.rs",
+          "crates/core/src/acquisitions.rs"
+        ]
+      },
+      {
+        "id": "FR-AUTH-006",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c06_credential_update_rebind_generation_background_retry_and_quality_recovery",
+          "c06_nested_secrets_and_signed_urls_do_not_reach_archive",
+          "c07_export_all_pages_versions_accounts_resources_and_failure_manifest",
+          "f003_restore_opens_and_marks_omitted_or_corrupt_objects",
+          "c11_two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown"
+        ],
+        "implementation": [
+          "crates/core/src/transport.rs",
+          "crates/core/src/vault.rs",
+          "crates/core/src/paths.rs",
+          "adapters/common/src/document.rs",
+          "crates/core/src/acquisitions.rs"
+        ]
+      },
+      {
+        "id": "FR-ARC-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c01_c02_douyin_article_account_to_full_document_through_production_process",
+          "c02_article_ops_av_mapping_and_opus_formula_list_production",
+          "c02_gallery_live_photo_required_tracks_and_edit_resources",
+          "c04_closed_capture_four_commit_windows_survive_cancel_and_restart"
+        ],
+        "implementation": [
+          "crates/contracts/src/content.rs",
+          "crates/domain/src/revision.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/objects/mod.rs"
+        ]
+      },
+      {
+        "id": "FR-ARC-002",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c07_quality_failure_shared_blob_pins_unique_coverage_and_gc_windows",
+          "recovery_matrix_is_reentrant",
+          "offline_full_loop_scan_observe_media_search_backup_restore"
+        ],
+        "implementation": [
+          "crates/contracts/src/content.rs",
+          "crates/domain/src/revision.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/objects/mod.rs"
+        ]
+      },
+      {
+        "id": "FR-ARC-003",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c02_summary_promotion_stats_and_atomic_resource_jobs",
+          "c02_gallery_live_photo_required_tracks_and_edit_resources",
+          "c06_nested_secrets_and_signed_urls_do_not_reach_archive",
+          "c08_large_revision_history_and_media_have_lossless_bounded_pages"
+        ],
+        "implementation": [
+          "crates/contracts/src/content.rs",
+          "crates/domain/src/revision.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/objects/mod.rs"
+        ]
+      },
+      {
+        "id": "FR-ARC-004",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-ARC-005",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c07_real_media_probe_keeps_each_variants_own_spec_and_upgrades_selection",
+          "c04_flv_recording_rotation_clock_codec_sleep_and_disk_full",
+          "c08_playback_cache_clear_rebuild_budget_and_originals"
+        ],
+        "implementation": [
+          "crates/core/src/media.rs",
+          "crates/core/src/objects/mod.rs",
+          "apps/desktop/src/components/MediaBrowser.vue"
+        ]
+      },
+      {
+        "id": "FR-ARC-006",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-ARC-007",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "recovery_matrix_is_reentrant",
+          "f003_restore_opens_and_marks_omitted_or_corrupt_objects",
+          "c04_closed_capture_four_commit_windows_survive_cancel_and_restart"
+        ],
+        "implementation": [
+          "crates/contracts/src/content.rs",
+          "crates/domain/src/revision.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/objects/mod.rs"
+        ]
+      },
+      {
+        "id": "FR-ARC-008",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-QUALITY-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c07_real_media_probe_keeps_each_variants_own_spec_and_upgrades_selection",
+          "c07_acquisition_identity_separates_spec_and_integrity_but_not_signed_urls",
+          "c07_strict_filters_each_representation_and_requires_all_necessary_media",
+          "c11_upgrade_accept_reject_keep_both_preserve_old_until_explicit_atomic_decision",
+          "c11_upgrade_stale_confirmations_reject_selection_revision_generations_cancel_and_corruption"
+        ],
+        "implementation": [
+          "crates/core/src/quality.rs",
+          "crates/core/src/core.rs",
+          "apps/desktop/src/components/QualityPanel.vue",
+          "crates/core/src/upgrades.rs"
+        ]
+      },
+      {
+        "id": "FR-QUALITY-002",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c07_real_media_probe_keeps_each_variants_own_spec_and_upgrades_selection",
+          "c07_quality_failure_shared_blob_pins_unique_coverage_and_gc_windows",
+          "c04_strict_quality_gap_survives_recovery_and_fallback_keeps_measured_media",
+          "c11_upgrade_accept_reject_keep_both_preserve_old_until_explicit_atomic_decision",
+          "c11_upgrade_stale_confirmations_reject_selection_revision_generations_cancel_and_corruption"
+        ],
+        "implementation": [
+          "crates/core/src/quality.rs",
+          "crates/core/src/core.rs",
+          "apps/desktop/src/components/QualityPanel.vue",
+          "crates/core/src/upgrades.rs"
+        ]
+      },
+      {
+        "id": "FR-QUALITY-003",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c07_quality_failure_shared_blob_pins_unique_coverage_and_gc_windows",
+          "c04_closed_capture_four_commit_windows_survive_cancel_and_restart",
+          "recovery_matrix_is_reentrant",
+          "c11_upgrade_accept_reject_keep_both_preserve_old_until_explicit_atomic_decision",
+          "c11_upgrade_stale_confirmations_reject_selection_revision_generations_cancel_and_corruption"
+        ],
+        "implementation": [
+          "crates/core/src/quality.rs",
+          "crates/core/src/core.rs",
+          "apps/desktop/src/components/QualityPanel.vue",
+          "crates/core/src/upgrades.rs"
+        ]
+      },
+      {
+        "id": "FR-QUALITY-004",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c07_quality_failure_shared_blob_pins_unique_coverage_and_gc_windows",
+          "c04_strict_quality_gap_survives_recovery_and_fallback_keeps_measured_media",
+          "c11_upgrade_accept_reject_keep_both_preserve_old_until_explicit_atomic_decision",
+          "c11_upgrade_stale_confirmations_reject_selection_revision_generations_cancel_and_corruption"
+        ],
+        "implementation": [
+          "crates/core/src/quality.rs",
+          "crates/core/src/core.rs",
+          "apps/desktop/src/components/QualityPanel.vue",
+          "crates/core/src/upgrades.rs"
+        ]
+      },
+      {
+        "id": "FR-QUALITY-005",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-BROWSE-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c08_resource_inventory_pages_variants_missing_copies_and_origins",
+          "c08_two_site_all_types_filters_pagination_current_revisions_and_ipc",
+          "c08_live_quality_query_ignores_unrelated_recording_fragments"
+        ],
+        "implementation": [
+          "crates/core/src/feed.rs",
+          "crates/core/src/ipc/archive.rs",
+          "apps/desktop/src/views/HomeView.vue",
+          "apps/desktop/src/views/ResourcesView.vue",
+          "crates/core/src/quality.rs",
+          "crates/core/src/db/schema.rs"
+        ]
+      },
+      {
+        "id": "FR-BROWSE-002",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c08_dates_specs_alias_tags_and_source_links_share_pagination",
+          "c08_resource_inventory_pages_variants_missing_copies_and_origins",
+          "c04_flv_recording_rotation_clock_codec_sleep_and_disk_full"
+        ],
+        "implementation": [
+          "crates/core/src/feed.rs",
+          "crates/core/src/ipc/archive.rs",
+          "apps/desktop/src/views/HomeView.vue",
+          "apps/desktop/src/views/ResourcesView.vue"
+        ]
+      },
+      {
+        "id": "FR-BROWSE-003",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c01_c08_public_search_pages_full_scope_and_creator_edits_keep_identity",
+          "c08_dates_specs_alias_tags_and_source_links_share_pagination",
+          "c08_two_site_all_types_filters_pagination_current_revisions_and_ipc"
+        ],
+        "implementation": [
+          "crates/core/src/search.rs",
+          "crates/core/src/feed.rs",
+          "crates/core/src/ipc/dispatch.rs",
+          "apps/desktop/src/lib/api.ts"
+        ]
+      },
+      {
+        "id": "FR-BROWSE-004",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c08_two_site_all_types_filters_pagination_current_revisions_and_ipc",
+          "c08_dates_specs_alias_tags_and_source_links_share_pagination",
+          "c08_large_revision_history_and_media_have_lossless_bounded_pages"
+        ],
+        "implementation": [
+          "crates/core/src/feed.rs",
+          "crates/core/src/ipc/archive.rs",
+          "apps/desktop/src/views/HomeView.vue",
+          "apps/desktop/src/views/ResourcesView.vue"
+        ]
+      },
+      {
+        "id": "FR-BROWSE-005",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c08_document_resource_ui_races_and_live_controls",
+          "c06_html_never_preserves_scripts_remote_attributes_or_css",
+          "c08_playback_cache_clear_rebuild_budget_and_originals"
+        ],
+        "implementation": [
+          "crates/core/src/feed.rs",
+          "crates/core/src/ipc/archive.rs",
+          "apps/desktop/src/views/HomeView.vue",
+          "apps/desktop/src/views/ResourcesView.vue"
+        ]
+      },
+      {
+        "id": "FR-BROWSE-006",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-BROWSE-007",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c06_health_merges_related_jobs_recovers_and_preserves_delivery_failures",
+          "c08_resource_inventory_pages_variants_missing_copies_and_origins",
+          "c08_document_resource_ui_races_and_live_controls"
+        ],
+        "implementation": [
+          "crates/core/src/issues.rs",
+          "crates/core/src/windows_integration.rs",
+          "apps/desktop/src-tauri/src/lib.rs",
+          "apps/desktop/src/views/StatusView.vue"
+        ]
+      },
+      {
+        "id": "FR-PLUGIN-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c01_identity_alias_repost_type_collision_and_persistent_cursor_cycle",
+          "c05_proxy_completion_cannot_cancel_partial_frame_read",
+          "c09_packaged_two_site_isolation_and_complete_inventory",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/core/src/pluginhost/mod.rs",
+          "crates/core/src/ipc/dispatch.rs",
+          "adapters/common/src/runtime.rs",
+          "apps/desktop/src/views/ModulesView.vue",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-PLUGIN-002",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c05_all_job_types_plugin_isolation_and_shutdown_sealing",
+          "c08_module_stop_shows_draining_until_workers_finish",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/core/src/pluginhost/mod.rs",
+          "crates/core/src/ipc/dispatch.rs",
+          "adapters/common/src/runtime.rs",
+          "apps/desktop/src/views/ModulesView.vue",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-PLUGIN-003",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c05_all_job_types_plugin_isolation_and_shutdown_sealing",
+          "c04_closed_capture_four_commit_windows_survive_cancel_and_restart",
+          "c08_module_stop_shows_draining_until_workers_finish",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/core/src/pluginhost/mod.rs",
+          "crates/core/src/ipc/dispatch.rs",
+          "adapters/common/src/runtime.rs",
+          "apps/desktop/src/views/ModulesView.vue",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-PLUGIN-004",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c01_c02_douyin_article_account_to_full_document_through_production_process",
+          "c06_nested_secrets_and_signed_urls_do_not_reach_archive",
+          "c07_export_all_pages_versions_accounts_resources_and_failure_manifest"
+        ],
+        "implementation": [
+          "crates/contracts/src/content.rs",
+          "crates/domain/src/revision.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/objects/mod.rs"
+        ]
+      },
+      {
+        "id": "FR-PLUGIN-005",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-PLUGIN-006",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c05_all_job_types_plugin_isolation_and_shutdown_sealing",
+          "c05_proxy_completion_cannot_cancel_partial_frame_read",
+          "c09_packaged_two_site_isolation_and_complete_inventory",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/core/src/pluginhost/mod.rs",
+          "crates/core/src/ipc/dispatch.rs",
+          "adapters/common/src/runtime.rs",
+          "apps/desktop/src/views/ModulesView.vue",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-PLUGIN-007",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-RUN-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c05_background_launcher_double_start_single_daemon_and_invalid_profile",
+          "c09_minimized_embedded_webview_close_reconnect_and_full_exit",
+          "c05_all_job_types_plugin_isolation_and_shutdown_sealing",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/core/src/core.rs",
+          "apps/daemon/src/main.rs",
+          "apps/desktop/src-tauri/src/state.rs",
+          "apps/desktop/src-tauri/src/commands.rs",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-RUN-002",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c09_minimized_embedded_webview_close_reconnect_and_full_exit",
+          "c04_closed_capture_four_commit_windows_survive_cancel_and_restart",
+          "c05_all_job_types_plugin_isolation_and_shutdown_sealing",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures",
+          "c11_metadata_pacing_fifo_and_urgent_budget_prevent_consumer_starvation"
+        ],
+        "implementation": [
+          "crates/core/src/core.rs",
+          "apps/daemon/src/main.rs",
+          "apps/desktop/src-tauri/src/state.rs",
+          "apps/desktop/src-tauri/src/commands.rs",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-RUN-003",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c05_background_launcher_double_start_single_daemon_and_invalid_profile",
+          "c05_notification_fixed_activation_preserves_profile_and_rejects_injection",
+          "c05_immediate_global_resume_revokes_every_old_job_lease",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/core/src/issues.rs",
+          "crates/core/src/windows_integration.rs",
+          "apps/desktop/src-tauri/src/lib.rs",
+          "apps/desktop/src/views/StatusView.vue",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-RUN-004",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c04_c07_disk_reserve_tracks_concurrent_minute_and_replacement_peak",
+          "c05_metadata_priority_reserves_progress_for_regular_work",
+          "c08_cache_budget_clear_rebuild_preserves_sources_and_rejects_partial_search",
+          "c08_playback_cache_clear_rebuild_budget_and_originals",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/core/src/core.rs",
+          "crates/core/src/scan_range.rs",
+          "crates/core/src/jobs/mod.rs",
+          "apps/desktop/src/views/CreatorsView.vue",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-RUN-005",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c04_flv_recording_rotation_clock_codec_sleep_and_disk_full",
+          "c04_closed_capture_four_commit_windows_survive_cancel_and_restart",
+          "recovery_matrix_is_reentrant",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/core/src/core.rs",
+          "apps/daemon/src/main.rs",
+          "apps/desktop/src-tauri/src/state.rs",
+          "apps/desktop/src-tauri/src/commands.rs",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "FR-DATA-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c07_deletion_scopes_stale_preview_shared_bytes_and_explicit_restore",
+          "c07_deleted_identity_rescan_and_backup_never_silently_reinclude",
+          "c08_playback_cache_clear_rebuild_budget_and_originals",
+          "c11_schema4_migration_unknown_history_and_failure_roll_back_without_rewriting_old_migrations"
+        ],
+        "implementation": [
+          "crates/core/src/deletion.rs",
+          "crates/core/src/quality.rs",
+          "crates/core/src/cache.rs",
+          "apps/desktop/src/components/ArchiveRemoval.vue"
+        ]
+      },
+      {
+        "id": "FR-DATA-002",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c07_export_all_pages_versions_accounts_resources_and_failure_manifest",
+          "offline_full_loop_scan_observe_media_search_backup_restore",
+          "c11_schema4_migration_unknown_history_and_failure_roll_back_without_rewriting_old_migrations"
+        ],
+        "implementation": [
+          "crates/core/src/storage_ops.rs",
+          "crates/core/src/archive_export.rs",
+          "crates/core/src/db/schema.rs",
+          "apps/desktop/src/views/StorageView.vue"
+        ]
+      },
+      {
+        "id": "FR-DATA-003",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "f003_restore_opens_and_marks_omitted_or_corrupt_objects",
+          "c07_schema3_backup_migration_and_failed_migration_rollback",
+          "offline_full_loop_scan_observe_media_search_backup_restore",
+          "c11_schema4_migration_unknown_history_and_failure_roll_back_without_rewriting_old_migrations"
+        ],
+        "implementation": [
+          "crates/core/src/storage_ops.rs",
+          "crates/core/src/archive_export.rs",
+          "crates/core/src/db/schema.rs",
+          "apps/desktop/src/views/StorageView.vue"
+        ]
+      },
+      {
+        "id": "FR-DATA-004",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c07_schema3_backup_migration_and_failed_migration_rollback",
+          "c07_schema3_source_search_rebuild_preserves_old_body_and_snapshot",
+          "c11_schema4_migration_unknown_history_and_failure_roll_back_without_rewriting_old_migrations"
+        ],
+        "implementation": [
+          "crates/core/src/storage_ops.rs",
+          "crates/core/src/archive_export.rs",
+          "crates/core/src/db/schema.rs",
+          "apps/desktop/src/views/StorageView.vue"
+        ]
+      },
+      {
+        "id": "FR-DATA-005",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c07_deleted_identity_rescan_and_backup_never_silently_reinclude",
+          "c07_deletion_scopes_stale_preview_shared_bytes_and_explicit_restore",
+          "c11_schema4_migration_unknown_history_and_failure_roll_back_without_rewriting_old_migrations"
+        ],
+        "implementation": [
+          "crates/core/src/deletion.rs",
+          "crates/core/src/quality.rs",
+          "crates/core/src/cache.rs",
+          "apps/desktop/src/components/ArchiveRemoval.vue"
+        ]
+      },
+      {
+        "id": "FR-SYNC-001",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-SYNC-002",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-SYNC-003",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-SYNC-004",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-SYNC-005",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-SYNC-006",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-SYNC-007",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "FR-SYNC-008",
+        "applicable": false,
+        "status": "not-run",
+        "testCases": [],
+        "implementation": []
+      },
+      {
+        "id": "NFR-REL-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "recovery_matrix_is_reentrant",
+          "c04_closed_capture_four_commit_windows_survive_cancel_and_restart",
+          "c05_all_job_types_plugin_isolation_and_shutdown_sealing",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/contracts/src/content.rs",
+          "crates/domain/src/revision.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/objects/mod.rs",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "NFR-REL-002",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "recovery_matrix_is_reentrant",
+          "c04_closed_capture_four_commit_windows_survive_cancel_and_restart",
+          "c07_quality_failure_shared_blob_pins_unique_coverage_and_gc_windows",
+          "f003_restore_opens_and_marks_omitted_or_corrupt_objects"
+        ],
+        "implementation": [
+          "crates/contracts/src/content.rs",
+          "crates/domain/src/revision.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/objects/mod.rs"
+        ]
+      },
+      {
+        "id": "NFR-REL-003",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c01_identity_alias_repost_type_collision_and_persistent_cursor_cycle",
+          "c02_summary_promotion_stats_and_atomic_resource_jobs",
+          "c06_health_merges_related_jobs_recovers_and_preserves_delivery_failures",
+          "c04_flv_recording_rotation_clock_codec_sleep_and_disk_full"
+        ],
+        "implementation": [
+          "crates/contracts/src/content.rs",
+          "crates/domain/src/revision.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/objects/mod.rs"
+        ]
+      },
+      {
+        "id": "NFR-PERF-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c09_minimized_embedded_webview_close_reconnect_and_full_exit",
+          "test_rejects_missing_package_failed_short_benchmark_and_stale_docs",
+          "c11_metadata_pacing_fifo_and_urgent_budget_prevent_consumer_starvation",
+          "c08_live_quality_query_ignores_unrelated_recording_fragments"
+        ],
+        "implementation": [
+          "scripts/measure_m1.py",
+          "scripts/benchmark_metrics.py",
+          "tests/e2e/src/bin/m1_resource_bench.rs",
+          "scripts/windows_metrics.py",
+          "crates/core/src/quality.rs",
+          "crates/core/src/feed.rs",
+          "crates/core/src/db/schema.rs"
+        ]
+      },
+      {
+        "id": "NFR-PERF-002",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c04_c07_disk_reserve_tracks_concurrent_minute_and_replacement_peak",
+          "test_rejects_missing_package_failed_short_benchmark_and_stale_docs"
+        ],
+        "implementation": [
+          "scripts/measure_m1.py",
+          "scripts/benchmark_metrics.py",
+          "tests/e2e/src/bin/m1_resource_bench.rs",
+          "scripts/windows_metrics.py"
+        ]
+      },
+      {
+        "id": "NFR-PERF-003",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c08_two_site_all_types_filters_pagination_current_revisions_and_ipc",
+          "c01_c08_public_search_pages_full_scope_and_creator_edits_keep_identity",
+          "test_rejects_missing_package_failed_short_benchmark_and_stale_docs",
+          "c08_live_quality_query_ignores_unrelated_recording_fragments"
+        ],
+        "implementation": [
+          "scripts/measure_m1.py",
+          "scripts/benchmark_metrics.py",
+          "tests/e2e/src/bin/m1_resource_bench.rs",
+          "scripts/windows_metrics.py",
+          "crates/core/src/quality.rs",
+          "crates/core/src/feed.rs",
+          "crates/core/src/db/schema.rs"
+        ]
+      },
+      {
+        "id": "NFR-SEC-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c06_nested_secrets_and_signed_urls_do_not_reach_archive",
+          "c06_credential_update_rebind_generation_background_retry_and_quality_recovery",
+          "c07_export_all_pages_versions_accounts_resources_and_failure_manifest",
+          "f003_restore_opens_and_marks_omitted_or_corrupt_objects"
+        ],
+        "implementation": [
+          "crates/core/src/transport.rs",
+          "crates/core/src/vault.rs",
+          "crates/core/src/paths.rs",
+          "adapters/common/src/document.rs"
+        ]
+      },
+      {
+        "id": "NFR-SEC-002",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c06_credential_scopes_and_cross_origin_redirect_strip_headers",
+          "c06_nested_hls_private_network_key_map_and_credential_scopes",
+          "c06_html_never_preserves_scripts_remote_attributes_or_css",
+          "f002_rejects_malicious_ids_before_writes"
+        ],
+        "implementation": [
+          "crates/core/src/transport.rs",
+          "crates/core/src/vault.rs",
+          "crates/core/src/paths.rs",
+          "adapters/common/src/document.rs"
+        ]
+      },
+      {
+        "id": "NFR-SEC-003",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c05_background_launcher_double_start_single_daemon_and_invalid_profile",
+          "c05_proxy_completion_cannot_cancel_partial_frame_read",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/core/src/core.rs",
+          "apps/daemon/src/main.rs",
+          "apps/desktop/src-tauri/src/state.rs",
+          "apps/desktop/src-tauri/src/commands.rs",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "NFR-COMPAT-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c09_packaged_two_site_isolation_and_complete_inventory",
+          "c05_background_launcher_double_start_single_daemon_and_invalid_profile"
+        ],
+        "implementation": [
+          "crates/core/src/core.rs",
+          "apps/daemon/src/main.rs",
+          "apps/desktop/src-tauri/src/state.rs",
+          "apps/desktop/src-tauri/src/commands.rs"
+        ]
+      },
+      {
+        "id": "NFR-DATA-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c07_schema3_backup_migration_and_failed_migration_rollback",
+          "c07_schema3_source_search_rebuild_preserves_old_body_and_snapshot",
+          "c02_article_ops_av_mapping_and_opus_formula_list_production"
+        ],
+        "implementation": [
+          "crates/contracts/src/content.rs",
+          "crates/domain/src/revision.rs",
+          "crates/core/src/core.rs",
+          "crates/core/src/objects/mod.rs"
+        ]
+      },
+      {
+        "id": "NFR-OBS-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c06_health_merges_related_jobs_recovers_and_preserves_delivery_failures",
+          "c05_all_job_types_plugin_isolation_and_shutdown_sealing",
+          "c08_resource_inventory_pages_variants_missing_copies_and_origins",
+          "c11_shared_control_revocation_restart_and_cancel_do_not_spend_failures"
+        ],
+        "implementation": [
+          "crates/core/src/issues.rs",
+          "crates/core/src/windows_integration.rs",
+          "apps/desktop/src-tauri/src/lib.rs",
+          "apps/desktop/src/views/StatusView.vue",
+          "crates/core/src/jobs/consumers.rs"
+        ]
+      },
+      {
+        "id": "NFR-TEST-001",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c01_c02_douyin_article_account_to_full_document_through_production_process",
+          "c02_article_ops_av_mapping_and_opus_formula_list_production",
+          "c01_site_check_dry_run_does_not_read_credentials_or_create_output",
+          "test_rejects_stale_source_missing_failed_duplicate_cases",
+          "test_rejects_missing_package_failed_short_benchmark_and_stale_docs",
+          "c09_packaged_two_site_isolation_and_complete_inventory"
+        ],
+        "implementation": [
+          "scripts/stage_evidence.py",
+          "scripts/verify.py",
+          "scripts/package_windows.py",
+          "tests/e2e/tests/m1_production_adapters.rs"
+        ]
+      },
+      {
+        "id": "FR-AUTH-007",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c11_two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown",
+          "c11_authentication_timelines_share_identity_counts_pages_and_immutable_history",
+          "c11_same_blob_distinct_acquisitions_backup_restore_keep_history_without_credentials",
+          "c11_home_authentication_filter_resets_cursor_and_preserves_media",
+          "c11_edited_completion_and_variant_labels_are_explicit_without_replacing_history",
+          "c11_acquisition_history_is_lazy_paginated_and_does_not_relabel_old_results",
+          "c11_pending_candidates_never_become_default_playback_and_keep_resource_identity_labels",
+          "c11_legacy_recovery_cache_verification_does_not_invent_acquisition_identity",
+          "c11_restore_invalidates_pending_confirmations_and_retry_finishes_original_acquisition"
+        ],
+        "implementation": [
+          "crates/core/src/acquisitions.rs",
+          "crates/contracts/src/acquisition.rs",
+          "crates/core/src/feed.rs",
+          "apps/desktop/src/views/HomeView.vue",
+          "apps/desktop/src/components/AcquisitionHistory.vue"
+        ]
+      },
+      {
+        "id": "FR-QUALITY-006",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c11_two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown",
+          "c11_upgrade_accept_reject_keep_both_preserve_old_until_explicit_atomic_decision",
+          "c11_upgrade_stale_confirmations_reject_selection_revision_generations_cancel_and_corruption",
+          "c11_login_completion_is_bounded_persistent_deduplicated_and_excludes_live_deleted",
+          "c11_upgrade_page_requires_explicit_selection_and_preserves_failed_comparison",
+          "c11_completed_candidate_cancel_and_failed_attempt_keep_old_resources_and_history",
+          "c11_edited_completion_and_variant_labels_are_explicit_without_replacing_history",
+          "c11_restore_invalidates_pending_confirmations_and_retry_finishes_original_acquisition"
+        ],
+        "implementation": [
+          "crates/core/src/acquisitions.rs",
+          "crates/core/src/upgrades.rs",
+          "apps/desktop/src/views/UpgradesView.vue"
+        ]
+      },
+      {
+        "id": "FR-LIVE-007",
+        "applicable": true,
+        "status": "passed",
+        "testCases": [
+          "c12_fragment_authentication_actual_specs_gaps_restart_export_and_no_backfill",
+          "c12_live_fragment_labels_keep_mixed_unknown_and_actual_bitrate"
+        ],
+        "implementation": [
+          "crates/core/src/recording/mod.rs",
+          "crates/core/src/acquisitions.rs",
+          "apps/desktop/src/components/LiveRecording.vue"
+        ]
+      }
+    ]
+  },
+  "commandReceipts": [
+    {
+      "receipt": "artifacts/b-m1-r2/final5/build.json",
+      "receiptSha256": "635e510b51ec673b4bedc5781fccc4c61ba086a5c01618fee84d5a5be31daf50",
+      "id": "build",
+      "kind": "report",
+      "argv": [
+        "cargo",
+        "build",
+        "--workspace",
+        "--locked"
+      ],
+      "durationSeconds": 17.003864288330078,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "log": "artifacts/b-m1-r2/final5/build.log",
+      "logSha256": "b2f2f1cbdbc0ea0374cbf37ad8fdff200927a4127fd8e43c69188cc7bb26cac8",
+      "caseCount": 0
+    },
+    {
+      "receipt": "artifacts/b-m1-r2/final5/fmt.json",
+      "receiptSha256": "f22a68ddb26c9140101c62bfe8a14571e703e7466032c0c092a07bc9dfabeecf",
+      "id": "fmt",
+      "kind": "report",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "durationSeconds": 0.5846056938171387,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "log": "artifacts/b-m1-r2/final5/fmt.log",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "caseCount": 0
+    },
+    {
+      "receipt": "artifacts/b-m1-r2/final5/clippy.json",
+      "receiptSha256": "d6299b5536a63e4b087c4514631b447ca21a1ab630473a53f732c0fbce74d292",
+      "id": "clippy",
+      "kind": "report",
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--locked",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "durationSeconds": 2.0451200008392334,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "log": "artifacts/b-m1-r2/final5/clippy.log",
+      "logSha256": "229cc24248079792bbfe8cb0cb4fdb9b41bcc9622548a8d8f1351eaf8d631a6d",
+      "caseCount": 0
+    },
+    {
+      "receipt": "artifacts/b-m1-r2/final5/acquisition.json",
+      "receiptSha256": "5963028c76ad52217af068bcf06ef0d2260a1c629e8b8cd1f525c9e0c12fe433",
+      "id": "acquisition",
+      "kind": "report",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "trace-core",
+        "--locked",
+        "c11_",
+        "--",
+        "--nocapture"
+      ],
+      "durationSeconds": 35.40634226799011,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "log": "artifacts/b-m1-r2/final5/acquisition.log",
+      "logSha256": "81da66354a64a0c072198fdd78a196e16c3d4dc312a04c03cc6de715522f59c9",
+      "caseCount": 0
+    },
+    {
+      "receipt": "artifacts/b-m1-r2/final5/rust.json",
+      "receiptSha256": "1e505c649ac39ba2c7db80851aaf1e78515002e570881381dbc2a9f5bae1246f",
+      "id": "rust",
+      "kind": "test",
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--locked",
+        "--no-fail-fast",
+        "--",
+        "--nocapture"
+      ],
+      "durationSeconds": 271.0695869922638,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "log": "artifacts/b-m1-r2/final5/rust.log",
+      "logSha256": "4603def5fcea5a2c7cebeae1804ce0b0d2caf2d43b2b16969a7380ef75cc4e61",
+      "caseCount": 224
+    },
+    {
+      "receipt": "artifacts/b-m1-r2/final5/desktop.json",
+      "receiptSha256": "9ea3cb88fe83836629c7c20612c5e92349372bb6891876a941e7be17169bf414",
+      "id": "desktop",
+      "kind": "test",
+      "argv": [
+        "corepack.cmd",
+        "pnpm",
+        "-C",
+        "apps/desktop",
+        "run",
+        "verify"
+      ],
+      "durationSeconds": 5.594511985778809,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "log": "artifacts/b-m1-r2/final5/desktop.log",
+      "logSha256": "495219325a94f997f2ef3d08e2a84b7b1a70463396597a706b40b367174fd2c8",
+      "caseCount": 48
+    },
+    {
+      "receipt": "artifacts/b-m1-r2/final5/python.json",
+      "receiptSha256": "cfeaca8272b2f9d15e1a5208e86ffb9f9ca64927c89ca6b67d08782e3ec985b3",
+      "id": "python",
+      "kind": "test",
+      "argv": [
+        "python",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-v"
+      ],
+      "durationSeconds": 5.460149049758911,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "log": "artifacts/b-m1-r2/final5/python.log",
+      "logSha256": "3ee7587be75271aff6949504a3eda2e0e93914b8f5dd3c1eeeaf915b126faabd",
+      "caseCount": 16
+    },
+    {
+      "receipt": "artifacts/b-m1-r2/final5/verify.json",
+      "receiptSha256": "0289c44ca5ddbe3171250ac6a9c9f3296499f4e0d2b3ed8852c63395dcbc48d5",
+      "id": "verify",
+      "kind": "report",
+      "argv": [
+        "python",
+        "scripts/verify.py",
+        "--all",
+        "--json"
+      ],
+      "durationSeconds": 328.2532241344452,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "log": "artifacts/b-m1-r2/final5/verify.log",
+      "logSha256": "a8e8ab814f23a1ace0d89d4ef60439e841576e0c506fe530c0ac63eb1708f95c",
+      "caseCount": 0
+    },
+    {
+      "receipt": "artifacts/b-m1-r2/final5/package.json",
+      "receiptSha256": "067be9df605ba3b5936ef344961d6d42c972aaaea93fb81ab0d9eb4cfa973a8c",
+      "id": "package",
+      "kind": "package",
+      "argv": [
+        "python",
+        "scripts/package_windows.py"
+      ],
+      "durationSeconds": 132.896812915802,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "log": "artifacts/b-m1-r2/final5/package.log",
+      "logSha256": "4c016ef210bb0d1428a2569c6cde1faebb7f80a63266d5c901312b7cbb08a145",
+      "caseCount": 0
+    },
+    {
+      "receipt": "artifacts/b-m1-r2/final5/package-smoke.json",
+      "receiptSha256": "f46dcb4614279f7559213c233eaa7bfa0d5fbba43dc97b69b082c8a4ae5fd716",
+      "id": "package-smoke",
+      "kind": "test",
+      "argv": [
+        "python",
+        "scripts/check_package.py",
+        "dist/trace-0.1.0-windows-x64-m1-r2-2"
+      ],
+      "durationSeconds": 12.408140897750854,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "log": "artifacts/b-m1-r2/final5/package-smoke.log",
+      "logSha256": "45930932f695d78409564922e7123bb4ad2eb0ee9caa6da1a8937a65b6f3cf60",
+      "caseCount": 2
+    },
+    {
+      "receipt": "artifacts/b-m1-r2/final5/benchmark.json",
+      "receiptSha256": "039ae5452c0a7bc36ca97a1a09456d4ad20ef0588921a11184d711dfd932d996",
+      "id": "benchmark",
+      "kind": "bench",
+      "argv": [
+        "python",
+        "scripts/measure_m1.py",
+        "artifacts/b-m1-r2/measure-final3",
+        "--idle",
+        "1030",
+        "--seconds",
+        "3620",
+        "--entries",
+        "100000",
+        "--package",
+        "dist/trace-0.1.0-windows-x64-m1-r2-2"
+      ],
+      "durationSeconds": 4742.806388139725,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "log": "artifacts/b-m1-r2/final5/benchmark.log",
+      "logSha256": "4169b35591d8b333e9bcab1befdc2d21edbeb320ce64e1dd8a9f64ed88bc0bc6",
+      "caseCount": 0
+    }
+  ],
+  "package": {
+    "directory": "dist/trace-0.1.0-windows-x64-m1-r2-2",
+    "fileCount": 23,
+    "bytes": 208475909,
+    "files": {
+      "adapters/douyin-NOTICE.txt": "4fd3af92aed108232918ad579eff7d8f85c0c48a8dc90523691d99a0386b6032",
+      "adapters/trace-adapter-bilibili.exe": "fdf367473cf58814e61be752998187f6ce86ce6c8bb59b5c00f07f68c70f4786",
+      "adapters/trace-adapter-douyin.exe": "c472a96e66d1dbd5e64f0dcc0c786e37f8690784b153728a69641efbb5368d24",
+      "dependency-licenses.md": "ab1f28c0228d15eeb6b31fdd5c188b7bcd0335a2efccb945c997f68c4208c568",
+      "manifest.json": "45a0f6a607be999be0c1d18bbde4df42e107080d67ec6724cce8e3f7ccc1c096",
+      "media/avcodec-63.dll": "525060f60b3d0171bb9e0ea4b2074a2ff07f5d96b2483a82d9e08fe2ece58e9c",
+      "media/avdevice-63.dll": "e9e4306ac36778f2faceb1b3ee42152e9b16f10227d2315ae42d282d77c9105c",
+      "media/avfilter-12.dll": "df6f94c43a04be9f3cedcf94b9c5085ae4186339b6828271d42055723eccc060",
+      "media/avformat-63.dll": "7275053ebb1dfa708d45d8544ad94bf664e0cb534cd0f2ed979fdf024bc190b3",
+      "media/avutil-61.dll": "a34c7ef846a2d353c1a6a266b22a001ccd42f6654ab92631a7196e961bdedffd",
+      "media/ffmpeg.exe": "24fdada9908f7a231e9dfcc9f462273d3ddb698f5071f04c61496819ce3cfef0",
+      "media/ffplay.exe": "2b5c7401fdff026d7f3849bde866749a1b5475220dcf59f8646a4f7e188987aa",
+      "media/ffprobe.exe": "a77003c4628c7a414718623156280be47c1aaa2fa85c177d3d1d325d3d06358f",
+      "media/LICENSE.txt": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+      "media/SOURCE.txt": "53d53283877d9bb775053d2599214f015bdb292cf1a167f8f9afddff49e08056",
+      "media/swresample-7.dll": "1fbcea031ada11a15e609e209e1cd71a9c632f39bc4794190137b67351db677f",
+      "media/swscale-10.dll": "9ff8d80bc228f0e557553fd5cfcefc67b682098e9bd6ab08dc7a7d2dc8ad4699",
+      "media/verified.json": "ca9fcb5605be9c5689dfe973820a2fe61d28406d01500259c7cc2074f66cf702",
+      "profile.example.json": "0f6296befca70de3145a02c285fcfce3cded70623f0651ca833150b46e4bdb94",
+      "README.md": "a13219cd64d1f6869d05565e93187d0c7355a0e1f69ae5b8b394077bab3795f0",
+      "SHA256SUMS.txt": "b4055f314174e0f7a52c764c6c13813305136d8364bf949b6a1dc6fae67201e8",
+      "trace-daemon.exe": "bce3064334876a141182b5753296e31fab78b6bc102238c0bf3fb9434fc4b5e0",
+      "trace-desktop.exe": "c0925ab7e628880f12f49ca470009344e9e8a65f6da61cedd97afd7f5844968a"
+    }
+  },
+  "benchmark": {
+    "status": "passed",
+    "exitCode": 0,
+    "sourceUnchanged": true,
+    "measurements": {
+      "privateWorkingSet": 199102464,
+      "cpuAllProcesses": 1.9324095023236718,
+      "handles": 3833,
+      "queryP95Ms": 317.72860000000003,
+      "queryP99Ms": 348.28340000000003,
+      "hotQueryP95Ms": 317.8358,
+      "coldQueryP95Ms": 258.7901,
+      "throughputBytes": 15827105203,
+      "queueDepth": 227,
+      "freeDiskBytes": 69786390339584,
+      "idleCpuMeanPct": 0.5123151120089995,
+      "idleMemoryP95MiB": 52.15234375,
+      "recordingOnlyCpuMeanPct": 2.3769164180959375,
+      "recordingOnlyMemoryP95MiB": 61.74609375,
+      "discoveryP95Seconds": 30.581099033355713,
+      "startRecordingP95Seconds": 1.4479906558990479,
+      "guiCloseSeconds": 6.972969871480018,
+      "recoverySeconds": 11.09927659999994
+    },
+    "durationSeconds": 3621.4613974000004,
+    "metadataEntries": 100000,
+    "mediaMetadata": 500000,
+    "bodyMedianChars": 512,
+    "ordinaryCheckTargets": 100,
+    "liveCheckTargets": 20,
+    "httpLatencyMs": 100,
+    "queryPageSize": 50,
+    "streamBytesPerSecond": 1112866,
+    "mixedParallelSamples": 352,
+    "parallelRecordings": 4,
+    "parallelDownloads": 2,
+    "recordingOnlyStreams": 4,
+    "guiModes": [
+      "closed",
+      "open",
+      "reconnected"
+    ],
+    "idleWindowSeconds": 906.1570000000065,
+    "recordingStarts": 4,
+    "jobErrors": 0,
+    "samples": "artifacts/b-m1-r2/measure-final3/resource-samples.json",
+    "samplesSha256": "e12615c7ae788ece5a5ba28deae955e2fc1242e582a90747f0a8345101124a82",
+    "errors": [],
+    "limitations": [
+      "Synthetic source and harness CPU included in Windows job accounting, including exited child workers",
+      "Resource snapshots every 5 seconds; minimized packaged WebView driven via loopback CDP with no foreground input",
+      "Recovery measures complete Core teardown/reopen; process crash correctness is separately tested",
+      "No extrapolation to real account archives"
+    ]
+  },
+  "measurementMethod": {
+    "device": {
+      "os": "Windows-11-10.0.26300-SP0",
+      "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+      "architecture": "AMD64",
+      "logicalProcessors": 20,
+      "cpu": "Intel(R) Core(TM) i5-14600K",
+      "physicalCores": 14,
+      "physicalMemoryBytes": 68422864896
+    },
+    "workload": {
+      "bodyMedianChars": 512,
+      "durationSeconds": 3620,
+      "httpLatencyMs": 100,
+      "idleSeconds": 1030,
+      "liveCheckTargets": 20,
+      "mediaMetadata": 500000,
+      "metadataEntries": 100000,
+      "ordinaryCheckTargets": 100,
+      "queryCacheState": "new_core_connection_os_cache_unflushed",
+      "queryPageSize": 50,
+      "seedSeconds": 24.2634857,
+      "streamBytesPerSecond": 1112866
+    },
+    "sampleCount": 937,
+    "sampleWindowSeconds": 4684.983999999997,
+    "maxSampleIntervalSeconds": 5.01600000000326,
+    "sampleIntervalSeconds": 5,
+    "sampledProcesses": [
+      "conhost.exe",
+      "ffprobe.exe",
+      "m1_bench_adapter.exe",
+      "m1_resource_bench.exe",
+      "msedgewebview2.exe",
+      "trace-desktop.exe"
+    ],
+    "cpu": "All workload and GUI Windows Job cumulative CPU, including exited children, normalized by logical processors.",
+    "memory": "Sum of current private working sets for every sampled workload and GUI process.",
+    "percentiles": "Nearest rank. Cold queries use a new Core/SQLite connection; OS filesystem cache is not flushed.",
+    "recovery": {
+      "finishedElapsed": 4662.673674,
+      "kind": "core_reopen",
+      "metadataEntries": 100000,
+      "serviceAccessible": true,
+      "startedElapsed": 4651.5743974,
+      "unfinishedOrdinaryTasks": 202
+    },
+    "guiEvents": [
+      {
+        "mode": "open",
+        "readyElapsed": 2873.3279999999795,
+        "desktopConnections": 1
+      },
+      {
+        "mode": "closed",
+        "requestedElapsed": 2884.6420300006866,
+        "releasedElapsed": 2888.359999999986
+      },
+      {
+        "mode": "reconnected",
+        "readyElapsed": 2903.3910000000033,
+        "desktopConnections": 2
+      },
+      {
+        "mode": "closed",
+        "requestedElapsed": 2916.433030128479,
+        "releasedElapsed": 2923.405999999959
+      }
+    ],
+    "benchmarkBinaries": {
+      "m1_resource_bench.exe": "4a7c78e2f250661e2778152e26b38d2355d0eaf46695a88a65628e31a7ed8d85",
+      "m1_bench_adapter.exe": "a292a19b9a0795b126cc6e2f4798507a06536e9572b3eef89fbb50ade00e83cb"
+    },
+    "accountingBoundary": "Core, synthetic source, Rust workload harness, adapters, media tools and packaged GUI/WebView workers are included. External Python sampler and CDP driver are instrumentation."
+  },
+  "actualDownloadObservation": {
+    "observations": 42,
+    "simultaneousPositiveGrowthIntervals": 37,
+    "first": {
+      "fromWorkloadSeconds": 2946.2851974,
+      "toWorkloadSeconds": 2991.4531646,
+      "byteGrowth": {
+        "load_bili": 51650700,
+        "load_douyin": 51902852
+      }
+    },
+    "last": {
+      "fromWorkloadSeconds": 4566.2923177,
+      "toWorkloadSeconds": 4611.1742967,
+      "byteGrowth": {
+        "load_bili": 47659404,
+        "load_douyin": 52302896
+      }
+    },
+    "source": "artifacts/b-m1-r2/third-run-transfer-observations.jsonl",
+    "sha256": "4154c1e0696d5862b01c24c1bff187d4859a96960568ba75397d2160393056d6"
+  },
+  "testPreservation": {
+    "receipt": "artifacts/b-m1-r2/test-preservation-final5.json",
+    "receiptSha256": "eade1828b212c7e13094af0f81fde5af22dc0a077644feac2f72c57b9b90a84f",
+    "aOriginalRustTests": 202,
+    "aOriginalRetained": 202,
+    "aLexicallyIdenticalBodies": 197,
+    "compatibilityOrStrongerBodies": 5,
+    "mainOriginalTestsRetained": 109,
+    "reportSections13To15Unchanged": true,
+    "migrations1To4Unchanged": true,
+    "originalASourceProbesAndCloseoutAndProductionTestsUnchanged": true
+  },
+  "preservedFailureFiles": {
+    "artifacts/b-m1-r2/f019-baseline.json": "f54fcf4e2d030be2fb898680d9fd1416732f8c39c75c74185ae1c132b2eff998",
+    "artifacts/b-m1-r2/core-first.json": "4c822f958319fd68db8dc041e856f57438c5c171e619e6db934b2ffc0f8ef933",
+    "artifacts/b-m1-r2/acquisition-first.json": "980e035af68450a20b27e7355bef789670c8dc266487df5ad3e1b2ba1d45b7e8",
+    "artifacts/b-m1-r2/acquisition-second.json": "b614d5fce4696eb0f282cbc954c6c4520b21b829a0553ba89e0f2d9b5d329114",
+    "artifacts/b-m1-r2/core-second.json": "a15ff52134cbeb938f9ca39a8c21c0f5da344fa8e2737e52d092dbc952a911aa",
+    "artifacts/b-m1-r2/core-third.json": "a00ebc0697b547aee8f2b734eeafdccc98f286e71168f3b78692b78bc897417e",
+    "artifacts/b-m1-r2/clippy-first.json": "9392b9522c5c028c898e3a0acdaca9b0a6e6fdbcc08991fdb35fdbe07cf858b9",
+    "artifacts/b-m1-r2/desktop-first.json": "de559c812c8b7c019999294933f9c3abfc0b8d6a41683c721794a561620ff134",
+    "artifacts/b-m1-r2/desktop-fourth.json": "f2c4daefc2554998e517f9089e57fe3cd7029a948d784d8a77ba47bb4431e95c",
+    "artifacts/b-m1-r2/desktop-fifth.json": "1163831a7ab6dea5ff5255a5a095e2546587d93dfed8a57bc8904e2eaa10e8a8",
+    "artifacts/b-m1-r2/final/rust.json": "a341f723918894654c0403fca615fe5003a9039bfa0bd20d2f7d11c4dd79a4fe",
+    "artifacts/b-m1-r2/final2/rust.json": "91c08161e14c20bfc196684a7309d9984dfe16de0b0cf521245052103de7b2ae",
+    "artifacts/b-m1-r2/final3/benchmark.json": "3eb93becf2d153cec3a0171ec9850a7f5b113d3a6152f6bd7920a8b8d401c205",
+    "artifacts/b-m1-r2/pacing-failed.json": "987143c59c15e24e45c6cfc3923bdcb00b8688b64ca284dc1ec4a93047f6b911",
+    "artifacts/b-m1-r2/final4/benchmark.json": "edc043ca0baae08ac0545b4449202a0ce1e636e4fbbf266d6fea5e55a521efb3",
+    "artifacts/b-m1-r2/query-cost-failed.json": "2c6a86eaf48d64e12055a2aec3a5effd7b568935e16a3fe59a7cb4b7671603dc",
+    "artifacts/b-m1-r2/query-cost-failed2.json": "d9dacc77fde6e82e371353b7b0010c0fb58670704f9bff9d7b412507e3ff0bd2",
+    "artifacts/b-m1-r2/query-cost-baseline.json": "68de9ad9a662449f27cf4f51f02d4de2244b710e54bf97fd2c0e641d4d749a4b"
+  },
+  "negativeEvidence": [
+    {
+      "receipt": "artifacts/b-m1-r2/r1-rejected-final5.json",
+      "exitCode": 1,
+      "meaning": "Expected rejection of the unchanged r1 bundle under the current r2 contract.",
+      "receiptSha256": "4fd04e9b8b25911f29b380e77bd5285f0491e06ad4bc9b11a185b6ce872c3546"
+    },
+    {
+      "receipt": "artifacts/b-m1-r2/r1-verify-rejected-final5.json",
+      "exitCode": 1,
+      "meaning": "Expected rejection of the unchanged r1 bundle under the current r2 contract.",
+      "receiptSha256": "d4591ff8630f388d8f93eacbc271f45043e131a9b35afeaf46b1cde0602f68b8"
+    }
+  ],
+  "stageGate": {
+    "bundle": "artifacts/b-m1-r2/final-bundle.json",
+    "commands": [
+      "python scripts/stage_evidence.py check artifacts/b-m1-r2/final-bundle.json",
+      "python scripts/verify.py --stage-bundle artifacts/b-m1-r2/final-bundle.json"
+    ],
+    "rule": "Refuse stale inputs/documents, missing/duplicate/failed required cases, changed logs/package/samples, old r1/schema4 mappings, short or failed formal measurements.",
+    "documentFinalization": "Final report receipts and bundle are generated after this summary and public documents. No self-referential document or bundle hash."
+  },
+  "limitations": [
+    "F-019, F-021 and F-022 are fixed pending independent A review; B does not close them.",
+    "A-verified F-018 and F-020 remain preserved; original failures and r1 evidence are not rebound.",
+    "B made zero real site requests. Login success does not prove content permission, full history or 720P/1080P original quality.",
+    "OSS-011 real content responses remain restricted; current inputs and authorization are maintained only in USER-ACTIONS.",
+    "Native decoding, audio, IME, scaling and user product acceptance are not-run. DOM/currentTime and package probes do not substitute for them.",
+    "Nineteen deferred requirements remain not-run. No push, PR, merge, publication or license decision is included.",
+    "Synthetic source and harness CPU included in Windows job accounting, including exited child workers",
+    "Resource snapshots every 5 seconds; minimized packaged WebView driven via loopback CDP with no foreground input",
+    "Recovery measures complete Core teardown/reopen; process crash correctness is separately tested",
+    "No extrapolation to real account archives"
+  ],
+  "reportReceipts": [
+    "artifacts/b-m1-r2/final-docs.json",
+    "artifacts/b-m1-r2/final-publication.json",
+    "artifacts/b-m1-r2/final-diff.json",
+    "artifacts/b-m1-r2/final-index-diff.json"
+  ],
+  "reportReceiptScope": "Run after all public documents and this summary, then verify in the complete local bundle."
+}

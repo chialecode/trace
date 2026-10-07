@@ -31,6 +31,9 @@ pub const DISK_SAFETY_MARGIN_BYTES: i64 = 1024 * 1024 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Profile {
+    /// Optional per-Profile bounded acquisition run. Counts survive Core restart;
+    /// this is a local network budget, never a permission to access a source.
+    pub acquisition_limits: Option<AcquisitionLimits>,
     pub archive_id: String,
     /// 运行元数据（数据库、迁移、锁、备份临时）。
     pub data_root: PathBuf,
@@ -41,6 +44,18 @@ pub struct Profile {
     pub adapter_dir: Option<PathBuf>,
     pub media_dir: Option<PathBuf>,
     pub allow_media_path: bool,
+    /// Independent live slots; default supports the four-stream resource target.
+    pub live_concurrency: usize,
+    pub metadata_min_interval_ms: u64,
+    pub metadata_jitter_ms: u64,
+    pub scan_page_budget: u32,
+    pub quality_prefer_fps: bool,
+    pub recycle_wait_seconds: i64,
+    pub manual_delete_wait_seconds: i64,
+    /// Recording limits; rotation uses a decodable boundary and retains raw bytes.
+    pub recording_fragment_seconds: u64,
+    pub recording_fragment_bytes: u64,
+    pub recording_disk_reserve_bytes: u64,
     /// 平台媒体传输允许域的额外扩展（默认内置保守清单）。
     pub extra_media_hosts: Vec<String>,
     /// 测试专用：显式允许的本地测试服务（仅测试构建生效，发行包默认拒绝）。
@@ -50,6 +65,7 @@ pub struct Profile {
 impl Default for Profile {
     fn default() -> Self {
         Self {
+            acquisition_limits: None,
             archive_id: "default".into(),
             data_root: PathBuf::from("profiles/default/data"),
             archive_root: PathBuf::from("profiles/default/archive"),
@@ -57,13 +73,40 @@ impl Default for Profile {
             adapter_dir: None,
             media_dir: None,
             allow_media_path: false,
+            live_concurrency: 4,
+            metadata_min_interval_ms: METADATA_MIN_INTERVAL_MS,
+            metadata_jitter_ms: 250,
+            scan_page_budget: DEFAULT_MAX_SCAN_PAGES,
+            quality_prefer_fps: false,
+            recycle_wait_seconds: 86400,
+            manual_delete_wait_seconds: 7 * 86400,
+            recording_fragment_seconds: 600,
+            recording_fragment_bytes: 512 * 1024 * 1024,
+            recording_disk_reserve_bytes: DISK_SAFETY_MARGIN_BYTES as u64,
             extra_media_hosts: Vec::new(),
             test_allowed_hosts: Vec::new(),
         }
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcquisitionLimits {
+    pub metadata_requests: usize,
+    pub media_bytes: usize,
+    pub interval_ms: u64,
+}
+
 impl Profile {
+    pub fn metadata_interval_ms(&self) -> u64 {
+        self.metadata_min_interval_ms
+            .clamp(METADATA_MIN_INTERVAL_MS, 60000)
+    }
+    pub fn metadata_jitter_ms(&self) -> u64 {
+        self.metadata_jitter_ms.min(1000)
+    }
+    pub fn scan_page_budget(&self) -> u32 {
+        self.scan_page_budget.clamp(1, 100)
+    }
     pub fn archive(&self) -> Result<ArchiveId, ConfigError> {
         ArchiveId::parse(self.archive_id.clone()).map_err(|_| ConfigError::InvalidArchiveId)
     }
@@ -115,6 +158,12 @@ impl Profile {
             short_hash(&current_user())
         )
     }
+}
+
+pub fn jittered_check_seconds(seconds: i64) -> i64 {
+    let seconds = seconds.clamp(5, 7 * 86400);
+    let spread = (seconds / 20).max(1);
+    (seconds + rand::random_range(-spread..=spread)).max(5)
 }
 
 #[derive(Debug, thiserror::Error)]

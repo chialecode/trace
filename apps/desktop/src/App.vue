@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed,onMounted,ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { NConfigProvider, NMessageProvider, NDialogProvider, zhCN, dateZhCN } from 'naive-ui';
+import {api} from './lib/api';
 import TraceIcon from './components/TraceIcon.vue';
 import ReferenceArt from './components/ReferenceArt.vue';
 import { platforms } from './lib/preview';
@@ -11,11 +12,16 @@ import './styles/shell.css';
 const route = useRoute();
 const router = useRouter();
 const workspace = useWorkspaceStore();
-const visiblePlatforms = computed(() => workspace.preview ? platforms : platforms.filter(p => p.id === 'bilibili'));
+const installedPlatforms=ref(['bilibili']);
+onMounted(async()=>{if(!workspace.preview)try{const result=await api.pluginList();installedPlatforms.value=result.items.map(p=>p.platform??p.plugin_id);}catch{/* Keep last known navigation while disconnected. */}});
+const visiblePlatforms = computed(() => workspace.preview ? platforms : platforms.filter(p => installedPlatforms.value.includes(p.id)));
 const nav = [
   { path:'/',label:'主页',icon:'home' },
+  { path:'/acquire',label:'链接归档',icon:'download' },
   { path:'/creators',label:'订阅管理',icon:'users' },
   { path:'/timeline',label:'内容库',icon:'file' },
+  { path:'/resources',label:'资源库',icon:'image' },
+  { path:'/upgrades',label:'资源升级',icon:'download' },
   { path:'/tasks',label:'下载任务',icon:'download' },
 ];
 const theme = { common: { primaryColor:'#3979ff', primaryColorHover:'#6496ff', borderRadius:'8px', fontFamily:'"Segoe UI", "Microsoft YaHei UI", sans-serif' } };
@@ -53,6 +59,7 @@ function search() { void router.push('/'); }
           <header class="topbar">
             <form class="global-search" @submit.prevent="search"><TraceIcon name="search"/><input v-model="workspace.query" aria-label="搜索内容" placeholder="搜索用户、内容、关键词..." @input="search"/><button v-if="workspace.query" type="button" class="icon-button" aria-label="清除搜索" @click="workspace.query = ''"><TraceIcon name="close" :size="15"/></button></form>
             <span v-if="workspace.preview" class="preview-badge">界面预览 · 示例数据</span>
+            <router-link v-else to="/status" class="preview-badge">关闭窗口后继续后台 · 退出管理</router-link>
             <div class="top-actions"><router-link to="/status" class="icon-button" aria-label="后台状态"><TraceIcon name="bell"/></router-link><router-link to="/tasks" class="icon-button" aria-label="查看下载任务"><TraceIcon name="download"/></router-link><router-link to="/storage" class="icon-button" aria-label="存储设置"><TraceIcon name="settings"/></router-link></div>
           </header>
           <main :class="['page-content',{'utility-page':route.path !== '/'}]"><router-view/></main>
