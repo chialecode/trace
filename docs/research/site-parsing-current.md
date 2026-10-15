@@ -1,12 +1,12 @@
 # 两站解析资料与实施边界
 
-核对：A规划资料为2026-10-07，B补证及实现回写核对于2026-10-08。本文记录资料证据和实现边界，**不是站点运行验收**。§1～5保留A规划时的资料、候选与未知，§6更新长图文完整响应、特殊资源及协议缺口；当前生产能力以两站能力表和[交付报告](../delivery/stage-report.md#final-m1-delivery)为准。已查本地站点解析、直播协议和分页实现，再用互联网查找补充资料；没有执行真实账号登录、作品下载或录制。两站生产接入按[唯一计划](../delivery/stage-plan.md)，字段语义按[归档契约](../site-archive-contracts.md)。
+核对：资料为2026-10-07，补证及实现回写核对于2026-10-08，多站部分另见[社交站点研究](social-sites-current.md)。本文记录资料证据和两站实现边界，**不是站点运行验收**。§1～5保留规划时的资料、候选与未知，§6更新长图文完整响应、特殊资源及协议缺口；当前生产能力以两站能力表和[状态](../delivery/status.md)为准。规划时已查本地站点解析、直播协议和分页实现，再用互联网查找补充资料，当时没有执行真实账号登录、作品下载或录制。字段语义按[归档契约](../site-archive-contracts.md)。
 
-上述“未执行”是A规划/B补证时的范围。2026-10-08 A 后续获得用户具体授权并进行了最小真实登录和给定目标检查，见§7及[审查报告](../delivery/stage-report.md#a-m1-review)；旧资料/自检不因此改写为当时已实测。
+上述“未执行”是规划与补证时的范围。2026-10-08 获得用户具体授权后进行了最小真实登录和给定目标检查，见§7及[审查报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#a-m1-review)；旧资料/自检不因此改写为当时已实测。
 
 ## 1. 证据口径
 
-2026-10-08 A 已集中审查 r1，当前结论和 F-018/019 见[报告§16](../delivery/stage-report.md#a-m1-review)。新增认证历史、补全确认及本地凭证方案写入同一 r2 契约；它们不改变本页历史资料的当时结论，也不构成真实站点验证。
+2026-10-08 的集中审查结论与 F-018/019 见[固定报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#a-m1-review)。认证历史、补全确认及本地凭证方案写入[归档契约](../site-archive-contracts.md#authentication-acquisition)；它们不改变本页历史资料的当时结论，也不构成真实站点验证。
 
 官方开放接口说明、社区协议文档、实现观察、媒体报道、TRACE 合成测试、TRACE 真实请求是不同等级。请求路径存在、第三方声称支持、单次取流和完整归档闭环分别判定。网页登录范围不等于作者 OAuth 管理范围；不得把 TikTok 文档套到抖音。参考实现的日志、无界读取、身份池和外部签名服务不继承到 TRACE。
 
@@ -29,11 +29,11 @@ WBI、Cookie、状态码和域名白名单沿现有站点适配器扩展。FLV �
 | 账号/主页/短链 | `www.douyin.com/aweme/v1/web/user/profile/other/`，sec_user_id；分享链接逐跳展开 | sec_uid、uid、unique_id/short_id、web_rid、room.id_str 分命名空间；昵称不作主键；短链跳转重新做网络边界检查 |
 | 投稿/空间内容 | `/aweme/v1/web/aweme/post/`，sec_user_id/max_cursor/count；aweme_list/has_more/max_cursor | 保留置顶、乱序、重复、空页与权限条件；账号投稿作为空间订阅主体，关注流是不同可见范围，不可替代完整作者列表 |
 | 单条视频/图集 | `/aweme/v1/web/aweme/detail/`，aweme_id；aweme_detail、aweme_type、desc、images、video、music | 按结构与类型共同判定；images 有序保留，混合动图/实况图不能只存封面；play_addr/download_addr/bit_rate/音轨是不同候选；地址名不能证明无水印、原始或完整 |
-| 长图文/文章 | 2025-12-26 [科技日报](https://www.stdaily.com/web/gdxw/2025-12/26/content_453850.html)报道抖音长图文正式上线，支持正文、配图与背景音乐 | **必须包含在 M1**。报道证明产品类型存在，不证明具体下载 API、字段或完整正文。A 尚未取得可核对的完整文章响应；B 需沿详情及页面结构做有界协议验证并补合成 fixture，禁止只保存 desc 或以“抖音没有专栏”略过。独立付费专栏目录未证实，与长图文区分 |
+| 长图文/文章 | 2025-12-26 [科技日报](https://www.stdaily.com/web/gdxw/2025-12/26/content_453850.html)报道抖音长图文正式上线，支持正文、配图与背景音乐 | **必须覆盖**。报道证明产品类型存在，不证明具体下载 API、字段或完整正文。A 尚未取得可核对的完整文章响应；B 需沿详情及页面结构做有界协议验证并补合成 fixture，禁止只保存 desc 或以“抖音没有专栏”略过。独立付费专栏目录未证实，与长图文区分 |
 | 合集/附属信息 | `/aweme/v1/web/mix/aweme/`；comment/list、comment/list/reply、danmaku/get_v2 等为独立端点 | 合集关系和当前可获得的元数据保存；评论/回复/弹幕按预算与覆盖保存，不能无限抓取。收藏夹是会话私有能力，不纳入任意作者的投稿全集 |
 | 直播房间/取流 | `live.douyin.com/webcast/room/web/enter/`，web_rid；`webcast.amemv.com/webcast/room/reflow/info/`，sec_user_id；room/id_str/status/stream_url，flv_pull_url、hls_pull_url、live_core_sdk_data.pull_data.stream_data | Web 与移动响应的状态码/嵌套结构不混用；音频直播保留 audio-only 证据；quality/codec/URL 分层。ttwid 与登录 Cookie 不相等；A-Bogus/UA/会话绑定需要本地可替换实现与固定向量，不依赖公共签名代理 |
 
-官方[视频列表](https://open.douyin.com/platform/resource/docs/openapi/video-management/douyin/search-video/account-video-list)、[视频数据](https://open.douyin.com/platform/resource/docs/openapi/video-management/douyin/search-video/video-data)、[授权](https://open.douyin.com/platform/resource/docs/develop/permission/web/permission)仅能支持其明示权限；[创建图文](https://partner.open-douyin.com/docs/resource/zh-CN/dop/develop/openapi/video-management/douyin/create-image-text/create-image-text)证明发布类型与权限，**不是下载授权，也不执行发布**。M1 选择用户有权观看范围内的本地网页适配路径，不增加云端服务或内置 clientSecret。
+官方[视频列表](https://open.douyin.com/platform/resource/docs/openapi/video-management/douyin/search-video/account-video-list)、[视频数据](https://open.douyin.com/platform/resource/docs/openapi/video-management/douyin/search-video/video-data)、[授权](https://open.douyin.com/platform/resource/docs/develop/permission/web/permission)仅能支持其明示权限；[创建图文](https://partner.open-douyin.com/docs/resource/zh-CN/dop/develop/openapi/video-management/douyin/create-image-text/create-image-text)证明发布类型与权限，**不是下载授权，也不执行发布**。产品选择用户有权观看范围内的本地网页适配路径，不增加云端服务或内置 clientSecret。
 
 异常检测必须结合端点：空详情、HTML 验证页、风控码、认证失效和合法空列表分别处理；不能将所有 HTTP 200、空字节或空数组解释为成功/删除。会话检测返回访客身份也不证明登录。任何响应携带的 Cookie/签名不得进入错误详情。
 
@@ -54,13 +54,13 @@ WBI、Cookie、状态码和域名白名单沿现有站点适配器扩展。FLV �
 
 真实两站会话、风控、质量、长文完整性、动态媒体与直播签名均 not-run。长图文与特殊卡片规则需要补足，属于开发协议验证工作；不能全转交用户。ACT-002 仅承接真实账号配置与有界请求授权。缺真实条件时继续合成、静态解析与安全实现，但相应真实支持声明保持未验证。API 变化导致当前必须类型无法实现时交付明确阻断及已尝试方案，不将 unsupported 当作整阶段通过。
 
-以上保留2026-10-07 A规划时的未知项。B的协议补证、实际采用与合成反例在下一节；当前逐类型实现和未经真实验证的边界以[Bilibili能力表](bilibili-capabilities.md)、[Douyin能力表](douyin-capabilities.md)及[阶段报告](../delivery/stage-report.md)为准，不把当时未知或后续合成通过改写成真实站点验证。
+以上保留2026-10-07 A规划时的未知项。B的协议补证、实际采用与合成反例在下一节；当前逐类型实现和未经真实验证的边界以[Bilibili能力表](bilibili-capabilities.md)、[Douyin能力表](douyin-capabilities.md)及[阶段报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md)为准，不把当时未知或后续合成通过改写成真实站点验证。
 
 ## 6. B 实施补证（2026-10-07）
 
 本节更新前文 A 规划时的未知项，仍不包含真实账号请求。抖音长图文已找到可核对的具体响应规则：`aweme_type=163`，列表 `article_info.article_content.markdown` 可能在 499 字符截断，必须再取 `/aweme/v1/web/aweme/detail/`。`article_content` 可能为对象或 JSON 编码字符串；`article_info` 提供 article_id/title/type/has_more 等信息。不能把此类响应中的 `video.play_addr` 背景 MP3 误认作主体视频。
 
-固定来源：[长文正文补全报告](https://github.com/njausxl/douyin-image-post-ocr/blob/504d0f6ddd09411d3fe819097f773e644b6ffb7c/docs/长文正文补全报告.md)、[TextWork 响应类型](https://github.com/ikenxuan/amagi/blob/fcc55ac2e9129cd141938f65496cfd18eb949da2/packages/response-types/src/generated/douyin/TextWork/TextWork_V0.ts)。TRACE 的合成用例经过生产适配器子进程，覆盖账号→分页→详情全文/30 图→资源计划与挑战响应；真实文章与媒体读取 not-run。具体通过跑次见[实施记录](../delivery/stage-report.md#m1-implementation)。
+固定来源：[长文正文补全报告](https://github.com/njausxl/douyin-image-post-ocr/blob/504d0f6ddd09411d3fe819097f773e644b6ffb7c/docs/长文正文补全报告.md)、[TextWork 响应类型](https://github.com/ikenxuan/amagi/blob/fcc55ac2e9129cd141938f65496cfd18eb949da2/packages/response-types/src/generated/douyin/TextWork/TextWork_V0.ts)。TRACE 的合成用例经过生产适配器子进程，覆盖账号→分页→详情全文/30 图→资源计划与挑战响应；真实文章与媒体读取 not-run。具体通过跑次见[实施记录](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#m1-implementation)。
 
 本次 A-Bogus 模块采用明确 MIT 许可的[固定公开源码](https://github.com/chen-zeong/DTV/blob/9cd17311fa32575fa68f7e79feafdb165c13edd3/src-tauri/src/platforms/douyin/a_bogus.rs)，保留版权和完整许可于 `adapters/douyin/NOTICE`；仓库核对时仍活跃，最近维护至 2026-10-01。TRACE 将 SM3 换为 RustCrypto 并显式传入时间；独立编译上游实现，仅替换时钟后得到固定向量，当前实现与向量一致。不依赖外部签名服务；该向量不是登录或站点风控验收。
 
@@ -86,7 +86,7 @@ Douyin图集补证为[固定ImageAlbumWork类型](https://github.com/ikenxuan/am
 
 ### 6.2 合集和直播有限历史采样
 
-2026-10-07公开补证：[合集条目/直播初始化端点](https://github.com/Johnserf-Seed/f2/blob/7dab3e2ffffaa2535834d28fca99dbc2e89fa9d3/f2/apps/douyin/api.py)、[请求模型](https://github.com/Johnserf-Seed/f2/blob/7dab3e2ffffaa2535834d28fca99dbc2e89fa9d3/f2/apps/douyin/model.py)、[IM JSON响应字段](https://github.com/Johnserf-Seed/f2/blob/7dab3e2ffffaa2535834d28fca99dbc2e89fa9d3/f2/apps/douyin/filter.py)；这些是社区协议资料，未引入其实现。独立的[series.list请求与2026-09-16第三方观察](https://github.com/jiji262/douyin-downloader/blob/9874f413b2c1f8ad6e731b26e3e05f402fc964f8/core/api_client.py#L974)补足F2常量表未能证明的列表差异：mix.list的mix_infos/mix_list与series.list的series_infos分别续页，后者带read_new_mix=true、req_from=channel_pc_web；series_id作为mix.aweme的mix_id取得公开成员。两种集合不能假定互为超集，A-Bogus不证明页面安全门禁已经满足。TRACE有限游标枚举与生产进程合成验证已实现，真实权限/安全门禁依ACT-002，不能把第三方观察冒充TRACE实测。
+2026-10-07公开补证：[合集条目/直播初始化端点](https://github.com/Johnserf-Seed/f2/blob/7dab3e2ffffaa2535834d28fca99dbc2e89fa9d3/f2/apps/douyin/api.py)、[请求模型](https://github.com/Johnserf-Seed/f2/blob/7dab3e2ffffaa2535834d28fca99dbc2e89fa9d3/f2/apps/douyin/model.py)、[IM JSON响应字段](https://github.com/Johnserf-Seed/f2/blob/7dab3e2ffffaa2535834d28fca99dbc2e89fa9d3/f2/apps/douyin/filter.py)；这些是社区协议资料，未引入其实现。另一份独立社区实现中的series.list请求与2026-09-16第三方观察补足F2常量表未能证明的列表差异：mix.list的mix_infos/mix_list与series.list的series_infos分别续页，后者带read_new_mix=true、req_from=channel_pc_web；series_id作为mix.aweme的mix_id取得公开成员。两种集合不能假定互为超集，A-Bogus不证明页面安全门禁已经满足。TRACE有限游标枚举与生产进程合成验证已实现，真实权限/安全门禁依ACT-002，不能把第三方观察冒充TRACE实测。
 
 B站[最近历史弹幕协议](https://github.com/SocialSisterYi/bilibili-API-collect/blob/271b123a083698bf576101c21f534b3418768a43/docs/live/danmaku.md)：GET xlive/web-room/v1/dM/gethistory，roomid；data.room和data.admin各是有限最近消息，非历史全集。抖音GET live.douyin.com/webcast/im/fetch，resp_content_type=json、room_id、user_unique_id、有限need_persist_msg_count，data数组的common.method/msg_id/room_id与content/user.nickname；extra.cursor与internal_ext不进入档案。访客ID仅用于协议请求，不充当登录证明。TRACE目前只保存WebcastChatMessage，其他事件计入省略数；源返回空/错误/串房不算成功。字幕若已嵌入画面会随原始录制保存，外部轨由下节Core处理。两站采样均由独立任务/用户选择控制，界面明确sampled_history，不能宣称无缺口弹幕或全量WebSocket录制。
 
@@ -107,18 +107,18 @@ Bilibili固定社区[动态音乐卡](https://github.com/pskdje/bilibili-API-col
 之后用户提供直播间与主页样本用于登录条件比较。固定房间身份的无Cookie诊断遇HTTP412，Douyin已登录生产枚举遇HTTP403，各一请求后停止。没有得到视频列表或实际直播媒体，不能证明匿名720P限制、登录1080P原画或全部投稿范围；这些是待核查的条件。登录证明、端点可访问、源声明质量、实际规格和历史完整性是五个独立结论。具体原始目标/响应只在本地隔离目录，当前授权与用户动作只在ACT-002维护。
 
 
-## 8. B 的 r2 作用域与访问分类核查（2026-10-09）
+## 8. 作用域与访问分类核查（2026-10-09）
 
 B本轮未新增真实站点请求，也未重复A已经完成的Cookie有效性对照。按已有协议资料与当前代码只读核对：Bilibili生产房间解析经Core代理并使用站点UA/Referer，原标准库无Cookie的room_init诊断HTTP412不等于生产直播流已经测试；Douyin的aweme/post使用sec_user_id、max_cursor及分页参数，协议入口添加当前签名、UA/Referer并由Core按凭证作用域附头。既有签名向量通过不能证明目标端点当前接受这些条件，亦无证据证明刷新Cookie或盲目重试能解除原403/412。
 
-Core元数据HTTP403/412现在分类为PermissionDenied，停止该访问路径并保留受限原因；不产生成功空页、不把有效登录直接改为过期，也不启动普通网络退避来反复撞同一限制。媒体CDN的原403/地址刷新语义继续保留，不能将所有403统一改成同一种失败。离线反例在 `c13_metadata_403_412_stop_as_access_restrictions_without_empty_success_or_cookie_expiry`，当前自动证据见报告。OSS-011仍保留实际内容访问限制，新的真实复验要有具体原因，并遵循ACT-002的现有目标、预算和停止条件。
+Core元数据HTTP403/412现在分类为PermissionDenied，停止该访问路径并保留受限原因；不产生成功空页、不把有效登录直接改为过期，也不启动普通网络退避来反复撞同一限制。媒体CDN的原403/地址刷新语义继续保留，不能将所有403统一改成同一种失败。离线反例在 `metadata_403_412_stop_as_access_restrictions_without_empty_success_or_cookie_expiry`，当前自动证据见报告。OSS-011仍保留实际内容访问限制，新的真实复验要有具体原因，并遵循ACT-002的现有目标、预算和停止条件。
 
 两站新获取使用本批次同凭证代次的认证证据；已认证解析后不向CDN发送Cookie仍保留该获取身份。普通资源补全候选按实际来源和实测规格比较，在统一页面等待用户决定；直播只保留逐片身份与实际规格，不补录历史。两站匿名/已认证、重叠订阅、CDN零Cookie和原资源保留已接生产适配器加隔离合成传输链，未冒充真实账号的720P/1080P原画或全部投稿对照。
 
 
 ## 9. A真实来源协议补证（2026-10-09）
 
-本次实际目标由用户提供，来源诊断与当前生产链严格分开；全部命令、失败/字节/解码事实见[报告§16.16](../delivery/stage-report.md#m1-real-source-readiness)，当前实现要求见[链接契约](../site-archive-contracts.md#direct-source-acquisition)。原§7/8的not-run和受限结果保留历史，不改写为当时通过。
+本次实际目标由用户提供，来源诊断与当前生产链严格分开；全部命令、失败/字节/解码事实见[固定报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#m1-real-source-readiness)，当前实现要求见[链接契约](../site-archive-contracts.md#direct-source-acquisition)。原§7/8的not-run和受限结果保留历史，不改写为当时通过。
 
 Bilibili WBI是img/sub密钥置换后的前32字符，排序/编码后的query只含一个wts；正确摘要和实际URL回归见F-026。旧room_init匿名诊断在相同环境代理下，默认标准库头412，浏览器UA与直播Referer组合200。当前现代`/xlive/web-room/v1/index/getInfoByRoom`及`/xlive/web-room/v2/index/getRoomPlayInfo`在正确WBI/直播头条件下取得实际流；不能仅凭端点常量断言生产取流已经成功。
 
@@ -128,15 +128,15 @@ Douyin的self登录端点与受保护内容端点不同。其网页加载的`@by
 
 Douyin网页直播的展示房号用于`GET https://live.douyin.com/webcast/room/web/enter/`的web_rid，不等于sec_uid或真实room.id；本次该路径取得直播信息。媒体来源可能是HTTP的douyinliving.com，已验证同一地址HTTPS；Bilibili源CDN实际重定向到bytefcdnrd.com。两个媒体域不携带Cookie，必须在窄策略下按每跳公共DNS/IP/TLS核对；动态重定向地址不能固定为第一次出现的某个边缘主机。尚未完成当前生产Core的真实链，依据P14执行，不引入任意域/明文回退。
 
-## 10. B的r3生产接线与对照（2026-10-10）
+## 10. 生产接线与对照（2026-10-10）
 
 上节保留A诊断时状态。B已在Core内接入受保护Douyin详情/投稿的SecSDK派生上下文，并保留self、跨域剥离与媒体零Cookie；大型JSON通过显式有界插件消息，生产20条页回放及超限/取消/重开反例均使用当前代码。直播CDN只扩展已证明的域族与同地址HTTPS规范化，协议上限及字段正本在[契约§9](../site-archive-contracts.md#direct-source-acquisition)。
 
 两站视频/直播URL现经生产适配器解析为稳定作品或实际房间，并由持久Core一次性任务处理明确选择。Bilibili公钥nav沿用所选身份，匿名nav的公开键与登录证明分开；原32字符WBI向量不变。DASH的数字质量ID在预览/执行两端使用相同规范化，分离视频/必要音轨完整Core链保留先失败后通过。Douyin视频CDN补入公开UA/Referer后成功接收，live enter的status=4即使缺owner也显示停播，不能把观看者当主播。
 
-这些是接线与具体反例事实；完整真实产品链是否完成，以[报告§17](../delivery/stage-report.md#b-m1-r3-delivery)中匹配包、任务、全部必要对象、导出和完整解码的回执判断。原来源诊断文件没有填入对象库，失败媒体/原包/旧采样继续保留；当前对象或授权依赖只维护于ACT-002，不扩大到作者全历史。
+这些是接线与具体反例事实；完整真实产品链是否完成，以[固定报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#b-m1-r3-delivery)中匹配包、任务、全部必要对象、导出和完整解码的回执判断。原来源诊断文件没有填入对象库，失败媒体/原包/旧采样继续保留；当前对象或授权依赖只维护于ACT-002，不扩大到作者全历史。
 
 
 ## 11. A当前生产包真实链核对（2026-10-13）
 
-四个用户指定对象已用m1-r3-12生产Core/GUI完成质量选择、任务/认证上下文、全部必要对象、两直播GUI关闭继续与封片、离线重开/范围读取/导出和完整自动解码。实测规格、累计预算、原失败和未知范围只见[完整报告§18.8](../delivery/stage-report.md#a-m1-r3-technical-closeout)及两站能力表。原§7～10的当时结论不改写；本次不证明全部类型、全部历史、匿名/会员差异或原生声音体验。
+四个用户指定对象已用当时的生产包完成质量选择、任务/认证上下文、全部必要对象、两直播GUI关闭继续与封片、离线重开/范围读取/导出和完整自动解码。实测规格、累计预算、原失败和未知范围只见[固定报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#a-m1-r3-technical-closeout)及两站能力表。原§7～10的当时结论不改写；本次不证明全部类型、全部历史、匿名/会员差异或原生声音体验。

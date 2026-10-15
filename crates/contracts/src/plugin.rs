@@ -37,6 +37,10 @@ pub struct PluginRequest {
     pub method: String,
     #[serde(default)]
     pub params: Value,
+    /// Host-provided access context for a site whose public API needs a device identifier
+    /// (DEC-041). It never carries a login Cookie or a session token.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub context: Value,
 }
 
 /// 通用响应（双向共用）。
@@ -69,6 +73,10 @@ pub struct AdapterHello {
     pub platform: String,
     pub capabilities: Vec<String>,
     pub limits: AdapterLimits,
+    /// What the adapter can subscribe to, preview and download. Older adapters declare
+    /// nothing; Core then derives `partial` rules from their capabilities.
+    #[serde(default)]
+    pub rules: Vec<crate::rules::RuleDeclaration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -129,6 +137,9 @@ pub struct EnumeratedEntry {
     pub published_at: Option<String>,
     #[serde(default)]
     pub published_precision: String,
+    /// 精度为 `approximate` 时：真实发布时间可能偏离 `published_at` 多少秒（至少一个单位）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_margin_seconds: Option<i64>,
     #[serde(default)]
     pub pinned: bool,
     /// 列表摘要（不可覆盖完整详情）。
@@ -136,6 +147,26 @@ pub struct EnumeratedEntry {
     pub summary_body: Option<String>,
     #[serde(default)]
     pub stats: Value,
+    /// What a profile preview shows about the entry before it is observed in full.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hints: Option<EntryHints>,
+}
+
+/// Counts and a thumbnail address the list already carried. All are optional claims; the
+/// observed detail is the record.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EntryHints {
+    #[serde(default)]
+    pub content_kinds: Vec<String>,
+    #[serde(default)]
+    pub image_count: u32,
+    #[serde(default)]
+    pub video_count: u32,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    /// A thumbnail on one of the site's media hosts; Core fetches it on demand.
+    #[serde(default)]
+    pub cover_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +208,9 @@ pub struct ObservedDetail {
     pub completeness: String,
     #[serde(default)]
     pub stats: Value,
+    /// Site fields mapped to the unified metadata; absent for adapters that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unified: Option<crate::unified::UnifiedMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -275,7 +309,14 @@ pub struct ProxyFetchParams {
     /// 是否允许携带该账号 Cookie（仅站点 API 域）。
     #[serde(default)]
     pub with_credential: bool,
+    /// 只读查询的请求体（站点的 GraphQL 等）；仅 POST 接受，文本且不超过
+    /// [`PROXY_BODY_MAX`] 字节，`content-type` 头必须是表单或 JSON。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
+
+/// Largest request body an adapter may send through the proxy.
+pub const PROXY_BODY_MAX: usize = 64 * 1024;
 
 fn default_max_body() -> u32 {
     8 * 1024 * 1024

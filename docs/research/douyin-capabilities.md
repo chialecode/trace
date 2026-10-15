@@ -1,12 +1,12 @@
 # 抖音归档与录制能力表
 
-当前生产包m1-r3-12获准实测：视频1080×1920 AVC＋AAC完整22.833秒；直播1080×1920 AVC＋AAC封片68.426秒。两链Core身份/任务/对象、桌面选择、直播GUI关闭继续、导出/离线重开及所有必要文件完整解码已核实。当前证据见[报告§18.8](../delivery/stage-report.md#a-m1-r3-technical-closeout)，§17仍保留B原跑次；只适用两个指定对象，其他类型/全历史及匿名与会员质量差异未验证。
+2026-10-13 获准实测（当时的生产包）：视频1080×1920 AVC＋AAC完整22.833秒；直播1080×1920 AVC＋AAC封片68.426秒。两链Core身份/任务/对象、桌面选择、直播GUI关闭继续、导出/离线重开及所有必要文件完整解码已核实，证据见[固定报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#a-m1-r3-technical-closeout)；只适用两个指定对象，其他类型/全历史及匿名与会员质量差异未验证。
 
-核对：2026-10-13，M1 r3 A复核与获准实测 / adapter 0.1.0。self登录判断保持，Core内SecSDK上下文、有界大页、直播CDN/HTTPS与视频/直播链接入口已接入。本轮真实生产视频接收、停播响应、原失败及最终完整链边界见[§17](../delivery/stage-report.md#b-m1-r3-delivery)；A原有[来源诊断](../delivery/stage-report.md#m1-real-source-readiness)与产品链证据分开。配置、对象和预算依赖只见[ACT-002](../../USER-ACTIONS.md#act-002)。
+核对：2026-10-17。self登录判断保持，Core内SecSDK上下文、有界大页、直播CDN/HTTPS与视频/直播链接入口已接入，并随多站规则目录声明规则。真实生产视频接收、停播响应、原失败及完整链边界见[固定报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#b-m1-r3-delivery)；本阶段的复验结果见[状态](../delivery/status.md)。A原有[来源诊断](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#m1-real-source-readiness)与产品链证据分开。配置、对象和预算依赖只见[ACT-002](../../USER-ACTIONS.md#act-002)。
 
-旧M1b准备表、当时源码/官方资料与未知保存在[固定历史](https://github.com/chialecode/trace/blob/960984c34487244f31f1238dffc2bd9faaa292e7/docs/research/douyin-capabilities.md)。现行来源与固定协议证据以[两站解析研究](site-parsing-current.md)为正本，不把第三方支持声明当作TRACE实测。
+早期准备表、当时源码/官方资料与未知保存在[固定历史](https://github.com/chialecode/trace/blob/960984c34487244f31f1238dffc2bd9faaa292e7/docs/research/douyin-capabilities.md)。现行来源与固定协议证据以[两站解析研究](site-parsing-current.md)为正本，不把第三方支持声明当作TRACE实测。
 
-A已核对原r1的type163全文/资源关系与r2共享作用域/认证历史，F-018来源长度和F-020登录探测保持。原[r2包与长测](../delivery/stage-report.md#b-m1-r2-delivery)只对应当时输入；本轮候选交接、恢复和物化等修复的当前状态只在[报告F正本](../delivery/stage-report.md#f-023)维护，不由能力表自行关闭。
+type163全文/资源关系与共享作用域/认证历史已由早期审查核对，F-018来源长度和F-020登录探测保持。当时的[包与长测](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#b-m1-r2-delivery)只对应当时输入；候选交接、恢复和物化等修复的状态见[固定报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#f-023)，不由能力表自行关闭。
 
 | 类型/入口 | 当前生产行为 | 合成证据与限制 |
 | --- | --- | --- |

@@ -44,6 +44,9 @@ fn next(c: &Connection, id: &str) -> Result<Option<PendingConsumer>, CoreError> 
     Ok(c.query_row("SELECT w.subscription_id,w.requested,w.state,w.attempts,w.next_run_at,w.last_error FROM job_consumers w JOIN subscriptions s ON s.subscription_id=w.subscription_id WHERE w.job_id=?1 AND w.requested>w.completed AND s.state='enabled' AND w.state IN ('queued','waiting_retry','waiting_storage') ORDER BY CASE WHEN w.next_run_at IS NULL OR w.next_run_at<=?2 THEN 0 ELSE 1 END,w.next_run_at,w.requested_at,w.subscription_id LIMIT 1",rusqlite::params![id,jobs::now()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?)
 }
 
+const SELECT_SUBSCRIPTIONS: &str = "SELECT EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscription_id=?1 AND s.state='enabled' AND s.config_version=?2 AND s.credential_id IS ?3 AND (SELECT generation FROM credentials_state WHERE credential_id=s.credential_id) IS ?4)";
+const UPDATE_JOBS: &str = "UPDATE jobs SET payload=?2,state=?3,target_generation=target_generation+?8,attempts=?4,next_run_at=?5,last_error=?6,lease_owner=NULL,lease_expires_at=NULL,updated_at=?7 WHERE job_id=?1";
+
 pub fn reconcile(tx: &Transaction<'_>, id: &str) -> Result<(), CoreError> {
     if !is_shared(tx, id)? {
         return Ok(());
@@ -58,7 +61,16 @@ pub fn reconcile(tx: &Transaction<'_>, id: &str) -> Result<(), CoreError> {
     }
     let mut payload: Value = serde_json::from_str(&raw)?;
     if matches!(state.as_str(), "running" | "leased") {
-        let current: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscription_id=?1 AND s.state='enabled' AND s.config_version=?2 AND s.credential_id IS ?3 AND (SELECT generation FROM credentials_state WHERE credential_id=s.credential_id) IS ?4)",rusqlite::params![payload["subscription_id"].as_str(),payload["execution_scope"]["subscription_version"].as_i64(),payload["execution_scope"]["credential_id"].as_str(),payload["execution_scope"]["credential_generation"].as_i64()],|r|r.get(0))?;
+        let current: bool = tx.query_row(
+            SELECT_SUBSCRIPTIONS,
+            rusqlite::params![
+                payload["subscription_id"].as_str(),
+                payload["execution_scope"]["subscription_version"].as_i64(),
+                payload["execution_scope"]["credential_id"].as_str(),
+                payload["execution_scope"]["credential_generation"].as_i64()
+            ],
+            |r| r.get(0),
+        )?;
         if current {
             return Ok(());
         }
@@ -81,7 +93,19 @@ pub fn reconcile(tx: &Transaction<'_>, id: &str) -> Result<(), CoreError> {
         payload["subscription_id"] = Value::String(sub);
         payload["consumer_request"] = Value::from(request);
         payload.as_object_mut().unwrap().remove("execution_scope");
-        tx.execute("UPDATE jobs SET payload=?2,state=?3,target_generation=target_generation+?8,attempts=?4,next_run_at=?5,last_error=?6,lease_owner=NULL,lease_expires_at=NULL,updated_at=?7 WHERE job_id=?1",rusqlite::params![id,payload.to_string(),if disabled {"waiting_plugin"} else {&state},attempts,at,error,jobs::now(),i64::from(!preserve_generation)])?;
+        tx.execute(
+            UPDATE_JOBS,
+            rusqlite::params![
+                id,
+                payload.to_string(),
+                if disabled { "waiting_plugin" } else { &state },
+                attempts,
+                at,
+                error,
+                jobs::now(),
+                i64::from(!preserve_generation)
+            ],
+        )?;
     } else {
         let state: String = tx.query_row("SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM job_consumers WHERE job_id=?1 AND requested>completed) THEN 'succeeded' WHEN NOT EXISTS(SELECT 1 FROM job_consumers w JOIN subscriptions s ON s.subscription_id=w.subscription_id WHERE w.job_id=?1 AND requested>completed AND s.state='enabled') THEN 'paused' ELSE COALESCE((SELECT state FROM job_consumers WHERE job_id=?1 AND requested>completed ORDER BY CASE state WHEN 'waiting_auth' THEN 0 ELSE 1 END LIMIT 1),'paused') END",[id],|r|r.get(0))?;
         tx.execute("UPDATE jobs SET state=?2,target_generation=target_generation+CASE WHEN state='succeeded' AND ?2='succeeded' THEN 0 ELSE 1 END,lease_owner=NULL,lease_expires_at=NULL,updated_at=?3 WHERE job_id=?1",rusqlite::params![id,state,jobs::now()])?;
@@ -99,7 +123,7 @@ pub fn subscription_changed(
     new_request: bool,
 ) -> Result<(), CoreError> {
     if new_request {
-        tx.execute("UPDATE job_consumers SET requested=requested+1,state='queued',attempts=0,next_run_at=NULL,last_error=NULL,requested_at=?2 WHERE subscription_id=?1 AND state!='cancelled'",rusqlite::params![sub,jobs::now()])?;
+        tx.execute("UPDATE job_consumers SET requested=requested+1,state='queued',attempts=0,next_run_at=NULL,last_error=NULL,requested_at=?2 WHERE subscription_id=?1 AND state NOT IN ('cancelled','waiting_user')",rusqlite::params![sub,jobs::now()])?;
     }
     let ids = tx
         .prepare("SELECT job_id FROM job_consumers WHERE subscription_id=?1")?
@@ -129,6 +153,65 @@ pub fn retry(tx: &Transaction<'_>, id: &str) -> Result<(), CoreError> {
     reconcile(tx, id)
 }
 
+/// A site refusal belongs to one subscription, not to another owner of the same shared job.
+/// The durable marker is the consumer row; scan lanes use their own job state because they have
+/// no consumer rows. Cancellation keeps that error: only explicit retry clears it.
+/// Both are checked by every automatic wake/schedule path.
+pub fn subscription_refused(c: &Connection, subscription: &str) -> Result<bool, CoreError> {
+    Ok(c.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM job_consumers
+           WHERE subscription_id=?1 AND requested>completed
+             AND state='waiting_user'
+             AND json_extract(last_error,'$.class')='permission_denied'
+           UNION ALL
+           SELECT 1 FROM jobs
+           WHERE json_extract(payload,'$.subscription_id')=?1
+             AND json_extract(last_error,'$.class')='permission_denied')",
+        [subscription],
+        |r| r.get(0),
+    )?)
+}
+
+/// Stops every automatic lane of one refused subscription. A shared logical job is not made
+/// unclaimable for every owner: only the refused consumer is parked, then reconciliation lets
+/// another owner advance. Non-shared jobs carry the stop themselves.
+pub fn stop_subscription(
+    tx: &Transaction<'_>,
+    subscription: &str,
+    error: &str,
+) -> Result<(), CoreError> {
+    let ts = jobs::now();
+    let shared = tx
+        .prepare(
+            "SELECT DISTINCT job_id FROM job_consumers
+             WHERE subscription_id=?1 AND requested>completed",
+        )?
+        .query_map([subscription], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    tx.execute(
+        "UPDATE job_consumers
+         SET state='waiting_user',next_run_at=NULL,last_error=?2
+         WHERE subscription_id=?1 AND requested>completed
+           AND state NOT IN ('cancelled','succeeded')",
+        rusqlite::params![subscription, error],
+    )?;
+    tx.execute(
+        "UPDATE jobs
+         SET state='waiting_user',target_generation=target_generation+1,
+             lease_owner=NULL,lease_expires_at=NULL,next_run_at=NULL,
+             last_error=?2,updated_at=?3
+         WHERE json_extract(payload,'$.subscription_id')=?1
+           AND state NOT IN ('succeeded','failed','cancelled','paused','waiting_user')
+           AND NOT EXISTS(SELECT 1 FROM job_consumers w WHERE w.job_id=jobs.job_id)",
+        rusqlite::params![subscription, error, ts],
+    )?;
+    for id in shared {
+        reconcile(tx, &id)?;
+    }
+    Ok(())
+}
+
 pub fn credential_changed(
     tx: &Transaction<'_>,
     credential: &str,
@@ -139,10 +222,14 @@ pub fn credential_changed(
         .query_map([credential], |r| r.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     for sub in subscriptions {
+        if subscription_refused(tx, &sub)? {
+            subscription_changed(tx, &sub, false)?;
+            continue;
+        }
         if valid {
             tx.execute("UPDATE job_consumers SET state='queued',next_run_at=NULL WHERE subscription_id=?1 AND state='waiting_auth'",[&sub])?;
         } else {
-            tx.execute("UPDATE job_consumers SET state='waiting_auth' WHERE subscription_id=?1 AND requested>completed AND state NOT IN ('cancelled','failed')",[&sub])?;
+            tx.execute("UPDATE job_consumers SET state='waiting_auth' WHERE subscription_id=?1 AND requested>completed AND state NOT IN ('cancelled','failed','waiting_user')",[&sub])?;
         }
         subscription_changed(tx, &sub, false)?;
     }

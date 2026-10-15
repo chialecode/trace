@@ -208,6 +208,9 @@ pub struct SubscriptionCreateArgs {
     pub capture_chat: bool,
     #[serde(default)]
     pub capture_subtitles: bool,
+    /// Download discovered videos on their own. Absent means off for a new subscription.
+    #[serde(default)]
+    pub auto_download: bool,
 }
 
 fn default_content_type() -> String {
@@ -232,9 +235,13 @@ pub struct SubscriptionUpdateArgs {
     pub capture_chat: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_subtitles: Option<bool>,
+    /// Affects videos discovered from now on; saved and undownloaded ones stay as they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_download: Option<bool>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, optional_fields = nullable)]
 #[serde(default, deny_unknown_fields)]
 pub struct QualityRequirement {
     pub min_height: Option<u32>,
@@ -289,6 +296,17 @@ pub struct ArchiveTimelineArgs {
     /// 键集分页游标（发布时间+entry_id 编码）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// `published` (default), `plays`, `likes`, `comments`, `favorites` or `duration`. Entries
+    /// without the value (unknown publication time, never counted) come last in either order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<String>,
+    /// Only entries that carry this tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// Only entries that hold this kind of content: `text`, `image`, `live_photo`, `video`,
+    /// `audio`, `article` or `live`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_kind: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: i64,
 }
@@ -423,7 +441,8 @@ pub struct SearchQueryArgs {
 
 // ---------- 结果 DTO ----------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct CreatorDto {
     pub creator_id: String,
     pub display_name: String,
@@ -433,11 +452,14 @@ pub struct CreatorDto {
     pub notes: String,
     pub created_at: String,
     pub updated_at: String,
+    #[ts(type = "number")]
     pub account_count: i64,
+    #[ts(type = "number")]
     pub entry_count: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct AccountDto {
     pub account_id: String,
     pub namespace: String,
@@ -445,23 +467,39 @@ pub struct AccountDto {
     pub display_name: Option<String>,
     pub profile_url: Option<String>,
     pub creator_id: Option<String>,
+    #[ts(type = "number")]
     pub subscription_count: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct SubscriptionDto {
     pub subscription_id: String,
     pub account_id: String,
     pub content_type: String,
+    #[ts(type = "unknown")]
     pub range: Value,
     pub state: String,
+    #[ts(type = "number")]
     pub config_version: i64,
     pub credential_id: Option<String>,
+    pub updated_at: String,
+    pub capture_chat: bool,
+    pub capture_subtitles: bool,
+    #[ts(type = "number")]
+    pub check_interval_seconds: i64,
+    pub next_check_at: Option<String>,
+    /// Per scan type: `{scan_type, coverage}` rows.
+    #[ts(type = "unknown")]
     pub coverage: Value,
-    pub last_check_at: Option<String>,
+    pub quality: QualityRequirement,
+    /// Whether videos found by later checks are downloaded on their own.
+    #[serde(default)]
+    pub auto_download: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct TimelineItemDto {
     pub entry_id: String,
     pub current_revision_id: Option<String>,
@@ -474,6 +512,7 @@ pub struct TimelineItemDto {
     pub access_state: String,
     pub save_progress: String,
     pub quality_state: String,
+    #[ts(type = "unknown")]
     pub media_summary: Value,
     #[serde(default)]
     pub account_id: Option<String>,
@@ -493,16 +532,26 @@ pub struct TimelineItemDto {
     pub source_url: Option<String>,
     #[serde(default)]
     pub cover_blob_id: Option<String>,
+    #[serde(default)]
+    pub authentication: Option<crate::acquisition::AuthenticationSummary>,
+    /// Unified fields of the entry; absent for an entry observed before they were kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub meta: Option<crate::entry_meta::EntryMetaDto>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct TimelineCounts {
+    #[ts(type = "number")]
     pub global: i64,
+    #[ts(type = "number")]
     pub filtered: i64,
     pub scope: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct TimelinePageDto {
     pub items: Vec<TimelineItemDto>,
     pub next_cursor: Option<String>,
@@ -510,40 +559,48 @@ pub struct TimelinePageDto {
     pub counts: Option<TimelineCounts>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct PageDto<T> {
     pub items: Vec<T>,
     pub next_cursor: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct JobDto {
     pub job_id: String,
     pub job_key: String,
     pub job_type: String,
     pub subject_id: String,
     pub state: String,
+    #[ts(type = "number")]
     pub attempts: i64,
+    #[ts(type = "number")]
     pub target_generation: i64,
     pub priority: i32,
     pub next_run_at: Option<String>,
+    #[ts(type = "{ class?: string; message?: string } | null")]
     pub last_error: Option<Value>,
     pub created_at: String,
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct CredentialDto {
     pub credential_id: String,
     pub platform: String,
     pub subject: Option<String>,
     pub status: String,
+    #[ts(type = "unknown")]
     pub capability: Value,
     pub validated_at: Option<String>,
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct PluginDto {
     pub plugin_id: String,
     pub platform: String,
@@ -555,40 +612,52 @@ pub struct PluginDto {
     pub active_tasks: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct StorageUsageDto {
+    #[ts(type = "number")]
     pub db_bytes: i64,
+    #[ts(type = "number")]
     pub objects_bytes: i64,
+    #[ts(type = "number")]
     pub staging_bytes: i64,
+    #[ts(type = "number")]
     pub object_count: i64,
+    #[ts(type = "number | null")]
     pub free_bytes: Option<i64>,
 }
 
 /// 任务/长操作受理响应。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct AcceptedDto {
     pub job_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct MediaLeaseDto {
     pub lease_id: String,
     pub blob_id: String,
+    #[ts(type = "number")]
     pub size: i64,
     pub mime: Option<String>,
     pub expires_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct MediaChunkDto {
     pub lease_id: String,
+    #[ts(type = "number")]
     pub offset: i64,
     pub eof: bool,
     /// base64 编码的字节（有界分块；≤ 512 KiB 原始字节）。
     pub data_b64: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct SearchResultItemDto {
     pub doc_kind: String,
     pub entry_id: Option<String>,
@@ -600,16 +669,20 @@ pub struct SearchResultItemDto {
     pub published_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct SearchStatusDto {
     /// 索引已消费的 Outbox 序号。
+    #[ts(type = "number")]
     pub indexed_seq: i64,
+    #[ts(type = "number")]
     pub total_seq: i64,
     pub lagging: bool,
     pub rebuilding: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct SearchResultsDto {
     pub items: Vec<SearchResultItemDto>,
     pub next_cursor: Option<String>,
@@ -618,44 +691,4 @@ pub struct SearchResultsDto {
     pub status: SearchStatusDto,
 }
 
-/// daemon 命令名常量（客户端与服务端共同引用，避免拼写漂移）。
-pub mod commands {
-    pub const DAEMON_STATUS: &str = "daemon.status";
-    pub const DAEMON_PAUSE: &str = "daemon.pause";
-    pub const DAEMON_SHUTDOWN: &str = "daemon.shutdown";
-    pub const CREATOR_CREATE: &str = "creator.create";
-    pub const CREATOR_UPDATE: &str = "creator.update";
-    pub const CREATOR_LIST: &str = "creator.list";
-    pub const CREATOR_GET: &str = "creator.get";
-    pub const ACCOUNT_BIND: &str = "account.bind";
-    pub const ACCOUNT_UNBIND: &str = "account.unbind";
-    pub const ACCOUNT_UPDATE: &str = "account.update";
-    pub const ACCOUNT_LIST: &str = "account.list";
-    pub const SUBSCRIPTION_CREATE: &str = "subscription.create";
-    pub const SUBSCRIPTION_UPDATE: &str = "subscription.update";
-    pub const SUBSCRIPTION_CHECK_NOW: &str = "subscription.check_now";
-    pub const SUBSCRIPTION_LIST: &str = "subscription.list";
-    pub const ARCHIVE_TIMELINE: &str = "archive.timeline";
-    pub const ARCHIVE_ENTRY_GET: &str = "archive.entry.get";
-    pub const JOB_LIST: &str = "job.list";
-    pub const JOB_GET: &str = "job.get";
-    pub const JOB_RETRY: &str = "job.retry";
-    pub const JOB_CANCEL: &str = "job.cancel";
-    pub const CREDENTIAL_LIST: &str = "credential.list";
-    pub const CREDENTIAL_IMPORT: &str = "credential.import";
-    pub const CREDENTIAL_VALIDATE: &str = "credential.validate";
-    pub const CREDENTIAL_REVOKE: &str = "credential.revoke";
-    pub const PLUGIN_LIST: &str = "plugin.list";
-    pub const PLUGIN_SET_STATE: &str = "plugin.set_state";
-    pub const STORAGE_USAGE: &str = "storage.usage";
-    pub const EXPORT_START: &str = "storage.export.start";
-    pub const BACKUP_START: &str = "storage.backup.start";
-    pub const BACKUP_LIST: &str = "storage.backup.list";
-    pub const RESTORE_START: &str = "storage.restore.start";
-    pub const ARCHIVE_OPEN_SOURCE: &str = "archive.open_source";
-    pub const MEDIA_RELEASE: &str = "media.release";
-    pub const MEDIA_OPEN_EXTERNAL: &str = "media.open_external";
-    pub const MEDIA_LEASE: &str = "media.lease";
-    pub const MEDIA_READ: &str = "media.read_range";
-    pub const SEARCH_QUERY: &str = "search.query";
-}
+pub mod commands;

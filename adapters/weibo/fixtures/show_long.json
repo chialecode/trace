@@ -1,0 +1,16 @@
+{
+  "ok": 1,
+  "id": 4906000000000001,
+  "idstr": "4906000000000001",
+  "mblogid": "Synth0000",
+  "created_at": "Tue Oct 06 07:00:00 +0800 2026",
+  "text": "长文开头……",
+  "text_raw": "长文开头……",
+  "isLongText": true,
+  "edit_count": 1,
+  "edit_at": "Tue Oct 06 08:00:00 +0800 2026",
+  "reposts_count": 0,
+  "comments_count": 0,
+  "attitudes_count": 1,
+  "user": {"id": 1234567890, "idstr": "1234567890", "screen_name": "合成创作者"}
+}

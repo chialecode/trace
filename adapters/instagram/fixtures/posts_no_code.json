@@ -1,0 +1,19 @@
+{
+ "data": {
+  "xdt_api__v1__feed__user_timeline_graphql_connection": {
+   "edges": [
+    {
+     "node": {
+      "pk": "1",
+      "media_type": 1
+     },
+     "cursor": "c"
+    }
+   ],
+   "page_info": {
+    "has_next_page": false,
+    "end_cursor": null
+   }
+  }
+ }
+}

@@ -1,0 +1,17 @@
+{
+  "ok": 1,
+  "data": {
+    "user": {
+      "id": 1234567890,
+      "idstr": "1234567890",
+      "screen_name": "合成创作者",
+      "description": "这是合成的个人简介",
+      "statuses_count": 5,
+      "followers_count": 10,
+      "friends_count": 3,
+      "verified": false,
+      "profile_url": "https://weibo.com/u/1234567890",
+      "avatar_hd": "https://tvax1.sinaimg.cn/crop.0.0.1.1/synthetic.jpg"
+    }
+  }
+}

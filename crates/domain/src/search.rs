@@ -1,4 +1,4 @@
-//! 搜索规范化 v1（docs/design.md §13.2、m1a-runtime-contracts §5）。
+//! 搜索规范化 v1（docs/design.md §13.2、windows-runtime-contracts §5）。
 //!
 //! v1 规则：NFC + Unicode 小写；保留标点与空白语义；不做分词同义扩展。
 //! 索引与查询必须使用同一实现；原文不变。

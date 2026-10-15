@@ -1,24 +1,363 @@
 <script setup lang="ts">
-import {ref,watch,onMounted,onBeforeUnmount} from 'vue';
-import {NButton,NSelect,NCheckbox,NAlert,NEmpty,NSpin} from 'naive-ui';
-import {api,type UpgradeCandidate,type UpgradeAction,type CreatorDto} from '../lib/api';
-import {authLabel,actualSpec} from '../lib/acquisition';
-import {formatTime,formatBytes} from '../lib/format';
-import {useWorkspaceStore} from '../stores/workspace';
-const workspace=useWorkspaceStore();
-const items=ref<UpgradeCandidate[]>([]),creators=ref<CreatorDto[]>([]),selected=ref<string[]>([]);
-const state=ref<string|null>('pending'),namespace=ref<string|null>(null),creator=ref<string|null>(null);
-const busy=ref(false),error=ref(''),next=ref<number>(),total=ref(0);let generation=0,alive=true;
-const states=[{label:'待确认',value:'pending'},{label:'获取中',value:'collecting'},{label:'已接受',value:'accepted'},{label:'已拒绝',value:'rejected'},{label:'保留两份',value:'kept'},{label:'无提升',value:'no_improvement'},{label:'获取失败',value:'failed'},{label:'比较已失效',value:'stale'},{label:'已取消',value:'cancelled'}];
-const comparisons:Record<string,string>={higher:'实测规格提升',lower:'实测规格较低',same_spec:'实测规格相同',incomparable:'时长或轨道不同，保留原副本',unknown:'无法证明可比较',new_resource:'补全原来缺失的资源'};
-const reasons:Record<string,string>={content_edited_requires_decision:'来源正文已编辑；此候选属于新的正文版本，旧版本及其资源仍可查看。',revision_changed:'正文版本已改变，请刷新后查看当前候选。',selection_changed:'原资源选择已改变，此次比较已失效。',comparison_scope_changed:'资源、配置或获取身份已改变，请重新获取候选后比较。',permission_denied:'内容访问受限，原资源已保留。',auth_required:'本次获取需要重新验证身份，原资源已保留。',capability_lost:'当前来源无法满足资源或质量条件，原资源已保留。',source_unavailable:'来源暂不可用，原资源已保留。',transient_network:'本次网络获取失败，原资源已保留。',storage_full:'空间不足，本次获取未完成，原资源已保留。',user_cancelled:'已取消本次获取或确认，原资源保持不变。',work_cancelled:'工作已取消，旧确认不能继续执行。'};
-const roles:Record<string,string>={video:'视频',audio:'音轨',video_segment:'视频分段',image:'图片',cover:'封面',music:'配乐',motion:'实况片段',subtitle:'字幕'};
-const label=(value:string)=>states.find(s=>s.value===value)?.label??'状态待确认';
-async function load(older=false){if(workspace.preview)return;const run=++generation;busy.value=true;error.value='';try{const page=await api.upgradeList({state:state.value??undefined,namespace:namespace.value??undefined,creator_id:creator.value??undefined,before:older?next.value:undefined});if(run!==generation||!alive)return;items.value=older?[...items.value,...page.items]:page.items;total.value=page.total;next.value=page.next_before??undefined;selected.value=selected.value.filter(id=>items.value.some(i=>i.candidate_id===id&&i.state==='pending'));}catch{if(run===generation)error.value='资源升级列表暂时无法读取，请检查后台连接后刷新。';}finally{if(run===generation)busy.value=false;}}
-async function moreResources(item:UpgradeCandidate){busy.value=true;error.value='';try{const page=await api.upgradeResources({candidate_id:item.candidate_id,after:item.resources_next});if(alive&&items.value.includes(item)){item.resources.push(...page.items);item.resources_next=page.next_after??undefined;}}catch{error.value='更多资源比较暂时无法读取，请重试。';}finally{busy.value=false;}}
-function select(id:string,checked:boolean){selected.value=checked?[...new Set([...selected.value,id])]:selected.value.filter(v=>v!==id);}
-async function decide(action:UpgradeAction,one?:UpgradeCandidate){const chosen=one?[one]:items.value.filter(i=>selected.value.includes(i.candidate_id));if(workspace.preview||!chosen.length||chosen.length>50)return;busy.value=true;error.value='';try{await api.upgradeDecide(chosen.map(i=>({candidate_id:i.candidate_id,decision:action,expected:i.expected})));selected.value=[];await load();}catch{error.value='比较已发生变化，或后台未能完成操作。旧资源已保留，请刷新比较后再决定。';}finally{busy.value=false;}}
-watch([state,namespace,creator],()=>{selected.value=[];void load();});onMounted(async()=>{void load();if(!workspace.preview)try{const page=await api.creatorList();if(alive)creators.value=page.items;}catch{/* Filtering by site remains available. */}});onBeforeUnmount(()=>{alive=false;generation++;});
+import { ref, watch, onMounted, onBeforeUnmount } from "vue";
+import { NButton, NSelect, NCheckbox, NAlert, NEmpty, NSpin } from "naive-ui";
+import { api, type UpgradeCandidate, type UpgradeAction, type CreatorDto } from "../lib/api";
+import { authLabel, actualSpec } from "../lib/acquisition";
+import { formatTime, formatBytes } from "../lib/format";
+import { useWorkspaceStore } from "../stores/workspace";
+const workspace = useWorkspaceStore();
+const items = ref<UpgradeCandidate[]>([]),
+  creators = ref<CreatorDto[]>([]),
+  selected = ref<string[]>([]);
+const state = ref<string | null>("pending"),
+  namespace = ref<string | null>(null),
+  creator = ref<string | null>(null);
+const busy = ref(false),
+  error = ref(""),
+  next = ref<number>(),
+  total = ref(0);
+let generation = 0,
+  alive = true;
+const states = [
+  { label: "待确认", value: "pending" },
+  { label: "获取中", value: "collecting" },
+  { label: "已接受", value: "accepted" },
+  { label: "已拒绝", value: "rejected" },
+  { label: "保留两份", value: "kept" },
+  { label: "无提升", value: "no_improvement" },
+  { label: "获取失败", value: "failed" },
+  { label: "比较已失效", value: "stale" },
+  { label: "已取消", value: "cancelled" },
+];
+const comparisons: Record<string, string> = {
+  higher: "实测规格提升",
+  lower: "实测规格较低",
+  same_spec: "实测规格相同",
+  incomparable: "时长或轨道不同，保留原副本",
+  unknown: "无法证明可比较",
+  new_resource: "补全原来缺失的资源",
+};
+const reasons: Record<string, string> = {
+  content_edited_requires_decision:
+    "来源正文已编辑；此候选属于新的正文版本，旧版本及其资源仍可查看。",
+  revision_changed: "正文版本已改变，请刷新后查看当前候选。",
+  selection_changed: "原资源选择已改变，此次比较已失效。",
+  comparison_scope_changed: "资源、配置或获取身份已改变，请重新获取候选后比较。",
+  permission_denied: "内容访问受限，原资源已保留。",
+  auth_required: "本次获取需要重新验证身份，原资源已保留。",
+  capability_lost: "当前来源无法满足资源或质量条件，原资源已保留。",
+  source_unavailable: "来源暂不可用，原资源已保留。",
+  transient_network: "本次网络获取失败，原资源已保留。",
+  storage_full: "空间不足，本次获取未完成，原资源已保留。",
+  user_cancelled: "已取消本次获取或确认，原资源保持不变。",
+  work_cancelled: "工作已取消，旧确认不能继续执行。",
+};
+const roles: Record<string, string> = {
+  video: "视频",
+  audio: "音轨",
+  video_segment: "视频分段",
+  image: "图片",
+  cover: "封面",
+  music: "配乐",
+  motion: "实况片段",
+  subtitle: "字幕",
+};
+const label = (value: string) => states.find((s) => s.value === value)?.label ?? "状态待确认";
+async function load(older = false) {
+  if (workspace.preview) return;
+  const run = ++generation;
+  busy.value = true;
+  error.value = "";
+  try {
+    const page = await api.upgradeList({
+      state: state.value ?? undefined,
+      namespace: namespace.value ?? undefined,
+      creator_id: creator.value ?? undefined,
+      before: older ? next.value : undefined,
+    });
+    if (run !== generation || !alive) return;
+    items.value = older ? [...items.value, ...page.items] : page.items;
+    total.value = page.total;
+    next.value = page.next_before ?? undefined;
+    selected.value = selected.value.filter((id) =>
+      items.value.some((i) => i.candidate_id === id && i.state === "pending"),
+    );
+  } catch {
+    if (run === generation) error.value = "资源升级列表暂时无法读取，请检查后台连接后刷新。";
+  } finally {
+    if (run === generation) busy.value = false;
+  }
+}
+async function moreResources(item: UpgradeCandidate) {
+  busy.value = true;
+  error.value = "";
+  try {
+    const page = await api.upgradeResources({
+      candidate_id: item.candidate_id,
+      after: item.resources_next,
+    });
+    if (alive && items.value.includes(item)) {
+      item.resources.push(...page.items);
+      item.resources_next = page.next_after ?? undefined;
+    }
+  } catch {
+    error.value = "更多资源比较暂时无法读取，请重试。";
+  } finally {
+    busy.value = false;
+  }
+}
+function select(id: string, checked: boolean) {
+  selected.value = checked
+    ? [...new Set([...selected.value, id])]
+    : selected.value.filter((v) => v !== id);
+}
+async function decide(action: UpgradeAction, one?: UpgradeCandidate) {
+  const chosen = one ? [one] : items.value.filter((i) => selected.value.includes(i.candidate_id));
+  if (workspace.preview || !chosen.length || chosen.length > 50) return;
+  busy.value = true;
+  error.value = "";
+  try {
+    await api.upgradeDecide(
+      chosen.map((i) => ({ candidate_id: i.candidate_id, decision: action, expected: i.expected })),
+    );
+    selected.value = [];
+    await load();
+  } catch {
+    error.value = "比较已发生变化，或后台未能完成操作。旧资源已保留，请刷新比较后再决定。";
+  } finally {
+    busy.value = false;
+  }
+}
+watch([state, namespace, creator], () => {
+  selected.value = [];
+  void load();
+});
+onMounted(async () => {
+  void load();
+  if (!workspace.preview)
+    try {
+      const page = await api.creatorList();
+      if (alive) creators.value = page.items;
+    } catch {
+      /* Filtering by site remains available. */
+    }
+});
+onBeforeUnmount(() => {
+  alive = false;
+  generation++;
+});
 </script>
-<template><main class="upgrades"><h1>资源升级</h1><p>登录验证后，后台会为普通资源获取当前身份可得的最高质量。完整候选在这里等候你的决定，原资源在确认前继续可用。</p><p>直播只保留当时的获取身份与实际规格，不补录历史，也不会出现在此队列。</p><n-alert v-if="workspace.preview" type="info">界面预览不读取或改动真实档案。</n-alert><div class="filters"><n-select v-model:value="state" :options="states" clearable placeholder="全部状态" aria-label="升级状态"/><n-select v-model:value="namespace" :options="[{label:'哔哩哔哩',value:'bilibili'},{label:'抖音',value:'douyin'}]" clearable placeholder="全部平台" aria-label="升级平台"/><n-select v-model:value="creator" :options="creators.map(c=>({label:c.display_name,value:c.creator_id}))" clearable placeholder="全部创作者" aria-label="升级创作者"/><n-button :disabled="busy||workspace.preview" @click="load()">刷新比较</n-button></div><n-alert v-if="error" type="error" role="alert">{{error}}</n-alert><p>符合筛选 {{total}} 项 · 已选择 {{selected.length}} 项（最多 50 项）</p><div v-if="selected.length" class="actions" aria-label="已选候选操作"><n-button :disabled="busy||selected.length>50" @click="decide('accept')">接受所选升级</n-button><n-button :disabled="busy||selected.length>50" @click="decide('reject')">拒绝所选升级</n-button><n-button :disabled="busy||selected.length>50" @click="decide('keep_both')">所选保留两份</n-button></div><n-spin :show="busy"><n-empty v-if="!items.length" description="当前筛选下没有资源升级候选"/><article v-for="item in items" :key="item.candidate_id" class="candidate"><header><n-checkbox v-if="item.state==='pending'" :checked="selected.includes(item.candidate_id)" :disabled="busy" @update:checked="select(item.candidate_id,$event)">选择此候选</n-checkbox><h2>{{item.title}}</h2><span>{{label(item.state)}} · {{authLabel(item.auth_state)}} · {{item.complete?'必要资源已齐全':'尚未取得完整资源'}}</span><router-link :to="{path:'/',query:{entry:item.entry_id}}">在档案中查看</router-link></header><p v-if="reasons[item.reason]">{{reasons[item.reason]}}</p><p>本次获取 {{formatTime(item.acquired_at)}}<span v-if="item.state==='no_improvement'"> · 未发现可证明的质量提升，原选择保持不变。</span></p><div class="comparison"><table><thead><tr><th>资源</th><th>当前保存</th><th>新候选</th></tr></thead><tbody><tr v-for="resource in item.resources" :key="resource.media_id"><td>{{roles[resource.role]??'附属资源'}} · {{resource.required?'必要':'附属'}}</td><td>{{authLabel(resource.old.auth_state)}}<br/>{{actualSpec(resource.old.spec)}}<br/>{{formatBytes(resource.old.bytes)}} · {{formatTime(resource.old.saved_at)}}<span v-if="resource.old.pinned"><br/>已固定保留</span></td><td>{{authLabel(item.auth_state)}} · {{comparisons[resource.comparison??'unknown']??comparisons.unknown}}<br/>{{actualSpec(resource.new.spec)}}<br/>{{formatBytes(resource.new.bytes)}} · {{formatTime(resource.new.saved_at)}}</td></tr></tbody></table></div><n-button v-if="item.resources_next" :disabled="busy" @click="moreResources(item)">加载更多资源比较（{{item.resources.length}} / {{item.resource_count}}）</n-button><p>接受后使用新候选。可比较的旧副本在等待期后才可回收；固定、共享或不可比较的资源继续保留。保留两份会固定新旧副本。</p><div v-if="item.state==='pending'" class="actions"><n-button type="primary" :disabled="busy||!item.complete" @click="decide('accept',item)">接受升级</n-button><n-button :disabled="busy" @click="decide('reject',item)">拒绝</n-button><n-button :disabled="busy||!item.complete" @click="decide('keep_both',item)">保留两份</n-button></div></article></n-spin><n-button v-if="next!==undefined" :disabled="busy" @click="load(true)">加载更多候选</n-button></main></template>
-<style scoped>.upgrades{padding:28px;max-width:1400px;margin:auto;color:#233857}.upgrades>p{color:#62748e;line-height:1.7}.filters{display:flex;gap:12px;margin:22px 0;flex-wrap:wrap}.filters>.n-select{width:180px}.candidate{background:#fff;border:1px solid #e6eefb;border-radius:9px;padding:22px;margin:18px 0}header{display:flex;gap:16px;align-items:center;flex-wrap:wrap}h2{font-size:18px;margin:0}header a{margin-left:auto;color:#3979ff}.comparison{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:14px;border-bottom:1px solid #e6eefb;line-height:1.8}th{background:#f6f9ff}.actions{display:flex;gap:10px;flex-wrap:wrap}.candidate>p{font-size:12px;color:#62748e;line-height:1.7}@media(max-width:760px){.upgrades{padding:14px}.candidate{padding:12px}th,td{padding:8px;min-width:180px}th:first-child,td:first-child{min-width:80px}}</style>
+<template>
+  <main class="upgrades">
+    <h1>资源升级</h1>
+    <p>
+      登录验证后，后台会为普通资源获取当前身份可得的最高质量。完整候选在这里等候你的决定，原资源在确认前继续可用。
+    </p>
+    <p>直播只保留当时的获取身份与实际规格，不补录历史，也不会出现在此队列。</p>
+    <p>
+      <router-link to="/management?tab=quality">质量状态筛选、固定保留与不可比较项</router-link>
+    </p>
+    <n-alert v-if="workspace.preview" type="info">界面预览不读取或改动真实档案。</n-alert>
+    <div class="filters">
+      <n-select
+        v-model:value="state"
+        :options="states"
+        clearable
+        placeholder="全部状态"
+        aria-label="升级状态"
+      /><n-select
+        v-model:value="namespace"
+        :options="[
+          { label: '哔哩哔哩', value: 'bilibili' },
+          { label: '抖音', value: 'douyin' },
+        ]"
+        clearable
+        placeholder="全部平台"
+        aria-label="升级平台"
+      /><n-select
+        v-model:value="creator"
+        :options="creators.map((c) => ({ label: c.display_name, value: c.creator_id }))"
+        clearable
+        placeholder="全部创作者"
+        aria-label="升级创作者"
+      /><n-button :disabled="busy || workspace.preview" @click="load()">刷新比较</n-button>
+    </div>
+    <n-alert v-if="error" type="error" role="alert">{{ error }}</n-alert>
+    <p>符合筛选 {{ total }} 项 · 已选择 {{ selected.length }} 项（最多 50 项）</p>
+    <div v-if="selected.length" class="actions" aria-label="已选候选操作">
+      <n-button :disabled="busy || selected.length > 50" @click="decide('accept')"
+        >接受所选升级</n-button
+      ><n-button :disabled="busy || selected.length > 50" @click="decide('reject')"
+        >拒绝所选升级</n-button
+      ><n-button :disabled="busy || selected.length > 50" @click="decide('keep_both')"
+        >所选保留两份</n-button
+      >
+    </div>
+    <n-spin :show="busy"
+      ><n-empty v-if="!items.length" description="当前筛选下没有资源升级候选" />
+      <article v-for="item in items" :key="item.candidate_id" class="candidate">
+        <header>
+          <n-checkbox
+            v-if="item.state === 'pending'"
+            :checked="selected.includes(item.candidate_id)"
+            :disabled="busy"
+            @update:checked="select(item.candidate_id, $event)"
+            >选择此候选</n-checkbox
+          >
+          <h2>{{ item.title }}</h2>
+          <span
+            >{{ label(item.state) }} · {{ authLabel(item.auth_state) }} ·
+            {{ item.complete ? "必要资源已齐全" : "尚未取得完整资源" }}</span
+          ><router-link :to="{ path: '/', query: { entry: item.entry_id } }"
+            >在档案中查看</router-link
+          >
+        </header>
+        <p v-if="reasons[item.reason]">{{ reasons[item.reason] }}</p>
+        <p>
+          本次获取 {{ formatTime(item.acquired_at)
+          }}<span v-if="item.state === 'no_improvement'">
+            · 未发现可证明的质量提升，原选择保持不变。</span
+          >
+        </p>
+        <div class="comparison">
+          <table>
+            <thead>
+              <tr>
+                <th>资源</th>
+                <th>当前保存</th>
+                <th>新候选</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="resource in item.resources" :key="resource.media_id">
+                <td>
+                  {{ roles[resource.role] ?? "附属资源" }} ·
+                  {{ resource.required ? "必要" : "附属" }}
+                </td>
+                <td>
+                  {{ authLabel(resource.old.auth_state) }}<br />{{ actualSpec(resource.old.spec)
+                  }}<br />{{ formatBytes(resource.old.bytes) }} ·
+                  {{ formatTime(resource.old.saved_at)
+                  }}<span v-if="resource.old.pinned"><br />已固定保留</span>
+                </td>
+                <td>
+                  {{ authLabel(item.auth_state) }} ·
+                  {{ comparisons[resource.comparison ?? "unknown"] ?? comparisons.unknown }}<br />{{
+                    actualSpec(resource.new.spec)
+                  }}<br />{{ formatBytes(resource.new.bytes) }} ·
+                  {{ formatTime(resource.new.saved_at) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <n-button v-if="item.resources_next" :disabled="busy" @click="moreResources(item)"
+          >加载更多资源比较（{{ item.resources.length }} / {{ item.resource_count }}）</n-button
+        >
+        <p>
+          接受后使用新候选。可比较的旧副本在等待期后才可回收；固定、共享或不可比较的资源继续保留。保留两份会固定新旧副本。
+        </p>
+        <div v-if="item.state === 'pending'" class="actions">
+          <n-button
+            type="primary"
+            :disabled="busy || !item.complete"
+            @click="decide('accept', item)"
+            >接受升级</n-button
+          ><n-button :disabled="busy" @click="decide('reject', item)">拒绝</n-button
+          ><n-button :disabled="busy || !item.complete" @click="decide('keep_both', item)"
+            >保留两份</n-button
+          >
+        </div>
+      </article></n-spin
+    ><n-button v-if="next !== undefined" :disabled="busy" @click="load(true)"
+      >加载更多候选</n-button
+    >
+  </main>
+</template>
+<style scoped>
+.upgrades {
+  padding: 28px;
+  max-width: 1400px;
+  margin: auto;
+  color: #233857;
+}
+.upgrades > p {
+  color: #62748e;
+  line-height: 1.7;
+}
+.filters {
+  display: flex;
+  gap: 12px;
+  margin: 22px 0;
+  flex-wrap: wrap;
+}
+.filters > .n-select {
+  width: 180px;
+}
+.candidate {
+  background: #fff;
+  border: 1px solid #e6eefb;
+  border-radius: 9px;
+  padding: 22px;
+  margin: 18px 0;
+}
+header {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+h2 {
+  font-size: 1.125rem;
+  margin: 0;
+}
+header a {
+  margin-left: auto;
+  color: #3979ff;
+}
+.comparison {
+  overflow: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+th,
+td {
+  text-align: left;
+  padding: 14px;
+  border-bottom: 1px solid #e6eefb;
+  line-height: 1.8;
+}
+th {
+  background: #f6f9ff;
+}
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.candidate > p {
+  font-size: 0.75rem;
+  color: #62748e;
+  line-height: 1.7;
+}
+@media (max-width: 760px) {
+  .upgrades {
+    padding: 14px;
+  }
+  .candidate {
+    padding: 12px;
+  }
+  th,
+  td {
+    padding: 8px;
+    min-width: 180px;
+  }
+  th:first-child,
+  td:first-child {
+    min-width: 80px;
+  }
+}
+</style>

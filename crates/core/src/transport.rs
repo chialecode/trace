@@ -1,29 +1,23 @@
-//! 受限 HTTP 传输：元数据代理与媒体下载（m1a-runtime-contracts §3）。
+//! 受限 HTTP 传输：元数据代理与媒体下载（windows-runtime-contracts §3）。
 //!
 //! 校验顺序：scheme → 主机白名单 → 每跳重定向 → 解析地址非私网；
 //! Cookie 只随授权域请求发送，跨域重定向显式剥离敏感头并受
 //! 白名单拦截；媒体下载带进度检查点与取消，不设大文件总时限。
 
-use crate::config::Profile;
 use crate::error::CoreError;
+use crate::network::{Proxy, Route};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use std::net::{IpAddr, ToSocketAddrs};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-/// 平台网络范围（保守内置清单；profile.extra_media_hosts 可显式扩展）。
-#[derive(Clone)]
-pub struct HostRules {
-    /// 元数据 API 域（允许携带 Cookie）。
-    pub api_hosts: Vec<String>,
-    /// 媒体/资源域（禁止 Cookie）。
-    pub media_hosts: Vec<String>,
-    /// 可选公共头白名单。
-    pub allowed_headers: Vec<String>,
-    /// 显式测试宿主（profile 文件配置）：允许 http/回环，仅离线 e2e。
-    pub test_allowed: Vec<String>,
-}
+mod rules;
+#[cfg(test)]
+use rules::validate_url;
+use rules::validate_url_for;
+pub use rules::{
+    HostRules, assert_public_host, host_matches, host_rules, is_forbidden_ip, platform_rules,
+};
 
 /// 媒体分块接收回调：(累计偏移, 本块字节)。
 pub type ChunkWriter<'a> = (
@@ -32,165 +26,66 @@ pub type ChunkWriter<'a> = (
     &'a trace_domain::ids::OperationId,
 );
 
-pub fn host_rules(profile: &Profile) -> HostRules {
-    let mut media = vec![
-        "bilivideo.com".to_owned(),
-        "hdslb.com".to_owned(),
-        "akamaized.net".to_owned(),
-        "douyinvod.com".into(),
-        "douyinpic.com".into(),
-        "byteimg.com".into(),
-        "pstatp.com".into(),
-        "amemv.com".into(),
-        "douyincdn.com".into(),
-        "bilivideo.cn".into(),
-        "bytefcdnrd.com".into(),
-        "douyinliving.com".into(),
-        "v.douyin.com".into(),
-        "b23.tv".into(),
-        "live.bilibili.com".into(),
-        "www.iesdouyin.com".into(),
-    ];
-    media.extend(profile.extra_media_hosts.iter().cloned());
-    #[cfg(debug_assertions)]
-    let test_allowed: Vec<String> = profile.test_allowed_hosts.to_vec();
-    #[cfg(not(debug_assertions))]
-    let test_allowed: Vec<String> = Vec::new();
-    HostRules {
-        api_hosts: vec![
-            "api.bilibili.com".into(),
-            "www.bilibili.com".into(),
-            "api.live.bilibili.com".into(),
-            "www.douyin.com".into(),
-            "live.douyin.com".into(),
-            "webcast.amemv.com".into(),
-        ]
-        .into_iter()
-        .collect(),
-        media_hosts: media,
-        allowed_headers: vec!["referer".into(), "user-agent".into()],
-        test_allowed,
-    }
-}
-
-pub fn host_matches(host: &str, rules: &[String]) -> bool {
-    let host = host.trim_end_matches('.');
-    let host = host.to_ascii_lowercase();
-    rules
-        .iter()
-        .any(|r| host == *r || host.ends_with(&format!(".{r}")))
-}
-
-pub fn platform_rules(rules: &HostRules, platform: &str) -> HostRules {
-    let mut scoped = rules.clone();
-    scoped.api_hosts.retain(|h| match platform {
-        "bilibili" => h.ends_with("bilibili.com"),
-        "douyin" => h.ends_with("douyin.com") || h == "webcast.amemv.com",
-        _ => false,
-    });
-    scoped.media_hosts.retain(|h| match platform {
-        "bilibili" => !matches!(
-            h.as_str(),
-            "douyinvod.com"
-                | "douyinpic.com"
-                | "byteimg.com"
-                | "pstatp.com"
-                | "amemv.com"
-                | "douyincdn.com"
-                | "douyinliving.com"
-                | "v.douyin.com"
-                | "www.iesdouyin.com"
-        ),
-        "douyin" => !matches!(
-            h.as_str(),
-            "bilivideo.com"
-                | "bilivideo.cn"
-                | "hdslb.com"
-                | "akamaized.net"
-                | "bytefcdnrd.com"
-                | "b23.tv"
-                | "live.bilibili.com"
-        ),
-        _ => false,
-    });
-    scoped
-}
-
-/// 拒绝 localhost/私网/链路本地/组播地址（C22）。
-pub fn assert_public_host(host: &str, port: u16) -> Result<(), CoreError> {
-    let addrs: Vec<IpAddr> = (host, port)
-        .to_socket_addrs()
-        .map_err(|e| CoreError::Network(format!("dns resolve failed: {e}")))?
-        .map(|a| a.ip())
-        .collect();
-    if addrs.is_empty() {
-        return Err(CoreError::Network("dns resolved no addresses".into()));
-    }
-    for ip in addrs {
-        if is_forbidden_ip(&ip) {
-            return Err(CoreError::Network(format!("forbidden address class {ip}")));
-        }
-    }
-    Ok(())
-}
-
-pub fn is_forbidden_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-                || v4.is_unspecified()
-                || v4.is_documentation()
-        }
-        IpAddr::V6(v6) => {
-            v6.to_ipv4_mapped().is_some_and(|ip| is_forbidden_ip(&IpAddr::V4(ip)))
-                || v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || (v6.segments()[0] & 0xfe00) == 0xfc00 // unique local
-                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link local
-        }
-    }
-}
-
-/// URL 校验：scheme → 白名单 → 地址类别。`test_allowed` 为 profile 文件
-/// 显式配置的测试宿主（不随产品配置进入运行路径）：允许 http 与回环地址，
-/// 供离线 e2e 本地服务器使用。
-fn validate_url(raw: &str, rules: &HostRules) -> Result<Url, CoreError> {
-    let url = Url::parse(raw).map_err(|_| CoreError::InvalidInput("bad url".into()))?;
-    let host = url
-        .host_str()
-        .ok_or_else(|| CoreError::InvalidInput("no host".into()))?;
-    if host_matches(host, &rules.test_allowed) {
-        if url.scheme() != "https" && url.scheme() != "http" {
-            return Err(CoreError::Network(format!(
-                "scheme {} rejected",
-                url.scheme()
-            )));
-        }
-        return Ok(url);
-    }
-    if url.scheme() != "https" {
-        return Err(CoreError::Network(format!(
-            "scheme {} rejected",
-            url.scheme()
-        )));
-    }
-    let port = url.port_or_known_default().unwrap_or(443);
-    if !host_matches(host, &rules.api_hosts) && !host_matches(host, &rules.media_hosts) {
-        return Err(CoreError::Network(format!("host {host} not allowed")));
-    }
-    assert_public_host(host, port)?;
-    Ok(url)
-}
-
 pub struct ConstrainedClient {
     budget: Option<std::sync::Arc<crate::request_budget::RequestBudget>>,
+    network: std::sync::Arc<crate::network::NetworkState>,
     #[cfg(test)]
     routes: std::sync::RwLock<std::collections::HashMap<String, Url>>,
+}
+
+/// One proxied metadata request.
+#[derive(Clone, Copy)]
+pub struct MetadataRequest<'a> {
+    pub method: &'a str,
+    pub url: &'a str,
+    pub headers: Option<&'a serde_json::Value>,
+    pub cookie: Option<&'a str>,
+    /// Query text of a POST; absent for every other method.
+    pub body: Option<&'a str>,
+    pub max_bytes: u32,
+    /// Opaque Core execution identity; never a URL, query or credential.
+    pub evidence_id: Option<&'a str>,
+}
+
+/// A body is only for a POST to one of the site's API hosts, within the size limit, and says
+/// what it is: a form or a JSON document.
+fn checked_body(
+    rules: &HostRules,
+    method: &str,
+    url: &Url,
+    headers: &HeaderMap,
+    body: Option<&str>,
+) -> Result<Option<Vec<u8>>, CoreError> {
+    let post = method.eq_ignore_ascii_case("POST");
+    let Some(body) = body else {
+        return if post {
+            Err(CoreError::InvalidInput("POST needs a query body".into()))
+        } else {
+            Ok(None)
+        };
+    };
+    let host = url.host_str().unwrap_or_default();
+    let kind = headers
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        });
+    if !post
+        || body.len() > trace_contracts::plugin::PROXY_BODY_MAX
+        || !(host_matches(host, &rules.api_hosts) || host_matches(host, &rules.test_allowed))
+        || !matches!(
+            kind.as_deref(),
+            Some("application/x-www-form-urlencoded" | "application/json")
+        )
+    {
+        return Err(CoreError::InvalidInput("request body not allowed".into()));
+    }
+    Ok(Some(body.as_bytes().to_vec()))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -201,12 +96,15 @@ pub struct FetchOutcome {
     pub body: Vec<u8>,
     pub etag: Option<String>,
     pub content_length: Option<i64>,
+    /// What the response asked to be remembered as the site's session.
+    pub set_cookies: crate::session_jar::SetCookies,
 }
 
 impl ConstrainedClient {
     pub fn build() -> Result<Self, CoreError> {
         Ok(Self {
             budget: None,
+            network: std::sync::Arc::new(crate::network::NetworkState::direct_only()),
             #[cfg(test)]
             routes: Default::default(),
         })
@@ -219,12 +117,55 @@ impl ConstrainedClient {
         self.budget = Some(budget);
         self
     }
+    /// 使用 Core 的网络设置选择每个站点的路线（直连或代理）。
+    pub fn with_network(mut self, network: std::sync::Arc<crate::network::NetworkState>) -> Self {
+        self.network = network;
+        self
+    }
+
+    fn route(&self, rules: &HostRules) -> Route {
+        rules
+            .site
+            .as_deref()
+            .map(|site| self.network.route_for(site))
+            .unwrap_or_default()
+    }
+
     pub fn budget_snapshot(&self) -> Option<serde_json::Value> {
         self.budget.as_ref().map(|b| b.snapshot())
     }
+    /// Counts requests an external tool makes on Core's behalf against a bounded run, so its
+    /// budget covers them too. Without a budget this costs nothing.
+    pub async fn charge_external(
+        &self,
+        url: &str,
+        requests: usize,
+        metadata: bool,
+        evidence_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        let Some(budget) = &self.budget else {
+            return Ok(());
+        };
+        let url = Url::parse(url).map_err(|_| CoreError::InvalidInput("tool request".into()))?;
+        for _ in 0..requests {
+            let index = budget
+                .begin_kind_with_evidence(&reqwest::Method::GET, &url, metadata, evidence_id)
+                .await?;
+            budget.response(index, Some(200));
+        }
+        Ok(())
+    }
     pub fn received_media(&self, bytes: usize) -> Result<(), CoreError> {
+        self.received_media_for(bytes, None)
+    }
+
+    pub fn received_media_for(
+        &self,
+        bytes: usize,
+        evidence_id: Option<&str>,
+    ) -> Result<(), CoreError> {
         if let Some(b) = &self.budget {
-            b.received_media(bytes)?;
+            b.received_media_for(bytes, evidence_id)?;
         }
         Ok(())
     }
@@ -245,7 +186,7 @@ impl ConstrainedClient {
         public: &serde_json::Value,
         range: Option<(u64, u64)>,
     ) -> Result<reqwest::Response, CoreError> {
-        let url = validate_url(raw, rules)?;
+        let url = validate_url_for(raw, rules, self.route(rules) == Route::Direct)?;
         let mut headers = self.build_headers(rules, Some(public), None, &url)?;
         if let Some((start, length)) = range {
             let end = start
@@ -260,7 +201,7 @@ impl ConstrainedClient {
             );
         }
         let response = self
-            .request(rules, reqwest::Method::GET, url, headers, false)
+            .request(rules, reqwest::Method::GET, url, headers, false, None, None)
             .await?;
         if let Some((start, length)) = range {
             let expected = format!("bytes {start}-{}/", start + length - 1);
@@ -315,6 +256,7 @@ impl ConstrainedClient {
         Ok((out, final_url))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn request(
         &self,
         rules: &HostRules,
@@ -322,10 +264,13 @@ impl ConstrainedClient {
         url: Url,
         headers: HeaderMap,
         metadata: bool,
+        body: Option<Vec<u8>>,
+        evidence_id: Option<&str>,
     ) -> Result<reqwest::Response, CoreError> {
         let mut current = url;
         let mut headers = headers;
         let mut method = method;
+        let route = self.route(rules);
         for hop in 0..=5 {
             #[cfg(test)]
             if let Some(mut local) = self
@@ -343,30 +288,39 @@ impl ConstrainedClient {
             }
             let current_rules = rules.clone();
             let raw = current.to_string();
-            tokio::task::spawn_blocking(move || validate_url(&raw, &current_rules))
+            let direct = route == Route::Direct;
+            tokio::task::spawn_blocking(move || validate_url_for(&raw, &current_rules, direct))
                 .await
                 .map_err(|_| CoreError::Network("validation failed".into()))??;
             let host = current
                 .host_str()
                 .ok_or_else(|| CoreError::InvalidInput("host".into()))?;
-            let addresses: Vec<_> =
-                tokio::net::lookup_host((host, current.port_or_known_default().unwrap_or(443)))
+            let builder = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(10))
+                .read_timeout(Duration::from_secs(60));
+            let mut builder = match &route {
+                Route::Direct => {
+                    let addresses: Vec<_> = tokio::net::lookup_host((
+                        host,
+                        current.port_or_known_default().unwrap_or(443),
+                    ))
                     .await
                     .map_err(|_| CoreError::Network("DNS failed".into()))?
                     .collect();
-            if addresses.is_empty()
-                || (!host_matches(host, &rules.test_allowed)
-                    && addresses.iter().any(|a| is_forbidden_ip(&a.ip())))
-            {
-                return Err(CoreError::Network("forbidden resolved address".into()));
-            }
-            // Pin the same checked DNS answers used to connect, preventing a second unchecked resolution.
-            let mut builder = reqwest::Client::builder()
-                .no_proxy()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(Duration::from_secs(10))
-                .read_timeout(Duration::from_secs(60))
-                .resolve_to_addrs(host, &addresses);
+                    if addresses.is_empty()
+                        || (!host_matches(host, &rules.test_allowed)
+                            && addresses.iter().any(|a| is_forbidden_ip(&a.ip())))
+                    {
+                        return Err(CoreError::Network("forbidden resolved address".into()));
+                    }
+                    // Pin the same checked DNS answers used to connect, preventing a second unchecked resolution.
+                    builder.no_proxy().resolve_to_addrs(host, &addresses)
+                }
+                // The proxy resolves the name; the target was checked against the site's
+                // declared domains above and a literal address is never accepted.
+                Route::Proxy(proxy) => builder.proxy(proxy_for_client(proxy)?),
+            };
             if metadata {
                 builder = builder.timeout(Duration::from_secs(30));
             }
@@ -374,24 +328,38 @@ impl ConstrainedClient {
                 .build()
                 .map_err(|_| CoreError::Network("client build failed".into()))?;
             let attempt = if let Some(budget) = &self.budget {
-                Some(budget.begin_kind(&method, &current, metadata).await?)
+                Some(
+                    budget
+                        .begin_kind_with_evidence(&method, &current, metadata, evidence_id)
+                        .await?,
+                )
             } else {
                 None
             };
-            let response = client
+            let mut request = client
                 .request(method.clone(), current.clone())
-                .headers(headers.clone())
-                .send()
-                .await;
+                .headers(headers.clone());
+            if let Some(body) = &body {
+                request = request.body(body.clone());
+            }
+            let response = request.send().await;
             if let (Some(budget), Some(index)) = (&self.budget, attempt) {
                 budget.response(index, response.as_ref().ok().map(|r| r.status().as_u16()));
             }
-            let response = response.map_err(|e| CoreError::Network(sanitize_reqwest(&e)))?;
+            let response = response.map_err(|e| CoreError::Network(sanitize_via(&e, &route)))?;
+            if route != Route::Direct && response.status().as_u16() == 407 {
+                return Err(CoreError::Network("proxy authentication required".into()));
+            }
             if !response.status().is_redirection() {
                 return Ok(response);
             }
             if hop == 5 {
                 return Err(CoreError::Network("too many redirects".into()));
+            }
+            if body.is_some() {
+                return Err(CoreError::Network(
+                    "redirect on a request with a body".into(),
+                ));
             }
             let location = response
                 .headers()
@@ -446,9 +414,10 @@ impl ConstrainedClient {
             }
         }
         if let Some(c) = cookie {
-            // Cookie 只允许发送到 API 域（C22/C13）。
+            // Cookie 只允许发送到该站的 Cookie 域（C22/C13）。
             let host = url.host_str().unwrap_or_default();
-            if !host_matches(host, &rules.api_hosts) && !host_matches(host, &rules.test_allowed) {
+            if !host_matches(host, &rules.cookie_hosts) && !host_matches(host, &rules.test_allowed)
+            {
                 return Err(CoreError::Network("credential host not allowed".into()));
             }
             headers.insert(
@@ -456,6 +425,11 @@ impl ConstrainedClient {
                 HeaderValue::from_str(c)
                     .map_err(|_| CoreError::InvalidInput("cookie header".into()))?,
             );
+            // Anti-forgery headers some sites require are derived from the Cookie here, so the
+            // adapter never needs to see it.
+            for (name, value) in crate::site_context::session_headers(rules.site.as_deref(), c) {
+                headers.insert(name, value);
+            }
         }
         Ok(headers)
     }
@@ -470,11 +444,39 @@ impl ConstrainedClient {
         cookie: Option<&str>,
         max_bytes: u32,
     ) -> Result<FetchOutcome, CoreError> {
+        let request = MetadataRequest {
+            method,
+            url,
+            headers: extra_public,
+            cookie,
+            body: None,
+            max_bytes,
+            evidence_id: None,
+        };
+        self.fetch_query(rules, &request).await
+    }
+
+    /// A metadata request that may carry a read-only query body (POST to an API host).
+    pub async fn fetch_query(
+        &self,
+        rules: &HostRules,
+        request: &MetadataRequest<'_>,
+    ) -> Result<FetchOutcome, CoreError> {
+        let MetadataRequest {
+            method,
+            url,
+            headers: extra_public,
+            cookie,
+            body,
+            max_bytes,
+            evidence_id,
+        } = *request;
         if max_bytes == 0 || max_bytes > trace_contracts::plugin_chunks::METADATA_MAX {
             return Err(CoreError::InvalidInput("metadata body budget".into()));
         }
-        let mut parsed = validate_url(url, rules)?;
+        let mut parsed = validate_url_for(url, rules, self.route(rules) == Route::Direct)?;
         let mut headers = self.build_headers(rules, extra_public, cookie, &parsed)?;
+        let body = checked_body(rules, method, &parsed, &headers, body)?;
         crate::site_context::decorate(
             &mut parsed,
             method,
@@ -488,7 +490,9 @@ impl ConstrainedClient {
             "POST" => reqwest::Method::POST,
             _ => return Err(CoreError::InvalidInput("method".into())),
         };
-        let resp = self.request(rules, m, parsed, headers, true).await?;
+        let resp = self
+            .request(rules, m, parsed, headers, true, body, evidence_id)
+            .await?;
         let status = resp.status().as_u16();
         let etag = resp
             .headers()
@@ -496,6 +500,14 @@ impl ConstrainedClient {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
         let content_length = resp.content_length().map(|l| l as i64);
+        let set_cookies = crate::session_jar::SetCookies(
+            resp.headers()
+                .get_all(reqwest::header::SET_COOKIE)
+                .iter()
+                .take(crate::session_jar::SET_COOKIES_MAX)
+                .filter_map(|v| v.to_str().ok().map(str::to_owned))
+                .collect(),
+        );
         if !resp.status().is_success() {
             // 不回显响应体；仅状态与最终主机（C26/C13）。
             let host = resp.url().host_str().unwrap_or_default().to_string();
@@ -535,6 +547,7 @@ impl ConstrainedClient {
             body,
             etag,
             content_length,
+            set_cookies,
         })
     }
 
@@ -552,6 +565,34 @@ impl ConstrainedClient {
         cancel: &CancellationToken,
         expect_content_length: Option<i64>,
     ) -> Result<(u64, Option<String>), CoreError> {
+        self.download_media_with(
+            rules,
+            (url, None),
+            extra_public,
+            (start_offset, resume_validator),
+            writer,
+            cancel,
+            expect_content_length,
+            None,
+        )
+        .await
+    }
+
+    /// The same download, carrying a Cookie Core chose for this address: a site's own video
+    /// address that only answers the session that produced it. The Cookie is attached only if
+    /// the address is on the site's Cookie domain, and never follows a redirect elsewhere.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn download_media_with(
+        &self,
+        rules: &HostRules,
+        (url, cookie): (&str, Option<&str>),
+        extra_public: Option<&serde_json::Value>,
+        (start_offset, resume_validator): (u64, Option<&str>),
+        writer: ChunkWriter<'_>,
+        cancel: &CancellationToken,
+        expect_content_length: Option<i64>,
+        evidence_id: Option<&str>,
+    ) -> Result<(u64, Option<String>), CoreError> {
         let expected_total = expect_content_length
             .map(|n| {
                 u64::try_from(n).map_err(|_| CoreError::InvalidInput("negative media size".into()))
@@ -565,23 +606,15 @@ impl ConstrainedClient {
                 "resume requires a strong ETag".into(),
             ));
         }
-        let parsed = validate_url(url, rules)?;
-        let mut headers = self.build_headers(rules, extra_public, None, &parsed)?;
+        let parsed = validate_url_for(url, rules, self.route(rules) == Route::Direct)?;
+        let mut headers = self.build_headers(rules, extra_public, cookie, &parsed)?;
         if start_offset > 0
             && let Some(validator) = resume_validator
         {
-            headers.insert(
-                reqwest::header::RANGE,
-                HeaderValue::from_str(&format!("bytes={start_offset}-")).unwrap(),
-            );
-            headers.insert(
-                reqwest::header::IF_RANGE,
-                HeaderValue::from_str(validator)
-                    .map_err(|_| CoreError::InvalidInput("validator".into()))?,
-            );
+            resume_headers(&mut headers, start_offset, validator)?;
         }
         let resp = tokio::select! {
-            r = self.request(rules,reqwest::Method::GET,parsed,headers,false) => r?,
+            r = self.request(rules,reqwest::Method::GET,parsed,headers,false,None,evidence_id) => r?,
             _ = cancel.cancelled() => return Err(CoreError::Cancelled),
         };
         let status = resp.status().as_u16();
@@ -590,54 +623,12 @@ impl ConstrainedClient {
             .get(reqwest::header::ETAG)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        let mut required_total = expected_total.or(resp.content_length());
-        if start_offset > 0 && status == 200 {
-            return Err(CoreError::Network(
-                "range unsupported: server returned 200".into(),
-            ));
-        }
-        if start_offset > 0 && status == 206 {
-            // 校验 Content-Range 起点与身份（C28）。
-            let cr = resp
-                .headers()
-                .get(reqwest::header::CONTENT_RANGE)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default();
-            let range = cr
-                .strip_prefix("bytes ")
-                .and_then(|r| r.split_once('/'))
-                .and_then(|(span, total)| {
-                    span.split_once('-').map(|(start, end)| (start, end, total))
-                })
-                .and_then(|(start, end, total)| {
-                    Some((
-                        start.parse::<u64>().ok()?,
-                        end.parse::<u64>().ok()?,
-                        total.parse::<u64>().ok()?,
-                    ))
-                });
-            let Some((start, end, total)) = range else {
-                return Err(CoreError::Network("invalid content-range".into()));
-            };
-            if start != start_offset
-                || end < start
-                || end.checked_add(1) != Some(total)
-                || resp.content_length().is_some_and(|n| n != end - start + 1)
-                || expect_content_length.is_some_and(|n| n < 0 || n as u64 != total)
-            {
-                return Err(CoreError::Network("inconsistent content-range".into()));
-            }
-            if let Some(v) = resume_validator
-                && etag.as_deref() != Some(v)
-            {
-                return Err(CoreError::Network("object validator changed".into()));
-            }
-            required_total = Some(total);
-        } else if status == 206 {
-            return Err(CoreError::Network("unsolicited partial response".into()));
-        } else if status != 200 {
-            return Err(status_error(status));
-        }
+        let resume = Resume {
+            offset: start_offset,
+            validator: resume_validator,
+        };
+        let required_total =
+            required_length(&resp, &etag, &resume, expect_content_length, expected_total)?;
         if let (Some(exp), Some(actual)) = (expect_content_length, resp.content_length())
             && start_offset == 0
             && exp != actual as i64
@@ -649,15 +640,124 @@ impl ConstrainedClient {
         if stream_is_html(resp.headers()) {
             return Err(CoreError::InvalidInput("HTML is not media".into()));
         }
-        let mut offset = if status == 206 { start_offset } else { 0 };
-        let mut stream = resp;
+        let offset = if status == 206 { start_offset } else { 0 };
+        let received = self
+            .stream_body(resp, offset, required_total, writer, cancel, evidence_id)
+            .await?;
+        Ok((received, etag))
+    }
+
+    /// A media download in consecutive ranges of `chunk` bytes, for hosts that slow one long
+    /// request down but serve short ranged ones at full speed. The whole size is known up front
+    /// (`total`); every range must answer 206 for exactly the span asked, of an object of that
+    /// size, so the bytes written are the object's, in order.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn download_media_ranged(
+        &self,
+        rules: &HostRules,
+        url: &str,
+        extra_public: Option<&serde_json::Value>,
+        total: u64,
+        chunk: u64,
+        writer: ChunkWriter<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<u64, CoreError> {
+        self.download_media_ranged_with(
+            rules,
+            (url, None),
+            extra_public,
+            (total, chunk),
+            writer,
+            cancel,
+            None,
+        )
+        .await
+    }
+
+    /// The ranged download carrying a Cookie Core chose for this address; see
+    /// [`Self::download_media_with`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn download_media_ranged_with(
+        &self,
+        rules: &HostRules,
+        (url, cookie): (&str, Option<&str>),
+        extra_public: Option<&serde_json::Value>,
+        (total, chunk): (u64, u64),
+        writer: ChunkWriter<'_>,
+        cancel: &CancellationToken,
+        evidence_id: Option<&str>,
+    ) -> Result<u64, CoreError> {
+        if total == 0 || chunk == 0 {
+            return Err(CoreError::InvalidInput("empty media range".into()));
+        }
+        let (staged, db, op) = writer;
+        let mut offset = 0u64;
+        while offset < total {
+            let end = offset.saturating_add(chunk - 1).min(total - 1);
+            let parsed = validate_url_for(url, rules, self.route(rules) == Route::Direct)?;
+            let mut headers = self.build_headers(rules, extra_public, cookie, &parsed)?;
+            headers.insert(
+                reqwest::header::RANGE,
+                HeaderValue::from_str(&format!("bytes={offset}-{end}")).unwrap(),
+            );
+            let resp = tokio::select! {
+                r = self.request(rules, reqwest::Method::GET, parsed, headers, false, None, evidence_id) => r?,
+                _ = cancel.cancelled() => return Err(CoreError::Cancelled),
+            };
+            let status = resp.status().as_u16();
+            if status != 206 {
+                return Err(if status == 200 {
+                    CoreError::Network("range unsupported: server returned 200".into())
+                } else {
+                    status_error(status)
+                });
+            }
+            let span = resp
+                .headers()
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_content_range);
+            if span != Some((offset, end, total))
+                || resp.content_length().is_some_and(|n| n != end - offset + 1)
+            {
+                return Err(CoreError::Network("inconsistent content-range".into()));
+            }
+            if stream_is_html(resp.headers()) {
+                return Err(CoreError::InvalidInput("HTML is not media".into()));
+            }
+            let reached = self
+                .stream_body(
+                    resp,
+                    offset,
+                    Some(end + 1),
+                    (&mut *staged, db, op),
+                    cancel,
+                    evidence_id,
+                )
+                .await?;
+            offset = reached;
+        }
+        Ok(offset)
+    }
+
+    /// Writes the body to the writer until it ends, checking the declared length and
+    /// giving up when no bytes arrive for a minute.
+    async fn stream_body(
+        &self,
+        mut stream: reqwest::Response,
+        mut offset: u64,
+        required_total: Option<u64>,
+        writer: ChunkWriter<'_>,
+        cancel: &CancellationToken,
+        evidence_id: Option<&str>,
+    ) -> Result<u64, CoreError> {
         let mut last_progress = tokio::time::Instant::now();
         loop {
             tokio::select! {
                 chunk = stream.chunk() => {
                     match chunk {
                         Ok(Some(bytes)) => {
-                            self.received_media(bytes.len())?;
+                            self.received_media_for(bytes.len(), evidence_id)?;
                             let next = offset.checked_add(bytes.len() as u64)
                                 .ok_or_else(|| CoreError::Network("media length overflow".into()))?;
                             if required_total.is_some_and(|total| next > total) {
@@ -687,13 +787,92 @@ impl ConstrainedClient {
                 "media ended before declared length".into(),
             ));
         }
-        Ok((offset, etag))
+        Ok(offset)
     }
+}
+
+/// A resumed download: where it continues and the strong validator it must still match.
+struct Resume<'a> {
+    offset: u64,
+    validator: Option<&'a str>,
+}
+
+fn resume_headers(headers: &mut HeaderMap, offset: u64, validator: &str) -> Result<(), CoreError> {
+    headers.insert(
+        reqwest::header::RANGE,
+        HeaderValue::from_str(&format!("bytes={offset}-")).unwrap(),
+    );
+    headers.insert(
+        reqwest::header::IF_RANGE,
+        HeaderValue::from_str(validator)
+            .map_err(|_| CoreError::InvalidInput("validator".into()))?,
+    );
+    Ok(())
+}
+
+/// `bytes start-end/total` of a 206 response.
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let (span, total) = value.strip_prefix("bytes ")?.split_once('/')?;
+    let (start, end) = span.split_once('-')?;
+    Some((start.parse().ok()?, end.parse().ok()?, total.parse().ok()?))
+}
+
+/// The total size the body must reach, after checking the status fits the request: a
+/// resumed download needs a consistent 206, a fresh one a 200 (C28).
+fn required_length(
+    resp: &reqwest::Response,
+    etag: &Option<String>,
+    resume: &Resume<'_>,
+    expect_content_length: Option<i64>,
+    expected_total: Option<u64>,
+) -> Result<Option<u64>, CoreError> {
+    let status = resp.status().as_u16();
+    let required_total = expected_total.or(resp.content_length());
+    if resume.offset > 0 && status == 200 {
+        return Err(CoreError::Network(
+            "range unsupported: server returned 200".into(),
+        ));
+    }
+    if resume.offset > 0 && status == 206 {
+        // 校验 Content-Range 起点与身份。
+        let cr = resp
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        let Some((start, end, total)) = parse_content_range(cr) else {
+            return Err(CoreError::Network("invalid content-range".into()));
+        };
+        if start != resume.offset
+            || end < start
+            || end.checked_add(1) != Some(total)
+            || resp.content_length().is_some_and(|n| n != end - start + 1)
+            || expect_content_length.is_some_and(|n| n < 0 || n as u64 != total)
+        {
+            return Err(CoreError::Network("inconsistent content-range".into()));
+        }
+        if let Some(v) = resume.validator
+            && etag.as_deref() != Some(v)
+        {
+            return Err(CoreError::Network("object validator changed".into()));
+        }
+        return Ok(Some(total));
+    }
+    if status == 206 {
+        return Err(CoreError::Network("unsolicited partial response".into()));
+    }
+    if status != 200 {
+        return Err(status_error(status));
+    }
+    Ok(required_total)
 }
 
 fn status_error(status: u16) -> CoreError {
     match status {
         429 => CoreError::RateLimited("HTTP 429".into()),
+        // The Xiaohongshu list endpoint answers a refused request signature with 406/461;
+        // that is a stop, not a changed page and never a retry with other parameters.
+        406 | 461 => CoreError::Adapter(trace_domain::errors::FailureClass::PermissionDenied),
         401 => CoreError::AuthRequired("HTTP 401".into()),
         403 | 404 | 410 => CoreError::SourceUnavailable(format!(
             "media source unavailable HTTP {status}; re-resolve"
@@ -708,6 +887,31 @@ fn stream_is_html(headers: &HeaderMap) -> bool {
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|s| s.to_ascii_lowercase().contains("text/html"))
+}
+
+/// The proxy to hand to reqwest. `socks5` names are resolved by the proxy (`socks5h`), so the
+/// name of a site is never looked up on this machine.
+fn proxy_for_client(proxy: &Proxy) -> Result<reqwest::Proxy, CoreError> {
+    let url = match proxy.url.strip_prefix("socks5://") {
+        Some(rest) => format!("socks5h://{rest}"),
+        None => proxy.url.clone(),
+    };
+    let mut built =
+        reqwest::Proxy::all(url).map_err(|_| CoreError::Network("proxy setting invalid".into()))?;
+    if let Some((user, password)) = &proxy.auth {
+        built = built.basic_auth(user, password);
+    }
+    Ok(built)
+}
+
+/// A failure to reach the proxy is a network problem to fix in the proxy settings; it never
+/// says anything about the content.
+fn sanitize_via(e: &reqwest::Error, route: &Route) -> String {
+    if matches!(route, Route::Proxy(_)) && (e.is_connect() || e.is_timeout()) {
+        "proxy unreachable or refused".into()
+    } else {
+        sanitize_reqwest(e)
+    }
 }
 
 /// reqwest 错误脱敏：只保留类别信息，不带 URL 查询参数（签名地址）。
@@ -726,14 +930,17 @@ fn sanitize_reqwest(e: &reqwest::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Profile;
 
     #[test]
     fn host_rules_match_suffixes_only() {
         let rules = HostRules {
             api_hosts: vec!["api.bilibili.com".into()],
+            cookie_hosts: vec!["api.bilibili.com".into()],
             media_hosts: vec!["bilivideo.com".into()],
             allowed_headers: vec![],
             test_allowed: vec![],
+            site: None,
         };
         assert!(host_matches("api.bilibili.com", &rules.api_hosts));
         assert!(host_matches("API.BILIBILI.COM", &rules.api_hosts));
@@ -746,6 +953,28 @@ mod tests {
             &rules.media_hosts
         ));
         assert!(!host_matches("bilibili.com.evil.io", &rules.media_hosts));
+    }
+
+    #[test]
+    fn a_cookie_is_attached_on_the_cookie_domain_only() {
+        let client = ConstrainedClient::build().unwrap();
+        let rules = platform_rules(&host_rules(&Profile::default()), "tiktok");
+        for (address, allowed) in [
+            ("https://www.tiktok.com/@a/video/1", true),
+            ("https://v16-webapp-prime.tiktok.com/video/tos/x", true),
+            ("https://v16m.tiktokcdn.com/x", false),
+            ("https://sf16-sg.tiktokcdn-us.com/x", false),
+            ("https://v19.tiktokv.com/x", false),
+            ("https://evil-tiktok.com/x", false),
+            ("https://tiktok.com.evil.io/x", false),
+        ] {
+            let url = Url::parse(address).unwrap();
+            let built = client.build_headers(&rules, None, Some("sessionid=a"), &url);
+            assert_eq!(built.is_ok(), allowed, "{address}");
+            if let Ok(headers) = built {
+                assert!(headers.contains_key(reqwest::header::COOKIE));
+            }
+        }
     }
 
     #[test]
@@ -783,8 +1012,13 @@ mod tests {
 }
 
 #[cfg(test)]
+#[path = "proxy_tests.rs"]
+mod proxy_tests;
+
+#[cfg(test)]
 mod fault_tests {
     use super::*;
+    use crate::config::Profile;
     use crate::{
         db::DbActor,
         objects::{ObjectStore, ReceiveParams},
@@ -793,7 +1027,7 @@ mod fault_tests {
     use trace_domain::ids::OperationId;
 
     #[tokio::test]
-    async fn c06_site_check_budget_applies_to_real_http_redirect_hops() {
+    async fn site_check_budget_applies_to_real_http_redirect_hops() {
         let failed = source(
             "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 .into(),
@@ -851,8 +1085,134 @@ mod fault_tests {
         format!("http://127.0.0.1:{port}/media")
     }
 
+    /// Serves `body` to ranged requests, one connection each; `skew` shifts every answered span.
+    async fn ranged_source(body: Vec<u8>, skew: u64) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    match socket.read_u8().await {
+                        Ok(byte) => request.push(byte),
+                        Err(_) => return,
+                    }
+                }
+                let request = String::from_utf8(request).unwrap().to_lowercase();
+                let Some(span) = request
+                    .lines()
+                    .find_map(|l| l.strip_prefix("range: bytes="))
+                    .and_then(|s| s.split_once('-'))
+                else {
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+                        .await;
+                    continue;
+                };
+                let start: usize = span.0.parse().unwrap();
+                let end = span.1.parse::<usize>().unwrap().min(body.len() - 1);
+                let head = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",
+                    end - start + 1,
+                    start as u64 + skew,
+                    end as u64 + skew,
+                    body.len()
+                );
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(&body[start..=end]).await;
+            }
+        });
+        format!("http://127.0.0.1:{port}/media")
+    }
+
     #[tokio::test]
-    async fn f007_http_range_resume_checks_identity_and_full_hash() {
+    async fn a_ranged_download_assembles_the_object_from_consecutive_spans() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = Profile {
+            data_root: dir.path().join("data"),
+            archive_root: dir.path().join("archive"),
+            test_allowed_hosts: vec!["127.0.0.1".into()],
+            ..Profile::default()
+        };
+        std::fs::create_dir_all(profile.data_root.join("state")).unwrap();
+        let (db, _actor) =
+            DbActor::start(rusqlite::Connection::open(profile.db_path()).unwrap(), 64).unwrap();
+        let store = ObjectStore::new(profile.clone());
+        let body: Vec<u8> = (0..2_500_000u32).map(|n| (n % 251) as u8).collect();
+        let params = |size: usize| ReceiveParams {
+            job_id: None,
+            subject_kind: "test".into(),
+            subject_id: "test".into(),
+            generation: 1,
+            mime: None,
+            expected_size: Some(size as i64),
+            expected_sha256: None,
+            source_validator: None,
+        };
+        let client = ConstrainedClient::build().unwrap();
+        let op = OperationId::new("ranged");
+        let mut writer = store
+            .start_receiving(&db, params(body.len()), &op)
+            .await
+            .unwrap();
+        let url = ranged_source(body.clone(), 0).await;
+        let received = client
+            .download_media_ranged(
+                &host_rules(&profile),
+                &url,
+                None,
+                body.len() as u64,
+                1_000_000,
+                (&mut writer, &db, &op),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(received, body.len() as u64);
+        let (size, sha) = store.finish_and_validate(&db, &op, writer).await.unwrap();
+        assert_eq!(size, body.len() as u64);
+        use sha2::Digest;
+        assert_eq!(
+            sha,
+            sha2::Sha256::digest(&body)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            "the object is the three spans in order"
+        );
+
+        // A span that is not the one asked for, an object of another size and a server that
+        // ignores the range are all refused, never written as the object.
+        let op = OperationId::new("ranged-wrong");
+        let mut writer = store
+            .start_receiving(&db, params(body.len()), &op)
+            .await
+            .unwrap();
+        for (url, total) in [
+            (ranged_source(body.clone(), 1).await, body.len() as u64),
+            (ranged_source(body.clone(), 0).await, body.len() as u64 + 1),
+            (
+                source("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".into(), 0, 0).await,
+                body.len() as u64,
+            ),
+        ] {
+            let result = client
+                .download_media_ranged(
+                    &host_rules(&profile),
+                    &url,
+                    None,
+                    total,
+                    1_000_000,
+                    (&mut writer, &db, &op),
+                    &CancellationToken::new(),
+                )
+                .await;
+            assert!(matches!(result, Err(CoreError::Network(_))), "{result:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn http_range_resume_checks_identity_and_full_hash() {
         let dir = tempfile::tempdir().unwrap();
         let profile = Profile {
             data_root: dir.path().join("data"),
@@ -958,6 +1318,15 @@ mod fault_tests {
         assert_eq!(size, total as u64);
         assert_eq!(sha, expected);
         assert!(matches!(status_error(429), CoreError::RateLimited(_)));
+        for code in [406, 461] {
+            assert!(
+                matches!(
+                    status_error(code),
+                    CoreError::Adapter(trace_domain::errors::FailureClass::PermissionDenied)
+                ),
+                "a refused signature is a stop, not a changed page: {code}"
+            );
+        }
         for code in [403, 404, 410] {
             assert!(matches!(
                 status_error(code),
@@ -968,7 +1337,7 @@ mod fault_tests {
     }
 
     #[tokio::test]
-    async fn f011_redirects_validate_each_host_and_private_address() {
+    async fn redirects_validate_each_host_and_private_address() {
         let profile = Profile {
             test_allowed_hosts: vec!["127.0.0.1".into()],
             // Allowed as media hosts, but still forbidden by their resolved address classes.
@@ -992,8 +1361,7 @@ mod fault_tests {
     }
 
     #[tokio::test]
-    async fn c13_metadata_403_412_stop_as_access_restrictions_without_empty_success_or_cookie_expiry()
-     {
+    async fn metadata_403_412_stop_as_access_restrictions_without_empty_success_or_cookie_expiry() {
         let profile = Profile {
             test_allowed_hosts: vec!["127.0.0.1".into()],
             ..Default::default()
@@ -1018,7 +1386,7 @@ mod fault_tests {
     }
 
     #[tokio::test]
-    async fn f007_stream_over_thirty_seconds_and_cancellation() {
+    async fn stream_over_thirty_seconds_and_cancellation() {
         let dir = tempfile::tempdir().unwrap();
         let profile = Profile {
             data_root: dir.path().join("data"),

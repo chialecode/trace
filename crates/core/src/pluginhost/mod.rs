@@ -4,23 +4,26 @@
 //! - 双向帧：适配器经 `proxy.fetch` 使用核心受限 HTTP 代理；Cookie 由宿主
 //!   按平台解析并仅在授权域附加，永远不进入适配器进程（INV-10）。
 //! - 协议帧上限 1 MiB；单页 100 条；请求带截止时间。
+//! - 进程与帧读写见 `session`，元数据代理见 `proxy`。
+
+pub(crate) mod fault_log;
+mod proxy;
+mod session;
 
 use crate::config::Profile;
 use crate::error::CoreError;
 use crate::transport::{ConstrainedClient, host_rules};
-use base64::Engine as _;
 use serde_json::Value;
+use session::{Launched, Reader, SessionInner, send_frame};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Mutex, oneshot};
-use tokio_util::sync::CancellationToken;
-use trace_contracts::plugin::{
-    AdapterHello, PluginError, PluginRequest, PluginResponse, ProxyFetchParams, ProxyFetchResult,
-};
+use trace_contracts::plugin::{AdapterHello, PluginError, PluginRequest};
 use trace_contracts::wire;
+use trace_domain::PLUGIN_PROTOCOL_VERSION;
+use trace_domain::errors::FailureClass;
 use trace_domain::states::PluginState;
 
 /// 适配器注册信息。
@@ -40,16 +43,21 @@ type PendingCalls = HashMap<String, oneshot::Sender<Result<Value, PluginError>>>
 // Unit tests can answer the production executable's metadata proxy messages.
 // This type and the injection point do not exist in any shipped library build.
 #[cfg(test)]
-type ProxyFixture = Arc<dyn Fn(&Value) -> Result<ProxyFetchResult, PluginError> + Send + Sync>;
+type ProxyFixture = Arc<
+    dyn Fn(&Value) -> Result<trace_contracts::plugin::ProxyFetchResult, PluginError> + Send + Sync,
+>;
 
-struct SessionInner {
-    stdin: Arc<Mutex<tokio::process::ChildStdin>>,
-    pending: Arc<std::sync::Mutex<PendingCalls>>,
-    hello: Arc<Mutex<AdapterHello>>,
-    cancel: CancellationToken,
-    exited: CancellationToken,
-    last_used: std::sync::Mutex<std::time::Instant>,
-}
+/// Adapter sessions alive at once; an idle one is evicted for a new scope.
+const SESSION_LIMIT: usize = 16;
+/// Requests waiting for an answer from one adapter.
+const PENDING_LIMIT: usize = 32;
+const HELLO_DEADLINE_MS: u64 = 10_000;
+const DEFAULT_DEADLINE_MS: u64 = 30_000;
+const MAX_DEADLINE_MS: u64 = 120_000;
+/// Time allowed beyond the adapter's own deadline for the answer to travel back.
+const DEADLINE_SLACK_MS: u64 = 2_000;
+const IDLE_EXIT: Duration = Duration::from_secs(120);
+const KILL_GRACE: Duration = Duration::from_secs(3);
 
 pub struct PluginHost {
     proxy_counts: Arc<[std::sync::atomic::AtomicU64; 3]>,
@@ -59,10 +67,15 @@ pub struct PluginHost {
     startup: Mutex<()>,
     closed: std::sync::atomic::AtomicBool,
     credential_lookup: std::sync::RwLock<CredentialLookup>,
-    specs: Vec<AdapterSpec>,
+    session_jar: Arc<crate::session_jar::SessionJar>,
+    specs: std::sync::RwLock<Vec<AdapterSpec>>,
     disabled: std::sync::RwLock<std::collections::HashSet<String>>,
     #[cfg(test)]
     fixture: std::sync::RwLock<Option<ProxyFixture>>,
+}
+
+fn is_closed(flag: &std::sync::atomic::AtomicBool) -> bool {
+    flag.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 impl PluginHost {
@@ -80,7 +93,8 @@ impl PluginHost {
             startup: Mutex::new(()),
             closed: std::sync::atomic::AtomicBool::new(false),
             credential_lookup: std::sync::RwLock::new(credential_lookup),
-            specs,
+            session_jar: Arc::default(),
+            specs: std::sync::RwLock::new(specs),
             disabled: Default::default(),
             #[cfg(test)]
             fixture: Default::default(),
@@ -103,11 +117,35 @@ impl PluginHost {
         *self.credential_lookup.write().unwrap() = lookup;
     }
 
+    /// The session Cookies the proxy has taken from the sites that need them for media.
+    pub fn session_jar(&self) -> &Arc<crate::session_jar::SessionJar> {
+        &self.session_jar
+    }
+
     pub fn spec_for_platform(&self, platform: &str) -> Option<AdapterSpec> {
         if self.disabled.read().unwrap().contains(platform) {
             return None;
         }
-        self.specs.iter().find(|s| s.platform == platform).cloned()
+        self.specs
+            .read()
+            .unwrap()
+            .iter()
+            .find(|s| s.platform == platform)
+            .cloned()
+    }
+
+    /// Points a platform at an installed release and ends its current session, so the next call
+    /// starts the new binary. The old release stays on disk for a rollback.
+    pub async fn replace_spec(&self, spec: AdapterSpec) {
+        {
+            let mut specs = self.specs.write().unwrap();
+            if let Some(existing) = specs.iter_mut().find(|s| s.platform == spec.platform) {
+                *existing = spec.clone();
+            } else {
+                specs.push(spec.clone());
+            }
+        }
+        self.kill_session(&spec.platform).await;
     }
 
     pub fn set_enabled(&self, platform: &str, enabled: bool) {
@@ -141,228 +179,130 @@ impl PluginHost {
         scope: &str,
     ) -> Result<Arc<SessionInner>, CoreError> {
         let _startup = self.startup.lock().await;
-        if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+        if is_closed(&self.closed) {
             return Err(CoreError::Cancelled);
         }
         let spec = self
             .spec_for_platform(platform)
             .ok_or_else(|| CoreError::PluginUnavailable(format!("no adapter for {platform}")))?;
-        {
-            let mut sessions = self.sessions.lock().await;
-            sessions.retain(|_, s| !s.cancel.is_cancelled());
-            if let Some(existing) = sessions.get(scope) {
-                return Ok(existing.clone());
-            }
-            if sessions.len() >= 16 {
-                let idle = sessions
-                    .iter()
-                    .find(|(_, s)| Arc::strong_count(s) == 1)
-                    .map(|(k, _)| k.clone());
-                if let Some(key) = idle {
-                    if let Some(s) = sessions.remove(&key) {
-                        s.cancel.cancel();
-                    }
-                } else {
-                    return Err(CoreError::Paused("adapter session budget occupied".into()));
-                }
+        if let Some(existing) = self.reusable_session(scope).await? {
+            return Ok(existing);
+        }
+        let inner = self.start_session(&spec, platform, scope)?;
+        self.register_session(scope, &inner).await?;
+        self.handshake(&inner, scope, platform).await?;
+        Ok(inner)
+    }
+
+    /// The live session of the scope, or room for a new one: at the limit an idle session
+    /// is evicted, and with none idle the new scope waits.
+    async fn reusable_session(&self, scope: &str) -> Result<Option<Arc<SessionInner>>, CoreError> {
+        let mut sessions = self.sessions.lock().await;
+        sessions.retain(|_, s| !s.cancel.is_cancelled());
+        if let Some(existing) = sessions.get(scope) {
+            return Ok(Some(existing.clone()));
+        }
+        if sessions.len() >= SESSION_LIMIT {
+            let idle = sessions
+                .iter()
+                .find(|(_, s)| Arc::strong_count(s) == 1)
+                .map(|(k, _)| k.clone());
+            let Some(key) = idle else {
+                return Err(CoreError::Paused("adapter session budget occupied".into()));
+            };
+            if let Some(s) = sessions.remove(&key) {
+                s.cancel.cancel();
             }
         }
-        let mut child = tokio::process::Command::new(&spec.binary_path)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW：隐式启动无终端窗口
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| CoreError::PluginUnavailable(format!("spawn adapter: {e}")))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| CoreError::PluginUnavailable("no stdin".into()))?;
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| CoreError::PluginUnavailable("no stdout".into()))?;
-        let stderr = child.stderr.take();
-        let cancel = CancellationToken::new();
-        let inner = Arc::new(SessionInner {
-            stdin: Arc::new(Mutex::new(stdin)),
-            pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            hello: Arc::new(Mutex::new(AdapterHello {
-                protocol_version: trace_domain::PLUGIN_PROTOCOL_VERSION.into(),
-                adapter_version: "0".into(),
-                platform: platform.into(),
-                capabilities: vec![],
-                limits: Default::default(),
-            })),
-            cancel: cancel.clone(),
-            exited: CancellationToken::new(),
-            last_used: std::sync::Mutex::new(std::time::Instant::now()),
-        });
+        Ok(None)
+    }
 
-        // 响应/代理请求处理循环。
-        let pending = inner.pending.clone();
-        let stdin_for_proxy = inner.stdin.clone();
-        let http = self.http.clone();
-        let rules = host_rules(&self.profile);
-        let cred_lookup = {
-            let guard = self.credential_lookup.read().unwrap();
-            let lookup = guard.clone();
-            let scope = scope.to_owned();
-            Arc::new(move |_: &str| lookup(&scope)) as CredentialLookup
+    /// Starts the adapter process and the tasks that read and drain it.
+    fn start_session(
+        &self,
+        spec: &AdapterSpec,
+        platform: &str,
+        scope: &str,
+    ) -> Result<Arc<SessionInner>, CoreError> {
+        let Launched {
+            child,
+            stdin,
+            stdout,
+            stderr,
+        } = session::launch(spec)?;
+        let inner = Arc::new(SessionInner::new(stdin, platform));
+        let reader = Reader {
+            stdout,
+            child,
+            pending: inner.pending.clone(),
+            cancel: inner.cancel.clone(),
+            exited: inner.exited.clone(),
+            proxy: self.proxy_context(&inner, platform, scope),
         };
-        let platform_owned = platform.to_string();
-        let proxy_counts = self.proxy_counts.clone();
-        let exited = inner.exited.clone();
-        #[cfg(test)]
-        let fixture = self.fixture.read().unwrap().clone();
-        tokio::spawn(async move {
-            let mut proxy_tasks = tokio::task::JoinSet::new();
-            let mut chunks = trace_contracts::plugin_chunks::Decoder::default();
-            loop {
-                // read_exact consumes bytes before yielding and is not cancel
-                // safe. Keep this future alive when a proxy finishes mid-frame.
-                let reading = read_frame_async(&mut stdout);
-                tokio::pin!(reading);
-                let frame = loop {
-                    tokio::select! {
-                        _=proxy_tasks.join_next(),if !proxy_tasks.is_empty()=>{},
-                        frame = &mut reading => break Some(frame),
-                        _ = cancel.cancelled() => break None,
-                    }
-                };
-                let Some(frame) = frame else {
-                    break;
-                };
-                match frame {
-                    Ok(bytes) => {
-                        let msg: Value = match serde_json::from_slice(&bytes) {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
-                        let msg = match chunks.push(msg) {
-                            Ok(Some(v)) => v,
-                            Ok(None) => continue,
-                            Err(_) => break,
-                        };
-                        let is_response = msg.get("ok").is_some() && msg.get("method").is_none();
-                        if is_response {
-                            let Ok(resp) = serde_json::from_value::<PluginResponse>(msg) else {
-                                continue;
-                            };
-                            if let Some(tx) = pending.lock().unwrap().remove(&resp.request_id) {
-                                let _ = tx.send(response_to_result(resp));
-                            }
-                        } else if matches!(
-                            msg.get("method").and_then(|m| m.as_str()),
-                            Some("proxy.fetch" | "proxy.fetch_large")
-                        ) {
-                            let Ok(req) = serde_json::from_value::<PluginRequest>(msg) else {
-                                continue;
-                            };
-                            let http = http.clone();
-                            let rules = rules.clone();
-                            let cred_lookup = cred_lookup.clone();
-                            let platform_owned = platform_owned.clone();
-                            let stdin_for_proxy = stdin_for_proxy.clone();
-                            let token = cancel.clone();
-                            #[cfg(test)]
-                            let fixture = fixture.clone();
-                            if proxy_tasks.len() >= 32 {
-                                break;
-                            }
-                            let occupied = proxy_tasks.len() >= 8;
-                            let proxy_counts = proxy_counts.clone();
-                            proxy_counts[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            // Keep reading responses while one upstream is slow. The
-                            // bounded pool cannot stall unrelated in-flight calls.
-                            proxy_tasks.spawn(async move {
-                                    let large=req.method=="proxy.fetch_large";
-                                    let fetch = async {
-                                        // The ordinary adapter default is 512 KiB, not
-                                        // the legacy protocol's permitted request cap.
-                                        // Older peers may ask for 4 MiB and return a
-                                        // small body. Preserve them while bounding
-                                        // all responses and keeping ordinary frames.
-                                        let max=trace_contracts::plugin_chunks::METADATA_MAX;
-                                        if req.params["max_bytes"].as_u64().is_none_or(|n|n==0||n>max as u64){return Err(PluginError{class:trace_domain::errors::FailureClass::InvalidPayload,message:"proxy byte budget".into(),retry_after_ms:None,details:Value::Null});}
-                                        #[cfg(test)]
-                                        if let Some(fixture)=fixture { return fixture(&req.params); }
-                                        handle_proxy_fetch(
-                                        &http,
-                                        &rules,
-                                        &cred_lookup,
-                                        &platform_owned,
-                                        &req.params,
-                                    ).await
-                                    };
-                                    let resp = if occupied {Err(PluginError{class:trace_domain::errors::FailureClass::RateLimited,message:"proxy concurrency budget".into(),retry_after_ms:Some(1000),details:Value::Null})}else{tokio::select!{_ = token.cancelled()=>return, value=fetch=>value}};
-                                    let out = PluginResponse {
-                                        request_id: req.request_id.clone(),
-                                        ok: resp.is_ok(),
-                                        result: resp
-                                            .as_ref()
-                                            .ok()
-                                            .and_then(|r| serde_json::to_value(r).ok()),
-                                        error: resp.err(),
-                                    };
-                                    proxy_counts[1].fetch_add(1,std::sync::atomic::Ordering::Relaxed);
-                                    let frame=if large {trace_contracts::plugin_chunks::encode(&out)} else {wire::encode_frame(&out)};
-                                    let frame=frame.or_else(|_|wire::encode_frame(&PluginResponse{request_id:out.request_id,ok:false,result:None,error:Some(PluginError{class:trace_domain::errors::FailureClass::InvalidPayload,message:"proxy response exceeds negotiated frame budget".into(),retry_after_ms:None,details:Value::Null})}));
-                                    if let Ok(frame)=frame && send_frame(stdin_for_proxy,frame,token).await.is_ok(){proxy_counts[2].fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
-
-                                    });
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            cancel.cancel();
-            proxy_tasks.abort_all();
-            pending.lock().unwrap().clear();
-            let _ = child.start_kill();
-            let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
-            exited.cancel();
-        });
-
-        // stderr 是适配器诊断通道：计数而非转发，避免敏感内容混入日志。
+        tokio::spawn(reader.run());
         if let Some(stderr) = stderr {
-            tokio::spawn(async move {
-                let mut err = stderr;
-                let mut lines = 0u64;
-                let mut buf = vec![0u8; 4096];
-                loop {
-                    match err.read(&mut buf).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {
-                            lines += 1;
-                            if lines <= 3 {
-                                tracing::debug!("adapter stderr activity (not echoed)");
-                            }
-                        }
-                    }
-                }
-            });
+            tokio::spawn(session::drain_stderr(stderr));
         }
+        Ok(inner)
+    }
 
-        {
-            let mut sessions = self.sessions.lock().await;
-            if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
-                inner.cancel.cancel();
-                return Err(CoreError::Cancelled);
-            }
-            sessions.insert(scope.to_owned(), inner.clone());
+    /// What the session's proxy requests run with. Credentials resolve for the session's
+    /// own scope only, whatever platform name the adapter asks for.
+    fn proxy_context(
+        &self,
+        inner: &SessionInner,
+        platform: &str,
+        scope: &str,
+    ) -> proxy::ProxyContext {
+        let lookup = self.credential_lookup.read().unwrap().clone();
+        let scope = scope.to_owned();
+        let session = proxy::Session {
+            jar: self.session_jar.clone(),
+            scope: scope.clone(),
+        };
+        proxy::ProxyContext {
+            http: self.http.clone(),
+            rules: host_rules(&self.profile),
+            credentials: Arc::new(move |_: &str| lookup(&scope)),
+            session,
+            platform: platform.to_owned(),
+            counts: self.proxy_counts.clone(),
+            stdin: inner.stdin.clone(),
+            cancel: inner.cancel.clone(),
+            #[cfg(test)]
+            fixture: self.fixture.read().unwrap().clone(),
         }
+    }
 
-        // 握手。
-        let hello_v = match Self::call_session(
-            &inner,
-            trace_contracts::plugin::methods::HELLO.to_owned(),
-            serde_json::json!({"protocol_version":trace_domain::PLUGIN_PROTOCOL_VERSION,"platform":platform}),
-            Some(10_000),
-        )
-        .await
-        {
+    async fn register_session(
+        &self,
+        scope: &str,
+        inner: &Arc<SessionInner>,
+    ) -> Result<(), CoreError> {
+        let mut sessions = self.sessions.lock().await;
+        if is_closed(&self.closed) {
+            inner.cancel.cancel();
+            return Err(CoreError::Cancelled);
+        }
+        sessions.insert(scope.to_owned(), inner.clone());
+        Ok(())
+    }
+
+    /// The adapter must speak this protocol for this platform, or it is stopped.
+    async fn handshake(
+        &self,
+        inner: &SessionInner,
+        scope: &str,
+        platform: &str,
+    ) -> Result<(), CoreError> {
+        let params = serde_json::json!({
+            "protocol_version": PLUGIN_PROTOCOL_VERSION,
+            "platform": platform,
+        });
+        let method = trace_contracts::plugin::methods::HELLO.to_owned();
+        let reply =
+            Self::call_session(inner, method, params, Value::Null, Some(HELLO_DEADLINE_MS)).await;
+        let value = match reply {
             Ok(value) => value,
             Err(error) => {
                 inner.cancel.cancel();
@@ -370,25 +310,26 @@ impl PluginHost {
                 return Err(error);
             }
         };
-        let hello: AdapterHello = match serde_json::from_value(hello_v) {
-            Ok(h) => h,
-            Err(_) => {
-                self.kill_session(scope).await;
-                return Err(CoreError::PluginUnavailable("invalid adapter hello".into()));
-            }
+        let Ok(hello) = serde_json::from_value::<AdapterHello>(value) else {
+            self.kill_session(scope).await;
+            return Err(CoreError::PluginUnavailable("invalid adapter hello".into()));
         };
-        if hello.protocol_version != trace_domain::PLUGIN_PROTOCOL_VERSION
-            || hello.platform != platform
-        {
+        if hello.protocol_version != PLUGIN_PROTOCOL_VERSION || hello.platform != platform {
             self.kill_session(scope).await;
             return Err(CoreError::PluginUnavailable(format!(
-                "protocol mismatch: adapter {} vs host {}",
+                "protocol mismatch: adapter {} vs host {PLUGIN_PROTOCOL_VERSION}",
                 hello.protocol_version,
-                trace_domain::PLUGIN_PROTOCOL_VERSION
             )));
         }
         *inner.hello.lock().await = hello;
-        Ok(inner)
+        Ok(())
+    }
+
+    /// The adapter's handshake, starting its process when none is running.
+    pub async fn hello(&self, platform: &str) -> Result<AdapterHello, CoreError> {
+        let session = self.ensure_session(platform, platform).await?;
+        let hello = session.hello.lock().await.clone();
+        Ok(hello)
     }
 
     pub async fn adapter_hello(&self, platform: &str) -> Option<AdapterHello> {
@@ -411,7 +352,14 @@ impl PluginHost {
     {
         let platform = platform.to_string();
         let method = method.to_string();
-        Box::pin(self.call_inner(platform.clone(), platform, method, params, deadline_ms))
+        Box::pin(self.call_inner(
+            platform.clone(),
+            platform,
+            method,
+            params,
+            deadline_ms,
+            None,
+        ))
     }
 
     pub async fn call_scoped(
@@ -422,6 +370,20 @@ impl PluginHost {
         params: Value,
         deadline_ms: Option<u64>,
     ) -> Result<Value, CoreError> {
+        self.call_scoped_with_evidence(platform, credential, method, params, deadline_ms, None)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn call_scoped_with_evidence(
+        &self,
+        platform: &str,
+        credential: Option<&str>,
+        method: &str,
+        params: Value,
+        deadline_ms: Option<u64>,
+        evidence_id: Option<&str>,
+    ) -> Result<Value, CoreError> {
         let scope = credential
             .map(|id| format!("{platform}/{id}"))
             .unwrap_or_else(|| platform.to_owned());
@@ -431,6 +393,7 @@ impl PluginHost {
             method.to_owned(),
             params,
             deadline_ms,
+            evidence_id.map(str::to_owned),
         )
         .await
     }
@@ -442,48 +405,47 @@ impl PluginHost {
         method: String,
         params: Value,
         deadline_ms: Option<u64>,
+        evidence_id: Option<String>,
     ) -> Result<Value, CoreError> {
         let _spec = self
             .spec_for_platform(&platform)
             .ok_or_else(|| CoreError::PluginUnavailable(format!("no adapter for {platform}")))?;
         let session = self.ensure_session(&platform, &scope).await?;
-        Self::call_session(&session, method, params, deadline_ms).await
+        let cookie = {
+            let lookup = self.credential_lookup.read().unwrap();
+            lookup(&scope)
+        };
+        let context = access_context(&platform, cookie.as_deref(), evidence_id.as_deref());
+        Self::call_session(&session, method, params, context, deadline_ms).await
     }
 
     async fn call_session(
         session: &SessionInner,
         method: String,
         params: Value,
+        context: Value,
         deadline_ms: Option<u64>,
     ) -> Result<Value, CoreError> {
         *session.last_used.lock().unwrap() = std::time::Instant::now();
         let request_id = format!("host-{}", uuid::Uuid::new_v4());
+        let method_name = method.clone();
         let req = PluginRequest {
-            protocol_version: trace_domain::PLUGIN_PROTOCOL_VERSION.into(),
+            protocol_version: PLUGIN_PROTOCOL_VERSION.into(),
             request_id: request_id.clone(),
             deadline_ms,
             method,
             params,
+            context,
         };
         let frame = wire::encode_frame(&req)
             .map_err(|_| CoreError::InvalidInput("adapter request frame budget".into()))?;
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = session.pending.lock().unwrap();
-            if pending.len() >= 32 {
+            if pending.len() >= PENDING_LIMIT {
                 return Err(CoreError::Paused("adapter request budget occupied".into()));
             }
             pending.insert(request_id.clone(), tx);
-        }
-        struct PendingGuard<'a> {
-            session: &'a SessionInner,
-            id: String,
-        }
-        impl Drop for PendingGuard<'_> {
-            fn drop(&mut self) {
-                self.session.pending.lock().unwrap().remove(&self.id);
-                *self.session.last_used.lock().unwrap() = std::time::Instant::now();
-            }
         }
         let _pending = PendingGuard {
             session,
@@ -493,7 +455,10 @@ impl PluginHost {
             send_frame(session.stdin.clone(), frame, session.cancel.clone()).await?;
             match rx.await {
                 Ok(Ok(v)) => Ok(v),
-                Ok(Err(e)) => Err(plugin_error_to_core(e)),
+                Ok(Err(e)) => {
+                    fault_log::record(&method_name, &e);
+                    Err(plugin_error_to_core(e))
+                }
                 Err(_) => Err(CoreError::PluginUnavailable(
                     "adapter response channel closed".into(),
                 )),
@@ -501,13 +466,17 @@ impl PluginHost {
         };
         let timeout = Duration::from_millis(
             deadline_ms
-                .unwrap_or(30_000)
-                .min(120_000)
-                .saturating_add(2_000),
+                .unwrap_or(DEFAULT_DEADLINE_MS)
+                .min(MAX_DEADLINE_MS)
+                .saturating_add(DEADLINE_SLACK_MS),
         );
         tokio::select! {
-            value=tokio::time::timeout(timeout,exchange)=>value.unwrap_or_else(|_|Err(CoreError::Network("adapter deadline exceeded".into()))),
-            _=session.cancel.cancelled()=>Err(CoreError::PluginUnavailable("adapter stopped".into())),
+            value = tokio::time::timeout(timeout, exchange) => value.unwrap_or_else(|_| {
+                Err(CoreError::Network("adapter deadline exceeded".into()))
+            }),
+            _ = session.cancel.cancelled() => {
+                Err(CoreError::PluginUnavailable("adapter stopped".into()))
+            },
         }
     }
 
@@ -518,7 +487,7 @@ impl PluginHost {
         self.sessions.lock().await.retain(|_, s| {
             let idle = Arc::strong_count(s) == 1
                 && s.pending.lock().unwrap().is_empty()
-                && s.last_used.lock().unwrap().elapsed() > Duration::from_secs(120);
+                && s.last_used.lock().unwrap().elapsed() > IDLE_EXIT;
             if idle {
                 s.cancel.cancel();
             }
@@ -541,12 +510,7 @@ impl PluginHost {
         for s in &removed {
             s.cancel.cancel();
         }
-        let _ = tokio::time::timeout(Duration::from_secs(3), async {
-            for s in removed {
-                s.exited.cancelled().await;
-            }
-        })
-        .await;
+        wait_exited(removed).await;
     }
 
     pub async fn shutdown_all(&self) {
@@ -555,124 +519,41 @@ impl PluginHost {
         for s in &sessions {
             s.cancel.cancel();
         }
-        let _ = tokio::time::timeout(Duration::from_secs(3), async {
-            for s in sessions {
-                s.exited.cancelled().await;
-            }
-        })
-        .await;
+        wait_exited(sessions).await;
     }
 }
 
-// An abandoned caller cannot abandon a partially written stdio frame. The
-// dedicated send task either finishes the frame or invalidates the session.
-async fn send_frame(
-    stdin: Arc<Mutex<tokio::process::ChildStdin>>,
-    frame: Vec<u8>,
-    cancel: CancellationToken,
-) -> Result<(), CoreError> {
-    tokio::spawn(async move {
-        let write = async {
-            let mut s = stdin.lock().await;
-            s.write_all(&frame).await?;
-            s.flush().await
-        };
-        let result = tokio::select! {
-            _=cancel.cancelled()=>Err(CoreError::Cancelled),
-            result=tokio::time::timeout(Duration::from_secs(25),write)=>match result {
-                Ok(Ok(()))=>Ok(()),
-                _=>Err(CoreError::PluginUnavailable("adapter frame write failed".into())),
-            }
-        };
-        if result.is_err() {
-            cancel.cancel();
+/// Gives cancelled sessions a moment to let their processes go.
+async fn wait_exited(sessions: Vec<Arc<SessionInner>>) {
+    let _ = tokio::time::timeout(KILL_GRACE, async {
+        for s in sessions {
+            s.exited.cancelled().await;
         }
-        result
     })
-    .await
-    .map_err(|_| CoreError::PluginUnavailable("adapter writer stopped".into()))?
+    .await;
 }
 
-async fn handle_proxy_fetch(
-    http: &ConstrainedClient,
-    rules: &crate::transport::HostRules,
-    cred_lookup: &CredentialLookup,
-    platform: &str,
-    params: &Value,
-) -> Result<ProxyFetchResult, PluginError> {
-    let params: ProxyFetchParams =
-        serde_json::from_value(params.clone()).map_err(|e| PluginError {
-            class: trace_domain::errors::FailureClass::InvalidPayload,
-            message: format!("bad proxy params: {e}"),
-            retry_after_ms: None,
-            details: Value::Null,
-        })?;
-    let scoped_rules = crate::transport::platform_rules(rules, platform);
-    let cookie = if params.with_credential {
-        (cred_lookup)(platform)
-    } else {
-        None
-    };
-    let outcome = http
-        .fetch_metadata(
-            &scoped_rules,
-            &params.method,
-            &params.url,
-            Some(&params.headers),
-            cookie.as_deref(),
-            params.max_bytes,
-        )
-        .await
-        .map_err(|e| PluginError {
-            class: e.failure_class(),
-            message: format!("{:?}", e.failure_class()),
-            retry_after_ms: None,
-            details: Value::Null,
-        })?;
-    Ok(ProxyFetchResult {
-        status: outcome.status,
-        headers: serde_json::json!({}),
-        body_b64: base64::engine::general_purpose::STANDARD.encode(&outcome.body),
-        final_url: outcome.final_url,
-    })
+/// Frees the request's pending slot even when the caller is dropped mid-wait.
+struct PendingGuard<'a> {
+    session: &'a SessionInner,
+    id: String,
+}
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        self.session.pending.lock().unwrap().remove(&self.id);
+        *self.session.last_used.lock().unwrap() = std::time::Instant::now();
+    }
 }
 
 fn plugin_error_to_core(e: PluginError) -> CoreError {
-    if e.class == trace_domain::errors::FailureClass::SourceUnavailable
+    if e.class == FailureClass::SourceUnavailable
         && e.details.get("source_state").and_then(Value::as_str) == Some("offline")
     {
         // Whitelist a source state, never relay the adapter's message/details.
         return CoreError::SourceUnavailable("room is not live".into());
     }
     CoreError::Adapter(e.class)
-}
-
-fn response_to_result(resp: PluginResponse) -> Result<Value, PluginError> {
-    if resp.ok {
-        Ok(resp.result.unwrap_or(Value::Null))
-    } else {
-        Err(resp.error.unwrap_or(PluginError {
-            class: trace_domain::errors::FailureClass::Unknown,
-            message: "adapter error".into(),
-            retry_after_ms: None,
-            details: Value::Null,
-        }))
-    }
-}
-
-async fn read_frame_async(reader: &mut (impl AsyncReadExt + Unpin)) -> std::io::Result<Vec<u8>> {
-    let mut len_buf = [0u8; 4];
-    reader.read_exact(&mut len_buf).await?;
-    let len = u32::from_le_bytes(len_buf);
-    if len > trace_domain::MAX_FRAME_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "frame too large",
-        ));
-    }
-    let mut buf = vec![0u8; len as usize];
-    reader.read_exact(&mut buf).await?;
-    Ok(buf)
 }
 
 /// 便捷构造：平台适配器二进制路径解析（发行包目录或开发目标目录）。
@@ -699,6 +580,36 @@ pub fn default_adapter_specs(profile: &Profile) -> Vec<AdapterSpec> {
             platform: "douyin".into(),
             binary_path: exe("trace-adapter-douyin"),
         },
+        AdapterSpec {
+            plugin_id: "weibo".into(),
+            platform: "weibo".into(),
+            binary_path: exe("trace-adapter-weibo"),
+        },
+        AdapterSpec {
+            plugin_id: "youtube".into(),
+            platform: "youtube".into(),
+            binary_path: exe("trace-adapter-youtube"),
+        },
+        AdapterSpec {
+            plugin_id: "tiktok".into(),
+            platform: "tiktok".into(),
+            binary_path: exe("trace-adapter-tiktok"),
+        },
+        AdapterSpec {
+            plugin_id: "xiaohongshu".into(),
+            platform: "xiaohongshu".into(),
+            binary_path: exe("trace-adapter-xiaohongshu"),
+        },
+        AdapterSpec {
+            plugin_id: "instagram".into(),
+            platform: "instagram".into(),
+            binary_path: exe("trace-adapter-instagram"),
+        },
+        AdapterSpec {
+            plugin_id: "x".into(),
+            platform: "x".into(),
+            binary_path: exe("trace-adapter-x"),
+        },
         // 合成异构平台只在开发/测试构建注册，发行包没有此能力。
         #[cfg(debug_assertions)]
         AdapterSpec {
@@ -709,14 +620,68 @@ pub fn default_adapter_specs(profile: &Profile) -> Vec<AdapterSpec> {
     ]
 }
 
+/// The one credential-derived value an adapter may see: Xiaohongshu's public list endpoint
+/// needs the device identifier `a1` to sign its requests (DEC-041). The session Cookie,
+/// `web_session` and every other name stay in Core; other platforms get no context at all.
+fn access_context(platform: &str, cookie: Option<&str>, evidence_id: Option<&str>) -> Value {
+    let mut context = serde_json::Map::new();
+    if platform == "xiaohongshu"
+        && let Some(a1) = cookie.and_then(|raw| {
+            raw.split(';').find_map(|pair| {
+                let (name, value) = pair.trim().split_once('=')?;
+                (name.trim() == "a1").then(|| value.trim().to_owned())
+            })
+        })
+        && (8..=128).contains(&a1.len())
+        && a1
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && b != b';' && b != b'=')
+    {
+        context.insert("device_id".into(), Value::String(a1));
+    }
+    if let Some(id) = evidence_id.filter(|id| {
+        (4..=160).contains(&id.len())
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    }) {
+        context.insert("evidence_id".into(), Value::String(id.to_owned()));
+    }
+    if context.is_empty() {
+        Value::Null
+    } else {
+        Value::Object(context)
+    }
+}
+
 #[cfg(test)]
-mod m1_tests {
+mod tests {
     use super::*;
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
-    fn c14_offline_source_errors_keep_safe_state_without_adapter_payload() {
+    fn only_the_device_identifier_reaches_the_site_that_signs_with_it() {
+        let cookie = "a1=synthetic-device-123; web_session=synthetic-session; xsec_source=pc_user";
+        assert_eq!(
+            access_context("xiaohongshu", Some(cookie), None),
+            json!({"device_id": "synthetic-device-123"})
+        );
+        assert!(access_context("weibo", Some(cookie), None).is_null());
+        assert!(
+            access_context("xiaohongshu", Some("web_session=synthetic-session"), None).is_null()
+        );
+        assert!(access_context("xiaohongshu", Some("a1=bad;value"), None).is_null());
+        assert!(access_context("xiaohongshu", None, None).is_null());
+        assert_eq!(
+            access_context("weibo", None, Some("ctx-safe")),
+            json!({"evidence_id": "ctx-safe"})
+        );
+        assert!(access_context("weibo", None, Some("not safe/context")).is_null());
+    }
+
+    #[test]
+    fn offline_source_errors_keep_safe_state_without_adapter_payload() {
         use trace_domain::errors::FailureClass;
         for (class, state, offline) in [
             (FailureClass::SourceUnavailable, "offline", true),
@@ -750,7 +715,7 @@ mod m1_tests {
 
     fn host() -> Arc<PluginHost> {
         let binary =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/m1_host_probe.exe");
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/host_probe.exe");
         assert!(binary.is_file(), "build the workspace before process tests");
         Arc::new(PluginHost::new(
             Profile {
@@ -775,7 +740,7 @@ mod m1_tests {
         ))
     }
     #[tokio::test]
-    async fn c06_credential_scopes_and_cross_origin_redirect_strip_headers() {
+    async fn credential_scopes_and_cross_origin_redirect_strip_headers() {
         let host = host();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -857,7 +822,7 @@ mod m1_tests {
         server.abort();
     }
     #[tokio::test]
-    async fn c05_plugin_process_isolation_and_cancelled_request_cleanup() {
+    async fn plugin_process_isolation_and_cancelled_request_cleanup() {
         let host = host();
         host.call("bilibili", "pid", json!({}), None).await.unwrap();
         host.call("douyin", "pid", json!({}), None).await.unwrap();
@@ -883,7 +848,7 @@ mod m1_tests {
         assert!(host.call("douyin", "pid", json!({}), None).await.is_err());
     }
     #[tokio::test]
-    async fn c05_slow_proxy_does_not_block_same_scope_responses_and_idle_exit() {
+    async fn slow_proxy_does_not_block_same_scope_responses_and_idle_exit() {
         let host = host();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -946,7 +911,7 @@ mod m1_tests {
         server.abort();
     }
     #[test]
-    fn c06_failure_class_survives_without_untrusted_error_text() {
+    fn failure_class_survives_without_untrusted_error_text() {
         for class in [
             trace_domain::errors::FailureClass::SchemaChanged,
             trace_domain::errors::FailureClass::PermissionDenied,
@@ -968,9 +933,9 @@ mod m1_tests {
         }
     }
     #[tokio::test]
-    async fn c05_proxy_completion_cannot_cancel_partial_frame_read() {
+    async fn proxy_completion_cannot_cancel_partial_frame_read() {
         let binary =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/m1_frame_probe.exe");
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/frame_probe.exe");
         assert!(binary.is_file(), "build workspace fixture binaries first");
         let host = PluginHost::new(
             Profile {

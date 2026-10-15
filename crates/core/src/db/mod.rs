@@ -1,8 +1,14 @@
-//! DB actor：单线程 rusqlite 连接 + 有界队列（INV-06/09，m1a-runtime-contracts §6）。
+//! DB actor：单线程 rusqlite 连接 + 有界队列（INV-06/09，windows-runtime-contracts §6）。
 //!
 //! 所有读写在专职线程串行执行；`write` 以 IMMEDIATE 事务包裹并在出错时回滚。
 //! 队列满载时调用方 await 背压，不无限增长。
 
+mod migration_v7;
+#[cfg(test)]
+mod migration_v7_tests;
+mod migration_v8;
+#[cfg(test)]
+mod migration_v8_tests;
 pub mod schema;
 
 use crate::error::CoreError;

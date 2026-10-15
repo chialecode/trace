@@ -1,0 +1,75 @@
+{
+ "contents": {
+  "twoColumnBrowseResultsRenderer": {
+   "tabs": [
+    {
+     "tabRenderer": {
+      "title": "Videos",
+      "selected": true,
+      "endpoint": {
+       "browseEndpoint": {
+        "browseId": "UCtest_channel_00000001a",
+        "params": "params-videos"
+       },
+       "commandMetadata": {
+        "webCommandMetadata": {
+         "url": "/channel/UCtest_channel_00000001a/videos"
+        }
+       }
+      },
+      "content": {
+       "richGridRenderer": {
+        "contents": [
+         {
+          "richItemRenderer": {
+           "content": {
+            "videoRenderer": {
+             "videoId": "vid_AAAAAA1",
+             "title": {
+              "runs": [
+               {
+                "text": "第一个视频"
+               }
+              ]
+             },
+             "lengthText": {
+              "simpleText": "12:34"
+             },
+             "viewCountText": {
+              "simpleText": "1,234 views"
+             },
+             "publishedTimeText": {
+              "simpleText": "3 days ago"
+             },
+             "thumbnail": {
+              "thumbnails": [
+               {
+                "url": "https://i.ytimg.com/vi/vid_AAAAAA1/hqdefault.jpg?sqp=x",
+                "width": 480,
+                "height": 270
+               }
+              ]
+             },
+             "thumbnailOverlays": [
+              {
+               "thumbnailOverlayTimeStatusRenderer": {
+                "style": "DEFAULT",
+                "text": {
+                 "simpleText": "12:34"
+                }
+               }
+              }
+             ]
+            }
+           }
+          }
+         }
+        ]
+       }
+      }
+     }
+    }
+   ]
+  }
+ }
+}

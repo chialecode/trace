@@ -62,33 +62,10 @@ impl MediaBackend {
             }
             let checked = async {
                 if source != "explicit-path" {
-                    let receipt: Value =
-                        serde_json::from_slice(&std::fs::read(dir.join("verified.json"))?)?;
                     let lock: Value =
                         serde_json::from_str(include_str!("../../../media-backend.lock.json"))?;
-                    if receipt["lock"] != lock {
-                        return Err(CoreError::InvalidInput("media asset lock mismatch".into()));
-                    }
-                    let files = receipt["files"].as_object().ok_or_else(|| {
-                        CoreError::InvalidInput("media asset inventory missing".into())
-                    })?;
-                    for (name, sha) in files {
-                        if Path::new(name).components().count() != 1
-                            || crate::objects::hash_file(&dir.join(name))?
-                                != sha.as_str().unwrap_or_default()
-                        {
-                            return Err(CoreError::InvalidInput(
-                                "media asset checksum mismatch".into(),
-                            ));
-                        }
-                    }
-                    if !files.contains_key(&format!("ffmpeg{suffix}"))
-                        || !files.contains_key(&format!("ffprobe{suffix}"))
-                    {
-                        return Err(CoreError::InvalidInput(
-                            "media binaries missing from inventory".into(),
-                        ));
-                    }
+                    let required = [format!("ffmpeg{suffix}"), format!("ffprobe{suffix}")];
+                    crate::asset_receipt::verify(&dir, &lock, &required)?;
                 }
                 let mut version = None;
                 for exe in [&ffmpeg, &ffprobe] {
@@ -337,7 +314,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn c06_local_backend_rejects_disguised_playlists_without_network() {
+    async fn local_backend_rejects_disguised_playlists_without_network() {
         let backend = MediaBackend::detect(&crate::config::Profile::default()).await;
         let dir = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -377,7 +354,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn f012_pinned_backend_probes_and_muxes_fixed_avc_aac_samples() {
+    async fn pinned_backend_probes_and_muxes_fixed_avc_aac_samples() {
         let backend = MediaBackend::detect(&crate::config::Profile::default()).await;
         assert!(
             backend.ffmpeg.is_some(),
@@ -505,7 +482,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn f012_rejects_unverified_backend_before_execution() {
+    async fn rejects_unverified_backend_before_execution() {
         let dir = tempfile::tempdir().unwrap();
         // Deliberately non-executable placeholders: validation must reject before process launch.
         for name in ["ffmpeg.exe", "ffprobe.exe"] {

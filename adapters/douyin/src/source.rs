@@ -28,7 +28,7 @@ pub fn resolve(client: &Client, p: &Value) -> Result<ResolvedSource, PluginError
         let response = client.fetch(
             "HEAD",
             url.as_str(),
-            json!({"user-agent":crate::protocol::UA}),
+            json!({"user-agent":crate::api::UA}),
             false,
         )?;
         url = url::Url::parse(&response.final_url).map_err(|_| invalid())?;
@@ -45,13 +45,13 @@ pub fn resolve(client: &Client, p: &Value) -> Result<ResolvedSource, PluginError
         return Err(invalid());
     }
     let key = parts[1];
-    let data = crate::protocol::api(client, "/aweme/v1/web/aweme/detail/", &[("aweme_id", key)])?;
+    let data = crate::api::api(client, "/aweme/v1/web/aweme/detail/", &[("aweme_id", key)])?;
     let value = &data["aweme_detail"];
-    let (detail, _) = crate::protocol::detail_for(value, key, false)?;
+    let (detail, _) = crate::detail::detail_for(value, key, false)?;
     if detail.native_kind != "video" {
         return Err(error(FailureClass::Unsupported, "link is not a video"));
     }
-    let candidates = crate::protocol::all_candidates(value, key)?;
+    let candidates = crate::detail::all_candidates(value, key)?;
     Ok(ResolvedSource {
         kind: "video".into(),
         canonical_url: format!("https://www.douyin.com/video/{key}"),
@@ -92,10 +92,10 @@ fn live(client: &Client, alias: &str) -> Result<ResolvedSource, PluginError> {
     ]);
     let value = client.json_large(
         url.as_str(),
-        json!({"user-agent":crate::protocol::UA,"referer":"https://live.douyin.com/"}),
+        json!({"user-agent":crate::api::UA,"referer":"https://live.douyin.com/"}),
         true,
     )?;
-    crate::protocol::envelope(value.clone())?;
+    crate::api::envelope(value.clone())?;
     let room = value.pointer("/data/data/0").ok_or_else(invalid)?;
     // An offline response can omit both owner and room identity. Do not turn
     // that known source state into a schema error or trust the viewer instead.

@@ -1,4 +1,4 @@
-use crate::{AdapterState, api, handlers};
+use crate::{AdapterState, api, detail, media, sign};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use trace_contracts::{
@@ -54,7 +54,7 @@ pub fn resolve(
     {
         return Err(invalid());
     }
-    let data = handlers::signed_get(
+    let data = sign::signed_get(
         s,
         api::VIEW_URL,
         &[(
@@ -69,7 +69,7 @@ pub fn resolve(
     if aid.is_none() && bvid != key || aid.is_some() && id(&data["aid"]).as_deref() != aid {
         return Err(invalid());
     }
-    let mut detail = handlers::map_view(&data, bvid)?;
+    let mut detail = detail::map_view(&data, bvid)?;
     if detail
         .resources
         .iter()
@@ -79,7 +79,7 @@ pub fn resolve(
     {
         return Err(error(FailureClass::Unsupported, "direct video part budget"));
     }
-    let media = handlers::resolve_media(
+    let media = media::resolve_media(
         s,
         &ResolveMediaParams {
             native_entry_key: bvid.into(),
@@ -119,7 +119,7 @@ fn live(
     d: Duration,
     t: Instant,
 ) -> Result<ResolvedSource, PluginError> {
-    let info = handlers::signed_get(
+    let info = sign::signed_get(
         s,
         "https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom",
         &[
@@ -136,7 +136,7 @@ fn live(
         .or_else(|| id(&info["anchor_info"]["base_info"]["uid"]))
         .ok_or_else(invalid)?;
     let play = if room["live_status"] == 1 {
-        handlers::signed_get(
+        sign::signed_get(
             s,
             "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo",
             &[

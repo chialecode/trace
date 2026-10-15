@@ -1,4 +1,6 @@
+#![cfg_attr(test, allow(clippy::too_many_lines))]
 pub mod document;
+pub mod kit;
 pub mod runtime;
 
 use serde_json::Value;

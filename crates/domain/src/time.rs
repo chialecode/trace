@@ -15,6 +15,8 @@ pub enum TimePrecision {
     /// 来源明确给出的时间（作者发布时间等）。
     #[default]
     Source,
+    /// 站点只给出“几天前”之类的相对时间，推算出的近似值；真实时间在这个值前后一个单位之内。
+    Approximate,
     /// 本地发现/保存时间。
     Discovery,
     /// 未知，仅知道存在该事件。
@@ -92,5 +94,12 @@ mod tests {
     fn unknown_time_is_representable() {
         let t = TraceTime::now(TimePrecision::Unknown);
         assert_eq!(t.precision, TimePrecision::Unknown);
+    }
+
+    #[test]
+    fn a_relative_time_is_stored_as_approximate_and_never_as_the_source_time() {
+        let text = serde_json::to_string(&TimePrecision::Approximate).unwrap();
+        assert_eq!(text, "\"approximate\"");
+        assert_ne!(TimePrecision::Approximate, TimePrecision::Source);
     }
 }

@@ -1,7 +1,7 @@
 //! Profile、路径布局与端点命名。
 //!
 //! 布局沿用 docs/design.md §6.1；端点名由当前用户与 archive_id 派生
-//! （m1a-runtime-contracts §2），不暴露用户路径。凭证 vault 独立于档案路径。
+//! （windows-runtime-contracts §2），不暴露用户路径。凭证 vault 独立于档案路径。
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use trace_domain::ids::ArchiveId;
 
 pub const DEFAULT_CHECK_INTERVAL_SECONDS: i64 = 300;
-/// 一轮枚举预算（m1a-runtime-contracts §6）。
+/// 一轮枚举预算（windows-runtime-contracts §6）。
 pub const DEFAULT_MAX_SCAN_PAGES: u32 = 10;
 /// 元数据请求最小间隔（毫秒），加抖动。
 pub const METADATA_MIN_INTERVAL_MS: u64 = 2000;
@@ -43,6 +43,9 @@ pub struct Profile {
     pub vault_dir: Option<PathBuf>,
     pub adapter_dir: Option<PathBuf>,
     pub media_dir: Option<PathBuf>,
+    /// Directory of the locked media tools (yt-dlp, Deno); packaged and development
+    /// locations are found without it.
+    pub tools_dir: Option<PathBuf>,
     pub allow_media_path: bool,
     /// Independent live slots; default supports the four-stream resource target.
     pub live_concurrency: usize,
@@ -72,6 +75,7 @@ impl Default for Profile {
             vault_dir: None,
             adapter_dir: None,
             media_dir: None,
+            tools_dir: None,
             allow_media_path: false,
             live_concurrency: 4,
             metadata_min_interval_ms: METADATA_MIN_INTERVAL_MS,

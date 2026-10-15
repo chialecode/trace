@@ -145,7 +145,7 @@ impl Reservation {
 mod tests {
     use super::*;
     #[test]
-    fn c04_c07_disk_reserve_tracks_concurrent_minute_and_replacement_peak() {
+    fn disk_reserve_tracks_concurrent_minute_and_replacement_peak() {
         let b = Arc::new(StorageBudget::default());
         let p = Profile::default();
         assert_eq!(b.reserve_bytes(&p), GIB);

@@ -1,0 +1,26 @@
+{
+ "data": {
+  "user": {
+   "id": "1500000000000000001",
+   "pk": "1500000000000000001",
+   "username": "synthetic.user",
+   "full_name": "合成用户",
+   "biography": "合成简介",
+   "is_private": false,
+   "is_verified": false,
+   "media_count": null,
+   "follower_count": 3,
+   "friendship_status": {
+    "following": false
+   },
+   "edge_owner_to_timeline_media": {
+    "count": 6
+   }
+  },
+  "viewer": {
+   "user": {
+    "pk": "1500000000000000009"
+   }
+  }
+ }
+}

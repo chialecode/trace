@@ -24,7 +24,8 @@
       "creator_name": "合成创作者",
       "source_key": "BV123",
       "source_url": "https://www.bilibili.com/video/BV123",
-      "cover_blob_id": null
+      "cover_blob_id": null,
+      "authentication": null
     }
   ],
   "next_cursor": null,

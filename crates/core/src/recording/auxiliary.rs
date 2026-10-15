@@ -65,6 +65,12 @@ fn text(value: &str, max: usize) -> String {
         .take(max)
         .collect()
 }
+const INSERT_LIVE_MESSAGES: &str = "INSERT OR IGNORE INTO live_messages(session_id,source_id,source_time,author,body,kind,observed_at) VALUES(?1,?2,?3,?4,?5,'chat',?6)";
+
+const SELECT_LIVE_SESSIONS: &str = "SELECT s.capture_chat=1 AND l.manual_stopped=0 AND l.ended_at IS NULL FROM live_sessions l JOIN subscriptions s ON s.subscription_id=l.subscription_id WHERE l.session_id=?1";
+const INSERT_LIVE_AUXILIARY_SAMPLES: &str = "INSERT INTO live_auxiliary_samples(session_id,observed_at,coverage,source_count,saved_count,omitted) VALUES(?1,?2,'sampled_history',?3,?4,?5)";
+const UPDATE_JOBS: &str = "UPDATE jobs SET state='queued',lease_owner=NULL,lease_expires_at=NULL,next_run_at=?2 WHERE job_id=?1";
+
 async fn persist(core: &Core, guard: &ClaimedJob, page: LiveAuxiliary) -> Result<(), CoreError> {
     if page.coverage != "sampled_history"
         || page.messages.len() > 100
@@ -77,31 +83,89 @@ async fn persist(core: &Core, guard: &ClaimedJob, page: LiveAuxiliary) -> Result
         ));
     }
     let guard = guard.clone();
-    core.db.write(move|tx| {
-        guard.check(tx)?;
-        let enabled:bool=tx.query_row("SELECT s.capture_chat=1 AND l.manual_stopped=0 AND l.ended_at IS NULL FROM live_sessions l JOIN subscriptions s ON s.subscription_id=l.subscription_id WHERE l.session_id=?1",[&guard.subject_id],|r|r.get(0))?;
-        if !enabled {return Err(CoreError::Cancelled)}
-        let ts=jobs::now();let mut saved=0;
-        for msg in page.messages {
-            if msg.source_id.is_empty() || msg.source_id.len()>128 || !msg.source_id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_') || msg.kind!="chat" {return Err(CoreError::InvalidInput("live message identity".into()))}
-            saved+=tx.execute("INSERT OR IGNORE INTO live_messages(session_id,source_id,source_time,author,body,kind,observed_at) VALUES(?1,?2,?3,?4,?5,'chat',?6)",rusqlite::params![guard.subject_id,msg.source_id,msg.source_time.map(|v|text(&v,64)),msg.author.map(|v|text(&v,256)),text(&msg.text,4096),ts])?;
-        }
-        tx.execute("INSERT INTO live_auxiliary_samples(session_id,observed_at,coverage,source_count,saved_count,omitted) VALUES(?1,?2,'sampled_history',?3,?4,?5)",rusqlite::params![guard.subject_id,ts,page.source_count,saved as i64,page.omitted])?;
-        let next=(time::OffsetDateTime::now_utc()+time::Duration::seconds(10)).format(&time::format_description::well_known::Rfc3339).map_err(|_|CoreError::Internal("clock".into()))?;
-        tx.execute("UPDATE jobs SET state='queued',lease_owner=NULL,lease_expires_at=NULL,next_run_at=?2 WHERE job_id=?1",rusqlite::params![guard.job_id,next])?;
-        crate::objects::outbox_emit(tx,"live.updated",&guard.subject_id,&json!({"auxiliary_sample":true}))?;
-        Ok(())
-    }).await
+    core.db
+        .write(move |tx| {
+            guard.check(tx)?;
+            let enabled: bool =
+                tx.query_row(SELECT_LIVE_SESSIONS, [&guard.subject_id], |r| r.get(0))?;
+            if !enabled {
+                return Err(CoreError::Cancelled);
+            }
+            let ts = jobs::now();
+            let mut saved = 0;
+            for msg in page.messages {
+                if msg.source_id.is_empty()
+                    || msg.source_id.len() > 128
+                    || !msg
+                        .source_id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                    || msg.kind != "chat"
+                {
+                    return Err(CoreError::InvalidInput("live message identity".into()));
+                }
+                saved += tx.execute(
+                    INSERT_LIVE_MESSAGES,
+                    rusqlite::params![
+                        guard.subject_id,
+                        msg.source_id,
+                        msg.source_time.map(|v| text(&v, 64)),
+                        msg.author.map(|v| text(&v, 256)),
+                        text(&msg.text, 4096),
+                        ts
+                    ],
+                )?;
+            }
+            tx.execute(
+                INSERT_LIVE_AUXILIARY_SAMPLES,
+                rusqlite::params![
+                    guard.subject_id,
+                    ts,
+                    page.source_count,
+                    saved as i64,
+                    page.omitted
+                ],
+            )?;
+            let next = (time::OffsetDateTime::now_utc() + time::Duration::seconds(10))
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|_| CoreError::Internal("clock".into()))?;
+            tx.execute(UPDATE_JOBS, rusqlite::params![guard.job_id, next])?;
+            crate::objects::outbox_emit(
+                tx,
+                "live.updated",
+                &guard.subject_id,
+                &json!({"auxiliary_sample":true}),
+            )?;
+            Ok(())
+        })
+        .await
 }
+
+const SELECT_LIVE_MESSAGES: &str = "SELECT sequence,source_id,source_time,author,body,observed_at FROM live_messages WHERE session_id=?1 AND sequence<?2 ORDER BY sequence DESC LIMIT 31";
+const SELECT_LIVE_AUXILIARY_SAMPLES: &str = "SELECT observed_at,coverage,source_count,saved_count,omitted,failure_class FROM live_auxiliary_samples WHERE session_id=?1 ORDER BY sequence DESC LIMIT 1";
 
 pub async fn page(core: &Core, session: String, before: Option<i64>) -> Result<Value, CoreError> {
     core.db.read(move|c| {
-        let mut items=c.prepare("SELECT sequence,source_id,source_time,author,body,observed_at FROM live_messages WHERE session_id=?1 AND sequence<?2 ORDER BY sequence DESC LIMIT 31")?.query_map(rusqlite::params![session,before.unwrap_or(i64::MAX)],|r|Ok(json!({"sequence":r.get::<_,i64>(0)?,"source_id":r.get::<_,String>(1)?,"source_time":r.get::<_,Option<String>>(2)?,"author":r.get::<_,Option<String>>(3)?,"text":r.get::<_,String>(4)?,"observed_at":r.get::<_,String>(5)?})))?.collect::<Result<Vec<_>,_>>()?;
+        let mut items=c.prepare(SELECT_LIVE_MESSAGES)?.query_map(rusqlite::params![session,before.unwrap_or(i64::MAX)],|r|Ok(json!({
+            "sequence": r.get::<_, i64>(0)?,
+            "source_id": r.get::<_, String>(1)?,
+            "source_time": r.get::<_, Option<String>>(2)?,
+            "author": r.get::<_, Option<String>>(3)?,
+            "text": r.get::<_, String>(4)?,
+            "observed_at": r.get::<_, String>(5)?,
+        })))?.collect::<Result<Vec<_>,_>>()?;
         let more=items.len()>30;items.truncate(30);
         let cursor=if more {items.last().map(|r|r["sequence"].clone())} else {None};
         let total:i64=c.query_row("SELECT count(*) FROM live_messages WHERE session_id=?1",[&session],|r|r.get(0))?;
         use rusqlite::OptionalExtension;
-        let latest:Option<Value>=c.query_row("SELECT observed_at,coverage,source_count,saved_count,omitted,failure_class FROM live_auxiliary_samples WHERE session_id=?1 ORDER BY sequence DESC LIMIT 1",[&session],|r|Ok(json!({"observed_at":r.get::<_,String>(0)?,"coverage":r.get::<_,String>(1)?,"source_count":r.get::<_,i64>(2)?,"saved_count":r.get::<_,i64>(3)?,"omitted":r.get::<_,i64>(4)?,"failure_class":r.get::<_,Option<String>>(5)?}))).optional()?;
+        let latest:Option<Value>=c.query_row(SELECT_LIVE_AUXILIARY_SAMPLES,[&session],|r|Ok(json!({
+            "observed_at": r.get::<_, String>(0)?,
+            "coverage": r.get::<_, String>(1)?,
+            "source_count": r.get::<_, i64>(2)?,
+            "saved_count": r.get::<_, i64>(3)?,
+            "omitted": r.get::<_, i64>(4)?,
+            "failure_class": r.get::<_, Option<String>>(5)?,
+        }))).optional()?;
         let enabled:bool=c.query_row("SELECT s.capture_chat FROM subscriptions s JOIN live_sessions l ON l.subscription_id=s.subscription_id WHERE l.session_id=?1",[session],|r|r.get(0))?;
         Ok(json!({"items":items,"next_before":cursor,"total":total,"latest":latest,"enabled":enabled,"coverage":"sampled_history"}))
     }).await
@@ -111,7 +175,7 @@ pub async fn page(core: &Core, session: String, before: Option<i64>) -> Result<V
 mod tests {
     use super::*;
     #[tokio::test]
-    async fn c04_c06_live_auxiliary_dedup_budget_pause_and_secrets() {
+    async fn live_auxiliary_dedup_budget_pause_and_secrets() {
         let (_dir, core, scan) = super::super::tests::fixture().await;
         let sid = super::super::register(&core, &scan, super::super::tests::snapshot())
             .await

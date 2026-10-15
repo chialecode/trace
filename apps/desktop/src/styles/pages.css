@@ -1,0 +1,182 @@
+/* Shared by the supported-sites, settings, explorer and profile-selection pages. */
+.page-stack {
+  display: grid;
+  gap: 14px;
+  max-width: 1280px;
+  width: 100%;
+  min-width: 0;
+}
+.page-stack > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.settings-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  max-width: 100%;
+}
+.settings-section > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.page-stack h2,
+.page-stack h3 {
+  margin: 0;
+}
+.page-note {
+  margin: 0;
+  color: #66748a;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+.row-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.row-line > .grow {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.management-link {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 8px;
+  color: #2f6fd0;
+  font-size: 0.75rem;
+  text-decoration: none;
+}
+.state-box {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+  border: 1px dashed #c9d6ea;
+  border-radius: 8px;
+  color: #51627b;
+  background: #f8fbff;
+}
+.state-box[role="alert"] {
+  border-color: #f0b4ae;
+  background: #fff6f5;
+  color: #8a2a21;
+}
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  line-height: 20px;
+  white-space: nowrap;
+  background: #eef2f8;
+  color: #3c4a60;
+}
+.badge.success {
+  background: #e4f6ea;
+  color: #1c6b3a;
+}
+.badge.warning {
+  background: #fff3d9;
+  color: #8a5a00;
+}
+.badge.error {
+  background: #fde8e6;
+  color: #9b2c22;
+}
+.scroll-x {
+  overflow-x: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.plain-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+.plain-table th,
+.plain-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #e6edf7;
+  text-align: left;
+  vertical-align: top;
+}
+.plain-table th {
+  color: #51627b;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.plain-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* A name from outside (file, title, tag) never overflows its cell or reads as markup. */
+.untrusted-text {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  unicode-bidi: plaintext;
+}
+.field {
+  display: grid;
+  gap: 4px;
+  font-size: 0.8125rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.field > span {
+  color: #51627b;
+}
+.field input,
+.field select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid #cdd8ea;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+}
+.field input:focus-visible,
+.field select:focus-visible,
+button:focus-visible,
+[role="treeitem"]:focus-visible,
+tr:focus-visible {
+  outline: 2px solid var(--trace-blue, #3979ff);
+  outline-offset: 1px;
+}
+.tool-button {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #cdd8ea;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+.tool-button.primary {
+  border-color: var(--trace-blue, #3979ff);
+  background: var(--trace-blue, #3979ff);
+  color: #fff;
+}
+.tool-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+@media (max-width: 760px) {
+  .page-stack {
+    gap: 10px;
+  }
+  .plain-table th,
+  .plain-table td {
+    padding: 5px 6px;
+  }
+  .row-line > .grow {
+    flex-basis: 100%;
+  }
+}

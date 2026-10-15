@@ -141,7 +141,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
-    fn c02_article_ops_preserve_lines_styles_images_and_fail_closed() {
+    fn article_ops_preserve_lines_styles_images_and_fail_closed() {
         let d=parse(&json!({"ops":[{"insert":"标题"},{"insert":"\n","attribute":{"header":2}},
             {"insert":"粗体","attributes":{"bold":true}},{"insert":"后半句\n"},
             {"insert":"第一"},{"insert":"\n","attribute":{"list":"ordered"}},

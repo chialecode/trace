@@ -1,0 +1,75 @@
+{
+  "key_bytes_first": [
+    11,
+    48,
+    85,
+    122,
+    159,
+    196,
+    233,
+    14
+  ],
+  "frame": 0,
+  "animation_key": "a4d900ca3d70a3d70a409eb851eb851eb809eb851eb851eb80ca3d70a3d70a400",
+  "ids": [
+    {
+      "method": "GET",
+      "path": "/i/api/graphql/AMIBMjtxEEATh4z8V9GtRg/UserByScreenName",
+      "now": 1800000000,
+      "salt": 90,
+      "id": "WlFqDyDFnrNUaQIn+J22S2wB2v+QtU5jBNnyl6hNZjvc8YqvQGU+0/SJokcYPdbrjKF6HzDV7oOkeRI3yO2GW3wRKs/ghV7KNKBcgnFg9z/XWCXXR0Gt6SMc5lk"
+    },
+    {
+      "method": "GET",
+      "path": "/i/api/graphql/7_KBXBpG0zBPRN6UCIV0-w/UserTweets",
+      "now": 1800000123,
+      "salt": 0,
+      "id": "AAswVXqfxOkOM1h9osfsETZbgKXK7xQ5XoOozfIXPGGGq9D1Gj9kia7T+B1CZ4yx1vsgRWqPtNn+I0htkrfcASZLcJW63wQLb/oGEBjUPRooU2OHLzufPKkcPwM"
+    },
+    {
+      "method": "POST",
+      "path": "/i/api/1.1/jot/client_event.json",
+      "now": 1899999999,
+      "salt": 255,
+      "id": "//TPqoVgOxbxzKeCXTgT7smkf1o1EOvGoXxXMg3ow555VC8K5cCbdlEsB+K9mHNOKQTfupVwSyYB3LeSbUgj/tm0j2pFIPtwsA/z0GyhSsoN9MEdlsl06fpGBfw"
+    }
+  ],
+  "other_keys": [
+    {
+      "key": "AQQHCg0QExYZHB8iJSgrLjE0Nzo9QENGSUxPUlVYW15hZGdqbXBzdnl8f4KFiIuOkZSXmp2go6aprK+ytbi7vsHEx8rN0A==",
+      "animation_key": "69b4e90170a3d70a3d70a110170a3d70a3d70a00",
+      "row": 7,
+      "frame": 0
+    },
+    {
+      "key": "BgoOEhYaHiImKi4yNjo+QkZKTlJWWl5iZmpucnZ6foKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr+AgYKDhIWGg==",
+      "animation_key": "4c699e0f3333333333330547ae147ae147c0547ae147ae147c0f33333333333300",
+      "row": 14,
+      "frame": 2
+    },
+    {
+      "key": "CxAVGh8kKS4zOD1CR0xRVltgZWpvdHl+g4iNkpecoaarsLW6v8TJztPY3eLn7PH2+wAFCg8UGR4jKC0yNzxBRktQVVpfZA==",
+      "animation_key": "a4d900ca3d70a3d70a409eb851eb851eb809eb851eb851eb80ca3d70a3d70a400",
+      "row": 5,
+      "frame": 0
+    },
+    {
+      "key": "EBYcIiguNDpARkxSWF5kanB2fIKIjpSaoKassri+xMrQ1tzi6O70+gAGDBIYHiQqMDY8QkhOVFpgZmxyeH6EipCWnKKorg==",
+      "animation_key": "1366e1007ae147ae147ae007ae147ae147ae100",
+      "row": 12,
+      "frame": 2
+    },
+    {
+      "key": "FRwjKjE4P0ZNVFtiaXB3foWMk5qhqK+2vcTL0tng5+71/AMKERgfJi00O0JJUFdeZWxzeoGIj5adpKuyucDHztXc4+rx+A==",
+      "animation_key": "ff93e0f851eb851eb8503d70a3d70a3d703d70a3d70a3d70f851eb851eb8500",
+      "row": 3,
+      "frame": 0
+    },
+    {
+      "key": "GiIqMjpCSlJaYmpyeoKKkpqiqrK6wsrS2uLq8voCChIaIioyOkJKUlpianJ6goqSmqKqsrrCytLa4ury+gIKEhoiKjI6Qg==",
+      "animation_key": "c9fe33100100",
+      "row": 10,
+      "frame": 2
+    }
+  ]
+}

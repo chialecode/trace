@@ -44,7 +44,12 @@ async function load(append: boolean, cursor?: string) {
   const generation = ++requestGeneration;
   loading.value = true;
   try {
-    const r = await api.archiveTimeline({query:query.value.trim() || undefined, kind:kindFilter.value || undefined, cursor, limit:50});
+    const r = await api.archiveTimeline({
+      query: query.value.trim() || undefined,
+      kind: kindFilter.value || undefined,
+      cursor,
+      limit: 50,
+    });
     if (generation !== requestGeneration) return;
     items.value = append ? items.value.concat(r.items) : r.items;
     nextCursor.value = r.next_cursor;
@@ -111,16 +116,23 @@ const columns: DataTableColumns<TimelineItemDto> = [
     key: "actions",
     width: 90,
     render: (r) =>
-      h(NButton, { size: "small", quaternary: true, onClick: () => openDetail(r) }, { default: () => "详情" }),
+      h(
+        NButton,
+        { size: "small", quaternary: true, onClick: () => openDetail(r) },
+        { default: () => "详情" },
+      ),
   },
 ];
 
 onMounted(() => load(false));
-onBeforeUnmount(() => { ++requestGeneration; ++detailGeneration; });
+onBeforeUnmount(() => {
+  ++requestGeneration;
+  ++detailGeneration;
+});
 </script>
 
 <template>
-  <n-card title="时间线">
+  <n-card title="时间线" data-page="timeline">
     <div class="toolbar">
       <n-input
         v-model:value="query"
@@ -145,16 +157,23 @@ onBeforeUnmount(() => { ++requestGeneration; ++detailGeneration; });
       preset="card"
       title="条目详情"
       style="width: min(720px, 94vw)"
-      @update:show="(v: boolean) => { if (!v) detail = null }"
+      @update:show="
+        (v: boolean) => {
+          if (!v) detail = null;
+        }
+      "
     >
       <n-tag v-if="detail" size="small">{{ String(detail["entry_id"] ?? "") }}</n-tag>
       <h3 v-if="detail">{{ String(detail["title"] ?? "") }}</h3>
       <p v-if="detail" class="body">{{ String(detail["body"] ?? "（无正文）") }}</p>
-      <MediaBrowser :media="detailMedia"/>
-      <h4 v-if="detailRevisions.length" class="rev-title">修订记录（{{ detailRevisions.length }}）</h4>
+      <MediaBrowser :media="detailMedia" />
+      <h4 v-if="detailRevisions.length" class="rev-title">
+        修订记录（{{ detailRevisions.length }}）
+      </h4>
       <div v-for="(rev, i) in detailRevisions" :key="i" class="rev">
         <n-tag size="tiny">{{ String(rev["revision_id"] ?? "") }}</n-tag>
-        完整度 {{ String(rev["completeness"] ?? "?") }} · 观察 {{ formatTime(String(rev["observed_at"] ?? "")) }}
+        完整度 {{ String(rev["completeness"] ?? "?") }} · 观察
+        {{ formatTime(String(rev["observed_at"] ?? "")) }}
       </div>
     </n-modal>
   </n-card>
@@ -163,19 +182,28 @@ onBeforeUnmount(() => { ++requestGeneration; ++detailGeneration; });
 <style scoped>
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
 }
+.toolbar > :deep(.n-input) {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.toolbar > :deep(.n-select) {
+  flex: 0 1 140px;
+  min-width: 0;
+}
 .hint {
   color: #888;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .body {
   white-space: pre-wrap;
 }
 .rev {
   margin: 4px 0;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .rev-title {
   margin: 12px 0 4px;

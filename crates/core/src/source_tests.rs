@@ -69,6 +69,7 @@ fn source() -> ResolvedSource {
             stats: json!({}),
             document: Document::default(),
             metadata: json!({}),
+            unified: None,
         }),
         media: ResolveMediaResult {
             candidates: vec![candidate],
@@ -93,7 +94,7 @@ async fn save(core: &Core) -> Value {
 }
 
 #[tokio::test]
-async fn c14_direct_live_offline_seals_but_denial_and_unknown_do_not() {
+async fn direct_live_offline_seals_but_denial_and_unknown_do_not() {
     for site in ["bilibili", "douyin"] {
         let (_dir, core) = fixture().await;
         let mode = Arc::new(AtomicUsize::new(0));
@@ -144,6 +145,7 @@ async fn c14_direct_live_offline_seals_but_denial_and_unknown_do_not() {
             SourceConfirmArgs {
                 preview_id: preview["preview_id"].as_str().unwrap().into(),
                 selected: selected(&preview),
+                destination: None,
             },
         )
         .await
@@ -215,7 +217,7 @@ async fn drain_source_jobs(core: &Core) {
             job.mark_running(&core.db).await.unwrap();
             match job.job_type.as_str() {
                 "source_acquire" => run(core, &job).await,
-                "media" => crate::core::run_media(core, &job).await,
+                "media" => crate::pipeline::media::run_media(core, &job).await,
                 "quality_maintenance" => crate::quality::maintain(core, &job).await,
                 _ => panic!("unexpected one-source job {}", job.job_type),
             }
@@ -227,7 +229,7 @@ async fn drain_source_jobs(core: &Core) {
 }
 
 #[tokio::test]
-async fn c14_live_distinct_previews_share_queued_request_and_reject_changed_choice() {
+async fn live_distinct_previews_share_queued_request_and_reject_changed_choice() {
     let (_dir, core) = fixture().await;
     let mut source = source();
     source.kind = "live".into();
@@ -259,14 +261,16 @@ async fn c14_live_distinct_previews_share_queued_request_and_reject_changed_choi
             &core,
             SourceConfirmArgs {
                 preview_id: a["preview_id"].as_str().unwrap().into(),
-                selected: selected(&a)
+                selected: selected(&a),
+                destination: None,
             }
         ),
         confirm(
             &core,
             SourceConfirmArgs {
                 preview_id: b["preview_id"].as_str().unwrap().into(),
-                selected: selected(&b)
+                selected: selected(&b),
+                destination: None,
             }
         )
     );
@@ -281,7 +285,8 @@ async fn c14_live_distinct_previews_share_queued_request_and_reject_changed_choi
             &core,
             SourceConfirmArgs {
                 preview_id: c["preview_id"].as_str().unwrap().into(),
-                selected: selected(&c)
+                selected: selected(&c),
+                destination: None,
             }
         )
         .await
@@ -317,6 +322,7 @@ async fn c14_live_distinct_previews_share_queued_request_and_reject_changed_choi
         SourceConfirmArgs {
             preview_id: c["preview_id"].as_str().unwrap().into(),
             selected: selected(&c),
+            destination: None,
         },
     )
     .await
@@ -326,7 +332,7 @@ async fn c14_live_distinct_previews_share_queued_request_and_reject_changed_choi
 }
 
 #[tokio::test]
-async fn c14_source_preview_expiry_credential_change_idempotency_cancel_and_restart() {
+async fn source_preview_expiry_credential_change_idempotency_cancel_and_restart() {
     let (_dir, core) = fixture().await;
     let preview = save(&core).await;
     let id = preview["preview_id"].as_str().unwrap().to_owned();
@@ -336,7 +342,8 @@ async fn c14_source_preview_expiry_credential_change_idempotency_cancel_and_rest
             &core,
             SourceConfirmArgs {
                 preview_id: id.clone(),
-                selected: vec![]
+                selected: vec![],
+                destination: None,
             }
         )
         .await
@@ -347,7 +354,8 @@ async fn c14_source_preview_expiry_credential_change_idempotency_cancel_and_rest
             &core,
             SourceConfirmArgs {
                 preview_id: id.clone(),
-                selected: vec!["forged-choice".into()]
+                selected: vec!["forged-choice".into()],
+                destination: None,
             }
         )
         .await
@@ -356,6 +364,7 @@ async fn c14_source_preview_expiry_credential_change_idempotency_cancel_and_rest
     let a = SourceConfirmArgs {
         preview_id: id.clone(),
         selected: selected(&preview),
+        destination: None,
     };
     let (first, second) = tokio::join!(confirm(&core, a.clone()), confirm(&core, a.clone()));
     assert_eq!(first.unwrap()["job_id"], second.unwrap()["job_id"]);
@@ -406,7 +415,8 @@ async fn c14_source_preview_expiry_credential_change_idempotency_cancel_and_rest
             &core,
             SourceConfirmArgs {
                 preview_id: id,
-                selected: selected(&preview)
+                selected: selected(&preview),
+                destination: None,
             }
         )
         .await
@@ -437,7 +447,8 @@ async fn c14_source_preview_expiry_credential_change_idempotency_cancel_and_rest
             &core,
             SourceConfirmArgs {
                 preview_id: preview["preview_id"].as_str().unwrap().into(),
-                selected: selected(&preview)
+                selected: selected(&preview),
+                destination: None,
             }
         )
         .await
@@ -447,7 +458,7 @@ async fn c14_source_preview_expiry_credential_change_idempotency_cancel_and_rest
 }
 
 #[test]
-fn c14_selection_rejects_downgrade_required_resource_changes_and_actual_mismatch() {
+fn selection_rejects_downgrade_required_resource_changes_and_actual_mismatch() {
     let original = source();
     let before = source_snapshot(&original).unwrap();
     let ids = vec![before["offers"][0]["id"].as_str().unwrap().into()];
@@ -512,8 +523,13 @@ fn c14_selection_rejects_downgrade_required_resource_changes_and_actual_mismatch
     }
 }
 
+const SELECT_MEDIA_VARIANTS: &str = "SELECT b.blob_id,b.size FROM media_variants v JOIN blobs b ON b.blob_id=v.blob_id JOIN asset_selections s ON s.variant_id=v.variant_id";
+const SELECT_SUBSCRIPTIONS: &str =
+    "SELECT count(*) FROM subscriptions WHERE acquisition_kind='subscription'";
+const SELECT_ASSET_SELECTIONS: &str = "SELECT v.blob_id FROM asset_selections s JOIN media_variants v ON v.variant_id=s.variant_id WHERE v.source_representation!='playback-mux-v1' LIMIT 1";
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn c14_two_production_links_selected_media_core_objects_offline_and_upgrade() {
+async fn two_production_links_selected_media_core_objects_offline_and_upgrade() {
     for site in ["bilibili", "douyin"] {
         let (dir, core) = fixture().await;
         let media = dir.path().join("test.mp4");
@@ -626,14 +642,32 @@ async fn c14_two_production_links_selected_media_core_objects_offline_and_upgrad
         let high = Arc::new(AtomicBool::new(false));
         let offered = high.clone();
         core.host.set_proxy_fixture(Arc::new(move|params|{
-            let high=offered.load(Ordering::SeqCst);let length=if high {high_length} else {length};let width=if high {1920} else {1280};let height=if high {1080} else {720};let name=if high {"high"} else {"video"};
+            let high=offered.load(Ordering::SeqCst);
+            let length=if high {high_length} else {length};
+            let width=if high {1920} else {1280};
+            let height=if high {1080} else {720};
+            let name=if high {"high"} else {"video"};
             let u=url::Url::parse(params["url"].as_str().unwrap()).unwrap();let value=match u.path(){
                 "/x/web-interface/nav"=>serde_json::from_str::<Value>(include_str!("../../../tests/fixtures/bilibili/nav.json")).unwrap(),
                 "/x/web-interface/wbi/view"=>json!({"code":0,"data":{"bvid":"BV1Ab4C5D6E7","aid":1,"title":"合成视频","desc":"正文","owner":{"mid":1,"name":"合成作者"},"pages":[{"cid":2,"page":1,"part":"正片","duration":1}],"stat":{}}}),
                 "/x/player/wbi/playurl"=>json!({"code":0,"data":{"quality":if high {120} else {80},"durl":[{"url":format!("https://fixture.bilivideo.com/{name}.mp4"),"size":length,"length":1000}]}}),
-                "/aweme/v1/web/aweme/detail/"=>json!({"status_code":0,"aweme_detail":{"aweme_id":"7000000000000000001","aweme_type":0,"desc":"合成视频","author":{"sec_uid":"MS4synthetic","nickname":"合成作者"},"video":{"width":width,"height":height,"duration":1000,"play_addr":{"uri":"video","url_list":[format!("https://fixture.douyinvod.com/{name}.mp4")],"data_size":length}}}}),
+                "/aweme/v1/web/aweme/detail/"=>json!({
+                    "status_code": 0,
+                    "aweme_detail": {
+                        "aweme_id": "7000000000000000001",
+                        "aweme_type": 0,
+                        "desc": "合成视频",
+                        "author": {"sec_uid":"MS4synthetic", "nickname":"合成作者"},
+                        "video": {"width":width, "height":height, "duration":1000, "play_addr":{"uri":"video", "url_list":[format!("https://fixture.douyinvod.com/{name}.mp4")], "data_size":length}},
+                    },
+                }),
                 _=>panic!("one-source operation must not scan an author: {}",u.path())};
-            Ok(ProxyFetchResult{status:200,headers:json!({}),body_b64:base64::engine::general_purpose::STANDARD.encode(value.to_string()),final_url:params["url"].as_str().unwrap().into()})
+            Ok(ProxyFetchResult {
+                status: 200,
+                headers: json!({}),
+                body_b64: base64::engine::general_purpose::STANDARD.encode(value.to_string()),
+                final_url: params["url"].as_str().unwrap().into(),
+            })
         }));
         let link = if site == "bilibili" {
             "https://www.bilibili.com/video/BV1Ab4C5D6E7"
@@ -654,6 +688,7 @@ async fn c14_two_production_links_selected_media_core_objects_offline_and_upgrad
             SourceConfirmArgs {
                 preview_id: p["preview_id"].as_str().unwrap().into(),
                 selected: selected(&p),
+                destination: None,
             },
         )
         .await
@@ -667,7 +702,7 @@ async fn c14_two_production_links_selected_media_core_objects_offline_and_upgrad
                 job.mark_running(&core.db).await.unwrap();
                 let result = match job.job_type.as_str() {
                     "source_acquire" => run(&core, &job).await,
-                    "media" => crate::core::run_media(&core, &job).await,
+                    "media" => crate::pipeline::media::run_media(&core, &job).await,
                     "quality_maintenance" => crate::quality::maintain(&core, &job).await,
                     _ => panic!("unexpected source work {}", job.job_type),
                 };
@@ -675,7 +710,15 @@ async fn c14_two_production_links_selected_media_core_objects_offline_and_upgrad
                 job.succeed(&core.db).await.unwrap();
             }
         }
-        let rows=core.db.read(|c|Ok(c.prepare("SELECT b.blob_id,b.size FROM media_variants v JOIN blobs b ON b.blob_id=v.blob_id JOIN asset_selections s ON s.variant_id=v.variant_id")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))?.collect::<Result<Vec<_>,_>>()?)).await.unwrap();
+        let rows = core
+            .db
+            .read(|c| {
+                Ok(c.prepare(SELECT_MEDIA_VARIANTS)?
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?)
+            })
+            .await
+            .unwrap();
         assert!(!rows.is_empty());
         assert!(rows.iter().any(|(_, n)| *n == length as i64));
         for (blob, _) in rows {
@@ -704,11 +747,7 @@ async fn c14_two_production_links_selected_media_core_objects_offline_and_upgrad
             .db
             .read(|c| {
                 Ok((
-                    c.query_row(
-                        "SELECT count(*) FROM subscriptions WHERE acquisition_kind='subscription'",
-                        [],
-                        |r| r.get::<_, i64>(0),
-                    )?,
+                    c.query_row(SELECT_SUBSCRIPTIONS, [], |r| r.get::<_, i64>(0))?,
                     c.query_row("SELECT count(*) FROM jobs WHERE job_type='scan'", [], |r| {
                         r.get::<_, i64>(0)
                     })?,
@@ -732,6 +771,7 @@ async fn c14_two_production_links_selected_media_core_objects_offline_and_upgrad
             SourceConfirmArgs {
                 preview_id: p["preview_id"].as_str().unwrap().into(),
                 selected: selected(&p),
+                destination: None,
             },
         )
         .await
@@ -745,7 +785,11 @@ async fn c14_two_production_links_selected_media_core_objects_offline_and_upgrad
             1,
             "{site}: explicit source upgrade missing"
         );
-        let selected_blob=core.db.read(|c|Ok(c.query_row("SELECT v.blob_id FROM asset_selections s JOIN media_variants v ON v.variant_id=s.variant_id WHERE v.source_representation!='playback-mux-v1' LIMIT 1",[],|r|r.get::<_,String>(0))?)).await.unwrap();
+        let selected_blob = core
+            .db
+            .read(|c| Ok(c.query_row(SELECT_ASSET_SELECTIONS, [], |r| r.get::<_, String>(0))?))
+            .await
+            .unwrap();
         assert_eq!(
             selected_blob,
             format!("sha256:{}", digest_bytes(&expected)),
@@ -762,7 +806,14 @@ async fn c14_two_production_links_selected_media_core_objects_offline_and_upgrad
         )
         .await
         .unwrap();
-        core.db.read(move|c|{let blob:String=c.query_row("SELECT v.blob_id FROM asset_selections s JOIN media_variants v ON v.variant_id=s.variant_id WHERE v.source_representation!='playback-mux-v1' LIMIT 1",[],|r|r.get(0))?;assert_eq!(blob,format!("sha256:{high_hash}"));Ok(())}).await.unwrap();
+        core.db
+            .read(move |c| {
+                let blob: String = c.query_row(SELECT_ASSET_SELECTIONS, [], |r| r.get(0))?;
+                assert_eq!(blob, format!("sha256:{high_hash}"));
+                Ok(())
+            })
+            .await
+            .unwrap();
         let profile = core.profile.clone();
         core.shutdown().await;
         drop(core);
@@ -786,8 +837,12 @@ fn digest_bytes(bytes: &[u8]) -> String {
         .collect()
 }
 
+const SELECT_MEDIA_ITEMS: &str = "SELECT m.role,v.blob_id FROM media_items m JOIN asset_selections s ON s.media_id=m.media_id JOIN media_variants v ON v.variant_id=s.variant_id WHERE m.required=1 ORDER BY m.role DESC";
+const SELECT_MEDIA_VARIANTS_2: &str =
+    "SELECT blob_id FROM media_variants WHERE source_representation='playback-mux-v1'";
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn c14_dash_choice_survives_safe_id_normalization_and_keeps_required_audio() {
+async fn dash_choice_survives_safe_id_normalization_and_keeps_required_audio() {
     let (dir, core) = fixture().await;
     let muxed = dir.path().join("fixture.mp4");
     let video = dir.path().join("video.mp4");
@@ -872,10 +927,26 @@ async fn c14_dash_choice_survives_safe_id_normalization_and_keeps_required_audio
                 value["code"]=json!(-101);value
             },
             "/x/web-interface/wbi/view" => json!({"code":0,"data":{"bvid":"BV1Ab4C5D6E7","aid":1,"title":"DASH合成选项","desc":"必要音轨","duration":2,"owner":{"mid":1,"name":"合成作者"},"pages":[{"cid":2,"page":1,"part":"正片","duration":2}],"stat":{}}}),
-            "/x/player/wbi/playurl" => json!({"code":0,"data":{"dash":{"video":[{"id":80,"width":1920,"height":1080,"codecs":"avc1.640028","frame_rate":"25","bandwidth":2000000,"base_url":"https://fixture.bilivideo.com/unselected.mp4"},{"id":64,"width":1280,"height":720,"codecs":"avc1.640028","frame_rate":"25","bandwidth":1000000,"base_url":"https://fixture.bilivideo.com/video.mp4"}],"audio":[{"id":30280,"codecs":"mp4a.40.2","bandwidth":128000,"base_url":"https://fixture.bilivideo.com/audio.m4a"}]}}}),
+            "/x/player/wbi/playurl" => json!({
+                "code": 0,
+                "data": {
+                    "dash": {
+                        "video": [
+                            {"id":80, "width":1920, "height":1080, "codecs":"avc1.640028", "frame_rate":"25", "bandwidth":2000000, "base_url":"https://fixture.bilivideo.com/unselected.mp4"},
+                            {"id":64, "width":1280, "height":720, "codecs":"avc1.640028", "frame_rate":"25", "bandwidth":1000000, "base_url":"https://fixture.bilivideo.com/video.mp4"},
+                        ],
+                        "audio": [{"id":30280, "codecs":"mp4a.40.2", "bandwidth":128000, "base_url":"https://fixture.bilivideo.com/audio.m4a"}],
+                    },
+                },
+            }),
             _ => panic!("one-shot source made an unrelated metadata request"),
         };
-        Ok(ProxyFetchResult { status:200, headers:json!({}), body_b64:base64::engine::general_purpose::STANDARD.encode(value.to_string()), final_url:params["url"].as_str().unwrap().into() })
+        Ok(ProxyFetchResult {
+            status: 200,
+            headers: json!({}),
+            body_b64: base64::engine::general_purpose::STANDARD.encode(value.to_string()),
+            final_url: params["url"].as_str().unwrap().into(),
+        })
     }));
     let p = preview(
         &core,
@@ -899,13 +970,22 @@ async fn c14_dash_choice_survives_safe_id_normalization_and_keeps_required_audio
         SourceConfirmArgs {
             preview_id: p["preview_id"].as_str().unwrap().into(),
             selected: chosen,
+            destination: None,
         },
     )
     .await
     .unwrap();
     drain_source_jobs(&core).await;
     server.await.unwrap();
-    let selected=core.db.read(|c|Ok(c.prepare("SELECT m.role,v.blob_id FROM media_items m JOIN asset_selections s ON s.media_id=m.media_id JOIN media_variants v ON v.variant_id=s.variant_id WHERE m.required=1 ORDER BY m.role DESC")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<Result<Vec<_>,_>>()?)).await.unwrap();
+    let selected = core
+        .db
+        .read(|c| {
+            Ok(c.prepare(SELECT_MEDIA_ITEMS)?
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<Result<Vec<_>, _>>()?)
+        })
+        .await
+        .unwrap();
     assert_eq!(selected.len(), 2);
     for ((role, blob), digest) in selected.iter().zip(expected) {
         assert!(matches!(role.as_str(), "video" | "audio"));
@@ -917,13 +997,7 @@ async fn c14_dash_choice_survives_safe_id_normalization_and_keeps_required_audio
     }
     let playback: String = core
         .db
-        .read(|c| {
-            Ok(c.query_row(
-                "SELECT blob_id FROM media_variants WHERE source_representation='playback-mux-v1'",
-                [],
-                |r| r.get(0),
-            )?)
-        })
+        .read(|c| Ok(c.query_row(SELECT_MEDIA_VARIANTS_2, [], |r| r.get(0))?))
         .await
         .unwrap();
     let measured = core
@@ -951,4 +1025,182 @@ async fn c14_dash_choice_survives_safe_id_normalization_and_keeps_required_audio
             .any(|r| r["state"] == "succeeded")
     );
     reopened.shutdown().await;
+}
+
+/// A post with a picture and some text, as a site that is not video-only resolves it.
+fn post() -> ResolvedSource {
+    let mut value = source();
+    let image = ResourceIdentityDto {
+        role: "image".into(),
+        source_attachment_id: "img-1".into(),
+        position: 0,
+        title: None,
+        group_key: None,
+        required: true,
+    };
+    value.kind = "entry".into();
+    value.canonical_url = "https://weibo.com/1/AbC".into();
+    let detail = value.detail.as_mut().unwrap();
+    detail.native_kind = "post".into();
+    detail.native_entry_key = "AbC".into();
+    detail.resources = vec![image.clone()];
+    value.media.candidates = vec![MediaCandidate {
+        resource: image,
+        representation: "orig".into(),
+        kind: "muxed".into(),
+        segments: vec![UrlSet {
+            primary: "https://wx1.sinaimg.cn/large/a.jpg".into(),
+            backups: vec![],
+            expected_size: Some(10),
+            expected_sha256: None,
+        }],
+        public_headers: json!({}),
+        expected_size: Some(10),
+        expected_sha256: None,
+        claimed_spec: json!({"width":100,"height":100}),
+    }];
+    value
+}
+
+#[tokio::test]
+async fn a_post_link_keeps_its_kind_and_a_destination_makes_one_download_request() {
+    let (dir, core) = fixture().await;
+    let preview = save_preview(&core, "weibo", post(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(preview["kind"], "entry");
+    let out = dir.path().join("out");
+    // A folder that cannot be used is refused before the request exists.
+    let bad = SourceConfirmArgs {
+        preview_id: preview["preview_id"].as_str().unwrap().into(),
+        selected: selected(&preview),
+        destination: Some(trace_contracts::preview::DownloadTarget {
+            kind: "folder".into(),
+            dir: Some("relative".into()),
+        }),
+    };
+    assert!(confirm(&core, bad).await.is_err());
+    let confirmed = confirm(
+        &core,
+        SourceConfirmArgs {
+            preview_id: preview["preview_id"].as_str().unwrap().into(),
+            selected: selected(&preview),
+            destination: Some(trace_contracts::preview::DownloadTarget {
+                kind: "folder".into(),
+                dir: Some(out.to_string_lossy().into_owned()),
+            }),
+        },
+    )
+    .await
+    .unwrap();
+    let delivery = confirmed["delivery_id"].as_str().expect("a request exists");
+    let (kind, items, payload): (String, i64, String) = core
+        .db
+        .read({
+            let delivery = delivery.to_owned();
+            move |c| {
+                Ok((
+                    c.query_row("SELECT native_kind FROM entries", [], |r| r.get(0))?,
+                    c.query_row(
+                        "SELECT count(*) FROM delivery_items WHERE delivery_id=?1",
+                        [&delivery],
+                        |r| r.get(0),
+                    )?,
+                    c.query_row(
+                        "SELECT payload FROM jobs WHERE job_type='source_acquire'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                ))
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!((kind.as_str(), items), ("post", 1));
+    let payload: Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(payload["delivery_id"], delivery);
+    // Cancelling the link request cancels the download request with it.
+    cancel(&core, preview["preview_id"].as_str().unwrap().into())
+        .await
+        .unwrap();
+    let state: String = core
+        .db
+        .read(|c| Ok(c.query_row("SELECT state FROM deliveries", [], |r| r.get(0))?))
+        .await
+        .unwrap();
+    assert_eq!(state, "cancelled");
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_text_only_post_has_nothing_to_choose_and_a_live_room_cannot_go_to_a_folder() {
+    let (_dir, core) = fixture().await;
+    let mut text = post();
+    text.detail.as_mut().unwrap().resources.clear();
+    text.media.candidates.clear();
+    let preview = save_preview(&core, "weibo", text, None, None)
+        .await
+        .unwrap();
+    assert!(preview["offers"].as_array().unwrap().is_empty());
+    let confirmed = confirm(
+        &core,
+        SourceConfirmArgs {
+            preview_id: preview["preview_id"].as_str().unwrap().into(),
+            selected: vec![],
+            destination: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(confirmed["entry_id"].is_string());
+    assert!(confirmed["delivery_id"].is_null(), "no folder, no request");
+    // A video that offers nothing is still refused.
+    let mut empty = source();
+    empty.media.candidates.clear();
+    assert!(
+        save_preview(&core, "douyin", empty, None, None)
+            .await
+            .is_err()
+    );
+    // Only an entry can go to a folder.
+    let live = ResolvedSource {
+        kind: "live".into(),
+        canonical_url: "https://live.douyin.com/77".into(),
+        native_account_key: "MS4synthetic".into(),
+        display_name: None,
+        source_duration_seconds: None,
+        detail: None,
+        media: ResolveMediaResult {
+            candidates: vec![],
+            notes: json!({}),
+        },
+        live: Some(LiveSnapshot {
+            room_key: "77".into(),
+            state: "live".into(),
+            source_session: Some("s".into()),
+            title: "直播".into(),
+            metadata: json!({}),
+            streams: vec![LiveStream {
+                protocol: "flv".into(),
+                url: "https://fixture.douyinvod.com/live.flv".into(),
+                quality: "origin".into(),
+                audio_only: false,
+                public_headers: json!({}),
+            }],
+        }),
+    };
+    let preview = save_preview(&core, "douyin", live, None, None)
+        .await
+        .unwrap();
+    let refused = confirm(
+        &core,
+        SourceConfirmArgs {
+            preview_id: preview["preview_id"].as_str().unwrap().into(),
+            selected: selected(&preview),
+            destination: Some(trace_contracts::preview::DownloadTarget::library()),
+        },
+    )
+    .await;
+    assert!(refused.is_err());
+    core.shutdown().await;
 }

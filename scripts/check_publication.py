@@ -1,9 +1,11 @@
 """Check public working files AND staged blobs; never print matched secrets."""
 from __future__ import annotations
 import argparse
+import json
 from pathlib import Path
 import re
 import subprocess
+from urllib.parse import urlsplit
 
 PRIVATE_DIRS = {'reference', '.local', 'profiles', 'archives', 'artifacts', 'tmp'}
 TEXT_SUFFIXES = {'.md', '.json', '.yaml', '.yml', '.toml', '.py', '.ts', '.vue', '.css', '.rs', '.txt', '.html', '.lock'}
@@ -14,11 +16,44 @@ RULES = {
 }
 
 
+#: Path words of profile links that name a page kind, not an account.
+LINK_WORDS = {'profile', 'channel', 'videos', 'shorts', 'status', 'explore', 'people', 'photo', 'video', 'space', 'detail'}
+
+
 def git(root, *args):
     return subprocess.check_output(['git', '-C', str(root), *args], stderr=subprocess.DEVNULL)
 
 
-def inspect(path: str, raw: bytes) -> list[str]:
+def _strings(value):
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+    elif isinstance(value, (str, int)) and not isinstance(value, bool):
+        yield str(value)
+
+
+def private_targets(root: Path) -> re.Pattern | None:
+    """The user's real test targets (accounts, handles, ids), read only from the ignored local
+    target files, so a test or document cannot quietly carry them. Absent files mean no rule."""
+    names = set()
+    for path in sorted((root / '.local' / 'site-check').glob('*targets*.json')):
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        for value in _strings(data.get('targets') if isinstance(data, dict) else None):
+            parts = urlsplit(value).path.split('/') if value.startswith(('http://', 'https://')) else [value]
+            names.update(p.lstrip('@') for p in parts if p.lstrip('@').lower() not in LINK_WORDS)
+    names = sorted(n for n in names if len(n) >= 6 and re.fullmatch(r'[\w.-]+', n))
+    if not names:
+        return None
+    return re.compile(r'(?i)(?<![\w])(?:' + '|'.join(map(re.escape, names)) + r')(?![\w])')
+
+
+def inspect(path: str, raw: bytes, targets: re.Pattern | None = None) -> list[str]:
     p = Path(path)
     reasons = []
     if any(part in PRIVATE_DIRS for part in p.parts) or (p.name.startswith('.env') and p.name != '.env.example') or p.suffix in {'.db', '.sqlite', '.sqlite3'}:
@@ -26,24 +61,27 @@ def inspect(path: str, raw: bytes) -> list[str]:
     if p.suffix in TEXT_SUFFIXES or p.name in {'AGENTS.md', 'README.md'}:
         text = raw.decode('utf-8', errors='replace')
         reasons.extend(name for name, regex in RULES.items() if regex.search(text))
+        if targets is not None and targets.search(text):
+            reasons.append('private-target')
     return reasons
 
 
 def validate(root: Path) -> list[str]:
     problems = []
+    targets = private_targets(root)
     tracked = set(git(root, 'ls-files', '-z').decode().split('\0')) - {''}
     public = set(git(root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard').decode().split('\0')) - {''}
     for path in sorted(public):
         file = root / path
         if file.is_file() and not file.is_symlink():
-            for rule in inspect(path, file.read_bytes()):
+            for rule in inspect(path, file.read_bytes(), targets):
                 problems.append(f'worktree:{path}: {rule}')
         if path in tracked:
             try:
                 staged = git(root, 'show', ':' + path)
             except subprocess.CalledProcessError:
                 continue
-            for rule in inspect(path, staged):
+            for rule in inspect(path, staged, targets):
                 problems.append(f'index:{path}: {rule}')
     return problems
 

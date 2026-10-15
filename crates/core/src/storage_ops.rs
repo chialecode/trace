@@ -287,27 +287,61 @@ pub async fn restore(
     backup_root: &Path,
     target_root: &Path,
 ) -> Result<serde_json::Value, CoreError> {
-    use crate::paths::{blob_sha, no_links, sha256};
+    use crate::paths::no_links;
     no_links(backup_root)?;
     no_links(target_root)?;
-    let manifest_path = backup_root.join("manifest.json");
-    no_links(&manifest_path)?;
-    let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
-    if manifest["backup_schema"].as_i64() != Some(1) {
-        return Err(CoreError::InvalidInput("unsupported backup schema".into()));
-    }
+    let manifest = read_manifest(backup_root)?;
     if target_root.exists() && std::fs::read_dir(target_root)?.next().is_some() {
         return Err(CoreError::InvalidInput(
             "restore target must be empty".into(),
         ));
     }
-    // Validate all untrusted identities before any destination write, even omitted objects.
+    let included = declared_objects(&manifest)?;
+    let src_db = backup_root.join("catalog.sqlite3");
+    let source = open_verified_catalog(&src_db, &manifest)?;
+    let (wanted, verified) = verify_objects(&source, backup_root, included)?;
+    drop(source);
+    std::fs::create_dir_all(target_root)?;
+    let target = std::fs::canonicalize(target_root)?;
+    let profile = Profile {
+        archive_id: format!("restored-{}", uuid::Uuid::new_v4()),
+        data_root: target.join("data"),
+        archive_root: target.join("archive"),
+        ..Profile::default()
+    };
+    install_catalog(&profile, &src_db, &manifest)?;
+    install_objects(&profile, &verified)?;
+    let profile_path = target.join("profile.json");
+    std::fs::write(&profile_path, serde_json::to_vec_pretty(&profile)?)?;
+    Ok(serde_json::json!({
+        "restored_objects": verified.len(),
+        "missing_objects": wanted.len() - verified.len(),
+        "profile_path": profile_path,
+        "credentials": "require-relogin",
+    }))
+}
+
+fn read_manifest(backup_root: &Path) -> Result<serde_json::Value, CoreError> {
+    let manifest_path = backup_root.join("manifest.json");
+    crate::paths::no_links(&manifest_path)?;
+    let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+    if manifest["backup_schema"].as_i64() != Some(1) {
+        return Err(CoreError::InvalidInput("unsupported backup schema".into()));
+    }
+    Ok(manifest)
+}
+
+/// Digest → (size, included) as the manifest declares. Validate all untrusted identities
+/// before any destination write, even omitted objects.
+fn declared_objects(
+    manifest: &serde_json::Value,
+) -> Result<std::collections::HashMap<String, (i64, bool)>, CoreError> {
     let objs = manifest["objects"]
         .as_array()
         .ok_or_else(|| CoreError::InvalidInput("objects missing".into()))?;
     let mut included = std::collections::HashMap::new();
     for o in objs {
-        let digest = blob_sha(o["blob_id"].as_str().unwrap_or_default())?;
+        let digest = crate::paths::blob_sha(o["blob_id"].as_str().unwrap_or_default())?;
         let size = o["size"]
             .as_i64()
             .filter(|s| *s >= 0)
@@ -322,13 +356,22 @@ pub async fn restore(
             return Err(CoreError::InvalidInput("duplicate object".into()));
         }
     }
-    let src_db = backup_root.join("catalog.sqlite3");
-    no_links(&src_db)?;
-    if hash_file(&src_db)? != sha256(manifest["db_sha256"].as_str().unwrap_or_default())? {
+    Ok(included)
+}
+
+/// Opens the backup's catalog read-only after its checksum, schema version and integrity
+/// have been checked.
+fn open_verified_catalog(
+    src_db: &Path,
+    manifest: &serde_json::Value,
+) -> Result<rusqlite::Connection, CoreError> {
+    crate::paths::no_links(src_db)?;
+    let actual = hash_file(src_db)?;
+    if actual != crate::paths::sha256(manifest["db_sha256"].as_str().unwrap_or_default())? {
         return Err(CoreError::InvalidInput("db checksum mismatch".into()));
     }
     let source =
-        rusqlite::Connection::open_with_flags(&src_db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        rusqlite::Connection::open_with_flags(src_db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let version: String = source.query_row(
         "SELECT value FROM meta WHERE key='schema_version'",
         [],
@@ -350,6 +393,18 @@ pub async fn restore(
             "invalid database relationships".into(),
         ));
     }
+    Ok(source)
+}
+
+/// What the catalog expects, and which of those objects the backup holds intact.
+type VerifiedObjects = (Vec<(String, i64)>, Vec<(String, std::path::PathBuf)>);
+
+fn verify_objects(
+    source: &rusqlite::Connection,
+    backup_root: &Path,
+    mut included: std::collections::HashMap<String, (i64, bool)>,
+) -> Result<VerifiedObjects, CoreError> {
+    use crate::paths::{blob_sha, no_links};
     let wanted: Vec<(String, i64)> = source
         .prepare("SELECT blob_id,size FROM blobs")?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -360,18 +415,19 @@ pub async fn restore(
         if *size < 0 {
             return Err(CoreError::InvalidInput("invalid blob size".into()));
         }
-        if let Some((declared, true)) = included.remove(digest) {
-            if declared != *size {
-                return Err(CoreError::InvalidInput("manifest size mismatch".into()));
+        let Some((declared, true)) = included.remove(digest) else {
+            continue;
+        };
+        if declared != *size {
+            return Err(CoreError::InvalidInput("manifest size mismatch".into()));
+        }
+        let src = backup_root.join("objects").join(digest);
+        no_links(&src)?;
+        if src.exists() {
+            if src.metadata()?.len() != *size as u64 || hash_file(&src)? != digest {
+                return Err(CoreError::InvalidInput("object checksum mismatch".into()));
             }
-            let src = backup_root.join("objects").join(digest);
-            no_links(&src)?;
-            if src.exists() {
-                if src.metadata()?.len() != *size as u64 || hash_file(&src)? != digest {
-                    return Err(CoreError::InvalidInput("object checksum mismatch".into()));
-                }
-                verified.push((blob.clone(), src));
-            }
+            verified.push((blob.clone(), src));
         }
     }
     if !included.is_empty() {
@@ -379,23 +435,32 @@ pub async fn restore(
             "manifest object absent from catalog".into(),
         ));
     }
-    drop(source);
-    std::fs::create_dir_all(target_root)?;
-    let target = std::fs::canonicalize(target_root)?;
-    let profile = Profile {
-        archive_id: format!("restored-{}", uuid::Uuid::new_v4()),
-        data_root: target.join("data"),
-        archive_root: target.join("archive"),
-        ..Profile::default()
-    };
+    Ok((wanted, verified))
+}
+
+/// Copies the catalog into the restored profile; the copy is verified too, since a stale
+/// preflight digest is never trusted.
+fn install_catalog(
+    profile: &Profile,
+    src_db: &Path,
+    manifest: &serde_json::Value,
+) -> Result<(), CoreError> {
     std::fs::create_dir_all(profile.db_path().parent().unwrap())?;
-    std::fs::copy(&src_db, profile.db_path())?;
-    // Destination copy is also verified; never trust a stale preflight digest.
+    std::fs::copy(src_db, profile.db_path())?;
     if hash_file(&profile.db_path())? != manifest["db_sha256"].as_str().unwrap_or_default() {
         return Err(CoreError::InvalidInput(
             "copied db checksum mismatch".into(),
         ));
     }
+    Ok(())
+}
+
+/// Resets what must not survive a restore (credentials, in-flight work, replica claims),
+/// then copies the verified objects in and marks their replicas verified.
+fn install_objects(
+    profile: &Profile,
+    verified: &[(String, std::path::PathBuf)],
+) -> Result<(), CoreError> {
     let mut conn = rusqlite::Connection::open(profile.db_path())?;
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM credentials_state", [])?;
@@ -405,14 +470,20 @@ pub async fn restore(
     )?;
     tx.execute("DELETE FROM materializations", [])?;
     tx.execute("DELETE FROM receipts", [])?;
+    // The restored library is the one in the restored profile, whatever folders the backed-up
+    // machine used.
+    crate::store::library::reset_for_restore(&tx)?;
     tx.execute("DELETE FROM plugins_state", [])?;
-    tx.execute("UPDATE jobs SET state='cancelled', lease_owner=NULL, lease_expires_at=NULL WHERE state NOT IN ('succeeded','cancelled','failed')", [])?;
+    tx.execute(
+        "UPDATE jobs SET state='cancelled', lease_owner=NULL, lease_expires_at=NULL WHERE state NOT IN ('succeeded','cancelled','failed')",
+        [],
+    )?;
     tx.execute(
         "UPDATE replicas SET state='absent',verified_at=NULL,locator=substr(blob_id,8)",
         [],
     )?;
-    for (blob, src) in &verified {
-        let digest = blob_sha(blob)?;
+    for (blob, src) in verified {
+        let digest = crate::paths::blob_sha(blob)?;
         let dst = crate::paths::object(&profile.objects_dir(), digest)?;
         std::fs::create_dir_all(dst.parent().unwrap())?;
         std::fs::copy(src, &dst)?;
@@ -421,17 +492,13 @@ pub async fn restore(
                 "copied object checksum mismatch".into(),
             ));
         }
-        tx.execute("INSERT OR REPLACE INTO replicas(replica_id,blob_id,node_id,store_id,locator,managed,state,verified_at) VALUES(?1,?2,'local','primary',?3,1,'verified',?4)", rusqlite::params![format!("restored-{digest}"),blob,digest,now()])?;
+        tx.execute(
+            "INSERT OR REPLACE INTO replicas(replica_id,blob_id,node_id,store_id,locator,managed,state,verified_at) VALUES(?1,?2,'local','primary',?3,1,'verified',?4)",
+            rusqlite::params![format!("restored-{digest}"), blob, digest, now()],
+        )?;
     }
     tx.commit()?;
-    let profile_path = target.join("profile.json");
-    std::fs::write(&profile_path, serde_json::to_vec_pretty(&profile)?)?;
-    Ok(serde_json::json!({
-        "restored_objects": verified.len(),
-        "missing_objects": wanted.len() - verified.len(),
-        "profile_path": profile_path,
-        "credentials": "require-relogin",
-    }))
+    Ok(())
 }
 
 /// 导出：可读目录 + 清单；重名/保留名处理；缺媒体明示。
@@ -493,14 +560,14 @@ pub async fn usage(core: &crate::core::Core) -> Result<serde_json::Value, CoreEr
             Ok((n, s))
         })
         .await?;
-    let staging_bytes = dir_size(&core.profile.staging_dir());
+    let staging_bytes = dir_size(&core.objects.staging_dir());
     Ok(serde_json::json!({
         "db_bytes": db_bytes,
         "objects_bytes": objects_bytes,
         "staging_bytes": staging_bytes,
         "object_count": object_count,
-        "free_bytes": free_bytes(&core.profile.archive_root),
-        "reserved_bytes": core.objects.budget.reserve_bytes(&core.profile),
+        "free_bytes": free_bytes(&core.objects.archive_root()),
+        "reserved_bytes": core.objects.budget.reserve_bytes(&core.live_profile()),
     }))
 }
 
@@ -586,7 +653,7 @@ mod restore_tests {
     }
 
     #[tokio::test]
-    async fn f002_rejects_malicious_ids_before_writes() {
+    async fn rejects_malicious_ids_before_writes() {
         let (dir, core, bk, _) = fixture().await;
         let manifest = bk.join("manifest.json");
         let original: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
@@ -611,7 +678,7 @@ mod restore_tests {
     }
 
     #[tokio::test]
-    async fn f003_restore_opens_and_marks_omitted_or_corrupt_objects() {
+    async fn restore_opens_and_marks_omitted_or_corrupt_objects() {
         let (dir, core, bk, sha) = fixture().await;
         let target = dir.path().join("metadata-only");
         let result = restore(&core, &bk, &target).await.unwrap();

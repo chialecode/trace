@@ -4,22 +4,25 @@
 //! docs/dev-rules/architecture-and-contracts.md）。它定义稳定身份、正交状态、
 //! 时间语义、失败分类与版本判定规则；持久化表示由 `trace-core::storage`
 //! 映射到 SQLite，跨进程表示由 `trace-contracts` 映射到协议 DTO。
+#![cfg_attr(test, allow(clippy::too_many_lines))]
 
 pub mod entities;
 pub mod errors;
 pub mod ids;
+pub mod jobs;
 pub mod quality;
 pub mod revision;
 pub mod search;
+pub mod sites;
 pub mod states;
 pub mod time;
 
 /// M1a 数据库/内容 schema 版本正本。
 ///
 /// 提升版本号必须伴随迁移与兼容证据（docs/design.md 6.2/14.4）。
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 8;
 
-/// 控制协议版本（docs/design/m1a-runtime-contracts.md §2）。
+/// 控制协议版本（docs/design/windows-runtime-contracts.md §2）。
 pub const CONTROL_PROTOCOL_VERSION: &str = "0.1";
 
 /// 插件协议版本（docs/design.md §8.2，0.x 验证期）。

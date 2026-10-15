@@ -9,9 +9,19 @@ members = [
     "adapters/bilibili",
     "adapters/common",
     "adapters/douyin",
+    "adapters/instagram",
+    "adapters/tiktok",
+    "adapters/weibo",
+    "adapters/x",
+    "adapters/xiaohongshu",
+    "adapters/youtube",
     "tests/e2e",
 ]
 exclude = []
+
+[workspace.lints.clippy]
+# Non-test functions stay reviewable; the threshold lives in clippy.toml.
+too_many_lines = "warn"
 
 [workspace.package]
 version = "0.1.0"
@@ -23,6 +33,7 @@ authors = ["TRACE maintainers"]
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.21"
+ts-rs = "12.0.1"
 tokio = { version = "1.53.1", features = [
     "rt-multi-thread",
     "macros",
@@ -36,7 +47,7 @@ tokio = { version = "1.53.1", features = [
 ] }
 tokio-util = { version = "0.7.19", features = ["rt"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
-reqwest = { version = "0.13.5", features = ["json", "stream"] }
+reqwest = { version = "0.13.5", features = ["json", "stream", "socks"] }
 sha2 = "0.11.0"
 md-5 = "0.11.0"
 base64 = "0.22"

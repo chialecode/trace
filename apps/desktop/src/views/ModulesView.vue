@@ -1,13 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
-import {
-  NButton,
-  NCard,
-  NDataTable,
-  NTag,
-  useMessage,
-  type DataTableColumns,
-} from "naive-ui";
+import { NButton, NCard, NDataTable, NTag, useMessage, type DataTableColumns } from "naive-ui";
 import { h } from "vue";
 import { api, type PluginDto } from "../lib/api";
 
@@ -16,7 +9,9 @@ const items = ref<PluginDto[]>([]);
 const loading = ref(false);
 const changing = ref<string | null>(null);
 let timer: number | undefined;
-function enabled(row: PluginDto) { return !['disabled', 'stopping'].includes(row.state); }
+function enabled(row: PluginDto) {
+  return !["disabled", "stopping"].includes(row.state);
+}
 
 async function refresh() {
   loading.value = true;
@@ -30,7 +25,7 @@ async function refresh() {
 }
 
 async function toggle(row: PluginDto) {
-  if (changing.value || row.state === 'stopping') return;
+  if (changing.value || row.state === "stopping") return;
   changing.value = row.plugin_id;
   try {
     await api.pluginSetState(row.plugin_id, !enabled(row));
@@ -52,11 +47,27 @@ const columns: DataTableColumns<PluginDto> = [
     render: (r) =>
       h(
         NTag,
-        { type: r.state === "enabled" ? "success" : r.state === "disabled" ? "default" : "warning", size: "small" },
-        { default: () => changing.value === r.plugin_id ? (enabled(r) ? '正在停止调度' : '正在启用') : ({enabled:'已启用',ready:'已就绪',installed:'已安装并启用',disabled:'已停用',stopping:'安全收尾中'}[r.state] ?? r.state) },
+        {
+          type: r.state === "enabled" ? "success" : r.state === "disabled" ? "default" : "warning",
+          size: "small",
+        },
+        {
+          default: () =>
+            changing.value === r.plugin_id
+              ? enabled(r)
+                ? "正在停止调度"
+                : "正在启用"
+              : ({
+                  enabled: "已启用",
+                  ready: "已就绪",
+                  installed: "已安装并启用",
+                  disabled: "已停用",
+                  stopping: "安全收尾中",
+                }[r.state] ?? r.state),
+        },
       ),
   },
-  { title: '执行与收尾', key: 'active_tasks', render: r => `${r.active_tasks ?? 0} 项任务` },
+  { title: "执行与收尾", key: "active_tasks", render: (r) => `${r.active_tasks ?? 0} 项任务` },
   {
     title: "能力",
     key: "capabilities",
@@ -69,15 +80,21 @@ const columns: DataTableColumns<PluginDto> = [
     render: (r) =>
       h(
         NButton,
-        { size: "small", disabled: !!changing.value || r.state === 'stopping', onClick: () => toggle(r) },
-        { default: () => (r.state === 'stopping' ? '正在收尾' : enabled(r) ? "停用" : "启用") },
+        {
+          size: "small",
+          disabled: !!changing.value || r.state === "stopping",
+          onClick: () => toggle(r),
+        },
+        { default: () => (r.state === "stopping" ? "正在收尾" : enabled(r) ? "停用" : "启用") },
       ),
   },
 ];
 
 onMounted(() => {
   void refresh();
-  timer = window.setInterval(() => { if (items.value.some(item => item.state === 'stopping') && !loading.value) void refresh(); }, 1000);
+  timer = window.setInterval(() => {
+    if (items.value.some((item) => item.state === "stopping") && !loading.value) void refresh();
+  }, 1000);
 });
 onBeforeUnmount(() => window.clearInterval(timer));
 </script>
@@ -85,11 +102,15 @@ onBeforeUnmount(() => window.clearInterval(timer));
 <template>
   <n-card title="模块">
     <template #header-extra>
+      <router-link to="/management?tab=plugins" class="management-link"
+        >安装、升级与能力</router-link
+      >
       <n-button size="small" @click="refresh">刷新</n-button>
     </template>
     <n-data-table :columns="columns" :data="items" :loading="loading" size="small" />
     <p class="hint">
-      停用先撤销调度，已有下载和录制安全收尾，剩余任务数归零后显示「已停用」。重新启用后恢复等待任务；已保存档案仍可读取。适配器进程由核心受限代理隔离，Cookie 不进入模块进程。
+      停用先撤销调度，已有下载和录制安全收尾，剩余任务数归零后显示「已停用」。重新启用后恢复等待任务；已保存档案仍可读取。适配器进程由核心受限代理隔离，Cookie
+      不进入模块进程。
     </p>
   </n-card>
 </template>
@@ -98,6 +119,6 @@ onBeforeUnmount(() => window.clearInterval(timer));
 .hint {
   margin-top: 12px;
   color: #888;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 </style>

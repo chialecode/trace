@@ -4,6 +4,8 @@ use crate::{core::Core, error::CoreError};
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 
+const SELECT_MEDIA_VARIANTS: &str = "SELECT v.variant_id,v.blob_id,COALESCE(k.pinned,0) OR COALESCE(s.pinned,0),b.size FROM media_variants v JOIN media_items m ON m.media_id=v.media_id JOIN entry_revisions r ON r.revision_id=m.revision_id JOIN blobs b ON b.blob_id=v.blob_id LEFT JOIN variant_retention k ON k.variant_id=v.variant_id LEFT JOIN asset_selections s ON s.variant_id=v.variant_id WHERE r.entry_id=?1 AND (?2!='cache' OR v.source_representation='playback-mux-v1') ORDER BY v.variant_id";
+
 fn snapshot(c: &Connection, entry: &str, scope: &str) -> Result<Value, CoreError> {
     if !matches!(scope, "cache" | "copies" | "archive") {
         return Err(CoreError::InvalidInput("deletion scope".into()));
@@ -13,7 +15,17 @@ fn snapshot(c: &Connection, entry: &str, scope: &str) -> Result<Value, CoreError
         [entry],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    let variants=c.prepare("SELECT v.variant_id,v.blob_id,COALESCE(k.pinned,0) OR COALESCE(s.pinned,0),b.size FROM media_variants v JOIN media_items m ON m.media_id=v.media_id JOIN entry_revisions r ON r.revision_id=m.revision_id JOIN blobs b ON b.blob_id=v.blob_id LEFT JOIN variant_retention k ON k.variant_id=v.variant_id LEFT JOIN asset_selections s ON s.variant_id=v.variant_id WHERE r.entry_id=?1 AND (?2!='cache' OR v.source_representation='playback-mux-v1') ORDER BY v.variant_id")?.query_map(params![entry,scope],|r|Ok(json!({"variant":r.get::<_,String>(0)?,"blob":r.get::<_,String>(1)?,"pinned":r.get::<_,bool>(2)?,"bytes":r.get::<_,i64>(3)?})))?.collect::<Result<Vec<_>,_>>()?;
+    let variants = c
+        .prepare(SELECT_MEDIA_VARIANTS)?
+        .query_map(params![entry, scope], |r| {
+            Ok(json!({
+                "variant": r.get::<_, String>(0)?,
+                "blob": r.get::<_, String>(1)?,
+                "pinned": r.get::<_, bool>(2)?,
+                "bytes": r.get::<_, i64>(3)?,
+            }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     let revisions = c
         .prepare("SELECT revision_id FROM entry_revisions WHERE entry_id=?1 ORDER BY revision_id")?
         .query_map([entry], |r| r.get::<_, String>(0))?
@@ -27,11 +39,24 @@ fn token(value: &Value) -> String {
 }
 pub async fn preview(core: &Core, entry: String, scope: String) -> Result<Value, CoreError> {
     let wait = core.profile.manual_delete_wait_seconds.clamp(0, 30 * 86400);
-    core.db.read(move|c|{
-        let value=snapshot(c,&entry,&scope)?;let variants=value["variants"].as_array().unwrap();
-        let pinned=variants.iter().filter(|v|v["pinned"]==true).count();
-        Ok(json!({"entry_id":entry,"scope":scope,"token":token(&value),"generation":value["generation"],"variants":variants.len(),"pinned_preserved":pinned,"wait_seconds":wait,"reclaim_bytes":"depends_on_shared_references_and_active_readers","revisions":value["revisions"].as_array().unwrap().len()}))
-    }).await
+    core.db
+        .read(move |c| {
+            let value = snapshot(c, &entry, &scope)?;
+            let variants = value["variants"].as_array().unwrap();
+            let pinned = variants.iter().filter(|v| v["pinned"] == true).count();
+            Ok(json!({
+                "entry_id": entry,
+                "scope": scope,
+                "token": token(&value),
+                "generation": value["generation"],
+                "variants": variants.len(),
+                "pinned_preserved": pinned,
+                "wait_seconds": wait,
+                "reclaim_bytes": "depends_on_shared_references_and_active_readers",
+                "revisions": value["revisions"].as_array().unwrap().len(),
+            }))
+        })
+        .await
 }
 pub async fn apply(
     core: &Core,
@@ -86,6 +111,31 @@ pub async fn restore(core: &Core, entry: String, generation: i64) -> Result<Valu
         Ok(json!({"generation":generation+1,"state":"restored_metadata","media":"verify_or_recheck_required"}))
     }).await
 }
+const SELECT_CURRENT_ENTRY_REVISIONS: &str = "SELECT e.entry_id,e.lifecycle,e.deletion_generation,e.media_suppressed,(SELECT r.title FROM current_entry_revisions r WHERE r.entry_id=e.entry_id) FROM entries e WHERE (e.lifecycle='deleted' OR e.media_suppressed=1 OR e.cache_suppressed=1) AND e.entry_id>?1 ORDER BY e.entry_id LIMIT 101";
+
 pub async fn listing(core: &Core, after: String) -> Result<Value, CoreError> {
-    core.db.read(move|c|{let mut items=c.prepare("SELECT e.entry_id,e.lifecycle,e.deletion_generation,e.media_suppressed,(SELECT r.title FROM current_entry_revisions r WHERE r.entry_id=e.entry_id) FROM entries e WHERE (e.lifecycle='deleted' OR e.media_suppressed=1 OR e.cache_suppressed=1) AND e.entry_id>?1 ORDER BY e.entry_id LIMIT 101")?.query_map([after],|r|Ok(json!({"entry_id":r.get::<_,String>(0)?,"lifecycle":r.get::<_,String>(1)?,"generation":r.get::<_,i64>(2)?,"media_suppressed":r.get::<_,bool>(3)?,"title":r.get::<_,Option<String>>(4)?})))?.collect::<Result<Vec<_>,_>>()?;let more=items.len()>100;items.truncate(100);let next=if more{items.last().map(|v|v["entry_id"].clone())}else{None};Ok(json!({"items":items,"next":next}))}).await
+    core.db
+        .read(move |c| {
+            let mut items = c
+                .prepare(SELECT_CURRENT_ENTRY_REVISIONS)?
+                .query_map([after], |r| {
+                    Ok(json!({
+                        "entry_id": r.get::<_, String>(0)?,
+                        "lifecycle": r.get::<_, String>(1)?,
+                        "generation": r.get::<_, i64>(2)?,
+                        "media_suppressed": r.get::<_, bool>(3)?,
+                        "title": r.get::<_, Option<String>>(4)?,
+                    }))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let more = items.len() > 100;
+            items.truncate(100);
+            let next = if more {
+                items.last().map(|v| v["entry_id"].clone())
+            } else {
+                None
+            };
+            Ok(json!({"items":items,"next":next}))
+        })
+        .await
 }

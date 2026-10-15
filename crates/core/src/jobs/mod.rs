@@ -5,6 +5,7 @@
 
 use crate::db::DbHandle;
 use crate::error::CoreError;
+use trace_domain::jobs::{ScanMode, ScanPayload};
 use trace_domain::time::{TimePrecision, TraceTime};
 use trace_domain::{errors::FailureClass, states::JobState};
 
@@ -72,6 +73,8 @@ pub async fn enqueue(
     .await
 }
 
+const INSERT_JOBS: &str = "INSERT OR IGNORE INTO jobs(job_id,job_key,job_type,subject_id,payload,target_generation,priority,state,next_run_at,created_at,updated_at) VALUES(?1,?2,'scan',?3,?4,1,1,'queued',?5,?5,?5)";
+
 /// Subscription and scan state change in one transaction. Revoking a lease makes late pages inert.
 pub fn set_subscription_enabled(
     tx: &rusqlite::Transaction<'_>,
@@ -90,11 +93,22 @@ pub fn set_subscription_enabled(
     let ts = now();
     tx.execute("UPDATE subscriptions SET state=?2,config_version=config_version+1,updated_at=?3 WHERE subscription_id=?1", rusqlite::params![id,state,ts])?;
     if enabled {
-        tx.execute("UPDATE jobs SET state='queued',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,next_run_at=?2,updated_at=?2,last_error=NULL WHERE (job_type='scan' AND subject_id=?1 OR json_extract(payload,'$.subscription_id')=?1) AND state NOT IN ('succeeded','cancelled')",rusqlite::params![id,ts])?;
+        tx.execute("UPDATE jobs SET state='queued',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,next_run_at=?2,updated_at=?2,last_error=NULL WHERE (job_type='scan' AND subject_id=?1 OR json_extract(payload,'$.subscription_id')=?1) AND state NOT IN ('succeeded','cancelled','waiting_user')",rusqlite::params![id,ts])?;
         // Restore/import and old profiles can lack a recurring scan. The stable key prevents duplicates.
-        tx.execute("INSERT OR IGNORE INTO jobs(job_id,job_key,job_type,subject_id,payload,target_generation,priority,state,next_run_at,created_at,updated_at) VALUES(?1,?2,'scan',?3,?4,1,1,'queued',?5,?5,?5)",rusqlite::params![format!("job-{}",uuid::Uuid::new_v4()),format!("scan:{id}:incremental"),id,serde_json::json!({"subscription_id":id,"mode":"incremental"}).to_string(),ts])?;
+        if !consumers::subscription_refused(tx, id)? {
+            tx.execute(
+                INSERT_JOBS,
+                rusqlite::params![
+                    format!("job-{}", uuid::Uuid::new_v4()),
+                    ScanMode::Incremental.job_key(id),
+                    id,
+                    ScanPayload::new(id, ScanMode::Incremental).to_json_text(),
+                    ts
+                ],
+            )?;
+        }
     } else {
-        tx.execute("UPDATE jobs SET state='paused',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,updated_at=?2 WHERE (job_type='scan' AND subject_id=?1 OR json_extract(payload,'$.subscription_id')=?1) AND state NOT IN ('succeeded','cancelled','paused')",rusqlite::params![id,ts])?;
+        tx.execute("UPDATE jobs SET state='paused',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,updated_at=?2 WHERE (job_type='scan' AND subject_id=?1 OR json_extract(payload,'$.subscription_id')=?1) AND state NOT IN ('succeeded','cancelled','paused','waiting_user')",rusqlite::params![id,ts])?;
     }
     consumers::subscription_changed(tx, id, false)?;
     crate::accounts::reconcile_subscription(tx, id)?;
@@ -201,6 +215,11 @@ pub struct ClaimedJob {
     pub payload: serde_json::Value,
 }
 
+const SELECT_JOBS: &str = "SELECT EXISTS(SELECT 1 FROM jobs WHERE job_id=?1 AND state='running' AND lease_owner=?2 AND target_generation=?3)";
+const UPDATE_JOBS: &str = "UPDATE jobs SET state='succeeded', lease_owner=NULL, lease_expires_at=NULL, updated_at=?2 WHERE job_id=?1 AND state='running' AND lease_owner=?3 AND target_generation=?4 AND lease_expires_at>?2";
+const SELECT_JOB_CONSUMERS: &str =
+    "SELECT EXISTS(SELECT 1 FROM job_consumers WHERE job_id=?1 AND requested>completed)";
+
 impl ClaimedJob {
     pub async fn mark_running(&self, db: &DbHandle) -> Result<(), CoreError> {
         let job = self.clone();
@@ -216,7 +235,7 @@ impl ClaimedJob {
     }
 
     pub fn check(&self, tx: &rusqlite::Connection) -> Result<(), CoreError> {
-        let valid: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE job_id=?1 AND lease_owner=?2 AND target_generation=?3 AND state IN ('leased','running') AND lease_expires_at>?4 AND (job_type!='scan' OR EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscription_id=jobs.subject_id AND s.state='enabled')) AND (json_extract(payload,'$.subscription_id') IS NULL OR EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscription_id=json_extract(jobs.payload,'$.subscription_id') AND s.state='enabled')) AND NOT EXISTS(SELECT 1 FROM entries e WHERE (e.entry_id=jobs.subject_id OR e.entry_id=json_extract(jobs.payload,'$.entry_id') OR e.entry_id=(SELECT entry_id FROM live_sessions WHERE session_id=jobs.subject_id)) AND (e.lifecycle='deleted' OR (e.media_suppressed=1 AND jobs.job_type IN ('media','record','live_auxiliary')))))", rusqlite::params![self.job_id,self.owner,self.generation,now()], |r| r.get(0))?;
+        let valid: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE job_id=?1 AND lease_owner=?2 AND target_generation=?3 AND state IN ('leased','running') AND lease_expires_at>?4 AND (job_type!='scan' OR EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscription_id=jobs.subject_id AND s.state='enabled')) AND (json_extract(payload,'$.subscription_id') IS NULL OR EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscription_id=json_extract(jobs.payload,'$.subscription_id') AND s.state='enabled')) AND NOT EXISTS(SELECT 1 FROM entries e WHERE (e.entry_id=jobs.subject_id OR e.entry_id=json_extract(jobs.payload,'$.entry_id') OR e.entry_id=(SELECT entry_id FROM live_sessions WHERE session_id=jobs.subject_id)) AND (e.lifecycle='deleted' OR (e.media_suppressed=1 AND jobs.job_type IN ('media','record','live_auxiliary')))) AND NOT EXISTS(SELECT 1 FROM job_consumers w WHERE w.job_id=jobs.job_id AND w.subscription_id=json_extract(jobs.payload,'$.subscription_id') AND w.state='waiting_user' AND json_extract(w.last_error,'$.class')='permission_denied'))", rusqlite::params![self.job_id,self.owner,self.generation,now()], |r| r.get(0))?;
         if valid {
             scope::check(tx, self)
         } else {
@@ -249,16 +268,34 @@ impl ClaimedJob {
     pub async fn succeed(&self, db: &DbHandle) -> Result<(), CoreError> {
         let job = self.clone();
         db.write(move |tx| {
-            let owned: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE job_id=?1 AND state='running' AND lease_owner=?2 AND target_generation=?3)",rusqlite::params![job.job_id,job.owner,job.generation],|r|r.get(0))?;
-            if owned { job.check(tx)?; }
-            let changed=tx.execute("UPDATE jobs SET state='succeeded', lease_owner=NULL, lease_expires_at=NULL, updated_at=?2 WHERE job_id=?1 AND state='running' AND lease_owner=?3 AND target_generation=?4 AND lease_expires_at>?2", rusqlite::params![job.job_id, now(),job.owner,job.generation])?;
-            if changed==1 {
+            let owned: bool = tx.query_row(
+                SELECT_JOBS,
+                rusqlite::params![job.job_id, job.owner, job.generation],
+                |r| r.get(0),
+            )?;
+            if owned {
+                job.check(tx)?;
+            }
+            let changed = tx.execute(
+                UPDATE_JOBS,
+                rusqlite::params![job.job_id, now(), job.owner, job.generation],
+            )?;
+            if changed == 1 {
                 consumers::finish(tx, &job, true)?;
-                let unfinished:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM job_consumers WHERE job_id=?1 AND requested>completed)",[&job.job_id],|r|r.get(0))?;
-                if job.job_type=="media" && crate::quality::state(tx,&job.subject_id)?=="degraded" {crate::issues::record(tx,&job,FailureClass::CapabilityLost)?;}else if !unfinished {crate::issues::resolved_job(tx,&job.job_id)?;}
+                crate::store::deliveries::job_settled(tx, &job.payload, &now())?;
+                let unfinished: bool =
+                    tx.query_row(SELECT_JOB_CONSUMERS, [&job.job_id], |r| r.get(0))?;
+                if job.job_type == "media"
+                    && crate::quality::state(tx, &job.subject_id)? == "degraded"
+                {
+                    crate::issues::record(tx, &job, FailureClass::CapabilityLost)?;
+                } else if !unfinished {
+                    crate::issues::resolved_job(tx, &job.job_id)?;
+                }
             }
             Ok(())
-        }).await
+        })
+        .await
     }
 
     /// 失败分类：决定退避或 waiting 状态。
@@ -286,6 +323,7 @@ impl ClaimedJob {
             if class_owned == FailureClass::Cancelled {
                 crate::upgrades::abandon(tx,&job,"cancelled","work_cancelled")?;
                 tx.execute("UPDATE jobs SET state='cancelled',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL WHERE job_id=?1",[&id])?;
+                crate::store::deliveries::job_settled(tx, &job.payload, &now())?;
                 return Ok(());
             }
             let outcome=class_str.trim_matches('"');
@@ -299,9 +337,10 @@ impl ClaimedJob {
                 _ if attempts >= 3 && class_owned.suggest_retryable() => ("failed", None),
                 FailureClass::Cancelled => ("cancelled", None),
                 FailureClass::StorageFull => ("waiting_storage", Some(60_000)),
-                FailureClass::AuthRequired | FailureClass::PermissionDenied | FailureClass::CapabilityLost => {
-                    ("waiting_auth", None)
-                }
+                // A site's explicit refusal (a signature, permission or policy answer) is not an
+                // expired login: only an explicit user retry may ask again (DEC-041, F-069).
+                FailureClass::PermissionDenied => ("waiting_user", None),
+                FailureClass::AuthRequired | FailureClass::CapabilityLost => ("waiting_auth", None),
                 FailureClass::RateLimited => ("waiting_retry", Some(retry_after_ms.unwrap_or(60_000))),
                 FailureClass::TransientNetwork
                 | FailureClass::PluginCrash
@@ -321,6 +360,12 @@ impl ClaimedJob {
                 rusqlite::params![format!("att-{}", uuid::Uuid::new_v4()), id, attempts + 1, now(), now(), error_json],
             )?;
             consumers::finish(tx, &job, false)?;
+            if class_owned == FailureClass::PermissionDenied
+                && let Some(subscription) = job.payload["subscription_id"].as_str()
+            {
+                consumers::stop_subscription(tx, subscription, &error_json)?;
+            }
+            crate::store::deliveries::job_settled(tx, &job.payload, &now())?;
             Ok(())
         })
         .await
@@ -336,6 +381,16 @@ impl ClaimedJob {
 pub fn cancel_work(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<bool, CoreError> {
     let n=tx.execute("UPDATE jobs SET state='cancelled',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL,updated_at=?2 WHERE job_id=?1 AND (state NOT IN ('succeeded','failed','cancelled') OR (state='succeeded' AND (EXISTS(SELECT 1 FROM upgrade_candidates u WHERE u.job_id=jobs.job_id AND u.state='pending') OR (job_type='auth_completion' AND EXISTS(SELECT 1 FROM jobs child WHERE json_extract(child.payload,'$.completion_parent')=jobs.job_id AND child.state!='cancelled')))))",rusqlite::params![id,now()])?;
     if n == 1 {
+        let payload: Option<String> = tx
+            .query_row("SELECT payload FROM jobs WHERE job_id=?1", [id], |r| {
+                r.get(0)
+            })
+            .ok();
+        if let Some(payload) =
+            payload.and_then(|p| serde_json::from_str::<serde_json::Value>(&p).ok())
+        {
+            crate::store::deliveries::job_settled(tx, &payload, &now())?;
+        }
         tx.execute("UPDATE jobs SET state='cancelled',target_generation=target_generation+1,lease_owner=NULL,lease_expires_at=NULL WHERE json_extract(payload,'$.completion_parent')=?1 AND state NOT IN ('succeeded','failed','cancelled')",[id])?;
         tx.execute("UPDATE upgrade_candidates SET state='cancelled',reason='user_cancelled',finished_at=?2 WHERE state IN ('collecting','pending') AND (job_id=?1 OR job_id IN (SELECT job_id FROM jobs WHERE json_extract(payload,'$.completion_parent')=?1))",rusqlite::params![id,now()])?;
     }
@@ -395,14 +450,23 @@ pub fn sanitize_message(msg: &str) -> String {
         .join(" ")
 }
 
-fn plus_ms(rfc3339: &str, ms: u64) -> String {
+/// `rfc3339` moved by `delta`; an unparsable time is returned unchanged.
+fn shifted(rfc3339: &str, delta: time::Duration) -> String {
     use time::format_description::well_known::Rfc3339;
-    if let Ok(t) = time::OffsetDateTime::parse(rfc3339, &Rfc3339) {
-        let t2 = t + time::Duration::milliseconds(ms as i64);
-        t2.format(&Rfc3339).unwrap_or_else(|_| rfc3339.to_string())
-    } else {
-        rfc3339.to_string()
+    match time::OffsetDateTime::parse(rfc3339, &Rfc3339) {
+        Ok(t) => (t + delta)
+            .format(&Rfc3339)
+            .unwrap_or_else(|_| rfc3339.to_string()),
+        Err(_) => rfc3339.to_string(),
     }
+}
+
+fn plus_ms(rfc3339: &str, ms: u64) -> String {
+    shifted(rfc3339, time::Duration::milliseconds(ms as i64))
+}
+
+pub fn plus_secs(rfc3339: &str, secs: i64) -> String {
+    shifted(rfc3339, time::Duration::seconds(secs))
 }
 
 /// DB 字符串 → 领域状态（free fn：JobState 定义于 domain）。

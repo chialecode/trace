@@ -6,25 +6,23 @@
 use crate::AdapterState;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
-use trace_contracts::plugin::{
-    PluginError, PluginRequest, ProxyFetchParams, ProxyFetchResult, methods,
-};
+use trace_contracts::plugin::{PluginError, ProxyFetchResult};
 use trace_domain::errors::FailureClass;
+use trace_site_support::runtime::Fetch;
 
-pub const UA: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36";
+pub const UA: &str = trace_site_support::kit::SIGNED_UA;
 pub const REFERER: &str = "https://www.bilibili.com/";
+
+/// Headers the media CDN expects on public (credential-free) fetches.
+pub(crate) fn public_headers() -> Value {
+    json!({"referer": REFERER, "user-agent": UA})
+}
 
 pub const NAV_URL: &str = "https://api.bilibili.com/x/web-interface/nav";
 pub const CARD_URL: &str = "https://api.bilibili.com/x/web-interface/card";
 pub const ARC_SEARCH_URL: &str = "https://api.bilibili.com/x/space/wbi/arc/search";
 pub const VIEW_URL: &str = "https://api.bilibili.com/x/web-interface/wbi/view";
 pub const PLAYURL_URL: &str = "https://api.bilibili.com/x/player/wbi/playurl";
-
-/// proxy.fetch 往返结果。
-pub struct ProxyReply {
-    pub result: Value,
-}
 
 /// 经宿主受限代理执行 GET 并返回结构化响应。
 pub fn proxy_get(
@@ -62,61 +60,23 @@ fn proxy_request(
     started: Instant,
     method: &str,
 ) -> Result<ProxyFetchResult, PluginError> {
-    let request_id = state.new_request_id();
-    let (tx, rx) = std::sync::mpsc::channel();
-    state.pending.lock().unwrap().insert(request_id.clone(), tx);
-    let params = ProxyFetchParams {
-        method: method.into(),
-        url: url.to_string(),
-        headers: json!({"referer": if url::Url::parse(url).ok().and_then(|u|u.host_str().map(str::to_owned)).as_deref()==Some("api.live.bilibili.com") {"https://live.bilibili.com/"} else {REFERER}, "user-agent": UA}),
+    let host = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned));
+    let referer = if host.as_deref() == Some("api.live.bilibili.com") {
+        "https://live.bilibili.com/"
+    } else {
+        REFERER
+    };
+    state.client.request(&Fetch {
+        method,
+        url,
+        headers: json!({"referer": referer, "user-agent": UA}),
+        credential: with_credential,
+        body: None,
         max_bytes,
-        with_credential,
-    };
-    let req = PluginRequest {
-        protocol_version: trace_domain::PLUGIN_PROTOCOL_VERSION.into(),
-        request_id: request_id.clone(),
-        deadline_ms: Some(
-            deadline
-                .saturating_sub(started.elapsed())
-                .as_millis()
-                .min(u64::MAX as u128) as u64,
-        ),
-        method: if max_bytes > 512 * 1024 {
-            "proxy.fetch_large"
-        } else {
-            methods::PROXY_FETCH
-        }
-        .into(),
-        params: serde_json::to_value(&params).unwrap_or_default(),
-    };
-    if let Err(e) = state.out.send(&req) {
-        state.pending.lock().unwrap().remove(&request_id);
-        return Err(PluginError {
-            class: FailureClass::PluginCrash,
-            message: format!("write proxy request: {e}"),
-            retry_after_ms: None,
-            details: Value::Null,
-        });
-    }
-    let remaining = deadline.saturating_sub(started.elapsed());
-    match rx.recv_timeout(remaining.max(Duration::from_millis(500))) {
-        Ok(Ok(reply)) => serde_json::from_value(reply.result).map_err(|e| PluginError {
-            class: FailureClass::InvalidPayload,
-            message: format!("bad proxy result: {e}"),
-            retry_after_ms: None,
-            details: Value::Null,
-        }),
-        Ok(Err(e)) => Err(e),
-        Err(_) => {
-            state.pending.lock().unwrap().remove(&request_id);
-            Err(PluginError {
-                class: FailureClass::TransientNetwork,
-                message: "proxy fetch timeout or closed".into(),
-                retry_after_ms: None,
-                details: Value::Null,
-            })
-        }
-    }
+        timeout: deadline.saturating_sub(started.elapsed()),
+    })
 }
 
 use base64::Engine;
@@ -192,7 +152,7 @@ pub fn envelope(v: &Value) -> Result<ApiEnvelope, PluginError> {
 }
 
 /// HTTP 状态分类（受限代理只放行 200 到这里）。
-fn classify_http(status: u16) -> PluginError {
+pub(crate) fn classify_http(status: u16) -> PluginError {
     let class = match status {
         401 | 403 => FailureClass::PermissionDenied,
         412 | 429 => FailureClass::RateLimited,

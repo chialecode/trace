@@ -135,7 +135,7 @@ async fn idempotency_receipt_key_is_unique() {
 }
 
 #[tokio::test]
-async fn f004_due_retry_is_bounded_and_f005_old_attempt_cannot_finish() {
+async fn due_retry_is_bounded_and_f005_old_attempt_cannot_finish() {
     let (db, _actor, _dir) = test_db();
     make_job(&db, "retry").await;
     let job = claim_due(&db, "instance", 1).await.unwrap().remove(0);
@@ -172,7 +172,7 @@ async fn f004_due_retry_is_bounded_and_f005_old_attempt_cannot_finish() {
 }
 
 #[tokio::test]
-async fn f004_three_automatic_retries_then_visible_failure() {
+async fn three_automatic_retries_then_visible_failure() {
     let (db, _actor, _dir) = test_db();
     make_job(&db, "bounded").await;
     for _ in 0..4 {

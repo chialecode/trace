@@ -258,7 +258,7 @@ async fn verify_replicas_marks_absent_and_corrupt() {
 }
 
 #[tokio::test]
-async fn f006_invalid_validation_never_installs_and_can_retry() {
+async fn invalid_validation_never_installs_and_can_retry() {
     let env = env();
     let op = OperationId::new("validation-test");
     let mut p = params("x");
@@ -291,7 +291,7 @@ async fn f006_invalid_validation_never_installs_and_can_retry() {
 }
 
 #[tokio::test]
-async fn f007_checkpoint_resume_hashes_entire_file() {
+async fn checkpoint_resume_hashes_entire_file() {
     let env = env();
     let op = OperationId::new("resume-test");
     let prefix = vec![1; crate::config::CHECKPOINT_INTERVAL_BYTES as usize];
@@ -320,7 +320,7 @@ async fn f007_checkpoint_resume_hashes_entire_file() {
 }
 
 #[tokio::test]
-async fn f005_cancelled_and_stale_commit_are_rejected() {
+async fn cancelled_and_stale_commit_are_rejected() {
     let env = env();
     env.db.write(|tx|{
         tx.execute("INSERT INTO source_accounts(account_id,namespace,native_account_key,first_seen_at) VALUES('a','fake','a','t')",[])?;
@@ -382,7 +382,7 @@ async fn f005_cancelled_and_stale_commit_are_rejected() {
 }
 
 #[tokio::test]
-async fn f014_replica_cursor_reaches_beyond_first_sixty_four() {
+async fn replica_cursor_reaches_beyond_first_sixty_four() {
     let env = env();
     let bytes = b"cursor-valid";
     let sha = receive_full(&env, "cursor-object", bytes).await;
@@ -413,7 +413,7 @@ async fn f014_replica_cursor_reaches_beyond_first_sixty_four() {
 }
 
 #[tokio::test]
-async fn c07_recovery_bounds_committed_cleanup_writes_and_keeps_objects() {
+async fn recovery_bounds_committed_cleanup_writes_and_keeps_objects() {
     let env = env();
     let bytes = b"verified bytes remain readable after staging cleanup";
     let sha = receive_full(&env, "protected", bytes).await;

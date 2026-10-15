@@ -121,6 +121,7 @@ async fn offline_full_loop_scan_observe_media_search_backup_restore() {
                 "content_type": "video",
                 "credential_id": credential_id,
                 "range": {"kind": "recent_days", "days": 365},
+                "auto_download": true,
             }),
             None,
         ),

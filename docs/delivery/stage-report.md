@@ -1,1540 +1,1258 @@
-# M1 · TRACE-M1-01 实施与审查记录
+# M2 · TRACE-M2-01 实施与审查记录
 
-B原r1实现已交付且当时自动自检 **passed**，A对r1的原审查结论保留为 **rework-required**；B r2实现、290项自检和正式资源证据经核对有效。2026-10-09 A最终集中复核 **failed / rework-required**：F-019/F-021/F-022原修复已核实，新增F-023～025三个P1反例实际失败；产品验收 **not-run**。同一[唯一计划](stage-plan.md)仍为r2，当前复核见[§16.13](#a-m1-r2-review)，集中返工见[当前A→B prompt](#a-to-b-m1-rework)，原B最终证据保留[第15节](#final-m1-delivery)及§16.8～16.12，用户依赖只维护于[USER-ACTIONS](../../USER-ACTIONS.md)。历史失败不改写为当时通过；各结果仅适用于明确版本和范围。
+本文是 M2 [唯一计划](stage-plan.md) 的交付报告：B 写实现、命令与结果、规则状态与真实证据、整理记录；A 写集中审查结论。B 自检通过不写成 A 已通过，A 技术通过也不等于用户产品验收。
 
-## 已合并基线的保留与提炼
+M1 的原交付、失败、返工、复审与真实产品链证据已随 PR 合并（`c1552e0`），全文见[固定链接报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md)；当前仍有效的结论只在[交付状态](status.md)维护。
 
-旧收尾报告§1～12及原始失败/返工/复审已归档于[固定基点报告](https://github.com/chialecode/trace/blob/960984c34487244f31f1238dffc2bd9faaa292e7/docs/delivery/stage-report.md)；F-001～017的当前守护见[状态](status.md)，原发现和复验见[固定审查](https://github.com/chialecode/trace/blob/960984c34487244f31f1238dffc2bd9faaa292e7/docs/evidence/2026-10-01-m0-m1a-review.md)。旧证据的通过只适用于当时源码。旧稳定包和验收Profile继续保留，具体操作仍在USER-ACTIONS。
+<a id="m2-planning"></a>
+## 1. A 规划（2026-10-16）
 
-P0整理已核对固定基点是origin/main祖先；11份过时过程文件（8份Markdown、3份JSON）与基点一致，先修全部Markdown入链为完整SHA链接、提炼到当前状态/计划/本报告，再从工作树退役。技术研究、运行契约、ADR、许可证继续保留；原A probes、B closeout_rework、home事件断言和full_loop断言保留原位置，未进行测试迁移。三个原Rust测试body的等价调整及逐测试审计见14.16；原109项均保留。
+- 计划：TRACE-M2-01 r1；分支 `codex/m2-multi-site-archive`，基点 `main@c1552e048ea608ba64deae820d127bbd5e969083`。
+- 依据：[DEC-031～034](../decisions/confirmed-decisions.md#dec-031)；本阶段需求见[需求](../requirements.md)状态列与[映射](requirements-map.json)。
+- A 本次只改治理、需求、设计契约、研究、计划与用户事项，没有改生产代码、没有发起真实站点请求、没有 push。站点资料的证据层级见[社交站点研究](../research/social-sites-current.md)：“资料，未实测”。
+- 2026-10-16 用户授权 ACT-007 并提供八站 Cookie 与创作者主页。A 做了一次只读登录与目标探测：共 18 次请求、约 0.90 MB、0 字节媒体；八站都可用。Instagram 首个请求 429 后停止，用户更新 Cookie 并提供浏览器记录后，按浏览器路径重试 2 次均 200。逐站结论见[研究 §10](../research/social-sites-current.md#login-probe-2026-10-16)；这是来源诊断，不是规则验证。
+- 交接：[A → B 实施 prompt](stage-plan.md#agent-b-prompt)。
 
-<a id="m1-planning"></a>
-## 13. M1 A 规划与开发流程核对（2026-10-07）
+<a id="b-m2-delivery"></a>
+## 2. B 交付
 
-本节为新阶段准备；前文是已完成基线的原交付/失败/复验，不作为M1新增功能通过记录。当前唯一计划TRACE-M1-01 r1，分支codex/m1-two-site-archive，基点960984c34487244f31f1238dffc2bd9faaa292e7。开始工作区干净，A仅修改治理/研究/计划和相应检查，没有修改生产Rust/Vue。未启动B/子Agent，未发送跨聊天消息，未push/PR/发布。
+被审提交是分支 `codex/m2-multi-site-archive` 的唯一阶段提交（基点 `main@c1552e0`；A 第一轮审查后的返工 R2-1～R2-10 已 amend 进同一个提交，未 push）；它自己的 SHA 不能写进它包含的文件，见 B → A 交接 prompt。相对基点约 735 个文件、+113,694 / −37,347 行（不含本节自身的最后一次修改）。§2～§4 记录当前状态；第一轮的交付由 A 审查的结论保留在 [§5](#a-m2-review)，返工与它的对应关系见[§2.7](#m2-rework-map)。
 
-### 13.1 逐专题核对与应用
+### 2.1 工作包与实现位置
 
-本次按本地索引逐份读取开发入口、工作流、Git规范、评审、贡献、质量、治理、架构/数据/插件规则、仓库地图和交接/提案/模块/决定/验证模板；另外核对索引、登记、阶段计划/状态/用户待办的组织方式，以及CI/ruleset/PR模板。产品专属需求与全部历史台账未逐行通读，不声称已审阅外部项目全部产品文档。只吸收适用开发规范，TRACE保持自身Rust/Vue/Tauri、档案安全与许可边界。
+| 包 | 完整结果与位置 |
+| --- | --- |
+| P0 | 整理清单全部执行，见[§3](#m2-cleanup-record)；文档去掉阶段标签（`requirements-map.json` 改为已实现 / 当前 / 待实现三态，`check_docs.py` 校验状态、实现文件与测试名） |
+| P1 R0～R8 | R0 `scripts/test_inventory.py` 与基线（322 个测试、1760 个断言）；R1 `adapters/common/src/runtime.rs` 统一运行时；R2 两站与共享文档模块按能力拆分（适配器文件 ≤600 行）；R3 `crates/domain/src/jobs.rs` 强类型任务载荷；R4 `crates/core/src/store/`（全部 SQL）与 `app/`（每命令族一个路由和用例），`ipc/` 零 SQL；R5 `pipeline/`、`pluginhost/`、`recording/`、`objects/`、`upgrades/` 拆分，`clippy::too_many_lines` 打开，`scripts/check_structure.py`、`check_file_sizes.py`、`lint_lines.py` 守住结构；R6 ts-rs 生成 23 个 TS 类型（`apps/desktop/src/lib/generated`，`check_generated_types.py` 比对）、Tauri 通用 `daemon_call` 与 64→更多条白名单、Prettier、长视图拆分；R7 测试按能力重命名（[§3](#m2-cleanup-record)）；R8 `scripts/stage.py` 统一入口，文档不再让包证据过期 |
+| P2 | `crates/domain/src/sites.rs` 八站注册表；`crates/contracts/src/{rules,unified,catalog}.rs`；schema v7 迁移（统一元数据列与子表、规则目录、存放位置、外部副本、资源库迁移、网络设置、请求与交付表）；`subscriptions.auto_download`；统一元数据写入 `pipeline/observe.rs`、`scan_page.rs` |
+| P3 | 规则目录 `catalog.rs`、`store/rules.rs`、`app/sites.rs`；命令 `site.catalog/recognize/refresh`；链接识别按字面段特异度排序；“支持的网站”页面零网络 |
+| P4 | `network.rs`（直连、系统、手动代理；系统代理为空即直连）、`transport/rules.rs`（域名按站点收窄）、`ConstrainedClient` 代理路径（socks5h、字面 IP 拒绝、逐跳复查）；TUN 虚拟段保持可直连 |
+| P5 | `library/`（迁移、校验、一次提交切换、旧位置保留）、`downloads/`（命名、临时目录写入后改名、旁注 JSON、外部副本检查与同步）及对应 `store/`、`app/` |
+| P6 | 订阅“自动下载视频”开关、`media_items.fetch_state`、状态“未下载（按订阅设置）”、命令 `archive.entry.sync`、`archive.recheck`、`archive.entry.recheck`；`media_sync_tests` |
+| P7 | `profile_preview.rs`：`source.profile.preview/download`、`source.deliveries`、`source.delivery.cancel`；上限 10 页 / 400 条 / 200 选中，预览 30 分钟过期；`source.confirm` 带下载位置 |
+| P8 | 六个新站点适配器 `adapters/{weibo,youtube,tiktok,x,instagram,xiaohongshu}`，共享 `adapters/common/src/kit/`（作品、规则构建、内嵌 JSON、网络、统一分发与测试夹具）；Core 侧元数据 POST、按站点请求头白名单、Core 派生防伪头（适配器永远看不到 Cookie） |
+| P9 | `media-tools.lock.json`（yt-dlp 2026.08.19、Deno 2.9.7，含摘要与许可）、`scripts/fetch_media_tools.py`、`crates/core/src/media_tools/`；固定参数、清空环境、超时与输出上限、无 Cookie；缺失降级 |
+| P10 | `adapters/{bilibili,douyin}/src/rules.rs`（只有 M1 有真实证据的项是 `implemented`）；`adapters/bilibili/src/browser.rs`（LOOP-002 的浏览器参数与独立签名向量）；`crates/core/src/legacy_metadata.rs` 把旧元数据映射到统一字段并后台有界补齐 |
+| P11 | 新页面 `SitesView`、`SettingsView`、`ExplorerView`、`profile/`（主页预览勾选）、`DeliveriesPanel`；时间线排序 / 标签 / 内容形式 / 保存状态、创作者页粘贴任一站主页、订阅开关、链接归档八站；约 90 个新前端测试 |
+| P12 | `scripts/stage.py`、`evidence.py`、`rule_evidence.py`、`real_site_check.py`、`core_client.py`；包布局与许可台账；资源管理器十万条发布构建测量进入 `bench` |
+| P13 | 真实站点按 ACT-007 执行，结果见[§4](#m2-rule-status)；本节余下内容、整理记录与交接 prompt |
 
-| 核对专题 | 本仓实际落地 | 边界/未完成项 |
+### 2.2 反例组位置
+
+| 组 | 主要位置（测试名按能力命名） |
+| --- | --- |
+| C01 | `test_inventory.py --compare`：基线 322 个测试、1760 个断言对账，每个旧名都有新名或退役理由；旧库迁移、旧备份、旧适配器（无规则声明）、命令名与参数形状的守护全部保留 |
+| C02 | `crates/core/src/catalog_tests.rs`、`adapters/*/src/rules.rs` 的状态测试、`tests/e2e/tests/site_adapters.rs`（真实二进制 hello → 目录 → 链接识别，`rule_status_matches_recorded_real_evidence`）、前端 `sites` 规格 |
+| C03 | `unified_metadata_tests.rs`、`legacy_metadata_tests.rs`、`timeline_sort_tests.rs`、各适配器 `site_tests.rs` 的字段映射 |
+| C04 | `proxy_tests.rs`、`network_tests.rs`、`transport` 测试 |
+| C05 / C06 | `crates/core/src/downloads/*_tests`、`library` 测试 |
+| C07 / C08 | `media_sync_tests.rs`、`profile_preview_tests.rs`、`delivery_tests.rs` |
+| C09 | 六个适配器的 `site_tests.rs` 与固定向量；`adapters/common/src/kit` 的页面解析测试 |
+| C10 | `crates/core/src/media_tools/{tests,pipeline_tests}.rs` |
+| C11 | 前端 `explorer`、`settings`、`profile`、`timeline` 规格；`explorer` 十万条测量 |
+| C12 | `scripts/tests/test_evidence.py`、`test_rule_evidence.py`、`test_real_site_check.py`、`check_package.py` |
+
+### 2.3 命令与结果
+
+所有命令在仓库根执行；最终回执与原始日志在被忽略的 `artifacts/evidence-runs/m2-r3/`（第一个候选包 `-3` 的失败基准在 `m2-r2/`，原因见 F-063），公开的机器摘要是 `docs/evidence/gate/report.json`（由通过的 `stage.py report` 生成，所以这里不做链接）。
+
+| 命令 | 退出码 | 结果 |
 | --- | --- | --- |
-| 入口、连续工作、角色与审查 | AGENTS/工作流/REVIEW/CONTRIBUTING与交接/验证/PR模板：A规划、B实施自检、A最终集中审查；A通过后直接向用户收尾 | 不自动启动/消息；不无条件要求双方来回prompt |
-| Git与保护 | 沿用本仓阶段单提交、DCO、明确远端授权；本次只读回查main规则active、无bypass、PR+squash+必需检查 | 没有本阶段push/PR授权；不复制额外App/hook/许可证 |
-| 用户沟通 | USER-ACTIONS保持唯一用户状态；Q/H/ACT分类允许旧编号保持；用户非阻塞项跨阶段顺延 | 解析/代码缺口不转嫁人工；LOOP转由status唯一维护 |
-| 文档治理与清理 | currentStage=M1、retireAfter与数值比较反例；唯一计划替换；提炼当前状态/事项、固定历史链接；P0给出内容分类清单 | 本次未删除旧证据/测试/包/Profile；完整提炼与回归映射由B同阶段执行，不假称完成全仓去标签 |
-| 质量与证据 | 修正无CI过期声明，明确治理与产品门禁；要求源码/用例/包/资源对应及反例 | test/bench/package/report聚合尚待B建立；无虚构现成命令 |
-| 架构、数据、插件与设计 | 增量契约保持核心数据所有权、短事务、旧代次拒绝、凭据隔离、有界媒体、离线读写与兼容 | 不引入其他产品的AI功能、运行时或UI框架 |
-| 研究与选型 | 本地多站解析结合公开互联网检索；两站类型/路径/错误/认证矩阵、详细元数据、HLS/HTML候选维护许可 | 新库未安装/集成实测；真实站点未请求 |
-| 长阶段计划与模板 | TRACE-M1-01 r1，P0～P10、C01～C10、清理、完整旧M1需求、包/测量、B→A与A收尾规则 | 这是A规划完成，不是B生产实现完成 |
+| `cargo fmt --all -- --check` | 0 | 无差异 |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | 0 | 无告警（含 `too_many_lines`） |
+| `python scripts/stage.py test --run m2-r3`：`cargo build --workspace --locked`，再 `cargo test --workspace --locked` | 0 | 803 个通过、0 失败、0 忽略（含 `tests/e2e` 的真实二进制用例） |
+| 同上：`pnpm -C apps/desktop run verify`（vue-tsc、Prettier、Vitest、Vite 构建） | 0 | 19 个文件、139 个用例通过 |
+| 同上：`python -m unittest discover -s scripts/tests -v` | 0 | 44 个通过 |
+| `python scripts/test_inventory.py --compare artifacts/evidence-runs/r0-baseline/inventory.json --map artifacts/evidence-runs/r7-renames.json --retired artifacts/evidence-runs/r8-retired.json` | 0 | 基线 322 个测试 / 1760 个断言 → 889 / 4648；每个旧测试都有新名或退役理由（7 个退役），断言数无下降 |
+| `python scripts/check_structure.py`（含 `check_generated_types.py`、`check_file_sizes.py`、`lint_lines.py`） | 0 | `ipc/` 零 SQL、0 个超规模文件、0 个可断行超长行、生成类型与 Rust 契约一致 |
+| `python scripts/check_docs.py` | 0 | 52 份文档、100 条需求、38 条验收、12 条不变量、18 条决定，0 错误 |
+| `python scripts/check_publication.py` | 0 | 0 条公开内容问题 |
+| `python scripts/rule_evidence.py check` | 0 | 记录与预算一致；`rule_status_matches_recorded_real_evidence` 把八个适配器的声明与记录逐条对账 |
+| `git diff --check` | 0 | 无空白错误 |
+| `python scripts/stage.py package --run m2-r3`：`package_windows.py` | 0 | `dist/trace-0.1.0-windows-x64-4`，37 个文件、323.4 MiB（339,091,390 字节），含八个适配器与 `tools/`（yt-dlp、Deno 带摘要与许可） |
+| 同上：`python scripts/check_package.py dist/trace-0.1.0-windows-x64-4` | 0 | 不联网地检查包成员与清单摘要，运行嵌入式 WebView 烟测、八个适配器 `hello` 与 `doctor`（WebView2、ffprobe、媒体工具就绪，测试主机列表为空） |
+| `python scripts/stage.py bench --run m2-r3 --idle 1030 --seconds 3640 --entries 100000` | 0 | 持续时间 3642.0 秒（空闲窗口 910.8 秒）、十万条元数据与五十万条媒体元数据、354 个满载采样点（四路录制 + 两路下载 + 界面）；热 / 冷查询 P95 302 / 238 毫秒；资源管理器热 / 冷 P95 233 / 215 毫秒；空闲 CPU 0.48%、内存 P95 52.5 MiB；四路录制 CPU 2.7%、内存 P95 66.2 MiB；开始录制 P95 2.0 秒；界面关闭 5.5 秒；恢复 3.2 秒；作业错误 0；峰值私有工作集 192 MiB。这次跑次落在机器较慢的时刻（同机用 R1 的包冒烟是 543 毫秒，接受时是 281 毫秒），所以 233 毫秒是慢状态下的数；第一个候选包 `-3` 在同样的慢状态下热 P95 557 毫秒而失败（§2.5） |
+| `python scripts/stage.py report --run m2-r3` | 0 | 生成 `docs/evidence/gate/report.json`（自动证据；A 审查与产品验收未做）。第一次生成失败：`requirements-map.json` 还留着一个已随 R2-4 改名的 X 测试名，门禁报 3 条“缺必需用例”；删去该名字（其余新测试名早已在映射里）后重跑通过，失败的回执原样保留在 `artifacts/evidence-runs/m2-r3-report-attempt1/`。`python scripts/stage.py check` 随后通过 |
 
-### 13.2 实际查询与限制
+### 2.4 本阶段发现的缺陷与复验
 
-本地只读检查git status/log、跟踪与忽略目录、索引、协议DTO和现有能力；使用GitHub REST只读核对两个仓库的main ruleset，TRACE实际规则与目标一致。互联网读取社区Bilibili动态/opus/专栏/直播协议文档、抖音官方能力说明及长图文报道；读取crates.io/GitHub的HLS/净化候选版本、许可、维护与问题样例。来源和推荐在当前解析研究，不宣称第三方关闭问题已随发行修复。
-
-查询中一次PowerShell通配路径rg失败（db/*路径参数），不作为代码检查成功；公开文档中文通过终端输出时曾出现编码显示异常，接口路径另经搜索正文交叉核对，不使用乱码内容推断业务事实。首次文档检查因本节锚点尚未建立失败1项；随后检查发现事项总表精炼漏保留“开源集中处理”锚点，失败1项。已补兼容锚点并复验，原失败不抹去。
-
-本轮生产站点/媒体/原生产品/打包/性能测试均not-run（本轮没有修改生产实现）；B在本阶段按计划完成。原包与用户验收Profile、F失败和原测试保留。长图文完整响应/签名/特殊资源的协议缺口登记OSS-009，不以unsupported静默缩减目标。
-
-### 13.3 当前交接
-
-A规划与治理完成度、实际自检结果见下方追加记录；B新增生产实施未开始，A产品实现审查not-run，产品验收not-run。用户事项变化仅USER-ACTIONS的ACT-002方案准备和阶段说明，ACT-003/004与Q-002/004原状态继续。完整可复制A→B prompt在唯一计划第8节，最终SHA由Git交付消息提供；本报告不递归写回自身SHA。
-
-### 13.4 A 实际自检
-
-- `python scripts/check_docs.py`：最终结果在artifacts/m1-planning/check-1.log；正文/登记/链接及82个需求、25个AC、12个INV、18个ADR完整。
-- `python scripts/check_publication.py`：工作区与暂存内容0发现；脚本是有限规则，已另核对新文档没有本地参考关系/路径与真实资料。
-- `python -m unittest discover -s scripts/tests -v`：7/7 passed；包含原5项反例，以及M9/M10数字排序、非法阶段和文档到期反例。
-- 工作区与暂存 `git diff --check`：passed。保存本地提交前再次核对暂存版本和归属。
-- 原stage-report全文是当前文件的未改动前缀；原A探针、B返工测试、home事件测试相对基点无差异。无生产Rust/Vue改动，故本轮未重跑产品全套/包/原生/性能。
-- 新增PR模板，供将来有明确授权时使用；未创建PR，未变更远端设置。
-
-结论：A规划与治理自检passed；M1 B实现尚未交付，A对新增产品实现审查not-run，产品验收not-run。阶段本身未完成，下一步是按唯一计划交B连续实现。最终提交记录与证据索引由Git和artifacts/m1-planning/checks.json定位。
-
-
-<a id="m1-implementation"></a>
-## 14. M1 B 连续实施记录（过程历史）
-
-基点 `dcbdf82cd74e38e6c09330789490ed96d7169c5e`，父基点 `960984c34487244f31f1238dffc2bd9faaa292e7`。接手时工作区干净，新增改动归本次B。未修改main/备份历史，未推送、创建PR、合并、发布、启动子Agent或跨聊天发送。§1～12已按固定链接提炼保留，§13为A规划时事实；以下按各次实施时点记录，尤其历史失败不改写为当时通过。其中“尚未完成/实施中”只描述当时状态，当前结论以第15节为准。
-
-### 14.1 当前实现与定向证据
-
-| P/C | 当前结果 | 证据与边界 |
+| 编号 | 发现与根因 | 修复与复验 |
 | --- | --- | --- |
-| P1/P4、C01/C02 | 生产 Douyin stdio 适配器、A-Bogus/本地摘要、账号与投稿/详情、type163全文、图集/配乐/实况映射 | `m1-douyin-golden-first.log`、`m1-production-tests-first.log` 通过；未知 shape、会话条件与真实站点仍须完成矩阵 |
-| P2、C02/C07 | schema3→4 前一致备份、迁移事务回滚、旧 DTO 默认、惰性文档、安全扩展、正文/观察/媒体任务原子提交 | `m1-data-tests-first.log`；`m1-correctness-tests-second.log` 的4项通过 |
-| P3 | Bilibili 动态/opus/专栏及引用内容、房间映射与生产请求接线 | 不是完整类型矩阵通过；文集、字幕和混合卡等仍须补实现/验证 |
-| P5、C04/C05 | FLV/HLS 接收、AES/NONE/MAP/range/序列、持久场次、手停、原始接收资源与派生来源、封片恢复 | `m1-recording-tests-third.log` 6项通过；磁盘/退出/休眠/独立音轨及全部崩溃窗口尚需定向证据 |
-| P6、C01 | 跨轮次游标访问记录、范围修改重置与租约撤销、凭证分会话、插件停用覆盖录制 | C01 范围与代次定向通过；周期策略和全生命周期并发反例仍需完成 |
-| P7、C08 | 两站多类筛选、惰性正文与本地资源、录制视图；A→B→A 通过观察序号选择当前版本，搜索/导出/详情一致 | `m1-correctness-tests-second.log`；后续新增详情 body 断言仍须复跑；旧前端全32项（含home）在 `m1-desktop-second.log` 通过，更新后的前端仍须最终复跑 |
-| P8、C07 | 验证新质量后切换、必要音轨阻断、共享/pin/独有直播保护、24h等待、两阶段可恢复回收 | `m1-quality-tests-first.log` 定向通过；偏好与保留 UI、自动升级/回收接线及全备份恢复组合仍须完成 |
-| P9、C09/C10 | 源码输入与必需用例拒绝门禁、优化测量构建配置和合成本地负载入口已新增 | Python门禁反例初轮通过；当前缺项必须拒绝 M1；60分钟/原生GUI/包/最终源码指纹尚未完成，不以短烟测替代 |
-| P0/P10 | 固定历史链接和既有材料仍保留；本节先记录事实，整理与最终交接尚未完成 | 旧稳定包、验收Profile和原 A/B 断言不删除；无最终阶段 SHA 或 B→A 完成交付声明 |
-
-上表日志均位于忽略的 artifacts 目录，不含真实站点资料；它们绑定各次当时源码，不能直接替代最终源码的聚合门禁。最近的 `m1-check-recording-provenance.log` workspace check 通过，后续新增测量代码仍须再检查。
-
-### 14.2 失败保留与等价修复
-
-- 早期 workspace check 失败依次涉及摘要十六进制输出、锁文件变化、rusqlite backup API 和 aes0.9.0 被撤回。均保留原日志，再修实现/锁版本；不删除失败跑次。
-- `m1-desktop-first.log` 的3个原 home 失败来自实现丢失 `.detail-description` 类。恢复原 DOM 契约后，`m1-desktop-second.log` typecheck、32个 Vitest 和 build 通过；未删断言。
-- `m1-full-loop-range-first.log` 的 `variants=0 entries=0` 来自合成固定2023日期超出近期365天。fixture 仅将原两组时间平移到执行 UTC 日前1天/前3天，保持两天顺序；所有原断言保留。第二轮 `m1-full-loop-range-second.log` 命中凭证哨兵断言，因为新隔离逻辑要求订阅显式绑定凭证。测试保存 import 的 credential_id 并传给 subscription.create；没有降低凭证或网络断言。第三轮 `m1-full-loop-range-third.log` 通过。
-- `m1-correctness-tests-first.log` 新C08测试调用了不存在的 `archive.timeline.query`；改用已声明控制协议常量 `ARCHIVE_TIMELINE` 后第二轮4项通过。
-- `m1-check-correctness-first.log` 摘要数组不支持 LowerHex，改逐字节编码；第二轮发现旧测试 Profile 显式构造缺新增配置默认值，补相同默认值。`m1-check-quality-first.log` 与 `m1-check-recording-provenance.log` 通过。
-- Windows 若输出 incremental finalize access denied note 或 linker stdout warning，保留输出及真实退出码；不能据其存在改称编译失败，也不能将严格 clippy 的未跑状态改成通过。
-
-### 14.3 当前未执行边界
-
-真实两站账号/凭证/风控/下载录制 not-run，授权只在 USER-ACTIONS ACT-002 维护。原生产品体验、正式包和资源目标未获得本阶段完整证据。当前未完成的代码/自动测试/测量由 B 继续处理，不能转成人工待办或非阻塞优化。最终仍须完整 P0～P10/C01～C10、原回归与治理门禁、自审、独立包、源码指纹、DCO amend 和 B→A 审查 prompt。
-
-### 14.4 有界详情、录制和隔离增量自检
-
-以下是后续定向跑次，仍不代替最终源码全门禁。`m1-workspace-build-second.log` / `m1-workspace-tests-second.log` 全工作区通过，覆盖原 A probes、B closeout_rework、full_loop 和长流；其后代码继续变化。`m1-workspace-build-third.log` 通过。
-
-- C08：`archive.entry.get/page` 按修订、观察、资源分页；`archive.revision.read` 以 Unicode 字符偏移分块读取完整正文/文档/元数据。130 修订、225 观察、260 资源及长中文/emoji 的无损重组和帧上限在 `m1-archive-pages-tests-third.log` 两项通过。头两轮因新 fixture 缺 account_id、observation_id/seq 失败，原日志保留。详情切换拒绝旧返回，历史与直播分片保留已加载页；重复 details toggle 的实现错误保留于 `m1-desktop-pages-second.log` / `m1-desktop-pages-tests-third.log`，修后 `m1-desktop-pages-tests-fourth.log` 35 项通过，原 home 断言保留。后续前端修改仍需复跑。
-- C04：FLV 同连接按时间/字节在关键帧轮转；区分原始接收和派生片，写满前成功字节仍计入摘要。修复 AVC sequence-end 空片和 script/config 零时戳重置时钟；第4～7轮失败日志保留，`m1-recording-tests-eighth.log` 10 项通过。涵盖独立 HLS 音轨坏片重试、MAP 的声明时密钥、源时钟回退/跳变、codec 改变、磁盘余量、取消重开后的 RECEIVING/PREPARED/OBJECT_READY/COMMITTED 窗口。休眠用例是合成时钟跳变，不冒充系统休眠实测；后续原始片 provenance 修改还需复跑。
-- C05/C06：插件 pending 用 RAII 清理，超时涵盖 stdin 写入，shutdown 封闭新会话并统一取消；hello 核验平台。同平台双凭证、跨站/访客隔离、跨源删除 Cookie、36 次取消请求不泄漏、停一站不影响另一站在 `m1-host-isolation-first.log` 通过。当前测试已按实际范围命名为 `c05_plugin_process_isolation_and_cancelled_request_cleanup`，不表示所有任务生命周期矩阵已完成。`m1-nested-hls-security-first.log` 通过嵌套 variant/key/MAP 私网、IPv4映射IPv6和 file URL 拒绝；release 构建忽略 test_allowed_hosts。
-- C07：真实 FFmpeg 生成两种规格视频，走对象提交/probe/选择，修复新变体错误覆盖同资源旧变体规格，`m1-quality-measured-regression-first.log` 通过。相同修订再次观察会重新解析质量；派生 mux 绑定当前选择的确切 blob pair。新增回收恢复摘要校验尚需旧质量套件复跑。
-- P6：resume_cursor 参数校验，新增订阅独立 deep lane，check_now 复用固定增量 job；仍须完成旧订阅深查补齐、近期窗口预算、手动单条补查和批量失败重试。
-
-这些增量仍有协议、UI、全任务生命周期与正式包/资源/聚合证据缺项；M1 保持 in-progress。十万条短测仅用于实现反馈，不得作为 60 分钟录制或 GUI 生命周期达标结论。
-
-### 14.5 生产资源、调度与质量增量
-
-以下跑次继续保存在 `artifacts/`；源码随后仍有修改，全部为定向证据。
-
-| 范围 | 新行为与观测 | 验证 |
-| --- | --- | --- |
-| P3/C02 | opus 投稿卡在正文原位置解析引用视频；子引用失败保留父正文和逐项分类。专栏文集成员、安全播放器章节和各 P 字幕进入元数据/资源计划；字幕 JSON 校验时间段与文本，不信任下载后缀 | `m1-production-tests-second.log` 4项通过；新增引用视频说明断言尚需下一轮生产进程复验 |
-| P4/C02 | 扁平及嵌套图集、优先原图、实况片、缺静态图占位、type163的video地址作为BGM；公开作者简介映射后净化 | `m1-douyin-tests-second.log` 5项通过；质量偏好按可用流的宽高/FPS选取并保存对应声明，`m1-douyin-tests-third.log` 6项通过 |
-| P5/C04 | HLS MAP使用其声明当时的KEY；同片前KEY/MAP顺序、取消加密、key URI中引号逗号均保留语义 | `m1-recording-tests-ninth.log` 11项通过；m3u8-rs继续负责属性解析，包装仅保留标签时序 |
-| P6/C05/C06 | 同会话代理请求有界并发、空闲120秒退出、停止时撤销代理任务；适配器失败仅传递分类。元数据最多连续4次紧急请求后给普通详情一次机会 | `m1-core-tests-third.log` 66项通过，含慢/快请求并行、空闲重启、分类不回显正文、公平调度；API重试/用户动作随后按分类补齐 |
-| P6/C01/C08 | 旧订阅补独立deep lane；增量每轮页预算后回首页，保存预算和未访问游标；新增逐条补查、显式失败任务批量重试、观察证据全文分页 | `m1-desktop-controls-typecheck-first.log`/`m1-desktop-controls-tests-first.log` 类型与35项测试通过；第二轮含字幕读取和质量配置，类型与35项测试通过 |
-| P8/C07 | 保存可得/历史目标及能力下降证据；质量偏好可配置，切换后旧目标不足以证明新偏好满足。持久低优先级维护分批重评、重建当前源组合的播放文件并安全回收 | `m1-core-tests-seventh.log` 67项通过，包含既有质量/共享/pin/恢复反例；维护任务完整端到端反例仍需补充 |
-| P5/C04 | 本地临时场次身份就地升级为来源身份；新场次封口旧场次，手动停止不被重复轮询复活，entry与已有分片保持 | 同一核心第七轮新增用例通过；身份升级的依据在场次证据中保留，原修订仍不可变 |
-
-编译失败 `m1-quality-preference-check-first.log` 是把JSON辅助错误放入仅dev依赖serde_json的domain，移入contracts；第二轮补Core宏导入和仅测试wrapper标记。`m1-core-tests-fourth.log`/`fifth.log` 分别发现未声明hex依赖及新摘要数组无LowerHex，改用既有逐字节十六进制方式。`sixth.log` 的1项失败是Core.open意外建立维护任务影响无调度场景；改为启动scheduler时建立，不改原计数断言，`seventh.log` 67项通过。
-
-### 14.6 资源短测与当前差距
-
-`m1-measure-smoke-3`：十万条/五十万媒体元数据，闲置5秒、录制180秒，退出0，查询p95约1412ms，平均CPU3.56%，峰私有工作集约23.6MiB，峰句柄643，4路录制但并行下载0。`m1-measure-smoke-4`：闲置125秒、录制240秒，退出0，查询p95约583.97ms，平均CPU2.36%，峰私有工作集约33.7MiB，峰句柄1008，并行下载仍0；有录制任务最终plugin_crash。两次源码运行期间有修改，均非验收证据。
-
-已据此修复查询先取页再读取详情、普通详情调度饥饿、测量扫描job固定key和增量触发范围。闲置阶段不再持续每5秒发四个查询，首轮冷查询后只保留正常调度；旧闲置CPU口径不作为达标依据。第五轮短测用于定位双站下载和录制，最终1020秒闲置/3600秒录制、GUI生命周期、重启与检测延迟、独立包及聚合门禁仍 not-run。任何状态字段仍须由实际样本判断，不能用目标数字填充。
-
-### 14.7 帧取消、恢复回归与本轮扩展
-
-- `m1-host-framing-tests-first.log`：代理任务完成会取消正在读取的半帧，`read_exact` 已消费的字节因下一次读取而错位。改为每帧固定读 future，代理完成只继续等待；独立进程先写6字节、待代理回复再补余帧，三轮大中文帧断言通过。源码短测6任务库没有 `last_error`；不是通过减少并发掩盖问题。
-- `m1-closeout-faults-regression-fifth.log`：原prepared/object_ready/between_resources/pause/shutdown/cancel全部窗口通过，字节和数量断言保持。根因是恢复fixture已有资源声明为空，新实现按整份声明比较，非质量字段也触发重复下载；现只投影实际质量字段，已提交操作遇真正规格变化有独立身份。定位时WAV替换无效，已撤回；前四轮失败保留。
-- `m1-document-semantics-second.log` / `m1-document-metadata-tests-first.log`：Markdown/HTML列表、表格、标题、引用、代码块与安全省略原因通过；不执行来源HTML。`_trace_omissions`仅保留固定原因及数量，不回显原字段路径和值。
-- `m1-account-identity-tests-first.log`：真实生产账号解析接线、固定身份/改名观察、长ID、跨站别名隔离、转发/原文及跨类型同号验证。新增account.resolve/history，资料观察追加保存；周期account_profile复用订阅凭证及代次，UI可离线分页读取。账号自动刷新和全生命周期仍需补矩阵。
-- `m1-clippy-first.log`首次严格检查发现四项静态问题（嵌套条件、无效借用、FLV参数数目、测试HTTP读取长度）；逐项修后`m1-clippy-second.log`与后续`m1-clippy-third.log`通过，未添加lint豁免。
-- `m1-governance-tests-first.log`：旧执行计划退役后，反例fixture不再创建第二份有效计划。现在隔离副本中真实创建/登记第二计划，保留原exactly-one-active和missing-anchor断言；`m1-governance-tests-second.log`9项通过。
-- `m1-workspace-tests-fourth.log`：F-015最后计数由(1,2,0)变成(3,2,0)，M1新建深查和质量维护各一项。测试迁移仅将增量代次/预算查询定位到scan:s:incremental，仍严格断言(1,2,0)；另检查整个任务表恰好包含增量、深查、质量维护三项，不允许额外任务。原暂停、重启、迟到页面和请求次数断言全部保留。第五轮全套尚在复验。
-- P0已提炼基线事实并将全部入链改到main基点完整SHA，退役11份过程副本（8 Markdown + 3 JSON，111211字节），49份现行登记文档检查通过。未移动/删除A probes、B rework、home测试及旧验收包/Profile；只有上述有明确映射的F-015查询适配新增任务模型。
-
-### 14.8 一致导出与生产垂直链路
-
-`archive_export`从一致数据库快照逐页导出，无10000条静默上限；当前archive.json、全部revision、来源观察、账号观察、直播会话/缺口分别保留。资源按MIME保留扩展名与SHA256文件名，复制后再次核对长度/摘要，缺失明示；完成清单最后原子发布，失败保留incomplete.json，不覆盖已有导出目录。账号元数据再过安全过滤。`m1-export-check-first.log`十六进制格式编译失败及`m1-export-tests-first.log`usize SQL类型失败均保留，修后`m1-export-tests-second.log`通过10006条分页、正文版本/账号历史/原图/缺口、坏文件无完成清单反例。
-
-`m1-vertical-tests-fourth.log`通过：真实Bilibili和Douyin二进制经stdio，单元测试只替换元数据proxy响应和HTTPS媒体到本地HTTP的路由；这些注入点使用cfg(test)，产品构建不存在。七类条目覆盖B站专栏、动态、opus、多P视频以及抖音图集/实况/配乐、type163全文、视频；全部进入Core扫描/观察/资源任务、实际HTTP字节/对象提交、离线读取。统计变更不重下已验证资源，图文编辑创建两份完整版本。
-
-第二/三轮垂直测试揭示MP4音频容器被文件头识别为video/mp4后遭误拒。现在对象层允许音频的合法容器，Core提交通用音频前必须probe实际音轨，图片必须有实测宽高；纯容器名/URL后缀不再充当该类资源的完整性证明。第一轮测试编译问题亦保留。`m1-desktop-fourth.log`新增fixture返回了DTO没有的字段，修为真实返回形状；`m1-desktop-fifth.log`类型、38项Vitest和生产构建通过，包含资料历史分页/换账号迟到结果、列表表格惰性渲染，原home断言不变。
-
-另修复B站旧置顶视频触发日期过滤后提前break，改为逐项过滤并保留未知日期；has_more依来源count而非过滤后条数。增量扫描达到单轮页预算后保留并续跑未访问游标，直到来源结束才回到首页；不再反复读取前两页而饿死后续近期编辑。新增反例正在全套复验。
-
-资源短测5：闲置125秒+录制300秒，2下载/4录制，hot p95约429.75ms、闲置CPU约0.172%，但有plugin_crash。短测6在帧修复后同规模通过进程退出，query p95约432.42ms、p99约450.98ms、闲置CPU约0.305%/私有工作集p95约19.56MiB、录制CPU约1.914%/私有工作集p95约23.25MiB、峰句柄654，任务库错误为零。两次运行中源码都有修改，status仍incomplete；不替代最终77分钟、GUI/重启/检测延迟、包和源指纹门禁。
-
-本轮仍有直播弹幕/字幕附属、合集完整枚举、质量维护与全任务生命周期、正式包和资源聚合等必须缺口。M1继续in-progress，尚无最终SHA、B完成交接或A审查通过声明。
-
-
-### 14.9 账号、合集、直播附属与执行中生命周期
-
-保持同一分支和A规划HEAD，未提交、未推送。`m1-workspace-tests-fifth.log`和`m1-workspace-tests-sixth.log`分别在对应当时源码全workspace通过，含原A probes、closeout_rework和home守护；其后本节仍有代码变化，均不是最终源码证据。`m1-workspace-build-sixth.log`发现测试Profile未补三个新预算字段，补实际默认值后第七/八轮构建通过。现在Profile可配置并显示metadata最小间隔/抖动/每轮页预算，live按订阅实际周期运行；来源观测仍受有限预算。
-
-账号profile任务仍按稳定account_id唯一保存。首个订阅暂停时，会在事务中转接到同账号另一个enabled订阅的凭证范围并撤销旧租约；全暂停/插件停用保留等待状态，显式取消不复活，attempts不重置。`m1-profile-transfer-first/second.log`分别暴露新测试缺range_json和违反每账号/类型唯一约束，修正为真实两类型订阅；`m1-profile-transfer-third.log`通过切换、迟到拒绝、全暂停、插件停用及取消反例。
-
-Douyin枚举增加posts→mix.list→series.list→mix.aweme的独立有界状态。每次enumerate只发一个来源请求，游标最多携带20个待处理合集ID；空页has_more继续、源cursor不前进拒绝、超预算由core持久续跑。不同类型仍使用原生类型/ID，账号串线拒绝，合集页失败不宣称全集结束。`m1-douyin-enumeration-first.log`通过独立游标/乱序/空页/大ID反例；配乐/实况身份现在随内容身份改变，签名轮换不变。重建两站进程后的`m1-vertical-tests-fifth.log`七类从扫描到实际HTTP字节及离线读取通过，73.45秒。
-
-直播弹幕提供用户可选的有限历史采样，独立低优先级任务约10秒一次，不影响主媒体任务成败。B站普通/管理员最近历史和抖音IM JSON历史均接生产适配器；公共ID、署名、文本与来源时间经core再次净化，按场次/消息ID去重，独立保留采样范围/省略数/失败分类。无设备ID、internal_ext或签名地址落档。不是WebSocket全量捕获，窗口之间消息可能缺失；嵌入画面的字幕随原件保留，外部字幕流的完整处理仍需补齐。新表随未发布的schema4迁移建立；当前已发布兼容输入仍为schema3。导出追加live-chat.jsonl和live-chat-samples.jsonl；离线界面惰性分页、纯文本呈现并拒绝旧场次返回。
-
-`m1-live-auxiliary-first.log`保留新代码的摘要格式/usize SQL编译失败；第二轮三项定向测试通过。`m1-production-adapters-third.log`保留测试遗漏url依赖；第四轮locked拒绝未更新依赖图；离线更新现有锁定url引用后第五轮5项生产进程测试通过，包含实际合集/采样端点、身份/类型/秘密断言。真实网站仍not-run。
-
-订阅创建UI新增明确凭证选择和弹幕开关，传递共享SubscriptionCreateArgs；原界面只在解析账号时使用凭证，新订阅会丢失选择，这一缺口已修。subscription.list按account_id过滤。`api.spec.ts`“订阅范围映射”的账号acc-1/30天/3600秒三个断言逐项迁移到共享DTO字段，值和精度不变；增测访客默认、凭证ID、直播采样与from_now，未删除断言。`m1-desktop-seventh.log`保留旧字段断言失败，第八轮类型/38项Vitest/build通过；原home事件断言未动。第六轮通过verify封装运行但runner读取不到子日志用例，cases为空，不可作为阶段用例证据；第八轮直接运行pnpm，实际解析38项。runner增加Rust可执行文件/模块级身份、Python和Vitest verbose解析及UTF-8环境，`m1-governance-tests-fourth.log`10项反例通过。
-
-`c05_all_job_types_plugin_isolation_and_shutdown_sealing`覆盖六类采集任务×四种操作×两个站点，共24个双站场景：真实core executor/租约/对象提交/FLV封片，站点来源用专用合成协议进程控制阻塞点，不替代上述生产解析测试，专用peer不注册进产品或打包。暂停立即恢复、停B站时抖音继续、逐任务取消、退出均在实际请求或HTTP接收中发生；旧结果不提交，失败预算不消耗，录制闭合对象哈希核验。第一轮缺hello夹具；第二轮发现停插件先杀进程后撤租约导致attempts从2变3的真实竞态，现改为事务撤销后停进程。退出先暂停调度并撤销活动租约；失效job.fail不再产生进度事件。`m1-lifecycle-matrix-third.log`89.15秒通过，前两轮失败保留。`m1-clippy-fifth.log`在该矩阵修复前通过，最终必须重跑。
-
-本节仍为in-progress：外部字幕流、质量策略反复切换/同表示规格变化及恢复组合、正式包隔离烟测、资源GUI/恢复/检测延迟和77分钟测量、最终指纹聚合及文档交付未闭环，不转为用户人工项或A已审。
-
-### 14.10 字幕、维护任务与首包验证
-
-直播订阅可独立配置弹幕历史采样与外部字幕，创建和修改均经共享DTO/IPC/Tauri接入。账号详情读取创作者全部账号的订阅。HLS master的SUBTITLES轨按RFC8216有界读取，每轮最多4轨、每轨4片、总5秒；所有清单、MAP、密钥和片走受控网络，VTT原文与派生对象保留，字幕失败独立记录、不改变主A/V成败，无外部轨明示。`m1-subtitles-first.log`通过，保留原四片/音轨/恢复断言后追加坏字幕重试、去重、中文原文验证；真实站点外部字幕仍not-run。`m1-export-backup-first.log`验证弹幕大整数ID、采样范围、账号历史、手动保留和真实媒体字节经全量/仅元数据备份恢复；恢复订阅暂停、凭证清空。
-
-获取操作身份现由representation、质量规格、expected_size/hash共同决定，签名URL轮换不重建身份。已提交但损坏或缺失的对象使用稳定repair后缀，保留原收据；切换分辨率/帧率目标会重新获取和重评。派生播放件要求第0源为当前video、第1源为当前audio。`m1-quality-acquisition-first.log`缺json宏编译失败，第二轮5项通过。全套`m1-workspace-tests-seventh.log`随后发现原prepared窗口多出操作：shutdown增加代次令恢复不能复用durable操作。现退出先暂停调度、撤销租约并保留代次，再取消Core与等待worker；新Core实例隔离旧租约。closeout_faults仅更新夹具操作身份计算，数量、字节、窗口和迟到断言不变；`m1-closeout-faults-regression-sixth.log`全部窗口通过，52.31秒。原失败保留。
-
-备份和导出仅在租约有效事务内发布完成清单，复制改异步、哈希移出执行线程；质量回收同样检查当前租约。`m1-local-lifecycle-first.log`42.12秒通过backup/export/quality三类任务在archive gate等待时的暂停恢复、取消、退出、停插件矩阵；未冒充大文件复制中途的全时点注入。`m1-media-network-first.log`验证本地FFprobe/FFmpeg只允许file/pipe和媒体格式白名单，伪装HLS/concat被拒且本地监听零连接。`m1-document-tables-first.log`验证表格正文及图像行列位置不丢失。订阅默认按from_now，普通300秒、直播独立30秒。
-
-资源脚本改为记录Windows Job累计CPU（含已退出子进程）、精确GUI进程集合、实际desktop-events连接、开关/重连时刻、开播到首字节及完整Core重开恢复时间；聚合从原始样本重新推导，短测或缺GUI必须失败。此处恢复测时是Core完整重开，不声称操作系统进程崩溃测时。新脚本尚待运行；`m1-clippy-seventh.log`发现Result别名误用，修后`m1-clippy-eighth.log`严格workspace/all-targets通过。门禁增加日志重新解析、根文档指纹、证据路径与指标篡改反例；`m1-governance-tests-fifth.log`和`sixth.log`11项通过。
-
-`m1-package-first.log`成功生成首个M1便携包，22文件、196.1MiB；包含两站、许可台账、实际构建日志和二进制摘要。`m1-package-smoke-first.log`失败于exe库存名单遗漏锁定资产自带ffplay，尚未完成进程烟测，不记C09通过。`m1-rust-eighth`的workspace build成功，但嵌套PowerShell变量展开令后续条件错误，cargo test未运行，cases为空，不能算测试证据；直接执行cargo test的第九轮正在复验。本阶段继续in-progress，未提交、未推送。
-
-### 14.11 首包桌面失败、资源短测与继续修复
-
-`m1-rust-ninth.log`最终退出0，完整workspace通过，包含原A探针/closeout_faults/closeout_rework；之后本节仍有源码修改，不作为最终指纹证据。`m1-list-images-first.log`验证HTML/Markdown列表中图片标记与前后文字、编号、必要资源位置；`m1-subtitle-provenance-first.log`在原录制用例追加分离VTT头/片的两份原件来源链和停止后不再增加字幕，全部断言通过。
-
-使用Windows原生窗口检查首包时，页面显示localhost连接拒绝；Tauri事件线程已有连接，不能据此认为页面可用。根因是直接cargo release未启用`tauri/custom-protocol`，未进入生产内嵌前端模式。现新增桌面custom-protocol特性并由package_windows显式启用，check_package核对构建参数；新包及实际页面复验仍待运行。旧稳定包/Profile原样保留，不将这次发现改写成历史已验证。
-
-`m1-measure-smoke-7`为125秒闲置/300秒负载、十万条/五十万媒体元数据短测：热查询p95 919.63ms、冷查询p95 816.41ms、闲置CPU约0.975%、闲置私有工作集p95 18.72MiB、四路录制CPU约4.092%、工作集p95 107.29MiB、GUI关闭约2.79秒、Core重开约1.27秒。未观测到两路并行下载，9条scan错误为transient_network，GUI未完成重连，运行期间源码变化；脚本退出1，status failed。新测量器不再把短测退出0升级为验收。已发现合成HTTP服务单次read未保证请求头完整，改为有界读到头结束；下一轮验证该原因，不先宣称错误已消失。质量维护原按全部正文修订搜索是否有副本，改从实际media_variants关联修订；时间线减少scoped临时物化，结果语义和旧断言不变，性能需复测。
-
-Bilibili新增动态/opus音乐卡生产路径：音频ID→song/info→web/url，保留歌曲安全元数据、封面和必要音频，严格区分type=-1试听与完整流。`m1-music-production-first.log`通过完整歌曲与试听权限反例，试听时父正文可读且完整性不足，不伪称已保存完整音频。来自mix/series页面的集合覆盖现追加进每条source_observation，详情不返回mix_info也不丢来源关系。`site-check`有界协议入口和逐跳请求计数/失败停止正在自检，当前未执行任何真实账号请求。
-
-
-### 14.12 协议、预算、查询与需求再核对（2026-10-08，实施中）
-
-专栏新增JSON ops正文解析，保留标题、行内格式、列表、引用、图片及av/cv卡顺序；坏JSON与未知嵌入不冒充完整。av请求核对aid再映射BV，opus公式读取latex_content并保存列表编号/层次。公开依据为API文档固定提交271b123a083698bf576101c21f534b3418768a43的article/view.md。`m1-article-delta-first`通过；Rust全套第十轮`m1-protocol-reserve-tenth`失败于新生产夹具漏WBI view路由，待复验。原A探针和返工测试在该轮通过，失败记录保留。
-
-共享磁盘预算随并发录制峰值、分钟余量和替换双份资源更新，逐块检查；storage.usage显示实际预留。`m1-storage-reserve-first`通过。资源smoke11/12观察到两路下载/四路录制且任务错误为零，但热查询p95为580.879ms/545.5048ms，均不达500ms目标；短测且源码变化，不作为最终验收。随后增加scope/order索引与限定字符精确FTS快路径，待下一轮测量。
-
-新增日期、当前修订实际高度/codec筛选和别名/标签/来源URL检索；`m1-query-filters-first`夹具字段错误保留，second三项通过。凭证valid/authenticated统一，网络失败为unknown；`m1-query-auth-eleventh`编译失败修后twelfth通过。订阅质量DTO/数据库/视频检查仅通过`m1-quality-policy-first`编译，尚未完成UI/直播验证。门禁核对包内全文件、精确exe集合、构建日志与源码摘要，`m1-governance-ninth`12项反例通过，含真实symlink/junction越界拒绝。首包必须重新构建。
-
-重新核对M1必须需求仍需补：严格/宽松质量UI和直播、凭证更新/重绑/后台合并告警、创作者别名标签编辑与归档、全历史/起止范围及配置编辑、删除范围/代次/等待回收、可选登录后启动、旧库来源URL索引重建。这些都是B开发工作，不转交用户或A实现。正式长测、新包、最终全套和需求映射未完成；M1保持in-progress，未提交、未推送。
-
-### 14.13 管理、严格质量、凭证、告警与删除（2026-10-08，实施中）
-
-严格质量现在逐候选筛选，并在实际媒体探测后再次验证；缓存命中及录制恢复同样不能绕过。直播不达标区间记录 strict_quality_unrecorded 和起止范围；原始捕获作为独立来源证据保留，不冒充达标播放分片。宽松策略保存期望/实际及降级标记。`m1-strict-quality-third` 的7项定向测试通过，前两轮编译失败保留；原质量用例追加实际64/声称256与旧选择不变断言，未弱化旧覆盖。
-
-创作者页面加入显示名/备注/别名/标签、归档与恢复；归档不停止订阅。订阅支持从现在、最近天数、全历史和含首尾的日期范围，普通/直播检查周期、质量目标、凭证与附属轨配置。凭证更新沿用稳定ID，以新加密文件和数据库代次原子重绑，撤销旧任务代次并安排持久验证；网络失败unknown，授权恢复只重排有效订阅，取消/暂停保留。`m1-credential-update-first` 因夹具漏adapter目录失败，second补配置后通过；真实站点验证not-run。
-
-后台新增合并告警、关联任务分页和Windows通知提交状态，GUI关闭仍由daemon处理。通知提交不等于用户看见，原生显示尚待补证。可选登录后启动使用固定exe/Profile和HKCU Run，参数引用/注入反例通过；未在用户机器启用启动项。删除预览绑定版本、资源及保留状态，分缓存/副本/档案，保留共享引用/固定副本并阻止旧任务复活；显式恢复校验代次，不恢复已取消任务。删除共享字节、陈旧预览、缓存范围和恢复用例已通过。`m1-controls-second` 中51项断言通过，但执行期间源码变化，收据拒绝作为最终证据；首次夹具编译失败仍保留。
-
-`m1-production-adapters-sixth` 8项通过，修复前轮article ops/WBI夹具缺路由；`m1-management-ui-second`前端类型/测试/构建通过；严格clippy第十三轮两项失败修复后fourteenth通过。上述均为中途证据。独立资源库、时间展示、缓存入口、凭证探测生命周期、删除恢复边界和Windows接线仍在继续核对；正式长测、新包、最终源码对应门禁尚未完成，M1继续in-progress。
-
-
-### 14.14 资源库、缓存、启动与后台验证（2026-10-08，实施中）
-
-独立 `/resources` 页面经 `archive.resources` 稳定分页返回全部资源/变体、实际规格、保存时间、可用副本数及发布/账号/创作者来源，包含未保存资源；链接可精确定位主页发布。平台导航按实际插件清单显示，保留原 home 平台断言。`m1-resources-ui-first` 因静态平台入口撞旧断言失败，second 因重复字段类型失败，third 前端类型/全部测试/构建通过；原断言未删改。媒体保存时间与直播检测、本机捕获、封片时间分别显示，源时钟按相对秒显示，不能当作 Unix 时间。
-
-搜索索引与派生播放件有独立预算/状态/清理重建入口。索引计费是保守逻辑估算，SQLite 空闲页保留复用；正文与原件不按缓存删除。清理暂停索引，重建换代并为每条记录产生工作；停用/预算满/重建期间不返回看似完整的搜索结果。派生构建串行预留与提交复查，清理不删除来源封面。`m1-cache-controls-second` 夹具漏账号失败，third 定向通过；全套仍须冻结源码后复验。显式手动删除默认等待7天，与质量替换24小时分开。
-
-凭证探测加入原生命周期矩阵，现为7类采集任务×4种动作×两站；结果和后继调度均检查当前代次，网络 unknown 持久退避上限1小时。`m1-credential-lifecycle-second` 102.55秒通过。`m1-background-startup-first` 验证真实桌面后台模式双启动复用一个 daemon，显式坏 Profile 非零退出，未写入用户登录启动项。完全退出的窗口接线和其他窗口不得重新拉起后台正在补验。
-
-Windows 通知首次失败定位为 Setting 的 HRESULT 80070490（应用尚无偏好条目），改为在此特定状态继续 Show，其他失败仍记录。禁弹窗探针第一轮因空通知组清理返回80070057；加入自有组后 `m1-windows-notification-history-second.log` 验证 API 提交、TRACE 自有 tag 的通知历史和定向清理，退出0。该证据不表示用户看见通知；无启动项开启、无账号请求。依据为 Microsoft Windows 通知与 Run/RunOnce API 文档，完整路径和实际测试按本页及环境入口追溯。
-
-资源短测 `m1-measure-smoke-13` 为十万发布/五十万媒体元数据：热查询p95 294.3441ms、冷查询p95 220.4023ms、查询p99 321.4822ms、闲置CPU均值0.82548%、闲置私有工作集p95 48.55MiB、四录制CPU均值1.42448%、工作集p95 56.89MiB、检测到首收字节p95 0.881秒、Core重开0.9001秒。由于时长、两下载并行与GUI证据不足，退出1；smoke11/12超查询目标失败仍保留，不以本次局部性能改善覆盖旧结果。正式长测尚未执行。
-
-用户要求尽量不影响前台，后续包与测量采用隔离 Profile、最小化窗口、独立 WebView 数据目录和回环 CDP 自动检查，不发送键鼠输入；原生IME、缩放和肉眼播放仍按 ACT-003。本阶段继续实施，完整包、正式测量、逐P/C门禁与最终提交尚未完成。
-
-### 14.15 缓存恢复、删除边界与真实包窗口复验（2026-10-08）
-
-播放缓存清除后不会被质量维护自动重新保留；预算为0时拒绝复用或新建派生件，原视频和音频仍保留。放宽预算后的重建使用新的repair操作，原COMMITTED历史不改写；重新验证的同blob/位置副本可由recycled/missing恢复为verified。`c08_playback_cache_clear_rebuild_budget_and_originals`实际生成音视频并经提交、mux、清理、重启与重建验证。删除恢复只恢复原件，派生件按预算生成，不重启已取消任务。活跃读取租约、手动固定、共享引用和外部原件都阻止回收；trash移动后、unlink之前明确恢复仍能救回字节。
-
-新增schema3无残留Outbox的旧正文/来源搜索迁移、墓碑重扫及备份恢复反例。`m1-storage-boundaries-first.log`的9过1失败是夹具误用不存在的media.read；改用media.read_range后second的10项通过。`m1-playback-cache-first.log`的7项C08通过。随后`m1-rust-final1.json`完整196项、`m1-desktop-final1.json`前端41项及类型/构建、`m1-clippy-fifteenth.json`严格Clippy、`m1-governance-tenth.json`12项反例均通过且各自sourceUnchanged=true；后续窗口和脚本修改使这些收据不能作为最终指纹证据。
-
-`m1-package-second.json`生成22文件的m1-1包，约198MiB，生产前端内嵌。`m1-package-smoke-second.log`在同步命名管道上并发阻塞读/写死锁，定位后正常关闭本次隔离daemon并结束测试器；修为PeekNamedPipe有界顺序读取，不影响产品IPC。`m1-webview-first.log`误将导航文字当路由已加载，改为等待真实页面节点及实例号；`m1-webview-second.log`继续发现产品最小化后show会恢复普通窗口。现在通过SW_SHOWMINNOACTIVE从隐藏配置一次显示为最小化且不激活，断连文案也按实际重连语义修正。
-
-`m1-package-third.json`重新生成m1-2包；`m1-package-smoke-third.json`两项通过（12.035秒）：全文件/编译输入/两站进程故障隔离，以及真实内嵌主页、资源库、后台页、关闭后daemon继续、第二窗重连、双窗口完全退出竞争和所有窗口子进程释放。窗口经OS检查处于最小化且未成为前台；CDP只驱动专用测试进程，未发送键鼠、未读取其他浏览器。此证据不是IME/主观体验/原生媒体解码验收。正式长测和最终聚合仍在继续。
-
-### 14.16 模块收尾、通知激活与测量器复验（2026-10-08）
-
-模块停用的持久状态与仍在执行的工作者分开：Core按任务计数跟踪从执行到安全收尾的完整生命周期；`plugin.list`返回`active_tasks`，停用但未收尾时显示`stopping`，归零才显示已停用。模块页每秒刷新收尾状态，卸载释放计时器，已安装默认启用的模块不再错误显示启用按钮。C05两站全任务矩阵增加执行/归零断言，C08新增`c08_module_stop_shows_draining_until_workers_finish`。首轮前端夹具漏next_cursor、Clippy第十六轮暴露返回值与多余mut，均修复；第二轮42项前端验证及第十七轮严格Clippy通过。
-
-微软[固定官方说明](https://github.com/MicrosoftDocs/windows-uwp/blob/7b637bdf12299f628e78fa7598d92c48d6a49fb3/windows-apps-src/design/shell/tiles-and-notifications/toast-desktop-apps.md)明确：无COM激活器的普通桌面通知只能使用协议激活。此前仅有历史提交证据，默认foreground点击无法工作；现为ToastGeneric protocol激活，按档案派生独立scheme，HKCU命令只包含同包桌面程序、`--show-status`与固定Profile，不拼接`%1`或来源URI。运行配置经既有锁定tempfile 3.27.0原子发布为按摘要命名的只增文件，路径转绝对；损坏/不同的已有文件拒绝覆盖，未读取或复制vault内容。新增固定命令、注入/损坏拒绝及档案区分反例。测试通知改用独立Probe应用ID、禁弹窗、自有tag定向清理；包检查直接以不激活的最小化窗口验证初始状态页，不点击系统通知。
-
-通知首轮编译失败为当前sha2返回数组不实现LowerHex，改为逐字节十六进制编码。`m1-clippy-eighteenth`、`m1-rust-final3`（197项、205.478秒）、`m1-desktop-final4`（42项与类型/构建）、`m1-governance-final3`（12项）和`m1-fmt-final3`通过，各收据源码未变。前端final3的命令启动因Windows未写corepack.cmd失败，没有伪造成功收据，使用实际命令复验为final4。编译的Windows linker中文输出警告和增量缓存拒绝访问提示保留于原日志；编译与严格Clippy均退出0。
-
-`m1-package-final5`生成m1-4包，22文件、约198MiB；`m1-package-smoke-final5`两项通过（12.041秒），包含新的通知初始状态页验证。许可清单重新生成：Rust539、Node168，没有升级tempfile或Windows绑定版本。该包尚须完成长测与最终聚合。
-
-资源短测14在两次窗口/重连成功后因重复把WebView子进程加入另一个Job而发生WinError5，退出1；原日志、progress和GUI证据保留，未补造缺失的采样文件。改为每个桌面从创建时单独持有Job，采样合计Core/各窗口的累计CPU与实际PID，窗口退出后仍保留累计值。短测15完整运行，四录制和两下载加两录制、两次窗口与重连均取得证据；只因正式时长不足拒绝。其热查询p95 140.9252ms、冷查询p95 121.9561ms、idle CPU 0.203125%/私有工作集p95 49.96875MiB、四录制CPU 1.41082%/内存p95 59.29297MiB、GUI释放4.1261秒、Core重开1.0718秒。冷查询使用新的Core/SQLite连接，不清系统文件缓存；恢复前确认至少100个未完成普通任务，重开后实际IPC可访问。门禁已拒绝缺少这两项原始证明的资源结果。正式测量另开新目录，短测不作为时长通过。
-
-原测试保留审计按main基点逐个匹配109个Rust测试，106个body的全部词法token/字面量/断言一致，无原测试迁移路径。仅3项body变化：F005/006/007从8条断言到8条，操作身份随资源/表示/摘要规则调整，原中断窗口与字节/数量不变；F015从5到6条，精确定位incremental后仍检查原(1,2,0)，并新增整个任务表只允许incremental/deep/quality三项；full_loop从45到45条，显式绑定导入凭证，日期夹具仍相差两天且在执行日前，原秘密/恢复断言保留。原A探针无差异，home既有断言未删改，仅新增资源来源定位用例；api订阅DTO等价说明见14.9。审计JSON/日志在artifacts，三个变更均经本轮完整Rust执行通过。
-
-### 14.17 公共搜索、创作者DTO与长测前收敛（2026-10-08）
-
-逐FR核对发现旧`search.query`没有复用已修好的时间线查询：一/二字只检查前2000候选，长词最多200行，并忽略部分创作者/平台/类型/日期筛选和游标。新增2110条记录的定向用例，先用2105条其他平台记录阻挡目标，再检查各长度查询、组合筛选、连续页和跨筛选游标拒绝。首轮`m1-search-contract-first.log`真实复现请求Bilibili却返回Douyin；复用`feed::query`与共享`SearchQueryArgs`后，第二轮继续暴露创作者aliases/tags为JSON字符串而非数组。现构造类型化`CreatorDto`，坏JSON明确失败，改名/别名/标签/备注及归档恢复不改变来源绑定、发布身份或订阅开启状态。
-
-第三轮漏导入`OptionalExtension`导致编译失败，第四轮新用例误查不存在的subscriptions.enabled列；改为检查真实state='enabled'，保留原筛选、数组和身份断言。`m1-search-contract-fifth.json`退出0。桌面公共搜索仍兼容原query/kind/limit调用，并转发共享范围及续页请求；新增前端用例验证这一接线。SQL只截取短正文片段，避免每页把整份长文载入内存。
-
-第一次正式测量`m1-measure-final-1`在闲置阶段因上述开发缺陷被主动中止；`m1-benchmark-final1.json`退出1、222.695秒，原采样/日志保留，未进入正式录制窗口，不将它解释为完整资源目标的实测失败，也不补造通过。修复后使用新的目录、源码指纹和m1-5包重新开始正式测量。分位数统一为nearest-rank，4次冷查询的p95取最慢值；门禁新增同一个mixed样本必须同时有至少2下载和2录制，只有分别出现的最大值不能通过。原反例继续保留。
-
-最终长测前的`m1-rust-final4.json`通过198项，`m1-desktop-final6.json`通过43项及类型/生产构建，`m1-governance-final5.json`通过12项，`m1-fmt-final4.json`与`m1-clippy-nineteenth.json`退出0；199个源码/测试/脚本/锁文件输入与当前工作树一致。`m1-package-final6.json`生成m1-5包，22文件、207701652字节；`m1-package-smoke-final6.json`两项通过、12.193秒。包说明改为退出后台并保留/备份Profile与数据后再移除程序，避免默认数据目录随解压目录误删。测试保留审计更新为198项总数，原109项全部匹配、106项body一致，新增用例没有替代或删减原断言。完整五套件、正式长测与最终文档门禁仍须以最终交付节实际结果判断。
-
-### 14.18 提交字节一致性与保留盘点（2026-10-08）
-
-`m1-verify-final2.json`五套件5/5通过、251.814秒。随后提交一致性审查发现55个源码输入仍为CRLF，而`.gitattributes`规定LF；原工作树回执相互一致，但重新检出提交后的字节摘要会不同。第二次正式测量`m1-measure-final-2`因此在闲置阶段主动中止，原failed回执/采样保留，未当作完整长录制或资源达标证据。55份文本只做CRLF→LF转换，未改代码/断言内容；199个输入逐一比较Git clean-filter前后字节，全部一致，变更明细保存在`artifacts/m1-source-line-endings.json`。最终收据和包重新生成，旧回执不改绑新指纹。
-
-本次盘点只统计明确的生成目录，不跟随符号链接或junction、不读取凭证正文：`.local`36文件/2006146字节，`artifacts`6133文件/14031627774字节，`dist`261文件/2446707805字节，前端构建26文件/841019字节；均保留。target/node_modules/生成schema按构建缓存与依赖保留，未做无意义的逐文件清理。计数是长测重启前时点，后续跑次会增加产物。原closeout-4稳定包20文件/199172866字节，原acceptance样本14文件/5259910字节，全部保留。
-
-11份退役文档在固定基点合计111211字节；先提炼当前状态、失败守护与约束，并将全部入链改为完整SHA，再删除工作树副本。旧计划/prompt转当前唯一计划，旧交付/审查/主页过程转本报告与状态，日期化研究和ADR继续保留。`m1-doc-cleanup-first.log`已验证当时49份文档、431条本地链接与全部82需求/25AC/12INV/18ADR；最终新增摘要与文档变化仍需新的治理检查，不复用该早期结果。
-
-### 14.19 正式负载基线复核
-
-LF输入的`m1-rust-final5.json`198项、`m1-desktop-final7.json`43项、`m1-governance-final6.json`12项、`m1-fmt-final5.json`、`m1-clippy-twentieth.json`及`m1-verify-final3.json`五套件均通过；m1-6包与两项实际窗口/隔离烟测通过。随后核对需求5.2发现生成器的16字正文重复25次实际只有400字符，未达到约500字符基线；在下一次正式测量开始前改为512字符。没有将400字符短测或两次中止跑次升级为完整资源验收。
-
-生成后从数据库实际检查正文最小/最大长度一致及100个普通/20个直播订阅数，ready/raw样本保留正文长度、目标数、100ms合成延迟、50行查询和实际流字节率。聚合门禁同步拒绝长度不足、目标数不足、延迟/页大小不足或流速不足；Python原用例中新增400字、99普通/19直播、99ms、49行和低于8Mbit/s的反例，原断言全部保留。代码变更限于测量器/派生/门禁与反例，产品流程未改；仍按严格全输入规则重新生成最终回执和m1-7包，旧收据不改绑。
-
-### 14.20 必需前端用例名称预检与修复
-
-资源基线补正后的Rust198/Vue43/Python12/包2项及五套件通过；预检255条收据时，`m1-required-preflight-first.json`发现17个C08必需名未匹配。原Vitest日志含“文件 > describe分组 > 用例名”，解析器误把分组并入name；完整日志中实际执行成功，不能据总数直接放行。新增嵌套分组/同名不同组/失败状态断言，原五条日志断言保持；`m1-vitest-receipt-first.json`退出1复现，修复后`second.json`退出0。name取叶子用例名，id仍保留文件与全部分组，避免不同用例被合并。
-
-预检重新解析后255个完整身份无重复、98个必需名各出现一次，63条M1需求引用的用例全部存在。该检查只定位解析问题，旧执行收据不改写；最终收据必须由修复后的脚本重新实际执行生成。文档审查同时修正根入口过时阶段说明、设计中的旧分批顺序、schema3/禁回收的历史口径，以及media.read_range和timeline/详情各自页上限，未改变产品行为。
-
-### 14.21 公开夹具路径与最终差异检查（2026-10-08）
-
-交付前实际公开检查发现`windows_integration.rs`中新测试的合成Profile路径仍使用用户目录形式，触发personal-absolute-path；`git diff --check`另发现core Cargo.toml多余的末尾空行。原失败已以`m1-publication-final-first.json/.log`、`m1-diff-final-first.json/.log`保留。没有削弱公开检查规则或加白名单：夹具改为专用Synthetic Profiles目录，继续包含空格、中文及完整精确引用断言；Cargo仅去掉一个末尾空行。14份文档另统一LF以保证Git与文档指纹字节一致。
-
-正式第三次测量`m1-measure-final-3`在闲置阶段被明确中止，命令回执`m1-benchmark-final3.json`退出1、738.971秒、sourceUnchanged=true；部分原始采样和中止说明保留。它不是完整录制或资源目标的实测结论。仅上述两个输入变化，新199输入集合SHA256为`aa08fb244bd9d18b667473f9f2a89e35a80e381d44e4e8d10ffadfbdbda6862b`，明细在`m1-publication-fixture-fix.json`。按严格输入一致门禁重新实际生成测试/包/资源收据，旧收据不改绑。
-
-修正后的workspace build、198项Rust、43项Vue及类型/构建、12项Python、fmt、严格Clippy、五套件5/5、公开检查和工作树diff已通过；m1-9新包和两项实际包检查通过，正式第四次资源测量继续运行。原109项Rust保留审计另存`m1-test-preservation-final3.json/.log`，原失败和final2审计均保留。下节在新收据全部就绪后更新到这次输入和正式第四次资源跑次。
-
-### 14.22 旧验收版本配对与包库存口径
-
-收尾文档核对发现ACT-003仍教用户以当前工作树生成新样本，再交旧closeout-4包打开；当前生成器已随M1使用schema4，旧包仅接受schema3。现改为直接使用原已保存的acceptance Profile，保留全部六步人工行为与预期、旧包及一致备份；需要重建时由Agent从固定基点隔离准备。只读核对原一致备份meta中的schema_version为3，未启动该Profile对应的Core，也未进行数据库迁移或改写。旧包仍为20文件、199172866字节，SHA256SUMS摘要仍为`7bcf580c7585bb711834e6abe9de0b7994381a5e6979b3a6e1fc3d56b53f097b`。
-
-新包构建输出“22文件”指SHA256SUMS覆盖的成员，不包括该清单自身；实际m1-9库存23文件、207700767字节，门禁验证全部23份。此处补正统计口径，没有更改包或采样输入。最新包内嵌状态页截图`artifacts/m1-webview-1791446572350544700/status.png`已视觉核对蓝白布局、管理入口、两站入口及后台操作；它不证明原生IME、系统缩放或媒体解码验收。
-
-<a id="final-m1-delivery"></a>
-## 15. M1 B 交付证据汇总
-
-本节为当前交付汇总：P0～P10的B实现与自动证据已闭环，C01～C10必需用例、实际包、正式长测与阶段聚合通过，状态ready-for-review。A独立审查、真实站点验证、产品验收均not-run。§13保留A规划时事实，§14保留实施各时点与失败复验，不能混用不同源码指纹。经审阅的[公开机器摘要](../evidence/gate/m1-self-check.json)包含逐输入/用例/包成员摘要及实际资源值；原始日志和完整bundle保留于本地artifacts。
-
-### 15.1 P0～P10 对应关系
-
-| 工作包 | 当前实现与交付物 | 自检与边界 |
-| --- | --- | --- |
-| P0 | 原阶段11份过程文档提炼及固定SHA入链、唯一计划/报告、原测试及稳定包/Profile保留 | 14.16/14.18逐测试与目录审计；最终文档/公开/索引检查另见15.3 |
-| P1 | 两站每类入口/参数/身份/分页/认证/媒体关系的固定协议来源，独立合成响应、WBI/A-Bogus向量与受控site-check | [解析研究](../research/site-parsing-current.md)、两站能力表；合成/资料证据，真实请求not-run |
-| P2 | contracts/domain类型化正文/附件/安全元数据、统计观察与正文版本分离、schema3→4迁移/旧协议默认及分块读取 | C02/C06/C07；旧完整正文不被摘要覆盖，旧库无Outbox也重建索引 |
-| P3 | Bilibili账号/动态/转发/opus/HTML和JSON ops专栏/文集/视频多P/字幕/音乐卡及直播生产适配 | C01/C02/C03生产进程与Core自动链；真实账户权限与返回差异未测 |
-| P4 | Douyin账号/短链/投稿、图集/实况/配乐、type163详情全文/30图、视频/合集及直播生产适配 | 生产进程调用真实映射逻辑，C01/C02/C06；签名向量不是风控通过证明 |
-| P5 | 持久直播场次、FLV/HLS/独立音轨、MAP/KEY/BYTERANGE、刷新/重连/缺口、封片及附属字幕/有限弹幕 | C04/C05/C06/C07；普通AES-128受控解密，DRM/未知加密明确受限；弹幕不是无缺口全集 |
-| P6 | 历史/增量/深查独立游标、持久范围/质量/周期、优先级/预算、补查/批量重试、全任务生命周期 | C01/C05；两站7类采集任务×4类控制动作，另含本地维护与跨窗口退出 |
-| P7 | 蓝白主页、管理入口、创作者编辑/归档、惰性全文、版本/资源/录制/质量、资源库来源定位、共享搜索分页 | C08与原home事件断言；实际包内嵌页通过，原生IME/缩放/解码仍依ACT-003 |
-| P8 | 实际质量探测/严格与宽松策略、引用保护和安全回收、删除预览/墓碑/恢复、备份/导出及新Profile恢复 | C07/C08；共享/固定/独有区间保护，恢复无凭证继承、目标外零写入 |
-| P9 | 82条需求映射（63条M1适用）、98个具名必需用例、源码/构建/包/采样/文档拒绝门禁、生产两站便携包 | passed；C09/C10、936份原始连续样本及完整聚合通过；所有63条M1行的自动证据已对应 |
-| P10 | 同一报告同步自审、失败复验、限制、单阶段DCO提交及B→A审查prompt | passed；交付SHA由Git和交付消息提供，A待审；无push/PR/合并/发布或自动消息 |
-
-上述P0～P10的B自动自检均passed，第三列保留各自的现场验证限制。需求定义保持在[需求正本](../requirements.md)，[机器映射](requirements-map.json)逐行记录实现路径、P/C、用例与证据；19条后继范围保持not-run，不据M1中的基础复用声称M2/M3已完成。
-
-### 15.2 C01～C10 定向证据
-
-| 组 / 必需用例数 | 本轮核对的失败边界与实际用例示例 | 证据入口 |
-| --- | --- | --- |
-| C01 / 10 | 身份别名/转发/跨类型同号、置顶乱序、空页has_more/重复游标、独立合集游标、历史范围与账号资料执行权；`c01_identity_alias_repost_type_collision_and_persistent_cursor_cycle` | Rust全套、生产适配器进程及site-check反例；全部具名要求以stage_evidence.py为准 |
-| C02 / 10 | 超摘要全文、type163详情对象/JSON字符串、30图/实况/配乐、专栏ops/av→BV、列表/表格内图片、统计与正文版本；`c01_c02_douyin_article_account_to_full_document_through_production_process` | Rust全套、类型化文档前端用例；必要资源缺失不得完整 |
-| C03 / 5 | 原11种HTTP长度/状态组合、逐段及整组摘要、强ETag/Range、不预期2xx、30秒以上流及取消；原F-007/008和A探针 | Rust全套closeout_faults/a_review_probes/closeout_rework；原断言及文件位置保留 |
-| C04 / 10 | FLV时钟/编码/休眠/磁盘，HLS真实TS/独立音轨/NONE/MAP/范围/序列滑窗，4个提交中断窗口、同场/新场次、严格质量缺口 | Rust录制与恢复矩阵；原件/封片哈希、缺口和手动停止均有断言 |
-| C05 / 11 | 暂停立即恢复、旧租约/代次、停模块/退出/取消/迟到事件，半帧读不能被代理完成取消，通知固定Profile激活与后台双启动 | Rust全任务矩阵、Windows禁弹窗历史探针；原生通知可见/点击不由此代填 |
-| C06 / 8 | 初始/重定向/DNS/IP及嵌套HLS私网、跨域头、秘密递归净化、错误与导出、凭证重绑/能力unknown/合并告警 | Rust秘密哨兵、ConstrainedClient/PluginHost与本地FFmpeg拒远程输入反例 |
-| C07 / 9 | schema3一致备份/迁移回滚/来源搜索重建、真实规格与严格候选、共享/pin/独有区间、回收窗口、墓碑重扫与备份 | Rust迁移/恢复/删除/质量与导出用例；原F-002～009同步复验 |
-| C08 / 30 | 两站全类型组合筛选/统计/分页、1/2/长词、2110候选不截断、慢返回/事件竞态、原媒体节点/播放位置、资源库/缓存/收尾显示 | Rust查询/IPC与Vue用例；前端原32项全部保留，其中home原17项加1项来源定位，当前前端共43项 |
-| C09 / 2 | 包全文件及生产两站注册/进程隔离，实际内嵌WebView关闭/重连/多窗完全退出；长测同时2下载+2录制及4路录制 | package smoke两项与正式resource-samples；资源目标仅以完整长测为准 |
-| C10 / 3 | 旧指纹、缺/失败/重复用例、漏包/篡改manifest与构建日志、失败/短基准、非同时并行样本、过期文档必须拒绝 | Python治理与stage_evidence反例；遍历/绝对/链接路径等另外计入12项Python总数 |
-
-必需数合计98，完整产品/治理/包用例总数与收据见下一节。表中C编号是当前M1语义组；旧五套件内部保留的历史C编号不用于替换本表。
-
-### 15.3 最终命令与字节指纹
-
-当前LF源码/测试/脚本/锁文件共199个输入，集合SHA256为`aa08fb244bd9d18b667473f9f2a89e35a80e381d44e4e8d10ffadfbdbda6862b`。算法为按路径排序的`sourceInputs` JSON，使用紧凑分隔符后取SHA256；逐文件摘要与构建收据一致。A规划基点为`dcbdf82cd74e38e6c09330789490ed96d7169c5e`，父基点main/origin/main为`960984c34487244f31f1238dffc2bd9faaa292e7`。最终Git SHA仅从实际提交后聊天交接取得，不递归写入报告本身。
-
-以下命令均由`stage_evidence.py run`实际执行；路径位于artifacts，保存完整输出、退出码、运行前后输入和逐用例。全部最终回执exitCode=0、sourceUnchanged=true，输入与本节一致；通过只覆盖各自范围。
-
-| 实际命令 | 最终回执 | 结果 / 秒 |
-| --- | --- | --- |
-| `cargo build --workspace --locked` | `m1-workspace-build-final8.json` | passed / 7.993 |
-| `cargo test --workspace --locked` | `m1-rust-final8.json` | 198 passed / 189.447 |
-| `corepack.cmd pnpm -C apps/desktop run verify` | `m1-desktop-final10.json` | typecheck、43 Vitest、build passed / 7.067 |
-| `python -m unittest discover -s scripts/tests -v` | `m1-governance-final9.json` | 12 passed / 5.380 |
-| `cargo fmt --all -- --check` | `m1-fmt-final8.json` | passed / 0.556 |
-| `cargo clippy --workspace --locked --all-targets -- -D warnings` | `m1-clippy-twentythird.json` | passed / 1.823 |
-| `python scripts/package_windows.py` | `m1-package-final10.json` | passed / 69.270 |
-| `python scripts/check_package.py dist/trace-0.1.0-windows-x64-m1-9` | `m1-package-smoke-final10.json` | 2 passed / 12.162 |
-| `python scripts/verify.py --all` | `m1-verify-final6.json` | 五套件5/5 passed / 250.059 |
-| `python scripts/measure_m1.py artifacts/m1-measure-final-4 --idle 1030 --seconds 3620 --entries 100000 --package dist/trace-0.1.0-windows-x64-m1-9` | `m1-benchmark-final4.json` | 正式长测passed / 4704.616 |
-
-`m1-required-preflight-final2.json`核对255项完整用例身份不重复、98个必需名各一次、63条M1映射用例/实现路径无缺项及实际包校验。它不代替正式资源门禁。原测试审计`m1-test-preservation-final3.json`绑定本节源码，原109项保留，三个等价调整说明见14.16；没有迁移或删除测试。
-
-最终文档、公开内容和工作树diff检查回执分别为`artifacts/m1-report-final.json`、`m1-publication-final.json`、`m1-diff-final.json`，实际命令分别为`python scripts/check_docs.py`、`python scripts/check_publication.py`、`git diff --check`。先完成所有文档与公开摘要，再生成`artifacts/m1-final-bundle.json`；`python scripts/stage_evidence.py check artifacts/m1-final-bundle.json`和`python scripts/verify.py --stage-bundle artifacts/m1-final-bundle.json`重新读取并验证完整证据，输出保留于`artifacts/m1-final-gate.log`。bundle不放入docs，避免文档摘要自引用；最终提交还须核对暂存diff与HEAD逐文件字节，结果保留于本地交付审计。
-
-### 15.4 本地包与正式测量
-
-最终本地包`dist/trace-0.1.0-windows-x64-m1-9`，23文件、207700767字节（198.08MiB）；`SHA256SUMS.txt`自身SHA256为`6a0f0ccd114a0f8581f26963718268147df73134a4ae27ecef32148f645c105a`。manifest与构建日志记录本节199个输入及4个生产程序，清单覆盖其余22个包成员，实际库存另计清单自身为23文件。构建器输出的“22文件”不含清单自身，最终门禁按完整库存核对。构建时Git为A规划HEAD和dirty工作树，交付提交通过逐输入字节对应；不改写构建现场。桌面SHA256为`186c8ae3d7e8a847b24ecdc76b8a171fb1ec9754405d2f49149b07d54a435549`；正式测量必须使用这份程序，不能借用旧debug桌面。锁定媒体、两站许可材料随包，许可台账列Rust539/Node168；本次最终重包未再升级依赖。
-
-测量设备：Windows11专业工作站版10.0.26300，Intel Core i5-14600K，14核/20逻辑处理器，68422864896字节物理内存，固定ReFS卷；未据卷类型声称底层SSD特性。WebView2为154.0.4258.62。CPU按20个逻辑处理器的整机时间归一，内存为所有被测进程私有工作集之和。Core/受控网络/调度/对象/IPC使用继承release优化的measure构建，仅开启合成网络所需debug_assertions；上游适配器和HTTP为合成源，GUI为上述实际便携包。
-
-正式命令：`python scripts/stage_evidence.py run --kind bench --id m1-benchmark --output artifacts/m1-benchmark-final4.json -- python scripts/measure_m1.py artifacts/m1-measure-final-4 --idle 1030 --seconds 3620 --entries 100000 --package dist/trace-0.1.0-windows-x64-m1-9`。实际命令耗时4704.616秒，退出0；936个原始进程样本覆盖4676.921秒，最长采样间隔5.016秒。有效闲置窗口905.391秒，持续录制窗口3625.930秒；四路录制、两路下载加两路录制均观测到，mixed同时并行样本360个，任务错误0。
-
-| 资源/响应指标 | 实测 | 原目标与判断 |
-| --- | --- | --- |
-| 数据与负载 | 100000发布、500000媒体元数据，正文512字符，100普通/20直播目标，100ms合成HTTP延迟，50行查询，每路1112866 B/s | 全部达到固定基线，未缩小输入 |
-| 闲置CPU均值 / 私有工作集p95 | 0.31204% / 50.6758MiB | ≤1% / ≤150MiB，passed |
-| 四路录制CPU均值 / 私有工作集p95 | 1.50984% / 65.6602MiB | ≤5% / ≤300MiB，passed |
-| 热查询p95 / 冷连接查询p95 | 164.4213ms / 134.0365ms | ≤500ms / ≤1500ms，passed |
-| 全窗口查询p99 | 176.6291ms | 原始样本派生，不用p95替代尾部观测 |
-| 可观测开播→持久检测p95 | 24.0114秒 | 每路≤1.2×实际轮询周期+10秒，逐原始时间戳passed |
-| 检测→首次接收p95 | 0.8070秒 | ≤10秒，passed |
-| GUI关闭释放 / Core完整重开 | 7.6551秒 / 8.1659秒 | ≤10秒 / ≤30秒，passed |
-| 全窗口CPU均值 / 采样区间峰值 | 1.19356% / 4.984375% | 全部Windows Job累计CPU，含已退出子进程 |
-| 私有工作集总和峰值 / 句柄总和峰值 | 193503232字节（184.5391MiB） / 3880 | 包含两次实际桌面/WebView；均为5秒采样所见峰值 |
-| 工作集总和峰值 / 累计传输字节计数 | 536743936字节 / 15891788013字节 | 工作集可能重复计算共享页；传输计数不等于去重后档案大小 |
-| 峰队列 / 卷报告最小可用空间 | 226 / 69814697857024字节 | 合成队列与卷报告值，不外推物理盘容量或真实档案 |
-
-Core重开前有202个未完成普通任务，重开后实际IPC可访问，metadataEntries仍为100000；两次GUI探针均验证内嵌页、生命周期控件、schema4及相同后台instanceId。原始样本`artifacts/m1-measure-final-4/resource-samples.json`为1605579字节，SHA256 `73a32a4254e23e7fce166db2c720650d307092290f2a6614c7d537da395ea0da`；测量程序与adapter二进制摘要同时保存在原始build回执中。各进程名称的观测峰值、采样口径和完整计数见公开机器摘要，原始PID不复制进公开内容。
-
-测量每5秒保存连续原始进程/累计CPU/内存/句柄/磁盘/队列/吞吐/查询样本；Windows Job保留已退出工作者CPU。GUI使用新Profile、独立WebView目录、最小化不激活及回环CDP，不发键鼠；冷查询用新Core/SQLite连接，不清系统文件缓存；恢复计时为完整Core重开，崩溃正确性另由故障矩阵证明。合成源与Rust负载驱动器成本计入，外部Python采样器与CDP测试驱动器属于测量工具。采样峰值不是采样间隔内无法观测到的瞬时峰值，结果不外推真实账号档案。
-
-### 15.5 失败保留与最终复验对应
-
-下表是§14原始过程的索引，原日志均留在artifacts；没有把历史失败改绑最终源码或改写为当时通过。最终用例执行及输入均由15.3收据证明，资源跑次另按15.4判断。
-
-| 原失败或证据缺项 | 处理与保留的断言 | 最终复验 |
-| --- | --- | --- |
-| `m1-desktop-first.log`原home三项失败；resources初轮又触发旧平台入口断言 | 恢复detail-description及真实平台入口，原home事件/竞态/媒体节点断言保留；增加来源定位 | `m1-desktop-final10.json`，43项通过，home原17项全部仍在 |
-| full-loop第一/二轮日期范围及凭证哨兵失败 | 仅平移两天间隔的日期，并显式绑定导入凭证；45条原断言保留 | `offline_full_loop_scan_observe_media_search_backup_restore`，Rust最终通过 |
-| `m1-closeout-faults-regression-first.log`及后续操作窗口失败；workspace第四轮F-015计数失败 | 获取身份纳入表示/规格/摘要，退出不破坏durable操作；F-015仍精确检查(1,2,0)，新增全任务清单断言 | `f005_f006_f007_task_windows_restart_pause_shutdown_and_cancel`及`f015_pause_due_running_resume_idempotency_and_restart`，Rust最终通过；逐测试审计保留 |
-| `m1-host-framing-tests-first.log`半帧被代理完成取消 | 每帧保持同一读取future；保留先6字节再补余帧的大中文并发用例 | `c05_proxy_completion_cannot_cancel_partial_frame_read`和原F-013探针，Rust最终通过 |
-| `m1-lifecycle-matrix-second.log`停插件意外增加失败次数 | 先事务撤租约再关闭进程，迟到结果不能写入或消耗失败预算；7类采集任务×4动作×两站 | `c05_all_job_types_plugin_isolation_and_shutdown_sealing`，Rust最终通过；本地维护任务另有矩阵 |
-| 首包未启用内嵌前端；包烟测第二轮管道死锁；WebView第二轮意外恢复普通窗口 | 构建显式custom-protocol；探针有界读取；桌面SW_SHOWMINNOACTIVE，验证最小化且非前台 | `m1-package-smoke-final10.json`两项通过；页面、关闭/重连、多窗完全退出及两站隔离有实际包证据 |
-| 缓存重建/删除恢复及旧库来源搜索缺口 | 原件与派生件分开，重建保留操作历史，墓碑及共享/固定/读取租约保护；旧schema3无Outbox仍重建索引 | `c08_playback_cache_clear_rebuild_budget_and_originals`及C07迁移/删除恢复组，Rust最终通过 |
-| `m1-search-contract-first.log`跨平台返回；第二轮aliases/tags类型错误 | 公共search复用时间线全范围查询，2110候选分页；CreatorDto数组及身份/订阅不变断言 | `c01_c08_public_search_pages_full_scope_and_creator_edits_keep_identity`与前端共享范围转发用例，最终通过 |
-| 最终公开检查夹具路径与Cargo EOF空行失败 | 仅改合成目录位置，保留空格/中文及完整精确引用断言；移除空行，不弱化规则 | `m1-publication-final-second.json`与`m1-diff-final-second.json`通过；新指纹全套与新包重新实跑，第三次中止测量保留 |
-| 早期短测查询超过500ms、并行不足、plugin_crash；smoke14采样器Job冲突 | 查询/调度/帧处理及每窗独立Job分别修复；短测和变动源码继续拒绝；smoke15只证明短窗口 | 正式时长、同样本2下载+2录制、四录制及目标值必须由15.4完整跑次和聚合门禁证明 |
-| 正式final1发现公共搜索缺陷、final2发现Git换行摘要不一致、final3发现公开夹具路径而中止 | 三次failed回执、部分样本及中止原因保留；55份输入仅CRLF→LF，逐项核对Git过滤前后字节 | 最终199输入与包、各命令一致；完整长测使用final4新目录，不将中止解释为完整资源达标 |
-| 正文负载实际400字；`m1-required-preflight-first.json`缺17个前端必需名 | 负载改512字且核对数据库实际值；Vitest name取叶子、id保留文件/分组，原断言加反例 | `m1-governance-final9.json`12项通过；最终预检255身份/98必需/63条M1映射无缺项 |
-
-早期编译、类型及严格Clippy失败和各次修复详见§14，不因最终全套通过省略。所有原A Rust probes仍在原文件，测试未迁移；三个有语义调整的旧Rust测试按14.16逐项证明等价，不能仅以总数上升替代该证明。
-
-### 15.6 交付适用范围与待审事项
-
-- 本阶段自动证据只对应15.3的源码输入和15.4的Windows x64便携包。真实两站登录、权限、风控、账号内容完整性及媒体下载/直播仍not-run，真实条件及有界采样方案只维护于[ACT-002](../../USER-ACTIONS.md#act-002)。B没有读取其他浏览器登录态；代码和自动用例缺口不转为人工待办。
-- 抖音长图文已按type163详情完整响应实现并通过生产进程合成链，列表摘要不能完成归档。真实站点字段变化、客户端差异和私有内容可访问性未经现场验证。独立付费专栏目录缺资料与已实现长图文分开，不据此略过长图文。
-- 弹幕为用户可选的有限历史采样，保存范围、去重和缺口；不是WebSocket消息全集。外部字幕依来源提供的HLS轨捕获，来源无轨或附属失败独立明示。DRM及未知加密不冒充已解密，必要资源不足不得显示完整。
-- 实际包的内嵌页、最小化、不激活、关闭/重连/完全退出已有自动证据；原生输入法、系统缩放、通知肉眼可见/点击、音视频真实解码体验仍按[ACT-003](../../USER-ACTIONS.md#act-003)择时检查，旧closeout-4包及其验收Profile保留。OS休眠用例为合成时钟跳变；系统休眠期间的真实媒体连续性未实测。
-- 资源结论是本设备及合成规模的样本，不代表真实账号十万条档案；5秒采样峰值、未清OS缓存的冷连接及完整Core重开各有明确口径。安装器、其他系统、软件签名、正式分发未验证；许可决定仍见Q-004。
-- OSS-007～010保持B已实现/自检、待A核实技术关闭，状态只维护于[事项总表](../decisions/open-questions.md)。A审查not-run，产品验收not-run。没有新增必须实现缺口被延期为LOOP；外部动作按现有具体授权边界执行。
-
-### 15.7 B→A 集中审查 prompt
-
-以下供用户手动转交。B自动门禁已通过；最终完整SHA附在交付消息中，报告不递归写入自身SHA，A须核对实际HEAD及本节指纹。审查记录与局部修复继续归并同一阶段提交。
+| F-037 | 十万条下资源管理器首屏 / 排序在满载发布构建 P95 约 0.6～0.9 秒（>500 毫秒）：列表与计数对每条求“当前版本”视图；同一测量还暴露基准把边录制边增长的总数当作错页 | 排序与筛选只读 `entries`（EXISTS 修订），名称与最近排序走新索引；基准接受 `total >= entries`；冒烟 100k 约 280 / 273 毫秒；按大小排序要汇总已存字节（约 0.6 秒）不纳入目标，记入 LOOP-003；正式数值见 §2.3 |
+| F-038 | 包的 GUI 检查失败：`webview_probe.mjs` 调用已不存在的命令 `daemon_status`，并写死 schema 版本 6 | 改用通用 `daemon_call`（`daemon.status`、`upgrade.list`、`archive.timeline`、`source.list`），schema 版本改为整数检查；包检查复跑通过 |
+| F-039 | 包检查报 `package tool deno.exe is not the pinned file`：锁文件里是压缩包的摘要，包里是解出的可执行文件 | 锁文件增加 `member_sha256`；`fetch_media_tools.py` 解压后与 `evidence.py` 按它校验，修正测试夹具 |
+| F-040 | 检查脚本没传规则（通道）导致 Bilibili 首轮烧预算；每张图片重读作者页 | 脚本显式带预览规则；适配器对作者页 / 页面状态做有界进程内记忆（首轮回执作废，预算照记） |
+| F-041 | 预览默认规则取了非视频通道 | 默认规则按通道排序，视频通道优先 |
+| F-042 | kit 适配器的订阅检查没有 `recent_days` 截止，扫到全历史 | kit 按订阅范围截止；`Range.includes` 对无日期条目保持保留 |
+| F-043 | Bilibili / Douyin 列表项没有内容形式、数量、时长提示，预览与挑选只能猜 | 两站列表带 `EntryHints` |
+| F-044 | `account.resolve` / 账号持久化只认 bilibili / douyin，界面却列了八站 | 泛化为任意已注册站点：通用键校验、按站点主页写法匹配、命名空间检查；测试 `every_site_names_its_accounts_and_a_malformed_key_is_refused`；解析使用凭证作用域 `{id}/g{generation}` |
+| F-045 | YouTube 视频服务器对单次长连接限速到几乎不动，真实下载超时 | Core `download_media_ranged`：对 googlevideo 主机按 10 MiB `Range` 分段，必须 206 且 `Content-Range` 完全一致；真实视频下载通过（§4） |
+| F-046 | 小红书登录探测在页面没有可读状态时只报 schema 变化，分不清登录失效与改版 | 探测返回 `unknown`，附页面形态（字节数、是否含状态名、标题前 24 字）；测试 `the_login_is_proven_by_the_page_state_and_a_silent_page_proves_nothing` |
+| F-047 | 小红书内嵌状态里有 JavaScript 专有值（`new Name(...)`、`NaN`、`Infinity`），严格 JSON 解析失败 | kit 的页面解析容忍这些值并按 `null` 读，失败时给出不引用页面内容的解释；测试 `javascript_only_values_inside_a_state_read_as_null` |
+| F-048 | 站点改版时 Core 只带失败分类，现场看不到失败的方法与原因 | 可选诊断日志 `TRACE_ADAPTER_FAULT_LOG`（文件名由环境变量给出，每行方法、分类和适配器自己的简短描述（前 480 个字符，可含页面形态，不含响应正文与凭证），超 256 KiB 截半）；Core 自己的拒绝（如“视频详情不完整”）同样记录并带适配器声明的完整度 |
+| F-049 | 小红书视频流的分组名不是编码名（真实页面里是四个页面自取的名字），解析只认 `h264/h265/av1`，于是视频笔记只存成摘要 | 用诊断日志读出页面形态后，`media.rs` 改为读所有分组、按条目自述的编码分类、同编码同尺寸去重；测试 `streams_under_names_of_the_pages_own_are_read_by_what_each_entry_says`（`xiaohongshu` 的 `media.rs`）。额度用尽，没有真实复验 |
+| F-050 | 每个下载任务各做一次“已登录”探测：一条有 9 张图的笔记多用 9 次请求，把额度烧光 | Core `auth_proofs`：同站点同凭证代次 2 分钟内复用探测结果，获取记录里的验证时间是探测实际发生的时间；撤销即清除；`two_production_auth_probes_require_batch_proof_and_preserve_expired_unknown` 加了复用与撤销断言 |
+| 检查脚本缺陷 | ① 账号识别失败后继续请求（X 白白用掉 24 次）；② 没读 Core 因 HTTP 403 停站的状态，把后续的取消当作普通失败（TikTok）；③ 登录探测显示未登录仍继续；④ 单链接选择把一张图的所有尺寸一起选（Core 拒绝“一个资源一个表示”）；⑤ 增量检查依赖账号识别；⑥ 记录时按标签字典序而不是时间合并；⑦ 旧脚本把“有一条失败”的勾选下载算通过 | 全部修复并加测试（`test_real_site_check.py`，18 个）；X 的发现结果加了失败后的负缓存；受影响的回执已标注，旧的错误通过结论改为失败（小红书 r8） |
+| F-051～F-053 | A 在审查时直接修的三处（微博、Instagram 的登录判据，真实测试目标不入库）见 [§5.3](#a-m2-fixes) | 本轮没有改动，真实复验见 §4 |
+| F-054 | 凭证 Cookie 会发往该站注册的全部接口域名（`weibo.cn`、`t.cn`、`twitter.com`、`t.co`、`xhslink.com` 等） | R2-1：只发往 Cookie 域名；每站一个反例；两站现有守护保留 |
+| F-055 | 订阅范围对没有日期的条目一律判为“在范围内”，范围外的作品也会被自动下载 | R2-2：详情给出确切日期后再判断；范围外不下载、不计入；紧凑年龄（“9h ago”）也能提前截止 |
+| F-056 | TikTok 的视频文件被站点 CDN 拒绝（HTTP 403） | R2-3：Core 带页面会话 Cookie；**真实站点验证通过**（视频链接与勾选下载）；工具回退只经离线验证 |
+| F-057 | `account.resolve` 不再拒绝非有效凭证，会带过期 Cookie 发请求，并接受任意域名的 `profile_url` | R2-5 |
+| F-058 | YouTube 真实列表给的是紧凑年龄（“9h ago”“12d ago”），`parse_ago` 只认完整单词，30 条里 0 条有日期 | `parse_ago` 同时认紧凑与完整单位；以真实页面形态做的夹具测试 `a_compact_age_in_a_list_gives_an_approximate_date…`；真实复验：30 条全部有日期 |
+| F-059 | 检查脚本：① 每次增量检查各建一个订阅，同一账号同通道的第二个违反唯一约束；② 一个订阅的三条通道各自读列表，每次检查 21～25 次请求，抖音与哔哩哔哩的额度因此烧光；③ 范围是几天的窗口时第一次检查出现一条作品就暂停，第二次检查“改变了集合” | 复用同一个订阅并 `subscription.update`；取消全历史通道；取最新 4 条里的视频、只读首页（每次约 10～14 次请求）；窗口读完再暂停；`test_real_site_check.py` 对应测试 |
+| F-060 | X 的列表把转推的原推媒体算作该条的媒体，而保存的作品按设计不带它们：预览显示“视频”，勾选下载却“没有取回内容” | 列表提示与保存内容一致（转推只算文字）；`site_tests.rs` 加断言；真实复验：预览勾选下载与图片推文链接通过 |
+| F-061 | 检查脚本把“下载了 0 个文件”的视频 / 图片链接算通过（X 的转推）；账号没有某种作品（没有纯文字笔记、没有图集）时整条链接检查被判“未执行” | 空下载判失败；账号没有的那一种不挡其余种类的结论（`test_a_video_or_picture_link_that_offers_nothing…`、`test_a_kind_of_work_the_account_does_not_have…`）；X 第二轮之前的“通过”是这个缺陷造成的，已被后一轮回执取代 |
+| F-062 | Instagram 把目标主页换成通用错误页时，适配器报“页面改版”（`schema_changed`） | 归为“站点不显示该主页”（`source_unavailable`），`web.rs::profile_error_page_in` 读页面数据；真实页面只经 2 次诊断核对形态，新分类只经离线测试验证 |
+| F-063 | R2-9 的第一次一小时基准（包 `-3`）失败：资源管理器热 P95 557 毫秒、冷 509 毫秒（目标 ≤ 500 / 1500；冷的 509 在目标内，只有热超标）。同一台机器上用 R1 的包（第一轮基准 281 毫秒）做冒烟测量也得 543 毫秒，查询类的其他指标同样慢约 2 倍，所以是机器状态（这台机器刚重启 2.7 小时，混合架构 CPU 上同一程序不同时刻速度相差约 2 倍，我另测过），不是 R2 的代码。但余量取决于机器：根因是 OFFSET 要走过跳过的每一行，最后一页与深页的开销随文件夹大小线性增长 | `store/explorer.rs::entry_page`：离末尾比离开头近的页从另一端按相反顺序读取再翻转（排序以条目 ID 作最后一级，空值的位置同样翻转）；测试 `a_page_in_the_far_half_is_the_same_rows_as_reading_the_whole_folder_from_the_start` 用 30 条含重复标题 / 日期与空值的库，八种排序 × 两个方向 × 5 种页大小 × 32 个偏移，逐页与从头整表读法对比（故意把空值位置改错会失败，已验证）。这是 R2 清单之外的改动，因为基准是 R2-9 的验收门；失败的第一次跑次与冒烟记录保留在被忽略的 `artifacts/evidence-runs/m2-r2/` 与 `artifacts/smoke-*`；LOOP-010 随之更新 |
+
+### 2.5 未执行与限制
+
+- **真实站点第二轮的结果**（逐规则见 [§4](#m2-rule-status)）：小红书（预览、笔记链接）、TikTok（预览；视频链接下载在真实站点通过，走 Core 带会话 Cookie 这一条）、X（预览；图片推文链接）、YouTube（增量(关)）通过；微博（数据接口答“需要登录”）、Instagram（目标主页被站点换成错误页）被站点挡住，TikTok 增量被限流；抖音、哔哩哔哩、YouTube 的额度用尽。
+- **订阅规则：八站没有一条同时满足“账号识别 + 列表 2 页 + 两次增量”，所以八站的订阅规则都是 `partial`**；每条的限制写明了缺哪一项与原因。增量检查从来没有拿到过两次都通过的真实结果：YouTube 只有自动下载关的一次，抖音与哔哩哔哩用旧脚本在额度用尽时中止（新脚本每次约 10～14 次请求，额度已用完），小红书的列表没有日期，每次检查约 33 次详情请求。
+- **没有真实复验**：外部解析工具回退（TikTok 真实站点只用到 Core 带会话 Cookie 这一条）；X 的事务 ID 请求头（站点没有拒绝未签名请求，只经固定向量与离线夹具验证）、视频推文、GIF；YouTube Shorts 与社区帖子的订阅；哔哩哔哩视频通道的浏览器参数（LOOP-002）；Instagram 的列表与下载、微博的列表与下载（被站点挡住）。
+- **真实跑次用的包**：第二轮用 `dist/trace-0.1.0-windows-x64-2`（R2-1～R2-7 之后打包）。其后又改了：Instagram 的错误页分类、X 转推的列表提示（X 的复验用的是把新 X 适配器换进该包副本的包，其余文件相同）、检查脚本与规则文案；还有资源管理器的深页读法（F-063，与站点无关）。最终包 `dist/trace-0.1.0-windows-x64-4` 含全部改动，没有在真实站点上整体重跑。
+- **手动诊断请求**：微博 5 次、Instagram 2 次、YouTube 1 次，都是单次 GET，计入各站额度，页面只保存在本机被忽略的 `.local/`。
+- **基准**：最终包 `-4` 的一小时基准通过（§2.3）。第一个候选包 `-3` 的基准失败在资源管理器热 P95 557 毫秒（> 500），机器当时比接受第一轮时慢约 2 倍（R1 的包同机冒烟 543 对 281 毫秒；刚重启 2.7 小时，混合架构 CPU 上同一程序在不同时刻速度相差约 2 倍），所以在 F-063 里改了深页读法并重打包，冒烟 541 → 244 毫秒，正式跑次 233 毫秒。失败的跑次（`m2-r2`）与冒烟记录原样保留。机器变慢时其他查询类指标也慢约 2 倍（热查询 P95 302 对 142 毫秒），仍在目标内；这个余量取决于机器，LOOP-010 记录。
+- **人工检查**：原生体验（输入法、缩放、声音、外部播放器）仍是 not-run，ACT-003 已换成本阶段的新包与合成档案（八站内容、下载文件夹、外部副本）；Linux、安装器、签名与发布未验证。
+- **第一轮的基准**：正式基准当时跑了四次（持续时间取最后一次采样差 3.4 秒；机器重启后变慢；清理误删包清单引用的构建日志而重打包），保留在被忽略的 `artifacts/evidence-runs/m2-final-bench-attempt1…3/`；第一个问题已由 R2-7 修复，余量问题见 LOOP-010。
+
+<a id="b-to-a-prompt"></a>
+### 2.6 B → A 审查 prompt
 
 ```text
-请作为 Agent A，在 trace 工作区的 codex/m1-two-site-archive 分支，对唯一计划 docs/delivery/stage-plan.md 的 TRACE-M1-01 r1 做最终集中审查。先核对 HEAD 与B交付消息中的完整SHA、工作区及用户后续修改。main基点为960984c34487244f31f1238dffc2bd9faaa292e7，A规划提交为dcbdf82cd74e38e6c09330789490ed96d7169c5e；本阶段仅一个未推送提交，A规划与B实施已归并。
+你是 Agent A（审查）。请复审 TRACE-M2-01 的 B 返工（第二轮交付）。
 
-按AGENTS.md读取索引、状态、有效决定、事项、USER-ACTIONS及适用规则，重点读取同一报告docs/delivery/stage-report.md第13～15节、docs/research/site-parsing-current.md、两站能力表、docs/site-archive-contracts.md和requirements-map.json。不要创建竞争计划或仅凭聊天“通过”作结论。
+对象：分支 codex/m2-multi-site-archive 上唯一的阶段提交（基点 main@c1552e048ea608ba64deae820d127bbd5e969083），SHA 以 `git log -1` 为准（B 的最后回复里有一份，文件里不能写自己的 SHA）；没有 push，没有 PR。工作区应当是干净的。
 
-B交付覆盖P0～P10：两站动态/图文/文章/视频/直播生产适配，抖音type163必须从详情取得对象或JSON字符串形式全文，30图/配乐/实况等必要资源，历史/增量/编辑和安全元数据，离线浏览搜索，质量保留/安全回收，旧库迁移/备份恢复，后台生命周期、包和正式资源测量。生产路径不能用fake adapter替代；合成来源只是隔离协议测试和资源负载。
+先读：docs/delivery/stage-plan.md §9（你的返工清单）、docs/delivery/stage-report.md §2（B 的交付，R2-1～R2-10 的位置与结果）、§4（逐规则的真实证据与做不到的规则）、USER-ACTIONS.md 的 ACT-007（第二轮之后）与 ACT-003（新包与合成档案）。机器记录：docs/evidence/rule-evidence.json、docs/evidence/gate/report.json。
 
-按C01～C10核对实际代码与故障断言，尤其正文完整性/资源组、类型身份/分页、FLV/HLS与四个提交窗口、全任务暂停恢复/停模块/取消/退出竞争、网络和秘密隔离、旧库及质量回收、UI事件/竞态/媒体节点，以及源码/用例/包/采样/文档缺项拒绝。逐P/C映射及失败复验在报告15.1/15.2/15.5，全部82条需求中63条M1适用，19条后继范围仍not-run。
+请重点核对（不要只信 B 的自检）：
+1. R2-1～R2-7 的离线反例：每个都有测试名可对到 docs/delivery/requirements-map.json 的 FR-SITE-003/004/006、FR-AUTH-006、NFR-SEC-001 等。Cookie 只发往 Cookie 域名；抖音、哔哩哔哩的原有守护与签名向量没有被改动（SIGNED_UA 是新增常量，向量不变）。
+2. 订阅规则口径：八站订阅规则都是 partial。请判断每条限制写的原因是否准确；特别是小红书的“列表无日期，每次检查约 33 次详情请求”——这是 Core 对未定位条目逐条取详情的结果，我没有加“遇到范围外就停止”的启发式，因为列表不保证按日期排序，担心漏更新；请判断这个取舍。
+3. 真实检查的诚实性：回执在 .local/site-check/（被忽略），公开记录只有计数与结论。X 第一次的三条“链接下载通过”其实下载了 0 个文件（转推），已被后一轮取代（F-061）；TikTok 的 post.link 记录为“未执行”，因为站点限流后图集 / 音频的检查没跑，视频链接本身通过（见 §4 的说明）；微博、Instagram 另有 7 次手动诊断请求，已计入额度。
+4. 真实跑次与最终包的差异（§2.5）：Instagram 错误页分类、X 转推的列表提示、检查脚本和规则文案是在跑次之后改的；X 的复验用了把新适配器换进 -2 包副本的包。请判断这是否可接受，还是要在最终包上补跑（那需要用户给额度）。
+5. 未完成项与原因（都在规则限制与 ACT-007 里）：微博需要用户重新复制 Cookie；Instagram 需要用户确认目标；抖音、哔哩哔哩、YouTube 额度用尽；小红书增量、TikTok 增量、X 视频与增量需要更多额度或新目标。我没有自己提高任何额度。
+6. ACT-003：新包与合成档案（artifacts/m2-acceptance，八站 16 条内容、下载文件夹、present / missing 的外部副本）与步骤是否足够覆盖资源管理器、设置页、支持的网站、预览勾选，以及中文输入与缩放。预览勾选需要联网，所以人工检查里只验证界面，不发真实请求，请判断。
+7. R2 清单之外的一处改动（F-063）：`crates/core/src/store/explorer.rs::entry_page` 让离末尾比离开头近的页从另一端按相反顺序读取再翻转。动机：第一个候选包 `-3` 的一小时基准在机器慢的时刻失败（资源管理器热 P95 557 毫秒），同机用 R1 的包冒烟也是 543 毫秒（接受那次是 281 毫秒），所以不是 R2 的代码，但余量取决于机器；根因是 OFFSET 走过所有跳过的行。请判断：这个范围扩大是否可接受；等价性测试（八种排序 × 两个方向 × 5 种页大小 × 32 个偏移，库里有重复值与空值）是否足够；页与总数是两次读、不在同一快照，这一点与原来相同。
 
-最终199个源码/测试/脚本/锁文件输入的SHA256为aa08fb244bd9d18b667473f9f2a89e35a80e381d44e4e8d10ffadfbdbda6862b。最终收据：artifacts/m1-rust-final8.json（198项）、m1-desktop-final10.json（43项和类型/构建）、m1-governance-final9.json（12项）、m1-package-smoke-final10.json（2项），合计255个完整身份、98个必需用例；五套件收据m1-verify-final6.json为5/5。fmt、严格Clippy、构建、治理及完整输出位置均在报告。先复用仍匹配的有效证据；有变更、失败或未解决疑虑才复跑对应范围。
+B 没做 / 做不到的清单见 stage-report §2.5。requirements.md 里“本阶段”行的状态按你的约定保留，等你的验收后再改。
 
-实际包为dist/trace-0.1.0-windows-x64-m1-9，23文件、207700767字节；SHA256SUMS.txt自身摘要6a0f0ccd114a0f8581f26963718268147df73134a4ae27ecef32148f645c105a。正式原始样本及结果在artifacts/m1-measure-final-4/，命令回执artifacts/m1-benchmark-final4.json，最终bundle为artifacts/m1-final-bundle.json。先执行python scripts/stage_evidence.py check artifacts/m1-final-bundle.json及python scripts/verify.py --stage-bundle artifacts/m1-final-bundle.json，核对实际包库存、原始采样派生值与全源码指纹；不能以短测/中止跑次或测试总数代替语义审查。
-
-保留F-001～017、原A Rust probes、B closeout_rework、原home事件断言、历史失败、蓝白主页和管理入口。测试审计artifacts/m1-test-preservation-final3.json：原109项Rust全部保留，106项body词法一致，3项等价调整详见14.16；没有迁移/删除/跳过旧测试。11份旧过程材料已先提炼、改固定完整SHA入链再退役，抽查提炼和历史链接；保留dist/trace-0.1.0-windows-x64-closeout-4及artifacts/closeout/acceptance，不清理用户资料或旧失败。
-
-真实账号请求仅按USER-ACTIONS ACT-002的具体授权执行；当前真实站点和原生产品验收not-run。登录/权限/风控等真实条件缺失由A按该入口后续处理，不要求B重复补已完成的自动实现。测试尽可能使用隔离Profile、独立WebView、回环CDP与最小化不激活窗口，不发送前台键鼠、不读取用户浏览器。有限弹幕、外部字幕和资源测量口径按报告15.6及能力表审查。
-
-A直接修复明确局部问题并做定向复验，将审查记录与修复amend进同一阶段提交并DCO签名；不改main或备份历史。只有较大耦合实现缺口才一次性给全部稳定F编号、复现、依据和验收的集中返工prompt。未经用户明确允许，不push、创建PR、合并、发布、启动子Agent或自动跨聊天发送。
-
-审查通过后，更新同一报告、状态和事项，分别说明B实现、自检、A技术审查、产品验收和发布结论，直接向用户收尾并给下一步；不再交B重复复审。最终SHA由实际Git读取并提供给用户。
+审查后：局部问题请你直接修；较大缺口一次性交回给我。收敛后在 USER-ACTIONS 登记 push / PR / 合并授权请求（我没有做任何远端动作）。
 ```
 
-<a id="a-m1-review"></a>
-## 16. M1 A 集中审查与同计划修订（2026-10-08）
+<a id="m2-rework-map"></a>
+### 2.7 返工 R2-1～R2-10 的位置与结果
 
-**当前结论：M1 / rework-required，A技术复核failed。** 原B r2自检和正式资源证据按对应输入保留；F-018～022原范围已核实，A本次修复F-026，F-023～025/F-027～029仍须集中实现。DEC-028已纳入同一计划r3的P14/C14；已取得四份真实媒体诊断样本，但尚无TRACE链接到Core完整归档/录制的产品链证据。F当前正本为§16.3，最新诊断与交接见§16.16/16.17。§13～15及本节各次历史失败、原包/长测保持当时事实；新增链接交互不追溯算作B违反r1/r2。
+A 的返工清单在[计划 §9](stage-plan.md#a-review-rework)。
 
-### 16.1 被审版本与证据核对
-
-- 被审 B：`772ab9a6c523a22385f024abafa66aef6ed7f0f1`；main/origin/main：`960984c34487244f31f1238dffc2bd9faaa292e7`；原 A 规划：`dcbdf82cd74e38e6c09330789490ed96d7169c5e`。开始时为 `codex/m1-two-site-archive`、干净工作区，相对 main 一提交；A 改动归本次审查，用户后来提供的本地凭据保持忽略且不入提交。
-- 修改前实际执行 `python scripts/stage_evidence.py check artifacts/m1-final-bundle.json`、`python scripts/verify.py --stage-bundle artifacts/m1-final-bundle.json`，均退出0。逐一核对199项输入的磁盘字节、Git HEAD字节、原收据与包manifest，零差异；原集合摘要仍为 `aa08fb244bd9d18b667473f9f2a89e35a80e381d44e4e8d10ffadfbdbda6862b`。
-- 独立核对 m1-9 库存23文件、207700767字节和全部成员摘要；SHA256SUMS自身仍为 `6a0f0ccd114a0f8581f26963718268147df73134a4ae27ecef32148f645c105a`。复用原两项实际包烟测，本次没有把包重新构建或替换。
-- 独立读取936个原始样本并复算录制3625.9299439秒、闲置905.391秒、同时2下载+2录制360样本、热查询p95 164.4213ms、闲置CPU均值0.3120422537%、四录制CPU均值1.5098369582%、闲置私有工作集p95 50.67578125MiB、任务错误0；采样连续，GUI两次连接为同一后台，重开前202个未完成普通任务，重开后IPC可达。没有用短测或中止跑次替代。原 `target/measure` 二进制摘要已核对，未重建它们。
-- 只读 `git ls-remote --heads origin` 仅见上述 main；GitHub ruleset 24632608 为 active，无bypass，PR/squash/讨论解决/线性历史/禁删除与强推/required repository-quality 均在。未改变远端配置、main或备份历史，未push/创建PR/合并/发布。
-
-独立原始审计在 `artifacts/a-m1-review/baseline-audit.json`、`independent-metrics-retirement.json`。A 当前源码/测试/脚本输入为201项，摘要 `32842821b669bddcf068d7046a0ac4f02fbdafb9d2a4f5eca3098438829eb55d`；该摘要不是新包或长测通过证明。当前摘要、定向结果与限制的公开索引见[审查机器摘要](../evidence/gate/m1-a-review.json)。
-
-提交前归属、原测试、报告§13～15、measure二进制和保留包核对保存于 `precommit-audit.json`；本次明确归属的39个公开文件按名单暂存。最终文档/工作树与暂存公开检查、DCO、相对main的一提交、保护引用和提交字节核对由 `git-delivery.json`承接，最终SHA从实际Git读取后提供，不递归写回报告。该本地审查提交保留F-019失败，不表示阶段门禁已通过。
-
-### 16.2 逐 C 语义审查
-
-| 组 / P 映射 | A 实际核对内容及证据方式 | 判断与边界 |
-| --- | --- | --- |
-| C01 / P1/P3/P4/P6 | 读取两站枚举/身份映射、游标、`process_scan_page`及具名反例；生产子进程测试使用真实适配器执行文件、仅在proxy边界供合成响应。另新增重叠订阅反例 | 原身份/分页证据可用；F-019 使多订阅持续观察失败，不能整体标通过；真实一页列表也不证明全部内容 |
-| C02 / P2/P3/P4 | 核对 type163 详情而非desc、对象/JSON字符串、30图/配乐/实况；B站HTML/ops/av→BV/opus、必要音乐与试听、正文和统计分离；读取真实路由及生产子进程断言并复跑9项 | 原映射和合成故障范围通过，完整真实文章/视频仍未验；没有由fake adapter替代生产接线 |
-| C03 / P3/P4/P8 | 追踪 MediaCandidate/UrlSet→下载→逐片与整组校验→引用提交；复跑原 closeout_rework 的11种HTTP组合与8种分段场景；补源data_size传播反例 | F-018 原失败后 A 已修并核实；原包没有修复。保留强ETag、长于30秒流与完整哈希旧断言，不用已收字节的哈希冒充来源完整 |
-| C04 / P5 | 读取 FLV/HLS/MAP/KEY/BYTERANGE/独立音轨/封片恢复与缺口；定向复跑四提交窗口，核对真实TS合成样本及原片哈希断言 | 被测合成窗口通过；休眠为合成时钟，真实媒体/当前直播分辨率与码率未测 |
-| C05 / P6 | 核对 claim/check、暂停/恢复、停模块、取消/退出与记录收尾；原单订阅恢复断言重跑通过，新增两订阅共享observe失败 | F-019 未解决，不能以原7类任务矩阵通过覆盖该遗漏；修复需同时审 media 的旧payload和租约 |
-| C06 / P1/P2/P5 | 读取 ConstrainedClient逐跳DNS/IP、凭证域、嵌套HLS/key/MAP、本地媒体输入及安全metadata；定向重跑嵌套网络反例；真实登录探测发现 F-020 | 原网络/秘密反例通过；F-020 A 已修并用合成与获准真实登录验证。无浏览器登录库读取，无凭据/账号正文入公开证据 |
-| C07 / P2/P8 | 核对 schema3→4快照/事务回滚/旧程序拒写、恢复目标验证及可用Profile、质量比较/共享与pin/独有区间、墓碑与回收；复用对应原有效回执 | 原 r1 恢复与保留边界未发现新增阻断；r2 新获取记录仍需新迁移和恢复证据，不以旧schema测试代填 |
-| C08 / P7 | 读取HomeView、MediaBrowser、ArchiveDocument、ResourcesView与共享查询；核对原home事件、慢列表/详情、排序移窗、媒体节点/currentTime、中文分页及统计断言 | 前端未被A改动，复用原43项及类型/构建证据；原生IME/缩放/真实解码仍not-run，新认证筛选和统一确认页尚未实现 |
-| C09 / P9 | 核对完整输入、实际包库存、原始采样派生值及measure二进制，区分生产包GUI和合成负载/适配器 | 原B版本的正式证据有效；当前A改动后的包/正式长测not-run，不改绑原结果 |
-| C10 / P0/P9/P10 | 读取聚合的输入/用例/日志/包/采样/文档拒绝条件及反例；修改前复跑两入口；修改后再检查陈旧拒绝 | 原r1门禁有效，当前输入须拒绝原bundle。r2新C组/计划/schema/用例须由P13接入；脚本不得自动给出A或产品验收通过 |
-
-逐需求映射保留 B r1 的自检证据，并单列 A 的审查范围。新增3条需求后共85条，66条M1适用、19条后继；这不改变原B“82条/63适用/255用例/98必需”的历史计数。
-
-### 16.3 当前 F 正本
-
-原 F-001～017 保持固定基线的状态与故障断言。本次编号续用，不复用旧编号，不另建F状态清单。下列触发、旧位置与原反例保留A当时观测；B本轮修复及复验在[§17](#b-m1-r3-delivery)，本节标题维护当前F状态。已修待A复核不等于AC-29/30或阶段通过。 2026-10-11的A复核证据见[§18](#a-m1-r3-review)；后文旧失败与当时“待A复核”的措辞保持历史语境。当前关闭覆盖已核实的代码、自动反例、正式资源及§18.8四项获准真实链；AC-29/30技术证据passed，原生产品验收not-run。
-
-<a id="f-018"></a>
-#### F-018 / P1：抖音来源声明长度未进入传输约束 — A已核实关闭（当前源码范围）
-
-触发：详情 `video.play_addr.data_size=4096`，URL合法且有可解析视频。原 `detail_for` 调用 common `candidate` 后 `expected_size=None`，单段同样缺少来源长度；在HTTP未提供可用总长时，Core失去该来源约束，不能靠对已收字节计算哈希证明完整。依据 r1 C03、FR-ARC、必要资源完整性契约。
-
-位置：`adapters/douyin/src/protocol.rs::detail_for`、`sized_candidate`；原 common `candidate`不持有源data_size。A增加 `declared_douyin_media_length_reaches_candidate`，修复前返回None而非Some(4096)，实际失败在 `length-failed.log`。修复将正数大小传到整候选与单UrlSet，覆盖选定码率视频、静态图、实况、音乐和封面；0/缺失保持unknown，负数/字符串/溢出明确拒绝，没有把总量平分给分段。
-
-实际复验：抖音11/11通过，包含不同角色与不同大小、候选选择、非法声明；原HTTP/分段反例通过。`douyin-final2.json/.log`是当前定向证据。原包、原长测不含本修复，P13须重新交付对应产物。
-
-<a id="f-019"></a>
-#### F-019 / P1：重叠订阅的共享任务被首个订阅永久占有 — A已核实关闭（原故障范围）
-
-2026-10-09 A核对消费者发现/请求/认领/失败预算及Core两条链，独立执行原复现1/1和C11的19/19，包括首owner四种状态、控制/凭证/重启和两站生产适配器字节链。证据为 `artifacts/a-m1-r2-review/f019-original.json/.log`、`c11-directed.json/.log`。本项原阻断已解除；完成后的候选寿命与跨任务物化归属另按F-023/F-025处理，不能用本项关闭推定整个M1通过。下文保留原发现及B交付时的待复核事实。
-
-触发步骤（隔离合成Profile、零网络）：同一个Douyin账号有dynamic和video两订阅；dynamic先发现视频71并排入observe；暂停dynamic；仍启用的video再次发现同一条视频。预期video可以继续详情与必要资源获取，暂停的旧租约不能写入。实际唯一observe仍是 `state=paused`、`payload.subscription_id=first`，没有可认领的第二订阅工作。已成功的同键任务重排也保留旧payload；media的同类upsert同样需要修复。
-
-位置：`crates/core/src/core.rs::process_scan_page` 的 `observe:{ns}:{kind}:{key}` upsert（只更新succeeded且不改payload）、`persist_detail` 的 `media:{rid}:{group}`；`crates/core/src/jobs/mod.rs::set_subscription_enabled/claim_due/ClaimedJob::check` 按payload订阅判断准入；请求凭证在 `Core::execute` 中按该订阅取得。依据 FR-SUB-001/003/004、r1 C01/C05 及多类型订阅独立推进契约。
-
-可复制复现：`cargo test -p trace-core --locked overlapping_subscription_can_continue_same_entry_after_owner_pause -- --nocapture`。A原始 `subscription-failed.log`、中间 `subscription-final.json/.log` 与当前 `subscription-final2.json/.log` 均保留；最终子命令退出101，1项failed、0 ignored，实际错误明确包含paused和first。该反例未删除、skip或减弱，A交接时全套不能声称绿色。B本轮原样复现失败后完成修复；定向反例通过，共享消费者矩阵与两站生产服务链通过，当前整套证据和修复位置见§16.8以后。A尚未复核本次修复。
-
-验收必须同时覆盖：
-
-1. 同一内容经两个订阅到达，原owner为queued/running/paused/succeeded时，活跃消费者都能继续；不重复entry/媒体组，不依赖重新恢复已暂停订阅。
-2. observe和media两条链都有合法消费者/执行作用域；不同凭证与质量策略不串用，不能仅把paused改queued或盲目覆盖payload。
-3. 暂停、取消、停模块、删除、立即恢复、重启与迟到页/媒体并发，旧租约/代次均拒绝，显式取消不复活，失败预算不被控制动作消耗。
-4. 原 F-015 `(1,2,0)`、A原probes、closeout_rework、事件及恢复断言保持；新增完整生产服务链的重叠订阅测试和r2认证历史共同验证。
-
-这是发现关系、执行作用域、凭证和资源提交的耦合缺口；B采用持久发现关系、逐消费者需求与冻结执行作用域修复，未以局部重排替代模型。A原始失败记录继续保留，关闭仍须A实际复核。
-
-<a id="f-020"></a>
-#### F-020 / P1：抖音登录检查选用了不能证明登录的接口 — A已核实关闭（当前源码及本次登录范围）
-
-用户提供Cookie并明确授权后，原m1-9包的 `probe_auth` 请求 `query/user`，HTTP200却返回unknown；该端点可为访客分配ID，原代码仅接受未获证明的根 `is_login`。这会使有效凭证无法成为Core允许关联订阅的valid登录主体。不能把它归咎于用户重新复制Cookie。来源资料与实际有界结果分别保存，未复制参考实现代码。
-
-A补生产子进程测试 `douyin_auth_probe_requires_self_profile_not_guest_uid`，修复前退出101，断言实际走query/user而非当前用户端点，见 `auth-probe-initial.json/.log`。修复 `protocol.rs::dispatch(probe_auth)` 改为 `user/profile/self`，在成功响应中要求非零数值uid与非空sec_uid；只输出状态与能力，不输出UID/昵称。访客根ID/伪is_login、零ID、缺字段保持unknown，认证拒绝保持AuthRequired。`request_budget.rs`只补固定端点的安全日志名称，不放宽网络权限。
-
-修复后该5场景生产进程用例通过，全部9项生产协议测试通过；用同一用户Cookie和A实际构建的生产debug daemon/adapter再发1次请求，结果valid/login_proven=true。用户要求本轮完成确认后，又以同一self端点做带Cookie/不带Cookie各1请求：分别valid/login_proven=true与auth_required；两次HTTP均200，CLI分别退出0/1。Bilibili同nav端点对照也分别authenticated与auth_required。原始结果只留本地，公开无身份字段。负对照按原样保存，不把协议200算成登录。质量和内容权限仍unknown；本次成功不外推所有账号、长期有效期或全站访问。
-
-<a id="f-021"></a>
-#### F-021 / P1：满负载元数据节流类内竞争使消费者长期等待 — A已核实关闭
-
-2026-10-09 A读取FIFO实现及取消/普通等待/跨站断言，独立C11复跑通过；从原始采样复算当前352个mixed并发样本、350个四路纯录制样本，并核对37个相邻区间两站同operation字节同时增加。原682样本失败保留，原2秒间隔/抖动/四次紧急预算未改变。当前正式时长和全部派生值通过，见 `artifacts/a-m1-r2-review/independent-metrics.json`；以下为原失败和B修复记录。
-
-B首次当前源码正式测量进入mixed阶段后，两路录制保持运行，但只出现一个state=running的media，另一个observe长期running且没有进入媒体接收；后台paused=false、订阅enabled、无认证错误或失败尝试。原节流只限制普通/紧急两类比例，同类等待者同时醒来竞争最后请求时间，较新的调用可反复抢占；合法消费者未获得有界推进。该运行有682个连续原始样本、录制计时2361.374秒、同时2下载+2录制样本0，不能算正式通过。仅停止所属合成工作进程，让采样器保存失败结果；没有缩短后继正式时长。
-
-原始证据为 `artifacts/b-m1-r2/measure-final/resource-samples.json`、`benchmark.json`、`final3/benchmark.json/.log` 和 `pacing-starvation-diagnostics.json`。第一次r2包/自动用例对应输入 `ed0198988b1a2a27b1a75db1018406c4cdc6f4a54ee4bff1a0308724c4628476`；不得将后续代码重新绑定这些记录。
-
-新增 `c11_metadata_pacing_fifo_and_urgent_budget_prevent_consumer_starvation` 在修复前退出101，实际紧急顺序为4/0/3/2/1，见 `pacing-failed.json/.log`。修复复用现有Tokio FIFO Mutex，在命名空间内分普通/紧急队列；两队首继续受原2秒最小间隔、抖动及最多4次紧急优先预算约束，取消释放排位，平台独立。修复后同一反例退出0，覆盖FIFO、最老等待者取消、普通等待上界及跨站独立，见 `pacing-fixed.json/.log`。本项纳入同一r2的P6/P11/P13和C05/C11，最终全套、新包及完整正式复测另见本节B交付；A核实后才关闭。
-
-<a id="f-022"></a>
-#### F-022 / P1：直播质量查询扫描无关片段，正式热查询未达标 — A已核实关闭
-
-2026-10-09 A核对按条目场次限定的查询与64项SQL代码缓存，独立计步反例1/1通过，状态仍实时读取；另从937个连续原始样本独立复算热查询p95为317.8358ms，满足500ms门槛，全部18项派生值与原回执一致。原903.249ms及60020步失败均保留。证据为 `artifacts/a-m1-r2-review/query-cost.json/.log`、`independent-metrics.json`；不是仅凭单元步数关闭。
-
-该轮输入`5d13cbc5e40357d56732f5ad68e6d6d75b9fd807190f67c54cdae2ffcc2f3acc`的第二次r2正式测量已完整结束：939个连续样本、905.828秒有效闲置、3622.714秒录制、354个同时2下载+2录制样本，任务错误0。工作负载退出0，但热查询p95为903.249ms，超过500ms，测量器/回执退出1；其余门槛通过。`measure-final2/resource-samples.json`摘要为`d68e9e29335617369169adb8856c21313f926c866983432f0005391984d1aaa2`，原始结果和`final4/benchmark.json/.log`保留为failed，不能归入后继通过聚合。
-
-只读同一合成库的EXPLAIN与计步定位到`quality::state`的直播退化查询：SQLite从全库`live_fragments`扫描后再匹配场次；没有任何录制场次的条目也扫描无关历史。50次读取约308万VM步；先限定条目场次的相关EXISTS约1400步。这是已复现的额外成本，不把所有间歇性慢样本无证据归因于机器繁忙。未改变全库搜索/计数/认证条件、数据规模、时长或资源上限。
-
-新增`c08_live_quality_query_ignores_unrelated_recording_fragments`使用实际迁移和一万片无关历史，原查询执行60020 VM步，超过5000步守护，`query-cost-baseline.json/.log`退出101。修复先筛本条目场次，再检查片段的严格缺口/实际降级，空场次、其他场次、目标片段与实际规格状态均断言；`query-cost-fixed.json/.log`退出0。列表、质量与认证摘要复用现有rusqlite有界预编译语句缓存（64项），只缓存SQL代码、不缓存结果；每次仍实时读取旧选择、修订和认证历史。最初两份新夹具遗漏必填列的失败也保留为`query-cost-failed`与`query-cost-failed2`。
-
-本项纳入同一r2的P7/P13、C08/C09及必需用例。原全套/旧包仍只证明原输入；修复后的全部自动检查、新包和正式资源复测必须另行通过，A核实后才关闭。
-
-<a id="f-023"></a>
-#### F-023 / P1：共享任务正常转交会立即废弃已完成消费者的升级候选 — A已核实关闭（本次复核范围）
-
-触发：已有匿名低清资源；两个启用的订阅以不同凭证成为同一media任务的消费者。第一个消费者完整下载高清候选，`upgrades::finish`后为pending，旧选择仍低清；随后正常调用`ClaimedJob::succeed`，仅调和到第二个待执行消费者。第二个消费者尚未获取任何资源，原选择、正文、凭证、订阅配置都未改变，`upgrade.list`却把第一候选永久标为stale。实际反例结果为pending→stale / comparison_scope_changed。
-
-位置：`jobs/consumers.rs::finish/reconcile`转交时递增逻辑任务`target_generation`；`upgrades.rs::snapshot/confirmation_current/invalidate_stale`把候选绑定到该共享任务的当前代次。执行租约撤销与某一消费者已经完成的确认依据被混为一体。依据r2 P11/P12、C11、FR-QUALITY-006：完整候选应进入统一页面供用户决定，正常调度另一个独立消费者不应撤回尚有效的已获取结果。
-
-反例：`a_completed_shared_consumer_keeps_its_downloaded_upgrade_available`。直接调用当前Core消费者、对象提交与升级服务，实际断言失败；不是构造一个伪造的失败回执。修复须区分消费者请求/控制代次与共享执行租约，使正常转交不永久失效候选；同消费者真正取消、改策略/凭证、删除、正文或旧选择变化仍拒绝旧确认。覆盖后继消费者结果相同、较低、无提升、失败及正常新候选；有可用升级时不能只剩被自动废弃的候选。不能仅移除全部代次检查。
-
-<a id="f-024"></a>
-#### F-024 / P1：删除后恢复把已拒绝候选写成当前选择 — A已核实关闭（本次复核范围）
-
-触发：低清automatic为当前选择，完整高清候选由用户明确Reject；确认旧选择仍低清。随后对同条目执行真实`deletion::preview/apply`的copies范围，立即按返回代次调用`deletion::restore`；当前选择变成`high / rejected`。再执行`quality::evaluate`仍保持该错误选择。旧对象字节未丢失，问题是确认边界被恢复路径越过。
-
-位置：`deletion.rs::restore`按最新非派生变体恢复`asset_selections`，没有过滤`approval_state`；`quality.rs::evaluate`找不到合格的当前基准后直接continue，不能纠正这个选择。依据C07/C11、FR-QUALITY-003/006及契约§7.2：恢复档案/副本不等于接受用户已拒绝的升级。
-
-反例：`a_delete_restore_does_not_promote_a_rejected_upgrade_to_selection`，实际`("high","rejected")`，期望`("low","automatic")`。修复须在恢复及所有自动选择/派生使用路径统一执行候选准入；没有已批准资源时保留未选择，不把pending/rejected改为accepted。覆盖copies/archive、pending/rejected、没有旧版、已固定/共享及已回收副本；恢复后质量维护、播放派生和导出不能绕过原决定。现有UI默认过滤仍保留，本反例不声称原生播放器已实际播放拒绝资源。
-
-<a id="f-025"></a>
-#### F-025 / P1：不同登录补全任务共用物化ID，新任务被旧准备记录取消 — A已核实关闭（本次复核范围）
-
-触发：旧completion-media任务代次1，为某media和候选保存到OBJECT_READY后取消；更新并验证新的凭证代次，建立另一个completion-media任务，其任务代次也从1开始。媒体、表示、规格、大小/摘要相同，生产`acquisition_operation`为二者构造同一ID。`uncommitted_operation`仅绕开COMMITTED，因此仍选旧OBJECT_READY记录；`ObjectStore::ready`核对新任务租约及旧文件，却不核对物化归属，实际返回true。随后commit正确拒绝不同job_id并返回Cancelled；按当前失败处理，新补全任务进入cancelled，未取得独立的新身份字节。
-
-位置：`core.rs::acquisition_operation/uncommitted_operation/run_media`、`objects/mod.rs::ready/start_receiving/commit`。物化ID只含media、任务代次及候选摘要，缺少独立逻辑请求身份；新r2补全会为相同媒体创建多个不同任务。依据C03/C07/C11、不可变获取身份与恢复契约：同一请求的重开可复用自己的准备结果，另一请求或凭证身份不能复用旧任务的接收证据，也不能因此被当成用户取消。
-
-反例：`a_prepared_bytes_from_cancelled_job_are_not_ready_for_new_completion`，使用生产ID公式和当前公共对象服务；实际ready=true、commit=Cancelled、新任务状态cancelled。该反例定位对象服务和任务失败处理，未冒充完整真实站点下载。修复须建立可重入且隔离逻辑请求的物化身份，所有ready/重用/重置阶段核对归属；保留正确的commit屏障。覆盖两个补全任务、普通media与补全交错、凭证换代、RECEIVING/PREPARED/OBJECT_READY/首资源已提交后重开；同任务恢复不多建变体，新身份必须有自身获取证据，旧记录/旧文件继续保留。
-
-三个反例共同入口：`cargo test --manifest-path artifacts/a-m1-r2-review/probes/Cargo.toml --locked --offline --target-dir target --no-fail-fast -- --nocapture`。当前真实子命令退出101，0 passed / 3 failed / 0 ignored；最终回执为 `artifacts/a-m1-r2-review/independent-probes-final2.json/.log`，初始两项和中间三项失败均保留。反例运行在隔离合成Profile，直接使用被审Core；独立审查crate源码/锁文件及摘要保留，B修复时将断言纳入规范测试和阶段门禁。当前生产源码、既有测试和216项规范输入未修改。
-
-<a id="f-026"></a>
-#### F-026 / P1：WBI使用64字符密钥且重复发送wts — A已核实关闭（源码签名范围）
-
-位置：`adapters/bilibili/src/wbi.rs::mixin_key`、`handlers.rs::signed_get`。原算法遍历全部64个置换项，未按协议取前32字符；`sign`的query已含wts，`signed_get`又附加一次。原两个nav/mixin测试错误地期待64字符，使测试绿色不能证明协议正确。影响签名的枚举、详情、播放地址等现有生产路径，依据P1/C01/C03和WBI既有契约；与旧匿名room_init诊断的412原因分开处理。
-
-A增加`.take(32)`及生产复用的`wbi::signed_url`，只附加一次w_rid；修正两个错误nav密钥期望，保留原三个任意密钥sign向量及其断言。新增`c14_signed_url_uses_32_character_key_and_one_timestamp`核对完整实际构造路径，固定结果：key为`ea1db124af3c7062474693fa704f4ff8`（32字符），query为`bar=2&baz=3&foo=1&wts=1702204169`，MD5为`e0ed91b768b58beb346ad3116de6ab68`。
-
-正确独立反例位于`artifacts/a-m1-real-readiness/wbi-verified-probe/`。`--features baseline c14_`导入保留的原Git源码，退出101、1 failed；相同断言导入当前源码，退出0、2 passed（含实际URL回归）。回执`f026-correct-oracle-baseline`和`f026-correct-oracle-fixed`原样保留。当前Bilibili26/26、生产适配器9/9、对应构建/严格Clippy及fmt通过；命令见§16.16。本关闭不宣称旧包已含修复，也不代替真实Core接线验收。
-
-A最初独立探针及首次新增期望误多写了一个字符，形成33字符预期与len=32相矛盾，`f026-wbi-baseline`不能单独作为有效关闭依据；`bilibili-final`因此23 passed/3 failed。原错误探针、输出及`wbi-oracle-correction.json`均保留，后用独立Python置换/MD5核对并重新执行上述有效的旧失败/新通过对照，没有把测试自身错误归咎于产品。
-
-<a id="f-027"></a>
-#### F-027 / P1：Douyin受保护详情/投稿请求缺少SecSDK访问上下文 — A已核实关闭（本次复核范围）
-
-位置：`adapters/douyin/src/protocol.rs::api`；Core的`pluginhost::handle_proxy_fetch`和凭证/传输边界需共同接线。生产请求已有aid/device_platform/业务参数/A-Bogus和Cookie，但没有端点所需的访问者上下文与`x-secsdk-web-signature`。同一有效Cookie、同一生产适配器：self登录成功，详情/投稿均HTTP403，安全归类为`uifid_missing`，不是Cookie失效或作者没有内容。
-
-在隔离代理补充现有Cookie中的访问者ID、设备指纹和SecSDK签名后，详情HTTP200/业务0、81,416字节且生产适配器解析成功；投稿HTTP200/业务0、20条、has_more=1、1,454,679字节。投稿随后因本地代理转发超过帧预算失败，不能称该生产链已通过，另见F-029。原失败、补充后的响应及登录观察均保留，命令/回执见§16.16；没有刷新Cookie、伪造msToken、读取浏览器或绕过验证码。
-
-验收：保持原F-020 self登录判断，按确证的host/method/path加入Core内的凭证派生签名上下文，绑定同一凭证代次；fixed-vector覆盖编码/顺序/唯一参数及实际发送字节。Cookie/UIFID/指纹/短期签名不交给适配器、UI或final_url，不进日志/参数/快照/导出/包；跨域重定向剥离。缺上下文、过期凭证、明确挑战和普通网络未知分别可解释。两站生产任务的访问/获取身份及原C06/C11/C13守护通过，指定Douyin视频完整下载；投稿页必须继续通过F-029的有界处理，不能只让HTTP变200。
-
-<a id="f-028"></a>
-#### F-028 / P1：真实直播来源与默认媒体域/HTTPS契约不兼容 — A已核实关闭（本次复核范围）
-
-位置：`crates/core/src/transport.rs::host_rules/validate_url/open_media`、`adapters/douyin/src/live.rs::map`及P14房间入口接线。指定Bilibili直播的站点媒体地址跳转到`bytefcdnrd.com`，指定Douyin直播返回`douyinliving.com`的HTTP FLV；这两个来源CDN都不在默认媒体清单，后者也未规范化为已经实测可用的同host/path/query HTTPS。当前Core会拒绝scheme/host，不能直接完成这些真实来源的录制。
-
-独立故障断言`c14_known_live_media_cdns_work_without_user_allowlist_or_cookies`读取当前Core默认规则，两个域族同时缺失，`integration-probes`退出101；合成域不含用户房号。真实诊断分别在窄CDN策略、每跳公共地址/TLS核验下得到1080P AVC/AAC样本。原HTTP拒绝、Bilibili动态重定向地址拒绝与最终接收均保留；不能以添加用户测试白名单或允许任意HTTP绕过产品缺口。Bilibili音轨8082端口的初次拒绝属于A诊断助手限制，Core本身允许HTTPS非443端口，不将它计为产品缺陷。
-
-验收：按来源证据注册窄媒体域并保持与凭证API域分离；只对已证明可用的CDN同地址升级HTTPS，逐跳DNS/IP/证书与嵌套HLS检查不减。负例覆盖伪后缀、跨站、私网/重绑定、明文回退和媒体Cookie泄漏。P14须从真实房间URL识别别名/房间/主播并经Core录制，两站各至少60秒实收，封片实际≥720P、必要音轨/哈希/恢复/导出通过；不以诊断脚本样本代填。
-
-<a id="f-029"></a>
-#### F-029 / P1：正常投稿单页超过固定元数据预算，无法完成有界归档 — A已核实关闭（本次复核范围）
-
-位置：`adapters/douyin/src/enumeration.rs::Cursor::request`固定count=20；`adapters/common/src/runtime.rs::Client::fetch`固定max_bytes=524288；`transport.rs::fetch_metadata`、`pluginhost::handle_proxy_fetch`与1MiB插件帧。F-027补齐后，指定作者首个20条页返回合法JSON、1,454,679字节，明显超过512KiB；直接base64转发也超过1MiB帧。既有小夹具未覆盖该正常来源规模。
-
-真实对照`douyin-post-secsdk`的HTTP200/20条已取得，但A隔离助手曾直接把超限响应写给生产适配器而出现BrokenPipeError；此为助手没有遵守产品帧预算，保留为失败，不称Core崩溃。另用当前生产适配器请求和实际Core受限HTTP服务回放同大小的20条合成页，Core正确拒绝超限、错误类别unknown，适配器返回ok=false，没有完成归档。反例`c14_production_post_page_survives_bounded_metadata_transport`退出101；与F-028共2 failed/0 passed，原回执`integration-probes.json/.log`保留。
-
-验收：协调页大小、HTTP体、序列化开销与协议预算，可采用有界页大小和有限缩页/大对象协议；完整遍历所选边界而不丢条目、全文或必要资源，失败不推进游标、不标历史完成，取消/重启可继续。覆盖20条约1.45MB、单条大正文、空页has_more、异常超限及并发/取消；端点仍超限须明确受限，不能无限重试。不得删除512KiB/1MiB守护、静默截断或把请求永久失败当可下载。该项属于原M1订阅/完整性义务，不是用户配置问题。
-
-<a id="f-030"></a>
-#### F-030 / P1：长录制后的已提交暂存记录逐行同步拖慢启动恢复 — A已核实关闭（本次复核范围）
-
-B在当前r3的C07/C09完整正式测量中发现：10万条/50万媒体元数据、完整3621.335秒录制及361个混合并发样本均完成，任务错误0，但`Core::open + recover + IPC可达`耗时45.246秒，超过原30秒门槛。原`resource-formal-2`、945个样本、生命周期、查询日志和当时measure二进制完整保留；其他资源指标通过不抵消这项失败。
-
-位置：`objects/mod.rs::recover_materializations`的COMMITTED暂存收尾。文件安装早已清理目录，但约10,798条已提交记录仍保留staging_path；旧恢复按每行独立FULL事务清空，形成上万次持久同步。新增`c07_recovery_bounds_committed_cleanup_writes_and_keeps_objects`在实际SQLite/WAL上重现：4097行产生4097个WAL帧、15.279秒，写入放大断言失败。
-
-修复以rowid键集分批读取，每批最多64条；先完成受控暂存目录清理，再用一个短事务确认该批相同COMMITTED路径。目录/路径须属于相应操作，拒绝链接和越界；崩溃在文件清理与事务确认之间仅重复清理不存在的目录。已验证对象、物化历史、未完成文件的重算/安装和副本哈希校验保持。最终定向复验4097行降为222帧、0.915秒，原对象恢复套件8/8通过，并断言对象字节、全部历史、重入及越界目录不被删除。其后使用当前m1-r3-11包完成原规模/时长的完整正式复测：恢复202个未完成普通任务且IPC可达耗时2.201秒，934个样本及18项指标复算通过，见[§17.7](#m1-r3-final-resource)。原45.246秒失败和存储中断跑次保留，本项仍待A复核。
-
-<a id="f-031"></a>
-#### F-031 / P2：共享候选的比较读取了后继消费者质量偏好 — A已修并自检关闭（当前自动验证范围）
-
-触发：原消费者prefer_fps=true，已选4K30，新候选1080P60完整且pending；正常succeed转交另一消费者，候选仍有效，`upgrade.resources`却由higher变成lower。`upgrades.rs::resources_on`读取共享job的当前execution_scope，转交清空或换成后继偏好。A独立`shared-policy-probe`实际失败，输出保留；本项是比较依据错误，不声称旧对象被替换。
-
-修复：新共享确认保存原prefer_fps，比较及确认沿用；旧token保持原形状，仅在原订阅配置版本仍相同时恢复旧偏好，缺依据显示unknown。没有新增schema或改写迁移。`c14_shared_candidate_comparison_keeps_originating_quality_preference`覆盖正常转交、下一消费者不同偏好、可接受原候选、旧token和后续配置改变的历史比较，`shared-policy-fixed`通过。
-
-<a id="f-032"></a>
-#### F-032 / P1：一次性直播在明确停播后未进入封口路径 — A已修并自检关闭（当前自动验证范围）
-
-触发：链接预览/确认及场次登记成功；录制重解析已收到明确offline，`source_snapshot`作为预览守护返回SourceUnavailable，既有场次仍waiting。A独立`live-offline-probe`和生产适配器驱动的`live-production-baseline`实际失败；未发真实请求。
-
-修复：已有录制的resolve_live将同房间明确offline交给原recording封口；Douyin省略身份时只接受宿主已白名单化的offline并沿用请求已绑定房间。预览仍拒绝停播，权限/未知/其他错误仍失败。`c14_direct_live_offline_seals_but_denial_and_unknown_do_not`通过两站生产适配器、拒绝/未知反例、封口、离线重开及零作者扫描断言，`live-production-fixed`通过。
-
-### 16.4 实际命令、反例与限制
-
-本节保留上轮A审查r1及本地登录验证的原命令与当时结论；当前r2实际复核在§16.13，旧失败不改写。
-
-除修改前原bundle核对，A新跑次均位于 `artifacts/a-m1-review/`；由 `stage_evidence.py run`记录的包装命令在子进程失败时退出1，JSON保留真实子命令退出码101。下表不把包装退出码当Rust用例结果。
-
-| 实际命令 / 检查 | 结果 | 证据 |
-| --- | --- | --- |
-| 原bundle两个检查入口（修改前） | 0 / passed | 16.1独立核对与原bundle |
-| 抖音源长度新增反例（修复前） | 101 / failed | `length-failed.log`；不覆写 |
-| `cargo test -p trace-adapter-douyin --locked -- --nocapture` | 0 / 11 passed | `douyin-final2.json/.log`，原`douyin-fixed`与`douyin-final`保留 |
-| `cargo test -p trace-core --locked overlapping_subscription_can_continue_same_entry_after_owner_pause -- --nocapture` | 101 / 1 failed | `subscription-final2.json/.log`；F-019仍开，原跑次保留 |
-| `cargo test -p trace-e2e --locked --test closeout_rework -- --nocapture` | 0 / 3 passed | `range-and-group.log`及`targeted-tests.json` |
-| `cargo test -p trace-core --locked c04_closed_capture_four_commit_windows_survive_cancel_and_restart -- --nocapture` | 0 / 1 passed | `live-commit-windows.log` |
-| `cargo test -p trace-core --locked c06_nested_hls_private_network_key_map_and_credential_scopes -- --nocapture` | 0 / 1 passed | `nested-network.log` |
-| 抖音登录生产路由新增反例（修复前→后） | 101 failed → 0 passed | `auth-probe-initial`、`auth-probe-fixed` JSON及log |
-| `cargo build -p trace-daemon -p trace-adapter-douyin --locked` | 0 / passed | `build-final.json/.log`；仅debug，不重建measure或发行包 |
-| `cargo test -p trace-e2e --locked --test m1_production_adapters -- --nocapture` | 0 / 9 passed | `production-final.json/.log`；保留原8项另加1项 |
-| `cargo fmt --all -- --check` | 0 / passed | `fmt-final.json/.log` |
-| `cargo clippy --workspace --locked --all-targets -- -D warnings` | 0 / passed | `clippy-final.json/.log` |
-| 新凭证准备脚本隔离反例 | 0 / 3 passed | `test_site_check_preparation.py`：缺项零输出、所选站点/秘密隔离、重复/格式/大小拒绝 |
-| `python -m unittest discover -s scripts/tests -v` | 0 / 15 passed | `python-final.json/.log`，含全部原12项及新增3项 |
-| `python scripts/check_docs.py` | 0 / passed | `docs-control.json/.log`；49文档、507本地链接、85需求、28AC、12INV，零错误；提交前最终同命令回执为`docs-final2.json/.log`，之前回执保留 |
-| `python scripts/check_publication.py` | 0 / 0发现 | `publication-control.json/.log`；工作树与索引，启发式检查另辅以人工文件归属核对；暂存后结果随Git交付审计保存 |
-| 原bundle的check及verify入口（修改后） | 均1 / 按预期拒绝 | `stale-bundle-check.json/.log`、`stale-bundle-verify.json/.log`：源码、文档、包、命令与原始基准输入不匹配，原回执不改绑 |
-| `git diff --check` | 0 / passed | 本地工具实际执行；暂存后的最终检查随Git交付审计保存 |
-| 本地凭证前置（用户保存前→后） | 两站各2 blocked → 两站各0 prepared | `credential-preflight.json`、`credential-authorized-preflight-1.json`；此处均零网络，prepared不等于验证登录 |
-| `python artifacts/a-m1-review/check_auth_controls.py` | 批处理0；每站带Cookie的site-check为0，无Cookie为1/auth_required | `auth-controls.json`及4份独立site-check日志；使用当前生产debug程序，无Cookie结果是预期负对照 |
-
-部分Rust测试输出有Windows linker消息及增量目录权限提示；实际测试运行/结果和退出码如上，没有删除目录或取消断言来绕过。A当前没有机械重复完整Rust/前端/五套件、发行包或长测；未改前端复用原有效证据，F-019失败保留，后继必须满足r2全部门禁。
-
-真实操作按用户本轮授权并使用新隔离目录，没有前台键鼠/浏览器操作：
-
-| 范围 | 实际调用与结果 | 能证明什么 |
-| --- | --- | --- |
-| Bilibili登录 | m1-9 `site-check --execute-authorized`、仅probe_auth、1请求，退出0/authenticated | 本次提供的Cookie在该登录端点有效；不公开会员/账号字段 |
-| Douyin登录原包 | 同样1请求，退出0但能力unknown | 协议请求成功不等于登录证明；F-020原始观测 |
-| Douyin登录A修复 | `target/debug/trace-daemon.exe site-check`配A生产适配器、仅probe_auth、剩余预算2中实际1请求，退出0/valid | 本次当前用户检查成功；没有将真实响应写入普通档案 |
-| Bilibili同接口登录对照 | A生产debug程序，nav带Cookie/不带Cookie各1请求；HTTP均200，退出0/authenticated及1/auth_required | 本次Cookie有效，空凭证不会被误判登录；没有读取浏览器登录态 |
-| Douyin同接口登录对照 | 同一A生产debug程序，self带Cookie/不带Cookie各1请求；HTTP均200，退出0/valid与login_proven=true及1/auth_required | 修复后的判定能区分本次有效会话与访客；负对照失败回执保留 |
-| 给定直播间身份准备 | 固定HTTPS room_init 的无Cookie诊断请求1次，HTTP412，工具退出1 | 该诊断使用标准库请求，未进入生产probe_live或媒体接收；不能用它宣称生产录制失败或720P上限 |
-| 给定抖音主页视频列表 | A生产site-check，已登录、最多2请求预算中实际1次HTTP403，子命令退出1/source_unavailable，停止 | 没有收到列表，不证明空列表、Cookie失效或作者无视频；匿名对照未继续，未证明全历史 |
-
-原登录3请求，加本次同接口对照4请求，登录累计7请求；给定目标内容诊断共2请求。对照发生于2026-10-08 14:48 UTC，每站每种模式独立Profile/输出目录、最多1请求、30秒，跑次间隔至少2秒。实际命令形态为 `target/debug/trace-daemon.exe site-check --profile .local/site-check/<site>-auth-control-<mode>-1/profile.json --request-file .local/site-check/<site>-auth-control-<mode>-1/request.json --execute-authorized --output .local/site-check/<site>-auth-control-<mode>-1/result`；site为bilibili/douyin，mode为authenticated/anonymous。带Cookie只传受保护文件路径，匿名计划明确credential_file=null；不改原Cookie文件。程序摘要、状态码和计数在 `auth-controls.json`，逐项结果校验在 `auth-controls-audit.json`。
-
-Cookie原文件仍留本机secret目录，真实目标/原始结果只留 `.local/site-check/`，公开只保留状态/计数，当前用户操作与授权仅在 ACT-002。没有实际媒体下载、订阅创建、真实录制、原生产品验收或发布。列表/直播质量请求条件由开发者在已有范围内核查，不能为绿灯弱化挑战/限流停止规则。两站Cookie确认已由A在本轮完成，不作为B返工或用户重新配置的前置。
-
-参考用途和TRACE接线一并核对：当前用户接口用于确认会话本人，客户端访客身份、请求签名、内容端点的访问能力各自独立。Core按站点/凭证作用域取值，只有with_credential且目标在允许API域时附Cookie，跨域重定向移除认证头，适配器不取得秘密正文。媒体CDN不带Cookie不能倒推解析时匿名；r2契约与C11已补该正反例，具体结论见[解析研究§7](../research/site-parsing-current.md#7-a-的有限真实登录与内容请求观察2026-10-08)。未将外部实现源码、私有路径或浏览器提取流程移入产品。
-
-### 16.5 逐文档流程核对与保留审查
-
-本轮按入口、治理、工作流、Git、数据、架构、质量、设计、模板、状态/计划和用户待办逐份核对适用规则。只同步TRACE自身约束；外部技术栈、业务模块、许可、阈值和操作授权未移入。本机只读核对的路径/摘要留在本地审计，公开内容不记录私有参考关系。
-
-| TRACE正本 | 核对结果 / 本次同步 |
+| 项 | 实现与结果 |
 | --- | --- |
-| AGENTS.md | 保留入口和A规划/B实施/A最终审查；不授权子Agent或自动消息，无需重写一致条款 |
-| CLAUDE.md | 仅引用AGENTS，保留 |
-| CONTRIBUTING.md | 补真实输入前置、同计划修订和原证据范围 |
-| REVIEW.md | 补逐项语义覆盖、新需求不追溯为旧缺陷、旧包不冒充含A修复 |
-| docs/README.md | 当前r2/A审查与凭证入口；历史B交付保留单独入口 |
-| dev-rules/README.md | 触发导航覆盖实际专项规则，保持 |
-| governance/documentation-policy.md | 补用户环境保护、按内容整理、受保护测试与逐文档差异记录 |
-| governance/document-registry.json | 当前计划路径仍唯一，更新实际核对日期/依据，未建立新计划文件 |
-| development-workflow.md | 同计划范围修订、证据分类复用、失败反例的本地审查提交；A通过后直接收尾 |
-| repo-and-environment.md | 实际命令/工具/本地准备与r1/r2证据边界；只读核对远端保护，不虚构hook或产品CI |
-| architecture-and-contracts.md | 明确共享身份与消费者执行权、凭证/质量作用域和提交屏障 |
-| data-and-security.md | 本地配置/秘密分离、缺输入停止、显式匿名对照、授权与站点失败停止 |
-| local-reference-and-files.md | 逐级索引、只读、.env.example与本机配置分开；已有用户值不覆盖 |
-| quality-gates.md | 指纹/旧证据、原生不抢焦点、连续长测、真实条件与当前r2门禁待补 |
-| site-adapters.md | 当前全类型范围、登录与可访问性分开，修正LOOP错误归属 |
-| open-source-first.md | 保留先查证/后集成、补丁移除条件和具体上游发送授权，无需改既定技术栈 |
-| product-rules/core-product-principles.md | 保留身份、来源、恢复与真实质量原则，新细节只在需求/契约维护 |
-| design-rules/DESIGN.md | 保留蓝白主页/管理入口，补非前台验证及认证时间线/确认页的状态边界 |
-| templates/README.md | 修正用户待办/OSS/LOOP/F的唯一维护位置，避免总表包办全部状态 |
-| templates/agent-handoff.md | 新旧范围、A已修与B待修、证据复用/失效、实际Git基点 |
-| templates/validation-report.md | 增加复用/未重跑边界与真实输入来源；不代填产品验收 |
-| templates/module-spec.md | 共享消费者、停止准入、提交屏障、旧代次与恢复 |
-| templates/change-proposal.md | 保留按规模最小材料和需求→契约→验收，复用本计划无需另提案 |
-| templates/decision-record.md | 保留来源/替代/迁移/重审，当前新增决定写有效决定正本 |
-| templates/open-source-assessment.md | 保留官方版本/维护/许可/边界证据，未复制项目专用工具或权限 |
-| .github/PULL_REQUEST_TEMPLATE.md | 已包含阶段、行为、验证、恢复、限制与分别授权，保持 |
-| USER-ACTIONS.md | Cookie教程、当前输入/授权/真实结果唯一入口；既有人工验收和许可状态保留 |
-| 状态/唯一计划/需求映射 | r2新增P/C与85条需求，原B证据和A失败分开；没有竞争计划 |
+| R2-1 | 站点清单的 `cookie_hosts`：微博 `weibo.com`、小红书 `xiaohongshu.com`、Instagram `instagram.com`、X `x.com`、TikTok `tiktok.com`，YouTube 空，抖音、哔哩哔哩保持；`transport.rs` 只把凭证 Cookie 发往这些域名，其余接口域名与重定向目标一律不带（`crates/domain/src/sites.rs`、`crates/core/src/transport.rs`） |
+| R2-2 | 订阅范围对没有日期的条目三态判断（范围内 / 范围外 / 待详情定位）：`crates/core/src/scan_range.rs`、`pipeline/standing.rs`、`observe.rs`、`scan_page.rs`；范围外的条目不自动下载、不计入发现数；列表的“N 天前”与紧凑的“9h ago”“2w ago”按近似日期（精度标为近似，留一个单位的误差）提前截止（`adapters/common/src/kit/clock.rs::parse_ago`）；无日期的整页扫描有页数上限 |
+| R2-3 | `crates/core/src/session_jar.rs`：Core 在内存里记下站点响应设置的会话 Cookie（按凭证作用域，不落盘、不给适配器、撤销即清除），`pluginhost/proxy.rs` 只在站点自己的视频地址（`session_media`）上与凭证 Cookie 一起带上，CDN 域名永不带；仍被拒绝时 `media_tools/fallback.rs` 改用随包的外部解析工具（只收数字 ID 的 TikTok 视频页，与 YouTube 同样的约束） |
+| R2-4 | `adapters/x/data/web_client.json`（查询标识、特性开关与令牌随适配器发布）、`catalog.rs`（先用内置数据、被拒绝才从页面脚本发现、负缓存与 TTL）、`transaction.rs`（按公开算法计算事务 ID 请求头，固定向量来自 MIT 许可参考实现在合成夹具上的输出）、`api.rs`（被拒绝时带事务 ID 重试，之后始终带） |
+| R2-5 | `crates/core/src/accounts.rs`：凭证状态不是有效时拒绝且零请求；适配器给的 `profile_url` 只接受该站自己的域名 |
+| R2-6 | `adapters/common/src/kit/mod.rs::DESKTOP_UA` 改为格式完整的桌面浏览器标识；抖音、哔哩哔哩的签名向量依赖原值，单设 `SIGNED_UA`，向量不变 |
+| R2-7 | `fault_log.rs` 的说明改准；`credential.revoke` 清除登录证明有了测试；基准持续时间取工作负载自己的结束时间（`scripts/benchmark_metrics.py`，LOOP-009） |
+| R2-8 | 第二轮真实站点检查，用返工后的包 `dist/trace-0.1.0-windows-x64-2`，结果见 [§4](#m2-rule-status) |
+| R2-9 | 重打包 `dist/trace-0.1.0-windows-x64-4`（第一个候选包 `-3` 的基准失败，见 F-063，修复后重打包）、重跑一小时基准、重新生成门禁报告；ACT-003 的新包与合成档案见 USER-ACTIONS；`tests/e2e/src/bin/prepare_acceptance.rs` 现在生成八站内容、下载文件夹与外部副本的合成档案 |
+| R2-10 | 本节与 §4 记录本轮实现、命令、真实证据；`requirements.md` 的“本阶段”状态仍等 A 验收 |
 
-历史整理抽查：11份退役文件在固定main基点均可读，合计111211字节；抽查原F-001预构建、F-002目标外零写入、F-015暂停、F-016媒体节点、F-017夹具顺序及原B实现保留项，当前守护/状态与完整SHA入链仍在。原报告§5/§9失败、旧B§12要求由固定完整SHA追溯；本次没有删除旧包、原Profile或失败日志。
+反例位置：
 
-原A `a_review_probes.rs` 与基点无差异；closeout_rework的HTTP/分段函数保持词法一致。三项旧Rust body调整逐hunk核对：物化操作ID随实际表示/大小摘要变化；F-015精确限定原增量任务并增加全任务清单，保留 `(1,2,0)`；full_loop将既有哨兵显式关联订阅，原45断言保留。原home事件断言和媒体节点未被A更改。原109项保留审计与A新增反例都保留，不以总数增加掩盖删除。
-
-### 16.6 r2 新增范围与 A 交接时判断
-
-P11：修F-019并实现逐获取认证历史、两个时间线和新迁移；P12：登录后有界补全、完整候选、统一用户确认和直播逐片标记；P13：沿用本地凭证准备并完善执行前置，接入新用例/计划/schema、产出当前包/自动/正式资源证据。详细验收只在[唯一计划](stage-plan.md)和[契约§7](../site-archive-contracts.md#authentication-acquisition)维护，不从旧self-check计完成。B不得简单将现有quality选择页称为已实现统一候选确认。
-
-| 判断 | 本次结论 |
+| 项 | 主要测试 |
 | --- | --- |
-| B实现交付 | 原r1 P0～P10代码与产物已交付，存在F-019；r2新增范围待B实施 |
-| B自动自检 | 原被审输入的255身份/98必需及五套件证据核对属实，覆盖未包含A新反例 |
-| A技术审查 | 已执行，failed / rework-required；F-018/F-020局部关闭，F-019未解决 |
-| 产品验收 | not-run；两站本次登录验证通过不等于下载/录制或原生体验通过 |
-| 远端与发布 | 未push/PR/合并/发布，无本阶段对应授权；Q-004保持原状态 |
+| R2-1 | `crates/core/src/pluginhost/proxy.rs`、`transport.rs`、`proxy_tests.rs`、`crates/domain/src/sites.rs` 的测试：每站 Cookie 不发往其他注册域，重定向不带 Cookie，两站现有守护不变 |
+| R2-2 | `crates/core/src/undated_range_tests.rs`、`scan_range.rs`、`adapters/common/src/kit/clock.rs`、`adapters/youtube/src/entry.rs`：7 天范围面对 100 条无日期的历史只翻有限页、只自动下载范围内的作品；详情日期在范围外的作品不下载；精度入库；紧凑年龄 |
+| R2-3 | `crates/core/src/session_media_tests.rs`、`session_jar.rs`、`media_tools/fallback.rs`、`pipeline_tests.rs`：CDN 永不带 Cookie、会话不跨作用域、撤销即清除、被拒绝才回退到工具、工具失败如实报告 |
+| R2-4 | `adapters/x/src/{catalog,transaction,site_tests}.rs`：内置标识先用、被拒才发现、负缓存、签名向量与改版页面 |
+| R2-5 | `crates/core/src/accounts.rs` 的测试：失效凭证被拒且零请求、其他域名的主页地址不入库 |
+| R2-6 | `adapters/common/src/kit/testing.rs`：夹具拒绝不完整的 User-Agent；两站向量照旧通过 |
+| R2-7 | `credential.revoke` 清除登录证明、`test_the_duration_is_the_workloads_own_end_not_the_last_five_second_sample` |
 
-以上表格与下方prompt保留A交接时的判断和待办；B已接手同一计划，后续实施与实际证据从§16.8起追加。A最终通过后直接向用户收尾，不要求B复审A。
+<a id="m2-cleanup-record"></a>
+## 3. 整理记录
 
-<a id="a-to-b-m1-r2-initial-rework"></a>
-### 16.7 上轮 A→B 集中实施与返工 prompt（历史）
+按[阶段整理清单](stage-plan.md#stage-cleanup-list)：
 
-本段保留上轮A交接内容，当前集中返工使用[§16.14](#a-to-b-m1-rework)。
-
-报告与A修改归入同一个未推送阶段提交。这里用实际Git读取命令定位交接提交，最终消息提供完整SHA，避免文档递归包含自身哈希。
-
-```text
-请作为 Agent B，在 TRACE 的 codex/m1-two-site-archive 分支，按唯一计划 docs/delivery/stage-plan.md 的 TRACE-M1-01 r2 集中实施与返工。先读取 AGENTS、索引、状态、有效决定、事项、USER-ACTIONS 和适用规则，执行 git log/status 核对 A 交付消息的完整SHA与用户后续修改。main 基点 960984c34487244f31f1238dffc2bd9faaa292e7，原被审B为772ab9a6c523a22385f024abafa66aef6ed7f0f1。本阶段相对main只保留一个DCO提交，后续amend同一阶段；不改main或备份历史，不push/PR/合并/发布，不启动子Agent或自动跨聊天发送。
-
-当前审查/F正本是 docs/delivery/stage-report.md §16，§13～15保留原r1规划/交付与失败。优先修 F-019/P1：同账号dynamic先发现视频→暂停该订阅→仍启用的video再次发现；共享observe仍paused且payload绑定首订阅。复现命令 cargo test -p trace-core --locked overlapping_subscription_can_continue_same_entry_after_owner_pause -- --nocapture，当前1项失败。连同media同键upsert、发现关系/合法消费者、凭证与质量作用域、租约/代次、已取消/删除和重启竞态一起修；不可仅改paused为queued或盲目换payload。验收按§16.3全部条件。
-
-保留 A 已修 F-018 的来源data_size传播及非法声明反例，F-020 的抖音user/profile/self登录验证及生产进程反例。保留 F-001～017、原A Rust probes、closeout_rework、home事件和媒体节点断言、原失败、蓝白主页/管理入口、旧稳定包/验收Profile、本地参考隔离。不因新类型重建已闭合范围，不删除/skip/弱化测试。
-
-连续完成 r2 P11～P13/C11～C13：逐获取保存anonymous/authenticated/expired/unknown历史，两个时间线共用稳定内容身份和同筛选分页/统计；同blob不抹去不同获取历史。认证依据解析身份和同代次验证，已登录解析后无Cookie的CDN传输仍保留该获取身份，匿名回退另记上下文，禁止为标签向CDN发Cookie。登录验证后有界重查普通资源，取该身份当时可得最高质量，完整新候选进入统一资源升级页，用户接受/拒绝/保留两份；确认绑定旧选择/修订/代次，失败或迟到不伤旧版。直播仅记录逐片认证与实际分辨率码率等规格，混合和未知明示，不补录过去、不进普通升级队列。旧schema3/4、备份/恢复、跨订阅、凭证更新、取消/停模块/退出、重启与旧确认都补定向反例。新增需求是用户追加，不追溯改写原B自检历史。
-
-本地 Cookie 方案已建立：.env.example、scripts/prepare_site_check.py、对应3项隔离反例；实际配置只在忽略的.env.local/.local。只读取任务必需键，保留用户文件，秘密不入日志/命令行/包/导出/Git。缺输入按ACT-002停对应真实测试并给步骤；原生测试用隔离Profile、独立WebView/回环CDP和不激活窗口。A已完成两站同接口带Cookie/不带Cookie对照：带凭证分别authenticated/valid，无凭证均auth_required，四次HTTP均200；Cookie有效性已经确认，不留给B或要求用户重新复制。此前给定目标查询出现HTTP412/403，已停止，不能把登录成功当全站下载可用。现有具体授权、范围和当前结果只看USER-ACTIONS；不要无理由重复请求、绕过挑战或扩展对象/媒体范围。
-
-按OSS-011核查上述真实内容端点的请求条件与错误分类，保留受限结果；具体目标在本机.local/site-check/user-targets.json。未取得可靠结果时如实说明具体范围，不把平台条件自动写成已修实现。将新增用例、计划修订/schema、.env.example等新输入和全部85需求中的66条M1适用范围接入现有stage_evidence门禁；保持19条后继范围未完成。原199输入/255用例/98必需、m1-9包及长测仅证明原B版本，不改绑收据或重写原始采样。新包另目录，在最终源码上真实执行需要的自动门禁与正式资源测量，缺项/陈旧/失败必须拒绝；不得降低长测规模/时长或借旧measure二进制冒充当前运行。
-
-报告复用同一文件，逐F/P/C回写实现、命令、退出码、故障/复验及包/指纹/限制；同步状态、能力表、需求映射和登记。完成后提供完整B→A复审prompt及实际Git读取的最终SHA。A复核通过后直接向用户收尾，不再交你重复复审。
-```
-
-
-<a id="b-m1-r2-delivery"></a>
-### 16.8 B 的 r2 集中实现与自审（2026-10-09）
-
-本轮以 A 交付 `141d261db8569100564b3f88b897ba4ca00b0f61` 接手同一 `codex/m1-two-site-archive` 分支；实际 HEAD 与 main 基点核对一致，开工工作区干净，所有本轮公开改动归属 B。未创建竞争计划、子 Agent 或新聊天，也未自动跨聊天发送。继续采用同阶段未推送提交 amend 与原 DCO 身份；最终 SHA 由实际 Git 读取交付，文档不递归包含自身提交摘要。
-
-F-019 的发现事实、消费者需求和执行租约已分开：`entry_subscriptions`只登记有证据的发现关系；`job_consumers`分别保存每个订阅的请求/完成序号、等待状态、失败次数和退避。`process_scan_page`与`persist_detail`都经同一注册/调和入口；稳定 entry/资源组不复制，有效执行中的消费者不被抢租约，暂停或失效的消费者让出执行机会。认领时冻结订阅版本、凭证 ID/代次和质量配置；认领、心跳、解析、对象提交都检查作用域。暂停/恢复、取消、停模块、删除、凭证变更及重启拒绝旧工作；控制操作不记失败尝试，显式取消不因发现新消费者自动复活。Core凭证缓存使用平台/凭证/代次作用域，匿名执行清除未限定的缓存身份。
-
-| P/C | 主要实现及自审边界 | 对应反例 |
-| --- | --- | --- |
-| P11，C01/C05/C11，F-019 | `jobs/consumers.rs`、`jobs/scope.rs`、Core扫描/详情/媒体链；不同凭证和质量不串用，首owner的queued/running/paused/succeeded均有活跃消费者继续 | 原 `overlapping_subscription_can_continue_same_entry_after_owner_pause`；共享observe/media状态、控制/重启/失败预算矩阵；两站生产adapter加合成HTTP字节链 |
-| P11，C07/C11 | 新迁移5；迁移1～4逐字保留。schema3/4各步迁移前一致备份，失败事务回滚。旧变体认证unknown；不可变获取上下文和资源观察由触发器保护 | 原schema3备份/回滚与新schema4失败注入；同blob不同身份、全量/元数据备份及无凭证恢复 |
-| P11，C08/C11 | `acquisitions.rs`和DTO、共享feed/search筛选、详情逐变体历史；同一entry可出现在多个认证时间线，分页/计数/定位共用条件和游标；混合/失效/未知明确 | 67条多身份分页/计数/定位、游标跨筛选拒绝、历史不可变、惰性历史页；原home事件/媒体节点断言完整保留 |
-| P12，C06/C11 | 本批次同代次生产登录探测才确认authenticated。解析身份贯穿无Cookie的CDN传输；明确匿名回退另建上下文，失败只记录安全分类 | 两站真实adapter进程的认证/失效/未知测试；本地HTTP实际校验零Cookie/Authorization，匿名与已认证各传输一次；同字节仍独立记录 |
-| P12，C05/C07/C11 | `upgrades.rs`：登录验证后持久补全，固定发现上界，每次至多16条、续行间隔2秒；普通资源取该身份当时可得最高组合，所有必要轨/段完整才待确认 | 重复验证不无限重排，40条样本只处理38条普通非删除记录；候选不借旧音轨凑完整、旧版一直可读；直播零补录 |
-| P12，C08/C11 | 统一资源升级页按平台/创作者/状态分页；10候选/页、20比较资源/页；逐项或明确所选1～50项接受/拒绝/保留两份。展示新旧身份、实际规格/字节、内容编辑/无提升/不可比较及回收影响 | 预期旧选择/修订/资源、订阅、凭证、工作代次及质量配置联合校验；缺失/损坏文件、迟到/重复确认、另一个窗口选择、取消/停模块/删除、重启/恢复反例 |
-| P12，C04/C12 | 直播逐片保留认证和实际宽高/码率/FPS/编码；无法探测为unknown，混合状态和gap可见。关闭分片恢复仍使用当时上下文；安全导出保留事实 | 混合认证、未知/失效缺口、实际TS规格、重启、导出；登录后无历史补录或普通升级任务 |
-| P13，C06/C10/C13 | 沿用本地凭证准备及3项原隔离反例；元数据HTTP403/412为访问受限，不返回空列表，不直接将Cookie标过期。门禁绑定r2、schema5、新增输入/必需用例及85/66/19需求范围 | 缺r2映射不能借r1记录放行；旧schema/计划、缺/失败/重复用例、失配源码/包、短测/原始采样和文档缺项拒绝 |
-
-P6/P11/P13的F-021以命名空间/优先级FIFO保证合法消费者推进，保留原节流与紧急预算；C05/C11反例、当前352个同时并发样本和37个实际双路字节增长区间共同自检。P7/P13的F-022以场次范围和有界SQL预编译缓存减少无关读取，C08/C09计步反例与完整正式热查询317.836ms共同自检；A复核前均保持已修待复核。
-
-`upgrade_candidates/upgrade_members`保存比较快照，pending/rejected变体不参与自动质量选择；默认播放器与正文内嵌图片均排除它们。新候选通过对象实际哈希复验后才在事务中切换；保留两份固定新旧副本，接受后的回收仍检查等待期、固定、共享与读取租约。正文编辑形成新修订并有独立说明，旧修订及资源继续保存；数据没有可比较证据时不伪造提升。
-
-自审发现并修复两项新回归，未改旧断言：第一轮完整Rust运行的 `closeout_faults` 在between_resources窗口产生3个变体，原断言要求2个。修复仅复用同一任务/代次已提交的旧副本，缺认证证据的缓存复核仍为unknown，不给新登录身份虚构下载；六个中断窗口复验通过。第二轮完整Rust运行的 `full_loop` 恢复后显示pending_upgrade而原断言要求unknown；修复同一逻辑请求补齐自身资源时不建立新升级、恢复时失效旧候选，并让质量标签与确认共用有效性检查。原全流程复验通过，新恢复反例保留全部获取历史且拒绝旧确认。两次完整失败及定向复验均保留，不由后来通过覆盖。
-
-本段只记录实现与已经执行的定向自检；最终整套、包和正式测量由下节对应实际输入回执给出。
-
-
-### 16.9 当前源码自动证据与全部失败保留
-
-最终自动用例回执在 `artifacts/b-m1-r2/final5/`。216项源码/测试/脚本/构建/锁文件及新增规范输入的集合摘要为 `f8a7d480ddb520d2b52f14f52145c4b1b6f1695b033d7e184a8b8f61140f86b7`（按路径排序的JSON、紧凑分隔符、SHA-256）。包manifest、每条命令前后输入及正式测量均按同一集合核对；报告/状态/需求映射/登记另由最终文档指纹绑定。之前 `freeze.json/freeze2.json/freeze3.json/freeze4.json` 和 `final/`、`final2/`、`final3/`、`final4/` 均为过程中实际版本，保留但不加入最终通过聚合。
-
-| 实际命令 | 子命令退出码 / 已执行结果 | 当前回执 |
-| --- | --- | --- |
-| `cargo build --workspace --locked` | 0；先构建所有生产进程与测试驱动，保留F-001 | `final5/build.json/.log` |
-| `cargo fmt --all -- --check` | 0 | `final5/fmt.json/.log` |
-| `cargo clippy --workspace --locked --all-targets -- -D warnings` | 0 | `final5/clippy.json/.log` |
-| `cargo test -p trace-core --locked c11_ -- --nocapture` | 0；19 passed、0 failed、0 ignored；作为定向report回执，不重复计用例 | `final5/acquisition.json/.log` |
-| `cargo test --workspace --locked --no-fail-fast -- --nocapture` | 0；224个完整Rust用例身份，0 failed、0 ignored；包括F-018/F-019/F-020和原全部守护 | `final5/rust.json/.log` |
-| `corepack.cmd pnpm -C apps/desktop run verify` | 0；类型检查、48个Vitest用例和生产构建通过 | `final5/desktop.json/.log` |
-| `python -m unittest discover -s scripts/tests -v` | 0；16项通过，含原治理、3项凭证准备及r2证据反例 | `final5/python.json/.log` |
-| `python scripts/verify.py --all --json` | 0；offline/desktop/recovery/site/resources五套件全部通过 | `final5/verify.json/.log`及所链接逐命令完整输出 |
-| `python scripts/package_windows.py` | 0；新目录中的当前生产包 | `final5/package.json/.log`及包manifest的build_commands |
-| `python scripts/check_package.py dist/trace-0.1.0-windows-x64-m1-r2-2` | 0；2项实际包检查通过 | `final5/package-smoke.json/.log` |
-
-224 Rust + 48前端 + 16 Python + 2包检查 = **290个唯一用例身份**；原98个必需用例全部保留，r2当前共**133个必需用例**，覆盖C01～C13。按用例身份去重，定向复跑与五套件汇总不再次灌入用例总数。requirements-map的旧m1事实不改写，新增r2映射单列全部85条需求中的66条M1适用范围；其余19条保持not-run。门禁要求每条适用映射有现存实现及真实通过用例，不从r1兜底；NFR还必须满足本次原始测量。
-
-本轮的失败与修复轨迹如下；所有路径相对 `artifacts/b-m1-r2/`，JSON保留子命令真实退出码，包装层源输入不一致时也会失败。中间通过只证明各自输入，不能改绑为final5。
-
-| 原跑次 / 退出码 | 原因与处理 | 复验 |
-| --- | --- | --- |
-| `f019-baseline` / 101 | 原重叠订阅反例原样失败，确认paused首owner阻断 | `shared-consumers-1` 3/3；生产重叠链及最终Rust通过 |
-| `core-first` / 101（101通过、2失败） | 严格直播夹具在claim后绕过接口改策略；全任务矩阵中的无关credential字段被错误施加代次检查。前者改为认领前设置策略、再经真实更新接口验证旧租约失效；后者限制检查到凭证/补全作用域 | 原严格直播与全任务生命周期在最终Rust通过，保留原断言并新增旧租约检查 |
-| `acquisition-first` / 101（6通过、1失败） | 新夹具重复插入已存在的quality_policy；改为真实upsert | 后续C11与最终Rust通过 |
-| `acquisition-second`、`core-second`、`core-third` / 101 | 新两站生产链的Bilibili合成响应先缺严格质量声明，后DASH使用错误字段名；修正为实际base_url/frame_rate等协议字段，未放宽适配器 | `production-overlap`通过；最终两站字节/认证/旧选择断言通过 |
-| `clippy-first` / 101 | 消费者SQL返回tuple复杂度触发严格Clippy；引入内聚类型别名 | `clippy-second/third`及最终严格Clippy通过 |
-| `desktop-first` / 2；`desktop-third.log` 启动失败 | 验证入口不支持`--output`；Windows子进程需解析`corepack.cmd`。保留原错误，使用现有stage_evidence输出参数和正确命令 | 后续真实类型/Vitest/build通过 |
-| `desktop-fourth` / 2；`desktop-fifth` / 1 | 新播放器夹具缺必填size，随后使用非法blob ID被既有安全过滤拒绝；补齐合法合成数据，不放宽媒体URL校验 | `desktop-sixth/seventh`及最终48项通过 |
-| `final/rust` / 101 | between_resources旧窗口出现3个变体而非2个；修复同任务/代次的已提交缓存复用，未知历史仍unknown | `restart-fixed` / 0，六个原窗口和全部原断言通过；最终Rust通过 |
-| `final2/rust` / 101 | 原离线全流程恢复后误显示pending_upgrade；区分同一次获取补齐与新升级，并统一失效确认/质量判断 | `full-loop-fixed` / 0；新增待确认备份恢复及最终Rust通过 |
-| `final4/benchmark` / 1 | 完整939样本、并发满足，但热查询p95为903.249ms；定位无关直播片段扫描，保留完整失败 | `query-cost-baseline` / 101（60020步），`query-cost-fixed` / 0；最终全套通过，正式measure-final3另行判定 |
-| `query-cost-failed`、`query-cost-failed2` / 101 | 新计步夹具遗漏订阅range_json/updated_at必填列；补齐真实schema要求 | 同一计步反例已真实复现旧查询失败，随后修复复验通过 |
-
-当前r2脚本还实际执行旧 `artifacts/m1-final-bundle.json` 的 `check` 与 `verify.py --stage-bundle`，两者均退出1，按预期拒绝旧计划/schema、缺新增用例、失配输入/包和原始测量。原负向回执为 `r1-rejected-current.json/.log` 与 `r1-verify-rejected-current.json/.log`；final4、最终final5输入分别又实际执行两入口，`r1-rejected-final5.json/.log`和`r1-verify-rejected-final5.json/.log`均退出1。预期拒绝的回执保留，不加入最终通过聚合。
-
-首次r2完整自动回执 `final3/` 为222 Rust/48前端/16 Python/2包检查，对应旧r2输入ed0198988b1a2a27b1a75db1018406c4cdc6f4a54ee4bff1a0308724c4628476。其正式测量因F-021未取得同时2下载+2录制样本而中止，保留682个原始样本，不能进入当前通过聚合。`pacing-failed`退出101，紧急顺序4/0/3/2/1；`pacing-fixed`退出0。随后final4新增FIFO/取消/普通等待上界/跨站独立反例，223 Rust/48前端/16 Python/2包自动自检通过；第二次完整长测并发满足，但热查询p95超限，见F-022。当前final5再加入无关直播历史查询步数反例及有界SQL预编译缓存，224 Rust/48前端/16 Python/2包与五套件通过，本次完整正式长测也已通过，原始指标见§16.10；2秒请求间隔、抖动和4次紧急预算未放宽。
-
-Windows链接器的stdout提示、前端隔离路由夹具的未注册路径提示保留完整输出；它们没有代替退出码或断言判断。没有删除测试、增加skip/ignore、改写失败采样或弱化既有值来取得通过。
-
-### 16.10 当前包与正式资源测量
-
-实际当前包为 `dist/trace-0.1.0-windows-x64-m1-r2-2/`，23个文件、208475909字节。`SHA256SUMS.txt`自身摘要为 `b4055f314174e0f7a52c764c6c13813305136d8364bf949b6a1dc6fae67201e8`；全部成员、生产两站注册、媒体资产、构建日志与216项输入均已实际核对，集合摘要为f8a7d480ddb520d2b52f14f52145c4b1b6f1695b033d7e184a8b8f61140f86b7。构建时manifest保留A交接HEAD及dirty状态；最终amend后按每个输入的Git blob字节对应交付提交，不修改manifest伪造构建时提交。
-
-独立WebView测试在新的隔离Profile上通过schema5、认证筛选/升级查询、页面导航、同一后台关闭重连与完全退出；未激活窗口或发送前台键鼠。`artifacts/m1-webview-1791492650801871200/`保留当前包实际结果和截图；与前次r2相同的前端输入保持蓝白外壳、资源升级导航及后台管理入口。它只证明包内页面/控制链；DOM或截图不证明原生解码、声音、中文输入法或系统缩放体验，产品验收仍not-run。
-
-正式当前命令为 `python scripts/measure_m1.py artifacts/b-m1-r2/measure-final3 --idle 1030 --seconds 3620 --entries 100000 --package dist/trace-0.1.0-windows-x64-m1-r2-2`，由 `final5/benchmark.json`记录。规模和时长保持原正式范围：10万发布、50万媒体元数据、正文中位数至少500字符、100普通/20直播目标、100ms HTTP延迟、50行查询、每路至少1MB/s、四路纯录制与同时2下载+2录制，包含GUI打开/关闭/重连、重启与任务恢复。
-
-当前正式复测 **passed，退出0**，命令耗时4742.806秒；937个原始连续样本覆盖4684.984秒，最长采样间隔5.016秒。有效闲置窗口906.157秒、持续录制窗口3621.461秒，同时2下载+2录制样本352个，4个录制起始点、任务错误0。`third-run-transfer-observations.jsonl`另有37个相邻观察区间同时记录两站相同operation的接收字节正增长，证明实际传输；它只是补充诊断，不代替正式原始样本。
-
-| 当前正式指标 | 实测 | 门槛 / 口径 |
-| --- | --- | --- |
-| 闲置累计CPU均值 / 私有工作集p95 | 0.512315% / 52.152 MiB | ≤1% / ≤150 MiB |
-| 四路纯录制CPU均值 / 私有工作集p95 | 2.376916% / 61.746 MiB | ≤5% / ≤300 MiB |
-| 热查询p95 / 新连接查询p95 | 317.836 ms / 258.790 ms | ≤500 / ≤1500 ms；未清OS文件缓存 |
-| 起录p95 / 任务恢复 | 1.448 s / 11.099 s | ≤10 / ≤30 s |
-| GUI关闭释放 | 6.973 s | ≤10 s，同后台打开/关闭/重连 |
-| 总接收字节 / 队列峰值 / 句柄峰值 | 15827105203 / 227 / 3833 | 原始计数，不是瞬时带宽或生命周期峰值 |
-
-原始样本为 `artifacts/b-m1-r2/measure-final3/resource-samples.json`，SHA-256 `e12615c7ae788ece5a5ba28deae955e2fc1242e582a90747f0a8345101124a82`。`benchmark.json`的全部派生值已从原始计数逐项重算相等；构建回执、measure二进制、包内GUI、216项输入和完整进程样本均匹配。采样包含Core/合成源、适配器、ffprobe及包内GUI/WebView，退出子进程CPU仍由Windows Job累计；外部Python采样器/CDP驱动属于测量工具。10万发布/50万媒体元数据、512字正文、100/20检查目标、100ms延迟和每路1112866字节/秒的合成负载保持原规模。恢复使用202个未完成普通任务并确认服务可访问；资源结论仅限本机、本次合成负载，原生体验与真实内容仍not-run。
-
-本轮公开脱敏摘要为 [m1-r2-self-check.json](../evidence/gate/m1-r2-self-check.json)，最终本地聚合为 `artifacts/b-m1-r2/final-bundle.json`。`stage_evidence.py check`与`verify.py --stage-bundle`核对源码、全部用例、包、样本和最终文档；最终文档/公开/差异回执为`final-docs.json`、`final-publication.json`、`final-diff.json`及`final-index-diff.json`，均以其真实退出码交付。66条M1适用需求的r2状态/证据已回写，19条后继保留not-run；旧m1对象逐条与A交接相同。
-
-首次r2包 `dist/trace-0.1.0-windows-x64-m1-r2/` 保留23文件/208386817字节，SHA256SUMS自身c580cb0c92bcc661bb5c7999e2d73a0b001d8101d6ae15dde6fa759c688f5ee5。其 `measure-final/` 跑次因F-021中止、结果failed：682个连续样本、录制计时2361.374秒、同时2下载+2录制样本0；退出造成最终恢复/起始汇总缺项，不能伪造补齐。当前复测使用新目录和新包，原字节/失败不改写。
-
-第二次r2包 `dist/trace-0.1.0-windows-x64-m1-r2-1/` 保留23文件/208453381字节，SHA256SUMS自身936a2163cdfe85d4fd9d80b9a6ebe7841806d27a7acd540b2e2a3d999a52c28a；`measure-final2/`完整失败及原始样本摘要只按F-022记录，不能改绑为当前修复。当前新包与第三次测量使用另一目录。
-
-启动前已按原始build摘要将r1和首次失败r2的两个measure二进制分别复制到 `artifacts/b-m1-r2/preserved-r1-measure/` 与 `preserved-failed-r2-measure/`，再由当前源码真实重建target/measure。第二次失败r2的measure二进制也按原始摘要保留在`preserved-second-failed-r2-measure/`。原r1长测、m1-9、closeout-4及其manifest保持不变，不能用它们代替当前结果。
-
-### 16.11 真实边界、守护与整理
-
-B本轮零新增真实站点请求。A两站Cookie正/负对照仍为已有登录有效性依据，未要求用户重复复制。B核查请求UA/Referer、签名、分页及凭证作用域，并补元数据403/412离线访问受限分类；原媒体403重新解析机制保留。实际直播间诊断与Douyin投稿列表仍未取得可用内容，OSS-011保持相应限制；没有把受限响应当空列表、把登录成功当全站可用、虚构720P/1080P原画差异或全部投稿覆盖。具体输入/授权与用户获取步骤只在ACT-002，后继复验须有理由并在既有目标/预算内。
-
-保留审计为 `artifacts/b-m1-r2/test-preservation-final5.json`：A交接的202项Rust名称全部保留，197项函数体词法一致，5项受schema/执行作用域影响的调整逐hunk核对；main基线原109项也全部存在。原A probes、closeout_rework、closeout_faults、生产协议用例、F-018/F-020实现、凭证准备及原3项反例整体与A交接一致；原home只追加新用例，事件和媒体节点断言不变。原报告§13～15、迁移1～4逐字保留。
-
-| 5项旧函数体调整 | 等价或增强依据 |
+| 类别 | 处理结果 |
 | --- | --- |
-| 导出、feed筛选、质量保留各1项 | 原位置INSERT改为显式列名以兼容新增列；原数据值及32/5/21个断言分别不变 |
-| schema3迁移1项 | 成功结果由字面schema4改为当前SCHEMA_VERSION；6个断言及schema3失败回滚/pre-schema-4备份仍保留 |
-| 严格直播质量1项 | 初始策略在claim前设置；策略改变走实际subscription.update并要求旧租约拒绝，重新认领后验证宽松回退；原5断言保留并新增2项 |
+| `artifacts/` | 删除 642 项、约 78.6 GB（已提炼的跑次、一次性回执、旧门禁与测量原始样本）；保留 ACT-003 在用的 `closeout/`、仍被状态引用的一阶段真实证据目录和本阶段 `evidence-runs/`；阶段末又删 WebView 测试临时目录、中间日志，以及五次基准跑次（第一轮三次，返工的 `m2-r2`、`m2-r3`）和四个冒烟包副本里的合成工作负载（`archive/`、`data/`、`gui/` 等，共约 40 GB），只留各次的 `benchmark.json`、资源采样、日志和回执（含两次失败的基准与两次失败的 `report`）。当前约 53 MB（含新包的构建日志 `package-commands/`，清单引用它们，不能删）|
+| `dist/` | 删除 29 个旧包约 6.0 GB 与一阶段后期包 `…-m1-r3-12`；保留 ACT-003 在用的 `trace-0.1.0-windows-x64-closeout-4` 与本阶段最新包 |
+| `target/` | `cargo clean`（74.8 GiB）后由本阶段构建重新生成，不入库 |
+| `.local/` | 删除 40 个一次性脚本与 25 个一阶段真实跑次约 4.4 GB；`site-secrets/`、`site-check/` 的目标与本阶段回执保留；用户的浏览器记录 `.local/www.instagram.com.har` 未读未删（ACT-007 提醒用户自己删除） |
+| 入库文档 | 去掉按轮次追加的叙述与阶段标签；`m1a-runtime-contracts.md` → `windows-runtime-contracts.md`；删除 7 个旧门禁 JSON，只留最近一次的 `docs/evidence/gate/report.json`；`requirements-map.json` 改为三态 |
+| 入库脚本 | 删除 `prepare_site_check.py`（并入 `real_site_check.py prepare`）、`real_chain_gate.py`、`real_source_evidence.py`、`stage_evidence.py`（由 `stage.py` / `evidence.py` 取代）及对应测试；`measure_m1.py` → `measure.py` |
+| 入库测试 | 194 个测试改名，7 个旧基线测试退役，断言只增不减：基线 322 个测试 / 1760 个断言 → 当前 889 / 4648（净增 567 个测试，退役 7 个）；`test_inventory.py --compare … --map … --retired …` 通过 |
+| `.env.local`、Profile、`node_modules`、本地参考 | 未动 |
 
-`preservation-before-final.json`核对旧稳定包closeout-4（20文件/199172866字节）和原m1-9（23文件/207700767字节）的全部成员，以及原验收Profile摘要与Git保护引用；未清理用户目录、原Profile、旧包、失败日志、真实站点结果或本地参考。新增产物仅在忽略的本轮artifacts、新包和构建缓存中；不把秘密、Cookie、真实目标/正文/截图或参考项目私有关系放进Git。公开保留本次必要机器摘要和同一报告，原r1公开摘要保持历史内容。
+测试迁移映射：160 个改名只是去掉阶段前缀（`c01_`、`c01_c02_`、`f009_`、`u04_`、`m1_`、`r3_`、`a_f007_`、`a_` 等），其余不变；34 个改动较大的如下（`旧 → 新`）。
 
-文档继续按一个事实一个正本同步：需求/同一计划与契约、实现证据/状态、两站能力与OSS-011、用户当前动作、需求映射、索引和登记。没有新依赖或通用框架替换；锁文件、许可和受控媒体资产沿用既定版本。19条后继需求不改成完成，没有把本阶段必须行为登记成后续LOOP。
-
-
-
-收尾保留审计曾发现三个历史审计文件名随当前回执编号被误替换，已仅将§13～15内这三处恢复为A交接原名；其余字节原已相同。`history-reference-restoration.json`保留差异，当前`test-preservation-final5.json`重新通过。没有更改历史命令、结果或采样。
-
-<a id="b-to-a-m1-r2-review"></a>
-### 16.12 B→A 集中复审 prompt
-
-§16.10的正式测量和当前输入聚合已通过，下面保存完整转交内容，不自动跨聊天发送。最终消息另附实际Git读取的SHA，避免文档递归包含自身提交摘要。
-
-```text
-请作为 Agent A，在 TRACE 工作区的 codex/m1-two-site-archive 分支，按唯一计划 docs/delivery/stage-plan.md 的 TRACE-M1-01 r2 做最终集中复核，不创建竞争计划。先读AGENTS、索引、状态、有效决定、事项、USER-ACTIONS和适用规则，核对B最终消息中的实际完整SHA、当前HEAD、工作区归属及用户后续修改。main基点960984c34487244f31f1238dffc2bd9faaa292e7，A本轮交接141d261db8569100564b3f88b897ba4ca00b0f61，原被审B r1为772ab9a6c523a22385f024abafa66aef6ed7f0f1。本阶段相对main仅一个未推送DCO提交；明确局部修复及复核记录amend同一阶段，不改main或备份历史，不push、创建PR、合并、发布、启动子Agent或自动跨聊天发送。
-
-当前F与报告正本为docs/delivery/stage-report.md §16，B r2实现/失败/当前证据从§16.8开始；§13～15及§16.1～16.7保留原r1与A交接时事实。F-018来源长度与F-020 Douyin self登录探测保持A已核实修复；F-019/F-021/F-022均仅标“已修待复核”，请根据实际代码和反例核实后关闭，不从B自检自动推定A通过。
-
-优先复核F-019：process_scan_page和persist_detail的同键observe/media不再由首订阅永久占有；entry_subscriptions保存有证据的发现，job_consumers隔离每个消费者的需求序号/失败预算，认领冻结订阅版本/凭证代次/质量，现有有效租约不被抢占。queued/running/paused/succeeded首owner、不同凭证和策略、暂停立即恢复、取消、停模块、删除、重启、迟到结果都须同时守住两条链。原复现命令cargo test -p trace-core --locked overlapping_subscription_can_continue_same_entry_after_owner_pause -- --nocapture已从原失败复验通过；原失败在artifacts/a-m1-review/subscription-final2.json/.log及artifacts/b-m1-r2/f019-baseline.json/.log，不得覆盖。检查新的生产两站重叠订阅字节链，不能只看状态矩阵。
-
-按P11～P13/C11～C13复核：每次获取有不可变anonymous/authenticated/expired/unknown观察；本批次同凭证代次的生产登录证明与资源获取关联；已认证解析后的CDN请求不带Cookie仍保留该解析身份，匿名回退另建上下文。同blob多次获取独立，旧schema3/4通过迁移5保留unknown，迁移1～4未改。认证筛选、分页、计数、定位、逐资源详情共用稳定entry身份，混合不被一个附件覆盖。
-
-登录验证后普通资源补全有固定发现上界、每次16条及2秒续行间隔，持久/去重且排除直播/删除/抑制条目。完整最高可得候选进入统一资源升级页，用户逐项或明确选择范围批量接受/拒绝/保留两份；候选与旧选择隔离，确认绑定完整旧选择/固定状态摘要、正文修订、媒体/订阅/凭证/任务代次和质量。实际对象哈希复验后在事务内切换。缺资源、失败、无提升、正文编辑、不可比较、旧点击、重复确认、取消/停模块/删除、另一窗口改变选择和恢复都需语义核对；旧资源、固定/共享引用和回收等待期不受损。默认播放器和正文图片不能自动选待确认/已拒绝候选。
-
-新增F-021来自第一次r2正式测量：同类元数据调用竞争导致observe/media长期running而无字节接收，mixed同时2下载+2录制样本0。该682样本失败跑次保留在measure-final，旧r2包也保留。当前用Tokio FIFO Mutex按命名空间/优先级排队，保留原最小间隔/抖动/4次紧急预算；新增反例先失败后通过，取消释放排位、普通请求有界推进且跨站独立。F-019和F-021均仅“已修待复核”，请核对当前measure-final3确有并发样本和完整时长后关闭，不以单元FIFO或第一次部分长测代填。
-
-新增F-022来自第二次完整长测：939样本、354个同时2下载+2录制样本、任务错误0，但热查询p95为903.249ms超过500ms。measure-final2及final4/benchmark原失败不改写。quality::state曾从全库直播片段开始扫描，无场次条目也遍历一万片；计步反例先在60020步失败，改为先限定条目场次后通过。列表/质量/认证查询只缓存64项SQL预编译代码，每次重读实际状态；严格缺口与实际降级、其他场次不污染、实时状态改变均有断言。先核对当前正式第三次结果，再决定关闭F-022，不用单元步数代替500ms门槛。
-
-重点看两项B自审回归的实质修复，原断言没有改：final/rust的between_resources曾多生成一个变体，现只允许同一任务/代次复核自身已提交的旧副本，缺认证证据仍unknown/cache_verified，不为新登录身份虚构下载。final2/rust的full_loop曾在恢复后误显示pending_upgrade，现区分同一请求补齐与新的升级请求，恢复失效候选，质量状态和确认共用比较有效性。定向restart-fixed/full-loop-fixed和最终Rust通过。查新C11旧缓存与待确认备份恢复反例，勿以改期望值代替修复。
-
-直播按片记录当时获取身份及实际分辨率、码率、帧率、编码；无法探测、混合和gap保持明确，封片恢复/导出保留原上下文。登录后旧直播零补录、零进入普通升级队列。原FLV/HLS、独立音轨、MAP/KEY/BYTERANGE、四个提交窗口与原F守护保持。
-
-当前216项输入的集合SHA256为f8a7d480ddb520d2b52f14f52145c4b1b6f1695b033d7e184a8b8f61140f86b7。artifacts/b-m1-r2/final5下rust=224、desktop=48、python=16、package-smoke=2，合计290个唯一用例身份；133个必需用例保留原98并覆盖C01～C13。build/fmt/clippy/verify/package实际回执均在该目录，五套件5/5。新包dist/trace-0.1.0-windows-x64-m1-r2-2有23文件、208475909字节，SHA256SUMS.txt自身摘要b4055f314174e0f7a52c764c6c13813305136d8364bf949b6a1dc6fae67201e8。核对所有输入的磁盘/Git blob/回执/manifest字节，不能仅凭测试总数或旧HEAD字段判断。
-
-正式新测量在artifacts/b-m1-r2/measure-final3，回执final5/benchmark.json；命令参数idle=1030、seconds=3620、entries=100000，配当前m1-r2-2包。检查原始连续样本、所有相关进程累计CPU/私有工作集/句柄、50万媒体元数据、512字正文、100普通/20直播检查、100ms延迟、50行查询、四路纯录制与同时2下载+2录制、GUI同后台打开/关闭/重连及恢复。脚本实际重建了当前measure程序，原r1二进制已按摘要复制到preserved-r1-measure，原采样未换绑。正式结果已通过：937样本、闲置906.157秒、录制3621.461秒、同时2下载+2录制样本352个、任务错误0，热查询p95 317.836ms；另有两站实际接收字节同步增长诊断。完整派生值/限制见报告16.10；未完成、失败、缺样本或源码已变都必须拒绝。
-
-先执行python scripts/stage_evidence.py check artifacts/b-m1-r2/final-bundle.json及python scripts/verify.py --stage-bundle artifacts/b-m1-r2/final-bundle.json，读取docs/evidence/gate/m1-r2-self-check.json与requirements-map.json的独立r2对象；全部85条中66条M1适用须有真实证据，19条后继仍not-run。原r1/schema4/199输入/255用例/98必需/m1-9及长测仅证明历史版本；当前门禁已实际拒绝旧bundle，负回执保留。先核对仍匹配的有效证据，遇改动、失败或具体疑虑再做相关复验，不机械重复已匹配的全套或正式长测。
-
-保留test-preservation-final5审计：A交接202项Rust全在、197项体词法一致，5项是显式列名/schema常量/真实策略更新兼容，原断言不减；main原109项也全在。原A Rust probes、closeout_rework/closeout_faults、生产协议用例、F-018/F-020和3项本地凭证反例整体未动，home只增加测试。旧closeout-4、artifacts/closeout/acceptance、m1-9、原正式材料/失败和本地参考全部保留。按文件归属审查，不清理用户资料。
-
-真实边界只看USER-ACTIONS ACT-002：A已证明两份Cookie在同登录端点有效，无需用户重新复制；本轮B零新增真实请求。原直播间诊断HTTP412和Douyin已登录列表HTTP403仍受限。B已核查请求条件并补元数据PermissionDenied离线分类，不能当空列表/直接Cookie过期，也不能把登录成功当全站下载可用或虚构720P/1080P原画/全部投稿。OSS-011后续只有在有具体原因、现有对象/预算和停止条件内才真实复验，不绕过挑战或扩对象。配置仍只在忽略的.env.local/.local；秘密不入日志/参数/包/导出/Git。
-
-原生检查使用隔离Profile、独立WebView、回环CDP、不激活窗口，不操作用户浏览器或前台键鼠。现有自动包截图/DOM/currentTime不代替实际解码、声音、IME、缩放与外部播放器体验；产品验收和许可/发布分别保持真实状态。开发/上游只在事项总表，用户当前动作只在USER-ACTIONS，非阻塞LOOP只在状态维护。
-
-A直接修复明确局部问题并定向复验，将复核/修复和DCO归入同一未推送阶段提交；只有较大实现缺口才一次性交回全部稳定F编号、复现、依据与验收。A核实后更新同一报告/状态/事项，分别给出B实现、自检、A技术复核、产品验收和发布结论；通过后直接向用户收尾及说明下一步，不要求B重复复审。如A修改源码、测试或门禁中的规范输入，原包/长测仍只证明修改前版本，须按当前门禁产生匹配的新证据，不能改绑；仅审查文档变化则重做文档检查与聚合。最终SHA从实际Git读取提供。
-```
-
-
-<a id="a-m1-r2-review"></a>
-### 16.13 A r2 最终集中复核（2026-10-09）
-
-**结论：failed / rework-required。** 本轮被审B提交为 `b670e3b7aee88bb72e4369c5d3bab0160c460cf2`，main基点 `960984c34487244f31f1238dffc2bd9faaa292e7`，上一轮A交接 `141d261db8569100564b3f88b897ba4ca00b0f61`。开始时HEAD、分支、工作树与索引符合交付，相对main只有一个带DCO的未推送阶段提交。A已独立核实关闭F-019/F-021/F-022的原故障范围，F-018/F-020保持已核实；新增[F-023](#f-023)、[F-024](#f-024)、[F-025](#f-025)三个P1反例阻止本阶段技术通过。它们不是新增产品要求，也不转交用户人工验收。
-
-本轮仅修改审查、状态、索引、需求审查映射和必要公开摘要；生产源码、规范测试、锁文件、唯一计划及216项规范输入均未变。独立故障crate保存在忽略的 `artifacts/a-m1-r2-review/probes/`，使用当前Core公共服务和隔离合成Profile。三个问题跨共享请求交接、候选确认、恢复选源及物化重入，需要一致的请求归属和批准边界；仅放宽代次或commit保护会破坏已有保障，因此一次性集中交B实现，不以局部绕过制造通过。最终审查记录amend同一未推送阶段并DCO签名；最终SHA从Git读取，在交付消息及本地 `artifacts/a-m1-r2-review/git-delivery.json` 给出，不递归写入本报告。
-
-#### 输入、包、历史与原始资源核对
-
-首先实际执行 `python scripts/stage_evidence.py check artifacts/b-m1-r2/final-bundle.json` 和 `python scripts/verify.py --stage-bundle artifacts/b-m1-r2/final-bundle.json`，修改文档前均退出0。A的 `baseline_audit.py` 独立比较216项Git blob、磁盘、命令回执、公开摘要及manifest，全部一致，集合SHA-256为 `f8a7d480ddb520d2b52f14f52145c4b1b6f1695b033d7e184a8b8f61140f86b7`。B的290个用例身份唯一，133个必需用例保留原98项；85条需求中66条M1适用、19条后继not-run。原m1映射保留，r2的B自检字段与A审查字段分别维护。
-
-当前包 `dist/trace-0.1.0-windows-x64-m1-r2-2/` 的实际库存为23文件、208475909字节；所有成员摘要和构建回执匹配，SHA256SUMS自身摘要 `b4055f314174e0f7a52c764c6c13813305136d8364bf949b6a1dc6fae67201e8`，manifest摘要 `45a0f6a607be999be0c1d18bbde4df42e107080d67ec6724cce8e3f7ccc1c096`。manifest保留真实构建时A交接HEAD/dirty，不改成最终amend后SHA。A未重建包或measure程序；当前二进制及r1、两次失败r2的preserved副本均逐摘要核对，不换绑。
-
-`independent_metrics.py`直接读取937个连续原始样本，独立复算全部18项派生指标，不调用B的derive函数。原始样本摘要仍为 `e12615c7ae788ece5a5ba28deae955e2fc1242e582a90747f0a8345101124a82`，结果全部与B回执一致：
-
-| A独立核对项 | 实际值及结论 |
+| 旧名 | 新名 |
 | --- | --- |
-| 连续采样 / 闲置 / 录制 | 4684.984秒，最大间隔5.016秒；有效闲置906.157秒、录制3621.461秒，满足时长 |
-| 实际并发与接收 | 同时至少2下载+2录制352个样本；纯录制窗口350个样本均为4录制；另有37个相邻区间两站相同operation的已接收字节同时正增长，任务错误0 |
-| CPU / 私有工作集 | 闲置均值0.512315% / p95 52.152 MiB；四路纯录制均值2.376916% / p95 61.746 MiB，全部满足门槛 |
-| 查询 | 热查询p95 317.8358ms；新Core连接查询p95 258.7901ms，未清OS文件缓存；均满足500/1500ms门槛 |
-| 起录 / 恢复 / GUI | 起录p95 1.447991秒；202个未完成普通任务的恢复11.099277秒且服务可访问；GUI关闭6.972970秒，两次连接同一后台实例 |
-| 负载与统计边界 | 10万发布、50万媒体元数据、512字正文、100普通/20直播检查目标、100ms延迟、50行查询、每流1112866字节/秒；统计包含相关进程及退出子进程的累计CPU，限于本机合成负载 |
+| `m1-archive.spec` 的 7 个用例（`c08_…`、`c02_…` 与两个无前缀用例） | 同名去前缀，文件改为 `archive-components.spec` |
+| `api.spec::U04 shared Rust/TypeScript timeline sample …` | `api.spec::shared Rust/TypeScript timeline sample …` |
+| `common::c02_c06_long_markdown_…`、`douyin::c01_c02_partial_article_…`、`core::c01_c08_public_search_…`、`core::c04_c06_live_auxiliary_…`、`core::c04_c05_same_session_…`、`core::c01_c06_validation_counts_…`、`core::c04_c07_disk_reserve_…`、`contracts::u04_…`、`core::u04_…` | 去掉双前缀 |
+| `e2e::a_f007_…`、`a_u02_…`、`a_f008_…`、`f005_f006_f007_…`、`c01_c02_douyin_article_…`、`a_completed_…`、`a_delete_restore_…`、`a_prepared_bytes_…` | 去掉前缀 |
+| `test_stage_evidence::test_r2_contract_requirements_and_configuration_are_required_inputs` | `test_evidence::test_product_inputs_exclude_documents_and_scope_comes_from_the_map` |
+| `test_stage_evidence::test_rejects_missing_package_failed_short_benchmark_and_stale_docs` | `test_evidence::test_rejects_missing_package_failed_and_short_benchmark`（文档陈旧不再使包证据过期） |
+| `test_stage_evidence` 的其余 7 个（`test_r3_…`、`test_rejects_…`、`test_verbose_…`） | `test_evidence` 同名去 `r3_` |
 
-原失败 `measure-final` 的682样本/并发0，以及 `measure-final2` 的939样本/热查询903.249ms均保留；本次通过不改写原失败。A核对 `test-preservation-final5.json` 的202项A交接Rust测试及main原109项全在；197项函数体词法一致，5项兼容/增强调整逐hunk核对，原断言未减。原A probes、closeout_rework/closeout_faults、生产协议用例、F-018/F-020与3项凭证准备反例保留；home事件与媒体节点断言保留。§13～15逐字节不变，迁移1～4原样；11份已退役过程材料的提炼和完整SHA入链抽查有效。旧closeout-4/原验收Profile、m1-9、原采样/失败、本地参考及用户配置不清理。
+7 个退役测试都在 `test_stage_evidence`（3 个旧阶段的 `realSource` 实录回执用例，由 `rule-evidence.json` 的逐规则记录与 `test_a_new_site_without_a_real_receipt_cannot_be_implemented` 取代）、`test_site_check_preparation`（3 个，并入 `test_real_site_check`，同样的畸形输入、缺凭证、Cookie 不进输出断言）和 `test_governance`（1 个，阶段先后检查随标签移除，后继为 `test_requirement_status_and_scope_are_checked`）。
 
-#### 逐C语义复核
+测试 / 文件级改名：`tests/e2e/tests/` 的 `a_review_probes` → `acquisition_integrity`、`m1_r3_transport` → `adapter_transport`、`m1_production_adapters` → `production_adapters`、`closeout_faults` → `task_faults`、`closeout_rework` → `transfer_integrity`、`m1_r3_rework` → `upgrade_and_restore`、`m1_startup` → `windows_startup`；`tests/e2e/src/bin/m1_*` 去 `m1_` 前缀；前端 `m1-archive.spec.ts` → `archive-components.spec.ts`。
 
-| P / C | A核对方式与结论 |
+<a id="m2-doc-sync-cleanup"></a>
+### 3.1 文档规范同步与阶段内产物整理（2026-10-24）
+
+依据 [DEC-043](../decisions/confirmed-decisions.md#dec-043)，只动文档与忽略目录，不改产品输入（`crates/`、`adapters/`、`apps/`、`tests/`、`scripts/` 等），冻结的 `m2-r7f` / 包 `-19` 不受影响。
+
+| 类别 | 处理结果 |
 | --- | --- |
-| P1～P4/P6/P11；C01 身份/分页/编辑 | 核对生产扫描、详情、发现关系和消费者调和；复跑原F-019及C11的两站生产adapter→HTTP字节链，确认其他订阅暂停时活跃消费者继续，凭证/质量与失败预算隔离。原故障关闭；候选交接问题另列F-023 |
-| P2～P4；C02 正文/必要附件 | 复核仍匹配的生产协议/全文与附件断言，Douyin type163详情对象/JSON字符串、30图及必要音轨不退化成列表摘要；长度F-018实现未变。技术证据通过，真实全类型内容not-run |
-| P3/P4/P8；C03 长度/摘要/重入 | 原HTTP11组、独立分段/整组摘要、大流/ETag及首资源提交恢复证据有效；补充跨逻辑请求OBJECT_READY反例失败，F-025揭示原单请求重开通过未覆盖的新路径 |
-| P5/P12；C04/C12 录制与身份 | 核对FLV/HLS/独立音轨/MAP/KEY/BYTERANGE、四提交窗口守护及逐片认证/实际规格；定向复跑C12通过。unknown/mixed/gap和原上下文保留，登录不补录旧直播；原生解码/声音不据此宣称通过 |
-| P6/P11/P12；C05 控制与代次 | C11共享消费者控制、失败预算、暂停即恢复、取消/停模块/删除/重启/迟到拒绝通过；已完成候选随正常交接失效及新补全误取消分别为F-023/F-025，不能用控制矩阵通过替代这两条链 |
-| P1/P3～P6/P13；C06 网络/秘密 | 核对逐跳DNS/IP、嵌套HLS、CDN头隔离、安全元数据/错误分类；生产认证探测与同代次获取、匿名回退的C11定向用例通过。403/412不写空列表或Cookie过期；本轮零真实请求 |
-| P2/P8/P11/P12；C07 迁移/恢复/质量 | schema3/4→5、旧库unknown/不可变历史、备份恢复、旧缓存不虚构新身份及待确认恢复失效的C11用例通过。另加删除恢复反例却选中rejected资源，F-024；跨请求准备记录重入失败F-025，本组整体未通过 |
-| P7/P11/P12；C08 UI/IPC | 核对认证筛选/分页/计数/定位共用entry及逐资源详情、保留的事件/媒体节点/竞态断言；48项前端证据有效，A定向查询成本守护通过。F-024证实Core选择错误，未声称UI/原生播放器已播放该资源；原生体验not-run |
-| P9/P13；C09 包/资源 | Git/磁盘/manifest/回执的216输入、实际包库存与全部摘要、原始负载/并发/进程指标和恢复独立复核通过；F-021/F-022据实际第三次正式结果关闭，非用单元FIFO/步数替代资源门槛 |
-| P9/P13；C10 门禁 | 原B bundle在审查修改前两个入口通过；核对旧r1/缺用例/失败/陈旧/坏包和短测拒绝断言。本轮将A实际失败回执纳入新聚合，技术失败必须使聚合拒绝；原B bundle不改写 |
-| P11/P12；C11 获取/升级 | 19项原C11定向通过，证明现有断言范围；新增三个跨场景反例0/3通过。F-023～025为本轮必须行为缺口，整体failed；不能只看测试总数、旧选择未丢或commit最后拒绝就放行 |
-| P13；C13 本地前置/证据 | 本地配置入口及3项凭证准备反例与A交接字节相同，16项Python和r2/schema5/85需求门禁证据有效。ACT-002已有正负登录证明继续保留；不重复索取Cookie、不扩展真实对象或授权 |
+| 入库文档 | 新增 [SECURITY](../../SECURITY.md) 与[生成物约定](../dev-rules/repo-and-environment.md#generated-outputs)；AGENTS 增加生成物的触发与约束；贡献指南改为“完成一次变更 / 环境与命令 / 本地资料与真实站点 / 许可与安全”；治理 9.3、9.6 与质量门禁写明阶段标签机械检查的现状和阶段内的防堆积做法；交付状态、证据索引、文档索引与 USER-ACTIONS 去掉轮次叙述与历史清单；DEC-019 去掉阶段标签写法，新增 DEC-043 与 ACT-009。阶段标签扫描后，长期正本里只剩 LOOP-014 描述待改的代码标签 |
+| `artifacts/evidence-runs/` | 9 个跑次（`m2-r4b`、`m2-r4g`、`m2-r4h`、`m2-r5b`、`m2-r5b-bench-failed`、`m2-r6`、`m2-r6b`、`m2-r7e`、`m2-r7f`）删除基准的合成数据 `bench/{archive,data,gui,vault,probe-0,probe-1}` 共 54 个目录、约 66 GB；回执、日志、`report.json` 与基准 JSON 全部保留，删除后 `stage.py check` 通过 |
+| `artifacts/` 其他 | 删除上一阶段的真实跑次目录（864 KB，结论已在已合并的报告里）；`closeout/`（上一阶段的验收样本，约 5.8 MB）、`m2-acceptance/`（ACT-003 在用）、`quick-verify/` 与根目录下本阶段的散落日志保留，下一阶段开始时按生成物约定处理。`artifacts/` 从约 67 GB 降到约 1.0 GB |
+| `dist/` | 删除上一阶段的 `trace-0.1.0-windows-x64-closeout-4`（190 MB，USER-ACTIONS 已写明不再用于验收）与空目录 `-16`；本阶段的其余 18 个包（约 5.8 GB，报告里有的还写明原样保留）留到本阶段合并后整理。`dist/` 约 6.1 GB |
+| `target/`、`.local/`、`.env.local`、Profile | 未动；`target/` 约 116 GB，下一阶段开始时 `cargo clean`。`.local/weibo.com.har` 未读未删，已在 USER-ACTIONS 提醒用户 |
 
-#### A实际定向命令与局限
+改脚本或代码会让冻结证据过期，所以阶段标签的机械检查、生成工具复用固定位置、代码与测试里的阶段标签排进交付状态的 LOOP-012～014，在下一阶段开始的整理里处理。
 
-下列新回执统一在 `artifacts/a-m1-r2-review/`；Rust真实子命令退出码记录在JSON，失败包装入口退出1，原输出不覆盖。
+<a id="m2-rule-status"></a>
+## 4. 规则状态与真实证据
 
-| 实际命令 | 结果 | 回执/原始日志 |
-| --- | --- | --- |
-| `cargo test -p trace-core --locked overlapping_subscription_can_continue_same_entry_after_owner_pause -- --nocapture` | 0，1 passed | `f019-original.json/.log`；旧A及B baseline失败继续保留 |
-| `cargo test -p trace-core --locked c11_ -- --nocapture` | 0，19 passed | `c11-directed.json/.log`；含生产两站字节链/身份、控制、确认、迁移恢复 |
-| `cargo test -p trace-core --locked c08_live_quality_query_ignores_unrelated_recording_fragments -- --nocapture` | 0，1 passed | `query-cost.json/.log` |
-| `cargo test -p trace-core --locked c12_fragment_authentication_actual_specs_gaps_restart_export_and_no_backfill -- --nocapture` | 0，1 passed | `live-auth.json/.log` |
-| `python artifacts/a-m1-r2-review/baseline_audit.py` | 0，版本/输入/库存/历史独立核对通过 | `baseline-audit.json`；仅初始干净B HEAD的审计，不在文档修改后冒充相同现场 |
-| `python artifacts/a-m1-r2-review/independent_metrics.py` | 0，18项派生值及保存二进制核对通过 | `independent-metrics.json` |
-| `cargo test --manifest-path artifacts/a-m1-r2-review/probes/Cargo.toml --locked --offline --target-dir target --no-fail-fast -- --nocapture` | 101，0 passed / 3 failed / 0 ignored | `independent-probes-final2.json/.log`；F-023/024/025；初始两项与中间三项失败均保留 |
+真实检查只按 [ACT-007](../../USER-ACTIONS.md#act-007) 的对象与额度，用生产便携包经 Core 的控制接口执行（脚本 [`real_site_check.py`](../../scripts/real_site_check.py)）：Cookie 只在隔离 Profile 的 DPAPI 保险库里，适配器看不到；原始回执在被忽略的 `.local/site-check/`；机器记录在 [`rule-evidence.json`](../evidence/rule-evidence.json)，下表只有统计和结论。额度由 Core 对每个 Profile 强制（`acquisition_limits`），Core 在任何 HTTP ≥400 或额度用尽后停站；挑战、限流、登录失败、封禁和权限不明立即停止，不重试、不绕过。
 
-独立反例只使用合成元数据、实写对象和当前公共Core服务。F-025按生产物化ID公式复现对象/任务交互，不把它描述为完整真实站点下载；F-024证明持久选择越过明确拒绝，旧字节仍在，不夸大为数据丢失或实际播放。B完整224 Rust、48 desktop、16 Python、2 package-smoke及fmt/Clippy/build/五套件证据仍对同一规范输入有效；A按具体疑虑新增/复跑，不机械重跑全套、包或80分钟长测。
+规则 `implemented` 的条件（`rule_evidence.py`）：订阅要账号识别、列表 2 页与增量检查（自动下载关与开各一次）通过（A 审查按计划 P13 收紧，见 [§5](#a-m2-review)）；预览要列表 2 页与勾选下载通过；链接要单链接下载通过；记录里不能有失败或中止的检查。海外四站（Instagram、X、YouTube、TikTok）经 `.env.local` 里用户给的本机代理。
 
-两站Cookie在2026-10-08 22:48（上海）由A完成同端点带/不带凭证对照；本轮未新增真实请求。原Bilibili诊断HTTP412和Douyin已登录列表HTTP403仍受限，登录成功不证明720P/1080P原画、全部投稿或真实录制可用。OSS-011后继只按既有对象/预算、具体原因和停止条件处理；凭证、真实原文与目标不进公开材料。原生IME/缩放/实际音视频/外部播放器、真实全类型验收、Linux/安装器/签名/发布保持not-run；用户动作只见ACT-002/003与Q-004。
+表里的“验证日期”是该规则最近一次通过检查的日期；订阅规则在第一轮的账号识别与列表日期之后又补了增量，没有通过的增量留 `partial`。Instagram 的“账号识别失败”是站点把目标主页换成错误页（适配器报 `source_unavailable`），不是登录失效，所以停止原因栏是“无”。
 
-| 独立结论 | 当前结果 |
-| --- | --- |
-| B实现交付 | 已交付r2实现与证据；发现必须修复的F-023～025，阶段仍rework-required |
-| B自动自检 | passed，仅限290个原用例及其对应构建/包/资源范围，不代替A新增交叉反例 |
-| A技术复核 | failed；F-019/F-021/F-022原范围已核实关闭，F-018/F-020保持；三个新P1未解决 |
-| 产品验收 | not-run；开发缺口先由Agent处理，现有自动DOM/currentTime与资源跑次不代替原生体验 |
-| 远端与发布 | 本阶段无授权且未执行push、PR、合并或发布；main与备份历史保持 |
+### 4.1 2026-10-19 最终包后的当前状态
 
-公开脱敏摘要见 [m1-r2-a-review.json](../evidence/gate/m1-r2-a-review.json)，包含独立反例源码/锁文件/日志摘要及复核边界。原B `final-bundle.json`保留审查前文档指纹；当前审查另聚合到 `artifacts/a-m1-r2-review/final-bundle.json`，纳入失败的report-kind回执，既不重复计入B已有用例，也不掩盖实际101。审查新增测试尚在忽略目录，B须将同等断言纳入规范输入和必需门禁后修复。
+下面各站的旧表保留第一、二轮的检查过程；**本节的状态取代旧表的状态列**，规则文案与 `rule-evidence.json` 以本节和 §8.5 为准。所有真实检查经全局手动代理、隔离 Profile 与生产控制接口执行，遇限流、登录失效、签名拒绝或额度用尽即停。
 
-收尾文档预检退出0：49份Markdown、525个本地链接、85需求、28AC、12INV、18ADR，零错误；公开内容预检退出0、零发现，工作树及索引diff检查均退出0。原B bundle在本轮文档修改后检查退出1，唯一原因是文档指纹陈旧，`old-bundle-after-docs.json/.log`保留该结果；216项规范输入及原包/长测仍匹配。
-
-A第一次聚合预检误将 `final5/benchmark.json` 的执行回执传给需要派生指标的 `--benchmark` 参数，因缺指标等项被拒绝；原 `bundle-preview.json`、`bundle-preview-result.json/.log`及初始辅助脚本保留，这是A聚合命令输入错误，不是新产品故障。改用原始 `measure-final3/benchmark.json` 后，`bundle-preview2.json`仅以 `failed command a-r2-independent-probes-final2` 拒绝，其余源码/用例/包/采样匹配；没有改写旧benchmark或屏蔽失败。
-
-收尾同命令的新回执为 `docs-final.json`、`publication-final.json`、`diff-final.json`、`index-diff-final.json`，归属/历史/包保留审计为 `precommit-audit.json`及 `precommit-audit-data.json`。最终聚合用 `python artifacts/a-m1-r2-review/assemble_review.py final`，并实际执行 `python scripts/stage_evidence.py check artifacts/a-m1-r2-review/final-bundle.json` 与 `python scripts/verify.py --stage-bundle artifacts/a-m1-r2-review/final-bundle.json`；输出分别保存在 `final-bundle-result.json/.log`、`final-bundle-check.json/.log`、`final-bundle-verify.json/.log`。这些入口按实际三个失败拒绝交付；文档通过或B原290用例绿色均不能覆盖A结论。
-
-<a id="a-to-b-m1-rework-r2"></a>
-### 16.14 A→B 原r2集中返工 prompt（历史）
-
-下段保留当时r2实现交接；DEC-028追加真实链接要求后的当前集中入口为[§16.17](#a-to-b-m1-rework)。F详情/故障原样在§16.3，原B实现与失败在§16.8～16.12，不将本历史文本作为竞争计划。
-
-```text
-请作为Agent B，在TRACE工作区的codex/m1-two-site-archive分支，按唯一计划docs/delivery/stage-plan.md的TRACE-M1-01 r2，集中修复A最终复核的F-023/F-024/F-025三个P1。先读AGENTS、索引、状态、有效决定、事项、USER-ACTIONS及适用规则，核对用户附带的最终A完整SHA、工作区归属和后续用户修改。main基点960984c34487244f31f1238dffc2bd9faaa292e7；原被审B r2是b670e3b7aee88bb72e4369c5d3bab0160c460cf2，上一轮A交接141d261db8569100564b3f88b897ba4ca00b0f61。当前只有一个未推送DCO阶段提交。沿用同一计划/报告，归并实现、返工和审查为同一提交；不改main/备份历史，不push、创建PR、合并、发布、启动子Agent或自动跨聊天发送。
-
-先看docs/delivery/stage-report.md §16.3、§16.13及docs/evidence/gate/m1-r2-a-review.json。F-018/F-020保持A已核实；F-019共享消费者原故障、F-021公平排队、F-022查询成本已由A用生产链/定向反例和正式原始样本核实关闭，不重开无变化范围。原失败均保留。
-
-原三项故障可一起复现：cargo test --manifest-path artifacts/a-m1-r2-review/probes/Cargo.toml --locked --offline --target-dir target --no-fail-fast -- --nocapture。当前子命令101，0 passed/3 failed/0 ignored；原回执independent-probes-final2.json/.log，独立crate的Cargo.toml/Cargo.lock/src/lib.rs摘要在公开A摘要中。先保留原失败和探针，再把等价故障断言纳入仓库规范测试/必需门禁，不能只调整fixture或放宽期望。
-
-F-023/P1：两个不同凭证的启用订阅共享media任务。已有匿名低清，第一个消费者完整取得高清候选并finish为pending；正常succeed使第二消费者待运行，尚无新字节，第一候选已被upgrade.list永久标stale/comparison_scope_changed。位置jobs/consumers.rs::finish/reconcile与upgrades.rs::snapshot/confirmation_current/invalidate_stale。把共享执行租约与已完成消费者的确认范围分开，正常交接不废弃仍有效候选；同消费者真正取消、订阅/凭证/质量/正文/旧选择变化仍拒绝旧确认。覆盖后继消费者相同、较低、无提升、失败和新候选；不能简单移除代次屏障。
-
-F-024/P1：旧低清automatic选中，高清候选已明确Reject；copies删除后立即restore，asset_selections变为high/rejected，quality::evaluate也不修正。位置deletion.rs::restore及quality.rs::evaluate。恢复/自动选择/派生使用须保持审批边界，选原合格副本或无选择，不把恢复等同接受pending/rejected。覆盖copies/archive、pending/rejected、无旧版、固定/共享/已回收副本、后续质量维护/播放派生/导出。反例仅证明错误Core选择，旧字节未丢，原UI过滤仍在；修复不能删除原历史候选或改成自动接受。
-
-F-025/P1：旧completion-media任务代次1的相同候选已OBJECT_READY后取消；新凭证代次产生另一个job_id，任务代次仍1。acquisition_operation只用media+任务代次+候选摘要导致同ID；uncommitted_operation不避开旧未提交记录，ObjectStore::ready错误返回true，commit正确因不同job_id拒绝Cancelled，正常失败处理把新任务cancelled。位置core.rs::acquisition_operation/uncommitted_operation及objects/mod.rs::ready/start_receiving/commit。物化身份按逻辑请求可重入且隔离，ready/重用/重置核对归属；保留commit屏障，同任务恢复不多建变体，不给新登录身份虚构旧下载。覆盖不同补全任务、普通任务交错、凭证换代以及RECEIVING/PREPARED/OBJECT_READY/首资源提交后的重开。
-
-三项需连同旧缓存between_resources与待确认备份恢复守护验证，不能让修一处又破坏另一处。保留原A probes、closeout_rework/closeout_faults、生产协议用例、F-001～022历史与原断言、home事件/媒体节点、蓝白主页/管理入口、§13～15原字节、迁移1～4、原m1需求对象。本轮A未改216项规范输入；当前指纹f8a7d480ddb520d2b52f14f52145c4b1b6f1695b033d7e184a8b8f61140f86b7，对应B final5的290唯一/133必需和m1-r2-2包/measure-final3，只证明修复前版本。
-
-A独立复算当前正式跑次937连续样本、闲置906.157秒、录制3621.461秒、混合352样本、37区间两站实际字节同时增长、任务错误0、热查询p95 317.8358ms、恢复11.099277秒。原失败两次长测及所有preserved measure二进制不改绑。你修改规范源码/测试/门禁后，真实运行匹配当前输入的相关旧/新测试、静态检查、构建、新包及当前门禁所需正式资源测量和聚合，不能仅改旧回执摘要。重建target/measure前保护按原摘要保存的各版本；旧包closeout-4/原验收Profile、m1-9、三次r2包和所有原始失败保留。当前A聚合因三个真实反例退出非零是正确拒绝，不通过修改聚合器去屏蔽失败。
-
-两站Cookie已由A在同登录端点完成正负对照，不重复索取；原Bilibili诊断412与Douyin已登录列表403仍受限。真实请求只按USER-ACTIONS ACT-002既有对象/预算、有具体原因时复验，遇挑战停止；不以登录成功声明全站可下载，不虚构720P/1080P原画或全部投稿。秘密不入Git/日志/参数/包/导出。本轮A零新增真实请求，原生IME/缩放/实际解码/声音/外部播放器和产品验收仍not-run。
-
-连续完成集中实现与自检，F只标已修待A复核；同一报告保留原失败、逐F定位/修复/新反例和实际命令，同步状态/事项/独立r2需求审查范围。用户当前动作只在USER-ACTIONS，代码缺口不得转成用户待办或后继LOOP。最终提交DCO并amend同阶段，实际Git读取最终完整SHA。提供一次B→A集中复审prompt；A通过后直接向用户交付，不要求B再审A。
-```
-
-
-<a id="m1-user-feedback-20261009"></a>
-### 16.15 用户视觉确认、项目许可选择与真实功能边界（2026-10-09）
-
-用户本次明确反馈“ACT-004 已完成，没什么问题”，并确定项目采用Apache-2.0。当前用户事项只回写[USER-ACTIONS](../../USER-ACTIONS.md)，长期许可选择记为DEC-027，根[LICENSE](../../LICENSE)保存标准Apache License 2.0完整正文（SHA-256 `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30`）。第三方依赖、已采用源码与媒体资产继续保留各自许可和通知；未引入新依赖、额外贡献协议或对外动作授权。
-
-本次仅落实项目许可正文与文档，没有修改产品实现、构建配置、规范测试或216项源码输入。原包不改写、不补造新库存；后继B因F-023～025返工产生的新包应随附根LICENSE及既有第三方/媒体法律材料，并验证清单完整。原B自检与A反例仍适用相同源码，整体技术状态保持rework-required；原A复核及用户确认属于不同证据范围。
-
-| 范围 | 当前真实事实 |
-| --- | --- |
-| ACT-004主页视觉 | 用户确认完成，限定为主页视觉/布局反馈，详见用户事项正本 |
-| 两站生产下载/录制代码 | 已有生产适配及Core接线，合成协议/故障/资源测试已有证据；F-023～025仍待修复 |
-| Bilibili真实视频下载 / 直播录制 | 均not-run；登录正负对照完成，房间身份诊断HTTP412后停止，没有进入实际媒体接收/录制 |
-| Douyin真实视频下载 / 直播录制 | 均not-run；登录正负对照完成，已登录投稿列表HTTP403后停止，没有实际下载或录制 |
-| 清晰度及覆盖 | 未证实匿名/登录的720P、1080P、原画差异，也未证实全部投稿覆盖；不把登录有效或合成长测当真实内容验收 |
-| 产品与发布 | ACT-003整体原生验收仍not-run；许可选择已明确，对外发布/推送/PR/合并没有新增授权 |
-
-本次答复不触发新的真实站点请求。后继仍由开发者处理代码缺口和具体请求条件；只有实际缺少或失效的输入才交用户配置，不重复索取已有Cookie。真实验证保持ACT-002的具体对象、预算与停止条件，不因本次状态询问扩大范围。
-
-收尾沿用同一M1未推送DCO提交。新增文档聚合保存在 `artifacts/a-m1-user-feedback-20261009/final-bundle.json`，原A/B聚合和失败均保留；只有文档指纹与新增许可检查更新，三个实际失败继续阻止技术放行。最终SHA从Git读取记录在该目录的 `git-delivery.json` 和交付消息。
-
-本次文档预检退出0：49份Markdown、543个本地链接、85需求、28AC，零错误；公开检查退出0、零发现。`license-check.json/.log`确认Apache-2.0正文、ACT-004记录、原报告完整保留及216项规范输入未变。收尾重新运行同一文档/公开/工作树和索引差异检查，回执为该目录的`docs-final`、`publication-final`、`diff-final`、`index-diff-final`；`assemble_feedback.py`及两个stage-bundle入口继续因原A失败退出1，原输出另存，不修改旧聚合。
-
-<a id="m1-real-source-readiness"></a>
-### 16.16 A真实来源诊断、局部修复与M1 r3退出条件（2026-10-09）
-
-用户在§16.15之后明确要求本阶段完成“视频地址→清晰度选项→下载”和“真实直播地址→720P以上录制”，并提供两站各一视频及一直播地址。A按新授权继续，既有本机Cookie保持原样；启动本次续行时HEAD为`8f7e2c9f1d4419016e7553790c050a3f0236af9e`，相对main一提交且跟踪工作区干净。新要求回写DEC-028和同一计划TRACE-M1-01 r3，新增FR-ARC-009、FR-LIVE-008、AC-29/30及P14/C14；当前87条需求中68条M1适用、19条后继。原m1/r2需求对象保留历史，r3独立表达待实现/复验范围，不另建计划。
-
-#### 请求原因与参考结论
-
-按仓库外索引只读核对两站相关解析、Cookie、受保护端点和直播协议实现；未改动参考工程、用户浏览器或系统代理，也未复制GPL代码。公开只记录TRACE自己的协议/实测结论，具体参考路径、版本和阅读范围留在本机审计。沿用§16.5逐文档流程核对，本次复读受影响的A/B职责、阶段单提交、授权、质量与文档规则；差异落到本计划、需求/契约、状态/事项和USER-ACTIONS，不复制外部技术栈或操作权限。
-
-| 问题 | 本次实际对照 | 可得结论与边界 |
-| --- | --- | --- |
-| 原Bilibili房间诊断412 | 同一旧room_init端点、同一环境代理、匿名1请求：标准库默认头412；另一个独立跑次补浏览器UA和直播Referer后200/业务0/正在直播 | 原诊断的请求头组合是可复现差异，不是Cookie失效证明；没有进一步把差异归为单独某一头或所有房间固定规则。原412仍保留，不推定当时生产Core已录制失败 |
-| Bilibili WBI | 实际源码64字符/重复wts；正确独立32字符向量对旧源码失败，对A修复后通过 | F-026源码范围关闭；与room_init请求头诊断分别记录。现代直播getInfoByRoom/getRoomPlayInfo采用正确WBI、直播头和已验证身份时取得真实流 |
-| Douyin详情403 | 同一生产适配器和Cookie，self登录成功、detail返回403/uifid_missing；在隔离代理补SecSDK上下文后200，81,416字节，生产适配器解析成功 | F-027是访问签名上下文缺口，不要求用户重新复制Cookie；Core生产接线尚待实现 |
-| Douyin投稿403 | 同Cookie/self成功，原post返回403/uifid_missing；补上下文后200、20条、has_more=1，1,454,679字节 | 已确认原投稿端点缺少该上下文；这页随后受F-029的大小/帧预算阻断，不能说已完整归档或全历史可用 |
-| 直播URL/媒体 | 指定Douyin web_rid经web enter得到流；Bilibili媒体重定向到bytefcdnrd.com，Douyin FLV来源为HTTP douyinliving.com，同地址HTTPS接收成功 | 当前生产入口/默认媒体策略仍需P14/F-028；必须保留逐跳公共地址、TLS及媒体零Cookie，不能靠用户填测试白名单完成支持 |
-
-Douyin所需访问者ID/指纹已在用户提供的Cookie中；无msToken仍完成本次受保护请求，不生成伪造token。登录来自self/nav证据，访问者ID和签名不当登录。隔离助手只在受保护路径补参数/签名，详情与投稿均保持原业务参数及A-Bogus；未来生产接线必须由Core保持代次和秘密隔离，不能照搬助手的宽响应转发。
-
-A隔离HTTP助手起初因本机DNS返回测试网段而拒绝连接，后按公开DNS答复逐地址验证并固定实际IP、保持TLS主机名验证。本机Core的地址分类并未同样拒绝该网段，不能将助手的拒绝写成原412/403的Core原因；没有修改系统网络配置。Bilibili旧请求头对照仍走原标准库环境代理，以免混淆这两个条件。此诊断网络路径也不是当前产品网络栈已通过的证据。
-
-#### 实际保存的四份媒体
-
-全部目标来自本次用户给定链接；源解析前的同身份登录证明已取得，媒体CDN请求没有Cookie/Authorization。实收媒体累计Bilibili **370,097,957字节**、Douyin **169,588,348字节**，均在每站512MiB诊断预算内；每站直播约60秒接收。原始响应、目标、签名地址和媒体只留本机`.local/site-check/`，不进入Git、普通日志或包。
-
-| 样本 | 实际接收/保存 | 本地探测和完整解码 | SHA-256 |
+| 站点 | 规则 | 当前状态 | 最终包上的证据 |
 | --- | --- | --- | --- |
-| Bilibili视频 | 完整4K AVC视频344,068,682字节，约32.8秒接收；必要AAC音轨5,385,435字节，stream-copy后349,599,098字节 | 3840×2160，约29.97fps，AAC双声道，218.559667秒；完整自动解码退出0 | `78b85814c51e7afbe867cba4dced7b897d71638a563170a35f27f3af4c2ffe80`（含音轨MP4） |
-| Douyin视频 | 完整9,352,828字节，HTTP长度与来源data_size均一致 | 1080×1920，30fps，AAC双声道，22.833333秒；完整自动解码退出0 | `ccc3d5fa6f1a2e32280640f8a0971808a125cdc86f82865e8d9a71ac955cbb1e` |
-| Bilibili直播 | 墙钟60.235秒，接收20,643,840字节，保留完整FLV tag共20,634,932字节；尾部8,908字节未完整tag不作封片 | 1920×1080，约60fps，AAC；原tag跨度68.416秒，含CDN初始缓冲；另存归零MP4为68.435秒且完整解码退出0 | `ae2cb7ac4b903da883cea3af7e7ae6e610411a8ee3016c02ce6924cb385e255e`（FLV） |
-| Douyin直播 | 墙钟60.000秒，接收160,235,520字节，保留完整tag共160,232,600字节；尾部2,920字节未完整tag不作封片 | 1920×1080，约59.94fps，AAC；原tag跨度62.933秒；另存归零MP4为62.957秒且完整解码退出0 | `1f2ee34173e6819ab128d6efd6289906f649b819d42b9a458eb3fe33d825d04e`（FLV） |
+| 微博 | `weibo.user.posts`、`weibo.user.preview`、`weibo.post.link` | partial | 账号与列表 2 页通过；图片/文字链接通过；视频链接 0 候选；预览 1 项失败；增量未完成 |
+| 小红书 | `xiaohongshu.user.notes`、`xiaohongshu.user.preview`、`xiaohongshu.note.link` | partial | 账号通过；签名续页被 HTTP 461 拒绝，按 DEC-041 停止，完整历史未取完 |
+| Instagram | `instagram.user.posts`、`instagram.user.preview`、`instagram.post.link` | partial | 目标主页被站点换成错误页（`source_unavailable`），账号识别失败 |
+| X | `x.user.posts`、`x.user.preview`、`x.post.link` | 订阅/链接 partial，预览 implemented | 账号、列表 2 页、预览勾选下载、图片/文字链接通过；前两页无原生视频，视频与增量未做 |
+| YouTube | 9 条规则 | 全部 partial | 账号通过；列表页无初始数据（`schema_changed`）后停止；旧包通过记录已标注只对应旧包 |
+| TikTok | `tiktok.user.posts`、`tiktok.user.preview`、`tiktok.post.link` | partial | 账号通过；列表被限流，停止；增量与链接未执行 |
+| 抖音 | `douyin.user.videos` 等 | 视频预览、视频链接、直播链接 implemented；订阅及其余规则 partial | 账号、列表、预览勾选、视频链接通过；直播链接沿用已合并真实证据；增量在额度用尽时停止 |
+| 哔哩哔哩 | `bilibili.user.videos`、`bilibili.user.preview_videos` 等 | 视频链接、直播链接 implemented；其余 partial | 账号、列表、勾选下载、视频链接通过；直播链接沿用已合并真实证据；增量在额度用尽时停止 |
 
-本次视频接口返回的实际候选：Bilibili从360P/480P/720P/1080P到4K，含不同编码/码率，选择4K AVC+AAC；Douyin返回1080×1920、720×1280、576×1024等多码率表示，选择1080×1920候选。只证明这些对象当时返回的候选，不宣称所有账号都可取4K、匿名只能720P或登录即可获取全部投稿。
 
-直播归零派生文件未重编码且保留原FLV：Bilibili为20,630,069字节，摘要`cc689829b6324c2aaedd81ca7acf2b08e556b5ec8a5a217a5f99e31a8f9bbb1c`；Douyin为160,217,514字节，摘要`b4a46b3dc1b5f518fefc7613ecea4b4a346b66c914d5fcbbaccae73608f45ed6`。Douyin原FLV容器duration约17559秒是源绝对时间戳，不能写成录制了数小时。自动解码只用包内锁定FFmpeg、file/pipe输入、两线程、完整文件与错误即失败；没有前台播放、声音判断或浏览器操作。
 
-**以上是实站来源可行性诊断，不是TRACE Core/GUI端到端验收。** 没有通过正式Core创建这些媒体的持久任务/资源引用，也没有完成新的链接质量选择UI；P14必须用当前生产包重新证明这一链路。原生IME、系统缩放、用户实际听到声音、外部播放器和ACT-003整体仍not-run，ACT-004已完成的用户反馈保持。
+| 规则 | 状态 | 验证日期 | 真实检查 |
+| --- | --- | --- | --- |
+| `youtube.channel.videos` | partial | 2026-10-17 | 账号识别通过；列表 2 页通过；增量(关)通过；增量(开)未执行 |
+| `youtube.channel.preview_videos` | implemented | 2026-10-17 | 账号识别通过；勾选下载通过；列表 2 页通过 |
+| `youtube.video.link` | implemented | 2026-10-17 | 链接下载通过 |
+| `youtube.post.link` | implemented | 2026-10-17 | 链接下载通过 |
+| `youtube.channel.shorts`、`youtube.channel.preview_shorts`、`youtube.channel.posts`、`youtube.channel.preview_posts`、`youtube.short.link` | partial | — | 没有真实检查（本阶段只经合成夹具验证） |
 
-#### 实际命令、失败及保留
+**抖音**（本站累计 68 次元数据请求、6,355,287 媒体字节，不含 A 的探测；停止原因：额度用尽）
 
-新命令均经`python scripts/stage_evidence.py run --kind <test|report> --id <id> --output artifacts/a-m1-real-readiness/<name>.json <下列命令>`保存真实退出码及完整日志；表中为子命令结果。诊断回执的生产组件为原m1-r2-2包/生产Douyin适配器及独立助手，不把源码快照字段当作新生产包证明。
+| 规则 | 状态 | 验证日期 | 真实检查 |
+| --- | --- | --- | --- |
+| `douyin.user.videos` | partial | 2026-10-15 | 账号识别通过；列表 2 页通过；增量(关)未执行；增量(开)未执行 |
+| `douyin.user.preview_videos` | implemented | 2026-10-17 | 勾选下载通过；账号识别通过；列表 2 页通过 |
+| `douyin.video.link` | implemented | 2026-10-13 | 链接下载通过 |
+| `douyin.live.link` | implemented | 2026-10-13 | 链接下载通过 |
+| `douyin.user.images`、`douyin.user.preview_images`、`douyin.user.articles`、`douyin.user.preview_articles`、`douyin.user.dynamics`、`douyin.user.preview_dynamics`、`douyin.user.live` | partial | — | 没有真实检查（本阶段只经合成夹具验证） |
 
-| 实际命令/用途 | 结果与回执 |
+**哔哩哔哩**（本站累计 66 次元数据请求、1,952,645 媒体字节，不含 A 的探测；停止原因：额度用尽）
+
+| 规则 | 状态 | 验证日期 | 真实检查 |
+| --- | --- | --- | --- |
+| `bilibili.user.videos` | partial | 2026-10-15 | 账号识别通过；列表 2 页通过；增量(关)未执行；增量(开)未执行 |
+| `bilibili.user.preview_videos` | partial | — | 账号识别通过；列表 2 页通过 |
+| `bilibili.video.link` | implemented | 2026-10-13 | 链接下载通过 |
+| `bilibili.live.link` | implemented | 2026-10-13 | 链接下载通过 |
+| `bilibili.user.dynamics`、`bilibili.user.preview_dynamics`、`bilibili.user.opus`、`bilibili.user.preview_opus`、`bilibili.user.articles`、`bilibili.user.preview_articles`、`bilibili.user.live` | partial | — | 没有真实检查（本阶段只经合成夹具验证） |
+
+**TikTok**（本站累计 41 次元数据请求、3,289,739 媒体字节，不含 A 的探测；停止原因：站点限流）
+
+| 规则 | 状态 | 验证日期 | 真实检查 |
+| --- | --- | --- | --- |
+| `tiktok.user.posts` | partial | — | 账号识别通过；列表 2 页通过；增量(关)中止；增量(开)未执行 |
+| `tiktok.user.preview` | implemented | 2026-10-18 | 账号识别通过；列表 2 页通过；勾选下载通过 |
+| `tiktok.post.link` | partial | — | 链接下载未执行 |
+
+**小红书**（本站累计 71 次元数据请求、37,015,293 媒体字节，不含 A 的探测；停止原因：无）
+
+| 规则 | 状态 | 验证日期 | 真实检查 |
+| --- | --- | --- | --- |
+| `xiaohongshu.user.notes` | partial | — | 账号识别通过；列表 2 页通过；增量(关)未执行；增量(开)未执行 |
+| `xiaohongshu.user.preview` | implemented | 2026-10-18 | 账号识别通过；列表 2 页通过；勾选下载通过 |
+| `xiaohongshu.note.link` | implemented | 2026-10-18 | 链接下载通过 |
+
+**X**（本站累计 59 次元数据请求、4,569,857 媒体字节，不含 A 的探测；停止原因：无）
+
+| 规则 | 状态 | 验证日期 | 真实检查 |
+| --- | --- | --- | --- |
+| `x.user.posts` | partial | — | 账号识别通过；列表 2 页通过；增量(关)未执行；增量(开)未执行 |
+| `x.user.preview` | implemented | 2026-10-18 | 账号识别通过；列表 2 页通过；勾选下载通过 |
+| `x.post.link` | partial | — | 链接下载通过 |
+
+**Instagram**（本站累计 9 次元数据请求、0 媒体字节，不含 A 的探测；停止原因：无）
+
+| 规则 | 状态 | 验证日期 | 真实检查 |
+| --- | --- | --- | --- |
+| `instagram.user.posts` | partial | — | 账号识别失败；列表 2 页未执行；增量(关)未执行；增量(开)未执行 |
+| `instagram.user.preview` | partial | — | 账号识别失败；列表 2 页未执行；勾选下载未执行 |
+| `instagram.post.link` | partial | — | 链接下载未执行 |
+
+**微博**（本站累计 11 次元数据请求、0 媒体字节，不含 A 的探测；停止原因：登录失效）
+
+| 规则 | 状态 | 验证日期 | 真实检查 |
+| --- | --- | --- | --- |
+| `weibo.user.posts` | partial | — | 账号识别中止；列表 2 页未执行；增量(关)未执行；增量(开)未执行 |
+| `weibo.user.preview` | partial | — | 账号识别中止；列表 2 页未执行；勾选下载未执行 |
+| `weibo.post.link` | partial | — | 链接下载未执行 |
+
+第二轮（2026-10-18）用返工后的包 `dist/trace-0.1.0-windows-x64-2` 执行，每站先把上一轮的回执作为起点，只补缺的检查；各站结果：
+
+- 通过：小红书（预览勾选下载、笔记链接）、TikTok（预览勾选下载；视频链接也下载成功，但该规则的记录里图集与音频没有执行，所以仍是“未执行”）、X（预览勾选下载图片推文；图片与文字推文链接）、YouTube（增量(关)）。
+- 被站点挡住后按规则停止：微博（数据接口仍答“需要登录”）、Instagram（目标主页被换成通用错误页）、TikTok（增量检查时列表答“无数据”，即限流）。
+- 额度用尽：抖音、哔哩哔哩、YouTube（增量(开)、Shorts、社区帖子）。
+- 额度不够完成：小红书增量（列表没有日期，每次检查约 33 次详情请求，剩余 28 次）；X 增量（剩余 17 次，且检查账号的前两页没有原生视频）。
+- 没有任何一站的订阅规则同时通过账号识别、列表 2 页与两次增量，所以八条订阅规则都是 `partial`。
+
+做不到的规则、已尝试的方案与剩余额度（计入手动诊断后）：
+
+| 规则 | 状态与原因 | 已尝试 | 剩余额度 |
+| --- | --- | --- | --- |
+| 微博 3 条 | 登录探测（分组列表，判据由 A 在第一轮修正）通过，但主页资料与微博列表接口仍答“需要登录”，带与不带 Cookie 结果相同；已按规则停止，列表与下载没有验证。需要用户重新复制 Cookie（ACT-007） | 桌面端接口与移动端接口各一次；5 次手动单次 GET 诊断页面形态（只存本机 `.local/`）；不重试、不绕过 | 67 |
+| Instagram 3 条 | 登录探测通过（页面标明已登录），但目标主页被站点换成通用错误页，走代理与直连结果相同；适配器改为报告“站点不显示该主页”（`source_unavailable`，第一轮是“页面改版”），并按规则停止。需要用户确认目标账号 | 浏览器路径（页面 HTML 取令牌、GraphQL 查询）；2 次诊断；直连与代理各一次 | 48 |
+| TikTok 订阅 | 账号识别、列表 2 页通过；增量检查时站点对列表答“无数据”（限流），按规则停止。限流不当作“没有更新” | 先预览与链接，增量放在最后；不重试 | 18 |
+| TikTok 链接 | 视频链接下载成功（视频文件由 Core 带页面会话 Cookie 取得，不经适配器）；图集与音频作品在站点限流后没有检查，该规则保持 `partial` | R2-3 的两条路径：会话 Cookie（真实通过）、外部解析工具（只经离线验证） | 同上 |
+| X 订阅与链接 | 账号识别、列表 2 页与图片推文预览勾选通过；检查账号的前两页没有原生视频，所以视频推文的链接与增量没有做；站点没有拒绝未签名请求，事务 ID 请求头没有在真实站点上用到 | 内置查询标识直接可用，没有触发重新读取；转推只算文字（F-060） | 17 |
+| 小红书订阅 | 账号识别、列表 2 页通过（无发布时间，没有续页）；增量检查每次要逐条取详情来定位范围（首屏 32 条约 33 次请求），剩余额度不够。纯文字笔记与 Core 对范围外条目的停止没有验证 | 没有加“遇到范围外就停”的启发式，因为列表不保证按日期排序；续页签名依赖 Cookie 值，适配器按设计看不到，不做 | 28 |
+| YouTube 频道视频订阅 | 增量(关)通过；增量(开)额度用尽 | 脚本每次检查约 10～14 次请求（取最新 4 条里的视频，只读首页） | 0 |
+| YouTube Shorts / 社区帖子订阅与预览、Shorts 链接 | 没有真实检查（额度） | — | 0 |
+| 抖音 / 哔哩哔哩订阅 | 增量检查额度用尽（旧脚本每次检查 21～25 次请求，F-059 已修，新脚本的额度已用完） | — | 0 |
+| 哔哩哔哩预览 | 账号识别与列表 2 页通过，勾选下载额度用尽 | — | 0 |
+| 抖音 / 哔哩哔哩 / YouTube 的其余通道 | 只经合成夹具验证 | — | — |
+
+每站剩余额度是用户在 ACT-007 授权的额度减去 A 的探测和本机台账；B 没有提高任何额度，“建议增加”只写在 USER-ACTIONS。
+
+<a id="a-m2-review"></a>
+## 5. A 集中审查（2026-10-18）
+
+被审：B 第一轮交付（阶段提交 `600b2bb`，未 push）。结论：**未收敛**。A 直接修了局部问题（§5.3），并已 amend 进阶段提交。较大的缺口一次性交回 B，见[计划 §9](stage-plan.md#a-review-rework)。push / PR / 合并的授权请求要等返工复审收敛后再登记。本节是技术审查，不是产品验收。
+
+### 5.1 逐项核对
+
+| 项 | 结论 | 依据 |
+| --- | --- | --- |
+| C01 重构不变 | 通过 | A 在基点 `c1552e0` 上独立重建测试清单，与 B 的对账一致（322/1760 → 831/4343，逐测试断言数不降）。按改名映射逐条比对断言文字：15 个测试有差异，原因是格式化、SQL 提成常量，或中文字面量在比对时的编码误差。其中两处是有意的行为变化，已写进契约：只读元数据查询可用 POST（[多站契约 §1](../design/multi-site-contracts.md)）；归档根改由可迁移的资源库给出。“已注册平台”的断言从固定三项改为与注册表一致，比原来更严。没有被删除或放宽的不变量 |
+| 规则状态 | 不符合计划口径，已降级 | 计划 P13 的订阅检查清单包含两次增量（自动下载关、开各一次），而 `rule_evidence.py` 只要求账号识别和列表 2 页。A 把两次增量加进订阅的必需检查，`youtube.channel.videos`、`douyin.user.videos`、`bilibili.user.videos` 退回 `partial`，原因写在规则限制里。预览和链接规则不受影响 |
+| 真实检查的诚实性 | 计数一致；两站的失败原因判断有误 | 本机台账与公开记录逐站一致：A 的 6 次诊断请求另记，作废跑次计入额度，小红书 r8 的勾选下载在公开记录里按失败处理。但微博、Instagram 的“Cookie 未被认可”是探测判据错了（§5.2）。另有三个已入库的测试含用户真实测试目标的账号标识（F-053） |
+| `auth_proofs.rs` | 接受 | 复用范围限于同站点、同凭证代次、2 分钟内。验证时间取探测实际发生的时间。原断言保留，并新增了复用断言。缺一个“经 `credential.revoke` 命令清除”的测试（R2-7） |
+| `download_media_ranged` | 接受 | 只用于 googlevideo。要求 206 且 Content-Range 完全一致，不一致直接失败，不做拼接 |
+| `fault_log.rs` | 接受，说明要改 | 只在设置了环境变量时写入。写入内容包含适配器自述的页面形态，文档里“只写方法与分类”的说法不准确（R2-7） |
+| `accounts.rs` 泛化 | 退步（F-057） | `account.resolve` 不再拒绝非有效凭证，会带着过期 Cookie 发请求；适配器给出的 `profile_url` 没有检查域名（R2-5） |
+| Cookie 发送范围 | 缺口（F-054） | 凭证 Cookie 会发往该站注册的全部接口域名，包括 `weibo.cn`、`t.cn`、`twitter.com`、`t.co`、`xhslink.com`；应该只发往 Cookie 域名（R2-1） |
+| 没有日期的列表 | 缺陷（F-055） | 订阅范围对没有日期的条目一律判为“在范围内”，YouTube、小红书这类列表的范围因此不起作用，范围外的作品也会被自动下载（R2-2）。原 LOOP-004 只写了“请求数偏高”，低估了影响 |
+| 请求标识 | 小缺口 | 六个新站点的 User-Agent 缺 `(KHTML, like Gecko)`，不是格式完整的浏览器标识（R2-6） |
+| 规则文案 | 通过 | 没有写入账号、作品清单、Cookie 或签名地址；新增的真实目标守护（§5.3）也没有在规则文案里发现问题 |
+| USER-ACTIONS | 已改 | 2026-10-18 用户授权每站更多额度，ACT-007 改为新的累计额度；微博、Instagram 不需要重新复制 Cookie。ACT-003 需要本阶段的新包和新样本，覆盖资源管理器、设置、支持的网站、预览勾选（R2-9） |
+| 基准余量 LOOP-010 | 接受 | 578 毫秒那一次，同机冒烟也从约 280 毫秒变成 585 毫秒，说明是机器负载造成的；发布的那次 281 毫秒在目标内。R2-9 在安静的机器上重跑 |
+| 门禁 | A 补了一处缺口 | e2e 测试启动 `target/debug` 下的适配器程序，`cargo test` 不会重建它们。A 降级规则后，第一次全量测试测的是旧程序，结果失败。`stage.py test` 现在先跑 `cargo build --workspace --locked` |
+
+<a id="a-m2-diagnosis"></a>
+### 5.2 真实站点失败的诊断
+
+A 按 ACT-007 的新额度做了 6 次只读请求（微博 2 次、Instagram 4 次，0 字节媒体），并对照用户浏览器记录里的已登录页面结构。回执只在本机 `.local/site-check/`，细节见[社交站点研究 §11](../research/social-sites-current.md#login-probe-2026-10-18)。各站失败的做法参考了本地参考索引里的同类项目（只读，仓库不写项目名）。
+
+| 站点 | 第一轮现象 | 原因 | 处理 |
+| --- | --- | --- | --- |
+| 微博 | 登录探测判为未登录 | 配置接口对已登录会话也回答访客；移动站是另一个 Cookie 域名。Cookie 有效 | A 已修：探测改用只有登录才有的分组列表（F-051） |
+| Instagram | 登录探测判为匿名 | `USER_ID` 和 `ACCOUNT_ID` 是关联的 Facebook 账号，登录与否都是 0。Cookie 有效，与是否走代理无关 | A 已修：改读 `NON_FACEBOOK_USER_ID`，缺失时读 `IG_USER_EIMU`（F-052） |
+| TikTok | 视频文件 403 | 视频地址在 `*.tiktok.com` 下，需要生成它的页面会话，只带 Referer 和 User-Agent 不够 | R2-3：Core 按 Cookie 域名代带会话；仍被拒绝时改用随包的外部解析工具 |
+| X | 额度在发现查询标识时用完；事务 ID 请求头没有计算 | 查询标识随前端发布变化 | R2-4：已知标识表作为数据随适配器发布，失效时才去发现；按公开算法计算事务 ID |
+| 小红书 | 首屏列表没有日期；下载没有复验 | 没有日期的范围缺陷（F-055）。续页签名依赖 Cookie 值，保持 `partial` | R2-2，R2-8 复验 |
+| YouTube | 增量检查没有执行 | 同上，没有日期的范围缺陷 | R2-2、R2-8 |
+| 抖音、哔哩哔哩 | 增量检查没有执行（额度用完） | — | R2-8，用新额度 |
+
+<a id="a-m2-fixes"></a>
+### 5.3 A 的直接修复
+
+| 编号 | 修复 | 位置 |
+| --- | --- | --- |
+| F-051 | 微博登录探测改用分组列表：`ok: 1` 且有分组算已登录，`ok: -100` 算访客，没有回答算未知，429 报错；不再访问两个配置接口 | `adapters/weibo/src/account.rs`、`api.rs`、`site_tests.rs` |
+| F-052 | Instagram 读取当前用户时只在 `CurrentUserInitialData` 块内读 Instagram 账号 ID：0 算匿名，其他数字算用户，缺失算未知；夹具改成真实的已登录形态 | `adapters/instagram/src/web.rs`、`fixtures/*.html` |
+| F-053 | 三个测试里的真实测试目标标识改成合成值。`check_publication.py` 新增 `private-target` 守护：从本机被忽略的 `.local/site-check/*targets*.json` 读取用户的真实目标，工作区或暂存区出现时即失败，且从不打印这些值；附回归测试 | `adapters/x/src/link.rs`、`crates/core/src/accounts.rs`、`tests/e2e/tests/site_adapters.rs`、`scripts/check_publication.py`、`scripts/tests/test_governance.py` |
+| 规则口径 | 订阅的必需检查加上两次增量；三条订阅规则降级，限制写明原因 | 三站 `rules.rs`、`scripts/rule_evidence.py`、`scripts/tests/test_evidence.py`、`docs/evidence/rule-evidence.json` |
+| 门禁 | `stage.py test` 先构建工作区程序，再跑 Rust 测试 | `scripts/stage.py` |
+| 契约与研究 | 只读元数据 POST、Cookie 域名、没有日期的列表、TikTok 媒体、登录探测判据 | [多站契约](../design/multi-site-contracts.md) §1、§3.4、§5.3、§9、§10、§11，[社交站点研究 §11](../research/social-sites-current.md#login-probe-2026-10-18) |
+
+验证（2026-10-18，A 的工作区）：
+
+| 命令 | 结果 |
 | --- | --- |
-| `python .local/site-check/m1-readiness-20261009/diagnose.py <mode> --execute-authorized --public-dns`；mode为bilibili-video-wbi32、bilibili-live-wbi32、douyin-original、douyin-secsdk、douyin-live-enter | 正确签名的源解析成功；原Douyin详情403失败保留。每跑次最多6请求/60秒、每次15秒、间隔2秒，未知/拒绝立即停止；各自原日志和私有summary可核对 |
-| `python .local/site-check/m1-readiness-20261009/compare_requests.py <mode> --execute-authorized` | `bilibili-legacy-default`退出1/412，`bilibili-legacy-browser`退出0/200；`douyin-post-original`退出1/403，`douyin-post-secsdk`退出1（两次HTTP200后助手BrokenPipeError）。每个Bilibili跑次1请求，Douyin每跑次self+post各1，不请求后续页 |
-| `python .local/site-check/m1-readiness-20261009/receive_media.py <mode> --execute-authorized` | `bilibili-video-complete`、`douyin-video`、`bilibili-live-cdn`、`douyin-live-https`四份成功回执均退出0；Bilibili视频补音轨复用已核对视频字节，没有重复下载4K视频。原视频音轨端口/直播scheme/重定向失败独立保留 |
-| `python .local/site-check/m1-readiness-20261009/validate_saved_media.py` | `local-saved-media-decode`退出0，四份完整解码通过；两个直播归零转封装，零网络，原文件摘要复核一致 |
-| `cargo test --manifest-path artifacts/a-m1-real-readiness/wbi-verified-probe/Cargo.toml --locked --offline --target-dir target --features baseline c14_ -- --nocapture` | `f026-correct-oracle-baseline`：101，1 failed；来源是保存的原Git源码，固定SHA和摘要可核对 |
-| 同一WBI命令去掉`--features baseline` | `f026-correct-oracle-fixed`：0，2 passed；导入当前实际源码及URL构造回归 |
-| `cargo test -p trace-adapter-bilibili --locked -- --nocapture` | `bilibili-final2`：0，26/26；初次错误A向量的`bilibili-final`：101，23/26，保留 |
-| `cargo build -p trace-adapter-bilibili --locked`；`cargo clippy -p trace-adapter-bilibili --locked --all-targets -- -D warnings`；`cargo fmt --all -- --check` | `bilibili-build`、`bilibili-clippy`、`fmt-final2`均0；未重建包或target/measure |
-| `cargo test -p trace-e2e --locked --test m1_production_adapters -- --nocapture` | `production-adapters`：0，9/9；没有删减原F-020/全文/分段断言 |
-| `cargo test --manifest-path artifacts/a-m1-real-readiness/probes/Cargo.toml --locked --offline --target-dir target --no-fail-fast -- --nocapture` | `integration-probes`：101，0 passed/2 failed；F-028默认媒体域与F-029生产适配器→实际Core限长回放。只用合成数据/回环，没有Cookie/站点请求 |
+| `cargo build --workspace --locked` 后 `cargo test --workspace --locked --no-fail-fast` | 退出 0；750 通过，0 失败 |
+| `cargo fmt --all -- --check`；`cargo clippy --workspace --all-targets --locked -- -D warnings` | 退出 0 |
+| `python -m unittest discover -s scripts/tests` | 41 通过 |
+| `python scripts/rule_evidence.py check`、`python scripts/check_structure.py`、`python scripts/check_docs.py`、`python scripts/check_publication.py`、`git diff --check` | 全部通过 |
 
-独立新crate首次从零生成锁文件遇离线索引中的yanked版本，未执行测试；`integration-baseline`保留解析失败。随后复用既有已锁依赖版本，`integration-build`退出0，项目Cargo.lock未变；不把首次工具准备失败算作产品反例。原错误WBI探针、历史媒体失败及所有后继正确复验分开保存。
+前端套件没有重跑：A 没有改前端。产品输入变了，`docs/evidence/gate/report.json` 和正式包都已过期，由 R2-9 重新生成；在那之前，门禁报告不代表当前代码。
 
-助手在诊断过程中有明确迭代；`preserved-a-handoff/`保存当前元数据助手、媒体phase2和CDN最终助手，源码摘要见公开审计。早期被改写的助手版本没有逐跑次冻结，报告仅保留其原命令/日志及当时观测，不把当前脚本摘要追溯冒充所有历史跑次。新compare/本地解码助手及独立探针另外保存摘要；B不可直接把这些私有诊断代码作为发布路径。
+<a id="a-m2-rereview"></a>
+## 6. A 复审 B 的返工（2026-10-18）
 
-#### 当前结论和证据适用范围
+被审：分支 `codex/m2-multi-site-archive` 上 B 第二轮的阶段提交 `7ff2528`（基点 `main@c1552e0`，未 push），对照 A 第一次审查后的提交 `72988ab` 逐项看差异。结论：**R2-1～R2-7 的离线返工与 F-063 通过；整体仍未收敛。** 原因有三：A 第一次审查对微博的诊断是错的（F-064，A 已修）；小红书增量没做的原因写得不准，检查脚本对没有日期的列表挑不出对象（F-065）；用户 2026-10-18 把 ACT-007 每站额度翻倍，额度用尽的检查现在可以做，并且现有真实证据只覆盖包 `-2`，不是最终包（F-066）。后两项交回 B 第三轮，见[计划 §10](stage-plan.md#a-rereview-rework)。本节是技术审查，不是产品验收；`requirements.md` 的“本阶段”状态继续保留。
 
-| 项目 | 结论 |
+### 6.1 逐项核对
+
+| 项 | 结论 | 依据 |
+| --- | --- | --- |
+| 1. R2-1 Cookie 域名 | 通过 | 站点表 `cookie_hosts` 与计划一致；`build_headers` 对非 Cookie 域名带 Cookie 直接拒绝，`pluginhost/proxy.rs` 把同站其他接口域名改为不带 Cookie 请求、媒体与外站拒绝；跨源重定向去掉 Cookie。反例 `cookies_go_only_to_the_cookie_domain_of_the_site_whatever_the_route`、`the_credential_goes_to_the_cookie_domain_only_and_the_secondary_domains_are_asked_without_it`、`a_cookie_goes_only_to_the_domain_it_was_copied_from`，前两个在映射的 FR-SITE-006 下。抖音、哔哩哔哩的 `cookie_hosts` 等于原 API 域名；两站 `UA` 改为引用 `SIGNED_UA`，字符串与原值逐字相同，签名向量文件未改 |
+| 1. R2-2 无日期列表 | 通过 | `scan_range::place` 三态（含近似日期的误差），`scan_page` 跳过详情已判为范围外的条目，`observe` 对范围外条目不排下载、对详情也定不了日期的条目不自动下载视频，`scan.rs` 对全无日期的页设 5 页上限并在覆盖记录里写明；`undated_range_tests.rs` 6 个用例在 FR-SUB 与 FR-SITE-003 下 |
+| 1. R2-3 TikTok 视频文件 | 通过 | 会话 Cookie 只在内存、按凭证作用域、有数量与长度上限、撤销即清；只从 Cookie 域名的响应记、只在 `session_media` 站点的视频地址上带；外部工具回退只经离线验证（报告已写明） |
+| 1. R2-4 X 列表 | 通过（离线） | 查询标识与特性开关作为数据随适配器发布，失效才发现，有负缓存；事务 ID 只经固定向量验证，真实站点从未要求 |
+| 1. R2-5 账号解析 | 通过 | `open_credential` 对非有效凭证在任何请求前拒绝，测试断言代理计数为 0 且适配器未启动；`own_profile_url` 只收本站域名的 https 地址 |
+| 1. R2-6、R2-7 | 通过 | 六站 `DESKTOP_UA` 完整；故障日志说明已改准；`credential.revoke` 清除登录证明的测试在 `archive_catalog_tests.rs`；基准持续时间改为工作负载结束时间 |
+| 2. 订阅规则口径 | 状态正确，两处原因不准（A 已改文案） | 八站订阅都是 `partial`，与回执一致。小红书：回执写的是“列表里没有带日期的视频可选”，即检查脚本按列表日期挑增量对象，对没有日期的列表根本挑不出，额度不是唯一原因（F-065）。YouTube 一条限制说“增量检查没有真实结果”，与同规则“自动下载关通过”矛盾。取舍：**同意不加“遇到范围外就停止”的启发式。** 小红书首屏有置顶、列表不保证按日期排序，提前停止会漏掉新笔记；代价有界：只有订阅的第一次检查要对首屏约 32 条逐条取详情，之后已定位的条目不再取详情，范围外的不再观察，后续检查只对新条目取详情。所以“每次检查约 33 次”应是“第一次检查约 33 次” |
+| 3. 真实检查的诚实性 | 计数与结论一致，一处记录缺失 | 逐站对照本机回执与 `rule-evidence.json`：X 第一轮三条 0 文件的“通过”已被 `w4` 回执取代，公开记录里 `x.post.link` 的通过来自图片推文（选 1 个文件）；TikTok 链接记录取最差结果“未执行”，视频链接本身通过，说明写在规则限制里，偏保守，可以接受。额度台账与公开记录一致（微博 80 − 探测 2 − 台账 11 = 67）。但 B 的 5 次微博手动诊断在 `.local/` 里没有任何回执，只有台账计数（F-067） |
+| 4. 微博 | B 的结论对，A 第一次的诊断错了（F-064，A 已修） | A 按 ACT-007 做了 4 次只读请求（[研究 §13](../research/social-sites-current.md#weibo-recheck-2026-10-18)）：不带 Cookie 的分组列表也答 `ok: 1` 并给出分组，字节数与带 Cookie 时相同；主页资料换请求头也答 `-100`；打开主页被转到登录页，按规则停止。Cookie 从 10-17 起就不是登录状态，B 第一轮配置接口给出的“访客”本来是对的。“需要用户重新复制 Cookie”准确；剩余额度足够，不需要再诊断 |
+| 5. 真实跑次与最终包 | 不再可接受，交回 B（F-066） | 包 `-2`、X 混合包与最终包 `-4` 的八个适配器和后台程序逐字节都不同。额度用尽时“按 `-2` 记录、写明差异”可以接受；现在额度翻倍，剩余检查要在最终包上跑，已通过的规则在最终包上补一次账号识别与第一页列表的冒烟 |
+| 6. 未完成项 | 原因准确（小红书除外，见第 2 项）；额度已翻倍 | 微博、Instagram 是用户事项，记入 USER-ACTIONS 新的[站点规则暂时做不到的情况](../../USER-ACTIONS.md#site-blockers)（S-001、S-002，另记小红书续页 S-003）；其余在第三轮做。B 没有自行提高额度 |
+| 7. ACT-003 | 基本足够，A 补了步骤 | 包 `-4` 的 `SHA256SUMS.txt` 摘要与 ACT-003 一致；合成档案 16 条、8 站、下载文件夹里视频与旁注、封面副本记为缺失，与步骤相符。同意预览勾选只验界面、不发真实请求（包里没有测试端点，真实预览由 ACT-007 覆盖）。A 补了：资源管理器、支持的网站、主页勾选三页的中文输入法与缩放检查；按 Q-008 在合成档案里保存一次全局手动代理再改回（只写设置，不发请求）；备份历史里已有生成器做的一条备份。第三轮重打包后 ACT-003 换到最终包 |
+| 8. F-063 | 接受 | 排序以条目 ID 收尾，是全序；从末端反向读取再翻转，非空值反向、空值在反向时排前，翻转后与正向完全相同；`lower(r.title)` 这类表达式产生的空值在 SQLite 里升序在前、降序在后，同样能正确翻转。等价性测试覆盖重复值、空值、缺元数据行、八种排序、两个方向、页大小 1/2/5/7/30 与 0～31 的偏移（含越界），足够。“页与总数两次读”：数据库是单连接的执行者，同一个读闭包里插不进写入，实际上是同一状态。范围扩大可以接受：基准是 R2-9 的验收门，根因是 OFFSET 线性走过跳过的行，改动行为等价、有测试 |
+| 9. 门禁报告的失败 | 属实 | `artifacts/evidence-runs/m2-r3-report-attempt1/report.json` 状态 failed，错误正是旧 X 测试名引起的 3 条；改名后重跑通过 |
+
+<a id="a-m2-rereview-findings"></a>
+### 6.2 新发现与处理
+
+| 编号 | 发现 | 处理 |
+| --- | --- | --- |
+| F-064 | A 第一次审查把微博登录探测改成分组列表（F-051），但分组列表对访客也答 `ok: 1` 并给出分组，探测会把访客当成已登录；“Cookie 有效”的结论也错了。另外不带登录时主页资料与列表都答 `-100`，站点声明的“登录可选”不准确 | A 已修：探测改回桌面端配置接口，`ok: 1` 且答出当前用户（用户 ID 或 `login: true`）才算已登录，`-100` 或 `login: false` 是访客，其余未知；测试加入“访客的分组列表与移动站都不被询问”的反例；站点表与三条规则改为“需要登录”，限制改写；研究 §11 更正、新增 §13，多站契约 §11 与[站点规则](../dev-rules/site-adapters.md)要求每个登录判据都有不带 Cookie 的对照。“已登录”一侧的形态要等用户的新 Cookie（S-001） |
+| F-065 | 小红书增量没做的原因写成“额度不够”，实际是检查脚本只从带日期的列表条目里挑增量对象，对没有日期的列表挑不出；YouTube 一条限制前后矛盾 | A 已改规则文案、机器记录与研究 §12；脚本的无日期增量检查交回 B（R3-3） |
+| F-066 | 公开的真实证据来自包 `-2` 与 X 混合包，与最终包逐字节不同 | 交回 B：第三轮在最终包上做（R3-1） |
+| F-067 | B 的 5 次微博手动诊断请求在本机没有回执，只在台账里计数 | 交回 B：以后每次手动诊断都在 `.local/site-check/` 留只含形态与计数的回执（R3-1） |
+
+### 6.3 A 的直接修改
+
+| 范围 | 修改 |
 | --- | --- |
-| B实现与原自检 | 原r2交付和290项自检/正式资源结果仍只证明当时版本；既有六个未结P1及新增P14待实现 |
-| A技术复核 | failed；F-026局部修复与定向复验完成，F-023～025/F-027～029集中交B实现，不要求B复审A |
-| 两站真实媒体 | 指定来源的两视频完整接收及两段1080P直播、四份自动完整解码通过；TRACE正式链接/任务/对象/GUI链仍未通过 |
-| 产品验收 | ACT-004视觉反馈保持完成；ACT-003整体及原生音视频/IME/缩放/外部程序仍not-run，现有自动解码不代填 |
-| 许可、远端和发布 | Apache-2.0项目许可已落实，后继新包须含根LICENSE；本阶段未push/创建PR/合并/发布，无新增此类授权 |
+| 微博（F-064） | `adapters/weibo/src/account.rs`、`site_tests.rs`、`rules.rs`；`crates/domain/src/sites.rs` 微博登录改为“需要登录” |
+| 规则文案（F-065） | `adapters/xiaohongshu/src/rules.rs`、`adapters/youtube/src/rules.rs`；`docs/evidence/rule-evidence.json` 里五条规则的说明按新声明更新，微博的请求计数加上 A 的 4 次诊断 |
+| 用户决定与授权 | ACT-007 额度翻倍（机器可读一行与说明表）；Q-008、Q-010 的答复记为 [DEC-035](../decisions/confirmed-decisions.md#dec-035)、[DEC-036](../decisions/confirmed-decisions.md#dec-036)；“站点规则做不到时统一记录”记为 [DEC-037](../decisions/confirmed-decisions.md#dec-037)，在 USER-ACTIONS 新增 S 编号的一节；额度翻倍记为 [DEC-038](../decisions/confirmed-decisions.md#dec-038) |
+| ACT-003 | 中文输入法与缩放补到资源管理器、支持的网站、主页勾选；Q-008 的代理设置步骤；已有备份的说明 |
+| 研究与契约 | [研究 §11～§13](../research/social-sites-current.md#weibo-recheck-2026-10-18)、[多站契约 §11](../design/multi-site-contracts.md#credentials)、[站点规则](../dev-rules/site-adapters.md)、[开发流程](../dev-rules/development-workflow.md#agent-user)、[状态](status.md)、[事项总表](../decisions/open-questions.md) |
 
-规范输入现在包含A的WBI修复及r3计划/需求/契约变化；原216输入指纹`f8a7d480ddb520d2b52f14f52145c4b1b6f1695b033d7e184a8b8f61140f86b7`和m1-r2-2包/measure-final3仅作历史，不能换绑。原r1/r2包、全部正式/失败采样及preserved measure二进制、closeout-4/原验收Profile、用户配置/媒体和本地参考都保留。§13～15、迁移1～4、原A probes/closeout/home断言及原m1/r2映射逐项核对；当前WBI两个错误nav期望的修正另列，不隐称全部函数体未动。
+真实请求：微博 4 次只读 GET、0 字节媒体（直连），回执在本机 `.local/site-check/m2-a-diag-20261018-3/`，已记入台账。A 没有 push，没有改前端。
 
-当前公开脱敏摘要为[m1-r3-a-readiness.json](../evidence/gate/m1-r3-a-readiness.json)。治理/公开检查、旧bundle的明确拒绝、源码及Git归属审计在同一`artifacts/a-m1-real-readiness/`追加，最终SHA从实际Git读取；本次不制造一个通过的r3产品bundle。B完成P14和集中返工后需按当前输入实际构建新包、运行完整正式资源与全部当前门禁。
+### 6.4 验证
 
-收尾预检已退出0：49份文档、549个本地链接、87需求/30AC/12INV/18ADR，公开内容0发现，Python治理反例16/16。当前216项规范输入集合摘要为`b8f26956b0dd39ae43fe12aad1e06e25dec5f633d1093e2310b8164bc625a5c2`，相对续行基点恰有5项变化：两个WBI源码文件和计划/需求/契约。原B bundle在`stage_evidence.py check`和`verify.py --stage-bundle`两个入口都实际退出1，明确拒绝旧源码、计划/需求范围、包和长测；回执为`old-bundle-check`及`old-bundle-verify`。当前规范下再次执行两个集成反例仍为101、0/2通过，`integration-probes-final`保留，不屏蔽失败。
+见下表；适配器源码变了，最终包 `-4`、一小时基准与 `docs/evidence/gate/report.json` 都已过期，由 B 后续轮次（第四轮）重新生成，A 没有重打包、没有重跑基准。
 
-最终文档、公开内容、工作树/索引差异检查分别写`docs-final`、`publication-final`、`diff-final`、`index-diff-final`，归属/保留审计为`preservation-source-audit.json`；实际远端只读查询仅见原main。提交前按明确22文件名单暂存，amend同一DCO阶段提交；提交后Git blob、引用和干净状态审计写`git-delivery.json`，最终SHA只由实际Git交付，不递归写回本报告。
+| 命令 | 结果 |
+| --- | --- |
+| `cargo fmt --all -- --check` | 通过（A 改的微博规则先按格式要求重排） |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | 通过 |
+| `cargo build --workspace --locked`、`cargo test --workspace --locked --no-fail-fast` | 803 通过，0 失败（44 个测试程序）；格式重排后微博适配器 24 个测试再跑一次，全部通过 |
+| `python -m unittest discover -s scripts/tests` | 44 通过 |
+| `python scripts/rule_evidence.py check` | 一致（微博、小红书、YouTube 的说明按新声明刷新；微博请求数含 A 的 4 次诊断） |
+| `python scripts/check_docs.py`、`python scripts/check_publication.py`、`python scripts/check_structure.py`、`git diff --check` | 全部通过；公开内容 0 条问题 |
+| 前端检查 | 没有重跑：A 没有改前端 |
+| 最终包、一小时基准、`python scripts/stage.py report` | 没有重跑，见本节开头 |
 
-<a id="a-to-b-m1-rework"></a>
-### 16.17 A→B 当前r3集中实施与返工 prompt
+<a id="a-m2-round-3"></a>
+## 7. A 第三轮：微博判据、用户答复与计划 r2（2026-10-18）
+
+被审的是阶段分支上 amend 前的唯一提交 `fb01662` 加 A 的工作区改动；B 第二轮交付的离线返工继续保持通过。结论：**微博登录判据仍未收敛，A 自己上一轮的修复有错（F-068），已在本轮改正并有真实已登录/未登录对照；用户对 Q-009、Q-012、S-001、S-003 的答复已落入 DEC-039～041 与计划 r2。** 九项管理功能与两项工具/签名改动尚未实现，不能写成已交付；剩余真实检查要在第四轮最终包上做。本节是技术审查与计划更新，不是产品验收。
+
+### 7.1 新发现
+
+| 编号 | 发现 | 处理 |
+| --- | --- | --- |
+| F-068 | A 在 F-064 中把微博探测改成“只读桌面端配置接口，`ok: 1` 且答出用户 ID 或 `login: true` 才算已登录”。2026-10-18 用用户重新复制的新 Cookie 做真实对照时，配置接口答 `ok: 1`，但 `data` 里只有 `ab_test`，没有用户 ID，也没有 `login`；这个判据会把真实已登录会话判成“未知”，所有微博规则都会拒绝运行。F-064 的“不能把访客当已登录”方向对，但只靠配置接口不能证明登录 | A 已改为两步：配置接口 `-100`/401 为访客；`ok: 1` 后再读 `weibo.com/` 首页，`window.$CONFIG` 的 `user.idstr`/`user.id` 为非零数字且（有 `uid` 时）与 `uid` 相等才算已登录；首页被转到 `passport.weibo.com` 为访客；静默、缺字段或 `uid` 不一致为未知；429 为错误。两步都带同一凭证，测试加入不带 Cookie 的对照与“配置 `ok: 1` 但无用户”的反例；分组列表与 `m.weibo.cn` 不再询问。规则文案按新判据更新 |
+
+### 7.2 真实核对与用户答复
+
+- **新微博 Cookie（S-001）：** 用户重新复制后，A 经 ACT-007 经用户代理做 4 次只读请求、0 字节媒体（回执 `.local/site-check/m2-a-diag-20261018-4/`，细节见[研究 §13](../research/social-sites-current.md#weibo-recheck-2026-10-18-new-cookie)）：带 Cookie 的配置接口 `ok: 1` 无用户，首页 `window.$CONFIG` 写出当前用户；不带 Cookie 的配置 `-100`，首页 302 到 `passport.weibo.com`。新 Cookie 确认已登录，S-001 关闭；微博规则仍要等第四轮最终包上的列表/下载/增量检查。
+- **Q-009：** 用户要求继续随包锁定 yt-dlp 与 Deno，并增加设置页手动检查更新。按 [DEC-039](../decisions/confirmed-decisions.md#dec-039) 落入计划 §12 R4-5：只由用户点击触发，先用随包公钥核对 `SHA2-256SUMS.sig`，再核对摘要，并排安装、启动检查、空闲切换、保留回退；不自动更新、不用 `-U`。
+- **Q-012：** 用户要求九项管理能力本阶段也做。按 [DEC-040](../decisions/confirmed-decisions.md#dec-040) 落入计划 §11；九项需求状态改为“本阶段”，`requirements-map.json` 标为 `current`，工作包 M1～M9、反例组 C13～C17。交付并通过 A 审查前不改为“已实现”。
+- **S-003：** 用户要求小红书订阅取到完整历史。按 [DEC-041](../decisions/confirmed-decisions.md#dec-041) 落入计划 §12 R4-6：Core 只把设备标识 `a1` 交给适配器，登录 Cookie 不出 Core；签名用固定向量测试，站点拒绝（406/461 等）即停止并把历史标为“未取完”，不换参数重试。
+- **S-002：** Instagram 目标仍被站点换成通用错误页，用户尚未确认；保持 `partial`，第四轮只在用户回复后做。
+
+### 7.3 A 的直接修改
+
+| 范围 | 修改 |
+| --- | --- |
+| 微博判据（F-068） | `adapters/weibo/src/account.rs` 两步探测；`api.rs` 首页请求头；`site_tests.rs` 已登录/访客/未知/无 Cookie 对照；`rules.rs` 限制文案 |
+| 有效决定 | 新增 [DEC-039～041](../decisions/confirmed-decisions.md#dec-039)，修改 DEC-031 对九项能力的顺延 |
+| 计划与需求 | [计划 r2](stage-plan.md#m2-management-scope)（§11 M1～M9、§12 R4-1～R4-10、C13～C17）；`requirements.md` 九项改“本阶段”；`requirements-map.json` 九项改 `current`、工作包/反例组/测试计划、全部计划 ID 改 r2；路线删去“管理与插件演进”的后继范围 |
+| 用户事项 | S-001、S-003、Q-009、Q-012 移到完成区并保留锚点；ACT-007 更新到第四轮与微博新 Cookie；ACT-003 标注暂缓到最终包；Q-011 仍 open |
+| 设计、研究、契约 | [设计 §5.2/§5.3/§7.1](../design.md#domain) 的资料历史、待确认关联、资源比较；[多站契约 §10/§11](../design/multi-site-contracts.md#youtube-media) 已在上一轮写入；[研究 §13](../research/social-sites-current.md#weibo-recheck-2026-10-18-new-cookie) 补第三次核对；[开源候选](../research/open-source-candidates.md#tool-update-2026-10-18) 记录手动更新 |
+| 状态与证据 | `status.md` 改为 r2、B 第四轮；`open-questions.md` OSS-012/013 更新；`rule-evidence.json` 计划改 r2、微博请求数 21、更新小红书签名说明；文档登记表 basis 改 r2/DEC-039～041 |
+
+### 7.4 验证
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo fmt --all -- --check` | 通过 |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | 通过 |
+| `cargo build --workspace --locked`、`cargo test --workspace --locked --no-fail-fast` | 通过：803 个测试、0 失败、0 忽略；38 个测试程序，另有 6 个无用例的文档测试程序。用 `cargo test --workspace --locked -- --list` 核对清单数量 |
+| `python -m unittest discover -s scripts/tests` | 44 通过，0 失败；UTF-8 环境复跑同样通过 |
+| `python scripts/check_docs.py` | 通过：52 个文档、800 个本地链接、100 条需求、38 条验收、12 条不变量、18 条决定、0 错误 |
+| `python scripts/check_publication.py`、`python scripts/check_structure.py`、`git diff --check` | 通过；公开内容 0 条问题 |
+| `python scripts/rule_evidence.py check` | 通过：规则声明、计划 r2、真实证据与累计额度一致 |
+| 前端套件 | 没有重跑：A 没有改前端，只改了计划/需求/映射里的前端文件引用 |
+
+A 没有改产品前端；没有重打包、没有重跑一小时基准，`dist/trace-0.1.0-windows-x64-4/`、`docs/evidence/gate/report.json` 与旧真实回执都只对应上一版源码，不能用于第四轮结论。新微博 Cookie 的 4 次请求已计入 ACT-007（微博已用 21）；0 字节媒体，没有 push。
+
+### 7.5 本地收尾与交接
+
+本轮复核并保留已有的 19 个文件改动，补齐 §7.4 的实际结果，并修正第四轮 prompt 对 F-068 所在报告节号的引用。没有删除或移动文件，没有增减既有测试或弱化断言，没有新增真实站点请求。未跟踪的个人配置、凭证、Profile、构建缓存、旧包和本地回执保留原状；最终包、基准与阶段整理仍由 R4-8/R4-10 完成。
+
+首次结构/脚本检查虽然退出 0，但 Python 子进程输出读取线程出现 Windows 默认 GBK 解码异常；用进程环境 `PYTHONUTF8=1` 复跑结构检查及全部 44 个脚本测试后通过，且未再出现该异常。不改脚本或用忽略解码错误的方式隐藏输出。
+
+保存前用 `git ls-remote --heads origin` 核实远端只有 `main@c1552e048ea608ba64deae820d127bbd5e969083`，阶段提交尚未共享。全部本轮修改按明确路径暂存，amend 进同一个带 DCO 签名的阶段提交；最终 SHA 从 Git 读取，不为文档自引用重复改提交。没有 push、PR、合并或发布。
+
+**A 本轮技术收尾完成，整个阶段仍为 `rework-required`。** 首选下一步是由用户把[计划 §12.1](stage-plan.md#agent-b-round-4-prompt)交给 B，连续完成 R4-1～R4-10。九项新增管理需求、工具更新、小红书完整历史与最终包验证尚待 B 交付；八站订阅规则仍为 `partial`。用户当前事项只见 USER-ACTIONS：无当前用户阻塞；S-002 只影响 Instagram 的真实检查，Q-011 按当前默认推进，ACT-003 为 `not-run` 且不阻碍后续技术审查与远端授权。
+
+<a id="b-m2-round-4"></a>
+## 8. B 第四轮交付（2026-10-18）
+
+被审对象是阶段分支上的唯一提交；B 的实现、本轮自检、下文记录与最终包都 amend 进它。本节是 B 自检，不是 A 审查或产品验收；真实站点只按 [ACT-007](../../USER-ACTIONS.md#act-007) 的对象与额度执行，结果逐站写在 §4 和 §8.5。共同基础、命令与未执行边界如下。
+
+### 8.1 共同 schema v8、契约与迁移
+
+| 范围 | 实现与证据 |
+| --- | --- |
+| schema v8 | `crates/core/src/db/migration_v8.rs` 一次建立 `creator_redirects`、`creator_operations`、`identity_candidates`、`live_replay_links`、`import_batches`、`import_items`、`resource_signatures`、`resource_comparisons`、`work_groups`、`work_group_members`、`work_batch_previews`、`plugin_releases`、`management_operations`，并给 `account_observations` 增加 `profile_json`；`schema.rs` 注册 v8，`SCHEMA_VERSION=8` |
+| 迁移反例 | `migration_v8_tests::schema_seven_databases_gain_the_management_tables_without_rewriting_content`（旧库保留条目、修订、对象与文件定位）、`an_interrupted_schema_eight_migration_leaves_schema_seven_usable_and_resumable`（中途失败仍是 v7、可重试）、`schema_eight_enforces_its_invariants_and_older_programs_refuse_it`（外键、唯一约束、旧程序拒写新库） |
+| 契约 | `crates/contracts/src/control/commands.rs` 增加 46 个管理与工具命令并加入 `UI_COMMANDS`（91→137，`ui_command_tests` 校验无重复、危险命令仍被排除）；`crates/contracts/src/capability.rs` 四类能力契约；`crates/contracts/src/management.rs` 导出 `ManagementOperationDto`、`IdentityCandidateDto`、`ProfileObservationDto`、`ImportBatchDto`、`ImportItemDto`、`PluginReleaseDto`、`CapabilityContractDto` |
+| TS | `cargo test -p trace-contracts` 生成 `apps/desktop/src/lib/generated/` 的 7 个新类型；`check_generated_types.py` 通过；`api.ts` 增加对应包装，所有命令字面量都在 `UI_COMMANDS` 内 |
+| 审计/事件 | `store::management::record` 为合并、拆分、重关联、候选确认/拒绝、回放关联/拒绝、导入开始/归入、比较决定、批量、插件安装/切换/回退/移除写一行；管理写命令发 `creator.changed`、`account.bound`、`import.changed`、`work.changed`、`plugin.changed` 等 outbox 事件 |
+
+### 8.2 M1～M9 实现、测试与界面路径
+
+| 包 | 需求 | 实现 | 主要测试 | 界面 |
+| --- | --- | --- | --- | --- |
+| M1 | FR-ID-003 | `crates/core/src/store/identity.rs`（merge/split/relink/operations/redirect，事务内只改 `account_bindings` 与 `creators.status`）；`app/identity.rs`；`app/mod.rs::resolve_creator` | `creator_merge_keeps_archive_identity`、`creator_merge_rejects_cycles`、`creator_split_moves_selected_accounts_only`、`creator_relink_checks_expected_source`、`creator_operations_are_paginated`、`timeline_follows_creator_redirect` | `/management?tab=identity`，创作者页入口「合并、拆分与身份候选」 |
+| M2 | FR-ID-005 | `identity.rs` 的 `observe_profile` 写 `account_observations.profile_json` 与同站候选；`store/identity.rs` 的 `profile_history`、`candidates`、`confirm`、`reject`；白名单字段，不含 Cookie/令牌/完整响应 | `profile_history_keeps_observations`、`similar_names_are_candidates_only`、`identity_confirm_is_explicit_and_conflict_safe`、`identity_reject_keeps_history`、`profile_evidence_has_no_credentials` | `/management?tab=identity`，账号页入口「资料历史与待确认关联」 |
+| M3 | FR-LIVE-006 | `crates/core/src/replays.rs`；`store/replays.rs`；`live_replay_links` 唯一约束；覆盖区间并集与缺口、`quality::comparison`、`keep_both`/`replay_primary`，不删除分片或对象 | `clipped_replay_keeps_recorded_ranges`、`replay_link_requires_same_account`、`incomparable_quality_keeps_both`、`replay_reject_is_recorded` | `/management?tab=replays` |
+| M4 | FR-ARC-004 | `crates/core/src/imports.rs`（扫描、托管复制 staging→对象库、原地索引只读摘要、外部观察）；`app/imports.rs`（inspect/start/status/cancel/resume/assign/check）；`store/imports.rs`；`JobType::Import` | `managed_import_leaves_source_untouched`、`in_place_index_never_moves_or_recycles`、`import_resume_does_not_claim_partial_success`、`duplicate_bytes_reuse_blob`、`external_change_marks_offline`、`import_rejects_link_traversal`、`import_assign_moves_selected_items_only` | `/management?tab=imports` |
+| M5 | FR-ARC-006 | `crates/core/src/resources.rs`（SHA-256 分组、同类型/同角色规格过滤、图片感知哈希、FFmpeg 有界抽帧、`resource_signatures` 缓存、`comparison`）；`app/resources.rs`；决定只写 `resource_comparisons` | `exact_duplicates_group_by_sha256`、`similar_candidates_require_signature`、`incomparable_is_not_similar`、`compare_decision_never_deletes` | `/management?tab=compare` |
+| M6 | FR-QUALITY-005 | `quality.rs` 的四类派生状态、`filtered_listing`、无条目的 `quality.configure` 排入 `quality-maintenance` 批处理；固定版本回收保护沿用现有 `protected` | `quality_filters_classify_groups`、`incomparable_is_not_lower_quality`、`pinned_variant_survives_recycle_after_policy_change`、`policy_change_reevaluates_affected_entries` | `/management?tab=quality`，升级页入口「质量状态筛选、固定保留与不可比较项」 |
+| M7 | FR-BROWSE-006 | `app/work.rs`、`store/work.rs`；作品组、只读比较、批量预览令牌与作用域摘要、逐条结果；批量动作仅标签/组/同步未下载/重新评估 | `work_group_keeps_each_caption_and_source`、`work_batch_requires_matching_preview`、`work_batch_partial_failure_is_per_entry`、`work_compare_is_read_only` | `/management?tab=works` |
+| M8 | FR-PLUGIN-005 | `plugin_install.rs`（清单摘要、协议/平台/能力/路径检查、staging→按版本目录、并排升级、空闲切换、回退、移除）；`store/plugin_releases.rs`；启动恢复活动版本 | `plugin_install_verifies_manifest_digests`、`incompatible_plugin_cannot_enable`、`plugin_upgrade_is_side_by_side`、`plugin_rollback_keeps_previous_release`、`plugin_remove_leaves_archive_readable` | `/management?tab=plugins`，模块页入口「安装、升级与能力」 |
+| M9 | FR-PLUGIN-007 | `contracts/capability.rs` 四类独立契约；`Core::capability_call` 按活动清单、开关、声明方法与结果字段路由；`Core::notify` 失败只记录；`app/plugins.rs` 的能力列表与独立开关 | `capability_routes_only_declared_methods`、`notification_failure_is_isolated`、`login_assist_never_receives_credentials`、`content_processing_cannot_replace_original`、`optional_extensions_off_keeps_base_archive`；`only_the_device_identifier_reaches_the_site_that_signs_with_it` | `/management?tab=plugins` |
+
+### 8.3 R4-5 yt-dlp 手动更新（DEC-039）
+
+- `crates/core/src/tool_update/mod.rs`、`signature.rs` 与 `crates/core/assets/yt-dlp-public.key`：只由 `tool.status`/`tool.check_update`/`tool.apply_update`/`tool.rollback` 触发，不自动检查、不使用 `-U`。
+- 下载 `yt-dlp.exe`、`SHA2-256SUMS`、`SHA2-256SUMS.sig`；先用随包 RSA 公钥验签（实际发布签名是 RSA/SHA-512，代码同时接受 SHA-256），再按 `SHA2-256SUMS` 验可执行文件摘要，写入按版本分开的目录；`update.json` 记录两件工具的摘要；切换前运行 `--version`，确认与发布版本和随包 Deno 均一致；有解析任务时拒绝或推迟，空闲后切换；启动时再次核对清单、摘要与版本，失败回退随包版本并记录原因。
+- 固定样本：`tool_update::signature::tests::the_pinned_release_signature_verifies`（真实发布签名）、`a_tampered_sums_file_is_rejected`、`a_tampered_signature_is_rejected`；`an_installed_update_must_match_its_manifest_and_start`（摘要/启动检查）、`a_version_that_was_not_just_checked_is_refused_before_any_download`、`a_status_call_never_checks_for_an_update_by_itself`。
+- 界面：`/management?tab=tool`，设置页入口「外部工具更新」。未自动发真实更新请求；真实站点的更新检查没有执行（本轮只做固定样本与离线反例）。
+
+### 8.4 R4-6 小红书完整历史（DEC-041）与 R4-7 无日期增量
+
+- 契约：`PluginRequest.context` 只由宿主注入；`pluginhost::access_context` 仅对小红书从凭证 Cookie 中取出 `a1`，`web_session` 与其他 Cookie 不外传；`kit::SiteAdapter::enumerate_with_context` 默认转调 `enumerate`，只有小红书覆盖。
+- 适配器：`adapters/xiaohongshu/src/sign.rs` 计算 `x-s`/`x-s-common`/`x-t`/trace id；`api.rs::signed_notes` 调用 `/api/sns/web/v1/user_posted`，406/461 直接停止并说明历史未取完，不换参数重试；`site.rs` 有 `a1` 时翻页到列表结束，没有时保留首屏兼容路径。固定向量：`a_list_request_matches_the_fixed_vector`、`the_fingerprint_block_matches_the_fixed_vector`；离线夹具：`the_signed_list_continues_the_profile_and_carries_the_device_signature`、`a_refused_signature_stops_the_history_instead_of_being_retried`、`without_the_device_identifier_the_first_screen_is_used_and_no_signed_request_is_made`。
+- 无日期增量：`scan_page.rs` 对“列表无日期、详情已定位在范围内、该订阅已完成过观察”的条目不再重复取详情（`a_repeat_incremental_check_does_not_fetch_a_known_undated_detail_again`）；`real_site_check.py` 的 `detail_date` 用单链接预览取详情日期，不选择、不下载；`test_an_undated_list_takes_the_instant_from_the_works_own_page_without_downloading_it` 覆盖。`source.preview` 现在返回详情的 `published_at`/`published_precision`，供检查脚本选对象。
+- 全局代理：`real_site_check.py` 在隔离 Profile 里用 `network.set` 的 `scope=global` 设置 `TRACE_TEST_PROXY`，八站都经它；回执记录路线。
+
+### 8.5 命令、结果与真实证据
+
+所有命令在仓库根执行。原始日志与回执在被忽略的 `artifacts/evidence-runs/m2-r4f/`、`.local/site-check/run-m2-r4*/`；公开机器摘要是 `docs/evidence/gate/report.json`（由通过的 `stage.py report` 生成）。
+
+| 命令 | 退出码 | 结果 |
+| --- | --- | --- |
+| `cargo fmt --all -- --check` | 0 | 无差异 |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | 0 | 无告警（`too_many_lines`/`too_many_arguments` 只在四个有注释的管理函数上局部放行） |
+| `python scripts/stage.py test --run m2-r4h` | 0 | Rust 875 个测试、前端 20 个文件/140 个用例、脚本 45 个测试，全部通过；含真实二进制的 e2e |
+| `python scripts/check_structure.py`、`check_generated_types.py`、`check_file_sizes.py`、`lint_lines.py` | 0 | 结构、生成类型、文件大小与断行通过；7 个新生成类型 |
+| `python scripts/check_docs.py` | 0 | 52 份文档、100 条需求、38 条验收、12 条不变量、0 错误 |
+| `python scripts/check_publication.py` | 0 | 0 条公开内容问题 |
+| `python scripts/rule_evidence.py check` | 0 | 规则声明、真实回执与累计额度一致 |
+| `python scripts/stage.py package --run m2-r4h` | 0 | `dist/trace-0.1.0-windows-x64-12`：37 个文件、342,213,078 字节；`SHA256SUMS.txt` 36 行，摘要 `ADBF2BA9C9F3FDB7EA09481D6BAC19CD6C4787875BE840298139C7422D10BD58` |
+| `python scripts/check_package.py dist/trace-0.1.0-windows-x64-12` | 0 | 包成员与清单摘要、嵌入式 WebView 烟测、八个适配器 `hello`/`doctor` 通过 |
+| `python scripts/stage.py bench --run m2-r4h --idle 1030 --seconds 3640 --entries 100000` | 0 | 3642.2 秒（空闲窗口 910.4 秒）、十万条元数据与五十万条媒体元数据、349 个混合负载采样点；热/冷查询 P95 318/242 毫秒；资源管理器热/冷 P95 246/189 毫秒；空闲 CPU 0.18%、内存 P95 52.4 MiB；四路录制 CPU 2.83%、内存 P95 68.1 MiB；开始录制 P95 0.80 秒；恢复 3.29 秒；界面关闭 2.99 秒；作业错误 0；峰值私有工作集 200 MiB |
+| `python scripts/stage.py report --run m2-r4h`、`stage.py check` | 0 | 生成 `docs/evidence/gate/report.json`（自动证据；A 审查与产品验收未做），随后 `stage.py check` 通过 |
+| `python scripts/real_site_check.py prepare` / `status` | 0 | 八站对象与 Cookie 就绪；执行前剩余额度为微博 139、小红书 128、Instagram 108、X 97、YouTube 100、TikTok 78、抖音 70、哔哩哔哩 70 |
+
+真实站点检查都在最终包或与它同源的候选包上、用全局手动代理（`network.set` 的 `scope=global`，路线写进每份回执）执行；遇到限流、登录失效、签名拒绝或额度用尽即停，不重试、不换参数、不绕过。逐站结果：
+
+| 站点 | 本次包与回执 | 通过 | 未通过/停止 | 规则状态 |
+| --- | --- | --- | --- | --- |
+| 微博 | `-10` 冒烟 + `-8` 全量，`run-m2-r4f-weibo-smoke`、`run-m2-r4d-weibo1` | 账号识别、列表 2 页（20 条均有日期）、图片与文字推文链接 | 视频推文链接 0 个候选；预览勾选 1 项导出、1 项失败；增量(关)找到 1 条但保存状态 unknown、再次检查集合不变；增量(开)没有视频候选 | 3 条 `partial` |
+| 小红书 | `-7`（签名续页尝试），`run-m2-r4c-xhs1` | 账号识别 | 签名列表被站点 HTTP 461 拒绝，按 DEC-041 立即停止，完整历史标为未取完；其余检查未执行 | 3 条 `partial` |
+| Instagram | `-8`，`run-m2-r4d-instagram1` | 登录探测未判为失效 | 目标主页仍被站点换成错误页（`source_unavailable`），账号识别失败；S-002 的新目标也没有显示 | 3 条 `partial` |
+| X | `-10` 冒烟 + `-8` 全量，`run-m2-r4f-x-smoke`、`run-m2-r4d-x1` | 账号识别、列表 2 页、预览勾选下载、图片与文字推文链接 | 前两页没有原生视频，视频推文与两次增量未执行 | 预览 implemented；订阅与链接 `partial` |
+| YouTube | `-8`，`run-m2-r4d-youtube1` | 账号识别 | 列表页返回不含初始数据的页面（`schema_changed`），按规则停止；预览与两种链接未重跑 | 全部 `partial`（旧包的通过记录已标注只对应旧包） |
+| TikTok | `-8`，`run-m2-r4d-tiktok1` | 账号识别 | 列表被站点以限流答复，立即停止；增量、链接、预览未执行 | 全部 `partial` |
+| 抖音 | `-9` 冒烟与增量，`-8` 全量，`run-m2-r4e-douyin-*` | 账号识别、列表 2 页、预览勾选下载、视频链接 | 增量(关)找到 1 条、保存状态 unknown、第二次检查集合不变，但检查途中额度用尽；增量(开)未执行 | 订阅 `partial`；视频链接 implemented |
+| 哔哩哔哩 | `-9`，`run-m2-r4e-bilibili1` | 账号识别、列表 2 页、勾选下载、视频链接（含浏览器参数） | 增量(关)在额度用尽时停止；增量(开)、图文链接未执行 | 订阅与预览 `partial`；视频链接 implemented |
+
+额度（A 在 §10 对账更正）：微博 62、X 74、Instagram 106、TikTok 73、小红书 123、YouTube 97 未用完；抖音与哔哩哔哩为 0，停止原因是额度，不是站点无更新。最终包 `-12` 与执行检查的 `-9`/`-10` 只差规则的说明文字、两个补充测试与包命名；没有改采集或下载行为，报告对这一差异照实记录。
+
+### 8.6 最终包、基准与门禁
+
+- **最终包：** `dist/trace-0.1.0-windows-x64-12`，37 个文件、342,213,078 字节；`SHA256SUMS.txt` 36 行，自身摘要 `ADBF2BA9C9F3FDB7EA09481D6BAC19CD6C4787875BE840298139C7422D10BD58`。`check_package.py` 的成员/清单/WebView/适配器检查通过。
+- **一小时基准：** 3642.2 秒（空闲窗口 910.4 秒），十万条元数据、五十万条媒体元数据、349 个混合并行采样点、四路录制、两路下载与界面同时运行；热/冷查询 P95 318/242 毫秒，资源管理器热/冷 P95 246/189 毫秒，空闲 CPU 0.18%、内存 P95 52.4 MiB，四路录制 CPU 2.83%、内存 P95 68.1 MiB，开始录制 P95 0.80 秒，恢复 3.29 秒，界面关闭 2.99 秒，作业错误 0。全部 NFR 目标在阈值内。
+- **门禁：** `stage.py report --run m2-r4h` 通过并写出 `docs/evidence/gate/report.json`；`stage.py check` 通过，产品验收仍为 `not-run`。该报告只覆盖自动证据，A 审查与人工验收仍需分别完成。
+
+### 8.7 未执行与限制
+
+- **真实站点：** 微博的视频推文与增量、小红书完整历史与增量、Instagram 目标、YouTube 列表、TikTok 列表、抖音与哔哩哔哩的增量没有通过；原因逐条写在上表与规则限制里。没有为通过而删除检查或放宽口径。
+- **包与回执：** 通过记录若来自 `-8`/`-9`/`-10`，在规则限制里写明只对应旧包；最终包 `-12` 与它们只差规则文字、两个补充测试与包命名，没有改采集或下载行为。没有把旧包证据换绑成最终包证据。
+- **人工检查：** ACT-003 的原生体验（输入法、缩放、声音、外部播放器）仍是 not-run；本轮新增管理页、导入、比较、回放、作品组、插件与工具更新的界面只经前端套件与包内 WebView 烟测，没有人工逐项操作。
+- **未联网的真实更新：** DEC-039 的更新检查/安装只经固定签名样本与离线反例；没有在真实站点或 GitHub 发布上执行下载。
+- **小红书签名：** 固定向量与离线夹具通过；真实站点以 461 拒绝，按 DEC-041 停止，没有换参数重试。`a1` 只由 Core 注入，`web_session` 与 Cookie 未离开 Core。
+
+<a id="b-m2-handoff"></a>
+## 9. B → A 最终审查交接
+
+审查对象：分支 `codex/m2-multi-site-archive` 的唯一阶段提交（B 完成自检后 amend；最终 SHA 由 Git 读取，不在提交内的文件里自引用）。基点 `main@c1552e048ea608ba64deae820d127bbd5e969083`；未 push、未建 PR、未合并、未发布。
+
+审查入口：
+
+1. 本报告 §8（实现位置、M1～M9 需求/测试/界面路径、R4-5～R4-7、命令与退出码、真实证据、包摘要、未执行边界）；§4.1 是最终包后的规则状态。
+2. `docs/evidence/rule-evidence.json` 与 `python scripts/rule_evidence.py check`；八站规则文案在 `adapters/*/src/rules.rs`。
+3. `docs/evidence/gate/report.json`（自动门禁；产品验收仍为 not-run）。
+4. 最终包 `dist/trace-0.1.0-windows-x64-12` 与 `SHA256SUMS.txt`；原始回执在 `.local/site-check/` 与 `artifacts/evidence-runs/m2-r4h/`（均不提交）。
+
+建议复验范围：
+
+- 完整差异与生产接线：schema v8 迁移、`creator.*`/`identity.*`/`import.*`/`resource.*`/`work.*`/`live.replay.*`/`plugin.*`/`tool.*` 的命令路由、`UI_COMMANDS`、前端 `/management` 与生成类型。
+- 管理能力的边界断言：不自动合并/删除、原地索引不移动外部文件、固定保留不回收、移除插件不删档案、关闭扩展不影响基础归档、候选只由用户决定。
+- DEC-039：真实签名样本（SHA-512）与摘要/启动/回退反例；确认没有 `-U`、没有自动检查。
+- DEC-041：`a1` 只经宿主上下文进入小红书适配器，`web_session`/Cookie 不离开 Core；461 停止且不重试；固定向量与离线夹具。
+- R4-7：无日期列表的详情定位、范围外不下载/不计入、重复增量不重复取详情；脚本与固定向量测试。
+- 真实回执与规则状态：逐站对照 §8.5、`rule-evidence.json` 和适配器声明；确认停止原因、额度与“不把限流/签名拒绝当作没有更新”。
+- 自动门禁：`stage.py check`、`check_docs.py`、`check_publication.py`、`check_structure.py`、`check_generated_types.py`。
+
+未完成/限制：
+
+- 八站订阅规则全部 `partial`：没有一站同时通过账号识别、列表 2 页与自动下载关/开两次增量。微博视频推文 0 候选；小红书签名续页 461；Instagram 目标错误页；YouTube 列表无初始数据；TikTok 列表限流；抖音/哔哩哔哩额度用尽。
+- X 预览与抖音/哔哩哔哩视频链接为 `implemented`；其余规则 `partial`。
+- 最终包 `-12` 与部分真实回执的 `-8`/`-9`/`-10` 只差规则说明文字、测试或包命名；报告如实标注，没有换绑旧包证据。
+- ACT-003 人工原生体验仍是 not-run；真实 yt-dlp 更新下载未执行；Linux、安装器、签名发布不在本阶段。
+- 自动检查通过只是 B 自检，不是 A 审查或产品验收；请 A 按[审查口径](../../REVIEW.md)独立核对，不采信报告结论本身。
+
+<a id="a-m2-final-review"></a>
+## 10. A 独立集中审查（2026-10-19）
+
+审查基线为 `94d80ac652c08a762dbc091b5d53bca0e8912d8c`，基点为 `main@c1552e048ea608ba64deae820d127bbd5e969083`。本次接手时已有六个未提交文件：小红书 `api.rs`/`site_tests.rs`、Core `media_tools/mod.rs`/`tool_update/mod.rs`/`transport.rs` 和本报告的 §10 草稿；全部保留并逐项独立核实，没有把这些补丁算作原提交已具备的行为。下面替代该草稿中“工作区原始状态干净”和未经本次复验的结论。审查结论为 **rework-required**；未发现 P0，不登记 push、PR 或合并授权。
+
+核查范围包括基点到目标的差异清单、schema v8 的快照/事务迁移与拒旧写、`UI_COMMANDS`→Tauri 通用转发→IPC→app/store→`/management` 的管理命令、生成类型、管理数据边界、DEC-039/041、无日期增量、八站规则声明、逐站原始回执、授权额度、最终包与 gate 输入指纹。命令在白名单内、类型生成通过，不代表参数、返回值和界面动作已经接通；以下缺口均有实际代码路径或反例支持。
+
+### 10.1 A 直接处理的局部问题
+
+| 编号 / 状态 | 触发、实际结果与修复 | 复验 |
+| --- | --- | --- |
+| F-069 / P1，部分修复、仍待 B | 原提交 `transport.rs::status_error` 与小红书 `signed_notes` 把 406/461 当 `RateLimited`，普通订阅经 `jobs/mod.rs` 自动进入 `waiting_retry`。保留已有补丁改为 `PermissionDenied` 并恢复业务码 `429 => RateLimited`，阻止 60 秒重试；但任务仍进入 waiting_auth，`credential_probe.rs::probe_guarded/wake` 在每次 valid 探测后调用 `store::credentials::wake_waiting_auth` 和 consumers 的 credential_changed，约 6 小时后的自动探测仍会重排签名拒绝任务，尚未满足 DEC-041 | transport 28 项、小红书 28 项通过；扩充 HTTP 200 业务码 406/461/429 的分类与单次请求断言；需补后台调度跨凭证复验的反例，真实站点未重跑 |
+| F-070 / P1，部分修复、仍待 B 验收 | 原提交回退到非随包版本后清空活动指针，重启回到随包版本；随包损坏时先切走可用更新再返回失败。保留已有补丁：更新清单保存前一版本，回退持久化非随包指针，先验证随包候选再切换。成功回退、跨重启和损坏候选保留当前版本仍缺动态回归，不据代码推演关闭 | tool update 9 项通过，但它们只覆盖固定签名、篡改、无自动检查、摘要/启动失败等反例 |
+| F-076 / P1，已修 | `store/identity.rs::merge` 允许 A→B 后 B→C，而 `resolve` 只走一步，旧 A 的时间线失去迁往 C 的内容。新增事务内 incoming redirect 检查，拒绝把已有重定向的目标继续合并，不改条目和文件 | `identity_tests` 11 项通过；扩展 `creator_merge_rejects_cycles` 验证第二层合并拒绝、绑定不变、旧 A 仍解析到 B |
+| F-077 / P1，已修 | `ManagementView.vue::previewBatch` 发 `tag_add`，`app/work.rs` 只接受 `tags_add`，填写标签后预览必失败。改为正确参数 | 管理页真实 tab/输入/按钮交互断言 `tags_add`，Vitest 1 项及前端类型检查通过 |
+
+### 10.2 一次性交回 B 的必须项
+
+下列是本阶段功能或证据缺口，不转成用户人工验收，也不推迟为 LOOP。保留上节修复，按原编号回复实现和复验。
+
+| 编号 / 严重度 | 位置与可复现结果 | 修复与验收 |
+| --- | --- | --- |
+| F-069 / P1（剩余） | `app/credential_probe.rs` 14/134～135/188～194 的定期 valid 探测，无条件调用 `store/credentials.rs::wake_waiting_auth`（244）与 `jobs/consumers.rs::credential_changed`（167）；当前 PermissionDenied 补丁只消除了计时重试，仍会被该自动路径唤醒 | 给签名拒绝可持久解释的停止状态或等价策略，不与凭证过期恢复混用；覆盖普通订阅签名 461 后，扫描时钟、valid 凭证复验、重启恢复均不再请求；仅显式用户动作可恢复，保留正常认证恢复 |
+| F-071 / P1 | `scripts/real_site_check.py::check_incremental`（690～719）：第二轮只比较时间线 entry_id 集合，没有按目标 native key/订阅发现关系/日期过滤，也不核对详情请求。离线 mock 令范围内和范围外条目都 deferred，第二轮详情读取 1→3，仍返回 `ok=true` 和 `second check changed nothing` | 记录按 endpoint/native key 或 observe-attempt 区分的前后快照；确认目标在范围内、范围外零订阅发现/零媒体下载、重复增量零详情请求；自动下载开/关都要有正反例，不用集合不变替代 |
+| F-072 / P1 | `ManagementView.vue::mergeCreators/splitCreator/relinkAccount`（62～87）直接写命令，`app/identity.rs`（26～66）直接写事务；用户未先看到账号、订阅、条目数量。`store::identity::scope` 只在写后结果或 get 中存在 | 三类操作均展示对应对象的影响范围，显式二次确认；输入/关系变化后重新预览或拒绝陈旧确认；覆盖取消零写入、实际执行范围和候选显式确认 |
+| F-073 / P2 | `plugin_install.rs::remove`（501～515）先提交 `store/plugin_releases.rs::remove` 的 DELETE，再删目录；Windows 文件占用或权限错误时，目录还在、版本记录已丢，重试 NotFound | 改为可重试/可恢复的一致删除流程；目录失败、重启、再次移除均有反例，保留档案可读与回退记录 |
+| F-074 / P2 | `ManagementView.vue::startImport`（123～127）不依赖 `importInspect` 即直接 start；可未预览就导入，或预览 A 后改路径 B 直接开始 | 成功预览后才能确认开始，预览与当前路径、模式、目标一致，展示数量/大小/重复/不可读项；输入变化使确认失效；Core 对实际扫描独立校验，不信陈旧预览。补 UI 和服务反例 |
+| F-075 / P2 | `core.rs::capability_call`（550～564）只在返回对象时查字段名；null、数组、字符串直接成功，对象字段的类型和必填也未校验。`notify` 把任意 Ok 视作发送成功 | 四类能力分别验证返回对象、字段、必填和类型；覆盖标量、数组、未知字段、错误类型、缺字段；失败隔离且原始归档不被替换 |
+| F-078 / P1 | `api.ts::resourceCompare/resourceCompareDecide`（701～719）发 `left_kind/left_id/right_kind/right_id`，`app/resources.rs::side_arg`（41～48）只收 `left_entry_id/right_entry_id` 或 left/right；默认条目比较也失败。UI 还提供 media/variant/blob，而 Core 比较只支持条目 | 统一参数和返回契约、明确且实现允许比较的对象类型；比较及三个决定均从真实 UI→API→Core 走通，决定只记记录，不删除或合并 |
+| F-079 / P1 | `ManagementView.vue` 候选表（727～736）没有动作；关联/拒绝只在已有 links 的 `state==='candidate'` 显示，而 `store/replays.rs` 唯一新增行直接写 confirmed，候选查询只读不落行。空关系库永远无法建立首个关联 | 候选行提供显式关联/拒绝、覆盖与质量对比、受约束的主版本选择；测试从零关系开始完成关联与拒绝，保留全部录制分片/独有区间，不可比较不能以回放为主 |
+| F-080 / P1 | 管理页质量筛选发 pending/pinned（245～249），Core 派生 pending_upgrade/manually_kept（`quality.rs` 311/321）且精确匹配，两个筛选恒空；表取 reason 而返回 reasons，actions 只有文本无固定/解除动作 | 四类枚举、原因和实际操作接通；覆盖筛选及 pin/unpin/重新评估的界面流程、受影响范围和固定版本回收保护 |
+| F-081 / P1 | `tool_update::apply`（372～379）复用持久 Check，成功后不消耗；UI 安装后仍保留按钮。再次安装 V1 时删除重建当前目录，previous=V1，回退链指向自己，原版无法从入口退回 | 在任何下载/删目录前基于当前活动版本拒绝或幂等同版本安装，防止 self previous，处理过期 Check；重复安装不得动当前目录/清单/活动指针/原回退链；补 V0→V1→V2→退 V1→重启仍 V1→退 V0 |
+| F-082 / P1 | apply 在 idle 检查（439）后 await 启动探测（444），期间解析任务可持 gate 开始，449 仍切换；rollback 也先 idle 再 await。`MediaTools::idle`（236～243）瞬时取许可即释放，存在确定的调度窗口 | 安装/回退切换与真实解析共用持有式互斥许可，覆盖实际切换和活动指针保存；可控延迟 probe 中启动解析的回归必须拒绝/推迟切换，失败不损当前版本 |
+| F-083 / P1（验证缺口） | `plugin_tests::optional_extensions_off_keeps_base_archive` 只关闭 notification，content_processing 仍开，且仅 SQL 播种再读；不能证明计划 C16 的“关闭全部四类→基础归档/时间线/导出” | 关闭全部可选能力，用生产基础采集链保存合成作品、查询时间线、导出并校验；保留档案/凭证边界和通知失败隔离 |
+| F-084 / P1（证据） | gate、包和 m2-r4h 保存的输入指纹与目标提交中的 `scripts/tests/test_real_site_check.py` 不符；在排除未提交补丁、处理工作树换行后仍失败。真实回执本身未记包摘要，只能从隔离 Profile 的 adapter_dir 辅助定位包名 | 最终代码完成后真实重跑测试、打包、正式原规模/时长测量、report/check；不手改哈希。新真实回执带包名、SHA256SUMS/源码指纹并由检查器验证；旧回执保留原归属，不补写旧包为新包。没有授权额度/被站点停止的项保持 partial/not-run，不为证据完整再试探 |
+
+### 10.3 本次实际验证
+
+| 命令 / 核查 | 退出码与结果 | 范围 |
+| --- | --- | --- |
+| `python scripts/stage.py check` | 1：stale source/commands/package/benchmark | 本次工作区；另重建目标提交输入，仍只有脚本测试一项不同并导致同类失败，非 A 修复才造成 |
+| `python scripts/check_package.py dist/trace-0.1.0-windows-x64-12` | 1：包 manifest/source/build 指纹不符；嵌入式 WebView 关闭/重连测试通过 | 不宣称包自动门禁通过 |
+| `python scripts/check_docs.py`、`check_publication.py`、`check_structure.py`、`check_generated_types.py`、`rule_evidence.py check` | 各 0 | 文档/公开内容/结构/类型/规则记录的机器检查；不能代替语义审查 |
+| `python -m unittest discover -s scripts/tests` | 0：45 项 | 含门禁反例；F-071 的漏检仍需新增回归 |
+| `cargo test -p trace-core --locked identity_tests:: -- --test-threads=1` | 0：11 项 | 含新增合并链拒绝断言 |
+| `cargo test -p trace-core --locked transport:: -- --test-threads=1` | 0：28 项 | 传输分类、代理与 Cookie 作用域 |
+| `cargo test -p trace-core --locked tool_update:: -- --test-threads=1` | 0：9 项 | 真实 RSA/SHA-512 样本、篡改与启动/摘要失败等；不证明成功更新/回退闭环 |
+| `cargo test -p trace-core --locked undated_range_tests:: -- --test-threads=1` | 0：7 项 | 生产扫描范围外不计发现/不排媒体；已知详情第二轮请求不增加 |
+| `cargo test -p trace-adapter-xiaohongshu --locked -- --test-threads=1` | 0：28 项 | 固定签名向量、无 a1 首屏兼容、HTTP/业务码拒绝与限流；单次请求 |
+| `corepack pnpm -C apps/desktop exec vitest run src/views/__tests__/management.spec.ts`、`run typecheck` | 各 0：1 项交互测试、类型无误 | 管理 tab、无自动写入、批量标签参数；不覆盖缺失流程 |
+| `cargo test -p trace-e2e --locked --test site_adapters rule_status_matches_recorded_real_evidence -- --exact` | 0：1 项 | 八站实际二进制声明与公开规则记录逐条吻合 |
+| `cargo clippy -p trace-core -p trace-adapter-xiaohongshu --locked --all-targets -- -D warnings` | 0 | 本轮受影响 Rust crate 的严格检查 |
+| `cargo fmt --all -- --check`、`check_file_sizes.py`、`lint_lines.py` | 最终各 0 | 初次 fmt 查出原有补丁及新改动排版差异，格式化后通过，不改测试语义 |
+
+没有全量重建新包、没有重跑一小时测量、没有真实网站/更新下载；原始 B 失败和已保存旧证据未改写。定向 Rust 测试编译有 MSVC 链接器消息 warning，未隐去；测试结果均为零失败。
+
+### 10.4 真实回执、规则与管理边界
+
+- 逐站核对 `.local/site-check/run-m2-r4c-*`～`run-m2-r4f-*` 的原始 receipt 与 Profile：小红书 `-7` 的签名 461 后停止；微博/X/抖音 `-8`，哔哩哔哩与两站增量 `-9`，微博/X 追加冒烟 `-10`。并非每站都跑在 `-12`，不将 Profile 包名或旧通过记录改绑新包；目前回执缺少包摘要的问题见 F-084。
+- 全部回执路线为 `proxy · 全局设置`。微博视频 0 候选与预览部分失败、小红书 refused、Instagram source_unavailable、YouTube schema_changed、TikTok rate_limit、抖音/哔哩哔哩 budget 均保留失败或未执行，不把它们记作无更新。Core 无日期范围反例通过，不等于 F-071 的真实增量驱动已能验证同样边界。
+- `rule-evidence.json` 八站累计元数据/媒体用量与 ledger 一致。授权先扣已记录的前置探测，再扣 ledger：微博剩 62、X 74、小红书 123、Instagram 106、YouTube 97、TikTok 73、抖音/哔哩哔哩 0。B 摘要微博 70/X 80 漏扣额外冒烟，已修报告与 USER-ACTIONS；本次零新增请求。
+- 八站订阅全部 partial。实际 implemented 集合为 `x.user.preview`、`douyin.user.preview_videos`、`douyin.video.link`、`douyin.live.link`、`bilibili.video.link`、`bilibili.live.link`；后两站直播链接沿用已合并证据。B 交接摘要漏列抖音视频预览和两站直播，已修 §4.1 与当前状态；这是文案更正，没有升降规则状态。
+- `-12` 包实物 37 文件、342,213,078 字节；SHA256SUMS 自身 SHA-256 为 `ADBF2BA9C9F3FDB7EA09481D6BAC19CD6C4787875BE840298139C7422D10BD58`，成员哈希匹配。实物完整与源码绑定失败是两个事实，后者不能被前者豁免。
+- a1 只从宿主为小红书生成的 device_id 上下文进入适配器，未发现 web_session/整段 Cookie 外传；工具执行有 `--no-update`/`--no-cookies`，未发现 `-U` 或自动联网检查。
+- 比较决定只存记录；原地索引以非托管外部副本保存，回收用对象库位置及 managed 条件；固定引用有 protected 检查。未发现自动合并/删除、移动或回收外部源文件、因插件移除删档案的路径；插件移除自身的一致性仍需修 F-073，全部扩展关闭的产品链仍缺 F-083。
+
+### 10.5 阶段判断
+
+**实现交付：未完成；A 技术审查：rework-required；产品验收：not-run。** schema 和命令注册已有实现，管理界面与关键故障仍不足以满足计划；本次未发现凭证泄漏或档案自动删除的 P0。ACT-003、真实 yt-dlp 更新、Linux、安装器和签名发布均未执行。当前不新增用户阻塞或远端授权请求，推荐 B 一次性返工后再交 A；人工检查不是以后远端授权的前提。
+
+### 10.6 A → B 集中返工 prompt
 
 ```text
-请作为Agent B，在TRACE的codex/m1-two-site-archive分支按唯一计划docs/delivery/stage-plan.md的TRACE-M1-01 r3，连续完成M1集中返工及P14/C14。先读AGENTS、索引、状态、有效决定、事项、USER-ACTIONS和适用专项规则，核对用户附带的最终A完整SHA、实际HEAD/工作区及本地reference，保护用户后续修改。main基点960984c34487244f31f1238dffc2bd9faaa292e7，原B r2交付b670e3b7aee88bb72e4369c5d3bab0160c460cf2；A实站诊断开始时8f7e2c9f1d4419016e7553790c050a3f0236af9e，最终以本次附带Git SHA为准。仍是一个未推送DCO阶段提交，不改main/备份历史，不push、创建PR、合并、发布、启动子Agent或自动跨聊天发送。
-
-当前F正本在同一报告§16.3，新实站原因/文件/命令/边界在§16.16，公开摘要docs/evidence/gate/m1-r3-a-readiness.json。原r2实现、自检及A审查历史继续保留。集中处理F-023/F-024/F-025/F-027/F-028/F-029六个P1，保留A已核实的F-018～022以及本次F-026局部修复；不重建无变化的已闭合范围。
-
-F-023：共享media第一个消费者完整高清候选pending后，正常succeed转交第二消费者，尚无新字节即被upgrade.list改为stale。位置jobs/consumers.rs::finish/reconcile及upgrades.rs::snapshot/confirmation_current/invalidate_stale。分开共享执行租约和已完成消费者的确认范围，正常交接保留候选，真实取消/订阅、凭证、质量、正文、旧选择变化仍拒绝旧确认。覆盖后继结果相同/较低/无提升/失败/新候选，不能简单移除代次屏障。
-
-F-024：旧低清automatic选中，高清已Reject；copies删除后restore把asset_selections改为high/rejected，quality::evaluate也不纠正。位置deletion.rs::restore及quality.rs::evaluate。所有恢复/自动选择/派生使用保持审批边界；覆盖copies/archive、pending/rejected、无旧版、固定/共享/已回收、后续质量/播放派生/导出，不删除历史或自动接受候选。
-
-F-025：旧completion-media代次1在OBJECT_READY后取消；新凭证的另一job_id代次仍1，acquisition_operation只含media+代次+候选摘要而碰撞。ready错误复用旧准备字节，commit正确拒绝所有权后新任务被cancelled。位置core.rs::acquisition_operation/uncommitted_operation及objects/mod.rs::ready/start_receiving/commit。物化ID与重用按逻辑请求隔离且可重入，保留commit屏障；覆盖两补全/普通任务交错、凭证换代及四提交窗口，同请求重开不多建变体，新身份不得虚构下载。
-
-这三项原复现：cargo test --manifest-path artifacts/a-m1-r2-review/probes/Cargo.toml --locked --offline --target-dir target --no-fail-fast -- --nocapture。原independent-probes-final2为101、0 passed/3 failed，原文件/失败不覆盖；先移入规范测试并保持故障语义，连同between_resources旧缓存与待确认备份恢复守护核对。
-
-F-026已由A修复：WBI取32字符，生产signed_url只发一次wts，正确固定key为ea1db124af3c7062474693fa704f4ff8，对应示例MD5 e0ed91b768b58beb346ad3116de6ab68。26项Bilibili及9项生产适配器通过。保留新增真实URL向量和原三个sign向量；两个旧nav期望原先错误地断言64字符，已明确纠正。A最初33字符的错误探针仅作历史，不用它回归；正确独立探针是artifacts/a-m1-real-readiness/wbi-verified-probe，旧源码模式失败、当前模式2/2通过。
-
-F-027：同一有效Cookie/self登录通过，生产Douyin详情和投稿缺SecSDK上下文而403/uifid_missing。隔离补齐现有Cookie的访问者ID/指纹和x-secsdk-web-signature后详情200且适配器解析，投稿200/20条/has_more=1；没有msToken也成功，不要伪造。按本地reference及TRACE研究核对受保护host/method/path和编码/顺序；Core持有凭证派生上下文及代次，适配器/UI/final_url/日志/参数/导出/包不得收到这些秘密。保留self登录判断、跨域头隔离、C06/C11/C13。成功HTTP不代替F-029分页处理或媒体归档。
-
-F-028：默认媒体策略缺bytefcdnrd.com和douyinliving.com；真实Bilibili CDN重定向用前者，Douyin直播返回后者的HTTP FLV，同一地址HTTPS已实测。按有证据的窄CDN策略和HTTPS规范化贯通Core，不让用户填测试白名单，不回退明文、不绕过逐跳DNS/IP/TLS或嵌套HLS校验。媒体零Cookie；伪后缀/私网/重绑定/跨站负例保留。诊断音轨8082端口的拒绝是A助手限制，不能误修Core端口策略。
-
-F-029：生产post固定20条，实站合法页1,454,679字节，common Client固定max_bytes=524288，base64后也超过1MiB帧。A实际Core+生产适配器合成回放安全拒绝但整页失败；助手直接转发的大帧BrokenPipe历史不冒称Core崩溃。协调有界页大小/有限缩页与必要的大对象协议，保证全文、必要资源、完整分页和失败游标不前移；超大单条、空页has_more、并发/取消/重启都覆盖。不能静默截断或取消大小上限。F-028/029原复现：cargo test --manifest-path artifacts/a-m1-real-readiness/probes/Cargo.toml --locked --offline --target-dir target --no-fail-fast -- --nocapture，原integration-probes为101、0/2通过；该探针使用原m1-r2-2生产适配器和当前Core，迁入规范时改为当前实际构建并保留等价断言。
-
-P14/C14是M1本次必须完成的完整产品流程：粘贴Bilibili/Douyin视频URL→解析稳定身份和当前身份可得质量/编码/必要音轨/分段→用户明确选择→同一Core持久一次性请求/对象库归档→离线读取；无需先订阅全账号。既有资源仍走统一升级确认；预览过期、凭证换代、双击幂等、取消/重启、降级/必要资源变化均有反例。直播URL先识别展示房号/真实房间/主播，不能把房号当账号；现代Bilibili getInfoByRoom/getRoomPlayInfo使用正确WBI与直播UA/Referer，Douyin web room用web_rid/enter路径已取得流。实现时保留全部原FLV/HLS、独立音轨、KEY/MAP/BYTERANGE和四提交窗口。
-
-真实退出条件AC-29/30不能写not-run后结项。用户给定的四个目标只在本机.local/site-check/m1-readiness-20261009/cases.json，旧主页在既有本地请求文件；凭证/授权/预算以USER-ACTIONS ACT-002为准，不重新索取已有效Cookie。先完成离线修复再用当前正式包在隔离Profile做一次有界生产复验：两站各一个完整视频（Bilibili样本实际4K及必要音轨）和一段至少60秒、实际短边≥720的真实直播；GUI关闭继续、停止封片/重开/导出/完整本地解码，记录任务/认证上下文/实收/全部必要对象哈希。A已取得两视频及两1080P直播并完整解码，只证明源可行，严禁把这些文件手动放入对象库代填。不得对真实旧档案覆盖；失败/挑战立即停止该跑次，目标停播或凭证失效仅暂停依赖部分并给具体原因，独立开发继续。
-
-原m1/r2映射对象、§13～15原字节、迁移1～4、A旧probes、closeout_rework/closeout_faults、home事件/媒体节点和F-001～029历史都保留。采用独立r3映射：87条需求/68条M1/19条后继，原98和r2的133必需用例不能消失，新增C14、六个F反例和真实产品链门禁。现有stage_evidence仍是r2门禁，需完整更新r3语义/计划/规范输入和真实回执拒绝，不只换标签。旧bundle/缺证据/失败/陈旧输入/低于720P/缺音轨/诊断脚本都不得放行。
-
-本次A只改WBI和规范/审查文档，原m1-r2-2/measure-final3仍证明修复前输入f8a7d480ddb520d2b52f14f52145c4b1b6f1695b033d7e184a8b8f61140f86b7。你完成修改后按当前输入运行相关及整套门禁、构建新包（含项目LICENSE/原第三方通知）与原标准完整正式资源测量/聚合，不能改绑旧回执或以60秒实站样本替代60分钟合成长测。保留closeout-4/原验收Profile、m1-9、全部r2包/失败采样及preserved measure二进制；重建前核对保护范围。
-
-开发缺口只在报告F及事项总表，用户当前动作只在USER-ACTIONS，非阻塞LOOP只在状态；不把必须项转给用户测试。ACT-004已按用户反馈完成，Apache-2.0许可证已决定，ACT-003原生整体仍not-run；自动DOM/currentTime/FFmpeg解码不代填原生体验。持续完成实现、自检、修复和文档同步，只把F标已修待A复核；amend同一未推送DCO阶段提交，实际Git读取完整SHA，提供一次B→A集中复审prompt。A通过后直接向用户收尾，不再要求B复审A。
+请作为 Agent B，在 codex/m2-multi-site-archive 连续完成 TRACE-M2-01 r2 的集中返工。原被审提交为 94d80ac652c08a762dbc091b5d53bca0e8912d8c，基点 main@c1552e048ea608ba64deae820d127bbd5e969083；本轮 A 修复与报告保存后的当前基点以 git log -1 为准。
+先读 AGENTS.md、REVIEW.md、stage-plan §11/§12、stage-report §10 与 USER-ACTIONS 的 ACT-007；本轮首选行动是返工，不是申请远端授权。
+保留已有 F-069/F-070 补丁，以及 A 新补的 429 分类、F-076 合并链保护、F-077 批量标签参数和对应回归；不要把 F-069/F-070 当已关闭。
+一次性完成 F-069 的持久停止、F-070 的动态验收、F-071～F-075、F-078～F-084。重点补管理页比较、首次回放关联、质量操作的实际 UI→API→Core 契约回归；确认范围与取消边界；插件移除失败恢复；四类能力结果校验和全部关闭后的基础归档/时间线/导出；工具同版重复安装、probe 并发切换、连续回退跨重启；无日期增量的目标/范围/详情请求快照。
+按原编号记录修复位置、输入、实际结果、命令和退出码。最终代码冻结后重新跑必需自动检查、打包和原规模/时长基准，再生成 report/check；旧日志和回执不改绑。真实站点不为补证据而重试，本轮不追加请求；遇挑战/限流/签名拒绝或已耗尽额度的项保留 partial/not-run。新驱动必须记录包摘要与输入指纹。
+同步唯一报告、当前状态及必要契约；需求仍为“本阶段”，ACT-003 仍 not-run。不 push、不建 PR、不合并、不发布；全部 amend 进同一个带 DCO 签名的阶段提交，交付最终 SHA、包摘要、原始证据入口与 B→A 复验 prompt。
 ```
 
-<a id="b-m1-r3-delivery"></a>
-## 17. B M1 r3 集中返工与验收
+<a id="b-m2-round-5"></a>
+## 11. B 集中返工 F-069～F-084（2026-10-19）
 
-本轮按唯一TRACE-M1-01 r3和§16.17连续实施，基点为A交付0a86273c602d1698a96962730dd5c67557b08e88，工作区起始干净。六项P1、P14/C14的当前实现与最终证据在本节集中记录，完整资源测量发现的F-030也在本轮修复。当前输入的自动检查、新包及完整正式资源测量通过；四个真实产品链用例仍缺，AC-29/30保持blocked，M1为rework-required。A审查尚未进行，原§13～16及全部旧成功/失败证据保留。
+返工基线为 `22b5082a63fd9fcc0c90ce70fc6b8451348d71a3`。A 在 §10.1 直接补的 429 分类、F-076 合并链拒绝、F-077 批量标签参数和原有签名拒绝/回退指针补丁全部保留；本节记录的是在其上完成的生产实现、反例和最终证据。真实站点本轮零新增请求，旧回执和旧规则状态不改绑，八站订阅规则仍全部为 `partial`。
 
-### 17.1 承接与受保护基线
+### 11.1 逐项修复与回归
 
-B开始于A交付SHA，未切换main、未创建竞争计划。依AGENTS及本地参考规则逐级确认索引，只读核对对应功能与许可；参考材料没有成为授权或构建依赖。凭据和四个目标仍使用ACT-002已有本机输入，不要求重新复制Cookie。
+| 编号 | 修复（生产位置） | 回归 |
+| --- | --- | --- |
+| F-069 | 站点明确拒绝（`PermissionDenied`，含小红书 461）落到可解释的 `waiting_user`，`last_error.class=permission_denied`；`wake_waiting_auth`、凭证变更、凭证泊车、`upgrades::schedule`、低于目标的媒体重排均排除此类停止；重启只恢复 `leased/running`；`jobs/consumers.rs` 不再把它改回 `waiting_auth`；只有 `job.retry`/显式重试恢复 | `permission_refusal_is_only_retried_by_an_explicit_user_action`；普通 `AuthRequired` 唤醒仍由既有 `shared_auth_failure_and_credential_change_do_not_cross_consumers` 覆盖 |
+| F-070 | `tool_update` 成功回退保留非随包 `previous`；启动 `restore` 重新校验；损坏候选拒绝且不切换、不改活动指针 | `rollback_survives_restarts_and_a_damaged_candidate_keeps_the_current_version`（V3→V2→重启→V1→重启，损坏 V2 仍保持 V3） |
+| F-071 | `scripts/real_site_check.py` 在增量前后记录完整 `requests` 快照与目标条目的 `observe/media` attempt 快照；核对发现条目的 `native_key`、是否落在请求范围、范围外条目、第二次检查详情 attempt 是否增长、自动下载关闭时媒体字节是否为 0；自动下载开启检查目标保存状态；回执记录每次请求的 `endpoint`/`started_at` | `test_an_incremental_check_verifies_range_detail_attempts_and_no_media_on_a_second_pass`（范围外、详情 attempt 增长、第二次媒体字节、成功路径）；既有增量/无日期驱动测试 |
+| F-072 | 新增 `creator.merge_preview`、`creator.split_preview`、`creator.relink_preview`，返回源/目标范围、每个账号的订阅与条目数量；执行命令必须带与当前状态重算一致的 `preview_token`，绑定/数量变化即 `VersionConflict`；管理页先预览、显示影响、勾选确认后才可执行；输入变化清空预览 | `identity_previews_show_scope_and_a_changed_binding_invalidates_the_confirmation`；管理页 Vitest 的预览 token 与实际 API 参数 |
+| F-073 | 移除插件改为“先原子改名到 `.removing-<version>`，再删目录，最后删记录”；改名/删除失败保留原目录与记录可重试；启动 `reconcile_removals` 完成改名后崩溃的删除并清理残留 | `a_failed_plugin_removal_stays_retryable_and_keeps_the_archive`、`a_removal_interrupted_after_the_directory_is_gone_is_reconciled_at_startup`、既有 `plugin_remove_leaves_archive_readable` |
+| F-074 | `import.inspect` 返回覆盖路径、文件集合、模式、目标的 `preview_token`；`import.start` 必须带 token，Core 重新扫描后不一致即拒绝，不写批次；预览显示文件数、字节、不可读、重复、链接跳过；管理页输入/模式/目标变化清空预览，必须勾选确认 | `import_start_requires_the_exact_preview_and_refuses_a_stale_one`；管理页 Vitest 的预览/确认/旧 token |
+| F-075 | 四类能力契约增加必填字段与 JSON 类型；`validate_result` 拒绝 null/标量/数组、未声明字段、缺必填、错类型；`notify` 只在返回对象 `delivered=true` 时算成功；失败不替换归档 | 契约单测 `capability_result_shapes_are_checked_for_every_kind`；`capability_results_are_typed_and_a_failure_never_touches_the_archive`（四类成功、六类坏结果、通知 false/true、归档标题与正文不变） |
+| F-078 | `resource.compare`/`decide` 统一接受 `left_entry_id`/`right_entry_id`，非 `entry` 的 kind 明确拒绝；UI 只提供条目比较；决定只写比较记录 | `comparison_uses_the_ui_entry_contract_and_only_records_a_decision`（比较、三种决定、不删除、拒绝 media kind）；管理页 Vitest 比较参数 |
+| F-079 | 回放候选表增加“关联并保留两者 / 设回放为主 / 拒绝”；零关系可直接建立首条关联，拒绝也落持久记录（upsert rejected）；主版本仍受覆盖完整与质量可比较约束；消息显示覆盖/质量；录制分片和独有区间不动 | `the_first_relation_can_be_linked_or_rejected_from_zero`、既有分片/独有区间测试；管理页 Vitest 候选关联 |
+| F-080 | 质量筛选值改为 `pending_upgrade`/`incomparable`/`replaced`/`manually_kept`/`stable`；表格显示 `states` 与 `reasons`；增加固定/解除/重新评估动作，按条目解析当前变体；保存策略返回受影响条目数 | `quality_failure_shared_blob_pins_unique_coverage_and_gc_windows` 增补 `pin_entry` 固定/解除；管理页 Vitest 枚举筛选与固定动作 |
+| F-081 | 安装前基于当前活动版本拒绝同版安装，并拒绝与当前版本不一致的过期 Check；拒绝发生在任何下载、删目录、清单、活动指针或回退链写入之前；安装成功后 UI 清除 Check、按钮失效 | `the_same_version_and_a_stale_check_are_refused_before_any_change`（保留目录标记文件、活动指针不变）；`rollback_survives…` 覆盖回退链 |
+| F-082 | `MediaTools::exclusive()` 持有真实解析同一个信号量；安装/回退在最终校验、`activate` 和活动指针持久化期间持有许可；已在运行的解析让切换等待，新解析不能插队；失败不损当前版本 | `a_switch_waits_for_a_tool_run_and_holds_the_same_permit`；既有安装启动/摘要反例 |
+| F-083 | 可选扩展测试声明并关闭全部四类；用生产 `process_scan_page` 保存合成作品，再查时间线、导出 `entries.jsonl`、读回标题；凭证仍在；通知失败隔离 | `optional_extensions_off_keeps_base_archive` |
+| F-084 | 新回执写入包名、`SHA256SUMS.txt` 摘要、manifest 的提交/源码树/协议；`record` 对带包身份的回执重新核对包实物，旧回执没有该字段则保留原归属；最终代码冻结后重跑测试、打包、原规模/时长基准和 report/check | `test_a_new_receipt_is_bound_to_its_package_digest_and_source_tree`；最终命令见 §11.3～§11.4 |
 
-§13～15原始字节保持，内容摘要仍为`af6d68e894acc6fe522959b974e84ed82bc36a5ea157bb3779f7021f68ae00cb`。原m1/r2需求对象及r2审查元数据逐项对照A基点，未改变；独立r3为87条需求、68条M1适用、19条后继。迁移1～5不改写，由schema6增加新结构。原A probes、closeout断言、home事件/媒体节点、旧包、验收Profile、旧正式/失败测量均保留。旧target/measure两执行文件另存`artifacts/m1-r3/preserved-pre-r3-measure/`，摘要清单用于新测量前后核对；不改绑旧测量。
+### 11.2 UI→API→Core、取消与故障恢复
 
-### 17.2 实现边界
+- 管理页两条 Vitest 用例覆盖：身份合并预览/确认、导入预览/勾选/旧 token、条目比较参数、零关系回放候选关联、质量枚举筛选与固定；均断言真实 `api.*` 参数，而不是只渲染按钮。
+- Rust 侧覆盖同三条链路：`creator.*_preview` 命令→事务前重算 token→`store::identity`；`import.inspect`→`import.start` 重扫描；`resource.compare`/`decide`→比较记录；`live.replay.candidates`→`link`/`reject`；`quality.pin(entry_id)`→当前变体。
+- 取消/陈旧确认：拆分空选择、Relink 过期预期、合并/拆分/重关联 token 变化、导入路径/模式/文件变化、同版安装、过期 Check、回放主版本约束、能力结果坏形状均被拒绝且不写目标状态；插件移除失败、改名后崩溃、工具回退跨重启、解析并发都有反例。
 
-F-023按完成消费者的请求序号保存升级确认范围，正常共享执行权交接保留完整候选；取消、订阅/凭证/正文/选择/固定状态变化仍失效。F-024保存删除前选择并对恢复、自动选择和播放派生实施审批检查，拒绝/待确认候选不被恢复为当前资源。F-025在物化身份中加入job_id，开始接收、ready和commit都检查原所有者；原schema5键仅由同一任务/资源/代次恢复，不能碰撞另一补全。收集中断的同任务可复用自身已提交的pending变体，不复制另一身份的获取记录。
+### 11.3 最终命令与退出码
 
-F-027的SecSDK上下文在Core中按固定host/method/path派生；固定查询编码/次序向量和实际回环HTTP断言共同验证，跨域剥离派生头/查询，final_url不含上下文。self登录证明与访问签名独立，不生成msToken。F-028按来源证据加入两个窄CDN域，Douyin该直播CDN只做同地址HTTPS规范化，所有逐跳域/IP/TLS及媒体零Cookie约束保留。F-029增加显式有界分片消息，1.45MB/20条生产适配器回放完整通过；超限、坏摘要、乱序、并发、超时和进程重开有拒绝断言。普通帧仍有1MiB限制，旧端预算参数不等于实际响应大小。
-
-P14通过`/acquire`进入原Core：稳定链接解析、安全选项、五分钟预览、显式确认、持久source_acquire、媒体或录制任务、原对象库和离线档案。one_shot仅复用凭证/控制范围，数据库禁止作者扫描；视频必要音轨/全部有序分段不得省略，已有资源仍走统一升级确认。双击以及不同直播预览在排队阶段去重，身份/质量变化返回冲突。实现及协议的唯一正本见[归档契约§9](../site-archive-contracts.md#direct-source-acquisition)。
-
-新增定向测试实际覆盖两站生产适配器→本地HTTP→Core资源→离线重开及真实旧/新媒体的显式升级；没有拿诊断媒体填对象库。真实执行器只通过生产包GUI/IPC驱动，所有网络接收与对象提交均由Core完成。门禁独立读取数据库中的任务、认证代次、所有必要变体、物化记录、封片源时间、Core范围读取字节、导出与完整解码输入，不能用成功标签或诊断文件通过。
-
-### 17.3 中间失败与修复记录
-
-全部原A失败及B中间回执留原路径。`artifacts/m1-r3/`中的initial/second/directed等为实施过程采样，不作为最终聚合输入；命令退出码及sourceUnchanged分别保存，不将测试进程成功但输入变化的跑次冒充当前证据。
-
-| 回执 / 原观测 | 具体处理与复验边界 |
+| 命令 | 退出码与结果 |
 | --- | --- |
-| core-initial、data-network、data-network-2 | 新任务身份参数、Profile字段及类型推导的编译失败；修正接线后相应定向用例通过，未改原业务断言 |
-| source-directed | Bilibili all_variants的已复合音轨分支未标示silent_or_muxed，必要资源检查正确拒绝；修复后两站生产视频链通过 |
-| ui-directed | Windows子进程找不到corepack；改用实际corepack.cmd命令，原失败日志保留 |
-| clippy-final-1 | 活跃录制行类型过于复杂；提取类型别名，严格Clippy通过 |
-| rust-final-1 | 旧proxy.fetch请求4MiB预算被新增512KiB参数上限拒绝，原closeout及离线闭环失败；宿主保留旧预算小响应能力，过大普通响应明确返回错误而不是丢帧 |
-| rust-final-2 | 原prepared恢复断言发现重复物化；新增预览字段不应改变旧物化比较，恢复原签名字段并只在新source选项/缓存核对中扩展，按同任务所有权接续旧键 |
-| legacy-reentry | 原closeout六个窗口、十种分段组合、暂停恢复、完整离线闭环均实际通过；原测试文件和断言未弱化 |
-| package-1、package-2 | 两个包均实际构建，分别绑定其当时输入；随上面修正成为历史包，不冒充当前交付，也未覆盖或换绑 |
-| real-douyin-01 / 1次元数据、0媒体 | GUI驱动器在初始路由尚未完成时导航，未进入来源请求；等待实际main内容后点击产品路由。三个冷启动离线窗口验证导航且未发新站点请求 |
-| real-douyin-02 / 7次元数据、0媒体 | self/detail均200，首个CDN请求403后立即停止。对照A已成功请求的公开头，生产候选缺UA/Referer；补入Douyin视频及直播候选，并由Core实际HTTP反例核对媒体零Cookie |
-| real-douyin-03 / 9次元数据、9,352,828媒体字节 | 生产GUI选择1080×1920选项，Core完成视频接收和对象提交；直播预览失败而中止，尚无该跑次的导出/重开/完整解码，不计AC-29/30通过 |
-| real-douyin-04 / 3次元数据、0媒体 | 先检查直播，enter为HTTP200/业务0、单房间status=4且无owner。只保留字节数/业务码/数量/状态/owner是否存在的安全观察；停止该目标。修复停播响应缺身份时误报结构变化，Core只传白名单离线状态，不转发原始消息；依赖只见ACT-002 |
-| real-bilibili-01 / 3次元数据、0媒体 | 登录验证成功，公钥bootstrap仍请求匿名nav，泛用API信封把其未登录状态当签名不可用。请求沿用所选范围；只允许无挑战且完整的公开WBI键用于签名，-101仍不是登录证明，原32字符算法和向量不改。原失败包/回执保留 |
-| real-bilibili-02 / 20次元数据、52,324,675媒体字节 | 生产GUI选择直播，Core实录、GUI关闭继续和停止封片成功；视频媒体任务在接收前被选择守护拒绝。数字quality_id经safe_metadata变成字符串，导致预览和执行摘要不同；统一新source规格规范化，原acquisition_spec不变。`dash-normalization-baseline`实际失败，`dash-normalization-fixed`通过分離视频/必要音轨接收、原选择保留、Core播放派生及离线重开。整个跑次仍失败，不冒充AC-29/30完整证据；后续依赖仅见ACT-002 |
-| resource-formal-1 / 主动停止、保留完整已采样部分 | 提交一致性核对发现需求JSON/许可台账为CRLF而Git要求LF；原包匹配工作区，但不匹配规范化后的提交字节。在闲置采样阶段停止自有工作负载，原始计数、失败benchmark及当时二进制全部保留。统一换行不改需求内容；按Git过滤后的233项输入逐一比较，字节差异为0，重新生成包/回执和完整正式测量 |
-| resource-formal-2 / 完整945样本、恢复45.246秒未达标 | 完整录制3621.335秒、闲置905.75秒、混合并发361样本、任务错误0；查询/CPU/内存/录制启动/GUI关闭均通过，原恢复30秒上限失败。按F-030量化并修复已提交暂存路径的逐行持久写放大；保存全部采样和二进制，再生成新包和同规模/时长正式结果 |
-| docs-pre-formal4 / 文档检查退出1 | §17.5将A探针、closeout、主页和WBI以斜杠串写，触发个人路径规则；改为准确枚举，未改变检查器。docs-post-path-fix实际退出0，49文档/570本地链接/87需求/30验收/12不变量检查通过；原失败回执保留 |
+| `python scripts/stage.py test --run m2-r5b` | 0：Rust 887 项、前端 20 个文件/141 项、脚本 47 项全部通过；`test-frontend` 同时跑 Prettier、`vue-tsc`、Vitest 与生产构建 |
+| `cargo clippy --workspace --locked --all-targets -- -D warnings` | 0 |
+| `cargo fmt --all -- --check` | 0 |
+| `python scripts/check_docs.py`、`check_publication.py`、`check_structure.py`、`check_generated_types.py` | 各 0（文档 52、链接 801、需求 100、验收 38、必需不变量 12、决定 18） |
+| `python scripts/stage.py package --run m2-r5b` | 0：`package/portable` 与 `package/check` 均通过 |
+| `python scripts/stage.py bench --run m2-r5b --idle 1030 --seconds 3640 --entries 100000` | 0：时长 3641.2 秒、空闲窗口 910.3 秒；10 万条/50 万媒体元数据；热/冷查询 P95 144/139 ms，资源管理器热/冷 P95 113/105 ms；空闲 CPU 0.18%、内存 P95 51.9 MiB；四路录制 CPU 1.64%、内存 P95 68.4 MiB；启动录制 P95 1.18 秒、恢复 2.13 秒、GUI 关闭 3.02 秒；0 作业错误 |
+| `python scripts/stage.py report --run m2-r5b`、`python scripts/stage.py check` | 各 0：`docs/evidence/gate/report.json` 已生成，check 输出 `automated evidence passed; A review pending; product acceptance not-run` |
 
-旧r1和r2 bundle在现有验证函数中明确拒绝，结果在`old-bundle-rejection.json`；旧回执字节未变。F-026继续使用A的32字符正确独立向量，最初33字符错误探针仅保留历史。最终通过证据与真实边界将在下节逐项列明。
+### 11.4 最终包、原规模/时长基准与门禁
 
-保护审计`preservation-final-2.json`逐项核对迁移1～5、原98/r2的133必需用例，以及closeout-4、m1-9、三个r2包的全部清单文件。首份审计使用不存在的MIGRATION_002/003常量名，造成两项假阴性；按实际MIGRATION_002_TRIGGERS和内联第三迁移核对后均未变，首份审计仍保留。中间Rust全套先后245及246用例通过，UI52、Python19通过；后续公钥bootstrap修正后这些仍只证明对应原输入，最终证据须重新运行并记录当前输入。
+- 最终包 `dist/trace-0.1.0-windows-x64-13/`：37 个文件、342,154,710 字节；`SHA256SUMS.txt` 自身 SHA-256 为 `394D933912D017F9F0CD4CF4BEF57BEFEE66920BBFB768E223C36E6F2FCA99EA`。manifest 的源码树为 `fc98d4f0b298df237f1cded8a4438c2126374269cfe3cdfee830c6d3be970c78`，schema 8、控制协议 0.1、`productAcceptance=not-run`；包内 WebView、八站适配器 hello/doctor 与清单检查通过。manifest 的 `git_commit` 是构建时的 `22b5082` 且 `source_dirty=true`：包由同一冻结工作树构建，最终 amend 只把该工作树写入提交元数据；`sourceInputs`/`source_tree_sha256` 与最终提交的工作树逐项一致，不能把 `git_commit` 字段误读为最终提交号。
+- 首次一小时长测在收尾校验时报 `invalid observable timestamps`：四个合成场次的 `started_at` 有两个早于驱动记录的全局 observable 时间，属基准驱动的时钟/时间戳缺陷，不是产品检查通过或失败。失败原始证据保留在 `artifacts/evidence-runs/m2-r5b-bench-failed/`，没有修改判据或把失败样本补写成通过；本轮按同一冻结源码、同一参数重跑，结果如下。
+- 原规模/时长基准（重跑）：3641.2 秒、空闲窗口 910.3 秒、10 万条/50 万媒体元数据；热查询 P95 144 ms、冷查询 P95 139 ms，资源管理器热/冷 P95 113/105 ms；空闲 CPU 均值 0.18%、内存 P95 51.9 MiB；四路录制 CPU 均值 1.64%、内存 P95 68.4 MiB；启动录制 P95 1.18 秒、恢复 2.13 秒、GUI 关闭 3.02 秒；352 个混合并行样本、4 次录制启动、0 作业错误。第一次失败样本仍保留在 `m2-r5b-bench-failed/`，没有用重跑覆盖或改判据。
+- 自动证据、包和基准绑定的是同一冻结源码；文档编辑不改变产品输入指纹。旧 `-12` 包、旧 gate 报告和旧回执保留原输入与归属，不改绑到本次源码。
 
-### 17.4 首次完整资源复测前的检查与包
+### 11.5 真实回执、规则与未执行边界
 
-本节记录发现F-030前的版本：输入233项，集合SHA-256为`ce112b46b2314f7b52e82c8350f776668277610d7a407b764bae81710a7fcb72`。测试、脚本、规范需求与契约都参与输入摘要；Git过滤后的源文件字节已逐一核对一致。各回执在`artifacts/m1-r3/`保存真实命令、原输出、退出码与sourceUnchanged，不从旧回执换绑摘要。F-030修改后本节包及回执只证明原输入，最终证据另列。
+- 本轮**零新增真实站点请求**；`.local/site-check/` 的既有回执仍只属于各自包（小红书 `-7`、微博/X/抖音 `-8`、哔哩哔哩与增量 `-9`、微博/X 追加 `-10`），没有改绑到新包。新回执代码会记录包摘要与源码树，但本轮没有产生新回执。
+- 八站订阅规则全部 `partial`；`x.user.preview`、`douyin.user.preview_videos`、`douyin.video.link`、`douyin.live.link`、`bilibili.video.link`、`bilibili.live.link` 保持 `implemented`。微博视频 0 候选、小红书 461、Instagram 目标错误页、YouTube 列表无初始数据、TikTok 限流、抖音/哔哩哔哩额度用尽均保留为失败或未执行，不写成“没有更新”。
+- 授权额度不变：微博 62、X 74、小红书 123、Instagram 106、YouTube 97、TikTok 73、抖音/哔哩哔哩 0。ACT-003 人工原生体验、真实 yt-dlp 更新下载、Linux/安装器/发布签名仍未执行。
 
-| 回执 / 实际命令 | 结果与范围 |
+### 11.6 本阶段判断
+
+实现交付：待 A 复验；A 技术审查：pending；产品验收：not-run。自动证据通过只说明 B 自检，不是 A 审查或产品验收。
+
+## 12. B → A 集中返工复验交接
+
+**最终提交：** 本次 amend 后的 `HEAD`（准确 SHA 在给 A 的交接消息中给出；报告不写自引用的提交号）。分支 `codex/m2-multi-site-archive`，工作区应为干净；未 push、未建 PR、未合并、未发布。
+
+**入口：** [§11 返工实现与证据](#b-m2-round-5)、§11.1 逐项表、§11.3 命令/退出码、§11.4 包/基准、§11.5 真实回执边界；`docs/evidence/gate/report.json`；`artifacts/evidence-runs/m2-r5b/`（test/package/bench/report 回执与日志，均不提交）；`artifacts/evidence-runs/m2-r5b-bench-failed/`（第一次长测失败的原始证据，不覆盖、不补写）；最终包 `dist/trace-0.1.0-windows-x64-13/` 与 `SHA256SUMS.txt`。
+
+**请 A 重点复验：**
+
+1. F-069：普通订阅收到站点 `PermissionDenied`（含小红书 461）后是否停在 `waiting_user`，扫描时钟、valid 凭证复验、凭证变更/泊车、升级排程、低于目标媒体重排、重启是否都不再请求；只有显式 `job.retry`/用户动作恢复；普通 `AuthRequired` 的认证恢复是否保留。
+2. F-070/F-081/F-082：成功回退、跨重启、损坏候选保持当前版本；同版安装与过期 Check 在任何下载/删目录/清单/活动指针/回退链写入前拒绝；安装/回退是否与真实解析共用持有式许可，启动解析时切换等待而不是越过。
+3. F-071：增量驱动是否按 `endpoint`/目标 `observe|media` attempt 快照验证目标在范围内、范围外零发现、第二次检查零详情、自动下载关闭零媒体；失败时是否返回 false，而不是用集合不变替代。
+4. F-072～F-074：合并/拆分/重关联的预览范围、二次确认、陈旧 token；导入预览 token 覆盖路径/文件/模式/目标，Core 重扫描拒绝陈旧确认；插件移除改名失败、改名后崩溃、重启重试是否保留档案与记录。
+5. F-075/F-078～F-080：四类能力返回对象、必填、类型、未知字段；通知 `delivered=false` 的隔离；条目比较 UI→API→Core 契约与三种决定；零关系回放候选的关联/拒绝、覆盖/质量/主版本约束；质量四类筛选、原因和固定/解除/重新评估。
+6. F-083/F-084：全部四类可选扩展关闭后，生产 `process_scan_page` 保存、时间线、导出和凭证边界；新回执的包摘要/源码树验证，旧回执不补写新包。
+7. 自动门禁：`stage.py check` 是否仍输出 `automated evidence passed; A review pending; product acceptance not-run`；文档、公开内容、结构、生成类型检查；包实物与源码指纹。
+
+**已知限制：** 八站订阅规则全部 `partial`；本轮零新增真实请求，旧回执仍属 `-7`～`-10` 包，不改绑；ACT-003 人工原生体验、真实 yt-dlp 更新下载、Linux/安装器/签名发布 not-run；第一次长测的 observable 时间戳失败保留原证据，不改变判据，重跑通过；包 manifest 的 `git_commit`/`source_dirty` 是构建时快照，最终提交以 `HEAD` 和 `source_tree_sha256` 为准。
+
+这是 B 自检与返工交接，不是 A 审查或产品验收。
+
+<a id="a-m2-rework-review"></a>
+## 13. A 独立返工复验（2026-10-19）
+
+被审提交为 `4e8a8a1988334beb1b8eeb42d140e79e959a74f8`，返工基线为 `22b5082a63fd9fcc0c90ce70fc6b8451348d71a3`，原审查对象为 `94d80ac652c08a762dbc091b5d53bca0e8912d8c`；接手时分支、唯一阶段提交及工作区均已核实，工作区干净。独立读生产代码、UI/API、反例和原始证据，不以 §11 的 B 自检结论代替审查。结论仍为 **rework-required**；没有发现 P0，不申请 push、PR、合并或发布授权。局部问题直接处理，下面六项剩余缺口一次性交回 B。
+
+### 13.1 原冻结证据的独立复核
+
+- 修改产品输入前，独立执行 `stage.py check` 成功；逐条校验 gate 的源码输入、命令原始日志摘要、包清单与源码树，未重现 §10 的旧指纹不一致。被审源码树为 `fc98d4f0b298df237f1cded8a4438c2126374269cfe3cdfee830c6d3be970c78`，共 770 项输入。887 项 Rust、141 项前端、47 项脚本是 B 原始日志中的用例数；A 重新读取并核对日志，而非宣称又运行过整个 workspace 的 887 项。
+- 独立重跑 `-13` 包检查，两个用例通过，包含真实嵌入式 WebView 的关闭/重连；实物 37 文件、342,154,710 字节。SHA256SUMS 自身 SHA-256 为 `394D933912D017F9F0CD4CF4BEF57BEFEE66920BBFB768E223C36E6F2FCA99EA`，成员摘要正确。这证明原包完整且与原冻结输入相符，不证明下节的新回执验证器能发现所有篡改。
+- 从 938 个原始资源样本重新调用同一测量推导，结果与 gate 的测量逐字段一致：空闲 CPU 0.179140%、内存 P95 51.867 MiB；四路录制 CPU 1.635626%、内存 P95 68.426 MiB；热查询 144.363 ms、资源管理器热查询 112.615 ms；启动 1.18197 s、恢复 2.13085 s、GUI 关闭 3.01666 s。原规模、正式时长与阈值没有缩减；A 没有另跑一小时测量。
+- 第一次失败基准的 JSON、原始资源样本、生命周期、命令回执和日志仍在原位置；源码输入均与原冻结输入一致，退出码 1。重新推导仍报 `invalid observable timestamps`；四个场次中两个 detected-observable 为负（约 -2.044/-3.892 s），并非删掉失败后改判据。失败日志 SHA-256 为 `be03edb1106e7eea7078eebcf68892a430d4ab2dc38d1d738a340a91b5dd237b`。
+- 本次局部产品代码/测试修复改变五个输入，仍为 770 项，修复后源码树为 `08f91296efb92be74a832fa1b0112862c491a36d86e8e5611107cf671101c7aa`；原 gate、包及基准保留原归属，不补写为修复后通过。最终源码上的 stale 拒绝是预期结果，B 完成下节返工后必须冻结新输入、重跑必要测试/包/原规模长测，再生成 report/check。
+
+### 13.2 一次性交回 B 的剩余必须项
+
+保留原编号，不把这些缺口转给人工验收或顺延 LOOP；它们与已通过的机器门禁可以同时存在。
+
+| 编号 / 严重度 | 实际路径与反例 | 完成条件 |
+| --- | --- | --- |
+| F-069 / P1，仍开放 | [消费者唤醒](../../crates/core/src/jobs/consumers.rs#L156-L171) 与 [认证补全排程](../../crates/core/src/upgrades/schedule.rs#L43) 用逻辑 job 的停止状态/错误判定拒绝，但拒绝实际属于某个 consumer。A 被拒后 reconciliation 选 B，job 变 queued 且错误被覆盖；自动 invalid→valid 凭证探测可将 A 从 waiting_user 改成 waiting_auth 再 queued，单次 valid 也能替 A 排 auth_completion。另一条路径是普通订阅的 incremental/history/deep 独立任务：一个被拒只停自己，另两个仍可 claim，并继续访问同一个签名列表端点。新增单消费者测试没有覆盖这两种实际所有权/扫描模型 | 拒绝按 owner/订阅/请求范围持久停止，所有自动扫描、凭证复验、补全、重排与重启都遵守；不得饿死另一个合法 owner；只有显式用户重试能解除。补双消费者 invalid→valid、valid-only、普通三 lane、重启与显式重试回归，保留 AuthRequired 正常恢复 |
+| F-071 / P1，仍开放 | [详情快照](../../scripts/real_site_check.py#L704-L715) 读 `jobs.attempts`，而该字段是失败预算，不是成功执行计数；成功 claim/succeed 不增加它。[第二次增量](../../scripts/real_site_check.py#L808-L833) 只记录而不核对 endpoint 请求，且没有核对 `entry_subscriptions`。离线驱动反例中，同一目标详情成功执行两次、失败计数始终 0、目标订阅发现记录为 0，auto-off 仍返回 ok=true、detail attempts unchanged；auto-on 对没有本订阅发现关系的 complete 条目也返回 true | 用真实成功/失败 attempt 或按 endpoint/native key 可验证的计数，不伪造 attempts 递增；核对目标属于本次订阅、范围外零订阅发现/媒体、重复增量零详情与新任务；开/关均有正反例，预览或其他 lane 的入库不得冒充订阅发现 |
+| F-072 / P1，仍开放 | [三种确认操作](../../crates/core/src/app/identity.rs#L179-L228) 在 `db.read(...).await` 重算/比较 token，随后另行 `db.write(...).await` 写关系。[DB actor](../../crates/core/src/db/mod.rs#L49-L52) 仅串行单闭包；已经排队的绑定/数量写入可在两者之间提交。A 的无 sleep、手动 poll/actor 屏障反例实际返回 accounts_moved=2，将预览外的 acc-not-shown 一起迁走；split/relink 同样不原子保证已确认的数量/范围 | 在同一写事务内重算相同影响、比较 token、执行关系变更与审计；不一致即 VersionConflict 且零写入。用 actor 屏障准确安排“校验后、写入前”的变更，不只在调用前改数据 |
+| F-073 / P1 可用性、P2 恢复，仍开放 | [删除恢复](../../crates/core/src/plugin_install.rs#L551-L574) 的 remove_dir 错误经 [Core 启动](../../crates/core/src/core.rs#L242) 传播，Windows tombstone 子文件 share_mode(0) 占用反例实际返回错误 32，Core::open 失败，基础档案也不可读。另在 [先删 trash、后删 DB](../../crates/core/src/plugin_install.rs#L529-L545) 之间崩溃，两目录都不存在时启动直接跳过，死 release/回退候选永久保留。删除前 non_active 查询还未向 activate/rollback 预留，存在删文件后才发现版本已 active 的代码级竞态；此竞态未宣称已动态复现 | 持久移除意图/状态覆盖改名、物理删除和 DB 清理；清理失败只能产生可重试告警，不能阻断基础档案启动；activation/rollback 与 removing 互斥或同生命周期锁。覆盖 Windows 显式 share_mode(0) 占用启动、trash 已删/DB 未删重启、再次移除、并发 activate/remove，并核对档案与活动驱动不受损 |
+| F-079 / P2 剩余，首次关联已修 | [候选动作](../../apps/desktop/src/views/ManagementView.vue#L292-L312) 已能从零关系关联/拒绝，Core 对不完整或不可比较的 replay_primary 也会拒绝；但界面仅在写后用 toast 显示 complete/quality，[已有关联列](../../apps/desktop/src/views/ManagementView.vue#L576-L600) 没有覆盖范围、录制独有区间或质量。候选“设回放为主”之前也看不到足以作决定的比较；页面声称区间会列在记录里，实际未渲染 | 提供只读覆盖/质量比较及受约束的主版本选择，持久展示 recorded/unique ranges、不可比较原因，不用写操作当预览；从零关联、拒绝、不可比较/剪辑缺段、取消和已有记录展示均走实际 UI→API→Core 回归；保持全部录制分片 |
+| F-084 / P2 剩余，原输入绑定已核实 | [包身份验证](../../scripts/real_site_check.py#L65-L98) 只读 manifest 并散列 SHA256SUMS 文件，未逐项核对实际成员；包目录缺失还直接返回成功。合成包保持 manifest/清单不变，仅修改 trace-daemon.exe，校验返回空错误；包完全缺失也为空错误。实际 `-13` 成员正确，不把此验证器缺口误写成当前包被篡改 | 新回执验证须核对包成员的实际摘要/缺失/额外成员及源码树关联；包缺失须失败或明确不可验证，不得报告成功；新增“二进制被改但 sums 未动”和缺包反例。旧真实回执不补写、不换绑；修复冻结后再生成新自动证据 |
+
+### 13.3 A 直接处理的局部问题与已核实项
+
+| 编号 / 状态 | 处理与边界 |
 | --- | --- |
-| `rust-final-7` / `cargo test --workspace --locked --offline --no-fail-fast` | 248项通过，0失败/忽略；包含原A/closeout、六项F、P14、分离DASH和大页/网络/恢复反例 |
-| `ui-final-8` / `corepack.cmd pnpm -C apps/desktop exec vitest run --reporter=verbose` | 52项通过；原home事件/媒体节点断言保持，新链接预览/选择/晚到事件/停止/错误状态通过 |
-| `python-final-9` / `python -m unittest discover -s scripts/tests -v` | 19项通过；包含r3真实回执、数据库所有权/封片、实际尺寸/音轨、解码输入、历史预算和授权上限的拒绝反例 |
-| `post-eol-fmt-1` / `cargo fmt --all -- --check` | 退出0 |
-| `post-eol-clippy-1` / `cargo clippy --workspace --locked --all-targets -- -D warnings` | 退出0；工具链的增量缓存无法复用提示不影响编译结果，原输出保留 |
-| `post-eol-verify-1` / `python scripts/verify.py --all --json` | 五套件5/5通过；包含类型检查、前端生产构建、离线、恢复、生产协议夹具和资源规则，不代替真实站点AC-29/30 |
-| `package-11` / `python scripts/package_windows.py` | 实际构建`dist/trace-0.1.0-windows-x64-m1-r3-10`，sourceUnchanged=true；新目录，未覆盖前十个r3包或旧稳定包 |
-| `package-check-11` / `python scripts/check_package.py dist/trace-0.1.0-windows-x64-m1-r3-10` | 2项通过；完整包清单、无测试端点、两站注册，以及实际最小化WebView关闭/重连/完全退出 |
-| `ui-visual-final-2` / `python artifacts/m1-r3/ui-visual-final-2/run.py` | 当前包1280/760宽的链接页截图及实际导航，0站点请求、无前台输入；不代替原生IME/声音/缩放验收 |
-| `original-r2-probes-current-2` / `cargo test --manifest-path artifacts/m1-r3/original-r2-probes-current/Cargo.toml --locked --offline --target-dir target --no-fail-fast -- --nocapture` | A原三项断言的副本3/3通过。原Cargo/src/lock摘要未变；初次直接使用原锁被--locked正确拒绝，失败保留，当前依赖边只在副本离线更新 |
-| `wbi-current-2` / `cargo test --manifest-path artifacts/a-m1-real-readiness/wbi-verified-probe/Cargo.toml --locked --offline --target-dir target -- --nocapture` | A正确32字符独立探针2/2通过，原错误33字符探针仅保留历史 |
+| F-085 / P2，局部修复 | [回放候选](../../crates/core/src/store/replays.rs#L208-L233) 把 RFC3339 的 T/时区字符串直接与 SQLite datetime 的空格字符串比较，错误地包含当天过早条目、漏掉次日有效条目。统一转为 datetime 后按真实时刻比较；新增同日下界、次日上界、时区偏移及越界回归 |
+| F-086 / P2，局部修复 | [工具真实运行](../../crates/core/src/media_tools/run.rs#L354-L440) 在拿许可前抓取程序路径；等待回退的解析/下载可在切到 V1 后仍执行 V2。将 program 解析放到拿许可之后，新增排队查询/下载启动真正合成 cmd 子进程的反例；不与已修的 F-082 物理运行/切换重叠混淆，不声称执行过真实下载 |
+| F-070、F-081、F-082 / 原缺陷已核实 | 非随包回退持久指针、先验坏候选再切换、同版/过期 Check 拒绝以及持许可的最终 current 重查符合原要求。A 加强成功回退测试为 shutdown 后重新 Core::open，再核对 V2/V1 与下一 previous；版本 probe 仍使用合成版本映射。原 F-082 测试仅手持许可+无活动指针的 rollback，证据较窄；A 的 F-086 测试补真实合成解析进程，但仍不是联网成功安装闭环 |
+| F-074、F-075 / 原缺陷已核实 | 导入 token 独立扫描绑定路径/文件元数据/模式/目标，目标在写事务再查有效；四类返回值必须 object、允许字段、必填和 JSON 类型，生产路径无条件校验；notify 仅 delivered=true 成功。导入 inspect 明确不散列字节，不能声称识别相同元数据下的字节替换；能力 Core 回归使用 test-only 结果替身，非外部进程线协议测试 |
+| F-076、F-077、F-078、F-080 / 原缺陷保留关闭 | 合并链保护、批量 tags_add、条目比较参数和三种只记决定、质量枚举/reasons/pin/unpin/重新评估已接通。pin_entry(false) 会清除全条目的 variant_retention 固定，不把“只解当前变体”的早期猜测登记为缺陷；固定/共享 blob/独有区间守护保留 |
+| F-083 / 在明确范围内已核实 | 四类全部关闭后，确实经过生产 process_scan_page 保存 summary、查询时间线和元数据导出；检查凭证行未丢。该测试不执行排队的 observe/media、不用真实插件程序、不导出媒体，亦无 Vault 秘密哨兵，不能扩大为完整媒体采集/秘密隔离的动态证明。代码未发现基础采集受四类开关控制或导出凭证的路径，不据测试范围有限新增一个未证实的功能缺陷 |
 
-当前自动套件共321个唯一用例身份，包含168个必需用例中的164个；尚缺四个必须真实产品链用例，不能据此宣布阶段通过。原98与r2的133项全部保留。中间`rust-final-6`原日志实际248 passed，但一行并发诊断使解析器只读到247个名称，B另跑该C11名称并保留回执；最终`rust-final-7`使用标准捕获输出，248个名称全部可解析，不修改旧输出或弱化解析器。
+### 13.4 本轮实际命令、反例与证据归属
 
-当前包24个文件、209,420,052字节，包含根LICENSE、Douyin通知、依赖许可台账及锁定媒体许可/源码说明。manifest摘要`35b6bf39d79ac72ed492ec7b0f3deb7d31e884afd841f4b3bc13195e763b8cd4`，SHA256SUMS自身摘要`229146bfab317f36892ee2f87caf8f91e3abb84482ee685f7226cde2681d79d5`；清单记录构建时A基点与dirty状态，实际内容由当前233项输入与所有包成员摘要证明。最终交付提交SHA从Git读取，不修改包的旧构建字段。
+下列测试只使用隔离合成 Profile、合成插件/工具及内存数据库；本轮零新增真实站点/真实更新请求。
 
-保留盘点`retained-inventory-final-1.json`在正式新测量前记录：artifacts 22,096文件/44,706,479,627字节；本地site-check 2,061文件/1,289,316,326字节；dist 663文件/5,998,382,821字节；锁定媒体资产238文件/443,118,902字节。只统计元数据，未读取无关凭据或沿链接遍历；构建/依赖缓存保持，未逐文件审查或清理。公开证据当时393,164字节，原包、Profile、正式/失败样本与新中间包均保留；最终摘要另行汇入本节。
-
-### 17.5 F-030后的当前输入、完整检查与新包
-
-F-030修复后继续冻结233项源码、测试、脚本、锁文件及规范输入。交付核对发现需求映射的描述性`r3Implementation.requiredCases`仍为早期165，已同步为实际169；原m1/r2对象及其98/133必需用例没有变化。该数字修正前的`rust-final-8`实际249/249通过，仍保留为其原输入的回执。最终集合SHA-256为`0c47d1764921fb2cd4898eb16211d821873c6ca0a2e9a29ffa3003b6a339ae72`，`final-input-audit.json`逐项验证Git规范字节无差异；本节以下检查均实际重新运行，sourceUnchanged=true且输入集合相等。
-
-| 当前回执 / 实际命令 | 结果与适用范围 |
+| 命令 / 核查 | 退出码与结果 |
 | --- | --- |
-| `rust-final-9` / `cargo test --workspace --locked --offline --no-fail-fast` | 249/249通过，0失败/忽略；保留原A、closeout、原r2和新增F/C14反例，标准捕获输出全部可解析 |
-| `ui-final-10` / `corepack.cmd pnpm -C apps/desktop exec vitest run --reporter=verbose` | 52/52通过，原主页事件和媒体节点断言保持 |
-| `python-final-11` / `python -m unittest discover -s scripts/tests -v` | 19/19通过；真实回执、任务/认证所有权、必要对象/音轨、封片/时长/尺寸及累计授权预算拒绝反例保持 |
-| `fmt-final` / `cargo fmt --all -- --check` | 退出0 |
-| `clippy-final` / `cargo clippy --workspace --locked --offline --all-targets -- -D warnings` | 退出0 |
-| `verify-final` / `python scripts/verify.py --all --json` | desktop/offline/recovery/resources/site五套件5/5通过，耗时379.819秒；原完整子命令日志保留 |
-| `package-12` / `python scripts/package_windows.py` | 退出0，实际生成新目录`dist/trace-0.1.0-windows-x64-m1-r3-11`，包含本次F-030；耗时139.635秒 |
-| `package-check-12` / `python scripts/check_package.py dist/trace-0.1.0-windows-x64-m1-r3-11` | 2/2通过，完整包/许可/组件及实际最小化桌面与同一Core关闭重连、完全退出 |
-| `original-r2-probes-current-3` / 原三项探针副本的`cargo test --manifest-path artifacts/m1-r3/original-r2-probes-current/Cargo.toml --locked --offline --target-dir target --no-fail-fast -- --nocapture` | 3/3通过；原探针文件和失败回执未修改 |
-| `wbi-current-3` / `cargo test --manifest-path artifacts/a-m1-real-readiness/wbi-verified-probe/Cargo.toml --locked --offline --target-dir target -- --nocapture` | 7/7通过：两个正确32字符独立C14探针及导入源码的五项原测试；未使用最初33字符错误期望 |
-| `ui-visual-final-3` / `python artifacts/m1-r3/ui-visual-final-3/run.py` | 当前包1280/760宽链接页及实际导航通过，截图已查看，0站点请求、无前台输入；原生体验仍单独判断 |
-| `preservation-final-4.json` / `python artifacts/m1-r3/audit_delivery.py --package dist/trace-0.1.0-windows-x64-m1-r3-11 --output artifacts/m1-r3/preservation-final-4.json` | 原§13～15、迁移1～5、A探针、closeout、主页与WBI文件、A公开摘要及原m1/r2映射一致；包/输入/许可校验无错误，原cases.json摘要未变 |
+| 修改前 `python scripts/stage.py check`；文档/公开/结构/生成类型/规则检查 | 各 0；原冻结输入一致 |
+| `python -m unittest discover -s scripts/tests` | 0：47 项 |
+| `python scripts/check_package.py dist/trace-0.1.0-windows-x64-13` | 0：2 项，含嵌入式 WebView 关闭/重连 |
+| `corepack pnpm -C apps/desktop run verify` | 0：141 项、格式/类型/生产构建 |
+| 修改前 `cargo test -p trace-core --locked -- --test-threads=1` | 0：421 项、0 failed/ignored，991.99 s；未修改产品输入时编译的原基线 |
+| 独立 Python 驱动/SQLite/原始基准复算 | 0；F-071 假阳性、F-084 篡改/缺包漏检及时间比较均已构造，不向真实站点发请求 |
+| `cargo test -p trace-core --locked a_review_ -- --nocapture --test-threads=1` | 101：9/9 按预期断言失败；F-069 三项、F-072 一项、F-073 两项及局部 F-085 一项/F-086 两项。先前并行编译曾因 Windows 正在运行原测试 exe 而报 LNK1104（101），原进程结束后重跑才得到这组语义结果；两次日志均保留 |
+| 修复后 `cargo test -p trace-core --locked media_tools::tests::` / `replay_tests::` / `tool_update::`（均单线程） | 各 0：24 + 6 + 12 = 42 项，含三条 red→green 新回归与两次真正重开 Core；MSVC linker_messages warning 如实保留 |
+| `cargo clippy -p trace-core --locked --all-targets -- -D warnings` | 0 |
+| 修复后 `python scripts/stage.py check` | 1：源码、command、package、benchmark/raw inputs stale；与本轮五个产品输入文件变更一致，未生成新报告或改旧哈希 |
+| 最终文档/公开/结构/类型/尺寸/长行/规则/脚本与 fmt/diff 检查 | 各 0：52 文档、816 本地链接，0 公开发现/超限文件/可折长行；生成类型一致，规则记录一致；脚本 47 项复跑通过 |
 
-四类计入聚合的test回执共322个唯一用例，169项必需中165项通过；另四项为`c14_real_{bilibili,douyin}_{video,live}`，只能由当前包的完整真实链补齐。上述原探针、五套件和截图回执为report，不重复计数。真实中间跑次继续按§17.3保留，不能因它们已接收部分媒体而冒充当前包四项通过。
-
-新包24个成员、209,444,628字节，含根LICENSE、Douyin通知、依赖许可台账及锁定媒体许可/源码说明。manifest摘要`6ffafa5d35ccbc3e7b51345fd74e56770636a030655984fc4f51d6d34f8a6024`，SHA256SUMS自身摘要`5a519ac0561955f9311da03d35d01d08722a06d87f760560d08511284d32e06a`。构建时A基点/dirty字段按原现场保留，最终提交通过逐输入字节对应，不能追改manifest。旧包、旧长测及本轮全部r3包均保留；该包的完整正式测量见§17.7，不由定向恢复测试代填。
-
-
-<a id="m1-storage-outage-recovery"></a>
-### 17.6 存储中断与恢复核对（2026-10-11）
-
-`resource-formal-3`在2026-10-10进入混合负载后发生宿主盘满：08:48的Windows VHDMP事件126/11记录虚拟卷写入返回0xC000007F，随后事件2卸载开发卷，System disk事件15/51记录设备未就绪和I/O错误。当时宿主卷剩余0字节，仓库及原始输出不可访问；包装器读取日志失败并退出1，没有完成最终回执。最后一次聊天工具可读进度为elapsedSeconds=4426.5961731、2下载+2录制、5177片封片、14,903,185,044字节实收；这只是当时观察，不能代替完整采样或60分钟/恢复门槛。
-
-用户于2026-10-11确认开发盘已恢复。B重新读取同一分支、A基点和main基点，233项输入仍精确匹配§17.5的0c47d176…9ae72；原322个自动用例、格式/Clippy/五套件、包构建与原探针回执的输入和原日志摘要均一致。`post-recovery-preservation-1.json`再次核对受保护正文/迁移/映射、原cases.json和当前包全部文件通过；`post-recovery-git-fsck`实际执行`git fsck --full --no-reflogs`退出0，`post-recovery-package-check-1`实际执行当前包检查退出0，包含新隔离Profile上的启动、关闭重连和退出。没有因恢复盘符重建计划、覆盖用户文件或改变真实站点授权；用户事项仅见[ACT-005](../../USER-ACTIONS.md#act-005)。
-
-恢复后的中断目录实际保留2116个文件、8,044,120,705字节（不含随后保存的二进制副本），未沿链接遍历。`resource-formal-3.json`、`benchmark.json`和`resource-samples.json`不存在，progress.json不能解析，包装日志为零字节。B保留这些现状，没有填造最终计数或修改原输出；当前可读measure程序另外复制到`measure-final-3/post-recovery-binaries/`并记录摘要，该摘要只证明恢复后读到的字节，不冒充中断前未落盘的构建摘要。完整核对在`artifacts/m1-r3/storage-outage-recovery.json`。此前仓库不可访问时的应急记录未在原位置找到，本次依据已保存的会话工具输出与实际恢复现场重新记录事实，不声称该临时副本仍存在。
-
-本次恢复时实际可用空间约为宿主卷1.14TiB、开发卷796GiB，已与仅反映虚拟容量的逻辑空间分别核对。正式复测继续使用当前未变更的m1-r3-11包和完整原规模、时长、门槛，在新的`measure-final-4`目录执行；中断跑次保持failed/interrupted，不能拼接为新正式结果。源码未变化，旧自动回执经过原始日志/输入核对继续有效；新的正式资源结果和最终文档聚合另行生成。
-
-<a id="m1-r3-final-resource"></a>
-### 17.7 当前包完整正式资源复测（2026-10-11）
-
-实际执行以下命令，子命令和包装器均退出0，sourceUnchanged=true，输入与§17.5的233项及当前包完全一致。运行期间未重建程序、修改规范输入、降低规模/时长或过滤慢样本。
-
-```powershell
-python scripts/stage_evidence.py run --kind bench --id r3-resource-formal-4 --output artifacts/m1-r3/resource-formal-4.json -- python scripts/measure_m1.py artifacts/m1-r3/measure-final-4 --idle 1030 --seconds 3620 --entries 100000 --package dist/trace-0.1.0-windows-x64-m1-r3-11
-```
-
-| 正式观测 | 实际结果与边界 |
-| --- | --- |
-| 原始采样与时长 | 934个连续样本，采样窗口4665.860秒、最大间隔5.016秒；有效闲置905.157秒、录制3621.222秒 |
-| 实际并发与接收 | 349个采样点同时至少2下载+2录制；纯录制350个样本全部4路活跃；累计实收15,862,850,922字节，任务错误0 |
-| 闲置CPU / 内存 | 全相关进程CPU均值0.176568%，私有工作集p95 50.777344MiB，满足1% / 150MiB |
-| 四录制CPU / 内存 | CPU均值1.556561%，私有工作集p95 62.765625MiB，满足5% / 300MiB |
-| 查询 | 热查询p95 288.3109ms，冷连接查询p95 126.2469ms，满足500 / 1500ms；未清OS文件缓存 |
-| 起录与发现 | 起录p95 1.407999秒，发现p95 28.016859秒，满足原10秒起录和30秒轮询的发现公式 |
-| 完整恢复 | 10万条库、202个未完成普通任务，Core完整重开/恢复且IPC可达2.201118秒，低于原30秒门槛 |
-| 实际GUI生命周期 | 两次当前包内嵌页面及r2/r3查询均成功、同一Core实例；关闭释放最大3.713482秒，之后无GUI仍继续接收 |
-| 其他原始指标 | 全窗口私有工作集峰值201,097,216字节，句柄峰值3852、队列峰值227；工作卷最小空闲850,727,026,688字节 |
-| 设备与负载 | Windows 11 10.0.26300、AMD64、20逻辑处理器；10万发布/50万媒体元数据、512字正文、100普通/20直播检查目标、100ms延迟、50行查询、每流1,112,866字节/秒 |
-
-原始样本`measure-final-4/resource-samples.json`的SHA-256为`3539fcdb7ccc31e44ef8199005fb9d6f9dbcd425b554d1b5a5e557d46c4d6c35`。`formal4-metrics-check.json/.log`实际执行本地`audit_formal4_metrics.py`，不调用生产derive函数，复算18项派生指标全部一致；同时核对时长、连续性、完整规模、四录制窗口、恢复、GUI、包/源码/构建日志和二进制摘要。只读物化观察另记录21个相邻区间中两站同一下载operation实收字节均正增长，原记录在`formal4-transfer-observations.jsonl`。这是B自检，不冒充A独立审查。
-
-当前两份measure二进制已复制到`measure-final-4/preserved-binaries/`并复核：`m1_resource_bench.exe`为`cafcc326352c5e23914100461980bb4bdb9da018afe96dbb57de150a056fd560`，`m1_bench_adapter.exe`为`25beaf0326c15653f4bd99374de84f36344052335d4e1f5c5bcf6fa62563ab0b`。原始进程计数包括合成源、驱动器及已退出子进程的累计CPU；宿主与工作卷的独立空间观察保存在`measure-final-4-host-space.jsonl`，不改动正式采样器。结果仅证明本机合成负载，不能替代AC-29/30真实产品链、全历史覆盖或原生体验。
-
-<a id="m1-r3-final-gate"></a>
-### 17.8 聚合门禁、未齐证据与交付边界
-
-当前公开摘要为[经脱敏的B交付证据](../evidence/gate/m1-r3-b-delivery.json)。四类test回执共有322个唯一身份、全部passed；原98和r2的133个必需用例都保留。独立r3现有169个必需用例中165个通过，缺少`c14_real_bilibili_video`、`c14_real_bilibili_live`、`c14_real_douyin_video`、`c14_real_douyin_live`。87条需求中68条M1适用、19条后继；43条已有完整映射证据，另25条适用需求同时要求上述真实链，不能计为通过。
-
-加入当前包及完整正式资源结果后，实际预聚合`provisional-bundle.json`为failed。两个现有CLI入口均实际运行，退出1，日志分别为`delivery-gate-pre-stage`和`delivery-gate-pre-verify`：
-
-```powershell
-python scripts/stage_evidence.py check artifacts/m1-r3/provisional-bundle.json
-python scripts/verify.py --stage-bundle artifacts/m1-r3/provisional-bundle.json
-```
-
-两入口的30条拒绝完全一致：25条M1需求尚未取得完整真实证据、4个必需用例缺失、1项缺少真实生产Core产品链回执。没有陈旧源码、损坏包、重复用例、失败资源指标或缺原始日志等其他错误；门禁没有因自动用例全绿而放行。最终文档、公开摘要和登记完成后在`artifacts/m1-r3/final-bundle.json`重新绑定文档指纹，最终两入口日志使用`delivery-gate-stage-1`和`delivery-gate-verify-1`，不修改预聚合或旧回执。
-
-AC-29/30仍为blocked，M1保持rework-required。本轮已有Douyin视频对象提交和Bilibili直播封片的中间事实只保留在§17.3，没有混入当前包的四项完整证据，也没有把A诊断文件导入对象库。后续真实执行的对象/额度依赖只在[ACT-002](../../USER-ACTIONS.md#act-002)维护，开发盘恢复不构成预算增加；Cookie无需重新提供。ACT-003原生声音、IME、缩放、外部程序体验仍not-run，ACT-004/005的已完成反馈与本阶段技术退出分别判断。
-
-F-023/F-024/F-025/F-027/F-028/F-029及F-030均只标“已修待 A 复核”。B完成当前可独立执行的实现、自检、打包、完整资源验证和记录；A复核与四个真实链用例未通过前不能称M1结项。未执行push、PR、合并、发布、子Agent或跨聊天发送。阶段仍按同一未推送DCO提交amend，最终SHA从Git实际读取，在交付消息及本地`artifacts/m1-r3/git-delivery.json`提供；本报告保留被测A基点和输入摘要，不递归填入自己的提交SHA。
-
-<a id="b-to-a-m1-r3-review"></a>
-### 17.9 B→A 一次集中复审 prompt
-
-下列仓库内文本以本次交付消息中的实际完整SHA定位；它不创建另一份实施计划。用户复制转交，B未自动发送。
+未提交原始证据入口（基线证据和失败编译/失败反例分别保存，不覆盖成成功）：
 
 ```text
-请作为 Agent A，对 TRACE 的 codex/m1-two-site-archive 分支进行一次集中复审。以 B 最终交付消息的实际完整 SHA 为被审版本，main 基点为 960984c34487244f31f1238dffc2bd9faaa292e7；本轮 B 承接的 A SHA 为 0a86273c602d1698a96962730dd5c67557b08e88。先核对 HEAD、工作区归属和用户后续修改，再读 AGENTS、索引、状态、有效决定、事项和 USER-ACTIONS。唯一计划仍为 docs/delivery/stage-plan.md 的 TRACE-M1-01 r3，不创建竞争计划。
-
-按 docs/delivery/stage-report.md §16.17 的合同复核 §17 的 B 交付；F 正本仍在 §16.3，来源诊断与原失败在 §16.16。集中核实 F-023/F-024/F-025/F-027/F-028/F-029 及完整长测新增的 F-030。B 只标“已修待 A 复核”，不自称独立 A 通过。保留 F-018～022 和 F-026 的已核实范围；WBI 正确独立入口是 artifacts/a-m1-real-readiness/wbi-verified-probe，最初 33 字符期望仅留历史。
-
-当前包为 dist/trace-0.1.0-windows-x64-m1-r3-11，233 项规范输入的集合 SHA-256 为 0c47d1764921fb2cd4898eb16211d821873c6ca0a2e9a29ffa3003b6a339ae72。按最终报告逐文件核对提交 blob、包成员、回执、完整资源采样和文档；保留 manifest 原构建 HEAD/dirty，不换绑旧包或旧测量。重点核实共享消费者确认身份、拒绝资源恢复、物化所有权、Core SecSDK 隔离、窄 CDN/HTTPS、正常大页有界协议及一次性链接任务不扫描整作者。P14 的预览过期、身份换代、幂等、取消/重开、降级、必要资源变化和旧资源升级确认都须核对实际断言。
-
-当前 322 个唯一自动用例通过，169 个必需用例中 165 个有当前证据；原 98 和 r2 的 133 项保留。独立 r3 映射为 87/68/19，43 条已有完整映射证据，25 条适用需求仍依赖四个真实链用例。按报告实际执行 stage_evidence.py check 和 verify.py --stage-bundle，使用 artifacts/m1-r3/final-bundle.json；四个真实链缺失时应保持非零，不能通过改标签、遗漏必需项或诊断媒体代填。AC-29/30 尚未通过，M1 不能结项；进一步真实执行仅按 USER-ACTIONS ACT-002 的最新用户答复、累计预算和停止条件，既有 Cookie 无需重索取。部分旧跑次已经接收媒体，但不是当前包完整产品链证据。
-
-复核 resource-formal-4 的934个原始样本、3621.222秒录制和18项指标，核对F-030的2.201秒完整恢复及349个混合并发样本。resource-formal-2 的恢复超限、resource-formal-3 的存储中断及缺失原始数据均须保留。原 §13～15、m1/r2 映射、迁移1～5、A probes、closeout、主页事件/媒体节点、旧包及全部正式/失败样本不改写。局部问题由 A 直接修复和相应验证，较大实现缺口一次性集中反馈；修复与审查记录继续 amend 同一未推送 DCO 阶段提交，不改 main/备份历史，不 push、建 PR、合并、发布、启动子 Agent 或跨聊天发送。必须条件补齐且 A 通过后直接向用户收尾，不要求 B 再审 A。
+artifacts/evidence-runs/a-m2-r5-review/audit.log
+artifacts/evidence-runs/a-m2-r5-review/adversarial-script.log
+artifacts/evidence-runs/a-m2-r5-review/diagnostic-probes.patch
+artifacts/evidence-runs/a-m2-r5-review/adversarial-tests.log
+artifacts/evidence-runs/a-m2-r5-review/adversarial-tests-rerun.log
+artifacts/evidence-runs/a-m2-r5-review/fixed-regressions.log
+artifacts/evidence-runs/a-m2-r5-review/clippy.log
+artifacts/evidence-runs/m2-r5b/
+artifacts/evidence-runs/m2-r5b-bench-failed/
 ```
 
+八站订阅继续全部 partial，implemented 六条规则及真实预算不变；原真实回执仍属于 `-7`～`-10`，不改绑 `-13`。ACT-003、真实 yt-dlp 更新、Linux、安装器、签名/发布仍 not-run。本轮改动不扩大网站授权，不增加用户阻塞；未 push、未创建 PR、未合并、未发布。
 
-<a id="a-m1-r3-review"></a>
-## 18. A M1 r3 集中复核与局部修复（2026-10-11）
+### 13.5 A → B 集中返工 prompt
 
-本节按§16.17复核§17，唯一计划仍为TRACE-M1-01 r3。被审完整SHA为`692ada9f11f762e959352762e0a295c13be659f7`，B承接A的`0a86273c602d1698a96962730dd5c67557b08e88`；main基点`960984c34487244f31f1238dffc2bd9faaa292e7`。对B的部分为A独立核对；A新增两项局部修复由A自检，并分别保留修复前反例与当前验证，不冒充另一执行者独立审查A的改动。原B自检不改写成A当时通过。
-
-### 18.1 现场、提交字节与旧证据
-
-起始HEAD、分支和用户指定一致，工作区干净，无用户后续修改。只读远端查询只有main，未推送本阶段；本轮不修改main/备份历史，不启动子Agent或跨聊天发送。按入口、唯一计划、有效决定、事项/用户待办与适用规则完成触发阅读，并找到仓库外本地参考索引，只读使用。
-
-`artifacts/a-m1-r3-review/input-package-preservation-2.json`逐项核对233个输入的提交blob、索引、工作树和B回执，均匹配`0c47d1764921fb2cd4898eb16211d821873c6ca0a2e9a29ffa3003b6a339ae72`；70个文档输入、19个命令回执及原日志摘要一致。m1-r3-11的24个成员/209,444,628字节、编译日志和项目/第三方许可均核对，manifest原`git_commit=0a86273…`及`source_dirty=true`保持原样。30个保留包的原清单逐一一致；63份正式/失败原始样本与保留measure二进制另存只读摘要。初次A审计的内联第三迁移正则漏掉换行/尾逗号，形成一条审计假阴性；修正审计器后通过，首份失败回执保留，未修改迁移或生产断言。
-
-原§13～15字节、迁移1～5、m1/r2映射及原98/133必需用例、A探针、closeout、主页事件/媒体节点和正确WBI源码不变。WBI独立复跑使用`artifacts/a-m1-real-readiness/wbi-verified-probe`，7/7通过；33字符错误探针仍只作历史。
-
-修改前实际执行`python scripts/stage_evidence.py check artifacts/m1-r3/final-bundle.json`和`python scripts/verify.py --stage-bundle artifacts/m1-r3/final-bundle.json`，均退出1，且各有相同30条拒绝：25条关联需求、四个真实用例、缺一组真实产品链回执。回执`gate-baseline-stage`、`gate-baseline-verify`保留；无陈旧源码、包或资源错误。B的322个唯一自动用例、169必需/165已有、87/68/19及43条完整映射证据均核对。
-
-### 18.2 语义复核、定向执行和完整资源复算
-
-F-023的确认已绑定原消费者请求序号；F-024恢复及选择触发器保留automatic/accepted/kept审批边界；F-025物化键/receiving/ready/commit核对任务所有权与兼容旧键。原三个A独立探针副本3/3通过，当前返工、生产协议及有界传输合并18/18通过。共享候选仍存在下述比较文案局部残留，按新F-031单列，不抹去原pending→stale故障的已修事实。
-
-F-027固定端点的SecSDK派生、实际发出字节和跨域剥离由Core处理；F-028窄媒体域及同地址HTTPS规范化保持逐跳/IP/媒体零Cookie约束；F-029的8MiB请求、12MiB逻辑消息、1MiB普通帧、192KiB分片/4组/30秒界限及故障断言均核对。Core C14定向10/10、协议分片2/2、Bilibili27/27、Douyin12/12通过，完整真实产品链仍不能由这些结果替代。
-
-P14预览五分钟、身份换代、幂等、取消/重开、必要资源和实际规格变化、DASH必要音轨、旧选择升级确认、one_shot数据库扫描屏障均核对；来源服务5/5、原C11的19/19及对象恢复8/8实际通过。新增发现F-032：已确认录制的明确停播被预览守护挡住，已直接修复，见下节。未改变既有F-018～022和F-026的核实范围。
-
-A的`metrics-recompute.json/.log`及`independent-metrics.json`不调用生产derive，独立复算resource-formal-4全部18项指标一致：934个连续样本，窗口4665.860秒、最大间隔5.016秒、闲置905.157秒、录制3621.222秒；349个同时2下载+2录制点、350个四录制点、任务错误0，21个相邻观察区间两站同operation字节同时正增长。热查询p95为288.3109ms，完整Core重开/恢复及IPC可达2.201118秒，包含202个未完成普通任务；原生命周期文件、原构建/保存二进制和GUI关闭后字节增长均核对。采样中去重后的2900次查询与独立查询文件的2904次分别统计；完整查询文件热p95为288.5852ms，仍满足500ms，没有删慢样本或将两种口径混写。
-
-resource-formal-2的945样本和恢复45.246460秒超限继续保留为failed；resource-formal-3的最终回执/benchmark/原始采样仍不存在，progress仍不可解析，其存活文件摘要与中断记录一致，没有补造计数。F-030分页64条、清理后每页FULL确认及越界拒绝经源码、8项恢复测试和上述完整长测核实；A修改后新输入须另建新包/长测，不换绑这些旧事实。
-
-### 18.3 A局部修复与新反例
-
-新发现F-031、F-032的触发、修复及当前状态只维护于[§16.3](#f-031)。两项均由A直接修复，独立失败和定向通过回执保留；当前包及完整资源证据在下一节单独绑定。
-
-### 18.4 当前修复输入的最终验证
-
-当前233项规范输入集合为`fed27badf50de158f304e0aa14c9eb4038acb29ba9b268322e84ed46cdb4c266`；相对被审B有7项变化：两份Core实现、两份测试、现有门禁必需名单、独立r3映射和归档契约。全部输入与Git过滤后的规范字节一致。原98/133项以及B的249个Rust用例全部保留，新加两项Rust反例；独立r3的171个必需用例中167个已通过，仍缺四个真实链。87/68/19和43条完整映射证据的口径不变。
-
-| 当前回执 / 实际命令 | 结果与范围 |
-| --- | --- |
-| `final1-prebuild` / `cargo build --workspace --locked --offline` | 退出0，先构建当前生产进程及探针 |
-| `final1-rust` / `cargo test --workspace --locked --offline --no-fail-fast` | 251/251，0失败/忽略；原249项及两个新增反例全部具名 |
-| `final1-fmt` / `cargo fmt --all -- --check` | 退出0 |
-| `final1-clippy` / `cargo clippy --workspace --locked --offline --all-targets -- -D warnings` | 退出0 |
-| `final1-python` / `python -m unittest discover -s scripts/tests -v` | 19/19，原治理/聚合拒绝断言保持 |
-| `final3-ui` / `corepack.cmd pnpm -C apps/desktop exec vitest run --reporter=verbose` | 52/52，原主页事件/媒体节点和链接交互守护保持 |
-| `final3-verify` / `python scripts/verify.py --all --json` | 五套件5/5，277.695秒，类型/生产构建、离线、恢复、协议和资源规则通过 |
-| `final3-original-probes` / 原三项A探针副本的`cargo test --manifest-path artifacts/m1-r3/original-r2-probes-current/Cargo.toml --locked --offline --target-dir target --no-fail-fast` | 3/3；原文件和失败回执不变 |
-| `final3-wbi` / `cargo test --manifest-path artifacts/a-m1-real-readiness/wbi-verified-probe/Cargo.toml --locked --offline --target-dir target` | 7/7，正确32字符向量和原导入测试 |
-| `final4-new-independent-probes` / `cargo test --manifest-path artifacts/a-m1-r3-review/semantic-probes/Cargo.toml --locked --offline --target-dir target --lib --no-fail-fast` | 8/8，含新增质量比较与明确停播独立探针 |
-| `final3-package` / `python scripts/package_windows.py` | 退出0，80.955秒，实际生成新目录m1-r3-12 |
-| `final3-package-check` / `python scripts/check_package.py dist/trace-0.1.0-windows-x64-m1-r3-12` | 2/2，完整包及实际最小化桌面关闭/重连/退出；四类test回执共324个唯一自动用例 |
-
-上表所有回执均为sourceUnchanged=true并精确对应当前输入。m1-r3-12有24个成员、209,423,636字节；manifest摘要`e5ff3efafcf3ab6ea630a7338c696eac815a9a1feaac7cb92549816ab7e36a12`，SHA256SUMS自身摘要`1d839206f69a79f5277d27f512fb8c92424f134ced687699a6aad85edf66e019`。原构建HEAD为被审B的692ada9f…，dirty=true，原字段不修改；最终提交用规范输入逐blob对应。包清单、媒体锁及全部许可均独立核对。1280/760宽的既有B链接页截图已查看，A未改前端，原截图仍只证明其原包；新包窗口行为由本次实际包检查证明。
-
-环境故障保留：`final1-ui`在测试启动前缺std-env；按原锁文件普通离线install恢复部分依赖后，`final2-ui`暴露estree-walker解析错误。离线force因缺缓存tarball退出1，随后`corepack.cmd pnpm -C apps/desktop install --frozen-lockfile --force`恢复成功，再得52项通过。所有失败、恢复命令与原输出保留，没有改版本或锁文件。另一次同名独立审查crate共用target命中了原3项可执行文件，`final3-new-independent-probes`仅实际执行3项，不能算新增探针通过；A为新crate使用独立package名称并保持原crate文件，`final4`明确运行8项且通过。原3项旧记录及本次中间记录均保留。
-
-<a id="a-m1-r3-final-resource"></a>
-### 18.5 当前源码完整正式资源复测
-
-本轮使用新m1-r3-12包执行原完整规模与时长，资源子命令和包装回执均退出0，sourceUnchanged=true。下面是实际命令的仓库相对路径写法；完整argv和原日志保存在`resource-formal-1.json/.log`。运行中没有调整233项规范输入、包、测量二进制、规模、时长或门槛。
-
-```powershell
-python scripts/stage_evidence.py run --kind bench --id a-r3-resource-formal-1 --output artifacts/a-m1-r3-review/resource-formal-1.json -- python scripts/measure_m1.py artifacts/a-m1-r3-review/measure-final-1 --idle 1030 --seconds 3620 --entries 100000 --package dist/trace-0.1.0-windows-x64-m1-r3-12
+```text
+请作为 Agent B 在 codex/m2-multi-site-archive 连续完成 TRACE-M2-01 r2 的再次集中返工。被审提交为 4e8a8a1988334beb1b8eeb42d140e79e959a74f8；当前基点为 A 保存本报告与局部修复后的 HEAD（以 git log -1 为准），仍只有一个阶段提交。
+先读 AGENTS.md、REVIEW.md、stage-plan、stage-report §13、当前状态及 USER-ACTIONS；§11 是 B 上轮自检，不是通过依据。
+保留 A 的 F-085 回放时刻比较、F-086 许可后选择工具及对应回归、F-070 真正重开 Core 的回退测试，也保留此前全部修复和断言。
+一次性完成 §13.2 的六项：F-069 双 owner 与跨 scan-lane 持久拒绝，F-071 真实详情执行与订阅发现证据，F-072 同事务 token 校验与关系写入，F-073 可恢复删除意图/非阻断启动/activate-remove 并发，F-079 只读覆盖质量与独有区间展示/受约束决定，F-084 实际成员与缺包验证。
+先从本机保存的 diagnostic-probes.patch 恢复相应反例，用明确屏障而不是碰运气 sleep 证明修复；成功重复详情不增加 jobs.attempts，不可改变或伪造该字段语义制造通过。保留正常 AuthRequired 恢复、另一个消费者进度、显式重试、档案/凭证/外部文件/固定版本边界。
+最终代码冻结后重跑必需自动检查、包、原规模/时长长测及 report/check；本轮 A 修改使旧 gate stale，原 -13/测试/长测只属原输入，不手改指纹或重绑旧证据，失败日志也保留。
+本轮不追加真实网站或真实更新请求，不为补证据再次试探；八站订阅 partial、原真实回执归属和预算、ACT-003 not-run 保持。不是人工验收问题，不等待用户决定，也不申请 push/PR/合并。
+在唯一报告记录原编号的实际输入、结果、修复位置、命令/退出码和证据限制，更新当前状态与必要契约，amend 进同一个带 DCO 的阶段提交；交付准确 SHA、包摘要、原始证据入口和 B→A 复验 prompt。远端操作仍须 A 收敛后在 USER-ACTIONS 单独请求授权。
 ```
 
-| 当前正式观测 | 实际结果与边界 |
-| --- | --- |
-| 连续性与时长 | 934个原始样本，采样窗口4666.484秒，最大间隔5.016秒；有效闲置905.203秒、录制3620.750秒 |
-| 实际负载 | 348个同时至少2下载+2录制点；纯录制350个点均为4路活跃；累计实收15,827,257,012字节，任务错误0 |
-| 闲置CPU / 内存 | 全相关进程CPU均值0.189668%，私有工作集p95 50.640625MiB；原目标1% / 150MiB |
-| 四录制CPU / 内存 | CPU均值1.380012%，私有工作集p95 66.015625MiB；原目标5% / 300MiB |
-| 查询 | 采样热查询p95 144.9766ms，冷连接p95 136.9484ms；原目标500 / 1500ms，未清OS文件缓存 |
-| 起录 / 发现 | 起录p95 0.735985秒，发现p95 29.148050秒；符合10秒起录及原30秒轮询的发现公式 |
-| 完整恢复 | 10万条库、202个未完成普通任务，Core完整重开/恢复且IPC可达1.161541秒；原目标30秒 |
-| GUI生命周期 | 两次当前包内嵌页面、r2/r3查询和同一Core重连核对；关闭释放最大3.765164秒，关闭后仍继续接收 |
-| 其他指标 | 全窗口私有工作集峰值204,898,304字节、句柄峰值3837、队列峰值227；正式采样工作卷最小空闲844,348,731,392字节 |
-| 设备与规模 | Windows 11 10.0.26300、AMD64、20逻辑处理器；10万发布/50万媒体元数据、512字正文、100普通/20直播检查目标、100ms延迟、50行查询、每流1,112,866字节/秒 |
+**实现交付：未完成；A 技术审查：rework-required；产品验收：not-run。** 首选下一步是 B 按上面的同一批必须项返工，不转回用户人工排错。
 
-`current-metrics-recompute.json/.log`实际执行A的`audit_current_metrics.py`，不调用生产derive；`current-independent-metrics.json`中18项独立复算全部一致，并核对原始生命周期、工作量、查询文件、构建日志、包和保留二进制。采样去重后2904次查询，独立完整查询文件有2908次，后者热p95为144.9766ms；两个口径分别保留，没有删除慢样本。只读物化观察另有56个相邻区间，两站同一operation的实际字节同时增长；接收开始前的空记录保留且不计为字节增长。
+<a id="b-m2-rework-r6"></a>
+## 14. B 第二次集中返工（2026-10-19）
 
-原始样本SHA-256为`cda1f4538550ee0b3c840e03476bdf709ebcac112de22feede0dea8f0da030f0`。新measure二进制独立保存于`measure-final-1/preserved-binaries/`：`m1_resource_bench.exe`为`0ddaf8bb84a22b7329eb8290a94c613ab936a5bbfdb78a82f7178607d1e08447`，`m1_bench_adapter.exe`为`18ad5e46a8c55977ac41836a5b3349db498450a655fc405fbfeec1f50cdec00c`；与本次实际运行和target/measure逐项一致。宿主/工作卷独立空间记录共158次，宿主最小剩余1,126,858,518,528字节。CPU包含所有产品相关进程、合成驱动器及已退出子进程的累计值。旧B包/二进制和全部旧成功、失败、中断样本不换绑；本结果仅证明本机完整合成负载，不能替代AC-29/30或原生体验。
+B 从 `81d17f887ac451f4b3e265988cb70faa26eb879d` 开始，按 §13.2/§13.5 处理六项剩余缺口。开工时分支为 `codex/m2-multi-site-archive`、工作区干净；先恢复 A 保存的 `artifacts/evidence-runs/a-m2-r5-review/diagnostic-probes.patch`，用其中的 actor 屏障、双 consumer、三 scan lane 和 Windows 文件占用反例得到 6 个预期失败，再把断言迁入按能力命名的正式回归。A 的 F-085/F-086 正式回归、F-070 重开 Core 回退测试及原失败日志均保留。
 
-<a id="a-m1-r3-final-gate"></a>
-### 18.6 聚合门禁、审查结论与用户依赖（2026-10-13收尾）
+### 14.1 六项修复与定向证据
 
-当前[脱敏A摘要](../evidence/gate/m1-r3-a-review.json)分别保留B被审输入与A当前输入。新包、完整资源和四类test回执聚合为324个唯一自动用例；171个必需中167个有当前证据。原98/133项保留，独立r3仍为87条需求、68条适用、19条后继；43条完整映射通过，25条适用需求仍依赖四个真实产品链。
+| 编号 / 状态 | 实现与实际行为 | 回归 |
+| --- | --- | --- |
+| F-069 / 已修待 A 复核 | `jobs/consumers.rs` 把拒绝标记保存在具体 consumer，并把同一订阅的独立扫描 lane 一起停到 `waiting_user`；`jobs/mod.rs` 在失败事务中扩散停止。`store/credentials.rs`、`upgrades/schedule.rs`、`store/subscriptions.rs`、`scan_range.rs`、`accounts.rs`、`app/jobs.rs` 的凭证唤醒、补全、质量/凭证重排、范围变更、history/deep lane 恢复、account profile、`check_now`、启用和重启路径都不复活该状态。另一个 owner 仍可 claim 共享 job；显式 `job.retry` 才清理对应停止并恢复。 | `site_refusal_is_scoped_to_one_consumer_and_needs_explicit_retry`、`site_refusal_stops_all_scan_lanes_until_an_explicit_retry`、`range_and_quality_changes_do_not_reopen_a_refused_subscription`、`enabling_a_refused_subscription_does_not_create_a_fresh_scan_lane`、`permission_refusal_is_only_retried_by_an_explicit_user_action`；既有 `shared_auth_failure_and_credential_change_do_not_cross_consumers` 保持 AuthRequired 正常唤醒 |
+| F-071 / 已修待 A 复核 | `scripts/real_site_check.py` 不再读取 `jobs.attempts` 作为详情成功计数，改用 `archive.entry.get` 的 `discovered_by_subscriptions`、`observation_count`、`latest_observation_seq` 与 job身份快照；第二轮核对单一重复 list endpoint、零新增 observe/media job、零媒体字节。自动下载关闭要求目标与所有发现条目 `deferred`，开启要求本订阅发现关系、目标媒体 job 和实际媒体字节。预览或其他 lane 的入库不能冒充本订阅发现。 | `test_an_incremental_check_verifies_range_detail_attempts_and_no_media_on_a_second_pass`（成功、范围外、范围外错误发现、其他 lane、观察增长、endpoint 增长、新 job、自动下载开关正反例）；`test_an_incremental_check_creates_the_subscription_for_one_instant_pauses_it_and_stops_on_a_challenge`、`test_an_undated_list_takes_the_instant_from_the_works_own_page_without_downloading_it` |
+| F-072 / 已修待 A 复核 | `app/identity.rs` 的影响范围、账号清单和 token 由同一组同步函数在预览只读事务与确认写事务内计算。merge/split/relink 均在 `db.write` 内重算、比较 token、执行关系变更和审计；不一致返回 `VersionConflict` 且不写关系。 | `merge_confirmation_recomputes_its_scope_inside_the_write_transaction`、`split_and_relink_tokens_are_revalidated_with_their_writes`、`identity_previews_show_scope_and_a_changed_binding_invalidates_the_confirmation` |
+| F-073 / 已修待 A 复核 | `store/plugin_releases.rs` 用稳定的 `plugin_remove_intent` 管理操作保存持久移除意图，`plugin.releases` 将其呈现为 `removing`；`plugin_install.rs` 依次改名到 tombstone、删目录、在同一 DB 事务完成记录清理。启动恢复对损坏/缺失 tombstone 只告警并保留可重试状态，不阻断 Core；目录已删而记录未删时会在下次启动清算。activation、rollback 与 remove 共用生命周期锁，removing 版本不能激活。 | `a_locked_plugin_tombstone_does_not_block_archive_startup`（Windows 显式 `share_mode(0)`，重开 Core 后档案可读、`removing` 保留、释放后可重试）、`removal_reconciles_after_files_are_gone_but_the_record_remains`、`a_removal_interrupted_after_the_directory_is_gone_is_reconciled_at_startup`、`a_failed_plugin_removal_stays_retryable_and_keeps_the_archive`、`activation_and_removal_of_the_same_release_are_mutually_exclusive` |
+| F-079 / 已修待 A 复核 | `replays::preview` 在候选查询阶段返回只读覆盖、真实/独有区间、质量、`can_replay_primary` 和不可比较原因；`ManagementView.vue` 候选与已有关联都持续渲染这些字段。候选先“查看比较”，取消零写入；只有完整覆盖且质量可比较才启用“设回放为主”，Core 仍做最终拒绝。 | `the_first_relation_can_be_linked_or_rejected_from_zero` 增补只读候选、独有区间、质量和主版本约束；`clipped_replay_keeps_recorded_ranges`、`incomparable_quality_keeps_both`；管理页 `management_view_confirms_previews_and_routes_compare_replay_and_quality_actions` 覆盖比较、禁用、取消、确认与已有关联展示 |
+| F-084 / 已修待 A 复核 | `package_identity` 与 `verify_package_identity` 现在逐项解析 `SHA256SUMS.txt`，核对实际成员摘要、缺失和额外文件，复算 manifest 的 `sourceInputs`/`source_files_sha256`/`source_tree_sha256` 关联；包目录缺失直接失败。旧回执无包身份时返回空错误并保留原归属。 | `test_a_new_receipt_is_bound_to_its_package_digest_and_source_tree`：有效包、篡改二进制但清单不动、额外成员、缺失成员、缺包、源码树不一致 |
 
-预聚合`artifacts/a-m1-r3-review/provisional-bundle.json`的两个CLI入口实际退出1，`gate-pre-stage`与`gate-pre-verify`各30条拒绝完全一致：25条关联需求、四个必需真实用例、缺一组真实生产Core回执。没有其他源码、包、资源或日志错误。文档/公开摘要完成后生成独立`final-bundle.json`，不覆盖原B bundle；最终实际入口如下，回执为`gate-final-stage`、`gate-final-verify`，仍各退出1且为相同30条拒绝。
+### 14.2 冻结测试、包与正式长测
 
-```powershell
-python scripts/stage_evidence.py check artifacts/a-m1-r3-review/final-bundle.json
-python scripts/verify.py --stage-bundle artifacts/a-m1-r3-review/final-bundle.json
-```
-
-本次B实现与对应证据的A集中复核在上述范围通过，F当前状态只见§16.3；A修复的F-031/032由A完成反例、全套、新包及完整资源自检。M1整体技术退出仍blocked、阶段仍rework-required：`c14_real_bilibili_video`、`c14_real_bilibili_live`、`c14_real_douyin_video`、`c14_real_douyin_live`未取得当前包的完整证据。既有A诊断、B旧部分跑次、合成套件都没有代填AC-29/30。本轮没有新的较大实现缺口需要集中交回B，也不要求B复审A。
-
-ACT-002的当前对象/额度依赖、累计预算与停止条件不变；本轮A真实站点请求为0，Cookie无需重配。实际逐跑次参数及累计扣减另经`real-budget-audit.json`核对，用户当前事项仍只在[USER-ACTIONS](../../USER-ACTIONS.md#act-002)维护。依赖补齐后由Agent在同一M1继续当前包四个真实产品链；ACT-003原生整体验收not-run，ACT-004/005已完成反馈保留。
-
-最终文档、公开内容、差异检查及`final-preservation`再次核对当前输入与受保护正文/映射/旧包/原始样本。修复、验证与审查记录归并同一个未推送DCO阶段提交，不改main或备份历史；最终完整SHA由Git实际读取并记录于本地`artifacts/a-m1-r3-review/git-delivery.json`和交付消息，不递归写入本报告。未执行push、PR、合并、发布、子Agent或跨聊天发送。
-
-<a id="a-m1-r3-real-continuation"></a>
-### 18.7 2026-10-13跨聊天续行：三项真实链通过及剩余依赖
-
-本次由用户要求继续既有A工作，起始HEAD为`b075488ceefec7c3eded44dc850430fe27894b89`，已有USER-ACTIONS授权更新保留。未改变233项产品/规范输入、m1-r3-12包或原资源测量；原§18.6的30条拒绝是三项真实证据聚合前的历史结果，本节记录三项通过时的中间状态，最终以§18.8为准。原驱动在两站任务完成后误用`export.start`，实际契约为`storage.export.start`；本机恢复脚本通过正确Core命令导出和离线重开，预算文件哈希不变、额外站点请求0。两份原失败回执不改写，恢复视频回执为`resume-bilibili-video`与`resume-douyin-video`。
-
-| 当前包真实用例 | 实测规格 | 保存时长 | 核实范围 |
-| --- | --- | --- | --- |
-| bilibili video | 3840×2160 / h264＋aac | 218.560秒 | 2个必要对象 / 349,454,117字节；Core范围读取、导出、完整本地解码通过 |
-| douyin video | 1080×1920 / h264＋aac | 22.833秒 | 1个必要对象 / 9,352,828字节；Core范围读取、导出、完整本地解码通过 |
-| douyin live | 1080×1920 / h264＋aac | 68.426秒 | 1个必要对象 / 53,090,163字节；Core范围读取、导出、完整本地解码通过 |
-
-Douyin直播新跑次`real-douyin-live-03`实际退出0；同Core实例、关闭GUI期间继续、重新打开停止、封片、导出及离线范围读取均执行时持久化于新目录。旧两站直播对象在本次离线恢复中均完整解码，封片时长分别72.050/67.417秒，但原内存生命周期字段未保存；严格real门禁拒绝两条旧直播回执，不补造Core实例。新Douyin直播取代其旧不完整回执，仅计一次必需用例。
-
-Bilibili本机补跑`real-bilibili-live-02`因Python导入路径缺失在联网前退出；修正仅限忽略目录驱动。`real-bilibili-live-03`产生5次元数据/0媒体，GUI选择成功后后台/最小化断言失败，原回执仅存AssertionError、没有细分原因。驱动改为最多5秒观察等待后，`real-bilibili-live-04`确认直播成功，12次元数据/0媒体；媒体CDN返回302后record任务记录TransientNetwork，具体下一跳失败原因unknown，重解析后额度停止。没有证据证明挑战、Cookie失效或具体TLS/DNS/域原因，不修改窄CDN守护，不继续碰撞。Douyin旧补跑`live-douyin-02`的8次元数据/0媒体及原失败也继续计入累计。
-
-三条真实回执由`real_chain_gate.validate_real`重新读取源输入、当前包manifest、Core目录快照、认证上下文、逐对象摘要、导出和解码，只有`missing one of four real product cases`，无三条回执自身错误。自动套件324项与三项真实用例合计327个唯一身份，171个必需中170个覆盖。独立r3映射仍87/68/19，43条需求完整、25条需全部四项真实链；实际assemble产生`artifacts/a-m1-r3-review/three-real-bundle-1.json`并退出1，27条拒绝由25条关联需求、缺Bilibili直播必需用例和未齐四项真实链组成。这份中间bundle未单独运行两个CLI检查（not-run），最终入口在§18.8实际执行。原B bundle和A原final-bundle保留，不换绑旧回执。该中间状态下AC-29技术证据passed，AC-30与M1技术退出blocked，原生产品验收not-run。
-
-当前累计扣减和用户依赖只见ACT-002；本地`continuation-audit.json`保留逐跑次预算文件哈希。持久化媒体计数低于实时回执可能源自最后不足1MiB计数块未刷新，所以额度始终按各跑次`max(media_bytes,media_reserved)`保守合计。Bilibili60/60次、424,673,280字节预留；Douyin46/50次、124,780,544字节预留；每站仍≤512MiB。三项当前包证据、旧已封片对象及全部失败保留，无用户档案覆盖、秘密出库或远端操作。仅文档和本机证据变化，Rust/前端/正式资源重跑not-run，继续使用逐输入核对仍有效的原回执。
-
-
-<a id="a-m1-r3-technical-closeout"></a>
-### 18.8 2026-10-14技术收尾：10月13日四项真实链通过
-
-用户在§18.7之后再次指定同一Bilibili直播对象并授权追加10次元数据；总上限按ACT-002改为70次，所有此前60次与媒体计数继续纳入。新隔离跑次`real-bilibili-live-05`实际使用10次元数据、38,139,804实收媒体字节，原命令回执退出0且sourceUnchanged=true。与前三条真实链使用同一m1-r3-12包和233项规范输入；仅忽略目录的证据驱动补导入路径、正确export命令、最多5秒后台状态观察和执行时checkpoint，不改产品源码、规范、守护或既有断言。
-
-| 当前包完整真实用例 | 实际视频 / 音轨 | 完整保存时长 | 必要对象 / 文件字节 |
-| --- | --- | --- | --- |
-| bilibili video | 3840×2160 / h264＋aac | 218.560秒 | 2个 / 349,454,117字节 |
-| douyin video | 1080×1920 / h264＋aac | 22.833秒 | 1个 / 9,352,828字节 |
-| douyin live | 1080×1920 / h264＋aac | 68.426秒 | 1个 / 53,090,163字节 |
-| bilibili live | 1920×1080 / h264＋aac | 68.869秒 | 1个 / 38,127,006字节 |
-
-两视频分别显示质量并由桌面明确选择；Bilibili保存4K AVC及独立必要AAC，派生播放文件完整解码。两直播分别选流、Core实收、关闭GUI后同一实例持续、重开GUI停止封片、Core重启离线读取/范围字节、导出哈希和所有必要文件完整解码。`complete-audit.json`额外匹配执行时checkpoint、原GUI关闭日志/停止结果和生命周期时钟；四份真实回执均由原`real_chain_gate`逐项验证，无诊断文件导入对象库、无作者scan任务，认证上下文和物化所有权保持。旧72.050/67.417秒对象与漏存生命周期、窗口断言、CDN重定向/预算停止及其他原失败继续保留，未改成历史通过。
-
-累计Bilibili70/70次，实收计数合计461,968,624字节、保守预留463,470,592；Douyin46/50次，实收计数合计124,014,548字节、保守预留124,780,544，均在每站512MiB内。所有跑次最小请求间隔复核≥2秒（计时浮点容差仅用于核对）。实时回执和持久块计数分别保留，累计以各跑次最大计数/预留扣减。此次成功不解释先前未记录的CDN下一跳故障原因，不宣称全部房间/匿名会员/全类型或全部历史覆盖。
-
-预聚合`four-real-bundle-pre.json`已退出0；最终独立bundle为`artifacts/a-m1-r3-review/four-real-bundle-final.json`。328个唯一用例全部passed，其中324个原自动用例、4个获准真实链；171/171必需用例、87条需求中的68条M1适用全部有完整证据，19条后继not-run。当前包24成员、原构建HEAD/dirty、233项输入集合`fed27badf50de158f304e0aa14c9eb4038acb29ba9b268322e84ed46cdb4c266`及934连续资源样本/18指标均保留原绑定。原B/A/三项partial bundle保留各自文档和回执摘要；不覆盖旧数据。
-
-最终实际检查入口为：
-
-```powershell
-python scripts/stage_evidence.py check artifacts/a-m1-r3-review/four-real-bundle-final.json
-python scripts/verify.py --stage-bundle artifacts/a-m1-r3-review/four-real-bundle-final.json
-```
-
-两个最终入口与文档、公开内容、差异检查退出0，完整源码/包/资源/真实链/文档聚合无错误。当前B实现及被审证据的A集中复核passed，A局部F-031/032及本次获准真实链按A自检分别标注；AC-29/30技术证据passed，M1技术退出passed，无必须开发缺口或未结返工。阶段accepted仅指技术交付；ACT-003原生声音/IME/缩放/外部程序仍not-run，其他真实类型/全历史、Linux、安装器、签名、发布不声明通过。ACT-002指定对象验证完成，用户当前动作仅在USER-ACTIONS维护。
-
-本次仅文档和忽略目录证据变化，原233项输入逐blob与HEAD一致、包成员及原正式资源结果复核有效；Rust/前端全套和正式长测重新执行not-run，无变化范围复用原完整回执。文档登记、能力表与公开摘要同步，当前profile、凭据、用户资料、旧包/失败证据均保留，不进行清理。通用实测脚本仍需迁入本机驱动改进，作为非阻塞工具维护LOOP-001在状态页承接；完整当前包验证已使用保存的修正驱动和原严格门禁，不改变规范输入来换绑旧包。按既有授权amend同一个未推送DCO阶段提交；不push、建PR、合并、发布、启动子Agent或跨聊天发送，不要求B再复审A。
-
-<a id="a-m1-user-scope-review"></a>
-## 19. A 按用户界定范围复核 M1（2026-10-15）
-
-### 19.1 范围与基点
-
-- **审查者：** A（本会话执行者，自审本轮文档改动；B 未参与本轮）。
-- **依据：** 用户 2026-10-15 指示（[DEC-029](../decisions/confirmed-decisions.md#dec-029)）：M1 应完成 Bilibili 与 Douyin 的直播录制、单个视频解析和用户视频列表解析；同时同步开发流程与文档规范、给出代码结构优化方案。计划范围仍以 [TRACE-M1-01 r3](stage-plan.md) 为准，本节不改变它。
-- **基点：** 分支 `codex/m1-two-site-archive`，阶段提交 `1dd1afb6882c852c4af26d7da444c5928049ad49`（基于 `main@960984c`，未推送）。本轮只改文档，产品源码、锁文件和四份包输入文档（需求、映射、计划、归档契约）均未改动。
-
-### 19.2 门禁（在阶段提交的源码上实跑）
+冻结产品输入共 **770 项**，源码树 `9f9d8aadf6498639bcaaecaf98ab65f4f18dacd577a19080b52d493cb5a52938`；测试、包、长测和最终 report 共用这一输入。正式跑次为 `artifacts/evidence-runs/m2-r6b/`（本地忽略目录）。
 
 | 检查 | 结果 |
 | --- | --- |
-| `python scripts/verify.py --all` | 5/5 套件通过（desktop、offline、recovery、resources、site），exit 0 |
-| `cargo fmt --all -- --check` | exit 0 |
-| `cargo clippy --workspace --locked --all-targets -- -D warnings` | exit 0，无警告 |
-| `python -m unittest discover -s scripts/tests` | 19 项通过 |
-| 文档、公开内容、`git diff --check` | 本轮文档改动后重跑，结果见 19.6 |
+| `python scripts/stage.py test --run m2-r6b` | 0：`rust-build` 0；`cargo test --workspace --locked` 0，899 项，327.92 秒；前端 141 项；脚本 47 项 |
+| `cargo clippy --workspace --locked --all-targets -- -D warnings`、`cargo fmt --all -- --check` | 各 0 |
+| `python scripts/check_structure.py`、`check_generated_types.py`、`check_publication.py`、`lint_lines.py` | 各 0；生成类型一致，0 公开发现、0 超限文件/可折长行 |
+| `python scripts/stage.py package --run m2-r6b` | 0：`dist/trace-0.1.0-windows-x64-15/`，37 个文件、342,224,342 字节；`SHA256SUMS.txt` 自身 SHA-256 `30BEE10304310DEBE8F3938CAD1623CD1A39AAAA1ADD294CABE1B637446A4A56`；包检查 2 项通过（含真实嵌入式 WebView 关闭/重连） |
+| `python scripts/stage.py bench --run m2-r6b --idle 1030 --seconds 3620 --entries 100000` | 0：正式样本窗 3621.180 秒、idle 窗口 910.031 秒；100,000 条目 / 500,000 媒体元数据；idle CPU 0.261095%、内存 P95 52.027 MiB；四路录制 CPU 2.443448%、内存 P95 67.738 MiB；热查询 P95 289.278 ms、冷查询 P95 130.744 ms、资源管理器热/冷 P95 221.048/103.914 ms；启动 1.141 s、恢复 2.140 s、GUI 关闭 2.991 s；2 路下载、4 路录制、4 次开始、0 job error；原始样本 SHA-256 `6D03AFF177E8CA66246FBDFF700E4CDEFBA24D8663D39CC4ECDA242217BF503F` |
+| `python scripts/stage.py report --run m2-r6b`、`python scripts/stage.py check` | 各 0；公开摘要写入 `docs/evidence/gate/report.json`，自动证据通过，A review pending，产品验收 not-run |
 
-### 19.3 三项能力逐项结论
+manifest 的 `source_tree_sha256` 与测试输入树一致，schema 8、控制协议 0.1、`productAcceptance=not-run`。manifest 的 `git_commit` 是构建时的阶段基点 `81d17f8` 且 `source_dirty=true`；包由本报告对应的工作树构建，最终 amend 只把这些输入写入提交元数据，不能把该字段误读为最终提交号。
 
-| 能力 | 证据 | 结论 |
-| --- | --- | --- |
-| 直播录制（两站） | 2026-10-13 生产包 m1-r3-12 真实产品链：Bilibili 1920×1080＋AAC 68.869 秒、Douyin 1080×1920＋AAC 68.426 秒；选流、Core 实收、关闭 GUI 后继续、重开停止封片、离线读取、导出、完整解码（[§18.8](#a-m1-r3-technical-closeout)） | passed（技术） |
-| 单个视频解析（两站） | 同日同包：Bilibili 3840×2160＋独立 AAC 218.560 秒、Douyin 1080×1920＋AAC 22.833 秒；链接解析、列出可得清晰度、明确选择后入库与解码（§18.8） | passed（技术） |
-| 用户视频列表解析（两站） | 自动：site 套件的协议夹具与生产适配器进程、offline 套件的扫描续页/游标/中断恢复。真实：2026-10-15 用 m1-r3-12 的生产适配器和 `trace-daemon site-check`（隔离 Profile、请求间隔 ≥2.5 秒、每次有请求上限）对用户此前提供的两站主页样本各取 2 页，见 19.4 | passed（协议层真实验证＋产品链自动验证） |
+### 14.3 证据归属与限制
 
-**限制：** 列表从订阅到入库的完整产品链只有自动测试，没有用真实作者跑完整订阅；更多页、全历史、匿名差异未验证。作者主页目前只能订阅，没有“预览后勾选”界面——这不是 M1 计划内的必须项，作为产品决定登记为 [Q-006](../../USER-ACTIONS.md#q-006)。
+- A 的 `a-m2-r5-review` 原始日志、失败反例和 `diagnostic-probes.patch` 原样保留；B 新增的 `m2-r6` 旧跑次和 `m2-r6b` 最终跑次均不覆盖原跑次。
+- 原 `-13` 包、原测试和原一小时长测继续只属于原输入。交付前审计又收紧了范围/质量/凭证重排、history/deep lane 恢复、account profile 与混合 waiting_auth，因此早期 `-14`/`m2-r6` 也成为旧输入并原样保留；本轮只以 `-15`/`m2-r6b` 作为最终证据。
+- 本轮零新增真实站点、真实更新或真实媒体请求；八站订阅规则仍全部 `partial`，原有真实回执仍属于 `-7`～`-10`，预算不变。
+- ACT-003、真实 yt-dlp 更新、Linux、安装器、签名与发布仍未验证；自动证据不表示 A 审查或产品验收通过。
 
-### 19.4 真实列表检查（2026-10-15）
+### 14.4 B → A 复验 prompt
 
-| 站点 | 请求（全部 200） | 第 1 页 | 第 2 页 |
-| --- | --- | --- | --- |
-| Douyin | 登录探测、账号解析、投稿列表 ×2，共 4 次 | 20 条视频，`max_cursor` 前进，`has_more` 为真 | 原始 20 条中 19 条视频（1 条非视频按 video 通道筛除），游标继续前进 |
-| Bilibili | nav ×3、card、`x/space/wbi/arc/search` ×2，共 6 次 | 30 条视频，WBI 签名通过 | 30 条视频，页码前进，仍有更多 |
+```text
+请作为 Agent A 复核 TRACE-M2-01 r2 的 §14 集中返工。分支 codex/m2-multi-site-archive；交付 SHA 以 git log -1 --format=%H 为准；工作区应干净。先读 AGENTS.md、REVIEW.md、docs/delivery/status.md、USER-ACTIONS.md、docs/delivery/stage-report.md §13～§14，再核对实际代码、测试和 m2-r6b 原始回执。
 
-两站两页均按发布时间衔接、无重叠。合计 10 次元数据请求、0 字节媒体，没有挑战或限流；不写档案、不建订阅。原始回执只在本机忽略目录，本报告不记录账号、作品清单或签名 URL；授权依据与累计记在 [ACT-002](../../USER-ACTIONS.md#act-002)。
+本轮已按 §13.2/§13.5 完成 F-069/F-071/F-072/F-073/F-079/F-084，并保留 A 的 F-085 回放时刻比较、F-086 许可后选择工具、F-070 重开 Core 回退测试及原失败证据。请重点复验：
+1. F-069：拒绝是否按具体 consumer/订阅持久停止，双 owner 的另一个 owner 不被饿死，incremental/history/deep 三 lane 同时停止；invalid→valid、valid-only、重启和质量/补全重排均不复活，显式 retry 才恢复对应请求；AuthRequired 正常恢复保持。
+2. F-071：增量驱动是否使用真实 source observation、entry_subscriptions 和 job身份/endpoint 证据；范围外零订阅发现与媒体、第二轮零详情请求/新任务，预览或其他 lane 不得冒充；自动下载开/关正反例均成立。
+3. F-072：merge/split/relink 是否在同一写事务内重算影响、比较 token、写关系与审计；actor 屏障下不移动预览外账号，陈旧确认零写入。
+4. F-073：tombstone 文件占用、trash 已删/DB 未删、再次移除和并发 activate/remove 是否保持档案可读、可重试、活动驱动不受损；cleanup 告警不得阻断 Core。
+5. F-079：UI→API→Core 是否先给出只读覆盖/质量/真实与独有区间，取消零写入，不可比较/剪辑缺段不能设回放为主，已有关联持续显示保存区间，全部分片保留。
+6. F-084：新回执是否逐项核对实际包成员、缺失/额外文件、篡改摘要和 manifest 源码树；缺包失败，旧无身份回执不换绑。
 
-### 19.5 复核发现
+证据入口：docs/delivery/stage-report.md §14；artifacts/evidence-runs/m2-r6b/（test/package/bench/report 回执与原始日志）；artifacts/evidence-runs/a-m2-r5-review/（A 原失败证据）；包 dist/trace-0.1.0-windows-x64-15/，SHA256SUMS 自身摘要 30BEE10304310DEBE8F3938CAD1623CD1A39AAAA1ADD294CABE1B637446A4A56。冻结输入 770 项、源码树 9f9d8aadf6498639bcaaecaf98ab65f4f18dacd577a19080b52d493cb5a52938；正式长测和 report/check 均已通过。
 
-| 编号 / 严重度 | 发现 | 处理 |
-| --- | --- | --- |
-| F-033 / 建议 | Bilibili 空间视频列表只带 mid/pn/ps/order 与 WBI 签名，未带部分浏览器实现会附加的 `dm_img_*`、`w_webid` 等风控参数；本次未复现 -352，更高频或匿名时有风险 | [LOOP-002](status.md#followup-loops)，随代码整理 R2 补齐并加固定向量 |
-| F-034 / 建议 | 代码结构：`ipc/dispatch.rs::execute` 1310 行、SQL 分布在 26 个非测试文件、两站适配器两套运行时、69 个手写 Tauri 转发、147 个测试按阶段/轮次命名等 | [代码结构优化方案](../design/code-structure-refactor.md)，排期见 [Q-005](../../USER-ACTIONS.md#q-005) |
-| F-035 / 建议 | 证据工具把全部文档绑定进包/聚合指纹并写死 87/68 需求数，文档修改让已验收的 bundle 报 stale | [LOOP-003](status.md#followup-loops)；落地前按[纯文档变化规则](../dev-rules/quality-gates.md#doc-only-changes) |
-| F-036 / 建议 | 生成物约 150 GB（`artifacts/` 74 GB/644 项、`target/` 72 GB、`dist/` 31 个包 6 GB），曾导致开发盘写满（ACT-005） | 下一阶段开始时按[阶段整理](../governance/documentation-policy.md#stage-cleanup)清理，保留 ACT-003 在用的包与样本 |
+请复用有效证据并做必要独立复验，不重复全部一小时长测；局部明确问题直接修复，较大缺口按稳定 F 编号一次性交回 B。不要追加真实站点/真实更新请求，不把原 -13 回执或长测改绑到 -14，不把自动证据写成产品验收。外部操作仍按已有授权；本轮未 push、未建 PR、未合并。
+```
 
-没有 P0/P1/P2 缺陷，不需要交回 B 返工。
+**实现交付：B 已完成并冻结；A 技术审查：待复验；产品验收：not-run。**
 
-### 19.6 流程文档同步与本轮文档门禁
+<a id="a-m2-r6-review"></a>
+## 15. A 独立集中复核与新增交互要求（2026-10-20）
 
-参照用户另一项目的流程规范，更新了 [AGENTS.md](../../AGENTS.md)、[REVIEW.md](../../REVIEW.md)、[开发流程](../dev-rules/development-workflow.md)、[文档治理](../governance/documentation-policy.md)（阶段整理与去阶段标签）、[本地参考规则](../dev-rules/local-reference-and-files.md)、[质量门禁](../dev-rules/quality-gates.md#doc-only-changes)、[交接模板](../templates/agent-handoff.md)，并按同一格式重写 [USER-ACTIONS](../../USER-ACTIONS.md)（新增 ACT-006、Q-005—Q-007，旧锚点保留）。用户新增的订阅规则目录与“支持的网站”页面记为[路线候选](roadmap-and-acceptance.md#待实现的后继范围)（[DEC-030](../decisions/confirmed-decisions.md#dec-030)）；本地参考索引在仓库外更新，仓库内不写项目名。
+被审交付为 `d3561dd091845bac66e99d2a4e1b4abde59a47ae`，接手核实分支 `codex/m2-multi-site-archive`、工作区干净、仍为一个阶段提交。先审实际生产代码、UI/API、测试和原始回执，再补必要独立反例；没有再跑一小时基准，没有追加真实站点/真实更新请求。**A 技术审查仍为 rework-required**：F-071 的证据判断仍有必须缺口；F-069 新发现的局部路径已直接补修。用户新增的沉浸式标题栏/四档文字与响应式布局进入计划，不冒充本次已实现。
 
-文档改动后的门禁：
+### 15.1 必须返工：F-071 / P1
 
-| 检查 | 结果 |
+位置：`scripts/real_site_check.py` 的 `job_snapshot/new_jobs/check_incremental`。独立合成驱动反例沿用已有测试夹具，仅改变输入/返回的可观察事实，不联网、不改 `jobs.attempts`。`artifacts/evidence-runs/a-m2-r6-review/driver-probes.py` 与 `.log` 保留完整输入和结果。
+
+| 触发与实际结果 | 影响及完成条件 |
 | --- | --- |
-| `python scripts/check_docs.py` | passed：50 份文档、685 个本地链接、87 条需求、0 错误 |
-| `python scripts/check_publication.py` | passed：0 处公开内容问题 |
-| `python -m unittest discover -s scripts/tests` | 19 项通过 |
-| `git diff --check` | exit 0 |
-| `python scripts/stage_evidence.py check artifacts/a-m1-r3-review/four-real-bundle-final.json` | exit 1，唯一原因 `stale or incomplete documents` |
-| `python scripts/verify.py --stage-bundle artifacts/a-m1-r3-review/four-real-bundle-final.json` | exit 1，唯一原因同上 |
+| `archive.entry.get` 不含 observation_count/latest_observation_seq；两次 `.get()` 均为 None，仍返回 ok=true、observations unchanged | 证据缺失不是零详情执行。必须要求可验证的实际观察字段/类型/值，并在缺失或不完整快照时明确不可验证 |
+| 首轮之前已有范围外条目 `old`，本次订阅错误地发现它；目标条目正常发现。由于仅核对 timeline 新 ID 差集，仍 ok=true，且不读取 old 的发现关系 | 必须比较本订阅全部相关发现关系的增量，覆盖已在库/预览/其它 lane 的条目；范围外零发现与零媒体不能只看新增条目 |
+| 目标有本订阅发现关系，但新 media job 是其它订阅/lane 的 failed job；目标 complete 与字节来自其它采集，仍 ok=true | 现有 JobDto/snapshot 只凭 subject ID，无法证明谁执行/成功。需要安全的 subscription/consumer/request/成功执行归属证据及 endpoint/媒体事实；不能用任意 job 存在+全局媒体字节归因给本订阅 |
+| 自动下载开启分支首轮下载后立即 return，subscription.check_now 调用数为 0 | 开/关都必须执行第二轮，核对重复 list、零详情/媒体执行、零新任务和发现关系不变；加入 auto-on 第二轮重复详情/媒体的负例，不只测试 off |
 
-两个聚合入口的拒绝是本轮文档改动的预期结果：按[纯文档变化规则](../dev-rules/quality-gates.md#doc-only-changes)，旧 bundle 继续只证明它绑定的文档版本，不改写摘要去重新绑定。本轮没有改动产品源码、锁文件或四份包输入文档，m1-r3-12 包、正式资源测量和四项真实产品链的证据仍对应原输入有效；Rust/前端全套已在 19.2 重跑通过，正式长测未重跑（not-run，源码无变化）。
+以上是**验证器假阳性与覆盖缺口**，没有据此宣称生产 Core 已发生对应错误下载或错误发现。此前 F-071 的 observation/关系/endpoint 修复方向正确，但尚不足以关闭原必须项。由 B 在同一批完成订阅归属与范围快照（包括必要的安全 API/DTO）、驱动与正反例，再交 A；不是交给用户做真实测试，也不消耗新预算。
 
-### 19.7 结论与下一步
+### 15.2 A 直接修复与已核实项
 
-- **实现交付：** 用户界定的三项能力在两站都已实现并有真实证据。
-- **技术审查：** passed（A 复核；本轮文档改动为 A 自审）。没有需要 B 返工的缺陷。
-- **产品验收：** 原生体验 [ACT-003](../../USER-ACTIONS.md#act-003) 仍 not-run，不是远端授权的前提。
-- **首选下一步：** 请用户授权 [ACT-006](../../USER-ACTIONS.md#act-006)（push 阶段分支、创建 PR、`repository-quality` 通过后 squash 合并）。合并后 A 按 [Q-005](../../USER-ACTIONS.md#q-005) 规划下一阶段：先做行为不变的[代码结构整理](../design/code-structure-refactor.md)与工作区清理，再做订阅规则目录与“支持的网站”页面。本轮 USER-ACTIONS 新增 ACT-006、Q-005、Q-006、Q-007，ACT-002 增加 2026-10-15 列表检查记录；无阻塞项。
-- **远端授权：** 用户 2026-10-15 回复“授权 ACT-006 的（1）（2）（3）”。本节随阶段提交 push，并经 PR 在 `repository-quality` 通过后 squash 合并；合并结果由 Git 历史记录，并在下一阶段开始时写入交付状态。
+| 编号 / 本轮结论 | 核查、修复与边界 |
+| --- | --- |
+| F-069 / 局部补修后关闭已复验路径 | 新增两个真实 DB actor/claim 反例：仅有 history 拒绝时 check_now 插入缺失 incremental，实际可 claim；范围改为 from_now 时 cancel_history_lane 抹去最后一个拒绝状态。原断言均失败，日志 `refusal-red.log` 保留。`store/subscriptions.rs` 现在先检查订阅拒绝，check_now 明确拒绝、范围更新不重排扫描、自动取消 history 不覆盖 waiting_user；拒绝 error 也在显式取消后继续作为持久标记，只有 job.retry 清除。`jobs/consumers.rs`、`store/credentials.rs`、`scan_range.rs` 的相关查询保持同一语义。新增三条正式回归，包含取消后自动路径仍停止、显式 retry 正常恢复；原双 owner、三 lane、invalid→valid/valid-only、history/deep/account-profile、重启与 AuthRequired 守护保留 |
+| F-072 / 关闭 | merge/split/relink 在同一个 db.write IMMEDIATE 事务重算影响和 token、写关系和审计；出错回滚。独立复跑 identity_tests 14 项，包含 actor 屏障下预览外账号不迁移、陈旧 split/relink 不写关系/审计。屏障中确认事务先排队时只迁预览内账号，不将后排绑定写入误称为陈旧确认 |
+| F-073 / 关闭 | 持久 remove intent、文件改名/删除/DB 收尾与可重试 removing 状态正确，activate/remove 共用生命周期锁。独立 plugin_tests 13 项通过，Windows share_mode(0) 实际告警错误 32 而 Core 重开成功/档案可读；trash 已删而 DB 未删可清算、再次移除与并发动作保持活动目录。告警不是“删除完成” |
+| F-079 / 关闭 | 候选只读返回覆盖/规格/真实与独有区间、质量和 can_replay_primary；UI 比较选择与取消先不写，已有关联持续展示 saved ranges。独立 replay_tests 6 项及前端完整 141 项通过，包含从零关联/拒绝、剪辑缺段/不可比较拒设回放主、全部分片保留、取消零写入；仍不代替原生体验 |
+| F-084 / 关闭 | 新回执逐项核对实际成员/缺失/额外/摘要、manifest 输入与源码树；缺包失败、旧无身份回执保持原归属。独立脚本 47 项（含篡改反例）通过；原 -15 实物 package_problems 返回空错误、身份与报告一致。旧回执无包身份时不补写为 -15 |
+| F-070 / F-085 / F-086 / 保持 | 真正重开 Core 的回退链、回放真实时刻比较、拿许可后选择程序路径的修复与原失败证据保留。独立 tool_update 12、media_tools 24、replay 6 项通过，排队启动的合成子进程不是联网下载证据 |
+
+### 15.3 原始证据独立复核与实际命令
+
+修改产品输入之前 `python scripts/stage.py check` 为 0。逐个读 `m2-r6b/receipts/*.json`，校验原始日志摘要、退出码、sourceUnchanged 和 770 项输入；Rust 899（327.92 秒）、前端 141、脚本 47、包 2 项是原回执核对结果，不虚称又执行 899 项。
+
+从 **934 个连续原始资源样本**重新调用 `benchmark_metrics.derive`，逐字段与原 benchmark 完全一致：3621.180 秒、idle 910.031 秒、100,000 条/500,000 媒体元数据；idle CPU 0.261095%、内存 P95 52.027 MiB；四录制 CPU 2.443448%、内存 P95 67.738 MiB；热查询 289.278 ms、资源管理器热查询 221.048 ms；启动 1.141 s、恢复 2.140 s、GUI 关闭 2.991 s。原 bench 命令总耗时 4726.61 秒（约 78.8 分钟），含空闲、准备与连续负载，不是单元测试耗时。
+
+原 -15 包实物身份独立通过：37 文件、342,224,342 字节；SHA256SUMS 自身摘要 `30BEE10304310DEBE8F3938CAD1623CD1A39AAAA1ADD294CABE1B637446A4A56`，源码树 `9f9d8aadf6498639bcaaecaf98ab65f4f18dacd577a19080b52d493cb5a52938`。初次核对结果在 `evidence-audit.log`，没有重写包、清单或旧回执。
+
+| 本轮实际执行 | 结果与限制 |
+| --- | --- |
+| 原输入定向 Rust：consumers / management / identity / plugin / replay / tool_update / media_tools | 8 + 8 + 14 + 13 + 6 + 12 + 24 = 85 项执行通过；不是 workspace 全量。曾用 plugin_lifecycle 过滤得到 0 项，随后改用实际 plugin_tests 运行 13 项，不把空过滤算覆盖 |
+| `corepack pnpm -C apps/desktop run verify` | 0：141 项，格式、类型、生产构建通过；已有 Vue Router 测试警告保留 |
+| 原 -15 的隔离原生回放 UI→API→Core（`native-replay-v2.py` / `replay-native.mjs`） | 0：实际最小化、不抢前台的生产 WebView 点击查候选/查看比较/取消/保留两者/拒绝/设主，真实 IPC/控制协议入原包 Core。取消前后 management.operations 和 links 相同；剪辑/未知质量禁用主版本、完整同规格可设主；3 个合成分片记录均保留、已保存区间持续渲染。首个探针合成规格漏 fps，完整候选被正确判 unknown 而断言失败，原日志保留；补齐合成 fps 后在新隔离 Profile 复跑通过，不算产品缺陷或真实媒体播放验收 |
+| `python -m unittest discover -s scripts/tests -v` | 0：47 项；独立额外 driver-probes 的四种假阳性不在原 47 项内，原测试全绿不关闭 F-071 |
+| 新增两个拒绝反例 `cargo test -p trace-core --locked jobs::consumers::tests::a_ -- --nocapture --test-threads=1` | 101：2/2 预期失败，完整保留 `refusal-red.log`；第二个断言在 actor 内触发，调用方同时收到 actor dropped job，不能误读为仅环境失败 |
+| 局部修复后 consumers 模块；credential / subscription / scan_range 过滤 | 各 0：11 项（1.55 秒）和 16 + 10 + 2 项通过，有重叠不相加宣称独立用例数；最后补显式 retry 断言后再次完整运行 consumers |
+| `cargo clippy -p trace-core --locked --all-targets -- -D warnings`、fmt/diff | 0；MSVC linker_messages 与一次 incremental cache 目录拒绝访问提示保留，没有把提示当测试失败或隐去 |
+| `python scripts/check_package.py dist/trace-0.1.0-windows-x64-15` | 在新增反例已改变产品输入后执行，1：实物/源码核对明确报 manifest/aggregate/build-command stale；独立嵌入 WebView 关闭/重连用例通过。没有把这个原包的原生烟测写成修复后包通过 |
+| 修复后 `python scripts/stage.py check` | 1：source、command、package、benchmark/raw inputs stale，符合五个产品输入改变。保留原 gate/包/长测，不生成假新 report；B 最后冻结后补匹配的新证据 |
+| 最终文档/公开/结构/生成类型/长行/规则/脚本与 fmt/diff | 各 0：52 文档、834 本地链接，0 公开发现、0 超限文件/可折长行，生成类型与规则一致；脚本47项复跑通过。对原 report 显式使用其原 sourceInputs 再校验也为0，并记录 currentInputsDiffer=true，只证明原冻结回执仍完整，不替当前 stale 检查 |
+
+本轮局部修复及 LF 行尾规范化后仍为 770 项，五个改变的输入是 `jobs/consumer_tests.rs`、`jobs/consumers.rs`、`scan_range.rs`、`store/credentials.rs`、`store/subscriptions.rs`；源码树 `5cc06b5abe6338fb53f4ebf98fe662bf2d86a04a5eecf4a38a6b13dd7c40efa4`。报告/需求/计划变化不进产品指纹。本轮原始日志均在 `artifacts/evidence-runs/a-m2-r6-review/`，原 `a-m2-r5-review`、`m2-r6b` 和旧失败原样保留。
+
+### 15.4 新增范围与长测安排
+
+[DEC-042](../decisions/confirmed-decisions.md#dec-042) 和[计划 §13](stage-plan.md#desktop-and-fast-validation)纳入 U1 沉浸式标题栏、U2 四档文字与响应式、V1 分层快验；**本轮 A 只完成方案与验收条件，UI 尚未实现**。开源调查沿用现有 Tauri/Vue/Naive UI，未加依赖或更换技术栈，官方依据与查询日期已落盘。
+
+日常改动跑秒至分钟的受影响测试；本轮 A 审查复算旧基准而没有另跑长测。原 78.8 分钟长测用于稳定空闲/连续并发的资源、十万级查询与 GUI 生命周期，不证明网站抓取或产品验收。后续先完成整批返工/新增 UI，再最后冻结集中跑一次需要的新包/正式基准；不在每个工作包和日常 A 复核中重复。短测不能冒充连续一小时，旧输入不能改绑；详见[分层门禁](../dev-rules/quality-gates.md#risk-layered-validation)。
+
+八站订阅仍全部 partial，原 -13/-14/-15 与真实 -7～-10 各属原输入；没有追加真实站点或真实更新请求。ACT-003、真实更新下载、Linux、安装器、签名/发布仍 not-run；未 push、未建 PR、未合并。不新增需用户作决定的阻塞项；USER-ACTIONS 仅同步 DEC-042 已收到、ACT-003 适用包限制，未将开发工作转成用户待办。
+
+### 15.5 A → B 集中实施 prompt
+
+```text
+请作为 Agent B 在 codex/m2-multi-site-archive 连续完成 TRACE-M2-01 r2 的本次集中实施。被审交付 d3561dd091845bac66e99d2a4e1b4abde59a47ae；当前基点以 A 保存 §15 后 git log -1 为准，仍只有一个未 push 的带 DCO 阶段提交。
+先读 AGENTS/REVIEW、stage-report §15、stage-plan §13、状态与 USER-ACTIONS。保留 A 本轮 F-069 的五个产品输入修改和三条新回归（check_now 缺 lane、from_now/history 拒绝标记、取消后仍拒绝且显式 retry 恢复），以及 F-070/F-085/F-086、原失败/回执/包身份。
+一次性完成 F-071：严格 observation 证据、全部相关订阅发现关系（含已在库范围外条目）、目标 subscription/consumer/request 的成功 observe/media 执行与 endpoint 归属；auto-on/off 都做第二轮零详情/媒体/新任务检查。把 a-m2-r6-review/driver-probes.py 的四种假阳性迁入正式回归并保留所有正例，不改 jobs.attempts 语义；安全 DTO 不泄露凭证/临时 URL。
+同批实现 DEC-042：沉浸式标题栏（真实窗口动作、拖动/最大化/resize、浏览器不显示伪控件、关闭不退出后台）；设置 100/110/125/150% 字号（默认100%、即时且持久、非法/存储失败可恢复）；全界面和 Naive UI 浮层随字重排，按计划视口/页面矩阵自动验证，不用 transform 固定画布。按官方研究复用已有依赖，不换技术栈。
+落实 V1 分层快验，日常不触发一小时基准/真实请求。先完成本批全部源码和测试，再最后冻结统一测试/打包与必要正式长测；不能用旧 -15 绑定新输入，也不能让短测通过正式 report/check。原始失败保留，当前 gate stale 是真实状态，不手改摘要。
+不追加真实站点或真实更新请求，八站订阅 partial、预算、ACT-003 not-run 保持；用户事项只在 USER-ACTIONS。记录实际命令/退出码/耗时、匹配包与源码树、证据限制，amend 同一带 DCO 阶段提交并交 A 复核。未获授权不得 push/PR/合并/发布。
+```
+
+**实现交付：需补 F-071 与新增范围；A 技术审查：rework-required；产品验收：not-run。** 首选下一步交 B 按同一 prompt 连续完成，不把原生人工检查当开发前提，也不请求远端操作授权。
+
+<a id="b-m2-r7-delivery"></a>
+## 16. B 集中实施与最终冻结（2026-10-20）
+
+B 以 A 保存 §15 后的 `fe5a596` 工作树继续，保留 F-069 的五个产品输入修复、三条回归，F-070/F-085/F-086 的修复及所有原失败/回执/包身份。本轮没有追加真实站点、真实更新或远端请求；八站订阅保持 `partial`，ACT-003 仍 `not-run`。
+
+### 16.1 F-071：订阅归属与可验证的增量证据
+
+| 项目 | 实际实现与测试 |
+| --- | --- |
+| 安全证据 DTO | `archive.subscription.evidence` 继续只返回本地身份、时间、状态和脱敏 endpoint；观察现在按 `acquisition_contexts.subscription_id` 过滤，消费者 job 增加 `job_generation`。请求仍以 `context_id`/`evidence_id` 归属，不读取 `jobs.attempts`，不返回 payload、查询串、Cookie 或临时 URL。`crates/core/src/archive_catalog_tests.rs` 的 `subscription_evidence_exposes_owned_facts_without_job_payloads_or_urls` 与 `subscription_evidence_does_not_borrow_another_subscriptions_job_or_observation` 覆盖脱敏、观察/任务归属和范围外订阅隔离 |
+| 严格快照校验 | `scripts/real_site_check.py::evidence_problem` 要求 `budget_available=true`、无截断、唯一 entry、完整 relation/discovery、observation 计数与最新序号一致、context/job/request/acquisition 类型和归属完整；缺失字段不再被当作零活动。请求必须属于现有 context，媒体字节必须属于本轮 context |
+| 首轮发现与执行 | 目标必须由本次检查的 `entry_subscriptions` 发现、落在请求范围、观察到新序号；observe job 必须同时是 succeeded consumer 且有新 acquisition context + job generation，详情请求必须来自本轮新请求且不是 list endpoint。范围外已有条目、错误关系、其它 lane 或失败/global job 不能通过 |
+| 自动下载两档 | auto-off 要求所有发现条目 `deferred`、无新增 media job/acquisition/媒体字节；auto-on 要求目标有本订阅的 succeeded media consumer、新 context、新媒体请求、实际新增媒体字节和成功 acquisition。两者都执行第二轮 |
+| 第二轮 | 关系（含 discovery 时间）、观察明细、context、job 状态/计数/generation、acquisition、媒体证据均逐项不变；只允许一个重复 list endpoint，且不新增详情、媒体或任务。`changed_jobs` 以证据内的 job 状态/requested 计数判断，不再用全局 `job.list` 或 `jobs.attempts` 归因 |
+| 回归 | `test_an_incremental_check_verifies_range_detail_attempts_and_no_media_on_a_second_pass`、`test_incremental_evidence_rejects_missing_observations_existing_outside_discovery_and_foreign_media`、`test_a_failed_media_job_cannot_back_an_incremental_download`、`test_auto_on_also_rejects_a_second_detail_job`、既有正例和无日期驱动均通过。A 的 `artifacts/evidence-runs/a-m2-r6-review/driver-probes.py`/`.log` 原样保留；其四种假阳性语义已迁入上述能力命名的正式回归 |
+
+### 16.2 U1：沉浸式标题栏
+
+- `apps/desktop/src-tauri/tauri.conf.json` 使用 `decorations=false`、可调整大小和原生窗口动作；`WindowTitlebar.vue` 提供拖动区域、真实最小化/最大化/还原/关闭按钮、状态图标、键盘焦点与可见错误。搜索、导航和按钮不在拖动区；浏览器预览不渲染伪原生控件。
+- `commands.rs` 对窗口动作增加 `main` label 限制；关闭仍只关闭当前 GUI，不调用 `desktop_exit`，后台任务由独立 Core 保持。嵌入式 WebView 检查实际点击关闭/重开并确认后台继续；另验证 `desktop_window_toggle_maximize` 的状态往返。`--show-status` 改为页面加载后延迟导航，避免 router 初始化覆盖通知入口。
+- 包内自动检查 `test_minimized_embedded_webview_close_reconnect_and_full_exit` 通过，包含最小化、不抢前台、关闭、重连、完全退出、其它窗口不重启已退出后台；自动检查不替代 ACT-003 的真实 IME/系统缩放/主观体验。
+
+### 16.3 U2：四档字号与响应式
+
+- `stores/display.ts` 提供 100/110/125/150 四档、默认 100%、`localStorage` 持久化、非法值/读写失败恢复和 `storage` + `BroadcastChannel` 多窗口同步；`SettingsDisplay.vue` 放在“设置 → 显示与文字”，说明这是本机显示偏好，不进入档案/备份。
+- `App.vue` 的 Naive UI theme overrides 与 `shell.css` 根字号 token 同步缩放按钮、卡片、表格、弹窗、下拉和浮层；页面 CSS 使用相对字号/间距、可换行网格和独立滚动区。所有固定宽度弹窗改为 `min(px, 94vw)`，窄窗工具栏允许换行。没有使用固定画布 `transform`。
+- 调试版与最终包内的自动矩阵共 **119** 个观察点：720/980/1280/1536 宽度 × 100/110/125/150% × 设置/主页/订阅/时间线/资源管理器/任务/管理页，另加 360 宽七个页面、150% 模态框与 Naive UI 浮层。根部实际计算字号为 16/17.6/20/24px；页面/浮层无横向溢出、底部可滚动到达、模态框和下拉不越界。真实 IME、Windows 系统缩放和主观阅读体验仍由 ACT-003 记录。
+
+### 16.4 V1：分层快验
+
+`scripts/quick_verify.py` 提供 `ui`、`backend`、`evidence`、`structure`、`all` 五组，输出目录带纳秒后缀避免并发碰撞，摘要固定含 `QUICK ONLY`、`completeStageEvidence=false`、`longBenchmark=false`、`realSiteRequests=0`。`--rust-test` 为 backend 组添加能力命名的定向 Rust 过滤，替代默认的 cargo check；失败立即停止，摘要保留原命令退出码，CLI 返回 1，不删除断言、不创建 `stage.py` 回执。实际全组本机耗时 **65.16 秒**（10 条命令），不含长基准、真实站点、打包或正式 report。
+
+### 16.5 最终冻结与匹配证据
+
+| 命令 / 输入 | 结果 |
+| --- | --- |
+| `python scripts/stage.py test --run m2-r7e` | 退出 0；Rust 工作区构建 8.88 秒，Rust 305.15 秒/905 项，前端 9.68 秒/148 项，脚本 37.21 秒/53 项 |
+| `python scripts/stage.py package --run m2-r7e` | 退出 0；`package/portable` 41.46 秒，`package/check` 57.61 秒/2 项（成员/摘要、八站隔离、嵌入式 WebView 关闭重连与状态入口） |
+| `python scripts/stage.py bench --run m2-r7e` | 退出 0；正式命令 4,709.65 秒；工作负载 3,601.18 秒，idle 窗口 905.187 秒；100k 发布/500k 媒体/100k 资源管理器 |
+| 基准指标 | idle CPU 0.3044%、内存 P95 52.984 MiB；四路录制 CPU 1.7082%、内存 P95 67.180 MiB；热查询 P95 140.732 ms、资源管理器热 P95 108.892 ms；GUI 关闭 3.044 秒、恢复 2.033 秒；作业错误 0 |
+| 最终包 | `dist/trace-0.1.0-windows-x64-18`；37 文件、342,444,318 字节；777 项产品输入源码树 `46e98fe6651dcdf179305eae28cb94d56a4439e694a192a61dfe59c1802df224`；`SHA256SUMS.txt` 自身 SHA-256 `132398D8835626A604EB5D94495AA2509EB625F1211AE117F75161B90DFA95CD`；manifest 构建时 `git_commit=fe5a596`、`source_dirty=true`，最终提交以实际 HEAD 与源码树为准 |
+| `python scripts/stage.py report --run m2-r7e` / `python scripts/stage.py check` | 均退出 0；`docs/evidence/gate/report.json` 由 `m2-r7e` 的测试、包、正式基准和文档/公开检查组装并通过；只证明自动证据，A 审查与产品验收仍 pending/not-run |
+
+保留的失败/过期证据：`m2-r7` 的 rust-build 因调试 WebView 遗留的隔离 daemon 锁定 `trace-daemon.exe` 退出 101（该跑次 Rust/前端/脚本仍各自通过）；`m2-r7d` 包检查在 119 点矩阵前暴露 `--show-status` 路由时序问题；`dist/trace-0.1.0-windows-x64-17` 为失败候选包。修复后从 `m2-r7e` 重跑，未覆盖上述日志、未把旧 `-15` 或旧 `-17` 结果改绑到当前源码。`m2-r7e` 的原始回执、日志、采样和包身份保留在忽略目录 `artifacts/evidence-runs/m2-r7e/`。
+
+自动证据不等于 A 技术审查或产品验收。真实站点/更新下载、Linux、安装器、签名发布仍 not-run，八站订阅规则仍全部 `partial`。
+
+### 16.6 B → A 复验 prompt
+
+```text
+请作为 Agent A，在 codex/m2-multi-site-archive 复核 TRACE-M2-01 r2 本轮最终冻结交付。先读 AGENTS/REVIEW、stage-report §16、status、USER-ACTIONS、stage-plan §13，再读实际代码与 m2-r7e 原始回执；不要用旧 -15/-17 证据替当前源码。
+重点复核：
+1. F-071：archive.subscription.evidence 是否严格按本订阅 context/observation 过滤，job generation/consumer/request 是否真实归属；范围外已有条目、缺失 observation、其它 lane/失败 job、auto-on/off 第二轮零详情/媒体/新任务是否都有正反例；jobs.attempts 是否保持失败预算语义。
+2. U1：窗口动作是否真实调用 main 窗口，拖动/双击最大化、按钮键盘、错误提示、浏览器隐藏、关闭后后台继续与重开是否由最终包实际验证；状态入口时序修复是否没有掩盖通知入口。
+3. U2：100/110/125/150% 实际计算字号、持久化、非法/存储失败、多窗口同步；720/980/1280/1536 和 360 页面/弹窗/浮层是否无横向溢出、底部可达；Naive UI theme 与 CSS token 是否一致。
+4. V1：快验的失败是否非零、是否明确不能作为正式 stage 证据、是否覆盖本批能力；最终包 -18 与 m2-r7e 是否匹配同一源码树。
+5. 保留 A 的 F-069/F-070/F-085/F-086 修复与原失败证据；检查报告/状态/需求状态没有被写成产品验收通过。真实站点/更新、Linux、安装器、签名发布仍 not-run，八站订阅 partial。
+请直接修局部问题、把较大缺口一次性交回 B，并在收敛后给出用户可执行的远端授权请求；本轮未授权 push/PR/合并。
+```
+
+<a id="a-m2-r7-review"></a>
+## 17. A 独立复核、局部修复与剩余返工（2026-10-20）
+
+被审交付为 `8dd0e49c728d0e6022a0a13895af6f286c75c10b`，分支正确、开工工作区干净，仍为基于 `main@c1552e0` 的唯一未 push 阶段提交。先核对 §16、当前状态、USER-ACTIONS 与计划 §13，再检查实际代码、原始回执和反例；没有用旧 `-15`、`-17` 替代当前冻结输入。结论：**F-071 仍开放；新增 F-087/F-088 已由 A 局部修复并定向复验；整阶段仍需返工，不请求远端授权。**
+
+### 17.1 原冻结身份与原始证据
+
+修改产品输入前，`python scripts/stage.py check` 为 0。独立逐项核对 `m2-r7e/receipts/*.json` 的九份回执：退出码均 0、sourceUnchanged=true、777 项 sourceInputs 与当前源码逐文件一致，原始日志摘要及解析用例与回执一致。Rust 905、前端 148、脚本 53、包 2 项是原回执核对结果，不虚称再次执行了 Rust 工作区全量。
+
+原 `-18` 实物的 37 个文件、342,444,318 字节、实际成员摘要、清单和 manifest 关联全部正确；源码树 `46e98fe6651dcdf179305eae28cb94d56a4439e694a192a61dfe59c1802df224`，SHA256SUMS 自身摘要 `132398D8835626A604EB5D94495AA2509EB625F1211AE117F75161B90DFA95CD`。manifest 的构建基线 `fe5a596`、source_dirty=true 与冻结前工作树一致，不把 Git SHA 当作产品输入摘要。公开 report 与原始跑次 report 内容相同。
+
+从 **930 个连续原始资源样本**重新调用 `benchmark_metrics.derive`，全部派生字段与原 benchmark 一致：工作负载 3601.183 秒、idle 905.187 秒、100,000 发布/500,000 媒体/100,000 资源管理器条目、四路录制、346 个混合并发样本、作业错误 0。idle CPU 0.304362%、内存 P95 52.984 MiB；四录制 CPU 1.708165%、内存 P95 67.180 MiB；热查询 140.732 ms、资源管理器热查询 108.892 ms；GUI 关闭 3.044 秒、恢复 2.033 秒。命令总耗时 4709.654 秒与连续负载时长分开记录；A 没有重跑一小时长测。
+
+### 17.2 必须项与局部修复
+
+| 编号 / 严重度 / 状态 | 实际复现、影响及处理 |
+| --- | --- |
+| F-071 / P1，仍开放 | `scripts/real_site_check.py:1422/1467/1497/1510` 的首轮 media job/acquisition/字节核查只遍历 changed_relations。独立反例让范围外已有条目的发现时间完全不变，但新增本订阅的 media job：auto-off 新增未完成的 media consumer（job 随订阅暂停，零字节）仍 ok=true；auto-on 对旧条目成功请求并收取 75 字节、同时目标正常完成，也仍 ok=true。第二轮完全不变不能补证首轮遗漏。必须对全部相关条目按任务/context/请求/acquisition/媒体字节分别做前后差异，不得只检查新增或刷新发现关系的条目 |
+| F-071 / 同一问题的请求归属剩余 | `scripts/real_site_check.py:1407` 把所有目标新 context 都作为 detail_requests 的来源，没有限定到成功 observe job 的同代执行。独立 auto-on 反例把唯一详情请求的 evidence_id 从 ctx-observe-e1 改为 ctx-media-e1，成功 observe consumer 没有自己的详情请求，仍 ok=true。必须把观察序号、成功 observe consumer、job generation、context 与详情请求连成同一执行证据；不能借同条目的 media 执行背书。显式匿名降级的不同 context 也要保持可验证的同代归属 |
+| F-087 / P1，A 局部修复、定向复验通过 | 原来没有任何 Tauri capability。`-18` 直接调用 plugin:window 的 start_dragging / internal_toggle_maximize 均答 not allowed by ACL；data-tauri-drag-region 实际走这些命令，而原包矩阵只调用自定义 desktop_window_toggle_maximize，故原测试全绿仍不能拖动/双击最大化。主页的 plugin:event listen 同样被拒绝，出现“后台事件连接失败”。新增 `src-tauri/capabilities/main-window.json`，仅 local/main 开放拖动、内部最大化和 listen/unlisten，不给远端 origin 或 emit 权限；扩充正式 WebView 探针验证真实拖动区事件的最大化往返、拖动调用及事件监听清理。新嵌入式 release 外壳实际通过 |
+| F-088 / P2，A 局部修复、定向复验通过 | `WindowTitlebar.vue` 原样式在 max-width:760px 隐藏 .window-error；720px 是支持的原生最小宽度，窗口动作失败时文本虽已渲染却不可见。原包的同 scoped 属性合成错误节点实际 display=none、宽高 0。移除该隐藏规则，新外壳同节点 display=block、有非零尺寸；正式 WebView 探针新增 720px 错误样式守护。组件既有 rejected IPC 测试继续验证真实错误渲染；CSS 探针不冒充真实系统错误 |
+
+F-071 的三条新反例都返回了错误的 ok=true，完整脚本最后以断言退出 1。最终反例仅替换时钟以免真实等待，wait_found/wait_quiet/wait_still 全部走生产实现；auto-on 的旧条目还具有成功 acquisition 和 complete 状态。它们是**验证器假阳性**，没有据此宣称生产 Core 真的进行了范围外下载。原四类反例与新反例须共同保留，不能仅调整一个样本或绕过断言。
+
+已核实的 F-071 修复部分也保留：Core observation/context/acquisition 按 subscription_id 过滤，job 通过真实 job_consumers 行归属；请求与字节按 context_id 脱敏提取，原始 payload、凭证和临时 URL 不返回。缺失 observation、已有条目错误刷新发现关系、失败/其他订阅 job、auto-on 第二轮重复详情/媒体的现有测试通过；第二轮确实检查关系、观察、context、job generation/计数、acquisition、请求和媒体不变。`jobs.attempts` 仍只在失败路径递增，没有伪造成功计数。
+
+### 17.3 U1 / U2 / V1 的证据边界
+
+- **U1：** 原包的自定义最小化/最大化/关闭动作和 main label 限制正确，关闭不调用 desktop_exit。原包独立包检查 2 项通过，但漏掉 F-087 的插件 ACL 路径。A 修复后用正确 custom-protocol 特性构建嵌入式 release 外壳，生产 WebView 的拖动区双击往返、拖动命令、事件 listen/unlisten、119 点矩阵、关闭后 daemon 继续与重开同 instance 通过。测试保持最小化、不抢前台；未模拟用户物理拖动距离、真实 IME 或系统 DPI。
+- **U2：** 四档根计算字号 16/17.6/20/24px、Naive UI theme 和 CSS 字号接入已核实，持久化/非法值/读写失败与 storage 同步的组件回归通过。A 在原包实际重载后仍为 150%/24px；两个隔离同源文档从另一文档选择 110% 后，两边与 localStorage 均为 110%，独立 BroadcastChannel 消息使接收方变为 125%。这是实际双文档同步，不冒充两个独立原生进程的完整体验验收。
+- **布局：** 原包独立重跑完整 119 点（4 宽度×4 字号×7 页面，加 360px/150% 七页），以及模态框/Naive UI 浮层，结果通过。原始 observations 中有宽表、tab 和主页筛选条超出可见区域，但都在自身横向滚动区，不能据此认定全页裁切；主区无横向溢出、纵向可达。A 修复后的嵌入式外壳再跑同一矩阵通过。该跑次主要是空/默认合成状态，不把它扩大为所有长中文档案、所有管理弹窗及 ACT-003 的人工体验已覆盖。
+- **V1：** 快验不启动 package/bench/report 或真实站点，不生成阶段回执。独立失败替身返回 9，execute 立即停止且保留 9；CLI 自身将失败映射到 1，§16.4 已更正表述。QUICK ONLY 摘要和 60 秒的短资源报告都被正式验证器拒绝；原输入与当前输入仍严格区分。分层快验不是正式阶段门禁。
+
+### 17.4 A 的实际命令与保留证据
+
+| 检查 | 实际结果与限制 |
+| --- | --- |
+| 修改前 stage check、原始回执/包/资源样本复算 | 各 0；仅证明原 m2-r7e / -18 冻结完整，不关闭验证器漏检 |
+| `python -m unittest discover -s scripts/tests -v`；修复后 quick_verify evidence | 各 0：53 项；快验摘要明确 QUICK ONLY，不替代 stage 回执 |
+| 前端 `run verify`（修复前、后） | 各 0：148 项、格式/类型/生产构建；既有 Vue Router 警告保留 |
+| 定向 Rust：subscription_evidence / consumers / tool_update / media_tools / replay | 各 0：2 + 11 + 12 + 24 + 6 = 55 项；不是 workspace 全量 |
+| 原 -18 独立 `check_package.py` | 修改产品输入前 0：2 项；新增拖动区守护后原包 1，含源码 stale 和实际 ACL 失败，不把它说成包被篡改 |
+| 独立 driver-probes.py | 1：三条预期必须拒绝的输入均错误通过；完整正反输入与输出保留 |
+| A 修复后的 release 外壳构建及嵌入式探针 | 0；`cargo build -p trace-desktop --release --locked --features trace-desktop/custom-protocol`，外壳 SHA-256 `2b6fb5b727bcea5bd65061d5324adbbccacaf487686c2bc9c13fcc6575f6448a`；这是定向外壳验证，不是新便携包/正式冻结 |
+| 最终文档/公开/结构/生成类型/长行/规则/fmt/diff | 各 0；52 文档、835 本地链接，0 公开发现/超限文件/可折长行；文档同步后脚本 53 项再通过 |
+| 修复后 stage check；原输入显式复验 | 当前 1：source/command/package/benchmark/raw inputs stale，符合 A 三个产品输入变更；按原 sourceInputs 显式校验旧 report 为 0 且 currentInputsDiffer=true，只证明旧冻结仍完整 |
+
+本轮产物入口为 `artifacts/evidence-runs/a-m2-r7-review/`：`evidence-audit.log`、`scripts.log`、`frontend.log` / `frontend-fixed.log`、五组定向 Rust 日志、`driver-probes.py` / `driver-probes-rerun.log` / `driver-probes-production-waits-final.log`、`native-probes.py` / `.mjs`、`native-probes.log`、`native-css-red.log`、`display-sync.log`、`titlebar-red.log`、`titlebar-embedded-build.log`、`native-fixed-embedded.log`、`quick-probes.log`。实际 WebView 原始矩阵保存在各隔离子目录的 first/layout-matrix 日志中。
+
+诊断过程的未成功输入也保留：最初 fixture 直接引用可变字节字典，随后改为 IPC 值快照的 deepcopy 才得到完整三条反例；最初尝试替换不可写的 Tauri invoke，未能触发错误，之后使用带相同 scoped 属性的错误节点仅验证 CSS；第一次直接 cargo release 未启用 custom-protocol，探针找不到生产页面，补上产品打包实际使用的特性后才通过。它们不是额外产品缺陷，也没有用后来的成功覆盖原日志。
+
+A 本轮只改变三个产品输入：新增 local/main capability、标题栏错误样式、WebView 探针；共 778 项，源码树 `cfa19eed133473ff7648b769033885bb6a8b81d48dab3d32cf9226941c1c755b`。原 m2-r7e / -18 / 原始资源样本与 SHA256SUMS 未修改；当前正式 gate 应为 stale，不生成新 report 冒充完整冻结。F-069 五个输入及三条新回归、F-070 真正重开 Core、F-085 时刻比较、F-086 许可后选程序均保留，55 项定向回归覆盖相应守护，原 a-m2-r5/r6 的失败证据仍在。
+
+八站订阅全部 partial，真实站点/真实更新下载、Linux、安装器、签名发布仍 not-run。本轮零真实请求、未 push、未创建 PR、未合并。USER-ACTIONS 仅更新 ACT-003 的适用包/已知限制与审查状态，不新增用户阻塞，也不把 F-071 转成人工检查。
+
+### 17.5 A → B 一次性返工 prompt
+
+```text
+请作为 Agent B 在 codex/m2-multi-site-archive 完成 TRACE-M2-01 r2 的剩余 F-071；当前基点以 A 保存 §17 后 git log -1 为准，被审原交付为 8dd0e49c728d0e6022a0a13895af6f286c75c10b，仍只保留一个未 push、带 DCO 的阶段提交。
+先读 AGENTS/REVIEW、stage-report §17、stage-plan §13、status 与 USER-ACTIONS。保留 A 的 F-069/F-070/F-085/F-086，以及本轮 F-087 local/main 最小 capability、F-088 窄窗错误可见性、WebView 的真实拖动区/事件权限/CSS 守护；原失败与 -18/m2-r7e 身份不变。
+将 artifacts/evidence-runs/a-m2-r7-review/driver-probes.py 的三个假阳性迁入能力命名的回归，保持 IPC 快照值语义及既有全部正例/四类负例。首轮必须对全部相关 entry（不仅 changed_relations）核对新增/变化的 observe/media job、context、acquisition、请求与媒体字节；已有范围外条目不刷新关系也不能漏过新媒体排队或执行。开/关都要拒绝对应反例。
+将新观察、成功 observe consumer、同代 job/context 与详情请求严格关联，media context 的详情请求不能冒充 observe；明确处理匿名降级的 context 关系，不伪造 jobs.attempts 或失败预算。继续保持两档第二轮零详情/媒体/新任务、关系不变与安全 DTO 隔离；不要只特判三个固定样本。
+先定向验证并自审，再最后冻结集中跑完整测试、匹配的新包与必要正式资源门禁；当前 A 的三个产品输入使旧 gate stale，不能改绑 -18 或旧资源样本。不要在工作包间滚动重跑长测。保留原矩阵与新增权限/错误路径断言，准确区分默认几何、长中文合成状态和原生体验证据。
+不追加真实站点或真实更新请求；八站订阅 partial、ACT-003 及 Linux/安装器/签名发布 not-run 保持。同步唯一报告/状态和用户适用包限制，amend 同一带 DCO 的阶段提交，交付准确 SHA、输入树、包摘要、原始回执及 B→A 复验 prompt。本轮不申请或执行 push/PR/合并/发布。
+```
+
+**实现交付：仍需补 F-071 与最终冻结；A 技术审查：rework-required；产品验收：not-run。** 首选下一步交 B 完成上述同一批剩余项，不要求用户人工排错或授权远端操作。
+
+<a id="b-m2-r7f-delivery"></a>
+## 18. B 完成 F-071 返工与最终冻结（2026-10-20）
+
+B 从 A 保存 §17 后的 `4e8de86021ae6b3190789e22434df40b30aed956` 继续，保留 A 对 F-087 local/main capability、F-088 窄窗错误可见性和 WebView 真实拖动区/事件权限/CSS 的修复，以及 F-069/F-070/F-085/F-086 的全部既有修复。原 `a-m2-r7-review/driver-probes.py`、其假阳性日志、`m2-r7e`、包 `-18` 和更早失败证据均未修改或改绑。本轮没有真实站点/更新请求，没有 push/PR/合并/发布。
+
+### 18.1 F-071：全部相关条目的首轮差异
+
+`scripts/real_site_check.py` 现在先取本订阅首轮前后的完整安全证据，再按 entry 的并集逐项计算：
+
+- 发现关系、observation、context、observe/media consumer job、acquisition、request 和按 context 的媒体字节差异；
+- 范围外既有条目不因发现时间未变而被跳过；任一新增/变化活动即拒绝；
+- 自动下载关闭时，任何相关条目的 media job、media request、acquired 记录或媒体字节都拒绝；
+- 自动下载开启时，每条 media request、采集字节和 acquired 记录都必须由本轮新增的 succeeded media consumer 的精确 job generation/context 支撑，不能借用全局字节、其它条目或旧 context。
+
+首轮目标观察也不再只凭“目标有新 context”通过。新 observation 必须落在本轮成功 observe consumer 的 `job_id + job_generation` context 上；详情请求必须是首轮新增请求，且 `evidence_id` 属于同一 observe 执行。显式匿名降级可在同一 job generation 下产生原 context 和匿名 resolution context：详情请求可留在原 context，最终 observation 可落在 resolution context，两者仍由同一成功执行连接。media context 的请求、失败 observe、旧 context 或未变化的 job 不能冒充。缺失/截断证据继续由 `evidence_problem` 拒绝；`jobs.attempts` 仍只是失败预算，未用于成功计数。
+
+### 18.2 三条新反例、正例与原反例
+
+新增正式回归：
+
+| 回归 | 覆盖 |
+| --- | --- |
+| `test_incremental_rejects_media_activity_on_an_existing_out_of_range_work` | 迁入 A 的 auto-off 暂停 media job 与 auto-on 旧条目成功请求/75 字节反例；发现关系不变也不能漏检 |
+| `test_incremental_detail_request_must_belong_to_the_observe_execution` | 迁入 A 的 `ctx-media-e1` 详情请求假阳性；该请求不再为成功 observe 背书 |
+| `test_incremental_observe_accepts_explicit_anonymous_resolution_and_rejects_failure` | 显式匿名 resolution context 的同代正例，以及 failed observe 不能支撑新 observation 的反例 |
+
+原四类反例及正例全部保留并通过：缺失 observation 字段、已有条目错误刷新范围外发现、其它 lane/foreign/failed media、auto-on 第二轮重复详情/media；范围、无日期详情、auto-on/off 第二轮零详情/媒体/新任务、关系/观察/context/job/acquisition/媒体证据不变和安全 DTO 隔离均继续覆盖。脚本全集由 53 项增至 **56 项**；A 的独立探针现三条都以 `ok=false` 结束、整体退出 0，保真输出在 `artifacts/evidence-runs/b-m2-r7f-rework/a-probes-after-fix.log`。
+
+### 18.3 最终冻结与匹配证据
+
+| 命令 / 输入 | 实际结果 |
+| --- | --- |
+| `python scripts/stage.py test --run m2-r7f` | 退出 0；Rust 工作区构建 9.87 秒，Rust 298.58 秒/905 项，前端 9.55 秒/148 项，脚本 36.88 秒/56 项；全部 `sourceUnchanged=true` |
+| `python scripts/stage.py package --run m2-r7f` | 退出 0；`package/portable` 41.34 秒，`package/check` 57.99 秒/2 项（成员/摘要与八站隔离，嵌入式 WebView 关闭/重连/状态入口及拖动权限/CSS 守护） |
+| `python scripts/stage.py bench --run m2-r7f` | 退出 0；命令耗时 4,652.66 秒，工作负载 3,601.22 秒，idle 窗口 905.41 秒；100k 发布/500k 媒体/100k 资源管理器；作业错误 0 |
+| 基准指标 | idle CPU 0.3111%、内存 P95 52.207 MiB；四路录制 CPU 1.7242%、内存 P95 67.332 MiB；热查询 P95 141.621 ms、资源管理器热 P95 109.311 ms；GUI 关闭 6.167 秒、恢复 2.059 秒 |
+| 最终包 | `dist/trace-0.1.0-windows-x64-19`；37 文件、342,475,050 字节；778 项产品输入源码树 `7c311ec63c4083d27ab6ae55875e5ad7361b39db37c86c260352ce89132eeefd`；`SHA256SUMS.txt` 自身 SHA-256 `56EE5A0AE7584413781B8ED6C304EC194B4B14EE99D86EDD3FC6172D5E4D1BB2` |
+| 包 manifest | 构建时 `git_commit=4e8de86021ae6b3190789e22434df40b30aed956`、`source_dirty=true`；该 SHA 是 A 保存 §17 后的返工基点，最终阶段 SHA 以 amend 后 HEAD 为准，包身份以产品输入源码树为准 |
+| `python scripts/stage.py report --run m2-r7f` / `python scripts/stage.py check` | 均退出 0；公开 gate 由 `m2-r7f` 的测试、`-19`、正式基准及文档/公开检查组装；只证明自动证据，A 审查仍 pending，产品验收 not-run |
+
+原始回执、日志、930 个资源采样与包命令日志在忽略目录 `artifacts/evidence-runs/m2-r7f/`。旧 `m2-r7e` / `-18` 的 777 项输入、905/148/53 回执、包摘要与资源采样保持原身份，只证明原输入；未用新结果覆盖或改绑。`m2-r7` 的 daemon 锁定失败、`m2-r7d` 的状态入口时序失败、失败包 `-17` 和 A 的 `a-m2-r7-review` 原失败记录继续保留。
+
+### 18.4 证据边界与下一步
+
+- U1/U2/WebView 的产品输入与行为来自 A 已在 §17.2/§17.3 定向复验的版本；B 没有再改这些产品输入，`-19` 的包检查重新执行了成员与嵌入式 WebView 守护。119 点几何矩阵仍只证明合成状态，原生 IME、Windows 系统缩放和主观体验继续由 ACT-003 记录为 not-run。
+- F-071 新回归是离线驱动/SQLite 契约验证，不是真实站点请求；八站订阅规则仍全部 `partial`，真实更新下载、Linux、安装器和签名发布仍 not-run。
+- B 自检不等于 A 技术审查。实现交付现为“已提交待 A 复验”；A 通过前不请求 push/PR/合并授权。ACT-003 可在 `-19` 独立进行，但其结果不替代 A 审查。
+
+### 18.5 B → A 复验 prompt
+
+```text
+请作为 Agent A，在 codex/m2-multi-site-archive 复核 TRACE-M2-01 r2 的 F-071 返工与最终冻结。先读 AGENTS/REVIEW、stage-report §17/§18、stage-plan §13、status 与 USER-ACTIONS，再看实际代码、`m2-r7f` 原始回执和包 `-19`；不要用 `-18`/`m2-r7e` 替当前输入。
+重点复核：
+1. 首轮是否对全部相关 entry（含发现关系未变的范围外旧条目）逐项比较 observation/context/observe/media job/acquisition/request/媒体字节；auto-off 和 auto-on 是否分别拒绝 A 的三条假阳性。
+2. 新 observation、succeeded observe consumer、精确 job generation/context 与详情请求是否连成同一执行；media context 不能冒充，显式匿名 resolution 的不同 context 是否仍按同代通过。
+3. 原有四类反例、全部正例、auto-on/off 第二轮零详情/媒体/新任务、安全 DTO 隔离与 `jobs.attempts` 失败预算语义是否保持；三条新回归是否在 56 项脚本全集内真实执行。
+4. `-19` 与 `m2-r7f` 是否绑定同一 778 项源码树 `7c311ec63c4083d27ab6ae55875e5ad7361b39db37c86c260352ce89132eeefd`；测试、包检查、正式基准、report/check 和文档/公开门禁是否匹配；旧 `-18`/`m2-r7e` 与全部失败证据是否原样。
+5. 保留 A 的 F-069/F-070/F-085/F-086/F-087/F-088 修复与 WebView 守护；确认八站 partial、ACT-003 not-run、真实站点/更新、Linux、安装器、签名发布未扩大声明。
+请直接修局部问题、把较大缺口一次性交回 B；收敛后登记具体 push/PR/合并授权请求。本轮未授权任何远端动作。
+```
+
+**实现交付：已完成并冻结，待 A 复验；A 技术审查：pending；产品验收：not-run。** 首选下一步交 A 按 §18.5 复核，不要求用户人工排错或追加真实请求。
+
+<a id="a-m2-r7f-review"></a>
+## 19. A 独立复核 F-071 与最终冻结（2026-10-21）
+
+被审交付为 `2e383ea43ad64c652fe230843e0b71649f2b4e41`，分支 `codex/m2-multi-site-archive`，开工工作区干净，基于 `main@c1552e048ea608ba64deae820d127bbd5e969083` 仍只有一个未 push、带 DCO 的阶段提交。按 §17/§18、计划 §13、REVIEW、状态及 USER-ACTIONS 复核实际实现、原始回执和 `-19`，没有使用 `-18/m2-r7e` 替代当前输入。**F-071 已关闭，未发现新增必须返工项；A 技术审查 passed。** 本轮不修改产品源码、测试、夹具、构建输入或原始交付证据，只同步当前审查/需求状态与具体授权请求。
+
+### 19.1 F-071 的逐项判断
+
+| 范围 | 实现核对与独立复验 | 结论 |
+| --- | --- | --- |
+| 首轮全部相关条目 | [增量驱动](../../scripts/real_site_check.py) 按 baseline/after entry 并集计算 `first_round_activity`，不再只遍历 changed_relations。发现关系单独比较；observation、context、observe/media consumer job、acquisition、请求与每个 context 字节分别比较 | 范围外旧条目的关系不变也不能漏过新活动；两档分别注入各维度均被拒绝；无新活动的旧条目两档均通过 |
+| 原三条假阳性 | 原 `a-m2-r7-review/driver-probes.py` 不变，仅在新目录记录复跑输出；auto-off 的暂停 media consumer、auto-on 的旧条目成功请求/75 字节，以及 media context 冒充 observe 详情均为 `ok=false`，整体退出 0 | 原失败及新通过并列保留；没有用替身 wait 绕过生产逻辑 |
+| observe 同代执行 | 新 observation 的 context 须属于本轮变化且 succeeded 的 observe consumer，其 `job_id + job_generation` 与新 context 精确相符；新增详情请求须落在这组 observe context，不借 media、旧 context、失败 consumer 背书 | 独立错代 context/失败 consumer 两档均拒绝；显式匿名 resolution 的请求与最终观察可处于不同 context，同 job/generation 两档均通过，resolution 错代两档均拒绝 |
+| media 执行归属 | auto-off 对全部相关条目的新增/变化 media job、媒体请求、acquired 与字节拒绝；auto-on 的新增媒体请求、字节、acquired 须由本条目本轮成功 media consumer 的精确 generation/context 支撑，目标另须有真实请求及正字节 | 不能借全局字节、其它订阅/lane、失败 job 或旧 context 冒充成功获取 |
+| 原反例、正例与第二轮 | [正式驱动测试](../../scripts/tests/test_real_site_check.py) 保留缺 observation、既有范围外关系错误刷新、其它 lane/foreign/failed media、auto-on 第二轮重复 detail/media 四类反例及全部正例。开/关均执行第二轮，比较关系、观察、context、job generation/consumer 计数、acquisition、字节与仅一次 list 请求 | 脚本全集真实执行 56 项；三条新能力命名回归各出现一次且 passed，非仅写在文件或额外探针中 |
+| 安全 DTO 与失败预算 | [仓储查询](../../crates/core/src/store/archive.rs) 的观察/context/acquisition 按 subscription_id 过滤，job 按真实 job_consumers 归属；[应用层](../../crates/core/src/app/archive.rs) 仅从这些 context 提取脱敏请求与字节，不返回 payload、Cookie、凭证引用或临时 URL。`jobs.attempts` 的成功路径不递增、取消不花失败预算，失败路径保留原递增与 consumer 隔离语义 | 两项 subscription_evidence SQLite 契约与 11 项 consumers 定向测试独立通过；未重定义 attempts 为执行次数 |
+
+独立补充的 24 个输入只使用合成 IPC 值快照与虚拟时钟：两档各验证旧条目零活动正例，以及 observation、context、observe job、media job、acquisition、request、媒体字节七种单独活动；另验证错代、失败 consumer、同代匿名 resolution、匿名错代四种执行边界。`wait_found/wait_quiet/wait_still` 均保留生产实现；这些探针不冒充新增正式测试或真实站点验证。
+
+### 19.2 冻结身份与原始证据
+
+逐文件重新计算当前产品输入，778 项、源码树 **`7c311ec63c4083d27ab6ae55875e5ad7361b39db37c86c260352ce89132eeefd`**。相对 A 保存 §17 的 `4e8de86`，只有 `scripts/real_site_check.py` 与 `scripts/tests/test_real_site_check.py` 两个产品输入变化；F-069/F-070/F-085/F-086、F-087 capability、F-088 CSS 和 WebView 守护逐文件保持。因此本轮不需要再修改产品输入或制造新包/长测。
+
+- `m2-r7f/receipts` 九份回执均退出 0、sourceUnchanged=true，sourceInputs 与当前 778 项逐文件相同；原始日志摘要、解析用例与回执完全一致。Rust 905、前端 148、脚本 56、包 2 项均有真实日志支持；Rust 构建/测试/前端/脚本耗时分别为 9.869/298.577/9.548/36.878 秒。
+- `-19` 实物为 37 文件、342,475,050 字节；实际成员与 SHA256SUMS、manifest、报告 inventory 全部一致。SHA256SUMS 自身摘要 `56ee5a0ae7584413781b8ed6c304ec194b4b14ee99d86edd3fc6172d5e4d1bb2`。manifest 仍如实记录构建基线 `4e8de86` 和 source_dirty=true，不改写为本轮提交 SHA；产品身份依源码树而非 amend 后 Git SHA。
+- 从 930 个连续原始资源样本重新调用 `benchmark_metrics.derive`，所有派生字段与 benchmark 完全一致：工作负载 3601.217681 秒、idle 窗口 905.406 秒、100k 发布/500k 媒体/100k 资源管理器、346 个混合并发采样、四路录制、作业错误 0。样本 SHA-256 `7fe2379738d333d9884d5c38a064be896fae6b75cae3389146799d9952ab805c`。
+- idle CPU 0.311070%、内存 P95 52.207031 MiB；四录制 CPU 1.724162%、内存 P95 67.332031 MiB；热查询 P95 141.621300 ms、资源管理器热 P95 109.310600 ms；GUI 关闭 6.167016 秒、恢复 2.059492 秒。命令总耗时 4652.658 秒与连续负载时长分开记录，没有补造或裁掉慢样本。
+- 公开 `docs/evidence/gate/report.json` 与 `m2-r7f/report.json` 内容相同；全部 commands 对应原始 receipt 文件，正式验证器通过源码、包、measure 二进制、日志、原始采样、规则与需求覆盖校验。本轮需求只同步九项管理能力的状态，未改变 current 的适用范围、implementation、caseGroups 或必需 testCases；现有 report/check 仍有效。
+
+旧 `m2-r7e` 的 777 项树 `46e98fe6651dcdf179305eae28cb94d56a4439e694a192a61dfe59c1802df224`、`-18` 的 37 文件/342,444,318 字节及摘要 `132398d8835626a604eb5d94495aa2509eb625f1211ae117f75161b90dfa95cd` 按原 sourceInputs 显式复验仍通过，但与当前输入不同，只证明原冻结。原 m2-r7 的 **rust-build 退出 101**（daemon 文件锁定）、m2-r7d 的 **package-check 退出 1**（状态入口时序失败）、失败包 `-17`、A 原三条 ok=true/断言失败及更早 a-m2-r5/r6 的失败日志/补丁均保留。对旧包、旧跑次和 A 失败证据建立本轮前后摘要清单，4,860 个文件全部不变，不改绑或覆盖旧失败；四项更早失败摘要与 §17 的保存记录相同。
+
+### 19.3 A 的实际命令与证据入口
+
+| 检查 | 实际结果与限制 |
+| --- | --- |
+| `python -m unittest discover -s scripts/tests -v` | 0：56 项，包括三条新回归、原反例/正例和治理反例；文档收尾后再执行仍通过 |
+| 原 driver-probes 与独立 24 输入边界 | 各 0；原三条假阳性全部拒绝，逐维度正反结果与 §19.1 一致；零网络 |
+| 定向 Rust：subscription_evidence / consumers / tool_update / media_tools / replay | 各 0：2 + 11 + 12 + 39 + 7 = 71 项。按实际过滤器输出计数，不沿用 §17 的 55 项；不是 workspace 全量 |
+| `python scripts/check_package.py dist/trace-0.1.0-windows-x64-19` | 0：2 项，57.841 秒；包含八站隔离、119 点矩阵、真实拖动区双击往返/拖动权限、事件 listen/unlisten、720px 错误 CSS、关闭后 daemon 继续与多窗口重连/退出 |
+| 原始回执、实物包、连续资源采样复算 | 0；当前与原 m2-r7e 分别按各自输入验证，没有重跑 Rust/前端全量或一小时长测 |
+| 文档、公开、结构、生成类型、长行、规则、Rust fmt、diff 与 stage check | 各 0；文档改动不改变产品指纹，不重生成 m2-r7f 原始回执或公开 report |
+
+证据入口为忽略目录 `artifacts/evidence-runs/a-m2-r7f-review/`：`audit.py`、`evidence-audit.log`、`preserved-inputs.json` / `preservation-final.log`、`scripts.log` / `scripts-final.log`、`original-probes.log`、`driver-boundaries.py` / `.log`、`doc-sanity.py` / `.log`、五组定向 Rust 日志、`package.log`、`gates-final.log`。本轮包检查的完整 WebView observations 在新建 `webview-*` 跑次中；不移动旧跑次。Rust 有既有 linker stdout 警告和增量缓存目录无法 finalize 提示，实际测试返回 0，没有将其说成严格 Clippy 通过。
+
+审计脚本初次错误地把 m2-r7 的 test-rust（实际成功）当作原锁定失败回执，故断言退出 1；对照原日志确认真正失败的是 test-rust-build（101）后修正审计选择并通过，初始日志 `evidence-audit-initial.log` 原样保留。文档核对的初始断言把八站当成八条订阅规则，实际是八站 18 条且全部 partial；错误假设的复现留在 `doc-sanity-initial.log`，正确计数及完整需求范围核对通过。这些是本轮审计脚本的定位/计数错误，不是产品或交付证据被修改。
+
+### 19.4 阶段判断与下一步
+
+**实现交付：已冻结；A 独立技术审查：passed；产品验收：not-run；远端操作/发布：未授权、未执行。** F-071 关闭，F-069/F-070/F-085/F-086/F-087/F-088 修复保持，无新增 Agent 侧必须项，不再交 B 复审。九项管理能力按计划 §6 的既定规则同步需求/映射为“已实现”；这不是产品验收或第三方插件分发结论。
+
+八站订阅仍全部 `partial`，旧真实站点回执只属于原包，不补写为 `-19` 已真实通过；签名拒绝、限流、未知历史与预算停止不是“无更新”。本轮真实站点/更新请求均为零。ACT-003、真实更新下载、Linux、安装器、签名发布继续 not-run；WebView 自动几何/权限/CSS 不能证明物理拖动、IME、系统 DPI 或主观体验。
+
+首选下一步是用户处理 [ACT-008](../../USER-ACTIONS.md#act-008) 的具体 push/PR/合并授权与已披露交付范围；本轮只登记请求，未进行任何远端查询或写入。本轮用户事项变化为 **ACT-003**（技术状态更新，适用包不变、无需因文档收尾重测）与新增 **ACT-008**；人工检查不是远端授权前提。其余事项和预算不变。

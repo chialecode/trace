@@ -1,12 +1,12 @@
 # 哔哩哔哩归档与录制能力表
 
-当前生产包m1-r3-12获准实测：视频3840×2160 AVC＋必要AAC完整218.560秒；直播1920×1080 AVC＋AAC封片68.869秒。两链Core身份/任务/对象、桌面选择、直播GUI关闭继续、导出/离线重开及所有必要文件完整解码已核实。当前证据见[报告§18.8](../delivery/stage-report.md#a-m1-r3-technical-closeout)，§17仍保留B原跑次；只适用两个指定对象，其他类型/全历史及匿名与会员质量差异未验证。
+2026-10-13 获准实测（当时的生产包）：视频3840×2160 AVC＋必要AAC完整218.560秒；直播1920×1080 AVC＋AAC封片68.869秒。两链Core身份/任务/对象、桌面选择、直播GUI关闭继续、导出/离线重开及所有必要文件完整解码已核实，证据见[固定报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#a-m1-r3-technical-closeout)；只适用两个指定对象，其他类型/全历史及匿名与会员质量差异未验证。
 
-核对：2026-10-13，M1 r3 A复核与获准实测 / adapter 0.1.0。生产实现为`adapters/bilibili`，经Core受控服务；链接解析、全部可得视频/编码/必要音轨选项、显式选择、持久下载和直播录制已接线。本轮实际生产跑次、失败与最终适用范围见[§17](../delivery/stage-report.md#b-m1-r3-delivery)，其他类型与全历史未验。A的4K视频/1080P直播[独立来源诊断](../delivery/stage-report.md#m1-real-source-readiness)保持原范围；配置/授权只见[ACT-002](../../USER-ACTIONS.md#act-002)。
+核对：2026-10-17。生产实现为`adapters/bilibili`，经Core受控服务；链接解析、全部可得视频/编码/必要音轨选项、显式选择、持久下载和直播录制已接线，并随多站规则目录声明规则。真实跑次、失败与适用范围见[固定报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#b-m1-r3-delivery)，其他类型与全历史未验；本阶段的复验结果见[状态](../delivery/status.md)。A的4K视频/1080P直播[独立来源诊断](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#m1-real-source-readiness)保持原范围；配置/授权只见[ACT-002](../../USER-ACTIONS.md#act-002)。
 
-旧M1a方案、当时推荐与逐项初轮结果已提炼到本页，历史全文及原失败依据保存在[固定版本](https://github.com/chialecode/trace/blob/960984c34487244f31f1238dffc2bd9faaa292e7/docs/research/bilibili-capabilities.md)。公开端点属于社区协议观察，不是站点对TRACE的稳定API承诺；固定来源见[解析研究](site-parsing-current.md)。
+早期方案、当时推荐与逐项初轮结果已提炼到本页，历史全文及原失败依据保存在[固定版本](https://github.com/chialecode/trace/blob/960984c34487244f31f1238dffc2bd9faaa292e7/docs/research/bilibili-capabilities.md)。公开端点属于社区协议观察，不是站点对TRACE的稳定API承诺；固定来源见[解析研究](site-parsing-current.md)。
 
-A已核对原r1及r2共享执行权/认证历史范围，原[包和长测](../delivery/stage-report.md#b-m1-r2-delivery)保留。A随后发现的候选交接、拒绝后恢复及跨请求物化问题沿用F-023～025，B修复与当前状态只在[报告正本](../delivery/stage-report.md#f-023)维护。下表的真实内容边界保持，不以合成测试或登录成功外推。
+共享执行权/认证历史范围已由早期审查核对，当时的[包和长测](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#b-m1-r2-delivery)只对应当时输入。候选交接、拒绝后恢复及跨请求物化问题（F-023～025）的修复与状态见[固定报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#f-023)。下表的真实内容边界保持，不以合成测试或登录成功外推。
 
 <a id="b-实现回写"></a>
 ## 当前实现与验证边界
@@ -15,7 +15,7 @@ A已核对原r1及r2共享执行权/认证历史范围，原[包和长测](../de
 | --- | --- | --- |
 | 账号资料 | card核对mid，支持稳定ID/规范主页；昵称、头像、简介/公开统计按观察保留，改名不改身份 | 身份别名/跨站/改名与资料刷新凭证转接通过；真实card返回差异未验证 |
 | 会话/WBI | nav确认登录，公钥请求沿用所选范围；匿名nav只可提供完整无挑战的公钥。WBI保持32字符密钥和唯一wts，有限TTL/一次失效刷新；Cookie留在Core | A的正确WBI向量及旧失败保留。公钥可用不证明登录或媒体权限，-101登录判定不放宽；畸形公钥、其他错误码和挑战拒绝 |
-| 视频枚举 | `x/space/wbi/arc/search`，mid、pn、ps、order；置顶/旧帖/未知日期逐项筛选，不遇旧即停 | 页游标、count观察、乱序/重复/历史增量独立恢复；count不代表可靠全历史。2026-10-15生产二进制登录态对一位作者真实取2页（各30条）：WBI签名200、页码前进、两页无重叠。请求未带`dm_img_*`、`w_webid`等浏览器风控参数，高频/多页/匿名下的-352风险未验证（[LOOP-002](../delivery/status.md#followup-loops)） |
+| 视频枚举 | `x/space/wbi/arc/search`，mid、pn、ps、order，并带与浏览器一致的`web_location`、`order_avoided`、`dm_img_*`及空间页给出的`w_webid`（空间页每位作者每30分钟至多多读一次）；置顶/旧帖/未知日期逐项筛选，不遇旧即停 | 页游标、count观察、乱序/重复/历史增量独立恢复；count不代表可靠全历史。2026-10-15生产二进制登录态对一位作者真实取2页（各30条）：WBI签名200、页码前进、两页无重叠。该次验证发生在请求加入`dm_img_*`、`w_webid`等浏览器字段之前；加入后的新形式只经固定向量与夹具验证，高频/多页/匿名下的-352风险与新形式的真实表现都未验证（[LOOP-002](../delivery/status.md#followup-loops)） |
 | 视频/多P | view核对bvid，aid映射要有响应证据；cid资源组、每P正文/标题/封面、必要音轨；DASH和durl全段分别表达 | 原F-007～009/原A探针保留；逐段/整组长度摘要、30秒以上流、Range与当前A/V派生源组合守护 |
 | 视频链接选择 | HTTPS BV/av及有界短链解析为稳定作品；显示全部当前可得编码/质量与必要音轨，规范化同一选项的质量ID后进入原Core任务 | 分离DASH视频/必要音轨的完整Core回归，保留用户选择、未选更高档零请求、生成本地播放派生及重开；真实4K整链结果以§17为准 |
 | 字幕与章节 | 每P player/wbi/v2，按cid/id/语言归档原字幕JSON，验证body/from/to/content；章节及安全元数据保留 | 卡内视频/多P资源计划和字幕原文可离线读；不保证真实账户可取所有语言/版权内容 |
@@ -31,4 +31,4 @@ A已核对原r1及r2共享执行权/认证历史范围，原[包和长测](../de
 
 受控实测先用`trace-daemon site-check`校验具体请求文件，dry-run不读取凭证也不启动站点进程；显式执行限定生产域、请求数/间隔、累计响应字节、截止时间和首个失败停止，输出脱敏协议观察。媒体/订阅实际验收仍按ACT-002指定范围执行，不能把单次解析升级为站点支持通过。
 
-A来源诊断的候选曾返回360P/480P/720P/1080P/4K及多编码，指定4K AVC+AAC与1080P直播完整解码；接收墙钟与源缓冲时间分别保留。Core现已注册bytefcdnrd.com窄媒体域且保持逐跳校验。该历史[来源诊断](../delivery/stage-report.md#m1-real-source-readiness)与B的[生产链复验](../delivery/stage-report.md#b-m1-r3-delivery)分开，不声明全部账号、匿名/会员差异或全类型通过。
+A来源诊断的候选曾返回360P/480P/720P/1080P/4K及多编码，指定4K AVC+AAC与1080P直播完整解码；接收墙钟与源缓冲时间分别保留。Core现已注册bytefcdnrd.com窄媒体域且保持逐跳校验。该[来源诊断](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#m1-real-source-readiness)与[生产链复验](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md#b-m1-r3-delivery)分开，不声明全部账号、匿名/会员差异或全类型通过。

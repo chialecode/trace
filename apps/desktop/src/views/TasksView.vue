@@ -19,8 +19,10 @@ const items = ref<JobDto[]>([]);
 const loading = ref(false);
 const stateFilter = ref<string | null>(null);
 const typeFilter = ref<string | null>(null);
-let timer: number | undefined;let generation=0;let alive=true;
-const selectedJobs=ref<string[]>([]);
+let timer: number | undefined;
+let generation = 0;
+let alive = true;
+const selectedJobs = ref<string[]>([]);
 
 const stateOptions = [
   { label: "全部状态", value: "" },
@@ -44,19 +46,17 @@ const typeOptions = [
 ];
 
 async function refresh() {
-  const current=++generation;loading.value = true;
+  const current = ++generation;
+  loading.value = true;
   try {
     const result = (
-      await api.jobList(
-        stateFilter.value || undefined,
-        typeFilter.value || undefined,
-      )
+      await api.jobList(stateFilter.value || undefined, typeFilter.value || undefined)
     ).items;
-    if(alive&&current===generation)items.value=result;
+    if (alive && current === generation) items.value = result;
   } catch (e) {
-    if(alive&&current===generation)message.error(String(e));
+    if (alive && current === generation) message.error(String(e));
   } finally {
-    if(alive&&current===generation)loading.value = false;
+    if (alive && current === generation) loading.value = false;
   }
 }
 
@@ -80,16 +80,40 @@ async function cancel(jobId: string) {
   }
 }
 
-async function retrySelected(){try{const result=await api.jobRetryFailed(selectedJobs.value);message.success(`已重新入队 ${result.requeued} 个任务`);selectedJobs.value=[];void refresh();}catch(e){message.error(String(e));}}
+async function retrySelected() {
+  try {
+    const result = await api.jobRetryFailed(selectedJobs.value);
+    message.success(`已重新入队 ${result.requeued} 个任务`);
+    selectedJobs.value = [];
+    void refresh();
+  } catch (e) {
+    message.error(String(e));
+  }
+}
 const columns: DataTableColumns<JobDto> = [
-  { type:'selection',disabled:(r)=>!['failed','waiting_retry','waiting_storage','waiting_auth','waiting_plugin','waiting_user'].includes(r.state) },
+  {
+    type: "selection",
+    disabled: (r) =>
+      ![
+        "failed",
+        "waiting_retry",
+        "waiting_storage",
+        "waiting_auth",
+        "waiting_plugin",
+        "waiting_user",
+      ].includes(r.state),
+  },
   { title: "类型", key: "job_type", width: 90 },
   {
     title: "状态",
     key: "state",
     width: 120,
     render: (r) =>
-      h(NTag, { type: jobStateTagType(r.state), size: "small" }, { default: () => jobStateLabel(r.state) }),
+      h(
+        NTag,
+        { type: jobStateTagType(r.state), size: "small" },
+        { default: () => jobStateLabel(r.state) },
+      ),
   },
   { title: "尝试", key: "attempts", width: 60 },
   { title: "对象", key: "subject_id", width: 220, ellipsis: { tooltip: true } },
@@ -127,20 +151,41 @@ onMounted(() => {
   refresh();
   timer = window.setInterval(refresh, 5000);
 });
-onBeforeUnmount(() => {alive=false;generation++;window.clearInterval(timer);});
+onBeforeUnmount(() => {
+  alive = false;
+  generation++;
+  window.clearInterval(timer);
+});
 </script>
 
 <template>
-  <n-card title="任务">
+  <n-card title="任务" data-page="tasks">
     <div class="toolbar">
       <n-select v-model:value="stateFilter" :options="stateOptions" style="width: 150px" />
       <n-select v-model:value="typeFilter" :options="typeOptions" style="width: 150px" />
-      <n-button type="primary" @click="refresh">刷新</n-button><n-button :disabled="!selectedJobs.length || selectedJobs.length>100" @click="retrySelected">重试所选失败任务</n-button>
+      <n-button type="primary" @click="refresh">刷新</n-button
+      ><n-button
+        :disabled="!selectedJobs.length || selectedJobs.length > 100"
+        @click="retrySelected"
+        >重试所选失败任务</n-button
+      >
     </div>
-    <n-alert v-if="items.some((j) => j.state === 'waiting_auth')" type="warning" title="存在等待登录的任务" style="margin-bottom: 12px">
+    <n-alert
+      v-if="items.some((j) => j.state === 'waiting_auth')"
+      type="warning"
+      title="存在等待登录的任务"
+      style="margin-bottom: 12px"
+    >
       请到「账号与登录」完成凭证导入或重新验证；任务不会自动更换账号或绕过访问限制。
     </n-alert>
-    <n-data-table v-model:checked-row-keys="selectedJobs" :row-key="(r:JobDto)=>r.job_id" :columns="columns" :data="items" :loading="loading" size="small" />
+    <n-data-table
+      v-model:checked-row-keys="selectedJobs"
+      :row-key="(r: JobDto) => r.job_id"
+      :columns="columns"
+      :data="items"
+      :loading="loading"
+      size="small"
+    />
   </n-card>
 </template>
 
@@ -150,6 +195,10 @@ onBeforeUnmount(() => {alive=false;generation++;window.clearInterval(timer);});
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
+}
+.toolbar > :deep(.n-select) {
+  flex: 1 1 140px;
+  min-width: 0;
 }
 .row-actions {
   display: flex;

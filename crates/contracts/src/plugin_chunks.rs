@@ -139,7 +139,7 @@ impl Decoder {
 mod tests {
     use super::*;
     #[test]
-    fn c14_large_interleaving_expiry_restart_and_single_item_ceiling() {
+    fn large_interleaving_expiry_restart_and_single_item_ceiling() {
         let a = json!({"request_id":"a","result":"a".repeat(1100000)});
         let b = json!({"request_id":"b","result":"b".repeat(1100000)});
         let frames = |v: &Value| {
@@ -176,7 +176,7 @@ mod tests {
         );
     }
     #[test]
-    fn c14_large_messages_preserve_all_bytes_and_reject_corruption_order_and_budget() {
+    fn large_messages_preserve_all_bytes_and_reject_corruption_order_and_budget() {
         let v = json!({"request_id":"source-page","ok":true,"result":"正文".repeat(250000)});
         assert!(wire::encode_frame(&v).is_err());
         let encoded = encode(&v).unwrap();

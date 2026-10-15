@@ -109,6 +109,62 @@ fn generate_random_str() -> String {
     bytes.into_iter().map(|b| b as char).collect()
 }
 
+fn split_to_bytes(num: i64) -> [i64; 4] {
+    [
+        (num >> 24) & 255,
+        (num >> 16) & 255,
+        (num >> 8) & 255,
+        num & 255,
+    ]
+}
+
+/// Start time (b[16]) and the three request arguments → b[20..=37].
+fn fill_start_and_arguments(b: &mut [i64], arguments: [i32; 3]) {
+    let start = split_to_bytes(b[16]);
+    b[20..=23].copy_from_slice(&start);
+    b[24] = (b[16] / 256 / 256 / 256 / 256) & 255;
+    b[25] = (b[16] / 256 / 256 / 256 / 256 / 256) & 255;
+    b[26..=29].copy_from_slice(&split_to_bytes(arguments[0] as i64));
+    b[30] = (arguments[1] / 256) as i64 & 255;
+    b[31] = (arguments[1] % 256) as i64 & 255;
+    b[32..=33].copy_from_slice(&split_to_bytes(arguments[1] as i64)[..2]);
+    b[34..=37].copy_from_slice(&split_to_bytes(arguments[2] as i64));
+}
+
+/// End time (b[10]) → b[44..=50].
+fn fill_end_time(b: &mut [i64]) {
+    let end = split_to_bytes(b[10]);
+    b[44..=47].copy_from_slice(&end);
+    b[48] = b[8];
+    b[49] = (b[10] / 256 / 256 / 256 / 256) & 255;
+    b[50] = (b[10] / 256 / 256 / 256 / 256 / 256) & 255;
+}
+
+/// Page id and application id → b[51..=60].
+fn fill_page_and_app(b: &mut [i64]) {
+    let page_id = 110624i64;
+    b[51] = page_id;
+    b[52..=55].copy_from_slice(&split_to_bytes(page_id));
+    let aid = 6383i64;
+    b[56] = aid;
+    b[57] = aid & 255;
+    b[58] = (aid >> 8) & 255;
+    b[59] = (aid >> 16) & 255;
+    b[60] = (aid >> 24) & 255;
+}
+
+/// Positions XOR-ed into the checksum, in the upstream order.
+const CHECKSUM_INDEXES: [usize; 43] = [
+    18, 20, 26, 30, 38, 40, 42, 21, 27, 31, 35, 39, 41, 43, 22, 28, 32, 36, 23, 29, 33, 37, 44, 45,
+    46, 47, 48, 49, 50, 24, 25, 52, 53, 54, 55, 57, 58, 59, 60, 65, 66, 70, 71,
+];
+
+/// Output order of the byte table before the browser environment string.
+const OUTPUT_ORDER: [usize; 44] = [
+    18, 20, 52, 26, 30, 34, 58, 38, 40, 53, 42, 21, 27, 54, 55, 31, 35, 57, 39, 41, 43, 22, 28, 32,
+    60, 36, 23, 29, 33, 37, 44, 45, 59, 46, 47, 48, 49, 50, 24, 25, 65, 66, 70, 71,
+];
+
 fn generate_rc4_bb_str(
     url_search_params: &str,
     user_agent: &str,
@@ -132,140 +188,31 @@ fn generate_rc4_bb_str(
         .as_bytes(),
     );
 
-    let end_time = start_time + 100;
-
     let mut b = vec![0i64; 80];
     b[8] = 3;
-    b[10] = end_time;
+    b[10] = start_time + 100;
     b[16] = start_time;
     b[18] = 44;
-
-    let split_to_bytes = |num: i64| -> [i64; 4] {
-        [
-            (num >> 24) & 255,
-            (num >> 16) & 255,
-            (num >> 8) & 255,
-            num & 255,
-        ]
-    };
-
-    let st_bytes = split_to_bytes(b[16]);
-    b[20] = st_bytes[0];
-    b[21] = st_bytes[1];
-    b[22] = st_bytes[2];
-    b[23] = st_bytes[3];
-    b[24] = (b[16] / 256 / 256 / 256 / 256) & 255;
-    b[25] = (b[16] / 256 / 256 / 256 / 256 / 256) & 255;
-
-    let arg0_bytes = split_to_bytes(arguments[0] as i64);
-    b[26] = arg0_bytes[0];
-    b[27] = arg0_bytes[1];
-    b[28] = arg0_bytes[2];
-    b[29] = arg0_bytes[3];
-
-    b[30] = (arguments[1] / 256) as i64 & 255;
-    b[31] = (arguments[1] % 256) as i64 & 255;
-
-    let arg1_bytes = split_to_bytes(arguments[1] as i64);
-    b[32] = arg1_bytes[0];
-    b[33] = arg1_bytes[1];
-
-    let arg2_bytes = split_to_bytes(arguments[2] as i64);
-    b[34] = arg2_bytes[0];
-    b[35] = arg2_bytes[1];
-    b[36] = arg2_bytes[2];
-    b[37] = arg2_bytes[3];
-
+    fill_start_and_arguments(&mut b, arguments);
     b[38] = *url_list.get(21).unwrap_or(&0) as i64;
     b[39] = *url_list.get(22).unwrap_or(&0) as i64;
     b[40] = *cus.get(21).unwrap_or(&0) as i64;
     b[41] = *cus.get(22).unwrap_or(&0) as i64;
     b[42] = *ua.get(23).unwrap_or(&0) as i64;
     b[43] = *ua.get(24).unwrap_or(&0) as i64;
-
-    let et_bytes = split_to_bytes(b[10]);
-    b[44] = et_bytes[0];
-    b[45] = et_bytes[1];
-    b[46] = et_bytes[2];
-    b[47] = et_bytes[3];
-    b[48] = b[8];
-    b[49] = (b[10] / 256 / 256 / 256 / 256) & 255;
-    b[50] = (b[10] / 256 / 256 / 256 / 256 / 256) & 255;
-
-    let page_id = 110624i64;
-    b[51] = page_id;
-    let page_bytes = split_to_bytes(page_id);
-    b[52] = page_bytes[0];
-    b[53] = page_bytes[1];
-    b[54] = page_bytes[2];
-    b[55] = page_bytes[3];
-
-    let aid = 6383i64;
-    b[56] = aid;
-    b[57] = aid & 255;
-    b[58] = (aid >> 8) & 255;
-    b[59] = (aid >> 16) & 255;
-    b[60] = (aid >> 24) & 255;
+    fill_end_time(&mut b);
+    fill_page_and_app(&mut b);
 
     let window_env_list: Vec<i64> = window_env_str.chars().map(|c| c as i64).collect();
-    b[64] = window_env_list.len() as i64;
-    b[65] = (window_env_list.len() as i64) & 255;
-    b[66] = ((window_env_list.len() as i64) >> 8) & 255;
-    b[69] = 0;
-    b[70] = 0;
-    b[71] = 0;
+    let env_len = window_env_list.len() as i64;
+    b[64] = env_len;
+    b[65] = env_len & 255;
+    b[66] = (env_len >> 8) & 255;
 
-    let checksum = b[18]
-        ^ b[20]
-        ^ b[26]
-        ^ b[30]
-        ^ b[38]
-        ^ b[40]
-        ^ b[42]
-        ^ b[21]
-        ^ b[27]
-        ^ b[31]
-        ^ b[35]
-        ^ b[39]
-        ^ b[41]
-        ^ b[43]
-        ^ b[22]
-        ^ b[28]
-        ^ b[32]
-        ^ b[36]
-        ^ b[23]
-        ^ b[29]
-        ^ b[33]
-        ^ b[37]
-        ^ b[44]
-        ^ b[45]
-        ^ b[46]
-        ^ b[47]
-        ^ b[48]
-        ^ b[49]
-        ^ b[50]
-        ^ b[24]
-        ^ b[25]
-        ^ b[52]
-        ^ b[53]
-        ^ b[54]
-        ^ b[55]
-        ^ b[57]
-        ^ b[58]
-        ^ b[59]
-        ^ b[60]
-        ^ b[65]
-        ^ b[66]
-        ^ b[70]
-        ^ b[71];
+    let checksum = CHECKSUM_INDEXES.iter().fold(0, |acc, &i| acc ^ b[i]);
     b[72] = checksum;
 
-    let mut bb: Vec<i64> = vec![
-        b[18], b[20], b[52], b[26], b[30], b[34], b[58], b[38], b[40], b[53], b[42], b[21], b[27],
-        b[54], b[55], b[31], b[35], b[57], b[39], b[41], b[43], b[22], b[28], b[32], b[60], b[36],
-        b[23], b[29], b[33], b[37], b[44], b[45], b[59], b[46], b[47], b[48], b[49], b[50], b[24],
-        b[25], b[65], b[66], b[70], b[71],
-    ];
+    let mut bb: Vec<i64> = OUTPUT_ORDER.iter().map(|&i| b[i]).collect();
     bb.extend(window_env_list);
     bb.push(checksum);
 
@@ -298,7 +245,7 @@ pub fn sign_at(query: &str, user_agent: &str, timestamp_ms: i64) -> String {
 #[cfg(test)]
 mod golden {
     #[test]
-    fn c01_a_bogus_fixed_upstream_vector_and_identity_binding() {
+    fn a_bogus_fixed_upstream_vector_and_identity_binding() {
         // Independent upstream implementation with only SystemTime replaced by
         // 1700000000000; upstream revision and license are fixed in NOTICE.
         let q = "aid=6383&aweme_id=90071992547409931";
