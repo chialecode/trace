@@ -5,12 +5,17 @@
 //! 所有网络访问经宿主受限代理（proxy.fetch），Cookie 永不进入本进程。
 
 mod api;
+mod article;
+mod audio;
+mod content;
 mod handlers;
+mod live;
+mod source;
 mod wbi;
 
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::{BufReader, Stdout};
+use std::io::{BufReader, Stdout, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,7 +30,11 @@ pub struct OutSink(pub Mutex<Stdout>);
 impl OutSink {
     pub fn send(&self, value: &impl serde::Serialize) -> Result<(), String> {
         let mut w = self.0.lock().map_err(|_| "out sink poisoned".to_string())?;
-        wire::write_frame(&mut *w, value).map_err(|e| format!("write frame: {e}"))
+        let bytes = trace_contracts::plugin_chunks::encode(value)
+            .map_err(|_| "plugin message budget".to_owned())?;
+        w.write_all(&bytes)
+            .and_then(|()| w.flush())
+            .map_err(|_| "plugin write failed".to_owned())
     }
 }
 
@@ -69,7 +78,13 @@ fn main() {
         .spawn(move || {
             let stdin = std::io::stdin();
             let mut r = BufReader::new(stdin.lock());
+            let mut chunks = trace_contracts::plugin_chunks::Decoder::default();
             while let Ok(msg) = wire::read_frame::<_, Value>(&mut r) {
+                let msg = match chunks.push(msg) {
+                    Ok(Some(v)) => v,
+                    Ok(None) => continue,
+                    Err(_) => break,
+                };
                 if msg.get("method").and_then(|m| m.as_str()).is_some() {
                     match serde_json::from_value::<PluginRequest>(msg) {
                         Ok(req) => {

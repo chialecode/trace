@@ -11,6 +11,9 @@ const Modules = () => import("./../views/ModulesView.vue");
 const Storage = () => import("./../views/StorageView.vue");
 
 export const routes: RouteRecordRaw[] = [
+  {path:"/acquire",name:"acquire",component:()=>import("../views/AcquireView.vue"),meta:{title:"链接归档"}},
+  {path:"/upgrades",name:"upgrades",component:()=>import("../views/UpgradesView.vue"),meta:{title:"资源升级"}},
+  {path:"/resources",name:"resources",component:()=>import("../views/ResourcesView.vue"),meta:{title:"资源库"}},
   { path: "/", name: "home", component: Home, meta: { title: "概览" } },
   { path: "/status", name: "status", component: () => import('../views/StatusView.vue'), meta: { title: "后台状态" } },
   { path: "/creators", name: "creators", component: Creators, meta: { title: "创作者" } },

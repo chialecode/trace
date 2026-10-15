@@ -80,7 +80,7 @@ def main() -> int:
         return 1
 
     lines = [
-        "# 依赖许可台账（M1a）",
+        "# 依赖许可台账（M1）",
         "",
         f"生成时间（UTC）：{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}；"
         "生成器：`scripts/gen_licenses.py`（cargo metadata + pnpm licenses）。",
@@ -142,8 +142,7 @@ def main() -> int:
         f"- 强 copyleft/未声明许可检查：{'无' if not flagged else '；'.join(flagged)}。",
         f"- 弱著佐（MPL/LGPL 或 OR 备选）：{'无' if not weak else '；'.join(weak)}；"
         "均为文件级弱著佐或以宽松许可为主的 OR 备选，未修改上游源码。",
-        "- 直接引用的上游实现（bili-sync MIT 参考）不复制代码；如后续复制，"
-        "按 bilibili-capabilities §1 保存 commit、原许可和版权通知。",
+        "- Douyin A-Bogus采用的MIT实现及固定版本归属见adapters/douyin/NOTICE；打包随附该通知。协议资料不作为二进制依赖。",
         "- 台账随依赖升级重新生成；与 Cargo.lock / pnpm-lock.yaml 同提交。",
         "",
     ]

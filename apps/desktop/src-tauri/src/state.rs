@@ -3,7 +3,10 @@
 //! 外壳不做领域写入（契约 §5）：所有业务经控制协议访问独立 daemon；
 //! 外壳只在 daemon 未运行时以无窗口方式拉起（先探测，不凭 PID 判断）。
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use tauri::Emitter;
 use tokio::sync::Mutex;
 use trace_core::config::Profile;
@@ -12,6 +15,9 @@ use trace_core::ipc::client::Client;
 pub struct AppState {
     pub profile: Profile,
     client: Mutex<Option<Arc<Client>>>,
+    joined: AtomicBool,
+    launch: Mutex<()>,
+    pub exiting: AtomicBool,
 }
 
 impl AppState {
@@ -19,11 +25,17 @@ impl AppState {
         Self {
             profile,
             client: Mutex::new(None),
+            joined: AtomicBool::new(false),
+            launch: Mutex::new(()),
+            exiting: AtomicBool::new(false),
         }
     }
 
     /// 取已连接客户端；未连接则连接（不拉起 daemon）。
     pub async fn client(&self) -> Result<Arc<Client>, String> {
+        if self.exiting.load(Ordering::SeqCst) {
+            return Err("正在完全退出，已停止发送新请求".into());
+        }
         let mut guard = self.client.lock().await;
         if let Some(c) = guard.as_ref() {
             return Ok(c.clone());
@@ -36,6 +48,7 @@ impl AppState {
         .await
         .map_err(|e| format!("daemon 未运行或连接失败：{e}"))?;
         let c = Arc::new(client);
+        self.joined.store(true, Ordering::SeqCst);
         *guard = Some(c.clone());
         Ok(c)
     }
@@ -85,6 +98,14 @@ pub fn spawn_daemon(_profile: &Profile) -> Result<(), String> {
 /// 外壳使用的 profile：TRACE_PROFILE 环境变量优先，否则默认开发档案。
 /// 打包版随程序目录携带 profile.json（P8 打包脚本写入）。
 pub fn profile_path() -> std::path::PathBuf {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(p) = args
+        .iter()
+        .position(|a| a == "--profile")
+        .and_then(|i| args.get(i + 1))
+    {
+        return std::path::PathBuf::from(p);
+    }
     if let Ok(p) = std::env::var("TRACE_PROFILE") {
         return std::path::PathBuf::from(p);
     }
@@ -115,9 +136,18 @@ pub fn load_shell_profile() -> Profile {
 
 /// 确认 daemon 可达；不可达则尝试拉起并轮询连接（最多 15s）。
 pub async fn ensure_daemon(state: &AppState) -> Result<Arc<Client>, String> {
+    let _launch = state.launch.lock().await;
+    if state.exiting.load(Ordering::SeqCst) {
+        return Err("正在完全退出，已停止发送新请求".into());
+    }
     match state.client().await {
         Ok(c) => Ok(c),
         Err(_) => {
+            // Once joined, a closed pipe means disconnected or intentionally
+            // stopped. Another open window must not undo a full shutdown.
+            if state.joined.load(Ordering::SeqCst) {
+                return Err("后台已断开。重新打开 TRACE 可启动后台；现有窗口会等待重连。".into());
+            }
             spawn_daemon(&state.profile)?;
             let mut last_err = String::new();
             for _ in 0..30 {
@@ -130,6 +160,7 @@ pub async fn ensure_daemon(state: &AppState) -> Result<Arc<Client>, String> {
                 .await
                 {
                     Ok(c) => {
+                        state.joined.store(true, Ordering::SeqCst);
                         let c = Arc::new(c);
                         *state.client.lock().await = Some(c.clone());
                         return Ok(c);
@@ -139,6 +170,44 @@ pub async fn ensure_daemon(state: &AppState) -> Result<Arc<Client>, String> {
             }
             Err(format!("daemon 未在 15 秒内就绪：{last_err}"))
         }
+    }
+}
+
+/// Request shutdown without starting a daemon, then wait for its process-held
+/// archive lock. A disconnected IPC alone does not prove sealing has finished.
+pub async fn shutdown_daemon(state: &AppState) -> Result<(), String> {
+    let _launch = state.launch.lock().await;
+    let client = state.client().await?;
+    state.exiting.store(true, Ordering::SeqCst);
+    if let Err(error) = client
+        .request(
+            trace_contracts::control::commands::DAEMON_SHUTDOWN,
+            serde_json::json!({}),
+            None,
+            None,
+        )
+        .await
+    {
+        state.exiting.store(false, Ordering::SeqCst);
+        state.invalidate().await;
+        return Err(error.to_string());
+    }
+    let until = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(state.profile.lock_path())
+        {
+            Ok(file) if file.try_lock().is_ok() => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err("无法确认后台锁状态，请查看后台诊断。".into()),
+            _ => {}
+        }
+        if tokio::time::Instant::now() >= until {
+            return Err("后台仍在结束工作，请稍后检查；未强制终止进程。".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 }
 

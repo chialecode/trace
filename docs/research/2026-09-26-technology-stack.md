@@ -1,6 +1,6 @@
 # M0/M1a 通用技术栈比较与选择
 
-调研/复核：2026-09-26（Asia/Shanghai）。角色：Agent A。依据 DEC-002/008/009；选择已进入 [ADR 台账](../decisions/architecture-decisions.md)，执行见[唯一计划](../delivery/m0-m1a-execution-plan.md)。本文记录 A 的选择理由与版本候选；B 创建锁文件后，实际安装版本以锁文件和交付证据为准。
+调研/复核：2026-09-26（Asia/Shanghai）。角色：Agent A。依据 DEC-002/008/009；选择已进入 [ADR 台账](../decisions/architecture-decisions.md)，执行见[唯一计划](https://github.com/chialecode/trace/blob/960984c34487244f31f1238dffc2bd9faaa292e7/docs/delivery/m0-m1a-execution-plan.md)。本文记录 A 的选择理由与版本候选；B 创建锁文件后，实际安装版本以锁文件和交付证据为准。
 
 ## 1. 结论与证据等级
 

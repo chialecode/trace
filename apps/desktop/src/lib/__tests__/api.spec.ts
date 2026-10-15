@@ -10,6 +10,13 @@ describe("api 封装", () => {
     invoke.mockClear();
   });
 
+  it('c08_public_search_forwards_shared_scope_and_continuation',async()=>{
+    await api.searchQuery('中文','article',1,{creator_id:'c',namespace:'bilibili',from:'2026-01-01T00:00:00Z',to:'2026-02-01T00:00:00Z',cursor:'opaque'});
+    expect(invoke).toHaveBeenLastCalledWith('search_query',{request:{query:'中文',kind:'article',limit:1,creator_id:'c',namespace:'bilibili',from:'2026-01-01T00:00:00Z',to:'2026-02-01T00:00:00Z',cursor:'opaque'}});
+    await api.searchQuery('字');
+    expect(invoke).toHaveBeenLastCalledWith('search_query',{request:{query:'字',kind:null,limit:50,creator_id:null,namespace:null,from:null,to:null,cursor:null}});
+  });
+
   it("可选参数显式置 null（对齐 Rust Option）", async () => {
     await api.accountList();
     expect(invoke).toHaveBeenCalledWith("account_list", { creatorId: null });
@@ -32,10 +39,17 @@ describe("api 封装", () => {
       "recent_days",
       30,
       3600,
-    )) as unknown as { args: Record<string, unknown> };
-    expect(r.args.accountId).toBe("acc-1");
-    expect(r.args.rangeDays).toBe(30);
-    expect(r.args.checkIntervalSeconds).toBe(3600);
+    )) as unknown as { args: { request: {account_id:string;range:{kind:string;days:number};check_interval_seconds:number;credential_id:string|null;capture_chat:boolean} } };
+    // M1 forwards the shared Rust DTO. The same account, days and interval
+    // assertions now address that DTO, including the previously dropped scope.
+    expect(r.args.request.account_id).toBe("acc-1");
+    expect(r.args.request.range.days).toBe(30);
+    expect(r.args.request.check_interval_seconds).toBe(3600);
+    expect(r.args.request.range.kind).toBe('recent_days');
+    expect(r.args.request.credential_id).toBeNull();
+    expect(r.args.request.capture_chat).toBe(false);
+    await api.subscriptionCreate('acc-1','from_now',undefined,30,'live',{credentialId:'credential-bili',captureChat:true});
+    expect(invoke).toHaveBeenLastCalledWith('subscription_create',{request:{account_id:'acc-1',content_type:'live',range:{kind:'from_now'},check_interval_seconds:30,credential_id:'credential-bili',capture_chat:true,capture_subtitles:false}});
   });
 
   it("任务列表过滤器可空", async () => {

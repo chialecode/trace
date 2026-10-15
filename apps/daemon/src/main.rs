@@ -41,6 +41,7 @@ fn main() -> ExitCode {
         "status" => run_status(profile),
         "shutdown" => run_shutdown(profile),
         "doctor" => run_doctor(&profile),
+        "site-check" => run_site_check(profile, &args),
         "version" => {
             println!(
                 "trace-daemon 0.1.0 (control protocol {})",
@@ -49,7 +50,70 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         other => {
-            eprintln!("unknown subcommand: {other} (start|status|shutdown|doctor|version)");
+            eprintln!(
+                "unknown subcommand: {other} (start|status|shutdown|doctor|version|site-check)"
+            );
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn run_site_check(mut profile: Profile, args: &[String]) -> ExitCode {
+    let value = |flag: &str| {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+    };
+    let Some(path) = value("--request-file") else {
+        eprintln!("site-check requires --request-file; default is dry-run");
+        return ExitCode::from(2);
+    };
+    let execute = args.iter().any(|a| a == "--execute-authorized");
+    let result = (|| -> Result<serde_json::Value, trace_core::error::CoreError> {
+        if std::fs::metadata(path)?.len() > 128 * 1024 {
+            return Err(trace_core::error::CoreError::InvalidInput(
+                "request file budget".into(),
+            ));
+        }
+        let spec: trace_core::site_check::Spec = serde_json::from_slice(&std::fs::read(path)?)?;
+        spec.validate()?;
+        if !execute {
+            return Ok(
+                json!({"status":"not-run","requests":spec.requests.len(),"max_http_requests":spec.max_http_requests,"deadline_seconds":spec.deadline_seconds,"credential_file_configured":spec.credential_file.is_some(),"instruction":"Execute only within the concrete scope authorized in USER-ACTIONS."}),
+            );
+        }
+        let output = value("--output").ok_or_else(|| {
+            trace_core::error::CoreError::InvalidInput("new --output directory required".into())
+        })?;
+        std::fs::create_dir(output)?;
+        if profile.adapter_dir.is_none() {
+            profile.adapter_dir = std::env::current_exe()?
+                .parent()
+                .map(|p| p.join("adapters"));
+        }
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let report = rt.block_on(trace_core::site_check::run(profile, spec)).unwrap_or_else(|error|json!({"status":"failed","failure_class":error.failure_class(),"phase":"initialization","productAcceptance":"not-run"}));
+        std::fs::write(
+            std::path::Path::new(output).join("site-check.json"),
+            serde_json::to_vec_pretty(&report)?,
+        )?;
+        Ok(
+            json!({"status":report["status"],"request_count":report["budget"]["request_count"],"failure_class":report["failure_class"]}),
+        )
+    })();
+    match result {
+        Ok(v) => {
+            println!("{v}");
+            if v["status"] == "failed" {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => {
+            eprintln!("site-check failed: {:?}", e.failure_class());
             ExitCode::from(2)
         }
     }
@@ -129,6 +193,8 @@ fn run_start(profile: Profile) -> ExitCode {
             })
         );
         core.start_scheduler();
+        let notify_core=core.clone();
+        tokio::spawn(async move {let mut tick=tokio::time::interval(std::time::Duration::from_secs(5));loop{tokio::select!{_=notify_core.cancel.cancelled()=>break,_=tick.tick()=>{let _=trace_core::issues::deliver_pending(&notify_core).await;}}}});
         let server = IpcServer { core: core.clone() };
         // 优雅停机：SIGINT/SIGTERM → shutdown（停止调度→关适配器）。
         let core2 = core.clone();
@@ -138,7 +204,9 @@ fn run_start(profile: Profile) -> ExitCode {
             core2.shutdown().await;
             std::process::exit(0);
         });
-        match server.serve().await {
+        let result = server.serve().await;
+        core.shutdown().await;
+        match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("trace-daemon: serve failed: {e}");

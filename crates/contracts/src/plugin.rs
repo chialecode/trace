@@ -8,6 +8,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use trace_domain::errors::FailureClass;
 
+/// Finite public history samples are independent of recording completeness.
+/// Device identity, cookies and continuation internals never cross this DTO.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveAuxiliary {
+    pub messages: Vec<LiveMessage>,
+    pub coverage: String,
+    pub source_count: u32,
+    pub omitted: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveMessage {
+    pub source_id: String,
+    pub author: Option<String>,
+    pub text: String,
+    pub source_time: Option<String>,
+    pub kind: String,
+}
+
 /// 主机 → 适配器请求。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginRequest {
@@ -82,6 +100,9 @@ pub struct ResolvedAccount {
 /// enumerate：有界分页枚举。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnumerateParams {
+    /// Independent subscription lane; old protocol peers default to video.
+    #[serde(default = "default_content_type")]
+    pub content_type: String,
     pub native_account_key: String,
     /// from_now / recent_days / resume_cursor。
     pub mode: String,
@@ -131,10 +152,16 @@ pub struct EnumeratedPage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObserveParams {
     pub native_entry_key: String,
+    #[serde(default = "default_content_type")]
+    pub native_kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObservedDetail {
+    #[serde(default)]
+    pub document: crate::content::Document,
+    #[serde(default)]
+    pub metadata: Value,
     pub native_entry_key: String,
     pub native_kind: String,
     pub title: String,
@@ -170,10 +197,16 @@ fn default_required() -> bool {
     true
 }
 
+fn default_content_type() -> String {
+    "video".into()
+}
+
 /// resolve_media：媒体候选访问计划（不含 Cookie；URL 为短期签名地址）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolveMediaParams {
     pub native_entry_key: String,
+    #[serde(default = "default_content_type")]
+    pub native_kind: String,
     pub resources: Vec<ResourceIdentityDto>,
     /// 质量目标（候选排序参考，不改变保存事实）。
     #[serde(default)]
@@ -280,3 +313,28 @@ pub struct CancelParams {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ShutdownParams {}
+
+/// Short-lived plan; URLs must never be persisted in a session record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveStream {
+    pub protocol: String,
+    pub url: String,
+    pub quality: String,
+    #[serde(default)]
+    pub audio_only: bool,
+    #[serde(default)]
+    pub public_headers: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveSnapshot {
+    pub room_key: String,
+    /// live / offline / unknown; request failures are never offline.
+    pub state: String,
+    pub source_session: Option<String>,
+    pub title: String,
+    #[serde(default)]
+    pub metadata: Value,
+    #[serde(default)]
+    pub streams: Vec<LiveStream>,
+}

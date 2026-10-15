@@ -1,0 +1,444 @@
+{
+  "schemaVersion": 1,
+  "reviewDate": "2026-10-08",
+  "role": "Agent A",
+  "report": "docs/delivery/stage-report.md#a-m1-review",
+  "reviewedPlan": "TRACE-M1-01 r1",
+  "currentPlan": "TRACE-M1-01 r2",
+  "reviewedDelivery": "772ab9a6c523a22385f024abafa66aef6ed7f0f1",
+  "base": "960984c34487244f31f1238dffc2bd9faaa292e7",
+  "status": "rework-required",
+  "technicalReview": "failed",
+  "productAcceptance": "not-run",
+  "reviewSourceInputCount": 201,
+  "reviewSourceInputsSha256": "32842821b669bddcf068d7046a0ac4f02fbdafb9d2a4f5eca3098438829eb55d",
+  "configurationTemplateSha256": "e702a234d152e5414eb262ecc02ba855153b36288fa80f747371837bd44a9fcd",
+  "sourceScope": "Existing stage input collector plus separately recorded public configuration template; private .env.local and credentials excluded.",
+  "originalBInputs": {
+    "count": 199,
+    "sha256": "aa08fb244bd9d18b667473f9f2a89e35a80e381d44e4e8d10ffadfbdbda6862b",
+    "checkedAgainstGitAndDisk": true
+  },
+  "originalBPackage": {
+    "directory": "dist/trace-0.1.0-windows-x64-m1-9",
+    "files": 23,
+    "bytes": 207700767,
+    "sha256sumsSha256": "6a0f0ccd114a0f8581f26963718268147df73134a4ae27ecef32148f645c105a",
+    "containsAFixes": false
+  },
+  "originalMeasurementIndependentCheck": {
+    "samples": 936,
+    "continuous": true,
+    "durationSeconds": 3625.9299438999997,
+    "idleSeconds": 905.3910000000033,
+    "mixedSamples": 360,
+    "hotQueryP95Ms": 164.4213,
+    "idleCpuMeanPct": 0.31204225368526833,
+    "recordingOnlyCpuMeanPct": 1.5098369582467117,
+    "idleMemoryP95MiB": 50.67578125,
+    "jobErrors": 0,
+    "retiredFiles": 11,
+    "retiredBytes": 111211,
+    "retiredPaths": [
+      "docs/delivery/m0-m1a-agent-b-prompt.md",
+      "docs/delivery/m0-m1a-execution-plan.md",
+      "docs/delivery/m0-m1a-preparation.md",
+      "docs/evidence/2026-09-25-documentation-framework.md",
+      "docs/evidence/2026-09-26-document-check-results.json",
+      "docs/evidence/2026-09-26-m0-m1a-delivery.md",
+      "docs/evidence/2026-09-26-m0-m1a-planning.md",
+      "docs/evidence/2026-10-01-m0-m1a-review.md",
+      "docs/evidence/2026-10-07-documentation-and-home.md",
+      "docs/evidence/document-check-results.json",
+      "docs/evidence/documentation-source-manifest.json"
+    ]
+  },
+  "findingsSnapshot": [
+    {
+      "id": "F-018",
+      "priority": "P1",
+      "scope": "source length propagation",
+      "observation": "fixed and verified in A source; original package unchanged"
+    },
+    {
+      "id": "F-019",
+      "priority": "P1",
+      "scope": "overlapping subscription observe/media ownership",
+      "observation": "reproduced and unresolved; regression retained"
+    },
+    {
+      "id": "F-020",
+      "priority": "P1",
+      "scope": "Douyin authenticated self probe",
+      "observation": "fixed; production subprocess positive/negative fixtures and authorized live login verified"
+    }
+  ],
+  "directedReceipts": [
+    {
+      "receipt": "artifacts/a-m1-review/build-final.json",
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "cases": [],
+      "logSha256": "bc10338e1037520922e051347b8aeb837e9ce3c6a69de79b114b1b16e03e239a"
+    },
+    {
+      "receipt": "artifacts/a-m1-review/douyin-final2.json",
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "cases": [
+        {
+          "id": "rust:trace_adapter_douyin:live::tests::c04_douyin_live_auxiliary_preserves_id_and_rejects_cross_room",
+          "name": "c04_douyin_live_auxiliary_preserves_id_and_rejects_cross_room",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_adapter_douyin:live::tests::c04_douyin_audio_live_and_ended_are_distinct",
+          "name": "c04_douyin_audio_live_and_ended_are_distinct",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_adapter_douyin:protocol::acquisition_integrity_tests::declared_douyin_media_length_reaches_candidate",
+          "name": "declared_douyin_media_length_reaches_candidate",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_adapter_douyin:protocol::tests::c07_preference_selects_available_stream_and_matching_claims",
+          "name": "c07_preference_selects_available_stream_and_matching_claims",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_adapter_douyin:protocol::tests::c01_c02_partial_article_and_empty_pagination_never_claim_completion",
+          "name": "c01_c02_partial_article_and_empty_pagination_never_claim_completion",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_adapter_douyin:enumeration::tests::c01_collections_keep_independent_bounded_cursors_and_reject_incomplete_pages",
+          "name": "c01_collections_keep_independent_bounded_cursors_and_reject_incomplete_pages",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_adapter_douyin:protocol::acquisition_integrity_tests::media_lengths_cover_selected_variant_motion_music_and_invalid_claims",
+          "name": "media_lengths_cover_selected_variant_motion_music_and_invalid_claims",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_adapter_douyin:protocol::tests::c02_nested_gallery_motion_missing_still_and_article_bgm",
+          "name": "c02_nested_gallery_motion_missing_still_and_article_bgm",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_adapter_douyin:signature::golden::c01_a_bogus_fixed_upstream_vector_and_identity_binding",
+          "name": "c01_a_bogus_fixed_upstream_vector_and_identity_binding",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_adapter_douyin:protocol::tests::c02_music_and_motion_edits_change_identity_but_signed_url_rotation_does_not",
+          "name": "c02_music_and_motion_edits_change_identity_but_signed_url_rotation_does_not",
+          "status": "passed"
+        },
+        {
+          "id": "rust:trace_adapter_douyin:protocol::tests::c02_article_full_detail_exceeds_summary_and_music_is_not_video",
+          "name": "c02_article_full_detail_exceeds_summary_and_music_is_not_video",
+          "status": "passed"
+        }
+      ],
+      "logSha256": "8e6a18e83667e4728e4c8f94045dba43915a04ed13ca28a329a435777705d939"
+    },
+    {
+      "receipt": "artifacts/a-m1-review/production-final.json",
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "cases": [
+        {
+          "id": "rust:m1_production_adapters:c01_c02_douyin_article_account_to_full_document_through_production_process",
+          "name": "c01_c02_douyin_article_account_to_full_document_through_production_process",
+          "status": "passed"
+        },
+        {
+          "id": "rust:m1_production_adapters:c02_article_ops_av_mapping_and_opus_formula_list_production",
+          "name": "c02_article_ops_av_mapping_and_opus_formula_list_production",
+          "status": "passed"
+        },
+        {
+          "id": "rust:m1_production_adapters:c02_bilibili_article_full_body_and_legacy_protocol_defaults",
+          "name": "c02_bilibili_article_full_body_and_legacy_protocol_defaults",
+          "status": "passed"
+        },
+        {
+          "id": "rust:m1_production_adapters:c02_bilibili_music_cards_require_full_audio_and_preserve_parent_on_trial",
+          "name": "c02_bilibili_music_cards_require_full_audio_and_preserve_parent_on_trial",
+          "status": "passed"
+        },
+        {
+          "id": "rust:m1_production_adapters:c02_bilibili_opus_video_cards_subtitles_and_failed_repost_preserve_parent",
+          "name": "c02_bilibili_opus_video_cards_subtitles_and_failed_repost_preserve_parent",
+          "status": "passed"
+        },
+        {
+          "id": "rust:m1_production_adapters:douyin_auth_probe_requires_self_profile_not_guest_uid",
+          "name": "douyin_auth_probe_requires_self_profile_not_guest_uid",
+          "status": "passed"
+        },
+        {
+          "id": "rust:m1_production_adapters:c01_collection_enumeration_and_c04_live_auxiliary_through_production_processes",
+          "name": "c01_collection_enumeration_and_c04_live_auxiliary_through_production_processes",
+          "status": "passed"
+        },
+        {
+          "id": "rust:m1_production_adapters:c02_bilibili_collection_membership_and_douyin_motion_production_mapping",
+          "name": "c02_bilibili_collection_membership_and_douyin_motion_production_mapping",
+          "status": "passed"
+        },
+        {
+          "id": "rust:m1_production_adapters:c01_site_check_dry_run_does_not_read_credentials_or_create_output",
+          "name": "c01_site_check_dry_run_does_not_read_credentials_or_create_output",
+          "status": "passed"
+        }
+      ],
+      "logSha256": "9a802ec879cfba4ba04687f5c6a8ee06b0a7f8cd7fe0f62c704b1f6c0adc0bf8"
+    },
+    {
+      "receipt": "artifacts/a-m1-review/subscription-final2.json",
+      "exitCode": 101,
+      "sourceUnchanged": true,
+      "cases": [
+        {
+          "id": "rust:trace_core:core::tests::overlapping_subscription_can_continue_same_entry_after_owner_pause",
+          "name": "overlapping_subscription_can_continue_same_entry_after_owner_pause",
+          "status": "failed"
+        }
+      ],
+      "logSha256": "09f1512bcb8acf332fe325cbfa04f11c3e25c9c57cf145052771e12cdd5e418e"
+    },
+    {
+      "receipt": "artifacts/a-m1-review/clippy-final.json",
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "cases": [],
+      "logSha256": "2f1f8e8f043f0ee477b54da3eeffa3f1888fc2b2d24d30a657b21c648eed1fb3"
+    },
+    {
+      "receipt": "artifacts/a-m1-review/fmt-final.json",
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "cases": [],
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "receipt": "artifacts/a-m1-review/python-final.json",
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "cases": [
+        {
+          "id": "python:test_governance.GovernanceTests.test_broken_link_and_missing_registry_are_rejected",
+          "name": "test_broken_link_and_missing_registry_are_rejected",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_governance.GovernanceTests.test_competing_plan_and_invalid_anchor_are_rejected",
+          "name": "test_competing_plan_and_invalid_anchor_are_rejected",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_governance.GovernanceTests.test_ignored_files_not_read_but_forced_tracking_is_rejected",
+          "name": "test_ignored_files_not_read_but_forced_tracking_is_rejected",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_governance.GovernanceTests.test_removed_requirement_is_rejected",
+          "name": "test_removed_requirement_is_rejected",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_governance.GovernanceTests.test_requirement_stage_order_and_names_are_checked",
+          "name": "test_requirement_stage_order_and_names_are_checked",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_governance.GovernanceTests.test_stage_retirement_is_numeric_and_rejects_expired_documents",
+          "name": "test_stage_retirement_is_numeric_and_rejects_expired_documents",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_governance.GovernanceTests.test_staged_private_path_stays_detected_after_worktree_fix",
+          "name": "test_staged_private_path_stays_detected_after_worktree_fix",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_site_check_preparation.SiteCheckPreparationTests.test_duplicate_and_malformed_inputs_are_rejected",
+          "name": "test_duplicate_and_malformed_inputs_are_rejected",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_site_check_preparation.SiteCheckPreparationTests.test_missing_credentials_stop_before_any_output",
+          "name": "test_missing_credentials_stop_before_any_output",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_site_check_preparation.SiteCheckPreparationTests.test_preparation_keeps_secret_out_of_output_and_requires_new_scope",
+          "name": "test_preparation_keeps_secret_out_of_output_and_requires_new_scope",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_stage_evidence.StageEvidenceTests.test_rejects_missing_package_failed_short_benchmark_and_stale_docs",
+          "name": "test_rejects_missing_package_failed_short_benchmark_and_stale_docs",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_stage_evidence.StageEvidenceTests.test_rejects_package_manifest_and_build_tampering",
+          "name": "test_rejects_package_manifest_and_build_tampering",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_stage_evidence.StageEvidenceTests.test_rejects_stale_source_missing_failed_duplicate_cases",
+          "name": "test_rejects_stale_source_missing_failed_duplicate_cases",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_stage_evidence.StageEvidenceTests.test_rejects_traversal_absolute_and_linked_evidence",
+          "name": "test_rejects_traversal_absolute_and_linked_evidence",
+          "status": "passed"
+        },
+        {
+          "id": "python:test_stage_evidence.StageEvidenceTests.test_verbose_receipts_preserve_names_and_executable_identity",
+          "name": "test_verbose_receipts_preserve_names_and_executable_identity",
+          "status": "passed"
+        }
+      ],
+      "logSha256": "31ebcb9c5fa39fad8fb0793c3672194138e5720e22987808bc613300b68501b2"
+    }
+  ],
+  "realRequests": [
+    {
+      "site": "bilibili",
+      "operation": "authentication",
+      "runtime": "original package",
+      "requests": 1,
+      "result": "authenticated"
+    },
+    {
+      "site": "douyin",
+      "operation": "authentication",
+      "runtime": "original package",
+      "requests": 1,
+      "result": "unknown"
+    },
+    {
+      "site": "douyin",
+      "operation": "authentication",
+      "runtime": "A-built production debug programs",
+      "requests": 1,
+      "result": "valid"
+    },
+    {
+      "site": "bilibili",
+      "operation": "room identity diagnostic preparation",
+      "runtime": "standard library fixed HTTPS request; no credential header",
+      "requests": 1,
+      "httpStatus": 412,
+      "result": "blocked before production live probe"
+    },
+    {
+      "site": "douyin",
+      "operation": "selected account first video page",
+      "runtime": "A-built production programs with credential",
+      "requests": 1,
+      "httpStatus": 403,
+      "result": "blocked; no list received"
+    },
+    {
+      "site": "bilibili",
+      "operation": "same-endpoint authentication control",
+      "mode": "authenticated",
+      "runtime": "A-built production debug programs",
+      "requests": 1,
+      "httpStatuses": [
+        200
+      ],
+      "cliExitCode": 0,
+      "protocolStatus": "passed",
+      "result": "authenticated",
+      "loginProven": null,
+      "expectedOutcomeConfirmed": true,
+      "startedUtc": "2026-10-08T14:48:38.812930+00:00"
+    },
+    {
+      "site": "bilibili",
+      "operation": "same-endpoint authentication control",
+      "mode": "anonymous",
+      "runtime": "A-built production debug programs",
+      "requests": 1,
+      "httpStatuses": [
+        200
+      ],
+      "cliExitCode": 1,
+      "protocolStatus": "failed",
+      "result": "auth_required",
+      "loginProven": null,
+      "expectedOutcomeConfirmed": true,
+      "startedUtc": "2026-10-08T14:48:41.001771+00:00"
+    },
+    {
+      "site": "douyin",
+      "operation": "same-endpoint authentication control",
+      "mode": "authenticated",
+      "runtime": "A-built production debug programs",
+      "requests": 1,
+      "httpStatuses": [
+        200
+      ],
+      "cliExitCode": 0,
+      "protocolStatus": "passed",
+      "result": "valid",
+      "loginProven": true,
+      "expectedOutcomeConfirmed": true,
+      "startedUtc": "2026-10-08T14:48:43.159687+00:00"
+    },
+    {
+      "site": "douyin",
+      "operation": "same-endpoint authentication control",
+      "mode": "anonymous",
+      "runtime": "A-built production debug programs",
+      "requests": 1,
+      "httpStatuses": [
+        200
+      ],
+      "cliExitCode": 1,
+      "protocolStatus": "failed",
+      "result": "auth_required",
+      "loginProven": null,
+      "expectedOutcomeConfirmed": true,
+      "startedUtc": "2026-10-08T14:48:45.527260+00:00"
+    }
+  ],
+  "authenticationControlAudit": {
+    "receipt": "artifacts/a-m1-review/auth-controls-audit.json",
+    "receiptSha256": "7e07b89bb1ec1319df4a9b1fc90c3f70cf1b1d369511a4ff6a7937fdb4a3ff86",
+    "daemonSha256": "65bcc3e83682687293575138d6dd95c7cbb4970fe94d2233e64cb95839f0ddd8",
+    "adapterSha256": {
+      "bilibili": "c760b36ce95269cc05db443e32dfd75de89437532ff320eef20600f351da01f4",
+      "douyin": "501f0d9e65f559a75416e910155bfcdd4452e69d4511fe603e7b4c6d33ce3534"
+    },
+    "authenticationConfirmedForBothSites": true,
+    "scope": "Both supplied Cookies were accepted, and both explicit no-Cookie controls returned auth_required. HTTP 200 alone was not treated as login proof."
+  },
+  "newRequirements": {
+    "count": 3,
+    "ids": [
+      "FR-AUTH-007",
+      "FR-QUALITY-006",
+      "FR-LIVE-007"
+    ],
+    "totalRequirements": 85,
+    "m1Applicable": 66,
+    "laterScope": 19,
+    "status": "not-run"
+  },
+  "limitations": [
+    "F-019 still fails.",
+    "No new current-source package or formal resource benchmark.",
+    "No actual media download/recording or full real-site acceptance.",
+    "Native IME, scaling and decode/product acceptance not-run.",
+    "No push, PR, merge or publication."
+  ]
+}

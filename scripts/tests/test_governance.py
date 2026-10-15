@@ -15,6 +15,47 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class GovernanceTests(unittest.TestCase):
+    def test_requirement_stage_order_and_names_are_checked(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = self.doc_copy(folder)
+            path = target / 'docs/delivery/requirements-map.json'
+            data = json.loads(path.read_text(encoding='utf8'))
+            row = data['requirements'][0]
+            row.update(firstStage='M10', completeStage='M9')
+            path.write_text(json.dumps(data), encoding='utf8')
+            errors, _ = check_docs(target)
+            self.assertTrue(any('first stage after complete stage' in e for e in errors))
+            row.update(firstStage='M9', completeStage='M10')
+            path.write_text(json.dumps(data), encoding='utf8')
+            errors, _ = check_docs(target)
+            self.assertFalse(any('delivery stage' in e or 'first stage after' in e for e in errors))
+            row.update(firstStage='M1a')
+            path.write_text(json.dumps(data), encoding='utf8')
+            errors, _ = check_docs(target)
+            self.assertTrue(any('invalid delivery stage' in e for e in errors))
+
+    def test_stage_retirement_is_numeric_and_rejects_expired_documents(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = self.doc_copy(folder)
+            path = target / 'docs/governance/document-registry.json'
+            data = json.loads(path.read_text(encoding='utf8'))
+            data['currentStage'] = 'M10'
+            entry = next(e for e in data['documents'] if e['path'] == 'README.md')
+            entry['retireAfter'] = 'M9'
+            path.write_text(json.dumps(data), encoding='utf8')
+            errors, _ = check_docs(target)
+            self.assertTrue(any('README.md: expired document' in e for e in errors))
+            entry['retireAfter'] = 'M10'
+            path.write_text(json.dumps(data), encoding='utf8')
+            errors, _ = check_docs(target)
+            self.assertFalse(any('README.md: expired document' in e for e in errors))
+            data['currentStage'] = 'M1b'
+            entry['retireAfter'] = 10
+            path.write_text(json.dumps(data), encoding='utf8')
+            errors, _ = check_docs(target)
+            self.assertTrue(any('currentStage must' in e for e in errors))
+            self.assertTrue(any('invalid retireAfter' in e for e in errors))
+
     def doc_copy(self, folder):
         target = Path(folder)
         shutil.copytree(ROOT / 'docs', target / 'docs')
@@ -35,9 +76,11 @@ class GovernanceTests(unittest.TestCase):
             target = self.doc_copy(folder)
             registry_path = target / 'docs/governance/document-registry.json'
             data = json.loads(registry_path.read_text(encoding='utf8'))
-            for entry in data['documents']:
-                if entry['path'] == 'docs/delivery/m0-m1a-execution-plan.md':
-                    entry.update(kind='execution-plan', status='active')
+            # A second real fixture survives retirement of historical plans.
+            plan = dict(next(e for e in data['documents'] if e['path'] == 'docs/delivery/stage-plan.md'))
+            plan['path'] = 'docs/delivery/competing-fixture-plan.md'
+            (target / plan['path']).write_text('# Competing plan\n', encoding='utf8')
+            data['documents'].append(plan)
             registry_path.write_text(json.dumps(data), encoding='utf8')
             with (target / 'README.md').open('a', encoding='utf8') as out:
                 out.write('\n[invalid](docs/README.md#nonexistent-anchor)\n')

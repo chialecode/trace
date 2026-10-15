@@ -187,7 +187,10 @@ impl IpcServer {
         let core = self.core.clone();
         tracing::info!(%name, "pipe server listening");
         loop {
-            server.connect().await.map_err(CoreError::Io)?;
+            tokio::select! {
+                result=server.connect()=>result.map_err(CoreError::Io)?,
+                _=core.cancel.cancelled()=>return Ok(()),
+            }
             let connected = server;
             server = tokio::net::windows::named_pipe::ServerOptions::new()
                 .create(&name)
@@ -218,6 +221,27 @@ async fn handle_session(
         write_frame(&mut server, &err).await?;
         return Err(CoreError::InvalidInput("archive mismatch".into()));
     }
+    if hello.protocol_version != CONTROL_PROTOCOL_VERSION {
+        return Err(CoreError::Unsupported("control protocol mismatch".into()));
+    }
+    struct DesktopConnection(Option<Arc<crate::core::Core>>);
+    impl Drop for DesktopConnection {
+        fn drop(&mut self) {
+            if let Some(core) = &self.0 {
+                core.desktop_event_clients
+                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+    let _connection = DesktopConnection(if hello.client == "desktop-events" {
+        core.desktop_event_clients
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        core.desktop_event_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Some(core.clone())
+    } else {
+        None
+    });
     let hello_resp = HelloResponse {
         protocol_version: CONTROL_PROTOCOL_VERSION.into(),
         archive_id,
@@ -241,6 +265,7 @@ async fn handle_session(
     let mut progress_rx = core.hub.subscribe();
     loop {
         tokio::select! {
+            _=core.cancel.cancelled()=>return Ok(()),
             frame = decoder.read(&mut server) => {
                 let bytes = frame?;
                 let req: Request = match serde_json::from_slice(&bytes) {

@@ -10,6 +10,7 @@ name = "trace-adapter-bilibili"
 path = "src/main.rs"
 
 [dependencies]
+trace-site-support.workspace = true
 trace-contracts.workspace = true
 trace-domain.workspace = true
 serde.workspace = true

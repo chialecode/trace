@@ -192,6 +192,8 @@ pub struct AccountListArgs {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionCreateArgs {
+    #[serde(default)]
+    pub quality: QualityRequirement,
     pub account_id: String,
     #[serde(default = "default_content_type")]
     pub content_type: String,
@@ -202,6 +204,10 @@ pub struct SubscriptionCreateArgs {
     pub credential_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_interval_seconds: Option<i64>,
+    #[serde(default)]
+    pub capture_chat: bool,
+    #[serde(default)]
+    pub capture_subtitles: bool,
 }
 
 fn default_content_type() -> String {
@@ -210,6 +216,11 @@ fn default_content_type() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionUpdateArgs {
+    /// None leaves the binding unchanged; empty string explicitly selects guest access.
+    #[serde(default)]
+    pub credential_id: Option<String>,
+    #[serde(default)]
+    pub quality: Option<QualityRequirement>,
     pub subscription_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<Value>,
@@ -217,6 +228,19 @@ pub struct SubscriptionUpdateArgs {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_interval_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_chat: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_subtitles: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct QualityRequirement {
+    pub min_height: Option<u32>,
+    pub min_fps: Option<u32>,
+    pub strict: bool,
+    pub prefer_fps: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,10 +252,14 @@ pub struct SubscriptionCheckNowArgs {
 pub struct SubscriptionListArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchiveTimelineArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<crate::acquisition::AuthenticationState>,
     /// Optional membership query using the same filters as the timeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_id: Option<String>,
@@ -249,6 +277,15 @@ pub struct ArchiveTimelineArgs {
     pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub save_state: Option<String>,
+    /// Inclusive start and exclusive end in RFC3339; unknown source time is excluded.
+    #[serde(default)]
+    pub published_from: Option<String>,
+    #[serde(default)]
+    pub published_before: Option<String>,
+    #[serde(default)]
+    pub min_height: Option<u32>,
+    #[serde(default)]
+    pub codec: Option<String>,
     /// 键集分页游标（发布时间+entry_id 编码）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
@@ -365,6 +402,8 @@ pub struct MediaReadArgs {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchQueryArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<crate::acquisition::AuthenticationState>,
     pub query: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator_id: Option<String>,
@@ -512,6 +551,8 @@ pub struct PluginDto {
     pub state: String,
     pub protocol: String,
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub active_tasks: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

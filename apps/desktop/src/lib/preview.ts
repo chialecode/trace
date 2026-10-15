@@ -1,5 +1,6 @@
 export type ContentKind = 'video' | 'image' | 'activity' | 'live' | 'article' | 'collection';
 export interface FeedEntry {
+  authenticationLabel?:string;
   id: string; platform: string; platformLabel: string; kind: ContentKind;
   title: string; body: string; time: string; day: string; tags: string[]; art: string;
   duration?: string; views?: string; comments?: string; likes?: string;

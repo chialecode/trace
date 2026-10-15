@@ -11,7 +11,8 @@ use trace_contracts::plugin::{
 };
 use trace_domain::errors::FailureClass;
 
-pub const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) TRACE/0.1 (M1a archive client)";
+pub const UA: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36";
 pub const REFERER: &str = "https://www.bilibili.com/";
 
 pub const NAV_URL: &str = "https://api.bilibili.com/x/web-interface/nav";
@@ -34,13 +35,40 @@ pub fn proxy_get(
     deadline: Duration,
     started: Instant,
 ) -> Result<ProxyFetchResult, PluginError> {
+    proxy_request(
+        state,
+        url,
+        with_credential,
+        max_bytes,
+        deadline,
+        started,
+        "GET",
+    )
+}
+pub fn proxy_head(
+    state: &AdapterState,
+    url: &str,
+    deadline: Duration,
+    started: Instant,
+) -> Result<ProxyFetchResult, PluginError> {
+    proxy_request(state, url, false, 512 * 1024, deadline, started, "HEAD")
+}
+fn proxy_request(
+    state: &AdapterState,
+    url: &str,
+    with_credential: bool,
+    max_bytes: u32,
+    deadline: Duration,
+    started: Instant,
+    method: &str,
+) -> Result<ProxyFetchResult, PluginError> {
     let request_id = state.new_request_id();
     let (tx, rx) = std::sync::mpsc::channel();
     state.pending.lock().unwrap().insert(request_id.clone(), tx);
     let params = ProxyFetchParams {
-        method: "GET".into(),
+        method: method.into(),
         url: url.to_string(),
-        headers: json!({"referer": REFERER, "user-agent": UA}),
+        headers: json!({"referer": if url::Url::parse(url).ok().and_then(|u|u.host_str().map(str::to_owned)).as_deref()==Some("api.live.bilibili.com") {"https://live.bilibili.com/"} else {REFERER}, "user-agent": UA}),
         max_bytes,
         with_credential,
     };
@@ -53,7 +81,12 @@ pub fn proxy_get(
                 .as_millis()
                 .min(u64::MAX as u128) as u64,
         ),
-        method: methods::PROXY_FETCH.into(),
+        method: if max_bytes > 512 * 1024 {
+            "proxy.fetch_large"
+        } else {
+            methods::PROXY_FETCH
+        }
+        .into(),
         params: serde_json::to_value(&params).unwrap_or_default(),
     };
     if let Err(e) = state.out.send(&req) {
@@ -176,7 +209,7 @@ fn classify_http(status: u16) -> PluginError {
 }
 
 /// 业务码分类：已证明语义映射；未知码不盲猜（capabilities §2 风控行）。
-pub fn classify_api_code(code: i64, message: &str) -> PluginError {
+pub fn classify_api_code(code: i64, _message: &str) -> PluginError {
     let (class, retry_after) = match code {
         -101 => (FailureClass::AuthRequired, None),
         -412 => (FailureClass::RateLimited, None),
@@ -189,7 +222,7 @@ pub fn classify_api_code(code: i64, message: &str) -> PluginError {
     };
     PluginError {
         class,
-        message: format!("api code {code}: {message}"),
+        message: format!("api code {code}"),
         retry_after_ms: retry_after,
         details: json!({ "api_code": code }),
     }

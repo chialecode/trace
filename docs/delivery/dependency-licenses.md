@@ -1,9 +1,9 @@
-# 依赖许可台账（M1a）
+# 依赖许可台账（M1）
 
-生成时间（UTC）：2026-10-06 20:04；生成器：`scripts/gen_licenses.py`（cargo metadata + pnpm licenses）。
+生成时间（UTC）：2026-10-09 17:48；生成器：`scripts/gen_licenses.py`（cargo metadata + pnpm licenses）。
 本表为直接/传递依赖的许可见证；许可证文本以各依赖包内文件为准。
 
-## Rust 依赖（519 个包）
+## Rust 依赖（539 个包）
 
 ### (Apache-2.0 OR MIT) AND BSD-3-Clause（1）
 
@@ -129,10 +129,12 @@
 
 - webpki-root-certs 1.0.9
 
-### ISC（3）
+### ISC（5）
 
+- ego-tree 0.11.0
 - libloading 0.7.4
 - rustls-webpki 0.103.15
+- scraper 0.27.0
 - untrusted 0.9.0
 
 ### ISC AND (Apache-2.0 OR ISC)（1）
@@ -143,7 +145,7 @@
 
 - aws-lc-sys 0.45.0
 
-### MIT（115）
+### MIT（118）
 
 - atk 0.18.2
 - atk-sys 0.18.2
@@ -193,10 +195,12 @@
 - javascriptcore-rs-sys 1.1.1
 - libredox 0.1.25
 - libsqlite3-sys 0.38.2
+- m3u8-rs 6.0.1
 - matchers 0.2.0
 - memoffset 0.9.1
 - mio 1.2.3
 - new_debug_unreachable 1.0.6
+- nom 7.1.3
 - nu-ansi-term 0.50.3
 - objc2 0.6.4
 - objc2-encode 4.1.0
@@ -210,6 +214,7 @@
 - phf_shared 0.13.1
 - plist 1.10.1
 - precomputed-hash 0.1.1
+- pulldown-cmark 0.13.4
 - quick-xml 0.42.0
 - redox_syscall 0.5.18
 - redox_users 0.5.3
@@ -261,8 +266,9 @@
 - x11-dl 2.21.0
 - zmij 1.0.23
 
-### MIT OR Apache-2.0（252）
+### MIT OR Apache-2.0（263）
 
+- aes 0.9.3
 - android_system_properties 0.1.6
 - anyhow 1.0.104
 - base64 0.21.7
@@ -271,14 +277,17 @@
 - bitflags 2.13.2
 - block-buffer 0.10.4
 - block-buffer 0.12.1
+- block-padding 0.4.2
 - bumpalo 3.20.3
 - camino 1.2.6
 - cargo-platform 0.1.9
+- cbc 0.2.1
 - cc 1.5.1
 - cfg-expr 0.15.8
 - cfg-if 1.0.5
 - chacha20 0.10.2
 - chrono 0.4.45
+- cipher 0.5.2
 - cmake 0.1.58
 - cookie 0.18.2
 - core-foundation 0.10.1
@@ -286,6 +295,7 @@
 - core-foundation-sys 0.8.7
 - core-graphics 0.25.0
 - core-graphics-types 0.2.0
+- cpubits 0.1.1
 - cpufeatures 0.2.17
 - cpufeatures 0.3.1
 - crc32fast 1.5.2
@@ -311,6 +321,7 @@
 - field-offset 0.3.6
 - find-msvc-tools 0.1.14
 - flate2 1.1.10
+- flv-core 0.1.1
 - form_urlencoded 1.2.2
 - futures-channel 0.3.34
 - futures-core 0.3.34
@@ -332,12 +343,14 @@
 - heck 0.5.0
 - hex 0.4.3
 - html5ever 0.38.0
+- html5ever 0.39.0
 - http 1.5.0
 - httparse 1.10.1
 - hybrid-array 0.4.15
 - iana-time-zone 0.1.65
 - iana-time-zone-haiku 0.1.2
 - idna 1.1.0
+- inout 0.2.2
 - ipnet 2.12.2
 - itoa 1.0.18
 - jni 0.22.4
@@ -354,6 +367,7 @@
 - lock_api 0.4.14
 - log 0.4.34
 - markup5ever 0.38.0
+- markup5ever 0.39.0
 - md-5 0.11.0
 - mime 0.3.17
 - ndk 0.9.0
@@ -421,6 +435,7 @@
 - signal-hook-registry 1.4.8
 - simdutf8 0.1.5
 - siphasher 1.0.4
+- sm3 0.5.0
 - smallvec 1.16.2
 - socket2 0.6.5
 - softbuffer 0.4.8
@@ -460,6 +475,7 @@
 - tray-icon 0.24.2
 - typeid 1.0.3
 - typenum 1.20.1
+- unicase 2.10.0
 - unicode-normalization 0.1.25
 - unicode-segmentation 1.13.3
 - url 2.5.8
@@ -531,7 +547,7 @@
 - miniz_oxide 0.8.9
 - miniz_oxide 0.9.1
 
-### MIT/Apache-2.0（21）
+### MIT/Apache-2.0（22）
 
 - bitflags 1.3.2
 - bs58 0.5.1
@@ -544,6 +560,7 @@
 - ident_case 1.0.1
 - jni 0.21.1
 - json-patch 3.0.1
+- minimal-lexical 0.2.1
 - unic-char-property 0.9.0
 - unic-char-range 0.9.0
 - unic-common 0.9.0
@@ -555,13 +572,16 @@
 - winapi-i686-pc-windows-gnu 0.4.0
 - winapi-x86_64-pc-windows-gnu 0.4.0
 
-### MPL-2.0（5）
+### MPL-2.0（8）
 
 - cssparser 0.36.0
+- cssparser 0.37.0
 - cssparser-macros 0.6.1
+- cssparser-macros 0.7.1
 - dtoa-short 0.3.5
 - option-ext 0.2.0
 - selectors 0.36.1
+- selectors 0.38.0
 
 ### Unicode-3.0（18）
 
@@ -829,8 +849,8 @@
 ## 许可合规说明
 
 - 强 copyleft/未声明许可检查：无。
-- 弱著佐（MPL/LGPL 或 OR 备选）：MPL-2.0: cssparser 0.36.0；MPL-2.0: cssparser-macros 0.6.1；MPL-2.0: dtoa-short 0.3.5；MPL-2.0: option-ext 0.2.0；MPL-2.0: selectors 0.36.1；MIT OR Apache-2.0 OR LGPL-2.1-or-later: r-efi 5.3.0；MIT OR Apache-2.0 OR LGPL-2.1-or-later: r-efi 6.0.0；均为文件级弱著佐或以宽松许可为主的 OR 备选，未修改上游源码。
-- 直接引用的上游实现（bili-sync MIT 参考）不复制代码；如后续复制，按 bilibili-capabilities §1 保存 commit、原许可和版权通知。
+- 弱著佐（MPL/LGPL 或 OR 备选）：MPL-2.0: cssparser 0.36.0；MPL-2.0: cssparser 0.37.0；MPL-2.0: cssparser-macros 0.6.1；MPL-2.0: cssparser-macros 0.7.1；MPL-2.0: dtoa-short 0.3.5；MPL-2.0: option-ext 0.2.0；MPL-2.0: selectors 0.36.1；MPL-2.0: selectors 0.38.0；MIT OR Apache-2.0 OR LGPL-2.1-or-later: r-efi 5.3.0；MIT OR Apache-2.0 OR LGPL-2.1-or-later: r-efi 6.0.0；均为文件级弱著佐或以宽松许可为主的 OR 备选，未修改上游源码。
+- Douyin A-Bogus采用的MIT实现及固定版本归属见adapters/douyin/NOTICE；打包随附该通知。协议资料不作为二进制依赖。
 - 台账随依赖升级重新生成；与 Cargo.lock / pnpm-lock.yaml 同提交。
 
 ## 本地媒体资产（TRACE-CLOSEOUT-02）

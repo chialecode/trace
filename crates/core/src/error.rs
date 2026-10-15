@@ -31,6 +31,8 @@ pub enum CoreError {
     SourceUnavailable(String),
     #[error("network: {0}")]
     Network(String),
+    #[error("adapter failure: {0:?}")]
+    Adapter(FailureClass),
     #[error("cancelled")]
     Cancelled,
     #[error("unsupported: {0}")]
@@ -61,7 +63,20 @@ impl CoreError {
             CoreError::Db(_) | CoreError::Io(_) | CoreError::Json(_) | CoreError::Internal(_) => {
                 ErrorCode::Internal
             }
-            CoreError::Network(_) | CoreError::SourceUnavailable(_) => ErrorCode::Internal,
+            CoreError::Adapter(
+                FailureClass::AuthRequired
+                | FailureClass::PermissionDenied
+                | FailureClass::CapabilityLost,
+            ) => ErrorCode::AuthRequired,
+            CoreError::Adapter(FailureClass::RateLimited) => ErrorCode::RateLimited,
+            CoreError::Adapter(FailureClass::PluginCrash) => ErrorCode::PluginUnavailable,
+            CoreError::Adapter(FailureClass::Unsupported) => ErrorCode::Unsupported,
+            CoreError::Adapter(FailureClass::InvalidPayload | FailureClass::SchemaChanged) => {
+                ErrorCode::InvalidInput
+            }
+            CoreError::Adapter(_) | CoreError::Network(_) | CoreError::SourceUnavailable(_) => {
+                ErrorCode::Internal
+            }
         }
     }
 
@@ -74,6 +89,7 @@ impl CoreError {
             CoreError::PluginUnavailable(_) => FailureClass::PluginCrash,
             CoreError::StorageFull(_) => FailureClass::StorageFull,
             CoreError::Cancelled => FailureClass::Cancelled,
+            CoreError::Adapter(class) => *class,
             _ => FailureClass::Unknown,
         }
     }
@@ -82,13 +98,14 @@ impl CoreError {
     pub fn to_api_error(&self) -> ApiError {
         ApiError {
             code: self.error_code(),
-            retryable: matches!(
-                self,
-                CoreError::Network(_)
-                    | CoreError::SourceUnavailable(_)
-                    | CoreError::RateLimited(_)
-                    | CoreError::StorageFull(_)
-            ),
+            retryable: matches!(self, CoreError::Adapter(class) if class.suggest_retryable())
+                || matches!(
+                    self,
+                    CoreError::Network(_)
+                        | CoreError::SourceUnavailable(_)
+                        | CoreError::RateLimited(_)
+                        | CoreError::StorageFull(_)
+                ),
             user_action: self.user_action(),
             related_ids: Vec::new(),
             details: serde_json::json!({}),
@@ -97,6 +114,25 @@ impl CoreError {
 
     fn user_action(&self) -> Option<String> {
         match self {
+            CoreError::SourceUnavailable(reason) if reason == "room is not live" => {
+                Some("该房间当前未开播，请等待开播或选择另一个直播链接".into())
+            }
+            CoreError::SourceUnavailable(_) => {
+                Some("来源当前没有可用资源，请检查来源状态或稍后重试".into())
+            }
+            CoreError::Adapter(FailureClass::Unsupported) => {
+                Some("该来源格式或传输方式当前不受支持".into())
+            }
+            CoreError::Adapter(FailureClass::AuthRequired) => Some("重新登录该平台账号".into()),
+            CoreError::Adapter(FailureClass::PermissionDenied | FailureClass::CapabilityLost) => {
+                Some("检查该账号的来源访问权限".into())
+            }
+            CoreError::Adapter(
+                FailureClass::SchemaChanged
+                | FailureClass::InvalidPayload
+                | FailureClass::PluginCrash,
+            ) => Some("检查平台模块状态与更新".into()),
+            CoreError::Adapter(FailureClass::StorageFull) => Some("释放存储空间后重试".into()),
             CoreError::AuthRequired(_) => Some("重新登录该平台账号".into()),
             CoreError::VersionConflict(_) => Some("刷新当前内容后重试".into()),
             CoreError::StorageFull(_) => Some("释放存储空间后重试".into()),

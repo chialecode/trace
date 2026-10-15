@@ -7,6 +7,8 @@ members = [
     "apps/daemon",
     "apps/desktop/src-tauri",
     "adapters/bilibili",
+    "adapters/common",
+    "adapters/douyin",
     "tests/e2e",
 ]
 exclude = []
@@ -54,6 +56,10 @@ windows = { version = "0.62.2", features = [
     "Win32_Security_Cryptography",
     "Win32_Security_Authorization",
     "Win32_System_Memory",
+    "Win32_System_Registry",
+    "Win32_System_WinRT",
+    "UI_Notifications",
+    "Data_Xml_Dom",
 ] }
 tauri = "2.11.6"
 tauri-build = "2"
@@ -61,6 +67,12 @@ tauri-build = "2"
 trace-domain = { path = "crates/domain" }
 trace-contracts = { path = "crates/contracts" }
 trace-core = { path = "crates/core" }
+trace-site-support = { path = "adapters/common" }
 
 [profile.release]
 lto = "thin"
+
+# Optimized offline measurement harness. Test transport is excluded from release.
+[profile.measure]
+inherits = "release"
+debug-assertions = true

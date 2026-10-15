@@ -37,13 +37,36 @@ pub fn host_rules(profile: &Profile) -> HostRules {
         "bilivideo.com".to_owned(),
         "hdslb.com".to_owned(),
         "akamaized.net".to_owned(),
+        "douyinvod.com".into(),
+        "douyinpic.com".into(),
+        "byteimg.com".into(),
+        "pstatp.com".into(),
+        "amemv.com".into(),
+        "douyincdn.com".into(),
+        "bilivideo.cn".into(),
+        "bytefcdnrd.com".into(),
+        "douyinliving.com".into(),
+        "v.douyin.com".into(),
+        "b23.tv".into(),
+        "live.bilibili.com".into(),
+        "www.iesdouyin.com".into(),
     ];
     media.extend(profile.extra_media_hosts.iter().cloned());
+    #[cfg(debug_assertions)]
     let test_allowed: Vec<String> = profile.test_allowed_hosts.to_vec();
+    #[cfg(not(debug_assertions))]
+    let test_allowed: Vec<String> = Vec::new();
     HostRules {
-        api_hosts: vec!["api.bilibili.com".into(), "www.bilibili.com".into()]
-            .into_iter()
-            .collect(),
+        api_hosts: vec![
+            "api.bilibili.com".into(),
+            "www.bilibili.com".into(),
+            "api.live.bilibili.com".into(),
+            "www.douyin.com".into(),
+            "live.douyin.com".into(),
+            "webcast.amemv.com".into(),
+        ]
+        .into_iter()
+        .collect(),
         media_hosts: media,
         allowed_headers: vec!["referer".into(), "user-agent".into()],
         test_allowed,
@@ -56,6 +79,41 @@ pub fn host_matches(host: &str, rules: &[String]) -> bool {
     rules
         .iter()
         .any(|r| host == *r || host.ends_with(&format!(".{r}")))
+}
+
+pub fn platform_rules(rules: &HostRules, platform: &str) -> HostRules {
+    let mut scoped = rules.clone();
+    scoped.api_hosts.retain(|h| match platform {
+        "bilibili" => h.ends_with("bilibili.com"),
+        "douyin" => h.ends_with("douyin.com") || h == "webcast.amemv.com",
+        _ => false,
+    });
+    scoped.media_hosts.retain(|h| match platform {
+        "bilibili" => !matches!(
+            h.as_str(),
+            "douyinvod.com"
+                | "douyinpic.com"
+                | "byteimg.com"
+                | "pstatp.com"
+                | "amemv.com"
+                | "douyincdn.com"
+                | "douyinliving.com"
+                | "v.douyin.com"
+                | "www.iesdouyin.com"
+        ),
+        "douyin" => !matches!(
+            h.as_str(),
+            "bilivideo.com"
+                | "bilivideo.cn"
+                | "hdslb.com"
+                | "akamaized.net"
+                | "bytefcdnrd.com"
+                | "b23.tv"
+                | "live.bilibili.com"
+        ),
+        _ => false,
+    });
+    scoped
 }
 
 /// 拒绝 localhost/私网/链路本地/组播地址（C22）。
@@ -129,12 +187,17 @@ fn validate_url(raw: &str, rules: &HostRules) -> Result<Url, CoreError> {
     Ok(url)
 }
 
-pub struct ConstrainedClient;
+pub struct ConstrainedClient {
+    budget: Option<std::sync::Arc<crate::request_budget::RequestBudget>>,
+    #[cfg(test)]
+    routes: std::sync::RwLock<std::collections::HashMap<String, Url>>,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct FetchOutcome {
     pub status: u16,
     pub final_host: String,
+    pub final_url: String,
     pub body: Vec<u8>,
     pub etag: Option<String>,
     pub content_length: Option<i64>,
@@ -142,7 +205,114 @@ pub struct FetchOutcome {
 
 impl ConstrainedClient {
     pub fn build() -> Result<Self, CoreError> {
-        Ok(Self)
+        Ok(Self {
+            budget: None,
+            #[cfg(test)]
+            routes: Default::default(),
+        })
+    }
+
+    pub fn with_budget(
+        mut self,
+        budget: std::sync::Arc<crate::request_budget::RequestBudget>,
+    ) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+    pub fn budget_snapshot(&self) -> Option<serde_json::Value> {
+        self.budget.as_ref().map(|b| b.snapshot())
+    }
+    pub fn received_media(&self, bytes: usize) -> Result<(), CoreError> {
+        if let Some(b) = &self.budget {
+            b.received_media(bytes)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn route_fixture(&self, host: &str, local: &str) {
+        let url = Url::parse(local).unwrap();
+        assert_eq!(url.host_str(), Some("127.0.0.1"));
+        self.routes.write().unwrap().insert(host.to_owned(), url);
+    }
+
+    /// Live streams, nested playlists, keys and MAP all enter through this same
+    /// redirect/DNS-pinned boundary. No caller can inject Cookie or Authorization.
+    pub async fn open_media(
+        &self,
+        rules: &HostRules,
+        raw: &str,
+        public: &serde_json::Value,
+        range: Option<(u64, u64)>,
+    ) -> Result<reqwest::Response, CoreError> {
+        let url = validate_url(raw, rules)?;
+        let mut headers = self.build_headers(rules, Some(public), None, &url)?;
+        if let Some((start, length)) = range {
+            let end = start
+                .checked_add(length)
+                .filter(|_| length > 0)
+                .and_then(|v| v.checked_sub(1))
+                .ok_or_else(|| CoreError::InvalidInput("invalid byte range".into()))?;
+            headers.insert(
+                reqwest::header::RANGE,
+                HeaderValue::from_str(&format!("bytes={start}-{end}"))
+                    .map_err(|_| CoreError::InvalidInput("range".into()))?,
+            );
+        }
+        let response = self
+            .request(rules, reqwest::Method::GET, url, headers, false)
+            .await?;
+        if let Some((start, length)) = range {
+            let expected = format!("bytes {start}-{}/", start + length - 1);
+            let content_range = response
+                .headers()
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if response.status().as_u16() != 206
+                || !content_range.starts_with(&expected)
+                || response.content_length().is_some_and(|n| n != length)
+            {
+                return Err(CoreError::Network("invalid ranged live resource".into()));
+            }
+        } else if response.status().as_u16() != 200 {
+            return Err(status_error(response.status().as_u16()));
+        }
+        Ok(response)
+    }
+
+    pub async fn live_resource(
+        &self,
+        rules: &HostRules,
+        raw: &str,
+        public: &serde_json::Value,
+        range: Option<(u64, u64)>,
+        limit: usize,
+    ) -> Result<(Vec<u8>, Url), CoreError> {
+        let mut response = self.open_media(rules, raw, public, range).await?;
+        let final_url = response.url().clone();
+        let length = response.content_length();
+        if length.is_some_and(|n| n > limit as u64) {
+            return Err(CoreError::InvalidInput("live resource byte budget".into()));
+        }
+        let mut out = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| CoreError::Network("live resource stream interrupted".into()))?
+        {
+            if out.len() + chunk.len() > limit {
+                return Err(CoreError::InvalidInput("live resource byte budget".into()));
+            }
+            self.received_media(chunk.len())?;
+            out.extend_from_slice(&chunk);
+        }
+        if length.is_some_and(|n| n != out.len() as u64)
+            || range.is_some_and(|(_, n)| n != out.len() as u64)
+        {
+            return Err(CoreError::Network("live resource length mismatch".into()));
+        }
+        Ok((out, final_url))
     }
 
     async fn request(
@@ -157,6 +327,20 @@ impl ConstrainedClient {
         let mut headers = headers;
         let mut method = method;
         for hop in 0..=5 {
+            #[cfg(test)]
+            if let Some(mut local) = self
+                .routes
+                .read()
+                .unwrap()
+                .get(current.host_str().unwrap_or(""))
+                .cloned()
+            {
+                local.set_path(current.path());
+                local.set_query(current.query());
+                current = local;
+                headers.remove(reqwest::header::COOKIE);
+                headers.remove(reqwest::header::AUTHORIZATION);
+            }
             let current_rules = rules.clone();
             let raw = current.to_string();
             tokio::task::spawn_blocking(move || validate_url(&raw, &current_rules))
@@ -189,12 +373,20 @@ impl ConstrainedClient {
             let client = builder
                 .build()
                 .map_err(|_| CoreError::Network("client build failed".into()))?;
+            let attempt = if let Some(budget) = &self.budget {
+                Some(budget.begin_kind(&method, &current, metadata).await?)
+            } else {
+                None
+            };
             let response = client
                 .request(method.clone(), current.clone())
                 .headers(headers.clone())
                 .send()
-                .await
-                .map_err(|e| CoreError::Network(sanitize_reqwest(&e)))?;
+                .await;
+            if let (Some(budget), Some(index)) = (&self.budget, attempt) {
+                budget.response(index, response.as_ref().ok().map(|r| r.status().as_u16()));
+            }
+            let response = response.map_err(|e| CoreError::Network(sanitize_reqwest(&e)))?;
             if !response.status().is_redirection() {
                 return Ok(response);
             }
@@ -206,14 +398,17 @@ impl ConstrainedClient {
                 .get(reqwest::header::LOCATION)
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| CoreError::Network("redirect location missing".into()))?;
-            let next = current
+            let mut next = current
                 .join(location)
                 .map_err(|_| CoreError::Network("invalid redirect".into()))?;
             if next.origin() != current.origin() {
                 headers.remove(reqwest::header::COOKIE);
                 headers.remove(reqwest::header::AUTHORIZATION);
+                crate::site_context::strip_headers(&mut headers);
+                next = Url::parse(&crate::site_context::public_url(&next))
+                    .map_err(|_| CoreError::Network("redirect query".into()))?;
             }
-            if response.status().as_u16() == 303 {
+            if response.status().as_u16() == 303 && method != reqwest::Method::HEAD {
                 method = reqwest::Method::GET;
             }
             current = next;
@@ -275,10 +470,21 @@ impl ConstrainedClient {
         cookie: Option<&str>,
         max_bytes: u32,
     ) -> Result<FetchOutcome, CoreError> {
-        let parsed = validate_url(url, rules)?;
-        let headers = self.build_headers(rules, extra_public, cookie, &parsed)?;
+        if max_bytes == 0 || max_bytes > trace_contracts::plugin_chunks::METADATA_MAX {
+            return Err(CoreError::InvalidInput("metadata body budget".into()));
+        }
+        let mut parsed = validate_url(url, rules)?;
+        let mut headers = self.build_headers(rules, extra_public, cookie, &parsed)?;
+        crate::site_context::decorate(
+            &mut parsed,
+            method,
+            cookie,
+            &mut headers,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        )?;
         let m = match method.to_ascii_uppercase().as_str() {
             "GET" => reqwest::Method::GET,
+            "HEAD" => reqwest::Method::HEAD,
             "POST" => reqwest::Method::POST,
             _ => return Err(CoreError::InvalidInput("method".into())),
         };
@@ -294,8 +500,14 @@ impl ConstrainedClient {
             // 不回显响应体；仅状态与最终主机（C26/C13）。
             let host = resp.url().host_str().unwrap_or_default().to_string();
             let _ = host;
-            return Err(status_error(status));
+            return Err(match status {
+                403 | 412 => {
+                    CoreError::Adapter(trace_domain::errors::FailureClass::PermissionDenied)
+                }
+                _ => status_error(status),
+            });
         }
+        let final_url = crate::site_context::public_url(resp.url());
         let host = resp.url().host_str().unwrap_or_default().to_string();
         // 有界读取：超限拒绝而不是静默截断。
         let mut body = Vec::new();
@@ -308,11 +520,18 @@ impl ConstrainedClient {
             if body.len() + chunk.len() > max_bytes as usize {
                 return Err(CoreError::InvalidInput("response exceeds max bytes".into()));
             }
+            if let Some(budget) = &self.budget {
+                budget.received(chunk.len())?;
+            }
             body.extend_from_slice(&chunk);
+        }
+        if let Some(budget) = &self.budget {
+            budget.observe_response(&final_url, &body)?;
         }
         Ok(FetchOutcome {
             status,
             final_host: host,
+            final_url,
             body,
             etag,
             content_length,
@@ -438,6 +657,7 @@ impl ConstrainedClient {
                 chunk = stream.chunk() => {
                     match chunk {
                         Ok(Some(bytes)) => {
+                            self.received_media(bytes.len())?;
                             let next = offset.checked_add(bytes.len() as u64)
                                 .ok_or_else(|| CoreError::Network("media length overflow".into()))?;
                             if required_total.is_some_and(|total| next > total) {
@@ -571,6 +791,44 @@ mod fault_tests {
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use trace_domain::ids::OperationId;
+
+    #[tokio::test]
+    async fn c06_site_check_budget_applies_to_real_http_redirect_hops() {
+        let failed = source(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .into(),
+            0,
+            0,
+        )
+        .await;
+        let first=source(format!("HTTP/1.1 302 Found\r\nLocation: {failed}?token=PRIVATE_REDIRECT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),0,0).await;
+        let budget =
+            std::sync::Arc::new(crate::request_budget::RequestBudget::new(2, 20, 1000).unwrap());
+        let client = ConstrainedClient::build()
+            .unwrap()
+            .with_budget(budget.clone());
+        let rules = host_rules(&Profile {
+            test_allowed_hosts: vec!["127.0.0.1".into()],
+            ..Default::default()
+        });
+        assert!(
+            client
+                .fetch_metadata(&rules, "GET", &first, None, None, 1024)
+                .await
+                .is_err()
+        );
+        assert!(
+            client
+                .fetch_metadata(&rules, "GET", &first, None, None, 1024)
+                .await
+                .is_err()
+        );
+        let result = budget.snapshot();
+        assert_eq!(result["request_count"], 2);
+        assert_eq!(result["requests"][0]["status"], 302);
+        assert_eq!(result["requests"][1]["status"], 429);
+        assert!(!result.to_string().contains("PRIVATE_REDIRECT"));
+    }
 
     async fn source(headers: String, chunks: usize, delay_ms: u64) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -731,6 +989,32 @@ mod fault_tests {
                     .is_err()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn c13_metadata_403_412_stop_as_access_restrictions_without_empty_success_or_cookie_expiry()
+     {
+        let profile = Profile {
+            test_allowed_hosts: vec!["127.0.0.1".into()],
+            ..Default::default()
+        };
+        for status in [403, 412] {
+            let url=source(format!("HTTP/1.1 {status} Restricted\r\nContent-Length: 21\r\nConnection: close\r\n\r\nSYNTHETIC_SECRET_BODY"),0,0).await;
+            let error = ConstrainedClient::build()
+                .unwrap()
+                .fetch_metadata(&host_rules(&profile), "GET", &url, None, None, 100)
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(
+                error.failure_class(),
+                trace_domain::errors::FailureClass::PermissionDenied
+            );
+            assert!(!error.failure_class().suggest_retryable());
+            assert!(!format!("{error:?}").contains("SYNTHETIC_SECRET_BODY"));
+        }
+        // Media URL expiration retains the original re-resolution contract.
+        assert!(matches!(status_error(403), CoreError::SourceUnavailable(_)));
     }
 
     #[tokio::test]

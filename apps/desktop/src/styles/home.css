@@ -1090,3 +1090,7 @@
 }
 
 .creator-picker {display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;}.creator-picker label{display:grid;gap:6px;font-size:12px;}.creator-picker select{max-width:220px;padding:6px;border:1px solid #dce4ee;border-radius:6px;}.entry-cover img,.detail-cover img{width:100%;height:100%;object-fit:cover;}
+
+.metadata-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;max-height:280px;overflow:auto}
+
+.archive-filters { margin:8px 0; color:#60708a; font-size:12px; }.archive-filters>div{display:flex;flex-wrap:wrap;gap:8px;padding:10px 0}.archive-filters input,.archive-filters select {border:1px solid #dce4ee;border-radius:4px;background:#fff;padding:4px}.archive-filters small{width:100%}

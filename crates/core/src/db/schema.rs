@@ -337,8 +337,316 @@ pub fn migrations() -> Vec<(i64, &'static str)> {
             3,
             "ALTER TABLE media_items ADD COLUMN acquisition_evidence TEXT;",
         ),
+        (4, MIGRATION_004),
+        (5, MIGRATION_005),
+        (6, MIGRATION_006),
     ]
 }
+
+pub const MIGRATION_004: &str = r#"
+ALTER TABLE search_state ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE search_state ADD COLUMN generation INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE search_state ADD COLUMN estimated_bytes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE search_state ADD COLUMN budget_bytes INTEGER NOT NULL DEFAULT 4294967296;
+ALTER TABLE search_state ADD COLUMN budget_blocked INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE search_documents ADD COLUMN cache_bytes INTEGER NOT NULL DEFAULT 0;
+UPDATE search_documents SET cache_bytes=length(CAST(normalized_text AS BLOB))*4+1024+128*((SELECT count(*) FROM search_unigram u WHERE u.doc_id=search_documents.doc_id)+(SELECT count(*) FROM search_bigram b WHERE b.doc_id=search_documents.doc_id));
+UPDATE search_state SET estimated_bytes=(SELECT COALESCE(sum(cache_bytes),0) FROM search_documents);
+CREATE TRIGGER cache_index_insert AFTER INSERT ON search_documents BEGIN UPDATE search_state SET estimated_bytes=estimated_bytes+NEW.cache_bytes WHERE id=1; END;
+CREATE TRIGGER cache_index_delete AFTER DELETE ON search_documents BEGIN UPDATE search_state SET estimated_bytes=MAX(0,estimated_bytes-OLD.cache_bytes) WHERE id=1; END;
+CREATE TABLE derived_cache_policy(id INTEGER PRIMARY KEY CHECK(id=1),budget_bytes INTEGER NOT NULL DEFAULT 10737418240,enabled INTEGER NOT NULL DEFAULT 1,generation INTEGER NOT NULL DEFAULT 1);
+INSERT INTO derived_cache_policy(id) VALUES(1);
+CREATE INDEX idx_variant_representation ON media_variants(source_representation,blob_id);
+CREATE TABLE account_observations (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL REFERENCES source_accounts(account_id),
+    display_name TEXT,
+    observed_at TEXT NOT NULL,
+    evidence TEXT NOT NULL
+);
+CREATE INDEX idx_account_observation ON account_observations(account_id,sequence);
+ALTER TABLE subscriptions ADD COLUMN quality_json TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE credentials_state ADD COLUMN generation INTEGER NOT NULL DEFAULT 1;
+CREATE TABLE issue_links (issue_key TEXT NOT NULL REFERENCES issues(issue_key),job_id TEXT NOT NULL,subscription_id TEXT,active INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(issue_key,job_id));
+CREATE INDEX idx_issue_job ON issue_links(job_id,active);
+CREATE TABLE issue_notifications (issue_key TEXT PRIMARY KEY REFERENCES issues(issue_key),event TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,last_error TEXT,updated_at TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1);
+INSERT INTO outbox(topic,aggregate_id,payload,created_at) SELECT 'entry.search_rebuild',entry_id,'{}',strftime('%Y-%m-%dT%H:%M:%SZ','now') FROM entries;
+ALTER TABLE entries ADD COLUMN deletion_generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE entries ADD COLUMN media_suppressed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE entries ADD COLUMN cache_suppressed INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE deleted_variants(variant_id TEXT PRIMARY KEY REFERENCES media_variants(variant_id),generation INTEGER NOT NULL);
+CREATE INDEX idx_search_scope ON search_documents(doc_id,namespace,entry_id);
+CREATE INDEX idx_entries_order ON entries(namespace,(published_at IS NULL),published_at DESC,entry_id DESC);
+CREATE INDEX idx_entries_account ON entries(account_id);
+
+ALTER TABLE entry_revisions ADD COLUMN document_json TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE entry_revisions ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
+CREATE INDEX idx_observation_revision ON source_observations(revision_id,observation_seq);
+CREATE TABLE scan_cursor_visits (
+    subscription_id TEXT NOT NULL REFERENCES subscriptions(subscription_id),
+    scan_type TEXT NOT NULL,
+    cursor_digest TEXT NOT NULL,
+    PRIMARY KEY(subscription_id,scan_type,cursor_digest)
+);
+CREATE TABLE variant_retention (
+    variant_id TEXT PRIMARY KEY REFERENCES media_variants(variant_id),
+    retained INTEGER NOT NULL DEFAULT 1,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL,
+    eligible_at TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE object_recycling (
+    blob_id TEXT PRIMARY KEY REFERENCES blobs(blob_id),
+    phase TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE VIEW current_entry_revisions AS
+SELECT r.* FROM entry_revisions r WHERE r.revision_id=(
+    SELECT candidate.revision_id FROM entry_revisions candidate
+    WHERE candidate.entry_id=r.entry_id
+    ORDER BY (candidate.completeness='full') DESC,
+      COALESCE((SELECT MAX(o.observation_seq) FROM source_observations o
+                WHERE o.revision_id=candidate.revision_id),0) DESC,
+      candidate.observed_at DESC,candidate.revision_id DESC LIMIT 1
+);
+CREATE TABLE live_sessions (
+    session_id TEXT PRIMARY KEY,
+    subscription_id TEXT NOT NULL REFERENCES subscriptions(subscription_id),
+    room_key TEXT NOT NULL,
+    source_session TEXT NOT NULL,
+    entry_id TEXT REFERENCES entries(entry_id),
+    state TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 1,
+    manual_stopped INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    stop_reason TEXT,
+    evidence TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(subscription_id,room_key,source_session)
+);
+CREATE TABLE live_fragments (
+    fragment_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES live_sessions(session_id),
+    sequence INTEGER NOT NULL,
+    source_sequence TEXT NOT NULL,
+    media_id TEXT REFERENCES media_items(media_id),
+    state TEXT NOT NULL,
+    start_ms INTEGER,
+    end_ms INTEGER,
+    discontinuity INTEGER NOT NULL DEFAULT 0,
+    reason TEXT,
+    evidence TEXT NOT NULL DEFAULT '{}',
+    captured_at TEXT,
+    retry_of TEXT REFERENCES live_fragments(fragment_id)
+);
+CREATE UNIQUE INDEX idx_live_active_source ON live_fragments(session_id,source_sequence)
+    WHERE state IN ('receiving','sealed','gap','source');
+CREATE INDEX idx_live_session_state ON live_sessions(state);
+ALTER TABLE subscriptions ADD COLUMN capture_chat INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE subscriptions ADD COLUMN capture_subtitles INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE live_messages (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES live_sessions(session_id),
+    source_id TEXT NOT NULL,
+    source_time TEXT,
+    author TEXT,
+    body TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    UNIQUE(session_id,source_id)
+);
+CREATE INDEX idx_live_messages_page ON live_messages(session_id,sequence);
+CREATE TABLE live_auxiliary_samples (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES live_sessions(session_id),
+    observed_at TEXT NOT NULL,
+    coverage TEXT NOT NULL,
+    source_count INTEGER NOT NULL DEFAULT 0,
+    saved_count INTEGER NOT NULL DEFAULT 0,
+    omitted INTEGER NOT NULL DEFAULT 0,
+    failure_class TEXT
+);
+CREATE INDEX idx_live_auxiliary_page ON live_auxiliary_samples(session_id,sequence);
+"#;
+
+/// Discovery, pending consumers and an execution lease are separate identities.
+/// Only relationships evidenced by old jobs are backfilled; account membership
+/// alone is not evidence that a subscription discovered every archived entry.
+pub const MIGRATION_005: &str = r#"
+CREATE TABLE entry_subscriptions (
+    entry_id TEXT NOT NULL REFERENCES entries(entry_id),
+    subscription_id TEXT NOT NULL REFERENCES subscriptions(subscription_id),
+    first_discovered_at TEXT NOT NULL,
+    last_discovered_at TEXT NOT NULL,
+    PRIMARY KEY(entry_id,subscription_id)
+);
+CREATE INDEX idx_discovery_subscription ON entry_subscriptions(subscription_id,entry_id);
+CREATE TABLE job_consumers (
+    job_id TEXT NOT NULL REFERENCES jobs(job_id),
+    subscription_id TEXT NOT NULL REFERENCES subscriptions(subscription_id),
+    requested INTEGER NOT NULL DEFAULT 1,
+    completed INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'queued',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_run_at TEXT,
+    last_error TEXT,
+    requested_at TEXT NOT NULL,
+    PRIMARY KEY(job_id,subscription_id)
+);
+CREATE INDEX idx_consumer_subscription ON job_consumers(subscription_id,state);
+INSERT OR IGNORE INTO entry_subscriptions
+    SELECT e.entry_id,s.subscription_id,j.created_at,j.updated_at FROM jobs j
+    JOIN entries e ON e.entry_id=j.subject_id
+    JOIN subscriptions s ON s.subscription_id=json_extract(j.payload,'$.subscription_id')
+    WHERE j.job_type IN ('observe','media');
+INSERT INTO job_consumers(job_id,subscription_id,completed,state,attempts,next_run_at,last_error,requested_at)
+    SELECT j.job_id,s.subscription_id,CASE WHEN j.state='succeeded' THEN 1 ELSE 0 END,
+      CASE WHEN j.state IN ('leased','running','paused','waiting_plugin') THEN 'queued' ELSE j.state END,
+      j.attempts,j.next_run_at,j.last_error,j.created_at
+    FROM jobs j JOIN subscriptions s ON s.subscription_id=json_extract(j.payload,'$.subscription_id')
+    WHERE j.job_type IN ('observe','media');
+CREATE TABLE acquisition_contexts (
+    context_id TEXT PRIMARY KEY,
+    entry_id TEXT NOT NULL REFERENCES entries(entry_id),
+    job_id TEXT,
+    job_generation INTEGER,
+    subscription_id TEXT,
+    credential_id TEXT,
+    credential_generation INTEGER,
+    auth_state TEXT NOT NULL CHECK(auth_state IN ('anonymous','authenticated','expired','unknown')),
+    validated_at TEXT,
+    basis TEXT NOT NULL,
+    started_at TEXT NOT NULL
+);
+CREATE INDEX idx_acquisition_entry_auth ON acquisition_contexts(entry_id,auth_state,started_at);
+CREATE TABLE resource_acquisitions (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    acquisition_id TEXT NOT NULL UNIQUE,
+    context_id TEXT NOT NULL REFERENCES acquisition_contexts(context_id),
+    media_id TEXT REFERENCES media_items(media_id),
+    variant_id TEXT REFERENCES media_variants(variant_id),
+    outcome TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    measured_spec TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(context_id,media_id,variant_id)
+);
+CREATE INDEX idx_resource_acquisition_media ON resource_acquisitions(media_id,sequence);
+ALTER TABLE source_observations ADD COLUMN context_id TEXT REFERENCES acquisition_contexts(context_id);
+ALTER TABLE live_fragments ADD COLUMN context_id TEXT REFERENCES acquisition_contexts(context_id);
+ALTER TABLE media_variants ADD COLUMN approval_state TEXT NOT NULL DEFAULT 'automatic';
+ALTER TABLE media_items ADD COLUMN resource_generation INTEGER NOT NULL DEFAULT 0;
+INSERT INTO acquisition_contexts(context_id,entry_id,auth_state,basis,started_at)
+    SELECT 'legacy:'||v.variant_id,r.entry_id,'unknown','legacy_without_authentication_evidence',v.created_at
+    FROM media_variants v JOIN media_items m ON m.media_id=v.media_id JOIN entry_revisions r ON r.revision_id=m.revision_id;
+INSERT INTO resource_acquisitions(acquisition_id,context_id,media_id,variant_id,outcome,finished_at,measured_spec)
+    SELECT 'legacy:'||variant_id,'legacy:'||variant_id,media_id,variant_id,'legacy',created_at,COALESCE(measured_spec,'{}') FROM media_variants;
+CREATE TRIGGER acquisition_context_immutable_update BEFORE UPDATE ON acquisition_contexts BEGIN SELECT RAISE(ABORT,'acquisition context is immutable'); END;
+CREATE TRIGGER acquisition_context_immutable_delete BEFORE DELETE ON acquisition_contexts BEGIN SELECT RAISE(ABORT,'acquisition context is immutable'); END;
+CREATE TRIGGER resource_acquisition_immutable_update BEFORE UPDATE ON resource_acquisitions BEGIN SELECT RAISE(ABORT,'resource acquisition is immutable'); END;
+CREATE TRIGGER resource_acquisition_immutable_delete BEFORE DELETE ON resource_acquisitions BEGIN SELECT RAISE(ABORT,'resource acquisition is immutable'); END;
+CREATE TABLE upgrade_candidates (
+    candidate_id TEXT PRIMARY KEY,
+    entry_id TEXT NOT NULL REFERENCES entries(entry_id),
+    revision_id TEXT NOT NULL REFERENCES entry_revisions(revision_id),
+    group_key TEXT NOT NULL,
+    context_id TEXT NOT NULL REFERENCES acquisition_contexts(context_id),
+    job_id TEXT NOT NULL REFERENCES jobs(job_id),
+    job_generation INTEGER NOT NULL,
+    subscription_id TEXT,
+    subscription_version INTEGER,
+    credential_id TEXT,
+    credential_generation INTEGER,
+    deletion_generation INTEGER NOT NULL,
+    policy TEXT,
+    state TEXT NOT NULL DEFAULT 'collecting',
+    reason TEXT NOT NULL DEFAULT '',
+    confirmation TEXT,
+    created_at TEXT NOT NULL,
+    finished_at TEXT
+);
+CREATE INDEX idx_upgrade_state ON upgrade_candidates(state,created_at,candidate_id);
+CREATE TABLE upgrade_members (
+    candidate_id TEXT NOT NULL REFERENCES upgrade_candidates(candidate_id),
+    media_id TEXT NOT NULL REFERENCES media_items(media_id),
+    old_variant_id TEXT REFERENCES media_variants(variant_id),
+    new_variant_id TEXT REFERENCES media_variants(variant_id),
+    required INTEGER NOT NULL,
+    expected_media_generation INTEGER NOT NULL DEFAULT 0,
+    old_pinned INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(candidate_id,media_id)
+);
+CREATE INDEX idx_upgrade_variant ON upgrade_members(new_variant_id);
+"#;
+
+pub const MIGRATION_006: &str = r#"
+ALTER TABLE upgrade_candidates ADD COLUMN consumer_request INTEGER;
+ALTER TABLE subscriptions ADD COLUMN acquisition_kind TEXT NOT NULL DEFAULT 'subscription' CHECK(acquisition_kind IN ('subscription','one_shot'));
+CREATE TABLE source_requests (
+    request_id TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('video','live')),
+    source_url TEXT NOT NULL,
+    native_key TEXT NOT NULL,
+    account_key TEXT NOT NULL,
+    account_name TEXT,
+    credential_id TEXT,
+    credential_generation INTEGER,
+    authentication TEXT NOT NULL,
+    validated_at TEXT,
+    snapshot TEXT NOT NULL,
+    selected TEXT NOT NULL DEFAULT '[]',
+    state TEXT NOT NULL DEFAULT 'preview',
+    generation INTEGER NOT NULL DEFAULT 1,
+    scope_id TEXT REFERENCES subscriptions(subscription_id),
+    entry_id TEXT REFERENCES entries(entry_id),
+    job_id TEXT REFERENCES jobs(job_id),
+    session_id TEXT REFERENCES live_sessions(session_id),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+CREATE INDEX idx_source_recent ON source_requests(created_at,request_id);
+-- One-shot scopes reuse credential/control checks, but can never enumerate an
+-- author's content or become a recurring subscription through retry paths.
+CREATE TRIGGER one_shot_no_scan BEFORE INSERT ON jobs
+WHEN NEW.job_type IN ('scan','auth_completion','account_profile') AND EXISTS(
+    SELECT 1 FROM subscriptions s WHERE s.acquisition_kind='one_shot' AND
+    (s.subscription_id=NEW.subject_id OR s.subscription_id=json_extract(NEW.payload,'$.subscription_id')))
+BEGIN SELECT RAISE(ABORT,'one-shot source cannot scan'); END;
+CREATE TRIGGER one_shot_no_scan_update BEFORE UPDATE OF job_type,subject_id,payload ON jobs
+WHEN NEW.job_type IN ('scan','auth_completion','account_profile') AND EXISTS(
+    SELECT 1 FROM subscriptions s WHERE s.acquisition_kind='one_shot' AND
+    (s.subscription_id=NEW.subject_id OR s.subscription_id=json_extract(NEW.payload,'$.subscription_id')))
+BEGIN SELECT RAISE(ABORT,'one-shot source cannot scan'); END;
+CREATE TABLE deletion_selections (
+    entry_id TEXT NOT NULL REFERENCES entries(entry_id),
+    generation INTEGER NOT NULL,
+    media_id TEXT NOT NULL REFERENCES media_items(media_id),
+    variant_id TEXT NOT NULL REFERENCES media_variants(variant_id),
+    pinned INTEGER NOT NULL,
+    policy_version TEXT NOT NULL,
+    reason TEXT,
+    PRIMARY KEY(entry_id,generation,media_id)
+);
+-- Old restores could select a candidate without approval. Keep its history,
+-- remove only the invalid selection, then let maintenance select eligible bytes.
+DELETE FROM asset_selections WHERE variant_id IN (
+    SELECT variant_id FROM media_variants WHERE approval_state NOT IN ('automatic','accepted','kept')
+);
+CREATE TRIGGER selection_approval_insert BEFORE INSERT ON asset_selections
+WHEN EXISTS(SELECT 1 FROM media_variants WHERE variant_id=NEW.variant_id AND approval_state NOT IN ('automatic','accepted','kept'))
+BEGIN SELECT RAISE(ABORT,'resource approval required'); END;
+CREATE TRIGGER selection_approval_update BEFORE UPDATE OF variant_id ON asset_selections
+WHEN EXISTS(SELECT 1 FROM media_variants WHERE variant_id=NEW.variant_id AND approval_state NOT IN ('automatic','accepted','kept'))
+BEGIN SELECT RAISE(ABORT,'resource approval required'); END;
+CREATE TRIGGER selection_generation_insert AFTER INSERT ON asset_selections
+BEGIN UPDATE media_items SET resource_generation=resource_generation+1 WHERE media_id=NEW.media_id; END;
+CREATE TRIGGER selection_generation_update AFTER UPDATE OF variant_id,pinned ON asset_selections
+WHEN OLD.variant_id IS NOT NEW.variant_id OR OLD.pinned!=NEW.pinned
+BEGIN UPDATE media_items SET resource_generation=resource_generation+1 WHERE media_id=NEW.media_id; END;
+CREATE TRIGGER selection_generation_delete AFTER DELETE ON asset_selections
+BEGIN UPDATE media_items SET resource_generation=resource_generation+1 WHERE media_id=OLD.media_id; END;
+"#;
 
 /// 执行未应用的迁移；每个迁移独立事务，失败即回滚（C23）。
 pub fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite::Error> {
@@ -360,9 +668,20 @@ pub fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite::Error> {
             0
         }
     };
+    // Preserve a consistent SQLite snapshot before changing an existing schema.
+    // The transaction below leaves schema 3 usable when migration fails.
     for (version, sql) in migrations() {
         if version <= current {
             continue;
+        }
+        if current > 0
+            && let Some(path) = conn.path().filter(|p| !p.is_empty())
+        {
+            let backup = std::path::PathBuf::from(format!(
+                "{path}.pre-schema-{version}-{}.sqlite3",
+                uuid::Uuid::new_v4()
+            ));
+            conn.backup("main", backup, None)?;
         }
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute_batch(sql)?;
@@ -393,10 +712,14 @@ pub fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite::Error> {
 
 /// 数据库连接初始化：WAL、FULL 同步、外键、busy 超时。
 pub fn configure(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // Timeline rows reuse a bounded set of statements; cache prepared code,
+    // never query results, so current state and authentication remain fresh.
+    conn.set_prepared_statement_cache_capacity(64);
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA synchronous=FULL;
          PRAGMA foreign_keys=ON;
+         PRAGMA cache_size=-32768;
          PRAGMA busy_timeout=5000;",
     )?;
     Ok(())

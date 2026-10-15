@@ -98,13 +98,22 @@ pub fn decide_revision(
         &incoming.normalized_body,
         &incoming.resources,
     );
+    decide_revision_digest(existing, incoming.completeness, &digest)
+}
+
+/// Core may include a versioned inert document structure in the digest.
+pub fn decide_revision_digest(
+    existing: &[(String, Completeness, String)],
+    completeness: Completeness,
+    digest: &str,
+) -> RevisionDecision {
     if let Some((id, _, _)) = existing.iter().find(|(_, _, d)| *d == digest) {
         return RevisionDecision::Reuse {
             revision_id: id.clone(),
         };
     }
     let has_full = existing.iter().any(|(_, c, _)| *c == Completeness::Full);
-    if has_full && incoming.completeness == Completeness::Summary {
+    if has_full && completeness == Completeness::Summary {
         return RevisionDecision::KeepExistingIgnoreSummary {
             reason: "full revision already exists; summary cannot overwrite it",
         };

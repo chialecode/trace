@@ -17,7 +17,7 @@ pub mod time;
 /// M1a 数据库/内容 schema 版本正本。
 ///
 /// 提升版本号必须伴随迁移与兼容证据（docs/design.md 6.2/14.4）。
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// 控制协议版本（docs/design/m1a-runtime-contracts.md §2）。
 pub const CONTROL_PROTOCOL_VERSION: &str = "0.1";

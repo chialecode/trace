@@ -1,0 +1,21 @@
+import {mount,flushPromises} from '@vue/test-utils';
+import {it,expect,vi} from 'vitest';
+import {createRouter,createMemoryHistory} from 'vue-router';
+import ResourcesView from '../ResourcesView.vue';
+import {api,type ResourceDto} from '../../lib/api';
+vi.mock('../../lib/api',async original=>{const source=await original<typeof import('../../lib/api')>();return {...source,api:{...source.api,archiveResources:vi.fn(),creatorList:vi.fn()}};});
+it('c08_resource_library_pages_specs_origin_and_stale_requests',async()=>{
+  const row=(id:string):ResourceDto=>({media_id:id,variant_id:'v-'+id,entry_id:'origin-'+id,revision_id:'r',namespace:'douyin',title:'全文来源',role:'image',position:2,blob_id:null,available:false,size:100,verified_copies:0,creator_name:'跨站创作者',account_name:'来源账号',measured_spec:'{"width":1080,"height":1920}',saved_at:'2026-10-08T01:02:03Z'});
+  vi.mocked(api.creatorList).mockResolvedValue({items:[],next_cursor:null});
+  vi.mocked(api.archiveResources).mockResolvedValueOnce({items:[row('a')],next_cursor:'page-2'}).mockResolvedValueOnce({items:[row('b')],next_cursor:null});
+  const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:ResourcesView}]});await router.push('/');
+  const wrapper=mount(ResourcesView,{global:{plugins:[router]}});await flushPromises();
+  expect(wrapper.text()).toContain('1080 × 1920');expect(wrapper.text()).toContain('来源账号');expect(wrapper.text()).toContain('未保存或副本缺失');
+  expect(wrapper.get('a').attributes('href')).toContain('entry=origin-a');
+  await wrapper.findAll('button').find(b=>b.text()==='加载更多资源')!.trigger('click');await flushPromises();
+  expect(wrapper.findAll('article')).toHaveLength(2);expect(api.archiveResources).toHaveBeenLastCalledWith(expect.objectContaining({cursor:'page-2'}));
+  let resolve!:(p:{items:ResourceDto[];next_cursor:null})=>void;
+  vi.mocked(api.archiveResources).mockImplementationOnce(()=>new Promise(done=>resolve=done));
+  await wrapper.get('form').trigger('submit');wrapper.unmount();resolve({items:[row('late')],next_cursor:null});await flushPromises();
+  expect(api.archiveResources).toHaveBeenCalledTimes(3);
+});

@@ -17,3 +17,16 @@
 凭据从本地受保护配置或系统存储读取，不回显。`.gitignore` 不是完整隔离保证。不得通过取消路径、引用或脱敏断言获得绿色结果。
 
 数据语义改变交付可审阅方案与兼容证据；授权内可逆实现和测试连续进行。真实数据删除、覆盖、迁移按具体授权执行，active 文档不代替授权。
+
+<a id="local-site-credentials"></a>
+## 本地真实站点测试凭证
+
+依据 DEC-025，开发用本地输入与产品 Vault 分开。公开的 [.env.example](../../.env.example) 只放配置键和合成路径；`.env.local` 只记录所选站点的 `TRACE_TEST_BILIBILI_COOKIE_FILE` / `TRACE_TEST_DOUYIN_COOKIE_FILE`，正文放忽略的 `.local/site-secrets/` 中，由用户主动提供。Windows 目录应仅当前用户与 SYSTEM 可读，其他系统采用等价私有权限；忽略规则不提供文件加密。已有配置按[本地文件规则](local-reference-and-files.md)保护，不读取或输出与任务无关的键。
+
+`python scripts/prepare_site_check.py --site <bilibili|douyin> --package <明确包目录> --out <.local/site-check/下的新目录>`是本地准备入口：只校验所选键和对应 Cookie 文件、包及输出路径，拒绝重复/缺失/空值/错误格式和链接路径，生成仅含凭证路径的请求计划与隔离 Profile。它不执行 shell 表达式、不启动浏览器/后台，也不能发网络请求或授予执行权限。实际用户步骤、目录和当前输入/授权状态只维护于 [ACT-002](../../USER-ACTIONS.md#act-002)。
+
+涉及真实站点的执行前必须同时具备所需凭证/对象/预算和该动作的明确授权；缺哪项就停止对应实测，记录 `blocked/not-run` 并请用户按 ACT-002 补齐，不自动匿名降级或读取浏览器登录库。准备成功不证明登录有效。现有 daemon 的 `site-check` 默认 dry-run；显式执行由 Agent 核对计划，遇认证/权限/挑战/限流停止。代码、合成故障与打包不依赖真实凭证时继续。
+
+凭证值不进入命令行、日志、JSON证据、包、Git、普通备份或导出；异常只记录类别。测试用合成哨兵验证泄漏边界，不用真实秘密做断言。产品凭证继续通过现有 DPAPI Vault 管理，不能把本机明文测试文件作为通用产品存储，也不自动复制到 Vault。获取状态和登录后补全遵守[认证历史契约](../site-archive-contracts.md#authentication-acquisition)。
+
+计划明确要求且已获具体授权的匿名对照可以不附 Cookie，记录该次 `auth_mode=anonymous` 和独立预算；它不是缺少配置后的隐式降级。遇挑战或限流停止对应站点跑次，保留结果并查明条件，不换会话反复尝试。真实目标、原始响应和账号字段只在本地隔离目录保留；公开证据只含测试类别、状态、计数和必要非敏感指标。

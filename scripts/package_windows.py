@@ -23,10 +23,12 @@ import subprocess
 import sys
 import time
 import tomllib
+import stage_evidence
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
+BUILD_COMMANDS = []
 
 
 def which_corepack() -> str:
@@ -39,9 +41,16 @@ def which_corepack() -> str:
 
 
 def run(cmd: list[str], cwd: Path = ROOT) -> str:
+    before=stage_evidence.inputs()
     proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, encoding="utf8", errors="replace")
+    logs=ROOT / "artifacts" / "m1-package-commands"
+    logs.mkdir(parents=True,exist_ok=True)
+    receipt=logs / f"{time.time_ns()}.log"
+    receipt.write_text(f"$ {' '.join(cmd)}\n{proc.stdout}\n{proc.stderr}\nexitCode={proc.returncode}\n",encoding="utf8")
+    if cmd[0].endswith(('cargo','cargo.exe','corepack.cmd','corepack')):
+        BUILD_COMMANDS.append({'argv':cmd,'exitCode':proc.returncode,'log':receipt.relative_to(ROOT).as_posix(),'logSha256':sha256(receipt),'sourceInputs':before,'sourceUnchanged':before==stage_evidence.inputs()})
     if proc.returncode != 0:
-        print(f"[FAIL] {' '.join(cmd)}\n{proc.stdout[-1500:]}\n{proc.stderr[-1500:]}")
+        print(f"[FAIL] {' '.join(cmd)}; complete output: {receipt.relative_to(ROOT)}")
         sys.exit(1)
     return proc.stdout
 
@@ -56,21 +65,18 @@ def sha256(path: Path) -> str:
 
 def source_snapshot() -> dict[str, str]:
     """Bind the package to the actual build inputs, including not-yet-committed source."""
-    names = set(run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"]).split("\0")) - {""}
-    prefixes = ("apps/", "adapters/", "crates/", "scripts/")
-    roots = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "media-backend.lock.json", ".cargo/config.toml"}
-    return {name: sha256(ROOT / name) for name in sorted(names)
-            if (name.startswith(prefixes) or name in roots) and (ROOT / name).is_file()}
+    return stage_evidence.inputs(ROOT)
+
 
 
 def main() -> int:
     sources = source_snapshot()
     with (ROOT / "Cargo.toml").open("rb") as f:
         version = tomllib.load(f)["workspace"]["package"]["version"]
-    out = DIST / f"trace-{version}-windows-x64-closeout"
+    out = DIST / f"trace-{version}-windows-x64-m1-r3"
     suffix = 1
     while out.exists():
-        out = DIST / f"trace-{version}-windows-x64-closeout-{suffix}"
+        out = DIST / f"trace-{version}-windows-x64-m1-r3-{suffix}"
         suffix += 1
     (out / "adapters").mkdir(parents=True)
 
@@ -84,7 +90,9 @@ def main() -> int:
         "cargo", "build", "--release", "--locked",
         "-p", "trace-daemon",
         "-p", "trace-adapter-bilibili",
+        "-p", "trace-adapter-douyin",
         "-p", "trace-desktop",
+        "--features", "trace-desktop/custom-protocol",
     ])
 
     rel = ROOT / "target" / "release"
@@ -92,12 +100,16 @@ def main() -> int:
         "trace-desktop.exe": rel / "trace-desktop.exe",
         "trace-daemon.exe": rel / "trace-daemon.exe",
         "adapters/trace-adapter-bilibili.exe": rel / "trace-adapter-bilibili.exe",
+        "adapters/trace-adapter-douyin.exe": rel / "trace-adapter-douyin.exe",
     }
     for dst, src in binaries.items():
         if not src.exists():
             print(f"[FAIL] 缺少构建产物 {src}")
             return 1
         shutil.copy2(src, out / dst)
+
+    shutil.copy2(ROOT / "LICENSE", out / "LICENSE")
+    shutil.copy2(ROOT / "adapters/douyin/NOTICE", out / "adapters/douyin-NOTICE.txt")
 
     # Local package verification includes only the pinned, previously verified backend.
     media_root = ROOT / "target" / "media"
@@ -114,6 +126,8 @@ def main() -> int:
     for name in ("LICENSE.txt", "SOURCE.txt", "verified.json"):
         shutil.copy2(media_root / name, out / "media" / name)
 
+    shutil.copy2(ROOT / "docs/delivery/dependency-licenses.md", out / "dependency-licenses.md")
+
     # 3) 发行 profile 样例（不得含测试端点）。
     example = {
         "archive_id": "default",
@@ -121,6 +135,13 @@ def main() -> int:
         "archive_root": "./trace-data/archive",
         "vault_dir": None,
         "adapter_dir": "./adapters",
+        "metadata_min_interval_ms": 2000,
+        "metadata_jitter_ms": 250,
+        "scan_page_budget": 10,
+        "live_concurrency": 4,
+        "recording_fragment_seconds": 600,
+        "recording_fragment_bytes": 536870912,
+        "recording_disk_reserve_bytes": 1073741824,
         "extra_media_hosts": [],
         "test_allowed_hosts": [],
     }
@@ -157,17 +178,22 @@ def main() -> int:
         "built_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "git_commit": git_commit,
         "components": list(binaries.keys()),
+        "built_binaries": {name:sha256(out/name) for name in binaries},
+        "build_commands": BUILD_COMMANDS,
         "control_protocol": "0.1",
         "plugin_protocol": "0.1",
-        "schema_version": 3,
+        "schema_version": stage_evidence.SCHEMA_VERSION,
         "source_dirty": bool(run(["git", "status", "--porcelain"], ROOT).strip()),
         "source_files_sha256": sources,
+        "sourceInputs": sources,
+        "stage": stage_evidence.PLAN_ID,
+        "productAcceptance": "not-run",
         "source_tree_sha256": hashlib.sha256(json.dumps(sources, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
         "media_asset": lock,
         "excludes_test_artifacts": True,
         "doctor": doctor_json,
-        "install": "便利包：解压后先复制 profile.example.json 为 profile.json（可按需改路径），再运行 trace-desktop.exe",
-        "uninstall": "删除解压目录；用户数据位于 profile.json 指定的 data_root/trace-data 与系统凭证目录",
+        "install": "便携包：解压后先复制 profile.example.json 为 profile.json（可按需改路径），再运行 trace-desktop.exe",
+        "uninstall": "关闭已启用的登录启动并完全退出；保留或备份Profile指定的数据与凭证后再移除程序文件。默认trace-data在包内，勿连同档案删除。",
     }
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf8")
 
@@ -177,7 +203,7 @@ def main() -> int:
         f"""# TRACE {version}（Windows x64 便携包）
 
 ## 运行
-1. 解压到任意目录（避免中文/超长路径问题）。
+1. 解压到用于保存程序和本地档案的目录。
 2. 复制 `profile.example.json` 为 `profile.json`；默认数据写入包内 `./trace-data/`。
 3. 双击 `trace-desktop.exe`。外壳会在后台未运行时自动以无窗口方式拉起 `trace-daemon.exe`。
 
@@ -187,8 +213,9 @@ def main() -> int:
 - 随时运行 `trace-daemon.exe doctor --profile profile.json` 复核（JSON 输出）。
 
 ## 卸载
-删除解压目录即可。用户数据在 `profile.json` 指定的 `data_root`/`archive_root`（默认 `./trace-data/`）；
-凭证存放于系统用户私有目录（DPAPI 加密），不随包。
+如已启用登录后启动，先在后台状态关闭，再选择完全退出。用户数据在 `profile.json` 指定的
+`data_root`/`archive_root`（默认位于包内 `./trace-data/`）；保留或备份这些目录和Profile后再移除程序文件，
+不要把默认档案一起删除。凭证存放于系统用户私有目录（DPAPI加密），不在软件包中。
 
 ## 校验
 `SHA256SUMS.txt` 为全文件摘要；`manifest.json` 记录版本、提交与构建时诊断。

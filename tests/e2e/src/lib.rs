@@ -85,7 +85,15 @@ impl FakeSource {
             stream.write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 39\r\nConnection: close\r\n\r\nCookie: SENTINEL-COOKIE-7f3a9-do-not-leak")?;
             return Ok(());
         }
-        let (status, ctype, body) = Self::route(path, query, base);
+        let (status, ctype, mut body) = Self::route(path, query, base);
+        // Keep the same two-day ordering while keeping the synthetic records in
+        // full_loop's 365-day range. The old fixed 2023 dates stopped matching
+        // when M1 began enforcing the configured subscription range.
+        if ctype == "application/json" {
+            let mut value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            rebase_fixture_epochs(&mut value);
+            body = serde_json::to_vec(&value).unwrap();
+        }
         let resp = format!(
             "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
@@ -196,6 +204,30 @@ impl FakeSource {
     }
 }
 
+fn rebase_fixture_epochs(value: &mut serde_json::Value) {
+    let today = time::OffsetDateTime::now_utc().unix_timestamp() / 86400 * 86400;
+    match value {
+        serde_json::Value::Object(o) => {
+            if let Some(epoch) = o.get_mut("epoch") {
+                match epoch.as_i64() {
+                    Some(1702204800) => *epoch = (today - 86400).into(),
+                    Some(1702032000) => *epoch = (today - 3 * 86400).into(),
+                    _ => {}
+                }
+            }
+            for child in o.values_mut() {
+                rebase_fixture_epochs(child);
+            }
+        }
+        serde_json::Value::Array(a) => {
+            for child in a {
+                rebase_fixture_epochs(child)
+            }
+        }
+        _ => {}
+    }
+}
+
 /// 确定性媒体字节（可复算 sha256）。
 pub fn media_bytes(name: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(96 * 1024);
@@ -213,8 +245,19 @@ pub fn media_bytes(name: &str) -> Vec<u8> {
 /// 测试 Profile：全路径隔离在 root 下，显式放行 127.0.0.1（仅本机回环）。
 pub fn test_profile(root: &Path, adapter_dir: &Path) -> Profile {
     Profile {
+        acquisition_limits: None,
         media_dir: None,
         allow_media_path: false,
+        live_concurrency: 4,
+        metadata_min_interval_ms: 2000,
+        metadata_jitter_ms: 250,
+        scan_page_budget: 10,
+        quality_prefer_fps: false,
+        recycle_wait_seconds: 86400,
+        manual_delete_wait_seconds: 7 * 86400,
+        recording_fragment_seconds: 600,
+        recording_fragment_bytes: 512 * 1024 * 1024,
+        recording_disk_reserve_bytes: trace_core::config::DISK_SAFETY_MARGIN_BYTES as u64,
         archive_id: "e2e".into(),
         data_root: root.join("data"),
         archive_root: root.join("archive"),

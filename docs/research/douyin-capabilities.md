@@ -1,42 +1,27 @@
-# 抖音视频能力表与第二站接入准备
+# 抖音归档与录制能力表
 
-日期：2026-09-26；Agent A 资料/源码审阅。抖音仍是首批优先平台，但生产适配安排在 **M1b**。此次完成独立能力表和规范化边界；M0/M1a 可使用其异构结构合成夹具检验核心契约，不提前交付一个未经验证的抖音下载入口。真实 OAuth、Cookie、列表和媒体下载均 `not-run`。
+当前生产包m1-r3-12获准实测：视频1080×1920 AVC＋AAC完整22.833秒；直播1080×1920 AVC＋AAC封片68.426秒。两链Core身份/任务/对象、桌面选择、直播GUI关闭继续、导出/离线重开及所有必要文件完整解码已核实。当前证据见[报告§18.8](../delivery/stage-report.md#a-m1-r3-technical-closeout)，§17仍保留B原跑次；只适用两个指定对象，其他类型/全历史及匿名与会员质量差异未验证。
 
-依据 DEC-005/008；实现顺序理由见 [ADR 台账](../decisions/architecture-decisions.md)。当前未知统一归 OSS-008/ACT-002，资料快照见[官方来源](2026-09-26/douyin-official-sources.json)、[社区源码记录](2026-09-26/source-inspection.json)与[维护快照](2026-09-26/maintenance.json)。
+核对：2026-10-13，M1 r3 A复核与获准实测 / adapter 0.1.0。self登录判断保持，Core内SecSDK上下文、有界大页、直播CDN/HTTPS与视频/直播链接入口已接入。本轮真实生产视频接收、停播响应、原失败及最终完整链边界见[§17](../delivery/stage-report.md#b-m1-r3-delivery)；A原有[来源诊断](../delivery/stage-report.md#m1-real-source-readiness)与产品链证据分开。配置、对象和预算依赖只见[ACT-002](../../USER-ACTIONS.md#act-002)。
 
-## 1. 两条路径的实际边界
+旧M1b准备表、当时源码/官方资料与未知保存在[固定历史](https://github.com/chialecode/trace/blob/960984c34487244f31f1238dffc2bd9faaa292e7/docs/research/douyin-capabilities.md)。现行来源与固定协议证据以[两站解析研究](site-parsing-current.md)为正本，不把第三方支持声明当作TRACE实测。
 
-| 路径 | 有证据的能力 | 限制及选择 |
+A已核对原r1的type163全文/资源关系与r2共享作用域/认证历史，F-018来源长度和F-020登录探测保持。原[r2包与长测](../delivery/stage-report.md#b-m1-r2-delivery)只对应当时输入；本轮候选交接、恢复和物化等修复的当前状态只在[报告F正本](../delivery/stage-report.md#f-023)维护，不由能力表自行关闭。
+
+| 类型/入口 | 当前生产行为 | 合成证据与限制 |
 | --- | --- | --- |
-| 官方开放平台 | 经应用权限申请、创作者授权后查询账号视频列表及特定视频数据 | `video.list`/`video.data` 不是普通观看用户 Cookie 权限；未证实可枚举任意关注创作者或获取完整可归档媒体计划。不能把自有创作者管理 API 写成全平台下载 API |
-| 网页社区接口 | 活跃 TikTokDownloader 中可见抖音 `aweme/post` 和 `aweme/detail` 路线，包含 sec_user_id/aweme_id、游标和作品数组 | 会话、签名、风控、媒体质量/期限均需独立验证。项目 GPL-3.0，只用作资料，不直接复制/捆绑；生产复用需许可及分发决定。不因仓库名字包含 TikTok 而混用两站字段 |
+| 账号、主页与短链 | `user/profile/other`解析sec_uid，保存uid、公开别名与资料观察；分享链接逐跳验证。跨站/账号不混合，昵称不作身份 | 身份、改名、长ID和跨账号隔离用例；访问者OAuth/open_id不自动映射 |
+| 会话与签名 | `user/profile/self`核对会话的非零uid及sec_uid；访客ID不当登录证明。A-Bogus与Core内受保护详情/投稿SecSDK上下文分层，Cookie和派生访问头不进入插件/UI | 固定编码/查询顺序/摘要向量及实际Core跨域HTTP隔离通过；self登录与来源访问能力分开，不生成msToken。真实成功与拒绝只按§17具体跑次判断 |
+| 投稿/动态订阅 | `aweme/post`，sec_user_id/max_cursor/count；大型JSON使用显式有界插件消息；dynamic lane按账号公开投稿归档视频/图集/长文 | 20条约1.45MB生产进程/Core回放完整通过；超限/缺片/坏摘要/并发/取消/重启失败不前移游标。置顶/乱序/空页has_more与无删除权威证据的unknown保持。2026-10-15生产二进制登录态对一位作者真实取2页：第1页20条视频，第2页20条中19条视频（1条非视频按video通道筛除）；max_cursor前进、仍有更多、两页无重叠 |
+| 视频 | `aweme/detail`核对aweme_id与类型；候选play_addr/download_addr/bit_rate按实际宽高/FPS与质量偏好选择，封面独立 | 生产进程→Core→HTTP字节→对象→离线读取通过；地址名不证明无水印/原画，实际规格由probe确认 |
+| 视频链接选择 | 明确展示当前来源候选、必要资源和实际声明规格；确认后持久一次性任务进入原对象库，媒体附公开UA/Referer而无Cookie | 链接预览/确认/取消/重启、降级及凭证换代有反例；原视频接收成功不代替最终整包的重开、导出与完整解码证据 |
+| 图集/实况 | images和image_post_info；优先原始静态图，保留顺序/缺图占位、motion片、必要配乐，安全作者/合集字段 | 扁平/嵌套、不同尺寸、缺静态图但有实况、正文和配乐编辑/签名轮换反例；不能把封面当实况完整保存 |
+| 长图文 | aweme_type=163，详情article_info/article_content为对象或JSON字符串；Markdown全文有序转类型块，30图、表格/列表/代码等安全保存 | 列表约499字符截断不能完成归档；必须请求详情。video.play_addr为背景MP3时保存为music。生产进程全文/资源/离线链通过，真实完整性仍not-run |
+| 合集/系列 | 投稿→mix.list→series.list→mix.aweme分别有界续页；series_id用于成员查询，空页不能代表全量结束 | 独立游标和生产端点用例；集合页覆盖保存在条目观察，详情无mix_info不丢来源。独立付费专栏目录仍无足够资料 |
+| 房间与直播 | 原sec_uid/reflow订阅入口保持；直接URL用web_rid/enter，身份取房间owner及其uid回退，外层观看者不作主播。选流进入共用录制服务，已停播可缺owner仍明确显示离线 | douyinliving.com按来源证据规范化同地址HTTPS，默认窄CDN策略、公开直播头和媒体零Cookie。保留FLV/HLS/音频直播的旧守护；直接直播最低规格、封片/离线证据按§17判断 |
+| 弹幕/字幕 | 用户可选WebcastChatMessage有限历史JSON采样，消息ID去重、串房拒绝；外部HLS字幕依Core轨道捕获，画面字幕随原件 | 省略数/采样范围/失败独立，非全量WebSocket；真实站点是否提供外部字幕轨未验证 |
+| 历史、质量和恢复 | 复用Core增量/深查、版本观察、必要资源验证、质量保留/回收、备份导出/新Profile恢复 | 两站共用C01～C08与原F守护，范围见[归档契约](../site-archive-contracts.md)，不建立第二套对象库 |
 
-目前官方路径不足以证明 TRACE 的任意创作者收录闭环；社区路径也未完成 TRACE 的现场验证。因此本轮优先有较完整当前 Rust 参考链路的 Bilibili，同时保存抖音的必查问题供 M1b 接续。该决定没有降低抖音的产品优先级，也没有预选 yt-dlp 等工具作为最终实现。
+统一入口支持按需安全导入用户主动提供的Cookie、撤销和重新验证。真实执行仅按ACT-002已授权的账号、内容类型、页数、字节/时间与停止条件进行；`trace-daemon site-check`默认dry-run，具体协议检查用隔离输出目录和显式执行标志，不启动订阅或下载。遇权限/挑战停止。不能因代码接线、单次登录或合成通过宣称两站真实全功能已验收。
 
-## 2. 独立能力表
-
-级别 O=官方文档；S=社区源码；R=问题讨论；T=TRACE 实测（此次均无 T）。
-
-| 能力 | 可验证资料事实 | TRACE 设计要求与未知 | 证据 |
-| --- | --- | --- | --- |
-| 账号身份 | OAuth 使用应用上下文中的 open_id；网页 account 接口使用 sec_user_id | PlatformAccount 分别记录 identity namespace 与别名证据，未证实前不把 open_id/sec_uid/uid 相等或直接合并；昵称/短链接不是身份 | O：授权文档；S：account.py |
-| 内容身份 | 官方响应有 item_id、video_id；网页详情按 aweme_id 获取 | 持久化来源命名空间+稳定 ID；转换需要可核对映射，item_id 编码不可当媒体哈希 | O：video.list/data；S：detail.py |
-| 授权列表 | `GET /video/list/` scope `video.list`，需要用户授权和申请权限；cursor/has_more；资料称实时，暂不支持时间过滤 | 仅授权范围，不能跳到指定时间或承诺任意作者历史。游标和页同事务，客户端时间范围筛选保留 coverage 证据 | O：[账号视频列表](https://open.douyin.com/platform/resource/docs/openapi/video-management/douyin/search-video/account-video-list) |
-| 网页列表 | `aweme/v1/web/aweme/post/` 使用 sec_user_id/max_cursor，返回 aweme_list/has_more | 接口可见不等于能稳定枚举；需登录/未登录、置顶、重复游标、空页仍 has_more、乱序/编辑样本；不能单凭时间提前宣称扫描完成 | S：[account.py](https://github.com/JoeanAmier/TikTokDownloader/blob/473c90ff70c663cfb69310fff2b8d5192f200661/src/interface/account.py)；R：issue 740 只作排障线索 |
-| 详情与正文 | 官方 `POST /video/data/` 查询授权用户公开视频；隐私视频可能 create_time=0；社区按 aweme_id 获取 aweme_detail | 元数据快照规范化，未知时间保持未知；未返回/时间零不代表删除。完整详情才形成完整 Revision；统计变化与内容版本分离 | O：[视频数据](https://open.douyin.com/platform/resource/docs/openapi/video-management/douyin/search-video/video-data)；S：[detail.py](https://github.com/JoeanAmier/TikTokDownloader/blob/473c90ff70c663cfb69310fff2b8d5192f200661/src/interface/detail.py) |
-| 图文/视频区分 | 官方有 media_type，网页作品形态不止视频 | M1b 先普通视频，图集/直播/特殊付费形态明确 unsupported，不对所有 aweme 套同一视频模型 | O+S，类型值/资源完整性需逐样本核对 |
-| 媒体候选 | 已查官方 video.list/data 主要提供元数据/封面/统计，未证明完整下载计划；社区详情可能有播放/下载地址和规格 | 下一轮必须核对视频/音频关系、水印、码率/编码、原始与派生、完整长度、鉴权和可下载范围；未知不能默认“原画/无水印” | O 未提供充分证据；S 详情结构，媒体路径 T not-run |
-| 登录与权限 | 应用 scope、用户 OAuth token、网页会话是不同能力；官方交换 token 涉及 client_key/clientSecret | 桌面不内置全局 clientSecret。未有服务端授权方案时不能偷偷增加云服务；普通观看者登录不能替代作者授权 | O：[WEB 授权](https://open.douyin.com/platform/resource/docs/develop/permission/web/permission)、[权限](https://open.douyin.com/platform/resource/docs/accession-guide/type-and-permission) |
-| 更新通知 | create_video 事件描述为用户通过开发者应用分享视频到抖音，带 share_id | 不证明能收到任意创作者的全部新投稿；轮询/复查仍需单独设计。M1b 不依赖 webhook 部署 | O：[事件目录](https://open.douyin.com/platform/resource/docs/develop/webhooks/event-list) |
-| 质量与完整性 | 现有资料不能保证每个账号所有视频取得相同规格/资源 | candidate/selected/actual 分开，任何能力下降显式告警；无声、部分音轨、文件截断纳入固定用例 | T not-run；不从下载器功能表推导 |
-| URL 期限与恢复 | 游标/作品 ID 与短期媒体 URL 不同 | 持久化 ID 与进度，重启重解析；ETag/长度/版本不足则重下；签名 URL/Cookie 永不写普通快照 | 基于 INV-10/11 的实现要求，站点实际期限未知 |
-| 失败与删除 | 权限、私密、风控、网络、列表缺失可能无法可靠区分 | waiting_auth/waiting_user/rate_limited/retryable/unavailable/unknown 分开；HTML 挑战页和空 JSON 非成功；不因缺失删原件 | O 视频数据及 R 线索；权威删除信号未知 |
-| 历史边界与预算 | 服务端时间筛选缺失、会话/权限限制可能改变可见集合 | 记录请求预算、最早观察、页数、终止原因和“本次可见范围”；全历史和所有旧编辑不得承诺 | O+S；跨日期覆盖需 T |
-
-## 3. 本轮保留给 M1b 的实施入口
-
-M0/M1a B 可以建立纯离线的抖音形态合成夹具：账号别名映射未知、aweme 资源列表、cursor/has_more 组合、隐私时间零、视频/图集区分、统计变化、挑战响应。它用于验证核心不会硬编码 Bilibili 的 BV/cid/页码，不需要安装抖音下载器，不向真实网站发请求。
-
-M1b 由 A 在本表基础刷新接口/维护证据，给出“作者 OAuth 管理路径”或“用户授权观看范围内网页适配路径”的具体选择与限制，再一次下达完整实施批次。需要服务端、应用申请或新增许可影响的动作先汇入总表；不把这些缺口让 B 用隐藏浏览器、硬编码密钥或泛用下载器掩盖。
-
-现场验证必须包含两个作者、有界历史、新增与编辑、部分失败、登录失效/恢复、至少两种实际媒体样本、过期地址和离线恢复；按安全输入入口提供账号条件，不能把 Cookie 发进聊天或仓库。缺任一项时按能力保留 not-run，不把“下载成功一个视频”升级为站点验收。
+A同Cookie对照的self成功、detail/post缺上下文403及补齐后200保留；原20条/1,454,679字节超过旧固定预算的失败未改写。当前明确的大页协议和拒绝边界以[契约§9](../site-archive-contracts.md#direct-source-acquisition)为正本。原视频1080×1920、原画直播1920×1080约59.94fps仅适用于指定诊断样本，不推广成全站规格或全历史覆盖。

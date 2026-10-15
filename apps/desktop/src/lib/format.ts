@@ -35,6 +35,7 @@ export const SAVE_PROGRESS_LABELS: Record<string, string> = {
 };
 
 export const QUALITY_LABELS: Record<string, string> = {
+  pending_upgrade: "等待升级确认",
   satisfied: "质量满足",
   degraded: "能力差距",
   unknown: "质量未知",
@@ -127,5 +128,5 @@ export function timePrecisionLabel(value: string | null | undefined): string {
   return ({second:'精确到秒',day:'精确到日期',minute:'精确到分钟',millisecond:'精确到毫秒',discovery:'仅发现时间',unknown:'未知'} as Record<string,string>)[value ?? 'unknown'] ?? '未知';
 }
 export function mediaRoleLabel(role: string): string {
-  return ({video:'视频',audio:'音频',video_segment:'视频分段',cover:'封面',image:'图片'} as Record<string,string>)[role] ?? '媒体资源';
+  return ({video:'视频',audio:'音频',video_segment:'视频分段',cover:'封面',image:'图片',motion:'实况',subtitle:'字幕',recording:'录制分片',recording_source:'录制原始数据',recording_audio:'录制音轨'} as Record<string,string>)[role] ?? '媒体资源';
 }

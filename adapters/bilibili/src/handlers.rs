@@ -17,10 +17,9 @@ use trace_domain::errors::FailureClass;
 
 /// 每页条数（站点 wbi/arc/search 上限 50，取保守 30）。
 const PAGE_SIZE: u32 = 30;
-/// 播放质量请求值：80 = 1080p（不承诺最高可用质量）。
-const REQUESTED_QN: u64 = 80;
-/// fnval=16：仅请求 DASH。
-const FNVAL: u64 = 16;
+/// Request source maxima; availability still depends on the supplied session.
+const REQUESTED_QN: u64 = 127;
+const FNVAL: u64 = 4048;
 
 pub fn dispatch(
     state: &AdapterState,
@@ -29,6 +28,12 @@ pub fn dispatch(
     started: Instant,
 ) -> Result<Value, trace_contracts::plugin::PluginError> {
     match req.method.as_str() {
+        "resolve_source" => crate::source::resolve(state, &req.params, deadline, started)
+            .map(|v| serde_json::to_value(v).unwrap()),
+        "sample_live_auxiliary" => crate::live::auxiliary(state, &req.params, deadline, started)
+            .map(|v| serde_json::to_value(v).unwrap()),
+        "probe_live" => crate::live::probe(state, &req.params, deadline, started)
+            .map(|v| serde_json::to_value(v).unwrap()),
         methods::HELLO => Ok(serde_json::to_value(hello()).unwrap_or_default()),
         methods::RESOLVE_ACCOUNT => {
             let p: ResolveAccountParams =
@@ -39,18 +44,49 @@ pub fn dispatch(
         methods::ENUMERATE => {
             let p: EnumerateParams =
                 serde_json::from_value(req.params.clone()).map_err(invalid_payload)?;
+            if p.content_type != "video" {
+                return crate::content::enumerate(state, &p, deadline, started)
+                    .map(|v| serde_json::to_value(v).unwrap());
+            }
             enumerate(state, &p, deadline, started)
                 .map(|v| serde_json::to_value(v).unwrap_or_default())
         }
         methods::OBSERVE => {
             let p: ObserveParams =
                 serde_json::from_value(req.params.clone()).map_err(invalid_payload)?;
+            if p.native_kind != "video" {
+                return crate::content::observe(state, &p, deadline, started)
+                    .map(|v| serde_json::to_value(v.0).unwrap());
+            }
             observe(state, &p, deadline, started)
                 .map(|v| serde_json::to_value(v).unwrap_or_default())
         }
         methods::RESOLVE_MEDIA => {
             let p: ResolveMediaParams =
                 serde_json::from_value(req.params.clone()).map_err(invalid_payload)?;
+            if p.native_kind != "video" {
+                let (detail, candidates) = crate::content::observe(
+                    state,
+                    &ObserveParams {
+                        native_entry_key: p.native_entry_key.clone(),
+                        native_kind: p.native_kind.clone(),
+                    },
+                    deadline,
+                    started,
+                )?;
+                return Ok(serde_json::to_value(ResolveMediaResult {
+                    candidates: candidates
+                        .into_iter()
+                        .filter(|c| {
+                            p.resources
+                                .iter()
+                                .any(|r| r.source_attachment_id == c.resource.source_attachment_id)
+                        })
+                        .collect(),
+                    notes: json!({"silent_or_muxed":detail.source_version_evidence["silent_or_muxed"]}),
+                })
+                .unwrap());
+            }
             resolve_media(state, &p, deadline, started)
                 .map(|v| serde_json::to_value(v).unwrap_or_default())
         }
@@ -86,6 +122,10 @@ fn hello() -> AdapterHello {
             methods::OBSERVE.into(),
             methods::RESOLVE_MEDIA.into(),
             methods::PROBE_AUTH.into(),
+            "probe_live".into(),
+            "sample_live_auxiliary".into(),
+            "resolve_source".into(),
+            "plugin_chunks_v1".into(),
         ],
         limits: AdapterLimits {
             max_page_items: PAGE_SIZE,
@@ -144,7 +184,7 @@ fn resolve_account(
             .and_then(|n| n.as_str())
             .map(str::to_string),
         profile_url: Some(format!("https://space.bilibili.com/{mid}")),
-        evidence: json!({"source": "card", "mid": mid}),
+        evidence: json!({"source": "card", "mid": mid,"profile":trace_contracts::content::safe_metadata(&env.data)}),
     })
 }
 
@@ -183,7 +223,32 @@ pub fn wbi_key_from_nav(nav_data: &Value) -> Option<String> {
     let sub_url = nav_data.pointer("/wbi_img/sub_url")?.as_str()?;
     let img = img_url.rsplit('/').next()?.split('.').next()?;
     let sub = sub_url.rsplit('/').next()?.split('.').next()?;
+    if [img, sub]
+        .into_iter()
+        .any(|s| s.len() != 32 || !s.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return None;
+    }
     Some(wbi::mixin_key(img, sub))
+}
+
+fn wbi_key_from_response(v: &Value) -> Result<String, trace_contracts::plugin::PluginError> {
+    // Logged-out nav still publishes WBI keys. That explicit envelope is only
+    // useful for signing; it is never accepted by probe_auth as a login proof.
+    let data = if v["code"] == -101
+        && v["data"]["isLogin"] == false
+        && v["data"].get("v_voucher").is_none()
+    {
+        v["data"].clone()
+    } else {
+        api::envelope(v)?.data
+    };
+    wbi_key_from_nav(&data).ok_or_else(|| trace_contracts::plugin::PluginError {
+        class: FailureClass::SchemaChanged,
+        message: "nav response missing valid wbi_img keys".into(),
+        retry_after_ms: None,
+        details: Value::Null,
+    })
 }
 
 /// 取缓存内的混淆 key；不新鲜则拉一次 nav。
@@ -198,21 +263,15 @@ fn ensure_wbi_key(
             return Ok(cache.key.clone().unwrap_or_default());
         }
     }
-    let v = api::get_json(state, api::NAV_URL, false, deadline, started)?;
-    let env = api::envelope(&v)?;
-    let key = wbi_key_from_nav(&env.data).ok_or_else(|| trace_contracts::plugin::PluginError {
-        class: FailureClass::SchemaChanged,
-        message: "nav response missing wbi_img keys".into(),
-        retry_after_ms: None,
-        details: Value::Null,
-    })?;
+    let v = api::get_json(state, api::NAV_URL, true, deadline, started)?;
+    let key = wbi_key_from_response(&v)?;
     state.wbi.lock().unwrap().key = Some(key.clone());
     state.wbi.lock().unwrap().fetched_at = Some(Instant::now());
     Ok(key)
 }
 
 /// WBI 签名 GET；签名失效刷新密钥重试一次（不无限重试）。
-fn signed_get(
+pub(crate) fn signed_get(
     state: &AdapterState,
     base: &str,
     params: &[(String, String)],
@@ -224,8 +283,7 @@ fn signed_get(
     loop {
         let mixin = ensure_wbi_key(state, deadline, started)?;
         let wts = unix_now();
-        let (qs, rid) = wbi::sign(params, &mixin, wts);
-        let url = format!("{base}?{qs}&w_rid={rid}&wts={wts}");
+        let url = wbi::signed_url(base, params, &mixin, wts);
         match api::get_json(state, &url, with_credential, deadline, started) {
             Ok(v) => {
                 let env = api::envelope(&v)?;
@@ -279,12 +337,12 @@ fn enumerate(
         .map(|d| unix_now() as i64 - d * 86_400);
     let count = data.pointer("/page/count").and_then(|c| c.as_i64());
     let (items, truncated_by_cutoff) = map_vlist(&data, cutoff)?;
-    let got_full_page = items.len() == PAGE_SIZE as usize && !truncated_by_cutoff;
+    // Short/filtered pages are not proof that a source count is exhausted.
     let within_count = match (&count, pn) {
         (Some(c), pn) => (pn as i64) * (PAGE_SIZE as i64) < *c,
         (None, _) => false,
     };
-    let has_more = got_full_page && within_count;
+    let has_more = within_count;
     Ok(EnumeratedPage {
         items,
         next_cursor: has_more.then(|| (pn + 1).to_string()),
@@ -300,7 +358,7 @@ fn enumerate(
     })
 }
 
-/// vlist → 条目（含 recent_days 截断：遇到早于 cutoff 的项停止；
+/// vlist → 条目（按项过滤日期，置顶/乱序不终止后续读取；
 /// 空列表不宣称"无作品"——has_more=false 只表示本轮页边界）。
 fn map_vlist(
     data: &Value,
@@ -320,10 +378,11 @@ fn map_vlist(
     for v in vlist {
         let created = v.get("created").and_then(|c| c.as_i64()).unwrap_or(0);
         if let Some(cutoff) = cutoff
+            && created > 0
             && created < cutoff
         {
             truncated = true;
-            break;
+            continue;
         }
         let bvid = v
             .get("bvid")
@@ -367,21 +426,136 @@ fn map_vlist(
 
 // ---------- observe ----------
 
-fn observe(
+pub(crate) fn observe(
     state: &AdapterState,
     p: &ObserveParams,
     deadline: Duration,
     started: Instant,
 ) -> Result<ObservedDetail, trace_contracts::plugin::PluginError> {
-    let bvid = p.native_entry_key.trim().to_string();
-    let params = vec![("bvid".to_string(), bvid.clone())];
+    let key = p.native_entry_key.trim();
+    let aid = key
+        .strip_prefix("av")
+        .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    let params = vec![(
+        if aid.is_some() { "aid" } else { "bvid" }.to_string(),
+        aid.unwrap_or(key).to_owned(),
+    )];
     let data = signed_get(state, api::VIEW_URL, &params, true, deadline, started)?;
-    map_view(&data, &bvid)
+    if let Some(expected) = aid
+        && trace_site_support::id(&data["aid"]).as_deref() != Some(expected)
+    {
+        return Err(trace_site_support::error(
+            FailureClass::SchemaChanged,
+            "view aid mismatch",
+        ));
+    }
+    let bvid = if aid.is_some() {
+        data["bvid"].as_str().unwrap_or_default()
+    } else {
+        key
+    }
+    .to_owned();
+    let mut detail = map_view(&data, &bvid)?;
+    if let Some(aid) = aid {
+        detail.source_version_evidence["identity_mapping"] =
+            json!({"aid":aid,"bvid":bvid,"source":"view.aid+bvid"});
+    }
+    detail.metadata["player_pages"] = json!([]);
+    for resource in detail
+        .resources
+        .clone()
+        .iter()
+        .filter(|r| r.role == "video")
+        .take(32)
+    {
+        let Some(cid) = resource.group_key.as_deref() else {
+            continue;
+        };
+        match player_info(state, &bvid, cid, deadline, started) {
+            Ok(player) => {
+                let (resources, _) = player_subtitles(&player, &bvid, cid);
+                detail.resources.extend(resources);
+                detail.metadata["player_pages"].as_array_mut().unwrap().push(json!({"cid":cid,"coverage":"observed","data":trace_contracts::content::safe_metadata(&player)}));
+            }
+            Err(error) => detail.metadata["player_pages"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"cid":cid,"coverage":"unavailable","failure":error.class})),
+        }
+    }
+    detail.metadata["player_page_budget"] = json!(32);
+    Ok(detail)
+}
+
+fn player_info(
+    state: &AdapterState,
+    bvid: &str,
+    cid: &str,
+    deadline: Duration,
+    started: Instant,
+) -> Result<Value, trace_contracts::plugin::PluginError> {
+    signed_get(
+        state,
+        "https://api.bilibili.com/x/player/wbi/v2",
+        &[("bvid".into(), bvid.into()), ("cid".into(), cid.into())],
+        true,
+        deadline,
+        started,
+    )
+}
+
+fn player_subtitles(
+    data: &Value,
+    bvid: &str,
+    cid: &str,
+) -> (Vec<ResourceIdentityDto>, Vec<MediaCandidate>) {
+    let mut resources = Vec::new();
+    let mut candidates = Vec::new();
+    if let Some(subtitles) = data["subtitle"]["subtitles"].as_array() {
+        for (i, subtitle) in subtitles.iter().take(64).enumerate() {
+            let Some(id) = trace_site_support::id(&subtitle["id_str"])
+                .or_else(|| trace_site_support::id(&subtitle["id"]))
+            else {
+                continue;
+            };
+            let mut r = trace_site_support::resource(
+                &format!("{bvid}:{cid}:subtitle:{id}"),
+                "subtitle",
+                i as i64,
+                false,
+            );
+            r.group_key = Some(cid.into());
+            r.title = subtitle["lan_doc"]
+                .as_str()
+                .or_else(|| subtitle["lan"].as_str())
+                .map(str::to_owned);
+            if let Some(raw) = subtitle["subtitle_url"].as_str() {
+                let url = if raw.starts_with("//") {
+                    format!("https:{raw}")
+                } else {
+                    raw.to_owned()
+                };
+                if trace_site_support::url_identity(&url).is_some() {
+                    let mut c = trace_site_support::candidate(
+                        r.clone(),
+                        vec![url],
+                        "subtitle_json",
+                        json!({"language":subtitle["lan"],"source":"player.subtitle"}),
+                    )
+                    .unwrap();
+                    c.public_headers = public_headers();
+                    candidates.push(c);
+                }
+            }
+            resources.push(r);
+        }
+    }
+    (resources, candidates)
 }
 
 /// view 响应 → 详情观察：每 P video 资源（必要）+ audio 资源（可选，
 /// DASH 无音轨/durl 混流场景不阻断保存完整性）；封面可选。
-fn map_view(
+pub(crate) fn map_view(
     data: &Value,
     expected_bvid: &str,
 ) -> Result<ObservedDetail, trace_contracts::plugin::PluginError> {
@@ -471,6 +645,8 @@ fn map_view(
     }
     let stat = data.get("stat").cloned().unwrap_or(Value::Null);
     Ok(ObservedDetail {
+        document: Default::default(),
+        metadata: trace_contracts::content::safe_metadata(data),
         native_entry_key: bvid.to_string(),
         native_kind: "video".into(),
         title: data
@@ -512,7 +688,7 @@ fn pic_hash(pic: &str) -> String {
 
 // ---------- resolve_media ----------
 
-fn resolve_media(
+pub(crate) fn resolve_media(
     state: &AdapterState,
     p: &ResolveMediaParams,
     deadline: Duration,
@@ -520,6 +696,7 @@ fn resolve_media(
 ) -> Result<ResolveMediaResult, trace_contracts::plugin::PluginError> {
     // 同页 video/audio 共享一次 playurl 调用（cid → 响应）。
     let mut cache: Vec<(String, Value)> = Vec::new();
+    let mut player_cache: Vec<(String, Value)> = Vec::new();
     let mut candidates: Vec<MediaCandidate> = Vec::new();
     let mut notes = json!({
         "quality_requested": REQUESTED_QN,
@@ -559,6 +736,23 @@ fn resolve_media(
         let Some((bvid, cid)) = parse_sai(&resource.source_attachment_id) else {
             continue;
         };
+        if resource.role == "subtitle" {
+            let data = match player_cache.iter().find(|(c, _)| c == &cid) {
+                Some((_, v)) => v.clone(),
+                None => {
+                    let v = player_info(state, &bvid, &cid, deadline, started)?;
+                    player_cache.push((cid.clone(), v.clone()));
+                    v
+                }
+            };
+            candidates.extend(
+                player_subtitles(&data, &bvid, &cid)
+                    .1
+                    .into_iter()
+                    .filter(|c| c.resource.source_attachment_id == resource.source_attachment_id),
+            );
+            continue;
+        }
         let data = match cache.iter().find(|(c, _)| c == &cid) {
             Some((_, v)) => v.clone(),
             None => {
@@ -575,7 +769,24 @@ fn resolve_media(
             }
         };
         match resource.role.as_str() {
-            "video" => candidates.extend(map_video_candidates(&data, resource)?),
+            "video" if p.quality_hint["all_variants"] == true => {
+                candidates.extend(all_video_candidates(&data, resource)?)
+            }
+            "audio" if p.quality_hint["all_variants"] == true => {
+                let audio = all_audio_candidates(&data, resource);
+                if audio.is_empty() && has_silent_or_muxed_evidence(&data) {
+                    notes["silent_or_muxed"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!(cid));
+                }
+                candidates.extend(audio);
+            }
+            "video" => candidates.extend(map_video_candidates_for(
+                &data,
+                resource,
+                p.quality_hint["prefer_fps"] == true,
+            )?),
             "audio" => match map_audio_candidate(&data, resource) {
                 Some(c) => candidates.push(c),
                 None if has_silent_or_muxed_evidence(&data) => notes["silent_or_muxed"]
@@ -633,9 +844,18 @@ fn url_set(primary: &str, backups: &Value) -> UrlSet {
 }
 
 /// 视频/混流候选：DASH 优先（AVC 优先按带宽），否则 durl 全段。
+#[cfg(test)]
 fn map_video_candidates(
     data: &Value,
     resource: &ResourceIdentityDto,
+) -> Result<Vec<MediaCandidate>, trace_contracts::plugin::PluginError> {
+    map_video_candidates_for(data, resource, false)
+}
+
+fn map_video_candidates_for(
+    data: &Value,
+    resource: &ResourceIdentityDto,
+    prefer_fps: bool,
 ) -> Result<Vec<MediaCandidate>, trace_contracts::plugin::PluginError> {
     let fail = |class, msg: &str| trace_contracts::plugin::PluginError {
         class,
@@ -654,13 +874,17 @@ fn map_video_candidates(
                 "dash video list empty",
             ));
         }
-        // 排序：AVC 兼容优先，其次按带宽降序（不承诺最高质量）。
+        // Source quality preference first; codec compatibility breaks ties.
         let mut streams: Vec<&Value> = videos.iter().collect();
         streams.sort_by_key(|s| {
             let codec = s.get("codecs").and_then(|c| c.as_str()).unwrap_or("");
             let avc = codec.starts_with("avc") as i64;
             let bw = s.get("bandwidth").and_then(|b| b.as_i64()).unwrap_or(0);
-            (std::cmp::Reverse(avc), std::cmp::Reverse(bw))
+            (
+                std::cmp::Reverse(trace_contracts::content::source_rank(s, prefer_fps)),
+                std::cmp::Reverse(avc),
+                std::cmp::Reverse(bw),
+            )
         });
         let best = streams[0];
         let codec = best
@@ -757,6 +981,47 @@ fn map_video_candidates(
         FailureClass::SourceUnavailable,
         "no dash or durl streams (empty flow)",
     ))
+}
+
+fn all_video_candidates(
+    data: &Value,
+    r: &ResourceIdentityDto,
+) -> Result<Vec<MediaCandidate>, trace_contracts::plugin::PluginError> {
+    let Some(streams) = data.pointer("/dash/video").and_then(Value::as_array) else {
+        return map_video_candidates_for(data, r, false);
+    };
+    if streams.len() > 128 {
+        return Err(trace_site_support::error(
+            FailureClass::InvalidPayload,
+            "video offer budget",
+        ));
+    }
+    let mut result = Vec::new();
+    for stream in streams {
+        let mut one = data.clone();
+        one["dash"]["video"] = json!([stream]);
+        result.extend(map_video_candidates_for(&one, r, false)?);
+    }
+    result.sort_by_key(|c| {
+        std::cmp::Reverse(trace_contracts::content::source_rank(
+            &c.claimed_spec,
+            false,
+        ))
+    });
+    Ok(result)
+}
+fn all_audio_candidates(data: &Value, r: &ResourceIdentityDto) -> Vec<MediaCandidate> {
+    let mut result = Vec::new();
+    if let Some(streams) = data.pointer("/dash/audio").and_then(Value::as_array) {
+        for stream in streams.iter().take(32) {
+            let mut one = data.clone();
+            one["dash"]["audio"] = json!([stream]);
+            if let Some(c) = map_audio_candidate(&one, r) {
+                result.push(c);
+            }
+        }
+    }
+    result
 }
 
 /// 音频候选：DASH 音轨按 AAC 优先取最高带宽；无声/混流返回 None。
@@ -875,10 +1140,46 @@ mod tests {
                 .unwrap();
         let key = wbi_key_from_nav(&nav["data"]).unwrap();
         // 固定夹具密钥 → 已知混淆 key。
+        assert_eq!(key, "ea1db124af3c7062474693fa704f4ff8");
+    }
+
+    #[test]
+    fn c14_public_wbi_keys_do_not_prove_login_or_bypass_challenges() {
+        let mut guest: Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/bilibili/nav.json"))
+                .unwrap();
+        guest["code"] = json!(-101);
+        assert_eq!(guest["data"]["isLogin"], false);
         assert_eq!(
-            key,
-            "ea1db124af3c7062474693fa704f4ff8ab4a500c8e7ca0784bf98095b48cd341"
+            wbi_key_from_response(&guest).unwrap(),
+            "ea1db124af3c7062474693fa704f4ff8"
         );
+        assert_eq!(
+            api::envelope(&guest).unwrap_err().class,
+            FailureClass::AuthRequired
+        );
+        for code in [-403, -352] {
+            let mut denied = guest.clone();
+            denied["code"] = json!(code);
+            assert!(wbi_key_from_response(&denied).is_err());
+        }
+        let mut inconsistent = guest.clone();
+        inconsistent["data"]["isLogin"] = json!(true);
+        assert!(wbi_key_from_response(&inconsistent).is_err());
+        for code in [0, -101] {
+            let mut challenge = guest.clone();
+            challenge["code"] = json!(code);
+            challenge["data"]["v_voucher"] = json!("fixture-challenge");
+            assert!(wbi_key_from_response(&challenge).is_err());
+        }
+        for value in [Value::Null, json!("https://i0.hdslb.com/bfs/wbi/short.png")] {
+            let mut malformed = guest.clone();
+            malformed["data"]["wbi_img"]["img_url"] = value;
+            assert_eq!(
+                wbi_key_from_response(&malformed).unwrap_err().class,
+                FailureClass::SchemaChanged
+            );
+        }
     }
 
     #[test]
@@ -919,6 +1220,21 @@ mod tests {
             .unwrap()
             .unix_timestamp()
             + 1
+    }
+
+    #[test]
+    fn c01_pinned_old_video_cannot_hide_later_recent_or_unknown_dates() {
+        let data = json!({"list":{"vlist":[{"bvid":"old","created":100},{"bvid":"new","created":300},{"bvid":"unknown"},{"bvid":"later","created":250}]}});
+        let (items, filtered) = map_vlist(&data, Some(200)).unwrap();
+        assert!(filtered);
+        assert_eq!(
+            items
+                .iter()
+                .map(|v| v.native_entry_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["new", "unknown", "later"]
+        );
+        assert!(items[1].published_at.is_none());
     }
 
     #[test]

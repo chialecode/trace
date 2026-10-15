@@ -10,13 +10,35 @@ pub mod error;
 pub mod events;
 pub mod ipc;
 pub mod jobs;
+#[cfg(test)]
+mod m1_tests;
 pub mod media;
 pub mod objects;
 pub mod paths;
 pub mod pluginhost;
+pub mod quality;
+pub mod recording;
+pub mod request_budget;
+pub mod scan_range;
 pub mod search;
+pub mod site_check;
 pub mod storage_ops;
 pub mod transport;
 pub mod vault;
 
+pub mod accounts;
+pub mod acquisitions;
+mod archive_export;
 pub mod feed;
+pub mod upgrades;
+
+pub mod storage_budget;
+
+pub mod issues;
+pub mod windows_integration;
+
+pub mod deletion;
+
+pub mod cache;
+mod site_context;
+pub mod source_acquisition;
