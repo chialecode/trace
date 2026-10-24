@@ -158,6 +158,7 @@ python scripts/fetch_media_tools.py
 | CI | `.github/workflows/ci.yml`：面向 main 的 PR opened/synchronize/reopened 和手动触发；无 main push/schedule/路径过滤，10 分钟超时，同 PR 新运行取消旧运行 |
 | 检查范围 | Ubuntu 24.04 执行 Python 文档、工作树/索引公开检查和 scripts/tests 自动发现的治理反例；不冒充 Rust/桌面/Windows 媒体/产品验收，阶段仍须本地六套件与相关门禁 |
 | Actions 权限 | contents 只读、checkout 不保留凭据；仅允许固定 SHA 的 checkout，默认 token read，不能创建/批准 PR |
+| 安全报告 | 开启 GitHub 私密漏洞报告（2026-10-24 按 ACT-009 开启并回读），报告方式见 SECURITY |
 | 其他设置 | 不安装 bot/App，不建立自动合并、定期巡检或无效必需检查；项目许可按 DEC-027，发布授权按 Q-004 |
 
 远端操作只按明确授权，串行提交配置差异，每次变更间隔至少一秒；403/429 按错误语义停止，不重试绕过限制。检查一次实际状态，运行状态按必要进展有界查询，不频繁轮询或重复触发 CI。
