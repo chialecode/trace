@@ -1,7 +1,7 @@
 //! 稳定身份类型。
 //!
 //! 内部 ID 是无业务含义的 UUID（跨语言以字符串传递，避免 JS 精度丢失，
-//! docs/design/m1a-runtime-contracts.md §2）；来源身份由
+//! docs/design/windows-runtime-contracts.md §2）；来源身份由
 //! `(source_namespace, native_kind, native_entry_key)` 三元组唯一确定，
 //! 昵称、URL 与插件安装 ID 均不进入身份（INV-01）。
 

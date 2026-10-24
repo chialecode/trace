@@ -12,6 +12,11 @@ authors.workspace = true
 name = "trace-fake-adapter"
 path = "src/bin/fake_adapter.rs"
 
+[[bin]]
+name = "trace-fake-media-tool"
+path = "src/bin/fake_media_tool.rs"
+
+# Test support crate: the function length lint applies to product code only.
 [dependencies]
 trace-core.workspace = true
 trace-domain.workspace = true
@@ -27,6 +32,7 @@ base64.workspace = true
 time.workspace = true
 rusqlite.workspace = true
 uuid.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

@@ -181,7 +181,21 @@ impl FakeSource {
                 let entry = get("id");
                 let part = get("part");
                 if entry == "v-2" && part == "p1" {
-                    return ("200 OK","application/json",serde_json::to_vec(&serde_json::json!({"segments":[{"u":format!("{base}/fake/media/v-2-segment-0.bin"),"size":media_bytes("v-2-segment-0.bin").len()},{"u":format!("{base}/fake/media/v-2-segment-1.bin"),"size":media_bytes("v-2-segment-1.bin").len()}]})).unwrap());
+                    let body = serde_json::json!({"segments": [
+                        {
+                            "u": format!("{base}/fake/media/v-2-segment-0.bin"),
+                            "size": media_bytes("v-2-segment-0.bin").len(),
+                        },
+                        {
+                            "u": format!("{base}/fake/media/v-2-segment-1.bin"),
+                            "size": media_bytes("v-2-segment-1.bin").len(),
+                        },
+                    ]});
+                    return (
+                        "200 OK",
+                        "application/json",
+                        serde_json::to_vec(&body).unwrap(),
+                    );
                 }
                 let url = format!("{base}/fake/media/{entry}-{part}.bin");
                 let bytes = media_bytes(&format!("{entry}-{part}.bin"));
@@ -247,6 +261,7 @@ pub fn test_profile(root: &Path, adapter_dir: &Path) -> Profile {
     Profile {
         acquisition_limits: None,
         media_dir: None,
+        tools_dir: None,
         allow_media_path: false,
         live_concurrency: 4,
         metadata_min_interval_ms: 2000,

@@ -206,7 +206,7 @@ pub fn segments(p: &MediaPlaylist) -> Result<Vec<Segment>, CoreError> {
 mod tests {
     use super::*;
     #[test]
-    fn c04_key_none_inheritance_ranges_map_and_discontinuity() {
+    fn key_none_inheritance_ranges_map_and_discontinuity() {
         let text=b"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:9\n#EXT-X-MAP:URI=\"init.mp4\",BYTERANGE=\"16@0\"\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n#EXTINF:6,\n#EXT-X-BYTERANGE:16@16\na.mp4\n#EXTINF:6,\n#EXT-X-BYTERANGE:16\na.mp4\n#EXT-X-KEY:METHOD=NONE\n#EXT-X-DISCONTINUITY\n#EXTINF:6,\nb.ts\n#EXT-X-ENDLIST\n";
         let Playlist::MediaPlaylist(p) = parse(text).unwrap() else {
             panic!()
@@ -225,7 +225,7 @@ mod tests {
         );
     }
     #[test]
-    fn c04_map_keeps_declaration_key_across_segment_key_rotation() {
+    fn map_keeps_declaration_key_across_segment_key_rotation() {
         let Playlist::MediaPlaylist(p)=parse(b"#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-KEY:METHOD=AES-128,URI=\"key-a\",IV=0x01\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:2,\na.m4s\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:2,\nb.m4s\n").unwrap()else{panic!()};
         let s = segments(&p).unwrap();
         assert_eq!(s[1].key.as_ref().unwrap().method, KeyMethod::None);
@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(s[1].map_key.as_ref().unwrap().iv.as_deref(), Some("0x01"));
     }
     #[test]
-    fn c04_ranges_drm_and_truncated_cipher_fail() {
+    fn ranges_drm_and_truncated_cipher_fail() {
         let Playlist::MediaPlaylist(p) =
             parse(b"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\n#EXT-X-BYTERANGE:20\nx.ts\n")
                 .unwrap()
@@ -249,7 +249,7 @@ mod tests {
         assert!(supported_key(&k).is_err());
     }
     #[test]
-    fn c04_map_key_respects_tag_order_before_same_segment() {
+    fn map_key_respects_tag_order_before_same_segment() {
         for (tags, map_uri, segment_uri) in [
             (
                 "#EXT-X-MAP:URI=\"init\"\n#EXT-X-KEY:METHOD=AES-128,URI=\"segment-key\",IV=0x01",
@@ -280,7 +280,7 @@ mod tests {
         }
     }
     #[test]
-    fn c04_aes128_known_roundtrip_and_wrong_key() {
+    fn aes128_known_roundtrip_and_wrong_key() {
         use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
         let plain = b"ordinary authorized media segment";
         let encrypted = cbc::Encryptor::<aes::Aes128>::new_from_slices(&[7; 16], &[9; 16])

@@ -31,6 +31,7 @@ export const SAVE_PROGRESS_LABELS: Record<string, string> = {
   pending: "未开始",
   partial: "部分保存",
   complete: "已保存",
+  deferred: "未下载（按订阅设置）",
   failed: "保存失败",
 };
 
@@ -61,7 +62,9 @@ export function qualityLabel(state: string | null | undefined): string {
 }
 
 /** naive-ui tag 类型映射（仅视觉，不改变状态语义）。 */
-export function jobStateTagType(state: string): "success" | "info" | "warning" | "error" | "default" {
+export function jobStateTagType(
+  state: string,
+): "success" | "info" | "warning" | "error" | "default" {
   switch (state) {
     case "succeeded":
       return "success";
@@ -114,10 +117,11 @@ export function platformOf(namespace: string): string {
 }
 
 /** 媒体保存摘要 → 一句话（区分"无声"与"失败"由证据字段决定）。 */
-export function mediaSummaryLabel(summary: Record<string, unknown> | null | undefined): string {
-  if (!summary) return "无媒体记录";
-  const total = Number(summary["total"] ?? 0);
-  const saved = Number(summary["saved"] ?? 0);
+export function mediaSummaryLabel(summary: unknown): string {
+  if (!summary || typeof summary !== "object") return "无媒体记录";
+  const fields = summary as Record<string, unknown>;
+  const total = Number(fields["total"] ?? 0);
+  const saved = Number(fields["saved"] ?? 0);
   if (total === 0) return "未发现媒体";
   if (saved >= total) return `已保存 ${saved}/${total}`;
   if (saved > 0) return `部分保存 ${saved}/${total}`;
@@ -125,8 +129,36 @@ export function mediaSummaryLabel(summary: Record<string, unknown> | null | unde
 }
 
 export function timePrecisionLabel(value: string | null | undefined): string {
-  return ({second:'精确到秒',day:'精确到日期',minute:'精确到分钟',millisecond:'精确到毫秒',discovery:'仅发现时间',unknown:'未知'} as Record<string,string>)[value ?? 'unknown'] ?? '未知';
+  return (
+    (
+      {
+        second: "精确到秒",
+        day: "精确到日期",
+        minute: "精确到分钟",
+        millisecond: "精确到毫秒",
+        source: "站点给出",
+        approximate: "约略（由“几天前”推算）",
+        discovery: "仅发现时间",
+        unknown: "未知",
+      } as Record<string, string>
+    )[value ?? "unknown"] ?? "未知"
+  );
 }
 export function mediaRoleLabel(role: string): string {
-  return ({video:'视频',audio:'音频',video_segment:'视频分段',cover:'封面',image:'图片',motion:'实况',subtitle:'字幕',recording:'录制分片',recording_source:'录制原始数据',recording_audio:'录制音轨'} as Record<string,string>)[role] ?? '媒体资源';
+  return (
+    (
+      {
+        video: "视频",
+        audio: "音频",
+        video_segment: "视频分段",
+        cover: "封面",
+        image: "图片",
+        motion: "实况",
+        subtitle: "字幕",
+        recording: "录制分片",
+        recording_source: "录制原始数据",
+        recording_audio: "录制音轨",
+      } as Record<string, string>
+    )[role] ?? "媒体资源"
+  );
 }

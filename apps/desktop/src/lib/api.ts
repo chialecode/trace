@@ -1,316 +1,849 @@
 /**
- * 控制协议调用封装（经 Tauri 命令薄转发到 daemon）。
- * 参数名与 apps/desktop/src-tauri/src/commands.rs 对齐（camelCase 自动转换）。
+ * Control-protocol calls from the UI. Every daemon command goes through the desktop
+ * process's whitelisted `daemon_call` (crates/contracts `UI_COMMANDS`); arguments have the
+ * control protocol's snake_case shape. Only window and startup actions use their own
+ * desktop commands.
  */
 import { invoke } from "@tauri-apps/api/core";
+import type {
+  AccountDto,
+  AcquisitionDto,
+  AuthenticationState,
+  AuthenticationSummary,
+  CacheStatus,
+  CheckReport,
+  CopyView,
+  CreatorDto,
+  CredentialDto,
+  DaemonStatus,
+  DeletedEntry,
+  DeletePreview,
+  DeliveryView,
+  DownloadSettingsView,
+  DownloadTarget,
+  EntryDetailDto,
+  ExportReport,
+  ForgetReport,
+  FragmentDto,
+  HealthIssue,
+  ImportBatchDto,
+  ImportInspectDto,
+  ImportItemDto,
+  IdentityCandidateDto,
+  JobDto,
+  LibraryStatus,
+  ListView,
+  ManagementOperationDto,
+  MediaSyncReport,
+  NetworkSetArgs,
+  NetworkView,
+  Page,
+  PluginDto,
+  PluginReleaseDto,
+  CapabilityContractDto,
+  ProfileDownloadReport,
+  ProfilePage,
+  ProfileObservationDto,
+  QualityRequirement,
+  QualityVariantDto,
+  RecheckReport,
+  Recognition,
+  ReplayLinkDto,
+  ResourceDto,
+  ResourceCompareDto,
+  SearchResultsDto,
+  SearchScope,
+  SimilarCandidateDto,
+  SiteCatalog,
+  SourcePreview,
+  SourceRequest,
+  SubscriptionDto,
+  SyncReport,
+  TagCount,
+  TimelineItemDto,
+  ToolStatusDto,
+  TreeView,
+  DuplicateGroupDto,
+  UpgradeAction,
+  UpgradeCandidate,
+  UpgradeResource,
+  WorkBatchPreviewDto,
+  WorkGroupDto,
+  WorkGroupMemberDto,
+} from "./types";
 
-export interface LiveDto {session_id:string;state:string;generation:number;manual_stopped:boolean;started_at:string;ended_at?:string;stop_reason?:string}
-export interface FragmentDto {authentication?:AuthenticationState;actual_spec?:MediaSpecDto;captured_at?:string|null;saved_at?:string|null;quality?:{requested_quality?:QualityRequirement;actual_quality?:{height?:number;fps?:number};below_target?:boolean|number};sequence:number;state:string;start_ms?:number;end_ms?:number;reason?:string;blob_id?:string;mime?:string;available?:boolean}
-export interface RevisionDto { revision_id:string; title?:string; completeness:string; observed_at?:string; content_inline?:boolean; body?:string; document?:DocumentDto; metadata?:Record<string,unknown> }
-export interface EntryDetailDto { entry:unknown; revisions:unknown[]; observations:unknown[]; media?:MediaDto[]; live?:LiveDto; fragments?:FragmentDto[]; revisions_cursor?:string|null; observations_cursor?:string|null; media_cursor?:string|null }
-export interface QualityVariantDto {variant_id:string;blob_id:string;role:string;measured?:{width?:number;height?:number;fps?:number};reason?:string;pinned:boolean;retained:boolean;selected:boolean;eligible_at?:string}
+export * from "./types";
 
-export interface DaemonStatus {
-  budgets?: {metadata_min_interval_ms:number;metadata_jitter_ms:number;scan_page_budget:number;live_concurrency:number;check_jitter_percent:number};
-  archive_id: string;
-  instance_id: string;
-  node_id: string;
-  schema_version: number;
-  paused: boolean;
-  started_at: string;
-  job_counts: Record<string, number>;
-  storage: Record<string, unknown>;
-  media_backend: { ffmpeg: string | null; ffprobe: string | null; version: string | null };
+type Args = Record<string, unknown>;
+
+function call<T = unknown>(command: string, args: Args = {}): Promise<T> {
+  return invoke<T>("daemon_call", { command, args });
 }
 
-export interface Page<T> {
-  items: T[];
-  next_cursor: string | null;
-  counts?: { global: number; filtered: number; scope: string };
+type TextPage = { text: string; next_offset: number | null; total_chars: number };
+type EnabledState = { enabled: boolean; current_location: boolean };
+
+const timelineArgs = (opts: TimelineQuery) => ({
+  authentication: opts.authentication ?? null,
+  entry_id: opts.entryId ?? null,
+  creator_id: opts.creatorId ?? null,
+  account_id: opts.accountId ?? null,
+  kind: opts.kind ?? null,
+  save_state: opts.saveState ?? null,
+  published_from: opts.publishedFrom ?? null,
+  published_before: opts.publishedBefore ?? null,
+  min_height: opts.minHeight ?? null,
+  codec: opts.codec ?? null,
+  query: opts.query ?? null,
+  namespace: opts.namespace ?? null,
+  sort: opts.sort ?? null,
+  tag: opts.tag ?? null,
+  content_kind: opts.contentKind ?? null,
+  oldest: opts.oldest ?? false,
+  cursor: opts.cursor ?? null,
+  limit: opts.limit ?? 50,
+});
+
+export interface TimelineQuery {
+  entryId?: string;
+  creatorId?: string;
+  authentication?: AuthenticationState;
+  accountId?: string;
+  kind?: string;
+  saveState?: string;
+  publishedFrom?: string;
+  publishedBefore?: string;
+  minHeight?: number;
+  codec?: string;
+  query?: string;
+  namespace?: string;
+  /** `published` (default), `plays`, `likes`, `comments`, `favorites` or `duration`. */
+  sort?: string;
+  tag?: string;
+  /** `text`, `image`, `live_photo`, `video`, `audio`, `article` or `live`. */
+  contentKind?: string;
+  oldest?: boolean;
+  cursor?: string;
+  limit?: number;
 }
 
-export interface SearchScope { creator_id?:string;namespace?:string;from?:string;to?:string;cursor?:string }
-export interface SearchItemDto { doc_kind:string;entry_id:string|null;revision_id:string|null;creator_id:string|null;namespace:string|null;title:string|null;snippet:string;published_at:string|null }
-export interface SearchResultsDto extends Page<SearchItemDto> { mode:string;status:{indexed_seq:number;total_seq:number;lagging:boolean;rebuilding:boolean} }
-
-export interface QualityRequirement { min_height?:number|null;min_fps?:number|null;strict?:boolean;prefer_fps?:boolean|null }
-export interface CreatorDto {
-  aliases?:string[];
-  tags?:string[];
-  creator_id: string;
-  display_name: string;
-  status?: string;
-  notes?: string;
-  created_at?: string;
+export interface ExplorerQuery {
+  node: string;
+  sort?: string;
+  descending?: boolean;
+  query?: string;
+  kind?: string;
+  state?: string;
+  offset?: number;
+  limit?: number;
 }
 
-export interface AccountDto {
-  account_id: string;
-  creator_id: string;
-  namespace: string;
-  native_account_key: string;
-  display_name: string | null;
-  profile_url: string | null;
+export interface SubscriptionOptions {
+  autoDownload?: boolean;
+  credentialId?: string;
+  captureChat?: boolean;
+  captureSubtitles?: boolean;
+  quality?: Partial<QualityRequirement>;
+  start?: string;
+  end?: string;
 }
 
-export interface SubscriptionDto {
-  quality?:QualityRequirement;
-  credential_id?:string|null;
-  config_version?:number;
-  coverage?:unknown[];
-  capture_chat?: boolean;
-  capture_subtitles?: boolean;
-  subscription_id: string;
-  account_id: string;
-  content_type: string;
-  range: unknown;
-  state: string;
-  check_interval_seconds: number | null;
-  next_check_at: string | null;
+type RangeKind = "from_now" | "recent_days" | "all" | "date_range";
+
+function subscriptionRange(
+  kind: RangeKind,
+  days: number | undefined,
+  options: SubscriptionOptions,
+) {
+  if (kind === "recent_days") return { kind, days: days ?? 30 };
+  if (kind === "date_range")
+    return { kind, start: options.start ?? null, end: options.end ?? null };
+  return { kind };
 }
 
-export type AuthenticationState = 'anonymous'|'authenticated'|'expired'|'unknown';
-export interface AuthenticationSummary {state:AuthenticationState|'mixed';states:AuthenticationState[]}
-export interface TimelineItemDto {
-  authentication?:AuthenticationSummary;
-  entry_id: string;
-  current_revision_id: string | null;
-  title: string;
-  namespace: string;
-  kind: string;
-  published_at: string | null;
-  published_precision: string;
-  first_seen_at?: string;
-  discovered_at?: string;
-  creator_name?: string | null;
-  account_name?: string | null;
-  native_account_key?: string;
-  source_key?: string;
-  source_url?: string | null;
-  cover_blob_id?: string | null;
-  access_state?: string;
-  save_progress?: string;
-  quality_state?: string;
-  media_summary?: Record<string, unknown>;
-}
-
-export interface JobDto {
-  job_id: string;
-  job_key: string;
-  job_type: string;
-  subject_id: string;
-  state: string;
-  attempts: number;
-  target_generation: number;
-  priority: number;
-  next_run_at: string | null;
-  last_error: { class?: string; message?: string } | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface CredentialDto {
-  capability?:Record<string,unknown>;
-  validated_at?:string|null;
-  credential_id: string;
-  platform: string;
-  subject: string | null;
-  status: string;
-  created_at: string;
-}
-
-export interface PluginDto {
-  plugin_id: string;
-  platform: string;
-  state: string;
-  capabilities?: string[];
-  active_tasks?: number;
-}
-
-export interface DeletePreview {entry_id:string;scope:'cache'|'copies'|'archive';token:string;generation:number;variants:number;pinned_preserved:number;wait_seconds:number;revisions:number}
-export interface DeletedEntry {entry_id:string;lifecycle:string;generation:number;media_suppressed:boolean;title?:string}
-export interface HealthIssue {issue_key:string;category:string;detail:Record<string,unknown>;resolved_at?:string|null;first_seen_at:string;last_seen_at:string;affected_jobs:number;notification_state?:string;notification_error?:string}
-export interface ResourceDto extends MediaDto {entry_id:string;revision_id:string;namespace:string;title:string;account_id?:string;account_name?:string;account_key?:string;creator_id?:string;creator_name?:string;verified_copies:number}
-export interface CacheStatus {index_estimated_bytes:number;index_budget_bytes:number;index_enabled:boolean;index_budget_blocked:boolean;index_rebuilding:boolean;derived_bytes:number;derived_budget_bytes:number;derived_enabled:boolean;thumbnail_bytes:number}
-export interface MediaSpecDto {width?:number|null;height?:number|null;bitrate_bps?:number|null;bit_rate?:number|null;fps?:number|null;codec?:string|null;audio_codec?:string|null}
-export interface AcquisitionDto {sequence:number;acquisition_id:string;auth_state:AuthenticationState;started_at:string;finished_at:string;validated_at?:string;outcome:string;media_id?:string;variant_id?:string;measured_spec?:MediaSpecDto;current_credential_available:boolean}
-export interface UpgradeResource {comparison?:string;media_id:string;role:string;required:boolean;old:{variant_id?:string;bytes?:number;spec?:MediaSpecDto;auth_state:AuthenticationState;saved_at?:string;pinned:boolean};new:{variant_id?:string;bytes?:number;spec?:MediaSpecDto;saved_at?:string}}
-export interface UpgradeCandidate {resources_next?:number;resource_count?:number;sequence:number;candidate_id:string;entry_id:string;revision_id:string;state:string;reason:string;title:string;namespace:string;auth_state:AuthenticationState;acquired_at:string;complete:boolean;expected:unknown;resources:UpgradeResource[]}
-export type UpgradeAction='accept'|'reject'|'keep_both';
-export interface SourceOffer {title?:string;position?:number;id:string;attachment_id:string;role:string;group?:string;required:boolean;representation?:string;spec?:Record<string,string|number|null>;kind?:string;bytes?:number;segments?:{bytes?:number;sha256?:string}[];protocol?:string;quality?:string;audio_only?:boolean}
-export interface SourcePreview {preview_id:string;kind:'video'|'live';platform:string;source_url:string;native_key:string;title:string;account_name?:string;authentication:AuthenticationState;validated_at?:string;expires_at:string;offers:SourceOffer[]}
-export interface SourceRequest {request_id:string;platform:string;kind:'video'|'live';state:string;entry_id?:string;job_id?:string;session_id?:string;session_state?:string;session_generation?:number;title:string;authentication:AuthenticationState;tasks:{job_id:string;kind:string;state:string;error?:string}[]}
 export const api = {
-  sourcePreview:(request:{url:string;credential_id:string|null})=>invoke<SourcePreview>('source_preview',{request}),
-  sourceConfirm:(request:{preview_id:string;selected:string[]})=>invoke<{request_id:string;entry_id?:string;job_id:string;state:string}>('source_confirm',{request}),
-  sourceList:()=>invoke<{items:SourceRequest[]}>('source_list',{}),
-  sourceCancel:(requestId:string)=>invoke('source_cancel',{requestId}),
-  archiveAcquisitions:(entryId:string,before?:number)=>invoke<{items:AcquisitionDto[];next_before?:number;summary:AuthenticationSummary}>('archive_acquisitions',{entryId,before:before??null}),
-  upgradeResources:(request:{candidate_id:string;after?:number})=>invoke<{items:UpgradeResource[];next_after?:number;total:number}>('upgrade_resources',{request}),
-  upgradeList:(request:{state?:string;namespace?:string;creator_id?:string;before?:number})=>invoke<{items:UpgradeCandidate[];next_before?:number;total:number}>('upgrade_list',{request}),
-  upgradeDecide:(items:{candidate_id:string;decision:UpgradeAction;expected:unknown}[])=>invoke('upgrade_decide',{items}),
-  desktopClose:()=>invoke('desktop_close'),
-  desktopExit:()=>invoke('desktop_exit'),
-  cacheStatus:()=>invoke<CacheStatus>('cache_status'),
-  cacheConfigure:(indexBudgetBytes:number,derivedBudgetBytes:number)=>invoke<CacheStatus>('cache_configure',{indexBudgetBytes,derivedBudgetBytes}),
-  cacheControl:(scope:string,rebuild:boolean)=>invoke<CacheStatus>('cache_control',{scope,rebuild}),
-  archiveResources:(request:{cursor?:string;namespace?:string;role?:string;creator_id?:string;available?:boolean})=>invoke<Page<ResourceDto>>("archive_resources",{request}),
-  deletePreview:(entryId:string,scope:string)=>invoke<DeletePreview>('archive_delete_preview',{entryId,scope}),
-  archiveDelete:(entryId:string,scope:string,token:string)=>invoke('archive_delete',{entryId,scope,token}),
-  deletedEntries:(after?:string)=>invoke<{items:DeletedEntry[];next?:string|null}>('archive_deleted',{after:after??null}),
-  restoreDeleted:(entryId:string,generation:number)=>invoke('archive_restore_deleted',{entryId,generation}),
-  startupStatus:()=>invoke<{enabled:boolean;current_location:boolean}>("startup_status"),
-  startupConfigure:(enabled:boolean)=>invoke<{enabled:boolean;current_location:boolean}>("startup_configure",{enabled}),
-  healthList:()=>invoke<{items:HealthIssue[]}>("health_list"),
-  healthRefs:(issueKey:string,after?:string)=>invoke<{items:{job_id:string;subscription_id?:string;active:boolean;state?:string}[];next?:string|null}>("health_refs",{issueKey,after:after??null}),
-  daemonStatus: () => invoke<DaemonStatus>("daemon_status"),
-  daemonPause: (paused: boolean) => invoke<DaemonStatus>("daemon_pause", { paused }),
+  // ---- one-source download ----
+  sourcePreview: (request: { url: string; credential_id: string | null }) =>
+    call<SourcePreview>("source.preview", request),
+  sourceConfirm: (request: {
+    preview_id: string;
+    selected: string[];
+    destination?: DownloadTarget;
+  }) =>
+    call<{ request_id: string; entry_id?: string; job_id: string; state: string }>(
+      "source.confirm",
+      request,
+    ),
+  sourceList: () => call<{ items: SourceRequest[] }>("source.list"),
+  sourceCancel: (requestId: string) => call("source.cancel", { request_id: requestId }),
 
-  creatorList: () => invoke<Page<CreatorDto>>("creator_list"),
+  // ---- sites, profile selection and deliveries ----
+  siteCatalog: () => call<SiteCatalog>("site.catalog"),
+  siteRecognize: (url: string) => call<Recognition>("site.recognize", { url }),
+  profilePreview: (request: {
+    url?: string;
+    previewId?: string;
+    ruleId?: string;
+    credentialId?: string;
+  }) =>
+    call<ProfilePage>("source.profile.preview", {
+      url: request.url ?? null,
+      preview_id: request.previewId ?? null,
+      rule_id: request.ruleId ?? null,
+      credential_id: request.credentialId ?? null,
+    }),
+  profileDownload: (previewId: string, nativeKeys: string[], target: DownloadTarget) =>
+    call<ProfileDownloadReport>("source.profile.download", {
+      preview_id: previewId,
+      native_keys: nativeKeys,
+      target,
+    }),
+  deliveries: (deliveryId?: string, limit?: number) =>
+    call<{ items: DeliveryView[] }>("source.deliveries", {
+      delivery_id: deliveryId ?? null,
+      limit: limit ?? null,
+    }),
+  deliveryCancel: (deliveryId: string) =>
+    call("source.delivery.cancel", { delivery_id: deliveryId }),
+
+  // ---- library location, download folders and proxy ----
+  libraryStatus: () => call<LibraryStatus>("library.status"),
+  libraryMigrate: (toPath: string) => call<LibraryStatus>("library.migrate", { to_path: toPath }),
+  librarySwitch: () => call<LibraryStatus>("library.switch"),
+  libraryCancel: () => call<LibraryStatus>("library.cancel"),
+  libraryReleaseOld: (locationId: string) =>
+    call<LibraryStatus>("library.release_old", { location_id: locationId }),
+  downloadSettings: () => call<DownloadSettingsView>("download.settings"),
+  downloadSettingsSet: (settings: { default_dir?: string; sidecar?: boolean }) =>
+    call<DownloadSettingsView>("download.settings_set", {
+      default_dir: settings.default_dir ?? null,
+      sidecar: settings.sidecar ?? null,
+    }),
+  downloadExport: (entryIds: string[], dir?: string) =>
+    call<ExportReport>("download.export", { entry_ids: entryIds, dir: dir ?? null }),
+  downloadCheck: (scope: { locationId?: string; entryId?: string }) =>
+    call<CheckReport>("download.check", {
+      location_id: scope.locationId ?? null,
+      entry_id: scope.entryId ?? null,
+    }),
+  downloadCopies: (entryId: string) =>
+    call<{ items: CopyView[] }>("download.copies", { entry_id: entryId }),
+  downloadSync: (entryIds: string[]) => call<SyncReport>("download.sync", { entry_ids: entryIds }),
+  downloadForget: (entryId: string, locationId?: string) =>
+    call<ForgetReport>("download.forget", { entry_id: entryId, location_id: locationId ?? null }),
+  networkGet: () => call<NetworkView>("network.get"),
+  networkSet: (args: Partial<NetworkSetArgs> & { scope: string; mode: string }) =>
+    call<NetworkView>("network.set", {
+      proxy_url: null,
+      username: null,
+      password: null,
+      keep_login: false,
+      ...args,
+    }),
+
+  // ---- explorer ----
+  explorerTree: (node?: string) => call<TreeView>("explorer.tree", { node: node ?? null }),
+  explorerList: (q: ExplorerQuery) =>
+    call<ListView>("explorer.list", {
+      node: q.node,
+      sort: q.sort ?? null,
+      descending: q.descending ?? false,
+      query: q.query?.trim() || null,
+      kind: q.kind || null,
+      state: q.state || null,
+      offset: q.offset ?? 0,
+      limit: q.limit ?? 100,
+    }),
+  explorerOpen: (locationId: string, relPath: string) =>
+    call("explorer.open", { location_id: locationId, rel_path: relPath }),
+  explorerReveal: (locationId: string, relPath: string) =>
+    call("explorer.reveal", { location_id: locationId, rel_path: relPath }),
+
+  // ---- entries: undownloaded files and unified tags ----
+  archiveEntrySync: (entryIds: string[]) =>
+    call<MediaSyncReport>("archive.entry.sync", { entry_ids: entryIds }),
+  archiveRecheck: (request: {
+    entryIds?: string[];
+    from?: string;
+    to?: string;
+    accountId?: string;
+    failed?: boolean;
+    limit?: number;
+  }) =>
+    call<RecheckReport>("archive.recheck", {
+      entry_ids: request.entryIds ?? [],
+      from: request.from ?? null,
+      to: request.to ?? null,
+      account_id: request.accountId ?? null,
+      failed: request.failed ?? false,
+      limit: request.limit ?? null,
+    }),
+  archiveTags: (scope: {
+    creatorId?: string;
+    accountId?: string;
+    namespace?: string;
+    prefix?: string;
+    limit?: number;
+  }) =>
+    call<TagCount[]>("archive.tags", {
+      creator_id: scope.creatorId ?? null,
+      account_id: scope.accountId ?? null,
+      namespace: scope.namespace ?? null,
+      prefix: scope.prefix ?? null,
+      limit: scope.limit ?? null,
+    }),
+
+  // ---- archive history ----
+  archiveAcquisitions: (entryId: string, before?: number) =>
+    call<{
+      items: AcquisitionDto[];
+      next_before?: number;
+      summary: AuthenticationSummary;
+    }>("archive.acquisitions", { entry_id: entryId, before: before ?? null }),
+  upgradeResources: (request: { candidate_id: string; after?: number }) =>
+    call<{ items: UpgradeResource[]; next_after?: number; total: number }>(
+      "upgrade.resources",
+      request,
+    ),
+  upgradeList: (request: {
+    state?: string;
+    namespace?: string;
+    creator_id?: string;
+    before?: number;
+  }) =>
+    call<{ items: UpgradeCandidate[]; next_before?: number; total: number }>(
+      "upgrade.list",
+      request,
+    ),
+  upgradeDecide: (items: { candidate_id: string; decision: UpgradeAction; expected: unknown }[]) =>
+    call("upgrade.decide", { items }),
+
+  // ---- desktop process ----
+  desktopClose: () => invoke("desktop_close"),
+  desktopExit: () => invoke("desktop_exit"),
+  startupStatus: () => invoke<EnabledState>("startup_status"),
+  startupConfigure: (enabled: boolean) => invoke<EnabledState>("startup_configure", { enabled }),
+
+  // ---- cache and storage ----
+  cacheStatus: () => call<CacheStatus>("cache.status"),
+  cacheConfigure: (indexBudgetBytes: number, derivedBudgetBytes: number) =>
+    call<CacheStatus>("cache.configure", {
+      index_budget_bytes: indexBudgetBytes,
+      derived_budget_bytes: derivedBudgetBytes,
+    }),
+  cacheControl: (scope: string, rebuild: boolean) =>
+    call<CacheStatus>("cache.control", { scope, rebuild }),
+  archiveResources: (request: {
+    cursor?: string;
+    namespace?: string;
+    role?: string;
+    creator_id?: string;
+    available?: boolean;
+  }) => call<Page<ResourceDto>>("archive.resources", request),
+  deletePreview: (entryId: string, scope: string) =>
+    call<DeletePreview>("archive.delete_preview", { entry_id: entryId, scope }),
+  archiveDelete: (entryId: string, scope: string, token: string) =>
+    call("archive.delete", { entry_id: entryId, scope, token }),
+  deletedEntries: (after?: string) =>
+    call<{ items: DeletedEntry[]; next?: string | null }>("archive.deleted", {
+      after: after ?? null,
+    }),
+  restoreDeleted: (entryId: string, generation: number) =>
+    call("archive.restore_deleted", { entry_id: entryId, generation }),
+  healthList: () => call<{ items: HealthIssue[] }>("health.list"),
+  healthRefs: (issueKey: string, after?: string) =>
+    call<{
+      items: { job_id: string; subscription_id?: string; active: boolean; state?: string }[];
+      next?: string | null;
+    }>("health.refs", { issue_key: issueKey, after: after ?? null }),
+  storageUsage: () => call<Record<string, unknown>>("storage.usage"),
+  exportStart: (targetDir: string, includeMedia: boolean, creatorId?: string) =>
+    call<{ accepted: boolean; target: string }>("storage.export.start", {
+      target_dir: targetDir,
+      include_media: includeMedia,
+      creator_id: creatorId ?? null,
+    }),
+  backupStart: () => call<{ accepted: boolean; job_id: string }>("storage.backup.start"),
+  backupList: () => call<Page<Record<string, unknown>>>("storage.backup.list"),
+  restoreStart: (backupRoot: string, targetRoot: string) =>
+    call<{ profile_path: string; restored_objects: number; missing_objects: number }>(
+      "storage.restore.start",
+      { backup_root: backupRoot, target_root: targetRoot },
+    ),
+
+  // ---- daemon ----
+  daemonStatus: () => call<DaemonStatus>("daemon.status"),
+  daemonPause: (paused: boolean) => call<DaemonStatus>("daemon.pause", { paused }),
+
+  // ---- creators, accounts and subscriptions ----
+  creatorList: () => call<Page<CreatorDto>>("creator.list", { include_archived: true }),
   creatorCreate: (displayName: string, notes?: string) =>
-    invoke<{ creator_id: string }>("creator_create", { displayName, notes: notes ?? null }),
-  creatorUpdate: (creatorId: string, displayName?: string, notes?: string, options:{aliases?:string[];tags?:string[];status?:string}={}) =>
-    invoke("creator_update", { creatorId, displayName: displayName ?? null, notes: notes ?? null,aliases:options.aliases??null,tags:options.tags??null,status:options.status??null }),
-
+    call<{ creator_id: string }>("creator.create", {
+      display_name: displayName,
+      aliases: [],
+      tags: [],
+      notes: notes ?? "",
+    }),
+  creatorUpdate: (
+    creatorId: string,
+    displayName?: string,
+    notes?: string,
+    options: { aliases?: string[]; tags?: string[]; status?: string } = {},
+  ) =>
+    call("creator.update", {
+      creator_id: creatorId,
+      display_name: displayName ?? null,
+      notes: notes ?? null,
+      aliases: options.aliases ?? null,
+      tags: options.tags ?? null,
+      status: options.status ?? null,
+    }),
   accountBind: (creatorId: string, namespace: string, nativeAccountKey: string) =>
-    invoke<{ account_id: string }>("account_bind", { creatorId, namespace, nativeAccountKey }),
-  accountResolve: (namespace:string,input:string,credentialId?:string) => invoke<{account_id:string;native_account_key:string;display_name?:string}>("account_resolve",{namespace,input,credentialId:credentialId??null}),
-  accountHistory: (accountId:string,before?:number) => invoke<{items:{sequence:number;display_name?:string;observed_at:string;evidence:Record<string,unknown>}[];next_before?:number|null}>("account_history",{accountId,before:before??null}),
+    call<{ account_id: string }>("account.bind", {
+      creator_id: creatorId,
+      namespace,
+      native_account_key: nativeAccountKey,
+    }),
+  accountResolve: (namespace: string, input: string, credentialId?: string) =>
+    call<{ account_id: string; native_account_key: string; display_name?: string }>(
+      "account.resolve",
+      { namespace, input, credential_id: credentialId ?? null },
+    ),
+  accountHistory: (accountId: string, before?: number) =>
+    call<{
+      items: {
+        sequence: number;
+        display_name?: string;
+        observed_at: string;
+        evidence: Record<string, unknown>;
+      }[];
+      next_before?: number | null;
+    }>("account.history", { account_id: accountId, before: before ?? null }),
   accountList: (creatorId?: string) =>
-    invoke<Page<AccountDto>>("account_list", { creatorId: creatorId ?? null }),
-
+    call<Page<AccountDto>>("account.list", { creator_id: creatorId ?? null }),
   subscriptionCreate: (
     accountId: string,
-    rangeKind: "from_now" | "recent_days" | "all" | "date_range",
+    rangeKind: RangeKind,
     rangeDays?: number,
     checkIntervalSeconds?: number,
     contentType = "video",
-    options: {credentialId?:string;captureChat?:boolean;captureSubtitles?:boolean;quality?:QualityRequirement;start?:string;end?:string} = {},
+    options: SubscriptionOptions = {},
   ) =>
-    invoke<{ subscription_id: string }>("subscription_create", {
-      request: {account_id: accountId,content_type:contentType,range:rangeKind==='recent_days'?{kind:rangeKind,days:rangeDays??30}:rangeKind==='date_range'?{kind:rangeKind,start:options.start??null,end:options.end??null}:{kind:rangeKind},check_interval_seconds:checkIntervalSeconds??null,credential_id:options.credentialId??null,capture_chat:options.captureChat??false,capture_subtitles:options.captureSubtitles??false,...(options.quality?{quality:options.quality}:{})},
+    call<{ subscription_id: string }>("subscription.create", {
+      account_id: accountId,
+      content_type: contentType,
+      range: subscriptionRange(rangeKind, rangeDays, options),
+      check_interval_seconds: checkIntervalSeconds ?? null,
+      credential_id: options.credentialId ?? null,
+      capture_chat: options.captureChat ?? false,
+      capture_subtitles: options.captureSubtitles ?? false,
+      ...(options.autoDownload === undefined ? {} : { auto_download: options.autoDownload }),
+      ...(options.quality ? { quality: options.quality } : {}),
     }),
-  subscriptionUpdate: (subscriptionId:string, options:{capture_chat?:boolean;capture_subtitles?:boolean;check_interval_seconds?:number;credential_id?:string;quality?:QualityRequirement;range?:unknown}) => invoke("subscription_update", {request:{subscription_id:subscriptionId,...options}}),
-  subscriptionSetEnabled: (subscriptionId: string, enabled: boolean) => invoke("subscription_set_enabled", {subscriptionId, enabled}),
+  subscriptionUpdate: (
+    subscriptionId: string,
+    options: {
+      capture_chat?: boolean;
+      capture_subtitles?: boolean;
+      auto_download?: boolean;
+      check_interval_seconds?: number;
+      credential_id?: string;
+      quality?: Partial<QualityRequirement>;
+      range?: unknown;
+    },
+  ) => call("subscription.update", { subscription_id: subscriptionId, ...options }),
+  subscriptionSetEnabled: (subscriptionId: string, enabled: boolean) =>
+    call("subscription.update", { subscription_id: subscriptionId, enabled }),
   subscriptionList: (accountId?: string) =>
-    invoke<Page<SubscriptionDto>>("subscription_list", { accountId: accountId ?? null }),
+    call<Page<SubscriptionDto>>("subscription.list", { account_id: accountId ?? null }),
   subscriptionCheckNow: (subscriptionId: string) =>
-    invoke<{ job_id: string }>("subscription_check_now", { subscriptionId }),
+    call<{ job_id: string }>("subscription.check_now", { subscription_id: subscriptionId }),
 
-  archiveTimeline: (opts: {
-    entryId?: string;
-    creatorId?: string;
-    authentication?: AuthenticationState;
-    accountId?: string;
-    kind?: string;
-    saveState?: string;
-    publishedFrom?:string;
-    publishedBefore?:string;
-    minHeight?:number;
-    codec?:string;
-    query?: string;
-    namespace?: string;
-    oldest?: boolean;
-    cursor?: string;
-    limit?: number;
-  }) =>
-    invoke<Page<TimelineItemDto>>("archive_timeline", {
-      authentication:opts.authentication??null,
-      entryId: opts.entryId ?? null,
-      creatorId: opts.creatorId ?? null,
-      accountId: opts.accountId ?? null,
-      kind: opts.kind ?? null,
-      saveState: opts.saveState ?? null,
-      publishedFrom:opts.publishedFrom??null,
-      publishedBefore:opts.publishedBefore??null,
-      minHeight:opts.minHeight??null,
-      codec:opts.codec??null,
-      query: opts.query ?? null,
-      namespace: opts.namespace ?? null,
-      oldest: opts.oldest ?? false,
-      cursor: opts.cursor ?? null,
-      limit: opts.limit ?? 50,
-    }),
+  // ---- timeline, entries and search ----
+  archiveTimeline: (opts: TimelineQuery) =>
+    call<Page<TimelineItemDto>>("archive.timeline", timelineArgs(opts)),
   archiveEntryGet: (entryId: string) =>
-    invoke<EntryDetailDto>("archive_entry_get", {
-      entryId,
+    call<EntryDetailDto>("archive.entry.get", { entry_id: entryId }),
+  archiveEntryPage: <T>(
+    entryId: string,
+    section: "revisions" | "observations" | "media",
+    cursor?: string | null,
+    revisionId?: string,
+  ) =>
+    call<Page<T>>("archive.entry.page", {
+      entry_id: entryId,
+      section,
+      revision_id: revisionId ?? null,
+      cursor: cursor ?? null,
     }),
-  archiveEntryPage: <T>(entryId:string,section:'revisions'|'observations'|'media',cursor?:string|null,revisionId?:string) => invoke<Page<T>>('archive_entry_page',{entryId,section,cursor:cursor??null,revisionId:revisionId??null}),
-  archiveRevisionRead: (entryId:string,revisionId:string,field:'body'|'document'|'metadata',offset:number) => invoke<{text:string;next_offset:number|null;total_chars:number}>('archive_revision_read',{entryId,revisionId,field,offset}),
-  archiveObservationRead: (entryId:string,seq:number,offset:number) => invoke<{text:string;next_offset:number|null;total_chars:number}>('archive_observation_read',{entryId,seq,offset}),
-  archiveEntryRecheck: (entryId:string) => invoke('archive_entry_recheck',{entryId}),
-  jobRetryFailed: (jobIds:string[]) => invoke<{requeued:number}>('job_retry_failed',{jobIds}),
-  liveSetRecording: (sessionId:string, enabled:boolean, generation:number) => invoke('live_set_recording',{sessionId,enabled,generation}),
-  liveFragments: (sessionId:string,before?:number) => invoke<{items:FragmentDto[];next_before?:number;total:number}>('live_fragments',{sessionId,before:before??null}),
-  liveAuxiliary: (sessionId:string,before?:number) => invoke<{items:{sequence:number;source_id:string;author?:string;text:string;source_time?:string;observed_at:string}[];next_before?:number;total:number;enabled:boolean;latest?:{coverage:string;failure_class?:string;omitted:number;observed_at:string}}>('live_auxiliary',{sessionId,before:before??null}),
-  qualityList: (entryId:string,after?:number) => invoke<{items:QualityVariantDto[];next_after?:number;state:string;preference:string;recycle_wait_seconds:number}>('quality_list',{entryId,after:after??null}),
-  qualityConfigure: (entryId:string,preferFps:boolean,waitSeconds:number) => invoke('quality_configure',{entryId,preferFps,waitSeconds}),
-  qualityPin: (variantId:string,enabled:boolean) => invoke('quality_pin',{variantId,enabled}),
-  qualityRecycle: () => invoke<{moved_to_trash:number;removed_from_trash:number}>('quality_recycle'),
+  archiveRevisionRead: (
+    entryId: string,
+    revisionId: string,
+    field: "body" | "document" | "metadata",
+    offset: number,
+  ) =>
+    call<TextPage>("archive.revision.read", {
+      entry_id: entryId,
+      revision_id: revisionId,
+      field,
+      offset,
+    }),
+  archiveObservationRead: (entryId: string, seq: number, offset: number) =>
+    call<TextPage>("archive.observation.read", { entry_id: entryId, seq, offset }),
+  archiveEntryRecheck: (entryId: string) => call("archive.entry.recheck", { entry_id: entryId }),
+  searchQuery: (query: string, kind?: string, limit?: number, scope?: SearchScope) =>
+    call<SearchResultsDto>("search.query", {
+      query,
+      kind: kind ?? null,
+      limit: limit ?? 50,
+      creator_id: scope?.creator_id ?? null,
+      namespace: scope?.namespace ?? null,
+      from: scope?.from ?? null,
+      to: scope?.to ?? null,
+      cursor: scope?.cursor ?? null,
+    }),
 
-  searchQuery: (query: string, kind?: string, limit?: number, scope?:SearchScope) =>
-    invoke<SearchResultsDto>("search_query", {request:{query,kind:kind??null,limit:limit??50,creator_id:scope?.creator_id??null,namespace:scope?.namespace??null,from:scope?.from??null,to:scope?.to??null,cursor:scope?.cursor??null}}),
-
+  // ---- jobs ----
   jobList: (stateFilter?: string, jobType?: string, limit?: number) =>
-    invoke<Page<JobDto>>("job_list", {
-      stateFilter: stateFilter ?? null,
-      jobType: jobType ?? null,
+    call<Page<JobDto>>("job.list", {
+      state: stateFilter ?? null,
+      job_type: jobType ?? null,
       limit: limit ?? 100,
     }),
-  jobGet: (jobId: string) => invoke<JobDto>("job_get", { jobId }),
-  jobRetry: (jobId: string) => invoke("job_retry", { jobId }),
-  jobCancel: (jobId: string) => invoke("job_cancel", { jobId }),
+  jobGet: (jobId: string) => call<JobDto>("job.get", { job_id: jobId }),
+  jobRetry: (jobId: string) => call("job.retry", { job_id: jobId }),
+  jobRetryFailed: (jobIds: string[]) =>
+    call<{ requeued: number }>("job.retry_failed", { job_ids: jobIds }),
+  jobCancel: (jobId: string) => call("job.cancel", { job_id: jobId }),
 
+  // ---- live recording and quality ----
+  liveSetRecording: (sessionId: string, enabled: boolean, generation: number) =>
+    call("live.set_recording", { session_id: sessionId, enabled, generation }),
+  liveFragments: (sessionId: string, before?: number) =>
+    call<{ items: FragmentDto[]; next_before?: number; total: number }>("live.fragments", {
+      session_id: sessionId,
+      before: before ?? null,
+    }),
+  liveAuxiliary: (sessionId: string, before?: number) =>
+    call<{
+      items: {
+        sequence: number;
+        source_id: string;
+        author?: string;
+        text: string;
+        source_time?: string;
+        observed_at: string;
+      }[];
+      next_before?: number;
+      total: number;
+      enabled: boolean;
+      latest?: { coverage: string; failure_class?: string; omitted: number; observed_at: string };
+    }>("live.auxiliary", { session_id: sessionId, before: before ?? null }),
+  qualityList: (entryId: string, after?: number) =>
+    call<{
+      items: QualityVariantDto[];
+      next_after?: number;
+      state: string;
+      preference: string;
+      recycle_wait_seconds: number;
+    }>("quality.list", { entry_id: entryId, after: after ?? null }),
+  qualityListFiltered: (state?: string, after?: string, limit = 50) =>
+    call<{
+      items: Record<string, unknown>[];
+      next_after?: string | null;
+      reason?: string;
+      state?: string;
+      preference?: string;
+      recycle_wait_seconds?: number;
+    }>("quality.list", { entry_id: null, state: state ?? null, after: after ?? null, limit }),
+  qualityConfigure: (entryId: string, preferFps: boolean, waitSeconds: number) =>
+    call<{ updated: boolean; scope: Record<string, unknown>; policy: Record<string, unknown> }>(
+      "quality.configure",
+      {
+        entry_id: entryId || null,
+        prefer_fps: preferFps,
+        wait_seconds: waitSeconds,
+      },
+    ),
+  qualityPin: (variantId: string, enabled: boolean) =>
+    call<{ pinned: boolean }>("quality.pin", { variant_id: variantId, enabled }),
+  qualityPinEntry: (entryId: string, enabled: boolean) =>
+    call<{ pinned: boolean }>("quality.pin", { entry_id: entryId, enabled }),
+  qualityRecycle: () =>
+    call<{ moved_to_trash: number; removed_from_trash: number }>("quality.recycle"),
+
+  // ---- credentials and modules ----
   credentialList: (platform?: string) =>
-    invoke<Page<CredentialDto>>("credential_list", { platform: platform ?? null }),
-  credentialUpdate:(credentialId:string,secret:string)=>invoke<{credential_id:string;status:string}>("credential_update",{credentialId,secret}),
+    call<Page<CredentialDto>>("credential.list", { platform: platform ?? null }),
+  credentialUpdate: (credentialId: string, secret: string) =>
+    call<{ credential_id: string; status: string }>("credential.update", {
+      credential_id: credentialId,
+      secret,
+    }),
   credentialImport: (platform: string, subject: string | null, secret: string) =>
-    invoke<{ credential_id: string; status: string }>("credential_import", {
+    call<{ credential_id: string; status: string }>("credential.import", {
       platform,
       subject,
       secret,
     }),
   credentialValidate: (credentialId: string) =>
-    invoke<{ status: string; capability: unknown }>("credential_validate", { credentialId }),
-  credentialRevoke: (credentialId: string) =>
-    invoke<{ ok: boolean }>("credential_revoke", { credentialId }),
-
-  pluginList: () => invoke<Page<PluginDto>>("plugin_list"),
-  pluginSetState: (pluginId: string, enabled: boolean) =>
-    invoke("plugin_set_state", { pluginId, enabled }),
-
-  storageUsage: () => invoke<Record<string, unknown>>("storage_usage"),
-  exportStart: (targetDir: string, includeMedia: boolean, creatorId?: string) =>
-    invoke<{ accepted: boolean; target: string }>("export_start", {
-      targetDir,
-      includeMedia,
-      creatorId: creatorId ?? null,
+    call<{ status: string; capability: unknown }>("credential.validate", {
+      credential_id: credentialId,
     }),
-  backupStart: () => invoke<{ accepted: boolean; job_id: string }>("backup_start"),
-  backupList: () => invoke<Page<Record<string, unknown>>>("backup_list"),
-  restoreStart: (backupRoot: string, targetRoot: string) =>
-    invoke<{ profile_path: string; restored_objects: number; missing_objects: number }>("restore_start", { backupRoot, targetRoot }),
+  credentialRevoke: (credentialId: string) =>
+    call<{ ok: boolean }>("credential.revoke", { credential_id: credentialId }),
+  pluginList: () => call<Page<PluginDto>>("plugin.list"),
+  pluginSetState: (pluginId: string, enabled: boolean) =>
+    call("plugin.set_state", { plugin_id: pluginId, state: enabled ? "enabled" : "disabled" }),
 
-  openSource: (entryId: string) => invoke<void>("open_source", {entryId}),
-  openExternal: (blobId: string) => invoke<void>("open_external", { blobId }),
+  // ---- management: creator relations, identity, imports, comparisons, replays, work groups ----
+  creatorMergePreview: (sourceCreatorId: string, targetCreatorId: string) =>
+    call<{ impact: Record<string, unknown>; preview_token: string }>("creator.merge_preview", {
+      source_creator_id: sourceCreatorId,
+      target_creator_id: targetCreatorId,
+    }),
+  creatorMerge: (sourceCreatorId: string, targetCreatorId: string, previewToken: string) =>
+    call<Record<string, unknown>>("creator.merge", {
+      source_creator_id: sourceCreatorId,
+      target_creator_id: targetCreatorId,
+      preview_token: previewToken,
+    }),
+  creatorSplitPreview: (sourceCreatorId: string, accountIds: string[], displayName?: string) =>
+    call<{ impact: Record<string, unknown>; preview_token: string }>("creator.split_preview", {
+      source_creator_id: sourceCreatorId,
+      account_ids: accountIds,
+      display_name: displayName ?? null,
+    }),
+  creatorSplit: (
+    sourceCreatorId: string,
+    accountIds: string[],
+    previewToken: string,
+    displayName?: string,
+  ) =>
+    call<{ creator_id: string; accounts: string[] }>("creator.split", {
+      source_creator_id: sourceCreatorId,
+      account_ids: accountIds,
+      preview_token: previewToken,
+      display_name: displayName ?? null,
+    }),
+  creatorRelinkPreview: (accountId: string, expectedCreatorId: string, targetCreatorId: string) =>
+    call<{ impact: Record<string, unknown>; preview_token: string }>("creator.relink_preview", {
+      account_id: accountId,
+      expected_creator_id: expectedCreatorId,
+      target_creator_id: targetCreatorId,
+    }),
+  creatorRelink: (
+    accountId: string,
+    expectedCreatorId: string,
+    targetCreatorId: string,
+    previewToken: string,
+  ) =>
+    call<Record<string, unknown>>("creator.relink", {
+      account_id: accountId,
+      expected_creator_id: expectedCreatorId,
+      target_creator_id: targetCreatorId,
+      preview_token: previewToken,
+    }),
+  creatorOperations: (creatorId?: string, after?: string, limit = 50) =>
+    call<{ items: ManagementOperationDto[]; next_after?: string | null }>("creator.operations", {
+      creator_id: creatorId ?? null,
+      after: after ?? null,
+      limit,
+    }),
+  identityCandidates: (scope: {
+    accountId?: string;
+    creatorId?: string;
+    state?: string;
+    after?: string;
+    limit?: number;
+  }) =>
+    call<{ items: IdentityCandidateDto[]; next_after?: string | null }>("identity.candidates", {
+      account_id: scope.accountId ?? null,
+      creator_id: scope.creatorId ?? null,
+      state: scope.state ?? null,
+      after: scope.after ?? null,
+      limit: scope.limit ?? 50,
+    }),
+  identityConfirm: (candidateId: string) =>
+    call<Record<string, unknown>>("identity.confirm", { candidate_id: candidateId }),
+  identityReject: (candidateId: string) =>
+    call<Record<string, unknown>>("identity.reject", { candidate_id: candidateId }),
+  accountProfileHistory: (accountId: string, before?: number, limit = 20) =>
+    call<{ items: ProfileObservationDto[]; next_before?: number | null }>(
+      "account.profile_history",
+      { account_id: accountId, before: before ?? null, limit },
+    ),
+  importInspect: (
+    path: string,
+    mode: "managed" | "in_place" = "managed",
+    targetCreatorId?: string,
+    followLinks = false,
+  ) =>
+    call<ImportInspectDto>("import.inspect", {
+      path,
+      mode,
+      target_creator_id: targetCreatorId ?? null,
+      follow_links: followLinks,
+    }),
+  importStart: (
+    path: string,
+    mode: "managed" | "in_place",
+    previewToken: string,
+    targetCreatorId?: string,
+  ) =>
+    call<ImportBatchDto>("import.start", {
+      path,
+      mode,
+      preview_token: previewToken,
+      target_creator_id: targetCreatorId ?? null,
+      follow_links: false,
+    }),
+  importStatus: (batchId?: string, after = -1, limit = 100) =>
+    call<{
+      batches?: ImportBatchDto[];
+      batch?: ImportBatchDto | null;
+      items: ImportItemDto[];
+      next_after?: number | null;
+      latest?: unknown;
+    }>("import.status", { batch_id: batchId ?? null, after, limit }),
+  importCancel: (batchId: string) =>
+    call<{ cancelled: boolean }>("import.cancel", { batch_id: batchId }),
+  importResume: (batchId: string) =>
+    call<{ resumed: boolean; items_reset: number }>("import.resume", { batch_id: batchId }),
+  importAssign: (batchId: string, targetCreatorId: string, itemIds?: string[]) =>
+    call<{ assigned: number }>("import.assign", {
+      batch_id: batchId,
+      target_creator_id: targetCreatorId,
+      item_ids: itemIds ?? null,
+    }),
+  importCheck: (batchId?: string) =>
+    call<{ checked: number; unchanged: number; changed: number; offline: number }>("import.check", {
+      batch_id: batchId ?? null,
+    }),
+  liveReplayCandidates: (sessionId: string) =>
+    call<{ items: Record<string, unknown>[] }>("live.replay.candidates", { session_id: sessionId }),
+  liveReplayLink: (sessionId: string, entryId: string, decision = "keep_both") =>
+    call<ReplayLinkDto>("live.replay.link", {
+      session_id: sessionId,
+      entry_id: entryId,
+      decision,
+    }),
+  liveReplayReject: (sessionId: string, entryId: string, reason?: string) =>
+    call<Record<string, unknown>>("live.replay.reject", {
+      session_id: sessionId,
+      entry_id: entryId,
+      reason: reason ?? null,
+    }),
+  liveReplayLinks: (scope: { sessionId?: string; entryId?: string; state?: string }) =>
+    call<{ items: ReplayLinkDto[] }>("live.replay.links", {
+      session_id: scope.sessionId ?? null,
+      entry_id: scope.entryId ?? null,
+      state: scope.state ?? null,
+    }),
+  resourceDuplicates: (after?: string, limit = 50) =>
+    call<{ items: DuplicateGroupDto[]; next_after?: string | null }>("resource.duplicates", {
+      after: after ?? null,
+      limit,
+    }),
+  resourceSimilar: (entryId: string, mediaId?: string, limit = 20) =>
+    call<{ items: SimilarCandidateDto[]; incomparable?: string | null }>("resource.similar", {
+      entry_id: entryId,
+      media_id: mediaId ?? null,
+      limit,
+    }),
+  resourceCompare: (leftEntryId: string, rightEntryId: string) =>
+    call<ResourceCompareDto>("resource.compare", {
+      left_entry_id: leftEntryId,
+      right_entry_id: rightEntryId,
+    }),
+  resourceCompareDecide: (
+    leftEntryId: string,
+    rightEntryId: string,
+    decision: "not_duplicate" | "keep_both" | "different_versions",
+  ) =>
+    call<Record<string, unknown>>("resource.compare.decide", {
+      left_entry_id: leftEntryId,
+      right_entry_id: rightEntryId,
+      decision,
+    }),
+  workGroupCreate: (title: string, description = "") =>
+    call<{ group_id: string }>("work.group.create", { title, description }),
+  workGroupUpdate: (groupId: string, title?: string, description?: string) =>
+    call<Record<string, unknown>>("work.group.update", {
+      group_id: groupId,
+      title: title ?? null,
+      description: description ?? null,
+    }),
+  workGroupDelete: (groupId: string) =>
+    call<Record<string, unknown>>("work.group.delete", { group_id: groupId }),
+  workGroupAdd: (groupId: string, entryIds: string[]) =>
+    call<{ added: number }>("work.group.add", { group_id: groupId, entry_ids: entryIds }),
+  workGroupRemove: (groupId: string, entryIds: string[]) =>
+    call<{ removed: number }>("work.group.remove", { group_id: groupId, entry_ids: entryIds }),
+  workGroupList: (after?: string, limit = 50) =>
+    call<{ items: WorkGroupDto[]; next_after?: string | null }>("work.group.list", {
+      after: after ?? null,
+      limit,
+    }),
+  workGroupGet: (groupId: string) =>
+    call<{ group: WorkGroupDto; members: WorkGroupMemberDto[] }>("work.group.get", {
+      group_id: groupId,
+    }),
+  workCompare: (groupId: string) =>
+    call<{ group_id: string; items: WorkGroupMemberDto[] }>("work.compare", { group_id: groupId }),
+  workBatchPreview: (entryIds: string[], actions: Record<string, unknown>) =>
+    call<WorkBatchPreviewDto>("work.batch.preview", { entry_ids: entryIds, actions }),
+  workBatchApply: (token: string) =>
+    call<{ token: string; ok: boolean; results: Record<string, unknown>[] }>("work.batch.apply", {
+      token,
+    }),
+  managementOperations: (after?: string, limit = 50) =>
+    call<{ items: Record<string, unknown>[]; next_after?: string | null }>(
+      "management.operations",
+      {
+        after: after ?? null,
+        limit,
+      },
+    ),
+
+  // ---- plugins, capabilities and the manual tool update ----
+  pluginInstall: (sourceDir: string) =>
+    call<Record<string, unknown>>("plugin.install", { source_dir: sourceDir }),
+  pluginActivate: (pluginId: string, version: string) =>
+    call<Record<string, unknown>>("plugin.activate", { plugin_id: pluginId, version }),
+  pluginUpgrade: (sourceDir: string) =>
+    call<Record<string, unknown>>("plugin.upgrade", { source_dir: sourceDir }),
+  pluginRollback: (pluginId: string) =>
+    call<Record<string, unknown>>("plugin.rollback", { plugin_id: pluginId }),
+  pluginRemove: (pluginId: string, version: string) =>
+    call<Record<string, unknown>>("plugin.remove", { plugin_id: pluginId, version }),
+  pluginReleases: (pluginId?: string) =>
+    call<{ items: PluginReleaseDto[] }>("plugin.releases", { plugin_id: pluginId ?? null }),
+  pluginCapabilities: () =>
+    call<{ contracts: CapabilityContractDto[]; active: Record<string, unknown>[] }>(
+      "plugin.capabilities",
+    ),
+  pluginCapabilitySet: (pluginId: string, kind: string, enabled: boolean) =>
+    call<Record<string, unknown>>("plugin.capability_set", {
+      plugin_id: pluginId,
+      kind,
+      enabled,
+    }),
+  toolStatus: () => call<ToolStatusDto>("tool.status"),
+  toolCheckUpdate: () =>
+    call<{ latest: string; current: string; newer: boolean; checked_at: string }>(
+      "tool.check_update",
+    ),
+  toolApplyUpdate: (version: string) => call<ToolStatusDto>("tool.apply_update", { version }),
+  toolRollback: () => call<ToolStatusDto>("tool.rollback"),
+
+  // ---- opening files ----
+  openSource: (entryId: string) => call<void>("archive.open_source", { entry_id: entryId }),
+  openExternal: (blobId: string) => call<void>("media.open_external", { blob_id: blobId }),
 };
 
-export interface MediaDto {
-  authentication?:AuthenticationSummary;
-  approval_state?:string;
-  saved_at?:string|null;
-  attachment_id?: string;
-  selected?: boolean;
-  playback_current?: boolean;
-  media_id: string; role: string; position: number; variant_id: string | null;
-  blob_id: string | null; mime?: string | null; available: boolean; size: number | null;
-  representation?: string; measured_spec?: string | null;
-}
-export interface DocumentDto {
-  version: number;
-  blocks: ({kind:'rich_text';spans:{text:string;bold:boolean;italic:boolean;strike:boolean}[];style:string;depth:number;ordinal?:number|null} | { kind: 'text'; text: string; style: string } | { kind: 'resource'; attachment_id: string; caption: string } | { kind: 'link'; text: string; url: string } | {kind:'list_item';text:string;depth:number;ordinal?:number|null} | {kind:'table';rows:string[][];header:boolean})[];
-  omissions: string[];
-}
 export function mediaUrl(blobId?: string | null) {
-  return blobId && /^sha256:[a-f0-9]{64}$/.test(blobId) ? `http://trace-media.localhost/blob/${blobId.slice(7)}` : '';
+  return blobId && /^sha256:[a-f0-9]{64}$/.test(blobId)
+    ? `http://trace-media.localhost/blob/${blobId.slice(7)}`
+    : "";
 }

@@ -18,13 +18,38 @@ pub fn search_ready(c: &Connection) -> Result<(), CoreError> {
         ))
     }
 }
+const SELECT_SEARCH_STATE: &str = "SELECT estimated_bytes,budget_bytes,enabled,budget_blocked,rebuilding FROM search_state WHERE id=1";
+
+const SELECT_DERIVED_CACHE_POLICY: &str =
+    "SELECT budget_bytes,enabled FROM derived_cache_policy WHERE id=1";
+const SELECT_BLOBS: &str = "SELECT COALESCE(sum(b.size),0) FROM blobs b WHERE EXISTS(SELECT 1 FROM media_variants v WHERE v.blob_id=b.blob_id AND v.source_representation='playback-mux-v1') AND EXISTS(SELECT 1 FROM replicas p WHERE p.blob_id=b.blob_id AND p.managed=1 AND p.state='verified')";
+
 pub async fn status(db: &DbHandle) -> Result<Value, CoreError> {
-    db.read(|c|{
-        let (bytes,budget,enabled,blocked,rebuilding):(i64,i64,bool,bool,bool)=c.query_row("SELECT estimated_bytes,budget_bytes,enabled,budget_blocked,rebuilding FROM search_state WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
-        let (derived_budget,derived_enabled):(i64,bool)=c.query_row("SELECT budget_bytes,enabled FROM derived_cache_policy WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
-        let derived:i64=c.query_row("SELECT COALESCE(sum(b.size),0) FROM blobs b WHERE EXISTS(SELECT 1 FROM media_variants v WHERE v.blob_id=b.blob_id AND v.source_representation='playback-mux-v1') AND EXISTS(SELECT 1 FROM replicas p WHERE p.blob_id=b.blob_id AND p.managed=1 AND p.state='verified')",[],|r|r.get(0))?;
-        Ok(json!({"index_estimated_bytes":bytes,"index_budget_bytes":budget,"index_enabled":enabled,"index_budget_blocked":blocked,"index_rebuilding":rebuilding,"derived_bytes":derived,"derived_budget_bytes":derived_budget,"derived_enabled":derived_enabled,"thumbnail_bytes":0,"thumbnail_budget_bytes":0,"thumbnail_state":"no_generated_thumbnails"}))
-    }).await
+    db.read(|c| {
+        let (bytes, budget, enabled, blocked, rebuilding): (i64, i64, bool, bool, bool) = c
+            .query_row(SELECT_SEARCH_STATE, [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?;
+        let (derived_budget, derived_enabled): (i64, bool) =
+            c.query_row(SELECT_DERIVED_CACHE_POLICY, [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?;
+        let derived: i64 = c.query_row(SELECT_BLOBS, [], |r| r.get(0))?;
+        Ok(json!({
+            "index_estimated_bytes": bytes,
+            "index_budget_bytes": budget,
+            "index_enabled": enabled,
+            "index_budget_blocked": blocked,
+            "index_rebuilding": rebuilding,
+            "derived_bytes": derived,
+            "derived_budget_bytes": derived_budget,
+            "derived_enabled": derived_enabled,
+            "thumbnail_bytes": 0,
+            "thumbnail_budget_bytes": 0,
+            "thumbnail_state": "no_generated_thumbnails",
+        }))
+    })
+    .await
 }
 pub async fn configure(core: &Core, index: i64, derived: i64) -> Result<Value, CoreError> {
     if !(1024 * 1024..=1024_i64.pow(4)).contains(&index)

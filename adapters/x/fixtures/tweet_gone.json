@@ -1,0 +1,14 @@
+{
+ "data": {
+  "tweetResult": {
+   "result": {
+    "__typename": "TweetTombstone",
+    "tombstone": {
+     "text": {
+      "text": "This post is unavailable"
+     }
+    }
+   }
+  }
+ }
+}

@@ -2,6 +2,7 @@
 //!
 //! 每个样本先按类型化 DTO 反序列化再重新序列化，断言语义字段不丢失；
 //! 样本覆盖成功、冲突、未知可选字段、大整数、空值与错误（计划 §3）。
+#![allow(clippy::too_many_lines)]
 
 use trace_contracts::control::{ApiError, ErrorCode, Request, Response};
 use trace_contracts::plugin::{PluginError, PluginRequest, PluginResponse};
@@ -50,7 +51,7 @@ fn control_unknown_optional_field_is_tolerated() {
 }
 
 #[test]
-fn f008_segment_validation_roundtrip_and_legacy_defaults() {
+fn segment_validation_roundtrip_and_legacy_defaults() {
     use trace_contracts::plugin::UrlSet;
     let legacy = serde_json::json!({"primary":"https://media.example/one","backups":[]});
     let urls: UrlSet = serde_json::from_value(legacy.clone()).unwrap();
@@ -120,6 +121,7 @@ fn proxy_fetch_params_roundtrip() {
         headers: serde_json::json!({"referer": "https://www.example.com/"}),
         max_bytes: 1024,
         with_credential: true,
+        body: None,
     };
     let json = serde_json::to_string(&p).unwrap();
     let back: ProxyFetchParams = serde_json::from_str(&json).unwrap();
@@ -136,7 +138,7 @@ fn proxy_fetch_params_roundtrip() {
 }
 
 #[test]
-fn u04_timeline_additive_fields_roundtrip_and_legacy_defaults() {
+fn timeline_additive_fields_roundtrip_and_legacy_defaults() {
     use trace_contracts::control::{ArchiveTimelineArgs, TimelinePageDto};
     let sample: serde_json::Value = parse(include_str!("golden/timeline_page.json"));
     let page: TimelinePageDto = serde_json::from_value(sample.clone()).unwrap();

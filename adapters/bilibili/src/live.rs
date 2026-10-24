@@ -191,7 +191,7 @@ pub fn map(room: &Value, info: &Value, play: &Value) -> Result<LiveSnapshot, Plu
 mod tests {
     use super::*;
     #[test]
-    fn c04_bilibili_live_auxiliary_is_bounded_history_with_stable_identity() {
+    fn bilibili_live_auxiliary_is_bounded_history_with_stable_identity() {
         let data = json!({"room":[{"id_str":"90071992547409931","text":"普通消息","nickname":"甲","timeline":"2026-10-07 12:00:00"}],"admin":[{"text":"管理员消息","uid":2,"nickname":"乙","timeline":"2026-10-07 12:00:01"}]});
         let a = auxiliary_map(&data).unwrap();
         let b = auxiliary_map(&data).unwrap();
@@ -202,7 +202,7 @@ mod tests {
         assert!(auxiliary_map(&json!({"room":null})).is_err());
     }
     #[test]
-    fn c04_live_is_distinct_from_replay_unknown_and_missing_stream() {
+    fn live_is_distinct_from_replay_unknown_and_missing_stream() {
         assert!(map(&json!({"room_id":1}), &json!({}), &Value::Null).is_err());
         assert_eq!(
             map(

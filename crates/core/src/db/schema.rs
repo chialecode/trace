@@ -3,6 +3,8 @@
 //! 每个迁移单事务执行；失败回滚到旧版本（C23）。FTS5 trigram + 单/双字
 //! 候选表按 docs/design.md §13.2 建立。
 
+use super::migration_v7::MIGRATION_007;
+use super::migration_v8::MIGRATION_008;
 use rusqlite::Connection;
 use trace_domain::SCHEMA_VERSION;
 
@@ -340,6 +342,8 @@ pub fn migrations() -> Vec<(i64, &'static str)> {
         (4, MIGRATION_004),
         (5, MIGRATION_005),
         (6, MIGRATION_006),
+        (7, MIGRATION_007),
+        (8, MIGRATION_008),
     ]
 }
 

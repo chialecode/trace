@@ -102,6 +102,7 @@ pub fn observe(
                 omissions: vec![],
             },
             metadata: trace_contracts::content::safe_metadata(&info),
+            unified: None,
             stats: Value::Null,
             source_version_evidence: json!({"source":"audio.song.info + audio.web.url","native_id":key,"stream_type":1}),
             resources,

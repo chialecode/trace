@@ -2,7 +2,7 @@
 //! login verification and is restricted to the observed SecSDK endpoint family.
 use crate::error::CoreError;
 use md5::{Digest, Md5};
-use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use url::Url;
 
 const PRIVATE_QUERY: &[&str] = &[
@@ -12,7 +12,15 @@ const PRIVATE_QUERY: &[&str] = &[
     "timestamp",
     "x-secsdk-web-signature",
 ];
-const PRIVATE_HEADERS: &[&str] = &["uifid", "x-secsdk-web-signature", "x-secsdk-web-expire"];
+const PRIVATE_HEADERS: &[&str] = &[
+    "uifid",
+    "x-secsdk-web-signature",
+    "x-secsdk-web-expire",
+    "x-csrf-token",
+    "x-csrftoken",
+    "x-xsrf-token",
+    "x-twitter-auth-type",
+];
 
 pub(crate) fn decorate(
     url: &mut Url,
@@ -89,6 +97,49 @@ pub(crate) fn decorate(
     Ok(())
 }
 
+/// Anti-forgery headers a site's web client sends with its API requests. They repeat a value
+/// the session Cookie already carries, so Core adds them where the Cookie is attached and
+/// the adapter never has to see the Cookie.
+pub(crate) fn session_headers(site: Option<&str>, cookie: &str) -> Vec<(HeaderName, HeaderValue)> {
+    // (Cookie name, header) pairs copied by value; (Cookie name, header, value) pairs set
+    // to a fixed value when the Cookie is present.
+    type Copied = &'static [(&'static str, &'static str)];
+    type Fixed = &'static [(&'static str, &'static str, &'static str)];
+    let (copied, fixed): (Copied, Fixed) = match site {
+        // `auth_token` marks a logged-in web session; the value itself is never copied.
+        Some("x") => (
+            &[("ct0", "x-csrf-token")],
+            &[("auth_token", "x-twitter-auth-type", "OAuth2Session")],
+        ),
+        Some("instagram") => (&[("csrftoken", "x-csrftoken")], &[]),
+        Some("weibo") => (&[("XSRF-TOKEN", "x-xsrf-token")], &[]),
+        _ => return Vec::new(),
+    };
+    let jar: std::collections::BTreeMap<&str, &str> = cookie
+        .split(';')
+        .filter_map(|p| p.trim().split_once('='))
+        .filter(|(_, v)| !v.is_empty())
+        .collect();
+    let mut out = Vec::new();
+    for (cookie_name, header) in copied {
+        if let Some(value) = jar
+            .get(cookie_name)
+            .and_then(|v| HeaderValue::from_str(v).ok())
+        {
+            out.push((HeaderName::from_static(header), value));
+        }
+    }
+    for (cookie_name, header, value) in fixed {
+        if jar.contains_key(cookie_name) {
+            out.push((
+                HeaderName::from_static(header),
+                HeaderValue::from_static(value),
+            ));
+        }
+    }
+    out
+}
+
 pub(crate) fn strip_headers(headers: &mut HeaderMap) {
     for key in PRIVATE_HEADERS {
         headers.remove(*key);
@@ -112,7 +163,7 @@ pub(crate) fn public_url(url: &Url) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn c14_secsdk_context_is_scoped_unique_and_never_returned() {
+    fn secsdk_context_is_scoped_unique_and_never_returned() {
         let original = "https://www.douyin.com/aweme/v1/web/aweme/detail/?aid=6383&text=a+b%2B~%E4%B8%AD&a_bogus=public%2F%3D";
         let mut url = Url::parse(original).unwrap();
         let mut headers = HeaderMap::new();
@@ -165,7 +216,7 @@ mod tests {
         assert!(decorate(&mut u, "GET", Some("sessionid=synthetic"), &mut headers, 1).is_err());
     }
     #[tokio::test]
-    async fn c14_secsdk_wire_bytes_and_cross_origin_redirect_never_export_context() {
+    async fn secsdk_wire_bytes_and_cross_origin_redirect_never_export_context() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let first = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let second = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

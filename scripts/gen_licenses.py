@@ -80,7 +80,7 @@ def main() -> int:
         return 1
 
     lines = [
-        "# 依赖许可台账（M1）",
+        "# 依赖许可台账",
         "",
         f"生成时间（UTC）：{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}；"
         "生成器：`scripts/gen_licenses.py`（cargo metadata + pnpm licenses）。",
@@ -147,7 +147,17 @@ def main() -> int:
         "",
     ]
     lock = json.loads((ROOT / "media-backend.lock.json").read_text(encoding="utf8"))
-    lines += ["## 本地媒体资产（TRACE-CLOSEOUT-02）", "", f"- BtbN FFmpeg / ffprobe {lock['version']}，{lock['variant']} / {lock['license']}；资产 SHA-256 `{lock['sha256']}`。", "- 来源与可复现获取见根 media-backend.lock.json、scripts/fetch_media.py；已核对两程序版本相同、构建选项无 --enable-gpl / --enable-nonfree。", "- 已执行 -L 确认 LGPL-3.0-or-later（启用 --enable-version3）；LGPL 共享库及 OpenH264 等资产内第三方组件的许可证以资产 LICENSE.txt、buildconf 与对应源码为依据。局部测试/打包不构成法律或对外分发批准。", "- 本地便携验证包保存 LICENSE.txt、SOURCE.txt、verified.json 与逐文件摘要；正式分发仍由 USER-ACTIONS Q-004 决定并复核对应源码与通知义务。", ""]
+    tools = json.loads((ROOT / "media-tools.lock.json").read_text(encoding="utf8"))
+    lines += ["## 本地媒体资产", "", f"- BtbN FFmpeg / ffprobe {lock['version']}，{lock['variant']} / {lock['license']}；资产 SHA-256 `{lock['sha256']}`。", "- 来源与可复现获取见根 media-backend.lock.json、scripts/fetch_media.py；已核对两程序版本相同、构建选项无 --enable-gpl / --enable-nonfree。", "- 已执行 -L 确认 LGPL-3.0-or-later（启用 --enable-version3）；LGPL 共享库及 OpenH264 等资产内第三方组件的许可证以资产 LICENSE.txt、buildconf 与对应源码为依据。局部测试/打包不构成法律或对外分发批准。", "- 本地便携验证包保存 LICENSE.txt、SOURCE.txt、verified.json 与逐文件摘要；正式分发仍由 USER-ACTIONS Q-004 决定并复核对应源码与通知义务。", ""]
+    yt, deno = tools["yt_dlp"], tools["deno"]
+    lines += [
+        "## 外部媒体解析工具（YouTube）", "",
+        f"- yt-dlp {yt['version']}，{yt['license']}；资产 SHA-256 `{yt['sha256']}`；{yt['bundles']}。",
+        f"- Deno {deno['version']}，{deno['license']}；资产 SHA-256 `{deno['sha256']}`（官方发布压缩包内的 `{deno['member']}`）。",
+        "- 两者均为锁定版本的独立可执行文件，不修改上游、不自我更新，由 Core 以固定参数调用，不接收 Cookie；版本、地址与摘要见根 media-tools.lock.json，获取与校验见 scripts/fetch_media_tools.py。",
+        "- 便携包的 `tools/` 保存两个程序、上游许可文本（" + "、".join(n["name"] for tool in tools.values() for n in tool["notices"]) + "）、SOURCE.txt、verified.json 与逐文件摘要；二进制内含的第三方组件以随包许可文本为准。局部测试/打包不构成对外分发批准，正式分发复核同上。",
+        "",
+    ]
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text("\n".join(lines), encoding="utf8")
     print(f"已写入 {OUT.relative_to(ROOT)}（rust={len(rust)}，node={len(node)}）")

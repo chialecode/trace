@@ -107,7 +107,7 @@ pub fn is_boundary(t: &Tag, video: bool) -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn c04_flv_partial_tags_corrupt_sizes_and_unbounded_headers() {
+    fn flv_partial_tags_corrupt_sizes_and_unbounded_headers() {
         let mut mux = flv_core::Muxer::new();
         let mut bytes = vec![];
         mux.write_header(true, false, &mut bytes);

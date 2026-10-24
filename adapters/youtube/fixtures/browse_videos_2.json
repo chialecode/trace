@@ -1,0 +1,74 @@
+{
+ "onResponseReceivedActions": [
+  {
+   "appendContinuationItemsAction": {
+    "continuationItems": [
+     {
+      "richItemRenderer": {
+       "content": {
+        "lockupViewModel": {
+         "contentId": "vid_LOCK_L6",
+         "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+         "contentImage": {
+          "thumbnailViewModel": {
+           "overlays": [
+            {
+             "thumbnailBottomOverlayViewModel": {
+              "badges": [
+               {
+                "thumbnailBadgeViewModel": {
+                 "text": "7:08"
+                }
+               }
+              ]
+             }
+            }
+           ]
+          }
+         },
+         "metadata": {
+          "lockupMetadataViewModel": {
+           "title": {
+            "content": "Lockup video"
+           },
+           "metadata": {
+            "contentMetadataViewModel": {
+             "metadataRows": [
+              {
+               "metadataParts": [
+                {
+                 "text": {
+                  "content": "2,048 views"
+                 }
+                },
+                {
+                 "text": {
+                  "content": "1 month ago"
+                 }
+                }
+               ]
+              }
+             ]
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     {
+      "richItemRenderer": {
+       "content": {
+        "lockupViewModel": {
+         "contentId": "PLsynthetic",
+         "contentType": "LOCKUP_CONTENT_TYPE_PLAYLIST"
+        }
+       }
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

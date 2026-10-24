@@ -10,6 +10,8 @@ fn notify(tx: &Transaction<'_>, key: &str, event: &str) -> Result<(), CoreError>
     Ok(())
 }
 
+const SELECT_SUBSCRIPTIONS: &str = "SELECT a.namespace,s.credential_id FROM subscriptions s JOIN source_accounts a ON a.account_id=s.account_id WHERE s.subscription_id=?1";
+
 pub fn record(
     tx: &Transaction<'_>,
     job: &ClaimedJob,
@@ -25,7 +27,16 @@ pub fn record(
         return Ok(());
     }
     let sub = job.payload["subscription_id"].as_str();
-    let (platform,credential):(String,Option<String>)=tx.query_row("SELECT a.namespace,s.credential_id FROM subscriptions s JOIN source_accounts a ON a.account_id=s.account_id WHERE s.subscription_id=?1",[sub],|r|Ok((r.get(0)?,r.get(1)?))).optional()?.unwrap_or((job.payload["platform"].as_str().unwrap_or("local").to_owned(),job.payload["credential_id"].as_str().map(str::to_owned)));
+    let (platform, credential): (String, Option<String>) = tx
+        .query_row(SELECT_SUBSCRIPTIONS, [sub], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?
+        .unwrap_or((
+            job.payload["platform"]
+                .as_str()
+                .unwrap_or("local")
+                .to_owned(),
+            job.payload["credential_id"].as_str().map(str::to_owned),
+        ));
     let category = serde_json::to_value(class)?
         .as_str()
         .unwrap_or("unknown")
@@ -82,23 +93,79 @@ pub fn resolved_job(tx: &Transaction<'_>, job: &str) -> Result<(), CoreError> {
     Ok(())
 }
 
+const SELECT_ISSUE_LINKS: &str = "SELECT i.issue_key,i.category,i.detail,i.first_seen_at,i.last_seen_at,i.resolved_at,n.state,n.last_error,(SELECT count(*) FROM issue_links l WHERE l.issue_key=i.issue_key AND active=1) FROM issues i LEFT JOIN issue_notifications n ON n.issue_key=i.issue_key ORDER BY (i.resolved_at IS NULL) DESC,i.last_seen_at DESC LIMIT 100";
+
 pub async fn listing(core: &Core) -> Result<Value, CoreError> {
-    core.db.read(|c|{
-        let items=c.prepare("SELECT i.issue_key,i.category,i.detail,i.first_seen_at,i.last_seen_at,i.resolved_at,n.state,n.last_error,(SELECT count(*) FROM issue_links l WHERE l.issue_key=i.issue_key AND active=1) FROM issues i LEFT JOIN issue_notifications n ON n.issue_key=i.issue_key ORDER BY (i.resolved_at IS NULL) DESC,i.last_seen_at DESC LIMIT 100")?.query_map([],|r|Ok(json!({"issue_key":r.get::<_,String>(0)?,"category":r.get::<_,String>(1)?,"detail":r.get::<_,String>(2)?.parse::<Value>().unwrap_or_default(),"first_seen_at":r.get::<_,String>(3)?,"last_seen_at":r.get::<_,String>(4)?,"resolved_at":r.get::<_,Option<String>>(5)?,"notification_state":r.get::<_,Option<String>>(6)?,"notification_error":r.get::<_,Option<String>>(7)?,"affected_jobs":r.get::<_,i64>(8)?})))?.collect::<Result<Vec<_>,_>>()?;
-        Ok(json!({"items":items}))
-    }).await
+    core.db
+        .read(|c| {
+            let items = c
+                .prepare(SELECT_ISSUE_LINKS)?
+                .query_map([], |r| {
+                    Ok(json!({
+                        "issue_key": r.get::<_, String>(0)?,
+                        "category": r.get::<_, String>(1)?,
+                        "detail": r.get::<_, String>(2)?.parse::<Value>().unwrap_or_default(),
+                        "first_seen_at": r.get::<_, String>(3)?,
+                        "last_seen_at": r.get::<_, String>(4)?,
+                        "resolved_at": r.get::<_, Option<String>>(5)?,
+                        "notification_state": r.get::<_, Option<String>>(6)?,
+                        "notification_error": r.get::<_, Option<String>>(7)?,
+                        "affected_jobs": r.get::<_, i64>(8)?,
+                    }))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(json!({"items":items}))
+        })
+        .await
 }
+const SELECT_ISSUE_LINKS_2: &str = "SELECT l.job_id,l.subscription_id,l.active,j.state FROM issue_links l LEFT JOIN jobs j ON j.job_id=l.job_id WHERE l.issue_key=?1 AND l.job_id>?2 ORDER BY l.job_id LIMIT 101";
+
 pub async fn refs(core: &Core, key: String, after: String) -> Result<Value, CoreError> {
-    core.db.read(move|c|{
-        let mut items=c.prepare("SELECT l.job_id,l.subscription_id,l.active,j.state FROM issue_links l LEFT JOIN jobs j ON j.job_id=l.job_id WHERE l.issue_key=?1 AND l.job_id>?2 ORDER BY l.job_id LIMIT 101")?.query_map(rusqlite::params![key,after],|r|Ok(json!({"job_id":r.get::<_,String>(0)?,"subscription_id":r.get::<_,Option<String>>(1)?,"active":r.get::<_,bool>(2)?,"state":r.get::<_,Option<String>>(3)?})))?.collect::<Result<Vec<_>,_>>()?;
-        let more=items.len()>100;items.truncate(100);let next=if more{items.last().map(|v|v["job_id"].clone())}else{None};Ok(json!({"items":items,"next":next}))
-    }).await
+    core.db
+        .read(move |c| {
+            let mut items = c
+                .prepare(SELECT_ISSUE_LINKS_2)?
+                .query_map(rusqlite::params![key, after], |r| {
+                    Ok(json!({
+                        "job_id": r.get::<_, String>(0)?,
+                        "subscription_id": r.get::<_, Option<String>>(1)?,
+                        "active": r.get::<_, bool>(2)?,
+                        "state": r.get::<_, Option<String>>(3)?,
+                    }))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let more = items.len() > 100;
+            items.truncate(100);
+            let next = if more {
+                items.last().map(|v| v["job_id"].clone())
+            } else {
+                None
+            };
+            Ok(json!({"items":items,"next":next}))
+        })
+        .await
 }
+
+const SELECT_ISSUE_NOTIFICATIONS: &str = "SELECT issue_key,event,version FROM issue_notifications WHERE state='pending' ORDER BY updated_at LIMIT 4";
+const UPDATE_ISSUE_NOTIFICATIONS: &str = "UPDATE issue_notifications SET state=?2,attempts=attempts+1,last_error=?3 WHERE issue_key=?1 AND version=?4";
 
 /// Delivery failure is retained and retried on a later explicit retry/new event,
 /// avoiding repeated OS prompts for an unchanged problem.
 pub async fn deliver_pending(core: &Core) -> Result<(), CoreError> {
-    let rows=core.db.read(|c|Ok(c.prepare("SELECT issue_key,event,version FROM issue_notifications WHERE state='pending' ORDER BY updated_at LIMIT 4")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?)))?.collect::<Result<Vec<_>,_>>()?)).await?;
+    let rows = core
+        .db
+        .read(|c| {
+            Ok(c.prepare(SELECT_ISSUE_NOTIFICATIONS)?
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?)
+        })
+        .await?;
     for (key, event, version) in rows {
         let profile = core.profile.clone();
         let delivered = tokio::task::spawn_blocking(move || {
@@ -106,7 +173,24 @@ pub async fn deliver_pending(core: &Core) -> Result<(), CoreError> {
         })
         .await
         .map_err(|_| CoreError::Internal("notification worker".into()))?;
-        core.db.write(move|tx|{tx.execute("UPDATE issue_notifications SET state=?2,attempts=attempts+1,last_error=?3 WHERE issue_key=?1 AND version=?4",rusqlite::params![key,if delivered.is_ok(){"submitted"}else{"failed"},delivered.err().map(|_|"system_notification_unavailable"),version])?;Ok(())}).await?;
+        core.db
+            .write(move |tx| {
+                tx.execute(
+                    UPDATE_ISSUE_NOTIFICATIONS,
+                    rusqlite::params![
+                        key,
+                        if delivered.is_ok() {
+                            "submitted"
+                        } else {
+                            "failed"
+                        },
+                        delivered.err().map(|_| "system_notification_unavailable"),
+                        version
+                    ],
+                )?;
+                Ok(())
+            })
+            .await?;
     }
     Ok(())
 }

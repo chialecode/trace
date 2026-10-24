@@ -25,6 +25,8 @@ pub enum SaveProgress {
     Pending,
     Partial,
     Complete,
+    /// 视频按订阅设置未下载：与“缺失”“失败”分开，不计入必需资源的缺口。
+    Deferred,
     Unknown,
 }
 

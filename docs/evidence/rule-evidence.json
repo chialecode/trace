@@ -1,0 +1,813 @@
+{
+  "schemaVersion": 1,
+  "plan": "TRACE-M2-01 r2",
+  "sites": {
+    "bilibili": {
+      "run": {
+        "date": "2026-10-19",
+        "metadataRequests": 136,
+        "mediaBytes": 22333495,
+        "stoppedBy": "budget"
+      },
+      "rules": {
+        "bilibili.user.videos": {
+          "entry": "subscription",
+          "status": "partial",
+          "verifiedAt": "2026-10-15",
+          "scope": "登录态一位作者的视频列表 2 页（各 30 条）：签名请求 200、页码前进、两页无重叠；0 媒体字节",
+          "checks": [
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "passed",
+              "requests": 7,
+              "mediaBytes": 0
+            },
+            {
+              "name": "incremental-auto-off",
+              "outcome": "not-run",
+              "requests": 40,
+              "mediaBytes": 0
+            },
+            {
+              "name": "incremental-auto-on",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "列表带浏览器会附加的校验参数（dm_img_*、w_webid）；只取公开可见的投稿；遇到风控校验（-352 等）即停止，不前移游标，不当作“没有更新”；只验证了前两页；全部历史与匿名差异没有验证；2026-10-18 的增量检查在额度用尽时中止：自动下载关的检查找到了 1 条作品、第二次检查没有变化，但检查途中额度用完，自动下载开的检查没有执行；订阅的增量检查（自动下载关与开各一次）没有真实结果，按计划口径保持部分实现"
+        },
+        "bilibili.user.preview_videos": {
+          "entry": "preview",
+          "status": "partial",
+          "checks": [
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "passed",
+              "requests": 7,
+              "mediaBytes": 0
+            },
+            {
+              "name": "preview-select-download",
+              "outcome": "passed",
+              "requests": 14,
+              "mediaBytes": 18616622
+            }
+          ],
+          "note": "列表带浏览器会附加的校验参数（dm_img_*、w_webid）；只取公开可见的投稿；遇到风控校验（-352 等）即停止，不前移游标，不当作“没有更新”；只经合成夹具验证，没有真实站点验证"
+        },
+        "bilibili.user.dynamics": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [],
+          "note": "转发是独立发布，原文失败时保留转发正文；特殊卡片只保存安全文字并标明缺口；遇到风控校验（-352 等）即停止，不前移游标，不当作“没有更新”；只经合成夹具验证，没有真实站点验证"
+        },
+        "bilibili.user.preview_dynamics": {
+          "entry": "preview",
+          "status": "partial",
+          "checks": [],
+          "note": "转发是独立发布，原文失败时保留转发正文；特殊卡片只保存安全文字并标明缺口；遇到风控校验（-352 等）即停止，不前移游标，不当作“没有更新”；只经合成夹具验证，没有真实站点验证"
+        },
+        "bilibili.user.opus": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [],
+          "note": "只有动态响应明示 opus 才建立与动态的对应，不按数字相等合并；遇到风控校验（-352 等）即停止，不前移游标，不当作“没有更新”；只经合成夹具验证，没有真实站点验证"
+        },
+        "bilibili.user.preview_opus": {
+          "entry": "preview",
+          "status": "partial",
+          "checks": [],
+          "note": "只有动态响应明示 opus 才建立与动态的对应，不按数字相等合并；遇到风控校验（-352 等）即停止，不前移游标，不当作“没有更新”；只经合成夹具验证，没有真实站点验证"
+        },
+        "bilibili.user.articles": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [],
+          "note": "未知的富文本节点明确标为不完整，不冒充全文；遇到风控校验（-352 等）即停止，不前移游标，不当作“没有更新”；只经合成夹具验证，没有真实站点验证"
+        },
+        "bilibili.user.preview_articles": {
+          "entry": "preview",
+          "status": "partial",
+          "checks": [],
+          "note": "未知的富文本节点明确标为不完整，不冒充全文；遇到风控校验（-352 等）即停止，不前移游标，不当作“没有更新”；只经合成夹具验证，没有真实站点验证"
+        },
+        "bilibili.user.live": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [],
+          "note": "订阅入口没有真实验证；直接的直播间链接已真实验证（见 bilibili.live.link）；只经合成夹具验证，没有真实站点验证"
+        },
+        "bilibili.video.link": {
+          "entry": "link",
+          "status": "implemented",
+          "verifiedAt": "2026-10-13",
+          "scope": "一个指定视频的整条链路：3840×2160 AVC 加 AAC，218.560 秒，选择、下载、离线读取、完整解码",
+          "checks": [
+            {
+              "name": "single-link-download",
+              "outcome": "passed",
+              "requests": 7,
+              "mediaBytes": 1764228
+            }
+          ]
+        },
+        "bilibili.live.link": {
+          "entry": "link",
+          "status": "implemented",
+          "verifiedAt": "2026-10-13",
+          "scope": "一个指定直播间：1920×1080 AVC 加 AAC，封片 68.869 秒，关闭界面后继续录制、导出与离线重开",
+          "checks": [
+            {
+              "name": "single-link-download",
+              "outcome": "passed",
+              "source": "上一阶段已合并报告中的真实回执（固定链接见阶段报告）"
+            }
+          ]
+        }
+      }
+    },
+    "douyin": {
+      "run": {
+        "date": "2026-10-19",
+        "metadataRequests": 138,
+        "mediaBytes": 16898525,
+        "stoppedBy": "budget"
+      },
+      "rules": {
+        "douyin.user.videos": {
+          "entry": "subscription",
+          "status": "partial",
+          "verifiedAt": "2026-10-15",
+          "scope": "登录态一位作者的投稿 2 页（各 20 条，第 2 页 19 条为视频）：游标前进、仍有更多、两页无重叠；0 媒体字节",
+          "checks": [
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "passed",
+              "requests": 4,
+              "mediaBytes": 0
+            },
+            {
+              "name": "incremental-auto-off",
+              "outcome": "not-run",
+              "requests": 36,
+              "mediaBytes": 21245
+            },
+            {
+              "name": "incremental-auto-on",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "图集、长图文与其它类型的投稿在这个通道里被筛除；遇到风控或验证即停止，不前移游标，不当作“没有更新”；只验证了前两页；全部历史与匿名差异没有验证；2026-10-17 与 2026-10-18 的增量检查都在额度用尽时中止：自动下载关的检查找到了 1 条作品、第二次检查没有变化，但检查途中额度用完，自动下载开的检查没有执行；订阅的增量检查（自动下载关与开各一次）没有真实结果，按计划口径保持部分实现"
+        },
+        "douyin.user.preview_videos": {
+          "entry": "preview",
+          "status": "implemented",
+          "verifiedAt": "2026-10-17",
+          "scope": "登录态一位作者的投稿列表 2 页（19 条视频、有更多），勾选 1 条下载到文件夹：1 个文件，约 2.4 MB，已导出",
+          "checks": [
+            {
+              "name": "preview-select-download",
+              "outcome": "passed",
+              "requests": 6,
+              "mediaBytes": 10034448
+            },
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "passed",
+              "requests": 4,
+              "mediaBytes": 0
+            }
+          ]
+        },
+        "douyin.user.images": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [],
+          "note": "优先保存原始静态图；缺图保留占位，封面不冒充实况；遇到风控或验证即停止，不前移游标，不当作“没有更新”；只经合成夹具验证，没有真实站点验证"
+        },
+        "douyin.user.preview_images": {
+          "entry": "preview",
+          "status": "partial",
+          "checks": [],
+          "note": "优先保存原始静态图；缺图保留占位，封面不冒充实况；遇到风控或验证即停止，不前移游标，不当作“没有更新”；只经合成夹具验证，没有真实站点验证"
+        },
+        "douyin.user.articles": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [],
+          "note": "列表只给截断的摘要，必须请求详情才算归档完成；遇到风控或验证即停止，不前移游标，不当作“没有更新”；只经合成夹具验证，没有真实站点验证"
+        },
+        "douyin.user.preview_articles": {
+          "entry": "preview",
+          "status": "partial",
+          "checks": [],
+          "note": "列表只给截断的摘要，必须请求详情才算归档完成；遇到风控或验证即停止，不前移游标，不当作“没有更新”；只经合成夹具验证，没有真实站点验证"
+        },
+        "douyin.user.dynamics": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [],
+          "note": "合集与系列分别续页；空页不能代表全量结束；遇到风控或验证即停止，不前移游标，不当作“没有更新”；只经合成夹具验证，没有真实站点验证"
+        },
+        "douyin.user.preview_dynamics": {
+          "entry": "preview",
+          "status": "partial",
+          "checks": [],
+          "note": "合集与系列分别续页；空页不能代表全量结束；遇到风控或验证即停止，不前移游标，不当作“没有更新”；只经合成夹具验证，没有真实站点验证"
+        },
+        "douyin.user.live": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [],
+          "note": "订阅入口没有真实验证；直接的直播间链接已真实验证（见 douyin.live.link）；只经合成夹具验证，没有真实站点验证"
+        },
+        "douyin.video.link": {
+          "entry": "link",
+          "status": "implemented",
+          "verifiedAt": "2026-10-13",
+          "scope": "一个指定视频的整条链路：1080×1920 AVC 加 AAC，22.833 秒，选择、下载、离线读取、完整解码",
+          "checks": [
+            {
+              "name": "single-link-download",
+              "outcome": "passed",
+              "requests": 3,
+              "mediaBytes": 487545
+            }
+          ]
+        },
+        "douyin.live.link": {
+          "entry": "link",
+          "status": "implemented",
+          "verifiedAt": "2026-10-13",
+          "scope": "一个指定直播间：1080×1920 AVC 加 AAC，封片 68.426 秒，关闭界面后继续录制、导出与离线重开",
+          "checks": [
+            {
+              "name": "single-link-download",
+              "outcome": "passed",
+              "source": "上一阶段已合并报告中的真实回执（固定链接见阶段报告）"
+            }
+          ]
+        }
+      }
+    },
+    "instagram": {
+      "run": {
+        "date": "2026-10-19",
+        "metadataRequests": 11,
+        "mediaBytes": 0,
+        "stoppedBy": null
+      },
+      "rules": {
+        "instagram.user.posts": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [
+            {
+              "name": "account-recognition",
+              "outcome": "failed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            },
+            {
+              "name": "incremental-auto-off",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            },
+            {
+              "name": "incremental-auto-on",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "不含快拍、精彩快拍和标签页；私密账号需要登录账号已关注；真实站点检查（2026-10-18）：登录探测通过（页面标明已登录 Instagram 账号），但检查目标的主页被站点换成通用错误页（走代理与直连结果相同），适配器报告“站点不显示该主页”并按规则停止；列表与下载没有验证"
+        },
+        "instagram.user.preview": {
+          "entry": "preview",
+          "status": "partial",
+          "checks": [
+            {
+              "name": "account-recognition",
+              "outcome": "failed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            },
+            {
+              "name": "preview-select-download",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "真实站点检查（2026-10-18）：登录探测通过（页面标明已登录 Instagram 账号），但检查目标的主页被站点换成通用错误页（走代理与直连结果相同），适配器报告“站点不显示该主页”并按规则停止；列表与下载没有验证"
+        },
+        "instagram.post.link": {
+          "entry": "link",
+          "status": "partial",
+          "checks": [
+            {
+              "name": "single-link-download",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "真实站点检查（2026-10-18）：登录探测通过（页面标明已登录 Instagram 账号），但检查目标的主页被站点换成通用错误页（走代理与直连结果相同），适配器报告“站点不显示该主页”并按规则停止；列表与下载没有验证"
+        }
+      }
+    },
+    "tiktok": {
+      "run": {
+        "date": "2026-10-19",
+        "metadataRequests": 46,
+        "mediaBytes": 3289739,
+        "stoppedBy": "rate_limit"
+      },
+      "rules": {
+        "tiktok.user.posts": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "stopped",
+              "requests": 3,
+              "mediaBytes": 0
+            },
+            {
+              "name": "incremental-auto-off",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            },
+            {
+              "name": "incremental-auto-on",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "作品列表接口需要站点的请求签名，没有签名时站点返回空结果；读不到时按“未知”处理，不当作没有更新；真实站点检查（2026-10-18）：账号识别、列表 2 页、勾选下载与视频链接下载通过，视频文件由 Core 带上页面会话 Cookie 取得；增量检查（自动下载关与开各一次）在站点答复列表“无数据”（限流）后按规则停止，没有结果；图集与音频作品没有真实检查"
+        },
+        "tiktok.user.preview": {
+          "entry": "preview",
+          "status": "partial",
+          "verifiedAt": "2026-10-18",
+          "scope": "同一账号视频列表 2 页（共 30 条、还有更多）后勾选 2 条下载到文件夹：2 个文件共 2,644,096 字节，全部已导出",
+          "checks": [
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "stopped",
+              "requests": 3,
+              "mediaBytes": 0
+            },
+            {
+              "name": "preview-select-download",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "2026-10-19 最终包重做列表时站点以限流答复，按规则停止；预览的通过记录只对应 2026-10-18 的包。"
+        },
+        "tiktok.post.link": {
+          "entry": "link",
+          "status": "partial",
+          "checks": [
+            {
+              "name": "single-link-download",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "下载地址依赖站点页面设置的会话 Cookie，未验证前可能被拒绝；真实站点检查（2026-10-18）：账号识别、列表 2 页、勾选下载与视频链接下载通过，视频文件由 Core 带上页面会话 Cookie 取得；增量检查（自动下载关与开各一次）在站点答复列表“无数据”（限流）后按规则停止，没有结果；图集与音频作品没有真实检查"
+        }
+      }
+    },
+    "weibo": {
+      "run": {
+        "date": "2026-10-19",
+        "metadataRequests": 96,
+        "mediaBytes": 438712,
+        "stoppedBy": null
+      },
+      "rules": {
+        "weibo.user.posts": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [
+            {
+              "name": "incremental-auto-off",
+              "outcome": "failed",
+              "requests": 39,
+              "mediaBytes": 15645
+            },
+            {
+              "name": "incremental-auto-on",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            },
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "passed",
+              "requests": 5,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "转发的原微博只保存关系和文字摘录，不保存其图片和视频；头条文章只保存摘要与链接；真实站点检查（2026-10-18）：旧 Cookie 失效后用户重新复制，新 Cookie 已核对是登录状态；列表、下载与增量检查还没有在最终包上验证；登录探测先读桌面端配置接口（访客答“需要登录”），再读首页配置里写出的当前用户；两步都和不带 Cookie 的同一请求对照过。分组列表对访客也给出分组，不作为登录证明"
+        },
+        "weibo.user.preview": {
+          "entry": "preview",
+          "status": "partial",
+          "checks": [
+            {
+              "name": "preview-select-download",
+              "outcome": "failed",
+              "requests": 2,
+              "mediaBytes": 57103
+            },
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "passed",
+              "requests": 5,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "真实站点检查（2026-10-18）：旧 Cookie 失效后用户重新复制，新 Cookie 已核对是登录状态；列表、下载与增量检查还没有在最终包上验证；登录探测先读桌面端配置接口（访客答“需要登录”），再读首页配置里写出的当前用户；两步都和不带 Cookie 的同一请求对照过。分组列表对访客也给出分组，不作为登录证明"
+        },
+        "weibo.post.link": {
+          "entry": "link",
+          "status": "partial",
+          "checks": [
+            {
+              "name": "single-link-download",
+              "outcome": "failed",
+              "requests": 12,
+              "mediaBytes": 365964
+            }
+          ],
+          "note": "真实站点检查（2026-10-18）：旧 Cookie 失效后用户重新复制，新 Cookie 已核对是登录状态；列表、下载与增量检查还没有在最终包上验证；登录探测先读桌面端配置接口（访客答“需要登录”），再读首页配置里写出的当前用户；两步都和不带 Cookie 的同一请求对照过。分组列表对访客也给出分组，不作为登录证明"
+        }
+      }
+    },
+    "x": {
+      "run": {
+        "date": "2026-10-19",
+        "metadataRequests": 82,
+        "mediaBytes": 5914417,
+        "stoppedBy": null
+      },
+      "rules": {
+        "x.user.posts": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [
+            {
+              "name": "incremental-auto-off",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            },
+            {
+              "name": "incremental-auto-on",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            },
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "passed",
+              "requests": 4,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "转推只保存关系与原推文字摘录，不保存原推的图片和视频；回复与点赞列表不在范围内；真实站点检查（2026-10-18）：账号识别、列表 2 页、勾选下载（图片推文）通过，查询标识用随适配器发布的数据，没有触发重新读取；检查账号的前两页没有原生视频（转推的原推视频不属于转推），所以视频推文的链接与增量检查没有做；增量检查（自动下载关与开各一次）没有结果；站点拒绝未签名的请求时，按公开算法计算页面要求的事务 ID 请求头后重试；仍被拒绝按“未知”处理，不当作没有更新"
+        },
+        "x.user.preview": {
+          "entry": "preview",
+          "status": "implemented",
+          "verifiedAt": "2026-10-18",
+          "scope": "账号识别和列表 2 页（共 20 条、有后续页）后勾选 1 条图片推文下载到文件夹：1 个文件共 1,894,410 字节，全部已导出",
+          "checks": [
+            {
+              "name": "preview-select-download",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 1089495
+            },
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "passed",
+              "requests": 4,
+              "mediaBytes": 0
+            }
+          ]
+        },
+        "x.post.link": {
+          "entry": "link",
+          "status": "partial",
+          "checks": [
+            {
+              "name": "single-link-download",
+              "outcome": "passed",
+              "requests": 4,
+              "mediaBytes": 255065
+            }
+          ],
+          "note": "真实站点检查（2026-10-18）：账号识别、列表 2 页、勾选下载（图片推文）通过，查询标识用随适配器发布的数据，没有触发重新读取；检查账号的前两页没有原生视频（转推的原推视频不属于转推），所以视频推文的链接与增量检查没有做；增量检查（自动下载关与开各一次）没有结果；站点拒绝未签名的请求时，按公开算法计算页面要求的事务 ID 请求头后重试；仍被拒绝按“未知”处理，不当作没有更新"
+        }
+      }
+    },
+    "xiaohongshu": {
+      "run": {
+        "date": "2026-10-19",
+        "metadataRequests": 76,
+        "mediaBytes": 37015293,
+        "stoppedBy": "refused"
+      },
+      "rules": {
+        "xiaohongshu.user.notes": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "stopped",
+              "requests": 3,
+              "mediaBytes": 0
+            },
+            {
+              "name": "incremental-auto-off",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            },
+            {
+              "name": "incremental-auto-on",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "只读取主页首屏（约 30 条）通过；续页接口的签名需要 Cookie 中的设备标识 a1。用户 2026-10-18 答复 S-003，按 DEC-041 只把 a1 交给适配器签名，订阅与预览取完整历史；第四轮实现并用固定向量与真实检查验证，完成前保持部分实现。列表不给发布时间，检查脚本要先用详情日期定位增量对象；订阅的第一次检查要逐条取详情判断范围。"
+        },
+        "xiaohongshu.user.preview": {
+          "entry": "preview",
+          "status": "partial",
+          "verifiedAt": "2026-10-18",
+          "scope": "作者主页首屏列表（32 条，无发布时间，没有后续页）后勾选 2 条下载到文件夹：9 个文件共 25,950,636 字节，全部已导出",
+          "checks": [
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "stopped",
+              "requests": 3,
+              "mediaBytes": 0
+            },
+            {
+              "name": "preview-select-download",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "2026-10-19 最终包尝试签名续页时站点以 HTTP 461 拒绝，按 DEC-041 停止；首屏预览的通过记录只对应 2026-10-18 的包。"
+        },
+        "xiaohongshu.note.link": {
+          "entry": "link",
+          "status": "partial",
+          "verifiedAt": "2026-10-18",
+          "scope": "一条视频笔记（3 个候选，选 1 个，7,855,669 字节）和一条图文笔记（10 个候选，选 5 个，729,933 字节）并入库；纯文字笔记没有验证",
+          "checks": [
+            {
+              "name": "single-link-download",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "2026-10-19 最终包尝试签名续页时站点以 HTTP 461 拒绝，按 DEC-041 停止；笔记链接的通过记录只对应 2026-10-18 的包。"
+        }
+      }
+    },
+    "youtube": {
+      "run": {
+        "date": "2026-10-19",
+        "metadataRequests": 102,
+        "mediaBytes": 344714771,
+        "stoppedBy": null
+      },
+      "rules": {
+        "youtube.channel.videos": {
+          "entry": "subscription",
+          "status": "partial",
+          "verifiedAt": "2026-10-17",
+          "scope": "一个频道的视频列表 2 页（共 30 条、还有更多）和频道识别（句柄解析为频道 ID）；没有媒体字节",
+          "checks": [
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "failed",
+              "requests": 2,
+              "mediaBytes": 0
+            },
+            {
+              "name": "incremental-auto-off",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            },
+            {
+              "name": "incremental-auto-on",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "列表只给“几天前”，按近似日期（带误差）判断范围；确切发布日在打开作品时取得；视频文件由锁定版本的外部解析工具获取，工具缺失时只保存元数据；2026-10-18 的增量检查：自动下载关通过（5 条作品，视频保持“未下载”，第二次检查没有变化）；自动下载开的检查在额度用尽时中止，没有结果。Shorts 与社区帖子的订阅没有真实检查；自动下载开的增量检查没有真实结果，按计划口径保持部分实现"
+        },
+        "youtube.channel.preview_videos": {
+          "entry": "preview",
+          "status": "partial",
+          "verifiedAt": "2026-10-17",
+          "scope": "同一频道视频列表 2 页后勾选 2 条下载到文件夹：2 个文件共 225,294,407 字节，全部已导出",
+          "checks": [
+            {
+              "name": "account-recognition",
+              "outcome": "passed",
+              "requests": 1,
+              "mediaBytes": 0
+            },
+            {
+              "name": "list-two-pages",
+              "outcome": "failed",
+              "requests": 2,
+              "mediaBytes": 0
+            },
+            {
+              "name": "preview-select-download",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "2026-10-19 最终包上的频道列表页没有读到初始数据，按规则停止；2026-10-17 的通过记录只对应旧包，预览在最终包上未重跑。"
+        },
+        "youtube.channel.shorts": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [],
+          "note": "列表只给“几天前”，按近似日期（带误差）判断范围；确切发布日在打开作品时取得；视频文件由锁定版本的外部解析工具获取，工具缺失时只保存元数据；尚未经过真实站点验证"
+        },
+        "youtube.channel.preview_shorts": {
+          "entry": "preview",
+          "status": "partial",
+          "checks": [],
+          "note": "列表只给“几天前”，按近似日期（带误差）判断范围；确切发布日在打开作品时取得；尚未经过真实站点验证"
+        },
+        "youtube.channel.posts": {
+          "entry": "subscription",
+          "status": "partial",
+          "checks": [],
+          "note": "列表只给“几天前”，按近似日期（带误差）判断范围；确切发布日在打开作品时取得；投票只保存选项文字，不保存票数；分享的视频只保存关系；尚未经过真实站点验证"
+        },
+        "youtube.channel.preview_posts": {
+          "entry": "preview",
+          "status": "partial",
+          "checks": [],
+          "note": "列表只给“几天前”，按近似日期（带误差）判断范围；确切发布日在打开作品时取得；尚未经过真实站点验证"
+        },
+        "youtube.video.link": {
+          "entry": "link",
+          "status": "partial",
+          "verifiedAt": "2026-10-17",
+          "scope": "一个视频：26 个候选，选 720p 以内的视频与音频各一，分段下载 43,211,617 字节并入库",
+          "checks": [
+            {
+              "name": "single-link-download",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "2026-10-19 最终包上的频道列表页没有读到初始数据，单视频链接没有在最终包上重跑；2026-10-17 的通过记录只对应旧包。"
+        },
+        "youtube.short.link": {
+          "entry": "link",
+          "status": "partial",
+          "checks": [],
+          "note": "尚未经过真实站点验证；视频文件由锁定版本的外部解析工具获取，工具缺失时只保存元数据"
+        },
+        "youtube.post.link": {
+          "entry": "link",
+          "status": "partial",
+          "verifiedAt": "2026-10-17",
+          "scope": "一个带图片的社区帖子：5 个候选，选 1 个，33,194 字节并入库",
+          "checks": [
+            {
+              "name": "single-link-download",
+              "outcome": "not-run",
+              "requests": 0,
+              "mediaBytes": 0
+            }
+          ],
+          "note": "2026-10-19 最终包上的频道列表页没有读到初始数据，社区帖子链接没有在最终包上重跑；2026-10-17 的通过记录只对应旧包。"
+        }
+      }
+    }
+  }
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TRACE 验证入口：五套件（offline/desktop/recovery/site/resources）。
+"""TRACE 验证入口：六套件（offline/desktop/recovery/site/resources/structure）。
 
 语义：
 - pass：套件命令全部成功；
@@ -20,28 +20,31 @@ import subprocess
 import sys
 from pathlib import Path
 import time
-import stage_evidence
+import evidence
 
 ROOT = Path(__file__).resolve().parent.parent
+
+SITES = ["bilibili", "douyin", "weibo", "xiaohongshu", "instagram", "x", "youtube", "tiktok"]
+SITE_CRATES = ["trace-site-support", *[f"trace-adapter-{site}" for site in SITES]]
 
 # 套件 → (命令, cwd, 说明, 覆盖用例)
 SUITES: dict[str, dict] = {
     "offline": {
         "desc": "离线测试：工作区全部单元/契约/适配器夹具测试",
-        "covers": ["C01", "C02", "C03", "C04", "C05", "C07", "C08", "C10", "C15", "C17", "C22", "C23", "C25", "C26", "C27", "C28", "C30"],
+        "covers": ["C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09", "C10"],
         "cmd": ["cargo", "test", "--workspace", "--locked"],
         "prebuild": True,
         "blocked_if_missing": ["cargo"],
     },
     "desktop": {
         "desc": "桌面前端：类型检查 + Vitest + 生产构建",
-        "covers": ["C14"],
+        "covers": ["C11"],
         "cmd": ["__corepack__", "pnpm", "-C", "apps/desktop", "run", "verify"],
         "blocked_if_missing": ["corepack"],
     },
     "recovery": {
         "desc": "恢复与进程级：对象库恢复矩阵、离线闭环、daemon 双启动/退出/重启",
-        "covers": ["C01", "C03", "C06", "C09", "C11", "C12", "C20", "C21"],
+        "covers": ["C01", "C05", "C06", "C07"],
         "cmd": ["cargo", "test", "-p", "trace-core", "--locked", "--lib", "--", "recovery"],
         "extra_cmds": [
             ["cargo", "test", "-p", "trace-e2e", "--locked", "--test", "full_loop"],
@@ -51,14 +54,20 @@ SUITES: dict[str, dict] = {
         "blocked_if_missing": ["cargo"],
     },
     "site": {
-        "desc": "生产两站适配器：协议夹具、签名向量与错误分类",
-        "covers": ["C25", "C26", "C27", "C28", "C29", "C31"],
-        "cmd": ["cargo", "test", "-p", "trace-adapter-bilibili", "-p", "trace-adapter-douyin", "--locked"],
+        "desc": "八个站点适配器与共用工具：协议夹具、规则声明、签名向量与错误分类",
+        "covers": ["C02", "C03", "C09", "C10"],
+        "cmd": ["cargo", "test", "--locked", *[arg for site in SITE_CRATES for arg in ("-p", site)]],
         "blocked_if_missing": ["cargo"],
+    },
+    "structure": {
+        "desc": "代码结构约束：IPC 层无 SQL、超长行、非测试文件规模",
+        "covers": ["C01"],
+        "cmd": [sys.executable, "scripts/check_structure.py"],
+        "blocked_if_missing": [],
     },
     "resources": {
         "desc": "静态与资源检查：凭证哨兵不回显、发行配置无测试端点、依赖许可台账存在",
-        "covers": ["C13", "C32"],
+        "covers": ["C12"],
         "cmd": None,  # 由 python 内部检查实现
         "blocked_if_missing": [],
     },
@@ -79,7 +88,7 @@ def resolve(cmd: list[str]) -> list[str]:
 def run(cmd: list[str], cwd: Path) -> tuple[int, str]:
     proc = subprocess.run(resolve(cmd), cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace")
     output=(proc.stdout or "") + (proc.stderr or "")
-    logs=ROOT/'artifacts'/'m1-verify-commands';logs.mkdir(parents=True,exist_ok=True)
+    logs=ROOT/'artifacts'/'evidence-runs'/'verify-commands';logs.mkdir(parents=True,exist_ok=True)
     log=logs/f'{time.time_ns()}.log';log.write_text(f"$ {' '.join(cmd)}\n{output}\nexitCode={proc.returncode}\n",encoding='utf8')
     return proc.returncode, f"Complete log: {log.relative_to(ROOT)}\n{output}"
 
@@ -121,10 +130,10 @@ def check_resources() -> tuple[str, str]:
             if data.get("test_allowed_hosts"):
                 problems.append(f"{f.relative_to(ROOT)} 含 test_allowed_hosts（发行/开发档案均不得默认放行）")
 
-    # 3) 依赖许可台账存在（P8 产物）。
+    # 3) 依赖许可台账存在。
     ledger = ROOT / "docs" / "delivery" / "dependency-licenses.md"
     if not ledger.exists():
-        problems.append("缺少依赖许可台账 docs/delivery/dependency-licenses.md（P8 交付物）")
+        problems.append("缺少依赖许可台账 docs/delivery/dependency-licenses.md（python scripts/gen_licenses.py 生成）")
 
     if problems:
         return "fail", "\n".join(problems)
@@ -134,7 +143,7 @@ def check_resources() -> tuple[str, str]:
 # 进程级测试通过 target/debug 定位 daemon 与适配器二进制；`cargo test` 不保证
 # 构建其他包的 bin，干净检出必须先构建工作区（2026-10-01 A 复核 F-001）。
 PREBUILD_CMD = ["cargo", "build", "--workspace", "--locked"]
-PREBUILD_ARTIFACTS = ["target/debug/trace-daemon.exe", "target/debug/trace-fake-adapter.exe", "target/debug/trace-adapter-bilibili.exe", "target/debug/trace-adapter-douyin.exe", "target/debug/m1_frame_probe.exe", "target/debug/m1_host_probe.exe", "target/debug/m1_lifecycle_adapter.exe"]
+PREBUILD_ARTIFACTS = ["target/debug/trace-daemon.exe", "target/debug/trace-fake-adapter.exe", *[f"target/debug/trace-adapter-{site}.exe" for site in SITES], "target/debug/frame_probe.exe", "target/debug/host_probe.exe", "target/debug/lifecycle_adapter.exe"]
 _prebuild_result: tuple[int, str] | None = None
 
 
@@ -198,14 +207,17 @@ def run_suite(name: str) -> dict:
 
 
 def main() -> int:
+    # JSON/CJK output must survive a redirected Windows console (GBK default).
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(description="TRACE verify suites")
     ap.add_argument("--suite", choices=sorted(SUITES), help="运行单个套件")
     ap.add_argument("--all", action="store_true", help="运行全部套件")
     ap.add_argument("--json", action="store_true", help="输出 JSON 摘要")
-    ap.add_argument("--stage-bundle", type=Path, help="核验 M1 完整阶段证据；缺项/过期/失败均拒绝")
+    ap.add_argument("--stage-bundle", type=Path, help="核验阶段证据报告（stage.py report 的产物）；缺项/过期/失败均拒绝")
     args = ap.parse_args()
     if args.stage_bundle:
-        errors=stage_evidence.validate(stage_evidence.read(args.stage_bundle))
+        errors=evidence.validate(evidence.read(args.stage_bundle))
         for error in errors:print('[FAIL]',error)
         if errors:return 1
         if not args.suite and not args.all:return 0

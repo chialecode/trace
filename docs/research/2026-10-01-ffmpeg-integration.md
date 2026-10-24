@@ -53,4 +53,4 @@ BtbN README 写明：每日 12:00 UTC 构建并自动发布；**每月最后一�
 
 实测 `-buildconf` 含 --enable-version3、--enable-shared、--disable-static、libopenh264，无 --enable-gpl/--enable-nonfree；`-L` 明确 **LGPL-3.0-or-later**，包内 LICENSE 是 LGPL version 3。曾误写 LGPL2.1，已在本轮修正并加脚本断言。OpenH264、第三方库和整体分发义务不能只靠“lgpl-shared”名字推断；完整公开分发许可核验仍归 Q-004。
 
-固定 AVC/AAC、无声视频、分轨流拷贝后的轨道/时长、两个 FLV 段 probe 用例通过。daemon 实现显式查找、receipt/摘要/版本核验、doctor 来源/变体/原因、异步超时取消和有界输出；本地便携包保存 DLL、LICENSE.txt、SOURCE.txt、verified.json 和全文件摘要。包与门禁事实见[交付报告](../delivery/stage-report.md)。本地验证不构成对外分发批准。
+固定 AVC/AAC、无声视频、分轨流拷贝后的轨道/时长、两个 FLV 段 probe 用例通过。daemon 实现显式查找、receipt/摘要/版本核验、doctor 来源/变体/原因、异步超时取消和有界输出；本地便携包保存 DLL、LICENSE.txt、SOURCE.txt、verified.json 和全文件摘要。包与门禁事实见[交付报告](https://github.com/chialecode/trace/blob/c1552e048ea608ba64deae820d127bbd5e969083/docs/delivery/stage-report.md)。本地验证不构成对外分发批准。

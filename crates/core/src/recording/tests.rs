@@ -1,8 +1,12 @@
 use super::*;
 use std::sync::Arc;
 
+const SELECT_LIVE_FRAGMENTS: &str = "SELECT sequence FROM live_fragments WHERE session_id=?1 AND state IN ('sealed','gap') ORDER BY sequence";
+const INSERT_CREDENTIALS_STATE: &str = "INSERT INTO credentials_state(credential_id,platform,vault_ref,status,created_at,updated_at) VALUES('login','bilibili','unused','valid','t','t')";
+const SELECT_JOBS: &str = "SELECT count(*) FROM jobs WHERE job_type='auth_completion'";
+
 #[tokio::test]
-async fn c12_fragment_authentication_actual_specs_gaps_restart_export_and_no_backfill() {
+async fn fragment_authentication_actual_specs_gaps_restart_export_and_no_backfill() {
     use trace_contracts::acquisition::{AcquisitionContext, AuthenticationState as Auth};
     let (dir, core, scan) = fixture().await;
     let job = recording_job(&core, &scan).await;
@@ -88,10 +92,19 @@ async fn c12_fragment_authentication_actual_specs_gaps_restart_export_and_no_bac
     .await
     .unwrap();
     let id = job.subject_id.clone();
-    let facts=core.db.read(move|c|{
-        let rows=c.prepare("SELECT sequence FROM live_fragments WHERE session_id=?1 AND state IN ('sealed','gap') ORDER BY sequence")?.query_map([&id],|r|r.get::<_,i64>(0))?.collect::<Result<Vec<_>,_>>()?;
-        rows.into_iter().map(|seq|crate::acquisitions::fragment(c,&id,seq)).collect::<Result<Vec<_>,_>>()
-    }).await.unwrap();
+    let facts = core
+        .db
+        .read(move |c| {
+            let rows = c
+                .prepare(SELECT_LIVE_FRAGMENTS)?
+                .query_map([&id], |r| r.get::<_, i64>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.into_iter()
+                .map(|seq| crate::acquisitions::fragment(c, &id, seq))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .await
+        .unwrap();
     for state in ["anonymous", "authenticated", "unknown", "expired"] {
         assert!(
             facts.iter().any(|v| v["authentication"] == state),
@@ -106,7 +119,16 @@ async fn c12_fragment_authentication_actual_specs_gaps_restart_export_and_no_bac
             .as_i64()
             .is_some_and(|n| n > 0)
     }));
-    core.db.write(|tx|{tx.execute("INSERT INTO credentials_state(credential_id,platform,vault_ref,status,created_at,updated_at) VALUES('login','bilibili','unused','valid','t','t')",[])?;tx.execute("UPDATE subscriptions SET credential_id='login'",[])?;crate::upgrades::schedule(tx,"login",1)?;assert_eq!(tx.query_row("SELECT count(*) FROM jobs WHERE job_type='auth_completion'",[],|r|r.get::<_,i64>(0))?,0);Ok(())}).await.unwrap();
+    core.db
+        .write(|tx| {
+            tx.execute(INSERT_CREDENTIALS_STATE, [])?;
+            tx.execute("UPDATE subscriptions SET credential_id='login'", [])?;
+            crate::upgrades::schedule(tx, "login", 1)?;
+            assert_eq!(tx.query_row(SELECT_JOBS, [], |r| r.get::<_, i64>(0))?, 0);
+            Ok(())
+        })
+        .await
+        .unwrap();
     let profile = core.profile.clone();
     core.shutdown().await;
     drop(core);
@@ -251,8 +273,14 @@ async fn http_bytes(bytes: Vec<u8>) -> (String, tokio::task::JoinHandle<()>) {
     (url, server)
 }
 
+const SELECT_LIVE_FRAGMENTS_2: &str = "SELECT f.source_sequence,COALESCE(f.reason,''),COALESCE(m.received_sha256,'') FROM live_fragments f JOIN materializations m ON m.subject_id=f.media_id";
+const SELECT_LIVE_FRAGMENTS_3: &str = "SELECT f.start_ms,f.end_ms,b.blob_id FROM live_fragments f JOIN media_items m ON m.media_id=f.media_id JOIN asset_selections a ON a.media_id=m.media_id JOIN media_variants v ON v.variant_id=a.variant_id JOIN blobs b ON b.blob_id=v.blob_id WHERE f.state='sealed' ORDER BY f.sequence";
+const SELECT_MEDIA_VARIANTS: &str = "SELECT v.blob_id FROM media_variants v JOIN media_items m ON m.media_id=v.media_id WHERE m.role='recording_source'";
+const SELECT_LIVE_FRAGMENTS_4: &str =
+    "SELECT count(*) FROM live_fragments WHERE state='gap' AND reason=?1";
+
 #[tokio::test]
-async fn c04_flv_recording_rotation_clock_codec_sleep_and_disk_full() {
+async fn flv_recording_rotation_clock_codec_sleep_and_disk_full() {
     let (dir, mut core, scan) = fixture_rotation(1).await;
     let job = recording_job(&core, &scan).await;
     let bytes = flv_sample(&core, &dir.path().join("one.flv"), "64x64");
@@ -267,7 +295,15 @@ async fn c04_flv_recording_rotation_clock_codec_sleep_and_disk_full() {
     };
     let received = receive(&core, &job, &stream).await;
     if received.is_err() {
-        let rows:Vec<(String,String,String)>=core.db.read(|c|Ok(c.prepare("SELECT f.source_sequence,COALESCE(f.reason,''),COALESCE(m.received_sha256,'') FROM live_fragments f JOIN materializations m ON m.subject_id=f.media_id")?.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<Result<Vec<_>,_>>()?)).await.unwrap();
+        let rows: Vec<(String, String, String)> = core
+            .db
+            .read(|c| {
+                Ok(c.prepare(SELECT_LIVE_FRAGMENTS_2)?
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect::<Result<Vec<_>, _>>()?)
+            })
+            .await
+            .unwrap();
         for (source, reason, sha) in rows {
             eprintln!("{source} {reason} {sha}");
             if !sha.is_empty() {
@@ -287,7 +323,15 @@ async fn c04_flv_recording_rotation_clock_codec_sleep_and_disk_full() {
     }
     assert!(!received.unwrap());
     server.abort();
-    let parts:Vec<(i64,i64,String)>=core.db.read(|c|Ok(c.prepare("SELECT f.start_ms,f.end_ms,b.blob_id FROM live_fragments f JOIN media_items m ON m.media_id=f.media_id JOIN asset_selections a ON a.media_id=m.media_id JOIN media_variants v ON v.variant_id=a.variant_id JOIN blobs b ON b.blob_id=v.blob_id WHERE f.state='sealed' ORDER BY f.sequence")?.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<Result<Vec<_>,_>>()?)).await.unwrap();
+    let parts: Vec<(i64, i64, String)> = core
+        .db
+        .read(|c| {
+            Ok(c.prepare(SELECT_LIVE_FRAGMENTS_3)?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<Result<Vec<_>, _>>()?)
+        })
+        .await
+        .unwrap();
     assert!(
         parts.len() >= 3,
         "source timestamps should rotate without reconnecting"
@@ -305,7 +349,11 @@ async fn c04_flv_recording_rotation_clock_codec_sleep_and_disk_full() {
             sha
         );
     }
-    let raw:String=core.db.read(|c|Ok(c.query_row("SELECT v.blob_id FROM media_variants v JOIN media_items m ON m.media_id=v.media_id WHERE m.role='recording_source'",[],|r|r.get(0))?)).await.unwrap();
+    let raw: String = core
+        .db
+        .read(|c| Ok(c.query_row(SELECT_MEDIA_VARIANTS, [], |r| r.get(0))?))
+        .await
+        .unwrap();
     assert_eq!(
         std::fs::read(
             core.objects
@@ -346,13 +394,7 @@ async fn c04_flv_recording_rotation_clock_codec_sleep_and_disk_full() {
         };
         let count: i64 = core
             .db
-            .read(move |c| {
-                Ok(c.query_row(
-                    "SELECT count(*) FROM live_fragments WHERE state='gap' AND reason=?1",
-                    [why],
-                    |r| r.get(0),
-                )?)
-            })
+            .read(move |c| Ok(c.query_row(SELECT_LIVE_FRAGMENTS_4, [why], |r| r.get(0))?))
             .await
             .unwrap();
         assert!(count > 0, "{why}");
@@ -377,7 +419,7 @@ async fn c04_flv_recording_rotation_clock_codec_sleep_and_disk_full() {
 }
 
 #[tokio::test]
-async fn c04_closed_capture_four_commit_windows_survive_cancel_and_restart() {
+async fn closed_capture_four_commit_windows_survive_cancel_and_restart() {
     let (dir, core, scan) = fixture().await;
     let job = recording_job(&core, &scan).await;
     let bytes = flv_sample(&core, &dir.path().join("one.flv"), "64x64");
@@ -476,8 +518,16 @@ async fn c04_closed_capture_four_commit_windows_survive_cancel_and_restart() {
     reopened.shutdown().await;
 }
 
+const SELECT_LIVE_FRAGMENTS_5: &str = "SELECT json_extract(evidence,'$.track'),start_ms,end_ms,source_sequence FROM live_fragments WHERE state='sealed' ORDER BY source_sequence";
+const SELECT_LIVE_FRAGMENTS_6: &str =
+    "SELECT count(*) FROM live_fragments WHERE state='superseded'";
+const SELECT_LIVE_SESSIONS: &str =
+    "SELECT json_extract(evidence,'$.subtitle_capture.state') FROM live_sessions";
+const SELECT_MEDIA_ITEMS: &str = "SELECT substr(v.blob_id,8) FROM media_items m JOIN media_variants v ON v.media_id=m.media_id WHERE m.role='subtitle'";
+const SELECT_LIVE_FRAGMENTS_7: &str = "SELECT json_array_length(f.evidence,'$.source_media_ids') FROM live_fragments f JOIN media_items m ON m.media_id=f.media_id WHERE m.role='subtitle' ORDER BY f.sequence DESC LIMIT 1";
+
 #[tokio::test]
-async fn c04_recording_commit_windows_and_independent_hls_audio() {
+async fn recording_commit_windows_and_independent_hls_audio() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let (dir, core, scan) = fixture().await;
     let job = recording_job(&core, &scan).await;
@@ -600,7 +650,15 @@ async fn c04_recording_commit_windows_and_independent_hls_audio() {
     );
     corrupt.store(false, Ordering::SeqCst);
     assert!(receive(&core, &job, &stream).await.unwrap());
-    let rows:Vec<(String,i64,i64,String)>=core.db.read(|c|Ok(c.prepare("SELECT json_extract(evidence,'$.track'),start_ms,end_ms,source_sequence FROM live_fragments WHERE state='sealed' ORDER BY source_sequence")?.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?.collect::<Result<Vec<_>,_>>()?)).await.unwrap();
+    let rows: Vec<(String, i64, i64, String)> = core
+        .db
+        .read(|c| {
+            Ok(c.prepare(SELECT_LIVE_FRAGMENTS_5)?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                .collect::<Result<Vec<_>, _>>()?)
+        })
+        .await
+        .unwrap();
     assert_eq!(rows.len(), 4);
     for track in ["main", "audio"] {
         let spans: Vec<_> = rows
@@ -612,13 +670,7 @@ async fn c04_recording_commit_windows_and_independent_hls_audio() {
     }
     let superseded: i64 = core
         .db
-        .read(|c| {
-            Ok(c.query_row(
-                "SELECT count(*) FROM live_fragments WHERE state='superseded'",
-                [],
-                |r| r.get(0),
-            )?)
-        })
+        .read(|c| Ok(c.query_row(SELECT_LIVE_FRAGMENTS_6, [], |r| r.get(0))?))
         .await
         .unwrap();
     assert_eq!(
@@ -652,11 +704,7 @@ async fn c04_recording_commit_windows_and_independent_hls_audio() {
     core.db
         .read(|c| {
             assert_eq!(
-                c.query_row(
-                    "SELECT json_extract(evidence,'$.subtitle_capture.state') FROM live_sessions",
-                    [],
-                    |r| r.get::<_, String>(0)
-                )?,
+                c.query_row(SELECT_LIVE_SESSIONS, [], |r| r.get::<_, String>(0))?,
                 "failed"
             );
             Ok(())
@@ -667,20 +715,50 @@ async fn c04_recording_commit_windows_and_independent_hls_audio() {
     for _ in 0..2 {
         assert!(receive(&core, &job, &stream).await.unwrap());
     }
-    let sha:String=core.db.read(|c|{
-        assert_eq!(c.query_row("SELECT count(*) FROM media_items WHERE role='subtitle'",[],|r|r.get::<_,i64>(0))?,1,"same segment does not duplicate");
-        assert!(c.query_row("SELECT required=0 FROM media_items WHERE role='subtitle'",[],|r|r.get::<_,bool>(0))?);
-        Ok(c.query_row("SELECT substr(v.blob_id,8) FROM media_items m JOIN media_variants v ON v.media_id=m.media_id WHERE m.role='subtitle'",[],|r|r.get(0))?)
-    }).await.unwrap();
+    let sha: String = core
+        .db
+        .read(|c| {
+            assert_eq!(
+                c.query_row(
+                    "SELECT count(*) FROM media_items WHERE role='subtitle'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                1,
+                "same segment does not duplicate"
+            );
+            assert!(c.query_row(
+                "SELECT required=0 FROM media_items WHERE role='subtitle'",
+                [],
+                |r| r.get::<_, bool>(0)
+            )?);
+            Ok(c.query_row(SELECT_MEDIA_ITEMS, [], |r| r.get(0))?)
+        })
+        .await
+        .unwrap();
     let bytes = std::fs::read(core.objects.object_path(&sha).unwrap()).unwrap();
     assert!(String::from_utf8(bytes).unwrap().contains("中文字幕"));
     subtitle_map.store(true, Ordering::SeqCst);
     assert!(receive(&core, &job, &stream).await.unwrap());
-    core.db.read(|c| {
-        assert_eq!(c.query_row("SELECT count(*) FROM media_items WHERE role='subtitle'",[],|r|r.get::<_,i64>(0))?,2);
-        assert_eq!(c.query_row("SELECT json_array_length(f.evidence,'$.source_media_ids') FROM live_fragments f JOIN media_items m ON m.media_id=f.media_id WHERE m.role='subtitle' ORDER BY f.sequence DESC LIMIT 1",[],|r|r.get::<_,i64>(0))?,2,"raw MAP and segment both retained");
-        Ok(())
-    }).await.unwrap();
+    core.db
+        .read(|c| {
+            assert_eq!(
+                c.query_row(
+                    "SELECT count(*) FROM media_items WHERE role='subtitle'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                2
+            );
+            assert_eq!(
+                c.query_row(SELECT_LIVE_FRAGMENTS_7, [], |r| r.get::<_, i64>(0))?,
+                2,
+                "raw MAP and segment both retained"
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
     core.db
         .write(|tx| {
             tx.execute("UPDATE live_sessions SET state='stopping'", [])?;
@@ -708,7 +786,7 @@ async fn c04_recording_commit_windows_and_independent_hls_audio() {
 }
 
 #[tokio::test]
-async fn c06_nested_hls_private_network_key_map_and_credential_scopes() {
+async fn nested_hls_private_network_key_map_and_credential_scopes() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let (_dir, core, scan) = fixture().await;
     let job = recording_job(&core, &scan).await;
@@ -793,7 +871,7 @@ async fn c06_nested_hls_private_network_key_map_and_credential_scopes() {
 }
 
 #[tokio::test]
-async fn c04_c05_same_session_manual_stop_offline_and_late_generation() {
+async fn same_session_manual_stop_offline_and_late_generation() {
     let (_dir, core, job) = fixture().await;
     let id = register(&core, &job, snapshot()).await.unwrap().unwrap();
     assert_eq!(
@@ -831,7 +909,7 @@ async fn c04_c05_same_session_manual_stop_offline_and_late_generation() {
 }
 
 #[tokio::test]
-async fn c04_local_identity_upgrade_and_new_broadcast_preserve_stop_and_history() {
+async fn local_identity_upgrade_and_new_broadcast_preserve_stop_and_history() {
     let (_dir, core, job) = fixture().await;
     let mut local = snapshot();
     local.source_session = None;
@@ -908,7 +986,7 @@ async fn c04_local_identity_upgrade_and_new_broadcast_preserve_stop_and_history(
 }
 
 #[tokio::test]
-async fn c04_real_ts_ingestion_dedup_and_missing_window_evidence() {
+async fn real_ts_ingestion_dedup_and_missing_window_evidence() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let (dir, core, job) = fixture().await;
     let sid = register(&core, &job, snapshot()).await.unwrap().unwrap();
@@ -1005,7 +1083,7 @@ async fn c04_real_ts_ingestion_dedup_and_missing_window_evidence() {
 }
 
 #[tokio::test]
-async fn c04_strict_quality_gap_survives_recovery_and_fallback_keeps_measured_media() {
+async fn strict_quality_gap_survives_recovery_and_fallback_keeps_measured_media() {
     let (dir, core, scan) = fixture().await;
     core.db.write(|tx|{tx.execute("UPDATE subscriptions SET quality_json='{\"min_height\":1080,\"strict\":true}' WHERE subscription_id='s'",[])?;Ok(())}).await.unwrap();
     let job = recording_job(&core, &scan).await;

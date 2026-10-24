@@ -2,6 +2,7 @@
 use crate::{
     config::Profile,
     error::CoreError,
+    network::{Mode, NetworkState, Setting, validate_proxy_url},
     pluginhost::{PluginHost, default_adapter_specs},
     request_budget::RequestBudget,
     transport::ConstrainedClient,
@@ -9,6 +10,7 @@ use crate::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc, time::Duration};
+use trace_domain::sites::NetworkAdvice;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,7 +31,7 @@ pub struct Step {
 }
 impl Spec {
     pub fn validate(&self) -> Result<(), CoreError> {
-        if !matches!(self.platform.as_str(), "bilibili" | "douyin")
+        if trace_domain::sites::site(&self.platform).is_none()
             || self.requests.is_empty()
             || self.requests.len() > 20
         {
@@ -60,6 +62,35 @@ impl Spec {
         Ok(())
     }
 }
+const SQL_ROWS: &str =
+    "one-shot protocol responses; no media download, archive write or subscription";
+
+/// The route of a check: the overseas sites go through the proxy named by
+/// `TRACE_TEST_PROXY` when it is set (the local test configuration), otherwise they follow
+/// the system like the product does.
+fn check_network() -> Arc<NetworkState> {
+    let network = Arc::new(NetworkState::default());
+    if let Ok(raw) = std::env::var("TRACE_TEST_PROXY")
+        && let Ok(url) = validate_proxy_url(&raw)
+    {
+        for site in trace_domain::sites::SITES
+            .iter()
+            .filter(|s| s.network == NetworkAdvice::ProxyRecommended)
+        {
+            network.set(
+                site.id,
+                Setting {
+                    mode: Mode::Manual,
+                    proxy_url: Some(url.clone()),
+                    auth_ref: None,
+                },
+                None,
+            );
+        }
+    }
+    network
+}
+
 pub async fn run(profile: Profile, spec: Spec) -> Result<Value, CoreError> {
     spec.validate()?;
     if !profile.test_allowed_hosts.is_empty() || !profile.extra_media_hosts.is_empty() {
@@ -89,7 +120,11 @@ pub async fn run(profile: Profile, spec: Spec) -> Result<Value, CoreError> {
         spec.deadline_seconds,
         spec.min_interval_ms,
     )?);
-    let http = Arc::new(ConstrainedClient::build()?.with_budget(budget.clone()));
+    let http = Arc::new(
+        ConstrainedClient::build()?
+            .with_network(check_network())
+            .with_budget(budget.clone()),
+    );
     let allowed_platform = spec.platform.clone();
     let host = PluginHost::new(
         profile.clone(),
@@ -113,7 +148,12 @@ pub async fn run(profile: Profile, spec: Spec) -> Result<Value, CoreError> {
                 }
                 match host.call_scoped(&spec.platform,None,&step.method,step.params.clone(),Some(30_000)).await {
                 Ok(value)=>results.push(json!({"step":index,"method":step.method,"status":"passed","safe_result":trace_contracts::content::safe_metadata(&value)})),
-                Err(error)=>{budget.stop();failure=Some(json!(error.failure_class()));results.push(json!({"step":index,"method":step.method,"status":"failed","failure_class":error.failure_class()}));break;}
+                Err(error)=>{budget.stop();failure=Some(json!(error.failure_class()));results.push(json!({
+                    "step": index,
+                    "method": step.method,
+                    "status": "failed",
+                    "failure_class": error.failure_class(),
+                }));break;}
             }
             }
         };
@@ -132,16 +172,24 @@ pub async fn run(profile: Profile, spec: Spec) -> Result<Value, CoreError> {
     }
     let budget_failed = budget.snapshot()["stopped"] == true;
     host.shutdown_all().await;
-    Ok(
-        json!({"platform":spec.platform,"status":if stopped || budget_failed || failure.is_some(){"failed"}else{"passed"},"credential_supplied":credential_present,"failure_class":failure,"interrupted_or_deadline":stopped,"budget":budget.snapshot(),"steps":results,"scope":"one-shot protocol responses; no media download, archive write or subscription","productAcceptance":"not-run"}),
-    )
+    Ok(json!({
+        "platform": spec.platform,
+        "status": if stopped || budget_failed || failure.is_some(){"failed"}else{"passed"},
+        "credential_supplied": credential_present,
+        "failure_class": failure,
+        "interrupted_or_deadline": stopped,
+        "budget": budget.snapshot(),
+        "steps": results,
+        "scope": SQL_ROWS,
+        "productAcceptance": "not-run",
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn c01_site_check_rejects_unbounded_and_write_operations_before_network() {
+    fn site_check_rejects_unbounded_and_write_operations_before_network() {
         for (method, maximum) in [("publish", 10), ("observe", 0), ("observe", 101)] {
             let spec = Spec {
                 platform: "douyin".into(),

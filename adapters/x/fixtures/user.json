@@ -1,0 +1,21 @@
+{
+ "data": {
+  "user": {
+   "result": {
+    "__typename": "User",
+    "rest_id": "1500000000000000001",
+    "is_blue_verified": false,
+    "core": {
+     "screen_name": "synthetic_user",
+     "name": "合成用户"
+    },
+    "legacy": {
+     "description": "合成简介",
+     "statuses_count": 6,
+     "followers_count": 3,
+     "protected": false
+    }
+   }
+  }
+ }
+}

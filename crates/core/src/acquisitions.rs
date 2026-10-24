@@ -35,6 +35,7 @@ pub async fn begin(
             context.credential_id = Some(id.clone());
             context.credential_generation = Some(generation);
             let scope = format!("{id}/g{generation}");
+            let mut proved_at: Option<String> = None;
             let result = if matches!(status.as_str(), "valid" | "authenticated") {
                 match core.vault.load(&reference).and_then(|bytes| {
                     String::from_utf8(bytes)
@@ -42,16 +43,21 @@ pub async fn begin(
                 }) {
                     Ok(secret) => {
                         core.cache_cookie(&format!("{platform}/{scope}"), secret);
-                        core.metadata_pacing(platform).await;
-                        core.host
-                            .call_scoped(
-                                platform,
-                                Some(&scope),
-                                "probe_auth",
-                                json!({}),
-                                Some(20000),
-                            )
-                            .await
+                        if let Some(at) = core.auth_proofs.recent(platform, &scope) {
+                            proved_at = Some(at);
+                            Ok(json!({"state": "valid"}))
+                        } else {
+                            core.metadata_pacing(platform).await;
+                            core.host
+                                .call_scoped(
+                                    platform,
+                                    Some(&scope),
+                                    "probe_auth",
+                                    json!({}),
+                                    Some(20000),
+                                )
+                                .await
+                        }
                     }
                     Err(e) => Err(e),
                 }
@@ -72,7 +78,13 @@ pub async fn begin(
                 }
                 _ => Auth::Unknown,
             };
-            context.validated_at = Some(jobs::now());
+            context.validated_at = Some(proved_at.unwrap_or_else(|| {
+                let at = jobs::now();
+                if context.auth_state == Auth::Authenticated {
+                    core.auth_proofs.note(platform, &scope, &at);
+                }
+                at
+            }));
             context.basis = "same_generation_batch_probe".into();
         }
         Ok(None) => {}
@@ -121,13 +133,30 @@ pub fn require_access(context: &AcquisitionContext) -> Result<(), CoreError> {
         )),
     }
 }
+const INSERT_ACQUISITION_CONTEXTS: &str = "INSERT INTO acquisition_contexts(context_id,entry_id,job_id,job_generation,subscription_id,credential_id,credential_generation,auth_state,validated_at,basis,started_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)";
+
 pub fn insert_context(
     tx: &Transaction<'_>,
     job: &ClaimedJob,
     entry: &str,
     c: &AcquisitionContext,
 ) -> Result<(), CoreError> {
-    tx.execute("INSERT INTO acquisition_contexts(context_id,entry_id,job_id,job_generation,subscription_id,credential_id,credential_generation,auth_state,validated_at,basis,started_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",rusqlite::params![c.context_id,entry,job.job_id,job.generation,job.payload["subscription_id"].as_str(),c.credential_id,c.credential_generation,c.auth_state.as_str(),c.validated_at,c.basis,c.started_at])?;
+    tx.execute(
+        INSERT_ACQUISITION_CONTEXTS,
+        rusqlite::params![
+            c.context_id,
+            entry,
+            job.job_id,
+            job.generation,
+            job.payload["subscription_id"].as_str(),
+            c.credential_id,
+            c.credential_generation,
+            c.auth_state.as_str(),
+            c.validated_at,
+            c.basis,
+            c.started_at
+        ],
+    )?;
     Ok(())
 }
 
@@ -230,8 +259,13 @@ pub fn summary(c: &Connection, entry: &str) -> Result<Value, CoreError> {
     Ok(json!({"state":label,"states":if states.is_empty(){vec!["unknown".to_owned()]}else{states}}))
 }
 
+const SELECT_LIVE_FRAGMENTS: &str = "SELECT COALESCE(x.auth_state,'unknown'),v.measured_spec FROM live_fragments f LEFT JOIN acquisition_contexts x ON x.context_id=f.context_id LEFT JOIN asset_selections s ON s.media_id=f.media_id LEFT JOIN media_variants v ON v.variant_id=s.variant_id WHERE f.session_id=?1 AND f.sequence=?2";
+
 pub fn fragment(c: &Connection, session: &str, sequence: i64) -> Result<Value, CoreError> {
-    Ok(c.query_row("SELECT COALESCE(x.auth_state,'unknown'),v.measured_spec FROM live_fragments f LEFT JOIN acquisition_contexts x ON x.context_id=f.context_id LEFT JOIN asset_selections s ON s.media_id=f.media_id LEFT JOIN media_variants v ON v.variant_id=s.variant_id WHERE f.session_id=?1 AND f.sequence=?2",rusqlite::params![session,sequence],|r|Ok(json!({"authentication":r.get::<_,String>(0)?,"actual_spec":r.get::<_,Option<String>>(1)?.and_then(|v|serde_json::from_str::<Value>(&v).ok())})))?)
+    Ok(c.query_row(SELECT_LIVE_FRAGMENTS,rusqlite::params![session,sequence],|r|Ok(json!({
+        "authentication": r.get::<_, String>(0)?,
+        "actual_spec": r.get::<_, Option<String>>(1)?.and_then(|v|serde_json::from_str::<Value>(&v).ok()),
+    })))?)
 }
 
 pub fn variant_summary(c: &Connection, variant: Option<&str>) -> rusqlite::Result<Value> {
@@ -244,6 +278,8 @@ pub fn variant_summary(c: &Connection, variant: Option<&str>) -> rusqlite::Resul
     Ok(json!({"state":label,"states":if states.is_empty(){vec!["unknown".to_owned()]}else{states}}))
 }
 
+const SELECT_CREDENTIALS_STATE: &str = "SELECT r.sequence,r.acquisition_id,x.context_id,x.auth_state,x.validated_at,x.basis,x.started_at,r.finished_at,r.media_id,r.variant_id,r.outcome,r.measured_spec,x.credential_id,x.credential_generation,EXISTS(SELECT 1 FROM credentials_state k WHERE k.credential_id=x.credential_id AND k.generation=x.credential_generation AND k.status IN ('valid','authenticated')) FROM resource_acquisitions r JOIN acquisition_contexts x ON x.context_id=r.context_id WHERE x.entry_id=?1 AND r.sequence<?2 ORDER BY r.sequence DESC LIMIT 51";
+
 pub async fn list(core: &Core, args: Value) -> Result<Value, CoreError> {
     let entry = args["entry_id"]
         .as_str()
@@ -251,7 +287,23 @@ pub async fn list(core: &Core, args: Value) -> Result<Value, CoreError> {
         .to_owned();
     let before = args["before"].as_i64().unwrap_or(i64::MAX);
     core.db.read(move|c|{
-        let mut rows=c.prepare("SELECT r.sequence,r.acquisition_id,x.context_id,x.auth_state,x.validated_at,x.basis,x.started_at,r.finished_at,r.media_id,r.variant_id,r.outcome,r.measured_spec,x.credential_id,x.credential_generation,EXISTS(SELECT 1 FROM credentials_state k WHERE k.credential_id=x.credential_id AND k.generation=x.credential_generation AND k.status IN ('valid','authenticated')) FROM resource_acquisitions r JOIN acquisition_contexts x ON x.context_id=r.context_id WHERE x.entry_id=?1 AND r.sequence<?2 ORDER BY r.sequence DESC LIMIT 51")?.query_map(rusqlite::params![entry,before],|r|Ok(json!({"sequence":r.get::<_,i64>(0)?,"acquisition_id":r.get::<_,String>(1)?,"context_id":r.get::<_,String>(2)?,"auth_state":r.get::<_,String>(3)?,"validated_at":r.get::<_,Option<String>>(4)?,"basis":r.get::<_,String>(5)?,"started_at":r.get::<_,String>(6)?,"finished_at":r.get::<_,String>(7)?,"media_id":r.get::<_,Option<String>>(8)?,"variant_id":r.get::<_,Option<String>>(9)?,"outcome":r.get::<_,String>(10)?,"measured_spec":serde_json::from_str::<Value>(&r.get::<_,String>(11)?).unwrap_or_default(),"credential_id":r.get::<_,Option<String>>(12)?,"credential_generation":r.get::<_,Option<i64>>(13)?,"current_credential_available":r.get::<_,bool>(14)?})))?.collect::<Result<Vec<_>,_>>()?;
+        let mut rows=c.prepare(SELECT_CREDENTIALS_STATE)?.query_map(rusqlite::params![entry,before],|r|Ok(json!({
+            "sequence": r.get::<_, i64>(0)?,
+            "acquisition_id": r.get::<_, String>(1)?,
+            "context_id": r.get::<_, String>(2)?,
+            "auth_state": r.get::<_, String>(3)?,
+            "validated_at": r.get::<_, Option<String>>(4)?,
+            "basis": r.get::<_, String>(5)?,
+            "started_at": r.get::<_, String>(6)?,
+            "finished_at": r.get::<_, String>(7)?,
+            "media_id": r.get::<_, Option<String>>(8)?,
+            "variant_id": r.get::<_, Option<String>>(9)?,
+            "outcome": r.get::<_, String>(10)?,
+            "measured_spec": serde_json::from_str::<Value>(&r.get::<_, String>(11)?).unwrap_or_default(),
+            "credential_id": r.get::<_, Option<String>>(12)?,
+            "credential_generation": r.get::<_, Option<i64>>(13)?,
+            "current_credential_available": r.get::<_, bool>(14)?,
+        })))?.collect::<Result<Vec<_>,_>>()?;
         let more=rows.len()>50;rows.truncate(50);let next=more.then(||rows.last().unwrap()["sequence"].clone());
         Ok(json!({"items":rows,"next_before":next,"summary":summary(c,&entry)?}))
     }).await

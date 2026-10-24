@@ -76,6 +76,8 @@ pub fn signed_url(base: &str, params: &[(String, String)], mixin: &str, wts: u64
 pub struct WbiCache {
     pub key: Option<String>,
     pub fetched_at: Option<std::time::Instant>,
+    /// Visitor identities of the space pages read for the list request.
+    pub web_ids: crate::browser::WebIds,
 }
 
 impl WbiCache {
@@ -108,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn c14_signed_url_uses_32_character_key_and_one_timestamp() {
+    fn signed_url_uses_32_character_key_and_one_timestamp() {
         let params = vec![
             ("foo".to_string(), "1".to_string()),
             ("bar".to_string(), "2".to_string()),

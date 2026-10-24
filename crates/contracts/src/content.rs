@@ -248,7 +248,7 @@ pub fn source_fps(v: &serde_json::Value) -> Option<f64> {
 mod tests {
     use super::*;
     #[test]
-    fn c06_nested_secrets_and_signed_urls_do_not_reach_archive() {
+    fn nested_secrets_and_signed_urls_do_not_reach_archive() {
         let value = serde_json::json!({"id":"90071992547409931","statistics":{"likes":12},"nested":[{"cookie":"sentinel","authentication_token":"sentinel","url_list":["https://cdn.invalid/?sign=sentinel"],"innocent":"https://cdn.invalid/?sign=sentinel"}],"encoded":"{\"token\":\"sentinel\"}"});
         let clean = safe_metadata(&value);
         assert!(!clean.to_string().contains("sentinel"));

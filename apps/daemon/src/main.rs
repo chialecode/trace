@@ -1,9 +1,10 @@
 //! TRACE daemon：独立后台进程（INV-06）。
 //!
-//! 启动流程（m1a-runtime-contracts §1）：
+//! 启动流程（windows-runtime-contracts §1）：
 //! 1. 先连接既有端点（握手成功即复用，"already running"）。
 //! 2. 否则获取 OS 排他锁 → 打开数据库 → 迁移 → 恢复扫描 → 发布端点。
 //! 3. 竞争失败者退出；握手成功才代表 ready，不凭 PID 文件判断。
+#![cfg_attr(test, allow(clippy::too_many_lines))]
 
 use serde_json::json;
 use std::io::Write as _;
@@ -78,9 +79,14 @@ fn run_site_check(mut profile: Profile, args: &[String]) -> ExitCode {
         let spec: trace_core::site_check::Spec = serde_json::from_slice(&std::fs::read(path)?)?;
         spec.validate()?;
         if !execute {
-            return Ok(
-                json!({"status":"not-run","requests":spec.requests.len(),"max_http_requests":spec.max_http_requests,"deadline_seconds":spec.deadline_seconds,"credential_file_configured":spec.credential_file.is_some(),"instruction":"Execute only within the concrete scope authorized in USER-ACTIONS."}),
-            );
+            return Ok(json!({
+                "status": "not-run",
+                "requests": spec.requests.len(),
+                "max_http_requests": spec.max_http_requests,
+                "deadline_seconds": spec.deadline_seconds,
+                "credential_file_configured": spec.credential_file.is_some(),
+                "instruction": "Execute only within the concrete scope authorized in USER-ACTIONS.",
+            }));
         }
         let output = value("--output").ok_or_else(|| {
             trace_core::error::CoreError::InvalidInput("new --output directory required".into())
@@ -94,7 +100,16 @@ fn run_site_check(mut profile: Profile, args: &[String]) -> ExitCode {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        let report = rt.block_on(trace_core::site_check::run(profile, spec)).unwrap_or_else(|error|json!({"status":"failed","failure_class":error.failure_class(),"phase":"initialization","productAcceptance":"not-run"}));
+        let report = rt
+            .block_on(trace_core::site_check::run(profile, spec))
+            .unwrap_or_else(|error| {
+                json!({
+                    "status": "failed",
+                    "failure_class": error.failure_class(),
+                    "phase": "initialization",
+                    "productAcceptance": "not-run",
+                })
+            });
         std::fs::write(
             std::path::Path::new(output).join("site-check.json"),
             serde_json::to_vec_pretty(&report)?,
@@ -193,8 +208,18 @@ fn run_start(profile: Profile) -> ExitCode {
             })
         );
         core.start_scheduler();
-        let notify_core=core.clone();
-        tokio::spawn(async move {let mut tick=tokio::time::interval(std::time::Duration::from_secs(5));loop{tokio::select!{_=notify_core.cancel.cancelled()=>break,_=tick.tick()=>{let _=trace_core::issues::deliver_pending(&notify_core).await;}}}});
+        let notify_core = core.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = notify_core.cancel.cancelled() => break,
+                    _ = tick.tick() => {
+                        let _ = trace_core::issues::deliver_pending(&notify_core).await;
+                    }
+                }
+            }
+        });
         let server = IpcServer { core: core.clone() };
         // 优雅停机：SIGINT/SIGTERM → shutdown（停止调度→关适配器）。
         let core2 = core.clone();
@@ -286,6 +311,14 @@ fn run_doctor(profile: &Profile) -> ExitCode {
     let backend = tokio::runtime::Runtime::new()
         .expect("doctor runtime")
         .block_on(trace_core::media::MediaBackend::detect(profile));
+    let tools = tokio::runtime::Runtime::new()
+        .expect("doctor runtime")
+        .block_on(async {
+            trace_core::media_tools::MediaTools::detect(profile)
+                .await
+                .status()
+                .await
+        });
     let webview2 = detect_webview2();
     let report = json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -298,6 +331,7 @@ fn run_doctor(profile: &Profile) -> ExitCode {
             "reason": backend.reason,
             "note": "缺失时仍可保存原件与外部打开；探测/封装能力受限并如实显示未知",
         },
+        "media_tools": tools,
         "webview2": webview2,
         "profile": {
             "archive_id": profile.archive_id,

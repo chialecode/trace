@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Local main window dragging and archive change subscriptions.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

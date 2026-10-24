@@ -1,10 +1,10 @@
-# M0/M1a 通用技术栈比较与选择
+# 通用技术栈比较与选择
 
-调研/复核：2026-09-26（Asia/Shanghai）。角色：Agent A。依据 DEC-002/008/009；选择已进入 [ADR 台账](../decisions/architecture-decisions.md)，执行见[唯一计划](https://github.com/chialecode/trace/blob/960984c34487244f31f1238dffc2bd9faaa292e7/docs/delivery/m0-m1a-execution-plan.md)。本文记录 A 的选择理由与版本候选；B 创建锁文件后，实际安装版本以锁文件和交付证据为准。
+调研/复核：2026-09-26（Asia/Shanghai）。角色：Agent A。依据 DEC-002/008/009；选择已进入 [ADR 台账](../decisions/architecture-decisions.md)，首批执行计划保存在[固定历史](https://github.com/chialecode/trace/blob/960984c34487244f31f1238dffc2bd9faaa292e7/docs/delivery/m0-m1a-execution-plan.md)。本文记录 A 的选择理由与版本候选；B 创建锁文件后，实际安装版本以锁文件和交付证据为准。
 
 ## 1. 结论与证据等级
 
-采用 Vue 3 + TypeScript + Vite + Naive UI + Pinia + Vue Router，桌面沿用 Tauri 2，独立 Rust daemon 使用 Tokio、rusqlite、SQLite 与可替换 FFmpeg/ffprobe。测试分为 Rust 故障/契约测试、Vitest 组件测试和 Windows 原生 WebdriverIO。M1a 不引入常驻 Node/Python 服务、云数据库或单独搜索服务。
+采用 Vue 3 + TypeScript + Vite + Naive UI + Pinia + Vue Router，桌面沿用 Tauri 2，独立 Rust daemon 使用 Tokio、rusqlite、SQLite 与可替换 FFmpeg/ffprobe。测试分为 Rust 故障/契约测试、Vitest 组件测试和 Windows 原生 WebdriverIO。不引入常驻 Node/Python 服务、云数据库或单独搜索服务。
 
 “注册表版本/许可”“维护活动”“官方文档描述”“临时兼容实测”“产品集成”是不同证据。此次只有前端最小组合进行了安装、类型检查、生产构建与 SSR 渲染测试；完整 Tauri、Rust 集成、媒体、原生测试、IME 和真实站点均 `not-run`。不得从下载量、stars、单个 PR 关闭或仓库的 latest release 推断兼容性。
 

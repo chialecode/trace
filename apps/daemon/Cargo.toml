@@ -9,6 +9,9 @@ authors.workspace = true
 name = "trace-daemon"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 trace-core.workspace = true
 trace-domain.workspace = true

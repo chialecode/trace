@@ -20,7 +20,7 @@ pub fn auxiliary(
     let visitor = if let Some(id) = cached {
         id
     } else {
-        let v = super::protocol::api(client, "/aweme/v1/web/query/user/", &[])?;
+        let v = crate::api::api(client, "/aweme/v1/web/query/user/", &[])?;
         let id = id(&v["id"])
             .filter(|s| s.len() <= 32 && s.bytes().all(|b| b.is_ascii_digit()))
             .ok_or_else(|| {
@@ -56,18 +56,18 @@ pub fn auxiliary(
         ("browser_platform", "Win32"),
         ("browser_language", "zh-CN"),
         ("browser_name", "Mozilla"),
-        ("browser_version", super::protocol::UA),
+        ("browser_version", crate::api::UA),
         ("browser_online", "true"),
     ]);
     let now = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64;
-    let sig = crate::signature::sign_at(url.query().unwrap_or(""), super::protocol::UA, now);
+    let sig = crate::signature::sign_at(url.query().unwrap_or(""), crate::api::UA, now);
     url.query_pairs_mut().append_pair("a_bogus", &sig);
     let v = client.json(
         url.as_str(),
-        json!({"referer":"https://live.douyin.com/","user-agent":super::protocol::UA}),
+        json!({"referer":"https://live.douyin.com/","user-agent":crate::api::UA}),
         true,
     )?;
-    auxiliary_map(&super::protocol::envelope(v)?, room)
+    auxiliary_map(&crate::api::envelope(v)?, room)
 }
 pub fn auxiliary_map(
     v: &Value,
@@ -120,8 +120,8 @@ pub fn probe(client: &Client, p: &Value) -> Result<LiveSnapshot, PluginError> {
         .append_pair("type_id", "0")
         .append_pair("live_id", "1")
         .append_pair("app_id", "1128");
-    let v = client.json(u.as_str(), json!({"user-agent":super::protocol::UA}), true)?;
-    super::protocol::envelope(v.clone())?;
+    let v = client.json(u.as_str(), json!({"user-agent":crate::api::UA}), true)?;
+    crate::api::envelope(v.clone())?;
     map(&v["data"]["room"])
 }
 pub fn map(room: &Value) -> Result<LiveSnapshot, PluginError> {
@@ -152,7 +152,16 @@ pub fn map(room: &Value) -> Result<LiveSnapshot, PluginError> {
         if let Some(map) = source[field].as_object() {
             for (q, u) in map {
                 if let Some(u) = u.as_str() {
-                    streams.push(LiveStream{protocol:protocol.into(),url:u.into(),quality:q.clone(),audio_only:room["room_layout"]==1,public_headers:json!({"referer":"https://live.douyin.com/","user-agent":super::protocol::UA})});
+                    streams.push(LiveStream {
+                        protocol: protocol.into(),
+                        url: u.into(),
+                        quality: q.clone(),
+                        audio_only: room["room_layout"] == 1,
+                        public_headers: json!({
+                            "referer": "https://live.douyin.com/",
+                            "user-agent": crate::api::UA,
+                        }),
+                    });
                 }
             }
         }
@@ -195,7 +204,7 @@ pub fn map(room: &Value) -> Result<LiveSnapshot, PluginError> {
     }
     for stream in &mut streams {
         stream.url = normalize_media_url(&stream.url)?;
-        stream.public_headers["user-agent"] = json!(super::protocol::UA);
+        stream.public_headers["user-agent"] = json!(crate::api::UA);
     }
     Ok(LiveSnapshot {
         room_key: key.clone(),
@@ -228,7 +237,7 @@ fn normalize_media_url(raw: &str) -> Result<String, PluginError> {
 mod tests {
     use super::*;
     #[test]
-    fn c14_https_normalization_is_exact_and_limited_to_verified_cdn() {
+    fn https_normalization_is_exact_and_limited_to_verified_cdn() {
         let raw = "http://pull-flv-fixture.douyinliving.com/live/a.flv?signature=unchanged%2Bbytes";
         assert_eq!(
             normalize_media_url(raw).unwrap(),
@@ -244,7 +253,7 @@ mod tests {
         }
     }
     #[test]
-    fn c04_douyin_live_auxiliary_preserves_id_and_rejects_cross_room() {
+    fn douyin_live_auxiliary_preserves_id_and_rejects_cross_room() {
         let data = json!({"status_code":0,"data":[{"common":{"method":"WebcastChatMessage","msg_id":"90071992547409931","room_id":"7","create_time":123},"user":{"nickname":"甲","token":"secret"},"content":"公开消息"},{"common":{"method":"WebcastGiftMessage","room_id":"7"},"content":"礼物"}],"internal_ext":"device-secret"});
         let page = auxiliary_map(&data, "7").unwrap();
         assert_eq!(page.messages.len(), 1);
@@ -256,7 +265,7 @@ mod tests {
         assert!(auxiliary_map(&json!({"data":null}), "7").is_err());
     }
     #[test]
-    fn c04_douyin_audio_live_and_ended_are_distinct() {
+    fn douyin_audio_live_and_ended_are_distinct() {
         let v = json!({"id_str":"90071992547409931","status":2,"room_layout":1,"stream_url":{"flv_pull_url":{"FULL_HD1":"https://cdn.douyincdn.com/1.flv?sign=secret"},"hls_pull_url":"https://cdn.douyincdn.com/1.m3u8"}});
         let r = map(&v).unwrap();
         assert_eq!(r.streams.len(), 2);

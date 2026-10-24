@@ -65,6 +65,7 @@ fn proxy_get(
         headers: json!({"user-agent": "trace-fake-adapter/0.1"}),
         max_bytes,
         with_credential: true,
+        body: None,
     };
     state.out.send(&PluginRequest {
         protocol_version: PLUGIN_PROTOCOL_VERSION.into(),
@@ -72,6 +73,7 @@ fn proxy_get(
         deadline_ms: Some(10_000),
         method: methods::PROXY_FETCH.into(),
         params: serde_json::to_value(&params).unwrap_or_default(),
+        context: Value::Null,
     });
     loop {
         let msg: Value = wire::read_frame(reader).map_err(|_| {
@@ -169,6 +171,7 @@ fn handle(
                 max_page_items: 20,
                 supports_cancel: false,
             },
+            rules: Vec::new(),
         })
         .map_err(|e| {
             plain_err(
@@ -208,9 +211,11 @@ fn handle(
                     title: e["heading"].as_str().unwrap_or("").to_string(),
                     published_at: e["epoch"].as_i64().map(fake_rfc3339),
                     published_precision: "source".into(),
+                    published_margin_seconds: None,
                     pinned: false,
                     summary_body: e["blurb"].as_str().map(str::to_string),
                     stats: e.get("stats").cloned().unwrap_or(Value::Null),
+                    hints: None,
                 })
                 .collect();
             serde_json::to_value(EnumeratedPage {
@@ -334,6 +339,12 @@ fn handle(
                 )
             })
         }
+        methods::RESOLVE_ACCOUNT => Ok(json!({
+            "native_account_key": "up-1",
+            "display_name": "合成创作者",
+            "profile_url": null,
+            "evidence": {"shape": "fake"},
+        })),
         methods::PROBE_AUTH => Ok(json!({"state":"valid","capability":{"synthetic":true}})),
         methods::CANCEL | methods::SHUTDOWN => Ok(json!({"ack": true})),
         other => Err(plain_err(

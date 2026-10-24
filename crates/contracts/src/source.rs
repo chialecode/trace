@@ -24,4 +24,7 @@ pub struct SourcePreviewArgs {
 pub struct SourceConfirmArgs {
     pub preview_id: String,
     pub selected: Vec<String>,
+    /// Where readable copies go once the entry is saved; absent means the library only.
+    #[serde(default)]
+    pub destination: Option<crate::preview::DownloadTarget>,
 }

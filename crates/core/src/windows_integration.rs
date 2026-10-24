@@ -41,6 +41,7 @@ pub fn notification_target(profile: &Profile) -> Result<(String, PathBuf), CoreE
         &mut saved.vault_dir,
         &mut saved.adapter_dir,
         &mut saved.media_dir,
+        &mut saved.tools_dir,
     ]
     .into_iter()
     .flatten()
@@ -337,7 +338,7 @@ pub fn startup_value(_: &str) -> Result<Option<String>, CoreError> {
 mod tests {
     use super::*;
     #[test]
-    fn c05_notification_fixed_activation_preserves_profile_and_rejects_injection() {
+    fn notification_fixed_activation_preserves_profile_and_rejects_injection() {
         let root = tempfile::tempdir().unwrap();
         let profile = Profile {
             archive_id: "synthetic-notification".into(),
@@ -393,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn c05_startup_quotes_paths_without_shell_execution() {
+    fn startup_quotes_paths_without_shell_execution() {
         let value = startup_command(
             Path::new(r"C:\Example Archive\trace-desktop.exe"),
             Path::new(r"C:\Synthetic Profiles\合成\profile.json"),

@@ -1,0 +1,25 @@
+[package]
+name = "trace-adapter-xiaohongshu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "trace-adapter-xiaohongshu"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+trace-site-support.workspace = true
+trace-contracts.workspace = true
+trace-domain.workspace = true
+serde_json.workspace = true
+url.workspace = true
+md-5.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+trace-site-support = { workspace = true, features = ["testing"] }

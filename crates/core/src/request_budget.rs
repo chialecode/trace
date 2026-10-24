@@ -2,6 +2,7 @@
 use crate::error::CoreError;
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -15,7 +16,14 @@ pub struct RequestBudget {
     state: Mutex<State>,
     media_limit: Option<usize>,
     audit_path: Option<std::path::PathBuf>,
+    /// Metadata bytes one run may receive.
+    byte_limit: usize,
 }
+/// Responses of a one-shot validation run together; read-only queries stay small.
+const VALIDATION_BYTES: usize = 8 * 1024 * 1024;
+/// What one metadata request of an acquisition run may add to its byte limit (page-state
+/// documents and feed pages of the newer sites run to a couple of megabytes).
+const BYTES_PER_REQUEST: usize = 2 * 1024 * 1024;
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct State {
@@ -23,9 +31,73 @@ struct State {
     bytes: usize,
     attempts: Vec<Value>,
     media_bytes: usize,
+    evidence_media: HashMap<String, usize>,
     media_reserved: usize,
     source_observations: Vec<Value>,
 }
+/// Endpoints whose path may appear in the validation record. Anything else (a page, a
+/// redirect, an address that carries an identity) is recorded as `<page-or-redirect>`.
+const AUDITED_PATHS: [&str; 41] = [
+    "/aweme/v1/web/aweme/detail/",
+    "/aweme/v1/web/aweme/post/",
+    "/aweme/v1/web/user/profile/other/",
+    "/aweme/v1/web/user/profile/self/",
+    "/aweme/v1/web/query/user/",
+    "/aweme/v1/web/mix/list/",
+    "/aweme/v1/web/series/list/",
+    "/aweme/v1/web/mix/aweme/",
+    "/x/web-interface/card",
+    "/x/web-interface/nav",
+    "/x/space/wbi/arc/search",
+    "/x/web-interface/view",
+    "/x/web-interface/wbi/view",
+    "/x/player/wbi/playurl",
+    "/x/player/wbi/v2",
+    "/x/polymer/web-dynamic/v1/feed/space",
+    "/x/polymer/web-dynamic/v1/detail",
+    "/x/polymer/web-dynamic/v1/opus/feed/space",
+    "/x/polymer/web-dynamic/v1/opus/detail",
+    "/x/space/article",
+    "/x/article/view",
+    "/x/article/list/web/articles",
+    "/audio/music-service-c/web/song/info",
+    "/audio/music-service-c/web/url",
+    "/room/v1/Room/room_init",
+    "/room/v1/Room/get_info",
+    "/xlive/web-room/v2/index/getRoomPlayInfo",
+    "/xlive/web-room/v1/dM/gethistory",
+    "/webcast/room/web/enter/",
+    "/webcast/room/reflow/info/",
+    "/webcast/im/fetch/",
+    "/ajax/profile/info",
+    "/ajax/statuses/mymblog",
+    "/ajax/statuses/show",
+    "/ajax/statuses/longtext",
+    "/ajax/config/get_config",
+    "/api/config",
+    "/youtubei/v1/browse",
+    "/api/post/item_list/",
+    "/api/graphql",
+    "/graphql/query",
+];
+
+/// The path to record for a request: a listed endpoint, a GraphQL operation of X (its name,
+/// never its id), or a placeholder. Never a query, a token or an identity.
+fn audited_path(path: &str) -> String {
+    if AUDITED_PATHS.contains(&path) {
+        return path.to_owned();
+    }
+    let operation = path
+        .strip_prefix("/i/api/graphql/")
+        .and_then(|rest| rest.split_once('/'))
+        .map(|(_, name)| name)
+        .filter(|name| !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric()));
+    match operation {
+        Some(name) => format!("/i/api/graphql/*/{name}"),
+        None => "<page-or-redirect>".to_owned(),
+    }
+}
+
 impl RequestBudget {
     pub fn new(maximum: usize, seconds: u64, interval_ms: u64) -> Result<Self, CoreError> {
         if !(1..=100).contains(&maximum)
@@ -44,6 +116,7 @@ impl RequestBudget {
             state: Mutex::new(State::default()),
             media_limit: None,
             audit_path: None,
+            byte_limit: VALIDATION_BYTES,
         })
     }
     pub fn acquisition(
@@ -72,6 +145,7 @@ impl RequestBudget {
             state: Mutex::new(state),
             media_limit: Some(limits.media_bytes),
             audit_path: Some(path),
+            byte_limit: VALIDATION_BYTES.max(limits.metadata_requests * BYTES_PER_REQUEST),
         })
     }
     fn persist(&self, state: &State) -> Result<(), CoreError> {
@@ -94,6 +168,19 @@ impl RequestBudget {
         url: &Url,
         metadata: bool,
     ) -> Result<usize, CoreError> {
+        self.begin_kind_with_evidence(method, url, metadata, None)
+            .await
+    }
+
+    /// The same request record with an opaque execution identity from Core. Only a bounded
+    /// identifier is retained so evidence can be attributed without persisting a URL or query.
+    pub async fn begin_kind_with_evidence(
+        &self,
+        method: &reqwest::Method,
+        url: &Url,
+        metadata: bool,
+        evidence_id: Option<&str>,
+    ) -> Result<usize, CoreError> {
         let mut last = self.serial.lock().await;
         if let Some(at) = *last {
             tokio::time::sleep(self.interval.saturating_sub(at.elapsed())).await;
@@ -109,55 +196,27 @@ impl RequestBudget {
                 >= self.maximum
                 && metadata
             || state.attempts.len() >= self.maximum + 256
-            || !matches!(*method, reqwest::Method::GET | reqwest::Method::HEAD)
+            || !(matches!(*method, reqwest::Method::GET | reqwest::Method::HEAD)
+                || (*method == reqwest::Method::POST && metadata))
         {
             state.stopped = true;
             return Err(CoreError::Cancelled);
         }
         let index = state.attempts.len();
         // Never log query, redirect token, Cookie or response body.
-        let path = if [
-            "/aweme/v1/web/aweme/detail/",
-            "/aweme/v1/web/aweme/post/",
-            "/aweme/v1/web/user/profile/other/",
-            "/aweme/v1/web/user/profile/self/",
-            "/aweme/v1/web/query/user/",
-            "/aweme/v1/web/mix/list/",
-            "/aweme/v1/web/series/list/",
-            "/aweme/v1/web/mix/aweme/",
-            "/x/web-interface/card",
-            "/x/web-interface/nav",
-            "/x/space/wbi/arc/search",
-            "/x/web-interface/view",
-            "/x/web-interface/wbi/view",
-            "/x/player/wbi/playurl",
-            "/x/player/wbi/v2",
-            "/x/polymer/web-dynamic/v1/feed/space",
-            "/x/polymer/web-dynamic/v1/detail",
-            "/x/polymer/web-dynamic/v1/opus/feed/space",
-            "/x/polymer/web-dynamic/v1/opus/detail",
-            "/x/space/article",
-            "/x/article/view",
-            "/x/article/list/web/articles",
-            "/audio/music-service-c/web/song/info",
-            "/audio/music-service-c/web/url",
-            "/room/v1/Room/room_init",
-            "/room/v1/Room/get_info",
-            "/xlive/web-room/v2/index/getRoomPlayInfo",
-            "/xlive/web-room/v1/dM/gethistory",
-            "/webcast/room/web/enter/",
-            "/webcast/room/reflow/info/",
-            "/webcast/im/fetch/",
-        ]
-        .contains(&url.path())
-        {
-            url.path()
-        } else {
-            "<page-or-redirect>"
-        };
-        state.attempts.push(
-            json!({"host":url.host_str(),"endpoint":path,"method":method.as_str(),"status":null,"metadata":metadata,"started_at":crate::jobs::now()}),
-        );
+        let path = audited_path(url.path());
+        let mut attempt = json!({
+            "host": url.host_str(),
+            "endpoint": path,
+            "method": method.as_str(),
+            "status": null,
+            "metadata": metadata,
+            "started_at": crate::jobs::now(),
+        });
+        if let Some(id) = safe_evidence_id(evidence_id) {
+            attempt["evidence_id"] = Value::String(id);
+        }
+        state.attempts.push(attempt);
         self.persist(&state)?;
         *last = Some(Instant::now());
         Ok(index)
@@ -175,7 +234,7 @@ impl RequestBudget {
     pub fn received(&self, bytes: usize) -> Result<(), CoreError> {
         let mut state = self.state.lock().unwrap();
         state.bytes = state.bytes.saturating_add(bytes);
-        if state.bytes > 8 * 1024 * 1024 {
+        if state.bytes > self.byte_limit {
             state.stopped = true;
             return Err(CoreError::InvalidInput(
                 "validation response byte budget".into(),
@@ -206,7 +265,15 @@ impl RequestBudget {
             .take(16)
             .map(|r| r["owner"].is_object())
             .collect::<Vec<_>>();
-        let observation = json!({"endpoint":"/webcast/room/web/enter/","body_bytes":body.len(),"json_valid":parsed.is_ok(),"status_code":value.and_then(|v|v["status_code"].as_i64()),"room_count":rooms.map(Vec::len),"room_states":states,"room_owner_present":owner_present});
+        let observation = json!({
+            "endpoint": "/webcast/room/web/enter/",
+            "body_bytes": body.len(),
+            "json_valid": parsed.is_ok(),
+            "status_code": value.and_then(|v|v["status_code"].as_i64()),
+            "room_count": rooms.map(Vec::len),
+            "room_states": states,
+            "room_owner_present": owner_present,
+        });
         let mut state = self.state.lock().unwrap();
         if state.source_observations.len() < 30 {
             state.source_observations.push(observation);
@@ -219,6 +286,14 @@ impl RequestBudget {
         let _ = self.persist(&s);
     }
     pub fn received_media(&self, bytes: usize) -> Result<(), CoreError> {
+        self.received_media_for(bytes, None)
+    }
+
+    pub fn received_media_for(
+        &self,
+        bytes: usize,
+        evidence_id: Option<&str>,
+    ) -> Result<(), CoreError> {
         let Some(limit) = self.media_limit else {
             return Ok(());
         };
@@ -232,6 +307,9 @@ impl RequestBudget {
             ));
         }
         s.media_bytes = next;
+        if let Some(id) = safe_evidence_id(evidence_id) {
+            *s.evidence_media.entry(id).or_default() += bytes;
+        }
         if next > s.media_reserved {
             s.media_reserved = next
                 .div_ceil(1024 * 1024)
@@ -243,15 +321,63 @@ impl RequestBudget {
     }
     pub fn snapshot(&self) -> Value {
         let s = self.state.lock().unwrap();
-        json!({"requests":s.attempts,"request_count":s.attempts.len(),"metadata_request_count":s.attempts.iter().filter(|v|v["metadata"]!=false).count(),"received_bytes":s.bytes,"media_received_bytes":s.media_bytes,"media_reserved_bytes":s.media_reserved,"stopped":s.stopped,"source_observations":s.source_observations})
+        json!({
+            "requests": s.attempts,
+            "request_count": s.attempts.len(),
+            "metadata_request_count": s.attempts.iter().filter(|v|v["metadata"]!=false).count(),
+            "received_bytes": s.bytes,
+            "media_received_bytes": s.media_bytes,
+            "evidence_media_bytes": s.evidence_media,
+            "media_reserved_bytes": s.media_reserved,
+            "stopped": s.stopped,
+            "source_observations": s.source_observations,
+        })
     }
+}
+
+fn safe_evidence_id(value: Option<&str>) -> Option<String> {
+    value
+        .filter(|id| {
+            (4..=160).contains(&id.len())
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        })
+        .map(str::to_owned)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_listed_endpoints_and_graphql_operation_names_reach_the_record() {
+        for listed in [
+            "/ajax/statuses/mymblog",
+            "/youtubei/v1/browse",
+            "/api/post/item_list/",
+            "/graphql/query",
+        ] {
+            assert_eq!(audited_path(listed), listed);
+        }
+        assert_eq!(
+            audited_path("/i/api/graphql/AbC-123_x/UserTweets"),
+            "/i/api/graphql/*/UserTweets"
+        );
+        for hidden in [
+            "/i/api/graphql/AbC/bad name",
+            "/i/api/graphql/AbC/",
+            "/@someone/video/7000000000000000001",
+            "/user/profile/5a1b2c3d4e5f60718293a4b5",
+            "/p/CxPhoto0001/",
+            "/",
+        ] {
+            assert_eq!(audited_path(hidden), "<page-or-redirect>", "{hidden}");
+        }
+    }
+
     #[tokio::test]
-    async fn c14_acquisition_budget_survives_restart_and_stops_on_denial() {
+    async fn acquisition_budget_survives_restart_and_stops_on_denial() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("budget.json");
         let limits = crate::config::AcquisitionLimits {
@@ -288,7 +414,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn c01_c06_validation_counts_each_redirect_and_stops_without_secrets() {
+    async fn validation_counts_each_redirect_and_stops_without_secrets() {
         let policy = RequestBudget::new(2, 30, 1000).unwrap();
         let url = Url::parse(
             "https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=7&token=PRIVATE_TOKEN",
@@ -308,8 +434,51 @@ mod tests {
             assert!(policy.begin(&reqwest::Method::GET, &url).await.is_err());
             assert_eq!(policy.snapshot()["request_count"], 1);
         }
+        // A read-only metadata query may be a POST; media never is.
         let policy = RequestBudget::new(2, 30, 1000).unwrap();
-        assert!(policy.begin(&reqwest::Method::POST, &url).await.is_err());
+        assert!(
+            policy
+                .begin_kind(&reqwest::Method::POST, &url, false)
+                .await
+                .is_err()
+        );
+        let policy = RequestBudget::new(2, 30, 1000).unwrap();
+        assert!(policy.begin(&reqwest::Method::POST, &url).await.is_ok());
         assert!(policy.received(8 * 1024 * 1024 + 1).is_err());
+    }
+
+    #[tokio::test]
+    async fn request_evidence_keeps_only_an_opaque_execution_identity_and_per_context_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let limits = crate::config::AcquisitionLimits {
+            metadata_requests: 3,
+            media_bytes: 1024,
+            interval_ms: 2000,
+        };
+        let policy = RequestBudget::acquisition(&limits, dir.path().join("budget.json")).unwrap();
+        let url = Url::parse("https://api.bilibili.com/x/web-interface/view?bvid=SECRET").unwrap();
+        let index = policy
+            .begin_kind_with_evidence(&reqwest::Method::GET, &url, true, Some("ctx-safe-01"))
+            .await
+            .unwrap();
+        policy.response(index, Some(200));
+        let bad = policy
+            .begin_kind_with_evidence(
+                &reqwest::Method::GET,
+                &url,
+                true,
+                Some("token/SHOULD-NOT-PERSIST"),
+            )
+            .await
+            .unwrap();
+        policy.response(bad, Some(200));
+        policy.received_media_for(64, Some("ctx-safe-01")).unwrap();
+        let snapshot = policy.snapshot();
+        assert_eq!(snapshot["requests"][0]["endpoint"], "/x/web-interface/view");
+        assert_eq!(snapshot["requests"][0]["evidence_id"], "ctx-safe-01");
+        assert!(snapshot["requests"][1].get("evidence_id").is_none());
+        assert_eq!(snapshot["evidence_media_bytes"]["ctx-safe-01"], 64);
+        assert!(!snapshot.to_string().contains("SECRET"));
+        assert!(!snapshot.to_string().contains("SHOULD-NOT-PERSIST"));
     }
 }

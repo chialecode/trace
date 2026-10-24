@@ -6,6 +6,7 @@
 //! 的不可猜测性。
 
 use crate::error::CoreError;
+use crate::store;
 use std::os::windows::io::RawHandle;
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,6 +36,8 @@ use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::core::PCWSTR;
 
 /// PIPE_ACCESS_DUPLEX = 0x3（GENERIC_READ|GENERIC_WRITE）。
+/// Change events one tick sends to the client.
+const OUTBOX_BATCH: i64 = 64;
 const PIPE_ACCESS_DUPLEX: u32 = 0x0000_0003;
 /// FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000。
 const FILE_FLAG_FIRST_PIPE_INSTANCE: u32 = 0x0008_0000;
@@ -256,10 +259,7 @@ async fn handle_session(
     write_frame(&mut server, &ServerFrame::Hello(hello_resp)).await?;
 
     // 主循环：请求→响应；Outbox 增量事件与进度事件穿插。
-    let mut outbox_seq: i64 = core
-        .db
-        .read(|c| Ok(c.query_row("SELECT COALESCE(max(seq),0) FROM outbox", [], |r| r.get(0))?))
-        .await?;
+    let mut outbox_seq: i64 = core.db.read(store::outbox::latest_seq).await?;
     let mut decoder = FrameReader::default();
     let mut event_tick = tokio::time::interval(Duration::from_millis(400));
     let mut progress_rx = core.hub.subscribe();
@@ -285,17 +285,11 @@ async fn handle_session(
                 }
             }
             _ = event_tick.tick() => {
-                let events: Vec<(i64, String, String, String, String)> = {
+                let events = {
                     let start = outbox_seq;
-                    core.db.read(move |c| {
-                        let mut stmt = c.prepare(
-                            "SELECT seq, topic, aggregate_id, payload, created_at FROM outbox WHERE seq > ?1 ORDER BY seq LIMIT 64",
-                        )?;
-                        let rows = stmt.query_map([start], |r| {
-                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-                        })?.collect::<Result<Vec<_>, _>>()?;
-                        Ok(rows)
-                    }).await?
+                    core.db
+                        .read(move |c| store::outbox::after(c, start, OUTBOX_BATCH))
+                        .await?
                 };
                 for (seq, topic, aggregate_id, payload, created_at) in events {
                     outbox_seq = seq;
@@ -399,7 +393,7 @@ impl FrameReader {
 mod framing_tests {
     use super::*;
     #[tokio::test]
-    async fn f013_fragmented_frame_survives_competing_events() {
+    async fn fragmented_frame_survives_competing_events() {
         let (mut tx, mut rx) = tokio::io::duplex(32);
         let payload = vec![42; 800_000];
         let expected = payload.clone();

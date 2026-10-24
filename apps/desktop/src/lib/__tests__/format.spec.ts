@@ -9,6 +9,7 @@ import {
   platformOf,
   qualityLabel,
   saveProgressLabel,
+  timePrecisionLabel,
 } from "../format";
 
 describe("状态文案（正交状态分开陈述）", () => {
@@ -58,6 +59,13 @@ describe("格式化", () => {
   it("平台命名空间取首段", () => {
     expect(platformOf("bilibili")).toBe("bilibili");
     expect(platformOf("fake:instance-a")).toBe("fake");
+  });
+
+  it("an_approximate_publish_time_is_described_as_approximate_never_as_the_source_time", () => {
+    expect(timePrecisionLabel("source")).toBe("站点给出");
+    expect(timePrecisionLabel("approximate")).toContain("约略");
+    expect(timePrecisionLabel("day")).toBe("精确到日期");
+    expect(timePrecisionLabel(null)).toBe("未知");
   });
 
   it("媒体摘要区分无声与未保存", () => {

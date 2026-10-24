@@ -1,4 +1,4 @@
-//! 凭证 vault：Windows DPAPI current-user 加密（INV-10，m1a-runtime-contracts §4）。
+//! 凭证 vault：Windows DPAPI current-user 加密（INV-10，windows-runtime-contracts §4）。
 //!
 //! - 文件存放于用户私有目录，按 archive_id 隔离；目录 ACL 仅当前用户。
 //! - 加密失败/ACL 失败一律拒绝保存，绝不降级明文。

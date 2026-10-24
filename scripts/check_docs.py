@@ -184,6 +184,12 @@ def validate(root: Path) -> tuple[list[str], dict[str, int]]:
             if fragment not in anchor_map.get(path, set()):
                 problem(f'{path}: removed stable anchor {fragment}')
 
+    statuses = {m[1]: m[2].strip() for m in re.finditer(r'^\| (FR-[A-Z]+-\d{3}) \| ([^|]+) \|', req_text, re.M)}
+
+    def status_of(rid: str) -> str:
+        text = statuses.get(rid, '已实现')  # non-functional rows are always in force
+        return 'current' if text.startswith('本阶段') else 'pending' if text.startswith('待实现') else 'implemented'
+
     mapping = read_json('docs/delivery/requirements-map.json')
     mapped: set[str] = set()
     for row in mapping.get('requirements', []):
@@ -193,12 +199,22 @@ def validate(root: Path) -> tuple[list[str], dict[str, int]]:
         mapped.add(rid)
         if rid not in definitions['requirements']:
             problem(f'{rid}: mapping without requirement definition')
-        first, complete = row.get('firstStage'), row.get('completeStage')
-        first_number, complete_number = stage_number(first), stage_number(complete)
-        if first_number is None or complete_number is None:
-            problem(f'{rid}: invalid delivery stage')
-        elif first_number > complete_number:
-            problem(f'{rid}: first stage after complete stage')
+        expected = status_of(rid)
+        if row.get('status') != expected:
+            problem(f'{rid}: map status {row.get("status")!r} differs from requirements.md ({expected!r})')
+        scope = row.get('current') or {}
+        if scope.get('plan') != mapping.get('currentPlan'):
+            problem(f'{rid}: current scope is not bound to the current plan')
+        if scope.get('applicable') != (expected != 'pending'):
+            problem(f'{rid}: applicability disagrees with status')
+        if scope.get('applicable'):
+            if not scope.get('implementation') or not scope.get('testCases') or not scope.get('workPackages') or not scope.get('caseGroups'):
+                problem(f'{rid}: applicable requirement lacks implementation, tests, work packages or case groups')
+            for path in scope.get('implementation', []):
+                if not (root / path).is_file():
+                    problem(f'{rid}: implementation file does not exist: {path}')
+        elif any(scope.get(key) for key in ('implementation', 'testCases', 'workPackages', 'caseGroups')):
+            problem(f'{rid}: a pending requirement cannot claim implementation or tests')
         if row.get('designAnchor') not in anchor_map.get('docs/design.md', set()):
             problem(f'{rid}: invalid design anchor')
         if not row.get('acceptance') or not set(row['acceptance']) <= set(definitions['acceptance']):

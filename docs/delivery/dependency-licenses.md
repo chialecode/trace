@@ -1,9 +1,9 @@
-# 依赖许可台账（M1）
+# 依赖许可台账
 
-生成时间（UTC）：2026-10-09 17:48；生成器：`scripts/gen_licenses.py`（cargo metadata + pnpm licenses）。
+生成时间（UTC）：2026-10-17 05:33；生成器：`scripts/gen_licenses.py`（cargo metadata + pnpm licenses）。
 本表为直接/传递依赖的许可见证；许可证文本以各依赖包内文件为准。
 
-## Rust 依赖（539 个包）
+## Rust 依赖（542 个包）
 
 ### (Apache-2.0 OR MIT) AND BSD-3-Clause（1）
 
@@ -145,7 +145,7 @@
 
 - aws-lc-sys 0.45.0
 
-### MIT（118）
+### MIT（120）
 
 - atk 0.18.2
 - atk-sys 0.18.2
@@ -247,6 +247,8 @@
 - tracing-log 0.2.0
 - tracing-subscriber 0.3.23
 - try-lock 0.2.5
+- ts-rs 12.0.1
+- ts-rs-macros 12.0.1
 - urlpattern 0.3.0
 - valuable 0.1.1
 - version-compare 0.2.1
@@ -604,7 +606,7 @@
 - zerovec 0.11.8
 - zerovec-derive 0.11.6
 
-### Unlicense OR MIT（9）
+### Unlicense OR MIT（10）
 
 - aho-corasick 1.1.5
 - byteorder 1.5.0
@@ -614,6 +616,7 @@
 - jiff-tzdb 0.1.8
 - jiff-tzdb-platform 0.1.3
 - memchr 2.8.3
+- termcolor 1.4.1
 - winapi-util 0.1.11
 
 ### Unlicense/MIT（2）
@@ -646,7 +649,7 @@
 - objc2-web-kit 0.3.2
 - tinyvec 1.13.3
 
-## 前端依赖（168 个包）
+## 前端依赖（169 个包）
 
 ### Apache-2.0（5）
 
@@ -695,7 +698,7 @@
 - saxes ?
 - semver ?
 
-### MIT（138）
+### MIT（139）
 
 - @asamuzakjp/css-color ?
 - @asamuzakjp/dom-selector ?
@@ -800,6 +803,7 @@
 - pinia ?
 - pkg-types ?
 - postcss ?
+- prettier ?
 - punycode ?
 - quansync ?
 - readdirp ?
@@ -853,9 +857,16 @@
 - Douyin A-Bogus采用的MIT实现及固定版本归属见adapters/douyin/NOTICE；打包随附该通知。协议资料不作为二进制依赖。
 - 台账随依赖升级重新生成；与 Cargo.lock / pnpm-lock.yaml 同提交。
 
-## 本地媒体资产（TRACE-CLOSEOUT-02）
+## 本地媒体资产
 
 - BtbN FFmpeg / ffprobe n9.0.2-17-g2a571b6068-20260930，lgpl-shared / LGPL-3.0-or-later；资产 SHA-256 `7157177b8a6cb2174c1650ba8c71b363f2c78cba5330f88c4c02cf5b2b880646`。
 - 来源与可复现获取见根 media-backend.lock.json、scripts/fetch_media.py；已核对两程序版本相同、构建选项无 --enable-gpl / --enable-nonfree。
 - 已执行 -L 确认 LGPL-3.0-or-later（启用 --enable-version3）；LGPL 共享库及 OpenH264 等资产内第三方组件的许可证以资产 LICENSE.txt、buildconf 与对应源码为依据。局部测试/打包不构成法律或对外分发批准。
 - 本地便携验证包保存 LICENSE.txt、SOURCE.txt、verified.json 与逐文件摘要；正式分发仍由 USER-ACTIONS Q-004 决定并复核对应源码与通知义务。
+
+## 外部媒体解析工具（YouTube）
+
+- yt-dlp 2026.08.19，Unlicense；资产 SHA-256 `66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a`；yt-dlp-ejs 0.8.0 (Unlicense, with MIT/ISC parts); further third-party parts listed in THIRD_PARTY_LICENSES.txt。
+- Deno 2.9.7，MIT；资产 SHA-256 `a0c3101b4158d1dfb7d6a78a7bf0f3de80c96bb423c152beec8beb22786f2238`（官方发布压缩包内的 `deno.exe`）。
+- 两者均为锁定版本的独立可执行文件，不修改上游、不自我更新，由 Core 以固定参数调用，不接收 Cookie；版本、地址与摘要见根 media-tools.lock.json，获取与校验见 scripts/fetch_media_tools.py。
+- 便携包的 `tools/` 保存两个程序、上游许可文本（yt-dlp-LICENSE.txt、yt-dlp-THIRD_PARTY_LICENSES.txt、deno-LICENSE.md）、SOURCE.txt、verified.json 与逐文件摘要；二进制内含的第三方组件以随包许可文本为准。局部测试/打包不构成对外分发批准，正式分发复核同上。

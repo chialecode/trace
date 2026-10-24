@@ -1,0 +1,4 @@
+# ts-rs writes the TypeScript types of the contract DTOs here when the contracts tests run
+# (`cargo test -p trace-contracts`); scripts/check_generated_types.py verifies they are current.
+[env]
+TS_RS_EXPORT_DIR = { value = "apps/desktop/src/lib/generated", relative = true }

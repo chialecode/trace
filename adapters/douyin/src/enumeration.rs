@@ -118,7 +118,7 @@ pub fn enumerate(client: &Client, params: &EnumerateParams) -> Result<Enumerated
         .iter()
         .map(|(k, v)| (*k, v.as_str()))
         .collect::<Vec<_>>();
-    let reply = super::protocol::api(client, path, &query)?;
+    let reply = crate::api::api(client, path, &query)?;
     advance(
         cursor,
         reply,
@@ -158,146 +158,170 @@ fn check_authors(v: &Value, account: &str) -> Result<(), PluginError> {
     }
     Ok(())
 }
+type Step = (EnumeratedPage, Option<Cursor>);
+
 fn advance(
     cursor: Cursor,
-    mut v: Value,
+    v: Value,
     lane: &str,
     account: &str,
 ) -> Result<EnumeratedPage, PluginError> {
-    let mut page;
-    let next;
-    match cursor {
-        Cursor::Post { cursor: previous } => {
-            check_authors(&v, account)?;
-            page = super::protocol::page(&v, lane)?;
-            next = if page.has_more {
-                let cursor = page
-                    .next_cursor
-                    .take()
-                    .filter(|s| number(s) && s != &previous)
-                    .ok_or_else(invalid)?;
-                Some(Cursor::Post { cursor })
-            } else {
-                Some(Cursor::List {
-                    cursor: "0".into(),
-                    series: false,
-                })
-            };
-        }
+    let (mut page, next) = match cursor {
+        Cursor::Post { cursor: previous } => advance_post(&v, lane, account, &previous)?,
         Cursor::List {
             cursor: previous,
             series,
-        } => {
-            let has_more = more(&v)?;
-            let next_list = if has_more {
-                Some(
-                    id(&v["cursor"])
-                        .filter(|s| number(s) && s != &previous)
-                        .ok_or_else(invalid)?,
-                )
-            } else {
-                None
-            };
-            let list = if series {
-                v.get("series_infos")
-            } else {
-                v.get("mix_infos").or_else(|| v.get("mix_list"))
-            }
-            .ok_or_else(invalid)?;
-            let empty = Vec::new();
-            let list = if list.is_null() && !has_more {
-                &empty
-            } else {
-                list.as_array().ok_or_else(invalid)?
-            };
-            if list.len() > 20 {
-                return Err(invalid());
-            }
-            let mut ids = Vec::new();
-            for item in list {
-                let item = item
-                    .get("mix_info")
-                    .filter(|v| v.is_object())
-                    .unwrap_or(item);
-                if item["author"]["sec_uid"]
-                    .as_str()
-                    .is_some_and(|key| key != account)
-                {
-                    return Err(invalid());
-                }
-                let key = id(&item[if series { "series_id" } else { "mix_id" }])
-                    .filter(|s| number(s))
-                    .ok_or_else(invalid)?;
-                if !ids.contains(&key) {
-                    ids.push(key)
-                }
-            }
-            next = if ids.is_empty() {
-                list_continuation(series, next_list)
-            } else {
-                Some(Cursor::Items {
-                    ids,
-                    cursor: "0".into(),
-                    next_list,
-                    series,
-                })
-            };
-            page = EnumeratedPage {
-                items: vec![],
-                next_cursor: None,
-                has_more: false,
-                coverage: json!({"source":if series {"series.list"} else {"mix.list"},"collections_observed":list.len(),"history":"unknown"}),
-            };
-        }
+        } => advance_list(&v, account, &previous, series)?,
         Cursor::Items {
-            mut ids,
+            ids,
             cursor: previous,
             next_list,
             series,
-        } => {
-            check_authors(&v, account)?;
-            let key = ids[0].clone();
-            v["max_cursor"] = v["cursor"].clone();
-            page = super::protocol::page(&v, lane)?;
-            page.coverage = json!({"source":"mix.aweme","collection_id":key,"collection_source":if series {"series"} else {"mix"},"observed_count":v["aweme_list"].as_array().map(Vec::len),"history":"unknown"});
-            next = if page.has_more {
-                let cursor = page
-                    .next_cursor
-                    .take()
-                    .filter(|s| number(s) && s != &previous)
-                    .ok_or_else(invalid)?;
-                Some(Cursor::Items {
-                    ids,
-                    cursor,
-                    next_list,
-                    series,
-                })
-            } else {
-                ids.remove(0);
-                if ids.is_empty() {
-                    list_continuation(series, next_list)
-                } else {
-                    Some(Cursor::Items {
-                        ids,
-                        cursor: "0".into(),
-                        next_list,
-                        series,
-                    })
-                }
-            };
-        }
-    }
+        } => advance_items(v, lane, account, (ids, previous, next_list), series)?,
+    };
     page.has_more = next.is_some();
     page.next_cursor = next.map(|c| c.encode());
     page.coverage["all_sources_exhausted"] = json!(!page.has_more);
     Ok(page)
 }
 
+/// The account's own posts; after the last page the sweep moves on to its collections.
+fn advance_post(v: &Value, lane: &str, account: &str, previous: &str) -> Result<Step, PluginError> {
+    check_authors(v, account)?;
+    let mut page = crate::post::page(v, lane)?;
+    let next = if page.has_more {
+        let cursor = page
+            .next_cursor
+            .take()
+            .filter(|s| number(s) && s != previous)
+            .ok_or_else(invalid)?;
+        Some(Cursor::Post { cursor })
+    } else {
+        Some(Cursor::List {
+            cursor: "0".into(),
+            series: false,
+        })
+    };
+    Ok((page, next))
+}
+
+/// A list of the account's mixes or series; produces no entries, only collection ids.
+fn advance_list(
+    v: &Value,
+    account: &str,
+    previous: &str,
+    series: bool,
+) -> Result<Step, PluginError> {
+    let has_more = more(v)?;
+    let next_list = if has_more {
+        Some(
+            id(&v["cursor"])
+                .filter(|s| number(s) && s != previous)
+                .ok_or_else(invalid)?,
+        )
+    } else {
+        None
+    };
+    let list = if series {
+        v.get("series_infos")
+    } else {
+        v.get("mix_infos").or_else(|| v.get("mix_list"))
+    }
+    .ok_or_else(invalid)?;
+    let empty = Vec::new();
+    let list = if list.is_null() && !has_more {
+        &empty
+    } else {
+        list.as_array().ok_or_else(invalid)?
+    };
+    if list.len() > 20 {
+        return Err(invalid());
+    }
+    let mut ids = Vec::new();
+    for item in list {
+        let item = item
+            .get("mix_info")
+            .filter(|v| v.is_object())
+            .unwrap_or(item);
+        if item["author"]["sec_uid"]
+            .as_str()
+            .is_some_and(|key| key != account)
+        {
+            return Err(invalid());
+        }
+        let key = id(&item[if series { "series_id" } else { "mix_id" }])
+            .filter(|s| number(s))
+            .ok_or_else(invalid)?;
+        if !ids.contains(&key) {
+            ids.push(key)
+        }
+    }
+    let next = if ids.is_empty() {
+        list_continuation(series, next_list)
+    } else {
+        Some(Cursor::Items {
+            ids,
+            cursor: "0".into(),
+            next_list,
+            series,
+        })
+    };
+    let page = EnumeratedPage {
+        items: vec![],
+        next_cursor: None,
+        has_more: false,
+        coverage: json!({"source":if series {"series.list"} else {"mix.list"},"collections_observed":list.len(),"history":"unknown"}),
+    };
+    Ok((page, next))
+}
+
+/// Posts of the first pending collection; `pending` is (ids, previous cursor, next list cursor).
+fn advance_items(
+    mut v: Value,
+    lane: &str,
+    account: &str,
+    pending: (Vec<String>, String, Option<String>),
+    series: bool,
+) -> Result<Step, PluginError> {
+    let (mut ids, previous, next_list) = pending;
+    check_authors(&v, account)?;
+    let key = ids[0].clone();
+    v["max_cursor"] = v["cursor"].clone();
+    let mut page = crate::post::page(&v, lane)?;
+    page.coverage = json!({"source":"mix.aweme","collection_id":key,"collection_source":if series {"series"} else {"mix"},"observed_count":v["aweme_list"].as_array().map(Vec::len),"history":"unknown"});
+    let next = if page.has_more {
+        let cursor = page
+            .next_cursor
+            .take()
+            .filter(|s| number(s) && s != &previous)
+            .ok_or_else(invalid)?;
+        Some(Cursor::Items {
+            ids,
+            cursor,
+            next_list,
+            series,
+        })
+    } else {
+        ids.remove(0);
+        if ids.is_empty() {
+            list_continuation(series, next_list)
+        } else {
+            Some(Cursor::Items {
+                ids,
+                cursor: "0".into(),
+                next_list,
+                series,
+            })
+        }
+    };
+    Ok((page, next))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn c01_collections_keep_independent_bounded_cursors_and_reject_incomplete_pages() {
+    fn collections_keep_independent_bounded_cursors_and_reject_incomplete_pages() {
         let mut cursor = Cursor::decode(None).unwrap();
         let steps = [
             (

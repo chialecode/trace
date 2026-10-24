@@ -146,7 +146,7 @@ async fn serve(
 mod tests {
     use super::*;
     #[test]
-    fn f010_ranges_are_bounded_and_suffix_semantics_are_correct() {
+    fn ranges_are_bounded_and_suffix_semantics_are_correct() {
         assert_eq!(
             byte_range(None, 10_000_000),
             Some((0, MEDIA_CHUNK_MAX as u64 - 1))

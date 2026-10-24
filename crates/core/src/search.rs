@@ -9,17 +9,6 @@ use crate::error::CoreError;
 use trace_contracts::control::{SearchResultItemDto, SearchResultsDto, SearchStatusDto};
 use trace_domain::search::{SEARCH_NORMALIZATION_VERSION, normalize_v1};
 
-/// entries+entry_revisions 聚合行：(namespace, title, account_id, published_at, normalized_body)。
-type EntryDocRow = (
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    String,
-    String,
-);
-
 /// 把规范化文本拆成 1/2 字 gram 集合。
 pub fn grams(text: &str) -> (Vec<String>, Vec<String>) {
     let chars: Vec<char> = text.chars().collect();
@@ -36,6 +25,38 @@ pub fn grams(text: &str) -> (Vec<String>, Vec<String>) {
     (uni.into_iter().collect(), bi.into_iter().collect())
 }
 
+/// One pending index event: the outbox row and the entry it names.
+struct Event {
+    seq: i64,
+    entry_id: String,
+}
+
+/// The current state of an entry, as the index sees it.
+struct EntryDoc {
+    namespace: String,
+    title: String,
+    account_id: Option<String>,
+    published_at: Option<String>,
+    body: Option<String>,
+    kind: String,
+    key: String,
+}
+
+/// An entry ready to be written to the index.
+struct Document {
+    creator_id: Option<String>,
+    namespace: String,
+    published_at: Option<String>,
+    title: String,
+    normalized: String,
+    unigrams: Vec<String>,
+    bigrams: Vec<String>,
+    /// Estimated bytes the document and its grams occupy.
+    charge: i64,
+}
+
+const MARK_PROCESSED: &str = "UPDATE outbox SET processed_at=?2 WHERE seq=?1";
+
 /// Outbox → 搜索文档同步（有界批次）。
 pub async fn index_pending(db: &DbHandle, batch: i64) -> Result<i64, CoreError> {
     let (epoch, enabled): (i64, bool) = db
@@ -50,21 +71,7 @@ pub async fn index_pending(db: &DbHandle, batch: i64) -> Result<i64, CoreError> 
     if !enabled {
         return Ok(0);
     }
-    // 读取 pending outbox（entry/creator 相关）。
-    let events: Vec<(i64, String, String, String)> = db
-        .read(move |c| {
-            let mut stmt = c.prepare(
-                "SELECT seq, topic, aggregate_id, payload FROM outbox
-                 WHERE processed_at IS NULL AND topic LIKE 'entry%' ORDER BY seq LIMIT ?1",
-            )?;
-            let rows = stmt
-                .query_map([batch], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })
-        .await?;
+    let events = pending_events(db, batch).await?;
     if events.is_empty() {
         db.write(move |tx| {
             tx.execute(
@@ -77,129 +84,196 @@ pub async fn index_pending(db: &DbHandle, batch: i64) -> Result<i64, CoreError> 
         return Ok(0);
     }
     let mut processed = 0i64;
-    for (seq, topic, aggregate_id, _payload) in events {
-        // 以 Entry 当前版本重建文档（幂等 upsert）。
-        let entry_id = aggregate_id;
-        let entry_for_read = entry_id.clone();
-        let doc: Option<EntryDocRow> = db
-            .read(move |c| {
-                Ok(c.query_row(
-                    "SELECT e.namespace, COALESCE(r.title,''), e.account_id, e.published_at, COALESCE(r.normalized_body,''),e.native_kind,e.native_entry_key
-                     FROM entries e
-                     LEFT JOIN current_entry_revisions r ON r.entry_id = e.entry_id
-                     WHERE e.entry_id = ?1 AND e.lifecycle!='deleted'
-                     LIMIT 1",
-                    [&entry_for_read],
-                    |r| {
-                        Ok((
-                            r.get(0)?,
-                            r.get(1)?,
-                            r.get(2)?,
-                            r.get(3)?,
-                            r.get(4)?,
-                            r.get(5)?,
-                            r.get(6)?,
-                        ))
-                    },
-                )
-                .ok())
-            })
-            .await?;
-        let seq2 = seq;
-        if let Some((namespace, title, account_id, published_at, body, kind, key)) = doc {
-            let creator_id: Option<String> = db
-                .read(move |c| {
-                    Ok(c.query_row(
-                        "SELECT creator_id FROM account_bindings WHERE account_id=?1 AND state='active'",
-                        [&account_id],
-                        |r| r.get(0),
-                    )
-                    .ok())
-                })
-                .await?;
-            let source = crate::feed::source_url(&namespace, &kind, &key).unwrap_or_default();
-            let normalized = normalize_v1(&format!(
-                "{title}\n{}\n{source}",
-                body.as_deref().unwrap_or("")
-            ));
-            let (uni, bi) = grams(&normalized);
-            let title2 = title.clone();
-            let ns2 = namespace.clone();
-            let cid = creator_id.clone();
-            let pub2 = published_at.clone();
-            let entry2 = entry_id.clone();
-            let charge = (normalized.len() as i64)
-                .saturating_mul(4)
-                .saturating_add(1024)
-                .saturating_add(128 * (uni.len() + bi.len()) as i64);
-            let indexed=db.write(move |tx| {
-                let (current,enabled,used,budget):(i64,bool,i64,i64)=tx.query_row("SELECT generation,enabled,estimated_bytes,budget_bytes FROM search_state WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-                if current!=epoch||!enabled{return Ok(false);}
-                let old:i64=tx.query_row("SELECT COALESCE(sum(cache_bytes),0) FROM search_documents WHERE doc_kind='entry' AND ref_id=?1",[&entry2],|r|r.get(0))?;
-                if used.saturating_sub(old).saturating_add(charge)>budget {tx.execute("UPDATE search_state SET budget_blocked=1 WHERE id=1",[])?;return Ok(false);}
-                let active:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM entries WHERE entry_id=?1 AND lifecycle!='deleted')",[&entry2],|r|r.get(0))?;
-                if !active {tx.execute("UPDATE outbox SET processed_at=?2 WHERE seq=?1",rusqlite::params![seq2,crate::jobs::now()])?;return Ok(true);}
-                // 删除旧版文档（级联 gram；FTS 由触发器清理）。
-                tx.execute(
-                    "DELETE FROM search_documents WHERE doc_kind='entry' AND ref_id=?1",
-                    [&entry2],
-                )?;
-                tx.execute(
-                    "INSERT INTO search_documents (doc_kind, ref_id, entry_id, creator_id, namespace, published_at, title, normalized_text, index_version,cache_bytes)
-                     VALUES ('entry', ?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7,?8)",
-                    rusqlite::params![entry2, cid, ns2, pub2, title2, normalized, SEARCH_NORMALIZATION_VERSION,charge],
-                )?;
-                let doc_id: i64 = tx.query_row(
-                    "SELECT doc_id FROM search_documents WHERE doc_kind='entry' AND ref_id=?1",
-                    [&entry2],
-                    |r| r.get(0),
-                )?;
-                for g in uni {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO search_unigram (gram, doc_id) VALUES (?1, ?2)",
-                        rusqlite::params![g, doc_id],
-                    )?;
-                }
-                for g in bi {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO search_bigram (gram, doc_id) VALUES (?1, ?2)",
-                        rusqlite::params![g, doc_id],
-                    )?;
-                }
-                tx.execute(
-                    "UPDATE outbox SET processed_at=?2 WHERE seq=?1",
-                    rusqlite::params![seq2, trace_domain::time::TraceTime::now(trace_domain::time::TimePrecision::Discovery).rfc3339],
-                )?;
-                tx.execute(
-                    "UPDATE search_state SET indexed_seq=MAX(indexed_seq, ?1)",
-                    [seq2],
-                )?;
-                Ok(true)
-            })
-            .await?;
-            if !indexed {
-                break;
-            }
-        } else {
-            db.write(move |tx| {
-                tx.execute(
-                    "UPDATE outbox SET processed_at=?2 WHERE seq=?1",
-                    rusqlite::params![
-                        seq2,
-                        trace_domain::time::TraceTime::now(
-                            trace_domain::time::TimePrecision::Discovery
-                        )
-                        .rfc3339
-                    ],
-                )?;
-                Ok(())
-            })
-            .await?;
+    for event in events {
+        if !index_event(db, epoch, &event).await? {
+            break;
         }
         processed += 1;
-        let _ = topic;
     }
     Ok(processed)
+}
+
+/// 读取 pending outbox（entry/creator 相关）。
+async fn pending_events(db: &DbHandle, batch: i64) -> Result<Vec<Event>, CoreError> {
+    db.read(move |c| {
+        let mut stmt = c.prepare(
+            "SELECT seq, aggregate_id FROM outbox
+             WHERE processed_at IS NULL AND topic LIKE 'entry%' ORDER BY seq LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map([batch], |r| {
+                Ok(Event {
+                    seq: r.get(0)?,
+                    entry_id: r.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })
+    .await
+}
+
+/// 以 Entry 当前版本重建文档（幂等 upsert）。`false` 表示索引已失效或预算用尽，应停止本批。
+async fn index_event(db: &DbHandle, epoch: i64, event: &Event) -> Result<bool, CoreError> {
+    let seq = event.seq;
+    let Some(doc) = load_entry(db, &event.entry_id).await? else {
+        db.write(move |tx| {
+            tx.execute(MARK_PROCESSED, rusqlite::params![seq, discovery_time()])?;
+            Ok(())
+        })
+        .await?;
+        return Ok(true);
+    };
+    let document = prepare(db, doc).await?;
+    let entry_id = event.entry_id.clone();
+    db.write(move |tx| write_document(tx, epoch, seq, &entry_id, document))
+        .await
+}
+
+fn discovery_time() -> String {
+    trace_domain::time::TraceTime::now(trace_domain::time::TimePrecision::Discovery).rfc3339
+}
+
+async fn load_entry(db: &DbHandle, entry_id: &str) -> Result<Option<EntryDoc>, CoreError> {
+    let entry_id = entry_id.to_owned();
+    db.read(move |c| {
+        Ok(c.query_row(
+            "SELECT e.namespace, COALESCE(r.title,''), e.account_id, e.published_at, COALESCE(r.normalized_body,''),e.native_kind,e.native_entry_key
+             FROM entries e
+             LEFT JOIN current_entry_revisions r ON r.entry_id = e.entry_id
+             WHERE e.entry_id = ?1 AND e.lifecycle!='deleted'
+             LIMIT 1",
+            [&entry_id],
+            |r| {
+                Ok(EntryDoc {
+                    namespace: r.get(0)?,
+                    title: r.get(1)?,
+                    account_id: r.get(2)?,
+                    published_at: r.get(3)?,
+                    body: r.get(4)?,
+                    kind: r.get(5)?,
+                    key: r.get(6)?,
+                })
+            },
+        )
+        .ok())
+    })
+    .await
+}
+
+/// Normalizes the entry's text (title, body and source link) and sizes its grams.
+async fn prepare(db: &DbHandle, doc: EntryDoc) -> Result<Document, CoreError> {
+    let account_id = doc.account_id;
+    let creator_id: Option<String> = db
+        .read(move |c| {
+            Ok(c.query_row(
+                "SELECT creator_id FROM account_bindings WHERE account_id=?1 AND state='active'",
+                [&account_id],
+                |r| r.get(0),
+            )
+            .ok())
+        })
+        .await?;
+    let source = crate::feed::source_url(&doc.namespace, &doc.kind, &doc.key).unwrap_or_default();
+    let normalized = normalize_v1(&format!(
+        "{}\n{}\n{source}",
+        doc.title,
+        doc.body.as_deref().unwrap_or("")
+    ));
+    let (unigrams, bigrams) = grams(&normalized);
+    let charge = (normalized.len() as i64)
+        .saturating_mul(4)
+        .saturating_add(1024)
+        .saturating_add(128 * (unigrams.len() + bigrams.len()) as i64);
+    Ok(Document {
+        creator_id,
+        namespace: doc.namespace,
+        published_at: doc.published_at,
+        title: doc.title,
+        normalized,
+        unigrams,
+        bigrams,
+        charge,
+    })
+}
+
+/// Replaces the entry's document in one transaction, unless the index was rebuilt or its
+/// budget is used up meanwhile.
+fn write_document(
+    tx: &rusqlite::Transaction<'_>,
+    epoch: i64,
+    seq: i64,
+    entry_id: &str,
+    doc: Document,
+) -> Result<bool, CoreError> {
+    let (current, enabled, used, budget): (i64, bool, i64, i64) = tx.query_row(
+        "SELECT generation,enabled,estimated_bytes,budget_bytes FROM search_state WHERE id=1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
+    if current != epoch || !enabled {
+        return Ok(false);
+    }
+    let old: i64 = tx.query_row(
+        "SELECT COALESCE(sum(cache_bytes),0) FROM search_documents WHERE doc_kind='entry' AND ref_id=?1",
+        [entry_id],
+        |r| r.get(0),
+    )?;
+    if used.saturating_sub(old).saturating_add(doc.charge) > budget {
+        tx.execute("UPDATE search_state SET budget_blocked=1 WHERE id=1", [])?;
+        return Ok(false);
+    }
+    let active: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM entries WHERE entry_id=?1 AND lifecycle!='deleted')",
+        [entry_id],
+        |r| r.get(0),
+    )?;
+    if !active {
+        tx.execute(MARK_PROCESSED, rusqlite::params![seq, crate::jobs::now()])?;
+        return Ok(true);
+    }
+    // 删除旧版文档（级联 gram；FTS 由触发器清理）。
+    tx.execute(
+        "DELETE FROM search_documents WHERE doc_kind='entry' AND ref_id=?1",
+        [entry_id],
+    )?;
+    tx.execute(
+        "INSERT INTO search_documents (doc_kind, ref_id, entry_id, creator_id, namespace, published_at, title, normalized_text, index_version,cache_bytes)
+         VALUES ('entry', ?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7,?8)",
+        rusqlite::params![
+            entry_id,
+            doc.creator_id,
+            doc.namespace,
+            doc.published_at,
+            doc.title,
+            doc.normalized,
+            SEARCH_NORMALIZATION_VERSION,
+            doc.charge
+        ],
+    )?;
+    let doc_id: i64 = tx.query_row(
+        "SELECT doc_id FROM search_documents WHERE doc_kind='entry' AND ref_id=?1",
+        [entry_id],
+        |r| r.get(0),
+    )?;
+    for g in doc.unigrams {
+        tx.execute(
+            "INSERT OR IGNORE INTO search_unigram (gram, doc_id) VALUES (?1, ?2)",
+            rusqlite::params![g, doc_id],
+        )?;
+    }
+    for g in doc.bigrams {
+        tx.execute(
+            "INSERT OR IGNORE INTO search_bigram (gram, doc_id) VALUES (?1, ?2)",
+            rusqlite::params![g, doc_id],
+        )?;
+    }
+    tx.execute(MARK_PROCESSED, rusqlite::params![seq, discovery_time()])?;
+    tx.execute(
+        "UPDATE search_state SET indexed_seq=MAX(indexed_seq, ?1)",
+        [seq],
+    )?;
+    Ok(true)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,6 +323,9 @@ pub async fn query(
             oldest: false,
             min_height: None,
             codec: None,
+            sort: None,
+            tag: None,
+            content_kind: None,
         },
     )
     .await?;

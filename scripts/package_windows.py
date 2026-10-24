@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""TRACE Windows x64 便携包（P8）。
+"""TRACE Windows x64 便携包。
 
 产物：dist/trace-<version>-windows-x64/ 含
-  trace-desktop.exe / trace-daemon.exe / adapters/trace-adapter-bilibili.exe
+  trace-desktop.exe / trace-daemon.exe / adapters/trace-adapter-<站点>.exe（八个站点）
+  media/（锁定的媒体后端）/ tools/（锁定的 yt-dlp 与 Deno 及其许可）
   profile.example.json / README.md / SHA256SUMS.txt / manifest.json
 
-约束（C32）：
+约束：
 - 不打包测试件（trace-fake-adapter 等 e2e 二进制）；
 - 发行 profile 不含 test_allowed_hosts（doctor 自检强制）；
 - 步骤失败即非 0 退出，保留日志；不自动安装/不发布。
@@ -23,7 +24,7 @@ import subprocess
 import sys
 import time
 import tomllib
-import stage_evidence
+import evidence
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -41,14 +42,14 @@ def which_corepack() -> str:
 
 
 def run(cmd: list[str], cwd: Path = ROOT) -> str:
-    before=stage_evidence.inputs()
+    before=evidence.inputs()
     proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, encoding="utf8", errors="replace")
-    logs=ROOT / "artifacts" / "m1-package-commands"
+    logs=ROOT / "artifacts" / "evidence-runs" / "package-commands"
     logs.mkdir(parents=True,exist_ok=True)
     receipt=logs / f"{time.time_ns()}.log"
     receipt.write_text(f"$ {' '.join(cmd)}\n{proc.stdout}\n{proc.stderr}\nexitCode={proc.returncode}\n",encoding="utf8")
     if cmd[0].endswith(('cargo','cargo.exe','corepack.cmd','corepack')):
-        BUILD_COMMANDS.append({'argv':cmd,'exitCode':proc.returncode,'log':receipt.relative_to(ROOT).as_posix(),'logSha256':sha256(receipt),'sourceInputs':before,'sourceUnchanged':before==stage_evidence.inputs()})
+        BUILD_COMMANDS.append({'argv':cmd,'exitCode':proc.returncode,'log':receipt.relative_to(ROOT).as_posix(),'logSha256':sha256(receipt),'sourceInputs':before,'sourceUnchanged':before==evidence.inputs()})
     if proc.returncode != 0:
         print(f"[FAIL] {' '.join(cmd)}; complete output: {receipt.relative_to(ROOT)}")
         sys.exit(1)
@@ -65,7 +66,7 @@ def sha256(path: Path) -> str:
 
 def source_snapshot() -> dict[str, str]:
     """Bind the package to the actual build inputs, including not-yet-committed source."""
-    return stage_evidence.inputs(ROOT)
+    return evidence.inputs(ROOT)
 
 
 
@@ -73,10 +74,10 @@ def main() -> int:
     sources = source_snapshot()
     with (ROOT / "Cargo.toml").open("rb") as f:
         version = tomllib.load(f)["workspace"]["package"]["version"]
-    out = DIST / f"trace-{version}-windows-x64-m1-r3"
+    out = DIST / f"trace-{version}-windows-x64"
     suffix = 1
     while out.exists():
-        out = DIST / f"trace-{version}-windows-x64-m1-r3-{suffix}"
+        out = DIST / f"trace-{version}-windows-x64-{suffix}"
         suffix += 1
     (out / "adapters").mkdir(parents=True)
 
@@ -86,11 +87,11 @@ def main() -> int:
 
     # 2) release 构建（daemon、适配器、桌面外壳）。
     print("== release 构建")
+    sites = evidence.adapter_sites(ROOT)
     run([
         "cargo", "build", "--release", "--locked",
         "-p", "trace-daemon",
-        "-p", "trace-adapter-bilibili",
-        "-p", "trace-adapter-douyin",
+        *[arg for site in sites for arg in ("-p", f"trace-adapter-{site}")],
         "-p", "trace-desktop",
         "--features", "trace-desktop/custom-protocol",
     ])
@@ -99,8 +100,7 @@ def main() -> int:
     binaries = {
         "trace-desktop.exe": rel / "trace-desktop.exe",
         "trace-daemon.exe": rel / "trace-daemon.exe",
-        "adapters/trace-adapter-bilibili.exe": rel / "trace-adapter-bilibili.exe",
-        "adapters/trace-adapter-douyin.exe": rel / "trace-adapter-douyin.exe",
+        **{f"adapters/trace-adapter-{site}.exe": rel / f"trace-adapter-{site}.exe" for site in sites},
     }
     for dst, src in binaries.items():
         if not src.exists():
@@ -125,6 +125,20 @@ def main() -> int:
         shutil.copy2(source, out / "media" / name)
     for name in ("LICENSE.txt", "SOURCE.txt", "verified.json"):
         shutil.copy2(media_root / name, out / "media" / name)
+
+    # The pinned YouTube tools: only files whose digests match media-tools.lock.json are shipped.
+    tools_root = ROOT / "target" / "tools"
+    tools_receipt = json.loads((tools_root / "verified.json").read_text(encoding="utf8"))
+    tools_lock = json.loads((ROOT / "media-tools.lock.json").read_text(encoding="utf8"))
+    if tools_receipt["lock"] != tools_lock:
+        raise ValueError("media tools lock mismatch; run scripts/fetch_media_tools.py")
+    (out / "tools").mkdir()
+    for name, expected in tools_receipt["files"].items():
+        source = tools_root / name
+        if source.name != name or sha256(source) != expected:
+            raise ValueError("media tool checksum mismatch")
+        shutil.copy2(source, out / "tools" / name)
+    shutil.copy2(tools_root / "verified.json", out / "tools" / "verified.json")
 
     shutil.copy2(ROOT / "docs/delivery/dependency-licenses.md", out / "dependency-licenses.md")
 
@@ -182,14 +196,15 @@ def main() -> int:
         "build_commands": BUILD_COMMANDS,
         "control_protocol": "0.1",
         "plugin_protocol": "0.1",
-        "schema_version": stage_evidence.SCHEMA_VERSION,
+        "schema_version": evidence.schema_version(),
         "source_dirty": bool(run(["git", "status", "--porcelain"], ROOT).strip()),
         "source_files_sha256": sources,
         "sourceInputs": sources,
-        "stage": stage_evidence.PLAN_ID,
+        "stage": evidence.current_plan(),
         "productAcceptance": "not-run",
         "source_tree_sha256": hashlib.sha256(json.dumps(sources, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
         "media_asset": lock,
+        "tool_assets": tools_lock,
         "excludes_test_artifacts": True,
         "doctor": doctor_json,
         "install": "便携包：解压后先复制 profile.example.json 为 profile.json（可按需改路径），再运行 trace-desktop.exe",
@@ -198,6 +213,7 @@ def main() -> int:
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf8")
 
     media = doctor_json["media_backend"]
+    tools = doctor_json["media_tools"]
     webview = doctor_json["webview2"]
     (out / "README.md").write_text(
         f"""# TRACE {version}（Windows x64 便携包）
@@ -210,6 +226,7 @@ def main() -> int:
 ## 依赖诊断（本包构建时实测）
 - WebView2 运行时：{"可用（" + str(webview["registry"] or "安装目录存在") + "）" if webview["available"] else "**未检测到**：请安装 Microsoft Edge WebView2 Runtime，否则窗口无法渲染"}
 - ffmpeg/ffprobe：{"已检测（" + str(media["version"]) + "）" if media["ffprobe"] else "**未检测到**：仍可保存原始媒体并外部打开；探测/封装能力受限且界面如实显示未知"}
+- yt-dlp 与 Deno（YouTube 视频解析）：{"已就绪（" + str(tools["version"]) + "）" if tools["ready"] else "**未就绪**：" + str(tools["reason"]) + "；YouTube 视频只保存元数据，显示为“未下载”"}
 - 随时运行 `trace-daemon.exe doctor --profile profile.json` 复核（JSON 输出）。
 
 ## 卸载
@@ -221,7 +238,7 @@ def main() -> int:
 `SHA256SUMS.txt` 为全文件摘要；`manifest.json` 记录版本、提交与构建时诊断。
 
 ## 边界
-- 本包不含测试适配器与测试端点（doctor 强制校验）。
+- 本包不含测试适配器与测试端点（doctor 强制校验）；`tools/` 中的 yt-dlp 与 Deno 为锁定版本，从不自我更新，也不接收任何 Cookie。
 - 安装包（NSIS）由 `pnpm tauri build` 另行生成；本便携包不自动安装、不写系统目录。
 """,
         encoding="utf8",
@@ -238,7 +255,7 @@ def main() -> int:
             raise ValueError("package checksum verification failed")
     total = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
     print(f"[PASS] {out.relative_to(ROOT)}（{len(sums)} 文件，{total/1024/1024:.1f} MiB）")
-    print(f"  doctor: webview2={webview['available']} ffprobe={bool(media['ffprobe'])} test_allowed_hosts_empty={doctor_json['release_check']['test_allowed_hosts_empty']}")
+    print(f"  doctor: webview2={webview['available']} ffprobe={bool(media['ffprobe'])} tools_ready={tools['ready']} test_allowed_hosts_empty={doctor_json['release_check']['test_allowed_hosts_empty']}")
     return 0
 
 
