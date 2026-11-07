@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/@mygo/schema/mygo.schema.json",
+  "name": "trace",
+  "slug": "trace",
+  "identifier": "io.github.chialecode.trace",
+  "version": "0.1.0",
+  "windows": {
+    "displayName": "TRACE",
+    "installDirName": "trace"
+  },
+  "linux": {
+    "webview": false
+  }
+}
