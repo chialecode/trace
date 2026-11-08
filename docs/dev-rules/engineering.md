@@ -88,7 +88,7 @@
 
 GitHub 上 main 的规则集：只能经 PR 写入，禁止强推和删除，保持线性历史，只允许 squash 合并，所有讨论必须解决，必需检查为 `repository-quality`；Actions 只允许固定 SHA 的 `actions/checkout`，token 只读，来自 fork 的 PR 运行 workflow 前须维护者批准（所有外部贡献者）。为防止垃圾内容，外部只开放 Discussions：关闭 Issues、Wiki 和 Projects，PR 仅协作者可创建；安全问题走私密漏洞报告。远端设置以 GitHub 实际回读为准。
 
-CI 文件 `.github/workflows/ci.yml` 由 M1 建立，job 名必须是 `repository-quality`，在 Ubuntu 上运行文档检查与 `go vet`/`go test ./internal/... ./tools/...`；Go 用 runner 预装版本或 `GOTOOLCHAIN` 自动下载，不引入未许可的 action。CI 不替代本地的 Windows 构建与界面检查：Linux 上 DPAPI 与 Media Foundation 换成非 Windows 桩或合成后端（`internal/credential/dpapi_other.go`、`internal/player/mf_other.go`），依赖 Windows 文件共享锁的测试段落跳过（`internal/library/lock_other_test.go`）。本机没有 cgo 工具链，`go test -race` 无法运行，记为 not-run。本机只完成 Linux `go vet` 与测试包交叉编译，未运行真实 Ubuntu CI；交叉编译的退出成功不等于 Linux 测试通过。
+CI 文件 `.github/workflows/ci.yml` 由 M1 建立，job 名必须是 `repository-quality`，在 Ubuntu 上运行文档检查与 `go vet`/`go test ./internal/... ./tools/...`；Go 用 runner 预装版本或 `GOTOOLCHAIN` 自动下载，不引入未许可的 action。CI 不替代本地的 Windows 构建与界面检查：Linux 上 DPAPI 与 Media Foundation 换成非 Windows 桩或合成后端（`internal/credential/dpapi_other.go`、`internal/player/mf_other.go`），依赖 Windows 文件共享锁的测试段落跳过（`internal/library/lock_other_test.go`）；没有显示器时，托盘测试里打开真实隐藏窗口的段落跳过（`internal/shell/shell_test.go`，Windows 本机照常运行）。本机没有 cgo 工具链，`go test -race` 无法运行，记为 not-run。本机只完成 Linux `go vet` 与测试包交叉编译，未运行真实 Ubuntu CI；交叉编译的退出成功不等于 Linux 测试通过。
 
 <a id="generated-outputs"></a>
 ## 5. 生成物

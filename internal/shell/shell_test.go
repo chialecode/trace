@@ -213,7 +213,12 @@ func TestQuietModeTrayIconCloseToTrayAndMemory(t *testing.T) {
 		t.Fatalf("expected valid 32x32 tray PNG, got err=%v", err)
 	}
 
-	// Run real hidden MyGo window helper in an isolated subprocess
+	// Run real hidden MyGo window helper in an isolated subprocess. It needs
+	// a desktop: Linux CI has no display, so the window part is not run
+	// there (Windows runs it locally).
+	if runtime.GOOS != "windows" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+		t.Skip("no display: the real tray window helper is not run")
+	}
 	tmpDir := t.TempDir()
 	outPath := filepath.Join(tmpDir, "pr4_helper.json")
 	tempSockDir := filepath.Join(tmpDir, "temp")
