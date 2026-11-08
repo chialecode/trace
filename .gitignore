@@ -1,0 +1,24 @@
+# 构建与依赖
+/build/
+/.mygo/
+dist/
+*.syso
+
+# 运行与测试输出
+/artifacts/
+/tmp/
+/coverage/
+trace-data/
+*.log
+
+# 本机配置与秘密
+.env
+.env.*
+!.env.example
+*.local
+/.local/
+/reference/
+
+# 系统文件
+.DS_Store
+Thumbs.db
