@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package build
 
 import (
 	"path/filepath"
@@ -31,7 +31,7 @@ func TestLockedBundleFileRestoresPreviousPackage(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = windows.CloseHandle(handle) })
-			err = publishBundle(src, dest, names, prune)
+			err = PublishBundle(src, dest, names, prune)
 			if err == nil || !strings.Contains(err.Error(), "previous package restored") {
 				t.Fatalf("locked file did not trigger a complete rollback: %v", err)
 			}

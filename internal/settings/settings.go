@@ -46,6 +46,14 @@ type Settings struct {
 	Live                 LiveSettings         `json:"live"`
 	Window               WindowSettings       `json:"window"`
 	Diagnostics          DiagnosticsSettings  `json:"diagnostics"`
+	Updates              UpdateSettings       `json:"updates"`
+}
+
+// UpdateSettings are the update preferences of the release channel
+// (FR-UPD-002): both on by default, a file without them keeps the defaults.
+type UpdateSettings struct {
+	AutoCheck    bool `json:"autoCheck"`
+	AutoDownload bool `json:"autoDownload"`
 }
 
 type DownloadSettings struct {
@@ -152,6 +160,7 @@ func Default(defaultCacheDir string) Settings {
 		Diagnostics: DiagnosticsSettings{
 			DebugLog: false,
 		},
+		Updates: UpdateSettings{AutoCheck: true, AutoDownload: true},
 	}
 }
 

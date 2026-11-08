@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/chialecode/trace/internal/appdirs"
 	"github.com/chialecode/trace/internal/download"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/live"
@@ -135,6 +134,7 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 					}
 				})
 			}
+			a.renderUpdateBanner(c)
 			if a.BannerInfo != "" {
 				ui.Row(c).FillWidth().Padding(8, 12).Radius(10).Background(ColorInfoBlueBg).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
 					ui.Text(c, a.BannerInfo).FontSize(13).TextColor(ColorInfoBlue).MaxLines(2).Grow(1)
@@ -2089,19 +2089,7 @@ func (a *App) renderSettingsCategoryContent(c *ui.Context) {
 		})
 
 	case "about":
-		diag := a.backend.DiagnosticsSnapshot()
-		ui.Column(c).FillWidth().Gap(10).ClipX().Children(func() {
-			ui.Column(c).FillWidth().Padding(14, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).Gap(6).Children(func() {
-				ui.Text(c, fmt.Sprintf("%s (%s) · 版本 %s", diag.DisplayName, diag.AppName, appdirs.Version)).
-					FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-				ui.Text(c, fmt.Sprintf("发布通道：%s · 运行模式：%s · 界面引擎：MyGo 原生界面", diag.Channel, diag.Mode)).
-					FontSize(13).TextColor(ColorTextMuted).SingleLine()
-				ui.Text(c, fmt.Sprintf("本地媒体库：%d 项 · 追踪订阅：%d 个 · 下载任务：%d 个", diag.LibraryCount, diag.SubscriptionCnt, diag.TaskCount)).
-					FontSize(13).TextColor(ColorTextMuted).SingleLine()
-				ui.Text(c, "第三方开源许可声明随安装包附于 THIRD-PARTY-NOTICES.txt。").
-					FontSize(12).TextColor(ColorTextMuted).SingleLine()
-			})
-		})
+		a.renderAboutSettings(c)
 	}
 }
 

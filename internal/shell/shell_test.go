@@ -19,7 +19,7 @@ import (
 	"github.com/egoist/mygo"
 )
 
-type pr4HelperResult struct {
+type trayHelperResult struct {
 	ReadyWindowOpen       bool                 `json:"readyWindowOpen"`
 	TrayWindowOpen        bool                 `json:"trayWindowOpen"`
 	RestoredWindowOpen    bool                 `json:"restoredWindowOpen"`
@@ -43,7 +43,7 @@ func runRealHiddenWindowHelper(outPath string) error {
 	_ = os.Setenv("TRACE_QUIET", "1")
 	_ = SetBelowNormalPriority()
 
-	root, err := os.MkdirTemp("", "trace-pr4-*")
+	root, err := os.MkdirTemp("", "trace-tray-*")
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,7 @@ func runRealHiddenWindowHelper(outPath string) error {
 
 		go func() {
 			time.Sleep(60 * time.Millisecond)
-			var res pr4HelperResult
+			var res trayHelperResult
 			done := make(chan struct{})
 			mygo.RunOnMain(func() {
 				readySnap := sh.Snapshot()
@@ -220,7 +220,7 @@ func TestQuietModeTrayIconCloseToTrayAndMemory(t *testing.T) {
 		t.Skip("no display: the real tray window helper is not run")
 	}
 	tmpDir := t.TempDir()
-	outPath := filepath.Join(tmpDir, "pr4_helper.json")
+	outPath := filepath.Join(tmpDir, "tray_helper.json")
 	tempSockDir := filepath.Join(tmpDir, "temp")
 	_ = os.MkdirAll(tempSockDir, 0o700)
 
@@ -240,7 +240,7 @@ func TestQuietModeTrayIconCloseToTrayAndMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read helper output: %v", err)
 	}
-	var res pr4HelperResult
+	var res trayHelperResult
 	if err := json.Unmarshal(raw, &res); err != nil {
 		t.Fatalf("unmarshal helper output: %v", err)
 	}
@@ -276,37 +276,4 @@ func TestQuietModeTrayIconCloseToTrayAndMemory(t *testing.T) {
 			t.Fatalf("recreate #%d took %dms, want < 2000ms", i+1, ms)
 		}
 	}
-
-	protoDir := filepath.Join("..", "..", "artifacts", "prototypes")
-	_ = os.MkdirAll(protoDir, 0o755)
-	pr4Data, _ := json.MarshalIndent(map[string]any{
-		"prototype":                  "PR-4",
-		"passed":                     true,
-		"quietMode":                  snap.QuietMode,
-		"realWindowCreated":          res.ReadyWindowOpen,
-		"windowClosedInTray":         !res.TrayWindowOpen,
-		"windowRestoredFromTray":     res.RestoredWindowOpen,
-		"webview2ProcessCount":       snap.WebView2ProcessCount,
-		"trayPrivateWorkingSetBytes": snap.PrivateWorkingSetBytes,
-		"trayPrivateWorkingSetMiB":   float64(snap.PrivateWorkingSetBytes) / (1024 * 1024),
-		"trayPrivateCommitBytes":     snap.PrivateBytes,
-		"trayWorkingSetBytes":        snap.WorkingSetBytes,
-		"traySettleMs":               2000,
-		"stealFocusDetected":         res.StealFocusDetectedAny,
-		"recreateCount":              len(res.RecreateLatenciesMs),
-		"recreateLatenciesMs":        res.RecreateLatenciesMs,
-		"installerTestGated":         "not-run (requires TRACE_RUN_INSTALLER_TEST=1 with trace-ptest)",
-	}, "", "  ")
-	_ = os.WriteFile(filepath.Join(protoDir, "pr4.json"), pr4Data, 0o644)
-
-	resultsMD := fmt.Sprintf(`# M1 隔离原型结果汇总（PR-1 ～ PR-4）
-
-| 编号 | 验证目标 | 状态 | 关键实测指标 | 证据文件 |
-| --- | --- | --- | --- | --- |
-| **PR-1** | 纯 Go（`+"`CGO_ENABLED=0`"+`）Media Foundation `+"`IMFSourceReader`"+` 解码与 Seek | PASS | `+"`640×360`"+` 视频帧 RGB32→RGBA 非黑屏（5 帧非黑像素 `+"`1,001,040`"+`），音频 Float32 采样读取与 Seek 正常，堆内存 < 100 MiB；大稀疏文件 `+"`co64`"+` 由 `+"`TRACE_RUN_LARGE=1`"+` 门控（默认 `+"`not-run`"+`）；缺解码器触发 `+"`ErrMissingCodec`"+` 并引导系统播放器 | `+"`artifacts/prototypes/pr1.json`"+` |
-| **PR-2** | `+"`mp4ff`"+` DASH 点播合并（AAC/FLAC/杜比）与直播 fMP4 `+"`Defragment`"+` | PASS | `+"`ftyp`"+`+`+"`moov`"+` 在 `+"`mdat`"+` 之前、约 1s 交错、写 `+"`elst`"+`；杜比（30250）与无损（30251）音轨另存 sidecar 并将兜底 AAC 合入主 `+"`.mp4`"+`，在 `+"`item.json`"+` 记录 `+"`savedAs`"+`；直播 fMP4 `+"`Defragment`"+` 收尾正常 | `+"`artifacts/prototypes/pr2.json`"+` |
-| **PR-3** | 10,000 条弹幕单帧排版耗时、Seek 窗口过滤与 WebVTT 实体解析 | PASS | 10,000 条弹幕单帧排版 < 1 ms；从 30s 拖到 120s 后只保留 `+"`[114s, 120s]`"+` 窗口内弹幕（0 残留）；WebVTT HTML 实体与 `+"`-->`"+` 正常解析 | `+"`artifacts/prototypes/pr3.json`"+` |
-| **PR-4** | 安静模式真实窗口关到托盘、内存释放、0 个 WebView2、5 次重建 | PASS | 真实创建隐藏 MyGo 窗口（`+"`ReadyWindowOpen=true`"+`），`+"`msedgewebview2.exe`"+` 进程数为 0，关到托盘销毁窗口（`+"`TrayWindowOpen=false`"+`）约 2 秒后专用工作集 `+"`%.2f MiB`"+`（< 60 MiB；已提交私有内存 `+"`%.2f MiB`"+` 仅记录），5 次真实窗口重建均 < 2s，全程未抢占前台焦点；安装包测试 `+"`trace-ptest`"+` 默认门控 `+"`not-run`"+` | `+"`artifacts/prototypes/pr4.json`"+` |
-`, float64(snap.PrivateWorkingSetBytes)/(1024*1024), float64(snap.PrivateBytes)/(1024*1024))
-	_ = os.WriteFile(filepath.Join(protoDir, "RESULTS.md"), []byte(resultsMD), 0o644)
 }

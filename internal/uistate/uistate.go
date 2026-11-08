@@ -27,6 +27,33 @@ type State struct {
 	HomeSeen     map[string]int64 `json:"homeSeen,omitempty"`
 	TrayNotified bool             `json:"trayNotified"`
 	Player       PlayerState      `json:"player"`
+	// Update records what the updates of TRACE need across launches.
+	Update UpdateState `json:"update"`
+}
+
+// UpdateState is what the updates of TRACE keep across launches
+// (FR-UPD-001, FR-UPD-002).
+type UpdateState struct {
+	// LastRunVersion is the version that ran last; a launch of another
+	// version says once that TRACE was updated.
+	LastRunVersion string `json:"lastRunVersion,omitempty"`
+	// LastCheck is when the release channel last checked for updates.
+	LastCheck string `json:"lastCheck,omitempty"`
+	// ReadyVersion and ReadyNotes are the downloaded release, whose notes
+	// the first launch of it shows.
+	ReadyVersion string `json:"readyVersion,omitempty"`
+	ReadyNotes   string `json:"readyNotes,omitempty"`
+	// Restart is set when TRACE quit to be updated: by tools/package for
+	// the development channel (--quit-for-update) or by "重启以更新".
+	Restart *UpdateRestart `json:"restart,omitempty"`
+}
+
+// UpdateRestart records a quit for an update.
+type UpdateRestart struct {
+	Reason      string `json:"reason"` // "dev-install" or "update"
+	WindowOpen  bool   `json:"windowOpen"`
+	FromVersion string `json:"fromVersion,omitempty"`
+	At          string `json:"at"`
 }
 
 type WindowState struct {
@@ -198,7 +225,26 @@ func cloneState(st State) State {
 			out.HomeSeen[k] = v
 		}
 	}
+	if st.Update.Restart != nil {
+		r := *st.Update.Restart
+		out.Update.Restart = &r
+	}
 	return out
+}
+
+// Mutate applies fn to the current state and saves the result atomically,
+// so that writers of different fields do not overwrite each other.
+func (s *Store) Mutate(fn func(*State)) (State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneState(s.current)
+	fn(&next)
+	norm := Normalize(next)
+	if err := storage.WriteJSONAtomic(s.path, norm, 0o600); err != nil {
+		return State{}, err
+	}
+	s.current = norm
+	return cloneState(s.current), nil
 }
 
 // Update saves the updated UI state atomically.

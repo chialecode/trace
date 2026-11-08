@@ -17,7 +17,9 @@ var allowedMyGoPackages = map[string]bool{
 	"github.com/chialecode/trace/internal/shell":  true,
 	"github.com/chialecode/trace/internal/ui":     true,
 	"github.com/chialecode/trace/internal/player": true,
-	"github.com/chialecode/trace/tools/uishots":   true,
+	// The Chinese catalogs of MyGo's own strings and of the installer.
+	"github.com/chialecode/trace/internal/locales": true,
+	"github.com/chialecode/trace/tools/uishots":    true,
 }
 
 var forbiddenBilibiliDeps = []string{

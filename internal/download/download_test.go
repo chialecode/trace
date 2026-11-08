@@ -257,30 +257,6 @@ func TestMuxDASHFilesAndVideoCacheEndToEnd(t *testing.T) {
 	if err != nil || !ok || itemMeta.Status != "complete" {
 		t.Fatalf("expected complete item in library, got %+v ok=%v err=%v", itemMeta, ok, err)
 	}
-
-	protoDir := filepath.Join("..", "..", "artifacts", "prototypes")
-	_ = os.MkdirAll(protoDir, 0o755)
-	if raw, err := json.MarshalIndent(map[string]any{
-		"prototype":           "PR-2",
-		"passed":              summary.MoovBeforeMdat && summary.HasElst && summary.Interleaved && defragSummary.MoovBeforeMdat,
-		"trackCount":          summary.TrackCount,
-		"handlers":            summary.Handlers,
-		"codecs":              summary.Codecs,
-		"moovBeforeMdat":      summary.MoovBeforeMdat,
-		"hasElst":             summary.HasElst,
-		"interleaved1sChunks": summary.Interleaved,
-		"durationSec":         summary.DurationSec,
-		"maxTrackDiffSec":     summary.MaxTrackDiffSec,
-		"flacSidecar":         "P01.audio-30251.m4a + main AAC MP4",
-		"liveFmp4DefragOk":    defragSummary.MoovBeforeMdat,
-	}, "", "  "); err == nil {
-		_ = os.WriteFile(filepath.Join(protoDir, "pr2.json"), raw, 0o644)
-	}
-}
-
-// Alias for stage-report C17 & PR-2 reference.
-func TestPR2PureGoDASHMuxAndFMP4Defragment(t *testing.T) {
-	TestMuxDASHFilesAndVideoCacheEndToEnd(t)
 }
 
 // C18 & R-06: Closed-interval 8 MiB Range resume, Content-Range verification, 200 fallback, per-segment retry + URL rotation, and 403 PlayURL refresh.

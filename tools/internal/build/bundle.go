@@ -1,4 +1,4 @@
-package main
+package build
 
 import (
 	"encoding/hex"
@@ -17,15 +17,15 @@ func validBundleName(name string) bool {
 
 // registeredBundleFiles only trusts plain filenames in the previous manifest.
 // A missing manifest represents an empty bundle; collisions remain user files.
-func registeredBundleFiles(destDir string) (map[string]bool, error) {
-	raw, err := os.ReadFile(filepath.Join(destDir, "SHA256SUMS.txt"))
+func registeredBundleFiles(destDir, sumsName string) (map[string]bool, error) {
+	raw, err := os.ReadFile(filepath.Join(destDir, sumsName))
 	if os.IsNotExist(err) {
 		return map[string]bool{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	registered := map[string]bool{"SHA256SUMS.txt": true}
+	registered := map[string]bool{sumsName: true}
 	for _, line := range strings.Split(string(raw), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -45,11 +45,18 @@ func registeredBundleFiles(destDir string) (map[string]bool, error) {
 	return registered, nil
 }
 
-// publishBundle stages every incoming file, then backs up registered originals
+// PublishBundle stages every incoming file, then backs up registered originals
 // before replacing them. A failed rename restores all originals, including the
 // checksum manifest. Recovery backups live beside the bundle, outside build
 // staging, so a failed rollback cannot discard the only copy of an old file.
-func publishBundle(srcDir, destDir string, names []string, pruneOld bool) error {
+func PublishBundle(srcDir, destDir string, names []string, pruneOld bool) error {
+	return PublishBundleWith(srcDir, destDir, "SHA256SUMS.txt", names, pruneOld)
+}
+
+// PublishBundleWith is PublishBundle for a bundle whose checksum file,
+// which registers its files, is sumsName (dist/trace/ keeps MyGo's
+// SHA256SUMS, which install.ps1 reads from the release).
+func PublishBundleWith(srcDir, destDir, sumsName string, names []string, pruneOld bool) error {
 	destDir, err := filepath.Abs(destDir)
 	if err != nil {
 		return err
@@ -60,7 +67,7 @@ func publishBundle(srcDir, destDir string, names []string, pruneOld bool) error 
 	if info, err := os.Lstat(destDir); err != nil || !info.IsDir() || info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
 		return fmt.Errorf("invalid package destination")
 	}
-	registered, err := registeredBundleFiles(destDir)
+	registered, err := registeredBundleFiles(destDir, sumsName)
 	if err != nil {
 		return err
 	}

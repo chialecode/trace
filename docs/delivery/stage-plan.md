@@ -1,481 +1,192 @@
-# 当前阶段计划：M1（全 Go + MyGo 原生界面）
+# 当前阶段计划：M2（安装与更新）
 
-- **阶段编号**：M1
-- **计划标识**：`TRACE-M1-03`，修订 4（2026-11-08，第二轮实机反馈返工，见 [§13](#rev4)；修订 3 见 [§12](#rev3)，修订记录见 §0）
-- **分支**：`codex/m1-mygo-bilibili`（父提交为初始化提交 `b208ad6c5d2de24202226e76f279db01196c7879`；文档基础与 M1 实现合并为单一阶段 DCO 提交）
-- **适用需求**：FR-AUTH-001～005、FR-LINK-001～002、FR-HIST-001、FR-VIDEO-001、FR-USER-001～003、FR-DYN-001、FR-IMG-001、FR-ERR-001、FR-CACHE-001～009、FR-FEED-001、FR-LIB-001～006、FR-SET-001～002、FR-SUBS-001～003、FR-SUB-001～002、FR-LIVE-001～002、FR-RUN-001、FR-STORE-001；NFR-DEV-001、NFR-UI-001～002、NFR-SEC-001～002、NFR-DATA-001～003、NFR-NET-001～002、NFR-MEDIA-001、NFR-PERF-001、NFR-RES-001
-- **不在本阶段**：FR-PLAY-001（在线播放）、FR-FEED-002、FR-LIVE-003、FR-SITE-001、FR-RUN-002、FR-AUTH-006
-- **适用验收场景**：AC-01 ～ AC-26（[路线与验收 §4](roadmap.md#acceptance)）
-- **核心不变量**：INV-01 ～ INV-14（[架构设计 §7](../design/architecture.md#invariants)）
+- **阶段编号**：M2；计划标识 `TRACE-M2-01`，修订 1（2026-11-09）。
+- **角色**：A 规划；B 连续实施与自检；A 集中审查（[开发流程 §2](../dev-rules/workflow.md#agent-handoff)）。给 B 的 prompt 在[第 9 节](#prompt)。
+- **分支**：`codex/m2-install-update`，A 已从 `main @ 29c2678`（M1，[PR #1](https://github.com/chialecode/trace/pull/1) 于 2026-11-09 squash 合并）创建。本计划所在的提交是阶段提交的起点；B 的实施、A 的审查修复和人工反馈的修复全部 amend 进这一个 DCO 提交。
+- **上一阶段**：M1 的计划与报告在合并提交里：[M1 计划](https://github.com/chialecode/trace/blob/29c2678/docs/delivery/stage-plan.md)、[M1 报告](https://github.com/chialecode/trace/blob/29c2678/docs/delivery/stage-report.md)。
+- **决定与需求**：范围记为 [DEC-041](../decisions.md#dec-041)，更新的设计记为 [DEC-042](../decisions.md#dec-042)；需求 FR-STORE-001 与新增 FR-UPD-001～004（[需求](../requirements.md#update)）；验收 AC-27～AC-33（[路线与验收](roadmap.md#acceptance)）。细节的默认值见 [Q-012](../../USER-ACTIONS.md#q-012)，B 按默认实现，用户以后可以改。
 
----
+用户 2026-11-09 要求：下一阶段先解决安装包的问题，参考用户指定的另一个桌面项目最近一次“安装与自动更新”提交（下称“安装参考项目”）和 MyGo 的推荐做法；通道同样是 `trace`（正式版）和 `trace-dev`（开发版）。A 理解的目标与安装参考项目一致：本机同时装着正式版和开发版；每次改完代码、打包通过后，本机的开发版自动更新；正式版通过互联网更新；整个流程尽量自动化，版本号用 `0.1.x`。
 
-## 0. 修订记录
+## 1. 范围与退出条件
 
-| 修订 | 内容 |
+| 项目 | 约定 |
 | --- | --- |
-| 1 | 初版：原型 PR-1～PR-4、工作包 P1～P16、必测用例 C01～C40 |
-| 2 | 按 MyGo `v0.8.1` 源码改正 API 名称（§2.2）；补单实例与通道隔离、下载超时、投稿列表风控参数、旧缓存文件夹识别、FLAC 兜底；原型代码改为入库、大文件测试改为门控、原型失败时的处理；新增执行顺序（§5）、工作包与用例的对应、MVP 与 LOOP 边界（§8）、阶段整理清单（§9）；**新增“安静测试”（静音、不抢焦点、不碰用户已装应用，§6）与“路径一律小写 `trace`”（§1.5）**；真实站点旧回执只证明旧输入，新实现另立 ACT-006 小额复核 |
-| 3 | 首轮实机反馈与 ACT-006 结果（DEC-033）：A 已修 F-029～F-032，B 返工 R1～R7（[§12](#rev3)） |
-| 4 | 第二轮实机反馈（DEC-037）：A 已修播放卡顿 F-043，B 返工 R8～R13（[§13](#rev4)） |
+| 阶段内容 | 阶段开始的整理（C0）；依赖盘点与 MyGo 升级（D1）；版本号（W1）；开发版本机自动更新（W2）；正式版联网更新（W3）；更新的安全与数据保护（W4）；一条命令发布与升级演练（W5）；安装体验（W6）；安装与更新的测试（W7）；GitHub Actions 上的构建与每周发布（W8）；文档与用户待办（W9） |
+| 不在本阶段 | Windows 代码签名（见 3.1，Q-012 默认不签）；winget、Microsoft Store；macOS 与 Linux 的发布包；应用内的“测试版”通道；产品功能的新需求 |
+| 可连续执行 | 本地实现、依赖升级、合成样本、测试、打包、本机开发版的自动安装（W2，用户要求的行为）、ptest 身份的安装演练、文档同步、阶段提交与 amend |
+| 外部操作 | 未授权：push、PR、合并、创建标签与 Release、改仓库设置与 secrets。仓库侧的一次性配置是 [ACT-008](../../USER-ACTIONS.md#act-008)；每周自动发布要用户另行授权 [ACT-009](../../USER-ACTIONS.md#act-009)，授权前 `release.yml` 只构建不发布。本阶段的测试不访问 GitHub 与哔哩哔哩：更新源用本机的假发布源 |
+| 必须保留 | M1 的全部行为、数据位置与通道隔离（DEC-029）、单实例与托盘、安静测试（[工程规则](../dev-rules/engineering.md#quiet-tests)）、只删登记文件、凭证隔离；`dist/<通道>/` 只留最新一份（DEC-025） |
 
----
+**退出条件**
 
-2026-11-07 用户要求 Agent B 重新检查实现并修复不符合或未完成的行为，2026-11-08 再次要求复查至可交 A。两次均沿用修订 2 的完整范围，复查差异、验证边界以[阶段报告](stage-report.md) F-001～F-025 为准；2026-11-08 A 集中复核通过并直接修复 F-026～F-028（报告 §5～§7）；不将原交付声明代替实际代码与证据。
-
-## 1. 目标与边界
-
-1. **目标（DEC-032）**：纯 Go + [MyGo](https://github.com/egoist/mygo) 原生界面（`github.com/egoist/mygo/ui` + `github.com/egoist/mygo/audio`）实现基本框架与哔哩哔哩全部 M1 功能，不依赖 WebView2；`internal/ui` 只经 `service.Backend` 接口调用 `internal/service`，后端零 GUI 依赖（INV-05），为以后的无头录制模式留边界（[架构设计 §9](../design/architecture.md#headless-ext)）。持续同步 MyGo 最新版（当前 `v0.8.1`），不保留旧版兼容代码。
-2. **代码基点**：当前唯一阶段提交的父提交为初始化提交 `b208ad6`，文档基础已并入阶段提交；本轮 B 从 `681b6d4308caa018abd21559123c90b69c1025f1` 的修订 3 实现复核，开始时工作区干净，保留原修复。设计中的草案接口与候选命令不能替代实际代码，当前源码与证据入口见报告。
-3. **本机文件保护**：不碰 `dist/` 下带日期的旧包目录（`dist/trace-0.1.0-windows-x64-*`，其中 `20261105-4/trace-data/` 有用户数据，只读）、`.env.local`、`.local/`。`dist/trace-dev/` 由 `tools/package` 更新登记产物，当前包与哈希以[报告 §3](stage-report.md)和 H-001 为准。
-4. **真实站点**：本轮 B **不发任何真实站点请求**；测试只连 `127.0.0.1` 上的 `httptest.Server` 夹具。ACT-004～ACT-007 的回执（`artifacts/site-check/`）及 `.local/site-check/` 额度账本原样保留，**只证明当时的实现与输入**。ACT-006 已执行但缓存/直播步骤未通过，ACT-007 已复跑通过；实际结果见[报告 §7](stage-report.md#feedback-1)，本轮不把旧回执写成新代码通过。真实请求的现有授权与额度规则以[USER-ACTIONS](../../USER-ACTIONS.md#standing-site-requests)为准。
-5. **路径一律小写 `trace`**（用户 2026-11-07 指示）：TRACE 自己创建或命名的目录与文件只用小写 `trace` / `trace-dev`。这包括可执行文件、安装目录、数据目录、缓存目录、MyGo 子目录、日志、临时目录、安装包、`dist/` 输出、测试临时目录前缀，以及单实例键和应用名。界面显示名（窗口标题、开始菜单与“设置 > 应用”里的名称、托盘提示）仍是 “TRACE” / “TRACE Dev”。做法：
-   - `mygo.json`：`name: "trace"`、`slug: "trace"`、`windows.displayName: "TRACE"`、`windows.installDirName: "trace"`、`identifier: "io.github.chialecode.trace"`；dev 通道由 `tools/package` 临时写成 `trace-dev` / `TRACE Dev` / `io.github.chialecode.trace-dev`。产物是 `trace.exe`、`trace[-dev]-setup-0.1.0-amd64.exe`，安装到 `%LOCALAPPDATA%\Programs\trace[-dev]`。
-   - `main.go` 启动时先调用 `mygo.App.SetName(loc.AppName)`（`trace` 或 `trace-dev`）。这样 MyGo 内部的默认路径和单实例键也是小写，而且两个通道互不冲突（DEC-029 要求可以同时安装）。
-   - 断言：`appdirs` 单元测试检查各通道推算出的每一级 TRACE 自有路径都是小写；冒烟检查新建的目录与文件名不含大写 `TRACE`（C36）。
-   - 开始菜单快捷方式的文件名由 MyGo 按显示名生成（`TRACE Dev.lnk`），属于用户看到的名称，作为例外保留；要改成小写，见 USER-ACTIONS 的 Q-008。
-
----
-
-## 2. 依据、查证与选型
-
-### 2.1 本机参考与开源查证
-
-- 本机参考索引：已按[开发流程 §1.3](../dev-rules/workflow.md#local-reference)找到。本阶段相关的领域有：用户投稿列表的分页与风控参数、B 站直播录制（开播检测、断线重连、分段）、无界面录制的状态机与重连退避、桌面录制列表与任务反馈。只参考做法，不复制代码，仓库里不写项目名。
-- 开源依赖已在 2026-11-07 对照模块缓存里的源码核对：`github.com/egoist/mygo v0.8.1`、`github.com/Eyevinn/mp4ff v0.62.0`（`mp4.Defragment` 存在）、`modernc.org/sqlite v1.61.1`。B 于 2026-11-08 接入已选 `github.com/yeqown/go-qrcode/v2 v2.3.0` 及 `github.com/yeqown/reedsolomon v1.0.0`，核对 MIT 许可；既有 `golang.org/x/image v0.46.0` 注册 WebP 解码，改为直接依赖，许可随包收录。
-
-<a id="mygo-api"></a>
-### 2.2 MyGo v0.8.1 实际 API 对照（以源码为准）
-
-| 用途 | 实际 API | 注意 |
-| --- | --- | --- |
-| 原生窗口 | `mygo.NewWindow(mygo.WindowOptions{Title, Width, Height, Content: ui.View(view)})`，在 `mygo.App.WhenReady` 里创建，`mygo.App.Run()` 进入循环 | **没有** `NewNativeWindow` / `NativeWindowConfig` |
-| 后台线程更新界面 | `win.Update(func(){…})`（在主线程改状态并重绘）、`win.Invalidate()`、`mygo.RunOnMain` | **没有** `ui.RunOnMain`、`ui.Go`、`ui.Load` |
-| 图片与视频帧 | `ui.NewBitmap(img)` → `ui.Image(c, bmp)`；每帧 `bmp.Update(rgba)` | `ui.Image` 接收 `ImageSource`（`*ui.Bitmap` 或 SVG），不能直接传 `*image.RGBA`；**没有** `ui.SetImageLoader` |
-| 视频组件 | 不用 `ui.VideoPlayer` | 它没有 Seek、没有音频时钟，桌面开启“减少动态效果”时会停在第一帧；播放层自己按音频时钟驱动 `Bitmap.Update` |
-| 无障碍名称 | 元素的 `.Label("…")`；测试用 `tt.Access` / `tt.AccessByRole` | **没有** `AccessibilityLabel` |
-| 虚拟列表 | `ui.List(c, &ui.ListState{…}, n, row)` | — |
-| 测试器 | `ui.NewTester(view, w, h)`：`Click`、`Type`、`Compose(text, caret)`、`Scroll`、`SetSize`、`Find`（按标签或文字返回 `Rect`）、`Image()`、`Advance(d)` | 在内存里运行，不建窗口、不出声 |
-| 单实例 | `mygo.App.RequestSingleInstanceLock()`、`mygo.App.OnSecondInstance` | 锁按“应用名 +（打包后的）标识”区分，socket 放在 `os.TempDir()`；所以必须先 `SetName`，冒烟还要隔离 `TEMP`/`TMP`（§6） |
-| 路径 | `mygo.App.SetPath(mygo.PathUserData / PathCache / PathLogs, p)` | 在 `Run` 前设置 |
-| 窗口生命周期 | `mygo.App.OnWindowAllClosed(fn)` 让进程在无窗口时继续运行；`win.Hide()`（紧跟 `NewWindow` 调用时窗口完全不出现）、`win.ShowInactive()`（显示但不抢焦点） | — |
-| 托盘与通知 | `mygo.NewTray(mygo.TrayOptions{ID, Icon, ToolTip, Menu})`、`mygo.NewNotification(mygo.NotificationOptions{…, Silent})` | — |
-| 音频 | `audio.NewPlayer(dec)`，`dec` 实现 `audio.Decoder`（`SampleRate`、`Channels`、`Read([]float32)`、`SetPosition(frame)`、`Len`）；`Player.Position()`、`Seek`、`SetVolume` | 创建 `Player` 就会打开系统默认输出设备（WASAPI）；没有公开的静音设备开关，所以测试不创建它（§6） |
-| 打包 | `go tool mygo build`（CLI 记为 `go.mod` 的 `tool` 依赖）；NSIS 安装包 `RequestExecutionLevel user`，装到 `%LOCALAPPDATA%\Programs\<installDirName>` | 安装包会先关闭正在运行的同名程序，并写开始菜单快捷方式和 HKCU 卸载项（§6） |
-
-B 用到其他 MyGo API 时先查 `$(go env GOMODCACHE)/github.com/egoist/mygo@v0.8.1/docs/`，不要按记忆写。
-
-### 2.3 选型与版本
-
-| 领域 | 选定方案与版本 | 边界与约束 |
-| --- | --- | --- |
-| Go 工具链 | `go 1.27.3`（`CGO_ENABLED=0`） | 全仓库纯 Go |
-| 原生外壳与界面 | `github.com/egoist/mygo v0.8.1` | 只有 `main.go`、`internal/shell`、`internal/ui`、`internal/player` 可以引用 `github.com/egoist/mygo/...`（INV-05） |
-| 本地播放 | Windows Media Foundation（`IMFSourceReader`，经 `golang.org/x/sys/windows` 做纯 Go COM 调用）解码，画面送 `*ui.Bitmap`，声音经 `internal/player` 的 `AudioSink` 接口交给 `mygo/audio` | `AudioSink` 与解码后端都可以替换：测试注入合成解码器和静音输出（§6） |
-| 弹幕与字幕 | `internal/player` 自己写纯 Go 的弹幕排版器与 WebVTT 解析器 | 按播放时刻 `t` 的纯函数计算 |
-| 登录二维码 | `github.com/yeqown/go-qrcode/v2 v2.3.0`，只用编码出的矩阵，自己画成 `*image.RGBA` 再 `ui.NewBitmap`（不用它的图片写出器，少带依赖）；备选 `rsc.io/qr` | B 已接入并核对 MIT 许可及传递 `reedsolomon v1.0.0`；只在内存里，不写盘 |
-| SQLite | `modernc.org/sqlite v1.61.1` | WAL；`library.db` 可从 `item.json` 重建 |
-| MP4 | `github.com/Eyevinn/mp4ff v0.62.0` | 点播合并（`moov` 在前、约 1 秒交错、`elst`）；直播用 `mp4.Defragment` 收尾 |
-| 弹幕 protobuf | `google.golang.org/protobuf v1.36.12`（只用 `encoding/protowire`） | 手写解码，未知字段跳过 |
-
----
-
-## 3. 隔离原型
-
-原型代码**入库**，放在对应包的测试里，或放在 `tools/proto/<名称>/`。`artifacts/` 被 Git 忽略，只放结果：`artifacts/prototypes/RESULTS.md` 与 `pr1.json`～`pr4.json`。B 开工前先清空旧内容（§9）。原型全部按 §6 的安静规则运行。
-
-| 编号 | 验证问题 | 通过标准 | 失败时的处理 |
+| 条件 | 做法 | 工作包 | 验收 |
 | --- | --- | --- | --- |
-| **PR-1** | MF `IMFSourceReader` 能否在不开 cgo 的情况下解码 MP4 视频帧（RGB32 → RGBA）和音频采样（Float/PCM）、Seek，以及支持 > 2 GiB（`co64`）？本机有没有 HEVC、AV1 解码器？ | 合成 AVC+AAC 样本：帧的宽高正确、非全黑，音频的采样率、声道数正确、波形非零；Seek 后首帧时间戳误差 ≤ 1 帧；堆峰值 < 100 MiB。HEVC、AV1 样本记录“可解码 / 缺解码器”。**只解码读取，不播放出声** | 纯 Go COM 走不通：播放层改为“用系统播放器打开”，弹幕与字幕叠加记为 blocked（C22），其余工作照常推进，报告写明并由 A 决定。缺 HEVC/AV1 解码器：播放层显示“本机缺少 HEVC/AV1 解码器”和“用系统播放器打开”，不能黑屏或无声却不提示 |
-| **PR-2** | `mp4ff` 合并 DASH（AAC、FLAC 30251、E-AC-3 30250），以及直播 fMP4（多 `moof`/`trun`、负 CTO）收尾 | 合并后 `ftyp`+`moov` 在 `mdat` 前，约 1 秒交错，带 `elst`，PR-1 能解码；杜比按 Q-005 另存 `P01.audio-30250.m4a`；fMP4 收尾时长误差 ≤ 0.1s，MF 能打开并 Seek | MF 解不了 FLAC-in-MP4：FLAC 也按杜比的办法另存 `Pxx.audio-30251.m4a`，主 MP4 合入最佳 AAC（与[数据设计](../design/data-and-cache.md#merge)的“能播放才合并，否则另存”一致） |
-| **PR-3** | 10,000 条弹幕时，单帧排版耗时、密度过滤、拖动后有无残留；WebVTT 解析（HTML 实体、`-->`） | 平均 < 1 ms；从 30s 拖到 120s 后只剩 `[114s, 120s]` 窗口内的弹幕；`ui.NewTester` 导出的画面非空 | 降到“只显示滚动弹幕、限制同屏条数”，记为 LOOP |
-| **PR-4** | 原生窗口关到托盘：窗口销毁、内存释放、没有 WebView2 子进程，同一进程内重建 5 次；NSIS 安装与卸载 | (1) **窗口按 §6 的安静方式创建**：关闭后进程继续运行，`msedgewebview2.exe` 为 0，专用工作集 < 60 MB，每次重建就绪 < 2s。(2) 安装包测试**用单独的测试应用名** `trace-ptest`（§6），装到临时目录、覆盖安装、卸载，并核对快捷方式与 HKCU 卸载项已清除 | (1) 不达标：如实记录数值，A 决定是否放宽 NFR-RES-001。(2) 默认不跑，需 `TRACE_RUN_INSTALLER_TEST=1`；没跑就记 not-run |
+| 版本号按规则生成 | 正式版 `0.1.x`，开发版 `<下一个正式版号>-dev.<UTC 年月日时分>`；由工具统一算出并写进程序和安装包，不为发布手改 `mygo.json`；“设置 › 关于”显示版本、提交与构建时间 | W1 | AC-27 |
+| 开发版在本机自动更新 | `tools/package` 打出开发版后，本机装了 `trace-dev` 就让运行中的它保存并退出、静默安装新包、原来在运行就重新打开；正式版绝不受影响；没装就跳过；可以关闭 | W2 | AC-28 |
+| 正式版联网更新 | 用 MyGo 的 `mygo.Updater` 从 GitHub Releases 检查、后台下载、校验后替换；顶部一行不打断的“新版本已就绪 · 重启以更新”；有缓存或录制时先说明会暂停什么；不理会时下次启动就是新版本；更新后第一次启动说明一次 | W3 | AC-29 |
+| 更新不能被篡改、数据不被破坏 | Ed25519 签名（公钥内置）；签名不对、被改过、版本不更新、不是 HTTPS 的一律拒绝并保留现版本；有结构升级的版本在迁移前备份数据，旧版本不打开更新过的数据 | W4 | AC-30 |
+| 一条命令发布 | `go run ./tools/release` 在同一份源码上生成正式版安装包、更新包、清单、`SHA256SUMS`、发布说明，并在 ptest 身份下演练“从上一版升级到这一版”；有授权时才发布 | W5 | AC-31 |
+| 安装体验 | 应用图标（开发版另一配色）、全中文的安装界面、发布者与版权、“设置 › 应用”里显示版本；安装包名带版本 | W6 | AC-32 |
+| CI 构建与每周发布 | `.github/workflows/release.yml`：每周定时与手动触发；上次发布以来没有新的合并就跳过；在 Windows 运行器上跑检查、打包与升级演练，全部通过才签名；授权前只构建不发布 | W8 | AC-33 |
+| 阶段开始的整理 | 去掉文档里以前阶段的标签；按内容整理文件 | C0 | 文档检查；报告的整理记录 |
 
-`co64` 的大文件样本：用 NTFS 稀疏文件（`FSCTL_SET_SPARSE` 后再 Seek 写），不实际写满 2 GiB 数据。这类测试只在 `TRACE_RUN_LARGE=1` 时运行，不进默认的 `go test ./...` 和 CI。
+**阶段完成的判定**：B 自检的必测用例与门禁全部通过，A 集中审查收敛后，才可以请用户授权 push、PR 与合并。人工检查（H-002）与待答复的问题不是合并的前提；产品验收保持 not-run。
 
----
+**阶段完成后，用户可以：**
 
-## 4. 工作包
+- 改完代码、打包通过后，本机的开发版自己装上新版本，原来开着的会自动重开；
+- 授权 ACT-009 后，每周一次，只要上周有 PR 合并，GitHub Actions 就自动检查、打包、演练并发布新的正式版；装着的正式版过一会儿提示“新版本已就绪，重启以更新”；
+- 在“设置 › 关于”里看到当前版本，手动检查更新，关闭自动检查或自动下载。
 
-每个工作包末尾的“证据”写对应的必测用例。凡是写着“防回归”的地方，括号里的行为描述就是要求本身，不另有出处。
+## 2. A 已核对的现场（2026-11-09）
 
-### P1：工程骨架、通道与数据位置（`internal/appdirs`、`internal/storage`、`internal/settings`、`internal/uistate`）
-- `go.mod`（`go 1.27.3`，`tool github.com/egoist/mygo/cmd/mygo`）、`mygo.json`（按 §1.5 的小写命名）。
-- `internal/appdirs`：三个通道 `release`、`dev`、`source`（`-ldflags -X` 注入）；`AppNameForChannel` 返回 `trace` 或 `trace-dev`；“文档”目录用 `SHGetKnownFolderPath(FOLDERID_Documents)` 取，不引用 MyGo（INV-05）。
-  - 默认缓存位置（`cacheRoot` 为空时）：`release` 用 `<文档>\trace`，`dev`、`source` 用 `<文档>\trace-dev`。`TRACE_DATA_DIR` 只覆盖数据目录，不会把缓存挪到数据目录里；测试要隔离缓存时用 `TRACE_CACHE_DIR` 或 `settings.CacheRoot`（防回归）。
-  - 数据目录独占锁 `app.lock`（`LockFileEx`，`EXCLUSIVE | FAIL_IMMEDIATELY`）：拿不到锁就立即返回错误，不打开任何数据文件（INV-14）。
-- `internal/storage`：原子写（临时文件 → `Sync` → `Close` → `Rename`）；损坏的 JSON 改名为 `<name>.corrupt-<时间>` 保留（NFR-DATA-001）；`history.json`（200 条，按 `kind+id` 去重，不存凭证和签名地址）。
-- `internal/settings`、`internal/uistate`：全部字段、默认值、范围校验、忽略未知字段、损坏后改名恢复。
-- 证据：C03、C28、C36。
+- **打包**（`tools/package/main.go`）：临时改写 `mygo.json` 的 `slug`、`identifier`、`windows.displayName`、`windows.installDirName` 区分通道（正式版 `trace` / `io.github.chialecode.trace` / `TRACE`，开发版 `trace-dev` / `io.github.chialecode.trace-dev` / `TRACE Dev`），通过 `MYGO_LDFLAGS` 注入 `appdirs.channel` 与 `appdirs.version`，运行 `go tool mygo build -platform windows/amd64`，再登记替换到 `dist/<通道>/`。版本固定读 `mygo.json` 的 `0.1.0`；`-install` 只在明确要求时静默安装，不处理运行中的应用。
+- **程序里的版本**：`internal/shell/shell.go` 写死 `mygo.App.SetVersion("0.1.0")`；`appdirs.version` 已有但没用于显示。“设置 › 关于”有版本号，没有提交与构建时间，也没有更新入口。
+- **安装包**：MyGo `v0.8.1` 生成的 NSIS 安装包按用户安装到 `%LOCALAPPDATA%\Programs\<installDirName>`，登记 `HKCU` 卸载项（含 `DisplayVersion`、`InstallLocation`），完成页提供运行与桌面快捷方式。没有图标（`resources/icon.png` 不存在），没有 `i18n`，所以安装界面是英文；没有 `publisher` 与 `copyright`。安装前它用 PowerShell 请运行中的应用关闭主窗口，10 秒后强制结束。**TRACE 关闭窗口是缩到托盘，所以安装器会在 10 秒后强杀正在缓存或录制的 TRACE**，W2 必须先让它自己保存退出。
+- **安装测试**：`internal/shell/shell_test.go` 只有一个占位（“requires `TRACE_RUN_INSTALLER_TEST=1` with trace-ptest”），没有真正的安装、升级与卸载测试。`appdirs` 已有 `ptest` 通道，可作为测试身份。
+- **更新**：没有任何更新机制。仓库 `chialecode/trace` 公开，没有标签与 Release。
+- **CI**：只有 `.github/workflows/ci.yml` 的必需检查 `repository-quality`（Ubuntu、`go run ./tools/check`、只读 token、只允许固定 SHA 的 `actions/checkout`，[工程规则 §4.1](../dev-rules/engineering.md#remote)）。
+- **更新签名密钥**：A 已于 2026-11-09 用 `go tool mygo keygen` 在仓库外（MyGo 默认配置目录下的 `mygo/update-keys/trace/`）生成 Ed25519 密钥对。公钥是 `PE6JZtvGTY8jvwwou6DHO/qhWjkbrSXHbHd2O3fRZFo=`，B 把它写进正式版的配置；**B 不得重新生成或覆盖这把密钥**，否则本机与 CI 的签名对不上。私钥不入库，备份与放进 CI 见 ACT-008。
 
-### P2：凭证（`internal/credential`）
-- DPAPI（当前用户范围）加解密 `<数据目录>/credentials/bilibili.bin`；非 Windows 平台用测试桩。
-- 结构字段：`cookies`、`refresh_token`、`mid`、`uname`、`face`、`obtained_at`、`source`（`qr` | `manual`）、`renewed_at`、`confirm_pending`、`pending_old_refresh_token`。
-- 手动 Cookie：上限 8 KiB；可带 `Cookie:` 前缀，`;` 或换行分隔；只保留 `SESSDATA`、`bili_jct`、`DedeUserID`、`DedeUserID__ckMd5`、`sid`；缺 `SESSDATA` 返回 `invalid_input`；任何错误消息都不回显输入（INV-01）。
-- 证据：C05、C37。
+## 3. 依据、查证与选型
 
-### P3：哔哩哔哩核心协议（`internal/site/bilibili` 第一部分）
-- **两个 HTTP 客户端**：
-  - API 客户端：15 秒总超时，不自动跟随重定向；全局互斥 + 500ms 最小间隔，可以用 `context` 取消（NFR-NET-001）。
-  - 媒体客户端（P6 使用）：连接与响应头 15 秒超时，读 body 时 30 秒没有进展才算超时，**不设总超时**。否则 8 MiB 分段在约 550 KB/s 以下的网速会每段必然超时。
-- 错误分类：`auth_required`、`risk_control`、`rate_limited`、`blocked`、`unavailable`、`network`、`schema_changed`。没有凭证时，除扫码接口和用候选 Cookie 的 `nav` 校验外，请求在发出前就返回 `auth_required`（INV-07）。遇 `-101` 或 `nav` 返回 `isLogin=false` 时调用 `onAuthExpired`。
-- WBI 签名，密钥缓存 30 分钟，遇 `-352` 刷新一次。`ResolveLink`：BV、av、`b23.tv`（手动处理一次 302，拒绝跳到外站）、空间链接、`UID:xxx`、纯数字 UID、`live.bilibili.com/<房间号>`（经 `room_init`）（FR-LINK-001/002）。
-- 扫码登录：180 秒过期，用 flowId 隔离；取消、过期或开始新流程后，丢弃旧流程的轮询结果（INV-03）。
-- 视频详情、用户资料与统计、空间投稿（**按[协议资料 §投稿列表](../research/bilibili.md#arc-search)带 `web_location`、`dm_img_*`、`w_webid` 参数，缺这些参数时真实站点返回 -412**）、用户动态列表（各类型和降级展示；原图 URL 去掉尺寸后缀）、播放地址（清晰度排序表、编码、无损与杜比音轨）。
-- 证据：C01、C02、C04、C11、C12、C13。
+本机参考索引里没有“安装与更新”的条目；用户在对话里指定了安装参考项目（只参考做法与流程，它是 Electron 应用，代码不适用）。A 已按[参考规则](../dev-rules/workflow.md#local-reference)在索引的 `PROPOSALS.md` 追加登记建议。
 
-### P4：哔哩哔哩扩展协议（`internal/site/bilibili` 第二部分）
-- **登录续期（FR-AUTH-003）**：`CookieInfo`；`GenerateCorrespondPath`（RSA-OAEP SHA-256）→ `correspond/1/<hex>` 取出 `refresh_csrf`（取不到或非 200 返回 `schema_changed`）；`RefreshCookie`（`csrf` 用旧 `bili_jct`，带旧 `refresh_token`）；`ConfirmRefresh`（防回归：**`csrf` 必须用新 Cookie 的 `bili_jct`，同时传替换前的旧 `refresh_token`**）。
-- 关注分组与关注列表（只读，每页 50 条）。
-- 弹幕：分段数 `ceil(duration/360)`，`protowire` 解码，按 `idStr` 去重、按 `progress` 排序，原子写出 XML。
-- CC 字幕：`x/player/wbi/v2` 列表（核对 `bvid`/`cid`，跳过空 URL，识别 AI 字幕）；字幕 JSON 上限 5 MiB，含 `auth_key` 的地址只留在内存；转换为 `.vtt`/`.srt`，正确转义。
-- 直播：按 uid 批量查状态（每批 ≤ 50，区分 `live`/`offline`/`round`/`none`）；`getRoomPlayInfo` 拒绝加密流，从 `http_hls`/`fmp4` 按 `codecOrder` 取最高画质，官方节点排在 MCDN 前。
-- 证据：C08、C09、C10、C21、C30、C34。
+<a id="sources"></a>
+### 3.1 候选（查询 2026-11-09）
 
-### P5：媒体库（`internal/library`）
-- `library.db`（WAL）与 `item.json` 正本；`quick_check` 失败时改名保留（连同 `-wal`、`-shm`），从 `library-roots.json` 登记的保存位置重建索引（NFR-DATA-002）。
-- **`item.json` 兼容**：开工前只读查看旧缓存 `dist/trace-0.1.0-windows-x64-20261105-4/trace-data/library/` 里的 1～2 个 `item.json`，确认字段（顶层有 `author`、`cachedAt`、`dynamicType`、`id`、`kind`、`media`、`pubTs`、`site`、`status`、`typeLabel`、`url`、`version`、`videos`）与[数据设计](../design/data-and-cache.md#cache)一致。不一致就以设计为准，同时保证能读入旧格式。测试夹具用**合成**数据（ID、昵称、URL 全部替换），不复制原文件。
-- 状态圆点推算（绿、黄、红、进度环、未缓存，并带无障碍文字）。
-- 主页信息流的双向键集分页 `(pub_ts, key)`，可按 `authors` 过滤。
-- `MediaPath(key, relPath)` 路径白名单（INV-08）：只允许清单登记的文件；拒绝 `.`、`..`、反斜杠、冒号、空字节；用 `Lstat` + `EvalSymlinks` 拒绝符号链接和目录联接逃逸。
-- `PlanDelete`/`Delete`（INV-09，防回归）：正在录制的条目拒绝删除；被别处引用的视频保留；只删登记的文件、`.part` 和 `item.json`，再自底向上删变空的目录；目录里有用户自己的文件时保留，并返回 `preservedUserFiles`；待清理记录写进 `pending-deletes.json`。
-- `AddLibraryRoot`（FR-LIB-006）：**只要文件夹里有 `library/` 子文件夹就当作旧数据目录**（`settings.json` 可有可无，旧缓存实际就没有这个文件）；不跟随链接，一次最多扫描 100,000 个清单，重复的键跳过并计数。
-- 证据：C19、C24、C25、C26、C27、C28。
+| 需要 | 候选与来源 | 版本、维护与许可 | 判断 |
+| --- | --- | --- | --- |
+| 应用内更新 | MyGo 自带的 `mygo.Updater`（[auto-updates](https://github.com/egoist/mygo/blob/v0.8.3/docs/updates.md)）：`mygo build` 用 Ed25519 私钥签名每个平台的更新包，写清单与差分包；应用用内置公钥校验后替换自己 | 与现用 MyGo 同一模块；`v0.8.3`（2026-11-07，GitHub Releases），仓库 MIT、2026-11-08 仍有提交 | **采用**：与现有 `mygo build` 安装包是同一套（按用户安装在 `%LOCALAPPDATA%\Programs` 才能自更新），不需要另装更新器；支持 GitHub Releases、差分更新、系统代理 |
+| 更新界面 | MyGo 的 `plugins/updater` 与原生界面版 `updater/native`（[updater plugin](https://github.com/egoist/mygo/blob/v0.8.3/docs/plugins/updater.md)） | 同上 | **不采用插件的窗口，用 `mygo.Updater` 自做一行提示**：插件会在下载后直接提供重启，不知道 TRACE 正在缓存或录制；它的窗口样式也与 TRACE 的界面不同。MyGo 文档把“自己的更新界面”列为同等做法 |
+| 发布到 GitHub | `mygo build -upload`（经 `gh` 上传到草稿 Release）与 `gh release` | 本机已登录 `gh` | **采用**：不引入第三方 Action |
+| Windows 构建与演练机器 | GitHub 托管运行器 `windows-2025` | Windows Server 2025 | **采用，固定写 `windows-2025`**。MyGo 能在 Ubuntu 上构建 Windows 包，但升级演练与冒烟要在 Windows 上跑。本机门禁仍是阶段合并的依据，CI 结果只决定这一次能不能发布 |
+| job 之间传文件 | `actions/upload-artifact`、`actions/download-artifact`（GitHub 官方，MIT） | B 实施时查当前正式版并固定完整 SHA | **采用**：让“构建与签名”和“发布”分开，发布的 job 有写权限但不运行仓库代码、不碰私钥。加入 Actions 允许列表属于 ACT-008 |
+| Windows 代码签名 | Azure Artifact Signing、开源项目证书、SignPath Foundation、Microsoft Store | — | **本阶段不签**（Q-012 默认）：个人开发者能拿到的签名要么收费、要么有地区或资格限制；未签名时 SmartScreen 会提示，H-002 写明怎样放行。更新本身由 Ed25519 签名保证完整性 |
 
-### P6：下载（`internal/download`）
-- 任务队列，并发 1～4（默认 2）；重启后未完成的任务恢复为“已暂停（应用关闭）”。
-- 8 MiB 分段续传：用 P3 的媒体客户端；闭区间 `Range`，校验 `206` 和 `Content-Range`；断连、超时、重置、5xx 从断点重试，最多 5 次（1/2/4/8/16s，±20% 抖动），主备节点轮换；403/404/410 时每个分 P 最多重取一次播放地址；遇 412、`-352`、`-412` 暂停为“已暂停（风控）”，不重试；尝试日志脱敏（INV-08）。
-- 选流与合并（NFR-MEDIA-001）：音频按 30251 > 30250 > 30280 > 30232 > 30216；FLAC 和杜比按 PR-2 的结论处理（合入或另存，主 MP4 合入最佳 AAC）；校验大小、轨道、时长（误差 ≤ 2s）和 SHA-256 通过后才改正式名（INV-06）。
-- 弹幕和字幕随视频保存，失败的记入 `missing`；`CacheSupplement` 只补存弹幕和字幕。
-- 逐文件进度（FR-CACHE-009）：文件计划表持久化在 `library.db`。
-- 画质升级：24 小时冷却，`UpgradeCandidates` ≤ 50 个，遇风控即停；`Upgrade` 只重下档位较低的分 P，校验通过后原子替换。
-- 证据：C15、C16、C17、C18、C20、C21、C23。
+**依赖盘点（D1）**：MyGo 从 `v0.8.1` 升到 `v0.8.3`。`v0.8.3` 的发行说明里与本阶段直接相关的一项：用它构建的应用在 Linux 与 Windows 上更新时，会删除新版本不再带的文件。其余为界面与渲染修复，没有 Go API 的破坏性变化。B 实施开始时再查一次 MyGo 的最新正式版（不用 `native-sqlitecore` 之类的非版本标签），并对其他依赖跑 `go list -m -u all`，可以升级的逐个升级并跑完整回归；某个升级失败就回退，在报告里写明尝试的版本、失败的命令与复查条件。
 
-### P7：订阅（`internal/subscription`）
-- `subscriptions.json` 原子写，写前把上一版存为 `.bak`；损坏时改名保留，并提供 `RestoreFromBackup`。
-- 账号键 `<site>:<uid>` 全局唯一，一个订阅最多 20 个账号；`Link` 遇到冲突返回 `conflict`；`Move` 在同一把锁里原子完成移出和移入（防回归）；删除订阅不删缓存，也不调站点写接口（DEC-031、INV-11）。
-- 检查更新（INV-12）：第一次只读第 1 页，全部标为已看并记起点（置顶动态不作起点）；之后最多翻 3 页，读满 3 页还没遇到起点就记 `gap=true`；每个账号保留 200 条；不属于任何订阅超过 30 天的账号记录在启动时清理；账号之间间隔 ≥ 2s（测试注入时钟）；遇风控、限流、未登录整轮停止；连续 3 个 `network` 错误也停止。
-- 定时调度：每分钟醒来一次；每轮 ≤ 30 个账号；退避 `interval × 2^n`（上限 24h），持久化；规则触发的请求共用每小时 200 次的令牌桶，额度不够就整轮推迟。
-- 自动缓存：开规则时 `since = now`；只在正常结束的轮次后建任务；每轮 ≤ 20 个，超出的记 `backlogCount`。
-- 证据：C29、C31、C32、C33。
+## 4. 设计
 
-### P8：直播（`internal/live`）
-- 开播状态在内存缓存 60 秒，按批查询。
-- HLS fMP4 录制：按 `TARGETDURATION`（夹在 1～5s）轮询，m3u8 上限 1 MiB；`EXT-X-MAP` 每段只写一次，至多每 10s `fsync` 一次；遇 MAP 变化、DISCONTINUITY、序号跳空 > 3、重连时换段；10 秒没有新分片就等 6 秒重新取流，连续 5 分钟取不到就结束；风控或 `-101` 立即停止；剩余空间 < 1 GiB 时停止（原因 `storage`）；每段用 `Defragment` 收尾，校验后改名，失败保留 `.part` 并标黄点；关闭应用时限时 30 秒收尾；启动时把孤儿 `.part` 补转 MP4。
-- 自动录制：每 `liveCheckIntervalMin` 检查一次，遵守退避和令牌桶；同一场（`live_time` 相同）被手动停止后，本场不再自动录。
-- 证据：C34。
+<a id="w1"></a>
+### 4.1 版本号（W1）
 
-### P9：服务层（`internal/service`）
-- `service.Backend` 接口与全部服务（[架构设计 §3](../design/architecture.md#services)）。
-- `BootstrapAuth`/`LoginWithCookie`（防回归）：`nav` 遇网络错误或风控时，手动登录返回 `network`（不说成“凭证失效”）；启动检查遇网络错误时状态设为 `unknown`，保留凭证。
-- 登录守卫：没有登录时，除 `Auth`、`Settings`、`App` 外一律返回 `auth_required`，0 次网络请求。
-- 续期调度：启动后 1 分钟和之后每 12 小时，只对 `source=qr` 的凭证；新 Cookie 经 `nav` 确认（`mid` 不变）后再原子替换，然后调用 `confirm/refresh`。
-- `EventHub`：没有订阅者时直接丢弃事件，不阻塞（INV-13）。
-- **外部动作接口 `service.Desktop`**（打开链接、在文件夹中显示、用系统播放器打开、选择文件夹、发通知）由 `internal/shell` 实现；测试和安静模式（§6）注入记录型假实现。
-- 证据：C05、C06、C07、C08、C37。
+- **正式版**：`0.1.x`。从 GitHub 上最高的 `v0.1.*` 标签算出下一个号（本机用 `git ls-remote --tags` 与 `gh release list` 核对，两者不一致时停下说明）；还没有发布时从 `0.1.1` 开始（Q-012：M1 期间的开发包都标着 `0.1.0`，从 `0.1.1` 开始避免两个不同的构建同号）。`mygo.json` 的 `version` 只表示版本线 `0.1.0`，不为每次发布提交改动。升到 `0.2` 或 `1.0` 由用户决定。
+- **开发版**：`<下一个正式版号>-dev.<UTC 年月日时分>`，例如 `0.1.1-dev.202611091530`。开发版与正式版是两个独立的通道，互不比较、互不更新。
+- **写进程序**：版本、通道、提交短哈希与 UTC 构建时间由 `tools/package` 与 `tools/release` 的同一个函数算出，经 `MYGO_LDFLAGS` 注入 `internal/appdirs`，并写进构建时的 `mygo.json` 副本（MyGo 用它写文件属性、安装包名与卸载项的 `DisplayVersion`）；`shell` 用它调用 `mygo.App.SetVersion`，去掉写死的 `0.1.0`。`go run`、测试等没有注入时显示 `0.0.0-dev`。
+- **显示**：“设置 › 关于”显示“版本 0.1.1（正式版）”或“0.1.1-dev.202611091530（开发版）”、提交与构建时间；诊断信息与日志开头也写这三项。`VERSION.txt` 改为同样的字段。
 
-### P10：播放器（`internal/player`）
-- `Decoder` 接口：`mf_windows.go`（MF，`CGO_ENABLED=0`）和 `synth.go`（确定性的合成帧、合成采样、合成时钟）。
-- `AudioSink` 接口：`mygoSink`（`audio.NewPlayer`）和 `nullSink`（只按时钟推进，不打开设备）。
-- 以音频位置为主时钟（没有音轨时用单调时钟）驱动 `Bitmap.Update`；Seek 时音画同步跳转。
-- 没有可用解码器（HEVC/AV1 缺扩展）时返回明确的错误类别，界面给出提示和“用系统播放器打开”。
-- `danmaku.go`（`LayoutAt`：模式 1～5、密度、透明度、防重叠轨道）、`subtitle.go`（`ActiveCuesAt`）。
-- 证据：C22，以及 PR-1、PR-3。
+<a id="w2"></a>
+### 4.2 开发版在本机自动更新（W2）
 
-### P11：原生界面（一）：外壳、三栏、登录、解析、视频、用户页（`internal/ui`）
-- 主题常量（[界面规范 §5](../ui.md#visual)）与线性图标（`ui.Canvas` 路径绘制）。
-- 三栏布局：≥ 1280 时 275/600/350；1000～1279 时 88/600/300（只有图标，带 tooltip 和 `.Label`）；720～999 时 88 + 自适应，右栏隐藏，快速解析框移到中栏顶部。左右栏固定，只有中栏滚动（NFR-UI-001）。
-- 路由与登录守卫：失效时保存路由和已加载的数据，重新登录后回到原处（FR-AUTH-005）。
-- 登录页（二维码 → `ui.NewBitmap`；粘贴凭证框用掩码，提交后立即清空）、解析页（输入法组合态按回车不提交）、视频详情、用户页（订阅归属、直播横幅、动态和投稿的虚拟列表、出错时停在原处并可重试）。
-- 后台事件经 `win.Update` 回到主线程（§2.2）。
-- 证据：C04、C05、C06、C07、C12、C13、C38。
+- **触发**：`go run ./tools/package`（开发版，默认通道）在包登记到 `dist/trace-dev/` 并校验通过之后，最后一步执行“安装到本机”。也可以单独运行 `go run ./tools/package -install-only`（用 `dist/trace-dev/` 里现有的包）。`TRACE_DEV_AUTO_INSTALL=0` 或在 CI 上（`CI=true`）时跳过并说明。原来的 `-install` 参数去掉（由这一步取代）。
+- **只碰开发版**：按 `HKCU` 卸载项里 `io.github.chialecode.trace-dev` 对应的条目（`InstallLocation`、`DisplayVersion`）确认本机装了开发版，没装就跳过。绝不安装、关闭或改动正式版与 ptest 身份。
+- **让运行中的开发版自己退出**：用开发版的可执行文件带 `--quit-for-update` 启动一次；它作为第二个实例把参数转给运行中的 TRACE（现有单实例通道）。运行中的 TRACE 收到后：不弹确认，暂停全部缓存任务（与托盘“退出”相同的持久化，重启后为“已暂停”，用户的“继续”不变），正常结束正在进行的录制（收尾成可播放的文件），保存界面状态，记下“为更新而退出”与退出前窗口是打开还是在托盘，然后退出。工具最多等 30 秒；没退出就放弃这次安装、不强杀，说明原因（例如“TRACE Dev 正在收尾录制，30 秒内没有退出，这次没有安装”）。没在运行就直接安装。
+- **安装**：用刚登记的开发版安装包静默安装（`/S`，MyGo 的安装包沿用上次的安装目录）；完成后从卸载项核对已装版本等于新版本号。
+- **重新打开**：原来在运行的，安装完成后启动它；退出前窗口在托盘的，带 `--background` 只回到托盘（B 核对现有启动参数，没有就新增），否则打开窗口。重新打开后的 TRACE 读到“为更新而退出”的记录，不再提示“已暂停”的意外；任务保持已暂停，由用户继续（与现在托盘退出后重开的行为一致）。
+- **结果**：写 `artifacts/package/install-dev.json`（是否安装、旧版本、新版本、是否在运行、是否重开、用时、跳过或失败原因）。安装失败让 `tools/package` 以非零退出，但不回滚已登记的包；跳过不算失败。
+- **安静与安全**：这一步是用户要求的、会关闭并更新本机 TRACE Dev 的行为，只在 `tools/package` 里，不在 `go test` 和 `tools/check` 里运行；测试用注入的假卸载项、假进程与假安装器覆盖它的判断。
 
-### P12：原生界面（二）：主页、订阅、媒体库、看图、播放、任务、设置（`internal/ui`）
-- 帖子卡片、主页信息流（`ui.List`，5000 条）、订阅（列表、添加、导入、详情四个标签）、媒体库、看图层、播放层（集成 P10；按钮动作经 `service.Desktop`）、任务页（逐文件进度）、设置页（七个分类；窄窗时二级导航）。
-- 证据：C14、C22、C23、C24、C25、C26、C29、C30、C31、C38。
+<a id="w3"></a>
+### 4.3 正式版联网更新（W3）
 
-### P13：桌面外壳（`internal/shell`、`main.go`）
-- **启动顺序**：`appdirs` 解析 → `mygo.App.SetName(loc.AppName)` → `RequestSingleInstanceLock()`（第二个实例把参数转给第一个后退出，不碰数据目录）→ `app.lock` → `SetPath(userData/cache/logs → <数据目录>/mygo、cache、logs)` → 启动服务 → `App.Run()`。
-- 托盘：自绘图标（有任务时带蓝点）；状态行；“打开 TRACE”、“检查全部订阅”、“退出”（有活动时二次确认）。
-- 关闭到托盘：销毁窗口，释放位图并取消订阅，`runtime.GC()` + `debug.FreeOSMemory()`；第一次关闭发一条通知；从托盘或第二个实例重建窗口（DEC-030、INV-13）。
-- 安静模式（§6）在这里实现。
-- 证据：C35、C36，以及 PR-4。
+- **只在正式版启用**：只有正式版的构建配置带 `updates`（公钥与 `github: "chialecode/trace"`）；开发版与 ptest 不带，`mygo.Updater.Enabled()` 为假，不检查。更新源是 GitHub Releases，只取已发布的正式 Release，草稿与预发布不算。
+- **检查**：启动 1 分钟后检查一次，之后每 24 小时一次（Q-012）；“设置 › 关于”的“检查更新”手动检查。离线或失败时静默，只写日志；手动检查时才显示原因。这些请求只访问 GitHub、只带版本与平台，不计入哔哩哔哩的请求额度（NFR-NET-002 不变），遵循系统代理。
+- **下载与就绪**：“自动下载更新”开着（默认开）时，发现新版本就在后台调用 `Install` 下载、校验并替换程序文件；新版本在下次启动时运行，正在运行的 TRACE 不受影响。关着时只提示“有新版本 0.1.x”，用户点“下载并安装”才下载。
+- **提示**：已就绪时页面顶部栏下方出现一行不打断的提示：“新版本 0.1.x 已就绪 · 更新内容 · 重启以更新”，可以关掉（这次运行不再出现）。“更新内容”展开 Release 的说明（`CHANGELOG.md` 里这一版的一节）。
+- **重启以更新**：没有缓存与录制时直接正常退出并 `App.Relaunch`；有时先说明“会暂停 N 个缓存任务并结束 M 场录制，重启后可以继续缓存”，确认后按托盘“退出”的同一条路径收尾再重开。用户不理会时，下次启动就是新版本。
+- **更新后第一次启动**：显示一次“已更新到 0.1.x”，点开看更新内容。
+- **设置 › 关于**：当前版本与通道、提交、构建时间；上次检查时间；“自动检查更新”（默认开）、“自动下载更新”（默认开），保存在 `settings.json`；“检查更新”按钮（检查中显示进度，结果写在按钮旁）。开发版这一节写“开发版由本机打包自动更新”，不显示开关。
+- **界面层边界**：`mygo.Updater` 只在 `internal/shell`（或新的 `internal/update`，同样属于允许依赖 MyGo 的外壳层）里调用；`internal/ui` 经一个小接口读状态和发命令，后端包不依赖 MyGo（INV-05）。`tools/check` 的依赖方向清单相应更新。
 
-### P14：界面截图与断言（`tools/uishots`）
-- 用 `ui.NewTester` 在内存里驱动 `internal/ui`（夹具服务、假的 `service.Desktop`、`nullSink`、合成解码器）；在 `1280×860`、`1000×860`、`720×860` 三档下覆盖修订 1 列出的全部场景。
-- `tt.Find` 断言：没有横向溢出；中栏滚动前后左右栏坐标不变。输出 `artifacts/uishots/*.png` 与 `assertions.json`。
-- 不建真实窗口，不出声（§6）。
-- 证据：C38。
+<a id="w4"></a>
+### 4.4 更新的安全与数据保护（W4）
 
-### P15：门禁、打包与冒烟（`tools/check`、`tools/checkdocs`、`tools/package`、`tools/smoke`、`.github/workflows/ci.yml`）
-- `tools/checkdocs`：相对链接与锚点、无本机绝对路径、无 Cookie 或令牌文本、无参考项目名（运行时读本机索引；**找不到索引时跳过这一项并打印说明**，CI 上就是这种情况），带反例测试。
-- `tools/check`：`gofmt -l`、`go vet ./...`、`go test ./...`、INV-05 依赖方向（`go list -deps`）、checkdocs、`git diff --check HEAD`。
-- `tools/package`：按 §1.5 临时写入通道的 `mygo.json` 字段，调用 `go tool mygo build -platform windows/amd64`；在 `dist/.staging-<时间>/` 生成并校验，再替换 `dist/trace-dev/`（或 `dist/trace/`）；生成 `THIRD-PARTY-NOTICES.txt`、`VERSION.txt`、`SHA256SUMS.txt`。`-install` 只在用户要求时使用。
-- `tools/smoke`：按 §6 的安静规则启动打包好的 `trace.exe`；检查进程存活、0 个 WebView2 子进程、数据文件位置、默认缓存位置、无杂散目录、TRACE 自有路径全部小写、单实例、关到托盘后 < 60 MB、日志里没有哨兵凭证；输出 `artifacts/smoke/smoke.json`。
-- CI（`repository-quality`，Ubuntu）：运行 `go run ./tools/check`。Windows 专有的测试用构建标签或 `runtime.GOOS` 跳过；读取 `artifacts/` 的检查在文件不存在时跳过。
-- 证据：C39。
+- **签名**：MyGo 的 Ed25519 签名与校验（更新包与差分包）；公钥写进正式版的构建配置；私钥只从 `MYGO_UPDATER_PRIVATE_KEY` 读取（本机由 `tools/release` 从第 2 节的密钥文件读入环境，CI 来自 `release` 环境的 secret），缺了就失败、不生成新密钥、不打不签名的正式版。
+- **必须拒绝**：签名不对或用别的密钥签的、内容被改过的、版本不比当前新的、地址不是 HTTPS 的、清单格式不对的；拒绝时保留现版本，手动检查时显示“更新包校验失败，已保留当前版本”，日志写原因。B 先确认 MyGo 实际做了哪些检查（读 `v0.8.3` 的 `updater.go` 与测试），MyGo 没做的由 TRACE 在调用前后补上；每一条都要有测试（假更新源，见 W7）。
+- **数据保护**：B 核对 `library.db`、`updates.db`、`subscriptions.json`、`settings.json`、`ui-state.json` 现有的结构版本与迁移。**有结构升级时**，迁移前把旧文件复制为 `<文件>.premigrate-<旧版本>`（每个文件只留最近一份）；**较旧的程序遇到较新的结构**时拒绝写入并显示“这些数据来自更新的 TRACE 版本，请安装新版”，不降级、不覆盖。没有版本字段的文件补上版本字段，兼容读取没有版本字段的旧文件。
+- **密钥轮换**：本阶段只用一把密钥；换密钥要先发布一个用旧密钥签名、内置了新公钥的版本，步骤写进[工程规则 §4](../dev-rules/engineering.md#git)。
 
-### P16：额度门控与收尾
-- 不再重写 ACT-004、ACT-005 的检查程序（它们的额度已基本用完，旧回执也只证明旧实现）。改为写一个通用的额度账本门控 `internal/sitecheck`：读取 `.local/site-check/usage-<ACT>.json`，超额的请求在发出前拒绝。单元测试用临时目录和 `httptest` 夹具验证“额度用尽时 0 请求”。ACT-006 授权后由 A 或 B 基于它写检查程序。
-- 写阶段报告 `docs/delivery/stage-report.md`，同步更新需求、路线、状态、工程规则（实测的冷/增量构建耗时、包大小、SHA-256）和 USER-ACTIONS（H-001 的新包 SHA-256）。
-- 证据：C40。
+<a id="w5"></a>
+### 4.5 一条命令发布与升级演练（W5）
 
----
+- **`go run ./tools/release`**（B 新建）：要求工作区干净、当前提交就是 `origin/main` 的最新提交（可以用 `-allow-dirty` 只做演练）；按 W1 算出版本；运行 `go run ./tools/check`；用正式版配置与私钥构建；产出 `dist/trace/` 下的安装包、更新包与清单（MyGo 的命名）、差分包（有上一版时）、`install.ps1`、`SHA256SUMS`、`VERSION.txt`、`THIRD-PARTY-NOTICES.txt`。
+- **发布说明**：`CHANGELOG.md`（B 新建，中文）里这一版的一节；没有这一节时由上次发布以来合并的 PR 标题生成草稿写进去，提交前给人看（CI 上直接使用生成的那一节）。MyGo 要求文件存在时必须有这一版的一节。
+- **升级演练**：在 ptest 身份下（`trace-ptest`，独立的安装目录、数据目录与卸载项）：用同一份源码构建两个版本（例如 `0.1.1-rehearsal.1` 与 `0.1.1-rehearsal.2`，都用一把只在这次演练里生成的临时密钥签名），静默安装旧版，启动它，让它从本机回环地址上的假发布源（只在 ptest 身份里允许用环境变量指定，正式版和开发版不读这个变量）检查、下载、校验并替换，重启后核对运行的版本、卸载项版本与数据仍在；再演练一次被篡改的包被拒绝；最后卸载并确认数据目录保留、安装目录删除。演练不碰本机的正式版与开发版，发现 ptest 已装时先卸载它。结果写 `artifacts/release/rehearsal.json`。
+- **发布**：只有带 `-publish` 且用户已授权（ACT-009 或用户在对话里对这一次的明确授权）时才创建标签 `v0.1.x`、上传到 Release 并发布；默认只生成文件与演练。上传用 `mygo build -upload` 或 `gh release`，发布后核对 Release 的文件与 `SHA256SUMS` 一致。
 
-## 5. 执行顺序
+<a id="w6"></a>
+### 4.6 安装体验（W6）
 
-按“先有一个能跑的窄流程，再铺满功能”推进。不逐步请示；每完成一个切片就 amend 一次本地提交，避免丢失工作。
+- **图标**：新建 `resources/icon.png`（1024×1024，TRACE 的 “T.” 字标，白字蓝底 `#1a73e8`，与界面和托盘一致）与开发版图标（同一字标，深灰底加一个小的 “DEV” 角标）。MyGo 的 `icon-dev.png` 只用于 `mygo dev`，所以开发版通道由 `tools/package` 在构建配置里把 `icon` 指向开发版图标。窗口、任务栏、开始菜单、卸载项与安装包都用对应通道的图标；托盘图标沿用现有的绘制。
+- **中文安装界面**：按 MyGo 的做法设 `i18n.source` 为 `zh-Hans` 并提供最小的中文目录（应用名 `TRACE` / `TRACE Dev`、描述“哔哩哔哩内容的订阅、缓存与录制”），安装、卸载与完成页都是中文。MyGo 自己的“应用正在运行”提示仍是英文（MyGo 的已知限制）；W2 与 W3 保证正常更新时不会走到它。
+- **发布者与版权**：`publisher` 为 `chialecode`，`copyright` 为 `© 2026 chialecode`，文件属性的描述与产品名分别是 TRACE / TRACE Dev；“设置 › 应用”里显示名称、版本与发布者。
+- **安装包名**：`trace-setup-<版本>-amd64.exe`、`trace-dev-setup-<版本>-amd64.exe`；`dist/<通道>/` 仍只留最新一份，旧版本的安装包在登记替换时删除。
 
-1. **切片 A（骨架能启动）**：PR-4(1) → P1 → P13 的最小外壳（安静模式、单实例、托盘）→ P15 的 `tools/check` → 空白三栏界面能在 `ui.NewTester` 里渲染。
-2. **切片 B（登录 → 解析 → 详情）**：P2 → P3 → P9 的 Auth/Parse → P11 的登录页和解析页。
-3. **切片 C（缓存 → 媒体库 → 播放）**：PR-2 → P5 → P6 → PR-1、PR-3 → P10 → P12 的媒体库、播放层、任务页。
-4. **铺满**：P4 → P7 → P8 → P9 其余部分 → P11、P12 其余页面 → P14。
-5. **收尾**：P15 的打包与冒烟 → PR-4(2)（可选，门控）→ P16 → 阶段整理（§9）→ 报告。
+<a id="w7"></a>
+### 4.7 安装与更新的测试（W7）
 
----
+- **单元与集成**（`go test`，安静、不碰本机安装）：版本号的计算（无标签、已有 `v0.1.3`、标签与 Release 不一致、开发版时间格式）；`install-dev` 的判断（没装、装了未运行、运行中且 30 秒内退出、运行中不退出、安装失败、版本核对不符、正式版存在时不受影响）用注入的卸载项、进程与安装器；`--quit-for-update` 让运行中的外壳暂停任务、收尾录制、记下窗口状态后退出（合成后端）；更新状态机（检查失败静默、手动检查显示原因、已就绪提示、有任务时的确认文案、更新后第一次启动的说明）；W4 的每一条拒绝；数据结构版本的备份与拒绝。
+- **安装演练**（`TRACE_RUN_INSTALLER_TEST=1` 门控，B 在本阶段实际运行并记录；`tools/release` 每次运行）：W5 的 ptest 安装、升级、篡改拒绝与卸载。
+- **界面**：`tools/uishots` 增加“设置 › 关于（正式版，可更新）”“更新已就绪的提示”两个场景（场景总数与截图数相应增加，写进工程规则）。
+- **冒烟**：`tools/smoke` 核对包里程序报告的版本与 `VERSION.txt` 一致。
 
-## 6. 安静测试：静音、不抢焦点、不碰用户已装的应用
+<a id="w8"></a>
+### 4.8 GitHub Actions 上的构建与每周发布（W8）
 
-长期规则见[工程规则 §3.0 安静测试](../dev-rules/engineering.md#quiet-tests)；本节是本阶段的落实方式。目标：B 自测、`tools/check`、`tools/uishots`、`tools/smoke` 和原型运行时，**不发出声音、不弹出或激活窗口、不打开外部程序，也不影响用户正在运行或已安装的 TRACE**，并尽量少占前台的 CPU 和磁盘。
+- **`.github/workflows/release.yml`**（与 `ci.yml` 分开，`ci.yml` 不变）：每周一 00:00 UTC（北京时间 08:00）定时，另可手动运行（手动时默认只构建不发布）。
+- **是否要发布**：上次发布的标签以来 `main` 上没有新合并的 PR 就跳过。第一次（没有标签时）总是构建。
+- **job 划分**：`check`（Ubuntu，`go run ./tools/check`，只读 token，没有 secret）→ `build`（`windows-2025`，`go run ./tools/release` 构建、演练与签名，私钥来自只允许 `main` 部署的 `release` 环境，只读 token；产物用 `upload-artifact` 传出）→ `publish`（Ubuntu，`contents: write`，不检出、不运行仓库代码，用 `download-artifact` 取产物，核对 `SHA256SUMS` 后用 `gh` 创建标签与 Release 并上传）。`publish` 只在 ACT-009 授权后由仓库变量 `TRACE_RELEASE_PUBLISH=1` 打开；没打开时只保留构建产物。
+- **固定与允许**：Action 一律固定完整 SHA；Go 用运行器自带版本或 `GOTOOLCHAIN=auto`，不加 `setup-go`；不引入第三方 Action。仓库侧的设置（`release` 环境、secret、允许列表）由用户授权 ACT-008 后由 A 完成，B 只写 workflow 与本机可做的静态检查（`tools/actcheck` 或同等检查：固定 SHA、权限、secret 只出现在 `build` 的签名步骤）。
 
-| 风险来源 | 规则 | 落实位置 |
+### 4.9 文档与用户待办（W9）
+
+需求 FR-UPD-001～004 与 FR-STORE-001 的状态、路线与验收 AC-27～AC-33、[架构](../design/architecture.md)（更新所在的层、启动参数）、[数据设计](../design/data-and-cache.md)（结构版本、备份、`settings.json` 的更新偏好）、[界面规范](../ui.md)（关于页与更新提示）、[工程规则](../dev-rules/engineering.md)（版本、命令、`dist/trace/`、密钥、release workflow、截图场景数）、[来源与安全](../dev-rules/sources-and-safety.md)（应用对 GitHub 的请求）、交付状态与阶段报告；USER-ACTIONS 的 H-002（实机：开发版自动更新、正式版安装与联网更新、SmartScreen 放行）与 H-001 第 23、24 步的安装说明。
+
+## 5. 阶段开始的整理（C0）
+
+1. **以前阶段的标签**：需求、设计、界面、状态、USER-ACTIONS 与开发规则里用来描述能力的旧编号（修订 3/4、R1～R13、F-0xx、P1～P16、C01～C40、“第 N 轮反馈”等）改为直接描述能力；决定表（DEC）保留编号；测试名不含阶段号或问题编号的保持不变，含的按能力改名（不弱化断言）。指向 M1 计划与报告锚点的链接已由 A 改为合并提交里的固定链接，B 不再改动。
+2. **文件**：`dist/trace-0.1.0-windows-x64-*` 旧包目录不在本阶段处理（USER-ACTIONS 本机文件一节）；`tmp/`、`artifacts/` 按 DEC-025 只留最新；仓库里不再使用的文件（例如只为 M1 原型保留的代码或样本）逐个按内容决定保留、精炼或删除。不得删除的见[开发流程 §5.4](../dev-rules/workflow.md#stage-cleanup)。
+3. 报告末尾附整理记录。
+
+## 6. 必测用例
+
+| 编号 | 用例 | 对应 |
 | --- | --- | --- |
-| 声音 | 测试与工具里不创建 `audio.Player`（一创建就会打开默认输出设备）。播放器测试注入 `nullSink`；PR-1 只用 `IMFSourceReader` 读取采样做断言，不送去播放 | P10、PR-1、P14 |
-| 窗口与焦点 | 默认测试一律用 `ui.NewTester`（在内存里运行，不建窗口）。需要真实窗口的只有 PR-4(1) 和冒烟，它们用**安静模式**：设置 `TRACE_QUIET=1`，窗口在 `NewWindow` 之后立即 `Hide()`，从不显示，也从不调用 `Focus`/`Show`；需要真实画面时设 `TRACE_QUIET=inactive`，只用 `ShowInactive()`，不激活、不抢键盘焦点。第二个实例唤醒在安静模式下也不置前 | P13、PR-4、P15 |
-| 通知与托盘 | 安静模式下不发系统通知（产品模式下首次关到托盘的通知设 `Silent: true`，只弹不响）；托盘图标照常创建，退出时移除 | P13 |
-| 外部程序与对话框 | “在浏览器中打开”、“在文件夹中显示”、“用系统播放器打开”、选择文件夹都经 `service.Desktop`；测试和安静模式注入记录型假实现，断言“调用了什么”，不真的打开资源管理器、浏览器或播放器 | P9、P12、P14 |
-| 防火墙弹窗 | 所有测试服务器只监听 `127.0.0.1:0`，不监听 `0.0.0.0`，避免触发 Windows 防火墙的授权弹窗 | 全部测试 |
-| 控制台闪窗 | 工具启动子进程时设 `SysProcAttr{HideWindow: true}`；`trace.exe` 用 `-H windowsgui` 构建，自身不再起控制台子进程 | P15 |
-| 单实例串到用户的应用 | 冒烟与 PR-4 把 `LOCALAPPDATA`、`APPDATA`、`USERPROFILE`、“文档”**以及 `TEMP`/`TMP`** 都指向隔离的临时目录（单实例 socket 放在 `TEMP`）；运行前检查 socket 路径确实在临时目录里，否则判失败，防止把参数转给用户正在运行的 TRACE | P15、PR-4 |
-| 安装包关掉或卸掉用户的应用 | 安装包测试用单独的应用名 `trace-ptest`（显示名 “TRACE Proto Test”，标识 `io.github.chialecode.trace-ptest`），用 `/S /D=<临时目录>` 安装；结束后核对开始菜单快捷方式和 HKCU 卸载项都已删除。默认不跑（`TRACE_RUN_INSTALLER_TEST=1` 才跑）。**绝不在测试里安装或卸载 `trace` / `trace-dev`**；`tools/package -install` 只在用户要求时用 | PR-4、P15 |
-| `mygo dev` 热重载 | 每次重编译都会重建窗口并抢焦点。B 自主工作时不用它，用 `ui.NewTester` 和 `go test`；只在用户要看界面时启动 | 工作习惯 |
-| CPU 与磁盘 | 打包、PR-1 和大文件测试用低优先级运行（工具把自身和子进程设为 `BELOW_NORMAL_PRIORITY_CLASS`）；`tools/check` 运行 `go test -p` 时并行数取 CPU 核数的一半；大文件样本用稀疏文件，并且需要 `TRACE_RUN_LARGE=1` 才跑 | P15、§3 |
+| M2-K01 | 版本号：无标签时正式版为 `0.1.1`；最高 `v0.1.3` 时为 `0.1.4`；开发版格式与 UTC 时间；标签与 Release 不一致时失败并说明 | W1、AC-27 |
+| M2-K02 | 包里的程序、文件属性、卸载项、`VERSION.txt` 与“关于”的版本一致；没有注入时为 `0.0.0-dev` | W1、W6 |
+| M2-K03 | `install-dev`：没装跳过；未运行直接装；运行中收到 `--quit-for-update` 后保存退出、装好、按原窗口状态重开；30 秒不退出时放弃且不强杀；`TRACE_DEV_AUTO_INSTALL=0` 与 CI 跳过；正式版不受影响 | W2、AC-28 |
+| M2-K04 | `--quit-for-update`：缓存任务持久化为已暂停，录制收尾成可播放文件，界面状态保存，记录窗口状态 | W2 |
+| M2-K05 | 更新状态机：启动 1 分钟与每 24 小时检查；离线静默；手动检查显示原因；自动下载开/关；已就绪提示；有任务时的确认；更新后第一次启动的说明；开发版不检查 | W3、AC-29 |
+| M2-K06 | 拒绝：签名不对、别的密钥、内容被改、版本不更新、非 HTTPS、清单损坏；都保留现版本 | W4、AC-30 |
+| M2-K07 | 数据结构升级前备份；旧程序遇到更新的结构拒绝写入并说明 | W4、AC-30 |
+| M2-K08 | `tools/release`：缺私钥失败；工作区不干净失败（`-allow-dirty` 只演练）；产物齐全且 `SHA256SUMS` 正确；没有授权不发布 | W5、AC-31 |
+| M2-K09 | ptest 安装演练：安装、经假发布源升级、篡改被拒、卸载保留数据；不碰正式版与开发版 | W5、W7、AC-31 |
+| M2-K10 | 安装包：中文界面字符串、图标资源（两个通道不同）、发布者、`DisplayVersion` | W6、AC-32 |
+| M2-K11 | `release.yml` 静态检查：Action 固定 SHA、各 job 权限、secret 只在签名步骤、没有授权时不发布、无新合并时跳过 | W8、AC-33 |
+| M2-K12 | 回归：`go run ./tools/check`、`tools/uishots`（含新场景）、`tools/package` 与 `tools/smoke` 全部通过 | 全部 |
 
-安静模式只在 `dev`/`source` 通道生效，`release` 忽略 `TRACE_QUIET`。冒烟结果 `smoke.json` 记下用的是哪种模式（`hidden` / `inactive`）；真实可见窗口的体验仍然由用户在 H-001 检查。
+## 7. MVP 与 LOOP
 
----
+本阶段要贯通的流程：开发版“打包 → 本机自动更新 → 重开”与正式版“发布 → 检查 → 下载校验 → 重启更新”。可记为 LOOP 的深化：差分更新的体积优化、更新说明的排版、winget 与 Microsoft Store、Windows 代码签名、测试版通道、更新失败时的回退帮助。
 
-## 7. 必测用例
+## 8. 交付与验证
 
-每条用例都要有对应的自动化测试或工具断言，并在阶段报告里引用实际的测试函数名和证据文件。
+- B 交付前运行并记录：`go run ./tools/check`；`GOOS=linux CGO_ENABLED=0 go vet ./...`；`go run ./tools/uishots -out artifacts/uishots`；`go run ./tools/package`（含本机开发版自动安装，记录 `install-dev.json`）；`go run ./tools/smoke -pkg dist/trace-dev -out artifacts/smoke`；`TRACE_RUN_INSTALLER_TEST=1` 的安装演练；`go run ./tools/release -allow-dirty`（只演练，不发布）。
+- 报告写在 [阶段报告](stage-report.md)，按“工作包 → 实现位置 → 验证证据 → 状态与限制”逐项对应 M2-K01～K12；not-run 照实写（例如真实 GitHub 发布、SmartScreen 体验、CI 上的 `release.yml` 运行）。
+- 不 push、不建 PR、不打标签、不发布、不改仓库设置。
 
-| 编号 | 覆盖 | 必测内容与断言 |
-| --- | --- | --- |
-| **C01** | FR-LINK-001 | BV、av（大小写、URL 参数）、`b23.tv`（302 到视频或空间，拒绝外站）、空间 URL、`UID:123`、纯数字 UID；非法输入和不支持的链接（`ep`/`ss`/`cv`）返回 `invalid_input`/`unsupported_link`，0 请求 |
-| **C02** | FR-LINK-002 | `live.bilibili.com/<房间号>`（含短号）经 `room_init` 换出长号和主播 UID |
-| **C03** | FR-HIST-001、INV-01 | 最近解析：写入、去重后排到最前、200 条上限、单条删除与清空；文件里没有 Cookie 和签名地址 |
-| **C04** | FR-AUTH-001、INV-03 | 扫码状态机 86101 → 86090 → 0；过期、取消或新流程开始后，旧 flowId 的成功响应被丢弃 |
-| **C05** | FR-AUTH-004、INV-01/03 | 手动 Cookie：白名单字段、`nav` 校验并核对 `DedeUserID == mid`；失败时不改动已有凭证；网络错误返回 `network`；提交后输入框清空 |
-| **C06** | FR-AUTH-002/005、INV-07 | 没有凭证时，业务方法返回 `auth_required`，夹具收到 0 请求；启动检查 `expired`/`unknown`；退出登录先暂停任务和录制再删凭证 |
-| **C07** | FR-AUTH-005 | 运行中遇 `-101`：标为 `expired`，推送 `auth:changed`，暂停任务；界面转到登录页并保留已加载的数据，重新登录后回到原路由 |
-| **C08** | FR-AUTH-003、DEC-031 | `source=qr` 才做续期检查；`refresh=false` 只更新检查时间；`manual` 不发 `cookie/info`，返回 `reason="manual"` |
-| **C09** | FR-AUTH-003、NFR-SEC-002 | 完整续期闭环；`confirm/refresh` 用新 `bili_jct` + 旧 `refresh_token`；确认失败时，下次先用 `pending_old_refresh_token` 补做 |
-| **C10** | FR-AUTH-003、INV-01 | 续期任一步失败：原凭证完好；遇 `-101`/`86095` 转为 `expired` |
-| **C11** | NFR-NET-001 | 相邻请求间隔 ≥ 450ms；WBI 固定向量（含 `arc/search` 的 `w_webid` 向量）一致；遇 `-352` 刷新一次密钥 |
-| **C12** | FR-VIDEO-001、FR-USER-001～002 | 单 P/多 P 视频、用户资料、投稿分页（带风控参数，按 `bvid` 去重） |
-| **C13** | FR-DYN-001、FR-ERR-001、INV-02 | 各类动态的解析与降级；翻第 2 页遇风控或网络错误时保留第 1 页，显示原因和“重试” |
-| **C14** | FR-IMG-001、DEC-033 | 沉浸式看图层：本机文件或原图 URL（无外站 Referer，用 https）、圆形悬浮按钮（关闭、上一张/下一张、适应/1:1）、鼠标静止约 2 秒自动隐藏与唤醒、缩放、平移、左右键切换、Esc 关闭 |
-| **C15** | FR-CACHE-001/002、DEC-024 | 最高画质与音质选流；多 P 全部缓存；同一 `bvid` 只存一份 |
-| **C16** | Q-005、NFR-MEDIA-001 | `moov` 在前、交错、`elst`；FLAC 与杜比按 PR-2 的结论合入或另存，`item.json` 记录 `savedAs` |
-| **C17** | FR-CACHE-005 | 发出 512 KiB 后断连、5xx：自动续传，主备节点轮换，SHA-256 一致；**慢速夹具（200 KB/s）下 8 MiB 分段不因总超时失败** |
-| **C18** | FR-CACHE-005 | 403/404/410 重取一次地址；412 和 `-352`/`-412` 暂停为风控；重试耗尽暂停为网络；继续后从断点完成 |
-| **C19** | FR-CACHE-004、INV-06 | 校验前只有 `.part`；绿、黄、红圆点的条件 |
-| **C20** | FR-CACHE-006 | 升级探测（24h 冷却）、批量检查（可取消，遇风控即停）、升级失败时旧文件完好 |
-| **C21** | FR-CACHE-008 | 弹幕 XML 与 CC 字幕（AI 字幕受开关控制）；没有字幕不算缺失；失败标黄并可补全；旧视频可以只补弹幕和字幕 |
-| **C22** | FR-LIB-002/004、DEC-033 | 沉浸式播放层：解码、Seek、圆形悬浮按钮与“⋯”菜单（弹幕开关/透明度/显示区域、字幕切换、分段切换、文件夹显示、系统播放器打开）、鼠标静止约 2 秒自动隐藏与唤醒、拖动后无残留、偏好持久化；**缺解码器时显示提示和“用系统播放器打开”**；测试用 `nullSink`，不出声 |
-| **C23** | FR-CACHE-009 | 逐文件进度与脱敏的尝试记录，重启后仍可查看 |
-| **C24** | FR-FEED-001 | 双向信息流、排序切换、无重复无遗漏、锚点恢复、“↑ N 条更新的内容”，0 网络请求 |
-| **C25** | FR-LIB-001/005 | 按类型、订阅（展开为全部账号）、独立 UP 主筛选；排序 |
-| **C26** | FR-LIB-003、INV-09 | `PlanDelete` 与 `Delete` 一致；引用保护；用户文件保留并计数；录制中拒绝删除 |
-| **C27** | FR-LIB-006 | 只有 `library/`、**没有 `settings.json`** 的旧数据目录也能识别（合成夹具模拟旧格式）；不跟随链接；重复键跳过并计数 |
-| **C28** | NFR-DATA-001/002 | 各 JSON 文件损坏时改名保留；订阅可从 `.bak` 恢复；`library.db` 重建；`updates.db` 重置起点且不冒出未读 |
-| **C29** | FR-SUBS-001、FR-USER-003、DEC-031、INV-11 | 订阅增删改、唯一归属、`conflict` 与 `Move`；删除订阅 0 站点写请求 |
-| **C30** | FR-SUBS-003、INV-11 | 关注导入：已订阅的跳过，0 写操作 |
-| **C31** | FR-SUB-001、INV-12、DEC-033 | 第一次检查只建起点（起点之前的动态不进入更新列表，不做已看标记）、起点之后的增量更新进入更新列表、3 页上限与 `gap`、风控整轮停止 |
-| **C32** | FR-SUB-002、NFR-NET-002、INV-10 | 每轮 30 个、间隔 2s、退避持久化、200/h 令牌桶 |
-| **C33** | FR-CACHE-007 | `since` 规则、每轮 20 个上限与积压；被中止的轮次不建任务 |
-| **C34** | FR-LIVE-001/002 | 状态四分类；换段；断流后重连；`Defragment` 收尾并入库；空间不足、风控、并发上限；手动停止后本场不再自动录 |
-| **C35** | FR-RUN-001、NFR-RES-001、DEC-030、INV-13 | 关到托盘（安静模式）：后台继续、事件丢弃不阻塞、< 60 MB、0 个 WebView2；重建窗口恢复路由；退出前确认；**安静模式下窗口从未成为前台窗口（断言 `GetForegroundWindow` 始终不是 TRACE 的窗口）** |
-| **C36** | FR-STORE-001、NFR-DATA-003、DEC-029、INV-14 | 各通道的 `InstallDir`、`DataDir`、默认缓存位置；**所有 TRACE 自有路径都是小写 `trace[-dev]`**；`app.lock` 生效；`%APPDATA%`、用户主目录和安装目录里没有写入；`trace` 和 `trace-dev` 两个通道的单实例互不影响 |
-| **C37** | INV-01/08、NFR-SEC-001/002 | 全链路哨兵：扫描所有落盘文件、DTO 和错误消息，哨兵出现 0 次 |
-| **C38** | NFR-UI-001/002、NFR-PERF-001、AC-07 | 三档宽度 0 横向溢出、固定侧栏、`tt.Compose` 组合态按回车不提交、5000 条和 500/1000 条虚拟列表 |
-| **C39** | INV-05、DEC-032 | 依赖方向；`tools/check` 全绿；打包与冒烟通过；**冒烟全程没有出声、没有窗口成为前台、没有外部程序被启动（假 `Desktop` 的记录与进程列表核对）** |
-| **C40** | ACT 额度门控 | `internal/sitecheck` 额度用尽时 0 请求；既有回执脱敏扫描干净（文件不存在时跳过） |
-
----
-
-## 8. MVP 与 LOOP
-
-- 每一项“MVP 必须”（[路线与验收 §3](roadmap.md#mvp-loop)）都要贯通，不能记为 LOOP。
-- 允许 B 记为 LOOP（写明影响、替代方式和触发条件）的只有：PR-3 的降级方案、播放层的快捷键与画中画、托盘菜单的额外项、动画与过渡细节、设置页里非必需的说明文案。
-- 原型失败按 §3 的“失败时的处理”执行，只暂停依赖它的用例，其余工作照常推进。不能为了通过而删除或弱化断言。
-
----
-
-<a id="cleanup"></a>
-## 9. 阶段整理清单
-
-B 在切片 A 开始前处理（全部是 Git 忽略的生成目录，先确认路径在仓库内且不是链接）：
-
-| 路径 | 处理 |
-| --- | --- |
-| `artifacts/prototypes/`（旧的 `pr1`～`pr10` 结果） | 清空，写入本阶段 PR-1～PR-4 的结果 |
-| `artifacts/uishots/`、`artifacts/smoke/` | 清空，由本阶段工具重写 |
-| `artifacts/site-check/` | 保留 `result.json`（ACT-004）和 `act005.json`；`act004-result.json` 与 `result.json` 内容相同，核对 SHA-256 一致后删除前者 |
-| `tmp/checkdocs.exe`、`tmp/checkdocs/`、`tmp/dev.log` | 删除（旧构建产物） |
-| `tmp/dev-data/` | 先看内容：只有合成数据就删除；有登录或缓存数据就保留，并在报告里写明 |
-| `build/windows-amd64/`、`.mygo/dev/` | 删除，由构建重建 |
-| `dist/trace-dev/` | 由 `tools/package` 整体替换，不单独删除 |
-| `dist/trace-0.1.0-windows-x64-*`、`.local/`、`.env.local` | 不动（USER-ACTIONS 的本机文件一节）；2026-11-08 用户选择删除旧包并按推荐清理 `.local/`，见[报告 §14.4](stage-report.md#a-review-rev4) |
-
-文档：本阶段文档只描述“全 Go + MyGo 原生界面”的现状；以前阶段的标签按[开发流程 §5.4](../dev-rules/workflow.md#stage-cleanup)去掉。阶段初始整理已执行；本次仍是 M1，更新当前截图、冒烟和开发包，保留用户文件与旧真实回执。被新职责文件替代的无引用下载/直播 helper 已删除，整理记录见报告。
-
----
-
-## 10. 交付与验证
-
-1. `go run ./tools/check` 0 错误（单轮预算约 10 分钟；超出时拆分并记录）。
-2. `go run ./tools/uishots -out artifacts/uishots`：全部断言 `passed=true`。
-3. `go run ./tools/package`，然后 `go run ./tools/smoke -pkg dist/trace-dev -out artifacts/smoke`：全部 `passed=true`，记录安静模式。
-4. 门控项（`TRACE_RUN_LARGE`、`TRACE_RUN_INSTALLER_TEST`）跑了就记录结果，没跑就记 `not-run`。
-5. Git：全部改动 amend 进 `codex/m1-mygo-bilibili` 上唯一一个带 DCO 签名的提交（父提交 `b208ad6` 初始化提交）；**不 push，不建 PR**。
-
----
-
-## 11. 给 Agent B 的交接 Prompt
+<a id="prompt"></a>
+## 9. 给 Agent B 的交接 Prompt
 
 ```text
-请作为 Agent B 执行 TRACE 阶段计划 TRACE-M1-03 修订 3（全 Go + MyGo v0.8.1 原生界面 M1，包含 §12 的返工与复核补充）。
-
-仓库：本机 TRACE 仓库根目录（Windows）。分支 codex/m1-mygo-bilibili，父提交 b208ad6c5d2de24202226e76f279db01196c7879（初始化提交）；当前已有 M1 实现，文档基础已并入同一个阶段提交，沿报告中的当前实现与待复核 F 编号继续，不从零重做。
-
-先读：
-1. AGENTS.md、REVIEW.md、USER-ACTIONS.md、docs/decisions.md（重点 DEC-025～DEC-036）
-2. docs/delivery/stage-plan.md 全文（§2.2 MyGo 实际 API 对照、§5 执行顺序、§6 安静测试、§9 整理清单）
-3. docs/design/*.md、docs/ui.md、docs/research/bilibili.md
-4. 本机参考索引（从仓库根逐级向上找 reference/trace/README.md，只读；仓库文件里不写参考项目名和本机路径）
-5. MyGo 源码文档：$(go env GOMODCACHE)/github.com/egoist/mygo@v0.8.1/docs/。API 以源码为准，不要用 NewNativeWindow、ui.RunOnMain、ui.SetImageLoader、AccessibilityLabel 这些不存在的名称
-
-关键要求：
-1. 纯 Go（CGO_ENABLED=0），不引入 Node/npm/WebView2；INV-05：后端包不引用 github.com/egoist/mygo。
-2. 路径一律小写 trace / trace-dev（mygo.json 的 name、slug、installDirName 都小写；显示名仍是 TRACE / TRACE Dev；启动先 SetName）。
-3. 安静测试（§6）：测试不出声（nullSink，不创建 audio.Player）、不建窗口（ui.NewTester）；需要真实窗口时用 TRACE_QUIET 隐藏或 ShowInactive，从不抢焦点；外部动作走假 Desktop；测试服务器只监听 127.0.0.1；冒烟隔离 TEMP/TMP；安装包测试只用 trace-ptest 且默认不跑，绝不安装或卸载 trace / trace-dev；重负载步骤用低优先级运行。
-4. 按 §5 的切片顺序推进，先完成 §9 的整理；原型代码入库，结果写到 artifacts/prototypes/；原型失败按 §3 的处理办法继续，不逐包请示。
-5. 不发任何真实站点请求；不碰 dist/ 下带日期的旧包、.env.local、.local/（旧缓存的 item.json 只读查看字段，夹具用合成数据）。
-6. 完成后依次运行 go run ./tools/check、go run ./tools/uishots -out artifacts/uishots、go run ./tools/package、go run ./tools/smoke -pkg dist/trace-dev -out artifacts/smoke。
-7. 写 docs/delivery/stage-report.md（逐条引用 C01～C40 的测试函数与证据；not-run 如实记），同步更新需求、路线、状态、工程规则与 USER-ACTIONS（新包 SHA-256）；全部 amend 成一个 DCO 提交（git commit --amend -s，只 amend M1 这一个提交，父提交保持 b208ad6），不要 push。
+你是 TRACE 仓库的 Agent B，执行 M2（安装与更新）的完整实施。
+- 仓库：本仓库根目录；分支 codex/m2-install-update（基点 main @ 29c2678，A 的计划提交在其上）。
+- 先读 AGENTS.md、docs/delivery/stage-plan.md（TRACE-M2-01 修订 1，全部章节）、docs/decisions.md 的 DEC-041/DEC-042、USER-ACTIONS.md 的 Q-012、ACT-008、ACT-009，再按 AGENTS.md 的触发表读工程规则、来源与安全、架构与数据设计。
+- 连续完成 C0、D1、W1～W9 与必测用例 M2-K01～K12，自测并修复，不逐包请求继续。非阻塞的缺项选可逆方案、记下依据后继续，不降低验收。
+- 更新签名密钥已由 A 生成在仓库外（计划第 2 节），不得重新生成或覆盖；私钥不入库、不打印。
+- 安装演练只用 ptest 身份；tools/package 的本机开发版自动安装是用户要求的行为，可以运行；不得安装、关闭或改动正式版 trace。测试保持安静（工程规则的安静测试）。
+- 不访问 GitHub 发布、不请求哔哩哔哩；不 push、不建 PR、不打标签、不发布、不改仓库设置与 secrets。
+- 完成后把实现、返工与报告全部 amend 进同一个 DCO 阶段提交（git commit --amend -s），报告写进 docs/delivery/stage-report.md（含整理记录、not-run、给 A 的审查 prompt），在回复里给出交付 SHA 和一个首选下一步。
 ```
-
----
-
-<a id="rev3"></a>
-## 12. 修订 3：首轮实机反馈返工（2026-11-08）
-
-用户在 A 复核后试用开发包并授权 ACT-006，提出 10 条反馈（DEC-033）。A 已直接修好其中的缺陷，产品调整交给 B。仍在 M1 同一分支、同一提交上做；B 不需要发真实站点请求（ACT-007 已由 A 执行并通过）。
-
-### 12.1 A 已完成（B 保留，不要回退）
-
-| 编号 | 反馈 | 处理 | 回归 |
-| --- | --- | --- | --- |
-| F-029 | 1：视频播放花屏（竖屏） | Media Foundation 解码输出的行宽带对齐填充（如 1080 宽实际每行 1088 像素），原代码按 `MF_MT_DEFAULT_STRIDE` 或紧凑行宽读取导致画面错位；改为优先用 `IMF2DBuffer::Lock2D` 取真实行距（处理负行距），不支持时按“缓冲区长度 ÷ 行数”推算 | `TestPaddedRowsAreNotSheared`；用户缓存的竖屏视频与 1920×1080 录像逐帧导出核对 |
-| F-030 | 4：偶发下载失败、重试正常 | 播放地址首选节点有时是不在白名单里的第三方 MCDN 节点，原代码把它当一次下载失败；改为跳过不受支持的节点，全部不受支持时按“不可用”刷新一次播放地址 | `TestUnsupportedMediaNodeIsSkippedNotCountedAsFailure` |
-| F-031 | 3：任务页不能移除已完成任务，失败也没反馈 | 新增 `RemoveTask`、`RemoveFinishedTasks`：已完成、已取消、失败、部分完成的任务可移除（失败与部分完成同时清理临时分片，不动已登记文件），进行中的不能移除；已完成的不能再“取消”；任务行只显示当前状态可用的按钮，失败行“重试”为主按钮；操作失败在页面上显示原因；顶部“清除已结束（N）” | `TestFinishedTasksCanBeRemovedButNotCanceled` |
-| F-032 | ACT-006 直播录制 0.23 秒即结束 | 播放列表被判无效而停止。按代码路径推断最可能是多码率索引（master playlist）被当成缺少初始化分片的媒体列表；改为跟随码率最高的一路（只跟一层、地址仍过白名单），列表无效时错误里写明具体原因。ACT-007 复跑通过，但那次是普通媒体列表，确切原因未复现（报告 §7） | `TestRecorderFollowsMultivariantPlaylistOnce`、`TestNestedMultivariantPlaylistStopsWithReason` |
-
-### 12.2 B 的工作包
-
-| 包 | 反馈 | 要求 |
-| --- | --- | --- |
-| R1 | 2：不要已看标记 | 去掉 `MarkSeen`、`MarkAllSeen`、`Unseen`、`updates:changed` 与界面上的未读数字、蓝色竖线、“全部标为已看”、左栏角标；`updates.db` 的 `seen_at` 不再使用（迁移可保留列，不读）。起点逻辑不变：第一次检查只建立起点，起点之前的动态不进入“更新”。主页右栏“订阅更新”改为“最近更新”（最近有新动态的订阅，按最新动态时间）。同步改 `docs/ui.md` §2、§3.9、主页右栏，`docs/design/subscriptions.md` §2，`docs/design/architecture.md`（接口表、事件、INV-12、第 129 行一带），`docs/delivery/roadmap.md` AC-17；C31 的断言改为“起点之前的不进入更新、之后的进入”，不能删掉起点与风控停止的断言 |
-| R2 | 5、8：订阅页太杂乱 | 订阅页 = 较大的圆形头像网格（头像约 88～96 px，下面一行名称，过长省略），按宽度自动排列列数，虚拟化保持 C38（1000 个订阅流畅）；正在直播的头像有粉色环和“直播”小标，录制中有红点；页面顶部只有“添加订阅”和一个“更多”菜单（检查全部、从关注导入），搜索框保留。点头像进详情；详情头部只留头像、名称、“检查更新”和一个“管理”菜单（改名、备注、更换头像、删除订阅）；关联账号的增删和“规则”放进详情的“账号”“规则”标签里。每个区域最多一个主按钮 |
-| R3 | 6：图标含义 | 逐个核对 `internal/ui` 用到的图标，设置用齿轮，设置分类“常规”用滑杆或齿轮，不再出现靶子形图标；每个图标在 `docs/ui.md` 列一张“图标 → 含义”表；`tools/uishots` 截图人工看一遍并在报告里写明 |
-| R4 | 7：直播录制入口与清晰度 | `live.RoomState` 增加 `Quality`、`QualityName`、`Codec`（来自取流结果，`QualityName` 用 `g_qn_desc`，取不到时按 10000=原画、400=蓝光、250=超清、150=高清、80=流畅）；直播横幅里“录制”是粉色主按钮，订阅头像网格的直播标记、订阅详情“直播”标签都能一键开始/停止；录制中、任务行、录像详情都显示“原画 · AVC”这类文字。夹具测试覆盖字段传递与界面文字 |
-| R5 | 9：解析页的后台状态 | 解析页不再显示“正在加载”“正在重建索引”等与解析无关的状态（解析本身的加载仍显示）；设置新增“日志”分类：上方是后台状态（索引重建、检查更新、自动缓存、录制的当前情况），下方是最近的运行日志（脱敏后最多约 500 行，等宽字体，“打开日志文件夹”“复制”）。日志读取放在服务层接口，不在界面里直接读文件 |
-| R6 | 10：看图与播放按钮太多 | 看图层与播放器改为沉浸式：画面铺满深色背景；只保留少量半透明圆形悬浮按钮（看图：关闭、上一张/下一张、适应/原始大小；播放：播放/暂停、进度条、音量、全屏，弹幕/字幕/在文件夹中显示等收进一个“⋯”菜单）；鼠标静止约 2 秒后控件淡出，移动或按键时出现；原有快捷键（Esc、左右键、空格、滚轮缩放、双击）保持。C14、C22 断言随之更新，不能删掉 |
-| R7 | 3（补完） | 在 A 的 F-031 基础上补 `tools/uishots` 任务页场景（进行中、失败带原因、已完成、清除已结束），失败原因用任务的 `LastError` 显示在行内；移除失败任务前提示“会删除未完成的临时文件” |
-
-### 12.3 验收与交付
-
-1. 每个工作包有定向测试；`go run ./tools/check` 全绿；`go run ./tools/uishots -out artifacts/uishots` 三档宽度全部断言通过，新增订阅网格、订阅详情、设置日志、沉浸式看图与播放、任务页场景。
-2. 同步需求（`docs/requirements.md` 中标“返工（修订 3）”的条目完成后改回“已实现”）、界面规范、设计与路线；在[阶段报告](stage-report.md)追加 B 的修订 3 结果。
-3. `go run ./tools/package`、`go run ./tools/smoke -pkg dist/trace-dev -out artifacts/smoke`，更新 USER-ACTIONS H-001 的哈希与步骤（订阅网格、录制清晰度、设置日志、沉浸式看图与播放、任务移除）。
-4. 全部 amend 进同一个 DCO 提交，不 push、不建 PR、不请求真实站点。
-
-### 12.4 给 Agent B 的交接 Prompt（修订 3）
-
-```text
-请作为 Agent B 执行 TRACE 计划 TRACE-M1-03 修订 3（M1 首轮实机反馈返工）。
-分支 codex/m1-mygo-bilibili，当前唯一未推送的 DCO 阶段提交（父提交 b208ad6）；先读 AGENTS.md、REVIEW.md、docs/decisions.md 的 DEC-033～DEC-036、docs/delivery/stage-plan.md §12、docs/delivery/stage-report.md §7～§9。
-保留 A 已修的 F-029～F-032（§12.1），不要回退。按 §12.2 完成 R1～R7：去掉已看标记、订阅页改为圆形头像网格且配置只在详情里、图标与含义一致、直播录制入口与清晰度、解析页不显示后台状态并新增设置“日志”分类、沉浸式看图与播放、任务页补完。
-约束：MyGo v0.8.1 API 以源码为准；INV-05；安静测试（§6）；不发真实站点请求；不碰 dist/ 下带日期的旧包、.env.local、.local/。不删除或弱化 C14、C22、C31、C38 的断言，只按新行为改写。
-完成后跑 go run ./tools/check、go run ./tools/uishots -out artifacts/uishots、go run ./tools/package、go run ./tools/smoke -pkg dist/trace-dev -out artifacts/smoke；同步需求、界面规范、设计、路线、报告和 USER-ACTIONS（H-001 哈希与步骤）；git commit --amend -s 进同一提交，不 push。交回 A 复核。
-```
-
-### 12.5 B 复核补充（2026-11-08）
-
-用户要求继续作为 B 复核实现至可交 A。沿用修订 3 与全部基本功能范围，保留 F-001～F-032；补齐日志脱敏与有界异步读取、真实诊断状态、全屏窗口回调、失效登录与迟到图片结果的媒体关闭、播放偏好与音量/弹幕密度、可见订阅账号直播刷新、旧首次检查快照的可逆迁移，以及订阅索引读取失败的反馈。稳定 F 编号、实际回归、被测基点与新包以[报告 §9](stage-report.md#b-recheck)为准。A 已集中复核 R1～R7 与 F-033～F-041 并通过，另直接修复 F-042（[报告 §10](stage-report.md#a-review-rev3)）；修订 3 没有待 B 执行的工作包，后续返工见 [§13](#rev4)。
-
-人读阶段标签与编号大写、机器标识中的阶段部分小写；阶段命令参数按大小写兼容/小写规范化约定实现。阶段编号不与 PR 编号绑定（DEC-035、DEC-036）；本轮只同步约定，不建立计划外的验证命令。
-
-<a id="rev4"></a>
-## 13. 修订 4：第二轮实机反馈返工（2026-11-08）
-
-用户在 A 复核修订 3 后再次试用，提出 7 条反馈：1 是缺陷（播放卡顿、卡死），由 A 直接修复为 F-043；2～7 是产品调整（DEC-037），交给 B。仍在 M1 同一分支、同一提交上做；B 不需要真实站点请求。总原则：界面整洁、少按钮，同类条目“点本体完成常用动作，其余收进一个‘⋯’”。
-
-### 13.1 A 已完成（B 保留，不要回退）
-
-| 编号 | 反馈 | 处理 | 回归 |
-| --- | --- | --- | --- |
-| F-043 | 1：播放非常卡顿、甚至卡死 | 视频帧原来在界面线程的 `View` 里同步解码；解码器用旧的软件色彩转换、没有 GPU；两个 Source Reader 都选中全部流；追帧时每个跳过的帧也做完整的色彩转换。现在：`internal/player/video_worker.go` 在单独的 goroutine 里按音频时钟解码，界面线程只上传最新的一帧（三缓冲，按 seek 代次丢弃过期帧，暂停时 seek 后请求重绘）；`mf_hw_windows.go` 用 D3D11 设备管理器、硬件解码和视频处理器在 GPU 上转成 RGBA 字节序、全范围（0～255）并缩到长边不超过 1920；视频与音频读取器只选各自的流；追帧时跳过的帧不做转换。任一步失败按“GPU → 软件缩放 → 旧软件路径”回退 | `TestAdvanceNeverDecodesOnTheUIThread`、`TestStaleFramesAreDroppedAndShownBufferIsNotReused`、`TestDecodePathsAgreeOnPixels`、`TestDecodeSizeFitsWindowAndKeepsAspect`；用户缓存的 3 个 60 fps 文件（含 2160×3840）实测见[报告 §11](stage-report.md#feedback-2) |
-
-### 13.2 B 的工作包
-
-| 包 | 反馈 | 要求 |
-| --- | --- | --- |
-| R8 | 2、7：主页按钮太多 | 主页帖子（`PostCard` 在主页的用法）不放任何文字按钮：去掉“内置播放”、补存弹幕字幕、“浏览器打开”“复制链接”“查看封面”等。点视频画面在播放层播放，点图片打开看图层，点头像或昵称进入用户页；状态圆点保留。补全、升级等缓存维护只在视频详情页（从媒体库“⋯ → 详情”进入）。订阅详情、用户页等同样使用 `PostCard` 的地方：未缓存时只保留“缓存”一个按钮，“在浏览器中打开”“复制链接”收进卡片右上角一个“⋯” |
-| R9 | 3：有更新的头像 | 去掉右栏“最近更新 / 最近看过的用户”卡片（右栏只留快速解析、缓存卡、正在直播）。中栏“主页”标题下面加一行横向头像（圆形约 56 px，下方一行名称，过长省略，可横向滚动；没有时整行不显示）：列出在“最后查看时间戳”之后有新缓存内容的订阅（不属于订阅的作者按 UP 主单独列），按最新内容时间从近到远。点头像进入只含这个订阅（全部关联账号）的信息流视图，标题栏显示头像、名称和返回箭头，从新到旧列出；返回后回到主时间线原来的位置。口径按 [Q-009](../../USER-ACTIONS.md#q-009) 默认值：打开某个头像即把这个订阅的“已看到”时间记为其最新内容的时间，头像从行里消失，直到有更新的内容；不按单条记已读。数据与锚点都在本机，0 网络请求 |
-| R10 | 4：时间线 | 去掉“最新在前 / 最早在前”切换，主页始终新内容在上。锚点记“最后查看的时间戳”（当前看到的条目的发布时间与键），下次打开从那里继续，往上滑或点“↑ N 条更新的内容”看更新的；底部到头显示“已经到最早的缓存了”。旧 `ui-state.json` 里 `order=oldest` 读取时规范为 `newest` 并保留锚点条目。C24 改写为：没有顺序切换控件、锚点恢复、双向加载无重复无遗漏、0 网络请求；不能删掉锚点与双向加载的断言 |
-| R11 | 5：解析页 | 解析成功后把封面与头像的缩略图缓存到数据目录（如 `%LOCALAPPDATA%\trace[-dev]\thumbs\`，不进媒体库），最近解析条目引用本机文件；下载不带 Cookie、不带外站 Referer，地址过白名单，大小有上限，失败时显示占位图而不是空白；删除单条或全部清空时一并删掉对应缩略图；文件名不含签名参数。条目点本体打开；“在浏览器中打开”“删除”收进条目右侧一个“⋯”；“全部清空”放进列表标题右侧的“⋯”（确认后执行）。同步数据设计与 C03（缩略图无 Cookie/签名、删除联动） |
-| R12 | 6：媒体库 | 网格条目只显示缩略图、标题、一行元信息和右下角一个“⋯”：菜单含“详情”（所属动态或视频详情）、“在资源管理器中显示”、“删除”（沿用确认弹窗与 FR-LIB-003 规则）。去掉“详情 / 文件夹 / 删除 / 内置播放”等文字按钮，点缩略图播放或看图。顶部“重建索引”移到设置“存储”。C25、C26 断言保留并改为经菜单操作 |
-| R13 | 7：整洁 | 把“同类条目点本体完成常用动作、其余收进一个‘⋯’；每个区域最多一个主按钮”写进 `docs/ui.md`，按它检查 R8～R12 涉及的页面和右栏，`tools/uishots` 截图逐页目视并在报告里写明；不顺带改动其他页面的功能 |
-
-### 13.3 验收与交付
-
-1. 每个工作包有定向测试；`go run ./tools/check` 全绿；`go run ./tools/uishots -out artifacts/uishots` 三档宽度全部断言通过，新增或更新主页（头像行、单个订阅视图）、解析页（带缩略图的最近解析）、媒体库（“⋯”菜单打开）场景。
-2. 同步需求（FR-FEED-001、FR-HIST-001、FR-LIB-001、FR-LIB-003）、界面规范、数据设计与路线；在[阶段报告](stage-report.md)追加 B 的修订 4 结果。
-3. `go run ./tools/package`、`go run ./tools/smoke -pkg dist/trace-dev -out artifacts/smoke`，更新 USER-ACTIONS H-001 的哈希与步骤。
-4. 全部 amend 进同一个 DCO 提交，不 push、不建 PR、不请求真实站点。
-
-### 13.4 给 Agent B 的交接 Prompt（修订 4）
-
-```text
-请作为 Agent B 执行 TRACE 计划 TRACE-M1-03 修订 4（M1 第二轮实机反馈返工）。
-分支 codex/m1-mygo-bilibili，当前唯一未推送的 DCO 阶段提交（父提交 b208ad6，基点见交付消息）；先读 AGENTS.md、REVIEW.md、USER-ACTIONS.md（Q-009）、docs/decisions.md 的 DEC-033～DEC-037、docs/delivery/stage-plan.md §13、docs/delivery/stage-report.md §10～§11，并查只读本机参考索引。
-保留 F-001～F-043，尤其 A 刚修的 F-043（internal/player 的解码线程、GPU 路径与回退，不要把解码搬回界面线程）。按 §13.2 完成 R8～R13：主页帖子去按钮、主页标题下的有更新头像行与单个订阅视图（Q-009 默认口径）、去掉顺序切换并按最后查看时间戳续看、解析页缓存缩略图并收起文字按钮、媒体库条目右下角“⋯”菜单、整洁原则写进界面规范。
-约束：MyGo v0.8.1 API 以源码为准；INV-05；安静测试（§6）；不发真实站点请求；不碰 dist/ 下带日期的旧包、.env.local、.local/ 和用户的缓存文件。C03、C24、C25、C26、C38 只按新行为改写，不能删除或弱化锚点、双向加载、删除规则和虚拟列表断言。
-完成后跑 go run ./tools/check、go run ./tools/uishots -out artifacts/uishots、go run ./tools/package、go run ./tools/smoke -pkg dist/trace-dev -out artifacts/smoke；同步需求、界面规范、数据设计、路线、报告和 USER-ACTIONS（H-001 哈希与步骤）；git commit --amend -s 进同一提交，不 push。交回 A 复核。
-```
-
-<a id="rev4-b-plan-recheck"></a>
-### 13.5 B 补充复核与交回 A（2026-11-08）
-
-用户再次要求仅作为 B 复核、修复到可交 A；继续修订 4，不开始新阶段。本轮基点为 `818a163`，分支和父提交不变。复核 R8～R13 的数据与界面调用链，并处理报告 §11 已确认的打包失败恢复缺口：缩略图引用/提交/清理、主页查询和位置/已看状态失败、同时间戳分页、统计读取、逐文件媒体动作、本机详情类型与完整元数据边界、主页零图片请求、包替换和版本刷新失败恢复。稳定问题编号为 **F-044～F-055**，实现、定向回归、完整验证和审查 prompt 以[报告 §13](stage-report.md#rev4-b-recheck)为正本。
-
-整理仍限于本阶段：当前截图增加本机视频、动态、录像详情，保留 21 个场景的最新三档产物；替换 `artifacts/review/`、`artifacts/smoke/` 和 `dist/trace-dev/` 的旧生成物；历史报告保留但注明当前证据正本，工程规则移除旧的场景/测试包计数。保留旧日期包、`.local/`、`.env.local`、用户媒体和真实站点回执；未引入依赖或一次性仓库脚本。
-
-下一接收方为 Agent A，按报告的交接 prompt 集中复核 R8～R13 与 F-044～F-055。F-001～F-043、C03/C24/C25/C26/C38、MyGo v0.8.1 与 INV-05 必须保留；B 未改 `internal/player/`。所有验证使用合成/loopback、静音输出与隐藏窗口，不请求真实站点，不安装、不 push、不建 PR；H-001 仍 not-run。
-
-<a id="rev4-a-review"></a>
-### 13.6 A 集中复核与第三轮反馈（2026-11-08）
-
-A 按 13.4 的交接复核了 R8～R13 与 F-044～F-055，并按用户第三轮反馈（DEC-038）直接修复 F-056～F-058、改设置侧边栏、做浮动侧栏预览（Q-010），同时按用户要求清理了无用函数和临时文件。问题都是局部的，没有新的 B 工作包；结论、范围与验证见[阶段报告 §14](stage-report.md#a-review-rev4)。下一步是用户的 H-001 实机体验。
-
-<a id="feedback-4-plan"></a>
-### 13.7 第四轮反馈（2026-11-08）
-
-用户第四轮反馈（拖动进度条卡顿、媒体库状态圆点、Cindy 字体与主题、三张布局参考、强调色不用粉色）由 A 直接处理：F-059 修复与 DEC-039 改版，没有新的 B 工作包；结论与验证见[阶段报告 §15](stage-report.md#feedback-4)。下一步仍是用户的 H-001 实机体验，并回复 Q-011。
-
-<a id="feedback-5-plan"></a>
-### 13.8 第五轮反馈（2026-11-09）
-
-用户第五轮反馈（共用缓存规则、订阅详情精简、设置页嵌套框、主页掉帧与未读恢复、浮动看图与播放、帖子图片与视频排版、实况照片）由 A 直接处理：DEC-040 与 F-060、F-061，没有新的 B 工作包；结论与验证见[阶段报告 §16](stage-report.md#feedback-5)。下一步仍是用户的 H-001 实机体验（重点第 7、15、18 步），并回复 Q-011。

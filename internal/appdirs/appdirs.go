@@ -8,14 +8,74 @@ import (
 	"strings"
 )
 
-// Build-time variables injectable via -ldflags.
+// Build-time variables injected by tools/package and tools/release through
+// -ldflags -X (MYGO_LDFLAGS); see BuildInfo.
 var (
 	channel     = ""
 	ChannelName = "stable"
 	version     = ""
-	Version     = "0.1.0"
-	Commit      = "dev"
+	commit      = ""
+	buildTime   = ""
 )
+
+// UnversionedBuild is the version of builds without injected build
+// information: go run, go test and mygo dev.
+const UnversionedBuild = "0.0.0-dev"
+
+// Build describes the running build: its version, channel, commit and UTC
+// build time, as tools/package and tools/release computed them.
+type Build struct {
+	Version   string `json:"version"`
+	Channel   string `json:"channel"`
+	Commit    string `json:"commit"`
+	BuildTime string `json:"buildTime"`
+}
+
+// BuildInfo returns the injected build information; a build without it
+// reports UnversionedBuild and an empty commit and time.
+func BuildInfo() Build {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		v = UnversionedBuild
+	}
+	return Build{
+		Version:   v,
+		Channel:   EffectiveChannel(""),
+		Commit:    strings.TrimSpace(commit),
+		BuildTime: strings.TrimSpace(buildTime),
+	}
+}
+
+// CompiledChannel returns the channel the build was made for, ignoring the
+// TRACE_CHANNEL override that tests and tools use: "stable", "dev" or
+// "ptest". Builds without an injected channel follow ChannelName, as
+// EffectiveChannel does.
+func CompiledChannel() string {
+	ch := strings.ToLower(strings.TrimSpace(channel))
+	if ch == "" {
+		ch = strings.ToLower(strings.TrimSpace(ChannelName))
+	}
+	switch ch {
+	case "dev", "development", "source":
+		return "dev"
+	case "ptest":
+		return "ptest"
+	default:
+		return "stable"
+	}
+}
+
+// ChannelLabel is the user-facing name of a channel.
+func ChannelLabel(channel string) string {
+	switch EffectiveChannel(channel) {
+	case "dev":
+		return "开发版"
+	case "ptest":
+		return "测试身份"
+	default:
+		return "正式版"
+	}
+}
 
 // ErrAlreadyLocked is returned when another process holds the data directory lock.
 var ErrAlreadyLocked = errors.New("appdirs: data directory is already locked by another instance")
