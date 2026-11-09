@@ -62,8 +62,10 @@ func rejectDirectoryLinks(dir string) error {
 			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 				return fmt.Errorf("library: 保存位置含链接或非目录节点")
 			}
+			// EvalSymlinks also expands 8.3 short names (RUNNER~1), which
+			// are not links: compare with the long form of the path.
 			resolved, err := filepath.EvalSymlinks(current)
-			if err != nil || !strings.EqualFold(filepath.Clean(resolved), current) {
+			if err != nil || !strings.EqualFold(filepath.Clean(resolved), filepath.Clean(longPathName(current))) {
 				return fmt.Errorf("library: 保存位置含目录联接")
 			}
 		}
