@@ -26,6 +26,7 @@ import (
 	"github.com/chialecode/trace/internal/storage"
 	"github.com/chialecode/trace/internal/subscription"
 	"github.com/chialecode/trace/internal/ui"
+	"github.com/chialecode/trace/internal/update"
 	mygoui "github.com/egoist/mygo/ui"
 )
 
@@ -738,10 +739,43 @@ func runUIShots(outDir string) error {
 			RequiredLabels: []string{"播放器音量调节", "播放器静音"},
 		},
 		{
+			// "设置 › 关于" of a release build that updates itself.
+			Name: "settings-about",
+			Setup: func() {
+				app.PlayerOverlay.Open = false
+				app.PlayerOverlay.VolumeMenuOpen = false
+				app.BindUpdater(&shotUpdater{st: update.State{
+					Enabled: true, Channel: "stable", CurrentVersion: "0.1.1", Phase: update.PhaseIdle,
+					LastCheck: time.Date(2026, 11, 9, 8, 0, 0, 0, time.UTC), Message: update.MsgUpToDate,
+					Prefs: update.Prefs{AutoCheck: true, AutoDownload: true},
+				}})
+				app.Navigate(ui.RouteSettings)
+				app.SettingsCategory = "about"
+			},
+			RequiredLabels: []string{"当前版本", "提交与构建时间", "检查更新按钮", "自动检查更新开关", "自动下载更新开关"},
+		},
+		{
+			// The line below the top bar once an update is ready, its
+			// notes open.
+			Name: "update-ready",
+			Setup: func() {
+				app.BindUpdater(&shotUpdater{st: update.State{
+					Enabled: true, Channel: "stable", CurrentVersion: "0.1.1", Phase: update.PhaseReady,
+					Release: &update.Release{Version: "0.1.2", Notes: "- 订阅支持合集\n- 修复直播录制在断线后的分段"},
+					Prefs:   update.Prefs{AutoCheck: true, AutoDownload: true},
+				}})
+				app.UpdateNotesOpen = true
+				app.Navigate(ui.RouteHome)
+			},
+			RequiredLabels: []string{"更新提示", "更新内容", "关闭更新提示"},
+		},
+		{
 			// Preview of the green accent (Q-011); the last scene, so the
 			// others keep the default blue.
 			Name: "home-green-accent",
 			Setup: func() {
+				app.BindUpdater(nil)
+				app.UpdateNotesOpen = false
 				app.PlayerOverlay.Open = false
 				app.PlayerOverlay.VolumeMenuOpen = false
 				ui.UseAccent("green")
@@ -848,3 +882,15 @@ func runUIShots(outDir string) error {
 	fmt.Printf("uishots: generated %d screenshots in %s (all passed)\n", len(assertions), outDir)
 	return nil
 }
+
+// shotUpdater shows a fixed state of the updates.
+type shotUpdater struct{ st update.State }
+
+func (u *shotUpdater) State() update.State      { return u.st }
+func (u *shotUpdater) CheckNow(context.Context) {}
+func (u *shotUpdater) Download(context.Context) {}
+func (u *shotUpdater) DismissBanner()           {}
+func (u *shotUpdater) DismissUpdatedNotice()    {}
+func (u *shotUpdater) RestartPrompt() string    { return update.RestartPrompt(1, 0) }
+func (u *shotUpdater) Restart()                 {}
+func (u *shotUpdater) PrefsChanged()            {}

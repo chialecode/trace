@@ -1,7 +1,6 @@
 package player
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -85,7 +84,9 @@ func TestMFDecoderPureGoVideoAndAudio(t *testing.T) {
 	if err := dec.Seek(200 * time.Millisecond); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}
-	_, ptsAfterSeek, _ := dec.DecodeVideoFrameAt(200*time.Millisecond, nil)
+	if _, ptsAfterSeek, _ := dec.DecodeVideoFrameAt(200*time.Millisecond, nil); ptsAfterSeek < 0 {
+		t.Fatalf("negative position after the seek: %s", ptsAfterSeek)
+	}
 
 	runtime.ReadMemStats(&memAfter)
 	heapAllocMiB := float64(memAfter.HeapAlloc) / (1024 * 1024)
@@ -98,25 +99,6 @@ func TestMFDecoderPureGoVideoAndAudio(t *testing.T) {
 		t.Fatalf("expected IsMissingCodecError(ErrMissingCodec) == true")
 	}
 
-	writeProtoJSON("pr1.json", map[string]any{
-		"prototype":        "PR-1",
-		"passed":           true,
-		"cgoEnabled":       false,
-		"width":            dec.Width(),
-		"height":           dec.Height(),
-		"sampleRate":       dec.SampleRate(),
-		"channels":         dec.Channels(),
-		"nonBlackPixels":   nonBlackPixels,
-		"seekTargetMs":     200,
-		"seekActualPtsMs":  ptsAfterSeek.Milliseconds(),
-		"heapAllocMiB":     heapAllocMiB,
-		"largeSparseCo64":  os.Getenv("TRACE_RUN_LARGE") == "1",
-		"missingCodecGate": "supported (ErrMissingCodec -> system player fallback)",
-	})
-}
-
-func TestMFDecoderPureGoAndMissingCodec(t *testing.T) {
-	TestMFDecoderPureGoVideoAndAudio(t)
 }
 
 // PR-3 & C22: 10,000 danmaku items single-frame layout < 1ms, seek from 30s to 120s leaves only [114s, 120s],
@@ -235,25 +217,8 @@ func TestPlayerDanmaku10kPerfSubtitlesAndNullSink(t *testing.T) {
 		t.Fatalf("expected controller closed and bitmap released")
 	}
 
-	writeProtoJSON("pr3.json", map[string]any{
-		"prototype":             "PR-3",
-		"passed":                true,
-		"totalDanmaku":          len(items),
-		"avgLayoutUs":           avgDur.Microseconds(),
-		"seek30To120WindowOnly": true,
-		"visibleAt120Count":     len(afterSeek120),
-		"webvttEntitiesDecoded": true,
-	})
 }
 
 func writeTestFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o600)
-}
-
-func writeProtoJSON(filename string, payload any) {
-	outDir := filepath.Join("..", "..", "artifacts", "prototypes")
-	_ = os.MkdirAll(outDir, 0o755)
-	if raw, err := json.MarshalIndent(payload, "", "  "); err == nil {
-		_ = os.WriteFile(filepath.Join(outDir, filename), raw, 0o644)
-	}
 }

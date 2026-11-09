@@ -70,6 +70,9 @@ type HistoryThumbJob struct {
 
 // Diagnostics provides a sanitized runtime status snapshot for the Settings/Diagnostics view and smoke tests (C37).
 type Diagnostics struct {
+	Version                 string            `json:"version"`
+	Commit                  string            `json:"commit,omitempty"`
+	BuildTime               string            `json:"buildTime,omitempty"`
 	AppName                 string            `json:"appName"`
 	DisplayName             string            `json:"displayName"`
 	Channel                 string            `json:"channel"`
@@ -291,6 +294,13 @@ func NewBackend(opts Options) (*Backend, error) {
 
 	var corruptBackups []string
 
+	// Data written by a newer TRACE is refused before anything is opened
+	// or rewritten; data of an older structure is backed up before it is
+	// migrated (FR-UPD-004).
+	if _, err := storage.GuardDataSchemas(loc.DataDir, storage.DataSchemas); err != nil {
+		return nil, err
+	}
+
 	settingsPath := filepath.Join(loc.DataDir, "settings.json")
 	setStore, setRec, setBackup, err := settings.Open(settingsPath, loc.DefaultCacheDir)
 	if err != nil {
@@ -347,6 +357,10 @@ func NewBackend(opts Options) (*Backend, error) {
 	if dbRec && dbBackup != "" {
 		corruptBackups = append(corruptBackups, dbBackup)
 	}
+	if _, err := storage.CheckSQLiteSchema(db, "library.db", schemaVersion("library.db")); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	updatesDBPath := filepath.Join(loc.DataDir, "updates.db")
 	updatesDB, updatesRec, updatesBackup, err := storage.OpenSQLite(updatesDBPath)
@@ -356,6 +370,11 @@ func NewBackend(opts Options) (*Backend, error) {
 	}
 	if updatesRec && updatesBackup != "" {
 		corruptBackups = append(corruptBackups, updatesBackup)
+	}
+	if _, err := storage.CheckSQLiteSchema(updatesDB, "updates.db", schemaVersion("updates.db")); err != nil {
+		_ = updatesDB.Close()
+		_ = db.Close()
+		return nil, err
 	}
 
 	biliOpts := opts.BilibiliOpts
@@ -436,6 +455,17 @@ func NewBackend(opts Options) (*Backend, error) {
 		return nil, err
 	}
 	b.subs = subMgr
+	// Every table of both databases now has the layout of this build.
+	if err := storage.StampSQLiteSchema(db, schemaVersion("library.db")); err != nil {
+		_ = updatesDB.Close()
+		_ = db.Close()
+		return nil, err
+	}
+	if err := storage.StampSQLiteSchema(updatesDB, schemaVersion("updates.db")); err != nil {
+		_ = updatesDB.Close()
+		_ = db.Close()
+		return nil, err
+	}
 
 	liveMgr := live.NewManager(libStore, subMgr, biliClient, curSettings.Live, func(n live.Notification) {
 		b.logInfo(fmt.Sprintf("live started: room=%d uid=%d uname=%s", n.RoomID, n.UID, n.Uname))
@@ -461,7 +491,8 @@ func NewBackend(opts Options) (*Backend, error) {
 		evBus.Publish(EventAccountChanged, "expired")
 	})
 
-	b.logInfo(fmt.Sprintf("backend initialized: app=%s mode=%s channel=%s", loc.AppName, loc.Mode, loc.Channel))
+	build := appdirs.BuildInfo()
+	b.logInfo(fmt.Sprintf("backend initialized: app=%s version=%s commit=%s built=%s mode=%s channel=%s", loc.AppName, build.Version, firstNonEmpty(build.Commit, "-"), firstNonEmpty(build.BuildTime, "-"), loc.Mode, loc.Channel))
 
 	if !opts.DisableBgWorkers {
 		if err := dlMgr.Start(bgCtx); err != nil {
@@ -479,6 +510,13 @@ func NewBackend(opts Options) (*Backend, error) {
 	}
 
 	return b, nil
+}
+
+func schemaVersion(name string) int {
+	if sf, ok := storage.SchemaFor(name); ok {
+		return sf.Current
+	}
+	return 1
 }
 
 func (b *Backend) runRenewalLoop(ctx context.Context) {
@@ -765,6 +803,62 @@ func (b *Backend) RefreshCookie(ctx context.Context) (credential.Status, error) 
 }
 
 // PauseAllActiveWork pauses all running and queued download tasks and stops active live recordings (R-04, C06, C07).
+// MutateUIState changes fields of ui-state.json under its lock.
+func (b *Backend) MutateUIState(fn func(*uistate.State)) (uistate.State, error) {
+	return b.uiState.Mutate(fn)
+}
+
+// ActiveWork counts the queued and running cache tasks and the live
+// recordings that quitting would pause or end.
+func (b *Backend) ActiveWork() (tasks, recordings int) {
+	if b.dl != nil {
+		if list, err := b.dl.ListTasks(); err == nil {
+			for _, t := range list {
+				if t.Status == "running" || t.Status == "queued" {
+					tasks++
+				}
+			}
+		}
+	}
+	if b.live != nil {
+		for _, r := range b.live.ListRooms() {
+			if r.Recording {
+				recordings++
+			}
+		}
+	}
+	return tasks, recordings
+}
+
+// PauseForExit is what quitting TRACE does to its work, for the tray's
+// Quit, for "重启以更新" and for --quit-for-update: queued and running
+// cache tasks become "已暂停（应用关闭）", kept so that the user can continue
+// them after the restart, and live recordings are finalized into playable
+// files (each within the recorder's time limit, in parallel).
+func (b *Backend) PauseForExit() {
+	if b.dl != nil {
+		b.dl.PauseAll("app_closed", "已暂停（应用关闭）")
+	}
+	if b.live == nil {
+		return
+	}
+	var wg sync.WaitGroup
+	for _, r := range b.live.ListRooms() {
+		if !r.Recording {
+			continue
+		}
+		wg.Add(1)
+		go func(roomID int64) {
+			defer wg.Done()
+			if _, err := b.live.StopRecording(roomID); err != nil {
+				b.logError("PauseForExit.StopRecording", err)
+			}
+		}(r.RoomID)
+	}
+	wg.Wait()
+	b.logInfo("work paused for exit")
+}
+
 func (b *Backend) PauseAllActiveWork() {
 	if b.dl != nil {
 		b.dl.PauseAll("auth_required", "登录状态已变更，任务已暂停")
@@ -1821,7 +1915,11 @@ func (b *Backend) DiagnosticsSnapshot() Diagnostics {
 		liveRecordStatus = fmt.Sprintf("录制中 %d 路 · 直播中 %d 个房间", recordingRooms, liveRooms)
 	}
 
+	build := appdirs.BuildInfo()
 	return Diagnostics{
+		Version:                 build.Version,
+		Commit:                  build.Commit,
+		BuildTime:               build.BuildTime,
 		AppName:                 b.loc.AppName,
 		DisplayName:             b.loc.DisplayName,
 		Channel:                 b.loc.Channel,
@@ -1939,6 +2037,11 @@ func (b *Backend) sanitizeLogLine(msg string) string {
 	return sanitized
 }
 
+// Logf writes an informational line to trace.log.
+func (b *Backend) Logf(format string, args ...any) {
+	b.logInfo(fmt.Sprintf(format, args...))
+}
+
 func (b *Backend) logInfo(msg string) {
 	b.writeLogLine("INFO", msg)
 }
@@ -1987,3 +2090,12 @@ func (b *Backend) CheckSubscription(ctx context.Context, subID string) (subscrip
 	return b.subs.CheckSubscription(ctx, subID)
 }
 func (b *Backend) CancelSubscriptionCheck() { b.subs.CancelCheck() }
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}

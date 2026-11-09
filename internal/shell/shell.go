@@ -21,6 +21,8 @@ import (
 	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/storage"
 	"github.com/chialecode/trace/internal/ui"
+	"github.com/chialecode/trace/internal/uistate"
+	"github.com/chialecode/trace/internal/update"
 	"github.com/egoist/mygo"
 	mygoui "github.com/egoist/mygo/ui"
 )
@@ -101,6 +103,9 @@ type RuntimeStateSnapshot struct {
 	ForegroundPID          uint32   `json:"foregroundPid"`
 	StealFocusDetected     bool     `json:"stealFocusDetected"`
 	SecondInstanceArgs     []string `json:"secondInstanceArgs,omitempty"`
+	Version                string   `json:"version"`
+	Commit                 string   `json:"commit"`
+	BuildTime              string   `json:"buildTime"`
 	Timestamp              string   `json:"timestamp"`
 }
 
@@ -122,6 +127,7 @@ type Shell struct {
 	lastRoute          string
 	secondInstanceArgs []string
 	stoleFocus         bool
+	updates            *update.Controller
 }
 
 // NewShell creates a new Shell instance for the given locations and backend.
@@ -154,8 +160,10 @@ func Run() error {
 	}
 
 	// Step 2: Set lowercase application name BEFORE RequestSingleInstanceLock and SetPath (DEC-029).
+	build := appdirs.BuildInfo()
 	mygo.App.SetName(loc.AppName)
-	mygo.App.SetVersion("0.1.0")
+	mygo.App.SetVersion(build.Version)
+	launch := ParseLaunchArgs(os.Args[1:])
 
 	if QuietMode(loc.Channel) != "" {
 		_ = SetBelowNormalPriority()
@@ -163,6 +171,11 @@ func Run() error {
 
 	// Step 3: Request single-instance lock. Second instance forwards args and returns immediately without touching DataDir (C36).
 	if !mygo.App.RequestSingleInstanceLock() {
+		return nil
+	}
+	// --quit-for-update asks a running TRACE to quit; when none runs there
+	// is nothing to do, and this launch must not start one.
+	if launch.QuitForUpdate {
 		return nil
 	}
 
@@ -192,6 +205,9 @@ func Run() error {
 		Locations: loc,
 	})
 	if err != nil {
+		if storage.IsNewerData(err) {
+			return refuseNewerData(loc, err)
+		}
 		return fmt.Errorf("shell: init backend: %w", err)
 	}
 	defer func() {
@@ -200,6 +216,28 @@ func Run() error {
 
 	sh := NewShell(loc, backend)
 	sh.lockHandle = lockHandle
+
+	decision := StartupDecision{OpenWindow: !launch.Background}
+	if _, err := backend.MutateUIState(func(st *uistate.State) {
+		var next uistate.State
+		decision, next = DecideStartup(*st, launch, build.Version, time.Now().UTC())
+		*st = next
+	}); err != nil {
+		backend.Logf("save launch state: %v", err)
+	}
+	if loc.Mode == "installed" {
+		if wrote, err := syncUninstallVersion(systemUninstallEntry(), loc.Identifier, loc.InstallDir, build.Version); err != nil {
+			backend.Logf("update the uninstall entry: %v", err)
+		} else if wrote {
+			backend.Logf("uninstall entry now names %s", build.Version)
+		}
+	}
+	updateCtx, stopUpdates := context.WithCancel(context.Background())
+	defer stopUpdates()
+	sh.updates = newUpdateController(backend, sh.redraw, sh.RestartToUpdate)
+	if decision.UpdatedTo != "" {
+		sh.updates.SetUpdatedNotice(decision.UpdatedTo, decision.UpdatedNotes)
+	}
 
 	// Keep the event loop running when closing window to tray (DEC-030).
 	mygo.App.OnWindowAllClosed(func() {
@@ -220,7 +258,10 @@ func Run() error {
 
 	mygo.App.WhenReady(func() {
 		sh.setupTray()
-		sh.openOrRestoreMainWindow()
+		if decision.OpenWindow {
+			sh.openOrRestoreMainWindow()
+		}
+		sh.updates.Start(updateCtx)
 		if smokeDir := strings.TrimSpace(os.Getenv("TRACE_SMOKE_DIR")); smokeDir != "" {
 			go sh.runSmokeControlLoop(smokeDir)
 		}
@@ -253,6 +294,9 @@ func (s *Shell) openOrRestoreMainWindow() {
 	}
 
 	uiApp := ui.NewApp(s.backend, s.audioSinkForMode())
+	if s.updates != nil {
+		uiApp.BindUpdater(s.updates)
+	}
 	if s.lastRoute != "" {
 		uiApp.Navigate(s.lastRoute)
 	}
@@ -338,9 +382,8 @@ func (s *Shell) CloseToTray() {
 	s.mu.Lock()
 	if s.uiApp != nil {
 		s.lastRoute = s.uiApp.CurrentRoute
-		st := s.backend.GetUIState()
-		st.LastRoute = s.lastRoute
-		_, _ = s.backend.UpdateUIState(st)
+		route := s.lastRoute
+		_, _ = s.backend.MutateUIState(func(st *uistate.State) { st.LastRoute = route })
 		s.uiApp.Close()
 		s.uiApp = nil
 	}
@@ -385,6 +428,16 @@ func (s *Shell) HandleSecondInstance(args []string) {
 	s.mu.Lock()
 	s.secondInstanceArgs = append([]string(nil), args...)
 	s.mu.Unlock()
+
+	launch := ParseLaunchArgs(args)
+	if launch.QuitForUpdate {
+		s.QuitForUpdate("dev-install", false)
+		return
+	}
+	if launch.Background {
+		// Already running: a background launch has nothing to open.
+		return
+	}
 
 	s.openOrRestoreMainWindow()
 
@@ -548,8 +601,27 @@ func (s *Shell) RequestQuit(force bool) {
 }
 
 func (s *Shell) performQuit() {
+	s.teardown()
+	// Pausing finalizes recordings, which may take a while: off the main
+	// thread, so that the event loop keeps running meanwhile.
+	go func() {
+		s.backend.PauseForExit()
+		mygo.RunOnMain(func() { mygo.App.Quit() })
+	}()
+}
+
+// teardown releases the window, the interface and the tray before a quit,
+// saving the route the window shows. It returns whether the window was
+// open.
+func (s *Shell) teardown() bool {
 	s.mu.Lock()
 	s.quitting = true
+	windowOpen := s.win != nil
+	if s.uiApp != nil {
+		s.lastRoute = s.uiApp.CurrentRoute
+		route := s.lastRoute
+		_, _ = s.backend.MutateUIState(func(st *uistate.State) { st.LastRoute = route })
+	}
 	if s.unsubEvents != nil {
 		s.unsubEvents()
 		s.unsubEvents = nil
@@ -558,14 +630,91 @@ func (s *Shell) performQuit() {
 		s.uiApp.Close()
 		s.uiApp = nil
 	}
+	win := s.win
+	s.win = nil
 	if s.tray != nil {
 		s.tray.Destroy()
 		s.tray = nil
 	}
 	s.mu.Unlock()
+	if win != nil {
+		win.Close()
+	}
+	return windowOpen
+}
 
-	s.backend.PauseAllActiveWork()
-	mygo.App.Quit()
+// QuitForUpdate saves TRACE's work and quits without asking, for an
+// update: tasks are paused as the tray's Quit pauses them, recordings are
+// finalized, and ui-state.json records why TRACE quit and whether its
+// window was open, so that the next launch reopens it the same way. With
+// relaunch, TRACE then starts again (the downloaded version, for
+// "restart to update"); otherwise tools/package installs the new build
+// and starts it.
+func (s *Shell) QuitForUpdate(reason string, relaunch bool) {
+	s.mu.Lock()
+	if s.quitting {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	windowOpen := s.teardown()
+	from := appdirs.BuildInfo().Version
+	go func() {
+		s.backend.PauseForExit()
+		_, err := s.backend.MutateUIState(func(st *uistate.State) {
+			st.Update.Restart = &uistate.UpdateRestart{Reason: reason, WindowOpen: windowOpen, FromVersion: from, At: time.Now().UTC().Format(time.RFC3339)}
+		})
+		if err != nil {
+			s.backend.Logf("record quit for update: %v", err)
+		}
+		s.backend.Logf("quitting for update (%s, window open: %v)", reason, windowOpen)
+		mygo.RunOnMain(func() {
+			if relaunch {
+				mygo.App.Relaunch()
+			} else {
+				mygo.App.Quit()
+			}
+		})
+	}()
+}
+
+// RestartToUpdate restarts TRACE into the downloaded update.
+func (s *Shell) RestartToUpdate() {
+	mygo.RunOnMain(func() { s.QuitForUpdate("update", true) })
+}
+
+// redraw asks the window, when there is one, to render again.
+func (s *Shell) redraw() {
+	s.mu.Lock()
+	w := s.win
+	s.mu.Unlock()
+	if w != nil {
+		w.Update(func() {})
+	}
+}
+
+// refuseNewerData tells the user that the data directory holds data of a
+// newer TRACE and exits without writing to it.
+func refuseNewerData(loc appdirs.Locations, cause error) error {
+	fmt.Fprintln(os.Stderr, cause.Error())
+	if QuietMode(loc.Channel) != "" {
+		return cause
+	}
+	mygo.App.OnWindowAllClosed(func() {})
+	mygo.App.WhenReady(func() {
+		go func() {
+			_, _ = mygo.Dialog.Message(mygo.MessageOptions{
+				Type:    mygo.MessageError,
+				Title:   loc.DisplayName,
+				Message: storage.NewerDataMessage,
+				Detail:  cause.Error() + "\n\n数据没有改动。请安装新版 " + loc.DisplayName + " 后再打开。",
+				Buttons: []string{"退出"},
+			})
+			mygo.RunOnMain(func() { mygo.App.Quit() })
+		}()
+	})
+	_ = mygo.App.Run()
+	return cause
 }
 
 // Snapshot captures the current runtime state of the shell for testing and smoke assertions.
@@ -606,6 +755,9 @@ func (s *Shell) Snapshot() RuntimeStateSnapshot {
 		ForegroundPID:          fgPID,
 		StealFocusDetected:     stole,
 		SecondInstanceArgs:     args,
+		Version:                appdirs.BuildInfo().Version,
+		Commit:                 appdirs.BuildInfo().Commit,
+		BuildTime:              appdirs.BuildInfo().BuildTime,
 		Timestamp:              time.Now().UTC().Format(time.RFC3339),
 	}
 }

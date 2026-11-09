@@ -1,0 +1,126 @@
+name: Release
+
+# Weekly release of TRACE (W8): every Monday 00:00 UTC (08:00 Beijing time)
+# or by hand. It builds only when main has changes merged since the last
+# release, and publishes only once the user has turned publishing on
+# (repository variable TRACE_RELEASE_PUBLISH=1, USER-ACTIONS ACT-009); a
+# manual run only builds unless its "publish" input is set as well.
+on:
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "构建后发布（还需要仓库变量 TRACE_RELEASE_PUBLISH=1）"
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+    env:
+      CGO_ENABLED: "0"
+      GOTOOLCHAIN: auto
+      TRACE_QUIET: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Is there something to release?
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: go run ./tools/release -plan
+
+      - name: Run quality gates
+        if: steps.plan.outputs.release == 'true'
+        run: go run ./tools/check
+
+  build:
+    name: build
+    needs: [check]
+    if: needs.check.outputs.release == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: read
+    env:
+      CGO_ENABLED: "0"
+      GOTOOLCHAIN: auto
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build, sign and rehearse the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+        run: go run ./tools/release
+
+      - name: Upload the release files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ needs.check.outputs.version }}
+          path: |
+            dist/trace/
+            artifacts/release/
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: [check, build]
+    if: ${{ needs.check.outputs.release == 'true' && vars.TRACE_RELEASE_PUBLISH == '1' && (github.event_name == 'schedule' || inputs.publish) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download the release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-${{ needs.check.outputs.version }}
+          path: release
+
+      - name: Verify, tag and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.check.outputs.version }}
+          TARGET: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd release/dist/trace
+          sha256sum -c SHA256SUMS
+          grep -qx "version=${VERSION}" VERSION.txt
+          grep -qx "channel=stable" VERSION.txt
+          mapfile -t files < <(awk '{print $2}' SHA256SUMS | grep -vx 'update-windows-amd64.json')
+          gh release create "v${VERSION}" --target "$TARGET" --title "TRACE ${VERSION}" \
+            --notes-file ../../artifacts/release/notes.md --draft "${files[@]}" SHA256SUMS
+          gh release upload "v${VERSION}" update-windows-amd64.json
+          assets="$(gh release view "v${VERSION}" --json assets --jq '.assets[].name')"
+          for f in "${files[@]}" SHA256SUMS update-windows-amd64.json; do
+            grep -qx "$f" <<<"$assets" || { echo "the draft release lacks $f"; exit 1; }
+          done
+          gh release edit "v${VERSION}" --draft=false --latest

@@ -323,6 +323,12 @@ type App struct {
 	MoveExistingFiles   bool
 	ConfirmLogoutOpen   bool
 
+	// Updates of TRACE (FR-UPD-002).
+	updater            UpdaterAPI
+	UpdateNotesOpen    bool
+	RestartConfirmOpen bool
+	RestartConfirmText string
+
 	// Overlays (C14, C22)
 	ImageViewer   ImageViewerState
 	PlayerOverlay PlayerOverlayState
@@ -1570,6 +1576,9 @@ func (a *App) View(c *ui.Context) {
 	}
 	if a.DeleteConfirm.Open {
 		a.renderDeleteConfirmOverlay(c, w, h)
+	}
+	if a.RestartConfirmOpen && a.updater != nil {
+		a.renderRestartConfirmOverlay(c, w, h)
 	}
 	if a.AddSubDialogOpen {
 		a.renderAddSubOverlay(c, w, h)

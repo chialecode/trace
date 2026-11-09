@@ -47,3 +47,10 @@ A 推荐前按下表记录证据，写进 `docs/research/`：
 - **真实请求的前提**：对象、额度和动作都已在 USER-ACTIONS 授权。缺哪项就停止对应检查，记为 `blocked/not-run`，继续合成测试和开发。遇到风控、拦截、验证码或权限不明，立即停止该跑次，记录条件，不换会话反复尝试。
 - 真实目标、原始响应和账号字段只留在本地忽略目录；报告只写类别、状态、计数和必要的非敏感指标。
 - 本机文件：`.env.local`、Cookie 文件和用户数据归用户所有，不覆盖、不整理与任务无关的键值；需要调整时先列在 USER-ACTIONS。临时草稿放 `.local/` 或 `tmp/`。
+
+<a id="github-requests"></a>
+## 6. 应用与工具对 GitHub 的请求
+
+- **正式版 TRACE 检查更新**（FR-UPD-003）：只访问 `github.com/chialecode/trace` 的 Releases——清单 `releases/latest/download/update-windows-amd64.json` 与清单里列出的更新包或差分包（经 GitHub 重定向到它的下载域名），一律 HTTPS，遵循系统代理；只带 MyGo 默认的请求头（版本与平台由下载的文件名体现），不带账号、Cookie 或设备信息。启动 1 分钟后一次、之后每 24 小时一次，或用户手动检查；“自动检查更新”关掉就不请求。这些请求与哔哩哔哩无关，不计入站点请求额度（NFR-NET-002）。开发版与源码运行不请求。
+- **打包与发布工具**：`tools/package` 不访问 GitHub（版本号只看本机标签）。`tools/release` 联网时用 `git ls-remote` 读 `origin` 的标签与 `main`、用 `gh release list` 读已发布的 Release、MyGo 做差分包时下载上一版的清单与更新包；`-offline` 时都不做。只有带 `-publish` 且用户已授权时才创建标签与 Release、上传文件。
+- **测试**：单元测试与 ptest 演练只用本机回环地址上的假发布源，不访问 GitHub。

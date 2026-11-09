@@ -37,6 +37,9 @@ type RuntimeStateSnapshot struct {
 	ForegroundPID        uint32   `json:"foregroundPid"`
 	StealFocusDetected   bool     `json:"stealFocusDetected"`
 	SecondInstanceArgs   []string `json:"secondInstanceArgs,omitempty"`
+	Version              string   `json:"version"`
+	Commit               string   `json:"commit"`
+	BuildTime            string   `json:"buildTime"`
 	Timestamp            string   `json:"timestamp"`
 }
 
@@ -48,6 +51,8 @@ type SmokeReceipt struct {
 	AppName                  string               `json:"appName"`
 	TempSocketIsolated       bool                 `json:"tempSocketIsolated"`
 	ChecksumsVerified        bool                 `json:"checksumsVerified"`
+	Version                  string               `json:"version"`
+	VersionMatchesFile       bool                 `json:"versionMatchesVersionTxt"`
 	DataLockExclusive        bool                 `json:"dataLockExclusive"`
 	SecondInstanceForwarded  bool                 `json:"secondInstanceForwarded"`
 	SecondInstanceUntouched  bool                 `json:"secondInstanceUntouchedDataDir"`
@@ -201,6 +206,24 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 
 	if !readySnap.WindowOpen {
 		fail("ready.WindowOpen = false, want true")
+	}
+	// The program reports the version, commit and build time of
+	// VERSION.txt (W1).
+	receipt.Version = readySnap.Version
+	if raw, err := os.ReadFile(filepath.Join(absPkg, "VERSION.txt")); err != nil {
+		fail("read VERSION.txt: %v", err)
+	} else {
+		fields := map[string]string{}
+		for _, line := range strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n") {
+			if k, v, ok := strings.Cut(line, "="); ok {
+				fields[strings.TrimSpace(k)] = strings.TrimSpace(v)
+			}
+		}
+		if fields["version"] == "" || fields["version"] != readySnap.Version || fields["commit"] != readySnap.Commit || fields["built_at"] != readySnap.BuildTime || fields["channel"] != readySnap.Channel {
+			fail("the program reports %s/%s/%s/%s, VERSION.txt %s/%s/%s/%s", readySnap.Version, readySnap.Commit, readySnap.BuildTime, readySnap.Channel, fields["version"], fields["commit"], fields["built_at"], fields["channel"])
+		} else {
+			receipt.VersionMatchesFile = true
+		}
 	}
 	if readySnap.WebView2ProcessCount != 0 {
 		fail("ready.WebView2ProcessCount = %d, want 0", readySnap.WebView2ProcessCount)

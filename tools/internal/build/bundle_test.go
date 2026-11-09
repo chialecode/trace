@@ -1,4 +1,4 @@
-package main
+package build
 
 import (
 	"crypto/sha256"
@@ -69,7 +69,7 @@ func TestBundleReplacementKeepsUserFilesAndRemovesObsoleteRegisteredFiles(t *tes
 	if err := os.WriteFile(filepath.Join(dest, "SHA256SUMS.txt"), oldSums, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := publishBundle(src, dest, names, true); err != nil {
+	if err := PublishBundle(src, dest, names, true); err != nil {
 		t.Fatal(err)
 	}
 	want["my-note.txt"] = []byte("user file")
@@ -105,7 +105,7 @@ func TestBundleInvalidInputAndManifestLeaveOldPackageIntact(t *testing.T) {
 				}
 				names = append(names, "user.exe")
 			}
-			if err := publishBundle(src, dest, names, true); err == nil {
+			if err := PublishBundle(src, dest, names, true); err == nil {
 				t.Fatal("invalid input unexpectedly replaced the package")
 			}
 			assertTestBundle(t, dest, want)
@@ -127,7 +127,7 @@ func TestBundleMetadataRefreshPreservesRegisteredBinaries(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "SHA256SUMS.txt"), want["SHA256SUMS.txt"], 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := publishBundle(src, dest, []string{"VERSION.txt", "SHA256SUMS.txt"}, false); err != nil {
+	if err := PublishBundle(src, dest, []string{"VERSION.txt", "SHA256SUMS.txt"}, false); err != nil {
 		t.Fatal(err)
 	}
 	assertTestBundle(t, dest, want)

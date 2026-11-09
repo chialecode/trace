@@ -450,8 +450,10 @@ func TestSubscriptionListVirtualizesAndSearchResetsScroll(t *testing.T) {
 	delete(app.pending, "check-updates")
 }
 
-// TestRevision3FeedbackReworkR1ToR7 verifies R1..R7 UI contracts from TRACE-M1-03 Revision 3.
-func TestRevision3FeedbackReworkR1ToR7(t *testing.T) {
+// TestSubscriptionGridParseStatusLogsAndTaskRemoval covers the subscription
+// avatar grid and detail, the parse page status, the logs settings and the
+// confirmation before a failed task is removed.
+func TestSubscriptionGridParseStatusLogsAndTaskRemoval(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
 	if _, err := app.backend.ImportCookie(context.Background(), "SESSDATA=fixture; DedeUserID=12345", ""); err != nil {
@@ -459,12 +461,12 @@ func TestRevision3FeedbackReworkR1ToR7(t *testing.T) {
 	}
 	app.CompleteLogin()
 
-	// R1 & R9: Right column no longer has "最近更新" or "最近看过的用户" cards (moved to Home updated avatars row under "主页" title in R9).
+	// Right column no longer has "最近更新" or "最近看过的用户" cards (moved to Home updated avatars row under the "主页" title).
 	app.Navigate(RouteHome)
 	tt := ui.NewTester(app.View, 1280, 860)
 	for _, removedCard := range []string{"最近看过的用户", "最近更新"} {
 		if _, ok := tt.Find(removedCard); ok {
-			t.Fatalf("expected right column card %q to be removed per R9 / DEC-037", removedCard)
+			t.Fatalf("expected right column card %q to be removed (DEC-037)", removedCard)
 		}
 	}
 	subA, _ := app.backend.CreateSubscription("Creator A", "note A", []subscription.AccountRef{{Site: "bilibili", UID: "1001", Name: "AccA"}}, subscription.SubRules{ScheduledCheck: true})
@@ -472,8 +474,8 @@ func TestRevision3FeedbackReworkR1ToR7(t *testing.T) {
 	app.RefreshData()
 	_ = subB
 
-	// R2 & R4: /subscriptions circular avatar grid, live badge one-click record, and clicking avatar opens /subscriptions/:id detail with 5 tabs and 管理 menu.
-	// Also seed a legacy recorded live item with Quality/Codec only in Live.Segments[0] to verify R4 fallback in Subscriptions and Library.
+	// /subscriptions circular avatar grid, live badge one-click record, and clicking avatar opens /subscriptions/:id detail with 5 tabs and 管理 menu.
+	// Also seed a legacy recorded live item with Quality/Codec only in Live.Segments[0] to verify the quality fallback in Subscriptions and Library.
 	liveItemDir := filepath.Join(t.TempDir(), "bilibili", "1001_AccA", "2026-03-01_live_8888_存量直播录像")
 	_ = os.MkdirAll(liveItemDir, 0o700)
 	_ = os.WriteFile(filepath.Join(liveItemDir, "part-001.mp4"), []byte("synthetic"), 0o600)
@@ -541,7 +543,7 @@ func TestRevision3FeedbackReworkR1ToR7(t *testing.T) {
 		t.Fatal("expected legacy Segments[0] quality fallback (时长 01:00 · 1 段 · 原画 · AVC) in subscription live tab")
 	}
 
-	// Verify Library card and "⋯" menu + detail view show legacy Segments[0] quality fallback (R4, R12).
+	// Verify Library card and "⋯" menu + detail view show legacy Segments[0] quality fallback.
 	app.Navigate(RouteLibrary)
 	app.ExpandedItemKey = savedLiveItem.ItemKey
 	tt.Frame()
@@ -562,7 +564,7 @@ func TestRevision3FeedbackReworkR1ToR7(t *testing.T) {
 		t.Fatal("expected 直播间: 8888 · 原画 · AVC on video/live detail page opened from library ⋯ menu")
 	}
 
-	// R5: Parse page never shows unrelated background loading status; Settings has "日志" category with background status & monospace logs.
+	// Parse page never shows unrelated background loading status; Settings has "日志" category with background status & monospace logs.
 	app.pending["upgrade-check"] = true
 	app.Navigate(RouteParse)
 	tt.Frame()
@@ -584,7 +586,7 @@ func TestRevision3FeedbackReworkR1ToR7(t *testing.T) {
 		}
 	}
 
-	// R7: Tasks page shows LastError inline and prompts confirmation ("会删除未完成的临时文件") before removing a failed task.
+	// Tasks page shows LastError inline and prompts confirmation ("会删除未完成的临时文件") before removing a failed task.
 	app.Tasks = []download.Task{
 		{
 			TaskID:       "task-fail-1",
@@ -618,8 +620,10 @@ func TestRevision3FeedbackReworkR1ToR7(t *testing.T) {
 	}
 }
 
-// TestRevision4FeedbackReworkR8ToR13 verifies R8..R13 UI and state contracts from TRACE-M1-03 Revision 4 (DEC-037).
-func TestRevision4FeedbackReworkR8ToR13(t *testing.T) {
+// TestHomePostsUpdatedRowParseHistoryAndLibraryMenus covers posts without
+// text buttons, the row of updated accounts, the parse history menu and the
+// library tile menu (DEC-037).
+func TestHomePostsUpdatedRowParseHistoryAndLibraryMenus(t *testing.T) {
 	app, desk, cleanup := newTestUIApp(t)
 	defer cleanup()
 	if _, err := app.backend.ImportCookie(context.Background(), "SESSDATA=fixture; DedeUserID=12345", ""); err != nil {
@@ -711,14 +715,14 @@ func TestRevision4FeedbackReworkR8ToR13(t *testing.T) {
 	tt := ui.NewTester(app.View, 1280, 860)
 	tt.Frame()
 
-	// R8: Verify Home posts have ZERO bottom text buttons!
+	// Verify Home posts have ZERO bottom text buttons!
 	for _, forbiddenBtn := range []string{"内置播放", "查看图片", "播放视频", "升级缓存", "补存弹幕和字幕", "查看封面", "浏览器打开", "复制链接"} {
 		if _, found := tt.Find(forbiddenBtn); found {
-			t.Fatalf("R8 violation: Home feed must not display button %q", forbiddenBtn)
+			t.Fatalf("Home feed must not display button %q", forbiddenBtn)
 		}
 	}
 
-	// R9: Verify "主页有更新头像行" is visible and ordered by latestTs DESC: SubBeta -> UnsubUP -> SubAlpha.
+	// Verify "主页有更新头像行" is visible and ordered by latestTs DESC: SubBeta -> UnsubUP -> SubAlpha.
 	// Also verify sitting idle or navigating /home -> /parse -> /home keeps the updated people.
 	tt.Advance(1500 * time.Millisecond)
 	tt.Frame()
@@ -778,7 +782,7 @@ func TestRevision4FeedbackReworkR8ToR13(t *testing.T) {
 		t.Fatalf("expected SubAlpha to disappear from updated avatars row after viewing, got %+v", actorsAfter)
 	}
 
-	// Open SubBeta in single-subscription view and click the embedded video card on betaDyn -> opens PlayerOverlay (R8).
+	// Open SubBeta in single-subscription view and click the embedded video card on betaDyn -> opens PlayerOverlay.
 	tt.Click("主页更新头像：SubBeta")
 	tt.Frame()
 	tt.Click("播放视频卡片：bilibili:video:BV1beta001")
@@ -802,7 +806,7 @@ func TestRevision4FeedbackReworkR8ToR13(t *testing.T) {
 	_ = betaDyn
 	_ = subBeta
 
-	// R11: Parse page local thumbnails, click body to open, right-side "⋯" menu, and header "⋯" clear confirmation.
+	// Parse page local thumbnails, click body to open, right-side "⋯" menu, and header "⋯" clear confirmation.
 	avThumb, err := hist.SaveThumb("video", "BV1xx411c7mD", "avatar", ".png", []byte("png"))
 	if err != nil {
 		t.Fatal(err)
@@ -827,7 +831,7 @@ func TestRevision4FeedbackReworkR8ToR13(t *testing.T) {
 	tt.Frame()
 	for _, oldHistBtn := range []string{"历史复制链接：BV1xx411c7mD", "历史浏览器打开：BV1xx411c7mD", "删除历史：BV1xx411c7mD"} {
 		if _, found := tt.Find(oldHistBtn); found {
-			t.Fatalf("R11 violation: history action %q must be hidden until ⋯ menu is opened", oldHistBtn)
+			t.Fatalf("history action %q must be hidden until ⋯ menu is opened", oldHistBtn)
 		}
 	}
 	chooseMenuItem(t, tt, "历史更多：BV1xx411c7mD", "在浏览器中打开")
@@ -849,7 +853,7 @@ func TestRevision4FeedbackReworkR8ToR13(t *testing.T) {
 		t.Fatal("expected confirmed clear to delete cached thumbnail files in thumbs/")
 	}
 
-	// R8: On /user (non-Home PostCard), uncached dynamic has only a single "缓存" button at the bottom and a "⋯" button in the header.
+	// On /user (non-Home PostCard), uncached dynamic has only a single "缓存" button at the bottom and a "⋯" button in the header.
 	app.CurrentUser = &bilibili.UserSpace{Mid: 2001, Name: "BetaCreator", CanonicalURL: "https://space.bilibili.com/2001"}
 	app.UserTab = "dynamics"
 	app.UserDynamics = []bilibili.DynamicItem{
@@ -865,7 +869,7 @@ func TestRevision4FeedbackReworkR8ToR13(t *testing.T) {
 	}
 	app.CurrentRoute = RouteUser
 	tt.Frame()
-	// F-056: a post carries no text buttons; caching, the browser and the
+	// a post carries no text buttons; caching, the browser and the
 	// link are items of the floating "⋯" menu, which takes no room in the page.
 	for _, gone := range []string{"缓存动态：dyn_uncached_user_1", "在浏览器中打开 dyn:dyn_uncached_user_1", "帖子菜单：dyn:dyn_uncached_user_1"} {
 		if _, found := tt.Find(gone); found {
@@ -876,11 +880,11 @@ func TestRevision4FeedbackReworkR8ToR13(t *testing.T) {
 		t.Fatalf("PostCard ⋯ items = %v", got)
 	}
 
-	// R12: Library header has no "重建索引" (moved to Settings -> "存储"); tile has only bottom-right "⋯" menu; "详情" opens /video with "补存弹幕和字幕", "删除" opens DeleteConfirm.
+	// Library header has no "重建索引" (moved to Settings -> "存储"); tile has only bottom-right "⋯" menu; "详情" opens /video with "补存弹幕和字幕", "删除" opens DeleteConfirm.
 	app.Navigate(RouteLibrary)
 	tt.Frame()
 	if _, found := tt.Find("重建索引"); found {
-		t.Fatal("R12 violation: 重建索引 must be moved out of /library header to Settings -> 存储")
+		t.Fatal("重建索引 must be moved out of /library header to Settings -> 存储")
 	}
 	chooseMenuItem(t, tt, "媒体更多：bilibili:video:BV1beta001", "删除")
 	tt.Frame()
