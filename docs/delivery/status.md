@@ -6,9 +6,11 @@
 
 **M2（安装与更新）：版本号、开发版本机自动更新、正式版联网更新、一条命令发布与每周发布流程、中文安装界面与图标**（[当前计划 TRACE-M2-01](stage-plan.md)，DEC-041、DEC-042）。
 
-- **状态**：B 已于 2026-11-09 完成实施与自测，A 同日审查完毕并修复两处局部问题（[阶段报告 §8](stage-report.md#review)），待用户授权 push 与 PR；没有发布过正式版。细节按 [Q-012](../../USER-ACTIONS.md#q-012) 的默认值；仓库的发布环境与密钥备份见 [ACT-008](../../USER-ACTIONS.md#act-008)，每周自动发布见 [ACT-009](../../USER-ACTIONS.md#act-009)。
-- **Git 与分支**：M1 已于 2026-11-09 经 PR #1 squash 合并为 `main @ 29c2678`（[M1 计划](https://github.com/chialecode/trace/blob/29c2678/docs/delivery/stage-plan.md)、[M1 报告](https://github.com/chialecode/trace/blob/29c2678/docs/delivery/stage-report.md)）。M2 分支 `codex/m2-install-update` 从这里开始，未推送。
+- **状态**：B 已于 2026-11-09 完成实施与自测，A 同日审查完毕并修复两处局部问题（[阶段报告 §8](stage-report.md#review)）；经 PR #2 squash 合并为 `main @ c17bd87`。没有发布过正式版。细节按 [Q-012](../../USER-ACTIONS.md#q-012) 的默认值；仓库的发布环境与密钥备份见 [ACT-008](../../USER-ACTIONS.md#act-008)，每周自动发布见 [ACT-009](../../USER-ACTIONS.md#act-009)。
+- **Git 与分支**：M1 已于 2026-11-09 经 PR #1 squash 合并为 `main @ 29c2678`（[M1 计划](https://github.com/chialecode/trace/blob/29c2678/docs/delivery/stage-plan.md)、[M1 报告](https://github.com/chialecode/trace/blob/29c2678/docs/delivery/stage-report.md)）。M2 经 [PR #2](https://github.com/chialecode/trace/pull/2) 合并为 `main @ c17bd87`。
 - **真实站点与实机**：M2 不请求哔哩哔哩，不访问 GitHub 发布；更新只用本机回环地址上的假发布源演练过。实机体验 [H-001](../../USER-ACTIONS.md#h-001) 与安装更新检查 [H-002](../../USER-ACTIONS.md#h-002) 为 `not-run`，产品验收未开始。
+- **发布环境（ACT-008，2026-11-09 完成仓库设置）**：`release` 环境只允许 `main` 部署；环境 secret `MYGO_UPDATER_PRIVATE_KEY` 从本机密钥文件直接读入（已核对与 `mygo.json` 的公钥配对）；Actions 允许列表按完整 SHA 加入 `actions/upload-artifact` v7.0.2、`actions/download-artifact` v8.0.2（`actions/checkout@*` 原已允许）。
+- **第一次手动只构建运行**（[42607654678](https://github.com/chialecode/trace/actions/runs/42607654678)）：`check` 通过；`build` 在 `tools/release` 自己的 `tools/check` 一步失败，没有签名、没有上传。原因：Windows 运行器的 `%TEMP%` 里用户目录是 8.3 短名 `RUNNER~1`，`filepath.EvalSymlinks` 会展开短路径，`internal/library` 的 `rejectDirectoryLinks` 把这种差异当成目录联接，用临时目录的 19 个测试失败（M1 起就有；`ci.yml` 只在 Ubuntu 上跑，没有暴露）。修复在分支 `codex/fix-windows-short-paths`：比较前先用 `GetLongPathName` 展开短路径（不跟随联接），由 `TestShortPathNamesAreNotLinksButJunctionsAre` 覆盖；本机把 `TMP`/`TEMP` 设为短路径时 `go test ./...` 全部通过。合并后再手动运行一次 `release.yml`。
 
 ## 已实现能力
 
