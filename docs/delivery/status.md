@@ -6,7 +6,7 @@
 
 **M2（安装与更新）：版本号、开发版本机自动更新、正式版联网更新、一条命令发布与每周发布流程、中文安装界面与图标**（[当前计划 TRACE-M2-01](stage-plan.md)，DEC-041、DEC-042）。
 
-- **状态**：B 已于 2026-11-09 完成实施与自测，A 同日审查完毕并修复两处局部问题（[阶段报告 §8](stage-report.md#review)）；经 PR #2 squash 合并为 `main @ c17bd87`。没有发布过正式版。细节按 [Q-012](../../USER-ACTIONS.md#q-012) 的默认值；仓库的发布环境与密钥备份见 [ACT-008](../../USER-ACTIONS.md#act-008)，每周自动发布见 [ACT-009](../../USER-ACTIONS.md#act-009)。
+- **状态**：B 已于 2026-11-09 完成实施与自测，A 同日审查完毕并修复两处局部问题（[阶段报告 §8](stage-report.md#review)）；经 PR #2 squash 合并为 `main @ c17bd87`。2026-11-12 按 ACT-009 打开每周自动发布，第一个正式版 [v0.1.1](https://github.com/chialecode/trace/releases/tag/v0.1.1) 经 `release.yml`（[运行 43138195253](https://github.com/chialecode/trace/actions/runs/43138195253)）发布，清单的版本证明签名已用内置公钥核对。细节按 [Q-012](../../USER-ACTIONS.md#q-012) 的默认值；仓库的发布环境与密钥备份见 [ACT-008](../../USER-ACTIONS.md#act-008)，每周自动发布见 [ACT-009](../../USER-ACTIONS.md#act-009)。
 - **Git 与分支**：M1 已于 2026-11-09 经 PR #1 squash 合并为 `main @ 29c2678`（[M1 计划](https://github.com/chialecode/trace/blob/29c2678/docs/delivery/stage-plan.md)、[M1 报告](https://github.com/chialecode/trace/blob/29c2678/docs/delivery/stage-report.md)）。M2 经 [PR #2](https://github.com/chialecode/trace/pull/2) 合并为 `main @ c17bd87`。
 - **真实站点与实机**：M2 不请求哔哩哔哩，不访问 GitHub 发布；更新只用本机回环地址上的假发布源演练过。实机体验 [H-001](../../USER-ACTIONS.md#h-001) 与安装更新检查 [H-002](../../USER-ACTIONS.md#h-002) 为 `not-run`，产品验收未开始。
 - **发布环境（ACT-008，2026-11-09 完成仓库设置）**：`release` 环境只允许 `main` 部署；环境 secret `MYGO_UPDATER_PRIVATE_KEY` 从本机密钥文件直接读入（已核对与 `mygo.json` 的公钥配对）；Actions 允许列表按完整 SHA 加入 `actions/upload-artifact` v7.0.2、`actions/download-artifact` v8.0.2（`actions/checkout@*` 原已允许）。
