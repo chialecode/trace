@@ -46,6 +46,12 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 			{Key: "video", Text: "视频", AccessLabel: "筛选类型：视频"},
 			{Key: "live", Text: "直播录像", AccessLabel: "筛选类型：直播录制"},
 		}, func(key string) { a.LibraryKindFilter = key; a.reloadLibraryItems() })
+		ui.Row(c).FillWidth().Padding(6, 16, 0, 16).Children(func() {
+			renderThreeSegmentSiteFilter(c, "媒体库站点筛选：", a.LibrarySiteFilter, func(next string) {
+				a.LibrarySiteFilter = normalizeSiteFilter(next)
+				a.reloadLibraryItems()
+			})
+		})
 	}
 	stats := a.libraryStatistics
 	ui.Column(c).FillWidth().Padding(10, 16).Gap(8).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).Children(func() {
@@ -74,31 +80,58 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 			ui.Scroll(c).FillWidth().Height(220).Gap(4).Children(func() {
 				if OutlinePillButton(c, "全部作者", "清除UP主筛选").Clicked() {
 					a.LibraryCreatorMid = 0
+					a.LibraryAuthorKey = ""
 					a.LibrarySubFilter = ""
 					a.LibraryAuthorMenu = false
 					a.reloadLibraryItems()
 				}
-				owned := make(map[int64]bool)
+				ownedKeys := make(map[string]bool)
+				ownedMids := make(map[int64]bool)
 				for _, sub := range a.Subscriptions {
 					for _, account := range sub.Accounts {
-						id, _ := strconv.ParseInt(account.UID, 10, 64)
-						owned[id] = true
+						normSite := normalizeSiteIDUI(account.Site)
+						uid := strings.TrimSpace(account.UID)
+						if uid != "" {
+							ownedKeys[normSite+":"+uid] = true
+						}
+						if normSite == "bilibili" {
+							if id, err := strconv.ParseInt(uid, 10, 64); err == nil && id > 0 {
+								ownedMids[id] = true
+							}
+						}
 					}
 					if AccentOutlinePillButton(c, "订阅："+sub.Name, "媒体库订阅筛选："+sub.ID).Clicked() {
 						a.LibrarySubFilter = sub.ID
 						a.LibraryCreatorMid = 0
+						a.LibraryAuthorKey = ""
 						a.LibraryAuthorMenu = false
 						a.reloadLibraryItems()
 					}
 				}
 				for _, author := range stats.Authors {
-					if owned[author.Mid] {
+					aSite := normalizeSiteIDUI(author.Site)
+					aUID := strings.TrimSpace(author.UID)
+					if aUID == "" && author.Mid > 0 {
+						aUID = strconv.FormatInt(author.Mid, 10)
+					}
+					aKey := aSite + ":" + aUID
+					if ownedKeys[aKey] || (aSite == "bilibili" && ownedMids[author.Mid]) {
 						continue
 					}
+					btnLabel := fmt.Sprintf("按UP主筛选 %d", author.Mid)
+					if aSite == "douyin" || author.Mid <= 0 {
+						btnLabel = "按作者筛选 " + aKey
+					}
 					ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-						a.renderAvatar(c, author.Name, author.Mid, 28, false, "", nil, author.Face)
-						if OutlinePillButton(c, author.Name, fmt.Sprintf("按UP主筛选 %d", author.Mid)).Clicked() {
-							a.LibraryCreatorMid = author.Mid
+						a.renderAccountAvatar(c, aSite, author.Name, aUID, author.Mid, 28, false, "", nil, author.Face)
+						if OutlinePillButton(c, author.Name, btnLabel).Clicked() {
+							if aSite == "bilibili" && author.Mid > 0 {
+								a.LibraryCreatorMid = author.Mid
+								a.LibraryAuthorKey = ""
+							} else {
+								a.LibraryCreatorMid = 0
+								a.LibraryAuthorKey = aKey
+							}
 							a.LibrarySubFilter = ""
 							a.LibraryAuthorMenu = false
 							a.reloadLibraryItems()
@@ -196,7 +229,7 @@ func (a *App) renderLibraryTile(c *ui.Context, tile libraryTile, thumbSize float
 			}
 		}
 
-		// R12 / DEC-037: Only thumbnail, title, 1-line meta info, and a bottom-right "⋯" button.
+		// Only thumbnail, title, 1-line meta info (with 12px site mark), and a bottom-right "⋯" button (DEC-037).
 		ui.Row(c).FillWidth().AlignItems(ui.Start).Justify(ui.SpaceBetween).Gap(6).ClipX().Children(func() {
 			ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 				title := ui.ButtonBase(c).Label("打开媒体：" + tileKey).FillWidth().Justify(ui.Start).AlignItems(ui.Start)
@@ -206,7 +239,10 @@ func (a *App) renderLibraryTile(c *ui.Context, tile libraryTile, thumbSize float
 				if title.Clicked() {
 					a.openLibraryTile(tile)
 				}
-				ui.Text(c, authorLine).FontSize(12).SingleLine().TextColor(ColorTextMuted)
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(4).ClipX().Children(func() {
+					ui.Text(c, authorLine).FontSize(12).SingleLine().TextColor(ColorTextMuted)
+					renderSiteSmallBadgeWithDot(c, item.Site, "媒体库站点："+tileKey)
+				})
 			})
 			open := menuOpen
 			MoreMenuButton(c, "媒体更多："+tileKey, 28, &open, func(m *ui.Menu) {
@@ -226,7 +262,7 @@ func (a *App) renderLibraryTile(c *ui.Context, tile libraryTile, thumbSize float
 	})
 }
 
-// requestLibraryDelete opens the delete confirmation with its plan (C26, FR-LIB-003).
+// requestLibraryDelete opens the delete confirmation with its plan.
 func (a *App) requestLibraryDelete(item library.ItemMetadata) {
 	plan, err := a.backend.PlanDelete(item.ItemKey)
 	if err != nil {
@@ -244,6 +280,18 @@ func (a *App) requestLibraryDelete(item library.ItemMetadata) {
 }
 
 func (a *App) openLibraryTile(tile libraryTile) {
+	if len(tile.item.NotePages) > 0 {
+		pages := buildDouyinNoteRenderPages(nil, &tile.item)
+		selected := 0
+		for i, pg := range pages {
+			if pg.ImageRel == tile.file.Path || pg.VideoRel == tile.file.Path {
+				selected = i
+				break
+			}
+		}
+		a.openDouyinNoteViewer(tile.item.ItemKey, pages, selected)
+		return
+	}
 	if tile.video {
 		a.openPlayerFile(tile.item, tile.file.Path)
 		return
@@ -263,6 +311,16 @@ func (a *App) openLibraryTile(tile libraryTile) {
 
 // OpenLibraryItemDetail opens the local detail view for a cached item without making network requests.
 func (a *App) OpenLibraryItemDetail(item library.ItemMetadata) {
+	if normalizeSiteIDUI(item.Site) == "douyin" {
+		if a.CurrentRoute != RouteDouyinWork {
+			a.PreviousRoute = a.CurrentRoute
+		}
+		a.CurrentRoute = RouteDouyinWork
+		a.BannerError = ""
+		a.CurrentLibraryDetail = &item
+		a.CurrentDouyinWork = nil
+		return
+	}
 	if a.CurrentRoute != RouteVideo {
 		a.PreviousRoute = a.CurrentRoute
 	}
@@ -344,8 +402,14 @@ func (a *App) renderRecordingDetail(c *ui.Context, item library.ItemMetadata) {
 	}
 	a.renderPostCard(c, post)
 	room := item.RawID
-	if item.Live != nil && item.Live.RoomID > 0 {
-		room = strconv.FormatInt(item.Live.RoomID, 10)
+	if item.Live != nil {
+		if item.Live.RoomID > 0 {
+			room = strconv.FormatInt(item.Live.RoomID, 10)
+		} else if item.Live.WebRID != "" {
+			room = item.Live.WebRID
+		} else if item.Live.RoomIDStr != "" {
+			room = item.Live.RoomIDStr
+		}
 	}
 	meta := "直播间: " + room
 	if spec := formatLiveRecordingSpec(item.Live, ""); spec != "" {

@@ -1,0 +1,68 @@
+{
+  "status_code": 0,
+  "data": {
+    "data": [
+      {
+        "id": 7400000000000000009,
+        "id_str": "7400000000000000009",
+        "status": 2,
+        "title": "合成直播间测试标题",
+        "start_time": 1763000500,
+        "live_room_mode": 0,
+        "cover": {
+          "url_list": [
+            "https://p3-webcast.douyinpic.com/img/synthetic_live_cover.jpeg"
+          ]
+        },
+        "owner": {
+          "id_str": "100000000001",
+          "sec_uid": "MS4wLjABAAAA_SYNTHETIC_ANCHOR_01",
+          "nickname": "合成主播一号",
+          "short_id": 10008888,
+          "web_rid": "990011223344",
+          "avatar_thumb": {
+            "url_list": [
+              "https://p3-webcast.douyinpic.com/img/synthetic_anchor_avatar.jpeg"
+            ]
+          }
+        },
+        "stream_url": {
+          "flv_pull_url": {
+            "FULL_HD1": "https://pull-flv-f1.douyincdn.com/stage/stream_uhd.flv",
+            "HD1": "https://pull-flv-f1.douyincdn.com/stage/stream_hd.flv"
+          },
+          "hls_pull_url_map": {
+            "FULL_HD1": "https://pull-hls-f1.douyincdn.com/stage/stream_uhd.m3u8"
+          },
+          "live_core_sdk_data": {
+            "pull_data": {
+              "stream_data": "{\"data\":{\"ao\":{\"main\":{\"flv\":\"https://pull-flv-f1.douyincdn.com/stage/stream_ao.flv?only_audio=1\",\"hls\":\"\"}},\"origin\":{\"main\":{\"flv\":\"http://pull-flv-f1.douyincdn.com/stage/stream_origin.flv\",\"hls\":\"https://pull-hls-f1.douyincdn.com/stage/stream_origin.m3u8\",\"sdk_params\":\"{\\\"VCodec\\\":\\\"h265\\\"}\"},\"backup\":{\"flv\":\"https://pull-flv-f2.douyincdn.com/stage/stream_origin_bak.flv\"}},\"uhd\":{\"main\":{\"flv\":\"https://pull-flv-f1.douyincdn.com/stage/stream_uhd.flv\",\"sdk_params\":\"{\\\"VCodec\\\":\\\"h264\\\"}\"}}}}"
+            }
+          }
+        }
+      }
+    ],
+    "user": {
+      "id_str": "100000000001",
+      "sec_uid": "MS4wLjABAAAA_SYNTHETIC_ANCHOR_01",
+      "nickname": "合成主播一号",
+      "short_id": 10008888,
+      "avatar_thumb": {
+        "url_list": [
+          "https://p3-webcast.douyinpic.com/img/synthetic_anchor_avatar.jpeg"
+        ]
+      }
+    },
+    "room_status": 0,
+    "enter_mode": 0,
+    "web_rid": "990011223344",
+    "shark_decision_conf": "",
+    "partition_road_map": {
+      "sub_partition": {
+        "partition": {
+          "title": "知识分享"
+        }
+      }
+    }
+  }
+}

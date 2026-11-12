@@ -64,8 +64,8 @@ func TestBackendStampsAndRefusesNewerDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil || v != 1 {
-		t.Fatalf("library.db user_version = %d (%v), want 1", v, err)
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil || v != 2 {
+		t.Fatalf("library.db user_version = %d (%v), want 2", v, err)
 	}
 	if _, err := db.Exec(`PRAGMA user_version = 9`); err != nil {
 		t.Fatal(err)

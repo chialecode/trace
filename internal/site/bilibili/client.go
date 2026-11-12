@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/chialecode/trace/internal/credential"
+	"github.com/chialecode/trace/internal/site"
 )
 
 const (
@@ -170,7 +171,7 @@ func NewClient(opts ClientOptions) *Client {
 	}
 
 	apiTransport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: site.Proxy,
 		DialContext: (&net.Dialer{
 			Timeout:   15 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -180,7 +181,7 @@ func NewClient(opts ClientOptions) *Client {
 	}
 
 	mediaTransport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: site.Proxy,
 		DialContext: (&net.Dialer{
 			Timeout:   15 * time.Second,
 			KeepAlive: 30 * time.Second,

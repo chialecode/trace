@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/chialecode/trace/internal/appdirs"
+	"github.com/chialecode/trace/internal/sitecheck"
 	"github.com/chialecode/trace/internal/storage"
 )
 
@@ -207,8 +208,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 	if !readySnap.WindowOpen {
 		fail("ready.WindowOpen = false, want true")
 	}
-	// The program reports the version, commit and build time of
-	// VERSION.txt (W1).
+	// Verify reported version, commit, build time, and channel match VERSION.txt.
 	receipt.Version = readySnap.Version
 	if raw, err := os.ReadFile(filepath.Join(absPkg, "VERSION.txt")); err != nil {
 		fail("read VERSION.txt: %v", err)
@@ -232,7 +232,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 		fail("ready.StealFocusDetected = true")
 	}
 
-	// 4. Verify exclusive app.lock while primary instance is running (INV-14, C36)
+	// 4. Verify exclusive app.lock while primary instance is running
 	if lock, lockErr := appdirs.LockDataDir(readySnap.DataDir); lockErr == nil {
 		_ = lock.Release()
 		fail("LockDataDir succeeded while trace.exe was running (app.lock not held)")
@@ -240,7 +240,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 		receipt.DataLockExclusive = true
 	}
 
-	// 5. Launch second instance with argument BV1xx411c7mD and verify forwarding + untouched DataDir (C35, C36)
+	// 5. Launch second instance with argument BV1xx411c7mD and verify forwarding + untouched DataDir
 	secondLocalAppData := filepath.Join(sandbox, "second-localappdata")
 	secondEnv := filterEnv(childEnv, "LOCALAPPDATA")
 	secondEnv = append(secondEnv, "LOCALAPPDATA="+secondLocalAppData)
@@ -276,7 +276,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 		}
 	}
 
-	// 6. Close to tray and verify memory < 60 MiB & 0 WebView2 processes (DEC-030, INV-13, C35)
+	// 6. Close to tray and verify private working set stays under 60 MiB with zero WebView2 processes
 	if err := sendSmokeCommand(smokeCtrlDir, "close_to_tray"); err != nil {
 		fail("send close_to_tray: %v", err)
 	}
@@ -305,7 +305,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 		}
 	}
 
-	// 7. Restore window from tray (C35)
+	// 7. Restore window from tray
 	if err := sendSmokeCommand(smokeCtrlDir, "restore_window"); err != nil {
 		fail("send restore_window: %v", err)
 	}
@@ -337,7 +337,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 
 	receipt.StealFocusDetected = readySnap.StealFocusDetected || traySnap.StealFocusDetected || restoredSnap.StealFocusDetected
 
-	// 9. Verify data files, default cache path, lowercase naming, no stray folders, and no sentinel secrets (C36, C37)
+	// 9. Verify data files, default cache path, lowercase naming, no stray folders, and no leaked secrets or sentinels
 	expectedFiles := []string{"library.db", "updates.db", "mygo", "cache", "logs"}
 	for _, name := range expectedFiles {
 		if _, err := os.Stat(filepath.Join(readySnap.DataDir, name)); err != nil {
@@ -484,7 +484,18 @@ func verifyNoUppercaseTrace(root string) error {
 }
 
 func scanDirForSecrets(root string) error {
-	markers := []string{"SESSDATA=", "bili_jct=", "DedeUserID__ckMd5=", "SENTINEL_"}
+	extraMarkers := []string{
+		"SENTINEL_",
+		"UIFID=",
+		"UIFID_TEMP=",
+		"uifid=",
+		"ttwid=",
+		"odin_tt=",
+		"sid_tt=",
+		"uid_tt=",
+		"uid_tt_ss=",
+		"__ac_signature=",
+	}
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -494,7 +505,10 @@ func scanDirForSecrets(root string) error {
 			return nil
 		}
 		text := string(raw)
-		for _, m := range markers {
+		if findings := sitecheck.ScanTextForSecrets(text); len(findings) > 0 {
+			return fmt.Errorf("%s in %s", findings[0], filepath.Base(path))
+		}
+		for _, m := range extraMarkers {
 			if strings.Contains(text, m) {
 				return fmt.Errorf("found secret marker %q in %s", m, filepath.Base(path))
 			}

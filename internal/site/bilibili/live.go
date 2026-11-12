@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// MaxLiveBatchUIDs is the maximum number of UIDs queried per get_status_info_by_uids call (C34).
+// MaxLiveBatchUIDs is the maximum number of UIDs queried per get_status_info_by_uids call.
 const MaxLiveBatchUIDs = 50
 
 // LiveRoomInit holds canonical room information from /room/v1/Room/room_init.
@@ -51,7 +51,7 @@ type LivePlaySelection struct {
 	URLs        []string `json:"-"`
 }
 
-// LiveQualityFallbackName returns the canonical Chinese live quality label when g_qn_desc is absent (R4).
+// LiveQualityFallbackName returns the canonical Chinese live quality label when g_qn_desc is absent.
 func LiveQualityFallbackName(qn int) string {
 	switch qn {
 	case 10000:
@@ -72,7 +72,7 @@ func LiveQualityFallbackName(qn int) string {
 	}
 }
 
-// FormatLiveQualitySpec formats quality name (or qn fallback) and codec into "原画 · AVC" (R4).
+// FormatLiveQualitySpec formats quality name (or qn fallback) and codec into "原画 · AVC".
 func FormatLiveQualitySpec(qualityName string, quality int, codec string) string {
 	qName := strings.TrimSpace(qualityName)
 	if qName == "" && quality > 0 {
@@ -143,7 +143,7 @@ func (c *Client) RoomInit(ctx context.Context, roomOrShortID int64) (LiveRoomIni
 	}, nil
 }
 
-// LiveStatusByUIDs queries live broadcast status for a list of UIDs in batches of at most 50 UIDs (C34).
+// LiveStatusByUIDs queries live broadcast status for a list of UIDs in batches of at most 50 UIDs.
 func (c *Client) LiveStatusByUIDs(ctx context.Context, uids []int64) (map[int64]LiveUserStatus, error) {
 	if err := c.RequireAuth("/room/v1/Room/get_status_info_by_uids"); err != nil {
 		return nil, err
@@ -225,7 +225,8 @@ func (c *Client) LiveStatusByUIDs(ctx context.Context, uids []int64) (map[int64]
 }
 
 // LiveRoomPlayInfo fetches stream play info from /xlive/web-room/v2/index/getRoomPlayInfo
-// and selects the optimal stream (http_hls -> fmp4 -> codecOrder -> highest qn, official CDN before *.mcdn.*) (C34).
+// and selects the optimal stream (preferring http_hls + fmp4, falling back to http_stream + flv,
+// then highest qn and codecOrder, with official CDN prioritized and *.mcdn.* excluded).
 func (c *Client) LiveRoomPlayInfo(ctx context.Context, roomID int64, codecOrder []string) (LivePlaySelection, error) {
 	if err := c.RequireAuth("/xlive/web-room/v2/index/getRoomPlayInfo"); err != nil {
 		return LivePlaySelection{}, err
@@ -335,32 +336,31 @@ func (c *Client) LiveRoomPlayInfo(ctx context.Context, roomID int64, codecOrder 
 	var candidates []candidate
 	for _, st := range raw.PlayurlInfo.Playurl.Stream {
 		pName := strings.ToLower(strings.TrimSpace(st.ProtocolName))
-		if pName != "http_hls" {
-			continue
-		}
 		pPri := 0
 		switch pName {
 		case "http_hls":
 			pPri = 20
 		case "http_stream":
 			pPri = 10
+		default:
+			continue
 		}
 		for _, fm := range st.Format {
 			fName := strings.ToLower(strings.TrimSpace(fm.FormatName))
-			if fName != "fmp4" {
-				continue
-			}
 			fPri := 0
-			switch fName {
-			case "fmp4":
+			switch {
+			case pName == "http_hls" && fName == "fmp4":
 				fPri = 30
-			case "ts":
-				fPri = 20
-			case "flv":
+			case pName == "http_stream" && fName == "flv":
 				fPri = 10
+			default:
+				continue
 			}
 			for _, cd := range fm.Codec {
 				cName := strings.ToLower(strings.TrimSpace(cd.CodecName))
+				if fName == "flv" && cName != "avc" && cName != "hevc" {
+					continue
+				}
 				cPri := codecRank[cName]
 				var rawURLs []string
 				for _, ui := range cd.URLInfo {
@@ -399,7 +399,7 @@ func (c *Client) LiveRoomPlayInfo(ctx context.Context, roomID int64, codecOrder 
 		return LivePlaySelection{}, &SiteError{
 			Kind:     ErrKindUnavailable,
 			Endpoint: fullURL,
-			Message:  "这个直播间现在没有提供可录制的 HLS fMP4 流格式",
+			Message:  "这个直播间现在没有提供可录制的流格式",
 		}
 	}
 

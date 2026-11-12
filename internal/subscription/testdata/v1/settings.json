@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "cacheRoot": "",
+  "videoQuality": "best",
+  "codecOrder": [
+    "avc",
+    "av1",
+    "hevc"
+  ],
+  "audioQuality": "best",
+  "multiPart": "all",
+  "concurrency": 2,
+  "upgradeCheckOnOpen": true,
+  "danmaku": true,
+  "subtitles": true,
+  "aiSubtitles": true,
+  "scheduledCheck": false,
+  "checkIntervalMin": 60,
+  "liveCheckIntervalMin": 3,
+  "maxRecordings": 2,
+  "closeAction": "tray"
+}

@@ -1,0 +1,114 @@
+{
+  "status_code": 0,
+  "status_msg": "",
+  "aweme_detail": {
+    "aweme_id": "7300000000000000001",
+    "aweme_type": 0,
+    "desc": "合成多档位点播视频选流测试",
+    "create_time": 1763000200,
+    "duration": 15200,
+    "author": {
+      "uid": "100000000001",
+      "sec_uid": "MS4wLjABAAAA_SYNTHETIC_AUTHOR_01",
+      "short_id": "88001122",
+      "unique_id": "",
+      "nickname": "合成创作者一号",
+      "avatar_thumb": {
+        "url_list": [
+          "https://p3-pc.douyinpic.com/aweme/100x100/synthetic_avatar_01.jpeg"
+        ]
+      }
+    },
+    "statistics": {
+      "digg_count": 512,
+      "comment_count": 64,
+      "collect_count": 128,
+      "share_count": 16,
+      "play_count": 0
+    },
+    "status": {
+      "is_delete": false,
+      "private_status": 0
+    },
+    "video": {
+      "width": 1080,
+      "height": 1920,
+      "duration": 15200,
+      "origin_cover": {
+        "url_list": [
+          "https://p3-pc-sign.douyinpic.com/tos-cn-p-0015/synthetic_cover_origin.jpeg"
+        ]
+      },
+      "download_addr": {
+        "url_list": [
+          "https://www.douyin.com/aweme/v1/playwm/?video_id=synth_watermark_must_ignore"
+        ]
+      },
+      "bit_rate": [
+        {
+          "gear_name": "bytevc2_1080p",
+          "quality_type": 2,
+          "bit_rate": 4500000,
+          "is_bytevc1": 2,
+          "FPS": 60,
+          "play_addr": {
+            "width": 1080,
+            "height": 1920,
+            "data_size": 8500000,
+            "url_list": [
+              "https://v26-web.douyinvod.com/synthetic/bytevc2_excluded.mp4"
+            ]
+          }
+        },
+        {
+          "gear_name": "normal_1080_0",
+          "quality_type": 2,
+          "bit_rate": 3100000,
+          "is_bytevc1": 0,
+          "FPS": 30,
+          "play_addr": {
+            "width": 1080,
+            "height": 1920,
+            "data_size": 5800000,
+            "url_list": [
+              "https://www.douyin.com/aweme/v1/play/?video_id=synth_redirect_last",
+              "https://v3-dy-o-mc-cold.douyinvod.com/synthetic/1080p30_avc_cold.mp4",
+              "https://www.douyin.com/aweme/v1/playwm/?video_id=synth_wm_excluded",
+              "https://v26-web.douyinvod.com/synthetic/1080p30_avc_direct.mp4"
+            ]
+          }
+        },
+        {
+          "gear_name": "adapt_lowest_1080_1",
+          "quality_type": 2,
+          "bit_rate": 2400000,
+          "is_bytevc1": 1,
+          "FPS": 60,
+          "play_addr": {
+            "width": 1080,
+            "height": 1920,
+            "data_size": 4600000,
+            "url_list": [
+              "https://v26-web.douyinvod.com/synthetic/1080p60_hevc_direct.mp4"
+            ]
+          }
+        },
+        {
+          "gear_name": "normal_720_0",
+          "quality_type": 10,
+          "bit_rate": 1500000,
+          "is_bytevc1": 0,
+          "FPS": 30,
+          "play_addr": {
+            "width": 720,
+            "height": 1280,
+            "data_size": 2900000,
+            "url_list": [
+              "https://v26-web.douyinvod.com/synthetic/720p30_avc_direct.mp4"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

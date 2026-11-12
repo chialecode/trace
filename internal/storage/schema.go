@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Data structure versions (FR-UPD-004). Every data file TRACE keeps has a
@@ -42,11 +45,11 @@ type SchemaFile struct {
 // versions this build reads and writes.
 var DataSchemas = []SchemaFile{
 	{Name: "settings.json", Kind: SchemaJSON, Current: 1},
-	{Name: "ui-state.json", Kind: SchemaJSON, Current: 1},
+	{Name: "ui-state.json", Kind: SchemaJSON, Current: 2},
 	{Name: "history.json", Kind: SchemaJSON, Current: 1},
-	{Name: "subscriptions.json", Kind: SchemaJSON, Current: 1},
-	{Name: "library.db", Kind: SchemaSQLite, Current: 1},
-	{Name: "updates.db", Kind: SchemaSQLite, Current: 1},
+	{Name: "subscriptions.json", Kind: SchemaJSON, Current: 2},
+	{Name: "library.db", Kind: SchemaSQLite, Current: 2},
+	{Name: "updates.db", Kind: SchemaSQLite, Current: 2},
 }
 
 // SchemaFor returns the entry of DataSchemas for a file name.
@@ -150,12 +153,59 @@ func effectiveVersion(v int) int {
 	return v
 }
 
+var (
+	schemaHooksMu             sync.Mutex
+	afterBackupHook           func(fileName, backupPath string) error
+	beforeMigrationRenameHook func(targetPath, tmpPath string) error
+)
+
+// SetAfterBackupHookForTest installs a fault-injection callback invoked right
+// after GuardDataSchemas finishes creating a .premigrate-<v> backup.
+func SetAfterBackupHookForTest(fn func(fileName, backupPath string) error) func() {
+	schemaHooksMu.Lock()
+	prev := afterBackupHook
+	afterBackupHook = fn
+	schemaHooksMu.Unlock()
+	return func() {
+		schemaHooksMu.Lock()
+		afterBackupHook = prev
+		schemaHooksMu.Unlock()
+	}
+}
+
+// SetBeforeMigrationRenameHookForTest installs a fault-injection callback
+// invoked after a migrated JSON temp file is synced and closed, right before
+// os.Rename replaces the target file.
+func SetBeforeMigrationRenameHookForTest(fn func(targetPath, tmpPath string) error) func() {
+	schemaHooksMu.Lock()
+	prev := beforeMigrationRenameHook
+	beforeMigrationRenameHook = fn
+	schemaHooksMu.Unlock()
+	return func() {
+		schemaHooksMu.Lock()
+		beforeMigrationRenameHook = prev
+		schemaHooksMu.Unlock()
+	}
+}
+
 // GuardDataSchemas checks every file of schemas in dataDir before TRACE
 // opens any of them: a file newer than this build knows stops the start
 // with a NewerDataError and nothing is written; a file older than this
 // build writes is copied to <file>.premigrate-<old> first. It returns the
 // backups it made.
 func GuardDataSchemas(dataDir string, schemas []SchemaFile) ([]string, error) {
+	// First verify no file is newer than supported so nothing is written on NewerDataError.
+	for _, sf := range schemas {
+		path := filepath.Join(dataDir, sf.Name)
+		v, exists, err := ReadSchemaVersion(path, sf.Kind)
+		if err != nil {
+			return nil, err
+		}
+		if exists && v > sf.Current {
+			return nil, &NewerDataError{File: sf.Name, Found: v, Supported: sf.Current}
+		}
+	}
+
 	var backups []string
 	for _, sf := range schemas {
 		path := filepath.Join(dataDir, sf.Name)
@@ -175,15 +225,27 @@ func GuardDataSchemas(dataDir string, schemas []SchemaFile) ([]string, error) {
 				return backups, fmt.Errorf("storage: back up %s before migration: %w", sf.Name, err)
 			}
 			backups = append(backups, backup)
+			schemaHooksMu.Lock()
+			hook := afterBackupHook
+			schemaHooksMu.Unlock()
+			if hook != nil {
+				if err := hook(sf.Name, backup); err != nil {
+					return backups, err
+				}
+			}
 		}
 	}
 	return backups, nil
 }
 
 // BackupBeforeMigration copies path to <path>.premigrate-<fromVersion>,
-// with the -wal journal of a database beside it, and removes the earlier
-// premigrate copies of the same file, so that only the latest remains.
+// with any -wal and -shm sidecar files of a SQLite database beside it, and
+// removes the earlier premigrate copies of the same file so that only the
+// latest remains.
 func BackupBeforeMigration(path string, fromVersion int) (string, error) {
+	if info, err := os.Stat(backupTargetCheck(path, fromVersion)); err == nil && info.IsDir() {
+		return "", fmt.Errorf("storage: backup destination %s is a directory", backupTargetCheck(path, fromVersion))
+	}
 	backup := fmt.Sprintf("%s.premigrate-%d", path, fromVersion)
 	tmp := backup + ".tmp"
 	if err := copyFileSync(path, tmp); err != nil {
@@ -194,20 +256,97 @@ func BackupBeforeMigration(path string, fromVersion int) (string, error) {
 		_ = os.Remove(tmp)
 		return "", err
 	}
-	_ = os.Remove(backup + "-wal")
-	if _, err := os.Stat(path + "-wal"); err == nil {
-		if err := copyFileSync(path+"-wal", backup+"-wal"); err != nil {
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sideSrc := path + suffix
+		sideDst := backup + suffix
+		sideInfo, statErr := os.Stat(sideSrc)
+		if errors.Is(statErr, os.ErrNotExist) {
+			_ = os.Remove(sideDst)
+			continue
+		}
+		if statErr != nil {
+			return "", statErr
+		}
+		if sideInfo.IsDir() {
+			return "", fmt.Errorf("storage: sidecar %s is a directory", sideSrc)
+		}
+		sideTmp := sideDst + ".tmp"
+		if err := copyFileSync(sideSrc, sideTmp); err != nil {
+			_ = os.Remove(sideTmp)
+			return "", err
+		}
+		if err := os.Rename(sideTmp, sideDst); err != nil {
+			_ = os.Remove(sideTmp)
 			return "", err
 		}
 	}
 	olds, _ := filepath.Glob(path + ".premigrate-*")
 	for _, old := range olds {
-		if old == backup || old == backup+"-wal" {
+		if old == backup || old == backup+"-wal" || old == backup+"-shm" {
 			continue
 		}
 		_ = os.Remove(old)
 	}
 	return backup, nil
+}
+
+func backupTargetCheck(path string, fromVersion int) string {
+	return fmt.Sprintf("%s.premigrate-%d", path, fromVersion)
+}
+
+// WriteMigratedJSONAtomic writes a migrated JSON file to a sibling temp file,
+// fsyncs and closes it, runs any registered pre-rename fault hook, and
+// atomically renames it over path.
+func WriteMigratedJSONAtomic(path string, v any, perm os.FileMode) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("storage: marshal json for %s: %w", path, err)
+	}
+	data = append(data, '\n')
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("storage: mkdir %s: %w", dir, err)
+	}
+
+	var rnd [6]byte
+	_, _ = rand.Read(rnd[:])
+	tmpPath := fmt.Sprintf("%s.tmp-%d-%s", path, os.Getpid(), hex.EncodeToString(rnd[:]))
+
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return fmt.Errorf("storage: create temp file %s: %w", tmpPath, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("storage: write temp file %s: %w", tmpPath, err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("storage: sync temp file %s: %w", tmpPath, err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("storage: close temp file %s: %w", tmpPath, err)
+	}
+
+	schemaHooksMu.Lock()
+	hook := beforeMigrationRenameHook
+	schemaHooksMu.Unlock()
+	if hook != nil {
+		if err := hook(path, tmpPath); err != nil {
+			_ = os.Remove(tmpPath)
+			return err
+		}
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("storage: rename %s -> %s: %w", tmpPath, path, err)
+	}
+	return nil
 }
 
 func copyFileSync(src, dst string) error {
@@ -246,8 +385,12 @@ func CheckSQLiteSchema(db *sql.DB, name string, current int) (int, error) {
 }
 
 // StampSQLiteSchema records the structure version once the migrations of a
-// database are done.
+// database are done and checkpoints WAL passively so the main database header
+// immediately reflects the new user_version.
 func StampSQLiteSchema(db *sql.DB, version int) error {
-	_, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, version))
-	return err
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, version)); err != nil {
+		return err
+	}
+	_, _ = db.Exec(`PRAGMA wal_checkpoint(PASSIVE)`)
+	return nil
 }

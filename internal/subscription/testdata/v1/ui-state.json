@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "window": {
+    "width": 1280,
+    "height": 820,
+    "x": 80,
+    "y": 60,
+    "maximized": false
+  },
+  "lastRoute": "/",
+  "anchor": {
+    "order": "newest",
+    "key": "bilibili:video:BV17x411w7KC",
+    "pubTs": 1700000200,
+    "offsetPx": 0
+  },
+  "homeSeen": {
+    "sub:sub0001alpha0001alpha0001alpha01": 1700000100,
+    "mid:2002": 1700000200
+  },
+  "feedFilter": {
+    "site": "bilibili",
+    "kind": "all",
+    "cachedOnly": false,
+    "subId": "",
+    "mid": 0
+  },
+  "player": {
+    "volume": 0.75,
+    "muted": false,
+    "danmakuVisible": true,
+    "danmakuOpacity": 0.8,
+    "danmakuArea": 0.5,
+    "danmakuDensity": "medium",
+    "subtitleLang": "zh-CN"
+  }
+}

@@ -24,11 +24,12 @@
 | --- | --- | --- |
 | `TRACE_DATA_DIR=tmp/dev-data mygo dev` | 开发模式：Go 改动自动重编译并重启原生窗口应用 | 已实测：冷编译 `2.9s`、增量重编译 `0.98s`（NFR-DEV-001，满足 10 秒以内目标） |
 | `go run ./tools/check` | 全部质量门禁（见第 3 节），任一失败就以非零退出 | 已实现并实测通过；最新范围与用时见[阶段报告](../delivery/stage-report.md) |
-| `go run ./tools/package [-install-only]` | 构建开发版：按[版本号](#versions)算出 `<下一个正式版>-dev.<UTC 时间>`，临时把 `mygo.json` 换成开发版配置（`trace-dev` 身份、开发版图标、发布者、中文目录，不带更新），经 `MYGO_LDFLAGS` 注入版本、通道、提交与构建时间，运行 `mygo build -platform windows/amd64`；先在 `dist/.staging-<时间>/` 生成安装包 `trace-dev-setup-<版本>-amd64.exe`、解包的 `trace.exe`、`THIRD-PARTY-NOTICES.txt`、`VERSION.txt`、`SHA256SUMS.txt` 并校验，再替换 `dist/trace-dev/` 中登记的文件。最后一步把它[安装到本机](#dev-install)；`-install-only` 只安装 `dist/trace-dev/` 里现有的包。许可文件逐字收录 Go 模块和标准库的 LICENSE/NOTICE；精确版本的官方补充见下，其他缺许可模块会停止打包 | 已实现并实测通过；最新产物与安装结果见[阶段报告](../delivery/stage-report.md) |
+| `go run ./tools/package [-install \| -install-only]` | 构建开发版：按[版本号](#versions)算出 `<下一个正式版>-dev.<UTC 时间>`，临时把 `mygo.json` 换成开发版配置（`trace-dev` 身份、开发版图标、发布者、中文目录，不带更新），经 `MYGO_LDFLAGS` 注入版本、通道、提交与构建时间，运行 `mygo build -platform windows/amd64`；先在 `dist/.staging-<时间>/` 生成安装包 `trace-dev-setup-<版本>-amd64.exe`、解包的 `trace.exe`、`THIRD-PARTY-NOTICES.txt`、`VERSION.txt`、`SHA256SUMS.txt` 并校验，再替换 `dist/trace-dev/` 中登记的文件。只打包，不动本机开发版；`-install` 打包后再[安装到本机](#dev-install)，`-install-only` 只安装 `dist/trace-dev/` 里现有的包。许可文件逐字收录 Go 模块和标准库的 LICENSE/NOTICE；精确版本的官方补充见下，其他缺许可模块会停止打包 | 已实现并实测通过；最新产物与安装结果见[阶段报告](../delivery/stage-report.md) |
 | `go run ./tools/release [-allow-dirty] [-offline] [-plan] [-publish]` | [发布正式版](#release)：检查、构建、签名、ptest 升级演练，产物放进 `dist/trace/` | 已实现；`-allow-dirty -offline` 演练实测通过，没有发布过 |
-| `go run ./tools/icons` | 重画 `assets/icon.png`（正式版：蓝底白字 “T.”）与 `assets/icon-dev.png`（开发版：深灰底加琥珀色 “DEV” 角标），1024×1024 | 已实现；图标已入库，只在改图标时运行 |
+| `go run ./tools/icons` | 重画 `assets/icon.png`（正式版：深灰底 `#3c4043` 白字 “T”，DEC-046 去掉了点）与 `assets/icon-dev.png`（开发版：同一图标加琥珀色 “DEV” 角标）；两个通道底色、字母高度（250–780）与笔画（110）相同，只差角标（2026-11-14 用户要求），1024×1024 | 已实现；图标已入库，只在改图标时运行 |
 | `go run ./tools/smoke -pkg dist/trace-dev -out artifacts/smoke` | 包冒烟：在临时的 `LOCALAPPDATA`、`APPDATA`、`USERPROFILE`、“文档”与 `TEMP`/`TMP` 目录下，以[安静模式](#quiet-tests)启动 `trace.exe`，检查进程存活、程序报告的版本、提交与构建时间与 `VERSION.txt` 一致、无 `msedgewebview2.exe` 子进程、`library.db`、`updates.db` 与 `mygo/` 建在数据目录里、临时 `APPDATA` 与用户主目录下没有新文件夹、单实例与数据目录锁生效、托盘关闭与重建正常、日志无凭证；`HTTP(S)_PROXY` 指向本机关闭的端口，保证不访问真实站点 | 已实现并实测通过，`quietMode=hidden`、`webview2=0`；最新内存与用时见[阶段报告](../delivery/stage-report.md) |
-| `go run ./tools/uishots -out artifacts/uishots` | 界面截图与断言：用 `mygo/ui` 的 `ui.NewTester` 在 1280、1000、720 三档宽度下渲染全部必测页面与状态，直接将 `tt.Image()` 编码为 PNG 截图并写出结构化布局/无障碍断言回执 `assertions.json` | 当前 25 个场景、75 张 PNG，含单订阅主页、设置“缓存规则”、“设置 › 关于”（正式版，可更新）、更新已就绪的提示、绿色强调色预览（Q-011）、本机视频/动态/录像详情、播放选项与音量面板；最新断言结果见[阶段报告](../delivery/stage-report.md) |
+| `go run ./tools/uishots -out artifacts/uishots` | 界面截图与断言：用 `mygo/ui` 的 `ui.NewTester` 在 1280、1000、720 三档宽度下渲染全部必测页面与状态，直接将 `tt.Image()` 编码为 PNG 截图并写出结构化布局/无障碍断言回执 `assertions.json` | 当前 33 个场景、99 张 PNG，含单订阅主页、设置“缓存规则”、“设置 › 关于”（正式版，可更新）、更新已就绪的提示、绿色强调色预览（Q-011）、本机视频/动态/录像详情、播放选项与音量面板，以及抖音用户页、视频/本机详情、图文与配乐条、抖音登录分段、多站点账号与退避设置、多站点订阅账号列表和六处站点小字断言；最新断言结果见[阶段报告](../delivery/stage-report.md) |
+| `go run ./tools/actcheck -act <act006\|act007\|act010\|act011\|act012\|act014>` | 真实站点有界检查：读取 `.local/site-check/` 的检查对象与持久化账本（发出前超额即拒），在 USER-ACTIONS 写明的额度内串行执行，遇挑战、限流或未登录立即停止，输出脱敏回执 `artifacts/site-check/<act>.json` | 已实现；合成门禁测试在 `tools/actcheck` 内，真实请求只在用户授权对应 ACT 项且账本未满时运行 |
 
 `reedsolomon v1.0.0` 模块归档缺少 LICENSE；官方下一提交只增加 MIT LICENSE、源码未变。其固定来源、SHA-256 与精确版本补充保存在 [tools/internal/build/licenses/README.md](../../tools/internal/build/licenses/README.md)，由打包工具嵌入通知，升级到自带许可的模块后移除；打包不依赖在线查许可。
 
@@ -37,14 +38,14 @@
 <a id="versions"></a>
 ### 2.1 版本号
 
-- **正式版**：`0.1.x`。下一个号是最高的 `v0.1.*` 标签加一，还没有标签时是 `0.1.1`（M1 的开发包都标着 `0.1.0`）。`tools/release` 用 `git ls-remote --tags` 与 `gh release list` 核对，标签与已发布的 Release 不一致时停下说明；`-offline` 只看本机标签。`mygo.json` 的 `version` 只表示版本线 `0.1.0`，不为每次发布改动；升到 `0.2` 或 `1.0` 由用户决定。
+- **正式版**：`0.1.x`。下一个号是最高的 `v0.1.*` 标签加一，还没有标签时是 `0.1.1`（第一次发布前的开发包都标着 `0.1.0`）。`tools/release` 用 `git ls-remote --tags` 与 `gh release list` 核对，标签与已发布的 Release 不一致时停下说明；`-offline` 只看本机标签。`mygo.json` 的 `version` 只表示版本线 `0.1.0`，不为每次发布改动；升到 `0.2` 或 `1.0` 由用户决定。
 - **开发版**：`<下一个正式版号>-dev.<UTC 年月日时分>`，例如 `0.1.1-dev.202611091530`；只看本机已有的标签（`git fetch --tags` 后才知道新发布），不访问 GitHub。开发版与正式版互不比较、互不更新。
 - **写进程序**：版本、通道、提交短哈希（工作区有改动时加 `-dirty`）与 UTC 构建时间由 `tools/internal/build` 算出，经 `MYGO_LDFLAGS` 注入 `internal/appdirs`，并写进构建时的 `mygo.json` 副本（MyGo 用它写文件属性、安装包名与卸载项的 `DisplayVersion`）。`go run`、测试等没有注入时为 `0.0.0-dev`。“设置 › 关于”、诊断信息、日志开头与 `VERSION.txt` 写同样的字段。
 
 <a id="dev-install"></a>
 ### 2.2 开发版自动安装到本机
 
-`go run ./tools/package` 打包并校验后，把开发版安装到本机（用户要求的行为，只在这个命令里，不在 `go test` 与 `tools/check` 里）：
+**什么时候装**（2026-11-13 用户要求、11-14 纠正）：每次需要用户人工检查时——B 交付整个阶段、A 审查修复或返工后、按用户反馈修复后请用户复查——交接的 Agent 先执行 `go run ./tools/package -install`，让用户检查时用的就是要检查的版本，装好的版本写进交接说明与报告；不让用户自己打包或安装。某个工作包或小功能做完、只为自动验证的 `go run ./tools/package` 都不装。安装只在这个命令里，不在 `go test` 与 `tools/check` 里：
 
 1. `TRACE_DEV_AUTO_INSTALL=0` 或 `CI=true` 时跳过并说明。
 2. 读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.trace-dev` 的 `InstallLocation` 与 `DisplayVersion`；没装就跳过（第一次请手动运行安装包）。只碰开发版，不读写正式版与 ptest 的安装。
@@ -81,9 +82,9 @@
 | 检查 | 内容 |
 | --- | --- |
 | Go 格式与静态检查 | `gofmt -l` 输出为空；`go vet ./...` |
-| Go 测试 | `go test ./...`：协议夹具与固定向量、选流、分段下载与重试、合并与校验、索引重建、安全删除、信息流分页、媒体路径白名单、凭证与哨兵隔离、订阅与检查更新、退避与额度、关注导入、登录续期、弹幕与字幕、直播录制与转换、安装与数据位置、托盘与单实例、原生界面 `ui.NewTester` 测试、文档检查反例 |
-| 依赖方向 | `go list -deps`：`internal/...` 与 `tools/...` 中只有 `internal/shell`、`internal/ui`、`internal/player`、`internal/locales`（MyGo 自带字符串与安装界面的中文目录）、`tools/uishots` 依赖 `github.com/egoist/mygo/...`（INV-05，`internal/service`、`internal/update` 及所有后端包零 MyGo 依赖），`internal/site/bilibili` 不依赖 `storage`、`library`、`download`、`subscription`、`live`、`service`、`ui` |
-| 文档与公开内容 | `go run ./tools/checkdocs`：相对链接与锚点存在；没有本机绝对路径、Cookie 或令牌样式的文本，也没有本机参考索引里登记的项目名（运行时读取索引，名单不进仓库） |
+| Go 测试 | `go test ./...`：协议夹具与固定向量（含抖音 SM3/`a_bogus`/`x-secsdk-web-signature`）、选流、分段下载与重试、合并与单文件 MP4 `moov` 前置校验、数据结构版本迁移与 `.premigrate-1` 备份、索引重建、安全删除、信息流分页、媒体路径白名单、多站点凭证与哨兵隔离、混合站点订阅与检查更新、按站点退避与每小时额度、关注导入、登录续期、弹幕与字幕、直播 HLS fMP4 与 HTTP-FLV（AVC/HEVC `CodecID=12`/Enhanced FLV `hvc1`）录制转换、安装与数据位置、托盘与单实例、原生界面 `ui.NewTester` 测试、真实检查器账本门禁与文档检查反例 |
+| 依赖方向 | `go list -deps`：`internal/...` 与 `tools/...` 中只有 `internal/shell`、`internal/ui`、`internal/player`、`internal/locales`（MyGo 自带字符串与安装界面的中文目录）、`tools/uishots` 依赖 `github.com/egoist/mygo/...`（INV-05）；`internal/site` 只用 Go 标准库（零 `internal/...` 与第三方依赖）；`internal/site/bilibili` 与 `internal/site/douyin`（含子包）不依赖 `storage`、`library`、`download`、`subscription`、`live`、`service`、`ui`，且两个站点包互不引用；`internal/site/douyin/sign` 不依赖 `internal/credential` 与 `net/http`；`download`、`live`、`subscription`、`library`、`storage`、`settings`、`uistate` 不依赖 `internal/site/douyin`；直接引用 `internal/site/bilibili` 的内部包名单锁定（`download`、`library`、`live`、`service`、`subscription`、`ui`），`storage`、`settings`、`uistate` 零 `site/bilibili` 依赖，不再新增引用者；`internal/ui` 不直接引用 `internal/site/douyin`（及 `sign`） |
+| 文档与公开内容 | `go run ./tools/checkdocs`：相对链接与锚点存在；没有本机绝对路径、哔哩哔哩/抖音 Cookie 或签名参数文本（含 `sessionid=`、`sessionid_ss=`、`sid_guard=`、`msToken=`、带 `a_bogus=` 或 `x-signature` 的地址），也没有本机参考索引里登记的项目名（运行时读取索引，名单不进仓库） |
 | 空白 | `git diff --check HEAD`（只看已跟踪的文件：新文件先 `git add` 再跑门禁） |
 
 只运行能证明风险边界的检查；不得删除、跳过或削弱有效断言来通过门禁。
@@ -129,7 +130,7 @@
 
 GitHub 上 main 的规则集：只能经 PR 写入，禁止强推和删除，保持线性历史，只允许 squash 合并，所有讨论必须解决，必需检查为 `repository-quality`；Actions 只允许固定 SHA 的 `actions/checkout`，token 只读，来自 fork 的 PR 运行 workflow 前须维护者批准（所有外部贡献者）。为防止垃圾内容，外部只开放 Discussions：关闭 Issues、Wiki 和 Projects，PR 仅协作者可创建；安全问题走私密漏洞报告。远端设置以 GitHub 实际回读为准。
 
-CI 文件 `.github/workflows/ci.yml` 由 M1 建立，job 名必须是 `repository-quality`，在 Ubuntu 上运行文档检查与 `go vet`/`go test ./internal/... ./tools/...`；Go 用 runner 预装版本或 `GOTOOLCHAIN` 自动下载，不引入未许可的 action。CI 不替代本地的 Windows 构建与界面检查：Linux 上 DPAPI 与 Media Foundation 换成非 Windows 桩或合成后端（`internal/credential/dpapi_other.go`、`internal/player/mf_other.go`），依赖 Windows 文件共享锁的测试段落跳过（`internal/library/lock_other_test.go`）；没有显示器时，托盘测试里打开真实隐藏窗口的段落跳过（`internal/shell/shell_test.go`，Windows 本机照常运行）。本机没有 cgo 工具链，`go test -race` 无法运行，记为 not-run。本机只完成 Linux `go vet` 与测试包交叉编译，未运行真实 Ubuntu CI；交叉编译的退出成功不等于 Linux 测试通过。
+CI 文件 `.github/workflows/ci.yml` 的 job 名必须是 `repository-quality`，在 Ubuntu 上运行文档检查与 `go vet`/`go test ./internal/... ./tools/...`；Go 用 runner 预装版本或 `GOTOOLCHAIN` 自动下载，不引入未许可的 action。CI 不替代本地的 Windows 构建与界面检查：Linux 上 DPAPI 与 Media Foundation 换成非 Windows 桩或合成后端（`internal/credential/dpapi_other.go`、`internal/player/mf_other.go`），依赖 Windows 文件共享锁的测试段落跳过（`internal/library/lock_other_test.go`）；没有显示器时，托盘测试里打开真实隐藏窗口的段落跳过（`internal/shell/shell_test.go`，Windows 本机照常运行）。本机没有 cgo 工具链，`go test -race` 无法运行，记为 not-run。本机只完成 Linux `go vet` 与测试包交叉编译，未运行真实 Ubuntu CI；交叉编译的退出成功不等于 Linux 测试通过。
 
 <a id="release-workflow"></a>
 ### 4.2 每周发布（`release.yml`）
@@ -152,7 +153,7 @@ Action 一律固定完整 SHA（`actions/checkout` v7.0.1、`actions/upload-arti
 | 位置 | 内容与去留 |
 | --- | --- |
 | `build/`、`tmp/` | 构建缓存与开发数据，随时可删，由构建重建 |
-| `dist/<通道>/`（`dist/trace-dev/`、`dist/trace/`） | 每个通道只有最新一份（DEC-025、DEC-029）。`dist/trace-dev/`（`tools/package`）：安装包 `trace-dev-setup-<版本>-amd64.exe`，以及解包的 `trace.exe`（冒烟用）、`THIRD-PARTY-NOTICES.txt`、`VERSION.txt`、`SHA256SUMS.txt`。`dist/trace/`（`tools/release`）：Release 上传的全部文件——安装包 `trace-setup-<版本>-amd64.exe`、更新包与清单、差分包、`install.ps1`、`VERSION.txt`、`THIRD-PARTY-NOTICES.txt`，以 `SHA256SUMS` 登记。工具先在 `dist/.staging-<时间>/`（发布为 `dist/.release-*`、演练为 `dist/.rehearsal-*`，用完删除）生成并校验，再替换上一份登记的文件，目录里其他文件不动。数据不在包旁（DEC-029），替换包不会碰到用户数据。安装包由 MyGo 用 NSIS（`v3.13`，见第 1 节）生成：按用户安装到 `%LOCALAPPDATA%\Programs\<目录名>`、开始菜单快捷方式、中文安装界面、可在“设置 > 应用”卸载；卸载只删安装目录。旧的带日期的包目录（`dist/trace-<版本>-windows-x64-<日期>[-序号]/`）里可能有用户数据，工具不删，按 USER-ACTIONS 的[本机文件](../../USER-ACTIONS.md#local-files)处理 |
+| `dist/<通道>/`（`dist/trace-dev/`、`dist/trace/`） | 每个通道只有最新一份（DEC-025、DEC-029）。`dist/trace-dev/`（`tools/package`）：安装包 `trace-dev-setup-<版本>-amd64.exe`，以及解包的 `trace.exe`（冒烟用）、`THIRD-PARTY-NOTICES.txt`、`VERSION.txt`、`SHA256SUMS.txt`。`dist/trace/`（`tools/release`）：Release 上传的全部文件——安装包 `trace-setup-<版本>-amd64.exe`、更新包与清单、差分包、`install.ps1`、`VERSION.txt`、`THIRD-PARTY-NOTICES.txt`，以 `SHA256SUMS` 登记。工具先在 `dist/.staging-<时间>/`（发布为 `dist/.release-*`、演练为 `dist/.rehearsal-*`，用完删除）生成并校验，再替换上一份登记的文件，目录里其他文件不动。数据不在包旁（DEC-029），替换包不会碰到用户数据。安装包由 MyGo 用 NSIS（`v3.13`，见第 1 节）生成：各通道的 `windows.installerInclude`（`assets/installer/<通道>.nsh` + `shortcuts.nsh`，由 `ChannelConfig` 设置）按 FR-STORE-001 处理快捷方式；按用户安装到 `%LOCALAPPDATA%\Programs\<目录名>`、开始菜单快捷方式、中文安装界面、可在“设置 > 应用”卸载；卸载只删安装目录。旧的带日期的包目录（`dist/trace-<版本>-windows-x64-<日期>[-序号]/`）里可能有用户数据，工具不删，按 USER-ACTIONS 的[本机文件](../../USER-ACTIONS.md#local-files)处理 |
 | `artifacts/<类别>/` | 一次性脚本、截图、日志和测量结果，每类只留最近一次（DEC-025）：类别为 `smoke`、`uishots`、`package`（`install-dev.json`）、`release`（`release.json`、`rehearsal.json`、`notes.md`）、`site-check`、`review`；写新一次前，工具只清空该类别目录里的内容（确认路径在 `artifacts/<类别>/` 内、不是链接，不跨目录通配）。阶段报告引用的证据就是这一份 |
 | `.local/site-secrets/`、`.local/site-check/` | 本机 Cookie 与真实检查记录；不删，不入库 |
 

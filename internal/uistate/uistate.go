@@ -79,10 +79,13 @@ type PlayerState struct {
 	SubtitleLang   string  `json:"subtitleLang"`
 }
 
+// CurrentSchemaVersion is the schema version written to ui-state.json.
+const CurrentSchemaVersion = 2
+
 // Default returns the default UI state.
 func Default() State {
 	return State{
-		Version: 1,
+		Version: CurrentSchemaVersion,
 		Window: WindowState{
 			Width:     1280,
 			Height:    820,
@@ -93,7 +96,7 @@ func Default() State {
 		LastRoute: "/home",
 		FeedFilter: FeedFilter{
 			Kind: "all",
-			Site: "bilibili",
+			Site: "all",
 		},
 		Anchor: FeedAnchor{
 			Order: "newest",
@@ -112,8 +115,8 @@ func Default() State {
 
 // Normalize clamps UI state fields to valid ranges.
 func Normalize(st State) State {
-	if st.Version <= 0 {
-		st.Version = 1
+	if st.Version < CurrentSchemaVersion {
+		st.Version = CurrentSchemaVersion
 	}
 	if st.Window.Width < 720 {
 		st.Window.Width = 1280
@@ -129,10 +132,13 @@ func Normalize(st State) State {
 	default:
 		st.FeedFilter.Kind = "all"
 	}
-	if strings.TrimSpace(st.FeedFilter.Site) == "" {
-		st.FeedFilter.Site = "bilibili"
+	switch strings.ToLower(strings.TrimSpace(st.FeedFilter.Site)) {
+	case "all", "bilibili", "douyin":
+		st.FeedFilter.Site = strings.ToLower(strings.TrimSpace(st.FeedFilter.Site))
+	default:
+		st.FeedFilter.Site = "all"
 	}
-	// DEC-037 / R10: Home feed is always newest-first; legacy "oldest" is normalized to "newest" while preserving Anchor Key/PubTs/OffsetPx.
+	// DEC-037: Home feed is always newest-first; legacy "oldest" is normalized to "newest" while preserving Anchor Key/PubTs/OffsetPx.
 	st.Anchor.Order = "newest"
 	if len(st.HomeSeen) > 0 {
 		cleanSeen := make(map[string]int64, len(st.HomeSeen))
@@ -196,6 +202,8 @@ func Open(path string) (*Store, bool, string, error) {
 	}
 
 	loaded := Default()
+	loaded.Version = 0
+	loaded.FeedFilter.Site = ""
 	if err := json.Unmarshal(raw, &loaded); err != nil {
 		backup, bErr := storage.BackupCorruptFile(path)
 		if bErr != nil {
@@ -203,6 +211,26 @@ func Open(path string) (*Store, bool, string, error) {
 		}
 		_ = storage.WriteJSONAtomic(path, def, 0o600)
 		return s, true, backup, nil
+	}
+	if loaded.Version > CurrentSchemaVersion {
+		return nil, false, "", &storage.NewerDataError{
+			File:      "ui-state.json",
+			Found:     loaded.Version,
+			Supported: CurrentSchemaVersion,
+		}
+	}
+	if loaded.Version < CurrentSchemaVersion {
+		site := strings.ToLower(strings.TrimSpace(loaded.FeedFilter.Site))
+		if site == "" || site == "bilibili" {
+			loaded.FeedFilter.Site = "all"
+		}
+		loaded.Version = CurrentSchemaVersion
+		norm := Normalize(loaded)
+		if err := storage.WriteMigratedJSONAtomic(path, norm, 0o600); err != nil {
+			return nil, false, "", err
+		}
+		s.current = norm
+		return s, false, "", nil
 	}
 
 	s.current = Normalize(loaded)

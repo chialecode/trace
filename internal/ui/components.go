@@ -18,7 +18,8 @@ type PostImage struct {
 	RelPath string
 	Width   int
 	Height  int
-	Live    bool // a live photo (实况): the still of a short motion clip
+	Live    bool   // a live photo (实况): the still of a short motion clip
+	LiveURL string // online motion clip of a live photo not cached yet
 }
 
 // PostVideo represents a video card embedded in a PostCard.
@@ -44,6 +45,7 @@ type PostCardData struct {
 	Kind          string // "video", "dynamic", "live"
 	RawID         string
 	Mid           int64
+	AuthorUID     string
 	AuthorName    string
 	AuthorFace    string
 	PubTs         int64
@@ -57,6 +59,7 @@ type PostCardData struct {
 	DotStatus     string
 	DotLabel      string
 	Images        []PostImage
+	NotePages     []douyinNoteRenderPage
 	Video         *PostVideo
 	Origin        *PostCardData
 	DynItem       *bilibili.DynamicItem
@@ -277,17 +280,15 @@ func (a *App) renderPostImageGrid(c *ui.Context, post PostCardData) {
 	}
 	var urls []string
 	var rels []string
+	var liveURLs []string
 	for _, img := range post.Images {
 		urls = append(urls, img.URL)
 		rels = append(rels, img.RelPath)
+		liveURLs = append(liveURLs, img.LiveURL)
 	}
 
 	openAt := func(idx int) {
-		if post.ItemKey != "" {
-			a.OpenItemImageViewer(post.ItemKey, urls, rels, idx)
-		} else {
-			a.OpenImageViewer(urls, nil, idx)
-		}
+		a.openPostImageViewer(post.ItemKey, post.Site, urls, rels, liveURLs, idx)
 	}
 
 	if n == 1 {
@@ -392,25 +393,39 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 		ClipX()
 
 	cardRow.Children(func() {
-		// Left: 40px circular creator avatar
-		a.renderAvatar(c, post.AuthorName, post.Mid, 40, false, "", func() {
+		openCreator := func() {
+			if normalizeSiteIDUI(post.Site) == "douyin" {
+				if post.AuthorUID != "" {
+					a.OpenDouyinUser(post.AuthorUID, post.AuthorName)
+				}
+				return
+			}
 			a.OpenUser(post.Mid, post.AuthorName)
-		})
+		}
+		// Left: 40px circular creator avatar
+		a.renderAccountAvatar(c, post.Site, post.AuthorName, post.AuthorUID, post.Mid, 40, false, "", openCreator, post.AuthorFace)
 
 		// Right: Main post column
 		ui.Column(c).Grow(1).Gap(6).ClipX().Children(func() {
-			// 1. Header line: Author · Relative Time · Type · Pinned/Unread · StatusDot
+			// 1. Header line: Author · Site (on Home) · Relative Time · Type · Pinned · StatusDot
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(6).ClipX().Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Gap(6).Grow(1).ClipX().Children(func() {
 					authorName := post.AuthorName
 					if authorName == "" {
-						authorName = "未知 UP 主"
+						if normalizeSiteIDUI(post.Site) == "douyin" {
+							authorName = "未知作者"
+						} else {
+							authorName = "未知 UP 主"
+						}
 					}
 					authorBtn := ui.ButtonBase(c).Padding(0).Children(func() {
 						ui.Text(c, authorName).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 					})
 					if authorBtn.Clicked() {
-						a.OpenUser(post.Mid, post.AuthorName)
+						openCreator()
+					}
+					if post.InHomeFeed {
+						renderSiteSmallBadgeWithDot(c, post.Site, "主页作者站点："+post.Key)
 					}
 
 					if post.PubTs > 0 {
@@ -431,8 +446,9 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 				ui.Row(c).AlignItems(ui.Center).Gap(6).Shrink(0).Children(func() {
 					// One dot for the whole post: its own state and its
 					// video's, the worse of the two (images and the video
-					// card carry none).
-					if dot := postDotStatus(post); dot != "" && dot != "none" {
+					// card carry none). Home lists cached posts only and
+					// draws no dot (DEC-046 ⑦).
+					if dot := postDotStatus(post); !post.InHomeFeed && dot != "" && dot != "none" {
 						label := post.DotLabel
 						if dot != post.DotStatus {
 							label = ""
@@ -454,7 +470,11 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 				ui.Text(c, post.Title).FontSize(15).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
 			}
 			if post.Text != "" && post.Text != post.Title {
-				a.renderExpandableText(c, post.Key, post.Text)
+				if normalizeSiteIDUI(post.Site) == "douyin" {
+					a.renderRichHashtagText(c, post.Key, post.Text)
+				} else {
+					a.renderExpandableText(c, post.Key, post.Text)
+				}
 			}
 
 			if post.Degraded {
@@ -465,23 +485,37 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 				})
 			}
 
-			// 3. Attached Image 9-Grid
-			if len(post.Images) > 0 {
+			// 3. Attached Pages / Image 9-Grid + Douyin Note BGM Bar
+			if len(post.NotePages) > 0 {
+				a.renderDouyinNotePagesGrid(c, post.ItemKey, post.NotePages)
+				if post.LibItem != nil && post.LibItem.Music != nil {
+					m := post.LibItem.Music
+					hint := ""
+					if m.File == "" {
+						hint = "本机配乐文件缺失"
+					}
+					a.renderBGMBar(c, "feed-bgm:"+post.Key, m.Title, m.Author, m.Original, m.Duration, post.ItemKey, m.File, "", hint)
+				}
+			} else if len(post.Images) > 0 {
 				a.renderPostImageGrid(c, post)
 			}
 
-			// 4. Attached Video 16:9 Card
+			// 4. Attached Video Card (16:9 horizontal for Bilibili/live, 3:4 vertical cover on left for Douyin video)
 			if post.Video != nil {
 				v := post.Video
-				// Cover on the left, title and description beside it, as
-				// the site shows a video in a post (DEC-040). No counts:
-				// they change and are not kept.
+				isDouyinVideo := normalizeSiteIDUI(post.Site) == "douyin" && post.Kind == "video"
+				coverW := float32(videoCoverWidth)
+				coverH := float32(videoCoverWidth * 9 / 16)
+				if isDouyinVideo {
+					coverW = 108
+					coverH = 144
+				}
 				vCard := ui.ButtonBase(c).
 					Label("播放视频卡片："+firstNonEmptyStrUI(v.ItemKey, v.BVID, post.Key)).
 					FillWidth().
 					Radius(10).
 					Border(1, ColorBorder).
-					Background(ColorBgSecondary).
+					Background(ColorBgMain).
 					Clip()
 				if vCard.Hovered() {
 					vCard.Background(ColorHover)
@@ -489,7 +523,7 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 				vCard.Children(func() {
 					ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Start).ClipX().Children(func() {
 						// No title on the placeholder: it is beside the cover.
-						a.renderMediaThumb(c, v.ItemKey, v.RelCover, "", v.Duration, "", v.Cached, videoCoverWidth, videoCoverWidth*9/16, v.CoverURL)
+						a.renderMediaThumb(c, v.ItemKey, v.RelCover, "", v.Duration, "", v.Cached, coverW, coverH, v.CoverURL)
 						ui.Column(c).Grow(1).Basis(0).Padding(10, 12, 10, 0).Gap(4).ClipX().Children(func() {
 							ui.Text(c, v.Title).FontSize(14).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
 							if desc := strings.TrimSpace(v.Desc); desc != "" && desc != "-" {
@@ -506,6 +540,8 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 						if it, ok, err := a.backend.GetLibraryItem(v.ItemKey); err == nil && ok {
 							a.OpenPlayerOverlay(it)
 						}
+					} else if isDouyinVideo {
+						a.OpenDouyinWork(v.BVID, "video", v.Title, post.AuthorName, post.AuthorUID, v.CoverURL, v.Duration)
 					} else {
 						a.OpenVideo(v.BVID, v.Title, post.AuthorName, post.Mid, v.CoverURL, v.Duration)
 					}
@@ -519,7 +555,7 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 					FillWidth().
 					Padding(10, 12).
 					Radius(12).
-					Background(ColorBgSecondary).
+					Background(ColorBgMain).
 					Border(1, ColorBorder).
 					Gap(4).
 					ClipX().
@@ -574,7 +610,7 @@ func dotRank(status string) int {
 }
 
 // postMenuItems fills a post's "⋯" menu: caching an uncached post, then the
-// browser and the link (R8, F-056). Posts carry no text buttons of their own.
+// browser and the link. Posts carry no text buttons of their own.
 func (a *App) postMenuItems(c *ui.Context, m *ui.Menu, post PostCardData) {
 	if !post.Cached && (post.DotStatus == "" || post.DotStatus == "none") && post.CacheBtnLabel != "" {
 		if m.Item("缓存").Chosen() {
@@ -583,14 +619,29 @@ func (a *App) postMenuItems(c *ui.Context, m *ui.Menu, post PostCardData) {
 	}
 	targetURL := post.URL
 	if targetURL == "" && post.RawID != "" {
-		switch post.Kind {
-		case "video":
-			targetURL = "https://www.bilibili.com/video/" + post.RawID
-		case "dynamic":
-			targetURL = "https://t.bilibili.com/" + post.RawID
-		case "live":
-			if post.LibItem != nil && post.LibItem.Live != nil && post.LibItem.Live.RoomID > 0 {
-				targetURL = fmt.Sprintf("https://live.bilibili.com/%d", post.LibItem.Live.RoomID)
+		if normalizeSiteIDUI(post.Site) == "douyin" {
+			switch post.Kind {
+			case "dynamic":
+				targetURL = "https://www.douyin.com/note/" + post.RawID
+			case "live":
+				if post.LibItem != nil && post.LibItem.Live != nil {
+					if post.LibItem.Live.WebRID != "" {
+						targetURL = "https://live.douyin.com/" + post.LibItem.Live.WebRID
+					}
+				}
+			default:
+				targetURL = "https://www.douyin.com/video/" + post.RawID
+			}
+		} else {
+			switch post.Kind {
+			case "video":
+				targetURL = "https://www.bilibili.com/video/" + post.RawID
+			case "dynamic":
+				targetURL = "https://t.bilibili.com/" + post.RawID
+			case "live":
+				if post.LibItem != nil && post.LibItem.Live != nil && post.LibItem.Live.RoomID > 0 {
+					targetURL = fmt.Sprintf("https://live.bilibili.com/%d", post.LibItem.Live.RoomID)
+				}
 			}
 		}
 	}
@@ -607,8 +658,12 @@ func (a *App) postMenuItems(c *ui.Context, m *ui.Menu, post PostCardData) {
 	}
 }
 
-// cachePost queues an uncached post: a dynamic with its linked videos, or a video.
+// cachePost queues an uncached post: a Douyin work, a Bilibili dynamic with its linked videos, or a video.
 func (a *App) cachePost(post PostCardData) {
+	if normalizeSiteIDUI(post.Site) == "douyin" && post.RawID != "" {
+		a.cacheDouyinWorkNow(post.RawID)
+		return
+	}
 	if post.DynItem != nil {
 		dynCopy := *post.DynItem
 		_, err := a.backend.EnqueueDynamicCache(context.Background(), download.DynamicEnqueueRequest{
@@ -632,7 +687,7 @@ func (a *App) cachePost(post PostCardData) {
 }
 
 // formatLiveRecordingSpec formats the live stream quality and codec (e.g. "原画 · AVC")
-// from LiveRecordingInfo, falling back to Segments[i] for pre-Rev3 recorded items (R4).
+// from LiveRecordingInfo, falling back to Segments[i] when needed.
 func formatLiveRecordingSpec(liveInfo *library.LiveRecordingInfo, segPath string) string {
 	if liveInfo == nil {
 		return ""
@@ -700,12 +755,19 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 	var qualityTag string
 	var durationStr string
 	var images []PostImage
+	var notePages []douyinNoteRenderPage
+	authorUID := strings.TrimSpace(entry.AuthorUID)
 
 	if entry.Cached && entry.ItemKey != "" {
 		if item, ok, err := a.backend.GetLibraryItem(entry.ItemKey); err == nil && ok {
 			libPtr = &item
+			if authorUID == "" {
+				authorUID = strings.TrimSpace(item.Author.UID)
+			}
 			if item.TypeLabel != "" {
 				typeLabel = item.TypeLabel
+			} else if normalizeSiteIDUI(entry.Site) == "douyin" && entry.Kind == "dynamic" {
+				typeLabel = "图文"
 			}
 			for _, m := range item.Media {
 				if m.Role == "cover" && relCover == "" {
@@ -718,6 +780,9 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 						Live:    m.Motion != "",
 					})
 				}
+			}
+			if len(item.NotePages) > 0 {
+				notePages = buildDouyinNoteRenderPages(nil, &item)
 			}
 			if len(item.Parts) > 0 {
 				p0 := item.Parts[0]
@@ -732,6 +797,8 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 					qParts = append(qParts, p0.Audio.Name)
 				}
 				qualityTag = strings.Join(qParts, " · ")
+			} else if item.DouyinVideo != nil {
+				qualityTag = formatDouyinVideoSpec(item.DouyinVideo, "", "")
 			} else if item.Live != nil {
 				qualityTag = formatLiveRecordingSpec(item.Live, "")
 			}
@@ -806,6 +873,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		Kind:       entry.Kind,
 		RawID:      entry.RawID,
 		Mid:        entry.Mid,
+		AuthorUID:  authorUID,
 		AuthorName: entry.AuthorName,
 		AuthorFace: entry.AuthorFace,
 		PubTs:      entry.PubTs,
@@ -817,6 +885,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		DotStatus:  dot,
 		DotLabel:   "已缓存：" + entry.RawID,
 		Images:     images,
+		NotePages:  notePages,
 		Video:      videoCard,
 		LibItem:    libPtr,
 		InHomeFeed: true,
@@ -838,10 +907,11 @@ func (a *App) buildDynamicPostCard(d bilibili.DynamicItem, openLabel, cacheLabel
 	var imgs []PostImage
 	for _, im := range d.Images {
 		imgs = append(imgs, PostImage{
-			URL:    im.URL,
-			Width:  im.Width,
-			Height: im.Height,
-			Live:   im.LiveURL != "",
+			URL:     im.URL,
+			Width:   im.Width,
+			Height:  im.Height,
+			Live:    im.LiveURL != "",
+			LiveURL: im.LiveURL,
 		})
 	}
 	var vid *PostVideo

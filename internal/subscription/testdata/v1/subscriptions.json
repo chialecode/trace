@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "subscriptions": [
+    {
+      "id": "sub0001alpha0001alpha0001alpha01",
+      "name": "SyntheticCreatorA",
+      "note": "Primary Bilibili creator",
+      "avatar": {
+        "site": "bilibili",
+        "uid": "1001"
+      },
+      "createdAt": "2026-11-05T08:00:00Z",
+      "accounts": [
+        {
+          "site": "bilibili",
+          "uid": "1001",
+          "name": "SyntheticCreatorA",
+          "face": "https://example.invalid/face-1001.jpg",
+          "addedAt": "2026-11-05T08:00:00Z"
+        }
+      ],
+      "ruleId": "rule-video-only",
+      "rules": {
+        "scheduledCheck": true,
+        "autoCache": {
+          "enabled": true,
+          "types": [
+            "video"
+          ],
+          "since": "2026-11-05T08:00:00Z"
+        },
+        "autoRecord": false
+      }
+    },
+    {
+      "id": "sub0002beta00002beta00002beta002",
+      "name": "SyntheticCreatorB",
+      "note": "",
+      "avatar": {
+        "site": "bilibili",
+        "uid": "2002"
+      },
+      "createdAt": "2026-11-05T09:00:00Z",
+      "accounts": [
+        {
+          "site": "bilibili",
+          "uid": "2002",
+          "name": "SyntheticCreatorB",
+          "face": "",
+          "addedAt": "2026-11-05T09:00:00Z"
+        }
+      ],
+      "ruleId": "default",
+      "rules": {
+        "scheduledCheck": true,
+        "autoCache": {
+          "enabled": false,
+          "types": [
+            "video",
+            "draw"
+          ],
+          "since": ""
+        },
+        "autoRecord": false
+      }
+    }
+  ],
+  "cacheRules": [
+    {
+      "id": "default",
+      "name": "默认",
+      "scheduledCheck": true,
+      "autoCache": false,
+      "types": [
+        "video",
+        "draw"
+      ],
+      "autoRecord": false
+    },
+    {
+      "id": "rule-video-only",
+      "name": "只存视频",
+      "scheduledCheck": true,
+      "autoCache": true,
+      "types": [
+        "video"
+      ],
+      "autoRecord": false
+    }
+  ]
+}

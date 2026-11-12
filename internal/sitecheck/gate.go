@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -14,7 +15,7 @@ import (
 	"github.com/chialecode/trace/internal/storage"
 )
 
-// ErrQuotaExceeded is returned BEFORE a network request is sent when an ACT quota is exhausted (C40).
+// ErrQuotaExceeded is returned BEFORE a network request is sent when an ACT quota is exhausted.
 var ErrQuotaExceeded = errors.New("sitecheck: quota exceeded for authorization")
 
 // Usage tracks cumulative site-check consumption for a specific ACT authorization ID.
@@ -53,7 +54,7 @@ type Gate struct {
 	usage      Usage
 }
 
-// OpenGate loads or initializes the usage ledger at `<ledgerDir>/usage-<actId>.json` (P16, C40).
+// OpenGate loads or initializes the persistent usage ledger at `<ledgerDir>/usage-<actId>.json`.
 func OpenGate(ledgerDir string, limits Limits) (*Gate, error) {
 	actID := strings.TrimSpace(limits.ActID)
 	if actID == "" {
@@ -106,7 +107,7 @@ func (g *Gate) BeginRun() error {
 	return g.saveLocked()
 }
 
-// AcquireAPI checks and reserves 1 API call of the given category BEFORE the HTTP request is sent (C40).
+// AcquireAPI checks and reserves 1 API call of the given category BEFORE the HTTP request is sent.
 func (g *Gate) AcquireAPI(category string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -141,7 +142,7 @@ func (g *Gate) AcquireMedia(expectedBytes int64) error {
 	return g.saveLocked()
 }
 
-// WrapTransport wraps base RoundTripper so every outgoing request is gated by AcquireAPI before transmission (C40).
+// WrapTransport wraps base RoundTripper so every outgoing request is gated by AcquireAPI before transmission.
 func (g *Gate) WrapTransport(base http.RoundTripper, classify func(*http.Request) string) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
@@ -220,16 +221,39 @@ func (g *Gate) saveLocked() error {
 }
 
 var secretReceiptMarkers = []string{
+	// Bilibili Cookie & refresh markers
 	"SESSDATA=",
 	"bili_jct=",
 	"DedeUserID__ckMd5=",
 	"ac_time_value=",
 	"refresh_token=",
 	"access_key=",
+	// Douyin Cookie & session markers
+	"sessionid=",
+	"sessionid_ss=",
+	"sid_guard=",
+	"msToken=",
 }
 
-// ScanReceiptsForSecrets scans JSON receipts in dir for any leaked Cookie/token markers.
-// Returns nil without error if dir does not exist (CI environment, P15/C40).
+var signedReceiptURLRe = regexp.MustCompile(`(?i)https?://[^\s"'<>` + "`" + `]*(?:a_bogus=[A-Za-z0-9%+/=._-]{4,}|x-(?:secsdk-web-)?signature(?:=[A-Za-z0-9%+/=._-]{4,}|/[A-Za-z0-9%+/=._-]{4,}))`)
+
+// ScanTextForSecrets checks an arbitrary text or JSON payload for Bilibili/Douyin Cookie markers
+// and signed URLs containing a_bogus= or x-signature.
+func ScanTextForSecrets(text string) []string {
+	var findings []string
+	for _, marker := range secretReceiptMarkers {
+		if strings.Contains(text, marker) {
+			findings = append(findings, fmt.Sprintf("contains secret marker %q", marker))
+		}
+	}
+	if m := signedReceiptURLRe.FindString(text); m != "" {
+		findings = append(findings, fmt.Sprintf("contains signed URL %q", m))
+	}
+	return findings
+}
+
+// ScanReceiptsForSecrets scans JSON receipts in dir for any leaked Cookie/token markers or signed URLs.
+// Returns nil without error if dir does not exist (such as clean CI environments).
 func ScanReceiptsForSecrets(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -248,11 +272,8 @@ func ScanReceiptsForSecrets(dir string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		text := string(raw)
-		for _, marker := range secretReceiptMarkers {
-			if strings.Contains(text, marker) {
-				findings = append(findings, fmt.Sprintf("%s contains secret marker %q", entry.Name(), marker))
-			}
+		for _, item := range ScanTextForSecrets(string(raw)) {
+			findings = append(findings, fmt.Sprintf("%s %s", entry.Name(), item))
 		}
 	}
 	return findings, nil

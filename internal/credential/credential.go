@@ -13,14 +13,28 @@ import (
 	"time"
 )
 
-// MaxCookieInputBytes is the maximum allowed byte length for manual cookie import.
-const MaxCookieInputBytes = 8192
+// Site constants and per-site DPAPI entropy strings.
+const (
+	SiteBilibili = "bilibili"
+	SiteDouyin   = "douyin"
+
+	BilibiliFileName = "bilibili.bin"
+	DouyinFileName   = "douyin.bin"
+
+	BilibiliEntropy = "trace:bilibili:credential:v1"
+	DouyinEntropy   = "trace:douyin:credential:v1"
+
+	// MaxCookieInputBytes is the maximum allowed byte length for manual cookie import.
+	MaxCookieInputBytes = 8192
+)
 
 // Errors returned by credential operations (never echoing raw secrets).
 var (
-	ErrInputTooLarge       = errors.New("credential: cookie input exceeds 8 KiB limit")
-	ErrMissingRequiredKeys = errors.New("credential: missing required cookie key SESSDATA")
-	ErrNotLoggedIn         = errors.New("credential: no active credential")
+	ErrInputTooLarge        = errors.New("credential: cookie input exceeds 8 KiB limit")
+	ErrMissingRequiredKeys  = errors.New("credential: missing required cookie key SESSDATA")
+	ErrMissingDouyinSession = errors.New("credential: missing required cookie key sessionid")
+	ErrNotLoggedIn          = errors.New("credential: no active credential")
+	ErrUnknownSite          = errors.New("credential: unsupported site")
 )
 
 // AllowedCookieKeys defines the strict whitelist of Bilibili cookie keys stored by TRACE.
@@ -40,10 +54,11 @@ var allowedKeyLookup = map[string]string{
 	"sid":               "sid",
 }
 
-// Record is the internal encrypted credential structure persisted in bilibili.dpapi.
+// Record is the internal encrypted credential structure persisted in <site>.bin.
 // It must NEVER be serialized directly to UI responses or logs.
 type Record struct {
 	Version                int               `json:"version"`
+	Site                   string            `json:"site,omitempty"`
 	Cookies                map[string]string `json:"cookies"`
 	RefreshToken           string            `json:"refresh_token,omitempty"`
 	Source                 string            `json:"source"` // "qr" or "manual"
@@ -54,6 +69,9 @@ type Record struct {
 	ConfirmPending         bool              `json:"confirm_pending,omitempty"`
 	PendingOldRefreshToken string            `json:"pending_old_refresh_token,omitempty"`
 	Mid                    int64             `json:"mid,omitempty"`
+	UID                    string            `json:"uid,omitempty"`
+	SecUID                 string            `json:"secUid,omitempty"`
+	UniqueID               string            `json:"uniqueId,omitempty"`
 	Uname                  string            `json:"uname,omitempty"`
 	Face                   string            `json:"face,omitempty"`
 	State                  string            `json:"state,omitempty"`
@@ -90,13 +108,18 @@ func (r *Record) UnmarshalJSON(raw []byte) error {
 
 // Status is the desensitized account status exposed to the UI and service layer.
 type Status struct {
+	Site            string `json:"site,omitempty"`
 	LoggedIn        bool   `json:"loggedIn"`
 	State           string `json:"state"` // "logged_out", "logged_in", "expired", "refresh_failed", "decrypt_failed"
 	Source          string `json:"source,omitempty"`
 	Mid             int64  `json:"mid,omitempty"`
+	UID             string `json:"uid,omitempty"`
+	SecUID          string `json:"secUid,omitempty"`
+	UniqueID        string `json:"uniqueId,omitempty"`
 	Uname           string `json:"uname,omitempty"`
 	Face            string `json:"face,omitempty"`
 	HasRefreshToken bool   `json:"hasRefreshToken"`
+	HasTTWID        bool   `json:"hasTtwid,omitempty"`
 	ConfirmPending  bool   `json:"confirmPending,omitempty"`
 	UpdatedAt       string `json:"updatedAt,omitempty"`
 	LastRenewedAt   string `json:"lastRenewedAt,omitempty"`
@@ -104,43 +127,16 @@ type Status struct {
 	Message         string `json:"message,omitempty"`
 }
 
-// ParseManualCookieInput parses a manual Cookie string and optional refresh_token.
-// It enforces the 8 KiB limit, filters by the 5-key whitelist, requires SESSDATA + bili_jct,
+// ParseManualCookieInput parses a manual Bilibili Cookie string and optional refresh_token.
+// It enforces the 8 KiB limit, filters by the 5-key whitelist, requires SESSDATA,
 // and never echoes input values in error messages.
 func ParseManualCookieInput(rawCookie string, rawRefreshToken string) (map[string]string, string, error) {
 	if len(rawCookie) > MaxCookieInputBytes || len(rawRefreshToken) > MaxCookieInputBytes {
 		return nil, "", ErrInputTooLarge
 	}
 
-	cleaned := strings.TrimSpace(rawCookie)
-	if strings.HasPrefix(strings.ToLower(cleaned), "cookie:") {
-		cleaned = strings.TrimSpace(cleaned[len("cookie:"):])
-	}
-	cleaned = strings.ReplaceAll(cleaned, "\r", ";")
-	cleaned = strings.ReplaceAll(cleaned, "\n", ";")
-
-	cookies := make(map[string]string)
-	parts := strings.Split(cleaned, ";")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		eq := strings.IndexByte(part, '=')
-		if eq <= 0 {
-			continue
-		}
-		k := strings.TrimSpace(part[:eq])
-		v := strings.TrimSpace(part[eq+1:])
-		v = strings.Trim(v, `"'`)
-		if v == "" {
-			continue
-		}
-		if canonicalKey, ok := allowedKeyLookup[strings.ToLower(k)]; ok {
-			cookies[canonicalKey] = v
-		}
-	}
-
+	rawPairs := parseRawCookieHeader(rawCookie)
+	cookies := FilterCookieMap(rawPairs)
 	if cookies["SESSDATA"] == "" {
 		return nil, "", ErrMissingRequiredKeys
 	}
@@ -154,7 +150,36 @@ func ParseManualCookieInput(rawCookie string, rawRefreshToken string) (map[strin
 	return cookies, rt, nil
 }
 
-// FilterCookieMap filters a map of cookies down to the 5 whitelisted keys.
+func parseRawCookieHeader(rawCookie string) map[string]string {
+	cleaned := strings.TrimSpace(rawCookie)
+	if strings.HasPrefix(strings.ToLower(cleaned), "cookie:") {
+		cleaned = strings.TrimSpace(cleaned[len("cookie:"):])
+	}
+	cleaned = strings.ReplaceAll(cleaned, "\r", ";")
+	cleaned = strings.ReplaceAll(cleaned, "\n", ";")
+
+	pairs := make(map[string]string)
+	for _, part := range strings.Split(cleaned, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		eq := strings.IndexByte(part, '=')
+		if eq <= 0 {
+			continue
+		}
+		k := strings.TrimSpace(part[:eq])
+		v := strings.TrimSpace(part[eq+1:])
+		v = strings.Trim(v, `"'`)
+		if k == "" || v == "" {
+			continue
+		}
+		pairs[k] = v
+	}
+	return pairs
+}
+
+// FilterCookieMap filters a map of cookies down to the 5 whitelisted Bilibili keys.
 func FilterCookieMap(in map[string]string) map[string]string {
 	out := make(map[string]string)
 	for k, v := range in {
@@ -169,21 +194,47 @@ func FilterCookieMap(in map[string]string) map[string]string {
 	return out
 }
 
-// Store manages the DPAPI-encrypted credential file on disk.
+// Store manages a single site's DPAPI-encrypted credential file on disk.
 type Store struct {
 	mu         sync.RWMutex
+	site       string
+	entropy    []byte
 	path       string
 	rec        *Record
 	lastStatus Status
 }
 
-// Open loads the DPAPI credential store from path.
+// Open loads the Bilibili DPAPI credential store from path using BilibiliEntropy.
 // If decryption or JSON parsing fails, the corrupt file is backed up to <path>.corrupt-<timestamp>
 // and the store degrades gracefully to "decrypt_failed" (logged_out) without crashing.
 func Open(path string) (*Store, string, error) {
+	return openWithConfig(SiteBilibili, []byte(BilibiliEntropy), path)
+}
+
+// OpenDouyin loads the Douyin DPAPI credential store from path using DouyinEntropy.
+func OpenDouyin(path string) (*Store, string, error) {
+	return openWithConfig(SiteDouyin, []byte(DouyinEntropy), path)
+}
+
+// OpenSite loads the credential store for siteID ("bilibili" or "douyin") from path.
+func OpenSite(siteID string, path string) (*Store, string, error) {
+	switch normalizeSiteID(siteID) {
+	case SiteBilibili:
+		return Open(path)
+	case SiteDouyin:
+		return OpenDouyin(path)
+	default:
+		return nil, "", ErrUnknownSite
+	}
+}
+
+func openWithConfig(siteID string, entropy []byte, path string) (*Store, string, error) {
 	s := &Store{
-		path: path,
+		site:    siteID,
+		entropy: append([]byte{}, entropy...),
+		path:    path,
 		lastStatus: Status{
+			Site:     siteID,
 			LoggedIn: false,
 			State:    "logged_out",
 		},
@@ -197,13 +248,14 @@ func Open(path string) (*Store, string, error) {
 		return nil, "", err
 	}
 
-	plain, err := decryptBytes(raw)
+	plain, err := decryptBytesWithEntropy(raw, s.entropy)
 	if err != nil {
 		backup, bErr := backupCorruptFile(path)
 		if bErr != nil {
 			return nil, "", bErr
 		}
 		s.lastStatus = Status{
+			Site:     siteID,
 			LoggedIn: false,
 			State:    "decrypt_failed",
 			Message:  "凭证无法解密，已备份原文件并降级为未登录状态",
@@ -212,12 +264,17 @@ func Open(path string) (*Store, string, error) {
 	}
 
 	var rec Record
-	if err := json.Unmarshal(plain, &rec); err != nil {
+	unmarshalErr := json.Unmarshal(plain, &rec)
+	for i := range plain {
+		plain[i] = 0
+	}
+	if unmarshalErr != nil {
 		backup, bErr := backupCorruptFile(path)
 		if bErr != nil {
 			return nil, "", bErr
 		}
 		s.lastStatus = Status{
+			Site:     siteID,
 			LoggedIn: false,
 			State:    "decrypt_failed",
 			Message:  "凭证文件损坏，已备份原文件并降级为未登录状态",
@@ -225,9 +282,24 @@ func Open(path string) (*Store, string, error) {
 		return s, backup, nil
 	}
 
-	rec.Cookies = FilterCookieMap(rec.Cookies)
-	if rec.Cookies["SESSDATA"] == "" {
+	if rec.Site != "" && normalizeSiteID(rec.Site) != siteID {
+		backup, bErr := backupCorruptFile(path)
+		if bErr != nil {
+			return nil, "", bErr
+		}
 		s.lastStatus = Status{
+			Site:     siteID,
+			LoggedIn: false,
+			State:    "decrypt_failed",
+			Message:  "凭证站点标识不匹配，已备份原文件并降级为未登录状态",
+		}
+		return s, backup, nil
+	}
+
+	rec.Cookies = s.filterCookies(rec.Cookies)
+	if !s.hasRequiredCookies(rec.Cookies) {
+		s.lastStatus = Status{
+			Site:     siteID,
 			LoggedIn: false,
 			State:    "logged_out",
 		}
@@ -237,8 +309,37 @@ func Open(path string) (*Store, string, error) {
 		rec.State = "logged_in"
 	}
 	s.rec = &rec
-	s.lastStatus = buildStatus(&rec)
+	s.lastStatus = s.buildStatus(&rec)
 	return s, "", nil
+}
+
+// Site returns the site identifier ("bilibili" or "douyin") managed by this Store.
+func (s *Store) Site() string {
+	if s == nil || s.site == "" {
+		return SiteBilibili
+	}
+	return s.site
+}
+
+func (s *Store) filterCookies(in map[string]string) map[string]string {
+	if s != nil && s.site == SiteDouyin {
+		return CleanDouyinCookieMap(in)
+	}
+	return FilterCookieMap(in)
+}
+
+func (s *Store) hasRequiredCookies(cookies map[string]string) bool {
+	if s != nil && s.site == SiteDouyin {
+		return hasDouyinSession(cookies)
+	}
+	return cookies["SESSDATA"] != ""
+}
+
+func (s *Store) orderedCookieKeys() []string {
+	if s != nil && s.site == SiteDouyin {
+		return AllowedDouyinCookieKeys
+	}
+	return AllowedCookieKeys
 }
 
 // Status returns the desensitized account status.
@@ -248,7 +349,7 @@ func (s *Store) Status() Status {
 	if s.rec == nil {
 		return s.lastStatus
 	}
-	return buildStatus(s.rec)
+	return s.buildStatus(s.rec)
 }
 
 // HasActiveCredential reports whether usable cookies are present.
@@ -261,24 +362,34 @@ func (s *Store) HasActiveCredential() bool {
 	if s.rec.State == "expired" || s.rec.State == "logged_out" || s.rec.State == "decrypt_failed" {
 		return false
 	}
-	return s.rec.Cookies["SESSDATA"] != ""
+	return s.hasRequiredCookies(s.rec.Cookies)
 }
 
-// CookieHeader returns the formatted Cookie header string for outbound requests to Bilibili.
-// Returns empty string if not logged in.
+// CookieHeader returns the formatted Cookie header string for outbound site API requests.
+// Returns empty string if not logged in or expired.
 func (s *Store) CookieHeader() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.rec == nil || s.rec.State == "expired" || s.rec.State == "logged_out" {
+	if s.rec == nil || s.rec.State == "expired" || s.rec.State == "logged_out" || s.rec.State == "decrypt_failed" {
 		return ""
 	}
 	var pairs []string
-	for _, k := range AllowedCookieKeys {
+	for _, k := range s.orderedCookieKeys() {
 		if v := s.rec.Cookies[k]; v != "" {
 			pairs = append(pairs, k+"="+v)
 		}
 	}
 	return strings.Join(pairs, "; ")
+}
+
+// CookieValue returns a single stored cookie value when active, or empty string if absent/inactive.
+func (s *Store) CookieValue(name string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.rec == nil || s.rec.State == "expired" || s.rec.State == "logged_out" || s.rec.State == "decrypt_failed" {
+		return ""
+	}
+	return s.rec.Cookies[name]
 }
 
 // Cookies returns a copy of the stored whitelisted cookies, or nil if not logged in.
@@ -315,7 +426,7 @@ func (s *Store) RefreshState() (refreshToken string, confirmPending bool, pendin
 	return s.rec.RefreshToken, s.rec.ConfirmPending, s.rec.PendingOldRefreshToken
 }
 
-// SaveManual validates and saves manually imported cookies and optional refresh_token.
+// SaveManual validates and saves manually imported Bilibili cookies and optional refresh_token.
 func (s *Store) SaveManual(rawCookie, rawRefreshToken string) (Status, error) {
 	cookies, rt, err := ParseManualCookieInput(rawCookie, rawRefreshToken)
 	if err != nil {
@@ -324,7 +435,7 @@ func (s *Store) SaveManual(rawCookie, rawRefreshToken string) (Status, error) {
 	return s.SaveVerifiedManual(cookies, rt, 0, "", "")
 }
 
-// SaveVerifiedManual saves already-validated manual cookies and profile metadata.
+// SaveVerifiedManual saves already-validated manual Bilibili cookies and profile metadata.
 func (s *Store) SaveVerifiedManual(cookies map[string]string, refreshToken string, mid int64, uname, face string) (Status, error) {
 	filtered := FilterCookieMap(cookies)
 	if filtered["SESSDATA"] == "" {
@@ -357,15 +468,15 @@ func (s *Store) MarkChecked() (Status, error) {
 	if s.rec == nil {
 		return s.lastStatus, ErrNotLoggedIn
 	}
-	next := cloneRecord(s.rec)
+	next := s.cloneRecord(s.rec)
 	next.LastCheckedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := s.persistRecordLocked(next); err != nil {
-		return buildStatus(s.rec), err
+		return s.buildStatus(s.rec), err
 	}
-	return buildStatus(s.rec), nil
+	return s.buildStatus(s.rec), nil
 }
 
-// SaveQR saves credentials obtained from QR code login.
+// SaveQR saves Bilibili credentials obtained from QR code login.
 func (s *Store) SaveQR(cookies map[string]string, refreshToken string, mid int64, uname, face string) (Status, error) {
 	filtered := FilterCookieMap(cookies)
 	if filtered["SESSDATA"] == "" || filtered["bili_jct"] == "" {
@@ -391,7 +502,7 @@ func (s *Store) SaveQR(cookies map[string]string, refreshToken string, mid int64
 	return s.Status(), nil
 }
 
-// UpdateProfile updates the cached account profile (mid, uname, face) and state.
+// UpdateProfile updates the cached Bilibili account profile (mid, uname, face) and state.
 func (s *Store) UpdateProfile(mid int64, uname, face string) (Status, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -399,7 +510,7 @@ func (s *Store) UpdateProfile(mid int64, uname, face string) (Status, error) {
 		return s.lastStatus, ErrNotLoggedIn
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	next := cloneRecord(s.rec)
+	next := s.cloneRecord(s.rec)
 	if mid > 0 {
 		next.Mid = mid
 	}
@@ -413,9 +524,9 @@ func (s *Store) UpdateProfile(mid int64, uname, face string) (Status, error) {
 	next.State = "logged_in"
 	next.Message = ""
 	if err := s.persistRecordLocked(next); err != nil {
-		return buildStatus(s.rec), err
+		return s.buildStatus(s.rec), err
 	}
-	return buildStatus(s.rec), nil
+	return s.buildStatus(s.rec), nil
 }
 
 // MarkState updates the credential state ("logged_in", "expired", "refresh_failed") and message.
@@ -427,18 +538,18 @@ func (s *Store) MarkState(state, message string) (Status, error) {
 		s.lastStatus.Message = message
 		return s.lastStatus, nil
 	}
-	next := cloneRecord(s.rec)
+	next := s.cloneRecord(s.rec)
 	next.State = state
 	next.Message = message
 	next.LastCheckedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := s.persistRecordLocked(next); err != nil {
 		if state == "expired" {
 			s.rec = next
-			return buildStatus(next), err
+			return s.buildStatus(next), err
 		}
-		return buildStatus(s.rec), err
+		return s.buildStatus(s.rec), err
 	}
-	return buildStatus(s.rec), nil
+	return s.buildStatus(s.rec), nil
 }
 
 // CommitRefreshStep4 atomically saves new cookies and newRefreshToken after cookie/refresh succeeds,
@@ -452,7 +563,7 @@ func (s *Store) CommitRefreshStep4(newCookies map[string]string, newRefreshToken
 	if s.rec.Source != "qr" || s.rec.RefreshToken != oldRefreshToken || s.rec.State == "expired" {
 		return ErrNotLoggedIn
 	}
-	next := cloneRecord(s.rec)
+	next := s.cloneRecord(s.rec)
 	filtered := FilterCookieMap(newCookies)
 	for k, v := range filtered {
 		next.Cookies[k] = v
@@ -477,7 +588,7 @@ func (s *Store) CompleteRefreshStep5() error {
 	if s.rec == nil {
 		return ErrNotLoggedIn
 	}
-	next := cloneRecord(s.rec)
+	next := s.cloneRecord(s.rec)
 	next.ConfirmPending = false
 	next.PendingOldRefreshToken = ""
 	next.LastCheckedAt = time.Now().UTC().Format(time.RFC3339)
@@ -495,13 +606,14 @@ func (s *Store) Clear() error {
 	}
 	s.rec = nil
 	s.lastStatus = Status{
+		Site:     s.Site(),
 		LoggedIn: false,
 		State:    "logged_out",
 	}
 	return nil
 }
 
-// ExtractSetCookies extracts whitelisted cookies from HTTP Set-Cookie headers.
+// ExtractSetCookies extracts whitelisted Bilibili cookies from HTTP Set-Cookie headers.
 func ExtractSetCookies(headers []*http.Cookie) map[string]string {
 	raw := make(map[string]string, len(headers))
 	for _, c := range headers {
@@ -513,20 +625,18 @@ func ExtractSetCookies(headers []*http.Cookie) map[string]string {
 	return FilterCookieMap(raw)
 }
 
-// RedactString replaces any stored cookie values or refresh tokens present in s with [REDACTED].
-func (s *Store) RedactString(in string) string {
-	if in == "" {
-		return ""
+func (s *Store) collectSecrets() []string {
+	if s == nil {
+		return nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.rec == nil {
-		return in
+		return nil
 	}
-	out := in
 	var secrets []string
-	for _, v := range s.rec.Cookies {
-		if len(v) >= 4 {
+	for k, v := range s.rec.Cookies {
+		if len(v) >= 4 && !isNonSecretCookieValue(k, v) {
 			secrets = append(secrets, v)
 		}
 	}
@@ -536,9 +646,40 @@ func (s *Store) RedactString(in string) string {
 	if len(s.rec.PendingOldRefreshToken) >= 4 {
 		secrets = append(secrets, s.rec.PendingOldRefreshToken)
 	}
+	return secrets
+}
+
+// isNonSecretCookieValue reports cookie values that carry no session secret and
+// would otherwise turn ordinary log text into redaction noise: Douyin's
+// is_staff_user flag and login_time timestamp, and bare boolean literals.
+func isNonSecretCookieValue(key, val string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "is_staff_user", "login_time":
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(val)) {
+	case "true", "false", "null":
+		return true
+	}
+	return false
+}
+
+// RedactString replaces any stored cookie values or refresh tokens present in in with [REDACTED].
+func (s *Store) RedactString(in string) string {
+	if in == "" {
+		return ""
+	}
+	return redactWithSecrets(in, s.collectSecrets())
+}
+
+func redactWithSecrets(in string, secrets []string) string {
+	if in == "" || len(secrets) == 0 {
+		return in
+	}
 	sort.Slice(secrets, func(i, j int) bool {
 		return len(secrets[i]) > len(secrets[j])
 	})
+	out := in
 	for _, sec := range secrets {
 		out = strings.ReplaceAll(out, sec, "[REDACTED]")
 	}
@@ -551,9 +692,9 @@ func (s *Store) saveRecord(rec *Record) error {
 	return s.persistRecordLocked(rec)
 }
 
-func cloneRecord(rec *Record) *Record {
+func (s *Store) cloneRecord(rec *Record) *Record {
 	next := *rec
-	next.Cookies = FilterCookieMap(rec.Cookies)
+	next.Cookies = s.filterCookies(rec.Cookies)
 	return &next
 }
 
@@ -562,7 +703,11 @@ func (s *Store) persistRecordLocked(next *Record) error {
 	if err != nil {
 		return fmt.Errorf("credential: marshal record: %w", err)
 	}
-	cipherData, err := encryptBytes(plain)
+	entropy := s.entropy
+	if len(entropy) == 0 {
+		entropy = []byte(BilibiliEntropy)
+	}
+	cipherData, err := encryptBytesWithEntropy(plain, entropy)
 	for i := range plain {
 		plain[i] = 0
 	}
@@ -573,7 +718,7 @@ func (s *Store) persistRecordLocked(next *Record) error {
 		return err
 	}
 	s.rec = next
-	s.lastStatus = buildStatus(next)
+	s.lastStatus = s.buildStatus(next)
 	return nil
 }
 
@@ -617,9 +762,11 @@ func backupCorruptFile(path string) (string, error) {
 	return backup, nil
 }
 
-func buildStatus(rec *Record) Status {
+func (s *Store) buildStatus(rec *Record) Status {
+	siteID := s.Site()
 	if rec == nil {
 		return Status{
+			Site:     siteID,
 			LoggedIn: false,
 			State:    "logged_out",
 		}
@@ -630,13 +777,18 @@ func buildStatus(rec *Record) Status {
 	}
 	loggedIn := state == "logged_in" || state == "refresh_failed" || state == "unknown"
 	return Status{
+		Site:            siteID,
 		LoggedIn:        loggedIn,
 		State:           state,
 		Source:          rec.Source,
 		Mid:             rec.Mid,
+		UID:             rec.UID,
+		SecUID:          rec.SecUID,
+		UniqueID:        rec.UniqueID,
 		Uname:           rec.Uname,
 		Face:            rec.Face,
 		HasRefreshToken: rec.RefreshToken != "",
+		HasTTWID:        rec.Cookies["ttwid"] != "",
 		ConfirmPending:  rec.ConfirmPending,
 		UpdatedAt:       rec.UpdatedAt,
 		LastRenewedAt:   rec.RenewedAt,

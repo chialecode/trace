@@ -19,11 +19,13 @@ import (
 	"github.com/chialecode/trace/internal/appdirs"
 	"github.com/chialecode/trace/internal/player"
 	"github.com/chialecode/trace/internal/service"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/storage"
 	"github.com/chialecode/trace/internal/ui"
 	"github.com/chialecode/trace/internal/uistate"
 	"github.com/chialecode/trace/internal/update"
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/netproxy"
 	mygoui "github.com/egoist/mygo/ui"
 )
 
@@ -45,11 +47,11 @@ func QuietMode(channel string) string {
 }
 
 // RenderTrayIconPNG generates a 32x32 PNG tray icon in pure Go: a white "T"
-// on the accent blue (DEC-039), with an amber corner while tasks or
-// recordings run (P13).
+// on dark gray like the application icon (DEC-039; dark gray since
+// 2026-11-14), with an amber corner while tasks or recordings run (P13).
 func RenderTrayIconPNG(hasActiveWork bool) []byte {
 	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
-	bg := color.RGBA{R: 26, G: 115, B: 232, A: 255}  // #1a73e8
+	bg := color.RGBA{R: 60, G: 64, B: 67, A: 255}    // #3c4043
 	fg := color.RGBA{R: 255, G: 255, B: 255, A: 255} // #ffffff
 	dot := color.RGBA{R: 243, G: 161, B: 21, A: 255} // #f3a115
 
@@ -201,6 +203,9 @@ func Run() error {
 	mygo.App.SetPath(mygo.PathLogs, loc.LogsDir)
 
 	// Step 6: Start Backend service.
+	// "Follow the system" proxy reads Windows' own settings, not only
+	// HTTP(S)_PROXY (DEC-046 ⑤).
+	site.SetSystemProxyFunc(netproxy.Proxy)
 	backend, err := service.NewBackend(service.Options{
 		Locations: loc,
 	})
@@ -320,6 +325,9 @@ func (s *Shell) openOrRestoreMainWindow() {
 		MinHeight:       520,
 		Hidden:          s.quiet != "",
 		AutoHideMenuBar: true,
+		// Immersive title bar (DEC-046 ④): the page reaches the top and the
+		// system's minimize, maximize and close buttons stay over it.
+		TitleBarStyle:   mygo.TitleBarHidden,
 		BackgroundColor: "#ffffff",
 		Content:         mygoui.View(uiApp.View),
 	}

@@ -27,6 +27,7 @@ type MediaDecoder interface {
 // SynthDecoder is a deterministic in-memory MediaDecoder for unit tests, uishots, and fallback.
 type SynthDecoder struct {
 	mu          sync.Mutex
+	hasVideo    bool
 	width       int
 	height      int
 	duration    time.Duration
@@ -56,6 +57,7 @@ func NewSynthDecoder(width, height int, duration time.Duration, fps float64) *Sy
 	ch := 2
 	totalFrames := int64(duration.Seconds() * float64(sr))
 	return &SynthDecoder{
+		hasVideo:    true,
 		width:       width,
 		height:      height,
 		duration:    duration,
@@ -66,7 +68,32 @@ func NewSynthDecoder(width, height int, duration time.Duration, fps float64) *Sy
 	}
 }
 
+// NewSynthAudioDecoder creates a deterministic audio-only decoder with no video stream.
+func NewSynthAudioDecoder(duration time.Duration, sampleRate, channels int) *SynthDecoder {
+	if duration <= 0 {
+		duration = 10 * time.Second
+	}
+	if sampleRate <= 0 {
+		sampleRate = 48000
+	}
+	if channels <= 0 {
+		channels = 2
+	}
+	totalFrames := int64(duration.Seconds() * float64(sampleRate))
+	return &SynthDecoder{
+		hasVideo:    false,
+		width:       0,
+		height:      0,
+		duration:    duration,
+		fps:         0,
+		sampleRate:  sampleRate,
+		channels:    channels,
+		totalFrames: totalFrames,
+	}
+}
+
 func (d *SynthDecoder) BackendName() string     { return "synth" }
+func (d *SynthDecoder) HasVideo() bool          { return d.hasVideo }
 func (d *SynthDecoder) Width() int              { return d.width }
 func (d *SynthDecoder) Height() int             { return d.height }
 func (d *SynthDecoder) Duration() time.Duration { return d.duration }
@@ -79,6 +106,9 @@ func (d *SynthDecoder) DecodeVideoFrameAt(pos time.Duration, dst *image.RGBA) (*
 	defer d.mu.Unlock()
 	if d.closed {
 		return nil, 0, io.EOF
+	}
+	if !d.hasVideo {
+		return nil, pos, nil
 	}
 	if pos < 0 {
 		pos = 0

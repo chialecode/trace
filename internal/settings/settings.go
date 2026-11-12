@@ -47,10 +47,19 @@ type Settings struct {
 	Window               WindowSettings       `json:"window"`
 	Diagnostics          DiagnosticsSettings  `json:"diagnostics"`
 	Updates              UpdateSettings       `json:"updates"`
+	Network              NetworkSettings      `json:"network"`
 }
 
 // UpdateSettings are the update preferences of the release channel
 // (FR-UPD-002): both on by default, a file without them keeps the defaults.
+// NetworkSettings chooses the proxy of every site request (DEC-046 ⑤):
+// "system" (default: the system's settings and HTTP(S)_PROXY), "none" or
+// "custom" with ProxyURL (http://, https:// or socks5://).
+type NetworkSettings struct {
+	ProxyMode string `json:"proxyMode"`
+	ProxyURL  string `json:"proxyUrl,omitempty"`
+}
+
 type UpdateSettings struct {
 	AutoCheck    bool `json:"autoCheck"`
 	AutoDownload bool `json:"autoDownload"`
@@ -161,6 +170,7 @@ func Default(defaultCacheDir string) Settings {
 			DebugLog: false,
 		},
 		Updates: UpdateSettings{AutoCheck: true, AutoDownload: true},
+		Network: NetworkSettings{ProxyMode: "system"},
 	}
 }
 
@@ -427,6 +437,21 @@ func Normalize(s Settings, defaultCacheDir string) (Settings, error) {
 		s.Window.CloseAction = "tray"
 	default:
 		return s, fmt.Errorf("settings: invalid closeAction %q", closeAct)
+	}
+
+	s.Network.ProxyURL = strings.TrimSpace(s.Network.ProxyURL)
+	switch pm := strings.ToLower(strings.TrimSpace(s.Network.ProxyMode)); pm {
+	case "", "system":
+		s.Network.ProxyMode = "system"
+	case "none":
+		s.Network.ProxyMode = pm
+	case "custom":
+		if s.Network.ProxyURL == "" {
+			return s, fmt.Errorf("settings: custom proxy needs an address")
+		}
+		s.Network.ProxyMode = pm
+	default:
+		return s, fmt.Errorf("settings: invalid proxyMode %q", s.Network.ProxyMode)
 	}
 
 	s.Download.VideoQuality = s.VideoQuality

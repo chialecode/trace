@@ -9,6 +9,8 @@ import (
 	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/live"
+	"github.com/chialecode/trace/internal/service"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/subscription"
 )
@@ -28,7 +30,9 @@ func (a *App) previewNewAccount() {
 		if strings.TrimSpace(a.AddSubName) == "" {
 			a.AddSubName = result.account.Name
 		}
-	}, nil)
+	}, func(err error) {
+		a.showError(err)
+	})
 }
 
 func (a *App) previewSubAccount(subID string) {
@@ -42,7 +46,9 @@ func (a *App) previewSubAccount(subID string) {
 		if result.owner != nil {
 			a.AccountPreviewOwner = result.owner.Name
 		}
-	}, nil)
+	}, func(err error) {
+		a.showError(err)
+	})
 }
 
 func (a *App) createPreviewedSubscription() {
@@ -75,17 +81,20 @@ func (a *App) createPreviewedSubscription() {
 }
 
 func (a *App) refreshVisibleLive() {
-	ids := a.selectedSubscriptionAuthors()
+	keys := a.selectedSubscriptionAccountKeys()
 	a.visibleLiveStopped = false
 	backend := a.backend
 	requestGuarded(a, "visible-live", func() bool {
-		return a.CurrentRoute == RouteSubscriptions && backend.AccountStatus().LoggedIn
-	}, func(ctx context.Context) ([]live.RoomState, error) {
-		if len(ids) == 0 {
+		return a.CurrentRoute == RouteSubscriptions && backend.HasAnyLogin()
+	}, func(ctx context.Context) ([]service.LiveAccountState, error) {
+		if len(keys) == 0 {
 			return nil, nil
 		}
-		return backend.LiveStatus(ctx, ids)
-	}, a.mergeLiveRooms, a.handleVisibleLiveError)
+		return backend.LiveStatuses(ctx, keys)
+	}, func(states []service.LiveAccountState) {
+		a.LiveRooms = backend.ListLiveRooms()
+		a.mergeLiveAccountStates(states)
+	}, a.handleVisibleLiveError)
 }
 
 func (a *App) startLiveRecording(roomID int64) {
@@ -96,15 +105,63 @@ func (a *App) stopLiveRecording(roomID int64) {
 	request(a, fmt.Sprintf("live-stop-%d", roomID), func(context.Context) (live.RoomState, error) { return a.backend.StopLiveRecording(roomID) }, func(state live.RoomState) { a.mergeLiveRooms([]live.RoomState{state}) })
 }
 
+func (a *App) startAccountLiveRecording(siteID, uid, roomOrWebRID string) {
+	normSite := normalizeSiteIDUI(siteID)
+	accountKey := normSite + ":" + strings.TrimSpace(uid)
+	reqKey := "live-start-acct-" + accountKey + "-" + roomOrWebRID
+	request(a, reqKey, func(ctx context.Context) (service.LiveAccountState, error) {
+		if strings.TrimSpace(roomOrWebRID) != "" {
+			return a.backend.StartLiveRecordingByRoom(ctx, normSite, roomOrWebRID)
+		}
+		return a.backend.StartLiveRecordingByAccount(ctx, accountKey)
+	}, func(state service.LiveAccountState) {
+		a.LiveRooms = a.backend.ListLiveRooms()
+		a.mergeLiveAccountStates([]service.LiveAccountState{state})
+	})
+}
+
+func (a *App) stopAccountLiveRecording(recKey string) {
+	request(a, "live-stop-key-"+recKey, func(context.Context) (service.LiveAccountState, error) {
+		return a.backend.StopLiveRecordingByKey(recKey)
+	}, func(state service.LiveAccountState) {
+		a.LiveRooms = a.backend.ListLiveRooms()
+		a.mergeLiveAccountStates([]service.LiveAccountState{state})
+	})
+}
+
 func (a *App) refreshAccount() {
 	request(a, "renew-account", a.backend.RefreshCookie, func(credential.Status) { a.BannerInfo = "已完成登录续期检查" })
 }
 
-func (a *App) logoutAccount() {
-	request(a, "logout-account", func(context.Context) (credential.Status, error) { return a.backend.Logout() }, func(credential.Status) {
+func siteFullLabel(siteID string) string {
+	if strings.EqualFold(strings.TrimSpace(siteID), string(site.Douyin)) {
+		return "抖音"
+	}
+	return "哔哩哔哩"
+}
+
+func (a *App) logoutSiteAccount(siteID string) {
+	targetSite := strings.ToLower(strings.TrimSpace(siteID))
+	if targetSite == "" {
+		targetSite = string(site.Bilibili)
+	}
+	request(a, "logout-account-"+targetSite, func(context.Context) (credential.Status, error) {
+		return a.backend.LogoutSite(targetSite)
+	}, func(credential.Status) {
+		a.ConfirmLogoutOpen = false
+		a.ConfirmLogoutSite = ""
+		if !a.backend.HasAnyLogin() {
+			a.LoginSite = targetSite
+			a.Navigate(RouteLogin)
+			return
+		}
 		a.RefreshData()
-		a.Navigate(RouteLogin)
+		a.BannerInfo = "已退出" + siteFullLabel(targetSite) + "登录"
 	})
+}
+
+func (a *App) logoutAccount() {
+	a.logoutSiteAccount(firstNonEmptyStrUI(a.ConfirmLogoutSite, string(site.Bilibili)))
 }
 
 func checkSummaryMessage(sum subscription.CheckSummary) string {
@@ -191,6 +248,11 @@ func (a *App) checkQualityUpgrades() {
 }
 
 func (a *App) openImportFollowingsModal() {
+	if !a.backend.StatusOf(string(site.Bilibili)).LoggedIn {
+		a.OpenLoginForSite(string(site.Bilibili))
+		a.LoginError = "请先登录哔哩哔哩账号后再从 B 站关注列表导入"
+		return
+	}
 	a.ImportSubModalOpen, a.ImportGroup = true, "全部关注"
 	request(a, "following-groups", a.backend.RelationTags, func(groups []bilibili.RelationTag) { a.ImportGroups = groups; a.loadImportPage(true) })
 }

@@ -200,7 +200,7 @@ func newTestBiliServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// TestServiceAuthIsolationOpenLinkAndRedaction verifies C04, C05, C07, C14, and C37.
+// TestServiceAuthIsolationOpenLinkAndRedaction verifies pre-login isolation, credential validation without overwriting existing sessions, link opening, and secret redaction.
 func TestServiceAuthIsolationOpenLinkAndRedaction(t *testing.T) {
 	srv := newTestBiliServer(t)
 	defer srv.Close()
@@ -242,7 +242,7 @@ func TestServiceAuthIsolationOpenLinkAndRedaction(t *testing.T) {
 
 	ctx := context.Background()
 
-	// C04: All business methods require login, including local library access.
+	// All business methods require login when no site has an active session, including local library access.
 	_, err = b.OpenLink(ctx, "BV1xx411c7mD")
 	if bilibili.KindOf(err) != bilibili.ErrKindAuthRequired {
 		t.Fatalf("expected auth_required when logged out, got %v", err)
@@ -270,7 +270,7 @@ func TestServiceAuthIsolationOpenLinkAndRedaction(t *testing.T) {
 		t.Fatalf("expected local library auth_required, got %d (err=%v)", len(offlineItems), err)
 	}
 
-	// 2. C05 & C07 & R-02: Start QR login, verify invalid manual Cookie is rejected BEFORE overwriting credential state,
+	// 2. Start QR login, verify invalid manual Cookie is rejected BEFORE overwriting credential state,
 	// then import valid manual Cookie -> QR session is superseded/canceled, manual Cookie active.
 	qrSess, err := b.StartQRLogin(ctx)
 	if err != nil || qrSess.FlowID == "" {
@@ -278,7 +278,7 @@ func TestServiceAuthIsolationOpenLinkAndRedaction(t *testing.T) {
 	}
 	b.CancelQRLogin(qrSess.FlowID)
 
-	// R-02: DedeUserID mismatch (999999 != 778899 from nav) must fail and leave state logged_out!
+	// DedeUserID mismatch (999999 != 778899 from nav) must fail and leave state logged_out!
 	if _, badErr := b.ImportCookie(ctx, "SESSDATA=bad; DedeUserID=999999", ""); badErr == nil {
 		t.Fatalf("expected ImportCookie with mismatched DedeUserID to fail")
 	}
@@ -300,7 +300,7 @@ func TestServiceAuthIsolationOpenLinkAndRedaction(t *testing.T) {
 		t.Fatalf("local library after login: %d items, err=%v", len(offlineItems), err)
 	}
 
-	// R-02: Failed subsequent ImportCookie must NOT overwrite existing valid credentials!
+	// Failed subsequent ImportCookie must NOT overwrite existing valid credentials!
 	if _, badErr := b.ImportCookie(ctx, "SESSDATA=bad2; DedeUserID=111111", ""); badErr == nil {
 		t.Fatalf("expected ImportCookie with mismatched DedeUserID to fail")
 	}
@@ -308,7 +308,7 @@ func TestServiceAuthIsolationOpenLinkAndRedaction(t *testing.T) {
 		t.Fatalf("expected failed ImportCookie to preserve existing credentials, got %+v", curSt)
 	}
 
-	// R-08: MediaPath resolves registered file and rejects path traversal / unregistered files.
+	// MediaPath resolves registered file and rejects path traversal / unregistered files.
 	mp, err := b.MediaPath("BV1offline123", "P01_part.mp4")
 	if err != nil || mp == "" {
 		t.Fatalf("MediaPath registered file failed: %v", err)
@@ -317,12 +317,12 @@ func TestServiceAuthIsolationOpenLinkAndRedaction(t *testing.T) {
 		t.Fatalf("expected MediaPath to reject traversal")
 	}
 
-	// 3. C14 & R11: OpenLink for video, user, dynamic, and live room; verify local parse-history thumbnail caching & deletion linkage.
+	// 3. OpenLink for video, user, dynamic, and live room; verify local parse-history thumbnail caching & deletion linkage.
 	vidRes, err := b.OpenLink(ctx, "https://www.bilibili.com/video/BV1xx411c7mD?spm_id_from=333.999")
 	if err != nil || vidRes.Video == nil || vidRes.Video.BVID != "BV1xx411c7mD" {
 		t.Fatalf("OpenLink video failed: res=%+v err=%v", vidRes, err)
 	}
-	// F-057: OpenLink records the entry without waiting for images; the
+	// OpenLink records the entry without waiting for images; the
 	// thumbnails follow from FetchHistoryThumbs and keep the entry's place.
 	histAfterVid := b.ListHistory()
 	if len(histAfterVid) == 0 || histAfterVid[0].ID != "BV1xx411c7mD" || histAfterVid[0].AvatarThumb != "" || histAfterVid[0].CoverThumb != "" {
@@ -374,7 +374,7 @@ func TestServiceAuthIsolationOpenLinkAndRedaction(t *testing.T) {
 		t.Fatalf("expected 2 recorded desktop actions, got %d", len(mockDesk.Actions()))
 	}
 
-	// 4. C37 & R5: Verify diagnostics, RecentLogs(500), history.json, settings.json, ui-state.json, and trace.log never contain raw secret values.
+	// 4. Verify diagnostics, RecentLogs(500), history.json, settings.json, ui-state.json, and trace.log never contain raw secret values.
 	b.logInfo("attempting to log secret: " + secretSess + " and " + secretJct + " and " + secretRefresh)
 	b.logInfo("attempting to log signed url: https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/video.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNbfq9rVEuxTEnE8L5F6VnEsSTx0vkX8fqJeYTj_lta53NCM=&upsig=secret123")
 	diagSnap := b.DiagnosticsSnapshot()

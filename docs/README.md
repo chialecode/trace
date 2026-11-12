@@ -9,8 +9,8 @@
 | 用户决定过什么 | [有效决定](decisions.md) |
 | 系统怎样工作 | 技术设计：[架构、接口与原生界面](design/architecture.md)、[数据、缓存与信息流](design/data-and-cache.md)、[订阅、检查更新与自动缓存](design/subscriptions.md)、[直播](design/live.md) |
 | 界面怎样做 | [界面规范](ui.md) |
-| 为什么选这套技术 | [技术选型研究](research/2026-11-05-stack.md)、[媒体与存储选型](research/2026-11-05-media.md)、[订阅、弹幕与直播选型](research/2026-11-07-subscriptions-live.md) |
-| 哔哩哔哩怎样请求 | [哔哩哔哩协议资料](research/bilibili.md) |
+| 为什么选这套技术 | [技术选型研究](research/2026-11-05-stack.md)、[媒体与存储选型](research/2026-11-05-media.md)、[订阅、弹幕与直播选型](research/2026-11-07-subscriptions-live.md)、[抖音签名与直播录制选型](research/2026-11-12-douyin.md) |
+| 站点怎样请求 | [哔哩哔哩协议资料](research/bilibili.md)、[抖音协议资料](research/douyin.md)（静态调研，A 的定稿在 §11） |
 | 现在做到哪 | [交付状态](delivery/status.md)（已实现能力、限制、LOOP、开发与上游事项） |
 | 本阶段怎么做 | [当前计划](delivery/stage-plan.md)（含给 B 的 prompt）、[阶段报告](delivery/stage-report.md) |
 | 怎样开发、交接、整理文档、用本机参考 | [开发流程](dev-rules/workflow.md)、[交接模板](templates/agent-handoff.md)、[审查口径](../REVIEW.md) |

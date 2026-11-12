@@ -142,48 +142,59 @@ type propVariant struct {
 	pad        uint64
 }
 
-// MFDecoder implements MediaDecoder using Windows Media Foundation IMFSourceReader in pure Go (PR-1).
+// MFDecoder implements MediaDecoder using Windows Media Foundation IMFSourceReader in pure Go.
 type MFDecoder struct {
-	mu           sync.Mutex
-	reader       uintptr
-	width        int
-	height       int
-	stride       int
-	videoFormat  string  // "abgr32" (RGBA bytes), "rgb32" or "nv12"
-	device       uintptr // ID3D11Device when decoding on the GPU
-	manager      uintptr // IMFDXGIDeviceManager owning device
-	hardware     bool
-	mode         string // readerMode name that opened the reader
-	duration     time.Duration
-	fps          float64
-	hasAudio     bool
-	audioFormat  string // "float" or "pcm16"
-	sampleRate   int
-	channels     int
-	audioCarry   []float32
-	lastVideoPos time.Duration
-	lastRequest  time.Duration
-	lastFrame    *image.RGBA
-	closed       bool
+	mu             sync.Mutex
+	reader         uintptr
+	hasVideo       bool
+	sourceHasVideo bool
+	width          int
+	height         int
+	stride         int
+	videoFormat    string  // "abgr32" (RGBA bytes), "rgb32", "nv12", or "none"
+	device         uintptr // ID3D11Device when decoding on the GPU
+	manager        uintptr // IMFDXGIDeviceManager owning device
+	hardware       bool
+	mode           string // readerMode name that opened the reader
+	duration       time.Duration
+	fps            float64
+	hasAudio       bool
+	audioFormat    string // "float" or "pcm16"
+	sampleRate     int
+	channels       int
+	audioCarry     []float32
+	lastVideoPos   time.Duration
+	lastRequest    time.Duration
+	lastFrame      *image.RGBA
+	closed         bool
 }
 
-// OpenMediaFile opens a local MP4/fMP4 file using Windows Media Foundation
-// IMFSourceReader: one reader decodes only video (on the GPU when possible),
-// another only audio, so neither buffers samples of a stream it never reads.
+// OpenMediaFile opens a local media file using Windows Media Foundation
+// IMFSourceReader: files with a video stream keep the video-first split reader
+// path (GPU video + independent audio reader), while pure audio files with no
+// video stream (such as .m4a or .mp3) open through an audio-only reader.
 func OpenMediaFile(path string) (MediaDecoder, error) {
 	video, err := openMFReader(path, true)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		if !video.hasAudio {
+			return video, nil
+		}
+		audio, err := openMFReader(path, false)
+		if err != nil {
+			_ = video.Close()
+			return nil, err
+		}
+		return &splitDecoder{MFDecoder: video, audio: audio}, nil
 	}
-	if !video.hasAudio {
-		return video, nil
+
+	audioOnly, audioErr := openMFReader(path, false)
+	if audioErr == nil {
+		if !audioOnly.sourceHasVideo && audioOnly.hasAudio {
+			return audioOnly, nil
+		}
+		_ = audioOnly.Close()
 	}
-	audio, err := openMFReader(path, false)
-	if err != nil {
-		_ = video.Close()
-		return nil, err
-	}
-	return &splitDecoder{MFDecoder: video, audio: audio}, nil
+	return nil, err
 }
 
 // readerMode is one way to build a Source Reader, tried in order.
@@ -274,14 +285,18 @@ func openMFReaderMode(path string, forVideo bool, mode readerMode) (*MFDecoder, 
 	}
 
 	dec := &MFDecoder{
-		reader:     reader,
-		device:     device,
-		manager:    manager,
-		hardware:   manager != 0,
-		mode:       mode.name,
-		fps:        30.0,
-		sampleRate: 48000,
-		channels:   2,
+		reader:      reader,
+		hasVideo:    forVideo,
+		videoFormat: "none",
+		device:      device,
+		manager:     manager,
+		hardware:    manager != 0,
+		mode:        mode.name,
+		sampleRate:  48000,
+		channels:    2,
+	}
+	if forVideo {
+		dec.fps = 30.0
 	}
 	fail := func(err error) (*MFDecoder, error) {
 		dec.releaseCOM()
@@ -293,6 +308,7 @@ func openMFReaderMode(path string, forVideo bool, mode readerMode) (*MFDecoder, 
 		if err := dec.configureVideoStream(mode.advanced); err != nil {
 			return fail(err)
 		}
+		dec.sourceHasVideo = true
 		// Only report audio; the separate audio reader decodes it.
 		var native uintptr
 		if hr := vcall(reader, 5, mfSourceReaderFirstAudioStream, 0, uintptr(unsafe.Pointer(&native))); int32(hr) >= 0 && native != 0 {
@@ -300,6 +316,11 @@ func openMFReaderMode(path string, forVideo bool, mode readerMode) (*MFDecoder, 
 			dec.hasAudio = true
 		}
 	} else {
+		var videoNative uintptr
+		if hr := vcall(reader, 5, mfSourceReaderFirstVideoStream, 0, uintptr(unsafe.Pointer(&videoNative))); int32(hr) >= 0 && videoNative != 0 {
+			comRelease(videoNative)
+			dec.sourceHasVideo = true
+		}
 		_ = vcall(reader, 4, mfSourceReaderFirstAudioStream, 1)
 		dec.configureAudioStream()
 		if !dec.hasAudio {
@@ -456,6 +477,7 @@ func (d *MFDecoder) setStreamSubtype(streamIdx uint32, major, sub *windows.GUID)
 }
 
 func (d *MFDecoder) BackendName() string { return "windows-mf" }
+func (d *MFDecoder) HasVideo() bool      { return d.hasVideo }
 
 // DecodePath names the reader mode and output format, such as "gpu/abgr32".
 func (d *MFDecoder) DecodePath() string      { return d.mode + "/" + d.videoFormat }
@@ -477,6 +499,9 @@ func (d *MFDecoder) DecodeVideoFrameAt(pos time.Duration, dst *image.RGBA) (*ima
 	defer d.mu.Unlock()
 	if d.closed || d.reader == 0 {
 		return nil, 0, io.EOF
+	}
+	if !d.hasVideo {
+		return nil, pos, nil
 	}
 
 	if pos < d.lastRequest || pos-d.lastRequest > 2*time.Second {
@@ -512,7 +537,7 @@ func (d *MFDecoder) DecodeVideoFrameAt(pos time.Duration, dst *image.RGBA) (*ima
 			pts := time.Duration(tsHNS * 100)
 			if pts < pos {
 				// A frame already replaced by a later one is never shown:
-				// skip reading it back and converting it (F-043).
+				// skip reading it back and converting it.
 				comRelease(sample)
 				d.lastVideoPos = pts
 				continue
@@ -899,12 +924,15 @@ func (d *splitDecoder) SeekAudio(pos time.Duration) error { return d.audio.Seek(
 // PreviewFrameAt seeks the video reader to pos and returns the first frame
 // it decodes there: the key frame at or before pos. Dragging the progress
 // bar shows these, which cost one frame each instead of decoding on from
-// the key frame to pos (F-059).
+// the key frame to pos.
 func (d *MFDecoder) PreviewFrameAt(pos time.Duration, dst *image.RGBA) (*image.RGBA, time.Duration, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed || d.reader == 0 {
 		return nil, 0, io.EOF
+	}
+	if !d.hasVideo {
+		return nil, pos, nil
 	}
 	if err := d.seekLocked(pos); err != nil {
 		return nil, pos, err

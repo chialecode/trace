@@ -1,18 +1,19 @@
 package bilibili
 
-import "context"
+import (
+	"context"
 
-type automaticContextKey struct{}
+	"github.com/chialecode/trace/internal/site"
+)
 
-// WithAutomaticRequests marks scheduled checks, renewal and auto-cache work.
+// WithAutomaticRequests marks scheduled checks, renewal, and auto-cache work.
 // Manual calls omit it and retain their explicit user-triggered behavior.
 func WithAutomaticRequests(ctx context.Context, source string) context.Context {
-	return context.WithValue(ctx, automaticContextKey{}, source)
+	return site.WithAutomaticRequests(ctx, source)
 }
 
 func AutomaticRequestSource(ctx context.Context) string {
-	source, _ := ctx.Value(automaticContextKey{}).(string)
-	return source
+	return site.AutomaticRequestSource(ctx)
 }
 
 func (c *Client) SetAutomaticRequestHandlers(guard func() error, stopped func(string)) {
@@ -22,7 +23,7 @@ func (c *Client) SetAutomaticRequestHandlers(guard func() error, stopped func(st
 }
 
 func (c *Client) ReportAutomaticError(ctx context.Context, err error) {
-	source, _ := ctx.Value(automaticContextKey{}).(string)
+	source := site.AutomaticRequestSource(ctx)
 	if source == "" || source == "subscription" {
 		return
 	}
@@ -39,7 +40,7 @@ func (c *Client) ReportAutomaticError(ctx context.Context, err error) {
 }
 
 func (c *Client) allowAutomaticRequest(ctx context.Context) error {
-	if source, _ := ctx.Value(automaticContextKey{}).(string); source == "" {
+	if source := site.AutomaticRequestSource(ctx); source == "" {
 		return nil
 	}
 	c.automationMu.RLock()

@@ -11,20 +11,22 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// Visual theme per docs/ui.md §5 (DEC-039): a warm gray-white base with
-// hairline borders, as Cindy's design system, and one fresh accent. Blue is
+// Visual theme per docs/ui.md §5 (DEC-039, DEC-046 ③): white content, an airy
+// neutral light-gray rail and panel, white fields and cards with hairline
+// borders rather than nested gray boxes, and one fresh accent. Blue is
 // the default; TRACE_UI_ACCENT=green previews the green accent (Q-011).
 var (
 	ColorBgMain       = ui.Hex("#ffffff") // content
-	ColorBgSecondary  = ui.Hex("#f8f8f6") // context panel, fields, cards on white
-	ColorBgRail       = ui.Hex("#f1f1ee") // icon rail
+	ColorBgPanel      = ui.Hex("#f7f7f7") // icon rail and context panel
+	ColorBgSecondary  = ui.Hex("#f4f4f4") // placeholders, small notices and chips on white
+	ColorBgRail       = ColorBgPanel
 	ColorHover        = ui.RGBA(38, 38, 38, 0.06)
 	ColorPressed      = ui.RGBA(38, 38, 38, 0.10)
 	ColorTextMain     = ui.Hex("#262626")
-	ColorTextMuted    = ui.Hex("#737373")
+	ColorTextMuted    = ui.Hex("#6b6b6b") // 4.9:1 on the panel gray, 5.3:1 on white
 	ColorTextFaint    = ui.Hex("#a3a3a3")
-	ColorBorder       = ui.Hex("#e7e7e3")
-	ColorBorderStrong = ui.Hex("#d7d7d4")
+	ColorBorder       = ui.Hex("#ececec")
+	ColorBorderStrong = ui.Hex("#dcdcdc")
 
 	ColorAccent      = ui.Hex("#1a73e8")
 	ColorAccentHover = ui.Hex("#1765cc")
@@ -80,7 +82,7 @@ func TraceTheme() *ui.Theme {
 	registerUIFont()
 	t := ui.LightTheme()
 	t.Background = ColorBgMain
-	t.Surface = ColorBgSecondary
+	t.Surface = ColorBgMain // fields and controls are white with a hairline (DEC-046 ③)
 	t.SurfaceHover = ColorHover
 	t.SurfacePressed = ColorPressed
 	t.Border = ColorBorderStrong

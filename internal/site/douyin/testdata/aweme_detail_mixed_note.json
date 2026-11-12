@@ -1,0 +1,158 @@
+{
+  "status_code": 0,
+  "status_msg": "",
+  "aweme_detail": {
+    "aweme_id": "7300000000000000002",
+    "aweme_type": 68,
+    "media_type": 42,
+    "desc": "合成混排图文示例：静图+实况+视频页+未知页\n#合成测试",
+    "create_time": 1763000100,
+    "is_top": 0,
+    "author": {
+      "uid": "100000000001",
+      "sec_uid": "MS4wLjABAAAA_SYNTHETIC_AUTHOR_01",
+      "short_id": "88001122",
+      "unique_id": "synth_creator_01",
+      "nickname": "合成创作者一号",
+      "avatar_larger": {
+        "url_list": [
+          "https://p3-pc.douyinpic.com/aweme/1080x1080/synthetic_avatar_01.jpeg"
+        ]
+      }
+    },
+    "statistics": {
+      "digg_count": 128,
+      "comment_count": 16,
+      "collect_count": 32,
+      "share_count": 8,
+      "play_count": 0
+    },
+    "status": {
+      "is_delete": false,
+      "private_status": 0
+    },
+    "video": {
+      "duration": 18000,
+      "play_addr": {
+        "url_list": [
+          "https://sf3-cdn-tos.douyinstatic.com/obj/ies-music/synthetic_bgm_trap.mp3"
+        ]
+      }
+    },
+    "music": {
+      "id_str": "7200000000000000001",
+      "title": "合成原声配乐",
+      "author": "合成创作者一号",
+      "duration": 18,
+      "is_original_sound": true,
+      "is_original": false,
+      "play_url": {
+        "url_list": [
+          "http://sf3-cdn-tos.douyinstatic.com/obj/ies-music/synthetic_bgm.mp3"
+        ]
+      }
+    },
+    "images": [
+      {
+        "uri": "tos-cn-i-0813/synth_page_01",
+        "width": 1440,
+        "height": 1920,
+        "live_photo_type": 0,
+        "clip_type": 0,
+        "url_list": [
+          "https://p3-pc-sign.douyinpic.com/tos-cn-i-0813/synth_page_01.heic",
+          "https://p3-pc-sign.douyinpic.com/tos-cn-i-0813/synth_page_01.webp",
+          "https://p3-pc-sign.douyinpic.com/tos-cn-i-0813/synth_page_01.jpeg"
+        ],
+        "download_url_list": [
+          "https://p3-pc-sign.douyinpic.com/tos-cn-i-0813/synth_page_01_tplv-dy-water.jpeg"
+        ]
+      },
+      {
+        "uri": "tos-cn-i-0813/synth_page_02_live",
+        "width": 1080,
+        "height": 1440,
+        "live_photo_type": 1,
+        "clip_type": 5,
+        "url_list": [
+          "https://p3-pc-sign.douyinpic.com/tos-cn-i-0813/synth_page_02.jpeg"
+        ],
+        "video": {
+          "width": 1080,
+          "height": 1440,
+          "duration": 3200,
+          "play_addr": {
+            "width": 1080,
+            "height": 1440,
+            "data_size": 1048576,
+            "url_list": [
+              "https://v26-web.douyinvod.com/synthetic/livephoto_page_02.mp4"
+            ]
+          }
+        }
+      },
+      {
+        "uri": "tos-cn-i-0813/synth_page_03_video",
+        "width": 1080,
+        "height": 1920,
+        "live_photo_type": 0,
+        "clip_type": 4,
+        "url_list": [
+          "https://p3-pc-sign.douyinpic.com/tos-cn-i-0813/synth_page_03_cover.jpeg"
+        ],
+        "video": {
+          "width": 1080,
+          "height": 1920,
+          "duration": 12400,
+          "bit_rate": [
+            {
+              "gear_name": "normal_720_0",
+              "quality_type": 10,
+              "bit_rate": 1200000,
+              "is_bytevc1": 0,
+              "FPS": 30,
+              "play_addr": {
+                "width": 720,
+                "height": 1280,
+                "data_size": 1800000,
+                "url_list": [
+                  "https://v26-web.douyinvod.com/synthetic/note_video_720p.mp4"
+                ]
+              }
+            },
+            {
+              "gear_name": "normal_1080_0",
+              "quality_type": 2,
+              "bit_rate": 2800000,
+              "is_bytevc1": 0,
+              "FPS": 60,
+              "play_addr": {
+                "width": 1080,
+                "height": 1920,
+                "data_size": 4200000,
+                "url_list": [
+                  "https://v26-web.douyinvod.com/synthetic/note_video_1080p60.mp4"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "uri": "tos-cn-i-0813/synth_page_04_unknown",
+        "width": 1080,
+        "height": 1080,
+        "live_photo_type": 0,
+        "clip_type": 99,
+        "url_list": [
+          "https://p3-pc-sign.douyinpic.com/tos-cn-i-0813/synth_page_04.jpeg"
+        ]
+      }
+    ],
+    "text_extra": [
+      {
+        "hashtag_name": "合成测试"
+      }
+    ]
+  }
+}

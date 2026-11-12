@@ -34,7 +34,7 @@ func (a *App) lookupRemoteBitmap(rawURL string) *ui.Bitmap {
 		a.mu.Unlock()
 		return nil
 	}
-	if a.dispatch == nil || a.CurrentRoute == RouteHome || (a.CurrentRoute == RouteVideo && a.CurrentLibraryDetail != nil) {
+	if a.dispatch == nil || a.CurrentRoute == RouteHome || (a.CurrentRoute == RouteVideo && a.CurrentLibraryDetail != nil) || (a.CurrentRoute == RouteDouyinWork && a.CurrentLibraryDetail != nil) {
 		a.mu.Unlock()
 		return nil
 	}
@@ -147,6 +147,49 @@ func (a *App) faceURL(mid int64) string {
 	}
 	for _, entry := range a.FeedItems {
 		if entry.Mid == mid {
+			return entry.AuthorFace
+		}
+	}
+	return ""
+}
+
+func (a *App) faceURLForAccount(siteID, uid string) string {
+	siteID = strings.ToLower(strings.TrimSpace(siteID))
+	uid = strings.TrimSpace(uid)
+	if uid == "" {
+		return ""
+	}
+	if siteID == "" || siteID == "bilibili" {
+		if mid, err := strconv.ParseInt(uid, 10, 64); err == nil && mid > 0 {
+			return a.faceURL(mid)
+		}
+		return ""
+	}
+	if st := a.backend.StatusOf(siteID); st.SecUID == uid || st.UID == uid {
+		if st.Face != "" {
+			return st.Face
+		}
+	}
+	if a.CurrentDouyinUser != nil && (a.CurrentDouyinUser.SecUID == uid || a.CurrentDouyinUser.UID == uid) && a.CurrentDouyinUser.AvatarURL != "" {
+		return a.CurrentDouyinUser.AvatarURL
+	}
+	if a.CurrentDouyinWork != nil && (a.CurrentDouyinWork.Author.SecUID == uid || a.CurrentDouyinWork.Author.UID == uid) && a.CurrentDouyinWork.Author.AvatarURL != "" {
+		return a.CurrentDouyinWork.Author.AvatarURL
+	}
+	for _, sub := range a.Subscriptions {
+		for _, acc := range sub.Accounts {
+			if strings.EqualFold(acc.Site, siteID) && acc.UID == uid && acc.Face != "" {
+				return acc.Face
+			}
+		}
+	}
+	for _, st := range a.LiveAccounts {
+		if strings.EqualFold(st.Site, siteID) && st.UID == uid && st.Face != "" {
+			return st.Face
+		}
+	}
+	for _, entry := range a.FeedItems {
+		if strings.EqualFold(entry.Site, siteID) && entry.AuthorUID == uid && entry.AuthorFace != "" {
 			return entry.AuthorFace
 		}
 	}
