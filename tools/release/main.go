@@ -10,7 +10,7 @@
 //	go run ./tools/release -publish       # tag and publish; needs TRACE_RELEASE_PUBLISH=1
 //
 // The update signing key comes from MYGO_UPDATER_PRIVATE_KEY, or here from
-// %APPDATA%\mygo\update-keys\trace\mygo-update.key; without it the release
+// %APPDATA%\trace-release\update-signing.key; without it the release
 // fails. The key is never printed or written anywhere else.
 package main
 
@@ -109,7 +109,7 @@ func defaultKeyFile() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "mygo", "update-keys", "trace", "mygo-update.key")
+	return filepath.Join(dir, "trace-release", "update-signing.key")
 }
 
 // signingKey returns the update key from the environment or the key file,
@@ -124,7 +124,7 @@ func signingKey(getenv func(string) string, keyFile, publicKey string) (ed25519.
 		text = strings.TrimSpace(string(raw))
 	}
 	if text == "" {
-		return nil, fmt.Errorf("no update signing key: set %s (CI: the release environment's secret) or keep it in %%APPDATA%%\\mygo\\update-keys\\trace\\mygo-update.key; a release is never built unsigned and the key is never generated here", keyEnv)
+		return nil, fmt.Errorf("no update signing key: set %s (CI: the release environment's secret) or keep it in %%APPDATA%%\\trace-release\\update-signing.key; a release is never built unsigned and the key is never generated here", keyEnv)
 	}
 	b, err := base64.StdEncoding.DecodeString(text)
 	if err != nil || len(b) != ed25519.PrivateKeySize {
