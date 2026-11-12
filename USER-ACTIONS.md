@@ -9,7 +9,7 @@
 <a id="now"></a>
 ## 推荐你做的
 
-M1 已于 2026-11-09 合并（`main @ 29c2678`）。按你的要求，M2 先解决安装包与更新（[DEC-041](docs/decisions.md#dec-041)，[阶段计划](docs/delivery/stage-plan.md)）：开发版每次打包后自动更新本机的 TRACE Dev，正式版通过互联网更新，版本号 `0.1.x`，GitHub Actions 每周自动检查与发布。B 已于 2026-11-09 实施完毕（细节按 [Q-012](#q-012) 的默认值），自动化测试与 ptest 身份下的“安装 → 更新 → 篡改被拒 → 卸载”演练通过；A 已于同日审查完毕，修了两处小问题，经 PR #2 合并为 `main @ c17bd87`。还没有发布过正式版。你装上 TRACE Dev 后，A 审查时打包了一次：开着的 TRACE Dev 自己退出、更新到新版本并重新打开窗口，用了约 1.5 秒；带缓存任务时的表现请按 [H-002](#h-002) 第 2 步看一次。你授权 ACT-008 后，A 已建好 `release` 环境与签名密钥的 secret；第一次手动构建因 Windows 运行器上的短路径问题失败，修复经 PR #3 合并后，第二次手动构建在 GitHub 上通过（签名、演练都成功，没有发布；[交付状态](docs/delivery/status.md)）。密钥文件请确认已备份（ACT-008 第 1 步）。M2 到此完成；发布第一个正式版 `0.1.1` 要你授权 [ACT-009](#act-009)。人工体验 H-001、H-002 仍为 not-run，产品验收还没开始。
+M1 已于 2026-11-09 合并（`main @ 29c2678`）。按你的要求，M2 先解决安装包与更新（[DEC-041](docs/decisions.md#dec-041)，[阶段计划](docs/delivery/stage-plan.md)）：开发版每次打包后自动更新本机的 TRACE Dev，正式版通过互联网更新，版本号 `0.1.x`，GitHub Actions 每周自动检查与发布。B 已于 2026-11-09 实施完毕（细节按 [Q-012](#q-012) 的默认值），自动化测试与 ptest 身份下的“安装 → 更新 → 篡改被拒 → 卸载”演练通过；A 已于同日审查完毕，修了两处小问题，经 PR #2 合并为 `main @ c17bd87`。还没有发布过正式版。你装上 TRACE Dev 后，A 审查时打包了一次：开着的 TRACE Dev 自己退出、更新到新版本并重新打开窗口，用了约 1.5 秒；带缓存任务时的表现请按 [H-002](#h-002) 第 2 步看一次。你授权 ACT-008 后，A 已建好 `release` 环境与签名密钥的 secret；第一次手动构建因 Windows 运行器上的短路径问题失败，修复经 PR #3 合并后，第二次手动构建在 GitHub 上通过（签名、演练都成功，没有发布；[交付状态](docs/delivery/status.md)）。密钥文件请确认已备份（ACT-008 第 1 步）。M2 到此完成。2026-11-12 你授权 ACT-009 后，第一个正式版 [`0.1.1`](https://github.com/chialecode/trace/releases/tag/v0.1.1) 已发布，每周自动发布已打开。人工体验 H-001、H-002 仍为 not-run，产品验收还没开始。
 
 | 顺序 | 事项 | 需要你做什么 | 暂时不做会怎样 |
 | --- | --- | --- | --- |
@@ -105,7 +105,9 @@ ACT-004、ACT-005 的回执只证明当时的代码。M1 的代码是新写的�
 3. **不包括**：创建标签和 Release、打开自动发布（见 ACT-009）。
 
 <a id="act-009"></a>
-### ACT-009：打开每周自动发布正式版（M2 合并后再授权）
+### ACT-009：打开每周自动发布正式版（2026-11-12 已完成）
+
+**结果**：你 2026-11-12 授权完成剩余操作直到发布成功。A 把仓库变量 `TRACE_RELEASE_PUBLISH` 设为 `1`，手动运行 `release.yml`（`publish=true`，[运行 43138195253](https://github.com/chialecode/trace/actions/runs/43138195253)），`check`、`build`、`publish` 全部通过，发布了 [v0.1.1](https://github.com/chialecode/trace/releases/tag/v0.1.1)。发布后从 `releases/latest` 取回更新清单，版本证明签名用内置公钥验证通过，更新包大小一致、地址为 HTTPS。以后每周一自动发布。以下为原说明。
 
 授权后，A 把仓库变量 `TRACE_RELEASE_PUBLISH` 设为 `1`：`release.yml` 每周一 00:00 UTC（北京时间 08:00）运行，上次发布以来 `main` 上有新合并的 PR 时，检查、构建、演练都通过就创建标签 `v0.1.x` 和 GitHub Release，装着正式版的电脑随后收到更新。第一次发布是 `0.1.1`。不授权时可以每次单独说“发布 0.1.x”，由 Agent 在本机用 `go run ./tools/release -publish` 发布那一次。随时可以说“停止自动发布”撤回。
 
