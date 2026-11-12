@@ -47,7 +47,7 @@
 - **安装测试**：`internal/shell/shell_test.go` 只有一个占位（“requires `TRACE_RUN_INSTALLER_TEST=1` with trace-ptest”），没有真正的安装、升级与卸载测试。`appdirs` 已有 `ptest` 通道，可作为测试身份。
 - **更新**：没有任何更新机制。仓库 `chialecode/trace` 公开，没有标签与 Release。
 - **CI**：只有 `.github/workflows/ci.yml` 的必需检查 `repository-quality`（Ubuntu、`go run ./tools/check`、只读 token、只允许固定 SHA 的 `actions/checkout`，[工程规则 §4.1](../dev-rules/engineering.md#remote)）。
-- **更新签名密钥**：A 已于 2026-11-09 用 `go tool mygo keygen` 在仓库外（MyGo 默认配置目录下的 `mygo/update-keys/trace/`）生成 Ed25519 密钥对。公钥是 `PE6JZtvGTY8jvwwou6DHO/qhWjkbrSXHbHd2O3fRZFo=`，B 把它写进正式版的配置；**B 不得重新生成或覆盖这把密钥**，否则本机与 CI 的签名对不上。私钥不入库，备份与放进 CI 见 ACT-008。
+- **更新签名密钥**：A 已于 2026-11-09 用 `go tool mygo keygen` 生成 Ed25519 密钥对，放在仓库外的 `%APPDATA%\trace-release\`（私钥 `update-signing.key`、公钥 `update-signing.pub`；2026-11-11 从 MyGo 默认目录移来）。公钥是 `PE6JZtvGTY8jvwwou6DHO/qhWjkbrSXHbHd2O3fRZFo=`，B 把它写进正式版的配置；**B 不得重新生成或覆盖这把密钥**，否则本机与 CI 的签名对不上。私钥不入库，备份与放进 CI 见 ACT-008。
 
 ## 3. 依据、查证与选型
 

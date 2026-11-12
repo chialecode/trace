@@ -94,9 +94,9 @@ ACT-004、ACT-005 的回执只证明当时的代码。M1 的代码是新写的�
 <a id="act-008"></a>
 ### ACT-008：备份更新密钥，配置仓库的发布环境（仓库设置已完成，2026-11-09）
 
-正式版的联网更新要用一把 Ed25519 密钥签名（DEC-042）。A 已于 2026-11-09 用 `go tool mygo keygen` 在本机生成，放在 MyGo 的默认配置目录里（`%APPDATA%` 下的 `mygo/update-keys/trace/`）：`mygo-update.key` 是私钥，`mygo-update.pub` 是公钥。公钥会内置在正式版里；**私钥丢了，已经装好的正式版就再也收不到更新**，被别人拿到就能伪造更新。
+正式版的联网更新要用一把 Ed25519 密钥签名（DEC-042）。A 已于 2026-11-09 用 `go tool mygo keygen` 在本机生成，现在放在 `%APPDATA%\trace-release\`（2026-11-11 从 MyGo 的默认配置目录移来）：`update-signing.key` 是私钥，`update-signing.pub` 是公钥。公钥会内置在正式版里；**私钥丢了，已经装好的正式版就再也收不到更新**，被别人拿到就能伪造更新。
 
-1. **你自己做**：把 `mygo-update.key` 复制到你的密码管理器或另一个安全的位置（不要放进任何仓库、网盘的公开目录或聊天）。
+1. **你自己做**：把 `update-signing.key` 复制到你的密码管理器或另一个安全的位置（不要放进任何仓库、网盘的公开目录或聊天）。
 2. **回复“授权 ACT-008”后，A 用 `gh` 对 `chialecode/trace` 做以下仓库设置**（只改设置，不 push 代码、不发布）：
    - 建 `release` 环境，只允许 `main` 分支部署；
    - 在这个环境里建 secret `MYGO_UPDATER_PRIVATE_KEY`，内容从本机密钥文件直接读入，不打印、不写进任何文件；

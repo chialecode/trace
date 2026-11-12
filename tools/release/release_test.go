@@ -157,7 +157,7 @@ func TestSigningKeyRequired(t *testing.T) {
 	if _, err := signingKey(env, "", base64.StdEncoding.EncodeToString(pub)); err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("other key: %v", err)
 	}
-	file := filepath.Join(t.TempDir(), "mygo-update.key")
+	file := filepath.Join(t.TempDir(), "update-signing.key")
 	if err := os.WriteFile(file, []byte(base64.StdEncoding.EncodeToString(key)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
