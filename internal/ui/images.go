@@ -25,7 +25,7 @@ func (a *App) lookupRemoteBitmap(rawURL string) *ui.Bitmap {
 	}
 	key := "public-image:" + rawURL
 	a.mu.Lock()
-	bmp, exists := a.imageCache[key]
+	bmp, exists := a.images.get(key)
 	if exists {
 		a.mu.Unlock()
 		return bmp
@@ -34,16 +34,11 @@ func (a *App) lookupRemoteBitmap(rawURL string) *ui.Bitmap {
 		a.mu.Unlock()
 		return nil
 	}
-	if a.dispatch == nil || a.CurrentRoute == RouteHome || (a.CurrentRoute == RouteVideo && a.CurrentLibraryDetail != nil) || (a.CurrentRoute == RouteDouyinWork && a.CurrentLibraryDetail != nil) {
+	if a.dispatch == nil || a.CurrentRoute == RouteHome || a.CurrentRoute == RouteLibrary || a.CurrentRoute == RouteLibraryItem || (a.CurrentRoute == RouteSubscriptions && a.SubDetailOpen && normalizeSubDetailTab(a.SubDetailTab) == "content") || (a.CurrentRoute == RouteVideo && a.CurrentLibraryDetail != nil) || (a.CurrentRoute == RouteDouyinWork && a.CurrentLibraryDetail != nil) {
 		a.mu.Unlock()
 		return nil
 	}
-	if len(a.imageKeys) >= 128 {
-		delete(a.imageCache, a.imageKeys[0])
-		a.imageKeys = a.imageKeys[1:]
-	}
-	a.imageKeys = append(a.imageKeys, key)
-	a.imageCache[key] = nil
+	a.images.reserve(key)
 	a.mu.Unlock()
 	requestGuarded(a, key, nil, func(ctx context.Context) (*ui.Bitmap, error) {
 		select {
@@ -76,9 +71,7 @@ func (a *App) lookupRemoteBitmap(rawURL string) *ui.Bitmap {
 		return ui.NewBitmap(small), nil
 	}, func(bmp *ui.Bitmap) {
 		a.mu.Lock()
-		if _, ok := a.imageCache[key]; ok {
-			a.imageCache[key] = bmp
-		}
+		a.images.fill(key, bmp)
 		delete(a.imageRetry, key)
 		a.mu.Unlock()
 	}, func(error) {
@@ -92,14 +85,8 @@ func (a *App) lookupRemoteBitmap(rawURL string) *ui.Bitmap {
 		r.at = time.Now().Add(time.Duration(r.tries) * remoteImageRetryPause)
 		a.imageRetry[key] = r
 		// Free the slot so the next lookup after the pause fetches again.
-		if bmp, ok := a.imageCache[key]; ok && bmp == nil {
-			delete(a.imageCache, key)
-			for i, k := range a.imageKeys {
-				if k == key {
-					a.imageKeys = append(a.imageKeys[:i], a.imageKeys[i+1:]...)
-					break
-				}
-			}
+		if bmp, ok := a.images.get(key); ok && bmp == nil {
+			a.images.remove(key)
 		}
 	})
 	return nil

@@ -11,6 +11,7 @@ import (
 	_ "image/png"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/storage"
 	"github.com/chialecode/trace/internal/subscription"
+	"github.com/chialecode/trace/internal/uistate"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -38,6 +40,7 @@ const (
 	RouteDouyinWork    = "/douyin/work"
 	RouteDouyinUser    = "/douyin/user"
 	RouteLibrary       = "/library"
+	RouteLibraryItem   = "/library/item"
 	RouteTasks         = "/tasks"
 	RouteSettings      = "/settings"
 	RouteLogin         = "/login"
@@ -114,7 +117,8 @@ type DeleteConfirmState struct {
 	DeleteFiles bool
 }
 
-// HomeUpdatedActor represents a subscription or unsubscribed creator with new cached content after the last viewed timestamp on Home (DEC-037).
+// HomeUpdatedActor is a subscription as a row of the Home panel, with its
+// newest cached post under the site filter (DEC-053 ②).
 type HomeUpdatedActor struct {
 	Key        string
 	SubID      string
@@ -149,17 +153,38 @@ type App struct {
 	player              *player.Controller
 	bgmPlayer           *player.Controller
 	viewerPlayer        *player.Controller
+	livePreviewPlayer   *player.Controller
 	unsub               func()
 
 	// In-memory bitmap cache for local covers/thumbnails, freed on CloseToTray (DEC-030)
-	imageCache map[string]*ui.Bitmap
-	imageKeys  []string
+	images     bitmapCache
 	imageRetry map[string]imageRetry
-	// homeBaselineTs is the newest post seen before this session (the
-	// "有更新" baseline); homeSeenTs is the newest seen so far.
+	// homeBaselineTs is the newest post seen before this session, the
+	// initial "seen" of subscriptions without a homeSeen entry; homeSeenTs
+	// is the newest seen so far; homeSeenLocal is homeSeen as written.
 	homeBaselineTs     int64
 	homeSeenTs         int64
 	homeBaselineLoaded bool
+	homeSeenLocal      map[string]int64
+	// Reading positions of Home per site filter (DEC-053 ①).
+	homePosRestored   map[string]bool
+	homeFilterViews   map[string]*homeFeedView
+	homePosSaved      map[string]uistate.HomePosition
+	homePosSeen       uistate.HomePosition
+	homePosSeenSite   string
+	homePosSeenAt     time.Time
+	homeRestorePhase  int
+	homeRestoreOffset int
+	homeListBounds    ui.Rect
+	// The subscriptions of the Home panel (DEC-053 ②): the order fixed on
+	// entering Home per site filter, and the rows built from it.
+	homeSubOrder     map[string][]string
+	homeSubRows      []HomeUpdatedActor
+	homeSubRowsSig   homeSubsSig
+	homeSubRowsValid bool
+	homeSubIndex     map[string]int
+	HomeSubListState ui.ListState
+	homeStripScroll  ui.ScrollState
 	// postCards caches the card built for each feed entry or dynamic, so
 	// scrolling does not query the library for every visible row on every
 	// frame. Cleared whenever tasks or the library change.
@@ -205,26 +230,21 @@ type App struct {
 	qrCancel           context.CancelFunc
 
 	// Home Feed (DEC-037, DEC-040)
-	FeedItems                 []library.FeedEntry
-	FeedListState             ui.ListState
-	FeedScroll                ui.ScrollState
-	feedMoreBefore            bool
-	feedMoreAfter             bool
-	FeedError                 string
-	feedFailedBefore          bool
-	FeedSortOrder             string // always "newest"
-	FeedFilterScope           string // "all" | "cached" | "unread"
-	FeedSiteFilter            string // "all" | "bilibili" | "douyin"
-	FeedAuthorsFilter         []int64
-	FeedAuthorRefsFilter      []library.AuthorRef
-	HomeActorFilter           *HomeUpdatedActor
-	savedMainFeedItems        []library.FeedEntry
-	savedMainFeedListState    ui.ListState
-	savedMainFeedScrollY      float32
-	savedMainFeedMoreBefore   bool
-	savedMainFeedMoreAfter    bool
-	savedMainFeedError        string
-	savedMainFeedFailedBefore bool
+	FeedItems            []library.FeedEntry
+	FeedListState        ui.ListState
+	FeedScroll           ui.ScrollState
+	feedMoreBefore       bool
+	feedMoreAfter        bool
+	FeedError            string
+	feedFailedBefore     bool
+	FeedSortOrder        string // always "newest"
+	FeedFilterScope      string // "all" | "cached" | "unread"
+	FeedSiteFilter       string // "all" | "bilibili" | "douyin"
+	FeedAuthorsFilter    []int64
+	FeedAuthorRefsFilter []library.AuthorRef
+	HomeActorFilter      *HomeUpdatedActor
+	// savedMain is the main timeline while a subscription's feed shows.
+	savedMain *homeFeedView
 
 	// Video & Dynamic Detail
 	CurrentVideo         *bilibili.VideoDetail
@@ -244,8 +264,11 @@ type App struct {
 	DouyinWorksAuthExpired bool
 	DouyinUserListState    ui.ListState
 	DouyinUserSubMenuOpen  bool
-	DouyinCardMenuID       string
-	DouyinDescExpanded     bool
+
+	// Mine is the in-memory state of 我的 (never written to ui-state.json).
+	Mine               MineState
+	DouyinCardMenuID   string
+	DouyinDescExpanded bool
 
 	// Pure-audio BGM bar playback state for Douyin notes
 	BGMActiveKey      string
@@ -297,27 +320,48 @@ type App struct {
 	douyinFilteredEmpty bool
 	// cacheStateRev changes whenever tasks or the library change.
 	cacheStateRev int
+	// cardLocals caches work cards' dots and local covers for cacheStateRev.
+	cardLocals    map[string]workCardLocal
+	cardLocalsRev int
 
 	// Subscriptions Page
-	Subscriptions      []subscription.Subscription
-	SubListState       ui.ListState
-	SubSearchQuery     string
-	subListQuery       string
-	CheckDone          int
-	CheckTotal         int
-	SelectedSubID      string
-	SelectedSubMid     int64
-	SubDetailOpen      bool
-	SubMoreMenuOpen    bool
-	SubManageMenuOpen  bool
-	SubManageModalMode string // "" | "rename" | "note" | "avatar" | "delete"
-	SubAvatarInput     string
-	SubDetailTab       string // "live" | "accounts"
-	SubRuleMenuOpen    bool
+	Subscriptions  []subscription.Subscription
+	SubListState   ui.ListState
+	SubSearchQuery string
+	subListQuery   string
+	CheckDone      int
+	CheckTotal     int
+	SelectedSubID  string
+	SelectedSubMid int64
+	SubDetailOpen  bool
+	// SubAccountsOpen shows 订阅 › 全部账号 (accounts by site, DEC-057).
+	SubAccountsOpen      bool
+	SubAccountsSite      string
+	SubAccountsListState ui.ListState
+	SubMoreMenuOpen      bool
+	SubManageMenuOpen    bool
+	SubManageModalMode   string // "" | "rename" | "note" | "avatar" | "delete"
+	SubAvatarInput       string
+	SubDetailTab         string // "content" | "accounts"
+	SubAccountMenuKey    string
+	SubFeedSubID         string
+	SubFeedRefsKey       string
+	SubFeedItems         []library.FeedEntry
+	SubFeedListState     ui.ListState
+	SubFeedMoreAfter     bool
+	SubFeedError         string
+	subFeedDirty         bool
+	SubRuleMenuOpen      bool
 	// RuleDraft is the cache rule being edited in Settings (ID "" = new).
-	RuleDraft           *subscription.CacheRule
-	RuleError           string
-	AddSubDialogOpen    bool
+	RuleDraft *subscription.CacheRule
+	RuleError string
+	RuleBatch RuleBatchDialogState
+	// LibraryRefresh is the media library's "刷新" and its result dialog.
+	LibraryRefresh   LibraryRefreshState
+	AddSubDialogOpen bool
+	// SubscribePicker subscribes to an account: into an existing
+	// subscription or a new one (DEC-058).
+	SubscribePicker     SubscribePickerState
 	AddSubInput         string
 	AddSubName          string
 	AddSubPreview       *subscription.AccountRef
@@ -350,9 +394,14 @@ type App struct {
 	LiveAccounts        []service.LiveAccountState
 
 	// Library Page
-	LibraryItems      []library.ItemMetadata
-	LibraryListState  ui.ListState
-	LibraryKindFilter string // "" | "image" | "video" | "dynamic" | "live"
+	LibraryItems     []library.ItemMetadata
+	LibraryListState ui.ListState
+	// queueCovers caches the cover of items in the queues' recent lists.
+	queueCovers    map[string][2]string
+	queueCoversRev int
+	// dismissedLive caches ui-state's DismissedLiveSessions (nil: not loaded).
+	dismissedLive     map[string]bool
+	LibraryKindFilter string // "" | "image" | "video" | "dynamic" | "live" | "forward"
 	LibrarySiteFilter string // "all" | "bilibili" | "douyin"
 	LibraryCreatorMid int64
 	LibraryAuthorKey  string // "<site>:<uid>"
@@ -368,15 +417,32 @@ type App struct {
 	DeleteConfirm     DeleteConfirmState
 
 	// Tasks Page
-	Tasks               []download.Task
-	ExpandedTaskID      string
-	TaskRemoveConfirmID string
-	TaskActionError     string
-	UpgradeCheckBusy    bool
-	UpgradeCandidates   []library.ItemMetadata
-	UpgradeDone         int
-	UpgradeTotal        int
-	upgradeCancel       context.CancelFunc
+	TasksSection            string // "downloads" | "queue" | "live" | "incidents"
+	SelectedCacheQueueID    string
+	SelectedLiveIncidentKey string
+	liveLibItemsCache       []library.ItemMetadata
+	liveLibItemsCacheRev    int
+	CacheQueue              []service.CacheQueueTask
+	Tasks                   []download.Task
+	ExpandedTaskID          string
+	TaskRemoveConfirmID     string
+	TaskActionError         string
+	UpgradeCheckBusy        bool
+	UpgradeCandidates       []library.ItemMetadata
+	UpgradeDone             int
+	UpgradeTotal            int
+	upgradeCancel           context.CancelFunc
+	LivePreviewKey          string
+	LivePreviewTitle        string
+	LivePreviewPartPath     string
+	LivePreviewPartIndex    int
+	LivePreviewLoading      bool
+	LivePreviewUnsupported  bool
+	LivePreviewReason       string
+	LivePreviewError        string
+	livePreviewOpenSeq      int
+	livePreviewCancel       context.CancelFunc
+	livePreviewOpener       func(ctx context.Context, path string, opts player.LivePreviewOptions) (player.MediaDecoder, error)
 
 	// Settings Page
 	SettingsCategory string // "account" | "download" | "quality" | "subscription" | "storage" | "general" | "logs" | "about"
@@ -411,6 +477,9 @@ func newCompanionAudioSink(primary player.AudioSink) player.AudioSink {
 
 func normalizeAppRoute(route string) string {
 	trimmed := strings.TrimSpace(route)
+	if q := strings.IndexByte(trimmed, '?'); q >= 0 {
+		trimmed = strings.TrimSpace(trimmed[:q])
+	}
 	switch {
 	case trimmed == "" || !strings.HasPrefix(trimmed, "/"):
 		return RouteHome
@@ -500,8 +569,16 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 		Volume:    uiSt.Player.Volume,
 		Muted:     uiSt.Player.Muted,
 	})
+	livePreviewCtrl := player.NewController(player.Options{
+		AudioSink: newCompanionAudioSink(audioSink),
+		Volume:    uiSt.Player.Volume,
+		Muted:     uiSt.Player.Muted,
+	})
 
 	initialRoute := normalizeAppRoute(uiSt.LastRoute)
+	if initialRoute == RouteLibraryItem {
+		initialRoute = RouteLibrary
+	}
 	loginSite := string(site.Bilibili)
 	if routeExclusiveSite(initialRoute) == string(site.Douyin) {
 		loginSite = string(site.Douyin)
@@ -512,7 +589,6 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 		ctx:                ctx,
 		cancel:             cancel,
 		pending:            make(map[string]bool),
-		imageCache:         make(map[string]*ui.Bitmap),
 		imageQueue:         make(chan struct{}, 2),
 		ExpandedPosts:      make(map[string]bool),
 		expiredNoticeShown: make(map[string]bool),
@@ -520,6 +596,7 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 		player:             ctrl,
 		bgmPlayer:          bgmCtrl,
 		viewerPlayer:       viewerCtrl,
+		livePreviewPlayer:  livePreviewCtrl,
 		CurrentRoute:       initialRoute,
 		LoginSite:          loginSite,
 		LoginTab:           "qr",
@@ -528,12 +605,13 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 		FeedSiteFilter:     normalizeSiteFilter(uiSt.FeedFilter.Site),
 		SelectedPartPages:  make(map[int]bool),
 		UserTab:            "dynamics",
-		SubDetailTab:       "live",
+		SubDetailTab:       normalizeSubDetailTab(uiSt.SubDetailTab),
 		AddSubScope:        "both",
 		AddSubAutoCache:    "inherit",
 		ImportSelectedMids: make(map[int64]bool),
 		LibrarySiteFilter:  "all",
-		LibrarySort:        "cached_at",
+		LibrarySort:        "pub_ts",
+		TasksSection:       "downloads",
 		SettingsCategory:   "account",
 		DraftSettings:      s,
 		CacheDirInput:      s.CacheDir,
@@ -556,7 +634,9 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 		app.FeedSortOrder = "newest"
 	}
 	app.resetFeedListState()
+	app.resetSubFeedListState()
 	app.RefreshData()
+	app.applyInitialSubscriptionRoute(uiSt.LastRoute)
 	return app
 }
 
@@ -573,6 +653,11 @@ func (a *App) resetFeedListState() {
 
 // Close releases bitmaps, player resources, and event subscriptions (DEC-030, INV-13).
 func (a *App) Close() {
+	// Closing the window, to the tray or to quit (--quit-for-update too),
+	// keeps where Home was read (DEC-053 ①).
+	if a.HomeActorFilter == nil {
+		a.flushHomePosition()
+	}
 	a.setPlayerFullscreen(false)
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -581,6 +666,10 @@ func (a *App) Close() {
 	if a.upgradeCancel != nil {
 		a.upgradeCancel()
 		a.upgradeCancel = nil
+	}
+	if a.livePreviewCancel != nil {
+		a.livePreviewCancel()
+		a.livePreviewCancel = nil
 	}
 	if a.qrCancel != nil {
 		a.qrCancel()
@@ -602,14 +691,16 @@ func (a *App) Close() {
 	if a.viewerPlayer != nil {
 		_ = a.viewerPlayer.Close()
 	}
+	if a.livePreviewPlayer != nil {
+		_ = a.livePreviewPlayer.Close()
+	}
 }
 
 // ReleaseBitmapsLocked frees any allocated UI bitmaps when closing to tray (DEC-030).
 func (a *App) ReleaseBitmapsLocked() {
 	a.QRBitmap = nil
 	a.ImageViewer.Bitmaps = nil
-	a.imageCache = make(map[string]*ui.Bitmap)
-	a.imageKeys = nil
+	a.images.reset()
 	a.postCards = nil
 }
 
@@ -618,19 +709,25 @@ func (a *App) ReleaseBitmapsLocked() {
 // (or when it cannot be read) the caller draws its placeholder. Scrolling
 // therefore never waits for a large original to decode.
 func (a *App) lookupLocalBitmap(itemKey, relPath string) *ui.Bitmap {
+	return a.lookupLocalBitmapEdge(itemKey, relPath, thumbMaxEdge)
+}
+
+// lookupLocalBitmapEdge is lookupLocalBitmap decoded to fit maxEdge pixels:
+// the size it is drawn at, not the original's (DEC-057).
+func (a *App) lookupLocalBitmapEdge(itemKey, relPath string, maxEdge int) *ui.Bitmap {
 	if a.backend == nil || itemKey == "" || relPath == "" {
 		return nil
 	}
 	key := itemKey + "::" + relPath
-	a.mu.Lock()
-	if a.imageCache == nil {
-		a.imageCache = make(map[string]*ui.Bitmap)
+	if maxEdge != thumbMaxEdge {
+		key += "@" + strconv.Itoa(maxEdge)
 	}
-	if bmp, ok := a.imageCache[key]; ok {
+	a.mu.Lock()
+	if bmp, ok := a.images.get(key); ok {
 		a.mu.Unlock()
 		return bmp
 	}
-	a.rememberImageKeyLocked(key)
+	a.images.reserve(key)
 	a.mu.Unlock()
 	requestGuarded(a, "thumb:"+key, nil, func(ctx context.Context) (*ui.Bitmap, error) {
 		select {
@@ -643,34 +740,26 @@ func (a *App) lookupLocalBitmap(itemKey, relPath string) *ui.Bitmap {
 		if err != nil || fullPath == "" {
 			return nil, nil
 		}
-		return loadThumbBitmap(fullPath, thumbMaxEdge), nil
+		return loadThumbBitmap(fullPath, maxEdge), nil
 	}, func(bmp *ui.Bitmap) {
 		a.mu.Lock()
-		if _, ok := a.imageCache[key]; ok && !a.closed {
-			a.imageCache[key] = bmp
+		if !a.closed {
+			a.images.fill(key, bmp)
 		}
 		a.mu.Unlock()
 	}, func(error) {})
 	a.mu.Lock()
-	bmp := a.imageCache[key]
+	bmp, _ := a.images.get(key)
 	a.mu.Unlock()
 	return bmp
 }
 
-// thumbMaxEdge bounds decoded thumbnails: wide enough for a full-width
-// card on a 150% display, far smaller than camera originals.
-const thumbMaxEdge = 1280
-
-// rememberImageKeyLocked reserves a cache slot for key (nil until loaded),
-// evicting the oldest entry beyond 160.
-func (a *App) rememberImageKeyLocked(key string) {
-	if len(a.imageKeys) >= 160 {
-		delete(a.imageCache, a.imageKeys[0])
-		a.imageKeys = a.imageKeys[1:]
-	}
-	a.imageKeys = append(a.imageKeys, key)
-	a.imageCache[key] = nil
-}
+// thumbMaxEdge bounds decoded thumbnails: a single post image or a card at
+// most 480 px wide on a 200% display. gridThumbEdge is a grid cell's.
+const (
+	thumbMaxEdge  = 960
+	gridThumbEdge = 480
+)
 
 // lookupHistoryThumbBitmap loads and caches a local parse-history thumbnail from <DataDir>/thumbs/.
 func (a *App) lookupHistoryThumbBitmap(thumbName string) *ui.Bitmap {
@@ -679,10 +768,7 @@ func (a *App) lookupHistoryThumbBitmap(thumbName string) *ui.Bitmap {
 	}
 	cacheKey := "hist-thumb::" + thumbName
 	a.mu.Lock()
-	if a.imageCache == nil {
-		a.imageCache = make(map[string]*ui.Bitmap)
-	}
-	if bmp, ok := a.imageCache[cacheKey]; ok {
+	if bmp, ok := a.images.get(cacheKey); ok {
 		a.mu.Unlock()
 		return bmp
 	}
@@ -696,10 +782,34 @@ func (a *App) lookupHistoryThumbBitmap(thumbName string) *ui.Bitmap {
 	if bmp != nil {
 		a.mu.Lock()
 		if !a.closed {
-			if len(a.imageCache) > 128 {
-				a.imageCache = make(map[string]*ui.Bitmap)
-			}
-			a.imageCache[cacheKey] = bmp
+			a.images.put(cacheKey, bmp)
+		}
+		a.mu.Unlock()
+	}
+	return bmp
+}
+
+// lookupAccountAvatarBitmap loads the local avatar of a subscribed account.
+func (a *App) lookupAccountAvatarBitmap(siteID, uid string) *ui.Bitmap {
+	if a.backend == nil || uid == "" {
+		return nil
+	}
+	path := a.backend.AccountAvatarPath(siteID, uid)
+	if path == "" {
+		return nil
+	}
+	cacheKey := "avatar::" + path
+	a.mu.Lock()
+	bmp, ok := a.images.get(cacheKey)
+	a.mu.Unlock()
+	if ok {
+		return bmp
+	}
+	bmp = loadBitmapFromFile(path)
+	if bmp != nil {
+		a.mu.Lock()
+		if !a.closed {
+			a.images.put(cacheKey, bmp)
 		}
 		a.mu.Unlock()
 	}
@@ -719,6 +829,9 @@ func (a *App) BindEventLoop(updateFn func(func())) {
 		}
 		if a.viewerPlayer != nil {
 			a.viewerPlayer.SetFrameNotify(notify)
+		}
+		if a.livePreviewPlayer != nil {
+			a.livePreviewPlayer.SetFrameNotify(notify)
 		}
 	}
 	if a.unsub != nil {
@@ -768,7 +881,10 @@ func (a *App) handleBackendEvent(ev service.Event) {
 	}
 	switch ev.Type {
 	case service.EventAccountChanged:
+		a.cacheStateRev++ // dots read "登录后查看" while signed out
 		evSite := strings.ToLower(strings.TrimSpace(ev.Site))
+		// 我的 keeps nothing across a sign-out, an expiry or another account.
+		a.mineOnAccountChanged(evSite)
 		if ev.Message == "logged_in" || ev.Message == "active" {
 			if a.expiredNoticeShown != nil && evSite != "" {
 				delete(a.expiredNoticeShown, evSite)
@@ -778,6 +894,9 @@ func (a *App) handleBackendEvent(ev service.Event) {
 		if ev.Message == "expired" || ev.Message == "logged_out" {
 			a.handleSiteAccountLoss(evSite, ev.Message)
 		}
+	case service.EventCacheQueueUpdated:
+		a.cacheStateRev++
+		a.CacheQueue = a.backend.ListCacheQueue()
 	case service.EventTaskUpdated, service.EventLibraryChanged, service.EventSubscriptionChecked, service.EventLiveUpdated:
 		a.postCards = nil
 		a.cacheStateRev++
@@ -786,6 +905,7 @@ func (a *App) handleBackendEvent(ev service.Event) {
 		}
 		a.refreshTasks()
 		if ev.Type == service.EventLibraryChanged {
+			a.subFeedDirty = true
 			a.refreshLibraryStatistics()
 			if len(a.FeedItems) == 0 && a.HomeActorFilter == nil {
 				a.loadInitialFeed()
@@ -793,14 +913,26 @@ func (a *App) handleBackendEvent(ev service.Event) {
 			if a.HomeActorFilter == nil && len(a.FeedItems) > 0 {
 				a.feedMoreBefore = true
 			}
-			a.reloadLibraryItems()
+			if a.CurrentRoute == RouteLibraryItem {
+				a.libraryOffset = 0
+				a.loadLibraryPage(true)
+				if a.CurrentLibraryDetail != nil {
+					if it, ok, err := a.backend.GetLibraryItem(a.CurrentLibraryDetail.ItemKey); err == nil && ok {
+						a.CurrentLibraryDetail = &it
+					}
+				}
+			} else {
+				a.reloadLibraryItems()
+			}
 		}
 		if ev.Type == service.EventSubscriptionChecked {
+			a.subFeedDirty = true
 			a.refreshSubscriptions()
 		}
 		if ev.Type == service.EventLiveUpdated {
 			a.LiveRooms = a.backend.ListLiveRooms()
 			a.syncLiveAccountsFromBackend()
+			a.syncLivePreviewState()
 		}
 	}
 }
@@ -855,9 +987,12 @@ func (a *App) handleSiteAccountLoss(evSite, kind string) {
 func (a *App) TriggerAuthExpired(reason string) {
 	a.closePlayerOverlay()
 	a.closeImageViewer()
+	a.closeLivePreview()
 	a.stopBGM()
 	a.ImportSubModalOpen = false
 	a.ConfirmLogoutOpen = false
+	a.RuleBatch.Open = false
+	a.SubscribePicker.Open = false
 	if a.CurrentRoute != RouteLogin {
 		a.SavedRoute = a.CurrentRoute
 	}
@@ -912,10 +1047,12 @@ func (a *App) OpenLoginForSite(siteID string) {
 
 // Navigate switches the active route and persists it in ui-state.json.
 func (a *App) Navigate(route string) {
+	rawRoute := route
 	route = normalizeAppRoute(route)
 	a.BannerError = ""
 	a.Opening = nil
 	a.PostMenuKey = ""
+	a.SubAccountMenuKey = ""
 	a.DouyinCardMenuID = ""
 	a.DouyinUserSubMenuOpen = false
 	a.HistoryHeaderMenuOpen = false
@@ -929,11 +1066,16 @@ func (a *App) Navigate(route string) {
 		a.SubMoreMenuOpen = false
 		a.SubManageMenuOpen = false
 		a.SubManageModalMode = ""
+		a.applySubscriptionRouteNavigate(rawRoute)
 	}
 	if a.CurrentRoute == RouteHome && route != RouteHome {
+		a.flushHomePosition()
 		if a.HomeActorFilter != nil {
 			a.closeHomeActorFeed()
 		}
+	}
+	if route == RouteHome && a.CurrentRoute != RouteHome {
+		a.enterHomeSubscriptions()
 	}
 	if route != RouteLogin && route != RouteSettings && !a.backend.HasAnyLogin() {
 		a.SavedRoute = route
@@ -941,6 +1083,9 @@ func (a *App) Navigate(route string) {
 			a.LoginSite = string(site.Douyin)
 		}
 		route = RouteLogin
+	}
+	if route != RouteTasks {
+		a.closeLivePreview()
 	}
 	if a.CurrentRoute != route && a.CurrentRoute != RouteLogin {
 		a.PreviousRoute = a.CurrentRoute
@@ -954,9 +1099,7 @@ func (a *App) Navigate(route string) {
 			a.feedMoreBefore = true
 		}
 	}
-	st := a.backend.GetUIState()
-	st.LastRoute = route
-	if _, err := a.backend.UpdateUIState(st); err != nil {
+	if _, err := a.backend.MutateUIState(func(st *uistate.State) { st.LastRoute = route }); err != nil {
 		a.showError(err)
 	}
 }
@@ -967,20 +1110,25 @@ func (a *App) OpenSubscriptionDetail(sub subscription.Subscription) {
 	a.SelectedSubID = sub.ID
 	a.SelectedSubMid = sub.Mid
 	a.SubDetailOpen = true
+	a.SubAccountsOpen = false
 	a.SubMoreMenuOpen = false
 	a.SubManageMenuOpen = false
+	a.SubAccountMenuKey = ""
 	a.SubManageModalMode = ""
-	if a.SubDetailTab != "accounts" {
-		a.SubDetailTab = "live"
-	}
+	a.SubDetailTab = normalizeSubDetailTab(a.SubDetailTab)
 	a.syncSelectedSubRules(sub)
+	a.ensureSubscriptionFeedLoaded(&sub)
 }
 
-// NavigateBack returns to PreviousRoute or RouteHome.
+// NavigateBack returns to PreviousRoute or RouteHome (or RouteLibrary from RouteLibraryItem).
 func (a *App) NavigateBack() {
 	target := a.PreviousRoute
 	if target == "" || target == a.CurrentRoute {
-		target = RouteHome
+		if a.CurrentRoute == RouteLibraryItem {
+			target = RouteLibrary
+		} else {
+			target = RouteHome
+		}
 	}
 	a.Navigate(target)
 }
@@ -990,6 +1138,7 @@ func (a *App) RefreshData() {
 	if !a.backend.HasAnyLogin() {
 		return
 	}
+	a.subFeedDirty = true
 	a.HistoryItems = a.backend.ListHistory()
 	a.refreshLibraryStatistics()
 	if len(a.FeedItems) == 0 {
@@ -1009,6 +1158,7 @@ func (a *App) RefreshData() {
 	}
 	a.LiveRooms = a.backend.ListLiveRooms()
 	a.syncLiveAccountsFromBackend()
+	a.liveLibItemsCacheRev = 0
 	a.reloadLibraryItems()
 	a.refreshTasks()
 }
@@ -1083,6 +1233,7 @@ func (a *App) refreshTasks() {
 	if !a.backend.HasAnyLogin() {
 		return
 	}
+	a.CacheQueue = a.backend.ListCacheQueue()
 	tasks, err := a.backend.ListDownloadTasks()
 	if err != nil {
 		a.showError(err)
@@ -1091,14 +1242,29 @@ func (a *App) refreshTasks() {
 	a.Tasks = tasks
 }
 
-// loadInitialFeed opens the timeline at the newest cached post (DEC-040).
+// loadInitialFeed opens the timeline: the first time a site filter shows
+// in a session, where it was read last (DEC-053 ①), otherwise or without a
+// position at the newest cached post.
 func (a *App) loadInitialFeed() {
 	a.FeedSortOrder = "newest"
 	a.loadHomeBaseline()
+	a.homeRestorePhase = homeRestoreNone
+	if a.HomeActorFilter == nil {
+		site := normalizeSiteFilter(a.FeedSiteFilter)
+		if !a.homePosRestored[site] {
+			if a.homePosRestored == nil {
+				a.homePosRestored = make(map[string]bool)
+			}
+			a.homePosRestored[site] = true
+			if a.restoreHomePosition() {
+				return
+			}
+		}
+	}
 	req := library.FeedPageRequest{
 		Order:      "newest",
 		CachedOnly: true,
-		Site:       normalizeSiteFilter(a.FeedSiteFilter),
+		Site:       feedSiteParam(a.FeedSiteFilter),
 		Authors:    a.FeedAuthorsFilter,
 		AuthorRefs: a.FeedAuthorRefsFilter,
 		Limit:      60,
@@ -1125,6 +1291,13 @@ func (a *App) syncSelectedSubRules(sub subscription.Subscription) {
 	a.SubRuleAutoCache = sub.AutoCache
 	a.SubRuleLiveNotify = sub.LiveNotify
 	a.SubRuleLiveAutoRec = sub.LiveAutoRecord
+}
+
+func (a *App) selectLibraryFilter() {
+	if a.CurrentRoute == RouteLibraryItem {
+		a.CurrentRoute = RouteLibrary
+	}
+	a.reloadLibraryItems()
 }
 
 func (a *App) reloadLibraryItems() {
@@ -1161,23 +1334,23 @@ func (a *App) loadLibraryPage(reset bool) {
 			authorRefs = append(authorRefs, library.AuthorRef{Site: string(siteID), UID: uid})
 		}
 	}
-	sortOrder := a.LibrarySort
-	if sortOrder == "pub_ts" {
-		sortOrder = "newest"
-	}
+	sortOrder := "newest"
 	if a.LibrarySort == "oldest" {
 		sortOrder = "oldest"
 	}
 	items, err := a.backend.ListLibraryItems(library.FeedFilter{
-		Site:       normalizeSiteFilter(a.LibrarySiteFilter),
-		Kind:       a.LibraryKindFilter,
-		Mid:        a.LibraryCreatorMid,
-		Authors:    authors,
-		AuthorRefs: authorRefs,
-		Keyword:    a.LibrarySearch,
-		Sort:       sortOrder,
-		Limit:      60,
-		Offset:     a.libraryOffset,
+		Site: normalizeSiteFilter(a.LibrarySiteFilter),
+		Kind: a.LibraryKindFilter,
+		// 图片/视频 list a creator's own posts; forwarded content has its
+		// own "转发" tab (DEC-056).
+		ExcludeForward: a.LibraryKindFilter == "image" || a.LibraryKindFilter == "video",
+		Mid:            a.LibraryCreatorMid,
+		Authors:        authors,
+		AuthorRefs:     authorRefs,
+		Keyword:        a.LibrarySearch,
+		Sort:           sortOrder,
+		Limit:          60,
+		Offset:         a.libraryOffset,
 	})
 	if err != nil {
 		a.LibraryError = userErrorText(err)
@@ -1602,6 +1775,13 @@ func (a *App) LoadMoreDouyinWorks() {
 				seen[w.ID] = true
 			}
 		}
+		// A private account whose first page failed and now shows works
+		// is visible to the signed-in account.
+		if a.CurrentDouyinUser.IsPrivate && len(page.Works) > 0 {
+			u := *a.CurrentDouyinUser
+			u.IsPrivate, u.PrivateVisible = false, true
+			a.CurrentDouyinUser = &u
+		}
 		a.DouyinWorksAuthExpired = false
 		a.DouyinWorksError = ""
 		a.DouyinWorksNextCursor = page.NextCursor
@@ -1764,6 +1944,9 @@ func (a *App) openPostImageViewer(itemKey, siteID string, urls, relPaths, liveUR
 		a.ImageViewer.InlineMediaURLs = inlineURLs
 		a.ImageViewer.InlineDurations = durations
 		a.ImageViewer.InlineSite = normalizeSiteIDUI(siteID)
+		if idx := a.ImageViewer.Index; idx >= 0 && idx < len(kinds) && viewerPageAutoplays(kinds[idx]) {
+			a.startViewerInlinePage(idx)
+		}
 	}
 }
 
@@ -1913,6 +2096,7 @@ func (a *App) openPlayerFile(item library.ItemMetadata, selected string) {
 }
 
 func (a *App) openPlayerSegment(item library.ItemMetadata, index int) {
+	a.closeLivePreview()
 	_ = a.player.Close()
 	a.PlayerOverlay.Open = true
 	a.PlayerOverlay.LastActiveAt = time.Time{}
@@ -2067,6 +2251,15 @@ func (a *App) View(c *ui.Context) {
 			c.Invalidate()
 		}
 	}
+	if a.LivePreviewKey != "" {
+		a.syncLivePreviewState()
+		if a.LivePreviewKey != "" && a.livePreviewPlayer != nil {
+			a.livePreviewPlayer.Advance(0)
+			if a.livePreviewPlayer.Snapshot(1, 1).Playing || a.LivePreviewLoading {
+				c.Invalidate()
+			}
+		}
+	}
 	w, h := c.Size()
 	if w <= 0 {
 		w = 1280
@@ -2152,6 +2345,15 @@ func (a *App) View(c *ui.Context) {
 	}
 	if a.ImportSubModalOpen {
 		a.renderImportSubOverlay(c, w, h)
+	}
+	if a.RuleBatch.Open {
+		a.renderRuleBatchOverlay(c, w, h)
+	}
+	if a.SubscribePicker.Open {
+		a.renderSubscribePickerOverlay(c, w, h)
+	}
+	if a.LibraryRefresh.Open {
+		a.renderLibraryRefreshOverlay(c, w, h)
 	}
 	if a.ImageViewer.Open {
 		a.renderImageViewerOverlay(c, w, h)

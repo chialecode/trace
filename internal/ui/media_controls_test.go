@@ -157,6 +157,10 @@ func (b failedPlayerPreferencesBackend) UpdateUIState(uistate.State) (uistate.St
 	return b.GetUIState(), errors.New("synthetic preferences write failure")
 }
 
+func (b failedPlayerPreferencesBackend) MutateUIState(func(*uistate.State)) (uistate.State, error) {
+	return b.GetUIState(), errors.New("synthetic preferences write failure")
+}
+
 func TestPlayerOffersVolumeAndDensityAndReportsPreferenceFailure(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()

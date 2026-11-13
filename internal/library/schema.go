@@ -44,12 +44,40 @@ type ItemMetadata struct {
 	UpgradeCheckedAt string             `json:"upgradeCheckedAt,omitempty"`
 	UpgradeAvailable bool               `json:"upgradeAvailable,omitempty"`
 	UpgradeHint      string             `json:"upgradeHint,omitempty"`
+	// Via is set when the item is stored under another creator's folder
+	// than its author's (a forwarded post's content, or a collaboration video
+	// cached for a member who is not the uploader; DEC-056). Optional; older
+	// manifests have none.
+	Via *ItemVia `json:"via,omitempty"`
 
 	// Runtime-populated fields
 	ItemKey    string `json:"itemKey,omitempty"`
 	RawID      string `json:"rawId,omitempty"`
 	ItemDir    string `json:"itemDir,omitempty"`
 	TotalBytes int64  `json:"totalBytes,omitempty"`
+}
+
+const (
+	LiveIncidentReconnect     = "reconnect"
+	LiveIncidentLostSegments  = "lost_segments"
+	LiveIncidentSlow          = "slow"
+	LiveIncidentDisk          = "disk"
+	LiveIncidentConvertFailed = "convert_failed"
+
+	MaxLiveIncidentsPerSession = 200
+)
+
+// LiveIncident records an anomaly observed during a live recording session (DEC-051 ③).
+// It never stores stream URLs, query parameters, or credentials.
+type LiveIncident struct {
+	Kind         string  `json:"kind"`                   // "reconnect", "lost_segments", "slow", "disk", "convert_failed"
+	At           string  `json:"at"`                     // RFC3339 timestamp when the incident occurred or started
+	EndedAt      string  `json:"endedAt,omitempty"`      // RFC3339 timestamp of closure or latest coalesced event
+	DurationSec  float64 `json:"durationSec,omitempty"`  // Affected duration in seconds (reconnect wait, lost gap, or slow span)
+	LostSegments int     `json:"lostSegments,omitempty"` // Dropped HLS media segment count (>0 for HLS sequence jumps)
+	Count        int     `json:"count,omitempty"`        // Number of coalesced occurrences (>=1)
+	Part         string  `json:"part,omitempty"`         // Local part file basename (never a URL or directory path)
+	Reason       string  `json:"reason,omitempty"`       // Sanitized human-readable reason
 }
 
 type LiveRecordingInfo struct {
@@ -71,6 +99,7 @@ type LiveRecordingInfo struct {
 	Quality         int               `json:"quality,omitempty"`
 	QualityName     string            `json:"qualityName,omitempty"`
 	Segments        []LiveSegmentInfo `json:"segments,omitempty"`
+	Incidents       []LiveIncident    `json:"incidents,omitempty"`
 }
 
 type LiveSegmentInfo struct {
@@ -105,6 +134,31 @@ type ItemAuthor struct {
 	Name        string `json:"name"`
 	Face        string `json:"face"`
 	LatestPubTs int64  `json:"latestPubTs,omitempty"`
+}
+
+// Reasons recorded in ItemVia.
+const (
+	ViaForward = "forward"
+	ViaCollab  = "collab"
+)
+
+// ItemVia records the creator an item was cached for when that creator is not
+// the item's author (DEC-056). It never changes Author.
+type ItemVia struct {
+	Reason    string `json:"reason"` // ViaForward or ViaCollab
+	Site      string `json:"site,omitempty"`
+	UID       string `json:"uid"`
+	Name      string `json:"name,omitempty"`
+	DynamicID string `json:"dynamicId,omitempty"` // forwarding post, for ViaForward
+}
+
+// IsForwardContent reports whether the item is a forwarded post or content
+// cached because of one (media library "转发" filter, DEC-056).
+func (m ItemMetadata) IsForwardContent() bool {
+	if m.Via != nil && m.Via.Reason == ViaForward {
+		return true
+	}
+	return m.Kind == "dynamic" && strings.EqualFold(strings.TrimSpace(m.DynamicType), "DYNAMIC_TYPE_FORWARD")
 }
 
 // DouyinVideoInfo records Douyin single-file video gear/stream metadata and available gears.
@@ -296,17 +350,20 @@ type FeedEntry struct {
 
 // FeedFilter specifies filtering criteria for querying the unified feed or local library.
 type FeedFilter struct {
-	Site       string      `json:"site,omitempty"` // "all"/"", "bilibili", "douyin"
-	Kind       string      `json:"kind"`           // "all", "video", "dynamic", "live"
-	Mid        int64       `json:"mid"`            // 0 means all creators
-	AuthorUID  string      `json:"authorUid,omitempty"`
-	Authors    []int64     `json:"authors,omitempty"`
-	AuthorRefs []AuthorRef `json:"authorRefs,omitempty"`
-	CachedOnly bool        `json:"cachedOnly"` // true = local library view
-	Keyword    string      `json:"keyword"`
-	Sort       string      `json:"sort,omitempty"` // "newest", "oldest"
-	Limit      int         `json:"limit"`
-	Offset     int         `json:"offset"`
+	Site string `json:"site,omitempty"` // "all"/"", "bilibili", "douyin"
+	Kind string `json:"kind"`           // "all", "video", "dynamic", "live", "image", "forward"
+	// ExcludeForward drops forwarded content from kind-specific lists (the
+	// media library's 图片/视频 tabs; "转发" lists it separately, DEC-056).
+	ExcludeForward bool        `json:"excludeForward,omitempty"`
+	Mid            int64       `json:"mid"` // 0 means all creators
+	AuthorUID      string      `json:"authorUid,omitempty"`
+	Authors        []int64     `json:"authors,omitempty"`
+	AuthorRefs     []AuthorRef `json:"authorRefs,omitempty"`
+	CachedOnly     bool        `json:"cachedOnly"` // true = local library view
+	Keyword        string      `json:"keyword"`
+	Sort           string      `json:"sort,omitempty"` // "newest", "oldest"
+	Limit          int         `json:"limit"`
+	Offset         int         `json:"offset"`
 }
 
 // NormalizeAuthorUID resolves canonical (site, author_uid) from site, uid, and legacy mid.
@@ -513,6 +570,102 @@ func SanitizeItemMetadata(meta *ItemMetadata) {
 			meta.Media[i].Source = ""
 		}
 	}
+	if meta.Live != nil && len(meta.Live.Incidents) > 0 {
+		meta.Live.Incidents = SanitizeLiveIncidents(meta.Live.Incidents)
+	}
+}
+
+// SanitizeLiveIncidents strips any accidental URLs, query parameters, paths, or cookies
+// from live recording incidents and enforces MaxLiveIncidentsPerSession.
+func SanitizeLiveIncidents(incidents []LiveIncident) []LiveIncident {
+	if len(incidents) == 0 {
+		return nil
+	}
+	out := make([]LiveIncident, 0, min(len(incidents), MaxLiveIncidentsPerSession))
+	for _, inc := range incidents {
+		inc.Kind = strings.TrimSpace(inc.Kind)
+		inc.At = strings.TrimSpace(inc.At)
+		inc.EndedAt = strings.TrimSpace(inc.EndedAt)
+		if inc.Kind == "" {
+			continue
+		}
+		if hasSignedOrQueryMarkers(inc.At) || isRemoteOrSignedURL(inc.At) {
+			inc.At = ""
+		}
+		if hasSignedOrQueryMarkers(inc.EndedAt) || isRemoteOrSignedURL(inc.EndedAt) {
+			inc.EndedAt = ""
+		}
+		if inc.DurationSec < 0 {
+			inc.DurationSec = 0
+		}
+		if inc.LostSegments < 0 {
+			inc.LostSegments = 0
+		}
+		if inc.Count < 1 {
+			inc.Count = 1
+		}
+		inc.Part = sanitizeLiveIncidentPart(inc.Part)
+		inc.Reason = SanitizeLiveIncidentText(inc.Reason)
+		out = append(out, inc)
+		if len(out) >= MaxLiveIncidentsPerSession {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sanitizeLiveIncidentPart(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || isRemoteOrSignedURL(trimmed) {
+		return ""
+	}
+	if idx := strings.IndexAny(trimmed, "?#"); idx >= 0 {
+		trimmed = trimmed[:idx]
+	}
+	if idx := strings.LastIndexAny(trimmed, `/\`); idx >= 0 {
+		trimmed = trimmed[idx+1:]
+	}
+	trimmed = strings.TrimSpace(trimmed)
+	if trimmed == "" || trimmed == "." || trimmed == ".." || hasSignedOrQueryMarkers(trimmed) {
+		return ""
+	}
+	return trimmed
+}
+
+// SanitizeLiveIncidentText removes any URLs, query strings, or credential markers from incident text.
+func SanitizeLiveIncidentText(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	fields := strings.Fields(trimmed)
+	kept := make([]string, 0, len(fields))
+	for _, tok := range fields {
+		clean := strings.Trim(tok, "()[]{}<>\"',;")
+		lower := strings.ToLower(clean)
+		if strings.HasPrefix(lower, "http://") ||
+			strings.HasPrefix(lower, "https://") ||
+			strings.HasPrefix(lower, "//") ||
+			strings.Contains(lower, "://") ||
+			hasSignedOrQueryMarkers(clean) ||
+			strings.Contains(lower, "cookie") ||
+			strings.Contains(lower, "bili_jct") ||
+			strings.Contains(lower, "ac_time_value") ||
+			strings.Contains(lower, "ttwid") ||
+			strings.Contains(lower, "odin_tt") {
+			continue
+		}
+		if idx := strings.IndexAny(tok, "?#"); idx >= 0 {
+			tok = tok[:idx]
+		}
+		if tok != "" {
+			kept = append(kept, tok)
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, " "))
 }
 
 func hasSignedOrQueryMarkers(s string) bool {

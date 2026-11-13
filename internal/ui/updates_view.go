@@ -196,9 +196,12 @@ func (a *App) renderRestartConfirmOverlay(c *ui.Context, w, h float32) {
 	})
 }
 
-// renderAboutSettings is "设置 › 关于": the version, commit and build time
-// of the running build and, in the release channel, the updates.
-func (a *App) renderAboutSettings(c *ui.Context) {
+const (
+	releaseUpdateMethodLine = "打开 TRACE 时每 24 小时自动检查一次（可在下面关闭），也可以立即检查"
+	devUpdateMethodLine     = "开发版不会自己联网检查；Agent 打包后会自动安装，正在运行的 TRACE Dev 会先退出，装完在托盘打开"
+)
+
+func (a *App) currentBuildPresentation() (appdirs.Build, string, string, update.State, bool) {
 	diag := a.backend.DiagnosticsSnapshot()
 	build := appdirs.BuildInfo()
 	if diag.Version != "" {
@@ -216,25 +219,40 @@ func (a *App) renderAboutSettings(c *ui.Context) {
 	if hasUpdater && st.Channel != "" {
 		name = appdirs.DisplayNameForChannel(st.Channel)
 	}
+	if strings.TrimSpace(name) == "" {
+		name = appdirs.DisplayNameForChannel(channel)
+	}
+	return build, channel, name, st, hasUpdater
+}
+
+// renderAboutSettings is "设置 › 关于": version, diagnostics summary, license
+// notice, and a direct link to "设置 › 更新".
+func (a *App) renderAboutSettings(c *ui.Context) {
+	diag := a.backend.DiagnosticsSnapshot()
+	build, channel, name, _, _ := a.currentBuildPresentation()
 	ui.Column(c).FillWidth().Gap(4).ClipX().Children(func() {
 		ui.Column(c).Label("版本信息").FillWidth().Padding(14, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).Gap(6).ClipX().Children(func() {
 			ui.Text(c, name).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-			ui.Text(c, versionLine(build, channel)).Label("当前版本").FontSize(13).TextColor(ColorTextMain).SingleLine()
-			ui.Text(c, buildLine(build)).Label("提交与构建时间").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+			ui.Row(c).Label("当前版本").FillWidth().ClipX().Children(func() {
+				ui.Text(c, versionLine(build, channel)).FontSize(13).TextColor(ColorTextMain).SingleLine()
+			})
+			ui.Row(c).Label("提交与构建时间").FillWidth().ClipX().Children(func() {
+				ui.Text(c, buildLine(build)).FontSize(13).TextColor(ColorTextMuted).SingleLine()
+			})
 		})
 
-		switch {
-		case hasUpdater && st.Enabled:
-			a.renderUpdateControls(c, st)
-		case appdirs.EffectiveChannel(channel) == "dev":
-			ui.Row(c).FillWidth().Padding(12, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).ClipX().Children(func() {
-				ui.Text(c, update.MsgDevChannel).Label("更新方式").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+		ui.Row(c).FillWidth().Padding(12, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).AlignItems(ui.Center).ClipX().Children(func() {
+			link := ui.ButtonBase(c).Label("版本与更新见‘更新’").Padding(4, 6).Radius(6)
+			if link.Hovered() {
+				link.Background(ColorHover)
+			}
+			link.Children(func() {
+				ui.Text(c, "版本与更新见‘更新’").FontSize(13).TextColor(ColorAccent).SingleLine()
 			})
-		default:
-			ui.Row(c).FillWidth().Padding(12, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).ClipX().Children(func() {
-				ui.Text(c, "这个构建没有联网更新").Label("更新方式").FontSize(13).TextColor(ColorTextMuted).SingleLine()
-			})
-		}
+			if link.Clicked() {
+				a.SettingsCategory = "update"
+			}
+		})
 
 		ui.Column(c).FillWidth().Padding(14, 0).Gap(6).ClipX().Children(func() {
 			ui.Text(c, fmt.Sprintf("本地媒体库：%d 项 · 订阅：%d 个 · 缓存任务：%d 个", diag.LibraryCount, diag.SubscriptionCnt, diag.TaskCount)).
@@ -245,44 +263,106 @@ func (a *App) renderAboutSettings(c *ui.Context) {
 	})
 }
 
-func (a *App) renderUpdateControls(c *ui.Context, st update.State) {
-	ui.Row(c).Label("检查更新").FillWidth().Padding(12, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(12).ClipX().Children(func() {
-		ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
-			status := updateStatusText(st)
-			color := ColorTextMuted
-			if st.MessageError {
-				color = ColorError
-			}
-			ui.Text(c, status).Label("更新状态").FontSize(13).TextColor(color).MaxLines(2)
-			last := "还没有检查过"
-			if !st.LastCheck.IsZero() {
-				last = "上次检查：" + st.LastCheck.Local().Format("2006-01-02 15:04")
-			}
-			ui.Text(c, last).Label("上次检查时间").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+// renderUpdateSettings is "设置 › 更新" (DEC-051 ①, Q-018 #1): flat 1px-divider
+// layout showing current version, how this channel updates, channel-specific
+// controls or local dev installation state, latest 20 check records, and
+// latest 50 update records.
+func (a *App) renderUpdateSettings(c *ui.Context) {
+	build, channel, name, st, hasUpdater := a.currentBuildPresentation()
+	effChannel := appdirs.EffectiveChannel(channel)
+	isRelease := hasUpdater && st.Enabled
+	isDev := !isRelease && effChannel == "dev"
+	hist := a.backend.GetUpdateHistory()
+
+	ui.Column(c).FillWidth().Gap(4).ClipX().Children(func() {
+		// 1. Current version block
+		ui.Column(c).Label("版本信息").FillWidth().Padding(14, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).Gap(6).ClipX().Children(func() {
+			ui.Text(c, name).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+			ui.Row(c).Label("当前版本").FillWidth().ClipX().Children(func() {
+				ui.Text(c, versionLine(build, channel)).FontSize(13).TextColor(ColorTextMain).SingleLine()
+			})
+			ui.Row(c).Label("提交与构建时间").FillWidth().ClipX().Children(func() {
+				ui.Text(c, buildLine(build)).FontSize(13).TextColor(ColorTextMuted).SingleLine()
+			})
 		})
+
+		// 2. One-sentence update mechanism description
+		methodSentence := "这个构建没有联网更新"
+		switch {
+		case isRelease:
+			methodSentence = releaseUpdateMethodLine
+		case isDev:
+			methodSentence = devUpdateMethodLine
+		}
+		ui.Row(c).Label("更新方式").FillWidth().Padding(12, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).ClipX().Children(func() {
+			ui.Text(c, methodSentence).FontSize(13).TextColor(ColorTextMuted).MaxLines(3)
+		})
+
+		// 3. Channel-specific section
+		if isRelease {
+			a.renderReleaseUpdateSection(c, st, hist.Checks)
+		} else if isDev {
+			a.renderDevUpdateSection(c, build)
+		}
+
+		// 4. Check history (latest 20) & update history (latest 50)
+		a.renderUpdateCheckHistorySection(c, isDev, hist.Checks)
+		a.renderAppUpdateHistorySection(c, hist.Updates)
+	})
+}
+
+func (a *App) renderReleaseUpdateSection(c *ui.Context, st update.State, checks []update.CheckRecord) {
+	ui.Row(c).Label("检查更新").FillWidth().Padding(12, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(12).ClipX().Children(func() {
+		ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
+			lastLine, lastIsErr := formatLastCheckLine(st, checks)
+			lastColor := ColorTextMain
+			if lastIsErr {
+				lastColor = ColorError
+			}
+			ui.Row(c).Label("上次检查").FillWidth().ClipX().Children(func() {
+				ui.Text(c, lastLine).FontSize(13).TextColor(lastColor).MaxLines(2)
+			})
+
+			nextLine := formatNextCheckLine(st, a.DraftSettings.Updates.AutoCheck)
+			ui.Row(c).Label("下次检查时间").FillWidth().ClipX().Children(func() {
+				ui.Text(c, nextLine).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+			})
+
+			if extra, extraErr := formatActiveUpdateProgressLine(st, lastLine); extra != "" {
+				col := ColorTextMuted
+				if extraErr {
+					col = ColorError
+				}
+				ui.Row(c).Label("更新状态").FillWidth().ClipX().Children(func() {
+					ui.Text(c, extra).FontSize(12).TextColor(col).MaxLines(2)
+				})
+			}
+		})
+
 		busy := st.Phase == update.PhaseChecking || st.Phase == update.PhaseDownloading
 		switch {
 		case st.Phase == update.PhaseReady:
-			if AccentOutlinePillButton(c, "重启以更新", "关于页重启以更新").Clicked() {
+			if AccentOutlinePillButton(c, "重启以更新", "更新页重启以更新").Clicked() {
 				a.requestRestartToUpdate()
 			}
 		case st.Phase == update.PhaseAvailable:
-			if AccentOutlinePillButton(c, "下载并安装", "关于页下载并安装").Clicked() {
+			if AccentOutlinePillButton(c, "下载并安装", "更新页下载并安装").Clicked() {
 				u := a.updater
 				go u.Download(context.Background())
 			}
 		default:
-			label := "检查更新"
+			label := "立即检查"
 			if busy {
 				label = "正在检查…"
 			}
-			btn := OutlinePillButton(c, label, "检查更新按钮")
+			btn := OutlinePillButton(c, label, "立即检查按钮")
 			if btn.Clicked() && !busy {
 				u := a.updater
 				go u.CheckNow(context.Background())
 			}
 		}
 	})
+
 	draft := a.DraftSettings.Updates
 	if settingSwitchRow(c, "自动检查更新", "", "自动检查更新开关", &draft.AutoCheck) {
 		a.DraftSettings.Updates.AutoCheck = draft.AutoCheck
@@ -294,6 +374,145 @@ func (a *App) renderUpdateControls(c *ui.Context, st update.State) {
 		a.saveSettings()
 		a.updater.PrefsChanged()
 	}
+}
+
+func (a *App) renderDevUpdateSection(c *ui.Context, runningBuild appdirs.Build) {
+	installedVer := strings.TrimSpace(a.backend.InstalledDevVersion())
+	ui.Column(c).Label("本机安装的开发版区域").FillWidth().Padding(12, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).Gap(4).ClipX().Children(func() {
+		line := "本机安装的开发版：未在本机安装"
+		if installedVer != "" {
+			line = "本机安装的开发版：" + installedVer
+		}
+		ui.Row(c).Label("本机安装的开发版").FillWidth().ClipX().Children(func() {
+			ui.Text(c, line).FontSize(13).TextColor(ColorTextMain).SingleLine()
+		})
+		runningVer := strings.TrimSpace(runningBuild.Version)
+		if installedVer != "" && runningVer != "" && runningVer != appdirs.UnversionedBuild && update.Compare(installedVer, runningVer) > 0 {
+			ui.Row(c).Label("开发版重启生效提示").FillWidth().ClipX().Children(func() {
+				ui.Text(c, "已安装更新的版本，重启 TRACE Dev 后生效").FontSize(12).TextColor(ColorInfoBlue).MaxLines(2)
+			})
+		}
+	})
+}
+
+func (a *App) renderUpdateCheckHistorySection(c *ui.Context, isDev bool, checks []update.CheckRecord) {
+	ui.Column(c).Label("检查记录区域").FillWidth().Padding(14, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).Gap(8).ClipX().Children(func() {
+		ui.Text(c, "检查记录").FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+		if isDev && len(checks) == 0 {
+			ui.Row(c).Label("检查记录空提示").FillWidth().ClipX().Children(func() {
+				ui.Text(c, "开发版不会自己联网检查更新，无检查记录").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+			})
+			return
+		}
+		if len(checks) == 0 {
+			ui.Row(c).Label("检查记录空提示").FillWidth().ClipX().Children(func() {
+				ui.Text(c, "暂无检查记录").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+			})
+			return
+		}
+		limit := min(len(checks), update.MaxCheckRecords)
+		for i := 0; i < limit; i++ {
+			chk := checks[i]
+			resCol := ColorTextMain
+			if strings.HasPrefix(chk.Result, "检查失败") || strings.HasPrefix(chk.Result, "检查更新失败") {
+				resCol = ColorError
+			}
+			meta := fmt.Sprintf("%s · %s", update.TriggerLabel(chk.Trigger), formatUpdateHistoryTime(chk.At))
+			ui.Row(c).FillWidth().Padding(4, 0).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(12).ClipX().Children(func() {
+				ui.Text(c, chk.Result).FontSize(13).TextColor(resCol).MaxLines(2).Grow(1)
+				ui.Text(c, meta).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(0)
+			})
+		}
+	})
+}
+
+func (a *App) renderAppUpdateHistorySection(c *ui.Context, updates []update.UpdateRecord) {
+	ui.Column(c).Label("更新记录区域").FillWidth().Padding(14, 0).Gap(8).ClipX().Children(func() {
+		ui.Text(c, "更新记录").FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+		if len(updates) == 0 {
+			ui.Row(c).Label("更新记录空提示").FillWidth().ClipX().Children(func() {
+				ui.Text(c, "暂无更新记录").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+			})
+			return
+		}
+		limit := min(len(updates), update.MaxUpdateRecords)
+		for i := 0; i < limit; i++ {
+			upd := updates[i]
+			versionSpan := fmt.Sprintf("从 %s 到 %s", upd.FromVersion, upd.ToVersion)
+			meta := fmt.Sprintf("%s · %s", update.MethodLabel(upd.Method), formatUpdateHistoryTime(upd.At))
+			ui.Row(c).FillWidth().Padding(4, 0).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(12).ClipX().Children(func() {
+				ui.Text(c, versionSpan).FontSize(13).TextColor(ColorTextMain).SingleLine().Grow(1)
+				ui.Text(c, meta).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(0)
+			})
+		}
+	})
+}
+
+func formatUpdateHistoryTime(raw string) string {
+	if t, err := time.Parse(time.RFC3339, strings.TrimSpace(raw)); err == nil {
+		return t.Local().Format("2006-01-02 15:04")
+	}
+	return strings.TrimSpace(raw)
+}
+
+func formatLastCheckLine(st update.State, checks []update.CheckRecord) (string, bool) {
+	var checkTime, result string
+	if !st.LastCheck.IsZero() {
+		checkTime = st.LastCheck.Local().Format("2006-01-02 15:04")
+	} else if len(checks) > 0 {
+		checkTime = formatUpdateHistoryTime(checks[0].At)
+	}
+	switch {
+	case strings.TrimSpace(st.LastCheckResult) != "":
+		result = strings.TrimSpace(st.LastCheckResult)
+	case len(checks) > 0 && strings.TrimSpace(checks[0].Result) != "":
+		result = strings.TrimSpace(checks[0].Result)
+	case strings.TrimSpace(st.Message) != "":
+		result = strings.TrimSpace(st.Message)
+	}
+	isErr := strings.HasPrefix(result, "检查失败") || strings.HasPrefix(result, "检查更新失败") || (st.MessageError && result == strings.TrimSpace(st.Message) && result != "")
+	switch {
+	case checkTime == "" && result == "":
+		return "上次检查：还没有检查过", false
+	case checkTime != "" && result != "":
+		return fmt.Sprintf("上次检查：%s · %s", checkTime, result), isErr
+	case checkTime != "":
+		return "上次检查：" + checkTime, false
+	default:
+		return "上次检查：" + result, isErr
+	}
+}
+
+func formatNextCheckLine(st update.State, draftAutoCheck bool) string {
+	if st.Phase == update.PhaseReady && st.Release != nil {
+		return fmt.Sprintf("下次检查：新版本 %s 已就绪，重启后生效", st.Release.Version)
+	}
+	if !draftAutoCheck || !st.Prefs.AutoCheck {
+		return "下次检查：已关闭自动检查"
+	}
+	if !st.NextCheck.IsZero() {
+		return "下次检查：" + st.NextCheck.Local().Format("2006-01-02 15:04")
+	}
+	if !st.LastCheck.IsZero() {
+		return "下次检查：" + st.LastCheck.Add(update.CheckInterval).Local().Format("2006-01-02 15:04")
+	}
+	return "下次检查：打开后每 24 小时自动检查"
+}
+
+func formatActiveUpdateProgressLine(st update.State, lastLine string) (string, bool) {
+	switch st.Phase {
+	case update.PhaseChecking, update.PhaseDownloading, update.PhaseReady:
+		return updateStatusText(st), false
+	case update.PhaseAvailable:
+		if st.MessageError && st.Message != "" {
+			return st.Message, true
+		}
+		return updateStatusText(st), false
+	}
+	if st.MessageError && st.Message != "" && !strings.Contains(lastLine, st.Message) {
+		return st.Message, true
+	}
+	return "", false
 }
 
 // updateStatusText says where the update stands, beside the button.

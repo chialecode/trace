@@ -15,14 +15,33 @@ var ruleTypeChoices = []struct{ code, name string }{
 	{"video", "视频"}, {"draw", "图文"}, {"word", "文字"}, {"forward", "转发"},
 }
 
+func effectiveSubRuleID(sub subscription.Subscription) string {
+	if sub.RuleID == "" {
+		return subscription.DefaultRuleID
+	}
+	return sub.RuleID
+}
+
 func (a *App) ruleUseCount(id string) int {
 	n := 0
 	for _, sub := range a.Subscriptions {
-		if sub.RuleID == id {
+		if effectiveSubRuleID(sub) == id {
 			n++
 		}
 	}
 	return n
+}
+
+func (a *App) savedRuleName(id, fallback string) string {
+	for _, r := range a.backend.ListCacheRules() {
+		if r.ID == id && r.Name != "" {
+			return r.Name
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "默认"
 }
 
 // renderCacheRulesSettings lists the rules; choosing one opens its editor in
@@ -57,7 +76,8 @@ func (a *App) renderCacheRulesSettings(c *ui.Context) {
 				}
 				a.RuleError = ""
 			}
-			if editing {
+			// Read the draft again: the click above may have just closed it.
+			if a.RuleDraft != nil && a.RuleDraft.ID == rule.ID {
 				a.renderRuleEditor(c)
 			}
 		}
@@ -76,6 +96,13 @@ func (a *App) renderCacheRulesSettings(c *ui.Context) {
 
 func (a *App) renderRuleEditor(c *ui.Context) {
 	d := a.RuleDraft
+	if d == nil {
+		return
+	}
+	if d.ID == subscription.DefaultRuleID {
+		a.renderDefaultRuleDetails(c)
+		return
+	}
 	ui.Column(c).FillWidth().Padding(4, 0, 14, 16).Gap(0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).ClipX().Children(func() {
 		ui.Row(c).FillWidth().Padding(10, 0).Gap(12).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "名称").FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
@@ -100,6 +127,15 @@ func (a *App) renderRuleEditor(c *ui.Context) {
 			})
 		}
 		settingSwitchRow(c, "开播自动录制", "", "规则：开播自动录制", &d.AutoRecord)
+		if d.ID != "" {
+			ui.Row(c).FillWidth().Padding(10, 0).Gap(12).AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
+				ui.Text(c, fmt.Sprintf("使用这条规则的订阅（%d）", a.ruleUseCount(d.ID))).
+					FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
+				if OutlinePillButton(c, "选择订阅…", "选择订阅…").Clicked() {
+					a.openRuleBatchDialog(d.ID, a.savedRuleName(d.ID, d.Name))
+				}
+			})
+		}
 		if a.RuleError != "" {
 			ui.Text(c, a.RuleError).FontSize(12).TextColor(ColorError).MaxLines(2)
 		}
@@ -132,6 +168,22 @@ func (a *App) renderRuleEditor(c *ui.Context) {
 	})
 }
 
+// renderDefaultRuleDetails shows the built-in rule, which cannot be edited
+// (DEC-054): what it does, and which subscriptions use it.
+func (a *App) renderDefaultRuleDetails(c *ui.Context) {
+	ui.Column(c).FillWidth().Padding(4, 0, 14, 16).Gap(0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).ClipX().Children(func() {
+		ui.Text(c, "不定时检查、不自动缓存、不录制直播；新订阅默认使用，不能修改。").
+			Label("默认规则说明").FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
+		ui.Row(c).FillWidth().Padding(10, 0, 0, 0).Gap(12).AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
+			ui.Text(c, fmt.Sprintf("使用这条规则的订阅（%d）", a.ruleUseCount(subscription.DefaultRuleID))).
+				FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
+			if OutlinePillButton(c, "选择订阅…", "选择订阅…").Clicked() {
+				a.openRuleBatchDialog(subscription.DefaultRuleID, a.savedRuleName(subscription.DefaultRuleID, "默认"))
+			}
+		})
+	})
+}
+
 // ToggleChip is a small pill that is on or off.
 func ToggleChip(c *ui.Context, text, label string, on bool) ui.Element {
 	btn := ui.ButtonBase(c).Label(label).Padding(5, 12).Radius(999).AlignItems(ui.Center)
@@ -157,9 +209,10 @@ func ToggleChip(c *ui.Context, text, label string, on bool) ui.Element {
 // automation: the rule it uses, chosen from a menu.
 func (a *App) renderSubscriptionRuleButton(c *ui.Context, sub *subscription.Subscription) {
 	rules := a.backend.ListCacheRules()
+	curRuleID := effectiveSubRuleID(*sub)
 	current := "默认"
 	for _, r := range rules {
-		if r.ID == sub.RuleID {
+		if r.ID == curRuleID {
 			current = r.Name
 		}
 	}
@@ -175,8 +228,8 @@ func (a *App) renderSubscriptionRuleButton(c *ui.Context, sub *subscription.Subs
 	btn.PopoverMenuButton(func(m *ui.Menu) {
 		for _, r := range rules {
 			rule := r
-			item := m.Item(rule.Name).Subtitle(subscription.RuleSummary(rule)).Checked(rule.ID == sub.RuleID)
-			if item.Chosen() && rule.ID != sub.RuleID {
+			item := m.Item(rule.Name).Subtitle(subscription.RuleSummary(rule)).Checked(rule.ID == curRuleID)
+			if item.Chosen() && rule.ID != curRuleID {
 				_, err := a.backend.SetSubscriptionRule(sub.ID, rule.ID)
 				a.showError(err)
 				if err == nil {

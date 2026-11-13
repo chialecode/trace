@@ -1,6 +1,6 @@
 # 哔哩哔哩协议资料
 
-核对：2026-11-07（第 16～20 节关注列表、登录续期、弹幕、字幕、直播已完成 [ACT-005](../../USER-ACTIONS.md#act-005) 真实站点有界检查与夹具验证）。内容是社区观察到的网页协议，加上 TRACE 自己计算的固定向量。端点不是站点对 TRACE 的稳定承诺；站点改版后要重新核对。规则见[站点规则](../dev-rules/sources-and-safety.md#site-rules)。
+核对：2026-11-07（第 16～20 节关注列表、登录续期、弹幕、字幕、直播已完成 [ACT-005](../../USER-ACTIONS.md#act-005) 真实站点有界检查与夹具验证；第 21 节是 2026-11-14 的静态调研，待 ACT-020 真实检查）。内容是社区观察到的网页协议，加上 TRACE 自己计算的固定向量。端点不是站点对 TRACE 的稳定承诺；站点改版后要重新核对。规则见[站点规则](../dev-rules/sources-and-safety.md#site-rules)。
 
 ## 1. 验证状态
 
@@ -276,3 +276,48 @@ dm_img_list=[] dm_img_str=bm8gd2ViZ2 dm_cover_img_str=bm8gd2ViZ2 dm_img_inter={"
 - **HLS fMP4**：先取 `EXT-X-MAP` 的初始化分片，再按播放列表顺序取 `.m4s` 分片；初始化分片变化时换新文件（ACT-005 实测 `d1--cn-gotcha207.bilivideo.com` 35 次播放列表与分片请求共 `8,899,963` 字节，收尾转渐进式 MP4 `9,073,932` 字节、时长 `21.01s`、`moov` 在前校验通过）。ACT-007（2026-11-08）记录的媒体列表：`#EXT-X-VERSION`、`#EXT-X-START`、`#EXT-X-MEDIA-SEQUENCE`、`#EXT-X-TARGETDURATION`、一个在首个分片前的 `#EXT-X-MAP`，6～8 个相对地址的 `.m4s` 分片，每个分片带 `#EXTINF` 和站点自定义的 `#EXT-BILI-AUX`（按未知标签忽略）；`Content-Type: application/vnd.apple.mpegurl`。同一地址也可能返回多码率索引（`#EXT-X-STREAM-INF`），录制时跟随码率最高的一路（推断，见 F-032）。
 
 来源（查询 2026-11-07）：社区整理的 [bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect)（`docs/login/cookie_refresh.md`、`docs/user/relation.md`、`docs/danmaku/danmaku_proto.md`、`docs/danmaku/danmaku_xml.md`、`docs/video/player.md`、`docs/live/info.md`、`docs/live/live_stream.md`）；本机参考索引中的多站点订阅项目与三个直播录制项目（只读事实，未复制代码）。参考实现与本页第 13 节的一处差异：它的动态列表请求里 `dm_img_list` 是随机生成的一个点、不带 `dm_img_inter`；TRACE 现在的写法已经通过 ACT-003 与 ACT-004，不改，只记录。
+
+<a id="account-lists"></a>
+## 21. 登录账号的收藏夹、稍后再看与历史记录（ACT-020 已真实检查）
+
+用于“我的”（FR-ACCT-004，DEC-047）。查询 2026-11-14。来源：社区整理的接口文档仓库 bilibili-API-collect 已于 2026-01 归档并清空（GitHub REST 读到默认分支只剩 `README.md`），本节改按一个活跃的第三方哔哩哔哩客户端（GPL-3.0，2026-11-13 仍有提交）的请求与数据模型核对，**只取协议事实，不复制代码**；另参照本机参考索引中多站点订阅项目的收藏夹与稍后再看路由。标记沿用本页：（社）社区资料、（参）参考实现、（未）未知；真实检查后改为（核）。全部是登录账号自己的只读 GET，带登录 Cookie，走第 12 节的 500 毫秒全局间隔，错误码按第 3 节。
+
+**收藏夹列表**
+
+- `GET https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=<登录账号 mid>`，不分页，不要 WBI（参）。可选 `type=2`（只算视频）不用。
+- 结果 `data.count`、`data.list[].{id, fid, mid, attr, title, fav_state, media_count, cover?}`（参）。`id` 是收藏夹的 `media_id`（下一步用它），`fid` 是原始编号；`id` 一律按字符串或 int64 处理。`attr` 的第 0 位为 1 表示私密、第 1 位为 0 表示默认收藏夹（社，单一来源，真实检查核对）；默认收藏夹排第一。
+- `data` 为 `null` 表示没有收藏夹（参），按空处理；-101 按未登录。
+
+**收藏夹内容**
+
+- `GET https://api.bilibili.com/x/v3/fav/resource/list?media_id=<id>&pn=<页，从 1>&ps=20&keyword=&order=mtime&type=0&tid=0&platform=web`，不要 WBI（参）。`order=mtime` 按收藏时间从新到旧；`ps` 上限 20（社，另有资料写 40，未核）。
+- 结果 `data.info.{id, title, cover, media_count, upper.{mid, name, face}}`、`data.medias[]`、`data.has_more`（参）。`medias[]` 字段：`id`（稿件 avid 或其他类型的编号）、`type`（`2` 视频稿件、`12` 音频、`24` 番剧/影视，参）、`title`、`cover`、`intro`、`page`（分 P 数）、`duration`（秒）、`upper.{mid, name, face}`、`attr`、`bvid`（个别为 `bv_id`，两者都认）、`fav_time`（Unix 秒）、`pubtime`、`ugc.first_cid`、`ogv.{type_name, season_id}`（参）。
+- **失效条目**：`attr` 为 `1`（其他原因删除）或 `9`（UP 主自己删除）时稿件已失效，标题常被站点替换为“已失效视频”（参）；不可打开、不可缓存。
+- 翻页：`has_more=false` 为到底；`medias` 为 `null` 且 `has_more=false` 是空收藏夹。`has_more=true` 而 `medias` 为空按 `schema_changed`，不当成到底。
+- 别人的私密收藏夹会返回错误（社）；TRACE 只读自己的。
+
+**稍后再看**
+
+- `GET https://api.bilibili.com/x/v2/history/toview/web?pn=<页>&ps=20&viewed=<0|2>&key=&asc=false&need_split=true&web_location=333.881`，**需要 WBI 签名**（第 5 节，参）。`viewed=0` 全部、`viewed=2` 未看完（参；`1` 未看、`3` 已看完的含义未核，TRACE 不用）。
+- 结果 `data.count`（总数）、`data.list[].{aid, bvid, cid, title, pic, duration, pubdate, owner.{mid, name, face}, progress, videos, is_pgc, is_pugv, bangumi, redirect_url, add_at?}`（参）。`progress` 是秒，`-1` 表示看完（社）；`is_pgc`/`is_pugv` 为真的是番剧或课程，TRACE 不打开。以 `count` 与已取条数判断到底。
+- 旧接口 `GET /x/v2/history/toview`（不分页，最多约 100 条，社）只作后备，不在本阶段使用。
+
+**历史记录**
+
+- `GET https://api.bilibili.com/x/web-interface/history/cursor?type=<all|archive|live|article>&ps=20&max=<上一页 cursor.max>&view_at=<上一页 cursor.view_at>&business=<上一页 cursor.business>`，第一页 `max=0&view_at=0`、不带 `business`；不要 WBI（参）。`ps` 上限 30（社）。TRACE 用 `type=all`。
+- 结果 `data.cursor.{max, view_at, business, ps}`、`data.tab[].{type, name}`、`data.list[]`（参）。`list[]`：`title`、`cover`（有时为空，另有 `covers[]`）、`history.{oid, epid, bvid, page, cid, part, business, dt}`、`videos`、`author_name`、`author_mid`、`view_at`（Unix 秒）、`progress`（秒，`-1` 看完）、`duration`、`kid`、`badge`、`show_title`、`live_status`、`uri`（参）。
+- `history.business`：`archive` 视频稿件（`bvid` 可打开）；`live` 直播（`oid` 是房间号、`author_mid` 是主播，`live_status=1` 在播）；`pgc` 番剧影视；`article`、`article-list` 专栏；`cheese` 课程（参）。TRACE 只打开 `archive`（视频详情）与 `live`（主播用户页），其余只显示类型并可在浏览器打开（地址用 `uri`，必须是 `https://` 的 `bilibili.com` 或 `b23.tv` 域名，否则不给浏览器入口）。
+- 到底：`list` 为空或 `cursor.max=0`（社）。翻页游标不变且仍有条目时按 `schema_changed` 停下，不死循环。
+- 用户在站点上暂停了历史记录时列表照常返回已有内容（社）；TRACE 不读也不改暂停开关。
+
+**关注**：沿用第 16 节（分组、关注列表都已真实检查）。
+
+**写操作**（不在 TRACE 范围，只记边界）：取消收藏 `fav/resource/batch-deal`、删除历史 `history/delete`、移出稍后再看 `toview/v2/dels` 等都是带 `csrf` 的 POST，TRACE 不调用（DEC-047）。
+
+**真实检查结果**（[ACT-020](../../USER-ACTIONS.md#act-020)，2026-11-14，1 次，经生产 `AccountService`，脱敏回执 `artifacts/site-check/act020.json`；以下各条改为（核））：
+
+- B-V0 关注（第 16 节接口经“我的”复用）：3 个分组，第 1 页 20 人、`total` 247、字段齐全。
+- B-V1 `list-all`：4 个收藏夹，恰好 1 个默认收藏夹（`attr` 第 1 位为 0）且排第一；本账号没有私密收藏夹，私密位只由合成测试覆盖。
+- B-V2 `resource/list`：`ps=20` 被接受；第 1、2 页各 20 条、页间 0 重复、`has_more` 正确；第 1 页有 1 条失效条目，按 `attr` 判为不可打开。
+- B-V3 `toview/web` 带 WBI：一次通过（没有 -352）；`viewed=0` 的 `count` 92、`viewed=2` 的 `count` 91，列表各 20 条。
+- B-V4 `history/cursor`：第 1、2 页各 20 条，游标三元组推进、页间 0 重复；本次两页全是 `archive`，`live`/`pgc`/`article` 的映射只由合成测试覆盖。

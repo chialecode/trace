@@ -1,5 +1,7 @@
 package ui
 
+import "github.com/chialecode/trace/internal/uistate"
+
 // BindFullscreenHandler connects the player control to the native shell window.
 // Memory-only UI tests inject a recorder instead of creating a window.
 func (a *App) BindFullscreenHandler(set func(bool)) {
@@ -112,10 +114,10 @@ func (a *App) persistPlayerVolume() {
 	if a.viewerPlayer != nil {
 		a.viewerPlayer.SetVolume(a.PlayerOverlay.Volume)
 	}
-	st := a.backend.GetUIState()
-	st.Player.Volume = a.PlayerOverlay.Volume
-	st.Player.Muted = a.player.Snapshot(1, 1).Muted
-	if _, err := a.backend.UpdateUIState(st); err != nil {
+	volume, muted := a.PlayerOverlay.Volume, a.player.Snapshot(1, 1).Muted
+	if _, err := a.backend.MutateUIState(func(st *uistate.State) {
+		st.Player.Volume, st.Player.Muted = volume, muted
+	}); err != nil {
 		a.showError(err)
 	}
 }

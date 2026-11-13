@@ -14,6 +14,10 @@ func GetForegroundWindowHandle() (hwnd uintptr, pid uint32) {
 	return 0, 0
 }
 
+func DescribeWindowHandle(hwnd uintptr) string {
+	return ""
+}
+
 func CurrentProcessMemoryBytes() (workingSet, privateWorkingSet, privateBytes int64) {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)

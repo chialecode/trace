@@ -9,9 +9,9 @@
 
 | 组件 | 版本 | 锁定方式 | 状态（2026-11-09） |
 | --- | --- | --- | --- |
-| Go | `go1.27.3 windows/amd64` | `go.mod` 的 `go 1.27.3` | 本机已安装 |
+| Go | `go1.27.4 windows/amd64` | `go.mod` 的 `go 1.27.4`（2026-11-14 从 1.27.3 升级，修 GO-2026-6859） | 本机已安装 1.27.3，`GOTOOLCHAIN=auto` 按 `go` 行自动下载 1.27.4 |
 | MyGo 库 / CLI | `v0.8.3` | `go.mod` 的 `tool github.com/egoist/mygo/cmd/mygo` 与 `require github.com/egoist/mygo v0.8.3` | 已锁定并实测（`go tool mygo`、`mygo/ui` 原生窗口/测试器、`mygo.Updater`） |
-| Go 依赖 | `github.com/egoist/mygo v0.8.3`、`modernc.org/sqlite v1.62.0`、`github.com/Eyevinn/mp4ff v0.62.0`、`google.golang.org/protobuf v1.36.12`（`protowire`）、`github.com/yeqown/go-qrcode/v2 v2.3.0`（二维码矩阵）及传递 `github.com/yeqown/reedsolomon v1.0.0`（均 MIT）、`golang.org/x/image v0.47.0`（WebP 与图标绘制，BSD-3-Clause）、`golang.org/x/sys v0.49.0`（Windows API 与注册表） | `go.mod` 与 `go.sum` 精确版本 | 已实际接入并通过门禁；许可随包收录，二维码传递模块的许可补充见下 |
+| Go 依赖 | `github.com/egoist/mygo v0.8.3`、`modernc.org/sqlite v1.62.0`、`github.com/Eyevinn/mp4ff v0.62.0`、`google.golang.org/protobuf v1.36.12`（`protowire`）、`github.com/yeqown/go-qrcode/v2 v2.3.0`（二维码矩阵）及传递 `github.com/yeqown/reedsolomon v1.0.0`（均 MIT）、`golang.org/x/image v0.47.0`（WebP 与图标绘制，BSD-3-Clause）、`golang.org/x/sys v0.50.0`（Windows API 与注册表） | `go.mod` 与 `go.sum` 精确版本 | 已实际接入并通过门禁；许可随包收录，二维码传递模块的许可补充见下 |
 | NSIS（构建期工具） | `v3.13`（`makensis.exe`） | MyGo 缓存于 `%LOCALAPPDATA%\mygo\nsis-3.13`（zlib/libpng、bzip2、CPL 1.0 许可） | 本机已安装并生成开发版、正式版与 ptest 安装包 |
 | Windows Media Foundation | Windows 10/11 系统自带（`mfplat.dll`、`mfreadwrite.dll`、`ole32.dll`） | — | 本机已有，经合成样本解码、拖动与静音测试验证 |
 
@@ -24,11 +24,12 @@
 | --- | --- | --- |
 | `TRACE_DATA_DIR=tmp/dev-data mygo dev` | 开发模式：Go 改动自动重编译并重启原生窗口应用 | 已实测：冷编译 `2.9s`、增量重编译 `0.98s`（NFR-DEV-001，满足 10 秒以内目标） |
 | `go run ./tools/check` | 全部质量门禁（见第 3 节），任一失败就以非零退出 | 已实现并实测通过；最新范围与用时见[阶段报告](../delivery/stage-report.md) |
+| `go run ./tools/deps [-audit]` | [依赖盘点](workflow.md#dependency-inventory)：列出直接依赖模块与 `go` 行满 7 天的新版本，只出报告；`-audit` 用固定版本的 `govulncheck` 查代码实际调用到的已知漏洞，未登记在 `tools/deps/exceptions.json` 或例外过了复查日期则退出码 1，跑不起来退出码 2（`not-run`）。阶段开始与 B 交付前各跑一次，要联网 | 已实现；2026-11-14 首次运行：盘点 2 项满龄（`golang.org/x/sys`、`go` 1.27.4），`-audit` 有 1 条被调用的标准库漏洞（升到 Go 1.27.4 可修），7 条在没调用到的依赖模块里 |
 | `go run ./tools/package [-install \| -install-only]` | 构建开发版：按[版本号](#versions)算出 `<下一个正式版>-dev.<UTC 时间>`，临时把 `mygo.json` 换成开发版配置（`trace-dev` 身份、开发版图标、发布者、中文目录，不带更新），经 `MYGO_LDFLAGS` 注入版本、通道、提交与构建时间，运行 `mygo build -platform windows/amd64`；先在 `dist/.staging-<时间>/` 生成安装包 `trace-dev-setup-<版本>-amd64.exe`、解包的 `trace.exe`、`THIRD-PARTY-NOTICES.txt`、`VERSION.txt`、`SHA256SUMS.txt` 并校验，再替换 `dist/trace-dev/` 中登记的文件。只打包，不动本机开发版；`-install` 打包后再[安装到本机](#dev-install)，`-install-only` 只安装 `dist/trace-dev/` 里现有的包。许可文件逐字收录 Go 模块和标准库的 LICENSE/NOTICE；精确版本的官方补充见下，其他缺许可模块会停止打包 | 已实现并实测通过；最新产物与安装结果见[阶段报告](../delivery/stage-report.md) |
 | `go run ./tools/release [-allow-dirty] [-offline] [-plan] [-publish]` | [发布正式版](#release)：检查、构建、签名、ptest 升级演练，产物放进 `dist/trace/` | 已实现；`-allow-dirty -offline` 演练实测通过，没有发布过 |
 | `go run ./tools/icons` | 重画 `assets/icon.png`（正式版：深灰底 `#3c4043` 白字 “T”，DEC-046 去掉了点）与 `assets/icon-dev.png`（开发版：同一图标加琥珀色 “DEV” 角标）；两个通道底色、字母高度（250–780）与笔画（110）相同，只差角标（2026-11-14 用户要求），1024×1024 | 已实现；图标已入库，只在改图标时运行 |
 | `go run ./tools/smoke -pkg dist/trace-dev -out artifacts/smoke` | 包冒烟：在临时的 `LOCALAPPDATA`、`APPDATA`、`USERPROFILE`、“文档”与 `TEMP`/`TMP` 目录下，以[安静模式](#quiet-tests)启动 `trace.exe`，检查进程存活、程序报告的版本、提交与构建时间与 `VERSION.txt` 一致、无 `msedgewebview2.exe` 子进程、`library.db`、`updates.db` 与 `mygo/` 建在数据目录里、临时 `APPDATA` 与用户主目录下没有新文件夹、单实例与数据目录锁生效、托盘关闭与重建正常、日志无凭证；`HTTP(S)_PROXY` 指向本机关闭的端口，保证不访问真实站点 | 已实现并实测通过，`quietMode=hidden`、`webview2=0`；最新内存与用时见[阶段报告](../delivery/stage-report.md) |
-| `go run ./tools/uishots -out artifacts/uishots` | 界面截图与断言：用 `mygo/ui` 的 `ui.NewTester` 在 1280、1000、720 三档宽度下渲染全部必测页面与状态，直接将 `tt.Image()` 编码为 PNG 截图并写出结构化布局/无障碍断言回执 `assertions.json` | 当前 33 个场景、99 张 PNG，含单订阅主页、设置“缓存规则”、“设置 › 关于”（正式版，可更新）、更新已就绪的提示、绿色强调色预览（Q-011）、本机视频/动态/录像详情、播放选项与音量面板，以及抖音用户页、视频/本机详情、图文与配乐条、抖音登录分段、多站点账号与退避设置、多站点订阅账号列表和六处站点小字断言；最新断言结果见[阶段报告](../delivery/stage-report.md) |
+| `go run ./tools/uishots -out artifacts/uishots` | 界面截图与断言：用 `mygo/ui` 的 `ui.NewTester` 在 1280、1000、720 三档宽度下渲染全部必测页面与状态，直接将 `tt.Image()` 编码为 PNG 截图并写出结构化布局/无障碍断言回执 `assertions.json` | 已实现并实测通过：当前 54 个场景、162 张 PNG，覆盖解析页侧栏与居中大输入框（有历史/空历史）、媒体库离线本机详情（`/library/item`）、任务页四组侧栏（下载任务、缓存队列详情、直播录制行内“⚠ N 处异常”与实时预览、录制异常）、“我的”（折叠、哔哩哔哩收藏夹/稍后再看/历史/关注、抖音喜欢/收藏、未登录、风控错误、窄窗选择）、订阅详情（“内容”跨站已缓存信息流与空态、“账号”合并直播状态与录制按钮）、设置“缓存规则”（含展开规则点开批量“选择订阅…”对话框）、“设置 › 更新”（正式版与开发版）及“关于”、更新已就绪的提示、绿色强调色预览（Q-011）、播放选项与音量面板，以及抖音用户页、作品/图文与配乐条、抖音登录分段、多站点账号与退避设置、多站点订阅账号列表和六处站点小字断言；最新断言结果见[阶段报告](../delivery/stage-report.md) |
 | `go run ./tools/actcheck -act <act006\|act007\|act010\|act011\|act012\|act014>` | 真实站点有界检查：读取 `.local/site-check/` 的检查对象与持久化账本（发出前超额即拒），在 USER-ACTIONS 写明的额度内串行执行，遇挑战、限流或未登录立即停止，输出脱敏回执 `artifacts/site-check/<act>.json` | 已实现；合成门禁测试在 `tools/actcheck` 内，真实请求只在用户授权对应 ACT 项且账本未满时运行 |
 
 `reedsolomon v1.0.0` 模块归档缺少 LICENSE；官方下一提交只增加 MIT LICENSE、源码未变。其固定来源、SHA-256 与精确版本补充保存在 [tools/internal/build/licenses/README.md](../../tools/internal/build/licenses/README.md)，由打包工具嵌入通知，升级到自带许可的模块后移除；打包不依赖在线查许可。
@@ -40,7 +41,7 @@
 
 - **正式版**：`0.1.x`。下一个号是最高的 `v0.1.*` 标签加一，还没有标签时是 `0.1.1`（第一次发布前的开发包都标着 `0.1.0`）。`tools/release` 用 `git ls-remote --tags` 与 `gh release list` 核对，标签与已发布的 Release 不一致时停下说明；`-offline` 只看本机标签。`mygo.json` 的 `version` 只表示版本线 `0.1.0`，不为每次发布改动；升到 `0.2` 或 `1.0` 由用户决定。
 - **开发版**：`<下一个正式版号>-dev.<UTC 年月日时分>`，例如 `0.1.1-dev.202611091530`；只看本机已有的标签（`git fetch --tags` 后才知道新发布），不访问 GitHub。开发版与正式版互不比较、互不更新。
-- **写进程序**：版本、通道、提交短哈希（工作区有改动时加 `-dirty`）与 UTC 构建时间由 `tools/internal/build` 算出，经 `MYGO_LDFLAGS` 注入 `internal/appdirs`，并写进构建时的 `mygo.json` 副本（MyGo 用它写文件属性、安装包名与卸载项的 `DisplayVersion`）。`go run`、测试等没有注入时为 `0.0.0-dev`。“设置 › 关于”、诊断信息、日志开头与 `VERSION.txt` 写同样的字段。
+- **写进程序**：版本、通道、提交短哈希（工作区有改动时加 `-dirty`）与 UTC 构建时间由 `tools/internal/build` 算出，经 `MYGO_LDFLAGS` 注入 `internal/appdirs`，并写进构建时的 `mygo.json` 副本（MyGo 用它写文件属性、安装包名与卸载项的 `DisplayVersion`）。`go run`、测试等没有注入时为 `0.0.0-dev`。“设置 › 更新”（及“关于”）、诊断信息、日志开头与 `VERSION.txt` 写同样的字段。
 
 <a id="dev-install"></a>
 ### 2.2 开发版自动安装到本机
@@ -51,10 +52,10 @@
 2. 读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.trace-dev` 的 `InstallLocation` 与 `DisplayVersion`；没装就跳过（第一次请手动运行安装包）。只碰开发版，不读写正式版与 ptest 的安装。
 3. 开发版在运行时，用它的程序带 `--quit-for-update` 启动一次：作为第二个实例把参数转给运行中的 TRACE Dev，它不弹确认，按托盘“退出”的方式暂停缓存任务、收尾录制、保存界面状态，记下“为更新而退出”与窗口是否打开，然后退出。工具最多等 30 秒，没退出就放弃这次安装、不强杀，说明原因。
 4. 用新包静默安装（`/S`），从卸载项核对已装版本等于新版本。
-5. 原来在运行的，安装后重新打开：退出前窗口在托盘的带 `--background`，否则打开窗口；TRACE 自己也读那条记录决定窗口。
-6. 结果写 `artifacts/package/install-dev.json`（是否安装、旧版本、新版本、是否在运行、退出用时、是否重开、跳过或失败原因）。安装失败让命令以非零退出，但不回滚已登记的包；跳过不算失败。
+5. 安装成功后**总是**以 `--background` 在托盘打开 TRACE Dev（[DEC-052](../decisions.md#dec-052)，用户常驻运行开发版），不论原来是否在运行、窗口是否打开；TRACE 遇到“为本机安装而退出”的记录且带 `--background` 时留在托盘（正式版应用内更新仍按记录恢复窗口）。启动时请求新进程脱离当前命令的作业对象（`CREATE_BREAKAWAY_FROM_JOB`），使 Agent 命令沙箱结束时不会一并结束它；作业不允许脱离时照常启动，并在结果里记 `inJob=true`、提示从开始菜单打开一次。
+6. 结果写 `artifacts/package/install-dev.json`（是否安装、旧版本、新版本、是否在运行、退出用时、是否已在托盘打开、是否仍在作业对象里、跳过或失败原因）。安装失败让命令以非零退出，但不回滚已登记的包；跳过不算失败。
 
-判断逻辑由 `tools/package` 的测试用注入的卸载项、进程与安装器覆盖（没装、未运行、运行中退出后重开、30 秒不退出、安装失败、版本不符、正式版不受影响）。
+判断逻辑由 `tools/package` 的测试用注入的卸载项、进程与安装器覆盖（没装、未运行时装后在托盘打开、运行中退出后在托盘重开、仍在作业对象里、30 秒不退出、安装失败、版本不符、正式版不受影响）。
 
 <a id="release"></a>
 ### 2.3 发布正式版
@@ -72,7 +73,7 @@
 `-plan` 给每周的 workflow 用：输出 `release=true|false` 与 `version=`（上次发布的标签以来 `main` 没有新提交就是 `false`，还没有标签时是 `true`）。
 
 <a id="update-key"></a>
-**更新签名密钥**：Ed25519，公钥在 `mygo.json` 的 `updates.publicKey`（正式版构建内置）。私钥不入库、不打印：本机放在 `%APPDATA%\trace-release\update-signing.key`（公钥 `update-signing.pub` 在同一目录；由 A 用 `mygo keygen` 生成后改名移到这里，用户按 ACT-008 备份），`tools/release` 读入后先从自己的环境里删掉这个变量（`tools/check` 及其测试、`git`、`gh`、演练里的 TRACE 都不继承），只交给 MyGo 构建子进程的 `MYGO_UPDATER_PRIVATE_KEY` 并在进程内签版本证明；CI 上来自 `release` 环境的 secret `MYGO_UPDATER_PRIVATE_KEY`。缺私钥或私钥与公钥不配对时失败，从不生成新密钥、不打不签名的正式版。本阶段只用这一把密钥。**换密钥**（私钥泄露或计划轮换时）：① 用 `mygo keygen -o <新目录>` 生成新密钥对（它写出的是 `mygo-update.key` / `mygo-update.pub`，切换时改名为 `update-signing.key` / `update-signing.pub`），保存与备份新私钥；② 发布一个过渡版本：用**旧**私钥签名（已安装的 TRACE 只认旧公钥），程序里内置**新**公钥（MyGo 的校验公钥与 TRACE 的 `internal/update.publicKey` 都换成新的）——MyGo 的构建要求签名私钥与 `updates.publicKey` 配对，所以这一步要先改 `tools/release` 并用 ptest 演练，单独写计划；③ 过渡版本发布后，把 `mygo.json` 的 `updates.publicKey`、本机密钥文件与 CI secret 换成新密钥，之后的版本用新私钥签名；④ 没更新到过渡版本的旧版本无法再联网更新，在发布说明里请这些用户手动下载安装。私钥丢失时无法做第 ② 步，只能走第 ④ 步。
+**更新签名密钥**：Ed25519，公钥在 `mygo.json` 的 `updates.publicKey`（正式版构建内置）。私钥不入库、不打印：本机放在 `%APPDATA%\trace-release\update-signing.key`（公钥 `update-signing.pub` 在同一目录；由 A 用 `mygo keygen` 生成后改名移到这里，用户按 ACT-008 备份），`tools/release` 读入后先从自己的环境里删掉这个变量（`tools/check` 及其测试、`git`、`gh`、演练里的 TRACE 都不继承），只交给 MyGo 构建子进程的 `MYGO_UPDATER_PRIVATE_KEY` 并在进程内签版本证明；CI 上来自 `release` 环境的 secret `MYGO_UPDATER_PRIVATE_KEY`。缺私钥或私钥与公钥不配对时失败，从不生成新密钥、不打不签名的正式版。目前只用这一把密钥。**换密钥**（私钥泄露或计划轮换时）：① 用 `mygo keygen -o <新目录>` 生成新密钥对（它写出的是 `mygo-update.key` / `mygo-update.pub`，切换时改名为 `update-signing.key` / `update-signing.pub`），保存与备份新私钥；② 发布一个过渡版本：用**旧**私钥签名（已安装的 TRACE 只认旧公钥），程序里内置**新**公钥（MyGo 的校验公钥与 TRACE 的 `internal/update.publicKey` 都换成新的）——MyGo 的构建要求签名私钥与 `updates.publicKey` 配对，所以这一步要先改 `tools/release` 并用 ptest 演练，单独写计划；③ 过渡版本发布后，把 `mygo.json` 的 `updates.publicKey`、本机密钥文件与 CI secret 换成新密钥，之后的版本用新私钥签名；④ 没更新到过渡版本的旧版本无法再联网更新，在发布说明里请这些用户手动下载安装。私钥丢失时无法做第 ② 步，只能走第 ④ 步。
 
 <a id="quality-gates"></a>
 ## 3. 质量门禁
@@ -126,11 +127,14 @@
 - 本仓设置 `core.autocrlf=false`、`pull.ff=only`、`fetch.prune=true`。
 
 <a id="remote"></a>
+<a id="remote-ci"></a>
 ### 4.1 远端保护与 CI
 
 GitHub 上 main 的规则集：只能经 PR 写入，禁止强推和删除，保持线性历史，只允许 squash 合并，所有讨论必须解决，必需检查为 `repository-quality`；Actions 只允许固定 SHA 的 `actions/checkout`，token 只读，来自 fork 的 PR 运行 workflow 前须维护者批准（所有外部贡献者）。为防止垃圾内容，外部只开放 Discussions：关闭 Issues、Wiki 和 Projects，PR 仅协作者可创建；安全问题走私密漏洞报告。远端设置以 GitHub 实际回读为准。
 
 CI 文件 `.github/workflows/ci.yml` 的 job 名必须是 `repository-quality`，在 Ubuntu 上运行文档检查与 `go vet`/`go test ./internal/... ./tools/...`；Go 用 runner 预装版本或 `GOTOOLCHAIN` 自动下载，不引入未许可的 action。CI 不替代本地的 Windows 构建与界面检查：Linux 上 DPAPI 与 Media Foundation 换成非 Windows 桩或合成后端（`internal/credential/dpapi_other.go`、`internal/player/mf_other.go`），依赖 Windows 文件共享锁的测试段落跳过（`internal/library/lock_other_test.go`）；没有显示器时，托盘测试里打开真实隐藏窗口的段落跳过（`internal/shell/shell_test.go`，Windows 本机照常运行）。本机没有 cgo 工具链，`go test -race` 无法运行，记为 not-run。本机只完成 Linux `go vet` 与测试包交叉编译，未运行真实 Ubuntu CI；交叉编译的退出成功不等于 Linux 测试通过。
+
+**Dependabot**（[.github/dependabot.yml](../../.github/dependabot.yml)，DEC-048）：Go 模块每周、Actions 每月，冷却期 7 天，同主版本更新合为一组（`golang.org/x/*` 单独一组），关闭自动 rebase，不自动合并。版本更新 PR 在阶段开始时集中处理（[开发流程 §5.5](workflow.md#dependency-inventory)），所以纯依赖更新不会单独触发每周发布。Dependabot 告警与自动安全修复 PR 已打开（2026-11-14 用户授权，Agent 经 API 打开并核对）；安全修复 PR 不受冷却期限制，有就尽快评审合并。
 
 <a id="release-workflow"></a>
 ### 4.2 每周发布（`release.yml`）

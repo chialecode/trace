@@ -15,6 +15,7 @@ import (
 	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/ui"
 	"github.com/chialecode/trace/internal/uistate"
+	"github.com/chialecode/trace/internal/update"
 	"github.com/egoist/mygo"
 )
 
@@ -157,6 +158,9 @@ func TestDecideStartupAfterUpdate(t *testing.T) {
 	marker := func(open bool, at time.Time) *uistate.UpdateRestart {
 		return &uistate.UpdateRestart{Reason: "dev-install", WindowOpen: open, At: at.Format(time.RFC3339)}
 	}
+	updateMarker := func(open bool, at time.Time) *uistate.UpdateRestart {
+		return &uistate.UpdateRestart{Reason: "update", WindowOpen: open, At: at.Format(time.RFC3339)}
+	}
 	cases := []struct {
 		name string
 		st   uistate.State
@@ -166,7 +170,9 @@ func TestDecideStartupAfterUpdate(t *testing.T) {
 		{"plain launch opens the window", uistate.State{}, LaunchArgs{}, true},
 		{"background launch stays in the tray", uistate.State{}, LaunchArgs{Background: true}, false},
 		{"reopen after quit from the tray", uistate.State{Update: uistate.UpdateState{Restart: marker(false, now.Add(-20*time.Second))}}, LaunchArgs{}, false},
-		{"reopen after quit with the window open, even launched in background", uistate.State{Update: uistate.UpdateState{Restart: marker(true, now.Add(-20*time.Second))}}, LaunchArgs{Background: true}, true},
+		{"reopen after quit with the window open", uistate.State{Update: uistate.UpdateState{Restart: marker(true, now.Add(-20*time.Second))}}, LaunchArgs{}, true},
+		{"dev install reopened in background stays in the tray even if the window was open", uistate.State{Update: uistate.UpdateState{Restart: marker(true, now.Add(-20*time.Second))}}, LaunchArgs{Background: true}, false},
+		{"app update reopens the window as it was, even launched in background", uistate.State{Update: uistate.UpdateState{Restart: updateMarker(true, now.Add(-20*time.Second))}}, LaunchArgs{Background: true}, true},
 		{"an old record does not hide the window", uistate.State{Update: uistate.UpdateState{Restart: marker(false, now.Add(-time.Hour))}}, LaunchArgs{}, true},
 	}
 	for _, tc := range cases {
@@ -199,6 +205,140 @@ func TestDecideStartupAfterUpdate(t *testing.T) {
 	}
 	if d, n := DecideStartup(uistate.State{Update: uistate.UpdateState{LastRunVersion: "0.1.1"}}, LaunchArgs{}, appdirs.UnversionedBuild, now); d.UpdatedTo != "" || n.Update.LastRunVersion != "0.1.1" {
 		t.Fatal("a source build does not change the record")
+	}
+}
+
+func TestDecideStartupRecordsVersionChangeMethods(t *testing.T) {
+	now := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+
+	// 1. Dev channel package install (with or without restart marker) -> dev_install ("本机打包安装")
+	devSt := uistate.State{
+		Update: uistate.UpdateState{
+			LastRunVersion: "0.1.2-dev.202611150900",
+			Restart: &uistate.UpdateRestart{
+				Reason:     "dev-install",
+				WindowOpen: true,
+				At:         now.Add(-15 * time.Second).Format(time.RFC3339),
+			},
+		},
+	}
+	d, next := DecideStartupForChannel(devSt, LaunchArgs{}, "dev", "0.1.2-dev.202611151001", now)
+	if d.UpdateRecord == nil || d.UpdateRecord.Method != update.UpdateMethodDevInstall || update.MethodLabel(d.UpdateRecord.Method) != "本机打包安装" {
+		t.Fatalf("dev startup update record = %+v", d.UpdateRecord)
+	}
+	if d.UpdateRecord.FromVersion != "0.1.2-dev.202611150900" || d.UpdateRecord.ToVersion != "0.1.2-dev.202611151001" {
+		t.Fatalf("dev version span = %+v", d.UpdateRecord)
+	}
+
+	// Dev version change without restart marker also records dev_install.
+	d, _ = DecideStartupForChannel(next, LaunchArgs{}, "dev", "0.1.1-dev.202611151100", now.Add(time.Minute))
+	if d.UpdateRecord == nil || d.UpdateRecord.Method != update.UpdateMethodDevInstall {
+		t.Fatalf("dev rollback/repack update record = %+v", d.UpdateRecord)
+	}
+	if d.UpdatedTo != "" {
+		t.Fatalf("downgrade should not set UpdatedTo banner: %q", d.UpdatedTo)
+	}
+
+	// 2. Release channel with valid restart marker -> auto_update ("自动更新")
+	relAutoSt := uistate.State{
+		Update: uistate.UpdateState{
+			LastRunVersion: "0.1.1",
+			ReadyVersion:   "0.1.2",
+			Restart: &uistate.UpdateRestart{
+				Reason:     "update",
+				WindowOpen: true,
+				At:         now.Add(-30 * time.Second).Format(time.RFC3339),
+			},
+		},
+	}
+	d, _ = DecideStartupForChannel(relAutoSt, LaunchArgs{}, "stable", "0.1.2", now)
+	if d.UpdateRecord == nil || d.UpdateRecord.Method != update.UpdateMethodAuto || update.MethodLabel(d.UpdateRecord.Method) != "自动更新" {
+		t.Fatalf("release auto-update record = %+v", d.UpdateRecord)
+	}
+
+	// 3. Release channel without restart marker (or expired restart marker) -> manual_install ("手动安装")
+	relManualSt := uistate.State{
+		Update: uistate.UpdateState{
+			LastRunVersion: "0.1.2",
+		},
+	}
+	d, _ = DecideStartupForChannel(relManualSt, LaunchArgs{}, "stable", "0.1.3", now)
+	if d.UpdateRecord == nil || d.UpdateRecord.Method != update.UpdateMethodManual || update.MethodLabel(d.UpdateRecord.Method) != "手动安装" {
+		t.Fatalf("release manual-install record = %+v", d.UpdateRecord)
+	}
+
+	relExpiredMarkerSt := uistate.State{
+		Update: uistate.UpdateState{
+			LastRunVersion: "0.1.3",
+			Restart: &uistate.UpdateRestart{
+				Reason:     "update",
+				WindowOpen: false,
+				At:         now.Add(-2 * time.Hour).Format(time.RFC3339),
+			},
+		},
+	}
+	d, _ = DecideStartupForChannel(relExpiredMarkerSt, LaunchArgs{}, "stable", "0.1.4", now)
+	if d.UpdateRecord == nil || d.UpdateRecord.Method != update.UpdateMethodManual {
+		t.Fatalf("expired restart marker must fall back to manual_install: %+v", d.UpdateRecord)
+	}
+
+	// 4. First launch, same version, or unversioned builds do not write an update record.
+	if d, _ := DecideStartupForChannel(uistate.State{}, LaunchArgs{}, "stable", "0.1.1", now); d.UpdateRecord != nil {
+		t.Fatalf("first launch must not write update record: %+v", d.UpdateRecord)
+	}
+	if d, _ := DecideStartupForChannel(uistate.State{Update: uistate.UpdateState{LastRunVersion: "0.1.1"}}, LaunchArgs{}, "stable", "0.1.1", now); d.UpdateRecord != nil {
+		t.Fatalf("same version must not write update record: %+v", d.UpdateRecord)
+	}
+	if d, _ := DecideStartupForChannel(uistate.State{Update: uistate.UpdateState{LastRunVersion: appdirs.UnversionedBuild}}, LaunchArgs{}, "dev", "0.1.2-dev.1", now); d.UpdateRecord != nil {
+		t.Fatalf("unversioned previous build must not write update record: %+v", d.UpdateRecord)
+	}
+	if d, _ := DecideStartupForChannel(uistate.State{Update: uistate.UpdateState{LastRunVersion: "0.1.1"}}, LaunchArgs{}, "dev", appdirs.UnversionedBuild, now); d.UpdateRecord != nil {
+		t.Fatalf("unversioned current build must not write update record: %+v", d.UpdateRecord)
+	}
+
+	// 5. End-to-end persistence through recordStartupDecision -> <DataDir>/update-history.json
+	root := t.TempDir()
+	loc := appdirs.Locations{
+		Channel:         "stable",
+		Mode:            "installed",
+		AppName:         "trace",
+		DisplayName:     "TRACE",
+		DataDir:         filepath.Join(root, "data"),
+		DefaultCacheDir: filepath.Join(root, "cache"),
+		CredentialsDir:  filepath.Join(root, "data", "credentials"),
+		LogsDir:         filepath.Join(root, "data", "logs"),
+		LockFile:        filepath.Join(root, "data", "app.lock"),
+	}
+	b, err := service.NewBackend(service.Options{Locations: loc, Desktop: service.NewMockDesktop(), DisableBgWorkers: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	// Seed initial version 0.1.0
+	recordStartupDecision(b, "stable", "0.1.0", LaunchArgs{}, now)
+	// Manual install to 0.1.1
+	recordStartupDecision(b, "stable", "0.1.1", LaunchArgs{}, now.Add(time.Minute))
+	// Auto update with valid restart marker to 0.1.2
+	_, _ = b.MutateUIState(func(st *uistate.State) {
+		st.Update.Restart = &uistate.UpdateRestart{
+			Reason:     "update",
+			WindowOpen: true,
+			At:         now.Add(2*time.Minute - 10*time.Second).Format(time.RFC3339),
+		}
+	})
+	recordStartupDecision(b, "stable", "0.1.2", LaunchArgs{}, now.Add(2*time.Minute))
+	// Dev install to 0.1.3-dev.1
+	recordStartupDecision(b, "dev", "0.1.3-dev.1", LaunchArgs{}, now.Add(3*time.Minute))
+
+	hist := b.GetUpdateHistory()
+	if hist.Version != 1 || len(hist.Updates) != 3 {
+		t.Fatalf("persisted update history = %+v", hist)
+	}
+	if hist.Updates[0].Method != update.UpdateMethodDevInstall ||
+		hist.Updates[1].Method != update.UpdateMethodAuto ||
+		hist.Updates[2].Method != update.UpdateMethodManual {
+		t.Fatalf("unexpected persisted update methods: %+v", hist.Updates)
 	}
 }
 

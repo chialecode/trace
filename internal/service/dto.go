@@ -1,8 +1,11 @@
 package service
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/live"
@@ -118,18 +121,21 @@ type DouyinWorkCardDTO struct {
 
 // DouyinUserView holds a Douyin creator's profile header and optional live banner state.
 type DouyinUserView struct {
-	SecUID         string            `json:"secUid"`
-	UID            string            `json:"uid,omitempty"`
-	UniqueID       string            `json:"uniqueId,omitempty"`
-	ShortID        string            `json:"shortId,omitempty"`
-	Nickname       string            `json:"nickname"`
-	Signature      string            `json:"signature,omitempty"`
-	AvatarURL      string            `json:"avatarUrl,omitempty"`
-	AwemeCount     int               `json:"awemeCount"`
-	FollowerCount  int64             `json:"followerCount"`
-	FollowingCount int64             `json:"followingCount"`
-	TotalFavorited int64             `json:"totalFavorited"`
-	IsPrivate      bool              `json:"isPrivate,omitempty"`
+	SecUID         string `json:"secUid"`
+	UID            string `json:"uid,omitempty"`
+	UniqueID       string `json:"uniqueId,omitempty"`
+	ShortID        string `json:"shortId,omitempty"`
+	Nickname       string `json:"nickname"`
+	Signature      string `json:"signature,omitempty"`
+	AvatarURL      string `json:"avatarUrl,omitempty"`
+	AwemeCount     int    `json:"awemeCount"`
+	FollowerCount  int64  `json:"followerCount"`
+	FollowingCount int64  `json:"followingCount"`
+	TotalFavorited int64  `json:"totalFavorited"`
+	IsPrivate      bool   `json:"isPrivate,omitempty"`
+	// PrivateVisible: the account is private but shows its works to the
+	// signed-in account (an approved follower).
+	PrivateVisible bool              `json:"privateVisible,omitempty"`
 	LiveStatus     int               `json:"liveStatus,omitempty"` // 0=offline, 1=live
 	RoomID         string            `json:"roomId,omitempty"`
 	WebRID         string            `json:"webRid,omitempty"`
@@ -168,36 +174,75 @@ type DouyinLiveView struct {
 // LiveAccountState describes the unified live broadcast and recording state of any <site>:<uid>
 // creator or room across Bilibili and Douyin.
 type LiveAccountState struct {
-	Site              string  `json:"site"`                   // "bilibili" or "douyin"
-	AccountKey        string  `json:"accountKey"`             // "<site>:<uid>"
-	RecordingKey      string  `json:"recordingKey,omitempty"` // "<site>:live:<room_id>" or decimal room ID
-	UID               string  `json:"uid"`                    // Bilibili decimal mid or Douyin sec_uid
-	Mid               int64   `json:"mid,omitempty"`          // Bilibili numeric mid when site=="bilibili"
-	RoomID            string  `json:"roomId,omitempty"`       // Bilibili decimal roomId or Douyin room_id_str
-	WebRID            string  `json:"webRid,omitempty"`       // Douyin web_rid (browser room number)
-	Uname             string  `json:"uname"`
-	Face              string  `json:"face,omitempty"`
-	Title             string  `json:"title,omitempty"`
-	Cover             string  `json:"cover,omitempty"`
-	AreaName          string  `json:"areaName,omitempty"`
-	NoRoom            bool    `json:"noRoom,omitempty"`
-	LiveStatus        int     `json:"liveStatus"` // 0=offline, 1=live, 2=carousel
-	LiveSince         int64   `json:"liveSince,omitempty"`
-	StatusText        string  `json:"statusText"` // "未开通直播间", "未开播", "直播中", "轮播中"
-	QualityName       string  `json:"qualityName,omitempty"`
-	Codec             string  `json:"codec,omitempty"`
-	Transport         string  `json:"transport,omitempty"` // "hls_fmp4" or "http_flv"
-	AudioOnly         bool    `json:"audioOnly,omitempty"`
-	Recording         bool    `json:"recording"`
-	RecordSession     string  `json:"recordSession,omitempty"`
-	RecordDurationSec float64 `json:"recordDurationSec,omitempty"`
-	RecordSpeedBps    int64   `json:"recordSpeedBps,omitempty"`
-	RecordBytes       int64   `json:"recordBytes,omitempty"`
-	RecordSegments    int     `json:"recordSegments,omitempty"`
-	RecordItemDir     string  `json:"recordItemDir,omitempty"`
-	StopReason        string  `json:"stopReason,omitempty"`
-	LastError         string  `json:"lastError,omitempty"`
-	UpdatedAt         string  `json:"updatedAt,omitempty"`
+	Site              string                 `json:"site"`                   // "bilibili" or "douyin"
+	AccountKey        string                 `json:"accountKey"`             // "<site>:<uid>"
+	RecordingKey      string                 `json:"recordingKey,omitempty"` // "<site>:live:<room_id>" or decimal room ID
+	UID               string                 `json:"uid"`                    // Bilibili decimal mid or Douyin sec_uid
+	Mid               int64                  `json:"mid,omitempty"`          // Bilibili numeric mid when site=="bilibili"
+	RoomID            string                 `json:"roomId,omitempty"`       // Bilibili decimal roomId or Douyin room_id_str
+	WebRID            string                 `json:"webRid,omitempty"`       // Douyin web_rid (browser room number)
+	Uname             string                 `json:"uname"`
+	Face              string                 `json:"face,omitempty"`
+	Title             string                 `json:"title,omitempty"`
+	Cover             string                 `json:"cover,omitempty"`
+	AreaName          string                 `json:"areaName,omitempty"`
+	NoRoom            bool                   `json:"noRoom,omitempty"`
+	LiveStatus        int                    `json:"liveStatus"` // 0=offline, 1=live, 2=carousel
+	LiveSince         int64                  `json:"liveSince,omitempty"`
+	StatusText        string                 `json:"statusText"` // "未开通直播间", "未开播", "直播中", "轮播中"
+	QualityName       string                 `json:"qualityName,omitempty"`
+	Codec             string                 `json:"codec,omitempty"`
+	Transport         string                 `json:"transport,omitempty"` // "hls_fmp4" or "http_flv"
+	AudioOnly         bool                   `json:"audioOnly,omitempty"`
+	Recording         bool                   `json:"recording"`
+	RecordSession     string                 `json:"recordSession,omitempty"`
+	RecordDurationSec float64                `json:"recordDurationSec,omitempty"`
+	RecordSpeedBps    int64                  `json:"recordSpeedBps,omitempty"`
+	RecordBytes       int64                  `json:"recordBytes,omitempty"`
+	RecordSegments    int                    `json:"recordSegments,omitempty"`
+	RecordItemDir     string                 `json:"recordItemDir,omitempty"`
+	RecordPartPath    string                 `json:"recordPartPath,omitempty"`
+	RecordPartIndex   int                    `json:"recordPartIndex,omitempty"`
+	RecordPartBytes   int64                  `json:"recordPartBytes,omitempty"`
+	RecordPartReady   bool                   `json:"recordPartReady,omitempty"`
+	PreviewSupported  bool                   `json:"previewSupported,omitempty"`
+	PreviewReason     string                 `json:"previewReason,omitempty"`
+	Incidents         []library.LiveIncident `json:"incidents,omitempty"`
+	StopReason        string                 `json:"stopReason,omitempty"`
+	LastError         string                 `json:"lastError,omitempty"`
+	UpdatedAt         string                 `json:"updatedAt,omitempty"`
+}
+
+// LiveRecordingPreviewInfo exposes active live recording .part file and transport metadata for live preview playback.
+type LiveRecordingPreviewInfo struct {
+	RecordingKey     string                 `json:"recordingKey"`
+	Site             string                 `json:"site"`
+	AccountUID       string                 `json:"accountUid,omitempty"`
+	RoomID           string                 `json:"roomId"`
+	WebRID           string                 `json:"webRid,omitempty"`
+	Uname            string                 `json:"uname"`
+	Title            string                 `json:"title,omitempty"`
+	Codec            string                 `json:"codec,omitempty"`
+	Quality          int                    `json:"quality,omitempty"`
+	QualityName      string                 `json:"qualityName,omitempty"`
+	Transport        string                 `json:"transport,omitempty"` // "hls_fmp4" or "http_flv"
+	AudioOnly        bool                   `json:"audioOnly,omitempty"`
+	Recording        bool                   `json:"recording"`
+	PartPath         string                 `json:"partPath,omitempty"`
+	PartIndex        int                    `json:"partIndex,omitempty"`
+	PartBytes        int64                  `json:"partBytes,omitempty"`
+	PartDurationSec  float64                `json:"partDurationSec,omitempty"`
+	PartReady        bool                   `json:"partReady,omitempty"`
+	PreviewSupported bool                   `json:"previewSupported"`
+	PreviewReason    string                 `json:"previewReason,omitempty"`
+	ItemDir          string                 `json:"itemDir,omitempty"`
+	DurationSec      float64                `json:"durationSec,omitempty"`
+	SpeedBps         int64                  `json:"speedBps,omitempty"`
+	BytesWritten     int64                  `json:"bytesWritten,omitempty"`
+	Segments         int                    `json:"segments,omitempty"`
+	Incidents        []library.LiveIncident `json:"incidents,omitempty"`
+	StopReason       string                 `json:"stopReason,omitempty"`
+	LastError        string                 `json:"lastError,omitempty"`
 }
 
 // SiteSchedulerStatus reports per-site scheduled subscription check timing and risk-control backoff
@@ -406,11 +451,13 @@ func mapRoomToAccountState(rs live.RoomState) LiveAccountState {
 		if recKey == "" && roomStr != "" {
 			recKey = "douyin:live:" + roomStr
 		}
-		audioOnly := rs.LiveState == site.LiveStateAudioOnly
+		audioOnly := rs.AudioOnly || rs.LiveState == site.LiveStateAudioOnly
 		liveStatus := rs.LiveStatus
 		if audioOnly {
 			liveStatus = 1
 		}
+		transport := firstNonEmpty(rs.Transport, string(site.LiveTransportHTTPFLV))
+		partPath := firstNonEmpty(rs.RecordPartPath, resolveRecordingPartPath(rs.RecordItemDir))
 		return LiveAccountState{
 			Site:              string(site.Douyin),
 			AccountKey:        accountKey,
@@ -429,7 +476,7 @@ func mapRoomToAccountState(rs live.RoomState) LiveAccountState {
 			StatusText:        rs.StatusText,
 			QualityName:       rs.QualityName,
 			Codec:             rs.Codec,
-			Transport:         string(site.LiveTransportHTTPFLV),
+			Transport:         transport,
 			AudioOnly:         audioOnly,
 			Recording:         rs.Recording,
 			RecordSession:     rs.RecordSession,
@@ -438,6 +485,12 @@ func mapRoomToAccountState(rs live.RoomState) LiveAccountState {
 			RecordBytes:       rs.RecordBytes,
 			RecordSegments:    rs.RecordSegments,
 			RecordItemDir:     rs.RecordItemDir,
+			RecordPartPath:    partPath,
+			RecordPartIndex:   rs.RecordPartIndex,
+			RecordPartBytes:   rs.RecordPartBytes,
+			RecordPartReady:   rs.RecordPartReady,
+			PreviewSupported:  rs.PreviewSupported,
+			PreviewReason:     rs.PreviewReason,
 			StopReason:        rs.StopReason,
 			LastError:         rs.LastError,
 			UpdatedAt:         rs.UpdatedAt,
@@ -465,6 +518,8 @@ func mapRoomToAccountState(rs live.RoomState) LiveAccountState {
 	if noRoom && statusText == "" {
 		statusText = "未开通直播间"
 	}
+	transport := firstNonEmpty(rs.Transport, string(site.LiveTransportHLSFMP4))
+	partPath := firstNonEmpty(rs.RecordPartPath, resolveRecordingPartPath(rs.RecordItemDir))
 	return LiveAccountState{
 		Site:              string(site.Bilibili),
 		AccountKey:        accountKey,
@@ -483,7 +538,8 @@ func mapRoomToAccountState(rs live.RoomState) LiveAccountState {
 		StatusText:        statusText,
 		QualityName:       rs.QualityName,
 		Codec:             rs.Codec,
-		Transport:         string(site.LiveTransportHLSFMP4),
+		Transport:         transport,
+		AudioOnly:         rs.AudioOnly,
 		Recording:         rs.Recording,
 		RecordSession:     rs.RecordSession,
 		RecordDurationSec: rs.RecordDurationSec,
@@ -491,6 +547,13 @@ func mapRoomToAccountState(rs live.RoomState) LiveAccountState {
 		RecordBytes:       rs.RecordBytes,
 		RecordSegments:    rs.RecordSegments,
 		RecordItemDir:     rs.RecordItemDir,
+		RecordPartPath:    partPath,
+		RecordPartIndex:   rs.RecordPartIndex,
+		RecordPartBytes:   rs.RecordPartBytes,
+		RecordPartReady:   rs.RecordPartReady,
+		PreviewSupported:  rs.PreviewSupported,
+		PreviewReason:     rs.PreviewReason,
+		Incidents:         append([]library.LiveIncident(nil), rs.Incidents...),
 		StopReason:        rs.StopReason,
 		LastError:         rs.LastError,
 		UpdatedAt:         rs.UpdatedAt,
@@ -560,4 +623,32 @@ func mapSiteLiveStatusToAccountState(st site.LiveStatus) LiveAccountState {
 		Transport:    transport,
 		AudioOnly:    audioOnly,
 	}
+}
+
+func resolveRecordingPartPath(itemDir string) string {
+	dir := strings.TrimSpace(itemDir)
+	if dir == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var newest string
+	var newestMod time.Time
+	for _, e := range entries {
+		if !e.Type().IsRegular() || !strings.HasSuffix(strings.ToLower(e.Name()), ".part") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		full := filepath.Join(dir, e.Name())
+		if newest == "" || info.ModTime().After(newestMod) {
+			newest = full
+			newestMod = info.ModTime()
+		}
+	}
+	return newest
 }

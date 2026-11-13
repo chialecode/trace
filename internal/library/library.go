@@ -28,6 +28,22 @@ type RebuildReport struct {
 	Indexed         int      `json:"indexed"`
 	MissingFiles    int      `json:"missingFiles"`
 	CorruptBackedUp []string `json:"corruptBackedUp,omitempty"`
+	// Removed lists indexed items whose item.json is gone (their folder was
+	// deleted outside TRACE); they left the index in this scan.
+	Removed []ChangedItem `json:"removed,omitempty"`
+	// NewlyMissing lists items that were complete before this scan and now
+	// lack files (deleted, emptied or changed outside TRACE).
+	NewlyMissing []ChangedItem `json:"newlyMissing,omitempty"`
+}
+
+// ChangedItem is one library item a scan found changed on disk.
+type ChangedItem struct {
+	ItemKey string   `json:"itemKey"`
+	Site    string   `json:"site"`
+	Kind    string   `json:"kind"`
+	Title   string   `json:"title"`
+	ItemDir string   `json:"itemDir"`
+	Files   []string `json:"files,omitempty"` // manifest paths that are missing or changed
 }
 
 // Store manages the local cache library (item.json files + SQLite index + unified feed).
@@ -137,6 +153,7 @@ func schemaV2Statements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_library_items_pub_ts ON library_items(pub_ts DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_library_items_mid ON library_items(mid);`,
 		`CREATE INDEX IF NOT EXISTS idx_library_items_site_author ON library_items(site, author_uid);`,
+		`CREATE INDEX IF NOT EXISTS idx_library_items_via ON library_items(site, json_extract(json_data, '$.via.uid'));`,
 		`CREATE TABLE IF NOT EXISTS item_refs (
 			from_key TEXT NOT NULL,
 			to_key TEXT NOT NULL,
@@ -333,6 +350,7 @@ func (s *Store) migrateSchemaToV2() error {
 		`CREATE INDEX IF NOT EXISTS idx_library_items_pub_ts ON library_items(pub_ts DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_library_items_mid ON library_items(mid);`,
 		`CREATE INDEX IF NOT EXISTS idx_library_items_site_author ON library_items(site, author_uid);`,
+		`CREATE INDEX IF NOT EXISTS idx_library_items_via ON library_items(site, json_extract(json_data, '$.via.uid'));`,
 		`CREATE INDEX IF NOT EXISTS idx_item_refs_to ON item_refs(to_key);`,
 		`CREATE INDEX IF NOT EXISTS idx_feed_items_pub_ts ON feed_items(pub_ts DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_feed_items_mid ON feed_items(mid);`,
@@ -608,12 +626,49 @@ func (s *Store) saveItemLocked(itemDir string, meta ItemMetadata, checkHash ...b
 }
 
 // RebuildIndex walks all registered library roots for item.json files, backs up corrupt files,
-// checks media file integrity, and rebuilds the SQLite library_items index.
+// checks media file integrity (including hashes), and rebuilds the SQLite library_items index.
 func (s *Store) RebuildIndex() (RebuildReport, error) {
+	return s.rebuildIndex(true)
+}
+
+// RefreshIndex is the media library's "刷新": the same scan as RebuildIndex,
+// but files are only checked for presence and size (no hashing), so it stays
+// quick on large libraries. The report lists what changed on disk.
+func (s *Store) RefreshIndex() (RebuildReport, error) {
+	return s.rebuildIndex(false)
+}
+
+type indexedItem struct {
+	site, kind, title, status, itemDir string
+}
+
+func (s *Store) indexedItemsLocked() (map[string]indexedItem, error) {
+	rows, err := s.db.Query(`SELECT item_key, site, kind, title, status, item_dir FROM library_items`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]indexedItem)
+	for rows.Next() {
+		var key string
+		var it indexedItem
+		if err := rows.Scan(&key, &it.site, &it.kind, &it.title, &it.status, &it.itemDir); err != nil {
+			return nil, err
+		}
+		out[key] = it
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) rebuildIndex(checkHash bool) (RebuildReport, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var report RebuildReport
+	previous, err := s.indexedItemsLocked()
+	if err != nil {
+		return report, err
+	}
 	roots := s.allRootsLocked()
 	if err := os.MkdirAll(s.cacheDir, 0o700); err != nil {
 		return report, err
@@ -678,9 +733,12 @@ func (s *Store) RebuildIndex() (RebuildReport, error) {
 				return err
 			}
 			meta.ItemDir = filepath.Clean(itemDir)
-			missing, totalBytes := verifyItemFiles(meta.ItemDir, &meta)
+			missing, totalBytes, missingPaths := verifyItemFilesDetail(meta.ItemDir, &meta, checkHash)
 			meta.TotalBytes = totalBytes
 			if missing && meta.Status != "recording" && meta.Status != "failed" && meta.Status != "partial" {
+				if prev, ok := previous[meta.ItemKey]; ok && prev.status != "missing_files" {
+					report.NewlyMissing = append(report.NewlyMissing, ChangedItem{ItemKey: meta.ItemKey, Site: meta.Site, Kind: meta.Kind, Title: meta.Title, ItemDir: meta.ItemDir, Files: missingPaths})
+				}
 				meta.Status = "missing_files"
 				report.MissingFiles++
 				if err := storage.WriteJSONAtomic(path, meta, 0o600); err != nil {
@@ -718,6 +776,9 @@ func (s *Store) RebuildIndex() (RebuildReport, error) {
 		}
 		if !seenKeys[k] {
 			stale = append(stale, k)
+			if prev, ok := previous[k]; ok && !pendingMap[k] {
+				report.Removed = append(report.Removed, ChangedItem{ItemKey: k, Site: prev.site, Kind: prev.kind, Title: prev.title, ItemDir: prev.itemDir})
+			}
 		}
 	}
 	rowErr := rows.Err()
@@ -1001,7 +1062,22 @@ func isRegisteredInManifest(meta ItemMetadata, normRel string) bool {
 }
 
 func verifyItemFiles(itemDir string, meta *ItemMetadata, checkHash ...bool) (missing bool, totalBytes int64) {
+	missing, totalBytes, _ = verifyItemFilesDetail(itemDir, meta, len(checkHash) == 0 || checkHash[0])
+	return missing, totalBytes
+}
+
+// verifyItemFilesDetail is verifyItemFiles that also returns the manifest
+// paths that are missing, empty or no longer match the recorded size/hash.
+func verifyItemFilesDetail(itemDir string, meta *ItemMetadata, hash bool) (missing bool, totalBytes int64, missingPaths []string) {
+	checkHash := []bool{hash}
 	checkedPaths := make(map[string]bool)
+	noted := make(map[string]bool)
+	note := func(rel string) {
+		if rel = cleanManifestRel(strings.TrimSpace(rel)); rel != "" && !noted[rel] {
+			noted[rel] = true
+			missingPaths = append(missingPaths, rel)
+		}
+	}
 
 	checkRel := func(rel string) bool {
 		rel = strings.TrimSpace(rel)
@@ -1010,10 +1086,12 @@ func verifyItemFiles(itemDir string, meta *ItemMetadata, checkHash ...bool) (mis
 		}
 		full, err := ResolveItemPath(itemDir, rel)
 		if err != nil {
+			note(rel)
 			return false
 		}
 		info, err := os.Lstat(full)
 		if err != nil || info.IsDir() || info.Size() == 0 {
+			note(rel)
 			return false
 		}
 		norm := cleanManifestRel(rel)
@@ -1036,12 +1114,14 @@ func verifyItemFiles(itemDir string, meta *ItemMetadata, checkHash ...bool) (mis
 			}
 			if meta.Media[i].Bytes > 0 && meta.Media[i].Bytes != info.Size() {
 				missing = true
+				note(rel)
 			} else if meta.Media[i].Bytes == 0 {
 				meta.Media[i].Bytes = info.Size()
 			}
 			if meta.Media[i].SHA256 != "" && (len(checkHash) == 0 || checkHash[0]) {
 				if !VerifyMediaFile(itemDir, meta.Media[i], true) {
 					missing = true
+					note(rel)
 				}
 			}
 		}
@@ -1107,7 +1187,7 @@ func verifyItemFiles(itemDir string, meta *ItemMetadata, checkHash ...bool) (mis
 	if !hasStructuredMedia && meta.Kind != "dynamic" && meta.Status != "partial" && meta.Status != "recording" {
 		missing = true
 	}
-	return missing, totalBytes
+	return missing, totalBytes, missingPaths
 }
 
 // VerifyMediaFile checks a registered file without rewriting its expected size.
@@ -1436,7 +1516,26 @@ func (s *Store) States(keys []string) map[string]DotState {
 	return out
 }
 
+// forwardContentSQL matches library_items rows that are forwarded posts or
+// content cached because of one (media library "转发", DEC-056).
+const forwardContentSQL = "(json_extract(json_data, '$.via.reason') = 'forward' OR (kind = 'dynamic' AND json_extract(json_data, '$.dynamicType') = 'DYNAMIC_TYPE_FORWARD'))"
+
+// viaUIDSQL is the indexed expression for the creator an item was cached for
+// (idx_library_items_via).
+const viaUIDSQL = "json_extract(json_data, '$.via.uid')"
+
+// appendLibrarySiteAndAuthorClauses is appendSiteAndAuthorClauses for
+// library_items: an author filter also matches items cached for that creator
+// under their folder (collaboration videos and forwarded content, DEC-056).
+func appendLibrarySiteAndAuthorClauses(clauses []string, args []any, siteFilter string, mid int64, authorUID string, mids []int64, refs []AuthorRef) ([]string, []any) {
+	return appendSiteAndAuthorClausesVia(clauses, args, "", siteFilter, mid, authorUID, mids, refs, true)
+}
+
 func appendSiteAndAuthorClauses(clauses []string, args []any, colPrefix, siteFilter string, mid int64, authorUID string, mids []int64, refs []AuthorRef) ([]string, []any) {
+	return appendSiteAndAuthorClausesVia(clauses, args, colPrefix, siteFilter, mid, authorUID, mids, refs, false)
+}
+
+func appendSiteAndAuthorClausesVia(clauses []string, args []any, colPrefix, siteFilter string, mid int64, authorUID string, mids []int64, refs []AuthorRef, withVia bool) ([]string, []any) {
 	normSiteFilter := strings.ToLower(strings.TrimSpace(siteFilter))
 	if normSiteFilter != "" && normSiteFilter != "all" {
 		clauses = append(clauses, colPrefix+"site = ?")
@@ -1493,17 +1592,23 @@ func appendSiteAndAuthorClauses(clauses []string, args []any, colPrefix, siteFil
 	var orParts []string
 	for _, st := range siteOrder {
 		uids := bySite[st]
-		if len(uids) == 1 {
-			orParts = append(orParts, "("+colPrefix+"site = ? AND "+colPrefix+"author_uid = ?)")
-			args = append(args, st, uids[0])
-		} else {
-			ph := make([]string, len(uids))
-			args = append(args, st)
-			for i, u := range uids {
-				ph[i] = "?"
-				args = append(args, u)
+		cols := []string{colPrefix + "author_uid"}
+		if withVia {
+			cols = append(cols, viaUIDSQL)
+		}
+		for _, col := range cols {
+			if len(uids) == 1 {
+				orParts = append(orParts, "("+colPrefix+"site = ? AND "+col+" = ?)")
+				args = append(args, st, uids[0])
+			} else {
+				ph := make([]string, len(uids))
+				args = append(args, st)
+				for i, u := range uids {
+					ph[i] = "?"
+					args = append(args, u)
+				}
+				orParts = append(orParts, "("+colPrefix+"site = ? AND "+col+" IN ("+strings.Join(ph, ",")+"))")
 			}
-			orParts = append(orParts, "("+colPrefix+"site = ? AND "+colPrefix+"author_uid IN ("+strings.Join(ph, ",")+"))")
 		}
 	}
 	if len(orParts) == 1 {
@@ -1521,13 +1626,23 @@ func (s *Store) ListItems(filter FeedFilter) ([]ItemMetadata, error) {
 
 	var clauses []string
 	var args []any
-	if filter.Kind == "image" {
+	switch filter.Kind {
+	case "image":
 		clauses = append(clauses, "(EXISTS (SELECT 1 FROM json_each(json_data, '$.media') WHERE json_extract(value, '$.role') = 'image') OR EXISTS (SELECT 1 FROM json_each(json_data, '$.notePages') WHERE json_extract(value, '$.kind') IN ('image', 'motion')))")
-	} else if filter.Kind != "" && filter.Kind != "all" {
+		if filter.ExcludeForward {
+			clauses = append(clauses, "NOT "+forwardContentSQL)
+		}
+	case "forward":
+		clauses = append(clauses, forwardContentSQL)
+	case "", "all":
+	default:
 		clauses = append(clauses, "kind = ?")
 		args = append(args, filter.Kind)
+		if filter.ExcludeForward {
+			clauses = append(clauses, "NOT "+forwardContentSQL)
+		}
 	}
-	clauses, args = appendSiteAndAuthorClauses(clauses, args, "", filter.Site, filter.Mid, filter.AuthorUID, filter.Authors, filter.AuthorRefs)
+	clauses, args = appendLibrarySiteAndAuthorClauses(clauses, args, filter.Site, filter.Mid, filter.AuthorUID, filter.Authors, filter.AuthorRefs)
 	if kw := strings.TrimSpace(filter.Keyword); kw != "" {
 		clauses = append(clauses, "(title LIKE ? OR summary LIKE ? OR author_name LIKE ? OR raw_id LIKE ?)")
 		pat := "%" + kw + "%"
@@ -2115,8 +2230,10 @@ func (s *Store) deleteWithPlanLocked(itemKey string, deleteFiles bool) (DeletePl
 				removeErrors = append(removeErrors, rErr)
 			}
 		}
+		roots := s.allRootsLocked()
 		for _, dir := range itemDirs {
 			removeEmptyDirsBottomUp(dir)
+			removeEmptyAuthorDirs(dir, roots)
 		}
 		if allRemoved {
 			// Clear completed keys from pending-deletes.json.
@@ -2169,6 +2286,32 @@ func removeEmptyDirsBottomUp(itemDir string) {
 		if err == nil && len(entries) == 0 {
 			_ = os.Remove(d)
 		}
+	}
+}
+
+// removeEmptyAuthorDirs removes the now-empty kind folder (videos/, works/…)
+// and author folder above a deleted item, so deleting a creator's last item
+// leaves no empty folders (2026-11-15 user feedback). It only climbs inside a
+// library root, never removes the root or its site folder (<root>/bilibili),
+// and uses os.Remove, which fails on any folder that still has files.
+func removeEmptyAuthorDirs(itemDir string, roots []string) {
+	itemDir = filepath.Clean(itemDir)
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		rel, err := filepath.Rel(root, itemDir)
+		if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			continue
+		}
+		// <site>/<author>/<kind>/<item>: remove <kind>, then <author>.
+		depth := len(strings.Split(filepath.ToSlash(rel), "/"))
+		dir := filepath.Dir(itemDir)
+		for depth--; depth >= 2; depth-- {
+			if os.Remove(dir) != nil {
+				return
+			}
+			dir = filepath.Dir(dir)
+		}
+		return
 	}
 }
 
@@ -2364,7 +2507,7 @@ func audioPriority(id int) int {
 }
 
 func safeRegisteredPath(root, rel string) bool {
-	if rejectDirectoryLinks(filepath.Clean(root)) != nil {
+	if rejectDirectoryLinksRecent(root) != nil {
 		return false
 	}
 	if rel == "" || filepath.IsAbs(rel) || strings.ContainsAny(rel, "\\:\x00") {

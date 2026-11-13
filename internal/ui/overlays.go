@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/chialecode/trace/internal/uistate"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -17,6 +18,34 @@ func (a *App) wakeImageViewerControls(now time.Time) {
 func (a *App) wakePlayerControls(now time.Time) {
 	a.PlayerOverlay.LastActiveAt = now
 	a.PlayerOverlay.ControlsHidden = false
+}
+
+func (a *App) renderRuleBatchOverlay(c *ui.Context, w, h float32) {
+	if !a.RuleBatch.Open {
+		return
+	}
+	cardW := min(float32(540), max(float32(320), w-40))
+	cardH := min(float32(580), max(float32(320), h-80))
+	dlg := ui.DialogBase(c, &a.RuleBatch.Open, func(backdrop, panel ui.Element) {
+		backdrop.Label("关闭选择订阅对话框（点击空白处）").Background(ui.RGBA(15, 20, 25, 0.55))
+		panel.
+			Label("选择订阅对话框").
+			Column().
+			Size(cardW, cardH).
+			Padding(20).
+			Radius(16).
+			Background(ColorBgMain).
+			Border(1, ColorBorder).
+			Shadow(0, 12, 40, 0, ui.RGBA(0, 0, 0, 0.24)).
+			Gap(12).
+			Clip().
+			Children(func() {
+				a.renderRuleBatchDialogBody(c)
+			})
+	})
+	if dlg.Dismissed() {
+		a.closeRuleBatchDialog()
+	}
 }
 
 func (a *App) renderLogoutConfirmOverlay(c *ui.Context, w, h float32) {
@@ -196,7 +225,7 @@ func (a *App) renderImageViewerOverlay(c *ui.Context, w, h float32) {
 		}
 		a.stopViewerInlinePlayback()
 		a.ImageViewer.Index = nextIdx
-		if nextIdx < len(a.ImageViewer.InlinePageKinds) && a.ImageViewer.InlinePageKinds[nextIdx] == "video" {
+		if nextIdx < len(a.ImageViewer.InlinePageKinds) && viewerPageAutoplays(a.ImageViewer.InlinePageKinds[nextIdx]) {
 			a.startViewerInlinePage(nextIdx)
 		}
 	}
@@ -810,13 +839,14 @@ func (a *App) applyAndPersistPlayerPrefs() {
 	}
 	a.player.SetSubtitleLang(lang)
 
-	uiSt := a.backend.GetUIState()
-	uiSt.Player.DanmakuVisible = a.PlayerOverlay.DanmakuEnabled
-	uiSt.Player.DanmakuOpacity = a.PlayerOverlay.DanmakuOpacity
-	uiSt.Player.DanmakuArea = areaFrac
-	uiSt.Player.DanmakuDensity = density
-	uiSt.Player.SubtitleLang = lang
-	if _, err := a.backend.UpdateUIState(uiSt); err != nil {
+	visible, opacity := a.PlayerOverlay.DanmakuEnabled, a.PlayerOverlay.DanmakuOpacity
+	if _, err := a.backend.MutateUIState(func(uiSt *uistate.State) {
+		uiSt.Player.DanmakuVisible = visible
+		uiSt.Player.DanmakuOpacity = opacity
+		uiSt.Player.DanmakuArea = areaFrac
+		uiSt.Player.DanmakuDensity = density
+		uiSt.Player.SubtitleLang = lang
+	}); err != nil {
 		a.showError(err)
 	}
 }

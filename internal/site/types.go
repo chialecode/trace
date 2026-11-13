@@ -316,6 +316,7 @@ type LiveStreamPlan struct {
 	Codec       string             `json:"codec,omitempty"`
 	Quality     int                `json:"quality,omitempty"`
 	QualityName string             `json:"qualityName,omitempty"`
+	BitrateBps  int64              `json:"bitrateBps,omitempty"`
 	URLs        []string           `json:"-"`
 	Media       MediaTransportSpec `json:"-"`
 }

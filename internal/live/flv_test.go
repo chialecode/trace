@@ -237,9 +237,12 @@ func remuxSinglePartAndFinalize(t *testing.T, flvBytes []byte) (FLVCheckpoint, d
 	if len(checkpoints) == 0 {
 		t.Fatalf("expected >=1 checkpoint callback")
 	}
-	summary, err := finalizeLivePart(context.Background(), partPath, finalPath, cp.DurationSec)
+	summary, err := finalizeLivePart(context.Background(), partPath, finalPath)
 	if err != nil {
-		t.Fatalf("finalizeLivePart(expected=%.4fs) failed: %v", cp.DurationSec, err)
+		t.Fatalf("finalizeLivePart failed: %v", err)
+	}
+	if math.Abs(summary.DurationSec-cp.DurationSec) > 0.1 {
+		t.Fatalf("converted duration %.4fs, remuxer checkpoint %.4fs", summary.DurationSec, cp.DurationSec)
 	}
 	return cp, summary, finalPath
 }
@@ -531,9 +534,12 @@ func TestFLVPartSplitOnParamSetChangeAndTimestampJump(t *testing.T) {
 				if writeErr != nil || cp.BytesWritten == 0 {
 					return writeErr
 				}
-				s, err := finalizeLivePart(context.Background(), partPath, finalPath, cp.DurationSec)
+				s, err := finalizeLivePart(context.Background(), partPath, finalPath)
 				if err != nil {
 					return err
+				}
+				if math.Abs(s.DurationSec-cp.DurationSec) > 0.1 {
+					return fmt.Errorf("converted duration %.4fs, remuxer checkpoint %.4fs", s.DurationSec, cp.DurationSec)
 				}
 				finalized = append(finalized, s)
 				return nil

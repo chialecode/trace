@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -197,6 +198,15 @@ func (a *App) renderAccountAvatar(c *ui.Context, siteID, name, uid string, mid i
 	seed := mid
 	if seed <= 0 {
 		seed = accountSeedHash(normSite, firstNonEmptyStrUI(uid, name))
+	}
+	// A subscribed account has a local copy of its avatar (both sites), which
+	// works offline and does not depend on a stored URL (2026-11-15 feedback).
+	lookupUID := uid
+	if lookupUID == "" && normSite == "bilibili" && mid > 0 {
+		lookupUID = strconv.FormatInt(mid, 10)
+	}
+	if bmp := a.lookupAccountAvatarBitmap(normSite, lookupUID); bmp != nil {
+		return a.renderAvatarWithBitmap(c, name, seed, size, liveRing, label, onClick, bmp)
 	}
 	face := firstImageURL(faces)
 	if face == "" {
@@ -753,8 +763,11 @@ func (a *App) openDouyinNoteViewer(itemKey string, pages []douyinNoteRenderPage,
 	inlineURLs := make([]string, len(pages))
 	inlineDurs := make([]int, len(pages))
 
+	offline := a.CurrentRoute == RouteLibrary || a.CurrentRoute == RouteLibraryItem
 	for i, pg := range pages {
-		urls[i] = pg.ImageURL
+		if !offline {
+			urls[i] = pg.ImageURL
+		}
 		rels[i] = pg.ImageRel
 		if itemKey != "" && pg.ImageRel != "" && a.backend != nil {
 			if p, err := a.backend.MediaPath(itemKey, pg.ImageRel); err == nil {
@@ -774,14 +787,18 @@ func (a *App) openDouyinNoteViewer(itemKey string, pages []douyinNoteRenderPage,
 					inlinePaths[i] = p
 				}
 			}
-			inlineURLs[i] = pg.MotionURL
+			if !offline {
+				inlineURLs[i] = pg.MotionURL
+			}
 		case "video":
 			if itemKey != "" && pg.VideoRel != "" && a.backend != nil {
 				if p, err := a.backend.MediaPath(itemKey, pg.VideoRel); err == nil {
 					inlinePaths[i] = p
 				}
 			}
-			inlineURLs[i] = pg.VideoURL
+			if !offline {
+				inlineURLs[i] = pg.VideoURL
+			}
 		}
 	}
 
@@ -795,9 +812,16 @@ func (a *App) openDouyinNoteViewer(itemKey string, pages []douyinNoteRenderPage,
 	a.ImageViewer.InlineSite = "douyin"
 
 	idx := a.ImageViewer.Index
-	if idx >= 0 && idx < len(kinds) && kinds[idx] == "video" {
+	if idx >= 0 && idx < len(kinds) && viewerPageAutoplays(kinds[idx]) {
 		a.startViewerInlinePage(idx)
 	}
+}
+
+// viewerPageAutoplays reports whether a viewer page plays as soon as it is
+// shown: a video page, and a live photo's motion clip, which plays once and
+// stays on its last frame; the play button replays it.
+func viewerPageAutoplays(kind string) bool {
+	return kind == "video" || kind == "live_photo"
 }
 
 func buildDouyinNoteRenderPages(work *service.DouyinWorkView, cached *library.ItemMetadata) []douyinNoteRenderPage {
@@ -1080,17 +1104,6 @@ func (a *App) renderDouyinUserRoute(c *ui.Context, centerWidth float32) {
 		a.LoadMoreDouyinWorks()
 	}
 
-	var keys []string
-	for _, w := range works {
-		if w.CacheKey != "" {
-			keys = append(keys, w.CacheKey)
-		}
-	}
-	var states map[string]library.DotState
-	if len(keys) > 0 {
-		states = a.backend.States(keys)
-	}
-
 	a.DouyinUserListState.Key = func(i int) any {
 		if i == 0 {
 			return "douyin-header"
@@ -1113,15 +1126,16 @@ func (a *App) renderDouyinUserRoute(c *ui.Context, centerWidth float32) {
 			start := (i - 1) * cols
 			end := min(len(works), start+cols)
 			rowCards := works[start:end]
+			rowKeys := make([]string, len(rowCards))
+			for j, w := range rowCards {
+				rowKeys[j] = w.CacheKey
+			}
+			locals := a.workCardLocals(rowKeys)
 			ui.Row(c).FillWidth().Padding(6, 16).Gap(10).AlignItems(ui.Start).ClipX().Children(func() {
 				for slot := 0; slot < cols; slot++ {
 					if slot < len(rowCards) {
 						card := rowCards[slot]
-						var dot string
-						if states != nil {
-							dot = states[card.CacheKey].Dot
-						}
-						a.renderDouyinWorkGridCard(c, u, card, dot)
+						a.renderDouyinWorkGridCard(c, u.Nickname, u.SecUID, card, locals[card.CacheKey])
 					} else {
 						ui.Box(c).Grow(1).Basis(0)
 					}
@@ -1170,11 +1184,7 @@ func (a *App) renderDouyinUserHeader(c *ui.Context, u *service.DouyinUserView) {
 								Name:     firstNonEmptyStrUI(u.Nickname, u.SecUID),
 								Face:     u.AvatarURL,
 							}
-							_, err := a.backend.CreateSubscription(acct.Name, "", []subscription.AccountRef{acct}, subscription.SubRules{
-								ScheduledCheck: true,
-							})
-							a.showError(err)
-							a.RefreshData()
+							a.OpenSubscribePicker(acct)
 						}
 						targetURL := firstNonEmptyStrUI(u.CanonicalURL, "https://www.douyin.com/user/"+u.SecUID)
 						MoreMenuButton(c, "抖音作者更多", 32, &a.DouyinUserSubMenuOpen, func(m *ui.Menu) {
@@ -1259,23 +1269,54 @@ func (a *App) renderDouyinUserHeader(c *ui.Context, u *service.DouyinUserView) {
 	})
 }
 
-func (a *App) renderDouyinWorkGridCard(c *ui.Context, u *service.DouyinUserView, card service.DouyinWorkCardDTO, dotStatus string) {
-	var relCover string
-	if card.CacheKey != "" {
-		if it, ok, err := a.backend.GetLibraryItem(card.CacheKey); err == nil && ok {
-			if dotStatus == "" {
-				dotStatus = library.ComputeDotState(it).Dot
-			}
-			for _, m := range it.Media {
-				if (m.Role == "cover" || m.Role == "image") && relCover == "" {
-					relCover = m.Path
-				}
-			}
-			if relCover == "" && len(it.NotePages) > 0 {
-				relCover = firstNonEmptyStrUI(it.NotePages[0].Image, it.NotePages[0].Cover)
-			}
+// renderDouyinWorkGridCard is one 3:4 work card; the user page and 我的 share
+// it, so it only needs the author's name and sec_uid for the opening preview.
+// workCardLocal is what a work card shows from the library: its status dot
+// and local cover.
+type workCardLocal struct{ dot, cover string }
+
+// workCardLocals returns the library side of the cards with these keys.
+// Grids ask per visible row; answers are kept until tasks or the library
+// change (cacheStateRev), so frames do not read the library. Reading every
+// loaded work's state and each visible card's metadata on every frame made
+// a Douyin user page with a few hundred works stutter (2026-11-15 feedback).
+func (a *App) workCardLocals(keys []string) map[string]workCardLocal {
+	if a.cardLocals == nil || a.cardLocalsRev != a.cacheStateRev || len(a.cardLocals) > 4000 {
+		a.cardLocals = make(map[string]workCardLocal)
+		a.cardLocalsRev = a.cacheStateRev
+	}
+	var missing []string
+	for _, k := range keys {
+		if _, ok := a.cardLocals[k]; k != "" && !ok {
+			missing = append(missing, k)
 		}
 	}
+	if len(missing) == 0 {
+		return a.cardLocals
+	}
+	states := a.backend.States(missing)
+	for _, k := range missing {
+		loc := workCardLocal{dot: states[k].Dot}
+		// Only a cached work has a local cover to look up.
+		if loc.dot != "" && loc.dot != "none" {
+			if it, ok, err := a.backend.GetLibraryItem(k); err == nil && ok {
+				for _, m := range it.Media {
+					if (m.Role == "cover" || m.Role == "image") && loc.cover == "" {
+						loc.cover = m.Path
+					}
+				}
+				if loc.cover == "" && len(it.NotePages) > 0 {
+					loc.cover = firstNonEmptyStrUI(it.NotePages[0].Image, it.NotePages[0].Cover)
+				}
+			}
+		}
+		a.cardLocals[k] = loc
+	}
+	return a.cardLocals
+}
+
+func (a *App) renderDouyinWorkGridCard(c *ui.Context, authorName, authorSecUID string, card service.DouyinWorkCardDTO, local workCardLocal) {
+	dotStatus, relCover := local.dot, local.cover
 	bmp := a.lookupLocalBitmap(card.CacheKey, relCover)
 	if bmp == nil {
 		bmp = a.lookupRemoteBitmap(card.CoverURL)
@@ -1318,7 +1359,7 @@ func (a *App) renderDouyinWorkGridCard(c *ui.Context, u *service.DouyinUserView,
 				if card.DurationSec > 0 {
 					dur = FormatDuration(card.DurationSec)
 				}
-				a.OpenDouyinWork(card.ID, card.Kind, card.Title, u.Nickname, u.SecUID, card.CoverURL, dur)
+				a.OpenDouyinWork(card.ID, card.Kind, card.Title, authorName, authorSecUID, card.CoverURL, dur)
 			}
 
 			// Top-left badges: 置顶 & 图文
@@ -1378,13 +1419,24 @@ func (a *App) renderDouyinWorkGridCard(c *ui.Context, u *service.DouyinUserView,
 
 func (a *App) renderDouyinUserFooter(c *ui.Context, u *service.DouyinUserView) {
 	ui.Column(c).FillWidth().Padding(14, 16, 24, 16).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
+		if u.IsPrivate && a.DouyinWorksError != "" {
+			a.renderUserListError(c, a.DouyinWorksError, "重试加载抖音作品", a.LoadMoreDouyinWorks)
+			return
+		}
 		if u.IsPrivate {
-			ui.Text(c, "这个账号是私密账号，不能浏览作品").
+			ui.Text(c, "这个账号是私密账号，当前登录的抖音账号看不到作品").
 				Label("私密账号提示").
 				FontSize(14).
 				TextColor(ColorTextMuted).
 				SingleLine()
 			return
+		}
+		if u.PrivateVisible {
+			ui.Text(c, "私密账号：当前登录的抖音账号可以看到这些作品").
+				Label("私密账号可见提示").
+				FontSize(12).
+				TextColor(ColorTextMuted).
+				SingleLine()
 		}
 		if a.UserListFilter == userFilterUncached && len(a.CurrentDouyinWorks) > 0 && a.douyinFilteredEmpty {
 			ui.Text(c, "已加载的作品都缓存了").Label("未缓存筛选为空").FontSize(13).TextColor(ColorTextMuted).SingleLine()
@@ -1570,22 +1622,38 @@ func (a *App) renderDouyinWorkRoute(c *ui.Context, viewportHeight float32) {
 				}
 			}
 
+			offline := a.CurrentRoute == RouteLibraryItem
+			if offline {
+				coverURL = ""
+				authorFace = ""
+			}
+
 			// 1. Author Row: Avatar, Nickname, 12px 抖音 badge, right-side Primary Cache button + Status Dot
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(10).ClipX().Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Gap(10).Grow(1).ClipX().Children(func() {
-					openAuthor := func() {
-						if authorSecUID != "" {
-							a.OpenDouyinUser(authorSecUID, authorName)
+					var openAuthor func()
+					avatarLabel := ""
+					if !offline {
+						avatarLabel = "打开抖音作者主页"
+						openAuthor = func() {
+							if authorSecUID != "" {
+								a.OpenDouyinUser(authorSecUID, authorName)
+							}
 						}
 					}
-					a.renderAccountAvatar(c, "douyin", firstNonEmptyStrUI(authorName, "抖音作者"), authorSecUID, 0, 42, false, "打开抖音作者主页", openAuthor, authorFace)
+					a.renderAccountAvatar(c, "douyin", firstNonEmptyStrUI(authorName, "抖音作者"), authorSecUID, 0, 42, false, avatarLabel, openAuthor, authorFace)
 					ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 						ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-							nameBtn := ui.ButtonBase(c).Padding(0).Children(func() {
-								ui.Text(c, firstNonEmptyStrUI(authorName, "抖音作者")).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-							})
-							if nameBtn.Clicked() {
-								openAuthor()
+							displayAuthor := firstNonEmptyStrUI(authorName, "抖音作者")
+							if openAuthor != nil {
+								nameBtn := ui.ButtonBase(c).Padding(0).Children(func() {
+									ui.Text(c, displayAuthor).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								})
+								if nameBtn.Clicked() {
+									openAuthor()
+								}
+							} else {
+								ui.Text(c, displayAuthor).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 							}
 							renderSiteSmallBadgeWithDot(c, "douyin", "抖音作品作者站点标记")
 						})
@@ -1598,6 +1666,12 @@ func (a *App) renderDouyinWorkRoute(c *ui.Context, viewportHeight float32) {
 				ui.Row(c).Shrink(0).AlignItems(ui.Center).Gap(8).Children(func() {
 					if dotStatus != "" && dotStatus != "none" {
 						DrawStatusDot(c, dotStatus, "抖音作品缓存状态")
+					}
+					if offline {
+						if cachedItem != nil {
+							a.renderLibraryItemMoreMenu(c, *cachedItem, 32)
+						}
+						return
 					}
 					cacheBtnLabel := "缓存视频"
 					if kind == "note" {
@@ -1686,6 +1760,9 @@ func (a *App) renderDouyinWorkRoute(c *ui.Context, viewportHeight float32) {
 							unavailableHint = firstNonEmptyStrUI(miss.Reason, "配乐文件缺失")
 						}
 					}
+				}
+				if offline {
+					onlineBGMURL = ""
 				}
 				if hasMusicMeta {
 					a.renderBGMBar(c, "douyin-note:"+awemeID, bgmTitle, bgmAuthor, bgmOriginal, bgmDur, itemKey, localBGMRel, onlineBGMURL, unavailableHint)

@@ -25,6 +25,7 @@ func (a *App) showError(err error) {
 	if err == nil {
 		return
 	}
+	a.backend.LogUserError(err)
 	if site.IsKind(err, site.ErrKindAuthRequired) {
 		errSite := string(site.SiteOf(err))
 		if !a.backend.HasAnyLogin() {

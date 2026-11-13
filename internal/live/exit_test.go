@@ -181,4 +181,50 @@ func TestStopRecordingWhileLiveFinalizesPlayableFile(t *testing.T) {
 	if err := json.Unmarshal(raw, &meta); err != nil || meta.Status == "recording" {
 		t.Fatalf("item still marked recording: %+v %v", meta.Status, err)
 	}
+	if len(meta.Media) != 1 || meta.Media[0].Path != "part-001.mp4" {
+		t.Fatalf("first part not registered: %+v", meta.Media)
+	}
+
+	// TRACE reopens after the update and records the same broadcast again:
+	// it continues the existing item instead of starting a blank one that
+	// collides with part-001.mp4 and drops it from the record.
+	before := fragments.Load()
+	rec2, err := liveMgr.StartRecording(context.Background(), 9101)
+	if err != nil {
+		t.Fatalf("StartRecording again: %v", err)
+	}
+	if rec2.RecordItemDir != rec.RecordItemDir {
+		t.Fatalf("second recording went to %s, not %s", rec2.RecordItemDir, rec.RecordItemDir)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for fragments.Load() < before+3 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if fragments.Load() < before+3 {
+		t.Fatal("second recording did not receive fragments")
+	}
+	if _, err := liveMgr.StopRecording(9101); err != nil {
+		t.Fatalf("StopRecording again: %v", err)
+	}
+	raw, err = os.ReadFile(filepath.Join(rec.RecordItemDir, "item.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again library.ItemMetadata
+	if err := json.Unmarshal(raw, &again); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, m := range again.Media {
+		paths = append(paths, m.Path)
+	}
+	if len(paths) != 2 || paths[0] != "part-001.mp4" || paths[1] != "part-002.mp4" {
+		t.Fatalf("parts after recording the same broadcast again: %v (stop %q)", paths, again.Live.StopReason)
+	}
+	if again.Live.StartedAt != meta.Live.StartedAt {
+		t.Fatalf("recording start reset from %s to %s", meta.Live.StartedAt, again.Live.StartedAt)
+	}
+	if got, ok, err := lib.GetItem(again.ItemKey); err != nil || !ok || len(got.Media) != 2 {
+		t.Fatalf("index after second recording: %+v %v %v", got.Media, ok, err)
+	}
 }

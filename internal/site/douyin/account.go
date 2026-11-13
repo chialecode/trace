@@ -1,0 +1,411 @@
+package douyin
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"strconv"
+	"strings"
+
+	"github.com/chialecode/trace/internal/site"
+	"github.com/chialecode/trace/internal/site/douyin/sign"
+)
+
+// Read-only lists of the signed-in account (douyin.md §12). Every call is a
+// manual request: it uses the global pacing and login check, never retries,
+// and never writes to the site.
+
+const (
+	accountOrigin        = "https://www.douyin.com"
+	collectVersionCode   = "170400"
+	collectVersionName   = "17.4.0"
+	followingPageSize    = 20
+	favoritePageSize     = 18
+	collectionPageSize   = 20
+	collectFolderPage    = 10
+	collectFolderWorkPge = 10
+	// WatchHistoryEnabled gates 观看历史. It stays false until a real check
+	// confirms the endpoint's shape (ACT-020 D-V5); see douyin.md §12.
+	WatchHistoryEnabled = false
+)
+
+// Account endpoint paths, joined to the API host of AwemePost so fixtures
+// that point the API at a loopback server keep these requests local too.
+const (
+	pathFollowingList  = "/aweme/v1/web/user/following/list/"
+	pathFavorite       = "/aweme/v1/web/aweme/favorite/"
+	pathListCollection = "/aweme/v1/web/aweme/listcollection/"
+	pathCollectsList   = "/aweme/v1/web/collects/list/"
+	pathCollectsVideos = "/aweme/v1/web/collects/video/list/"
+	pathHistoryRead    = "/aweme/v1/web/history/read/"
+	shellMessage       = "抖音返回了空壳，登录已失效或被拦截"
+	// likesRefusedMessage: 喜欢 answers every non-browser request with HTTP 200
+	// and no body, while the same session reads 收藏 fine (douyin.md §12).
+	likesRefusedMessage = "抖音只把“喜欢”列表给浏览器里的抖音网页，TRACE 取不到；其他功能不受影响"
+	cursorStalledMesage = "抖音列表的翻页位置没有前进，已停止翻页"
+)
+
+func (c *Client) accountEndpoint(path string) string {
+	base := c.endpoints.AwemePost
+	if i := strings.Index(base, "/aweme/"); i > 0 {
+		return base[:i] + path
+	}
+	return "https://www.douyin.com" + path
+}
+
+// FollowingUser is one creator the signed-in account follows.
+type FollowingUser struct {
+	SecUID    string `json:"secUid"`
+	UID       string `json:"uid,omitempty"`
+	UniqueID  string `json:"uniqueId,omitempty"`
+	Nickname  string `json:"nickname"`
+	Signature string `json:"signature,omitempty"`
+	AvatarURL string `json:"avatarUrl,omitempty"`
+}
+
+// FollowingPage is one page of the following list. NextMaxTime is passed back as maxTime.
+type FollowingPage struct {
+	Users       []FollowingUser `json:"users"`
+	NextMaxTime string          `json:"nextMaxTime"`
+	HasMore     bool            `json:"hasMore"`
+	Total       int             `json:"total"`
+}
+
+// Followings lists the creators selfSecUID follows; maxTime is "" for the first page.
+func (c *Client) Followings(ctx context.Context, selfSecUID, maxTime string) (*FollowingPage, error) {
+	selfSecUID = strings.TrimSpace(selfSecUID)
+	if !reValidSecUID.MatchString(selfSecUID) {
+		return nil, &site.Error{Site: site.Douyin, Kind: site.ErrKindAuthRequired, Message: "缺少登录账号的 sec_uid，请重新登录抖音"}
+	}
+	maxTime = strings.TrimSpace(maxTime)
+	business := []sign.Pair{
+		{Key: "user_id", Value: selfSecUID},
+		{Key: "sec_user_id", Value: selfSecUID},
+		{Key: "offset", Value: "0"},
+		{Key: "count", Value: strconv.Itoa(followingPageSize)},
+		{Key: "source_type", Value: "1"},
+		{Key: "gps_access", Value: "0"},
+		{Key: "address_book_access", Value: "0"},
+		{Key: "min_change", Value: "0"},
+	}
+	if maxTime != "" && maxTime != "0" {
+		business = append(business, sign.Pair{Key: "max_time", Value: maxTime})
+	}
+	ep := c.accountEndpoint(pathFollowingList)
+	top, err := c.accountGet(ctx, ep, "https://www.douyin.com/user/self?showTab=following", c.profile.CommonWebParams(c.webID, "", business...), nil)
+	if err != nil {
+		return nil, err
+	}
+	var rawList json.RawMessage
+	for _, key := range []string{"followings", "follow_list", "user_list"} {
+		if v, ok := top[key]; ok && !isJSONNull(v) {
+			rawList = v
+			break
+		}
+	}
+	rawHasMore, hasMoreKey := top["has_more"]
+	if rawList == nil || !hasMoreKey {
+		return nil, c.shellError(ctx, ep)
+	}
+	var users []rawDouyinAuthor
+	if err := json.Unmarshal(rawList, &users); err != nil {
+		return nil, schemaErr(ep, "抖音关注列表结构异常", err)
+	}
+	page := &FollowingPage{
+		HasMore:     parseJSONBoolOrInt(rawHasMore),
+		NextMaxTime: rawNumberOrString(top["min_time"]),
+		Total:       int(parseJSONInt(top["total"])),
+		Users:       make([]FollowingUser, 0, len(users)),
+	}
+	if page.HasMore && (page.NextMaxTime == "" || page.NextMaxTime == "0" || page.NextMaxTime == maxTime) {
+		return nil, schemaErr(ep, cursorStalledMesage, nil)
+	}
+	seen := make(map[string]bool, len(users))
+	for i := range users {
+		s := toAuthorSummary(&users[i], c.allowLocalhost)
+		if s.SecUID == "" || seen[s.SecUID] {
+			continue
+		}
+		seen[s.SecUID] = true
+		page.Users = append(page.Users, FollowingUser{
+			SecUID: s.SecUID, UID: s.UID, UniqueID: s.UniqueID, Nickname: s.Nickname, Signature: s.Signature, AvatarURL: s.AvatarURL,
+		})
+	}
+	return page, nil
+}
+
+// AccountWorksPage is one page of 喜欢, 收藏 or a 收藏夹.
+type AccountWorksPage struct {
+	Works      []WorkDetail `json:"works"`
+	NextCursor string       `json:"nextCursor"`
+	HasMore    bool         `json:"hasMore"`
+}
+
+// Favorites lists the works selfSecUID liked; cursor is "" for the first page.
+func (c *Client) Favorites(ctx context.Context, selfSecUID, cursor string) (*AccountWorksPage, error) {
+	selfSecUID = strings.TrimSpace(selfSecUID)
+	if !reValidSecUID.MatchString(selfSecUID) {
+		return nil, &site.Error{Site: site.Douyin, Kind: site.ErrKindAuthRequired, Message: "缺少登录账号的 sec_uid，请重新登录抖音"}
+	}
+	cursor = normCursor(cursor)
+	ep := c.accountEndpoint(pathFavorite)
+	params := c.profile.CommonWebParams(c.webID, "",
+		sign.Pair{Key: "sec_user_id", Value: selfSecUID},
+		sign.Pair{Key: "max_cursor", Value: cursor},
+		sign.Pair{Key: "count", Value: strconv.Itoa(favoritePageSize)},
+	)
+	raw, err := c.doAPIRequest(ctx, apiRequestSpec{
+		endpoint: ep, referer: "https://www.douyin.com/user/self?showTab=like", origin: accountOrigin,
+		params: params, requireSign: true, emptyMeans: likesRefusedMessage,
+	})
+	if err != nil {
+		return nil, err
+	}
+	top, err := decodeAccountTop(ep, raw.body)
+	if err != nil {
+		return nil, err
+	}
+	return c.parseAccountWorks(ctx, ep, top, cursor)
+}
+
+// Collection lists 全部收藏 via the POST form endpoint; cursor is "" for the first page.
+func (c *Client) Collection(ctx context.Context, cursor string) (*AccountWorksPage, error) {
+	cursor = normCursor(cursor)
+	ep := c.accountEndpoint(pathListCollection)
+	params := collectVersion(c.profile.CommonWebParams(c.webID, "",
+		sign.Pair{Key: "publish_video_strategy_type", Value: "2"},
+	))
+	form := []sign.Pair{
+		{Key: "count", Value: strconv.Itoa(collectionPageSize)},
+		{Key: "cursor", Value: cursor},
+	}
+	top, err := c.accountGet(ctx, ep, "https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection", params, form)
+	if err != nil {
+		return nil, err
+	}
+	return c.parseAccountWorks(ctx, ep, top, cursor)
+}
+
+// CollectFolder is one of the signed-in account's 收藏夹.
+type CollectFolder struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Count    int    `json:"count"`
+	CoverURL string `json:"coverUrl,omitempty"`
+}
+
+// CollectFoldersPage is one page of 收藏夹.
+type CollectFoldersPage struct {
+	Folders    []CollectFolder `json:"folders"`
+	NextCursor string          `json:"nextCursor"`
+	HasMore    bool            `json:"hasMore"`
+}
+
+// CollectFolders lists the account's 收藏夹; cursor is "" for the first page.
+func (c *Client) CollectFolders(ctx context.Context, cursor string) (*CollectFoldersPage, error) {
+	cursor = normCursor(cursor)
+	ep := c.accountEndpoint(pathCollectsList)
+	params := collectVersion(c.profile.CommonWebParams(c.webID, "",
+		sign.Pair{Key: "cursor", Value: cursor},
+		sign.Pair{Key: "count", Value: strconv.Itoa(collectFolderPage)},
+	))
+	top, err := c.accountGet(ctx, ep, "https://www.douyin.com/user/self?showTab=favorite_collection", params, nil)
+	if err != nil {
+		return nil, err
+	}
+	rawList, ok := top["collects_list"]
+	rawHasMore, hasMoreKey := top["has_more"]
+	if !hasMoreKey || (!ok && cursor == "0") {
+		return nil, c.shellError(ctx, ep)
+	}
+	var folders []struct {
+		IDStr  string           `json:"collects_id_str"`
+		ID     json.RawMessage  `json:"collects_id"`
+		Name   string           `json:"collects_name"`
+		Total  json.RawMessage  `json:"total_number"`
+		Status int              `json:"status"`
+		Cover  *rawURLContainer `json:"collects_cover"`
+	}
+	if ok && !isJSONNull(rawList) {
+		dec := json.NewDecoder(bytes.NewReader(rawList))
+		dec.UseNumber()
+		if err := dec.Decode(&folders); err != nil {
+			return nil, schemaErr(ep, "抖音收藏夹列表结构异常", err)
+		}
+	}
+	page := &CollectFoldersPage{HasMore: parseJSONBoolOrInt(rawHasMore), NextCursor: firstCursor(top), Folders: make([]CollectFolder, 0, len(folders))}
+	if page.HasMore && (page.NextCursor == "0" || page.NextCursor == cursor) {
+		return nil, schemaErr(ep, cursorStalledMesage, nil)
+	}
+	for _, f := range folders {
+		id := strings.TrimSpace(f.IDStr)
+		if id == "" {
+			id = rawNumberOrString(f.ID)
+		}
+		if !reDigitsOnly.MatchString(id) {
+			return nil, schemaErr(ep, "抖音收藏夹缺少编号", nil)
+		}
+		cf := CollectFolder{ID: id, Name: strings.TrimSpace(f.Name), Count: int(parseJSONInt(f.Total))}
+		if f.Cover != nil {
+			if urls := filterNoteImageURLs(f.Cover.URLList, c.allowLocalhost); len(urls) > 0 {
+				cf.CoverURL = urls[0]
+			}
+		}
+		page.Folders = append(page.Folders, cf)
+	}
+	return page, nil
+}
+
+// CollectFolderWorks lists one 收藏夹 by its string id; cursor is "" for the first page.
+func (c *Client) CollectFolderWorks(ctx context.Context, folderID, cursor string) (*AccountWorksPage, error) {
+	folderID = strings.TrimSpace(folderID)
+	if !reDigitsOnly.MatchString(folderID) {
+		return nil, &site.Error{Site: site.Douyin, Kind: site.ErrKindBadRequest, Message: "抖音收藏夹编号无效"}
+	}
+	cursor = normCursor(cursor)
+	ep := c.accountEndpoint(pathCollectsVideos)
+	params := collectVersion(c.profile.CommonWebParams(c.webID, "",
+		sign.Pair{Key: "collects_id", Value: folderID},
+		sign.Pair{Key: "cursor", Value: cursor},
+		sign.Pair{Key: "count", Value: strconv.Itoa(collectFolderWorkPge)},
+	))
+	top, err := c.accountGet(ctx, ep, "https://www.douyin.com/user/self?showTab=favorite_collection", params, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.parseAccountWorks(ctx, ep, top, cursor)
+}
+
+// WatchHistory lists 观看历史. The parameters are a guess from a path name
+// only (douyin.md §12); the service shows it only when WatchHistoryEnabled.
+func (c *Client) WatchHistory(ctx context.Context, cursor string) (*AccountWorksPage, error) {
+	cursor = normCursor(cursor)
+	ep := c.accountEndpoint(pathHistoryRead)
+	params := c.profile.CommonWebParams(c.webID, "",
+		sign.Pair{Key: "max_cursor", Value: cursor},
+		sign.Pair{Key: "count", Value: "20"},
+	)
+	top, err := c.accountGet(ctx, ep, "https://www.douyin.com/user/self?showTab=record", params, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.parseAccountWorks(ctx, ep, top, cursor)
+}
+
+// accountGet sends one signed account request (GET, or POST when form is set) and decodes the top-level object.
+func (c *Client) accountGet(ctx context.Context, ep, referer string, params, form []sign.Pair) (map[string]json.RawMessage, error) {
+	raw, err := c.doAPIRequest(ctx, apiRequestSpec{
+		endpoint:    ep,
+		referer:     referer,
+		origin:      accountOrigin,
+		params:      params,
+		requireSign: true,
+		form:        form,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return decodeAccountTop(ep, raw.body)
+}
+
+func decodeAccountTop(ep string, body []byte) (map[string]json.RawMessage, error) {
+	var top map[string]json.RawMessage
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(&top); err != nil {
+		return nil, schemaErr(ep, "解析抖音列表 JSON 失败", err)
+	}
+	return top, nil
+}
+
+// parseAccountWorks applies douyin.md §12: on any page a list without has_more,
+// or aweme_list:null, is a shell (login lost or blocked), never an empty list.
+func (c *Client) parseAccountWorks(ctx context.Context, ep string, top map[string]json.RawMessage, reqCursor string) (*AccountWorksPage, error) {
+	rawList, hasList := top["aweme_list"]
+	rawHasMore, hasMoreKey := top["has_more"]
+	if !hasList || !hasMoreKey || isJSONNull(rawList) {
+		return nil, c.shellError(ctx, ep)
+	}
+	var nodes []rawAwemeNode
+	dec := json.NewDecoder(bytes.NewReader(rawList))
+	dec.UseNumber()
+	if err := dec.Decode(&nodes); err != nil {
+		return nil, schemaErr(ep, "抖音 aweme_list 数组结构异常", err)
+	}
+	page := &AccountWorksPage{HasMore: parseJSONBoolOrInt(rawHasMore), NextCursor: firstCursor(top), Works: make([]WorkDetail, 0, len(nodes))}
+	if page.HasMore && (page.NextCursor == "0" || page.NextCursor == reqCursor) {
+		return nil, schemaErr(ep, cursorStalledMesage, nil)
+	}
+	seen := make(map[string]bool, len(nodes))
+	for i := range nodes {
+		n := &nodes[i]
+		id := strings.TrimSpace(n.AwemeID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if n.Status != nil && (n.Status.IsDelete || n.Status.IsProhibited) {
+			continue
+		}
+		work, err := parseAwemeWork(n, StreamSelectOptions{}, c.allowLocalhost, false)
+		if err != nil {
+			return nil, err
+		}
+		page.Works = append(page.Works, *work)
+	}
+	return page, nil
+}
+
+func (c *Client) shellError(ctx context.Context, ep string) error {
+	se := &site.Error{Site: site.Douyin, Kind: site.ErrKindRiskControl, Endpoint: ep, Message: shellMessage}
+	c.ReportAutomaticError(ctx, se)
+	return se
+}
+
+func schemaErr(ep, msg string, err error) error {
+	return &site.Error{Site: site.Douyin, Kind: site.ErrKindSchemaChanged, Endpoint: ep, Message: msg, Err: err}
+}
+
+// firstCursor reads the next-page cursor from `cursor` or `max_cursor`, preferring the first non-zero one.
+func firstCursor(top map[string]json.RawMessage) string {
+	first := ""
+	for _, key := range []string{"cursor", "max_cursor"} {
+		v := strings.TrimSpace(rawNumberOrString(top[key]))
+		if v != "" && v != "0" {
+			return v
+		}
+		if first == "" && v != "" {
+			first = v
+		}
+	}
+	if first == "" {
+		return "0"
+	}
+	return first
+}
+
+func normCursor(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "0"
+	}
+	return s
+}
+
+// collectVersion swaps the common version pair for the one the collection endpoints expect.
+func collectVersion(pairs []sign.Pair) []sign.Pair {
+	for i := range pairs {
+		switch pairs[i].Key {
+		case "version_code":
+			pairs[i].Value = collectVersionCode
+		case "version_name":
+			pairs[i].Value = collectVersionName
+		}
+	}
+	return pairs
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	t := bytes.TrimSpace(raw)
+	return len(t) == 0 || bytes.Equal(t, []byte("null"))
+}

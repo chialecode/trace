@@ -45,6 +45,8 @@ type Options struct {
 type StateSnapshot struct {
 	Open            bool                `json:"open"`
 	Playing         bool                `json:"playing"`
+	Live            bool                `json:"live,omitempty"`
+	LiveEnded       bool                `json:"liveEnded,omitempty"`
 	HasVideo        bool                `json:"hasVideo"`
 	FilePath        string              `json:"filePath,omitempty"`
 	Backend         string              `json:"backend"`
@@ -69,6 +71,8 @@ type StateSnapshot struct {
 type Controller struct {
 	mu             sync.Mutex
 	dec            MediaDecoder
+	live           bool
+	liveEnded      bool
 	hasVideo       bool
 	sink           AudioSink
 	configuredSink AudioSink
@@ -190,8 +194,24 @@ func (c *Controller) HasVideo() bool {
 	return c.dec != nil && c.hasVideo
 }
 
+// IsLive reports whether the currently loaded media is a real-time live preview.
+func (c *Controller) IsLive() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dec != nil && c.live
+}
+
 // LoadDecoder attaches an explicit MediaDecoder (used by unit tests, prototypes, and media playback).
 func (c *Controller) LoadDecoder(label string, dec MediaDecoder) error {
+	return c.loadDecoderInternal(label, dec, false)
+}
+
+// LoadLiveDecoder attaches a live-preview decoder, disabling seeking, danmaku, and subtitles.
+func (c *Controller) LoadLiveDecoder(label string, dec MediaDecoder) error {
+	return c.loadDecoderInternal(label, dec, true)
+}
+
+func (c *Controller) loadDecoderInternal(label string, dec MediaDecoder, forceLive bool) error {
 	if dec == nil {
 		return errors.New("player: nil media decoder")
 	}
@@ -200,12 +220,18 @@ func (c *Controller) LoadDecoder(label string, dec MediaDecoder) error {
 		_ = dec.Close()
 		return errors.New("player: media has neither video nor audio stream")
 	}
+	isLive := forceLive
+	if ld, ok := dec.(LiveDecoder); ok && ld.IsLive() {
+		isLive = true
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.closeLocked()
 	c.dec = dec
+	c.live = isLive
+	c.liveEnded = false
 	c.hasVideo = hasVideo
 	c.filePath = label
 	c.position = 0
@@ -214,9 +240,11 @@ func (c *Controller) LoadDecoder(label string, dec MediaDecoder) error {
 
 	c.sink = c.configuredSink
 	if dec.SampleRate() <= 0 {
-		c.sink = NewNullAudioSink()
+		if _, alreadyNull := c.sink.(*NullAudioSink); !alreadyNull {
+			c.sink = NewNullAudioSink()
+		}
 	}
-	if err := c.sink.Open(&decoderAudioAdapter{dec: dec}); err != nil {
+	if err := c.sink.Open(&decoderAudioAdapter{dec: dec, live: isLive}); err != nil {
 		c.closeLocked()
 		return err
 	}
@@ -254,12 +282,20 @@ func (c *Controller) LoadDecoder(label string, dec MediaDecoder) error {
 
 // LoadDanmakuXML loads a Bilibili XML danmaku file or byte payload into the player.
 func (c *Controller) LoadDanmakuXML(xmlBytes []byte) error {
+	c.mu.Lock()
+	live := c.live
+	c.mu.Unlock()
+	if live {
+		return nil
+	}
 	eng, err := ParseDanmakuXML(xmlBytes)
 	if err != nil {
 		return err
 	}
 	c.mu.Lock()
-	c.danmakuEngine = eng
+	if !c.live {
+		c.danmakuEngine = eng
+	}
 	c.mu.Unlock()
 	return nil
 }
@@ -268,7 +304,9 @@ func (c *Controller) LoadDanmakuXML(xmlBytes []byte) error {
 // large file is not parsed on the UI thread.
 func (c *Controller) SetDanmakuEngine(eng *DanmakuEngine) {
 	c.mu.Lock()
-	c.danmakuEngine = eng
+	if !c.live {
+		c.danmakuEngine = eng
+	}
 	c.mu.Unlock()
 }
 
@@ -276,6 +314,9 @@ func (c *Controller) SetDanmakuEngine(eng *DanmakuEngine) {
 func (c *Controller) SetSubtitles(tracks []SubtitleTrack) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.live {
+		return
+	}
 	c.subtitles = make(map[string]SubtitleTrack, len(tracks))
 	c.subOrder = make([]string, 0, len(tracks))
 	for _, t := range tracks {
@@ -338,7 +379,7 @@ func (c *Controller) TogglePlay() bool {
 func (c *Controller) Seek(sec float64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.dec == nil {
+	if c.dec == nil || c.live {
 		return nil
 	}
 	pos := c.clampLocked(sec)
@@ -386,7 +427,7 @@ func (c *Controller) releaseHold(gen uint64) {
 func (c *Controller) Preview(sec float64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.dec == nil {
+	if c.dec == nil || c.live {
 		return
 	}
 	if !c.scrubbing {
@@ -435,6 +476,45 @@ func (c *Controller) Advance(delta time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.dec == nil {
+		return
+	}
+	if c.live {
+		var avail time.Duration
+		ended := c.liveEnded
+		if ld, ok := c.dec.(LiveDecoder); ok {
+			avail = ld.AvailableDuration()
+			if ld.LiveEnded() {
+				ended = true
+				c.liveEnded = true
+			}
+		}
+		if delta > 0 {
+			c.position += delta
+			if avail > 0 && c.position > avail {
+				c.position = avail
+			}
+			if ns, ok := c.sink.(*NullAudioSink); ok {
+				_ = ns.Seek(c.position)
+			}
+			c.requestFrameLocked()
+		} else if c.playing {
+			pos := c.sink.Position()
+			if avail > 0 && pos > avail {
+				pos = avail
+				if ns, ok := c.sink.(*NullAudioSink); ok {
+					_ = ns.Seek(pos)
+				}
+			}
+			c.position = pos
+		}
+		if ended && c.playing && (!c.sink.IsPlaying() || avail == 0 || c.position >= avail) {
+			if avail > 0 && c.position < avail {
+				c.position = avail
+			}
+			c.playing = false
+			c.sink.Pause()
+		}
+		c.showReadyFrameLocked()
 		return
 	}
 	if delta > 0 {
@@ -564,6 +644,33 @@ func (c *Controller) Snapshot(viewportW, viewportH float32) StateSnapshot {
 	}
 
 	posSec := c.position.Seconds()
+	if c.live {
+		ended := c.liveEnded
+		if ld, ok := c.dec.(LiveDecoder); ok && ld.LiveEnded() {
+			ended = true
+			c.liveEnded = true
+		}
+		return StateSnapshot{
+			Open:           true,
+			Playing:        c.playing,
+			Live:           true,
+			LiveEnded:      ended,
+			HasVideo:       c.hasVideo,
+			FilePath:       c.filePath,
+			Backend:        c.dec.BackendName(),
+			Width:          c.dec.Width(),
+			Height:         c.dec.Height(),
+			PositionSec:    posSec,
+			DurationSec:    0,
+			Volume:         c.volume,
+			Muted:          c.muted,
+			DanmakuVisible: false,
+			DanmakuOpacity: c.danmakuOpacity,
+			DanmakuArea:    c.danmakuArea,
+			DanmakuDensity: c.danmakuDensity,
+		}
+	}
+
 	var visibleDm []PositionedDanmaku
 	dmCount := 0
 	if c.danmakuEngine != nil {
@@ -615,9 +722,14 @@ func (c *Controller) Close() error {
 
 func (c *Controller) closeLocked() {
 	c.playing = false
+	c.live = false
+	c.liveEnded = false
 	c.hasVideo = false
 	c.scrubbing, c.resumeAfterScr = false, false
 	c.holdGen = 0
+	if ab, ok := c.dec.(liveAborter); ok {
+		ab.abort()
+	}
 	if c.worker != nil {
 		// The worker exits at its next check; Close below waits for a
 		// decode in progress through the decoder's own lock.
@@ -642,7 +754,8 @@ func (c *Controller) closeLocked() {
 }
 
 type decoderAudioAdapter struct {
-	dec MediaDecoder
+	dec  MediaDecoder
+	live bool
 }
 
 func (a *decoderAudioAdapter) SampleRate() int {
@@ -663,11 +776,21 @@ func (a *decoderAudioAdapter) Len() int64 {
 	if a.dec == nil {
 		return 0
 	}
-	return int64(a.dec.Duration().Seconds() * float64(a.dec.SampleRate()))
+	if a.live {
+		return -1
+	}
+	if ld, ok := a.dec.(LiveDecoder); ok && ld.IsLive() {
+		return -1
+	}
+	dur := a.dec.Duration()
+	if dur <= 0 {
+		return -1
+	}
+	return int64(dur.Seconds() * float64(a.dec.SampleRate()))
 }
 
 func (a *decoderAudioAdapter) SetPosition(frame int64) error {
-	if a.dec == nil || a.dec.SampleRate() <= 0 {
+	if a.dec == nil || a.live || a.dec.SampleRate() <= 0 {
 		return nil
 	}
 	pos := time.Duration(float64(frame) / float64(a.dec.SampleRate()) * float64(time.Second))

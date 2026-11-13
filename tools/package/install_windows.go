@@ -21,10 +21,10 @@ func (winProcesses) RequestQuit(exe string) error {
 	return build.RunQuiet(exe, []string{flagQuitUpdate}, build.AppEnv())
 }
 
-// Launch reopens TRACE Dev detached from this tool, its window shown
-// normally (or kept in the tray with --background).
-func (winProcesses) Launch(exe string, args []string) error {
-	return build.LaunchDetached(exe, args, build.AppEnv())
+// Launch starts TRACE Dev detached from this tool and outside its job
+// object when the job allows it.
+func (winProcesses) Launch(exe string, args []string) (bool, error) {
+	return build.LaunchDetachedOutsideJob(exe, args, build.AppEnv())
 }
 
 func runSetup(setup string) error { return build.RunQuiet(setup, []string{"/S"}, build.AppEnv()) }

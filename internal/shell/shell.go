@@ -14,6 +14,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chialecode/trace/internal/appdirs"
@@ -104,6 +105,7 @@ type RuntimeStateSnapshot struct {
 	WebView2ProcessCount   int      `json:"webview2ProcessCount"`
 	ForegroundPID          uint32   `json:"foregroundPid"`
 	StealFocusDetected     bool     `json:"stealFocusDetected"`
+	StealFocusDetail       string   `json:"stealFocusDetail,omitempty"`
 	SecondInstanceArgs     []string `json:"secondInstanceArgs,omitempty"`
 	Version                string   `json:"version"`
 	Commit                 string   `json:"commit"`
@@ -121,7 +123,6 @@ type Shell struct {
 	uiApp              *ui.App
 	win                *mygo.Window
 	tray               *mygo.Tray
-	statusMenuItem     *mygo.MenuItem
 	unsubEvents        func()
 	closingToTray      bool
 	quitting           bool
@@ -129,7 +130,13 @@ type Shell struct {
 	lastRoute          string
 	secondInstanceArgs []string
 	stoleFocus         bool
+	stoleFocusDetail   string
 	updates            *update.Controller
+
+	// trayRefreshPending coalesces tray refreshes requested by backend
+	// events; trayRefresh is refreshTrayState (replaced in tests).
+	trayRefreshPending atomic.Bool
+	trayRefresh        func()
 }
 
 // NewShell creates a new Shell instance for the given locations and backend.
@@ -192,6 +199,7 @@ func Run() error {
 	defer func() {
 		_ = lockHandle.Release()
 	}()
+	previousCrash := setupCrashOutput(loc.LogsDir)
 
 	// Step 5: Redirect MyGo internal paths inside <DataDir> so %APPDATA% is never touched (INV-14, C36).
 	mygoDir := filepath.Join(loc.DataDir, "mygo")
@@ -207,7 +215,8 @@ func Run() error {
 	// HTTP(S)_PROXY (DEC-046 ⑤).
 	site.SetSystemProxyFunc(netproxy.Proxy)
 	backend, err := service.NewBackend(service.Options{
-		Locations: loc,
+		Locations:           loc,
+		InstalledDevVersion: service.ReadSystemInstalledDevVersion,
 	})
 	if err != nil {
 		if storage.IsNewerData(err) {
@@ -219,17 +228,14 @@ func Run() error {
 		_ = backend.Close()
 	}()
 
+	if previousCrash != "" {
+		backend.Logf("the previous run ended in a crash; traceback kept in logs/%s", previousCrash)
+	}
+
 	sh := NewShell(loc, backend)
 	sh.lockHandle = lockHandle
 
-	decision := StartupDecision{OpenWindow: !launch.Background}
-	if _, err := backend.MutateUIState(func(st *uistate.State) {
-		var next uistate.State
-		decision, next = DecideStartup(*st, launch, build.Version, time.Now().UTC())
-		*st = next
-	}); err != nil {
-		backend.Logf("save launch state: %v", err)
-	}
+	decision := recordStartupDecision(backend, loc.Channel, build.Version, launch, time.Now().UTC())
 	if loc.Mode == "installed" {
 		if wrote, err := syncUninstallVersion(systemUninstallEntry(), loc.Identifier, loc.InstallDir, build.Version); err != nil {
 			backend.Logf("update the uninstall entry: %v", err)
@@ -295,6 +301,7 @@ func (s *Shell) openOrRestoreMainWindow() {
 		} else if quiet == "inactive" {
 			w.ShowInactive()
 		}
+		s.checkForegroundSafety("reuse_window")
 		return
 	}
 
@@ -332,7 +339,11 @@ func (s *Shell) openOrRestoreMainWindow() {
 		Content:         mygoui.View(uiApp.View),
 	}
 	win := mygo.NewWindow(winOpts)
-	uiApp.BindFullscreenHandler(win.SetFullScreen)
+	uiApp.BindFullscreenHandler(func(full bool) {
+		if s.quiet == "" {
+			win.SetFullScreen(full)
+		}
+	})
 	if s.quiet == "hidden" {
 		win.Hide()
 	} else if s.quiet == "inactive" {
@@ -369,17 +380,24 @@ func (s *Shell) openOrRestoreMainWindow() {
 	s.closingToTray = false
 	s.mu.Unlock()
 
-	s.checkForegroundSafety()
+	s.checkForegroundSafety("open_window")
 }
 
-func (s *Shell) checkForegroundSafety() {
+func (s *Shell) checkForegroundSafety(stage string) {
 	if s.quiet == "" {
 		return
 	}
-	_, fgPID := GetForegroundWindowHandle()
+	fgHWND, fgPID := GetForegroundWindowHandle()
 	if fgPID != 0 && fgPID == uint32(os.Getpid()) {
+		detail := stage
+		if desc := DescribeWindowHandle(fgHWND); desc != "" {
+			detail = stage + " (" + desc + ")"
+		}
 		s.mu.Lock()
 		s.stoleFocus = true
+		if s.stoleFocusDetail == "" {
+			s.stoleFocusDetail = detail
+		}
 		s.mu.Unlock()
 	}
 }
@@ -422,13 +440,13 @@ func (s *Shell) CloseToTray() {
 		})
 		_ = n.Show()
 	}
-	s.checkForegroundSafety()
+	s.checkForegroundSafety("close_to_tray")
 }
 
 // RestoreFromTray recreates the native UI window and restores the previous route (DEC-030, C35).
 func (s *Shell) RestoreFromTray() {
 	s.openOrRestoreMainWindow()
-	s.checkForegroundSafety()
+	s.checkForegroundSafety("restore_from_tray")
 }
 
 // HandleSecondInstance handles command-line arguments forwarded from a second instance (C35, C36).
@@ -466,7 +484,7 @@ func (s *Shell) HandleSecondInstance(args []string) {
 			break
 		}
 	}
-	s.checkForegroundSafety()
+	s.checkForegroundSafety("second_instance")
 	if smokeDir := strings.TrimSpace(os.Getenv("TRACE_SMOKE_DIR")); smokeDir != "" {
 		snap := s.Snapshot()
 		if raw, err := json.MarshalIndent(snap, "", "  "); err == nil {
@@ -475,61 +493,91 @@ func (s *Shell) HandleSecondInstance(args []string) {
 	}
 }
 
+// trayMenuEntry is one item of the tray menu.
+type trayMenuEntry struct {
+	label string
+	run   func()
+}
+
+// trayMenuEntries is the whole tray menu: open and quit (2026-11-15
+// feedback). The status shows in the icon's tooltip instead.
+func (s *Shell) trayMenuEntries() []trayMenuEntry {
+	return []trayMenuEntry{
+		{label: "打开 " + s.loc.DisplayName, run: s.RestoreFromTray},
+		{label: "退出", run: func() { s.RequestQuit(false) }},
+	}
+}
+
+func (s *Shell) handleTrayClick() {
+	if s.quiet != "" {
+		return
+	}
+	s.RestoreFromTray()
+}
+
+func (s *Shell) handleTrayRightClick(show func([]trayMenuEntry)) {
+	if s.quiet != "" || show == nil {
+		return
+	}
+	show(s.trayMenuEntries())
+}
+
 func (s *Shell) setupTray() {
 	hasWork := s.hasActiveWork()
 	iconBytes := RenderTrayIconPNG(hasWork)
 
-	statusItem := &mygo.MenuItem{
-		ID:       "status",
-		Label:    s.trayStatusLabel(),
-		Disabled: true,
-	}
-	s.statusMenuItem = statusItem
-
-	menu := mygo.NewMenu([]*mygo.MenuItem{
-		statusItem,
-		mygo.Separator(),
-		{
-			ID:    "open",
-			Label: "打开 " + s.loc.DisplayName,
-			Click: func(*mygo.MenuItem, *mygo.Window) {
-				s.RestoreFromTray()
-			},
-		},
-		{
-			ID:    "check_subs",
-			Label: "立即检查全部订阅",
-			Click: func(*mygo.MenuItem, *mygo.Window) {
-				go func() {
-					_, _ = s.backend.CheckSubscriptionsNow(context.Background(), 0)
-				}()
-			},
-		},
-		mygo.Separator(),
-		{
-			ID:    "quit",
-			Label: "退出",
-			Click: func(*mygo.MenuItem, *mygo.Window) {
-				s.RequestQuit(false)
-			},
-		},
-	})
-
-	tray, err := mygo.NewTray(mygo.TrayOptions{
+	opts := mygo.TrayOptions{
 		ID:      s.loc.AppName + "-tray",
 		Icon:    iconBytes,
-		ToolTip: s.loc.DisplayName,
-		Menu:    menu,
-	})
+		ToolTip: s.trayStatusLabel(),
+	}
+	// Quiet mode never attaches interactive tray menus or click handlers so
+	// stray taskbar clicks during automated tests cannot pop up a menu or
+	// call SetForegroundWindow.
+	if s.quiet == "" && !nativeTrayMenu {
+		var items []*mygo.MenuItem
+		for _, e := range s.trayMenuEntries() {
+			run := e.run
+			items = append(items, &mygo.MenuItem{Label: e.label, Click: func(*mygo.MenuItem, *mygo.Window) { run() }})
+		}
+		opts.Menu = mygo.NewMenu(items)
+	}
+	tray, err := mygo.NewTray(opts)
 	if err == nil {
+		if s.quiet == "" {
+			tray.OnClick(s.handleTrayClick)
+			if nativeTrayMenu {
+				tray.OnRightClick(func() { s.handleTrayRightClick(popUpTrayMenu) })
+			}
+		}
 		s.mu.Lock()
 		s.tray = tray
 		s.mu.Unlock()
 	}
 
-	s.unsubEvents = s.backend.SubscribeEvents(func(ev service.Event) {
-		s.refreshTrayState()
+	s.unsubEvents = s.backend.SubscribeEvents(func(service.Event) {
+		s.scheduleTrayRefresh()
 	})
+}
+
+// scheduleTrayRefresh refreshes the tray off the publisher's goroutine.
+// Events are published while their sender may hold its own lock (the cache
+// queue holds queue.mu), and the tray calls wait for the main thread; if the
+// main thread is waiting for that lock, as the author page's "⋯" menu does
+// while it draws, refreshing in place deadlocks the window. Events arriving
+// while a refresh is pending are merged into it.
+func (s *Shell) scheduleTrayRefresh() {
+	if !s.trayRefreshPending.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		s.trayRefreshPending.Store(false)
+		if s.trayRefresh != nil {
+			s.trayRefresh()
+			return
+		}
+		s.refreshTrayState()
+	}()
 }
 
 func (s *Shell) hasActiveWork() bool {
@@ -564,24 +612,21 @@ func (s *Shell) trayStatusLabel() string {
 		}
 	}
 	if activeTasks == 0 && activeRecs == 0 {
-		return s.loc.DisplayName + "：空闲运行中"
+		return s.loc.DisplayName
 	}
-	return fmt.Sprintf("%s：下载 %d · 录制 %d", s.loc.DisplayName, activeTasks, activeRecs)
+	return fmt.Sprintf("%s · 正在缓存 %d 项 · 录制 %d 场", s.loc.DisplayName, activeTasks, activeRecs)
 }
 
 func (s *Shell) refreshTrayState() {
 	s.mu.Lock()
 	tray := s.tray
-	item := s.statusMenuItem
 	s.mu.Unlock()
 	if tray == nil {
 		return
 	}
 	hasWork := s.hasActiveWork()
 	_ = tray.SetIcon(RenderTrayIconPNG(hasWork), false)
-	if item != nil {
-		item.SetLabel(s.trayStatusLabel())
-	}
+	tray.SetToolTip(s.trayStatusLabel())
 }
 
 // RequestQuit quits the application, optionally asking for confirmation if tasks/recordings are active in interactive mode (P13, C35).
@@ -727,7 +772,7 @@ func refuseNewerData(loc appdirs.Locations, cause error) error {
 
 // Snapshot captures the current runtime state of the shell for testing and smoke assertions.
 func (s *Shell) Snapshot() RuntimeStateSnapshot {
-	s.checkForegroundSafety()
+	s.checkForegroundSafety("snapshot")
 	ws, privWS, priv := CurrentProcessMemoryBytes()
 	_, fgPID := GetForegroundWindowHandle()
 	pid := os.Getpid()
@@ -742,6 +787,7 @@ func (s *Shell) Snapshot() RuntimeStateSnapshot {
 	}
 	args := append([]string(nil), s.secondInstanceArgs...)
 	stole := s.stoleFocus
+	stoleDetail := s.stoleFocusDetail
 	s.mu.Unlock()
 
 	return RuntimeStateSnapshot{
@@ -762,6 +808,7 @@ func (s *Shell) Snapshot() RuntimeStateSnapshot {
 		WebView2ProcessCount:   wv2Count,
 		ForegroundPID:          fgPID,
 		StealFocusDetected:     stole,
+		StealFocusDetail:       stoleDetail,
 		SecondInstanceArgs:     args,
 		Version:                appdirs.BuildInfo().Version,
 		Commit:                 appdirs.BuildInfo().Commit,

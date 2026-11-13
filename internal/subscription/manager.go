@@ -170,24 +170,28 @@ type CheckSummary struct {
 
 // Manager coordinates subscription persistence (subscriptions.json + .bak), updates.db state, incremental checks, and scheduling.
 type Manager struct {
-	mu          sync.Mutex
-	db          *sql.DB
-	updatesDB   *sql.DB
-	ownsUpdates bool
-	subsPath    string
-	lib         *library.Store
-	dl          *download.Manager
-	client      *bilibili.Client
-	subSettings settings.SubscriptionSettings
-	rules       []CacheRule
-	onEvent     func(CheckSummary)
-	liveCheck   func(context.Context, []int64) error
-	nowFunc     func() time.Time
+	mu sync.Mutex
+	// formerDefaultName is the name a user gave the once-editable default
+	// rule; the rule that keeps its subscriptions' settings is named after it.
+	formerDefaultName string
+	db                *sql.DB
+	updatesDB         *sql.DB
+	ownsUpdates       bool
+	subsPath          string
+	lib               *library.Store
+	dl                *download.Manager
+	client            *bilibili.Client
+	subSettings       settings.SubscriptionSettings
+	rules             []CacheRule
+	onEvent           func(CheckSummary)
+	liveCheck         func(context.Context, []int64) error
+	nowFunc           func() time.Time
 
 	fetchers               map[site.ID]site.SubscriptionFetcher
 	siteAuthCheck          func(site.ID) bool
 	autoCacheEnqueuers     map[site.ID]AutoCacheEnqueueFunc
 	onLiveHint             func(acc AccountRef, roomID, webRID string)
+	onAuthorAvatar         func(siteID, uid, rawFace string)
 	siteLiveCheck          func(ctx context.Context, accounts []AccountRef) error
 	sleepFunc              func(ctx context.Context, d time.Duration) error
 	siteIntervals          map[string]time.Duration
@@ -204,6 +208,8 @@ type Manager struct {
 	schedCancel context.CancelFunc
 	schedWake   chan struct{}
 	wg          sync.WaitGroup
+
+	diskWriteHook func() error
 }
 
 // NewManager initializes a subscription Manager backed by db (and automatically uses subscriptions.json in the same data directory).
@@ -394,7 +400,7 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 		return err
 	}
 	m.rules = sf.CacheRules
-	m.ensureDefaultRuleLocked()
+	rebound := m.ensureDefaultRuleLocked()
 
 	// Enforce global uniqueness of <site>:<uid> across all subscriptions (keep first, warn once).
 	seenAccounts := make(map[string]bool)
@@ -433,7 +439,9 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 			sub.Mid = 0
 		}
 		syncSubFields(&sub, m.nowFunc())
-		m.bindRuleLocked(&sub)
+		if m.bindRuleLocked(&sub) {
+			rebound = true
+		}
 		if err := upsertSubscriptionRow(tx, sub); err != nil {
 			m.rules = prevRules
 			return err
@@ -454,6 +462,11 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 	if err := tx.Commit(); err != nil {
 		m.rules = prevRules
 		return err
+	}
+	if rebound && !needsMigration {
+		// Persist the reset default rule and the rules that keep its former
+		// subscriptions' behaviour, so the generated rule IDs stay stable.
+		return m.writeSubscriptionsToDiskLocked()
 	}
 	return nil
 }
@@ -485,6 +498,12 @@ func (m *Manager) writeSubscriptionsToDiskLocked() (writeErr error) {
 		return err
 	}
 	data = append(data, '\n')
+
+	if m.diskWriteHook != nil {
+		if err := m.diskWriteHook(); err != nil {
+			return err
+		}
+	}
 
 	// Save previous valid subscriptions.json to subscriptions.json.bak before writing (data-and-cache.md §1).
 	if prev, err := os.ReadFile(m.subsPath); err == nil && len(prev) > 0 {
@@ -1198,6 +1217,8 @@ func (m *Manager) ImportCreators(users []bilibili.FollowingUser, scope, autoCach
 			count++
 			continue
 		}
+		// New subscriptions start on the built-in rule: no scheduled check
+		// unless the caller asks for automatic caching or recording.
 		_, err := m.Upsert(Subscription{
 			Site:           "bilibili",
 			Mid:            u.Mid,
@@ -1205,7 +1226,6 @@ func (m *Manager) ImportCreators(users []bilibili.FollowingUser, scope, autoCach
 			Uname:          firstNonEmptyStr(u.Uname, fmt.Sprintf("UID %d", u.Mid)),
 			Face:           u.Face,
 			Sign:           u.Sign,
-			Enabled:        true,
 			Scope:          scope,
 			AutoCache:      autoCache,
 			LiveNotify:     liveNotify,

@@ -18,6 +18,34 @@ import (
 	"github.com/chialecode/trace/internal/storage"
 )
 
+// videoVia records why a new video item sits under another creator's folder:
+// bilibili/<mid>/forwards/<bvid> is a forwarder's, bilibili/<mid>/videos/<bvid>
+// with mid a collaboration member is that member's (DEC-056). Anything else,
+// including the uploader's own folder, has none.
+func videoVia(root, itemDir string, detail bilibili.VideoDetail, t *Task) *library.ItemVia {
+	rel, err := filepath.Rel(root, itemDir)
+	if err != nil {
+		return nil
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if len(parts) != 4 || parts[0] != "bilibili" {
+		return nil
+	}
+	mid, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || mid <= 0 || mid == detail.Author.Mid {
+		return nil
+	}
+	switch parts[2] {
+	case "forwards":
+		return &library.ItemVia{Reason: library.ViaForward, Site: "bilibili", UID: parts[1], Name: t.ViaName, DynamicID: t.ViaDynamicID}
+	case "videos":
+		if member, ok := detail.StaffMember(mid); ok {
+			return &library.ItemVia{Reason: library.ViaCollab, Site: "bilibili", UID: parts[1], Name: member.Name}
+		}
+	}
+	return nil
+}
+
 func (m *Manager) executeVideoTask(ctx context.Context, task *Task) error {
 	return m.cacheVideoPart(ctx, task, false)
 }
@@ -70,6 +98,7 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 		if err != nil {
 			return err
 		}
+		meta.Via = videoVia(root, meta.ItemDir, detail, t)
 	}
 	if err := os.MkdirAll(meta.ItemDir, 0700); err != nil {
 		return err

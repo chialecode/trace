@@ -1072,6 +1072,28 @@ func TestDouyinParseDispatchAndUserPagePaginationExpiredRetryPrivate(t *testing.
 	if _, ok := tt.Find("私密账号提示"); !ok {
 		t.Fatal("expected 私密账号提示 on private Douyin account")
 	}
+
+	// 7. A rate limit on a private account is shown with a retry, not as
+	// "cannot see the works"; a retry that brings works shows them.
+	app.DouyinWorksError = "抖音限流，请稍后再试"
+	tt.Frame()
+	if _, ok := tt.Find("私密账号提示"); ok {
+		t.Fatal("a rate limit was shown as a private account that cannot be seen")
+	}
+	stub.mu.Lock()
+	stub.userPages[privUID] = map[string]douyinPageFixture{"": {page: service.DouyinUserWorksPage{Works: []service.DouyinWorkCardDTO{{ID: "7400000000000000901", Title: "关注者可见"}}}}}
+	stub.mu.Unlock()
+	if err := tt.Click("重试加载抖音作品"); err != nil {
+		t.Fatal(err)
+	}
+	nextPosted(t, posted)()
+	tt.Frame()
+	if app.CurrentDouyinUser.IsPrivate || !app.CurrentDouyinUser.PrivateVisible || len(app.CurrentDouyinWorks) != 1 {
+		t.Fatalf("the retry did not show the private account's works: private=%v visible=%v works=%d", app.CurrentDouyinUser.IsPrivate, app.CurrentDouyinUser.PrivateVisible, len(app.CurrentDouyinWorks))
+	}
+	if _, ok := tt.Find("私密账号可见提示"); !ok {
+		t.Fatal("the visible private account does not say so")
+	}
 }
 
 // TestDouyinWorkVideoNoteBGMAndViewerInlinePlayback verifies video detail (no play count,
@@ -1142,7 +1164,7 @@ func TestDouyinWorkVideoNoteBGMAndViewerInlinePlayback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Open offline from Library -> 0 network requests, RouteDouyinWork, cached spec shown, NO Bilibili controls.
+	// Open offline from Library -> 0 network requests, RouteLibraryItem, cached spec shown, NO Bilibili or online controls.
 	stub.douyinNetCalls.Store(0)
 	app.OpenLibraryItemDetail(savedVideo)
 	tt := ui.NewTester(app.View, 1280, 860)
@@ -1150,15 +1172,15 @@ func TestDouyinWorkVideoNoteBGMAndViewerInlinePlayback(t *testing.T) {
 	if stub.douyinNetCalls.Load() != 0 {
 		t.Fatalf("offline Douyin detail must make 0 network calls, got %d", stub.douyinNetCalls.Load())
 	}
-	if app.CurrentRoute != RouteDouyinWork {
-		t.Fatalf("expected RouteDouyinWork for cached Douyin video, got %s", app.CurrentRoute)
+	if app.CurrentRoute != RouteLibraryItem {
+		t.Fatalf("expected RouteLibraryItem for cached Douyin video, got %s", app.CurrentRoute)
 	}
-	for _, label := range []string{"抖音作品作者站点标记", "缓存视频", "抖音视频封面播放", "抖音本机缓存规格"} {
+	for _, label := range []string{"抖音作品作者站点标记", "本机详情更多", "抖音视频封面播放", "抖音本机缓存规格"} {
 		if _, ok := tt.Find(label); !ok {
 			t.Fatalf("missing %q on cached Douyin video detail", label)
 		}
 	}
-	for _, forbidden := range []string{"升级缓存", "补存弹幕和字幕", "抖音作品统计行"} {
+	for _, forbidden := range []string{"缓存视频", "升级缓存", "补存弹幕和字幕", "抖音作品统计行"} {
 		if _, ok := tt.Find(forbidden); ok {
 			t.Fatalf("cached Douyin video must NOT render %q", forbidden)
 		}
@@ -1232,7 +1254,7 @@ func TestDouyinWorkVideoNoteBGMAndViewerInlinePlayback(t *testing.T) {
 
 	bgmKey := "douyin-note:731002"
 	for _, label := range []string{
-		"缓存图文",
+		"本机详情更多",
 		"查看图文页 1",
 		"查看图文页 2",
 		"实况标记 2",
@@ -1281,27 +1303,29 @@ func TestDouyinWorkVideoNoteBGMAndViewerInlinePlayback(t *testing.T) {
 		t.Fatal("expected inline progress bar in ImageViewer for mixed video page")
 	}
 
-	// Navigate to live-photo page 2 -> stops viewerPlayer, and BGM must NOT auto-resume!
+	// Navigate to live-photo page 2 -> the video page stops and the motion clip plays on its own; BGM stays paused.
 	if err := tt.Click("看图上一张"); err != nil {
 		t.Fatalf("click previous page in ImageViewer: %v", err)
 	}
+	nextPosted(t, posted)()
 	waitUIIdle(t, app, posted)
 	tt.Frame()
-	if playerLoaded(app.viewerPlayer) {
-		t.Fatal("expected viewerPlayer stopped after switching away from video page")
+	if app.ImageViewer.InlinePageIndex != 1 || !playerPlaying(app.viewerPlayer) {
+		t.Fatalf("live-photo motion should play when its page is shown: page=%d err=%q", app.ImageViewer.InlinePageIndex, app.ImageViewer.InlineError)
 	}
 	if playerPlaying(app.bgmPlayer) {
 		t.Fatal("BGM must NOT auto-resume after inline video page stops")
 	}
 
-	// Resume BGM manually, then trigger live-photo motion playback on page 2 -> pauses BGM, and closing viewer keeps BGM paused.
+	// Resume BGM manually, then replay the motion clip -> pauses BGM, and closing viewer keeps BGM paused.
 	app.bgmPlayer.Play()
 	if !playerPlaying(app.bgmPlayer) {
 		t.Fatal("expected bgmPlayer resumed for live-photo test")
 	}
-	if err := tt.Click("看图播放实况"); err != nil {
-		t.Fatalf("click play live photo in ImageViewer: %v", err)
+	if _, ok := tt.Find("看图播放实况"); !ok {
+		t.Fatal("live photo page lacks its replay button")
 	}
+	app.startViewerInlinePage(1)
 	nextPosted(t, posted)()
 	waitUIIdle(t, app, posted)
 	if !playerPlaying(app.viewerPlayer) {
@@ -1515,10 +1539,15 @@ func TestSiteFiltersPersistenceAndSixSiteBadges(t *testing.T) {
 		{TaskID: "t_dy", Site: "douyin", Kind: "video", TargetID: "7301", Title: "抖音任务", Status: "running", Progress: 0.6},
 	}
 	ttWide.Frame()
-	for _, label := range []string{"录制站点：douyin:MS4wLjABAAAA_rec", "任务站点：t_bili", "任务站点：t_dy"} {
+	for _, label := range []string{"任务站点：t_bili", "任务站点：t_dy"} {
 		if _, ok := ttWide.Find(label); !ok {
-			t.Fatalf("Place #5 missing: %q on /tasks", label)
+			t.Fatalf("Place #5 missing: %q on /tasks downloads", label)
 		}
+	}
+	app.selectTasksLive()
+	ttWide.Frame()
+	if _, ok := ttWide.Find("录制站点：douyin:MS4wLjABAAAA_rec"); !ok {
+		t.Fatalf("Place #5 missing: %q on /tasks live", "录制站点：douyin:MS4wLjABAAAA_rec")
 	}
 
 	// 5. Place #6: Recent parse history item site badges (/parse).

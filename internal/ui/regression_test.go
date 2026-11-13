@@ -230,9 +230,10 @@ func seedUIFeed(t *testing.T, app *App, count int) {
 	app.Navigate(RouteHome)
 }
 
-// DEC-040: progress events and navigation do not move the timeline; a new
-// session opens at the newest post (no restored reading position), and the
-// newest post seen is stored only as the next session's "有更新" baseline.
+// DEC-040: progress events and navigation do not move the timeline, and
+// the newest post seen is stored as the next session's baseline. Rewritten
+// for DEC-053 ①, which replaces "a new session opens at the newest post": a
+// new session opens where the timeline was read.
 func TestFeedProgressEventsKeepPositionAndRestartOpensAtNewest(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
@@ -270,6 +271,7 @@ func TestFeedProgressEventsKeepPositionAndRestartOpensAtNewest(t *testing.T) {
 		t.Fatal("switching pages lost the feed scroll offset within the session")
 	}
 	newest := app.FeedItems[0]
+	app.Close()
 	restored := NewApp(app.backend, player.NewNullAudioSink())
 	defer restored.Close()
 	restored.Navigate(RouteHome)
@@ -278,8 +280,8 @@ func TestFeedProgressEventsKeepPositionAndRestartOpensAtNewest(t *testing.T) {
 		view.Frame()
 	}
 	index, _ := restored.FeedListState.Visible()
-	if index != 0 || restored.FeedItems[0].FeedKey != newest.FeedKey || restored.FeedScroll.Y != 0 {
-		t.Fatalf("a new session must open at the newest post, got first=%d scroll=%v", index, restored.FeedScroll.Y)
+	if index < 0 || restored.FeedItems[index].FeedKey != key {
+		t.Fatalf("a new session must open where the timeline was read (%s), got first=%d", key, index)
 	}
 	if restored.homeBaselineTs != newest.PubTs {
 		t.Fatalf("the next session's baseline = %d, want the newest post seen %d", restored.homeBaselineTs, newest.PubTs)
@@ -295,7 +297,7 @@ func TestThumbnailCoverAndPlayOverlayShareFullArea(t *testing.T) {
 			image.SetRGBA(x, y, color.RGBA{R: 230, G: 30, B: 40, A: 255})
 		}
 	}
-	app.imageCache["fixture::cover.png"] = ui.NewBitmap(image)
+	app.images.put("fixture::cover.png", ui.NewBitmap(image))
 	tester := ui.NewTester(func(c *ui.Context) {
 		ui.Column(c).Width(240).Height(240).Children(func() {
 			app.renderMediaThumb(c, "fixture", "cover.png", "fixture", "", "", true, 240, 240)
@@ -469,8 +471,8 @@ func TestSubscriptionGridParseStatusLogsAndTaskRemoval(t *testing.T) {
 			t.Fatalf("expected right column card %q to be removed (DEC-037)", removedCard)
 		}
 	}
-	subA, _ := app.backend.CreateSubscription("Creator A", "note A", []subscription.AccountRef{{Site: "bilibili", UID: "1001", Name: "AccA"}}, subscription.SubRules{ScheduledCheck: true})
-	subB, _ := app.backend.CreateSubscription("Creator B", "note B", []subscription.AccountRef{{Site: "bilibili", UID: "2002", Name: "AccB"}}, subscription.SubRules{ScheduledCheck: true})
+	subA, _ := app.backend.CreateSubscription("Creator A", "note A", []subscription.AccountRef{{Site: "bilibili", UID: "1001", Name: "AccA"}}, subscription.DefaultSubRules())
+	subB, _ := app.backend.CreateSubscription("Creator B", "note B", []subscription.AccountRef{{Site: "bilibili", UID: "2002", Name: "AccB"}}, subscription.DefaultSubRules())
 	app.RefreshData()
 	_ = subB
 
@@ -517,13 +519,16 @@ func TestSubscriptionGridParseStatusLogsAndTaskRemoval(t *testing.T) {
 	if !app.SubDetailOpen || app.SelectedSubID != subA.ID {
 		t.Fatalf("expected clicking avatar to open subscription detail for %s", subA.ID)
 	}
-	// DEC-040: no "更新", "已缓存" or "规则" tabs; the rule is one button.
-	for _, tabLabel := range []string{"订阅标签：直播", "订阅标签：账号", "订阅缓存规则：默认"} {
+	// DEC-040 & DEC-051 ⑦: tabs are "内容" (default) and "账号"; no "直播", "更新", "已缓存" or "规则" tabs; the rule is one button.
+	if app.SubDetailTab != "content" {
+		t.Fatalf("expected default SubDetailTab=content, got %q", app.SubDetailTab)
+	}
+	for _, tabLabel := range []string{"订阅标签：内容", "订阅标签：账号", "订阅缓存规则：默认"} {
 		if _, ok := tt.Find(tabLabel); !ok {
 			t.Fatalf("expected %s in subscription detail", tabLabel)
 		}
 	}
-	for _, gone := range []string{"订阅标签：更新", "订阅标签：已缓存", "订阅标签：规则", "检查该订阅更新"} {
+	for _, gone := range []string{"订阅标签：直播", "订阅标签：更新", "订阅标签：已缓存", "订阅标签：规则", "检查该订阅更新"} {
 		if _, ok := tt.Find(gone); ok {
 			t.Fatalf("subscription detail still shows %s", gone)
 		}
@@ -531,16 +536,25 @@ func TestSubscriptionGridParseStatusLogsAndTaskRemoval(t *testing.T) {
 	if got := menuItems(t, tt, "订阅管理菜单"); strings.Join(got, ",") != "检查更新,改名,备注,更换头像,-,删除订阅" {
 		t.Fatalf("订阅管理菜单 items = %v", got)
 	}
-	tt.Click("订阅标签：直播")
+	// Default "内容" tab shows the recorded live stream as a post card with Segments[0] quality fallback.
+	if _, ok := tt.Find("存量直播录像"); !ok {
+		t.Fatal("expected recorded live post 存量直播录像 in subscription content tab")
+	}
+	if _, ok := tt.Find("原画 · AVC"); !ok {
+		t.Fatal("expected legacy Segments[0] quality fallback (原画 · AVC) on recorded live post in subscription content tab")
+	}
+	if err := tt.Click("订阅标签：账号"); err != nil {
+		t.Fatal(err)
+	}
 	tt.Frame()
-	if _, ok := tt.Find("· 原画 · AVC"); !ok {
-		t.Fatal("expected 原画 · AVC quality/codec text in subscription live tab")
+	if _, ok := tt.Find("直播中 · Live Stream · 原画 · AVC"); !ok {
+		t.Fatal("expected 直播中 · Live Stream · 原画 · AVC in subscription accounts tab")
 	}
-	if _, ok := tt.Find("已录制的直播录像（1）"); !ok {
-		t.Fatal("expected 已录制的直播录像（1） section in subscription live tab")
+	if _, ok := tt.Find("开始录制 8888"); !ok {
+		t.Fatal("expected 开始录制 8888 button in subscription accounts tab")
 	}
-	if _, ok := tt.Find("时长 01:00 · 1 段 · 原画 · AVC"); !ok {
-		t.Fatal("expected legacy Segments[0] quality fallback (时长 01:00 · 1 段 · 原画 · AVC) in subscription live tab")
+	if _, ok := tt.Find("已录制的直播录像（1）"); ok {
+		t.Fatal("recorded lives must not be listed in subscription accounts tab (DEC-051 ⑦)")
 	}
 
 	// Verify Library card and "⋯" menu + detail view show legacy Segments[0] quality fallback.
@@ -557,8 +571,8 @@ func TestSubscriptionGridParseStatusLogsAndTaskRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if app.CurrentRoute != RouteVideo || app.CurrentLibraryDetail == nil || app.CurrentLibraryDetail.Kind != "live" {
-		t.Fatalf("expected clicking 详情 in library ⋯ menu to open /video detail, got route=%s", app.CurrentRoute)
+	if app.CurrentRoute != RouteLibraryItem || app.CurrentLibraryDetail == nil || app.CurrentLibraryDetail.Kind != "live" {
+		t.Fatalf("expected clicking 详情 in library ⋯ menu to open /library/item detail, got route=%s", app.CurrentRoute)
 	}
 	if _, ok := tt.Find("直播间: 8888 · 原画 · AVC"); !ok {
 		t.Fatal("expected 直播间: 8888 · 原画 · AVC on video/live detail page opened from library ⋯ menu")
@@ -722,8 +736,9 @@ func TestHomePostsUpdatedRowParseHistoryAndLibraryMenus(t *testing.T) {
 		}
 	}
 
-	// Verify "主页有更新头像行" is visible and ordered by latestTs DESC: SubBeta -> UnsubUP -> SubAlpha.
-	// Also verify sitting idle or navigating /home -> /parse -> /home keeps the updated people.
+	// DEC-053 ②: the Home panel lists the subscriptions (never the
+	// unsubscribed UnsubUP), unread ones with a dot, newest first: SubBeta
+	// -> SubAlpha. Sitting idle or /home -> /parse -> /home keeps them.
 	tt.Advance(1500 * time.Millisecond)
 	tt.Frame()
 	app.Navigate(RouteParse)
@@ -731,20 +746,37 @@ func TestHomePostsUpdatedRowParseHistoryAndLibraryMenus(t *testing.T) {
 	app.Navigate(RouteHome)
 	tt.Frame()
 	// DEC-040: viewing the timeline records the newest post seen for the
-	// next session, but this session's "有更新" baseline does not move.
+	// next session, but this session's baseline does not move.
 	if app.homeBaselineTs != oldItem.PubTs {
 		t.Fatalf("viewing Home moved this session's baseline: got %d, want %d", app.homeBaselineTs, oldItem.PubTs)
 	}
-	actors := app.homeUpdatedActors()
-	if len(actors) != 3 || actors[0].Name != "SubBeta" || actors[1].Name != "UnsubUP" || actors[2].Name != "SubAlpha" {
-		t.Fatalf("unexpected Home updated actors order: %+v", actors)
+	rowNames := func() []string {
+		var out []string
+		for _, r := range app.homeSubscriptionRows() {
+			out = append(out, r.Name)
+		}
+		return out
 	}
-	if _, ok := tt.Find("主页有更新头像行"); !ok {
-		t.Fatal("expected 主页有更新头像行 to be rendered on Home")
+	if got := strings.Join(rowNames(), ","); got != "SubBeta,SubAlpha" {
+		t.Fatalf("unexpected Home subscriptions order: %s", got)
+	}
+	if _, ok := tt.Find("主页订阅列表"); !ok {
+		t.Fatal("expected the subscriptions list in the Home panel")
+	}
+	for _, name := range []string{"SubBeta", "SubAlpha"} {
+		if _, ok := tt.Find("未读圆点：" + name); !ok {
+			t.Fatalf("expected an unread dot on %s", name)
+		}
+	}
+	for _, gone := range []string{"有更新", "正在直播", "主页订阅：UnsubUP"} {
+		if _, ok := tt.Find(gone); ok {
+			t.Fatalf("the Home panel must not show %q", gone)
+		}
 	}
 
-	// Click SubAlpha avatar in the row -> enters single-subscription view on Home, marks SubAlpha seen in ui-state.json.
-	tt.Click("主页更新头像：SubAlpha")
+	// Click SubAlpha -> its feed on Home; homeSeen is written and the dot
+	// goes at once, the row staying where it is.
+	tt.Click("主页订阅：SubAlpha")
 	tt.Frame()
 	if app.HomeActorFilter == nil || app.HomeActorFilter.SubID != subAlpha.ID {
 		t.Fatalf("expected HomeActorFilter to be set to SubAlpha, got %+v", app.HomeActorFilter)
@@ -752,12 +784,12 @@ func TestHomePostsUpdatedRowParseHistoryAndLibraryMenus(t *testing.T) {
 	if _, ok := tt.Find("返回主页时间线"); !ok {
 		t.Fatal("expected 返回主页时间线 back arrow in single-subscription Home header")
 	}
-	// DEC-039: the people with updates are in the context panel, which
-	// stays beside a single subscription's timeline with that one chosen;
-	// the timeline itself shows no row of avatars.
-	if row, ok := tt.Find("主页有更新头像行"); ok {
+	// DEC-039: the subscriptions are in the context panel, which stays
+	// beside a single subscription's timeline; the timeline itself shows no
+	// row of avatars.
+	if row, ok := tt.Find("主页订阅头像条"); ok {
 		if center, _ := tt.Find("中栏内容"); row.X >= center.X {
-			t.Fatal("updated avatars row must not be shown inside single-subscription view")
+			t.Fatal("the avatar strip must not show inside the wide single-subscription view")
 		}
 	}
 	// Verify all items in single-subscription view belong to SubAlpha's linked accounts (1001 and 1002).
@@ -765,10 +797,15 @@ func TestHomePostsUpdatedRowParseHistoryAndLibraryMenus(t *testing.T) {
 		t.Fatalf("expected SubAlpha's 2 items from newest to oldest, got %+v", app.FeedItems)
 	}
 	if seenTs := app.backend.GetUIState().HomeSeen["sub:"+subAlpha.ID]; seenTs != 1710000500 {
-		t.Fatalf("expected Q-009 HomeSeen[sub:%s]=1710000500, got %d", subAlpha.ID, seenTs)
+		t.Fatalf("expected HomeSeen[sub:%s]=1710000500, got %d", subAlpha.ID, seenTs)
+	}
+	if _, ok := tt.Find("未读圆点：SubAlpha"); ok {
+		t.Fatal("the dot of a subscription opened must go at once")
+	}
+	if got := strings.Join(rowNames(), ","); got != "SubBeta,SubAlpha" {
+		t.Fatalf("opening a subscription must not move the rows during the stay: %s", got)
 	}
 
-	// Click back arrow -> returns to main timeline, and SubAlpha is gone from updated avatars row!
 	tt.Click("返回主页时间线")
 	tt.Frame()
 	if app.HomeActorFilter != nil {
@@ -777,13 +814,9 @@ func TestHomePostsUpdatedRowParseHistoryAndLibraryMenus(t *testing.T) {
 	if app.homeBaselineTs != oldItem.PubTs {
 		t.Fatalf("single-subscription view moved the session baseline: got %d, want %d", app.homeBaselineTs, oldItem.PubTs)
 	}
-	actorsAfter := app.homeUpdatedActors()
-	if len(actorsAfter) != 2 || actorsAfter[0].Name != "SubBeta" || actorsAfter[1].Name != "UnsubUP" {
-		t.Fatalf("expected SubAlpha to disappear from updated avatars row after viewing, got %+v", actorsAfter)
-	}
 
 	// Open SubBeta in single-subscription view and click the embedded video card on betaDyn -> opens PlayerOverlay.
-	tt.Click("主页更新头像：SubBeta")
+	tt.Click("主页订阅：SubBeta")
 	tt.Frame()
 	tt.Click("播放视频卡片：bilibili:video:BV1beta001")
 	tt.Frame()
@@ -795,13 +828,14 @@ func TestHomePostsUpdatedRowParseHistoryAndLibraryMenus(t *testing.T) {
 	tt.Click("返回主页时间线")
 	tt.Frame()
 
-	// Mark remaining actor UnsubUP seen -> updated avatars row disappears completely ("没有时整行不显示").
-	tt.Click("主页更新头像：UnsubUP")
-	tt.Frame()
-	tt.Click("返回主页时间线")
-	tt.Frame()
-	if _, ok := tt.Find("主页有更新头像行"); ok {
-		t.Fatal("expected 主页有更新头像行 to be hidden when no actors have unseen updates")
+	// Both seen: no dot remains, and the rows stay listed (as read).
+	for _, name := range []string{"SubBeta", "SubAlpha"} {
+		if _, ok := tt.Find("未读圆点：" + name); ok {
+			t.Fatalf("no dot expected on %s once seen", name)
+		}
+	}
+	if _, ok := tt.Find("主页订阅：SubBeta"); !ok {
+		t.Fatal("read subscriptions stay in the Home panel")
 	}
 	_ = betaDyn
 	_ = subBeta
@@ -896,14 +930,24 @@ func TestHomePostsUpdatedRowParseHistoryAndLibraryMenus(t *testing.T) {
 
 	chooseMenuItem(t, tt, "媒体更多：bilibili:video:BV1beta001", "详情")
 	tt.Frame()
-	if app.CurrentRoute != RouteVideo || app.CurrentVideo == nil || app.CurrentVideo.BVID != "BV1beta001" {
-		t.Fatalf("expected 详情 in library ⋯ menu to open /video for BV1beta001, got route=%s video=%+v", app.CurrentRoute, app.CurrentVideo)
+	if app.CurrentRoute != RouteLibraryItem || app.CurrentVideo == nil || app.CurrentVideo.BVID != "BV1beta001" {
+		t.Fatalf("expected 详情 in library ⋯ menu to open /library/item for BV1beta001, got route=%s video=%+v", app.CurrentRoute, app.CurrentVideo)
 	}
+	for _, netOnly := range []string{"视频详情升级缓存", "补全：bilibili:video:BV1beta001", "缓存视频"} {
+		if _, ok := tt.Find(netOnly); ok {
+			t.Fatalf("offline /library/item detail must hide network action %q", netOnly)
+		}
+	}
+	if got := menuItems(t, tt, "本机详情更多"); strings.Join(got, ",") != "在解析页打开" {
+		t.Fatalf("expected only 在解析页打开 in /library/item menu, got %v", got)
+	}
+	app.CurrentRoute = RouteVideo
+	tt.Frame()
 	if _, ok := tt.Find("视频详情升级缓存"); !ok {
-		t.Fatal("expected 视频详情升级缓存 on /video detail page")
+		t.Fatal("expected 视频详情升级缓存 on online /video detail page")
 	}
 	if _, ok := tt.Find("补全：bilibili:video:BV1beta001"); !ok {
-		t.Fatal("expected 补存弹幕和字幕 (补全：bilibili:video:BV1beta001) on /video detail page")
+		t.Fatal("expected 补存弹幕和字幕 (补全：bilibili:video:BV1beta001) on online /video detail page")
 	}
 
 	app.Navigate(RouteSettings)

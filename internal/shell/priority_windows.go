@@ -3,6 +3,7 @@
 package shell
 
 import (
+	"fmt"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -21,6 +22,8 @@ var (
 	modUser32               = syscall.NewLazyDLL("user32.dll")
 	procGetForegroundWindow = modUser32.NewProc("GetForegroundWindow")
 	procGetWindowThreadPID  = modUser32.NewProc("GetWindowThreadProcessId")
+	procGetClassNameW       = modUser32.NewProc("GetClassNameW")
+	procIsWindowVisible     = modUser32.NewProc("IsWindowVisible")
 )
 
 const (
@@ -76,6 +79,21 @@ func GetForegroundWindowHandle() (hwnd uintptr, pid uint32) {
 	var p uint32
 	procGetWindowThreadPID.Call(h, uintptr(unsafe.Pointer(&p)))
 	return h, p
+}
+
+// DescribeWindowHandle returns the Win32 class name and visibility state of hwnd for focus diagnostics.
+func DescribeWindowHandle(hwnd uintptr) string {
+	if hwnd == 0 {
+		return ""
+	}
+	var buf [128]uint16
+	n, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	cls := ""
+	if n > 0 && int(n) <= len(buf) {
+		cls = syscall.UTF16ToString(buf[:n])
+	}
+	vis, _, _ := procIsWindowVisible.Call(hwnd)
+	return fmt.Sprintf("hwnd=0x%x class=%q visible=%v", hwnd, cls, vis != 0)
 }
 
 // TrimWorkingSet trims unused pages from the current process working set after window destruction.

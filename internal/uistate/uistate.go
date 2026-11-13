@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/chialecode/trace/internal/storage"
 )
@@ -17,16 +18,36 @@ type FeedAnchor struct {
 	OffsetPx int    `json:"offsetPx"`
 }
 
+// HomePosition is where the main timeline of one site filter of Home was
+// read: the post at the top of the view and how far its top is above the
+// view's top (DEC-053 ①).
+type HomePosition struct {
+	Key      string `json:"key"`
+	PubTs    int64  `json:"pubTs"`
+	OffsetPx int    `json:"offsetPx"`
+}
+
+// HomePositionSites are the site filters whose positions are kept.
+var HomePositionSites = []string{"all", "bilibili", "douyin"}
+
 // State represents the persistent UI state stored in ui-state.json.
 type State struct {
 	Version      int              `json:"version"`
 	Window       WindowState      `json:"window"`
 	LastRoute    string           `json:"lastRoute"`
+	SubDetailTab string           `json:"subDetailTab,omitempty"`
 	FeedFilter   FeedFilter       `json:"feedFilter"`
 	Anchor       FeedAnchor       `json:"anchor"`
 	HomeSeen     map[string]int64 `json:"homeSeen,omitempty"`
-	TrayNotified bool             `json:"trayNotified"`
-	Player       PlayerState      `json:"player"`
+	// HomePositions keeps, per site filter ("all", "bilibili", "douyin"),
+	// where the main timeline was read; optional, schema version 2.
+	HomePositions map[string]HomePosition `json:"homePositions,omitempty"`
+	// DismissedLiveSessions are finished recordings removed from Tasks ›
+	// 直播录制 "最近结束的录制" (session key → RFC3339 time removed); optional,
+	// entries past that list's 7-day window are dropped.
+	DismissedLiveSessions map[string]string `json:"dismissedLiveSessions,omitempty"`
+	TrayNotified          bool              `json:"trayNotified"`
+	Player                PlayerState       `json:"player"`
 	// Update records what the updates of TRACE need across launches.
 	Update UpdateState `json:"update"`
 }
@@ -82,6 +103,44 @@ type PlayerState struct {
 // CurrentSchemaVersion is the schema version written to ui-state.json.
 const CurrentSchemaVersion = 2
 
+// NormalizeSubDetailTab normalizes subscription detail tab values (DEC-051 ⑦).
+// Legacy "live" maps to "accounts"; empty or unknown values default to "content".
+func NormalizeSubDetailTab(tab string) string {
+	switch strings.ToLower(strings.TrimSpace(tab)) {
+	case "accounts", "live":
+		return "accounts"
+	default:
+		return "content"
+	}
+}
+
+func extractRouteSubDetailTab(rawRoute string) string {
+	r := strings.TrimSpace(rawRoute)
+	if !strings.HasPrefix(r, "/subscriptions") {
+		return ""
+	}
+	if qIdx := strings.IndexByte(r, '?'); qIdx >= 0 {
+		query := r[qIdx+1:]
+		for _, part := range strings.Split(query, "&") {
+			if k, v, ok := strings.Cut(part, "="); ok && strings.EqualFold(strings.TrimSpace(k), "tab") {
+				return strings.TrimSpace(v)
+			}
+		}
+		r = r[:qIdx]
+	}
+	trimmed := strings.TrimSuffix(strings.TrimPrefix(r, "/subscriptions"), "/")
+	if strings.HasPrefix(trimmed, "/") {
+		parts := strings.Split(strings.TrimPrefix(trimmed, "/"), "/")
+		if len(parts) >= 2 {
+			switch strings.ToLower(strings.TrimSpace(parts[len(parts)-1])) {
+			case "content", "accounts", "live":
+				return parts[len(parts)-1]
+			}
+		}
+	}
+	return ""
+}
+
 // Default returns the default UI state.
 func Default() State {
 	return State{
@@ -93,7 +152,8 @@ func Default() State {
 			Y:         0,
 			Maximized: false,
 		},
-		LastRoute: "/home",
+		LastRoute:    "/home",
+		SubDetailTab: "content",
 		FeedFilter: FeedFilter{
 			Kind: "all",
 			Site: "all",
@@ -127,6 +187,12 @@ func Normalize(st State) State {
 	if strings.TrimSpace(st.LastRoute) == "" {
 		st.LastRoute = "/home"
 	}
+	if strings.TrimSpace(st.SubDetailTab) == "" {
+		if routeTab := extractRouteSubDetailTab(st.LastRoute); routeTab != "" {
+			st.SubDetailTab = routeTab
+		}
+	}
+	st.SubDetailTab = NormalizeSubDetailTab(st.SubDetailTab)
 	switch st.FeedFilter.Kind {
 	case "all", "video", "dynamic":
 	default:
@@ -156,6 +222,8 @@ func Normalize(st State) State {
 	} else {
 		st.HomeSeen = nil
 	}
+	st.HomePositions = normalizeHomePositions(st.HomePositions)
+	st.DismissedLiveSessions = normalizeDismissedLiveSessions(st.DismissedLiveSessions, time.Now())
 	if st.Player.Volume < 0 {
 		st.Player.Volume = 0
 	} else if st.Player.Volume > 1 {
@@ -173,6 +241,58 @@ func Normalize(st State) State {
 		st.Player.DanmakuDensity = "medium"
 	}
 	return st
+}
+
+// DismissedLiveSessionTTL is how long a removed "最近结束的录制" entry is
+// remembered: the list itself only shows the last 7 days.
+const DismissedLiveSessionTTL = 8 * 24 * time.Hour
+
+func normalizeDismissedLiveSessions(in map[string]string, now time.Time) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		k = strings.TrimSpace(k)
+		t, err := time.Parse(time.RFC3339, strings.TrimSpace(v))
+		if k == "" || err != nil || now.Sub(t) > DismissedLiveSessionTTL {
+			continue
+		}
+		out[k] = t.UTC().Format(time.RFC3339)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeHomePositions(in map[string]HomePosition) map[string]HomePosition {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]HomePosition, len(in))
+	for k, v := range in {
+		k = strings.ToLower(strings.TrimSpace(k))
+		v.Key = strings.TrimSpace(v.Key)
+		valid := false
+		for _, site := range HomePositionSites {
+			valid = valid || k == site
+		}
+		if !valid || (v.Key == "" && v.PubTs <= 0) {
+			continue
+		}
+		if v.PubTs < 0 {
+			v.PubTs = 0
+		}
+		if v.OffsetPx < 0 {
+			v.OffsetPx = 0
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // Store manages reading and writing ui-state.json safely.
@@ -203,6 +323,7 @@ func Open(path string) (*Store, bool, string, error) {
 
 	loaded := Default()
 	loaded.Version = 0
+	loaded.SubDetailTab = ""
 	loaded.FeedFilter.Site = ""
 	if err := json.Unmarshal(raw, &loaded); err != nil {
 		backup, bErr := storage.BackupCorruptFile(path)
@@ -251,6 +372,18 @@ func cloneState(st State) State {
 		out.HomeSeen = make(map[string]int64, len(st.HomeSeen))
 		for k, v := range st.HomeSeen {
 			out.HomeSeen[k] = v
+		}
+	}
+	if len(st.HomePositions) > 0 {
+		out.HomePositions = make(map[string]HomePosition, len(st.HomePositions))
+		for k, v := range st.HomePositions {
+			out.HomePositions[k] = v
+		}
+	}
+	if len(st.DismissedLiveSessions) > 0 {
+		out.DismissedLiveSessions = make(map[string]string, len(st.DismissedLiveSessions))
+		for k, v := range st.DismissedLiveSessions {
+			out.DismissedLiveSessions[k] = v
 		}
 	}
 	if st.Update.Restart != nil {

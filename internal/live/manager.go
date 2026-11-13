@@ -33,38 +33,47 @@ var errSegmentRollover = errors.New("live: segment rollover required")
 
 // RoomState describes the current live status and recording state of a room/creator.
 type RoomState struct {
-	Site              string  `json:"site,omitempty"`
-	AccountUID        string  `json:"accountUid,omitempty"`
-	UniqueID          string  `json:"uniqueId,omitempty"`
-	UID               int64   `json:"uid"`
-	RoomID            int64   `json:"roomId"`
-	RoomIDStr         string  `json:"roomIdStr,omitempty"`
-	WebRID            string  `json:"webRid,omitempty"`
-	RoomKey           string  `json:"roomKey,omitempty"`
-	LiveState         string  `json:"liveState,omitempty"`
-	ShortID           int64   `json:"shortId,omitempty"`
-	Uname             string  `json:"uname"`
-	Face              string  `json:"face"`
-	Title             string  `json:"title"`
-	Cover             string  `json:"cover,omitempty"`
-	AreaName          string  `json:"areaName,omitempty"`
-	LiveStatus        int     `json:"liveStatus"` // 0=offline, 1=live, 2=carousel
-	LiveSince         int64   `json:"liveSince,omitempty"`
-	Source            string  `json:"source,omitempty"`
-	StatusText        string  `json:"statusText"` // "未开播", "直播中", "轮播中"
-	Quality           int     `json:"quality,omitempty"`
-	QualityName       string  `json:"qualityName,omitempty"`
-	Codec             string  `json:"codec,omitempty"`
-	Recording         bool    `json:"recording"`
-	RecordSession     string  `json:"recordSession,omitempty"`
-	RecordDurationSec float64 `json:"recordDurationSec,omitempty"`
-	RecordSpeedBps    int64   `json:"recordSpeedBps,omitempty"`
-	RecordBytes       int64   `json:"recordBytes,omitempty"`
-	RecordSegments    int     `json:"recordSegments,omitempty"`
-	RecordItemDir     string  `json:"recordItemDir,omitempty"`
-	StopReason        string  `json:"stopReason,omitempty"`
-	LastError         string  `json:"lastError,omitempty"`
-	UpdatedAt         string  `json:"updatedAt"`
+	Site              string                 `json:"site,omitempty"`
+	AccountUID        string                 `json:"accountUid,omitempty"`
+	UniqueID          string                 `json:"uniqueId,omitempty"`
+	UID               int64                  `json:"uid"`
+	RoomID            int64                  `json:"roomId"`
+	RoomIDStr         string                 `json:"roomIdStr,omitempty"`
+	WebRID            string                 `json:"webRid,omitempty"`
+	RoomKey           string                 `json:"roomKey,omitempty"`
+	LiveState         string                 `json:"liveState,omitempty"`
+	ShortID           int64                  `json:"shortId,omitempty"`
+	Uname             string                 `json:"uname"`
+	Face              string                 `json:"face"`
+	Title             string                 `json:"title"`
+	Cover             string                 `json:"cover,omitempty"`
+	AreaName          string                 `json:"areaName,omitempty"`
+	LiveStatus        int                    `json:"liveStatus"` // 0=offline, 1=live, 2=carousel
+	LiveSince         int64                  `json:"liveSince,omitempty"`
+	Source            string                 `json:"source,omitempty"`
+	StatusText        string                 `json:"statusText"` // "未开播", "直播中", "轮播中"
+	Quality           int                    `json:"quality,omitempty"`
+	QualityName       string                 `json:"qualityName,omitempty"`
+	Codec             string                 `json:"codec,omitempty"`
+	Transport         string                 `json:"transport,omitempty"`
+	AudioOnly         bool                   `json:"audioOnly,omitempty"`
+	Recording         bool                   `json:"recording"`
+	RecordSession     string                 `json:"recordSession,omitempty"`
+	RecordDurationSec float64                `json:"recordDurationSec,omitempty"`
+	RecordSpeedBps    int64                  `json:"recordSpeedBps,omitempty"`
+	RecordBytes       int64                  `json:"recordBytes,omitempty"`
+	RecordSegments    int                    `json:"recordSegments,omitempty"`
+	RecordItemDir     string                 `json:"recordItemDir,omitempty"`
+	RecordPartPath    string                 `json:"recordPartPath,omitempty"`
+	RecordPartIndex   int                    `json:"recordPartIndex,omitempty"`
+	RecordPartBytes   int64                  `json:"recordPartBytes,omitempty"`
+	RecordPartReady   bool                   `json:"recordPartReady,omitempty"`
+	PreviewSupported  bool                   `json:"previewSupported,omitempty"`
+	PreviewReason     string                 `json:"previewReason,omitempty"`
+	Incidents         []library.LiveIncident `json:"incidents,omitempty"`
+	StopReason        string                 `json:"stopReason,omitempty"`
+	LastError         string                 `json:"lastError,omitempty"`
+	UpdatedAt         string                 `json:"updatedAt"`
 }
 
 // Notification represents a transition from offline/carousel (0/2) to live (1).
@@ -81,38 +90,54 @@ type Notification struct {
 }
 
 type recordSession struct {
-	siteID          string
-	accountUID      string
-	roomIDStr       string
-	webRID          string
-	stateKey        string
-	coverURL        string
-	transport       site.MediaTransportSpec
-	sessionID       string
-	roomID          int64
-	uid             int64
-	uname           string
-	face            string
-	title           string
-	itemDir         string
-	itemMeta        library.ItemMetadata
-	cancel          context.CancelFunc
-	doneCh          chan struct{}
-	startedAt       time.Time
-	reportAt        time.Time
-	reportBytes     int64
-	bytesTotal      int64
-	segments        []string
-	stopReason      string
-	lastErr         string
-	nextPart        int
-	lastSequence    int64
-	hasSequence     bool
-	segmentDuration float64
-	wroteMedia      bool
-	quality         int
-	qualityName     string
-	codec           string
+	siteID                   string
+	accountUID               string
+	roomIDStr                string
+	webRID                   string
+	stateKey                 string
+	coverURL                 string
+	transport                site.MediaTransportSpec
+	sessionID                string
+	roomID                   int64
+	uid                      int64
+	uname                    string
+	face                     string
+	title                    string
+	itemDir                  string
+	itemMeta                 library.ItemMetadata
+	cancel                   context.CancelFunc
+	doneCh                   chan struct{}
+	startedAt                time.Time
+	reportAt                 time.Time
+	reportBytes              int64
+	bytesTotal               int64
+	segments                 []string
+	stopReason               string
+	lastErr                  string
+	nextPart                 int
+	lastSequence             int64
+	hasSequence              bool
+	lastSequenceAt           time.Time // when lastSequence was written in this run; zero after a restart
+	segmentDuration          float64
+	wroteMedia               bool
+	quality                  int
+	qualityName              string
+	codec                    string
+	streamTransport          string
+	audioOnly                bool
+	activePartPath           string
+	activePartIndex          int
+	activePartBytes          int64
+	activePartDur            float64
+	activePartReady          bool
+	lastSpeedBps             int64
+	previewSupport           bool
+	previewReason            string
+	incidents                []library.LiveIncident
+	slow                     slowDetector
+	nominalByteRate          float64
+	pendingReconnectAt       time.Time
+	pendingReconnectHadMedia bool
 }
 
 type cachedStatusEntry struct {
@@ -480,10 +505,6 @@ func (m *Manager) refreshAccounts(ctx context.Context, selected []int64, force, 
 
 	m.mu.Lock()
 	notifyGlobal := m.liveSettings.NotifyOnStart
-	maxRec := m.liveSettings.MaxConcurrentRecordings
-	if maxRec <= 0 {
-		maxRec = 2
-	}
 	for _, uid := range uids {
 		sub := subByUID[uid]
 		st, ok := statusMap[uid]
@@ -556,6 +577,7 @@ func (m *Manager) refreshAccounts(ctx context.Context, selected []int64, force, 
 			QualityName: existing.QualityName,
 			Codec:       existing.Codec,
 			Recording:   recSess != nil,
+			Incidents:   cloneIncidents(existing.Incidents),
 			StopReason:  existing.StopReason,
 			LastError:   existing.LastError,
 			UpdatedAt:   nowStr,
@@ -568,6 +590,7 @@ func (m *Manager) refreshAccounts(ctx context.Context, selected []int64, force, 
 			roomState.Quality = recSess.quality
 			roomState.QualityName = recSess.qualityName
 			roomState.Codec = recSess.codec
+			hydrateSessionPreviewFieldsLocked(&roomState, recSess)
 		}
 		m.states[key] = roomState
 		for oldKey, state := range m.states {
@@ -634,6 +657,7 @@ func (m *Manager) OpenRoom(ctx context.Context, roomOrShortID int64) (RoomState,
 		QualityName: existing.QualityName,
 		Codec:       existing.Codec,
 		Recording:   recSess != nil,
+		Incidents:   cloneIncidents(existing.Incidents),
 		StopReason:  existing.StopReason,
 		LastError:   existing.LastError,
 		UpdatedAt:   nowStr,
@@ -646,6 +670,9 @@ func (m *Manager) OpenRoom(ctx context.Context, roomOrShortID int64) (RoomState,
 		st.Quality = recSess.quality
 		st.QualityName = recSess.qualityName
 		st.Codec = recSess.codec
+		hydrateSessionPreviewFieldsLocked(&st, recSess)
+	} else {
+		hydrateSessionPreviewFieldsLocked(&st, nil)
 	}
 	m.states[info.RoomID] = st
 	m.mu.Unlock()
@@ -691,8 +718,10 @@ func (m *Manager) ListRooms() []RoomState {
 			if sess.lastErr != "" {
 				st.LastError = sess.lastErr
 			}
+			hydrateSessionPreviewFieldsLocked(&st, sess)
 		} else {
 			st.Recording = false
+			hydrateSessionPreviewFieldsLocked(&st, nil)
 		}
 		if st.QualityName == "" && st.Quality > 0 {
 			st.QualityName = bilibili.LiveQualityFallbackName(st.Quality)
@@ -749,14 +778,6 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 		m.mu.Unlock()
 		return m.OpenRoom(ctx, st.RoomID)
 	}
-	maxRec := m.liveSettings.MaxConcurrentRecordings
-	if maxRec <= 0 {
-		maxRec = 2
-	}
-	if len(m.sessions)+len(m.douyinSessions) >= maxRec {
-		m.mu.Unlock()
-		return st, fmt.Errorf("已达到同时录制上限（%d 路），未开始录制", maxRec)
-	}
 	codecOrder := append([]string(nil), m.liveSettings.CodecOrder...)
 	m.mu.Unlock()
 
@@ -806,7 +827,11 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 			Face: st.Face,
 		},
 	}
-	existing, exists, err := m.lib.GetItem("live:" + sessionID)
+	// Look up by the canonical key: "live:<room>:<since>" has two colons and
+	// would be taken as a full key without the site, never matching, so a
+	// recording restarted after an exit or update began a blank item that
+	// collided with part-001.mp4 and dropped the earlier parts.
+	existing, exists, err := m.lib.GetItem(library.CanonicalItemKey("bilibili", "live", sessionID))
 	if err != nil {
 		return st, err
 	}
@@ -837,6 +862,10 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 		recParent = bilibili.WithAutomaticRequests(recParent, "live")
 	}
 	recCtx, recCancel := context.WithCancel(recParent)
+	initialTransport := string(site.LiveTransportHLSFMP4)
+	if playSel.Format == "flv" || playSel.Protocol == "http_stream" {
+		initialTransport = string(site.LiveTransportHTTPFLV)
+	}
 	sess := &recordSession{
 		sessionID: sessionID,
 		startedAt: now, reportAt: now,
@@ -850,10 +879,14 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 		cancel:   recCancel,
 		doneCh:   make(chan struct{}),
 		nextPart: nextPartNumber(meta), lastSequence: meta.Live.LastSequence, hasSequence: meta.Live.HasSequence,
-		quality:     playSel.Quality,
-		qualityName: playSel.QualityName,
-		codec:       playSel.Codec,
+		quality:         playSel.Quality,
+		qualityName:     playSel.QualityName,
+		codec:           playSel.Codec,
+		streamTransport: initialTransport,
+		previewSupport:  true,
+		previewReason:   previewReasonWaitingFirstFragment,
 	}
+	m.initSessionIncidents(sess)
 	for _, media := range meta.Media {
 		if media.Role == "live_segment" {
 			sess.segments = append(sess.segments, media.Path)
@@ -871,6 +904,7 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 	st.Codec = playSel.Codec
 	st.StopReason = ""
 	st.LastError = ""
+	hydrateSessionPreviewFieldsLocked(&st, sess)
 	m.states[st.RoomID] = st
 	m.mu.Unlock()
 
@@ -924,10 +958,12 @@ func (m *Manager) stopRecordingInternal(roomID int64, reason string, suppressAut
 	st.RecordBytes = sess.bytesTotal
 	st.RecordSegments = len(sess.segments)
 	st.RecordItemDir = sess.itemDir
+	st.Incidents = cloneIncidents(sess.incidents)
 	st.StopReason = sess.stopReason
 	if sess.lastErr != "" {
 		st.LastError = sess.lastErr
 	}
+	hydrateSessionPreviewFieldsLocked(&st, nil)
 	m.states[roomID] = st
 	m.mu.Unlock()
 
@@ -996,22 +1032,26 @@ func (m *Manager) addSessionBytes(sess *recordSession, delta int64) {
 		m.mu.Unlock()
 		return
 	}
+	speedBps := int64(float64(sess.bytesTotal-sess.reportBytes) / elapsed.Seconds())
+	sess.lastSpeedBps = speedBps
 	var st RoomState
 	if sess.siteID == string(site.Douyin) {
 		st = m.douyinStates[sess.stateKey]
 		st.RecordBytes = sess.bytesTotal
 		st.RecordDurationSec = m.nowFunc().Sub(sess.startedAt).Seconds()
-		st.RecordSpeedBps = int64(float64(sess.bytesTotal-sess.reportBytes) / elapsed.Seconds())
+		st.RecordSpeedBps = speedBps
 		st.RecordSegments = len(sess.segments)
 		st.Recording = true
+		hydrateSessionPreviewFieldsLocked(&st, sess)
 		m.douyinStates[sess.stateKey] = st
 	} else {
 		st = m.states[sess.roomID]
 		st.RecordBytes = sess.bytesTotal
 		st.RecordDurationSec = m.nowFunc().Sub(sess.startedAt).Seconds()
-		st.RecordSpeedBps = int64(float64(sess.bytesTotal-sess.reportBytes) / elapsed.Seconds())
+		st.RecordSpeedBps = speedBps
 		st.RecordSegments = len(sess.segments)
 		st.Recording = true
+		hydrateSessionPreviewFieldsLocked(&st, sess)
 		m.states[sess.roomID] = st
 	}
 	sess.reportAt = m.nowFunc()
@@ -1051,6 +1091,11 @@ type m3u8Variant struct {
 
 // bestVariant picks the highest-bandwidth variant; ties keep playlist order.
 func (p m3u8Playlist) bestVariant() (string, bool) {
+	v, ok := p.bestVariantInfo()
+	return v.uri, ok
+}
+
+func (p m3u8Playlist) bestVariantInfo() (m3u8Variant, bool) {
 	best := -1
 	for i, v := range p.variants {
 		if v.uri != "" && (best < 0 || v.bandwidth > p.variants[best].bandwidth) {
@@ -1058,9 +1103,9 @@ func (p m3u8Playlist) bestVariant() (string, bool) {
 		}
 	}
 	if best < 0 {
-		return "", false
+		return m3u8Variant{}, false
 	}
-	return p.variants[best].uri, true
+	return p.variants[best], true
 }
 
 func parseM3U8PlaylistDetails(content string, baseURL string) m3u8Playlist {

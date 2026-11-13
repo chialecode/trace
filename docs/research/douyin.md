@@ -23,7 +23,7 @@
   - **ACT-012（2026-11-13，A 运行）**：两次 FLV 连接的第一跳都是 `302`，目标为 HTTPS、443 端口、**另一个域名**（不是 IP，不在直播 CDN 白名单 `douyincdn.com`/`bytefcdnrd.com`/`amemv.com`/`douyinvod.com`/`zjcdn.com` 内；回执只记形状，不记地址）。拉流 CDN 会把连接调度到各厂商域名，固定后缀名单补不全，因此拉流跳转改为：首个地址查白名单，之后的跳转只要求 HTTPS、443、公共域名（见[直播设计](../design/live.md)）。FLV 流头与短录仍为 `not-run`，转 `ACT-014`。
   - **ACT-014（2026-11-13，A 运行）**：按新跳转规则跟随 `302` 后第二跳 `200`，选中“原画”，FLV 视频标签是 AVC（`CodecID=7`，不是 `12`/`hvc1`），`1280×720`，音视频 `avc1`+`mp4a`；录了 `21.56` 秒、`15` 个分片、`1` 个分段，收尾为 `735,389` 字节的 MP4，`moov` 在 `mdat` 之前，状态 `completed`。V-07 对 AVC 已回答；这个直播间没有 HEVC 流，`CodecID=12`/`hvc1` 仍只由合成样本覆盖。
   - **B 交付时为 `not-run` 的子项（之后由 `ACT-011` 补测）**：因首轮客户端本地两处判断偏差（`ReflowRoomInfo` 的房间号正则要求至少 4 位导致占位 `room_id=2` 在本地被拒未发包；`EnterLiveRoom` 误将外层 `data.enter_mode == 1` / 无条件 `live_room_mode == 2` 当作纯语音直播，在进入 FLV 选流前返回 `语音直播` 错误），**V-06 离线 `room_id=2` 探测**与 **V-07 直播 HTTP-FLV 流头及短录转封装**未发出对应线上请求，保持 `not-run`（两处代码已修复并准备独立小额检查 `-act act011`）。
-- **产品范围前置决定**：按[有效决定](../decisions.md)（DEC-043、DEC-018、DEC-024、DEC-026、DEC-040），TRACE 对抖音采用**粘贴 Cookie 登录**、**每站点一个登录账号**、**先登录再发任何站点请求**（访客模式不做产品功能，仅在本文中用于对照确认“确实已登录”与识别未登录退化响应）、视频/图文缓存与订阅检查、直播 HTTP-FLV 录制（不录弹幕）；关注列表导入与登录自动续期不在 M3 范围。
+- **产品范围前置决定**：按[有效决定](../decisions.md)（DEC-043、DEC-018、DEC-024、DEC-026、DEC-040），TRACE 对抖音采用**粘贴 Cookie 登录**、**每站点一个登录账号**、**先登录再发任何站点请求**（访客模式不做产品功能，仅在本文中用于对照确认“确实已登录”与识别未登录退化响应）、视频/图文缓存与订阅检查、直播 HTTP-FLV 录制（不录弹幕）；登录账号的关注、喜欢与收藏只读浏览见第 12 节。
 
 <a id="headers"></a>
 <a id="signing"></a>
@@ -190,7 +190,7 @@ TRACE 登录确认判定式（缺一不可；精确未登录错误码在 [ACT-01
 | 7 | `/user/<sec_uid>`、`/share/user/<sec_uid>`，或 `/share/user/` 配合查询参数 `sec_uid` / `sec_user_id`（匹配 `^MS4wLjAB[A-Za-z0-9_-]+$`） | **用户主页**（`sec_uid`） | 打开用户资料与作品列表 |
 | 8 | **不支持的抖音路径或子域**（本地或短链展开后命中） | **明确拒绝**（`bad_request` 附 `Unsupported=true`；越界跳转归 `blocked`） | 见下表，立即给出中文原因“暂不支持这种抖音链接”，**不再发起后续 API 请求** |
 
-明确拒绝的不支持链接清单（M3 范围外，本地或跳转落定即停）：
+明确拒绝的不支持链接清单（本地或跳转落定即停）：
 
 - **电商与团购**：`mall.douyin.com`、`jinritemai.com`、`haohuo.jinritemai.com`、路径含 `/shop/`、`/goods/`、商品橱窗分享。
 - **聚合页与发现页（不带 `modal_id`）**：合集 `/collection/<mix_id>`、`/mix/<mix_id>`、带 `?mix_id=` 却无 `modal_id`、音乐聚合 `/music/<id>`、话题挑战 `/hashtag/<id>`、`/challenge/<id>`、纯搜索页 `/search/...`、纯推荐页 `/discover`、热榜 `/hot/...`。
@@ -544,7 +544,7 @@ TRACE 登录确认判定式（缺一不可；精确未登录错误码在 [ACT-01
 <a id="pacing"></a>
 ### 9.3 面向 TRACE 桌面端的请求节奏与配额建议（NFR-NET-002）
 
-按[需求](../requirements.md)（NFR-NET-002 限流与配额按站点独立运行，互不挤占 B 站额度）及抖音比 B 站更敏感的网关特征，建议 TRACE 抖音客户端执行以下保守默认值（供 Agent A 在 M3 计划中拍板）：
+按[需求](../requirements.md)（NFR-NET-002 限流与配额按站点独立运行，互不挤占 B 站额度）及抖音比 B 站更敏感的网关特征，建议 TRACE 抖音客户端执行以下保守默认值：
 
 | 维度 | 建议默认值 | 依据与说明 |
 | --- | --- | --- |
@@ -595,7 +595,7 @@ TRACE 登录确认判定式（缺一不可；精确未登录错误码在 [ACT-01
 <a id="a-review"></a>
 ## 11. A 审阅定稿与 ACT-010 实测结论（2026-11-12 定稿，2026-11-13 更新）
 
-A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1～10 节，抽查了其中引用的仓库代码事实（`storage/schema.go` 各文件结构版本均为 1、`uistate` 空站点归一为 `bilibili`、下载熔断全局生效、`validateVideoOutput` 强制 `moov` 在前与 `elst`、播放器只按“先有视频轨”打开文件、`scheduler_state` 只有单行），都属实。2026-11-13 B 按 [ACT-010](../../USER-ACTIONS.md#act-010) 运行 `go run ./tools/actcheck -act act010` 1 次（账本 `runs=1`、接口与播放列表请求 `15/18`、点播与图片 CDN 请求 `6/16` 共 `10,602,566` 字节、`stoppedBy=""`；脱敏回执 `artifacts/site-check/act010.json`）。下面是 M3 实现采用的取舍与 V-01～V-08 核对状态：
+A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1～10 节，抽查了其中引用的仓库代码事实（`storage/schema.go` 各文件结构版本均为 1、`uistate` 空站点归一为 `bilibili`、下载熔断全局生效、`validateVideoOutput` 强制 `moov` 在前与 `elst`、播放器只按“先有视频轨”打开文件、`scheduler_state` 只有单行），都属实。2026-11-13 B 按 [ACT-010](../../USER-ACTIONS.md#act-010) 运行 `go run ./tools/actcheck -act act010` 1 次（账本 `runs=1`、接口与播放列表请求 `15/18`、点播与图片 CDN 请求 `6/16` 共 `10,602,566` 字节、`stoppedBy=""`；脱敏回执 `artifacts/site-check/act010.json`）。下面是实现采用的取舍与 V-01～V-08 核对状态：
 
 ### 11.1 V-01～V-08 实测核对状态（2026-11-13）
 
@@ -610,7 +610,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 | **V-07** | **已验证（AVC）：ACT-014 录到原画 AVC 720p 21.56 秒并收尾为可播放 MP4；HEVC 未在真实站点出现（ACT-011 时检查程序误停 `302`；ACT-012 查明跳转去向为白名单外的 HTTPS 443 域名、被生产策略拒绝，已改跳转规则）** | 开播直播间的 `.m3u8` 播放列表文本在不带 Cookie 下拉取成功（1 次）；随后因首轮 `EnterLiveRoom` 误将外层 `data.enter_mode == 1` / 无条件 `live_room_mode == 2` 标为 `AudioOnly`，在建立 FLV 连接前提前报错退出（直播媒体 `0` 次请求）。已修正为仅凭外层 `data.room_status == 1`、`live_type_audio == true` 或纯音频 `stream_url` 判定语音房，HTTP-FLV 流头（`CodecID=12` vs `hvc1`）与短录收尾归入 `ACT-011` 待测 |
 | **V-08** | **已验证** | 同一直播间的两种号码（主播不变的数字 `short_id` 与另一串可变数字）调 `webcast/room/web/enter/` 均通过并指向同一开播直播间与主播 `sec_uid`；代码保持以 `sec_uid` 为唯一身份主键，确认数字 `short_id` 可用时在可失效的 `webRid` 缓存中优先保留 `short_id` |
 
-### 11.2 M3 实现定稿取舍表
+### 11.2 实现定稿取舍表
 
 | 问题 | 定稿 | 依据与边界 |
 | --- | --- | --- |
@@ -628,6 +628,45 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 | 图文混排 | 图文的每一页按类型处理：图片、实况照片、视频页（§6.4 规则），认不出的页保存图片并记明；视频页的选流与校验同视频作品 | V-04 已在真实混排图文样本上验证通过 |
 | 真实检查程序 | [ACT-010](../../USER-ACTIONS.md#act-010) 已执行 1 次；未跑完的两个子项由独立小额检查 `ACT-011`（`-act act011`）承接；§10 保留调研时的初稿 | — |
 | 空响应判定 | 严格按 §9.2 真值表；任何不确定的空结果都不当成“没有作品”或“到底了”，订阅检查记为“本轮结果不完整”，不移动起点 | — |
+
+<a id="account-lists"></a>
+## 12. 登录账号的关注、喜欢与收藏（ACT-020 部分真实检查）
+
+用于“我的”（FR-ACCT-005，DEC-047）。查询 2026-11-14。来源：本机参考索引中“用户视频列表解析”和“抖音签名与访问上下文”两个领域的实现（本地副本 2026-11-09 更新；只读协议事实，不复制代码，DEC-044），以及 GitHub REST 读到的公开元数据。全部只读，只看登录账号自己；作品条目与第 6.1 节 `aweme_detail` 同构，复用同一个解析；请求节奏、错误与风控判定沿用第 9 节，签名沿用[附录](#sign-spec)。
+
+| 功能 | 方法与路径 | 必要参数（另加公共参数） | 返回 | 网关签名 |
+| --- | --- | --- | --- | --- |
+| 关注列表 | `GET /aweme/v1/web/user/following/list/` | `user_id=<自己的 sec_uid>`、`sec_user_id=<同>`、`offset=0`、`count=20`、`source_type=1`、`gps_access=0`、`address_book_access=0`、`min_change=0`；第 2 页起加 `max_time=<上一页的 min_time>` | `followings[]`（个别版本为 `follow_list`/`user_list`）、`has_more`、`min_time`、`max_time`、`total` | 不在 14 条受保护路径里（只要 `a_bogus`） |
+| 喜欢 | `GET /aweme/v1/web/aweme/favorite/` | `sec_user_id=<自己的 sec_uid>`、`max_cursor`（首页 0）、`count=18` | `aweme_list`、`has_more`、`max_cursor` | 受保护 |
+| 全部收藏 | **`POST`** `/aweme/v1/web/aweme/listcollection/` | 查询串：公共参数 + `publish_video_strategy_type=2`、`version_code=170400`、`version_name=17.4.0`；表单体 `count=20&cursor=<首页 0>`，`Content-Type: application/x-www-form-urlencoded`；`Referer: https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection` | `aweme_list`、`has_more`、`cursor` | 受保护；`a_bogus` 的请求体链用这段表单体（附录 A 的 `db`） |
+| 收藏夹列表 | `GET /aweme/v1/web/collects/list/` | `cursor`（首页 0）、`count=10`、`version_code=170400`、`version_name=17.4.0` | `collects_list[].{collects_id_str, collects_name, collects_cover.url_list, total_number?, status?}`、`has_more`、`cursor` | 受保护 |
+| 收藏夹内容 | `GET /aweme/v1/web/collects/video/list/` | `collects_id=<collects_id_str>`、`cursor`、`count=10`、`version_code`、`version_name` | `aweme_list`、`has_more`、`cursor` | 受保护 |
+
+要点（参；关注已核，其余待真实检查）：
+
+- **关注列表按时间游标翻页**：下一页把返回的 `min_time` 作为 `max_time` 传回，`count` 被服务端限制在 20。条目字段：`uid`、`sec_uid`、`nickname`、`unique_id`（抖音号，空时用 `short_id`）、`signature`、`avatar_thumb.url_list[]`、`follower_count`、`follow_status`。`sec_uid` 是打开用户页与订阅的主键（第 5 节）。翻页后 `min_time` 不变且 `has_more` 仍为真时按 `schema_changed` 停下。
+- **`collects_id` 用字符串**：数字 `collects_id` 是 int64，经过 JavaScript 会丢低位；优先 `collects_id_str`。
+- **全部收藏只认 POST**：`GET` 返回 404 `Unsupported path(Janus)`；POST 不带 `Referer` 也不带 `Origin` 时只返回 7 字节、没有列表（参，2026-10-17 观察），所以按表里的 `Referer` 与 TRACE 公共的 `Origin` 发送。参考实现另发 `x-secsdk-csrf-token: DOWNGRADE`，观察到不必需；TRACE 先不发，真实检查被拒时再加。
+- **游标字段名**：收藏类接口的下一页游标在 `cursor`，少数响应在 `max_cursor`；两个都认，以先出现的非零值为准。游标不前进且 `has_more` 为真时停下并按 `schema_changed` 说明，不死循环。
+- **空响应**：喜欢接口对“别人的私密喜欢列表”返回 HTTP 200 加 0 字节，或 `aweme_list: null` 且没有 `has_more`。TRACE 只查自己，所以第 1 页出现这两种形态时**不当成“还没有喜欢”**：`aweme_list: null` 按第 9.2 节的空壳规则判为“登录已失效或被拦截”并停下；0 字节是这个接口对非浏览器请求的固定回答（见下方复查），判为 `unavailable`，不打开退避；`aweme_list: []` 加 `has_more: 0` 才是真正为空。其余四个接口同理：有 `has_more` 字段的空列表才算空。
+- **观看历史**：参考实现里只有路径常量 `GET /aweme/v1/web/history/read/`，没有参数、返回结构与实测记录（未）。TRACE 不按猜测实现产品功能：ACT-020 用 `max_cursor=0&count=20` 试 1 次，返回 `aweme_list` 与 `has_more` 才在 B 实现并显示“观看历史”；否则不显示入口，记为 LOOP。
+- **稍后再看**：抖音 App 有这个功能，但 2026-11-14 网页检索与两个本机参考里都没有网页接口（未）；用户同日另行网页搜索（看过 CSDN、知乎等结果）也没有找到，TRACE 不做。
+- **收藏的合集与音乐**（`mix/listcollection`、`music/listcollection`）：TRACE 还不能打开合集与音乐页（FR-FEED-002），本阶段不做。
+- **写操作**（取消喜欢、取消收藏、取消关注）不调用（DEC-047）。
+
+**真实检查结果**（[ACT-020](../../USER-ACTIONS.md#act-020)，2026-11-14，1 次，脱敏回执 `artifacts/site-check/act020.json`）：
+
+- D-V1 关注（核）：第 1、2 页各 20 人，`max_time` 游标推进、页间 0 重复、字段齐全，`total` 95。
+- D-V2 喜欢（未）：HTTP 200，但客户端按第 9.2 节判为 `risk_control`（空壳、非 JSON 验证页或挑战字段之一；回执的错误原文被当时的脱敏规则截断，脱敏已修正）。按站点规则立即停止抖音，没有重试。
+- D-V3 全部收藏 POST、D-V4 收藏夹、D-V5 观看历史：因上一步停止而没有发出，`not-run`。
+- 结论：喜欢、收藏与收藏夹只经合成测试验证；`favorite` 是否需要额外的请求头或 Cookie 字段未知，要新的授权再查 1 次（USER-ACTIONS“待你统一处理”）。观看历史没有得到证据，按 Q-015 第 3 条不显示入口（`WatchHistoryEnabled=false`），记 LOOP-014。
+
+**复查**（2026-11-14，用户反馈“抖音喜欢和收藏返回空响应，确认是否风控”后的 1 次，同一测试 Cookie，5 次 API：`profile/self` 1、`favorite` 3、`listcollection` 1，没有挑战与限流）：
+
+- 喜欢（核：拒绝）：三种请求都是 HTTP 200、`Content-Type: text/plain`、**0 字节**——按上表发送；加网页同款的 `min_cursor=0`、`whale_cut_token=`、`cut_version=1`、`publish_video_strategy_type=2`；再加 `x-secsdk-csrf-token: DOWNGRADE`。同一会话里 `profile/self` 与全部收藏都正常，所以这不是登录失效或整站风控，而是这个接口不回应非浏览器发出的请求。测试 Cookie 有 `UIFID`，没有 `s_v_web_id` 与 `msToken`（客户端生成回退值）；这两个字段是否就是缺口未知（未）。两个能拿到喜欢列表的开源实现都经真实浏览器发这一个请求（无界面浏览器打开用户页取响应，或桌面版的隐藏登录窗口代发）。
+- 全部收藏（核）：POST 按上表发送，第 1 页 18 条、`has_more=1`，不需要 `DOWNGRADE` 头。
+- 用户看到“收藏”也空，是因为“喜欢”的 0 字节被当成风控、打开了整个抖音的退避，随后的收藏请求在发出前就被拒（日志只有两条 `account.douyin.likes error=risk_control`）。
+- 处理：喜欢的 0 字节改判为 `unavailable`，说明“只给浏览器里的抖音网页”，**不打开退避**；其余接口的 0 字节仍按第 9.2 节判风控。收藏夹与观看历史仍未实测。是否为喜欢加一条浏览器通道见 USER-ACTIONS Q-016。
 
 <a id="sign-spec"></a>
 ## 附录：签名规格

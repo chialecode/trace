@@ -68,6 +68,12 @@ type State struct {
 	Downloaded     int64
 	Total          int64
 	LastCheck      time.Time
+	// NextCheck is when the next automatic check is scheduled, or zero when
+	// automatic checks are off, disabled, or an update is already ready.
+	NextCheck time.Time
+	// LastCheckResult is the sanitized outcome of the most recent check
+	// (automatic or manual), shown in Settings -> 更新.
+	LastCheckResult string
 	// Message is the result of the last manual check or of a download the
 	// user started, shown beside the button; automatic checks stay silent.
 	Message      string
@@ -91,6 +97,9 @@ type Options struct {
 	// LastCheck is the time of the last check of an earlier run, shown
 	// until this run checks.
 	LastCheck time.Time
+	// LastCheckResult is the sanitized result of the last check of an
+	// earlier run, shown until this run checks.
+	LastCheckResult string
 	// OnChange is called after every change of State.
 	OnChange func()
 	// Logf writes a line to TRACE's log.
@@ -99,6 +108,8 @@ type Options struct {
 	// so that the next launch can say what changed.
 	SaveLastCheck func(time.Time)
 	SaveReady     func(version, notes string)
+	// RecordCheck appends one completed check to update-history.json.
+	RecordCheck func(CheckRecord)
 	// Restart quits TRACE as the tray's Quit does and starts the new
 	// version.
 	Restart func()
@@ -144,12 +155,13 @@ func NewController(opts Options) *Controller {
 		started: opts.Now(),
 		wake:    make(chan struct{}, 1),
 		state: State{
-			Enabled:        enabled,
-			Channel:        opts.Channel,
-			CurrentVersion: opts.CurrentVersion,
-			Phase:          phase,
-			LastCheck:      opts.LastCheck,
-			Prefs:          opts.Prefs(),
+			Enabled:         enabled,
+			Channel:         opts.Channel,
+			CurrentVersion:  opts.CurrentVersion,
+			Phase:           phase,
+			LastCheck:       opts.LastCheck,
+			LastCheckResult: SanitizeHistoryText(opts.LastCheckResult, nil),
+			Prefs:           opts.Prefs(),
 		},
 	}
 	return c
@@ -177,6 +189,9 @@ func (c *Controller) State() State {
 	defer c.mu.Unlock()
 	st := c.state
 	st.Prefs = c.opts.Prefs()
+	if next, ok := c.dueAtLocked(); ok {
+		st.NextCheck = next
+	}
 	if st.Release != nil {
 		r := *st.Release
 		st.Release = &r
@@ -289,10 +304,12 @@ func (c *Controller) check(ctx context.Context, manual bool) {
 
 	rel, err := c.opts.Engine.Check(ctx)
 	now := c.opts.Now()
+	checkResult := FormatCheckResult(rel, err)
 
 	c.mu.Lock()
 	c.lastRun = now
 	c.state.LastCheck = now
+	c.state.LastCheckResult = checkResult
 	c.busy = false
 	autoDownload := c.opts.Prefs().AutoDownload
 	startDownload := false
@@ -302,7 +319,7 @@ func (c *Controller) check(ctx context.Context, manual bool) {
 		if c.state.Phase == PhaseChecking || c.state.Phase == PhaseDownloading {
 			c.state.Phase = PhaseIdle
 		}
-		c.opts.Logf("update check failed: %v", err)
+		c.opts.Logf("update check failed: %v", Describe(err))
 		if manual {
 			c.state.Message, c.state.MessageError = Describe(err), true
 		}
@@ -330,6 +347,17 @@ func (c *Controller) check(ctx context.Context, manual bool) {
 	c.mu.Unlock()
 	if c.opts.SaveLastCheck != nil {
 		c.opts.SaveLastCheck(now)
+	}
+	if c.opts.RecordCheck != nil {
+		trigger := CheckTriggerAuto
+		if manual {
+			trigger = CheckTriggerManual
+		}
+		c.opts.RecordCheck(CheckRecord{
+			At:      now.UTC().Format(time.RFC3339),
+			Trigger: trigger,
+			Result:  checkResult,
+		})
 	}
 	c.changed()
 	if startDownload {
@@ -373,7 +401,7 @@ func (c *Controller) install(ctx context.Context, report bool) {
 	if err != nil {
 		// The current version stays; the next check tries again.
 		c.state.Phase = PhaseAvailable
-		c.opts.Logf("update %s not installed: %v", rel.Version, err)
+		c.opts.Logf("update %s not installed: %s", rel.Version, Describe(err))
 		if report || IsRejection(err) {
 			c.state.Message, c.state.MessageError = Describe(err), true
 		}
@@ -464,7 +492,11 @@ func Describe(err error) string {
 	if errors.As(err, &ne) || errors.Is(err, context.DeadlineExceeded) {
 		return msgCheckFailed + "：无法连接 GitHub，请检查网络或代理"
 	}
-	return msgCheckFailed + "：" + shorten(err.Error(), 80)
+	reason := SanitizeHistoryText(err.Error(), nil)
+	if reason == "" {
+		return msgCheckFailed + "：请求异常"
+	}
+	return msgCheckFailed + "：" + shorten(reason, 80)
 }
 
 // IsRejection reports an update that failed verification, by TRACE's

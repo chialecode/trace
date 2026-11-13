@@ -103,8 +103,18 @@ func TestLocalThumbnailsLoadInTheBackgroundAndAreScaled(t *testing.T) {
 	if bmp == nil {
 		t.Fatal("the decoded thumbnail was not kept")
 	}
-	if w, h := bmp.Size(); w > thumbMaxEdge || h > thumbMaxEdge || w != 1280 {
+	if w, h := bmp.Size(); w > thumbMaxEdge || h > thumbMaxEdge || w != thumbMaxEdge {
 		t.Fatalf("thumbnail is %dx%d, want it scaled to fit %d", w, h, thumbMaxEdge)
+	}
+	// A grid cell asks for a smaller decode, cached apart (DEC-057).
+	if app.lookupLocalBitmapEdge(item.ItemKey, "big.png", gridThumbEdge) != nil {
+		t.Fatal("the grid size reused the larger decode")
+	}
+	(<-done)()
+	if small := app.lookupLocalBitmapEdge(item.ItemKey, "big.png", gridThumbEdge); small == nil {
+		t.Fatal("the grid thumbnail was not kept")
+	} else if w, _ := small.Size(); w != gridThumbEdge {
+		t.Fatalf("grid thumbnail is %d wide, want %d", w, gridThumbEdge)
 	}
 }
 
@@ -147,7 +157,7 @@ func TestCacheRulesAreSharedAndChosenPerSubscription(t *testing.T) {
 	seedUIFeed(t, app, 1)
 	var subs []subscription.Subscription
 	for i, uid := range []string{"3001", "3002"} {
-		sub, err := app.backend.CreateSubscription(fmt.Sprintf("订阅%d", i), "", []subscription.AccountRef{{Site: "bilibili", UID: uid}}, subscription.SubRules{ScheduledCheck: true})
+		sub, err := app.backend.CreateSubscription(fmt.Sprintf("订阅%d", i), "", []subscription.AccountRef{{Site: "bilibili", UID: uid}}, subscription.DefaultSubRules())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -259,5 +269,58 @@ func TestPostImagesKeepTheirShapeAndVideosSitBesideTheirText(t *testing.T) {
 	}
 	if !tt.HasText("合成视频标题") || !tt.HasText("合成视频简介") || tt.HasText("播放 0") {
 		t.Fatal("video card lacks its title or description, or shows counts")
+	}
+}
+
+// Clicking an open rule folds it again (it used to draw the editor of the
+// draft it had just cleared and crash).
+func TestCacheRuleFoldsAgainWithoutCrashing(t *testing.T) {
+	app, _, cleanup := newTestUIApp(t)
+	defer cleanup()
+	app.SettingsCategory = "rules"
+	app.Navigate(RouteSettings)
+	tt := ui.NewTester(app.View, 1280, 860)
+	tt.Frame()
+	for i := 0; i < 2; i++ {
+		if err := tt.Click("缓存规则：默认"); err != nil {
+			t.Fatal(err)
+		}
+		tt.Frame()
+		if app.RuleDraft == nil {
+			t.Fatal("clicking the rule did not open it")
+		}
+		if err := tt.Click("缓存规则：默认"); err != nil {
+			t.Fatal(err)
+		}
+		tt.Frame()
+		if app.RuleDraft != nil {
+			t.Fatal("clicking the open rule did not fold it")
+		}
+	}
+}
+
+// DEC-054: the built-in rule opens read-only: a description and the batch
+// selection, no switches and no save.
+func TestDefaultCacheRuleOpensReadOnly(t *testing.T) {
+	app, _, cleanup := newTestUIApp(t)
+	defer cleanup()
+	app.SettingsCategory = "rules"
+	app.Navigate(RouteSettings)
+	tt := ui.NewTester(app.View, 1280, 860)
+	tt.Frame()
+	if err := tt.Click("缓存规则：默认"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if _, ok := tt.Find("默认规则说明"); !ok {
+		t.Fatal("the default rule shows no description")
+	}
+	for _, editable := range []string{"规则名称", "规则：定时检查", "保存缓存规则", "删除缓存规则"} {
+		if _, ok := tt.Find(editable); ok {
+			t.Fatalf("the default rule shows %q", editable)
+		}
+	}
+	if _, ok := tt.Find("选择订阅…"); !ok {
+		t.Fatal("the default rule lost batch selection")
 	}
 }

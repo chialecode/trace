@@ -35,11 +35,11 @@ assets/                       应用图标 icon.png（正式版）与 icon-dev.p
 internal/
   shell/                      MyGo 桌面外壳适配：NewWindow、窗口关闭与重建、安静模式、托盘与菜单、单实例、通知、对话框、外部链接、在文件夹中显示；
                               启动参数（--quit-for-update、--background）、mygo.Updater 的接入与卸载项版本（updates.go）
-  update/                     更新逻辑（纯 Go，不依赖 MyGo）：检查与下载的状态机（controller.go）、TRACE 的更新源与校验（source.go）
+  update/                     更新逻辑（纯 Go，不依赖 MyGo）：检查与下载的状态机（controller.go）、TRACE 的更新源与校验（source.go）、检查与更新记录（update-history.json）
   locales/                    中文目录 zh-Hans.json 与 MyGo 生成的访问代码（安装界面与 MyGo 自带字符串）
   ui/                         mygo/ui 原生界面：图标栏 + 上下文侧栏 + 页面的自适应布局、路由、登录页、主页信息流、订阅（列表/详情/导入）、
-                              解析页、视频详情、用户页、媒体库、任务页、设置页、看图层、播放层及界面内存测试（ui.NewTester）
-  player/                     原生媒体播放与叠加：Windows Media Foundation（IMFSourceReader 纯 Go COM 调用）解码 MP4 音视频、
+                              我的、解析页、视频详情、用户页、媒体库（含 /library/item 离线详情）、任务页（四组侧栏、直播录制实时预览与录制异常）、设置页（含“更新”分类与规则批量选订阅）、看图层、播放层及界面内存测试（ui.NewTester）
+  player/                     原生媒体播放与叠加：Windows Media Foundation（IMFSourceReader 纯 Go COM 调用，含增长中 fMP4 .part 的只读实时预览）解码 MP4 音视频、
                               mygo/audio 音频时钟与输出、纯 Go 弹幕排版器（danmaku.go）与 WebVTT 字幕解析匹配（subtitle.go）
   appdirs/                    构建信息（版本、通道、提交、构建时间，由 -ldflags 注入）；通道（release / dev / ptest / source）与安装、数据、缓存位置的推算，“文档”文件夹的系统登记位置，数据目录独占锁
   site/                       站点公共层（DEC-043）：站点标识与显示名（site.go）、错误类别 Error 与 KindOf/IsKind（errors.go）、规则请求上下文标记
@@ -53,10 +53,10 @@ internal/
                               refresh.go 登录续期、relation.go 关注列表与分组、danmaku.go 弹幕分段、subtitle.go 字幕、
                               live.go 开播状态与取流；testdata/ 夹具
   credential/                 按站点的凭证仓（Manager，每个站点一个文件与加密熵）；DPAPI 加密保存；手动凭证文本解析（按站点的白名单与清洗规则）；续期时的原子替换（只有哔哩哔哩）
-  service/                    纯 Go 服务层：auth、parse、cache、feed、library、settings、history、subscription、update、following、live、app；dto.go、errors.go
+  service/                    纯 Go 服务层：auth、parse、cache、cache_queue、feed、library、settings、history、subscription、update、following、account、live、app；dto.go、errors.go
   subscription/               订阅模型与 subscriptions.json（含 .bak）、更新记录（updates.db）、按站点分派的检查更新、按站点的定时调度、退避与每小时额度、自动缓存规则
-  live/                       直播录制器：按站点取流；两种输入——HLS fMP4 分片（哔哩哔哩）与 HTTP-FLV（抖音，哔哩哔哩后备；flv.go 解析、remux.go 按 GOP 写 fMP4 分片）；
-                              断流重连与换段、checkpoint 与启动恢复、mp4ff Defragment 收尾与校验
+  live/                       直播录制器：按站点取流，不限同时录制路数；两种输入——HLS fMP4 分片（哔哩哔哩）与 HTTP-FLV（抖音，哔哩哔哩后备；flv.go 解析、remux.go 按 GOP 写 fMP4 分片）；
+                              增长中 .part 只读实时预览查询、录制异常事件采集（live.incidents）、断流重连与换段、checkpoint 与启动恢复、分片重叠裁剪与 mp4ff Defragment 收尾校验
   library/                    缓存条目模型、清单（item.json）读写、SQLite 索引、从清单重建、引用、安全删除、信息流查询、MediaPath 路径白名单
   download/                   任务队列与状态机（按站点熔断）、分段下载器（8 MiB 续传、重试、节点轮换）、按站点的执行器与媒体传输规格、选流、合并（mp4ff）、
                               单文件 MP4 校验与 moov 前置、升级探测（只有哔哩哔哩）、弹幕与字幕保存
@@ -92,19 +92,21 @@ tools/internal/build/         打包共用：版本号、通道配置、-ldflags
 | `AuthService.Renewal()` | 续期状态：`{available, reason?, lastRenewedAt?, lastError?}`（[§5.1](#renewal)） |
 | `CacheService.CacheDynamic(id)` / `CacheVideo(bvid)` / `CacheSupplement(bvid)` / `CacheDouyinWork(awemeId)` | 建立缓存任务（或为旧视频补存弹幕和字幕），立即返回任务 ID；同一对象已有进行中的任务时返回该任务 |
 | `CacheService.States(keys)` | 批量查询状态圆点 `{key: {dot, label, progress, missing[], upgrade?}}`（[数据 §2.6](data-and-cache.md#merge)） |
-| `CacheService.Tasks()` / `Pause(id)` / `Resume(id)` / `Cancel(id)` / `Retry(id)` / `RemoveTask(id)` / `RemoveFinishedTasks()` / `TaskDetail(id)` | 任务列表与操作（已结束任务只支持移除，移除失败/部分完成任务清理登记的 `.part` 临时文件）；详情含逐文件进度清单与尝试记录（[数据 §2.4](data-and-cache.md#tasks)） |
+| `CacheService.Tasks()` / `Pause(id)` / `Resume(id)` / `Cancel(id)` / `Retry(id)` / `RemoveTask(id)` / `RemoveFinishedTasks()` / `TaskDetail(id)` | 下载任务列表与操作（已结束任务只支持移除，移除失败/部分完成任务清理登记的 `.part` 临时文件）；详情含逐文件进度清单与尝试记录（[数据 §2.4](data-and-cache.md#tasks)） |
+| `CacheService.ListCacheQueue()` / `FindCacheQueueTask(site, user, list)` / `EnqueueCacheQueue(req)` / `PauseCacheQueue(id)` / `ResumeCacheQueue(id)` / `CancelCacheQueue(id)` | 后台慢速缓存队列（FR-USER-004，DEC-050 ①，替代旧 `CacheOlderUserItems` 按 10/20/50 条入队）：按站点各自串行、每次只排 1 条下载，两条间随机等 40～150 秒、每 15～25 条长歇 10～25 分钟，自动翻页共用对应站点每小时规则额度与退避；进度持久化到 `cache-queue.json`（v1，不含凭证与签名地址）；取消时停止队列并取消派生的未完成下载，保留已入库媒体 |
 | `CacheService.CheckUpgrade(keys, force)` / `UpgradeCandidates()` / `Upgrade(key)` | 画质升级探测与升级（[数据 §2.7](data-and-cache.md#upgrade)）；`UpgradeCandidates` 返回最多 50 个待检查的视频（最久未检查的在前），任务页逐个调用 `CheckUpgrade` 以显示进度、可取消，遇风控、限流或未登录即停 |
-| `FeedService.Page(cursor, direction, order, limit, filter?)` / `Anchor()` / `SaveAnchor(anchor)` / `NewerCount(anchor)` | 主页信息流（[数据 §4](data-and-cache.md#feed)）；`Anchor` 只记看过的最新一条，作下次启动时“有更新”的基准（DEC-040） |
+| `FeedService.Page(cursor, direction, order, limit, filter?)` / `Anchor()` / `SaveAnchor(anchor)` / `NewerCount(anchor)` | 主页信息流（[数据 §4](data-and-cache.md#feed)）；`Anchor` 只记看过的最新一条，作没有 `homeSeen` 的订阅下次启动时的初始已读基准（DEC-040、DEC-053）；阅读位置 `homePositions` 由界面经 `GetUIState`/`UpdateUIState` 读写（DEC-053 ①） |
 | `LibraryService.List(filter)` / `Item(key)` / `MediaPath(key, relPath)` / `PlanDelete(key)` / `Delete(key)` / `Reveal(key, file)` / `Stats()` | 媒体库查询、本机媒体路径白名单解析（[数据 §3](data-and-cache.md#media-server)）、安全删除、在资源管理器中显示、占用统计 |
 | `SettingsService.Get()` / `Update(patch)` / `ChooseCacheRoot()` / `OpenFolder(which)` / `Locations()` / `AddLibraryRoot()` | 设置、三个位置与通道（FR-STORE-001）、选择已有的缓存文件夹并接入（FR-LIB-006，[数据 §1](data-and-cache.md#storage)） |
-| `AppService.Quit(confirm)` / `QuitPlan()` / `DiagnosticsSnapshot()` / `RecentLogs(maxLines)` | 退出前列出会暂停的任务与会结束的录制（第 8 节）；后台状态快照（索引重建、检查更新、自动缓存、录制情况）与脱敏后的最近运行日志读取（最多 500 行，DEC-033） |
+| `AppService.Quit(confirm)` / `QuitPlan()` / `DiagnosticsSnapshot()` / `RecentLogs(maxLines)` | 退出前列出会暂停的任务与会结束的录制（第 8 节）；后台状态快照（索引重建、检查更新、自动缓存、录制情况）、脱敏后的最近运行日志读取（最多 500 行，DEC-033），以及设置“更新”页所需的检查与更新记录读写（`update-history.json` 最近 20 条检查与 50 条更新，DEC-051 ①） |
 | `HistoryService.List()` / `Remove(kind, id)` / `Clear()` / `HistoryThumbPath(name)` | 最近解析列表、单条删除、全部清空，以及本机缩略图路径白名单读取（`<数据目录>/thumbs/`，DEC-037） |
-| `SubscriptionService.List()` / `Get(id)` / `Create(name, account?)` / `Update(id, patch)` / `Delete(id)` / `Link(id, site, uid)` / `Unlink(id, site, uid)` / `Move(site, uid, toId)` / `PreviewAccount(input)` / `OwnerOf(site, uid)` / `SetRules(id, rules)` / `ListCacheRules()` / `SaveCacheRule(rule)` / `DeleteCacheRule(id)` / `SetSubscriptionRule(id, ruleId)` | 订阅管理（[订阅 §1](subscriptions.md#model)）；关联账号前先用 `PreviewAccount` 解析头像与昵称确认，已属于别的订阅时返回 `conflict` 和原订阅摘要，用户确认后调 `Move` |
+| `SubscriptionService.List()` / `Get(id)` / `Create(name, account?)` / `Update(id, patch)` / `Delete(id)` / `Link(id, site, uid)` / `Unlink(id, site, uid)` / `Move(site, uid, toId)` / `PreviewAccount(input)` / `OwnerOf(site, uid)` / `SetRules(id, rules)` / `ListCacheRules()` / `SaveCacheRule(rule)` / `DeleteCacheRule(id)` / `SetSubscriptionRule(id, ruleId)` / `SetSubscriptionsRule(ruleId, subIds)` | 订阅管理（[订阅 §1](subscriptions.md#model)）；关联账号前先用 `PreviewAccount` 解析头像与昵称确认，已属于别的订阅时返回 `conflict` 和原订阅摘要，用户确认后调 `Move`；`SetSubscriptionsRule` 一次原子写入批量指定使用某条缓存规则的订阅（非默认规则下取消勾选的回到 `default`，DEC-051 ⑧） |
 | `UpdateService.Check(ids)` / `Cancel()` / `Items(subId, cursor)` | 检查更新与更新记录（[订阅 §2](subscriptions.md#update-check)，不做已看标记，DEC-033）；`Check` 立即返回，进度经 `subs:check` 事件推送；`ids` 为空表示全部 |
 | `FollowingService.Groups()` / `Page(groupId, pn)` / `Import(uids)` | 从登录账号的关注列表导入（[订阅 §5](subscriptions.md#following-import)） |
-| `LiveService.Status(accountKeys)` / `Start(accountKey)` / `Stop(recId)` / `Recordings(filter)` | 开播状态与录制（[直播](live.md)）；录制也出现在 `CacheService.Tasks()` 里 |
+| `AccountService.AccountSections(site)` / `AccountFolders(site, kind)` / `AccountPage(site, kind, folderId, cursor)` | “我的”（FR-ACCT-001～005，DEC-047）：按站点列出可用功能（未登录或功能不可用时不列，抖音“观看历史”受 ACT-020 结果开关控制），收藏夹列表，以及一页 `{items, cursor, hasMore, total?}`；条目是统一的 `AccountItem{kind: video\|work\|user\|unsupported, site, id, title, cover, author, duration, progress, viewedAt, favAt, invalid, typeLabel, browserURL, cacheKey}`。只读、只在界面请求时发出（手动请求，不计规则额度但同样遵守站点间隔、熔断与登录检查；站点熔断中直接拒绝，遇风控或限流记入该站点的自动停止，另一站点不受影响），结果只在内存里，不写文件、不进日志（日志只记功能、页数与错误类别）；退出登录或换账号时 `auth:changed` 让界面清空。打开详情仍用 `ParseService.OpenLink` |
+| `LiveService.Status(accountKeys)` / `Start(accountKey)` / `Stop(recId)` / `Recordings(filter)` / `LiveRecordingPreview(recKey)` | 开播状态、不限同时路数的直播录制、进行中录制的本机 `.part` 实时预览信息与录制异常事件 `incidents`（[直播](live.md)，DEC-049 ①、DEC-051 ③）；录制也出现在 `CacheService.Tasks()` 里（图标栏“任务”数字角标只统计排队和进行中的下载任务） |
 
-后端通过进程内事件总线（`EventHub`）推送 `cache:changed`（`{key, dot, progress}`，进度至多每秒一次）、`task:changed`、`feed:changed`（有新条目入库时）、`auth:changed`、`subs:changed`（订阅增删改）、`subs:check`（检查进度 `{done, total, current, stopped?}`）和 `live:changed`（开播状态与录制状态）。当窗口打开时，界面订阅器通过 `win.Update`（主线程改状态并重绘）更新界面状态；窗口关闭到托盘时，界面取消订阅，事件直接丢弃，不排队、不阻塞（INV-13）。
+后端通过进程内事件总线（`EventHub`）推送 `cache:changed`（`{key, dot, progress}`，进度至多每秒一次）、`task:changed`、`cache_queue.updated`、`feed:changed`（有新条目入库时）、`auth:changed`、`subs:changed`（订阅增删改）、`subs:check`（检查进度 `{done, total, current, stopped?}`）和 `live:changed`（开播状态与录制状态）。当窗口打开时，界面订阅器通过 `win.Update`（主线程改状态并重绘）更新界面状态；窗口关闭到托盘时，界面取消订阅，事件直接丢弃，不排队、不阻塞（INV-13）。
 
 错误类别取[协议资料的错误分类](../research/bilibili.md#errors)，再加上 `invalid_input`、`unsupported_link`、`storage`（磁盘写入、空间不足）、`conflict`（账号已属于别的订阅）。站点及已分类的业务错误用 `*site.Error{Site, Kind, Code, Message, Err}` 保留类别（`bilibili.SiteError` 是它的别名，旧代码与测试不改；抖音的分类见[抖音协议 §9](../research/douyin.md#errors)）；进程内存储/校验错误也必须向调用者返回，不能吞成空结果或成功状态。原始响应、签名 URL 和 Cookie 不进入错误消息。
 
@@ -137,6 +139,7 @@ tools/internal/build/         打包共用：版本号、通道配置、-ldflags
 - **只有登录模式**：Cookie 只从凭证仓取；取不到时任何请求在发出前返回 `auth_required`（INV-07），候选 Cookie 的 `profile/self` 确认除外。确认已登录只看 `profile/self`（[协议 §3.2](../research/douyin.md#auth)）。站点判定未登录时标记抖音凭证 `expired`、推送 `auth:changed{site}`、只暂停抖音的任务与录制。
 - 签名在 `site/douyin/sign` 内：输入请求上下文（路径、按发送顺序编码的查询串、请求体、UA、环境串、时钟、随机源、可选 `uifid` 与 `verifyFp`），输出完整查询串与附加请求头，调用方不再二次拼接。站点拒绝签名按 `risk_control` 处理。
 - 响应先按[协议 §9.1、§9.2](../research/douyin.md#errors)判空包、验证页、网关拦截与未登录，再解析结构；ID 一律按字符串（`*_str` 或 `UseNumber`）。不确定的空结果不当成“没有内容”。
+- 除表单 POST 的“全部收藏”（[协议 §12](../research/douyin.md#account-lists)）外，接口都是 GET；POST 的请求体参与 `a_bogus` 计算，表单体与查询串一样按发送字节签名。
 - 媒体与直播 CDN 请求带同一 UA 和对应的 `Referer`，**不带 Cookie**；地址只在内存里，不落盘、不进日志。
 
 <a id="credentials"></a>
@@ -148,6 +151,7 @@ tools/internal/build/         打包共用：版本号、通道配置、-ldflags
 - 新写入采用上述 snake_case 字段，读取兼容旧 camelCase。普通替换/状态更新/退出均在成功落盘后才切换内存，失败保留原凭证并返回错误；已被站点确认失效时，即使失效标记无法落盘，也在内存阻止继续使用，原密文保留。
 - 只有 `internal/credential` 和 `internal/site/bilibili` 接触明文；服务层只返回账号摘要。
 - 日志里涉及请求时只记录路径和 `code`，不记录查询串和 Cookie。
+- 日志在 `<数据目录>/logs/trace.log`。下载任务的进度更新每秒一次，日志只记状态变化（排队、进行中、暂停、完成等），不重复记同一状态。界面上显示给用户的错误都同时写一行 `ERROR ui: …`（`LogUserError`，同一行 1 分钟内只写一次）；站点错误附接口路径（不含查询串）与字段解析失败的原因，后台请求失败（如解析用户页时的动态）也写日志（2026-11-16 反馈）。程序崩溃时 Go 运行时把调用栈写进 `logs/crash.log`（`runtime/debug.SetCrashOutput`）；下次启动时非空的 `crash.log` 改名为 `crash-<UTC 时间>.log`（只留最新 5 份），并在 `trace.log` 记一行“上次运行崩溃”。崩溃文件只在本机，不随诊断信息外发（2026-11-15 日志检查）。
 - 扫码流程：每个流程有独立 ID 和 180 秒有效期；取消、过期或新流程开始后，旧流程的轮询结果一律丢弃；同一流程同一时间只有一个站点轮询。
 - **手动凭证**：接受浏览器复制的 Cookie 请求头文本（可带 `Cookie:` 前缀，`;` 或换行分隔），上限 8 KiB。只保留 `SESSDATA`、`bili_jct`、`DedeUserID`、`DedeUserID__ckMd5`、`sid`；缺 `SESSDATA` 直接拒绝；用 nav 确认 `isLogin=true`，有 `DedeUserID` 时必须等于 nav 的 `mid`；通过后保存，失败不保存任何内容，也不改变已有凭证和状态；有扫码流程进行时，手动登录成功会取消该流程。输入框提交后立即清空字符串状态；原文只在这一次 Go 方法调用的内存里，不写日志，错误消息不回显。哨兵测试覆盖这条路径（INV-01）。
 
@@ -164,13 +168,13 @@ tools/internal/build/         打包共用：版本号、通道配置、-ldflags
 <a id="frontend"></a>
 ## 6. 原生界面（`internal/ui` + `internal/player`）
 
-- **路由状态机**：`/login`（先选站点：哔哩哔哩有扫码与粘贴凭证两个标签，抖音只有粘贴凭证）、`/douyin/work/:awemeId`、`/douyin/user/:secUid`、`/` 主页信息流、`/subscriptions`（圆形头像网格）、`/subscriptions/import`（从关注列表导入）、`/subscriptions/:id?tab=updates|cached|live|accounts|rules`、`/parse` 解析页、`/video/:id`、`/user/:mid?tab=dynamic|videos`、`/library?type=&sub=&mid=&sort=`、`/tasks`、`/settings/:category`（默认 `account`，含 `logs` 日志分类）。一个站点都没有有效登录时，除 `/login`、`/settings/*` 外都转到 `/login`；某个站点登录失效（`auth:changed{site}`）而另一个站点仍有效时，只有当前页面属于失效站点（这个站点的详情、用户页）才转到登录页并预选这个站点，其他页面留在原处并在顶部提示一次；两个站点都失效时转到 `/login`，关闭看图/播放层并退出原生全屏，记住原路由，重新登录后自动回到原路由，之前已加载的页面状态保留不清空（AC-08、FR-AUTH-005）。
-- **图标栏 + 上下文侧栏 + 页面（NFR-UI-001、DEC-039）**：窗口用 MyGo `TitleBarHidden`（DEC-046 ④）：内容延伸到窗口顶部，系统窗口按钮盖在右上角；`View` 每帧读 `c.TitleBar()`，页面顶部栏右侧按按钮宽度让位并 `DragWindow()`，图标栏与侧栏顶部一条与按钮同高的透明拖动条（`窗口拖动区`），看图层与播放层面板上边距不小于按钮高度加 8（`mediaPanelRectBelow`）；测试、全屏与非沉浸窗口里 `TitleBar()` 为零，布局不变。顶层 `ui.Row` 依次是图标栏（`renderRail`，52px）、上下文侧栏（`renderContextPanel`，主页/订阅/媒体库/视频/用户页 ≥ 1280px 为 272px、1000～1279px 为 240px；设置 ≥ 1000px 为 232px、更窄 72px；其余页面和 720～999px 不显示）和页面（`renderCenterColumn`，帖子类页面限宽 680px、设置 860px、媒体库等网格占满）。宽度规则在 `internal/ui/shell.go`。图标栏与侧栏是固定高度容器，只有页面内部的 `ui.List` 或 `ui.ScrollView` 纵向滚动；页面滚到任意深度时图标栏与侧栏的坐标盒不变，全窗口无横向溢出。页面顶部栏（标题、快速解析框、页面操作）不随内容滚动；没有侧栏时，主页“有更新”退回为时间线上方的头像行，媒体库的类型与来源退回为页面里的标签与“作者筛选”。
+- **路由状态机**：`/login`（先选站点：哔哩哔哩有扫码与粘贴凭证两个标签，抖音只有粘贴凭证）、`/douyin/work/:awemeId`、`/douyin/user/:secUid`、`/` 主页信息流、`/subscriptions`（圆形头像网格）、`/subscriptions/import`（从关注列表导入）、`/subscriptions/:id?tab=content|accounts`（默认 `content`，旧 `live` 兼容映射为 `accounts`，DEC-051 ⑦）、`/mine` 我的、`/parse` 解析页、`/video/:id`、`/user/:mid?tab=dynamic|videos`、`/library?type=&sub=&mid=`、`/library/item?key=...`（媒体库纯离线本机详情，DEC-049 ③）、`/tasks`（下载任务 / 缓存队列 / 直播录制 / 录制异常，DEC-050 ②、DEC-051 ③）、`/settings/:category`（默认 `account`，含 `logs` 日志与 `update` 更新分类，DEC-051 ①）。一个站点都没有有效登录时，除 `/login`、`/settings/*` 外都转到 `/login`；某个站点登录失效（`auth:changed{site}`）而另一个站点仍有效时，只有当前页面属于失效站点（这个站点的详情、用户页）才转到登录页并预选这个站点，其他页面留在原处并在顶部提示一次；两个站点都失效时转到 `/login`，关闭看图/播放层并退出原生全屏，记住原路由，重新登录后自动回到原路由，之前已加载的页面状态保留不清空（AC-08、FR-AUTH-005）。
+- **图标栏 + 上下文侧栏 + 页面（NFR-UI-001、DEC-039、DEC-049、DEC-050、DEC-051）**：窗口用 MyGo `TitleBarHidden`（DEC-046 ④）：内容延伸到窗口顶部，系统窗口按钮盖在右上角；`View` 每帧读 `c.TitleBar()`，页面顶部栏右侧按按钮宽度让位并 `DragWindow()`，图标栏与侧栏顶部一条与按钮同高的透明拖动条（`窗口拖动区`），看图层与播放层面板上边距不小于按钮高度加 8（`mediaPanelRectBelow`）；测试、全屏与非沉浸窗口里 `TitleBar()` 为零，布局不变。顶层 `ui.Row` 依次是图标栏（`renderRail`，52px，“任务”数字角标只数排队和进行中的下载任务）、上下文侧栏（`renderContextPanel`，主页/订阅/我的/解析/视频/用户/媒体库及 `/library/item`/任务页 ≥ 1280px 为 272px、1000～1279px 为 240px；设置 ≥ 1000px 为 232px、更窄 72px；720～999px 不显示）和页面（`renderCenterColumn`，帖子类页面限宽 680px、设置 860px，解析主面板与媒体库等网格占满）。宽度规则在 `internal/ui/shell.go`。图标栏与侧栏是固定高度容器，只有页面内部的 `ui.List` 或 `ui.ScrollView` 纵向滚动；页面滚到任意深度时图标栏与侧栏的坐标盒不变，全窗口无横向溢出。页面顶部栏（标题、快速解析框、页面操作）不随内容滚动；没有侧栏时，主页侧栏的订阅列表退回为时间线上方的横向头像条（只构建滚到的条目），媒体库的类型与来源退回为页面里的标签与“作者筛选”，解析页在大输入框下方显示“最近解析”，任务页四组切换退回为页面顶部的分段选择。
 - **虚拟列表（NFR-PERF-001、NFR-UI-002）**：主页信息流、用户动态与投稿列表、媒体库网格、订阅圆形头像网格均使用 `mygo/ui` 的 `ui.List` 虚拟化渲染，只构建可见区域的条目节点。
-  - 主页信息流固定按从新到旧排列（无顺序切换），支持双向游标翻页；每次打开从最新处开始，不恢复位置、不提示“N 条更新的内容”，只把看过的最新一条记为下次启动时的基准（`SaveAnchor`，DEC-040）；帖子显示数据按条目缓存，本机图片后台解码缩放，重绘不逐帧读媒体库；“有更新”列出上次使用时看过的最新内容之后有新缓存内容的订阅/作者头像，点击进入该人的单订阅已缓存视图并按人记录 `homeSeen` 时间戳（DEC-037）。主页帖子不放底部文字按钮，点图片看原图、点视频卡片播放、点头像进用户页。
-  - 订阅详情只有“直播”“账号”两个标签和一个缓存规则按钮；规则在设置“缓存规则”里统一管理，多个订阅共用（DEC-040）。不做已看/未读标记或图标栏未读数字角标（DEC-033）。
-  - 解析页最近解析条目显示本机缓存的封面/头像缩略图，点条目本身打开详情，单条操作收进右侧“⋯”菜单（在浏览器中打开、删除），标题栏“⋯”提供“全部清空”（二次确认）；媒体库每格只保留缩略图、一行标题、一行元信息和右下角“⋯”菜单（详情、在资源管理器中显示、删除），“重建索引”收纳在设置“存储”分类（DEC-037）。
-  - 媒体库缩略图与标题按登记文件路径选择图片、分 P 或录像片段，选定后只打开一次播放器；弹幕与字幕按相同文件匹配。本机详情保留动态引用视频与已知未完成分 P，录像使用自身类型和直播间入口；未知统计/时长不显示成 0。用户点缓存时由缓存器重新获取完整站点元数据，渲染主页与本机详情不自动获取远程图片（[数据契约](data-and-cache.md#feed)、[界面](../ui.md#detail)）。
+  - 主页信息流固定按从新到旧排列（无顺序切换），支持双向游标翻页；每个站点筛选记阅读位置，启动后第一次显示时回到那条与偏移（`internal/ui/home_position.go`：`restoreHomePosition`、`stepHomeRestore`、`noteHomePosition`、`flushHomePosition`，DEC-053 ①），不提示“N 条更新的内容”；看过的最新一条仍由 `SaveAnchor` 记下（DEC-040）；帖子显示数据按条目缓存，本机图片后台解码缩放，重绘不逐帧读媒体库；侧栏订阅列表（`internal/ui/home_subs.go`：`homeSubscriptionRows` 按签名缓存行、进入主页时定顺序快照，`ui.List` 虚拟化）把正在直播的排最前，未读带圆点，点击进入单订阅已缓存视图并写 `homeSeen["sub:<id>"]`（DEC-053 ②）。主页帖子不放底部文字按钮，点图片看原图、点视频卡片播放、点头像进用户页。
+  - 订阅详情改为“内容”（默认，合并该订阅全部跨站关联账号已缓存内容的信息流，与主页时间线同源、只读本机不联网）和“账号”（合并原“直播”，每行同时显示账号信息、直播状态与录制入口）两个标签及缓存规则按钮（DEC-051 ⑦）；规则在设置“缓存规则”里统一管理，多个订阅共用，支持展开规则后点“选择订阅…”批量勾选并通过 `SetSubscriptionsRule` 一次写入应用（DEC-040、DEC-051 ⑧）。不做已看/未读标记或图标栏未读数字角标（DEC-033）。
+  - 解析页侧栏（与视频页、用户页共用“最近解析”侧栏，DEC-049 ②）显示本机缓存的封面/头像缩略图，点条目本身打开详情，单条操作收进右侧“⋯”菜单（在浏览器中打开、删除），标题栏“⋯”提供“全部清空”（二次确认），主面板只留居中大输入框；媒体库固定按发布时间从新到旧排列（无缓存时间排序，DEC-049 ③），每格只保留缩略图、一行标题、一行元信息和右下角“⋯”菜单（详情、在资源管理器中显示、删除），“重建索引”收纳在设置“存储”分类（DEC-037）。
+  - 媒体库是独立的离线本机内容（DEC-049 ③）：点卡片直接播放本机媒体或打开看图层（不联网、不改路由到解析页、不写最近解析），“⋯ → 详情”打开纯离线本机详情 `/library/item`（只用 `LibraryService.Item` / `MediaPath` 读本机清单与文件，不调任何站点接口；只有点页面右上角“⋯ → 在解析页打开”才进入对应解析页并发网络请求）。用户页与抖音用户页“⋯”提供“全部缓存”（已有未结束队列时显示“在缓存队列中查看”，DEC-050 ①）。任务页侧栏在“下载任务（N）”“缓存队列”“直播录制（N）”“录制异常（N）”四组间切换（DEC-050 ②、DEC-051 ③；“录制异常”统计最近 7 天有异常的场数，为 0 时不带数字，已结束场次点开走 `/library/item` 纯离线详情）；“直播录制”展开或点“实时预览”时在页内只读打开正在写入的本机 `.part`（不发额外站点连接，不显示实时弹幕，离开“直播录制”、切到“录制异常”等其他组或停止录制时同步释放文件与解码器句柄，DEC-049 ①）。
 - **看图层（FR-IMG-001、DEC-033、DEC-040）**：在顶层 `ui.Overlay` 上画半透明遮罩与居中的深色圆角面板（`mediaPanelRect`，点遮罩关闭）；已缓存图片通过 `LibraryService.MediaPath` 读取本机原图，未缓存图片通过无 `Referer`（且 `http://` 转 `https://`）的加载器读取去掉尺寸后缀的原图。只保留少量半透明圆形悬浮按钮（右上角关闭、左右上一张/下一张、底部适应窗口/1:1），鼠标静止约 2 秒后自动隐藏，鼠标移动或按键时重新出现；支持滚轮、快捷键（`+`/`-`/`0`）、双击缩放、按住拖拽平移、左右键切换与 `Esc` 关闭。实况照片与抖音图文视频页都在看图层里原地播放（`startViewerInlinePage`，独立的 `viewerPlayer`）：已缓存的读本机片段，未缓存的经 `StagePreviewMedia(站点, 地址)` 取到临时文件（哔哩哔哩与抖音按 `ImageViewer.InlineSite` 区分），DEC-046 ①。
 - **沉浸式播放层与弹幕字幕（FR-LIB-002、FR-LIB-004、DEC-033）**：
   - 点击已缓存视频或直播录像打开播放层（与看图层相同的浮动面板，全屏时铺满窗口；打开即自动播放，DEC-040），通过 `LibraryService.MediaPath` 获取受白名单保护的本机 `.mp4` 路径，交给 `internal/player`（Windows Media Foundation `IMFSourceReader` 解码音视频 + `mygo/audio` 播放声音 + `*ui.Bitmap` 渲染视频帧）。纯音频文件（如图文作品配乐 `music.*`，`HasVideo=false`）由同一个 `Controller` 只开音频读取器与输出、不启动视频后台线程，含视频轨的文件仍走原有音视频双读取器路径；看图层播放图文视频页或实况片段时自动暂停配乐条。底部悬浮条只保留圆形播放/暂停、进度条拖动（Seek）、音量、全屏，右上角保留圆形“⋯”更多菜单与关闭；弹幕、字幕、多段切换（“上一段 / 下一段”）、“在文件夹中显示”和“用系统播放器打开”收进“⋯”菜单。鼠标静止约 2 秒后悬浮控件自动隐藏，鼠标移动或按键时重新出现。
@@ -197,7 +201,7 @@ tools/internal/build/         打包共用：版本号、通道配置、-ldflags
 | INV-07 | 某个站点没有有效登录凭证时，不向这个站点的内容接口、用户主页和媒体 CDN 发任何请求（只有哔哩哔哩扫码接口、候选凭证的 nav 与 `profile/self` 校验例外）；媒体与直播 CDN 请求从不带 Cookie |
 | INV-08 | 本地媒体读取（`LibraryService.MediaPath`）只返回索引登记、位于条目文件夹内的真实文件（拒绝 `..`、符号链接/目录联接与跨条目路径）；签名播放地址、直播流地址与字幕 `auth_key` 地址不落盘、不进日志 |
 | INV-09 | TRACE 只删除自己登记过的文件和变空的文件夹，从不递归删除条目文件夹或保存位置；录制中的条目不可删除 |
-| INV-10 | 规则触发的请求（定时检查、开播检查、自动缓存、续期）只在应用运行、这个站点已登录、对应设置开启、这个站点不在退避期、没超过这个站点的每小时额度（哔哩哔哩 200 次、抖音 120 次）时发出；一个站点的退避、熔断与额度不影响另一个站点 |
+| INV-10 | 规则与后台队列触发的请求（定时检查、开播检查、自动缓存、缓存队列翻页、续期）只在应用运行、这个站点已登录、对应设置或队列任务开启、这个站点不在退避期、没超过这个站点的每小时额度（哔哩哔哩 200 次、抖音 120 次）时发出；一个站点的退避、熔断与额度不影响另一个站点 |
 | INV-11 | 删除订阅、解除关联不删除任何缓存文件；TRACE 不调用站点的写操作接口（关注、取关、点赞、评论等），登录、续期接口除外 |
 | INV-12 | 检查更新从不把一个账号第一次检查前就存在的动态放入更新列表（第一次检查只建立起点，起点之前的动态不进入更新，DEC-033）；更新记录丢失时回到“未建立起点”，不会一次冒出大量历史条目 |
 | INV-13 | 窗口关闭或重建不影响后端工作：任务、录制、调度与续期的状态只在后端服务层；没有窗口时推送的事件直接丢弃，不排队、不阻塞；重新打开的窗口从服务重新读取状态 |
@@ -207,23 +211,23 @@ tools/internal/build/         打包共用：版本号、通道配置、-ldflags
 ## 8. 窗口生命周期、托盘与单实例（DEC-030）
 
 - **单实例**：`main.go` 先 `mygo.App.SetName("trace"|"trace-dev")`（锁按应用名与标识区分，两个通道互不影响），再调用 `mygo.App.RequestSingleInstanceLock()`；不是第一个实例就退出，第一个实例在 `OnSecondInstance` 里打开（或重建）窗口并置前。另外在数据目录里用 `app.lock`（Windows `LockFileEx` 独占锁）做数据目录锁：拿不到锁时返回明确错误后退出，不打开任何数据文件（INV-14）。
-- **托盘**：`WhenReady` 里用 `mygo.NewTray` 建图标（`ID: "trace"`，16×16 与 32×32 的 PNG 由 TRACE 自己绘制：蓝底白色 “T”，与应用图标一致（DEC-046 ② 起应用图标也不带点），有进行中任务或录制时右下角加琥珀色 `#f3a115` 圆点），单击 → 打开窗口；菜单：“打开 TRACE”、一行禁用的状态（“正在缓存 N 项 · 录制 M 场”或“没有进行中的任务”）、“检查全部订阅”、分隔线、“退出”。悬停提示与状态行在任务数变化时更新（至多每 2 秒一次）。
+- **托盘**：`WhenReady` 里用 `mygo.NewTray` 建图标（`ID: "trace"`，16×16 与 32×32 的 PNG 由 TRACE 自己绘制：蓝底白色 “T”，与应用图标一致（DEC-046 ② 起应用图标也不带点），有进行中任务或录制时右下角加琥珀色 `#f3a115` 圆点），左键单击 → 打开窗口；Windows 下右键在指针处打开系统原生菜单（`TrackPopupMenuEx`，系统菜单字体，DEC-050 ③），只有“打开 TRACE”（开发版为“打开 TRACE Dev”）和“退出”（其他系统沿用 MyGo 菜单的同样两项）；正在缓存的任务数、缓存队列与正在录制的场次放在托盘悬停提示里更新（至多每 2 秒一次）。
 - **关闭到托盘**：注册 `App.OnWindowAllClosed` 让进程在没有窗口时继续运行。原生窗口的 `OnClose` 里：设置 `closeAction=tray`（默认）时不阻止窗口关闭，原生窗口销毁，同时释放 `internal/ui` 与 `internal/player` 持有的图片缓存、视频位图纹理和事件订阅，调用 `runtime.GC()` 与 `debug.FreeOSMemory()`（NFR-RES-001）。第一次关到托盘时用 MyGo 的 `Notification` 发一条系统通知（记在 `ui-state.json` 的 `trayNotified`），之后不再重复提示。`closeAction=quit` 时关闭窗口等同托盘“退出”。
-- **重新打开**：按 `ui-state.json` 记下的最后路由和窗口位置大小调用 `mygo.NewWindow` 新建原生窗口；主页从最新处开始（DEC-040）。界面挂载时从 `internal/service` 重新读取任务、订阅、直播与登录状态（INV-13）。
+- **重新打开**：按 `ui-state.json` 记下的最后路由和窗口位置大小调用 `mygo.NewWindow` 新建原生窗口；主页各站点筛选回到记下的阅读位置（DEC-053 ①）。界面挂载时从 `internal/service` 重新读取任务、订阅、直播与登录状态（INV-13）。
 - **退出**：托盘“退出”或窗口里的退出：有排队、进行中的任务或进行中的录制时先确认（有窗口时在窗口里弹确认框；没有窗口时托盘菜单的“退出”变成子菜单“退出（会暂停 N 个任务、结束 M 场录制）”，再点一次才退出）。确认后：任务改为“已暂停（应用关闭）”，录制按[直播 §2](live.md#recorder)收尾（限时 30 秒），然后 `App.Quit()`。
 - **后台节律**：没有窗口时，调度器仍是每分钟醒来一次；没有任务、录制和到期的规则时不发请求、不写盘。
 - **启动参数**：`--background` 启动时不开窗口、只在托盘；`--quit-for-update` 交给运行中的 TRACE（第二个实例经单实例通道转发），它不弹确认，按托盘“退出”的同一条路径保存（任务改为“已暂停（应用关闭）”、录制收尾、保存路由与窗口状态），在 `ui-state.json` 记下 `update.restart`（原因、窗口是否打开、时间）后退出；没有运行中的 TRACE 时这个参数什么都不做。下次启动若读到 5 分钟内的这条记录，就按记录决定开窗口还是留在托盘（优先于 `--background`），然后删掉记录。
 
 <a id="updates"></a>
-## 8.1 更新（FR-UPD-001～004，DEC-042）
+## 8.1 更新（FR-UPD-001～004，DEC-042、DEC-051 ①）
 
-- **分层**：检查与下载的状态机和更新源的校验在 `internal/update`（纯 Go，可测试，不依赖 MyGo）；`internal/shell/updates.go` 把它接到 `mygo.Updater`（`SetSource` 换成 TRACE 的更新源，`Check`/`Install`/`App.Relaunch`）；`internal/ui` 只经 `UpdaterAPI` 小接口读状态、发命令。
-- **只在正式版启用**：只有 `tools/release` 的正式版构建带 `updates`（MyGo 注入清单地址与公钥）和 TRACE 自己的同一份地址与公钥（`internal/update.feedURL`/`publicKey`）；开发版与源码运行没有，`Enabled()` 为假，关于页写“开发版由本机打包自动更新”。ptest 身份（只在演练里构建）另外可以用环境变量 `TRACE_PTEST_UPDATE_URL` 指到本机回环地址上的假发布源，并在启动 3 秒后检查；正式版与开发版不读这个变量。
-- **检查**：启动 1 分钟后一次，之后每 24 小时一次（“自动检查更新”关掉就不检查）；“设置 › 关于”的“检查更新”手动检查。请求经系统代理只访问 GitHub（清单 `releases/latest/download/update-windows-amd64.json` 与它列出的文件），只带版本与平台。自动检查失败时静默，只写日志；手动检查显示原因。
+- **分层**：检查与下载的状态机、更新源校验及检查记录在 `internal/update`（纯 Go，可测试，不依赖 MyGo）；`internal/shell/updates.go` 把它接到 `mygo.Updater`（`SetSource` 换成 TRACE 的更新源，`Check`/`Install`/`App.Relaunch`）并在启动时按版本变化写入更新记录；`internal/ui` 只经 `UpdaterAPI` 与服务接口读状态、读检查/更新历史与发命令。
+- **只在正式版启用联网更新**：只有 `tools/release` 的正式版构建带 `updates`（MyGo 注入清单地址与公钥）和 TRACE 自己的同一份地址与公钥（`internal/update.feedURL`/`publicKey`）；开发版与源码运行没有，`Enabled()` 为假，不在“设置 › 更新”显示检查按钮与开关，而是说明开发版由 Agent 打包后自动安装并重开，同时只读查询卸载项 `HKCU\...\Uninstall\io.github.chialecode.trace-dev` 的 `DisplayVersion` 展示“本机安装的开发版”（与正在运行的版本不同时提示重启生效）；“设置 › 关于”改为“版本与更新见‘更新’”入口。ptest 身份（只在演练里构建）另外可以用环境变量 `TRACE_PTEST_UPDATE_URL` 指到本机回环地址上的假发布源，并在启动 3 秒后检查；正式版与开发版不读这个变量。
+- **检查与检查记录**：启动 1 分钟后一次，之后每 24 小时一次（`State()` 暴露下次自动检查时间 `NextCheck`；“自动检查更新”关掉就不检查）；“设置 › 更新”的“立即检查”触发手动检查。请求经系统代理只访问 GitHub（清单 `releases/latest/download/update-windows-amd64.json` 与它列出的文件），只带版本与平台。每次检查结束时 `update.Controller` 往 `<数据目录>/update-history.json` 追加一条检查记录（保留最近 20 条：时间、自动/手动、脱敏结果文字如“已是最新版本”“发现 x.y.z”“检查失败：<原因>”，严禁存下载地址；开发版不联网检查、不写检查记录）。自动检查失败时静默，只写日志与检查记录；手动检查在页面显示原因。
 - **校验**（MyGo 之外 TRACE 补上的）：所有请求与重定向都必须是 HTTPS（只有 ptest 的假发布源可以是回环地址上的 HTTP）；清单最大 1 MiB、字段齐全、版本格式正确、大小在 1 GiB 内、地址都是 HTTPS；清单的 `traceAttestation` 是更新密钥对“`trace-update-v1`、版本、更新包签名”的签名——MyGo 的签名只覆盖更新包内容、不含版本号，这一条防止把旧版本的更新包标成新版本号送来；只下载清单里列出的文件，边读边核对大小与签名，不符就在读到结尾前失败。MyGo 自己核对 Ed25519 签名、差分包的起止版本，并只接受比当前新的版本。任何一条不符都拒绝，保留现版本；手动操作时显示“更新包校验失败，已保留当前版本”，日志写原因。
 - **下载与替换**：“自动下载更新”开着（默认）时，发现新版本就在后台 `Install`：下载、校验、解包，把程序文件换成新版本（正在运行的程序被改名放在一边，下次启动时删除）；新版本在下次启动时运行。关着时只提示“有新版本”，用户点“下载并安装”才下载。就绪的版本与说明记在 `ui-state.json`（`update.readyVersion`、`readyNotes`）。
 - **重启以更新**：没有缓存与录制时直接按托盘“退出”的路径收尾并 `App.Relaunch`；有时先确认“重启会暂停 N 个缓存任务并结束 M 场录制，重启后可以继续缓存。”。
-- **更新后第一次启动**：版本比 `update.lastRunVersion` 新时显示一次“已更新到 0.1.x”，可以展开更新内容；同时把本机卸载项（`HKCU\...\Uninstall\<标识>`，只在它的 `InstallLocation` 就是这个程序所在目录时）的 `DisplayVersion` 改成新版本，“设置 › 应用”显示的版本随之正确。
+- **更新后启动与更新记录写入时机**（DEC-051 ①）：启动时 `DecideStartup` 发现有效版本变化（上次运行版本 `update.lastRunVersion` 与当前版本均非空、均非未注入占位，且两者不同）时，向 `update-history.json` 追加一条更新记录（保留最近 50 条：时间、旧版本、新版本、方式，不含下载地址）——开发版通道（`channel == "dev"`）记“本机打包安装”（`dev_install`）；正式版若本次启动消费了有效的 `ui-state.json` `update.restart` 标记则记“自动更新”（`auto_update`），否则记“手动安装”（`manual_install`）。正式版版本比 `update.lastRunVersion` 新时显示一次“已更新到 0.1.x”，可以展开更新内容；同时把本机卸载项（`HKCU\...\Uninstall\<标识>`，只在它的 `InstallLocation` 就是这个程序所在目录时）的 `DisplayVersion` 改成新版本，“设置 › 应用”显示的版本随之正确。
 - **数据结构版本**：启动时先核对数据文件的结构版本（[数据 §1](data-and-cache.md#schema-versions)）；遇到比这个版本新的结构就显示“这些数据来自更新的 TRACE 版本，请安装新版”并退出，不写任何文件。
 
 <a id="headless-ext"></a>

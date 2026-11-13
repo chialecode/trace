@@ -35,15 +35,20 @@ import (
 	"github.com/chialecode/trace/internal/storage"
 	"github.com/chialecode/trace/internal/subscription"
 	"github.com/chialecode/trace/internal/uistate"
+	"github.com/chialecode/trace/internal/update"
 )
 
 // Options configures the TRACE Backend service.
 type Options struct {
-	Locations        appdirs.Locations
-	BilibiliOpts     bilibili.ClientOptions
-	DouyinOpts       douyin.ClientOptions
-	Desktop          Desktop
-	DisableBgWorkers bool
+	Locations           appdirs.Locations
+	BilibiliOpts        bilibili.ClientOptions
+	DouyinOpts          douyin.ClientOptions
+	Desktop             Desktop
+	DisableBgWorkers    bool
+	CacheQueueClock     CacheQueueClock
+	CacheQueueRand      CacheQueueRand
+	CacheQueuePacing    *CacheQueuePacing
+	InstalledDevVersion func() string
 }
 
 // OpenLinkResult contains the resolved target and fetched detail payload for UI navigation.
@@ -150,12 +155,21 @@ type HistoryService interface {
 	HistoryThumbPath(name string) (string, error)
 }
 
-// CacheService defines download queue, supplement, and quality upgrade operations.
+// CacheService defines download queue, background list cache queue, supplement, and quality upgrade operations.
 type CacheService interface {
 	EnqueueVideoCache(ctx context.Context, req download.VideoEnqueueRequest) ([]download.Task, error)
 	EnqueueDynamicCache(ctx context.Context, req download.DynamicEnqueueRequest) (download.Task, error)
 	CacheDouyinWork(ctx context.Context, awemeID string) (download.Task, error)
-	CacheOlderUserItems(ctx context.Context, req CacheOlderRequest) (CacheOlderResult, error)
+	ListCacheQueue() []CacheQueueTask
+	FindCacheQueueTask(siteID, user, list string) (CacheQueueTask, bool)
+	EnqueueCacheQueue(ctx context.Context, req CacheQueueRequest) (CacheQueueTask, error)
+	PauseCacheQueue(id string) (CacheQueueTask, error)
+	ResumeCacheQueue(id string) (CacheQueueTask, error)
+	CancelCacheQueue(id string) (CacheQueueTask, error)
+	// RemoveCacheQueue deletes a finished cache queue task from the list;
+	// RemoveFinishedCacheQueues deletes all of them. Cached items stay.
+	RemoveCacheQueue(id string) error
+	RemoveFinishedCacheQueues() (int, error)
 	CacheSupplement(ctx context.Context, bvid string) (download.Task, error)
 	Upgrade(ctx context.Context, key string) (download.Task, error)
 	ListDownloadTasks() ([]download.Task, error)
@@ -191,6 +205,9 @@ type LibraryService interface {
 	Delete(key string) error
 	DeleteLibraryItem(itemKey string, deleteFiles bool) error
 	RebuildLibraryIndex() (library.RebuildReport, error)
+	// RefreshLibrary rescans the library folders for files deleted or changed
+	// outside TRACE (presence and size, no hashing) and reports what changed.
+	RefreshLibrary() (library.RebuildReport, error)
 	AddLibraryRoot(selectedDir string) (library.AddRootReport, error)
 	MigrateCacheDir(newDir string, moveExisting bool) (library.RebuildReport, error)
 	OpenItemFolder(itemKey string) error
@@ -203,6 +220,13 @@ type SettingsService interface {
 	UpdateSettings(next settings.Settings) (settings.Settings, error)
 	GetUIState() uistate.State
 	UpdateUIState(next uistate.State) (uistate.State, error)
+	// MutateUIState changes ui-state.json under its lock, so a write from
+	// another goroutine (the updater) between reading and writing is kept.
+	MutateUIState(fn func(*uistate.State)) (uistate.State, error)
+	GetUpdateHistory() update.History
+	RecordUpdateCheck(rec update.CheckRecord) error
+	RecordAppUpdate(rec update.UpdateRecord) error
+	InstalledDevVersion() string
 	OpenDataFolder(target string) error
 }
 
@@ -221,8 +245,11 @@ type SubscriptionService interface {
 	SaveCacheRule(rule subscription.CacheRule) (subscription.CacheRule, error)
 	DeleteCacheRule(id string) error
 	SetSubscriptionRule(subID, ruleID string) (subscription.Subscription, error)
+	SetSubscriptionsRule(ruleID string, subIDs []string) error
 	PreviewAccount(ctx context.Context, input string) (subscription.AccountRef, *subscription.Subscription, error)
 	OwnerOfAccount(site, uid string) (subscription.Subscription, bool)
+	// AccountAvatarPath is the local copy of a subscribed account's avatar, or "".
+	AccountAvatarPath(site, uid string) string
 	DeleteSubscription(subIDOrMid string) error
 	ExportOPML(path string) error
 	ImportOPML(path string) (int, error)
@@ -259,6 +286,10 @@ type LiveService interface {
 	StartLiveRecordingByRoom(ctx context.Context, siteID, roomOrWebRID string) (LiveAccountState, error)
 	StopLiveRecording(roomID int64) (live.RoomState, error)
 	StopLiveRecordingByKey(recKey string) (LiveAccountState, error)
+	// ClearLiveIncidents deletes the incident records of a finished live
+	// session; the recording itself is kept.
+	ClearLiveIncidents(itemKey, siteID, roomID, uid string) error
+	LiveRecordingPreview(recKey string) (LiveRecordingPreviewInfo, bool)
 }
 
 // AppService defines application lifecycle, event subscription, and diagnostics operations.
@@ -268,6 +299,9 @@ type AppService interface {
 	Desktop() Desktop
 	DiagnosticsSnapshot() Diagnostics
 	RecentLogs(maxLines int) ([]string, error)
+	// LogUserError records an error the UI showed to the user, so every
+	// visible error also appears in the run log.
+	LogUserError(err error)
 	PauseAllActiveWork()
 }
 
@@ -283,6 +317,7 @@ type BackendAPI interface {
 	SubscriptionService
 	UpdateService
 	FollowingService
+	AccountService
 	LiveService
 	AppService
 }
@@ -291,35 +326,40 @@ var _ BackendAPI = (*Backend)(nil)
 
 // Backend coordinates all TRACE domain packages without importing any UI framework.
 type Backend struct {
-	loc           appdirs.Locations
-	db            *sql.DB
-	updatesDB     *sql.DB
-	settings      *settings.Store
-	uiState       *uistate.Store
-	history       *storage.HistoryStore
-	credMgr       *credential.Manager
-	cred          *credential.Store
-	douyinCred    *credential.Store
-	bili          *bilibili.Client
-	douyin        *douyin.Client
-	biliAdapter   *bilibili.Adapter
-	douyinAdapter *douyin.Adapter
-	registry      *site.Registry
-	lib           *library.Store
-	dl            *download.Manager
-	subs          *subscription.Manager
-	live          *live.Manager
-	desktop       Desktop
-	events        *eventBus
-	bgCtx         context.Context
-	bgCancel      context.CancelFunc
-	renewalWake   chan struct{}
-	bgWg          sync.WaitGroup
-	logMu         sync.Mutex
-	settingsMu    sync.Mutex
-	logPath       string
-	previewDir    string
-	corruptFiles  []string
+	loc                 appdirs.Locations
+	db                  *sql.DB
+	updatesDB           *sql.DB
+	settings            *settings.Store
+	uiState             *uistate.Store
+	history             *storage.HistoryStore
+	credMgr             *credential.Manager
+	cred                *credential.Store
+	douyinCred          *credential.Store
+	bili                *bilibili.Client
+	douyin              *douyin.Client
+	biliAdapter         *bilibili.Adapter
+	douyinAdapter       *douyin.Adapter
+	registry            *site.Registry
+	lib                 *library.Store
+	dl                  *download.Manager
+	queue               *cacheQueueManager
+	subs                *subscription.Manager
+	live                *live.Manager
+	desktop             Desktop
+	events              *eventBus
+	bgCtx               context.Context
+	bgCancel            context.CancelFunc
+	renewalWake         chan struct{}
+	bgWg                sync.WaitGroup
+	logMu               sync.Mutex
+	lastUserError       string
+	lastUserErrorAt     time.Time
+	settingsMu          sync.Mutex
+	logPath             string
+	previewDir          string
+	corruptFiles        []string
+	updateHistory       *update.HistoryStore
+	installedDevVersion func() string
 }
 
 // NewBackend initializes all storage, credential, site, library, download, subscription, and live components.
@@ -341,8 +381,16 @@ func NewBackend(opts Options) (*Backend, error) {
 	// Data written by a newer TRACE is refused before anything is opened
 	// or rewritten; data of an older structure is backed up before it is
 	// migrated.
+	if err := update.GuardHistorySchema(loc.DataDir); err != nil {
+		return nil, err
+	}
 	if _, err := storage.GuardDataSchemas(loc.DataDir, storage.DataSchemas); err != nil {
 		return nil, err
+	}
+	if queueCorruptBackup, err := guardCacheQueueSchema(loc.DataDir); err != nil {
+		return nil, err
+	} else if queueCorruptBackup != "" {
+		corruptBackups = append(corruptBackups, queueCorruptBackup)
 	}
 
 	settingsPath := filepath.Join(loc.DataDir, "settings.json")
@@ -474,6 +522,11 @@ func NewBackend(opts Options) (*Backend, error) {
 		previewDir:   previewDir,
 		corruptFiles: corruptBackups,
 	}
+	if err := b.initUpdateHistory(opts); err != nil {
+		_ = updatesDB.Close()
+		_ = db.Close()
+		return nil, err
+	}
 
 	biliOpts := opts.BilibiliOpts
 	biliOpts.CredStore = credStore
@@ -494,8 +547,11 @@ func NewBackend(opts Options) (*Backend, error) {
 	b.douyinAdapter = dyAdapter
 	b.registry = site.NewRegistry(biliAdapter, dyAdapter)
 
+	taskLog := newTaskStatusLog()
 	dlMgr, err := download.NewManager(db, libStore, biliClient, curSettings.Download, func(t download.Task) {
-		b.logInfo(fmt.Sprintf("download task %s (%s) -> %s", t.TaskID, t.TargetID, t.Status))
+		if taskLog.changed(t.TaskID, t.Status) {
+			b.logInfo(fmt.Sprintf("download task %s (%s) -> %s", t.TaskID, t.TargetID, t.Status))
+		}
 		message := t.TaskID + ":" + t.Status
 		if t.ErrorKind == "storage" {
 			message += ":storage"
@@ -503,6 +559,9 @@ func NewBackend(opts Options) (*Backend, error) {
 		evBus.PublishSite(EventTaskUpdated, t.Site, message)
 		if t.Status == "completed" || t.Status == "partial" {
 			evBus.PublishSite(EventLibraryChanged, t.Site, t.ItemKey)
+		}
+		if b.queue != nil {
+			b.queue.onDownloadUpdated(t.Site)
 		}
 	})
 	if err != nil {
@@ -528,6 +587,20 @@ func NewBackend(opts Options) (*Backend, error) {
 		return nil, err
 	}
 	b.subs = subMgr
+	if opts.CacheQueueClock != nil {
+		subMgr.SetNowFunc(opts.CacheQueueClock.Now)
+	}
+	queuePath := filepath.Join(loc.DataDir, cacheQueueFileName)
+	queueMgr, queueLoadBackup, err := newCacheQueueManager(b, queuePath, opts.CacheQueueClock, opts.CacheQueueRand, opts.CacheQueuePacing)
+	if err != nil {
+		_ = updatesDB.Close()
+		_ = db.Close()
+		return nil, err
+	}
+	if queueLoadBackup != "" {
+		b.corruptFiles = append(b.corruptFiles, queueLoadBackup)
+	}
+	b.queue = queueMgr
 	// Every table of both databases now has the layout of this build.
 	if err := storage.StampSQLiteSchema(db, schemaVersion("library.db")); err != nil {
 		_ = updatesDB.Close()
@@ -581,6 +654,7 @@ func NewBackend(opts Options) (*Backend, error) {
 		t, err := b.enqueueDouyinWorkWithSource(ctx, item.DynID, "auto")
 		return t.TaskID, err
 	})
+	subMgr.SetOnAuthorAvatar(b.rememberAccountAvatar)
 	subMgr.SetOnLiveHint(func(acc subscription.AccountRef, roomID string, webRID string) {
 		if strings.EqualFold(acc.Site, string(site.Douyin)) {
 			liveMgr.ObserveAccountLiveHint(site.Douyin, acc.UID, webRID, roomID)
@@ -625,6 +699,8 @@ func NewBackend(opts Options) (*Backend, error) {
 		}
 		subMgr.Start(bgCtx)
 		liveMgr.Start(bgCtx)
+		queueMgr.Start(bgCtx)
+		b.pruneAccountAvatars()
 		b.bgWg.Add(1)
 		go b.runRenewalLoop(bgCtx)
 		b.bgWg.Add(1)
@@ -646,6 +722,9 @@ func schemaVersion(name string) int {
 func (b *Backend) pauseSiteActiveWork(targetSite site.ID, reasonCode, reasonMsg string) {
 	if b.dl != nil {
 		b.dl.PauseForSite(targetSite, reasonCode, reasonMsg)
+	}
+	if b.queue != nil {
+		b.queue.pauseForSite(targetSite, reasonCode, reasonMsg)
 	}
 	if b.live != nil {
 		b.live.StopForSite(targetSite, reasonCode)
@@ -757,6 +836,9 @@ func (b *Backend) Close() error {
 	b.bgWg.Wait()
 	if b.live != nil {
 		b.live.Stop()
+	}
+	if b.queue != nil {
+		b.queue.Stop()
 	}
 	if b.subs != nil {
 		b.subs.Stop()
@@ -966,6 +1048,8 @@ func (b *Backend) StartQRLogin(ctx context.Context) (bilibili.QRSession, error) 
 
 // PollQRLogin polls the status of the active QR login flow.
 func (b *Backend) PollQRLogin(ctx context.Context, flowID string) (bilibili.QRPollResult, error) {
+	prevAuthPaused := b.snapshotAuthPausedQueueIDs(site.Bilibili)
+	prev := b.cred.Status()
 	res, err := b.bili.PollQR(ctx, flowID)
 	if err != nil {
 		b.logError("PollQRLogin", err)
@@ -976,6 +1060,12 @@ func (b *Backend) PollQRLogin(ctx context.Context, flowID string) (bilibili.QRPo
 		select {
 		case b.renewalWake <- struct{}{}:
 		default:
+		}
+		switched := prev.LoggedIn && prev.Mid != 0 && prev.Mid != res.Account.Mid
+		if switched {
+			b.resumeAuthPausedQueueIDs(site.Bilibili, prevAuthPaused)
+		} else if b.queue != nil {
+			b.queue.resumeAuthPausedForSite(site.Bilibili)
 		}
 		b.logInfo(fmt.Sprintf("QR login confirmed: mid=%d", res.Account.Mid))
 		b.events.PublishSite(EventAccountChanged, string(site.Bilibili), "logged_in")
@@ -992,14 +1082,23 @@ func (b *Backend) CancelQRLogin(flowID string) {
 // ImportCookie validates a manual Bilibili Cookie string against /x/web-interface/nav first,
 // and only persists the credential if verification succeeds.
 func (b *Backend) ImportCookie(ctx context.Context, rawCookie, rawRefreshToken string) (credential.Status, error) {
+	prevAuthPaused := b.snapshotAuthPausedQueueIDs(site.Bilibili)
 	prev := b.cred.Status()
 	st, err := b.bili.LoginWithCookie(ctx, rawCookie, rawRefreshToken)
 	if err != nil {
 		b.logError("ImportCookie", err)
 		return b.cred.Status(), err
 	}
-	if prev.LoggedIn && prev.Mid != 0 && prev.Mid != st.Mid {
+	switched := prev.LoggedIn && prev.Mid != 0 && prev.Mid != st.Mid
+	if switched {
 		b.pauseSiteActiveWork(site.Bilibili, "auth_required", "哔哩哔哩登录账号已变更，任务已暂停")
+	}
+	if st.LoggedIn {
+		if switched {
+			b.resumeAuthPausedQueueIDs(site.Bilibili, prevAuthPaused)
+		} else if b.queue != nil {
+			b.queue.resumeAuthPausedForSite(site.Bilibili)
+		}
 	}
 	b.logInfo(fmt.Sprintf("manual cookie imported: state=%s mid=%d", st.State, st.Mid))
 	b.events.PublishSite(EventAccountChanged, string(site.Bilibili), st.State)
@@ -1011,6 +1110,8 @@ func (b *Backend) RefreshCookie(ctx context.Context) (credential.Status, error) 
 	st, err := b.bili.CheckAndRefreshCookie(ctx)
 	if err != nil {
 		b.logError("RefreshCookie", err)
+	} else if st.LoggedIn && b.queue != nil {
+		b.queue.resumeAuthPausedForSite(site.Bilibili)
 	}
 	b.events.PublishSite(EventAccountChanged, string(site.Bilibili), st.State)
 	return st, err
@@ -1045,6 +1146,9 @@ func (b *Backend) ActiveWork() (tasks, recordings int) {
 
 // PauseForExit pauses queued and running cache tasks for restart and finalizes active live recordings.
 func (b *Backend) PauseForExit() {
+	if b.queue != nil {
+		b.queue.pauseForExit()
+	}
 	if b.dl != nil {
 		b.dl.PauseAll("app_closed", "已暂停（应用关闭）")
 	}
@@ -1077,6 +1181,15 @@ func (b *Backend) PauseForExit() {
 
 // PauseAllActiveWork pauses running and queued download tasks and stops active live recordings across all sites.
 func (b *Backend) PauseAllActiveWork() {
+	if b.queue != nil {
+		for _, sid := range []site.ID{site.Bilibili, site.Douyin} {
+			if b.credMgr != nil && b.credMgr.HasActiveCredential(string(sid)) {
+				b.queue.pauseForSite(sid, "app_closed", "已暂停（应用关闭）")
+			} else {
+				b.queue.pauseForSite(sid, "auth_required", "登录状态已变更，任务已暂停")
+			}
+		}
+	}
 	if b.dl != nil {
 		b.dl.PauseAll("auth_required", "登录状态已变更，任务已暂停")
 	}
@@ -1194,6 +1307,7 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 		if dyns, dErr := b.bili.UserDynamics(ctx, target.Mid, ""); dErr == nil {
 			out.UserDynamics = &dyns
 		} else {
+			b.logError("OpenLink.UserDynamics", dErr)
 			out.UserDynamicsError = dErr.Error()
 		}
 		userID := fmt.Sprintf("%d", space.Mid)
@@ -1364,13 +1478,7 @@ func (b *Backend) openDouyinLink(ctx context.Context, normalizedInput string) (*
 		out.Target.ID = uv.SecUID
 		out.SiteTarget.ID = uv.SecUID
 		out.SiteTarget.SecUID = uv.SecUID
-		if !uv.IsPrivate {
-			if wp, wErr := b.DouyinUserWorks(ctx, uv.SecUID, ""); wErr == nil {
-				out.DouyinUserWorks = wp
-			} else {
-				out.DouyinUserWorksError = wErr.Error()
-			}
-		}
+		out.DouyinUserWorks, out.DouyinUserWorksError = b.firstDouyinUserWorks(ctx, uv)
 		out.HistoryThumbs = &HistoryThumbJob{
 			Site:      "douyin",
 			Kind:      "user",
@@ -1404,13 +1512,7 @@ func (b *Backend) openDouyinLink(ctx context.Context, normalizedInput string) (*
 					}
 				}
 				out.DouyinUser = uv
-				if !uv.IsPrivate {
-					if wp, wErr := b.DouyinUserWorks(ctx, uv.SecUID, ""); wErr == nil {
-						out.DouyinUserWorks = wp
-					} else {
-						out.DouyinUserWorksError = wErr.Error()
-					}
-				}
+				out.DouyinUserWorks, out.DouyinUserWorksError = b.firstDouyinUserWorks(ctx, uv)
 			}
 		}
 		liveID := "live:" + lv.WebRID
@@ -1467,6 +1569,11 @@ func (b *Backend) FetchHistoryThumbs(ctx context.Context, job HistoryThumbJob) e
 	for _, want := range []struct{ role, url string }{{"avatar", job.AvatarURL}, {"cover", job.CoverURL}} {
 		if t := b.fetchHistoryThumbForSite(ctx, jobSite, want.role, want.url); len(t.Data) > 0 {
 			thumbs = append(thumbs, t)
+		}
+	}
+	if job.Kind == "user" && b.subs != nil {
+		if _, ok := b.subs.OwnerOf(string(jobSite), job.ID); ok {
+			b.rememberAccountAvatar(string(jobSite), job.ID, job.AvatarURL)
 		}
 	}
 	if len(thumbs) == 0 {
@@ -1730,9 +1837,7 @@ func (b *Backend) SaveAnchor(anchor uistate.FeedAnchor) error {
 	if err := b.requireAnyLogin(); err != nil {
 		return err
 	}
-	st := b.uiState.Get()
-	st.Anchor = anchor
-	_, err := b.uiState.Update(st)
+	_, err := b.uiState.Mutate(func(st *uistate.State) { st.Anchor = anchor })
 	return err
 }
 
@@ -1861,6 +1966,28 @@ func (b *Backend) RebuildLibraryIndex() (library.RebuildReport, error) {
 	return rep, err
 }
 
+// RefreshLibrary is the media library's "刷新": a quick rescan that drops
+// items whose folder was deleted and marks items with missing files. Only
+// local files are read; no site request is made.
+func (b *Backend) RefreshLibrary() (library.RebuildReport, error) {
+	if err := b.requireAnyLogin(); err != nil {
+		return library.RebuildReport{}, err
+	}
+	rep, err := b.lib.RefreshIndex()
+	if len(rep.CorruptBackedUp) > 0 {
+		b.logMu.Lock()
+		b.corruptFiles = append(b.corruptFiles, rep.CorruptBackedUp...)
+		b.logMu.Unlock()
+	}
+	if err != nil {
+		b.logError("RefreshLibrary", err)
+	} else {
+		b.logInfo(fmt.Sprintf("library refresh: scanned=%d removed=%d newly_missing=%d", rep.Scanned, len(rep.Removed), len(rep.NewlyMissing)))
+	}
+	b.events.Publish(EventLibraryChanged, "refreshed")
+	return rep, err
+}
+
 // AddLibraryRoot adds an existing cache root or legacy trace-data directory and indexes its manifests.
 func (b *Backend) AddLibraryRoot(selectedDir string) (library.AddRootReport, error) {
 	if err := b.requireAnyLogin(); err != nil {
@@ -1967,6 +2094,13 @@ func (b *Backend) UpsertSubscription(sub subscription.Subscription) (subscriptio
 	}
 	res, err := b.subs.Upsert(sub)
 	if err == nil {
+		// A user page subscribes with only Mid and Face; the stored accounts
+		// then carry that face. Raw input accounts win when given.
+		if len(sub.Accounts) > 0 {
+			b.rememberAccountAvatars(sub.Accounts)
+		} else {
+			b.rememberAccountAvatars(res.Accounts)
+		}
 		b.events.Publish(EventSubscriptionChecked, "upserted")
 	}
 	return res, err
@@ -1979,6 +2113,8 @@ func (b *Backend) CreateSubscription(name, note string, accounts []subscription.
 	}
 	res, err := b.subs.Create(name, note, accounts, rules)
 	if err == nil {
+		// The input still has the raw avatar URL; a stored Douyin one is dropped.
+		b.rememberAccountAvatars(accounts)
 		b.events.Publish(EventSubscriptionChecked, "created")
 	}
 	return res, err
@@ -1991,6 +2127,7 @@ func (b *Backend) LinkSubscriptionAccount(subID, siteID, uid, name, face string)
 	}
 	res, err := b.subs.Link(subID, siteID, uid, name, face)
 	if err == nil {
+		b.rememberAccountAvatar(siteID, uid, face)
 		b.events.Publish(EventSubscriptionChecked, "linked")
 	}
 	return res, err
@@ -2003,6 +2140,7 @@ func (b *Backend) UnlinkSubscriptionAccount(subID, siteID, uid string) (subscrip
 	}
 	res, err := b.subs.Unlink(subID, siteID, uid)
 	if err == nil {
+		b.pruneAccountAvatars()
 		b.events.Publish(EventSubscriptionChecked, "unlinked")
 	}
 	return res, err
@@ -2071,6 +2209,19 @@ func (b *Backend) SetSubscriptionRule(subID, ruleID string) (subscription.Subscr
 		b.events.Publish(EventSubscriptionChecked, "rules_updated")
 	}
 	return res, err
+}
+
+// SetSubscriptionsRule assigns a shared rule to the selected subscriptions in one batch;
+// unselected subscriptions that previously used a non-default rule fall back to DefaultRuleID.
+func (b *Backend) SetSubscriptionsRule(ruleID string, subIDs []string) error {
+	if err := b.requireAnyLogin(); err != nil {
+		return err
+	}
+	err := b.subs.SetSubscriptionsRule(ruleID, subIDs)
+	if err == nil {
+		b.events.Publish(EventSubscriptionChecked, "rules_updated")
+	}
+	return err
 }
 
 // PreviewAccount resolves a Bilibili or Douyin account input and checks whether it is already owned by a subscription.
@@ -2172,6 +2323,7 @@ func (b *Backend) DeleteSubscription(subIDOrMid string) error {
 	}
 	err := b.subs.Delete(subIDOrMid)
 	if err == nil {
+		b.pruneAccountAvatars()
 		b.events.Publish(EventSubscriptionChecked, "deleted")
 	}
 	return err
@@ -2543,7 +2695,50 @@ func (b *Backend) logError(op string, err error) {
 	if err == nil {
 		return
 	}
-	b.writeLogLine("ERROR", op+": "+err.Error())
+	b.writeLogLine("ERROR", op+": "+err.Error()+siteErrorDetail(err))
+}
+
+// LogUserError logs an error the UI displayed. The same line within a minute
+// is written once, so a page that keeps failing does not flood the log.
+func (b *Backend) LogUserError(err error) {
+	if err == nil {
+		return
+	}
+	line := "ui: " + err.Error() + siteErrorDetail(err)
+	now := time.Now()
+	b.logMu.Lock()
+	repeated := line == b.lastUserError && now.Sub(b.lastUserErrorAt) < time.Minute
+	if !repeated {
+		b.lastUserError, b.lastUserErrorAt = line, now
+	}
+	b.logMu.Unlock()
+	if !repeated {
+		b.writeLogLine("ERROR", line)
+	}
+}
+
+// siteErrorDetail adds what the user-facing message leaves out: the endpoint
+// path (never its query, which can carry signatures) and, for a response that
+// did not match the expected fields, the decoder's reason (field and type).
+func siteErrorDetail(err error) string {
+	var se *site.Error
+	if !errors.As(err, &se) {
+		return ""
+	}
+	var detail string
+	if se.Endpoint != "" {
+		if u, perr := url.Parse(se.Endpoint); perr == nil && u.Path != "" {
+			detail += " endpoint=" + u.Path
+		}
+	}
+	if se.Kind == site.ErrKindSchemaChanged && se.Err != nil {
+		cause := []rune(se.Err.Error())
+		if len(cause) > 240 { // Go prints a whole anonymous struct type here
+			cause = append(cause[:240], '…')
+		}
+		detail += " cause=" + string(cause)
+	}
+	return detail
 }
 
 func (b *Backend) writeLogLine(level, msg string) {
@@ -2602,4 +2797,59 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// taskStatusLog remembers the last logged status of each download task.
+// Progress updates arrive about once a second while a task runs; the log
+// records only status changes so it stays readable (2026-11-15 log review).
+type taskStatusLog struct {
+	mu   sync.Mutex
+	last map[string]string
+}
+
+func newTaskStatusLog() *taskStatusLog {
+	return &taskStatusLog{last: map[string]string{}}
+}
+
+// changed reports whether status differs from the last one logged for id.
+func (l *taskStatusLog) changed(id, status string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.last[id] == status {
+		return false
+	}
+	if status == "completed" || status == "canceled" {
+		delete(l.last, id)
+	} else {
+		l.last[id] = status
+	}
+	return true
+}
+
+// firstDouyinUserWorks loads the first page of a user's works for the user
+// page. A private account still shows its works to the followers it approved,
+// which the signed-in account may be (the web page then lists them, 2026-11-16
+// feedback), so the works are always asked for: when they come back the page
+// shows them (IsPrivate is cleared, PrivateVisible set); otherwise it says the
+// account is private, without an error.
+func (b *Backend) firstDouyinUserWorks(ctx context.Context, uv *DouyinUserView) (*DouyinUserWorksPage, string) {
+	wp, err := b.DouyinUserWorks(ctx, uv.SecUID, "")
+	if uv.IsPrivate {
+		if err == nil && wp != nil && len(wp.Works) > 0 {
+			uv.IsPrivate = false
+			uv.PrivateVisible = true
+			return wp, ""
+		}
+		// Only an empty list or a refusal means the works are not visible;
+		// risk control, rate limits, an expired login or the network are
+		// reported as they are, with a retry.
+		if err == nil || site.IsKind(err, site.ErrKindForbidden) || site.IsKind(err, site.ErrKindUnavailable) {
+			return nil, ""
+		}
+		return nil, err.Error()
+	}
+	if err != nil {
+		return nil, err.Error()
+	}
+	return wp, ""
 }

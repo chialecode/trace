@@ -426,8 +426,8 @@ func compareFields(a, b string) int {
 		if i < len(bf) {
 			y = bf[i]
 		}
-		xn, xerr := strconv.Atoi(x)
-		yn, yerr := strconv.Atoi(y)
+		xn, xerr := strconv.ParseInt(x, 10, 64)
+		yn, yerr := strconv.ParseInt(y, 10, 64)
 		switch {
 		case x == y:
 			continue

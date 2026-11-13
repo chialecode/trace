@@ -43,10 +43,16 @@ func TestUIShotsScenesAndStructuredAssertions(t *testing.T) {
 	requiredScenes := []string{
 		"home",
 		"subscriptions",
+		"subscription-detail",
+		"subscription-content-empty",
 		"subscription-accounts",
+		"settings-rules",
+		"settings-rules-batch",
 		"settings-account",
 		"settings-subscription",
 		"parse",
+		"library-item",
+		"cached-video",
 		"user",
 		"douyin-user",
 		"douyin-video",
@@ -54,8 +60,24 @@ func TestUIShotsScenesAndStructuredAssertions(t *testing.T) {
 		"douyin-note",
 		"library",
 		"tasks",
+		"tasks-queue",
+		"tasks-live",
+		"tasks-incidents",
+		"settings-update",
+		"settings-update-dev",
+		"settings-about",
 		"login",
 		"login-douyin",
+		"mine-folded",
+		"mine-bili-favorites",
+		"mine-bili-toview",
+		"mine-bili-history",
+		"mine-bili-following",
+		"mine-douyin-likes",
+		"mine-douyin-collection",
+		"mine-logged-out",
+		"mine-risk-error",
+		"mine-narrow-chooser",
 	}
 	widths := []int{1280, 1000, 720}
 	bySceneWidth := make(map[string]map[int]SceneAssertion)
@@ -80,4 +102,5 @@ func TestUIShotsScenesAndStructuredAssertions(t *testing.T) {
 			}
 		}
 	}
+	t.Logf("verified %d scenes (%d screenshots)", len(bySceneWidth), len(report.Assertions))
 }

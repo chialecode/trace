@@ -12,6 +12,7 @@ const (
 	EventAccountChanged      EventType = "account.changed"
 	EventSettingsChanged     EventType = "settings.changed"
 	EventTaskUpdated         EventType = "download.updated"
+	EventCacheQueueUpdated   EventType = "cache_queue.updated"
 	EventLibraryChanged      EventType = "library.changed"
 	EventSubscriptionChecked EventType = "subscription.checked"
 	EventLiveUpdated         EventType = "live.updated"
