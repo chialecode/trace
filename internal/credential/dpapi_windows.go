@@ -9,7 +9,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-var dpapiEntropy = []byte("trace:bilibili:credential:v1")
+var dpapiEntropy = []byte(BilibiliEntropy)
 
 func makeBlob(b []byte) windows.DataBlob {
 	if len(b) == 0 {
@@ -22,8 +22,19 @@ func makeBlob(b []byte) windows.DataBlob {
 }
 
 func encryptBytes(plain []byte) ([]byte, error) {
+	return encryptBytesWithEntropy(plain, dpapiEntropy)
+}
+
+func decryptBytes(cipher []byte) ([]byte, error) {
+	return decryptBytesWithEntropy(cipher, dpapiEntropy)
+}
+
+func encryptBytesWithEntropy(plain []byte, entropy []byte) ([]byte, error) {
+	if len(entropy) == 0 {
+		entropy = dpapiEntropy
+	}
 	inBlob := makeBlob(plain)
-	entropyBlob := makeBlob(dpapiEntropy)
+	entropyBlob := makeBlob(entropy)
 	var outBlob windows.DataBlob
 
 	err := windows.CryptProtectData(
@@ -49,12 +60,15 @@ func encryptBytes(plain []byte) ([]byte, error) {
 	return out, nil
 }
 
-func decryptBytes(cipher []byte) ([]byte, error) {
+func decryptBytesWithEntropy(cipher []byte, entropy []byte) ([]byte, error) {
 	if len(cipher) == 0 {
 		return nil, fmt.Errorf("credential: empty cipher blob")
 	}
+	if len(entropy) == 0 {
+		entropy = dpapiEntropy
+	}
 	inBlob := makeBlob(cipher)
-	entropyBlob := makeBlob(dpapiEntropy)
+	entropyBlob := makeBlob(entropy)
 	var outBlob windows.DataBlob
 
 	err := windows.CryptUnprotectData(

@@ -109,7 +109,7 @@ func newTestUIApp(t *testing.T) (*App, *service.MockDesktop, func()) {
 	return app, desk, cleanup
 }
 
-// TestThreeColumnResponsiveFixedSidebarsComposeAndVirtualList verifies C38:
+// TestThreeColumnResponsiveFixedSidebarsComposeAndVirtualList verifies:
 // - 3 widths (1280x860, 1000x860, 720x860) have zero horizontal overflow
 // - Left and Right sidebars keep fixed coordinates when scrolling the Center column
 // - IME composition (`tt.Compose`) pressing Enter does NOT submit parse
@@ -156,7 +156,7 @@ func TestThreeColumnResponsiveFixedSidebarsComposeAndVirtualList(t *testing.T) {
 		if inlineParse, okQ := tt.Find("快速解析输入框"); !okQ || inlineParse.W <= 0 || inlineParse.X+inlineParse.W > float32(w)+0.5 {
 			t.Fatalf("width=%d: expected the paste box in the top bar, got %+v (%v)", w, inlineParse, okQ)
 		}
-		// Scroll the page: the rail and the panel do not move (NFR-UI-001).
+		// Scroll the page: the rail and the panel do not move.
 		tt.Scroll(centerRect.X+centerRect.W/2, centerRect.Y+300, 0, 600)
 		leftAfter, _ := tt.Find("左栏导航")
 		panelAfter, _ := tt.Find("上下文侧栏")
@@ -165,7 +165,7 @@ func TestThreeColumnResponsiveFixedSidebarsComposeAndVirtualList(t *testing.T) {
 		}
 	}
 
-	// Verify IME composition (`tt.Compose`) Enter key guard on /parse (C38)
+	// Verify IME composition (`tt.Compose`) Enter key guard on /parse
 	app.Navigate(RouteParse)
 	tt := ui.NewTester(app.View, 1280, 860)
 	tt.Click("链接解析输入框")
@@ -176,14 +176,14 @@ func TestThreeColumnResponsiveFixedSidebarsComposeAndVirtualList(t *testing.T) {
 	}
 }
 
-// TestAuthGuardLoginCookieClearOverlaysAndDesktopActions verifies C04..C07, C12, C14, C22, C26, C29, C30.
+// TestAuthGuardLoginCookieClearOverlaysAndDesktopActions verifies login cookie clear, overlays, and desktop actions.
 func TestAuthGuardLoginCookieClearOverlaysAndDesktopActions(t *testing.T) {
 	app, desk, cleanup := newTestUIApp(t)
 	defer cleanup()
 
 	tt := ui.NewTester(app.View, 1280, 860)
 
-	// 1. Login via Manual Cookie and verify input is cleared immediately on submit (C05)
+	// 1. Login via Manual Cookie and verify input is cleared immediately on submit
 	app.Navigate(RouteLogin)
 	tt.Frame()
 	tt.Click("登录标签：粘贴凭证")
@@ -195,21 +195,21 @@ func TestAuthGuardLoginCookieClearOverlaysAndDesktopActions(t *testing.T) {
 		t.Fatalf("expected manual cookie & refresh inputs to be cleared immediately on submit")
 	}
 
-	// 2. Parse video link -> navigates to /video (C12)
+	// 2. Parse video link -> navigates to /video
 	app.SubmitParse("BV1xx411c7mD")
 	tt.Frame()
 	if app.CurrentRoute != RouteVideo || app.CurrentVideo == nil || len(app.CurrentVideo.Pages) != 2 {
 		t.Fatalf("expected /video with 2 pages loaded, got route=%s video=%+v", app.CurrentRoute, app.CurrentVideo)
 	}
 
-	// 3. Simulate mid-session -101 expiry -> transitions to /login while preserving loaded video & SavedRoute (C07)
+	// 3. Simulate mid-session -101 expiry -> transitions to /login while preserving loaded video & SavedRoute
 	app.TriggerAuthExpired("会话过期 (-101)")
 	tt.Frame()
 	if app.CurrentRoute != RouteLogin || app.SavedRoute != RouteVideo || app.CurrentVideo == nil {
 		t.Fatalf("expected auth guard to redirect to /login with SavedRoute=/video and preserve CurrentVideo")
 	}
 
-	// Re-login via QR code flow -> returns to /video with loaded data intact (C04, C07)
+	// Re-login via QR code flow -> returns to /video with loaded data intact
 	tt.Click("登录标签：扫码")
 	tt.Click("获取登录二维码")
 	if app.QRBitmap == nil {
@@ -220,7 +220,7 @@ func TestAuthGuardLoginCookieClearOverlaysAndDesktopActions(t *testing.T) {
 		t.Fatalf("expected re-login to restore /video and CurrentVideo, got route=%s", app.CurrentRoute)
 	}
 
-	// 4. Immersive Image Viewer Overlay: https enforcement, floating circular buttons, 2s auto-hide & wakeup, Esc close (C14, R6)
+	// 4. Immersive Image Viewer Overlay: https enforcement, floating circular buttons, 2s auto-hide & wakeup, Esc close
 	app.OpenImageViewer([]string{"http://image.example.invalid/pic1.jpg", "https://image.example.invalid/pic2.jpg"}, nil, 0)
 	tt.Frame()
 	if !app.ImageViewer.Open || app.ImageViewer.URLs[0] != "https://image.example.invalid/pic1.jpg" {
@@ -234,7 +234,7 @@ func TestAuthGuardLoginCookieClearOverlaysAndDesktopActions(t *testing.T) {
 	if app.ImageViewer.Zoom != 1.0 || app.ImageViewer.Fit {
 		t.Fatalf("expected zoom 1.0 and Fit=false after clicking 1:1, got zoom=%v fit=%v", app.ImageViewer.Zoom, app.ImageViewer.Fit)
 	}
-	// Verify wheel zoom, pointer drag pan, and double-click toggle (C14)
+	// Verify wheel zoom, pointer drag pan, and double-click toggle
 	app.imageInput(ui.InputEvent{Kind: ui.InputScroll, DY: -1})
 	if app.ImageViewer.Zoom <= 1.0 {
 		t.Fatalf("expected wheel scroll up to zoom in (>1.0), got %v", app.ImageViewer.Zoom)
@@ -260,7 +260,7 @@ func TestAuthGuardLoginCookieClearOverlaysAndDesktopActions(t *testing.T) {
 	if app.ImageViewer.Index != 1 {
 		t.Fatalf("expected image index 1, got %d", app.ImageViewer.Index)
 	}
-	// Verify 2-second inactivity auto-hide and keyboard wakeup (R6)
+	// Verify 2-second inactivity auto-hide and keyboard wakeup
 	tt.Advance(2100 * time.Millisecond)
 	tt.Frame()
 	if !app.ImageViewer.ControlsHidden {
@@ -282,7 +282,7 @@ func TestAuthGuardLoginCookieClearOverlaysAndDesktopActions(t *testing.T) {
 		t.Fatalf("expected Escape to close ImageViewer overlay")
 	}
 
-	// 5. Real cached item on disk: Immersive Player Overlay (MFDecoder + "⋯" menu + 2s auto-hide) + Image Viewer via Backend.MediaPath (C14, C22, R6, R-07, R-08)
+	// 5. Real cached item on disk: Immersive Player Overlay (MFDecoder + "⋯" menu + 2s auto-hide) + Image Viewer via Backend.MediaPath
 	itemDir := filepath.Join(t.TempDir(), "bilibili", "8888_测试UP主", "2026-03-01_video_BV1xx411c7mD_原生界面测试视频")
 	if err := os.MkdirAll(itemDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -376,7 +376,7 @@ func TestAuthGuardLoginCookieClearOverlaysAndDesktopActions(t *testing.T) {
 	if !app.PlayerOverlay.Fullscreen {
 		t.Fatalf("expected clicking 播放器全屏 to toggle Fullscreen=true")
 	}
-	// Open "⋯" menu in immersive player and verify danmaku/subtitle/folder/external player controls (R6)
+	// Open "⋯" menu in immersive player and verify danmaku/subtitle/folder/external player controls
 	tt.Click("播放器更多菜单")
 	if !app.PlayerOverlay.MoreMenuOpen {
 		t.Fatalf("expected PlayerOverlay MoreMenuOpen=true after clicking 播放器更多菜单")
@@ -398,7 +398,7 @@ func TestAuthGuardLoginCookieClearOverlaysAndDesktopActions(t *testing.T) {
 	}
 	app.PlayerOverlay.MoreMenuOpen = false
 	tt.Frame()
-	// Verify 2s auto-hide and Space wakeup on PlayerOverlay (R6)
+	// Verify 2s auto-hide and Space wakeup on PlayerOverlay
 	tt.Advance(2100 * time.Millisecond)
 	tt.Frame()
 	if !app.PlayerOverlay.ControlsHidden {
@@ -409,7 +409,7 @@ func TestAuthGuardLoginCookieClearOverlaysAndDesktopActions(t *testing.T) {
 	if app.PlayerOverlay.ControlsHidden {
 		t.Fatalf("expected Space key to wake PlayerOverlay controls")
 	}
-	// Missing decoder fallback action via service.Desktop (C22)
+	// Missing decoder fallback action via service.Desktop
 	app.PlayerOverlay.DecoderMissing = true
 	tt.Frame()
 	tt.Click("缺失解码器时用系统播放器打开")
@@ -422,11 +422,11 @@ func TestAuthGuardLoginCookieClearOverlaysAndDesktopActions(t *testing.T) {
 		t.Fatalf("expected PlayerOverlay to close")
 	}
 
-	// 6. Subscriptions Import from Followings via top "更多" menu (C29, C30, R2)
+	// 6. Subscriptions Import from Followings via top "更多" menu
 	app.Navigate(RouteSubscriptions)
 	tt.Frame()
 	tt.Click("订阅更多菜单")
-	tt.Click("从关注列表导入")
+	tt.Click("从 B 站关注列表导入")
 	if !app.ImportSubModalOpen || len(app.ImportFollowings) != 2 {
 		t.Fatalf("expected import modal with 2 followings, got open=%v len=%d", app.ImportSubModalOpen, len(app.ImportFollowings))
 	}

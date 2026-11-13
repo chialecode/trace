@@ -1,6 +1,6 @@
-// Command actcheck runs an authorized, quota-gated real-site check of the M1
-// implementation (USER-ACTIONS ACT-006, rerun as ACT-007). Every request passes a persistent
-// quota ledger before it is sent; risk control, rate limits, -101 or a
+// Command actcheck runs an authorized, quota-gated real-site check
+// (USER-ACTIONS ACT-006, ACT-007, ACT-010 to ACT-012, ACT-014 to ACT-019). Every request passes a persistent
+// quota ledger before it is sent; risk control, rate limits, auth expiry or a
 // challenge stop the run. The receipt holds categories, counts, sizes and
 // quality only: no Cookie, signed URL or account data.
 package main
@@ -193,6 +193,8 @@ func classify(r *http.Request) (category string, media bool) {
 		return "nav", false
 	case strings.Contains(path, "/x/polymer/web-dynamic/") && strings.HasSuffix(path, "/feed/space"):
 		return "dynamic_feed", false
+	case strings.HasSuffix(path, "/x/polymer/web-dynamic/v1/detail"):
+		return "dynamic_detail", false
 	case host == "space.bilibili.com":
 		return "space_page", false
 	case strings.HasSuffix(path, "/x/space/wbi/arc/search"):
@@ -277,8 +279,37 @@ func main() {
 	root := flag.String("root", ".", "repository root")
 	act := flag.String("act", "act007", "authorization id (ledger and limits)")
 	out := flag.String("out", "", "receipt path (default artifacts/site-check/<act>.json)")
-	recordFor := flag.Duration("record", 20*time.Second, "live recording length (<= 30s)")
+	recordFor := flag.Duration("record", 20*time.Second, "live recording length (<= 30s; <= 25s for act010)")
 	flag.Parse()
+	switch *act {
+	case "act010":
+		runAct010Main(*root, *out, *recordFor)
+		return
+	case "act011":
+		runAct011Main(*root, *out, *recordFor)
+		return
+	case "act012":
+		runAct012Main(*root, *out, *recordFor)
+		return
+	case "act014":
+		runAct014Main(*root, *out, *recordFor)
+		return
+	case "act015":
+		runAct015Main(*root, *out, act015Run1)
+		return
+	case "act016":
+		runAct015Main(*root, *out, act016Run)
+		return
+	case "act017":
+		runAct015Main(*root, *out, act017Run)
+		return
+	case "act018":
+		runAct015Main(*root, *out, act018Run)
+		return
+	case "act019":
+		runAct019Main(*root, *out)
+		return
+	}
 	if *recordFor > 30*time.Second {
 		fatal("recording longer than the authorized 30s")
 	}

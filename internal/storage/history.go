@@ -18,7 +18,7 @@ import (
 // MaxHistoryItems is the maximum number of navigation history entries stored in history.json.
 const MaxHistoryItems = 200
 
-// MaxHistoryThumbBytes caps the size of a single cached parse-history thumbnail (R11).
+// MaxHistoryThumbBytes caps the size of a single cached parse-history thumbnail.
 const MaxHistoryThumbBytes = 10 * 1024 * 1024
 
 // HistoryEntry represents a single sanitized navigation history item.
@@ -51,8 +51,13 @@ type HistoryThumbnail struct {
 }
 
 type historyThumbOwner struct {
+	Site string
 	Kind string
 	ID   string
+}
+
+func (o historyThumbOwner) key() string {
+	return historyIdentityKey(o.Site, o.Kind, o.ID)
 }
 
 // HistoryStore manages history.json and its local thumbnail cache (<DataDir>/thumbs/) in DataDir.
@@ -146,11 +151,12 @@ func (s *HistoryStore) Record(entry HistoryEntry) error {
 func (s *HistoryStore) RecordWithThumbs(entry HistoryEntry, thumbs ...HistoryThumbnail) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := sanitizeHistoryEntry(entry); !ok {
+	sanitized, ok := sanitizeHistoryEntry(entry)
+	if !ok {
 		return nil
 	}
 	for _, thumb := range thumbs {
-		name, err := s.saveThumbLocked(entry.Kind, entry.ID, thumb.Role, thumb.Ext, thumb.Data)
+		name, err := s.saveThumbLocked(sanitized.Site, sanitized.Kind, sanitized.ID, thumb.Role, thumb.Ext, thumb.Data)
 		if err != nil {
 			continue
 		}
@@ -170,7 +176,7 @@ func (s *HistoryStore) RecordWithThumbs(entry HistoryEntry, thumbs ...HistoryThu
 func (s *HistoryStore) AttachThumbs(site, kind, id string, thumbs ...HistoryThumbnail) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := historyKey(HistoryEntry{Site: site, Kind: kind, ID: id})
+	key := historyIdentityKey(site, kind, id)
 	idx := -1
 	for i, existing := range s.data.Items {
 		if historyKey(existing) == key {
@@ -184,7 +190,7 @@ func (s *HistoryStore) AttachThumbs(site, kind, id string, thumbs ...HistoryThum
 	entry := s.data.Items[idx]
 	changed := false
 	for _, thumb := range thumbs {
-		name, err := s.saveThumbLocked(entry.Kind, entry.ID, thumb.Role, thumb.Ext, thumb.Data)
+		name, err := s.saveThumbLocked(entry.Site, entry.Kind, entry.ID, thumb.Role, thumb.Ext, thumb.Data)
 		if err != nil {
 			continue
 		}
@@ -203,8 +209,9 @@ func (s *HistoryStore) AttachThumbs(site, kind, id string, thumbs ...HistoryThum
 	next := append([]HistoryEntry(nil), s.data.Items...)
 	next[idx] = entry
 	pending := s.pendingThumbsLocked(next)
+	entryKey := historyKey(entry)
 	for name, owner := range s.staged {
-		if owner.Kind == strings.ToLower(strings.TrimSpace(entry.Kind)) && owner.ID == strings.TrimSpace(entry.ID) {
+		if owner.key() == entryKey {
 			pending = append(pending, name)
 		}
 	}
@@ -261,11 +268,11 @@ func (s *HistoryStore) recordLocked(entry HistoryEntry) error {
 	}
 	pending := s.pendingThumbsLocked(next)
 	for name, owner := range s.staged {
-		if owner.Kind == sanitized.Kind && owner.ID == sanitized.ID {
+		if owner.key() == key {
 			pending = append(pending, name)
 		}
 		for _, old := range evicted {
-			if owner.Kind == old.Kind && owner.ID == old.ID {
+			if owner.key() == historyKey(old) {
 				pending = append(pending, name)
 			}
 		}
@@ -300,10 +307,30 @@ func (s *HistoryStore) Clear() error {
 	return s.cleanupThumbsLocked()
 }
 
+func normalizeHistorySite(site string) string {
+	s := strings.ToLower(strings.TrimSpace(site))
+	if s == "" {
+		return "bilibili"
+	}
+	return s
+}
+
+func splitHistorySiteKind(kind string) (site, cleanKind string) {
+	trimmed := strings.ToLower(strings.TrimSpace(kind))
+	if idx := strings.IndexByte(trimmed, ':'); idx >= 0 {
+		return normalizeHistorySite(trimmed[:idx]), strings.TrimSpace(trimmed[idx+1:])
+	}
+	return "bilibili", trimmed
+}
+
+func historyIdentityKey(site, kind, id string) string {
+	return normalizeHistorySite(site) + ":" +
+		strings.ToLower(strings.TrimSpace(kind)) + ":" +
+		strings.TrimSpace(id)
+}
+
 func historyKey(e HistoryEntry) string {
-	return strings.ToLower(strings.TrimSpace(e.Site)) + ":" +
-		strings.ToLower(strings.TrimSpace(e.Kind)) + ":" +
-		strings.TrimSpace(e.ID)
+	return historyIdentityKey(e.Site, e.Kind, e.ID)
 }
 
 var sensitiveMarkers = []string{
@@ -314,13 +341,21 @@ var sensitiveMarkers = []string{
 	"access_key=",
 	"w_rid=",
 	"upsig=",
+	"sessionid=",
+	"sessionid_ss=",
+	"sid_guard=",
+	"uid_tt=",
+	"odin_tt=",
+	"mstoken=",
+	"a_bogus=",
+	"x-bogus=",
+	"__ac_signature=",
+	"x-signature=",
+	"x-secsdk-csrf-token",
 }
 
 func sanitizeHistoryEntry(e HistoryEntry) (HistoryEntry, bool) {
-	e.Site = strings.ToLower(strings.TrimSpace(e.Site))
-	if e.Site == "" {
-		e.Site = "bilibili"
-	}
+	e.Site = normalizeHistorySite(e.Site)
 	e.Kind = strings.ToLower(strings.TrimSpace(e.Kind))
 	e.ID = strings.TrimSpace(e.ID)
 	if e.Kind == "" || e.ID == "" {
@@ -340,7 +375,7 @@ func sanitizeHistoryEntry(e HistoryEntry) (HistoryEntry, bool) {
 	e.DurationText = sanitizeText(e.DurationText)
 	e.AvatarThumb = sanitizeThumbFileName(e.AvatarThumb)
 	e.CoverThumb = sanitizeThumbFileName(e.CoverThumb)
-	e.CanonicalURL = sanitizeCanonicalURL(e.CanonicalURL, e.Kind, e.ID)
+	e.CanonicalURL = sanitizeCanonicalURL(e.CanonicalURL, e.Site, e.Kind, e.ID)
 	return e, true
 }
 
@@ -355,7 +390,7 @@ func sanitizeText(s string) string {
 	return s
 }
 
-func sanitizeCanonicalURL(rawURL, kind, id string) string {
+func sanitizeCanonicalURL(rawURL, site, kind, id string) string {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL != "" {
 		if u, err := url.Parse(rawURL); err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" {
@@ -364,6 +399,21 @@ func sanitizeCanonicalURL(rawURL, kind, id string) string {
 			u.RawQuery = ""
 			u.Fragment = ""
 			return u.String()
+		}
+	}
+	if normalizeHistorySite(site) == "douyin" {
+		switch kind {
+		case "video":
+			return "https://www.douyin.com/video/" + id
+		case "dynamic", "note":
+			return "https://www.douyin.com/note/" + id
+		case "user":
+			return "https://www.douyin.com/user/" + id
+		case "live":
+			cleanID := strings.TrimPrefix(id, "live:")
+			return "https://live.douyin.com/" + cleanID
+		default:
+			return ""
 		}
 	}
 	switch kind {
@@ -381,20 +431,30 @@ func sanitizeCanonicalURL(rawURL, kind, id string) string {
 	}
 }
 
-// Remove deletes exactly one kind/id record, removes its cached thumbnails, and commits before changing memory.
+// Remove deletes one history record keyed by <site>:<kind>:<id> (when kind has
+// no "<site>:" prefix, site defaults to "bilibili"), removes its unreferenced
+// thumbnails, and commits before changing memory.
 func (s *HistoryStore) Remove(kind, id string) error {
+	site, cleanKind := splitHistorySiteKind(kind)
+	return s.RemoveBySite(site, cleanKind, id)
+}
+
+// RemoveBySite deletes exactly one <site>:<kind>:<id> record (empty site
+// defaults to "bilibili"), removes its unreferenced thumbnails, and commits
+// before changing memory.
+func (s *HistoryStore) RemoveBySite(site, kind, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	kind, id = strings.ToLower(strings.TrimSpace(kind)), strings.TrimSpace(id)
+	targetKey := historyIdentityKey(site, kind, id)
 	next := HistoryFile{Version: s.data.Version, Items: []HistoryEntry{}}
 	for _, it := range s.data.Items {
-		if it.Kind != kind || it.ID != id {
+		if historyKey(it) != targetKey {
 			next.Items = append(next.Items, it)
 		}
 	}
 	pending := s.pendingThumbsLocked(next.Items)
 	for name, owner := range s.staged {
-		if owner.Kind == kind && owner.ID == id {
+		if owner.key() == targetKey {
 			pending = append(pending, name)
 		}
 	}
@@ -411,19 +471,28 @@ func (s *HistoryStore) ThumbsDir() string {
 	return s.thumbsDir
 }
 
-// SaveThumb writes a sanitized thumbnail file into <DataDir>/thumbs/ atomically and returns its base filename (R11).
-// The filename never contains query strings, signatures, or path separators.
+// SaveThumb writes a sanitized thumbnail file into <DataDir>/thumbs/ atomically
+// and returns its base filename. When kind has no "<site>:" prefix, site defaults
+// to "bilibili". The filename never contains query strings, signatures, or path separators.
 func (s *HistoryStore) SaveThumb(kind, id, role, ext string, data []byte) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.saveThumbLocked(kind, id, role, ext, data)
+	site, cleanKind := splitHistorySiteKind(kind)
+	return s.SaveThumbForSite(site, cleanKind, id, role, ext, data)
 }
 
-func (s *HistoryStore) saveThumbLocked(kind, id, role, ext string, data []byte) (string, error) {
+// SaveThumbForSite writes a sanitized thumbnail file scoped to <site>:<kind>:<id>
+// into <DataDir>/thumbs/ atomically and returns its base filename.
+func (s *HistoryStore) SaveThumbForSite(site, kind, id, role, ext string, data []byte) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveThumbLocked(site, kind, id, role, ext, data)
+}
+
+func (s *HistoryStore) saveThumbLocked(site, kind, id, role, ext string, data []byte) (string, error) {
+	normSite := normalizeHistorySite(site)
 	if len(data) == 0 || len(data) > MaxHistoryThumbBytes {
 		return "", fmt.Errorf("storage: invalid thumbnail size %d", len(data))
 	}
-	fileName := buildThumbFileName(kind, id, role, ext, data)
+	fileName := buildThumbFileName(normSite, kind, id, role, ext, data)
 	if fileName == "" {
 		return "", fmt.Errorf("storage: invalid thumbnail identifiers")
 	}
@@ -453,11 +522,15 @@ func (s *HistoryStore) saveThumbLocked(kind, id, role, ext string, data []byte) 
 	if err := WriteFileAtomic(fullPath, data, 0o600); err != nil {
 		return "", err
 	}
-	s.staged[historyThumbKey(fileName)] = historyThumbOwner{Kind: strings.ToLower(strings.TrimSpace(kind)), ID: strings.TrimSpace(id)}
+	s.staged[historyThumbKey(fileName)] = historyThumbOwner{
+		Site: normSite,
+		Kind: strings.ToLower(strings.TrimSpace(kind)),
+		ID:   strings.TrimSpace(id),
+	}
 	return fileName, nil
 }
 
-// ThumbPath validates and resolves a cached history thumbnail filename inside <DataDir>/thumbs/ (R11).
+// ThumbPath validates and resolves a cached history thumbnail filename inside <DataDir>/thumbs/.
 func (s *HistoryStore) ThumbPath(name string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -578,18 +651,19 @@ func (s *HistoryStore) cleanupThumbsLocked() error {
 	return nil
 }
 
-func buildThumbFileName(kind, id, role, ext string, data []byte) string {
+func buildThumbFileName(site, kind, id, role, ext string, data []byte) string {
+	safeSite := sanitizeThumbToken(normalizeHistorySite(site))
 	safeKind := sanitizeThumbToken(kind)
 	safeID := sanitizeThumbToken(id)
 	safeRole := sanitizeThumbToken(role)
-	if safeKind == "" || safeID == "" || (safeRole != "avatar" && safeRole != "cover") {
+	if safeSite == "" || safeKind == "" || safeID == "" || (safeRole != "avatar" && safeRole != "cover") {
 		return ""
 	}
 	safeExt := sanitizeThumbExt(ext)
-	// Both identity and image contents are hashed. Different case-sensitive IDs
-	// cannot collide on Windows, and refreshing a cover never changes an old file.
+	// Site, object identity, and image contents are hashed together so entries
+	// with matching IDs across sites or different letter cases never collide.
 	hash := sha256.New()
-	_, _ = hash.Write([]byte(strings.ToLower(strings.TrimSpace(kind)) + "\x00" + strings.TrimSpace(id) + "\x00" + safeRole + "\x00"))
+	_, _ = hash.Write([]byte(normalizeHistorySite(site) + "\x00" + strings.ToLower(strings.TrimSpace(kind)) + "\x00" + strings.TrimSpace(id) + "\x00" + safeRole + "\x00"))
 	_, _ = hash.Write(data)
 	return sanitizeThumbFileName(fmt.Sprintf("%s_%x_%s%s", strings.ToLower(safeKind), hash.Sum(nil), safeRole, safeExt))
 }

@@ -25,6 +25,7 @@ func (a *App) closePlayerOverlay() {
 }
 
 func (a *App) closeImageViewer() {
+	a.stopViewerInlinePlayback()
 	a.imageViewerRevision++
 	if a.imageViewerCancel != nil {
 		a.imageViewerCancel()
@@ -105,6 +106,12 @@ func playerSubtitleLabel(lang string) string {
 
 func (a *App) persistPlayerVolume() {
 	a.player.SetVolume(a.PlayerOverlay.Volume)
+	if a.bgmPlayer != nil {
+		a.bgmPlayer.SetVolume(a.PlayerOverlay.Volume)
+	}
+	if a.viewerPlayer != nil {
+		a.viewerPlayer.SetVolume(a.PlayerOverlay.Volume)
+	}
 	st := a.backend.GetUIState()
 	st.Player.Volume = a.PlayerOverlay.Volume
 	st.Player.Muted = a.player.Snapshot(1, 1).Muted

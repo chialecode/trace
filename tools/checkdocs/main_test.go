@@ -16,7 +16,7 @@ func TestCheckdocsPositiveAndNegativeCases(t *testing.T) {
 		t.Fatalf("write ref README: %v", err)
 	}
 
-	targetMD := "# Target Doc\n\n<a id=\"custom-anchor\"></a>\n## Section One\nText.\n"
+	targetMD := "# Target Doc\n\n<a id=\"custom-anchor\"></a>\n## Section One\nText mentioning `sessionid=`, `Set-Cookie: msToken=...`, `&a_bogus=<百分号编码>`, and `x-signature=<签名>` as placeholders.\n"
 	if err := os.WriteFile(filepath.Join(repoDir, "target.md"), []byte(targetMD), 0o600); err != nil {
 		t.Fatalf("write target.md: %v", err)
 	}
@@ -75,6 +75,33 @@ func TestCheckdocsPositiveAndNegativeCases(t *testing.T) {
 	for _, want := range wantSubstrings {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("expected finding containing %q, got:\n%s", want, joined)
+		}
+	}
+
+	// 4. Douyin secret/sentinel leak detection (sessionid=, sessionid_ss=, sid_guard=, msToken=, a_bogus=, x-signature)
+	douyinLeaks := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"sessionid", "Cookie: sessionid=0123456789abcdef0123456789abcdef", "contains Cookie/token value"},
+		{"sessionid_ss", "Cookie: sessionid_ss=fedcba9876543210fedcba9876543210", "contains Cookie/token value"},
+		{"sid_guard", "Cookie: sid_guard=tok123%7C1760000000%7C5184000", "contains Cookie/token value"},
+		{"msToken", "Cookie: msToken=AbCdEfGhIjKlMnOp123456", "contains Cookie/token value"},
+		{"a_bogus_url", "URL: https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=7300000000000000001&a_bogus=dJUnkqSiQoWb", "contains signed URL"},
+		{"x_signature_url", "CDN: https://v3-web.douyinvod.com/video/tos/cn/1/?x-expires=1763003600&x-signature=9f8e7d6c5b4a", "contains signed URL"},
+	}
+	for _, tc := range douyinLeaks {
+		caseDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(caseDir, "LEAK.md"), []byte("# Leak\n\n"+tc.line+"\n"), 0o600); err != nil {
+			t.Fatalf("write LEAK.md (%s): %v", tc.name, err)
+		}
+		gotFindings, _, err := Run(caseDir, emptyRefDir)
+		if err != nil {
+			t.Fatalf("Run(%s): %v", tc.name, err)
+		}
+		if joinedGot := strings.Join(gotFindings, "\n"); !strings.Contains(joinedGot, tc.want) {
+			t.Fatalf("%s: expected finding %q, got: %v", tc.name, tc.want, gotFindings)
 		}
 	}
 }

@@ -3,15 +3,17 @@ package player
 import (
 	"errors"
 	"image"
+	"io"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/egoist/mygo/audio"
 	"github.com/egoist/mygo/ui"
 )
 
-// ErrMissingCodec indicates the local machine lacks a Media Foundation decoder for the video/audio stream (C22).
+// ErrMissingCodec indicates the local machine lacks a Media Foundation decoder for the video/audio stream.
 var ErrMissingCodec = errors.New("player: missing local media codec (HEVC/AV1 extension required)")
 
 // IsMissingCodecError reports whether err represents a missing hardware/software codec.
@@ -43,6 +45,7 @@ type Options struct {
 type StateSnapshot struct {
 	Open            bool                `json:"open"`
 	Playing         bool                `json:"playing"`
+	HasVideo        bool                `json:"hasVideo"`
 	FilePath        string              `json:"filePath,omitempty"`
 	Backend         string              `json:"backend"`
 	Width           int                 `json:"width"`
@@ -62,10 +65,11 @@ type StateSnapshot struct {
 	ActiveSubtitle  string              `json:"activeSubtitle"`
 }
 
-// Controller manages local video playback, A/V clock synchronization, danmaku overlay, and subtitle tracks.
+// Controller manages local video/audio playback, A/V clock synchronization, danmaku overlay, and subtitle tracks.
 type Controller struct {
 	mu             sync.Mutex
 	dec            MediaDecoder
+	hasVideo       bool
 	sink           AudioSink
 	configuredSink AudioSink
 	filePath       string
@@ -85,7 +89,7 @@ type Controller struct {
 	subOrder       []string
 	activeSubLang  string
 
-	// Video frames are decoded by worker off the UI thread (F-043); seekGen
+	// Video frames are decoded by worker off the UI thread; seekGen
 	// discards frames decoded for a position the user has left.
 	worker  *videoWorker
 	seekGen uint64
@@ -93,13 +97,13 @@ type Controller struct {
 
 	// scrubbing: the progress bar is being dragged. Audio stays paused and
 	// the worker shows the nearest key frame, which decodes at once, until
-	// Seek commits the position (F-059).
+	// Seek commits the position.
 	scrubbing      bool
 	resumeAfterScr bool
 
 	// holdGen: playback resumed after a seek waits, audio held, for the
 	// first frame at the new position (or holdUntil), so picture and sound
-	// start together instead of the sound running ahead (F-059).
+	// start together instead of the sound running ahead.
 	holdGen   uint64
 	holdUntil time.Time
 }
@@ -165,13 +169,44 @@ func NewController(opts Options) *Controller {
 	}
 }
 
-// LoadDecoder attaches an explicit MediaDecoder (used by unit tests and prototypes).
+type videoPresenceReporter interface {
+	HasVideo() bool
+}
+
+func decoderHasVideo(dec MediaDecoder) bool {
+	if dec == nil {
+		return false
+	}
+	if r, ok := dec.(videoPresenceReporter); ok {
+		return r.HasVideo()
+	}
+	return dec.Width() > 0 && dec.Height() > 0
+}
+
+// HasVideo reports whether the currently loaded media has a video stream.
+func (c *Controller) HasVideo() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dec != nil && c.hasVideo
+}
+
+// LoadDecoder attaches an explicit MediaDecoder (used by unit tests, prototypes, and media playback).
 func (c *Controller) LoadDecoder(label string, dec MediaDecoder) error {
+	if dec == nil {
+		return errors.New("player: nil media decoder")
+	}
+	hasVideo := decoderHasVideo(dec)
+	if !hasVideo && dec.SampleRate() <= 0 {
+		_ = dec.Close()
+		return errors.New("player: media has neither video nor audio stream")
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.closeLocked()
 	c.dec = dec
+	c.hasVideo = hasVideo
 	c.filePath = label
 	c.position = 0
 	c.playing = false
@@ -189,6 +224,14 @@ func (c *Controller) LoadDecoder(label string, dec MediaDecoder) error {
 		c.sink.SetVolume(0)
 	} else {
 		c.sink.SetVolume(c.volume)
+	}
+
+	if !hasVideo {
+		c.bitmap = nil
+		c.bmpW = 0
+		c.bmpH = 0
+		c.worker = nil
+		return nil
 	}
 
 	// Decode initial frame at t=0.
@@ -256,7 +299,9 @@ func (c *Controller) Play() {
 	c.holdGen = 0
 	c.playing = true
 	c.sink.Play()
-	c.worker.signal()
+	if c.worker != nil {
+		c.worker.signal()
+	}
 }
 
 // Pause pauses playback.
@@ -286,9 +331,9 @@ func (c *Controller) TogglePlay() bool {
 }
 
 // Seek jumps to sec seconds in the media timeline and updates the video
-// frame and overlays (C22). It never touches the decoder on the calling (UI)
+// frame and overlays. It never touches the decoder on the calling (UI)
 // thread: the audio sink seeks the audio on its own goroutine, and the video
-// worker seeks the video when it sees the new position (F-059). A drag of
+// worker seeks the video when it sees the new position. A drag of
 // the progress bar (Preview) ends here, resuming playback if it was playing.
 func (c *Controller) Seek(sec float64) error {
 	c.mu.Lock()
@@ -308,8 +353,13 @@ func (c *Controller) Seek(sec float64) error {
 	c.requestFrameLocked()
 	if resume {
 		c.playing = true
-		c.sink.Pause()
-		c.holdGen, c.holdUntil = c.seekGen, time.Now().Add(seekHoldLimit)
+		if c.hasVideo && c.worker != nil {
+			c.sink.Pause()
+			c.holdGen, c.holdUntil = c.seekGen, time.Now().Add(seekHoldLimit)
+		} else {
+			c.holdGen = 0
+			c.sink.Play()
+		}
 	}
 	return nil
 }
@@ -534,6 +584,7 @@ func (c *Controller) Snapshot(viewportW, viewportH float32) StateSnapshot {
 	return StateSnapshot{
 		Open:            true,
 		Playing:         c.playing,
+		HasVideo:        c.hasVideo,
 		FilePath:        c.filePath,
 		Backend:         c.dec.BackendName(),
 		Width:           c.dec.Width(),
@@ -554,7 +605,7 @@ func (c *Controller) Snapshot(viewportW, viewportH float32) StateSnapshot {
 	}
 }
 
-// Close stops playback, closes the decoder and audio sink, and releases all frame buffers (C22).
+// Close stops playback, closes the decoder and audio sink, and releases all frame buffers.
 func (c *Controller) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -564,6 +615,7 @@ func (c *Controller) Close() error {
 
 func (c *Controller) closeLocked() {
 	c.playing = false
+	c.hasVideo = false
 	c.scrubbing, c.resumeAfterScr = false, false
 	c.holdGen = 0
 	if c.worker != nil {
@@ -630,4 +682,97 @@ func (a *decoderAudioAdapter) Read(buf []float32) (int, error) {
 		return 0, nil
 	}
 	return a.dec.ReadAudioSamples(buf)
+}
+
+type pureAudioFileDecoder struct {
+	mu       sync.Mutex
+	file     *os.File
+	dec      audio.Decoder
+	backend  string
+	duration time.Duration
+	closed   bool
+}
+
+func openPureAudioFile(path string) (MediaDecoder, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	dec, formatName, err := audio.NewDecoder(f)
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	sr := dec.SampleRate()
+	if sr <= 0 {
+		_ = f.Close()
+		return nil, ErrMissingCodec
+	}
+	dur := time.Second
+	if totalFrames := dec.Len(); totalFrames > 0 {
+		dur = time.Duration(float64(totalFrames) / float64(sr) * float64(time.Second))
+	}
+	backend := "mygo-audio"
+	if formatName != "" {
+		backend = "mygo-audio/" + formatName
+	}
+	return &pureAudioFileDecoder{
+		file:     f,
+		dec:      dec,
+		backend:  backend,
+		duration: dur,
+	}, nil
+}
+
+func (d *pureAudioFileDecoder) BackendName() string     { return d.backend }
+func (d *pureAudioFileDecoder) HasVideo() bool          { return false }
+func (d *pureAudioFileDecoder) Width() int              { return 0 }
+func (d *pureAudioFileDecoder) Height() int             { return 0 }
+func (d *pureAudioFileDecoder) Duration() time.Duration { return d.duration }
+func (d *pureAudioFileDecoder) FPS() float64            { return 0 }
+func (d *pureAudioFileDecoder) SampleRate() int         { return d.dec.SampleRate() }
+func (d *pureAudioFileDecoder) Channels() int           { return d.dec.Channels() }
+
+func (d *pureAudioFileDecoder) DecodeVideoFrameAt(pos time.Duration, dst *image.RGBA) (*image.RGBA, time.Duration, error) {
+	return nil, pos, nil
+}
+
+func (d *pureAudioFileDecoder) ReadAudioSamples(buf []float32) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed || d.dec == nil {
+		return 0, io.EOF
+	}
+	return d.dec.Read(buf)
+}
+
+func (d *pureAudioFileDecoder) Seek(pos time.Duration) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed || d.dec == nil {
+		return io.EOF
+	}
+	if pos < 0 {
+		pos = 0
+	}
+	if d.duration > 0 && pos > d.duration {
+		pos = d.duration
+	}
+	frame := int64(pos.Seconds() * float64(d.dec.SampleRate()))
+	return d.dec.SetPosition(frame)
+}
+
+func (d *pureAudioFileDecoder) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return nil
+	}
+	d.closed = true
+	if d.file != nil {
+		err := d.file.Close()
+		d.file = nil
+		return err
+	}
+	return nil
 }

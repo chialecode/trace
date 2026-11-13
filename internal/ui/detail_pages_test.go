@@ -219,7 +219,7 @@ func TestDetailListsFillTheColumnAndScrollTheirHeader(t *testing.T) {
 			t.Fatalf("the creator header still shows %q as a button", gone)
 		}
 	}
-	if got := menuItems(t, short, "空间更多"); strings.Join(got, ",") != "在浏览器中打开空间,在浏览器中观看直播" {
+	if got := menuItems(t, short, "空间更多"); strings.Join(got, ",") != "缓存更早的内容,在浏览器中打开空间,在浏览器中观看直播" {
 		t.Fatalf("creator ⋯ items = %v", got)
 	}
 }

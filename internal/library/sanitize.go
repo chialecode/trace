@@ -1,6 +1,8 @@
 package library
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -17,7 +19,7 @@ var windowsReservedNames = map[string]bool{
 	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
 }
 
-// SanitizeFileName sanitizes a single file or directory name segment for Windows/cross-platform safety (C16).
+// SanitizeFileName sanitizes a single file or directory name segment for Windows/cross-platform safety.
 // It replaces illegal characters (<>:"/\|?* and control chars), trims trailing dots/spaces,
 // prefixes Windows reserved device names, and truncates to MaxFileNameRunes runes.
 func SanitizeFileName(name string) string {
@@ -75,28 +77,119 @@ func ItemDirName(kind, id string) string {
 	return SanitizeFileName(strings.ToLower(strings.TrimSpace(kind)) + "_" + cleanID)
 }
 
-// NormalizeRawID strips optional "<kind>:" prefix from an item ID (e.g. "video:BV1xx" -> "BV1xx").
+// NormalizeRawID strips optional "<site>:<kind>:" or "<kind>:" prefixes from an item ID.
 func NormalizeRawID(kind, id string) string {
 	id = strings.TrimSpace(id)
-	prefix := strings.ToLower(strings.TrimSpace(kind)) + ":"
-	if strings.HasPrefix(strings.ToLower(id), prefix) {
-		return id[len(prefix):]
+	lower := strings.ToLower(id)
+	cleanKind := strings.ToLower(strings.TrimSpace(kind))
+	for _, site := range []string{"bilibili:", "douyin:"} {
+		if strings.HasPrefix(lower, site) {
+			id = id[len(site):]
+			lower = lower[len(site):]
+			break
+		}
 	}
-	if strings.HasPrefix(strings.ToLower(id), "live:") {
-		return id[len("live:"):]
+	if cleanKind != "" && strings.HasPrefix(lower, cleanKind+":") {
+		return id[len(cleanKind)+1:]
+	}
+	for _, p := range []string{"video:", "dynamic:", "note:", "live:"} {
+		if strings.HasPrefix(lower, p) {
+			return id[len(p):]
+		}
 	}
 	return id
 }
 
-// CanonicalItemKey returns "bilibili:<kind>:<raw_id>".
+// CanonicalItemKey returns "<site>:<kind>:<raw_id>" (empty site defaults to "bilibili").
 func CanonicalItemKey(site, kind, id string) string {
+	site = strings.ToLower(strings.TrimSpace(site))
 	if site == "" {
 		site = "bilibili"
 	}
-	rawID := NormalizeRawID(kind, id)
-	return strings.ToLower(strings.TrimSpace(site)) + ":" +
-		strings.ToLower(strings.TrimSpace(kind)) + ":" +
-		rawID
+	normKind := strings.ToLower(strings.TrimSpace(kind))
+	if normKind == "note" && site == "douyin" {
+		normKind = "dynamic"
+	}
+	rawID := NormalizeRawID(normKind, id)
+	return site + ":" + normKind + ":" + rawID
+}
+
+// ValidateDouyinSecUID verifies a Douyin sec_uid preserves exact case/underscores
+// and contains no whitespace, path separators, traversal segments, or colons.
+func ValidateDouyinSecUID(secUID string) error {
+	if secUID == "" {
+		return fmt.Errorf("library: douyin sec_uid cannot be empty")
+	}
+	if secUID == "." || secUID == ".." || strings.Contains(secUID, "..") {
+		return fmt.Errorf("library: invalid douyin sec_uid")
+	}
+	for _, r := range secUID {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || r == '/' || r == '\\' || r == ':' || r == 0 {
+			return fmt.Errorf("library: forbidden character in douyin sec_uid")
+		}
+	}
+	return nil
+}
+
+// ValidateSafeIDSegment validates an item directory ID segment (such as aweme_id or room_id).
+func ValidateSafeIDSegment(id string) error {
+	if id == "" || id == "." || id == ".." || strings.Contains(id, "..") {
+		return fmt.Errorf("library: invalid item ID segment")
+	}
+	for _, r := range id {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || r == '/' || r == '\\' || r == ':' || r == 0 ||
+			r == '<' || r == '>' || r == '"' || r == '|' || r == '?' || r == '*' {
+			return fmt.Errorf("library: forbidden character in item ID segment")
+		}
+	}
+	return nil
+}
+
+// DouyinCreatorDirHash returns the first 12 lowercase hex characters of sha256(sec_uid) (DEC-043).
+func DouyinCreatorDirHash(secUID string) (string, error) {
+	if err := ValidateDouyinSecUID(secUID); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(secUID))
+	return hex.EncodeToString(sum[:])[:12], nil
+}
+
+// DouyinCreatorDir resolves <cacheRoot>/douyin/<sha256(sec_uid)[:12]>.
+func DouyinCreatorDir(cacheRoot, secUID string) (string, error) {
+	if strings.TrimSpace(cacheRoot) == "" {
+		return "", fmt.Errorf("library: cacheRoot cannot be empty")
+	}
+	dirHash, err := DouyinCreatorDirHash(secUID)
+	if err != nil {
+		return "", err
+	}
+	return EnsureWithinRoot(cacheRoot, filepath.Join(cacheRoot, "douyin", dirHash))
+}
+
+// DouyinWorkDir resolves <cacheRoot>/douyin/<sha256(sec_uid)[:12]>/works/<aweme_id>.
+func DouyinWorkDir(cacheRoot, secUID, awemeID string) (string, error) {
+	creatorDir, err := DouyinCreatorDir(cacheRoot, secUID)
+	if err != nil {
+		return "", err
+	}
+	cleanID := NormalizeRawID("video", awemeID)
+	if err := ValidateSafeIDSegment(cleanID); err != nil {
+		return "", err
+	}
+	return EnsureWithinRoot(cacheRoot, filepath.Join(creatorDir, "works", cleanID))
+}
+
+// DouyinLiveDir resolves <cacheRoot>/douyin/<sha256(sec_uid)[:12]>/lives/<room_id>.
+func DouyinLiveDir(cacheRoot, secUID, roomID string) (string, error) {
+	creatorDir, err := DouyinCreatorDir(cacheRoot, secUID)
+	if err != nil {
+		return "", err
+	}
+	cleanID := NormalizeRawID("live", roomID)
+	if err := ValidateSafeIDSegment(cleanID); err != nil {
+		return "", err
+	}
+	return EnsureWithinRoot(cacheRoot, filepath.Join(creatorDir, "lives", cleanID))
 }
 
 // EnsureWithinRoot verifies that target is strictly inside root (or equal to root)

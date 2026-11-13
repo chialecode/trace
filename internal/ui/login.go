@@ -3,9 +3,11 @@ package ui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/chialecode/trace/internal/credential"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/egoist/mygo/ui"
 )
@@ -53,7 +55,7 @@ func (a *App) startQRLogin() {
 				}
 			}
 		}()
-	}, func(err error) { a.LoginError = err.Error(); a.QRStatusText = "获取失败，请重试" })
+	}, func(err error) { a.LoginError = userErrorText(err); a.QRStatusText = "获取失败，请重试" })
 }
 
 func (a *App) pollQRLogin() {
@@ -73,7 +75,7 @@ func (a *App) pollQRLogin() {
 			a.cancelQRLogin()
 			a.QRStatusText = "二维码已失效，请重新获取"
 		}
-	}, func(err error) { a.LoginError = err.Error() })
+	}, func(err error) { a.LoginError = userErrorText(err) })
 }
 
 func (a *App) importManualCookie() {
@@ -88,5 +90,55 @@ func (a *App) importManualCookie() {
 			a.cancelQRLogin()
 			a.CompleteLogin()
 		}
-	}, func(err error) { a.LoginError = err.Error() })
+	}, func(err error) { a.LoginError = userErrorText(err) })
+}
+
+func (a *App) importDouyinCookie() {
+	rawCookie := a.DouyinCookieInput
+	// Clear input immediately upon submit before async network validation finishes.
+	a.DouyinCookieInput = ""
+	a.LoginError = ""
+	if strings.TrimSpace(rawCookie) == "" {
+		a.LoginError = "缺少 sessionid"
+		return
+	}
+	requestGuarded(a, "douyin-cookie-login", nil, func(ctx context.Context) (credential.Status, error) {
+		status, err := a.backend.LoginWithCookie(ctx, string(site.Douyin), rawCookie, "")
+		rawCookie = ""
+		return status, err
+	}, func(status credential.Status) {
+		if status.LoggedIn {
+			handle := strings.TrimSpace(status.UniqueID)
+			if handle == "" {
+				handle = strings.TrimSpace(status.UID)
+			}
+			if handle != "" {
+				a.BannerInfo = fmt.Sprintf("已登录抖音：%s · 抖音号：%s", status.Uname, handle)
+			} else if status.Uname != "" {
+				a.BannerInfo = fmt.Sprintf("已登录抖音：%s", status.Uname)
+			}
+			a.CompleteLogin()
+		}
+	}, func(err error) {
+		a.LoginError = douyinLoginErrorMessage(err)
+	})
+}
+
+func douyinLoginErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch site.KindOf(err) {
+	case site.ErrKindInvalidInput:
+		if strings.Contains(err.Error(), "8 KiB") {
+			return userErrorText(err)
+		}
+		return "缺少 sessionid"
+	case site.ErrKindAuthRequired:
+		return "抖音认为这个 Cookie 没有登录或已过期"
+	case site.ErrKindRiskControl, site.ErrKindRateLimited:
+		return "抖音要求验证，请先在浏览器里正常打开一次抖音再复制"
+	default:
+		return userErrorText(err)
+	}
 }

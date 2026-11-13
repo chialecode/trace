@@ -2,22 +2,58 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"strconv"
+	"strings"
 
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 )
+
+func userErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	var se *site.Error
+	if errors.As(err, &se) && strings.TrimSpace(se.Message) != "" {
+		return strings.TrimSpace(se.Message)
+	}
+	return err.Error()
+}
 
 func (a *App) showError(err error) {
 	if err == nil {
 		return
 	}
-	if bilibili.IsKind(err, bilibili.ErrKindAuthRequired) {
-		if a.CurrentRoute != RouteLogin {
-			a.TriggerAuthExpired("登录已失效，请重新登录")
+	if site.IsKind(err, site.ErrKindAuthRequired) {
+		errSite := string(site.SiteOf(err))
+		if !a.backend.HasAnyLogin() {
+			reason := userErrorText(err)
+			if reason == "" {
+				reason = "登录已失效，请重新登录"
+			}
+			if a.CurrentRoute != RouteLogin {
+				a.TriggerAuthExpired(reason)
+			} else {
+				a.LoginError = reason
+			}
+			return
 		}
+		if errSite != "" {
+			st := a.backend.StatusOf(errSite)
+			if st.State == "expired" {
+				a.handleSiteAccountLoss(errSite, "expired")
+				return
+			}
+			a.BannerLoginSite = errSite
+		} else {
+			a.BannerLoginSite = ""
+		}
+		a.BannerError = userErrorText(err)
 		return
 	}
-	a.BannerError = err.Error()
+	a.BannerLoginSite = ""
+	a.BannerError = userErrorText(err)
 }
 
 func (a *App) saveSettings() {
@@ -61,7 +97,7 @@ func (a *App) loadImportPage(reset bool) {
 			}
 		}
 		a.ImportPage, a.ImportHasMore = page, len(users) == 50
-	}, func(err error) { a.ImportError = err.Error(); a.showError(err) })
+	}, func(err error) { a.ImportError = userErrorText(err); a.showError(err) })
 }
 
 func (a *App) selectedSubscriptionAuthors() []int64 {
@@ -69,12 +105,31 @@ func (a *App) selectedSubscriptionAuthors() []int64 {
 		if sub.ID == a.SelectedSubID {
 			var ids []int64
 			for _, acc := range sub.Accounts {
-				id, _ := strconv.ParseInt(acc.UID, 10, 64)
-				if id > 0 {
-					ids = append(ids, id)
+				if acc.Site == "" || acc.Site == string(site.Bilibili) {
+					id, _ := strconv.ParseInt(acc.UID, 10, 64)
+					if id > 0 {
+						ids = append(ids, id)
+					}
 				}
 			}
 			return ids
+		}
+	}
+	return nil
+}
+
+func (a *App) selectedSubscriptionAccountKeys() []string {
+	for _, sub := range a.Subscriptions {
+		if sub.ID == a.SelectedSubID {
+			var keys []string
+			for _, acc := range sub.Accounts {
+				siteID, ok := site.ParseID(firstNonEmptyStrUI(acc.Site, string(site.Bilibili)))
+				if !ok || strings.TrimSpace(acc.UID) == "" {
+					continue
+				}
+				keys = append(keys, site.AccountKey(siteID, acc.UID))
+			}
+			return keys
 		}
 	}
 	return nil

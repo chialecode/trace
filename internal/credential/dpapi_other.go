@@ -12,10 +12,29 @@ import (
 	"io"
 )
 
-var nonWindowsKey = sha256.Sum256([]byte("trace:bilibili:credential:v1:fallback"))
+var defaultEntropy = []byte(BilibiliEntropy)
+
+func deriveFallbackKey(entropy []byte) [32]byte {
+	if len(entropy) == 0 {
+		entropy = defaultEntropy
+	}
+	buf := make([]byte, 0, len(entropy)+len(":fallback"))
+	buf = append(buf, entropy...)
+	buf = append(buf, ":fallback"...)
+	return sha256.Sum256(buf)
+}
 
 func encryptBytes(plain []byte) ([]byte, error) {
-	block, err := aes.NewCipher(nonWindowsKey[:])
+	return encryptBytesWithEntropy(plain, defaultEntropy)
+}
+
+func decryptBytes(cipherData []byte) ([]byte, error) {
+	return decryptBytesWithEntropy(cipherData, defaultEntropy)
+}
+
+func encryptBytesWithEntropy(plain []byte, entropy []byte) ([]byte, error) {
+	key := deriveFallbackKey(entropy)
+	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return nil, err
 	}
@@ -31,12 +50,13 @@ func encryptBytes(plain []byte) ([]byte, error) {
 	return append([]byte("DPAPI1"), out...), nil
 }
 
-func decryptBytes(cipherData []byte) ([]byte, error) {
+func decryptBytesWithEntropy(cipherData []byte, entropy []byte) ([]byte, error) {
 	if !bytes.HasPrefix(cipherData, []byte("DPAPI1")) {
 		return nil, fmt.Errorf("credential: invalid cipher header")
 	}
 	raw := cipherData[6:]
-	block, err := aes.NewCipher(nonWindowsKey[:])
+	key := deriveFallbackKey(entropy)
+	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return nil, err
 	}

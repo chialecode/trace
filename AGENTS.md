@@ -25,7 +25,7 @@
 | 订阅、检查更新、定时规则、自动缓存 | [订阅设计](docs/design/subscriptions.md) |
 | 直播状态与录制 | [直播设计](docs/design/live.md) |
 | UI、文案、交互 | [界面规范](docs/ui.md) |
-| 哔哩哔哩协议 | [哔哩哔哩协议资料](docs/research/bilibili.md) |
+| 站点协议 | [哔哩哔哩协议资料](docs/research/bilibili.md)、[抖音协议资料](docs/research/douyin.md) |
 
 ## 约束
 

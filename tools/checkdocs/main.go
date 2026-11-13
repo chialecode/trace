@@ -12,13 +12,14 @@ import (
 )
 
 var (
-	anchorTagRe  = regexp.MustCompile(`<a\s+(?:id|name)=["']([^"']+)["']`)
-	headingRe    = regexp.MustCompile(`(?m)^#{1,6}\s+(.+?)\s*$`)
-	mdLinkRe     = regexp.MustCompile(`!?\[[^\]]*\]\(([^)]+)\)`)
-	refHeadingRe = regexp.MustCompile(`(?m)^###\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\s*$`)
-	winAbsPathRe = regexp.MustCompile(`(?i)\b[cd]:\\[A-Za-z0-9_.-]+`)
-	unixHomeRe   = regexp.MustCompile(`(?:/Users/|/home/runner/)[A-Za-z0-9_.-]+`)
-	cookieLeakRe = regexp.MustCompile(`(?i)\b(?:SESSDATA|bili_jct|DedeUserID__ckMd5|ac_time_value)=[A-Za-z0-9%._-]{6,}`)
+	anchorTagRe     = regexp.MustCompile(`<a\s+(?:id|name)=["']([^"']+)["']`)
+	headingRe       = regexp.MustCompile(`(?m)^#{1,6}\s+(.+?)\s*$`)
+	mdLinkRe        = regexp.MustCompile(`!?\[[^\]]*\]\(([^)]+)\)`)
+	refHeadingRe    = regexp.MustCompile(`(?m)^###\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\s*$`)
+	winAbsPathRe    = regexp.MustCompile(`(?i)\b[cd]:\\[A-Za-z0-9_.-]+`)
+	unixHomeRe      = regexp.MustCompile(`(?:/Users/|/home/runner/)[A-Za-z0-9_.-]+`)
+	cookieLeakRe    = regexp.MustCompile(`(?i)\b(?:SESSDATA|bili_jct|DedeUserID__ckMd5|ac_time_value|sessionid|sessionid_ss|sid_guard|msToken)=[A-Za-z0-9%][A-Za-z0-9%|._-]{5,}`)
+	signedURLLeakRe = regexp.MustCompile(`(?i)https?://[^\s"'<>` + "`" + `]*(?:a_bogus=[A-Za-z0-9%+/=._-]{4,}|x-(?:secsdk-web-)?signature(?:=[A-Za-z0-9%+/=._-]{4,}|/[A-Za-z0-9%+/=._-]{4,}))`)
 )
 
 var ignoredDirs = map[string]bool{
@@ -100,9 +101,12 @@ func Run(rootDir string, refDirOverride string) ([]string, string, error) {
 			findings = append(findings, fmt.Sprintf("%s: contains local Unix home path %q", relPath, m))
 		}
 
-		// 2. Check leaked Cookie/token values
+		// 2. Check leaked Cookie/token values and signed URLs
 		if m := cookieLeakRe.FindString(text); m != "" {
 			findings = append(findings, fmt.Sprintf("%s: contains Cookie/token value %q", relPath, m))
+		}
+		if m := signedURLLeakRe.FindString(text); m != "" {
+			findings = append(findings, fmt.Sprintf("%s: contains signed URL %q", relPath, m))
 		}
 
 		// 3. Check reference project names (if reference index was found)

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// videoWorker decodes video frames off the UI thread (F-043). Decoding a
+// videoWorker decodes video frames off the UI thread. Decoding a
 // frame costs milliseconds even on the GPU and far more in software; done in
 // the view it froze the whole window and fell ever further behind.
 //

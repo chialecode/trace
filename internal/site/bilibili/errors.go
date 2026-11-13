@@ -1,71 +1,37 @@
 package bilibili
 
 import (
-	"errors"
 	"fmt"
+
+	"github.com/chialecode/trace/internal/site"
 )
 
 // Unified error classifications returned by the Bilibili site adapter.
 const (
-	ErrKindAuthRequired  = "auth_required"
-	ErrKindRiskControl   = "risk_control"
-	ErrKindRateLimited   = "rate_limited"
-	ErrKindBlocked       = "blocked"
-	ErrKindUnavailable   = "unavailable"
-	ErrKindForbidden     = "forbidden"
-	ErrKindBadRequest    = "bad_request"
-	ErrKindSchemaChanged = "schema_changed"
-	ErrKindNetwork       = "network"
-	ErrKindQuota         = "quota"
-	ErrKindBackoff       = "backoff"
+	ErrKindAuthRequired  = site.ErrKindAuthRequired
+	ErrKindRiskControl   = site.ErrKindRiskControl
+	ErrKindRateLimited   = site.ErrKindRateLimited
+	ErrKindBlocked       = site.ErrKindBlocked
+	ErrKindUnavailable   = site.ErrKindUnavailable
+	ErrKindForbidden     = site.ErrKindForbidden
+	ErrKindBadRequest    = site.ErrKindBadRequest
+	ErrKindSchemaChanged = site.ErrKindSchemaChanged
+	ErrKindNetwork       = site.ErrKindNetwork
+	ErrKindQuota         = site.ErrKindQuota
+	ErrKindBackoff       = site.ErrKindBackoff
 )
 
-// SiteError is a structured error returned by Bilibili adapter methods.
-type SiteError struct {
-	Kind       string `json:"kind"`
-	Code       int    `json:"code,omitempty"`
-	HTTPStatus int    `json:"httpStatus,omitempty"`
-	Endpoint   string `json:"endpoint,omitempty"`
-	Message    string `json:"message"`
-	Err        error  `json:"-"`
-}
-
-func (e *SiteError) Error() string {
-	if e == nil {
-		return ""
-	}
-	if e.Code != 0 {
-		return fmt.Sprintf("bilibili [%s code=%d]: %s", e.Kind, e.Code, e.Message)
-	}
-	if e.HTTPStatus != 0 {
-		return fmt.Sprintf("bilibili [%s http=%d]: %s", e.Kind, e.HTTPStatus, e.Message)
-	}
-	return fmt.Sprintf("bilibili [%s]: %s", e.Kind, e.Message)
-}
-
-func (e *SiteError) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.Err
-}
+// SiteError aliases site.Error so cross-site managers and Bilibili callers share one error type.
+type SiteError = site.Error
 
 // KindOf extracts the ErrorKind from err, defaulting to ErrKindNetwork.
 func KindOf(err error) string {
-	if err == nil {
-		return ""
-	}
-	var se *SiteError
-	if errors.As(err, &se) && se.Kind != "" {
-		return se.Kind
-	}
-	return ErrKindNetwork
+	return site.KindOf(err)
 }
 
 // IsKind reports whether err is a SiteError of the specified kind.
 func IsKind(err error, kind string) bool {
-	var se *SiteError
-	return errors.As(err, &se) && se.Kind == kind
+	return site.IsKind(err, kind)
 }
 
 func classifyBiliCode(code int, message string, hasVoucher bool, endpoint string) *SiteError {

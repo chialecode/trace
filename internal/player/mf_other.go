@@ -2,6 +2,11 @@
 
 package player
 
-// Production media loading reports unsupported platforms explicitly. Synthetic
-// decoders are only selected by tests through LoadDecoder.
-func OpenMediaFile(path string) (MediaDecoder, error) { return nil, ErrMissingCodec }
+// OpenMediaFile opens pure audio formats registered with mygo/audio on
+// non-Windows builds and reports ErrMissingCodec for unsupported containers.
+func OpenMediaFile(path string) (MediaDecoder, error) {
+	if dec, err := openPureAudioFile(path); err == nil {
+		return dec, nil
+	}
+	return nil, ErrMissingCodec
+}

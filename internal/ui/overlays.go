@@ -24,18 +24,25 @@ func (a *App) renderLogoutConfirmOverlay(c *ui.Context, w, h float32) {
 		a.ConfirmLogoutOpen = false
 		return
 	}
+	targetSite := normalizeSiteIDUI(a.ConfirmLogoutSite)
+	titleText := "退出登录？"
+	bodyText := "退出后会暂停哔哩哔哩的缓存任务并停止录制，抖音不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
+	if targetSite == "douyin" {
+		titleText = "退出抖音登录？"
+		bodyText = "退出后会暂停抖音的缓存任务并停止抖音录制，哔哩哔哩不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
+	}
 	ui.Overlay(c, func() {
 		ui.Column(c).Absolute().Top(0).Left(0).Size(w, h).Background(ui.RGBA(15, 20, 25, 0.55)).Center().Children(func() {
 			ui.Column(c).Label("退出登录确认对话框").Width(min(float32(460), w-40)).Padding(22).Radius(16).Background(ColorBgMain).Gap(12).Children(func() {
-				ui.Text(c, "退出登录？").FontSize(18).FontWeight(600).TextColor(ColorTextMain)
-				ui.Text(c, "退出后会暂停缓存任务并停止录制。已缓存的文件会保留，重新登录后可以继续任务。").FontSize(13).TextColor(ColorTextMuted).MaxLines(3)
+				ui.Text(c, titleText).FontSize(18).FontWeight(600).TextColor(ColorTextMain)
+				ui.Text(c, bodyText).FontSize(13).TextColor(ColorTextMuted).MaxLines(3)
 				ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
 					if OutlinePillButton(c, "取消", "取消退出登录").Clicked() {
 						a.ConfirmLogoutOpen = false
 					}
 					if DangerOutlinePillButton(c, "退出登录", "确认退出登录").Clicked() {
 						a.ConfirmLogoutOpen = false
-						a.logoutAccount()
+						a.logoutSiteAccount(targetSite)
 					}
 				})
 			})
@@ -96,7 +103,7 @@ func (a *App) renderDeleteConfirmOverlay(c *ui.Context, w, h float32) {
 							FillWidth().
 							Padding(10, 12).
 							Radius(10).
-							Background(ColorBgSecondary).
+							Background(ColorBgMain).
 							Border(1, ColorBorder).
 							AlignItems(ui.Center).
 							Justify(ui.SpaceBetween).
@@ -130,13 +137,22 @@ func (a *App) renderDeleteConfirmOverlay(c *ui.Context, w, h float32) {
 }
 
 // ============================================================================
-// Overlay: In-App Immersive Image Viewer (C14, R6, docs/ui.md §3.5)
+// Overlay: In-App Immersive Image & Mixed-Page Viewer (docs/ui.md §3.5)
 // ============================================================================
 
 // mediaPanelRect is the floating frame the image viewer and the player open
 // in (DEC-040): centred over the app, which stays visible around it.
 func mediaPanelRect(w, h float32) (x, y, pw, ph float32) {
+	return mediaPanelRectBelow(w, h, 0)
+}
+
+// mediaPanelRectBelow keeps the panel clear of a hidden title bar's window
+// buttons (DEC-046 ④): its top margin is at least the bar's height plus 8.
+func mediaPanelRectBelow(w, h, titleBarH float32) (x, y, pw, ph float32) {
 	margin := max(24, min(w, h)*0.06)
+	if titleBarH > 0 {
+		margin = max(margin, titleBarH+8)
+	}
 	pw, ph = max(320, min(w-2*margin, 1280)), max(240, min(h-2*margin, 860))
 	return (w - pw) / 2, (h - ph) / 2, pw, ph
 }
@@ -151,7 +167,7 @@ func mediaBackdrop(c *ui.Context, label string, w, h float32, close func()) {
 
 func (a *App) renderImageViewerOverlay(c *ui.Context, w, h float32) {
 	fullW, fullH := w, h
-	panelX, panelY, w, h := mediaPanelRect(fullW, fullH)
+	panelX, panelY, w, h := mediaPanelRectBelow(fullW, fullH, a.titleBar.Height)
 	now := c.Now()
 	if a.ImageViewer.LastActiveAt.IsZero() {
 		a.ImageViewer.LastActiveAt = now
@@ -174,16 +190,31 @@ func (a *App) renderImageViewerOverlay(c *ui.Context, w, h float32) {
 		a.ImageViewer.Index = total - 1
 	}
 
+	switchViewerPage := func(nextIdx int) {
+		if nextIdx == a.ImageViewer.Index || nextIdx < 0 || nextIdx >= total {
+			return
+		}
+		a.stopViewerInlinePlayback()
+		a.ImageViewer.Index = nextIdx
+		if nextIdx < len(a.ImageViewer.InlinePageKinds) && a.ImageViewer.InlinePageKinds[nextIdx] == "video" {
+			a.startViewerInlinePage(nextIdx)
+		}
+	}
+
+	if c.Shortcut(0, ui.KeySpace) && a.ImageViewer.InlineActive {
+		a.wakeImageViewerControls(now)
+		a.toggleViewerInlinePlay()
+	}
 	if c.Shortcut(0, ui.KeyLeft) {
 		a.wakeImageViewerControls(now)
 		if a.ImageViewer.Index > 0 {
-			a.ImageViewer.Index--
+			switchViewerPage(a.ImageViewer.Index - 1)
 		}
 	}
 	if c.Shortcut(0, ui.KeyRight) {
 		a.wakeImageViewerControls(now)
 		if a.ImageViewer.Index+1 < total {
-			a.ImageViewer.Index++
+			switchViewerPage(a.ImageViewer.Index + 1)
 		}
 	}
 	if c.Shortcut(0, ui.KeyEqual) {
@@ -241,35 +272,85 @@ func (a *App) renderImageViewerOverlay(c *ui.Context, w, h float32) {
 					Size(w, h).
 					Clip().
 					Children(func() {
-						bmpIdx := a.ImageViewer.Index
-						if bmpIdx < 0 || bmpIdx >= len(a.ImageViewer.Bitmaps) {
-							bmpIdx = 0
-						}
-						if len(a.ImageViewer.Bitmaps) > 0 && a.ImageViewer.Bitmaps[bmpIdx] != nil {
-							bmp := a.ImageViewer.Bitmaps[bmpIdx]
-							bw, bh := bmp.Size()
-							scale := a.ImageViewer.Zoom
-							if a.ImageViewer.Fit && bw > 0 && bh > 0 {
-								scale *= min((w-64)/float32(bw), (h-64)/float32(bh))
+						inlineShowing := a.ImageViewer.InlineActive && a.ImageViewer.InlinePageIndex == a.ImageViewer.Index
+						if inlineShowing && playerLoaded(a.viewerPlayer) {
+							if vBmp := a.viewerPlayer.Bitmap(); vBmp != nil {
+								ui.Image(c, vBmp).Size(w, h).Fit(ui.Contain).Absolute().Left(0).Top(0)
 							}
-							dispW, dispH := float32(bw)*scale, float32(bh)*scale
-							ui.Image(c, bmp).
-								Size(dispW, dispH).
-								Fit(ui.Contain).
-								Absolute().
-								Left((w-dispW)/2 + a.ImageViewer.PanX).
-								Top((h-dispH)/2 + a.ImageViewer.PanY)
+						} else {
+							bmpIdx := a.ImageViewer.Index
+							if bmpIdx < 0 || bmpIdx >= len(a.ImageViewer.Bitmaps) {
+								bmpIdx = 0
+							}
+							if len(a.ImageViewer.Bitmaps) > 0 && a.ImageViewer.Bitmaps[bmpIdx] != nil {
+								bmp := a.ImageViewer.Bitmaps[bmpIdx]
+								bw, bh := bmp.Size()
+								scale := a.ImageViewer.Zoom
+								if a.ImageViewer.Fit && bw > 0 && bh > 0 {
+									scale *= min((w-64)/float32(bw), (h-64)/float32(bh))
+								}
+								dispW, dispH := float32(bw)*scale, float32(bh)*scale
+								ui.Image(c, bmp).
+									Size(dispW, dispH).
+									Fit(ui.Contain).
+									Absolute().
+									Left((w-dispW)/2 + a.ImageViewer.PanX).
+									Top((h-dispH)/2 + a.ImageViewer.PanY)
+							}
 						}
-						if a.ImageViewer.Index < len(a.ImageViewer.Errors) && a.ImageViewer.Errors[a.ImageViewer.Index] != "" {
+						if inlineShowing && a.ImageViewer.InlineLoading {
+							ui.Column(c).Absolute().Top(0).Left(0).Size(w, h).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
+								ui.Spinner(c).Label("看图媒体加载中").Size(26, 26)
+							})
+						}
+						errText := ""
+						if inlineShowing && a.ImageViewer.InlineError != "" {
+							errText = a.ImageViewer.InlineError
+						} else if a.ImageViewer.Index < len(a.ImageViewer.Errors) && a.ImageViewer.Errors[a.ImageViewer.Index] != "" {
+							errText = a.ImageViewer.Errors[a.ImageViewer.Index]
+						}
+						if errText != "" {
 							ui.Row(c).Absolute().Top(72).Left(24).Right(24).Justify(ui.Center).Children(func() {
 								ui.Box(c).Padding(8, 14).Radius(10).Background(ui.RGBA(180, 35, 24, 0.85)).Children(func() {
-									ui.Text(c, a.ImageViewer.Errors[a.ImageViewer.Index]).FontSize(13).FontWeight(600).TextColor(ColorWhite).MaxLines(2)
+									ui.Text(c, errText).FontSize(13).FontWeight(600).TextColor(ColorWhite).MaxLines(2)
 								})
 							})
 						}
+						// Thin inline progress bar + duration at the bottom of the viewer when playing motion/video page (docs/ui.md §3.5)
+						if inlineShowing && playerLoaded(a.viewerPlayer) {
+							vSnap := a.viewerPlayer.Snapshot(w, h)
+							dur := vSnap.DurationSec
+							if dur <= 0 && a.ImageViewer.Index < len(a.ImageViewer.InlineDurations) {
+								dur = float64(a.ImageViewer.InlineDurations[a.ImageViewer.Index])
+							}
+							frac := float32(0)
+							if dur > 0 {
+								frac = float32(max(0.0, min(1.0, vSnap.PositionSec/dur)))
+							}
+							ui.Row(c).
+								Label("看图内嵌播放进度栏").
+								Absolute().
+								Bottom(78).
+								Left(36).
+								Right(36).
+								Padding(6, 12).
+								Radius(999).
+								Background(ui.RGBA(0, 0, 0, 0.56)).
+								AlignItems(ui.Center).
+								Gap(10).
+								Children(func() {
+									ui.Box(c).Grow(1).Height(4).Radius(2).Background(ui.RGBA(255, 255, 255, 0.28)).Clip().Draw(func(p *ui.Painter, r ui.Rect) {
+										if frac > 0 {
+											p.Fill(ui.Rect{X: r.X, Y: r.Y, W: r.W * frac, H: r.H}, ColorWhite, 2)
+										}
+									})
+									ui.Text(c, fmt.Sprintf("%s / %s", FormatDuration(int(vSnap.PositionSec)), FormatDuration(int(dur)))).
+										FontSize(11).FontWeight(600).TextColor(ColorWhite).SingleLine()
+								})
+						}
 					})
 
-				// Minimal floating circular controls (fade out after 2s of inactivity - R6)
+				// Minimal floating circular controls (fade out after 2s of inactivity)
 				if !a.ImageViewer.ControlsHidden {
 					// Top floating bar: index/zoom badge on left + Close circular button on right
 					ui.Row(c).
@@ -298,7 +379,7 @@ func (a *App) renderImageViewerOverlay(c *ui.Context, w, h float32) {
 							if FloatingCircleButton(c, "chevron-left", "看图上一张", 44).Disabled(a.ImageViewer.Index <= 0).Clicked() {
 								a.wakeImageViewerControls(now)
 								if a.ImageViewer.Index > 0 {
-									a.ImageViewer.Index--
+									switchViewerPage(a.ImageViewer.Index - 1)
 								}
 							}
 						})
@@ -310,12 +391,12 @@ func (a *App) renderImageViewerOverlay(c *ui.Context, w, h float32) {
 							if FloatingCircleButton(c, "chevron-right", "看图下一张", 44).Disabled(a.ImageViewer.Index+1 >= total).Clicked() {
 								a.wakeImageViewerControls(now)
 								if a.ImageViewer.Index+1 < total {
-									a.ImageViewer.Index++
+									switchViewerPage(a.ImageViewer.Index + 1)
 								}
 							}
 						})
 
-					// Bottom-center floating circular buttons: 适应 / 原始大小 (1:1)
+					// Bottom-center floating circular buttons: 适应 / 原始大小 (1:1) / 实况或视频内嵌播放
 					ui.Row(c).
 						Absolute().
 						Bottom(24).
@@ -338,9 +419,22 @@ func (a *App) renderImageViewerOverlay(c *ui.Context, w, h float32) {
 								a.ImageViewer.PanX = 0
 								a.ImageViewer.PanY = 0
 							}
-							if i := a.ImageViewer.Index; i >= 0 && i < len(a.ImageViewer.Motions) && a.ImageViewer.Motions[i] != "" {
-								if FloatingCircleButton(c, "play", "看图播放实况", 42).Clicked() {
-									a.playImageMotion(a.ImageViewer.Motions[i])
+							i := a.ImageViewer.Index
+							hasInlineMedia := (i >= 0 && i < len(a.ImageViewer.InlineMediaPaths) && a.ImageViewer.InlineMediaPaths[i] != "") ||
+								(i >= 0 && i < len(a.ImageViewer.InlineMediaURLs) && a.ImageViewer.InlineMediaURLs[i] != "")
+							if hasInlineMedia {
+								inlinePlaying := a.ImageViewer.InlineActive && a.ImageViewer.InlinePageIndex == i && playerPlaying(a.viewerPlayer)
+								icon := "play"
+								if inlinePlaying {
+									icon = "pause"
+								}
+								if FloatingCircleButton(c, icon, "看图播放实况", 42).Clicked() {
+									a.wakeImageViewerControls(now)
+									if a.ImageViewer.InlineActive && a.ImageViewer.InlinePageIndex == i && playerLoaded(a.viewerPlayer) {
+										a.toggleViewerInlinePlay()
+									} else {
+										a.startViewerInlinePage(i)
+									}
 									return
 								}
 							}
@@ -357,7 +451,7 @@ func (a *App) renderImageViewerOverlay(c *ui.Context, w, h float32) {
 }
 
 // ============================================================================
-// Overlay: In-App Immersive Media Player + Danmaku + Subtitles (C22, R6)
+// Overlay: In-App Immersive Media Player + Danmaku + Subtitles
 // ============================================================================
 
 func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
@@ -365,7 +459,7 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 	fullW, fullH := w, h
 	panelX, panelY, radius := float32(0), float32(0), float32(0)
 	if !a.PlayerOverlay.Fullscreen {
-		panelX, panelY, w, h = mediaPanelRect(fullW, fullH)
+		panelX, panelY, w, h = mediaPanelRectBelow(fullW, fullH, a.titleBar.Height)
 		radius = 16
 	}
 	now := c.Now()
@@ -434,7 +528,7 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 			Background(ColorBlack).
 			Clip().
 			Children(func() {
-				// Full-window dark video surface or decoder fallback (C22, R6)
+				// Full-window dark video surface or decoder fallback
 				if a.PlayerOverlay.DecoderMissing {
 					ui.Column(c).Absolute().Top(0).Left(0).Size(w, h).Justify(ui.Center).AlignItems(ui.Center).Padding(32).Children(func() {
 						ui.Column(c).Width(min(float32(520), w-48)).Padding(24).Radius(16).Background(ui.RGBA(30, 34, 42, 0.94)).Border(1, ColorDotYellow).AlignItems(ui.Center).Gap(12).Children(func() {
@@ -487,7 +581,7 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 					})
 				}
 
-				// Floating controls (fade out after 2s of mouse/key inactivity - R6)
+				// Floating controls (fade out after 2s of mouse/key inactivity)
 				if !a.PlayerOverlay.ControlsHidden {
 					// Top floating bar: Title on left + "⋯" menu & Close circular floating buttons on right
 					ui.Row(c).
@@ -514,7 +608,7 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 							})
 						})
 
-					// Popover "⋯" Menu: Danmaku, Subtitles, Segments, Reveal in folder, Open in external player (R6)
+					// Popover "⋯" Menu: Danmaku, Subtitles, Segments, Reveal in folder, Open in external player
 					if a.PlayerOverlay.MoreMenuOpen {
 						ui.Column(c).
 							Label("播放器更多面板").
@@ -633,7 +727,7 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 						})
 					}
 
-					// Bottom floating transport bar: Play/Pause, Seek bar, Volume, Fullscreen (R6)
+					// Bottom floating transport bar: Play/Pause, Seek bar, Volume, Fullscreen
 					ui.Row(c).
 						Absolute().
 						Bottom(20).
@@ -658,9 +752,8 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 							ui.Text(c, fmt.Sprintf("%s / %s", FormatDuration(int(snap.PositionSec)), FormatDuration(int(snap.DurationSec)))).
 								FontSize(12).FontWeight(600).TextColor(ColorWhite).SingleLine()
 
-							// Dragging shows key-frame previews with the audio
-							// held; the position is sought once, on release
-							// (F-059). Arrow keys on the bar seek at once.
+							// Dragging shows key-frame previews with the audio held;
+							// the position is sought once, on release. Arrow keys on the bar seek at once.
 							seekBar := ui.Slider(c, &a.PlayerOverlay.SeekNormalized, 0, 1).Label("播放进度条").Grow(1)
 							durSec := snap.DurationSec
 							if durSec <= 0 {
@@ -744,6 +837,10 @@ func (a *App) imageInput(ev ui.InputEvent) bool {
 	case ui.InputPointerDown:
 		if ev.Button != 0 {
 			return false
+		}
+		if a.ImageViewer.InlineActive && a.ImageViewer.InlinePageIndex == a.ImageViewer.Index && ev.Clicks == 1 {
+			a.toggleViewerInlinePlay()
+			return true
 		}
 		if ev.Clicks == 2 {
 			a.ImageViewer.Fit = !a.ImageViewer.Fit

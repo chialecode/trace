@@ -41,7 +41,7 @@ func (a *App) refreshGridLive(c *ui.Context, subs []subscription.Subscription, c
 }
 
 func (a *App) refreshLiveAccounts(c *ui.Context, ids []int64) {
-	if a.visibleLiveStopped || !a.backend.AccountStatus().LoggedIn {
+	if a.visibleLiveStopped || !a.backend.StatusOf("bilibili").LoggedIn {
 		return
 	}
 	if a.visibleLiveNextRead == nil {
@@ -72,7 +72,7 @@ func (a *App) refreshLiveAccounts(c *ui.Context, ids []int64) {
 	c.After(visibleLiveRefreshInterval)
 	backend := a.backend
 	requestGuarded(a, "visible-live", func() bool {
-		return a.CurrentRoute == RouteSubscriptions && backend.AccountStatus().LoggedIn
+		return a.CurrentRoute == RouteSubscriptions && backend.StatusOf("bilibili").LoggedIn
 	}, func(ctx context.Context) ([]live.RoomState, error) {
 		return backend.LiveStatus(ctx, due)
 	}, a.mergeLiveRooms, a.handleVisibleLiveError)

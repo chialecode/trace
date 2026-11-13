@@ -33,12 +33,24 @@
   - 遇到**比这个程序新**的结构（例如装回了旧版本）就拒绝启动，显示“这些数据来自更新的 TRACE 版本，请安装新版”，不写、不降级、不覆盖任何文件；
   - 遇到**比这个程序旧**的结构，迁移前先把旧文件复制为 `<文件>.premigrate-<旧版本>`（SQLite 连同 `-wal`），每个文件只留最近一份，再由各自的代码迁移。
 
+<a id="schema-v2"></a>
+- **多站点的结构版本 2**（NFR-DATA-004，DEC-043）：加入抖音时以下四个文件升到 2，其余仍是 1。迁移都在一个事务（JSON 为一次原子写）里完成，失败时保留原文件与 `.premigrate-1`，启动显示原因、不带着半迁移的数据继续；迁移可重复执行（已是 2 的文件不再动）。
+
+  | 文件 | 1 → 2 的变化 | 旧数据怎样对应 |
+  | --- | --- | --- |
+  | `library.db` | 条目、信息流与任务表加 `author_uid TEXT`（站点内作者主键：哔哩哔哩是十进制 `mid`，抖音是 `sec_uid`）及 `(site, author_uid)` 索引；按作者的筛选、统计与“有更新”改用 `(site, author_uid)` | 已有行 `author_uid = CAST(mid AS TEXT)`；`mid` 列保留，哔哩哔哩代码照常写 |
+  | `updates.db` | 新表 `site_scheduler_state(site 主键, 退避截止、退避级数、连续失败、最后停止原因与时间、每小时令牌时间戳)` 替代单行的 `scheduler_state`，以及 `account_baseline_pinned(site, uid, post_id)` 记录建立起点时已在列的置顶作品 ID | 原单行搬到 `site = 'bilibili'`；旧表保留不再写；`account_state`、`update_item` 原本就以 `(site, uid)` 为键，不变 |
+  | `ui-state.json` | 主页与媒体库的站点筛选 `feedFilter.site` 增加 `"all"`，默认 `"all"` | 版本 1 里只有默认值 `"bilibili"`（界面从未提供站点筛选），迁移时一次性改成 `"all"`；之后用户选的“B 站”原样保留 |
+  | `subscriptions.json` | 账号 `accounts[]` 可以是 `site: "douyin"`（`uid` 为 `sec_uid`），并可带 `webRid`、`uniqueId`；订阅校验按站点 | 原有账号原样保留（都是 `bilibili`）；共用缓存规则不变 |
+
+  `history.json` 只新增可选字段、保持 1：最近解析条目原本就带 `site`，删除与缩略图归属改按 `<site>:<kind>:<id>`。旧版本程序遇到版本 2 的文件按上面的规则拒绝启动，不会改写抖音数据。
+
 <a id="cache"></a>
 ## 2. 缓存
 
 ### 2.1 条目与文件夹
 
-缓存以动态为单位（DEC-018）。条目键：`dynamic:<id_str>`、`video:<bvid>`；直播录像为 `live:<room_id>:<开播时间>`（[直播 §4](live.md#recording-item)）。
+缓存以动态为单位（DEC-018）。条目键是 `<站点>:<类型>:<ID>`（`library.CanonicalItemKey`）：哔哩哔哩 `bilibili:dynamic:<id_str>`、`bilibili:video:<bvid>`、直播录像 `bilibili:live:<room_id>-<开播时间>`（[直播 §4](live.md#recording-item)）；抖音视频作品 `douyin:video:<aweme_id>`、图文作品 `douyin:dynamic:<aweme_id>`（与哔哩哔哩的图文动态同属“动态”类，主页与媒体库沿用同样的筛选）、直播录像 `douyin:live:<room_id>`。不带站点的旧键按哔哩哔哩解释。
 
 ```text
 <保存位置>/bilibili/<mid>/dynamics/<id_str>/item.json、images/01.jpg…、orig.json（转发的原动态快照）
@@ -46,7 +58,15 @@
 <保存位置>/bilibili/<mid>/lives/<room_id>-<开播时间>/item.json、cover.jpg、part-001.mp4…（见直播设计）
 ```
 
-文件名只用 ID 和序号，标题写在清单里，避免非法字符和超长路径。视频条目放在 UP 主自己的目录下，被动态引用；投稿列表和视频页直接缓存的也是同一个视频条目。
+抖音（DEC-043）的作者目录用 `sec_uid` 的短哈希（SHA-256 前 12 个十六进制字符），不用昵称，也不用会变的抖音号；完整 `sec_uid` 写在清单的作者里：
+
+```text
+<保存位置>/douyin/<sec_uid 短哈希>/works/<aweme_id>/item.json、cover.jpg、video.mp4（视频作品）
+<保存位置>/douyin/<sec_uid 短哈希>/works/<aweme_id>/item.json、cover.jpg、images/01.jpg…、images/01_live.mp4…、music.m4a（图文作品，扩展名按实际格式）
+<保存位置>/douyin/<sec_uid 短哈希>/lives/<room_id>/item.json、cover.jpg、part-001.mp4…
+```
+
+“添加已有的缓存文件夹”同样扫描 `douyin/*/{works,lives}/*/item.json`。文件名只用 ID 和序号，标题写在清单里，避免非法字符和超长路径。视频条目放在 UP 主自己的目录下，被动态引用；投稿列表和视频页直接缓存的也是同一个视频条目。
 
 ### 2.2 清单 `item.json`
 
@@ -57,18 +77,28 @@
 - `available`：缓存当时站点列出的档位快照（`accept_quality`、`support_formats` 的 `quality`/`need_vip`、返回流里的最高档、是否有杜比/无损音频）与探测时间；
 - `danmaku`：弹幕文件、条数、取得时间（没开设置时记 `skipped`）；`subtitles`：每种语言的 `lan`、`lan_doc`、是否 AI、VTT 与 SRT 文件。
 
-只存公开内容；图片原始 URL 可以存（公开 CDN，去掉尺寸后缀），**视频的签名播放地址不存**。播放数、点赞数、评论数这类会变的互动数据不缓存（DEC-040）。
+抖音条目的作者另记 `site`、`uid`（`sec_uid`）与抖音号；视频作品记实际与可选的档位（分辨率、编码、帧率、码率、档位名）；图文记配乐（标题、作者、时长、文件）。
+
+只存公开内容；哔哩哔哩的图片原始 URL 可以存（公开 CDN，去掉尺寸后缀），**视频的签名播放地址不存**；抖音的图片与媒体地址都带签名与过期参数，**一律不存**。播放数、点赞数、评论数这类会变的互动数据不缓存（DEC-040）。
 
 ### 2.3 内容范围
 
 | 动态类型 | 保存 |
 | --- | --- |
 | 视频 | 正文 + 引用的视频条目（封面 + 全部分 P，按第 2.5 节选流） |
-| 图文、带图文字 | 正文 + 全部原图；实况照片另存动态片段 `images/NN_live.mp4`（角色 `motion`，静帧的 `motion` 字段指向它，下载失败记为部分缓存，DEC-040） |
+| 图文、带图文字 | 正文 + 全部原图；实况照片另存动态片段 `images/NN_live.mp4`（角色 `motion`，静帧的 `motion` 字段指向它；按下面的单文件 MP4 校验并保证 `moov` 在前，系统播放器也能预览；下载或校验失败删掉片段、记为部分缓存，DEC-040、DEC-046 ①） |
 | 纯文字 | 正文 |
 | 转发 | 转发正文 + 原动态快照，原动态的图片和视频按上两行保存 |
 | 专栏 | 标题、摘要、封面与摘要里的图；全文待实现（FR-FEED-002），记为部分缓存 |
 | 直播、番剧、课程、音乐、商品等 | 正文与封面，记为部分缓存并写明类型不支持 |
+
+抖音作品（FR-DY-005、FR-DY-006）：
+
+| 作品 | 保存 |
+| --- | --- |
+| 视频 | 文案、发布信息、封面（`origin_cover` 优先）、一个无水印单文件 MP4（第 2.5 节） |
+| 图文 | 文案、发布信息与按顺序的每一页（`images[]` 可以混排三种页）：图片页存无水印原图（`images[].url_list`，不用带水印的 `download_url_list`）；实况照片存静帧与片段（`images/NN_live.mp4`，角色 `motion`）；视频页（有 `images[i].video` 但不是实况照片）存封面 `images/NN.<扩展名>` 与视频 `images/NN.mp4`（角色 `video`，按下面的单文件 MP4 校验，选流规则同视频作品）；认不出的页存能拿到的图片并在清单的该页记 `unknownKind`。配乐 `music.<扩展名>`（角色 `audio`）；配乐没有地址（版权限制）记为缺失项并写明原因 |
+| 付费、加密、已删除、私密 | 不缓存，说明原因 |
 
 <a id="tasks"></a>
 ### 2.4 任务与下载器
@@ -99,14 +129,16 @@
 ### 2.5 选流（DEC-024）
 
 - **视频**：用协议资料 §14 的清晰度排序表，在这次返回的 `dash.video[]` 里取最高的一档（`videoQuality` 为上限时取不超过上限的最高档）；同档内按 `codecOrder` 选编码（默认 AVC → AV1 → HEVC：AVC 在 Windows Media Foundation 下全部机器原生可解；AV1 / HEVC 在装有系统视频扩展时可解，不可解时播放层提示并可一键调用系统播放器打开）。实际编码与偏好不同时记在清单里。
-- **音频**：`audioQuality=best` 时按 无损（`dash.flac.audio`，30251）> 杜比（`dash.dolby.audio[]`，30250）> 192K > 132K > 64K 取最高；响应完全没有音频时只存视频。杜比或无损音轨只有取得应用内解码证据后才直接合并；当前 M1 将两者原样另存为 `Pxx.audio-<代码>.m4a`，主 MP4 合并最好的普通 AAC，清单记两者关系（[媒体选型 §1.1](../research/2026-11-05-media.md#hires-audio)、Q-005）。已返回最高音轨但 AAC 后备缺失/下载失败时，保留完成的最高轨并记缺失/失败，不生成静音的完成主视频。
+- **音频**：`audioQuality=best` 时按 无损（`dash.flac.audio`，30251）> 杜比（`dash.dolby.audio[]`，30250）> 192K > 132K > 64K 取最高；响应完全没有音频时只存视频。杜比或无损音轨只有取得应用内解码证据后才直接合并；目前将两者原样另存为 `Pxx.audio-<代码>.m4a`，主 MP4 合并最好的普通 AAC，清单记两者关系（[媒体选型 §1.1](../research/2026-11-05-media.md#hires-audio)、Q-005）。已返回最高音轨但 AAC 后备缺失/下载失败时，保留完成的最高轨并记缺失/失败，不生成静音的完成主视频。
 - **多 P**：`multiPart=all` 时全部分 P。
+- **抖音视频**（DEC-043 ⑤）：档位都在作品详情的 `video.bit_rate[]` 里，不另请求播放地址。先排除带水印地址与 `is_bytevc1 == 2`，再按分辨率档（短边归一到 2160/1440/1080/720/540/480）取最高，`videoQuality` 为上限时取不超过上限的最高档；同档内按 `codecOrder`，再按帧率、码率、文件大小。同一档的地址列表里直连 CDN 优先，回源跳转地址排最后（[抖音协议 §6.5](../research/douyin.md#playurl)）。
 - 付费或会员内容只给试看时，不存试看片段，记为部分缓存并写明原因。
 
 <a id="merge"></a>
 ### 2.6 合并、校验与状态圆点
 
 - **合并**：用 mp4ff 把视频流和音频流合成一个 MP4（Q-003）：`ftyp` + `moov` 在前、音视频约 1 秒一块交错写入、带编辑列表、各轨时长与源流一致（NFR-MEDIA-001）。合并成功后删掉中间流文件；合并失败时保留两个流文件，记为部分缓存“合并失败”。
+- **单文件 MP4**（抖音视频、混排图文视频页、抖音与哔哩哔哩的实况片段；哔哩哔哩实况片段不核对预期时长，DEC-046 ①，[ACT-019](../../USER-ACTIONS.md#act-019) 实测站点给的是 `moov` 在前的 AVC MP4）：不合并。下载完成后以懒加载模式核对顶层 box 总长与文件长度一致、非分片结构（不含 `moof`）、至少含一条有效非加密视频轨（有音频轨就一起核对，拒绝 `encv`/`enca`/`sinf` 等 CENC 加密样本项）、正时长且与站点给的预期时长误差不超过 2 秒（不要求 `elst` 编辑列表）。`moov` 已在 `mdat` 之前时直接计算 SHA-256 通过；`moov` 在 `mdat` 之后时用 mp4ff 在磁盘上把 `moov` 移到 `mdat` 之前（按文件区间流式顺序拷贝 `mdat` 载荷、不把整个文件读进内存，平移全部轨道的 `stco`/`co64` 块偏移并在超 32 位上限时自动升级为 `co64`，写同目录临时文件、`fsync` 后原子改名；改写失败清理临时文件、保留原文件不动并记为部分缓存）。图片按文件头与 `Content-Type` 决定扩展名，拒绝 HTML/JSON 伪装的响应。
 - **校验**：文件长度与响应一致；合并后的 MP4 能被解析出视频轨（和音频轨），时长与站点给的误差不超过 2 秒；记录 SHA-256。全部通过后才把 `*.part` 改为正式名并写清单（INV-06）。
 - **状态圆点**（FR-CACHE-004）由后端推算，前端只负责显示：
 
@@ -153,7 +185,7 @@
 
 改为 `mygo/ui` 原生界面（DEC-032）后，图片查看器与视频/弹幕/字幕播放器在 Go 进程内直接读取本机文件，不再经过 WebView 自定义协议。所有本机媒体读取统一通过 `Library.MediaPath(key, relPath)`（暴露为 `LibraryService.MediaPath`）解析绝对路径：
 
-- **登记白名单（INV-08）**：只允许打开索引与 `item.json` 里登记在该 `key` 下的媒体文件（封面、图片、`Pxx.mp4`、`part-NNN.mp4`、`Pxx.danmaku.xml`、`Pxx.<lan>.vtt`/`.srt`）；未登记的文件名或属于其他条目的路径一律拒绝。
+- **登记白名单（INV-08）**：只允许打开索引与 `item.json` 里登记在该 `key` 下的媒体文件（封面、图片、`Pxx.mp4`、`video.mp4`、`images/NN_live.mp4`、`images/NN.mp4`、`music.*`、`part-NNN.mp4`、`Pxx.danmaku.xml`、`Pxx.<lan>.vtt`/`.srt`）；未登记的文件名或属于其他条目的路径一律拒绝。在线浏览未缓存的抖音图文配乐或混排视频页时，经 `StagePreviewMedia` 在白名单、不带 Cookie 条件下暂存到 `<数据目录>/cache/preview/` 后再交给本地播放器。
 - **路径与链接安全**：路径在服务端由“条目所在保存位置 + 条目相对目录 + 清单里的相对路径”拼出；每段路径拒绝 `.`、`..`、反斜杠、空字节与冒号，用 `filepath.Rel` 确认没有跑出条目文件夹，并用 `os.Lstat` 与 `filepath.EvalSymlinks` 拒绝符号链接或目录联接（Junction）逃逸（INV-08）。
 - 缩略图：图片直接读取缓存原图并在 `mygo/ui` 中按网格尺寸缩放渲染；视频与直播录像使用登记的封面文件 `cover.jpg`。
 

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +19,7 @@ import (
 	"github.com/chialecode/trace/internal/download"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/settings"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/storage"
 )
@@ -35,11 +35,13 @@ type AvatarRef struct {
 
 // AccountRef represents a site account associated with a Subscription (subscriptions.md §1).
 type AccountRef struct {
-	Site    string `json:"site"`
-	UID     string `json:"uid"`
-	Name    string `json:"name"`
-	Face    string `json:"face"`
-	AddedAt string `json:"addedAt"`
+	Site     string `json:"site"`
+	UID      string `json:"uid"`
+	UniqueID string `json:"uniqueId,omitempty"`
+	WebRID   string `json:"webRid,omitempty"`
+	Name     string `json:"name"`
+	Face     string `json:"face"`
+	AddedAt  string `json:"addedAt"`
 }
 
 // AutoCacheRule configures automatic caching for a subscription (subscriptions.md §1 & §4).
@@ -131,6 +133,8 @@ type UpdateItem struct {
 
 // SchedulerState represents the persistent scheduler backoff and token bucket state in updates.db (subscriptions.md §3).
 type SchedulerState struct {
+	Site                string  `json:"site,omitempty"`
+	BackoffLevel        int     `json:"backoffLevel,omitempty"`
 	ConsecutiveFailures int     `json:"consecutiveFailures"`
 	BackoffUntil        string  `json:"backoffUntil"`
 	LastStopReason      string  `json:"lastStopReason"`
@@ -140,23 +144,28 @@ type SchedulerState struct {
 
 // CheckSummary reports the result of a manual or scheduled subscription check run.
 type CheckSummary struct {
-	StartedAt            string   `json:"startedAt"`
-	FinishedAt           string   `json:"finishedAt"`
-	CheckedCreators      int      `json:"checkedCreators"`
-	TotalCreators        int      `json:"totalCreators"`
-	CurrentUID           string   `json:"currentUid,omitempty"`
-	Canceled             bool     `json:"canceled,omitempty"`
-	BaselineInitialized  int      `json:"baselineInitialized"`
-	NewVideos            int      `json:"newVideos"`
-	NewDynamics          int      `json:"newDynamics"`
-	AutoCacheTasks       int      `json:"autoCacheTasks"`
-	AutoCacheBacklog     int      `json:"autoCacheBacklog"`
-	FailedCreators       int      `json:"failedCreators"`
-	StoppedByRiskControl bool     `json:"stoppedByRiskControl"`
-	DeferredByQuota      bool     `json:"deferredByQuota,omitempty"`
-	DeferredByBackoff    bool     `json:"deferredByBackoff,omitempty"`
-	GapAccounts          []string `json:"gapAccounts,omitempty"`
-	Errors               []string `json:"errors,omitempty"`
+	StartedAt             string            `json:"startedAt"`
+	FinishedAt            string            `json:"finishedAt"`
+	CheckedCreators       int               `json:"checkedCreators"`
+	TotalCreators         int               `json:"totalCreators"`
+	CurrentUID            string            `json:"currentUid,omitempty"`
+	Canceled              bool              `json:"canceled,omitempty"`
+	BaselineInitialized   int               `json:"baselineInitialized"`
+	NewVideos             int               `json:"newVideos"`
+	NewDynamics           int               `json:"newDynamics"`
+	AutoCacheTasks        int               `json:"autoCacheTasks"`
+	AutoCacheBacklog      int               `json:"autoCacheBacklog"`
+	FailedCreators        int               `json:"failedCreators"`
+	StoppedByRiskControl  bool              `json:"stoppedByRiskControl"`
+	DeferredByQuota       bool              `json:"deferredByQuota,omitempty"`
+	DeferredByBackoff     bool              `json:"deferredByBackoff,omitempty"`
+	SiteStopped           map[string]string `json:"siteStopped,omitempty"`
+	SiteDeferredByQuota   []string          `json:"siteDeferredByQuota,omitempty"`
+	SiteDeferredByBackoff []string          `json:"siteDeferredByBackoff,omitempty"`
+	SkippedUnauthSites    []string          `json:"skippedUnauthSites,omitempty"`
+	IncompleteAccounts    []string          `json:"incompleteAccounts,omitempty"`
+	GapAccounts           []string          `json:"gapAccounts,omitempty"`
+	Errors                []string          `json:"errors,omitempty"`
 }
 
 // Manager coordinates subscription persistence (subscriptions.json + .bak), updates.db state, incremental checks, and scheduling.
@@ -174,6 +183,15 @@ type Manager struct {
 	onEvent     func(CheckSummary)
 	liveCheck   func(context.Context, []int64) error
 	nowFunc     func() time.Time
+
+	fetchers               map[site.ID]site.SubscriptionFetcher
+	siteAuthCheck          func(site.ID) bool
+	autoCacheEnqueuers     map[site.ID]AutoCacheEnqueueFunc
+	onLiveHint             func(acc AccountRef, roomID, webRID string)
+	siteLiveCheck          func(ctx context.Context, accounts []AccountRef) error
+	sleepFunc              func(ctx context.Context, d time.Duration) error
+	siteIntervals          map[string]time.Duration
+	accountIntervalTouched bool
 
 	accountInterval      time.Duration
 	corruptRecovered     bool
@@ -220,17 +238,21 @@ func NewManagerWithUpdatesDB(
 		updatesDB = db
 	}
 	m := &Manager{
-		db:              db,
-		updatesDB:       updatesDB,
-		subsPath:        subsPath,
-		lib:             lib,
-		dl:              dl,
-		client:          client,
-		subSettings:     subSettings,
-		onEvent:         onEvent,
-		nowFunc:         time.Now,
-		accountInterval: 2 * time.Second,
-		schedWake:       make(chan struct{}, 1),
+		db:                 db,
+		updatesDB:          updatesDB,
+		subsPath:           subsPath,
+		lib:                lib,
+		dl:                 dl,
+		client:             client,
+		subSettings:        subSettings,
+		onEvent:            onEvent,
+		nowFunc:            time.Now,
+		fetchers:           make(map[site.ID]site.SubscriptionFetcher),
+		autoCacheEnqueuers: make(map[site.ID]AutoCacheEnqueueFunc),
+		sleepFunc:          defaultSubscriptionSleep,
+		siteIntervals:      make(map[string]time.Duration),
+		accountInterval:    DefaultBilibiliAccountInterval,
+		schedWake:          make(chan struct{}, 1),
 	}
 	if err := m.initSchema(); err != nil {
 		return nil, err
@@ -274,6 +296,7 @@ func (m *Manager) SetNowFunc(fn func() time.Time) {
 func (m *Manager) SetAccountInterval(d time.Duration) {
 	m.mu.Lock()
 	m.accountInterval = d
+	m.accountIntervalTouched = true
 	m.mu.Unlock()
 }
 
@@ -322,71 +345,48 @@ func (m *Manager) initSchema() error {
 		return err
 	}
 	_, _ = m.db.Exec(`ALTER TABLE subscriptions ADD COLUMN raw_json TEXT NOT NULL DEFAULT ''`)
-
-	updatesStmts := []string{
-		`CREATE TABLE IF NOT EXISTS account_state (
-			site TEXT NOT NULL,
-			uid TEXT NOT NULL,
-			baseline_at TEXT NOT NULL DEFAULT '',
-			last_checked_at TEXT NOT NULL DEFAULT '',
-			last_kind TEXT NOT NULL DEFAULT '',
-			newest_id TEXT NOT NULL DEFAULT '',
-			newest_ts INTEGER NOT NULL DEFAULT 0,
-			note TEXT NOT NULL DEFAULT '',
-			unlinked_at TEXT NOT NULL DEFAULT '',
-			PRIMARY KEY (site, uid)
-		);`,
-		`CREATE TABLE IF NOT EXISTS update_item (
-			site TEXT NOT NULL,
-			uid TEXT NOT NULL,
-			dyn_id TEXT NOT NULL,
-			pub_ts INTEGER NOT NULL DEFAULT 0,
-			type TEXT NOT NULL DEFAULT '',
-			snapshot TEXT NOT NULL DEFAULT '',
-			discovered_at TEXT NOT NULL DEFAULT '',
-			seen_at TEXT NOT NULL DEFAULT '',
-			baseline_snapshot INTEGER NOT NULL DEFAULT 0,
-			auto_task_id TEXT NOT NULL DEFAULT '',
-			PRIMARY KEY (site, uid, dyn_id)
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_update_item_pub ON update_item(site, uid, pub_ts DESC, dyn_id DESC);`,
-		`CREATE TABLE IF NOT EXISTS scheduler_state (
-			id INTEGER PRIMARY KEY CHECK (id = 1),
-			consecutive_failures INTEGER NOT NULL DEFAULT 0,
-			backoff_until TEXT NOT NULL DEFAULT '',
-			last_stop_reason TEXT NOT NULL DEFAULT '',
-			last_stop_at TEXT NOT NULL DEFAULT '',
-			token_timestamps_json TEXT NOT NULL DEFAULT '[]'
-		);`,
-		`INSERT OR IGNORE INTO scheduler_state (id, consecutive_failures, backoff_until, last_stop_reason, last_stop_at, token_timestamps_json)
-		 VALUES (1, 0, '', '', '', '[]');`,
-	}
-	for _, stmt := range updatesStmts {
-		if _, err := m.updatesDB.Exec(stmt); err != nil {
-			return err
-		}
-	}
-	return m.migrateBaselineSnapshots()
+	return m.initUpdatesSchemaV2()
 }
 
 func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 	if m.subsPath == "" {
 		return nil
 	}
-	m.rules = nil
-	m.ensureDefaultRuleLocked()
 	raw, err := os.ReadFile(m.subsPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			m.rules = nil
+			m.ensureDefaultRuleLocked()
 			return nil
 		}
 		return err
 	}
+
+	var rawVersion struct {
+		Version *int `json:"version"`
+	}
+	needsMigration := false
+	if err := json.Unmarshal(raw, &rawVersion); err == nil {
+		if rawVersion.Version != nil && *rawVersion.Version > CurrentSchemaVersion {
+			return &storage.NewerDataError{
+				File:      filepath.Base(m.subsPath),
+				Found:     *rawVersion.Version,
+				Supported: CurrentSchemaVersion,
+			}
+		}
+		needsMigration = rawVersion.Version == nil || *rawVersion.Version < CurrentSchemaVersion
+	}
+
+	prevRules := append([]CacheRule(nil), m.rules...)
+	m.rules = nil
+	m.ensureDefaultRuleLocked()
+
 	var sf subscriptionsFile
 	if err := json.Unmarshal(raw, &sf); err != nil {
 		// Corrupt subscriptions.json: rename and keep, set corruptRecovered = true (data-and-cache.md §1).
 		corruptPath := fmt.Sprintf("%s.corrupt-%s", m.subsPath, m.nowFunc().UTC().Format("20060102-150405"))
 		if err := os.Rename(m.subsPath, corruptPath); err != nil {
+			m.rules = prevRules
 			return err
 		}
 		m.corruptRecovered = true
@@ -400,29 +400,30 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 	seenAccounts := make(map[string]bool)
 	tx, err := m.db.Begin()
 	if err != nil {
+		m.rules = prevRules
 		return err
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`DELETE FROM subscriptions`); err != nil {
+		m.rules = prevRules
 		return err
 	}
+	migratedSubs := make([]Subscription, 0, len(sf.Subscriptions))
 	for _, sub := range sf.Subscriptions {
 		hadAccounts := len(sub.Accounts) > 0
 		var cleanAccs []AccountRef
 		for _, acc := range sub.Accounts {
-			if acc.Site == "" {
-				acc.Site = "bilibili"
+			normAcc, ok := normalizeSubscriptionAccountForLoad(acc)
+			if !ok {
+				continue
 			}
-			if id, err := strconv.ParseInt(acc.UID, 10, 64); err == nil && id > 0 {
-				acc.UID = strconv.FormatInt(id, 10)
-			}
-			key := acc.Site + ":" + acc.UID
+			key := normAcc.Site + ":" + normAcc.UID
 			if seenAccounts[key] {
 				m.duplicateAccountWarn = true
 				continue
 			}
 			seenAccounts[key] = true
-			cleanAccs = append(cleanAccs, acc)
+			cleanAccs = append(cleanAccs, normAcc)
 			if len(cleanAccs) >= 20 {
 				break
 			}
@@ -434,10 +435,27 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 		syncSubFields(&sub, m.nowFunc())
 		m.bindRuleLocked(&sub)
 		if err := upsertSubscriptionRow(tx, sub); err != nil {
+			m.rules = prevRules
+			return err
+		}
+		migratedSubs = append(migratedSubs, sub)
+	}
+	if needsMigration {
+		out := subscriptionsFile{
+			Version:       CurrentSchemaVersion,
+			Subscriptions: migratedSubs,
+			CacheRules:    m.rules,
+		}
+		if err := storage.WriteMigratedJSONAtomic(m.subsPath, out, 0o600); err != nil {
+			m.rules = prevRules
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		m.rules = prevRules
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) writeSubscriptionsToDiskLocked() (writeErr error) {
@@ -458,7 +476,7 @@ func (m *Manager) writeSubscriptionsToDiskLocked() (writeErr error) {
 		}
 	}
 	sf := subscriptionsFile{
-		Version:       1,
+		Version:       CurrentSchemaVersion,
 		Subscriptions: subs,
 		CacheRules:    m.rules,
 	}
@@ -551,6 +569,7 @@ func (m *Manager) cleanupExpiredUnlinkedAccountsLocked() {
 
 	for _, c := range toDelete {
 		_, _ = m.updatesDB.Exec(`DELETE FROM update_item WHERE site = ? AND uid = ?`, c.site, c.uid)
+		_, _ = m.updatesDB.Exec(`DELETE FROM account_baseline_pinned WHERE site = ? AND uid = ?`, c.site, c.uid)
 		_, _ = m.updatesDB.Exec(`DELETE FROM account_state WHERE site = ? AND uid = ?`, c.site, c.uid)
 	}
 }
@@ -578,8 +597,10 @@ func syncSubFields(s *Subscription, now time.Time) {
 		if s.Accounts[i].Site == "" {
 			s.Accounts[i].Site = "bilibili"
 		}
-		if id, err := strconv.ParseInt(s.Accounts[i].UID, 10, 64); err == nil && id > 0 {
-			s.Accounts[i].UID = strconv.FormatInt(id, 10)
+		if s.Accounts[i].Site == "bilibili" {
+			if id, err := strconv.ParseInt(s.Accounts[i].UID, 10, 64); err == nil && id > 0 {
+				s.Accounts[i].UID = strconv.FormatInt(id, 10)
+			}
 		}
 	}
 
@@ -602,7 +623,12 @@ func syncSubFields(s *Subscription, now time.Time) {
 		if primary.AddedAt == "" {
 			primary.AddedAt = s.CreatedAt
 		}
-		s.Mid, _ = strconv.ParseInt(primary.UID, 10, 64)
+		s.Site = primary.Site
+		if primary.Site == "bilibili" {
+			s.Mid, _ = strconv.ParseInt(primary.UID, 10, 64)
+		} else {
+			s.Mid = 0
+		}
 		s.Uname, s.Face = primary.Name, primary.Face
 		avatarLinked := false
 		for _, account := range s.Accounts {
@@ -615,7 +641,11 @@ func syncSubFields(s *Subscription, now time.Time) {
 		s.Avatar = AvatarRef{}
 	}
 	if s.Name == "" {
-		s.Name = firstNonEmptyStr(s.Uname, fmt.Sprintf("UID %d", s.Mid))
+		if len(s.Accounts) > 0 && s.Accounts[0].Site == "douyin" {
+			s.Name = firstNonEmptyStr(s.Uname, firstNonEmptyStr(s.Accounts[0].UniqueID, s.Accounts[0].UID))
+		} else {
+			s.Name = firstNonEmptyStr(s.Uname, fmt.Sprintf("UID %d", s.Mid))
+		}
 	}
 	if s.Uname == "" {
 		s.Uname = s.Name
@@ -714,7 +744,7 @@ func (m *Manager) UpdateSettings(s settings.SubscriptionSettings) {
 
 func (m *Manager) scheduleLoop(ctx context.Context, checkOnStartup bool) {
 	defer m.wg.Done()
-	if checkOnStartup && m.client.HasAuth() {
+	if checkOnStartup && m.hasAnySiteAuth() {
 		_, _ = m.RunScheduledRound(ctx)
 	}
 
@@ -747,7 +777,7 @@ func (m *Manager) scheduleLoop(ctx context.Context, checkOnStartup bool) {
 			timer.Stop()
 			continue
 		case <-timer.C:
-			if m.client.HasAuth() {
+			if m.hasAnySiteAuth() {
 				_, _ = m.RunScheduledRound(ctx)
 			}
 		}
@@ -777,11 +807,16 @@ func (m *Manager) Create(name, note string, accounts []AccountRef, rules SubRule
 		}
 	}()
 
+	normAccounts := make([]AccountRef, 0, len(accounts))
 	for _, acc := range accounts {
-		site := firstNonEmptyStr(acc.Site, "bilibili")
-		if owner, ok := m.ownerOfLocked(site, acc.UID); ok {
-			return owner, fmt.Errorf("%w: %s:%s is owned by %s (%s)", ErrAccountConflict, site, acc.UID, owner.Name, owner.ID)
+		norm, err := NormalizeAndValidateAccount(acc)
+		if err != nil {
+			return Subscription{}, err
 		}
+		if owner, ok := m.ownerOfLocked(norm.Site, norm.UID); ok {
+			return owner, fmt.Errorf("%w: %s:%s is owned by %s (%s)", ErrAccountConflict, norm.Site, norm.UID, owner.Name, owner.ID)
+		}
+		normAccounts = append(normAccounts, norm)
 	}
 
 	now := m.nowFunc()
@@ -792,7 +827,7 @@ func (m *Manager) Create(name, note string, accounts []AccountRef, rules SubRule
 		Name:      strings.TrimSpace(name),
 		Note:      strings.TrimSpace(note),
 		CreatedAt: now.UTC().Format(time.RFC3339),
-		Accounts:  accounts,
+		Accounts:  normAccounts,
 		Rules:     rules,
 		Enabled:   rules.ScheduledCheck,
 	}
@@ -813,15 +848,15 @@ func (m *Manager) Create(name, note string, accounts []AccountRef, rules SubRule
 func (m *Manager) OwnerOf(site, uid string) (Subscription, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if site == "" {
-		site = "bilibili"
-	}
-	return m.ownerOfLocked(site, uid)
+	return m.ownerOfLocked(normalizeSchedulerSite(site), uid)
 }
 
 func (m *Manager) ownerOfLocked(site, uid string) (Subscription, bool) {
-	if id, err := strconv.ParseInt(uid, 10, 64); err == nil && id > 0 {
-		uid = strconv.FormatInt(id, 10)
+	site = normalizeSchedulerSite(site)
+	if site == "bilibili" {
+		if id, err := strconv.ParseInt(uid, 10, 64); err == nil && id > 0 {
+			uid = strconv.FormatInt(id, 10)
+		}
 	}
 	subs, err := m.listLocked()
 	if err != nil {
@@ -842,63 +877,21 @@ func (m *Manager) ownerOfLocked(site, uid string) (Subscription, bool) {
 
 // Link associates <site>:<uid> with subscription subID. If the account already belongs to another subscription, returns (ownerSub, ErrAccountConflict).
 func (m *Manager) Link(subID, site, uid, name, face string) (result Subscription, resultErr error) {
-	if id, err := strconv.ParseInt(uid, 10, 64); err == nil && id > 0 {
-		uid = strconv.FormatInt(id, 10)
-	}
-	if err := validateSubscriptionInput("", "", []AccountRef{{Site: site, UID: uid}}); err != nil {
-		return Subscription{}, err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	before, snapshotErr := m.listLocked()
-	if snapshotErr != nil {
-		return Subscription{}, snapshotErr
-	}
-	defer func() {
-		if resultErr != nil {
-			resultErr = errors.Join(resultErr, m.restoreSubscriptionViewLocked(before))
-		}
-	}()
-
-	if site == "" {
-		site = "bilibili"
-	}
-	target, ok, err := m.findByIDOrSubIDLocked(subID)
-	if err != nil || !ok {
-		return Subscription{}, fmt.Errorf("subscription: %s not found", subID)
-	}
-	if owner, owned := m.ownerOfLocked(site, uid); owned {
-		if owner.ID == target.ID || owner.SubID == target.SubID {
-			return target, nil
-		}
-		return owner, fmt.Errorf("%w: %s:%s already belongs to %s", ErrAccountConflict, site, uid, owner.Name)
-	}
-	if len(target.Accounts) >= 20 {
-		return Subscription{}, fmt.Errorf("subscription: maximum 20 accounts per subscription reached")
-	}
-	nowStr := m.nowFunc().UTC().Format(time.RFC3339)
-	target.Accounts = append(target.Accounts, AccountRef{
-		Site:    site,
-		UID:     uid,
-		Name:    name,
-		Face:    face,
-		AddedAt: nowStr,
+	return m.LinkAccount(subID, AccountRef{
+		Site: site,
+		UID:  uid,
+		Name: name,
+		Face: face,
 	})
-	_, _ = m.updatesDB.Exec(`UPDATE account_state SET unlinked_at = '' WHERE site = ? AND uid = ?`, site, uid)
-	syncSubFields(&target, m.nowFunc())
-	if err := m.upsertRowLocked(target); err != nil {
-		return Subscription{}, err
-	}
-	if err := m.writeSubscriptionsToDiskLocked(); err != nil {
-		return Subscription{}, err
-	}
-	return target, nil
 }
 
 // Unlink removes <site>:<uid> from subscription subID while preserving its account_state and update_item rows in updates.db (subscriptions.md §2).
 func (m *Manager) Unlink(subID, site, uid string) (result Subscription, resultErr error) {
-	if id, err := strconv.ParseInt(uid, 10, 64); err == nil && id > 0 {
-		uid = strconv.FormatInt(id, 10)
+	site = normalizeSchedulerSite(site)
+	if site == "bilibili" {
+		if id, err := strconv.ParseInt(uid, 10, 64); err == nil && id > 0 {
+			uid = strconv.FormatInt(id, 10)
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -912,9 +905,6 @@ func (m *Manager) Unlink(subID, site, uid string) (result Subscription, resultEr
 		}
 	}()
 
-	if site == "" {
-		site = "bilibili"
-	}
 	target, ok, err := m.findByIDOrSubIDLocked(subID)
 	if err != nil || !ok {
 		return Subscription{}, fmt.Errorf("subscription: %s not found", subID)
@@ -927,7 +917,7 @@ func (m *Manager) Unlink(subID, site, uid string) (result Subscription, resultEr
 		kept = append(kept, a)
 	}
 	target.Accounts = kept
-	if len(kept) > 0 {
+	if len(kept) > 0 && kept[0].Site == "bilibili" {
 		if parsedMid, pErr := strconv.ParseInt(kept[0].UID, 10, 64); pErr == nil {
 			target.Mid = parsedMid
 		}
@@ -946,14 +936,13 @@ func (m *Manager) Unlink(subID, site, uid string) (result Subscription, resultEr
 	return target, nil
 }
 
-// Move atomically moves <site>:<uid> from its current owner subscription to toSubID under a single lock and single file write (R-09).
+// Move atomically moves <site>:<uid> from its current owner subscription to toSubID under a single lock and single file write.
 func (m *Manager) Move(site, uid, toSubID string) (result Subscription, resultErr error) {
-	if err := validateSubscriptionInput("", "", []AccountRef{{Site: site, UID: uid}}); err != nil {
+	normAcc, err := NormalizeAndValidateAccount(AccountRef{Site: site, UID: uid})
+	if err != nil {
 		return Subscription{}, err
 	}
-	if id, err := strconv.ParseInt(uid, 10, 64); err == nil {
-		uid = strconv.FormatInt(id, 10)
-	}
+	site, uid = normAcc.Site, normAcc.UID
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	before, snapshotErr := m.listLocked()
@@ -966,9 +955,6 @@ func (m *Manager) Move(site, uid, toSubID string) (result Subscription, resultEr
 		}
 	}()
 
-	if site == "" {
-		site = "bilibili"
-	}
 	dest, ok, err := m.findByIDOrSubIDLocked(toSubID)
 	if err != nil || !ok {
 		return Subscription{}, fmt.Errorf("subscription: destination %s not found", toSubID)
@@ -999,7 +985,7 @@ func (m *Manager) Move(site, uid, toSubID string) (result Subscription, resultEr
 			kept = append(kept, a)
 		}
 		owner.Accounts = kept
-		if len(kept) > 0 {
+		if len(kept) > 0 && kept[0].Site == "bilibili" {
 			if parsedMid, pErr := strconv.ParseInt(kept[0].UID, 10, 64); pErr == nil {
 				owner.Mid = parsedMid
 			}
@@ -1067,10 +1053,17 @@ func (m *Manager) SetRules(subID string, rules SubRules) (result Subscription, r
 	return sub, nil
 }
 
-// Upsert creates or updates a creator subscription idempotently (C29).
+// Upsert creates or updates a creator subscription idempotently.
 func (m *Manager) Upsert(in Subscription) (result Subscription, resultErr error) {
 	if err := validateSubscriptionInput(in.Name, in.Note, in.Accounts); err != nil {
 		return Subscription{}, err
+	}
+	for i := range in.Accounts {
+		norm, err := NormalizeAndValidateAccount(in.Accounts[i])
+		if err != nil {
+			return Subscription{}, err
+		}
+		in.Accounts[i] = norm
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1088,18 +1081,28 @@ func (m *Manager) Upsert(in Subscription) (result Subscription, resultErr error)
 		return Subscription{}, fmt.Errorf("subscription: invalid creator mid %d", in.Mid)
 	}
 	now := m.nowFunc()
-	if existing, ok, _ := m.findByIDOrSubIDLocked(firstNonEmptyStr(in.SubID, fmt.Sprintf("bilibili:%d", in.Mid))); ok {
-		if in.ID == "" {
-			in.ID = existing.ID
+	lookupKey := in.SubID
+	if lookupKey == "" {
+		if in.ID != "" {
+			lookupKey = in.ID
+		} else if in.Mid > 0 {
+			lookupKey = fmt.Sprintf("bilibili:%d", in.Mid)
 		}
-		if in.CreatedAt == "" {
-			in.CreatedAt = existing.CreatedAt
-		}
-		if len(in.Accounts) == 0 {
-			in.Accounts = existing.Accounts
-		}
-		if in.Rules.AutoCache.Since == "" && existing.Rules.AutoCache.Since != "" {
-			in.Rules = existing.Rules
+	}
+	if lookupKey != "" {
+		if existing, ok, _ := m.findByIDOrSubIDLocked(lookupKey); ok {
+			if in.ID == "" {
+				in.ID = existing.ID
+			}
+			if in.CreatedAt == "" {
+				in.CreatedAt = existing.CreatedAt
+			}
+			if len(in.Accounts) == 0 {
+				in.Accounts = existing.Accounts
+			}
+			if in.Rules.AutoCache.Since == "" && existing.Rules.AutoCache.Since != "" {
+				in.Rules = existing.Rules
+			}
 		}
 	}
 	syncSubFields(&in, now)
@@ -1166,7 +1169,7 @@ func upsertSubscriptionRow(executor subscriptionExecutor, in Subscription) error
 	return err
 }
 
-// ImportCreators idempotently imports a batch of creators without overwriting existing watermarks (C29, C30).
+// ImportCreators idempotently imports a batch of creators without overwriting existing watermarks.
 func (m *Manager) ImportCreators(users []bilibili.FollowingUser, scope, autoCache string, liveNotify, liveAutoRecord bool) (int, error) {
 	if scope == "" {
 		scope = "both"
@@ -1475,89 +1478,33 @@ func (m *Manager) saveAccountStateLocked(st AccountState) error {
 	return err
 }
 
-// GetSchedulerState returns the persistent scheduler backoff and token bucket state from updates.db.
+// GetSchedulerState returns the persistent Bilibili scheduler backoff and token bucket state from updates.db.
 func (m *Manager) GetSchedulerState() SchedulerState {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.getSchedulerStateLocked()
+	return m.GetSiteSchedulerState("bilibili")
 }
 
 func (m *Manager) getSchedulerStateLocked() SchedulerState {
-	var st SchedulerState
-	var tokensRaw string
-	_ = m.updatesDB.QueryRow(`
-		SELECT consecutive_failures, backoff_until, last_stop_reason, last_stop_at, token_timestamps_json
-		FROM scheduler_state WHERE id = 1
-	`).Scan(&st.ConsecutiveFailures, &st.BackoffUntil, &st.LastStopReason, &st.LastStopAt, &tokensRaw)
-	if tokensRaw != "" {
-		_ = json.Unmarshal([]byte(tokensRaw), &st.TokenTimestamps)
-	}
-	return st
+	return m.getSiteSchedulerStateLocked("bilibili")
 }
 
 func (m *Manager) saveSchedulerStateLocked(st SchedulerState) error {
-	tokensRaw, _ := json.Marshal(st.TokenTimestamps)
-	_, err := m.updatesDB.Exec(`
-		UPDATE scheduler_state
-		SET consecutive_failures = ?, backoff_until = ?, last_stop_reason = ?, last_stop_at = ?, token_timestamps_json = ?
-		WHERE id = 1
-	`, st.ConsecutiveFailures, st.BackoffUntil, st.LastStopReason, st.LastStopAt, string(tokensRaw))
-	return err
+	return m.saveSiteSchedulerStateLocked("bilibili", st)
 }
 
-// IsInBackoff reports whether scheduled jobs (subscription checks, live checks, cookie renewal) are currently paused due to backoff (subscriptions.md §3).
+// IsInBackoff reports whether scheduled Bilibili jobs (subscription checks, live checks, cookie renewal) are currently paused due to backoff (subscriptions.md §3).
 func (m *Manager) IsInBackoff() (bool, time.Time) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	st := m.getSchedulerStateLocked()
-	if st.BackoffUntil == "" {
-		return false, time.Time{}
-	}
-	t, err := time.Parse(time.RFC3339, st.BackoffUntil)
-	if err != nil {
-		return false, time.Time{}
-	}
-	now := m.nowFunc().UTC()
-	return now.Before(t), t
+	return m.IsSiteInBackoff("bilibili")
 }
 
-// ConsumeQuotaTokens attempts to reserve n tokens from the shared 200 requests/hour scheduled token bucket (subscriptions.md §3).
+// ConsumeQuotaTokens attempts to reserve n tokens from the shared 200 requests/hour Bilibili scheduled token bucket (subscriptions.md §3).
 // If insufficient tokens remain in the current 1-hour window, returns false without consuming any tokens.
 func (m *Manager) ConsumeQuotaTokens(n int) bool {
-	if n <= 0 {
-		return true
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.consumeQuotaTokensLocked(n)
+	return m.ConsumeSiteQuotaTokens("bilibili", n)
 }
 
-func (m *Manager) consumeQuotaTokensLocked(n int) bool {
-	st := m.getSchedulerStateLocked()
-	now := m.nowFunc().UTC()
-	cutoff := now.Add(-time.Hour).Unix()
-	var valid []int64
-	for _, ts := range st.TokenTimestamps {
-		if ts > cutoff {
-			valid = append(valid, ts)
-		}
-	}
-	if len(valid)+n > 200 {
-		st.TokenTimestamps = valid
-		m.saveSchedulerStateLocked(st)
-		return false
-	}
-	nowUnix := now.Unix()
-	for i := 0; i < n; i++ {
-		valid = append(valid, nowUnix)
-	}
-	st.TokenTimestamps = valid
-	return m.saveSchedulerStateLocked(st) == nil
-}
-
-// RunScheduledRound executes a scheduled check round: respects backoff, picks at most 30 oldest-checked accounts,
-// checks the 200/hr token bucket, updates exponential backoff (interval * 2^n up to 24h) on risk_control/rate_limited,
-// and runs auto-cache (subscriptions.md §3 & §4, R-11).
+// RunScheduledRound executes a scheduled check round across enabled sites, respecting per-site backoff,
+// per-site account caps (Bilibili <=30, Douyin <=20), per-site hourly token buckets (Bilibili 200/hr, Douyin 120/hr),
+// per-site exponential backoff, and rule-based auto-cache.
 func (m *Manager) RunScheduledRound(ctx context.Context) (CheckSummary, error) {
 	m.mu.Lock()
 	enabled := m.subSettings.Enabled
@@ -1565,14 +1512,11 @@ func (m *Manager) RunScheduledRound(ctx context.Context) (CheckSummary, error) {
 	if !enabled {
 		return CheckSummary{}, nil
 	}
-	if inBackoff, _ := m.IsInBackoff(); inBackoff {
-		return CheckSummary{DeferredByBackoff: true}, nil
-	}
-	return m.runRoundInternal(bilibili.WithAutomaticRequests(ctx, "subscription"), 0, true)
+	return m.runRoundInternal(site.WithAutomaticRequests(ctx, "subscription"), 0, true)
 }
 
 // CheckNow runs an immediate manual subscription check (for targetMid if > 0, or all enabled subscriptions).
-// Enforces a single-flight lock so concurrent checks never overlap (C31, C32).
+// Enforces a single-flight lock so concurrent checks never overlap.
 func (m *Manager) CheckNow(ctx context.Context, targetMid int64) (CheckSummary, error) {
 	return m.runRoundInternal(ctx, targetMid, false)
 }
@@ -1589,300 +1533,7 @@ func (m *Manager) CheckSubscription(ctx context.Context, subID string) (CheckSum
 }
 
 func (m *Manager) runRoundForSubscription(ctx context.Context, targetMid int64, isScheduled bool, subID string) (CheckSummary, error) {
-	if err := m.client.RequireAuth("subscription:check"); err != nil {
-		return CheckSummary{}, err
-	}
-
-	m.mu.Lock()
-	if m.checking {
-		var prev CheckSummary
-		if m.lastSummary != nil {
-			prev = *m.lastSummary
-		}
-		m.mu.Unlock()
-		return prev, nil
-	}
-	roundCtx, roundCancel := context.WithCancel(ctx)
-	m.checking = true
-	m.checkCancel = roundCancel
-	m.lastSummary = nil
-	globalAutoCache := m.subSettings.AutoCacheScope
-	accInterval := m.accountInterval
-	subs, err := m.listLocked()
-	m.mu.Unlock()
-
-	defer func() {
-		roundCancel()
-		m.mu.Lock()
-		m.checking = false
-		m.checkCancel = nil
-		m.mu.Unlock()
-	}()
-
-	if err != nil {
-		return CheckSummary{}, err
-	}
-
-	type accountTarget struct {
-		subIndex      int
-		acc           AccountRef
-		lastCheckedAt string
-	}
-	var targets []accountTarget
-	for i := range subs {
-		sub := &subs[i]
-		if subID != "" && sub.ID != subID {
-			continue
-		}
-		if targetMid > 0 && sub.Mid != targetMid {
-			hasTarget := false
-			for _, a := range sub.Accounts {
-				if a.UID == strconv.FormatInt(targetMid, 10) {
-					hasTarget = true
-					break
-				}
-			}
-			if !hasTarget {
-				continue
-			}
-		}
-		if isScheduled && !sub.Rules.ScheduledCheck {
-			continue
-		}
-		for _, a := range sub.Accounts {
-			if targetMid > 0 && a.UID != strconv.FormatInt(targetMid, 10) {
-				continue
-			}
-			m.mu.Lock()
-			st, _, _ := m.getAccountStateLocked(a.Site, a.UID)
-			m.mu.Unlock()
-			lastCheck := st.LastCheckedAt
-			targets = append(targets, accountTarget{
-				subIndex:      i,
-				acc:           a,
-				lastCheckedAt: lastCheck,
-			})
-		}
-	}
-
-	// Scheduled round: sort by oldest last_checked_at first and cap at 30 accounts (subscriptions.md §3).
-	if isScheduled {
-		sort.SliceStable(targets, func(i, j int) bool {
-			return targets[i].lastCheckedAt < targets[j].lastCheckedAt
-		})
-		if len(targets) > 30 {
-			targets = targets[:30]
-		}
-		// Reserve tokens from shared 200 req/hr bucket; defer entire round if insufficient (subscriptions.md §3).
-		if !m.CanUseQuotaTokens(3*len(targets) + 2) {
-			return CheckSummary{DeferredByQuota: true}, nil
-		}
-	}
-
-	summary := CheckSummary{
-		StartedAt:     m.nowFunc().UTC().Format(time.RFC3339),
-		TotalCreators: len(targets),
-	}
-	m.publishProgress(summary)
-
-	consecutiveNetFailures := 0
-	abortedRound := false
-	var abortReason string
-
-	for idx, tgt := range targets {
-		if roundCtx.Err() != nil {
-			abortedRound, summary.Canceled = true, true
-			break
-		}
-		if idx > 0 && accInterval > 0 {
-			select {
-			case <-roundCtx.Done():
-				break
-			case <-time.After(accInterval):
-			}
-		}
-		if roundCtx.Err() != nil {
-			abortedRound, summary.Canceled = true, true
-			break
-		}
-		summary.CurrentUID = tgt.acc.UID
-		m.publishProgress(summary)
-
-		sub := &subs[tgt.subIndex]
-		m.mu.Lock()
-		accState, _, stateErr := m.getAccountStateLocked(tgt.acc.Site, tgt.acc.UID)
-		m.mu.Unlock()
-		if stateErr != nil {
-			return summary, stateErr
-		}
-
-		summary.CheckedCreators++
-		isBaseline := accState.BaselineAt == ""
-
-		newVids, newDyns, autoTasks, gapDetected, checkErr := m.checkSingleAccount(roundCtx, sub, tgt.acc, &accState, isBaseline, globalAutoCache)
-		if roundCtx.Err() != nil {
-			abortedRound, summary.Canceled = true, true
-			break
-		}
-		nowStr := m.nowFunc().UTC().Format(time.RFC3339)
-		sub.LastCheckedAt = nowStr
-		accState.LastCheckedAt = nowStr
-		if !isBaseline {
-			summary.NewVideos += newVids
-			summary.NewDynamics += newDyns
-			summary.AutoCacheTasks += autoTasks
-		}
-
-		if checkErr != nil {
-			errKind := bilibili.KindOf(checkErr)
-			accState.LastKind = errKind
-			sub.ConsecutiveFailures++
-			sub.LastError = checkErr.Error()
-			summary.FailedCreators++
-			summary.Errors = append(summary.Errors, fmt.Sprintf("UID %s (%s): %v", tgt.acc.UID, tgt.acc.Name, checkErr))
-
-			m.mu.Lock()
-			persistErr := m.saveAccountStateLocked(accState)
-			m.mu.Unlock()
-			if persistErr != nil {
-				return summary, persistErr
-			}
-			if err := m.saveSubState(*sub); err != nil {
-				return summary, err
-			}
-
-			// Stop entire round immediately on risk_control, rate_limited, or auth_required (subscriptions.md §2, C31).
-			if errKind == bilibili.ErrKindRiskControl || errKind == bilibili.ErrKindRateLimited || errKind == bilibili.ErrKindAuthRequired {
-				summary.StoppedByRiskControl = true
-				abortedRound = true
-				abortReason = errKind
-				break
-			}
-			if errKind == bilibili.ErrKindQuota || errKind == bilibili.ErrKindBackoff {
-				abortedRound = true
-				summary.DeferredByQuota = errKind == bilibili.ErrKindQuota
-				summary.DeferredByBackoff = errKind == bilibili.ErrKindBackoff
-				break
-			}
-			// Stop entire round on 3 consecutive network errors (subscriptions.md §2, R-10).
-			if errKind == bilibili.ErrKindNetwork {
-				consecutiveNetFailures++
-				if consecutiveNetFailures >= 3 {
-					abortedRound = true
-					abortReason = bilibili.ErrKindNetwork
-					break
-				}
-			} else {
-				// unavailable (-404 etc.) only records on this account and resets consecutive network counter.
-				consecutiveNetFailures = 0
-			}
-			continue
-		}
-
-		consecutiveNetFailures = 0
-		accState.LastKind = "ok"
-		if gapDetected {
-			accState.Note = "可能还有更早的更新没有拿到"
-			summary.GapAccounts = append(summary.GapAccounts, tgt.acc.Site+":"+tgt.acc.UID)
-		} else {
-			accState.Note = ""
-		}
-		if isBaseline && accState.BaselineAt == "" {
-			accState.BaselineAt = nowStr
-		}
-		m.mu.Lock()
-		persistErr := m.saveAccountStateLocked(accState)
-		m.mu.Unlock()
-		if persistErr != nil {
-			return summary, persistErr
-		}
-
-		sub.LastSuccessAt = nowStr
-		sub.ConsecutiveFailures = 0
-		sub.LastError = ""
-		if err := m.saveSubState(*sub); err != nil {
-			return summary, err
-		}
-
-		if isBaseline {
-			summary.BaselineInitialized++
-		}
-		m.publishProgress(summary)
-	}
-	if !abortedRound && roundCtx.Err() == nil {
-		m.mu.Lock()
-		checkLive := m.liveCheck
-		m.mu.Unlock()
-		if checkLive != nil {
-			var uids []int64
-			for _, target := range targets {
-				uid, _ := strconv.ParseInt(target.acc.UID, 10, 64)
-				if uid > 0 {
-					uids = append(uids, uid)
-				}
-			}
-			if err := checkLive(roundCtx, uids); err != nil {
-				summary.Errors = append(summary.Errors, err.Error())
-				if isRoundStop(err) {
-					abortedRound = true
-					abortReason = bilibili.KindOf(err)
-					summary.StoppedByRiskControl = abortReason == bilibili.ErrKindRiskControl || abortReason == bilibili.ErrKindRateLimited || abortReason == bilibili.ErrKindAuthRequired
-				}
-			}
-		}
-	}
-
-	// Update scheduler backoff state in updates.db (subscriptions.md §3).
-	m.mu.Lock()
-	schedSt := m.getSchedulerStateLocked()
-	now := m.nowFunc().UTC()
-	var schedulerErr error
-	if summary.StoppedByRiskControl {
-		schedSt.ConsecutiveFailures++
-		schedSt.LastStopReason = abortReason
-		schedSt.LastStopAt = now.Format(time.RFC3339)
-		baseInterval := time.Duration(m.subSettings.IntervalMinutes) * time.Minute
-		if baseInterval < time.Minute {
-			baseInterval = 60 * time.Minute
-		}
-		shift := schedSt.ConsecutiveFailures
-		if shift > 10 {
-			shift = 10
-		}
-		backoffDur := baseInterval * time.Duration(1<<shift)
-		if backoffDur > 24*time.Hour {
-			backoffDur = 24 * time.Hour
-		}
-		schedSt.BackoffUntil = now.Add(backoffDur).Format(time.RFC3339)
-		schedulerErr = m.saveSchedulerStateLocked(schedSt)
-	} else if !abortedRound && summary.CheckedCreators > 0 {
-		schedSt.ConsecutiveFailures = 0
-		schedSt.BackoffUntil = ""
-		schedulerErr = m.saveSchedulerStateLocked(schedSt)
-	}
-	m.mu.Unlock()
-	if schedulerErr != nil {
-		return summary, schedulerErr
-	}
-
-	// Run rule-based auto-cache if the round was NOT aborted by risk_control / rate_limited / auth_required (subscriptions.md §4).
-	if !abortedRound && roundCtx.Err() == nil {
-		addedTasks, backlog, err := m.evaluateAutoCacheRules(roundCtx)
-		if err != nil {
-			return summary, err
-		}
-		summary.AutoCacheTasks += addedTasks
-		summary.AutoCacheBacklog = backlog
-	}
-
-	summary.FinishedAt = m.nowFunc().UTC().Format(time.RFC3339)
-	m.mu.Lock()
-	m.lastSummary = &summary
-	m.mu.Unlock()
-	if m.onEvent != nil {
-		m.onEvent(summary)
-	}
-	return summary, nil
+	return m.executeMultiSiteRound(ctx, targetMid, isScheduled, subID)
 }
 
 func (m *Manager) checkSingleAccount(
@@ -1893,6 +1544,9 @@ func (m *Manager) checkSingleAccount(
 	isBaseline bool,
 	globalAutoCache string,
 ) (newVideos int, newDynamics int, autoCacheTasks int, gapDetected bool, err error) {
+	if acc.Site != "" && acc.Site != "bilibili" {
+		return 0, 0, 0, false, nil
+	}
 	mid, _ := strconv.ParseInt(acc.UID, 10, 64)
 	if mid <= 0 {
 		mid = sub.Mid
@@ -1924,20 +1578,22 @@ func (m *Manager) checkSingleAccount(
 					maxBVID = item.BVID
 				}
 
-				if err := m.lib.UpsertFeedEntry(library.FeedEntry{
-					Site:         "bilibili",
-					Kind:         "video",
-					RawID:        item.BVID,
-					Mid:          mid,
-					AuthorName:   firstNonEmptyStr(item.Author, sub.Uname),
-					AuthorFace:   sub.Face,
-					Title:        item.Title,
-					Summary:      item.Description,
-					CoverURL:     item.Cover,
-					CanonicalURL: "https://www.bilibili.com/video/" + item.BVID,
-					PubTs:        item.PubTs,
-				}); err != nil {
-					return newVideos, newDynamics, 0, false, err
+				if m.lib != nil {
+					if err := m.lib.UpsertFeedEntry(library.FeedEntry{
+						Site:         "bilibili",
+						Kind:         "video",
+						RawID:        item.BVID,
+						Mid:          mid,
+						AuthorName:   firstNonEmptyStr(item.Author, sub.Uname),
+						AuthorFace:   sub.Face,
+						Title:        item.Title,
+						Summary:      item.Description,
+						CoverURL:     item.Cover,
+						CanonicalURL: "https://www.bilibili.com/video/" + item.BVID,
+						PubTs:        item.PubTs,
+					}); err != nil {
+						return newVideos, newDynamics, 0, false, err
+					}
 				}
 
 				if !isBaseline && isNew {
@@ -2000,25 +1656,27 @@ func (m *Manager) checkSingleAccount(
 				} else if len(dyn.Videos) > 0 {
 					cover = dyn.Videos[0].Cover
 				}
-				if err := m.lib.UpsertFeedEntry(library.FeedEntry{
-					Site:         "bilibili",
-					Kind:         "dynamic",
-					RawID:        dyn.ID,
-					Mid:          mid,
-					AuthorName:   firstNonEmptyStr(dyn.Author.Name, sub.Uname),
-					AuthorFace:   firstNonEmptyStr(dyn.Author.Face, sub.Face),
-					Title:        dyn.Title,
-					Summary:      dyn.Text,
-					CoverURL:     cover,
-					CanonicalURL: dyn.CanonicalURL,
-					PubTs:        dyn.PubTs,
-				}); err != nil {
-					return newVideos, newDynamics, 0, false, err
+				if m.lib != nil {
+					if err := m.lib.UpsertFeedEntry(library.FeedEntry{
+						Site:         "bilibili",
+						Kind:         "dynamic",
+						RawID:        dyn.ID,
+						Mid:          mid,
+						AuthorName:   firstNonEmptyStr(dyn.Author.Name, sub.Uname),
+						AuthorFace:   firstNonEmptyStr(dyn.Author.Face, sub.Face),
+						Title:        dyn.Title,
+						Summary:      dyn.Text,
+						CoverURL:     cover,
+						CanonicalURL: dyn.CanonicalURL,
+						PubTs:        dyn.PubTs,
+					}); err != nil {
+						return newVideos, newDynamics, 0, false, err
+					}
 				}
 
 				dynCategory := normalizeDynamicType(dyn.Type)
 				snapJSON, _ := json.Marshal(dyn)
-				// INV-12 (DEC-033, R1): First check only establishes baseline; dynamics before baseline never enter update_item.
+				// INV-12 (DEC-033): First check only establishes baseline; dynamics before baseline never enter update_item.
 				if !isBaseline && !(dyn.Pinned && accState.NewestTs > 0 && dyn.PubTs <= accState.NewestTs) {
 					inserted, err := m.insertUpdateItem(acc.Site, acc.UID, dyn.ID, dyn.PubTs, dynCategory, string(snapJSON), nowStr)
 					if err != nil {
@@ -2119,173 +1777,7 @@ func (m *Manager) enforceAccountItemCap(site, uid string, maxItems int) {
 }
 
 func (m *Manager) evaluateAutoCacheRules(ctx context.Context) (createdTasks int, totalBacklog int, result error) {
-	m.mu.Lock()
-	subs, err := m.listLocked()
-	m.mu.Unlock()
-	if err != nil {
-		return 0, 0, err
-	}
-	if m.dl == nil {
-		return 0, 0, nil
-	}
-
-	type candidate struct {
-		subID    string
-		site     string
-		uid      string
-		dynID    string
-		pubTs    int64
-		typ      string
-		snapshot string
-	}
-	var allCandidates []candidate
-
-	for _, s := range subs {
-		sinceUnix := int64(0)
-		typeAllowed := make(map[string]bool, len(s.Rules.AutoCache.Types))
-		legacy := !s.Rules.AutoCache.Enabled
-		if legacy {
-			effective := s.AutoCache
-			if effective == "inherit" || effective == "" {
-				effective = m.subSettings.AutoCacheScope
-			}
-			if effective == "none" || effective == "" {
-				continue
-			}
-			if effective == "video" || effective == "both" {
-				typeAllowed["video"] = true
-			}
-			if effective == "dynamic" || effective == "both" {
-				for _, typ := range []string{"video", "draw", "word", "forward"} {
-					typeAllowed[typ] = true
-				}
-			}
-		} else {
-			sinceTime, err := time.Parse(time.RFC3339, s.Rules.AutoCache.Since)
-			if err != nil {
-				continue
-			}
-			sinceUnix = sinceTime.Unix()
-			for _, typ := range s.Rules.AutoCache.Types {
-				typeAllowed[strings.ToLower(strings.TrimSpace(typ))] = true
-			}
-		}
-
-		for _, acc := range s.Accounts {
-			m.mu.Lock()
-			rows, qErr := m.updatesDB.Query(`
-				SELECT dyn_id, pub_ts, type, snapshot
-				FROM update_item
-				WHERE site = ? AND uid = ? AND pub_ts >= ? AND auto_task_id = '' AND baseline_snapshot = 0
-				ORDER BY pub_ts ASC, dyn_id ASC
-			`, acc.Site, acc.UID, sinceUnix)
-			if qErr == nil {
-				for rows.Next() {
-					var dynID, typ, snap string
-					var pubTs int64
-					if err := rows.Scan(&dynID, &pubTs, &typ, &snap); err == nil {
-						if typeAllowed[typ] {
-							allCandidates = append(allCandidates, candidate{
-								subID:    s.SubID,
-								site:     acc.Site,
-								uid:      acc.UID,
-								dynID:    dynID,
-								pubTs:    pubTs,
-								typ:      typ,
-								snapshot: snap,
-							})
-						}
-					}
-				}
-				_ = rows.Close()
-			}
-			m.mu.Unlock()
-			if qErr != nil {
-				return createdTasks, totalBacklog, qErr
-			}
-		}
-	}
-
-	// Sort oldest to newest across all subscriptions (subscriptions.md §4: "按发布时间从早到晚").
-	sort.SliceStable(allCandidates, func(i, j int) bool {
-		if allCandidates[i].pubTs != allCandidates[j].pubTs {
-			return allCandidates[i].pubTs < allCandidates[j].pubTs
-		}
-		return allCandidates[i].dynID < allCandidates[j].dynID
-	})
-
-	backlogBySub := make(map[string]int)
-	for _, c := range allCandidates {
-		if err := ctx.Err(); err != nil {
-			return createdTasks, totalBacklog, err
-		}
-		// Check if already cached in library (subscriptions.md §4: "已经缓存过的动态只记 auto_task_id 为已有条目，不重复建任务").
-		if m.lib != nil {
-			if _, ok, _ := m.lib.GetItem("bilibili:dynamic:" + c.dynID); ok {
-				if err := m.setUpdateItemTaskID(c.site, c.uid, c.dynID, "cached:"+c.dynID); err != nil {
-					return createdTasks, totalBacklog, err
-				}
-				continue
-			}
-			if _, ok, _ := m.lib.GetItem(c.dynID); ok {
-				if err := m.setUpdateItemTaskID(c.site, c.uid, c.dynID, "cached:"+c.dynID); err != nil {
-					return createdTasks, totalBacklog, err
-				}
-				continue
-			}
-		}
-
-		if createdTasks >= 20 {
-			backlogBySub[c.subID]++
-			totalBacklog++
-			continue
-		}
-
-		if strings.HasPrefix(strings.ToUpper(c.dynID), "BV1") {
-			if tasks, err := m.dl.EnqueueVideo(ctx, download.VideoEnqueueRequest{BVID: c.dynID, Source: "auto"}); err == nil && len(tasks) > 0 {
-				createdTasks++
-				if err := m.setUpdateItemTaskID(c.site, c.uid, c.dynID, tasks[0].TaskID); err != nil {
-					return createdTasks, totalBacklog, err
-				}
-			}
-		} else {
-			var dynItem bilibili.DynamicItem
-			var itemPtr *bilibili.DynamicItem
-			if c.snapshot != "" && json.Unmarshal([]byte(c.snapshot), &dynItem) == nil && dynItem.ID != "" {
-				itemPtr = &dynItem
-			}
-			if task, err := m.dl.EnqueueDynamic(ctx, download.DynamicEnqueueRequest{
-				DynamicID:         c.dynID,
-				CacheLinkedVideos: true,
-				Source:            "auto",
-				Item:              itemPtr,
-			}); err == nil {
-				createdTasks++
-				if err := m.setUpdateItemTaskID(c.site, c.uid, c.dynID, task.TaskID); err != nil {
-					return createdTasks, totalBacklog, err
-				}
-			}
-		}
-	}
-
-	// Update AutoCacheBacklog on subscriptions
-	m.mu.Lock()
-	current, listErr := m.listLocked()
-	if listErr != nil {
-		m.mu.Unlock()
-		return createdTasks, totalBacklog, listErr
-	}
-	for i := range current {
-		current[i].AutoCacheBacklog = backlogBySub[current[i].SubID]
-		if err := m.upsertRowLocked(current[i]); err != nil {
-			m.mu.Unlock()
-			return createdTasks, totalBacklog, err
-		}
-	}
-	writeErr := m.writeSubscriptionsToDiskLocked()
-	m.mu.Unlock()
-
-	return createdTasks, totalBacklog, writeErr
+	return m.evaluateAutoCacheRulesForSites(ctx, nil)
 }
 
 func (m *Manager) saveSubState(sub Subscription) error {
@@ -2303,6 +1795,10 @@ func (m *Manager) saveSubState(sub Subscription) error {
 		for _, account := range sub.Accounts {
 			if current.Accounts[i].Site == account.Site && current.Accounts[i].UID == account.UID {
 				current.Accounts[i].Name, current.Accounts[i].Face = account.Name, account.Face
+				if account.UniqueID != "" {
+					current.Accounts[i].UniqueID = account.UniqueID
+				}
+				current.Accounts[i].WebRID = account.WebRID
 			}
 		}
 	}

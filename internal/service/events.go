@@ -20,6 +20,7 @@ const (
 // Event carries a backend state change notification.
 type Event struct {
 	Type      EventType `json:"type"`
+	Site      string    `json:"site,omitempty"`
 	Message   string    `json:"message,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
@@ -52,8 +53,13 @@ func (b *eventBus) Subscribe(fn func(Event)) func() {
 }
 
 func (b *eventBus) Publish(evtType EventType, msg string) {
+	b.PublishSite(evtType, "", msg)
+}
+
+func (b *eventBus) PublishSite(evtType EventType, siteID, msg string) {
 	evt := Event{
 		Type:      evtType,
+		Site:      siteID,
 		Message:   msg,
 		Timestamp: time.Now().UTC(),
 	}

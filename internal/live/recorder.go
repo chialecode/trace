@@ -36,6 +36,9 @@ func (m *Manager) RecoverOrphanParts() {
 			for _, session := range m.sessions {
 				active = active || session.itemDir == meta.ItemDir
 			}
+			for _, session := range m.douyinSessions {
+				active = active || session.itemDir == meta.ItemDir
+			}
 			m.mu.Unlock()
 			if active || len(meta.PendingParts) == 0 {
 				continue
@@ -153,6 +156,12 @@ func (m *Manager) runRecordingSession(ctx context.Context, sess *recordSession, 
 	defer m.wg.Done()
 	defer close(sess.doneCh)
 	defer func() { m.mu.Lock(); delete(m.sessions, sess.roomID); m.mu.Unlock() }()
+	var flvConn *activeFLVConn
+	defer func() {
+		if flvConn != nil {
+			_ = flvConn.Close()
+		}
+	}()
 	selection := initial
 	if err := m.saveLiveCover(ctx, sess); err != nil {
 		m.setSessionStop(sess, liveStopReason(err), err)
@@ -203,7 +212,21 @@ func (m *Manager) runRecordingSession(ctx context.Context, sess *recordSession, 
 			break
 		}
 		sess.segmentDuration, sess.wroteMedia = 0, false
-		n, recordErr := m.recordHLSSegment(ctx, sess, selection.URLs, path, true)
+		var n int64
+		var recordErr error
+		if selection.Format == "flv" || selection.Protocol == "http_stream" {
+			n, recordErr = m.recordBilibiliFLVPart(ctx, sess, selection.URLs, &flvConn, path)
+		} else {
+			if flvConn != nil {
+				_ = flvConn.Close()
+				flvConn = nil
+			}
+			n, recordErr = m.recordHLSSegment(ctx, sess, selection.URLs, path, true)
+		}
+		if !errors.Is(recordErr, errSegmentRollover) && flvConn != nil {
+			_ = flvConn.Close()
+			flvConn = nil
+		}
 		if n > 0 {
 			finishCtx, cancel := context.WithTimeout(context.Background(), m.finalizeTimeout)
 			summary, conversionErr := finalizeLivePart(finishCtx, path, filepath.Join(sess.itemDir, partRel), sess.segmentDuration)
@@ -357,6 +380,12 @@ func liveStopReason(err error) string {
 	var pathErr *os.PathError
 	if errors.As(err, &pathErr) {
 		return "storage"
+	}
+	if IsUnsupportedCodec(err) {
+		return bilibili.ErrKindBlocked
+	}
+	if IsFLVFormatError(err) {
+		return bilibili.ErrKindSchemaChanged
 	}
 	switch bilibili.KindOf(err) {
 	case bilibili.ErrKindRiskControl, bilibili.ErrKindRateLimited, bilibili.ErrKindAuthRequired, bilibili.ErrKindQuota, bilibili.ErrKindBackoff, "storage", bilibili.ErrKindSchemaChanged, bilibili.ErrKindBlocked:

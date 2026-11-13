@@ -44,17 +44,22 @@ type Identity struct {
 	DisplayName string
 	InstallDir  string
 	Icon        string
+	// InstallerInclude is the channel's windows.installerInclude: the
+	// shortcut rules of assets/installer/shortcuts.nsh with the channel's
+	// shortcut name, and for dev the desktop shortcut made again on every
+	// silent over-install.
+	InstallerInclude string
 }
 
 // IdentityOf returns the naming of a channel.
 func IdentityOf(channel string) Identity {
 	switch channel {
 	case ChannelDev:
-		return Identity{Slug: "trace-dev", Identifier: appdirs.IdentifierForChannel("dev"), DisplayName: "TRACE Dev", InstallDir: "trace-dev", Icon: "assets/icon-dev.png"}
+		return Identity{Slug: "trace-dev", Identifier: appdirs.IdentifierForChannel("dev"), DisplayName: "TRACE Dev", InstallDir: "trace-dev", Icon: "assets/icon-dev.png", InstallerInclude: "assets/installer/dev.nsh"}
 	case ChannelPtest:
-		return Identity{Slug: "trace-ptest", Identifier: appdirs.IdentifierForChannel("ptest"), DisplayName: "TRACE PTest", InstallDir: "trace-ptest", Icon: "assets/icon-dev.png"}
+		return Identity{Slug: "trace-ptest", Identifier: appdirs.IdentifierForChannel("ptest"), DisplayName: "TRACE PTest", InstallDir: "trace-ptest", Icon: "assets/icon-dev.png", InstallerInclude: "assets/installer/ptest.nsh"}
 	default:
-		return Identity{Slug: "trace", Identifier: appdirs.IdentifierForChannel("stable"), DisplayName: "TRACE", InstallDir: "trace", Icon: "assets/icon.png"}
+		return Identity{Slug: "trace", Identifier: appdirs.IdentifierForChannel("stable"), DisplayName: "TRACE", InstallDir: "trace", Icon: "assets/icon.png", InstallerInclude: "assets/installer/stable.nsh"}
 	}
 }
 
@@ -238,6 +243,7 @@ func ChannelConfig(base []byte, channel, version, out string, updates *Updates) 
 	}
 	win["displayName"] = id.DisplayName
 	win["installDirName"] = id.InstallDir
+	win["installerInclude"] = id.InstallerInclude
 	cfg["windows"] = win
 	delete(cfg, "updates")
 	if updates != nil {

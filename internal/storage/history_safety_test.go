@@ -239,7 +239,7 @@ func TestHistoryThumbnailCleanupFailureIsRecoverableAfterRestart(t *testing.T) {
 	}
 }
 
-// F-057: thumbnails fetched after an entry was recorded keep its place,
+// Thumbnails fetched after an entry was recorded keep its place,
 // replace its old image and are not written for an entry removed meanwhile.
 func TestHistoryAttachThumbsKeepsPlaceAndSkipsRemovedEntries(t *testing.T) {
 	store, _, err := OpenHistory(filepath.Join(t.TempDir(), "history.json"))
@@ -277,5 +277,94 @@ func TestHistoryAttachThumbsKeepsPlaceAndSkipsRemovedEntries(t *testing.T) {
 	after, _ := os.ReadDir(store.ThumbsDir())
 	if len(after) != len(before) || len(store.List()) != 1 {
 		t.Fatalf("a removed entry came back or got a file: %d -> %d files, %+v", len(before), len(after), store.List())
+	}
+}
+
+func TestHistoryMultiSiteIsolationAndEmptySiteDefault(t *testing.T) {
+	historyPath := filepath.Join(t.TempDir(), "history.json")
+	store, _, err := OpenHistory(historyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty site defaults to "bilibili" and stays isolated from "douyin" with identical kind+id+bytes.
+	if err := store.RecordWithThumbs(
+		HistoryEntry{Kind: "video", ID: "9001", Title: "Bilibili Title"},
+		HistoryThumbnail{Role: "cover", Ext: ".jpg", Data: []byte("identical-bytes")},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordWithThumbs(
+		HistoryEntry{
+			Site:         "douyin",
+			Kind:         "video",
+			ID:           "9001",
+			Title:        "My Signature Dish",
+			CanonicalURL: "https://www.douyin.com/video/9001?a_bogus=secret123",
+		},
+		HistoryThumbnail{Role: "cover", Ext: ".jpg", Data: []byte("identical-bytes")},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	items := store.List()
+	if len(items) != 2 {
+		t.Fatalf("expected 2 isolated multi-site entries, got %+v", items)
+	}
+	var dyItem, biliItem HistoryEntry
+	for _, it := range items {
+		switch it.Site {
+		case "douyin":
+			dyItem = it
+		case "bilibili":
+			biliItem = it
+		}
+	}
+	if dyItem.CoverThumb == "" || biliItem.CoverThumb == "" || dyItem.CoverThumb == biliItem.CoverThumb {
+		t.Fatalf("multi-site thumbnails collided or missing: dy=%q bili=%q", dyItem.CoverThumb, biliItem.CoverThumb)
+	}
+	if dyItem.CanonicalURL != "https://www.douyin.com/video/9001" {
+		t.Fatalf("signed query not stripped on douyin canonical URL: %q", dyItem.CanonicalURL)
+	}
+	if dyItem.Title != "My Signature Dish" {
+		t.Fatalf("benign title unexpectedly redacted: %q", dyItem.Title)
+	}
+
+	// Removing with legacy Remove("video", "9001") (or empty site) removes only bilibili:video:9001.
+	if err := store.Remove("video", "9001"); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.List()) != 1 || store.List()[0].Site != "douyin" {
+		t.Fatalf("removing bilibili entry affected douyin entry: %+v", store.List())
+	}
+	if _, err := os.Stat(filepath.Join(store.ThumbsDir(), biliItem.CoverThumb)); !os.IsNotExist(err) {
+		t.Fatalf("bilibili thumbnail was not cleaned up: %v", err)
+	}
+	if _, err := store.ThumbPath(dyItem.CoverThumb); err != nil {
+		t.Fatalf("douyin thumbnail was deleted when removing bilibili entry: %v", err)
+	}
+
+	// Removing douyin entry cleans up douyin thumbnail; history.json stays version 1.
+	if err := store.RemoveBySite("douyin", "video", "9001"); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.List()) != 0 {
+		t.Fatalf("douyin entry remained after RemoveBySite: %+v", store.List())
+	}
+	if _, err := os.Stat(filepath.Join(store.ThumbsDir(), dyItem.CoverThumb)); !os.IsNotExist(err) {
+		t.Fatalf("douyin thumbnail was not cleaned up: %v", err)
+	}
+
+	v, exists, err := ReadSchemaVersion(historyPath, SchemaJSON)
+	if err != nil || !exists || v != 1 {
+		t.Fatalf("history.json version must stay 1, got v=%d exists=%v err=%v", v, exists, err)
+	}
+
+	// Douyin cookie/token markers in IDs are rejected and redacted in text.
+	if err := store.Record(HistoryEntry{Site: "douyin", Kind: "user", ID: "sessionid=leak"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.List()) != 0 {
+		t.Fatalf("credential marker ID should be rejected: %+v", store.List())
 	}
 }

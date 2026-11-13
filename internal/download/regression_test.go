@@ -556,10 +556,12 @@ func TestFinishedTasksCanBeRemovedButNotCanceled(t *testing.T) {
 }
 
 // DEC-040: a live photo (实况) keeps its motion clip next to the still; a
-// second run reuses both files.
+// second run reuses both files. DEC-046 ①: a clip whose moov trails mdat is
+// saved with moov first, so system players preview it as well.
 func TestDynamicLivePhotoKeepsItsMotionClip(t *testing.T) {
 	var base string
 	clipHits := 0
+	clipBytes := buildProgressiveWithoutElst(t, true, true, 0)
 	mgr, lib, server := setupDownloadEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/x/polymer/web-dynamic/v1/detail":
@@ -581,7 +583,8 @@ func TestDynamicLivePhotoKeepsItsMotionClip(t *testing.T) {
 		case "/clip.mp4":
 			clipHits++
 			w.Header().Set("Content-Type", "video/mp4")
-			_, _ = w.Write([]byte("synthetic motion clip"))
+			w.Header().Set("Content-Length", strconv.Itoa(len(clipBytes)))
+			_, _ = w.Write(clipBytes)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -616,5 +619,55 @@ func TestDynamicLivePhotoKeepsItsMotionClip(t *testing.T) {
 	}
 	if clipHits != 1 {
 		t.Fatalf("motion clip fetched %d times, want once", clipHits)
+	}
+	full, _ := library.ResolveItemPath(item.ItemDir, clip.Path)
+	sum, err := InspectMP4File(full)
+	if err != nil || !sum.MoovBeforeMdat || clip.Duration <= 0 {
+		t.Fatalf("motion clip must be a moov-first MP4: %+v %v (record %+v)", sum, err, clip)
+	}
+}
+
+// DEC-046 ①: a motion clip that is not a playable single-file MP4 is not kept
+// as one; the post stays partial and names the clip.
+func TestDynamicLivePhotoRejectsBrokenMotionClip(t *testing.T) {
+	var base string
+	mgr, lib, server := setupDownloadEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/x/polymer/web-dynamic/v1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"item": map[string]any{
+				"id_str": "778900", "type": "DYNAMIC_TYPE_DRAW", "modules": map[string]any{
+					"module_author": map[string]any{"mid": 1, "name": "synthetic", "pub_ts": 1},
+					"module_dynamic": map[string]any{"major": map[string]any{"opus": map[string]any{"pics": []map[string]any{
+						{"url": base + "/still.png", "width": 1080, "height": 1440, "live_url": base + "/clip.mp4"},
+					}}}},
+				},
+			}}})
+		case "/still.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("synthetic still"))
+		case "/clip.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("not an mp4 at all"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}), 1)
+	base = server.URL
+	task := Task{Kind: "dynamic", TargetID: "778900"}
+	err := mgr.executeDynamicTask(context.Background(), &task)
+	if err == nil || !strings.Contains(err.Error(), "实况") {
+		t.Fatalf("broken clip must leave the post partial with a reason, got %v", err)
+	}
+	item, ok, _ := lib.GetItem("dynamic:778900")
+	if !ok {
+		t.Fatal("the still must still be indexed")
+	}
+	for _, m := range item.Media {
+		if m.Role == "motion" {
+			t.Fatalf("broken clip kept as motion: %+v", m)
+		}
+		if m.Role == "image" && m.Motion != "" {
+			t.Fatalf("still points at a missing clip: %+v", m)
+		}
 	}
 }

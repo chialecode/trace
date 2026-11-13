@@ -1,10 +1,14 @@
 // Command package builds the development package of TRACE into
-// dist/trace-dev/ and installs it on this machine (W2):
+// dist/trace-dev/ and, when asked, installs it on this machine (W2):
 //
-//	go run ./tools/package               # build, then install TRACE Dev here
+//	go run ./tools/package               # build only
+//	go run ./tools/package -install      # build, then install TRACE Dev here
 //	go run ./tools/package -install-only # install the package in dist/trace-dev
 //
-// The automatic install is skipped with TRACE_DEV_AUTO_INSTALL=0, on CI
+// The agent installs whenever the next step is the person's manual check (a
+// stage handed over, or fixes handed back for another look), so the person
+// never installs by hand; packaging only for automated checks does not install
+// (the person's rule of 2026-11-13, corrected 2026-11-14). The install is skipped with TRACE_DEV_AUTO_INSTALL=0, on CI
 // (CI=true) and when TRACE Dev is not installed. Release packages are built
 // by tools/release.
 package main
@@ -23,6 +27,7 @@ import (
 
 func main() {
 	appdirs.LowerCurrentProcessPriority()
+	install := flag.Bool("install", false, "after building, install the package on this machine (before handing over for the person's checks)")
 	installOnly := flag.Bool("install-only", false, "install the package already in dist/trace-dev without building")
 	flag.Parse()
 
@@ -33,6 +38,10 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("package (dev) built in %s\n", time.Since(started).Round(time.Millisecond))
+	}
+	if !*install && !*installOnly {
+		fmt.Println("==> [install-dev] not asked (-install): TRACE Dev on this machine is left as it is")
+		return
 	}
 	if err := installDev(filepath.Join("dist", "trace-dev")); err != nil {
 		fmt.Fprintf(os.Stderr, "install-dev failed: %v\n", err)

@@ -18,6 +18,7 @@ import (
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/settings"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/subscription"
 )
@@ -32,8 +33,15 @@ var errSegmentRollover = errors.New("live: segment rollover required")
 
 // RoomState describes the current live status and recording state of a room/creator.
 type RoomState struct {
+	Site              string  `json:"site,omitempty"`
+	AccountUID        string  `json:"accountUid,omitempty"`
+	UniqueID          string  `json:"uniqueId,omitempty"`
 	UID               int64   `json:"uid"`
 	RoomID            int64   `json:"roomId"`
+	RoomIDStr         string  `json:"roomIdStr,omitempty"`
+	WebRID            string  `json:"webRid,omitempty"`
+	RoomKey           string  `json:"roomKey,omitempty"`
+	LiveState         string  `json:"liveState,omitempty"`
 	ShortID           int64   `json:"shortId,omitempty"`
 	Uname             string  `json:"uname"`
 	Face              string  `json:"face"`
@@ -61,14 +69,25 @@ type RoomState struct {
 
 // Notification represents a transition from offline/carousel (0/2) to live (1).
 type Notification struct {
-	UID       int64  `json:"uid"`
-	RoomID    int64  `json:"roomId"`
-	Uname     string `json:"uname"`
-	Title     string `json:"title"`
-	StartedAt string `json:"startedAt"`
+	Site       string `json:"site,omitempty"`
+	AccountUID string `json:"accountUid,omitempty"`
+	UID        int64  `json:"uid"`
+	RoomID     int64  `json:"roomId"`
+	RoomIDStr  string `json:"roomIdStr,omitempty"`
+	WebRID     string `json:"webRid,omitempty"`
+	Uname      string `json:"uname"`
+	Title      string `json:"title"`
+	StartedAt  string `json:"startedAt"`
 }
 
 type recordSession struct {
+	siteID          string
+	accountUID      string
+	roomIDStr       string
+	webRID          string
+	stateKey        string
+	coverURL        string
+	transport       site.MediaTransportSpec
 	sessionID       string
 	roomID          int64
 	uid             int64
@@ -118,8 +137,23 @@ type Manager struct {
 	statusCache       map[int64]cachedStatusEntry // UID -> cached LiveUserStatus (60s TTL)
 	sessions          map[int64]*recordSession    // RoomID -> active recording session
 	stoppedBroadcasts map[int64]int64             // RoomID -> manually stopped live_time
-	stopping          bool
-	finalizeTimeout   time.Duration
+
+	siteProviders         map[site.ID]site.LiveProvider
+	webRIDSyncFn          WebRIDSyncFunc
+	siteBackoffFn         SiteBackoffChecker
+	douyinPollMinInterval time.Duration
+	flvIdleTimeout        time.Duration
+	douyinStates          map[string]RoomState
+	douyinStatusCache     map[string]douyinCachedStatusEntry
+	douyinLastAutoPoll    map[string]time.Time
+	douyinWebRIDHints     map[string]string
+	douyinRoomHints       map[string]string
+	douyinPrevLive        map[string]string
+	douyinSessions        map[string]*recordSession
+	douyinStoppedRooms    map[string]bool
+
+	stopping        bool
+	finalizeTimeout time.Duration
 
 	pollCancel context.CancelFunc
 	pollWake   chan struct{}
@@ -147,26 +181,37 @@ func NewManager(
 		liveSettings.MaxConcurrentRecordings = 2
 	}
 	return &Manager{
-		lib:               lib,
-		subs:              subs,
-		client:            client,
-		liveSettings:      liveSettings,
-		onNotify:          onNotify,
-		onState:           onState,
-		nowFunc:           time.Now,
-		states:            make(map[int64]RoomState),
-		prevLive:          make(map[int64]int),
-		statusCache:       make(map[int64]cachedStatusEntry),
-		sessions:          make(map[int64]*recordSession),
-		stoppedBroadcasts: make(map[int64]int64),
-		finalizeTimeout:   30 * time.Second,
-		pollWake:          make(chan struct{}, 1),
-		hlsPollInterval:   0, // 0 uses #EXT-X-TARGETDURATION clamped to [1s, 5s]
-		reconnectWait:     6 * time.Second,
-		noSegmentTimeout:  10 * time.Second,
-		maxStreamLossDur:  5 * time.Minute,
-		minFreeBytes:      defaultMinFreeBytes,
-		freeBytesFunc:     getFreeDiskBytes,
+		lib:                   lib,
+		subs:                  subs,
+		client:                client,
+		liveSettings:          liveSettings,
+		onNotify:              onNotify,
+		onState:               onState,
+		nowFunc:               time.Now,
+		states:                make(map[int64]RoomState),
+		prevLive:              make(map[int64]int),
+		statusCache:           make(map[int64]cachedStatusEntry),
+		sessions:              make(map[int64]*recordSession),
+		stoppedBroadcasts:     make(map[int64]int64),
+		siteProviders:         make(map[site.ID]site.LiveProvider),
+		douyinPollMinInterval: defaultDouyinAutoPollInterval,
+		flvIdleTimeout:        defaultFLVIdleTimeout,
+		douyinStates:          make(map[string]RoomState),
+		douyinStatusCache:     make(map[string]douyinCachedStatusEntry),
+		douyinLastAutoPoll:    make(map[string]time.Time),
+		douyinWebRIDHints:     make(map[string]string),
+		douyinRoomHints:       make(map[string]string),
+		douyinPrevLive:        make(map[string]string),
+		douyinSessions:        make(map[string]*recordSession),
+		douyinStoppedRooms:    make(map[string]bool),
+		finalizeTimeout:       30 * time.Second,
+		pollWake:              make(chan struct{}, 1),
+		hlsPollInterval:       0, // 0 uses #EXT-X-TARGETDURATION clamped to [1s, 5s]
+		reconnectWait:         6 * time.Second,
+		noSegmentTimeout:      10 * time.Second,
+		maxStreamLossDur:      5 * time.Minute,
+		minFreeBytes:          defaultMinFreeBytes,
+		freeBytesFunc:         getFreeDiskBytes,
 	}
 }
 
@@ -230,17 +275,28 @@ func (m *Manager) pollLoop(ctx context.Context) {
 		cfg := m.liveSettings
 		m.mu.Unlock()
 
-		hasAuto := false
+		hasBiliAuto := false
+		hasDouyinAuto := false
 		if m.subs != nil {
 			if subs, err := m.subs.List(); err == nil {
 				for _, sub := range subs {
-					if sub.Rules.AutoRecord {
-						hasAuto = true
+					if sub.Rules.AutoRecord || sub.LiveAutoRecord {
+						for _, acc := range sub.Accounts {
+							switch acc.Site {
+							case string(site.Douyin):
+								hasDouyinAuto = true
+							case "", string(site.Bilibili):
+								hasBiliAuto = true
+							}
+						}
+						if sub.Mid > 0 {
+							hasBiliAuto = true
+						}
 					}
 				}
 			}
 		}
-		if !cfg.PollEnabled && !hasAuto {
+		if !cfg.PollEnabled && !hasBiliAuto && !hasDouyinAuto {
 			select {
 			case <-ctx.Done():
 				return
@@ -251,14 +307,16 @@ func (m *Manager) pollLoop(ctx context.Context) {
 			}
 		}
 
-		if m.client.HasAuth() && m.subs != nil {
-			backoff, _ := m.subs.IsInBackoff()
-			if !backoff {
+		if (cfg.PollEnabled || hasBiliAuto) && m.client != nil && m.client.HasAuth() && m.subs != nil {
+			if !m.isSiteInBackoff(site.Bilibili) {
 				var uids []int64
 				if list, err := m.subs.List(); err == nil {
 					for _, sub := range list {
-						if cfg.PollEnabled || sub.Rules.AutoRecord {
+						if cfg.PollEnabled || sub.Rules.AutoRecord || sub.LiveAutoRecord {
 							for _, account := range sub.Accounts {
+								if account.Site != "" && account.Site != string(site.Bilibili) {
+									continue
+								}
 								uid, _ := strconv.ParseInt(account.UID, 10, 64)
 								if uid > 0 {
 									uids = append(uids, uid)
@@ -267,7 +325,15 @@ func (m *Manager) pollLoop(ctx context.Context) {
 						}
 					}
 				}
-				_, _ = m.refreshAccounts(bilibili.WithAutomaticRequests(ctx, "live"), uids, true, true)
+				if len(uids) > 0 {
+					_, _ = m.refreshAccounts(bilibili.WithAutomaticRequests(ctx, "live"), uids, true, true)
+				}
+			}
+		}
+
+		if hasDouyinAuto && m.subs != nil && m.hasSiteAuth(site.Douyin) {
+			if !m.isSiteInBackoff(site.Douyin) {
+				_, _ = m.pollDouyinAutoRecord(bilibili.WithAutomaticRequests(ctx, "live"))
 			}
 		}
 
@@ -334,7 +400,7 @@ func (m *Manager) Status(ctx context.Context, uids []int64) (map[int64]bilibili.
 }
 
 // PollNow queries live status for all subscribed creators (in <=50 UID batches),
-// detects 0/2 -> 1 transitions (ignoring 2=carousel), emits notifications, and triggers auto-recording (C32).
+// detects 0/2 -> 1 transitions (ignoring 2=carousel), emits notifications, and triggers auto-recording.
 func (m *Manager) PollNow(ctx context.Context) ([]RoomState, error) {
 	return m.refreshAccounts(ctx, nil, true, false)
 }
@@ -441,15 +507,18 @@ func (m *Manager) refreshAccounts(ctx context.Context, selected []int64, force, 
 			delete(m.stoppedBroadcasts, st.RoomID)
 		}
 
-		// Transition 0/2 -> 1 triggers notification and auto-record (LiveStatus==2 carousel NEVER triggers, C32).
+		// Transition 0/2 -> 1 triggers notification and auto-record (LiveStatus==2 carousel never triggers).
 		if st.LiveStatus == 1 && (!hadPrev || prev != 1) {
 			if notifyGlobal && sub.LiveNotify {
 				notifications = append(notifications, Notification{
-					UID:       uid,
-					RoomID:    st.RoomID,
-					Uname:     firstNonEmpty(st.Uname, sub.Uname),
-					Title:     st.Title,
-					StartedAt: nowStr,
+					Site:       string(site.Bilibili),
+					AccountUID: strconv.FormatInt(uid, 10),
+					UID:        uid,
+					RoomID:     st.RoomID,
+					RoomIDStr:  strconv.FormatInt(st.RoomID, 10),
+					Uname:      firstNonEmpty(st.Uname, sub.Uname),
+					Title:      st.Title,
+					StartedAt:  nowStr,
 				})
 			}
 		}
@@ -588,8 +657,18 @@ func (m *Manager) ListRooms() []RoomState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	out := make([]RoomState, 0, len(m.states))
+	out := make([]RoomState, 0, len(m.states)+len(m.douyinStates))
 	for _, st := range m.states {
+		if st.Site == "" {
+			st.Site = string(site.Bilibili)
+		}
+		if st.AccountUID == "" && st.UID > 0 {
+			st.AccountUID = strconv.FormatInt(st.UID, 10)
+		}
+		if st.RoomIDStr == "" && st.RoomID > 0 {
+			st.RoomIDStr = strconv.FormatInt(st.RoomID, 10)
+			st.RoomKey = "bilibili:live:" + st.RoomIDStr
+		}
 		if sess := m.sessions[st.RoomID]; sess != nil {
 			st.Recording = true
 			st.RecordSession = sess.sessionID
@@ -620,6 +699,9 @@ func (m *Manager) ListRooms() []RoomState {
 		}
 		out = append(out, st)
 	}
+	for _, st := range m.douyinStates {
+		out = append(out, m.hydrateDouyinStateLocked(st))
+	}
 
 	sort.SliceStable(out, func(i, j int) bool {
 		pi := statusPriority(out[i].LiveStatus)
@@ -627,12 +709,18 @@ func (m *Manager) ListRooms() []RoomState {
 		if pi != pj {
 			return pi > pj
 		}
-		return out[i].RoomID < out[j].RoomID
+		if out[i].Site != out[j].Site {
+			return out[i].Site < out[j].Site
+		}
+		if out[i].RoomID != out[j].RoomID {
+			return out[i].RoomID < out[j].RoomID
+		}
+		return out[i].RoomIDStr < out[j].RoomIDStr
 	})
 	return out
 }
 
-// StartRecording begins recording a live room into <cache_dir>/bilibili/<uid>_<uname>/live_<room_id>_<timestamp>/ (C32).
+// StartRecording begins recording a Bilibili live room into <cache_dir>/bilibili/<uid>/lives/<room_id>-<timestamp>/.
 func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (RoomState, error) {
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
@@ -665,7 +753,7 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 	if maxRec <= 0 {
 		maxRec = 2
 	}
-	if len(m.sessions) >= maxRec {
+	if len(m.sessions)+len(m.douyinSessions) >= maxRec {
 		m.mu.Unlock()
 		return st, fmt.Errorf("已达到同时录制上限（%d 路），未开始录制", maxRec)
 	}
@@ -908,13 +996,24 @@ func (m *Manager) addSessionBytes(sess *recordSession, delta int64) {
 		m.mu.Unlock()
 		return
 	}
-	st := m.states[sess.roomID]
-	st.RecordBytes = sess.bytesTotal
-	st.RecordDurationSec = m.nowFunc().Sub(sess.startedAt).Seconds()
-	st.RecordSpeedBps = int64(float64(sess.bytesTotal-sess.reportBytes) / elapsed.Seconds())
-	st.RecordSegments = len(sess.segments)
-	st.Recording = true
-	m.states[sess.roomID] = st
+	var st RoomState
+	if sess.siteID == string(site.Douyin) {
+		st = m.douyinStates[sess.stateKey]
+		st.RecordBytes = sess.bytesTotal
+		st.RecordDurationSec = m.nowFunc().Sub(sess.startedAt).Seconds()
+		st.RecordSpeedBps = int64(float64(sess.bytesTotal-sess.reportBytes) / elapsed.Seconds())
+		st.RecordSegments = len(sess.segments)
+		st.Recording = true
+		m.douyinStates[sess.stateKey] = st
+	} else {
+		st = m.states[sess.roomID]
+		st.RecordBytes = sess.bytesTotal
+		st.RecordDurationSec = m.nowFunc().Sub(sess.startedAt).Seconds()
+		st.RecordSpeedBps = int64(float64(sess.bytesTotal-sess.reportBytes) / elapsed.Seconds())
+		st.RecordSegments = len(sess.segments)
+		st.Recording = true
+		m.states[sess.roomID] = st
+	}
 	sess.reportAt = m.nowFunc()
 	sess.reportBytes = sess.bytesTotal
 	m.mu.Unlock()
@@ -1089,9 +1188,6 @@ func parseM3U8PlaylistDetails(content string, baseURL string) m3u8Playlist {
 	return out
 }
 
-// finalizeFMP4Part defragments a `.mp4.part` file into `finalPath` via a temporary file,
-// verifies it with `download.InspectMP4File`, and removes `partPath` ONLY if conversion succeeds.
-// If conversion fails, `partPath` is preserved on disk (live.md §2.6, R-14).
 // LiveStatusText returns the Chinese label for a Bilibili live_status code.
 func LiveStatusText(status int) string {
 	switch status {
@@ -1130,5 +1226,51 @@ func (m *Manager) CancelRecordings(reason string) {
 	for _, session := range m.sessions {
 		session.stopReason = reason
 		session.cancel()
+	}
+	for _, session := range m.douyinSessions {
+		session.stopReason = reason
+		session.cancel()
+	}
+}
+
+// StopForSite cancels and waits for active recordings belonging to siteID without affecting other sites.
+func (m *Manager) StopForSite(siteID site.ID, reason string) {
+	if reason == "" {
+		reason = "auth_required"
+	}
+	var waitChs []chan struct{}
+	m.mu.Lock()
+	switch siteID {
+	case site.Bilibili:
+		for _, session := range m.sessions {
+			if session.stopReason == "" {
+				session.stopReason = reason
+			}
+			session.cancel()
+			waitChs = append(waitChs, session.doneCh)
+		}
+	case site.Douyin:
+		for _, session := range m.douyinSessions {
+			if session.stopReason == "" {
+				session.stopReason = reason
+			}
+			session.cancel()
+			waitChs = append(waitChs, session.doneCh)
+		}
+	}
+	timeout := m.finalizeTimeout
+	m.mu.Unlock()
+
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for _, ch := range waitChs {
+		select {
+		case <-ch:
+		case <-deadline.C:
+			return
+		}
 	}
 }

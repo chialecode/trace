@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -66,12 +65,11 @@ func validateSubscriptionInput(name, note string, accounts []AccountRef) error {
 	}
 	seen := make(map[string]bool)
 	for _, account := range accounts {
-		site := firstNonEmptyStr(account.Site, "bilibili")
-		id, err := strconv.ParseInt(account.UID, 10, 64)
-		if site != "bilibili" || err != nil || id <= 0 {
-			return fmt.Errorf("subscription: 账号必须是有效的哔哩哔哩 UID")
+		norm, err := NormalizeAndValidateAccount(account)
+		if err != nil {
+			return err
 		}
-		key := site + ":" + strconv.FormatInt(id, 10)
+		key := norm.Site + ":" + norm.UID
 		if seen[key] {
 			return fmt.Errorf("subscription: 同一账号不能重复关联")
 		}

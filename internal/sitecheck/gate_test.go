@@ -129,17 +129,31 @@ func TestQuotaGateBlocksBeforeNetworkRequestAndScansReceipts(t *testing.T) {
 		t.Fatalf("unexpected secret findings in %s: %v", repoReceiptDir, findings)
 	}
 
-	// Negative test for ScanReceiptsForSecrets
-	badDir := t.TempDir()
-	badFile := filepath.Join(badDir, "run-bad.json")
-	if err := os.WriteFile(badFile, []byte(`{"cookie":"SESSDATA=secret_leak"}`), 0o600); err != nil {
-		t.Fatalf("write bad receipt: %v", err)
+	// Negative tests for ScanReceiptsForSecrets (Bilibili + Douyin Cookie markers & signed URLs)
+	badCases := []struct {
+		name    string
+		payload string
+	}{
+		{"bili-sessdata", `{"cookie":"SESSDATA=secret_leak"}`},
+		{"douyin-sessionid", `{"cookie":"sessionid=0123456789abcdef"}`},
+		{"douyin-sessionid-ss", `{"cookie":"sessionid_ss=0123456789abcdef"}`},
+		{"douyin-sid-guard", `{"cookie":"sid_guard=tok%7C1760000000%7C5184000"}`},
+		{"douyin-mstoken", `{"cookie":"msToken=AbCdEfGh12345678"}`},
+		{"douyin-abogus-url", `{"endpoint":"https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=7300000000000000001&a_bogus=dJUnkqSiQoWb"}`},
+		{"douyin-x-signature-url", `{"media":"https://v3-web.douyinvod.com/video/tos/cn/1/?x-expires=1763003600&x-signature=9f8e7d6c5b4a"}`},
 	}
-	badFindings, err := ScanReceiptsForSecrets(badDir)
-	if err != nil {
-		t.Fatalf("ScanReceiptsForSecrets(badDir): %v", err)
-	}
-	if len(badFindings) == 0 {
-		t.Fatalf("expected secret finding for leaked SESSDATA=, got none")
+	for _, tc := range badCases {
+		badDir := t.TempDir()
+		badFile := filepath.Join(badDir, tc.name+".json")
+		if err := os.WriteFile(badFile, []byte(tc.payload), 0o600); err != nil {
+			t.Fatalf("write bad receipt %s: %v", tc.name, err)
+		}
+		badFindings, err := ScanReceiptsForSecrets(badDir)
+		if err != nil {
+			t.Fatalf("ScanReceiptsForSecrets(%s): %v", tc.name, err)
+		}
+		if len(badFindings) == 0 {
+			t.Fatalf("expected secret finding for %s, got none", tc.name)
+		}
 	}
 }

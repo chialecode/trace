@@ -68,7 +68,7 @@ func TestDPAPIStoreRoundTripCorruptAndConfirmState(t *testing.T) {
 		t.Fatalf("unexpected status after SaveManual: %+v", st)
 	}
 
-	// Verify on-disk ciphertext does NOT contain plaintext secrets (C37).
+	// Verify on-disk ciphertext does NOT contain plaintext secrets.
 	diskBytes, err := os.ReadFile(credPath)
 	if err != nil {
 		t.Fatalf("read dpapi file: %v", err)
@@ -79,7 +79,7 @@ func TestDPAPIStoreRoundTripCorruptAndConfirmState(t *testing.T) {
 		}
 	}
 
-	// Verify Status JSON does NOT contain plaintext secrets (C37).
+	// Verify Status JSON does NOT contain plaintext secrets.
 	statusJSON, _ := json.Marshal(store.Status())
 	for _, secret := range []string{secretSess, secretCsrf, secretRT} {
 		if bytes.Contains(statusJSON, []byte(secret)) {
@@ -96,7 +96,7 @@ func TestDPAPIStoreRoundTripCorruptAndConfirmState(t *testing.T) {
 		t.Fatalf("decrypted SESSDATA = %q, want %q", got, secretSess)
 	}
 
-	// Test Step 4 -> Step 5 partial confirmation persistence (C08).
+	// Verify partial confirmation state persists between refresh step 4 and step 5.
 	// Only a QR credential may renew; manual credentials retain their source.
 	if _, err := store2.SaveQR(store2.Cookies(), secretRT, 8888, "Synthetic QR", ""); err != nil {
 		t.Fatalf("SaveQR before renewal: %v", err)

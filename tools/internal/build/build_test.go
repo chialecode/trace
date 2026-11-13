@@ -151,6 +151,60 @@ func TestChannelConfigs(t *testing.T) {
 	if SetupName(ChannelDev, "0.1.1-dev.1") != "trace-dev-setup-0.1.1-dev.1-amd64.exe" || SetupName(ChannelStable, "0.1.1") != "trace-setup-0.1.1-amd64.exe" {
 		t.Fatal("installer names")
 	}
+	for channel, raw := range map[string][]byte{ChannelDev: devRaw, ChannelStable: stableRaw} {
+		var c struct {
+			Windows struct {
+				InstallerInclude string `json:"installerInclude"`
+			} `json:"windows"`
+		}
+		if err := json.Unmarshal(raw, &c); err != nil {
+			t.Fatal(err)
+		}
+		if c.Windows.InstallerInclude != IdentityOf(channel).InstallerInclude {
+			t.Fatalf("%s installerInclude %q", channel, c.Windows.InstallerInclude)
+		}
+	}
+}
+
+// Each channel's installer include names the channel's shortcuts and
+// brings in the shared shortcut rules; only dev makes the desktop shortcut
+// again on a silent over-install. The files are UTF-8 with a BOM, which
+// makensis needs to read the Chinese text.
+func TestInstallerIncludes(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	read := func(rel string) string {
+		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.HasPrefix(raw, []byte{0xEF, 0xBB, 0xBF}) {
+			t.Fatalf("%s has no UTF-8 BOM", rel)
+		}
+		return string(raw)
+	}
+	common := read("assets/installer/shortcuts.nsh")
+	for _, rule := range []string{
+		"!macro customInit",
+		"!macro customInstall",
+		`${If} ${FileExists} "$INSTDIR\Uninstall.exe"`,
+		`Delete "$SMPROGRAMS\${TRACE_SHORTCUT}.lnk"`,
+		"!ifdef TRACE_DESKTOP_ON_UPDATE",
+		"Call CreateDesktopShortcut",
+	} {
+		if !strings.Contains(common, rule) {
+			t.Fatalf("shortcuts.nsh lacks %q", rule)
+		}
+	}
+	for _, channel := range []string{ChannelStable, ChannelDev, ChannelPtest} {
+		id := IdentityOf(channel)
+		text := read(id.InstallerInclude)
+		if !strings.Contains(text, `!define TRACE_SHORTCUT "`+id.DisplayName+`"`) || !strings.Contains(text, `!include "${__FILEDIR__}\shortcuts.nsh"`) {
+			t.Fatalf("%s: %s", id.InstallerInclude, text)
+		}
+		if strings.Contains(text, "!define TRACE_DESKTOP_ON_UPDATE") != (channel == ChannelDev) {
+			t.Fatalf("%s: only dev makes the desktop shortcut again", id.InstallerInclude)
+		}
+	}
 }
 
 // The icons of the two channels are different 1024x1024 PNGs, and the

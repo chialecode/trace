@@ -23,6 +23,7 @@ import (
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/settings"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/storage"
 )
@@ -33,7 +34,7 @@ const DefaultRangeChunkSize int64 = 8 * 1024 * 1024
 // MaxImageFileBytes is the 50 MiB per-image limit required by data-and-cache.md §2.4.
 const MaxImageFileBytes int64 = 50 * 1024 * 1024
 
-// TaskFileProgress tracks per-file download state within a Task (FR-CACHE-009).
+// TaskFileProgress tracks per-file download state within a Task.
 type TaskFileProgress struct {
 	Owned           bool   `json:"owned,omitempty"`
 	Role            string `json:"role"`   // "cover", "image", "video_stream", "audio_stream", "video", "audio", "danmaku", "subtitle"
@@ -76,6 +77,7 @@ type Task struct {
 	Title             string             `json:"title"`
 	PartTitle         string             `json:"partTitle,omitempty"`
 	Mid               int64              `json:"mid,omitempty"`
+	AuthorUID         string             `json:"authorUid,omitempty"`
 	AuthorName        string             `json:"authorName,omitempty"`
 	AuthorFace        string             `json:"authorFace,omitempty"`
 	CoverURL          string             `json:"coverUrl,omitempty"`
@@ -131,12 +133,17 @@ type Manager struct {
 
 	chunkSize    int64
 	backoffScale time.Duration
+	mediaWrap    func(http.RoundTripper) http.RoundTripper
 
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wakeCh    chan struct{}
-	activeRun map[string]context.CancelFunc
-	wg        sync.WaitGroup
+	planners     map[site.ID]WorkPlanner
+	initialPlans map[string]WorkDownloadPlan
+
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wakeCh     chan struct{}
+	activeRun  map[string]context.CancelFunc
+	activeSite map[string]string
+	wg         sync.WaitGroup
 }
 
 // NewManager creates and initializes a download Manager backed by db.
@@ -159,8 +166,11 @@ func NewManager(
 		lastNotify:   make(map[string]taskNotification),
 		chunkSize:    DefaultRangeChunkSize,
 		backoffScale: time.Second,
+		planners:     make(map[site.ID]WorkPlanner),
+		initialPlans: make(map[string]WorkDownloadPlan),
 		wakeCh:       make(chan struct{}, 1),
 		activeRun:    make(map[string]context.CancelFunc),
+		activeSite:   make(map[string]string),
 	}
 	if err := m.initSchema(); err != nil {
 		return nil, err
@@ -172,6 +182,15 @@ func NewManager(
 func (m *Manager) SetBackoffScale(scale time.Duration) {
 	m.mu.Lock()
 	m.backoffScale = scale
+	m.mu.Unlock()
+}
+
+// SetMediaTransportWrap wraps the transport of every site media client the manager
+// builds. Only the bounded real-site checker uses it, to put media requests on its
+// quota ledger; the app never sets it.
+func (m *Manager) SetMediaTransportWrap(wrap func(http.RoundTripper) http.RoundTripper) {
+	m.mu.Lock()
+	m.mediaWrap = wrap
 	m.mu.Unlock()
 }
 
@@ -197,6 +216,7 @@ func (m *Manager) initSchema() error {
 			title TEXT NOT NULL DEFAULT '',
 			part_title TEXT NOT NULL DEFAULT '',
 			mid INTEGER NOT NULL DEFAULT 0,
+			author_uid TEXT NOT NULL DEFAULT '',
 			author_name TEXT NOT NULL DEFAULT '',
 			author_face TEXT NOT NULL DEFAULT '',
 			cover_url TEXT NOT NULL DEFAULT '',
@@ -236,6 +256,7 @@ func (m *Manager) initSchema() error {
 	// Ensure columns exist on databases created before schema additions.
 	for _, alter := range []string{
 		`ALTER TABLE download_tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'`,
+		`ALTER TABLE download_tasks ADD COLUMN author_uid TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE download_tasks ADD COLUMN pause_reason TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE download_tasks ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE download_tasks ADD COLUMN attempts_json TEXT NOT NULL DEFAULT '[]'`,
@@ -246,7 +267,7 @@ func (m *Manager) initSchema() error {
 }
 
 // Start marks any leftover "queued" or "running" tasks from a previous session as
-// "paused" ("已暂停（应用关闭）") per data-and-cache.md §2.4, and launches the worker loop (C15, R-05).
+// "paused" ("已暂停（应用关闭）") per data-and-cache.md §2.4, and launches the worker loop.
 func (m *Manager) Start(parentCtx context.Context) error {
 	m.mu.Lock()
 	if m.cancel != nil {
@@ -289,12 +310,14 @@ func (m *Manager) Stop() {
 	m.wg.Wait()
 }
 
-// PauseAll pauses all currently running and queued tasks with the specified reason (R-04).
+// PauseAll pauses all currently running and queued tasks across all sites with the specified reason.
 func (m *Manager) PauseAll(reason, message string) {
 	m.mu.Lock()
-	for _, fn := range m.activeRun {
+	for id, fn := range m.activeRun {
+		delete(m.initialPlans, id)
 		fn()
 	}
+	clear(m.initialPlans)
 	if reason == "" {
 		reason = "user"
 	}
@@ -313,6 +336,47 @@ func (m *Manager) PauseAll(reason, message string) {
 	m.mu.Unlock()
 }
 
+// PauseForSite pauses only running and queued tasks belonging to siteID without interrupting other sites.
+func (m *Manager) PauseForSite(siteID site.ID, reason, message string) {
+	targetSite := strings.TrimSpace(string(siteID))
+	if targetSite == "" {
+		return
+	}
+	m.mu.Lock()
+	var pausedIDs []string
+	for id, fn := range m.activeRun {
+		if m.activeSite[id] == targetSite {
+			delete(m.initialPlans, id)
+			pausedIDs = append(pausedIDs, id)
+			fn()
+		}
+	}
+	for id, plan := range m.initialPlans {
+		if string(plan.Site) == targetSite {
+			delete(m.initialPlans, id)
+		}
+	}
+	if reason == "" {
+		reason = "user"
+	}
+	if message == "" {
+		message = "已暂停"
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := m.db.Exec(`
+		UPDATE download_tasks
+		SET status = 'paused', pause_reason = ?, error_message = ?, updated_at = ?
+		WHERE site = ? AND status IN ('queued', 'running')
+	`, reason, message, now, targetSite)
+	if err == nil {
+		for _, id := range pausedIDs {
+			m.taskFaults.Delete(id)
+		}
+	}
+	m.mu.Unlock()
+	m.notifyWake()
+}
+
 // UpdateSettings updates download concurrency and stream preferences dynamically.
 func (m *Manager) UpdateSettings(s settings.DownloadSettings) {
 	m.mu.Lock()
@@ -324,7 +388,7 @@ func (m *Manager) UpdateSettings(s settings.DownloadSettings) {
 	m.notifyWake()
 }
 
-// EnqueueVideo resolves video pages and enqueues download tasks (deduplicating active/queued tasks by kind+targetId+cid, C15).
+// EnqueueVideo resolves video pages and enqueues download tasks (deduplicating active/queued tasks by site+kind+targetId+cid).
 func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]Task, error) {
 	if err := m.client.RequireAuth("download:video"); err != nil {
 		return nil, err
@@ -383,7 +447,7 @@ func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]
 	return tasks, nil
 }
 
-// EnqueueDynamic enqueues a dynamic post for local caching (and optionally its linked videos, C19).
+// EnqueueDynamic enqueues a dynamic post for local caching (and optionally its linked videos).
 func (m *Manager) EnqueueDynamic(ctx context.Context, req DynamicEnqueueRequest) (Task, error) {
 	if err := m.client.RequireAuth("download:dynamic"); err != nil {
 		return Task{}, err
@@ -492,8 +556,15 @@ func (m *Manager) enqueueSingleTask(in Task) (Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Deduplicate if an identical task is already queued or running (C15).
-	existing, ok, err := m.findActiveOrQueuedLocked(in.Kind, in.TargetID, in.CID)
+	if in.Site == "" {
+		in.Site = "bilibili"
+	}
+	if in.AuthorUID == "" && in.Mid > 0 && in.Site == "bilibili" {
+		in.AuthorUID = strconv.FormatInt(in.Mid, 10)
+	}
+
+	// Deduplicate if an identical task for the same site is already queued or running.
+	existing, ok, err := m.findActiveOrQueuedLocked(in.Site, in.Kind, in.TargetID, in.CID)
 	if err != nil {
 		return Task{}, err
 	}
@@ -511,9 +582,6 @@ func (m *Manager) enqueueSingleTask(in Task) (Task, error) {
 	}
 	in.CreatedAt = now
 	in.UpdatedAt = now
-	if in.Site == "" {
-		in.Site = "bilibili"
-	}
 
 	linkedInt := 0
 	if in.CacheLinkedVideos {
@@ -526,14 +594,14 @@ func (m *Manager) enqueueSingleTask(in Task) (Task, error) {
 	_, err = m.db.Exec(`
 		INSERT INTO download_tasks (
 			task_id, site, kind, source, target_id, cid, page, title, part_title,
-			mid, author_name, author_face, cover_url, cache_linked_videos,
+			mid, author_uid, author_name, author_face, cover_url, cache_linked_videos,
 			status, pause_reason, error_kind, error_message, quality_hint,
 			bytes_downloaded, total_bytes, progress, item_key, item_dir,
 			files_json, attempts_json, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', '', 0, 0, 0, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', '', 0, 0, 0, ?, ?, ?, ?, ?, ?)
 	`,
 		in.TaskID, in.Site, in.Kind, in.Source, in.TargetID, in.CID, in.Page, in.Title, in.PartTitle,
-		in.Mid, in.AuthorName, in.AuthorFace, in.CoverURL, linkedInt,
+		in.Mid, in.AuthorUID, in.AuthorName, in.AuthorFace, in.CoverURL, linkedInt,
 		in.Status, in.ItemKey, in.ItemDir, string(filesJSON), string(attemptsJSON), in.CreatedAt, in.UpdatedAt,
 	)
 	if err != nil {
@@ -542,18 +610,18 @@ func (m *Manager) enqueueSingleTask(in Task) (Task, error) {
 	return in, nil
 }
 
-func (m *Manager) findActiveOrQueuedLocked(kind, targetID string, cid int64) (Task, bool, error) {
+func (m *Manager) findActiveOrQueuedLocked(siteID, kind, targetID string, cid int64) (Task, bool, error) {
 	row := m.db.QueryRow(`
 		SELECT
 			task_id, site, kind, source, target_id, cid, page, title, part_title,
-			mid, author_name, author_face, cover_url, cache_linked_videos,
+			mid, author_uid, author_name, author_face, cover_url, cache_linked_videos,
 			status, pause_reason, error_kind, error_message, quality_hint,
 			bytes_downloaded, total_bytes, progress, item_key, item_dir,
 			files_json, attempts_json, created_at, updated_at
 		FROM download_tasks
-		WHERE kind = ? AND target_id = ? AND cid = ? AND status IN ('queued', 'running')
+		WHERE site = ? AND kind = ? AND target_id = ? AND cid = ? AND status IN ('queued', 'running')
 		LIMIT 1
-	`, kind, targetID, cid)
+	`, siteID, kind, targetID, cid)
 	t, err := scanTask(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -570,7 +638,7 @@ func (m *Manager) ListTasks() ([]Task, error) {
 	rows, err := m.db.Query(`
 		SELECT
 			task_id, site, kind, source, target_id, cid, page, title, part_title,
-			mid, author_name, author_face, cover_url, cache_linked_videos,
+			mid, author_uid, author_name, author_face, cover_url, cache_linked_videos,
 			status, pause_reason, error_kind, error_message, quality_hint,
 			bytes_downloaded, total_bytes, progress, item_key, item_dir,
 			files_json, attempts_json, created_at, updated_at
@@ -618,7 +686,7 @@ func (m *Manager) GetTask(taskID string) (Task, bool, error) {
 	row := m.db.QueryRow(`
 		SELECT
 			task_id, site, kind, source, target_id, cid, page, title, part_title,
-			mid, author_name, author_face, cover_url, cache_linked_videos,
+			mid, author_uid, author_name, author_face, cover_url, cache_linked_videos,
 			status, pause_reason, error_kind, error_message, quality_hint,
 			bytes_downloaded, total_bytes, progress, item_key, item_dir,
 			files_json, attempts_json, created_at, updated_at
@@ -635,7 +703,7 @@ func (m *Manager) GetTask(taskID string) (Task, bool, error) {
 	return m.withTaskFault(t), true, nil
 }
 
-// TaskDetail returns the task along with its per-file progress manifest and desensitized attempt log (FR-CACHE-009).
+// TaskDetail returns the task along with its per-file progress manifest and desensitized attempt log.
 func (m *Manager) TaskDetail(taskID string) (TaskDetail, bool, error) {
 	t, ok, err := m.GetTask(taskID)
 	if err != nil || !ok {
@@ -651,6 +719,7 @@ func (m *Manager) TaskDetail(taskID string) (TaskDetail, bool, error) {
 // Pause transitions a queued or running task to "paused".
 func (m *Manager) Pause(taskID string) (Task, error) {
 	m.mu.Lock()
+	delete(m.initialPlans, taskID)
 	if cancel, ok := m.activeRun[taskID]; ok {
 		cancel()
 	}
@@ -705,6 +774,7 @@ func (m *Manager) Retry(taskID string) (Task, error) {
 // Cancel stops a task, marks it "canceled", and cleans up any incomplete .part files.
 func (m *Manager) Cancel(taskID string) (Task, error) {
 	m.mu.Lock()
+	delete(m.initialPlans, taskID)
 	if cancel, ok := m.activeRun[taskID]; ok {
 		cancel()
 	}
@@ -849,6 +919,7 @@ func (m *Manager) launchAvailableWorkers() {
 
 		taskCtx, taskCancel := context.WithCancel(m.ctx)
 		m.activeRun[nextTask.TaskID] = taskCancel
+		m.activeSite[nextTask.TaskID] = nextTask.Site
 		m.wg.Add(1)
 		m.mu.Unlock()
 
@@ -861,6 +932,7 @@ func (m *Manager) launchAvailableWorkers() {
 			}
 			m.mu.Lock()
 			delete(m.activeRun, t.TaskID)
+			delete(m.activeSite, t.TaskID)
 			m.mu.Unlock()
 			m.notifyWake()
 		}(nextTask, taskCtx)
@@ -871,7 +943,7 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool) {
 	query := `
 		SELECT
 			task_id, site, kind, source, target_id, cid, page, title, part_title,
-			mid, author_name, author_face, cover_url, cache_linked_videos,
+			mid, author_uid, author_name, author_face, cover_url, cache_linked_videos,
 			status, pause_reason, error_kind, error_message, quality_hint,
 			bytes_downloaded, total_bytes, progress, item_key, item_dir,
 			files_json, attempts_json, created_at, updated_at
@@ -905,17 +977,21 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 		ctx = bilibili.WithAutomaticRequests(ctx, "download")
 	}
 	var err error
-	switch t.Kind {
-	case "video":
-		err = m.executeVideoTask(ctx, &t)
-	case "dynamic":
-		err = m.executeDynamicTask(ctx, &t)
-	case "supplement":
-		err = m.executeSupplementTask(ctx, &t)
-	case "upgrade":
-		err = m.executeUpgradeTask(ctx, &t)
-	default:
-		err = fmt.Errorf("unsupported download task kind %q", t.Kind)
+	if t.Site == string(site.Douyin) {
+		err = m.executeDouyinTask(ctx, &t)
+	} else {
+		switch t.Kind {
+		case "video":
+			err = m.executeVideoTask(ctx, &t)
+		case "dynamic":
+			err = m.executeDynamicTask(ctx, &t)
+		case "supplement":
+			err = m.executeSupplementTask(ctx, &t)
+		case "upgrade":
+			err = m.executeUpgradeTask(ctx, &t)
+		default:
+			err = fmt.Errorf("unsupported download task kind %q", t.Kind)
+		}
 	}
 
 	if ctx.Err() != nil {
@@ -924,29 +1000,30 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 	}
 
 	if err != nil {
-		m.client.ReportAutomaticError(ctx, err)
-		errKind := bilibili.KindOf(err)
-		var pathErr *os.PathError
-		if errors.As(err, &pathErr) {
-			errKind = "storage"
-		}
+		m.reportSiteAutomaticError(ctx, t.Site, err)
+		errKind := classifyDownloadError(err)
 		if errKind == bilibili.ErrKindAuthRequired {
 			t.Status, t.PauseReason = "paused", "auth_required"
+			t.ErrorKind = errKind
+			t.ErrorMessage = "已暂停（登录已失效）：" + err.Error()
+			m.persistTaskProgress(t)
+			m.pauseQueuedForSite(t.Site, "auth_required", errKind, "已暂停（登录已失效）："+err.Error())
+			return
 		}
 		if errKind == bilibili.ErrKindQuota || errKind == bilibili.ErrKindBackoff {
 			t.Status, t.PauseReason = "paused", errKind
 		}
-		if errKind == bilibili.ErrKindUnavailable || errKind == bilibili.ErrKindBlocked {
+		if (errKind == bilibili.ErrKindUnavailable || errKind == bilibili.ErrKindBlocked) && t.Site != string(site.Douyin) {
 			t.Status = "partial"
 		}
-		// Check risk_control / rate_limited -> immediately pause task with reason "risk_control" (data-and-cache.md §2.4).
+		// Risk control or rate limit pauses this task and queued tasks of the same site only (data-and-cache.md §2.4).
 		if errKind == bilibili.ErrKindRiskControl || errKind == bilibili.ErrKindRateLimited {
 			t.Status = "paused"
 			t.PauseReason = "risk_control"
 			t.ErrorKind = errKind
 			t.ErrorMessage = "已暂停（风控）：" + err.Error()
 			m.persistTaskProgress(t)
-			m.tripCircuitBreaker(errKind, err.Error())
+			m.tripSiteCircuitBreaker(t.Site, t.TaskID, errKind, err.Error())
 			return
 		}
 		if t.Status == "paused" {
@@ -978,15 +1055,38 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 	m.persistTaskProgress(t)
 }
 
-func (m *Manager) tripCircuitBreaker(errKind, reason string) {
+func (m *Manager) tripSiteCircuitBreaker(siteID, triggeringTaskID, errKind, reason string) {
+	if siteID == "" {
+		siteID = string(site.Bilibili)
+	}
 	m.mu.Lock()
 	now := time.Now().UTC().Format(time.RFC3339)
-	msg := fmt.Sprintf("检测到站点风控或频率限制 (%s)，已自动暂停排队任务: %s", errKind, reason)
+	msg := fmt.Sprintf("检测到站点风控或频率限制 (%s)，已自动暂停同站点排队任务: %s", errKind, reason)
+	for id, fn := range m.activeRun {
+		if id != triggeringTaskID && m.activeSite[id] == siteID {
+			delete(m.initialPlans, id)
+			fn()
+		}
+	}
 	_, _ = m.db.Exec(`
 		UPDATE download_tasks
 		SET status = 'paused', pause_reason = 'risk_control', error_kind = ?, error_message = ?, updated_at = ?
-		WHERE status = 'queued'
-	`, errKind, msg, now)
+		WHERE site = ? AND (status = 'queued' OR (status = 'running' AND task_id != ?))
+	`, errKind, msg, now, siteID, triggeringTaskID)
+	m.mu.Unlock()
+}
+
+func (m *Manager) pauseQueuedForSite(siteID, pauseReason, errKind, msg string) {
+	if siteID == "" {
+		siteID = string(site.Bilibili)
+	}
+	m.mu.Lock()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, _ = m.db.Exec(`
+		UPDATE download_tasks
+		SET status = 'paused', pause_reason = ?, error_kind = ?, error_message = ?, updated_at = ?
+		WHERE site = ? AND status = 'queued'
+	`, pauseReason, errKind, msg, now, siteID)
 	m.mu.Unlock()
 }
 
@@ -1136,7 +1236,7 @@ func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error
 		}
 		fullPath := filepath.Join(itemDir, relName)
 
-		// If image already exists on disk from an earlier partial attempt, reuse it without re-downloading (C23)!
+		// If image already exists on disk from an earlier partial attempt, reuse it without re-downloading.
 		if mediaIsValid(previous, relName) {
 			info, statErr := os.Stat(fullPath)
 			if statErr != nil {
@@ -1295,7 +1395,7 @@ func (m *Manager) downloadStreamWithRefresh(
 
 // downloadFileWithRange downloads from candidate URLs into finalPath via <finalPath>.part,
 // using 8 MiB closed-interval Range requests, per-segment retry with exponential backoff + URL rotation,
-// and Content-Range verification (data-and-cache.md §2.4, C18, R-06).
+// and Content-Range verification (data-and-cache.md §2.4).
 func (m *Manager) downloadFileWithRange(ctx context.Context, urls []string, finalPath string, t *Task) (int64, string, error) {
 	var cleanURLs []string
 	rejectedNodes := 0
@@ -1819,14 +1919,14 @@ func (m *Manager) saveTaskProgress(t Task) error {
 		UPDATE download_tasks
 		SET
 			cid = ?, page = ?, title = ?, part_title = ?,
-			mid = ?, author_name = ?, author_face = ?, cover_url = ?,
+			mid = ?, author_uid = ?, author_name = ?, author_face = ?, cover_url = ?,
 			status = ?, pause_reason = ?, error_kind = ?, error_message = ?, quality_hint = ?,
 			bytes_downloaded = ?, total_bytes = ?, progress = ?,
 			item_key = ?, item_dir = ?, files_json = ?, attempts_json = ?, updated_at = ?
 		WHERE task_id = ? AND status = 'running'
 	`,
 		t.CID, t.Page, t.Title, t.PartTitle,
-		t.Mid, t.AuthorName, t.AuthorFace, t.CoverURL,
+		t.Mid, t.AuthorUID, t.AuthorName, t.AuthorFace, t.CoverURL,
 		t.Status, t.PauseReason, t.ErrorKind, t.ErrorMessage, t.QualityHint,
 		t.BytesDownloaded, t.TotalBytes, t.Progress,
 		t.ItemKey, t.ItemDir, string(filesJSON), string(attemptsJSON), t.UpdatedAt,
@@ -1962,7 +2062,7 @@ func scanTask(r rowScanner) (Task, error) {
 	var filesRaw, attemptsRaw string
 	err := r.Scan(
 		&t.TaskID, &t.Site, &t.Kind, &t.Source, &t.TargetID, &t.CID, &t.Page, &t.Title, &t.PartTitle,
-		&t.Mid, &t.AuthorName, &t.AuthorFace, &t.CoverURL, &linkedInt,
+		&t.Mid, &t.AuthorUID, &t.AuthorName, &t.AuthorFace, &t.CoverURL, &linkedInt,
 		&t.Status, &t.PauseReason, &t.ErrorKind, &t.ErrorMessage, &t.QualityHint,
 		&t.BytesDownloaded, &t.TotalBytes, &t.Progress, &t.ItemKey, &t.ItemDir,
 		&filesRaw, &attemptsRaw, &t.CreatedAt, &t.UpdatedAt,
@@ -2040,6 +2140,26 @@ func (m *Manager) cacheLiveMotion(ctx context.Context, t *Task, itemDir string, 
 		*partialErrors = append(*partialErrors, fmt.Sprintf("img_%02d 实况: %v", idx+1, err))
 		return nil, nil
 	}
+	// Keep the clip a plain progressive MP4 with moov ahead of mdat, so system
+	// players preview it too (DEC-046 ①); a fragmented or broken clip is
+	// removed and leaves the post partial.
+	if strings.EqualFold(path.Ext(relName), ".mp4") || strings.EqualFold(path.Ext(relName), ".m4v") {
+		full := filepath.Join(itemDir, relName)
+		summary, vErr := EnsureSingleMP4Context(ctx, full, 0)
+		if vErr != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			_ = os.Remove(full)
+			m.setFileProgress(t, "motion", relName, "failed", 0, 0, 0)
+			*partialErrors = append(*partialErrors, fmt.Sprintf("img_%02d 实况: %v", idx+1, vErr))
+			return nil, nil
+		}
+		n, sha = summary.FileBytes, summary.SHA256
+		m.setFileProgress(t, "motion", relName, "completed", n, n, 0)
+		return &library.MediaFile{Role: "motion", Path: relName, Bytes: n, SHA256: sha, Source: liveURL,
+			Width: summary.Width, Height: summary.Height, Duration: int(summary.DurationSec + 0.5)}, nil
+	}
 	m.setFileProgress(t, "motion", relName, "completed", n, n, 0)
 	return &library.MediaFile{Role: "motion", Path: relName, Bytes: n, SHA256: sha, Source: liveURL}, nil
 }
@@ -2056,6 +2176,10 @@ func guessImageExt(rawURL string) string {
 	return ".jpg"
 }
 
+func isTempStagingPath(rel string) bool {
+	return strings.HasSuffix(rel, ".raw") || strings.HasSuffix(rel, ".imgtmp") || strings.HasSuffix(rel, ".audtmp")
+}
+
 func cleanTaskPartFiles(t Task) {
 	if t.ItemDir == "" {
 		return
@@ -2069,7 +2193,11 @@ func cleanTaskPartFiles(t Task) {
 			root, rel = file.ItemDir, filepath.Base(file.Path)
 		}
 		rel = taskFileIdentity(rel)
-		for _, pending := range []string{rel + ".part", rel + ".part.part"} {
+		candidates := []string{rel + ".part", rel + ".part.part", rel + ".raw", rel + ".raw.part"}
+		if isTempStagingPath(rel) {
+			candidates = append(candidates, rel)
+		}
+		for _, pending := range candidates {
 			partPath, err := library.ResolveItemPath(root, pending)
 			if err == nil {
 				_ = os.Remove(partPath)

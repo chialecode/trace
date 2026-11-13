@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -74,14 +75,50 @@ func OpenWithDataDir(db *sql.DB, cacheDir, dataDir string) (*Store, error) {
 	return s, nil
 }
 
+var (
+	migrateV2HookMu sync.Mutex
+	migrateV2Hook   func(tx *sql.Tx) error
+)
+
+// SetMigrateV2HookForTest installs a fault-injection callback invoked inside
+// the v1 -> v2 SQLite migration transaction right before PRAGMA user_version = 2.
+func SetMigrateV2HookForTest(fn func(tx *sql.Tx) error) func() {
+	migrateV2HookMu.Lock()
+	prev := migrateV2Hook
+	migrateV2Hook = fn
+	migrateV2HookMu.Unlock()
+	return func() {
+		migrateV2HookMu.Lock()
+		migrateV2Hook = prev
+		migrateV2HookMu.Unlock()
+	}
+}
+
 func (s *Store) initSchema() error {
-	stmts := []string{
+	v, err := storage.CheckSQLiteSchema(s.db, "library.db", CurrentSchemaVersion)
+	if err != nil {
+		return err
+	}
+	if v < CurrentSchemaVersion {
+		return s.migrateSchemaToV2()
+	}
+	for _, q := range schemaV2Statements() {
+		if _, err := s.db.Exec(q); err != nil {
+			return fmt.Errorf("library: init schema: %w", err)
+		}
+	}
+	return nil
+}
+
+func schemaV2Statements() []string {
+	return []string{
 		`CREATE TABLE IF NOT EXISTS library_items (
 			item_key TEXT PRIMARY KEY,
 			site TEXT NOT NULL,
 			kind TEXT NOT NULL,
 			raw_id TEXT NOT NULL,
 			mid INTEGER NOT NULL DEFAULT 0,
+			author_uid TEXT NOT NULL DEFAULT '',
 			author_name TEXT NOT NULL DEFAULT '',
 			author_face TEXT NOT NULL DEFAULT '',
 			title TEXT NOT NULL DEFAULT '',
@@ -99,6 +136,7 @@ func (s *Store) initSchema() error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_library_items_pub_ts ON library_items(pub_ts DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_library_items_mid ON library_items(mid);`,
+		`CREATE INDEX IF NOT EXISTS idx_library_items_site_author ON library_items(site, author_uid);`,
 		`CREATE TABLE IF NOT EXISTS item_refs (
 			from_key TEXT NOT NULL,
 			to_key TEXT NOT NULL,
@@ -111,6 +149,7 @@ func (s *Store) initSchema() error {
 			kind TEXT NOT NULL,
 			raw_id TEXT NOT NULL,
 			mid INTEGER NOT NULL DEFAULT 0,
+			author_uid TEXT NOT NULL DEFAULT '',
 			author_name TEXT NOT NULL DEFAULT '',
 			author_face TEXT NOT NULL DEFAULT '',
 			title TEXT NOT NULL DEFAULT '',
@@ -125,13 +164,228 @@ func (s *Store) initSchema() error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_feed_items_pub_ts ON feed_items(pub_ts DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_feed_items_mid ON feed_items(mid);`,
+		`CREATE INDEX IF NOT EXISTS idx_feed_items_site_author ON feed_items(site, author_uid);`,
+		`CREATE TABLE IF NOT EXISTS download_tasks (
+			task_id TEXT PRIMARY KEY,
+			site TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'manual',
+			target_id TEXT NOT NULL,
+			cid INTEGER NOT NULL DEFAULT 0,
+			page INTEGER NOT NULL DEFAULT 1,
+			title TEXT NOT NULL DEFAULT '',
+			part_title TEXT NOT NULL DEFAULT '',
+			mid INTEGER NOT NULL DEFAULT 0,
+			author_uid TEXT NOT NULL DEFAULT '',
+			author_name TEXT NOT NULL DEFAULT '',
+			author_face TEXT NOT NULL DEFAULT '',
+			cover_url TEXT NOT NULL DEFAULT '',
+			cache_linked_videos INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'queued',
+			pause_reason TEXT NOT NULL DEFAULT '',
+			error_kind TEXT NOT NULL DEFAULT '',
+			error_message TEXT NOT NULL DEFAULT '',
+			quality_hint TEXT NOT NULL DEFAULT '',
+			bytes_downloaded INTEGER NOT NULL DEFAULT 0,
+			total_bytes INTEGER NOT NULL DEFAULT 0,
+			progress REAL NOT NULL DEFAULT 0,
+			item_key TEXT NOT NULL DEFAULT '',
+			item_dir TEXT NOT NULL DEFAULT '',
+			files_json TEXT NOT NULL DEFAULT '[]',
+			attempts_json TEXT NOT NULL DEFAULT '[]',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_download_tasks_site_author ON download_tasks(site, author_uid);`,
+		`CREATE TABLE IF NOT EXISTS task_attempts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			task_id TEXT NOT NULL,
+			attempt_time TEXT NOT NULL,
+			file_path TEXT NOT NULL,
+			offset_bytes INTEGER NOT NULL DEFAULT 0,
+			host TEXT NOT NULL DEFAULT '',
+			attempt_num INTEGER NOT NULL DEFAULT 1,
+			error_kind TEXT NOT NULL DEFAULT '',
+			http_status INTEGER NOT NULL DEFAULT 0
+		);`,
 	}
-	for _, q := range stmts {
-		if _, err := s.db.Exec(q); err != nil {
-			return fmt.Errorf("library: init schema: %w", err)
+}
+
+func (s *Store) migrateSchemaToV2() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("library: begin schema v2 migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	baseTables := []string{
+		`CREATE TABLE IF NOT EXISTS library_items (
+			item_key TEXT PRIMARY KEY,
+			site TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			raw_id TEXT NOT NULL,
+			mid INTEGER NOT NULL DEFAULT 0,
+			author_uid TEXT NOT NULL DEFAULT '',
+			author_name TEXT NOT NULL DEFAULT '',
+			author_face TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL DEFAULT '',
+			summary TEXT NOT NULL DEFAULT '',
+			cover_path TEXT NOT NULL DEFAULT '',
+			canonical_url TEXT NOT NULL DEFAULT '',
+			pub_ts INTEGER NOT NULL DEFAULT 0,
+			cached_at TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'complete',
+			item_dir TEXT NOT NULL DEFAULT '',
+			total_bytes INTEGER NOT NULL DEFAULT 0,
+			upgrade_available INTEGER NOT NULL DEFAULT 0,
+			upgrade_hint TEXT NOT NULL DEFAULT '',
+			json_data TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS item_refs (
+			from_key TEXT NOT NULL,
+			to_key TEXT NOT NULL,
+			PRIMARY KEY (from_key, to_key)
+		);`,
+		`CREATE TABLE IF NOT EXISTS feed_items (
+			feed_key TEXT PRIMARY KEY,
+			site TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			raw_id TEXT NOT NULL,
+			mid INTEGER NOT NULL DEFAULT 0,
+			author_uid TEXT NOT NULL DEFAULT '',
+			author_name TEXT NOT NULL DEFAULT '',
+			author_face TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL DEFAULT '',
+			summary TEXT NOT NULL DEFAULT '',
+			cover_url TEXT NOT NULL DEFAULT '',
+			canonical_url TEXT NOT NULL DEFAULT '',
+			pub_ts INTEGER NOT NULL DEFAULT 0,
+			discovered_at TEXT NOT NULL DEFAULT '',
+			cached INTEGER NOT NULL DEFAULT 0,
+			cache_status TEXT NOT NULL DEFAULT '',
+			item_key TEXT NOT NULL DEFAULT ''
+		);`,
+		`CREATE TABLE IF NOT EXISTS download_tasks (
+			task_id TEXT PRIMARY KEY,
+			site TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'manual',
+			target_id TEXT NOT NULL,
+			cid INTEGER NOT NULL DEFAULT 0,
+			page INTEGER NOT NULL DEFAULT 1,
+			title TEXT NOT NULL DEFAULT '',
+			part_title TEXT NOT NULL DEFAULT '',
+			mid INTEGER NOT NULL DEFAULT 0,
+			author_uid TEXT NOT NULL DEFAULT '',
+			author_name TEXT NOT NULL DEFAULT '',
+			author_face TEXT NOT NULL DEFAULT '',
+			cover_url TEXT NOT NULL DEFAULT '',
+			cache_linked_videos INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'queued',
+			pause_reason TEXT NOT NULL DEFAULT '',
+			error_kind TEXT NOT NULL DEFAULT '',
+			error_message TEXT NOT NULL DEFAULT '',
+			quality_hint TEXT NOT NULL DEFAULT '',
+			bytes_downloaded INTEGER NOT NULL DEFAULT 0,
+			total_bytes INTEGER NOT NULL DEFAULT 0,
+			progress REAL NOT NULL DEFAULT 0,
+			item_key TEXT NOT NULL DEFAULT '',
+			item_dir TEXT NOT NULL DEFAULT '',
+			files_json TEXT NOT NULL DEFAULT '[]',
+			attempts_json TEXT NOT NULL DEFAULT '[]',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS task_attempts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			task_id TEXT NOT NULL,
+			attempt_time TEXT NOT NULL,
+			file_path TEXT NOT NULL,
+			offset_bytes INTEGER NOT NULL DEFAULT 0,
+			host TEXT NOT NULL DEFAULT '',
+			attempt_num INTEGER NOT NULL DEFAULT 1,
+			error_kind TEXT NOT NULL DEFAULT '',
+			http_status INTEGER NOT NULL DEFAULT 0
+		);`,
+	}
+	for _, q := range baseTables {
+		if _, err := tx.Exec(q); err != nil {
+			return fmt.Errorf("library: migrate schema v2 base table: %w", err)
 		}
 	}
+
+	for _, tbl := range []string{"library_items", "feed_items", "download_tasks"} {
+		hasCol, err := tableHasColumnTx(tx, tbl, "author_uid")
+		if err != nil {
+			return err
+		}
+		if !hasCol {
+			if _, err := tx.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN author_uid TEXT NOT NULL DEFAULT ''`, tbl)); err != nil {
+				return fmt.Errorf("library: add author_uid on %s: %w", tbl, err)
+			}
+		}
+		if _, err := tx.Exec(fmt.Sprintf(`UPDATE %s SET author_uid = CASE WHEN mid > 0 THEN CAST(mid AS TEXT) ELSE '' END WHERE author_uid = ''`, tbl)); err != nil {
+			return fmt.Errorf("library: backfill author_uid on %s: %w", tbl, err)
+		}
+	}
+
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_library_items_pub_ts ON library_items(pub_ts DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_library_items_mid ON library_items(mid);`,
+		`CREATE INDEX IF NOT EXISTS idx_library_items_site_author ON library_items(site, author_uid);`,
+		`CREATE INDEX IF NOT EXISTS idx_item_refs_to ON item_refs(to_key);`,
+		`CREATE INDEX IF NOT EXISTS idx_feed_items_pub_ts ON feed_items(pub_ts DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_feed_items_mid ON feed_items(mid);`,
+		`CREATE INDEX IF NOT EXISTS idx_feed_items_site_author ON feed_items(site, author_uid);`,
+		`CREATE INDEX IF NOT EXISTS idx_download_tasks_site_author ON download_tasks(site, author_uid);`,
+	}
+	for _, q := range indexes {
+		if _, err := tx.Exec(q); err != nil {
+			return fmt.Errorf("library: create schema v2 index: %w", err)
+		}
+	}
+
+	migrateV2HookMu.Lock()
+	hook := migrateV2Hook
+	migrateV2HookMu.Unlock()
+	if hook != nil {
+		if err := hook(tx); err != nil {
+			return err
+		}
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, CurrentSchemaVersion)); err != nil {
+		return fmt.Errorf("library: stamp user_version %d: %w", CurrentSchemaVersion, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("library: commit schema v2 migration: %w", err)
+	}
+	_, _ = s.db.Exec(`PRAGMA wal_checkpoint(PASSIVE)`)
 	return nil
+}
+
+func tableHasColumnTx(tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid        int
+			name, ctyp string
+			notNull    int
+			dflt       sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &ctyp, &notNull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if strings.EqualFold(name, column) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func (s *Store) loadRootsLocked() error {
@@ -315,8 +569,12 @@ func (s *Store) saveItemLocked(itemDir string, meta ItemMetadata, checkHash ...b
 	if meta.Site == "" {
 		meta.Site = "bilibili"
 	}
+	if meta.Site == "douyin" && strings.EqualFold(meta.Kind, "note") {
+		meta.Kind = "dynamic"
+	}
 	meta.RawID = NormalizeRawID(meta.Kind, meta.ID)
 	meta.ItemKey = CanonicalItemKey(meta.Site, meta.Kind, meta.RawID)
+	SanitizeItemMetadata(&meta)
 	if meta.CachedAt == "" {
 		meta.CachedAt = time.Now().UTC().Format(time.RFC3339)
 	}
@@ -350,7 +608,7 @@ func (s *Store) saveItemLocked(itemDir string, meta ItemMetadata, checkHash ...b
 }
 
 // RebuildIndex walks all registered library roots for item.json files, backs up corrupt files,
-// checks media file integrity, and rebuilds the SQLite library_items index (C24, C25, C28).
+// checks media file integrity, and rebuilds the SQLite library_items index.
 func (s *Store) RebuildIndex() (RebuildReport, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -485,8 +743,9 @@ func (s *Store) RebuildIndex() (RebuildReport, error) {
 	return report, tx.Commit()
 }
 
-// AddLibraryRoot scans an existing cache folder (or legacy trace-data folder containing library/)
-// and indexes its items without moving files or overwriting existing keys (FR-LIB-006, C27).
+// AddLibraryRoot scans an existing cache folder (including bilibili/* and douyin/*/{works,lives}/*)
+// or legacy trace-data folder containing library/, and indexes its items without moving files
+// or overwriting existing keys (FR-LIB-006).
 func (s *Store) AddLibraryRoot(selectedDir string) (AddRootReport, error) {
 	if strings.TrimSpace(selectedDir) == "" || !filepath.IsAbs(selectedDir) {
 		return AddRootReport{}, fmt.Errorf("library: folder path cannot be empty")
@@ -558,7 +817,7 @@ func (s *Store) AddLibraryRoot(selectedDir string) (AddRootReport, error) {
 		if walkErr != nil {
 			return walkErr
 		}
-		// Never follow symlinks or junctions (INV-08, C27).
+		// Never follow symlinks or junctions (INV-08).
 		if d.Type()&os.ModeSymlink != 0 {
 			if d.IsDir() {
 				return filepath.SkipDir
@@ -585,7 +844,7 @@ func (s *Store) AddLibraryRoot(selectedDir string) (AddRootReport, error) {
 			return nil
 		}
 
-		// If itemKey already exists in index, keep existing item and count as Skipped (C27).
+		// If itemKey already exists in index, keep existing item and count as Skipped.
 		var existingCount int
 		if err := s.db.QueryRow(`SELECT COUNT(1) FROM library_items WHERE item_key = ?`, meta.ItemKey).Scan(&existingCount); err != nil {
 			return err
@@ -614,7 +873,7 @@ func (s *Store) AddLibraryRoot(selectedDir string) (AddRootReport, error) {
 	return report, err
 }
 
-// MediaPath resolves and validates a whitelisted media file path belonging to key (INV-08, C22, C37).
+// MediaPath resolves and validates a whitelisted media file path belonging to key (INV-08).
 // It rejects '.', '..', backslashes, colons, null bytes, unregistered filenames, and symlinks/junctions.
 func (s *Store) MediaPath(key, relPath string) (string, error) {
 	relPath = strings.TrimSpace(relPath)
@@ -642,35 +901,8 @@ func (s *Store) MediaPath(key, relPath string) (string, error) {
 		return "", fmt.Errorf("library: item %q not found", key)
 	}
 
-	// Verify relPath is registered in meta.
 	normRel := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relPath)))
-	registered := false
-	for _, m := range meta.Media {
-		if filepath.ToSlash(filepath.Clean(filepath.FromSlash(m.Path))) == normRel {
-			registered = true
-			break
-		}
-	}
-	if !registered {
-		for _, p := range meta.Parts {
-			if filepath.ToSlash(filepath.Clean(filepath.FromSlash(p.File))) == normRel ||
-				filepath.ToSlash(filepath.Clean(filepath.FromSlash(p.Danmaku))) == normRel ||
-				filepath.ToSlash(filepath.Clean(filepath.FromSlash(p.Audio.SavedAs))) == normRel {
-				registered = true
-				break
-			}
-			for _, sub := range p.Subtitles {
-				if filepath.ToSlash(filepath.Clean(filepath.FromSlash(sub))) == normRel {
-					registered = true
-					break
-				}
-			}
-			if registered {
-				break
-			}
-		}
-	}
-	if !registered {
+	if !isRegisteredInManifest(meta, normRel) {
 		return "", fmt.Errorf("library: file %q is not registered in item %q manifest", relPath, key)
 	}
 
@@ -710,6 +942,64 @@ func (s *Store) MediaPath(key, relPath string) (string, error) {
 	return fullPath, nil
 }
 
+func cleanManifestRel(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	return filepath.ToSlash(filepath.Clean(filepath.FromSlash(p)))
+}
+
+func isRegisteredInManifest(meta ItemMetadata, normRel string) bool {
+	if normRel == "" {
+		return false
+	}
+	for _, m := range meta.Media {
+		if cleanManifestRel(m.Path) == normRel || cleanManifestRel(m.Motion) == normRel {
+			return true
+		}
+	}
+	for _, p := range meta.Parts {
+		if cleanManifestRel(p.File) == normRel ||
+			cleanManifestRel(p.Danmaku) == normRel ||
+			cleanManifestRel(p.Audio.SavedAs) == normRel {
+			return true
+		}
+		for _, sub := range p.Subtitles {
+			if cleanManifestRel(sub) == normRel {
+				return true
+			}
+		}
+	}
+	if meta.DouyinVideo != nil && cleanManifestRel(meta.DouyinVideo.File) == normRel {
+		return true
+	}
+	for _, np := range meta.NotePages {
+		if cleanManifestRel(np.Image) == normRel ||
+			cleanManifestRel(np.Cover) == normRel ||
+			cleanManifestRel(np.Motion) == normRel ||
+			cleanManifestRel(np.Video) == normRel {
+			return true
+		}
+		if np.VideoInfo != nil && cleanManifestRel(np.VideoInfo.File) == normRel {
+			return true
+		}
+	}
+	if meta.Music != nil {
+		if cleanManifestRel(meta.Music.File) == normRel || cleanManifestRel(meta.Music.Cover) == normRel {
+			return true
+		}
+	}
+	if meta.Live != nil {
+		for _, seg := range meta.Live.Segments {
+			if cleanManifestRel(seg.File) == normRel {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func verifyItemFiles(itemDir string, meta *ItemMetadata, checkHash ...bool) (missing bool, totalBytes int64) {
 	checkedPaths := make(map[string]bool)
 
@@ -726,8 +1016,9 @@ func verifyItemFiles(itemDir string, meta *ItemMetadata, checkHash ...bool) (mis
 		if err != nil || info.IsDir() || info.Size() == 0 {
 			return false
 		}
-		if !checkedPaths[rel] {
-			checkedPaths[rel] = true
+		norm := cleanManifestRel(rel)
+		if !checkedPaths[norm] {
+			checkedPaths[norm] = true
 			totalBytes += info.Size()
 		}
 		return true
@@ -754,6 +1045,9 @@ func verifyItemFiles(itemDir string, meta *ItemMetadata, checkHash ...bool) (mis
 				}
 			}
 		}
+		if meta.Media[i].Motion != "" && !checkRel(meta.Media[i].Motion) {
+			missing = true
+		}
 	}
 
 	for _, part := range meta.Parts {
@@ -763,6 +1057,9 @@ func verifyItemFiles(itemDir string, meta *ItemMetadata, checkHash ...bool) (mis
 		if part.Danmaku != "" && !checkRel(part.Danmaku) {
 			missing = true
 		}
+		if part.Audio.SavedAs != "" && !checkRel(part.Audio.SavedAs) {
+			missing = true
+		}
 		for _, sub := range part.Subtitles {
 			if sub != "" && !checkRel(sub) {
 				missing = true
@@ -770,7 +1067,44 @@ func verifyItemFiles(itemDir string, meta *ItemMetadata, checkHash ...bool) (mis
 		}
 	}
 
-	if len(meta.Media) == 0 && len(meta.Parts) == 0 && meta.Kind != "dynamic" && meta.Status != "partial" && meta.Status != "recording" {
+	if meta.DouyinVideo != nil && meta.DouyinVideo.File != "" && !checkRel(meta.DouyinVideo.File) {
+		missing = true
+	}
+
+	for _, np := range meta.NotePages {
+		for _, rel := range []string{np.Image, np.Cover, np.Motion, np.Video} {
+			if rel != "" && !checkRel(rel) {
+				missing = true
+			}
+		}
+		if np.VideoInfo != nil && np.VideoInfo.File != "" && !checkRel(np.VideoInfo.File) {
+			missing = true
+		}
+	}
+
+	if meta.Music != nil {
+		if meta.Music.File != "" && !checkRel(meta.Music.File) {
+			missing = true
+		}
+		if meta.Music.Cover != "" && !checkRel(meta.Music.Cover) {
+			missing = true
+		}
+	}
+
+	if meta.Live != nil {
+		for _, seg := range meta.Live.Segments {
+			if seg.File != "" && !checkRel(seg.File) {
+				missing = true
+			}
+		}
+	}
+
+	hasStructuredMedia := len(meta.Media) > 0 || len(meta.Parts) > 0 ||
+		(meta.DouyinVideo != nil && meta.DouyinVideo.File != "") ||
+		len(meta.NotePages) > 0 ||
+		(meta.Music != nil && meta.Music.File != "") ||
+		(meta.Live != nil && len(meta.Live.Segments) > 0)
+	if !hasStructuredMedia && meta.Kind != "dynamic" && meta.Status != "partial" && meta.Status != "recording" {
 		missing = true
 	}
 	return missing, totalBytes
@@ -802,6 +1136,7 @@ func VerifyMediaFile(itemDir string, file MediaFile, checkHash bool) bool {
 }
 
 func (s *Store) upsertItemRowLocked(meta ItemMetadata) error {
+	SanitizeItemMetadata(&meta)
 	jsonBytes, err := json.Marshal(meta)
 	if err != nil {
 		return err
@@ -818,11 +1153,24 @@ func (s *Store) upsertItemRowLocked(meta ItemMetadata) error {
 			break
 		}
 	}
+	if coverPath == "" && len(meta.NotePages) > 0 {
+		for _, np := range meta.NotePages {
+			cand := np.Image
+			if cand == "" {
+				cand = np.Cover
+			}
+			if cand != "" {
+				coverPath = filepath.Join(meta.ItemDir, filepath.FromSlash(cand))
+				break
+			}
+		}
+	}
 
 	upAvail := 0
 	if meta.UpgradeAvailable {
 		upAvail = 1
 	}
+	_, authorUID := NormalizeAuthorUID(meta.Site, meta.Author.UID, meta.Author.Mid)
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -831,12 +1179,13 @@ func (s *Store) upsertItemRowLocked(meta ItemMetadata) error {
 	defer tx.Rollback()
 	_, err = tx.Exec(`
 		INSERT INTO library_items (
-			item_key, site, kind, raw_id, mid, author_name, author_face,
+			item_key, site, kind, raw_id, mid, author_uid, author_name, author_face,
 			title, summary, cover_path, canonical_url, pub_ts, cached_at,
 			status, item_dir, total_bytes, upgrade_available, upgrade_hint, json_data
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(item_key) DO UPDATE SET
 			mid = excluded.mid,
+			author_uid = excluded.author_uid,
 			author_name = excluded.author_name,
 			author_face = excluded.author_face,
 			title = excluded.title,
@@ -853,7 +1202,7 @@ func (s *Store) upsertItemRowLocked(meta ItemMetadata) error {
 			json_data = excluded.json_data
 	`,
 		meta.ItemKey, meta.Site, meta.Kind, meta.RawID,
-		meta.Author.Mid, meta.Author.Name, meta.Author.Face,
+		meta.Author.Mid, authorUID, meta.Author.Name, meta.Author.Face,
 		meta.Title, summary, coverPath, meta.URL, meta.PubTs, meta.CachedAt,
 		meta.Status, meta.ItemDir, meta.TotalBytes, upAvail, meta.UpgradeHint, string(jsonBytes),
 	)
@@ -876,11 +1225,13 @@ func (s *Store) upsertItemRowLocked(meta ItemMetadata) error {
 
 	_, err = tx.Exec(`
 		INSERT INTO feed_items (
-			feed_key, site, kind, raw_id, mid, author_name, author_face,
+			feed_key, site, kind, raw_id, mid, author_uid, author_name, author_face,
 			title, summary, cover_url, canonical_url, pub_ts, discovered_at,
 			cached, cache_status, item_key
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 		ON CONFLICT(feed_key) DO UPDATE SET
+			mid = excluded.mid,
+			author_uid = excluded.author_uid,
 			cached = 1,
 			cache_status = excluded.cache_status,
 			item_key = excluded.item_key,
@@ -889,7 +1240,7 @@ func (s *Store) upsertItemRowLocked(meta ItemMetadata) error {
 			cover_url = CASE WHEN feed_items.cover_url = '' THEN excluded.cover_url ELSE feed_items.cover_url END
 	`,
 		meta.ItemKey, meta.Site, meta.Kind, meta.RawID,
-		meta.Author.Mid, meta.Author.Name, meta.Author.Face,
+		meta.Author.Mid, authorUID, meta.Author.Name, meta.Author.Face,
 		meta.Title, summary, coverPath, meta.URL, meta.PubTs, meta.CachedAt,
 		meta.Status, meta.ItemKey,
 	)
@@ -904,13 +1255,35 @@ func (s *Store) UpsertFeedEntry(entry FeedEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	entry.Site = strings.ToLower(strings.TrimSpace(entry.Site))
 	if entry.Site == "" {
 		entry.Site = "bilibili"
+	}
+	if entry.Site == "douyin" && strings.EqualFold(entry.Kind, "note") {
+		entry.Kind = "dynamic"
 	}
 	entry.RawID = NormalizeRawID(entry.Kind, entry.RawID)
 	entry.FeedKey = CanonicalItemKey(entry.Site, entry.Kind, entry.RawID)
 	if entry.DiscoveredAt == "" {
 		entry.DiscoveredAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	_, authorUID := NormalizeAuthorUID(entry.Site, entry.AuthorUID, entry.Mid)
+	if entry.Site == "bilibili" && entry.Mid <= 0 && authorUID != "" {
+		if n, err := strconv.ParseInt(authorUID, 10, 64); err == nil && n > 0 {
+			entry.Mid = n
+		}
+	}
+	entry.CanonicalURL = sanitizeManifestPageURL(entry.CanonicalURL, entry.Site, entry.Kind, entry.RawID, nil)
+	if entry.Site == "douyin" {
+		if isRemoteOrSignedURL(entry.CoverURL) {
+			entry.CoverURL = ""
+		}
+		if isRemoteOrSignedURL(entry.AuthorFace) {
+			entry.AuthorFace = ""
+		}
+	} else {
+		entry.CoverURL = stripURLQueryAndFragment(entry.CoverURL)
+		entry.AuthorFace = stripURLQueryAndFragment(entry.AuthorFace)
 	}
 
 	var cachedStatus string
@@ -924,12 +1297,13 @@ func (s *Store) UpsertFeedEntry(entry FeedEntry) error {
 
 	_, err = s.db.Exec(`
 		INSERT INTO feed_items (
-			feed_key, site, kind, raw_id, mid, author_name, author_face,
+			feed_key, site, kind, raw_id, mid, author_uid, author_name, author_face,
 			title, summary, cover_url, canonical_url, pub_ts, discovered_at,
 			cached, cache_status, item_key
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(feed_key) DO UPDATE SET
 			mid = excluded.mid,
+			author_uid = CASE WHEN excluded.author_uid != '' THEN excluded.author_uid ELSE feed_items.author_uid END,
 			author_name = excluded.author_name,
 			author_face = CASE WHEN excluded.author_face != '' THEN excluded.author_face ELSE feed_items.author_face END,
 			title = excluded.title,
@@ -942,7 +1316,7 @@ func (s *Store) UpsertFeedEntry(entry FeedEntry) error {
 			item_key = CASE WHEN ? != '' THEN ? ELSE feed_items.item_key END
 	`,
 		entry.FeedKey, entry.Site, entry.Kind, entry.RawID,
-		entry.Mid, entry.AuthorName, entry.AuthorFace,
+		entry.Mid, authorUID, entry.AuthorName, entry.AuthorFace,
 		entry.Title, entry.Summary, entry.CoverURL, entry.CanonicalURL,
 		entry.PubTs, entry.DiscoveredAt,
 		cachedInt, cachedStatus, itemKey,
@@ -951,7 +1325,7 @@ func (s *Store) UpsertFeedEntry(entry FeedEntry) error {
 	return err
 }
 
-// GetItem retrieves a single cached ItemMetadata by itemKey ("bilibili:video:BV..."), short key ("video:BV..."), or rawID ("BV...").
+// GetItem retrieves a single cached ItemMetadata by canonical itemKey ("<site>:<kind>:<id>"), short key ("<kind>:<id>"), or rawID.
 func (s *Store) GetItem(keyOrID string) (ItemMetadata, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -960,21 +1334,42 @@ func (s *Store) GetItem(keyOrID string) (ItemMetadata, bool, error) {
 
 func (s *Store) getItemLocked(keyOrID string) (ItemMetadata, bool, error) {
 	keyOrID = strings.TrimSpace(keyOrID)
-	rawCand := keyOrID
-	if idx := strings.LastIndexByte(keyOrID, ':'); idx >= 0 {
-		rawCand = keyOrID[idx+1:]
+	if keyOrID == "" {
+		return ItemMetadata{}, false, nil
 	}
 	var jsonStr, itemDir, status string
 	var totalBytes int64
 	var upAvail int
 	var upHint string
 
-	err := s.db.QueryRow(`
-		SELECT json_data, item_dir, status, total_bytes, upgrade_available, upgrade_hint
-		FROM library_items
-		WHERE item_key = ? OR raw_id = ? OR item_key = ?
-		LIMIT 1
-	`, keyOrID, rawCand, "bilibili:"+keyOrID).Scan(&jsonStr, &itemDir, &status, &totalBytes, &upAvail, &upHint)
+	var err error
+	switch strings.Count(keyOrID, ":") {
+	case 0:
+		err = s.db.QueryRow(`
+			SELECT json_data, item_dir, status, total_bytes, upgrade_available, upgrade_hint
+			FROM library_items
+			WHERE item_key = ? OR raw_id = ?
+			LIMIT 1
+		`, keyOrID, keyOrID).Scan(&jsonStr, &itemDir, &status, &totalBytes, &upAvail, &upHint)
+	case 1:
+		err = s.db.QueryRow(`
+			SELECT json_data, item_dir, status, total_bytes, upgrade_available, upgrade_hint
+			FROM library_items
+			WHERE item_key = ? OR item_key = ?
+			LIMIT 1
+		`, keyOrID, "bilibili:"+keyOrID).Scan(&jsonStr, &itemDir, &status, &totalBytes, &upAvail, &upHint)
+	default:
+		normKey := keyOrID
+		if strings.HasPrefix(strings.ToLower(normKey), "douyin:note:") {
+			normKey = "douyin:dynamic:" + normKey[len("douyin:note:"):]
+		}
+		err = s.db.QueryRow(`
+			SELECT json_data, item_dir, status, total_bytes, upgrade_available, upgrade_hint
+			FROM library_items
+			WHERE item_key = ?
+			LIMIT 1
+		`, normKey).Scan(&jsonStr, &itemDir, &status, &totalBytes, &upAvail, &upHint)
+	}
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return ItemMetadata{}, false, nil
@@ -1041,6 +1436,84 @@ func (s *Store) States(keys []string) map[string]DotState {
 	return out
 }
 
+func appendSiteAndAuthorClauses(clauses []string, args []any, colPrefix, siteFilter string, mid int64, authorUID string, mids []int64, refs []AuthorRef) ([]string, []any) {
+	normSiteFilter := strings.ToLower(strings.TrimSpace(siteFilter))
+	if normSiteFilter != "" && normSiteFilter != "all" {
+		clauses = append(clauses, colPrefix+"site = ?")
+		args = append(args, normSiteFilter)
+	}
+
+	var collected []AuthorRef
+	seen := make(map[string]bool)
+	addRef := func(site, uid string) {
+		uid = strings.TrimSpace(uid)
+		if uid == "" {
+			return
+		}
+		site = strings.ToLower(strings.TrimSpace(site))
+		if site == "" {
+			if normSiteFilter != "" && normSiteFilter != "all" {
+				site = normSiteFilter
+			} else {
+				site = "bilibili"
+			}
+		}
+		k := site + "\x00" + uid
+		if !seen[k] {
+			seen[k] = true
+			collected = append(collected, AuthorRef{Site: site, UID: uid})
+		}
+	}
+	if mid > 0 {
+		addRef("bilibili", strconv.FormatInt(mid, 10))
+	}
+	if strings.TrimSpace(authorUID) != "" {
+		addRef("", authorUID)
+	}
+	for _, m := range mids {
+		if m > 0 {
+			addRef("bilibili", strconv.FormatInt(m, 10))
+		}
+	}
+	for _, r := range refs {
+		addRef(r.Site, r.UID)
+	}
+	if len(collected) == 0 {
+		return clauses, args
+	}
+
+	bySite := make(map[string][]string)
+	var siteOrder []string
+	for _, r := range collected {
+		if _, ok := bySite[r.Site]; !ok {
+			siteOrder = append(siteOrder, r.Site)
+		}
+		bySite[r.Site] = append(bySite[r.Site], r.UID)
+	}
+	var orParts []string
+	for _, st := range siteOrder {
+		uids := bySite[st]
+		if len(uids) == 1 {
+			orParts = append(orParts, "("+colPrefix+"site = ? AND "+colPrefix+"author_uid = ?)")
+			args = append(args, st, uids[0])
+		} else {
+			ph := make([]string, len(uids))
+			args = append(args, st)
+			for i, u := range uids {
+				ph[i] = "?"
+				args = append(args, u)
+			}
+			orParts = append(orParts, "("+colPrefix+"site = ? AND "+colPrefix+"author_uid IN ("+strings.Join(ph, ",")+"))")
+		}
+	}
+	if len(orParts) == 1 {
+		clauses = append(clauses, orParts[0])
+	} else {
+		clauses = append(clauses, "("+strings.Join(orParts, " OR ")+")")
+	}
+	return clauses, args
+}
+
 // ListItems returns cached library items matching filter.
 func (s *Store) ListItems(filter FeedFilter) ([]ItemMetadata, error) {
 	s.mu.RLock()
@@ -1049,23 +1522,12 @@ func (s *Store) ListItems(filter FeedFilter) ([]ItemMetadata, error) {
 	var clauses []string
 	var args []any
 	if filter.Kind == "image" {
-		clauses = append(clauses, "EXISTS (SELECT 1 FROM json_each(json_data, '$.media') WHERE json_extract(value, '$.role') = 'image')")
+		clauses = append(clauses, "(EXISTS (SELECT 1 FROM json_each(json_data, '$.media') WHERE json_extract(value, '$.role') = 'image') OR EXISTS (SELECT 1 FROM json_each(json_data, '$.notePages') WHERE json_extract(value, '$.kind') IN ('image', 'motion')))")
 	} else if filter.Kind != "" && filter.Kind != "all" {
 		clauses = append(clauses, "kind = ?")
 		args = append(args, filter.Kind)
 	}
-	if filter.Mid > 0 {
-		clauses = append(clauses, "mid = ?")
-		args = append(args, filter.Mid)
-	}
-	if len(filter.Authors) > 0 {
-		placeholders := make([]string, len(filter.Authors))
-		for i, a := range filter.Authors {
-			placeholders[i] = "?"
-			args = append(args, a)
-		}
-		clauses = append(clauses, "mid IN ("+strings.Join(placeholders, ",")+")")
-	}
+	clauses, args = appendSiteAndAuthorClauses(clauses, args, "", filter.Site, filter.Mid, filter.AuthorUID, filter.Authors, filter.AuthorRefs)
 	if kw := strings.TrimSpace(filter.Keyword); kw != "" {
 		clauses = append(clauses, "(title LIKE ? OR summary LIKE ? OR author_name LIKE ? OR raw_id LIKE ?)")
 		pat := "%" + kw + "%"
@@ -1118,7 +1580,7 @@ func (s *Store) ListItems(filter FeedFilter) ([]ItemMetadata, error) {
 	return out, rows.Err()
 }
 
-// FeedPage implements bidirectional keyset pagination over (pub_ts, feed_key) for the home feed (FR-FEED-001, C24).
+// FeedPage implements bidirectional keyset pagination over (pub_ts, feed_key) for the home feed (FR-FEED-001).
 // It excludes videos that are referenced by a cached dynamic item so videos referenced by dynamics do not appear twice.
 func (s *Store) FeedPage(req FeedPageRequest) (FeedPageResult, error) {
 	if req.Direction == "around" && req.Cursor != nil {
@@ -1198,7 +1660,7 @@ func (s *Store) FeedPage(req FeedPageRequest) (FeedPageResult, error) {
 
 	query := `
 		SELECT
-			f.feed_key, f.site, f.kind, f.raw_id, f.mid, f.author_name, f.author_face,
+			f.feed_key, f.site, f.kind, f.raw_id, f.mid, f.author_uid, f.author_name, f.author_face,
 			f.title, f.summary, f.cover_url, f.canonical_url, f.pub_ts, f.discovered_at,
 			f.cached, f.cache_status, f.item_key,
 			COALESCE(l.item_dir, ''), COALESCE(l.upgrade_available, 0), COALESCE(l.upgrade_hint, '')
@@ -1224,12 +1686,15 @@ func (s *Store) FeedPage(req FeedPageRequest) (FeedPageResult, error) {
 		var e FeedEntry
 		var cachedInt, upAvail int
 		if err := rows.Scan(
-			&e.FeedKey, &e.Site, &e.Kind, &e.RawID, &e.Mid, &e.AuthorName, &e.AuthorFace,
+			&e.FeedKey, &e.Site, &e.Kind, &e.RawID, &e.Mid, &e.AuthorUID, &e.AuthorName, &e.AuthorFace,
 			&e.Title, &e.Summary, &e.CoverURL, &e.CanonicalURL, &e.PubTs, &e.DiscoveredAt,
 			&cachedInt, &e.CacheStatus, &e.ItemKey,
 			&e.ItemDir, &upAvail, &e.UpgradeHint,
 		); err != nil {
 			return FeedPageResult{}, err
+		}
+		if e.AuthorUID == "" && e.Mid > 0 && e.Site == "bilibili" {
+			e.AuthorUID = strconv.FormatInt(e.Mid, 10)
 		}
 		e.Cached = cachedInt == 1
 		e.UpgradeAvailable = upAvail == 1
@@ -1272,14 +1737,7 @@ func feedPageClauses(req FeedPageRequest) ([]string, []any) {
 		clauses = append(clauses, "f.kind = ?")
 		args = append(args, req.Kind)
 	}
-	if len(req.Authors) > 0 {
-		ph := make([]string, len(req.Authors))
-		for i, author := range req.Authors {
-			ph[i] = "?"
-			args = append(args, author)
-		}
-		clauses = append(clauses, "f.mid IN ("+strings.Join(ph, ",")+")")
-	}
+	clauses, args = appendSiteAndAuthorClauses(clauses, args, "f.", req.Site, 0, "", req.Authors, req.AuthorRefs)
 	return clauses, args
 }
 
@@ -1346,7 +1804,7 @@ func (s *Store) newerCount(anchorPubTs int64, anchorKey string, cachedOnly bool)
 	return count, err
 }
 
-// QueryFeed queries the unified feed (both online-discovered and locally cached items) ordered by pub_ts DESC (C24).
+// QueryFeed queries the unified feed (both online-discovered and locally cached items) ordered by pub_ts DESC.
 func (s *Store) QueryFeed(filter FeedFilter) ([]FeedEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1357,18 +1815,7 @@ func (s *Store) QueryFeed(filter FeedFilter) ([]FeedEntry, error) {
 		clauses = append(clauses, "f.kind = ?")
 		args = append(args, filter.Kind)
 	}
-	if filter.Mid > 0 {
-		clauses = append(clauses, "f.mid = ?")
-		args = append(args, filter.Mid)
-	}
-	if len(filter.Authors) > 0 {
-		ph := make([]string, len(filter.Authors))
-		for i, a := range filter.Authors {
-			ph[i] = "?"
-			args = append(args, a)
-		}
-		clauses = append(clauses, "f.mid IN ("+strings.Join(ph, ",")+")")
-	}
+	clauses, args = appendSiteAndAuthorClauses(clauses, args, "f.", filter.Site, filter.Mid, filter.AuthorUID, filter.Authors, filter.AuthorRefs)
 	if filter.CachedOnly {
 		clauses = append(clauses, "f.cached = 1")
 	}
@@ -1380,7 +1827,7 @@ func (s *Store) QueryFeed(filter FeedFilter) ([]FeedEntry, error) {
 
 	query := `
 		SELECT
-			f.feed_key, f.site, f.kind, f.raw_id, f.mid, f.author_name, f.author_face,
+			f.feed_key, f.site, f.kind, f.raw_id, f.mid, f.author_uid, f.author_name, f.author_face,
 			f.title, f.summary, f.cover_url, f.canonical_url, f.pub_ts, f.discovered_at,
 			f.cached, f.cache_status, f.item_key,
 			COALESCE(l.item_dir, ''), COALESCE(l.upgrade_available, 0), COALESCE(l.upgrade_hint, '')
@@ -1412,12 +1859,15 @@ func (s *Store) QueryFeed(filter FeedFilter) ([]FeedEntry, error) {
 		var e FeedEntry
 		var cachedInt, upAvail int
 		if err := rows.Scan(
-			&e.FeedKey, &e.Site, &e.Kind, &e.RawID, &e.Mid, &e.AuthorName, &e.AuthorFace,
+			&e.FeedKey, &e.Site, &e.Kind, &e.RawID, &e.Mid, &e.AuthorUID, &e.AuthorName, &e.AuthorFace,
 			&e.Title, &e.Summary, &e.CoverURL, &e.CanonicalURL, &e.PubTs, &e.DiscoveredAt,
 			&cachedInt, &e.CacheStatus, &e.ItemKey,
 			&e.ItemDir, &upAvail, &e.UpgradeHint,
 		); err != nil {
 			return nil, err
+		}
+		if e.AuthorUID == "" && e.Mid > 0 && e.Site == "bilibili" {
+			e.AuthorUID = strconv.FormatInt(e.Mid, 10)
 		}
 		e.Cached = cachedInt == 1
 		e.UpgradeAvailable = upAvail == 1
@@ -1426,7 +1876,7 @@ func (s *Store) QueryFeed(filter FeedFilter) ([]FeedEntry, error) {
 	return out, rows.Err()
 }
 
-// PlanDelete computes the exact DeletePlan for an item without modifying disk or DB (FR-LIB-003, INV-09, C26).
+// PlanDelete computes the exact DeletePlan for an item without modifying disk or DB (FR-LIB-003, INV-09).
 func (s *Store) PlanDelete(itemKey string) (DeletePlan, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1514,6 +1964,7 @@ func collectRegisteredAndUserFiles(meta ItemMetadata) (registeredAbs []string, u
 
 	for _, m := range meta.Media {
 		addRel(m.Path)
+		addRel(m.Motion)
 	}
 	for _, part := range meta.PendingParts {
 		addRel(part)
@@ -1529,6 +1980,27 @@ func collectRegisteredAndUserFiles(meta ItemMetadata) (registeredAbs []string, u
 		addRel(p.Audio.SavedAs)
 		for _, sub := range p.Subtitles {
 			addRel(sub)
+		}
+	}
+	if meta.DouyinVideo != nil {
+		addRel(meta.DouyinVideo.File)
+	}
+	for _, np := range meta.NotePages {
+		addRel(np.Image)
+		addRel(np.Cover)
+		addRel(np.Motion)
+		addRel(np.Video)
+		if np.VideoInfo != nil {
+			addRel(np.VideoInfo.File)
+		}
+	}
+	if meta.Music != nil {
+		addRel(meta.Music.File)
+		addRel(meta.Music.Cover)
+	}
+	if meta.Live != nil {
+		for _, seg := range meta.Live.Segments {
+			addRel(seg.File)
 		}
 	}
 	addRel("orig.json")
@@ -1561,14 +2033,14 @@ func collectRegisteredAndUserFiles(meta ItemMetadata) (registeredAbs []string, u
 	return registeredAbs, userRel
 }
 
-// Delete executes PlanDelete: removes only registered files and empty directories, never recursive RemoveAll (INV-09, C26).
+// Delete executes PlanDelete: removes only registered files and empty directories, never recursive RemoveAll (INV-09).
 func (s *Store) Delete(itemKey string) (DeletePlan, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.deleteWithPlanLocked(itemKey, true)
 }
 
-// DeleteItem removes an item from the index and optionally deletes its registered files from disk (INV-09, C26).
+// DeleteItem removes an item from the index and optionally deletes its registered files from disk (INV-09).
 // It NEVER calls os.RemoveAll on the item directory; user-placed files are strictly preserved.
 func (s *Store) DeleteItem(itemKey string, deleteFiles bool) error {
 	s.mu.Lock()
@@ -1743,12 +2215,12 @@ func (s *Store) listAllItemsLocked() ([]ItemMetadata, error) {
 	return out, rows.Err()
 }
 
-// UpgradeCandidates returns up to 50 cached video items ordered by oldest UpgradeCheckedAt first (FR-CACHE-006, C20).
+// UpgradeCandidates returns up to 50 cached video items ordered by oldest UpgradeCheckedAt first (FR-CACHE-006).
 func (s *Store) UpgradeCandidates(limit int) ([]ItemMetadata, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 50
 	}
-	items, err := s.ListItems(FeedFilter{Kind: "video", Limit: 500})
+	items, err := s.ListItems(FeedFilter{Site: "bilibili", Kind: "video", Limit: 500})
 	if err != nil {
 		return nil, err
 	}
@@ -1767,7 +2239,7 @@ func (s *Store) UpgradeCandidates(limit int) ([]ItemMetadata, error) {
 }
 
 // CheckUpgradeKeys probes the given video keys (or all candidates if keys is empty) for quality upgrades.
-// When force is false, items checked within the last 24 hours are skipped without network requests (FR-CACHE-006, C20).
+// When force is false, items checked within the last 24 hours are skipped without network requests (FR-CACHE-006).
 func (s *Store) CheckUpgradeKeys(ctx context.Context, client *bilibili.Client, keys []string, force bool, opts bilibili.PlaySelectionOptions) ([]ItemMetadata, error) {
 	if client == nil {
 		return nil, fmt.Errorf("library: bilibili client is nil")
