@@ -20,4 +20,6 @@ func RunQuiet(string, []string, []string) error        { return errWindowsOnly }
 func LaunchDetached(string, []string, []string) error  { return errWindowsOnly }
 func AppEnv(extra ...string) []string                  { return extra }
 
+func LaunchDetachedOutsideJob(string, []string, []string) (bool, error) { return false, errWindowsOnly }
+
 func RunningIn(string) (bool, error) { return false, errWindowsOnly }

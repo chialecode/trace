@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -169,14 +170,23 @@ func (b *Backend) LoginWithCookie(ctx context.Context, siteID, rawCookie, rawRef
 	if id == site.Bilibili {
 		return b.ImportCookie(ctx, rawCookie, rawRefreshToken)
 	}
+	prevAuthPaused := b.snapshotAuthPausedQueueIDs(site.Douyin)
 	prev := b.douyinCred.Status()
 	st, lErr := b.douyin.LoginWithCookie(ctx, rawCookie)
 	if lErr != nil {
 		b.logError("LoginWithCookie.Douyin", lErr)
 		return b.douyinCred.Status(), lErr
 	}
-	if prev.LoggedIn && prev.SecUID != "" && prev.SecUID != st.SecUID {
+	switched := prev.LoggedIn && prev.SecUID != "" && prev.SecUID != st.SecUID
+	if switched {
 		b.pauseSiteActiveWork(site.Douyin, "auth_required", "抖音登录账号已变更，任务已暂停")
+	}
+	if st.LoggedIn {
+		if switched {
+			b.resumeAuthPausedQueueIDs(site.Douyin, prevAuthPaused)
+		} else if b.queue != nil {
+			b.queue.resumeAuthPausedForSite(site.Douyin)
+		}
 	}
 	b.logInfo(fmt.Sprintf("douyin cookie imported: state=%s uid=%s", st.State, firstNonEmpty(st.UniqueID, st.UID)))
 	b.events.PublishSite(EventAccountChanged, string(site.Douyin), st.State)
@@ -415,11 +425,22 @@ func (b *Backend) DouyinLive(ctx context.Context, webRID string) (*DouyinLiveVie
 	if b.live != nil && detail.OwnerSecUID != "" {
 		if cached, ok := b.live.CachedAccountState(site.Douyin, detail.OwnerSecUID); ok && cached.Recording {
 			acctState.Recording = true
+			if cached.Transport != "" {
+				acctState.Transport = cached.Transport
+			}
+			acctState.AudioOnly = acctState.AudioOnly || cached.AudioOnly
 			acctState.RecordSession = cached.RecordSession
 			acctState.RecordDurationSec = cached.RecordDurationSec
+			acctState.RecordSpeedBps = cached.RecordSpeedBps
 			acctState.RecordBytes = cached.RecordBytes
 			acctState.RecordSegments = cached.RecordSegments
 			acctState.RecordItemDir = cached.RecordItemDir
+			acctState.RecordPartPath = firstNonEmpty(cached.RecordPartPath, resolveRecordingPartPath(cached.RecordItemDir))
+			acctState.RecordPartIndex = cached.RecordPartIndex
+			acctState.RecordPartBytes = cached.RecordPartBytes
+			acctState.RecordPartReady = cached.RecordPartReady
+			acctState.PreviewSupported = cached.PreviewSupported
+			acctState.PreviewReason = cached.PreviewReason
 		}
 	}
 	canonicalURL := "https://live.douyin.com/" + prefWebRID
@@ -533,6 +554,7 @@ func (b *Backend) LinkSubscriptionAccountRef(subID string, acct subscription.Acc
 	}
 	res, err := b.subs.LinkAccount(subID, acct)
 	if err == nil {
+		b.rememberAccountAvatar(acct.Site, acct.UID, acct.Face)
 		b.events.Publish(EventSubscriptionChecked, "linked")
 	}
 	return res, err
@@ -712,6 +734,99 @@ func (b *Backend) StopLiveRecordingByKey(recKey string) (LiveAccountState, error
 	return mapRoomToAccountState(rs), err
 }
 
+// LiveRecordingPreview returns an in-memory snapshot of an active or recent live recording session for preview playback.
+func (b *Backend) LiveRecordingPreview(recKey string) (LiveRecordingPreviewInfo, bool) {
+	if b.requireAnyLogin() != nil || b.live == nil {
+		return LiveRecordingPreviewInfo{}, false
+	}
+	target := strings.TrimSpace(recKey)
+	if target == "" {
+		return LiveRecordingPreviewInfo{}, false
+	}
+	if p, ok := b.live.RecordingPreview(target); ok {
+		roomID := strings.TrimSpace(p.RoomIDStr)
+		if roomID == "" && p.RoomID > 0 {
+			roomID = strconv.FormatInt(p.RoomID, 10)
+		}
+		return LiveRecordingPreviewInfo{
+			RecordingKey:     p.RecordingKey,
+			Site:             p.Site,
+			AccountUID:       p.AccountUID,
+			RoomID:           roomID,
+			WebRID:           p.WebRID,
+			Uname:            p.Uname,
+			Title:            p.Title,
+			Codec:            p.Codec,
+			Quality:          p.Quality,
+			QualityName:      p.QualityName,
+			Transport:        p.Transport,
+			AudioOnly:        p.AudioOnly,
+			Recording:        p.Recording,
+			PartPath:         p.PartPath,
+			PartIndex:        p.PartIndex,
+			PartBytes:        p.PartBytes,
+			PartDurationSec:  p.PartDurationSec,
+			PartReady:        p.PartReady,
+			PreviewSupported: p.PreviewSupported,
+			PreviewReason:    p.PreviewReason,
+			ItemDir:          p.ItemDir,
+			DurationSec:      p.DurationSec,
+			SpeedBps:         p.SpeedBps,
+			BytesWritten:     p.BytesWritten,
+			Segments:         p.Segments,
+			Incidents:        append([]library.LiveIncident(nil), p.Incidents...),
+			StopReason:       p.StopReason,
+			LastError:        p.LastError,
+		}, true
+	}
+	for _, st := range b.ListLiveAccounts() {
+		if st.RecordingKey != target && st.AccountKey != target && st.RoomID != target && st.UID != target && st.WebRID != target {
+			continue
+		}
+		partPath := st.RecordPartPath
+		if partPath == "" && st.RecordItemDir != "" {
+			partPath = resolveRecordingPartPath(st.RecordItemDir)
+		}
+		var partBytes int64 = st.RecordPartBytes
+		if partBytes <= 0 && partPath != "" {
+			if info, err := os.Stat(partPath); err == nil {
+				partBytes = info.Size()
+			}
+		}
+		partReady := st.RecordPartReady || partBytes > 0
+		supported := st.PreviewSupported || (st.Recording && partPath != "")
+		return LiveRecordingPreviewInfo{
+			RecordingKey:     st.RecordingKey,
+			Site:             st.Site,
+			AccountUID:       st.UID,
+			RoomID:           st.RoomID,
+			WebRID:           st.WebRID,
+			Uname:            st.Uname,
+			Title:            st.Title,
+			Codec:            st.Codec,
+			QualityName:      st.QualityName,
+			Transport:        st.Transport,
+			AudioOnly:        st.AudioOnly,
+			Recording:        st.Recording,
+			PartPath:         partPath,
+			PartIndex:        st.RecordPartIndex,
+			PartBytes:        partBytes,
+			PartReady:        partReady,
+			PreviewSupported: supported,
+			PreviewReason:    st.PreviewReason,
+			ItemDir:          st.RecordItemDir,
+			DurationSec:      st.RecordDurationSec,
+			SpeedBps:         st.RecordSpeedBps,
+			BytesWritten:     st.RecordBytes,
+			Segments:         st.RecordSegments,
+			Incidents:        append([]library.LiveIncident(nil), st.Incidents...),
+			StopReason:       st.StopReason,
+			LastError:        st.LastError,
+		}, true
+	}
+	return LiveRecordingPreviewInfo{}, false
+}
+
 // OpenLiveInBrowser opens a Bilibili roomID or Douyin web_rid in the external system browser.
 func (b *Backend) OpenLiveInBrowser(siteID, roomOrWebRID string) error {
 	if err := b.requireAnyLogin(); err != nil {
@@ -805,4 +920,38 @@ func (b *Backend) detectImageSite(rawURL string) site.ID {
 		}
 	}
 	return site.Bilibili
+}
+
+// ClearLiveIncidents deletes the recorded incidents of a finished live session
+// (Tasks › 录制异常): the item's live.incidents when itemKey names a finished
+// recording, and the in-memory list of matching rooms that are not recording.
+// The recording files are kept. A session still recording is refused.
+func (b *Backend) ClearLiveIncidents(itemKey, siteID, roomID, uid string) error {
+	itemKey = strings.TrimSpace(itemKey)
+	changed := false
+	if itemKey != "" && b.lib != nil {
+		item, ok, err := b.lib.GetItem(itemKey)
+		if err != nil {
+			return err
+		}
+		if ok && item.Kind == "live" {
+			if item.Status == "recording" {
+				return &site.Error{Kind: site.ErrKindBadRequest, Message: "这场直播还在录制，结束后才能删除异常记录"}
+			}
+			if item.Live != nil && len(item.Live.Incidents) > 0 {
+				item.Live.Incidents = nil
+				if _, err := b.lib.SaveItem(item.ItemDir, item); err != nil {
+					return err
+				}
+				changed = true
+			}
+		}
+	}
+	if b.live != nil && b.live.ClearIdleIncidents(siteID, roomID, uid) {
+		changed = true
+	}
+	if changed && b.events != nil {
+		b.events.Publish(EventLibraryChanged, "incidents_cleared")
+	}
+	return nil
 }

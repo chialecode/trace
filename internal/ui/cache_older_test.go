@@ -8,60 +8,136 @@ import (
 	"testing"
 
 	"github.com/chialecode/trace/internal/library"
-
 	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/egoist/mygo/ui"
 )
 
-type cacheOlderStub struct {
+type cacheQueueMenuStub struct {
 	*douyinStubBackend
-	got []service.CacheOlderRequest
+	enqueued []service.CacheQueueRequest
+	tasks    []service.CacheQueueTask
 }
 
-func (s *cacheOlderStub) CacheOlderUserItems(_ context.Context, req service.CacheOlderRequest) (service.CacheOlderResult, error) {
-	s.got = append(s.got, req)
-	return service.CacheOlderResult{Enqueued: req.Limit, Skipped: 2, Stopped: "遇到站点风控，已停止"}, nil
+func (s *cacheQueueMenuStub) ListCacheQueue() []service.CacheQueueTask {
+	out := make([]service.CacheQueueTask, len(s.tasks))
+	copy(out, s.tasks)
+	return out
 }
 
-// DEC-046 ⑥: the user page's ⋯ offers 缓存更早的内容 with 10 / 20 / 50 per
-// batch; the loaded list and where it stops go with the request, and the
-// outcome, including a stop at risk control, is told.
-func TestUserPageCachesOlderPosts(t *testing.T) {
+func (s *cacheQueueMenuStub) FindCacheQueueTask(siteID, user, list string) (service.CacheQueueTask, bool) {
+	for _, t := range s.tasks {
+		if t.Site == siteID && t.User == user && t.List == list && isUnfinishedCacheQueueStatus(t.Status) {
+			return t, true
+		}
+	}
+	return service.CacheQueueTask{}, false
+}
+
+func (s *cacheQueueMenuStub) EnqueueCacheQueue(_ context.Context, req service.CacheQueueRequest) (service.CacheQueueTask, error) {
+	s.enqueued = append(s.enqueued, req)
+	label := "动态"
+	if req.List == "videos" {
+		label = "投稿"
+	} else if req.List == "works" {
+		label = "作品"
+	}
+	task := service.CacheQueueTask{
+		ID:         fmt.Sprintf("cq_%s_%s_%s", req.Site, req.List, req.User),
+		Site:       req.Site,
+		User:       req.User,
+		UserName:   req.UserName,
+		List:       req.List,
+		ListLabel:  label,
+		Status:     service.CacheQueueQueued,
+		StatusText: "排队中",
+	}
+	s.tasks = append(s.tasks, task)
+	return task, nil
+}
+
+// The user page's "⋯" menu offers only "全部缓存" (or "在缓存队列中查看"
+// when already queued), has no 10 / 20 / 50 count choices, enqueues without a
+// confirmation dialog, and is absent on private Douyin accounts.
+func TestUserPageCacheAllQueueEntry(t *testing.T) {
 	app, stub, _, cleanup := newDouyinUITestHarness(t)
 	defer cleanup()
 	posted := make(chan func(), 32)
 	app.dispatch = func(fn func()) { posted <- fn }
 	_, _ = stub.raw.ImportCookie(context.Background(), "SESSDATA=fixture; bili_jct=csrf; DedeUserID=12345", "")
-	cs := &cacheOlderStub{douyinStubBackend: stub}
+	_, _ = stub.LoginWithCookie(context.Background(), "douyin", "sessionid=synth_dy_cookie", "")
+	cs := &cacheQueueMenuStub{douyinStubBackend: stub}
 	app.backend = cs
 
 	app.CurrentUser = &bilibili.UserSpace{Mid: 8888, Name: "测试UP主"}
 	app.UserTab = "dynamics"
-	for i := 0; i < 5; i++ {
-		app.UserDynamics = append(app.UserDynamics, bilibili.DynamicItem{ID: fmt.Sprintf("d%02d", i), TypeLabel: "文字动态", Text: "正文", Author: bilibili.AuthorInfo{Mid: 8888}})
+	for i := 0; i < 4; i++ {
+		app.UserDynamics = append(app.UserDynamics, bilibili.DynamicItem{
+			ID:        fmt.Sprintf("d%02d", i),
+			TypeLabel: "文字动态",
+			Text:      "正文",
+			Author:    bilibili.AuthorInfo{Mid: 8888},
+		})
 	}
-	app.UserDynamicsNext, app.UserDynamicsHasMore = "offset-5", true
+	app.UserDynamicsNext, app.UserDynamicsHasMore = "offset-4", true
 	app.CurrentRoute = RouteUser
+
 	tt := ui.NewTester(app.View, 1280, 860)
 	tt.Frame()
 	if err := tt.Click("空间更多"); err != nil {
 		t.Fatal(err)
 	}
-	if err := tt.ChooseMenuItem("缓存更早的内容", "20 条（推荐）"); err != nil {
-		t.Fatal(err)
+	for _, legacy := range []string{"缓存更早的内容", "10 条", "20 条（推荐）", "50 条"} {
+		if tt.HasText(legacy) {
+			t.Fatalf("legacy count-based menu option %q still rendered", legacy)
+		}
+	}
+	if err := tt.ChooseMenuItem("全部缓存"); err != nil {
+		t.Fatalf("expected 全部缓存 menu item: %v", err)
 	}
 	nextPosted(t, posted)()
 	waitUIIdle(t, app, posted)
-	if len(cs.got) != 1 {
-		t.Fatalf("requests %+v", cs.got)
+
+	if len(cs.enqueued) != 1 {
+		t.Fatalf("expected 1 EnqueueCacheQueue request, got %+v", cs.enqueued)
 	}
-	req := cs.got[0]
-	if req.Site != "bilibili" || req.List != "dynamics" || req.User != "8888" || req.Limit != 20 || len(req.Dynamics) != 5 || req.Cursor != "offset-5" || !req.HasMore {
-		t.Fatalf("request %+v", req)
+	req := cs.enqueued[0]
+	if req.Site != "bilibili" || req.List != "dynamics" || req.User != "8888" || len(req.Dynamics) != 4 || req.Cursor != "offset-4" || !req.HasMore {
+		t.Fatalf("unexpected EnqueueCacheQueue request: %+v", req)
 	}
-	if app.BannerInfo != "已把 20 条更早的内容加入缓存队列，跳过 2 条已缓存或不能缓存的。遇到站点风控，已停止" {
-		t.Fatalf("outcome %q", app.BannerInfo)
+	if app.BannerInfo != "已加入缓存队列，会在后台慢慢缓存" {
+		t.Fatalf("unexpected banner message: %q", app.BannerInfo)
+	}
+
+	// Reopening "⋯" on the same list now offers "在缓存队列中查看" and jumps to that queue task.
+	tt.Frame()
+	if err := tt.Click("空间更多"); err != nil {
+		t.Fatal(err)
+	}
+	if tt.HasText("全部缓存") {
+		t.Fatal("expected 全部缓存 to be replaced by 在缓存队列中查看 while unfinished in queue")
+	}
+	if err := tt.ChooseMenuItem("在缓存队列中查看"); err != nil {
+		t.Fatalf("expected 在缓存队列中查看 menu item: %v", err)
+	}
+	tt.Frame()
+	if app.CurrentRoute != RouteTasks || app.effectiveTasksSection() != "queue" || app.SelectedCacheQueueID != "cq_bilibili_dynamics_8888" {
+		t.Fatalf("expected jump to RouteTasks queue detail, got route=%s sec=%s id=%s", app.CurrentRoute, app.TasksSection, app.SelectedCacheQueueID)
+	}
+
+	// Private Douyin account must not offer "全部缓存" or "在缓存队列中查看".
+	app.CurrentDouyinUser = &service.DouyinUserView{
+		SecUID:    "MS4wLjABAAAA_private_acct",
+		Nickname:  "私密测试号",
+		IsPrivate: true,
+	}
+	app.CurrentRoute = RouteDouyinUser
+	tt.Frame()
+	if err := tt.Click("抖音作者更多"); err != nil {
+		t.Fatal(err)
+	}
+	if tt.HasText("全部缓存") || tt.HasText("在缓存队列中查看") {
+		t.Fatalf("private Douyin account must not expose cache-all entry: %v", tt.Texts())
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/chialecode/trace/internal/live"
+	"github.com/chialecode/trace/internal/subscription"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -49,27 +50,46 @@ func TestLibraryFiltersLiveInTheContextPanel(t *testing.T) {
 	}
 }
 
-// DEC-039: Home's panel lists the whole timeline and who is live; a live
-// row opens that person's space, where its banner records.
+// DEC-039, rewritten for DEC-053 ②: Home's panel lists the whole timeline
+// and the subscriptions, the live ones first with a ring and no "正在直播"
+// section; a live row opens that subscription's feed on Home. A live room
+// nobody subscribed to is not listed.
 func TestHomePanelListsLiveRooms(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
 	seedUIFeed(t, app, 2)
-	app.LiveRooms = []live.RoomState{{UID: 4242, Uname: "直播中的UP", RoomID: 5150, LiveStatus: 1, Title: "直播标题"}}
+	sub, err := app.backend.CreateSubscription("直播中的UP", "", []subscription.AccountRef{{Site: "bilibili", UID: "4242", Name: "直播中的UP"}}, subscription.SubRules{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.refreshSubscriptions()
+	app.LiveRooms = []live.RoomState{
+		{UID: 4242, Uname: "直播中的UP", RoomID: 5150, LiveStatus: 1, Title: "直播标题"},
+		{UID: 4343, Uname: "没订阅的UP", RoomID: 5151, LiveStatus: 1, Title: "别的直播"},
+	}
+	app.Navigate(RouteParse)
 	app.Navigate(RouteHome)
 	tt := ui.NewTester(app.View, 1280, 860)
 	tt.Frame()
-	for _, label := range []string{"主页全部动态", "侧栏直播 5150"} {
+	for _, label := range []string{"主页全部动态", "主页订阅：直播中的UP"} {
 		if _, ok := tt.Find(label); !ok {
 			t.Fatalf("home panel misses %s", label)
 		}
 	}
-	if err := tt.Click("侧栏直播 5150"); err != nil {
+	for _, label := range []string{"正在直播", "侧栏直播 5150", "主页订阅：没订阅的UP", "直播标题"} {
+		if _, ok := tt.Find(label); ok {
+			t.Fatalf("home panel still shows %s", label)
+		}
+	}
+	if rows := app.homeSubscriptionRows(); len(rows) == 0 || rows[0].SubID != sub.ID || !app.homeSubLive(rows[0]) {
+		t.Fatalf("the live subscription is not first with its ring: %+v", rows)
+	}
+	if err := tt.Click("主页订阅：直播中的UP"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if app.CurrentRoute != RouteUser {
-		t.Fatalf("a live row opened %s, want the user's space", app.CurrentRoute)
+	if app.CurrentRoute != RouteHome || app.HomeActorFilter == nil || app.HomeActorFilter.SubID != sub.ID {
+		t.Fatalf("a live row opened %s (%+v), want the subscription's feed on Home", app.CurrentRoute, app.HomeActorFilter)
 	}
 }
 

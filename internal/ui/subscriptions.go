@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/subscription"
+	"github.com/chialecode/trace/internal/uistate"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -45,6 +47,10 @@ func (a *App) renderSubscriptionsRoute(c *ui.Context) {
 		}
 		a.SubDetailOpen = false
 	}
+	if a.SubAccountsOpen {
+		a.renderSubscriptionAccountsView(c)
+		return
+	}
 
 	ui.Column(c).Grow(1).FillWidth().Padding(16).Gap(14).ClipX().Children(func() {
 		// Search filter bar (docs/ui.md §3.9)
@@ -67,6 +73,12 @@ func (a *App) renderSubscriptionsRoute(c *ui.Context) {
 				if a.SubSearchQuery != "" {
 					if OutlinePillButton(c, "清除", "清除订阅搜索").Clicked() {
 						a.SubSearchQuery = ""
+					}
+				}
+				// Without the panel, 全部账号 is reached from here.
+				if !a.panelShown && len(a.Subscriptions) > 0 {
+					if OutlinePillButton(c, "全部账号", "订阅页全部账号").Clicked() {
+						a.openSubscriptionAccounts()
 					}
 				}
 			})
@@ -260,19 +272,234 @@ func (a *App) renderSubscriptionGridCell(c *ui.Context, s subscription.Subscript
 		})
 }
 
-func (a *App) renderSubscriptionDetailView(c *ui.Context, sub *subscription.Subscription) {
-	a.refreshLiveAccounts(c, subscriptionAuthors(*sub))
-	ui.Scroll(c).Grow(1).FillWidth().ClipX().Children(func() {
-		ui.Column(c).FillWidth().Padding(16).Gap(14).ClipX().Children(func() {
-			a.renderSubscriptionDetailHeader(c, sub)
-			// The subscription's posts are on Home and in the library;
-			// what it does automatically is its rule (DEC-040).
-			if a.SubDetailTab == "accounts" {
-				a.renderSubscriptionAccountsTab(c, sub)
-			} else {
-				a.renderSubscriptionLiveTab(c, sub)
+func normalizeSubDetailTab(tab string) string {
+	return uistate.NormalizeSubDetailTab(tab)
+}
+
+func (a *App) setSubDetailTab(tab string) {
+	norm := normalizeSubDetailTab(tab)
+	a.SubDetailTab = norm
+	if a.backend != nil {
+		if a.backend.GetUIState().SubDetailTab != norm {
+			if _, err := a.backend.MutateUIState(func(st *uistate.State) { st.SubDetailTab = norm }); err != nil {
+				a.showError(err)
 			}
+		}
+	}
+}
+
+func parseSubscriptionRouteParams(rawRoute string) (subID string, tab string, hasTab bool) {
+	r := strings.TrimSpace(rawRoute)
+	if !strings.HasPrefix(r, RouteSubscriptions) {
+		return "", "", false
+	}
+	if qIdx := strings.IndexByte(r, '?'); qIdx >= 0 {
+		query := r[qIdx+1:]
+		for _, part := range strings.Split(query, "&") {
+			if k, v, ok := strings.Cut(part, "="); ok && strings.EqualFold(strings.TrimSpace(k), "tab") {
+				tab = strings.TrimSpace(v)
+				hasTab = true
+			}
+		}
+		r = r[:qIdx]
+	}
+	rest := strings.Trim(strings.TrimPrefix(r, RouteSubscriptions), "/")
+	if rest != "" {
+		parts := strings.Split(rest, "/")
+		if !strings.EqualFold(parts[0], "import") {
+			subID = parts[0]
+			if len(parts) >= 2 && !hasTab {
+				switch strings.ToLower(strings.TrimSpace(parts[len(parts)-1])) {
+				case "content", "accounts", "live":
+					tab = parts[len(parts)-1]
+					hasTab = true
+				}
+			}
+		}
+	}
+	return subID, tab, hasTab
+}
+
+func (a *App) applySubscriptionRouteNavigate(rawRoute string) {
+	subID, tab, hasTab := parseSubscriptionRouteParams(rawRoute)
+	if hasTab {
+		a.setSubDetailTab(tab)
+	}
+	if subID == "" {
+		return
+	}
+	for i := range a.Subscriptions {
+		if a.Subscriptions[i].ID == subID {
+			sub := a.Subscriptions[i]
+			a.SelectedSubID = sub.ID
+			a.SelectedSubMid = sub.Mid
+			a.SubDetailOpen = true
+			a.SubDetailTab = normalizeSubDetailTab(a.SubDetailTab)
+			a.syncSelectedSubRules(sub)
+			a.ensureSubscriptionFeedLoaded(&sub)
+			return
+		}
+	}
+}
+
+func (a *App) applyInitialSubscriptionRoute(rawRoute string) {
+	if strings.HasPrefix(strings.TrimSpace(rawRoute), RouteSubscriptions) {
+		a.applySubscriptionRouteNavigate(rawRoute)
+	}
+}
+
+func (a *App) resetSubFeedListState() {
+	a.SubFeedListState = ui.ListState{
+		Key: func(i int) any {
+			if i >= 0 && i < len(a.SubFeedItems) {
+				return a.SubFeedItems[i].FeedKey
+			}
+			return i
+		},
+	}
+}
+
+func subscriptionAuthorRefsKey(refs []library.AuthorRef) string {
+	if len(refs) == 0 {
+		return ""
+	}
+	parts := make([]string, len(refs))
+	for i, r := range refs {
+		parts[i] = r.Site + ":" + r.UID
+	}
+	return strings.Join(parts, "|")
+}
+
+func (a *App) ensureSubscriptionFeedLoaded(sub *subscription.Subscription) {
+	if sub == nil || a.backend == nil {
+		return
+	}
+	refs := subscriptionAuthorRefs(*sub)
+	refsKey := subscriptionAuthorRefsKey(refs)
+	if !a.subFeedDirty && a.SubFeedSubID == sub.ID && a.SubFeedRefsKey == refsKey {
+		return
+	}
+	subChanged := a.SubFeedSubID != sub.ID || a.SubFeedRefsKey != refsKey
+	a.loadSubscriptionFeed(sub, refs, refsKey, subChanged)
+}
+
+func (a *App) loadSubscriptionFeed(sub *subscription.Subscription, refs []library.AuthorRef, refsKey string, resetScroll bool) {
+	a.subFeedDirty = false
+	a.SubFeedSubID = sub.ID
+	a.SubFeedRefsKey = refsKey
+	// Guard: a subscription with no linked accounts MUST return an empty feed
+	// immediately and never query FeedPage without author clauses.
+	if len(refs) == 0 {
+		a.SubFeedItems = nil
+		a.SubFeedMoreAfter = false
+		a.SubFeedError = ""
+		a.resetSubFeedListState()
+		return
+	}
+	page, err := a.backend.FeedPage(library.FeedPageRequest{
+		Order:      "newest",
+		CachedOnly: true,
+		AuthorRefs: refs,
+		Limit:      60,
+	})
+	if err != nil {
+		a.SubFeedError = userErrorText(err)
+		if resetScroll {
+			a.SubFeedItems = nil
+			a.SubFeedMoreAfter = false
+			a.resetSubFeedListState()
+		}
+		a.showError(err)
+		return
+	}
+	a.SubFeedItems = page.Items
+	a.SubFeedMoreAfter = page.HasMore
+	a.SubFeedError = ""
+	if resetScroll {
+		a.resetSubFeedListState()
+		a.SubFeedListState.ScrollTo(0, ui.Start)
+	}
+}
+
+func (a *App) loadMoreSubscriptionFeed(sub *subscription.Subscription) {
+	if sub == nil || a.backend == nil || len(a.SubFeedItems) == 0 {
+		return
+	}
+	refs := subscriptionAuthorRefs(*sub)
+	if len(refs) == 0 {
+		return
+	}
+	edge := a.SubFeedItems[len(a.SubFeedItems)-1]
+	page, err := a.backend.FeedPage(library.FeedPageRequest{
+		Cursor:     &library.FeedCursor{Key: edge.FeedKey, PubTs: edge.PubTs},
+		Order:      "newest",
+		Direction:  "older",
+		CachedOnly: true,
+		AuthorRefs: refs,
+		Limit:      30,
+	})
+	if err != nil {
+		a.SubFeedError = userErrorText(err)
+		a.showError(err)
+		return
+	}
+	a.SubFeedError = ""
+	a.SubFeedMoreAfter = page.HasMore
+	if len(page.Items) == 0 {
+		return
+	}
+	seen := make(map[string]bool, len(a.SubFeedItems))
+	for _, e := range a.SubFeedItems {
+		seen[e.FeedKey] = true
+	}
+	for _, e := range page.Items {
+		if !seen[e.FeedKey] {
+			a.SubFeedItems = append(a.SubFeedItems, e)
+			seen[e.FeedKey] = true
+		}
+	}
+}
+
+func subscriptionEffectiveAccounts(sub subscription.Subscription) []subscription.AccountRef {
+	if len(sub.Accounts) > 0 {
+		return sub.Accounts
+	}
+	pSite, pUID := subscriptionPrimarySiteAndUID(sub)
+	if pUID != "" {
+		return []subscription.AccountRef{{
+			Site: pSite,
+			UID:  pUID,
+			Name: sub.Name,
+			Face: sub.Face,
+		}}
+	}
+	return nil
+}
+
+func (a *App) renderSubscriptionDetailView(c *ui.Context, sub *subscription.Subscription) {
+	a.SubDetailTab = normalizeSubDetailTab(a.SubDetailTab)
+	if a.SubDetailTab == "accounts" {
+		a.refreshLiveAccounts(c, subscriptionAuthors(*sub))
+		ui.Column(c).Grow(1).FillWidth().ClipX().Children(func() {
+			ui.Column(c).FillWidth().Padding(16, 16, 0, 16).ClipX().Children(func() {
+				a.renderSubscriptionDetailHeader(c, sub)
+			})
+			ui.Scroll(c).Grow(1).FillWidth().ClipX().Children(func() {
+				ui.Column(c).FillWidth().Padding(16).Gap(14).ClipX().Children(func() {
+					a.renderSubscriptionAccountsTab(c, sub)
+				})
+			})
 		})
+		return
+	}
+
+	// Default "content" tab: strictly local index & manifest reads, zero site HTTP requests (DEC-051 ⑦).
+	a.ensureSubscriptionFeedLoaded(sub)
+	ui.Column(c).Grow(1).FillWidth().ClipX().Children(func() {
+		ui.Column(c).FillWidth().Padding(16, 16, 0, 16).ClipX().Children(func() {
+			a.renderSubscriptionDetailHeader(c, sub)
+		})
+		a.renderSubscriptionContentTab(c, sub)
 	})
 }
 
@@ -282,7 +509,7 @@ func (a *App) renderSubscriptionDetailHeader(c *ui.Context, sub *subscription.Su
 	// Header: avatar, name (+ note), the rule button and the "⋯" menu.
 	ui.Column(c).
 		FillWidth().
-		Padding(4, 0).
+		Padding(4, 0, 12, 0).
 		Gap(12).
 		ClipX().
 		Children(func() {
@@ -295,7 +522,7 @@ func (a *App) renderSubscriptionDetailHeader(c *ui.Context, sub *subscription.Su
 						if strings.TrimSpace(sub.Note) != "" {
 							ui.Text(c, sub.Note).FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
 						} else {
-							ui.Text(c, fmt.Sprintf("关联 %d 个账号", max(1, len(sub.Accounts)))).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+							ui.Text(c, fmt.Sprintf("关联 %d 个账号", len(subscriptionEffectiveAccounts(*sub)))).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 						}
 					})
 				})
@@ -413,9 +640,55 @@ func (a *App) renderSubscriptionDetailHeader(c *ui.Context, sub *subscription.Su
 		})
 
 	UnderlineTabs(c, a.SubDetailTab, []TabOption{
-		{Key: "live", Text: "直播", AccessLabel: "订阅标签：直播"},
+		{Key: "content", Text: "内容", AccessLabel: "订阅标签：内容"},
 		{Key: "accounts", Text: "账号", AccessLabel: "订阅标签：账号"},
-	}, func(key string) { a.SubDetailTab = key })
+	}, func(key string) { a.setSubDetailTab(key) })
+}
+
+func (a *App) renderSubscriptionContentTab(c *ui.Context, sub *subscription.Subscription) {
+	if a.SubFeedError != "" {
+		ui.Row(c).FillWidth().Padding(8, 16).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, a.SubFeedError).FontSize(13).TextColor(ColorError).MaxLines(2).Grow(1)
+			if OutlinePillButton(c, "重试", "重试订阅内容分页").Clicked() {
+				if len(a.SubFeedItems) == 0 {
+					a.subFeedDirty = true
+					a.ensureSubscriptionFeedLoaded(sub)
+				} else {
+					a.loadMoreSubscriptionFeed(sub)
+				}
+			}
+		})
+	}
+
+	_, last := a.SubFeedListState.Visible()
+	if len(a.SubFeedItems) > 0 && last >= len(a.SubFeedItems)-3 && a.SubFeedMoreAfter && a.SubFeedError == "" {
+		a.loadMoreSubscriptionFeed(sub)
+	}
+
+	if len(a.SubFeedItems) == 0 {
+		ui.Column(c).Grow(1).FillWidth().Padding(48, 24).AlignItems(ui.Center).Gap(10).ClipX().Children(func() {
+			ui.Text(c, "还没有缓存这个订阅的内容").FontSize(17).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+			ui.Text(c, "可在右上角「⋯」菜单点「检查更新」，新缓存的动态、视频、作品和直播录像都会出现在这里。").
+				FontSize(14).TextColor(ColorTextMuted).MaxLines(2)
+		})
+		return
+	}
+
+	ui.List(c, &a.SubFeedListState, len(a.SubFeedItems), func(i int) {
+		if i < 0 || i >= len(a.SubFeedItems) {
+			return
+		}
+		entry := a.SubFeedItems[i]
+		post := a.feedEntryToPostCard(entry)
+		ui.Column(c).Label("订阅内容行 " + entry.FeedKey).FillWidth().Children(func() {
+			a.renderPostCard(c, post)
+		})
+		if i == len(a.SubFeedItems)-1 && !a.SubFeedMoreAfter {
+			ui.Row(c).FillWidth().Padding(18, 16).Justify(ui.Center).Children(func() {
+				ui.Text(c, "已经到最早的缓存了").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+			})
+		}
+	}).Label("订阅内容信息流列表").Grow(1).FillWidth()
 }
 
 func formatSubscriptionAccountIdent(acc subscription.AccountRef) string {
@@ -428,7 +701,158 @@ func formatSubscriptionAccountIdent(acc subscription.AccountRef) string {
 	return "UID:" + acc.UID
 }
 
+type subAccountLiveView struct {
+	noRoom       bool
+	isLive       bool
+	isRecording  bool
+	hasRoom      bool
+	title        string
+	qualSpec     string
+	recDurSec    int
+	recBytes     int64
+	biliRoomID   int64
+	roomOrWebRID string
+	accountKey   string
+	recordingKey string
+	startLabel   string
+	stopLabel    string
+}
+
+func (a *App) lookupSubAccountLiveView(acc subscription.AccountRef) subAccountLiveView {
+	accSite := normalizeSiteIDUI(acc.Site)
+	uid := strings.TrimSpace(acc.UID)
+	accountKey := accSite + ":" + uid
+	lv := subAccountLiveView{
+		accountKey:   accountKey,
+		recordingKey: accountKey,
+		startLabel:   "开始录制 " + accountKey,
+		stopLabel:    "停止录制 " + accountKey,
+	}
+
+	if accSite == "bilibili" {
+		mid, _ := strconv.ParseInt(uid, 10, 64)
+		for _, rm := range a.LiveRooms {
+			if mid > 0 && rm.UID == mid {
+				lv.biliRoomID = rm.RoomID
+				lv.isLive = rm.LiveStatus == 1
+				lv.isRecording = rm.Recording
+				lv.noRoom = rm.RoomID == 0 && !lv.isLive && !lv.isRecording
+				lv.hasRoom = rm.RoomID > 0 || lv.isLive
+				lv.title = strings.TrimSpace(rm.Title)
+				lv.qualSpec = bilibili.FormatLiveQualitySpec(rm.QualityName, rm.Quality, rm.Codec)
+				lv.recDurSec = int(rm.RecordDurationSec)
+				lv.recBytes = rm.RecordBytes
+				if rm.RoomID > 0 {
+					lv.startLabel = fmt.Sprintf("开始录制 %d", rm.RoomID)
+					lv.stopLabel = fmt.Sprintf("停止录制 %d", rm.RoomID)
+				}
+				return lv
+			}
+		}
+		for _, st := range a.LiveAccounts {
+			if strings.EqualFold(st.Site, "bilibili") && st.UID == uid {
+				roomID, _ := strconv.ParseInt(st.RoomID, 10, 64)
+				lv.biliRoomID = roomID
+				lv.roomOrWebRID = firstNonEmptyStrUI(st.WebRID, st.RoomID)
+				lv.isLive = st.LiveStatus == 1
+				lv.isRecording = st.Recording
+				lv.noRoom = st.NoRoom || (roomID == 0 && st.RoomID == "" && !lv.isLive && !lv.isRecording)
+				lv.hasRoom = roomID > 0 || st.RoomID != "" || lv.isLive
+				lv.title = strings.TrimSpace(st.Title)
+				lv.qualSpec = formatLiveAccountQualitySpec(st)
+				lv.recDurSec = int(st.RecordDurationSec)
+				lv.recBytes = st.RecordBytes
+				lv.recordingKey = firstNonEmptyStrUI(st.RecordingKey, st.AccountKey, accountKey)
+				if roomID > 0 {
+					lv.startLabel = fmt.Sprintf("开始录制 %d", roomID)
+					lv.stopLabel = fmt.Sprintf("停止录制 %d", roomID)
+				}
+				return lv
+			}
+		}
+		return lv
+	}
+
+	for _, st := range a.LiveAccounts {
+		if strings.EqualFold(st.Site, accSite) && st.UID == uid {
+			lv.roomOrWebRID = firstNonEmptyStrUI(st.WebRID, st.RoomID)
+			lv.accountKey = firstNonEmptyStrUI(st.AccountKey, accountKey)
+			lv.recordingKey = firstNonEmptyStrUI(st.RecordingKey, lv.accountKey)
+			lv.isLive = st.LiveStatus == 1
+			lv.isRecording = st.Recording
+			lv.noRoom = st.NoRoom
+			lv.hasRoom = !st.NoRoom && (lv.roomOrWebRID != "" || lv.isLive)
+			lv.title = strings.TrimSpace(st.Title)
+			lv.qualSpec = formatLiveAccountQualitySpec(st)
+			lv.recDurSec = int(st.RecordDurationSec)
+			lv.recBytes = st.RecordBytes
+			lv.startLabel = "开始录制 " + lv.accountKey
+			lv.stopLabel = "停止录制 " + lv.accountKey
+			return lv
+		}
+	}
+	return lv
+}
+
+func formatSubAccountLiveStatus(lv subAccountLiveView) (string, ui.Color, int) {
+	if lv.isRecording {
+		parts := []string{
+			"录制中",
+			"已录 " + FormatDuration(lv.recDurSec),
+			FormatBytes(lv.recBytes),
+		}
+		if lv.qualSpec != "" {
+			parts = append(parts, lv.qualSpec)
+		}
+		return strings.Join(parts, " · "), ColorLive, 600
+	}
+	if lv.isLive {
+		parts := []string{"直播中"}
+		if lv.title != "" {
+			parts = append(parts, lv.title)
+		}
+		if lv.qualSpec != "" {
+			parts = append(parts, lv.qualSpec)
+		}
+		return strings.Join(parts, " · "), ColorLive, 600
+	}
+	if lv.noRoom {
+		return "未开通直播间", ColorTextMuted, 400
+	}
+	return "未开播", ColorTextMuted, 400
+}
+
+func (a *App) refreshSingleAccountLive(siteID, uid string) {
+	normSite := normalizeSiteIDUI(siteID)
+	uid = strings.TrimSpace(uid)
+	if uid == "" || a.backend == nil {
+		return
+	}
+	a.visibleLiveStopped = false
+	backend := a.backend
+	if normSite == "bilibili" {
+		if mid, err := strconv.ParseInt(uid, 10, 64); err == nil && mid > 0 {
+			requestGuarded(a, "visible-live:"+normSite+":"+uid, func() bool {
+				return a.CurrentRoute == RouteSubscriptions && backend.StatusOf("bilibili").LoggedIn
+			}, func(ctx context.Context) ([]live.RoomState, error) {
+				return backend.LiveStatus(ctx, []int64{mid})
+			}, a.mergeLiveRooms, a.handleVisibleLiveError)
+			return
+		}
+	}
+	key := normSite + ":" + uid
+	requestGuarded(a, "visible-live:"+key, func() bool {
+		return a.CurrentRoute == RouteSubscriptions && backend.HasAnyLogin()
+	}, func(ctx context.Context) ([]service.LiveAccountState, error) {
+		return backend.LiveStatuses(ctx, []string{key})
+	}, func(states []service.LiveAccountState) {
+		a.LiveRooms = backend.ListLiveRooms()
+		a.mergeLiveAccountStates(states)
+	}, a.handleVisibleLiveError)
+}
+
 func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Subscription) {
+	accounts := subscriptionEffectiveAccounts(*sub)
 	ui.Column(c).
 		FillWidth().
 		Padding(16).
@@ -438,50 +862,110 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 		Gap(10).
 		ClipX().
 		Children(func() {
-			ui.Text(c, fmt.Sprintf("关联账号（%d 个）", len(sub.Accounts))).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-			for _, accItem := range sub.Accounts {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
+				ui.Text(c, fmt.Sprintf("关联账号（%d 个）", len(accounts))).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				secOpen := a.SubAccountMenuKey == "section:live"
+				MoreMenuButton(c, "订阅直播更多", 30, &secOpen, func(m *ui.Menu) {
+					if m.Item("刷新直播状态").Chosen() {
+						a.refreshVisibleLive()
+					}
+				})
+				keyedMenuOpen(&a.SubAccountMenuKey, "section:live", secOpen)
+			})
+
+			if len(accounts) == 0 {
+				ui.Text(c, "暂未关联站点账号，可在下方粘贴主页链接、分享文本或 UID 关联。").
+					FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
+			}
+
+			for _, accItem := range accounts {
 				acc := accItem
 				accSite := normalizeSiteIDUI(acc.Site)
 				var uidNum int64
 				if accSite == "bilibili" {
 					_, _ = fmt.Sscanf(acc.UID, "%d", &uidNum)
 				}
+				lv := a.lookupSubAccountLiveView(acc)
+				liveText, liveColor, liveWeight := formatSubAccountLiveStatus(lv)
+				menuKey := "acct:" + accSite + ":" + acc.UID
+
 				ui.Row(c).
 					FillWidth().
-					Padding(10, 12).
+					Padding(12, 14).
 					Radius(12).
 					Background(ColorBgMain).
 					Border(1, ColorBorder).
 					AlignItems(ui.Center).
 					Justify(ui.SpaceBetween).
-					Gap(8).
+					Gap(10).
 					ClipX().
 					Children(func() {
-						ui.Row(c).AlignItems(ui.Center).Gap(8).Grow(1).ClipX().Children(func() {
-							a.renderAccountAvatar(c, accSite, acc.Name, acc.UID, uidNum, 34, false, "", nil, acc.Face)
-							ui.Text(c, firstNonEmptyStrUI(acc.Name, acc.UniqueID, acc.UID)).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-							renderSiteSmallBadgeWithDot(c, accSite, "订阅详情账号站点："+accSite+":"+acc.UID)
-							ui.Text(c, "· "+formatSubscriptionAccountIdent(acc)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+						ui.Row(c).AlignItems(ui.Center).Gap(10).Grow(1).ClipX().Children(func() {
+							a.renderAccountAvatar(c, accSite, acc.Name, acc.UID, uidNum, 40, lv.isLive || lv.isRecording, "", nil, acc.Face)
+							ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
+								ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
+									ui.Text(c, firstNonEmptyStrUI(acc.Name, acc.UniqueID, acc.UID)).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+									renderSiteSmallBadgeWithDot(c, accSite, "订阅详情账号站点："+accSite+":"+acc.UID)
+									ui.Text(c, "· "+formatSubscriptionAccountIdent(acc)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+								})
+								ui.Text(c, liveText).FontSize(12).FontWeight(liveWeight).TextColor(liveColor).SingleLine()
+							})
 						})
-						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-							if OutlinePillButton(c, "打开主页", "订阅账号主页："+acc.UID).Clicked() {
-								if accSite == "douyin" {
-									a.OpenDouyinUser(acc.UID, acc.Name)
-								} else if mid, err := strconv.ParseInt(acc.UID, 10, 64); err == nil {
-									a.OpenUser(mid, acc.Name)
+
+						ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
+							if lv.isRecording {
+								if DangerOutlinePillButton(c, "停止录制", lv.stopLabel).Clicked() {
+									if accSite == "bilibili" && lv.biliRoomID > 0 {
+										a.stopLiveRecording(lv.biliRoomID)
+									} else {
+										a.stopAccountLiveRecording(lv.recordingKey)
+									}
+								}
+							} else if lv.isLive {
+								if AccentPillButton(c, "录制", lv.startLabel).Clicked() {
+									if accSite == "bilibili" && lv.biliRoomID > 0 {
+										a.startLiveRecording(lv.biliRoomID)
+									} else {
+										a.startAccountLiveRecording(accSite, acc.UID, lv.roomOrWebRID)
+									}
 								}
 							}
-							if OutlinePillButton(c, "用作头像", "订阅头像："+acc.UID).Clicked() {
-								sub.Avatar = subscription.AvatarRef{Site: acc.Site, UID: acc.UID}
-								_, err := a.backend.UpsertSubscription(*sub)
-								a.showError(err)
-								a.RefreshData()
-							}
-							if DangerOutlinePillButton(c, "解除关联", "解除账号："+acc.UID).Clicked() {
-								_, err := a.backend.UnlinkSubscriptionAccount(sub.ID, acc.Site, acc.UID)
-								a.showError(err)
-								a.RefreshData()
-							}
+
+							open := a.SubAccountMenuKey == menuKey
+							MoreMenuButton(c, "订阅账号更多："+accSite+":"+acc.UID, 30, &open, func(m *ui.Menu) {
+								if m.Item("打开主页").Chosen() {
+									if accSite == "douyin" {
+										a.OpenDouyinUser(acc.UID, acc.Name)
+									} else if mid, err := strconv.ParseInt(acc.UID, 10, 64); err == nil && mid > 0 {
+										a.OpenUser(mid, acc.Name)
+									}
+								}
+								if lv.hasRoom {
+									if m.Item("在浏览器中观看").Chosen() {
+										if accSite == "douyin" {
+											_ = a.backend.OpenLiveInBrowser("douyin", lv.roomOrWebRID)
+										} else if lv.biliRoomID > 0 {
+											_ = a.backend.OpenLiveRoomInBrowser(lv.biliRoomID)
+										}
+									}
+								}
+								if m.Item("用作头像").Chosen() {
+									sub.Avatar = subscription.AvatarRef{Site: acc.Site, UID: acc.UID}
+									_, err := a.backend.UpsertSubscription(*sub)
+									a.showError(err)
+									a.RefreshData()
+								}
+								if m.Item("刷新直播状态").Chosen() {
+									a.refreshSingleAccountLive(accSite, acc.UID)
+								}
+								m.Separator()
+								if m.Item("解除关联").Danger().Chosen() {
+									_, err := a.backend.UnlinkSubscriptionAccount(sub.ID, acc.Site, acc.UID)
+									a.showError(err)
+									a.RefreshData()
+								}
+							})
+							keyedMenuOpen(&a.SubAccountMenuKey, menuKey, open)
 						})
 					})
 			}
@@ -540,6 +1024,27 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 					})
 			}
 		})
+}
+
+// subscriptionForAuthor finds the subscription that has the account
+// (site, uid) — or, on Bilibili, the mid.
+func (a *App) subscriptionForAuthor(siteID, uid string, mid int64) (subscription.Subscription, bool) {
+	siteID = normalizeSiteIDUI(siteID)
+	uid = strings.TrimSpace(uid)
+	if uid == "" && siteID == "bilibili" && mid > 0 {
+		uid = strconv.FormatInt(mid, 10)
+	}
+	if uid == "" {
+		return subscription.Subscription{}, false
+	}
+	for _, sub := range a.Subscriptions {
+		for _, acc := range sub.Accounts {
+			if normalizeSiteIDUI(acc.Site) == siteID && strings.TrimSpace(acc.UID) == uid {
+				return sub, true
+			}
+		}
+	}
+	return subscription.Subscription{}, false
 }
 
 func (a *App) findSubscriptionLiveRoom(sub subscription.Subscription) *live.RoomState {
@@ -650,272 +1155,6 @@ func settingSwitchRow(c *ui.Context, title, desc, switchLabel string, value *boo
 	return changed
 }
 
-func (a *App) renderSubscriptionLiveTab(c *ui.Context, sub *subscription.Subscription) {
-	ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
-		ui.Text(c, "关联账号直播间").FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-		MoreMenuButton(c, "订阅直播更多", 30, nil, func(m *ui.Menu) {
-			if m.Item("刷新直播状态").Chosen() {
-				a.refreshVisibleLive()
-			}
-		})
-	})
-
-	authors := a.selectedSubscriptionAuthors()
-	refs := subscriptionAuthorRefs(*sub)
-	matchedCount := 0
-	for _, rm := range a.LiveRooms {
-		room := rm
-		matches := false
-		for _, id := range authors {
-			if id == room.UID {
-				matches = true
-				break
-			}
-		}
-		if !matches {
-			continue
-		}
-		matchedCount++
-		statusText := "未开播"
-		badgeBg := ColorBgSecondary
-		badgeFg := ColorTextMuted
-		if room.LiveStatus == 1 {
-			statusText = "直播中"
-			badgeBg = ColorLive
-			badgeFg = ColorWhite
-		} else if room.RoomID == 0 {
-			statusText = "未开通直播间"
-		}
-		qualSpec := bilibili.FormatLiveQualitySpec(room.QualityName, room.Quality, room.Codec)
-
-		ui.Row(c).
-			FillWidth().
-			Padding(12, 14).
-			Radius(14).
-			Background(ColorBgMain).
-			Border(1, ColorBorder).
-			AlignItems(ui.Center).
-			Justify(ui.SpaceBetween).
-			Gap(12).
-			ClipX().
-			Children(func() {
-				a.renderAvatar(c, room.Uname, room.UID, 42, room.LiveStatus == 1, "", nil)
-				ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
-					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-						ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(badgeBg).Children(func() {
-							ui.Text(c, statusText).FontSize(11).FontWeight(600).TextColor(badgeFg).SingleLine()
-						})
-						ui.Text(c, room.Uname).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-						if room.RoomID > 0 {
-							ui.Text(c, fmt.Sprintf("房间号 %d", room.RoomID)).Shrink(0).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-						}
-						if qualSpec != "" && (room.LiveStatus == 1 || room.Recording) {
-							ui.Text(c, "· "+qualSpec).Shrink(0).FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-						}
-					})
-					if room.Title != "" {
-						ui.Text(c, room.Title).FontSize(13).TextColor(ColorTextMain).SingleLine()
-					}
-					if room.Recording {
-						recMeta := fmt.Sprintf("正在录制：%s · %s · %d 段",
-							FormatDuration(int(room.RecordDurationSec)),
-							FormatBytes(room.RecordBytes),
-							room.RecordSegments)
-						if qualSpec != "" {
-							recMeta += " · " + qualSpec
-						}
-						ui.Text(c, recMeta).FontSize(12).FontWeight(600).TextColor(ColorLive).SingleLine()
-					}
-				})
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					if room.Recording {
-						if DangerOutlinePillButton(c, "停止录制", fmt.Sprintf("停止录制 %d", room.RoomID)).Clicked() {
-							a.stopLiveRecording(room.RoomID)
-						}
-					} else if room.LiveStatus == 1 {
-						if AccentPillButton(c, "录制", fmt.Sprintf("开始录制 %d", room.RoomID)).Clicked() {
-							a.startLiveRecording(room.RoomID)
-						}
-					}
-					if room.RoomID > 0 {
-						roomID := room.RoomID
-						MoreMenuButton(c, fmt.Sprintf("直播间更多 %d", roomID), 28, nil, func(m *ui.Menu) {
-							if m.Item("在浏览器中观看").Chosen() {
-								_ = a.backend.OpenLiveRoomInBrowser(roomID)
-							}
-						})
-					}
-				})
-			})
-	}
-
-	for _, acctItem := range a.LiveAccounts {
-		st := acctItem
-		if !strings.EqualFold(st.Site, "douyin") {
-			continue
-		}
-		matches := false
-		for _, ref := range refs {
-			if strings.EqualFold(ref.Site, "douyin") && ref.UID == st.UID {
-				matches = true
-				break
-			}
-		}
-		if !matches {
-			continue
-		}
-		matchedCount++
-		statusText := firstNonEmptyStrUI(st.StatusText, "未开播")
-		badgeBg := ColorBgSecondary
-		badgeFg := ColorTextMuted
-		if st.LiveStatus == 1 {
-			statusText = "直播中"
-			badgeBg = ColorLive
-			badgeFg = ColorWhite
-		} else if st.NoRoom {
-			statusText = "未开通直播间"
-		}
-		qualSpec := formatLiveAccountQualitySpec(st)
-
-		ui.Row(c).
-			FillWidth().
-			Padding(12, 14).
-			Radius(14).
-			Background(ColorBgMain).
-			Border(1, ColorBorder).
-			AlignItems(ui.Center).
-			Justify(ui.SpaceBetween).
-			Gap(12).
-			ClipX().
-			Children(func() {
-				a.renderAccountAvatar(c, "douyin", st.Uname, st.UID, 0, 42, st.LiveStatus == 1, "", nil, st.Face)
-				ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
-					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-						ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(badgeBg).Children(func() {
-							ui.Text(c, statusText).FontSize(11).FontWeight(600).TextColor(badgeFg).SingleLine()
-						})
-						ui.Text(c, firstNonEmptyStrUI(st.Uname, st.UID)).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-						if st.WebRID != "" {
-							ui.Text(c, "直播间 "+st.WebRID).Shrink(0).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-						}
-						if qualSpec != "" && (st.LiveStatus == 1 || st.Recording) {
-							ui.Text(c, "· "+qualSpec).Shrink(0).FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-						}
-					})
-					if st.Title != "" {
-						ui.Text(c, st.Title).FontSize(13).TextColor(ColorTextMain).SingleLine()
-					}
-					if st.Recording {
-						recMeta := fmt.Sprintf("正在录制：%s · %s · %d 段",
-							FormatDuration(int(st.RecordDurationSec)),
-							FormatBytes(st.RecordBytes),
-							max(1, st.RecordSegments))
-						if qualSpec != "" {
-							recMeta += " · " + qualSpec
-						}
-						ui.Text(c, recMeta).FontSize(12).FontWeight(600).TextColor(ColorLive).SingleLine()
-					}
-				})
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					if st.Recording {
-						if DangerOutlinePillButton(c, "停止录制", "停止录制 "+st.AccountKey).Clicked() {
-							a.stopAccountLiveRecording(firstNonEmptyStrUI(st.RecordingKey, st.AccountKey))
-						}
-					} else if st.LiveStatus == 1 {
-						if AccentPillButton(c, "录制", "开始录制 "+st.AccountKey).Clicked() {
-							a.startAccountLiveRecording("douyin", st.UID, firstNonEmptyStrUI(st.WebRID, st.RoomID))
-						}
-					}
-					roomOrWebRID := firstNonEmptyStrUI(st.WebRID, st.RoomID)
-					if roomOrWebRID != "" {
-						MoreMenuButton(c, "直播间更多 "+st.AccountKey, 28, nil, func(m *ui.Menu) {
-							if m.Item("在浏览器中观看").Chosen() {
-								_ = a.backend.OpenLiveInBrowser("douyin", roomOrWebRID)
-							}
-						})
-					}
-				})
-			})
-	}
-	if matchedCount == 0 {
-		ui.Text(c, "暂无直播间状态，正在直播时会在这里显示。").FontSize(13).TextColor(ColorTextMuted)
-	}
-
-	// Recorded live items belonging to this subscription's accounts (docs/ui.md §3.9)
-	var recordedLives []library.ItemMetadata
-	for _, it := range a.LibraryItems {
-		if it.Kind != "live" {
-			continue
-		}
-		matched := false
-		for _, id := range authors {
-			if it.Author.Mid > 0 && it.Author.Mid == id {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			itSite, itUID := library.NormalizeAuthorUID(it.Site, it.Author.UID, it.Author.Mid)
-			for _, ref := range refs {
-				if ref.Site == itSite && ref.UID == itUID {
-					matched = true
-					break
-				}
-			}
-		}
-		if matched {
-			recordedLives = append(recordedLives, it)
-		}
-	}
-	if len(recordedLives) > 0 {
-		ui.Column(c).FillWidth().Padding(8, 0, 0, 0).Gap(8).ClipX().Children(func() {
-			ui.Text(c, fmt.Sprintf("已录制的直播录像（%d）", len(recordedLives))).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-			for _, rec := range recordedLives {
-				recItem := rec
-				spec := formatLiveRecordingSpec(recItem.Live, "")
-				segCount := 1
-				if recItem.Live != nil && len(recItem.Live.Segments) > 0 {
-					segCount = len(recItem.Live.Segments)
-				}
-				metaLine := fmt.Sprintf("时长 %s · %d 段", FormatDuration(recItem.Duration), segCount)
-				if spec != "" {
-					metaLine += " · " + spec
-				}
-				ui.Row(c).
-					FillWidth().
-					Padding(10, 14).
-					Radius(12).
-					Background(ColorBgMain).
-					Border(1, ColorBorder).
-					AlignItems(ui.Center).
-					Justify(ui.SpaceBetween).
-					Gap(10).
-					ClipX().
-					Children(func() {
-						body := ui.ButtonBase(c).Label("播放订阅录像：" + recItem.ItemKey).Grow(1).Padding(0).ClipX()
-						body.Children(func() {
-							ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
-								ui.Text(c, recItem.Title).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-								ui.Text(c, metaLine).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-							})
-						})
-						if body.Clicked() {
-							a.OpenPlayerOverlay(recItem)
-						}
-						MoreMenuButton(c, "录像更多："+recItem.ItemKey, 28, nil, func(m *ui.Menu) {
-							if m.Item("详情").Chosen() {
-								a.OpenLibraryItemDetail(recItem)
-							}
-							if m.Item("在资源管理器中显示").Chosen() {
-								a.showError(a.backend.OpenItemFolder(recItem.ItemKey))
-							}
-						})
-					})
-			}
-		})
-	}
-}
-
 func (a *App) renderAddSubOverlay(c *ui.Context, w, h float32) {
 	if c.Shortcut(0, ui.KeyEscape) {
 		a.AddSubDialogOpen = false
@@ -973,6 +1212,11 @@ func (a *App) renderAddSubOverlay(c *ui.Context, w, h float32) {
 									renderSiteSmallBadgeWithDot(c, accSite, "新增订阅预览站点")
 									ui.Text(c, "· "+formatSubscriptionAccountIdent(acc)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 								})
+								if a.AddSubPreviewOwner == nil && len(a.Subscriptions) > 0 && OutlinePillButton(c, "加入现有订阅…", "预览账号加入现有订阅").Clicked() {
+									a.AddSubInput, a.AddSubName, a.AddSubPreviewInput = "", "", ""
+									a.AddSubPreview, a.AddSubDialogOpen = nil, false
+									a.OpenSubscribePicker(acc)
+								}
 								if a.AddSubPreviewOwner != nil {
 									ui.Text(c, fmt.Sprintf("该账号已属于订阅「%s」，可点击下方按钮移到新订阅。", a.AddSubPreviewOwner.Name)).
 										FontSize(12).TextColor(ColorDotYellow).MaxLines(2)
@@ -981,7 +1225,7 @@ func (a *App) renderAddSubOverlay(c *ui.Context, w, h float32) {
 										if name == "" {
 											name = acc.Name
 										}
-										sub, err := a.backend.CreateSubscription(name, "", nil, subscription.SubRules{ScheduledCheck: true})
+										sub, err := a.backend.CreateSubscription(name, "", nil, subscription.DefaultSubRules())
 										a.showError(err)
 										if err == nil {
 											sub, err = a.backend.MoveSubscriptionAccount(acc.Site, acc.UID, sub.ID)

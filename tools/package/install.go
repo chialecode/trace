@@ -13,8 +13,10 @@ import (
 // The development build installs itself on this machine after packaging
 // (W2): it finds TRACE Dev in the per-user uninstall entries, asks a
 // running TRACE Dev to save its work and quit, installs the new package
-// silently, checks the installed version and reopens TRACE Dev the way it
-// was. It never touches the release or ptest identities.
+// silently, checks the installed version and then starts TRACE Dev in the
+// tray (--background), whether it was running or not: the user keeps the
+// development build running (2026-11-15). It never touches the release or
+// ptest identities.
 
 const (
 	devIdentifier   = "io.github.chialecode.trace-dev"
@@ -40,26 +42,27 @@ type uninstallReader interface {
 }
 
 // processes finds, asks to quit and launches TRACE Dev by its executable.
-// There is deliberately no way to kill a process.
+// There is deliberately no way to kill a process. Launch reports whether the
+// new process stayed inside this tool's job object, where it may end when
+// the command that ran the tool ends.
 type processes interface {
 	Running(exe string) (bool, error)
 	RequestQuit(exe string) error
-	Launch(exe string, args []string) error
+	Launch(exe string, args []string) (inJob bool, err error)
 }
 
 // devInstaller holds what an install depends on, so tests can replace the
 // registry, the processes, the installer and the clock.
 type devInstaller struct {
-	Setup       string
-	Version     string
-	Registry    uninstallReader
-	Procs       processes
-	RunSetup    func(setup string) error
-	WindowState func() (open, known bool)
-	Now         func() time.Time
-	Sleep       func(time.Duration)
-	Timeout     time.Duration
-	Logf        func(format string, args ...any)
+	Setup    string
+	Version  string
+	Registry uninstallReader
+	Procs    processes
+	RunSetup func(setup string) error
+	Now      func() time.Time
+	Sleep    func(time.Duration)
+	Timeout  time.Duration
+	Logf     func(format string, args ...any)
 }
 
 // installResult is artifacts/package/install-dev.json.
@@ -75,8 +78,11 @@ type installResult struct {
 	QuitMs     int64  `json:"quitMs,omitempty"`
 	Relaunched bool   `json:"relaunched"`
 	Background bool   `json:"background"`
-	ElapsedMs  int64  `json:"elapsedMs"`
-	At         string `json:"at"`
+	// InJob: the started TRACE Dev could not leave the job object of the
+	// command that ran this tool and may end with it.
+	InJob     bool   `json:"inJob,omitempty"`
+	ElapsedMs int64  `json:"elapsedMs"`
+	At        string `json:"at"`
 }
 
 // skipReason tells why the automatic install does not run, or "".
@@ -165,46 +171,12 @@ func (d *devInstaller) Run() (installResult, error) {
 	}
 	res.Installed, res.Location = true, after.Location
 
-	if running {
-		var args []string
-		if d.WindowState != nil {
-			if open, known := d.WindowState(); known && !open {
-				args = []string{flagBackground}
-			}
-		}
-		res.Background = len(args) > 0
-		if err := d.Procs.Launch(filepath.Join(after.Location, devExeName), args); err != nil {
-			return finish(fmt.Errorf("已安装 %s，重新打开失败：%w", d.Version, err))
-		}
-		res.Relaunched = true
-	}
-	return finish(nil)
-}
-
-// restartWindowState reads the record a TRACE Dev quitting for the update
-// left in its ui-state.json: whether its window was open.
-func restartWindowState(uiStatePath string, now time.Time) (open, known bool) {
-	raw, err := os.ReadFile(uiStatePath)
+	inJob, err := d.Procs.Launch(filepath.Join(after.Location, devExeName), []string{flagBackground})
 	if err != nil {
-		return false, false
+		return finish(fmt.Errorf("已安装 %s，在托盘打开失败：%w", d.Version, err))
 	}
-	var st struct {
-		Update struct {
-			Restart *struct {
-				Reason     string `json:"reason"`
-				WindowOpen bool   `json:"windowOpen"`
-				At         string `json:"at"`
-			} `json:"restart"`
-		} `json:"update"`
-	}
-	if json.Unmarshal(raw, &st) != nil || st.Update.Restart == nil {
-		return false, false
-	}
-	at, err := time.Parse(time.RFC3339, st.Update.Restart.At)
-	if err != nil || now.Sub(at) > 5*time.Minute || now.Sub(at) < -time.Minute {
-		return false, false
-	}
-	return st.Update.Restart.WindowOpen, true
+	res.Relaunched, res.Background, res.InJob = true, true, inJob
+	return finish(nil)
 }
 
 func writeInstallResult(path string, res installResult) error {

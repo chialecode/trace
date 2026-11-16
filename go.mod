@@ -1,13 +1,13 @@
 module github.com/chialecode/trace
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/Eyevinn/mp4ff v0.62.0
 	github.com/egoist/mygo v0.8.3
 	github.com/yeqown/go-qrcode/v2 v2.3.0
 	golang.org/x/image v0.47.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.62.0
 )

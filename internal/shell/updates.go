@@ -59,28 +59,64 @@ func ParseLaunchArgs(args []string) LaunchArgs {
 	return la
 }
 
-// StartupDecision is what a launch does with its window and which update
-// notice it shows, from the launch flags and ui-state.json.
+// StartupDecision is what a launch does with its window, which update
+// notice it shows, and which version-change record it appends to
+// update-history.json, from the launch flags and ui-state.json.
 type StartupDecision struct {
 	OpenWindow   bool
 	UpdatedTo    string
 	UpdatedNotes string
+	UpdateRecord *update.UpdateRecord
 }
 
-// DecideStartup applies the launch rules and returns the state to save:
-// a recent quit for an update reopens the window as it was before it;
-// otherwise --background starts in the tray and any other launch opens the
-// window. A launch of a newer version than the last one says once that
-// TRACE was updated, with the notes of the downloaded release.
+// DecideStartup applies the launch rules for the release channel and returns
+// the state to save.
 func DecideStartup(st uistate.State, args LaunchArgs, version string, now time.Time) (StartupDecision, uistate.State) {
+	return DecideStartupForChannel(st, args, "stable", version, now)
+}
+
+// DecideStartupForChannel applies the launch rules for channel and returns the
+// state to save: a recent quit for an update reopens the window as it was
+// before it, except that a dev-install restart launched with --background
+// stays in the tray; otherwise --background starts in the tray and any other
+// launch opens the window. Any effective version change records one UpdateRecord
+// ("dev_install" on dev, "auto_update" on release when a valid update.restart
+// marker was consumed, otherwise "manual_install"). A launch of a newer
+// version than the last one says once that TRACE was updated, with the notes
+// of the downloaded release.
+func DecideStartupForChannel(st uistate.State, args LaunchArgs, channel, version string, now time.Time) (StartupDecision, uistate.State) {
 	d := StartupDecision{OpenWindow: !args.Background}
+	validRestart := false
+	restartReason := ""
 	if r := st.Update.Restart; r != nil {
 		if at, err := time.Parse(time.RFC3339, r.At); err == nil && now.Sub(at) >= 0 && now.Sub(at) <= restartMarkerTTL {
-			d.OpenWindow = r.WindowOpen
+			validRestart = true
+			restartReason = strings.TrimSpace(r.Reason)
+			// tools/package reopens TRACE Dev with --background after every
+			// local install (the user keeps it running in the tray), so a
+			// dev-install restart honours --background over the window record.
+			if restartReason != "dev-install" || !args.Background {
+				d.OpenWindow = r.WindowOpen
+			}
 		}
 		st.Update.Restart = nil
 	}
-	prev := st.Update.LastRunVersion
+	prev := strings.TrimSpace(st.Update.LastRunVersion)
+	cur := strings.TrimSpace(version)
+	if cur != "" && cur != appdirs.UnversionedBuild && prev != "" && prev != appdirs.UnversionedBuild && cur != prev {
+		method := update.UpdateMethodManual
+		if appdirs.EffectiveChannel(channel) == "dev" {
+			method = update.UpdateMethodDevInstall
+		} else if validRestart && restartReason != "dev-install" {
+			method = update.UpdateMethodAuto
+		}
+		d.UpdateRecord = &update.UpdateRecord{
+			At:          now.UTC().Format(time.RFC3339),
+			FromVersion: prev,
+			ToVersion:   cur,
+			Method:      method,
+		}
+	}
 	if version != appdirs.UnversionedBuild && prev != "" && prev != appdirs.UnversionedBuild && update.Compare(version, prev) > 0 {
 		d.UpdatedTo = version
 		if st.Update.ReadyVersion == version {
@@ -94,6 +130,26 @@ func DecideStartup(st uistate.State, args LaunchArgs, version string, now time.T
 		st.Update.ReadyVersion, st.Update.ReadyNotes = "", ""
 	}
 	return d, st
+}
+
+// recordStartupDecision persists ui-state.json launch updates and writes any
+// version-change entry to update-history.json.
+func recordStartupDecision(backend *service.Backend, channel, version string, launch LaunchArgs, now time.Time) StartupDecision {
+	decision := StartupDecision{OpenWindow: !launch.Background}
+	if _, err := backend.MutateUIState(func(st *uistate.State) {
+		var next uistate.State
+		decision, next = DecideStartupForChannel(*st, launch, channel, version, now)
+		*st = next
+	}); err != nil {
+		backend.Logf("save launch state: %v", err)
+		return decision
+	}
+	if decision.UpdateRecord != nil {
+		if err := backend.RecordAppUpdate(*decision.UpdateRecord); err != nil {
+			backend.Logf("save update history: %v", err)
+		}
+	}
+	return decision
 }
 
 // mygoEngine adapts mygo.Updater to update.Engine.
@@ -163,11 +219,17 @@ func newUpdateController(backend *service.Backend, onChange func(), restart func
 	}
 	uiSt := backend.GetUIState()
 	lastCheck, _ := time.Parse(time.RFC3339, uiSt.Update.LastCheck)
+	hist := backend.GetUpdateHistory()
+	lastResult := ""
+	if len(hist.Checks) > 0 {
+		lastResult = hist.Checks[0].Result
+	}
 	return update.NewController(update.Options{
-		Engine:         engine,
-		Channel:        appdirs.CompiledChannel(),
-		CurrentVersion: build.Version,
-		LastCheck:      lastCheck,
+		Engine:          engine,
+		Channel:         appdirs.CompiledChannel(),
+		CurrentVersion:  build.Version,
+		LastCheck:       lastCheck,
+		LastCheckResult: lastResult,
 		Prefs: func() update.Prefs {
 			p := backend.GetSettings().Updates
 			return update.Prefs{AutoCheck: p.AutoCheck, AutoDownload: p.AutoDownload}
@@ -181,6 +243,11 @@ func newUpdateController(backend *service.Backend, onChange func(), restart func
 			_, _ = backend.MutateUIState(func(st *uistate.State) {
 				st.Update.ReadyVersion, st.Update.ReadyNotes = version, notes
 			})
+		},
+		RecordCheck: func(rec update.CheckRecord) {
+			if err := backend.RecordUpdateCheck(rec); err != nil {
+				backend.Logf("save update check history: %v", err)
+			}
 		},
 		ActiveWork: backend.ActiveWork,
 		Restart:    restart,

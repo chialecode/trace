@@ -99,6 +99,13 @@ func (b *feedFaultBackend) UpdateUIState(st uistate.State) (uistate.State, error
 	return b.BackendAPI.UpdateUIState(st)
 }
 
+func (b *feedFaultBackend) MutateUIState(fn func(*uistate.State)) (uistate.State, error) {
+	if b.stateErr != nil {
+		return uistate.State{}, b.stateErr
+	}
+	return b.BackendAPI.MutateUIState(fn)
+}
+
 func (b *feedFaultBackend) SaveAnchor(anchor uistate.FeedAnchor) error {
 	if b.anchorErr != nil {
 		return b.anchorErr

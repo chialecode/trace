@@ -834,9 +834,10 @@ type rawSDKStreamData struct {
 }
 
 type flvTierCandidate struct {
-	tier  liveQualityTierSpec
-	codec string
-	urls  []string
+	tier       liveQualityTierSpec
+	codec      string
+	bitrateBps int64
+	urls       []string
 }
 
 func selectFLVFromStreamURL(s *rawLiveStreamURL, codecOrder []string, mediaSpec site.MediaTransportSpec, allowLocalhost bool) (site.LiveStreamPlan, error) {
@@ -878,6 +879,7 @@ func selectFLVFromStreamURL(s *rawLiveStreamURL, codecOrder []string, mediaSpec 
 				// Group main + backup lines.
 				var urls []string
 				codec := ""
+				var bitrateBps int64
 				for _, lineName := range []string{"main", "backup"} {
 					line, exists := lineMap[lineName]
 					if !exists {
@@ -888,8 +890,14 @@ func selectFLVFromStreamURL(s *rawLiveStreamURL, codecOrder []string, mediaSpec 
 					}
 					if uStr, valid := checkURL(line.FLV); valid {
 						urls = append(urls, uStr)
-						if codec == "" {
-							codec = parseSDKParamsCodec(line.SDKParams)
+						if codec == "" || bitrateBps == 0 {
+							cName, br := parseSDKParamsCodecAndBitrate(line.SDKParams)
+							if codec == "" {
+								codec = cName
+							}
+							if bitrateBps == 0 {
+								bitrateBps = br
+							}
 						}
 					}
 				}
@@ -899,9 +907,10 @@ func selectFLVFromStreamURL(s *rawLiveStreamURL, codecOrder []string, mediaSpec 
 						codec = "avc"
 					}
 					candidates = append(candidates, flvTierCandidate{
-						tier:  spec,
-						codec: codec,
-						urls:  urls,
+						tier:       spec,
+						codec:      codec,
+						bitrateBps: bitrateBps,
+						urls:       urls,
 					})
 				}
 			}
@@ -983,6 +992,7 @@ func selectFLVFromStreamURL(s *rawLiveStreamURL, codecOrder []string, mediaSpec 
 		Codec:       best.codec,
 		Quality:     best.tier.qualityID,
 		QualityName: best.tier.label,
+		BitrateBps:  best.bitrateBps,
 		URLs:        best.urls,
 		Media:       mediaSpec,
 	}, nil
@@ -1080,22 +1090,33 @@ func matchLiveTierByLegacyKey(key string) (liveQualityTierSpec, bool) {
 }
 
 func parseSDKParamsCodec(raw string) string {
+	codec, _ := parseSDKParamsCodecAndBitrate(raw)
+	return codec
+}
+
+func parseSDKParamsCodecAndBitrate(raw string) (string, int64) {
 	if strings.TrimSpace(raw) == "" {
-		return ""
+		return "", 0
 	}
 	var sp struct {
-		VCodec string `json:"VCodec"`
+		VCodec   string      `json:"VCodec"`
+		VBitrate json.Number `json:"vbitrate"`
 	}
 	if json.Unmarshal([]byte(raw), &sp) == nil {
+		var bitrate int64
+		if v, err := sp.VBitrate.Int64(); err == nil && v > 0 {
+			bitrate = v
+		}
 		vc := strings.ToLower(strings.TrimSpace(sp.VCodec))
 		if strings.Contains(vc, "265") || strings.Contains(vc, "hevc") || strings.Contains(vc, "bytevc1") {
-			return "hevc"
+			return "hevc", bitrate
 		}
 		if strings.Contains(vc, "264") || strings.Contains(vc, "avc") {
-			return "avc"
+			return "avc", bitrate
 		}
+		return "", bitrate
 	}
-	return ""
+	return "", 0
 }
 
 func inferLiveURLCodec(raw string) string {

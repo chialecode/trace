@@ -104,16 +104,54 @@ func RunQuiet(exe string, args, env []string) error {
 }
 
 // LaunchDetached starts exe detached from this tool; its window shows as
-// the program decides.
+// usual unless args keep it in the tray.
 func LaunchDetached(exe string, args, env []string) error {
-	cmd := exec.Command(exe, args...)
-	cmd.Dir = filepath.Dir(exe)
-	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS}
-	if err := cmd.Start(); err != nil {
-		return err
+	_, err := LaunchDetachedOutsideJob(exe, args, env)
+	return err
+}
+
+// LaunchDetachedOutsideJob starts exe detached from this tool and, when this
+// tool runs inside a job object (as an agent's command sandbox does), asks
+// for the new process to break away from it so that closing the job does not
+// end it. A job that forbids breaking away refuses the request; exe then
+// starts inside the job and inJob reports that it may end with the command.
+func LaunchDetachedOutsideJob(exe string, args, env []string) (inJob bool, err error) {
+	start := func(flags uint32) (*exec.Cmd, error) {
+		cmd := exec.Command(exe, args...)
+		cmd.Dir = filepath.Dir(exe)
+		cmd.Env = env
+		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags}
+		return cmd, cmd.Start()
 	}
-	return cmd.Process.Release()
+	base := uint32(windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS)
+	cmd, err := start(base | windows.CREATE_BREAKAWAY_FROM_JOB)
+	if err != nil {
+		var errno syscall.Errno
+		if !errors.As(err, &errno) || errno != windows.ERROR_ACCESS_DENIED {
+			return false, err
+		}
+		if cmd, err = start(base); err != nil {
+			return false, err
+		}
+	}
+	inJob = processInJob(uint32(cmd.Process.Pid))
+	return inJob, cmd.Process.Release()
+}
+
+var procIsProcessInJob = windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
+
+// processInJob reports whether the process pid belongs to any job object.
+func processInJob(pid uint32) bool {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(h)
+	var in int32
+	if r, _, _ := procIsProcessInJob.Call(uintptr(h), 0, uintptr(unsafe.Pointer(&in))); r == 0 {
+		return false
+	}
+	return in != 0
 }
 
 // AppEnv is this process's environment without the variables that would

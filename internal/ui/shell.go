@@ -23,7 +23,7 @@ func (a *App) contextPanelWidth(w float32) float32 {
 			return 232
 		}
 		return 72
-	case RouteHome, RouteSubscriptions, RouteLibrary, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser:
+	case RouteHome, RouteSubscriptions, RouteMine, RouteLibrary, RouteLibraryItem, RouteTasks, RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser:
 		if w >= 1280 {
 			return 272
 		}
@@ -38,7 +38,7 @@ func (a *App) contextPanelWidth(w float32) float32 {
 // grids and lists of rows use the whole width.
 func (a *App) pageWidth(contentW float32) float32 {
 	switch a.CurrentRoute {
-	case RouteHome, RouteVideo, RouteUser, RouteDouyinWork, RouteParse, RouteLogin:
+	case RouteHome, RouteVideo, RouteUser, RouteDouyinWork, RouteLibraryItem, RouteLogin:
 		return min(contentW, 680)
 	case RouteSubscriptions:
 		if a.SubDetailOpen {
@@ -46,6 +46,11 @@ func (a *App) pageWidth(contentW float32) float32 {
 		}
 	case RouteSettings:
 		return min(contentW, 860)
+	case RouteMine:
+		// Rows read like the user page's uploads; the Douyin grid uses the width.
+		if !mineIsWorkGrid(a.Mine.Site, a.Mine.Kind) || !a.mineShowsList() {
+			return min(contentW, 680)
+		}
 	}
 	return contentW
 }
@@ -55,36 +60,36 @@ func (a *App) pageWidth(contentW float32) float32 {
 func (a *App) renderRail(c *ui.Context) {
 	workCount := a.activeWorkCount()
 	anyLive := a.anyLiveRoomActive()
-	// Under a hidden title bar the rail's top is a handle that moves the window.
-	topPad := float32(12)
-	if a.titleBar.Height > 0 {
-		topPad = max(topPad, a.titleBar.Height+4)
-	}
-	ui.Column(c).Fill().Padding(topPad, 0, 12, 0).AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
+	// The mark sits level with the panel's title, in the strip that moves
+	// the window under a hidden title bar (it is not a button), so the
+	// first page button lines up with the panel's first row (DEC-057).
+	ui.Column(c).Fill().Padding(12, 0, 12, 0).AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
 		ui.Column(c).AlignItems(ui.Center).Gap(6).Children(func() {
-			brand := ui.ButtonBase(c).Label("TRACE 主页").Tooltip("TRACE").Size(40, 36).Radius(10).Center()
-			if brand.Hovered() {
-				brand.Background(ColorHover)
-			}
-			brand.Children(func() {
+			ui.Box(c).Label("TRACE 标志").Size(40, 32).Center().Children(func() {
 				ui.Text(c, "T").FontSize(20).FontWeight(700).TextColor(ColorTextMain).SingleLine()
 			})
-			if brand.Clicked() {
-				a.Navigate(RouteHome)
-			}
-			ui.Box(c).Height(8)
 			for _, item := range mainNavItems {
 				nav := item
 				active := a.CurrentRoute == nav.Route ||
+					(nav.Route == RouteLibrary && a.CurrentRoute == RouteLibraryItem) ||
 					(nav.Route == RouteParse && (a.CurrentRoute == RouteVideo || a.CurrentRoute == RouteUser || a.CurrentRoute == RouteDouyinWork || a.CurrentRoute == RouteDouyinUser))
 				badge, dot := 0, false
+				tip := nav.Label
 				switch nav.Route {
 				case RouteSubscriptions:
+					// The orange dot only means someone subscribed is live now
+					// (not unread); the tooltip says so (2026-11-15 feedback).
 					dot = anyLive
+					if dot {
+						tip = "订阅 · 有订阅正在直播"
+					}
 				case RouteTasks:
 					badge = workCount
+					if badge > 0 {
+						tip = fmt.Sprintf("任务 · %d 个下载排队或进行中", badge)
+					}
 				}
-				if railButton(c, nav.Icon, nav.Label, active, badge, dot) {
+				if railButtonTip(c, nav.Icon, nav.Label, tip, active, badge, dot) {
 					a.Navigate(nav.Route)
 				}
 			}
@@ -133,7 +138,12 @@ func (a *App) renderRail(c *ui.Context) {
 }
 
 func railButton(c *ui.Context, icon, label string, active bool, badge int, dot bool) bool {
-	btn := ui.ButtonBase(c).Label(label).Tooltip(label).Size(40, 40).Radius(10).Center()
+	return railButtonTip(c, icon, label, label, active, badge, dot)
+}
+
+// railButtonTip is railButton with a tooltip that can explain the mark.
+func railButtonTip(c *ui.Context, icon, label, tooltip string, active bool, badge int, dot bool) bool {
+	btn := ui.ButtonBase(c).Label(label).Tooltip(tooltip).Size(40, 40).Radius(10).Center()
 	if active {
 		btn.Background(ColorAccentBg)
 	} else if btn.Hovered() {
@@ -167,9 +177,13 @@ func (a *App) renderContextPanel(c *ui.Context, width float32) {
 		a.renderHomePanel(c)
 	case RouteSubscriptions:
 		a.renderSubscriptionsPanel(c)
-	case RouteLibrary:
+	case RouteLibrary, RouteLibraryItem:
 		a.renderLibraryPanel(c)
-	case RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser:
+	case RouteTasks:
+		a.renderTasksPanel(c)
+	case RouteMine:
+		a.renderMinePanel(c)
+	case RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser:
 		a.renderHistoryPanel(c)
 	}
 }
@@ -220,99 +234,48 @@ func panelIconItem(c *ui.Context, icon, text, label string, active bool) bool {
 }
 
 // renderHomePanel: the whole timeline, the 3-segment site filter right below
-// "全部动态", the people with updates since you last looked at them, and who is live now.
+// "全部动态", then the subscriptions without any section title (DEC-053 ②):
+// live first (ringed), then unread (a dot), then read. The list is
+// virtualized for a thousand subscriptions.
 func (a *App) renderHomePanel(c *ui.Context) {
 	ui.Column(c).Fill().ClipX().Children(func() {
 		panelTitle(c, "主页")
-		ui.Scroll(c).Grow(1).FillWidth().Children(func() {
-			ui.Column(c).FillWidth().Padding(0, 8, 12, 8).Gap(2).ClipX().Children(func() {
-				if panelIconItem(c, "home", "全部动态", "主页全部动态", a.HomeActorFilter == nil) && a.HomeActorFilter != nil {
-					a.closeHomeActorFeed()
-				}
-				ui.Row(c).FillWidth().Padding(4, 2, 2, 2).Children(func() {
-					renderThreeSegmentSiteFilter(c, "主页站点筛选：", a.FeedSiteFilter, func(next string) {
-						a.setFeedSiteFilter(next)
-					})
+		ui.Column(c).FillWidth().Padding(0, 8, 4, 8).Gap(2).Shrink(0).ClipX().Children(func() {
+			if panelIconItem(c, "home", "全部动态", "主页全部动态", a.HomeActorFilter == nil) && a.HomeActorFilter != nil {
+				a.closeHomeActorFeed()
+			}
+			ui.Row(c).FillWidth().Padding(4, 2, 2, 2).Children(func() {
+				renderThreeSegmentSiteFilter(c, "主页站点筛选：", a.FeedSiteFilter, func(next string) {
+					a.setFeedSiteFilter(next)
 				})
-				if actors := a.homeUpdatedActors(); len(actors) > 0 {
-					panelSection(c, "有更新")
-					ui.Column(c).Label("主页有更新头像行").FillWidth().Gap(2).ClipX().Children(func() {
-						for _, act := range actors {
-							actor := act
-							active := a.HomeActorFilter != nil && a.HomeActorFilter.Key == actor.Key
-							if panelItem(c, "主页更新头像："+actor.Name, active, func() {
-								a.renderAccountAvatar(c, actor.Site, actor.Name, actor.UID, actor.Mid, 26, a.isActorLive(actor), "", nil, actor.Face)
-								panelItemText(c, actor.Name, active)
-							}) && !active {
-								a.openHomeActorFeed(actor)
-							}
-						}
-					})
-				}
-				a.renderLivePanelSection(c)
 			})
 		})
-	})
-}
-
-// renderLivePanelSection lists who is live now (at most eight); a row opens
-// their space, where the live banner records.
-func (a *App) renderLivePanelSection(c *ui.Context) {
-	shown := 0
-	seenBili := make(map[int64]bool)
-	for _, room := range a.LiveRooms {
-		if room.LiveStatus != 1 || shown >= 8 {
-			continue
+		rows := a.homeSubscriptionRows()
+		if len(rows) == 0 {
+			return
 		}
-		if shown == 0 {
-			panelSection(c, "正在直播")
-		}
-		shown++
-		seenBili[room.UID] = true
-		rm := room
-		if panelItem(c, fmt.Sprintf("侧栏直播 %d", rm.RoomID), false, func() {
-			a.renderAvatar(c, rm.Uname, rm.UID, 26, true, "", nil)
-			ui.Column(c).Grow(1).Gap(1).ClipX().Children(func() {
-				ui.Text(c, rm.Uname).FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
-				status := rm.Title
-				if rm.Recording {
-					status = "录制中 · " + rm.Title
-				}
-				ui.Text(c, status).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-			})
-		}) {
-			a.OpenUser(rm.UID, rm.Uname)
-		}
-	}
-	for _, acct := range a.LiveAccounts {
-		if acct.LiveStatus != 1 || shown >= 8 {
-			continue
-		}
-		if !strings.EqualFold(acct.Site, "douyin") {
-			if acct.Mid > 0 && seenBili[acct.Mid] {
-				continue
+		a.HomeSubListState.Key = func(i int) any {
+			if i >= 0 && i < len(rows) {
+				return rows[i].Key
 			}
-			continue
+			return i
 		}
-		if shown == 0 {
-			panelSection(c, "正在直播")
-		}
-		shown++
-		st := acct
-		if panelItem(c, "侧栏直播 "+st.AccountKey, false, func() {
-			a.renderAccountAvatar(c, "douyin", st.Uname, st.UID, 0, 26, true, "", nil, st.Face)
-			ui.Column(c).Grow(1).Gap(1).ClipX().Children(func() {
-				ui.Text(c, firstNonEmptyStrUI(st.Uname, st.UID)).FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
-				status := firstNonEmptyStrUI(st.Title, "直播中")
-				if st.Recording {
-					status = "录制中 · " + status
+		ui.List(c, &a.HomeSubListState, len(rows), func(i int) {
+			if i < 0 || i >= len(rows) {
+				return
+			}
+			actor := rows[i]
+			ui.Column(c).FillWidth().Padding(1, 8).Children(func() {
+				active := a.HomeActorFilter != nil && a.HomeActorFilter.Key == actor.Key
+				if panelItem(c, "主页订阅："+actor.Name, active, func() {
+					a.renderHomeSubAvatar(c, actor, 26, ColorBgPanel, nil)
+					panelItemText(c, actor.Name, active)
+				}) && !active {
+					a.openHomeActorFeed(actor)
 				}
-				ui.Text(c, status).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 			})
-		}) {
-			a.OpenDouyinUser(st.UID, st.Uname)
-		}
-	}
+		}).Label("主页订阅列表").Grow(1).FillWidth()
+	})
 }
 
 // renderSubscriptionsPanel lists the subscriptions, virtualized for a
@@ -321,10 +284,14 @@ func (a *App) renderSubscriptionsPanel(c *ui.Context) {
 	ui.Column(c).Fill().ClipX().Children(func() {
 		panelTitle(c, "订阅")
 		ui.Column(c).FillWidth().Padding(0, 8, 4, 8).Shrink(0).Children(func() {
-			if panelIconItem(c, "grid", "全部订阅", "订阅侧栏：全部订阅", !a.SubDetailOpen) {
+			if panelIconItem(c, "grid", "全部订阅", "订阅侧栏：全部订阅", !a.SubDetailOpen && !a.SubAccountsOpen) {
 				a.SubDetailOpen = false
+				a.SubAccountsOpen = false
 				a.SubManageMenuOpen = false
 				a.SubManageModalMode = ""
+			}
+			if panelIconItem(c, "user", "全部账号", "订阅侧栏：全部账号", !a.SubDetailOpen && a.SubAccountsOpen) {
+				a.openSubscriptionAccounts()
 			}
 			if len(a.Subscriptions) > 0 {
 				panelSection(c, fmt.Sprintf("订阅 · %d", len(a.Subscriptions)))
@@ -361,11 +328,12 @@ func (a *App) renderLibraryPanel(c *ui.Context) {
 					{"video", "video", "视频", "筛选类型：视频"},
 					{"image", "image", "图片", "筛选类型：图片"},
 					{"live", "live", "直播录像", "筛选类型：直播录制"},
+					{"forward", "share", "转发", "筛选类型：转发"},
 				} {
 					kind := k
 					if panelIconItem(c, kind.icon, kind.text, kind.label, a.LibraryKindFilter == kind.key) {
 						a.LibraryKindFilter = kind.key
-						a.reloadLibraryItems()
+						a.selectLibraryFilter()
 					}
 				}
 
@@ -373,7 +341,7 @@ func (a *App) renderLibraryPanel(c *ui.Context) {
 				ui.Row(c).FillWidth().Padding(2, 2, 4, 2).Children(func() {
 					renderThreeSegmentSiteFilter(c, "媒体库站点筛选：", a.LibrarySiteFilter, func(next string) {
 						a.LibrarySiteFilter = normalizeSiteFilter(next)
-						a.reloadLibraryItems()
+						a.selectLibraryFilter()
 					})
 				})
 
@@ -409,7 +377,7 @@ func (a *App) renderLibraryPanel(c *ui.Context) {
 				}
 				if panelIconItem(c, "subscriptions", "全部来源", "清除UP主筛选", a.LibraryCreatorMid == 0 && a.LibraryAuthorKey == "" && a.LibrarySubFilter == "") {
 					a.LibraryCreatorMid, a.LibraryAuthorKey, a.LibrarySubFilter = 0, "", ""
-					a.reloadLibraryItems()
+					a.selectLibraryFilter()
 				}
 				for _, s := range a.Subscriptions {
 					sub := s
@@ -420,7 +388,7 @@ func (a *App) renderLibraryPanel(c *ui.Context) {
 						panelItemText(c, sub.Name, active)
 					}) {
 						a.LibrarySubFilter, a.LibraryCreatorMid, a.LibraryAuthorKey = sub.ID, 0, ""
-						a.reloadLibraryItems()
+						a.selectLibraryFilter()
 					}
 				}
 				for _, au := range stats.Authors {
@@ -451,7 +419,7 @@ func (a *App) renderLibraryPanel(c *ui.Context) {
 						} else {
 							a.LibraryCreatorMid, a.LibraryAuthorKey, a.LibrarySubFilter = 0, aKey, ""
 						}
-						a.reloadLibraryItems()
+						a.selectLibraryFilter()
 					}
 				}
 			})
@@ -462,12 +430,58 @@ func (a *App) renderLibraryPanel(c *ui.Context) {
 	})
 }
 
-// renderHistoryPanel lists recent parses beside a video, work, or creator page.
+// renderHistoryPanel lists recent parses on /parse and beside video, work, or creator pages.
 func (a *App) renderHistoryPanel(c *ui.Context) {
 	ui.Column(c).Fill().ClipX().Children(func() {
-		panelTitle(c, "最近解析")
+		ui.Row(c).FillWidth().Padding(14, 12, 8, 18).Shrink(0).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(6).ClipX().Children(func() {
+			ui.Text(c, "最近解析").FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+			if len(a.HistoryItems) > 0 {
+				open := a.HistoryHeaderMenuOpen
+				MoreMenuButton(c, "最近解析更多", 28, &open, func(m *ui.Menu) {
+					if m.Item("全部清空").Danger().Chosen() {
+						a.HistoryClearConfirmOpen = true
+					}
+				})
+				a.HistoryHeaderMenuOpen = open
+			}
+		})
+
+		if len(a.HistoryItems) > 0 && a.HistoryClearConfirmOpen {
+			ui.Column(c).
+				Label("确认清空最近解析栏").
+				FillWidth().
+				Padding(8, 12).
+				Background(ColorWarnBg).
+				BorderWidth(1, 0, 1, 0).
+				BorderColor(ColorDotYellow).
+				Gap(8).
+				Shrink(0).
+				ClipX().
+				Children(func() {
+					ui.Text(c, "确认清空全部最近解析记录？同时清理缓存的缩略图。").
+						FontSize(12).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
+					ui.Row(c).FillWidth().Justify(ui.End).Gap(6).AlignItems(ui.Center).Children(func() {
+						if OutlinePillButton(c, "取消", "取消清空历史").Clicked() {
+							a.HistoryClearConfirmOpen = false
+							a.HistoryHeaderMenuOpen = false
+						}
+						if DangerOutlinePillButton(c, "确认清空", "确认清空历史").Clicked() {
+							if err := a.backend.ClearHistory(); err != nil {
+								a.showError(err)
+								a.HistoryItems = a.backend.ListHistory()
+								return
+							}
+							a.HistoryItems = a.backend.ListHistory()
+							a.HistoryClearConfirmOpen = false
+							a.HistoryHeaderMenuOpen = false
+							a.HistoryItemMenuID = ""
+						}
+					})
+				})
+		}
+
 		ui.Scroll(c).Grow(1).FillWidth().Children(func() {
-			ui.Column(c).FillWidth().Padding(0, 8, 12, 8).Gap(2).ClipX().Children(func() {
+			ui.Column(c).FillWidth().Padding(2, 8, 12, 8).Gap(2).ClipX().Children(func() {
 				if len(a.HistoryItems) == 0 {
 					ui.Text(c, "还没有解析过链接").FontSize(13).TextColor(ColorTextMuted).Padding(8, 10)
 				}
@@ -487,35 +501,125 @@ func (a *App) renderHistoryPanel(c *ui.Context) {
 					if entry.Kind == "user" || author == "" {
 						author = entry.Title
 					}
-					title := entry.Title
-					if entry.Kind == "user" {
-						title = firstNonEmptyStrUI(entry.Subtitle, entry.Title)
+					title := firstNonEmptyStrUI(entry.Title, entry.Subtitle, entry.ID)
+					kindLabel := "视频"
+					switch entry.Kind {
+					case "user":
+						kindLabel = "用户"
+					case "note":
+						kindLabel = "图文"
+					case "dynamic":
+						if entrySite == "douyin" {
+							kindLabel = "图文"
+						} else {
+							kindLabel = "动态"
+						}
+					case "live":
+						kindLabel = "直播"
 					}
-					histLabel := "侧栏历史：" + entry.Kind + ":" + entry.ID
-					if entrySite != "bilibili" {
-						histLabel = "侧栏历史：" + entrySite + ":" + entry.Kind + ":" + entry.ID
+
+					active := a.isCurrentHistoryEntry(entrySite, entry.Kind, entry.ID)
+					itemMenuKey := entrySite + ":" + entry.Kind + ":" + entry.ID
+					legacyMenuKey := entry.Kind + ":" + entry.ID
+					itemMenuOpen := a.HistoryItemMenuID == itemMenuKey || a.HistoryItemMenuID == legacyMenuKey || a.HistoryItemMenuID == entry.ID
+					avatarBmp := a.lookupHistoryThumbBitmap(entry.AvatarThumb)
+					coverBmp := a.lookupHistoryThumbBitmap(entry.CoverThumb)
+
+					row := ui.Row(c).FillWidth().Radius(8).Padding(5, 6, 5, 8).Gap(6).AlignItems(ui.Center).ClipX()
+					if active {
+						row.Background(ColorAccentBg)
+					} else if row.Hovered() {
+						row.Background(ColorHover)
 					}
-					if panelItem(c, histLabel, a.isCurrentHistoryEntry(entrySite, entry.Kind, entry.ID), func() {
-						a.renderAvatarWithBitmap(c, author, mid, 28, false, "", nil, a.lookupHistoryThumbBitmap(entry.AvatarThumb))
-						ui.Column(c).Grow(1).Gap(1).ClipX().Children(func() {
-							ui.Text(c, title).FontSize(13).FontWeight(500).TextColor(ColorTextMain).SingleLine()
-							ui.Row(c).AlignItems(ui.Center).Gap(4).ClipX().Children(func() {
-								ui.Text(c, author).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-								renderSiteSmallBadgeWithDot(c, entrySite, "侧栏历史站点："+entry.ID)
+					rowHovered := row.Hovered()
+					row.Children(func() {
+						bodyBtn := ui.ButtonBase(c).
+							Label("历史打开：" + entry.ID).
+							Grow(1).
+							Padding(0).
+							Gap(8).
+							AlignItems(ui.Center).
+							Justify(ui.Start).
+							ClipX()
+						bodyBtn.Children(func() {
+							if entry.Kind == "user" || (entry.CoverThumb == "" && entry.Kind != "video" && entry.Kind != "note" && entry.Kind != "live") {
+								a.renderAvatarWithBitmap(c, author, mid, 32, false, "", nil, avatarBmp)
+							} else {
+								ui.Box(c).Size(44, 30).Radius(5).Background(ColorBgMain).Border(1, ColorBorder).Clip().Shrink(0).Center().Children(func() {
+									if coverBmp != nil {
+										ui.Image(c, coverBmp).Size(44, 30).Fit(ui.Cover)
+									} else if avatarBmp != nil {
+										ui.Image(c, avatarBmp).Size(44, 30).Fit(ui.Cover)
+									} else {
+										iconName := "video"
+										if entry.Kind == "note" || entry.Kind == "dynamic" {
+											iconName = "image"
+										} else if entry.Kind == "live" {
+											iconName = "live"
+										}
+										DrawIcon(c, iconName, 14, ColorTextMuted, 1.7)
+									}
+								})
+							}
+							ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
+								titleCol := ColorTextMain
+								weight := 500
+								if active {
+									titleCol = ColorAccent
+									weight = 600
+								}
+								ui.Text(c, title).FontSize(13).FontWeight(weight).TextColor(titleCol).SingleLine()
+								ui.Row(c).AlignItems(ui.Center).Gap(4).ClipX().Children(func() {
+									ui.Text(c, kindLabel).FontSize(11).TextColor(ColorTextMuted).SingleLine().Shrink(0)
+									renderSiteSmallBadgeWithDot(c, entrySite, "历史站点："+entrySite+":"+entry.ID)
+								})
 							})
 						})
-					}) {
-						preview := &OpeningPreview{Site: entrySite, Kind: entry.Kind, Title: title, AuthorName: author}
-						if entry.Kind == "user" {
-							preview.Title = ""
-							if entrySite == "bilibili" {
-								preview.Mid = mid
-							} else {
-								preview.AuthorUID = entry.ID
+						if bodyBtn.Clicked() {
+							preview := &OpeningPreview{Site: entrySite, Kind: entry.Kind, Title: title, AuthorName: author}
+							if entry.Kind == "user" {
+								preview.Title = ""
+								if entrySite == "bilibili" {
+									preview.Mid = mid
+								} else {
+									preview.AuthorUID = entry.ID
+								}
 							}
+							a.openLink(entry.CanonicalURL, preview)
 						}
-						a.openLink(entry.CanonicalURL, preview)
-					}
+
+						open := itemMenuOpen
+						moreBtn := ui.ButtonBase(c).
+							Label("历史更多："+entry.ID).
+							Tooltip("更多操作").
+							Size(26, 26).
+							Radius(13).
+							Shrink(0).
+							Center()
+						showDots := rowHovered || open || moreBtn.Hovered() || moreBtn.Focused()
+						if moreBtn.Hovered() || open {
+							moreBtn.Background(ColorHover)
+						}
+						moreBtn.Children(func() {
+							if showDots {
+								DrawIcon(c, "more", 15, ColorTextMuted, 1.8)
+							}
+						})
+						moreBtn.PopoverMenuButton(func(m *ui.Menu) {
+							if entry.CanonicalURL != "" && m.Item("在浏览器中打开").Chosen() {
+								_ = a.backend.Desktop().OpenExternalURL(entry.CanonicalURL)
+							}
+							if m.Item("删除").Danger().Chosen() {
+								a.showError(a.backend.RemoveHistoryForSite(entrySite, entry.Kind, entry.ID))
+								a.HistoryItems = a.backend.ListHistory()
+							}
+						}, ui.PopoverMenuButtonOptions{At: ui.AnchorBottomEnd, Self: ui.AnchorTopEnd, Open: &open})
+						if open {
+							a.HistoryItemMenuID = itemMenuKey
+						} else if itemMenuOpen {
+							a.HistoryItemMenuID = ""
+						}
+					})
 				}
 			})
 		})
@@ -528,15 +632,17 @@ func (a *App) isCurrentHistoryEntry(siteID, kind, id string) bool {
 		switch kind {
 		case "video", "note", "dynamic":
 			return a.CurrentRoute == RouteDouyinWork && a.CurrentDouyinWork != nil && a.CurrentDouyinWork.ID == id
-		case "user":
-			return a.CurrentRoute == RouteDouyinUser && a.CurrentDouyinUser != nil && a.CurrentDouyinUser.SecUID == id
+		case "user", "live":
+			return a.CurrentRoute == RouteDouyinUser && a.CurrentDouyinUser != nil && (a.CurrentDouyinUser.SecUID == id || a.CurrentDouyinUser.WebRID == id)
 		}
 		return false
 	}
 	switch kind {
 	case "video":
 		return a.CurrentRoute == RouteVideo && a.CurrentVideo != nil && a.CurrentVideo.BVID == id
-	case "user":
+	case "dynamic":
+		return a.CurrentRoute == RouteVideo && a.CurrentDynamic != nil && a.CurrentDynamic.ID == id
+	case "user", "live":
 		return a.CurrentRoute == RouteUser && a.CurrentUser != nil && strconv.FormatInt(a.CurrentUser.Mid, 10) == id
 	}
 	return false

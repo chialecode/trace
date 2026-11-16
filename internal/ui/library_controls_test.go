@@ -35,15 +35,36 @@ func TestCachedVideoDetailRequestsFreshMetadataAndKeepsKnownMissingPages(t *test
 		Parts: []library.VideoPartRecord{{Page: 1, CID: 101, File: "P01.mp4"}}, ExpectedPages: []int{1, 2},
 	})
 	app.OpenLibraryItemDetail(item)
+	if app.CurrentRoute != RouteLibraryItem {
+		t.Fatalf("expected OpenLibraryItemDetail to open %s, got %s", RouteLibraryItem, app.CurrentRoute)
+	}
 	backend := &capturedLocalVideoCacheBackend{BackendAPI: app.backend}
 	app.backend = backend
 	tt := ui.NewTester(app.View, 1000, 860)
-	if _, found := tt.Find("选择分P 2"); !found {
+	if !tt.HasText("分P 2") {
 		t.Fatal("cached detail omitted a known missing part")
+	}
+	if _, found := tt.Find("播放分P 1"); !found {
+		t.Fatal("offline library detail omitted local play action for cached P1")
+	}
+	for _, netOnly := range []string{"缓存视频", "选择分P 2", "补全：" + item.ItemKey, "浏览器打开视频"} {
+		if _, found := tt.Find(netOnly); found {
+			t.Fatalf("offline library detail must hide network action %q", netOnly)
+		}
+	}
+	if got := menuItems(t, tt, "本机详情更多"); strings.Join(got, ",") != "在解析页打开" {
+		t.Fatalf("expected only 在解析页打开 in offline detail menu, got %v", got)
 	}
 	// Counts are not kept (DEC-040): a cached video shows none, never zeros.
 	if tt.HasText("播放 0") || tt.HasText("评论 0") {
 		t.Fatal("cached detail showed absent interaction statistics as real zero counts")
+	}
+
+	// Online /video view for a local manifest still keeps missing pages and requests fresh metadata by BVID.
+	app.CurrentRoute = RouteVideo
+	tt.Frame()
+	if _, found := tt.Find("选择分P 2"); !found {
+		t.Fatal("online /video detail omitted a known missing part")
 	}
 	if err := tt.Click("缓存视频"); err != nil {
 		t.Fatal(err)
@@ -146,6 +167,12 @@ func TestLiveLibraryDetailOnlyOffersRecordingActions(t *testing.T) {
 	if _, found := tt.Find("· 原画 · AVC"); found {
 		t.Fatal("recording quality starts with a stray separator")
 	}
+	if got := menuItems(t, tt, "本机详情更多"); strings.Join(got, ",") != "在解析页打开" {
+		t.Fatalf("offline recording detail ⋯ items = %v", got)
+	}
+	// Online recording card still uses room URL for browser open.
+	app.CurrentRoute = RouteVideo
+	tt.Frame()
 	chooseMenuItem(t, tt, "帖子更多："+item.ItemKey, "在浏览器中打开")
 	if actions := desk.Actions(); len(actions) != 1 || actions[0].Kind != "url" || actions[0].Target != "https://live.bilibili.com/44" {
 		t.Fatalf("recording detail used a video/dynamic URL for its room: %v", actions)

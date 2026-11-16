@@ -251,13 +251,15 @@ func (m *Manager) CachedAccountState(siteID site.ID, uid string) (RoomState, boo
 					st.Site = string(site.Bilibili)
 				}
 				st.AccountUID = normUID
-				if sess := m.sessions[st.RoomID]; sess != nil {
+				sess := m.sessions[st.RoomID]
+				if sess != nil {
 					st.Recording = true
 					st.RecordSession = sess.sessionID
 					st.RecordBytes = sess.bytesTotal
 					st.RecordSegments = len(sess.segments)
 					st.RecordItemDir = sess.itemDir
 				}
+				hydrateSessionPreviewFieldsLocked(&st, sess)
 				return st, true
 			}
 		}
@@ -529,6 +531,7 @@ func (m *Manager) applyDouyinLiveStatus(liveSt site.LiveStatus, queriedWebRID st
 		QualityName: firstNonEmpty(liveSt.QualityName, existing.QualityName),
 		Codec:       firstNonEmpty(liveSt.Codec, existing.Codec),
 		Recording:   recSess != nil,
+		Incidents:   cloneIncidents(existing.Incidents),
 		StopReason:  existing.StopReason,
 		LastError:   existing.LastError,
 		UpdatedAt:   now.UTC().Format(time.RFC3339),
@@ -589,8 +592,10 @@ func (m *Manager) hydrateDouyinStateLocked(st RoomState) RoomState {
 		if sess.lastErr != "" {
 			st.LastError = sess.lastErr
 		}
+		hydrateSessionPreviewFieldsLocked(&st, sess)
 	} else {
 		st.Recording = false
+		hydrateSessionPreviewFieldsLocked(&st, nil)
 	}
 	return st
 }
@@ -959,10 +964,6 @@ func (m *Manager) StartDouyinRecording(ctx context.Context, uid, roomOrWebRID st
 	}
 
 	m.mu.Lock()
-	maxRec := m.liveSettings.MaxConcurrentRecordings
-	if maxRec <= 0 {
-		maxRec = 2
-	}
 	codecOrder := append([]string(nil), m.liveSettings.CodecOrder...)
 	m.mu.Unlock()
 
@@ -1020,10 +1021,6 @@ func (m *Manager) StartDouyinRecording(ctx context.Context, uid, roomOrWebRID st
 		st := m.hydrateDouyinStateLocked(m.douyinStates[existingSess.stateKey])
 		m.mu.Unlock()
 		return st, nil
-	}
-	if len(m.sessions)+len(m.douyinSessions) >= maxRec {
-		m.mu.Unlock()
-		return RoomState{}, fmt.Errorf("已达到同时录制上限（%d 路），未开始录制", maxRec)
 	}
 	m.mu.Unlock()
 
@@ -1140,30 +1137,37 @@ func (m *Manager) StartDouyinRecording(ctx context.Context, uid, roomOrWebRID st
 	recCtx, recCancel := context.WithCancel(recParent)
 	stateKey := "douyin:live:" + roomID
 	sess := &recordSession{
-		siteID:       string(site.Douyin),
-		accountUID:   secUID,
-		roomIDStr:    roomID,
-		webRID:       webRID,
-		stateKey:     stateKey,
-		coverURL:     st.Cover,
-		transport:    transport,
-		sessionID:    roomID,
-		roomID:       parsedRoomInt,
-		uname:        uname,
-		face:         face,
-		title:        title,
-		itemDir:      itemDir,
-		itemMeta:     savedMeta,
-		cancel:       recCancel,
-		doneCh:       make(chan struct{}),
-		startedAt:    now,
-		reportAt:     now,
-		nextPart:     nextPartNumber(savedMeta),
-		lastSequence: savedMeta.Live.LastSequence,
-		hasSequence:  savedMeta.Live.HasSequence,
-		quality:      plan.Quality,
-		qualityName:  plan.QualityName,
-		codec:        plan.Codec,
+		siteID:          string(site.Douyin),
+		accountUID:      secUID,
+		roomIDStr:       roomID,
+		webRID:          webRID,
+		stateKey:        stateKey,
+		coverURL:        st.Cover,
+		transport:       transport,
+		sessionID:       roomID,
+		roomID:          parsedRoomInt,
+		uname:           uname,
+		face:            face,
+		title:           title,
+		itemDir:         itemDir,
+		itemMeta:        savedMeta,
+		cancel:          recCancel,
+		doneCh:          make(chan struct{}),
+		startedAt:       now,
+		reportAt:        now,
+		nextPart:        nextPartNumber(savedMeta),
+		lastSequence:    savedMeta.Live.LastSequence,
+		hasSequence:     savedMeta.Live.HasSequence,
+		quality:         plan.Quality,
+		qualityName:     plan.QualityName,
+		codec:           plan.Codec,
+		streamTransport: string(site.LiveTransportHTTPFLV),
+		previewSupport:  true,
+		previewReason:   previewReasonWaitingFirstFragment,
+	}
+	m.initSessionIncidents(sess)
+	if plan.BitrateBps > 0 {
+		sess.nominalByteRate = float64(plan.BitrateBps) / 8.0
 	}
 	for _, media := range savedMeta.Media {
 		if media.Role == "live_segment" {
@@ -1173,32 +1177,36 @@ func (m *Manager) StartDouyinRecording(ctx context.Context, uid, roomOrWebRID st
 	}
 
 	outState := RoomState{
-		Site:           string(site.Douyin),
-		AccountUID:     secUID,
-		UniqueID:       subAcc.UniqueID,
-		RoomID:         parsedRoomInt,
-		RoomIDStr:      roomID,
-		WebRID:         webRID,
-		RoomKey:        stateKey,
-		LiveState:      site.LiveStateLive,
-		Uname:          uname,
-		Face:           face,
-		Title:          title,
-		Cover:          sanitizeLiveURL(st.Cover),
-		AreaName:       st.AreaName,
-		LiveStatus:     1,
-		LiveSince:      liveSince,
-		Source:         meta.Live.Source,
-		StatusText:     "直播中",
-		Quality:        plan.Quality,
-		QualityName:    plan.QualityName,
-		Codec:          plan.Codec,
-		Recording:      true,
-		RecordSession:  roomID,
-		RecordBytes:    sess.bytesTotal,
-		RecordSegments: len(sess.segments),
-		RecordItemDir:  itemDir,
-		UpdatedAt:      now.Format(time.RFC3339),
+		Site:             string(site.Douyin),
+		AccountUID:       secUID,
+		UniqueID:         subAcc.UniqueID,
+		RoomID:           parsedRoomInt,
+		RoomIDStr:        roomID,
+		WebRID:           webRID,
+		RoomKey:          stateKey,
+		LiveState:        site.LiveStateLive,
+		Uname:            uname,
+		Face:             face,
+		Title:            title,
+		Cover:            sanitizeLiveURL(st.Cover),
+		AreaName:         st.AreaName,
+		LiveStatus:       1,
+		LiveSince:        liveSince,
+		Source:           meta.Live.Source,
+		StatusText:       "直播中",
+		Quality:          plan.Quality,
+		QualityName:      plan.QualityName,
+		Codec:            plan.Codec,
+		Transport:        string(site.LiveTransportHTTPFLV),
+		Recording:        true,
+		RecordSession:    roomID,
+		RecordBytes:      sess.bytesTotal,
+		RecordSegments:   len(sess.segments),
+		RecordItemDir:    itemDir,
+		PreviewSupported: true,
+		PreviewReason:    previewReasonWaitingFirstFragment,
+		Incidents:        cloneIncidents(sess.incidents),
+		UpdatedAt:        now.Format(time.RFC3339),
 	}
 
 	m.mu.Lock()
@@ -1278,10 +1286,12 @@ func (m *Manager) StopDouyinRecording(roomOrUID string) (RoomState, error) {
 	st.RecordBytes = sess.bytesTotal
 	st.RecordSegments = len(sess.segments)
 	st.RecordItemDir = sess.itemDir
+	st.Incidents = cloneIncidents(sess.incidents)
 	st.StopReason = sess.stopReason
 	if sess.lastErr != "" {
 		st.LastError = sess.lastErr
 	}
+	hydrateSessionPreviewFieldsLocked(&st, nil)
 	m.douyinStates[sess.stateKey] = st
 	m.mu.Unlock()
 
@@ -1328,6 +1338,11 @@ func (m *Manager) runDouyinRecordingSession(ctx context.Context, sess *recordSes
 				m.setSessionStop(sess, "storage", fErr)
 				break
 			} else if free < m.minFreeBytes {
+				m.recordSessionIncident(sess, library.LiveIncident{
+					Kind:   library.LiveIncidentDisk,
+					At:     m.nowFunc().UTC().Format(time.RFC3339),
+					Reason: "保存位置磁盘空间不足，录制已停止",
+				}, true)
 				m.setSessionStop(sess, "storage", &site.Error{Site: site.Douyin, Kind: site.ErrKindStorage, Message: "磁盘空间不足 1 GiB，已停止录制"})
 				break
 			}
@@ -1371,7 +1386,9 @@ func (m *Manager) runDouyinRecordingSession(ctx context.Context, sess *recordSes
 		}
 
 		sess.segmentDuration, sess.wroteMedia = 0, false
+		m.beginSessionPart(sess, sess.nextPart, path, string(site.LiveTransportHTTPFLV))
 		n, recordErr := m.recordFLVPartWithTransport(ctx, sess, plan.Media, plan.URLs, &flvConn, path)
+		m.endSessionPart(sess)
 		if !errors.Is(recordErr, errSegmentRollover) && flvConn != nil {
 			_ = flvConn.Close()
 			flvConn = nil
@@ -1379,10 +1396,19 @@ func (m *Manager) runDouyinRecordingSession(ctx context.Context, sess *recordSes
 
 		if n > 0 {
 			finishCtx, cancel := context.WithTimeout(context.Background(), m.finalizeTimeout)
-			summary, conversionErr := finalizeLivePart(finishCtx, path, filepath.Join(sess.itemDir, partRel), sess.segmentDuration)
+			summary, conversionErr := finalizeLivePart(finishCtx, path, filepath.Join(sess.itemDir, partRel))
 			cancel()
 			if conversionErr != nil {
 				addLiveMissing(&sess.itemMeta, pending, "转换失败，临时片段已保留")
+				m.mu.Lock()
+				sess.lastErr = "直播录像转换失败：" + conversionErr.Error()
+				m.mu.Unlock()
+				m.recordSessionIncident(sess, library.LiveIncident{
+					Kind:   library.LiveIncidentConvertFailed,
+					At:     m.nowFunc().UTC().Format(time.RFC3339),
+					Part:   pending,
+					Reason: "直播录像转换失败：" + library.SanitizeLiveIncidentText(conversionErr.Error()),
+				}, true)
 			} else {
 				sess.itemMeta.Media = mergeLiveMedia(sess.itemMeta.Media, library.MediaFile{
 					Role:     "live_segment",
@@ -1431,6 +1457,14 @@ func (m *Manager) runDouyinRecordingSession(ctx context.Context, sess *recordSes
 		}
 
 		if err := m.saveSession(sess); err != nil {
+			if isDiskFullError(err) {
+				m.recordSessionIncident(sess, library.LiveIncident{
+					Kind:   library.LiveIncidentDisk,
+					At:     m.nowFunc().UTC().Format(time.RFC3339),
+					Part:   pending,
+					Reason: "保存位置磁盘空间不足，录制已停止",
+				}, true)
+			}
 			m.setSessionStop(sess, "storage", err)
 			break
 		}
@@ -1441,6 +1475,14 @@ func (m *Manager) runDouyinRecordingSession(ctx context.Context, sess *recordSes
 			continue
 		}
 		if recordErr != nil {
+			if isDiskFullError(recordErr) {
+				m.recordSessionIncident(sess, library.LiveIncident{
+					Kind:   library.LiveIncidentDisk,
+					At:     m.nowFunc().UTC().Format(time.RFC3339),
+					Part:   pending,
+					Reason: "保存位置磁盘空间不足，录制已停止",
+				}, true)
+			}
 			if reason := liveStopReason(recordErr); reason != "" {
 				if rep, ok := provider.(LiveErrorReporter); ok {
 					rep.ReportAutomaticError(ctx, recordErr)
@@ -1463,6 +1505,7 @@ func (m *Manager) runDouyinRecordingSession(ctx context.Context, sess *recordSes
 			}
 		}
 
+		m.markSessionDisconnected(sess, m.nowFunc())
 		select {
 		case <-ctx.Done():
 		case <-time.After(m.reconnectWait):
@@ -1540,9 +1583,13 @@ func (m *Manager) runDouyinRecordingSession(ctx context.Context, sess *recordSes
 		if len(freshPlan.Media.AllowedDomains) == 0 {
 			freshPlan.Media = sess.transport
 		}
+		if freshPlan.BitrateBps > 0 {
+			m.setSessionNominalBitrateBps(sess, freshPlan.BitrateBps)
+		}
 		plan = freshPlan
 	}
 
+	m.closeSessionSlowIncident(sess, m.nowFunc())
 	m.mu.Lock()
 	if sess.stopReason == "" {
 		if ctx.Err() != nil {
@@ -1559,6 +1606,8 @@ func (m *Manager) runDouyinRecordingSession(ctx context.Context, sess *recordSes
 	state.RecordDurationSec = m.nowFunc().Sub(sess.startedAt).Seconds()
 	state.RecordBytes = sess.bytesTotal
 	state.RecordSegments = len(sess.segments)
+	state.Incidents = cloneIncidents(sess.incidents)
+	hydrateSessionPreviewFieldsLocked(&state, nil)
 	if reason == "ended" {
 		state.LiveStatus = 0
 		state.LiveState = site.LiveStateOffline
@@ -1631,6 +1680,7 @@ func (m *Manager) recordFLVPartWithTransport(
 	connPtr **activeFLVConn,
 	partPath string,
 ) (written int64, result error) {
+	partBase := filepath.Base(partPath)
 	if *connPtr == nil {
 		m.mu.Lock()
 		idleDur := m.flvIdleTimeout
@@ -1639,6 +1689,7 @@ func (m *Manager) recordFLVPartWithTransport(
 		if err != nil {
 			return 0, err
 		}
+		m.markSessionReconnected(sess, m.nowFunc(), true, partBase)
 		remuxer := NewFLVRemuxer(body, FLVRemuxOptions{})
 		*connPtr = &activeFLVConn{
 			body:    body,
@@ -1660,6 +1711,8 @@ func (m *Manager) recordFLVPartWithTransport(
 	}()
 
 	var prevBytes int64
+	var prevDur float64
+	prevCheckAt := m.nowFunc()
 	cp, wErr := (*connPtr).remuxer.WritePart(ctx, f, func(cp FLVCheckpoint) error {
 		if m.freeBytesFunc != nil && m.minFreeBytes > 0 {
 			free, fErr := m.freeBytesFunc(sess.itemDir)
@@ -1670,11 +1723,18 @@ func (m *Manager) recordFLVPartWithTransport(
 				return &site.Error{Site: transport.Site, Kind: site.ErrKindStorage, Message: "磁盘空间不足 1 GiB，已停止录制"}
 			}
 		}
+		checkNow := m.nowFunc()
 		delta := cp.BytesWritten - prevBytes
+		deltaDur := cp.DurationSec - prevDur
 		if delta > 0 {
+			m.observeTransferSpeed(sess, prevCheckAt, checkNow, delta, deltaDur, partBase)
 			prevBytes = cp.BytesWritten
 			written = cp.BytesWritten
 			m.addSessionBytes(sess, delta)
+		}
+		prevCheckAt = checkNow
+		if cp.DurationSec > prevDur {
+			prevDur = cp.DurationSec
 		}
 		sess.wroteMedia = true
 		sess.segmentDuration = cp.DurationSec
@@ -1684,12 +1744,17 @@ func (m *Manager) recordFLVPartWithTransport(
 			sess.codec = cp.Codec
 			sess.itemMeta.Live.Codec = cp.Codec
 		}
+		m.commitSessionPart(sess, cp.BytesWritten, cp.DurationSec)
+		m.mu.Lock()
 		sess.itemMeta.Live.LastSequence = cp.Sequence
 		sess.itemMeta.Live.HasSequence = true
-		sess.itemMeta.Live.PendingFile = filepath.Base(partPath)
+		sess.itemMeta.Live.PendingFile = partBase
 		sess.itemMeta.Live.PendingBytes = cp.BytesWritten
 		sess.itemMeta.Live.PendingDuration = cp.DurationSec
-		_, saveErr := m.lib.SaveRecordingCheckpoint(sess.itemDir, sess.itemMeta)
+		sess.itemMeta.Live.Incidents = cloneIncidents(sess.incidents)
+		checkpointMeta := sess.itemMeta
+		m.mu.Unlock()
+		_, saveErr := m.lib.SaveRecordingCheckpoint(sess.itemDir, checkpointMeta)
 		return saveErr
 	})
 	if cp.BytesWritten > written {

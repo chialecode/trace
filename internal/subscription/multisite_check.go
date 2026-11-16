@@ -100,6 +100,15 @@ func (m *Manager) RegisterAutoCacheEnqueuer(siteID site.ID, fn AutoCacheEnqueueF
 	m.mu.Unlock()
 }
 
+// SetOnAuthorAvatar registers a callback with the avatar URL a check saw for
+// an account, before it is sanitized: Douyin avatar URLs carry query strings
+// and are never stored, so the caller can keep a local copy of the image.
+func (m *Manager) SetOnAuthorAvatar(fn func(siteID, uid, rawFace string)) {
+	m.mu.Lock()
+	m.onAuthorAvatar = fn
+	m.mu.Unlock()
+}
+
 // SetOnLiveHint registers a callback invoked with 0 extra network requests when Douyin's page-1
 // creator posts response carries an active LiveRoomID or LiveWebRID.
 func (m *Manager) SetOnLiveHint(fn func(acc AccountRef, roomID, webRID string)) {
@@ -1171,6 +1180,15 @@ func (m *Manager) applyPage1AuthorAndLiveHint(sub *Subscription, acc AccountRef,
 		}
 	}
 
+	if raw := strings.TrimSpace(page.AuthorFace); raw != "" {
+		m.mu.Lock()
+		avatarFn := m.onAuthorAvatar
+		m.mu.Unlock()
+		if avatarFn != nil {
+			avatarFn(acc.Site, acc.UID, raw)
+		}
+	}
+
 	if liveRoomID != "" || liveWebRID != "" {
 		m.mu.Lock()
 		hintFn := m.onLiveHint
@@ -1439,7 +1457,7 @@ func (m *Manager) evaluateAutoCacheRulesForSites(ctx context.Context, abortedSit
 
 		if c.site == string(site.Bilibili) && dl != nil {
 			if strings.HasPrefix(strings.ToUpper(c.dynID), "BV1") {
-				if tasks, err := dl.EnqueueVideo(ctx, download.VideoEnqueueRequest{BVID: c.dynID, Source: "auto"}); err == nil && len(tasks) > 0 {
+				if tasks, err := dl.EnqueueVideo(ctx, download.VideoEnqueueRequest{BVID: c.dynID, Source: "auto", ForMid: parseBiliMid(c.uid)}); err == nil && len(tasks) > 0 {
 					createdTasks++
 					if err := m.setUpdateItemTaskID(c.site, c.uid, c.dynID, tasks[0].TaskID); err != nil {
 						return createdTasks, totalBacklog, err
@@ -1511,4 +1529,13 @@ func appendUniqueString(slice []string, val string) []string {
 		}
 	}
 	return append(slice, val)
+}
+
+// parseBiliMid is the subscription account a video is cached for (DEC-056).
+func parseBiliMid(uid string) int64 {
+	mid, err := strconv.ParseInt(strings.TrimSpace(uid), 10, 64)
+	if err != nil || mid <= 0 {
+		return 0
+	}
+	return mid
 }

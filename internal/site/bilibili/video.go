@@ -38,18 +38,19 @@ type VideoStat struct {
 
 // VideoDetail holds metadata and part list for a Bilibili video.
 type VideoDetail struct {
-	BVID         string      `json:"bvid"`
-	AID          int64       `json:"aid"`
-	Title        string      `json:"title"`
-	Desc         string      `json:"desc"`
-	Cover        string      `json:"cover"`
-	PubTs        int64       `json:"pubTs"`
-	Duration     int         `json:"duration"`
-	TName        string      `json:"tname,omitempty"`
-	Stat         VideoStat   `json:"stat"`
-	Author       AuthorInfo  `json:"author"`
-	Pages        []VideoPage `json:"pages"`
-	CanonicalURL string      `json:"canonicalUrl"`
+	BVID         string       `json:"bvid"`
+	AID          int64        `json:"aid"`
+	Title        string       `json:"title"`
+	Desc         string       `json:"desc"`
+	Cover        string       `json:"cover"`
+	PubTs        int64        `json:"pubTs"`
+	Duration     int          `json:"duration"`
+	TName        string       `json:"tname,omitempty"`
+	Stat         VideoStat    `json:"stat"`
+	Author       AuthorInfo   `json:"author"`
+	Staff        []AuthorInfo `json:"staff,omitempty"` // collaboration members (联合投稿), uploader included; empty for single-author videos
+	Pages        []VideoPage  `json:"pages"`
+	CanonicalURL string       `json:"canonicalUrl"`
 }
 
 // VideoDetail fetches video details from /x/web-interface/wbi/view.
@@ -98,6 +99,7 @@ func (c *Client) VideoDetail(ctx context.Context, bvidOrAid string) (VideoDetail
 			Name string `json:"name"`
 			Face string `json:"face"`
 		} `json:"owner"`
+		Staff []rawVideoStaff `json:"staff"`
 		Pages []struct {
 			CID       int64  `json:"cid"`
 			Page      int    `json:"page"`
@@ -173,9 +175,53 @@ func (c *Client) VideoDetail(ctx context.Context, bvidOrAid string) (VideoDetail
 			Name: raw.Owner.Name,
 			Face: normalizeHTTPSURL(raw.Owner.Face),
 		},
+		Staff:        staffInfos(raw.Staff),
 		Pages:        pages,
 		CanonicalURL: fmt.Sprintf("https://www.bilibili.com/video/%s", raw.BVID),
 	}, nil
+}
+
+type rawVideoStaff struct {
+	Mid  int64  `json:"mid"`
+	Name string `json:"name"`
+	Face string `json:"face"`
+}
+
+func staffInfos(raw []rawVideoStaff) []AuthorInfo {
+	var out []AuthorInfo
+	for _, m := range raw {
+		if m.Mid <= 0 {
+			continue
+		}
+		out = append(out, AuthorInfo{Mid: m.Mid, Name: m.Name, Face: normalizeHTTPSURL(m.Face)})
+	}
+	return out
+}
+
+// HasStaffMember reports whether mid is the uploader or a collaboration member.
+func (d VideoDetail) HasStaffMember(mid int64) bool {
+	if mid <= 0 {
+		return false
+	}
+	if d.Author.Mid == mid {
+		return true
+	}
+	for _, m := range d.Staff {
+		if m.Mid == mid {
+			return true
+		}
+	}
+	return false
+}
+
+// StaffMember returns the collaboration member with mid, if any.
+func (d VideoDetail) StaffMember(mid int64) (AuthorInfo, bool) {
+	for _, m := range d.Staff {
+		if m.Mid == mid {
+			return m, true
+		}
+	}
+	return AuthorInfo{}, false
 }
 
 func normalizeHTTPSURL(raw string) string {

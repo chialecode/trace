@@ -172,12 +172,9 @@ func installDev(dir string) error {
 		fmt.Println("==> [install-dev] " + reason)
 		return writeInstallResult(resultPath, installResult{Skipped: true, Reason: reason, NewVersion: version, At: time.Now().UTC().Format(time.RFC3339)})
 	}
-	// The installed TRACE Dev keeps its data in %LOCALAPPDATA%	race-dev.
-	uiState := filepath.Join(os.Getenv("LOCALAPPDATA"), appdirs.AppNameForChannel(build.ChannelDev), "ui-state.json")
 	d := &devInstaller{
 		Setup: setup, Version: version, Registry: reg, Procs: procs, RunSetup: run,
-		WindowState: func() (bool, bool) { return restartWindowState(uiState, time.Now()) },
-		Now:         time.Now, Sleep: time.Sleep, Timeout: quitTimeout,
+		Now: time.Now, Sleep: time.Sleep, Timeout: quitTimeout,
 		Logf: func(format string, args ...any) { fmt.Printf(format+"\n", args...) },
 	}
 	res, runErr := d.Run()
@@ -190,11 +187,9 @@ func installDev(dir string) error {
 	case res.Skipped:
 		fmt.Println("==> [install-dev] " + res.Reason)
 	default:
-		how := "未在运行，未打开"
-		if res.Relaunched && res.Background {
-			how = "已在托盘重新打开"
-		} else if res.Relaunched {
-			how = "已重新打开窗口"
+		how := "已在托盘打开"
+		if res.InJob {
+			how += "；它仍在运行这个命令的作业对象里，命令结束后可能被一起结束，请从开始菜单打开一次"
 		}
 		fmt.Printf("==> [install-dev] %s %s → %s，%s（%d ms）\n", devDisplayName, strings.TrimSpace(res.OldVersion), res.NewVersion, how, res.ElapsedMs)
 	}

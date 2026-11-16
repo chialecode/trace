@@ -183,6 +183,220 @@ func (d *SynthDecoder) Close() error {
 	return nil
 }
 
+// SynthLiveDecoder is a deterministic in-memory LiveDecoder for quiet tests, non-Windows builds, and UI prototypes.
+type SynthLiveDecoder struct {
+	mu          sync.Mutex
+	cond        *sync.Cond
+	width       int
+	height      int
+	fps         float64
+	sampleRate  int
+	channels    int
+	audioPos    int64
+	startedAt   time.Time
+	manualAvail bool
+	avail       time.Duration
+	frozenAvail time.Duration
+	ended       bool
+	closed      bool
+	isActive    func() bool
+}
+
+// NewSynthLiveDecoder creates a synthetic live-preview decoder whose available media grows while isActive reports true.
+func NewSynthLiveDecoder(width, height int, fps float64, isActive func() bool) *SynthLiveDecoder {
+	if width <= 0 {
+		width = 320
+	}
+	if height <= 0 {
+		height = 180
+	}
+	if fps <= 0 {
+		fps = 30
+	}
+	d := &SynthLiveDecoder{
+		width:      width,
+		height:     height,
+		fps:        fps,
+		sampleRate: 48000,
+		channels:   2,
+		startedAt:  time.Now(),
+		isActive:   isActive,
+	}
+	d.cond = sync.NewCond(&d.mu)
+	return d
+}
+
+// SetAvailableDuration pins the synthetic stream's currently buffered duration for deterministic growth tests.
+func (d *SynthLiveDecoder) SetAvailableDuration(avail time.Duration) {
+	d.mu.Lock()
+	d.manualAvail = true
+	if avail > d.avail {
+		d.avail = avail
+	}
+	d.cond.Broadcast()
+	d.mu.Unlock()
+}
+
+func (d *SynthLiveDecoder) BackendName() string     { return "synth-live" }
+func (d *SynthLiveDecoder) HasVideo() bool          { return true }
+func (d *SynthLiveDecoder) Width() int              { return d.width }
+func (d *SynthLiveDecoder) Height() int             { return d.height }
+func (d *SynthLiveDecoder) Duration() time.Duration { return 0 }
+func (d *SynthLiveDecoder) FPS() float64            { return d.fps }
+func (d *SynthLiveDecoder) SampleRate() int         { return d.sampleRate }
+func (d *SynthLiveDecoder) Channels() int           { return d.channels }
+func (d *SynthLiveDecoder) IsLive() bool            { return true }
+
+func (d *SynthLiveDecoder) refreshStateLocked() (avail time.Duration, ended bool) {
+	if d.closed {
+		return d.avail, true
+	}
+	active := true
+	if d.isActive != nil {
+		active = d.isActive()
+	}
+	if d.manualAvail {
+		if !active {
+			d.ended = true
+		}
+		return d.avail, d.ended
+	}
+	if !d.ended {
+		cur := time.Since(d.startedAt) + 2*time.Second
+		if cur > d.frozenAvail {
+			d.frozenAvail = cur
+		}
+		if !active {
+			d.ended = true
+		}
+	}
+	return d.frozenAvail, d.ended
+}
+
+func (d *SynthLiveDecoder) LiveEnded() bool {
+	d.mu.Lock()
+	_, ended := d.refreshStateLocked()
+	d.mu.Unlock()
+	return ended
+}
+
+func (d *SynthLiveDecoder) AvailableDuration() time.Duration {
+	d.mu.Lock()
+	avail, _ := d.refreshStateLocked()
+	d.mu.Unlock()
+	return avail
+}
+
+func (d *SynthLiveDecoder) DecodeVideoFrameAt(pos time.Duration, dst *image.RGBA) (*image.RGBA, time.Duration, error) {
+	if pos < 0 {
+		pos = 0
+	}
+	d.mu.Lock()
+	for {
+		if d.closed {
+			d.mu.Unlock()
+			return nil, 0, io.EOF
+		}
+		avail, ended := d.refreshStateLocked()
+		if pos <= avail || ended {
+			if ended && pos > avail {
+				pos = avail
+			}
+			break
+		}
+		if !d.manualAvail {
+			break
+		}
+		d.cond.Wait()
+	}
+	w, h, fps := d.width, d.height, d.fps
+	d.mu.Unlock()
+
+	return renderSynthLiveFrame(pos, w, h, fps, dst)
+}
+
+func renderSynthLiveFrame(pos time.Duration, w, h int, fps float64, dst *image.RGBA) (*image.RGBA, time.Duration, error) {
+	if dst == nil || dst.Bounds().Dx() != w || dst.Bounds().Dy() != h {
+		dst = image.NewRGBA(image.Rect(0, 0, w, h))
+	}
+	frameIdx := int(pos.Seconds() * fps)
+	barX := (frameIdx * 8) % w
+	accentG := uint8(120 + (frameIdx*7)%120)
+
+	for y := 0; y < h; y++ {
+		rBase := uint8(20 + (y*44)/h)
+		gBase := uint8(30 + (y*52)/h)
+		bBase := uint8(54 + (y*84)/h)
+		for x := 0; x < w; x++ {
+			c := color.RGBA{R: rBase, G: gBase, B: bBase, A: 255}
+			if x >= barX && x < barX+18 {
+				c = color.RGBA{R: 56, G: accentG, B: 248, A: 255}
+			}
+			dst.SetRGBA(x, y, c)
+		}
+	}
+	pts := time.Duration(float64(frameIdx) / fps * float64(time.Second))
+	return dst, pts, nil
+}
+
+func (d *SynthLiveDecoder) ReadAudioSamples(buf []float32) (int, error) {
+	if len(buf) == 0 {
+		return 0, nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	for {
+		if d.closed {
+			return 0, io.EOF
+		}
+		avail, ended := d.refreshStateLocked()
+		availFrames := int64(avail.Seconds() * float64(d.sampleRate))
+		if d.audioPos < availFrames {
+			framesToRead := len(buf) / d.channels
+			rem := int(availFrames - d.audioPos)
+			if framesToRead > rem {
+				framesToRead = rem
+			}
+			if framesToRead <= 0 {
+				return 0, nil
+			}
+			for i := 0; i < framesToRead; i++ {
+				t := float64(d.audioPos+int64(i)) / float64(d.sampleRate)
+				val := float32(0.05 * math.Sin(2*math.Pi*440.0*t))
+				for c := 0; c < d.channels; c++ {
+					buf[i*d.channels+c] = val
+				}
+			}
+			d.audioPos += int64(framesToRead)
+			return framesToRead * d.channels, nil
+		}
+		if ended {
+			return 0, io.EOF
+		}
+		if !d.manualAvail {
+			return 0, nil
+		}
+		d.cond.Wait()
+	}
+}
+
+func (d *SynthLiveDecoder) Seek(pos time.Duration) error {
+	return nil
+}
+
+func (d *SynthLiveDecoder) abort() {
+	d.mu.Lock()
+	d.closed = true
+	d.cond.Broadcast()
+	d.mu.Unlock()
+}
+
+func (d *SynthLiveDecoder) Close() error {
+	d.abort()
+	return nil
+}
+
 // NV12ToRGBA converts an NV12 YUV 4:2:0 frame buffer into *image.RGBA (BT.709 integer math).
 func NV12ToRGBA(nv12 []byte, width, height, stride int, dst *image.RGBA) *image.RGBA {
 	if stride < width {

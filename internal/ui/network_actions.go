@@ -62,7 +62,7 @@ func (a *App) createPreviewedSubscription() {
 	if input != "" && a.AddSubPreviewOwner == nil {
 		accounts = append(accounts, *a.AddSubPreview)
 	}
-	sub, err := a.backend.CreateSubscription(strings.TrimSpace(a.AddSubName), "", accounts, subscription.SubRules{ScheduledCheck: true})
+	sub, err := a.backend.CreateSubscription(strings.TrimSpace(a.AddSubName), "", accounts, subscription.DefaultSubRules())
 	if err != nil {
 		a.showError(err)
 		return
@@ -102,6 +102,7 @@ func (a *App) startLiveRecording(roomID int64) {
 }
 
 func (a *App) stopLiveRecording(roomID int64) {
+	a.closeLivePreviewForRoom(roomID)
 	request(a, fmt.Sprintf("live-stop-%d", roomID), func(context.Context) (live.RoomState, error) { return a.backend.StopLiveRecording(roomID) }, func(state live.RoomState) { a.mergeLiveRooms([]live.RoomState{state}) })
 }
 
@@ -121,6 +122,7 @@ func (a *App) startAccountLiveRecording(siteID, uid, roomOrWebRID string) {
 }
 
 func (a *App) stopAccountLiveRecording(recKey string) {
+	a.closeLivePreviewForKey(recKey)
 	request(a, "live-stop-key-"+recKey, func(context.Context) (service.LiveAccountState, error) {
 		return a.backend.StopLiveRecordingByKey(recKey)
 	}, func(state service.LiveAccountState) {

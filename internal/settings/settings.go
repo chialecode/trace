@@ -368,17 +368,16 @@ func Normalize(s Settings, defaultCacheDir string) (Settings, error) {
 		return s, fmt.Errorf("settings: live pollIntervalSeconds must be >= 30, got %d", s.Live.PollIntervalSeconds)
 	}
 	s.Live.PollIntervalSeconds = s.LiveCheckIntervalMin * 60
-	if s.MaxRecordings == 0 {
-		if s.Live.MaxConcurrentRecordings != 0 {
+	// Legacy maxRecordings / live.maxConcurrentRecordings remain compatible in settings.json v1
+	// (DEC-051 ③) without enforcing a concurrent recording cap.
+	if s.MaxRecordings <= 0 {
+		if s.Live.MaxConcurrentRecordings > 0 {
 			s.MaxRecordings = s.Live.MaxConcurrentRecordings
 		} else {
 			s.MaxRecordings = 2
 		}
-	} else if s.Live.MaxConcurrentRecordings != 0 && s.Live.MaxConcurrentRecordings != 2 && s.MaxRecordings == 2 {
+	} else if s.Live.MaxConcurrentRecordings > 0 && s.Live.MaxConcurrentRecordings != 2 && s.MaxRecordings == 2 {
 		s.MaxRecordings = s.Live.MaxConcurrentRecordings
-	}
-	if s.MaxRecordings < 1 || s.MaxRecordings > 4 {
-		return s, fmt.Errorf("settings: maxRecordings must be between 1 and 4, got %d", s.MaxRecordings)
 	}
 	s.Live.MaxConcurrentRecordings = s.MaxRecordings
 

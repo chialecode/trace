@@ -37,6 +37,7 @@ type RuntimeStateSnapshot struct {
 	WebView2ProcessCount int      `json:"webview2ProcessCount"`
 	ForegroundPID        uint32   `json:"foregroundPid"`
 	StealFocusDetected   bool     `json:"stealFocusDetected"`
+	StealFocusDetail     string   `json:"stealFocusDetail,omitempty"`
 	SecondInstanceArgs   []string `json:"secondInstanceArgs,omitempty"`
 	Version              string   `json:"version"`
 	Commit               string   `json:"commit"`
@@ -229,7 +230,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 		fail("ready.WebView2ProcessCount = %d, want 0", readySnap.WebView2ProcessCount)
 	}
 	if readySnap.StealFocusDetected {
-		fail("ready.StealFocusDetected = true")
+		fail("%s", formatFocusFailure("ready.StealFocusDetected = true", readySnap))
 	}
 
 	// 4. Verify exclusive app.lock while primary instance is running
@@ -272,7 +273,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 			fail("second instance args %v did not contain BV1xx411c7mD", secondSnap.SecondInstanceArgs)
 		}
 		if secondSnap.StealFocusDetected {
-			fail("second instance stole foreground focus")
+			fail("%s", formatFocusFailure("second instance stole foreground focus", secondSnap))
 		}
 	}
 
@@ -301,7 +302,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 			fail("tray private working set = %d (%.2f MiB), want < 60 MiB", traySnap.PrivateWorkingSet, float64(traySnap.PrivateWorkingSet)/(1024*1024))
 		}
 		if traySnap.StealFocusDetected {
-			fail("traySnap.StealFocusDetected = true")
+			fail("%s", formatFocusFailure("traySnap.StealFocusDetected = true", traySnap))
 		}
 	}
 
@@ -318,7 +319,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 			fail("restoredSnap.WindowOpen = false, want true")
 		}
 		if restoredSnap.StealFocusDetected {
-			fail("restoredSnap.StealFocusDetected = true")
+			fail("%s", formatFocusFailure("restoredSnap.StealFocusDetected = true", restoredSnap))
 		}
 	}
 
@@ -335,7 +336,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 		fail("trace.exe did not exit within 8s after quit command")
 	}
 
-	receipt.StealFocusDetected = readySnap.StealFocusDetected || traySnap.StealFocusDetected || restoredSnap.StealFocusDetected
+	receipt.StealFocusDetected = readySnap.StealFocusDetected || secondSnap.StealFocusDetected || traySnap.StealFocusDetected || restoredSnap.StealFocusDetected
 
 	// 9. Verify data files, default cache path, lowercase naming, no stray folders, and no leaked secrets or sentinels
 	expectedFiles := []string{"library.db", "updates.db", "mygo", "cache", "logs"}
@@ -413,6 +414,13 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 
 func sendSmokeCommand(smokeDir, cmd string) error {
 	return storage.WriteFileAtomic(filepath.Join(smokeDir, "command.txt"), []byte(cmd+"\n"), 0o600)
+}
+
+func formatFocusFailure(prefix string, snap RuntimeStateSnapshot) string {
+	if strings.TrimSpace(snap.StealFocusDetail) != "" {
+		return fmt.Sprintf("%s (%s, fgPid=%d)", prefix, snap.StealFocusDetail, snap.ForegroundPID)
+	}
+	return fmt.Sprintf("%s (fgPid=%d)", prefix, snap.ForegroundPID)
 }
 
 func waitForSnapshot(path string, timeout time.Duration) (RuntimeStateSnapshot, error) {

@@ -21,10 +21,11 @@ type navItem struct {
 	Label string
 }
 
-// Per docs/ui.md §2 & DEC-014, main navigation has 5 items; Settings is pinned in the bottom-left row (DEC-019).
+// Per docs/ui.md §2 & DEC-014, main navigation has 6 items (我的 since DEC-047); Settings is pinned in the bottom-left row (DEC-019).
 var mainNavItems = []navItem{
 	{Route: RouteHome, Icon: "home", Label: "主页"},
 	{Route: RouteSubscriptions, Icon: "subscriptions", Label: "订阅"},
+	{Route: RouteMine, Icon: "mine", Label: "我的"},
 	{Route: RouteParse, Icon: "parse", Label: "解析"},
 	{Route: RouteLibrary, Icon: "library", Label: "媒体库"},
 	{Route: RouteTasks, Icon: "tasks", Label: "任务"},
@@ -34,16 +35,6 @@ func (a *App) activeWorkCount() int {
 	n := 0
 	for _, t := range a.Tasks {
 		if t.Status == "running" || t.Status == "queued" {
-			n++
-		}
-	}
-	for _, r := range a.LiveRooms {
-		if r.Recording {
-			n++
-		}
-	}
-	for _, acct := range a.LiveAccounts {
-		if normalizeSiteIDUI(acct.Site) == "douyin" && acct.Recording {
 			n++
 		}
 	}
@@ -91,14 +82,18 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 				ui.Row(c).AlignItems(ui.Center).Gap(10).Grow(1).ClipX().Children(func() {
 					if a.CurrentRoute == RouteVideo || a.CurrentRoute == RouteUser ||
 						a.CurrentRoute == RouteDouyinWork || a.CurrentRoute == RouteDouyinUser ||
+						a.CurrentRoute == RouteLibraryItem ||
 						(a.CurrentRoute == RouteSubscriptions && a.SubDetailOpen) ||
 						(a.CurrentRoute == RouteHome && a.HomeActorFilter != nil) ||
+						(a.CurrentRoute == RouteMine && !a.panelShown && a.mineShowsList()) ||
 						(a.CurrentRoute == RouteLogin && a.backend.HasAnyLogin()) {
 						backLabel := "返回"
 						if a.CurrentRoute == RouteSubscriptions && a.SubDetailOpen {
 							backLabel = "返回订阅列表"
 						} else if a.CurrentRoute == RouteHome && a.HomeActorFilter != nil {
 							backLabel = "返回主页时间线"
+						} else if a.CurrentRoute == RouteMine {
+							backLabel = "返回我的功能列表"
 						}
 						backBtn := ui.ButtonBase(c).
 							Label(backLabel).
@@ -115,6 +110,8 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 						if backBtn.Clicked() {
 							if a.CurrentRoute == RouteHome && a.HomeActorFilter != nil {
 								a.closeHomeActorFeed()
+							} else if a.CurrentRoute == RouteMine {
+								a.Mine.Picker = true
 							} else if a.CurrentRoute == RouteSubscriptions && a.SubDetailOpen {
 								a.SubDetailOpen = false
 								a.SubManageMenuOpen = false
@@ -146,7 +143,7 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 				ui.Text(c, "正在加载…").Label("请求进行中").FontSize(12).TextColor(ColorInfoBlue)
 			}
 
-			if a.BannerError != "" {
+			if a.BannerError != "" && !(a.CurrentRoute == RouteParse && a.BannerError == a.LastParseError) {
 				ui.Row(c).FillWidth().Padding(8, 12).Radius(10).Background(ColorErrorBg).Border(1, ui.RGBA(180, 35, 24, 0.2)).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
 					DrawIcon(c, "alert-circle", 16, ColorError, 1.8)
 					ui.Text(c, a.BannerError).FontSize(13).TextColor(ColorError).MaxLines(2).Grow(1)
@@ -177,17 +174,19 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 
 	// Without the context panel (a narrow window), the site filter and people
 	// with updates appear above the timeline.
-	if a.CurrentRoute == RouteHome && a.HomeActorFilter == nil && !a.panelShown {
-		ui.Row(c).
-			FillWidth().
-			Padding(8, 16).
-			BorderWidth(0, 0, 1, 0).
-			BorderColor(ColorBorder).
-			Background(ColorBgMain).
-			Shrink(0).
-			Children(func() {
-				renderThreeSegmentSiteFilter(c, "主页站点筛选：", a.FeedSiteFilter, a.setFeedSiteFilter)
-			})
+	if a.CurrentRoute == RouteHome && !a.panelShown && a.backend.HasAnyLogin() {
+		if a.HomeActorFilter == nil {
+			ui.Row(c).
+				FillWidth().
+				Padding(8, 16).
+				BorderWidth(0, 0, 1, 0).
+				BorderColor(ColorBorder).
+				Background(ColorBgMain).
+				Shrink(0).
+				Children(func() {
+					renderThreeSegmentSiteFilter(c, "主页站点筛选：", a.FeedSiteFilter, a.setFeedSiteFilter)
+				})
+		}
 		a.renderHomeUpdatedAvatarsRow(c)
 	}
 
@@ -197,8 +196,10 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 		a.renderHomeRoute(c)
 	case RouteSubscriptions:
 		a.renderSubscriptionsRoute(c)
+	case RouteMine:
+		a.renderMineRoute(c, width)
 	case RouteParse:
-		a.renderParseRoute(c)
+		a.renderParseRoute(c, width)
 	case RouteVideo:
 		a.renderVideoRoute(c)
 	case RouteUser:
@@ -210,6 +211,9 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 		a.renderDouyinUserRoute(c, width)
 	case RouteLibrary:
 		a.renderLibraryRoute(c)
+	case RouteLibraryItem:
+		_, winH := c.Size()
+		a.renderLibraryItemRoute(c, winH)
 	case RouteTasks:
 		a.renderTasksRoute(c)
 	case RouteSettings:
@@ -238,6 +242,8 @@ func (a *App) routeTitle() string {
 			return "订阅详情"
 		}
 		return "订阅"
+	case RouteMine:
+		return a.mineTitle()
 	case RouteParse:
 		return "解析"
 	case RouteVideo:
@@ -285,6 +291,21 @@ func (a *App) routeTitle() string {
 		return "抖音作者"
 	case RouteLibrary:
 		return "媒体库"
+	case RouteLibraryItem:
+		if a.CurrentLibraryDetail != nil {
+			switch a.CurrentLibraryDetail.Kind {
+			case "live":
+				return "直播录像"
+			case "note":
+				return "图文"
+			case "dynamic":
+				if normalizeSiteIDUI(a.CurrentLibraryDetail.Site) == "douyin" || len(a.CurrentLibraryDetail.NotePages) > 0 {
+					return "图文"
+				}
+				return "动态"
+			}
+		}
+		return "视频"
 	case RouteTasks:
 		return "任务"
 	case RouteSettings:
@@ -301,6 +322,8 @@ func (a *App) routeTitle() string {
 
 func (a *App) renderRouteHeaderActions(c *ui.Context) {
 	switch a.CurrentRoute {
+	case RouteMine:
+		a.renderMineHeaderActions(c)
 	case RouteSubscriptions:
 		if a.SubDetailOpen {
 			return
@@ -327,6 +350,9 @@ func (a *App) renderRouteHeaderActions(c *ui.Context) {
 			a.SubMoreMenuOpen = open
 		})
 	case RouteTasks:
+		if a.effectiveTasksSection() != "downloads" {
+			return
+		}
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 			btnText := "检查画质更新"
 			if a.pending["upgrade-check"] {
@@ -382,53 +408,93 @@ func (a *App) renderQuickParseBox(c *ui.Context, inputLabel string) {
 // Route: /home (Virtualized Feed List + Updated Avatars Row, docs/ui.md §3.1)
 // ============================================================================
 
+// homeStripStride is the width of one entry of the narrow window's avatar
+// strip on Home.
+const homeStripStride = 76
+
+// renderHomeUpdatedAvatarsRow is the narrow window's form of the Home
+// panel's subscriptions (DEC-053 ②): a strip of round avatars with the
+// name below, "全部动态" first, live rings and unread dots as in the panel.
+// Only the entries scrolled into view are built.
 func (a *App) renderHomeUpdatedAvatarsRow(c *ui.Context) {
-	actors := a.homeUpdatedActors()
-	if len(actors) == 0 {
+	rows := a.homeSubscriptionRows()
+	if len(rows) == 0 {
 		return
 	}
+	total := len(rows) + 1
+	lo := max(0, int(a.homeStripScroll.X/homeStripStride)-2)
+	hi := min(total, lo+40)
 	ui.Column(c).
-		Label("主页有更新头像行").
+		Label("主页订阅头像条").
 		FillWidth().
-		Padding(10, 16).
+		Padding(10, 8).
 		BorderWidth(0, 0, 1, 0).
 		BorderColor(ColorBorder).
 		Background(ColorBgMain).
 		Shrink(0).
 		ClipX().
 		Children(func() {
-			ui.ScrollHorizontal(c).FillWidth().Height(88).Shrink(0).Children(func() {
-				ui.Row(c).Gap(14).AlignItems(ui.Start).Children(func() {
-					for _, act := range actors {
-						actor := act
-						liveRing := a.isActorLive(actor)
-						ui.Column(c).
-							Width(72).
-							Shrink(0).
-							AlignItems(ui.Center).
-							Gap(4).
-							ClipX().
-							Children(func() {
-								a.renderAccountAvatar(c, actor.Site, actor.Name, actor.UID, actor.Mid, 56, liveRing, "主页更新头像："+actor.Name, func() {
-									a.openHomeActorFeed(actor)
-								}, actor.Face)
-								nameBtn := ui.ButtonBase(c).
-									FillWidth().
-									Padding(0).
-									Justify(ui.Center).
-									AlignItems(ui.Center).
-									ClipX()
-								nameBtn.Children(func() {
-									ui.Text(c, actor.Name).FontSize(12).TextColor(ColorTextMain).SingleLine()
-								})
-								if nameBtn.Clicked() {
-									a.openHomeActorFeed(actor)
-								}
-							})
+			ui.ScrollHorizontal(c).TrackScroll(&a.homeStripScroll).FillWidth().Height(84).Shrink(0).Children(func() {
+				ui.Row(c).AlignItems(ui.Start).Children(func() {
+					if lo > 0 {
+						ui.Box(c).Width(float32(lo * homeStripStride)).Height(1).Shrink(0)
+					}
+					for i := lo; i < hi; i++ {
+						if i == 0 {
+							a.renderHomeStripAll(c)
+							continue
+						}
+						actor := rows[i-1]
+						a.renderHomeStripEntry(c, actor.Name, a.HomeActorFilter != nil && a.HomeActorFilter.Key == actor.Key, func() {
+							a.renderHomeSubAvatar(c, actor, 52, ColorBgMain, func() { a.openHomeActorFeed(actor) })
+						}, func() { a.openHomeActorFeed(actor) })
+					}
+					if hi < total {
+						ui.Box(c).Width(float32((total - hi) * homeStripStride)).Height(1).Shrink(0)
 					}
 				})
 			})
 		})
+}
+
+func (a *App) renderHomeStripAll(c *ui.Context) {
+	active := a.HomeActorFilter == nil
+	a.renderHomeStripEntry(c, "全部动态", active, func() {
+		btn := ui.ButtonBase(c).Label("主页订阅头像：全部动态").Size(52, 52).Radius(26).Shrink(0).Justify(ui.Center).AlignItems(ui.Center)
+		if active {
+			btn.Background(ColorAccentBg)
+		} else {
+			btn.Background(ColorBgSecondary)
+		}
+		btn.Children(func() {
+			col := ColorTextMuted
+			if active {
+				col = ColorAccent
+			}
+			DrawIcon(c, "home", 22, col, 1.6)
+		})
+		if btn.Clicked() {
+			a.closeHomeActorFeed()
+		}
+	}, a.closeHomeActorFeed)
+}
+
+func (a *App) renderHomeStripEntry(c *ui.Context, name string, active bool, avatar func(), open func()) {
+	ui.Column(c).Width(homeStripStride).Shrink(0).AlignItems(ui.Center).Gap(4).ClipX().Children(func() {
+		ui.Box(c).Height(58).Width(58).Justify(ui.Center).AlignItems(ui.Center).Shrink(0).Children(avatar)
+		nameBtn := ui.ButtonBase(c).Width(homeStripStride - 8).Padding(0).Justify(ui.Center).AlignItems(ui.Center).ClipX()
+		nameBtn.Children(func() {
+			t := ui.Text(c, name).FontSize(12).SingleLine()
+			if active {
+				t.TextColor(ColorAccent).FontWeight(600)
+			} else {
+				t.TextColor(ColorTextMain)
+			}
+		})
+		if nameBtn.Clicked() {
+			open()
+		}
+	})
 }
 
 func (a *App) renderHomeRoute(c *ui.Context) {
@@ -445,14 +511,26 @@ func (a *App) renderHomeRoute(c *ui.Context) {
 		})
 	}
 	first, last := a.FeedListState.Visible()
-	a.markHomeSeen(first, last)
-	// Posts cached while the timeline is open are fetched when it reaches
-	// the top; nothing is counted or announced as unread (DEC-040).
-	if a.HomeActorFilter == nil && first >= 0 && first <= 2 && a.feedMoreBefore && a.FeedError == "" {
+	restoring := a.HomeActorFilter == nil && a.stepHomeRestore(c, first, last)
+	if !restoring {
+		a.markHomeSeen(first, last)
+	}
+	// Posts cached while the timeline is open, or newer than the position
+	// it opened at, are fetched when it reaches the top, the rows in view
+	// staying where they are; nothing is counted or announced as unread
+	// (DEC-040, DEC-053).
+	if !restoring && a.HomeActorFilter == nil && first >= 0 && first <= 2 && a.feedMoreBefore && a.FeedError == "" {
 		a.loadFeedEdge(true)
 	}
-	if last >= len(a.FeedItems)-3 && a.feedMoreAfter && a.FeedError == "" {
+	if !restoring && last >= len(a.FeedItems)-3 && a.feedMoreAfter && a.FeedError == "" {
 		a.loadFeedEdge(false)
+	}
+	// Where the main timeline is read: the top row's place against the
+	// list's, both as the last frame laid them out. The rows are built as
+	// the list lays out, so the top row notes it.
+	topKey := ""
+	if !restoring && a.HomeActorFilter == nil && first >= 0 && first < len(a.FeedItems) && last >= first {
+		topKey = a.FeedItems[first].FeedKey
 	}
 
 	if len(a.FeedItems) == 0 {
@@ -474,26 +552,34 @@ func (a *App) renderHomeRoute(c *ui.Context) {
 		return
 	}
 
-	ui.List(c, &a.FeedListState, len(a.FeedItems), func(i int) {
+	list := ui.List(c, &a.FeedListState, len(a.FeedItems), func(i int) {
 		if i < 0 || i >= len(a.FeedItems) {
 			return
 		}
 		entry := a.FeedItems[i]
 		post := a.feedEntryToPostCard(entry)
-		ui.Column(c).Label("信息流行 " + entry.FeedKey).FillWidth().Children(func() { a.renderPostCard(c, post) })
+		row := ui.Column(c).Label("信息流行 " + entry.FeedKey).FillWidth().Children(func() { a.renderPostCard(c, post) })
+		if topKey != "" && entry.FeedKey == topKey {
+			rb, lb := row.Bounds(), a.homeListBounds
+			a.noteHomePosition(c, i, rb.Y, lb.Y, rb.H > 0 && lb.H > 0)
+		}
 		if i == len(a.FeedItems)-1 && !a.feedMoreAfter {
 			ui.Row(c).FillWidth().Padding(18, 16).Justify(ui.Center).Children(func() {
 				ui.Text(c, "已经到最早的缓存了").FontSize(13).TextColor(ColorTextMuted).SingleLine()
 			})
 		}
-	}).Label("主页信息流列表").TrackScroll(&a.FeedScroll).Grow(1).FillWidth()
+	})
+	list.Label("主页信息流列表").TrackScroll(&a.FeedScroll).Grow(1).FillWidth()
+	// As the last frame laid the list out; the rows, built as this frame
+	// lays out, read it.
+	a.homeListBounds = list.Bounds()
 }
 
 // ============================================================================
 // Route: /parse (Link & UID Parser + Sanitized History, docs/ui.md §3.2)
 // ============================================================================
 
-func (a *App) renderParseRoute(c *ui.Context) {
+func (a *App) renderParseRoute(c *ui.Context, width float32) {
 	acct := a.backend.StatusOf("bilibili")
 	acctSite := "bilibili"
 	if !acct.LoggedIn {
@@ -507,33 +593,52 @@ func (a *App) renderParseRoute(c *ui.Context) {
 		acctName = "TRACE"
 	}
 
-	ui.Scroll(c).Grow(1).FillWidth().ClipX().Children(func() {
-		ui.Column(c).FillWidth().Gap(0).ClipX().Children(func() {
-			// Social Composer-style Input Box (docs/ui.md §3.2)
-			ui.Row(c).
-				FillWidth().
-				Padding(16).
-				Gap(12).
-				AlignItems(ui.Start).
-				BorderWidth(0, 0, 1, 0).
-				BorderColor(ColorBorder).
-				Background(ColorBgMain).
+	barW := min(float32(640), max(float32(220), width-32))
+	ui.Column(c).
+		Grow(1).
+		FillWidth().
+		Padding(0, 16).
+		AlignItems(ui.Center).
+		ClipX().
+		Children(func() {
+			// Place the search-style input slightly above the vertical center (DEC-049 ②).
+			// A narrow window has no context panel, so the recent parses fall back under
+			// the input (docs/ui.md §1) instead of becoming unreachable.
+			narrow := !a.panelShown
+			if narrow {
+				ui.Box(c).Height(24).Shrink(0)
+			} else {
+				ui.Box(c).Grow(2)
+			}
+			ui.Column(c).
+				Width(barW).
+				Gap(10).
 				ClipX().
 				Children(func() {
-					a.renderAccountAvatar(c, acctSite, acctName, acct.UID, acct.Mid, 42, false, "", nil, acct.Face)
-					ui.Column(c).Grow(1).Gap(10).ClipX().Children(func() {
-						inp := ui.TextInput(c, &a.ParsePageInput).
-							Placeholder("粘贴哔哩哔哩或抖音链接、分享文本、主页或 UID").
-							Label("链接解析输入框").
-							FillWidth()
-						wasComposing := a.ParseInputComposing
-						a.ParseInputComposing = inp.Composing()
-						if inp.Submitted() && !inp.Composing() && !wasComposing {
-							a.SubmitParse(a.ParsePageInput)
-						}
-
-						ui.Row(c).FillWidth().Padding(4, 0, 0, 0).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
-							ui.Text(c, "支持 B 站与抖音视频、图文、短链、分享文本、主页和 UID").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+					ui.Row(c).
+						Label("解析大输入框容器").
+						FillWidth().
+						Height(52).
+						Padding(6, 6, 6, 10).
+						Radius(999).
+						Background(ColorBgMain).
+						Border(1, ColorBorderStrong).
+						Gap(10).
+						AlignItems(ui.Center).
+						ClipX().
+						Children(func() {
+							a.renderAccountAvatar(c, acctSite, acctName, acct.UID, acct.Mid, 34, false, "", nil, acct.Face)
+							inp := ui.TextInputBase(c, &a.ParsePageInput).
+								Placeholder("粘贴哔哩哔哩或抖音链接、分享文本、主页或 UID").
+								Label("链接解析输入框").
+								FontSize(14).
+								Padding(6, 4).
+								Grow(1)
+							wasComposing := a.ParseInputComposing
+							a.ParseInputComposing = inp.Composing()
+							if inp.Submitted() && !inp.Composing() && !wasComposing && !a.parseBusy() {
+								a.SubmitParse(a.ParsePageInput)
+							}
 							btnLabel := "立即解析"
 							if a.parseBusy() {
 								btnLabel = "解析中…"
@@ -543,10 +648,19 @@ func (a *App) renderParseRoute(c *ui.Context) {
 							}
 						})
 
-						if a.LastParseError != "" {
-							ui.Row(c).FillWidth().Padding(8, 12).Radius(8).Background(ColorErrorBg).AlignItems(ui.Center).Gap(6).Children(func() {
-								DrawIcon(c, "alert-circle", 16, ColorError, 1.8)
-								ui.Text(c, a.LastParseError).FontSize(13).TextColor(ColorError).MaxLines(2).Grow(1)
+					if a.LastParseError != "" {
+						ui.Row(c).
+							FillWidth().
+							Padding(4, 12).
+							AlignItems(ui.Center).
+							Justify(ui.SpaceBetween).
+							Gap(8).
+							ClipX().
+							Children(func() {
+								ui.Row(c).AlignItems(ui.Center).Gap(6).Grow(1).ClipX().Children(func() {
+									DrawIcon(c, "alert-circle", 15, ColorError, 1.8)
+									ui.Text(c, a.LastParseError).FontSize(13).TextColor(ColorError).MaxLines(2).Grow(1)
+								})
 								if a.BannerLoginSite != "" {
 									targetSite := a.BannerLoginSite
 									if AccentPillButton(c, "去登录", "解析提示去登录").Clicked() {
@@ -557,171 +671,24 @@ func (a *App) renderParseRoute(c *ui.Context) {
 									}
 								}
 							})
-						}
-					})
-				})
-
-			// Recent Parse History Header (docs/ui.md §3.2)
-			ui.Row(c).FillWidth().Padding(14, 16, 8, 16).AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
-				ui.Text(c, fmt.Sprintf("最近解析（%d）", len(a.HistoryItems))).FontSize(16).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-				if len(a.HistoryItems) > 0 {
-					open := a.HistoryHeaderMenuOpen
-					MoreMenuButton(c, "最近解析更多", 30, &open, func(m *ui.Menu) {
-						if m.Item("全部清空").Danger().Chosen() {
-							a.HistoryClearConfirmOpen = true
-						}
-					})
-					a.HistoryHeaderMenuOpen = open
-				}
-			})
-
-			if len(a.HistoryItems) > 0 && a.HistoryClearConfirmOpen {
-				ui.Row(c).
-					Label("确认清空最近解析栏").
-					FillWidth().
-					Padding(10, 16).
-					Background(ColorWarnBg).
-					BorderWidth(0, 0, 1, 0).
-					BorderColor(ColorDotYellow).
-					AlignItems(ui.Center).
-					Justify(ui.SpaceBetween).
-					Gap(8).
-					ClipX().
-					Children(func() {
-						ui.Text(c, "确认清空全部最近解析记录？同时会清理本机缓存的缩略图。").
-							FontSize(13).FontWeight(600).TextColor(ColorTextMain).MaxLines(2).Grow(1)
-						ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
-							if OutlinePillButton(c, "取消", "取消清空历史").Clicked() {
-								a.HistoryClearConfirmOpen = false
-								a.HistoryHeaderMenuOpen = false
-							}
-							if DangerOutlinePillButton(c, "确认清空", "确认清空历史").Clicked() {
-								if err := a.backend.ClearHistory(); err != nil {
-									a.showError(err)
-									a.HistoryItems = a.backend.ListHistory()
-									return
-								}
-								a.HistoryItems = a.backend.ListHistory()
-								a.HistoryClearConfirmOpen = false
-								a.HistoryHeaderMenuOpen = false
-								a.HistoryItemMenuID = ""
-							}
-						})
-					})
-			}
-
-			if len(a.HistoryItems) == 0 {
-				ui.Column(c).FillWidth().Padding(40, 16).AlignItems(ui.Center).Gap(6).Children(func() {
-					ui.Text(c, "粘贴一个链接开始").FontSize(15).TextColor(ColorTextMuted).SingleLine()
-				})
-				return
-			}
-
-			for _, h := range a.HistoryItems {
-				entry := h
-				entrySite := normalizeSiteIDUI(entry.Site)
-				var midNum int64
-				_, _ = fmt.Sscanf(entry.ID, "%d", &midNum)
-				authorLabel := entry.Subtitle
-				if entry.Kind == "user" || authorLabel == "" {
-					authorLabel = entry.Title
-				}
-				bodyTitle := entry.Title
-				if entry.Kind == "user" {
-					bodyTitle = entry.Subtitle
-				}
-				kindLabel := "视频"
-				switch entry.Kind {
-				case "user":
-					if entrySite == "douyin" {
-						kindLabel = "作者主页"
-					} else {
-						kindLabel = "UP 主空间"
 					}
-				case "note":
-					kindLabel = "图文"
-				case "dynamic":
-					if entrySite == "douyin" {
-						kindLabel = "图文"
-					} else {
-						kindLabel = "动态"
-					}
-				case "live":
-					kindLabel = "直播间"
-				}
-				itemMenuKey := entrySite + ":" + entry.Kind + ":" + entry.ID
-				itemMenuOpen := a.HistoryItemMenuID == itemMenuKey || a.HistoryItemMenuID == entry.ID
-				avatarBmp := a.lookupHistoryThumbBitmap(entry.AvatarThumb)
-				coverBmp := a.lookupHistoryThumbBitmap(entry.CoverThumb)
-
+				})
+			if narrow {
 				ui.Column(c).
-					FillWidth().
-					Padding(14, 16).
-					Gap(8).
-					BorderWidth(0, 0, 1, 0).
-					BorderColor(ColorBorder).
-					ClipX().
+					Label("解析页最近解析").
+					Width(barW).
+					Grow(1).
+					Margin(12, 0, 12, 0).
+					Radius(12).
+					Border(1, ColorBorder).
+					Clip().
 					Children(func() {
-						ui.Row(c).
-							FillWidth().
-							Gap(12).
-							AlignItems(ui.Start).
-							ClipX().
-							Children(func() {
-								// Click entry body to open directly; right side has only a "⋯" button (DEC-037).
-								bodyBtn := ui.ButtonBase(c).
-									Label("历史打开：" + entry.ID).
-									Grow(1).
-									Padding(0).
-									Gap(12).
-									AlignItems(ui.Start).
-									Justify(ui.Start).
-									ClipX()
-								bodyBtn.Children(func() {
-									a.renderAvatarWithBitmap(c, authorLabel, midNum, 40, false, "", nil, avatarBmp)
-									ui.Column(c).Grow(1).Gap(6).ClipX().Children(func() {
-										ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-											ui.Text(c, authorLabel).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-											renderSiteSmallBadgeWithDot(c, entrySite, "历史站点："+entrySite+":"+entry.ID)
-											ui.Text(c, fmt.Sprintf("· %s · %s", kindLabel, entry.ID)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-										})
-										if bodyTitle != "" {
-											ui.Text(c, bodyTitle).FontSize(15).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
-										}
-
-										if entry.Kind == "video" || entry.CoverThumb != "" {
-											a.renderMediaThumbWithBitmap(c, coverBmp, "", "", entry.Title, entry.DurationText, "", entry.Kind == "video", 0, 148)
-										}
-									})
-								})
-								if bodyBtn.Clicked() {
-									preview := &OpeningPreview{Site: entrySite, Kind: entry.Kind, Title: bodyTitle, AuthorName: authorLabel}
-									if entry.Kind == "user" {
-										preview.Title, preview.Mid, preview.AuthorUID = "", midNum, entry.ID
-									}
-									a.openLink(entry.CanonicalURL, preview)
-								}
-
-								open := itemMenuOpen
-								MoreMenuButton(c, "历史更多："+entry.ID, 30, &open, func(m *ui.Menu) {
-									if entry.CanonicalURL != "" && m.Item("在浏览器中打开").Chosen() {
-										_ = a.backend.Desktop().OpenExternalURL(entry.CanonicalURL)
-									}
-									if m.Item("删除").Danger().Chosen() {
-										a.showError(a.backend.RemoveHistoryForSite(entrySite, entry.Kind, entry.ID))
-										a.HistoryItems = a.backend.ListHistory()
-									}
-								})
-								if open {
-									a.HistoryItemMenuID = itemMenuKey
-								} else if itemMenuOpen {
-									a.HistoryItemMenuID = ""
-								}
-							})
+						a.renderHistoryPanel(c)
 					})
+			} else {
+				ui.Box(c).Grow(3)
 			}
 		})
-	})
 }
 
 // ============================================================================
@@ -765,14 +732,18 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 					}
 				}
 
+				offline := a.CurrentRoute == RouteLibraryItem
 				// 1. Creator Row + Cache Button + Status Dot (docs/ui.md §3.4)
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(10).ClipX().Children(func() {
 					ui.Row(c).AlignItems(ui.Center).Gap(10).Grow(1).ClipX().Children(func() {
-						a.renderAvatar(c, vd.Author.Name, vd.Author.Mid, 42, false, "", func() {
-							a.OpenUser(vd.Author.Mid, vd.Author.Name)
-						})
-						author := ui.ButtonBase(c).Label("进入空间").Grow(1).Padding(0).ClipX()
-						author.Children(func() {
+						var openAuthor func()
+						if !offline {
+							openAuthor = func() {
+								a.OpenUser(vd.Author.Mid, vd.Author.Name)
+							}
+						}
+						a.renderAvatar(c, vd.Author.Name, vd.Author.Mid, 42, false, "", openAuthor)
+						authorBody := func() {
 							ui.Column(c).Gap(2).Grow(1).ClipX().Children(func() {
 								ui.Text(c, vd.Author.Name).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 								ui.Row(c).AlignItems(ui.Center).Gap(4).ClipX().Children(func() {
@@ -780,46 +751,57 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 									ui.Text(c, fmt.Sprintf("· UID %d", vd.Author.Mid)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 								})
 							})
-						})
-						if author.Clicked() {
-							a.OpenUser(vd.Author.Mid, vd.Author.Name)
+						}
+						if !offline {
+							author := ui.ButtonBase(c).Label("进入空间").Grow(1).Padding(0).ClipX()
+							author.Children(authorBody)
+							if author.Clicked() {
+								a.OpenUser(vd.Author.Mid, vd.Author.Name)
+							}
+						} else {
+							authorBody()
 						}
 					})
 
 					ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-						if AccentPillButton(c, "缓存视频", "缓存视频").Clicked() {
-							var pages []int
-							for _, p := range vd.Pages {
-								if a.SelectedPartPages[p.Page] {
-									pages = append(pages, p.Page)
+						if !offline {
+							if AccentPillButton(c, "缓存视频", "缓存视频").Clicked() {
+								var pages []int
+								for _, p := range vd.Pages {
+									if a.SelectedPartPages[p.Page] {
+										pages = append(pages, p.Page)
+									}
 								}
-							}
-							detail := vd
-							if a.CurrentLibraryDetail != nil {
-								// A local manifest is not a complete site response.
-								// The cache worker must resolve fresh metadata by BVID.
-								detail = nil
-							}
-							_, err := a.backend.EnqueueVideoCache(context.Background(), download.VideoEnqueueRequest{
-								BVID:   vd.BVID,
-								Pages:  pages,
-								Detail: detail,
-							})
-							if err != nil {
-								a.BannerError = err.Error()
-							} else {
-								a.RefreshData()
-								a.BannerInfo = "已加入缓存队列：" + vd.BVID
+								detail := vd
+								if a.CurrentLibraryDetail != nil {
+									// A local manifest is not a complete site response.
+									// The cache worker must resolve fresh metadata by BVID.
+									detail = nil
+								}
+								_, err := a.backend.EnqueueVideoCache(context.Background(), download.VideoEnqueueRequest{
+									BVID:   vd.BVID,
+									Pages:  pages,
+									Detail: detail,
+								})
+								if err != nil {
+									a.BannerError = err.Error()
+								} else {
+									a.RefreshData()
+									a.BannerInfo = "已加入缓存队列：" + vd.BVID
+								}
 							}
 						}
 						if dotStatus != "" && dotStatus != "none" {
 							DrawStatusDot(c, dotStatus, dotLabel)
 						}
+						if offline && cachedItem != nil {
+							a.renderLibraryItemMoreMenu(c, *cachedItem, 32)
+						}
 					})
 				})
 
 				// 2. Quality Upgrade Banner (docs/ui.md §3.4)
-				if a.UpgradeAvailable || (cachedItem != nil && cachedItem.UpgradeAvailable) {
+				if !offline && (a.UpgradeAvailable || (cachedItem != nil && cachedItem.UpgradeAvailable)) {
 					hint := "可以升级到更高画质（如 4K / 高码率）"
 					if cachedItem != nil && cachedItem.UpgradeHint != "" {
 						hint = cachedItem.UpgradeHint
@@ -864,6 +846,10 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 				if a.CurrentLibraryDetail != nil && vd.Duration <= 0 {
 					durationText = ""
 				}
+				coverRemote := vd.Cover
+				if offline {
+					coverRemote = ""
+				}
 				coverBtn := ui.ButtonBase(c).
 					Label("视频大封面").
 					FillWidth().
@@ -872,12 +858,12 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 					Clip()
 				coverBtn.Children(func() {
 					// The status dot is beside the cache button above, not on the cover.
-					a.renderMediaThumb(c, itemKey, relCover, vd.Title, durationText, "", cachedItem != nil, 0, 236, vd.Cover)
+					a.renderMediaThumb(c, itemKey, relCover, vd.Title, durationText, "", cachedItem != nil, 0, 236, coverRemote)
 				})
 				if coverBtn.Clicked() {
 					if cachedItem != nil {
 						a.OpenPlayerOverlay(*cachedItem)
-					} else if vd.Cover != "" {
+					} else if !offline && vd.Cover != "" {
 						a.OpenImageViewer([]string{vd.Cover}, nil, 0)
 					}
 				}
@@ -907,36 +893,38 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 				}
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Wrap().Children(func() {
 					ui.Text(c, strings.Join(metaParts, " · ")).FontSize(13).TextColor(ColorTextMuted).SingleLine()
-					ui.Row(c).Gap(6).Wrap().Children(func() {
-						if cachedItem != nil && cachedItem.Kind == "video" {
-							if OutlinePillButton(c, "补存弹幕和字幕", "补全："+itemKey).Clicked() {
-								_, err := a.backend.CacheSupplement(context.Background(), vd.BVID)
-								a.showError(err)
-								if err == nil {
-									a.BannerInfo = "已加入弹幕字幕补存任务：" + vd.BVID
-									a.RefreshData()
+					if !offline {
+						ui.Row(c).Gap(6).Wrap().Children(func() {
+							if cachedItem != nil && cachedItem.Kind == "video" {
+								if OutlinePillButton(c, "补存弹幕和字幕", "补全："+itemKey).Clicked() {
+									_, err := a.backend.CacheSupplement(context.Background(), vd.BVID)
+									a.showError(err)
+									if err == nil {
+										a.BannerInfo = "已加入弹幕字幕补存任务：" + vd.BVID
+										a.RefreshData()
+									}
 								}
 							}
-						}
-						if vd.Cover != "" {
-							if OutlinePillButton(c, "查看高清封面", "查看高清封面").Clicked() {
-								a.OpenImageViewer([]string{vd.Cover}, nil, 0)
+							if vd.Cover != "" {
+								if OutlinePillButton(c, "查看高清封面", "查看高清封面").Clicked() {
+									a.OpenImageViewer([]string{vd.Cover}, nil, 0)
+								}
 							}
-						}
-						targetURL := vd.CanonicalURL
-						if targetURL == "" {
-							targetURL = "https://www.bilibili.com/video/" + vd.BVID
-						}
-						if OutlinePillButton(c, "在浏览器中打开", "浏览器打开视频").Clicked() {
-							_ = a.backend.Desktop().OpenExternalURL(targetURL)
-						}
-					})
+							targetURL := vd.CanonicalURL
+							if targetURL == "" {
+								targetURL = "https://www.bilibili.com/video/" + vd.BVID
+							}
+							if OutlinePillButton(c, "在浏览器中打开", "浏览器打开视频").Clicked() {
+								_ = a.backend.Desktop().OpenExternalURL(targetURL)
+							}
+						})
+					}
 				})
 
 				// 7. Interaction Statistics Bar with Linear Icons and 万/亿 Formatting (docs/ui.md §3.4, §7)
 				// Counts change all the time and are not kept, so a cached
 				// video shows none (DEC-040).
-				if a.CurrentLibraryDetail == nil {
+				if a.CurrentLibraryDetail == nil && !offline {
 					stats := []struct {
 						Icon  string
 						Label string
@@ -985,9 +973,11 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 					}
 					selected := a.SelectedPartPages[p.Page]
 					var partSpec string
+					var partFile string
 					if cachedItem != nil {
 						for _, rec := range cachedItem.Parts {
 							if rec.Page == p.Page {
+								partFile = rec.File
 								var specs []string
 								if rec.Video.QualityName != "" {
 									specs = append(specs, rec.Video.QualityName)
@@ -1028,9 +1018,17 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 							})
 							ui.Row(c).AlignItems(ui.Center).Gap(10).Children(func() {
 								ui.Text(c, partDuration).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-								chk := selected
-								if ui.Switch(c, &chk).Label(fmt.Sprintf("选择分P %d", p.Page)).Changed() {
-									a.SelectedPartPages[p.Page] = chk
+								if offline {
+									if cachedItem != nil && partFile != "" {
+										if OutlinePillButton(c, "播放", fmt.Sprintf("播放分P %d", p.Page)).Clicked() {
+											a.openPlayerFile(*cachedItem, partFile)
+										}
+									}
+								} else {
+									chk := selected
+									if ui.Switch(c, &chk).Label(fmt.Sprintf("选择分P %d", p.Page)).Changed() {
+										a.SelectedPartPages[p.Page] = chk
+									}
 								}
 							})
 						})
@@ -1251,16 +1249,7 @@ func (a *App) renderUserHeader(c *ui.Context, u *bilibili.UserSpace) {
 							a.OpenSubscriptionDetail(ownerSub)
 						}
 					} else if AccentPillButton(c, "订阅", "订阅该 UP 主").Clicked() {
-						_, err := a.backend.UpsertSubscription(subscription.Subscription{
-							Site:      "bilibili",
-							Mid:       u.Mid,
-							Uname:     u.Name,
-							Name:      u.Name,
-							Scope:     "both",
-							AutoCache: "inherit",
-							Enabled:   true,
-						})
-						a.showError(err)
+						a.OpenSubscribePicker(subscription.AccountRef{Site: "bilibili", UID: strconv.FormatInt(u.Mid, 10), Name: u.Name, Face: u.Face})
 						a.RefreshData()
 					}
 					targetURL := u.CanonicalURL
@@ -1359,16 +1348,56 @@ func (a *App) renderUserListError(c *ui.Context, msg, retryLabel string, retry f
 // renderUserVideoRow is one upload: clicking it opens the video; caching and
 // the browser are in its "⋯".
 func (a *App) renderUserVideoRow(c *ui.Context, u *bilibili.UserSpace, v bilibili.UserVideoItem) {
-	itemKey := library.CanonicalItemKey("bilibili", "video", v.BVID)
-	dotStatus := ""
-	var relCover string
-	if it, ok, err := a.backend.GetLibraryItem(itemKey); err == nil && ok {
-		dotStatus = library.ComputeDotState(it).Dot
-		for _, m := range it.Media {
-			if m.Role == "cover" && relCover == "" {
-				relCover = m.Path
+	a.renderCompactVideoRow(c, compactVideoRow{
+		Label:      "打开视频：" + v.BVID,
+		MenuKey:    "upload:" + v.BVID,
+		MenuName:   "投稿更多：" + v.BVID,
+		BVID:       v.BVID,
+		ForMid:     u.Mid,
+		Title:      v.Title,
+		Cover:      v.Cover,
+		Duration:   v.Length,
+		Meta:       fmt.Sprintf("时长 %s · 播放 %s", v.Length, FormatCount(int64(v.PlayCount))),
+		BrowserURL: "https://www.bilibili.com/video/" + v.BVID,
+		Open:       func() { a.OpenVideo(v.BVID, v.Title, u.Name, u.Mid, v.Cover, v.Length) },
+	})
+}
+
+// compactVideoRow is the data of one compact row (16:9 thumbnail, two-line
+// title, one line of details), whatever list it comes from.
+type compactVideoRow struct {
+	Label, MenuKey, MenuName string
+	BVID                     string // set for a Bilibili video: cache key, status dot, "缓存"
+	ForMid                   int64  // creator page the row is on: a collaboration video is cached under their folder (DEC-056)
+	Title, Cover, Duration   string
+	Meta                     string
+	TypeLabel                string  // 音频、番剧…: shown instead of the play mark
+	Badge                    string  // top-left mark on the thumbnail (直播)
+	BadgeLive                bool    // the badge uses the live colour
+	Progress                 float32 // 0..1, a thin accent line under the thumbnail
+	Invalid                  bool    // grey block, not clickable, no "⋯"
+	Open                     func()  // nil: the body is not clickable
+	BrowserURL               string  // "在浏览器中打开"; "" hides it
+	CopyURL                  string  // "复制链接"; "" hides it
+	Extra                    func(m *ui.Menu)
+}
+
+func (a *App) renderCompactVideoRow(c *ui.Context, r compactVideoRow) {
+	itemKey, dotStatus, relCover := "", "", ""
+	if r.BVID != "" && !r.Invalid {
+		itemKey = library.CanonicalItemKey("bilibili", "video", r.BVID)
+		if it, ok, err := a.backend.GetLibraryItem(itemKey); err == nil && ok {
+			dotStatus = library.ComputeDotState(it).Dot
+			for _, m := range it.Media {
+				if m.Role == "cover" && relCover == "" {
+					relCover = m.Path
+				}
 			}
 		}
+	}
+	titleColor, metaColor := ColorTextMain, ColorTextMuted
+	if r.Invalid || r.Open == nil {
+		titleColor = ColorTextMuted
 	}
 	ui.Row(c).
 		FillWidth().
@@ -1379,389 +1408,81 @@ func (a *App) renderUserVideoRow(c *ui.Context, u *bilibili.UserSpace, v bilibil
 		BorderColor(ColorBorder).
 		ClipX().
 		Children(func() {
-			body := ui.ButtonBase(c).Label("打开视频：" + v.BVID).Grow(1).Padding(0).Gap(12).AlignItems(ui.Center).Justify(ui.Start).ClipX()
-			body.Children(func() {
-				a.renderMediaThumb(c, itemKey, relCover, v.Title, v.Length, dotStatus, dotStatus == "green", 144, 82, v.Cover)
-				ui.Column(c).Grow(1).Gap(5).ClipX().Children(func() {
-					ui.Text(c, v.Title).FontSize(15).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
-					ui.Text(c, fmt.Sprintf("时长 %s · 播放 %s", v.Length, FormatCount(int64(v.PlayCount)))).
-						FontSize(12).TextColor(ColorTextMuted).SingleLine()
+			content := func() {
+				ui.Column(c).Width(144).Shrink(0).Gap(0).Children(func() {
+					ui.Box(c).Size(144, 82).Shrink(0).Children(func() {
+						if r.Invalid {
+							ui.Box(c).Size(144, 82).Radius(12).Background(ColorBgSecondary).Border(1, ColorBorder)
+						} else {
+							a.renderMediaThumb(c, itemKey, relCover, r.Title, r.Duration, dotStatus, dotStatus == "green" && r.TypeLabel == "", 144, 82, r.Cover)
+						}
+						if r.Badge != "" {
+							bg := ui.RGBA(0, 0, 0, 0.65)
+							if r.BadgeLive {
+								bg = ColorLive
+							}
+							ui.Box(c).Absolute().Top(6).Left(6).Padding(2, 6).Radius(4).Background(bg).Children(func() {
+								ui.Text(c, r.Badge).FontSize(11).FontWeight(600).TextColor(ColorWhite).SingleLine()
+							})
+						}
+					})
+					if r.Progress > 0 && !r.Invalid {
+						ui.Box(c).Width(144).Height(3).Radius(2).Background(ColorBorder).Children(func() {
+							ui.Box(c).Width(144 * min(r.Progress, 1)).Height(3).Radius(2).Background(ColorAccent)
+						})
+					}
 				})
-			})
-			if body.Clicked() {
-				a.OpenVideo(v.BVID, v.Title, u.Name, u.Mid, v.Cover, v.Length)
+				ui.Column(c).Grow(1).Gap(5).ClipX().Children(func() {
+					ui.Text(c, r.Title).FontSize(15).FontWeight(600).TextColor(titleColor).MaxLines(2)
+					meta := r.Meta
+					if r.TypeLabel != "" {
+						meta = strings.TrimSpace(r.TypeLabel + " · " + meta)
+						meta = strings.TrimSuffix(meta, " ·")
+					}
+					if meta != "" {
+						ui.Text(c, meta).FontSize(12).TextColor(metaColor).SingleLine()
+					}
+				})
 			}
-			open := a.PostMenuKey == "upload:"+v.BVID
-			MoreMenuButton(c, "投稿更多："+v.BVID, 28, &open, func(m *ui.Menu) {
-				if dotStatus == "" && m.Item("缓存").Chosen() {
-					_, err := a.backend.EnqueueVideoCache(context.Background(), download.VideoEnqueueRequest{BVID: v.BVID})
+			if r.Open != nil && !r.Invalid {
+				body := ui.ButtonBase(c).Label(r.Label).Grow(1).Padding(0).Gap(12).AlignItems(ui.Center).Justify(ui.Start).ClipX()
+				body.Children(content)
+				if body.Clicked() {
+					r.Open()
+				}
+			} else {
+				ui.Row(c).Label(r.Label).Grow(1).Gap(12).AlignItems(ui.Center).ClipX().Children(content)
+			}
+			if r.Invalid {
+				return
+			}
+			browser := r.BrowserURL
+			if browser == "" && r.CopyURL == "" && (r.BVID == "" || dotStatus != "") && r.Extra == nil {
+				return
+			}
+			open := a.PostMenuKey == r.MenuKey
+			MoreMenuButton(c, r.MenuName, 28, &open, func(m *ui.Menu) {
+				if r.BVID != "" && dotStatus == "" && m.Item("缓存").Chosen() {
+					_, err := a.backend.EnqueueVideoCache(context.Background(), download.VideoEnqueueRequest{BVID: r.BVID, ForMid: r.ForMid})
 					a.showError(err)
 					if err == nil {
-						a.BannerInfo = "已加入缓存队列：" + v.BVID
+						a.BannerInfo = "已加入缓存队列：" + r.BVID
 					}
 					a.RefreshData()
 				}
-				if m.Item("在浏览器中打开").Chosen() {
-					_ = a.backend.Desktop().OpenExternalURL("https://www.bilibili.com/video/" + v.BVID)
+				if r.CopyURL != "" && m.Item("复制链接").Chosen() {
+					c.WriteClipboard(r.CopyURL)
+					c.Toast("已复制链接")
+				}
+				if browser != "" && m.Item("在浏览器中打开").Chosen() {
+					_ = a.backend.Desktop().OpenExternalURL(browser)
+				}
+				if r.Extra != nil {
+					r.Extra(m)
 				}
 			})
-			keyedMenuOpen(&a.PostMenuKey, "upload:"+v.BVID, open)
+			keyedMenuOpen(&a.PostMenuKey, r.MenuKey, open)
 		})
-}
-
-// ============================================================================
-// Route: /tasks (Active Live Recordings & Download Queue, docs/ui.md §3.6)
-// ============================================================================
-
-func (a *App) renderTasksRoute(c *ui.Context) {
-	ui.Scroll(c).Grow(1).FillWidth().ClipX().Children(func() {
-		ui.Column(c).FillWidth().Padding(16).Gap(12).ClipX().Children(func() {
-			// 1. Upgrade Candidates Banner
-			if len(a.UpgradeCandidates) > 0 {
-				ui.Column(c).FillWidth().Padding(14).Radius(16).Background(ColorInfoBlueBg).Border(1, ColorInfoBlue).Gap(8).ClipX().Children(func() {
-					ui.Text(c, fmt.Sprintf("可升级画质视频（%d）", len(a.UpgradeCandidates))).FontSize(14).FontWeight(600).TextColor(ColorInfoBlue).SingleLine()
-					for _, cand := range a.UpgradeCandidates {
-						it := cand
-						ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
-							ui.Text(c, fmt.Sprintf("%s（%s）", it.Title, it.UpgradeHint)).
-								FontSize(13).TextColor(ColorTextMain).SingleLine().Grow(1)
-							if AccentPillButton(c, "升级缓存", "升级缓存："+it.RawID).Clicked() {
-								if it.ItemKey != "" {
-									_, _ = a.backend.Upgrade(context.Background(), it.ItemKey)
-								} else {
-									_, _ = a.backend.EnqueueVideoCache(context.Background(), download.VideoEnqueueRequest{
-										BVID: it.RawID,
-									})
-								}
-								a.RefreshData()
-							}
-						})
-					}
-				})
-			}
-
-			// 2. Active Live Recordings at the top (docs/ui.md §3.6)
-			for _, roomItem := range a.LiveRooms {
-				room := roomItem
-				if room.Recording {
-					qualSpec := bilibili.FormatLiveQualitySpec(room.QualityName, room.Quality, room.Codec)
-					ui.Row(c).
-						FillWidth().
-						Padding(14).
-						Radius(16).
-						Background(ColorLiveBg).
-						Border(1, ColorLive).
-						AlignItems(ui.Center).
-						Justify(ui.SpaceBetween).
-						Gap(12).
-						ClipX().
-						Children(func() {
-							a.renderAvatar(c, room.Uname, room.UID, 42, true, "", nil)
-							ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
-								ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-									ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(ColorLive).Children(func() {
-										ui.Text(c, "录制中").FontSize(11).FontWeight(600).TextColor(ColorWhite).SingleLine()
-									})
-									ui.Text(c, room.Uname+" · "+room.Title).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-									renderSiteSmallBadgeWithDot(c, "bilibili", fmt.Sprintf("录制站点：bilibili:%d", room.RoomID))
-									if qualSpec != "" {
-										ui.Text(c, "· "+qualSpec).Shrink(0).FontSize(12).FontWeight(600).TextColor(ColorLive).SingleLine()
-									}
-								})
-								recMeta := fmt.Sprintf("已录时长 %s · 大小 %s · 速度 %s/s · 第 %d 段",
-									FormatDuration(int(room.RecordDurationSec)),
-									FormatBytes(room.RecordBytes),
-									FormatBytes(room.RecordSpeedBps),
-									max(1, room.RecordSegments))
-								if qualSpec != "" {
-									recMeta += " · " + qualSpec
-								}
-								ui.Text(c, recMeta).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-							})
-							if DangerOutlinePillButton(c, "停止录制", fmt.Sprintf("任务停止录制 %d", room.RoomID)).Clicked() {
-								a.stopLiveRecording(room.RoomID)
-							}
-						})
-				}
-			}
-
-			for _, acctItem := range a.LiveAccounts {
-				acct := acctItem
-				if normalizeSiteIDUI(acct.Site) == "douyin" && acct.Recording {
-					acctName := firstNonEmptyStrUI(acct.Uname, acct.UID)
-					title := firstNonEmptyStrUI(acct.Title, "抖音直播")
-					qualSpec := formatLiveAccountQualitySpec(acct)
-					ui.Row(c).
-						FillWidth().
-						Padding(14).
-						Radius(16).
-						Background(ColorLiveBg).
-						Border(1, ColorLive).
-						AlignItems(ui.Center).
-						Justify(ui.SpaceBetween).
-						Gap(12).
-						ClipX().
-						Children(func() {
-							a.renderAccountAvatar(c, "douyin", acctName, acct.UID, 0, 42, true, "", nil, acct.Face)
-							ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
-								ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-									ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(ColorLive).Children(func() {
-										ui.Text(c, "录制中").FontSize(11).FontWeight(600).TextColor(ColorWhite).SingleLine()
-									})
-									ui.Text(c, acctName+" · "+title).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-									renderSiteSmallBadgeWithDot(c, "douyin", "录制站点："+acct.AccountKey)
-									if qualSpec != "" {
-										ui.Text(c, "· "+qualSpec).Shrink(0).FontSize(12).FontWeight(600).TextColor(ColorLive).SingleLine()
-									}
-								})
-								recMeta := fmt.Sprintf("已录时长 %s · 大小 %s · 速度 %s/s · 第 %d 段",
-									FormatDuration(int(acct.RecordDurationSec)),
-									FormatBytes(acct.RecordBytes),
-									FormatBytes(acct.RecordSpeedBps),
-									max(1, acct.RecordSegments))
-								if qualSpec != "" {
-									recMeta += " · " + qualSpec
-								}
-								ui.Text(c, recMeta).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-							})
-							if DangerOutlinePillButton(c, "停止录制", "任务停止录制 "+acct.AccountKey).Clicked() {
-								a.stopAccountLiveRecording(firstNonEmptyStrUI(acct.RecordingKey, acct.AccountKey))
-							}
-						})
-				}
-			}
-
-			if a.TaskActionError != "" {
-				ui.Text(c, a.TaskActionError).FontSize(13).TextColor(ColorError).MaxLines(2)
-			}
-			finished := 0
-			for _, t := range a.Tasks {
-				if t.Status == "completed" || t.Status == "canceled" {
-					finished++
-				}
-			}
-			if finished > 0 {
-				ui.Row(c).FillWidth().Justify(ui.End).Children(func() {
-					if OutlinePillButton(c, fmt.Sprintf("清除已结束（%d）", finished), "清除已结束的任务").Clicked() {
-						_, err := a.backend.RemoveFinishedTasks()
-						a.finishTaskAction(err)
-					}
-				})
-			}
-
-			if len(a.Tasks) == 0 {
-				ui.Column(c).FillWidth().Padding(40, 16).AlignItems(ui.Center).Gap(8).Children(func() {
-					ui.Text(c, "当前没有缓存任务").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-					ui.Text(c, "在动态或视频详情上点「缓存」后，下载进度与子文件详情会显示在这里。").FontSize(13).TextColor(ColorTextMuted)
-				})
-				return
-			}
-
-			// 3. Download Task Cards with Visual Progress Bar & Expandable Per-File Detail
-			for _, t := range a.Tasks {
-				task := t
-				taskSite := normalizeSiteIDUI(task.Site)
-				statusLabel := taskStatusText(task.Status)
-				barCol := ColorInfoBlue
-				switch task.Status {
-				case "completed":
-					barCol = ColorDotGreen
-				case "paused":
-					barCol = ColorDotYellow
-				case "failed":
-					barCol = ColorDotRed
-				}
-				isExpanded := a.ExpandedTaskID == task.TaskID
-
-				ui.Column(c).
-					FillWidth().
-					Padding(14).
-					Radius(16).
-					Background(ColorBgMain).
-					Border(1, ColorBorder).
-					Gap(8).
-					ClipX().
-					Children(func() {
-						ui.Row(c).FillWidth().AlignItems(ui.Start).Gap(12).ClipX().Children(func() {
-							a.renderMediaThumb(c, task.ItemKey, "", task.Title, "", task.Status, false, 96, 58)
-
-							ui.Column(c).Grow(1).Gap(6).ClipX().Children(func() {
-								ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
-									ui.Row(c).AlignItems(ui.Center).Gap(6).Grow(1).ClipX().Children(func() {
-										DrawStatusDotFull(c, task.Status, task.Progress, task.Status == "paused", "任务状态："+task.Status)
-										ui.Text(c, fmt.Sprintf("%s (%s)", task.Title, task.TargetID)).
-											FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-										renderSiteSmallBadgeWithDot(c, taskSite, "任务站点："+task.TaskID)
-										if task.Source == "auto" {
-											ui.Box(c).Padding(1, 6).Radius(4).Background(ColorBgMain).Border(1, ColorBorder).Children(func() {
-												ui.Text(c, "自动").FontSize(11).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
-											})
-										}
-									})
-									ui.Text(c, fmt.Sprintf("%s · %.0f%% (%s / %s)",
-										statusLabel,
-										task.Progress*100,
-										FormatBytes(task.BytesDownloaded),
-										FormatBytes(task.TotalBytes))).
-										FontSize(12).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
-								})
-
-								// Visual progress bar
-								ui.Box(c).FillWidth().Height(6).Radius(3).Background(ColorBorder).Clip().Draw(func(p *ui.Painter, r ui.Rect) {
-									frac := float32(max(0.0, min(1.0, task.Progress)))
-									if frac > 0 {
-										p.Fill(ui.Rect{X: r.X, Y: r.Y, W: r.W * frac, H: r.H}, barCol, 3)
-									}
-								})
-
-								if task.QualityHint != "" {
-									ui.Text(c, "画质与音轨："+task.QualityHint).FontSize(12).FontWeight(600).TextColor(ColorInfoBlue).SingleLine()
-								}
-								lastErr := firstNonEmptyStrUI(task.LastError, task.ErrorMessage)
-								if lastErr != "" {
-									ui.Row(c).FillWidth().Padding(6, 10).Radius(8).Background(ColorErrorBg).AlignItems(ui.Center).Gap(6).Children(func() {
-										DrawIcon(c, "alert-circle", 14, ColorError, 1.8)
-										errLine := "原因：" + lastErr
-										if task.ErrorKind != "" {
-											errLine = fmt.Sprintf("原因 [%s]：%s", task.ErrorKind, lastErr)
-										}
-										ui.Text(c, errLine).
-											FontSize(12).TextColor(ColorError).MaxLines(2).Grow(1)
-									})
-								}
-
-								if a.TaskRemoveConfirmID == task.TaskID {
-									ui.Row(c).
-										FillWidth().
-										Padding(8, 12).
-										Radius(10).
-										Background(ColorWarnBg).
-										Border(1, ColorDotYellow).
-										AlignItems(ui.Center).
-										Justify(ui.SpaceBetween).
-										Gap(8).
-										Children(func() {
-											ui.Text(c, "确认移除该任务？会删除未完成的临时文件，已缓存完成的文件会保留。").
-												FontSize(12).FontWeight(600).TextColor(ColorTextMain).MaxLines(2).Grow(1)
-											ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-												if OutlinePillButton(c, "取消", "取消移除任务："+task.TaskID).Clicked() {
-													a.TaskRemoveConfirmID = ""
-												}
-												if DangerOutlinePillButton(c, "确认移除", "确认移除任务："+task.TaskID).Clicked() {
-													a.TaskRemoveConfirmID = ""
-													a.finishTaskAction(a.backend.RemoveTask(task.TaskID))
-												}
-											})
-										})
-								}
-
-								// Task Actions Row
-								ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Wrap().ClipX().Children(func() {
-									if task.Status == "running" || task.Status == "queued" {
-										if OutlinePillButton(c, "暂停", "暂停任务："+task.TaskID).Clicked() {
-											_, err := a.backend.PauseTask(task.TaskID)
-											a.finishTaskAction(err)
-										}
-									}
-									if task.Status == "paused" || strings.HasPrefix(task.Status, "paused_") {
-										if AccentPillButton(c, "继续", "继续任务："+task.TaskID).Clicked() {
-											_, err := a.backend.ResumeTask(task.TaskID)
-											a.finishTaskAction(err)
-										}
-									}
-									if task.Status == "failed" || task.Status == "partial" {
-										if AccentPillButton(c, "重试", "重试任务："+task.TaskID).Clicked() {
-											_, err := a.backend.RetryTask(task.TaskID)
-											a.finishTaskAction(err)
-										}
-									}
-									switch task.Status {
-									case "failed", "partial":
-										if OutlinePillButton(c, "移除", "移除任务："+task.TaskID).Clicked() {
-											a.TaskRemoveConfirmID = task.TaskID
-										}
-									case "completed", "canceled":
-										// Removing a completed/canceled task clears the record directly; cached files stay in the library.
-										if OutlinePillButton(c, "移除", "移除任务："+task.TaskID).Clicked() {
-											a.finishTaskAction(a.backend.RemoveTask(task.TaskID))
-										}
-									default:
-										if DangerOutlinePillButton(c, "取消", "取消任务："+task.TaskID).Clicked() {
-											_, err := a.backend.CancelTask(task.TaskID)
-											a.finishTaskAction(err)
-										}
-									}
-									expandLabel := "展开详情"
-									if isExpanded {
-										expandLabel = "收起详情"
-									}
-									if OutlinePillButton(c, expandLabel, "展开任务详情："+task.TaskID).Clicked() {
-										if isExpanded {
-											a.ExpandedTaskID = ""
-										} else {
-											a.ExpandedTaskID = task.TaskID
-										}
-									}
-								})
-							})
-						})
-
-						// Expanded Per-File Progress & Desensitized Attempt Log
-						if isExpanded {
-							detail, ok, _ := a.backend.TaskDetail(task.TaskID)
-							files := task.Files
-							attempts := task.Attempts
-							if ok {
-								if len(detail.Files) > 0 {
-									files = detail.Files
-								}
-								if len(detail.Attempts) > 0 {
-									attempts = detail.Attempts
-								}
-							}
-
-							ui.Column(c).
-								FillWidth().
-								Padding(10, 12).
-								Radius(12).
-								Background(ColorBgMain).
-								Border(1, ColorBorder).
-								Gap(6).
-								ClipX().
-								Children(func() {
-									ui.Text(c, fmt.Sprintf("逐文件进度清单（%d 个文件）", len(files))).
-										FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-									if len(files) == 0 {
-										ui.Text(c, "P01 视频流 (AVC/AV1) · P01 音轨流 (Hi-Res/192K) · P01.danmaku.xml · cover.png").
-											FontSize(12).TextColor(ColorTextMuted).SingleLine()
-									}
-									for _, f := range files {
-										fl := f
-										ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
-											ui.Text(c, fmt.Sprintf("[%s] %s", fl.Role, fl.Path)).FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine().Grow(1)
-											ui.Text(c, fmt.Sprintf("%s · %s / %s",
-												fl.Status,
-												FormatBytes(fl.DownloadedBytes),
-												FormatBytes(fl.TotalBytes))).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-										})
-									}
-									if len(attempts) > 0 {
-										ui.Text(c, fmt.Sprintf("最近分段重试记录（已脱敏，共 %d 条）", len(attempts))).
-											FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-										limit := min(len(attempts), 5)
-										for i := 0; i < limit; i++ {
-											att := attempts[i]
-											ui.Text(c, fmt.Sprintf("%s · 文件 %s · 节点 %s · 偏移 %s · 错误 %s (第 %d 次)",
-												att.Time, att.File, att.Host, FormatBytes(att.Offset), att.ErrorKind, att.Attempt)).
-												FontSize(11).TextColor(ColorTextMuted).SingleLine()
-										}
-									}
-								})
-						}
-					})
-			}
-		})
-	})
 }
 
 func taskStatusText(status string) string {
@@ -1803,6 +1524,7 @@ var settingsCategories = []struct {
 	{"general", "sliders", "常规"},
 	{"network", "link", "网络"},
 	{"logs", "logs", "日志"},
+	{"update", "refresh", "更新"},
 	{"about", "check-circle", "关于"},
 }
 
@@ -2170,18 +1892,6 @@ func (a *App) renderSettingsCategoryContent(c *ui.Context) {
 					a.saveSettings()
 				}
 			}
-
-			maxRecStr := strconv.Itoa(a.DraftSettings.MaxRecordings)
-			if maxRecStr == "0" {
-				maxRecStr = "2"
-			}
-			if settingChoiceRow(c, "同时录制数", "", "选择最大录制数", &maxRecStr, numberChoices("1", "2", "3", "4")) {
-				if v, err := strconv.Atoi(maxRecStr); err == nil {
-					a.DraftSettings.MaxRecordings = v
-					a.DraftSettings.Live.MaxConcurrentRecordings = v
-					a.saveSettings()
-				}
-			}
 		})
 
 	case "storage":
@@ -2376,6 +2086,9 @@ func (a *App) renderSettingsCategoryContent(c *ui.Context) {
 				})
 			})
 		})
+
+	case "update":
+		a.renderUpdateSettings(c)
 
 	case "about":
 		a.renderAboutSettings(c)

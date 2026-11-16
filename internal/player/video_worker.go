@@ -125,6 +125,13 @@ func (c *Controller) runVideoWorker(w *videoWorker, startGen uint64) {
 		holdOver := holding && time.Now().After(c.holdUntil)
 		if playing && !holding {
 			pos = c.sink.Position()
+			if c.live {
+				if ld, ok := c.dec.(LiveDecoder); ok {
+					if avail := ld.AvailableDuration(); avail > 0 && pos > avail {
+						pos = avail
+					}
+				}
+			}
 		}
 		notify := c.onFrame
 		c.mu.Unlock()

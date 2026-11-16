@@ -128,7 +128,7 @@ func AccentPillButton(c *ui.Context, text string, label string) ui.Element {
 }
 
 // MoreMenuButton draws the round "⋯" button whose menu floats beside it as a
-// popover, as the menus of the system do (docs/ui.md §1, F-056): its items
+// popover, as the menus of the system do (docs/ui.md §1): its items
 // never take room in the page. open, when not nil, lets the app open and
 // close the menu, and reports whether it shows.
 func MoreMenuButton(c *ui.Context, label string, size float32, open *bool, build func(m *ui.Menu)) ui.Element {
@@ -212,7 +212,7 @@ func DangerOutlinePillButton(c *ui.Context, text string, label string) ui.Elemen
 	return btn
 }
 
-// FloatingCircleButton renders a semi-transparent circular floating button for dark immersive overlays (R6, docs/ui.md §3.4/§3.5).
+// FloatingCircleButton renders a semi-transparent circular floating button for dark immersive overlays (docs/ui.md §3.4/§3.5).
 func FloatingCircleButton(c *ui.Context, icon string, label string, size float32) ui.Element {
 	if size <= 0 {
 		size = 40
@@ -240,7 +240,7 @@ func FloatingCircleButton(c *ui.Context, icon string, label string, size float32
 	return btn
 }
 
-// FloatingPillButton renders a semi-transparent capsule floating button for dark immersive overlays (R6).
+// FloatingPillButton renders a semi-transparent capsule floating button for dark immersive overlays.
 func FloatingPillButton(c *ui.Context, icon string, text string, label string) ui.Element {
 	if label == "" {
 		label = text
@@ -484,6 +484,16 @@ func DrawIcon(c *ui.Context, name string, size float32, col ui.Color, strokeWidt
 				LineTo(x(21), y(21))
 			p.StrokePath(handle, strokeWidth, col)
 
+		case "mine", "bookmark":
+			// A bookmark: a tall tab with a V notch at the bottom (我的).
+			mark := (&ui.Path{}).
+				MoveTo(x(6.5), y(4)).
+				LineTo(x(17.5), y(4)).
+				LineTo(x(17.5), y(20)).
+				LineTo(x(12), y(15.5)).
+				LineTo(x(6.5), y(20)).
+				Close()
+			p.StrokePath(mark, strokeWidth, col)
 		case "library":
 			rect := (&ui.Path{}).
 				MoveTo(x(3.5), y(5)).
@@ -511,7 +521,7 @@ func DrawIcon(c *ui.Context, name string, size float32, col ui.Color, strokeWidt
 			p.StrokePath(arrow, strokeWidth, col)
 
 		case "settings":
-			// 8-tooth gear polygon with center axle hole (R3: never draw concentric target circles).
+			// 8-tooth gear polygon with center axle hole; never concentric target circles.
 			gear := &ui.Path{}
 			const teeth = 8
 			outerR := s(9.2)
@@ -540,7 +550,7 @@ func DrawIcon(c *ui.Context, name string, size float32, col ui.Color, strokeWidt
 			p.StrokePath(axle, strokeWidth, col)
 
 		case "sliders", "general":
-			// Horizontal adjustment sliders for General settings (R3).
+			// Horizontal adjustment sliders for General settings.
 			tracks := (&ui.Path{}).
 				MoveTo(x(4), y(6.5)).LineTo(x(20), y(6.5)).
 				MoveTo(x(4), y(12)).LineTo(x(20), y(12)).
@@ -599,6 +609,29 @@ func DrawIcon(c *ui.Context, name string, size float32, col ui.Color, strokeWidt
 				MoveTo(x(8.5), y(12)).
 				LineTo(x(15.5), y(12))
 			p.StrokePath(path, strokeWidth, col)
+
+		case "clock":
+			circ := (&ui.Path{}).Circle(x(12), y(12), s(8.5))
+			p.StrokePath(circ, strokeWidth, col)
+			hands := (&ui.Path{}).
+				MoveTo(x(12), y(7.5)).
+				LineTo(x(12), y(12)).
+				LineTo(x(15.2), y(14))
+			p.StrokePath(hands, strokeWidth, col)
+
+		case "history":
+			arc := buildArcPath(x(12), y(12), s(8.5), math.Pi+0.6, 3*math.Pi-0.15)
+			p.StrokePath(arc, strokeWidth, col)
+			head := (&ui.Path{}).
+				MoveTo(x(3.4), y(4.6)).
+				LineTo(x(4.9), y(7.8)).
+				LineTo(x(8.2), y(7))
+			p.StrokePath(head, strokeWidth, col)
+			hands := (&ui.Path{}).
+				MoveTo(x(12), y(8)).
+				LineTo(x(12), y(12)).
+				LineTo(x(14.8), y(13.8))
+			p.StrokePath(hands, strokeWidth, col)
 
 		case "check-circle":
 			circ := (&ui.Path{}).Circle(x(12), y(12), s(8.5))

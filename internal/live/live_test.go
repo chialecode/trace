@@ -292,19 +292,26 @@ func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 			"data": map[string]any{
 				"2001": map[string]any{"uid": 2001, "room_id": 9001, "title": "R9001", "uname": "U2001", "live_status": 1, "live_time": 1794024000},
 				"2002": map[string]any{"uid": 2002, "room_id": 9002, "title": "R9002", "uname": "U2002", "live_status": 1, "live_time": 1794024000},
+				"2003": map[string]any{"uid": 2003, "room_id": 9003, "title": "R9003", "uname": "U2003", "live_status": 1, "live_time": 1794024000},
 			},
 		})
 	})
 	mux.HandleFunc("/room/v1/Room/room_init", func(w http.ResponseWriter, r *http.Request) {
 		roomID := 9001
 		liveSt := 0
-		if r.URL.Query().Get("id") == "9002" {
+		switch r.URL.Query().Get("id") {
+		case "9002":
 			roomID = 9002
 			if room9002Live.Load() {
 				liveSt = 1
 			}
-		} else if room9001Live.Load() {
+		case "9003":
+			roomID = 9003
 			liveSt = 1
+		default:
+			if room9001Live.Load() {
+				liveSt = 1
+			}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"code": 0,
@@ -318,14 +325,19 @@ func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 	})
 	mux.HandleFunc("/xlive/web-room/v2/index/getRoomPlayInfo", func(w http.ResponseWriter, r *http.Request) {
 		roomID := 9001
-		if r.URL.Query().Get("room_id") == "9002" {
+		baseURL := "/hls/stream.m3u8"
+		switch r.URL.Query().Get("room_id") {
+		case "9002":
 			roomID = 9002
+		case "9003":
+			roomID = 9003
+			baseURL = "/hls/stream9003.m3u8"
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"code": 0,
 			"data": map[string]any{
 				"room_id":     roomID,
-				"uid":         2001,
+				"uid":         2001 + (roomID - 9001),
 				"live_status": 1,
 				"playurl_info": map[string]any{
 					"playurl": map[string]any{
@@ -339,7 +351,7 @@ func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 											{
 												"codec_name": "avc",
 												"current_qn": 10000,
-												"base_url":   "/hls/stream.m3u8",
+												"base_url":   baseURL,
 												"url_info": []map[string]any{
 													{"host": srvURL, "extra": ""},
 												},
@@ -353,6 +365,9 @@ func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 				},
 			},
 		})
+	})
+	mux.HandleFunc("/hls/stream9003.m3u8", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXT-X-MAP:URI=\"/hls/init1.mp4\"\n#EXTINF:1.0,\n/hls/seg100.m4s\n"))
 	})
 	mux.HandleFunc("/hls/stream.m3u8", func(w http.ResponseWriter, r *http.Request) {
 		if corruptMode.Load() {
@@ -435,9 +450,12 @@ func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRecording 9001: %v", err)
 	}
-	// While 9001 is recording and MaxConcurrentRecordings == 1, starting 9002 must fail!
-	if _, err := liveMgr.StartRecording(ctx, 9002); err == nil {
-		t.Fatalf("expected StartRecording 9002 to fail when MaxConcurrentRecordings=1 is reached")
+	// DEC-051 ③: Legacy MaxConcurrentRecordings=1 must NOT block starting another concurrent room.
+	if _, err := liveMgr.StartRecording(ctx, 9003); err != nil {
+		t.Fatalf("expected StartRecording 9003 to succeed without concurrent recording cap, got: %v", err)
+	}
+	if _, err := liveMgr.StopRecording(9003); err != nil {
+		t.Fatalf("StopRecording 9003: %v", err)
 	}
 	// Wait for 9001 to finish
 	deadline := time.Now().Add(5 * time.Second)
@@ -492,6 +510,9 @@ func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 	var metaCorrupt library.ItemMetadata
 	if err := json.Unmarshal(rawMeta, &metaCorrupt); err != nil || metaCorrupt.Status != "partial" || len(metaCorrupt.Missing) == 0 {
 		t.Fatalf("expected partial status with Missing record on conversion failure, got %+v err=%v", metaCorrupt, err)
+	}
+	if metaCorrupt.Live == nil || len(metaCorrupt.Live.Incidents) == 0 || metaCorrupt.Live.Incidents[0].Kind != library.LiveIncidentConvertFailed {
+		t.Fatalf("expected convert_failed incident persisted on conversion failure, got %+v", metaCorrupt.Live)
 	}
 
 	// 4. Low disk space (< 1 GiB) rejects recording

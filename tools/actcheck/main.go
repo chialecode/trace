@@ -309,6 +309,9 @@ func main() {
 	case "act019":
 		runAct019Main(*root, *out)
 		return
+	case "act020":
+		runAct020Main(*root, *out)
+		return
 	}
 	if *recordFor > 30*time.Second {
 		fatal("recording longer than the authorized 30s")

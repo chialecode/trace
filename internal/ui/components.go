@@ -65,6 +65,7 @@ type PostCardData struct {
 	DynItem       *bilibili.DynamicItem
 	LibItem       *library.ItemMetadata
 	InHomeFeed    bool
+	Offline       bool
 	OpenBtnLabel  string
 	CacheBtnLabel string
 }
@@ -282,9 +283,14 @@ func (a *App) renderPostImageGrid(c *ui.Context, post PostCardData) {
 	var rels []string
 	var liveURLs []string
 	for _, img := range post.Images {
-		urls = append(urls, img.URL)
+		if post.Offline {
+			urls = append(urls, "")
+			liveURLs = append(liveURLs, "")
+		} else {
+			urls = append(urls, img.URL)
+			liveURLs = append(liveURLs, img.LiveURL)
+		}
 		rels = append(rels, img.RelPath)
-		liveURLs = append(liveURLs, img.LiveURL)
 	}
 
 	openAt := func(idx int) {
@@ -293,7 +299,7 @@ func (a *App) renderPostImageGrid(c *ui.Context, post PostCardData) {
 
 	if n == 1 {
 		img := post.Images[0]
-		bmp := a.postImageBitmap(post, img)
+		bmp := a.postImageBitmap(post, img, thumbMaxEdge)
 		ratio := imageRatio(img, bmp)
 		cell := ui.ButtonBase(c).Label("查看图片 1").Radius(8).Clip().Shrink(0)
 		if ratio < 1 {
@@ -321,7 +327,7 @@ func (a *App) renderPostImageGrid(c *ui.Context, post PostCardData) {
 			img := post.Images[imageIdx]
 			cell := ui.ButtonBase(c).Label(fmt.Sprintf("查看图片 %d", imageIdx+1)).AspectRatio(1).Radius(6).Clip()
 			cell.Children(func() {
-				a.renderPostImageCell(c, a.postImageBitmap(post, img), img)
+				a.renderPostImageCell(c, a.postImageBitmap(post, img, gridThumbEdge), img)
 				if extra > 0 && imageIdx == shown-1 {
 					ui.Row(c).Absolute().Left(0).Top(0).Right(0).Bottom(0).Background(ui.RGBA(0, 0, 0, 0.55)).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
 						ui.Text(c, fmt.Sprintf("+%d", extra)).FontSize(18).FontWeight(600).TextColor(ColorWhite).SingleLine()
@@ -344,9 +350,12 @@ const (
 )
 
 // postImageBitmap is the cached file when there is one, else the site's image.
-func (a *App) postImageBitmap(post PostCardData, img PostImage) *ui.Bitmap {
-	if bmp := a.lookupLocalBitmap(post.ItemKey, img.RelPath); bmp != nil {
+func (a *App) postImageBitmap(post PostCardData, img PostImage, maxEdge int) *ui.Bitmap {
+	if bmp := a.lookupLocalBitmapEdge(post.ItemKey, img.RelPath, maxEdge); bmp != nil {
 		return bmp
+	}
+	if post.Offline {
+		return nil
 	}
 	return a.lookupRemoteBitmap(img.URL)
 }
@@ -393,17 +402,30 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 		ClipX()
 
 	cardRow.Children(func() {
-		openCreator := func() {
-			if normalizeSiteIDUI(post.Site) == "douyin" {
-				if post.AuthorUID != "" {
-					a.OpenDouyinUser(post.AuthorUID, post.AuthorName)
+		var openCreator func()
+		authorFace := post.AuthorFace
+		if post.Offline {
+			authorFace = ""
+		}
+		// On Home the avatar opens the author's subscription; the user page
+		// (a parse) only opens for an author without one (DEC-057).
+		if sub, ok := a.subscriptionForAuthor(post.Site, post.AuthorUID, post.Mid); ok && post.InHomeFeed {
+			openCreator = func() { a.OpenSubscriptionDetail(sub) }
+		} else if !post.Offline {
+			openCreator = func() {
+				if normalizeSiteIDUI(post.Site) == "douyin" {
+					if post.AuthorUID != "" {
+						a.OpenDouyinUser(post.AuthorUID, post.AuthorName)
+					}
+					return
 				}
-				return
+				a.OpenUser(post.Mid, post.AuthorName)
 			}
-			a.OpenUser(post.Mid, post.AuthorName)
 		}
 		// Left: 40px circular creator avatar
-		a.renderAccountAvatar(c, post.Site, post.AuthorName, post.AuthorUID, post.Mid, 40, false, "", openCreator, post.AuthorFace)
+		ui.Box(c).Label("作者头像：" + post.Key).Shrink(0).Children(func() {
+			a.renderAccountAvatar(c, post.Site, post.AuthorName, post.AuthorUID, post.Mid, 40, false, "", openCreator, authorFace)
+		})
 
 		// Right: Main post column
 		ui.Column(c).Grow(1).Gap(6).ClipX().Children(func() {
@@ -418,11 +440,15 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 							authorName = "未知 UP 主"
 						}
 					}
-					authorBtn := ui.ButtonBase(c).Padding(0).Children(func() {
+					if openCreator != nil {
+						authorBtn := ui.ButtonBase(c).Padding(0).Children(func() {
+							ui.Text(c, authorName).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+						})
+						if authorBtn.Clicked() {
+							openCreator()
+						}
+					} else {
 						ui.Text(c, authorName).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-					})
-					if authorBtn.Clicked() {
-						openCreator()
 					}
 					if post.InHomeFeed {
 						renderSiteSmallBadgeWithDot(c, post.Site, "主页作者站点："+post.Key)
@@ -455,7 +481,11 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 						}
 						DrawStatusDot(c, dot, label)
 					}
-					if !post.InHomeFeed && post.Key != "" {
+					if post.Offline {
+						if post.LibItem != nil {
+							a.renderLibraryItemMoreMenu(c, *post.LibItem, 28)
+						}
+					} else if !post.InHomeFeed && post.Key != "" {
 						open := a.PostMenuKey == post.Key
 						MoreMenuButton(c, "帖子更多："+post.Key, 28, &open, func(m *ui.Menu) {
 							a.postMenuItems(c, m, post)
@@ -520,10 +550,14 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 				if vCard.Hovered() {
 					vCard.Background(ColorHover)
 				}
+				coverURL := v.CoverURL
+				if post.Offline {
+					coverURL = ""
+				}
 				vCard.Children(func() {
 					ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Start).ClipX().Children(func() {
 						// No title on the placeholder: it is beside the cover.
-						a.renderMediaThumb(c, v.ItemKey, v.RelCover, "", v.Duration, "", v.Cached, coverW, coverH, v.CoverURL)
+						a.renderMediaThumb(c, v.ItemKey, v.RelCover, "", v.Duration, "", v.Cached, coverW, coverH, coverURL)
 						ui.Column(c).Grow(1).Basis(0).Padding(10, 12, 10, 0).Gap(4).ClipX().Children(func() {
 							ui.Text(c, v.Title).FontSize(14).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
 							if desc := strings.TrimSpace(v.Desc); desc != "" && desc != "-" {
@@ -540,10 +574,12 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 						if it, ok, err := a.backend.GetLibraryItem(v.ItemKey); err == nil && ok {
 							a.OpenPlayerOverlay(it)
 						}
-					} else if isDouyinVideo {
-						a.OpenDouyinWork(v.BVID, "video", v.Title, post.AuthorName, post.AuthorUID, v.CoverURL, v.Duration)
-					} else {
-						a.OpenVideo(v.BVID, v.Title, post.AuthorName, post.Mid, v.CoverURL, v.Duration)
+					} else if !post.Offline {
+						if isDouyinVideo {
+							a.OpenDouyinWork(v.BVID, "video", v.Title, post.AuthorName, post.AuthorUID, v.CoverURL, v.Duration)
+						} else {
+							a.OpenVideo(v.BVID, v.Title, post.AuthorName, post.Mid, v.CoverURL, v.Duration)
+						}
 					}
 				}
 			}

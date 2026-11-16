@@ -83,6 +83,8 @@ type Task struct {
 	CoverURL          string             `json:"coverUrl,omitempty"`
 	CacheLinkedVideos bool               `json:"cacheLinkedVideos,omitempty"`
 	LinkedVideo       bool               `json:"-"` // a video cached as part of a dynamic
+	ViaName           string             `json:"-"` // forwarder name for a video cached from a forward (DEC-056)
+	ViaDynamicID      string             `json:"-"` // forwarding dynamic for such a video
 	ProgressOwner     *Task              `json:"-"`
 	ProgressPrefix    string             `json:"-"`
 	Status            string             `json:"status"` // "queued", "running", "paused", "completed", "failed", "canceled", "partial"
@@ -108,6 +110,10 @@ type VideoEnqueueRequest struct {
 	Pages  []int                 `json:"pages,omitempty"` // 1-based page numbers; empty means all pages (or first page if MultiPart=="first")
 	Source string                `json:"source,omitempty"`
 	Detail *bilibili.VideoDetail `json:"-"`
+	// ForMid is the creator the video is cached for (the subscription, user
+	// page or cache queue). When that creator is a collaboration member but
+	// not the uploader, a new item is stored under their folder (DEC-056).
+	ForMid int64 `json:"forMid,omitempty"`
 }
 
 // DynamicEnqueueRequest specifies a dynamic post to cache.
@@ -415,6 +421,13 @@ func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]
 	m.mu.Lock()
 	multiPart := m.dlSettings.MultiPart
 	m.mu.Unlock()
+	itemDir := ""
+	if req.ForMid > 0 && req.ForMid != detail.Author.Mid && detail.HasStaffMember(req.ForMid) {
+		root := m.lib.CacheDir()
+		if dir, err := library.EnsureWithinRoot(root, filepath.Join(root, "bilibili", strconv.FormatInt(req.ForMid, 10), "videos", detail.BVID)); err == nil {
+			itemDir = dir
+		}
+	}
 	var tasks []Task
 	for _, vp := range detail.Pages {
 		if len(pageSet) == 0 && multiPart == "first" && vp.Page != 1 {
@@ -437,6 +450,7 @@ func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]
 			AuthorFace: detail.Author.Face,
 			CoverURL:   detail.Cover,
 			ItemKey:    library.CanonicalItemKey("bilibili", "video", detail.BVID),
+			ItemDir:    itemDir,
 		})
 		if err != nil {
 			return tasks, err
@@ -1149,17 +1163,29 @@ func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error
 		return err
 	}
 
+	forward := dyn.Origin != nil || strings.EqualFold(dyn.Type, "DYNAMIC_TYPE_FORWARD")
 	for origin := dyn.Origin; origin != nil; origin = origin.Origin {
 		dyn.Images = append(dyn.Images, origin.Images...)
 		dyn.Videos = append(dyn.Videos, origin.Videos...)
 	}
+	// A forward's parse already copies the origin's media when the forward has
+	// none of its own; keep each image and video once.
+	dyn.Images = dedupeDynamicImages(dyn.Images)
+	dyn.Videos = dedupeDynamicVideos(dyn.Videos)
 	t.Title = dyn.Title
 	t.Mid = dyn.Author.Mid
 	t.AuthorName = dyn.Author.Name
 	t.AuthorFace = dyn.Author.Face
 
 	cacheRoot := m.lib.CacheDir()
-	itemDir, err := library.EnsureWithinRoot(cacheRoot, filepath.Join(cacheRoot, "bilibili", strconv.FormatInt(dyn.Author.Mid, 10), "dynamics", dyn.ID))
+	// Forwards and what they carry live in the forwarder's own forwards/
+	// folder, apart from their own posts (DEC-056).
+	typeDir := "dynamics"
+	if forward {
+		typeDir = "forwards"
+	}
+	authorDir := filepath.Join(cacheRoot, "bilibili", strconv.FormatInt(dyn.Author.Mid, 10))
+	itemDir, err := library.EnsureWithinRoot(cacheRoot, filepath.Join(authorDir, typeDir, dyn.ID))
 	if err != nil {
 		return err
 	}
@@ -1301,6 +1327,18 @@ func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error
 				}
 				for _, page := range detail.Pages {
 					vidTask := Task{Site: "bilibili", Kind: "video", TargetID: v.BVID, CID: page.CID, Page: page.Page, Source: t.Source, LinkedVideo: true, ProgressOwner: t, ProgressPrefix: "videos/" + v.BVID + "/", Attempts: t.Attempts}
+					switch {
+					case detail.Author.Mid == dyn.Author.Mid:
+					case forward:
+						if dir, dirErr := library.EnsureWithinRoot(cacheRoot, filepath.Join(authorDir, "forwards", detail.BVID)); dirErr == nil {
+							vidTask.ItemDir, vidTask.ViaName, vidTask.ViaDynamicID = dir, dyn.Author.Name, dyn.ID
+						}
+					case detail.HasStaffMember(dyn.Author.Mid):
+						// A collaboration video posted by a member who is not the uploader.
+						if dir, dirErr := library.EnsureWithinRoot(cacheRoot, filepath.Join(authorDir, "videos", detail.BVID)); dirErr == nil {
+							vidTask.ItemDir = dir
+						}
+					}
 					if err := m.executeVideoTask(ctx, &vidTask); err != nil {
 						if bilibili.IsKind(err, bilibili.ErrKindRiskControl) || bilibili.IsKind(err, bilibili.ErrKindRateLimited) || bilibili.IsKind(err, bilibili.ErrKindAuthRequired) {
 							return err
@@ -2278,4 +2316,30 @@ func targetQuality(quality string) int {
 		return 74
 	}
 	return 127
+}
+
+func dedupeDynamicImages(in []bilibili.DynamicMedia) []bilibili.DynamicMedia {
+	seen := make(map[string]bool, len(in))
+	out := in[:0:0]
+	for _, img := range in {
+		if img.URL != "" && seen[img.URL] {
+			continue
+		}
+		seen[img.URL] = true
+		out = append(out, img)
+	}
+	return out
+}
+
+func dedupeDynamicVideos(in []bilibili.DynamicVideoRef) []bilibili.DynamicVideoRef {
+	seen := make(map[string]bool, len(in))
+	out := in[:0:0]
+	for _, v := range in {
+		if v.BVID != "" && seen[v.BVID] {
+			continue
+		}
+		seen[v.BVID] = true
+		out = append(out, v)
+	}
+	return out
 }

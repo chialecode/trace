@@ -435,7 +435,17 @@ type apiRequestSpec struct {
 	requireSign     bool
 	guestNoCookie   bool
 	candidateCookie map[string]string
+	// form, when non-nil, turns the request into a POST with an
+	// application/x-www-form-urlencoded body; the encoded body is also fed to
+	// the a_bogus body chain. GET requests leave it nil and are byte-identical.
+	form []sign.Pair
+	// emptyMeans, when set, replaces the risk-control reading of an HTTP 200
+	// with a 0-byte body: the endpoint answers every non-browser request that
+	// way, so it says nothing about the session and must not stop the site.
+	emptyMeans string
 }
+
+const formContentType = "application/x-www-form-urlencoded"
 
 type apiRawResponse struct {
 	statusCode int
@@ -529,11 +539,18 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 		params = append(params, sign.Pair{Key: "msToken", Value: msToken})
 	}
 
+	method, formBody, contentType := http.MethodGet, "", ""
+	if spec.form != nil {
+		method, formBody, contentType = http.MethodPost, sign.SerializePairs(spec.form), formContentType
+	}
+
 	var extraHeaders map[string]string
 	if spec.requireSign {
 		signed, sErr := c.signer.Sign(ctx, sign.SignInput{
 			Endpoint:    parsedURL.Path,
 			Params:      params,
+			Body:        formBody,
+			ContentType: contentType,
 			UserAgent:   c.profile.UserAgent,
 			BrowserInfo: c.profile.BrowserInfo,
 			UIFID:       uifid,
@@ -554,7 +571,11 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 		parsedURL.RawQuery = sign.SerializePairs(params)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+	var reqBody io.Reader
+	if method == http.MethodPost {
+		reqBody = strings.NewReader(formBody)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), reqBody)
 	if err != nil {
 		return nil, &site.Error{
 			Site:     site.Douyin,
@@ -566,6 +587,9 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 	}
 
 	c.applyAPIHeaders(req, spec.referer, spec.origin, cookieHeader, extraHeaders)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -621,6 +645,9 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 		statusCode: resp.StatusCode,
 		header:     resp.Header.Clone(),
 		body:       body,
+	}
+	if spec.emptyMeans != "" && rawResp.statusCode == http.StatusOK && len(bytes.TrimSpace(rawResp.body)) == 0 {
+		return nil, &site.Error{Site: site.Douyin, Kind: site.ErrKindUnavailable, HTTPStatus: http.StatusOK, Endpoint: sanitizeEndpointLabel(parsedURL), Message: spec.emptyMeans}
 	}
 	if err := c.classifyHTTPAndEnvelopeError(ctx, sanitizeEndpointLabel(parsedURL), rawResp, usingStore); err != nil {
 		return rawResp, err

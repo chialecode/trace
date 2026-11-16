@@ -15,15 +15,17 @@
   | `source` | 不安装 | 必须由 `TRACE_DATA_DIR` 指定（工程规则用 `tmp/dev-data`）；没设置时用 `%LOCALAPPDATA%\trace-dev`，由数据目录锁避免与已安装的开发版同时打开 | 同 `dev` | `mygo.json` 的名称；`mygo dev` 自己的单实例标识是 `<identifier>.dev` |
 
   `<文档>` 是系统登记的“文档”文件夹（`SHGetKnownFolderPath(FOLDERID_Documents)`，可能被重定向到别的盘或 OneDrive），不是简单的 `%USERPROFILE%\Documents`。`TRACE_DATA_DIR` 对所有通道都优先（测试与冒烟用）。数据目录或缓存位置不能创建、不可写时，启动后显示明确的错误，不悄悄换到别处。安装目录只放程序文件（卸载时整个删除），任何数据都不写进去（INV-14）。
-- **数据目录里的内容**：`settings.json`、`history.json`、`thumbs/`（最近解析条目的封面与头像缩略图）、`ui-state.json`、`subscriptions.json`（及 `.bak`）、`credentials/`、`library.db`、`updates.db`、`library-roots.json`、`pending-deletes.json`、`mygo/`（MyGo 的 `userData`）、`logs/`、`cache/`（可随时删除的临时文件）、`app.lock`（数据目录锁）。
-- **添加已有的缓存文件夹**（FR-LIB-006）：`AddLibraryRoot` 让用户选一个文件夹；如果它含 `library/` 子文件夹，就当作旧便携数据目录，使用其中的 `library/`；有 `settings.json` 时也看其中记的 `cacheRoot`（旧数据目录不一定有这个文件）。扫描 `bilibili/<mid>/{dynamics,videos,lives}/*/item.json`（不跟随链接、单次最多 10 万个清单），按条目键加入索引，保存位置写进 `library-roots.json`；键已存在时保留现有条目、计入“跳过”。文件留在原处，播放、圆点、删除规则与其他条目相同（INV-08、INV-09）。不导入旧的凭证与历史（重新登录即可）。
+- **数据目录里的内容**：`settings.json`、`history.json`、`thumbs/`（最近解析条目的封面与头像缩略图）、`avatars/`（订阅与账号的本机头像 PNG，两个站点都存，界面优先用它，七天内不重取，不含远程地址）、`cache-queue.json`（后台缓存队列任务，DEC-050 ①）、`update-history.json`（更新检查记录与版本更新记录，DEC-051 ①）、`ui-state.json`、`subscriptions.json`（及 `.bak`）、`credentials/`、`library.db`、`updates.db`、`library-roots.json`、`pending-deletes.json`、`mygo/`（MyGo 的 `userData`）、`logs/`、`cache/`（可随时删除的临时文件）、`app.lock`（数据目录锁）。
+- **添加已有的缓存文件夹**（FR-LIB-006）：`AddLibraryRoot` 让用户选一个文件夹；如果它含 `library/` 子文件夹，就当作旧便携数据目录，使用其中的 `library/`；有 `settings.json` 时也看其中记的 `cacheRoot`（旧数据目录不一定有这个文件）。扫描 `bilibili/<mid>/{dynamics,videos,lives,forwards}/*/item.json`（不跟随链接、单次最多 10 万个清单），按条目键加入索引，保存位置写进 `library-roots.json`；键已存在时保留现有条目、计入“跳过”。文件留在原处，播放、圆点、删除规则与其他条目相同（INV-08、INV-09）。不导入旧的凭证与历史（重新登录即可）。
 - 旧版便携包的 `trace-data/`（可执行文件旁）不再自动使用；`cacheRoot` 为空的旧设置值表示“默认缓存位置”，按新规则解释为 `<文档>\trace[-dev]`。
 - `history.json` 与 `thumbs/`：最近解析（最多 200 条，原子写，损坏时改名保留并提示一次）。解析成功时先记录条目（保留同一对象已有的缩略图），打开页面不等图片；随后界面在后台调用 `FetchHistoryThumbs`，经无 Cookie、无 `Referer` 的白名单图片通道读取封面与头像，再用 `AttachThumbs` 写回原条目（不改变顺序；条目在此期间被删除或清空时不写文件、不恢复条目）：源数据最多 10 MiB、24,000,000 像素，完整解码后按比例缩小（头像最长边 128、封面最长边 640，不放大小图）并重新编码为 PNG，去除源图元数据。保存到 `<数据目录>/thumbs/<kind>_<sha256>_<role>.png`，哈希包含对象标识、角色与图像内容；对象 ID 的大小写仍影响身份，文件名不含查询串和签名参数。条目记录相对文件名 `coverThumb`、`avatarThumb` 与 `durationText`；旧文件名继续读取，下载或缩略图写入失败保留原图或占位图（DEC-037）。
   缩略图创建与历史提交串行，提交失败保留旧记录和旧图，只清理本次新建且无引用的候选图。删除单条、清空或超出上限淘汰时，只按准确引用清理无引用图，不按 ID 前缀或目录枚举删除；Windows 下引用按文件名大小写不敏感比较。先把待清理文件名 `pendingThumbDeletes` 与新历史一同提交，再删除文件；清理失败返回可见错误，后续记录、删除或清空继续重试，重启不丢待清理记录。只读取历史引用或本次暂存的合法图片文件，拒绝链接、目录与未登记文件；解析页不向站点补发图片请求。
-- `settings.json`：`version`、`cacheRoot`（空表示默认缓存位置 `<文档>\trace[-dev]`）、`videoQuality`（`best`/`2160`/`1080`/`720`，默认 `best`）、`codecOrder`（默认 `["avc","av1","hevc"]`）、`audioQuality`（`best`/`192k`，默认 `best`）、`multiPart`（`all`/`first`，默认 `all`）、`concurrency`（1～4，默认 2）、`upgradeCheckOnOpen`（默认 `true`）、`danmaku`（默认 `true`）、`subtitles`（默认 `true`）、`aiSubtitles`（默认 `true`）、`scheduledCheck`（默认 `false`）、`checkIntervalMin`（30/60/120/360，默认 60）、`liveCheckIntervalMin`（1～30，默认 3）、`maxRecordings`（1～4，默认 2）、`player`（`{danmakuOn, danmakuOpacity, danmakuDensity, subtitleLang}`）、`closeAction`（`tray`/`quit`，默认 `tray`）。原子写；未知字段忽略；非法值回到默认并提示一次；损坏时同 `history.json` 的处理。更新偏好 `updates: {autoCheck, autoDownload}`（“自动检查更新”“自动下载更新”，默认都开，只在正式版起作用，FR-UPD-002）。
+- `settings.json`：`version`、`cacheRoot`（空表示默认缓存位置 `<文档>\trace[-dev]`）、`videoQuality`（`best`/`2160`/`1080`/`720`，默认 `best`）、`codecOrder`（默认 `["avc","av1","hevc"]`）、`audioQuality`（`best`/`192k`，默认 `best`）、`multiPart`（`all`/`first`，默认 `all`）、`concurrency`（1～4，默认 2）、`upgradeCheckOnOpen`（默认 `true`）、`danmaku`（默认 `true`）、`subtitles`（默认 `true`）、`aiSubtitles`（默认 `true`）、`scheduledCheck`（默认 `false`）、`checkIntervalMin`（30/60/120/360，默认 60）、`liveCheckIntervalMin`（1～30，默认 3）、`maxRecordings`（旧字段，1～4，默认 2；连同 `live.maxConcurrentRecordings` 仅兼容读取与规范化、不改结构版本 1，不再限制同时录制数，DEC-051 ③）、`player`（`{danmakuOn, danmakuOpacity, danmakuDensity, subtitleLang}`）、`closeAction`（`tray`/`quit`，默认 `tray`）。原子写；未知字段忽略；非法值回到默认并提示一次；损坏时同 `history.json` 的处理。更新偏好 `updates: {autoCheck, autoDownload}`（“设置 › 更新”里的“自动检查更新”“自动下载更新”，默认都开，只在正式版起作用，FR-UPD-003、DEC-051 ①）。
 - `subscriptions.json`：订阅与共用缓存规则（`cacheRules`，订阅用 `ruleId` 选一条，DEC-040）的正本（[订阅 §1](subscriptions.md#model)）。原子写；损坏时改名保留、提示一次、从空开始（订阅不能从别处重建，所以每次成功写入前把上一版保存为 `subscriptions.json.bak`，损坏时提示里给出“从上一版恢复”）。
 - `updates.db`：检查更新的状态与更新记录（[订阅 §2](subscriptions.md#update-check)），独立于 `library.db`。损坏时改名保留后重新开始，所有账号回到“未建立起点”，下次检查只建立起点，旧动态不会进入更新列表。旧首次检查快照的可逆标志与迁移边界以订阅设计为准。
-- `ui-state.json`：主页看过的最新一条（`anchor: {order: "newest", key, pubTs}`，只作下次启动时“有更新”的基准，不用来恢复位置，DEC-040，第 4 节）、主页有更新头像行的按人已看最新时间戳 `homeSeen`（`{"sub:<id>": <latestPubTs>, "mid:<uid>": <latestPubTs>}`，Q-009、DEC-037）、窗口/路由及播放偏好。旧文件中若 `anchor.order` 为 `"oldest"`，规范化时统一改为 `"newest"` 并保留 `key`、`pubTs`、`offsetPx`。`player` 保存 `volume`（0～1，0 为有效静音音量）、`muted`、`danmakuVisible`、`danmakuOpacity`、`danmakuArea`、`danmakuDensity`（`low`/`medium`/`high`/`unlimited`，默认 `medium`）、`subtitleLang`；旧文件缺少新字段时采用默认值。原子写，失败保留原文件与状态并在界面显示原因；读取和更新返回的状态不与已提交状态共享 `homeSeen` 映射；损坏时改名保留后恢复默认值。更新状态 `update`：`lastRunVersion`（上次运行的版本，用来在更新后第一次启动时说明一次）、`lastCheck`、已下载待重启的 `readyVersion` 与 `readyNotes`、为更新而退出的记录 `restart`（`reason`、`windowOpen`、`fromVersion`、`at`，下次启动读到后删除，[架构 §8](architecture.md#tray)）。
+- `ui-state.json`：主页看过的最新一条（`anchor: {order: "newest", key, pubTs}`，作为没有 `homeSeen` 项的订阅在下次启动时的初始已读基准，DEC-040、DEC-053，第 4 节）、主页阅读位置 `homePositions`（可选，`{"all"|"bilibili"|"douyin": {key, pubTs, offsetPx}}`，每个站点筛选下主时间线可见区最上面那条与偏移；旧文件没有时照常读，结构版本仍为 2，DEC-053 ①）、主页侧栏订阅的已看最新时间戳 `homeSeen`（`{"sub:<id>": <latestPubTs>}`；旧的 `mid:` 与作者键保留不删、不再写，Q-009、DEC-053 ②）、任务页里移除的“最近结束的录制” `dismissedLiveSessions`（可选，`{"<录像条目键>": "<移除时间 RFC3339>"}`，只用来隐藏列表行，8 天后规范化时删除，DEC-057 ①）、窗口/路由及播放偏好。旧文件中若 `anchor.order` 为 `"oldest"`，规范化时统一改为 `"newest"` 并保留 `key`、`pubTs`、`offsetPx`；媒体库固定按发布时间排序（DEC-049 ③），旧文件里若留有按缓存时间排序的偏好则静默忽略，结构版本保持 2 不变。`player` 保存 `volume`（0～1，0 为有效静音音量）、`muted`、`danmakuVisible`、`danmakuOpacity`、`danmakuArea`、`danmakuDensity`（`low`/`medium`/`high`/`unlimited`，默认 `medium`）、`subtitleLang`；旧文件缺少新字段时采用默认值。原子写，失败保留原文件与状态并在界面显示原因；读取和更新返回的状态不与已提交状态共享 `homeSeen`、`homePositions` 映射；`homePositions` 只保留三个筛选键、键或时间有效的项，偏移小于 0 时取 0；损坏时改名保留后恢复默认值。更新状态 `update`：`lastRunVersion`（上次运行的版本，用来在更新后第一次启动时说明一次）、`lastCheck`、已下载待重启的 `readyVersion` 与 `readyNotes`、为更新而退出的记录 `restart`（`reason`、`windowOpen`、`fromVersion`、`at`，下次启动读到后删除，[架构 §8](architecture.md#tray)）。
+- `cache-queue.json`（DEC-050 ①，FR-USER-004）：保存“全部缓存”后台慢速缓存队列任务，使用独立的新文件与自带顶层结构版本 `version: 1`（**现有 v2 数据文件 `library.db`、`updates.db`、`subscriptions.json`、`ui-state.json` 的结构完全未变**）。原子写（临时文件 + `fsync` + 改名）；遇到高于当前程序支持的未知 `version` 时拒绝覆盖并返回错误，JSON 损坏时改名保留并从空队列恢复。每个任务只存公开调度元数据：任务 ID、站点（`bilibili` / `douyin`）、账号 ID（B 站 `mid` 或抖音 `sec_uid`）、显示名称、本机头像键（如有）、列表类型（B 站 `dynamics` / `videos`，抖音 `works`）、翻页游标与 `hasMore`、计数（已缓存、跳过）、最近缓存的若干条本机摘要（本机条目键 `key` 与标题，供任务页详情点击打开本机内容，封面按条目键从媒体库读）、状态（`queued`、`running`、`waiting`、`waiting_backoff`、`paused`、`completed`、`stopped`）、暂停或停止原因、下次计划执行时间与创建/更新时间戳。**字段边界（NFR-SEC-001～003）**：严禁保存任何 Cookie、签名 URL 或带查询串的地址；应用退出时停下并保存进度，启动后随机等 1～5 分钟继续。结束的任务（`completed`、`stopped`）可以逐个或一次全部从文件中移除（DEC-057 ①），未结束的要先取消；移除不删已缓存的条目。
+- `update-history.json`（DEC-051 ①，FR-UPD-001～003）：保存设置“更新”页的检查记录与版本更新记录，同样使用独立新文件与自带顶层结构版本 `version: 1`（**不改动现有 v2 数据文件结构**）。原子写（临时文件 + `fsync` + 改名，权限 `0600`）；遇到高于当前程序支持的 `version > 1` 时拒绝启动且绝不覆盖；JSON 损坏时改名保留备份并从空记录重建，记入损坏恢复提示或日志。保存最近 20 次检查记录 `checks`（时间 RFC3339、触发方式 `auto` / `manual`、脱敏结果文字如“已是最新版本”“发现 x.y.z”“检查失败：<原因>”；仅正式版写入，开发版不联网检查）与最近 50 次更新记录 `updates`（时间 RFC3339、`fromVersion`、`toVersion`、方式：`auto_update`“自动更新” / `dev_install`“本机打包安装” / `manual_install`“手动安装”）。**隐私边界（NFR-SEC-001～003）**：只保存版本号、时间、方式与脱敏结果文字，严禁保存任何下载地址、URL、查询串或凭证，读写均做清洗校验。
 - 当前播放偏好的唯一来源为 `ui-state.json.player`；`settings.json.player` 的旧字段仍可读写和规范化，但当前播放器不读取它们。下载时是否保存弹幕、字幕仍由 `settings.json` 的下载开关控制。
 - `library.db`：SQLite（`modernc.org/sqlite`，WAL 模式）索引，表为条目、媒体文件、引用、任务、任务尝试记录、待清理。它只是索引：每个缓存条目文件夹里的 `item.json` 才是正本。启动时 `PRAGMA quick_check` 失败或数据库文件无法解析，就把数据库（连同 `-wal`、`-shm`）改名为 `library.db.corrupt-<时间>` 保留，扫描各保存位置（记录在 `library-roots.json`）的 `item.json` 重建，界面提示一次。文件被占用、没有权限等打开失败不算损坏：显示错误，不改名、不重建。
 - 待清理记录同时写进 `pending-deletes.json`（不只在可重建的索引里），索引重建后删到一半的条目不会重新出现。账本读取/解析失败时原样保留、返回错误并停止删除/重建相关变更，不能当作空账本覆盖。重建扫描、清单读写或 SQL 失败时停止并保留尚未确认 stale 的旧索引，只有完整扫描成功才事务清理旧行。
@@ -56,6 +58,8 @@
 <保存位置>/bilibili/<mid>/dynamics/<id_str>/item.json、images/01.jpg…、orig.json（转发的原动态快照）
 <保存位置>/bilibili/<mid>/videos/<bvid>/item.json、cover.jpg、P01.mp4…、P01.audio-30251.m4a（必要时，见 2.5）、P01.danmaku.xml、P01.zh-CN.vtt、P01.zh-CN.srt、P01.ai-zh.vtt…（见 2.9）
 <保存位置>/bilibili/<mid>/lives/<room_id>-<开播时间>/item.json、cover.jpg、part-001.mp4…（见直播设计）
+<保存位置>/bilibili/<mid>/forwards/<id_str>/…（这位作者转发的动态，结构同 dynamics/）
+<保存位置>/bilibili/<mid>/forwards/<bvid>/…（转发里带的视频，结构同 videos/）
 ```
 
 抖音（DEC-043）的作者目录用 `sec_uid` 的短哈希（SHA-256 前 12 个十六进制字符），不用昵称，也不用会变的抖音号；完整 `sec_uid` 写在清单的作者里：
@@ -66,7 +70,12 @@
 <保存位置>/douyin/<sec_uid 短哈希>/lives/<room_id>/item.json、cover.jpg、part-001.mp4…
 ```
 
-“添加已有的缓存文件夹”同样扫描 `douyin/*/{works,lives}/*/item.json`。文件名只用 ID 和序号，标题写在清单里，避免非法字符和超长路径。视频条目放在 UP 主自己的目录下，被动态引用；投稿列表和视频页直接缓存的也是同一个视频条目。
+“添加已有的缓存文件夹”同样扫描 `douyin/*/{works,lives}/*/item.json`。文件名只用 ID 和序号，标题写在清单里，避免非法字符和超长路径。视频条目放在 UP 主自己的目录下，被动态引用；投稿列表和视频页直接缓存的也是同一个视频条目。两种例外（DEC-056），都在清单里记 `via`：
+
+- **转发**：转发的动态存到转发者的 `forwards/`，转发里带的视频（原作者不是转发者）也存到转发者的 `forwards/<bvid>/`，不建原作者的文件夹，也不和转发者自己的 `dynamics/`、`videos/` 混在一起；`via = {reason: "forward", site, uid: 转发者, name, dynamicId}`。
+- **合作视频**：为订阅、缓存队列或用户页里的某位成员缓存哔哩哔哩合作视频（视频详情 `staff` 里有这位成员、但他不是投稿人）时，存到这位成员的 `videos/<bvid>/`，`via = {reason: "collab", site, uid: 成员, name}`；没有成员上下文（直接解析视频链接）时仍存在投稿人的文件夹。
+
+同一条目键只有一个文件夹：条目已经缓存过时沿用原来的文件夹，不搬动；想换位置就在媒体库删除后重新缓存。
 
 ### 2.2 清单 `item.json`
 
@@ -77,9 +86,11 @@
 - `available`：缓存当时站点列出的档位快照（`accept_quality`、`support_formats` 的 `quality`/`need_vip`、返回流里的最高档、是否有杜比/无损音频）与探测时间；
 - `danmaku`：弹幕文件、条数、取得时间（没开设置时记 `skipped`）；`subtitles`：每种语言的 `lan`、`lan_doc`、是否 AI、VTT 与 SRT 文件。
 
-抖音条目的作者另记 `site`、`uid`（`sec_uid`）与抖音号；视频作品记实际与可选的档位（分辨率、编码、帧率、码率、档位名）；图文记配乐（标题、作者、时长、文件）。
+可选的 `via`（DEC-056，见 2.1）说明条目为谁缓存、存在谁的文件夹：`reason`（`forward` 或 `collab`）、`site`、`uid`、`name`，转发另记 `dynamicId`；`author` 仍是原作者或投稿人。旧清单没有这个字段时照常读取，结构版本不变。媒体库把 `via.reason = forward` 或动态类型为 `DYNAMIC_TYPE_FORWARD` 的条目算作“转发”（`FeedFilter.Kind = "forward"`），“图片”“视频”用 `ExcludeForward` 只列作者自己的内容；按作者筛选时也匹配 `via.uid`，`library.db` 为此建表达式索引 `idx_library_items_via (site, json_extract(json_data, '$.via.uid'))`。
 
-只存公开内容；哔哩哔哩的图片原始 URL 可以存（公开 CDN，去掉尺寸后缀），**视频的签名播放地址不存**；抖音的图片与媒体地址都带签名与过期参数，**一律不存**。播放数、点赞数、评论数这类会变的互动数据不缓存（DEC-040）。
+抖音条目的作者另记 `site`、`uid`（`sec_uid`）与抖音号；视频作品记实际与可选的档位（分辨率、编码、帧率、码率、档位名）；图文记配乐（标题、作者、时长、文件）。直播录像条目（[直播 §4](live.md#recording-item)）的 `live` 对象另含可选字段 `live.incidents`（录制异常事件列表：`reconnect`、`lost_segments`、`slow`、`disk`、`convert_failed`，每场最多 200 条，DEC-051 ③；不改清单结构版本，无此字段的旧清单照常读取）。
+
+只存公开内容；哔哩哔哩的图片原始 URL 可以存（公开 CDN，去掉尺寸后缀），**视频的签名播放地址与直播流地址不存**；抖音的图片与媒体地址都带签名与过期参数，**一律不存**。播放数、点赞数、评论数这类会变的互动数据不缓存（DEC-040）。
 
 ### 2.3 内容范围
 
@@ -88,7 +99,7 @@
 | 视频 | 正文 + 引用的视频条目（封面 + 全部分 P，按第 2.5 节选流） |
 | 图文、带图文字 | 正文 + 全部原图；实况照片另存动态片段 `images/NN_live.mp4`（角色 `motion`，静帧的 `motion` 字段指向它；按下面的单文件 MP4 校验并保证 `moov` 在前，系统播放器也能预览；下载或校验失败删掉片段、记为部分缓存，DEC-040、DEC-046 ①） |
 | 纯文字 | 正文 |
-| 转发 | 转发正文 + 原动态快照，原动态的图片和视频按上两行保存 |
+| 转发 | 转发正文 + 原动态快照，原动态的图片和视频按上两行保存，都存在转发者的 `forwards/`（DEC-056）；同一图片或视频在转发与原动态里重复出现时只存一份 |
 | 专栏 | 标题、摘要、封面与摘要里的图；全文待实现（FR-FEED-002），记为部分缓存 |
 | 直播、番剧、课程、音乐、商品等 | 正文与封面，记为部分缓存并写明类型不支持 |
 
@@ -163,7 +174,7 @@
 ### 2.8 删除（FR-LIB-003）
 
 - 删动态条目删除它自己的文件；它引用的视频条目只在没有其他动态引用、也不是被直接缓存的情况下一起删除，否则保留并告知。
-- **只删登记过的文件**：按清单删除媒体文件、`orig.json`、本条目的 `*.part` 临时文件，最后删除 `item.json`；然后自下而上只删除已经变空的文件夹（`images/`、条目文件夹）。文件夹里还有未登记的文件（例如用户自己放的）时保留文件夹，界面说明“文件夹里还有 N 个不是 TRACE 创建的文件，已保留”。任何情况下都不对条目文件夹做递归删除（INV-09）。
+- **只删登记过的文件**：按清单删除媒体文件、`orig.json`、本条目的 `*.part` 临时文件，最后删除 `item.json`；然后自下而上只删除已经变空的文件夹（`images/`、条目文件夹），再向上删除因此变空的类型文件夹（`videos/`、`works/` 等）与作者文件夹（`<mid>/`、`<sec_uid 短哈希>/`）；只在保存位置内向上，站点文件夹与保存位置本身不删，一律用只能删空文件夹的 `os.Remove`。文件夹里还有未登记的文件（例如用户自己放的）时保留文件夹，界面说明“文件夹里还有 N 个不是 TRACE 创建的文件，已保留”。任何情况下都不对条目文件夹做递归删除（INV-09）。
 - 确认弹窗先调 `PlanDelete(key)`：它与 `Delete` 用同一份删除计划，列出会删除的条目与登记文件、会保留的共用视频（“这个视频还被 N 条动态引用，将保留视频文件”），不改动任何东西。
 - 先改索引并写待清理记录，再删文件；删不掉的（被占用等）留在待清理里，下次启动再删，并跳过已经被重新缓存的条目。
 - **改保存位置**：只影响之后的新任务；索引给每个条目记它的保存位置，旧条目照常浏览。
@@ -186,13 +197,13 @@
 改为 `mygo/ui` 原生界面（DEC-032）后，图片查看器与视频/弹幕/字幕播放器在 Go 进程内直接读取本机文件，不再经过 WebView 自定义协议。所有本机媒体读取统一通过 `Library.MediaPath(key, relPath)`（暴露为 `LibraryService.MediaPath`）解析绝对路径：
 
 - **登记白名单（INV-08）**：只允许打开索引与 `item.json` 里登记在该 `key` 下的媒体文件（封面、图片、`Pxx.mp4`、`video.mp4`、`images/NN_live.mp4`、`images/NN.mp4`、`music.*`、`part-NNN.mp4`、`Pxx.danmaku.xml`、`Pxx.<lan>.vtt`/`.srt`）；未登记的文件名或属于其他条目的路径一律拒绝。在线浏览未缓存的抖音图文配乐或混排视频页时，经 `StagePreviewMedia` 在白名单、不带 Cookie 条件下暂存到 `<数据目录>/cache/preview/` 后再交给本地播放器。
-- **路径与链接安全**：路径在服务端由“条目所在保存位置 + 条目相对目录 + 清单里的相对路径”拼出；每段路径拒绝 `.`、`..`、反斜杠、空字节与冒号，用 `filepath.Rel` 确认没有跑出条目文件夹，并用 `os.Lstat` 与 `filepath.EvalSymlinks` 拒绝符号链接或目录联接（Junction）逃逸（INV-08）。
-- 缩略图：图片直接读取缓存原图并在 `mygo/ui` 中按网格尺寸缩放渲染；视频与直播录像使用登记的封面文件 `cover.jpg`。
+- **路径与链接安全**：路径在服务端由“条目所在保存位置 + 条目相对目录 + 清单里的相对路径”拼出；每段路径拒绝 `.`、`..`、反斜杠、空字节与冒号，用 `filepath.Rel` 确认没有跑出条目文件夹，并用 `os.Lstat` 与 `filepath.EvalSymlinks` 拒绝符号链接或目录联接（Junction）逃逸（INV-08）。读取时（`MediaPath`）条目文件夹的上级目录在 3 秒内核对过就不再逐级核对（DEC-057 ⑤，主页一屏几十张缩略图不必每张都逐级 `EvalSymlinks`）；文件本身与条目文件夹每次都核对，写入与删除不用这个缓存。
+- 缩略图：图片直接读取缓存原图，按显示大小解码（单图最长边 960 px，九宫格与小封面 480 px），解码结果放进按最近使用淘汰的缓存（最多 600 张、320 MiB），切回刚看过的站点筛选时不重新解码（DEC-057 ⑤）；视频与直播录像使用登记的封面文件 `cover.jpg`。
 
 <a id="feed"></a>
 ## 4. 主页信息流（FR-FEED-001、DEC-037）
 
 - 来源：索引里所有动态条目、没有被任何动态引用、被直接缓存的视频条目（显示成一条“视频”帖子），以及直播录像条目（显示成一条“直播录像”帖子，发布时间取开播时间）。被动态引用的视频不单独出现。只要有清单就出现，不管圆点颜色。
 - 排序键：固定按 `(发布时间, 条目键)` 从新到旧（`order` 恒为 `newest`，不再提供正序/倒序切换，DEC-037）。分页用双向键集游标，`direction` 为 `older`/`newer`/`around`，每页 30 条；同一发布时间按条目键稳定排序，翻页不重复不遗漏。
-- 位置（DEC-040）：主页每次打开都从最新处开始，不恢复位置，也不提示“N 条更新的内容”。前端在可见条目里有比已记下的更新的发布时间时调用 `SaveAnchor({order: "newest", key, pubTs})`，`ui-state.json` 的 `anchor` 只表示“看过的最新一条”；它在下次启动时读一次，作为这次会话“有更新”的基准，会话内不变。往上翻过即算看过，往下滑不会把内容重新当成未读。保存失败显示原因。新缓存的内容在回到列表顶部时载入（`direction: newer`），当前看到的条目不跳动。“看最新”先成功读取再替换可见时间线，失败保留原列表。
-- 主页标题下的有更新头像行（Q-009、DEC-037）：按 `library.Statistics()` 的各作者最新缓存发布时间 `latestPubTs` 聚合到订阅（合并关联账号）及未归属订阅的独立作者；当某个订阅/作者的 `latestPubTs > max(会话基准, uiState.homeSeen[actorKey])`（且基准时间戳大于 0）时，按 `latestPubTs` 从近到远在“主页”标题下方横向列出圆形头像与一行名称。点击后先读取该人的已缓存内容，成功才进入单订阅/单作者视图并保存 `homeSeen`；查询失败保留主时间线，保存失败显示原因。单订阅视图使用独立列表，返回时恢复主时间线的条目、滚动位置和分页错误。统计在本机刷新和媒体库变更时读取，失败保留上次可读结果，不在每次重绘查询；帖子的显示数据按条目缓存在内存里，任务、媒体库、订阅或直播事件到来时整体重建，重绘时不逐帧读媒体库；本机图片在后台解码并缩到最长边 1280px，界面线程不解码原图（DEC-040）；主页图片只用本机文件或已有内存位图，缺失时占位，不自动补发远程图片请求。
+- 位置（DEC-053 ①，替代 DEC-040 的“不恢复位置”）：每个站点筛选的主时间线记 `homePositions[filter] = {key, pubTs, offsetPx}`：`key` 是上一帧可见区最上面那条，`offsetPx` 是它的顶边在列表顶边之上多少像素（由行与列表上一帧的布局框算出）；位置不变约 1 秒后保存，离开主页、点开单订阅、切换筛选与关闭窗口（含关到托盘、退出与 `--quit-for-update`，都经 `App.Close`）时立即保存；与上次写入相同就不写。每次启动后第一次显示某个筛选时，以 `{key + "\x00", pubTs}` 为游标读 `direction: older` 的一页（包含这条本身；这条已删除时就是不晚于它的最近一条），列表先定位到第 0 行、布局后再按偏移滚动（这条已删时偏移为 0），期间不在两端翻页；随后 `feedMoreBefore = true`，在顶端按 `direction: newer` 载入更新的内容，列表按条目键保持当前行不跳。没有记录或读不到时从最新处开始。同一次运行内筛选之间来回切换时，各筛选的条目与位置留在内存里，回来时按那条与偏移重新定位。单订阅视图不记位置。不提示“N 条更新的内容”。`anchor` 仍在可见条目有更新的发布时间时由 `SaveAnchor` 记下，只作没有 `homeSeen` 项的订阅的初始已读基准。保存失败显示原因（同一位置只报一次）。
+- 主页侧栏订阅列表（DEC-053 ②，替代“有更新”头像行）：按 `library.Statistics()` 的各作者最新缓存发布时间 `latestPubTs`（只算当前站点筛选的站点）聚合到订阅（合并关联账号），列出有内容或正在直播的订阅（没订阅的作者不列）。未读：`latest > seen`，`seen` 为 `homeSeen["sub:<id>"]`，没有这一项时为启动时读到的 `anchor.pubTs`，为 0 时算已读。顺序快照：每次进入主页时（每个站点筛选第一次列出时）按“正在直播（组内未读在前）→ 未读 → 已读、组内按 `latest` 从新到旧”排一次，存为订阅 ID 序列；停留期间只按快照显示，新符合条件的订阅追加到末尾，删掉的订阅去掉。行列表只在订阅、统计、站点筛选或直播集合变化时重建（按签名比较），重绘只为可见行查直播圈与圆点。点击后先读取该订阅的已缓存内容，成功才进入单订阅视图并把 `homeSeen["sub:<id>"]` 写为原值与 `latest` 的较大者；查询失败保留主时间线，保存失败显示原因。单订阅视图使用独立列表，返回时按主时间线那条与偏移重新定位并恢复分页错误。统计在本机刷新和媒体库变更时读取，失败保留上次可读结果，不在每次重绘查询；帖子的显示数据按条目缓存在内存里，任务、媒体库、订阅或直播事件到来时整体重建，重绘时不逐帧读媒体库；本机图片在后台解码并缩到最长边 1280px，界面线程不解码原图（DEC-040）；主页图片只用本机文件或已有内存位图，缺失时占位，不自动补发远程图片请求。

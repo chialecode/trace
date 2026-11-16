@@ -1,0 +1,4 @@
+{
+  "description": "Known vulnerabilities accepted for now. Each entry: advisory (GO- or GHSA- id), module, reason (why it cannot be fixed or does not apply), reviewBy (YYYY-MM-DD; past that date the audit fails again). Entries are added only with the reason written in the stage report.",
+  "exceptions": []
+}

@@ -41,14 +41,31 @@ func TestImmersiveTitleBarKeepsControlsClearOfWindowButtons(t *testing.T) {
 		if drag, ok := tt.Find("窗口拖动区"); !ok || drag.Y != 0 || drag.H != bar.Height {
 			t.Fatalf("width=%d: no drag strip above the rail: %+v", w, drag)
 		}
-		brand, _ := tt.Find("TRACE 主页")
-		if brand.Y < bar.Height {
-			t.Fatalf("width=%d: the brand %+v sits under the drag strip", w, brand)
+		// The mark is not a button and may sit in the drag strip; the first
+		// page button lines up with the panel's first row (DEC-057).
+		if _, ok := tt.Find("TRACE 标志"); !ok {
+			t.Fatalf("width=%d: no TRACE mark on the rail", w)
 		}
+		home, ok := tt.Find("主页")
+		if !ok || home.Y < bar.Height {
+			t.Fatalf("width=%d: the first rail button %+v sits under the drag strip", w, home)
+		}
+	}
+	app.Navigate(RouteHome)
+	tt := ui.NewTester(app.View, 1280, 860)
+	tt.SetTitleBar(bar)
+	tt.Frame()
+	home, _ := tt.Find("主页")
+	first, ok := tt.Find("主页全部动态")
+	if !ok {
+		t.Fatal("no 全部动态 row in the home panel")
+	}
+	if d := (home.Y + home.H/2) - (first.Y + first.H/2); d > 6 || d < -6 {
+		t.Fatalf("first rail button center %v is %vpx off the panel's first row center %v", home.Y+home.H/2, d, first.Y+first.H/2)
 	}
 
 	// Without a hidden title bar (tests, full screen) nothing moves.
-	tt := ui.NewTester(app.View, 1280, 860)
+	tt = ui.NewTester(app.View, 1280, 860)
 	if _, ok := tt.Find("窗口拖动区"); ok {
 		t.Fatal("a drag strip shows without a hidden title bar")
 	}

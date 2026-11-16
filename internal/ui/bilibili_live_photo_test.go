@@ -25,7 +25,9 @@ func (s *livePhotoStub) StagePreviewMedia(_ context.Context, siteID, rawURL, _ s
 
 // DEC-046 ①: a Bilibili live photo plays its motion clip inside the viewer,
 // online before caching (staged from the Bilibili CDN) and from the cached
-// clip afterwards, without leaving the viewer.
+// clip afterwards, without leaving the viewer. It plays as soon as the viewer
+// shows it (2026-11-14 feedback: a still that needs a button looked broken);
+// the play button stays for replaying.
 func TestBilibiliLivePhotoPlaysInTheViewer(t *testing.T) {
 	app, stub, _, cleanup := newDouyinUITestHarness(t)
 	defer cleanup()
@@ -64,10 +66,10 @@ func TestBilibiliLivePhotoPlaysInTheViewer(t *testing.T) {
 	if !app.ImageViewer.Open || app.ImageViewer.InlineSite != "bilibili" {
 		t.Fatalf("viewer not open for a Bilibili live photo: %+v", app.ImageViewer.InlineSite)
 	}
-	if err := tt.Click("看图播放实况"); err != nil {
-		t.Fatalf("an uncached live photo has no play button in the viewer: %v", err)
+	if _, ok := tt.Find("看图播放实况"); !ok {
+		t.Fatal("an uncached live photo has no play button in the viewer")
 	}
-	nextPosted(t, posted)()
+	nextPosted(t, posted)() // started on open, no click
 	waitUIIdle(t, app, posted)
 	if len(ls.stagedFor) != 1 || ls.stagedFor[0] != "bilibili https://i0.hdslb.com/bfs/synthetic/clip.mp4" {
 		t.Fatalf("clip staged as %v, want from the Bilibili CDN", ls.stagedFor)
@@ -98,10 +100,10 @@ func TestBilibiliLivePhotoPlaysInTheViewer(t *testing.T) {
 	}
 	app.OpenItemImageViewer(saved.ItemKey, nil, []string{"images/01.png"}, 0)
 	tt.Frame()
-	if err := tt.Click("看图播放实况"); err != nil {
-		t.Fatalf("a cached live photo has no play button in the viewer: %v", err)
+	if _, ok := tt.Find("看图播放实况"); !ok {
+		t.Fatal("a cached live photo has no play button in the viewer")
 	}
-	nextPosted(t, posted)()
+	nextPosted(t, posted)() // started on open, no click
 	waitUIIdle(t, app, posted)
 	if len(ls.stagedFor) != 1 {
 		t.Fatalf("a cached clip must not be fetched again: %v", ls.stagedFor)

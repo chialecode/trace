@@ -45,6 +45,7 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 			{Key: "image", Text: "图片", AccessLabel: "筛选类型：图片"},
 			{Key: "video", Text: "视频", AccessLabel: "筛选类型：视频"},
 			{Key: "live", Text: "直播录像", AccessLabel: "筛选类型：直播录制"},
+			{Key: "forward", Text: "转发", AccessLabel: "筛选类型：转发"},
 		}, func(key string) { a.LibraryKindFilter = key; a.reloadLibraryItems() })
 		ui.Row(c).FillWidth().Padding(6, 16, 0, 16).Children(func() {
 			renderThreeSegmentSiteFilter(c, "媒体库站点筛选：", a.LibrarySiteFilter, func(next string) {
@@ -60,20 +61,9 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 			if input.Changed() {
 				a.reloadLibraryItems()
 			}
+			a.renderLibraryRefreshButton(c)
 			if !a.panelShown && OutlinePillButton(c, "作者筛选", "媒体库作者筛选").Clicked() {
 				a.LibraryAuthorMenu = !a.LibraryAuthorMenu
-			}
-			sortText := "缓存时间"
-			if a.LibrarySort == "pub_ts" {
-				sortText = "发布时间"
-			}
-			if OutlinePillButton(c, sortText, "媒体库排序切换").Clicked() {
-				if a.LibrarySort == "cached_at" {
-					a.LibrarySort = "pub_ts"
-				} else {
-					a.LibrarySort = "cached_at"
-				}
-				a.reloadLibraryItems()
 			}
 		})
 		if a.LibraryAuthorMenu && !a.panelShown {
@@ -309,28 +299,21 @@ func (a *App) openLibraryTile(tile libraryTile) {
 	a.OpenItemImageViewer(tile.item.ItemKey, nil, images, selected)
 }
 
-// OpenLibraryItemDetail opens the local detail view for a cached item without making network requests.
+// OpenLibraryItemDetail opens the local detail view on RouteLibraryItem without making network requests.
 func (a *App) OpenLibraryItemDetail(item library.ItemMetadata) {
-	if normalizeSiteIDUI(item.Site) == "douyin" {
-		if a.CurrentRoute != RouteDouyinWork {
-			a.PreviousRoute = a.CurrentRoute
-		}
-		a.CurrentRoute = RouteDouyinWork
-		a.BannerError = ""
-		a.CurrentLibraryDetail = &item
-		a.CurrentDouyinWork = nil
-		return
-	}
-	if a.CurrentRoute != RouteVideo {
+	if a.CurrentRoute != RouteLibraryItem {
 		a.PreviousRoute = a.CurrentRoute
 	}
-	a.CurrentRoute = RouteVideo
+	a.CurrentRoute = RouteLibraryItem
 	a.BannerError = ""
+	a.Opening = nil
+	a.PostMenuKey = ""
 	a.CurrentLibraryDetail = &item
+	a.CurrentDouyinWork = nil
 	a.CurrentDynamic = nil
 	a.SelectedPartPages = make(map[int]bool)
 	a.UpgradeAvailable = false
-	if item.Kind == "dynamic" || item.Kind == "live" {
+	if normalizeSiteIDUI(item.Site) == "douyin" || item.Kind == "dynamic" || item.Kind == "live" {
 		a.CurrentVideo = nil
 		a.CurrentVideoItemKey = ""
 		return
@@ -371,26 +354,145 @@ func (a *App) OpenLibraryItemDetail(item library.ItemMetadata) {
 		Author: bilibili.AuthorInfo{
 			Mid:  item.Author.Mid,
 			Name: item.Author.Name,
-			Face: item.Author.Face,
 		},
 		Pages: pages,
 	}
 	a.CurrentVideoItemKey = item.ItemKey
-	a.CurrentDynamic = nil
-	a.UpgradeAvailable = item.UpgradeAvailable
 }
 
 func (a *App) cachedDetailPost(item library.ItemMetadata) PostCardData {
-	post := a.cachedPostCard("detail:"+item.ItemKey, func() PostCardData {
-		return a.buildFeedPostCard(library.FeedEntry{
+	offline := a.CurrentRoute == RouteLibraryItem
+	cacheKey := "detail:" + item.ItemKey
+	if offline {
+		cacheKey = "detail-offline:" + item.ItemKey
+	}
+	post := a.cachedPostCard(cacheKey, func() PostCardData {
+		authorFace := item.Author.Face
+		if offline {
+			authorFace = ""
+		}
+		p := a.buildFeedPostCard(library.FeedEntry{
 			FeedKey: item.ItemKey, ItemKey: item.ItemKey, Site: item.Site, Kind: item.Kind, RawID: item.RawID,
-			Mid: item.Author.Mid, AuthorName: item.Author.Name, AuthorFace: item.Author.Face,
+			Mid: item.Author.Mid, AuthorName: item.Author.Name, AuthorFace: authorFace,
 			Title: item.Title, Summary: firstNonEmptyStrUI(item.Text, item.Desc), PubTs: item.PubTs,
 			CanonicalURL: item.URL, Cached: true, CacheStatus: library.ComputeDotState(item).Dot,
 		})
+		if p.LibItem == nil {
+			cp := item
+			p.LibItem = &cp
+		}
+		if offline {
+			p.Offline = true
+			p.AuthorFace = ""
+			if len(p.Images) > 0 {
+				imgs := make([]PostImage, len(p.Images))
+				for i, img := range p.Images {
+					img.URL = ""
+					img.LiveURL = ""
+					imgs[i] = img
+				}
+				p.Images = imgs
+			}
+			if len(p.NotePages) > 0 {
+				pages := make([]douyinNoteRenderPage, len(p.NotePages))
+				for i, pg := range p.NotePages {
+					pg.ImageURL = ""
+					pg.MotionURL = ""
+					pg.VideoURL = ""
+					pages[i] = pg
+				}
+				p.NotePages = pages
+			}
+			if p.Video != nil {
+				v := *p.Video
+				v.CoverURL = ""
+				v.BVID = ""
+				p.Video = &v
+			}
+		}
+		return p
 	})
 	post.InHomeFeed = false
+	post.Offline = offline
+	if post.LibItem == nil {
+		cp := item
+		post.LibItem = &cp
+	}
 	return post
+}
+
+func libraryItemParseInput(item library.ItemMetadata) string {
+	if u := strings.TrimSpace(item.URL); u != "" {
+		return u
+	}
+	siteID := normalizeSiteIDUI(item.Site)
+	rawID := strings.TrimSpace(firstNonEmptyStrUI(item.RawID, item.ID))
+	if siteID == "douyin" {
+		switch item.Kind {
+		case "dynamic", "note":
+			if rawID != "" {
+				return "https://www.douyin.com/note/" + rawID
+			}
+		case "live":
+			if item.Live != nil && strings.TrimSpace(item.Live.WebRID) != "" {
+				return "https://live.douyin.com/" + strings.TrimSpace(item.Live.WebRID)
+			}
+			if strings.TrimSpace(item.Author.UID) != "" {
+				return "https://www.douyin.com/user/" + strings.TrimSpace(item.Author.UID)
+			}
+		default:
+			if rawID != "" {
+				return "https://www.douyin.com/video/" + rawID
+			}
+		}
+		return rawID
+	}
+	switch item.Kind {
+	case "dynamic":
+		if rawID != "" {
+			return "https://t.bilibili.com/" + rawID
+		}
+	case "live":
+		if item.Live != nil && item.Live.RoomID > 0 {
+			return fmt.Sprintf("https://live.bilibili.com/%d", item.Live.RoomID)
+		}
+		if item.Author.Mid > 0 {
+			return fmt.Sprintf("https://space.bilibili.com/%d", item.Author.Mid)
+		}
+	default:
+		if rawID != "" {
+			return "https://www.bilibili.com/video/" + rawID
+		}
+	}
+	return rawID
+}
+
+func (a *App) openInParseFromLibrary(item library.ItemMetadata) {
+	target := libraryItemParseInput(item)
+	a.Navigate(RouteParse)
+	a.ParsePageInput = target
+	if target != "" {
+		a.SubmitParse(target)
+	}
+}
+
+func (a *App) renderLibraryItemMoreMenu(c *ui.Context, item library.ItemMetadata, size float32) {
+	menuKey := "lib-detail:" + item.ItemKey
+	open := a.PostMenuKey == menuKey
+	MoreMenuButton(c, "本机详情更多", size, &open, func(m *ui.Menu) {
+		if m.Item("在解析页打开").Chosen() {
+			a.openInParseFromLibrary(item)
+		}
+	})
+	keyedMenuOpen(&a.PostMenuKey, menuKey, open)
+}
+
+func (a *App) renderLibraryItemRoute(c *ui.Context, viewportHeight float32) {
+	if a.CurrentLibraryDetail != nil && normalizeSiteIDUI(a.CurrentLibraryDetail.Site) == "douyin" && a.CurrentLibraryDetail.Kind != "live" {
+		a.renderDouyinWorkRoute(c, viewportHeight)
+		return
+	}
+	a.renderVideoRoute(c)
 }
 
 func (a *App) renderRecordingDetail(c *ui.Context, item library.ItemMetadata) {

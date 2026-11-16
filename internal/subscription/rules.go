@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -30,9 +31,21 @@ type CacheRule struct {
 // ErrRuleNotFound reports an unknown rule ID.
 var ErrRuleNotFound = errors.New("subscription: cache rule not found")
 
+// defaultRule is the built-in rule: every option off (no scheduled check, no
+// automatic caching, no recording). It cannot be edited; new subscriptions
+// start on it (DEC-054).
 func defaultRule() CacheRule {
-	return CacheRule{ID: DefaultRuleID, Name: "默认", ScheduledCheck: true, Types: []string{"video", "draw"}}
+	return CacheRule{ID: DefaultRuleID, Name: "默认"}
 }
+
+// DefaultSubRules are the settings of the built-in rule, for creating a
+// subscription that starts on it.
+func DefaultSubRules() SubRules {
+	return ruleToSubRules(defaultRule())
+}
+
+// ErrDefaultRuleLocked reports an attempt to change the built-in rule.
+var ErrDefaultRuleLocked = errors.New("默认规则不能修改")
 
 // ruleTypeOrder is the display and storage order of dynamic types.
 var ruleTypeOrder = []string{"video", "draw", "word", "forward"}
@@ -87,17 +100,24 @@ func newRuleID() string {
 	return "rule-" + hex.EncodeToString(rnd[:])
 }
 
-// ensureDefaultRuleLocked keeps the built-in rule first in the list.
-func (m *Manager) ensureDefaultRuleLocked() {
+// ensureDefaultRuleLocked keeps the built-in rule first in the list and with
+// its fixed settings. A stored "default" that differs (the earlier editable
+// one, which checked on a schedule) is reset; subscriptions that used it are
+// then bound by bindRuleLocked to a rule with their own settings, so none of
+// them changes behaviour. It reports whether the stored rule was reset.
+func (m *Manager) ensureDefaultRuleLocked() bool {
 	for i, r := range m.rules {
 		if r.ID == DefaultRuleID {
-			if i != 0 {
-				m.rules = append([]CacheRule{r}, slices.Delete(slices.Clone(m.rules), i, i+1)...)
+			reset := !slices.Equal(r.Types, nil) || r.ScheduledCheck || r.AutoCache || r.AutoRecord || r.Name != defaultRule().Name
+			if reset && strings.TrimSpace(r.Name) != "" && r.Name != defaultRule().Name {
+				m.formerDefaultName = strings.TrimSpace(r.Name)
 			}
-			return
+			m.rules = append([]CacheRule{defaultRule()}, slices.Delete(slices.Clone(m.rules), i, i+1)...)
+			return reset
 		}
 	}
 	m.rules = append([]CacheRule{defaultRule()}, m.rules...)
+	return false
 }
 
 func (m *Manager) ruleLocked(id string) (CacheRule, bool) {
@@ -133,7 +153,11 @@ func (m *Manager) bindRuleLocked(sub *Subscription) bool {
 	if r.AutoCache {
 		r.Types = normalizeRuleTypes(sub.Rules.AutoCache.Types)
 	}
-	r.Name = m.uniqueRuleNameLocked(RuleSummary(r), "")
+	name := RuleSummary(r)
+	if sub.RuleID == DefaultRuleID && m.formerDefaultName != "" {
+		name = m.formerDefaultName // keep the name the user gave the old default
+	}
+	r.Name = m.uniqueRuleNameLocked(name, "")
 	m.rules = append(m.rules, r)
 	sub.RuleID = r.ID
 	return true
@@ -198,6 +222,9 @@ func (m *Manager) ListRules() []CacheRule {
 // SaveRule creates (empty ID) or updates a shared rule and applies it to
 // every subscription that uses it.
 func (m *Manager) SaveRule(in CacheRule) (result CacheRule, resultErr error) {
+	if in.ID == DefaultRuleID {
+		return CacheRule{}, ErrDefaultRuleLocked
+	}
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" {
 		return CacheRule{}, errors.New("请填写规则名称")
@@ -322,4 +349,72 @@ func (m *Manager) SetSubscriptionRule(subID, ruleID string) (result Subscription
 		return Subscription{}, err
 	}
 	return sub, nil
+}
+
+// SetSubscriptionsRule assigns a shared rule to the selected subscriptions in one atomic batch.
+// Subscriptions in subIDs switch to ruleID; subscriptions previously using ruleID (when
+// ruleID != DefaultRuleID) that are not in subIDs fall back to DefaultRuleID; all other
+// subscriptions remain unchanged.
+func (m *Manager) SetSubscriptionsRule(ruleID string, subIDs []string) (resultErr error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureDefaultRuleLocked()
+
+	ruleID = strings.TrimSpace(ruleID)
+	rule, ok := m.ruleLocked(ruleID)
+	if !ok {
+		return ErrRuleNotFound
+	}
+
+	before, err := m.listLocked()
+	if err != nil {
+		return err
+	}
+
+	selected := make(map[int]bool, len(subIDs))
+	for _, rawID := range subIDs {
+		id := strings.TrimSpace(rawID)
+		matched := -1
+		if id != "" {
+			for i, s := range before {
+				if s.ID == id || s.SubID == id || (s.Mid > 0 && strconv.FormatInt(s.Mid, 10) == strings.TrimPrefix(id, "bilibili:")) {
+					matched = i
+					break
+				}
+			}
+		}
+		if matched < 0 {
+			return fmt.Errorf("subscription: %s not found", rawID)
+		}
+		selected[matched] = true
+	}
+
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, m.restoreSubscriptionViewLocked(before))
+		}
+	}()
+
+	fallback, _ := m.ruleLocked(DefaultRuleID)
+	for i, sub := range before {
+		effectiveRuleID := sub.RuleID
+		if effectiveRuleID == "" {
+			effectiveRuleID = DefaultRuleID
+		}
+		switch {
+		case selected[i]:
+			sub.RuleID = rule.ID
+			m.applyRulesLocked(&sub, ruleToSubRules(rule))
+			if err := m.upsertRowLocked(sub); err != nil {
+				return err
+			}
+		case effectiveRuleID == rule.ID && rule.ID != DefaultRuleID:
+			sub.RuleID = DefaultRuleID
+			m.applyRulesLocked(&sub, ruleToSubRules(fallback))
+			if err := m.upsertRowLocked(sub); err != nil {
+				return err
+			}
+		}
+	}
+	return m.writeSubscriptionsToDiskLocked()
 }

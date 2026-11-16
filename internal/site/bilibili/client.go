@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -509,9 +510,18 @@ func (c *Client) doBiliJSON(ctx context.Context, method, fullURL string, body io
 		return resp, classifyBiliCode(env.Code, msg, hasVoucher, fullURL)
 	}
 
+	if nd, ok := out.(nullableData); ok {
+		if len(payload) == 0 || string(payload) == "null" {
+			return resp, nil
+		}
+		out = nd.out
+	}
 	if out != nil {
 		if len(payload) == 0 || string(payload) == "null" {
 			return resp, &SiteError{Kind: ErrKindSchemaChanged, Message: "接口响应缺少 data"}
+		}
+		if emptyArrayForMap(payload, out) {
+			return resp, nil
 		}
 		if err := json.Unmarshal(payload, out); err != nil {
 			return resp, &SiteError{
@@ -523,6 +533,18 @@ func (c *Client) doBiliJSON(ctx context.Context, method, fullURL string, body io
 		}
 	}
 	return resp, nil
+}
+
+// emptyArrayForMap reports whether an object-keyed result came back as an
+// empty JSON array. Bilibili's live endpoints serialize an empty map that way:
+// get_status_info_by_uids answers `"data": []` when no requested UID has a
+// live room. The map stays empty instead of failing as a schema change.
+func emptyArrayForMap(payload json.RawMessage, out any) bool {
+	rv := reflect.ValueOf(out)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() || rv.Elem().Kind() != reflect.Map {
+		return false
+	}
+	return strings.Join(strings.Fields(string(payload)), "") == "[]"
 }
 
 // doWBIGet executes a WBI-signed GET request. On a single -352 response (without v_voucher),
@@ -542,7 +564,7 @@ func (c *Client) doWBIGet(ctx context.Context, path string, params url.Values, o
 
 	var se *SiteError
 	if errors.As(err, &se) && se.Code == -352 && !strings.Contains(se.Message, "v_voucher") {
-		// Refresh WBI keys once and retry once (C09).
+		// Refresh WBI keys once and retry once.
 		mixin2, rErr := c.ensureMixinKey(ctx, true)
 		if rErr != nil {
 			return err

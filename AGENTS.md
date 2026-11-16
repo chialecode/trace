@@ -32,7 +32,7 @@
 - 在已有任务分支继续，不覆盖、不回退他人改动，不顺带扩大任务范围。
 - Git：一个阶段一个分支、一个提交、一个 PR；push 前把阶段内的实现、返工、审查与修复都 amend 进这个提交，提交带 DCO 签名。push、创建 PR、合并、发布、改写已推送历史，都要用户对具体动作明确授权（[Git 规则](docs/dev-rules/engineering.md#git)）。
 - 常规本地实现、已选依赖安装、验证、文档同步和本地 commit/amend 由 Agent 连续完成，不逐项请示。
-- 新阶段开始时，按[阶段开始的整理](docs/dev-rules/workflow.md#stage-cleanup)把无用文件（不论是否入库，按内容决定保留、精炼、提炼后删除或删除）和文档里以前阶段的标签列进计划并处理。构建与测试产物只保留最新一份（DEC-025）。
+- 新阶段开始时，按[阶段开始的整理](docs/dev-rules/workflow.md#stage-cleanup)把无用文件（不论是否入库，按内容决定保留、精炼、提炼后删除或删除）和文档里以前阶段的标签列进计划并处理。构建与测试产物只保留最新一份（DEC-025）。同时做[依赖盘点](docs/dev-rules/workflow.md#dependency-inventory)：先处理还开着的 Dependabot PR，再跑 `go run ./tools/deps`，升级满 7 天的新版本（DEC-048）。
 - 默认短测：单轮验证约 10 分钟，长测先请用户授权（[有界验证](docs/dev-rules/engineering.md#bounded-validation)）。
 - MVP 按完整可用流程切分；数据正确、凭证隔离、真实状态不因 MVP 放宽。
 - 同一事实只有一个正本：代码说明现在怎样，需求和设计说明应当怎样。关键决定、契约、实际版本与命令、故障与证据、交接 prompt 都要写进仓库，不只留在聊天里。

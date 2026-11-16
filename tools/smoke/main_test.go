@@ -116,3 +116,20 @@ func TestScanDirForSecrets(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatFocusFailure(t *testing.T) {
+	withDetail := formatFocusFailure("traySnap.StealFocusDetected = true", RuntimeStateSnapshot{
+		ForegroundPID:    4242,
+		StealFocusDetail: `close_to_tray (hwnd=0x1020 class="STATIC" visible=false)`,
+	})
+	if !strings.Contains(withDetail, "close_to_tray") || !strings.Contains(withDetail, `class="STATIC"`) || !strings.Contains(withDetail, "fgPid=4242") {
+		t.Fatalf("unexpected formatted focus failure with detail: %q", withDetail)
+	}
+
+	withoutDetail := formatFocusFailure("traySnap.StealFocusDetected = true", RuntimeStateSnapshot{
+		ForegroundPID: 99,
+	})
+	if withoutDetail != "traySnap.StealFocusDetected = true (fgPid=99)" {
+		t.Fatalf("unexpected formatted focus failure without detail: %q", withoutDetail)
+	}
+}
