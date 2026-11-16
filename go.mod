@@ -6,7 +6,7 @@ require (
 	github.com/Eyevinn/mp4ff v0.62.0
 	github.com/egoist/mygo v0.8.3
 	github.com/yeqown/go-qrcode/v2 v2.3.0
-	golang.org/x/image v0.47.0
+	golang.org/x/image v0.48.0
 	golang.org/x/sys v0.50.0
 	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.62.0
@@ -22,7 +22,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/yeqown/reedsolomon v1.0.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
