@@ -294,6 +294,8 @@ func setupLiveTestHarness(t *testing.T, handler http.Handler) (*Manager, *librar
 	liveMgr.hlsPollInterval = 25 * time.Millisecond
 	liveMgr.reconnectWait = 20 * time.Millisecond
 	liveMgr.freeBytesFunc = func(string) (uint64, error) { return 10 << 30, nil }
+	// Live checks are not spaced out in tests.
+	liveMgr.douyinGapWait = func(ctx context.Context, _ time.Duration) bool { return ctx.Err() == nil }
 	t.Cleanup(liveMgr.Stop)
 	return liveMgr, lib, subMgr, srv, cacheDir
 }

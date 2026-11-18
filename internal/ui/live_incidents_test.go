@@ -382,3 +382,31 @@ func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI_M4K33_M4K35(t *testing.
 		t.Fatalf("after deleting the records: ok=%v live=%+v media=%d", ok, item.Live, len(item.Media))
 	}
 }
+
+// A finished room whose state no longer names its session folder (the state
+// was rebuilt by a status refresh) shows its incidents on the saved session
+// only, not as a second card that starts at the first incident (dev
+// feedback 2026-11-18).
+func TestFinishedRoomIncidentsStayOnTheirSession(t *testing.T) {
+	app, _, cleanup := newTestUIApp(t)
+	defer cleanup()
+	incs := []library.LiveIncident{
+		{Kind: library.LiveIncidentLostSegments, At: "2026-11-18T10:20:34Z", EndedAt: "2026-11-18T10:20:34Z", DurationSec: 3, LostSegments: 1, Count: 1},
+		{Kind: library.LiveIncidentLostSegments, At: "2026-11-18T10:43:10Z", EndedAt: "2026-11-18T10:43:10Z", DurationSec: 12, LostSegments: 12, Count: 1},
+	}
+	app.LibraryItems = []library.ItemMetadata{{
+		ItemKey: "bilibili:live:1966814385:1794991191",
+		ItemDir: filepath.Join(t.TempDir(), "1966814385-1794991191"),
+		Site:    "bilibili", Kind: "live", Status: "complete",
+		Author: library.ItemAuthor{Mid: 1096484706, Name: "synthetic streamer"},
+		Live:   &library.LiveRecordingInfo{RoomID: 1966814385, StartedAt: "2026-11-18T08:41:05Z", EndedAt: "2026-11-18T10:46:59Z", Incidents: incs},
+	}}
+	app.LiveRooms = []live.RoomState{{UID: 1096484706, RoomID: 1966814385, Uname: "synthetic streamer", Incidents: incs}}
+	sessions := app.collectLiveSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want the saved session only: %+v", len(sessions), sessions)
+	}
+	if sessions[0].LibraryItem == nil || sessions[0].StartedAt != "2026-11-18T08:41:05Z" || len(sessions[0].Incidents) != 2 {
+		t.Fatalf("the session lost its folder, start or incidents: %+v", sessions[0])
+	}
+}

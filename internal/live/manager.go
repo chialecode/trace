@@ -138,6 +138,10 @@ type recordSession struct {
 	nominalByteRate          float64
 	pendingReconnectAt       time.Time
 	pendingReconnectHadMedia bool
+	// saveMu serializes writes of the manifest (item.json); finishDone
+	// closes when the parts converting in the background are done.
+	saveMu     sync.Mutex
+	finishDone chan struct{}
 }
 
 type cachedStatusEntry struct {
@@ -167,15 +171,19 @@ type Manager struct {
 	webRIDSyncFn          WebRIDSyncFunc
 	siteBackoffFn         SiteBackoffChecker
 	douyinPollMinInterval time.Duration
-	flvIdleTimeout        time.Duration
-	douyinStates          map[string]RoomState
-	douyinStatusCache     map[string]douyinCachedStatusEntry
-	douyinLastAutoPoll    map[string]time.Time
-	douyinWebRIDHints     map[string]string
-	douyinRoomHints       map[string]string
-	douyinPrevLive        map[string]string
-	douyinSessions        map[string]*recordSession
-	douyinStoppedRooms    map[string]bool
+	// douyinLiveGap is the least time between two Douyin live checks.
+	douyinLiveGap time.Duration
+	// douyinGapWait replaces the wait between live checks in tests.
+	douyinGapWait      func(ctx context.Context, d time.Duration) bool
+	flvIdleTimeout     time.Duration
+	douyinStates       map[string]RoomState
+	douyinStatusCache  map[string]douyinCachedStatusEntry
+	douyinLastAutoPoll map[string]time.Time
+	douyinWebRIDHints  map[string]string
+	douyinRoomHints    map[string]string
+	douyinPrevLive     map[string]string
+	douyinSessions     map[string]*recordSession
+	douyinStoppedRooms map[string]bool
 
 	stopping        bool
 	finalizeTimeout time.Duration
@@ -220,6 +228,7 @@ func NewManager(
 		stoppedBroadcasts:     make(map[int64]int64),
 		siteProviders:         make(map[site.ID]site.LiveProvider),
 		douyinPollMinInterval: defaultDouyinAutoPollInterval,
+		douyinLiveGap:         DefaultDouyinLiveGap,
 		flvIdleTimeout:        defaultFLVIdleTimeout,
 		douyinStates:          make(map[string]RoomState),
 		douyinStatusCache:     make(map[string]douyinCachedStatusEntry),
@@ -332,6 +341,9 @@ func (m *Manager) pollLoop(ctx context.Context) {
 			}
 		}
 
+		// Rounds start an interval apart: the Douyin checks spaced through
+		// the round do not push the next one back.
+		roundStart := time.Now()
 		if (cfg.PollEnabled || hasBiliAuto) && m.client != nil && m.client.HasAuth() && m.subs != nil {
 			if !m.isSiteInBackoff(site.Bilibili) {
 				var uids []int64
@@ -366,7 +378,7 @@ func (m *Manager) pollLoop(ctx context.Context) {
 		if sec < 60 {
 			sec = 60
 		}
-		timer := time.NewTimer(time.Duration(sec) * time.Second)
+		timer := time.NewTimer(max(time.Duration(sec)*time.Second-time.Since(roundStart), time.Second))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -430,8 +442,13 @@ func (m *Manager) PollNow(ctx context.Context) ([]RoomState, error) {
 	return m.refreshAccounts(ctx, nil, true, false)
 }
 
+// RefreshForAccounts reads the live status of the given accounts (cached for
+// 60 seconds). Like a poll round it starts recording a broadcast found live
+// when the account's subscription records broadcasts, so a status refresh on
+// the account page or by an update check does not leave it unrecorded until
+// the next round (dev 2026-11-18).
 func (m *Manager) RefreshForAccounts(ctx context.Context, uids []int64) ([]RoomState, error) {
-	return m.refreshAccounts(ctx, uids, false, false)
+	return m.refreshAccounts(ctx, uids, false, true)
 }
 
 func (m *Manager) refreshAccounts(ctx context.Context, selected []int64, force, autoRecord bool) ([]RoomState, error) {
@@ -578,9 +595,12 @@ func (m *Manager) refreshAccounts(ctx context.Context, selected []int64, force, 
 			Codec:       existing.Codec,
 			Recording:   recSess != nil,
 			Incidents:   cloneIncidents(existing.Incidents),
-			StopReason:  existing.StopReason,
-			LastError:   existing.LastError,
-			UpdatedAt:   nowStr,
+			// The last session's folder stays with its incidents after it ends,
+			// so Tasks › 录制异常 shows them on that session only.
+			RecordItemDir: existing.RecordItemDir,
+			StopReason:    existing.StopReason,
+			LastError:     existing.LastError,
+			UpdatedAt:     nowStr,
 		}
 		if recSess != nil {
 			roomState.RecordSession = recSess.sessionID
@@ -607,7 +627,7 @@ func (m *Manager) refreshAccounts(ctx context.Context, selected []int64, force, 
 		}
 	}
 	for _, roomID := range toAutoRecord {
-		if _, rErr := m.StartRecording(bilibili.WithAutomaticRequests(ctx, "live"), roomID); rErr != nil {
+		if _, rErr := m.StartRecording(ctx, roomID); rErr != nil {
 			m.mu.Lock()
 			if st, ok := m.states[roomID]; ok {
 				st.LastError = rErr.Error()
@@ -658,9 +678,12 @@ func (m *Manager) OpenRoom(ctx context.Context, roomOrShortID int64) (RoomState,
 		Codec:       existing.Codec,
 		Recording:   recSess != nil,
 		Incidents:   cloneIncidents(existing.Incidents),
-		StopReason:  existing.StopReason,
-		LastError:   existing.LastError,
-		UpdatedAt:   nowStr,
+		// The last session's folder stays with its incidents after it ends,
+		// so Tasks › 录制异常 shows them on that session only.
+		RecordItemDir: existing.RecordItemDir,
+		StopReason:    existing.StopReason,
+		LastError:     existing.LastError,
+		UpdatedAt:     nowStr,
 	}
 	if recSess != nil {
 		st.RecordSession = recSess.sessionID

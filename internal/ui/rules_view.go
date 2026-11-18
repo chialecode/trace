@@ -126,6 +126,7 @@ func (a *App) renderRuleEditor(c *ui.Context) {
 				}
 			})
 		}
+		settingSwitchRow(c, "全部缓存", "每 7 天检查一次每个账号的全部作品（哔哩哔哩为投稿视频），没缓存的放进缓存队列慢慢缓存", "规则：全部缓存", &d.FullCache)
 		settingSwitchRow(c, "开播自动录制", "", "规则：开播自动录制", &d.AutoRecord)
 		if d.ID != "" {
 			ui.Row(c).FillWidth().Padding(10, 0).Gap(12).AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {

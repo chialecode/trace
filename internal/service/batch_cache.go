@@ -119,6 +119,9 @@ func (b *Backend) buildQueuePager(siteID site.ID, list, normUser string) (queueP
 			if err != nil {
 				return nil, "", false, err
 			}
+			if page == 1 {
+				b.recordAccountWorks(site.Bilibili, strconv.FormatInt(mid, 10), res.Total)
+			}
 			out := make([]queueCandidate, 0, len(res.Items))
 			for _, v := range res.Items {
 				out = append(out, b.videoQueueCandidate(v.BVID, v.Title, mid))

@@ -231,9 +231,9 @@ func (m *Manager) runRecordingSession(ctx context.Context, sess *recordSession, 
 		if qName == "" && selection.Quality > 0 {
 			qName = bilibili.LiveQualityFallbackName(selection.Quality)
 		}
+		m.mu.Lock()
 		sess.itemMeta.PendingParts = append(sess.itemMeta.PendingParts, pending)
 		sess.itemMeta.Live.Codec, sess.itemMeta.Live.Quality, sess.itemMeta.Live.QualityName = selection.Codec, selection.Quality, qName
-		m.mu.Lock()
 		sess.codec, sess.quality, sess.qualityName = selection.Codec, selection.Quality, qName
 		if st, ok := m.states[sess.roomID]; ok {
 			st.Codec, st.Quality, st.QualityName = selection.Codec, selection.Quality, qName
@@ -264,34 +264,15 @@ func (m *Manager) runRecordingSession(ctx context.Context, sess *recordSession, 
 			flvConn = nil
 		}
 		if n > 0 {
-			finishCtx, cancel := context.WithTimeout(context.Background(), m.finalizeTimeout)
-			summary, conversionErr := finalizeLivePart(finishCtx, path, filepath.Join(sess.itemDir, partRel))
-			cancel()
-			if conversionErr != nil {
-				addLiveMissing(&sess.itemMeta, pending, "转换失败，临时片段已保留")
-				m.mu.Lock()
-				sess.lastErr = "直播录像转换失败：" + conversionErr.Error()
-				m.mu.Unlock()
-				m.recordSessionIncident(sess, library.LiveIncident{
-					Kind:   library.LiveIncidentConvertFailed,
-					At:     m.nowFunc().UTC().Format(time.RFC3339),
-					Part:   pending,
-					Reason: "直播录像转换失败：" + library.SanitizeLiveIncidentText(conversionErr.Error()),
-				}, true)
+			job := partJob{path: path, partRel: partRel, pending: pending, codec: selection.Codec, quality: selection.Quality, qualityName: qName}
+			if errors.Is(recordErr, errSegmentRollover) && ctx.Err() == nil {
+				m.finishPartAsync(sess, job)
 			} else {
-				sess.itemMeta.Media = mergeLiveMedia(sess.itemMeta.Media, library.MediaFile{Role: "live_segment", Path: partRel, Bytes: summary.FileBytes, SHA256: summary.SHA256, Duration: int(math.Round(summary.DurationSec)), Width: summary.Width, Height: summary.Height})
-				sess.itemMeta.PendingParts = removePending(sess.itemMeta.PendingParts, pending)
-				clearLiveCheckpoint(&sess.itemMeta, pending)
-				clearLiveMissing(&sess.itemMeta, pending)
-				sess.itemMeta.Live.Segments = mergeLiveSegment(sess.itemMeta.Live.Segments, library.LiveSegmentInfo{File: partRel, Bytes: summary.FileBytes, SHA256: summary.SHA256, DurationSec: summary.DurationSec, Codec: selection.Codec, Width: summary.Width, Height: summary.Height, Quality: selection.Quality, QualityName: qName})
-				m.mu.Lock()
-				sess.segments = append(sess.segments, partRel)
-				m.mu.Unlock()
-				if err := m.saveSession(sess); err != nil {
+				sess.waitPartsFinished()
+				if err := m.finishPart(sess, job); err != nil {
 					m.setSessionStop(sess, "storage", err)
 					break
 				}
-				_ = os.Remove(path)
 			}
 			sess.nextPart++
 			if sess.wroteMedia {
@@ -299,8 +280,10 @@ func (m *Manager) runRecordingSession(ctx context.Context, sess *recordSession, 
 			}
 		} else {
 			_ = os.Remove(path)
+			m.mu.Lock()
 			sess.itemMeta.PendingParts = removePending(sess.itemMeta.PendingParts, pending)
 			clearLiveCheckpoint(&sess.itemMeta, pending)
+			m.mu.Unlock()
 		}
 		if err := m.saveSession(sess); err != nil {
 			if isDiskFullError(err) {
@@ -385,6 +368,7 @@ func (m *Manager) runRecordingSession(ctx context.Context, sess *recordSession, 
 			break
 		}
 	}
+	sess.waitPartsFinished()
 	m.closeSessionSlowIncident(sess, m.nowFunc())
 	m.mu.Lock()
 	if sess.stopReason == "" {
@@ -423,22 +407,6 @@ func (m *Manager) runRecordingSession(ctx context.Context, sess *recordSession, 
 	if m.onState != nil {
 		m.onState(state)
 	}
-}
-
-func (m *Manager) saveSession(sess *recordSession) error {
-	m.mu.Lock()
-	sess.itemMeta.Live.LastSequence, sess.itemMeta.Live.HasSequence = sess.lastSequence, sess.hasSequence
-	sess.itemMeta.Live.Incidents = cloneIncidents(sess.incidents)
-	metaCopy := sess.itemMeta
-	m.mu.Unlock()
-	saved, err := m.lib.SaveItem(sess.itemDir, metaCopy)
-	if err == nil {
-		m.mu.Lock()
-		saved.Live.Incidents = cloneIncidents(sess.incidents)
-		sess.itemMeta = saved
-		m.mu.Unlock()
-	}
-	return err
 }
 
 func (m *Manager) setSessionStop(sess *recordSession, reason string, err error) {
@@ -629,14 +597,12 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 			sess.lastSequenceAt = fetchEnd
 			sess.segmentDuration += segment.duration
 			m.commitSessionPart(sess, written, sess.segmentDuration)
-			m.mu.Lock()
-			sess.itemMeta.Live.LastSequence, sess.itemMeta.Live.HasSequence = sess.lastSequence, sess.hasSequence
-			sess.itemMeta.Live.PendingFile = partBase
-			sess.itemMeta.Live.PendingBytes, sess.itemMeta.Live.PendingDuration = written, sess.segmentDuration
-			sess.itemMeta.Live.Incidents = cloneIncidents(sess.incidents)
-			checkpointMeta := sess.itemMeta
-			m.mu.Unlock()
-			if _, err := m.lib.SaveRecordingCheckpoint(sess.itemDir, checkpointMeta); err != nil {
+			seq, hasSeq, dur := sess.lastSequence, sess.hasSequence, sess.segmentDuration
+			if err := m.saveCheckpoint(sess, func(meta *library.ItemMetadata) {
+				meta.Live.LastSequence, meta.Live.HasSequence = seq, hasSeq
+				meta.Live.PendingFile = partBase
+				meta.Live.PendingBytes, meta.Live.PendingDuration = written, dur
+			}); err != nil {
 				return written, err
 			}
 			newCount++

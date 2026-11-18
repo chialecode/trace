@@ -101,6 +101,14 @@ CREATE TABLE IF NOT EXISTS site_scheduler_state (
 	last_stop_at TEXT NOT NULL DEFAULT '',
 	token_timestamps_json TEXT NOT NULL DEFAULT '[]'
 );
+CREATE TABLE IF NOT EXISTS account_works (
+	site TEXT NOT NULL,
+	uid TEXT NOT NULL,
+	works_total INTEGER NOT NULL DEFAULT -1,
+	works_at TEXT NOT NULL DEFAULT '',
+	full_cache_at TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (site, uid)
+);
 CREATE TABLE IF NOT EXISTS account_baseline_pinned (
 	site TEXT NOT NULL,
 	uid TEXT NOT NULL,
@@ -425,6 +433,23 @@ func (m *Manager) SiteAutomaticRequestAllowed(siteName string) error {
 	}
 	if !m.ConsumeSiteQuotaTokens(normSite, 1) {
 		return &site.Error{Site: site.ID(normSite), Kind: site.ErrKindQuota, Message: "本小时自动请求额度已用尽"}
+	}
+	return nil
+}
+
+// SiteAutomaticRequestAllowedFor is SiteAutomaticRequestAllowed for a
+// request of the given automatic source. Live work ("live": status checks
+// and starting or resuming a recording) still stops in backoff but does not
+// take the hourly quota: it keeps its own pace (Douyin live checks at least
+// 6 seconds apart), so update checks and automatic caching keep the whole
+// quota and live checks need not wait for it (DEC-060 ⑤).
+func (m *Manager) SiteAutomaticRequestAllowedFor(siteName, source string) error {
+	if source != "live" {
+		return m.SiteAutomaticRequestAllowed(siteName)
+	}
+	normSite := normalizeSchedulerSite(siteName)
+	if active, _ := m.IsSiteInBackoff(normSite); active {
+		return &site.Error{Site: site.ID(normSite), Kind: site.ErrKindBackoff, Message: "自动请求仍在退避期"}
 	}
 	return nil
 }

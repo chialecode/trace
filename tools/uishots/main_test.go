@@ -63,6 +63,7 @@ func TestUIShotsScenesAndStructuredAssertions(t *testing.T) {
 		"tasks-queue",
 		"tasks-live",
 		"tasks-incidents",
+		"tasks-checks",
 		"settings-update",
 		"settings-update-dev",
 		"settings-about",

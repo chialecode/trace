@@ -56,6 +56,7 @@ type SubRules struct {
 	ScheduledCheck bool          `json:"scheduledCheck"`
 	AutoCache      AutoCacheRule `json:"autoCache"`
 	AutoRecord     bool          `json:"autoRecord"`
+	FullCache      bool          `json:"fullCache,omitempty"` // DEC-061
 }
 
 // subscriptionsFile is the on-disk schema of subscriptions.json (subscriptions.md §1).
@@ -206,8 +207,11 @@ type Manager struct {
 	lastSummary *CheckSummary
 
 	schedCancel context.CancelFunc
-	schedWake   chan struct{}
-	wg          sync.WaitGroup
+	// nextRunAt is when the schedule loop runs the next round; zero when
+	// scheduled checking is off or the loop is not running.
+	nextRunAt time.Time
+	schedWake chan struct{}
+	wg        sync.WaitGroup
 
 	diskWriteHook func() error
 }
@@ -774,6 +778,9 @@ func (m *Manager) scheduleLoop(ctx context.Context, checkOnStartup bool) {
 		m.mu.Unlock()
 
 		nextTime, ok := NextRunTime(cfg, now)
+		m.mu.Lock()
+		m.nextRunAt = nextTime
+		m.mu.Unlock()
 		if !ok {
 			select {
 			case <-ctx.Done():
@@ -1553,7 +1560,16 @@ func (m *Manager) CheckSubscription(ctx context.Context, subID string) (CheckSum
 }
 
 func (m *Manager) runRoundForSubscription(ctx context.Context, targetMid int64, isScheduled bool, subID string) (CheckSummary, error) {
-	return m.executeMultiSiteRound(ctx, targetMid, isScheduled, subID)
+	return m.executeMultiSiteRound(ctx, targetMid, isScheduled, subID, "", "")
+}
+
+// CheckAccount checks one account of a subscription for updates at once
+// (Tasks › 检查计划), as a manual check of its subscription would.
+func (m *Manager) CheckAccount(ctx context.Context, subID, siteName, uid string) (CheckSummary, error) {
+	if subID == "" || uid == "" {
+		return CheckSummary{}, fmt.Errorf("subscription: no account selected")
+	}
+	return m.executeMultiSiteRound(ctx, 0, false, subID, normalizeSchedulerSite(siteName), uid)
 }
 
 func (m *Manager) checkSingleAccount(

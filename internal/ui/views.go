@@ -552,7 +552,7 @@ func (a *App) renderHomeRoute(c *ui.Context) {
 		return
 	}
 
-	list := ui.List(c, &a.FeedListState, len(a.FeedItems), func(i int) {
+	list := ui.List(c, a.FeedListState, len(a.FeedItems), func(i int) {
 		if i < 0 || i >= len(a.FeedItems) {
 			return
 		}
@@ -782,6 +782,7 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 									BVID:   vd.BVID,
 									Pages:  pages,
 									Detail: detail,
+									ForMid: a.cacheForMid(vd.BVID),
 								})
 								if err != nil {
 									a.BannerError = err.Error()
@@ -1101,7 +1102,7 @@ func (a *App) renderUserRoute(c *ui.Context) {
 			}
 			return all[idx[i-1]].BVID
 		}
-		ui.List(c, &a.UserVidListState, rows+1, func(i int) {
+		ui.List(c, a.UserVidListState, rows+1, func(i int) {
 			if i == 0 {
 				a.renderUserHeader(c, u)
 				return
@@ -1148,7 +1149,7 @@ func (a *App) renderUserRoute(c *ui.Context) {
 		}
 		return all[idx[i-1]].ID
 	}
-	ui.List(c, &a.UserDynListState, rows+1, func(i int) {
+	ui.List(c, a.UserDynListState, rows+1, func(i int) {
 		if i == 0 {
 			a.renderUserHeader(c, u)
 			return
@@ -1359,7 +1360,7 @@ func (a *App) renderUserVideoRow(c *ui.Context, u *bilibili.UserSpace, v bilibil
 		Duration:   v.Length,
 		Meta:       fmt.Sprintf("时长 %s · 播放 %s", v.Length, FormatCount(int64(v.PlayCount))),
 		BrowserURL: "https://www.bilibili.com/video/" + v.BVID,
-		Open:       func() { a.OpenVideo(v.BVID, v.Title, u.Name, u.Mid, v.Cover, v.Length) },
+		Open:       func() { a.openVideoFor(v.BVID, v.Title, u.Name, u.Mid, v.Cover, v.Length, u.Mid) },
 	})
 }
 
@@ -1885,13 +1886,14 @@ func (a *App) renderSettingsCategoryContent(c *ui.Context) {
 			if liveMinStr == "0" {
 				liveMinStr = "3"
 			}
-			if settingChoiceRow(c, "开播检查间隔", "", "选择直播轮询间隔", &liveMinStr, []settingChoice{{"1", "1 分钟"}, {"3", "3 分钟"}, {"5", "5 分钟"}, {"10", "10 分钟"}}) {
+			if settingChoiceRow(c, "开播检查间隔", liveIntervalNote(a.checkPlanRows()), "选择直播轮询间隔", &liveMinStr, []settingChoice{{"1", "1 分钟"}, {"3", "3 分钟"}, {"5", "5 分钟"}, {"10", "10 分钟"}}) {
 				if v, err := strconv.Atoi(liveMinStr); err == nil {
 					a.DraftSettings.LiveCheckIntervalMin = v
 					a.DraftSettings.Live.PollIntervalSeconds = v * 60
 					a.saveSettings()
 				}
 			}
+			renderLiveCheckRules(c, a.DraftSettings.Live.PollIntervalSeconds)
 		})
 
 	case "storage":

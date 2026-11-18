@@ -349,7 +349,7 @@ func (a *App) applyInitialSubscriptionRoute(rawRoute string) {
 }
 
 func (a *App) resetSubFeedListState() {
-	a.SubFeedListState = ui.ListState{
+	a.SubFeedListState = &ui.ListState{
 		Key: func(i int) any {
 			if i >= 0 && i < len(a.SubFeedItems) {
 				return a.SubFeedItems[i].FeedKey
@@ -674,7 +674,7 @@ func (a *App) renderSubscriptionContentTab(c *ui.Context, sub *subscription.Subs
 		return
 	}
 
-	ui.List(c, &a.SubFeedListState, len(a.SubFeedItems), func(i int) {
+	ui.List(c, a.SubFeedListState, len(a.SubFeedItems), func(i int) {
 		if i < 0 || i >= len(a.SubFeedItems) {
 			return
 		}
@@ -909,6 +909,9 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 									ui.Text(c, "· "+formatSubscriptionAccountIdent(acc)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 								})
 								ui.Text(c, liveText).FontSize(12).FontWeight(liveWeight).TextColor(liveColor).SingleLine()
+								if works := a.accountWorksText(accSite, acc.UID); works != "" {
+									ui.Text(c, works).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+								}
 							})
 						})
 

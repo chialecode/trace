@@ -1,6 +1,9 @@
 package ui
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 func request[T any](a *App, key string, work func(context.Context) (T, error), apply func(T)) {
 	requestGuarded(a, key, nil, work, apply, nil)
@@ -60,5 +63,23 @@ func (a *App) checkAllSubscriptions() {
 			return "", err
 		}
 		return checkSummaryMessage(sum), nil
-	}, func(message string) { a.BannerInfo = message; a.RefreshData() })
+	}, func(message string) { a.BannerInfo = message; a.checkPlanAt = time.Time{}; a.RefreshData() })
+}
+
+// checkAccountNow checks one account of a subscription for updates at once
+// (Tasks › 检查计划).
+func (a *App) checkAccountNow(subID, siteName, uid string) {
+	if a.pending["check-updates"] {
+		return
+	}
+	a.CheckDone, a.CheckTotal = 0, 0
+	a.checkingAccount = siteName + ":" + uid
+	backend := a.backend
+	request(a, "check-updates", func(ctx context.Context) (string, error) {
+		sum, err := backend.CheckAccount(ctx, subID, siteName, uid)
+		if err != nil {
+			return "", err
+		}
+		return checkSummaryMessage(sum), nil
+	}, func(message string) { a.BannerInfo = message; a.checkPlanAt = time.Time{}; a.RefreshData() })
 }
