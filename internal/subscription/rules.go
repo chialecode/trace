@@ -26,6 +26,9 @@ type CacheRule struct {
 	AutoCache      bool     `json:"autoCache"`
 	Types          []string `json:"types,omitempty"`
 	AutoRecord     bool     `json:"autoRecord"`
+	// FullCache sweeps each account's works every FullCacheInterval and
+	// queues the ones not cached yet (DEC-061).
+	FullCache bool `json:"fullCache,omitempty"`
 }
 
 // ErrRuleNotFound reports an unknown rule ID.
@@ -62,7 +65,7 @@ func normalizeRuleTypes(types []string) []string {
 
 // ruleMatches reports whether a subscription's effective rules equal r.
 func ruleMatches(r CacheRule, s SubRules) bool {
-	if r.ScheduledCheck != s.ScheduledCheck || r.AutoRecord != s.AutoRecord || r.AutoCache != s.AutoCache.Enabled {
+	if r.ScheduledCheck != s.ScheduledCheck || r.AutoRecord != s.AutoRecord || r.AutoCache != s.AutoCache.Enabled || r.FullCache != s.FullCache {
 		return false
 	}
 	return !r.AutoCache || slices.Equal(normalizeRuleTypes(r.Types), normalizeRuleTypes(s.AutoCache.Types))
@@ -88,6 +91,9 @@ func RuleSummary(r CacheRule) string {
 		}
 		parts = append(parts, "自动缓存"+strings.Join(names, "、"))
 	}
+	if r.FullCache {
+		parts = append(parts, "全部缓存")
+	}
 	if r.AutoRecord {
 		parts = append(parts, "开播录制")
 	}
@@ -108,7 +114,7 @@ func newRuleID() string {
 func (m *Manager) ensureDefaultRuleLocked() bool {
 	for i, r := range m.rules {
 		if r.ID == DefaultRuleID {
-			reset := !slices.Equal(r.Types, nil) || r.ScheduledCheck || r.AutoCache || r.AutoRecord || r.Name != defaultRule().Name
+			reset := !slices.Equal(r.Types, nil) || r.ScheduledCheck || r.AutoCache || r.AutoRecord || r.FullCache || r.Name != defaultRule().Name
 			if reset && strings.TrimSpace(r.Name) != "" && r.Name != defaultRule().Name {
 				m.formerDefaultName = strings.TrimSpace(r.Name)
 			}
@@ -149,6 +155,7 @@ func (m *Manager) bindRuleLocked(sub *Subscription) bool {
 		ScheduledCheck: sub.Rules.ScheduledCheck,
 		AutoCache:      sub.Rules.AutoCache.Enabled,
 		AutoRecord:     sub.Rules.AutoRecord,
+		FullCache:      sub.Rules.FullCache,
 	}
 	if r.AutoCache {
 		r.Types = normalizeRuleTypes(sub.Rules.AutoCache.Types)
@@ -208,7 +215,7 @@ func ruleToSubRules(r CacheRule) SubRules {
 	if len(types) == 0 {
 		types = []string{"video", "draw"}
 	}
-	return SubRules{ScheduledCheck: r.ScheduledCheck, AutoRecord: r.AutoRecord, AutoCache: AutoCacheRule{Enabled: r.AutoCache, Types: types}}
+	return SubRules{ScheduledCheck: r.ScheduledCheck, AutoRecord: r.AutoRecord, AutoCache: AutoCacheRule{Enabled: r.AutoCache, Types: types}, FullCache: r.FullCache}
 }
 
 // ListRules returns the shared rules, the built-in one first.

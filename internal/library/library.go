@@ -1531,8 +1531,18 @@ func appendLibrarySiteAndAuthorClauses(clauses []string, args []any, siteFilter 
 	return appendSiteAndAuthorClausesVia(clauses, args, "", siteFilter, mid, authorUID, mids, refs, true)
 }
 
+// appendSiteAndAuthorClauses is the author filter for feed_items (colPrefix
+// "f."): an author's feed also has the collaboration videos cached for them
+// under their folder, though the uploader is someone else (DEC-061).
 func appendSiteAndAuthorClauses(clauses []string, args []any, colPrefix, siteFilter string, mid int64, authorUID string, mids []int64, refs []AuthorRef) ([]string, []any) {
 	return appendSiteAndAuthorClausesVia(clauses, args, colPrefix, siteFilter, mid, authorUID, mids, refs, false)
+}
+
+// collabItemKeysSQL selects the item keys of collaboration videos cached for
+// one of a site's creators; the site and creator placeholders follow.
+func collabItemKeysSQL(n int) string {
+	ph := strings.TrimSuffix(strings.Repeat("?,", n), ",")
+	return "(SELECT item_key FROM library_items WHERE site = ? AND " + viaUIDSQL + " IN (" + ph + ") AND json_extract(json_data, '$.via.reason') = '" + ViaCollab + "')"
 }
 
 func appendSiteAndAuthorClausesVia(clauses []string, args []any, colPrefix, siteFilter string, mid int64, authorUID string, mids []int64, refs []AuthorRef, withVia bool) ([]string, []any) {
@@ -1608,6 +1618,13 @@ func appendSiteAndAuthorClausesVia(clauses []string, args []any, colPrefix, site
 					args = append(args, u)
 				}
 				orParts = append(orParts, "("+colPrefix+"site = ? AND "+col+" IN ("+strings.Join(ph, ",")+"))")
+			}
+		}
+		if !withVia && colPrefix != "" {
+			orParts = append(orParts, "("+colPrefix+"item_key IN "+collabItemKeysSQL(len(uids))+")")
+			args = append(args, st)
+			for _, u := range uids {
+				args = append(args, u)
 			}
 		}
 	}

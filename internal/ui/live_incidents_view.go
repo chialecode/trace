@@ -176,7 +176,7 @@ func (a *App) collectLiveSessions() []liveIncidentSession {
 	libItems := a.localLiveLibraryItems()
 	matchedLibIdx := make(map[int]bool)
 
-	matchLibForState := func(siteID, roomID, uid, itemDir string, active bool) *library.ItemMetadata {
+	matchLibForState := func(siteID, roomID, uid, itemDir string, active bool, incs []library.LiveIncident) *library.ItemMetadata {
 		dirKey := cleanSessionDirKey(itemDir)
 		normSite := normalizeSiteIDUI(siteID)
 		if dirKey != "" {
@@ -185,6 +185,31 @@ func (a *App) collectLiveSessions() []liveIncidentSession {
 					matchedLibIdx[i] = true
 					cp := libItems[i]
 					return &cp
+				}
+			}
+		}
+		if !active && len(incs) > 0 {
+			// A finished room that lost its folder: the session of the same
+			// room that holds the same incidents.
+			at := make(map[string]bool, len(incs))
+			for _, inc := range incs {
+				at[inc.Kind+"@"+strings.TrimSpace(inc.At)] = true
+			}
+			for i := range libItems {
+				it := libItems[i]
+				if matchedLibIdx[i] || it.Live == nil || normalizeSiteIDUI(it.Site) != normSite {
+					continue
+				}
+				libRoom := liveInfoRoomIDString(it.Live)
+				if !((roomID != "" && libRoom == roomID) || (uid != "" && it.Author.UID == uid) || (uid != "" && it.Author.Mid > 0 && strconv.FormatInt(it.Author.Mid, 10) == uid)) {
+					continue
+				}
+				for _, inc := range it.Live.Incidents {
+					if at[inc.Kind+"@"+strings.TrimSpace(inc.At)] {
+						matchedLibIdx[i] = true
+						cp := it
+						return &cp
+					}
 				}
 			}
 		}
@@ -212,7 +237,7 @@ func (a *App) collectLiveSessions() []liveIncidentSession {
 	for _, room := range a.LiveRooms {
 		roomDec := strconv.FormatInt(room.RoomID, 10)
 		uidStr := strconv.FormatInt(room.UID, 10)
-		matched := matchLibForState("bilibili", roomDec, uidStr, room.RecordItemDir, room.Recording)
+		matched := matchLibForState("bilibili", roomDec, uidStr, room.RecordItemDir, room.Recording, room.Incidents)
 		if !room.Recording && matched == nil && len(room.Incidents) == 0 {
 			continue
 		}
@@ -275,7 +300,7 @@ func (a *App) collectLiveSessions() []liveIncidentSession {
 		if normalizeSiteIDUI(acct.Site) != "douyin" {
 			continue
 		}
-		matched := matchLibForState("douyin", acct.RoomID, acct.UID, acct.RecordItemDir, acct.Recording)
+		matched := matchLibForState("douyin", acct.RoomID, acct.UID, acct.RecordItemDir, acct.Recording, acct.Incidents)
 		if !acct.Recording && matched == nil && len(acct.Incidents) == 0 {
 			continue
 		}

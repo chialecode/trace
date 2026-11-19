@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/download"
@@ -310,6 +311,7 @@ func (b *Backend) DouyinUser(ctx context.Context, secUID string) (*DouyinUserVie
 	if b.subs != nil {
 		_ = b.subs.UpdateAccountSnapshot(string(site.Douyin), prof.SecUID, prof.Nickname, prof.AvatarURL, prof.UniqueID)
 	}
+	b.recordAccountWorks(site.Douyin, prof.SecUID, prof.AwemeCount)
 	if prof.WebRID != "" {
 		b.syncDouyinAccountWebRID(prof.SecUID, prof.WebRID)
 	}
@@ -608,6 +610,48 @@ func (b *Backend) SchedulerStatuses() map[string]SiteSchedulerStatus {
 	return out
 }
 
+// AccountCheckRow is a row of Tasks › 检查计划: an account's update checks
+// and, when its subscription records broadcasts, its live checks.
+type AccountCheckRow struct {
+	subscription.AccountCheckPlan
+	// LiveCheckedAt is the last live status check (RFC 3339), "" if none
+	// in this run; LiveEverySec how often one comes, about.
+	LiveCheckedAt string `json:"liveCheckedAt,omitempty"`
+	LiveEverySec  int    `json:"liveEverySec,omitempty"`
+}
+
+// CheckPlan lists every subscribed account with its last update check and
+// the scheduled round expected to check it next, plus the live checks of
+// accounts whose subscriptions record broadcasts.
+func (b *Backend) CheckPlan() []AccountCheckRow {
+	if b.subs == nil || b.requireAnyLogin() != nil {
+		return nil
+	}
+	plans := b.subs.CheckPlan()
+	var liveAt map[string]time.Time
+	if b.live != nil {
+		liveAt = b.live.LiveCheckTimes()
+	}
+	autoRecord := map[string]int{}
+	for _, p := range plans {
+		if p.AutoRecord {
+			autoRecord[p.Site]++
+		}
+	}
+	out := make([]AccountCheckRow, 0, len(plans))
+	for _, p := range plans {
+		row := AccountCheckRow{AccountCheckPlan: p}
+		if p.AutoRecord && b.live != nil {
+			if at, ok := liveAt[p.Site+":"+p.UID]; ok {
+				row.LiveCheckedAt = at.UTC().Format(time.RFC3339)
+			}
+			row.LiveEverySec = int(b.live.LiveCheckEvery(site.ID(p.Site), autoRecord[p.Site]).Seconds())
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
 // ListLiveAccounts returns unified live & recording states across all tracked rooms/accounts.
 func (b *Backend) ListLiveAccounts() []LiveAccountState {
 	if b.requireAnyLogin() != nil {
@@ -876,7 +920,11 @@ func (b *Backend) UserVideosPage(ctx context.Context, mid int64, page int) (bili
 	if err := b.requireSiteLogin(site.Bilibili); err != nil {
 		return bilibili.UserVideosPage{}, err
 	}
-	return b.bili.UserVideos(ctx, mid, page, 30, "pubdate", "")
+	res, err := b.bili.UserVideos(ctx, mid, page, 30, "pubdate", "")
+	if err == nil && page <= 1 {
+		b.recordAccountWorks(site.Bilibili, strconv.FormatInt(mid, 10), res.Total)
+	}
+	return res, err
 }
 
 // LiveStatus is a read-only refresh of visible Bilibili accounts, with a 60s cache.

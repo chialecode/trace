@@ -376,7 +376,10 @@ type roundAccountTarget struct {
 	lastCheckedAt string
 }
 
-func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, isScheduled bool, subID string) (CheckSummary, error) {
+// executeMultiSiteRound checks the accounts of all subscriptions, of subID
+// only, of the subscriptions with Bilibili account targetMid only, or (with
+// accSite and accUID) one account of subID.
+func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, isScheduled bool, subID, accSite, accUID string) (CheckSummary, error) {
 	if !m.hasAnySiteAuth() {
 		if isScheduled {
 			return CheckSummary{}, nil
@@ -436,6 +439,7 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 		targetMidStr = strconv.FormatInt(targetMid, 10)
 	}
 
+	onlySite := accSite
 	for i := range subs {
 		sub := &subs[i]
 		if subID != "" && sub.ID != subID && sub.SubID != subID {
@@ -460,6 +464,9 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 			accSite := normalizeSchedulerSite(a.Site)
 			a.Site = accSite
 			if targetMid > 0 && (accSite != string(site.Bilibili) || a.UID != targetMidStr) {
+				continue
+			}
+			if accUID != "" && (accSite != onlySite || a.UID != accUID) {
 				continue
 			}
 			m.mu.Lock()

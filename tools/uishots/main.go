@@ -1646,6 +1646,24 @@ func runUIShots(outDir string) error {
 			},
 		},
 		{
+			Name: "tasks-checks",
+			Setup: func() {
+				app.Navigate(ui.RouteTasks)
+				app.TasksSection = "checks"
+			},
+			RequiredLabels: []string{
+				"检查计划行 bilibili:20001",
+				"检查计划行 douyin:" + douyinSecUID,
+			},
+			PanelRequiredLabels: []string{
+				"任务侧栏：录制异常",
+				"任务侧栏：检查计划",
+			},
+			NarrowRequiredLabels: []string{
+				"任务分段：检查计划",
+			},
+		},
+		{
 			Name: "settings",
 			Setup: func() {
 				app.Navigate(ui.RouteSettings)

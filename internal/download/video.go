@@ -554,8 +554,21 @@ func validateVideoOutput(summary MuxTrackSummary, duration int, audio bool) erro
 		videoFound = videoFound || handler == "vide"
 		audioFound = audioFound || handler == "soun"
 	}
-	if !videoFound || audio && !audioFound || !summary.MoovBeforeMdat || !summary.HasElst || summary.DurationSec <= 0 || duration > 0 && math.Abs(summary.DurationSec-float64(duration)) > 2 {
-		return &bilibili.SiteError{Kind: bilibili.ErrKindSchemaChanged, Message: "MP4 轨道、结构或时长校验失败，已保留旧文件和中间流"}
+	reason := ""
+	switch {
+	case !videoFound:
+		reason = "合并后的 MP4 没有视频轨"
+	case audio && !audioFound:
+		reason = "合并后的 MP4 没有音频轨"
+	case !summary.MoovBeforeMdat || !summary.HasElst:
+		reason = "合并后的 MP4 结构不对"
+	case summary.DurationSec <= 0:
+		reason = "合并后的 MP4 时长为 0"
+	default:
+		reason = durationMismatch(summary.DurationSec, float64(duration))
+	}
+	if reason != "" {
+		return &bilibili.SiteError{Kind: bilibili.ErrKindSchemaChanged, Message: reason + "，已保留旧文件和中间流"}
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chialecode/trace/internal/subscription"
 	"github.com/egoist/mygo/ui"
@@ -46,7 +47,26 @@ func (a *App) subscriptionAccountRows(siteFilter string) []subAccountRow {
 	return rows
 }
 
+// accountWorksText is the works line of a subscribed account: the total
+// from the last parse of the account and how many are cached (DEC-061).
+// Showing it sends no request; "" when nothing is known yet.
+func (a *App) accountWorksText(siteID, uid string) string {
+	w, ok := a.accountWorks[normalizeSiteIDUI(siteID)+":"+strings.TrimSpace(uid)]
+	if !ok {
+		return ""
+	}
+	if w.Total < 0 {
+		return fmt.Sprintf("已缓存 %d · 作品总数在打开主页后统计", w.Cached)
+	}
+	text := fmt.Sprintf("作品 %d · 已缓存 %d", w.Total, w.Cached)
+	if at := formatPlanTime(w.TotalAt, time.Now()); at != "" {
+		text += " · " + at + " 统计"
+	}
+	return text
+}
+
 func (a *App) openSubscriptionAccounts() {
+	a.refreshAccountWorks()
 	a.SubDetailOpen = false
 	a.SubAccountsOpen = true
 	a.SubManageMenuOpen = false
@@ -114,6 +134,9 @@ func (a *App) renderSubscriptionAccountRow(c *ui.Context, r subAccountRow) {
 			id := "UID " + r.UID
 			if r.Site == "douyin" {
 				id = "抖音号 " + firstNonEmptyStrUI(r.UniqueID, "未知")
+			}
+			if works := a.accountWorksText(r.Site, r.UID); works != "" {
+				id += " · " + works
 			}
 			ui.Text(c, id).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 		})

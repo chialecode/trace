@@ -1117,7 +1117,7 @@ func (a *App) renderDouyinUserRoute(c *ui.Context, centerWidth float32) {
 		return "douyin-footer"
 	}
 
-	ui.List(c, &a.DouyinUserListState, totalRows, func(i int) {
+	ui.List(c, a.DouyinUserListState, totalRows, func(i int) {
 		if i == 0 {
 			a.renderDouyinUserHeader(c, u)
 			return

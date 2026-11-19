@@ -242,6 +242,7 @@ type SubscriptionService interface {
 	SetSubscriptionRules(subID string, rules subscription.SubRules) (subscription.Subscription, error)
 	// Shared cache rules: subscriptions choose one by ID.
 	ListCacheRules() []subscription.CacheRule
+	SubscriptionAccountWorks() map[string]AccountWorks
 	SaveCacheRule(rule subscription.CacheRule) (subscription.CacheRule, error)
 	DeleteCacheRule(id string) error
 	SetSubscriptionRule(subID, ruleID string) (subscription.Subscription, error)
@@ -261,8 +262,11 @@ type UpdateService interface {
 	ListSubscriptionUpdates(subID string) ([]subscription.UpdateItem, error)
 	CheckSubscriptionsNow(ctx context.Context, targetMid int64) (subscription.CheckSummary, error)
 	CheckSubscription(ctx context.Context, subID string) (subscription.CheckSummary, error)
+	CheckAccount(ctx context.Context, subID, siteName, uid string) (subscription.CheckSummary, error)
 	CancelSubscriptionCheck()
 	SchedulerStatuses() map[string]SiteSchedulerStatus
+	// CheckPlan is Tasks › 检查计划: each account's last and next checks.
+	CheckPlan() []AccountCheckRow
 }
 
 // FollowingService defines read-only following group and creator import operations.
@@ -639,8 +643,8 @@ func NewBackend(opts Options) (*Backend, error) {
 	})
 	biliClient.SetAutomaticRequestHandlers(subMgr.AutomaticRequestAllowed, subMgr.RecordAutomaticStop)
 	dyClient.SetAutomaticRequestHandlers(
-		func(_ context.Context, _ string, _ string) error {
-			return subMgr.SiteAutomaticRequestAllowed(string(site.Douyin))
+		func(_ context.Context, source string, _ string) error {
+			return subMgr.SiteAutomaticRequestAllowedFor(string(site.Douyin), source)
 		},
 		func(_ string, err error) {
 			subMgr.RecordSiteAutomaticStop(string(site.Douyin), site.KindOf(err))
@@ -703,6 +707,8 @@ func NewBackend(opts Options) (*Backend, error) {
 		b.pruneAccountAvatars()
 		b.bgWg.Add(1)
 		go b.runRenewalLoop(bgCtx)
+		b.bgWg.Add(1)
+		go b.runFullCacheLoop(bgCtx)
 		b.bgWg.Add(1)
 		go func() { defer b.bgWg.Done(); _, _ = b.BootstrapAuth(bgCtx) }()
 	}
@@ -1304,6 +1310,7 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 			return nil, err
 		}
 		out.User = &space
+		b.recordAccountWorks(site.Bilibili, strconv.FormatInt(space.Mid, 10), space.ArchiveCount)
 		if dyns, dErr := b.bili.UserDynamics(ctx, target.Mid, ""); dErr == nil {
 			out.UserDynamics = &dyns
 		} else {
@@ -1378,6 +1385,7 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 			return nil, err
 		}
 		out.User = &space
+		b.recordAccountWorks(site.Bilibili, strconv.FormatInt(space.Mid, 10), space.ArchiveCount)
 		if dyns, dErr := b.bili.UserDynamics(ctx, room.UID, ""); dErr == nil {
 			out.UserDynamics = &dyns
 		} else {
@@ -2786,6 +2794,14 @@ func (b *Backend) CheckSubscription(ctx context.Context, subID string) (subscrip
 		return subscription.CheckSummary{}, err
 	}
 	return b.subs.CheckSubscription(ctx, subID)
+}
+
+// CheckAccount checks one account of a subscription for updates at once.
+func (b *Backend) CheckAccount(ctx context.Context, subID, siteName, uid string) (subscription.CheckSummary, error) {
+	if err := b.requireSiteLogin(site.ID(siteName)); err != nil {
+		return subscription.CheckSummary{}, err
+	}
+	return b.subs.CheckAccount(ctx, subID, siteName, uid)
 }
 
 func (b *Backend) CancelSubscriptionCheck() { b.subs.CancelCheck() }

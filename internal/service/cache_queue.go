@@ -112,7 +112,13 @@ type CacheQueueRequest struct {
 	Works     []DouyinWorkCardDTO      `json:"-"`
 	Cursor    string                   `json:"cursor"`
 	HasMore   bool                     `json:"hasMore"`
+	// Origin is QueueOriginFullCache when a full-cache rule started the run
+	// (DEC-061); empty for "全部缓存" on a user page.
+	Origin string `json:"origin,omitempty"`
 }
+
+// QueueOriginFullCache marks a queue run started by a full-cache rule (DEC-061).
+const QueueOriginFullCache = "full_cache"
 
 // CacheQueueRecentItem summarizes one item cached by a queue run so the detail panel can open it locally.
 type CacheQueueRecentItem struct {
@@ -130,6 +136,7 @@ type CacheQueueTask struct {
 	AvatarPath       string                 `json:"avatarPath,omitempty"`
 	List             string                 `json:"list"`
 	ListLabel        string                 `json:"listLabel"`
+	Origin           string                 `json:"origin,omitempty"`
 	Status           string                 `json:"status"`
 	StatusText       string                 `json:"statusText"`
 	PauseReason      string                 `json:"pauseReason,omitempty"`
@@ -159,6 +166,7 @@ type cacheQueueRecord struct {
 	UserName          string                 `json:"userName,omitempty"`
 	AvatarKey         string                 `json:"avatarKey,omitempty"`
 	List              string                 `json:"list"`
+	Origin            string                 `json:"origin,omitempty"`
 	Cursor            string                 `json:"cursor,omitempty"`
 	HasMore           bool                   `json:"hasMore"`
 	ProcessedKeys     []string               `json:"processedKeys,omitempty"`
@@ -378,6 +386,9 @@ func sanitizeQueueRecord(r cacheQueueRecord) cacheQueueRecord {
 	r.User = normUser
 	r.ID = sanitizeCursor(r.ID)
 	r.UserName = sanitizeQueueText(r.UserName)
+	if r.Origin != QueueOriginFullCache {
+		r.Origin = ""
+	}
 	if !avatarFileRe.MatchString(r.AvatarKey) {
 		r.AvatarKey = ""
 	}
@@ -590,7 +601,8 @@ func (m *cacheQueueManager) toDTOLocked(e *cacheQueueEntry) CacheQueueTask {
 		UserName:         userName,
 		AvatarPath:       avatarPath,
 		List:             rec.List,
-		ListLabel:        cacheQueueListLabel(rec.Site, rec.List),
+		ListLabel:        queueListLabel(rec),
+		Origin:           rec.Origin,
 		Status:           rec.Status,
 		StatusText:       m.statusTextLocked(rec),
 		PauseReason:      rec.PauseReason,
@@ -1607,6 +1619,22 @@ func (b *Backend) EnqueueCacheQueue(ctx context.Context, req CacheQueueRequest) 
 	return b.enqueueCacheQueueWithPager(normSite, normList, normUser, req, loaded, pager)
 }
 
+// queueListLabel names the list; a run a full-cache rule started says so.
+func queueListLabel(rec cacheQueueRecord) string {
+	label := cacheQueueListLabel(rec.Site, rec.List)
+	if rec.Origin == QueueOriginFullCache {
+		return "定期全部缓存 · " + label
+	}
+	return label
+}
+
+func queueOrigin(o string) string {
+	if o == QueueOriginFullCache {
+		return o
+	}
+	return ""
+}
+
 func (b *Backend) enqueueCacheQueueWithPager(
 	normSite site.ID,
 	normList, normUser string,
@@ -1667,6 +1695,7 @@ func (b *Backend) enqueueCacheQueueWithPager(
 		UserName:      cleanName,
 		AvatarKey:     avatarKey,
 		List:          normList,
+		Origin:        queueOrigin(req.Origin),
 		Cursor:        "",
 		HasMore:       true,
 		RestThreshold: m.pickRestThresholdLocked(),

@@ -20,7 +20,7 @@ import (
 
 func (a *App) effectiveTasksSection() string {
 	switch a.TasksSection {
-	case "queue", "live", "incidents":
+	case "queue", "live", "incidents", "checks":
 		return a.TasksSection
 	default:
 		return "downloads"
@@ -186,9 +186,9 @@ func (a *App) cacheQueueNavText() string {
 	return fmt.Sprintf("缓存队列（%d）", n)
 }
 
-// renderTasksPanel renders the context sidebar on RouteTasks: four uniform
-// entries 下载任务、缓存队列、直播录制、录制异常; the queues themselves are
-// listed on the 缓存队列 page (DEC-057).
+// renderTasksPanel renders the context sidebar on RouteTasks: five uniform
+// entries 下载任务、缓存队列、直播录制、录制异常、检查计划; the queues
+// themselves are listed on the 缓存队列 page (DEC-057).
 func (a *App) renderTasksPanel(c *ui.Context) {
 	sec := a.effectiveTasksSection()
 	activeDL := a.activeWorkCount()
@@ -211,6 +211,9 @@ func (a *App) renderTasksPanel(c *ui.Context) {
 				if panelIconItem(c, "alert-circle", a.liveIncidentsNavText(), "任务侧栏：录制异常", sec == "incidents") {
 					a.selectTasksIncidents("")
 				}
+				if panelIconItem(c, "refresh", "检查计划", "任务侧栏：检查计划", sec == "checks") {
+					a.selectTasksChecks()
+				}
 			})
 		})
 	})
@@ -229,6 +232,7 @@ func (a *App) renderTasksNarrowSelector(c *ui.Context) {
 		{"queue", a.cacheQueueNavText(), "任务分段：缓存队列"},
 		{"live", fmt.Sprintf("直播录制（%d）", activeLive), "任务分段：直播录制"},
 		{"incidents", a.liveIncidentsNavText(), "任务分段：录制异常"},
+		{"checks", "检查计划", "任务分段：检查计划"},
 	}
 	ui.Row(c).
 		FillWidth().
@@ -267,6 +271,8 @@ func (a *App) renderTasksNarrowSelector(c *ui.Context) {
 							a.selectTasksLive()
 						case "incidents":
 							a.selectTasksIncidents("")
+						case "checks":
+							a.selectTasksChecks()
 						}
 					}
 				}
@@ -286,6 +292,8 @@ func (a *App) renderTasksRoute(c *ui.Context) {
 		a.renderTasksLiveView(c)
 	case "incidents":
 		a.renderTasksIncidentsView(c)
+	case "checks":
+		a.renderTasksChecksView(c)
 	default:
 		a.renderTasksDownloadsView(c)
 	}

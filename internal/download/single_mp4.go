@@ -151,10 +151,8 @@ func EnsureSingleMP4Context(ctx context.Context, path string, expectedDurationSe
 	if summary.DurationSec <= 0 {
 		return summary, &SingleMP4ValidationError{Reason: "MP4 时长必须大于 0"}
 	}
-	if expectedDurationSec > 0 && math.Abs(summary.DurationSec-expectedDurationSec) > 2.0 {
-		return summary, &SingleMP4ValidationError{
-			Reason: fmt.Sprintf("MP4 时长 %.2fs 与预期 %.2fs 误差超过 2 秒", summary.DurationSec, expectedDurationSec),
-		}
+	if reason := durationMismatch(summary.DurationSec, expectedDurationSec); reason != "" {
+		return summary, &SingleMP4ValidationError{Reason: reason}
 	}
 	return summary, nil
 }
@@ -321,10 +319,8 @@ func validateDecodedSingleMP4(parsed *mp4.File, fileSize uint64, expectedDuratio
 	if durationSec <= 0 {
 		return singleMP4Inspection{}, &SingleMP4ValidationError{Reason: "MP4 总时长必须大于 0"}
 	}
-	if expectedDurationSec > 0 && math.Abs(durationSec-expectedDurationSec) > 2.0 {
-		return singleMP4Inspection{}, &SingleMP4ValidationError{
-			Reason: fmt.Sprintf("MP4 时长 %.2fs 与预期 %.2fs 误差超过 2 秒", durationSec, expectedDurationSec),
-		}
+	if reason := durationMismatch(durationSec, expectedDurationSec); reason != "" {
+		return singleMP4Inspection{}, &SingleMP4ValidationError{Reason: reason}
 	}
 
 	// Relocate whenever moov appears after any mdat box.

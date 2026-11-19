@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,8 +29,18 @@ import (
 
 const (
 	defaultDouyinAutoPollInterval = 90 * time.Second
-	defaultFLVConnectTimeout      = 10 * time.Second
-	defaultFLVIdleTimeout         = 15 * time.Second
+	// DefaultDouyinLiveGap is the least time between two Douyin live checks.
+	// Douyin has no batch status request, so each account costs a request;
+	// a round checks every account it can at this pace (a 3-minute round:
+	// 30 accounts), the longest unchecked first, and an account's interval
+	// grows past the round only by this gap per further account. The checks
+	// do not take the site's hourly quota, which stays for update checks,
+	// automatic caching and starting recordings (DEC-060 ⑤): a share of the
+	// quota left 17 accounts about 18 minutes apart and the interval growing
+	// with every account added (dev 2026-11-18).
+	DefaultDouyinLiveGap     = 6 * time.Second
+	defaultFLVConnectTimeout = 10 * time.Second
+	defaultFLVIdleTimeout    = 15 * time.Second
 )
 
 // LiveRoomAliveChecker is an optional extension on site.LiveProvider for batch room alive checks (e.g. Douyin check_alive).
@@ -90,6 +101,67 @@ func (m *Manager) SetDouyinPollMinInterval(d time.Duration) {
 		m.douyinPollMinInterval = d
 	}
 	m.mu.Unlock()
+}
+
+// SetDouyinLiveGap overrides the least time between two Douyin live checks
+// (used by unit tests; 0 sends them back to back).
+func (m *Manager) SetDouyinLiveGap(d time.Duration) {
+	m.mu.Lock()
+	m.douyinLiveGap = max(d, 0)
+	m.mu.Unlock()
+}
+
+// DouyinLiveGap is the least time between two Douyin live checks.
+func (m *Manager) DouyinLiveGap() time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.douyinLiveGap
+}
+
+// douyinLiveChecksPerRoundLocked is how many Douyin live requests one poll
+// round may make: as many as fit in the round at the live check gap.
+func (m *Manager) douyinLiveChecksPerRoundLocked() int {
+	sec := max(m.liveSettings.PollIntervalSeconds, 60)
+	if m.douyinLiveGap <= 0 {
+		return math.MaxInt32
+	}
+	return max(1, int(time.Duration(sec)*time.Second/m.douyinLiveGap))
+}
+
+// waitDouyinLiveGap waits the gap before a round's next live check; false
+// when ctx ends first.
+func (m *Manager) waitDouyinLiveGap(ctx context.Context) bool {
+	m.mu.Lock()
+	gap, wait := m.douyinLiveGap, m.douyinGapWait
+	m.mu.Unlock()
+	if gap <= 0 {
+		return ctx.Err() == nil
+	}
+	if wait != nil {
+		return wait(ctx, gap)
+	}
+	t := time.NewTimer(gap)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// DouyinLiveCheckEvery estimates how often each of n auto-record Douyin
+// accounts gets its live status checked.
+func (m *Manager) DouyinLiveCheckEvery(n int) time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if n <= 0 {
+		return 0
+	}
+	sec := max(m.liveSettings.PollIntervalSeconds, 60)
+	per := m.douyinLiveChecksPerRoundLocked()
+	rounds := (n + per - 1) / per
+	return max(m.douyinPollMinInterval, time.Duration(rounds*sec)*time.Second)
 }
 
 // SetFLVIdleTimeout overrides the 15s per-read idle timeout on HTTP-FLV streams (used by unit tests).
@@ -222,10 +294,21 @@ func (m *Manager) ObserveAccountLiveHint(siteID site.ID, uid, webRID, roomID str
 		prev.UpdatedAt = nowStr
 		m.douyinStates[stateKey] = prev
 	}
+	start := roomID != "" && roomID != "0" && m.douyinShouldAutoStartLocked(site.LiveStatus{Status: site.LiveStateLive, RoomID: roomID})
 	m.mu.Unlock()
 
 	if syncNeeded {
 		m.syncWebRID(site.Douyin, normUID, webRID, false)
+	}
+	// An update check that sees the account live starts its recording when
+	// a subscription records its broadcasts, before the account's turn for
+	// a live check (dev 2026-11-18). Starting asks for the stream, which
+	// confirms the broadcast; a hint gone stale just starts nothing.
+	if start && m.douyinAccountAutoRecords(normUID) {
+		target := firstNonEmpty(webRID, roomID)
+		go func() {
+			_, _ = m.StartDouyinRecording(site.WithAutomaticRequests(context.Background(), "live"), normUID, target)
+		}()
 	}
 }
 
@@ -380,7 +463,7 @@ func (m *Manager) CheckAccountLiveStatus(ctx context.Context, siteID site.ID, ui
 			return RoomState{}, &site.Error{Site: site.Bilibili, Kind: site.ErrKindBadRequest, Message: "无效的哔哩哔哩 UID"}
 		}
 		mid, _ := strconv.ParseInt(normUID, 10, 64)
-		if _, err := m.refreshAccounts(ctx, []int64{mid}, force, false); err != nil {
+		if _, err := m.refreshAccounts(ctx, []int64{mid}, force, true); err != nil {
 			return RoomState{}, err
 		}
 		st, _ := m.CachedAccountState(site.Bilibili, normUID)
@@ -417,7 +500,20 @@ func (m *Manager) CheckAccountLiveStatus(ctx context.Context, siteID site.ID, ui
 		if liveSt.AccountUID == "" {
 			liveSt.AccountUID = normUID
 		}
-		return m.applyDouyinLiveStatus(liveSt, effectiveWebRID, subAcc, now), nil
+		st := m.applyDouyinLiveStatus(liveSt, effectiveWebRID, subAcc, now)
+		if m.douyinAccountAutoRecords(normUID) {
+			// The check counts as the account's live check, and a broadcast
+			// it finds is recorded as a poll round would.
+			m.mu.Lock()
+			m.douyinLastAutoPoll[normUID] = now
+			m.mu.Unlock()
+			if m.autoStartDouyin(ctx, liveSt, st) {
+				if rec, ok := m.CachedAccountState(site.Douyin, normUID); ok {
+					st = rec
+				}
+			}
+		}
+		return st, nil
 
 	default:
 		return RoomState{}, site.ErrUnknownSite
@@ -532,9 +628,12 @@ func (m *Manager) applyDouyinLiveStatus(liveSt site.LiveStatus, queriedWebRID st
 		Codec:       firstNonEmpty(liveSt.Codec, existing.Codec),
 		Recording:   recSess != nil,
 		Incidents:   cloneIncidents(existing.Incidents),
-		StopReason:  existing.StopReason,
-		LastError:   existing.LastError,
-		UpdatedAt:   now.UTC().Format(time.RFC3339),
+		// The last session's folder stays with its incidents after it ends,
+		// so Tasks › 录制异常 shows them on that session only.
+		RecordItemDir: existing.RecordItemDir,
+		StopReason:    existing.StopReason,
+		LastError:     existing.LastError,
+		UpdatedAt:     now.UTC().Format(time.RFC3339),
 	}
 	st = m.hydrateDouyinStateLocked(st)
 	m.douyinStates[stateKey] = st
@@ -647,6 +746,71 @@ func (m *Manager) findDouyinSubAccount(secUID string) subscription.AccountRef {
 	return subscription.AccountRef{}
 }
 
+// douyinAccountAutoRecords tells whether a subscription records the
+// broadcasts of a Douyin account.
+func (m *Manager) douyinAccountAutoRecords(secUID string) bool {
+	if m.subs == nil || secUID == "" {
+		return false
+	}
+	list, err := m.subs.List()
+	if err != nil {
+		return false
+	}
+	for _, s := range list {
+		if !s.Rules.AutoRecord && !s.LiveAutoRecord {
+			continue
+		}
+		for _, acc := range s.Accounts {
+			if acc.Site != string(site.Douyin) {
+				continue
+			}
+			if norm, err := site.NormalizeUID(site.Douyin, acc.UID); err == nil && norm == secUID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// douyinShouldAutoStartLocked tells whether a broadcast a check found should
+// start recording: it is live and neither recorded already nor stopped by
+// hand. The caller holds m.mu.
+func (m *Manager) douyinShouldAutoStartLocked(liveSt site.LiveStatus) bool {
+	if liveSt.Status != site.LiveStateLive || liveSt.RoomID == "" || m.stopping {
+		return false
+	}
+	_, running := m.douyinSessions[liveSt.RoomID]
+	return !running && !m.douyinStoppedRooms[liveSt.RoomID]
+}
+
+// autoStartDouyin starts recording a broadcast found live outside a poll
+// round (an account's status refreshed by hand or by an update check), for
+// an account whose subscription records broadcasts. It reports whether a
+// recording started.
+func (m *Manager) autoStartDouyin(ctx context.Context, liveSt site.LiveStatus, st RoomState) bool {
+	m.mu.Lock()
+	if liveSt.Status != site.LiveStateLive && liveSt.RoomID != "" {
+		delete(m.douyinStoppedRooms, liveSt.RoomID)
+	}
+	start := m.douyinShouldAutoStartLocked(liveSt)
+	m.mu.Unlock()
+	if !start {
+		return false
+	}
+	if _, err := m.StartDouyinRecording(ctx, liveSt.AccountUID, firstNonEmpty(st.WebRID, liveSt.RoomID)); err != nil {
+		m.mu.Lock()
+		for k, rs := range m.douyinStates {
+			if rs.AccountUID == liveSt.AccountUID {
+				rs.LastError = err.Error()
+				m.douyinStates[k] = rs
+			}
+		}
+		m.mu.Unlock()
+		return false
+	}
+	return true
+}
+
 // PollDouyinAutoRecordNow polls subscribed Douyin accounts with AutoRecord enabled,
 // enforcing >= 90s per-account interval, checking known active room_ids via CheckRoomsAlive
 // when supported, and auto-starting HTTP-FLV recording on live broadcasts.
@@ -693,6 +857,15 @@ func (m *Manager) pollDouyinAutoRecord(ctx context.Context) ([]RoomState, error)
 	if len(targets) == 0 {
 		return m.ListRooms(), nil
 	}
+	// The accounts checked longest ago go first (never checked: first of
+	// all), so a round that cannot check them all goes round all of them.
+	m.mu.Lock()
+	sort.SliceStable(targets, func(i, j int) bool {
+		return m.douyinLastAutoPoll[targets[i].acc.UID].Before(m.douyinLastAutoPoll[targets[j].acc.UID])
+	})
+	requests := m.douyinLiveChecksPerRoundLocked()
+	m.mu.Unlock()
+	sent := 0 // live requests of this round, spaced by the live check gap
 
 	// Step 1: Check known active room_ids via CheckRoomsAlive (batch check_alive) when supported.
 	if aliveChecker, ok := provider.(LiveRoomAliveChecker); ok {
@@ -707,7 +880,11 @@ func (m *Manager) pollDouyinAutoRecord(ctx context.Context) ([]RoomState, error)
 		}
 		m.mu.Unlock()
 
-		if len(knownRooms) > 0 {
+		// A round with a single request spends it on an account's status:
+		// the recordings notice an ended broadcast themselves.
+		if len(knownRooms) > 0 && requests >= 2 {
+			requests--
+			sent++
 			aliveMap, aErr := aliveChecker.CheckRoomsAlive(ctx, knownRooms)
 			if aErr != nil {
 				if site.IsRoundStop(aErr) {
@@ -783,6 +960,14 @@ func (m *Manager) pollDouyinAutoRecord(ctx context.Context) ([]RoomState, error)
 		if hadLast && minInterval > 0 && now.Sub(lastAt) < minInterval {
 			continue
 		}
+		if requests <= 0 {
+			break
+		}
+		if sent > 0 && !m.waitDouyinLiveGap(ctx) {
+			break
+		}
+		requests--
+		sent++
 
 		m.mu.Lock()
 		m.douyinLastAutoPoll[uid] = now
@@ -824,9 +1009,7 @@ func (m *Manager) pollDouyinAutoRecord(ctx context.Context) ([]RoomState, error)
 				StartedAt:  now.UTC().Format(time.RFC3339),
 			})
 		}
-		suppressed := liveSt.RoomID != "" && m.douyinStoppedRooms[liveSt.RoomID]
-		_, running := m.douyinSessions[liveSt.RoomID]
-		shouldStart := liveSt.Status == site.LiveStateLive && liveSt.RoomID != "" && !m.stopping && !suppressed && !running
+		shouldStart := m.douyinShouldAutoStartLocked(liveSt)
 		m.mu.Unlock()
 
 		if shouldStart {
@@ -1369,11 +1552,11 @@ func (m *Manager) runDouyinRecordingSession(ctx context.Context, sess *recordSes
 			break
 		}
 
+		m.mu.Lock()
 		sess.itemMeta.PendingParts = append(sess.itemMeta.PendingParts, pending)
 		sess.itemMeta.Live.Codec = plan.Codec
 		sess.itemMeta.Live.Quality = plan.Quality
 		sess.itemMeta.Live.QualityName = plan.QualityName
-		m.mu.Lock()
 		sess.codec, sess.quality, sess.qualityName = plan.Codec, plan.Quality, plan.QualityName
 		if st, ok := m.douyinStates[sess.stateKey]; ok {
 			st.Codec, st.Quality, st.QualityName = plan.Codec, plan.Quality, plan.QualityName
@@ -1395,56 +1578,15 @@ func (m *Manager) runDouyinRecordingSession(ctx context.Context, sess *recordSes
 		}
 
 		if n > 0 {
-			finishCtx, cancel := context.WithTimeout(context.Background(), m.finalizeTimeout)
-			summary, conversionErr := finalizeLivePart(finishCtx, path, filepath.Join(sess.itemDir, partRel))
-			cancel()
-			if conversionErr != nil {
-				addLiveMissing(&sess.itemMeta, pending, "转换失败，临时片段已保留")
-				m.mu.Lock()
-				sess.lastErr = "直播录像转换失败：" + conversionErr.Error()
-				m.mu.Unlock()
-				m.recordSessionIncident(sess, library.LiveIncident{
-					Kind:   library.LiveIncidentConvertFailed,
-					At:     m.nowFunc().UTC().Format(time.RFC3339),
-					Part:   pending,
-					Reason: "直播录像转换失败：" + library.SanitizeLiveIncidentText(conversionErr.Error()),
-				}, true)
+			job := partJob{path: path, partRel: partRel, pending: pending, codec: sess.codec, quality: plan.Quality, qualityName: plan.QualityName}
+			if errors.Is(recordErr, errSegmentRollover) && ctx.Err() == nil {
+				m.finishPartAsync(sess, job)
 			} else {
-				sess.itemMeta.Media = mergeLiveMedia(sess.itemMeta.Media, library.MediaFile{
-					Role:     "live_segment",
-					Path:     partRel,
-					Bytes:    summary.FileBytes,
-					SHA256:   summary.SHA256,
-					Duration: int(math.Round(summary.DurationSec)),
-					Width:    summary.Width,
-					Height:   summary.Height,
-				})
-				sess.itemMeta.PendingParts = removePending(sess.itemMeta.PendingParts, pending)
-				clearLiveCheckpoint(&sess.itemMeta, pending)
-				clearLiveMissing(&sess.itemMeta, pending)
-				codecName := sess.codec
-				if codecName == "" && len(summary.Codecs) > 0 {
-					codecName = summary.Codecs[0]
-				}
-				sess.itemMeta.Live.Segments = mergeLiveSegment(sess.itemMeta.Live.Segments, library.LiveSegmentInfo{
-					File:        partRel,
-					Bytes:       summary.FileBytes,
-					SHA256:      summary.SHA256,
-					DurationSec: summary.DurationSec,
-					Codec:       codecName,
-					Width:       summary.Width,
-					Height:      summary.Height,
-					Quality:     plan.Quality,
-					QualityName: plan.QualityName,
-				})
-				m.mu.Lock()
-				sess.segments = append(sess.segments, partRel)
-				m.mu.Unlock()
-				if err := m.saveSession(sess); err != nil {
+				sess.waitPartsFinished()
+				if err := m.finishPart(sess, job); err != nil {
 					m.setSessionStop(sess, "storage", err)
 					break
 				}
-				_ = os.Remove(path)
 			}
 			sess.nextPart++
 			if sess.wroteMedia {
@@ -1452,8 +1594,10 @@ func (m *Manager) runDouyinRecordingSession(ctx context.Context, sess *recordSes
 			}
 		} else {
 			_ = os.Remove(path)
+			m.mu.Lock()
 			sess.itemMeta.PendingParts = removePending(sess.itemMeta.PendingParts, pending)
 			clearLiveCheckpoint(&sess.itemMeta, pending)
+			m.mu.Unlock()
 		}
 
 		if err := m.saveSession(sess); err != nil {
@@ -1589,6 +1733,7 @@ func (m *Manager) runDouyinRecordingSession(ctx context.Context, sess *recordSes
 		plan = freshPlan
 	}
 
+	sess.waitPartsFinished()
 	m.closeSessionSlowIncident(sess, m.nowFunc())
 	m.mu.Lock()
 	if sess.stopReason == "" {
@@ -1742,20 +1887,18 @@ func (m *Manager) recordFLVPartWithTransport(
 		sess.hasSequence = true
 		if cp.Codec != "" {
 			sess.codec = cp.Codec
-			sess.itemMeta.Live.Codec = cp.Codec
 		}
 		m.commitSessionPart(sess, cp.BytesWritten, cp.DurationSec)
-		m.mu.Lock()
-		sess.itemMeta.Live.LastSequence = cp.Sequence
-		sess.itemMeta.Live.HasSequence = true
-		sess.itemMeta.Live.PendingFile = partBase
-		sess.itemMeta.Live.PendingBytes = cp.BytesWritten
-		sess.itemMeta.Live.PendingDuration = cp.DurationSec
-		sess.itemMeta.Live.Incidents = cloneIncidents(sess.incidents)
-		checkpointMeta := sess.itemMeta
-		m.mu.Unlock()
-		_, saveErr := m.lib.SaveRecordingCheckpoint(sess.itemDir, checkpointMeta)
-		return saveErr
+		return m.saveCheckpoint(sess, func(meta *library.ItemMetadata) {
+			if cp.Codec != "" {
+				meta.Live.Codec = cp.Codec
+			}
+			meta.Live.LastSequence = cp.Sequence
+			meta.Live.HasSequence = true
+			meta.Live.PendingFile = partBase
+			meta.Live.PendingBytes = cp.BytesWritten
+			meta.Live.PendingDuration = cp.DurationSec
+		})
 	})
 	if cp.BytesWritten > written {
 		m.addSessionBytes(sess, cp.BytesWritten-written)
@@ -2043,4 +2186,33 @@ func firstPositiveInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// LiveCheckTimes returns when each account's live status was last fetched
+// by a check, keyed "<site>:<uid>".
+func (m *Manager) LiveCheckTimes() map[string]time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]time.Time, len(m.statusCache)+len(m.douyinLastAutoPoll))
+	for uid, e := range m.statusCache {
+		if !e.fetchedAt.IsZero() {
+			out[string(site.Bilibili)+":"+strconv.FormatInt(uid, 10)] = e.fetchedAt
+		}
+	}
+	for uid, at := range m.douyinLastAutoPoll {
+		out[string(site.Douyin)+":"+uid] = at
+	}
+	return out
+}
+
+// LiveCheckEvery estimates how often an auto-record account of siteID has
+// its live status checked, n being that site's auto-record accounts:
+// Bilibili checks them all each round, Douyin within its budget.
+func (m *Manager) LiveCheckEvery(siteID site.ID, n int) time.Duration {
+	if siteID == site.Douyin {
+		return m.DouyinLiveCheckEvery(n)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return time.Duration(max(m.liveSettings.PollIntervalSeconds, 60)) * time.Second
 }

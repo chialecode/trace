@@ -231,7 +231,7 @@ type App struct {
 
 	// Home Feed (DEC-037, DEC-040)
 	FeedItems            []library.FeedEntry
-	FeedListState        ui.ListState
+	FeedListState        *ui.ListState
 	FeedScroll           ui.ScrollState
 	feedMoreBefore       bool
 	feedMoreAfter        bool
@@ -262,7 +262,7 @@ type App struct {
 	DouyinWorksHasMore     bool
 	DouyinWorksError       string
 	DouyinWorksAuthExpired bool
-	DouyinUserListState    ui.ListState
+	DouyinUserListState    *ui.ListState
 	DouyinUserSubMenuOpen  bool
 
 	// Mine is the in-memory state of 我的 (never written to ui-state.json).
@@ -310,8 +310,8 @@ type App struct {
 	UserVideosPage      int
 	UserVideosHasMore   bool
 	UserVideosError     string
-	UserDynListState    ui.ListState
-	UserVidListState    ui.ListState
+	UserDynListState    *ui.ListState
+	UserVidListState    *ui.ListState
 	UserSubMenuOpen     bool
 	// UserListFilter is 全部 ("all") or 未缓存 ("uncached") on user pages (DEC-046 ⑧).
 	UserListFilter  string
@@ -347,11 +347,16 @@ type App struct {
 	SubFeedSubID         string
 	SubFeedRefsKey       string
 	SubFeedItems         []library.FeedEntry
-	SubFeedListState     ui.ListState
-	SubFeedMoreAfter     bool
-	SubFeedError         string
-	subFeedDirty         bool
-	SubRuleMenuOpen      bool
+	SubFeedListState     *ui.ListState
+	// checkPlan is Tasks › 检查计划 as last read, at checkPlanAt.
+	checkPlan   []service.AccountCheckRow
+	checkPlanAt time.Time
+	// checkingAccount is the "<site>:<uid>" a 检查计划 row is checking.
+	checkingAccount  string
+	SubFeedMoreAfter bool
+	SubFeedError     string
+	subFeedDirty     bool
+	SubRuleMenuOpen  bool
 	// RuleDraft is the cache rule being edited in Settings (ID "" = new).
 	RuleDraft *subscription.CacheRule
 	RuleError string
@@ -411,6 +416,11 @@ type App struct {
 	LibraryHasMore    bool
 	LibraryError      string
 	libraryStatistics library.Statistics
+	// accountWorks is each subscribed account's works total (from its last
+	// parse) and cached count, keyed "site:uid" (DEC-061).
+	accountWorks map[string]service.AccountWorks
+	// videoCacheFor is the creator page the open video came from (DEC-061).
+	videoCacheFor     videoCacheContext
 	libraryOffset     int
 	LibraryAuthorMenu bool
 	ExpandedItemKey   string
@@ -635,13 +645,14 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 	}
 	app.resetFeedListState()
 	app.resetSubFeedListState()
+	app.UserDynListState, app.UserVidListState, app.DouyinUserListState = &ui.ListState{}, &ui.ListState{}, &ui.ListState{}
 	app.RefreshData()
 	app.applyInitialSubscriptionRoute(uiSt.LastRoute)
 	return app
 }
 
 func (a *App) resetFeedListState() {
-	a.FeedListState = ui.ListState{
+	a.FeedListState = &ui.ListState{
 		Key: func(i int) any {
 			if i >= 0 && i < len(a.FeedItems) {
 				return a.FeedItems[i].FeedKey
@@ -1116,6 +1127,7 @@ func (a *App) OpenSubscriptionDetail(sub subscription.Subscription) {
 	a.SubAccountMenuKey = ""
 	a.SubManageModalMode = ""
 	a.SubDetailTab = normalizeSubDetailTab(a.SubDetailTab)
+	a.refreshAccountWorks()
 	a.syncSelectedSubRules(sub)
 	a.ensureSubscriptionFeedLoaded(&sub)
 }
@@ -1218,6 +1230,16 @@ func (a *App) refreshSubscriptions() {
 		return
 	}
 	a.Subscriptions = subs
+	a.refreshAccountWorks()
+}
+
+// refreshAccountWorks reloads the works numbers of subscribed accounts. It
+// reads only local data: totals come from earlier parses (DEC-061).
+func (a *App) refreshAccountWorks() {
+	if !a.backend.HasAnyLogin() {
+		return
+	}
+	a.accountWorks = a.backend.SubscriptionAccountWorks()
 }
 
 func (a *App) refreshLibraryStatistics() {
@@ -1227,6 +1249,7 @@ func (a *App) refreshLibraryStatistics() {
 		return
 	}
 	a.libraryStatistics = stats
+	a.refreshAccountWorks()
 }
 
 func (a *App) refreshTasks() {
@@ -1428,6 +1451,20 @@ func (a *App) PopulateSyntheticFeed(n int) {
 
 // OpeningPreview is what a clicked card already knows about the link it
 // opens. Kind is "video", "note", "dynamic", "user" or "live".
+// videoCacheContext is the creator page a video was opened from.
+type videoCacheContext struct {
+	BVID   string
+	ForMid int64
+}
+
+// cacheForMid is the creator a video page caches bvid for (0: its uploader).
+func (a *App) cacheForMid(bvid string) int64 {
+	if a.videoCacheFor.BVID != "" && strings.EqualFold(a.videoCacheFor.BVID, strings.TrimSpace(bvid)) {
+		return a.videoCacheFor.ForMid
+	}
+	return 0
+}
+
 type OpeningPreview struct {
 	Site       string
 	Kind       string
@@ -1455,9 +1492,17 @@ func (a *App) SubmitParse(raw string) {
 
 // OpenVideo opens a video from a card: the video page shows at once.
 func (a *App) OpenVideo(bvid, title, authorName string, mid int64, coverURL, duration string) {
+	a.openVideoFor(bvid, title, authorName, mid, coverURL, duration, 0)
+}
+
+// openVideoFor opens a video from creator forMid's page: caching it there
+// stores a collaboration video under forMid's folder, as caching from the
+// page's list does (DEC-061).
+func (a *App) openVideoFor(bvid, title, authorName string, mid int64, coverURL, duration string, forMid int64) {
 	if strings.TrimSpace(bvid) == "" {
 		return
 	}
+	a.videoCacheFor = videoCacheContext{BVID: strings.TrimSpace(bvid), ForMid: forMid}
 	a.openLink(bvid, &OpeningPreview{Site: string(site.Bilibili), Kind: "video", Title: title, AuthorName: authorName, Mid: mid, CoverURL: coverURL, Duration: duration})
 }
 
@@ -1639,7 +1684,7 @@ func (a *App) applyParseResult(res *service.OpenLinkResult) {
 	case "user", "live":
 		a.CurrentUser = res.User
 		a.UserTab = "dynamics"
-		a.UserDynListState, a.UserVidListState = ui.ListState{}, ui.ListState{}
+		a.UserDynListState, a.UserVidListState = &ui.ListState{}, &ui.ListState{}
 		a.UserDynamics = nil
 		a.UserVideos = nil
 		a.UserVideosPage = 0
@@ -1717,7 +1762,7 @@ func (a *App) applyDouyinParseResult(res *service.OpenLinkResult) {
 			}
 		}
 		a.CurrentDouyinUser = uv
-		a.DouyinUserListState = ui.ListState{}
+		a.DouyinUserListState = &ui.ListState{}
 		a.DouyinCardMenuID = ""
 		a.DouyinUserSubMenuOpen = false
 		a.CurrentDouyinWorks = nil
