@@ -18,9 +18,8 @@ import (
 
 // A rollover converts the finished part in the background: the next part
 // keeps fetching segments while the previous one converts, so a long part's
-// conversion no longer lets the live playlist move past unfetched segments
-// (dev 2026-11-18: 12 segments lost after a 3.3 GB part). Both parts end up
-// registered, in order, with nothing pending and no lost segments.
+// conversion no longer lets the live playlist move past unfetched segments.
+// Both parts end up registered, in order, with nothing pending and no lost segments.
 func TestRolloverConvertsPreviousPartWhileRecording(t *testing.T) {
 	initBytes, fragBytes := splitSyntheticHLSInitAndFrag(t)
 	const roomID = int64(9701)
@@ -111,11 +110,16 @@ func TestRolloverConvertsPreviousPartWhileRecording(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(10 * time.Second)
+	finished := false
 	for time.Now().Before(deadline) {
 		if st, ok := roomState(mgr, roomID); ok && !st.Recording && ended.Load() {
+			finished = true
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if !finished {
+		t.Fatalf("timed out waiting for room %d to finish recording", roomID)
 	}
 	if !progressed.Load() {
 		t.Fatal("the next part fetched nothing while the previous part converted")

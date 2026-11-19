@@ -54,26 +54,10 @@ func (a *App) renderUserListFilter(c *ui.Context) {
 	if cur != userFilterUncached {
 		cur = userFilterAll
 	}
-	ui.Row(c).Padding(2).Radius(8).Background(ColorBgMain).Border(1, ColorBorder).Gap(2).Shrink(0).Children(func() {
-		for _, opt := range []struct{ key, text string }{{userFilterAll, "全部"}, {userFilterUncached, "未缓存"}} {
-			o := opt
-			active := cur == o.key
-			btn := ui.ButtonBase(c).Label("用户页筛选："+o.text).Padding(4, 12).Radius(6).Center()
-			if active {
-				btn.Background(ColorBgSecondary)
-			} else if btn.Hovered() {
-				btn.Background(ColorHover)
-			}
-			btn.Children(func() {
-				col, weight := ColorTextMuted, 400
-				if active {
-					col, weight = ColorTextMain, 600
-				}
-				ui.Text(c, o.text).FontSize(12).FontWeight(weight).TextColor(col).SingleLine()
-			})
-			if btn.Clicked() && !active {
-				a.UserListFilter = o.key
-			}
-		}
+	renderSegmentedPills(c, cur, []segmentedChoice{
+		{Key: userFilterAll, Text: "全部", Label: "用户页筛选：全部"},
+		{Key: userFilterUncached, Text: "未缓存", Label: "用户页筛选：未缓存"},
+	}, func(next string) {
+		a.UserListFilter = next
 	})
 }

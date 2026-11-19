@@ -136,10 +136,6 @@ func TestLockDataDirExclusive(t *testing.T) {
 	_ = lock2.Release()
 }
 
-func TestLocationsByChannel(t *testing.T) {
-	TestResolvePortableAndInstalledPaths(t)
-}
-
 func TestDocumentsKnownFolderRedirect(t *testing.T) {
 	tmp := t.TempDir()
 	redirectedDocs := filepath.Join(tmp, "OneDrive", "Documents")
@@ -156,14 +152,6 @@ func TestDocumentsKnownFolderRedirect(t *testing.T) {
 	if loc.DefaultCacheDir != want {
 		t.Fatalf("DefaultCacheDir = %q, want %q", loc.DefaultCacheDir, want)
 	}
-}
-
-func TestAllTracePathsLowercase(t *testing.T) {
-	TestResolvePortableAndInstalledPaths(t)
-}
-
-func TestDataDirExclusiveLock(t *testing.T) {
-	TestLockDataDirExclusive(t)
 }
 
 func assertRelativeLowercase(t *testing.T, base, target string) {

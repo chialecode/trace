@@ -181,16 +181,12 @@ func (b *Backend) AccountFolders(ctx context.Context, siteID, kind string) ([]Ac
 		for i := 0; i < 5; i++ {
 			page, err := b.douyin.CollectFolders(ctx, cursor)
 			if err != nil {
-				if i == 0 {
-					return nil, b.accountFail(sid, kind, err)
-				}
-				b.accountFail(sid, kind, err)
-				break
+				return nil, b.accountFail(sid, kind, err)
 			}
 			for _, f := range page.Folders {
 				out = append(out, AccountFolder{ID: f.ID, Title: f.Name, Count: f.Count})
 			}
-			if !page.HasMore {
+			if !page.HasMore || page.NextCursor == "" || page.NextCursor == cursor {
 				break
 			}
 			cursor = page.NextCursor
@@ -397,7 +393,7 @@ func (b *Backend) douyinAccountPage(ctx context.Context, kind, folderID, raw str
 			it.BrowserURL = safeBrowserURL("https://www.douyin.com/video/" + w.ID)
 		} else {
 			it.Kind, it.CacheKey = AccountItemWork, card.CacheKey
-			it.OpenURL = firstNonEmptyStr(safeBrowserURL(card.CanonicalURL), "https://www.douyin.com/video/"+w.ID)
+			it.OpenURL = firstNonEmpty(safeBrowserURL(card.CanonicalURL), "https://www.douyin.com/video/"+w.ID)
 			it.BrowserURL = it.OpenURL
 		}
 		out.Items = append(out.Items, it)
@@ -528,13 +524,4 @@ func firstLine(s string) string {
 		return strings.TrimSpace(s[:i])
 	}
 	return s
-}
-
-func firstNonEmptyStr(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -179,12 +180,17 @@ func parseRawCookieHeader(rawCookie string) map[string]string {
 	return pairs
 }
 
-// FilterCookieMap filters a map of cookies down to the 5 whitelisted Bilibili keys.
+func isSafeCookieValue(v string) bool {
+	return v != "" && !strings.ContainsAny(v, "\r\n;")
+}
+
+// FilterCookieMap filters a map of cookies down to the 5 whitelisted Bilibili keys,
+// rejecting empty values and values containing CR/LF/semicolon header delimiters.
 func FilterCookieMap(in map[string]string) map[string]string {
 	out := make(map[string]string)
 	for k, v := range in {
 		v = strings.TrimSpace(v)
-		if v == "" {
+		if !isSafeCookieValue(v) {
 			continue
 		}
 		if canonicalKey, ok := allowedKeyLookup[strings.ToLower(strings.TrimSpace(k))]; ok {
@@ -248,7 +254,7 @@ func openWithConfig(siteID string, entropy []byte, path string) (*Store, string,
 		return nil, "", err
 	}
 
-	plain, err := decryptBytesWithEntropy(raw, s.entropy)
+	plain, err := unprotectFor(path, raw, s.entropy)
 	if err != nil {
 		backup, bErr := backupCorruptFile(path)
 		if bErr != nil {
@@ -352,14 +358,25 @@ func (s *Store) Status() Status {
 	return s.buildStatus(s.rec)
 }
 
+func (s *Store) isActiveRecordLocked() bool {
+	if s == nil || s.rec == nil {
+		return false
+	}
+	return s.rec.State != "expired" && s.rec.State != "logged_out" && s.rec.State != "decrypt_failed"
+}
+
+func (s *Store) requireSite(want string) error {
+	if s.Site() != want {
+		return fmt.Errorf("credential: store site %q cannot accept %q operation", s.Site(), want)
+	}
+	return nil
+}
+
 // HasActiveCredential reports whether usable cookies are present.
 func (s *Store) HasActiveCredential() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.rec == nil {
-		return false
-	}
-	if s.rec.State == "expired" || s.rec.State == "logged_out" || s.rec.State == "decrypt_failed" {
+	if !s.isActiveRecordLocked() {
 		return false
 	}
 	return s.hasRequiredCookies(s.rec.Cookies)
@@ -370,7 +387,7 @@ func (s *Store) HasActiveCredential() bool {
 func (s *Store) CookieHeader() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.rec == nil || s.rec.State == "expired" || s.rec.State == "logged_out" || s.rec.State == "decrypt_failed" {
+	if !s.isActiveRecordLocked() {
 		return ""
 	}
 	var pairs []string
@@ -386,17 +403,17 @@ func (s *Store) CookieHeader() string {
 func (s *Store) CookieValue(name string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.rec == nil || s.rec.State == "expired" || s.rec.State == "logged_out" || s.rec.State == "decrypt_failed" {
+	if !s.isActiveRecordLocked() {
 		return ""
 	}
 	return s.rec.Cookies[name]
 }
 
-// Cookies returns a copy of the stored whitelisted cookies, or nil if not logged in.
+// Cookies returns a copy of the stored whitelisted cookies when active, or nil if not logged in or expired.
 func (s *Store) Cookies() map[string]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.rec == nil {
+	if !s.isActiveRecordLocked() {
 		return nil
 	}
 	out := make(map[string]string, len(s.rec.Cookies))
@@ -406,11 +423,11 @@ func (s *Store) Cookies() map[string]string {
 	return out
 }
 
-// CSRF returns the current bili_jct token if logged in.
+// CSRF returns the current bili_jct token when active, or empty string if not logged in or expired.
 func (s *Store) CSRF() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.rec == nil {
+	if !s.isActiveRecordLocked() {
 		return ""
 	}
 	return s.rec.Cookies["bili_jct"]
@@ -437,6 +454,9 @@ func (s *Store) SaveManual(rawCookie, rawRefreshToken string) (Status, error) {
 
 // SaveVerifiedManual saves already-validated manual Bilibili cookies and profile metadata.
 func (s *Store) SaveVerifiedManual(cookies map[string]string, refreshToken string, mid int64, uname, face string) (Status, error) {
+	if err := s.requireSite(SiteBilibili); err != nil {
+		return Status{}, err
+	}
 	filtered := FilterCookieMap(cookies)
 	if filtered["SESSDATA"] == "" {
 		return Status{}, ErrMissingRequiredKeys
@@ -478,6 +498,9 @@ func (s *Store) MarkChecked() (Status, error) {
 
 // SaveQR saves Bilibili credentials obtained from QR code login.
 func (s *Store) SaveQR(cookies map[string]string, refreshToken string, mid int64, uname, face string) (Status, error) {
+	if err := s.requireSite(SiteBilibili); err != nil {
+		return Status{}, err
+	}
 	filtered := FilterCookieMap(cookies)
 	if filtered["SESSDATA"] == "" || filtered["bili_jct"] == "" {
 		return Status{}, ErrMissingRequiredKeys
@@ -547,6 +570,26 @@ func (s *Store) MarkState(state, message string) (Status, error) {
 			s.rec = next
 			return s.buildStatus(next), err
 		}
+		return s.buildStatus(s.rec), err
+	}
+	return s.buildStatus(s.rec), nil
+}
+
+// MarkPushed records that the credential was pushed by the desktop to the
+// remote (source "remote_push"): it keeps no refresh token and is never
+// renewed there (DEC-062 ③).
+func (s *Store) MarkPushed(source string) (Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rec == nil {
+		return s.lastStatus, ErrNotLoggedIn
+	}
+	next := s.cloneRecord(s.rec)
+	next.Source = source
+	next.RefreshToken = ""
+	next.ConfirmPending = false
+	next.PendingOldRefreshToken = ""
+	if err := s.persistRecordLocked(next); err != nil {
 		return s.buildStatus(s.rec), err
 	}
 	return s.buildStatus(s.rec), nil
@@ -625,6 +668,20 @@ func ExtractSetCookies(headers []*http.Cookie) map[string]string {
 	return FilterCookieMap(raw)
 }
 
+func appendSecretVariants(dst []string, raw string) []string {
+	if len(raw) < 4 {
+		return dst
+	}
+	dst = append(dst, raw)
+	if esc := url.QueryEscape(raw); esc != raw && len(esc) >= 4 {
+		dst = append(dst, esc)
+	}
+	if unesc, err := url.QueryUnescape(raw); err == nil && unesc != raw && len(unesc) >= 4 {
+		dst = append(dst, unesc)
+	}
+	return dst
+}
+
 func (s *Store) collectSecrets() []string {
 	if s == nil {
 		return nil
@@ -637,15 +694,11 @@ func (s *Store) collectSecrets() []string {
 	var secrets []string
 	for k, v := range s.rec.Cookies {
 		if len(v) >= 4 && !isNonSecretCookieValue(k, v) {
-			secrets = append(secrets, v)
+			secrets = appendSecretVariants(secrets, v)
 		}
 	}
-	if len(s.rec.RefreshToken) >= 4 {
-		secrets = append(secrets, s.rec.RefreshToken)
-	}
-	if len(s.rec.PendingOldRefreshToken) >= 4 {
-		secrets = append(secrets, s.rec.PendingOldRefreshToken)
-	}
+	secrets = appendSecretVariants(secrets, s.rec.RefreshToken)
+	secrets = appendSecretVariants(secrets, s.rec.PendingOldRefreshToken)
 	return secrets
 }
 
@@ -707,7 +760,7 @@ func (s *Store) persistRecordLocked(next *Record) error {
 	if len(entropy) == 0 {
 		entropy = []byte(BilibiliEntropy)
 	}
-	cipherData, err := encryptBytesWithEntropy(plain, entropy)
+	cipherData, err := protectFor(s.path, plain, entropy)
 	for i := range plain {
 		plain[i] = 0
 	}
@@ -727,7 +780,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".tmp-cred-*")
+	tmp, err := os.CreateTemp(dir, ".trace-cred-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -755,7 +808,14 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 }
 
 func backupCorruptFile(path string) (string, error) {
-	backup := fmt.Sprintf("%s.corrupt-%s", path, time.Now().UTC().Format("20060102T150405Z"))
+	ts := time.Now().UTC().Format("20060102T150405.000Z")
+	backup := fmt.Sprintf("%s.corrupt-%s", path, ts)
+	for i := 1; i < 100; i++ {
+		if _, err := os.Stat(backup); os.IsNotExist(err) {
+			break
+		}
+		backup = fmt.Sprintf("%s.corrupt-%s-%d", path, ts, i)
+	}
 	if err := os.Rename(path, backup); err != nil {
 		return "", err
 	}

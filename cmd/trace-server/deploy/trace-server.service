@@ -1,0 +1,36 @@
+# TRACE 远程版的 systemd 服务示例（部署步骤见同目录 README.md）。
+# 路径按 README 的默认布局：程序 /opt/trace，数据目录 /var/lib/trace/data，
+# 导出目录 /srv/trace/export，rclone 配置 /var/lib/trace/rclone/rclone.conf。
+# 改了路径时，ExecStart、ReadWritePaths 与 RCLONE_CONFIG 一起改。
+
+[Unit]
+Description=TRACE remote (trace-server)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=trace
+Group=trace
+ExecStart=/opt/trace/trace-server run --data /var/lib/trace/data
+Environment=RCLONE_CONFIG=/var/lib/trace/rclone/rclone.conf
+Restart=on-failure
+RestartSec=10
+# SIGTERM 时暂停任务、给录制收尾，最多 30 秒。
+KillSignal=SIGTERM
+TimeoutStopSec=45
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/trace /srv/trace/export
+
+[Install]
+WantedBy=multi-user.target

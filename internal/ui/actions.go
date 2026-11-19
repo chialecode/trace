@@ -3,8 +3,10 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
@@ -70,7 +72,9 @@ func (a *App) loadImportPage(reset bool) {
 	page := a.ImportPage + 1
 	if reset {
 		page = 1
+		a.importFollowingsSeq++
 	}
+	seq := a.importFollowingsSeq
 	tag, _ := strconv.ParseInt(a.ImportGroup, 10, 64)
 	for _, group := range a.ImportGroups {
 		if group.Name == a.ImportGroup {
@@ -79,7 +83,10 @@ func (a *App) loadImportPage(reset bool) {
 		}
 	}
 	group := a.ImportGroup
-	requestGuarded(a, "followings:"+group, func() bool { return a.ImportGroup == group }, func(ctx context.Context) ([]bilibili.FollowingUser, error) {
+	reqKey := fmt.Sprintf("followings:%d:%s:%d", seq, group, page)
+	requestGuarded(a, reqKey, func() bool {
+		return a.ImportSubModalOpen && a.ImportGroup == group && a.importFollowingsSeq == seq
+	}, func(ctx context.Context) ([]bilibili.FollowingUser, error) {
 		return a.backend.RelationFollowings(ctx, tag, page, 50)
 	}, func(users []bilibili.FollowingUser) {
 		a.ImportError = ""
@@ -87,7 +94,7 @@ func (a *App) loadImportPage(reset bool) {
 			a.ImportFollowings = nil
 			a.ImportSelectedMids = make(map[int64]bool)
 		}
-		seen := make(map[int64]bool)
+		seen := make(map[int64]bool, len(a.ImportFollowings))
 		for _, user := range a.ImportFollowings {
 			seen[user.Mid] = true
 		}
@@ -137,19 +144,26 @@ func (a *App) selectedSubscriptionAccountKeys() []string {
 }
 
 func (a *App) checkSelectedSubscription() {
-	if a.pending["check-updates"] {
+	if a.isPending("check-updates") {
 		return
 	}
 	a.CheckDone, a.CheckTotal = 0, 0
+	a.checkingAccount = ""
 	backend, subID := a.backend, a.SelectedSubID
-	request(a, "check-updates", func(ctx context.Context) (string, error) {
+	requestGuarded(a, "check-updates", nil, func(ctx context.Context) (string, error) {
 		sum, err := backend.CheckSubscription(ctx, subID)
 		if err != nil {
 			return "", err
 		}
 		return checkSummaryMessage(sum), nil
 	}, func(message string) {
+		a.checkingAccount = ""
 		a.BannerInfo = message
+		a.checkPlanAt = time.Time{}
 		a.RefreshData()
+	}, func(err error) {
+		a.checkingAccount = ""
+		a.checkPlanAt = time.Time{}
+		a.showError(err)
 	})
 }

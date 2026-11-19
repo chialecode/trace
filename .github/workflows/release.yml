@@ -1,6 +1,6 @@
 name: Release
 
-# Weekly release of TRACE (W8): every Monday 00:00 UTC (08:00 Beijing time)
+# Weekly release of TRACE: every Monday 00:00 UTC (08:00 Beijing time)
 # or by hand. It builds only when main has changes merged since the last
 # release, and publishes only once the user has turned publishing on
 # (repository variable TRACE_RELEASE_PUBLISH=1, USER-ACTIONS ACT-009); a
@@ -113,14 +113,14 @@ jobs:
           set -euo pipefail
           cd release/dist/trace
           sha256sum -c SHA256SUMS
-          grep -qx "version=${VERSION}" VERSION.txt
-          grep -qx "channel=stable" VERSION.txt
-          mapfile -t files < <(awk '{print $2}' SHA256SUMS | grep -vx 'update-windows-amd64.json')
+          grep -Fqx "version=${VERSION}" VERSION.txt
+          grep -Fqx "channel=stable" VERSION.txt
+          mapfile -t files < <(awk '{print $2}' SHA256SUMS | grep -Fvx 'update-windows-amd64.json')
           gh release create "v${VERSION}" --target "$TARGET" --title "TRACE ${VERSION}" \
             --notes-file ../../artifacts/release/notes.md --draft "${files[@]}" SHA256SUMS
           gh release upload "v${VERSION}" update-windows-amd64.json
           assets="$(gh release view "v${VERSION}" --json assets --jq '.assets[].name')"
           for f in "${files[@]}" SHA256SUMS update-windows-amd64.json; do
-            grep -qx "$f" <<<"$assets" || { echo "the draft release lacks $f"; exit 1; }
+            grep -Fqx "$f" <<<"$assets" || { echo "the draft release lacks $f"; exit 1; }
           done
           gh release edit "v${VERSION}" --draft=false --latest

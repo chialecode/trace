@@ -181,6 +181,10 @@ func (s *Source) Verify(raw []byte) (*Manifest, error) {
 	if err := dec.Decode(&m); err != nil {
 		return nil, rejectf("manifest is not valid JSON: %v", err)
 	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return nil, rejectf("manifest has trailing JSON tokens")
+	}
 	if m.Version == "" || m.URL == "" || m.Signature == "" || m.Size <= 0 {
 		return nil, rejectf("incomplete manifest")
 	}
@@ -200,7 +204,7 @@ func (s *Source) Verify(raw []byte) (*Manifest, error) {
 		return nil, err
 	}
 	for _, d := range m.Deltas {
-		if d.Size <= 0 || d.Size > MaxArchiveSize || d.From == "" {
+		if d.Size <= 0 || d.Size > MaxArchiveSize || d.From == "" || !validVersion(d.From) {
 			return nil, rejectf("delta from %q is incomplete", d.From)
 		}
 		if err := s.checkURL(d.URL); err != nil {
@@ -461,8 +465,13 @@ func validVersion(v string) bool {
 		return false
 	}
 	for _, p := range parts {
-		if _, err := strconv.Atoi(p); err != nil || p == "" {
+		if p == "" {
 			return false
+		}
+		for i := 0; i < len(p); i++ {
+			if p[i] < '0' || p[i] > '9' {
+				return false
+			}
 		}
 	}
 	return true

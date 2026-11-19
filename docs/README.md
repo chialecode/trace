@@ -7,7 +7,7 @@
 | 用户要什么 | [需求](requirements.md)（FR/NFR，状态分已实现、本阶段、待实现） |
 | 先做什么、做到什么算基本可用、怎样验收 | [路线与验收](delivery/roadmap.md)（能力范围、MVP 基线、验收场景 AC） |
 | 用户决定过什么 | [有效决定](decisions.md) |
-| 系统怎样工作 | 技术设计：[架构、接口与原生界面](design/architecture.md)、[数据、缓存与信息流](design/data-and-cache.md)、[订阅、检查更新与自动缓存](design/subscriptions.md)、[直播](design/live.md) |
+| 系统怎样工作 | 技术设计：[架构、接口与原生界面](design/architecture.md)、[数据、缓存与信息流](design/data-and-cache.md)、[订阅、检查更新与自动缓存](design/subscriptions.md)、[直播](design/live.md)、[远程版、上传与导入导出](design/remote.md) |
 | 界面怎样做 | [界面规范](ui.md) |
 | 为什么选这套技术 | [技术选型研究](research/2026-11-05-stack.md)、[媒体与存储选型](research/2026-11-05-media.md)、[订阅、弹幕与直播选型](research/2026-11-07-subscriptions-live.md)、[抖音签名与直播录制选型](research/2026-11-12-douyin.md) |
 | 站点怎样请求 | [哔哩哔哩协议资料](research/bilibili.md)、[抖音协议资料](research/douyin.md)（静态调研，A 的定稿在 §11） |

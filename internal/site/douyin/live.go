@@ -271,7 +271,7 @@ func (c *Client) EnterLiveRoom(ctx context.Context, webRID string, expectedSecUI
 		}
 	}
 
-	// Strict anchor sec_uid ownership check (M3-K16): reject recycled/mismatched web_rid!
+	// Strict anchor sec_uid ownership check: reject recycled/mismatched web_rid.
 	if expectedSecUID != "" && ownerSecUID != expectedSecUID {
 		return nil, &site.Error{
 			Site:     site.Douyin,
@@ -554,7 +554,7 @@ func (c *Client) CheckRoomsAlive(ctx context.Context, roomIDs []string) (map[str
 
 // CheckLiveStatus checks a subscribed creator's live state by sec_uid and optional cachedWebRID.
 // If cachedWebRID is stale, unavailable (4001038), or belongs to another sec_uid, it clears the cache
-// and falls back to the room_id route with AT MOST 1 extra request while preserving AccountUID = sec_uid (M3-K16).
+// and falls back to the room_id route with AT MOST 1 extra request while preserving AccountUID = sec_uid.
 func (c *Client) CheckLiveStatus(ctx context.Context, secUID string, cachedWebRID string) (site.LiveStatus, error) {
 	secUID = strings.TrimSpace(secUID)
 	if !reValidSecUID.MatchString(secUID) {
@@ -575,8 +575,8 @@ func (c *Client) CheckLiveStatus(ctx context.Context, secUID string, cachedWebRI
 		if err == nil {
 			return c.roomToLiveStatus(secUID, room, false), nil
 		}
-		// Propagate round-stop or transient network errors without wiping cached web_rid.
-		if site.IsRoundStop(err) || site.IsKind(err, site.ErrKindNetwork) {
+		// Propagate round-stop, quota/backoff, schema, or transient network errors without wiping cached web_rid.
+		if site.IsRoundStop(err) || site.IsKind(err, site.ErrKindNetwork) || site.IsKind(err, site.ErrKindQuota) || site.IsKind(err, site.ErrKindBackoff) || site.IsKind(err, site.ErrKindSchemaChanged) {
 			return site.LiveStatus{}, err
 		}
 
@@ -658,8 +658,12 @@ func (c *Client) checkLiveViaProfile(ctx context.Context, secUID string, invalid
 	}
 
 	if allowReflowLookup && c.canCallEndpoint(c.endpoints.LiveReflowInfo) {
-		if reflowRoom, rErr := c.ReflowRoomInfo(ctx, prof.RoomID, secUID); rErr == nil {
+		reflowRoom, rErr := c.ReflowRoomInfo(ctx, prof.RoomID, secUID)
+		if rErr == nil {
 			return c.roomToLiveStatus(secUID, reflowRoom, invalidated), nil
+		}
+		if site.IsRoundStop(rErr) {
+			return site.LiveStatus{}, rErr
 		}
 	}
 
@@ -724,7 +728,7 @@ func (c *Client) roomToLiveStatus(secUID string, room *LiveRoomDetail, invalidat
 
 // SelectLiveStream resolves the target room and selects the highest-quality HTTP-FLV stream
 // (origin > uhd > hd > sd > ld), excluding only_audio=1 and reporting clear Chinese errors
-// on audio-only or HLS-only rooms (DEC-043 & M3-K16).
+// on audio-only or HLS-only rooms (DEC-043).
 func (c *Client) SelectLiveStream(ctx context.Context, secUID string, roomOrWebRID string, codecOrder []string) (site.LiveStreamPlan, error) {
 	secUID = strings.TrimSpace(secUID)
 	target := strings.TrimSpace(roomOrWebRID)
@@ -738,13 +742,13 @@ func (c *Client) SelectLiveStream(ctx context.Context, secUID string, roomOrWebR
 	switch {
 	case rePure19Digits.MatchString(target) && c.canCallEndpoint(c.endpoints.LiveReflowInfo):
 		room, err = c.ReflowRoomInfo(ctx, target, secUID)
-		if err != nil && c.canCallEndpoint(c.endpoints.LiveWebEnter) {
+		if err != nil && !site.IsRoundStop(err) && !site.IsKind(err, site.ErrKindNetwork) && !site.IsKind(err, site.ErrKindQuota) && !site.IsKind(err, site.ErrKindBackoff) && c.canCallEndpoint(c.endpoints.LiveWebEnter) {
 			room, err = c.EnterLiveRoom(ctx, target, secUID)
 		}
 
 	case target != "":
 		room, err = c.EnterLiveRoom(ctx, target, secUID)
-		if err != nil && !site.IsRoundStop(err) && !site.IsKind(err, site.ErrKindNetwork) && secUID != "" {
+		if err != nil && !site.IsRoundStop(err) && !site.IsKind(err, site.ErrKindNetwork) && !site.IsKind(err, site.ErrKindQuota) && !site.IsKind(err, site.ErrKindBackoff) && !site.IsKind(err, site.ErrKindSchemaChanged) && secUID != "" {
 			c.clearCachedWebRID(secUID)
 			prof, pErr := c.GetUserProfile(ctx, secUID)
 			if pErr != nil {
@@ -1087,11 +1091,6 @@ func matchLiveTierByLegacyKey(key string) (liveQualityTierSpec, bool) {
 		}
 	}
 	return liveQualityTierSpec{}, false
-}
-
-func parseSDKParamsCodec(raw string) string {
-	codec, _ := parseSDKParamsCodecAndBitrate(raw)
-	return codec
 }
 
 func parseSDKParamsCodecAndBitrate(raw string) (string, int64) {

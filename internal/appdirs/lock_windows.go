@@ -42,7 +42,7 @@ func LockDataDir(dataDir string) (*Lock, error) {
 		if errors.Is(err, windows.ERROR_LOCK_VIOLATION) || errors.Is(err, windows.ERROR_IO_PENDING) {
 			return nil, ErrAlreadyLocked
 		}
-		return nil, fmt.Errorf("%w: %v", ErrAlreadyLocked, err)
+		return nil, fmt.Errorf("appdirs: lock %s: %w", lockPath, err)
 	}
 
 	return &Lock{

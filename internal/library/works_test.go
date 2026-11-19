@@ -81,3 +81,116 @@ func TestCollabVideoBelongsToMemberItWasCachedFor(t *testing.T) {
 		t.Fatalf("cached works = %+v", counts)
 	}
 }
+
+// A video cached only because a creator forwarded it in a dynamic (via.reason == "forward",
+// stored under the forwarder's forwards/ directory) must belong to the forwarder in the
+// Media Library author list, item list, latest-pub lookup, and cached-works count — never
+// creating a phantom author row for the original uploader.
+func TestForwardVideoBelongsToForwarderNotUploaderInLibrary(t *testing.T) {
+	tmp := t.TempDir()
+	db, _, _, err := storage.OpenSQLite(filepath.Join(tmp, "library.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := OpenWithDataDir(db, filepath.Join(tmp, "cache"), tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fwdDir := filepath.Join(store.CacheDir(), "bilibili", "3546", "forwards", "BV1fwdvid")
+	if err := os.MkdirAll(fwdDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveItem(fwdDir, ItemMetadata{
+		Site:         "bilibili",
+		Kind:         "video",
+		ID:           "BV1fwdvid",
+		Title:        "被转发的视频",
+		PubTs:        200,
+		Status:       "complete",
+		DirectCached: false,
+		Author:       ItemAuthor{Site: "bilibili", Mid: 9999, UID: "9999", Name: "原视频作者"},
+		Via:          &ItemVia{Reason: ViaForward, Site: "bilibili", UID: "3546", Name: "转发动态作者", DynamicID: "127286"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	dynDir := filepath.Join(store.CacheDir(), "bilibili", "3546", "dynamics", "127286")
+	if err := os.MkdirAll(dynDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveItem(dynDir, ItemMetadata{
+		Site:         "bilibili",
+		Kind:         "dynamic",
+		ID:           "127286",
+		Title:        "转发动态",
+		PubTs:        210,
+		Status:       "complete",
+		DirectCached: true,
+		Author:       ItemAuthor{Site: "bilibili", Mid: 3546, UID: "3546", Name: "转发动态作者"},
+		Videos:       []string{"BV1fwdvid"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Statistics(): forwarder appears once, original uploader does NOT appear at all.
+	stats, err := store.Statistics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners := map[string]int{}
+	for _, a := range stats.Authors {
+		owners[a.UID]++
+		if a.UID == "3546" && (a.Name != "转发动态作者" || a.Mid != 3546) {
+			t.Fatalf("forwarder author row = %+v, want name=转发动态作者 mid=3546", a)
+		}
+	}
+	if owners["9999"] != 0 || owners["3546"] != 1 {
+		t.Fatalf("library authors = %+v, want forwarder only (no phantom uploader 9999)", stats.Authors)
+	}
+
+	// 2. ListItems(): forwarder sees both dynamic & forwarded video; original uploader sees neither.
+	fwdItems, err := store.ListItems(FeedFilter{Site: "bilibili", AuthorUID: "3546"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fwdItems) != 2 {
+		t.Fatalf("ListItems(forwarder) = %d items (%+v), want 2", len(fwdItems), fwdItems)
+	}
+	uploaderItems, err := store.ListItems(FeedFilter{Site: "bilibili", AuthorUID: "9999"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(uploaderItems) != 0 {
+		t.Fatalf("ListItems(original uploader) = %+v, want 0", uploaderItems)
+	}
+
+	// 3. LatestPubByAuthor(): must not attribute forwarded video to original uploader.
+	latestRows, err := store.LatestPubByAuthor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest := map[string]int64{}
+	for _, a := range latestRows {
+		latest[a.Site+":"+a.UID] = a.LatestPubTs
+	}
+	if latest["bilibili:9999"] != 0 {
+		t.Fatalf("LatestPubByAuthor(uploader) = %d, want 0", latest["bilibili:9999"])
+	}
+	if latest["bilibili:3546"] != 210 {
+		t.Fatalf("LatestPubByAuthor(forwarder) = %d, want 210", latest["bilibili:3546"])
+	}
+
+	// 4. CountCachedWorks(): must not count forwarded video for original uploader.
+	counts, err := store.CountCachedWorks([]AuthorRef{
+		{Site: "bilibili", UID: "3546"},
+		{Site: "bilibili", UID: "9999"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["bilibili:9999"] != 0 {
+		t.Fatalf("CountCachedWorks(uploader) = %d, want 0", counts["bilibili:9999"])
+	}
+}

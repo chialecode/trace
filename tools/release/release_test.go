@@ -82,6 +82,10 @@ func fakeBuild(t *testing.T, key ed25519.PrivateKey, seen *[]string) func(root, 
 		*seen = append(*seen, cfg.Version)
 		if cfg.Updates == nil || cfg.Updates.Changelog == "" {
 			t.Errorf("build without updates or changelog: %s", raw)
+		} else if filepath.IsAbs(cfg.Updates.Changelog) {
+			t.Errorf("updates.changelog should be repo-relative, got %q", cfg.Updates.Changelog)
+		} else if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(cfg.Updates.Changelog))); err != nil {
+			t.Errorf("updates.changelog %q missing under repo root: %v", cfg.Updates.Changelog, err)
 		}
 		hasKey := false
 		for _, kv := range env {
@@ -125,6 +129,7 @@ func testOptions(t *testing.T, root string, key ed25519.PrivateKey, seen *[]stri
 		rehearse: func(in rehearsalInput) (rehearsalResult, error) {
 			r := newRehearsalResult(in)
 			r.Status = "passed"
+			r.OthersSame = true
 			return r, nil
 		},
 		build: fakeBuild(t, key, seen),
@@ -140,7 +145,7 @@ func testOptions(t *testing.T, root string, key ed25519.PrivateKey, seen *[]stri
 }
 
 // Without the key the release fails before building, and the key must be
-// the one of mygo.json; nothing generates a key (M2-K08).
+// the one of mygo.json; nothing generates a key.
 func TestSigningKeyRequired(t *testing.T) {
 	pub, key := testKey(t)
 	none := func(string) string { return "" }
@@ -255,8 +260,8 @@ func TestSigningKeyKeptFromChildProcesses(t *testing.T) {
 	}
 }
 
-// A rehearsal from the work tree: the files of W5 in dist/trace, the
-// SHA256SUMS right, the manifest attested, nothing published (M2-K08).
+// A rehearsal from the work tree: the release files in dist/trace, the
+// SHA256SUMS right, the manifest attested, nothing published.
 func TestReleaseFiles(t *testing.T) {
 	pub, key := testKey(t)
 	root := newRepo(t, pub)
@@ -373,5 +378,107 @@ func TestChangelog(t *testing.T) {
 	}
 	if ok, _, _ := hasChanges(root, ""); !ok {
 		t.Fatal("the first release is skipped")
+	}
+}
+
+func TestAllowDirtyDoesNotMutateChangelogAndCleansReleaseArtifacts(t *testing.T) {
+	pub, key := testKey(t)
+	root := newRepo(t, pub)
+	git(t, root, "tag", "v0.1.1")
+	if err := os.WriteFile(filepath.Join(root, "next.txt"), []byte("next"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-q", "-m", "feat: new feature for rehearsal")
+
+	origChangelog := must(os.ReadFile(filepath.Join(root, "CHANGELOG.md")))
+	staleFile := filepath.Join(root, "artifacts", "release", "stale.json")
+	if err := os.MkdirAll(filepath.Dir(staleFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleFile, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var seen []string
+	var seenChangelogPath string
+	var seenChangelogText string
+	o := testOptions(t, root, key, &seen)
+	o.allowDirty = true
+	baseBuild := o.build
+	o.build = func(root, out, ldflags string, env []string) (string, error) {
+		raw, err := os.ReadFile(filepath.Join(root, "mygo.json"))
+		if err != nil {
+			return "", err
+		}
+		var cfg struct {
+			Updates *build.Updates `json:"updates"`
+		}
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return "", err
+		}
+		seenChangelogPath = cfg.Updates.Changelog
+		clRaw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(seenChangelogPath)))
+		if err != nil {
+			return "", err
+		}
+		seenChangelogText = string(clRaw)
+		return baseBuild(root, out, ldflags, env)
+	}
+
+	res, err := run(o)
+	if err != nil {
+		t.Fatalf("allow-dirty run: %v", err)
+	}
+	if res.Version != "0.1.2" {
+		t.Fatalf("version = %q, want 0.1.2", res.Version)
+	}
+	// Tracked CHANGELOG.md must remain byte-for-byte unchanged.
+	afterChangelog := must(os.ReadFile(filepath.Join(root, "CHANGELOG.md")))
+	if string(afterChangelog) != string(origChangelog) {
+		t.Fatalf("tracked CHANGELOG.md was mutated under -allow-dirty:\n%s", afterChangelog)
+	}
+	// The temporary changelog passed to mygo build must be repo-relative and contain the drafted section.
+	if filepath.IsAbs(seenChangelogPath) || seenChangelogPath == changelogName {
+		t.Fatalf("expected repo-relative temporary changelog path, got %q", seenChangelogPath)
+	}
+	if !strings.Contains(seenChangelogText, "## 0.1.2") || !strings.Contains(seenChangelogText, "feat: new feature for rehearsal") {
+		t.Fatalf("temporary changelog missing drafted section:\n%s", seenChangelogText)
+	}
+	// Stale files in artifacts/release/ must be removed.
+	if _, err := os.Stat(staleFile); !os.IsNotExist(err) {
+		t.Fatalf("stale release artifact was not cleaned: %v", err)
+	}
+	notes := string(must(os.ReadFile(filepath.Join(root, "artifacts", "release", "notes.md"))))
+	if !strings.Contains(notes, "feat: new feature for rehearsal") {
+		t.Fatalf("notes.md = %q", notes)
+	}
+}
+
+func TestReleaseFailsWhenOthersChangedInRehearsal(t *testing.T) {
+	pub, key := testKey(t)
+	root := newRepo(t, pub)
+	var seen []string
+	o := testOptions(t, root, key, &seen)
+	o.allowDirty = true
+	o.rehearse = func(in rehearsalInput) (rehearsalResult, error) {
+		r := newRehearsalResult(in)
+		r.Status = "passed"
+		r.OthersSame = false
+		return r, nil
+	}
+	if _, err := run(o); err == nil || !strings.Contains(err.Error(), "rehearsal") {
+		t.Fatalf("expected release to fail when OthersSame=false, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "dist", "trace", releaseSums)); !os.IsNotExist(err) {
+		t.Fatalf("dist/trace should not be published when OthersSame=false: %v", err)
+	}
+	raw := must(os.ReadFile(filepath.Join(root, "artifacts", "release", "rehearsal.json")))
+	var saved rehearsalResult
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != "failed" || saved.OthersSame {
+		t.Fatalf("saved rehearsal.json = %+v, want failed with OthersSame=false", saved)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/chialecode/trace/internal/appdirs"
+	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/update"
 	"github.com/egoist/mygo/ui"
 )
@@ -24,6 +25,8 @@ type UpdaterAPI interface {
 	PrefsChanged()
 }
 
+const settingsMetaCacheTTL = 2 * time.Second
+
 // BindUpdater connects the interface to the updates of the running build.
 func (a *App) BindUpdater(u UpdaterAPI) {
 	a.updater = u
@@ -34,6 +37,30 @@ func (a *App) updateState() (update.State, bool) {
 		return update.State{}, false
 	}
 	return a.updater.State(), true
+}
+
+func (a *App) diagnosticsSnapshotCached() service.Diagnostics {
+	if a.dispatch == nil || a.cachedDiagAt.IsZero() || time.Since(a.cachedDiagAt) >= settingsMetaCacheTTL {
+		a.cachedDiag = a.backend.DiagnosticsSnapshot()
+		a.cachedDiagAt = time.Now()
+	}
+	return a.cachedDiag
+}
+
+func (a *App) installedDevVersionCached() string {
+	if a.dispatch == nil || a.cachedInstalledDevAt.IsZero() || time.Since(a.cachedInstalledDevAt) >= settingsMetaCacheTTL {
+		a.cachedInstalledDev = strings.TrimSpace(a.backend.InstalledDevVersion())
+		a.cachedInstalledDevAt = time.Now()
+	}
+	return a.cachedInstalledDev
+}
+
+func (a *App) updateHistoryCached() update.History {
+	if a.dispatch == nil || a.cachedUpdateHistAt.IsZero() || time.Since(a.cachedUpdateHistAt) >= settingsMetaCacheTTL {
+		a.cachedUpdateHist = a.backend.GetUpdateHistory()
+		a.cachedUpdateHistAt = time.Now()
+	}
+	return a.cachedUpdateHist
 }
 
 // versionLine is "版本 0.1.1（正式版）".
@@ -52,6 +79,20 @@ func buildLine(build appdirs.Build) string {
 		built = t.UTC().Format("2006-01-02 15:04") + " UTC"
 	}
 	return fmt.Sprintf("提交 %s · 构建于 %s", commit, built)
+}
+
+// renderBuildVersionBlock renders the shared version + commit/build-time header
+// block used by Settings › 关于 and Settings › 更新.
+func renderBuildVersionBlock(c *ui.Context, name string, build appdirs.Build, channel string) {
+	ui.Column(c).Label("版本信息").FillWidth().Padding(14, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).Gap(6).ClipX().Children(func() {
+		ui.Text(c, name).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+		ui.Row(c).Label("当前版本").FillWidth().ClipX().Children(func() {
+			ui.Text(c, versionLine(build, channel)).FontSize(13).TextColor(ColorTextMain).SingleLine()
+		})
+		ui.Row(c).Label("提交与构建时间").FillWidth().ClipX().Children(func() {
+			ui.Text(c, buildLine(build)).FontSize(13).TextColor(ColorTextMuted).SingleLine()
+		})
+	})
 }
 
 // renderUpdateBanner is the one line below the top bar that tells about an
@@ -126,8 +167,7 @@ func (a *App) renderUpdateBanner(c *ui.Context) {
 	})
 }
 
-// releaseNoteLines turns the Markdown of a CHANGELOG section into plain
-// lines.
+// releaseNoteLines turns the Markdown of a CHANGELOG section into plain lines.
 func releaseNoteLines(notes string) []string {
 	var out []string
 	for _, line := range strings.Split(strings.ReplaceAll(notes, "\r\n", "\n"), "\n") {
@@ -154,7 +194,8 @@ func (a *App) onUpdatePrimary(st update.State) {
 		a.requestRestartToUpdate()
 	case update.PhaseAvailable:
 		u := a.updater
-		go u.Download(context.Background())
+		ctx := a.ctx
+		go u.Download(ctx)
 	}
 }
 
@@ -173,27 +214,24 @@ func (a *App) requestRestartToUpdate() {
 }
 
 func (a *App) renderRestartConfirmOverlay(c *ui.Context, w, h float32) {
-	if c.Shortcut(0, ui.KeyEscape) {
-		a.RestartConfirmOpen = false
-		return
-	}
-	ui.Overlay(c, func() {
-		ui.Column(c).Absolute().Top(0).Left(0).Size(w, h).Background(ui.RGBA(15, 20, 25, 0.55)).Center().Children(func() {
-			ui.Column(c).Label("重启以更新确认对话框").Width(min(float32(460), w-40)).Padding(22).Radius(16).Background(ColorBgMain).Gap(12).Children(func() {
-				ui.Text(c, "重启以更新？").FontSize(18).FontWeight(600).TextColor(ColorTextMain)
-				ui.Text(c, a.RestartConfirmText).FontSize(13).TextColor(ColorTextMuted).MaxLines(3)
-				ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-					if OutlinePillButton(c, "取消", "取消重启以更新").Clicked() {
-						a.RestartConfirmOpen = false
-					}
-					if AccentOutlinePillButton(c, "重启以更新", "确认重启以更新").Clicked() {
-						a.RestartConfirmOpen = false
-						a.updater.Restart()
-					}
-				})
-			})
-		})
-	})
+	renderConfirmDialog(
+		c,
+		&a.RestartConfirmOpen,
+		"关闭重启以更新对话框（点击空白处）",
+		"重启以更新确认对话框",
+		"重启以更新？",
+		a.RestartConfirmText,
+		"取消",
+		"取消重启以更新",
+		"重启以更新",
+		"确认重启以更新",
+		false,
+		func() {
+			if a.updater != nil {
+				a.updater.Restart()
+			}
+		},
+	)
 }
 
 const (
@@ -201,8 +239,7 @@ const (
 	devUpdateMethodLine     = "开发版不会自己联网检查；Agent 打包后会自动安装，正在运行的 TRACE Dev 会先退出，装完在托盘打开"
 )
 
-func (a *App) currentBuildPresentation() (appdirs.Build, string, string, update.State, bool) {
-	diag := a.backend.DiagnosticsSnapshot()
+func (a *App) currentBuildPresentation(diag service.Diagnostics) (appdirs.Build, string, string, update.State, bool) {
 	build := appdirs.BuildInfo()
 	if diag.Version != "" {
 		build.Version, build.Commit, build.BuildTime = diag.Version, diag.Commit, diag.BuildTime
@@ -228,18 +265,10 @@ func (a *App) currentBuildPresentation() (appdirs.Build, string, string, update.
 // renderAboutSettings is "设置 › 关于": version, diagnostics summary, license
 // notice, and a direct link to "设置 › 更新".
 func (a *App) renderAboutSettings(c *ui.Context) {
-	diag := a.backend.DiagnosticsSnapshot()
-	build, channel, name, _, _ := a.currentBuildPresentation()
+	diag := a.diagnosticsSnapshotCached()
+	build, channel, name, _, _ := a.currentBuildPresentation(diag)
 	ui.Column(c).FillWidth().Gap(4).ClipX().Children(func() {
-		ui.Column(c).Label("版本信息").FillWidth().Padding(14, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).Gap(6).ClipX().Children(func() {
-			ui.Text(c, name).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-			ui.Row(c).Label("当前版本").FillWidth().ClipX().Children(func() {
-				ui.Text(c, versionLine(build, channel)).FontSize(13).TextColor(ColorTextMain).SingleLine()
-			})
-			ui.Row(c).Label("提交与构建时间").FillWidth().ClipX().Children(func() {
-				ui.Text(c, buildLine(build)).FontSize(13).TextColor(ColorTextMuted).SingleLine()
-			})
-		})
+		renderBuildVersionBlock(c, name, build, channel)
 
 		ui.Row(c).FillWidth().Padding(12, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).AlignItems(ui.Center).ClipX().Children(func() {
 			link := ui.ButtonBase(c).Label("版本与更新见‘更新’").Padding(4, 6).Radius(6)
@@ -263,30 +292,21 @@ func (a *App) renderAboutSettings(c *ui.Context) {
 	})
 }
 
-// renderUpdateSettings is "设置 › 更新" (DEC-051 ①, Q-018 #1): flat 1px-divider
-// layout showing current version, how this channel updates, channel-specific
-// controls or local dev installation state, latest 20 check records, and
-// latest 50 update records.
+// renderUpdateSettings is "设置 › 更新": flat 1px-divider layout showing
+// current version, how this channel updates, channel-specific controls or
+// local dev installation state, latest 20 check records, and latest 50 update
+// records.
 func (a *App) renderUpdateSettings(c *ui.Context) {
-	build, channel, name, st, hasUpdater := a.currentBuildPresentation()
+	diag := a.diagnosticsSnapshotCached()
+	build, channel, name, st, hasUpdater := a.currentBuildPresentation(diag)
 	effChannel := appdirs.EffectiveChannel(channel)
 	isRelease := hasUpdater && st.Enabled
 	isDev := !isRelease && effChannel == "dev"
-	hist := a.backend.GetUpdateHistory()
+	hist := a.updateHistoryCached()
 
 	ui.Column(c).FillWidth().Gap(4).ClipX().Children(func() {
-		// 1. Current version block
-		ui.Column(c).Label("版本信息").FillWidth().Padding(14, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).Gap(6).ClipX().Children(func() {
-			ui.Text(c, name).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-			ui.Row(c).Label("当前版本").FillWidth().ClipX().Children(func() {
-				ui.Text(c, versionLine(build, channel)).FontSize(13).TextColor(ColorTextMain).SingleLine()
-			})
-			ui.Row(c).Label("提交与构建时间").FillWidth().ClipX().Children(func() {
-				ui.Text(c, buildLine(build)).FontSize(13).TextColor(ColorTextMuted).SingleLine()
-			})
-		})
+		renderBuildVersionBlock(c, name, build, channel)
 
-		// 2. One-sentence update mechanism description
 		methodSentence := "这个构建没有联网更新"
 		switch {
 		case isRelease:
@@ -298,14 +318,12 @@ func (a *App) renderUpdateSettings(c *ui.Context) {
 			ui.Text(c, methodSentence).FontSize(13).TextColor(ColorTextMuted).MaxLines(3)
 		})
 
-		// 3. Channel-specific section
 		if isRelease {
 			a.renderReleaseUpdateSection(c, st, hist.Checks)
 		} else if isDev {
 			a.renderDevUpdateSection(c, build)
 		}
 
-		// 4. Check history (latest 20) & update history (latest 50)
 		a.renderUpdateCheckHistorySection(c, isDev, hist.Checks)
 		a.renderAppUpdateHistorySection(c, hist.Updates)
 	})
@@ -348,17 +366,21 @@ func (a *App) renderReleaseUpdateSection(c *ui.Context, st update.State, checks 
 		case st.Phase == update.PhaseAvailable:
 			if AccentOutlinePillButton(c, "下载并安装", "更新页下载并安装").Clicked() {
 				u := a.updater
-				go u.Download(context.Background())
+				ctx := a.ctx
+				go u.Download(ctx)
 			}
 		default:
 			label := "立即检查"
-			if busy {
+			if st.Phase == update.PhaseDownloading {
+				label = "正在下载…"
+			} else if st.Phase == update.PhaseChecking {
 				label = "正在检查…"
 			}
-			btn := OutlinePillButton(c, label, "立即检查按钮")
+			btn := OutlinePillButton(c, label, "立即检查按钮").Disabled(busy)
 			if btn.Clicked() && !busy {
 				u := a.updater
-				go u.CheckNow(context.Background())
+				ctx := a.ctx
+				go u.CheckNow(ctx)
 			}
 		}
 	})
@@ -377,7 +399,7 @@ func (a *App) renderReleaseUpdateSection(c *ui.Context, st update.State, checks 
 }
 
 func (a *App) renderDevUpdateSection(c *ui.Context, runningBuild appdirs.Build) {
-	installedVer := strings.TrimSpace(a.backend.InstalledDevVersion())
+	installedVer := a.installedDevVersionCached()
 	ui.Column(c).Label("本机安装的开发版区域").FillWidth().Padding(12, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).Gap(4).ClipX().Children(func() {
 		line := "本机安装的开发版：未在本机安装"
 		if installedVer != "" {

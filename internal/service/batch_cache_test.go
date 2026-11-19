@@ -404,3 +404,32 @@ func TestEnqueueCacheQueueValidatesRequestAndLoadedList(t *testing.T) {
 		t.Fatalf("loaded-only completion mismatch: %+v", done)
 	}
 }
+
+func TestDynamicQueueCandidateSkipsLiveRcmd(t *testing.T) {
+	clock := newFakeQueueClock(time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC))
+	b := newBatchTestBackend(t, clock)
+
+	liveCand := b.dynamicQueueCandidate(bilibili.DynamicItem{
+		ID:   "1272800651797069830",
+		Type: "DYNAMIC_TYPE_LIVE_RCMD",
+		Text: "暂不支持完整展示的动态类型 (DYNAMIC_TYPE_LIVE_RCMD)",
+	})
+	if !liveCand.uncacheable {
+		t.Fatalf("DYNAMIC_TYPE_LIVE_RCMD should be marked uncacheable")
+	}
+
+	liveCandLower := b.dynamicQueueCandidate(bilibili.DynamicItem{
+		ID:   "1272800651797069831",
+		Type: " dynamic_type_live_rcmd ",
+	})
+	if !liveCandLower.uncacheable {
+		t.Fatalf("lowercase/padded DYNAMIC_TYPE_LIVE_RCMD should be marked uncacheable")
+	}
+
+	for _, typ := range []string{"DYNAMIC_TYPE_DRAW", "DYNAMIC_TYPE_FORWARD", "DYNAMIC_TYPE_AV", "DYNAMIC_TYPE_WORD"} {
+		cand := b.dynamicQueueCandidate(bilibili.DynamicItem{ID: "1001", Type: typ})
+		if cand.uncacheable {
+			t.Fatalf("type %s should remain cacheable", typ)
+		}
+	}
+}

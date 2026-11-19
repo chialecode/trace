@@ -17,7 +17,7 @@ import (
 	"github.com/chialecode/trace/internal/storage"
 )
 
-// C16: Filename sanitization and path traversal containment.
+// Filename sanitization and path traversal containment.
 func TestSanitizeFileNameAndEnsureWithinRoot(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -49,7 +49,7 @@ func TestSanitizeFileNameAndEnsureWithinRoot(t *testing.T) {
 	}
 }
 
-// C24, C25, C26, C28: Index rebuild from item.json after DB deletion, missing_files detection,
+// Index rebuild from item.json after DB deletion, missing_files detection,
 // corrupt item.json backup, cache dir migration, and safe item deletion preserving user files.
 func TestLibraryIndexRebuildMissingFilesMigrateAndDelete(t *testing.T) {
 	tmp := t.TempDir()
@@ -106,7 +106,7 @@ func TestLibraryIndexRebuildMissingFilesMigrateAndDelete(t *testing.T) {
 		t.Fatalf("SaveItem video: %v", err)
 	}
 
-	// Also insert an online-only discovered feed item to verify unified feed order and deduplication (C24).
+	// Also insert an online-only discovered feed item to verify unified feed order and deduplication.
 	if err := store.UpsertFeedEntry(FeedEntry{
 		Site:         "bilibili",
 		Kind:         "dynamic",
@@ -132,12 +132,12 @@ func TestLibraryIndexRebuildMissingFilesMigrateAndDelete(t *testing.T) {
 		t.Fatalf("expected second item to be cached video BV17x411w7KC, got %+v", feed[1])
 	}
 
-	// Create a corrupt item.json in another folder to verify C28 backup during RebuildIndex.
+	// Create a corrupt item.json in another folder to verify backup during RebuildIndex.
 	corruptDir := filepath.Join(cacheDir, "bilibili", "12345_TestUP", "dynamic_bad")
 	_ = os.MkdirAll(corruptDir, 0o700)
 	_ = os.WriteFile(filepath.Join(corruptDir, "item.json"), []byte("{corrupt"), 0o600)
 
-	// Delete library.db and reopen a fresh DB, then RebuildIndex from item.json files (C25).
+	// Delete library.db and reopen a fresh DB, then RebuildIndex from item.json files.
 	_ = db.Close()
 	_ = os.Remove(dbPath)
 	db2, _, _, err := storage.OpenSQLite(dbPath)
@@ -158,7 +158,7 @@ func TestLibraryIndexRebuildMissingFilesMigrateAndDelete(t *testing.T) {
 		t.Fatalf("unexpected RebuildReport: %+v", rep)
 	}
 
-	// Remove P01_Part1.mp4 on disk and rebuild -> status must become missing_files (C24).
+	// Remove P01_Part1.mp4 on disk and rebuild -> status must become missing_files.
 	_ = os.Remove(mp4Path)
 	repMissing, err := store2.RebuildIndex()
 	if err != nil {
@@ -172,7 +172,7 @@ func TestLibraryIndexRebuildMissingFilesMigrateAndDelete(t *testing.T) {
 		t.Fatalf("expected status=missing_files, got %+v ok=%v err=%v", gotItem, ok, err)
 	}
 
-	// Restore file and migrate cacheDir to cache2 (C26).
+	// Restore file and migrate cacheDir to cache2.
 	_ = os.WriteFile(mp4Path, []byte("synthetic-mp4-bytes"), 0o600)
 	cacheDir2 := filepath.Join(tmp, "cache2")
 	repMig, err := store2.MigrateCacheDir(cacheDir2, true)
@@ -207,7 +207,7 @@ func TestLibraryIndexRebuildMissingFilesMigrateAndDelete(t *testing.T) {
 	}
 }
 
-// R-01 (P0) & C26: PlanDelete and Delete preserve user-owned files, protect shared videos, and reject active recordings.
+// PlanDelete and Delete preserve user-owned files, protect shared videos, and reject active recordings.
 func TestPlanDeleteAndDeletePreservesUserFiles(t *testing.T) {
 	tmp := t.TempDir()
 	db, _, _, err := storage.OpenSQLite(filepath.Join(tmp, "library.db"))
@@ -304,7 +304,7 @@ func TestPlanDeleteAndDeletePreservesUserFiles(t *testing.T) {
 		t.Fatalf("expected item.json to be deleted, stat err=%v", err)
 	}
 	if data, err := os.ReadFile(userFile); err != nil || string(data) != "keep-my-notes" {
-		t.Fatalf("CRITICAL R-01: user-owned.txt was not preserved! err=%v data=%q", err, string(data))
+		t.Fatalf("user-owned.txt was not preserved! err=%v data=%q", err, string(data))
 	}
 
 	// 3. Active recording item cannot be deleted.
@@ -379,7 +379,7 @@ func TestMediaPathWhitelistAndSymlinkRejection(t *testing.T) {
 	}
 }
 
-// C19: State dot inference (green, yellow, red, ring, none).
+// State dot inference (green, yellow, red, ring, none).
 func TestStateDotInference(t *testing.T) {
 	tmp := t.TempDir()
 	db, _, _, _ := storage.OpenSQLite(filepath.Join(tmp, "library.db"))
@@ -415,7 +415,7 @@ func TestStateDotInference(t *testing.T) {
 	}
 }
 
-// C24: Bidirectional keyset pagination (pub_ts, key) and NewerCount.
+// Bidirectional keyset pagination (pub_ts, key) and NewerCount.
 func TestBidirectionalKeysetFeedAndAnchor(t *testing.T) {
 	tmp := t.TempDir()
 	db, _, _, _ := storage.OpenSQLite(filepath.Join(tmp, "library.db"))
@@ -459,13 +459,13 @@ func TestBidirectionalKeysetFeedAndAnchor(t *testing.T) {
 		t.Fatalf("NewerCount = %d, err=%v (want 2)", newer, err)
 	}
 
-	// Bidirectional newer page from dyn_3 cursor: should return dyn_5, dyn_4 in newest-first order with no duplicates or omissions (C24, R10).
+	// Bidirectional newer page from dyn_3 cursor: should return dyn_5, dyn_4 in newest-first order with no duplicates or omissions.
 	pNewer, err := store.FeedPage(FeedPageRequest{Cursor: &FeedCursor{PubTs: p2.Items[0].PubTs, Key: p2.Items[0].FeedKey}, Order: "newest", Direction: "newer", Limit: 5})
 	if err != nil || len(pNewer.Items) != 2 || pNewer.Items[0].RawID != "dyn_5" || pNewer.Items[1].RawID != "dyn_4" {
 		t.Fatalf("FeedPage newer from dyn_3 = %+v, err=%v", pNewer, err)
 	}
 
-	// Around cursor when anchor item still exists vs when anchor item was deleted (R10).
+	// Around cursor when anchor item still exists vs when anchor item was deleted.
 	pAround, err := store.FeedPage(FeedPageRequest{Cursor: &FeedCursor{PubTs: p2.Items[0].PubTs, Key: p2.Items[0].FeedKey}, Order: "newest", Direction: "around", Limit: 10})
 	if err != nil || len(pAround.Items) != 5 {
 		t.Fatalf("FeedPage around = %+v, err=%v", pAround, err)
@@ -544,7 +544,7 @@ func TestFeedAroundTimestampChoosesNearestOlderItemAcrossTies(t *testing.T) {
 	}
 }
 
-// C25: Filter by type, subscription authors, and creator mid.
+// Filter by type, subscription authors, and creator mid.
 func TestLibraryFilterByTypeSubscriptionAndCreator(t *testing.T) {
 	tmp := t.TempDir()
 	db, _, _, _ := storage.OpenSQLite(filepath.Join(tmp, "library.db"))
@@ -570,7 +570,7 @@ func TestLibraryFilterByTypeSubscriptionAndCreator(t *testing.T) {
 	}
 }
 
-// C27: AddLibraryRoot recognizes legacy trace-data folder with library/ and NO settings.json, skipping duplicates.
+// AddLibraryRoot recognizes legacy trace-data folder with library/ and NO settings.json, skipping duplicates.
 func TestAddLibraryRootLegacyWithoutSettingsJSON(t *testing.T) {
 	tmp := t.TempDir()
 	db, _, _, _ := storage.OpenSQLite(filepath.Join(tmp, "library.db"))
@@ -616,11 +616,7 @@ func TestAddLibraryRootLegacyWithoutSettingsJSON(t *testing.T) {
 	}
 }
 
-func TestRebuildIndexFromItemJSONManifests(t *testing.T) {
-	TestLibraryIndexRebuildMissingFilesMigrateAndDelete(t)
-}
-
-// C20 & C27: Quality upgrade detection and 24-hour cooldown.
+// Quality upgrade detection and 24-hour cooldown.
 func TestCheckQualityUpgradeDetection(t *testing.T) {
 	tmp := t.TempDir()
 	db, _, _, err := storage.OpenSQLite(filepath.Join(tmp, "library.db"))

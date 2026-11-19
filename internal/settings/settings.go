@@ -48,10 +48,36 @@ type Settings struct {
 	Diagnostics          DiagnosticsSettings  `json:"diagnostics"`
 	Updates              UpdateSettings       `json:"updates"`
 	Network              NetworkSettings      `json:"network"`
+	// Remote is the connection to trace-server (docs/design/remote.md §3,
+	// §7). Optional; the access token is kept in the credential store,
+	// never here.
+	Remote RemoteSettings `json:"remote"`
 }
 
-// UpdateSettings are the update preferences of the release channel
-// (FR-UPD-002): both on by default, a file without them keeps the defaults.
+// RemoteSettings holds the remote connections (one for now; a list so a
+// later cluster mode can add more) and the sites whose Cookie still has to
+// be pushed to the remote.
+type RemoteSettings struct {
+	Connections    []RemoteConnection `json:"connections,omitempty"`
+	PendingCookies []PendingCookie    `json:"pendingCookies,omitempty"`
+}
+
+// RemoteConnection is one remote: its address, name and pinned
+// certificate fingerprint.
+type RemoteConnection struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	URL         string `json:"url"`
+	Fingerprint string `json:"fingerprint"`
+	AddedAt     string `json:"addedAt,omitempty"`
+}
+
+// PendingCookie marks a site whose new Cookie the remote has not received.
+type PendingCookie struct {
+	Site  string `json:"site"`
+	Since string `json:"since"`
+}
+
 // NetworkSettings chooses the proxy of every site request (DEC-046 ⑤):
 // "system" (default: the system's settings and HTTP(S)_PROXY), "none" or
 // "custom" with ProxyURL (http://, https:// or socks5://).
@@ -60,6 +86,8 @@ type NetworkSettings struct {
 	ProxyURL  string `json:"proxyUrl,omitempty"`
 }
 
+// UpdateSettings are the update preferences of the release channel
+// (FR-UPD-002): both on by default, a file without them keeps the defaults.
 type UpdateSettings struct {
 	AutoCheck    bool `json:"autoCheck"`
 	AutoDownload bool `json:"autoDownload"`
@@ -357,6 +385,8 @@ func Normalize(s Settings, defaultCacheDir string) (Settings, error) {
 	if s.LiveCheckIntervalMin == 0 {
 		if s.Live.PollIntervalSeconds >= 60 {
 			s.LiveCheckIntervalMin = s.Live.PollIntervalSeconds / 60
+		} else if s.Live.PollIntervalSeconds >= 30 {
+			s.LiveCheckIntervalMin = 1
 		} else {
 			s.LiveCheckIntervalMin = 3
 		}
@@ -522,8 +552,17 @@ func Open(path, defaultCacheDir string) (*Store, bool, string, error) {
 		if bErr != nil {
 			return nil, false, "", bErr
 		}
-		_ = storage.WriteJSONAtomic(path, def, 0o600)
+		if wErr := storage.WriteJSONAtomic(path, def, 0o600); wErr != nil {
+			return nil, true, backup, wErr
+		}
 		return s, true, backup, nil
+	}
+	if loaded.Version > 1 {
+		return nil, false, "", &storage.NewerDataError{
+			File:      filepath.Base(path),
+			Found:     loaded.Version,
+			Supported: 1,
+		}
 	}
 
 	norm, err := Normalize(loaded, defaultCacheDir)
@@ -532,7 +571,9 @@ func Open(path, defaultCacheDir string) (*Store, bool, string, error) {
 		if bErr != nil {
 			return nil, false, "", bErr
 		}
-		_ = storage.WriteJSONAtomic(path, def, 0o600)
+		if wErr := storage.WriteJSONAtomic(path, def, 0o600); wErr != nil {
+			return nil, true, backup, wErr
+		}
 		return s, true, backup, nil
 	}
 
@@ -591,7 +632,14 @@ func normalizeUpdate(next, before Settings, defaultCacheDir string) (Settings, e
 	syncChangedAlias(&next.MaxRecordings, &next.Live.MaxConcurrentRecordings, before.MaxRecordings, before.Live.MaxConcurrentRecordings)
 	syncChangedAlias(&next.CloseAction, &next.Window.CloseAction, before.CloseAction, before.Window.CloseAction)
 	if next.LiveCheckIntervalMin == before.LiveCheckIntervalMin && next.Live.PollIntervalSeconds != before.Live.PollIntervalSeconds {
-		next.LiveCheckIntervalMin = next.Live.PollIntervalSeconds / 60
+		if next.Live.PollIntervalSeconds < 30 {
+			return Settings{}, fmt.Errorf("settings: live pollIntervalSeconds must be >= 30, got %d", next.Live.PollIntervalSeconds)
+		}
+		mins := next.Live.PollIntervalSeconds / 60
+		if mins < 1 {
+			mins = 1
+		}
+		next.LiveCheckIntervalMin = mins
 	}
 	if slices.Equal(next.CodecOrder, before.CodecOrder) && next.Download.PreferredVideoCodec != before.Download.PreferredVideoCodec {
 		next.CodecOrder = uniqueCodecs([]string{next.Download.PreferredVideoCodec, "avc", "av1", "hevc"})
@@ -613,6 +661,12 @@ func cloneSettings(in Settings) Settings {
 	}
 	if in.Live.CodecOrder != nil {
 		out.Live.CodecOrder = append([]string(nil), in.Live.CodecOrder...)
+	}
+	if in.Remote.Connections != nil {
+		out.Remote.Connections = append([]RemoteConnection(nil), in.Remote.Connections...)
+	}
+	if in.Remote.PendingCookies != nil {
+		out.Remote.PendingCookies = append([]PendingCookie(nil), in.Remote.PendingCookies...)
 	}
 	return out
 }

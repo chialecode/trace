@@ -23,7 +23,7 @@ func mustReadFixture(t *testing.T, name string) string {
 	return string(b)
 }
 
-// TestMixedNoteAndVODWorkDetail verifies M3-K08:
+// TestMixedNoteAndVODWorkDetail verifies mixed note and VOD work detail parsing:
 //   - images[] checked BEFORE top-level video.play_addr BGM trap
 //   - mixed note page order & 4 subtypes (image with .heic last & watermark excluded, live_photo, video page, unknownKind fallback)
 //   - live_photo_type == 1 missing motion clip fails with schema_changed
@@ -306,7 +306,7 @@ func TestMixedNoteAndVODWorkDetail(t *testing.T) {
 	})
 }
 
-// TestUserProfileAndAwemePostTruthTable verifies M3-K07:
+// TestUserProfileAndAwemePostTruthTable verifies user profile and aweme post truth-table handling:
 //   - profile/other sec_uid consistency check, secret==1 private account, room_id & room_data web_rid extraction
 //   - aweme/post is_top==1 old pinned post preservation, cross-page SeenIDs dedup, cursor-stall guard
 //   - all 6 rows of douyin.md §9.2 empty-shell truth table
@@ -608,7 +608,7 @@ func TestUserProfileAndAwemePostTruthTable(t *testing.T) {
 	})
 }
 
-// TestLiveResolutionFallbackCheckAliveAndFLVSelection verifies M3-K16:
+// TestLiveResolutionFallbackCheckAliveAndFLVSelection verifies live fallback, status checks, and FLV selection:
 //   - both live.douyin.com/<short_id> and live.douyin.com/<transient_web_rid> resolve anchor sec_uid & room_id
 //   - confirmed permanent numeric short_id is retained in webRid cache over transient web_rid
 //   - invalidated (4001038) or recycled (wrong sec_uid) cached webRid clears cache and falls back to profile/other

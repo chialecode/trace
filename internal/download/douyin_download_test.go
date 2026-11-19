@@ -284,6 +284,7 @@ func TestDouyinVideoCacheRangeRefreshAndSecretScrub(t *testing.T) {
 	})
 
 	mgr, libStore, srv, dbPath, logBuf := setupDouyinDownloadTestEnv(t, mux, 1)
+	checkNames := watchNames(t, libStore.CacheDir())
 	planner := newFakeDouyinWorkPlanner()
 	mgr.RegisterWorkPlanner(planner)
 
@@ -324,6 +325,7 @@ func TestDouyinVideoCacheRangeRefreshAndSecretScrub(t *testing.T) {
 		t.Fatalf("EnqueueDouyinWork(awemeOK): %v", err)
 	}
 	doneOK := waitForTaskStatus(t, mgr, taskOK.TaskID, "completed", 8*time.Second)
+	checkNames()
 	if sawCookieLeak.Load() {
 		t.Fatal("CDN media request leaked Cookie header")
 	}
@@ -496,6 +498,7 @@ func TestDouyinPlainAndMixedNotesMusicAndUnknownPage(t *testing.T) {
 	})
 
 	mgr, libStore, srv, _, _ := setupDouyinDownloadTestEnv(t, mux, 2)
+	checkNames := watchNames(t, libStore.CacheDir())
 	planner := newFakeDouyinWorkPlanner()
 	mgr.RegisterWorkPlanner(planner)
 	transport := site.DouyinVODTransport("Mozilla/5.0 Test", true)
@@ -600,6 +603,7 @@ func TestDouyinPlainAndMixedNotesMusicAndUnknownPage(t *testing.T) {
 		t.Fatalf("EnqueueDouyinWork(mixed): %v", err)
 	}
 	doneMixed := waitForTaskStatus(t, mgr, tMixed.TaskID, "partial", 8*time.Second)
+	checkNames()
 
 	for _, rel := range []string{
 		"images/01.png",

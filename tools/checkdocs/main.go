@@ -12,14 +12,15 @@ import (
 )
 
 var (
-	anchorTagRe     = regexp.MustCompile(`<a\s+(?:id|name)=["']([^"']+)["']`)
-	headingRe       = regexp.MustCompile(`(?m)^#{1,6}\s+(.+?)\s*$`)
-	mdLinkRe        = regexp.MustCompile(`!?\[[^\]]*\]\(([^)]+)\)`)
-	refHeadingRe    = regexp.MustCompile(`(?m)^###\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\s*$`)
-	winAbsPathRe    = regexp.MustCompile(`(?i)\b[cd]:\\[A-Za-z0-9_.-]+`)
-	unixHomeRe      = regexp.MustCompile(`(?:/Users/|/home/runner/)[A-Za-z0-9_.-]+`)
-	cookieLeakRe    = regexp.MustCompile(`(?i)\b(?:SESSDATA|bili_jct|DedeUserID__ckMd5|ac_time_value|sessionid|sessionid_ss|sid_guard|msToken)=[A-Za-z0-9%][A-Za-z0-9%|._-]{5,}`)
-	signedURLLeakRe = regexp.MustCompile(`(?i)https?://[^\s"'<>` + "`" + `]*(?:a_bogus=[A-Za-z0-9%+/=._-]{4,}|x-(?:secsdk-web-)?signature(?:=[A-Za-z0-9%+/=._-]{4,}|/[A-Za-z0-9%+/=._-]{4,}))`)
+	anchorTagRe        = regexp.MustCompile(`<a\s+(?:id|name)=["']([^"']+)["']`)
+	headingRe          = regexp.MustCompile(`(?m)^#{1,6}\s+(.+?)\s*$`)
+	mdLinkRe           = regexp.MustCompile(`!?\[[^\]]*\]\(([^)]+)\)`)
+	refHeadingRe       = regexp.MustCompile(`(?m)^###\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\s*$`)
+	winAbsPathRe       = regexp.MustCompile(`(?i)\b[a-zA-Z]:\\[A-Za-z0-9_.-]+`)
+	unixHomeRe         = regexp.MustCompile(`(?:/Users/[A-Za-z0-9_.-]+|/home/[a-zA-Z0-9._-]+/)`)
+	cookieLeakRe       = regexp.MustCompile(`(?i)(?:\b(?:SESSDATA|bili_jct|DedeUserID__ckMd5|ac_time_value|sessionid|sessionid_ss|sid_guard|msToken|UIFID|UIFID_TEMP|ttwid|odin_tt|sid_tt|uid_tt|uid_tt_ss|__ac_signature)=[A-Za-z0-9%_][A-Za-z0-9%|._-]{5,}|\btrace-remote:(?:[0-9]+:)?[A-Za-z0-9_=-]{8,})`)
+	signedURLLeakRe    = regexp.MustCompile(`(?i)https?://[^\s"'<>` + "`" + `]*(?:a_bogus=[A-Za-z0-9%+/=._-]{4,}|x-(?:secsdk-web-)?signature(?:=[A-Za-z0-9%+/=._-]{4,}|/[A-Za-z0-9%+/=._-]{4,}))`)
+	signedURLPathSigRe = regexp.MustCompile(`(?i)(x-(?:secsdk-web-)?signature/)[^/\s?"'<>` + "`" + `]+`)
 )
 
 var ignoredDirs = map[string]bool{
@@ -103,10 +104,10 @@ func Run(rootDir string, refDirOverride string) ([]string, string, error) {
 
 		// 2. Check leaked Cookie/token values and signed URLs
 		if m := cookieLeakRe.FindString(text); m != "" {
-			findings = append(findings, fmt.Sprintf("%s: contains Cookie/token value %q", relPath, m))
+			findings = append(findings, fmt.Sprintf("%s: contains Cookie/token value %q", relPath, redactSecretMatch(m)))
 		}
 		if m := signedURLLeakRe.FindString(text); m != "" {
-			findings = append(findings, fmt.Sprintf("%s: contains signed URL %q", relPath, m))
+			findings = append(findings, fmt.Sprintf("%s: contains signed URL %q", relPath, redactSignedURL(m)))
 		}
 
 		// 3. Check reference project names (if reference index was found)
@@ -180,35 +181,87 @@ func isExternalLink(target string) bool {
 	return false
 }
 
-func stripCodeBlocksAndSpans(md string) string {
+func redactSecretMatch(m string) string {
+	if strings.HasPrefix(strings.ToLower(m), "trace-remote:") {
+		return "trace-remote:<redacted>"
+	}
+	if k, _, ok := strings.Cut(m, "="); ok {
+		return k + "=<redacted>"
+	}
+	return "<redacted>"
+}
+
+func redactSignedURL(m string) string {
+	if base, _, ok := strings.Cut(m, "?"); ok {
+		m = base + "?<redacted>"
+	}
+	return signedURLPathSigRe.ReplaceAllString(m, "${1}<redacted>")
+}
+
+func parseFenceOpen(trimmed string) (byte, int) {
+	if len(trimmed) < 3 {
+		return 0, 0
+	}
+	ch := trimmed[0]
+	if ch != '`' && ch != '~' {
+		return 0, 0
+	}
+	n := 0
+	for n < len(trimmed) && trimmed[n] == ch {
+		n++
+	}
+	if n < 3 {
+		return 0, 0
+	}
+	if ch == '`' && strings.ContainsRune(trimmed[n:], '`') {
+		return 0, 0
+	}
+	return ch, n
+}
+
+func isFenceClose(trimmed string, ch byte, minLen int) bool {
+	if len(trimmed) < minLen || trimmed[0] != ch {
+		return false
+	}
+	for i := 0; i < len(trimmed); i++ {
+		if trimmed[i] != ch {
+			return false
+		}
+	}
+	return true
+}
+
+func stripFencedCodeBlocks(md string) string {
 	lines := strings.Split(md, "\n")
 	var out strings.Builder
-	inFence := false
-	fenceMarker := ""
+	var fenceChar byte
+	fenceLen := 0
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if !inFence {
-			if strings.HasPrefix(trimmed, "```") {
-				inFence = true
-				fenceMarker = "```"
+		if fenceLen == 0 {
+			if ch, n := parseFenceOpen(trimmed); n > 0 {
+				fenceChar, fenceLen = ch, n
 				out.WriteByte('\n')
 				continue
 			}
-			if strings.HasPrefix(trimmed, "~~~") {
-				inFence = true
-				fenceMarker = "~~~"
-				out.WriteByte('\n')
-				continue
-			}
-			out.WriteString(stripInlineCode(line))
+			out.WriteString(line)
 			out.WriteByte('\n')
 		} else {
-			if strings.HasPrefix(trimmed, fenceMarker) {
-				inFence = false
-				fenceMarker = ""
+			if isFenceClose(trimmed, fenceChar, fenceLen) {
+				fenceChar, fenceLen = 0, 0
 			}
 			out.WriteByte('\n')
 		}
+	}
+	return out.String()
+}
+
+func stripCodeBlocksAndSpans(md string) string {
+	lines := strings.Split(stripFencedCodeBlocks(md), "\n")
+	var out strings.Builder
+	for _, line := range lines {
+		out.WriteString(stripInlineCode(line))
+		out.WriteByte('\n')
 	}
 	return out.String()
 }
@@ -236,7 +289,7 @@ func collectMarkdownAnchors(mdPath string) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	text := string(raw)
+	text := stripFencedCodeBlocks(string(raw))
 	anchors := make(map[string]bool)
 
 	for _, m := range anchorTagRe.FindAllStringSubmatch(text, -1) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -20,17 +21,22 @@ var (
 	modMFReadWrite = windows.NewLazySystemDLL("mfreadwrite.dll")
 
 	procCoInitializeEx              = modOle32.NewProc("CoInitializeEx")
+	procCoUninitialize              = modOle32.NewProc("CoUninitialize")
 	procPropVariantClear            = modOle32.NewProc("PropVariantClear")
 	procMFStartup                   = modMFPlat.NewProc("MFStartup")
 	procMFShutdown                  = modMFPlat.NewProc("MFShutdown")
 	procMFCreateAttributes          = modMFPlat.NewProc("MFCreateAttributes")
 	procMFCreateMediaType           = modMFPlat.NewProc("MFCreateMediaType")
 	procMFCreateSourceReaderFromURL = modMFReadWrite.NewProc("MFCreateSourceReaderFromURL")
+
+	processMTAOnce sync.Once
 )
 
 const (
 	mfVersionWin10      = 0x00020070 // (MF_SDK_VERSION << 16) | MF_API_VERSION
 	coinitMultithreaded = 0x0
+	hrCOMSOk            = 0x00000000
+	hrCOMSFalse         = 0x00000001
 
 	mfSourceReaderFirstVideoStream = 0xFFFFFFFC
 	mfSourceReaderFirstAudioStream = 0xFFFFFFFD
@@ -42,6 +48,37 @@ const (
 	vtI8  = 20
 	vtUI8 = 21
 )
+
+// ensureProcessMTA keeps one dedicated OS-locked thread initialized in the
+// process-wide COM multi-threaded apartment so implicit MTA remains valid for
+// Media Foundation calls across Go worker threads without leaking per-thread
+// CoInitializeEx counts on Go's M pool.
+func ensureProcessMTA() {
+	processMTAOnce.Do(func() {
+		ready := make(chan struct{})
+		go func() {
+			runtime.LockOSThread()
+			_, _, _ = procCoInitializeEx.Call(0, coinitMultithreaded)
+			close(ready)
+			select {}
+		}()
+		<-ready
+	})
+}
+
+// withThreadMTA runs fn on an OS-locked thread with paired CoInitializeEx /
+// CoUninitialize (skipping CoUninitialize when the calling thread is already
+// initialized in another apartment such as STA).
+func withThreadMTA(fn func()) {
+	ensureProcessMTA()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded)
+	if hr == hrCOMSOk || hr == hrCOMSFalse {
+		defer procCoUninitialize.Call()
+	}
+	fn()
+}
 
 var (
 	guidNull = windows.GUID{}
@@ -163,6 +200,7 @@ type MFDecoder struct {
 	sampleRate     int
 	channels       int
 	audioCarry     []float32
+	audioScratch   []float32
 	lastVideoPos   time.Duration
 	lastRequest    time.Duration
 	lastFrame      *image.RGBA
@@ -213,28 +251,53 @@ var videoReaderModes = []readerMode{
 // openMFReader opens path for its first video stream (forVideo) or its
 // first audio stream; every other stream is deselected.
 func openMFReader(path string, forVideo bool) (*MFDecoder, error) {
-	_, _, _ = procCoInitializeEx.Call(0, coinitMultithreaded)
-	r1, _, _ := procMFStartup.Call(mfVersionWin10, 0)
-	if int32(r1) < 0 {
-		return nil, fmt.Errorf("mf: MFStartup failed: 0x%08x", uint32(r1))
+	urlPtr, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
 	}
-	modes := videoReaderModes
-	if !forVideo {
-		modes = []readerMode{{name: "audio"}}
-	}
-	var lastErr error
-	for _, mode := range modes {
-		dec, err := openMFReaderMode(path, forVideo, mode)
-		if err == nil {
-			return dec, nil
+	return openMFReaderWithFactory(forVideo, true, func(attrs uintptr) (uintptr, error) {
+		var reader uintptr
+		hr, _, _ := procMFCreateSourceReaderFromURL.Call(
+			uintptr(unsafe.Pointer(urlPtr)),
+			attrs,
+			uintptr(unsafe.Pointer(&reader)),
+		)
+		if int32(hr) < 0 || reader == 0 {
+			return 0, fmt.Errorf("mf: MFCreateSourceReaderFromURL(%s) failed: 0x%08x", path, uint32(hr))
 		}
-		lastErr = err
-	}
-	_, _, _ = procMFShutdown.Call()
-	return nil, lastErr
+		return reader, nil
+	})
 }
 
-func openMFReaderMode(path string, forVideo bool, mode readerMode) (*MFDecoder, error) {
+func openMFReaderWithFactory(forVideo, queryDur bool, create func(attrs uintptr) (uintptr, error)) (*MFDecoder, error) {
+	var dec *MFDecoder
+	var openErr error
+	withThreadMTA(func() {
+		r1, _, _ := procMFStartup.Call(mfVersionWin10, 0)
+		if int32(r1) < 0 {
+			openErr = fmt.Errorf("mf: MFStartup failed: 0x%08x", uint32(r1))
+			return
+		}
+		modes := videoReaderModes
+		if !forVideo {
+			modes = []readerMode{{name: "audio"}}
+		}
+		var lastErr error
+		for _, mode := range modes {
+			d, err := openMFReaderModeWithFactory(forVideo, queryDur, mode, create)
+			if err == nil {
+				dec = d
+				return
+			}
+			lastErr = err
+		}
+		_, _, _ = procMFShutdown.Call()
+		openErr = lastErr
+	})
+	return dec, openErr
+}
+
+func openMFReaderModeWithFactory(forVideo, queryDur bool, mode readerMode, create func(attrs uintptr) (uintptr, error)) (*MFDecoder, error) {
 	var device, manager uintptr
 	if mode.hardware {
 		if device, manager = newDXGIDeviceManager(); manager == 0 {
@@ -268,20 +331,10 @@ func openMFReaderMode(path string, forVideo bool, mode readerMode) (*MFDecoder, 
 		}
 	}
 
-	urlPtr, err := windows.UTF16PtrFromString(path)
+	reader, err := create(attrs)
 	if err != nil {
 		release()
 		return nil, err
-	}
-	var reader uintptr
-	hr, _, _ = procMFCreateSourceReaderFromURL.Call(
-		uintptr(unsafe.Pointer(urlPtr)),
-		attrs,
-		uintptr(unsafe.Pointer(&reader)),
-	)
-	if int32(hr) < 0 || reader == 0 {
-		release()
-		return nil, fmt.Errorf("mf: MFCreateSourceReaderFromURL(%s) failed: 0x%08x", path, uint32(hr))
 	}
 
 	dec := &MFDecoder{
@@ -327,7 +380,9 @@ func openMFReaderMode(path string, forVideo bool, mode readerMode) (*MFDecoder, 
 			return fail(fmt.Errorf("mf: no decodable audio stream"))
 		}
 	}
-	dec.queryDuration()
+	if queryDur {
+		dec.queryDuration()
+	}
 	return dec, nil
 }
 
@@ -409,10 +464,10 @@ func (d *MFDecoder) configureVideoStream(advanced bool) error {
 }
 
 func (d *MFDecoder) configureAudioStream() {
-	if err := d.setStreamSubtype(mfSourceReaderFirstAudioStream, &guidMFMediaTypeAudio, &guidMFAudioFormatFloat); err == nil {
+	if err := d.setStreamSubtype(mfSourceReaderFirstAudioStream, &guidMFMediaTypeAudio, &guidMFAudioFormatFloat, 0); err == nil {
 		d.hasAudio = true
 		d.audioFormat = "float"
-	} else if err := d.setStreamSubtype(mfSourceReaderFirstAudioStream, &guidMFMediaTypeAudio, &guidMFAudioFormatPCM); err == nil {
+	} else if err := d.setStreamSubtype(mfSourceReaderFirstAudioStream, &guidMFMediaTypeAudio, &guidMFAudioFormatPCM, 16); err == nil {
 		d.hasAudio = true
 		d.audioFormat = "pcm16"
 	} else {
@@ -427,6 +482,12 @@ func (d *MFDecoder) configureAudioStream() {
 	}
 	defer comRelease(curType)
 
+	if d.audioFormat == "pcm16" {
+		if bits, err := comGetUINT32(curType, &guidMFMTAudioBitsPerSample); err == nil && bits != 0 && bits != 16 {
+			d.hasAudio = false
+			return
+		}
+	}
 	if ch, err := comGetUINT32(curType, &guidMFMTAudioNumChannels); err == nil && ch > 0 {
 		d.channels = int(ch)
 	}
@@ -454,7 +515,7 @@ func (d *MFDecoder) queryDuration() {
 	}
 }
 
-func (d *MFDecoder) setStreamSubtype(streamIdx uint32, major, sub *windows.GUID) error {
+func (d *MFDecoder) setStreamSubtype(streamIdx uint32, major, sub *windows.GUID, bitsPerSample uint32) error {
 	var mt uintptr
 	hr, _, _ := procMFCreateMediaType.Call(uintptr(unsafe.Pointer(&mt)))
 	if int32(hr) < 0 || mt == 0 {
@@ -467,6 +528,11 @@ func (d *MFDecoder) setStreamSubtype(streamIdx uint32, major, sub *windows.GUID)
 	}
 	if err := comSetGUID(mt, &guidMFMTSubtype, sub); err != nil {
 		return err
+	}
+	if bitsPerSample > 0 {
+		if err := comSetUINT32(mt, &guidMFMTAudioBitsPerSample, bitsPerSample); err != nil {
+			return err
+		}
 	}
 
 	hr = vcall(d.reader, 7, uintptr(streamIdx), 0, mt)
@@ -514,7 +580,17 @@ func (d *MFDecoder) DecodeVideoFrameAt(pos time.Duration, dst *image.RGBA) (*ima
 		return d.lastFrame, d.lastVideoPos, nil
 	}
 
-	for tries := 0; tries < 240; tries++ {
+	maxTries := 240
+	if d.fps > 0 {
+		if scaled := int(d.fps * 12); scaled > maxTries {
+			maxTries = scaled
+		}
+	}
+	if maxTries > 900 {
+		maxTries = 900
+	}
+
+	for tries := 0; tries < maxTries; tries++ {
 		var actualIdx uint32
 		var flags uint32
 		var tsHNS int64
@@ -559,7 +635,7 @@ func (d *MFDecoder) DecodeVideoFrameAt(pos time.Duration, dst *image.RGBA) (*ima
 		}
 	}
 
-	return d.fallbackFrameLocked(dst, pos), pos, fmt.Errorf("mf: video ReadSample yielded no sample after 64 tries")
+	return d.fallbackFrameLocked(dst, pos), pos, fmt.Errorf("mf: video ReadSample yielded no sample after %d tries", maxTries)
 }
 
 func (d *MFDecoder) extractVideoSample(sample uintptr, dst *image.RGBA) *image.RGBA {
@@ -619,7 +695,7 @@ func (d *MFDecoder) extract2DVideoBuffer(buf uintptr, dst *image.RGBA) (*image.R
 	}
 	rows := d.height
 	if d.videoFormat == "nv12" {
-		rows = d.height * 3 / 2
+		rows = d.height + (d.height+1)/2
 	}
 	start := unsafe.Pointer(scan0)
 	if pitch < 0 { // bottom-up: the lowest address holds the last row
@@ -662,7 +738,12 @@ func (d *MFDecoder) ReadAudioSamples(out []float32) (int, error) {
 	written := 0
 	if len(d.audioCarry) > 0 {
 		n := copy(out, d.audioCarry)
-		d.audioCarry = d.audioCarry[n:]
+		if n == len(d.audioCarry) {
+			d.audioCarry = d.audioCarry[:0]
+		} else {
+			rem := copy(d.audioCarry, d.audioCarry[n:])
+			d.audioCarry = d.audioCarry[:rem]
+		}
 		written += n
 		if written == len(out) {
 			return written, nil
@@ -744,9 +825,13 @@ func (d *MFDecoder) extractAudioFloats(sample uintptr) []float32 {
 			return nil
 		}
 		src := unsafe.Slice((*float32)(unsafe.Pointer(dataPtr)), count)
-		copied := make([]float32, count)
-		copy(copied, src)
-		return copied
+		if cap(d.audioScratch) < count {
+			d.audioScratch = make([]float32, count)
+		} else {
+			d.audioScratch = d.audioScratch[:count]
+		}
+		copy(d.audioScratch, src)
+		return d.audioScratch
 	}
 
 	// 16-bit PCM fallback conversion to float32 [-1.0, 1.0]
@@ -755,11 +840,15 @@ func (d *MFDecoder) extractAudioFloats(sample uintptr) []float32 {
 		return nil
 	}
 	src16 := unsafe.Slice((*int16)(unsafe.Pointer(dataPtr)), count)
-	out := make([]float32, count)
-	for i, s := range src16 {
-		out[i] = float32(s) / 32768.0
+	if cap(d.audioScratch) < count {
+		d.audioScratch = make([]float32, count)
+	} else {
+		d.audioScratch = d.audioScratch[:count]
 	}
-	return out
+	for i, s := range src16 {
+		d.audioScratch[i] = float32(s) / 32768.0
+	}
+	return d.audioScratch
 }
 
 // setVideoOutput requests subtype, at w×h when both are set, in full-range
@@ -833,6 +922,7 @@ func (d *MFDecoder) Close() error {
 	d.closed = true
 	d.releaseCOM()
 	d.audioCarry = nil
+	d.audioScratch = nil
 	d.lastFrame = nil
 	_, _, _ = procMFShutdown.Call()
 	return nil
@@ -853,9 +943,15 @@ func vcall(obj uintptr, index int, args ...uintptr) uintptr {
 	objPtr := *(*unsafe.Pointer)(unsafe.Pointer(&obj))
 	vtbl := *(**[64]uintptr)(objPtr)
 	fn := vtbl[index]
-	all := make([]uintptr, 0, len(args)+1)
-	all = append(all, obj)
-	all = append(all, args...)
+	var stackBuf [12]uintptr
+	var all []uintptr
+	if len(args)+1 <= len(stackBuf) {
+		all = stackBuf[:len(args)+1]
+	} else {
+		all = make([]uintptr, len(args)+1)
+	}
+	all[0] = obj
+	copy(all[1:], args)
 	r1, _, _ := syscall.SyscallN(fn, all...)
 	return r1
 }
@@ -907,6 +1003,8 @@ type splitDecoder struct {
 	audio *MFDecoder
 }
 
+func (d *splitDecoder) SampleRate() int { return d.audio.SampleRate() }
+func (d *splitDecoder) Channels() int   { return d.audio.Channels() }
 func (d *splitDecoder) ReadAudioSamples(buf []float32) (int, error) {
 	return d.audio.ReadAudioSamples(buf)
 }
@@ -952,9 +1050,10 @@ func (d *MFDecoder) PreviewFrameAt(pos time.Duration, dst *image.RGBA) (*image.R
 			pts := time.Duration(tsHNS * 100)
 			rgba := d.extractVideoSample(sample, dst)
 			comRelease(sample)
-			// The reader stands after this frame: a later decode at pos
-			// goes on from here without seeking again.
-			d.lastVideoPos, d.lastFrame = pts, rgba
+			// The reader stands after this frame: update lastRequest to pts so
+			// releasing near pos continues forward while releasing before pts
+			// seeks cleanly instead of returning a stale far-ahead preview frame.
+			d.lastVideoPos, d.lastRequest, d.lastFrame = pts, pts, rgba
 			return rgba, pts, nil
 		}
 		if flags&(mfSourceReaderFlagEndOfStream|mfSourceReaderFlagError) != 0 {

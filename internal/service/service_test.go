@@ -39,7 +39,7 @@ func newTestBiliServer(t *testing.T) *httptest.Server {
 
 	mux.HandleFunc("/bfs/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Cookie") != "" || r.Header.Get("Referer") != "" {
-			t.Errorf("R11 violation: thumbnail request leaked Cookie or Referer: %v", r.Header)
+			t.Errorf("thumbnail request leaked Cookie or Referer: %v", r.Header)
 		}
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(samplePNG(color.RGBA{R: 214, G: 51, B: 108, A: 255}))
@@ -363,7 +363,7 @@ func TestServiceAuthIsolationOpenLinkAndRedaction(t *testing.T) {
 		t.Fatalf("OpenLink live failed: res=%+v err=%v", liveRes, err)
 	}
 
-	// Verify MockDesktop records external URL and folder open actions without spawning OS processes (§6.4).
+	// Verify MockDesktop records external URL and folder open actions without spawning OS processes.
 	if err := b.OpenLiveRoomInBrowser(223344); err != nil {
 		t.Fatalf("OpenLiveRoomInBrowser: %v", err)
 	}
@@ -419,19 +419,19 @@ func TestServiceAuthIsolationOpenLinkAndRedaction(t *testing.T) {
 			scanned++
 			for _, sec := range []string{secretSess, secretJct, secretRefresh, "spm_id_from"} {
 				if strings.Contains(string(raw), sec) {
-					t.Fatalf("C37 violation: file %s leaked secret/tracking string %q", fp, sec)
+					t.Fatalf("secret leak: file %s leaked secret/tracking string %q", fp, sec)
 				}
 			}
 			return nil
 		})
 	}
-	t.Logf("C37 scanned %d files", scanned)
+	t.Logf("secret scan covered %d files", scanned)
 	if scanned < len(filesToCheck) {
-		t.Fatalf("C37 scan covered only %d files", scanned)
+		t.Fatalf("secret scan covered only %d files", scanned)
 	}
 	for _, sec := range []string{secretSess, secretJct, secretRefresh} {
 		if strings.Contains(string(diagBytes), sec) {
-			t.Fatalf("C37 violation: DiagnosticsSnapshot leaked secret %q", sec)
+			t.Fatalf("secret leak: DiagnosticsSnapshot leaked secret %q", sec)
 		}
 	}
 

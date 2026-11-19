@@ -1,20 +1,20 @@
 package download
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"math"
+	"math/bits"
 	"os"
+	"path/filepath"
 
 	"github.com/Eyevinn/mp4ff/mp4"
-	"github.com/chialecode/trace/internal/storage"
 )
 
-// MuxTrackSummary describes the tracks and structural invariants inside a muxed MP4 file (C17, PR-2).
+// MuxTrackSummary describes the tracks and structural invariants inside a muxed MP4 file.
 type MuxTrackSummary struct {
 	TrackCount      int      `json:"trackCount"`
 	Handlers        []string `json:"handlers"`
@@ -31,7 +31,7 @@ type MuxTrackSummary struct {
 }
 
 // MuxDASHFiles remuxes a Bilibili DASH video .m4s file and an optional audio .m4s file
-// into a standard progressive (moov-before-mdat) MP4 file at outPath using pure-Go mp4ff (C17, PR-2).
+// into a standard progressive (moov-before-mdat) MP4 file at outPath using pure-Go mp4ff.
 func MuxDASHFiles(videoPath, audioPath, outPath string) (MuxTrackSummary, error) {
 	return MuxDASHFilesContext(context.Background(), videoPath, audioPath, outPath)
 }
@@ -39,15 +39,31 @@ func MuxDASHFiles(videoPath, audioPath, outPath string) (MuxTrackSummary, error)
 // DefragmentFMP4Bytes converts a fragmented MP4 byte slice into a progressive MP4 file at outPath.
 // Returns an error if defragmentation fails (never silently writes fragmented bytes).
 func DefragmentFMP4Bytes(raw []byte, outPath string) (MuxTrackSummary, error) {
-	return writeDefragmentedOutput(raw, outPath)
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o700); err != nil {
+		return MuxTrackSummary{}, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(outPath), ".trace-defrag-*.part")
+	if err != nil {
+		return MuxTrackSummary{}, err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return MuxTrackSummary{}, err
+	}
+	return writeProgressiveDisk(context.Background(), tmp, tmpPath, outPath)
 }
 
-func ensureTrackElst(moov *mp4.MoovBox, trak *mp4.TrakBox, mediaDur uint64) {
+// ensureTrackElst adds a single-entry edit list when trak does not already carry one.
+// It uses elst version 1 (64-bit) whenever SegmentDuration or MediaTime exceeds 32-bit bounds
+// and never overwrites an existing edit list (e.g. B-frame CTS delay or empty edit).
+func ensureTrackElst(moov *mp4.MoovBox, trak *mp4.TrakBox, mediaDur uint64, mediaTime int64) bool {
 	if trak == nil {
-		return
+		return false
 	}
 	if trak.Edts != nil && len(trak.Edts.Elst) > 0 {
-		return
+		return false
 	}
 	movieTS := uint32(1000)
 	if moov != nil && moov.Mvhd != nil && moov.Mvhd.Timescale > 0 {
@@ -59,20 +75,29 @@ func ensureTrackElst(moov *mp4.MoovBox, trak *mp4.TrakBox, mediaDur uint64) {
 	}
 	segDur := mediaDur
 	if trackTS > 0 && movieTS > 0 && trackTS != movieTS {
-		segDur = (mediaDur * uint64(movieTS)) / uint64(trackTS)
+		hi, lo := bits.Mul64(mediaDur, uint64(movieTS))
+		if hi < uint64(trackTS) {
+			segDur, _ = bits.Div64(hi, lo, uint64(trackTS))
+		} else {
+			segDur = math.MaxUint64
+		}
 	}
-	edts := &mp4.EdtsBox{}
+	var version byte
+	if segDur > math.MaxUint32 || mediaTime > math.MaxInt32 || mediaTime < math.MinInt32 {
+		version = 1
+	}
 	elst := &mp4.ElstBox{
-		Version: 0,
+		Version: version,
 		Entries: []mp4.ElstEntry{
 			{
 				SegmentDuration:   segDur,
-				MediaTime:         0,
+				MediaTime:         mediaTime,
 				MediaRateInteger:  1,
 				MediaRateFraction: 0,
 			},
 		},
 	}
+	edts := &mp4.EdtsBox{Elst: []*mp4.ElstBox{elst}}
 	edts.AddChild(elst)
 	// Insert EdtsBox into trak (preserving Tkhd first).
 	trak.Edts = edts
@@ -89,6 +114,7 @@ func ensureTrackElst(moov *mp4.MoovBox, trak *mp4.TrakBox, mediaDur uint64) {
 		newChildren = append([]mp4.Box{edts}, newChildren...)
 	}
 	trak.Children = newChildren
+	return true
 }
 
 func setSingleTrackID(f *mp4.File, trackID uint32) {
@@ -117,89 +143,6 @@ func setSingleTrackID(f *mp4.File, trackID uint32) {
 	}
 }
 
-func writeDefragmentedOutput(combinedFragmented []byte, outPath string) (MuxTrackSummary, error) {
-	rs := bytes.NewReader(combinedFragmented)
-	lazyFile, err := mp4.DecodeFile(rs, mp4.WithDecodeMode(mp4.DecModeLazyMdat), mp4.WithDecodeFlags(mp4.DecStartOnMoof))
-	if err != nil {
-		return MuxTrackSummary{}, fmt.Errorf("download: decode combined fragmented stream: %w", err)
-	}
-
-	var outBuf bytes.Buffer
-	if dErr := mp4.Defragment(lazyFile, rs, &outBuf); dErr != nil {
-		return MuxTrackSummary{}, fmt.Errorf("download: defragment fmp4: %w", dErr)
-	}
-
-	finalBytes, err := injectElstIntoProgressiveMP4(outBuf.Bytes())
-	if err != nil {
-		finalBytes = outBuf.Bytes()
-	}
-
-	if err := storage.WriteFileAtomic(outPath, finalBytes, 0o600); err != nil {
-		return MuxTrackSummary{}, err
-	}
-	summary, err := InspectMP4File(outPath)
-	if err != nil {
-		return MuxTrackSummary{}, err
-	}
-	if !summary.MoovBeforeMdat {
-		return summary, fmt.Errorf("download: output mp4 moov is not before mdat")
-	}
-	if summary.MaxTrackDiffSec > 2.0 {
-		return summary, fmt.Errorf("download: output mp4 track duration mismatch %.2fs > 2s", summary.MaxTrackDiffSec)
-	}
-	return summary, nil
-}
-
-func injectElstIntoProgressiveMP4(defragBytes []byte) ([]byte, error) {
-	progFile, err := mp4.DecodeFile(bytes.NewReader(defragBytes))
-	if err != nil {
-		return nil, err
-	}
-	if progFile.Moov == nil {
-		return defragBytes, nil
-	}
-	oldMoovSize := progFile.Moov.Size()
-	modified := false
-	for _, trak := range progFile.Moov.Traks {
-		if trak.Edts == nil || len(trak.Edts.Elst) == 0 {
-			var mediaDur uint64
-			if trak.Mdia != nil && trak.Mdia.Mdhd != nil {
-				mediaDur = trak.Mdia.Mdhd.Duration
-			}
-			ensureTrackElst(progFile.Moov, trak, mediaDur)
-			modified = true
-		}
-	}
-	if !modified {
-		return defragBytes, nil
-	}
-	newMoovSize := progFile.Moov.Size()
-	delta := int64(newMoovSize) - int64(oldMoovSize)
-	if delta != 0 {
-		for _, trak := range progFile.Moov.Traks {
-			if trak.Mdia == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil {
-				continue
-			}
-			stbl := trak.Mdia.Minf.Stbl
-			if stbl.Stco != nil {
-				for i := range stbl.Stco.ChunkOffset {
-					stbl.Stco.ChunkOffset[i] = uint32(int64(stbl.Stco.ChunkOffset[i]) + delta)
-				}
-			}
-			if stbl.Co64 != nil {
-				for i := range stbl.Co64.ChunkOffset {
-					stbl.Co64.ChunkOffset[i] = uint64(int64(stbl.Co64.ChunkOffset[i]) + delta)
-				}
-			}
-		}
-	}
-	var finalBuf bytes.Buffer
-	if err := progFile.Encode(&finalBuf); err != nil {
-		return nil, err
-	}
-	return finalBuf.Bytes(), nil
-}
-
 // InspectMP4File parses an MP4 file on disk and returns its track count, handlers, codecs, dimensions, and box layout invariants.
 func InspectMP4File(path string) (MuxTrackSummary, error) {
 	return InspectMP4FileContext(context.Background(), path)
@@ -224,8 +167,11 @@ func InspectMP4FileContext(ctx context.Context, path string) (MuxTrackSummary, e
 		return MuxTrackSummary{}, err
 	}
 	parsed, err := mp4.DecodeFile(contextIO{File: f, ctx: ctx}, mp4.WithDecodeMode(mp4.DecModeLazyMdat), mp4.WithDecodeFlags(mp4.DecStartOnMoof))
-	if err != nil || parsed == nil {
+	if err != nil {
 		return MuxTrackSummary{}, err
+	}
+	if parsed == nil {
+		return MuxTrackSummary{}, fmt.Errorf("download: mp4 file %s decoded to nil", path)
 	}
 	var declared uint64
 	for _, box := range parsed.Children {

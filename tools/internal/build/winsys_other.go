@@ -2,7 +2,10 @@
 
 package build
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 // InstallEntry is what the per-user uninstall entry of an identity says.
 type InstallEntry struct {
@@ -14,11 +17,12 @@ type InstallEntry struct {
 
 var errWindowsOnly = errors.New("installing TRACE is only supported on Windows")
 
-func LookupInstall(string) (InstallEntry, bool, error) { return InstallEntry{}, false, errWindowsOnly }
-func ProcessRunning(string) (bool, error)              { return false, errWindowsOnly }
-func RunQuiet(string, []string, []string) error        { return errWindowsOnly }
-func LaunchDetached(string, []string, []string) error  { return errWindowsOnly }
-func AppEnv(extra ...string) []string                  { return extra }
+func LookupInstall(string) (InstallEntry, bool, error)                  { return InstallEntry{}, false, errWindowsOnly }
+func ProcessRunning(string) (bool, error)                               { return false, errWindowsOnly }
+func RunQuiet(string, []string, []string) error                         { return errWindowsOnly }
+func RunQuietContext(context.Context, string, []string, []string) error { return errWindowsOnly }
+func LaunchDetached(string, []string, []string) error                   { return errWindowsOnly }
+func AppEnv(extra ...string) []string                                   { return extra }
 
 func LaunchDetachedOutsideJob(string, []string, []string) (bool, error) { return false, errWindowsOnly }
 

@@ -92,13 +92,13 @@ func seedFiveSubscriptionsForRuleBatch(t *testing.T, app *App) (ruleVideo, ruleL
 	return ruleVideo, ruleLive, subs
 }
 
-// M4-K37: In Settings › 缓存规则, expanding a rule offers "选择订阅…", supports
+// In Settings › 缓存规则, expanding a rule offers "选择订阅…", supports
 // instant search (by name, note, account nickname with IME composition guard)
 // and select-all / unselect-all, applies the selection in 1 atomic write to
 // subscriptions.json, reverts unchecked former members to "默认", keeps other
 // rules untouched, and syncs both rule counts and subscription detail's rule
-// button immediately.
-func TestCacheRuleBatchSelectSubscriptionsM4K37(t *testing.T) {
+// button immediately (DEC-051 ⑧).
+func TestCacheRuleBatchSelectSubscriptions(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
 

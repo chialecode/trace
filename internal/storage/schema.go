@@ -1,10 +1,8 @@
 package storage
 
 import (
-	"crypto/rand"
 	"database/sql"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,46 +86,55 @@ func IsNewerData(err error) bool {
 // file that does not parse reports version 0: its own loader decides what
 // to do with it.
 func ReadSchemaVersion(path string, kind SchemaKind) (version int, exists bool, err error) {
+	v, ex, _, err := readSchemaFileState(path, kind)
+	return v, ex, err
+}
+
+func readSchemaFileState(path string, kind SchemaKind) (version int, exists bool, valid bool, err error) {
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return 0, false, nil
+		return 0, false, false, nil
 	}
 	if err != nil {
-		return 0, false, err
+		return 0, false, false, err
 	}
 	if info.IsDir() {
-		return 0, false, fmt.Errorf("storage: %s is a directory", path)
+		return 0, false, false, fmt.Errorf("storage: %s is a directory", path)
 	}
 	switch kind {
 	case SchemaJSON:
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			return 0, true, err
+			return 0, true, false, err
 		}
 		var head struct {
 			Version json.RawMessage `json:"version"`
 		}
-		if json.Unmarshal(raw, &head) != nil || len(head.Version) == 0 {
-			return 0, true, nil
+		if json.Unmarshal(raw, &head) != nil {
+			return 0, true, false, nil
+		}
+		if len(head.Version) == 0 {
+			return 0, true, true, nil
 		}
 		v, convErr := strconv.Atoi(strings.TrimSpace(string(head.Version)))
 		if convErr != nil {
-			return 0, true, nil
+			return 0, true, false, nil
 		}
-		return v, true, nil
+		return v, true, true, nil
 	case SchemaSQLite:
 		v, ok, err := sqliteHeaderUserVersion(path)
 		if err != nil || !ok {
-			return 0, true, err
+			return 0, true, false, err
 		}
-		return v, true, nil
+		return v, true, true, nil
 	}
-	return 0, true, fmt.Errorf("storage: unknown schema kind %q", kind)
+	return 0, true, false, fmt.Errorf("storage: unknown schema kind %q", kind)
 }
 
 // sqliteHeaderUserVersion reads PRAGMA user_version from the database
-// header (bytes 60..63, big-endian) without opening the database, so a
-// newer file is not touched. ok is false for a file that is not SQLite.
+// header (bytes 60..63, big-endian) and any committed page-1 frame in its
+// -wal sidecar without opening or modifying the database, so a newer file
+// is not touched. ok is false for a file that is not SQLite.
 func sqliteHeaderUserVersion(path string) (int, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -142,7 +149,102 @@ func sqliteHeaderUserVersion(path string) (int, bool, error) {
 	if string(hdr[:16]) != "SQLite format 3\x00" {
 		return 0, false, nil
 	}
-	return int(int32(binary.BigEndian.Uint32(hdr[60:64]))), true, nil
+	v := int(int32(binary.BigEndian.Uint32(hdr[60:64])))
+	if walVer, ok := sqliteWALUserVersion(path + "-wal"); ok {
+		v = walVer
+	}
+	return v, true, nil
+}
+
+// sqliteWALUserVersion inspects committed frames in a SQLite WAL file for
+// page 1 and returns its latest committed user_version without mutating any
+// file. Malformed or synthetic WAL files are ignored (ok=false).
+func sqliteWALUserVersion(walPath string) (int, bool) {
+	f, err := os.Open(walPath)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+
+	var walHdr [32]byte
+	if _, err := io.ReadFull(f, walHdr[:]); err != nil {
+		return 0, false
+	}
+	magic := binary.BigEndian.Uint32(walHdr[0:4])
+	var bigEndian bool
+	switch magic {
+	case 0x377f0682:
+		bigEndian = false
+	case 0x377f0683:
+		bigEndian = true
+	default:
+		return 0, false
+	}
+	pageSize := binary.BigEndian.Uint32(walHdr[8:12])
+	if pageSize < 512 || pageSize > 65536 || (pageSize&(pageSize-1)) != 0 {
+		return 0, false
+	}
+	salt1 := binary.BigEndian.Uint32(walHdr[16:20])
+	salt2 := binary.BigEndian.Uint32(walHdr[20:24])
+	wantCksum1 := binary.BigEndian.Uint32(walHdr[24:28])
+	wantCksum2 := binary.BigEndian.Uint32(walHdr[28:32])
+	s0, s1 := sqliteWALChecksum(walHdr[:24], 0, 0, bigEndian)
+	if s0 != wantCksum1 || s1 != wantCksum2 {
+		return 0, false
+	}
+
+	frameHdr := make([]byte, 24)
+	pageBuf := make([]byte, pageSize)
+	var (
+		committedVer  int
+		hasCommitted  bool
+		pendingVer    int
+		hasPendingVer bool
+	)
+	for {
+		if _, err := io.ReadFull(f, frameHdr); err != nil {
+			break
+		}
+		if _, err := io.ReadFull(f, pageBuf); err != nil {
+			break
+		}
+		if binary.BigEndian.Uint32(frameHdr[8:12]) != salt1 || binary.BigEndian.Uint32(frameHdr[12:16]) != salt2 {
+			break
+		}
+		s0, s1 = sqliteWALChecksum(frameHdr[:8], s0, s1, bigEndian)
+		s0, s1 = sqliteWALChecksum(pageBuf, s0, s1, bigEndian)
+		if s0 != binary.BigEndian.Uint32(frameHdr[16:20]) || s1 != binary.BigEndian.Uint32(frameHdr[20:24]) {
+			break
+		}
+		pageNum := binary.BigEndian.Uint32(frameHdr[0:4])
+		dbSize := binary.BigEndian.Uint32(frameHdr[4:8])
+		if pageNum == 1 && len(pageBuf) >= 64 && string(pageBuf[:16]) == "SQLite format 3\x00" {
+			pendingVer = int(int32(binary.BigEndian.Uint32(pageBuf[60:64])))
+			hasPendingVer = true
+		}
+		if dbSize > 0 && hasPendingVer {
+			committedVer = pendingVer
+			hasCommitted = true
+			hasPendingVer = false
+		}
+	}
+	return committedVer, hasCommitted
+}
+
+func sqliteWALChecksum(data []byte, s0, s1 uint32, bigEndian bool) (uint32, uint32) {
+	for i := 0; i+8 <= len(data); i += 8 {
+		var x0, x1 uint32
+		if bigEndian {
+			x0 = binary.BigEndian.Uint32(data[i : i+4])
+			x1 = binary.BigEndian.Uint32(data[i+4 : i+8])
+		} else {
+			x0 = binary.LittleEndian.Uint32(data[i : i+4])
+			x1 = binary.LittleEndian.Uint32(data[i+4 : i+8])
+		}
+		s0 += x0 + s1
+		s1 += x1 + s0
+	}
+	return s0, s1
 }
 
 // effectiveVersion maps "no version recorded" to the layout of version 1.
@@ -209,11 +311,11 @@ func GuardDataSchemas(dataDir string, schemas []SchemaFile) ([]string, error) {
 	var backups []string
 	for _, sf := range schemas {
 		path := filepath.Join(dataDir, sf.Name)
-		v, exists, err := ReadSchemaVersion(path, sf.Kind)
+		v, exists, valid, err := readSchemaFileState(path, sf.Kind)
 		if err != nil {
 			return backups, err
 		}
-		if !exists {
+		if !exists || !valid {
 			continue
 		}
 		if v > sf.Current {
@@ -247,7 +349,7 @@ func BackupBeforeMigration(path string, fromVersion int) (string, error) {
 		return "", fmt.Errorf("storage: backup destination %s is a directory", backupTargetCheck(path, fromVersion))
 	}
 	backup := fmt.Sprintf("%s.premigrate-%d", path, fromVersion)
-	tmp := backup + ".tmp"
+	tmp := TempSiblingPath(backup)
 	if err := copyFileSync(path, tmp); err != nil {
 		_ = os.Remove(tmp)
 		return "", err
@@ -270,7 +372,7 @@ func BackupBeforeMigration(path string, fromVersion int) (string, error) {
 		if sideInfo.IsDir() {
 			return "", fmt.Errorf("storage: sidecar %s is a directory", sideSrc)
 		}
-		sideTmp := sideDst + ".tmp"
+		sideTmp := TempSiblingPath(sideDst)
 		if err := copyFileSync(sideSrc, sideTmp); err != nil {
 			_ = os.Remove(sideTmp)
 			return "", err
@@ -304,49 +406,10 @@ func WriteMigratedJSONAtomic(path string, v any, perm os.FileMode) error {
 	}
 	data = append(data, '\n')
 
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("storage: mkdir %s: %w", dir, err)
-	}
-
-	var rnd [6]byte
-	_, _ = rand.Read(rnd[:])
-	tmpPath := fmt.Sprintf("%s.tmp-%d-%s", path, os.Getpid(), hex.EncodeToString(rnd[:]))
-
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
-	if err != nil {
-		return fmt.Errorf("storage: create temp file %s: %w", tmpPath, err)
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("storage: write temp file %s: %w", tmpPath, err)
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("storage: sync temp file %s: %w", tmpPath, err)
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("storage: close temp file %s: %w", tmpPath, err)
-	}
-
 	schemaHooksMu.Lock()
 	hook := beforeMigrationRenameHook
 	schemaHooksMu.Unlock()
-	if hook != nil {
-		if err := hook(path, tmpPath); err != nil {
-			_ = os.Remove(tmpPath)
-			return err
-		}
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("storage: rename %s -> %s: %w", tmpPath, path, err)
-	}
-	return nil
+	return writeFileAtomicWithHook(path, data, perm, hook)
 }
 
 func copyFileSync(src, dst string) error {
@@ -385,12 +448,18 @@ func CheckSQLiteSchema(db *sql.DB, name string, current int) (int, error) {
 }
 
 // StampSQLiteSchema records the structure version once the migrations of a
-// database are done and checkpoints WAL passively so the main database header
+// database are done and checkpoints WAL so the main database header
 // immediately reflects the new user_version.
 func StampSQLiteSchema(db *sql.DB, version int) error {
 	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, version)); err != nil {
 		return err
 	}
-	_, _ = db.Exec(`PRAGMA wal_checkpoint(PASSIVE)`)
+	var busy, logFrames, checkpointed int
+	if err := db.QueryRow(`PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed); err != nil {
+		return fmt.Errorf("storage: checkpoint user_version=%d: %w", version, err)
+	}
+	if busy != 0 {
+		return fmt.Errorf("storage: wal_checkpoint busy=%d after stamping user_version=%d", busy, version)
+	}
 	return nil
 }

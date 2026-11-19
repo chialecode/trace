@@ -81,6 +81,13 @@ func (c *Client) RelationFollowings(ctx context.Context, vmid int64, pn, ps int)
 	if vmid <= 0 && c.credStore != nil {
 		vmid = c.credStore.Status().Mid
 	}
+	if vmid <= 0 {
+		return FollowingsPage{}, &SiteError{
+			Kind:     ErrKindBadRequest,
+			Endpoint: "/x/relation/followings",
+			Message:  "无效的用户 UID",
+		}
+	}
 	if pn <= 0 {
 		pn = 1
 	}

@@ -49,7 +49,11 @@ func (m *Manager) restoreSubscriptionViewLocked(before []Subscription) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	m.invalidateSubsCacheLocked()
+	return nil
 }
 
 type subscriptionExecutor interface {

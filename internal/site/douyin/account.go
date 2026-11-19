@@ -16,14 +16,13 @@ import (
 // and never writes to the site.
 
 const (
-	accountOrigin        = "https://www.douyin.com"
-	collectVersionCode   = "170400"
-	collectVersionName   = "17.4.0"
-	followingPageSize    = 20
-	favoritePageSize     = 18
-	collectionPageSize   = 20
-	collectFolderPage    = 10
-	collectFolderWorkPge = 10
+	collectVersionCode    = "170400"
+	collectVersionName    = "17.4.0"
+	followingPageSize     = 20
+	favoritePageSize      = 18
+	collectionPageSize    = 20
+	collectFolderPage     = 10
+	collectFolderWorkPage = 10
 	// WatchHistoryEnabled gates 观看历史. It stays false until a real check
 	// confirms the endpoint's shape (ACT-020 D-V5); see douyin.md §12.
 	WatchHistoryEnabled = false
@@ -41,8 +40,8 @@ const (
 	shellMessage       = "抖音返回了空壳，登录已失效或被拦截"
 	// likesRefusedMessage: 喜欢 answers every non-browser request with HTTP 200
 	// and no body, while the same session reads 收藏 fine (douyin.md §12).
-	likesRefusedMessage = "抖音只把“喜欢”列表给浏览器里的抖音网页，TRACE 取不到；其他功能不受影响"
-	cursorStalledMesage = "抖音列表的翻页位置没有前进，已停止翻页"
+	likesRefusedMessage  = "抖音只把“喜欢”列表给浏览器里的抖音网页，TRACE 取不到；其他功能不受影响"
+	cursorStalledMessage = "抖音列表的翻页位置没有前进，已停止翻页"
 )
 
 func (c *Client) accountEndpoint(path string) string {
@@ -118,7 +117,7 @@ func (c *Client) Followings(ctx context.Context, selfSecUID, maxTime string) (*F
 		Users:       make([]FollowingUser, 0, len(users)),
 	}
 	if page.HasMore && (page.NextMaxTime == "" || page.NextMaxTime == "0" || page.NextMaxTime == maxTime) {
-		return nil, schemaErr(ep, cursorStalledMesage, nil)
+		return nil, schemaErr(ep, cursorStalledMessage, nil)
 	}
 	seen := make(map[string]bool, len(users))
 	for i := range users {
@@ -155,7 +154,7 @@ func (c *Client) Favorites(ctx context.Context, selfSecUID, cursor string) (*Acc
 		sign.Pair{Key: "count", Value: strconv.Itoa(favoritePageSize)},
 	)
 	raw, err := c.doAPIRequest(ctx, apiRequestSpec{
-		endpoint: ep, referer: "https://www.douyin.com/user/self?showTab=like", origin: accountOrigin,
+		endpoint: ep, referer: "https://www.douyin.com/user/self?showTab=like", origin: DefaultOrigin,
 		params: params, requireSign: true, emptyMeans: likesRefusedMessage,
 	})
 	if err != nil {
@@ -235,7 +234,7 @@ func (c *Client) CollectFolders(ctx context.Context, cursor string) (*CollectFol
 	}
 	page := &CollectFoldersPage{HasMore: parseJSONBoolOrInt(rawHasMore), NextCursor: firstCursor(top), Folders: make([]CollectFolder, 0, len(folders))}
 	if page.HasMore && (page.NextCursor == "0" || page.NextCursor == cursor) {
-		return nil, schemaErr(ep, cursorStalledMesage, nil)
+		return nil, schemaErr(ep, cursorStalledMessage, nil)
 	}
 	for _, f := range folders {
 		id := strings.TrimSpace(f.IDStr)
@@ -267,7 +266,7 @@ func (c *Client) CollectFolderWorks(ctx context.Context, folderID, cursor string
 	params := collectVersion(c.profile.CommonWebParams(c.webID, "",
 		sign.Pair{Key: "collects_id", Value: folderID},
 		sign.Pair{Key: "cursor", Value: cursor},
-		sign.Pair{Key: "count", Value: strconv.Itoa(collectFolderWorkPge)},
+		sign.Pair{Key: "count", Value: strconv.Itoa(collectFolderWorkPage)},
 	))
 	top, err := c.accountGet(ctx, ep, "https://www.douyin.com/user/self?showTab=favorite_collection", params, nil)
 	if err != nil {
@@ -297,7 +296,7 @@ func (c *Client) accountGet(ctx context.Context, ep, referer string, params, for
 	raw, err := c.doAPIRequest(ctx, apiRequestSpec{
 		endpoint:    ep,
 		referer:     referer,
-		origin:      accountOrigin,
+		origin:      DefaultOrigin,
 		params:      params,
 		requireSign: true,
 		form:        form,
@@ -334,7 +333,7 @@ func (c *Client) parseAccountWorks(ctx context.Context, ep string, top map[strin
 	}
 	page := &AccountWorksPage{HasMore: parseJSONBoolOrInt(rawHasMore), NextCursor: firstCursor(top), Works: make([]WorkDetail, 0, len(nodes))}
 	if page.HasMore && (page.NextCursor == "0" || page.NextCursor == reqCursor) {
-		return nil, schemaErr(ep, cursorStalledMesage, nil)
+		return nil, schemaErr(ep, cursorStalledMessage, nil)
 	}
 	seen := make(map[string]bool, len(nodes))
 	for i := range nodes {

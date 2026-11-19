@@ -6,6 +6,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -208,7 +209,7 @@ func TestInstallerIncludes(t *testing.T) {
 }
 
 // The icons of the two channels are different 1024x1024 PNGs, and the
-// Chinese catalog names the app and the desktop shortcut (M2-K10).
+// Chinese catalog names the app and the desktop shortcut.
 func TestIconsAndChineseCatalog(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
 	var images [][]byte
@@ -237,7 +238,7 @@ func TestIconsAndChineseCatalog(t *testing.T) {
 	if err := json.Unmarshal(raw, &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if catalog["@@locale"] != "zh-Hans" || catalog["mygo.appName"] != "TRACE" || catalog["mygo.desktopShortcut"] != "创建桌面快捷方式" || !strings.Contains(catalog["mygo.appDescription"], "哔哩哔哩") {
+	if catalog["@@locale"] != "zh-Hans" || catalog["mygo.appName"] != "TRACE" || catalog["mygo.desktopShortcut"] != "创建桌面快捷方式" || !strings.Contains(catalog["mygo.appDescription"], "哔哩哔哩") || !strings.Contains(catalog["mygo.appDescription"], "抖音") {
 		t.Fatalf("catalog: %v", catalog)
 	}
 }
@@ -268,5 +269,136 @@ func TestWithConfigRestoresOnFailure(t *testing.T) {
 	raw, _ := os.ReadFile(path)
 	if string(raw) != "original" {
 		t.Fatal("mygo.json not restored")
+	}
+}
+
+func TestWithConfigRestoresOnSignal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mygo.json")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origExit := signalExit
+	t.Cleanup(func() { signalExit = origExit })
+
+	exited := make(chan os.Signal, 1)
+	signalExit = func(sig os.Signal) {
+		exited <- sig
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	err := withConfigSignals(path, []byte("channel"), func() error {
+		raw, _ := os.ReadFile(path)
+		if string(raw) != "channel" {
+			t.Fatal("channel config not in place")
+		}
+		sigCh <- os.Interrupt
+		gotSig := <-exited
+		if gotSig != os.Interrupt {
+			t.Fatalf("signalExit got %v, want %v", gotSig, os.Interrupt)
+		}
+		rawAfter, _ := os.ReadFile(path)
+		if string(rawAfter) != "original" {
+			t.Fatalf("mygo.json not restored before signalExit: %q", rawAfter)
+		}
+		return nil
+	}, sigCh)
+	if err == nil || !strings.Contains(err.Error(), "interrupted by signal") {
+		t.Fatalf("expected interrupted error, got %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	if string(raw) != "original" {
+		t.Fatalf("mygo.json not restored after return: %q", raw)
+	}
+}
+
+func TestCopiedFileModeAndCopyFile(t *testing.T) {
+	cases := []struct {
+		in   os.FileMode
+		want os.FileMode
+	}{
+		{0o644, 0o644},
+		{0o600, 0o600},
+		{0o755, 0o755},
+		{0o777, 0o755},
+		{0o444, 0o644},
+		{0, 0o644},
+	}
+	for _, tc := range cases {
+		if got := copiedFileMode(tc.in); got != tc.want {
+			t.Errorf("copiedFileMode(%#o) = %#o, want %#o", tc.in, got, tc.want)
+		}
+	}
+
+	dir := t.TempDir()
+	dataSrc := filepath.Join(dir, "SHA256SUMS")
+	dataDst := filepath.Join(dir, "SHA256SUMS.copy")
+	if err := os.WriteFile(dataSrc, []byte("abc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyFile(dataSrc, dataDst); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(dataDst)
+	if err != nil || string(raw) != "abc" {
+		t.Fatalf("CopyFile content = %q err=%v", raw, err)
+	}
+	if runtime.GOOS != "windows" {
+		st, err := os.Stat(dataDst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm()&0o111 != 0 {
+			t.Fatalf("non-executable file gained +x: %#o", st.Mode().Perm())
+		}
+		binSrc := filepath.Join(dir, "bin")
+		binDst := filepath.Join(dir, "bin.copy")
+		if err := os.WriteFile(binSrc, []byte("elf"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := CopyFile(binSrc, binDst); err != nil {
+			t.Fatal(err)
+		}
+		st, err = os.Stat(binDst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm()&0o100 == 0 {
+			t.Fatalf("executable file lost +x: %#o", st.Mode().Perm())
+		}
+	}
+}
+
+func TestVerifySumsRejectsMalformedAndPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ok.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := SHA256File(filepath.Join(dir, "ok.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SHA256SUMS.txt"), []byte(sum+"  ok.txt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	names, err := VerifySums(dir, "SHA256SUMS.txt")
+	if err != nil || len(names) != 1 || names[0] != "ok.txt" {
+		t.Fatalf("valid sums failed: names=%v err=%v", names, err)
+	}
+
+	for name, content := range map[string]string{
+		"empty":          "",
+		"malformed":      "not-a-valid-line\n",
+		"path traversal": sum + "  ../outside.txt\n",
+		"subpath":        sum + "  sub/ok.txt\n",
+		"mismatch":       strings.Repeat("0", 64) + "  ok.txt\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(dir, "SHA256SUMS.txt"), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := VerifySums(dir, "SHA256SUMS.txt"); err == nil {
+				t.Fatalf("VerifySums accepted %s", name)
+			}
+		})
 	}
 }

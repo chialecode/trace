@@ -1,6 +1,7 @@
 package player
 
 import (
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,19 +16,58 @@ type SubtitleCue struct {
 
 // SubtitleTrack holds parsed cues for a single language track.
 type SubtitleTrack struct {
-	Lang  string        `json:"lang"`
-	Label string        `json:"label"`
-	Cues  []SubtitleCue `json:"cues"`
+	Lang   string        `json:"lang"`
+	Label  string        `json:"label"`
+	Cues   []SubtitleCue `json:"cues"`
+	maxEnd []float64
 }
 
-// ParseWebVTT parses a WebVTT (.vtt) or SRT (.srt) subtitle payload into sorted SubtitleCues (C22).
+func (t *SubtitleTrack) buildIndex() {
+	if len(t.Cues) == 0 {
+		t.maxEnd = nil
+		return
+	}
+	t.maxEnd = make([]float64, len(t.Cues))
+	best := math.Inf(-1)
+	for i, c := range t.Cues {
+		if c.EndSec > best {
+			best = c.EndSec
+		}
+		t.maxEnd[i] = best
+	}
+}
+
+func (t *SubtitleTrack) activeCueAt(tSec float64) string {
+	if len(t.Cues) == 0 || math.IsNaN(tSec) || math.IsInf(tSec, 0) || tSec < 0 {
+		return ""
+	}
+	if len(t.maxEnd) != len(t.Cues) {
+		return ActiveCueAt(t.Cues, tSec)
+	}
+	idx := sort.Search(len(t.maxEnd), func(i int) bool {
+		return t.maxEnd[i] >= tSec
+	})
+	var active []string
+	for i := idx; i < len(t.Cues); i++ {
+		if t.Cues[i].StartSec > tSec {
+			break
+		}
+		if tSec >= t.Cues[i].StartSec && tSec <= t.Cues[i].EndSec {
+			active = append(active, t.Cues[i].Text)
+		}
+	}
+	return strings.Join(active, "\n")
+}
+
+// ParseWebVTT parses a WebVTT (.vtt) or SRT (.srt) subtitle payload into sorted SubtitleCues.
 func ParseWebVTT(raw []byte) []SubtitleCue {
-	content := strings.ReplaceAll(string(raw), "\r\n", "\n")
-	blocks := strings.Split(content, "\n\n")
+	content := strings.TrimPrefix(string(raw), "\uFEFF")
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	blocks := splitSubtitleBlocks(content)
 	var cues []SubtitleCue
 
-	for _, block := range blocks {
-		lines := strings.Split(strings.TrimSpace(block), "\n")
+	for _, lines := range blocks {
 		if len(lines) == 0 {
 			continue
 		}
@@ -81,19 +121,37 @@ func ParseWebVTT(raw []byte) []SubtitleCue {
 	return cues
 }
 
+func splitSubtitleBlocks(content string) [][]string {
+	var blocks [][]string
+	var cur []string
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(line) == "" {
+			if len(cur) > 0 {
+				blocks = append(blocks, cur)
+				cur = nil
+			}
+			continue
+		}
+		cur = append(cur, line)
+	}
+	if len(cur) > 0 {
+		blocks = append(blocks, cur)
+	}
+	return blocks
+}
+
 // ActiveCueAt returns the active subtitle text at playback timestamp tSec.
+// Cues must be sorted by StartSec (as returned by ParseWebVTT); overlapping
+// cues with non-monotonic EndSec are handled without missing earlier long cues.
 func ActiveCueAt(cues []SubtitleCue, tSec float64) string {
-	if len(cues) == 0 || tSec < 0 {
+	if len(cues) == 0 || math.IsNaN(tSec) || math.IsInf(tSec, 0) || tSec < 0 {
 		return ""
 	}
-	idx := sort.Search(len(cues), func(i int) bool {
-		return cues[i].EndSec >= tSec
+	endIdx := sort.Search(len(cues), func(i int) bool {
+		return cues[i].StartSec > tSec
 	})
 	var active []string
-	for i := idx; i < len(cues); i++ {
-		if cues[i].StartSec > tSec {
-			break
-		}
+	for i := 0; i < endIdx; i++ {
 		if tSec >= cues[i].StartSec && tSec <= cues[i].EndSec {
 			active = append(active, cues[i].Text)
 		}
@@ -103,25 +161,42 @@ func ActiveCueAt(cues []SubtitleCue, tSec float64) string {
 
 func parseCueTime(s string) (float64, bool) {
 	s = strings.TrimSpace(strings.ReplaceAll(s, ",", "."))
+	if s == "" || strings.ContainsAny(s, "+-") {
+		return 0, false
+	}
 	parts := strings.Split(s, ":")
 	if len(parts) == 3 {
 		h, err1 := strconv.ParseFloat(parts[0], 64)
 		m, err2 := strconv.ParseFloat(parts[1], 64)
 		sec, err3 := strconv.ParseFloat(parts[2], 64)
-		if err1 != nil || err2 != nil || err3 != nil {
+		if err1 != nil || err2 != nil || err3 != nil ||
+			!isValidNonNegFloat(h) || !isValidNonNegFloat(m) || !isValidNonNegFloat(sec) {
 			return 0, false
 		}
-		return h*3600 + m*60 + sec, true
+		total := h*3600 + m*60 + sec
+		if !isValidNonNegFloat(total) {
+			return 0, false
+		}
+		return total, true
 	}
 	if len(parts) == 2 {
 		m, err1 := strconv.ParseFloat(parts[0], 64)
 		sec, err2 := strconv.ParseFloat(parts[1], 64)
-		if err1 != nil || err2 != nil {
+		if err1 != nil || err2 != nil ||
+			!isValidNonNegFloat(m) || !isValidNonNegFloat(sec) {
 			return 0, false
 		}
-		return m*60 + sec, true
+		total := m*60 + sec
+		if !isValidNonNegFloat(total) {
+			return 0, false
+		}
+		return total, true
 	}
 	return 0, false
+}
+
+func isValidNonNegFloat(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0
 }
 
 var webvttUnescaper = strings.NewReplacer(

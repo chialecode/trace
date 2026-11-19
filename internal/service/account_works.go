@@ -103,7 +103,7 @@ type fullCacheCandidate struct {
 // queue itself walks the works newest first, skips what is cached and caches
 // the rest slowly. It returns the queue IDs it started.
 func (b *Backend) startDueFullCacheSweeps(ctx context.Context, now time.Time) []string {
-	if b.subs == nil || b.queue == nil || b.requireAnyLogin() != nil {
+	if b.profile == ProfileRemote || b.subs == nil || b.queue == nil || b.requireAnyLogin() != nil {
 		return nil
 	}
 	subs, err := b.subs.List()

@@ -58,10 +58,6 @@ func TestUIStateCorruptRecoveryAndNormalize(t *testing.T) {
 	}
 }
 
-func TestUIStatePersistAndCorruptRecovery(t *testing.T) {
-	TestUIStateCorruptRecoveryAndNormalize(t)
-}
-
 func TestUIStateSeenMapsNeverAliasCommittedState(t *testing.T) {
 	store, _, _, err := Open(filepath.Join(t.TempDir(), "ui-state.json"))
 	if err != nil {
@@ -69,19 +65,29 @@ func TestUIStateSeenMapsNeverAliasCommittedState(t *testing.T) {
 	}
 	st := store.Get()
 	st.HomeSeen = map[string]int64{"mid:123": 100}
+	st.Update.Restart = &UpdateRestart{Reason: "update", FromVersion: "1.2.3"}
 	updated, err := store.Update(st)
 	if err != nil {
 		t.Fatal(err)
 	}
 	st.HomeSeen["mid:123"] = 200
 	updated.HomeSeen["mid:123"] = 300
+	st.Update.Restart.FromVersion = "mutated-input"
+	updated.Update.Restart.FromVersion = "mutated-return"
 	if got := store.Get().HomeSeen["mid:123"]; got != 100 {
 		t.Fatalf("a caller changed committed seen state without an atomic write: %d", got)
 	}
+	if got := store.Get().Update.Restart; got == nil || got.FromVersion != "1.2.3" {
+		t.Fatalf("a caller mutated committed Update.Restart pointer: %+v", got)
+	}
 	read := store.Get()
 	read.HomeSeen["mid:123"] = 400
+	read.Update.Restart.FromVersion = "mutated-read"
 	if got := store.Get().HomeSeen["mid:123"]; got != 100 {
 		t.Fatalf("a read exposed mutable committed state: %d", got)
+	}
+	if got := store.Get().Update.Restart; got == nil || got.FromVersion != "1.2.3" {
+		t.Fatalf("a read exposed mutable committed Update.Restart: %+v", got)
 	}
 }
 

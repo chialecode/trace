@@ -104,7 +104,7 @@ func runQuitForUpdateHelper(outPath string) error {
 
 // --quit-for-update, forwarded to the running TRACE, pauses its tasks as
 // the tray's Quit does, saves the route and records that the window was
-// open, then quits (M2-K04).
+// open, then quits.
 func TestQuitForUpdateSavesWorkAndWindowState(t *testing.T) {
 	if runtime.GOOS != "windows" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
 		t.Skip("no display: the real window helper is not run")

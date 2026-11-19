@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/settings"
@@ -50,16 +49,11 @@ func (m *Manager) executeVideoTask(ctx context.Context, task *Task) error {
 	return m.cacheVideoPart(ctx, task, false)
 }
 
-// All operations on one video's manifest share this lock, including supplement
-// and upgrade. Different pages cannot overwrite one another's successful work.
-func (m *Manager) lockVideo(id string) func() {
-	lock, _ := m.videoLocks.LoadOrStore(id, &sync.Mutex{})
-	lock.(*sync.Mutex).Lock()
-	return lock.(*sync.Mutex).Unlock
-}
-
 func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (result error) {
-	unlock := m.lockVideo(t.TargetID)
+	unlock, err := m.lockItem(ctx, t.TargetID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	if err := ctx.Err(); err != nil {
 		return err
@@ -227,8 +221,14 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 	var vPath, aPath string
 	var intermediate []library.MediaFile
 	part := library.VideoPartRecord{CID: page.CID, Page: page.Page, Title: page.Title, Duration: page.Duration, File: mp4Rel, Video: library.PartVideoInfo{Quality: plan.Video.Quality, QualityName: plan.Video.QualityName, CodecID: plan.Video.CodecID, Codecs: plan.Video.Codecs, Width: plan.Video.Width, Height: plan.Video.Height, FrameRate: plan.Video.FrameRate}, Available: availableRecord(plan)}
+	var summary MuxTrackSummary
 	if plan.Mode == "dash" {
-		vRel := fmt.Sprintf("P%02d.video-%d-%d.m4s", page.Page, plan.Video.Quality, plan.Video.CodecID)
+		// The DASH streams are only material for the MP4: they carry a
+		// temporary name the whole time, so an export folder never shows a
+		// finished-looking file that is not part of the item (remote.md §6.1).
+		legacyV := fmt.Sprintf("P%02d.video-%d-%d.m4s", page.Page, plan.Video.Quality, plan.Video.CodecID)
+		vRel := storage.TempPrefix + legacyV
+		m.adoptLegacyName(t, meta.ItemDir, legacyV, vRel)
 		vPath = filepath.Join(meta.ItemDir, vRel)
 		m.setFileProgress(t, "video_stream", vRel, "downloading", 0, 0, 0)
 		n, hash, err := m.downloadStreamWithRefresh(ctx, plan.Video.URLs, vPath, t, videoURLs)
@@ -260,7 +260,9 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 				}
 			}
 			if mainAudio != nil {
-				rel := fmt.Sprintf("P%02d.audio-%d.m4s", page.Page, mainAudio.Quality)
+				legacyA := fmt.Sprintf("P%02d.audio-%d.m4s", page.Page, mainAudio.Quality)
+				rel := storage.TempPrefix + legacyA
+				m.adoptLegacyName(t, meta.ItemDir, legacyA, rel)
 				aPath = filepath.Join(meta.ItemDir, rel)
 				m.setFileProgress(t, "audio_stream", rel, "downloading", 0, 0, 0)
 				n, hash, err := m.downloadStreamWithRefresh(ctx, mainAudio.URLs, aPath, t, audioURLs(mainAudio, isHigh))
@@ -273,33 +275,68 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 			}
 		}
 		m.setFileProgress(t, "video", mp4Rel, "verifying", 0, 0, 0)
-		_, err = MuxDASHFilesContext(ctx, vPath, aPath, mp4Path+".part")
+		if _, err = MuxDASHFilesContext(ctx, vPath, aPath, mp4Path+".part"); err != nil {
+			m.setFileProgress(t, "video", mp4Rel, "failed", 0, 0, 0)
+			return err
+		}
+		summary, err = InspectMP4FileContext(ctx, mp4Path+".part")
+		if err == nil {
+			err = validateVideoOutput(summary, page.Duration, aPath != "")
+		}
+		if err != nil {
+			m.setFileProgress(t, "video", mp4Rel, "failed", 0, 0, 0)
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := os.Rename(mp4Path+".part", mp4Path); err != nil {
+			return err
+		}
 	} else {
+		stageRel := mp4Rel + stageSuffix
+		stagePath := mp4Path + stageSuffix
 		m.setFileProgress(t, "video", mp4Rel, "downloading", 0, 0, 0)
-		_, _, err = m.downloadStreamWithRefresh(ctx, plan.Video.URLs, mp4Path+".part", t, videoURLs)
-	}
-	if err != nil {
-		m.setFileProgress(t, "video", mp4Rel, "failed", 0, 0, 0)
-		return err
-	}
-	summary, err := InspectMP4FileContext(ctx, mp4Path+".part")
-	if err == nil {
-		err = validateVideoOutput(summary, page.Duration, aPath != "")
-	}
-	if err != nil {
-		m.setFileProgress(t, "video", mp4Rel, "failed", 0, 0, 0)
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := os.Rename(mp4Path+".part", mp4Path); err != nil {
-		return err
+		if _, _, err = m.downloadStreamWithRefresh(ctx, plan.Video.URLs, stagePath, t, videoURLs); err != nil {
+			if ctx.Err() == nil && !fileOrPartExists(stagePath) {
+				m.removeTempTaskProgress(t, stageRel)
+			}
+			m.setFileProgress(t, "video", mp4Rel, "failed", 0, 0, 0)
+			return err
+		}
+		m.setFileProgress(t, "video", mp4Rel, "verifying", 0, 0, 0)
+		summary, err = EnsureSingleMP4Context(ctx, stagePath, float64(page.Duration))
+		if err != nil {
+			if ctx.Err() == nil {
+				_ = os.Remove(stagePath)
+				m.removeTempTaskProgress(t, stageRel)
+				m.setFileProgress(t, "video", mp4Rel, "failed", 0, 0, 0)
+			}
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := os.Rename(stagePath, mp4Path); err != nil {
+			return err
+		}
+		m.removeTempTaskProgress(t, stageRel)
 	}
 	m.setFileProgress(t, "video", mp4Rel, "completed", summary.FileBytes, summary.FileBytes, 0)
 	newMedia = append(newMedia, library.MediaFile{Role: "video", Path: mp4Rel, Bytes: summary.FileBytes, SHA256: summary.SHA256, Width: summary.Width, Height: summary.Height, Duration: int(math.Round(summary.DurationSec))})
 	for _, media := range intermediate {
 		meta.Media = withoutMedia(meta.Media, media.Path)
+	}
+	// Drop any previously registered intermediate streams for this page (both
+	// legacy Pxx.* and current .trace-Pxx.* names from an earlier quality/codec).
+	legacyPrefix := fmt.Sprintf("P%02d.", page.Page)
+	tempPrefix := storage.TempPrefix + legacyPrefix
+	for _, media := range meta.Media {
+		if (media.Role == "video_stream" || media.Role == "audio_stream") &&
+			(strings.HasPrefix(media.Path, legacyPrefix) || strings.HasPrefix(media.Path, tempPrefix)) {
+			intermediate = append(intermediate, media)
+			meta.Media = withoutMedia(meta.Media, media.Path)
+		}
 	}
 	meta.Media = mergeMediaFiles(meta.Media, newMedia)
 	clearMissing(&meta, fmt.Sprintf("P%02d.media", page.Page))
@@ -377,7 +414,7 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 				return err
 			}
 		} else {
-			if err := m.writeExtra(t, meta, "danmaku", dmRel, raw); err != nil {
+			if err := m.writeExtra(ctx, t, meta, "danmaku", dmRel, raw); err != nil {
 				return err
 			}
 			part.Danmaku, part.DanmakuState = dmRel, "saved"
@@ -429,7 +466,7 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 			rel  string
 			data []byte
 		}{{vtt, track.VTT}, {srt, track.SRT}} {
-			if err := m.writeExtra(t, meta, "subtitle", file.rel, file.data); err != nil {
+			if err := m.writeExtra(ctx, t, meta, "subtitle", file.rel, file.data); err != nil {
 				addMissing(meta, file.rel, "字幕写入失败")
 				return err
 			}
@@ -464,12 +501,15 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 	return nil
 }
 
-func (m *Manager) writeExtra(t *Task, meta *library.ItemMetadata, role, rel string, raw []byte) error {
+func (m *Manager) writeExtra(ctx context.Context, t *Task, meta *library.ItemMetadata, role, rel string, raw []byte) error {
 	full, err := library.ResolveItemPath(meta.ItemDir, rel)
 	if err != nil {
 		return err
 	}
 	if err := m.claimTaskFile(t, meta.ItemDir, rel, full); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	m.setFileProgress(t, role, rel, "verifying", 0, int64(len(raw)), 0)
@@ -487,7 +527,10 @@ func (m *Manager) writeExtra(t *Task, meta *library.ItemMetadata, role, rel stri
 }
 
 func (m *Manager) executeSupplementTask(ctx context.Context, t *Task) error {
-	unlock := m.lockVideo(t.TargetID)
+	unlock, err := m.lockItem(ctx, t.TargetID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	meta, ok, err := m.lib.GetItem(t.TargetID)
 	if err != nil {
@@ -539,8 +582,10 @@ func (m *Manager) executeUpgradeTask(ctx context.Context, t *Task) error {
 	for _, part := range meta.Parts {
 		child := Task{Site: "bilibili", Kind: "video", TargetID: meta.RawID, CID: part.CID, Page: part.Page, Source: t.Source, LinkedVideo: !meta.DirectCached, ProgressOwner: t, Attempts: t.Attempts}
 		if err := m.cacheVideoPart(ctx, &child, true); err != nil {
+			t.Attempts = child.Attempts
 			return err
 		}
+		t.Attempts = child.Attempts
 		if child.Status == "partial" {
 			t.Status = "partial"
 		}

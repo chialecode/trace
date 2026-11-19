@@ -43,6 +43,7 @@ type douyinStubBackend struct {
 	lives      map[string]*service.DouyinLiveView
 	liveStates []service.LiveAccountState
 	schedulers map[string]service.SiteSchedulerStatus
+	cachedFor  string
 	cachedWork string
 }
 
@@ -436,6 +437,13 @@ func (s *douyinStubBackend) CacheDouyinWork(_ context.Context, awemeID string) (
 		Title:    "抖音作品 " + awemeID,
 		Status:   "queued",
 	}, nil
+}
+
+func (s *douyinStubBackend) CacheDouyinWorkFor(ctx context.Context, awemeID, forUID, _ string) (download.Task, error) {
+	s.mu.Lock()
+	s.cachedFor = forUID
+	s.mu.Unlock()
+	return s.CacheDouyinWork(ctx, awemeID)
 }
 
 func isAllASCIIUI(str string) bool {
@@ -1438,6 +1446,12 @@ func TestSiteFiltersPersistenceAndSixSiteBadges(t *testing.T) {
 	if _, ok := ttWide.Find("主页作者站点：bilibili:dynamic:dyn_bili_1"); !ok {
 		t.Fatal("Place #3 missing: Home feed Bilibili post author site badge")
 	}
+	// The subscription's name follows the account on Home posts and opens it.
+	for _, key := range []string{"douyin:dynamic:732001", "bilibili:dynamic:dyn_bili_1"} {
+		if _, ok := ttWide.Find("主页订阅名：" + key); !ok {
+			t.Fatalf("Home post %s shows no subscription name", key)
+		}
+	}
 
 	// Filter Home to Douyin -> persists to ui-state.json and hides Bilibili post!
 	if err := ttWide.Click("主页站点筛选：抖音"); err != nil {
@@ -1568,5 +1582,120 @@ func TestSiteFiltersPersistenceAndSixSiteBadges(t *testing.T) {
 	ttWide.Frame()
 	if _, ok := ttWide.Find("用户页站点标记"); !ok {
 		t.Fatal("Place #1 missing: /douyin/user header site badge")
+	}
+}
+
+func TestDouyinWorkDetailPreservesUserContextForCoCreationCache(t *testing.T) {
+	app, stub, _, cleanup := newDouyinUITestHarness(t)
+	defer cleanup()
+
+	posted := make(chan func(), 64)
+	app.dispatch = func(fn func()) { posted <- fn }
+	stub.dyStatus = credential.Status{
+		Site: string(site.Douyin), LoggedIn: true, State: "logged_in", Source: "cookie",
+		UID: "900001", SecUID: "MS4wLjABAAAA_synth_self_user_0001", Uname: "抖音测试账号",
+	}
+	app.CompleteLogin()
+	waitUIIdle(t, app, posted)
+
+	const (
+		coCreatorUID  = "MS4wLjABAAAA_cocreator_b"
+		coCreatorName = "共创成员B"
+		mainAuthorUID = "MS4wLjABAAAA_main_author_a"
+		awemeID       = "7229580276903447820"
+	)
+	stub.mu.Lock()
+	stub.works[awemeID] = &service.DouyinWorkView{
+		ID:           awemeID,
+		Kind:         "video",
+		Title:        "共创视频",
+		CanonicalURL: "https://www.douyin.com/video/" + awemeID,
+		Author: service.DouyinAuthorDTO{
+			SecUID:   mainAuthorUID,
+			Nickname: "主发作者A",
+		},
+	}
+	stub.mu.Unlock()
+
+	tt := ui.NewTester(app.View, 1200, 800)
+
+	// 1. Opening a Douyin work from co-creator B's user page must pass B as forUID/forName
+	// when clicking "缓存视频" inside the work detail view.
+	app.openDouyinWorkFor(awemeID, "video", "共创视频", "主发作者A", mainAuthorUID, "", "", coCreatorUID, coCreatorName)
+	waitUIIdle(t, app, posted)
+	tt.Frame()
+	if err := tt.Click("缓存视频"); err != nil {
+		t.Fatalf("click 缓存视频 on Douyin work detail page: %v", err)
+	}
+	waitUIIdle(t, app, posted)
+
+	stub.mu.Lock()
+	gotFor, gotWork := stub.cachedFor, stub.cachedWork
+	stub.mu.Unlock()
+	if gotWork != awemeID || gotFor != coCreatorUID {
+		t.Fatalf("work detail cache from user page: work=%q forUID=%q, want %q / %q", gotWork, gotFor, awemeID, coCreatorUID)
+	}
+
+	// 2. Opening a Douyin work directly (without user page context) clears douyinCacheFor
+	// and invokes CacheDouyinWork instead of CacheDouyinWorkFor.
+	stub.mu.Lock()
+	stub.cachedFor = ""
+	stub.cachedWork = ""
+	stub.mu.Unlock()
+
+	app.OpenDouyinWork(awemeID, "video", "共创视频", "主发作者A", mainAuthorUID, "", "")
+	waitUIIdle(t, app, posted)
+	tt.Frame()
+	if err := tt.Click("缓存视频"); err != nil {
+		t.Fatalf("click 缓存视频 on direct Douyin work detail page: %v", err)
+	}
+	waitUIIdle(t, app, posted)
+
+	stub.mu.Lock()
+	gotFor, gotWork = stub.cachedFor, stub.cachedWork
+	stub.mu.Unlock()
+	if gotWork != awemeID || gotFor != "" {
+		t.Fatalf("direct work detail cache: work=%q forUID=%q, want %q / empty", gotWork, gotFor, awemeID)
+	}
+}
+
+func TestTasksDownloadsLongTitleAndPartialReasonDoNotClip(t *testing.T) {
+	app, stub, _, cleanup := newDouyinUITestHarness(t)
+	defer cleanup()
+
+	posted := make(chan func(), 64)
+	app.dispatch = func(fn func()) { posted <- fn }
+	stub.dyStatus = credential.Status{
+		Site: string(site.Douyin), LoggedIn: true, State: "logged_in", Source: "cookie",
+		UID: "900001", SecUID: "MS4wLjABAAAA_synth_self_user_0001", Uname: "抖音测试账号",
+	}
+	app.CompleteLogin()
+	waitUIIdle(t, app, posted)
+
+	tt := ui.NewTester(app.View, 960, 720)
+
+	app.Navigate(RouteTasks)
+	app.Tasks = []download.Task{
+		{
+			TaskID:          "t_partial_long",
+			Site:            "douyin",
+			Kind:            "note",
+			TargetID:        "7577636749766764393",
+			Title:           strings.Repeat("这是一段非常长的抖音图文标题用来验证右侧百分比不会被挤出卡片边界", 3),
+			Status:          "partial",
+			Progress:        1.0,
+			BytesDownloaded: 1024 * 1024,
+			TotalBytes:      1024 * 1024,
+			ErrorMessage:    "配乐下载失败 (blocked)：媒体域名不在允许列表中",
+		},
+	}
+	tt.Frame()
+
+	// Both the site badge and task action controls must remain present inside the 960px frame.
+	if _, ok := tt.Find("任务站点：t_partial_long"); !ok {
+		t.Fatal("missing site badge on long-title partial task card")
+	}
+	if _, ok := tt.Find("重试任务：t_partial_long"); !ok {
+		t.Fatal("missing Retry button on partial task card")
 	}
 }

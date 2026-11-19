@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,7 +22,7 @@ import (
 	"github.com/chialecode/trace/internal/storage"
 )
 
-// C28 & R-09: Multi-account subscription CRUD, global <site>:<uid> uniqueness, Link conflict, atomic Move, <= 20 accounts cap, and subscriptions.json.bak recovery.
+// Multi-account subscription CRUD, global <site>:<uid> uniqueness, Link conflict, atomic Move, <= 20 accounts cap, and subscriptions.json.bak recovery.
 func TestSubscriptionCRUDLinkMoveAndBackupRecovery(t *testing.T) {
 	tmp := t.TempDir()
 	db, _, _, err := storage.OpenSQLite(filepath.Join(tmp, "library.db"))
@@ -108,7 +107,7 @@ func TestSubscriptionCRUDLinkMoveAndBackupRecovery(t *testing.T) {
 	}
 }
 
-// C29: Subscription CRUD and idempotent followings import.
+// Subscription CRUD and idempotent followings import.
 func TestSubscriptionCRUDAndIdempotentImport(t *testing.T) {
 	tmp := t.TempDir()
 	db, _, _, err := storage.OpenSQLite(filepath.Join(tmp, "library.db"))
@@ -158,12 +157,7 @@ func TestSubscriptionCRUDAndIdempotentImport(t *testing.T) {
 	}
 }
 
-// Alias for stage-report C29 reference.
-func TestImportFollowingPaginationAndIdempotentCreate(t *testing.T) {
-	TestSubscriptionCRUDAndIdempotentImport(t)
-}
-
-// C30 & R-10: Baseline watermark (page 1 marked seen, 0 auto-cache tasks), 3-page pagination with pinned ignore and gap note,
+// Baseline watermark (page 1 marked seen, 0 auto-cache tasks), 3-page pagination with pinned ignore and gap note,
 // MarkSeen / MarkAllSeen / Unseen, 3 consecutive network errors stop, and risk_control batch stop.
 func TestIncrementalCheckBaselineFailureIsolationAndRiskStop(t *testing.T) {
 	var step atomic.Int32
@@ -295,7 +289,7 @@ func TestIncrementalCheckBaselineFailureIsolationAndRiskStop(t *testing.T) {
 	}
 }
 
-// C30 & R-10: 3-page dynamic pagination, pinned item ignore, gap note ("可能还有更早的更新没有拿到"), and 3 consecutive network errors stop.
+// 3-page dynamic pagination, pinned item ignore, gap note ("可能还有更早的更新没有拿到"), and 3 consecutive network errors stop.
 func TestBaselineAndIncrementalCheckThreePageAndMarkSeen(t *testing.T) {
 	var mode atomic.Int32 // 1 = baseline, 2 = 3 pages without hitting baseline (gap), 3 = network failures
 
@@ -433,7 +427,7 @@ func TestBaselineAndIncrementalCheckThreePageAndMarkSeen(t *testing.T) {
 	}
 }
 
-// C31 & R-11: Scheduled check 30-account cap, exponential backoff (interval * 2^n up to 24h) in updates.db, 200/hr token bucket, and 20-task auto-cache cap + backlog.
+// Scheduled check 30-account cap, exponential backoff (interval * 2^n up to 24h) in updates.db, 200/hr token bucket, and 20-task auto-cache cap + backlog.
 func TestScheduledCheckBackoffQuotaAndAutoCache(t *testing.T) {
 	var failRisk atomic.Bool
 	var srvURL string
@@ -580,7 +574,7 @@ func TestScheduledCheckBackoffQuotaAndAutoCache(t *testing.T) {
 	}
 }
 
-// C32: Schedule calculation for interval, daily, weekly, and manual modes.
+// Schedule calculation for interval, daily, weekly, and manual modes.
 func TestNextRunTimeModes(t *testing.T) {
 	loc := time.FixedZone("CST", 8*3600)
 	// Wednesday 2026-11-04 09:00:00 CST (ISO weekday = 3)
@@ -614,34 +608,5 @@ func TestNextRunTimeModes(t *testing.T) {
 	wantWeekly := time.Date(2026, 11, 6, 8, 0, 0, 0, loc)
 	if !ok || !nextWeekly.Equal(wantWeekly) {
 		t.Fatalf("weekly next = %v, want %v", nextWeekly, wantWeekly)
-	}
-}
-
-// C33: OPML 2.0 export and import round-trip + invalid XML rejection.
-func TestOPMLImportExportRoundTrip(t *testing.T) {
-	subs := []Subscription{
-		{Mid: 12345, Uname: "Creator Alpha"},
-		{Mid: 67890, Uname: "Creator Beta"},
-	}
-	xmlBytes, err := ExportOPML(subs, time.Unix(1700000000, 0))
-	if err != nil {
-		t.Fatalf("ExportOPML: %v", err)
-	}
-	xmlStr := string(xmlBytes)
-	if strings.Contains(xmlStr, "SESSDATA") || !strings.Contains(xmlStr, "space.bilibili.com/12345") {
-		t.Fatalf("unexpected OPML XML:\n%s", xmlStr)
-	}
-
-	parsed, err := ParseOPML(xmlBytes)
-	if err != nil || len(parsed) != 2 {
-		t.Fatalf("ParseOPML = %+v, err=%v", parsed, err)
-	}
-	if parsed[0].Mid != 12345 || parsed[0].Uname != "Creator Alpha" || parsed[1].Mid != 67890 {
-		t.Fatalf("unexpected parsed OPML creators: %+v", parsed)
-	}
-
-	// Invalid XML returns structured error.
-	if _, err := ParseOPML([]byte("<opml><unclosed>")); err == nil {
-		t.Fatalf("expected error for malformed OPML XML")
 	}
 }

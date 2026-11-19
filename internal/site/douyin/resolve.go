@@ -199,7 +199,7 @@ func (c *Client) validateResolveHopURL(u *url.URL, isRedirect bool) error {
 	}
 
 	host := strings.ToLower(u.Hostname())
-	if c.allowLocalhost && isLoopbackHost(host) {
+	if c.allowLocalhost && site.IsLoopbackHost(host) {
 		if strings.EqualFold(u.Scheme, "http") || strings.EqualFold(u.Scheme, "https") {
 			return nil
 		}
@@ -258,7 +258,7 @@ func isAllowedDouyinRedirectHost(host string) bool {
 // classifyLocalURL applies the strict priority table in douyin.md §4.3 without network I/O.
 func (c *Client) classifyLocalURL(u *url.URL) localRouteMatch {
 	host := strings.ToLower(u.Hostname())
-	segments := splitPathSegments(u.Path)
+	segments := site.SplitCleanPath(u.Path)
 	lowerPath := "/" + strings.ToLower(strings.Join(segments, "/"))
 	if len(segments) > 0 {
 		lowerPath += "/"
@@ -274,7 +274,7 @@ func (c *Client) classifyLocalURL(u *url.URL) localRouteMatch {
 	}
 
 	// Priority 1: Short-link domains (v.douyin.com, v.amemv.com, or synthetic loopback /short/<code>).
-	if shortLinkHosts[host] || (c.allowLocalhost && isLoopbackHost(host) && len(segments) >= 2 && strings.EqualFold(segments[0], "short")) {
+	if shortLinkHosts[host] || (c.allowLocalhost && site.IsLoopbackHost(host) && len(segments) >= 2 && strings.EqualFold(segments[0], "short")) {
 		if len(segments) == 0 || (strings.EqualFold(segments[0], "short") && len(segments) < 2) {
 			return localRouteMatch{
 				kind:   routeUnsupported,
@@ -347,7 +347,7 @@ func (c *Client) classifyLocalURL(u *url.URL) localRouteMatch {
 	if host == "live.douyin.com" && len(segments) == 1 && reRoomDigits.MatchString(segments[0]) {
 		return localRouteMatch{kind: routeLiveWebRID, webRID: segments[0]}
 	}
-	if c.allowLocalhost && isLoopbackHost(host) && len(segments) == 2 && strings.EqualFold(segments[0], "live") && reRoomDigits.MatchString(segments[1]) {
+	if c.allowLocalhost && site.IsLoopbackHost(host) && len(segments) == 2 && strings.EqualFold(segments[0], "live") && reRoomDigits.MatchString(segments[1]) {
 		return localRouteMatch{kind: routeLiveWebRID, webRID: segments[1]}
 	}
 
@@ -418,17 +418,6 @@ func firstValidSecUID(candidates ...string) string {
 	return ""
 }
 
-func splitPathSegments(p string) []string {
-	parts := strings.Split(strings.Trim(p, "/"), "/")
-	out := make([]string, 0, len(parts))
-	for _, seg := range parts {
-		if seg != "" {
-			out = append(out, seg)
-		}
-	}
-	return out
-}
-
 func (c *Client) expandShortLink(ctx context.Context, startURL *url.URL) (*url.URL, localRouteMatch, error) {
 	cur := startURL
 	for hop := 0; hop < maxShortLinkHops; hop++ {
@@ -447,7 +436,7 @@ func (c *Client) expandShortLink(ctx context.Context, startURL *url.URL) (*url.U
 				Site:    site.Douyin,
 				Kind:    site.ErrKindBadRequest,
 				Message: "构造抖音短链请求失败",
-				Err:     reqErr,
+				Err:     site.UnwrapURLError(reqErr),
 			}
 		}
 		req.Header.Set("User-Agent", c.profile.UserAgent)
@@ -457,26 +446,45 @@ func (c *Client) expandShortLink(ctx context.Context, startURL *url.URL) (*url.U
 		resp, doErr := c.redirectClient.Do(req)
 		if doErr != nil {
 			release()
-			return nil, localRouteMatch{}, &site.Error{
+			netErr := &site.Error{
 				Site:     site.Douyin,
 				Kind:     site.ErrKindNetwork,
 				Endpoint: sanitizeEndpointLabel(cur),
 				Message:  "展开抖音短链失败",
-				Err:      doErr,
+				Err:      site.UnwrapURLError(doErr),
 			}
+			c.ReportAutomaticError(ctx, netErr)
+			return nil, localRouteMatch{}, netErr
 		}
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
 		release()
 
 		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
-			return nil, localRouteMatch{}, &site.Error{
+			var kind, msg string
+			switch resp.StatusCode {
+			case http.StatusTooManyRequests:
+				kind = site.ErrKindRateLimited
+				msg = "抖音短链请求过于频繁（HTTP 429），已暂停自动请求"
+			case http.StatusForbidden, http.StatusPreconditionFailed:
+				kind = site.ErrKindRiskControl
+				msg = fmt.Sprintf("抖音短链触发风控拦截（HTTP %d）", resp.StatusCode)
+			case http.StatusUnauthorized:
+				kind = site.ErrKindAuthRequired
+				msg = "抖音短链请求需要登录凭证（HTTP 401）"
+			default:
+				kind = site.ErrKindUnavailable
+				msg = fmt.Sprintf("短链未返回有效跳转（HTTP %d）", resp.StatusCode)
+			}
+			se := &site.Error{
 				Site:       site.Douyin,
-				Kind:       site.ErrKindUnavailable,
+				Kind:       kind,
 				HTTPStatus: resp.StatusCode,
 				Endpoint:   sanitizeEndpointLabel(cur),
-				Message:    fmt.Sprintf("短链未返回有效跳转（HTTP %d）", resp.StatusCode),
+				Message:    msg,
 			}
+			c.ReportAutomaticError(ctx, se)
+			return nil, localRouteMatch{}, se
 		}
 
 		loc := strings.TrimSpace(resp.Header.Get("Location"))
@@ -627,7 +635,7 @@ func (c *Client) canCallEndpoint(ep string) bool {
 		return true
 	}
 	u, err := url.Parse(ep)
-	return err == nil && isLoopbackHost(strings.ToLower(u.Hostname()))
+	return err == nil && site.IsLoopbackHost(u.Hostname())
 }
 
 func (c *Client) resolveLiveByWebRID(ctx context.Context, webRID string) (site.ResolveTarget, error) {

@@ -1,6 +1,6 @@
 # 技术设计：架构、接口与原生界面
 
-技术设计说明系统“应当怎样工作”，按专题分四份：本页（进程与分层、代码目录、服务接口、站点客户端、凭证、原生界面、不变量、窗口与托盘、远程无头扩展边界）、[数据、缓存与信息流](data-and-cache.md)、[订阅、检查更新与自动缓存](subscriptions.md)、[直播](live.md)。与代码不一致时按[冲突规则](../dev-rules/workflow.md#conflicts)处理。选型依据见[技术选型研究](../research/2026-11-05-stack.md)和[媒体与存储选型](../research/2026-11-05-media.md)，协议见[哔哩哔哩协议资料](../research/bilibili.md)。
+技术设计说明系统“应当怎样工作”，按专题分五份：本页（进程与分层、代码目录、服务接口、站点客户端、凭证、原生界面、不变量、窗口与托盘、远程版的分层）、[数据、缓存与信息流](data-and-cache.md)、[订阅、检查更新与自动缓存](subscriptions.md)、[直播](live.md)、[远程版、上传与导入导出](remote.md)。与代码不一致时按[冲突规则](../dev-rules/workflow.md#conflicts)处理。选型依据见[技术选型研究](../research/2026-11-05-stack.md)和[媒体与存储选型](../research/2026-11-05-media.md)，协议见[哔哩哔哩协议资料](../research/bilibili.md)。
 
 <a id="architecture"></a>
 ## 1. 进程与分层
@@ -28,6 +28,7 @@ internal/ui（mygo/ui 声明式视图、路由、看图层、播放层） ──
 
 ```text
 main.go                       组装依赖、获取单实例与数据目录锁、启动服务与原生窗口
+cmd/trace-server/             无界面的远程程序（Linux）：init、run、token、upload-test 等命令；deploy/ 放 systemd 示例与中文部署说明
 mygo.json                     MyGo 打包配置：正式版身份、版本线 0.1.0、图标、发布者与版权、中文目录（i18n）、更新公钥与 GitHub 仓库；
                               打包工具按通道临时改写（开发版 trace-dev、ptest 演练 trace-ptest）
 CHANGELOG.md                  正式版每个版本的更新内容（Release 说明与“更新内容”）
@@ -38,7 +39,7 @@ internal/
   update/                     更新逻辑（纯 Go，不依赖 MyGo）：检查与下载的状态机（controller.go）、TRACE 的更新源与校验（source.go）、检查与更新记录（update-history.json）
   locales/                    中文目录 zh-Hans.json 与 MyGo 生成的访问代码（安装界面与 MyGo 自带字符串）
   ui/                         mygo/ui 原生界面：图标栏 + 上下文侧栏 + 页面的自适应布局、路由、登录页、主页信息流、订阅（列表/详情/导入）、
-                              我的、解析页、视频详情、用户页、媒体库（含 /library/item 离线详情）、任务页（四组侧栏、直播录制实时预览与录制异常）、设置页（含“更新”分类与规则批量选订阅）、看图层、播放层及界面内存测试（ui.NewTester）
+                              我的、解析页、视频详情、用户页、媒体库（含 /library/item 离线详情与导入页）、任务页（六组侧栏、直播录制实时预览与录制异常、导入导出）、设置页（含“远程”“更新”分类与规则批量选订阅）、看图层、播放层及界面内存测试（ui.NewTester）
   player/                     原生媒体播放与叠加：Windows Media Foundation（IMFSourceReader 纯 Go COM 调用，含增长中 fMP4 .part 的只读实时预览）解码 MP4 音视频、
                               mygo/audio 音频时钟与输出、纯 Go 弹幕排版器（danmaku.go）与 WebVTT 字幕解析匹配（subtitle.go）
   appdirs/                    构建信息（版本、通道、提交、构建时间，由 -ldflags 注入）；通道（release / dev / ptest / source）与安装、数据、缓存位置的推算，“文档”文件夹的系统登记位置，数据目录独占锁
@@ -61,12 +62,16 @@ internal/
   download/                   任务队列与状态机（按站点熔断）、分段下载器（8 MiB 续传、重试、节点轮换）、按站点的执行器与媒体传输规格、选流、合并（mp4ff）、
                               单文件 MP4 校验与 moov 前置、升级探测（只有哔哩哔哩）、弹幕与字幕保存
   settings/、uistate/         设置（settings.json）；界面状态（ui-state.json，主页看过的最新一条、窗口尺寸、最后路由等）
-  storage/                    数据目录、原子写、最近解析（history.json）、SQLite 打开与迁移、数据文件的结构版本（schema.go）
+  storage/                    数据目录、原子写、最近解析（history.json）、SQLite 打开与迁移、数据文件的结构版本（schema.go）、临时文件名约定（*.part、.trace-*）
+  remote/                     远程协议：连接码、状态与快照等 JSON 类型、按证书指纹固定的 HTTPS 客户端与错误分类（无法连接、证书变了、令牌错、版本不同、被拒）
+  remoteserver/               trace-server 的服务端：init 与配置（server.json、证书、令牌哈希）、HTTPS 接口与鉴权限流、磁盘空间、Run 的启动与收尾
+  upload/                     远程的内置上传：逐条目调用 rclone、确认后删登记文件、退避与错误分类；fakerclone/ 是测试与冒烟用的假 rclone
+  transfer/                   资源库导入（扫描分六类、校验后复制、合并清单）与导出（可携带的 item.json）
 tools/check/                  质量门禁（一条命令）
 tools/checkdocs/              文档、公开内容与依赖方向检查
 tools/uishots/                用 ui.NewTester 渲染全部页面的必测状态与三档宽度，输出 PNG 截图与结构化断言回执 assertions.json
-tools/smoke/                  真实进程端到端冒烟（启动 trace.exe、单实例与数据目录锁、托盘关闭与重建、零杂散目录校验）
-tools/package/                开发版打包（解包文件 + NSIS 按用户安装包）与本机自动安装（install.go）
+tools/smoke/                  真实进程端到端冒烟（启动 trace.exe、单实例与数据目录锁、托盘关闭与重建、零杂散目录校验）；-server 是远程冒烟（server.go）
+tools/package/                开发版打包（解包文件 + NSIS 按用户安装包）与本机自动安装（install.go）；-server 打远程版的 Linux 包（server.go）
 tools/release/                正式版发布：检查、构建签名、ptest 升级演练、可选发布；release.yml 的静态检查
 tools/actcheck/               真实站点有界检查程序（act006 / act007 / act010 / act011，账本门禁与脱敏回执）
 tools/icons/                  绘制两个通道的应用图标
@@ -233,11 +238,6 @@ tools/internal/build/         打包共用：版本号、通道配置、-ldflags
 - **数据结构版本**：启动时先核对数据文件的结构版本（[数据 §1](data-and-cache.md#schema-versions)）；遇到比这个版本新的结构就显示“这些数据来自更新的 TRACE 版本，请安装新版”并退出，不写任何文件。
 
 <a id="headless-ext"></a>
-## 9. 未来远程服务器（VPS）轻量模式与 Web 配置边界（DEC-032）
+## 9. 远程版（DEC-032、DEC-062）
 
-全项目改为纯 Go 后，架构通过以下约束保证未来可零成本提取出一个部署在 Linux/Windows VPS 上的无头直播录制与自动缓存程序（如 `cmd/trace-server` 或 `trace -headless`），并通过浏览器 Web 界面进行基础配置（添加/删除直播间与订阅、开关自动录制、扫码或粘贴 Cookie 登录、查看录制状态）：
-
-1. **后端零 GUI 依赖（INV-05）**：`internal/service` 及所有下层包（`site/bilibili`、`subscription`、`live`、`download`、`library`、`credential`、`storage`、`settings`）全部是 `CGO_ENABLED=0` 的标准 Go 代码，不引用 `mygo` 或 Windows GUI 库（平台相关文件如 `dpapi_other.go`、`lock_other.go`、`disk_other.go` 提供 Linux/跨平台实现）。
-2. **`internal/service` 接口化**：桌面端的 `internal/ui` 只通过 `service.Backend` 接口调用业务方法。未来新增远程模式时，只需提供两种轻量 Web 入口之一（或同时提供），无需重写任何业务逻辑：
-   - **路线 A（标准库 `net/http` JSON API + 内嵌单页 Web 控制台）**：用一个很薄的 `internal/webadmin` 包把 `service.Backend` 的方法（如 `AuthService`、`SubscriptionService`、`LiveService`、`SettingsService`）映射为带 Token 鉴权的 HTTP JSON 端点，并用 `embed.FS` 内嵌一个几十 KB 的静态配置页面，编译出约 10 MB 的单文件 Linux 静态二进制即可在 VPS 上通过浏览器添加直播间与管理录制。
-   - **路线 B（`mygo/ui` 直接编译为浏览器 WebAssembly）**：MyGo 原生支持 `mygo build -platform web`（`GOOS=js GOARCH=wasm`），可将 `internal/ui` 编译为运行在浏览器 Canvas/WebGL2 中的前端，通过实现一个走 HTTP 的 `service.Backend` 客户端直接复用同一套 Go 界面。
+后端零 GUI 依赖（INV-05）让同一套 `internal/service` 能编译成无界面的远程程序 `cmd/trace-server`（Linux，`CGO_ENABLED=0`）：它在服务层用远程配置启动（不续期、不做全部缓存与补更早内容、定时检查总开关常开），由 `internal/remoteserver` 把状态、订阅快照与凭证推送映射为 HTTPS JSON 接口；本地桌面版经 `internal/remote` 客户端连接。远程不提供网页（浏览器控制台与 `mygo/ui` WebAssembly 前端仍是以后的选项）。完整设计见[远程设计](remote.md)。

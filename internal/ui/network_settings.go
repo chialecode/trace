@@ -29,9 +29,11 @@ func (a *App) renderNetworkSettings(c *ui.Context) {
 			if shown == site.ProxyCustom {
 				// Wait for an address before switching.
 				a.proxyEditing = true
+				a.proxyDraftLoaded = true
 				a.ProxyDraftURL = a.DraftSettings.Network.ProxyURL
 			} else {
 				a.proxyEditing = false
+				a.proxyDraftLoaded = false
 				a.applyProxySetting(shown, a.DraftSettings.Network.ProxyURL)
 			}
 		}
@@ -40,12 +42,15 @@ func (a *App) renderNetworkSettings(c *ui.Context) {
 			ui.Text(c, "使用 Windows 的代理设置（含自动配置脚本）；设置了 HTTP_PROXY / HTTPS_PROXY 环境变量时以环境变量为准。").
 				Label("跟随系统代理说明").FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
 		case site.ProxyCustom:
-			if !a.proxyEditing && a.ProxyDraftURL == "" {
+			if !a.proxyDraftLoaded {
+				a.proxyDraftLoaded = true
 				a.ProxyDraftURL = a.DraftSettings.Network.ProxyURL
 			}
 			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).ClipX().Children(func() {
 				in := ui.TextInput(c, &a.ProxyDraftURL).Label("代理地址").Placeholder("http://127.0.0.1:7890 或 socks5://127.0.0.1:1080").Grow(1)
-				submitted := in.Submitted()
+				wasComposing := a.proxyComposing
+				a.proxyComposing = in.Composing()
+				submitted := in.Submitted() && !in.Composing() && !wasComposing
 				if AccentPillButton(c, "保存", "保存代理地址").Clicked() || submitted {
 					a.applyProxySetting(site.ProxyCustom, a.ProxyDraftURL)
 				}
@@ -80,5 +85,6 @@ func (a *App) applyProxySetting(mode, rawURL string) {
 	a.DraftSettings = updated
 	a.ProxyError = ""
 	a.proxyEditing = false
+	a.proxyDraftLoaded = mode == site.ProxyCustom
 	a.ProxyDraftURL = updated.Network.ProxyURL
 }

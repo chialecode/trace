@@ -23,7 +23,7 @@ import (
 	"github.com/chialecode/trace/internal/storage"
 )
 
-// C17 (scaled): media reads have only an idle timeout, never a total timeout.
+// Media reads have only an idle timeout, never a total timeout.
 // A segment that trickles in far longer than the idle timeout must complete,
 // and a stall longer than the idle timeout must resume from the breakpoint.
 func TestSlowMediaUsesIdleTimeoutNotTotalTimeout(t *testing.T) {

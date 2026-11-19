@@ -10,7 +10,8 @@ import (
 )
 
 var (
-	reBareKnownDomain = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9._/-])((?:v\.douyin\.com|www\.douyin\.com|live\.douyin\.com|iesdouyin\.com|www\.iesdouyin\.com|v\.amemv\.com|webcast\.amemv\.com|mall\.douyin\.com|haohuo\.jinritemai\.com|b23\.tv|www\.b23\.tv|www\.bilibili\.com|m\.bilibili\.com|space\.bilibili\.com|live\.bilibili\.com|t\.bilibili\.com)/[^\s"'<>` + "`" + `]+)`)
+	reHTTPPrefix      = regexp.MustCompile(`(?i)https?://`)
+	reBareKnownDomain = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9._/-])((?:v\.douyin\.com|www\.douyin\.com|m\.douyin\.com|live\.douyin\.com|iesdouyin\.com|www\.iesdouyin\.com|v\.amemv\.com|webcast\.amemv\.com|mall\.douyin\.com|haohuo\.jinritemai\.com|b23\.tv|www\.b23\.tv|acg\.tv|www\.bilibili\.com|m\.bilibili\.com|space\.bilibili\.com|live\.bilibili\.com|t\.bilibili\.com)/[^\s"'<>` + "`" + `]+)`)
 	reDouyinGluedCode = regexp.MustCompile(`^(https?://v\.(?:douyin|amemv)\.com/[A-Za-z0-9_-]+)/\d+(?:\.\d+)?/?$`)
 	reDouyinSecUID    = regexp.MustCompile(`^MS4wLjAB[A-Za-z0-9_-]+$`)
 	reBiliBV          = regexp.MustCompile(`(?i)\bBV1[1-9A-NP-Za-km-z]{9}\b`)
@@ -42,20 +43,9 @@ func ExtractShareURL(text string) (string, bool) {
 		return "", false
 	}
 
-	lower := strings.ToLower(s)
-	start := -1
-	httpsIdx := strings.Index(lower, "https://")
-	httpIdx := strings.Index(lower, "http://")
-	switch {
-	case httpsIdx >= 0 && (httpIdx < 0 || httpsIdx <= httpIdx):
-		start = httpsIdx
-	case httpIdx >= 0:
-		start = httpIdx
-	}
-
 	var candidate string
-	if start >= 0 {
-		candidate = scanASCIIURLToken(s[start:])
+	if loc := reHTTPPrefix.FindStringIndex(s); len(loc) == 2 {
+		candidate = scanASCIIURLToken(s[loc[0]:])
 	} else if loc := reBareKnownDomain.FindStringSubmatchIndex(s); len(loc) >= 4 {
 		candidate = "https://" + scanASCIIURLToken(s[loc[2]:])
 	}

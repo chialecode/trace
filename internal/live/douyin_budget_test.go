@@ -14,8 +14,7 @@ import (
 // account it can with the live check gap between requests, those checked
 // longest ago first, so an account's interval stays the round's until the
 // accounts no longer fit in one round, and grows by about the gap per
-// further account, not with a share of a fixed hourly budget (dev
-// 2026-11-18: 17 accounts were about 18 minutes apart). An account newly
+// further account, not with a share of a fixed hourly budget. An account newly
 // linked to an auto-record subscription is checked in the next round.
 func TestDouyinLiveChecksPacedThroughRound(t *testing.T) {
 	mgr, _, subMgr, _, _ := setupLiveTestHarness(t, http.NewServeMux())

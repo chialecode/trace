@@ -16,6 +16,8 @@ const (
 	EventLibraryChanged      EventType = "library.changed"
 	EventSubscriptionChecked EventType = "subscription.checked"
 	EventLiveUpdated         EventType = "live.updated"
+	// EventTransferUpdated is an import or export job's progress.
+	EventTransferUpdated EventType = "transfer.updated"
 )
 
 // Event carries a backend state change notification.

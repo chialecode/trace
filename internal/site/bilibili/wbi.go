@@ -86,6 +86,29 @@ func SignWBIParams(params url.Values, mixinKey string, wts int64) url.Values {
 	return out
 }
 
+// EncodeWBIQuery encodes signed WBI parameters using RFC 3986 percent-encoding
+// (spaces as %20) so the wire query string matches the exact bytes hashed in SignWBIParams.
+func EncodeWBIQuery(signed url.Values) string {
+	if len(signed) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(signed))
+	for k := range signed {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			sb.WriteByte('&')
+		}
+		sb.WriteString(encodeURIComponent(k))
+		sb.WriteByte('=')
+		sb.WriteString(encodeURIComponent(signed.Get(k)))
+	}
+	return sb.String()
+}
+
 func stripWBIChars(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {

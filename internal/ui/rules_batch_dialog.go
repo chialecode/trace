@@ -8,7 +8,7 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// RuleBatchDialogState holds UI state for the "选择订阅…" batch rule assignment modal (S2 / DEC-051 ⑧).
+// RuleBatchDialogState holds UI state for the "选择订阅…" batch rule assignment modal (DEC-051 ⑧).
 type RuleBatchDialogState struct {
 	Open            bool
 	RuleID          string
@@ -28,6 +28,7 @@ func ruleBatchSubKey(sub subscription.Subscription) string {
 func (a *App) openRuleBatchDialog(ruleID, ruleName string) {
 	if subs, err := a.backend.ListSubscriptions(); err == nil {
 		a.Subscriptions = subs
+		a.subsRev++
 	}
 	selected := make(map[string]bool, len(a.Subscriptions))
 	for _, sub := range a.Subscriptions {
@@ -72,7 +73,15 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 	if a.RuleBatch.Selected == nil {
 		a.RuleBatch.Selected = make(map[string]bool)
 	}
-	ruleName := a.savedRuleName(a.RuleBatch.RuleID, a.RuleBatch.RuleName)
+	rules := a.backend.ListCacheRules()
+	ruleNames := make(map[string]string, len(rules)+1)
+	ruleNames[subscription.DefaultRuleID] = "默认"
+	for _, r := range rules {
+		if r.ID != "" && r.Name != "" {
+			ruleNames[r.ID] = r.Name
+		}
+	}
+	ruleName := firstNonEmptyStrUI(ruleNames[a.RuleBatch.RuleID], a.RuleBatch.RuleName, "默认")
 	isDefaultRule := a.RuleBatch.RuleID == subscription.DefaultRuleID
 
 	ui.Column(c).FillWidth().Gap(4).Children(func() {
@@ -104,21 +113,14 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 		}
 	})
 
-	ruleNames := map[string]string{subscription.DefaultRuleID: "默认"}
-	for _, r := range a.backend.ListCacheRules() {
-		if r.ID != "" && r.Name != "" {
-			ruleNames[r.ID] = r.Name
-		}
-	}
-
 	filtered := make([]subscription.Subscription, 0, len(a.Subscriptions))
 	selectedCount := 0
 	for _, sub := range a.Subscriptions {
 		key := ruleBatchSubKey(sub)
-		if isDefaultRule && effectiveSubRuleID(sub) == subscription.DefaultRuleID {
+		if key != "" && isDefaultRule && effectiveSubRuleID(sub) == subscription.DefaultRuleID {
 			a.RuleBatch.Selected[key] = true
 		}
-		if a.RuleBatch.Selected[key] {
+		if key != "" && a.RuleBatch.Selected[key] {
 			selectedCount++
 		}
 		if ruleBatchMatchesQuery(sub, a.RuleBatch.CommittedQuery) {
@@ -130,7 +132,9 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			if OutlinePillButton(c, "全选", "全选").Disabled(len(filtered) == 0).Clicked() {
 				for _, sub := range filtered {
-					a.RuleBatch.Selected[ruleBatchSubKey(sub)] = true
+					if key := ruleBatchSubKey(sub); key != "" {
+						a.RuleBatch.Selected[key] = true
+					}
 				}
 				a.RuleBatch.Error = ""
 			}
@@ -139,7 +143,9 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 					if isDefaultRule && effectiveSubRuleID(sub) == subscription.DefaultRuleID {
 						continue
 					}
-					a.RuleBatch.Selected[ruleBatchSubKey(sub)] = false
+					if key := ruleBatchSubKey(sub); key != "" {
+						a.RuleBatch.Selected[key] = false
+					}
 				}
 				a.RuleBatch.Error = ""
 			}
@@ -163,14 +169,23 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 				ui.Text(c, "没有匹配的订阅").FontSize(13).TextColor(ColorTextMuted).SingleLine()
 			})
 		default:
+			a.RuleBatch.ListState.Key = func(idx int) any {
+				if idx < 0 || idx >= len(filtered) {
+					return idx
+				}
+				return ruleBatchSubKey(filtered[idx])
+			}
 			ui.List(c, &a.RuleBatch.ListState, len(filtered), func(idx int) {
+				if idx < 0 || idx >= len(filtered) {
+					return
+				}
 				sub := filtered[idx]
 				key := ruleBatchSubKey(sub)
 				subName := firstNonEmptyStrUI(sub.Name, sub.Uname, key)
 				origRuleID := effectiveSubRuleID(sub)
 				origRuleName := firstNonEmptyStrUI(ruleNames[origRuleID], "默认")
 				lockedDefault := isDefaultRule && origRuleID == subscription.DefaultRuleID
-				checked := a.RuleBatch.Selected[key] || lockedDefault
+				checked := (key != "" && a.RuleBatch.Selected[key]) || lockedDefault
 
 				row := ui.CheckboxBase(c, &checked).
 					Label("勾选规则订阅："+subName).
@@ -201,7 +216,7 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 						ui.Text(c, "当前：默认").FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(0)
 					}
 				})
-				if row.Changed() && !lockedDefault {
+				if row.Changed() && !lockedDefault && key != "" {
 					a.RuleBatch.Selected[key] = checked
 					a.RuleBatch.Error = ""
 				}
@@ -210,10 +225,7 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 	})
 
 	if a.RuleBatch.Error != "" {
-		ui.Row(c).FillWidth().Padding(8, 12).Radius(8).Background(ColorErrorBg).AlignItems(ui.Center).Gap(6).Children(func() {
-			DrawIcon(c, "alert-circle", 15, ColorError, 1.8)
-			ui.Text(c, a.RuleBatch.Error).FontSize(12).TextColor(ColorError).MaxLines(2).Grow(1)
-		})
+		renderErrorBanner(c, "", a.RuleBatch.Error, nil)
 	}
 
 	applyLabel := fmt.Sprintf("应用到 %d 个订阅", selectedCount)
@@ -231,7 +243,7 @@ func renderRuleBatchCheckIndicator(c *ui.Context, checked, locked bool) {
 	box := ui.Box(c).Size(18, 18).Radius(5).Shrink(0)
 	switch {
 	case checked && locked:
-		box.Background(ui.RGBA(29, 155, 240, 0.45))
+		box.Background(ColorAccent.Mix(ColorBgMain, 0.55))
 	case checked:
 		box.Background(ColorAccent)
 	default:
@@ -269,6 +281,7 @@ func (a *App) applyRuleBatchSelection() {
 	a.closeRuleBatchDialog()
 	if subs, err := a.backend.ListSubscriptions(); err == nil {
 		a.Subscriptions = subs
+		a.subsRev++
 	} else {
 		a.refreshSubscriptions()
 	}

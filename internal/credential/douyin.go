@@ -124,7 +124,7 @@ func CleanDouyinCookieMap(in map[string]string) map[string]string {
 	// First apply case-folded matches, then exact-case matches so UIFID and uifid never clobber each other.
 	for k, v := range in {
 		v = strings.TrimSpace(strings.Trim(strings.TrimSpace(v), `"'`))
-		if v == "" {
+		if !isSafeCookieValue(v) {
 			continue
 		}
 		trimmedKey := strings.TrimSpace(k)
@@ -137,7 +137,7 @@ func CleanDouyinCookieMap(in map[string]string) map[string]string {
 	}
 	for k, v := range in {
 		v = strings.TrimSpace(strings.Trim(strings.TrimSpace(v), `"'`))
-		if v == "" {
+		if !isSafeCookieValue(v) {
 			continue
 		}
 		trimmedKey := strings.TrimSpace(k)
@@ -171,6 +171,9 @@ func (s *Store) SaveDouyinManual(rawCookie string) (Status, error) {
 
 // SaveVerifiedDouyinManual persists cleaned Douyin cookies and verified profile metadata.
 func (s *Store) SaveVerifiedDouyinManual(cookies map[string]string, profile DouyinProfile) (Status, error) {
+	if err := s.requireSite(SiteDouyin); err != nil {
+		return Status{}, err
+	}
 	cleaned := CleanDouyinCookieMap(cookies)
 	if !hasDouyinSession(cleaned) {
 		return Status{}, ErrMissingDouyinSession
@@ -199,6 +202,9 @@ func (s *Store) SaveVerifiedDouyinManual(cookies map[string]string, profile Douy
 
 // UpdateDouyinProfile updates cached Douyin profile metadata (uid, sec_uid, unique_id, nickname, avatar) and marks state logged_in.
 func (s *Store) UpdateDouyinProfile(profile DouyinProfile) (Status, error) {
+	if err := s.requireSite(SiteDouyin); err != nil {
+		return Status{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.rec == nil {
@@ -233,13 +239,16 @@ func (s *Store) UpdateDouyinProfile(profile DouyinProfile) (Status, error) {
 // MergeContextCookies merges non-identity context cookies (ttwid, msToken, UIFID, __ac_*)
 // received from response Set-Cookie headers into an active Douyin credential.
 func (s *Store) MergeContextCookies(cookies map[string]string) error {
+	if err := s.requireSite(SiteDouyin); err != nil {
+		return err
+	}
 	cleaned := CleanDouyinCookieMap(cookies)
 	if len(cleaned) == 0 {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.rec == nil || s.rec.State == "expired" || s.rec.State == "logged_out" || s.rec.State == "decrypt_failed" {
+	if !s.isActiveRecordLocked() {
 		return ErrNotLoggedIn
 	}
 	next := s.cloneRecord(s.rec)

@@ -206,8 +206,8 @@ func openLiveFMP4Source(ctx context.Context, path string, opts LivePreviewOption
 			break
 		}
 		if !active {
-			_ = f.Close()
 			if src.initEnd == 0 || len(frags) == 0 {
+				_ = f.Close()
 				return nil, fmt.Errorf("直播录制尚未写入可预览的媒体分片")
 			}
 			break
@@ -384,7 +384,11 @@ func (s *liveFMP4Source) tryParseInit(f *os.File, limit int64) (initEnd int64, s
 				return 0, false, false, errors.New("moov 超过大小上限")
 			}
 			raw := make([]byte, initEnd)
-			if _, rErr := f.ReadAt(raw, 0); rErr != nil && rErr != io.EOF {
+			n, rErr := f.ReadAt(raw, 0)
+			if rErr == io.EOF || int64(n) < initEnd {
+				return 0, true, false, nil
+			}
+			if rErr != nil {
 				return 0, true, false, rErr
 			}
 			parsed, dErr := mp4.DecodeFile(bytes.NewReader(raw), mp4.WithDecodeFlags(mp4.DecStartOnMoof))
@@ -511,6 +515,7 @@ func (s *liveFMP4Source) scanFragmentsFrom(f *os.File, limit int64) (added []fmp
 			// Ensure the companion mdat (plus any tiny intervening box) is also completely flushed on disk.
 			cur := off + bSize
 			foundMdat := false
+			orphan := false
 			var unitEnd int64
 			for cur < limit {
 				nt, nsz, _, nComp, nValid := readBoxHeaderAt(f, cur, limit)
@@ -522,13 +527,22 @@ func (s *liveFMP4Source) scanFragmentsFrom(f *os.File, limit int64) (added []fmp
 					unitEnd = cur + nsz
 					break
 				}
-				if nt == "free" || nt == "skip" || nt == "prft" || nt == "sidx" {
+				if nt == "free" || nt == "skip" || nt == "prft" || nt == "sidx" || nt == "emsg" {
 					cur += nsz
 					continue
 				}
+				// A complete non-mdat box (e.g., another moof) means this moof has no mdat;
+				// advance past it so scanning cannot stall permanently.
+				orphan = true
 				break
 			}
 			if !foundMdat {
+				if orphan {
+					off = cur
+					s.scannedOff = off
+					s.committedFragEnd = off
+					continue
+				}
 				return added, false
 			}
 			meta := s.inspectMoof(f, off, bSize, unitEnd-off)
@@ -609,10 +623,8 @@ func (s *liveFMP4Source) inspectMoof(f *os.File, moofOff int64, moofSize int64, 
 		if hasTFDT || durTicks > 0 {
 			startDur := ticksToDuration(startTicks, scale)
 			endDur := ticksToDuration(startTicks+durTicks, scale)
-			if !meta.hasTimeline || (tid == s.videoTrackID) || startDur < meta.startPTS {
-				if !meta.hasTimeline || tid == s.videoTrackID {
-					meta.startPTS = startDur
-				}
+			if !meta.hasTimeline || tid == s.videoTrackID {
+				meta.startPTS = startDur
 			}
 			if !meta.hasTimeline || endDur > meta.endPTS {
 				meta.endPTS = endDur
@@ -690,15 +702,16 @@ func (s *liveFMP4Source) pollLoop() {
 	}
 }
 
-func (s *liveFMP4Source) subscribe(fn func(committedEnd int64, ended bool, closed bool)) (committedEnd int64, ended bool) {
+func (s *liveFMP4Source) subscribe(fn func(committedEnd int64, ended bool, closed bool)) (committedEnd int64, ended bool, closed bool) {
 	s.mu.Lock()
 	committedEnd = s.committedFragEnd
 	ended = s.ended
-	if !s.closed {
+	closed = s.closed
+	if !closed {
 		s.listeners = append(s.listeners, fn)
 	}
 	s.mu.Unlock()
-	return committedEnd, ended
+	return committedEnd, ended, closed
 }
 
 func (s *liveFMP4Source) AvailableDuration() time.Duration {

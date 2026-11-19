@@ -1,9 +1,10 @@
 // Command package builds the development package of TRACE into
-// dist/trace-dev/ and, when asked, installs it on this machine (W2):
+// dist/trace-dev/ and, when asked, installs it on this machine:
 //
 //	go run ./tools/package               # build only
 //	go run ./tools/package -install      # build, then install TRACE Dev here
 //	go run ./tools/package -install-only # install the package in dist/trace-dev
+//	go run ./tools/package -server       # build trace-server for Linux into dist/trace-server
 //
 // The agent installs whenever the next step is the person's manual check (a
 // stage handed over, or fixes handed back for another look), so the person
@@ -29,9 +30,22 @@ func main() {
 	appdirs.LowerCurrentProcessPriority()
 	install := flag.Bool("install", false, "after building, install the package on this machine (before handing over for the person's checks)")
 	installOnly := flag.Bool("install-only", false, "install the package already in dist/trace-dev without building")
+	server := flag.Bool("server", false, "build the trace-server packages for linux/amd64 and linux/arm64 into dist/trace-server")
 	flag.Parse()
 
 	started := time.Now()
+	if *server {
+		if *install || *installOnly {
+			fmt.Fprintln(os.Stderr, "package: -server cannot be combined with -install")
+			os.Exit(2)
+		}
+		if err := buildServer(started); err != nil {
+			fmt.Fprintf(os.Stderr, "package -server failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("package (server) built in %s\n", time.Since(started).Round(time.Millisecond))
+		return
+	}
 	if !*installOnly {
 		if err := buildDev(started); err != nil {
 			fmt.Fprintf(os.Stderr, "package failed: %v\n", err)
@@ -49,43 +63,52 @@ func main() {
 	}
 }
 
-// buildDev builds the development package with its version (W1) and
+// devInfo is the version of a development build made now, from mygo.json
+// and the tags this clone knows.
+func devInfo(root string, now time.Time) (build.Info, []byte, error) {
+	base, err := os.ReadFile(filepath.Join(root, "mygo.json"))
+	if err != nil {
+		return build.Info{}, nil, fmt.Errorf("read mygo.json (run from the repository root): %w", err)
+	}
+	cfgVersion, err := build.ConfigVersion(base)
+	if err != nil {
+		return build.Info{}, nil, err
+	}
+	line, err := build.VersionLine(cfgVersion)
+	if err != nil {
+		return build.Info{}, nil, err
+	}
+	// Development builds use the tags this clone knows; `git fetch --tags`
+	// brings in new releases. Nothing here asks GitHub.
+	tags, err := build.LocalTags(root)
+	if err != nil {
+		return build.Info{}, nil, err
+	}
+	commit, dirty, err := build.HeadInfo(root)
+	if err != nil {
+		return build.Info{}, nil, err
+	}
+	if dirty {
+		commit += "-dirty"
+	}
+	return build.Info{
+		Version:   build.DevVersion(build.NextStable(line, tags), now),
+		Channel:   build.ChannelDev,
+		Commit:    commit,
+		BuildTime: now.UTC().Format(time.RFC3339),
+	}, base, nil
+}
+
+// buildDev builds the development package with its version and
 // replaces the registered files of dist/trace-dev/.
 func buildDev(now time.Time) error {
 	root, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	base, err := os.ReadFile("mygo.json")
-	if err != nil {
-		return fmt.Errorf("read mygo.json (run from the repository root): %w", err)
-	}
-	cfgVersion, err := build.ConfigVersion(base)
+	info, base, err := devInfo(root, now)
 	if err != nil {
 		return err
-	}
-	line, err := build.VersionLine(cfgVersion)
-	if err != nil {
-		return err
-	}
-	// Development builds use the tags this clone knows; `git fetch --tags`
-	// brings in new releases. Nothing here asks GitHub.
-	tags, err := build.LocalTags(root)
-	if err != nil {
-		return err
-	}
-	commit, dirty, err := build.HeadInfo(root)
-	if err != nil {
-		return err
-	}
-	if dirty {
-		commit += "-dirty"
-	}
-	info := build.Info{
-		Version:   build.DevVersion(build.NextStable(line, tags), now),
-		Channel:   build.ChannelDev,
-		Commit:    commit,
-		BuildTime: now.UTC().Format(time.RFC3339),
 	}
 	cfg, err := build.ChannelConfig(base, build.ChannelDev, info.Version, "dist", nil)
 	if err != nil {

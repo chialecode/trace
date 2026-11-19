@@ -3,6 +3,8 @@
 /.mygo/
 dist/
 *.syso
+# 本机 go build 出来的工具程序
+/*.exe
 
 # 运行与测试输出
 /artifacts/

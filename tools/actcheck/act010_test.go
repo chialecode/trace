@@ -26,10 +26,6 @@ import (
 )
 
 const (
-	synthAVCSPSHex   = "6764001eacd940a02ff9610000030001000003003c8f162d96"
-	synthAVCPPSHex   = "68ebecb22c"
-	synthAVCSliceHex = "658884004ffede23c0a6109524aac694"
-
 	synthHEVCVPSHex   = "40010c01ffff016000000300900000030000030078959809"
 	synthHEVCSPSHex   = "420101016000000300900000030000030078a00502016965959a4932bc05a80808082000000300200000030321"
 	synthHEVCPPSHex   = "4401c172b46240"
@@ -961,6 +957,7 @@ func TestAct010PreFlightQuotasAndPacing(t *testing.T) {
 		var upstreamCalls atomic.Int64
 		ck := &act010Checker{
 			gate:           gate,
+			apiLimits:      act010APILimits,
 			vod:            &mediaBudget{name: "vod", maxRequests: 1, maxBytes: 16},
 			live:           &mediaBudget{name: "live", maxRequests: 1, maxBytes: 16},
 			statuses:       make(map[string]int),

@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 
 	"github.com/chialecode/trace/internal/library"
@@ -20,7 +21,7 @@ func (m *Manager) saveVideoCover(ctx context.Context, task *Task, meta *library.
 			continue
 		}
 		rel = file.Path
-		if mediaIsValid(*meta, rel) {
+		if m.mediaAlreadyCompleted(*meta, file) {
 			clearMissing(meta, "cover")
 			return nil
 		}
@@ -39,4 +40,23 @@ func (m *Manager) saveVideoCover(ctx context.Context, task *Task, meta *library.
 	meta.Media = mergeMediaFiles(meta.Media, []library.MediaFile{{Role: "cover", Path: rel, Bytes: n, SHA256: hash, Source: coverURL}})
 	clearMissing(meta, "cover")
 	return m.saveVideoManifest(task, meta)
+}
+
+// mediaAlreadyCompleted reports whether a registered manifest file is valid on
+// disk, or was already completed and later moved away in remote/export mode.
+func (m *Manager) mediaAlreadyCompleted(meta library.ItemMetadata, file library.MediaFile) bool {
+	if file.Path == "" {
+		return false
+	}
+	if library.VerifyMediaFile(meta.ItemDir, file, true) {
+		return true
+	}
+	if m.lib != nil && m.lib.AllowMovedFiles() && file.Bytes > 0 && file.SHA256 != "" {
+		if full, err := library.ResolveItemPath(meta.ItemDir, file.Path); err == nil {
+			if _, statErr := os.Stat(full); os.IsNotExist(statErr) {
+				return true
+			}
+		}
+	}
+	return false
 }

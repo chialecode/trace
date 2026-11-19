@@ -78,30 +78,158 @@ func TestCheckdocsPositiveAndNegativeCases(t *testing.T) {
 		}
 	}
 
-	// 4. Douyin secret/sentinel leak detection (sessionid=, sessionid_ss=, sid_guard=, msToken=, a_bogus=, x-signature)
-	douyinLeaks := []struct {
-		name string
-		line string
-		want string
+	// 4. Douyin secret/sentinel & trace-remote token leak detection + redaction
+	secretLeaks := []struct {
+		name      string
+		line      string
+		want      string
+		rawSecret string
 	}{
-		{"sessionid", "Cookie: sessionid=0123456789abcdef0123456789abcdef", "contains Cookie/token value"},
-		{"sessionid_ss", "Cookie: sessionid_ss=fedcba9876543210fedcba9876543210", "contains Cookie/token value"},
-		{"sid_guard", "Cookie: sid_guard=tok123%7C1760000000%7C5184000", "contains Cookie/token value"},
-		{"msToken", "Cookie: msToken=AbCdEfGhIjKlMnOp123456", "contains Cookie/token value"},
-		{"a_bogus_url", "URL: https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=7300000000000000001&a_bogus=dJUnkqSiQoWb", "contains signed URL"},
-		{"x_signature_url", "CDN: https://v3-web.douyinvod.com/video/tos/cn/1/?x-expires=1763003600&x-signature=9f8e7d6c5b4a", "contains signed URL"},
+		{"sessionid", "Cookie: sessionid=0123456789abcdef0123456789abcdef", "contains Cookie/token value", "0123456789abcdef0123456789abcdef"},
+		{"sessionid_ss", "Cookie: sessionid_ss=fedcba9876543210fedcba9876543210", "contains Cookie/token value", "fedcba9876543210fedcba9876543210"},
+		{"sid_guard", "Cookie: sid_guard=tok123%7C1760000000%7C5184000", "contains Cookie/token value", "tok123%7C1760000000%7C5184000"},
+		{"msToken", "Cookie: msToken=AbCdEfGhIjKlMnOp123456", "contains Cookie/token value", "AbCdEfGhIjKlMnOp123456"},
+		{"UIFID", "Cookie: UIFID=synth_uifid_secret_001", "contains Cookie/token value", "synth_uifid_secret_001"},
+		{"ttwid", "Cookie: ttwid=1%7Csynth_ttwid_secret_002", "contains Cookie/token value", "synth_ttwid_secret_002"},
+		{"odin_tt", "Cookie: odin_tt=synth_odin_secret_003", "contains Cookie/token value", "synth_odin_secret_003"},
+		{"sid_tt", "Cookie: sid_tt=synth_sid_tt_secret_004", "contains Cookie/token value", "synth_sid_tt_secret_004"},
+		{"uid_tt", "Cookie: uid_tt=synth_uid_tt_secret_005", "contains Cookie/token value", "synth_uid_tt_secret_005"},
+		{"ac_signature", "Cookie: __ac_signature=_02B4Z6wo00f01synthsig", "contains Cookie/token value", "_02B4Z6wo00f01synthsig"},
+		{"trace_remote", "Code: trace-remote:1:eyJ0b2tlbiI6InN5bnRoX3NlY3JldCJ9", "contains Cookie/token value", "eyJ0b2tlbiI6InN5bnRoX3NlY3JldCJ9"},
+		{"a_bogus_url", "URL: https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=7300000000000000001&a_bogus=dJUnkqSiQoWb", "contains signed URL", "dJUnkqSiQoWb"},
+		{"x_signature_url", "CDN: https://v3-web.douyinvod.com/video/tos/cn/1/?x-expires=1763003600&x-signature=9f8e7d6c5b4a", "contains signed URL", "9f8e7d6c5b4a"},
+		{"x_signature_path_url", "CDN: https://v3-web.douyinvod.com/video/x-signature/7a6b5c4d3e2f/clip.mp4", "contains signed URL", "7a6b5c4d3e2f"},
 	}
-	for _, tc := range douyinLeaks {
-		caseDir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(caseDir, "LEAK.md"), []byte("# Leak\n\n"+tc.line+"\n"), 0o600); err != nil {
-			t.Fatalf("write LEAK.md (%s): %v", tc.name, err)
+	for _, tc := range secretLeaks {
+		t.Run(tc.name, func(t *testing.T) {
+			caseDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(caseDir, "LEAK.md"), []byte("# Leak\n\n"+tc.line+"\n"), 0o600); err != nil {
+				t.Fatalf("write LEAK.md (%s): %v", tc.name, err)
+			}
+			gotFindings, _, err := Run(caseDir, emptyRefDir)
+			if err != nil {
+				t.Fatalf("Run(%s): %v", tc.name, err)
+			}
+			joinedGot := strings.Join(gotFindings, "\n")
+			if !strings.Contains(joinedGot, tc.want) {
+				t.Fatalf("%s: expected finding %q, got: %v", tc.name, tc.want, gotFindings)
+			}
+			if strings.Contains(joinedGot, tc.rawSecret) {
+				t.Fatalf("%s: raw secret %q leaked into finding output: %s", tc.name, tc.rawSecret, joinedGot)
+			}
+			if !strings.Contains(joinedGot, "<redacted>") {
+				t.Fatalf("%s: expected <redacted> in finding output: %s", tc.name, joinedGot)
+			}
+		})
+	}
+}
+
+func TestCheckdocsBroadenedPathsAndPlaceholders(t *testing.T) {
+	emptyRefDir := filepath.Join(t.TempDir(), "nonexistent")
+	t.Setenv("TRACE_REFERENCE_DIR", emptyRefDir)
+
+	t.Run("non-CD Windows drives and /home/<user>/ detected", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			line string
+			want string
+		}{
+			{"E drive", `Path: E:\Projects\trace`, "contains local Windows absolute path"},
+			{"z drive lowercase", `Path: z:\work\file.txt`, "contains local Windows absolute path"},
+			{"unix home user", `Path: /home/alice/notes.md`, "contains local Unix home path"},
+			{"unix home runner", `Path: /home/runner/work/trace`, "contains local Unix home path"},
+			{"macOS Users", `Path: /Users/devuser/trace`, "contains local Unix home path"},
+		} {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "DOC.md"), []byte("# Doc\n\n"+tc.line+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			findings, _, err := Run(dir, emptyRefDir)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if !strings.Contains(strings.Join(findings, "\n"), tc.want) {
+				t.Fatalf("%s: expected %q, got %v", tc.name, tc.want, findings)
+			}
 		}
-		gotFindings, _, err := Run(caseDir, emptyRefDir)
-		if err != nil {
-			t.Fatalf("Run(%s): %v", tc.name, err)
+	})
+
+	t.Run("UI route /home and placeholder trace-remote:1: are allowed", func(t *testing.T) {
+		dir := t.TempDir()
+		doc := "# Safe Doc\n\nRoute `/home` and prefix `trace-remote:1:` are placeholders.\n"
+		if err := os.WriteFile(filepath.Join(dir, "SAFE.md"), []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
 		}
-		if joinedGot := strings.Join(gotFindings, "\n"); !strings.Contains(joinedGot, tc.want) {
-			t.Fatalf("%s: expected finding %q, got: %v", tc.name, tc.want, gotFindings)
+		findings, _, err := Run(dir, emptyRefDir)
+		if err != nil || len(findings) != 0 {
+			t.Fatalf("unexpected findings for safe placeholders: %v err=%v", findings, err)
+		}
+	})
+}
+
+func TestCheckdocsNestedFencesAndCodeBlockHeadings(t *testing.T) {
+	emptyRefDir := filepath.Join(t.TempDir(), "nonexistent")
+	t.Setenv("TRACE_REFERENCE_DIR", emptyRefDir)
+
+	dir := t.TempDir()
+	// Target has a real heading and a # comment inside both 3-backtick and 4-backtick fences.
+	target := strings.Join([]string{
+		"# Real Title",
+		"",
+		"```bash",
+		"# comment-in-code-block",
+		"```",
+		"",
+		"````markdown",
+		"```bash",
+		"# comment-in-nested-fence",
+		"```",
+		"[fake-link-in-nested-fence](does-not-exist.md)",
+		"````",
+		"",
+		"## Real Section",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "target.md"), []byte(target), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	index := strings.Join([]string{
+		"# Index",
+		"- Valid: [real](target.md#real-section)",
+		"- Bad code comment anchor: [bad1](target.md#comment-in-code-block)",
+		"- Bad nested comment anchor: [bad2](target.md#comment-in-nested-fence)",
+		"",
+		"````markdown",
+		"```",
+		"[ignored](missing-inside-4-fence.md)",
+		"```",
+		"````",
+		"- Real broken link after 4-fence: [real-broken](missing-after-4-fence.md)",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(index), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, _, err := Run(dir, emptyRefDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(findings, "\n")
+	for _, want := range []string{
+		"missing anchor #comment-in-code-block",
+		"missing anchor #comment-in-nested-fence",
+		`broken link target "missing-after-4-fence.md"`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected finding %q, got:\n%s", want, joined)
+		}
+	}
+	for _, forbid := range []string{
+		"does-not-exist.md",
+		"missing-inside-4-fence.md",
+		"#real-section",
+	} {
+		if strings.Contains(joined, forbid) {
+			t.Fatalf("unexpected finding mentioning %q:\n%s", forbid, joined)
 		}
 	}
 }

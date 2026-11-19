@@ -413,9 +413,13 @@ func (m *Manager) RecordSiteAutomaticStop(siteName, kind string) {
 	if previous, err := time.Parse(time.RFC3339, state.LastStopAt); err == nil && now.Sub(previous) < time.Second && state.LastStopReason == kind {
 		return
 	}
+	state.LastStopReason, state.LastStopAt = kind, now.Format(time.RFC3339)
+	if kind != site.ErrKindRiskControl && kind != site.ErrKindRateLimited {
+		_ = m.saveSiteSchedulerStateLocked(normSite, state)
+		return
+	}
 	state.ConsecutiveFailures++
 	state.BackoffLevel = state.ConsecutiveFailures
-	state.LastStopReason, state.LastStopAt = kind, now.Format(time.RFC3339)
 	interval := time.Duration(m.subSettings.IntervalMinutes) * time.Minute
 	if interval < time.Minute {
 		interval = time.Hour
@@ -536,7 +540,11 @@ func sanitizeAccountFace(s site.ID, face string) string {
 		return ""
 	}
 	lower := strings.ToLower(trimmed)
-	for _, marker := range []string{"a_bogus=", "x-bogus=", "x-signature=", "x-expires=", "upsig=", "w_rid=", "sessionid=", "sessdata="} {
+	for _, marker := range []string{
+		"a_bogus=", "x-bogus=", "x-signature=", "x-expires=", "upsig=",
+		"w_rid=", "sessionid=", "sessdata=", "auth_key=", "token=",
+		"sign=", "signature=", "expires=",
+	} {
 		if strings.Contains(lower, marker) {
 			return ""
 		}
@@ -611,7 +619,9 @@ func (m *Manager) LinkAccount(subID string, acc AccountRef) (result Subscription
 		normAcc.AddedAt = m.nowFunc().UTC().Format(time.RFC3339)
 	}
 	target.Accounts = append(target.Accounts, normAcc)
-	_, _ = m.updatesDB.Exec(`UPDATE account_state SET unlinked_at = '' WHERE site = ? AND uid = ?`, normAcc.Site, normAcc.UID)
+	if _, err := m.updatesDB.Exec(`UPDATE account_state SET unlinked_at = '' WHERE site = ? AND uid = ?`, normAcc.Site, normAcc.UID); err != nil {
+		return Subscription{}, err
+	}
 	syncSubFields(&target, m.nowFunc())
 	if err := m.upsertRowLocked(target); err != nil {
 		return Subscription{}, err

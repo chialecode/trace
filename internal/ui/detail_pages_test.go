@@ -50,9 +50,9 @@ func nextPosted(t *testing.T, posted chan func()) func() {
 	}
 }
 
-// F-057: a card click shows its page at once, before OpenLink returns; the
-// newest click wins, a failure stays on the page with a retry, and a page
-// the user left is not brought back by a late result.
+// A card click shows its page at once, before OpenLink returns; the newest
+// click wins, a failure stays on the page with a retry, and a page the user
+// left is not brought back by a late result.
 func TestOpeningFromCardShowsPageBeforeOpenLinkReturns(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
@@ -157,8 +157,8 @@ func savePlayableItem(t *testing.T, app *App) library.ItemMetadata {
 	return item
 }
 
-// F-057: the player layer shows at once; opening the file and parsing its
-// danmaku run off the UI thread, and a result for a closed layer is dropped.
+// The player layer shows at once; opening the file and parsing its danmaku
+// run off the UI thread, and a result for a closed layer is dropped.
 func TestPlayerOpensFilesOffTheUIThread(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("needs Media Foundation")
@@ -193,9 +193,8 @@ func TestPlayerOpensFilesOffTheUIThread(t *testing.T) {
 	}
 }
 
-// F-058: a creator's posts fill the column; the header is row 0 and
-// scrolls away instead of leaving the list a fixed strip. (The
-// subscription's own "已缓存" list was removed in DEC-040.)
+// A creator's posts fill the column; the header is row 0 and scrolls away
+// instead of leaving the list a fixed strip.
 func TestDetailListsFillTheColumnAndScrollTheirHeader(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()

@@ -1,12 +1,11 @@
 // Command actcheck runs an authorized, quota-gated real-site check
-// (USER-ACTIONS ACT-006, ACT-007, ACT-010 to ACT-012, ACT-014 to ACT-019). Every request passes a persistent
+// (USER-ACTIONS ACT-006, ACT-007, ACT-010 to ACT-012, ACT-014 to ACT-020). Every request passes a persistent
 // quota ledger before it is sent; risk control, rate limits, auth expiry or a
 // challenge stop the run. The receipt holds categories, counts, sizes and
 // quality only: no Cookie, signed URL or account data.
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -61,122 +60,43 @@ type targets struct {
 	VideoMid   int64 `json:"videoMid"`
 }
 
-var (
-	actID     string
-	apiLimits map[string]int
-)
-
-type step struct {
-	Name     string         `json:"name"`
-	OK       bool           `json:"ok"`
-	Skipped  bool           `json:"skipped,omitempty"`
-	ErrKind  string         `json:"errorKind,omitempty"`
-	Error    string         `json:"error,omitempty"`
-	Facts    map[string]any `json:"facts,omitempty"`
-	Duration int64          `json:"durationMs"`
-}
-
-type receipt struct {
-	Act          string          `json:"act"`
-	Commit       string          `json:"commit,omitempty"`
-	StartedAt    string          `json:"startedAt"`
-	FinishedAt   string          `json:"finishedAt"`
-	Passed       bool            `json:"passed"`
-	StoppedBy    string          `json:"stoppedBy,omitempty"`
-	Steps        []step          `json:"steps"`
-	APIUsage     sitecheck.Usage `json:"apiUsage"`
-	VODMedia     mediaUsage      `json:"vodMedia"`
-	LiveMedia    mediaUsage      `json:"liveMedia"`
-	StatusCounts map[string]int  `json:"httpStatusCounts"`
-	Limits       map[string]any  `json:"limits"`
-	Notes        []string        `json:"notes,omitempty"`
-}
-
-type mediaUsage struct {
-	Requests int   `json:"requests"`
-	Bytes    int64 `json:"bytes"`
-}
-
-type mediaBudget struct {
-	name        string
-	maxRequests int
-	maxBytes    int64
-	requests    atomic.Int64
-	bytes       atomic.Int64
-}
-
-func (b *mediaBudget) acquire() error {
-	if n := b.requests.Add(1); int(n) > b.maxRequests {
-		b.requests.Add(-1)
-		return fmt.Errorf("%w: %s requests %d", sitecheck.ErrQuotaExceeded, b.name, b.maxRequests)
-	}
-	return nil
-}
-
-type countingBody struct {
-	io.ReadCloser
-	budget *mediaBudget
-}
-
-func (c countingBody) Read(p []byte) (int, error) {
-	n, err := c.ReadCloser.Read(p)
-	if total := c.budget.bytes.Add(int64(n)); total > c.budget.maxBytes {
-		return n, fmt.Errorf("%w: %s bytes over %d", sitecheck.ErrQuotaExceeded, c.budget.name, c.budget.maxBytes)
-	}
-	return n, err
-}
-
 type checker struct {
 	gate       *sitecheck.Gate
+	apiLimits  map[string]int
 	vod, live  *mediaBudget
 	liveMode   atomic.Bool
 	mu         sync.Mutex
 	statuses   map[string]int
-	stopped    atomic.Value // string
+	stopped    string
 	playlists  []map[string]any
 	mediaKinds []string
+}
+
+func (c *checker) stopReason() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stopped
+}
+
+func (c *checker) tripStop(reason string) {
+	if reason == "" {
+		return
+	}
+	c.mu.Lock()
+	if c.stopped == "" {
+		c.stopped = reason
+	}
+	c.mu.Unlock()
 }
 
 // notePlaylist keeps only the playlist's structure: tag names and counts,
 // whether entries are relative, and file extensions. No URI or token text.
 func (c *checker) notePlaylist(status int, contentType string, raw []byte) {
-	tags := map[string]int{}
-	entries, relative := 0, 0
-	exts := map[string]int{}
-	mapBeforeFirstEntry := false
-	firstLine := ""
-	for i, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if i == 0 {
-			firstLine = line
-			if len(firstLine) > 7 {
-				firstLine = firstLine[:7]
-			}
-		}
-		if strings.HasPrefix(line, "#") {
-			name, _, _ := strings.Cut(line, ":")
-			tags[name]++
-			if name == "#EXT-X-MAP" && entries == 0 {
-				mapBeforeFirstEntry = true
-			}
-			continue
-		}
-		entries++
-		if !strings.HasPrefix(line, "http") {
-			relative++
-		}
-		path, _, _ := strings.Cut(line, "?")
-		exts[strings.ToLower(filepath.Ext(path))]++
-	}
+	summary := parseHLSPlaylistSummary(status, contentType, raw, true)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.playlists) < 3 {
-		c.playlists = append(c.playlists, map[string]any{"status": status, "contentType": contentType, "bytes": len(raw),
-			"startsWith": firstLine, "tags": tags, "entries": entries, "relativeEntries": relative, "entryExt": exts,
-			"mapBeforeFirstEntry": mapBeforeFirstEntry})
+		c.playlists = append(c.playlists, summary)
 	}
 }
 
@@ -222,8 +142,11 @@ func classify(r *http.Request) (category string, media bool) {
 }
 
 func (c *checker) wrap(base http.RoundTripper) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
 	return roundTrip(func(r *http.Request) (*http.Response, error) {
-		if s, _ := c.stopped.Load().(string); s != "" {
+		if s := c.stopReason(); s != "" {
 			return nil, errors.New("site check stopped: " + s)
 		}
 		cat, media := classify(r)
@@ -235,9 +158,8 @@ func (c *checker) wrap(base http.RoundTripper) http.RoundTripper {
 			if err := budget.acquire(); err != nil {
 				return nil, err
 			}
-		} else if cat == "other" {
-			// The gate treats a zero limit as unlimited; refuse unlisted endpoints here.
-			return nil, fmt.Errorf("%w: endpoint outside the authorized list", sitecheck.ErrQuotaExceeded)
+		} else if err := checkAPICategoryAllowed(c.apiLimits, cat); err != nil {
+			return nil, err
 		} else if err := c.gate.AcquireAPI(cat); err != nil {
 			return nil, err
 		}
@@ -249,7 +171,7 @@ func (c *checker) wrap(base http.RoundTripper) http.RoundTripper {
 		c.statuses[fmt.Sprintf("%s:%d", map[bool]string{true: "media", false: cat}[media], resp.StatusCode)]++
 		c.mu.Unlock()
 		if resp.StatusCode == http.StatusPreconditionFailed {
-			c.stopped.Store("http_412")
+			c.tripStop("http_412")
 		}
 		if media {
 			resp.Body = countingBody{ReadCloser: resp.Body, budget: budget}
@@ -271,9 +193,30 @@ func (c *checker) wrap(base http.RoundTripper) http.RoundTripper {
 	})
 }
 
-type roundTrip func(*http.Request) (*http.Response, error)
+func newBilibiliStepRunner(steps *[]step, ck *checker, scrub func(string) string) *stepRunner {
+	return &stepRunner{
+		steps:       steps,
+		stopReason:  ck.stopReason,
+		tripStop:    ck.tripStop,
+		classifyErr: bilibili.KindOf,
+		scrubErr:    scrub,
+		stopOnKinds: map[string]bool{
+			bilibili.ErrKindRiskControl:  true,
+			bilibili.ErrKindRateLimited:  true,
+			bilibili.ErrKindAuthRequired: true,
+		},
+	}
+}
 
-func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+func firstCachedPartFile(item library.ItemMetadata) (string, error) {
+	if len(item.Parts) == 0 {
+		return "", errors.New("cached item has no parts")
+	}
+	if strings.TrimSpace(item.Parts[0].File) == "" {
+		return "", errors.New("cached item first part has empty file path")
+	}
+	return item.Parts[0].File, nil
+}
 
 func main() {
 	root := flag.String("root", ".", "repository root")
@@ -320,7 +263,7 @@ func main() {
 	if !ok {
 		fatal("unknown authorization " + *act)
 	}
-	actID, apiLimits = *act, quota.api
+	actID := *act
 	if *out == "" {
 		*out = filepath.Join("artifacts", "site-check", actID+".json")
 	}
@@ -335,7 +278,7 @@ func main() {
 		fatal("cookie: " + err.Error())
 	}
 	gate, err := sitecheck.OpenGate(filepath.Join(*root, ".local", "site-check"), sitecheck.Limits{
-		ActID: actID, MaxRuns: quota.maxRuns, MaxAPICalls: quota.maxAPI, MaxByCategory: apiLimits,
+		ActID: actID, MaxRuns: quota.maxRuns, MaxAPICalls: quota.maxAPI, MaxByCategory: quota.api,
 	})
 	if err != nil {
 		fatal(err.Error())
@@ -344,12 +287,12 @@ func main() {
 		fatal(err.Error())
 	}
 	ck := &checker{
-		gate:     gate,
-		vod:      &mediaBudget{name: "vod", maxRequests: 30, maxBytes: 200 << 20},
-		live:     &mediaBudget{name: "live", maxRequests: 60, maxBytes: 60 << 20},
-		statuses: map[string]int{},
+		gate:      gate,
+		apiLimits: quota.api,
+		vod:       &mediaBudget{name: "vod", maxRequests: 30, maxBytes: 200 << 20},
+		live:      &mediaBudget{name: "live", maxRequests: 60, maxBytes: 60 << 20},
+		statuses:  map[string]int{},
 	}
-	ck.stopped.Store("")
 
 	work, err := os.MkdirTemp("", "trace-"+actID+"-")
 	if err != nil {
@@ -374,56 +317,29 @@ func main() {
 	}
 	defer b.Close()
 
-	rc := receipt{Act: quota.label, StartedAt: time.Now().UTC().Format(time.RFC3339), StatusCounts: ck.statuses,
-		Limits: map[string]any{"api": apiLimits, "apiTotal": 20, "vodMediaRequests": 30, "vodMediaBytes": 200 << 20,
-			"liveMediaRequests": 60, "liveMediaBytes": 60 << 20, "recordSeconds": recordFor.Seconds()}}
-	if raw, err := os.ReadFile(filepath.Join(*root, "dist", "trace-dev", "VERSION.txt")); err == nil {
-		for _, line := range strings.Split(string(raw), "\n") {
-			if v, ok := strings.CutPrefix(strings.TrimSpace(line), "commit="); ok {
-				rc.Commit = v
-			}
-		}
+	rc := receipt{
+		Act:          quota.label,
+		Commit:       resolveReceiptCommit(*root),
+		StartedAt:    time.Now().UTC().Format(time.RFC3339),
+		StatusCounts: ck.statuses,
+		Limits: map[string]any{
+			"api": quota.api, "apiTotal": quota.maxAPI, "vodMediaRequests": 30, "vodMediaBytes": 200 << 20,
+			"liveMediaRequests": 60, "liveMediaBytes": 60 << 20, "recordSeconds": recordFor.Seconds(),
+		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
-	run := func(name string, fn func(facts map[string]any) error) bool {
-		if s, _ := ck.stopped.Load().(string); s != "" {
-			rc.Steps = append(rc.Steps, step{Name: name, Skipped: true, Error: "stopped earlier: " + s})
-			return false
-		}
-		facts := map[string]any{}
-		start := time.Now()
-		err := fn(facts)
-		st := step{Name: name, OK: err == nil, Facts: facts, Duration: time.Since(start).Milliseconds()}
-		if errors.Is(err, errSkip) {
-			st.OK, st.Skipped = true, true
-		} else if err != nil {
-			st.ErrKind = bilibili.KindOf(err)
-			st.Error = redact(err.Error(), cookie)
-			switch st.ErrKind {
-			case bilibili.ErrKindRiskControl, bilibili.ErrKindRateLimited, bilibili.ErrKindAuthRequired:
-				ck.stopped.Store(st.ErrKind)
-			}
-			if errors.Is(err, sitecheck.ErrQuotaExceeded) {
-				st.ErrKind = "quota"
-			}
-		}
-		if len(st.Facts) == 0 {
-			st.Facts = nil
-		}
-		rc.Steps = append(rc.Steps, st)
-		return err == nil
-	}
+	runner := newBilibiliStepRunner(&rc.Steps, ck, func(s string) string { return redact(s, cookie) })
 
-	run("login_with_cookie", func(f map[string]any) error {
+	runner.run("login_with_cookie", func(f map[string]any) error {
 		st, err := b.ImportCookie(ctx, cookie, "")
 		f["loggedIn"], f["source"] = st.LoggedIn, st.Source
 		return err
 	})
 
 	var candidates []candidate
-	run("user_dynamics", func(f map[string]any) error {
+	runner.run("user_dynamics", func(f map[string]any) error {
 		page, err := b.UserDynamicsPage(ctx, *dynMid, "")
 		f["items"], f["hasMore"] = len(page.Items), page.HasMore
 		types := map[string]int{}
@@ -438,7 +354,7 @@ func main() {
 		f["types"] = types
 		return err
 	})
-	run("user_videos", func(f map[string]any) error {
+	runner.run("user_videos", func(f map[string]any) error {
 		page, err := b.UserVideosPage(ctx, *videoMid, 1)
 		f["items"], f["total"] = len(page.Items), page.Total
 		for _, it := range page.Items {
@@ -450,7 +366,7 @@ func main() {
 	})
 
 	var cachedKey string
-	run("cache_shortest_video", func(f map[string]any) error {
+	runner.run("cache_shortest_video", func(f map[string]any) error {
 		sort.Slice(candidates, func(i, j int) bool { return candidates[i].dur < candidates[j].dur })
 		if len(candidates) == 0 || candidates[0].dur > 180 {
 			return fmt.Errorf("no candidate video of 180s or less")
@@ -490,7 +406,7 @@ func main() {
 		}
 		return fmt.Errorf("download did not finish within 4 minutes")
 	})
-	run("verify_cached_item", func(f map[string]any) error {
+	runner.run("verify_cached_item", func(f map[string]any) error {
 		if cachedKey == "" {
 			return errSkip
 		}
@@ -504,11 +420,15 @@ func main() {
 			f["audioQuality"], f["audioSavedAs"] = p.Audio.Quality, p.Audio.SavedAs != ""
 			f["danmaku"], f["danmakuState"], f["subtitles"], f["subtitleState"] = p.Danmaku != "", p.DanmakuState, len(p.Subtitles), p.SubtitleState
 		}
-		path, err := b.MediaPath(cachedKey, item.Parts[0].File)
+		partFile, err := firstCachedPartFile(item)
 		if err != nil {
 			return err
 		}
-		if !library.VerifyMediaFile(item.ItemDir, library.MediaFile{Path: item.Parts[0].File}, false) {
+		path, err := b.MediaPath(cachedKey, partFile)
+		if err != nil {
+			return err
+		}
+		if !library.VerifyMediaFile(item.ItemDir, library.MediaFile{Path: partFile}, false) {
 			return fmt.Errorf("cached MP4 failed verification")
 		}
 		info, err := os.Stat(path)
@@ -519,7 +439,7 @@ func main() {
 	})
 
 	ck.liveMode.Store(true)
-	run("live_record", func(f map[string]any) error {
+	runner.run("live_record", func(f map[string]any) error {
 		st, err := b.StartLiveRecording(ctx, *liveRoom)
 		f["liveStatus"] = st.LiveStatus
 		if err != nil {
@@ -569,7 +489,7 @@ func main() {
 	rc.APIUsage = gate.Usage()
 	rc.VODMedia = mediaUsage{int(ck.vod.requests.Load()), ck.vod.bytes.Load()}
 	rc.LiveMedia = mediaUsage{int(ck.live.requests.Load()), ck.live.bytes.Load()}
-	rc.StoppedBy, _ = ck.stopped.Load().(string)
+	rc.StoppedBy = ck.stopReason()
 	rc.Passed = rc.StoppedBy == ""
 	for _, s := range rc.Steps {
 		if !s.OK {
@@ -577,12 +497,9 @@ func main() {
 		}
 	}
 	rc.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	raw, _ := json.MarshalIndent(rc, "", "  ")
-	if strings.Contains(string(raw), cookieValue(cookie, "SESSDATA")) || strings.Contains(string(raw), cookieValue(cookie, "bili_jct")) {
-		fatal("receipt would contain a secret; not written")
-	}
-	_ = os.MkdirAll(filepath.Dir(*out), 0o755)
-	if err := os.WriteFile(*out, raw, 0o644); err != nil {
+	if err := writeCleanReceipt(*out, rc, func(raw string) error {
+		return verifyCookieValuesAbsent(raw, cookie, "SESSDATA", "bili_jct")
+	}); err != nil {
 		fatal(err.Error())
 	}
 	fmt.Printf(quota.label+" passed=%v stoppedBy=%q api=%d vodMedia=%d/%dB liveMedia=%d/%dB receipt=%s\n",
@@ -599,58 +516,4 @@ type candidate struct {
 	bvid string
 	dur  int
 	from string
-}
-
-var errSkip = errors.New("skipped")
-
-func readCookie(root string) (string, error) {
-	f, err := os.Open(filepath.Join(root, ".env.local"))
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	var path string
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(sc.Text()), "TRACE_TEST_BILIBILI_COOKIE_FILE="); ok {
-			path = strings.Trim(strings.TrimSpace(v), `"`)
-		}
-	}
-	if path == "" {
-		return "", errors.New("TRACE_TEST_BILIBILI_COOKIE_FILE is not set")
-	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(root, path)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", errors.New("cookie file unreadable")
-	}
-	return strings.TrimSpace(string(raw)), nil
-}
-
-func cookieValue(cookie, key string) string {
-	for _, part := range strings.Split(cookie, ";") {
-		if k, v, ok := strings.Cut(strings.TrimSpace(part), "="); ok && k == key && len(v) >= 4 {
-			return v
-		}
-	}
-	return "\x00never\x00"
-}
-
-func redact(s, cookie string) string {
-	for _, part := range strings.Split(cookie, ";") {
-		if _, v, ok := strings.Cut(strings.TrimSpace(part), "="); ok && len(v) >= 4 {
-			s = strings.ReplaceAll(s, v, "[REDACTED]")
-		}
-	}
-	if i := strings.Index(s, "http"); i >= 0 {
-		s = s[:i] + "[URL]"
-	}
-	return s
-}
-
-func fatal(msg string) {
-	fmt.Fprintln(os.Stderr, "actcheck:", msg)
-	os.Exit(2)
 }

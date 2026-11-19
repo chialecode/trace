@@ -5,16 +5,15 @@ import (
 	"math"
 	"os"
 	"strings"
-	"time"
-	"unicode/utf8"
+	"sync"
 
 	"github.com/egoist/mygo/ui"
 )
 
-// Visual theme per docs/ui.md §5 (DEC-039, DEC-046 ③): white content, an airy
-// neutral light-gray rail and panel, white fields and cards with hairline
-// borders rather than nested gray boxes, and one fresh accent. Blue is
-// the default; TRACE_UI_ACCENT=green previews the green accent (Q-011).
+// Visual theme per docs/ui.md §5: white content, an airy neutral light-gray
+// rail and panel, white fields and cards with hairline borders rather than
+// nested gray boxes, and one fresh accent. Blue is the default;
+// TRACE_UI_ACCENT=green previews the green accent.
 var (
 	ColorBgMain       = ui.Hex("#ffffff") // content
 	ColorBgPanel      = ui.Hex("#f7f7f7") // icon rail and context panel
@@ -48,6 +47,13 @@ var (
 	ColorBlack         = ui.Hex("#000000")
 )
 
+var (
+	themeMu           sync.Mutex
+	cachedTheme       *ui.Theme
+	cachedThemeAccent ui.Color
+	cachedThemeFont   bool
+)
+
 // UIFont is the family text uses: Inter, bundled (internal/ui/fonts), with
 // the system's Chinese font for what Inter lacks.
 const UIFont = "Inter"
@@ -57,11 +63,14 @@ func init() { UseAccent(os.Getenv("TRACE_UI_ACCENT")) }
 // UseAccent sets the accent: "green", or the default blue for anything
 // else. Call it before building a frame.
 func UseAccent(name string) {
+	themeMu.Lock()
+	defer themeMu.Unlock()
 	if name == "green" {
 		ColorAccent, ColorAccentHover, ColorAccentPress, ColorAccentBg = ui.Hex("#0a8754"), ui.Hex("#08744a"), ui.Hex("#066340"), ui.Hex("#e6f4ec")
-		return
+	} else {
+		ColorAccent, ColorAccentHover, ColorAccentPress, ColorAccentBg = ui.Hex("#1a73e8"), ui.Hex("#1765cc"), ui.Hex("#1557b0"), ui.Hex("#e8f0fe")
 	}
-	ColorAccent, ColorAccentHover, ColorAccentPress, ColorAccentBg = ui.Hex("#1a73e8"), ui.Hex("#1765cc"), ui.Hex("#1557b0"), ui.Hex("#e8f0fe")
+	cachedTheme = nil
 }
 
 // AvatarPalette provides deterministic, high-contrast background colors for creator/account avatars.
@@ -76,13 +85,18 @@ var AvatarPalette = []ui.Color{
 	ui.Hex("#475569"),
 }
 
-// TraceTheme returns the TRACE light theme (docs/ui.md §5). InactiveAccent
+// TraceTheme returns the cached TRACE light theme (docs/ui.md §5). InactiveAccent
 // = Accent keeps the accent in inactive windows and headless testers.
 func TraceTheme() *ui.Theme {
 	registerUIFont()
+	themeMu.Lock()
+	defer themeMu.Unlock()
+	if cachedTheme != nil && cachedThemeAccent == ColorAccent && cachedThemeFont == fontRegistered {
+		return cachedTheme
+	}
 	t := ui.LightTheme()
 	t.Background = ColorBgMain
-	t.Surface = ColorBgMain // fields and controls are white with a hairline (DEC-046 ③)
+	t.Surface = ColorBgMain // fields and controls are white with a hairline
 	t.SurfaceHover = ColorHover
 	t.SurfacePressed = ColorPressed
 	t.Border = ColorBorderStrong
@@ -96,8 +110,8 @@ func TraceTheme() *ui.Theme {
 	t.Danger = ColorError
 	t.Warning = ColorDotYellow
 	t.Success = ColorDotGreen
-	t.Selection = ui.RGBA(26, 115, 232, 0.20)
-	t.Focus = ui.RGBA(26, 115, 232, 0.50)
+	t.Selection = ColorAccent.Alpha(0.20)
+	t.Focus = ColorAccent.Alpha(0.50)
 	t.FocusRingWidth = 2
 	t.FocusRingOffset = 1
 	t.Scrollbar = ui.RGBA(38, 38, 38, 0.24)
@@ -107,7 +121,36 @@ func TraceTheme() *ui.Theme {
 	if fontRegistered {
 		t.Font = UIFont
 	}
+	cachedTheme = t
+	cachedThemeAccent = ColorAccent
+	cachedThemeFont = fontRegistered
 	return t
+}
+
+// renderErrorBanner renders a full-width inline error banner with an alert icon,
+// message text, and optional trailing actions.
+func renderErrorBanner(c *ui.Context, label, text string, actions func()) {
+	row := ui.Row(c).
+		FillWidth().
+		Padding(10, 14).
+		Radius(10).
+		Background(ColorErrorBg).
+		Border(1, ui.RGBA(180, 35, 24, 0.22)).
+		AlignItems(ui.Center).
+		Justify(ui.SpaceBetween).
+		Gap(10)
+	if label != "" {
+		row.Label(label)
+	}
+	row.Children(func() {
+		ui.Row(c).Grow(1).Shrink(1).AlignItems(ui.Center).Gap(8).Children(func() {
+			DrawIcon(c, "alert-circle", 16, ColorError, 1.8)
+			ui.Text(c, text).FontSize(13).TextColor(ColorError).MaxLines(3).Grow(1).Shrink(1)
+		})
+		if actions != nil {
+			ui.Row(c).Shrink(0).AlignItems(ui.Center).Gap(6).Children(actions)
+		}
+	})
 }
 
 // AccentPillButton renders a primary capsule button: accent fill, white text.
@@ -219,6 +262,7 @@ func FloatingCircleButton(c *ui.Context, icon string, label string, size float32
 	}
 	btn := ui.Button(c, "").
 		Label(label).
+		Tooltip(label).
 		Size(size, size).
 		Shrink(0).
 		Radius(size/2).
@@ -277,7 +321,7 @@ type TabOption struct {
 }
 
 // UnderlineTabs renders a social-network style tab bar where the selected tab has bold text
-// and a 4px rounded blue (#1565c0) bottom indicator bar (docs/ui.md §3, §5).
+// and a 4px rounded accent bottom indicator bar (docs/ui.md §3, §5).
 func UnderlineTabs(c *ui.Context, activeKey string, items []TabOption, onSelect func(key string)) {
 	ui.Row(c).FillWidth().BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).Background(ColorBgMain).ClipX().Children(func() {
 		for _, item := range items {
@@ -306,7 +350,7 @@ func UnderlineTabs(c *ui.Context, activeKey string, items []TabOption, onSelect 
 						Y: r.Y + r.H - 4,
 						W: barW,
 						H: 4,
-					}, ColorInfoBlue, 2)
+					}, ColorAccent, 2)
 				}
 			})
 			btn.Children(func() {
@@ -324,23 +368,7 @@ func UnderlineTabs(c *ui.Context, activeKey string, items []TabOption, onSelect 
 	})
 }
 
-func buildArcPath(cx, cy, radius, startAngle, endAngle float32) *ui.Path {
-	path := &ui.Path{}
-	steps := 20
-	for i := 0; i <= steps; i++ {
-		ang := float64(startAngle) + (float64(endAngle-startAngle)*float64(i))/float64(steps)
-		px := cx + radius*float32(math.Cos(ang))
-		py := cy + radius*float32(math.Sin(ang))
-		if i == 0 {
-			path.MoveTo(px, py)
-		} else {
-			path.LineTo(px, py)
-		}
-	}
-	return path
-}
-
-// DrawStatusDot renders a 14x14 status dot per docs/ui.md §3.3 & §5.
+// DrawStatusDot renders a status mark per docs/ui.md §3.3 & §5.
 func DrawStatusDot(c *ui.Context, status string, label string) ui.Element {
 	paused := status == "paused" || strings.HasPrefix(status, "paused_")
 	prog := 0.35
@@ -358,21 +386,20 @@ func DrawStatusDotFull(c *ui.Context, status string, progress float64, paused bo
 	if status == "" || status == "none" {
 		return ui.Box(c).Size(0, 0)
 	}
+	isPaused := paused || status == "paused" || strings.HasPrefix(status, "paused_")
 	if label == "" {
-		switch status {
-		case "ring", "progress", "running", "queued", "downloading", "muxing", "recording":
+		switch {
+		case statusInProgress(status):
 			label = fmt.Sprintf("正在缓存 %.0f%%", math.Round(progress*100))
-		case "green", "completed", "complete":
+		case status == "green" || status == "completed" || status == "complete":
 			label = "已缓存，完整"
-		case "yellow", "partial", "paused", "upgrade":
-			if paused || status == "paused" {
-				label = "已暂停"
-			} else if status == "upgrade" {
-				label = "可升级画质"
-			} else {
-				label = "部分缓存"
-			}
-		case "red", "failed", "missing", "missing_files", "corrupt":
+		case isPaused:
+			label = "已暂停"
+		case status == "upgrade":
+			label = "可升级画质"
+		case status == "yellow" || status == "partial":
+			label = "部分缓存"
+		case status == "red" || status == "failed" || status == "missing" || status == "missing_files" || status == "corrupt":
 			label = "失败或文件缺失"
 		default:
 			label = "状态：" + status
@@ -384,8 +411,8 @@ func DrawStatusDotFull(c *ui.Context, status string, progress float64, paused bo
 	}
 	return ui.Box(c).Size(size, size).Shrink(0).Label(label).Tooltip(label).Draw(func(p *ui.Painter, r ui.Rect) {
 		cx, cy := r.X+r.W/2, r.Y+r.H/2
-		switch status {
-		case "ring", "progress", "running", "queued", "downloading", "muxing", "recording":
+		switch {
+		case statusInProgress(status):
 			track := (&ui.Path{}).Circle(cx, cy, 5.2)
 			p.StrokePath(track, 2.0, ColorBorder)
 			frac := float32(max(0.12, min(0.95, progress)))
@@ -394,13 +421,13 @@ func DrawStatusDotFull(c *ui.Context, status string, progress float64, paused bo
 			arc := buildArcPath(cx, cy, 5.2, startAng, endAng)
 			p.StrokePath(arc, 2.0, ColorInfoBlue)
 
-		case "green", "completed", "complete":
+		case status == "green" || status == "completed" || status == "complete":
 			p.Fill(dotRect(r), ColorDotGreen, 4)
 
-		case "yellow", "partial", "paused", "upgrade":
+		case isPaused || status == "yellow" || status == "partial" || status == "upgrade":
 			p.Fill(dotRect(r), ColorDotYellow, 4)
 
-		case "red", "failed", "missing", "missing_files", "corrupt":
+		case status == "red" || status == "failed" || status == "missing" || status == "missing_files" || status == "corrupt":
 			p.Fill(dotRect(r), ColorDotRed, 4)
 
 		default:
@@ -423,7 +450,7 @@ func dotRect(r ui.Rect) ui.Rect {
 	return ui.Rect{X: r.X + r.W/2 - 4, Y: r.Y + r.H/2 - 4, W: 8, H: 8}
 }
 
-// DrawNavIcon draws a 22x22 linear vector icon for the left navigation rail (DEC-014, docs/ui.md §2).
+// DrawNavIcon draws a 22x22 linear vector icon for the left navigation rail (docs/ui.md §2).
 func DrawNavIcon(c *ui.Context, icon string, active bool) ui.Element {
 	col := ColorTextMuted
 	sw := float32(1.6)
@@ -432,575 +459,4 @@ func DrawNavIcon(c *ui.Context, icon string, active bool) ui.Element {
 		sw = 2
 	}
 	return DrawIcon(c, icon, 22, col, sw)
-}
-
-// DrawIcon draws a unified linear vector icon scaled to size x size DIPs.
-func DrawIcon(c *ui.Context, name string, size float32, col ui.Color, strokeWidth float32) ui.Element {
-	if size <= 0 {
-		size = 18
-	}
-	if strokeWidth <= 0 {
-		strokeWidth = 1.75
-	}
-	return ui.Box(c).Size(size, size).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
-		s := func(v float32) float32 { return v * r.W / 24.0 }
-		x := func(v float32) float32 { return r.X + s(v) }
-		y := func(v float32) float32 { return r.Y + s(v) }
-
-		switch name {
-		case "home":
-			roof := (&ui.Path{}).
-				MoveTo(x(3), y(10.5)).
-				LineTo(x(12), y(3)).
-				LineTo(x(21), y(10.5))
-			p.StrokePath(roof, strokeWidth, col)
-			walls := (&ui.Path{}).
-				MoveTo(x(5), y(9.5)).
-				LineTo(x(5), y(20)).
-				LineTo(x(19), y(20)).
-				LineTo(x(19), y(9.5))
-			p.StrokePath(walls, strokeWidth, col)
-			door := (&ui.Path{}).
-				MoveTo(x(9.5), y(20)).
-				LineTo(x(9.5), y(13.5)).
-				LineTo(x(14.5), y(13.5)).
-				LineTo(x(14.5), y(20))
-			p.StrokePath(door, strokeWidth, col)
-
-		case "subscriptions", "user":
-			head := (&ui.Path{}).Circle(x(12), y(8), s(4))
-			p.StrokePath(head, strokeWidth, col)
-			body := (&ui.Path{}).
-				MoveTo(x(4.5), y(20)).
-				QuadTo(x(4.5), y(14.5), x(12), y(14.5)).
-				QuadTo(x(19.5), y(14.5), x(19.5), y(20))
-			p.StrokePath(body, strokeWidth, col)
-
-		case "parse", "search":
-			lens := (&ui.Path{}).Circle(x(11), y(11), s(6.8))
-			p.StrokePath(lens, strokeWidth, col)
-			handle := (&ui.Path{}).
-				MoveTo(x(16), y(16)).
-				LineTo(x(21), y(21))
-			p.StrokePath(handle, strokeWidth, col)
-
-		case "mine", "bookmark":
-			// A bookmark: a tall tab with a V notch at the bottom (我的).
-			mark := (&ui.Path{}).
-				MoveTo(x(6.5), y(4)).
-				LineTo(x(17.5), y(4)).
-				LineTo(x(17.5), y(20)).
-				LineTo(x(12), y(15.5)).
-				LineTo(x(6.5), y(20)).
-				Close()
-			p.StrokePath(mark, strokeWidth, col)
-		case "library":
-			rect := (&ui.Path{}).
-				MoveTo(x(3.5), y(5)).
-				LineTo(x(20.5), y(5)).
-				LineTo(x(20.5), y(19)).
-				LineTo(x(3.5), y(19)).
-				Close()
-			p.StrokePath(rect, strokeWidth, col)
-			tri := (&ui.Path{}).
-				MoveTo(x(10), y(9)).
-				LineTo(x(15.5), y(12)).
-				LineTo(x(10), y(15)).
-				Close()
-			p.StrokePath(tri, strokeWidth, col)
-
-		case "tasks", "download":
-			arrow := (&ui.Path{}).
-				MoveTo(x(12), y(3.5)).
-				LineTo(x(12), y(15)).
-				MoveTo(x(7.5), y(10.5)).
-				LineTo(x(12), y(15)).
-				LineTo(x(16.5), y(10.5)).
-				MoveTo(x(4), y(19.5)).
-				LineTo(x(20), y(19.5))
-			p.StrokePath(arrow, strokeWidth, col)
-
-		case "settings":
-			// 8-tooth gear polygon with center axle hole; never concentric target circles.
-			gear := &ui.Path{}
-			const teeth = 8
-			outerR := s(9.2)
-			innerR := s(6.8)
-			cx, cy := x(12), y(12)
-			for i := 0; i < teeth; i++ {
-				base := float64(i) * (2 * math.Pi / float64(teeth))
-				a0 := base - 0.19
-				a1 := base - 0.11
-				a2 := base + 0.11
-				a3 := base + 0.19
-				p0x, p0y := cx+innerR*float32(math.Cos(a0)), cy+innerR*float32(math.Sin(a0))
-				p1x, p1y := cx+outerR*float32(math.Cos(a1)), cy+outerR*float32(math.Sin(a1))
-				p2x, p2y := cx+outerR*float32(math.Cos(a2)), cy+outerR*float32(math.Sin(a2))
-				p3x, p3y := cx+innerR*float32(math.Cos(a3)), cy+innerR*float32(math.Sin(a3))
-				if i == 0 {
-					gear.MoveTo(p0x, p0y)
-				} else {
-					gear.LineTo(p0x, p0y)
-				}
-				gear.LineTo(p1x, p1y).LineTo(p2x, p2y).LineTo(p3x, p3y)
-			}
-			gear.Close()
-			axle := (&ui.Path{}).Circle(cx, cy, s(2.8))
-			p.StrokePath(gear, strokeWidth*0.95, col)
-			p.StrokePath(axle, strokeWidth, col)
-
-		case "sliders", "general":
-			// Horizontal adjustment sliders for General settings.
-			tracks := (&ui.Path{}).
-				MoveTo(x(4), y(6.5)).LineTo(x(20), y(6.5)).
-				MoveTo(x(4), y(12)).LineTo(x(20), y(12)).
-				MoveTo(x(4), y(17.5)).LineTo(x(20), y(17.5)).
-				MoveTo(x(9), y(4.2)).LineTo(x(9), y(8.8)).
-				MoveTo(x(15), y(9.7)).LineTo(x(15), y(14.3)).
-				MoveTo(x(11), y(15.2)).LineTo(x(11), y(19.8))
-			p.StrokePath(tracks, strokeWidth, col)
-
-		case "logs", "terminal":
-			frame := (&ui.Path{}).
-				MoveTo(x(4), y(4.5)).
-				LineTo(x(20), y(4.5)).
-				LineTo(x(20), y(19.5)).
-				LineTo(x(4), y(19.5)).
-				Close()
-			prompt := (&ui.Path{}).
-				MoveTo(x(7.5), y(9)).
-				LineTo(x(10.5), y(11.5)).
-				LineTo(x(7.5), y(14)).
-				MoveTo(x(12), y(14)).
-				LineTo(x(16.5), y(14))
-			p.StrokePath(frame, strokeWidth, col)
-			p.StrokePath(prompt, strokeWidth, col)
-
-		case "arrow-left":
-			path := (&ui.Path{}).
-				MoveTo(x(19), y(12)).
-				LineTo(x(5), y(12)).
-				MoveTo(x(11.5), y(5.5)).
-				LineTo(x(5), y(12)).
-				LineTo(x(11.5), y(18.5))
-			p.StrokePath(path, strokeWidth, col)
-
-		case "arrow-up":
-			path := (&ui.Path{}).
-				MoveTo(x(12), y(19)).
-				LineTo(x(12), y(5)).
-				MoveTo(x(6), y(11)).
-				LineTo(x(12), y(5)).
-				LineTo(x(18), y(11))
-			p.StrokePath(path, strokeWidth, col)
-
-		case "link":
-			path := (&ui.Path{}).
-				MoveTo(x(9.5), y(16.5)).
-				LineTo(x(7.5), y(16.5)).
-				QuadTo(x(3), y(16.5), x(3), y(12)).
-				QuadTo(x(3), y(7.5), x(7.5), y(7.5)).
-				LineTo(x(9.5), y(7.5)).
-				MoveTo(x(14.5), y(7.5)).
-				LineTo(x(16.5), y(7.5)).
-				QuadTo(x(21), y(7.5), x(21), y(12)).
-				QuadTo(x(21), y(16.5), x(16.5), y(16.5)).
-				LineTo(x(14.5), y(16.5)).
-				MoveTo(x(8.5), y(12)).
-				LineTo(x(15.5), y(12))
-			p.StrokePath(path, strokeWidth, col)
-
-		case "clock":
-			circ := (&ui.Path{}).Circle(x(12), y(12), s(8.5))
-			p.StrokePath(circ, strokeWidth, col)
-			hands := (&ui.Path{}).
-				MoveTo(x(12), y(7.5)).
-				LineTo(x(12), y(12)).
-				LineTo(x(15.2), y(14))
-			p.StrokePath(hands, strokeWidth, col)
-
-		case "history":
-			arc := buildArcPath(x(12), y(12), s(8.5), math.Pi+0.6, 3*math.Pi-0.15)
-			p.StrokePath(arc, strokeWidth, col)
-			head := (&ui.Path{}).
-				MoveTo(x(3.4), y(4.6)).
-				LineTo(x(4.9), y(7.8)).
-				LineTo(x(8.2), y(7))
-			p.StrokePath(head, strokeWidth, col)
-			hands := (&ui.Path{}).
-				MoveTo(x(12), y(8)).
-				LineTo(x(12), y(12)).
-				LineTo(x(14.8), y(13.8))
-			p.StrokePath(hands, strokeWidth, col)
-
-		case "check-circle":
-			circ := (&ui.Path{}).Circle(x(12), y(12), s(8.5))
-			p.StrokePath(circ, strokeWidth, col)
-			chk := (&ui.Path{}).
-				MoveTo(x(8), y(12.2)).
-				LineTo(x(10.8), y(15)).
-				LineTo(x(16.2), y(9.2))
-			p.StrokePath(chk, strokeWidth, col)
-
-		case "play":
-			tri := (&ui.Path{}).
-				MoveTo(x(7), y(5)).
-				LineTo(x(19), y(12)).
-				LineTo(x(7), y(19)).
-				Close()
-			p.StrokePath(tri, strokeWidth, col)
-
-		case "pause":
-			bars := (&ui.Path{}).
-				MoveTo(x(8.5), y(5)).LineTo(x(8.5), y(19)).
-				MoveTo(x(15.5), y(5)).LineTo(x(15.5), y(19))
-			p.StrokePath(bars, strokeWidth*1.2, col)
-
-		case "refresh":
-			arc := buildArcPath(x(12), y(12), s(7.5), -2.4, 2.2)
-			p.StrokePath(arc, strokeWidth, col)
-			head := (&ui.Path{}).
-				MoveTo(x(16), y(4.5)).
-				LineTo(x(19.5), y(8)).
-				LineTo(x(15), y(9))
-			p.StrokePath(head, strokeWidth, col)
-
-		case "image":
-			p.Stroke(ui.Rect{X: x(3), Y: y(4), W: s(18), H: s(16)}, col, s(3), strokeWidth)
-			hill := (&ui.Path{}).
-				MoveTo(x(3.5), y(17.5)).
-				LineTo(x(9), y(12)).
-				LineTo(x(13.5), y(16.5)).
-				LineTo(x(16), y(14)).
-				LineTo(x(20.5), y(18.5))
-			p.StrokePath(hill, strokeWidth, col)
-			p.Stroke(ui.Rect{X: x(14), Y: y(7.5), W: s(3), H: s(3)}, col, s(1.5), strokeWidth)
-
-		case "video":
-			p.Stroke(ui.Rect{X: x(3), Y: y(5), W: s(18), H: s(14)}, col, s(3), strokeWidth)
-			tri := (&ui.Path{}).
-				MoveTo(x(10), y(9)).
-				LineTo(x(15), y(12)).
-				LineTo(x(10), y(15)).
-				Close()
-			p.StrokePath(tri, strokeWidth, col)
-
-		case "live":
-			p.Stroke(ui.Rect{X: x(10), Y: y(10), W: s(4), H: s(4)}, col, s(2), strokeWidth)
-			for _, r := range []float32{5.5, 9} {
-				p.StrokePath(buildArcPath(x(12), y(12), s(r), -0.75, 0.75), strokeWidth, col)
-				p.StrokePath(buildArcPath(x(12), y(12), s(r), math.Pi-0.75, math.Pi+0.75), strokeWidth, col)
-			}
-
-		case "grid":
-			for _, o := range [][2]float32{{4, 4}, {13, 4}, {4, 13}, {13, 13}} {
-				p.Stroke(ui.Rect{X: x(o[0]), Y: y(o[1]), W: s(7), H: s(7)}, col, s(1.8), strokeWidth)
-			}
-
-		case "folder":
-			path := (&ui.Path{}).
-				MoveTo(x(3), y(6)).
-				LineTo(x(9.5), y(6)).
-				LineTo(x(11.5), y(8.5)).
-				LineTo(x(21), y(8.5)).
-				LineTo(x(21), y(19)).
-				LineTo(x(3), y(19)).
-				Close()
-			p.StrokePath(path, strokeWidth, col)
-
-		case "external-link":
-			path := (&ui.Path{}).
-				MoveTo(x(14), y(4)).
-				LineTo(x(20), y(4)).
-				LineTo(x(20), y(10)).
-				MoveTo(x(10), y(14)).
-				LineTo(x(20), y(4)).
-				MoveTo(x(18), y(13.5)).
-				LineTo(x(18), y(19.5)).
-				LineTo(x(4.5), y(19.5)).
-				LineTo(x(4.5), y(6)).
-				LineTo(x(10.5), y(6))
-			p.StrokePath(path, strokeWidth, col)
-
-		case "copy":
-			path := (&ui.Path{}).
-				MoveTo(x(9), y(9)).
-				LineTo(x(20), y(9)).
-				LineTo(x(20), y(20)).
-				LineTo(x(9), y(20)).
-				Close().
-				MoveTo(x(15), y(9)).
-				LineTo(x(15), y(4.5)).
-				LineTo(x(4.5), y(4.5)).
-				LineTo(x(4.5), y(15)).
-				LineTo(x(9), y(15))
-			p.StrokePath(path, strokeWidth, col)
-
-		case "trash":
-			path := (&ui.Path{}).
-				MoveTo(x(4), y(6.5)).LineTo(x(20), y(6.5)).
-				MoveTo(x(9), y(6.5)).LineTo(x(9), y(4)).LineTo(x(15), y(4)).LineTo(x(15), y(6.5)).
-				MoveTo(x(6.5), y(6.5)).LineTo(x(6.5), y(20)).LineTo(x(17.5), y(20)).LineTo(x(17.5), y(6.5)).
-				MoveTo(x(10), y(10.5)).LineTo(x(10), y(16.5)).
-				MoveTo(x(14), y(10.5)).LineTo(x(14), y(16.5))
-			p.StrokePath(path, strokeWidth, col)
-
-		case "eye":
-			eye := (&ui.Path{}).
-				MoveTo(x(2.5), y(12)).
-				QuadTo(x(12), y(4.5), x(21.5), y(12)).
-				QuadTo(x(12), y(19.5), x(2.5), y(12))
-			pupil := (&ui.Path{}).Circle(x(12), y(12), s(2.8))
-			p.StrokePath(eye, strokeWidth, col)
-			p.StrokePath(pupil, strokeWidth, col)
-
-		case "heart":
-			path := (&ui.Path{}).
-				MoveTo(x(12), y(20)).
-				LineTo(x(4.5), y(12.5)).
-				QuadTo(x(2), y(8), x(6.5), y(5.5)).
-				QuadTo(x(10), y(4), x(12), y(7.5)).
-				QuadTo(x(14), y(4), x(17.5), y(5.5)).
-				QuadTo(x(22), y(8), x(19.5), y(12.5)).
-				Close()
-			p.StrokePath(path, strokeWidth, col)
-
-		case "coin":
-			c1 := (&ui.Path{}).Circle(x(12), y(12), s(8.2))
-			c2 := (&ui.Path{}).
-				MoveTo(x(9.2), y(7.8)).LineTo(x(12), y(11.2)).LineTo(x(14.8), y(7.8)).
-				MoveTo(x(9.2), y(11.8)).LineTo(x(14.8), y(11.8)).
-				MoveTo(x(9.2), y(14.4)).LineTo(x(14.8), y(14.4)).
-				MoveTo(x(12), y(11.2)).LineTo(x(12), y(17))
-			p.StrokePath(c1, strokeWidth, col)
-			p.StrokePath(c2, strokeWidth*0.95, col)
-
-		case "star":
-			path := (&ui.Path{}).
-				MoveTo(x(12), y(3.5)).
-				LineTo(x(14.6), y(9)).
-				LineTo(x(20.5), y(9.8)).
-				LineTo(x(16.2), y(14)).
-				LineTo(x(17.3), y(20)).
-				LineTo(x(12), y(17)).
-				LineTo(x(6.7), y(20)).
-				LineTo(x(7.8), y(14)).
-				LineTo(x(3.5), y(9.8)).
-				LineTo(x(9.4), y(9)).
-				Close()
-			p.StrokePath(path, strokeWidth, col)
-
-		case "message":
-			path := (&ui.Path{}).
-				MoveTo(x(4), y(5)).
-				LineTo(x(20), y(5)).
-				LineTo(x(20), y(16.5)).
-				LineTo(x(9), y(16.5)).
-				LineTo(x(4), y(20.5)).
-				Close()
-			p.StrokePath(path, strokeWidth, col)
-
-		case "share":
-			c1 := (&ui.Path{}).Circle(x(18), y(5.5), s(2.5))
-			c2 := (&ui.Path{}).Circle(x(6), y(12), s(2.5))
-			c3 := (&ui.Path{}).Circle(x(18), y(18.5), s(2.5))
-			lines := (&ui.Path{}).
-				MoveTo(x(8.3), y(10.8)).LineTo(x(15.7), y(6.7)).
-				MoveTo(x(8.3), y(13.2)).LineTo(x(15.7), y(17.3))
-			p.StrokePath(c1, strokeWidth, col)
-			p.StrokePath(c2, strokeWidth, col)
-			p.StrokePath(c3, strokeWidth, col)
-			p.StrokePath(lines, strokeWidth, col)
-
-		case "alert-circle":
-			circ := (&ui.Path{}).Circle(x(12), y(12), s(8.5))
-			line := (&ui.Path{}).MoveTo(x(12), y(7.5)).LineTo(x(12), y(13))
-			p.StrokePath(circ, strokeWidth, col)
-			p.StrokePath(line, strokeWidth, col)
-			p.Fill(ui.Rect{X: x(11), Y: y(15.5), W: s(2), H: s(2)}, col, s(1))
-
-		case "chevron-down":
-			path := (&ui.Path{}).
-				MoveTo(x(6), y(9)).
-				LineTo(x(12), y(15)).
-				LineTo(x(18), y(9))
-			p.StrokePath(path, strokeWidth, col)
-
-		case "chevron-up":
-			path := (&ui.Path{}).
-				MoveTo(x(6), y(15)).
-				LineTo(x(12), y(9)).
-				LineTo(x(18), y(15))
-			p.StrokePath(path, strokeWidth, col)
-
-		case "chevron-left":
-			path := (&ui.Path{}).
-				MoveTo(x(15), y(6)).
-				LineTo(x(9), y(12)).
-				LineTo(x(15), y(18))
-			p.StrokePath(path, strokeWidth, col)
-
-		case "chevron-right":
-			path := (&ui.Path{}).
-				MoveTo(x(9), y(6)).
-				LineTo(x(15), y(12)).
-				LineTo(x(9), y(18))
-			p.StrokePath(path, strokeWidth, col)
-
-		case "close":
-			path := (&ui.Path{}).
-				MoveTo(x(6), y(6)).LineTo(x(18), y(18)).
-				MoveTo(x(18), y(6)).LineTo(x(6), y(18))
-			p.StrokePath(path, strokeWidth, col)
-
-		case "maximize", "fullscreen":
-			path := (&ui.Path{}).
-				MoveTo(x(4), y(9)).LineTo(x(4), y(4)).LineTo(x(9), y(4)).
-				MoveTo(x(15), y(4)).LineTo(x(20), y(4)).LineTo(x(20), y(9)).
-				MoveTo(x(20), y(15)).LineTo(x(20), y(20)).LineTo(x(15), y(20)).
-				MoveTo(x(9), y(20)).LineTo(x(4), y(20)).LineTo(x(4), y(15))
-			p.StrokePath(path, strokeWidth, col)
-
-		case "volume":
-			cone := (&ui.Path{}).
-				MoveTo(x(4.5), y(9.5)).
-				LineTo(x(8.5), y(9.5)).
-				LineTo(x(13.5), y(5.5)).
-				LineTo(x(13.5), y(18.5)).
-				LineTo(x(8.5), y(14.5)).
-				LineTo(x(4.5), y(14.5)).
-				Close()
-			wave := buildArcPath(x(13.5), y(12), s(4.2), -0.85, 0.85)
-			p.StrokePath(cone, strokeWidth, col)
-			p.StrokePath(wave, strokeWidth, col)
-
-		case "volume-mute":
-			cone := (&ui.Path{}).
-				MoveTo(x(4.5), y(9.5)).
-				LineTo(x(8.5), y(9.5)).
-				LineTo(x(13.5), y(5.5)).
-				LineTo(x(13.5), y(18.5)).
-				LineTo(x(8.5), y(14.5)).
-				LineTo(x(4.5), y(14.5)).
-				Close()
-			cross := (&ui.Path{}).
-				MoveTo(x(16), y(9.5)).LineTo(x(20.5), y(14.5)).
-				MoveTo(x(20.5), y(9.5)).LineTo(x(16), y(14.5))
-			p.StrokePath(cone, strokeWidth, col)
-			p.StrokePath(cross, strokeWidth, col)
-
-		case "more":
-			p.Fill(ui.Rect{X: x(5), Y: y(10.6), W: s(2.8), H: s(2.8)}, col, s(1.4))
-			p.Fill(ui.Rect{X: x(10.6), Y: y(10.6), W: s(2.8), H: s(2.8)}, col, s(1.4))
-			p.Fill(ui.Rect{X: x(16.2), Y: y(10.6), W: s(2.8), H: s(2.8)}, col, s(1.4))
-
-		default:
-			circ := (&ui.Path{}).Circle(x(12), y(12), s(6))
-			p.StrokePath(circ, strokeWidth, col)
-		}
-	})
-}
-
-// FormatCount formats large numbers using Chinese 万/亿 abbreviations per docs/ui.md §7.
-func FormatCount(n int64) string {
-	if n < 0 {
-		return "0"
-	}
-	if n >= 100_000_000 {
-		v := float64(n) / 100_000_000.0
-		return strings.TrimSuffix(fmt.Sprintf("%.1f", v), ".0") + "亿"
-	}
-	if n >= 10_000 {
-		v := float64(n) / 10_000.0
-		return strings.TrimSuffix(fmt.Sprintf("%.1f", v), ".0") + "万"
-	}
-	return fmt.Sprintf("%d", n)
-}
-
-// FormatBytes formats a byte count into human-readable B / KB / MB / GB.
-func FormatBytes(b int64) string {
-	if b <= 0 {
-		return "0 B"
-	}
-	units := []string{"B", "KB", "MB", "GB", "TB"}
-	val := float64(b)
-	idx := 0
-	for val >= 1024 && idx < len(units)-1 {
-		val /= 1024
-		idx++
-	}
-	if idx == 0 {
-		return fmt.Sprintf("%d B", b)
-	}
-	return strings.TrimSuffix(fmt.Sprintf("%.1f", val), ".0") + " " + units[idx]
-}
-
-// FormatDuration formats seconds into MM:SS or H:MM:SS.
-func FormatDuration(sec int) string {
-	if sec <= 0 {
-		return "00:00"
-	}
-	h := sec / 3600
-	m := (sec % 3600) / 60
-	s := sec % 60
-	if h > 0 {
-		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
-	}
-	return fmt.Sprintf("%02d:%02d", m, s)
-}
-
-// FormatTimestamp formats a Unix timestamp (or RFC3339 string) into a readable date/time.
-func FormatTimestamp(ts int64) string {
-	if ts <= 0 {
-		return ""
-	}
-	t := time.Unix(ts, 0).Local()
-	return t.Format("2006-01-02 15:04")
-}
-
-// FormatRelativeTime formats a Unix timestamp into social-style relative or date text.
-func FormatRelativeTime(ts int64) string {
-	if ts <= 0 {
-		return ""
-	}
-	t := time.Unix(ts, 0).Local()
-	now := time.Now()
-	diff := now.Sub(t)
-	if diff >= 0 {
-		if diff < time.Minute {
-			return "刚刚"
-		}
-		if diff < time.Hour {
-			return fmt.Sprintf("%d 分钟前", int(diff.Minutes()))
-		}
-		if diff < 24*time.Hour {
-			return fmt.Sprintf("%d 小时前", int(diff.Hours()))
-		}
-	}
-	if t.Year() == now.Year() {
-		return fmt.Sprintf("%d月%d日", int(t.Month()), t.Day())
-	}
-	return fmt.Sprintf("%d年%d月%d日", t.Year(), int(t.Month()), t.Day())
-}
-
-// FirstGlyph returns the first visible rune of a name for avatar fallback badges.
-func FirstGlyph(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "T"
-	}
-	r, _ := utf8.DecodeRuneInString(name)
-	if r == utf8.RuneError {
-		return "T"
-	}
-	return strings.ToUpper(string(r))
-}
-
-// AvatarColor picks a deterministic palette color for a creator/account.
-func AvatarColor(name string, mid int64) ui.Color {
-	var h uint64 = uint64(mid) * 2654435761
-	for i := 0; i < len(name); i++ {
-		h = h*31 + uint64(name[i])
-	}
-	return AvatarPalette[int(h%uint64(len(AvatarPalette)))]
 }

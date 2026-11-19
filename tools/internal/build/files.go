@@ -186,13 +186,25 @@ func VerifySums(dir, sumsName string) ([]string, error) {
 // CopyFile copies src to dst and syncs it.
 func CopyFile(src, dst string) error { return copyFile(src, dst) }
 
+func copiedFileMode(srcMode os.FileMode) os.FileMode {
+	perm := srcMode.Perm()
+	if perm == 0 {
+		return 0o644
+	}
+	return (perm & 0o755) | 0o600
+}
+
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	mode := os.FileMode(0o644)
+	if st, err := in.Stat(); err == nil {
+		mode = copiedFileMode(st.Mode())
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}

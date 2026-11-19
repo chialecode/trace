@@ -17,7 +17,6 @@ const (
 	flvHeaderSize      = 9
 	flvTagHeaderSize   = 11
 	flvMaxHeaderOffset = 64 * 1024
-	flvMaxTagDataSize  = 32 * 1024 * 1024 // 32 MiB upper bound per FLV tag
 
 	flvTagTypeAudio  uint8 = 8
 	flvTagTypeVideo  uint8 = 9
@@ -32,7 +31,7 @@ const (
 	flvExPacketCodedFrames   uint8 = 1
 	flvExPacketSequenceEnd   uint8 = 2
 	flvExPacketCodedFramesX  uint8 = 3
-	flvExPacketMetadata      uint8 = 5
+	flvExPacketMetadata      uint8 = 4
 )
 
 // VideoCodec identifies the normalized ISO BMFF sample entry FourCC for live video.
@@ -211,9 +210,6 @@ func (fr *FLVReader) NextTag() (FLVTag, error) {
 	}
 	tagType := fr.scratch[0] & 0x1f
 	dataSize := uint32(fr.scratch[1])<<16 | uint32(fr.scratch[2])<<8 | uint32(fr.scratch[3])
-	if dataSize > flvMaxTagDataSize {
-		return FLVTag{}, &FLVFormatError{Reason: fmt.Sprintf("单标签长度超限 (%d 字节)", dataSize)}
-	}
 	rawTS := uint32(fr.scratch[4])<<16 | uint32(fr.scratch[5])<<8 | uint32(fr.scratch[6]) | uint32(fr.scratch[7])<<24
 
 	data := make([]byte, dataSize)
@@ -666,6 +662,35 @@ func normalizeLengthPrefixedNALUs(payload []byte, naluLenSize int) ([]byte, erro
 	}
 	if len(payload) == 0 {
 		return nil, &FLVFormatError{Reason: "视频编码帧为空"}
+	}
+
+	// Zero-copy fast path: validate 4-byte length-prefixed NALUs in place and return
+	// payload directly when no zero-length NALU needs to be stripped.
+	if naluLenSize == 4 {
+		hasNonEmpty := false
+		hasEmpty := false
+		for off := 0; off < len(payload); {
+			if len(payload)-off < 4 {
+				return nil, &FLVFormatError{Reason: "NALU 长度前缀截断"}
+			}
+			naluLen := binary.BigEndian.Uint32(payload[off : off+4])
+			off += 4
+			if naluLen == 0 {
+				hasEmpty = true
+				continue
+			}
+			if uint64(naluLen) > uint64(len(payload)-off) {
+				return nil, &FLVFormatError{Reason: "NALU 载荷长度越界"}
+			}
+			hasNonEmpty = true
+			off += int(naluLen)
+		}
+		if !hasNonEmpty {
+			return nil, &FLVFormatError{Reason: "视频帧不含有效非空 NALU"}
+		}
+		if !hasEmpty {
+			return payload, nil
+		}
 	}
 
 	outCap := len(payload)

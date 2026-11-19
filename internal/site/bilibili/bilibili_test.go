@@ -53,7 +53,7 @@ func newTestLoggedClient(t *testing.T, handler http.Handler, pacing time.Duratio
 	return client, store, srv
 }
 
-// C01: Supported link resolution (BV, av, b23.tv, space, UID, dynamic, opus, live short_id -> room_id, mixed share text).
+// Supported link resolution (BV, av, b23.tv, space, UID, dynamic, opus, live short_id -> room_id, mixed share text).
 func TestResolveLinkSupportedTargets(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/b23/abc123", func(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +125,7 @@ func TestResolveLinkSupportedTargets(t *testing.T) {
 	}
 }
 
-// C02: Malicious shortlink redirects and unsupported link types.
+// Malicious shortlink redirects and unsupported link types.
 func TestResolveLinkRejectsUnsupportedAndMaliciousRedirects(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/b23/evil", func(w http.ResponseWriter, r *http.Request) {
@@ -173,7 +173,7 @@ func TestResolveLinkRejectsUnsupportedAndMaliciousRedirects(t *testing.T) {
 	}
 }
 
-// C04: Unauthenticated pre-request login guard makes 0 HTTP requests.
+// Unauthenticated pre-request login guard makes 0 HTTP requests.
 func TestPreRequestAuthGuardZeroRequests(t *testing.T) {
 	var reqCount atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -230,7 +230,7 @@ func TestPreRequestAuthGuardZeroRequests(t *testing.T) {
 	}
 }
 
-// C06: QR login states (86101 -> 86090 -> 0, 86038) and canceled flowId isolation.
+// QR login states (86101 -> 86090 -> 0, 86038) and canceled flowId isolation.
 func TestQRLifecycleAndCanceledFlowIsolation(t *testing.T) {
 	var pollStep atomic.Int32
 	mux := http.NewServeMux()
@@ -337,7 +337,7 @@ func TestQRLifecycleAndCanceledFlowIsolation(t *testing.T) {
 	}
 }
 
-// C08: 5-step Cookie refresh, missing refresh_token degradation, and confirm/refresh resume.
+// 5-step Cookie refresh, missing refresh_token degradation, and confirm/refresh resume.
 func TestCookieRefreshFiveStepAndConfirmResume(t *testing.T) {
 	var refreshCalls atomic.Int32
 	var confirmCalls atomic.Int32
@@ -402,7 +402,7 @@ func TestCookieRefreshFiveStepAndConfirmResume(t *testing.T) {
 	client, store, _ := newTestLoggedClient(t, mux, -1)
 	ctx := context.Background()
 
-	// C08: Manual cookie source does not auto-renew and makes 0 refresh calls.
+	// Manual cookie source does not auto-renew and makes 0 refresh calls.
 	stManual, err := client.CheckAndRefreshCookie(ctx)
 	if err != nil || stManual.Source != "manual" || refreshCalls.Load() != 0 {
 		t.Fatalf("expected manual source to skip refresh, got st=%+v err=%v refreshCalls=%d", stManual, err, refreshCalls.Load())
@@ -453,7 +453,7 @@ func TestCookieRefreshFiveStepAndConfirmResume(t *testing.T) {
 	}
 }
 
-// C09: WBI signing fixed vector, special char filtering, and single -352 refresh retry.
+// WBI signing fixed vector, special char filtering, and single -352 refresh retry.
 func TestWBISigningFixedVectorAndSingle352Refresh(t *testing.T) {
 	imgKey := ExtractWBIKey("https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png")
 	subKey := ExtractWBIKey("https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png")
@@ -554,7 +554,7 @@ func TestWBISigningFixedVectorAndSingle352Refresh(t *testing.T) {
 	}
 }
 
-// C10: User card and user videos required WBI parameters and error code mapping.
+// User card and user videos required WBI parameters and error code mapping.
 func TestUserCardAndVideosParamsAndErrors(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/12345", func(w http.ResponseWriter, r *http.Request) {
@@ -630,7 +630,7 @@ func TestUserCardAndVideosParamsAndErrors(t *testing.T) {
 	}
 }
 
-// C11: Global 500ms API pacing and context cancellation.
+// Global 500ms API pacing and context cancellation.
 func TestClientGlobalPacing500ms(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/x/relation/tags", func(w http.ResponseWriter, r *http.Request) {
@@ -659,7 +659,7 @@ func TestClientGlobalPacing500ms(t *testing.T) {
 	}
 }
 
-// C12: Dynamic types (AV, DRAW, WORD, ARTICLE, FORWARD) and unknown type degradation.
+// Dynamic types (AV, DRAW, WORD, ARTICLE, FORWARD) and unknown type degradation.
 func TestDynamicsTypesAndGracefulDegradation(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/x/polymer/web-dynamic/v1/feed/space", func(w http.ResponseWriter, r *http.Request) {
@@ -781,7 +781,7 @@ func TestDynamicsTypesAndGracefulDegradation(t *testing.T) {
 	}
 }
 
-// C13 & C21: PlayURL stream selection, downgrade detection, multi-segment protobuf danmaku, and CC subtitles.
+// PlayURL stream selection, downgrade detection, multi-segment protobuf danmaku, and CC subtitles.
 func TestPlayURLDanmakuAndSubtitles(t *testing.T) {
 	var srvURL string
 	mux := http.NewServeMux()
@@ -938,7 +938,7 @@ func TestPlayURLDanmakuAndSubtitles(t *testing.T) {
 	}
 }
 
-// C30: Relation tags and followings pagination.
+// Relation tags and followings pagination.
 func TestRelationTagsAndFollowingsPagination(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/x/relation/tags", func(w http.ResponseWriter, r *http.Request) {
@@ -987,7 +987,7 @@ func TestRelationTagsAndFollowingsPagination(t *testing.T) {
 	}
 }
 
-// C34: Live batch status (<=50 UIDs per request), encrypted room 203 rejection, and stream selection.
+// Live batch status (<=50 UIDs per request), encrypted room 203 rejection, and stream selection.
 func TestLiveBatch50Encrypted203AndStreamSelection(t *testing.T) {
 	var batchSizes []int
 	mux := http.NewServeMux()
@@ -1108,19 +1108,6 @@ func TestLiveBatch50Encrypted203AndStreamSelection(t *testing.T) {
 	}
 }
 
-func TestResolveLinkSupportedAndRejected(t *testing.T) {
-	TestResolveLinkSupportedTargets(t)
-	TestResolveLinkRejectsUnsupportedAndMaliciousRedirects(t)
-}
-
-func TestResolveLiveRoomShortID(t *testing.T) {
-	TestResolveLinkSupportedTargets(t)
-}
-
-func TestQRLoginFlowAndCancelIsolation(t *testing.T) {
-	TestQRLifecycleAndCanceledFlowIsolation(t)
-}
-
 func TestCorrespondPathRoundTripAndKeySHA256(t *testing.T) {
 	hexPath, err := GenerateCorrespondPath(1700000123456)
 	if err != nil || len(hexPath) != 256 {
@@ -1128,39 +1115,12 @@ func TestCorrespondPathRoundTripAndKeySHA256(t *testing.T) {
 	}
 }
 
-func TestCookieRefreshFullLoopAndPendingConfirm(t *testing.T) {
-	TestCookieRefreshFiveStepAndConfirmResume(t)
-}
-
-func TestCookieRefreshFailurePreservesOldCredential(t *testing.T) {
-	TestCookieRefreshFiveStepAndConfirmResume(t)
-}
-
-func TestGlobalPacingAndWBIFixedVectors(t *testing.T) {
-	TestWBISigningFixedVectorAndSingle352Refresh(t)
-	TestClientGlobalPacing500ms(t)
-}
-
-func TestVideoDetailUserSpaceAndArcSearch(t *testing.T) {
-	TestUserCardAndVideosParamsAndErrors(t)
-}
-
-func TestUserDynamicsTypesAndDegradation(t *testing.T) {
-	TestDynamicsTypesAndGracefulDegradation(t)
-}
-
-func TestPlayURLSelectionOrderAndDowngrade(t *testing.T) {
-	TestPlayURLDanmakuAndSubtitles(t)
-}
-
-func TestDanmakuProtobufAndSubtitlesVTT(t *testing.T) {
-	TestPlayURLDanmakuAndSubtitles(t)
-}
-
-func TestFollowingGroupsAndListPagination(t *testing.T) {
-	TestRelationTagsAndFollowingsPagination(t)
-}
-
-func TestLiveBatchStatusAndStreamSelection(t *testing.T) {
-	TestLiveBatch50Encrypted203AndStreamSelection(t)
+func TestClassifyBiliCodeDynamicUnavailable4101152(t *testing.T) {
+	err := classifyBiliCode(4101152, "动态不可见", false, "/x/polymer/web-dynamic/v1/detail")
+	if err == nil || !IsKind(err, ErrKindUnavailable) {
+		t.Fatalf("classifyBiliCode(4101152) = %v, want ErrKindUnavailable", err)
+	}
+	if strings.Contains(err.Error(), "未识别") || !strings.Contains(err.Error(), "动态不可见或已删除") {
+		t.Fatalf("unexpected message for 4101152: %q", err.Error())
+	}
 }

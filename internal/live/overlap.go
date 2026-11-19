@@ -55,6 +55,7 @@ func trimFragmentOverlaps(f *mp4.File) int {
 						trimmed++
 					}
 					te.end = start
+					te.last = nil
 				}
 				for _, trun := range traf.Truns {
 					// Make every duration explicit so Defragment keeps a trimmed value.
@@ -71,12 +72,11 @@ func trimFragmentOverlaps(f *mp4.File) int {
 	return trimmed
 }
 
-// fragmentTimelineSec returns the longest track timeline of a recorded fMP4 in
-// seconds: from the first fragment's tfdt to the end of the last sample. Run it
-// after trimFragmentOverlaps, which makes every sample duration explicit. It is
-// the reference for checking the defragmented output: the HLS EXTINF sum only
-// approximates the media and drifts by tenths of a second over a few minutes.
-// It returns 0 when the file has no usable decode times.
+// fragmentTimelineSec returns the combined cross-track timeline of a recorded
+// fMP4 in seconds: max_i(end_i/ts_i) - min_i(first_i/ts_i), matching how
+// mp4.Defragment computes mvhd.Duration across tracks with differing start
+// offsets. Run it after trimFragmentOverlaps, which makes every sample duration
+// explicit. It returns 0 when the file has no usable decode times.
 func fragmentTimelineSec(f *mp4.File) float64 {
 	if f == nil || f.Moov == nil {
 		return 0
@@ -87,7 +87,11 @@ func fragmentTimelineSec(f *mp4.File) float64 {
 			timescale[trak.Tkhd.TrackID] = trak.Mdia.Mdhd.Timescale
 		}
 	}
-	type span struct{ first, end uint64 }
+	type span struct {
+		first uint64
+		end   uint64
+		has   bool
+	}
 	spans := map[uint32]*span{}
 	for _, seg := range f.Segments {
 		for _, frag := range seg.Fragments {
@@ -100,14 +104,21 @@ func fragmentTimelineSec(f *mp4.File) float64 {
 				}
 				id := traf.Tfhd.TrackID
 				start := traf.Tfdt.BaseMediaDecodeTime()
-				s := spans[id]
-				if s == nil {
-					s = &span{first: start}
-					spans[id] = s
-				}
 				end := start
 				for _, trun := range traf.Truns {
 					end += trun.Duration(0)
+				}
+				if end <= start {
+					continue
+				}
+				s := spans[id]
+				if s == nil {
+					s = &span{first: start, end: end, has: true}
+					spans[id] = s
+					continue
+				}
+				if start < s.first {
+					s.first = start
 				}
 				if end > s.end {
 					s.end = end
@@ -115,11 +126,28 @@ func fragmentTimelineSec(f *mp4.File) float64 {
 			}
 		}
 	}
-	longest := 0.0
+	var minFirst, maxEnd float64
+	found := false
 	for id, s := range spans {
-		if ts := timescale[id]; ts > 0 && s.end > s.first {
-			longest = max(longest, float64(s.end-s.first)/float64(ts))
+		if ts := timescale[id]; ts > 0 && s.has && s.end > s.first {
+			firstSec := float64(s.first) / float64(ts)
+			endSec := float64(s.end) / float64(ts)
+			if !found {
+				minFirst = firstSec
+				maxEnd = endSec
+				found = true
+			} else {
+				if firstSec < minFirst {
+					minFirst = firstSec
+				}
+				if endSec > maxEnd {
+					maxEnd = endSec
+				}
+			}
 		}
 	}
-	return longest
+	if !found || maxEnd <= minFirst {
+		return 0
+	}
+	return maxEnd - minFirst
 }

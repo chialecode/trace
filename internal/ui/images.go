@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"os"
 	"strconv"
@@ -13,6 +14,10 @@ import (
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 )
+
+// maxImageReadBytes caps local image reads before os.ReadFile so a mis-referenced
+// multi-GB media file (e.g. a coverless video) is never loaded into memory.
+const maxImageReadBytes = 32 << 20
 
 // Thumbnail requests use public, cookie-free image fetching. A failed fetch is
 // retried after a pause (a few times at most), so one network hiccup does not
@@ -52,8 +57,11 @@ func (a *App) lookupRemoteBitmap(rawURL string) *ui.Bitmap {
 			return nil, err
 		}
 		config, _, err := image.DecodeConfig(bytes.NewReader(raw))
-		if err != nil || config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 24_000_000 {
+		if err != nil {
 			return nil, err
+		}
+		if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 24_000_000 {
+			return nil, errors.New("image dimensions out of range")
 		}
 		img, _, err := image.Decode(bytes.NewReader(raw))
 		if err != nil {
@@ -104,40 +112,90 @@ const (
 	remoteImageRetryPause = 20 * time.Second
 )
 
+type faceIndexSig struct {
+	subsRev    int
+	subsN      int
+	followN    int
+	liveAcctsN int
+	feedN      int
+}
+
+func (a *App) ensureFaceIndex() {
+	sig := faceIndexSig{
+		subsRev:    a.subsRev,
+		subsN:      len(a.Subscriptions),
+		followN:    len(a.ImportFollowings),
+		liveAcctsN: len(a.LiveAccounts),
+		feedN:      len(a.FeedItems),
+	}
+	if a.faceIndexValid && a.faceIndexSig == sig {
+		return
+	}
+	a.faceIndexSig = sig
+	a.faceIndexValid = true
+	bili := make(map[int64]string, len(a.Subscriptions)+len(a.ImportFollowings))
+	acct := make(map[string]string, len(a.Subscriptions)+len(a.LiveAccounts))
+
+	for _, entry := range a.FeedItems {
+		if entry.AuthorFace == "" {
+			continue
+		}
+		if entry.Mid > 0 && bili[entry.Mid] == "" {
+			bili[entry.Mid] = entry.AuthorFace
+		}
+		if entry.AuthorUID != "" {
+			k := strings.ToLower(strings.TrimSpace(entry.Site)) + ":" + entry.AuthorUID
+			if acct[k] == "" {
+				acct[k] = entry.AuthorFace
+			}
+		}
+	}
+	for _, st := range a.LiveAccounts {
+		if st.Face != "" && st.UID != "" {
+			acct[strings.ToLower(strings.TrimSpace(st.Site))+":"+st.UID] = st.Face
+		}
+	}
+	for _, user := range a.ImportFollowings {
+		if user.Mid > 0 && user.Face != "" {
+			bili[user.Mid] = user.Face
+		}
+	}
+	for _, sub := range a.Subscriptions {
+		if sub.Mid > 0 && sub.Face != "" {
+			bili[sub.Mid] = sub.Face
+		}
+		for _, acc := range sub.Accounts {
+			if acc.Face == "" || acc.UID == "" {
+				continue
+			}
+			s := normalizeSiteIDUI(acc.Site)
+			acct[s+":"+acc.UID] = acc.Face
+			if s == "bilibili" {
+				if mid, err := strconv.ParseInt(acc.UID, 10, 64); err == nil && mid > 0 {
+					bili[mid] = acc.Face
+				}
+			}
+		}
+	}
+	a.biliFaceIndex = bili
+	a.acctFaceIndex = acct
+}
+
 func (a *App) faceURL(mid int64) string {
 	if mid <= 0 {
 		return ""
 	}
-	if account := a.backend.AccountStatus(); account.Mid == mid {
+	if account := a.backend.AccountStatus(); account.Mid == mid && account.Face != "" {
 		return account.Face
 	}
-	if a.CurrentUser != nil && a.CurrentUser.Mid == mid {
+	if a.CurrentUser != nil && a.CurrentUser.Mid == mid && a.CurrentUser.Face != "" {
 		return a.CurrentUser.Face
 	}
-	if a.CurrentVideo != nil && a.CurrentVideo.Author.Mid == mid {
+	if a.CurrentVideo != nil && a.CurrentVideo.Author.Mid == mid && a.CurrentVideo.Author.Face != "" {
 		return a.CurrentVideo.Author.Face
 	}
-	for _, sub := range a.Subscriptions {
-		for _, acc := range sub.Accounts {
-			if acc.UID == strconv.FormatInt(mid, 10) {
-				return acc.Face
-			}
-		}
-		if sub.Mid == mid {
-			return sub.Face
-		}
-	}
-	for _, user := range a.ImportFollowings {
-		if user.Mid == mid {
-			return user.Face
-		}
-	}
-	for _, entry := range a.FeedItems {
-		if entry.Mid == mid {
-			return entry.AuthorFace
-		}
-	}
-	return ""
+	a.ensureFaceIndex()
+	return a.biliFaceIndex[mid]
 }
 
 func (a *App) faceURLForAccount(siteID, uid string) string {
@@ -163,24 +221,8 @@ func (a *App) faceURLForAccount(siteID, uid string) string {
 	if a.CurrentDouyinWork != nil && (a.CurrentDouyinWork.Author.SecUID == uid || a.CurrentDouyinWork.Author.UID == uid) && a.CurrentDouyinWork.Author.AvatarURL != "" {
 		return a.CurrentDouyinWork.Author.AvatarURL
 	}
-	for _, sub := range a.Subscriptions {
-		for _, acc := range sub.Accounts {
-			if strings.EqualFold(acc.Site, siteID) && acc.UID == uid && acc.Face != "" {
-				return acc.Face
-			}
-		}
-	}
-	for _, st := range a.LiveAccounts {
-		if strings.EqualFold(st.Site, siteID) && st.UID == uid && st.Face != "" {
-			return st.Face
-		}
-	}
-	for _, entry := range a.FeedItems {
-		if strings.EqualFold(entry.Site, siteID) && entry.AuthorUID == uid && entry.AuthorFace != "" {
-			return entry.AuthorFace
-		}
-	}
-	return ""
+	a.ensureFaceIndex()
+	return a.acctFaceIndex[siteID+":"+uid]
 }
 
 func firstImageURL(urls []string) string {
@@ -192,10 +234,22 @@ func firstImageURL(urls []string) string {
 	return ""
 }
 
-// loadThumbBitmap decodes an image file scaled to fit maxEdge.
-func loadThumbBitmap(path string, maxEdge int) *ui.Bitmap {
+func readBoundedImageFile(path string) []byte {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxImageReadBytes {
+		return nil
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	return raw
+}
+
+// loadThumbBitmap decodes an image file scaled to fit maxEdge.
+func loadThumbBitmap(path string, maxEdge int) *ui.Bitmap {
+	raw := readBoundedImageFile(path)
+	if len(raw) == 0 {
 		return nil
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))

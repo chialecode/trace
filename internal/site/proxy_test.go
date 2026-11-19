@@ -10,10 +10,10 @@ import (
 
 func withSystemProxy(t *testing.T, fn func(*http.Request) (*url.URL, error)) {
 	t.Helper()
-	prev := systemProxy
-	systemProxy = fn
+	prev := systemProxy.Load()
+	SetSystemProxyFunc(fn)
 	t.Cleanup(func() {
-		systemProxy = prev
+		systemProxy.Store(prev)
 		_ = SetProxy(ProxySystem, "")
 	})
 }
@@ -53,10 +53,13 @@ func TestProxyModes(t *testing.T) {
 	if got, _ := Proxy(req); got == nil || got.String() != "http://127.0.0.1:7890" {
 		t.Fatalf("custom proxy without scheme = %v", got)
 	}
-	for _, bad := range []string{"", "ftp://h:1", "http://host", "http://h:1/path", "socks4://h:1", "http://user:pass@h:1", "socks5://user@h:1"} {
+	for _, bad := range []string{"", "ftp://h:1", "http://host", "http://h:1/path", "socks4://h:1", "http://user:pass@h:1", "socks5://user@h:1", "http://127.0.0.1:0", "http://127.0.0.1:70000"} {
 		if err := SetProxy(ProxyCustom, bad); err == nil {
 			t.Fatalf("custom proxy %q accepted", bad)
 		}
+	}
+	if !IsLoopbackHost("localhost.") || !IsLoopbackHost("127.0.0.1") || !IsLoopbackHost("::1") {
+		t.Fatal("IsLoopbackHost failed on loopback inputs")
 	}
 	if got, _ := Proxy(req); got == nil || got.Port() != "7890" {
 		t.Fatalf("a rejected address changed the proxy in use: %v", got)
@@ -85,11 +88,21 @@ func TestGuardedMediaDialerTrustsCustomProxy(t *testing.T) {
 	if err != nil || p == nil || p.Host != "127.0.0.1:7890" {
 		t.Fatalf("guard proxy = %v, %v", p, err)
 	}
-	if _, ok := g.proxyAddrs.Load("127.0.0.1:7890"); !ok {
+	if !g.isTrustedProxyAddr("127.0.0.1:7890") {
 		t.Fatal("the configured proxy is not trusted for dialing")
 	}
 	inner, _ := http.NewRequest(http.MethodGet, "https://inner.example/v.mp4", nil)
 	if _, err := g.Proxy(inner); err == nil {
 		t.Fatal("a private media host passed through the proxy")
+	}
+	// Switching to ProxyNone must immediately revoke trust for the old proxy address.
+	if err := SetProxy(ProxyNone, ""); err != nil {
+		t.Fatal(err)
+	}
+	if g.isTrustedProxyAddr("127.0.0.1:7890") {
+		t.Fatal("old proxy address remained trusted after switching to ProxyNone")
+	}
+	if _, err := g.DialContext(context.Background(), "tcp", "127.0.0.1:7890"); !IsKind(err, ErrKindBlocked) {
+		t.Fatalf("direct dial to old proxy after ProxyNone = %v, want blocked", err)
 	}
 }

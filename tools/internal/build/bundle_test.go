@@ -132,3 +132,27 @@ func TestBundleMetadataRefreshPreservesRegisteredBinaries(t *testing.T) {
 	}
 	assertTestBundle(t, dest, want)
 }
+
+func TestRegisteredBundleFilesFormatsSumsName(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"invalid entry", "bad line\n", "invalid previous SHA256SUMS entry"},
+		{"invalid hash", strings.Repeat("z", 64) + "  file.tar.gz\n", "invalid previous SHA256SUMS hash"},
+		{"empty", "\n  \n", "empty previous SHA256SUMS"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "SHA256SUMS"), []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := registeredBundleFiles(dir, "SHA256SUMS")
+			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "SHA256SUMS.txt") {
+				t.Fatalf("error = %v, want %q without SHA256SUMS.txt", err, tc.want)
+			}
+		})
+	}
+}

@@ -1,7 +1,9 @@
 package player
 
 import (
+	"errors"
 	"image"
+	"io"
 	"sync"
 	"time"
 )
@@ -96,6 +98,17 @@ func (w *videoWorker) take() (*image.RGBA, uint64) {
 	return img, gen
 }
 
+// isShown reports whether img is already the buffer currently displayed on screen.
+func (w *videoWorker) isShown(img *image.RGBA) bool {
+	if img == nil {
+		return false
+	}
+	w.mu.Lock()
+	same := img == w.shown
+	w.mu.Unlock()
+	return same
+}
+
 // showing records img as the buffer on screen and recycles the previous one.
 func (w *videoWorker) showing(img *image.RGBA) {
 	w.mu.Lock()
@@ -154,8 +167,15 @@ func (c *Controller) runVideoWorker(w *videoWorker, startGen uint64) {
 		} else {
 			img, pts, err = w.dec.DecodeVideoFrameAt(pos, buf)
 		}
+		select {
+		case <-w.stop:
+			w.putFree(buf)
+			return
+		default:
+		}
+		alreadyShown := err == nil && img != nil && w.isShown(img)
 		published := false
-		if err == nil && img != nil && (pts != lastPTS || gen != lastGen) {
+		if err == nil && img != nil && !alreadyShown && (pts != lastPTS || gen != lastGen) {
 			published = w.publish(img, gen)
 			if published {
 				lastPTS = pts
@@ -165,11 +185,16 @@ func (c *Controller) runVideoWorker(w *videoWorker, startGen uint64) {
 			w.putFree(buf)
 		}
 		lastGen = gen
-		if holding && (published || holdOver) {
+		if holding && (published || alreadyShown || errors.Is(err, io.EOF) || holdOver) {
 			c.releaseHold(gen)
 		}
 		if published && !playing && notify != nil {
-			notify() // a paused seek: nothing else redraws the window
+			select {
+			case <-w.stop:
+				return
+			default:
+				notify() // a paused seek: nothing else redraws the window
+			}
 		}
 		if !playing {
 			continue
@@ -177,7 +202,7 @@ func (c *Controller) runVideoWorker(w *videoWorker, startGen uint64) {
 
 		// Sleep until the decoded frame is due; then the next one is needed.
 		wait := pts - pos
-		if err != nil || !published {
+		if err != nil || (!published && !alreadyShown) {
 			wait = 4 * time.Millisecond
 		}
 		wait = min(max(wait, time.Millisecond), 100*time.Millisecond)

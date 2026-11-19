@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"sort"
@@ -38,8 +39,9 @@ import (
 )
 
 const (
-	minAgeDays = 7
-	userAgent  = "dependency-inventory"
+	minAgeDays     = 7
+	userAgent      = "dependency-inventory"
+	defaultGoProxy = "https://proxy.golang.org"
 )
 
 var client = &http.Client{Timeout: 30 * time.Second}
@@ -192,14 +194,44 @@ type candidate struct {
 	days    int
 }
 
+// parseGoProxy returns the first HTTP/HTTPS proxy URL from a GOPROXY list
+// (comma- or pipe-separated), falling back to defaultGoProxy.
+func parseGoProxy(raw string) string {
+	for _, item := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '|' }) {
+		entry := strings.TrimSpace(item)
+		if entry == "" || entry == "direct" || entry == "off" {
+			continue
+		}
+		u, err := url.Parse(entry)
+		if err != nil || u.Host == "" {
+			continue
+		}
+		if scheme := strings.ToLower(u.Scheme); scheme == "http" || scheme == "https" {
+			return strings.TrimRight(entry, "/")
+		}
+	}
+	return defaultGoProxy
+}
+
+func resolveGoProxy() string {
+	out, err := exec.Command("go", "env", "GOPROXY").Output()
+	if err == nil {
+		return parseGoProxy(strings.TrimSpace(string(out)))
+	}
+	return parseGoProxy(os.Getenv("GOPROXY"))
+}
+
 // newestMature is the newest stable version above current that is at least minAgeDays old,
 // and the newest stable version of any age.
-func newestMature(path, current string, info func(version string) (time.Time, error)) (mature, newest *candidate, err error) {
+func newestMature(proxyBase, path, current string, info func(version string) (time.Time, error)) (mature, newest *candidate, err error) {
 	cur, ok := stable(current)
 	if !ok {
 		cur = [3]int{}
 	}
-	list, err := getText("https://proxy.golang.org/" + escapePath(path) + "/@v/list")
+	if proxyBase == "" {
+		proxyBase = defaultGoProxy
+	}
+	list, err := getText(strings.TrimRight(proxyBase, "/") + "/" + escapePath(path) + "/@v/list")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -230,10 +262,14 @@ func newestMature(path, current string, info func(version string) (time.Time, er
 	return nil, newest, nil
 }
 
-func moduleTime(path string) func(string) (time.Time, error) {
+func moduleTime(proxyBase, path string) func(string) (time.Time, error) {
+	if proxyBase == "" {
+		proxyBase = defaultGoProxy
+	}
+	base := strings.TrimRight(proxyBase, "/")
 	return func(version string) (time.Time, error) {
 		var info struct{ Time time.Time }
-		err := getJSON("https://proxy.golang.org/"+escapePath(path)+"/@v/"+version+".info", &info)
+		err := getJSON(base+"/"+escapePath(path)+"/@v/"+version+".info", &info)
 		return info.Time, err
 	}
 }
@@ -255,6 +291,7 @@ func runInventory() (int, error) {
 			direct = append(direct, m)
 		}
 	}
+	proxyBase := resolveGoProxy()
 	rows := make([]row, len(direct))
 	errs := make([]error, len(direct))
 	var wg sync.WaitGroup
@@ -265,7 +302,7 @@ func runInventory() (int, error) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			mature, newest, err := newestMature(m.Path, m.Version, moduleTime(m.Path))
+			mature, newest, err := newestMature(proxyBase, m.Path, m.Version, moduleTime(proxyBase, m.Path))
 			rows[i], errs[i] = row{name: m.Path, current: m.Version, mature: mature, newest: newest}, err
 		}(i, m)
 	}
@@ -294,7 +331,7 @@ func runInventory() (int, error) {
 		if !r.Stable || !ok || !less(cur, p) {
 			continue
 		}
-		at, err := moduleTime("golang.org/toolchain")("v0.0.1-go" + v + ".windows-amd64")
+		at, err := moduleTime(proxyBase, "golang.org/toolchain")("v0.0.1-go" + v + ".windows-amd64")
 		if err != nil {
 			return 0, err
 		}
@@ -407,7 +444,7 @@ func runAudit() (int, error) {
 		}
 	}
 
-	today := time.Now().Format("2006-01-02")
+	now := time.Now()
 	matches := func(id string, e exception) bool {
 		if e.Advisory == id {
 			return true
@@ -458,9 +495,9 @@ func runAudit() (int, error) {
 		fmt.Printf("[deps] %d more in required modules that the code does not call (not a failure; upgrading the module clears them; details: go run %s -show verbose ./...)\n", notCalled, govulncheck)
 	}
 	for _, e := range file.Exceptions {
-		if e.ReviewBy == "" || e.ReviewBy < today {
+		if bad, reason := reviewByExpired(e.ReviewBy, now); bad {
 			expired++
-			fmt.Fprintf(os.Stderr, "[deps] exception %s (%s) passed its reviewBy date %q\n", e.Advisory, e.Module, e.ReviewBy)
+			fmt.Fprintf(os.Stderr, "[deps] exception %s (%s): %s\n", e.Advisory, e.Module, reason)
 		}
 		if !used[e.Advisory] {
 			fmt.Printf("[deps] exception %s (%s) no longer matches a called vulnerability: remove it\n", e.Advisory, e.Module)
@@ -476,4 +513,22 @@ func runAudit() (int, error) {
 		return 1, nil
 	}
 	return 0, nil
+}
+
+// reviewByExpired validates reviewBy as YYYY-MM-DD and reports whether it is
+// missing, malformed, or earlier than now's calendar date.
+func reviewByExpired(reviewBy string, now time.Time) (bool, string) {
+	s := strings.TrimSpace(reviewBy)
+	if s == "" {
+		return true, "missing reviewBy date"
+	}
+	parsed, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return true, fmt.Sprintf("invalid reviewBy date %q (want YYYY-MM-DD)", reviewBy)
+	}
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	if parsed.Before(today) {
+		return true, fmt.Sprintf("passed its reviewBy date %q", reviewBy)
+	}
+	return false, ""
 }

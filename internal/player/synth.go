@@ -399,6 +399,12 @@ func (d *SynthLiveDecoder) Close() error {
 
 // NV12ToRGBA converts an NV12 YUV 4:2:0 frame buffer into *image.RGBA (BT.709 integer math).
 func NV12ToRGBA(nv12 []byte, width, height, stride int, dst *image.RGBA) *image.RGBA {
+	if width <= 0 || height <= 0 {
+		if dst == nil {
+			return image.NewRGBA(image.Rect(0, 0, 0, 0))
+		}
+		return dst
+	}
 	if stride < width {
 		stride = width
 	}
@@ -406,7 +412,8 @@ func NV12ToRGBA(nv12 []byte, width, height, stride int, dst *image.RGBA) *image.
 		dst = image.NewRGBA(image.Rect(0, 0, width, height))
 	}
 	yPlaneSize := stride * height
-	if len(nv12) < yPlaneSize+(stride*height)/2 {
+	uvRows := (height + 1) / 2
+	if len(nv12) < yPlaneSize+uvRows*stride {
 		return dst
 	}
 	uvPlane := nv12[yPlaneSize:]
@@ -414,16 +421,22 @@ func NV12ToRGBA(nv12 []byte, width, height, stride int, dst *image.RGBA) *image.
 
 	for y := 0; y < height; y++ {
 		yRow := nv12[y*stride:]
-		uvRow := uvPlane[(y/2)*stride:]
+		uvRow := uvPlane[(y/2)*stride : (y/2+1)*stride]
 		dstRow := pix[y*dst.Stride:]
 		for x := 0; x < width; x++ {
 			yv := int(yRow[x]) - 16
 			if yv < 0 {
 				yv = 0
 			}
-			uvIdx := (x & ^1)
-			u := int(uvRow[uvIdx]) - 128
-			v := int(uvRow[uvIdx+1]) - 128
+			uvIdx := x & ^1
+			var u, v int
+			if uvIdx+1 < len(uvRow) {
+				u = int(uvRow[uvIdx]) - 128
+				v = int(uvRow[uvIdx+1]) - 128
+			} else if len(uvRow) >= 2 {
+				u = int(uvRow[len(uvRow)-2]) - 128
+				v = int(uvRow[len(uvRow)-1]) - 128
+			}
 
 			c := 298 * yv
 			r := (c + 459*v + 128) >> 8
@@ -442,6 +455,12 @@ func NV12ToRGBA(nv12 []byte, width, height, stride int, dst *image.RGBA) *image.
 
 // BGRA32ToRGBA converts a Windows MFVideoFormat_RGB32 (BGRA in memory) buffer into *image.RGBA.
 func BGRA32ToRGBA(bgra []byte, width, height, stride int, dst *image.RGBA) *image.RGBA {
+	if width <= 0 || height <= 0 {
+		if dst == nil {
+			return image.NewRGBA(image.Rect(0, 0, 0, 0))
+		}
+		return dst
+	}
 	if stride == 0 {
 		stride = width * 4
 	}
@@ -452,7 +471,7 @@ func BGRA32ToRGBA(bgra []byte, width, height, stride int, dst *image.RGBA) *imag
 	if absStride < 0 {
 		absStride = -absStride
 	}
-	if len(bgra) < absStride*height {
+	if absStride < width*4 || len(bgra) < absStride*(height-1)+width*4 {
 		return dst
 	}
 	pix := dst.Pix
@@ -489,6 +508,12 @@ func clampByte(v int) uint8 {
 // Foundation's ABGR32) row by row, honouring padded or bottom-up rows, and
 // makes them opaque: a video frame never shows what is behind it.
 func RGBA32Rows(src []byte, width, height, stride int, dst *image.RGBA) *image.RGBA {
+	if width <= 0 || height <= 0 {
+		if dst == nil {
+			return image.NewRGBA(image.Rect(0, 0, 0, 0))
+		}
+		return dst
+	}
 	if stride == 0 {
 		stride = width * 4
 	}
@@ -522,7 +547,7 @@ func RGBA32Rows(src []byte, width, height, stride int, dst *image.RGBA) *image.R
 func contiguousStride(format string, width, height, typeStride, length int) int {
 	rows, minRow := height, width*4
 	if format == "nv12" {
-		rows, minRow = height*3/2, width
+		rows, minRow = height+(height+1)/2, width
 	}
 	if rows <= 0 || length%rows != 0 {
 		return typeStride

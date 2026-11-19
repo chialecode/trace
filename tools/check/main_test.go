@@ -153,6 +153,22 @@ func TestDependencyDirectionRulesSynthetic(t *testing.T) {
 			record:    "github.com/chialecode/trace/internal/ui|github.com/chialecode/trace/internal/site/douyin/sign|github.com/chialecode/trace/internal/site/douyin/sign",
 			wantError: "ui decoupling violation",
 		},
+
+		// Rule 9: trace-server links no window, player or shell code.
+		{
+			name:   "trace-server with service and remoteserver accepted",
+			record: "github.com/chialecode/trace/cmd/trace-server|github.com/chialecode/trace/internal/remoteserver|github.com/chialecode/trace/internal/service,github.com/chialecode/trace/internal/uistate",
+		},
+		{
+			name:      "trace-server depending on MyGo rejected",
+			record:    "github.com/chialecode/trace/cmd/trace-server|github.com/chialecode/trace/internal/remoteserver|github.com/egoist/mygo/ui",
+			wantError: "INV-05 violation",
+		},
+		{
+			name:      "trace-server depending on the player rejected",
+			record:    "github.com/chialecode/trace/cmd/trace-server|github.com/chialecode/trace/internal/remoteserver|github.com/chialecode/trace/internal/player",
+			wantError: "server size violation",
+		},
 	}
 
 	for _, tc := range cases {
@@ -171,5 +187,30 @@ func TestDependencyDirectionRulesSynthetic(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", err.Error(), tc.wantError)
 			}
 		})
+	}
+}
+
+func TestCheckDependencyDirectionTargetsAndLinuxOnlyViolation(t *testing.T) {
+	if got := strings.Join(dependencyCheckTargets("windows"), ","); got != "windows,linux" {
+		t.Fatalf("dependencyCheckTargets(windows) = %q, want windows,linux", got)
+	}
+	if got := strings.Join(dependencyCheckTargets("linux"), ","); got != "linux" {
+		t.Fatalf("dependencyCheckTargets(linux) = %q, want linux", got)
+	}
+
+	var checked []string
+	err := checkDependencyDirectionWith(dependencyCheckTargets("windows"), func(goos string) (string, error) {
+		checked = append(checked, goos)
+		if goos == "windows" {
+			return "github.com/chialecode/trace/internal/site|context,strings|context,strings\n", nil
+		}
+		// Forbidden import present only under GOOS=linux (e.g. *_linux.go / *_other.go).
+		return "github.com/chialecode/trace/internal/site|context,github.com/chialecode/trace/internal/credential|context,github.com/chialecode/trace/internal/credential\n", nil
+	})
+	if strings.Join(checked, ",") != "windows,linux" {
+		t.Fatalf("checked GOOS list = %v, want [windows linux]", checked)
+	}
+	if err == nil || !strings.Contains(err.Error(), "GOOS=linux") || !strings.Contains(err.Error(), "site stdlib-only violation") {
+		t.Fatalf("expected GOOS=linux violation, got %v", err)
 	}
 }

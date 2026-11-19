@@ -16,8 +16,7 @@ import (
 
 // Refreshing an account's live status by hand (the account page) starts
 // recording a broadcast it finds live when the account's subscription
-// records broadcasts, without waiting for the next poll round (dev
-// 2026-11-18: the refresh showed 直播中 and nothing recorded). An account
+// records broadcasts, without waiting for the next poll round. An account
 // whose subscription does not record is only refreshed.
 func TestManualLiveRefreshStartsAutoRecording(t *testing.T) {
 	const (

@@ -104,7 +104,7 @@ func (a *App) applyMainFeedView(v *homeFeedView) {
 func (a *App) restoreHomePosition() bool {
 	site := normalizeSiteFilter(a.FeedSiteFilter)
 	pos, ok := a.backend.GetUIState().HomePositions[site]
-	if !ok {
+	if !ok || pos.Key == "" {
 		return false
 	}
 	// "\x00" makes the cursor take the post itself: no key lies between

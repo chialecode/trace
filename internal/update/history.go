@@ -1,11 +1,8 @@
 package update
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,7 +15,7 @@ import (
 	"github.com/chialecode/trace/internal/storage"
 )
 
-// Schema and retention bounds for <DataDir>/update-history.json (DEC-051 ①, Q-018 #1).
+// Schema and retention bounds for <DataDir>/update-history.json (DEC-051 ①).
 const (
 	HistoryFileName      = "update-history.json"
 	HistorySchemaVersion = 1
@@ -82,28 +79,8 @@ func MethodLabel(method string) string {
 // FormatCheckResult turns the outcome of Engine.Check into a sanitized check-history result string.
 func FormatCheckResult(rel *Release, err error) string {
 	if err != nil {
-		if IsRejection(err) {
-			return msgHistoryFailedPrefix + "：" + MsgRejected
-		}
-		var st *HTTPStatusError
-		if errors.As(err, &st) {
-			if st.Status == 404 {
-				return msgHistoryFailedPrefix + "：还没有发布的版本"
-			}
-			return fmt.Sprintf("%s：更新服务器返回 HTTP %d", msgHistoryFailedPrefix, st.Status)
-		}
-		var ne net.Error
-		if errors.As(err, &ne) || errors.Is(err, context.DeadlineExceeded) {
-			return msgHistoryFailedPrefix + "：无法连接 GitHub，请检查网络或代理"
-		}
-		reason := SanitizeHistoryText(err.Error(), nil)
-		reason = strings.TrimPrefix(reason, msgCheckFailed+"：")
-		reason = strings.TrimPrefix(reason, msgHistoryFailedPrefix+"：")
-		reason = strings.TrimSpace(reason)
-		if reason == "" {
-			return msgHistoryFailedPrefix + "：请求异常"
-		}
-		return msgHistoryFailedPrefix + "：" + shorten(reason, 80)
+		_, detail := classifyUpdateError(err)
+		return msgHistoryFailedPrefix + "：" + detail
 	}
 	if rel == nil {
 		return MsgUpToDate

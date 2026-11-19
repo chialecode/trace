@@ -243,7 +243,7 @@ func TestPlayerVolumeAndDensityInputsChangePlaybackAndPersist(t *testing.T) {
 	if app.player.Snapshot(1, 1).DanmakuDensity != "high" || app.backend.GetUIState().Player.DanmakuDensity != "high" {
 		t.Fatal("density selection did not change and persist playback")
 	}
-	// F-042: the area menu shows Chinese choices, never the stored machine values.
+	// The area menu shows Chinese choices, never the stored machine values.
 	if err := tester.Click("弹幕显示区域"); err != nil {
 		t.Fatal(err)
 	}

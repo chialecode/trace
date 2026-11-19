@@ -226,6 +226,21 @@ func TestExtractShareURLAndRegistryDispatch(t *testing.T) {
 			in:   "打开 v.douyin.com/AbCdEf9/ 查看视频。",
 			want: "https://v.douyin.com/AbCdEf9/",
 		},
+		{
+			name: "expanding unicode before url does not panic",
+			in:   "İİİİİİİİİİİİİİİİ https://www.bilibili.com/video/BV1xx411c7mD",
+			want: "https://www.bilibili.com/video/BV1xx411c7mD",
+		},
+		{
+			name: "bare acg.tv and m.douyin.com links",
+			in:   "查看 acg.tv/av170001",
+			want: "https://acg.tv/av170001",
+		},
+		{
+			name: "bare m.douyin.com link",
+			in:   "打开 m.douyin.com/share/video/7300000000000000001",
+			want: "https://m.douyin.com/share/video/7300000000000000001",
+		},
 	}
 	for _, tc := range cases {
 		got, ok := ExtractShareURL(tc.in)

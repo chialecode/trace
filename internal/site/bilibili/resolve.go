@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/chialecode/trace/internal/site"
 )
 
 // ResolveTarget describes a normalized Bilibili target parsed from user input.
@@ -205,7 +207,7 @@ func (c *Client) resolveURL(ctx context.Context, rawURL string, allowShortHop bo
 		}
 	}
 
-	pathParts := splitCleanPath(u.Path)
+	pathParts := site.SplitCleanPath(u.Path)
 	page := 1
 	if pStr := u.Query().Get("p"); pStr != "" {
 		if p, err := strconv.Atoi(pStr); err == nil && p > 0 {
@@ -312,8 +314,9 @@ func (c *Client) resolveURL(ctx context.Context, rawURL string, allowShortHop bo
 				Unsupported:  true,
 				Reason:       "当前版本暂不支持番剧/影视解析，仅支持普通投稿视频、用户、动态与直播",
 			}, &SiteError{
-				Kind:    ErrKindBadRequest,
-				Message: "当前版本暂不支持番剧/影视解析，仅支持普通投稿视频、用户、动态与直播",
+				Kind:        ErrKindBadRequest,
+				Unsupported: true,
+				Message:     "当前版本暂不支持番剧/影视解析，仅支持普通投稿视频、用户、动态与直播",
 			}
 		case "read":
 			return ResolveTarget{
@@ -324,8 +327,9 @@ func (c *Client) resolveURL(ctx context.Context, rawURL string, allowShortHop bo
 				Unsupported:  true,
 				Reason:       "当前版本暂不支持专栏文章独立解析",
 			}, &SiteError{
-				Kind:    ErrKindBadRequest,
-				Message: "当前版本暂不支持专栏文章独立解析",
+				Kind:        ErrKindBadRequest,
+				Unsupported: true,
+				Message:     "当前版本暂不支持专栏文章独立解析",
 			}
 		}
 	}
@@ -337,23 +341,62 @@ func (c *Client) resolveURL(ctx context.Context, rawURL string, allowShortHop bo
 }
 
 func (c *Client) resolveShortLink(ctx context.Context, shortURL string) (ResolveTarget, error) {
-	targetURL := shortURL
-	if c.allowLocalhost {
-		if u, err := url.Parse(shortURL); err == nil && (u.Hostname() == "b23.tv" || u.Hostname() == "www.b23.tv") {
-			// Redirect b23.tv to test APIBase /b23/<path> when running against local httptest server.
-			targetURL = strings.TrimRight(c.endpoints.APIBase, "/") + "/b23/" + strings.TrimLeft(u.Path, "/")
+	u, parseErr := url.Parse(shortURL)
+	if parseErr != nil || u.Host == "" || u.User != nil {
+		return ResolveTarget{}, &SiteError{
+			Kind:    ErrKindBadRequest,
+			Message: "无效的短链格式",
+		}
+	}
+	safeShort := site.SanitizeEndpoint(shortURL)
+	host := strings.ToLower(u.Hostname())
+	isB23 := host == "b23.tv" || host == "www.b23.tv"
+	if !c.allowLocalhost {
+		if !isB23 || !strings.EqualFold(u.Scheme, "https") {
+			return ResolveTarget{}, &SiteError{
+				Kind:     ErrKindBlocked,
+				Endpoint: safeShort,
+				Message:  "已拦截非 HTTPS 短链地址",
+			}
+		}
+		if port := u.Port(); port != "" && port != "443" {
+			return ResolveTarget{}, &SiteError{
+				Kind:     ErrKindBlocked,
+				Endpoint: safeShort,
+				Message:  "已拦截非标准端口的短链地址",
+			}
 		}
 	}
 
-	resp, _, err := c.doAPIRequest(ctx, http.MethodGet, targetURL, nil, "", false)
-	if err != nil && resp == nil {
-		return ResolveTarget{}, err
+	targetURL := shortURL
+	if c.allowLocalhost && isB23 {
+		// Redirect b23.tv to test APIBase /b23/<path> when running against local httptest server.
+		targetURL = strings.TrimRight(c.endpoints.APIBase, "/") + "/b23/" + strings.TrimLeft(u.Path, "/")
 	}
-	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+
+	resp, _, err := c.doAPIRequest(ctx, http.MethodGet, targetURL, nil, "", false)
+	if err != nil {
+		if resp == nil {
+			c.ReportAutomaticError(ctx, err)
+			return ResolveTarget{}, err
+		}
+		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+			if site.IsRoundStop(err) || site.IsKind(err, ErrKindForbidden) {
+				c.ReportAutomaticError(ctx, err)
+				return ResolveTarget{}, err
+			}
+			return ResolveTarget{}, &SiteError{
+				Kind:       ErrKindBlocked,
+				HTTPStatus: resp.StatusCode,
+				Endpoint:   safeShort,
+				Message:    "短链未返回有效的重定向响应",
+			}
+		}
+	} else if resp.StatusCode < 300 || resp.StatusCode >= 400 {
 		return ResolveTarget{}, &SiteError{
 			Kind:       ErrKindBlocked,
 			HTTPStatus: resp.StatusCode,
-			Endpoint:   shortURL,
+			Endpoint:   safeShort,
 			Message:    "短链未返回有效的重定向响应",
 		}
 	}
@@ -362,7 +405,7 @@ func (c *Client) resolveShortLink(ctx context.Context, shortURL string) (Resolve
 	if loc == "" {
 		return ResolveTarget{}, &SiteError{
 			Kind:     ErrKindBlocked,
-			Endpoint: shortURL,
+			Endpoint: safeShort,
 			Message:  "短链响应缺少 Location 重定向目标",
 		}
 	}
@@ -371,16 +414,16 @@ func (c *Client) resolveShortLink(ctx context.Context, shortURL string) (Resolve
 	if err != nil || locURL.Host == "" {
 		return ResolveTarget{}, &SiteError{
 			Kind:     ErrKindBlocked,
-			Endpoint: shortURL,
+			Endpoint: safeShort,
 			Message:  "短链重定向目标格式无效",
 		}
 	}
 
-	// Enforce HTTPS and *.bilibili.com target host on redirect Location (C02).
+	// Enforce HTTPS and *.bilibili.com target host on redirect Location.
 	if !strings.EqualFold(locURL.Scheme, "https") {
 		return ResolveTarget{}, &SiteError{
 			Kind:     ErrKindBlocked,
-			Endpoint: shortURL,
+			Endpoint: safeShort,
 			Message:  "已拦截非 HTTPS 短链重定向目标",
 		}
 	}
@@ -388,7 +431,7 @@ func (c *Client) resolveShortLink(ctx context.Context, shortURL string) (Resolve
 	if !isBilibiliHost(locHost) {
 		return ResolveTarget{}, &SiteError{
 			Kind:     ErrKindBlocked,
-			Endpoint: shortURL,
+			Endpoint: safeShort,
 			Message:  fmt.Sprintf("已拦截非哔哩哔哩短链重定向域名: %s", locHost),
 		}
 	}
@@ -415,17 +458,6 @@ func (c *Client) resolveLiveRoom(ctx context.Context, roomOrShortID int64) (Reso
 func isBilibiliHost(host string) bool {
 	host = strings.ToLower(host)
 	return host == "bilibili.com" || strings.HasSuffix(host, ".bilibili.com")
-}
-
-func splitCleanPath(p string) []string {
-	raw := strings.Split(strings.Trim(p, "/"), "/")
-	out := make([]string, 0, len(raw))
-	for _, s := range raw {
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 func normalizeBVID(s string) string {

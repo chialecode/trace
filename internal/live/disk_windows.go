@@ -1,16 +1,16 @@
+//go:build windows
+
 package live
 
 import (
+	"errors"
+
 	"golang.org/x/sys/windows"
-	"path/filepath"
 )
 
 func getFreeDiskBytes(dir string) (uint64, error) {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		abs = dir
-	}
-	ptr, err := windows.UTF16PtrFromString(abs)
+	target := nearestExistingDir(dir)
+	ptr, err := windows.UTF16PtrFromString(target)
 	if err != nil {
 		return 0, err
 	}
@@ -19,4 +19,8 @@ func getFreeDiskBytes(dir string) (uint64, error) {
 		return 0, err
 	}
 	return freeBytesAvailable, nil
+}
+
+func isPlatformDiskFullError(err error) bool {
+	return errors.Is(err, windows.ERROR_DISK_FULL) || errors.Is(err, windows.ERROR_HANDLE_DISK_FULL)
 }

@@ -3,9 +3,13 @@
 package build
 
 import (
+	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -40,5 +44,26 @@ func TestLockedBundleFileRestoresPreviousPackage(t *testing.T) {
 				t.Fatalf("a successful rollback retained unnecessary backups: %v err=%v", backups, err)
 			}
 		})
+	}
+}
+
+func TestRunQuietContextTimesOut(t *testing.T) {
+	if os.Getenv("TRACE_TEST_HANG_HELPER") == "1" {
+		time.Sleep(10 * time.Second)
+		return
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err = RunQuietContext(ctx, self, []string{"-test.run=^TestRunQuietContextTimesOut$"}, append(os.Environ(), "TRACE_TEST_HANG_HELPER=1"))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("RunQuietContext took too long to cancel: %s", time.Since(start))
 	}
 }

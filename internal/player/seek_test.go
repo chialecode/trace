@@ -41,10 +41,8 @@ func (d *seekRecorder) PreviewFrameAt(pos time.Duration, dst *image.RGBA) (*imag
 	return d.SynthDecoder.DecodeVideoFrameAt(pos, dst)
 }
 
-// F-059: a seek moved both readers twice, once from the UI thread and once
-// from the audio sink's goroutine (through SetPosition), so the audio reader
-// jumped under the sink while it read, and the video reader was pulled back
-// to the key frame after the worker had caught up.
+// Seeking moves only the audio reader from the sink while the video worker
+// seeks the video reader itself, avoiding double seeks and reader jumps.
 func TestSeekMovesOnlyTheAudioReaderFromTheSink(t *testing.T) {
 	dec := &seekRecorder{slowDecoder: &slowDecoder{SynthDecoder: NewSynthDecoder(64, 36, 60*time.Second, 30)}}
 	c := NewController(Options{AudioSink: NewNullAudioSink()})
@@ -70,9 +68,8 @@ func TestSeekMovesOnlyTheAudioReaderFromTheSink(t *testing.T) {
 	})
 }
 
-// F-059: dragging the progress bar sought audio and video every frame.
-// Now it previews key frames with the audio held, and seeks once on release,
-// resuming playback.
+// Dragging the progress bar previews key frames with audio held, then seeks
+// once on release and resumes playback if it was running.
 func TestDraggingTheProgressBarPreviewsThenSeeksOnce(t *testing.T) {
 	dec := &seekRecorder{slowDecoder: &slowDecoder{SynthDecoder: NewSynthDecoder(64, 36, 60*time.Second, 30)}}
 	sink := NewNullAudioSink()
@@ -125,9 +122,8 @@ func TestDraggingTheProgressBarPreviewsThenSeeksOnce(t *testing.T) {
 	}
 }
 
-// F-059: after a seek during playback the sound waited for nothing and ran
-// ahead of a picture still decoding from the key frame. The audio is held
-// until the first frame at the new position is ready.
+// After a seek during playback, audio is held until the first frame at the new
+// position is ready so sound does not run ahead of decoding.
 func TestSeekWhilePlayingHoldsAudioForTheFirstFrame(t *testing.T) {
 	dec := &seekRecorder{slowDecoder: &slowDecoder{SynthDecoder: NewSynthDecoder(64, 36, 60*time.Second, 30), delay: 120 * time.Millisecond}}
 	sink := NewNullAudioSink()

@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -48,6 +47,7 @@ type SelectedVODStream struct {
 	BitRate      int64    `json:"bitRate,omitempty"`
 	DataSize     int64    `json:"dataSize,omitempty"`
 	DurationSec  int      `json:"durationSec,omitempty"`
+	NeedSetToken bool     `json:"needSetToken,omitempty"`
 	URLs         []string `json:"-"`
 }
 
@@ -70,7 +70,7 @@ type MusicInfo struct {
 	Author          string   `json:"author,omitempty"`
 	DurationSec     int      `json:"durationSec,omitempty"`
 	IsOriginalSound bool     `json:"isOriginalSound"`
-	CoverURL        string   `json:"coverUrl,omitempty"`
+	CoverURL        string   `json:"-"`
 	PlayURLs        []string `json:"-"`
 }
 
@@ -93,7 +93,7 @@ type AuthorSummary struct {
 	ShortID   string `json:"shortId,omitempty"`
 	Nickname  string `json:"nickname"`
 	Signature string `json:"signature,omitempty"`
-	AvatarURL string `json:"avatarUrl,omitempty"`
+	AvatarURL string `json:"-"`
 	RoomID    string `json:"roomId,omitempty"`
 	WebRID    string `json:"webRid,omitempty"`
 }
@@ -200,18 +200,20 @@ type rawBitRateEntry struct {
 }
 
 type rawVideoNode struct {
-	Width        int               `json:"width"`
-	Height       int               `json:"height"`
-	Duration     int64             `json:"duration"`
-	Format       string            `json:"format"`
-	IsBytevc1    int               `json:"is_bytevc1"`
-	EncryptType  int               `json:"encrypt_type"`
-	PlayAddr     *rawURLContainer  `json:"play_addr"`
-	PlayAddrH264 *rawURLContainer  `json:"play_addr_h264"`
-	PlayAddr265  *rawURLContainer  `json:"play_addr_265"`
-	BitRate      []rawBitRateEntry `json:"bit_rate"`
-	OriginCover  *rawURLContainer  `json:"origin_cover"`
-	Cover        *rawURLContainer  `json:"cover"`
+	Width           int               `json:"width"`
+	Height          int               `json:"height"`
+	Duration        int64             `json:"duration"`
+	Format          string            `json:"format"`
+	IsBytevc1       int               `json:"is_bytevc1"`
+	EncryptType     int               `json:"encrypt_type"`
+	NeedSetToken    bool              `json:"need_set_token"`
+	IsNeedSetCookie bool              `json:"is_need_set_cookie"`
+	PlayAddr        *rawURLContainer  `json:"play_addr"`
+	PlayAddrH264    *rawURLContainer  `json:"play_addr_h264"`
+	PlayAddr265     *rawURLContainer  `json:"play_addr_265"`
+	BitRate         []rawBitRateEntry `json:"bit_rate"`
+	OriginCover     *rawURLContainer  `json:"origin_cover"`
+	Cover           *rawURLContainer  `json:"cover"`
 	// Note: download_addr & download_suffix_logo_addr are intentionally excluded (watermarked).
 }
 
@@ -452,6 +454,7 @@ func parseAwemeWork(node *rawAwemeNode, opts StreamSelectOptions, allowLocalhost
 			pages = append(pages, page)
 		}
 		work.Pages = pages
+		work.Music = noteMusicWithFallback(work.Music, node.Video, allowLocalhost)
 		if len(pages) > 0 && len(pages[0].ImageURLs) > 0 {
 			work.CoverURLs = append([]string(nil), pages[0].ImageURLs...)
 		} else if node.Video != nil {
@@ -621,6 +624,7 @@ func collectVODStreams(v *rawVideoNode, opts StreamSelectOptions, allowLocalhost
 	}
 
 	durSec := normalizeDurationSec(v.Duration, 0)
+	needSetToken := v.NeedSetToken || v.IsNeedSetCookie
 	var out []SelectedVODStream
 
 	for _, br := range v.BitRate {
@@ -654,6 +658,7 @@ func collectVODStreams(v *rawVideoNode, opts StreamSelectOptions, allowLocalhost
 			BitRate:      br.BitRate,
 			DataSize:     dataSize,
 			DurationSec:  durSec,
+			NeedSetToken: needSetToken,
 			URLs:         urls,
 		})
 	}
@@ -680,6 +685,7 @@ func collectVODStreams(v *rawVideoNode, opts StreamSelectOptions, allowLocalhost
 				Height:       h,
 				DataSize:     sz,
 				DurationSec:  durSec,
+				NeedSetToken: needSetToken,
 				URLs:         urls,
 			})
 		}
@@ -783,7 +789,7 @@ func filterAndOrderVODURLs(raw []string, allowLocalhost bool) []string {
 			score = 4
 		case strings.Contains(host, "-mc-cold"):
 			score = 3
-		case site.MatchDomainSuffix(host, []string{"douyinvod.com", "zjcdn.com"}) || (allowLocalhost && isLoopbackHost(host)):
+		case site.MatchDomainSuffix(host, []string{"douyinvod.com", "zjcdn.com"}) || (allowLocalhost && site.IsLoopbackHost(host)):
 			score = 1
 		}
 		seen[uStr] = true
@@ -888,6 +894,29 @@ func parseMusicNode(m *rawMusicNode, allowLocalhost bool) *MusicInfo {
 	}
 }
 
+// noteMusicWithFallback fills a note's music play URLs from the top-level
+// video.play_addr when music.play_url has none: on a note that container
+// carries the background music audio (§6.4). The download still checks the
+// bytes are audio. Without a music node the fallback is not used, so a
+// note never gains music the site did not describe.
+func noteMusicWithFallback(music *MusicInfo, video *rawVideoNode, allowLocalhost bool) *MusicInfo {
+	if music == nil || len(music.PlayURLs) > 0 || video == nil || video.PlayAddr == nil {
+		return music
+	}
+	var urls []string
+	for _, u := range video.PlayAddr.URLList {
+		if norm := upgradeDouyinHTTPS(u, allowLocalhost); norm != "" {
+			urls = append(urls, norm)
+		}
+	}
+	if len(urls) == 0 {
+		return music
+	}
+	out := *music
+	out.PlayURLs = dedupStrings(urls)
+	return &out
+}
+
 var reVideoURI = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
 
 // originalSourceURLs builds the play redirector URL for the untranscoded source
@@ -925,6 +954,16 @@ func detectPaidOrEncrypted(node *rawAwemeNode) (bool, string) {
 		}
 		if node.Video.PlayAddr != nil {
 			for _, u := range node.Video.PlayAddr.URLList {
+				if parsed, err := url.Parse(u); err == nil && isEncryptedQuery(parsed) {
+					return true, "该作品视频流已加密，不支持缓存"
+				}
+			}
+		}
+		for _, br := range node.Video.BitRate {
+			if br.PlayAddr == nil {
+				continue
+			}
+			for _, u := range br.PlayAddr.URLList {
 				if parsed, err := url.Parse(u); err == nil && isEncryptedQuery(parsed) {
 					return true, "该作品视频流已加密，不支持缓存"
 				}
@@ -1005,10 +1044,11 @@ func normalizeDurationSec(videoMs, outerMs int64) int {
 	if v <= 0 {
 		return 0
 	}
-	if v >= 1000 {
-		return int((v + 500) / 1000)
+	sec := int((v + 500) / 1000)
+	if sec < 1 {
+		return 1
 	}
-	return int(v)
+	return sec
 }
 
 func rawNumberOrString(raw json.RawMessage) string {
@@ -1060,8 +1100,4 @@ func dedupStrings(in []string) []string {
 		}
 	}
 	return out
-}
-
-func strconvFormatInt64(v int64) string {
-	return strconv.FormatInt(v, 10)
 }

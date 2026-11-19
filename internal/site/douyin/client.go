@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -206,9 +207,10 @@ func NewClient(opts ClientOptions) *Client {
 		maxBytes = defaultMaxBodyBytes
 	}
 
-	baseTransport := opts.Transport
-	if baseTransport == nil {
-		baseTransport = &http.Transport{
+	apiTransport := opts.Transport
+	mediaTransport := opts.Transport
+	if apiTransport == nil {
+		apiTransport = &http.Transport{
 			Proxy:                 site.Proxy,
 			MaxIdleConns:          16,
 			MaxIdleConnsPerHost:   4,
@@ -217,9 +219,30 @@ func NewClient(opts ClientOptions) *Client {
 			ExpectContinueTimeout: 1 * time.Second,
 			ResponseHeaderTimeout: apiTimeout,
 		}
+		mediaDialer := &net.Dialer{
+			Timeout:   15 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}
+		mediaGuard := site.NewGuardedMediaDialer(site.Douyin, opts.AllowLocalhost, mediaDialer, "已拦截内网或回环媒体节点地址")
+		mediaTransport = &http.Transport{
+			Proxy:                 mediaGuard.Proxy,
+			DialContext:           mediaGuard.DialContext,
+			MaxIdleConns:          16,
+			MaxIdleConnsPerHost:   4,
+			IdleConnTimeout:       60 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			ResponseHeaderTimeout: apiTimeout,
+		}
+		if opts.AllowLocalhost {
+			// Fixture clients using real transports must never escape to the real site.
+			apiTransport = site.LoopbackTransport(apiTransport)
+			mediaTransport = site.LoopbackTransport(mediaTransport)
+		}
 	}
 	if opts.WrapTransport != nil {
-		baseTransport = opts.WrapTransport(baseTransport)
+		apiTransport = opts.WrapTransport(apiTransport)
+		mediaTransport = opts.WrapTransport(mediaTransport)
 	}
 
 	noRedirect := func(*http.Request, []*http.Request) error {
@@ -244,17 +267,17 @@ func NewClient(opts ClientOptions) *Client {
 		webRIDByUser:   make(map[string]liveWebRIDEntry),
 	}
 	c.httpClient = &http.Client{
-		Transport:     baseTransport,
+		Transport:     apiTransport,
 		Timeout:       apiTimeout,
 		CheckRedirect: noRedirect,
 	}
 	c.redirectClient = &http.Client{
-		Transport:     baseTransport,
+		Transport:     apiTransport,
 		Timeout:       redirTimeout,
 		CheckRedirect: noRedirect,
 	}
 	c.mediaClient = &http.Client{
-		Transport:     baseTransport,
+		Transport:     mediaTransport,
 		Timeout:       apiTimeout,
 		CheckRedirect: noRedirect,
 	}
@@ -293,6 +316,184 @@ func (c *Client) VODTransport() site.MediaTransportSpec {
 // LiveTransport returns the Douyin live CDN transport policy.
 func (c *Client) LiveTransport() site.MediaTransportSpec {
 	return site.DouyinLiveTransport(c.profile.UserAgent, c.allowLocalhost)
+}
+
+// ResolvePlayRedirect resolves an authenticated Douyin main-site play redirector
+// URL (https://www.douyin.com/aweme/v1/play/?...) into a cookieless CDN media URL.
+// Cookies are sent ONLY to the validated Douyin API host and never forwarded on
+// redirects (douyin.md §7). Used for works/notes whose direct CDN URLs require
+// a session token (need_set_token=true / is_need_set_cookie=true) or return 403.
+func (c *Client) ResolvePlayRedirect(ctx context.Context, playURL string) (string, error) {
+	playURL = strings.TrimSpace(playURL)
+	parsedURL, err := url.Parse(playURL)
+	if err != nil || parsedURL.Host == "" {
+		return "", &site.Error{
+			Site:    site.Douyin,
+			Kind:    site.ErrKindBadRequest,
+			Message: "无效的抖音播放跳转地址",
+		}
+	}
+	if err := c.validateAPIURL(parsedURL); err != nil {
+		return "", err
+	}
+	cleanPath := strings.TrimSuffix(strings.ToLower(parsedURL.Path), "/")
+	if cleanPath != "/aweme/v1/play" {
+		return "", &site.Error{
+			Site:     site.Douyin,
+			Kind:     site.ErrKindBlocked,
+			Endpoint: sanitizeEndpointLabel(parsedURL),
+			Message:  "已拦截非播放跳转路径请求",
+		}
+	}
+	lowerRaw := strings.ToLower(playURL)
+	if strings.Contains(lowerRaw, "/playwm/") || strings.Contains(lowerRaw, "watermark=1") {
+		return "", &site.Error{
+			Site:     site.Douyin,
+			Kind:     site.ErrKindBlocked,
+			Endpoint: sanitizeEndpointLabel(parsedURL),
+			Message:  "已拦截带水印的播放跳转地址",
+		}
+	}
+
+	cookieHeader, _, _, _, usingStore, err := c.resolveCookieContext(apiRequestSpec{endpoint: playURL})
+	if err != nil {
+		c.ReportAutomaticError(ctx, err)
+		return "", err
+	}
+	if ctx.Err() != nil {
+		return "", &site.Error{
+			Site:     site.Douyin,
+			Kind:     site.ErrKindNetwork,
+			Endpoint: sanitizeEndpointLabel(parsedURL),
+			Message:  "请求已取消",
+			Err:      ctx.Err(),
+		}
+	}
+	if err := c.checkAutomaticBudget(ctx, sanitizeEndpointLabel(parsedURL)); err != nil {
+		return "", err
+	}
+	release, err := c.acquireSlotAndPace(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+	if err != nil {
+		return "", &site.Error{
+			Site:     site.Douyin,
+			Kind:     site.ErrKindBadRequest,
+			Endpoint: sanitizeEndpointLabel(parsedURL),
+			Message:  "构造抖音播放跳转请求失败",
+			Err:      site.UnwrapURLError(err),
+		}
+	}
+	c.applyAPIHeaders(req, DefaultReferer, "", cookieHeader, nil)
+
+	resp, err := c.redirectClient.Do(req)
+	if err != nil {
+		netErr := &site.Error{
+			Site:     site.Douyin,
+			Kind:     site.ErrKindNetwork,
+			Endpoint: sanitizeEndpointLabel(parsedURL),
+			Message:  "请求抖音播放跳转地址失败",
+			Err:      site.UnwrapURLError(err),
+		}
+		c.ReportAutomaticError(ctx, netErr)
+		return "", netErr
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		rawLoc := strings.TrimSpace(resp.Header.Get("Location"))
+		if rawLoc == "" {
+			return "", &site.Error{
+				Site:       site.Douyin,
+				Kind:       site.ErrKindUnavailable,
+				HTTPStatus: resp.StatusCode,
+				Endpoint:   sanitizeEndpointLabel(parsedURL),
+				Message:    "抖音播放跳转响应缺少目标地址",
+			}
+		}
+		lowerLoc := strings.ToLower(rawLoc)
+		if strings.Contains(lowerLoc, "login") || strings.Contains(lowerLoc, "passport") {
+			authErr := &site.Error{
+				Site:       site.Douyin,
+				Kind:       site.ErrKindAuthRequired,
+				HTTPStatus: resp.StatusCode,
+				Endpoint:   sanitizeEndpointLabel(parsedURL),
+				Message:    "抖音登录状态已失效，请在设置页重新粘贴 Cookie",
+			}
+			c.onClassifiedError(ctx, authErr, usingStore)
+			return "", authErr
+		}
+		if strings.Contains(lowerLoc, "verify") || strings.Contains(lowerLoc, "captcha") {
+			rcErr := &site.Error{
+				Site:       site.Douyin,
+				Kind:       site.ErrKindRiskControl,
+				HTTPStatus: resp.StatusCode,
+				Endpoint:   sanitizeEndpointLabel(parsedURL),
+				Message:    "抖音播放跳转触发验证拦截，已停止请求",
+			}
+			c.onClassifiedError(ctx, rcErr, usingStore)
+			return "", rcErr
+		}
+		locURL, pErr := url.Parse(rawLoc)
+		if pErr != nil {
+			return "", &site.Error{
+				Site:       site.Douyin,
+				Kind:       site.ErrKindBlocked,
+				HTTPStatus: resp.StatusCode,
+				Endpoint:   sanitizeEndpointLabel(parsedURL),
+				Message:    "抖音播放跳转目标地址格式无效",
+			}
+		}
+		resolved := parsedURL.ResolveReference(locURL).String()
+		vodSpec := c.VODTransport()
+		vodSpec.PublicRedirects = true
+		if vErr := vodSpec.ValidateRedirectURL(resolved); vErr != nil {
+			return "", vErr
+		}
+		return resolved, nil
+	}
+
+	body, _ := readBoundedBody(resp.Body, 64*1024)
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return "", &site.Error{
+			Site:       site.Douyin,
+			Kind:       site.ErrKindUnavailable,
+			HTTPStatus: resp.StatusCode,
+			Endpoint:   sanitizeEndpointLabel(parsedURL),
+			Message:    fmt.Sprintf("抖音播放跳转地址已不可用 (HTTP %d)", resp.StatusCode),
+		}
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		authErr := &site.Error{
+			Site:       site.Douyin,
+			Kind:       site.ErrKindAuthRequired,
+			HTTPStatus: resp.StatusCode,
+			Endpoint:   sanitizeEndpointLabel(parsedURL),
+			Message:    "抖音登录状态已失效，请在设置页重新粘贴 Cookie",
+		}
+		c.onClassifiedError(ctx, authErr, usingStore)
+		return "", authErr
+	}
+	rawResp := &apiRawResponse{
+		statusCode: resp.StatusCode,
+		header:     resp.Header.Clone(),
+		body:       body,
+	}
+	if cErr := c.classifyHTTPAndEnvelopeError(ctx, sanitizeEndpointLabel(parsedURL), rawResp, usingStore); cErr != nil {
+		return "", cErr
+	}
+	return "", &site.Error{
+		Site:       site.Douyin,
+		Kind:       site.ErrKindUnavailable,
+		HTTPStatus: resp.StatusCode,
+		Endpoint:   sanitizeEndpointLabel(parsedURL),
+		Message:    fmt.Sprintf("抖音播放跳转未返回媒体地址 (HTTP %d)", resp.StatusCode),
+	}
 }
 
 // SetAutomaticRequestHandlers wires per-site automatic request quota and circuit-breaker hooks.
@@ -504,13 +705,21 @@ func (c *Client) resolveCookieContext(spec apiRequestSpec) (cookieHeader, msToke
 }
 
 func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRawResponse, error) {
-	if err := c.checkAutomaticBudget(ctx, spec.endpoint); err != nil {
-		return nil, err
-	}
-
 	cookieHeader, msToken, uifid, verifyFp, usingStore, err := c.resolveCookieContext(spec)
 	if err != nil {
 		c.ReportAutomaticError(ctx, err)
+		return nil, err
+	}
+	if ctx.Err() != nil {
+		return nil, &site.Error{
+			Site:     site.Douyin,
+			Kind:     site.ErrKindNetwork,
+			Endpoint: site.SanitizeEndpoint(spec.endpoint),
+			Message:  "请求已取消",
+			Err:      ctx.Err(),
+		}
+	}
+	if err := c.checkAutomaticBudget(ctx, site.SanitizeEndpoint(spec.endpoint)); err != nil {
 		return nil, err
 	}
 
@@ -525,7 +734,7 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 		return nil, &site.Error{
 			Site:     site.Douyin,
 			Kind:     site.ErrKindBadRequest,
-			Endpoint: spec.endpoint,
+			Endpoint: site.SanitizeEndpoint(spec.endpoint),
 			Message:  "无效的接口地址",
 		}
 	}
@@ -598,7 +807,7 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 			Kind:     site.ErrKindNetwork,
 			Endpoint: sanitizeEndpointLabel(parsedURL),
 			Message:  "请求抖音接口失败，请检查网络连接",
-			Err:      err,
+			Err:      site.UnwrapURLError(err),
 		}
 		c.ReportAutomaticError(ctx, netErr)
 		return nil, netErr
@@ -696,7 +905,7 @@ func (c *Client) validateAPIURL(u *url.URL) error {
 		}
 	}
 	host := strings.ToLower(u.Hostname())
-	if c.allowLocalhost && isLoopbackHost(host) {
+	if c.allowLocalhost && site.IsLoopbackHost(host) {
 		if strings.EqualFold(u.Scheme, "http") || strings.EqualFold(u.Scheme, "https") {
 			return nil
 		}
@@ -723,10 +932,6 @@ func (c *Client) validateAPIURL(u *url.URL) error {
 		}
 	}
 	return nil
-}
-
-func isLoopbackHost(host string) bool {
-	return host == "127.0.0.1" || host == "localhost" || host == "::1"
 }
 
 var errBodyTooLarge = errors.New("douyin: response body exceeds limit")
@@ -894,29 +1099,27 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 
 	code := parseJSONInt(top["status_code"])
 	statusMsg := parseJSONString(top["status_msg"])
-	if statusMsg == "" {
-		if dataRaw, ok := top["data"]; ok {
-			var dataMap map[string]json.RawMessage
-			if json.Unmarshal(dataRaw, &dataMap) == nil {
-				if hasNonEmptyChallengeField(dataMap) {
-					err := &site.Error{
-						Site:       site.Douyin,
-						Kind:       site.ErrKindRiskControl,
-						HTTPStatus: resp.statusCode,
-						Endpoint:   endpoint,
-						Message:    "抖音直播间触发验证挑战，已立即停止请求",
-					}
-					c.ReportAutomaticError(ctx, err)
-					return err
+	if dataRaw, ok := top["data"]; ok {
+		var dataMap map[string]json.RawMessage
+		if json.Unmarshal(dataRaw, &dataMap) == nil {
+			if hasNonEmptyChallengeField(dataMap) {
+				err := &site.Error{
+					Site:       site.Douyin,
+					Kind:       site.ErrKindRiskControl,
+					HTTPStatus: resp.statusCode,
+					Endpoint:   endpoint,
+					Message:    "抖音直播间触发验证挑战，已立即停止请求",
 				}
-				if code == 0 {
-					code = parseJSONInt(dataMap["status_code"])
-				}
+				c.ReportAutomaticError(ctx, err)
+				return err
+			}
+			if code == 0 {
+				code = parseJSONInt(dataMap["status_code"])
+			}
+			if statusMsg == "" {
+				statusMsg = parseJSONString(dataMap["prompts"])
 				if statusMsg == "" {
-					statusMsg = parseJSONString(dataMap["prompts"])
-					if statusMsg == "" {
-						statusMsg = parseJSONString(dataMap["message"])
-					}
+					statusMsg = parseJSONString(dataMap["message"])
 				}
 			}
 		}
@@ -1109,8 +1312,11 @@ func (c *Client) FetchImage(ctx context.Context, rawURL string) ([]byte, string,
 }
 
 // FetchImageLimited fetches up to maxBytes of a Douyin CDN image, preserving full query signatures
-// and strictly stripping any Cookie header.
+// and strictly stripping any Cookie header. Requires active Douyin auth (INV-07).
 func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes int64) ([]byte, string, error) {
+	if err := c.RequireAuth("image"); err != nil {
+		return nil, "", err
+	}
 	normalized := upgradeDouyinHTTPS(strings.TrimSpace(rawURL), c.allowLocalhost)
 	transportSpec := c.VODTransport()
 	if err := transportSpec.ValidateURL(normalized); err != nil {
@@ -1126,7 +1332,7 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 			Site:    site.Douyin,
 			Kind:    site.ErrKindBadRequest,
 			Message: "无效的图片地址",
-			Err:     err,
+			Err:     site.UnwrapURLError(err),
 		}
 	}
 	transportSpec.ApplyHeaders(req)
@@ -1137,7 +1343,7 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 			Site:    site.Douyin,
 			Kind:    site.ErrKindNetwork,
 			Message: "拉取抖音图片失败",
-			Err:     err,
+			Err:     site.UnwrapURLError(err),
 		}
 	}
 	defer resp.Body.Close()
@@ -1183,7 +1389,7 @@ func upgradeDouyinHTTPS(raw string, allowLocalhost bool) string {
 	s := strings.TrimSpace(raw)
 	if strings.HasPrefix(strings.ToLower(s), "http://") {
 		if allowLocalhost {
-			if u, err := url.Parse(s); err == nil && isLoopbackHost(strings.ToLower(u.Hostname())) {
+			if u, err := url.Parse(s); err == nil && site.IsLoopbackHost(u.Hostname()) {
 				return s
 			}
 		}

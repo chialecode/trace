@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -155,5 +156,47 @@ func TestQuotaGateBlocksBeforeNetworkRequestAndScansReceipts(t *testing.T) {
 		if len(badFindings) == 0 {
 			t.Fatalf("expected secret finding for %s, got none", tc.name)
 		}
+		for _, f := range badFindings {
+			if strings.Contains(f, "dJUnkqSiQoWb") || strings.Contains(f, "9f8e7d6c5b4a") {
+				t.Fatalf("ScanReceiptsForSecrets(%s) echoed raw secret in finding: %s", tc.name, f)
+			}
+		}
+	}
+}
+
+func TestGateCategoryStrictnessAndErrors(t *testing.T) {
+	dir := t.TempDir()
+	gate, err := OpenGate(dir, Limits{
+		ActID:       "ACT-STRICT",
+		MaxRuns:     1,
+		MaxAPICalls: 5,
+		MaxByCategory: map[string]int{
+			"allowed": 1,
+			"zero":    0,
+		},
+	})
+	if err != nil {
+		t.Fatalf("OpenGate: %v", err)
+	}
+	if err := gate.AcquireAPI("unlisted"); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("unlisted category err = %v, want ErrQuotaExceeded", err)
+	}
+	if err := gate.AcquireAPI("zero"); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("zero-limit category err = %v, want ErrQuotaExceeded", err)
+	}
+	if err := gate.AcquireAPI("allowed"); err != nil {
+		t.Fatalf("allowed category err = %v, want nil", err)
+	}
+	if err := gate.AcquireMedia(-1); err == nil {
+		t.Fatal("AcquireMedia(-1) succeeded, want error")
+	}
+
+	// Non-NotExist read error (ledger path is a directory) must fail OpenGate.
+	badDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(badDir, "usage-ACT-BAD.json"), 0o700); err != nil {
+		t.Fatalf("mkdir ledger dir: %v", err)
+	}
+	if _, err := OpenGate(badDir, Limits{ActID: "ACT-BAD"}); err == nil {
+		t.Fatal("OpenGate on directory ledger succeeded, want error")
 	}
 }

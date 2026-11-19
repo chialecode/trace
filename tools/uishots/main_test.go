@@ -3,13 +3,202 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+
+	"github.com/chialecode/trace/internal/appdirs"
+	mygoui "github.com/egoist/mygo/ui"
 )
 
+func createDirLink(t *testing.T, linkPath, targetDir string) {
+	t.Helper()
+	if err := os.Symlink(targetDir, linkPath); err == nil {
+		return
+	}
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command("cmd", "/c", "mklink", "/J", linkPath, targetDir)
+		appdirs.SetSubprocessQuiet(cmd)
+		if out, err := cmd.CombinedOutput(); err == nil {
+			return
+		} else {
+			t.Fatalf("create directory junction %q -> %q failed: %v (%s)", linkPath, targetDir, err, string(out))
+		}
+	}
+	t.Fatalf("os.Symlink(%q, %q) failed", targetDir, linkPath)
+}
+
+func TestValidateCLIOutDir(t *testing.T) {
+	repoRoot := t.TempDir()
+	artifactsDir := filepath.Join(repoRoot, "artifacts")
+	if err := os.MkdirAll(artifactsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideDir := t.TempDir()
+
+	// Valid subdirectories inside <repo>/artifacts/
+	for _, rel := range []string{"artifacts/uishots", "artifacts/uishots/nested"} {
+		got, err := validateCLIOutDir(repoRoot, rel)
+		if err != nil {
+			t.Fatalf("validateCLIOutDir(%q) unexpected error: %v", rel, err)
+		}
+		want := filepath.Join(repoRoot, filepath.FromSlash(rel))
+		if !sameCleanPath(got, want) {
+			t.Fatalf("validateCLIOutDir(%q) = %q, want %q", rel, got, want)
+		}
+	}
+
+	// Reject empty, repo root (.), parent (..), artifacts root itself, traversal, and outside paths.
+	rejected := []string{
+		"",
+		"   ",
+		".",
+		"..",
+		"artifacts",
+		"artifacts/.",
+		"artifacts/../outside",
+		filepath.Join(repoRoot, "tools", "uishots"),
+		outsideDir,
+		filepath.Join(outsideDir, "uishots"),
+	}
+	for _, bad := range rejected {
+		if got, err := validateCLIOutDir(repoRoot, bad); err == nil {
+			t.Fatalf("validateCLIOutDir(%q) unexpectedly succeeded with %q", bad, got)
+		}
+	}
+
+	// Reject regular file at target path.
+	fileTarget := filepath.Join(artifactsDir, "not-a-dir")
+	if err := os.WriteFile(fileTarget, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateCLIOutDir(repoRoot, "artifacts/not-a-dir"); err == nil {
+		t.Fatal("validateCLIOutDir accepted regular file path")
+	}
+
+	// Reject symlink/junction at -out directly AND as an intermediate path component.
+	linkPath := filepath.Join(artifactsDir, "link-uishots")
+	createDirLink(t, linkPath, outsideDir)
+	if _, err := validateCLIOutDir(repoRoot, "artifacts/link-uishots"); err == nil {
+		t.Fatal("validateCLIOutDir accepted symlink/junction output directory")
+	}
+	if _, err := validateCLIOutDir(repoRoot, "artifacts/link-uishots/child"); err == nil {
+		t.Fatal("validateCLIOutDir accepted path traversing symlink/junction")
+	}
+}
+
+func TestPrepareCleanOutDirPreservesNonGeneratedAndRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	// Seed generated files (should be removed) and non-generated files/dirs (must be preserved).
+	for name, content := range map[string]string{
+		"old-home-1280x860.png": "old-png",
+		"UPPER.PNG":             "upper-png",
+		"assertions.json":       `{"old":true}`,
+		"keep.txt":              "important notes",
+		"custom.json":           `{"keep":true}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	subDir := filepath.Join(dir, "subdir")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nestedPNG := filepath.Join(subDir, "nested.png")
+	if err := os.WriteFile(nestedPNG, []byte("nested"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := prepareCleanOutDir(dir); err != nil {
+		t.Fatalf("prepareCleanOutDir failed: %v", err)
+	}
+
+	for _, deleted := range []string{"old-home-1280x860.png", "UPPER.PNG", "assertions.json"} {
+		if _, err := os.Stat(filepath.Join(dir, deleted)); !os.IsNotExist(err) {
+			t.Fatalf("expected generated file %s to be deleted, stat err=%v", deleted, err)
+		}
+	}
+	for _, kept := range []string{"keep.txt", "custom.json"} {
+		if _, err := os.Stat(filepath.Join(dir, kept)); err != nil {
+			t.Fatalf("expected non-generated file %s to be preserved: %v", kept, err)
+		}
+	}
+	if _, err := os.Stat(nestedPNG); err != nil {
+		t.Fatalf("expected nested file in subdirectory to be preserved: %v", err)
+	}
+
+	// Reject symlink/junction in both prepareCleanOutDir and runUIShots without deleting target contents.
+	targetDir := t.TempDir()
+	targetPNG := filepath.Join(targetDir, "victim.png")
+	targetJSON := filepath.Join(targetDir, "assertions.json")
+	if err := os.WriteFile(targetPNG, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetJSON, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(t.TempDir(), "out-link")
+	createDirLink(t, linkPath, targetDir)
+
+	if err := prepareCleanOutDir(linkPath); err == nil {
+		t.Fatal("prepareCleanOutDir accepted symlink/junction")
+	}
+	if err := runUIShots(linkPath); err == nil {
+		t.Fatal("runUIShots accepted symlink/junction")
+	}
+	if _, err := os.Stat(targetPNG); err != nil {
+		t.Fatalf("target PNG behind rejected symlink was deleted: %v", err)
+	}
+	if _, err := os.Stat(targetJSON); err != nil {
+		t.Fatalf("target assertions.json behind rejected symlink was deleted: %v", err)
+	}
+}
+
+func TestEvaluateSceneRecordsForbiddenFound(t *testing.T) {
+	t.Setenv("TRACE_QUIET", "1")
+	tt := mygoui.NewTester(func(c *mygoui.Context) {
+		mygoui.Row(c).Size(1280, 860).Children(func() {
+			mygoui.Column(c).Label("左栏导航").Size(64, 860)
+			mygoui.Column(c).Label("中栏内容").Size(1216, 860).Children(func() {
+				mygoui.Box(c).Label("必须存在的控件").Size(100, 32)
+				mygoui.Box(c).Label("禁止出现的控件").Size(100, 32)
+			})
+		})
+	}, 1280, 860)
+
+	sc := sceneSpec{
+		Name:            "forbidden-check",
+		RequiredLabels:  []string{"必须存在的控件"},
+		ForbiddenLabels: []string{"禁止出现的控件", "确实不存在的控件"},
+	}
+	a, _ := evaluateScene(tt, sc, 1280, 860, "forbidden-check-1280x860.png")
+	if a.ForbiddenControlsAbsent {
+		t.Fatal("expected ForbiddenControlsAbsent=false when forbidden control is rendered")
+	}
+	if a.Passed {
+		t.Fatal("expected Passed=false when forbidden control is rendered")
+	}
+	if len(a.ForbiddenFound) != 1 || !strings.Contains(a.ForbiddenFound[0], "禁止出现的控件") {
+		t.Fatalf("expected ForbiddenFound to record matched forbidden label, got %v", a.ForbiddenFound)
+	}
+}
+
 func TestUIShotsScenesAndStructuredAssertions(t *testing.T) {
-	_ = os.Setenv("TRACE_QUIET", "1")
+	t.Setenv("TRACE_QUIET", "1")
 	outDir := t.TempDir()
+
+	// Seed a non-generated file to verify runUIShots preserves it while cleaning stale PNGs.
+	keepFile := filepath.Join(outDir, "README.txt")
+	if err := os.WriteFile(keepFile, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stalePNG := filepath.Join(outDir, "stale-removed-1280x860.png")
+	if err := os.WriteFile(stalePNG, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := runUIShots(outDir); err != nil {
 		// If an assertion failed, inspect assertions.json to report exact scene/width.
@@ -18,13 +207,20 @@ func TestUIShotsScenesAndStructuredAssertions(t *testing.T) {
 			if json.Unmarshal(raw, &rep) == nil {
 				for _, a := range rep.Assertions {
 					if !a.Passed {
-						t.Logf("FAILED scene=%s width=%d noOverflow=%v fixed=%v reqVisible=%v forbAbsent=%v missing=%v",
-							a.Scene, a.Width, a.NoHorizontalOver, a.FixedSidebarsOnScr, a.RequiredControlsVisible, a.ForbiddenControlsAbsent, a.MissingLabels)
+						t.Logf("FAILED scene=%s width=%d noOverflow=%v fixed=%v reqVisible=%v forbAbsent=%v missing=%v forbiddenFound=%v",
+							a.Scene, a.Width, a.NoHorizontalOver, a.FixedSidebarsOnScr, a.RequiredControlsVisible, a.ForbiddenControlsAbsent, a.MissingLabels, a.ForbiddenFound)
 					}
 				}
 			}
 		}
 		t.Fatalf("runUIShots failed: %v", err)
+	}
+
+	if _, err := os.Stat(keepFile); err != nil {
+		t.Fatalf("runUIShots deleted non-generated file %s: %v", keepFile, err)
+	}
+	if _, err := os.Stat(stalePNG); !os.IsNotExist(err) {
+		t.Fatalf("runUIShots did not clean stale PNG %s (err=%v)", stalePNG, err)
 	}
 
 	raw, err := os.ReadFile(filepath.Join(outDir, "assertions.json"))

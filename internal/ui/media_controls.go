@@ -106,15 +106,29 @@ func playerSubtitleLabel(lang string) string {
 	return lang
 }
 
-func (a *App) persistPlayerVolume() {
-	a.player.SetVolume(a.PlayerOverlay.Volume)
+// applyPlayerVolume updates volume and mute on all active player controllers
+// without touching disk (used while dragging the volume slider).
+func (a *App) applyPlayerVolume(volume float64, muted bool) {
+	a.player.SetVolume(volume)
+	a.player.SetMuted(muted)
 	if a.bgmPlayer != nil {
-		a.bgmPlayer.SetVolume(a.PlayerOverlay.Volume)
+		a.bgmPlayer.SetVolume(volume)
+		a.bgmPlayer.SetMuted(muted)
 	}
 	if a.viewerPlayer != nil {
-		a.viewerPlayer.SetVolume(a.PlayerOverlay.Volume)
+		a.viewerPlayer.SetVolume(volume)
+		a.viewerPlayer.SetMuted(muted)
 	}
-	volume, muted := a.PlayerOverlay.Volume, a.player.Snapshot(1, 1).Muted
+	if a.livePreviewPlayer != nil {
+		a.livePreviewPlayer.SetVolume(volume)
+		a.livePreviewPlayer.SetMuted(muted)
+	}
+}
+
+func (a *App) persistPlayerVolume() {
+	muted := a.player.Snapshot(1, 1).Muted
+	a.applyPlayerVolume(a.PlayerOverlay.Volume, muted)
+	volume := a.PlayerOverlay.Volume
 	if _, err := a.backend.MutateUIState(func(st *uistate.State) {
 		st.Player.Volume, st.Player.Muted = volume, muted
 	}); err != nil {

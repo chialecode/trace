@@ -49,6 +49,9 @@ type ItemMetadata struct {
 	// cached for a member who is not the uploader; DEC-056). Optional; older
 	// manifests have none.
 	Via *ItemVia `json:"via,omitempty"`
+	// CachedBy is the TRACE installation that cached the item (DEC-062 ⑧);
+	// optional, older manifests have none.
+	CachedBy *ItemNode `json:"cachedBy,omitempty"`
 
 	// Runtime-populated fields
 	ItemKey    string `json:"itemKey,omitempty"`
@@ -141,6 +144,13 @@ const (
 	ViaForward = "forward"
 	ViaCollab  = "collab"
 )
+
+// ItemNode names a TRACE installation: its random node ID and a readable
+// name (the computer's or the remote's name).
+type ItemNode struct {
+	Node string `json:"node"`
+	Name string `json:"name,omitempty"`
+}
 
 // ItemVia records the creator an item was cached for when that creator is not
 // the item's author (DEC-056). It never changes Author.
@@ -779,26 +789,20 @@ func ComputeDotState(meta ItemMetadata) DotState {
 			d.Label = "部分缓存"
 		}
 	case "complete":
-		incomplete := false
-		for _, page := range meta.ExpectedPages {
-			found := false
-			for _, part := range meta.Parts {
-				if part.Page == page && part.File != "" {
-					found = true
-				}
-			}
-			incomplete = incomplete || !found
-		}
+		incomplete := expectedPagesIncomplete(meta)
 		belowBest := false
 		for _, part := range meta.Parts {
 			belowBest = belowBest || part.Available.BestVideo > part.Video.Quality || audioPriority(part.Available.BestAudio) > audioPriority(part.Audio.Quality)
 		}
 		if meta.UpgradeAvailable || len(meta.Missing) > 0 || incomplete || belowBest {
 			d.Dot = "yellow"
-			if meta.UpgradeAvailable {
+			switch {
+			case meta.UpgradeAvailable:
 				d.Label = "可升级画质"
-			} else {
+			case len(meta.Missing) > 0 || incomplete:
 				d.Label = "部分缺失"
+			default:
+				d.Label = "非最高画质"
 			}
 		} else {
 			d.Dot = "green"
@@ -809,6 +813,36 @@ func ComputeDotState(meta ItemMetadata) DotState {
 		d.Label = "未缓存"
 	}
 	return d
+}
+
+// expectedPagesIncomplete reports whether a page the item expects has no file.
+func expectedPagesIncomplete(meta ItemMetadata) bool {
+	for _, page := range meta.ExpectedPages {
+		found := false
+		for _, part := range meta.Parts {
+			if part.Page == page && part.File != "" {
+				found = true
+			}
+		}
+		if !found {
+			return true
+		}
+	}
+	return false
+}
+
+// NeedsCompletion reports whether a cached item lacks content that caching
+// it again can fill: it is partial, or complete with missing records or
+// expected pages without a file. A better quality being available is not
+// missing content, and paused or failed items are not counted here.
+func NeedsCompletion(meta ItemMetadata) bool {
+	switch meta.Status {
+	case "partial":
+		return true
+	case "complete":
+		return len(meta.Missing) > 0 || expectedPagesIncomplete(meta)
+	}
+	return false
 }
 
 func parseFlexibleUnix(v any) int64 {

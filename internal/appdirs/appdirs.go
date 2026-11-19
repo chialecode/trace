@@ -240,11 +240,16 @@ func ResolveWithOptions(opts Options) (Locations, error) {
 				var err error
 				docsDir, err = resolveDocumentsDir()
 				if err != nil || docsDir == "" {
-					home, _ := os.UserHomeDir()
-					docsDir = filepath.Join(home, "Documents")
+					if home, hErr := os.UserHomeDir(); hErr == nil && strings.TrimSpace(home) != "" {
+						docsDir = filepath.Join(home, "Documents")
+					}
 				}
 			}
-			defaultCacheDir = filepath.Join(docsDir, appName)
+			if docsDir != "" {
+				defaultCacheDir = filepath.Join(docsDir, appName)
+			} else {
+				defaultCacheDir = filepath.Join(dataDir, "library")
+			}
 		}
 	}
 	defaultCacheDir = filepath.Clean(defaultCacheDir)

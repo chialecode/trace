@@ -118,7 +118,9 @@ func TestLibraryTitleOpensMediaAndFileChoiceDoesNotDependOnPartOrder(t *testing.
 			if _, found := tt.Find(label); !found {
 				t.Fatalf("library %s is not an accessible media action", target)
 			}
-			tt.Click(label)
+			if err := tt.Click(label); err != nil {
+				t.Fatalf("click %s: %v", label, err)
+			}
 			if app.PlayerOverlay.MediaPath != filepath.Join(item.ItemDir, "P01.mp4") {
 				t.Fatalf("clicking a tile chose a different file according to Parts order: %q", app.PlayerOverlay.MediaPath)
 			}

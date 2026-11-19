@@ -27,9 +27,10 @@ func (s *Store) CountCachedWorks(refs []AuthorRef) (map[string]int, error) {
 		switch siteID {
 		case "bilibili":
 			err = s.db.QueryRow(`SELECT COUNT(*) FROM library_items WHERE site = 'bilibili' AND kind = 'video'
-				AND (author_uid = ? OR (`+collabSQL+` AND `+viaUIDSQL+` = ?))`, uid, uid).Scan(&n)
+				AND ((author_uid = ? AND NOT `+viaForwardSQL+`) OR (`+collabSQL+` AND `+viaUIDSQL+` = ?))`, uid, uid).Scan(&n)
 		case "douyin":
-			err = s.db.QueryRow(`SELECT COUNT(*) FROM library_items WHERE site = 'douyin' AND kind IN ('video', 'dynamic') AND author_uid = ?`, uid).Scan(&n)
+			err = s.db.QueryRow(`SELECT COUNT(*) FROM library_items WHERE site = 'douyin' AND kind IN ('video', 'dynamic')
+				AND (author_uid = ? OR (`+collabSQL+` AND `+viaUIDSQL+` = ?))`, uid, uid).Scan(&n)
 		default:
 			continue
 		}

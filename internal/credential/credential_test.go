@@ -148,14 +148,6 @@ func TestDPAPIStoreRoundTripCorruptAndConfirmState(t *testing.T) {
 	}
 }
 
-func TestManualCookieParseWhitelistAndLimit(t *testing.T) {
-	TestManualCookieParserWhitelistAndBounds(t)
-}
-
-func TestDPAPIRoundTripAndCorruptBackup(t *testing.T) {
-	TestDPAPIStoreRoundTripCorruptAndConfirmState(t)
-}
-
 func TestAtomicReplaceCredential(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "credentials", "bilibili.bin")
 	store, _, err := Open(path)
@@ -219,5 +211,49 @@ func TestExpiredCredentialIsBlockedWhenStatusCannotPersist(t *testing.T) {
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatalf("expiration damaged encrypted credential: %v", err)
+	}
+	if store.Cookies() != nil || store.CSRF() != "" {
+		t.Fatalf("expired store still returned Cookies=%v CSRF=%q", store.Cookies(), store.CSRF())
+	}
+}
+
+func TestRedactEncodedSecretsAndCookieInjectionGuard(t *testing.T) {
+	dir := t.TempDir()
+	biliStore, _, err := Open(filepath.Join(dir, "bilibili.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawSess := "abc,def%2Cxyz|123"
+	rawCSRF := "csrf_token_9999"
+	if _, err := biliStore.SaveVerifiedManual(map[string]string{
+		"SESSDATA":   rawSess,
+		"bili_jct":   rawCSRF,
+		"sid":        "bad\r\nInjected: 1",
+		"DedeUserID": "123;evil=1",
+	}, "", 1, "u", ""); err != nil {
+		t.Fatal(err)
+	}
+	gotCookies := biliStore.Cookies()
+	if gotCookies["sid"] != "" || gotCookies["DedeUserID"] != "" {
+		t.Fatalf("CR/LF/semicolon cookie values were not rejected: %+v", gotCookies)
+	}
+	logLine := "raw=" + rawSess + " enc=abc%2Cdef%252Cxyz%7C123 dec=abc,def,xyz|123 csrf=" + rawCSRF
+	redacted := biliStore.RedactString(logLine)
+	for _, leak := range []string{"abc,def", "abc%2Cdef", "csrf_token_9999"} {
+		if strings.Contains(redacted, leak) {
+			t.Fatalf("RedactString leaked %q in %q", leak, redacted)
+		}
+	}
+
+	// Cross-site save must be rejected.
+	if _, err := biliStore.SaveVerifiedDouyinManual(map[string]string{"sessionid": "synth_dy"}, DouyinProfile{}); err == nil {
+		t.Fatal("expected Bilibili store to reject SaveVerifiedDouyinManual")
+	}
+	dyStore, _, err := OpenDouyin(filepath.Join(dir, "douyin.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dyStore.SaveVerifiedManual(map[string]string{"SESSDATA": "synth_bili"}, "", 1, "u", ""); err == nil {
+		t.Fatal("expected Douyin store to reject SaveVerifiedManual")
 	}
 }

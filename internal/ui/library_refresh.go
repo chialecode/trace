@@ -19,11 +19,12 @@ type LibraryRefreshState struct {
 }
 
 func (a *App) renderLibraryRefreshButton(c *ui.Context) {
+	running := a.LibraryRefresh.Running || a.isPending("library-refresh")
 	text := "刷新"
-	if a.LibraryRefresh.Running {
+	if running {
 		text = "正在刷新…"
 	}
-	if OutlinePillButton(c, text, "刷新媒体库").Clicked() && !a.LibraryRefresh.Running {
+	if OutlinePillButton(c, text, "刷新媒体库").Disabled(running).Clicked() && !running {
 		a.refreshLibraryFromDisk()
 	}
 }
@@ -31,6 +32,9 @@ func (a *App) renderLibraryRefreshButton(c *ui.Context) {
 // refreshLibraryFromDisk rescans the library folders in the background (only
 // local files, no site requests) and opens the result dialog.
 func (a *App) refreshLibraryFromDisk() {
+	if a.LibraryRefresh.Running || a.isPending("library-refresh") {
+		return
+	}
 	a.LibraryRefresh.Running = true
 	backend := a.backend
 	requestGuarded(a, "library-refresh", nil, func(context.Context) (library.RebuildReport, error) {
@@ -46,44 +50,35 @@ func (a *App) refreshLibraryFromDisk() {
 }
 
 func (a *App) renderLibraryRefreshOverlay(c *ui.Context, w, h float32) {
-	if c.Shortcut(0, ui.KeyEscape) {
-		a.LibraryRefresh.Open = false
-		return
-	}
 	rep := a.LibraryRefresh.Report
 	cardW := min(float32(560), max(float32(320), w-40))
 	maxListH := max(float32(120), min(float32(420), h-260))
-	dlg := ui.DialogBase(c, &a.LibraryRefresh.Open, func(backdrop, panel ui.Element) {
-		backdrop.Label("关闭媒体库刷新结果（点击空白处）").Background(ui.RGBA(15, 20, 25, 0.55))
-		panel.Label("媒体库刷新结果").Column().Width(cardW).Padding(22).Radius(16).Background(ColorBgMain).
-			Border(1, ColorBorder).Shadow(0, 12, 40, 0, ui.RGBA(0, 0, 0, 0.24)).Gap(12).Clip().
-			Children(func() {
-				ui.Text(c, "媒体库已刷新").FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-				if len(rep.Removed) == 0 && len(rep.NewlyMissing) == 0 {
-					ui.Text(c, fmt.Sprintf("检查了 %d 个条目，没有发现被删除的文件。", rep.Scanned)).
-						FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
-				} else {
-					ui.Scroll(c).FillWidth().MaxHeight(maxListH).Children(func() {
-						ui.Column(c).FillWidth().Gap(14).ClipX().Children(func() {
-							if len(rep.Removed) > 0 {
-								libraryRefreshSection(c, fmt.Sprintf("文件夹已删除，已从媒体库移除（%d）", len(rep.Removed)), rep.Removed, false)
-							}
-							if len(rep.NewlyMissing) > 0 {
-								libraryRefreshSection(c, fmt.Sprintf("缺少文件（%d）", len(rep.NewlyMissing)), rep.NewlyMissing, true)
-							}
-						})
+	renderDialog(c, &a.LibraryRefresh.Open,
+		"关闭媒体库刷新结果（点击空白处）", "媒体库刷新结果",
+		cardW, 0, nil,
+		func() {
+			ui.Text(c, "媒体库已刷新").FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+			if len(rep.Removed) == 0 && len(rep.NewlyMissing) == 0 {
+				ui.Text(c, fmt.Sprintf("检查了 %d 个条目，没有发现被删除的文件。", rep.Scanned)).
+					FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
+			} else {
+				ui.Scroll(c).FillWidth().MaxHeight(maxListH).Children(func() {
+					ui.Column(c).FillWidth().Gap(14).ClipX().Children(func() {
+						if len(rep.Removed) > 0 {
+							libraryRefreshSection(c, fmt.Sprintf("文件夹已删除，已从媒体库移除（%d）", len(rep.Removed)), rep.Removed, false)
+						}
+						if len(rep.NewlyMissing) > 0 {
+							libraryRefreshSection(c, fmt.Sprintf("缺少文件（%d）", len(rep.NewlyMissing)), rep.NewlyMissing, true)
+						}
 					})
-				}
-				ui.Row(c).FillWidth().Justify(ui.End).Children(func() {
-					if AccentPillButton(c, "知道了", "关闭媒体库刷新结果").Clicked() {
-						a.LibraryRefresh.Open = false
-					}
 				})
+			}
+			ui.Row(c).FillWidth().Justify(ui.End).Children(func() {
+				if AccentPillButton(c, "知道了", "关闭媒体库刷新结果").Clicked() {
+					a.LibraryRefresh.Open = false
+				}
 			})
-	})
-	if dlg.Dismissed() {
-		a.LibraryRefresh.Open = false
-	}
+		})
 }
 
 // libraryRefreshSection lists changed items: the title, then the folder (for

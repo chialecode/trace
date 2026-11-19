@@ -1,13 +1,9 @@
 package shell
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -30,10 +26,14 @@ import (
 	mygoui "github.com/egoist/mygo/ui"
 )
 
-// QuietMode resolves the effective quiet mode for the given channel (§6).
+func isReleaseChannel(channel string) bool {
+	return strings.EqualFold(channel, "release") || strings.EqualFold(channel, "stable")
+}
+
+// QuietMode resolves the effective quiet mode for the given channel.
 // Quiet mode is only active on dev/source channels; release/stable ignores TRACE_QUIET.
 func QuietMode(channel string) string {
-	if strings.EqualFold(channel, "release") || strings.EqualFold(channel, "stable") {
+	if isReleaseChannel(channel) {
 		return ""
 	}
 	raw := strings.ToLower(strings.TrimSpace(os.Getenv("TRACE_QUIET")))
@@ -47,46 +47,7 @@ func QuietMode(channel string) string {
 	}
 }
 
-// RenderTrayIconPNG generates a 32x32 PNG tray icon in pure Go: a white "T"
-// on dark gray like the application icon (DEC-039; dark gray since
-// 2026-11-14), with an amber corner while tasks or recordings run (P13).
-func RenderTrayIconPNG(hasActiveWork bool) []byte {
-	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
-	bg := color.RGBA{R: 60, G: 64, B: 67, A: 255}    // #3c4043
-	fg := color.RGBA{R: 255, G: 255, B: 255, A: 255} // #ffffff
-	dot := color.RGBA{R: 243, G: 161, B: 21, A: 255} // #f3a115
-
-	for y := 2; y < 30; y++ {
-		for x := 2; x < 30; x++ {
-			img.SetRGBA(x, y, bg)
-		}
-	}
-	// Draw 'T' glyph in white
-	for y := 8; y < 12; y++ {
-		for x := 8; x < 24; x++ {
-			img.SetRGBA(x, y, fg)
-		}
-	}
-	for y := 12; y < 25; y++ {
-		for x := 14; x < 18; x++ {
-			img.SetRGBA(x, y, fg)
-		}
-	}
-	// Optional active work indicator dot in bottom-right corner
-	if hasActiveWork {
-		for y := 21; y < 30; y++ {
-			for x := 21; x < 30; x++ {
-				img.SetRGBA(x, y, dot)
-			}
-		}
-	}
-
-	var buf bytes.Buffer
-	_ = png.Encode(&buf, img)
-	return buf.Bytes()
-}
-
-// RuntimeStateSnapshot records window, tray, memory, and focus state for smoke tests and PR-4 (C35, C36, C39).
+// RuntimeStateSnapshot records window, tray, memory, and focus state for smoke tests and diagnostics.
 type RuntimeStateSnapshot struct {
 	PID                    int      `json:"pid"`
 	AppName                string   `json:"appName"`
@@ -122,21 +83,33 @@ type Shell struct {
 	backend            *service.Backend
 	uiApp              *ui.App
 	win                *mygo.Window
+	winClosed          *atomic.Bool
 	tray               *mygo.Tray
 	unsubEvents        func()
 	closingToTray      bool
 	quitting           bool
-	notifiedTrayOnce   bool
+	quitConfirmOpen    bool
 	lastRoute          string
 	secondInstanceArgs []string
 	stoleFocus         bool
 	stoleFocusDetail   string
 	updates            *update.Controller
 
-	// trayRefreshPending coalesces tray refreshes requested by backend
-	// events; trayRefresh is refreshTrayState (replaced in tests).
-	trayRefreshPending atomic.Bool
-	trayRefresh        func()
+	// Serialized tray refresh worker state; trayRefresh and trayDispatchMain are replaceable in tests.
+	trayMu           sync.Mutex
+	trayRunning      bool
+	trayDirty        bool
+	trayStopped      bool
+	trayWg           sync.WaitGroup
+	trayRefresh      func()
+	trayDispatchMain func(func())
+	trayLastHasWork  bool
+	trayLastTooltip  string
+	trayHasState     bool
+	trayWantHasWork  bool
+	trayWantTooltip  string
+	trayWantDirty    bool
+	trayApplyQueued  bool
 }
 
 // NewShell creates a new Shell instance for the given locations and backend.
@@ -154,11 +127,11 @@ func NewShell(loc appdirs.Locations, backend *service.Backend) *Shell {
 	}
 }
 
-// Run executes the full TRACE desktop application lifecycle per P13 & §1.5:
+// Run executes the full TRACE desktop application lifecycle:
 //  1. appdirs.Resolve()
 //  2. mygo.App.SetName(loc.AppName)
 //  3. mygo.App.RequestSingleInstanceLock() (second instance forwards args and exits before touching DataDir)
-//  4. appdirs.AcquireLock(loc.LockFile)
+//  4. appdirs.LockDataDir(loc.DataDir)
 //  5. mygo.App.SetPath(userData/cache/logs -> <DataDir>/mygo, cache, logs)
 //  6. service.NewBackend(...)
 //  7. mygo.App.Run()
@@ -168,7 +141,7 @@ func Run() error {
 		return fmt.Errorf("shell: resolve appdirs: %w", err)
 	}
 
-	// Step 2: Set lowercase application name BEFORE RequestSingleInstanceLock and SetPath (DEC-029).
+	// Set lowercase application name BEFORE RequestSingleInstanceLock and SetPath (DEC-029).
 	build := appdirs.BuildInfo()
 	mygo.App.SetName(loc.AppName)
 	mygo.App.SetVersion(build.Version)
@@ -178,7 +151,7 @@ func Run() error {
 		_ = SetBelowNormalPriority()
 	}
 
-	// Step 3: Request single-instance lock. Second instance forwards args and returns immediately without touching DataDir (C36).
+	// Request single-instance lock. Second instance forwards args and returns immediately without touching DataDir.
 	if !mygo.App.RequestSingleInstanceLock() {
 		return nil
 	}
@@ -188,7 +161,7 @@ func Run() error {
 		return nil
 	}
 
-	// Step 4: Ensure directories and acquire exclusive app.lock inside DataDir.
+	// Ensure directories and acquire exclusive app.lock inside DataDir.
 	if err := appdirs.EnsureDirectories(loc); err != nil {
 		return fmt.Errorf("shell: ensure directories: %w", err)
 	}
@@ -196,12 +169,34 @@ func Run() error {
 	if err != nil {
 		return fmt.Errorf("shell: acquire app.lock: %w", err)
 	}
-	defer func() {
-		_ = lockHandle.Release()
-	}()
+
+	var (
+		cleanupOnce sync.Once
+		stopUpdates context.CancelFunc
+		sh          *Shell
+		backend     *service.Backend
+	)
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			if stopUpdates != nil {
+				stopUpdates()
+			}
+			if sh != nil {
+				sh.stopTrayRefresh()
+			}
+			if backend != nil {
+				_ = backend.Close()
+			}
+			if lockHandle != nil {
+				_ = lockHandle.Release()
+			}
+		})
+	}
+	defer cleanup()
+
 	previousCrash := setupCrashOutput(loc.LogsDir)
 
-	// Step 5: Redirect MyGo internal paths inside <DataDir> so %APPDATA% is never touched (INV-14, C36).
+	// Redirect MyGo internal paths inside <DataDir> so %APPDATA% is never touched (INV-14).
 	mygoDir := filepath.Join(loc.DataDir, "mygo")
 	cacheSubDir := filepath.Join(loc.DataDir, "cache")
 	_ = os.MkdirAll(mygoDir, 0o700)
@@ -210,11 +205,9 @@ func Run() error {
 	mygo.App.SetPath(mygo.PathCache, cacheSubDir)
 	mygo.App.SetPath(mygo.PathLogs, loc.LogsDir)
 
-	// Step 6: Start Backend service.
-	// "Follow the system" proxy reads Windows' own settings, not only
-	// HTTP(S)_PROXY (DEC-046 ⑤).
+	// "Follow the system" proxy reads Windows' own settings, not only HTTP(S)_PROXY (DEC-046 ⑤).
 	site.SetSystemProxyFunc(netproxy.Proxy)
-	backend, err := service.NewBackend(service.Options{
+	backend, err = service.NewBackend(service.Options{
 		Locations:           loc,
 		InstalledDevVersion: service.ReadSystemInstalledDevVersion,
 	})
@@ -224,15 +217,12 @@ func Run() error {
 		}
 		return fmt.Errorf("shell: init backend: %w", err)
 	}
-	defer func() {
-		_ = backend.Close()
-	}()
 
 	if previousCrash != "" {
 		backend.Logf("the previous run ended in a crash; traceback kept in logs/%s", previousCrash)
 	}
 
-	sh := NewShell(loc, backend)
+	sh = NewShell(loc, backend)
 	sh.lockHandle = lockHandle
 
 	decision := recordStartupDecision(backend, loc.Channel, build.Version, launch, time.Now().UTC())
@@ -243,7 +233,8 @@ func Run() error {
 			backend.Logf("uninstall entry now names %s", build.Version)
 		}
 	}
-	updateCtx, stopUpdates := context.WithCancel(context.Background())
+	var updateCtx context.Context
+	updateCtx, stopUpdates = context.WithCancel(context.Background())
 	defer stopUpdates()
 	sh.updates = newUpdateController(backend, sh.redraw, sh.RestartToUpdate)
 	if decision.UpdatedTo != "" {
@@ -256,10 +247,16 @@ func Run() error {
 	})
 
 	mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
-		sh.mu.Lock()
-		sh.quitting = true
-		sh.mu.Unlock()
+		_, alreadyQuitting := sh.teardown()
+		if !alreadyQuitting {
+			// OS session shutdown or external quit bypassed RequestQuit: pause tasks and finalize recordings synchronously.
+			backend.ExitGracefully(10 * time.Second)
+		}
 	})
+
+	// Release SQLite databases and app.lock synchronously inside OnQuit, which
+	// MyGo runs after the event loop ends and BEFORE Relaunch spawns the new binary.
+	mygo.App.OnQuit(cleanup)
 
 	mygo.App.OnSecondInstance(func(args []string, workingDir string) {
 		mygo.RunOnMain(func() {
@@ -273,7 +270,7 @@ func Run() error {
 			sh.openOrRestoreMainWindow()
 		}
 		sh.updates.Start(updateCtx)
-		if smokeDir := strings.TrimSpace(os.Getenv("TRACE_SMOKE_DIR")); smokeDir != "" {
+		if smokeDir := smokeDirForChannel(loc.Channel); smokeDir != "" {
 			go sh.runSmokeControlLoop(smokeDir)
 		}
 	})
@@ -288,8 +285,23 @@ func (s *Shell) audioSinkForMode() player.AudioSink {
 	return player.NewMyGoAudioSink()
 }
 
+func captureWindowSize(win *mygo.Window) (int, int, bool) {
+	if win == nil || win.IsMinimized() || win.IsFullScreen() {
+		return 0, 0, false
+	}
+	w, h := win.Size()
+	if w < 720 || h < 520 {
+		return 0, 0, false
+	}
+	return w, h, true
+}
+
 func (s *Shell) openOrRestoreMainWindow() {
 	s.mu.Lock()
+	if s.quitting {
+		s.mu.Unlock()
+		return
+	}
 	if s.win != nil {
 		w := s.win
 		quiet := s.quiet
@@ -339,8 +351,9 @@ func (s *Shell) openOrRestoreMainWindow() {
 		Content:         mygoui.View(uiApp.View),
 	}
 	win := mygo.NewWindow(winOpts)
+	winClosed := &atomic.Bool{}
 	uiApp.BindFullscreenHandler(func(full bool) {
-		if s.quiet == "" {
+		if s.quiet == "" && !winClosed.Load() {
 			win.SetFullScreen(full)
 		}
 	})
@@ -351,7 +364,9 @@ func (s *Shell) openOrRestoreMainWindow() {
 	}
 
 	uiApp.BindEventLoop(func(fn func()) {
-		win.Update(fn)
+		if !winClosed.Load() {
+			win.Update(fn)
+		}
 	})
 
 	win.OnClose(func(e *mygo.CloseEvent) {
@@ -377,6 +392,7 @@ func (s *Shell) openOrRestoreMainWindow() {
 	})
 
 	s.win = win
+	s.winClosed = winClosed
 	s.closingToTray = false
 	s.mu.Unlock()
 
@@ -402,26 +418,65 @@ func (s *Shell) checkForegroundSafety(stage string) {
 	}
 }
 
+func (s *Shell) persistCloseToTrayState(route string, width, height int, saveSize, interactive bool) bool {
+	if s.backend == nil {
+		return false
+	}
+	var shouldNotify bool
+	_, _ = s.backend.MutateUIState(func(st *uistate.State) {
+		if route != "" {
+			st.LastRoute = route
+		}
+		if saveSize {
+			st.Window.Width = width
+			st.Window.Height = height
+		}
+		if interactive && !st.TrayNotified {
+			shouldNotify = true
+			st.TrayNotified = true
+		}
+	})
+	return shouldNotify
+}
+
 // CloseToTray destroys the native UI window, releases bitmaps and UI subscriptions,
-// and forces garbage collection + OS memory return so tray resident memory stays < 60 MB (DEC-030, INV-13, C35).
+// and forces garbage collection + OS memory return so tray resident memory stays < 60 MB (DEC-030, INV-13).
 func (s *Shell) CloseToTray() {
 	s.mu.Lock()
-	if s.uiApp != nil {
-		s.lastRoute = s.uiApp.CurrentRoute
-		route := s.lastRoute
-		_, _ = s.backend.MutateUIState(func(st *uistate.State) { st.LastRoute = route })
-		s.uiApp.Close()
-		s.uiApp = nil
-	}
 	win := s.win
-	s.win = nil
-	s.closingToTray = true
-	firstNotify := !s.notifiedTrayOnce
-	s.notifiedTrayOnce = true
+	uiApp := s.uiApp
+	winClosed := s.winClosed
 	quiet := s.quiet
 	title := s.loc.DisplayName
 	s.mu.Unlock()
 
+	var route string
+	if uiApp != nil {
+		route = uiApp.CurrentRoute
+	}
+	w, h, saveSize := captureWindowSize(win)
+
+	s.mu.Lock()
+	if route != "" {
+		s.lastRoute = route
+	}
+	if s.uiApp == uiApp {
+		s.uiApp = nil
+	}
+	if s.win == win {
+		s.win = nil
+		s.winClosed = nil
+	}
+	s.closingToTray = true
+	s.mu.Unlock()
+
+	if winClosed != nil {
+		winClosed.Store(true)
+	}
+	firstNotify := s.persistCloseToTrayState(route, w, h, saveSize, quiet == "")
+	if uiApp != nil {
+		uiApp.Close()
+	}
 	if win != nil {
 		win.Close()
 	}
@@ -430,7 +485,7 @@ func (s *Shell) CloseToTray() {
 	debug.FreeOSMemory()
 	TrimWorkingSet()
 
-	// Only show first-time tray notification in interactive mode; quiet mode never sends notifications (§6.3).
+	// Only show first-time tray notification in interactive mode; quiet mode never sends notifications.
 	if firstNotify && quiet == "" && mygo.NotificationsSupported() {
 		n := mygo.NewNotification(mygo.NotificationOptions{
 			ID:     "trace-tray-hint",
@@ -443,16 +498,17 @@ func (s *Shell) CloseToTray() {
 	s.checkForegroundSafety("close_to_tray")
 }
 
-// RestoreFromTray recreates the native UI window and restores the previous route (DEC-030, C35).
+// RestoreFromTray recreates the native UI window and restores the previous route (DEC-030).
 func (s *Shell) RestoreFromTray() {
 	s.openOrRestoreMainWindow()
 	s.checkForegroundSafety("restore_from_tray")
 }
 
-// HandleSecondInstance handles command-line arguments forwarded from a second instance (C35, C36).
+// HandleSecondInstance handles command-line arguments forwarded from a second instance.
 func (s *Shell) HandleSecondInstance(args []string) {
 	s.mu.Lock()
 	s.secondInstanceArgs = append([]string(nil), args...)
+	quitting := s.quitting
 	s.mu.Unlock()
 
 	launch := ParseLaunchArgs(args)
@@ -460,8 +516,8 @@ func (s *Shell) HandleSecondInstance(args []string) {
 		s.QuitForUpdate("dev-install", false)
 		return
 	}
-	if launch.Background {
-		// Already running: a background launch has nothing to open.
+	if quitting || launch.Background {
+		// Already quitting or launched in background: nothing to open.
 		return
 	}
 
@@ -474,10 +530,11 @@ func (s *Shell) HandleSecondInstance(args []string) {
 			s.mu.Lock()
 			app := s.uiApp
 			w := s.win
+			wc := s.winClosed
 			s.mu.Unlock()
 			if app != nil {
 				app.SubmitParse(trimmed)
-				if w != nil {
+				if w != nil && (wc == nil || !wc.Load()) {
 					w.Update(func() {})
 				}
 			}
@@ -485,7 +542,7 @@ func (s *Shell) HandleSecondInstance(args []string) {
 		}
 	}
 	s.checkForegroundSafety("second_instance")
-	if smokeDir := strings.TrimSpace(os.Getenv("TRACE_SMOKE_DIR")); smokeDir != "" {
+	if smokeDir := smokeDirForChannel(s.loc.Channel); smokeDir != "" {
 		snap := s.Snapshot()
 		if raw, err := json.MarshalIndent(snap, "", "  "); err == nil {
 			_ = storage.WriteFileAtomic(filepath.Join(smokeDir, "second_instance.json"), raw, 0o600)
@@ -493,156 +550,36 @@ func (s *Shell) HandleSecondInstance(args []string) {
 	}
 }
 
-// trayMenuEntry is one item of the tray menu.
-type trayMenuEntry struct {
-	label string
-	run   func()
-}
-
-// trayMenuEntries is the whole tray menu: open and quit (2026-11-15
-// feedback). The status shows in the icon's tooltip instead.
-func (s *Shell) trayMenuEntries() []trayMenuEntry {
-	return []trayMenuEntry{
-		{label: "打开 " + s.loc.DisplayName, run: s.RestoreFromTray},
-		{label: "退出", run: func() { s.RequestQuit(false) }},
-	}
-}
-
-func (s *Shell) handleTrayClick() {
-	if s.quiet != "" {
-		return
-	}
-	s.RestoreFromTray()
-}
-
-func (s *Shell) handleTrayRightClick(show func([]trayMenuEntry)) {
-	if s.quiet != "" || show == nil {
-		return
-	}
-	show(s.trayMenuEntries())
-}
-
-func (s *Shell) setupTray() {
-	hasWork := s.hasActiveWork()
-	iconBytes := RenderTrayIconPNG(hasWork)
-
-	opts := mygo.TrayOptions{
-		ID:      s.loc.AppName + "-tray",
-		Icon:    iconBytes,
-		ToolTip: s.trayStatusLabel(),
-	}
-	// Quiet mode never attaches interactive tray menus or click handlers so
-	// stray taskbar clicks during automated tests cannot pop up a menu or
-	// call SetForegroundWindow.
-	if s.quiet == "" && !nativeTrayMenu {
-		var items []*mygo.MenuItem
-		for _, e := range s.trayMenuEntries() {
-			run := e.run
-			items = append(items, &mygo.MenuItem{Label: e.label, Click: func(*mygo.MenuItem, *mygo.Window) { run() }})
-		}
-		opts.Menu = mygo.NewMenu(items)
-	}
-	tray, err := mygo.NewTray(opts)
-	if err == nil {
-		if s.quiet == "" {
-			tray.OnClick(s.handleTrayClick)
-			if nativeTrayMenu {
-				tray.OnRightClick(func() { s.handleTrayRightClick(popUpTrayMenu) })
-			}
-		}
-		s.mu.Lock()
-		s.tray = tray
+// RequestQuit quits the application, optionally asking for confirmation if tasks/recordings are active in interactive mode.
+func (s *Shell) RequestQuit(force bool) {
+	s.mu.Lock()
+	if s.quitting {
 		s.mu.Unlock()
-	}
-
-	s.unsubEvents = s.backend.SubscribeEvents(func(service.Event) {
-		s.scheduleTrayRefresh()
-	})
-}
-
-// scheduleTrayRefresh refreshes the tray off the publisher's goroutine.
-// Events are published while their sender may hold its own lock (the cache
-// queue holds queue.mu), and the tray calls wait for the main thread; if the
-// main thread is waiting for that lock, as the author page's "⋯" menu does
-// while it draws, refreshing in place deadlocks the window. Events arriving
-// while a refresh is pending are merged into it.
-func (s *Shell) scheduleTrayRefresh() {
-	if !s.trayRefreshPending.CompareAndSwap(false, true) {
 		return
 	}
-	go func() {
-		s.trayRefreshPending.Store(false)
-		if s.trayRefresh != nil {
-			s.trayRefresh()
+	if !force && s.quiet == "" && s.hasActiveWork() {
+		if s.quitConfirmOpen {
+			s.mu.Unlock()
 			return
 		}
-		s.refreshTrayState()
-	}()
-}
-
-func (s *Shell) hasActiveWork() bool {
-	if tasks, err := s.backend.ListDownloadTasks(); err == nil {
-		for _, t := range tasks {
-			if t.Status == "running" || t.Status == "queued" {
-				return true
-			}
-		}
-	}
-	for _, r := range s.backend.ListLiveRooms() {
-		if r.Recording {
-			return true
-		}
-	}
-	return false
-}
-
-func (s *Shell) trayStatusLabel() string {
-	activeTasks := 0
-	if tasks, err := s.backend.ListDownloadTasks(); err == nil {
-		for _, t := range tasks {
-			if t.Status == "running" || t.Status == "queued" {
-				activeTasks++
-			}
-		}
-	}
-	activeRecs := 0
-	for _, r := range s.backend.ListLiveRooms() {
-		if r.Recording {
-			activeRecs++
-		}
-	}
-	if activeTasks == 0 && activeRecs == 0 {
-		return s.loc.DisplayName
-	}
-	return fmt.Sprintf("%s · 正在缓存 %d 项 · 录制 %d 场", s.loc.DisplayName, activeTasks, activeRecs)
-}
-
-func (s *Shell) refreshTrayState() {
-	s.mu.Lock()
-	tray := s.tray
-	s.mu.Unlock()
-	if tray == nil {
-		return
-	}
-	hasWork := s.hasActiveWork()
-	_ = tray.SetIcon(RenderTrayIconPNG(hasWork), false)
-	tray.SetToolTip(s.trayStatusLabel())
-}
-
-// RequestQuit quits the application, optionally asking for confirmation if tasks/recordings are active in interactive mode (P13, C35).
-func (s *Shell) RequestQuit(force bool) {
-	if !force && s.quiet == "" && s.hasActiveWork() {
+		s.quitConfirmOpen = true
+		displayName := s.loc.DisplayName
+		s.mu.Unlock()
 		go func() {
 			res, err := mygo.Dialog.Message(mygo.MessageOptions{
 				Type:          mygo.MessageWarning,
-				Title:         "确认退出 " + s.loc.DisplayName,
+				Title:         "确认退出 " + displayName,
 				Message:       "当前仍有正在运行的缓存任务或直播录制，确定要退出吗？",
 				Detail:        "退出前会自动暂停任务并安全收尾正在录制的分段。",
 				Buttons:       []string{"取消", "确认退出"},
 				DefaultButton: 0,
 				CancelButton:  0,
 			})
-			if err == nil && res.Button == 1 {
+			s.mu.Lock()
+			s.quitConfirmOpen = false
+			quitting := s.quitting
+			s.mu.Unlock()
+			if !quitting && err == nil && res.Button == 1 {
 				mygo.RunOnMain(func() {
 					s.performQuit()
 				})
@@ -650,50 +587,91 @@ func (s *Shell) RequestQuit(force bool) {
 		}()
 		return
 	}
+	s.mu.Unlock()
 	s.performQuit()
 }
 
+const quitPauseTimeout = 30 * time.Second
+
 func (s *Shell) performQuit() {
-	s.teardown()
+	_, alreadyQuitting := s.teardown()
+	if alreadyQuitting {
+		return
+	}
 	// Pausing finalizes recordings, which may take a while: off the main
-	// thread, so that the event loop keeps running meanwhile.
+	// thread, so that the event loop keeps running meanwhile, bounded so a
+	// stuck stream can never hang exit forever.
 	go func() {
-		s.backend.PauseForExit()
+		if s.backend != nil && !s.backend.ExitGracefully(quitPauseTimeout) {
+			s.backend.Logf("pause for exit timed out after %s; proceeding with quit", quitPauseTimeout)
+		}
 		mygo.RunOnMain(func() { mygo.App.Quit() })
 	}()
 }
 
 // teardown releases the window, the interface and the tray before a quit,
-// saving the route the window shows. It returns whether the window was
-// open.
-func (s *Shell) teardown() bool {
+// saving the route and window dimensions. It returns whether the window was
+// open and whether a quit was already in progress.
+func (s *Shell) teardown() (windowOpen bool, alreadyQuitting bool) {
 	s.mu.Lock()
+	if s.quitting {
+		s.mu.Unlock()
+		return false, true
+	}
 	s.quitting = true
-	windowOpen := s.win != nil
-	if s.uiApp != nil {
-		s.lastRoute = s.uiApp.CurrentRoute
-		route := s.lastRoute
-		_, _ = s.backend.MutateUIState(func(st *uistate.State) { st.LastRoute = route })
-	}
-	if s.unsubEvents != nil {
-		s.unsubEvents()
-		s.unsubEvents = nil
-	}
-	if s.uiApp != nil {
-		s.uiApp.Close()
-		s.uiApp = nil
-	}
 	win := s.win
+	uiApp := s.uiApp
+	winClosed := s.winClosed
+	unsub := s.unsubEvents
+	tray := s.tray
+	s.unsubEvents = nil
+	s.uiApp = nil
 	s.win = nil
-	if s.tray != nil {
-		s.tray.Destroy()
-		s.tray = nil
-	}
+	s.winClosed = nil
+	s.tray = nil
 	s.mu.Unlock()
+
+	windowOpen = win != nil
+	var route string
+	if uiApp != nil {
+		route = uiApp.CurrentRoute
+	}
+	w, h, saveSize := captureWindowSize(win)
+
+	if winClosed != nil {
+		winClosed.Store(true)
+	}
+	if unsub != nil {
+		unsub()
+	}
+	s.markTrayStopped()
+
+	if route != "" {
+		s.mu.Lock()
+		s.lastRoute = route
+		s.mu.Unlock()
+	}
+	if s.backend != nil && (route != "" || saveSize) {
+		_, _ = s.backend.MutateUIState(func(st *uistate.State) {
+			if route != "" {
+				st.LastRoute = route
+			}
+			if saveSize {
+				st.Window.Width = w
+				st.Window.Height = h
+			}
+		})
+	}
+	if uiApp != nil {
+		uiApp.Close()
+	}
+	if tray != nil {
+		tray.Destroy()
+	}
 	if win != nil {
 		win.Close()
 	}
-	return windowOpen
+	return windowOpen, false
 }
 
 // QuitForUpdate saves TRACE's work and quits without asking, for an
@@ -704,23 +682,24 @@ func (s *Shell) teardown() bool {
 // "restart to update"); otherwise tools/package installs the new build
 // and starts it.
 func (s *Shell) QuitForUpdate(reason string, relaunch bool) {
-	s.mu.Lock()
-	if s.quitting {
-		s.mu.Unlock()
+	windowOpen, alreadyQuitting := s.teardown()
+	if alreadyQuitting {
 		return
 	}
-	s.mu.Unlock()
-	windowOpen := s.teardown()
 	from := appdirs.BuildInfo().Version
 	go func() {
-		s.backend.PauseForExit()
-		_, err := s.backend.MutateUIState(func(st *uistate.State) {
-			st.Update.Restart = &uistate.UpdateRestart{Reason: reason, WindowOpen: windowOpen, FromVersion: from, At: time.Now().UTC().Format(time.RFC3339)}
-		})
-		if err != nil {
-			s.backend.Logf("record quit for update: %v", err)
+		if s.backend != nil {
+			if !s.backend.ExitGracefully(quitPauseTimeout) {
+				s.backend.Logf("pause for update quit timed out after %s; continuing", quitPauseTimeout)
+			}
+			_, err := s.backend.MutateUIState(func(st *uistate.State) {
+				st.Update.Restart = &uistate.UpdateRestart{Reason: reason, WindowOpen: windowOpen, FromVersion: from, At: time.Now().UTC().Format(time.RFC3339)}
+			})
+			if err != nil {
+				s.backend.Logf("record quit for update: %v", err)
+			}
+			s.backend.Logf("quitting for update (%s, window open: %v)", reason, windowOpen)
 		}
-		s.backend.Logf("quitting for update (%s, window open: %v)", reason, windowOpen)
 		mygo.RunOnMain(func() {
 			if relaunch {
 				mygo.App.Relaunch()
@@ -740,8 +719,9 @@ func (s *Shell) RestartToUpdate() {
 func (s *Shell) redraw() {
 	s.mu.Lock()
 	w := s.win
+	wc := s.winClosed
 	s.mu.Unlock()
-	if w != nil {
+	if w != nil && (wc == nil || !wc.Load()) {
 		w.Update(func() {})
 	}
 }
@@ -790,6 +770,11 @@ func (s *Shell) Snapshot() RuntimeStateSnapshot {
 	stoleDetail := s.stoleFocusDetail
 	s.mu.Unlock()
 
+	var cacheDir string
+	if s.backend != nil {
+		cacheDir = s.backend.LibraryStore().CacheDir()
+	}
+
 	return RuntimeStateSnapshot{
 		PID:                    pid,
 		AppName:                s.loc.AppName,
@@ -798,7 +783,7 @@ func (s *Shell) Snapshot() RuntimeStateSnapshot {
 		Mode:                   s.loc.Mode,
 		QuietMode:              s.quiet,
 		DataDir:                s.loc.DataDir,
-		CacheDir:               s.backend.LibraryStore().CacheDir(),
+		CacheDir:               cacheDir,
 		WindowOpen:             winOpen,
 		TrayActive:             trayActive,
 		ActiveRoute:            route,
@@ -814,73 +799,5 @@ func (s *Shell) Snapshot() RuntimeStateSnapshot {
 		Commit:                 appdirs.BuildInfo().Commit,
 		BuildTime:              appdirs.BuildInfo().BuildTime,
 		Timestamp:              time.Now().UTC().Format(time.RFC3339),
-	}
-}
-
-func (s *Shell) runSmokeControlLoop(smokeDir string) {
-	_ = os.MkdirAll(smokeDir, 0o700)
-	writeSnap := func(name string) {
-		snap := s.Snapshot()
-		if raw, err := json.MarshalIndent(snap, "", "  "); err == nil {
-			_ = storage.WriteFileAtomic(filepath.Join(smokeDir, name), raw, 0o600)
-		}
-	}
-
-	writeSnap("ready.json")
-	cmdFile := filepath.Join(smokeDir, "command.txt")
-	lastCmd := ""
-
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		s.mu.Lock()
-		quitting := s.quitting
-		s.mu.Unlock()
-		if quitting {
-			return
-		}
-		raw, err := os.ReadFile(cmdFile)
-		if err != nil {
-			continue
-		}
-		cmd := strings.TrimSpace(string(raw))
-		if cmd == "" || cmd == lastCmd {
-			continue
-		}
-		lastCmd = cmd
-
-		switch cmd {
-		case "close_to_tray":
-			done := make(chan struct{})
-			mygo.RunOnMain(func() {
-				s.CloseToTray()
-				close(done)
-			})
-			<-done
-			// CloseToTray already collects and trims; measure after it settles.
-			time.Sleep(2 * time.Second)
-			writeSnap("tray_state.json")
-
-		case "restore_window":
-			done := make(chan struct{})
-			mygo.RunOnMain(func() {
-				s.RestoreFromTray()
-				close(done)
-			})
-			<-done
-			time.Sleep(50 * time.Millisecond)
-			writeSnap("restored_state.json")
-
-		case "snapshot":
-			writeSnap("snapshot.json")
-
-		case "quit":
-			writeSnap("final_state.json")
-			mygo.RunOnMain(func() {
-				s.RequestQuit(true)
-			})
-			return
-		}
 	}
 }

@@ -22,27 +22,33 @@ func (a *App) selectTasksChecks() {
 	a.closeLivePreview()
 }
 
-func (a *App) checkPlanRows() []service.AccountCheckRow {
+func (a *App) checkPlanRowsAt(now time.Time) []service.AccountCheckRow {
 	if a.backend == nil {
 		return nil
 	}
-	if now := time.Now(); a.checkPlanAt.IsZero() || now.Sub(a.checkPlanAt) >= checkPlanRefresh {
+	if a.checkPlanAt.IsZero() || now.Sub(a.checkPlanAt) >= checkPlanRefresh {
 		a.checkPlan = a.backend.CheckPlan()
 		a.checkPlanAt = now
 	}
 	return a.checkPlan
 }
 
+func (a *App) checkPlanRows() []service.AccountCheckRow {
+	return a.checkPlanRowsAt(time.Now())
+}
+
 // formatPlanTime shows a check time as 今天 15:04, 明天 15:04, 昨天 15:04
-// or 11月16日 15:04.
+// or 11月16日 15:04, using UTC midnight of local calendar dates so 23-hour
+// spring-forward / 25-hour fall-back DST boundaries stay exact.
 func formatPlanTime(raw string, now time.Time) string {
 	t, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
 	if err != nil {
 		return ""
 	}
 	t, now = t.Local(), now.Local()
-	day := func(x time.Time) time.Time { return time.Date(x.Year(), x.Month(), x.Day(), 0, 0, 0, 0, x.Location()) }
-	switch int(day(t).Sub(day(now)).Hours() / 24) {
+	tDay := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	nowDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	switch int(tDay.Sub(nowDay) / (24 * time.Hour)) {
 	case 0:
 		return "今天 " + t.Format("15:04")
 	case 1:
@@ -173,51 +179,108 @@ func checkPlanNextText(row service.AccountCheckRow, now time.Time) (string, bool
 // round should check it next, and, for subscriptions that record
 // broadcasts, its live checks.
 func (a *App) renderTasksChecksView(c *ui.Context) {
-	rows := a.checkPlanRows()
-	now := time.Now()
-	ui.Scroll(c).Grow(1).FillWidth().ClipX().Children(func() {
-		ui.Column(c).FillWidth().Padding(16).Gap(12).ClipX().Children(func() {
-			ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).ClipX().Children(func() {
-				a.renderCheckPlanHead(c, rows, now)
-				checking := a.pending["check-updates"]
-				if checking {
-					ui.Text(c, fmt.Sprintf("正在检查 %d / %d", a.CheckDone, a.CheckTotal)).FontSize(12).FontWeight(600).TextColor(ColorInfoBlue).SingleLine().Shrink(0)
-					if OutlinePillButton(c, "取消", "检查计划：取消检查").Clicked() {
-						a.backend.CancelSubscriptionCheck()
+	now := c.Now()
+	rows := a.checkPlanRowsAt(now)
+	checking := a.isPending("check-updates")
+
+	st := a.fs()
+	if st.checkPlanListState == nil {
+		st.checkPlanListState = &ui.ListState{}
+	}
+	totalItems := 1 + len(rows)
+	if len(rows) == 0 {
+		totalItems = 2
+	}
+	st.checkPlanListState.Key = func(i int) any {
+		if i == 0 {
+			return "header"
+		}
+		if len(rows) == 0 {
+			return "empty"
+		}
+		idx := i - 1
+		if idx < 0 || idx >= len(rows) {
+			return i
+		}
+		return rows[idx].Site + ":" + rows[idx].UID
+	}
+
+	ui.List(c, st.checkPlanListState, totalItems, func(i int) {
+		if i == 0 {
+			ui.Box(c).FillWidth().Padding(16, 16, 12, 16).ClipX().Children(func() {
+				ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).ClipX().Children(func() {
+					a.renderCheckPlanHead(c, rows, now)
+					if checking {
+						ui.Text(c, fmt.Sprintf("正在检查 %d / %d", a.CheckDone, a.CheckTotal)).FontSize(12).FontWeight(600).TextColor(ColorInfoBlue).SingleLine().Shrink(0)
+						if OutlinePillButton(c, "取消", "检查计划：取消检查").Clicked() {
+							a.backend.CancelSubscriptionCheck()
+						}
+					} else if len(rows) > 0 && OutlinePillButton(c, "检查全部", "检查计划：检查全部").Clicked() {
+						a.checkingAccount = ""
+						a.checkAllSubscriptions()
 					}
-				} else if len(rows) > 0 && OutlinePillButton(c, "检查全部", "检查计划：检查全部").Clicked() {
-					a.checkingAccount = ""
-					a.checkAllSubscriptions()
-				}
-			})
-			if len(rows) == 0 {
-				ui.Column(c).FillWidth().Padding(32, 16).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, "还没有订阅的账号").FontSize(14).TextColor(ColorTextMuted).SingleLine()
 				})
-				return
-			}
-			for _, row := range rows {
-				a.renderCheckPlanRow(c, row, now)
-			}
+			})
+			return
+		}
+		if len(rows) == 0 {
+			ui.Column(c).FillWidth().Padding(32, 16).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "还没有订阅的账号").FontSize(14).TextColor(ColorTextMuted).SingleLine()
+			})
+			return
+		}
+		idx := i - 1
+		if idx < 0 || idx >= len(rows) {
+			return
+		}
+		padBottom := float32(10)
+		if idx == len(rows)-1 {
+			padBottom = 16
+		}
+		ui.Box(c).FillWidth().Padding(0, 16, padBottom, 16).ClipX().Children(func() {
+			a.renderCheckPlanRow(c, rows[idx], now, checking)
 		})
-	})
-	if a.pending["check-updates"] {
+	}).Label("检查计划列表").Grow(1).FillWidth()
+
+	if checking {
 		c.After(time.Second)
 		return
 	}
-	c.After(checkPlanRefresh)
+	wait := checkPlanRefresh - now.Sub(a.checkPlanAt)
+	if wait < time.Second {
+		wait = time.Second
+	} else if wait > checkPlanRefresh {
+		wait = checkPlanRefresh
+	}
+	c.After(wait)
+}
+
+// earliestScheduledNextAt finds the chronologically earliest scheduled NextAt
+// using parsed timestamps (handling mixed RFC3339 timezone offsets safely).
+func earliestScheduledNextAt(rows []service.AccountCheckRow) string {
+	var bestRaw string
+	var bestTime time.Time
+	for _, r := range rows {
+		if r.Plan != subscription.PlanScheduled || strings.TrimSpace(r.NextAt) == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, strings.TrimSpace(r.NextAt))
+		if err != nil {
+			continue
+		}
+		if bestRaw == "" || t.Before(bestTime) {
+			bestRaw = r.NextAt
+			bestTime = t
+		}
+	}
+	return bestRaw
 }
 
 // renderCheckPlanHead is the page's heading: when the next scheduled round
 // starts and how a round picks its accounts.
 func (a *App) renderCheckPlanHead(c *ui.Context, rows []service.AccountCheckRow, now time.Time) {
 	ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
-		next := ""
-		for _, r := range rows {
-			if r.Plan == subscription.PlanScheduled && r.NextAt != "" && (next == "" || r.NextAt < next) {
-				next = r.NextAt
-			}
-		}
+		next := earliestScheduledNextAt(rows)
 		head := "定时检查已关闭或没有定时检查的订阅"
 		if next != "" {
 			head = "下一轮定时检查：" + formatPlanTime(next, now)
@@ -232,7 +295,7 @@ func (a *App) renderCheckPlanHead(c *ui.Context, rows []service.AccountCheckRow,
 	})
 }
 
-func (a *App) renderCheckPlanRow(c *ui.Context, row service.AccountCheckRow, now time.Time) {
+func (a *App) renderCheckPlanRow(c *ui.Context, row service.AccountCheckRow, now time.Time, checking bool) {
 	key := row.Site + ":" + row.UID
 	ui.Row(c).Label("检查计划行 "+key).FillWidth().Padding(12, 14).Gap(12).Radius(14).Border(1, ColorBorder).Background(ColorBgMain).AlignItems(ui.Center).ClipX().Children(func() {
 		var mid int64
@@ -242,10 +305,10 @@ func (a *App) renderCheckPlanRow(c *ui.Context, row service.AccountCheckRow, now
 		a.renderAccountAvatar(c, row.Site, row.Name, row.UID, mid, 36, false, "", nil)
 		ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
 			ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).ClipX().Children(func() {
-				ui.Text(c, firstNonEmptyStrUI(row.Name, row.UID)).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				ui.Text(c, firstNonEmptyStrUI(row.Name, row.UID)).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
 				renderSiteSmallBadgeWithDot(c, row.Site, "")
 				if row.SubName != "" && row.SubName != row.Name {
-					ui.Text(c, "· 订阅 "+row.SubName).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					ui.Text(c, "· 订阅 "+row.SubName).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
 				}
 			})
 			last := "更新检查：还没有检查过"
@@ -282,7 +345,6 @@ func (a *App) renderCheckPlanRow(c *ui.Context, row service.AccountCheckRow, now
 			nt.TextColor(ColorTextMuted)
 		}
 		// Checking by hand works whatever the plan, except signed out.
-		checking := a.pending["check-updates"]
 		if checking && a.checkingAccount == key {
 			ui.Text(c, "检查中…").FontSize(12).FontWeight(600).TextColor(ColorInfoBlue).SingleLine().Shrink(0)
 		} else if OutlinePillButton(c, "检查", "检查计划：立即检查 "+key).Disabled(checking || row.Plan == subscription.PlanUnauth).Clicked() {

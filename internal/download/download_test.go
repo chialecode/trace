@@ -74,7 +74,7 @@ func setupDownloadEnv(t *testing.T, handler http.Handler, maxConc int) (*Manager
 	return mgr, libStore, srv
 }
 
-// PR-2 & C17: Pure-Go DASH video.m4s + audio.m4s muxing via mp4ff, elst verification, Dolby/FLAC sidecar + AAC fallback, and complete video part caching.
+// Pure-Go DASH video.m4s + audio.m4s muxing via mp4ff, elst verification, Dolby/FLAC sidecar + AAC fallback, and complete video part caching.
 func TestMuxDASHFilesAndVideoCacheEndToEnd(t *testing.T) {
 	// Generate 2 seconds (60 video frames @ 30fps, 94 audio frames @ 48kHz) so 1s chunk interleaving produces multiple chunks per track.
 	vBytes, err := BuildSyntheticVideoM4S(60, 30)
@@ -189,6 +189,7 @@ func TestMuxDASHFilesAndVideoCacheEndToEnd(t *testing.T) {
 
 	mgr, libStore, srv := setupDownloadEnv(t, mux, 2)
 	srvURL = srv.URL
+	checkNames := watchNames(t, libStore.CacheDir())
 
 	// High-quality DASH audio retains its MP4 container name, with AAC in the main MP4.
 	dlCfg := mgr.dlSettings
@@ -209,6 +210,7 @@ func TestMuxDASHFilesAndVideoCacheEndToEnd(t *testing.T) {
 
 	// Wait for task completion.
 	doneTask := waitForTaskStatus(t, mgr, tasks[0].TaskID, "completed", 5*time.Second)
+	checkNames()
 	mp4Path := filepath.Join(doneTask.ItemDir, "P01.mp4")
 	summary, err := InspectMP4File(mp4Path)
 	if err != nil {
@@ -259,7 +261,7 @@ func TestMuxDASHFilesAndVideoCacheEndToEnd(t *testing.T) {
 	}
 }
 
-// C18 & R-06: Closed-interval 8 MiB Range resume, Content-Range verification, 200 fallback, per-segment retry + URL rotation, and 403 PlayURL refresh.
+// Closed-interval 8 MiB Range resume, Content-Range verification, 200 fallback, per-segment retry + URL rotation, and 403 PlayURL refresh.
 func TestRangeResume206AndFallback200(t *testing.T) {
 	fullPayload := bytes.Repeat([]byte("0123456789abcdef"), 1024) // 16 KiB
 	wantSum := sha256.Sum256(fullPayload)
@@ -345,7 +347,7 @@ func TestRangeResume206AndFallback200(t *testing.T) {
 	}
 }
 
-// C19 & C23: Dynamic caching with linked video and partial image failure + retry recovery.
+// Dynamic caching with linked video and partial image failure + retry recovery.
 func TestDynamicCacheLinkedVideosAndPartialRetry(t *testing.T) {
 	vBytes, _ := BuildSyntheticVideoM4S(10, 30)
 	aBytes, _ := BuildSyntheticAudioM4S(15)
@@ -480,16 +482,7 @@ func TestDynamicCacheLinkedVideosAndPartialRetry(t *testing.T) {
 	}
 }
 
-// Aliases for stage-report C19 & C23 references.
-func TestDynamicCacheAndLinkedVideos(t *testing.T) {
-	TestDynamicCacheLinkedVideosAndPartialRetry(t)
-}
-
-func TestPartialFailureAndRetrySkipsCompleted(t *testing.T) {
-	TestDynamicCacheLinkedVideosAndPartialRetry(t)
-}
-
-// C15, C20, R-05: Queue concurrency limit, deduplication, startup pause ("已暂停（应用关闭）"), and risk_control circuit breaker.
+// Queue concurrency limit, deduplication, startup pause ("已暂停（应用关闭）"), and risk_control circuit breaker.
 func TestQueueConcurrencyDedupStartupRecoveryAndCircuitBreaker(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/x/web-interface/wbi/view", func(w http.ResponseWriter, r *http.Request) {
@@ -518,7 +511,7 @@ func TestQueueConcurrencyDedupStartupRecoveryAndCircuitBreaker(t *testing.T) {
 	mgr, _, _ := setupDownloadEnv(t, mux, 1)
 	ctx := context.Background()
 
-	// 1. Test task deduplication before starting workers (C15).
+	// 1. Test task deduplication before starting workers.
 	detail := &bilibili.VideoDetail{
 		BVID:   "BV1dedup0001",
 		Title:  "Dedup Video",
@@ -534,7 +527,7 @@ func TestQueueConcurrencyDedupStartupRecoveryAndCircuitBreaker(t *testing.T) {
 		t.Fatalf("expected duplicate EnqueueVideo to return same task ID %q, got %+v", t1[0].TaskID, t2)
 	}
 
-	// Simulate an interrupted "running" task in SQLite and verify Start() transitions it to "paused" ("已暂停（应用关闭）") without auto-running (R-05, C15).
+	// Simulate an interrupted "running" task in SQLite and verify Start() transitions it to "paused" ("已暂停（应用关闭）") without auto-running.
 	_, _ = mgr.db.Exec(`UPDATE download_tasks SET status = 'running' WHERE task_id = ?`, t1[0].TaskID)
 	_ = mgr.Start(ctx)
 	mgr.Stop()
@@ -544,7 +537,7 @@ func TestQueueConcurrencyDedupStartupRecoveryAndCircuitBreaker(t *testing.T) {
 	}
 	_, _ = mgr.Cancel(t1[0].TaskID)
 
-	// 2. Test risk_control circuit breaker (C20):
+	// 2. Test risk_control circuit breaker:
 	// Start manager first, then enqueue a task that triggers -412 risk_control and a second queued task.
 	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -574,15 +567,6 @@ func TestQueueConcurrencyDedupStartupRecoveryAndCircuitBreaker(t *testing.T) {
 	if pausedNext.ErrorKind != bilibili.ErrKindRiskControl {
 		t.Fatalf("expected queued task auto-paused with risk_control, got %+v", pausedNext)
 	}
-}
-
-// Aliases for stage-report C15 & C20 references.
-func TestTaskQueueConcurrencyAndStartupPause(t *testing.T) {
-	TestQueueConcurrencyDedupStartupRecoveryAndCircuitBreaker(t)
-}
-
-func TestRiskControlCircuitBreakerPausesQueued(t *testing.T) {
-	TestQueueConcurrencyDedupStartupRecoveryAndCircuitBreaker(t)
 }
 
 func waitForTaskStatus(t *testing.T, mgr *Manager, taskID string, wantStatus string, timeout time.Duration) Task {

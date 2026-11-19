@@ -253,7 +253,7 @@ func TestRecordingPreservesUserOwnedTargetName(t *testing.T) {
 // Some live nodes answer the playurl address with a multivariant playlist; the
 // recorder follows the best variant once and records from the media playlist,
 // whose entries are relative and carry Bilibili-style EXTINF titles and the
-// site's own #EXT-BILI-AUX tag (seen in ACT-007).
+// site's own #EXT-BILI-AUX tag.
 func TestRecorderFollowsMultivariantPlaylistOnce(t *testing.T) {
 	init, fragment := regressionLiveSamples(t)
 	var masterHits atomic.Int32

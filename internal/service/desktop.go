@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -11,11 +12,42 @@ import (
 
 // Desktop abstracts OS shell actions (opening URLs, folders, or revealing files).
 // Automated tests, prototypes, uishots, and smoke runs use MockDesktop or TRACE_QUIET
-// so no external browser or Explorer window is ever launched (§6.4).
+// so no external browser or Explorer window is ever launched.
 type Desktop interface {
 	OpenExternalURL(rawURL string) error
 	OpenPath(path string) error
 	RevealPath(path string) error
+}
+
+// validateExternalURL ensures only safe HTTP/HTTPS URLs with a non-empty host
+// and no embedded credentials or control characters are passed to the OS URL handler.
+func validateExternalURL(rawURL string) (string, error) {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return "", fmt.Errorf("empty url")
+	}
+	for _, r := range trimmed {
+		if r < 0x20 || r == 0x7f || r == ' ' || r == '\t' {
+			return "", fmt.Errorf("invalid url: contains whitespace or control character")
+		}
+	}
+	if strings.HasPrefix(trimmed, `\\`) {
+		return "", fmt.Errorf("invalid url: UNC path rejected")
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("invalid url: %w", err)
+	}
+	if !strings.EqualFold(u.Scheme, "https") && !strings.EqualFold(u.Scheme, "http") {
+		return "", fmt.Errorf("unsupported url scheme: %q", u.Scheme)
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return "", fmt.Errorf("invalid url: missing host")
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("invalid url: userinfo not allowed")
+	}
+	return u.String(), nil
 }
 
 // RecordedAction represents a shell action captured by MockDesktop.
@@ -35,11 +67,12 @@ func NewMockDesktop() *MockDesktop {
 }
 
 func (m *MockDesktop) OpenExternalURL(rawURL string) error {
-	if strings.TrimSpace(rawURL) == "" {
-		return fmt.Errorf("empty url")
+	clean, err := validateExternalURL(rawURL)
+	if err != nil {
+		return err
 	}
 	m.mu.Lock()
-	m.actions = append(m.actions, RecordedAction{Kind: "url", Target: rawURL})
+	m.actions = append(m.actions, RecordedAction{Kind: "url", Target: clean})
 	m.mu.Unlock()
 	return nil
 }
@@ -84,32 +117,53 @@ func NewDefaultDesktop() Desktop {
 	return &OSDesktop{fallback: NewMockDesktop()}
 }
 
+func startAndRelease(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	if cmd.Process != nil {
+		_ = cmd.Process.Release()
+	}
+	return nil
+}
+
 func (d *OSDesktop) OpenExternalURL(rawURL string) error {
+	clean, err := validateExternalURL(rawURL)
+	if err != nil {
+		return err
+	}
 	if os.Getenv("TRACE_QUIET") != "" {
-		return d.fallback.OpenExternalURL(rawURL)
+		return d.fallback.OpenExternalURL(clean)
 	}
 	if runtime.GOOS == "windows" {
-		return exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", rawURL).Start()
+		return startAndRelease("rundll32.exe", "url.dll,FileProtocolHandler", clean)
 	}
-	return d.fallback.OpenExternalURL(rawURL)
+	return d.fallback.OpenExternalURL(clean)
 }
 
 func (d *OSDesktop) OpenPath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("empty path")
+	}
 	if os.Getenv("TRACE_QUIET") != "" {
 		return d.fallback.OpenPath(path)
 	}
 	if runtime.GOOS == "windows" {
-		return exec.Command("explorer.exe", path).Start()
+		return startAndRelease("explorer.exe", path)
 	}
 	return d.fallback.OpenPath(path)
 }
 
 func (d *OSDesktop) RevealPath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("empty path")
+	}
 	if os.Getenv("TRACE_QUIET") != "" {
 		return d.fallback.RevealPath(path)
 	}
 	if runtime.GOOS == "windows" {
-		return exec.Command("explorer.exe", "/select,", path).Start()
+		return startAndRelease("explorer.exe", "/select,", path)
 	}
 	return d.fallback.RevealPath(path)
 }

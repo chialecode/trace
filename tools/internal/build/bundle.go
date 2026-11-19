@@ -32,15 +32,15 @@ func registeredBundleFiles(destDir, sumsName string) (map[string]bool, error) {
 		}
 		fields := strings.Fields(line)
 		if len(fields) != 2 || len(fields[0]) != 64 || !validBundleName(fields[1]) || registered[fields[1]] {
-			return nil, fmt.Errorf("invalid previous SHA256SUMS.txt entry")
+			return nil, fmt.Errorf("invalid previous %s entry", sumsName)
 		}
 		if _, err := hex.DecodeString(fields[0]); err != nil {
-			return nil, fmt.Errorf("invalid previous SHA256SUMS.txt hash")
+			return nil, fmt.Errorf("invalid previous %s hash", sumsName)
 		}
 		registered[fields[1]] = true
 	}
 	if len(registered) == 1 {
-		return nil, fmt.Errorf("empty previous SHA256SUMS.txt")
+		return nil, fmt.Errorf("empty previous %s", sumsName)
 	}
 	return registered, nil
 }
