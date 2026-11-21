@@ -24,6 +24,7 @@ const RouteMine = "/mine"
 var mineSites = []struct{ ID, Name, Short string }{
 	{string(site.Bilibili), "哔哩哔哩", "B 站"},
 	{string(site.Douyin), "抖音", "抖音"},
+	{string(site.Weibo), "微博", "微博"},
 }
 
 // mineNow is the clock for the history date groups (tests pin it).
@@ -104,7 +105,8 @@ func mineFnKey(siteID, kind string) string { return siteID + "/" + kind }
 func mineHasFolders(siteID, kind string) bool {
 	switch mineFnKey(siteID, kind) {
 	case "bilibili/" + service.AccountFollowing, "bilibili/" + service.AccountFavorites,
-		"bilibili/" + service.AccountToView, "douyin/" + service.AccountCollection:
+		"bilibili/" + service.AccountToView, "douyin/" + service.AccountCollection,
+		"weibo/" + service.AccountFollowing:
 		return true
 	}
 	return false
@@ -128,12 +130,18 @@ func mineKindLabel(siteID, kind string) string {
 	case service.AccountFollowing:
 		return "关注"
 	case service.AccountFavorites:
+		if siteID == string(site.Weibo) {
+			return "收藏"
+		}
 		return "收藏夹"
 	case service.AccountToView:
 		return "稍后再看"
 	case service.AccountHistory:
 		return "历史记录"
 	case service.AccountLikes:
+		if siteID == string(site.Weibo) {
+			return "赞过"
+		}
 		return "喜欢"
 	case service.AccountCollection:
 		return "收藏"
@@ -194,6 +202,22 @@ func (a *App) mineSiteURL(siteID, kind string) string {
 			return "https://www.bilibili.com/account/history"
 		}
 		return "https://www.bilibili.com/"
+	}
+	if siteID == string(site.Weibo) {
+		uid := strings.TrimSpace(a.backend.StatusOf(siteID).UID)
+		switch kind {
+		case service.AccountFollowing:
+			if uid != "" {
+				return "https://weibo.com/u/page/follow/" + uid
+			}
+		case service.AccountFavorites:
+			return "https://weibo.com/fav"
+		case service.AccountLikes:
+			if uid != "" {
+				return "https://weibo.com/u/page/like/" + uid
+			}
+		}
+		return "https://weibo.com/"
 	}
 	switch kind {
 	case service.AccountFollowing:
@@ -810,6 +834,10 @@ func (a *App) renderMineRows(c *ui.Context, siteID, kind string, l *mineList) {
 			a.renderMineUserRow(c, it)
 			return
 		}
+		if it.Kind == service.AccountItemPost {
+			a.renderMineWeiboPostRow(c, it)
+			return
+		}
 		a.renderMineVideoRow(c, kind, it)
 	}).Label("我的虚拟列表").Grow(1).FillWidth()
 }
@@ -916,9 +944,12 @@ func (a *App) renderMineUserRow(c *ui.Context, it service.AccountItem) {
 			})
 		})
 		if body.Clicked() {
-			if it.Site == string(site.Douyin) {
+			switch it.Site {
+			case string(site.Douyin):
 				a.OpenDouyinUser(it.ID, it.Title)
-			} else {
+			case string(site.Weibo):
+				a.OpenWeiboUser(it.ID, it.Title)
+			default:
 				a.OpenUser(mid, it.Title)
 			}
 		}
@@ -948,6 +979,195 @@ func (a *App) mineSubscribe(it service.AccountItem) {
 		acct.UniqueID = it.UniqueID
 	}
 	a.OpenSubscribePicker(acct)
+}
+
+func (a *App) renderMineWeiboPostRow(c *ui.Context, it service.AccountItem) {
+	var post service.WeiboPostView
+	if it.Post != nil {
+		post = *it.Post
+	} else {
+		post = service.WeiboPostView{
+			Mid:          it.ID,
+			Text:         it.Title,
+			CreatedAt:    it.FavAt,
+			CanonicalURL: firstNonEmptyStrUI(it.BrowserURL, it.OpenURL, "https://weibo.com/detail/"+it.ID),
+			Author: service.WeiboAuthorDTO{
+				UID:        it.AuthorID,
+				ScreenName: it.Author,
+			},
+		}
+	}
+	if post.Mid == "" {
+		post.Mid = it.ID
+	}
+	if post.CanonicalURL == "" {
+		post.CanonicalURL = firstNonEmptyStrUI(it.BrowserURL, it.OpenURL, "https://weibo.com/detail/"+post.Mid)
+	}
+	card := a.weiboPostToPostCard(post, nil)
+	card.Key = "mine-wb:" + post.Mid
+	card.OpenBtnLabel = "我的微博：" + post.Mid
+
+	authorUID := strings.TrimSpace(card.AuthorUID)
+	authorName := firstNonEmptyStrUI(card.AuthorName, "未知博主")
+	openPost := func() {
+		a.OpenWeiboPost(post.Mid, clampRunes(firstNonEmptyStrUI(post.Text, it.Title), 40), authorName, authorUID, it.Cover, post.CanonicalURL)
+	}
+	openAuthor := func() {
+		if authorUID != "" {
+			a.OpenWeiboUser(authorUID, authorName)
+		}
+	}
+	owner, owned := a.ownerOfAccountInMemory(string(site.Weibo), authorUID, 0)
+
+	ui.Row(c).
+		Label("我的微博行："+post.Mid).
+		FillWidth().
+		Padding(12, 16).
+		Gap(12).
+		AlignItems(ui.Start).
+		BorderWidth(0, 0, 1, 0).
+		BorderColor(ColorBorder).
+		Background(ColorBgMain).
+		ClipX().
+		Children(func() {
+			a.renderAccountAvatar(c, "weibo", authorName, authorUID, 0, 38, false, "", openAuthor, card.AuthorFace)
+			ui.Column(c).Grow(1).Gap(6).ClipX().Children(func() {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(6).ClipX().Children(func() {
+					ui.Row(c).AlignItems(ui.Center).Gap(6).Grow(1).ClipX().Children(func() {
+						authorBtn := ui.ButtonBase(c).Padding(0).Children(func() {
+							ui.Text(c, authorName).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+						})
+						if authorBtn.Clicked() {
+							openAuthor()
+						}
+						if post.CreatedAt > 0 {
+							ui.Text(c, "· "+FormatRelativeTime(post.CreatedAt)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+						}
+						if card.TypeLabel != "" {
+							ui.Text(c, "· "+card.TypeLabel).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+						}
+					})
+					ui.Row(c).AlignItems(ui.Center).Gap(6).Shrink(0).Children(func() {
+						if dot := postDotStatus(card); dot != "" && dot != "none" {
+							DrawStatusDot(c, dot, card.DotLabel)
+						}
+						menuKey := "mine-wb-menu:" + post.Mid
+						open := a.PostMenuKey == menuKey
+						MoreMenuButton(c, "我的条目更多："+post.Mid, 28, &open, func(m *ui.Menu) {
+							if !card.Cached && (card.DotStatus == "" || card.DotStatus == "none") && post.Mid != "" {
+								if m.Item("缓存").Chosen() {
+									a.cacheWeiboPostNow(post.Mid, card.WeiboCacheVia)
+								}
+							}
+							if authorUID != "" {
+								if owned {
+									if m.Item("打开订阅“" + owner.Name + "”").Chosen() {
+										a.OpenSubscriptionDetail(owner)
+									}
+								} else if m.Item("加入订阅").Chosen() {
+									a.OpenSubscribePicker(subscription.AccountRef{
+										Site: string(site.Weibo),
+										UID:  authorUID,
+										Name: authorName,
+										Face: card.AuthorFace,
+									})
+								}
+							}
+							if post.CanonicalURL != "" {
+								if m.Item("复制链接").Chosen() {
+									c.WriteClipboard(post.CanonicalURL)
+									c.Toast("已复制链接")
+									a.BannerInfo = "已复制链接"
+								}
+								if m.Item("在浏览器中打开").Chosen() {
+									a.showError(a.backend.Desktop().OpenExternalURL(post.CanonicalURL))
+								}
+							}
+						})
+						keyedMenuOpen(&a.PostMenuKey, menuKey, open)
+					})
+				})
+
+				bodyBtn := ui.ButtonBase(c).Label("我的微博：" + post.Mid).FillWidth().Padding(0).Justify(ui.Start).AlignItems(ui.Start).ClipX()
+				bodyBtn.Children(func() {
+					text := firstNonEmptyStrUI(post.Text, post.TextRaw, it.Title, "微博 "+post.Mid)
+					ui.Text(c, text).FontSize(14).LineHeight(LineHeightBody).TextColor(ColorTextMain).MaxLines(4)
+				})
+				if bodyBtn.Clicked() {
+					openPost()
+				}
+				if card.Origin != nil && !card.Origin.Unavailable {
+					orig := card.Origin
+					origBtn := ui.ButtonBase(c).
+						Label("我的微博转发内容："+post.Mid).
+						FillWidth().
+						Padding(8, 10).
+						Radius(10).
+						Background(ColorBgSecondary).
+						Border(1, ColorBorder).
+						Justify(ui.Start).
+						AlignItems(ui.Start).
+						ClipX()
+					if origBtn.Hovered() {
+						origBtn.Background(ColorHover)
+					}
+					origBtn.Children(func() {
+						ui.Column(c).FillWidth().Gap(4).ClipX().Children(func() {
+							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
+								ui.Text(c, "@"+firstNonEmptyStrUI(orig.AuthorName, "原博主")).FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								if orig.TypeLabel != "" {
+									ui.Text(c, "· "+orig.TypeLabel).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+								}
+								if orig.PubTs > 0 {
+									ui.Text(c, "· "+FormatRelativeTime(orig.PubTs)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+								}
+							})
+							if strings.TrimSpace(orig.Text) != "" {
+								ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightBody).TextColor(ColorTextMain).MaxLines(3)
+							}
+							var parts []string
+							if len(orig.NotePages) > 0 {
+								parts = append(parts, fmt.Sprintf("含 %d 项媒体", len(orig.NotePages)))
+							}
+							if orig.Video != nil {
+								vPart := "视频 · " + firstNonEmptyStrUI(orig.Video.Title, "微博视频")
+								if orig.Video.Duration != "" && orig.Video.Duration != "00:00" {
+									vPart += " (" + orig.Video.Duration + ")"
+								}
+								parts = append(parts, vPart)
+							}
+							if orig.WeiboCard != nil {
+								parts = append(parts, firstNonEmptyStrUI(weiboCardKindLabel(orig.WeiboCard), "卡片")+" · "+orig.WeiboCard.Title)
+							}
+							if orig.Incomplete {
+								parts = append(parts, "点开查看原微博完整内容")
+							}
+							if len(parts) > 0 {
+								ui.Text(c, strings.Join(parts, " · ")).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+							}
+						})
+					})
+					if origBtn.Clicked() {
+						openPost()
+					}
+				} else if card.OriginUnavailable != "" {
+					ui.Row(c).
+						Label("我的微博转发不可用："+post.Mid).
+						FillWidth().
+						Padding(8, 10).
+						Radius(10).
+						Background(ColorBgSecondary).
+						Border(1, ColorBorder).
+						AlignItems(ui.Center).
+						Gap(6).
+						ClipX().
+						Children(func() {
+							DrawIcon(c, "alert-circle", 14, ColorTextMuted, 1.75)
+							ui.Text(c, card.OriginUnavailable).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+						})
+				}
+			})
+		})
 }
 
 func (a *App) renderMineWorkGrid(c *ui.Context, width float32, l *mineList) {

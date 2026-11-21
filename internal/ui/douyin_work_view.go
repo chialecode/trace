@@ -262,7 +262,7 @@ func (a *App) renderDouyinWorkRoute(c *ui.Context, viewportHeight float32) {
 
 			// 2. Headline (first line of caption) + Expandable Body with Accent #话题
 			headline, restBody := splitDouyinHeadlineAndBody(title, desc, hashtags)
-			ui.Text(c, headline).FontSize(20).FontWeight(600).TextColor(ColorTextMain).MaxLines(3)
+			ui.Text(c, headline).FontSize(20).LineHeight(LineHeightHeading).FontWeight(600).TextColor(ColorTextMain).MaxLines(3)
 			if restBody != "" {
 				a.renderRichHashtagText(c, "douyin-work-body:"+awemeID, restBody)
 			}

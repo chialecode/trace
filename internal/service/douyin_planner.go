@@ -73,6 +73,10 @@ func (p *douyinWorkPlanner) PlanWorkDownload(ctx context.Context, targetID strin
 		}
 	}
 
+	if detail.Author.SecUID != "" && detail.Author.AvatarURL != "" {
+		p.backend.rememberAccountAvatar(string(site.Douyin), detail.Author.SecUID, detail.Author.AvatarURL)
+	}
+
 	plan := download.WorkDownloadPlan{
 		Site:           site.Douyin,
 		Kind:           kind,

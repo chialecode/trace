@@ -208,10 +208,11 @@ func (a *Adapter) FetchCreatorPosts(ctx context.Context, uid string, cursor stri
 
 	seen := make(map[string]bool)
 	page, err := a.client.ListUserPosts(ctx, UserPostsRequest{
-		SecUID:        uid,
-		MaxCursor:     reqCursor,
-		SeenIDs:       seen,
-		StreamOptions: StreamSelectOptions{PreferredCodec: pref},
+		SecUID:            uid,
+		MaxCursor:         reqCursor,
+		SeenIDs:           seen,
+		CrossCheckProfile: reqCursor == "0",
+		StreamOptions:     StreamSelectOptions{PreferredCodec: pref},
 	})
 	if err != nil {
 		return site.CreatorPostsPage{}, err
@@ -239,44 +240,6 @@ func (a *Adapter) FetchCreatorPosts(ctx context.Context, uid string, cursor stri
 			}, nil
 		}
 		page = page2
-	}
-
-	// Row 6: page-1 empty list with has_more == 0 -> cross-check profile/other when reachable!
-	if reqCursor == "0" && len(page.Works) == 0 && !page.HasMore && a.client.canCallEndpoint(a.client.endpoints.ProfileOther) {
-		prof, pErr := a.client.GetUserProfile(ctx, uid)
-		if pErr != nil {
-			return site.CreatorPostsPage{}, pErr
-		}
-		if prof.IsPrivate {
-			return site.CreatorPostsPage{}, &site.Error{
-				Site:    site.Douyin,
-				Kind:    site.ErrKindForbidden,
-				Message: "该抖音账号已设为私密，无法查看作品列表",
-			}
-		}
-		if prof.AwemeCount == 0 {
-			return site.CreatorPostsPage{
-				Posts:          []site.CreatorPost{},
-				HasMore:        false,
-				UncertainEmpty: false,
-				AuthorName:     prof.Nickname,
-				AuthorFace:     prof.AvatarURL,
-				UniqueID:       prof.UniqueID,
-				LiveWebRID:     prof.WebRID,
-				LiveRoomID:     prof.RoomID,
-			}, nil
-		}
-		return site.CreatorPostsPage{
-			Posts:           []site.CreatorPost{},
-			HasMore:         false,
-			UncertainEmpty:  true,
-			UncertainReason: "账号公开作品数大于 0 但首屏返回空列表，本轮结果记为不完整",
-			AuthorName:      prof.Nickname,
-			AuthorFace:      prof.AvatarURL,
-			UniqueID:        prof.UniqueID,
-			LiveWebRID:      prof.WebRID,
-			LiveRoomID:      prof.RoomID,
-		}, nil
 	}
 
 	posts := make([]site.CreatorPost, 0, len(page.Works))
@@ -307,6 +270,7 @@ func (a *Adapter) FetchCreatorPosts(ctx context.Context, uid string, cursor stri
 		Posts:           posts,
 		NextCursor:      page.NextCursor,
 		HasMore:         page.HasMore,
+		TotalWorks:      page.ProfileAwemeCount,
 		UncertainEmpty:  page.UncertainEmpty,
 		UncertainReason: page.UncertainReason,
 	}

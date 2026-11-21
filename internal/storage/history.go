@@ -362,6 +362,28 @@ var sensitiveMarkers = []string{
 	"x-signature/",
 	"x-secsdk-web-signature",
 	"x-secsdk-csrf-token",
+	"sub=",
+	"subp=",
+	"xsrf-token=",
+	"x-xsrf-token=",
+	"wbpsess=",
+	"scf=",
+	"alf=",
+	"alc=",
+	"ssologinstate=",
+	"suhb=",
+	"pc_token=",
+	"_t_wm=",
+	"ssig=",
+	"kid=",
+	"expires=",
+	"ssig%3d",
+	"kid%3d",
+	"expires%3d",
+	"sub%3d",
+	"subp%3d",
+	"xsrf-token%3d",
+	"wbpsess%3d",
 }
 
 func sanitizeHistoryEntry(e HistoryEntry) (HistoryEntry, bool) {
@@ -421,7 +443,8 @@ func sanitizeCanonicalURL(rawURL, site, kind, id string) string {
 			}
 		}
 	}
-	if normalizeHistorySite(site) == "douyin" {
+	switch normalizeHistorySite(site) {
+	case "douyin":
 		switch kind {
 		case "video":
 			return "https://www.douyin.com/video/" + id
@@ -435,17 +458,35 @@ func sanitizeCanonicalURL(rawURL, site, kind, id string) string {
 		default:
 			return ""
 		}
-	}
-	switch kind {
-	case "video":
-		return "https://www.bilibili.com/video/" + id
-	case "user":
-		return "https://space.bilibili.com/" + id
-	case "dynamic":
-		return "https://t.bilibili.com/" + id
-	case "live":
-		cleanID := strings.TrimPrefix(id, "live:")
-		return "https://live.bilibili.com/" + cleanID
+	case "weibo":
+		switch kind {
+		case "dynamic", "post":
+			return "https://weibo.com/detail/" + id
+		case "video":
+			cleanID := strings.Replace(id, "1034_", "1034:", 1)
+			return "https://weibo.com/tv/show/" + cleanID
+		case "user":
+			return "https://weibo.com/u/" + id
+		case "live":
+			cleanID := strings.TrimPrefix(id, "live:")
+			return "https://weibo.com/l/wblive/p/show/" + cleanID
+		default:
+			return ""
+		}
+	case "bilibili":
+		switch kind {
+		case "video":
+			return "https://www.bilibili.com/video/" + id
+		case "user":
+			return "https://space.bilibili.com/" + id
+		case "dynamic":
+			return "https://t.bilibili.com/" + id
+		case "live":
+			cleanID := strings.TrimPrefix(id, "live:")
+			return "https://live.bilibili.com/" + cleanID
+		default:
+			return ""
+		}
 	default:
 		return ""
 	}

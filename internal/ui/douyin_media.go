@@ -16,6 +16,7 @@ import (
 type douyinNoteRenderPage struct {
 	Index         int
 	Kind          string // "image", "live_photo", "video", "unknown"
+	IsGIF         bool
 	ImageURL      string
 	ImageRel      string
 	MotionURL     string
@@ -384,6 +385,10 @@ func (a *App) toggleViewerInlinePlay() {
 }
 
 func (a *App) openDouyinNoteViewer(itemKey string, pages []douyinNoteRenderPage, index int) {
+	a.openNotePagesViewer(itemKey, "douyin", pages, index)
+}
+
+func (a *App) openNotePagesViewer(itemKey, siteID string, pages []douyinNoteRenderPage, index int) {
 	if len(pages) == 0 {
 		return
 	}
@@ -441,7 +446,7 @@ func (a *App) openDouyinNoteViewer(itemKey string, pages []douyinNoteRenderPage,
 	a.ImageViewer.InlineMediaPaths = inlinePaths
 	a.ImageViewer.InlineMediaURLs = inlineURLs
 	a.ImageViewer.InlineDurations = inlineDurs
-	a.ImageViewer.InlineSite = "douyin"
+	a.ImageViewer.InlineSite = firstNonEmptyStrUI(siteID, "douyin")
 
 	idx := a.ImageViewer.Index
 	if idx >= 0 && idx < len(kinds) && viewerPageAutoplays(kinds[idx]) {
@@ -562,6 +567,10 @@ func buildDouyinNoteRenderPages(work *service.DouyinWorkView, cached *library.It
 }
 
 func (a *App) renderDouyinNotePagesGrid(c *ui.Context, itemKey string, pages []douyinNoteRenderPage) {
+	a.renderNotePagesGrid(c, itemKey, "douyin", pages, false)
+}
+
+func (a *App) renderNotePagesGrid(c *ui.Context, itemKey, siteID string, pages []douyinNoteRenderPage, showAll bool) {
 	n := len(pages)
 	if n == 0 {
 		return
@@ -598,6 +607,12 @@ func (a *App) renderDouyinNotePagesGrid(c *ui.Context, itemKey string, pages []d
 			ui.Box(c).Absolute().Bottom(6).Left(6).Right(6).Padding(2, 6).Radius(4).Background(ui.RGBA(0, 0, 0, 0.65)).Children(func() {
 				ui.Text(c, firstNonEmptyStrUI(pg.UnknownReason, "暂不支持此页")).FontSize(11).TextColor(ColorWhite).SingleLine()
 			})
+		default:
+			if pg.IsGIF {
+				ui.Box(c).Label(fmt.Sprintf("动图标记 %d", pageNum)).Absolute().Left(6).Top(6).Padding(1, 6).Radius(4).Background(ui.RGBA(0, 0, 0, 0.58)).Children(func() {
+					ui.Text(c, "GIF").FontSize(11).FontWeight(600).TextColor(ColorWhite).SingleLine()
+				})
+			}
 		}
 	}
 
@@ -613,7 +628,7 @@ func (a *App) renderDouyinNotePagesGrid(c *ui.Context, itemKey string, pages []d
 		}
 		cell.Children(func() { renderCell(bmp, pg, 1) })
 		if cell.Clicked() {
-			a.openDouyinNoteViewer(itemKey, pages, 0)
+			a.openNotePagesViewer(itemKey, siteID, pages, 0)
 		}
 		return
 	}
@@ -623,6 +638,9 @@ func (a *App) renderDouyinNotePagesGrid(c *ui.Context, itemKey string, pages []d
 		cols, maxW = 2, float32(gridMaxWidth2)
 	}
 	shown := min(n, 9)
+	if showAll {
+		shown = n
+	}
 	extra := n - shown
 	ui.Grid(c).Columns(cols).Gap(4).FillWidth().MaxWidth(maxW).Children(func() {
 		for idx := range shown {
@@ -638,7 +656,7 @@ func (a *App) renderDouyinNotePagesGrid(c *ui.Context, itemKey string, pages []d
 				}
 			})
 			if cell.Clicked() {
-				a.openDouyinNoteViewer(itemKey, pages, pageIdx)
+				a.openNotePagesViewer(itemKey, siteID, pages, pageIdx)
 			}
 		}
 	})

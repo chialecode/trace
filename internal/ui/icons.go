@@ -256,12 +256,18 @@ func DrawIcon(c *ui.Context, name string, size float32, col ui.Color, strokeWidt
 			p.StrokePath(bars, strokeWidth*1.2, col)
 
 		case "refresh":
-			arc := buildArcPath(x(12), y(12), s(7.5), -2.4, 2.2)
+			const (
+				aStart = float32(0.40)
+				aEnd   = float32(2*math.Pi - 0.65)
+			)
+			arc := buildArcPath(x(12), y(12), s(7.5), aStart, aEnd)
 			p.StrokePath(arc, strokeWidth, col)
+			tipX := float32(12 + 7.5*math.Cos(-0.65))
+			tipY := float32(12 + 7.5*math.Sin(-0.65))
 			head := (&ui.Path{}).
-				MoveTo(x(16), y(4.5)).
-				LineTo(x(19.5), y(8)).
-				LineTo(x(15), y(9))
+				MoveTo(x(tipX), y(tipY-3.6)).
+				LineTo(x(tipX), y(tipY)).
+				LineTo(x(tipX-3.6), y(tipY))
 			p.StrokePath(head, strokeWidth, col)
 
 		case "image":

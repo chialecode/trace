@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
+	"github.com/chialecode/trace/internal/site/weibo"
 	"github.com/chialecode/trace/internal/subscription"
 )
 
@@ -113,6 +115,19 @@ func (b *Backend) MoveSubscriptionAccount(siteID, uid, toSubID string) (subscrip
 	return res, err
 }
 
+// MoveSubscriptionAccountToNew atomically moves an account from its current subscription
+// into a newly created subscription under a single lock and single file write.
+func (b *Backend) MoveSubscriptionAccountToNew(siteID, uid, name, note string, rules subscription.SubRules) (subscription.Subscription, error) {
+	if err := b.requireAnyLogin(); err != nil {
+		return subscription.Subscription{}, err
+	}
+	res, err := b.subs.MoveToNew(siteID, uid, name, note, rules)
+	if err == nil {
+		b.events.Publish(EventSubscriptionChecked, "moved")
+	}
+	return res, err
+}
+
 // SetSubscriptionRules updates per-subscription rules and manages AutoCache.Since.
 func (b *Backend) SetSubscriptionRules(subID string, rules subscription.SubRules) (subscription.Subscription, error) {
 	if err := b.requireAnyLogin(); err != nil {
@@ -179,7 +194,7 @@ func (b *Backend) SetSubscriptionsRule(ruleID string, subIDs []string) error {
 	return err
 }
 
-// PreviewAccount resolves a Bilibili or Douyin account input and checks whether it is already owned by a subscription.
+// PreviewAccount resolves a Bilibili, Douyin, or Weibo account input and checks whether it is already owned by a subscription.
 func (b *Backend) PreviewAccount(ctx context.Context, input string) (subscription.AccountRef, *subscription.Subscription, error) {
 	if err := b.requireAnyLogin(); err != nil {
 		return subscription.AccountRef{}, nil, err
@@ -192,7 +207,8 @@ func (b *Backend) PreviewAccount(ctx context.Context, input string) (subscriptio
 		return subscription.AccountRef{}, nil, err
 	}
 
-	if siteID == site.Douyin {
+	switch siteID {
+	case site.Douyin:
 		target, rErr := b.douyin.ResolveLink(ctx, normalized)
 		if rErr != nil {
 			return subscription.AccountRef{}, nil, rErr
@@ -228,31 +244,64 @@ func (b *Backend) PreviewAccount(ctx context.Context, input string) (subscriptio
 			AddedAt:  time.Now().UTC().Format(time.RFC3339),
 		}
 		return b.subs.PreviewResolvedAccount(acc)
-	}
 
-	target, err := b.bili.ResolveLink(ctx, normalized)
-	if err != nil {
-		return subscription.AccountRef{}, nil, err
+	case site.Weibo:
+		target, rErr := b.weibo.ResolveLink(ctx, normalized)
+		if rErr != nil {
+			return subscription.AccountRef{}, nil, rErr
+		}
+		if target.Kind != "user" {
+			return subscription.AccountRef{}, nil, &site.Error{
+				Site:    site.Weibo,
+				Kind:    site.ErrKindBadRequest,
+				Message: "请粘贴微博用户主页链接或分享文本",
+			}
+		}
+		uv, uErr := b.WeiboUser(ctx, firstNonEmpty(target.AuthorUID, target.ID))
+		if uErr != nil {
+			return subscription.AccountRef{}, nil, uErr
+		}
+		acc := subscription.AccountRef{
+			Site:    string(site.Weibo),
+			UID:     uv.UID,
+			Name:    uv.ScreenName,
+			Face:    uv.AvatarURL,
+			AddedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+		return b.subs.PreviewResolvedAccount(acc)
+
+	case site.Bilibili:
+		target, err := b.bili.ResolveLink(ctx, normalized)
+		if err != nil {
+			return subscription.AccountRef{}, nil, err
+		}
+		if target.Kind != "user" {
+			return subscription.AccountRef{}, nil, fmt.Errorf("请粘贴用户主页链接或 UID")
+		}
+		card, err := b.bili.UserCard(ctx, target.Mid)
+		if err != nil {
+			return subscription.AccountRef{}, nil, err
+		}
+		uidStr := fmt.Sprintf("%d", card.Mid)
+		acc := subscription.AccountRef{
+			Site:    "bilibili",
+			UID:     uidStr,
+			Name:    card.Name,
+			Face:    card.Face,
+			AddedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+		if owner, owned := b.subs.OwnerOf("bilibili", uidStr); owned {
+			return acc, &owner, nil
+		}
+		return acc, nil, nil
+
+	default:
+		return subscription.AccountRef{}, nil, &site.Error{
+			Site:    siteID,
+			Kind:    site.ErrKindBadRequest,
+			Message: "不支持的站点标识: " + string(siteID),
+		}
 	}
-	if target.Kind != "user" {
-		return subscription.AccountRef{}, nil, fmt.Errorf("请粘贴用户主页链接或 UID")
-	}
-	card, err := b.bili.UserCard(ctx, target.Mid)
-	if err != nil {
-		return subscription.AccountRef{}, nil, err
-	}
-	uidStr := fmt.Sprintf("%d", card.Mid)
-	acc := subscription.AccountRef{
-		Site:    "bilibili",
-		UID:     uidStr,
-		Name:    card.Name,
-		Face:    card.Face,
-		AddedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-	if owner, owned := b.subs.OwnerOf("bilibili", uidStr); owned {
-		return acc, &owner, nil
-	}
-	return acc, nil, nil
 }
 
 // OwnerOfAccount returns the subscription owning (site, uid), if any.
@@ -345,16 +394,24 @@ func formatBackoffLevelText(level int) string {
 
 // SchedulerStatuses returns per-site scheduled check timing and backoff state for Settings -> 订阅与直播.
 func (b *Backend) SchedulerStatuses() map[string]SiteSchedulerStatus {
-	out := make(map[string]SiteSchedulerStatus, 2)
+	allSites := site.All()
+	out := make(map[string]SiteSchedulerStatus, len(allSites))
 	var states map[string]subscription.SchedulerState
 	if b.subs != nil {
 		states = b.subs.ListSiteSchedulerStates()
 	}
-	for _, id := range site.All() {
+	for _, id := range allSites {
 		key := string(id)
-		label := "哔哩哔哩"
-		if id == site.Douyin {
+		var label string
+		switch id {
+		case site.Bilibili:
+			label = "哔哩哔哩"
+		case site.Douyin:
 			label = "抖音"
+		case site.Weibo:
+			label = "微博"
+		default:
+			label = id.DisplayName()
 		}
 		st := SiteSchedulerStatus{
 			Site:        key,
@@ -451,6 +508,252 @@ func (b *Backend) ImportCreators(users []bilibili.FollowingUser, scope, autoCach
 		b.events.Publish(EventSubscriptionChecked, "imported")
 	}
 	return n, err
+}
+
+// FollowingGroups returns the selectable following groups for siteID in the subscription import dialog.
+// For Weibo, groups are returned ONLY when weibo.FollowGroupsEnabled (accountWeiboFollowGroupsEnabled) is true.
+func (b *Backend) FollowingGroups(ctx context.Context, siteID string) ([]FollowingGroupDTO, error) {
+	id, err := normalizeSiteID(siteID)
+	if err != nil {
+		return nil, err
+	}
+	switch id {
+	case site.Bilibili:
+		if err := b.requireSiteLogin(site.Bilibili); err != nil {
+			return nil, err
+		}
+		tags, err := b.bili.RelationTags(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]FollowingGroupDTO, 0, len(tags))
+		for _, t := range tags {
+			out = append(out, FollowingGroupDTO{
+				ID:    strconv.FormatInt(t.TagID, 10),
+				Name:  t.Name,
+				Count: t.Count,
+			})
+		}
+		return out, nil
+
+	case site.Weibo:
+		if err := b.requireSiteLogin(site.Weibo); err != nil {
+			return nil, err
+		}
+		if !accountWeiboFollowGroupsEnabled {
+			return nil, nil
+		}
+		groups, err := b.weibo.ListFollowGroups(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]FollowingGroupDTO, 0, len(groups))
+		for _, g := range groups {
+			out = append(out, FollowingGroupDTO{
+				ID:    g.ID,
+				Name:  g.Title,
+				Count: g.Count,
+			})
+		}
+		return out, nil
+
+	case site.Douyin:
+		return nil, &site.Error{
+			Site:        site.Douyin,
+			Kind:        site.ErrKindUnavailable,
+			Unsupported: true,
+			Message:     "抖音暂不支持从关注列表导入订阅",
+		}
+
+	default:
+		return nil, &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点标识: " + strings.TrimSpace(siteID)}
+	}
+}
+
+func (b *Backend) snapshotWeiboFollowingSeen(groupKey string, reset bool) (map[string]bool, uint64) {
+	return b.snapshotWeiboSeenMap(&b.weiboFollowingSeen, groupKey, reset)
+}
+
+func (b *Backend) mergeWeiboFollowingSeen(groupKey string, gen uint64, seen map[string]bool) {
+	b.mergeWeiboSeenMap(&b.weiboFollowingSeen, groupKey, gen, seen)
+}
+
+// FollowingCreatorsPage returns one page of followed creators for siteID, marking
+// already-subscribed accounts so the import dialog can render them unselectable.
+func (b *Backend) FollowingCreatorsPage(ctx context.Context, siteID, groupID string, page int) (FollowingCreatorsPageDTO, error) {
+	id, err := normalizeSiteID(siteID)
+	if err != nil {
+		return FollowingCreatorsPageDTO{}, err
+	}
+	if page <= 0 {
+		page = 1
+	}
+	groupID = strings.TrimSpace(groupID)
+	if groupID == AccountFolderAll {
+		groupID = ""
+	}
+
+	switch id {
+	case site.Bilibili:
+		if err := b.requireSiteLogin(site.Bilibili); err != nil {
+			return FollowingCreatorsPageDTO{}, err
+		}
+		const ps = 50
+		var users []bilibili.FollowingUser
+		var total int
+		if groupID != "" {
+			tagID, pErr := strconv.ParseInt(groupID, 10, 64)
+			if pErr != nil {
+				return FollowingCreatorsPageDTO{}, &site.Error{Site: site.Bilibili, Kind: site.ErrKindBadRequest, Message: "无效的关注分组"}
+			}
+			users, err = b.bili.RelationTagUsers(ctx, b.cred.Status().Mid, tagID, page, ps)
+			if err != nil {
+				return FollowingCreatorsPageDTO{}, err
+			}
+		} else {
+			res, rErr := b.bili.RelationFollowings(ctx, 0, page, ps)
+			if rErr != nil {
+				return FollowingCreatorsPageDTO{}, rErr
+			}
+			users, total = res.Items, res.Total
+		}
+		items := make([]FollowingCreatorDTO, 0, len(users))
+		for _, u := range users {
+			uid := strconv.FormatInt(u.Mid, 10)
+			dto := FollowingCreatorDTO{
+				Site: string(site.Bilibili),
+				UID:  uid,
+				Name: u.Uname,
+				Face: u.Face,
+				Sign: u.Sign,
+			}
+			if b.subs != nil {
+				if owner, owned := b.subs.OwnerOf(string(site.Bilibili), uid); owned {
+					dto.Subscribed = true
+					dto.OwnerSubID = owner.ID
+					dto.OwnerSubName = owner.Name
+				}
+			}
+			items = append(items, dto)
+		}
+		hasMore := len(users) == ps
+		if total > 0 {
+			hasMore = len(users) > 0 && (page-1)*ps+len(users) < total
+		}
+		nextPage := 0
+		if hasMore {
+			nextPage = page + 1
+		}
+		return FollowingCreatorsPageDTO{
+			Site:          string(site.Bilibili),
+			Items:         items,
+			Page:          page,
+			NextPage:      nextPage,
+			Total:         total,
+			HasMore:       hasMore,
+			GroupsEnabled: true,
+		}, nil
+
+	case site.Weibo:
+		if err := b.requireSiteLogin(site.Weibo); err != nil {
+			return FollowingCreatorsPageDTO{}, err
+		}
+		selfUID := ""
+		if b.weiboCred != nil {
+			selfUID = strings.TrimSpace(b.weiboCred.Status().UID)
+		}
+		if selfUID == "" {
+			return FollowingCreatorsPageDTO{}, &site.Error{Site: site.Weibo, Kind: site.ErrKindAuthRequired, Message: "缺少登录账号的微博 UID，请重新登录微博"}
+		}
+		seen, gen := b.snapshotWeiboFollowingSeen(groupID, page <= 1)
+		var res *weibo.FollowingPage
+		if groupID != "" {
+			if !accountWeiboFollowGroupsEnabled {
+				return FollowingCreatorsPageDTO{}, &site.Error{Site: site.Weibo, Kind: site.ErrKindBadRequest, Message: "微博关注分组筛选暂未开放"}
+			}
+			res, err = b.weibo.ListFollowGroupMembers(ctx, selfUID, groupID, page, seen)
+		} else {
+			res, err = b.weibo.ListFollowing(ctx, selfUID, page, seen)
+		}
+		if err != nil {
+			return FollowingCreatorsPageDTO{}, err
+		}
+		b.mergeWeiboFollowingSeen(groupID, gen, seen)
+		items := make([]FollowingCreatorDTO, 0, len(res.Users))
+		for _, u := range res.Users {
+			dto := FollowingCreatorDTO{
+				Site: string(site.Weibo),
+				UID:  u.UID,
+				Name: u.ScreenName,
+				Face: u.AvatarURL,
+				Sign: firstLine(u.Description),
+			}
+			if b.subs != nil {
+				if owner, owned := b.subs.OwnerOf(string(site.Weibo), u.UID); owned {
+					dto.Subscribed = true
+					dto.OwnerSubID = owner.ID
+					dto.OwnerSubName = owner.Name
+				}
+			}
+			items = append(items, dto)
+		}
+		return FollowingCreatorsPageDTO{
+			Site:          string(site.Weibo),
+			Items:         items,
+			Page:          res.Page,
+			NextPage:      res.NextPage,
+			NextCursor:    res.NextCursor,
+			Total:         res.Total,
+			HasMore:       res.HasMore,
+			GroupsEnabled: accountWeiboFollowGroupsEnabled,
+		}, nil
+
+	case site.Douyin:
+		return FollowingCreatorsPageDTO{}, &site.Error{
+			Site:        site.Douyin,
+			Kind:        site.ErrKindUnavailable,
+			Unsupported: true,
+			Message:     "抖音暂不支持从关注列表导入订阅",
+		}
+
+	default:
+		return FollowingCreatorsPageDTO{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点标识: " + strings.TrimSpace(siteID)}
+	}
+}
+
+// ImportFollowingCreators atomically imports selected creators for siteID into subscriptions
+// using subscription.Manager.ImportAccountRefs with zero extra site API calls.
+func (b *Backend) ImportFollowingCreators(siteID string, creators []FollowingCreatorDTO, rules subscription.SubRules) (subscription.ImportAccountRefsResult, error) {
+	id, err := normalizeExplicitSiteID(siteID)
+	if err != nil {
+		return subscription.ImportAccountRefsResult{}, err
+	}
+	if err := b.requireSiteLogin(id); err != nil {
+		return subscription.ImportAccountRefsResult{}, err
+	}
+	if len(creators) == 0 {
+		return subscription.ImportAccountRefsResult{}, nil
+	}
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	refs := make([]subscription.AccountRef, 0, len(creators))
+	for _, c := range creators {
+		uid := strings.TrimSpace(c.UID)
+		if uid == "" {
+			continue
+		}
+		refs = append(refs, subscription.AccountRef{
+			Site:    string(id),
+			UID:     uid,
+			Name:    strings.TrimSpace(c.Name),
+			Face:    strings.TrimSpace(c.Face),
+			AddedAt: nowStr,
+		})
+	}
+	res, err := b.subs.ImportAccountRefs(refs, rules)
+	if err == nil && res.Created > 0 {
+		b.events.Publish(EventSubscriptionChecked, "imported")
+	}
+	return res, err
 }
 
 // subscribedAccountName is the name an account has in the subscriptions

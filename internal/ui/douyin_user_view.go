@@ -210,7 +210,7 @@ func (a *App) renderDouyinUserHeader(c *ui.Context, u *service.DouyinUserView) {
 				})
 
 				if strings.TrimSpace(u.Signature) != "" {
-					ui.Text(c, strings.TrimSpace(u.Signature)).FontSize(13).TextColor(ColorTextMuted).MaxLines(3)
+					ui.Text(c, strings.TrimSpace(u.Signature)).FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(3)
 				}
 
 				if liveState != nil {
@@ -426,7 +426,7 @@ func (a *App) renderDouyinWorkGridCard(c *ui.Context, authorName, authorSecUID s
 		})
 
 		caption := firstNonEmptyStrUI(card.Title, card.Desc, card.ID)
-		ui.Text(c, caption).FontSize(13).FontWeight(500).TextColor(ColorTextMain).MaxLines(2)
+		ui.Text(c, caption).FontSize(13).LineHeight(LineHeightHeading).FontWeight(500).TextColor(ColorTextMain).MaxLines(2)
 	})
 }
 

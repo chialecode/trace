@@ -22,6 +22,13 @@ func (m *Manager) checkAccountBySite(
 	globalAutoCache string,
 ) (accountCheckOutcome, error) {
 	siteName := normalizeSchedulerSite(acc.Site)
+	if siteName == "" {
+		return accountCheckOutcome{}, &site.Error{
+			Site:    site.ID(strings.TrimSpace(acc.Site)),
+			Kind:    site.ErrKindBadRequest,
+			Message: "不支持的站点",
+		}
+	}
 	acc.Site = siteName
 
 	m.mu.Lock()
@@ -315,7 +322,10 @@ func (m *Manager) checkFetcherAccount(
 		maxPages = 1
 	}
 
-	cursor := "0"
+	cursor := ""
+	if siteID == site.Douyin {
+		cursor = "0"
+	}
 	seenIDs := make(map[string]bool)
 	reachedBaseline := isBaseline
 
@@ -333,6 +343,9 @@ func (m *Manager) checkFetcherAccount(
 
 		if pageIdx == 0 {
 			m.applyPage1AuthorAndLiveHint(sub, acc, page)
+			if page.TotalWorks > 0 {
+				_ = m.RecordAccountWorks(acc.Site, acc.UID, page.TotalWorks)
+			}
 		}
 
 		if page.UncertainEmpty {
@@ -352,25 +365,22 @@ func (m *Manager) checkFetcherAccount(
 			}
 			seenIDs[postID] = true
 
+			isNonMonotonic := post.IsTop || post.IsFastRetweet
 			isBaselinePinned := !isBaseline && m.wasPinnedOnBaseline(acc.Site, acc.UID, postID)
-			if !isBaseline && !post.IsTop {
-				if isBaselinePinned || (accState.NewestID != "" && postID == accState.NewestID) || (accState.NewestTs > 0 && post.PubTs <= accState.NewestTs) {
+			if !isBaseline && !isNonMonotonic {
+				if isBaselinePinned || postAtOrBeforeWatermark(postID, post.PubTs, accState) {
 					reachedBaseline = true
 					break
 				}
 			}
 
-			wm.observe(postID, post.PubTs, post.IsTop, isBaseline)
+			wm.observe(postID, post.PubTs, isNonMonotonic, isBaseline)
 
 			normType := normalizeFetcherPostType(post.Type)
-			feedKind := "video"
-			canonicalURL := "https://www.douyin.com/video/" + postID
-			if normType == "draw" {
-				feedKind = "dynamic"
-				canonicalURL = "https://www.douyin.com/note/" + postID
-			} else if siteID != site.Douyin {
-				canonicalURL = ""
+			if siteID == site.Weibo && post.IsFastRetweet {
+				normType = "forward"
 			}
+			feedKind, canonicalURL := fetcherPostFeedKindAndURL(siteID, acc.UID, postID, normType, post.Snapshot)
 
 			pendingFeed = append(pendingFeed, library.FeedEntry{
 				Site:         acc.Site,
@@ -389,10 +399,8 @@ func (m *Manager) checkFetcherAccount(
 				if isBaselinePinned {
 					continue
 				}
-				if post.IsTop {
-					if postID == accState.NewestID || (accState.NewestTs > 0 && post.PubTs <= accState.NewestTs) {
-						continue
-					}
+				if isNonMonotonic && postAtOrBeforeWatermark(postID, post.PubTs, accState) {
+					continue
 				}
 				pendingItems = append(pendingItems, pendingUpdateRow{
 					dynID:    postID,
@@ -403,19 +411,30 @@ func (m *Manager) checkFetcherAccount(
 			}
 		}
 
-		lastHasMore = page.HasMore
-		if reachedBaseline || !page.HasMore {
+		lastHasMore = page.HasMore && !page.BottomTipsVisible
+		if reachedBaseline || !page.HasMore || page.BottomTipsVisible {
 			reachedBaseline = true
 			break
 		}
 
 		nextCursor := strings.TrimSpace(page.NextCursor)
-		if nextCursor == "" || nextCursor == "0" || nextCursor == cursor {
-			break
-		}
-		if cursor != "0" {
-			if prevN, err1 := strconv.ParseInt(cursor, 10, 64); err1 == nil && prevN > 0 {
-				if nextN, err2 := strconv.ParseInt(nextCursor, 10, 64); err2 == nil && nextN >= prevN {
+		if siteID == site.Douyin {
+			if nextCursor == "" || nextCursor == "0" || nextCursor == cursor {
+				break
+			}
+			if cursor != "0" {
+				if prevN, err1 := strconv.ParseInt(cursor, 10, 64); err1 == nil && prevN > 0 {
+					if nextN, err2 := strconv.ParseInt(nextCursor, 10, 64); err2 == nil && nextN >= prevN {
+						break
+					}
+				}
+			}
+		} else {
+			if nextCursor == "" || nextCursor == cursor {
+				break
+			}
+			if _, prevSince, ok1 := strings.Cut(cursor, ":"); ok1 && prevSince != "" {
+				if _, nextSince, ok2 := strings.Cut(nextCursor, ":"); ok2 && nextSince == prevSince {
 					break
 				}
 			}
@@ -461,28 +480,97 @@ func (m *Manager) checkFetcherAccount(
 	return out, nil
 }
 
-func (m *Manager) applyPage1AuthorAndLiveHint(sub *Subscription, acc AccountRef, page site.CreatorPostsPage) {
-	siteID := site.ID(acc.Site)
-	cleanFace := sanitizeAccountFace(siteID, page.AuthorFace)
-	cleanUniqueID := strings.TrimSpace(page.UniqueID)
-	if utf8.RuneCountInString(cleanUniqueID) > 64 {
-		runes := []rune(cleanUniqueID)
-		cleanUniqueID = string(runes[:64])
+func postAtOrBeforeWatermark(postID string, pubTs int64, accState *AccountState) bool {
+	if accState == nil {
+		return false
 	}
+	if accState.NewestID != "" && postID == accState.NewestID {
+		return true
+	}
+	if accState.NewestTs <= 0 {
+		return false
+	}
+	if pubTs < accState.NewestTs {
+		return true
+	}
+	if pubTs == accState.NewestTs {
+		return accState.NewestID == "" || compareNumericID(postID, accState.NewestID) <= 0
+	}
+	return false
+}
 
-	liveRoomID := strings.TrimSpace(page.LiveRoomID)
-	liveWebRID := strings.TrimSpace(page.LiveWebRID)
-	if liveRoomID == "" && liveWebRID == "" {
-		for _, p := range page.Posts {
-			if p.LiveRoomID != "" || p.LiveWebRID != "" {
-				liveRoomID = strings.TrimSpace(p.LiveRoomID)
-				liveWebRID = strings.TrimSpace(p.LiveWebRID)
-				break
+func fetcherPostFeedKindAndURL(siteID site.ID, uid, postID, normType, rawSnapshot string) (feedKind, canonicalURL string) {
+	switch siteID {
+	case site.Douyin:
+		if normType == "draw" {
+			return "dynamic", "https://www.douyin.com/note/" + postID
+		}
+		return "video", "https://www.douyin.com/video/" + postID
+	case site.Weibo:
+		return "dynamic", weiboCanonicalPostURL(uid, postID, rawSnapshot)
+	case site.Bilibili:
+		return "dynamic", "https://t.bilibili.com/" + postID
+	default:
+		return "dynamic", ""
+	}
+}
+
+func weiboCanonicalPostURL(uid, postID, rawSnapshot string) string {
+	trimmedSnap := strings.TrimSpace(rawSnapshot)
+	if trimmedSnap != "" {
+		var meta struct {
+			CanonicalURL string `json:"canonicalUrl"`
+			CanonicalAlt string `json:"canonical_url"`
+			MblogID      string `json:"mblogId"`
+			MblogIDAlt   string `json:"mblogid"`
+		}
+		if json.Unmarshal([]byte(trimmedSnap), &meta) == nil {
+			for _, candidate := range []string{meta.CanonicalURL, meta.CanonicalAlt} {
+				c := strings.TrimSpace(candidate)
+				if strings.HasPrefix(c, "https://weibo.com/") && !strings.ContainsAny(c, "?#") {
+					return c
+				}
+			}
+			mblogID := firstNonEmptyStr(strings.TrimSpace(meta.MblogID), strings.TrimSpace(meta.MblogIDAlt))
+			if mblogID != "" && !strings.ContainsAny(mblogID, "/?# \t\r\n") && strings.TrimSpace(uid) != "" {
+				return "https://weibo.com/" + strings.TrimSpace(uid) + "/" + mblogID
 			}
 		}
 	}
-	if liveWebRID != "" && validateOptionalDouyinToken(liveWebRID, "webRid") != nil {
-		liveWebRID = ""
+	if strings.TrimSpace(uid) != "" && strings.TrimSpace(postID) != "" {
+		return "https://weibo.com/" + strings.TrimSpace(uid) + "/" + strings.TrimSpace(postID)
+	}
+	if strings.TrimSpace(postID) != "" {
+		return "https://weibo.com/detail/" + strings.TrimSpace(postID)
+	}
+	return ""
+}
+
+func (m *Manager) applyPage1AuthorAndLiveHint(sub *Subscription, acc AccountRef, page site.CreatorPostsPage) {
+	siteID := site.ID(acc.Site)
+	cleanFace := sanitizeAccountFace(siteID, page.AuthorFace)
+
+	var cleanUniqueID, liveRoomID, liveWebRID string
+	if siteID == site.Douyin {
+		cleanUniqueID = strings.TrimSpace(page.UniqueID)
+		if utf8.RuneCountInString(cleanUniqueID) > 64 {
+			runes := []rune(cleanUniqueID)
+			cleanUniqueID = string(runes[:64])
+		}
+		liveRoomID = strings.TrimSpace(page.LiveRoomID)
+		liveWebRID = strings.TrimSpace(page.LiveWebRID)
+		if liveRoomID == "" && liveWebRID == "" {
+			for _, p := range page.Posts {
+				if p.LiveRoomID != "" || p.LiveWebRID != "" {
+					liveRoomID = strings.TrimSpace(p.LiveRoomID)
+					liveWebRID = strings.TrimSpace(p.LiveWebRID)
+					break
+				}
+			}
+		}
+		if liveWebRID != "" && validateOptionalDouyinToken(liveWebRID, "webRid") != nil {
+			liveWebRID = ""
+		}
 	}
 
 	updatedAcc := acc
@@ -494,11 +582,13 @@ func (m *Manager) applyPage1AuthorAndLiveHint(sub *Subscription, acc AccountRef,
 			if cleanFace != "" {
 				sub.Accounts[i].Face = cleanFace
 			}
-			if cleanUniqueID != "" {
-				sub.Accounts[i].UniqueID = cleanUniqueID
-			}
-			if liveWebRID != "" {
-				sub.Accounts[i].WebRID = liveWebRID
+			if siteID == site.Douyin {
+				if cleanUniqueID != "" {
+					sub.Accounts[i].UniqueID = cleanUniqueID
+				}
+				if liveWebRID != "" {
+					sub.Accounts[i].WebRID = liveWebRID
+				}
 			}
 			updatedAcc = sub.Accounts[i]
 		}
@@ -513,7 +603,7 @@ func (m *Manager) applyPage1AuthorAndLiveHint(sub *Subscription, acc AccountRef,
 		}
 	}
 
-	if liveRoomID != "" || liveWebRID != "" {
+	if siteID == site.Douyin && (liveRoomID != "" || liveWebRID != "") {
 		m.mu.Lock()
 		hintFn := m.onLiveHint
 		m.mu.Unlock()
@@ -525,6 +615,9 @@ func (m *Manager) applyPage1AuthorAndLiveHint(sub *Subscription, acc AccountRef,
 
 func (m *Manager) recordBaselinePinnedIDs(siteName, uid string, ids []string) error {
 	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.updatesDB == nil {
@@ -555,6 +648,9 @@ func (m *Manager) recordBaselinePinnedIDs(siteName, uid string, ids []string) er
 
 func (m *Manager) wasPinnedOnBaseline(siteName, uid, id string) bool {
 	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return false
+	}
 	trimmed := strings.TrimSpace(id)
 	if trimmed == "" {
 		return false
@@ -635,6 +731,9 @@ func scrubSignedValues(siteID site.ID, v any) any {
 	case map[string]any:
 		out := make(map[string]any, len(val))
 		for k, elem := range val {
+			if siteID == site.Weibo && isWeiboEphemeralSnapshotKey(k) {
+				continue
+			}
 			out[k] = scrubSignedValues(siteID, elem)
 		}
 		return out
@@ -645,12 +744,26 @@ func scrubSignedValues(siteID site.ID, v any) any {
 		}
 		return out
 	case string:
-		lower := strings.ToLower(val)
-		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		lower := strings.ToLower(strings.TrimSpace(val))
+		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "//") {
 			return sanitizeAccountFace(siteID, val)
 		}
 		return val
 	default:
 		return v
 	}
+}
+
+func isWeiboEphemeralSnapshotKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "videourl", "video_url", "videourls", "video_urls",
+		"livephotourl", "live_photo_url", "motionurl", "motion_url",
+		"motionfallbackurls", "playback_list", "stream_url", "stream_url_hd",
+		"mp4_hd_url", "mp4_720p_mp4", "hevc_mp4_hd",
+		"stats", "repostscount", "reposts_count",
+		"commentscount", "comments_count",
+		"attitudescount", "attitudes_count":
+		return true
+	}
+	return false
 }

@@ -82,7 +82,7 @@ func NormalizeRawID(kind, id string) string {
 	id = strings.TrimSpace(id)
 	lower := strings.ToLower(id)
 	cleanKind := strings.ToLower(strings.TrimSpace(kind))
-	for _, site := range []string{"bilibili:", "douyin:"} {
+	for _, site := range []string{"bilibili:", "douyin:", "weibo:"} {
 		if strings.HasPrefix(lower, site) {
 			id = id[len(site):]
 			lower = lower[len(site):]
@@ -111,6 +111,9 @@ func CanonicalItemKey(site, kind, id string) string {
 		normKind = "dynamic"
 	}
 	rawID := NormalizeRawID(normKind, id)
+	if site == "weibo" && normKind == "video" {
+		rawID = strings.ReplaceAll(rawID, ":", "_")
+	}
 	return site + ":" + normKind + ":" + rawID
 }
 
@@ -190,6 +193,40 @@ func DouyinLiveDir(cacheRoot, secUID, roomID string) (string, error) {
 		return "", err
 	}
 	return EnsureWithinRoot(cacheRoot, filepath.Join(creatorDir, "lives", cleanID))
+}
+
+// WeiboCreatorDir resolves <cacheRoot>/weibo/<uid>.
+func WeiboCreatorDir(cacheRoot, uid string) (string, error) {
+	if strings.TrimSpace(cacheRoot) == "" {
+		return "", fmt.Errorf("library: cacheRoot cannot be empty")
+	}
+	cleanUID := strings.TrimLeft(strings.TrimSpace(uid), "0")
+	if len(cleanUID) < 5 || len(cleanUID) > 19 {
+		return "", fmt.Errorf("library: invalid weibo uid")
+	}
+	for _, r := range cleanUID {
+		if r < '0' || r > '9' {
+			return "", fmt.Errorf("library: invalid weibo uid")
+		}
+	}
+	return EnsureWithinRoot(cacheRoot, filepath.Join(cacheRoot, "weibo", cleanUID))
+}
+
+// WeiboPostDir resolves <cacheRoot>/weibo/<uid>/posts/<id> or <cacheRoot>/weibo/<uid>/forwards/<id>.
+func WeiboPostDir(cacheRoot, uid, id string, forward bool) (string, error) {
+	creatorDir, err := WeiboCreatorDir(cacheRoot, uid)
+	if err != nil {
+		return "", err
+	}
+	cleanID := strings.ReplaceAll(NormalizeRawID("dynamic", id), ":", "_")
+	if err := ValidateSafeIDSegment(cleanID); err != nil {
+		return "", err
+	}
+	bucket := "posts"
+	if forward {
+		bucket = "forwards"
+	}
+	return EnsureWithinRoot(cacheRoot, filepath.Join(creatorDir, bucket, cleanID))
 }
 
 // EnsureWithinRoot verifies that target is strictly inside root (or equal to root)

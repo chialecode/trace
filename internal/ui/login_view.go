@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -119,6 +120,78 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 									}
 									if AccentPillButton(c, label, "验证并登录抖音").Disabled(dyBusy).Clicked() && !dyBusy {
 										a.importDouyinCookie()
+									}
+								})
+							})
+						return
+					}
+
+					if loginSite == "weibo" {
+						ui.Column(c).Gap(4).Children(func() {
+							ui.Text(c, "登录微博").FontSize(20).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+							ui.Text(c, "TRACE 需要登录后才能解析和缓存").
+								FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
+						})
+
+						if siteStatus.LoggedIn {
+							wbUID := strings.TrimSpace(siteStatus.UID)
+							uidLine := "UID：—"
+							if wbUID != "" {
+								uidLine = "UID：" + wbUID
+							}
+							ui.Row(c).
+								Label("微博已登录摘要").
+								FillWidth().
+								Padding(12, 14).
+								Radius(12).
+								Background(ColorBgMain).
+								Border(1, ColorBorder).
+								AlignItems(ui.Center).
+								Gap(10).
+								ClipX().
+								Children(func() {
+									a.renderAccountAvatar(c, "weibo", firstNonEmptyStrUI(siteStatus.Uname, "微博用户"), wbUID, 0, 40, false, "", nil, siteStatus.Face)
+									ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
+										ui.Text(c, firstNonEmptyStrUI(siteStatus.Uname, "微博用户")).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+										ui.Text(c, uidLine).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+									})
+								})
+						}
+
+						ui.Column(c).
+							FillWidth().
+							Padding(16).
+							Radius(12).
+							Background(ColorBgMain).
+							Border(1, ColorBorder).
+							Gap(10).
+							ClipX().
+							Children(func() {
+								ui.Text(c, "粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								ui.Text(c, "1. 在桌面浏览器打开 weibo.com 并登录账号\n2. 按 F12 打开开发者工具 → 网络 (Network)，刷新页面并点开任意请求\n3. 复制请求头 (Request Headers) 中的整段 Cookie 粘贴到下方（至少包含 SUB）").
+									FontSize(12).TextColor(ColorTextMuted).MaxLines(5)
+
+								wbBusy := a.isPending("weibo-cookie-login")
+								inp := ui.TextInput(c, &a.WeiboCookieInput).
+									Password().
+									Placeholder("粘贴 Cookie（至少包含 SUB）").
+									Label("微博Cookie输入框").
+									FillWidth()
+								wasComposing := a.WeiboCookieComposing
+								a.WeiboCookieComposing = inp.Composing()
+								if inp.Submitted() && !inp.Composing() && !wasComposing && !wbBusy {
+									a.importWeiboCookie()
+								}
+
+								ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
+									ui.Text(c, "凭证只保存在这台电脑上，并按当前 Windows 用户加密").
+										FontSize(12).TextColor(ColorTextMuted).SingleLine()
+									label := "验证并登录"
+									if wbBusy {
+										label = "正在验证…"
+									}
+									if AccentPillButton(c, label, "验证并登录微博").Disabled(wbBusy).Clicked() && !wbBusy {
+										a.importWeiboCookie()
 									}
 								})
 							})

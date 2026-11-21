@@ -53,6 +53,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 	b := env.rawBackend
 	fixtureBackend := env.backend
 	douyinSecUID := env.douyinSecUID
+	weiboUID := env.weiboUID
 	primarySub := env.primarySub
 	auroraSub := env.auroraSub
 	batchRule := env.batchRule
@@ -62,6 +63,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 	savedDynamicItem := env.savedDynamicItem
 	savedDouyinVideo := env.savedDouyinVideo
 	savedDouyinNote := env.savedDouyinNote
+	savedWeiboPost := env.savedWeiboPost
+	savedWeiboRetweet := env.savedWeiboRetweet
 	seedRecentAndLive := func() { env.seedRecentAndLive(app) }
 	injectMixedHomeFeed := func() { env.injectMixedHomeFeed(app) }
 
@@ -86,10 +89,13 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.RestartHomeSession()
 			},
 			RequiredLabels: []string{
+				"主页刷新",
 				"主页站点筛选：全部",
 				"主页站点筛选：B 站",
 				"主页站点筛选：抖音",
+				"主页站点筛选：微博",
 				"主页作者站点：bilibili:video:SYNTH_0001",
+				"主页作者站点：" + savedWeiboPost.ItemKey,
 				"主页作者站点：" + savedDouyinNote.ItemKey,
 			},
 			// DEC-053 ②: the subscriptions in the panel, or the avatar
@@ -154,6 +160,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			ForbiddenLabels: []string{
 				"订阅详情账号站点：bilibili:20001",
 				"订阅详情账号站点：douyin:" + douyinSecUID,
+				"订阅详情账号站点：weibo:" + weiboUID,
 				"用户页站点标记",
 			},
 		},
@@ -174,6 +181,26 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 		},
 		{
+			Name: "move-account-picker",
+			Setup: func() {
+				seedRecentAndLive()
+				app.Navigate(ui.RouteSubscriptions)
+				app.SubDetailOpen, app.SubAccountsOpen = false, false
+				app.OpenMoveAccountPicker(primarySub, subscription.AccountRef{Site: "weibo", UID: weiboUID, Name: "技术频道_微博"})
+			},
+			RequiredLabels: []string{
+				"更改关联订阅对话框",
+				"更改关联账号站点",
+				"移到新建订阅",
+				"更改关联搜索框",
+				"更改关联订阅列表",
+				"移到现有订阅：" + auroraSub.ID,
+			},
+			ForbiddenLabels: []string{
+				"移到现有订阅：" + primarySub.ID,
+			},
+		},
+		{
 			Name: "subscriptions-all-accounts",
 			Setup: func() {
 				seedRecentAndLive()
@@ -187,6 +214,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅账号列表",
 				"订阅账号：bilibili:20001",
 				"所属订阅：bilibili:20001",
+				"全部账号更多：bilibili:20001",
 			},
 			PanelRequiredLabels: []string{"订阅侧栏：全部账号"},
 		},
@@ -248,21 +276,59 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅直播更多",
 				"订阅详情账号站点：bilibili:20001",
 				"订阅详情账号站点：douyin:" + douyinSecUID,
+				"订阅详情账号站点：weibo:" + weiboUID,
 				"开始录制 9001",
 				"停止录制 douyin:" + douyinSecUID,
 				"订阅账号更多：bilibili:20001",
 				"订阅账号更多：douyin:" + douyinSecUID,
+				"订阅账号更多：weibo:" + weiboUID,
 				"关联账号输入",
 				"预览关联账号",
 			},
 			ForbiddenLabels: []string{
 				"订阅内容信息流列表",
+				"开始录制 weibo:" + weiboUID,
+				"停止录制 weibo:" + weiboUID,
+			},
+		},
+		{
+			Name: "import-followings-weibo",
+			Setup: func() {
+				seedRecentAndLive()
+				app.Navigate(ui.RouteSubscriptions)
+				app.SubDetailOpen, app.SubAccountsOpen = false, false
+				app.ImportSubModalOpen = true
+				app.ImportSite = "weibo"
+				app.ImportGroup = "全部关注"
+				app.ImportSearch = ""
+				app.ImportError = ""
+				app.ImportGroupsDTO = nil
+				app.ImportGroupsEnabled = false
+				app.ImportCreators = []service.FollowingCreatorDTO{
+					{Site: "weibo", UID: weiboUID, Name: "技术频道_微博", Sign: "系统工程与媒体工具开发笔记", Subscribed: true, OwnerSubName: "技术频道_Alpha"},
+					{Site: "weibo", UID: "500000002", Name: "合成摄影日记", Sign: "胶片与风光摄影日常"},
+					{Site: "weibo", UID: "500000003", Name: "合成设计周刊", Sign: "每周分享桌面界面与字体排印"},
+				}
+				app.ImportSelectedKeys = map[string]bool{"weibo:500000002": true}
+				app.ImportHasMore = false
+			},
+			RequiredLabels: []string{
+				"关注导入对话框",
+				"关注导入站点：哔哩哔哩",
+				"关注导入站点：微博",
+				"关注导入虚拟列表",
+				"勾选导入 500000002",
+			},
+			ForbiddenLabels: []string{
+				"关注分组",
+				"勾选导入 " + weiboUID,
 			},
 		},
 		{
 			Name: "settings-rules",
 			Setup: func() {
 				seedRecentAndLive()
+				app.ImportSubModalOpen = false
 				app.RuleBatch.Open = false
 				app.RuleDraft = nil
 				app.SettingsCategory = "rules"
@@ -307,8 +373,11 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			RequiredLabels: []string{
 				"账号分组：哔哩哔哩",
 				"账号分组：抖音",
+				"账号分组：微博",
 				"重新粘贴抖音Cookie",
 				"退出抖音登录",
+				"重新粘贴微博Cookie",
+				"退出微博登录",
 			},
 		},
 		{
@@ -324,6 +393,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			Name: "parse",
 			Setup: func() {
 				app.Navigate(ui.RouteParse)
+				app.LastParseError = ""
 				app.HistoryItems = b.ListHistory()
 				app.ParsePageInput = "https://www.douyin.com/video/7388001001"
 				app.HistoryItemMenuID = "bilibili:video:BV1xx411c7mD"
@@ -338,6 +408,21 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"历史更多：BV1xx411c7mD",
 				"历史站点：bilibili:BV1xx411c7mD",
 				"历史站点：douyin:7388001001",
+				"历史站点：weibo:5000000000000001",
+			},
+			ForbiddenLabels: []string{"快速解析输入框"},
+		},
+		{
+			Name: "parse-weibo-live",
+			Setup: func() {
+				app.Navigate(ui.RouteParse)
+				app.HistoryItems = b.ListHistory()
+				app.ParsePageInput = "https://weibo.com/l/wblive/p/show/1022:2321325000000000000099"
+				app.LastParseError = "微博直播暂不支持录制，可以在浏览器中打开"
+			},
+			RequiredLabels: []string{
+				"链接解析输入框",
+				"立即解析",
 			},
 			ForbiddenLabels: []string{"快速解析输入框"},
 		},
@@ -586,6 +671,369 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			ForbiddenLabels: []string{"缓存图文"},
 		},
 		{
+			Name: "weibo-user",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.UserListFilter = "all"
+				app.CurrentWeiboUser = &service.WeiboUserView{
+					UID:            weiboUID,
+					ScreenName:     "技术频道_微博",
+					Description:    "系统工程、纯 Go 桌面架构与摄影日常记录",
+					StatusesCount:  342,
+					FollowersCount: 92400,
+					FriendsCount:   186,
+					Verified:       true,
+					VerifiedReason: "数码科技领域创作者",
+					Domain:         "techchannel",
+					CanonicalURL:   "https://weibo.com/u/" + weiboUID,
+				}
+				app.CurrentWeiboPosts = []service.WeiboPostView{
+					{
+						Mid:          "5000000000000001",
+						Author:       service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博"},
+						CreatedAt:    1710004500,
+						Text:         "置顶公告：本账号整理系统编程、多媒体封装与跨平台桌面工具实践笔记。\n定期更新离线归档与界面排印优化记录。",
+						IsTop:        true,
+						CanonicalURL: "https://weibo.com/" + weiboUID + "/5000000000000001",
+						CacheKey:     savedWeiboPost.ItemKey,
+					},
+					{
+						Mid:              "5000000000000015",
+						Author:           service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博"},
+						CreatedAt:        1710004700,
+						Text:             "转发推荐：主页列表也能直接完整预览原微博正文与附带媒体。",
+						IsRetweet:        true,
+						OriginIncomplete: true,
+						CanonicalURL:     "https://weibo.com/" + weiboUID + "/5000000000000015",
+						CacheKey:         savedWeiboRetweet.ItemKey,
+						Retweeted: &service.WeiboPostView{
+							Mid:       "5000000000000088",
+							Author:    service.WeiboAuthorDTO{UID: "500000002", ScreenName: "合成摄影日记"},
+							CreatedAt: 1710004100,
+							Text:      "原微博节选：川西高原实况照片与单文件 HEVC 航拍视频归档说明。",
+							Images:    []service.WeiboMediaItemDTO{{Index: 1, Kind: "image", Width: 480, Height: 200}},
+						},
+					},
+				}
+				app.WeiboPostsHasMore = false
+				app.WeiboPostsError = ""
+				app.WeiboPostsAuthExpired = false
+				app.WeiboPostsUncertainEmpty = false
+				app.WeiboBottomTipsVisible = true
+				app.WeiboBottomTipsText = "博主设置了仅展示半年内的微博"
+				app.WeiboUserSubMenuOpen = false
+				app.WeiboUserListState = &mygoui.ListState{}
+				app.CurrentRoute = ui.RouteWeiboUser
+			},
+			RequiredLabels: []string{
+				"用户页站点标记",
+				"微博总数",
+				"微博主页更多",
+				"用户页筛选：全部",
+				"用户页筛选：未缓存",
+				"微博用户列表",
+				"微博可见范围提示",
+			},
+		},
+		{
+			Name: "weibo-user-empty-shell",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.UserListFilter = "all"
+				app.CurrentWeiboUser = &service.WeiboUserView{
+					UID:            "500000009",
+					ScreenName:     "受限测试博主",
+					Description:    "用于验证风控空壳与零内容区别",
+					StatusesCount:  128,
+					FollowersCount: 4500,
+					FriendsCount:   32,
+					CanonicalURL:   "https://weibo.com/u/500000009",
+				}
+				app.CurrentWeiboPosts = nil
+				app.WeiboPostsHasMore = false
+				app.WeiboPostsAuthExpired = false
+				app.WeiboPostsUncertainEmpty = true
+				app.WeiboPostsError = "微博返回了异常空列表（账号标注有 128 条微博），可能是风控或受限，可稍后重试"
+				app.WeiboBottomTipsVisible = false
+				app.WeiboBottomTipsText = ""
+				app.WeiboUserListState = &mygoui.ListState{}
+				app.CurrentRoute = ui.RouteWeiboUser
+			},
+			RequiredLabels: []string{
+				"用户页站点标记",
+				"微博空壳提示",
+				"重试加载微博",
+			},
+			ForbiddenLabels: []string{
+				"微博零内容提示",
+			},
+		},
+		{
+			Name: "weibo-post",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.CurrentWeiboVideo = nil
+				imgs := make([]service.WeiboMediaItemDTO, 11)
+				for i := range imgs {
+					kind := "image"
+					if i == 1 {
+						kind = "live_photo"
+					} else if i == 2 {
+						kind = "gif"
+					} else if i == 3 {
+						kind = "video"
+					}
+					imgs[i] = service.WeiboMediaItemDTO{
+						Index:       i + 1,
+						PicID:       fmt.Sprintf("synthpic%02d", i+1),
+						Kind:        kind,
+						Width:       1080,
+						Height:      1080,
+						DurationSec: 5,
+					}
+				}
+				app.CurrentWeiboPost = &service.WeiboPostView{
+					Mid:             "5000000000000010",
+					Author:          service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博", VerifiedReason: "数码科技领域创作者"},
+					CreatedAt:       1710004800,
+					Text:            "长微博正文示例：完整保留长微博全文、超过 9 张图按原始顺序展示（共 11 项，含实况照片、GIF 动图与混排视频页），同时保留可见范围标记与转发原微博降级提示。",
+					IsLongText:      true,
+					LongTextFetched: true,
+					Source:          "微博网页版",
+					RegionName:      "发布于 上海",
+					VisibleType:     10,
+					VisibleLabel:    "仅粉丝可见",
+					Images:          imgs,
+					Retweeted: &service.WeiboPostView{
+						Unavailable:       true,
+						UnavailableReason: "抱歉，此微博已被作者删除。",
+					},
+					Stats:        service.WeiboStatsDTO{RepostsCount: 312, CommentsCount: 84, AttitudesCount: 1620},
+					CanonicalURL: "https://weibo.com/" + weiboUID + "/5000000000000010",
+					CacheKey:     "weibo:dynamic:5000000000000010",
+				}
+				app.CurrentRoute = ui.RouteWeiboPost
+			},
+			RequiredLabels: []string{
+				"微博详情站点标记",
+				"微博可见范围标记",
+				"微博正文",
+				"查看图文页 1",
+				"实况标记 2",
+				"动图标记 3",
+				"视频页标记 4",
+			},
+		},
+		{
+			Name: "weibo-post-video",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.CurrentWeiboVideo = nil
+				app.CurrentWeiboPost = &service.WeiboPostView{
+					Mid:        "5000000000000011",
+					Author:     service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博"},
+					CreatedAt:  1710004900,
+					Text:       "单条视频微博示例：自动选择 1080P HEVC 流，并按单文件 MP4 归档。",
+					Source:     "微博视频号",
+					RegionName: "发布于 北京",
+					Video: &service.WeiboVideoDTO{
+						ObjectID:     "1034:5000000000000099",
+						Title:        "4K 航拍云海与纯 Go 容器重排演示",
+						DurationSec:  142,
+						QualityLabel: "1080P",
+						Codec:        "hevc",
+						Width:        1920,
+						Height:       1080,
+						FPS:          60,
+					},
+					Stats:        service.WeiboStatsDTO{RepostsCount: 540, CommentsCount: 129, AttitudesCount: 4820},
+					CanonicalURL: "https://weibo.com/" + weiboUID + "/5000000000000011",
+					CacheKey:     "weibo:dynamic:5000000000000011",
+				}
+				app.CurrentRoute = ui.RouteWeiboPost
+			},
+			RequiredLabels: []string{
+				"微博详情站点标记",
+				"缓存当前微博",
+				"微博视频卡片",
+				"微博视频规格",
+				"微博在线统计",
+			},
+		},
+		{
+			Name: "weibo-post-cards",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.CurrentWeiboVideo = nil
+				app.CurrentWeiboPost = &service.WeiboPostView{
+					Mid:       "5000000000000012",
+					Author:    service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博"},
+					CreatedAt: 1710005000,
+					Text:      "分享一篇头条文章并转发已删除的原微博，验证降级展示且不提供视频缓存按钮。",
+					Source:    "微博网页版",
+					Card: &service.WeiboRichCardDTO{
+						Kind:        "article",
+						Label:       "头条文章",
+						Title:       "跨平台桌面客户端的离线缓存设计",
+						Desc:        "探讨媒体目录组织、索引重建与多站点凭证隔离。",
+						URL:         "https://weibo.com/ttarticle/p/show?id=2309405000000000000012",
+						Unsupported: true,
+					},
+					Retweeted: &service.WeiboPostView{
+						Unavailable:       true,
+						UnavailableReason: "原微博已删除或不可查看",
+					},
+					Stats:        service.WeiboStatsDTO{RepostsCount: 88, CommentsCount: 23, AttitudesCount: 410},
+					CanonicalURL: "https://weibo.com/" + weiboUID + "/5000000000000012",
+					CacheKey:     "weibo:dynamic:5000000000000012",
+				}
+				app.CurrentRoute = ui.RouteWeiboPost
+			},
+			RequiredLabels: []string{
+				"微博详情站点标记",
+				"微博卡片：article",
+				"微博卡片在浏览器中打开：article",
+				"转发原微博不可用提示",
+				"微博在线统计",
+			},
+			ForbiddenLabels: []string{
+				"缓存当前微博",
+			},
+		},
+		{
+			Name: "weibo-post-retweet",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.CurrentWeiboVideo = nil
+				app.CurrentWeiboPost = &service.WeiboPostView{
+					Mid:        "5000000000000015",
+					Author:     service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博", VerifiedReason: "数码科技领域创作者"},
+					CreatedAt:  1710004700,
+					Text:       "转发推荐：这套多段落排印与原微博媒体归档方案非常完整。\n在线详情可同时浏览外层评论与原微博图文、实况和视频卡片，并支持一键打开原微博。",
+					Source:     "微博网页版",
+					RegionName: "发布于 上海",
+					IsRetweet:  true,
+					Retweeted: &service.WeiboPostView{
+						Mid:          "5000000000000088",
+						Author:       service.WeiboAuthorDTO{UID: "500000002", ScreenName: "合成摄影日记"},
+						CreatedAt:    1710004100,
+						Text:         "第一段：今天整理完高原风光的实况照片与单文件 MP4 视频归档。\n第二段：正文采用 1.6 倍行高排印后，多行中文动态在桌面端阅读更加舒展。",
+						CanonicalURL: "https://weibo.com/500000002/5000000000000088",
+						Images: []service.WeiboMediaItemDTO{
+							{Index: 1, Kind: "image", FromOrigin: true, Width: 480, Height: 200},
+							{Index: 2, Kind: "live_photo", FromOrigin: true, Width: 240, Height: 320, DurationSec: 3},
+						},
+						Video: &service.WeiboVideoDTO{
+							ObjectID:     "1034:5000000000000088",
+							Title:        "川西高原延时航拍成片（1080P HEVC）",
+							DurationSec:  118,
+							QualityLabel: "1080P",
+							Codec:        "hevc",
+							Width:        1920,
+							Height:       1080,
+							FPS:          60,
+						},
+					},
+					Stats:        service.WeiboStatsDTO{RepostsCount: 215, CommentsCount: 64, AttitudesCount: 1280},
+					CanonicalURL: "https://weibo.com/" + weiboUID + "/5000000000000015",
+					CacheKey:     savedWeiboRetweet.ItemKey,
+					CachedItem:   &savedWeiboRetweet,
+				}
+				app.CurrentRoute = ui.RouteWeiboPost
+			},
+			RequiredLabels: []string{
+				"微博详情站点标记",
+				"缓存当前微博",
+				"微博正文",
+				"转发原微博卡片",
+				"转发原微博正文",
+				"打开原微博",
+				"查看图文页 1",
+				"实况标记 2",
+				"微博视频卡片",
+			},
+		},
+		{
+			Name: "weibo-post-retweet-offline",
+			Setup: func() {
+				app.Opening = nil
+				app.OpenLibraryItemDetail(savedWeiboRetweet)
+			},
+			RequiredLabels: []string{
+				"本机微博详情站点标记",
+				"本机转发微博标记",
+				"微博正文",
+				"转发原微博卡片",
+				"转发原微博正文",
+				"查看图文页 1",
+				"实况标记 2",
+				"微博视频卡片",
+			},
+			ForbiddenLabels: []string{
+				"缓存当前微博",
+				"打开原微博",
+				"微博在线统计",
+			},
+		},
+		{
+			Name: "home-weibo-retweet",
+			Setup: func() {
+				app.ImageViewer.Open = false
+				app.PlayerOverlay.Open = false
+				app.DeleteConfirm.Open = false
+				app.Navigate(ui.RouteHome)
+				seedRecentAndLive()
+				app.FeedSiteFilter = "weibo"
+				app.FeedItems = []library.FeedEntry{
+					{
+						FeedKey:      savedWeiboRetweet.ItemKey,
+						ItemKey:      savedWeiboRetweet.ItemKey,
+						Site:         "weibo",
+						Kind:         "dynamic",
+						RawID:        savedWeiboRetweet.RawID,
+						AuthorUID:    weiboUID,
+						AuthorName:   "技术频道_微博",
+						Title:        savedWeiboRetweet.Title,
+						Summary:      savedWeiboRetweet.Text,
+						CanonicalURL: savedWeiboRetweet.URL,
+						PubTs:        savedWeiboRetweet.PubTs,
+						Cached:       true,
+						CacheStatus:  "green",
+					},
+					{
+						FeedKey:      savedWeiboPost.ItemKey,
+						ItemKey:      savedWeiboPost.ItemKey,
+						Site:         "weibo",
+						Kind:         "dynamic",
+						RawID:        savedWeiboPost.RawID,
+						AuthorUID:    weiboUID,
+						AuthorName:   "技术频道_微博",
+						Title:        savedWeiboPost.Title,
+						Summary:      savedWeiboPost.Text,
+						CanonicalURL: savedWeiboPost.URL,
+						PubTs:        savedWeiboPost.PubTs,
+						Cached:       true,
+						CacheStatus:  "green",
+					},
+				}
+				app.FeedListState = &mygoui.ListState{}
+			},
+			RequiredLabels: []string{
+				"主页站点筛选：微博",
+				"主页作者站点：" + savedWeiboRetweet.ItemKey,
+				"转发原内容：" + savedWeiboRetweet.ItemKey,
+				"查看图文页 1",
+				"实况标记 2",
+				"播放原视频卡片：" + savedWeiboRetweet.ItemKey,
+			},
+		},
+		{
 			Name: "library",
 			Setup: func() {
 				app.LibrarySiteFilter = "all"
@@ -596,9 +1044,11 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"媒体库站点筛选：全部",
 				"媒体库站点筛选：B 站",
 				"媒体库站点筛选：抖音",
+				"媒体库站点筛选：微博",
 				"媒体更多：" + savedDynamicItem.ItemKey,
 				"媒体库站点：" + savedDynamicItem.ItemKey,
 				"媒体库站点：" + savedDouyinVideo.ItemKey,
+				"媒体库站点：" + savedWeiboPost.ItemKey,
 			},
 		},
 		{
@@ -625,6 +1075,18 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.Navigate(ui.RouteTasks)
 				app.TasksSection = "downloads"
 				app.Tasks = []download.Task{
+					{
+						TaskID:          "task_demo_wb",
+						Site:            "weibo",
+						Kind:            "dynamic",
+						TargetID:        "5000000000000011",
+						Title:           "正在缓存：4K 航拍云海与纯 Go 容器重排演示",
+						Status:          "running",
+						QualityHint:     "1080P · HEVC",
+						BytesDownloaded: 4194304,
+						TotalBytes:      8388608,
+						Progress:        0.50,
+					},
 					{
 						TaskID:          "task_demo_dy",
 						Site:            "douyin",
@@ -668,6 +1130,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.ExpandedTaskID = ""
 			},
 			RequiredLabels: []string{
+				"任务站点：task_demo_wb",
 				"任务站点：task_demo_dy",
 				"任务站点：task_demo_run",
 			},
@@ -690,8 +1153,10 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			RequiredLabels: []string{
 				"缓存队列卡片：cq_demo_bili",
 				"缓存队列卡片：cq_demo_dy",
+				"缓存队列卡片：cq_demo_wb",
 				"展开缓存队列：cq_demo_bili",
 				"队列详情站点：cq_demo_bili",
+				"队列详情站点：cq_demo_wb",
 				"队列详情计数：cq_demo_bili",
 				"暂停缓存队列：cq_demo_bili",
 				"取消缓存队列：cq_demo_bili",
@@ -781,6 +1246,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			RequiredLabels: []string{
 				"检查计划行 bilibili:20001",
 				"检查计划行 douyin:" + douyinSecUID,
+				"检查计划行 weibo:" + weiboUID,
 			},
 			PanelRequiredLabels: []string{
 				"任务侧栏：录制异常",
@@ -821,7 +1287,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.QRBitmap = mygoui.NewBitmap(bilibili.RenderQRRGBA("https://passport.bilibili.com/h5-app/passport/login/scan?qrcode_key=demo", 6))
 				app.QRStatusText = "等待扫码（86101）"
 			},
-			RequiredLabels: []string{"登录站点：哔哩哔哩", "登录站点：抖音"},
+			RequiredLabels: []string{"登录站点：哔哩哔哩", "登录站点：抖音", "登录站点：微博"},
 		},
 		{
 			Name: "login-douyin",
@@ -833,9 +1299,27 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			RequiredLabels: []string{
 				"登录站点：哔哩哔哩",
 				"登录站点：抖音",
+				"登录站点：微博",
 				"抖音已登录摘要",
 				"抖音Cookie输入框",
 				"验证并登录抖音",
+			},
+			ForbiddenLabels: []string{"刷新登录二维码"},
+		},
+		{
+			Name: "login-weibo",
+			Setup: func() {
+				app.LoginSite = "weibo"
+				app.WeiboCookieInput = ""
+				app.Navigate(ui.RouteLogin)
+			},
+			RequiredLabels: []string{
+				"登录站点：哔哩哔哩",
+				"登录站点：抖音",
+				"登录站点：微博",
+				"微博已登录摘要",
+				"微博Cookie输入框",
+				"验证并登录微博",
 			},
 			ForbiddenLabels: []string{"刷新登录二维码"},
 		},

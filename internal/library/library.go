@@ -208,6 +208,9 @@ func (s *Store) saveItemLocked(itemDir string, meta ItemMetadata, checkHash ...b
 		meta.Kind = "dynamic"
 	}
 	meta.RawID = NormalizeRawID(meta.Kind, meta.ID)
+	if meta.Site == "weibo" && meta.Kind == "video" {
+		meta.RawID = strings.ReplaceAll(meta.RawID, ":", "_")
+	}
 	meta.ItemKey = CanonicalItemKey(meta.Site, meta.Kind, meta.RawID)
 	SanitizeItemMetadata(&meta)
 	if meta.CachedAt == "" {
@@ -402,6 +405,9 @@ func (s *Store) UpsertFeedEntry(entry FeedEntry) error {
 		entry.Kind = "dynamic"
 	}
 	entry.RawID = NormalizeRawID(entry.Kind, entry.RawID)
+	if entry.Site == "weibo" && entry.Kind == "video" {
+		entry.RawID = strings.ReplaceAll(entry.RawID, ":", "_")
+	}
 	entry.FeedKey = CanonicalItemKey(entry.Site, entry.Kind, entry.RawID)
 	if entry.DiscoveredAt == "" {
 		entry.DiscoveredAt = time.Now().UTC().Format(time.RFC3339)
@@ -413,14 +419,18 @@ func (s *Store) UpsertFeedEntry(entry FeedEntry) error {
 		}
 	}
 	entry.CanonicalURL = sanitizeManifestPageURL(entry.CanonicalURL, entry.Site, entry.Kind, entry.RawID, nil)
-	if entry.Site == "douyin" {
+	switch entry.Site {
+	case "douyin":
 		if isRemoteOrSignedURL(entry.CoverURL) {
 			entry.CoverURL = ""
 		}
 		if isRemoteOrSignedURL(entry.AuthorFace) {
 			entry.AuthorFace = ""
 		}
-	} else {
+	case "weibo":
+		entry.CoverURL = sanitizeWeiboManifestURL(entry.CoverURL)
+		entry.AuthorFace = sanitizeWeiboManifestURL(entry.AuthorFace)
+	default:
 		entry.CoverURL = stripURLQueryAndFragment(entry.CoverURL)
 		entry.AuthorFace = stripURLQueryAndFragment(entry.AuthorFace)
 	}
@@ -506,10 +516,7 @@ func (s *Store) getItemLocked(keyOrID string) (ItemMetadata, bool, error) {
 			LIMIT 1
 		`, keyOrID, "bilibili:"+keyOrID).Scan(&jsonStr, &itemDir, &status, &totalBytes, &upAvail, &upHint)
 	default:
-		normKey := keyOrID
-		if strings.HasPrefix(strings.ToLower(normKey), "douyin:note:") {
-			normKey = "douyin:dynamic:" + normKey[len("douyin:note:"):]
-		}
+		normKey := normalizeLookupKey(keyOrID)
 		err = s.db.QueryRow(`
 			SELECT json_data, item_dir, status, total_bytes, upgrade_available, upgrade_hint
 			FROM library_items
@@ -534,6 +541,17 @@ func (s *Store) getItemLocked(keyOrID string) (ItemMetadata, bool, error) {
 	meta.UpgradeAvailable = upAvail == 1
 	meta.UpgradeHint = upHint
 	return meta, true, nil
+}
+
+func normalizeLookupKey(k string) string {
+	lower := strings.ToLower(k)
+	if strings.HasPrefix(lower, "douyin:note:") {
+		return "douyin:dynamic:" + k[len("douyin:note:"):]
+	}
+	if strings.HasPrefix(lower, "weibo:video:") {
+		return "weibo:video:" + strings.ReplaceAll(k[len("weibo:video:"):], ":", "_")
+	}
+	return k
 }
 
 func refreshItemFileState(meta *ItemMetadata) {
@@ -622,11 +640,7 @@ func (s *Store) States(keys []string) map[string]DotState {
 			addKey(k)
 			addKey("bilibili:" + k)
 		default:
-			if strings.HasPrefix(strings.ToLower(k), "douyin:note:") {
-				addKey("douyin:dynamic:" + k[len("douyin:note:"):])
-			} else {
-				addKey(k)
-			}
+			addKey(normalizeLookupKey(k))
 		}
 	}
 
@@ -688,11 +702,7 @@ func (s *Store) States(keys []string) map[string]DotState {
 			m, ok := byKey["bilibili:"+k]
 			return m, ok
 		default:
-			normKey := k
-			if strings.HasPrefix(strings.ToLower(normKey), "douyin:note:") {
-				normKey = "douyin:dynamic:" + normKey[len("douyin:note:"):]
-			}
-			m, ok := byKey[normKey]
+			m, ok := byKey[normalizeLookupKey(k)]
 			return m, ok
 		}
 	}

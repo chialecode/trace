@@ -3,69 +3,58 @@ package shell
 import (
 	"bytes"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"sync"
 
+	"github.com/chialecode/trace/internal/brandicon"
 	"github.com/chialecode/trace/internal/service"
 	"github.com/egoist/mygo"
 )
 
+// trayIconSize is the size the tray icon is drawn at; Windows scales it to
+// the notification area.
+const trayIconSize = 32
+
 var (
-	trayIconOnce   sync.Once
-	trayIconIdle   []byte
-	trayIconActive []byte
+	trayIconOnce sync.Once
+	// trayIcons is indexed by trayIconIndex.
+	trayIcons [4][]byte
 )
 
-func renderTrayIconPNGUncached(hasActiveWork bool) []byte {
-	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
-	bg := color.RGBA{R: 60, G: 64, B: 67, A: 255}    // #3c4043
-	fg := color.RGBA{R: 255, G: 255, B: 255, A: 255} // #ffffff
-	dot := color.RGBA{R: 243, G: 161, B: 21, A: 255} // #f3a115
-
-	for y := 2; y < 30; y++ {
-		for x := 2; x < 30; x++ {
-			img.SetRGBA(x, y, bg)
-		}
+func trayIconIndex(badge, hasActiveWork bool) int {
+	i := 0
+	if badge {
+		i += 2
 	}
-	// Draw 'T' glyph in white
-	for y := 8; y < 12; y++ {
-		for x := 8; x < 24; x++ {
-			img.SetRGBA(x, y, fg)
-		}
-	}
-	for y := 12; y < 25; y++ {
-		for x := 14; x < 18; x++ {
-			img.SetRGBA(x, y, fg)
-		}
-	}
-	// Optional active work indicator dot in bottom-right corner
 	if hasActiveWork {
-		for y := 21; y < 30; y++ {
-			for x := 21; x < 30; x++ {
-				img.SetRGBA(x, y, dot)
-			}
-		}
+		i++
 	}
-
-	var buf bytes.Buffer
-	_ = png.Encode(&buf, img)
-	return buf.Bytes()
+	return i
 }
 
-// RenderTrayIconPNG generates a cached 32x32 PNG tray icon in pure Go: a white "T"
-// on dark gray like the application icon (DEC-039), with an amber corner while
-// cache tasks or live recordings run.
-func RenderTrayIconPNG(hasActiveWork bool) []byte {
+// RenderTrayIconPNG returns the cached 32x32 PNG tray icon: the application
+// icon's mark (internal/brandicon), so the development and test identities
+// show the same amber "DEV" badge in the lower right as their application
+// icon (badge), with an amber dot in the upper right while cache tasks or
+// live recordings run.
+func RenderTrayIconPNG(badge, hasActiveWork bool) []byte {
 	trayIconOnce.Do(func() {
-		trayIconIdle = renderTrayIconPNGUncached(false)
-		trayIconActive = renderTrayIconPNGUncached(true)
+		for _, b := range []bool{false, true} {
+			for _, w := range []bool{false, true} {
+				data, err := brandicon.PNG(trayIconSize, brandicon.Options{Badge: b, Activity: w})
+				if err != nil {
+					panic(fmt.Sprintf("tray icon: %v", err)) // encoding an in-memory RGBA image does not fail
+				}
+				trayIcons[trayIconIndex(b, w)] = data
+			}
+		}
 	})
-	if hasActiveWork {
-		return bytes.Clone(trayIconActive)
-	}
-	return bytes.Clone(trayIconIdle)
+	return bytes.Clone(trayIcons[trayIconIndex(badge, hasActiveWork)])
+}
+
+// trayBadge reports whether the channel's tray icon carries the "DEV" badge:
+// the development and test identities, whose application icon has it too.
+func trayBadge(channel string) bool {
+	return channel == "dev" || channel == "ptest"
 }
 
 // trayMenuEntry is one item of the tray menu.
@@ -120,7 +109,7 @@ func (s *Shell) setupTray() {
 	tasks, recs := s.activeWorkCounts()
 	hasWork := tasks > 0 || recs > 0
 	tooltip := formatTrayStatusLabel(s.loc.DisplayName, tasks, recs)
-	iconBytes := RenderTrayIconPNG(hasWork)
+	iconBytes := RenderTrayIconPNG(trayBadge(s.loc.Channel), hasWork)
 
 	opts := mygo.TrayOptions{
 		ID:      s.loc.AppName + "-tray",
@@ -289,7 +278,7 @@ func (s *Shell) applyTrayStateOnMain() {
 		s.mu.Unlock()
 
 		if iconChanged {
-			_ = tray.SetIcon(RenderTrayIconPNG(hasWork), false)
+			_ = tray.SetIcon(RenderTrayIconPNG(trayBadge(s.loc.Channel), hasWork), false)
 		}
 		if tooltipChanged {
 			tray.SetToolTip(tooltip)

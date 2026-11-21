@@ -43,9 +43,9 @@ type SchemaFile struct {
 // versions this build reads and writes.
 var DataSchemas = []SchemaFile{
 	{Name: "settings.json", Kind: SchemaJSON, Current: 1},
-	{Name: "ui-state.json", Kind: SchemaJSON, Current: 2},
+	{Name: "ui-state.json", Kind: SchemaJSON, Current: 3},
 	{Name: "history.json", Kind: SchemaJSON, Current: 1},
-	{Name: "subscriptions.json", Kind: SchemaJSON, Current: 2},
+	{Name: "subscriptions.json", Kind: SchemaJSON, Current: 3},
 	{Name: "library.db", Kind: SchemaSQLite, Current: 2},
 	{Name: "updates.db", Kind: SchemaSQLite, Current: 2},
 }

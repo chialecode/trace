@@ -56,12 +56,12 @@ func TestBackendUpdateHistoryNewerVersionRefused(t *testing.T) {
 }
 
 func TestBackendUpdateHistoryCorruptRecoveryAndExistingSchemasUnchanged(t *testing.T) {
-	// Verify existing v2 data schema versions were NOT altered (DEC-051 ①).
+	// Verify current data schema versions match storage.DataSchemas (ui-state.json & subscriptions.json bumped to v3 for Weibo).
 	wantSchemas := map[string]int{
 		"settings.json":      1,
-		"ui-state.json":      2,
+		"ui-state.json":      3,
 		"history.json":       1,
-		"subscriptions.json": 2,
+		"subscriptions.json": 3,
 		"library.db":         2,
 		"updates.db":         2,
 	}

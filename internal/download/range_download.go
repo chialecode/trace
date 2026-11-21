@@ -311,12 +311,25 @@ func (m *Manager) downloadRange(
 		offset = info.Size()
 	}
 
+	// Only constrain knownTotal from persisted progress when resuming an existing
+	// non-empty .part file on disk. A fresh download (offset == 0) must adopt the
+	// server's authoritative total so fallback streams (e.g. Douyin OriginalURLs
+	// falling back to transcoded VideoURLs) or pre-poisoned tasks auto-heal.
 	var totalSize int64 = -1
-	for _, file := range t.Files {
-		fid := taskFileIdentity(file.Path)
-		if (fid == relID || (trimmedID != "" && fid == trimmedID)) && file.TotalBytes > 0 {
-			totalSize = file.TotalBytes
-			break
+	if offset > 0 {
+		for _, file := range t.Files {
+			if taskFileIdentity(file.Path) == relID && file.TotalBytes > 0 {
+				totalSize = file.TotalBytes
+				break
+			}
+		}
+		if totalSize < 0 && trimmedID != "" && trimmedID != relID {
+			for _, file := range t.Files {
+				if taskFileIdentity(file.Path) == trimmedID && file.TotalBytes > 0 {
+					totalSize = file.TotalBytes
+					break
+				}
+			}
 		}
 	}
 	if totalSize > 0 && offset > totalSize {
@@ -324,6 +337,7 @@ func (m *Manager) downloadRange(
 			return 0, "", "", err
 		}
 		offset = 0
+		totalSize = -1
 	}
 
 	var contentType string
@@ -354,6 +368,16 @@ func (m *Manager) downloadRange(
 			offset = res.newOffset
 			if res.totalSize > 0 {
 				totalSize = res.totalSize
+				t.TotalBytes = totalSize
+			}
+			for i := range t.Files {
+				fid := taskFileIdentity(t.Files[i].Path)
+				if fid == relID || (trimmedID != "" && fid == trimmedID) {
+					t.Files[i].DownloadedBytes = offset
+					if totalSize > 0 {
+						t.Files[i].TotalBytes = totalSize
+					}
+				}
 			}
 			segRetries = 0
 			if res.done || (totalSize > 0 && offset >= totalSize) {
@@ -841,10 +865,10 @@ func mapMediaHTTPStatus(siteID site.ID, status int, endpoint string) *site.Error
 		return &site.Error{Site: siteID, Kind: site.ErrKindForbidden, HTTPStatus: status, Endpoint: endpoint, Message: "媒体访问被拒绝 (403)"}
 	case 404, 410:
 		return &site.Error{Site: siteID, Kind: site.ErrKindUnavailable, HTTPStatus: status, Endpoint: endpoint, Message: fmt.Sprintf("媒体资源已失效 (%d)", status)}
-	case 412:
-		return &site.Error{Site: siteID, Kind: site.ErrKindRiskControl, HTTPStatus: status, Endpoint: endpoint, Message: "媒体请求触发风控 (412)"}
-	case 429:
-		return &site.Error{Site: siteID, Kind: site.ErrKindRateLimited, HTTPStatus: status, Endpoint: endpoint, Message: "媒体请求触发限流 (429)"}
+	case 412, 418, 432:
+		return &site.Error{Site: siteID, Kind: site.ErrKindRiskControl, HTTPStatus: status, Endpoint: endpoint, Message: fmt.Sprintf("媒体请求触发风控 (%d)", status)}
+	case 414, 429:
+		return &site.Error{Site: siteID, Kind: site.ErrKindRateLimited, HTTPStatus: status, Endpoint: endpoint, Message: fmt.Sprintf("媒体请求触发限流 (%d)", status)}
 	default:
 		return &site.Error{Site: siteID, Kind: site.ErrKindNetwork, HTTPStatus: status, Endpoint: endpoint, Message: fmt.Sprintf("媒体 HTTP 状态异常 (%d)", status)}
 	}

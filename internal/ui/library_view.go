@@ -152,7 +152,7 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 						continue
 					}
 					btnLabel := fmt.Sprintf("按UP主筛选 %d", author.Mid)
-					if aSite == "douyin" || author.Mid <= 0 {
+					if aSite != "bilibili" || author.Mid <= 0 {
 						btnLabel = "按作者筛选 " + aKey
 					}
 					ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
@@ -283,7 +283,7 @@ func (a *App) renderLibraryTile(c *ui.Context, tile libraryTile, thumbSize float
 			ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 				title := ui.ButtonBase(c).Label("打开媒体：" + tileKey).FillWidth().Justify(ui.Start).AlignItems(ui.Start)
 				title.Children(func() {
-					ui.Text(c, item.Title).FontSize(14).FontWeight(600).MaxLines(2).TextColor(ColorTextMain)
+					ui.Text(c, item.Title).FontSize(14).LineHeight(LineHeightHeading).FontWeight(600).MaxLines(2).TextColor(ColorTextMain)
 				})
 				if title.Clicked() {
 					a.openLibraryTile(tile)
@@ -381,7 +381,7 @@ func (a *App) openLibraryTile(tile libraryTile) {
 				break
 			}
 		}
-		a.openDouyinNoteViewer(tile.item.ItemKey, pages, selected)
+		a.openNotePagesViewer(tile.item.ItemKey, normalizeSiteIDUI(tile.item.Site), pages, selected)
 		return
 	}
 	if tile.video {
@@ -405,7 +405,7 @@ func (a *App) openLibraryTile(tile libraryTile) {
 func (a *App) OpenLibraryItemDetail(item library.ItemMetadata) {
 	a.closeLivePreview()
 	if a.CurrentRoute != RouteLibraryItem {
-		a.PreviousRoute = a.CurrentRoute
+		a.pushPreviousRoute(a.currentReturnRoute())
 	}
 	a.CurrentRoute = RouteLibraryItem
 	a.BannerError = ""
@@ -413,10 +413,12 @@ func (a *App) OpenLibraryItemDetail(item library.ItemMetadata) {
 	a.PostMenuKey = ""
 	a.CurrentLibraryDetail = &item
 	a.CurrentDouyinWork = nil
+	a.CurrentWeiboPost = nil
+	a.CurrentWeiboVideo = nil
 	a.CurrentDynamic = nil
 	a.SelectedPartPages = make(map[int]bool)
 	a.UpgradeAvailable = false
-	if normalizeSiteIDUI(item.Site) == "douyin" || item.Kind == "dynamic" || item.Kind == "live" {
+	if siteID := normalizeSiteIDUI(item.Site); siteID == "douyin" || siteID == "weibo" || item.Kind == "dynamic" || item.Kind == "live" {
 		a.CurrentVideo = nil
 		a.CurrentVideoItemKey = ""
 		return
@@ -550,6 +552,15 @@ func libraryItemParseInput(item library.ItemMetadata) string {
 		}
 		return rawID
 	}
+	if siteID == "weibo" {
+		if item.Kind == "video" && rawID != "" {
+			return "https://weibo.com/tv/show/" + rawID
+		}
+		if rawID != "" {
+			return "https://weibo.com/detail/" + rawID
+		}
+		return rawID
+	}
 	switch item.Kind {
 	case "dynamic":
 		if rawID != "" {
@@ -591,9 +602,17 @@ func (a *App) renderLibraryItemMoreMenu(c *ui.Context, item library.ItemMetadata
 }
 
 func (a *App) renderLibraryItemRoute(c *ui.Context, viewportHeight float32) {
-	if a.CurrentLibraryDetail != nil && normalizeSiteIDUI(a.CurrentLibraryDetail.Site) == "douyin" && a.CurrentLibraryDetail.Kind != "live" {
-		a.renderDouyinWorkRoute(c, viewportHeight)
-		return
+	if a.CurrentLibraryDetail != nil {
+		switch normalizeSiteIDUI(a.CurrentLibraryDetail.Site) {
+		case "douyin":
+			if a.CurrentLibraryDetail.Kind != "live" {
+				a.renderDouyinWorkRoute(c, viewportHeight)
+				return
+			}
+		case "weibo":
+			a.renderWeiboPostRoute(c, viewportHeight)
+			return
+		}
 	}
 	a.renderVideoRoute(c)
 }

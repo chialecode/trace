@@ -194,7 +194,7 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 				}
 
 				// 3. Large Video Title (20px Bold)
-				ui.Text(c, vd.Title).FontSize(20).FontWeight(600).TextColor(ColorTextMain).MaxLines(3)
+				ui.Text(c, vd.Title).FontSize(20).LineHeight(LineHeightHeading).FontWeight(600).TextColor(ColorTextMain).MaxLines(3)
 
 				// 4. 16:9 Large Cover Card (click to play if cached, else view HD cover)
 				totalDur := vd.Duration
@@ -473,7 +473,7 @@ func (a *App) renderCompactVideoRow(c *ui.Context, r compactVideoRow) {
 					}
 				})
 				ui.Column(c).Grow(1).Gap(5).ClipX().Children(func() {
-					ui.Text(c, r.Title).FontSize(15).FontWeight(600).TextColor(titleColor).MaxLines(2)
+					ui.Text(c, r.Title).FontSize(15).LineHeight(LineHeightCompact).FontWeight(600).TextColor(titleColor).MaxLines(2)
 					meta := r.Meta
 					if r.TypeLabel != "" {
 						meta = strings.TrimSpace(r.TypeLabel + " · " + meta)

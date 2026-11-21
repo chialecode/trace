@@ -16,11 +16,15 @@ const (
 	DefaultBilibiliRoundAccountCap = 30
 	// DefaultDouyinRoundAccountCap is the maximum Douyin accounts checked in one scheduled round.
 	DefaultDouyinRoundAccountCap = 20
+	// DefaultWeiboRoundAccountCap is the maximum Weibo accounts checked in one scheduled round.
+	DefaultWeiboRoundAccountCap = 20
 
 	// DefaultBilibiliAccountInterval is the minimum spacing between two Bilibili accounts in a check round.
 	DefaultBilibiliAccountInterval = 2 * time.Second
 	// DefaultDouyinAccountInterval is the minimum spacing between two Douyin accounts in a check round.
 	DefaultDouyinAccountInterval = 2500 * time.Millisecond
+	// DefaultWeiboAccountInterval is the minimum spacing between two Weibo accounts in a check round.
+	DefaultWeiboAccountInterval = 3 * time.Second
 )
 
 // AutoCacheEnqueueFunc enqueues an automatic cache task (with source="auto") for a discovered update item
@@ -51,12 +55,17 @@ func defaultSubscriptionSleep(ctx context.Context, d time.Duration) error {
 }
 
 // SiteScheduledRoundCap returns the per-round scheduled account limit for siteName.
+// Unknown or empty site names return 0 rather than falling back to Bilibili.
 func SiteScheduledRoundCap(siteName string) int {
 	switch normalizeSchedulerSite(siteName) {
+	case string(site.Bilibili):
+		return DefaultBilibiliRoundAccountCap
 	case string(site.Douyin):
 		return DefaultDouyinRoundAccountCap
+	case string(site.Weibo):
+		return DefaultWeiboRoundAccountCap
 	default:
-		return DefaultBilibiliRoundAccountCap
+		return 0
 	}
 }
 
@@ -130,6 +139,9 @@ func (m *Manager) SetSiteLiveCheck(fn func(ctx context.Context, accounts []Accou
 // SetSiteAccountInterval overrides the inter-account check spacing for a specific site.
 func (m *Manager) SetSiteAccountInterval(siteName string, d time.Duration) {
 	norm := normalizeSchedulerSite(siteName)
+	if norm == "" {
+		return
+	}
 	m.mu.Lock()
 	if m.siteIntervals == nil {
 		m.siteIntervals = make(map[string]time.Duration)
@@ -150,18 +162,30 @@ func (m *Manager) SiteAccountInterval(siteName string) time.Duration {
 
 func (m *Manager) siteAccountIntervalLocked(siteName string) time.Duration {
 	norm := normalizeSchedulerSite(siteName)
+	if norm == "" {
+		return 0
+	}
 	if m.siteIntervals != nil {
 		if d, ok := m.siteIntervals[norm]; ok {
 			return d
 		}
 	}
-	if norm == string(site.Douyin) {
+	switch site.ID(norm) {
+	case site.Bilibili:
+		return m.accountInterval
+	case site.Douyin:
 		if m.accountIntervalTouched && m.accountInterval == 0 {
 			return 0
 		}
 		return DefaultDouyinAccountInterval
+	case site.Weibo:
+		if m.accountIntervalTouched && m.accountInterval == 0 {
+			return 0
+		}
+		return DefaultWeiboAccountInterval
+	default:
+		return 0
 	}
-	return m.accountInterval
 }
 
 // SetSleepFunc overrides the inter-account pacing sleep function (for deterministic tests).
@@ -190,11 +214,13 @@ func (m *Manager) PreviewResolvedAccount(acc AccountRef) (AccountRef, *Subscript
 
 // GetAccount looks up an AccountRef and its owning Subscription by <site, uid>.
 func (m *Manager) GetAccount(siteName, uid string) (Subscription, AccountRef, bool) {
-	normSite := normalizeSchedulerSite(siteName)
-	if normSite == string(site.Bilibili) {
-		if id, err := strconv.ParseInt(uid, 10, 64); err == nil && id > 0 {
-			uid = strconv.FormatInt(id, 10)
-		}
+	siteID, ok := site.ParseID(siteName)
+	if !ok {
+		return Subscription{}, AccountRef{}, false
+	}
+	normSite := string(siteID)
+	if normUID, err := site.NormalizeUID(siteID, uid); err == nil {
+		uid = normUID
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -268,9 +294,17 @@ func (m *Manager) UpdateAccountSnapshot(siteName, uid, name, face, uniqueID stri
 }
 
 // ListAutoRecordAccounts returns all linked accounts on subscriptions that have Rules.AutoRecord enabled,
-// optionally filtered by siteName (empty siteName returns all sites).
+// optionally filtered by siteName (empty siteName returns all live-capable sites; Weibo is always excluded).
 func (m *Manager) ListAutoRecordAccounts(siteName string) []AccountRef {
-	filterSite := strings.ToLower(strings.TrimSpace(siteName))
+	rawFilter := strings.ToLower(strings.TrimSpace(siteName))
+	var filterSite string
+	if rawFilter != "" {
+		id, ok := site.ParseID(rawFilter)
+		if !ok || id == site.Weibo {
+			return nil
+		}
+		filterSite = string(id)
+	}
 	m.mu.Lock()
 	subs, err := m.listSubsOnlyLocked()
 	m.mu.Unlock()
@@ -283,7 +317,10 @@ func (m *Manager) ListAutoRecordAccounts(siteName string) []AccountRef {
 			continue
 		}
 		for _, a := range s.Accounts {
-			accSite := normalizeSchedulerSite(a.Site)
+			accSite := normalizeLegacyAccountSite(a.Site)
+			if accSite == string(site.Weibo) || !site.ID(accSite).Valid() {
+				continue
+			}
 			if filterSite != "" && accSite != filterSite {
 				continue
 			}
@@ -295,14 +332,17 @@ func (m *Manager) ListAutoRecordAccounts(siteName string) []AccountRef {
 	return out
 }
 
-// ListSiteSchedulerStates returns the persisted scheduler backoff and quota states for both supported sites.
+// ListSiteSchedulerStates returns the persisted scheduler backoff and quota states for all supported sites.
 func (m *Manager) ListSiteSchedulerStates() map[string]SchedulerState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return map[string]SchedulerState{
-		string(site.Bilibili): m.getSiteSchedulerStateLocked(string(site.Bilibili)),
-		string(site.Douyin):   m.getSiteSchedulerStateLocked(string(site.Douyin)),
+	all := site.All()
+	out := make(map[string]SchedulerState, len(all))
+	for _, s := range all {
+		key := string(s)
+		out[key] = m.getSiteSchedulerStateLocked(key)
 	}
+	return out
 }
 
 func (m *Manager) isSiteAuthenticated(siteID site.ID) bool {
@@ -325,13 +365,15 @@ func (m *Manager) isSiteAuthenticated(siteID site.ID) bool {
 }
 
 func (m *Manager) hasAnySiteAuth() bool {
-	if m.isSiteAuthenticated(site.Bilibili) || m.isSiteAuthenticated(site.Douyin) {
-		return true
+	for _, s := range site.All() {
+		if m.isSiteAuthenticated(s) {
+			return true
+		}
 	}
 	m.mu.Lock()
 	var extraSites []site.ID
 	for s := range m.fetchers {
-		if s != site.Bilibili && s != site.Douyin {
+		if !s.Valid() {
 			extraSites = append(extraSites, s)
 		}
 	}
@@ -346,25 +388,31 @@ func (m *Manager) hasAnySiteAuth() bool {
 
 func unloggedSiteSkipMessage(siteName string) string {
 	switch normalizeSchedulerSite(siteName) {
-	case string(site.Douyin):
-		return "未登录抖音，已跳过"
 	case string(site.Bilibili):
 		return "未登录哔哩哔哩，已跳过"
+	case string(site.Douyin):
+		return "未登录抖音，已跳过"
+	case string(site.Weibo):
+		return "未登录微博，已跳过"
 	default:
-		return "未登录" + siteName + "，已跳过"
+		return "未登录" + strings.TrimSpace(siteName) + "，已跳过"
 	}
 }
 
 func orderedSiteNames(bySite map[string][]roundAccountTarget) []string {
 	var out []string
-	for _, preferred := range []string{string(site.Bilibili), string(site.Douyin)} {
-		if len(bySite[preferred]) > 0 {
-			out = append(out, preferred)
+	all := site.All()
+	seen := make(map[string]bool, len(all))
+	for _, preferred := range all {
+		key := string(preferred)
+		seen[key] = true
+		if len(bySite[key]) > 0 {
+			out = append(out, key)
 		}
 	}
 	var extras []string
 	for k, v := range bySite {
-		if len(v) == 0 || k == string(site.Bilibili) || k == string(site.Douyin) {
+		if len(v) == 0 || seen[k] {
 			continue
 		}
 		extras = append(extras, k)
@@ -386,6 +434,14 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 	if !m.hasAnySiteAuth() {
 		if isScheduled {
 			return CheckSummary{}, nil
+		}
+		if accSite != "" {
+			targetSite := site.ID(accSite)
+			return CheckSummary{}, &site.Error{
+				Site:    targetSite,
+				Kind:    site.ErrKindAuthRequired,
+				Message: "请先登录" + targetSite.DisplayName(),
+			}
 		}
 		if m.client != nil {
 			if err := m.client.RequireAuth("subscription:check"); err != nil {
@@ -449,7 +505,7 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 		if targetMid > 0 && sub.Mid != targetMid {
 			hasTarget := false
 			for _, a := range sub.Accounts {
-				if normalizeSchedulerSite(a.Site) == string(site.Bilibili) && a.UID == targetMidStr {
+				if normalizeLegacyAccountSite(a.Site) == string(site.Bilibili) && a.UID == targetMidStr {
 					hasTarget = true
 					break
 				}
@@ -462,7 +518,10 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 			continue
 		}
 		for _, a := range sub.Accounts {
-			accSite := normalizeSchedulerSite(a.Site)
+			accSite := normalizeLegacyAccountSite(a.Site)
+			if !site.ID(accSite).Valid() {
+				continue
+			}
 			a.Site = accSite
 			if targetMid > 0 && (accSite != string(site.Bilibili) || a.UID != targetMidStr) {
 				continue
@@ -481,7 +540,7 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 
 	siteOrder := orderedSiteNames(bySite)
 	if isScheduled && len(siteOrder) == 0 {
-		for _, s := range []site.ID{site.Bilibili, site.Douyin} {
+		for _, s := range site.All() {
 			if m.isSiteAuthenticated(s) {
 				if inBackoff, _ := m.IsSiteInBackoff(string(s)); inBackoff {
 					return CheckSummary{
@@ -511,6 +570,9 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 				return candidates[i].lastCheckedAt < candidates[j].lastCheckedAt
 			})
 			capN := SiteScheduledRoundCap(siteName)
+			if capN <= 0 {
+				continue
+			}
 			if len(candidates) > capN {
 				candidates = candidates[:capN]
 			}
@@ -540,9 +602,14 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 				abortedSites[siteName] = site.ErrKindBackoff
 				continue
 			}
-			requiredTokens := 2 * len(candidates)
-			if siteName == string(site.Bilibili) {
+			var requiredTokens int
+			switch site.ID(siteName) {
+			case site.Bilibili:
 				requiredTokens = 3*len(candidates) + 2
+			case site.Douyin, site.Weibo:
+				requiredTokens = 2 * len(candidates)
+			default:
+				requiredTokens = 1
 			}
 			if !m.CanUseSiteQuotaTokens(siteName, requiredTokens) {
 				summary.DeferredByQuota = true
@@ -868,7 +935,10 @@ func (m *Manager) runPostRoundLiveCheck(
 
 	var eligible []AccountRef
 	for _, a := range checkedAccounts {
-		s := normalizeSchedulerSite(a.Site)
+		s := normalizeLegacyAccountSite(a.Site)
+		if s == string(site.Weibo) || !site.ID(s).Valid() {
+			continue // Weibo live status check is unsupported (0 requests).
+		}
 		if abortedSites[s] != "" {
 			continue
 		}
@@ -884,18 +954,26 @@ func (m *Manager) runPostRoundLiveCheck(
 		if err := siteLiveFn(ctx, eligible); err != nil {
 			summary.Errors = append(summary.Errors, err.Error())
 			if isRoundStop(err) {
-				errSite := string(site.SiteOf(err))
+				errSite := normalizeSchedulerSite(string(site.SiteOf(err)))
 				if errSite == "" {
-					errSite = string(site.Bilibili)
-				}
-				kind := site.KindOf(err)
-				abortedSites[errSite] = kind
-				if kind == site.ErrKindRiskControl || kind == site.ErrKindRateLimited || kind == site.ErrKindAuthRequired {
-					summary.StoppedByRiskControl = true
-					if summary.SiteStopped == nil {
-						summary.SiteStopped = make(map[string]string)
+					// Only attribute untagged live-check errors to Bilibili if Bilibili was checked.
+					for _, a := range eligible {
+						if a.Site == string(site.Bilibili) {
+							errSite = string(site.Bilibili)
+							break
+						}
 					}
-					summary.SiteStopped[errSite] = kind
+				}
+				if errSite != "" {
+					kind := site.KindOf(err)
+					abortedSites[errSite] = kind
+					if kind == site.ErrKindRiskControl || kind == site.ErrKindRateLimited || kind == site.ErrKindAuthRequired {
+						summary.StoppedByRiskControl = true
+						if summary.SiteStopped == nil {
+							summary.SiteStopped = make(map[string]string)
+						}
+						summary.SiteStopped[errSite] = kind
+					}
 				}
 			}
 		}

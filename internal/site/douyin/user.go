@@ -145,12 +145,13 @@ func (c *Client) GetUserProfile(ctx context.Context, secUID string) (*UserProfil
 
 // UserPostsRequest configures a single paginated call to /aweme/v1/web/aweme/post/.
 type UserPostsRequest struct {
-	SecUID        string
-	MaxCursor     string
-	Count         int
-	SeenIDs       map[string]bool
-	KnownProfile  *UserProfile
-	StreamOptions StreamSelectOptions
+	SecUID            string
+	MaxCursor         string
+	Count             int
+	SeenIDs           map[string]bool
+	KnownProfile      *UserProfile
+	CrossCheckProfile bool // when true and page 1 returns an empty list without KnownProfile, cross-checks GetUserProfile
+	StreamOptions     StreamSelectOptions
 }
 
 // UserPostsPage holds one validated page of works from aweme/post.
@@ -163,6 +164,7 @@ type UserPostsPage struct {
 	EmptyFollowupSuggested bool           `json:"emptyFollowupSuggested,omitempty"`
 	UncertainEmpty         bool           `json:"uncertainEmpty,omitempty"`
 	UncertainReason        string         `json:"uncertainReason,omitempty"`
+	ProfileAwemeCount      int            `json:"profileAwemeCount,omitempty"`
 	Author                 *AuthorSummary `json:"author,omitempty"`
 }
 
@@ -231,9 +233,45 @@ func (c *Client) ListUserPosts(ctx context.Context, req UserPostsRequest) (*User
 	rawList, hasListKey := top["aweme_list"]
 	rawHasMore, hasMoreKey := top["has_more"]
 
-	// Truth table rows 2 & 3: bare {"status_code":0} missing aweme_list or has_more, or aweme_list: null.
 	listTrimmed := bytes.TrimSpace(rawList)
-	if !hasListKey || !hasMoreKey || len(listTrimmed) == 0 || bytes.Equal(listTrimmed, []byte("null")) {
+	isListMissing := !hasListKey || len(listTrimmed) == 0
+	isListNull := hasListKey && bytes.Equal(listTrimmed, []byte("null"))
+	hasMore := hasMoreKey && parseJSONBoolOrInt(rawHasMore)
+	nextCursor := rawNumberOrString(top["max_cursor"])
+	minCursor := rawNumberOrString(top["min_cursor"])
+
+	// Truth table rows 2 & 3: bare {"status_code":0} missing aweme_list or has_more, or aweme_list: null.
+	if !hasMoreKey || isListMissing || isListNull {
+		// On page 1 with explicit has_more == 0, Douyin may serialize an empty
+		// aweme_list as null (or omit it when a known 0-post/private profile is
+		// supplied). Only accept this when cross-checked against a matching
+		// UserProfile; otherwise preserve strict shell protection.
+		if !isSubsequentPage && hasMoreKey && !hasMore && (isListNull || isListMissing) {
+			prof, pErr := c.resolveEmptyPage1Profile(ctx, secUID, req.KnownProfile, req.CrossCheckProfile && isListNull)
+			if pErr != nil {
+				return nil, pErr
+			}
+			if prof != nil {
+				if prof.IsPrivate {
+					return nil, &site.Error{
+						Site:     site.Douyin,
+						Kind:     site.ErrKindForbidden,
+						Endpoint: c.endpoints.AwemePost,
+						Message:  "该抖音账号已设为私密，无法查看作品列表",
+					}
+				}
+				if prof.AwemeCount == 0 {
+					return &UserPostsPage{
+						Works:      []WorkDetail{},
+						NextCursor: nextCursor,
+						MinCursor:  minCursor,
+						HasMore:    false,
+						Author:     authorSummaryFromProfile(prof),
+					}, nil
+				}
+			}
+		}
+
 		if isSubsequentPage && (!hasListKey || !hasMoreKey) {
 			se := &site.Error{
 				Site:     site.Douyin,
@@ -266,10 +304,6 @@ func (c *Client) ListUserPosts(ctx context.Context, req UserPostsRequest) (*User
 			Err:      err,
 		}
 	}
-
-	hasMore := parseJSONBoolOrInt(rawHasMore)
-	nextCursor := rawNumberOrString(top["max_cursor"])
-	minCursor := rawNumberOrString(top["min_cursor"])
 
 	// Empty explicit array aweme_list: [] branches (douyin.md §9.2 rows 4, 5, 6).
 	if len(nodes) == 0 {
@@ -307,9 +341,14 @@ func (c *Client) ListUserPosts(ctx context.Context, req UserPostsRequest) (*User
 			}, nil
 		}
 
-		// Row 6: max_cursor == 0 (first page) -> cross-check KnownProfile!
-		if req.KnownProfile != nil {
-			if req.KnownProfile.IsPrivate {
+		// Row 6: max_cursor == 0 (first page) -> cross-check KnownProfile (or profile/other when CrossCheckProfile is enabled).
+		prof, pErr := c.resolveEmptyPage1Profile(ctx, secUID, req.KnownProfile, req.CrossCheckProfile)
+		if pErr != nil {
+			return nil, pErr
+		}
+		if prof != nil {
+			author := authorSummaryFromProfile(prof)
+			if prof.IsPrivate {
 				return nil, &site.Error{
 					Site:     site.Douyin,
 					Kind:     site.ErrKindForbidden,
@@ -317,36 +356,43 @@ func (c *Client) ListUserPosts(ctx context.Context, req UserPostsRequest) (*User
 					Message:  "该抖音账号已设为私密，无法查看作品列表",
 				}
 			}
-			if req.KnownProfile.AwemeCount == 0 {
+			if prof.AwemeCount == 0 {
 				return &UserPostsPage{
 					Works:      []WorkDetail{},
 					NextCursor: nextCursor,
 					MinCursor:  minCursor,
 					HasMore:    false,
+					Author:     author,
 				}, nil
 			}
-			if req.KnownProfile.AwemeCount > 5 {
+			if prof.AwemeCount > 5 {
 				return &UserPostsPage{
-					Works:           []WorkDetail{},
-					NextCursor:      nextCursor,
-					MinCursor:       minCursor,
-					HasMore:         false,
-					UncertainEmpty:  true,
-					UncertainReason: "账号显示有公开作品但首屏返回 0 条，疑似风控静默限流或仅好友可见，本轮结果不完整",
+					Works:             []WorkDetail{},
+					NextCursor:        nextCursor,
+					MinCursor:         minCursor,
+					HasMore:           false,
+					UncertainEmpty:    true,
+					UncertainReason:   "账号显示有公开作品但首屏返回 0 条，疑似风控静默限流或仅好友可见，本轮结果不完整",
+					ProfileAwemeCount: prof.AwemeCount,
+					Author:            author,
 				}, nil
 			}
-			// 1..5 works: may all be friends-only or self-only, still mark uncertain for subscription safety (douyin.md §11).
-			return &UserPostsPage{
-				Works:           []WorkDetail{},
-				NextCursor:      nextCursor,
-				MinCursor:       minCursor,
-				HasMore:         false,
-				UncertainEmpty:  true,
-				UncertainReason: "首屏无可浏览公开作品（可能为仅好友/私密可见），本轮结果记为不完整",
-			}, nil
+			if prof.AwemeCount > 0 {
+				// 1..5 works: may all be friends-only or self-only, still mark uncertain for subscription safety (douyin.md §11).
+				return &UserPostsPage{
+					Works:             []WorkDetail{},
+					NextCursor:        nextCursor,
+					MinCursor:         minCursor,
+					HasMore:           false,
+					UncertainEmpty:    true,
+					UncertainReason:   "首屏无可浏览公开作品（可能为仅好友/私密可见），本轮结果记为不完整",
+					ProfileAwemeCount: prof.AwemeCount,
+					Author:            author,
+				}, nil
+			}
 		}
 
-		// No KnownProfile passed: treat page-1 empty list as uncertain until cross-checked!
+		// No KnownProfile passed (or unknown total): treat page-1 empty list as uncertain until cross-checked!
 		return &UserPostsPage{
 			Works:           []WorkDetail{},
 			NextCursor:      nextCursor,
@@ -410,6 +456,36 @@ func (c *Client) ListUserPosts(ctx context.Context, req UserPostsRequest) (*User
 		CursorStalled: cursorStalled,
 		Author:        pageAuthor,
 	}, nil
+}
+
+func (c *Client) resolveEmptyPage1Profile(ctx context.Context, secUID string, known *UserProfile, crossCheck bool) (*UserProfile, error) {
+	if known != nil {
+		knownSec := strings.TrimSpace(known.SecUID)
+		if (knownSec == "" || knownSec == secUID) && (known.IsPrivate || known.AwemeCount >= 0) {
+			return known, nil
+		}
+	}
+	if !crossCheck || !c.canCallEndpoint(c.endpoints.ProfileOther) {
+		return nil, nil
+	}
+	return c.GetUserProfile(ctx, secUID)
+}
+
+func authorSummaryFromProfile(prof *UserProfile) *AuthorSummary {
+	if prof == nil {
+		return nil
+	}
+	return &AuthorSummary{
+		SecUID:    prof.SecUID,
+		UID:       prof.UID,
+		UniqueID:  prof.UniqueID,
+		ShortID:   prof.ShortID,
+		Nickname:  prof.Nickname,
+		Signature: prof.Signature,
+		AvatarURL: prof.AvatarURL,
+		RoomID:    prof.RoomID,
+		WebRID:    prof.WebRID,
+	}
 }
 
 func parseJSONBoolOrInt(raw json.RawMessage) bool {

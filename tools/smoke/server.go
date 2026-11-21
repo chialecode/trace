@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +22,10 @@ import (
 	"github.com/chialecode/trace/internal/appdirs"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/remote"
+	"github.com/chialecode/trace/internal/remoteserver"
 	"github.com/chialecode/trace/internal/service"
+	"github.com/chialecode/trace/internal/site/weibo"
+	"github.com/chialecode/trace/internal/sitecheck"
 	"github.com/chialecode/trace/internal/storage"
 	"github.com/chialecode/trace/internal/subscription"
 )
@@ -28,26 +33,30 @@ import (
 // ServerSmokeReceipt is artifacts/smoke-server/smoke.json: trace-server run
 // as a real process in a temporary folder — init, start, status with the
 // connection code, a synthetic subscription snapshot, one synthetic item
-// uploaded through a fake rclone, then stop (docs/design/remote.md §7).
+// uploaded through a fake rclone, fake-Weibo credential push & snapshot check,
+// then stop (docs/design/remote.md §7).
 type ServerSmokeReceipt struct {
-	Passed          bool     `json:"passed"`
-	OS              string   `json:"os"`
-	Arch            string   `json:"arch"`
-	Binary          string   `json:"binary"`
-	Version         string   `json:"version"`
-	InitCodePrinted bool     `json:"initCodePrinted"`
-	PrivateFiles    bool     `json:"privateFiles"`
-	Started         bool     `json:"started"`
-	StatusRead      bool     `json:"statusRead"`
-	SnapshotSynced  bool     `json:"snapshotSynced"`
-	ItemUploaded    bool     `json:"itemUploaded"`
-	SourceRemoved   bool     `json:"sourceRemoved"`
-	StopHow         string   `json:"stopHow"` // "SIGTERM" (Linux) or "kill+restart" (Windows)
-	StoppedCleanly  bool     `json:"stoppedCleanly"`
-	LockReleased    bool     `json:"lockReleased"`
-	NoTokenInFiles  bool     `json:"noTokenInFiles"`
-	DurationMs      int64    `json:"durationMs"`
-	Failures        []string `json:"failures,omitempty"`
+	Passed                bool     `json:"passed"`
+	OS                    string   `json:"os"`
+	Arch                  string   `json:"arch"`
+	Binary                string   `json:"binary"`
+	Version               string   `json:"version"`
+	InitCodePrinted       bool     `json:"initCodePrinted"`
+	PrivateFiles          bool     `json:"privateFiles"`
+	Started               bool     `json:"started"`
+	StatusRead            bool     `json:"statusRead"`
+	WeiboSiteReported     bool     `json:"weiboSiteReported"`
+	SnapshotSynced        bool     `json:"snapshotSynced"`
+	ItemUploaded          bool     `json:"itemUploaded"`
+	SourceRemoved         bool     `json:"sourceRemoved"`
+	WeiboFakeSiteVerified bool     `json:"weiboFakeSiteVerified"`
+	StopHow               string   `json:"stopHow"` // "SIGTERM" (Linux) or "kill+restart" (Windows)
+	StoppedCleanly        bool     `json:"stoppedCleanly"`
+	LockReleased          bool     `json:"lockReleased"`
+	NoTokenInFiles        bool     `json:"noTokenInFiles"`
+	NoSecretsInFiles      bool     `json:"noSecretsInFiles"`
+	DurationMs            int64    `json:"durationMs"`
+	Failures              []string `json:"failures,omitempty"`
 }
 
 const smokeServerItem = "video_smoke"
@@ -105,7 +114,12 @@ func runServerSmoke(bin string) (ServerSmokeReceipt, error) {
 	}
 
 	if bin == "" {
-		bin = filepath.Join(sandbox, "trace-server"+exeSuffix())
+		binDir, err := os.MkdirTemp("", "trace-smoke-bin-*")
+		if err != nil {
+			return rec, err
+		}
+		defer os.RemoveAll(binDir)
+		bin = filepath.Join(binDir, "trace-server"+exeSuffix())
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/trace-server")
 		cmd.Env = append(filterEnv(os.Environ(), "CGO_ENABLED", "TRACE_QUIET"), "CGO_ENABLED=0", "TRACE_QUIET=1")
 		appdirs.SetSubprocessQuiet(cmd)
@@ -187,15 +201,27 @@ func runServerSmoke(bin string) (ServerSmokeReceipt, error) {
 	defer client.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	if _, err := client.Status(ctx); err != nil {
+	if st, err := client.Status(ctx); err != nil {
 		fail("status: %v", err)
 	} else {
 		rec.StatusRead = true
+		for _, s := range st.Sites {
+			if s.Site == "weibo" {
+				rec.WeiboSiteReported = true
+				break
+			}
+		}
+		if !rec.WeiboSiteReported {
+			fail("status sites missing weibo row: %+v", st.Sites)
+		}
 	}
 
 	snap := subscription.Snapshot{Format: subscription.SnapshotFormat, Version: subscription.SnapshotVersion, Node: &subscription.SnapshotNode{ID: "node-smoke-desktop", Name: "smoke-desktop"},
-		Rules:         []subscription.CacheRule{{ID: "r-smoke", Name: "冒烟规则"}},
-		Subscriptions: []subscription.SnapshotSubscription{{ID: "s-smoke", Name: "冒烟订阅", RuleID: "r-smoke"}}}
+		Rules: []subscription.CacheRule{{ID: "r-smoke", Name: "冒烟规则"}},
+		Subscriptions: []subscription.SnapshotSubscription{{
+			ID: "s-smoke", Name: "冒烟订阅", RuleID: "r-smoke",
+			Accounts: []subscription.SnapshotAccount{{Site: "weibo", UID: "5000000001", Name: "冒烟微博博主"}},
+		}}}
 	raw, _ := json.Marshal(snap)
 	if info, err := client.PutSubscriptions(ctx, raw); err != nil {
 		fail("sync snapshot: %v", err)
@@ -257,9 +283,250 @@ func runServerSmoke(bin string) (ServerSmokeReceipt, error) {
 	if !rec.NoTokenInFiles {
 		fail("the access token was found in a file or the server output")
 	}
-	rec.Passed = len(rec.Failures) == 0 && rec.InitCodePrinted && rec.Started && rec.StatusRead && rec.SnapshotSynced &&
-		rec.ItemUploaded && rec.SourceRemoved && rec.StoppedCleanly && rec.LockReleased && rec.NoTokenInFiles
+	if err := scanDirForSecrets(sandbox); err != nil {
+		fail("secret scan in server sandbox: %v", err)
+	} else if findings := sitecheck.ScanTextForSecrets(srv.output() + "\n" + restartOutput); len(findings) > 0 {
+		fail("secret scan in server output: %s", findings[0])
+	} else {
+		rec.NoSecretsInFiles = true
+	}
+
+	if err := runWeiboFakeRemoteSmoke(ctx); err != nil {
+		fail("weibo fake remote smoke: %v", err)
+	} else {
+		rec.WeiboFakeSiteVerified = true
+	}
+
+	rec.Passed = len(rec.Failures) == 0 && rec.InitCodePrinted && rec.Started && rec.StatusRead && rec.WeiboSiteReported && rec.SnapshotSynced &&
+		rec.ItemUploaded && rec.SourceRemoved && rec.WeiboFakeSiteVerified && rec.StoppedCleanly && rec.LockReleased && rec.NoTokenInFiles && rec.NoSecretsInFiles
 	return rec, nil
+}
+
+// runWeiboFakeRemoteSmoke exercises remoteserver against a local httptest fake Weibo
+// PC server (0 real network requests): verifies PUT /credentials/weibo validates via
+// the strict PC 2-step flow, preserves existing credentials on invalid push, accepts
+// Weibo subscription snapshots, reports Weibo login in Status, and leaks zero Cookie
+// or signed-URL sentinels into files, logs, or Status JSON.
+func runWeiboFakeRemoteSmoke(parentCtx context.Context) error {
+	const (
+		sentinelSub     = "SENTINEL_SMOKE_WB_SUB_01"
+		sentinelSubp    = "SENTINEL_SMOKE_WB_SUBP_02"
+		sentinelXsrf    = "SENTINEL_SMOKE_WB_XSRF_03"
+		sentinelWbpsess = "SENTINEL_SMOKE_WB_SESS_04"
+		selfUID         = "5290000001"
+		selfNick        = "合成冒烟微博账号"
+		creatorUID      = "5290000002"
+		creatorNick     = "合成冒烟微博博主"
+	)
+	validCookie := "SUB=" + sentinelSub + "; SUBP=" + sentinelSubp + "; XSRF-TOKEN=" + sentinelXsrf + "; WBPSESS=" + sentinelWbpsess
+
+	fakeWB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		ck := r.Header.Get("Cookie")
+		if !strings.Contains(ck, "SUB="+sentinelSub) {
+			_, _ = fmt.Fprint(w, `{"ok":-100,"url":"https://passport.weibo.com/sso/signin"}`)
+			return
+		}
+		switch r.URL.Path {
+		case "/ajax/setting/getBasicInfo":
+			_, _ = fmt.Fprintf(w, `{"ok":1,"data":{"screen_name":%q,"domain":"smokeself"}}`, selfNick)
+		case "/ajax/profile/info":
+			if r.URL.Query().Get("screen_name") == selfNick {
+				_, _ = fmt.Fprintf(w, `{"ok":1,"data":{"user":{"idstr":%q,"screen_name":%q,"statuses_count":3}}}`, selfUID, selfNick)
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"ok":1,"data":{"user":{"idstr":%q,"screen_name":%q,"statuses_count":7}}}`, creatorUID, creatorNick)
+		case "/ajax/statuses/mymblog":
+			_, _ = fmt.Fprintf(w, `{"ok":1,"data":{"list":[{"idstr":"5099000000000001","mid":"5099000000000001","mblogid":"SmokeWb01","created_at":"Sat Nov 21 12:00:00 +0800 2026","text_raw":"冒烟基线","user":{"idstr":%q,"screen_name":%q}}],"since_id":"","total":1}}`, creatorUID, creatorNick)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer fakeWB.Close()
+
+	sandbox, err := os.MkdirTemp("", "trace-smoke-weibo-remote-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(sandbox)
+	dataDir := filepath.Join(sandbox, "data")
+	exportDir := filepath.Join(sandbox, "export")
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return err
+	}
+	initRes, err := remoteserver.Init(remoteserver.InitOptions{
+		DataDir:       dataDir,
+		ExportDir:     exportDir,
+		Listen:        ln.Addr().String(),
+		PublicAddress: "127.0.0.1",
+		Name:          "weibo-smoke",
+	})
+	if err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("init: %w", err)
+	}
+
+	var logBuf bytes.Buffer
+	var logMu sync.Mutex
+	logMirror := &lockedBuf{mu: &logMu, buf: &logBuf}
+
+	srvCtx, srvCancel := context.WithCancel(parentCtx)
+	defer srvCancel()
+	ready := make(chan struct{}, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- remoteserver.Run(srvCtx, remoteserver.RunOptions{
+			DataDir:   dataDir,
+			Listener:  ln,
+			LogMirror: logMirror,
+			Ready:     func(string) { ready <- struct{}{} },
+			Backend: func(bo *service.Options) {
+				bo.DisableBgWorkers = true
+				bo.WeiboOpts = weibo.ClientOptions{
+					AllowLocalhost: true,
+					MinInterval:    -1,
+					JitterMax:      -1,
+					Endpoints: weibo.Endpoints{
+						PCBasicInfo:     fakeWB.URL + "/ajax/setting/getBasicInfo",
+						ProfileInfo:     fakeWB.URL + "/ajax/profile/info",
+						StatusesShow:    fakeWB.URL + "/ajax/statuses/show",
+						StatusesLong:    fakeWB.URL + "/ajax/statuses/longtext",
+						StatusesMyMblog: fakeWB.URL + "/ajax/statuses/mymblog",
+						TVComponent:     fakeWB.URL + "/tv/api/component",
+					},
+				}
+			},
+		})
+	}()
+
+	select {
+	case <-ready:
+	case runErr := <-errCh:
+		return fmt.Errorf("server exited early: %w", runErr)
+	case <-time.After(15 * time.Second):
+		srvCancel()
+		return fmt.Errorf("server did not start within 15s")
+	}
+
+	client, err := remote.NewClient(initRes.Conn, "0.1.3-smoke")
+	if err != nil {
+		srvCancel()
+		<-errCh
+		return err
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(parentCtx, 20*time.Second)
+	defer cancel()
+
+	// 1. Push valid Weibo cookie -> strict PC 2-step validation must succeed.
+	siteSt, err := client.PushCredential(ctx, "weibo", remote.CredentialPush{Cookie: validCookie})
+	if err != nil {
+		srvCancel()
+		<-errCh
+		return fmt.Errorf("push valid weibo credential: %w", err)
+	}
+	if siteSt.State != remote.SiteValid || siteSt.Uname != selfNick {
+		srvCancel()
+		<-errCh
+		return fmt.Errorf("unexpected weibo site status after valid push: %+v", siteSt)
+	}
+
+	// 2. Push invalid Weibo cookie -> must fail and preserve existing valid login.
+	if _, err := client.PushCredential(ctx, "weibo", remote.CredentialPush{Cookie: "SUB=invalid_sub_value_0001"}); err == nil {
+		srvCancel()
+		<-errCh
+		return fmt.Errorf("invalid weibo credential push unexpectedly succeeded")
+	}
+
+	// 3. Sync Weibo subscription snapshot.
+	snap := subscription.Snapshot{
+		Format:  subscription.SnapshotFormat,
+		Version: subscription.SnapshotVersion,
+		Node:    &subscription.SnapshotNode{ID: "node-weibo-smoke", Name: "weibo-smoke"},
+		Rules:   []subscription.CacheRule{{ID: "r-wb", Name: "微博规则"}},
+		Subscriptions: []subscription.SnapshotSubscription{{
+			ID: "s-wb", Name: "微博冒烟订阅", RuleID: "r-wb",
+			Accounts: []subscription.SnapshotAccount{{Site: "weibo", UID: creatorUID, Name: creatorNick}},
+		}},
+	}
+	rawSnap, _ := json.Marshal(snap)
+	if info, err := client.PutSubscriptions(ctx, rawSnap); err != nil {
+		srvCancel()
+		<-errCh
+		return fmt.Errorf("sync weibo snapshot: %w", err)
+	} else if info.Hash != snap.Hash() {
+		srvCancel()
+		<-errCh
+		return fmt.Errorf("weibo snapshot hash mismatch: got %s want %s", info.Hash, snap.Hash())
+	}
+
+	// 4. Verify Status shows Weibo still logged in and leaks zero sentinels.
+	st, err := client.Status(ctx)
+	if err != nil {
+		srvCancel()
+		<-errCh
+		return fmt.Errorf("status after weibo push: %w", err)
+	}
+	wbLoggedIn := false
+	for _, s := range st.Sites {
+		if s.Site == "weibo" && s.State == remote.SiteValid && s.Uname == selfNick {
+			wbLoggedIn = true
+		}
+	}
+	if !wbLoggedIn {
+		srvCancel()
+		<-errCh
+		return fmt.Errorf("weibo lost login state after failed push: %+v", st.Sites)
+	}
+	wbCheckScheduled := false
+	for _, c := range st.Checks {
+		if c.Site == "weibo" && c.UID == creatorUID {
+			wbCheckScheduled = true
+		}
+	}
+	if !wbCheckScheduled {
+		srvCancel()
+		<-errCh
+		return fmt.Errorf("weibo synced account missing from remote checks: %+v", st.Checks)
+	}
+
+	srvCancel()
+	if runErr := <-errCh; runErr != nil {
+		return fmt.Errorf("server shutdown: %w", runErr)
+	}
+
+	statusJSON, _ := json.Marshal(st)
+	logMu.Lock()
+	logs := logBuf.String()
+	logMu.Unlock()
+
+	if err := scanDirForSecrets(sandbox); err != nil {
+		return fmt.Errorf("weibo remote sandbox secret scan: %w", err)
+	}
+	combined := string(statusJSON) + "\n" + logs
+	if findings := sitecheck.ScanTextForSecrets(combined); len(findings) > 0 {
+		return fmt.Errorf("weibo remote output secret scan: %s", findings[0])
+	}
+	for _, s := range []string{sentinelSub, sentinelSubp, sentinelXsrf, sentinelWbpsess, initRes.Conn.Token} {
+		if strings.Contains(combined, s) || treeContains(sandbox, s) {
+			return fmt.Errorf("weibo remote leaked sentinel %q", s)
+		}
+	}
+	return nil
+}
+
+type lockedBuf struct {
+	mu  *sync.Mutex
+	buf *bytes.Buffer
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
 }
 
 func exeSuffix() string {

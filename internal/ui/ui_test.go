@@ -426,7 +426,7 @@ func TestAuthGuardLoginCookieClearOverlaysAndDesktopActions(t *testing.T) {
 	app.Navigate(RouteSubscriptions)
 	tt.Frame()
 	tt.Click("订阅更多菜单")
-	tt.Click("从 B 站关注列表导入")
+	tt.Click("从关注列表导入")
 	if !app.ImportSubModalOpen || len(app.ImportFollowings) != 2 {
 		t.Fatalf("expected import modal with 2 followings, got open=%v len=%d", app.ImportSubModalOpen, len(app.ImportFollowings))
 	}

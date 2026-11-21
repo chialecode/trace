@@ -62,27 +62,33 @@ func (e *Error) Unwrap() error {
 }
 
 // KindOf extracts the error classification from err, defaulting to ErrKindNetwork.
+// A nil error or typed-nil *Error returns "".
 func KindOf(err error) string {
 	if err == nil {
 		return ""
 	}
 	var se *Error
-	if errors.As(err, &se) && se.Kind != "" {
-		return se.Kind
+	if errors.As(err, &se) {
+		if se == nil {
+			return ""
+		}
+		if se.Kind != "" {
+			return se.Kind
+		}
 	}
 	return ErrKindNetwork
 }
 
-// IsKind reports whether err is a *Error of the specified classification.
+// IsKind reports whether err is a non-nil *Error of the specified classification.
 func IsKind(err error, kind string) bool {
 	var se *Error
-	return errors.As(err, &se) && se.Kind == kind
+	return errors.As(err, &se) && se != nil && se.Kind == kind
 }
 
-// SiteOf extracts the site ID recorded on err, or empty ID if unset.
+// SiteOf extracts the site ID recorded on err, or empty ID if unset or typed-nil.
 func SiteOf(err error) ID {
 	var se *Error
-	if errors.As(err, &se) {
+	if errors.As(err, &se) && se != nil {
 		return se.Site
 	}
 	return ""
@@ -91,7 +97,7 @@ func SiteOf(err error) ID {
 // IsUnsupported reports whether err represents an explicitly unsupported link or content form.
 func IsUnsupported(err error) bool {
 	var se *Error
-	return errors.As(err, &se) && (se.Unsupported || se.Kind == ErrKindUnsupportedLink)
+	return errors.As(err, &se) && se != nil && (se.Unsupported || se.Kind == ErrKindUnsupportedLink)
 }
 
 // IsRoundStop reports whether err requires immediately aborting the current background check round.

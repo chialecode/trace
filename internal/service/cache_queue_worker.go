@@ -39,7 +39,7 @@ func (m *cacheQueueManager) Start(ctx context.Context) {
 
 	now := m.clock.Now().UTC()
 	changed := false
-	for _, sid := range []site.ID{site.Bilibili, site.Douyin} {
+	for _, sid := range site.All() {
 		loggedIn := m.hasSiteLogin(sid)
 		assignedActive := false
 		for _, e := range m.tasks {
@@ -101,7 +101,7 @@ func (m *cacheQueueManager) Start(ctx context.Context) {
 	}
 	m.mu.Unlock()
 
-	for _, sid := range []site.ID{site.Bilibili, site.Douyin} {
+	for _, sid := range site.All() {
 		siteCopy := sid
 		m.wg.Add(1)
 		go func() {
@@ -716,12 +716,16 @@ func (m *cacheQueueManager) finishItemOutcomeLocked(entry *cacheQueueEntry, cach
 
 	// If the current page buffer is exhausted and there are no further pages, complete immediately.
 	if entry.rt.pageLoaded && entry.rt.pageIdx >= len(entry.rt.pageItems) && !entry.rt.pageNextHasMore {
-		entry.rec.Cursor = sanitizeCursor(entry.rt.pageNextCursor)
+		entry.rec.Cursor = sanitizeQueueCursor(entry.rt.pageNextCursor)
 		entry.rec.HasMore = false
 		entry.rec.ProcessedKeys = nil
+		if entry.rt.pageCompletionNote != "" {
+			entry.rec.Note = sanitizeQueueText(entry.rt.pageCompletionNote)
+		}
 		entry.rt.pageLoaded = false
 		entry.rt.pageItems = nil
 		entry.rt.pageIdx = 0
+		entry.rt.pageCompletionNote = ""
 		entry.rec.Status = CacheQueueCompleted
 		entry.rec.PauseReason = ""
 		entry.rec.StopReason = ""
@@ -773,14 +777,19 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 
 	// Exhausted current buffered page? Advance persistent cursor.
 	if entry.rt.pageLoaded && entry.rt.pageIdx >= len(entry.rt.pageItems) {
-		entry.rec.Cursor = sanitizeCursor(entry.rt.pageNextCursor)
+		entry.rec.Cursor = sanitizeQueueCursor(entry.rt.pageNextCursor)
 		entry.rec.HasMore = entry.rt.pageNextHasMore
 		entry.rec.ProcessedKeys = nil
+		completionNote := entry.rt.pageCompletionNote
 		entry.rt.pageLoaded = false
 		entry.rt.pageItems = nil
 		entry.rt.pageIdx = 0
+		entry.rt.pageCompletionNote = ""
 		entry.rec.UpdatedAt = m.nowRFC3339()
 		if !entry.rec.HasMore {
+			if completionNote != "" {
+				entry.rec.Note = sanitizeQueueText(completionNote)
+			}
 			entry.rec.Status = CacheQueueCompleted
 			entry.rec.PauseReason = ""
 			entry.rec.StopReason = ""
@@ -822,6 +831,7 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 		cursor := entry.rec.Cursor
 		pager := entry.rt.pager
 		stepCtx, stepCancel := context.WithCancel(site.WithAutomaticRequests(ctx, "cache_queue"))
+		stepCtx, stepMeta := withQueueStepMeta(stepCtx)
 		entry.rt.stepCancel = stepCancel
 		m.mu.Unlock()
 
@@ -860,7 +870,7 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 			return
 		}
 		if len(items) == 0 {
-			cleanNext := sanitizeCursor(nextCursor)
+			cleanNext := sanitizeQueueCursor(nextCursor)
 			if nextMore && cleanNext != "" && cleanNext != entry.rec.Cursor {
 				entry.rec.Cursor = cleanNext
 				entry.rec.HasMore = true
@@ -873,6 +883,9 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 			entry.rec.Cursor = cleanNext
 			entry.rec.HasMore = false
 			entry.rec.ProcessedKeys = nil
+			if stepMeta.completionNote != "" {
+				entry.rec.Note = sanitizeQueueText(stepMeta.completionNote)
+			}
 			entry.rec.Status = CacheQueueCompleted
 			entry.rec.PauseReason = ""
 			entry.rec.StopReason = ""
@@ -888,6 +901,7 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 		entry.rt.pageIdx = 0
 		entry.rt.pageNextCursor = nextCursor
 		entry.rt.pageNextHasMore = nextMore
+		entry.rt.pageCompletionNote = sanitizeQueueText(stepMeta.completionNote)
 		entry.rt.pageLoaded = true
 	}
 

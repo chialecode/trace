@@ -119,7 +119,14 @@ func (r *stepRunner) run(name string, fn func(facts map[string]any) error) bool 
 	}
 	facts := make(map[string]any)
 	start := time.Now()
-	err := fn(facts)
+	err := func() (outErr error) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				outErr = fmt.Errorf("step panicked: %v", rec)
+			}
+		}()
+		return fn(facts)
+	}()
 	st := step{
 		Name:     name,
 		OK:       err == nil,

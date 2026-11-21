@@ -37,6 +37,7 @@ type screenshotBackend struct {
 	service.BackendAPI
 	rooms           []live.RoomState
 	dyStatus        credential.Status
+	wbStatus        credential.Status
 	schedulers      map[string]service.SiteSchedulerStatus
 	liveAccts       []service.LiveAccountState
 	queue           []service.CacheQueueTask
@@ -79,21 +80,61 @@ func (b *screenshotBackend) Statuses() map[string]credential.Status {
 	return map[string]credential.Status{
 		"bilibili": bili,
 		"douyin":   b.dyStatus,
+		"weibo":    b.wbStatus,
 	}
 }
 
 func (b *screenshotBackend) StatusOf(siteID string) credential.Status {
-	if strings.EqualFold(strings.TrimSpace(siteID), "douyin") {
+	switch strings.ToLower(strings.TrimSpace(siteID)) {
+	case "douyin":
 		if b.mineDouyinOut {
 			return credential.Status{Site: "douyin", State: "logged_out"}
 		}
 		return b.dyStatus
+	case "weibo":
+		return b.wbStatus
 	}
 	return b.BackendAPI.StatusOf(siteID)
 }
 
 func (b *screenshotBackend) HasAnyLogin() bool {
-	return b.BackendAPI.HasAnyLogin() || b.dyStatus.LoggedIn
+	return b.BackendAPI.HasAnyLogin() || b.dyStatus.LoggedIn || b.wbStatus.LoggedIn
+}
+
+func (b *screenshotBackend) FollowingGroups(_ context.Context, siteID string) ([]service.FollowingGroupDTO, error) {
+	if strings.EqualFold(strings.TrimSpace(siteID), "weibo") {
+		return nil, nil
+	}
+	return []service.FollowingGroupDTO{
+		{ID: "-10", Name: "特别关注", Count: 3},
+		{ID: "7", Name: "游戏", Count: 12},
+	}, nil
+}
+
+func (b *screenshotBackend) FollowingCreatorsPage(_ context.Context, siteID, _ string, page int) (service.FollowingCreatorsPageDTO, error) {
+	if strings.EqualFold(strings.TrimSpace(siteID), "weibo") {
+		return service.FollowingCreatorsPageDTO{
+			Site: "weibo",
+			Page: max(1, page),
+			Items: []service.FollowingCreatorDTO{
+				{Site: "weibo", UID: "500000001", Name: "技术频道_微博", Sign: "系统工程与媒体工具开发笔记", Subscribed: true, OwnerSubName: "技术频道_Alpha"},
+				{Site: "weibo", UID: "500000002", Name: "合成摄影日记", Sign: "胶片与风光摄影日常"},
+				{Site: "weibo", UID: "500000003", Name: "合成设计周刊", Sign: "每周分享桌面界面与字体排印"},
+			},
+			HasMore:       false,
+			GroupsEnabled: false,
+		}, nil
+	}
+	return service.FollowingCreatorsPageDTO{
+		Site: "bilibili",
+		Page: max(1, page),
+		Items: []service.FollowingCreatorDTO{
+			{Site: "bilibili", UID: "20001", Name: "技术频道_Alpha", Sign: "系统编程与多媒体工程", Subscribed: true, OwnerSubName: "技术频道_Alpha"},
+			{Site: "bilibili", UID: "30001", Name: "合成科技实验室", Sign: "每周硬件评测"},
+		},
+		HasMore:       false,
+		GroupsEnabled: true,
+	}, nil
 }
 
 func (b *screenshotBackend) SchedulerStatuses() map[string]service.SiteSchedulerStatus {
@@ -177,20 +218,23 @@ func buildSyntheticWAVBytes(sampleRate, channels, numFrames int) []byte {
 }
 
 type fixtureEnv struct {
-	srv              *httptest.Server
-	tmpRoot          string
-	rawBackend       *service.Backend
-	backend          *screenshotBackend
-	douyinSecUID     string
-	primarySub       subscription.Subscription
-	auroraSub        subscription.Subscription
-	batchRule        subscription.CacheRule
-	savedItem        library.ItemMetadata
-	savedLiveItem    library.ItemMetadata
-	savedPartialItem library.ItemMetadata
-	savedDynamicItem library.ItemMetadata
-	savedDouyinVideo library.ItemMetadata
-	savedDouyinNote  library.ItemMetadata
+	srv               *httptest.Server
+	tmpRoot           string
+	rawBackend        *service.Backend
+	backend           *screenshotBackend
+	douyinSecUID      string
+	weiboUID          string
+	primarySub        subscription.Subscription
+	auroraSub         subscription.Subscription
+	batchRule         subscription.CacheRule
+	savedItem         library.ItemMetadata
+	savedLiveItem     library.ItemMetadata
+	savedPartialItem  library.ItemMetadata
+	savedDynamicItem  library.ItemMetadata
+	savedDouyinVideo  library.ItemMetadata
+	savedDouyinNote   library.ItemMetadata
+	savedWeiboPost    library.ItemMetadata
+	savedWeiboRetweet library.ItemMetadata
 }
 
 func (e *fixtureEnv) close() {
@@ -208,6 +252,7 @@ func (e *fixtureEnv) close() {
 func seedFixtures() (env *fixtureEnv, err error) {
 	env = &fixtureEnv{
 		douyinSecUID: "MS4wLjABAAAA_uishots_creator_01",
+		weiboUID:     "500000001",
 	}
 	defer func() {
 		if err != nil {
@@ -305,6 +350,13 @@ func seedFixtures() (env *fixtureEnv, err error) {
 				env.primarySub = linked
 			} else {
 				env.primarySub = sub
+			}
+			if wbLinked, wbErr := b.LinkSubscriptionAccountRef(env.primarySub.ID, subscription.AccountRef{
+				Site: "weibo",
+				UID:  env.weiboUID,
+				Name: "技术频道_微博",
+			}); wbErr == nil {
+				env.primarySub = wbLinked
 			}
 		}
 	}
@@ -555,7 +607,7 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		Title:    "竖屏高原雪山延时摄影记录",
 		Desc:     "竖屏高原雪山延时摄影记录\n无水印高码率原片归档 #延时摄影 #风光",
 		URL:      "https://www.douyin.com/video/7388001001",
-		PubTs:    1710003800,
+		PubTs:    1710004200,
 		CachedAt: "2026-03-02T12:00:00Z",
 		Duration: 95,
 		Author: library.ItemAuthor{
@@ -638,7 +690,104 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		return nil, err
 	}
 
-	// Seed recent parse history with local avatar & cover thumbnails in <DataDir>/thumbs/ across Bilibili and Douyin
+	wbPostDir := filepath.Join(loc.DefaultCacheDir, "weibo", "500000001_技术频道_微博", "posts", "5000000000000001")
+	if err := os.MkdirAll(wbPostDir, 0o700); err != nil {
+		return nil, err
+	}
+	_ = os.WriteFile(filepath.Join(wbPostDir, "img_01.png"), coverBuf.Bytes(), 0o600)
+	env.savedWeiboPost, err = b.LibraryStore().SaveItem(wbPostDir, library.ItemMetadata{
+		Version:   1,
+		ID:        "5000000000000001",
+		RawID:     "5000000000000001",
+		Site:      "weibo",
+		Kind:      "dynamic",
+		TypeLabel: "微博",
+		Status:    "complete",
+		Title:     "微博长文与多图实况示例",
+		Text:      "微博图文归档示例：按原始顺序保存图片、GIF 与实况静帧。\n多段落中文正文采用更舒展的行高排印，让长动态在桌面阅读时层次清晰、不拥挤。",
+		URL:       "https://weibo.com/500000001/5000000000000001",
+		PubTs:     1710004500,
+		CachedAt:  "2026-03-02T12:00:00Z",
+		Author: library.ItemAuthor{
+			Site: "weibo",
+			UID:  env.weiboUID,
+			Name: "技术频道_微博",
+		},
+		Media: []library.MediaFile{
+			{Role: "image", Path: "img_01.png", Width: 480, Height: 200},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	wbRetweetDir := filepath.Join(loc.DefaultCacheDir, "weibo", "500000001_技术频道_微博", "forwards", "5000000000000015")
+	if err := os.MkdirAll(filepath.Join(wbRetweetDir, "images"), 0o700); err != nil {
+		return nil, err
+	}
+	_ = os.WriteFile(filepath.Join(wbRetweetDir, "images", "01.png"), coverBuf.Bytes(), 0o600)
+	_ = os.WriteFile(filepath.Join(wbRetweetDir, "images", "02.png"), portraitBuf.Bytes(), 0o600)
+	_ = os.WriteFile(filepath.Join(wbRetweetDir, "images", "02_live.mp4"), []byte("synth-live-motion"), 0o600)
+	_ = os.WriteFile(filepath.Join(wbRetweetDir, "cover.png"), coverBuf.Bytes(), 0o600)
+	_ = os.WriteFile(filepath.Join(wbRetweetDir, "video.mp4"), []byte("synth-origin-video"), 0o600)
+	env.savedWeiboRetweet, err = b.LibraryStore().SaveItem(wbRetweetDir, library.ItemMetadata{
+		Version:     1,
+		ID:          "dynamic:5000000000000015",
+		RawID:       "5000000000000015",
+		Site:        "weibo",
+		Kind:        "dynamic",
+		DynamicType: "forward",
+		TypeLabel:   "转发微博",
+		Status:      "complete",
+		Title:       "转发推荐：这套多段落排印与原微博媒体归档方案非常完整。",
+		Text:        "转发推荐：这套多段落排印与原微博媒体归档方案非常完整。\n全部原微博文字、图片、实况与视频均归档到订阅转发者目录，离线同样可完整回看。",
+		URL:         "https://weibo.com/500000001/5000000000000015",
+		PubTs:       1709980000,
+		CachedAt:    "2026-03-02T12:15:00Z",
+		Duration:    118,
+		Author: library.ItemAuthor{
+			Site: "weibo",
+			UID:  env.weiboUID,
+			Name: "技术频道_微博",
+		},
+		Via: &library.ItemVia{
+			Reason:    library.ViaForward,
+			Site:      "weibo",
+			UID:       env.weiboUID,
+			Name:      "技术频道_微博",
+			DynamicID: "5000000000000015",
+		},
+		Origin: &library.ItemOrigin{
+			Site:         "weibo",
+			ID:           "5000000000000088",
+			CanonicalURL: "https://weibo.com/500000002/5000000000000088",
+			Author: library.ItemAuthor{
+				Site: "weibo",
+				UID:  "500000002",
+				Name: "合成摄影日记",
+			},
+			PubTs:           1709975000,
+			Title:           "川西高原延时航拍成片（1080P HEVC）",
+			Text:            "第一段：整理完高原风光的实况照片与单文件 MP4 视频，补齐原微博全文与媒体顺序。\n第二段：正文行高提升到 1.6 倍后，多行中文动态在桌面阅读时呼吸感明显改善。",
+			VideoFromOrigin: true,
+		},
+		NotePages: []library.NotePageRecord{
+			{Index: 1, Kind: "image", FromOrigin: true, Image: "images/01.png", Width: 480, Height: 200},
+			{Index: 2, Kind: "motion", FromOrigin: true, Image: "images/02.png", Motion: "images/02_live.mp4", Width: 240, Height: 320, Duration: 3},
+		},
+		Media: []library.MediaFile{
+			{Role: "image", Path: "images/01.png", FromOrigin: true, Width: 480, Height: 200},
+			{Role: "image", Path: "images/02.png", Motion: "images/02_live.mp4", FromOrigin: true, Width: 240, Height: 320},
+			{Role: "motion", Path: "images/02_live.mp4", FromOrigin: true, Duration: 3},
+			{Role: "cover", Path: "cover.png", FromOrigin: true, Width: 480, Height: 200},
+			{Role: "video", Path: "video.mp4", FromOrigin: true, Duration: 118},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Seed recent parse history with local avatar & cover thumbnails in <DataDir>/thumbs/ across Bilibili, Douyin, and Weibo
 	avatarImg := image.NewRGBA(image.Rect(0, 0, 80, 80))
 	for y := 0; y < 80; y++ {
 		for x := 0; x < 80; x++ {
@@ -670,6 +819,8 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		{"bilibili", "20006", 230},
 		{"douyin", env.douyinSecUID, 55},
 		{"douyin", "MS4wLjABAAAA_uishots_creator_02", 145},
+		{"weibo", env.weiboUID, 15},
+		{"weibo", "500000002", 110},
 	}
 	for _, at := range avatarTargets {
 		avImg := image.NewRGBA(image.Rect(0, 0, 80, 80))
@@ -695,6 +846,18 @@ func seedFixtures() (env *fixtureEnv, err error) {
 	histAv2, _ := b.HistoryStore().SaveThumb("user", "20002", "avatar", ".png", avatarBuf.Bytes())
 	histAvDy, _ := b.HistoryStore().SaveThumb("video", "7388001001", "avatar", ".png", avatarBuf.Bytes())
 	histCvDy, _ := b.HistoryStore().SaveThumb("video", "7388001001", "cover", ".png", portraitBuf.Bytes())
+	histAvWb, _ := b.HistoryStore().SaveThumb("dynamic", "5000000000000001", "avatar", ".png", avatarBuf.Bytes())
+	histCvWb, _ := b.HistoryStore().SaveThumb("dynamic", "5000000000000001", "cover", ".png", coverBuf.Bytes())
+	_ = b.HistoryStore().Record(storage.HistoryEntry{
+		Site:         "weibo",
+		Kind:         "dynamic",
+		ID:           "5000000000000001",
+		Title:        "微博长文与多图实况示例",
+		Subtitle:     "技术频道_微博",
+		CanonicalURL: "https://weibo.com/500000001/5000000000000001",
+		AvatarThumb:  histAvWb,
+		CoverThumb:   histCvWb,
+	})
 	_ = b.HistoryStore().Record(storage.HistoryEntry{
 		Site:         "douyin",
 		Kind:         "video",
@@ -739,6 +902,14 @@ func seedFixtures() (env *fixtureEnv, err error) {
 			UniqueID: "trace_douyin_demo",
 			Uname:    "TRACE抖音演示账号",
 		},
+		wbStatus: credential.Status{
+			Site:     "weibo",
+			LoggedIn: true,
+			State:    "logged_in",
+			Source:   "manual",
+			UID:      "100000001",
+			Uname:    "TRACE微博演示账号",
+		},
 		schedulers: map[string]service.SiteSchedulerStatus{
 			"bilibili": {
 				Site:        "bilibili",
@@ -754,6 +925,12 @@ func seedFixtures() (env *fixtureEnv, err error) {
 				CurrentInterval: "1 小时",
 				BackoffUntil:    "2026-11-12T12:00:00Z",
 				BackoffSummary:  "抖音：因风控放慢到 1 小时，11 月 12 日 12:00 恢复",
+			},
+			"weibo": {
+				Site:        "weibo",
+				DisplayName: "微博",
+				LastCheckAt: "2026-11-12T10:10:00Z",
+				NextCheckAt: "2026-11-12T11:10:00Z",
 			},
 		},
 	}
@@ -877,15 +1054,42 @@ func (e *fixtureEnv) seedRecentAndLive(app *ui.App) {
 			SkippedCount: 2,
 			NextRunAt:    "2026-11-15T07:00:00Z",
 		},
+		{
+			ID:           "cq_demo_wb",
+			Site:         "weibo",
+			User:         e.weiboUID,
+			UserName:     "技术频道_微博",
+			List:         "posts",
+			ListLabel:    "微博",
+			Status:       service.CacheQueueCompleted,
+			StatusText:   "已完成",
+			Note:         "博主设置了仅展示半年内的微博，已缓存全部可见原创微博",
+			CachedCount:  12,
+			SkippedCount: 3,
+		},
 	}
 	app.CacheQueue = e.backend.ListCacheQueue()
 }
 
 func (e *fixtureEnv) injectMixedHomeFeed(app *ui.App) {
 	app.PopulateSyntheticFeed(5000)
-	if len(app.FeedItems) > 2 {
-		// Insert a Douyin entry as item #1 so Home simultaneously showcases both B 站 and 抖音 author badges.
+	if len(app.FeedItems) > 3 {
+		// Showcase B 站, 微博, and 抖音 author badges simultaneously on Home.
 		app.FeedItems[1] = library.FeedEntry{
+			FeedKey:      e.savedWeiboPost.ItemKey,
+			Site:         "weibo",
+			Kind:         "dynamic",
+			RawID:        e.savedWeiboPost.RawID,
+			AuthorUID:    e.weiboUID,
+			AuthorName:   "技术频道_微博",
+			Title:        e.savedWeiboPost.Title,
+			Summary:      e.savedWeiboPost.Text,
+			CanonicalURL: e.savedWeiboPost.URL,
+			PubTs:        app.FeedItems[0].PubTs - 60,
+			Cached:       true,
+			CacheStatus:  "green",
+		}
+		app.FeedItems[2] = library.FeedEntry{
 			FeedKey:      e.savedDouyinNote.ItemKey,
 			Site:         "douyin",
 			Kind:         "dynamic",

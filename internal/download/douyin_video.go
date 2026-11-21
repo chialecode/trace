@@ -120,6 +120,17 @@ func (m *Manager) executeDouyinVideoTask(ctx context.Context, t *Task, plan Work
 		if err := m.claimTaskFile(t, itemDir, videoRel, videoPath); err != nil {
 			return err
 		}
+		rawRel := videoRel + stageSuffix
+		stagingPath := videoPath + stageSuffix
+		m.adoptLegacyStaging(t, itemDir, videoRel, ".raw", stageSuffix)
+		origPath := videoPath + origSuffix
+		m.adoptLegacyStaging(t, itemDir, videoRel, ".orig.raw", origSuffix)
+		if !fileOrPartExists(stagingPath) && !fileOrPartExists(origPath) {
+			t.BytesDownloaded = 0
+			t.TotalBytes = 0
+			t.Progress = 0
+			m.resetFileProgress(t, videoRel)
+		}
 		m.setFileProgress(t, "video", videoRel, "downloading", 0, 0, 0)
 		refreshVideoURLs := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
 			if plan.Codec != "" && fresh.Codec != "" && !strings.EqualFold(plan.Codec, fresh.Codec) {
@@ -130,9 +141,6 @@ func (m *Manager) executeDouyinVideoTask(ctx context.Context, t *Task, plan Work
 			}
 			return fresh.VideoURLs, nil
 		})
-		rawRel := videoRel + stageSuffix
-		stagingPath := videoPath + stageSuffix
-		m.adoptLegacyStaging(t, itemDir, videoRel, ".raw", stageSuffix)
 		var summary MuxTrackSummary
 		original := false
 		if len(plan.OriginalURLs) > 0 {
@@ -266,6 +274,11 @@ func (m *Manager) cacheDouyinOriginal(
 			_ = os.Remove(origPath)
 			_ = os.Remove(origPath + ".part")
 			m.removeTempTaskProgress(t, origRel)
+			t.BytesDownloaded = 0
+			t.TotalBytes = 0
+			t.Progress = 0
+			m.resetFileProgress(t, videoRel)
+			m.persistTaskProgress(*t)
 		}
 	}
 	refresh := makeOnceURLRefresher(refreshPlan, func(fresh WorkDownloadPlan) ([]string, error) {
@@ -274,7 +287,13 @@ func (m *Manager) cacheDouyinOriginal(
 		}
 		return fresh.OriginalURLs, nil
 	})
-	if _, _, err := m.downloadWithTransportRefresh(ctx, plan.Transport, plan.OriginalURLs, origPath, "video", t, refresh); err != nil {
+	// aweme.snssdk.com/aweme/v1/play/ 302-redirects each Range segment to a
+	// scheduled public HTTPS 443 CDN edge (docs/research/douyin.md §6.5).
+	// ValidateRedirectURL still enforces HTTPS:443, public DNS name (no IP/local),
+	// GuardedMediaDialer, 5-hop cap, and Cookie stripping.
+	origTransport := plan.Transport
+	origTransport.PublicRedirects = true
+	if _, _, err := m.downloadWithTransportRefresh(ctx, origTransport, plan.OriginalURLs, origPath, "video", t, refresh); err != nil {
 		discard()
 		return MuxTrackSummary{}, err
 	}
@@ -329,10 +348,13 @@ func (m *Manager) cacheDouyinSingleMP4(
 	if err := m.claimTaskFile(t, itemDir, relPath, fullPath); err != nil {
 		return nil, err
 	}
-	m.setFileProgress(t, role, relPath, "downloading", 0, 0, 0)
 	rawRel := relPath + stageSuffix
 	stagingPath := fullPath + stageSuffix
 	m.adoptLegacyStaging(t, itemDir, relPath, ".raw", stageSuffix)
+	if !fileOrPartExists(stagingPath) {
+		m.resetFileProgress(t, relPath)
+	}
+	m.setFileProgress(t, role, relPath, "downloading", 0, 0, 0)
 	if _, _, err := m.downloadDouyinMP4WithFallback(ctx, transport, urls, needSetToken, stagingPath, role, t, planner, refreshURLs); err != nil {
 		if ctx.Err() == nil && !fileOrPartExists(stagingPath) {
 			m.removeTempTaskProgress(t, rawRel)

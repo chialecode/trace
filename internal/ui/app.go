@@ -33,6 +33,8 @@ const (
 	RouteUser          = "/user"
 	RouteDouyinWork    = "/douyin/work"
 	RouteDouyinUser    = "/douyin/user"
+	RouteWeiboPost     = "/weibo/post"
+	RouteWeiboUser     = "/weibo/user"
 	RouteLibrary       = "/library"
 	RouteLibraryItem   = "/library/item"
 	RouteTasks         = "/tasks"
@@ -253,6 +255,7 @@ type App struct {
 	CurrentRoute       string
 	SavedRoute         string
 	PreviousRoute      string
+	navBackStack       []string
 	BannerError        string
 	BannerLoginSite    string
 	BannerInfo         string
@@ -274,7 +277,7 @@ type App struct {
 	HistoryItemMenuID       string
 
 	// Login Page
-	LoginSite             string // "bilibili" | "douyin"
+	LoginSite             string // "bilibili" | "douyin" | "weibo"
 	LoginTab              string // "qr" | "cookie"
 	QRSession             bilibili.QRSession
 	QRBitmap              *ui.Bitmap
@@ -284,6 +287,8 @@ type App struct {
 	ManualRefreshInput    string
 	DouyinCookieInput     string
 	DouyinCookieComposing bool
+	WeiboCookieInput      string
+	WeiboCookieComposing  bool
 	LoginError            string
 	qrRevision            uint64
 	qrCancel              context.CancelFunc
@@ -297,10 +302,11 @@ type App struct {
 	FeedError            string
 	feedFailedBefore     bool
 	FeedSortOrder        string // always "newest"
-	FeedSiteFilter       string // "all" | "bilibili" | "douyin"
+	FeedSiteFilter       string // "all" | "bilibili" | "douyin" | "weibo"
 	FeedAuthorsFilter    []int64
 	FeedAuthorRefsFilter []library.AuthorRef
 	HomeActorFilter      *HomeUpdatedActor
+	HomeRefreshRunning   bool
 	// savedMain is the main timeline while a subscription's feed shows.
 	savedMain *homeFeedView
 
@@ -322,6 +328,22 @@ type App struct {
 	DouyinWorksAuthExpired bool
 	DouyinUserListState    *ui.ListState
 	DouyinUserSubMenuOpen  bool
+
+	// Weibo Post, Video & Creator Browsing
+	CurrentWeiboPost         *service.WeiboPostView
+	CurrentWeiboVideo        *service.WeiboVideoView
+	CurrentWeiboUser         *service.WeiboUserView
+	CurrentWeiboPosts        []service.WeiboPostView
+	WeiboPostsNextCursor     string
+	WeiboPostsHasMore        bool
+	WeiboPostsError          string
+	WeiboPostsAuthExpired    bool
+	WeiboPostsUncertainEmpty bool
+	WeiboBottomTipsVisible   bool
+	WeiboBottomTipsText      string
+	WeiboUserListState       *ui.ListState
+	WeiboUserSubMenuOpen     bool
+	weiboFilteredEmpty       bool
 
 	// Mine is the in-memory state of 我的 (never written to ui-state.json).
 	Mine             MineState
@@ -445,14 +467,19 @@ type App struct {
 	AccountPreviewOwner string
 	ImportSubModalOpen  bool
 	importFollowingsSeq uint64
+	ImportSite          string // "bilibili" | "weibo"
 	ImportFollowings    []bilibili.FollowingUser
+	ImportCreators      []service.FollowingCreatorDTO
 	ImportPage          int
 	ImportHasMore       bool
 	ImportGroup         string
 	ImportGroups        []bilibili.RelationTag
+	ImportGroupsDTO     []service.FollowingGroupDTO
+	ImportGroupsEnabled bool
 	ImportSearch        string
 	ImportError         string
 	ImportSelectedMids  map[int64]bool
+	ImportSelectedKeys  map[string]bool
 	LiveRooms           []live.RoomState
 	LiveAccounts        []service.LiveAccountState
 
@@ -480,6 +507,7 @@ type App struct {
 	// videoCacheFor is the creator page the open video came from (DEC-061).
 	videoCacheFor     videoCacheContext
 	douyinCacheFor    douyinCacheContext
+	weiboCacheFor     weiboCacheContext
 	libraryOffset     int
 	LibraryAuthorMenu bool
 	ExpandedItemKey   string
@@ -585,8 +613,8 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 		initialRoute = RouteLibrary
 	}
 	loginSite := string(site.Bilibili)
-	if routeExclusiveSite(initialRoute) == string(site.Douyin) {
-		loginSite = string(site.Douyin)
+	if excl := routeExclusiveSite(initialRoute); excl != "" {
+		loginSite = excl
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -610,7 +638,9 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 		SelectedPartPages:  make(map[int]bool),
 		UserTab:            "dynamics",
 		SubDetailTab:       normalizeSubDetailTab(uiSt.SubDetailTab),
+		ImportSite:         string(site.Bilibili),
 		ImportSelectedMids: make(map[int64]bool),
+		ImportSelectedKeys: make(map[string]bool),
 		LibrarySiteFilter:  "all",
 		LibrarySort:        "pub_ts",
 		TasksSection:       "downloads",
@@ -637,7 +667,7 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 	}
 	app.resetFeedListState()
 	app.resetSubFeedListState()
-	app.UserDynListState, app.UserVidListState, app.DouyinUserListState = &ui.ListState{}, &ui.ListState{}, &ui.ListState{}
+	app.UserDynListState, app.UserVidListState, app.DouyinUserListState, app.WeiboUserListState = &ui.ListState{}, &ui.ListState{}, &ui.ListState{}, &ui.ListState{}
 	app.RefreshData()
 	app.applyInitialSubscriptionRoute(uiSt.LastRoute)
 	return app

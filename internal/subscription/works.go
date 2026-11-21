@@ -3,6 +3,8 @@ package subscription
 import (
 	"strings"
 	"time"
+
+	"github.com/chialecode/trace/internal/site"
 )
 
 // FullCacheInterval is how often a full-cache rule sweeps an account's works
@@ -28,6 +30,12 @@ func (m *Manager) RecordAccountWorks(siteID, uid string, total int) error {
 	if m == nil || siteID == "" || uid == "" || total < 0 {
 		return nil
 	}
+	if id, ok := site.ParseID(siteID); ok {
+		siteID = string(id)
+		if norm, err := site.NormalizeUID(id, uid); err == nil {
+			uid = norm
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.updatesDB == nil {
@@ -46,6 +54,12 @@ func (m *Manager) MarkFullCacheSweep(siteID, uid string, at time.Time) error {
 	siteID, uid = strings.ToLower(strings.TrimSpace(siteID)), strings.TrimSpace(uid)
 	if m == nil || siteID == "" || uid == "" {
 		return nil
+	}
+	if id, ok := site.ParseID(siteID); ok {
+		siteID = string(id)
+		if norm, err := site.NormalizeUID(id, uid); err == nil {
+			uid = norm
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

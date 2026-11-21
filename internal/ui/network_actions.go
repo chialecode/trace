@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/chialecode/trace/internal/credential"
@@ -138,10 +139,14 @@ func (a *App) refreshAccount() {
 }
 
 func siteFullLabel(siteID string) string {
-	if strings.EqualFold(strings.TrimSpace(siteID), string(site.Douyin)) {
+	switch strings.ToLower(strings.TrimSpace(siteID)) {
+	case string(site.Douyin):
 		return "抖音"
+	case string(site.Weibo):
+		return "微博"
+	default:
+		return "哔哩哔哩"
 	}
-	return "哔哩哔哩"
 }
 
 func (a *App) logoutSiteAccount(siteID string) {
@@ -254,18 +259,64 @@ func (a *App) checkQualityUpgrades() {
 }
 
 func (a *App) openImportFollowingsModal() {
-	if !a.backend.StatusOf(string(site.Bilibili)).LoggedIn {
+	biliIn := a.backend.StatusOf(string(site.Bilibili)).LoggedIn
+	wbIn := a.backend.StatusOf(string(site.Weibo)).LoggedIn
+	if !biliIn && !wbIn {
 		a.OpenLoginForSite(string(site.Bilibili))
-		a.LoginError = "请先登录哔哩哔哩账号后再从 B 站关注列表导入"
+		a.LoginError = "请先登录哔哩哔哩或微博账号后再从关注列表导入"
 		return
 	}
+	targetSite := string(site.Bilibili)
+	if !biliIn && wbIn {
+		targetSite = string(site.Weibo)
+	}
+	a.ImportSubModalOpen = true
+	a.selectImportSite(targetSite)
+}
+
+func (a *App) selectImportSite(siteID string) {
+	norm := string(site.Bilibili)
+	if strings.EqualFold(strings.TrimSpace(siteID), string(site.Weibo)) {
+		norm = string(site.Weibo)
+	}
 	a.importFollowingsSeq++
-	a.ImportSubModalOpen, a.ImportGroup = true, "全部关注"
+	a.ImportSite = norm
+	a.ImportGroup = "全部关注"
+	a.ImportSearch = ""
+	a.ImportError = ""
+	a.ImportCreators = nil
+	a.ImportFollowings = nil
+	a.ImportGroupsDTO = nil
+	a.ImportGroups = nil
+	a.ImportGroupsEnabled = false
+	a.ImportPage = 0
+	a.ImportHasMore = false
+	a.ImportSelectedKeys = make(map[string]bool)
+	a.ImportSelectedMids = make(map[int64]bool)
+
+	if !a.backend.StatusOf(norm).LoggedIn {
+		a.ImportError = "请先登录" + siteFullLabel(norm)
+		return
+	}
 	seq := a.importFollowingsSeq
-	requestGuarded(a, "following-groups", func() bool {
-		return a.ImportSubModalOpen && a.importFollowingsSeq == seq
-	}, a.backend.RelationTags, func(groups []bilibili.RelationTag) {
-		a.ImportGroups = groups
+	requestGuarded(a, fmt.Sprintf("following-groups:%s:%d", norm, seq), func() bool {
+		return a.ImportSubModalOpen && a.ImportSite == norm && a.importFollowingsSeq == seq
+	}, func(ctx context.Context) ([]service.FollowingGroupDTO, error) {
+		return a.backend.FollowingGroups(ctx, norm)
+	}, func(groups []service.FollowingGroupDTO) {
+		a.ImportGroupsDTO = groups
+		a.ImportGroupsEnabled = len(groups) > 0
+		if norm == string(site.Bilibili) {
+			tags := make([]bilibili.RelationTag, 0, len(groups))
+			for _, g := range groups {
+				tid, _ := strconv.ParseInt(g.ID, 10, 64)
+				tags = append(tags, bilibili.RelationTag{TagID: tid, Name: g.Name, Count: g.Count})
+			}
+			a.ImportGroups = tags
+		}
 		a.loadImportPage(true)
-	}, nil)
+	}, func(err error) {
+		a.ImportError = userErrorText(err)
+		a.showError(err)
+	})
 }

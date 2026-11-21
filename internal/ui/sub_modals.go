@@ -5,7 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/chialecode/trace/internal/site/bilibili"
+	"github.com/chialecode/trace/internal/service"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/subscription"
 	"github.com/egoist/mygo/ui"
 )
@@ -23,7 +24,7 @@ func (a *App) renderAddSubOverlay(c *ui.Context, w, h float32) {
 		cardW, 0, a.closeAddSubOverlay,
 		func() {
 			ui.Text(c, "添加订阅").FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-			ui.Text(c, "建立一个订阅并可选关联哔哩哔哩或抖音账号（主页链接、分享文本或 UID）。").FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
+			ui.Text(c, "建立一个订阅并可选关联哔哩哔哩、抖音或微博账号（主页链接、分享文本或 UID）。").FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
 
 			ui.TextInput(c, &a.AddSubName).
 				Label("新订阅名称").
@@ -107,19 +108,53 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 	if st.importFollowingsListState == nil {
 		st.importFollowingsListState = &ui.ListState{}
 	}
+	curSite := a.ImportSite
+	if curSite != string(site.Weibo) {
+		curSite = string(site.Bilibili)
+	}
+	siteLoggedIn := a.backend.StatusOf(curSite).LoggedIn
 
 	renderDialog(c, &a.ImportSubModalOpen,
 		"关闭关注导入对话框（点击空白处）", "关注导入对话框",
 		cardW, cardH, nil,
 		func() {
-			ui.Text(c, "从 B 站关注列表导入").FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
+				ui.Text(c, "从关注列表导入").FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				renderSegmentedPills(c, curSite, []segmentedChoice{
+					{Key: string(site.Bilibili), Text: "哔哩哔哩", Label: "关注导入站点：哔哩哔哩"},
+					{Key: string(site.Weibo), Text: "微博", Label: "关注导入站点：微博"},
+				}, func(next string) {
+					if next != curSite {
+						a.selectImportSite(next)
+					}
+				})
+			})
+
+			if !siteLoggedIn {
+				ui.Column(c).Grow(1).FillWidth().Padding(32, 16).AlignItems(ui.Center).Justify(ui.Center).Gap(12).Children(func() {
+					ui.Text(c, "请先登录"+siteFullLabel(curSite)).Label("关注导入未登录提示").FontSize(14).TextColor(ColorTextMuted).SingleLine()
+					if AccentPillButton(c, "去登录", "关注导入去登录").Clicked() {
+						a.ImportSubModalOpen = false
+						a.OpenLoginForSite(curSite)
+					}
+				})
+				ui.Row(c).FillWidth().Justify(ui.End).Children(func() {
+					if OutlinePillButton(c, "关闭", "取消导入关注").Clicked() {
+						a.ImportSubModalOpen = false
+					}
+				})
+				return
+			}
+
 			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-				groups := []string{"全部关注"}
-				for _, group := range a.ImportGroups {
-					groups = append(groups, group.Name)
-				}
-				if ui.Select(c, &a.ImportGroup, groups).Label("关注分组").Changed() {
-					a.loadImportPage(true)
+				if len(a.ImportGroupsDTO) > 0 {
+					groups := []string{"全部关注"}
+					for _, group := range a.ImportGroupsDTO {
+						groups = append(groups, group.Name)
+					}
+					if ui.Select(c, &a.ImportGroup, groups).Label("关注分组").Changed() {
+						a.loadImportPage(true)
+					}
 				}
 				inp := ui.TextInput(c, &a.ImportSearch).
 					Placeholder("搜索已加载的关注昵称或签名…").
@@ -138,13 +173,34 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 				})
 			}
 
+			if a.ImportSelectedKeys == nil {
+				a.ImportSelectedKeys = make(map[string]bool)
+			}
+			if a.ImportSelectedMids == nil {
+				a.ImportSelectedMids = make(map[int64]bool)
+			}
+
 			kw := strings.ToLower(strings.TrimSpace(st.importSearchApplied))
-			visible := make([]bilibili.FollowingUser, 0, len(a.ImportFollowings))
-			for _, u := range a.ImportFollowings {
-				if kw != "" && !strings.Contains(strings.ToLower(u.Uname), kw) && !strings.Contains(strings.ToLower(u.Sign), kw) {
+			visible := make([]service.FollowingCreatorDTO, 0, len(a.ImportCreators))
+			for _, u := range a.ImportCreators {
+				if kw != "" && !strings.Contains(strings.ToLower(u.Name), kw) && !strings.Contains(strings.ToLower(u.Sign), kw) {
 					continue
 				}
 				visible = append(visible, u)
+			}
+
+			isOwned := func(u service.FollowingCreatorDTO) (string, bool) {
+				if u.Subscribed {
+					return firstNonEmptyStrUI(u.OwnerSubName, "已有订阅"), true
+				}
+				var mid int64
+				if u.Site == string(site.Bilibili) {
+					mid, _ = strconv.ParseInt(u.UID, 10, 64)
+				}
+				if sub, ok := a.ownerOfAccountInMemory(u.Site, u.UID, mid); ok {
+					return firstNonEmptyStrUI(sub.Name, sub.ID), true
+				}
+				return "", false
 			}
 
 			totalRows := len(visible)
@@ -153,7 +209,7 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 			}
 			st.importFollowingsListState.Key = func(i int) any {
 				if i >= 0 && i < len(visible) {
-					return "imp:" + strconv.FormatInt(visible[i].Mid, 10)
+					return "imp:" + visible[i].Site + ":" + visible[i].UID
 				}
 				return "imp-more"
 			}
@@ -168,8 +224,17 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 					return
 				}
 				u := visible[i]
-				ownerSub, owned := a.ownerOfAccountInMemory("bilibili", "", u.Mid)
-				selected := a.ImportSelectedMids[u.Mid]
+				uSite := normalizeSiteIDUI(firstNonEmptyStrUI(u.Site, curSite))
+				uKey := uSite + ":" + u.UID
+				var mid int64
+				if uSite == string(site.Bilibili) {
+					mid, _ = strconv.ParseInt(u.UID, 10, 64)
+				}
+				ownerName, owned := isOwned(u)
+				selected := a.ImportSelectedKeys[uKey]
+				if !selected && uSite == string(site.Bilibili) && mid > 0 {
+					selected = a.ImportSelectedMids[mid]
+				}
 				ui.Box(c).FillWidth().Padding(0, 0, 6, 0).ClipX().Children(func() {
 					ui.Row(c).
 						FillWidth().
@@ -181,25 +246,37 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 						Gap(10).
 						ClipX().
 						Children(func() {
-							a.renderAvatar(c, u.Uname, u.Mid, 34, false, "", nil)
+							a.renderAccountAvatar(c, uSite, u.Name, u.UID, mid, 34, false, "", nil, u.Face)
 							ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
-								ui.Text(c, u.Uname).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								ui.Text(c, firstNonEmptyStrUI(u.Name, u.UID)).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 								if u.Sign != "" {
 									ui.Text(c, u.Sign).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 								}
 							})
 							if owned {
-								ui.Text(c, fmt.Sprintf("已在订阅「%s」中", ownerSub.Name)).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(0)
-							} else if ui.Switch(c, &selected).Label(fmt.Sprintf("勾选导入 %d", u.Mid)).Changed() {
-								a.ImportSelectedMids[u.Mid] = selected
+								ui.Text(c, fmt.Sprintf("已在订阅「%s」中", ownerName)).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(0)
+							} else if ui.Switch(c, &selected).Label("勾选导入 " + u.UID).Changed() {
+								a.ImportSelectedKeys[uKey] = selected
+								if uSite == string(site.Bilibili) && mid > 0 {
+									a.ImportSelectedMids[mid] = selected
+								}
 							}
 						})
 				})
 			}).Label("关注导入虚拟列表").Grow(1).FillWidth()
 
 			selectedCount := 0
-			for _, v := range a.ImportSelectedMids {
-				if v {
+			for _, u := range a.ImportCreators {
+				uSite := normalizeSiteIDUI(firstNonEmptyStrUI(u.Site, curSite))
+				uKey := uSite + ":" + u.UID
+				var mid int64
+				if uSite == string(site.Bilibili) {
+					mid, _ = strconv.ParseInt(u.UID, 10, 64)
+				}
+				if _, owned := isOwned(u); owned {
+					continue
+				}
+				if a.ImportSelectedKeys[uKey] || (uSite == string(site.Bilibili) && mid > 0 && a.ImportSelectedMids[mid]) {
 					selectedCount++
 				}
 			}
@@ -211,22 +288,34 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 					}
 					if OutlinePillButton(c, "全选已加载", "全选已加载").Clicked() {
 						for _, u := range visible {
-							if _, owned := a.ownerOfAccountInMemory("bilibili", "", u.Mid); !owned {
-								a.ImportSelectedMids[u.Mid] = true
+							if _, owned := isOwned(u); !owned {
+								uSite := normalizeSiteIDUI(firstNonEmptyStrUI(u.Site, curSite))
+								a.ImportSelectedKeys[uSite+":"+u.UID] = true
+								if uSite == string(site.Bilibili) {
+									if mid, err := strconv.ParseInt(u.UID, 10, 64); err == nil && mid > 0 {
+										a.ImportSelectedMids[mid] = true
+									}
+								}
 							}
 						}
 					}
 					if AccentPillButton(c, fmt.Sprintf("导入 %d 个订阅", selectedCount), "确认导入关注").Disabled(selectedCount == 0).Clicked() && selectedCount > 0 {
-						var users []bilibili.FollowingUser
-						for _, u := range a.ImportFollowings {
-							if a.ImportSelectedMids[u.Mid] {
-								users = append(users, u)
+						var chosen []service.FollowingCreatorDTO
+						for _, u := range a.ImportCreators {
+							uSite := normalizeSiteIDUI(firstNonEmptyStrUI(u.Site, curSite))
+							uKey := uSite + ":" + u.UID
+							var mid int64
+							if uSite == string(site.Bilibili) {
+								mid, _ = strconv.ParseInt(u.UID, 10, 64)
+							}
+							if a.ImportSelectedKeys[uKey] || (uSite == string(site.Bilibili) && mid > 0 && a.ImportSelectedMids[mid]) {
+								chosen = append(chosen, u)
 							}
 						}
-						n, err := a.backend.ImportCreators(users, "both", "inherit", false, false)
+						res, err := a.backend.ImportFollowingCreators(curSite, chosen, subscription.DefaultSubRules())
 						a.showError(err)
 						if err == nil {
-							a.BannerInfo = fmt.Sprintf("已建立 %d 个订阅", n)
+							a.BannerInfo = fmt.Sprintf("已建立 %d 个订阅", res.Created)
 							a.ImportSubModalOpen = false
 							a.RefreshData()
 						}

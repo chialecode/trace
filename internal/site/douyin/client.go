@@ -970,6 +970,17 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 	trimmed := bytes.TrimSpace(resp.body)
 
 	switch {
+	case resp.statusCode == http.StatusUnauthorized:
+		err := &site.Error{
+			Site:       site.Douyin,
+			Kind:       site.ErrKindAuthRequired,
+			HTTPStatus: resp.statusCode,
+			Endpoint:   endpoint,
+			Message:    "抖音登录状态已失效（HTTP 401），请在设置页重新粘贴 Cookie",
+		}
+		c.onClassifiedError(ctx, err, usingStore)
+		return err
+
 	case resp.statusCode == http.StatusForbidden:
 		bodyStr := string(trimmed)
 		if strings.Contains(bodyStr, "ArgusSecurityPlugin") || strings.Contains(strings.ToLower(bodyStr), "verify") {

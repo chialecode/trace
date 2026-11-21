@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,14 +16,23 @@ import (
 	"github.com/chialecode/trace/internal/storage"
 )
 
-// CurrentSchemaVersion is the schema version for updates.db and subscriptions.json.
-const CurrentSchemaVersion = 2
+// SubscriptionsSchemaVersion is the on-disk schema version for subscriptions.json.
+const SubscriptionsSchemaVersion = 3
+
+// UpdatesDBSchemaVersion is the SQLite PRAGMA user_version for updates.db.
+const UpdatesDBSchemaVersion = 2
+
+// CurrentSchemaVersion aliases SubscriptionsSchemaVersion for callers inspecting
+// the current subscriptions.json structure version.
+const CurrentSchemaVersion = SubscriptionsSchemaVersion
 
 const (
 	// DefaultBilibiliHourlyQuota is the shared automatic request limit per hour for Bilibili.
 	DefaultBilibiliHourlyQuota = 200
 	// DefaultDouyinHourlyQuota is the shared automatic request limit per hour for Douyin.
 	DefaultDouyinHourlyQuota = 120
+	// DefaultWeiboHourlyQuota is the shared automatic request limit per hour for Weibo.
+	DefaultWeiboHourlyQuota = 100
 )
 
 var (
@@ -118,11 +128,11 @@ CREATE TABLE IF NOT EXISTS account_baseline_pinned (
 `
 
 func (m *Manager) initUpdatesSchemaV2() error {
-	v, err := storage.CheckSQLiteSchema(m.updatesDB, "updates.db", CurrentSchemaVersion)
+	v, err := storage.CheckSQLiteSchema(m.updatesDB, "updates.db", UpdatesDBSchemaVersion)
 	if err != nil {
 		return err
 	}
-	if v < CurrentSchemaVersion {
+	if v < UpdatesDBSchemaVersion {
 		tx, err := m.updatesDB.Begin()
 		if err != nil {
 			return err
@@ -164,7 +174,7 @@ func (m *Manager) initUpdatesSchemaV2() error {
 				return err
 			}
 		}
-		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", CurrentSchemaVersion)); err != nil {
+		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", UpdatesDBSchemaVersion)); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
@@ -248,21 +258,43 @@ func migrateBaselineSnapshotsExec(exec sqlQueryExecutor) error {
 	return nil
 }
 
+// normalizeSchedulerSite parses a known site identifier for scheduler, quota,
+// pacing, and round-cap lookups. Empty or unknown site names return "" and
+// never fall back to Bilibili.
 func normalizeSchedulerSite(raw string) string {
-	s := strings.ToLower(strings.TrimSpace(raw))
-	if s == "" {
+	id, ok := site.ParseID(raw)
+	if !ok {
+		return ""
+	}
+	return string(id)
+}
+
+// normalizeLegacyAccountSite normalizes a persisted account or SQLite row site
+// field, mapping empty legacy v1 records (predating multi-site support) to
+// bilibili while never coercing any unknown non-empty site name to bilibili.
+func normalizeLegacyAccountSite(raw string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	if trimmed == "" {
 		return string(site.Bilibili)
 	}
-	return s
+	if id, ok := site.ParseID(trimmed); ok {
+		return string(id)
+	}
+	return trimmed
 }
 
 // SiteHourlyQuotaLimit returns the per-hour automatic request limit for a site.
+// Unknown or empty site names return 0 rather than falling back to Bilibili.
 func SiteHourlyQuotaLimit(siteName string) int {
 	switch normalizeSchedulerSite(siteName) {
+	case string(site.Bilibili):
+		return DefaultBilibiliHourlyQuota
 	case string(site.Douyin):
 		return DefaultDouyinHourlyQuota
+	case string(site.Weibo):
+		return DefaultWeiboHourlyQuota
 	default:
-		return DefaultBilibiliHourlyQuota
+		return 0
 	}
 }
 
@@ -275,6 +307,9 @@ func (m *Manager) GetSiteSchedulerState(siteName string) SchedulerState {
 
 func (m *Manager) getSiteSchedulerStateLocked(siteName string) SchedulerState {
 	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return SchedulerState{Site: strings.TrimSpace(siteName)}
+	}
 	st := SchedulerState{Site: normSite}
 	var tokensRaw string
 	err := m.updatesDB.QueryRow(`
@@ -300,6 +335,9 @@ func (m *Manager) SaveSiteSchedulerState(siteName string, st SchedulerState) err
 
 func (m *Manager) saveSiteSchedulerStateLocked(siteName string, st SchedulerState) error {
 	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return fmt.Errorf("%w: %q", site.ErrUnknownSite, siteName)
+	}
 	level := st.BackoffLevel
 	failures := st.ConsecutiveFailures
 	if failures == 0 && st.BackoffUntil == "" {
@@ -338,7 +376,11 @@ func (m *Manager) IsSiteInBackoff(siteName string) (bool, time.Time) {
 }
 
 func (m *Manager) isSiteInBackoffLocked(siteName string) (bool, time.Time) {
-	st := m.getSiteSchedulerStateLocked(siteName)
+	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return false, time.Time{}
+	}
+	st := m.getSiteSchedulerStateLocked(normSite)
 	if st.BackoffUntil == "" {
 		return false, time.Time{}
 	}
@@ -352,12 +394,16 @@ func (m *Manager) isSiteInBackoffLocked(siteName string) (bool, time.Time) {
 
 // CanUseSiteQuotaTokens checks whether n automatic request tokens are available in siteName's 1-hour bucket without consuming them.
 func (m *Manager) CanUseSiteQuotaTokens(siteName string, n int) bool {
+	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return false
+	}
 	if n <= 0 {
 		return true
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	st := m.getSiteSchedulerStateLocked(siteName)
+	st := m.getSiteSchedulerStateLocked(normSite)
 	cutoff := m.nowFunc().UTC().Add(-time.Hour).Unix()
 	count := 0
 	for _, ts := range st.TokenTimestamps {
@@ -365,22 +411,32 @@ func (m *Manager) CanUseSiteQuotaTokens(siteName string, n int) bool {
 			count++
 		}
 	}
-	return count+n <= SiteHourlyQuotaLimit(siteName)
+	return count+n <= SiteHourlyQuotaLimit(normSite)
 }
 
 // ConsumeSiteQuotaTokens reserves n tokens from siteName's hourly automatic request bucket.
 func (m *Manager) ConsumeSiteQuotaTokens(siteName string, n int) bool {
+	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return false
+	}
 	if n <= 0 {
 		return true
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.consumeSiteQuotaTokensLocked(siteName, n)
+	return m.consumeSiteQuotaTokensLocked(normSite, n)
 }
 
 func (m *Manager) consumeSiteQuotaTokensLocked(siteName string, n int) bool {
 	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return false
+	}
 	limit := SiteHourlyQuotaLimit(normSite)
+	if limit <= 0 {
+		return false
+	}
 	st := m.getSiteSchedulerStateLocked(normSite)
 	now := m.nowFunc().UTC()
 	cutoff := now.Add(-time.Hour).Unix()
@@ -408,6 +464,9 @@ func (m *Manager) RecordSiteAutomaticStop(siteName, kind string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return
+	}
 	state := m.getSiteSchedulerStateLocked(normSite)
 	now := m.nowFunc().UTC()
 	if previous, err := time.Parse(time.RFC3339, state.LastStopAt); err == nil && now.Sub(previous) < time.Second && state.LastStopReason == kind {
@@ -432,6 +491,9 @@ func (m *Manager) RecordSiteAutomaticStop(siteName, kind string) {
 // SiteAutomaticRequestAllowed checks backoff and charges 1 hourly quota token for siteName.
 func (m *Manager) SiteAutomaticRequestAllowed(siteName string) error {
 	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return &site.Error{Site: site.ID(strings.TrimSpace(siteName)), Kind: site.ErrKindBadRequest, Message: fmt.Sprintf("不支持的站点 %q", siteName)}
+	}
 	if active, _ := m.IsSiteInBackoff(normSite); active {
 		return &site.Error{Site: site.ID(normSite), Kind: site.ErrKindBackoff, Message: "自动请求仍在退避期"}
 	}
@@ -448,23 +510,27 @@ func (m *Manager) SiteAutomaticRequestAllowed(siteName string) error {
 // 6 seconds apart), so update checks and automatic caching keep the whole
 // quota and live checks need not wait for it (DEC-060 ⑤).
 func (m *Manager) SiteAutomaticRequestAllowedFor(siteName, source string) error {
-	if source != "live" {
-		return m.SiteAutomaticRequestAllowed(siteName)
-	}
 	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return &site.Error{Site: site.ID(strings.TrimSpace(siteName)), Kind: site.ErrKindBadRequest, Message: fmt.Sprintf("不支持的站点 %q", siteName)}
+	}
+	if source != "live" {
+		return m.SiteAutomaticRequestAllowed(normSite)
+	}
 	if active, _ := m.IsSiteInBackoff(normSite); active {
 		return &site.Error{Site: site.ID(normSite), Kind: site.ErrKindBackoff, Message: "自动请求仍在退避期"}
 	}
 	return nil
 }
 
-// NormalizeAndValidateAccount validates and normalizes a Bilibili or Douyin account reference.
+// NormalizeAndValidateAccount validates and normalizes a Bilibili, Douyin, or Weibo account reference.
+// Empty or unknown sites are rejected and never fall back to Bilibili.
 func NormalizeAndValidateAccount(acc AccountRef) (AccountRef, error) {
-	rawSite := strings.ToLower(strings.TrimSpace(acc.Site))
-	if rawSite == "" {
-		rawSite = string(site.Bilibili)
+	siteID, ok := site.ParseID(acc.Site)
+	if !ok {
+		return AccountRef{}, fmt.Errorf("subscription: 不支持的站点 %q", acc.Site)
 	}
-	switch site.ID(rawSite) {
+	switch siteID {
 	case site.Bilibili:
 		normUID, err := site.NormalizeUID(site.Bilibili, acc.UID)
 		if err != nil {
@@ -505,6 +571,18 @@ func NormalizeAndValidateAccount(acc AccountRef) (AccountRef, error) {
 		acc.Face = sanitizeAccountFace(site.Douyin, acc.Face)
 		return acc, nil
 
+	case site.Weibo:
+		normUID, err := site.NormalizeUID(site.Weibo, acc.UID)
+		if err != nil {
+			return AccountRef{}, fmt.Errorf("subscription: 账号必须是有效的微博 UID")
+		}
+		acc.Site = string(site.Weibo)
+		acc.UID = normUID
+		acc.UniqueID = ""
+		acc.WebRID = ""
+		acc.Face = sanitizeAccountFace(site.Weibo, acc.Face)
+		return acc, nil
+
 	default:
 		return AccountRef{}, fmt.Errorf("subscription: 不支持的站点 %q", acc.Site)
 	}
@@ -540,36 +618,76 @@ func sanitizeAccountFace(s site.ID, face string) string {
 		return ""
 	}
 	lower := strings.ToLower(trimmed)
+	unescaped := lower
+	if decoded, err := url.QueryUnescape(lower); err == nil {
+		unescaped = strings.ToLower(decoded)
+	}
 	for _, marker := range []string{
 		"a_bogus=", "x-bogus=", "x-signature=", "x-expires=", "upsig=",
 		"w_rid=", "sessionid=", "sessdata=", "auth_key=", "token=",
 		"sign=", "signature=", "expires=",
+		"ssig=", "kid=", "sub=", "subp=", "xsrf-token=", "wbpsess=",
+		"scf=", "alf=", "ssologinstate=", "livephoto=",
 	} {
-		if strings.Contains(lower, marker) {
+		if strings.Contains(lower, marker) || strings.Contains(unescaped, marker) {
 			return ""
 		}
 	}
-	if s == site.Douyin && strings.Contains(trimmed, "?") {
-		return ""
+	switch s {
+	case site.Douyin:
+		if strings.Contains(trimmed, "?") {
+			return ""
+		}
+	case site.Weibo:
+		if strings.Contains(trimmed, "?") || strings.Contains(lower, "%3f") || isWeiboEphemeralMediaURL(lower) || isWeiboEphemeralMediaURL(unescaped) {
+			return ""
+		}
 	}
 	return trimmed
+}
+
+// isWeiboEphemeralMediaURL reports whether lowerURL targets Weibo video or
+// LivePhoto media hosts/extensions that must never be persisted in snapshots
+// or account metadata (public sinaimg.cn image URLs and weibo.com page URLs
+// remain allowed).
+func isWeiboEphemeralMediaURL(lowerURL string) bool {
+	if strings.Contains(lowerURL, "weibocdn.com") ||
+		strings.Contains(lowerURL, "video.weibo.com") ||
+		strings.Contains(lowerURL, "livephoto.us.sinaimg.cn") {
+		return true
+	}
+	pathPart := lowerURL
+	if idx := strings.IndexAny(pathPart, "?#"); idx >= 0 {
+		pathPart = pathPart[:idx]
+	}
+	for _, ext := range []string{".mp4", ".mov", ".m3u8", ".flv"} {
+		if strings.HasSuffix(pathPart, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeSubscriptionAccountForLoad(acc AccountRef) (AccountRef, bool) {
 	rawSite := strings.ToLower(strings.TrimSpace(acc.Site))
 	if rawSite == "" {
+		// Legacy v1 subscriptions.json records predate multi-site support and represent Bilibili accounts.
 		rawSite = string(site.Bilibili)
 	}
-	acc.Site = rawSite
-	if rawSite == string(site.Bilibili) {
+	siteID, ok := site.ParseID(rawSite)
+	if !ok {
+		return AccountRef{}, false
+	}
+	acc.Site = string(siteID)
+	switch siteID {
+	case site.Bilibili:
 		if id, err := strconv.ParseInt(acc.UID, 10, 64); err == nil && id > 0 {
 			acc.UID = strconv.FormatInt(id, 10)
 			acc.Face = sanitizeAccountFace(site.Bilibili, acc.Face)
 			return acc, true
 		}
 		return acc, strings.TrimSpace(acc.UID) != ""
-	}
-	if rawSite == string(site.Douyin) {
+	case site.Douyin:
 		if err := validateStrictDouyinUID(acc.UID); err != nil {
 			return AccountRef{}, false
 		}
@@ -579,8 +697,19 @@ func normalizeSubscriptionAccountForLoad(acc AccountRef) (AccountRef, bool) {
 		acc.UniqueID = strings.TrimSpace(acc.UniqueID)
 		acc.Face = sanitizeAccountFace(site.Douyin, acc.Face)
 		return acc, true
+	case site.Weibo:
+		normUID, err := site.NormalizeUID(site.Weibo, acc.UID)
+		if err != nil {
+			return AccountRef{}, false
+		}
+		acc.UID = normUID
+		acc.UniqueID = ""
+		acc.WebRID = ""
+		acc.Face = sanitizeAccountFace(site.Weibo, acc.Face)
+		return acc, true
+	default:
+		return AccountRef{}, false
 	}
-	return AccountRef{}, false
 }
 
 // LinkAccount associates acc with subscription subID, preserving Douyin uniqueId and webRid fields.

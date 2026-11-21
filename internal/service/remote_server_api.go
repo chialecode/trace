@@ -43,7 +43,7 @@ func (b *Backend) ServerStatus() remote.Status {
 			}
 		}
 	}
-	for _, sid := range []site.ID{site.Bilibili, site.Douyin} {
+	for _, sid := range site.All() {
 		cs := b.credMgr.Status(string(sid))
 		row := remote.SiteStatus{Site: string(sid), Uname: cs.Uname, CookieSyncedAt: sync.CookieSyncedAt[string(sid)]}
 		switch {
@@ -191,12 +191,12 @@ func (b *Backend) ApplyRemoteSnapshot(raw []byte) (remote.SubscriptionsInfo, err
 }
 
 // AcceptPushedCredential checks a Cookie the desktop pushed (nav for
-// 哔哩哔哩, the profile for 抖音) and keeps it only when the check passes;
-// otherwise the stored credential is unchanged and the reason is returned
-// (remote.md §5). The kept credential is marked remote_push: no refresh
-// token, never renewed.
+// 哔哩哔哩, self profile for 抖音, PC getBasicInfo+profile/info for 微博)
+// and keeps it only when the check passes; otherwise the stored credential is
+// unchanged and the reason is returned (remote.md §5). The kept credential is
+// marked remote_push: no refresh token, never renewed.
 func (b *Backend) AcceptPushedCredential(ctx context.Context, siteID, cookie string) (remote.SiteStatus, error) {
-	id, err := normalizeSiteID(siteID)
+	id, err := normalizeExplicitSiteID(siteID)
 	if err != nil {
 		return remote.SiteStatus{}, err
 	}
@@ -204,10 +204,15 @@ func (b *Backend) AcceptPushedCredential(ctx context.Context, siteID, cookie str
 		return remote.SiteStatus{}, &site.Error{Site: id, Kind: site.ErrKindInvalidInput, Message: "没有收到 Cookie"}
 	}
 	var st credential.Status
-	if id == site.Bilibili {
+	switch id {
+	case site.Bilibili:
 		st, err = b.ImportCookie(ctx, cookie, "")
-	} else {
-		st, err = b.LoginWithCookie(ctx, string(id), cookie, "")
+	case site.Douyin:
+		st, err = b.LoginWithCookie(ctx, string(site.Douyin), cookie, "")
+	case site.Weibo:
+		st, err = b.LoginWithCookie(ctx, string(site.Weibo), cookie, "")
+	default:
+		return remote.SiteStatus{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点标识: " + strings.TrimSpace(siteID)}
 	}
 	if err != nil {
 		return remote.SiteStatus{}, err
@@ -238,11 +243,19 @@ func (b *Backend) AcceptPushedCredential(ctx context.Context, siteID, cookie str
 
 // ClearPushedCredential clears the remote's login of one site.
 func (b *Backend) ClearPushedCredential(siteID string) error {
-	_, err := b.LogoutSite(siteID)
+	id, err := normalizeExplicitSiteID(siteID)
+	if err != nil {
+		return err
+	}
+	switch id {
+	case site.Bilibili, site.Douyin, site.Weibo:
+		_, err = b.LogoutSite(string(id))
+	default:
+		return &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点标识: " + strings.TrimSpace(siteID)}
+	}
 	if err == nil {
-		key := strings.ToLower(strings.TrimSpace(siteID))
 		_, _ = b.mutateSyncState(func(sync *syncState) {
-			delete(sync.CookieSyncedAt, key)
+			delete(sync.CookieSyncedAt, string(id))
 		})
 	}
 	return err

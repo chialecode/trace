@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/storage"
 )
 
@@ -79,7 +80,7 @@ func (m *Manager) ensureSubsCacheLocked() error {
 			}
 		}
 		for _, a := range s.Accounts {
-			accSite := normalizeSchedulerSite(a.Site)
+			accSite := normalizeLegacyAccountSite(a.Site)
 			key := accSite + ":" + a.UID
 			if _, ok := ownerIdx[key]; !ok {
 				ownerIdx[key] = i
@@ -132,15 +133,19 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 		Version *int `json:"version"`
 	}
 	needsMigration := false
+	fromVersion := 1
 	if err := json.Unmarshal(raw, &rawVersion); err == nil {
-		if rawVersion.Version != nil && *rawVersion.Version > CurrentSchemaVersion {
+		if rawVersion.Version != nil && *rawVersion.Version > SubscriptionsSchemaVersion {
 			return &storage.NewerDataError{
 				File:      filepath.Base(m.subsPath),
 				Found:     *rawVersion.Version,
-				Supported: CurrentSchemaVersion,
+				Supported: SubscriptionsSchemaVersion,
 			}
 		}
-		needsMigration = rawVersion.Version == nil || *rawVersion.Version < CurrentSchemaVersion
+		if rawVersion.Version != nil && *rawVersion.Version > 0 {
+			fromVersion = *rawVersion.Version
+		}
+		needsMigration = rawVersion.Version == nil || *rawVersion.Version < SubscriptionsSchemaVersion
 	}
 
 	prevRules := append([]CacheRule(nil), m.rules...)
@@ -210,8 +215,15 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 		migratedSubs = append(migratedSubs, sub)
 	}
 	if needsMigration {
+		bakPath := fmt.Sprintf("%s.premigrate-%d", m.subsPath, fromVersion)
+		if info, statErr := os.Stat(bakPath); os.IsNotExist(statErr) || (statErr == nil && info.IsDir()) {
+			if _, err := storage.BackupBeforeMigration(m.subsPath, fromVersion); err != nil {
+				m.rules = prevRules
+				return fmt.Errorf("subscription: back up %s before migration: %w", filepath.Base(m.subsPath), err)
+			}
+		}
 		out := subscriptionsFile{
-			Version:       CurrentSchemaVersion,
+			Version:       SubscriptionsSchemaVersion,
 			Subscriptions: migratedSubs,
 			CacheRules:    m.rules,
 		}
@@ -251,7 +263,7 @@ func (m *Manager) writeSubscriptionsToDiskLocked() (writeErr error) {
 		}
 	}
 	sf := subscriptionsFile{
-		Version:       CurrentSchemaVersion,
+		Version:       SubscriptionsSchemaVersion,
 		Subscriptions: subs,
 		CacheRules:    m.rules,
 	}
@@ -395,11 +407,16 @@ func syncSubFields(s *Subscription, now time.Time) {
 	}
 	for i := range s.Accounts {
 		if s.Accounts[i].Site == "" {
-			s.Accounts[i].Site = "bilibili"
+			s.Accounts[i].Site = string(site.Bilibili)
 		}
-		if s.Accounts[i].Site == "bilibili" {
+		switch site.ID(s.Accounts[i].Site) {
+		case site.Bilibili:
 			if id, err := strconv.ParseInt(s.Accounts[i].UID, 10, 64); err == nil && id > 0 {
 				s.Accounts[i].UID = strconv.FormatInt(id, 10)
+			}
+		case site.Weibo:
+			if norm, err := site.NormalizeUID(site.Weibo, s.Accounts[i].UID); err == nil {
+				s.Accounts[i].UID = norm
 			}
 		}
 	}
@@ -418,13 +435,13 @@ func syncSubFields(s *Subscription, now time.Time) {
 	if len(s.Accounts) > 0 {
 		primary := &s.Accounts[0]
 		if primary.Site == "" {
-			primary.Site = "bilibili"
+			primary.Site = string(site.Bilibili)
 		}
 		if primary.AddedAt == "" {
 			primary.AddedAt = s.CreatedAt
 		}
 		s.Site = primary.Site
-		if primary.Site == "bilibili" {
+		if primary.Site == string(site.Bilibili) {
 			s.Mid, _ = strconv.ParseInt(primary.UID, 10, 64)
 		} else {
 			s.Mid = 0
@@ -439,12 +456,24 @@ func syncSubFields(s *Subscription, now time.Time) {
 		}
 	} else {
 		s.Avatar = AvatarRef{}
+		s.Face = ""
 	}
 	if s.Name == "" {
-		if len(s.Accounts) > 0 && s.Accounts[0].Site == "douyin" {
-			s.Name = firstNonEmptyStr(s.Uname, firstNonEmptyStr(s.Accounts[0].UniqueID, s.Accounts[0].UID))
-		} else {
+		if len(s.Accounts) > 0 {
+			switch site.ID(s.Accounts[0].Site) {
+			case site.Bilibili:
+				s.Name = firstNonEmptyStr(s.Uname, "UID "+s.Accounts[0].UID)
+			case site.Douyin:
+				s.Name = firstNonEmptyStr(s.Uname, firstNonEmptyStr(s.Accounts[0].UniqueID, s.Accounts[0].UID))
+			case site.Weibo:
+				s.Name = firstNonEmptyStr(s.Uname, "微博用户 "+s.Accounts[0].UID)
+			default:
+				s.Name = firstNonEmptyStr(s.Uname, s.Accounts[0].UID)
+			}
+		} else if s.Mid > 0 {
 			s.Name = firstNonEmptyStr(s.Uname, fmt.Sprintf("UID %d", s.Mid))
+		} else {
+			s.Name = firstNonEmptyStr(s.Uname, "未命名订阅")
 		}
 	}
 	if s.Uname == "" {

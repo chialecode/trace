@@ -212,6 +212,7 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 	biliAcct := a.backend.StatusOf("bilibili")
 	biliRenew := a.backend.Renewal("bilibili")
 	dyAcct := a.backend.StatusOf("douyin")
+	wbAcct := a.backend.StatusOf("weibo")
 
 	ui.Column(c).FillWidth().Gap(0).ClipX().Children(func() {
 		// Group 1: 哔哩哔哩 (docs/ui.md §3.7)
@@ -281,7 +282,9 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 		ui.Column(c).
 			Label("账号分组：抖音").
 			FillWidth().
-			Padding(18, 0, 0, 0).
+			Padding(18, 0, 18, 0).
+			BorderWidth(0, 0, 1, 0).
+			BorderColor(ColorBorder).
 			Gap(12).
 			ClipX().
 			Children(func() {
@@ -316,6 +319,53 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 						ui.Text(c, "未登录抖音账号").FontSize(13).TextColor(ColorTextMuted).SingleLine()
 						if AccentPillButton(c, "登录抖音", "登录抖音").Clicked() {
 							a.OpenLoginForSite("douyin")
+						}
+					})
+				}
+			})
+
+		// Group 3: 微博 (docs/ui.md §3.7)
+		ui.Column(c).
+			Label("账号分组：微博").
+			FillWidth().
+			Padding(18, 0, 0, 0).
+			Gap(12).
+			ClipX().
+			Children(func() {
+				ui.Text(c, "微博").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+
+				if wbAcct.LoggedIn || wbAcct.State == "expired" {
+					wbUID := strings.TrimSpace(wbAcct.UID)
+					uidLine := "UID：—"
+					if wbUID != "" {
+						uidLine = "UID " + wbUID
+					}
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).ClipX().Children(func() {
+						a.renderAccountAvatar(c, "weibo", firstNonEmptyStrUI(wbAcct.Uname, "微博用户"), wbUID, 0, 48, false, "", nil, wbAcct.Face)
+						ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
+							ui.Text(c, firstNonEmptyStrUI(wbAcct.Uname, "微博用户")).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+							ui.Text(c, uidLine+" · 登录方式：粘贴 Cookie").
+								FontSize(13).TextColor(ColorTextMuted).SingleLine()
+						})
+					})
+
+					ui.Text(c, "自动续期：不可用，粘贴的 Cookie 不续期；过期后请重新粘贴").
+						FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
+
+					ui.Row(c).Gap(8).Wrap().Children(func() {
+						if OutlinePillButton(c, "重新粘贴", "重新粘贴微博Cookie").Clicked() {
+							a.OpenLoginForSite("weibo")
+						}
+						if DangerOutlinePillButton(c, "退出登录", "退出微博登录").Clicked() {
+							a.ConfirmLogoutSite = "weibo"
+							a.ConfirmLogoutOpen = true
+						}
+					})
+				} else {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(12).Children(func() {
+						ui.Text(c, "未登录微博账号").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+						if AccentPillButton(c, "登录微博", "登录微博").Clicked() {
+							a.OpenLoginForSite("weibo")
 						}
 					})
 				}

@@ -553,3 +553,84 @@ func (a *App) openPlayerSegment(item library.ItemMetadata, index int) {
 		}
 	})
 }
+
+// openRemoteVideoPreview stages an uncached online video via Backend.StagePreviewMedia
+// (allowlisted CDN, zero Cookie) and plays it in PlayerOverlay.
+func (a *App) openRemoteVideoPreview(siteID, title, rawURL string) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" || a.backend == nil {
+		return
+	}
+	a.pauseBGM()
+	a.closeLivePreview()
+	a.setPlayerFullscreen(false)
+	_ = a.player.Close()
+
+	a.PlayerOverlay.Open = true
+	a.PlayerOverlay.LastActiveAt = time.Time{}
+	a.PlayerOverlay.ControlsHidden = false
+	a.PlayerOverlay.MoreMenuOpen = false
+	a.PlayerOverlay.VolumeMenuOpen = false
+	a.PlayerOverlay.volumeScrubbing = false
+	a.PlayerOverlay.opacityScrubbing = false
+	a.PlayerOverlay.ItemKey = ""
+	a.PlayerOverlay.Title = firstNonEmptyStrUI(title, "在线视频预览")
+	a.PlayerOverlay.Segments = nil
+	a.PlayerOverlay.Segment = 0
+	a.PlayerOverlay.DecoderMissing = false
+	a.PlayerOverlay.MissingReason = ""
+	a.PlayerOverlay.LoadError = ""
+	a.PlayerOverlay.Loading = true
+	a.PlayerOverlay.MediaPath = ""
+	a.PlayerOverlay.SeekNormalized = 0
+	a.PlayerOverlay.SubtitleOptions = []string{"关闭"}
+
+	a.playerOpenSeq++
+	seq := a.playerOpenSeq
+	backend := a.backend
+	type previewOpened struct {
+		path string
+		dec  player.MediaDecoder
+	}
+	current := func() bool {
+		return a.playerOpenSeq == seq && a.PlayerOverlay.Open
+	}
+	requestGuardedCleanup(a, fmt.Sprintf("player-preview-%d", seq), current, func(ctx context.Context) (previewOpened, error) {
+		stagedPath, err := backend.StagePreviewMedia(ctx, siteID, rawURL, ".mp4")
+		if err != nil {
+			return previewOpened{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return previewOpened{}, err
+		}
+		dec, err := player.OpenMediaFile(stagedPath)
+		if err != nil {
+			return previewOpened{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			_ = dec.Close()
+			return previewOpened{}, err
+		}
+		return previewOpened{path: stagedPath, dec: dec}, nil
+	}, func(res previewOpened) {
+		a.PlayerOverlay.Loading = false
+		a.PlayerOverlay.MediaPath = res.path
+		if err := a.player.LoadDecoder(res.path, res.dec); err != nil {
+			a.PlayerOverlay.DecoderMissing = player.IsMissingCodecError(err)
+			a.PlayerOverlay.MissingReason = err.Error()
+			a.PlayerOverlay.LoadError = "无法预览此视频：" + err.Error()
+			return
+		}
+		a.applyPlayerPrefs()
+		a.player.Play()
+	}, func(err error) {
+		a.PlayerOverlay.Loading = false
+		a.PlayerOverlay.DecoderMissing = player.IsMissingCodecError(err)
+		a.PlayerOverlay.MissingReason = err.Error()
+		a.PlayerOverlay.LoadError = "无法预览此视频：" + userErrorText(err)
+	}, func(res previewOpened) {
+		if res.dec != nil {
+			_ = res.dec.Close()
+		}
+	})
+}

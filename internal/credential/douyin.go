@@ -236,34 +236,58 @@ func (s *Store) UpdateDouyinProfile(profile DouyinProfile) (Status, error) {
 	return s.buildStatus(s.rec), nil
 }
 
-// MergeContextCookies merges non-identity context cookies (ttwid, msToken, UIFID, __ac_*)
-// received from response Set-Cookie headers into an active Douyin credential.
+// MergeContextCookies merges non-identity context cookies received from response
+// Set-Cookie headers into an active credential without touching core identity cookies:
+//   - douyin: ttwid, UIFID, UIFID_TEMP, uifid, msToken, s_v_web_id, __ac_nonce, __ac_signature
+//   - weibo:  XSRF-TOKEN only
 func (s *Store) MergeContextCookies(cookies map[string]string) error {
-	if err := s.requireSite(SiteDouyin); err != nil {
-		return err
-	}
-	cleaned := CleanDouyinCookieMap(cookies)
-	if len(cleaned) == 0 {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.isActiveRecordLocked() {
-		return ErrNotLoggedIn
-	}
-	next := s.cloneRecord(s.rec)
-	changed := false
-	for _, k := range []string{"ttwid", "UIFID", "UIFID_TEMP", "uifid", "msToken", "s_v_web_id", "__ac_nonce", "__ac_signature"} {
-		if v := cleaned[k]; v != "" && next.Cookies[k] != v {
-			next.Cookies[k] = v
-			changed = true
+	switch s.Site() {
+	case SiteDouyin:
+		cleaned := CleanDouyinCookieMap(cookies)
+		if len(cleaned) == 0 {
+			return nil
 		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !s.isActiveRecordLocked() {
+			return ErrNotLoggedIn
+		}
+		next := s.cloneRecord(s.rec)
+		changed := false
+		for _, k := range []string{"ttwid", "UIFID", "UIFID_TEMP", "uifid", "msToken", "s_v_web_id", "__ac_nonce", "__ac_signature"} {
+			if v := cleaned[k]; v != "" && next.Cookies[k] != v {
+				next.Cookies[k] = v
+				changed = true
+			}
+		}
+		if !changed {
+			return nil
+		}
+		next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		return s.persistRecordLocked(next)
+
+	case SiteWeibo:
+		cleaned := CleanWeiboCookieMap(cookies)
+		xsrf := cleaned["XSRF-TOKEN"]
+		if xsrf == "" {
+			return nil
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !s.isActiveRecordLocked() {
+			return ErrNotLoggedIn
+		}
+		if s.rec.Cookies["XSRF-TOKEN"] == xsrf {
+			return nil
+		}
+		next := s.cloneRecord(s.rec)
+		next.Cookies["XSRF-TOKEN"] = xsrf
+		next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		return s.persistRecordLocked(next)
+
+	default:
+		return s.requireSite(SiteDouyin)
 	}
-	if !changed {
-		return nil
-	}
-	next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	return s.persistRecordLocked(next)
 }
 
 // UIFID returns the active uifid / UIFID / UIFID_TEMP token for ArgusSecurityPlugin signing, or empty string.

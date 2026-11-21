@@ -62,6 +62,8 @@ func (b *Backend) LiveStatuses(ctx context.Context, accountKeys []string) ([]Liv
 			}
 		case site.Douyin:
 			douyinUIDs = append(douyinUIDs, uid)
+		case site.Weibo:
+			// Weibo live status polling is intentionally excluded (0 requests).
 		}
 	}
 
@@ -132,7 +134,7 @@ func (b *Backend) OpenLiveRoomInBrowser(roomID int64) error {
 	return b.desktop.OpenExternalURL(fmt.Sprintf("https://live.bilibili.com/%d", roomID))
 }
 
-// OpenLiveInBrowser opens a Bilibili roomID or Douyin web_rid in the external system browser.
+// OpenLiveInBrowser opens a Bilibili roomID, Douyin web_rid, or Weibo live link/ID in the external system browser.
 func (b *Backend) OpenLiveInBrowser(siteID, roomOrWebRID string) error {
 	if err := b.requireAnyLogin(); err != nil {
 		return err
@@ -142,18 +144,37 @@ func (b *Backend) OpenLiveInBrowser(siteID, roomOrWebRID string) error {
 		return err
 	}
 	clean := strings.TrimSpace(roomOrWebRID)
-	for _, r := range clean {
-		if r < '0' || r > '9' {
-			return &site.Error{Site: id, Kind: site.ErrKindBadRequest, Message: "无效的直播间号"}
-		}
-	}
 	if clean == "" || clean == "0" {
 		return &site.Error{Site: id, Kind: site.ErrKindBadRequest, Message: "无效的直播间号"}
 	}
-	if id == site.Douyin {
+	switch id {
+	case site.Bilibili:
+		for _, r := range clean {
+			if r < '0' || r > '9' {
+				return &site.Error{Site: id, Kind: site.ErrKindBadRequest, Message: "无效的直播间号"}
+			}
+		}
+		return b.desktop.OpenExternalURL("https://live.bilibili.com/" + clean)
+	case site.Douyin:
+		for _, r := range clean {
+			if r < '0' || r > '9' {
+				return &site.Error{Site: id, Kind: site.ErrKindBadRequest, Message: "无效的直播间号"}
+			}
+		}
 		return b.desktop.OpenExternalURL("https://live.douyin.com/" + clean)
+	case site.Weibo:
+		if safe := safeBrowserURL(clean); safe != "" {
+			return b.desktop.OpenExternalURL(safe)
+		}
+		for _, r := range clean {
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == ':' || r == '_' || r == '-') {
+				return &site.Error{Site: site.Weibo, Kind: site.ErrKindBadRequest, Message: "无效的微博直播间号"}
+			}
+		}
+		return b.desktop.OpenExternalURL("https://weibo.com/l/wblive/p/show/" + clean)
+	default:
+		return &site.Error{Site: id, Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
 	}
-	return b.desktop.OpenExternalURL("https://live.bilibili.com/" + clean)
 }
 
 // StartLiveRecording starts recording a Bilibili live room.
@@ -170,10 +191,19 @@ func (b *Backend) StartLiveRecordingByAccount(ctx context.Context, accountKey st
 	if err != nil {
 		return LiveAccountState{}, err
 	}
+	if siteID == site.Weibo {
+		return LiveAccountState{}, &site.Error{
+			Site:        site.Weibo,
+			Kind:        site.ErrKindUnavailable,
+			Unsupported: true,
+			Message:     live.WeiboLiveUnsupportedMessage,
+		}
+	}
 	if err := b.requireSiteLogin(siteID); err != nil {
 		return LiveAccountState{}, err
 	}
-	if siteID == site.Bilibili {
+	switch siteID {
+	case site.Bilibili:
 		mid, mErr := strconv.ParseInt(uid, 10, 64)
 		if mErr != nil || mid <= 0 {
 			return LiveAccountState{}, &site.Error{Site: site.Bilibili, Kind: site.ErrKindBadRequest, Message: "无效的哔哩哔哩账号 UID"}
@@ -194,8 +224,11 @@ func (b *Backend) StartLiveRecordingByAccount(ctx context.Context, accountKey st
 		}
 		rs, sErr := b.live.StartRecording(ctx, targetRoomID)
 		return mapRoomToAccountState(rs), sErr
+	case site.Douyin:
+		return b.startDouyinLiveRecording(ctx, uid, b.lookupAccountWebRID(uid))
+	default:
+		return LiveAccountState{}, &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
 	}
-	return b.startDouyinLiveRecording(ctx, uid, b.lookupAccountWebRID(uid))
 }
 
 // StartLiveRecordingByRoom starts live recording given an explicit site and roomID/webRID.
@@ -204,18 +237,30 @@ func (b *Backend) StartLiveRecordingByRoom(ctx context.Context, siteID, roomOrWe
 	if err != nil {
 		return LiveAccountState{}, err
 	}
+	if id == site.Weibo {
+		return LiveAccountState{}, &site.Error{
+			Site:        site.Weibo,
+			Kind:        site.ErrKindUnavailable,
+			Unsupported: true,
+			Message:     live.WeiboLiveUnsupportedMessage,
+		}
+	}
 	if err := b.requireSiteLogin(id); err != nil {
 		return LiveAccountState{}, err
 	}
-	if id == site.Bilibili {
+	switch id {
+	case site.Bilibili:
 		roomID, pErr := strconv.ParseInt(strings.TrimSpace(roomOrWebRID), 10, 64)
 		if pErr != nil || roomID <= 0 {
 			return LiveAccountState{}, &site.Error{Site: site.Bilibili, Kind: site.ErrKindBadRequest, Message: "无效的直播间号"}
 		}
 		rs, sErr := b.live.StartRecording(ctx, roomID)
 		return mapRoomToAccountState(rs), sErr
+	case site.Douyin:
+		return b.startDouyinLiveRecording(ctx, "", strings.TrimSpace(roomOrWebRID))
+	default:
+		return LiveAccountState{}, &site.Error{Site: id, Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
 	}
-	return b.startDouyinLiveRecording(ctx, "", strings.TrimSpace(roomOrWebRID))
 }
 
 // StopLiveRecording stops an active Bilibili live room recording and finalizes item.json.

@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -796,5 +798,343 @@ func TestUpgradeNetworkExhaustionPausesAndRecordsAttempts(t *testing.T) {
 	}
 	if dbAttempts < 5 {
 		t.Fatalf("expected >=5 rows in task_attempts for parent upgrade task, got %d", dbAttempts)
+	}
+}
+
+// cacheDouyinOriginal must set PublicRedirects=true so aweme.snssdk.com chunk
+// redirects to public HTTPS 443 CDN edges outside DefaultDouyinMediaHosts succeed,
+// while non-HTTPS, IP-literal, non-443, and local redirects stay blocked and fall
+// back cleanly to VideoURLs.
+func TestCacheDouyinOriginalAllowsPublicRedirectsAndRejectsUnsafeRedirects(t *testing.T) {
+	origMP4 := buildProgressiveWithoutElst(t, true, false, 32<<10)
+	transcodedMP4 := buildProgressiveWithoutElst(t, true, false, 0)
+
+	// 1. Validate redirect policy directly: public HTTPS:443 accepted, unsafe targets blocked.
+	origSpec := site.DouyinVODTransport("Mozilla/5.0 Test", false)
+	origSpec.PublicRedirects = true
+	checkRedir := makeMediaRedirectCheck(origSpec)
+	firstReq, _ := http.NewRequest(http.MethodGet, "https://aweme.snssdk.com/aweme/v1/play/?video_id=v0200test001&ratio=default&watermark=0", nil)
+	okReq, _ := http.NewRequest(http.MethodGet, "https://edge-vendor.example-cdn.net/orig.mp4", nil)
+	if err := checkRedir(okReq, []*http.Request{firstReq}); err != nil {
+		t.Fatalf("public HTTPS 443 redirect rejected: %v", err)
+	}
+	for _, bad := range []string{
+		"http://edge-vendor.example-cdn.net/orig.mp4",
+		"https://203.0.113.7/orig.mp4",
+		"https://cdn.local/orig.mp4",
+		"https://edge-vendor.example-cdn.net:8443/orig.mp4",
+	} {
+		badReq, _ := http.NewRequest(http.MethodGet, bad, nil)
+		if err := checkRedir(badReq, []*http.Request{firstReq}); site.KindOf(err) != site.ErrKindBlocked {
+			t.Fatalf("unsafe redirect %q = %v, want ErrKindBlocked", bad, err)
+		}
+	}
+
+	// 2. End-to-end cacheDouyinOriginal with AllowLocalhost=false and wrapped in-memory
+	// RoundTripper (zero external network): chunk 1 redirects to douyinvod.com, chunk 2
+	// redirects to a public HTTPS 443 host outside DefaultDouyinMediaHosts.
+	var sawPublicEdge atomic.Bool
+	var unsafeChunk2 atomic.Bool
+	var cookieLeak atomic.Bool
+	serveRangeResp := func(r *http.Request, payload []byte) *http.Response {
+		rec := httptest.NewRecorder()
+		serveRangeBytes(rec, r, payload, "video/mp4", 0, nil)
+		return rec.Result()
+	}
+
+	mgr, lib, _ := setupDownloadEnv(t, http.NewServeMux(), 1)
+	mgr.SetChunkSize(int64(len(origMP4)/2 + 1024))
+	mgr.SetMediaTransportWrap(func(http.RoundTripper) http.RoundTripper {
+		return roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.Header.Get("Cookie") != "" {
+				cookieLeak.Store(true)
+			}
+			switch r.URL.Hostname() {
+			case "aweme.snssdk.com":
+				loc := "https://v26-web.douyinvod.com/orig.mp4"
+				if strings.HasPrefix(r.Header.Get("Range"), "bytes=") && !strings.HasPrefix(r.Header.Get("Range"), "bytes=0-") {
+					if unsafeChunk2.Load() {
+						loc = "http://edge-vendor.example-cdn.net/orig.mp4"
+					} else {
+						loc = "https://edge-vendor.example-cdn.net/orig.mp4"
+					}
+				}
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": {loc}},
+					Body:       io.NopCloser(strings.NewReader("")),
+					Request:    r,
+				}, nil
+			case "edge-vendor.example-cdn.net":
+				sawPublicEdge.Store(true)
+				return serveRangeResp(r, origMP4), nil
+			case "v26-web.douyinvod.com":
+				if r.URL.Path == "/orig.mp4" {
+					return serveRangeResp(r, origMP4), nil
+				}
+				return serveRangeResp(r, transcodedMP4), nil
+			default:
+				return nil, fmt.Errorf("unexpected synthetic host: %s", r.URL.Hostname())
+			}
+		})
+	})
+
+	const secUID = "MS4wLjABAAAA_orig_public_redirect_0001"
+	planner := newFakeDouyinWorkPlanner()
+	makePlan := func(id string) func(int) (WorkDownloadPlan, error) {
+		return func(int) (WorkDownloadPlan, error) {
+			return WorkDownloadPlan{
+				Site:         site.Douyin,
+				Kind:         "video",
+				TargetID:     id,
+				Title:        "原画公网重定向测试",
+				DurationSec:  2,
+				AuthorUID:    secUID,
+				AuthorName:   "测试创作者",
+				OriginalURLs: []string{"https://aweme.snssdk.com/aweme/v1/play/?video_id=v0200test001&ratio=default&watermark=0"},
+				VideoURLs:    []string{"https://v26-web.douyinvod.com/transcoded.mp4"},
+				VideoGear:    "normal_1080_0",
+				QualityName:  "1080P",
+				Codec:        "avc",
+				Transport:    site.DouyinVODTransport("Mozilla/5.0 Test", false),
+			}, nil
+		}
+	}
+	planner.setPlan("7399000000000000201", makePlan("7399000000000000201"))
+	planner.setPlan("7399000000000000202", makePlan("7399000000000000202"))
+	mgr.RegisterWorkPlanner(planner)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Stop()
+
+	// Public HTTPS 443 edge redirect on chunk 2 succeeds as original.
+	tk1, err := mgr.EnqueueDouyinWork(ctx, DouyinWorkEnqueueRequest{AwemeID: "7399000000000000201"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done1 := waitForTaskStatus(t, mgr, tk1.TaskID, "completed", 8*time.Second)
+	if !sawPublicEdge.Load() {
+		t.Fatal("expected chunk 2 to follow public HTTPS redirect to edge-vendor.example-cdn.net")
+	}
+	if cookieLeak.Load() {
+		t.Fatal("cookie leaked to redirected CDN host")
+	}
+	item1, ok, err := lib.GetItem(done1.ItemKey)
+	if err != nil || !ok || item1.DouyinVideo == nil || item1.DouyinVideo.Gear != douyinOriginalGear {
+		t.Fatalf("expected completed original video, got ok=%v err=%v video=%+v", ok, err, item1.DouyinVideo)
+	}
+
+	// Unsafe plain-HTTP redirect on chunk 2 stays blocked, discards orig, and falls back cleanly to smaller VideoURLs.
+	unsafeChunk2.Store(true)
+	tk2, err := mgr.EnqueueDouyinWork(ctx, DouyinWorkEnqueueRequest{AwemeID: "7399000000000000202"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done2 := waitForTaskStatus(t, mgr, tk2.TaskID, "completed", 8*time.Second)
+	item2, ok, err := lib.GetItem(done2.ItemKey)
+	if err != nil || !ok || item2.DouyinVideo == nil || item2.DouyinVideo.Gear != "normal_1080_0" {
+		t.Fatalf("expected fallback to transcoded video after blocked redirect, got ok=%v err=%v video=%+v", ok, err, item2.DouyinVideo)
+	}
+	if done2.TotalBytes != int64(len(transcodedMP4)) {
+		t.Fatalf("fallback task TotalBytes = %d, want %d", done2.TotalBytes, len(transcodedMP4))
+	}
+}
+
+// When chunked OriginalURLs downloads segment 1 (writing larger TotalBytes onto
+// t.Files["video.mp4"]), fails on segment 2, discards .orig.part, and falls back
+// to a smaller transcoded VideoURLs stream, downloadRange must NOT carry over the
+// discarded stream's TotalBytes onto the fresh (offset==0) fallback stream.
+func TestOriginalURLsPartialChunkFailureFallsBackToSmallerVideoURLsWithoutPoisoning(t *testing.T) {
+	origMP4 := buildProgressiveWithoutElst(t, true, false, 48<<10)
+	transcodedMP4 := buildProgressiveWithoutElst(t, true, false, 0)
+	if len(origMP4) <= len(transcodedMP4) {
+		t.Fatalf("test fixture requires origMP4 (%d) > transcodedMP4 (%d)", len(origMP4), len(transcodedMP4))
+	}
+
+	var origSeg2Hits atomic.Int32
+	var videoHits atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cdn/orig.mp4", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.Header.Get("Range"), "bytes=0-") {
+			serveRangeBytes(w, r, origMP4, "video/mp4", 0, nil)
+			return
+		}
+		origSeg2Hits.Add(1)
+		// Fail chunk 2 so OriginalURLs exhausts retries and falls back to VideoURLs.
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/cdn/transcoded.mp4", func(w http.ResponseWriter, r *http.Request) {
+		videoHits.Add(1)
+		serveRangeBytes(w, r, transcodedMP4, "video/mp4", 0, nil)
+	})
+
+	mgr, lib, srv := setupDownloadEnv(t, mux, 1)
+	// Force multi-segment Range downloads on both streams so 206 Content-Range checks run.
+	mgr.SetChunkSize(int64(len(transcodedMP4)/2 + 512))
+
+	const (
+		secUID  = "MS4wLjABAAAA_orig_partial_fallback_0001"
+		awemeID = "7399000000000000203"
+	)
+	planner := newFakeDouyinWorkPlanner()
+	planner.setPlan(awemeID, func(_ int) (WorkDownloadPlan, error) {
+		return WorkDownloadPlan{
+			Site:         site.Douyin,
+			Kind:         "video",
+			TargetID:     awemeID,
+			Title:        "原画分段失败回退防污染测试",
+			DurationSec:  2,
+			AuthorUID:    secUID,
+			AuthorName:   "测试创作者",
+			OriginalURLs: []string{srv.URL + "/cdn/orig.mp4"},
+			VideoURLs:    []string{srv.URL + "/cdn/transcoded.mp4"},
+			VideoGear:    "normal_1080_0",
+			QualityName:  "1080P",
+			Codec:        "avc",
+			Transport:    site.DouyinVODTransport("Mozilla/5.0 Test", true),
+		}, nil
+	})
+	mgr.RegisterWorkPlanner(planner)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Stop()
+
+	task, err := mgr.EnqueueDouyinWork(ctx, DouyinWorkEnqueueRequest{AwemeID: awemeID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitForTaskStatus(t, mgr, task.TaskID, "completed", 8*time.Second)
+	if origSeg2Hits.Load() < 5 {
+		t.Fatalf("expected OriginalURLs chunk 2 to exhaust 5 retries before fallback, got %d hits", origSeg2Hits.Load())
+	}
+	if videoHits.Load() == 0 {
+		t.Fatal("expected fallback download from VideoURLs")
+	}
+	if done.PauseReason != "" || done.ErrorKind != "" || done.ErrorMessage != "" {
+		t.Fatalf("completed fallback task kept stale error state: %+v", done)
+	}
+	if done.TotalBytes != int64(len(transcodedMP4)) {
+		t.Fatalf("done.TotalBytes = %d, want %d", done.TotalBytes, len(transcodedMP4))
+	}
+	var foundVideoFile bool
+	for _, f := range done.Files {
+		if f.Path == "video.mp4" {
+			foundVideoFile = true
+			if f.TotalBytes != int64(len(transcodedMP4)) || f.DownloadedBytes != int64(len(transcodedMP4)) || f.Status != "completed" {
+				t.Fatalf("video.mp4 file progress = %+v, want completed %d/%d", f, len(transcodedMP4), len(transcodedMP4))
+			}
+		}
+	}
+	if !foundVideoFile {
+		t.Fatalf("missing video.mp4 entry in done.Files: %+v", done.Files)
+	}
+	info, err := os.Stat(filepath.Join(done.ItemDir, "video.mp4"))
+	if err != nil || info.Size() != int64(len(transcodedMP4)) {
+		t.Fatalf("final video.mp4 stat err=%v size=%d want %d", err, info.Size(), len(transcodedMP4))
+	}
+	entries, _ := os.ReadDir(done.ItemDir)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".part") {
+			t.Fatalf("leftover staging file after fallback completion: %s", e.Name())
+		}
+	}
+	meta, ok, err := lib.GetItem(done.ItemKey)
+	if err != nil || !ok || meta.Status != "complete" || meta.DouyinVideo == nil || meta.DouyinVideo.Gear != "normal_1080_0" {
+		t.Fatalf("expected complete transcoded library item, got ok=%v err=%v meta=%+v", ok, err, meta)
+	}
+}
+
+// A pre-poisoned SQLite download_tasks row from an earlier build (paused/network
+// with stale larger video.mp4 TotalBytes and no .part file on disk) must auto-heal
+// and complete cleanly upon Retry.
+func TestPrePoisonedDouyinTaskRetriesCleanlyWhenPartFileMissing(t *testing.T) {
+	transcodedMP4 := buildProgressiveWithoutElst(t, true, false, 0)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cdn/orig-missing.mp4", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/cdn/transcoded.mp4", func(w http.ResponseWriter, r *http.Request) {
+		serveRangeBytes(w, r, transcodedMP4, "video/mp4", 0, nil)
+	})
+
+	mgr, lib, srv := setupDownloadEnv(t, mux, 1)
+	mgr.SetChunkSize(int64(len(transcodedMP4)/2 + 512))
+
+	const (
+		secUID  = "MS4wLjABAAAA_pre_poisoned_retry_0001"
+		awemeID = "7399000000000000204"
+		taskID  = "dl-poisoned001"
+	)
+	planner := newFakeDouyinWorkPlanner()
+	planner.setPlan(awemeID, func(_ int) (WorkDownloadPlan, error) {
+		return WorkDownloadPlan{
+			Site:         site.Douyin,
+			Kind:         "video",
+			TargetID:     awemeID,
+			Title:        "旧库污染任务重试自愈测试",
+			DurationSec:  2,
+			AuthorUID:    secUID,
+			AuthorName:   "测试创作者",
+			OriginalURLs: []string{srv.URL + "/cdn/orig-missing.mp4"},
+			VideoURLs:    []string{srv.URL + "/cdn/transcoded.mp4"},
+			VideoGear:    "normal_1080_0",
+			QualityName:  "1080P",
+			Codec:        "avc",
+			Transport:    site.DouyinVODTransport("Mozilla/5.0 Test", true),
+		}, nil
+	})
+	mgr.RegisterWorkPlanner(planner)
+
+	itemDir := filepath.Join(lib.CacheDir(), "douyin", site.DouyinAuthorDir(secUID), "works", awemeID)
+	if err := os.MkdirAll(itemDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	poisonedFiles, _ := json.Marshal([]TaskFileProgress{
+		{Owned: true, Role: "video", Path: "video.mp4", Status: "failed", DownloadedBytes: 8388608, TotalBytes: 46636542},
+	})
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := mgr.db.Exec(`
+		INSERT INTO download_tasks (
+			task_id, site, kind, source, target_id, cid, page, title, part_title,
+			mid, author_uid, author_name, author_face, cover_url, cache_linked_videos,
+			status, pause_reason, error_kind, error_message, quality_hint,
+			bytes_downloaded, total_bytes, progress, item_key, item_dir,
+			files_json, attempts_json, created_at, updated_at, via_json
+		) VALUES (?, 'douyin', 'video', 'queue', ?, 0, 1, '旧库污染任务', '',
+			0, ?, '测试创作者', '', '', 0,
+			'paused', 'network', 'network', '已暂停（网络）：分段重试已达上限', '',
+			8388608, 46636542, 0.18, ?, ?,
+			?, '[]', ?, ?, '')
+	`, taskID, awemeID, secUID, library.CanonicalItemKey("douyin", "video", awemeID), itemDir, string(poisonedFiles), now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Stop()
+
+	res, err := mgr.RetryActionable(map[string]bool{"douyin": true})
+	if err != nil || res.Retried != 1 {
+		t.Fatalf("RetryActionable = %+v err=%v, want Retried=1", res, err)
+	}
+	done := waitForTaskStatus(t, mgr, taskID, "completed", 8*time.Second)
+	if done.TotalBytes != int64(len(transcodedMP4)) {
+		t.Fatalf("healed task TotalBytes = %d, want %d", done.TotalBytes, len(transcodedMP4))
+	}
+	meta, ok, err := lib.GetItem(done.ItemKey)
+	if err != nil || !ok || meta.Status != "complete" {
+		t.Fatalf("expected complete library item after retry, got ok=%v err=%v meta=%+v", ok, err, meta)
 	}
 }

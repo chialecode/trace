@@ -2,6 +2,8 @@ package uistate
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -28,7 +30,7 @@ type HomePosition struct {
 }
 
 // HomePositionSites are the site filters whose positions are kept.
-var HomePositionSites = []string{"all", "bilibili", "douyin"}
+var HomePositionSites = []string{"all", "bilibili", "douyin", "weibo"}
 
 // State represents the persistent UI state stored in ui-state.json.
 type State struct {
@@ -39,8 +41,8 @@ type State struct {
 	FeedFilter   FeedFilter       `json:"feedFilter"`
 	Anchor       FeedAnchor       `json:"anchor"`
 	HomeSeen     map[string]int64 `json:"homeSeen,omitempty"`
-	// HomePositions keeps, per site filter ("all", "bilibili", "douyin"),
-	// where the main timeline was read; optional, schema version 2.
+	// HomePositions keeps, per site filter ("all", "bilibili", "douyin", "weibo"),
+	// where the main timeline was read; optional, schema version 2+.
 	HomePositions map[string]HomePosition `json:"homePositions,omitempty"`
 	// DismissedLiveSessions are finished recordings removed from Tasks ›
 	// 直播录制 "最近结束的录制" (session key → RFC3339 time removed); optional,
@@ -101,7 +103,7 @@ type PlayerState struct {
 }
 
 // CurrentSchemaVersion is the schema version written to ui-state.json.
-const CurrentSchemaVersion = 2
+const CurrentSchemaVersion = 3
 
 // NormalizeSubDetailTab normalizes subscription detail tab values (DEC-051 ⑦).
 // Legacy "live" maps to "accounts"; empty or unknown values default to "content".
@@ -199,7 +201,7 @@ func Normalize(st State) State {
 		st.FeedFilter.Kind = "all"
 	}
 	switch strings.ToLower(strings.TrimSpace(st.FeedFilter.Site)) {
-	case "all", "bilibili", "douyin":
+	case "all", "bilibili", "douyin", "weibo":
 		st.FeedFilter.Site = strings.ToLower(strings.TrimSpace(st.FeedFilter.Site))
 	default:
 		st.FeedFilter.Site = "all"
@@ -343,12 +345,24 @@ func Open(path string) (*Store, bool, string, error) {
 		}
 	}
 	if loaded.Version < CurrentSchemaVersion {
-		site := strings.ToLower(strings.TrimSpace(loaded.FeedFilter.Site))
-		if site == "" || site == "bilibili" {
-			loaded.FeedFilter.Site = "all"
+		oldVersion := loaded.Version
+		if oldVersion <= 0 {
+			oldVersion = 1
+		}
+		if loaded.Version < 2 {
+			site := strings.ToLower(strings.TrimSpace(loaded.FeedFilter.Site))
+			if site == "" || site == "bilibili" {
+				loaded.FeedFilter.Site = "all"
+			}
 		}
 		loaded.Version = CurrentSchemaVersion
 		norm := Normalize(loaded)
+		backupPath := fmt.Sprintf("%s.premigrate-%d", path, oldVersion)
+		if info, statErr := os.Stat(backupPath); errors.Is(statErr, os.ErrNotExist) || statErr != nil || info.IsDir() {
+			if _, bErr := storage.BackupBeforeMigration(path, oldVersion); bErr != nil {
+				return nil, false, "", bErr
+			}
+		}
 		if err := storage.WriteMigratedJSONAtomic(path, norm, 0o600); err != nil {
 			return nil, false, "", err
 		}

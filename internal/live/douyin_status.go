@@ -143,6 +143,9 @@ func (m *Manager) CachedAccountState(siteID site.ID, uid string) (RoomState, boo
 
 	case site.Douyin:
 		return m.cachedDouyinStateLocked(normUID)
+
+	case site.Weibo:
+		return RoomState{}, false
 	}
 	return RoomState{}, false
 }
@@ -239,6 +242,11 @@ func (m *Manager) StatusByAccountKeys(ctx context.Context, accountKeys []string)
 			}
 		case site.Douyin:
 			douyinUIDs = append(douyinUIDs, uid)
+		case site.Weibo:
+			// Weibo live status polling is unsupported; exclude from batch status checks with 0 requests.
+			continue
+		default:
+			continue
 		}
 	}
 
@@ -350,6 +358,9 @@ func (m *Manager) checkAccountLiveStatus(ctx context.Context, siteID site.ID, ui
 			}
 		}
 		return st, nil
+
+	case site.Weibo:
+		return RoomState{Site: string(site.Weibo)}, errWeiboLiveUnsupported()
 
 	default:
 		return RoomState{}, site.ErrUnknownSite

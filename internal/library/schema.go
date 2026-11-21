@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,12 @@ type ItemMetadata struct {
 	// cached for a member who is not the uploader; DEC-056). Optional; older
 	// manifests have none.
 	Via *ItemVia `json:"via,omitempty"`
+	// Origin records the retweeted/forwarded original post metadata directly
+	// inside item.json (optional; older manifests have none, schema version unchanged).
+	Origin *ItemOrigin `json:"origin,omitempty"`
+	// Card records a degraded non-media rich card attached to the post
+	// (e.g. Weibo article, vote, music, webpage, or live card; no signed URLs).
+	Card *ItemRichCard `json:"card,omitempty"`
 	// CachedBy is the TRACE installation that cached the item (DEC-062 ⑧);
 	// optional, older manifests have none.
 	CachedBy *ItemNode `json:"cachedBy,omitempty"`
@@ -162,13 +169,41 @@ type ItemVia struct {
 	DynamicID string `json:"dynamicId,omitempty"` // forwarding post, for ViaForward
 }
 
+// ItemRichCard records sanitized metadata for a degraded non-media card attached to a post.
+type ItemRichCard struct {
+	Kind  string `json:"kind,omitempty"` // "article", "vote", "music", "webpage", "live"
+	Label string `json:"label,omitempty"`
+	Title string `json:"title,omitempty"`
+	Desc  string `json:"desc,omitempty"`
+	URL   string `json:"url,omitempty"`
+}
+
+// ItemOrigin records the retweeted/forwarded original post snapshot inside item.json.
+// All origin media files live inside the forwarder's forwards/ item folder and are tagged
+// via NotePageRecord.FromOrigin / MediaFile.FromOrigin / ItemOrigin.VideoFromOrigin.
+type ItemOrigin struct {
+	Site              string        `json:"site,omitempty"`
+	ID                string        `json:"id,omitempty"`
+	MblogID           string        `json:"mblogid,omitempty"`
+	CanonicalURL      string        `json:"canonicalUrl,omitempty"`
+	Author            ItemAuthor    `json:"author,omitempty"`
+	PubTs             int64         `json:"pubTs,omitempty"`
+	Title             string        `json:"title,omitempty"`
+	Text              string        `json:"text,omitempty"`
+	Card              *ItemRichCard `json:"card,omitempty"`
+	Unavailable       bool          `json:"unavailable,omitempty"`
+	UnavailableReason string        `json:"unavailableReason,omitempty"`
+	VideoFromOrigin   bool          `json:"videoFromOrigin,omitempty"`
+}
+
 // IsForwardContent reports whether the item is a forwarded post or content
 // cached because of one (media library "转发" filter, DEC-056).
 func (m ItemMetadata) IsForwardContent() bool {
 	if m.Via != nil && m.Via.Reason == ViaForward {
 		return true
 	}
-	return m.Kind == "dynamic" && strings.EqualFold(strings.TrimSpace(m.DynamicType), "DYNAMIC_TYPE_FORWARD")
+	dt := strings.TrimSpace(m.DynamicType)
+	return m.Kind == "dynamic" && (strings.EqualFold(dt, "DYNAMIC_TYPE_FORWARD") || strings.EqualFold(dt, "forward"))
 }
 
 // DouyinVideoInfo records Douyin single-file video gear/stream metadata and available gears.
@@ -184,10 +219,11 @@ type DouyinVideoInfo struct {
 	AvailableGears []string `json:"availableGears,omitempty"`
 }
 
-// NotePageRecord records one ordered page of a Douyin image/mixed note (image, motion live-photo, video, or unknown).
+// NotePageRecord records one ordered page of a Douyin/Weibo image or mixed note (image, motion live-photo, video, or unknown).
 type NotePageRecord struct {
 	Index       int              `json:"index"`
 	Kind        string           `json:"kind"` // "image", "motion", "video", "unknown"
+	FromOrigin  bool             `json:"fromOrigin,omitempty"`
 	UnknownKind string           `json:"unknownKind,omitempty"`
 	Image       string           `json:"image,omitempty"`
 	Cover       string           `json:"cover,omitempty"`
@@ -211,14 +247,15 @@ type MusicInfo struct {
 }
 
 type MediaFile struct {
-	Role     string `json:"role"` // "cover", "video", "audio", "danmaku", "subtitle", "image", "motion", "live_segment"
-	Path     string `json:"path"` // relative to item directory
-	Bytes    int64  `json:"bytes"`
-	SHA256   string `json:"sha256,omitempty"`
-	Source   string `json:"source,omitempty"`
-	Width    int    `json:"width,omitempty"`
-	Height   int    `json:"height,omitempty"`
-	Duration int    `json:"duration,omitempty"`
+	Role       string `json:"role"` // "cover", "video", "audio", "danmaku", "subtitle", "image", "motion", "live_segment"
+	Path       string `json:"path"` // relative to item directory
+	FromOrigin bool   `json:"fromOrigin,omitempty"`
+	Bytes      int64  `json:"bytes"`
+	SHA256     string `json:"sha256,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Width      int    `json:"width,omitempty"`
+	Height     int    `json:"height,omitempty"`
+	Duration   int    `json:"duration,omitempty"`
 	// Motion is the motion clip of a live photo (实况), relative to the item
 	// directory; set on the still image.
 	Motion string `json:"motion,omitempty"`
@@ -360,7 +397,7 @@ type FeedEntry struct {
 
 // FeedFilter specifies filtering criteria for querying the unified feed or local library.
 type FeedFilter struct {
-	Site string `json:"site,omitempty"` // "all"/"", "bilibili", "douyin"
+	Site string `json:"site,omitempty"` // "all"/"", "bilibili", "douyin", "weibo"
 	Kind string `json:"kind"`           // "all", "video", "dynamic", "live", "image", "forward"
 	// ExcludeForward drops forwarded content from kind-specific lists (the
 	// media library's 图片/视频 tabs; "转发" lists it separately, DEC-056).
@@ -383,11 +420,27 @@ func NormalizeAuthorUID(site, uid string, mid int64) (normSite, normUID string) 
 		normSite = "bilibili"
 	}
 	normUID = strings.TrimSpace(uid)
-	if normSite == "bilibili" {
+	switch normSite {
+	case "bilibili":
 		if normUID == "" && mid > 0 {
 			normUID = strconv.FormatInt(mid, 10)
 		} else if n, err := strconv.ParseInt(normUID, 10, 64); err == nil && n > 0 {
 			normUID = strconv.FormatInt(n, 10)
+		}
+	case "weibo":
+		if normUID != "" {
+			allDigits := true
+			for _, r := range normUID {
+				if r < '0' || r > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits {
+				if trimmed := strings.TrimLeft(normUID, "0"); trimmed != "" {
+					normUID = trimmed
+				}
+			}
 		}
 	}
 	return normSite, normUID
@@ -512,6 +565,9 @@ func ParseItemMetadata(raw []byte) (ItemMetadata, error) {
 		return ItemMetadata{}, fmt.Errorf("library: item.json missing required kind or id")
 	}
 	meta.RawID = NormalizeRawID(meta.Kind, meta.ID)
+	if meta.Site == "weibo" && meta.Kind == "video" {
+		meta.RawID = strings.ReplaceAll(meta.RawID, ":", "_")
+	}
 	meta.ItemKey = CanonicalItemKey(meta.Site, meta.Kind, meta.RawID)
 	SanitizeItemMetadata(&meta)
 	if meta.Status == "" {
@@ -538,8 +594,8 @@ func SanitizeItemMetadata(meta *ItemMetadata) {
 		authorSite = meta.Site
 	}
 	normSite, normUID := NormalizeAuthorUID(authorSite, meta.Author.UID, meta.Author.Mid)
-	if meta.Site == "douyin" {
-		meta.Author.Site = "douyin"
+	if meta.Site == "douyin" || meta.Site == "weibo" {
+		meta.Author.Site = meta.Site
 	} else if meta.Author.UID != "" || meta.Author.Site != "" {
 		meta.Author.Site = normSite
 	}
@@ -557,7 +613,8 @@ func SanitizeItemMetadata(meta *ItemMetadata) {
 	}
 
 	meta.URL = sanitizeManifestPageURL(meta.URL, meta.Site, meta.Kind, meta.RawID, meta.Live)
-	if meta.Site == "douyin" {
+	switch meta.Site {
+	case "douyin":
 		// Douyin image/media CDN URLs carry expiring signatures and are never persisted.
 		if isRemoteOrSignedURL(meta.Author.Face) {
 			meta.Author.Face = ""
@@ -568,21 +625,180 @@ func SanitizeItemMetadata(meta *ItemMetadata) {
 		if meta.Music != nil && isRemoteOrSignedURL(meta.Music.File) {
 			meta.Music.File = ""
 		}
-	} else {
+	case "weibo":
+		meta.Author.Face = sanitizeWeiboManifestURL(meta.Author.Face)
+	default:
 		meta.Author.Face = stripURLQueryAndFragment(meta.Author.Face)
 	}
 	for i := range meta.Media {
-		if meta.Site == "douyin" {
-			if isRemoteOrSignedURL(meta.Media[i].Source) {
+		switch meta.Site {
+		case "douyin", "weibo":
+			if isRemoteOrSignedURL(meta.Media[i].Source) || hasSignedOrQueryMarkers(meta.Media[i].Source) {
 				meta.Media[i].Source = ""
 			}
-		} else if hasSignedOrQueryMarkers(meta.Media[i].Source) {
-			meta.Media[i].Source = ""
+		default:
+			if hasSignedOrQueryMarkers(meta.Media[i].Source) {
+				meta.Media[i].Source = ""
+			}
 		}
 	}
 	if meta.Live != nil && len(meta.Live.Incidents) > 0 {
 		meta.Live.Incidents = SanitizeLiveIncidents(meta.Live.Incidents)
 	}
+	if meta.Card != nil {
+		sanitizeItemRichCard(meta.Card)
+		if meta.Card.Kind == "" && meta.Card.Label == "" && meta.Card.Title == "" && meta.Card.Desc == "" && meta.Card.URL == "" {
+			meta.Card = nil
+		}
+	}
+	if meta.Origin != nil {
+		sanitizeItemOrigin(meta.Origin, meta.Site)
+	}
+}
+
+func sanitizeItemOrigin(orig *ItemOrigin, defaultSite string) {
+	if orig == nil {
+		return
+	}
+	orig.Site = strings.ToLower(strings.TrimSpace(orig.Site))
+	if orig.Site == "" {
+		orig.Site = defaultSite
+	}
+	orig.ID = strings.TrimSpace(orig.ID)
+	orig.MblogID = strings.TrimSpace(orig.MblogID)
+	orig.Title = scrubManifestFreeText(orig.Title)
+	orig.Text = scrubManifestFreeText(orig.Text)
+	orig.UnavailableReason = scrubManifestFreeText(orig.UnavailableReason)
+
+	authorSite := orig.Author.Site
+	if authorSite == "" {
+		authorSite = orig.Site
+	}
+	normSite, normUID := NormalizeAuthorUID(authorSite, orig.Author.UID, orig.Author.Mid)
+	if orig.Site == "douyin" || orig.Site == "weibo" {
+		orig.Author.Site = orig.Site
+	} else if orig.Author.UID != "" || orig.Author.Site != "" {
+		orig.Author.Site = normSite
+	}
+	if normSite == "bilibili" {
+		if orig.Author.Mid <= 0 && normUID != "" {
+			if n, err := strconv.ParseInt(normUID, 10, 64); err == nil && n > 0 {
+				orig.Author.Mid = n
+			}
+		}
+		if orig.Author.UID != "" {
+			orig.Author.UID = normUID
+		}
+	} else {
+		orig.Author.UID = normUID
+	}
+	orig.Author.Name = strings.TrimSpace(orig.Author.Name)
+	switch orig.Site {
+	case "douyin":
+		if isRemoteOrSignedURL(orig.Author.Face) {
+			orig.Author.Face = ""
+		}
+	case "weibo":
+		orig.Author.Face = sanitizeWeiboManifestURL(orig.Author.Face)
+	default:
+		orig.Author.Face = stripURLQueryAndFragment(orig.Author.Face)
+	}
+
+	if orig.CanonicalURL != "" || orig.ID != "" {
+		orig.CanonicalURL = sanitizeManifestPageURL(orig.CanonicalURL, orig.Site, "dynamic", orig.ID, nil)
+	}
+	if orig.Card != nil {
+		sanitizeItemRichCard(orig.Card)
+		if orig.Card.Kind == "" && orig.Card.Label == "" && orig.Card.Title == "" && orig.Card.Desc == "" && orig.Card.URL == "" {
+			orig.Card = nil
+		}
+	}
+}
+
+func sanitizeItemRichCard(card *ItemRichCard) {
+	if card == nil {
+		return
+	}
+	card.Kind = strings.TrimSpace(card.Kind)
+	card.Label = strings.TrimSpace(card.Label)
+	card.Title = scrubManifestFreeText(card.Title)
+	card.Desc = scrubManifestFreeText(card.Desc)
+	card.URL = sanitizeRichCardURL(card.URL)
+}
+
+func sanitizeRichCardURL(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" || hasSignedTokenMarkers(trimmed) {
+		return ""
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Host == "" || u.User != nil {
+		return ""
+	}
+	if !strings.EqualFold(u.Scheme, "https") && !strings.EqualFold(u.Scheme, "http") {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "weibocdn.com" || strings.HasSuffix(host, ".weibocdn.com") || host == "video.weibo.com" {
+		return ""
+	}
+	u.Fragment = ""
+	return u.String()
+}
+
+var (
+	reManifestURLSpan     = regexp.MustCompile(`(?i)https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+`)
+	reManifestSecretToken = regexp.MustCompile(`(?i)\b(SUB|SUBP|XSRF-TOKEN|X-XSRF-TOKEN|WBPSESS|SESSDATA|BILI_JCT|SESSIONID|SSIG|EXPIRES|KID|SCF|ALF|SSOLOGINSTATE|SUHB|A_BOGUS|X-BOGUS|X-SIGNATURE|W_RID|UPSIG)\s*=\s*[^\s;,&"'()<>]+`)
+)
+
+func scrubManifestFreeText(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return strings.TrimSpace(raw)
+	}
+	out := reManifestURLSpan.ReplaceAllStringFunc(raw, func(tok string) string {
+		trimmed := strings.TrimRight(tok, ".,;:!?)]}\"'")
+		suffix := tok[len(trimmed):]
+		if u, err := url.Parse(trimmed); err == nil {
+			host := strings.ToLower(u.Hostname())
+			if host == "weibocdn.com" || strings.HasSuffix(host, ".weibocdn.com") || (host == "video.weibo.com" && strings.EqualFold(u.Path, "/media/play")) {
+				return suffix
+			}
+		}
+		if !hasSignedTokenMarkers(tok) {
+			return tok
+		}
+		clean := stripURLQueryAndFragment(trimmed)
+		if clean == "" {
+			return suffix
+		}
+		return clean + suffix
+	})
+	if hasSignedTokenMarkers(out) {
+		out = reManifestSecretToken.ReplaceAllString(out, "")
+	}
+	return strings.TrimSpace(out)
+}
+
+func hasSignedTokenMarkers(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	for _, marker := range []string{
+		"a_bogus=", "x-bogus=", "x-signature=", "x-expires=",
+		"upsig=", "w_rid=", "sessionid=", "sessdata=", "bili_jct=", "ac_time_value=",
+		"ssig=", "expires=", "kid=",
+		"ssig%3d", "expires%3d", "kid%3d",
+		"sub=", "subp=", "xsrf-token=", "x-xsrf-token=", "wbpsess=",
+		"sub%3d", "subp%3d", "xsrf-token%3d", "wbpsess%3d",
+		"scf=", "alf=", "alc=", "ssologinstate=", "suhb=", "pc_token=", "_t_wm=",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // SanitizeLiveIncidents strips any accidental URLs, query parameters, paths, or cookies
@@ -684,7 +900,16 @@ func hasSignedOrQueryMarkers(s string) bool {
 		return false
 	}
 	lower := strings.ToLower(trimmed)
-	for _, marker := range []string{"?", "#", "a_bogus=", "x-bogus=", "x-signature=", "x-expires=", "upsig=", "w_rid=", "sessionid=", "sessdata="} {
+	for _, marker := range []string{
+		"?", "#",
+		"a_bogus=", "x-bogus=", "x-signature=", "x-expires=",
+		"upsig=", "w_rid=", "sessionid=", "sessdata=",
+		"ssig=", "expires=", "kid=",
+		"ssig%3d", "expires%3d", "kid%3d",
+		"sub=", "subp=", "xsrf-token=", "x-xsrf-token=", "wbpsess=",
+		"sub%3d", "subp%3d", "xsrf-token%3d", "wbpsess%3d",
+		"scf=", "alf=", "alc=", "ssologinstate=", "suhb=", "pc_token=", "_t_wm=",
+	} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
@@ -701,12 +926,36 @@ func isRemoteOrSignedURL(s string) bool {
 	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "//") {
 		return true
 	}
-	for _, marker := range []string{"?", "a_bogus=", "x-bogus=", "x-signature=", "x-expires=", "upsig=", "w_rid=", "sessionid=", "sessdata="} {
-		if strings.Contains(lower, marker) {
-			return true
+	return hasSignedOrQueryMarkers(trimmed)
+}
+
+func sanitizeWeiboManifestURL(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	for _, signedMarker := range []string{
+		"ssig=", "expires=", "kid=",
+		"ssig%3d", "expires%3d", "kid%3d",
+		"sub=", "subp=", "xsrf-token=", "wbpsess=",
+		"sub%3d", "subp%3d", "xsrf-token%3d", "wbpsess%3d",
+	} {
+		if strings.Contains(lower, signedMarker) {
+			return ""
 		}
 	}
-	return false
+	clean := stripURLQueryAndFragment(trimmed)
+	if clean == "" || hasSignedOrQueryMarkers(clean) {
+		return ""
+	}
+	if u, err := url.Parse(clean); err == nil {
+		host := strings.ToLower(u.Hostname())
+		if host == "weibocdn.com" || strings.HasSuffix(host, ".weibocdn.com") || host == "video.weibo.com" {
+			return ""
+		}
+	}
+	return clean
 }
 
 func stripURLQueryAndFragment(rawURL string) string {
@@ -728,10 +977,17 @@ func stripURLQueryAndFragment(rawURL string) string {
 
 func sanitizeManifestPageURL(rawURL, site, kind, rawID string, live *LiveRecordingInfo) string {
 	clean := stripURLQueryAndFragment(rawURL)
+	if hasSignedOrQueryMarkers(clean) {
+		clean = ""
+	}
 	if clean != "" {
 		return clean
 	}
-	if site == "douyin" && rawID != "" {
+	if rawID == "" {
+		return ""
+	}
+	switch site {
+	case "douyin":
 		switch kind {
 		case "video":
 			return "https://www.douyin.com/video/" + rawID
@@ -743,8 +999,17 @@ func sanitizeManifestPageURL(rawURL, site, kind, rawID string, live *LiveRecordi
 			}
 			return "https://live.douyin.com/" + rawID
 		}
+	case "weibo":
+		switch kind {
+		case "dynamic":
+			return "https://weibo.com/detail/" + rawID
+		case "video":
+			return "https://weibo.com/tv/show/" + strings.Replace(rawID, "1034_", "1034:", 1)
+		case "live":
+			return "https://weibo.com/l/wblive/p/show/" + strings.TrimPrefix(rawID, "live:")
+		}
 	}
-	return clean
+	return ""
 }
 
 func parseFlexibleIDString(v any) string {

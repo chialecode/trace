@@ -17,6 +17,9 @@ type ResolveTarget struct {
 	Site          ID     `json:"site"`
 	Kind          string `json:"kind"` // "video", "note", "dynamic", "user", "live", "bangumi", "article", "collection"
 	ID            string `json:"id"`
+	AuthorUID     string `json:"authorUid,omitempty"`
+	HintAuthorUID string `json:"hintAuthorUid,omitempty"`
+	MblogID       string `json:"mblogId,omitempty"`
 	SecUID        string `json:"secUid,omitempty"`
 	WebRID        string `json:"webRid,omitempty"`
 	RoomID        string `json:"roomId,omitempty"`
@@ -27,6 +30,13 @@ type ResolveTarget struct {
 	CanonicalURL  string `json:"canonicalUrl"`
 	Unsupported   bool   `json:"unsupported,omitempty"`
 	Reason        string `json:"reason,omitempty"`
+}
+
+// ExactInitialURLRule permits one exact HTTPS host and exact URL path on the
+// initial media request only (never for arbitrary paths or redirect hops).
+type ExactInitialURLRule struct {
+	Host string `json:"host"`
+	Path string `json:"path"`
 }
 
 // MediaTransportSpec defines outbound CDN host allowlisting and headers for media/live streams.
@@ -43,6 +53,10 @@ type MediaTransportSpec struct {
 	// still match AllowedDomains; live CDNs schedule edges on vendor domains that no
 	// fixed suffix list covers. Resolved addresses are still checked by the dialer.
 	PublicRedirects bool `json:"-"`
+	// AllowedInitialHostPaths optionally allows exact host+path pairs on the initial
+	// request only (e.g. Weibo LivePhoto initial redirector video.weibo.com/media/play).
+	// Redirect hops must still land on AllowedDomains (or PublicRedirects when enabled).
+	AllowedInitialHostPaths []ExactInitialURLRule `json:"-"`
 }
 
 // DefaultBilibiliCDNHosts returns the official Bilibili media/cover CDN domain suffixes.
@@ -84,6 +98,14 @@ func DefaultDouyinLiveHosts() []string {
 		"amemv.com",
 		"douyinvod.com",
 		"zjcdn.com",
+	}
+}
+
+// DefaultWeiboMediaHosts returns the official Weibo image, video, and LivePhoto CDN domain suffixes.
+func DefaultWeiboMediaHosts() []string {
+	return []string{
+		"sinaimg.cn",
+		"weibocdn.com",
 	}
 }
 
@@ -131,9 +153,58 @@ func DouyinLiveTransport(userAgent string, allowLocalhost bool) MediaTransportSp
 	}
 }
 
+// WeiboMediaTransport returns the standard Weibo image and video CDN transport policy.
+func WeiboMediaTransport(userAgent string, allowLocalhost bool) MediaTransportSpec {
+	if strings.TrimSpace(userAgent) == "" {
+		userAgent = DefaultUserAgent
+	}
+	return MediaTransportSpec{
+		Site:            Weibo,
+		AllowedDomains:  DefaultWeiboMediaHosts(),
+		UserAgent:       userAgent,
+		Referer:         "https://weibo.com/",
+		Origin:          "",
+		AllowLocalhost:  allowLocalhost,
+		PublicRedirects: false,
+	}
+}
+
+// WeiboLivePhotoMediaTransport returns the Weibo media transport policy for LivePhoto
+// motion clips, additionally allowing only the initial hop on exact host "video.weibo.com"
+// with exact path "/media/play" without adding weibo.com to global media hosts.
+func WeiboLivePhotoMediaTransport(userAgent string, allowLocalhost bool) MediaTransportSpec {
+	spec := WeiboMediaTransport(userAgent, allowLocalhost)
+	spec.AllowedInitialHostPaths = []ExactInitialURLRule{
+		{Host: "video.weibo.com", Path: "/media/play"},
+	}
+	return spec
+}
+
+// IsWeiboLivePhotoInitialURL reports whether rawURL targets the Weibo LivePhoto
+// initial redirector endpoint (https://video.weibo.com/media/play on port 443).
+func IsWeiboLivePhotoInitialURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" || u.User != nil {
+		return false
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return false
+	}
+	if port := u.Port(); port != "" && port != "443" {
+		return false
+	}
+	return strings.EqualFold(u.Hostname(), "video.weibo.com") &&
+		u.Path == "/media/play" &&
+		u.EscapedPath() == "/media/play"
+}
+
 // ValidateURL verifies that rawURL uses HTTPS on port 443 and matches AllowedDomains
-// (or loopback when AllowLocalhost is enabled for synthetic tests).
+// (or AllowedInitialHostPaths on the initial request, or loopback when AllowLocalhost is enabled).
 func (m MediaTransportSpec) ValidateURL(rawURL string) error {
+	return m.validateURL(rawURL, true)
+}
+
+func (m MediaTransportSpec) validateURL(rawURL string, allowInitialRules bool) error {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || u.Host == "" || u.User != nil {
 		return &Error{
@@ -162,21 +233,43 @@ func (m MediaTransportSpec) ValidateURL(rawURL string) error {
 			Message: "已拦截非常规端口媒体地址",
 		}
 	}
-	if !MatchDomainSuffix(host, m.AllowedDomains) {
-		return &Error{
-			Site:    m.Site,
-			Kind:    ErrKindBlocked,
-			Message: "媒体域名不在允许列表中: " + host,
-		}
+	if MatchDomainSuffix(host, m.AllowedDomains) {
+		return nil
 	}
-	return nil
+	if allowInitialRules && m.matchesInitialRule(host, u) {
+		return nil
+	}
+	return &Error{
+		Site:    m.Site,
+		Kind:    ErrKindBlocked,
+		Message: "媒体域名不在允许列表中: " + host,
+	}
 }
 
-// ValidateRedirectURL checks one redirect hop. Without PublicRedirects it is the
-// same as ValidateURL. With PublicRedirects a hop may also target any public DNS
-// name over HTTPS on port 443; IP literals, single-label and local names stay blocked.
+func (m MediaTransportSpec) matchesInitialRule(host string, u *url.URL) bool {
+	if u == nil || len(m.AllowedInitialHostPaths) == 0 {
+		return false
+	}
+	escapedPath := u.EscapedPath()
+	for _, rule := range m.AllowedInitialHostPaths {
+		rHost := strings.ToLower(strings.TrimSpace(rule.Host))
+		rPath := strings.TrimSpace(rule.Path)
+		if rHost == "" || rPath == "" {
+			continue
+		}
+		if host == rHost && u.Path == rPath && escapedPath == rPath {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateRedirectURL checks one redirect hop. Redirect hops never inherit
+// AllowedInitialHostPaths. Without PublicRedirects it requires AllowedDomains.
+// With PublicRedirects a hop may also target any public DNS name over HTTPS on
+// port 443; IP literals, single-label and local names stay blocked.
 func (m MediaTransportSpec) ValidateRedirectURL(rawURL string) error {
-	err := m.ValidateURL(rawURL)
+	err := m.validateURL(rawURL, false)
 	if err == nil || !m.PublicRedirects || KindOf(err) != ErrKindBlocked {
 		return err
 	}
@@ -338,33 +431,71 @@ func FormatLiveQualitySpec(qualityName string, quality int, codec string) string
 	return cName
 }
 
-// MediaImageAsset describes a single image page (and optional Live Photo video clip) in an image-note post.
+// RichCardSummary holds sanitized metadata for a degraded non-media card attached to a post.
+type RichCardSummary struct {
+	Kind  string `json:"kind,omitempty"` // "article", "vote", "music", "webpage", "live"
+	Label string `json:"label,omitempty"`
+	Title string `json:"title,omitempty"`
+	Desc  string `json:"desc,omitempty"`
+	URL   string `json:"url,omitempty"`
+}
+
+// MediaImageAsset describes a single image page (and optional Live Photo or mixed video clip) in an image-note post.
 type MediaImageAsset struct {
-	Index     int      `json:"index"` // 1-based page index
-	Width     int      `json:"width,omitempty"`
-	Height    int      `json:"height,omitempty"`
-	ImageURLs []string `json:"-"`
-	VideoURLs []string `json:"-"`
+	Index        int      `json:"index"`               // 1-based page index
+	MediaRole    string   `json:"mediaRole,omitempty"` // "", "image", "gif", "live_photo", "video"
+	FromOrigin   bool     `json:"fromOrigin,omitempty"`
+	Width        int      `json:"width,omitempty"`
+	Height       int      `json:"height,omitempty"`
+	DurationSec  int      `json:"durationSec,omitempty"`
+	VideoCodec   string   `json:"videoCodec,omitempty"`
+	QualityLabel string   `json:"qualityLabel,omitempty"`
+	FPS          int      `json:"fps,omitempty"`
+	Bitrate      int64    `json:"bitrate,omitempty"`
+	ImageURLs    []string `json:"-"`
+	VideoURLs    []string `json:"-"`
 }
 
 // DownloadPlan describes resolved media streams and metadata for caching an item locally.
 type DownloadPlan struct {
-	Site         ID       `json:"site"`
-	ItemKey      string   `json:"itemKey"`
-	TargetID     string   `json:"targetId"`
-	Kind         string   `json:"kind"` // "dash", "single_mp4", "image_note"
-	AuthorUID    string   `json:"authorUid"`
-	AuthorName   string   `json:"authorName,omitempty"`
-	Title        string   `json:"title,omitempty"`
-	Desc         string   `json:"desc,omitempty"`
-	PubTs        int64    `json:"pubTs,omitempty"`
-	DurationSec  int      `json:"durationSec,omitempty"`
-	VideoCodec   string   `json:"videoCodec,omitempty"`
-	QualityLabel string   `json:"qualityLabel,omitempty"`
-	Width        int      `json:"width,omitempty"`
-	Height       int      `json:"height,omitempty"`
-	ExpectedSize int64    `json:"expectedSize,omitempty"`
-	VideoURLs    []string `json:"-"`
+	Site                    ID               `json:"site"`
+	ItemKey                 string           `json:"itemKey"`
+	TargetID                string           `json:"targetId"`
+	Kind                    string           `json:"kind"` // "dash", "single_mp4", "image_note"
+	CanonicalURL            string           `json:"canonicalUrl,omitempty"`
+	AuthorUID               string           `json:"authorUid"`
+	AuthorName              string           `json:"authorName,omitempty"`
+	AuthorFace              string           `json:"authorFace,omitempty"`
+	Title                   string           `json:"title,omitempty"`
+	Desc                    string           `json:"desc,omitempty"`
+	PubTs                   int64            `json:"pubTs,omitempty"`
+	DurationSec             int              `json:"durationSec,omitempty"`
+	VideoCodec              string           `json:"videoCodec,omitempty"`
+	QualityLabel            string           `json:"qualityLabel,omitempty"`
+	Width                   int              `json:"width,omitempty"`
+	Height                  int              `json:"height,omitempty"`
+	FPS                     int              `json:"fps,omitempty"`
+	Bitrate                 int64            `json:"bitrate,omitempty"`
+	ExpectedSize            int64            `json:"expectedSize,omitempty"`
+	IsForward               bool             `json:"isForward,omitempty"`
+	IsFastRetweet           bool             `json:"isFastRetweet,omitempty"`
+	OriginID                string           `json:"originId,omitempty"`
+	OriginMblogID           string           `json:"originMblogId,omitempty"`
+	OriginCanonicalURL      string           `json:"originCanonicalUrl,omitempty"`
+	OriginAuthorUID         string           `json:"originAuthorUid,omitempty"`
+	OriginAuthorName        string           `json:"originAuthorName,omitempty"`
+	OriginAuthorFace        string           `json:"originAuthorFace,omitempty"`
+	OriginPubTs             int64            `json:"originPubTs,omitempty"`
+	OriginText              string           `json:"originText,omitempty"`
+	OriginVideoTitle        string           `json:"originVideoTitle,omitempty"`
+	OriginUnavailable       bool             `json:"originUnavailable,omitempty"`
+	OriginUnavailableReason string           `json:"originUnavailableReason,omitempty"`
+	OriginCard              *RichCardSummary `json:"originCard,omitempty"`
+	Card                    *RichCardSummary `json:"card,omitempty"`
+	VideoFromOrigin         bool             `json:"videoFromOrigin,omitempty"`
+	VisibleType             int              `json:"visibleType,omitempty"`
+	VisibleLabel            string           `json:"visibleLabel,omitempty"`
+	VideoURLs               []string         `json:"-"`
 	// OriginalURLs, when set, point at the untranscoded source (原画) and are tried
 	// before VideoURLs; VideoURLs and the quality fields describe the fallback.
 	OriginalURLs []string           `json:"-"`
@@ -377,29 +508,36 @@ type DownloadPlan struct {
 
 // CreatorPost represents a single normalized creator feed entry returned during subscription checks.
 type CreatorPost struct {
-	ID         string `json:"id"`
-	PubTs      int64  `json:"pubTs"`
-	Type       string `json:"type"` // "video", "draw", "word", "forward", "article", "other"
-	IsTop      bool   `json:"isTop,omitempty"`
-	Title      string `json:"title,omitempty"`
-	CoverURL   string `json:"coverUrl,omitempty"`
-	Snapshot   string `json:"snapshot,omitempty"`
-	LiveWebRID string `json:"liveWebRid,omitempty"`
-	LiveRoomID string `json:"liveRoomId,omitempty"`
+	ID            string `json:"id"`
+	PubTs         int64  `json:"pubTs"`
+	Type          string `json:"type"` // "video", "draw", "word", "forward", "article", "other"
+	IsTop         bool   `json:"isTop,omitempty"`
+	IsFastRetweet bool   `json:"isFastRetweet,omitempty"`
+	OriginID      string `json:"originId,omitempty"`
+	VisibleType   int    `json:"visibleType,omitempty"`
+	VisibleLabel  string `json:"visibleLabel,omitempty"`
+	Title         string `json:"title,omitempty"`
+	CoverURL      string `json:"coverUrl,omitempty"`
+	Snapshot      string `json:"snapshot,omitempty"`
+	LiveWebRID    string `json:"liveWebRid,omitempty"`
+	LiveRoomID    string `json:"liveRoomId,omitempty"`
 }
 
 // CreatorPostsPage holds one page of creator posts for subscription update checking.
 type CreatorPostsPage struct {
-	Posts           []CreatorPost `json:"posts"`
-	NextCursor      string        `json:"nextCursor,omitempty"`
-	HasMore         bool          `json:"hasMore"`
-	UncertainEmpty  bool          `json:"uncertainEmpty,omitempty"`
-	UncertainReason string        `json:"uncertainReason,omitempty"`
-	AuthorName      string        `json:"authorName,omitempty"`
-	AuthorFace      string        `json:"authorFace,omitempty"`
-	UniqueID        string        `json:"uniqueId,omitempty"`
-	LiveWebRID      string        `json:"liveWebRid,omitempty"`
-	LiveRoomID      string        `json:"liveRoomId,omitempty"`
+	Posts             []CreatorPost `json:"posts"`
+	NextCursor        string        `json:"nextCursor,omitempty"`
+	HasMore           bool          `json:"hasMore"`
+	BottomTipsVisible bool          `json:"bottomTipsVisible,omitempty"`
+	BottomTipsText    string        `json:"bottomTipsText,omitempty"`
+	TotalWorks        int           `json:"totalWorks,omitempty"`
+	UncertainEmpty    bool          `json:"uncertainEmpty,omitempty"`
+	UncertainReason   string        `json:"uncertainReason,omitempty"`
+	AuthorName        string        `json:"authorName,omitempty"`
+	AuthorFace        string        `json:"authorFace,omitempty"`
+	UniqueID          string        `json:"uniqueId,omitempty"`
+	LiveWebRID        string        `json:"liveWebRid,omitempty"`
+	LiveRoomID        string        `json:"liveRoomId,omitempty"`
 }
 
 // Resolver resolves pasted URLs, share text, or site-specific tokens into a normalized ResolveTarget.

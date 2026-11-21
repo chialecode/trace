@@ -257,10 +257,15 @@ var secretReceiptMarkers = []string{
 	"msToken=",
 }
 
-var signedReceiptURLRe = regexp.MustCompile(`(?i)https?://[^\s"'<>` + "`" + `]*?(a_bogus|x-(?:secsdk-web-)?signature)(?:=[A-Za-z0-9%+/=._-]{4,}|/[A-Za-z0-9%+/=._-]{4,})`)
+var (
+	signedReceiptURLRe  = regexp.MustCompile(`(?i)https?://[^\s"'<>` + "`" + `]*?(a_bogus|x-(?:secsdk-web-)?signature)(?:=[A-Za-z0-9%+/=._-]{4,}|/[A-Za-z0-9%+/=._-]{4,})`)
+	weiboSecretCookieRe = regexp.MustCompile(`\b(SUB|SUBP|XSRF-TOKEN|WBPSESS|SCF|ALF|SSOLoginState|SUHB|PC_TOKEN|_T_WM)=[A-Za-z0-9%_-][A-Za-z0-9%|._+/=-]{7,}`)
+	weiboSignedSSigRe   = regexp.MustCompile(`(?i)(?:^|[\s"'` + "`" + `?&]|\\u0026|&amp;|%3f|%26)ssig(?:=|%3d)[A-Za-z0-9%+/=._-]{4,}`)
+	weiboSignedExpKIDRe = regexp.MustCompile(`(?i)(?:^|[\s"'` + "`" + `?&]|\\u0026|&amp;|%3f|%26)(?:expires(?:=|%3d)[0-9]{9,}[^\s"'<>` + "`" + `]*(?:&|\\u0026|&amp;|%26)kid(?:=|%3d)[A-Za-z0-9%,._-]{3,}|kid(?:=|%3d)[A-Za-z0-9%,._-]{3,}[^\s"'<>` + "`" + `]*(?:&|\\u0026|&amp;|%26)expires(?:=|%3d)[0-9]{9,})`)
+)
 
-// ScanTextForSecrets checks an arbitrary text or JSON payload for Bilibili/Douyin Cookie markers
-// and signed URLs containing a_bogus= or x-signature.
+// ScanTextForSecrets checks an arbitrary text or JSON payload for Bilibili/Douyin/Weibo Cookie
+// markers and signed URLs containing a_bogus=, x-signature, or Weibo ssig=/Expires=/KID=.
 func ScanTextForSecrets(text string) []string {
 	var findings []string
 	for _, marker := range secretReceiptMarkers {
@@ -268,8 +273,20 @@ func ScanTextForSecrets(text string) []string {
 			findings = append(findings, fmt.Sprintf("contains secret marker %q", marker))
 		}
 	}
+	seenWeiboKeys := make(map[string]bool)
+	for _, m := range weiboSecretCookieRe.FindAllStringSubmatch(text, -1) {
+		if len(m) >= 2 && !seenWeiboKeys[m[1]] {
+			seenWeiboKeys[m[1]] = true
+			findings = append(findings, fmt.Sprintf("contains secret marker %q (redacted)", m[1]+"="))
+		}
+	}
 	if m := signedReceiptURLRe.FindStringSubmatch(text); len(m) >= 2 {
 		findings = append(findings, fmt.Sprintf("contains signed URL marker %q (redacted)", strings.ToLower(m[1])))
+	}
+	if weiboSignedSSigRe.MatchString(text) {
+		findings = append(findings, `contains signed URL marker "ssig" (redacted)`)
+	} else if weiboSignedExpKIDRe.MatchString(text) {
+		findings = append(findings, `contains signed URL marker "expires+kid" (redacted)`)
 	}
 	return findings
 }

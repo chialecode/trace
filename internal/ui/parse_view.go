@@ -45,7 +45,7 @@ func (a *App) renderParseRoute(c *ui.Context, width float32) {
 						Children(func() {
 							a.renderAccountAvatar(c, acctSite, acctName, acctUID, acct.Mid, 34, false, "", nil, acct.Face)
 							inp := ui.TextInputBase(c, &a.ParsePageInput).
-								Placeholder("粘贴哔哩哔哩或抖音链接、分享文本、主页或 UID").
+								Placeholder("粘贴哔哩哔哩、抖音或微博链接、分享文本、主页或 UID").
 								Label("链接解析输入框").
 								FontSize(14).
 								Padding(6, 4).

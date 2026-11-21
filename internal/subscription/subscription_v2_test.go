@@ -142,8 +142,8 @@ func TestDouyinSubscriptionValidationOwnershipAndWebRID(t *testing.T) {
 	if err := json.Unmarshal(rawDisk, &diskDoc); err != nil {
 		t.Fatalf("Unmarshal subscriptions.json: %v", err)
 	}
-	if diskDoc.Version != 2 {
-		t.Fatalf("subscriptions.json version = %d, want 2", diskDoc.Version)
+	if diskDoc.Version != SubscriptionsSchemaVersion {
+		t.Fatalf("subscriptions.json version = %d, want %d", diskDoc.Version, SubscriptionsSchemaVersion)
 	}
 }
 
@@ -428,6 +428,11 @@ func TestFullV1DirectoryMigrationIdempotencyAndRetention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first startup migration failed: %v", err)
 	}
+	defer func() {
+		if svcs != nil {
+			svcs.closeAll()
+		}
+	}()
 
 	for _, migratedFile := range []string{"library.db", "updates.db", "subscriptions.json", "ui-state.json"} {
 		bakPath := filepath.Join(env.dataDir, migratedFile+".premigrate-1")
@@ -484,8 +489,8 @@ func TestFullV1DirectoryMigrationIdempotencyAndRetention(t *testing.T) {
 		t.Fatalf("unexpected LatestPubByAuthor map: %+v", latestMap)
 	}
 	uiSnap := svcs.uiState.Get()
-	if uiSnap.Version != 2 || uiSnap.FeedFilter.Site != "all" {
-		t.Fatalf("expected ui-state upgraded to v2 with feedFilter.site='all', got %+v", uiSnap)
+	if uiSnap.Version != uistate.CurrentSchemaVersion || uiSnap.FeedFilter.Site != "all" {
+		t.Fatalf("expected ui-state upgraded to v%d with feedFilter.site='all', got %+v", uistate.CurrentSchemaVersion, uiSnap)
 	}
 	if seenTs := library.LookupAuthorHomeSeen(uiSnap.HomeSeen, "bilibili", "2002"); seenTs != 1700000200 {
 		t.Fatalf("expected legacy mid:2002 homeSeen preserved & matched, got ts=%d", seenTs)
@@ -546,6 +551,7 @@ func TestFullV1DirectoryMigrationIdempotencyAndRetention(t *testing.T) {
 		t.Fatalf("uiState.Mutate(bilibili): %v", err)
 	}
 	svcs.closeAll()
+	svcs = nil
 
 	// 2. Second startup: idempotent (no re-migration, .premigrate-1 still matches original v1 bytes, and "bilibili" site choice is retained!).
 	svcs2, err := runDataDirStartup(env.dataDir, env.cacheDir)

@@ -156,10 +156,11 @@ func (b *Backend) enqueueCacheQueueWithPager(
 	if len(loaded) > 0 {
 		rt.pageItems = loaded
 		rt.pageIdx = 0
-		rt.pageNextCursor = sanitizeCursor(req.Cursor)
+		rt.pageNextCursor = sanitizeQueueCursor(req.Cursor)
 		rt.pageNextHasMore = req.HasMore && (normSite == site.Bilibili && normList == "videos" || rt.pageNextCursor != "")
+		rt.pageCompletionNote = sanitizeQueueText(req.CompletionNote)
 		rt.pageLoaded = true
-	} else if cleanCur := sanitizeCursor(req.Cursor); cleanCur != "" {
+	} else if cleanCur := sanitizeQueueCursor(req.Cursor); cleanCur != "" {
 		rec.Cursor = cleanCur
 		rec.HasMore = req.HasMore
 	}

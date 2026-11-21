@@ -432,18 +432,19 @@ func (m *Manager) GetAccountState(site, uid string) (AccountState, bool, error) 
 	return m.getAccountStateLocked(site, uid)
 }
 
-func (m *Manager) getAccountStateLocked(site, uid string) (AccountState, bool, error) {
-	if site == "" {
-		site = "bilibili"
+func (m *Manager) getAccountStateLocked(siteName, uid string) (AccountState, bool, error) {
+	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return AccountState{Site: strings.TrimSpace(siteName), UID: uid}, false, nil
 	}
 	var st AccountState
 	err := m.updatesDB.QueryRow(`
 		SELECT site, uid, baseline_at, last_checked_at, last_kind, newest_id, newest_ts, note, unlinked_at
 		FROM account_state WHERE site = ? AND uid = ?
-	`, site, uid).Scan(&st.Site, &st.UID, &st.BaselineAt, &st.LastCheckedAt, &st.LastKind, &st.NewestID, &st.NewestTs, &st.Note, &st.UnlinkedAt)
+	`, normSite, uid).Scan(&st.Site, &st.UID, &st.BaselineAt, &st.LastCheckedAt, &st.LastKind, &st.NewestID, &st.NewestTs, &st.Note, &st.UnlinkedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return AccountState{Site: site, UID: uid}, false, nil
+			return AccountState{Site: normSite, UID: uid}, false, nil
 		}
 		return AccountState{}, false, err
 	}
@@ -468,15 +469,17 @@ func (m *Manager) listAccountStatesLocked() (map[string]AccountState, error) {
 		if err := rows.Scan(&st.Site, &st.UID, &st.BaselineAt, &st.LastCheckedAt, &st.LastKind, &st.NewestID, &st.NewestTs, &st.Note, &st.UnlinkedAt); err != nil {
 			return out, err
 		}
-		out[normalizeSchedulerSite(st.Site)+":"+st.UID] = st
+		out[normalizeLegacyAccountSite(st.Site)+":"+st.UID] = st
 	}
 	return out, rows.Err()
 }
 
 func (m *Manager) saveAccountStateLocked(st AccountState) error {
-	if st.Site == "" {
-		st.Site = "bilibili"
+	normSite := normalizeSchedulerSite(st.Site)
+	if normSite == "" {
+		return site.ErrUnknownSite
 	}
+	st.Site = normSite
 	_, err := m.updatesDB.Exec(`
 		INSERT INTO account_state (site, uid, baseline_at, last_checked_at, last_kind, newest_id, newest_ts, note, unlinked_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -508,16 +511,17 @@ func (m *Manager) ConsumeQuotaTokens(n int) bool {
 	return m.ConsumeSiteQuotaTokens("bilibili", n)
 }
 
-func (m *Manager) insertUpdateItem(site, uid, dynID string, pubTs int64, typ, snapshot, discoveredAt string) (bool, error) {
-	if site == "" {
-		site = "bilibili"
+func (m *Manager) insertUpdateItem(siteName, uid, dynID string, pubTs int64, typ, snapshot, discoveredAt string) (bool, error) {
+	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return false, site.ErrUnknownSite
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	res, err := m.updatesDB.Exec(`
 		INSERT OR IGNORE INTO update_item (site, uid, dyn_id, pub_ts, type, snapshot, discovered_at, auto_task_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, '')
-	`, site, uid, dynID, pubTs, typ, snapshot, discoveredAt)
+	`, normSite, uid, dynID, pubTs, typ, snapshot, discoveredAt)
 	if err != nil {
 		return false, err
 	}
@@ -525,24 +529,26 @@ func (m *Manager) insertUpdateItem(site, uid, dynID string, pubTs int64, typ, sn
 	return affected > 0, nil
 }
 
-func (m *Manager) setUpdateItemTaskID(site, uid, dynID, taskID string) error {
-	if site == "" {
-		site = "bilibili"
+func (m *Manager) setUpdateItemTaskID(siteName, uid, dynID, taskID string) error {
+	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return site.ErrUnknownSite
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, err := m.updatesDB.Exec(`UPDATE update_item SET auto_task_id = ? WHERE site = ? AND uid = ? AND dyn_id = ?`, taskID, site, uid, dynID)
+	_, err := m.updatesDB.Exec(`UPDATE update_item SET auto_task_id = ? WHERE site = ? AND uid = ? AND dyn_id = ?`, taskID, normSite, uid, dynID)
 	return err
 }
 
-func (m *Manager) enforceAccountItemCap(site, uid string, maxItems int) {
-	if site == "" {
-		site = "bilibili"
+func (m *Manager) enforceAccountItemCap(siteName, uid string, maxItems int) {
+	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var count int
-	if err := m.updatesDB.QueryRow(`SELECT COUNT(*) FROM update_item WHERE site = ? AND uid = ? AND baseline_snapshot = 0`, site, uid).Scan(&count); err != nil || count <= maxItems {
+	if err := m.updatesDB.QueryRow(`SELECT COUNT(*) FROM update_item WHERE site = ? AND uid = ? AND baseline_snapshot = 0`, normSite, uid).Scan(&count); err != nil || count <= maxItems {
 		return
 	}
 	excess := count - maxItems
@@ -554,7 +560,7 @@ func (m *Manager) enforceAccountItemCap(site, uid string, maxItems int) {
 			ORDER BY pub_ts ASC, dyn_id ASC
 			LIMIT ?
 		)
-	`, site, uid, excess); err != nil {
+	`, normSite, uid, excess); err != nil {
 		return
 	}
 }

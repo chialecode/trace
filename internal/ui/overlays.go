@@ -87,10 +87,14 @@ func (a *App) renderRuleBatchOverlay(c *ui.Context, w, h float32) {
 func (a *App) renderLogoutConfirmOverlay(c *ui.Context, w, h float32) {
 	targetSite := normalizeSiteIDUI(a.ConfirmLogoutSite)
 	titleText := "退出登录？"
-	bodyText := "退出后会暂停哔哩哔哩的缓存任务并停止录制，抖音不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
-	if targetSite == "douyin" {
+	bodyText := "退出后会暂停哔哩哔哩的缓存任务并停止录制，抖音与微博不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
+	switch targetSite {
+	case "douyin":
 		titleText = "退出抖音登录？"
-		bodyText = "退出后会暂停抖音的缓存任务并停止抖音录制，哔哩哔哩不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
+		bodyText = "退出后会暂停抖音的缓存任务并停止抖音录制，哔哩哔哩与微博不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
+	case "weibo":
+		titleText = "退出微博登录？"
+		bodyText = "退出后会暂停微博的缓存任务，哔哩哔哩与抖音不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
 	}
 	renderConfirmDialog(
 		c,

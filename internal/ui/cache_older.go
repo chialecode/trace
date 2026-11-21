@@ -40,6 +40,12 @@ func (a *App) currentUserQueueTarget(siteID string) (normSite, user, list string
 			return "", "", "", false
 		}
 		return "douyin", user, "works", true
+	case normSite == "weibo" && a.CurrentWeiboUser != nil:
+		user = strings.TrimSpace(a.CurrentWeiboUser.UID)
+		if user == "" {
+			return "", "", "", false
+		}
+		return "weibo", user, "posts", true
 	case normSite == "bilibili" && a.CurrentUser != nil:
 		if a.CurrentUser.Mid <= 0 {
 			return "", "", "", false
@@ -96,6 +102,17 @@ func (a *App) enqueueCacheAll(siteID string) {
 		req.Works = append(req.Works, a.CurrentDouyinWorks...)
 		req.Cursor = a.DouyinWorksNextCursor
 		req.HasMore = a.DouyinWorksHasMore || (len(a.CurrentDouyinWorks) == 0 && a.DouyinWorksError != "")
+	case siteID == "weibo" && a.CurrentWeiboUser != nil:
+		req.List = "posts"
+		req.User = a.CurrentWeiboUser.UID
+		req.UserName = firstNonEmptyStrUI(a.CurrentWeiboUser.ScreenName, a.CurrentWeiboUser.UID)
+		req.AvatarURL = a.CurrentWeiboUser.AvatarURL
+		req.WeiboPosts = append(req.WeiboPosts, a.CurrentWeiboPosts...)
+		req.Cursor = a.WeiboPostsNextCursor
+		req.HasMore = a.WeiboPostsHasMore || (len(a.CurrentWeiboPosts) == 0 && a.WeiboPostsError != "")
+		if a.WeiboBottomTipsVisible && a.WeiboBottomTipsText != "" {
+			req.CompletionNote = a.WeiboBottomTipsText
+		}
 	case siteID == "bilibili" && a.CurrentUser != nil:
 		req.User = strconv.FormatInt(a.CurrentUser.Mid, 10)
 		req.UserName = firstNonEmptyStrUI(a.CurrentUser.Name, req.User)

@@ -257,7 +257,7 @@ func (a *App) renderUserHeader(c *ui.Context, u *bilibili.UserSpace) {
 			})
 
 			if u.Sign != "" {
-				ui.Text(c, u.Sign).FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
+				ui.Text(c, u.Sign).FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
 			}
 
 			// Live banner (docs/ui.md §3.4): the record toggle is its one button.

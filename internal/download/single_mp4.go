@@ -90,13 +90,27 @@ func EnsureSingleMP4(path string, expectedDurationSec float64) (MuxTrackSummary,
 
 // EnsureSingleMP4Context is the context-aware variant of EnsureSingleMP4.
 func EnsureSingleMP4Context(ctx context.Context, path string, expectedDurationSec float64) (MuxTrackSummary, error) {
+	summary, _, err := ensureSingleMP4OrQuickTimeContext(ctx, path, expectedDurationSec, false)
+	return summary, err
+}
+
+// EnsureLivePhotoMP4Context validates a progressive MP4 or QuickTime .mov (ftyp="qt  ")
+// LivePhoto motion clip on disk. When the input uses a QuickTime brand, wide placeholder,
+// QuickTime handler, or QuickTime v1/v2 audio sample entry, it losslessly repackages the
+// container in-place into standard ISO BMFF MP4 (ftyp=mp42/isom, moov before mdat) with
+// bounded-memory streaming mdat copy and zero transcoding.
+func EnsureLivePhotoMP4Context(ctx context.Context, path string, expectedDurationSec float64) (MuxTrackSummary, bool, error) {
+	return ensureSingleMP4OrQuickTimeContext(ctx, path, expectedDurationSec, true)
+}
+
+func ensureSingleMP4OrQuickTimeContext(ctx context.Context, path string, expectedDurationSec float64, allowQuickTimeRepackage bool) (MuxTrackSummary, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return MuxTrackSummary{}, err
+		return MuxTrackSummary{}, false, err
 	}
 
 	source, err := os.Open(path)
 	if err != nil {
-		return MuxTrackSummary{}, err
+		return MuxTrackSummary{}, false, err
 	}
 	sourceClosed := false
 	defer func() {
@@ -107,37 +121,47 @@ func EnsureSingleMP4Context(ctx context.Context, path string, expectedDurationSe
 
 	info, err := source.Stat()
 	if err != nil {
-		return MuxTrackSummary{}, err
+		return MuxTrackSummary{}, false, err
 	}
 	if info.Size() <= 0 {
-		return MuxTrackSummary{}, &SingleMP4ValidationError{Reason: "文件为空"}
+		return MuxTrackSummary{}, false, &SingleMP4ValidationError{Reason: "文件为空"}
 	}
 
 	reader := contextIO{File: source, ctx: ctx}
 	parsed, err := mp4.DecodeFile(reader, mp4.WithDecodeMode(mp4.DecModeLazyMdat), mp4.WithDecodeFlags(mp4.DecStartOnMoof))
 	if err != nil || parsed == nil {
-		return MuxTrackSummary{}, &SingleMP4ValidationError{Reason: "解析 MP4 容器失败", Err: err}
+		return MuxTrackSummary{}, false, &SingleMP4ValidationError{Reason: "解析 MP4 容器失败", Err: err}
 	}
 
 	inspected, err := validateDecodedSingleMP4(parsed, uint64(info.Size()), expectedDurationSec)
 	if err != nil {
-		return MuxTrackSummary{}, err
+		return MuxTrackSummary{}, false, err
 	}
 
-	if inspected.needsReloc {
-		if err := relocateMoovOnDisk(ctx, source, &sourceClosed, parsed, inspected.moovIdx, inspected.firstMdatIdx, path); err != nil {
-			return MuxTrackSummary{}, err
+	repackaged := false
+	needsQT := allowQuickTimeRepackage && needsQuickTimeRepackage(parsed)
+	switch {
+	case needsQT:
+		normalizeQuickTimeMoov(parsed.Moov)
+		newFtyp := buildISOBMFFFtyp(parsed.Moov)
+		if err := repackageProgressiveOnDisk(ctx, source, &sourceClosed, parsed, newFtyp, inspected.moovIdx, inspected.firstMdatIdx, true, path); err != nil {
+			return MuxTrackSummary{}, false, err
 		}
-	} else {
+		repackaged = true
+	case inspected.needsReloc:
+		if err := relocateMoovOnDisk(ctx, source, &sourceClosed, parsed, inspected.moovIdx, inspected.firstMdatIdx, path); err != nil {
+			return MuxTrackSummary{}, false, err
+		}
+	default:
 		sourceClosed = true
 		if err := source.Close(); err != nil {
-			return MuxTrackSummary{}, err
+			return MuxTrackSummary{}, false, err
 		}
 	}
 
 	summary, err := InspectMP4FileContext(ctx, path)
 	if err != nil {
-		return MuxTrackSummary{}, err
+		return MuxTrackSummary{}, repackaged, err
 	}
 	if summary.Width == 0 && inspected.width > 0 {
 		summary.Width = inspected.width
@@ -146,15 +170,15 @@ func EnsureSingleMP4Context(ctx context.Context, path string, expectedDurationSe
 		summary.Height = inspected.height
 	}
 	if !summary.MoovBeforeMdat {
-		return summary, &SingleMP4ValidationError{Reason: "MP4 moov 未位于 mdat 之前"}
+		return summary, repackaged, &SingleMP4ValidationError{Reason: "MP4 moov 未位于 mdat 之前"}
 	}
 	if summary.DurationSec <= 0 {
-		return summary, &SingleMP4ValidationError{Reason: "MP4 时长必须大于 0"}
+		return summary, repackaged, &SingleMP4ValidationError{Reason: "MP4 时长必须大于 0"}
 	}
 	if reason := durationMismatch(summary.DurationSec, expectedDurationSec); reason != "" {
-		return summary, &SingleMP4ValidationError{Reason: reason}
+		return summary, repackaged, &SingleMP4ValidationError{Reason: reason}
 	}
-	return summary, nil
+	return summary, repackaged, nil
 }
 
 func validateDecodedSingleMP4(parsed *mp4.File, fileSize uint64, expectedDurationSec float64) (singleMP4Inspection, error) {
@@ -650,4 +674,300 @@ func upgradeTrackStcoToCo64(stbl *mp4.StblBox) {
 	}
 	stbl.Stco = nil
 	stbl.Co64 = co64
+}
+
+func needsQuickTimeRepackage(parsed *mp4.File) bool {
+	if parsed == nil {
+		return false
+	}
+	if parsed.Ftyp == nil || parsed.Ftyp.MajorBrand() == "qt  " || !hasISOBMFFBrand(parsed.Ftyp) {
+		return true
+	}
+	for _, ch := range parsed.Children {
+		if ch.Type() == "wide" {
+			return true
+		}
+	}
+	if parsed.Moov != nil {
+		for _, trak := range parsed.Moov.Traks {
+			if trak == nil || trak.Mdia == nil {
+				continue
+			}
+			if trak.Mdia.Hdlr != nil && trak.Mdia.Hdlr.QuickTimeComponentType() != "" {
+				return true
+			}
+			if trak.Mdia.Minf != nil && trak.Mdia.Minf.Stbl != nil && trak.Mdia.Minf.Stbl.Stsd != nil {
+				for _, ch := range trak.Mdia.Minf.Stbl.Stsd.Children {
+					if ase, ok := ch.(*mp4.AudioSampleEntryBox); ok && (ase.QuickTimeVersion != 0 || ase.Wave != nil) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func hasISOBMFFBrand(ftyp *mp4.FtypBox) bool {
+	if ftyp == nil {
+		return false
+	}
+	isISO := func(b string) bool {
+		switch b {
+		case "isom", "iso2", "iso5", "iso6", "mp41", "mp42", "avc1", "M4V ", "dash":
+			return true
+		default:
+			return false
+		}
+	}
+	if isISO(ftyp.MajorBrand()) {
+		return true
+	}
+	for _, cb := range ftyp.CompatibleBrands() {
+		if isISO(cb) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeQuickTimeMoov(moov *mp4.MoovBox) {
+	if moov == nil {
+		return
+	}
+	for _, trak := range moov.Traks {
+		if trak == nil || trak.Mdia == nil {
+			continue
+		}
+		if hdlr := trak.Mdia.Hdlr; hdlr != nil && hdlr.QuickTimeComponentType() != "" {
+			if name, ok := hdlr.QuickTimeComponentName(); ok {
+				hdlr.Name = name
+			}
+			hdlr.PreDefined = 0
+			hdlr.Reserved = [3]uint32{}
+			hdlr.LacksNullTermination = false
+		}
+		if trak.Mdia.Minf != nil && trak.Mdia.Minf.Stbl != nil && trak.Mdia.Minf.Stbl.Stsd != nil {
+			for _, ch := range trak.Mdia.Minf.Stbl.Stsd.Children {
+				if ase, ok := ch.(*mp4.AudioSampleEntryBox); ok {
+					ase.NormalizeQuickTime()
+				}
+			}
+		}
+	}
+}
+
+func buildISOBMFFFtyp(moov *mp4.MoovBox) *mp4.FtypBox {
+	codecBrand := "avc1"
+	if moov != nil {
+		for _, trak := range moov.Traks {
+			if trak == nil || trak.Mdia == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil || trak.Mdia.Minf.Stbl.Stsd == nil {
+				continue
+			}
+			for _, ch := range trak.Mdia.Minf.Stbl.Stsd.Children {
+				if ch.Type() == "hvc1" || ch.Type() == "hev1" {
+					codecBrand = "hvc1"
+				}
+			}
+		}
+	}
+	return mp4.NewFtyp("mp42", 0, []string{"mp42", "isom", codecBrand, "mp41"})
+}
+
+// repackageProgressiveOnDisk rewrites a validated progressive MP4/QuickTime file into a
+// standard ISO BMFF MP4 with newFtyp and moov ahead of the first mdat while streaming
+// mdat payloads on disk in fixed 256 KiB chunks (zero transcoding, bounded memory).
+func repackageProgressiveOnDisk(
+	ctx context.Context,
+	source *os.File,
+	sourceClosed *bool,
+	parsed *mp4.File,
+	newFtyp *mp4.FtypBox,
+	moovIdx int,
+	firstMdatIdx int,
+	dropWide bool,
+	path string,
+) error {
+	moov := parsed.Moov
+	newOrder := make([]mp4.Box, 0, len(parsed.Children)+1)
+	newOrder = append(newOrder, newFtyp)
+	skipBox := func(idx int, b mp4.Box) bool {
+		if idx == moovIdx || b.Type() == "ftyp" {
+			return true
+		}
+		if dropWide && b.Type() == "wide" {
+			return true
+		}
+		return false
+	}
+	for idx := 0; idx < firstMdatIdx; idx++ {
+		if skipBox(idx, parsed.Children[idx]) {
+			continue
+		}
+		newOrder = append(newOrder, parsed.Children[idx])
+	}
+	newOrder = append(newOrder, moov)
+	for idx := firstMdatIdx; idx < len(parsed.Children); idx++ {
+		if skipBox(idx, parsed.Children[idx]) {
+			continue
+		}
+		newOrder = append(newOrder, parsed.Children[idx])
+	}
+
+	type mdatShift struct {
+		origStart uint64
+		origEnd   uint64
+		delta     int64
+	}
+	computeShifts := func(moovSize uint64) []mdatShift {
+		var shifts []mdatShift
+		var pos uint64
+		for _, b := range newOrder {
+			if mdat, ok := b.(*mp4.MdatBox); ok {
+				origStart := mdat.PayloadAbsoluteOffset()
+				origEnd := mdat.StartPos + mdat.Size()
+				newPayloadStart := pos + mdat.HeaderSize()
+				shifts = append(shifts, mdatShift{
+					origStart: origStart,
+					origEnd:   origEnd,
+					delta:     int64(newPayloadStart) - int64(origStart),
+				})
+			}
+			if b == moov {
+				pos += moovSize
+			} else {
+				pos += b.Size()
+			}
+		}
+		return shifts
+	}
+	applyShift := func(orig uint64, shifts []mdatShift) (uint64, error) {
+		for _, sp := range shifts {
+			if orig >= sp.origStart && orig < sp.origEnd {
+				shifted := int64(orig) + sp.delta
+				if shifted < 0 {
+					return 0, &SingleMP4ValidationError{Reason: "重封装后块偏移出现负值"}
+				}
+				return uint64(shifted), nil
+			}
+		}
+		return 0, &SingleMP4ValidationError{Reason: fmt.Sprintf("块偏移 %d 位于预期 mdat 区间之外", orig)}
+	}
+
+	candShifts := computeShifts(moov.Size())
+	needCo64 := false
+	for _, trak := range moov.Traks {
+		if trak == nil || trak.Mdia == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil {
+			continue
+		}
+		stco := trak.Mdia.Minf.Stbl.Stco
+		if stco == nil {
+			continue
+		}
+		for _, off := range stco.ChunkOffset {
+			shifted, err := applyShift(uint64(off), candShifts)
+			if err != nil {
+				return err
+			}
+			if shifted > math.MaxUint32 {
+				needCo64 = true
+			}
+		}
+	}
+	if needCo64 {
+		for _, trak := range moov.Traks {
+			if trak == nil || trak.Mdia == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil {
+				continue
+			}
+			upgradeTrackStcoToCo64(trak.Mdia.Minf.Stbl)
+		}
+	}
+
+	finalMoovSize := moov.Size()
+	finalShifts := computeShifts(finalMoovSize)
+	for _, trak := range moov.Traks {
+		if trak == nil || trak.Mdia == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil {
+			continue
+		}
+		stbl := trak.Mdia.Minf.Stbl
+		if stbl.Stco != nil {
+			for i, off := range stbl.Stco.ChunkOffset {
+				shifted, err := applyShift(uint64(off), finalShifts)
+				if err != nil {
+					return err
+				}
+				if shifted > math.MaxUint32 {
+					return &SingleMP4ValidationError{Reason: "stco 偏移超出 32 位上限"}
+				}
+				stbl.Stco.ChunkOffset[i] = uint32(shifted)
+			}
+		}
+		if stbl.Co64 != nil {
+			for i, off := range stbl.Co64.ChunkOffset {
+				shifted, err := applyShift(off, finalShifts)
+				if err != nil {
+					return err
+				}
+				stbl.Co64.ChunkOffset[i] = shifted
+			}
+		}
+	}
+	if moov.Size() != finalMoovSize {
+		return &SingleMP4ValidationError{Reason: "重封装后 moov 长度不一致"}
+	}
+
+	out, err := os.CreateTemp(filepath.Dir(path), ".trace-singlemp4-*.part")
+	if err != nil {
+		return err
+	}
+	tempPath := out.Name()
+	outClosed := false
+	defer func() {
+		if !outClosed {
+			_ = out.Close()
+		}
+		if tempPath != "" {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	bw := bufio.NewWriterSize(contextIO{File: out, ctx: ctx}, singleMP4StreamBufSize)
+	copyBuf := make([]byte, singleMP4StreamBufSize)
+	for _, box := range newOrder {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := box.Encode(bw); err != nil {
+			return err
+		}
+		if mdat, ok := box.(*mp4.MdatBox); ok && mdat.IsLazy() {
+			payloadLen := int64(mdat.Size() - mdat.HeaderSize())
+			sec := io.NewSectionReader(contextIO{File: source, ctx: ctx}, int64(mdat.PayloadAbsoluteOffset()), payloadLen)
+			if _, err := io.CopyBuffer(bw, sec, copyBuf); err != nil {
+				return err
+			}
+		}
+	}
+	if err := bw.Flush(); err != nil {
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		return err
+	}
+	outClosed = true
+	if err := out.Close(); err != nil {
+		return err
+	}
+	*sourceClosed = true
+	if err := source.Close(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	tempPath = ""
+	return nil
 }

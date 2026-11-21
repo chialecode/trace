@@ -18,12 +18,15 @@ import (
 const (
 	SiteBilibili = "bilibili"
 	SiteDouyin   = "douyin"
+	SiteWeibo    = "weibo"
 
 	BilibiliFileName = "bilibili.bin"
 	DouyinFileName   = "douyin.bin"
+	WeiboFileName    = "weibo.bin"
 
 	BilibiliEntropy = "trace:bilibili:credential:v1"
 	DouyinEntropy   = "trace:douyin:credential:v1"
+	WeiboEntropy    = "trace:weibo:credential:v1"
 
 	// MaxCookieInputBytes is the maximum allowed byte length for manual cookie import.
 	MaxCookieInputBytes = 8192
@@ -31,11 +34,13 @@ const (
 
 // Errors returned by credential operations (never echoing raw secrets).
 var (
-	ErrInputTooLarge        = errors.New("credential: cookie input exceeds 8 KiB limit")
-	ErrMissingRequiredKeys  = errors.New("credential: missing required cookie key SESSDATA")
-	ErrMissingDouyinSession = errors.New("credential: missing required cookie key sessionid")
-	ErrNotLoggedIn          = errors.New("credential: no active credential")
-	ErrUnknownSite          = errors.New("credential: unsupported site")
+	ErrInputTooLarge            = errors.New("credential: cookie input exceeds 8 KiB limit")
+	ErrInvalidCookieControlChar = errors.New("credential: cookie input contains invalid control characters")
+	ErrMissingRequiredKeys      = errors.New("credential: missing required cookie key SESSDATA")
+	ErrMissingDouyinSession     = errors.New("credential: missing required cookie key sessionid")
+	ErrMissingWeiboSub          = errors.New("credential: missing required cookie key SUB")
+	ErrNotLoggedIn              = errors.New("credential: no active credential")
+	ErrUnknownSite              = errors.New("credential: unsupported site")
 )
 
 // AllowedCookieKeys defines the strict whitelist of Bilibili cookie keys stored by TRACE.
@@ -222,13 +227,20 @@ func OpenDouyin(path string) (*Store, string, error) {
 	return openWithConfig(SiteDouyin, []byte(DouyinEntropy), path)
 }
 
-// OpenSite loads the credential store for siteID ("bilibili" or "douyin") from path.
+// OpenWeibo loads the Weibo credential store from path using WeiboEntropy.
+func OpenWeibo(path string) (*Store, string, error) {
+	return openWithConfig(SiteWeibo, []byte(WeiboEntropy), path)
+}
+
+// OpenSite loads the credential store for siteID ("bilibili", "douyin", or "weibo") from path.
 func OpenSite(siteID string, path string) (*Store, string, error) {
 	switch normalizeSiteID(siteID) {
 	case SiteBilibili:
 		return Open(path)
 	case SiteDouyin:
 		return OpenDouyin(path)
+	case SiteWeibo:
+		return OpenWeibo(path)
 	default:
 		return nil, "", ErrUnknownSite
 	}
@@ -319,33 +331,100 @@ func openWithConfig(siteID string, entropy []byte, path string) (*Store, string,
 	return s, "", nil
 }
 
-// Site returns the site identifier ("bilibili" or "douyin") managed by this Store.
+// Site returns the site identifier ("bilibili", "douyin", or "weibo") managed by this Store.
 func (s *Store) Site() string {
-	if s == nil || s.site == "" {
-		return SiteBilibili
+	if s == nil {
+		return ""
 	}
 	return s.site
 }
 
 func (s *Store) filterCookies(in map[string]string) map[string]string {
-	if s != nil && s.site == SiteDouyin {
-		return CleanDouyinCookieMap(in)
+	if s == nil {
+		return nil
 	}
-	return FilterCookieMap(in)
+	switch s.site {
+	case SiteBilibili:
+		return FilterCookieMap(in)
+	case SiteDouyin:
+		return CleanDouyinCookieMap(in)
+	case SiteWeibo:
+		return CleanWeiboCookieMap(in)
+	default:
+		return map[string]string{}
+	}
 }
 
 func (s *Store) hasRequiredCookies(cookies map[string]string) bool {
-	if s != nil && s.site == SiteDouyin {
-		return hasDouyinSession(cookies)
+	if s == nil {
+		return false
 	}
-	return cookies["SESSDATA"] != ""
+	switch s.site {
+	case SiteBilibili:
+		return cookies["SESSDATA"] != ""
+	case SiteDouyin:
+		return hasDouyinSession(cookies)
+	case SiteWeibo:
+		return hasWeiboSession(cookies)
+	default:
+		return false
+	}
 }
 
 func (s *Store) orderedCookieKeys() []string {
-	if s != nil && s.site == SiteDouyin {
-		return AllowedDouyinCookieKeys
+	if s == nil {
+		return nil
 	}
-	return AllowedCookieKeys
+	switch s.site {
+	case SiteBilibili:
+		return AllowedCookieKeys
+	case SiteDouyin:
+		return AllowedDouyinCookieKeys
+	case SiteWeibo:
+		return AllowedWeiboCookieKeys
+	default:
+		return nil
+	}
+}
+
+// RenewalInfo summarizes whether automatic cookie renewal is available for a credential store.
+type RenewalInfo struct {
+	Site      string `json:"site"`
+	Available bool   `json:"available"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// Renewal reports whether automatic credential renewal is available for this store.
+func (s *Store) Renewal() RenewalInfo {
+	if s == nil {
+		return RenewalInfo{Available: false, Reason: "未登录"}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	switch s.site {
+	case SiteWeibo:
+		return RenewalInfo{
+			Site:      SiteWeibo,
+			Available: false,
+			Reason:    WeiboManualRenewalUnavailableReason,
+		}
+	case SiteDouyin:
+		return RenewalInfo{
+			Site:      SiteDouyin,
+			Available: false,
+			Reason:    "不可用，粘贴的 Cookie 与浏览器共用会话；过期后请重新粘贴",
+		}
+	case SiteBilibili:
+		if s.rec == nil || !s.isActiveRecordLocked() {
+			return RenewalInfo{Site: SiteBilibili, Available: false, Reason: "未登录"}
+		}
+		if s.rec.Source == "qr" && s.rec.RefreshToken != "" {
+			return RenewalInfo{Site: SiteBilibili, Available: true}
+		}
+		return RenewalInfo{Site: SiteBilibili, Available: false, Reason: WeiboManualRenewalUnavailableReason}
+	default:
+		return RenewalInfo{Site: s.site, Available: false, Reason: ErrUnknownSite.Error()}
+	}
 }
 
 // Status returns the desensitized account status.
@@ -718,11 +797,16 @@ func isNonSecretCookieValue(key, val string) bool {
 }
 
 // RedactString replaces any stored cookie values or refresh tokens present in in with [REDACTED].
+// For Weibo stores, it also scrubs Weibo sensitive field key=value pairs (raw and URL-encoded).
 func (s *Store) RedactString(in string) string {
 	if in == "" {
 		return ""
 	}
-	return redactWithSecrets(in, s.collectSecrets())
+	out := redactWithSecrets(in, s.collectSecrets())
+	if s != nil && s.site == SiteWeibo {
+		out = redactWeiboSensitiveFields(out)
+	}
+	return out
 }
 
 func redactWithSecrets(in string, secrets []string) string {
@@ -758,7 +842,7 @@ func (s *Store) persistRecordLocked(next *Record) error {
 	}
 	entropy := s.entropy
 	if len(entropy) == 0 {
-		entropy = []byte(BilibiliEntropy)
+		return ErrUnknownSite
 	}
 	cipherData, err := protectFor(s.path, plain, entropy)
 	for i := range plain {

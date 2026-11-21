@@ -68,13 +68,21 @@ func (a *App) applySubscriptionRouteNavigate(rawRoute string) {
 	if subID == "" {
 		return
 	}
+	if strings.EqualFold(subID, "accounts") {
+		a.SubDetailOpen = false
+		a.SubAccountsOpen = true
+		a.refreshAccountWorks()
+		return
+	}
 	for i := range a.Subscriptions {
 		if a.Subscriptions[i].ID == subID {
 			sub := a.Subscriptions[i]
 			a.SelectedSubID = sub.ID
 			a.SelectedSubMid = sub.Mid
 			a.SubDetailOpen = true
+			a.SubAccountsOpen = false
 			a.SubDetailTab = normalizeSubDetailTab(a.SubDetailTab)
+			a.refreshAccountWorks()
 			a.syncSelectedSubRules(sub)
 			a.ensureSubscriptionFeedLoaded(&sub)
 			return
@@ -260,7 +268,7 @@ func (a *App) renderSubscriptionDetailHeader(c *ui.Context, sub *subscription.Su
 					ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
 						ui.Text(c, sub.Name).FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 						if strings.TrimSpace(sub.Note) != "" {
-							ui.Text(c, sub.Note).FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
+							ui.Text(c, sub.Note).FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
 						} else {
 							ui.Text(c, fmt.Sprintf("关联 %d 个账号", len(subscriptionEffectiveAccounts(*sub)))).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 						}
@@ -483,6 +491,9 @@ func (a *App) lookupSubAccountLiveView(acc subscription.AccountRef) subAccountLi
 		startLabel:   "开始录制 " + accountKey,
 		stopLabel:    "停止录制 " + accountKey,
 	}
+	if accSite == "weibo" {
+		return lv
+	}
 
 	if accSite == "bilibili" {
 		mid, _ := strconv.ParseInt(uid, 10, 64)
@@ -577,6 +588,19 @@ func formatSubAccountLiveStatus(lv subAccountLiveView) (string, ui.Color, int) {
 	return "未开播", ColorTextMuted, 400
 }
 
+func (a *App) openAccountUserPage(accSite, uid, name string) {
+	switch normalizeSiteIDUI(accSite) {
+	case "douyin":
+		a.OpenDouyinUser(uid, name)
+	case "weibo":
+		a.OpenWeiboUser(uid, name)
+	default:
+		if mid, err := strconv.ParseInt(uid, 10, 64); err == nil && mid > 0 {
+			a.OpenUser(mid, name)
+		}
+	}
+}
+
 func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Subscription) {
 	accounts := subscriptionEffectiveAccounts(*sub)
 	ui.Column(c).
@@ -607,6 +631,7 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 			for _, accItem := range accounts {
 				acc := accItem
 				accSite := normalizeSiteIDUI(acc.Site)
+				isWeibo := accSite == "weibo"
 				var uidNum int64
 				if accSite == "bilibili" {
 					_, _ = fmt.Sscanf(acc.UID, "%d", &uidNum)
@@ -614,6 +639,9 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 				lv := a.lookupSubAccountLiveView(acc)
 				liveText, liveColor, liveWeight := formatSubAccountLiveStatus(lv)
 				menuKey := "acct:" + accSite + ":" + acc.UID
+				openAccountPage := func() {
+					a.openAccountUserPage(accSite, acc.UID, acc.Name)
+				}
 
 				ui.Row(c).
 					FillWidth().
@@ -627,14 +655,21 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 					ClipX().
 					Children(func() {
 						ui.Row(c).AlignItems(ui.Center).Gap(10).Grow(1).ClipX().Children(func() {
-							a.renderAccountAvatar(c, accSite, acc.Name, acc.UID, uidNum, 40, lv.isLive || lv.isRecording, "", nil, acc.Face)
+							a.renderAccountAvatar(c, accSite, acc.Name, acc.UID, uidNum, 40, !isWeibo && (lv.isLive || lv.isRecording), "打开关联账号主页："+accSite+":"+acc.UID, openAccountPage, acc.Face)
 							ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
 								ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-									ui.Text(c, firstNonEmptyStrUI(acc.Name, acc.UniqueID, acc.UID)).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
+									nameBtn := ui.ButtonBase(c).Label("订阅账号主页：" + accSite + ":" + acc.UID).Padding(0).Shrink(1).Children(func() {
+										ui.Text(c, firstNonEmptyStrUI(acc.Name, acc.UniqueID, acc.UID)).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+									})
+									if nameBtn.Clicked() {
+										openAccountPage()
+									}
 									renderSiteSmallBadgeWithDot(c, accSite, "订阅详情账号站点："+accSite+":"+acc.UID)
 									ui.Text(c, "· "+formatSubscriptionAccountIdent(acc)).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
 								})
-								ui.Text(c, liveText).FontSize(12).FontWeight(liveWeight).TextColor(liveColor).SingleLine()
+								if !isWeibo {
+									ui.Text(c, liveText).FontSize(12).FontWeight(liveWeight).TextColor(liveColor).SingleLine()
+								}
 								if works := a.accountWorksText(accSite, acc.UID); works != "" {
 									ui.Text(c, works).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 								}
@@ -642,20 +677,22 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 						})
 
 						ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
-							if lv.isRecording {
-								if DangerOutlinePillButton(c, "停止录制", lv.stopLabel).Clicked() {
-									if accSite == "bilibili" && lv.biliRoomID > 0 {
-										a.stopLiveRecording(lv.biliRoomID)
-									} else {
-										a.stopAccountLiveRecording(lv.recordingKey)
+							if !isWeibo {
+								if lv.isRecording {
+									if DangerOutlinePillButton(c, "停止录制", lv.stopLabel).Clicked() {
+										if accSite == "bilibili" && lv.biliRoomID > 0 {
+											a.stopLiveRecording(lv.biliRoomID)
+										} else {
+											a.stopAccountLiveRecording(lv.recordingKey)
+										}
 									}
-								}
-							} else if lv.isLive {
-								if AccentPillButton(c, "录制", lv.startLabel).Clicked() {
-									if accSite == "bilibili" && lv.biliRoomID > 0 {
-										a.startLiveRecording(lv.biliRoomID)
-									} else {
-										a.startAccountLiveRecording(accSite, acc.UID, lv.roomOrWebRID)
+								} else if lv.isLive {
+									if AccentPillButton(c, "录制", lv.startLabel).Clicked() {
+										if accSite == "bilibili" && lv.biliRoomID > 0 {
+											a.startLiveRecording(lv.biliRoomID)
+										} else {
+											a.startAccountLiveRecording(accSite, acc.UID, lv.roomOrWebRID)
+										}
 									}
 								}
 							}
@@ -663,13 +700,9 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 							open := a.SubAccountMenuKey == menuKey
 							MoreMenuButton(c, "订阅账号更多："+accSite+":"+acc.UID, 30, &open, func(m *ui.Menu) {
 								if m.Item("打开主页").Chosen() {
-									if accSite == "douyin" {
-										a.OpenDouyinUser(acc.UID, acc.Name)
-									} else if mid, err := strconv.ParseInt(acc.UID, 10, 64); err == nil && mid > 0 {
-										a.OpenUser(mid, acc.Name)
-									}
+									openAccountPage()
 								}
-								if lv.hasRoom {
+								if !isWeibo && lv.hasRoom {
 									if m.Item("在浏览器中观看").Chosen() {
 										if accSite == "douyin" {
 											a.showError(a.backend.OpenLiveInBrowser("douyin", lv.roomOrWebRID))
@@ -686,8 +719,11 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 										a.RefreshData()
 									}
 								}
-								if m.Item("刷新直播状态").Chosen() {
+								if !isWeibo && m.Item("刷新直播状态").Chosen() {
 									a.refreshSingleAccountLive(accSite, acc.UID)
+								}
+								if m.Item("更改关联订阅").Chosen() {
+									a.OpenMoveAccountPicker(*sub, acc)
 								}
 								m.Separator()
 								if m.Item("解除关联").Danger().Chosen() {

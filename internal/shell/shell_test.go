@@ -204,8 +204,8 @@ func TestQuietModeTrayIconCloseToTrayAndMemory(t *testing.T) {
 	t.Setenv("TRACE_QUIET", "1")
 
 	// Verify Tray PNG generation
-	idlePNG := RenderTrayIconPNG(false)
-	activePNG := RenderTrayIconPNG(true)
+	idlePNG := RenderTrayIconPNG(false, false)
+	activePNG := RenderTrayIconPNG(false, true)
 	if bytes.Equal(idlePNG, activePNG) {
 		t.Fatalf("expected active tray icon PNG to differ from idle tray icon PNG")
 	}

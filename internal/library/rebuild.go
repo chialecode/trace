@@ -184,9 +184,9 @@ func (s *Store) rebuildIndex(checkHash bool) (RebuildReport, error) {
 	return report, tx.Commit()
 }
 
-// AddLibraryRoot scans an existing cache folder (including bilibili/* and douyin/*/{works,lives}/*)
-// or legacy trace-data folder containing library/, and indexes its items without moving files
-// or overwriting existing keys (FR-LIB-006).
+// AddLibraryRoot scans an existing cache folder (including bilibili/*, douyin/*/{works,lives}/*,
+// and weibo/*/{posts,forwards}/*) or legacy trace-data folder containing library/, and indexes its
+// items without moving files or overwriting existing keys (FR-LIB-006).
 func (s *Store) AddLibraryRoot(selectedDir string) (AddRootReport, error) {
 	if strings.TrimSpace(selectedDir) == "" || !filepath.IsAbs(selectedDir) {
 		return AddRootReport{}, fmt.Errorf("library: folder path cannot be empty")

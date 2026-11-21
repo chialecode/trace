@@ -172,7 +172,8 @@ func (m *Manager) syncSessionRoomStateLocked(sess *recordSession) (RoomState, bo
 	if sess == nil {
 		return RoomState{}, false
 	}
-	if sess.siteID == string(site.Douyin) {
+	switch sess.siteID {
+	case string(site.Douyin):
 		st, ok := m.douyinStates[sess.stateKey]
 		if !ok {
 			return RoomState{}, false
@@ -180,15 +181,18 @@ func (m *Manager) syncSessionRoomStateLocked(sess *recordSession) (RoomState, bo
 		st = m.hydrateDouyinStateLocked(st)
 		m.douyinStates[sess.stateKey] = st
 		return st, true
-	}
-	st, ok := m.states[sess.roomID]
-	if !ok {
+	case "", string(site.Bilibili):
+		st, ok := m.states[sess.roomID]
+		if !ok {
+			return RoomState{}, false
+		}
+		m.normalizeBilibiliRoomStateLocked(&st)
+		m.hydrateBilibiliStateFromSessionLocked(&st, sess)
+		m.states[sess.roomID] = st
+		return st, true
+	default:
 		return RoomState{}, false
 	}
-	m.normalizeBilibiliRoomStateLocked(&st)
-	m.hydrateBilibiliStateFromSessionLocked(&st, sess)
-	m.states[sess.roomID] = st
-	return st, true
 }
 
 // RecordingPreview returns a read-only local preview snapshot for a recording or tracked room.
@@ -197,7 +201,7 @@ func (m *Manager) syncSessionRoomStateLocked(sess *recordSession) (RoomState, bo
 // session IDs ("live:<session>"), room IDs, UIDs, or Douyin web_rids, and never performs network I/O.
 func (m *Manager) RecordingPreview(key string) (RecordingPreview, bool) {
 	target := strings.TrimSpace(key)
-	if target == "" {
+	if target == "" || strings.HasPrefix(strings.ToLower(target), "weibo:") {
 		return RecordingPreview{}, false
 	}
 
@@ -264,8 +268,12 @@ func (m *Manager) matchBilibiliSessionLocked(target string) *recordSession {
 			}
 		}
 		return nil
-	case strings.HasPrefix(target, "douyin:"):
+	case strings.HasPrefix(target, "douyin:"), strings.HasPrefix(strings.ToLower(target), "weibo:"):
 		return nil
+	default:
+		if strings.Contains(target, ":") {
+			return nil
+		}
 	}
 
 	if trimmed == "" {
@@ -290,7 +298,7 @@ func (m *Manager) matchBilibiliSessionLocked(target string) *recordSession {
 }
 
 func (m *Manager) matchDouyinSessionLocked(target string) *recordSession {
-	if strings.HasPrefix(target, "bilibili:") {
+	if strings.HasPrefix(target, "bilibili:") || strings.HasPrefix(strings.ToLower(target), "weibo:") {
 		return nil
 	}
 	var candidates []string
@@ -330,7 +338,7 @@ func (m *Manager) matchDouyinSessionLocked(target string) *recordSession {
 }
 
 func (m *Manager) matchBilibiliStateLocked(target string) (RoomState, bool) {
-	if strings.HasPrefix(target, "douyin:") {
+	if strings.HasPrefix(target, "douyin:") || strings.HasPrefix(strings.ToLower(target), "weibo:") {
 		return RoomState{}, false
 	}
 	trimmed := target
@@ -378,7 +386,7 @@ func (m *Manager) matchBilibiliStateLocked(target string) (RoomState, bool) {
 }
 
 func (m *Manager) matchDouyinStateLocked(target string) (RoomState, bool) {
-	if strings.HasPrefix(target, "bilibili:") {
+	if strings.HasPrefix(target, "bilibili:") || strings.HasPrefix(strings.ToLower(target), "weibo:") {
 		return RoomState{}, false
 	}
 	trimmed := target

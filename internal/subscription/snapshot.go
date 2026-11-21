@@ -230,7 +230,7 @@ func (m *Manager) ReplaceFromSnapshot(snap Snapshot) error {
 	prevAccs := map[string]AccountRef{}
 	for _, s := range prevSubs {
 		for _, a := range s.Accounts {
-			prevAccs[normalizeSchedulerSite(a.Site)+":"+a.UID] = a
+			prevAccs[normalizeLegacyAccountSite(a.Site)+":"+a.UID] = a
 		}
 	}
 	var subs []Subscription
@@ -242,7 +242,7 @@ func (m *Manager) ReplaceFromSnapshot(snap Snapshot) error {
 		}
 		sub := m.snapshotToSubscriptionLocked(x, r)
 		for _, a := range sub.Accounts {
-			nextAccs[normalizeSchedulerSite(a.Site)+":"+a.UID] = a
+			nextAccs[normalizeLegacyAccountSite(a.Site)+":"+a.UID] = a
 		}
 		subs = append(subs, sub)
 	}
@@ -253,11 +253,11 @@ func (m *Manager) ReplaceFromSnapshot(snap Snapshot) error {
 		nowStr := m.nowFunc().UTC().Format(time.RFC3339)
 		for k, a := range prevAccs {
 			if _, stillPresent := nextAccs[k]; !stillPresent {
-				_, _ = m.updatesDB.Exec(`UPDATE account_state SET unlinked_at = ? WHERE site = ? AND uid = ?`, nowStr, normalizeSchedulerSite(a.Site), a.UID)
+				_, _ = m.updatesDB.Exec(`UPDATE account_state SET unlinked_at = ? WHERE site = ? AND uid = ?`, nowStr, normalizeLegacyAccountSite(a.Site), a.UID)
 			}
 		}
 		for _, a := range nextAccs {
-			_, _ = m.updatesDB.Exec(`UPDATE account_state SET unlinked_at = '' WHERE site = ? AND uid = ?`, normalizeSchedulerSite(a.Site), a.UID)
+			_, _ = m.updatesDB.Exec(`UPDATE account_state SET unlinked_at = '' WHERE site = ? AND uid = ?`, normalizeLegacyAccountSite(a.Site), a.UID)
 		}
 	}
 	return nil
@@ -274,7 +274,7 @@ func (m *Manager) replaceAllLocked(subs []Subscription, rules []CacheRule) error
 	}
 	prevRaw, prevErr := os.ReadFile(m.subsPath)
 	prevRules := slices.Clone(m.rules)
-	sf := subscriptionsFile{Version: CurrentSchemaVersion, Subscriptions: subs, CacheRules: rules}
+	sf := subscriptionsFile{Version: SubscriptionsSchemaVersion, Subscriptions: subs, CacheRules: rules}
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
 		return err

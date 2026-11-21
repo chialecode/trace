@@ -115,7 +115,7 @@ func (a *App) renderSubscriptionsRoute(c *ui.Context) {
 				ui.Text(c, "还没有订阅").FontSize(16).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 				ui.Text(c, "把你关心的人建成订阅，一个人可以关联他的多个账号。").FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
 				ui.Row(c).Gap(10).Children(func() {
-					if OutlinePillButton(c, "从 B 站关注列表导入", "空状态导入关注").Clicked() {
+					if OutlinePillButton(c, "从关注列表导入", "空状态导入关注").Clicked() {
 						a.openImportFollowingsModal()
 					}
 				})
@@ -275,7 +275,7 @@ func (a *App) renderSubscriptionGridCell(c *ui.Context, s subscription.Subscript
 func (a *App) refreshSingleAccountLive(siteID, uid string) {
 	normSite := normalizeSiteIDUI(siteID)
 	uid = strings.TrimSpace(uid)
-	if uid == "" || a.backend == nil {
+	if uid == "" || a.backend == nil || normSite == "weibo" {
 		return
 	}
 	backend := a.backend

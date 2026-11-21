@@ -10,7 +10,8 @@ import (
 
 // forwardContentSQL matches library_items rows that are forwarded posts or
 // content cached because of one (media library "转发", DEC-056).
-const forwardContentSQL = "(json_extract(json_data, '$.via.reason') = 'forward' OR (kind = 'dynamic' AND json_extract(json_data, '$.dynamicType') = 'DYNAMIC_TYPE_FORWARD'))"
+// COALESCE ensures the expression always yields a boolean (never NULL under NOT).
+const forwardContentSQL = "(COALESCE(json_extract(json_data, '$.via.reason'), '') = 'forward' OR (kind = 'dynamic' AND COALESCE(json_extract(json_data, '$.dynamicType'), '') IN ('DYNAMIC_TYPE_FORWARD', 'forward')))"
 
 // viaUIDSQL is the indexed expression for the creator an item was cached for
 // (idx_library_items_via).
@@ -30,17 +31,29 @@ func appendLibrarySiteAndAuthorClauses(clauses []string, args []any, siteFilter 
 }
 
 // appendSiteAndAuthorClauses is the author filter for feed_items (colPrefix
-// "f."): an author's feed also has the collaboration videos cached for them
-// under their folder, though the uploader is someone else (DEC-061).
+// "f."): an author's feed includes collaboration works and forwarded posts
+// cached for them under their folder (DEC-056, DEC-061, DEC-063), and excludes
+// items cached solely because another creator forwarded them (e.g. Weibo
+// fast-retweets whose author_uid is the original author while via.uid is the
+// forwarder).
 func appendSiteAndAuthorClauses(clauses []string, args []any, colPrefix, siteFilter string, mid int64, authorUID string, mids []int64, refs []AuthorRef) ([]string, []any) {
 	return appendSiteAndAuthorClausesVia(clauses, args, colPrefix, siteFilter, mid, authorUID, mids, refs, false)
 }
 
-// collabItemKeysSQL selects the item keys of collaboration videos cached for
-// one of a site's creators; the site and creator placeholders follow.
-func collabItemKeysSQL(n int) string {
+// viaOwnerItemKeysSQL selects the item keys of collaboration works and
+// forwarded posts cached for one of a site's creators; the site and creator
+// placeholders follow.
+func viaOwnerItemKeysSQL(n int) string {
 	ph := strings.TrimSuffix(strings.Repeat("?,", n), ",")
-	return "(SELECT item_key FROM library_items WHERE site = ? AND " + viaUIDSQL + " IN (" + ph + ") AND json_extract(json_data, '$.via.reason') = '" + ViaCollab + "')"
+	return "(SELECT item_key FROM library_items WHERE site = ? AND " + viaUIDSQL + " IN (" + ph + ") AND json_extract(json_data, '$.via.reason') IN ('" + ViaCollab + "', '" + ViaForward + "'))"
+}
+
+// feedExcludedForwardSQL excludes feed_items rows whose library item was cached
+// under another creator's forwards/ folder (via.reason = 'forward' and
+// via.uid != f.author_uid), so fast-retweets never leak into the original
+// author's feed.
+func feedExcludedForwardSQL(colPrefix string) string {
+	return " AND NOT (" + colPrefix + "item_key != '' AND EXISTS (SELECT 1 FROM library_items li WHERE li.item_key = " + colPrefix + "item_key AND COALESCE(json_extract(li.json_data, '$.via.reason'), '') = '" + ViaForward + "' AND COALESCE(json_extract(li.json_data, '$.via.uid'), '') != '' AND json_extract(li.json_data, '$.via.uid') != " + colPrefix + "author_uid))"
 }
 
 func appendSiteAndAuthorClausesVia(clauses []string, args []any, colPrefix, siteFilter string, mid int64, authorUID string, mids []int64, refs []AuthorRef, withVia bool) ([]string, []any) {
@@ -108,6 +121,8 @@ func appendSiteAndAuthorClausesVia(clauses []string, args []any, colPrefix, site
 		if withVia {
 			cols[0].extra = " AND NOT " + viaForwardSQL
 			cols = append(cols, colClause{expr: viaUIDSQL})
+		} else if colPrefix != "" {
+			cols[0].extra = feedExcludedForwardSQL(colPrefix)
 		}
 		for _, col := range cols {
 			if len(uids) == 1 {
@@ -124,7 +139,7 @@ func appendSiteAndAuthorClausesVia(clauses []string, args []any, colPrefix, site
 			}
 		}
 		if !withVia && colPrefix != "" {
-			orParts = append(orParts, "("+colPrefix+"item_key IN "+collabItemKeysSQL(len(uids))+")")
+			orParts = append(orParts, "("+colPrefix+"item_key IN "+viaOwnerItemKeysSQL(len(uids))+")")
 			args = append(args, st)
 			for _, u := range uids {
 				args = append(args, u)
@@ -146,6 +161,11 @@ func (s *Store) ListItems(filter FeedFilter) ([]ItemMetadata, error) {
 	switch filter.Kind {
 	case "image":
 		clauses = append(clauses, "(EXISTS (SELECT 1 FROM json_each(json_data, '$.media') WHERE json_extract(value, '$.role') = 'image') OR EXISTS (SELECT 1 FROM json_each(json_data, '$.notePages') WHERE json_extract(value, '$.kind') IN ('image', 'motion')))")
+		if filter.ExcludeForward {
+			clauses = append(clauses, "NOT "+forwardContentSQL)
+		}
+	case "video":
+		clauses = append(clauses, "(kind = 'video' OR EXISTS (SELECT 1 FROM json_each(json_data, '$.media') WHERE json_extract(value, '$.role') = 'video') OR EXISTS (SELECT 1 FROM json_each(json_data, '$.notePages') WHERE json_extract(value, '$.kind') = 'video'))")
 		if filter.ExcludeForward {
 			clauses = append(clauses, "NOT "+forwardContentSQL)
 		}
