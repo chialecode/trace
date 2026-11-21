@@ -15,10 +15,11 @@ import (
 type queuePartEnqueuer func(ctx context.Context) ([]string, error)
 
 type queueEnqueued struct {
-	taskIDs   []string
-	itemKey   string
-	title     string
-	nextParts []queuePartEnqueuer
+	taskIDs      []string
+	itemKey      string
+	title        string
+	nextParts    []queuePartEnqueuer
+	pendingPages []int
 }
 
 // queueCandidate is one post from a creator's user page list that the background
@@ -81,7 +82,7 @@ func cacheQueueListLabel(siteID, list string) string {
 }
 
 func (b *Backend) buildQueueLoadedAndPager(siteID site.ID, list, normUser string, req CacheQueueRequest) ([]queueCandidate, queuePager, error) {
-	pager, err := b.buildQueuePager(siteID, list, normUser)
+	pager, err := b.buildQueuePager(siteID, list, normUser, req.UserName)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -97,13 +98,15 @@ func (b *Backend) buildQueueLoadedAndPager(siteID site.ID, list, normUser string
 		}
 	case siteID == site.Douyin:
 		for _, w := range req.Works {
-			loaded = append(loaded, b.workQueueCandidate(w))
+			loaded = append(loaded, b.workQueueCandidate(w, normUser, req.UserName))
 		}
 	}
 	return loaded, pager, nil
 }
 
-func (b *Backend) buildQueuePager(siteID site.ID, list, normUser string) (queuePager, error) {
+// buildQueuePager pages the queue's list; userName is the account's name,
+// recorded on co-creations cached for them.
+func (b *Backend) buildQueuePager(siteID site.ID, list, normUser, userName string) (queuePager, error) {
 	switch {
 	case siteID == site.Bilibili && list == "videos":
 		mid, err := strconv.ParseInt(normUser, 10, 64)
@@ -157,9 +160,16 @@ func (b *Backend) buildQueuePager(siteID site.ID, list, normUser string) (queueP
 			if err != nil {
 				return nil, "", false, err
 			}
+			if res.UncertainEmpty {
+				return nil, "", false, &site.Error{
+					Site:    site.Douyin,
+					Kind:    site.ErrKindRiskControl,
+					Message: firstNonEmpty(res.UncertainReason, "抖音返回空作品列表，可能被拦截或登录已失效"),
+				}
+			}
 			out := make([]queueCandidate, 0, len(res.Works))
 			for _, w := range res.Works {
-				out = append(out, b.workQueueCandidate(w))
+				out = append(out, b.workQueueCandidate(w, secUID, userName))
 			}
 			return out, res.NextCursor, res.HasMore && res.NextCursor != "", nil
 		}, nil
@@ -214,37 +224,58 @@ func (b *Backend) videoQueueCandidate(bvid, fallbackTitle string, forMid int64) 
 				ids = append(ids, t.TaskID)
 			}
 			var nextParts []queuePartEnqueuer
+			var pendingPages []int
 			if len(vd.Pages) > 1 && b.GetSettings().Download.MultiPart != "first" {
 				for _, vp := range vd.Pages[1:] {
 					pageNum := vp.Page
-					nextParts = append(nextParts, func(partCtx context.Context) ([]string, error) {
-						ptasks, perr := b.EnqueueVideoCache(partCtx, download.VideoEnqueueRequest{
-							BVID:   cleanID,
-							Detail: &detailCopy,
-							Pages:  []int{pageNum},
-							Source: "queue",
-							ForMid: forMid,
-						})
-						if perr != nil {
-							return nil, perr
-						}
-						var pids []string
-						for _, pt := range ptasks {
-							pids = append(pids, pt.TaskID)
-						}
-						return pids, nil
-					})
+					pendingPages = append(pendingPages, pageNum)
+					nextParts = append(nextParts, b.makeBilibiliPartEnqueuer(cleanID, &detailCopy, pageNum, forMid))
 				}
 			}
 			title := firstNonEmpty(vd.Title, fallbackTitle, cleanID)
 			return queueEnqueued{
-				taskIDs:   ids,
-				itemKey:   itemKey,
-				title:     trimQueueSummaryTitle(title),
-				nextParts: nextParts,
+				taskIDs:      ids,
+				itemKey:      itemKey,
+				title:        trimQueueSummaryTitle(title),
+				nextParts:    nextParts,
+				pendingPages: pendingPages,
 			}, nil
 		},
 	}
+}
+
+func (b *Backend) makeBilibiliPartEnqueuer(bvid string, detail *bilibili.VideoDetail, pageNum int, forMid int64) queuePartEnqueuer {
+	return func(partCtx context.Context) ([]string, error) {
+		ptasks, perr := b.EnqueueVideoCache(partCtx, download.VideoEnqueueRequest{
+			BVID:   bvid,
+			Detail: detail,
+			Pages:  []int{pageNum},
+			Source: "queue",
+			ForMid: forMid,
+		})
+		if perr != nil {
+			return nil, perr
+		}
+		pids := make([]string, 0, len(ptasks))
+		for _, pt := range ptasks {
+			pids = append(pids, pt.TaskID)
+		}
+		return pids, nil
+	}
+}
+
+func (b *Backend) buildBilibiliPartEnqueuers(bvid string, pages []int, forMid int64) []queuePartEnqueuer {
+	bvid = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(bvid), "bilibili:video:"))
+	if bvid == "" || len(pages) == 0 {
+		return nil
+	}
+	out := make([]queuePartEnqueuer, 0, len(pages))
+	for _, p := range pages {
+		if p > 0 {
+			out = append(out, b.makeBilibiliPartEnqueuer(bvid, nil, p, forMid))
+		}
+	}
+	return out
 }
 
 func (b *Backend) dynamicQueueCandidate(d bilibili.DynamicItem) queueCandidate {
@@ -256,8 +287,9 @@ func (b *Backend) dynamicQueueCandidate(d bilibili.DynamicItem) queueCandidate {
 	}
 	title := trimQueueSummaryTitle(firstNonEmpty(d.Title, d.Text, cleanID))
 	return queueCandidate{
-		key:   itemKey,
-		title: title,
+		key:         itemKey,
+		title:       title,
+		uncacheable: strings.EqualFold(strings.TrimSpace(d.Type), "DYNAMIC_TYPE_LIVE_RCMD"),
 		enqueue: func(ctx context.Context) (queueEnqueued, error) {
 			t, err := b.EnqueueDynamicCache(ctx, download.DynamicEnqueueRequest{
 				DynamicID: item.ID,
@@ -276,7 +308,9 @@ func (b *Backend) dynamicQueueCandidate(d bilibili.DynamicItem) queueCandidate {
 	}
 }
 
-func (b *Backend) workQueueCandidate(w DouyinWorkCardDTO) queueCandidate {
+// workQueueCandidate enqueues one work from account forUID's works list; a
+// co-creation by someone else is stored under forUID's folder (DEC-063).
+func (b *Backend) workQueueCandidate(w DouyinWorkCardDTO, forUID, forName string) queueCandidate {
 	id := strings.TrimSpace(w.ID)
 	key := w.CacheKey
 	if key == "" && id != "" {
@@ -288,7 +322,7 @@ func (b *Backend) workQueueCandidate(w DouyinWorkCardDTO) queueCandidate {
 		title:       title,
 		uncacheable: w.Uncacheable || w.Kind == "unsupported",
 		enqueue: func(ctx context.Context) (queueEnqueued, error) {
-			t, err := b.enqueueDouyinWorkWithSource(ctx, id, "queue")
+			t, err := b.enqueueDouyinWorkWithSource(ctx, id, "queue", forUID, forName)
 			if err != nil {
 				return queueEnqueued{}, err
 			}

@@ -181,12 +181,14 @@ func NewClient(opts ClientOptions) *Client {
 		ResponseHeaderTimeout: apiTimeout,
 	}
 
+	mediaDialer := &net.Dialer{
+		Timeout:   15 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	mediaGuard := site.NewGuardedMediaDialer(site.Bilibili, opts.AllowLocalhost, mediaDialer, "已拦截内网或回环媒体节点地址")
 	mediaTransport := &http.Transport{
-		Proxy: site.Proxy,
-		DialContext: (&net.Dialer{
-			Timeout:   15 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		Proxy:                 mediaGuard.Proxy,
+		DialContext:           mediaGuard.DialContext,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 15 * time.Second,
 	}
@@ -212,13 +214,15 @@ func NewClient(opts ClientOptions) *Client {
 	}
 
 	c.mediaClient = &http.Client{
-		Timeout:   0, // No total timeout on media streams; enforced via ResponseHeaderTimeout + idleTimeoutReader
+		Timeout:   0, // No total timeout on media streams; enforced via ResponseHeaderTimeout + WrapIdleReadCloser
 		Transport: mediaTransport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 3 {
 				return errors.New("bilibili: media redirect limit exceeded")
 			}
-			if !c.isAllowedMediaURL(req.URL) {
+			req.Header.Del("Cookie")
+			req.Header.Del("Authorization")
+			if err := c.ValidateMediaURL(req.URL.String()); err != nil {
 				return fmt.Errorf("bilibili: blocked media redirect host %s", req.URL.Host)
 			}
 			return nil
@@ -227,8 +231,8 @@ func NewClient(opts ClientOptions) *Client {
 
 	if opts.AllowLocalhost {
 		// Fixture clients must never escape to the real site, including redirects.
-		c.apiClient.Transport = loopbackTransport{apiTransport}
-		c.mediaClient.Transport = loopbackTransport{mediaTransport}
+		c.apiClient.Transport = site.LoopbackTransport(apiTransport)
+		c.mediaClient.Transport = site.LoopbackTransport(mediaTransport)
 	}
 	if opts.WrapTransport != nil {
 		c.apiClient.Transport = opts.WrapTransport(c.apiClient.Transport)
@@ -237,14 +241,9 @@ func NewClient(opts ClientOptions) *Client {
 	return c
 }
 
-type loopbackTransport struct{ base http.RoundTripper }
-
-func (t loopbackTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	host := r.URL.Hostname()
-	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
-		return nil, errors.New("fixture transport: non-loopback request rejected")
-	}
-	return t.base.RoundTrip(r)
+// AllowLocalhost reports whether this client is configured for local synthetic/fixture servers.
+func (c *Client) AllowLocalhost() bool {
+	return c != nil && c.allowLocalhost
 }
 
 // HasAuth reports whether the client currently holds an active login credential.
@@ -283,8 +282,11 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 	if err := c.RequireAuth("image"); err != nil {
 		return nil, err
 	}
-	u, err := url.Parse(rawURL)
-	if err != nil || !c.isAllowedMediaURL(u) || u.User != nil {
+	if err := c.ValidateMediaURL(rawURL); err != nil {
+		return nil, &SiteError{Kind: ErrKindBadRequest, Message: "图片地址不受支持"}
+	}
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
 		return nil, &SiteError{Kind: ErrKindBadRequest, Message: "图片地址不受支持"}
 	}
 	u.Path = strings.SplitN(u.Path, "@", 2)[0]
@@ -295,7 +297,7 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 	req.Header.Set("User-Agent", DefaultUserAgent)
 	resp, err := c.mediaClient.Do(req)
 	if err != nil {
-		return nil, &SiteError{Kind: ErrKindNetwork, Message: "原图加载失败，请重试"}
+		return nil, &SiteError{Kind: ErrKindNetwork, Message: "原图加载失败，请重试", Err: site.UnwrapURLError(err)}
 	}
 	body := c.WrapMediaReader(resp.Body)
 	defer body.Close()
@@ -317,10 +319,12 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 
 // WrapMediaReader wraps an io.ReadCloser with a per-read idle timeout.
 func (c *Client) WrapMediaReader(rc io.ReadCloser) io.ReadCloser {
-	return &idleTimeoutReadCloser{
-		rc:      rc,
-		timeout: c.mediaIdleTimeout,
-	}
+	return site.WrapIdleReadCloser(rc, c.mediaIdleTimeout, func() error {
+		return &SiteError{
+			Kind:    ErrKindNetwork,
+			Message: "媒体流读取超时（超过 30 秒无进展）",
+		}
+	})
 }
 
 func (c *Client) waitPacing(ctx context.Context) error {
@@ -400,10 +404,15 @@ func (c *Client) beginAPI(ctx context.Context) (func(), error) {
 }
 
 func (c *Client) doAPIRequest(ctx context.Context, method, fullURL string, body io.Reader, contentType string, includeCookies bool) (*http.Response, []byte, error) {
+	return c.doAPIRequestWithCookie(ctx, method, fullURL, body, contentType, includeCookies, "")
+}
+
+func (c *Client) doAPIRequestWithCookie(ctx context.Context, method, fullURL string, body io.Reader, contentType string, includeCookies bool, explicitCookie string) (*http.Response, []byte, error) {
 	ctx, unlock := c.beginSequence(ctx, false)
 	defer unlock()
-	if includeCookies {
-		if err := c.RequireAuth("api"); err != nil {
+	safeEndpoint := site.SanitizeEndpoint(fullURL)
+	if includeCookies && explicitCookie == "" {
+		if err := c.RequireAuth(safeEndpoint); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -415,9 +424,9 @@ func (c *Client) doAPIRequest(ctx context.Context, method, fullURL string, body 
 		}
 		return nil, nil, &SiteError{
 			Kind:     ErrKindNetwork,
-			Endpoint: fullURL,
+			Endpoint: safeEndpoint,
 			Message:  "请求已取消",
-			Err:      err,
+			Err:      site.UnwrapURLError(err),
 		}
 	}
 	defer endAPI()
@@ -426,9 +435,9 @@ func (c *Client) doAPIRequest(ctx context.Context, method, fullURL string, body 
 	if err != nil {
 		return nil, nil, &SiteError{
 			Kind:     ErrKindBadRequest,
-			Endpoint: fullURL,
+			Endpoint: safeEndpoint,
 			Message:  "构造请求失败",
-			Err:      err,
+			Err:      site.UnwrapURLError(err),
 		}
 	}
 	req.Header.Set("User-Agent", DefaultUserAgent)
@@ -437,7 +446,9 @@ func (c *Client) doAPIRequest(ctx context.Context, method, fullURL string, body 
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	if includeCookies && c.credStore != nil {
+	if explicitCookie != "" {
+		req.Header.Set("Cookie", explicitCookie)
+	} else if includeCookies && c.credStore != nil {
 		if ck := c.credStore.CookieHeader(); ck != "" {
 			req.Header.Set("Cookie", ck)
 		}
@@ -447,9 +458,9 @@ func (c *Client) doAPIRequest(ctx context.Context, method, fullURL string, body 
 	if err != nil {
 		return nil, nil, &SiteError{
 			Kind:     ErrKindNetwork,
-			Endpoint: fullURL,
+			Endpoint: safeEndpoint,
 			Message:  "网络请求失败",
-			Err:      err,
+			Err:      site.UnwrapURLError(err),
 		}
 	}
 	defer resp.Body.Close()
@@ -462,33 +473,71 @@ func (c *Client) doAPIRequest(ctx context.Context, method, fullURL string, body 
 	if err != nil {
 		return resp, nil, &SiteError{
 			Kind:     ErrKindNetwork,
-			Endpoint: fullURL,
+			Endpoint: safeEndpoint,
 			Message:  "读取响应失败",
-			Err:      err,
+			Err:      site.UnwrapURLError(err),
 		}
 	}
 
 	if int64(len(raw)) > limit {
-		return resp, nil, &SiteError{Kind: ErrKindSchemaChanged, Message: "接口响应超过大小上限"}
+		return resp, nil, &SiteError{Kind: ErrKindSchemaChanged, Endpoint: safeEndpoint, Message: "接口响应超过大小上限"}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return resp, raw, classifyHTTPStatus(resp.StatusCode, fullURL)
+		return resp, raw, classifyHTTPStatus(resp.StatusCode, safeEndpoint)
 	}
 	return resp, raw, nil
 }
 
-func (c *Client) doBiliJSON(ctx context.Context, method, fullURL string, body io.Reader, contentType string, includeCookies bool, out any) (response *http.Response, result error) {
-	defer func() { c.ReportAutomaticError(ctx, result) }()
+func (c *Client) doBiliJSON(ctx context.Context, method, fullURL string, body io.Reader, contentType string, includeCookies bool, out any) (*http.Response, error) {
+	return c.doBiliJSONWithReport(ctx, method, fullURL, body, contentType, includeCookies, out, true)
+}
+
+func (c *Client) doBiliJSONWithReport(ctx context.Context, method, fullURL string, body io.Reader, contentType string, includeCookies bool, out any, reportAuto bool) (response *http.Response, result error) {
+	if reportAuto {
+		defer func() { c.ReportAutomaticError(ctx, result) }()
+	}
+	safeEndpoint := site.SanitizeEndpoint(fullURL)
 	resp, raw, err := c.doAPIRequest(ctx, method, fullURL, body, contentType, includeCookies)
 	if err != nil {
 		return resp, err
 	}
 
+	payload, envErr := c.decodeBiliEnvelope(raw, safeEndpoint, true)
+	if envErr != nil {
+		return resp, envErr
+	}
+
+	if nd, ok := out.(nullableData); ok {
+		if len(payload) == 0 || string(payload) == "null" {
+			return resp, nil
+		}
+		out = nd.out
+	}
+	if out != nil {
+		if len(payload) == 0 || string(payload) == "null" {
+			return resp, &SiteError{Kind: ErrKindSchemaChanged, Endpoint: safeEndpoint, Message: "接口响应缺少 data"}
+		}
+		if emptyArrayForMap(payload, out) {
+			return resp, nil
+		}
+		if err := json.Unmarshal(payload, out); err != nil {
+			return resp, &SiteError{
+				Kind:     ErrKindSchemaChanged,
+				Endpoint: safeEndpoint,
+				Message:  "解析接口数据字段失败",
+				Err:      err,
+			}
+		}
+	}
+	return resp, nil
+}
+
+func (c *Client) decodeBiliEnvelope(raw []byte, safeEndpoint string, expireOn101 bool) (json.RawMessage, error) {
 	var env apiEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return resp, &SiteError{
+		return nil, &SiteError{
 			Kind:     ErrKindSchemaChanged,
-			Endpoint: fullURL,
+			Endpoint: safeEndpoint,
 			Message:  "接口返回非预期 JSON 结构",
 			Err:      err,
 		}
@@ -504,35 +553,12 @@ func (c *Client) doBiliJSON(ctx context.Context, method, fullURL string, body io
 		if msg == "" {
 			msg = env.Msg
 		}
-		if env.Code == -101 && c.credStore != nil {
+		if expireOn101 && env.Code == -101 && c.credStore != nil {
 			c.expireAuth()
 		}
-		return resp, classifyBiliCode(env.Code, msg, hasVoucher, fullURL)
+		return nil, classifyBiliCode(env.Code, msg, hasVoucher, safeEndpoint)
 	}
-
-	if nd, ok := out.(nullableData); ok {
-		if len(payload) == 0 || string(payload) == "null" {
-			return resp, nil
-		}
-		out = nd.out
-	}
-	if out != nil {
-		if len(payload) == 0 || string(payload) == "null" {
-			return resp, &SiteError{Kind: ErrKindSchemaChanged, Message: "接口响应缺少 data"}
-		}
-		if emptyArrayForMap(payload, out) {
-			return resp, nil
-		}
-		if err := json.Unmarshal(payload, out); err != nil {
-			return resp, &SiteError{
-				Kind:     ErrKindSchemaChanged,
-				Endpoint: fullURL,
-				Message:  "解析接口数据字段失败",
-				Err:      err,
-			}
-		}
-	}
-	return resp, nil
+	return payload, nil
 }
 
 // emptyArrayForMap reports whether an object-keyed result came back as an
@@ -548,32 +574,35 @@ func emptyArrayForMap(payload json.RawMessage, out any) bool {
 }
 
 // doWBIGet executes a WBI-signed GET request. On a single -352 response (without v_voucher),
-// it refreshes the WBI keys once from /x/web-interface/nav and retries once.
+// it refreshes the WBI keys once from /x/web-interface/nav and retries once before reporting
+// an automatic-request circuit break.
 func (c *Client) doWBIGet(ctx context.Context, path string, params url.Values, out any) error {
 	mixin, err := c.ensureMixinKey(ctx, false)
 	if err != nil {
 		return err
 	}
 	signed := SignWBIParams(params, mixin, c.nowFunc().Unix())
-	fullURL := strings.TrimRight(c.endpoints.APIBase, "/") + path + "?" + signed.Encode()
+	fullURL := strings.TrimRight(c.endpoints.APIBase, "/") + path + "?" + EncodeWBIQuery(signed)
 
-	_, err = c.doBiliJSON(ctx, http.MethodGet, fullURL, nil, "", true, out)
+	_, err = c.doBiliJSONWithReport(ctx, http.MethodGet, fullURL, nil, "", true, out, false)
 	if err == nil {
 		return nil
 	}
 
 	var se *SiteError
 	if errors.As(err, &se) && se.Code == -352 && !strings.Contains(se.Message, "v_voucher") {
-		// Refresh WBI keys once and retry once.
+		// Refresh WBI keys once and retry once before tripping automatic backoff.
 		mixin2, rErr := c.ensureMixinKey(ctx, true)
 		if rErr != nil {
+			c.ReportAutomaticError(ctx, err)
 			return err
 		}
 		signed2 := SignWBIParams(params, mixin2, c.nowFunc().Unix())
-		retryURL := strings.TrimRight(c.endpoints.APIBase, "/") + path + "?" + signed2.Encode()
+		retryURL := strings.TrimRight(c.endpoints.APIBase, "/") + path + "?" + EncodeWBIQuery(signed2)
 		_, err2 := c.doBiliJSON(ctx, http.MethodGet, retryURL, nil, "", true, out)
 		return err2
 	}
+	c.ReportAutomaticError(ctx, err)
 	return err
 }
 
@@ -631,8 +660,10 @@ type navData struct {
 	} `json:"wbi_img"`
 }
 
-func (c *Client) fetchNav(ctx context.Context) (navData, error) {
+func (c *Client) fetchNav(ctx context.Context) (nav navData, result error) {
+	defer func() { c.ReportAutomaticError(ctx, result) }()
 	fullURL := strings.TrimRight(c.endpoints.APIBase, "/") + "/x/web-interface/nav"
+	safeEndpoint := site.SanitizeEndpoint(fullURL)
 	_, raw, err := c.doAPIRequest(ctx, http.MethodGet, fullURL, nil, "", true)
 	if err != nil {
 		return navData{}, err
@@ -641,19 +672,24 @@ func (c *Client) fetchNav(ctx context.Context) (navData, error) {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return navData{}, &SiteError{
 			Kind:     ErrKindSchemaChanged,
-			Endpoint: fullURL,
+			Endpoint: safeEndpoint,
 			Message:  "解析 nav 响应失败",
 			Err:      err,
 		}
 	}
-	// Note: /x/web-interface/nav returns wbi_img inside data even when code == -101,
-	// though TRACE only calls nav when logged in or validating credentials.
+	hasVoucher := bytesContainsVoucher(env.Data)
+	if hasVoucher || env.Code == -101 {
+		if env.Code == -101 && c.credStore != nil {
+			c.expireAuth()
+		}
+		return navData{}, classifyBiliCode(env.Code, env.Message, hasVoucher, safeEndpoint)
+	}
 	var data navData
 	if len(env.Data) > 0 {
 		_ = json.Unmarshal(env.Data, &data)
 	}
 	if env.Code != 0 && data.WbiImg.ImgURL == "" {
-		return navData{}, classifyBiliCode(env.Code, env.Message, bytesContainsVoucher(env.Data), fullURL)
+		return navData{}, classifyBiliCode(env.Code, env.Message, false, safeEndpoint)
 	}
 	return data, nil
 }
@@ -677,80 +713,22 @@ func (c *Client) ValidateCandidateCookies(ctx context.Context, cookies map[strin
 	}
 	cookieHeader := strings.Join(pairs, "; ")
 
-	endAPI, err := c.beginAPI(ctx)
-	if err != nil {
-		var siteErr *SiteError
-		if errors.As(err, &siteErr) {
-			return 0, "", "", err
-		}
-		return 0, "", "", &SiteError{
-			Kind:     ErrKindNetwork,
-			Endpoint: "/x/web-interface/nav",
-			Message:  "请求已取消",
-			Err:      err,
-		}
-	}
-	defer endAPI()
 	fullURL := strings.TrimRight(c.endpoints.APIBase, "/") + "/x/web-interface/nav"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	safeEndpoint := site.SanitizeEndpoint(fullURL)
+	_, raw, err := c.doAPIRequestWithCookie(ctx, http.MethodGet, fullURL, nil, "", false, cookieHeader)
 	if err != nil {
-		return 0, "", "", &SiteError{
-			Kind:     ErrKindBadRequest,
-			Endpoint: fullURL,
-			Message:  "构造请求失败",
-			Err:      err,
-		}
+		return 0, "", "", err
 	}
-	req.Header.Set("User-Agent", DefaultUserAgent)
-	req.Header.Set("Referer", DefaultReferer)
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("Cookie", cookieHeader)
-
-	resp, err := c.apiClient.Do(req)
-	if err != nil {
-		return 0, "", "", &SiteError{
-			Kind:     ErrKindNetwork,
-			Endpoint: fullURL,
-			Message:  "网络请求失败",
-			Err:      err,
-		}
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, MaxAPIResponseBytes+1))
-	if err != nil {
-		return 0, "", "", &SiteError{
-			Kind:     ErrKindNetwork,
-			Endpoint: fullURL,
-			Message:  "读取响应失败",
-			Err:      err,
-		}
-	}
-	if len(raw) > MaxAPIResponseBytes {
-		return 0, "", "", &SiteError{Kind: ErrKindSchemaChanged, Message: "登录校验响应超过大小上限"}
-	}
-	if resp.StatusCode != http.StatusOK {
-		return 0, "", "", classifyHTTPStatus(resp.StatusCode, fullURL)
-	}
-
-	var env apiEnvelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return 0, "", "", &SiteError{
-			Kind:     ErrKindSchemaChanged,
-			Endpoint: fullURL,
-			Message:  "接口返回非预期 JSON 结构",
-			Err:      err,
-		}
-	}
-	if env.Code != 0 || bytesContainsVoucher(env.Data) {
-		return 0, "", "", classifyBiliCode(env.Code, env.Message, bytesContainsVoucher(env.Data), fullURL)
+	payload, envErr := c.decodeBiliEnvelope(raw, safeEndpoint, false)
+	if envErr != nil {
+		return 0, "", "", envErr
 	}
 
 	var data navData
-	if err := json.Unmarshal(env.Data, &data); err != nil {
+	if err := json.Unmarshal(payload, &data); err != nil {
 		return 0, "", "", &SiteError{
 			Kind:     ErrKindSchemaChanged,
-			Endpoint: fullURL,
+			Endpoint: safeEndpoint,
 			Message:  "解析 nav 数据失败",
 			Err:      err,
 		}
@@ -758,18 +736,18 @@ func (c *Client) ValidateCandidateCookies(ctx context.Context, cookies map[strin
 	if !data.IsLogin {
 		return 0, "", "", &SiteError{
 			Kind:     ErrKindAuthRequired,
-			Endpoint: fullURL,
+			Endpoint: safeEndpoint,
 			Message:  "凭证无效或未登录",
 		}
 	}
 	if data.Mid <= 0 {
-		return 0, "", "", &SiteError{Kind: ErrKindSchemaChanged, Message: "登录校验缺少有效的账号 ID"}
+		return 0, "", "", &SiteError{Kind: ErrKindSchemaChanged, Endpoint: safeEndpoint, Message: "登录校验缺少有效的账号 ID"}
 	}
 	if dede := strings.TrimSpace(filtered["DedeUserID"]); dede != "" && data.Mid > 0 {
 		if dede != fmt.Sprintf("%d", data.Mid) {
 			return 0, "", "", &SiteError{
 				Kind:     ErrKindBadRequest,
-				Endpoint: fullURL,
+				Endpoint: safeEndpoint,
 				Message:  "Cookie 中的 DedeUserID 与当前登录账号不一致",
 			}
 		}
@@ -796,117 +774,69 @@ func (c *Client) ClearCaches() {
 // VerifyCredential calls /x/web-interface/nav to verify that current cookies are valid and updates the cached profile.
 func (c *Client) VerifyCredential(ctx context.Context) (credential.Status, error) {
 	ctx, unlock := c.beginSequence(ctx, false)
-	defer unlock()
+	unlocked := false
+	release := func() {
+		if !unlocked {
+			unlocked = true
+			unlock()
+		}
+	}
+	defer release()
 	if err := c.RequireAuth("/x/web-interface/nav"); err != nil {
-		return c.credStore.Status(), err
+		return c.currentAccountStatus(), err
 	}
 	fullURL := strings.TrimRight(c.endpoints.APIBase, "/") + "/x/web-interface/nav"
+	safeEndpoint := site.SanitizeEndpoint(fullURL)
 	var data navData
 	if _, err := c.doBiliJSON(ctx, http.MethodGet, fullURL, nil, "", true, &data); err != nil {
-		return c.credStore.Status(), err
+		return c.currentAccountStatus(), err
 	}
 	if !data.IsLogin {
+		release()
 		c.expireAuth()
-		st := c.credStore.Status()
+		st := c.currentAccountStatus()
 		return st, &SiteError{
 			Kind:     ErrKindAuthRequired,
-			Endpoint: fullURL,
+			Endpoint: safeEndpoint,
 			Message:  "登录凭证已失效",
 		}
 	}
 	if data.Mid <= 0 {
-		return c.currentAccountStatus(), &SiteError{Kind: ErrKindSchemaChanged, Message: "登录校验缺少有效的账号 ID"}
+		return c.currentAccountStatus(), &SiteError{Kind: ErrKindSchemaChanged, Endpoint: safeEndpoint, Message: "登录校验缺少有效的账号 ID"}
 	}
 	if imgKey, subKey := ExtractWBIKey(data.WbiImg.ImgURL), ExtractWBIKey(data.WbiImg.SubURL); imgKey != "" && subKey != "" {
 		c.SetWBIKeys(imgKey, subKey)
 	}
+	if c.credStore == nil {
+		return c.currentAccountStatus(), nil
+	}
 	return c.credStore.UpdateProfile(data.Mid, data.Uname, data.Face)
 }
 
-func (c *Client) isAllowedMediaURL(u *url.URL) bool {
-	if u == nil {
-		return false
-	}
-	host := strings.ToLower(u.Hostname())
-	if c.allowLocalhost && (host == "127.0.0.1" || host == "localhost") {
-		return true
-	}
-	if u.Scheme != "https" {
-		return false
-	}
-	allowedSuffixes := []string{
-		".bilivideo.com",
-		".bilivideo.cn",
-		".hdslb.com",
-		".bilibili.com",
-		".akamaized.net",
-	}
-	for _, suf := range allowedSuffixes {
-		if strings.HasSuffix(host, suf) || host == strings.TrimPrefix(suf, ".") {
-			return true
-		}
-	}
-	return false
-}
-
+// ValidateMediaURL checks that rawURL matches Bilibili's allowed HTTPS media CDN whitelist.
 func (c *Client) ValidateMediaURL(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.User != nil || !c.isAllowedMediaURL(u) {
-		return &SiteError{Kind: ErrKindBadRequest, Message: "媒体地址不受支持"}
-	}
-	return nil
+	return site.BilibiliMediaTransport(c.allowLocalhost).ValidateURL(rawURL)
 }
 
 func bytesContainsVoucher(b []byte) bool {
 	return len(b) > 0 && strings.Contains(string(b), `"v_voucher"`)
 }
 
-type idleTimeoutReadCloser struct {
-	rc      io.ReadCloser
-	timeout time.Duration
+// SetAuthExpiredHandler registers a callback invoked when an authenticated request fails with expired credentials.
+func (c *Client) SetAuthExpiredHandler(handler func()) {
+	c.automationMu.Lock()
+	c.authExpired = handler
+	c.automationMu.Unlock()
 }
 
-func (r *idleTimeoutReadCloser) Read(p []byte) (int, error) {
-	if r.timeout <= 0 {
-		return r.rc.Read(p)
-	}
-	type readResult struct {
-		n   int
-		err error
-	}
-	ch := make(chan readResult, 1)
-	go func() {
-		n, err := r.rc.Read(p)
-		ch <- readResult{n: n, err: err}
-	}()
-
-	timer := time.NewTimer(r.timeout)
-	defer timer.Stop()
-	select {
-	case res := <-ch:
-		return res.n, res.err
-	case <-timer.C:
-		_ = r.rc.Close()
-		// The reader owns p until it exits; never let it mutate a reused buffer.
-		<-ch
-		return 0, &SiteError{
-			Kind:    ErrKindNetwork,
-			Message: "媒体流读取超时（超过 30 秒无进展）",
-		}
-	}
-}
-
-func (r *idleTimeoutReadCloser) Close() error {
-	return r.rc.Close()
-}
-
-// SetAuthExpiredHandler is configured before starting background work.
-func (c *Client) SetAuthExpiredHandler(handler func()) { c.authExpired = handler }
 func (c *Client) expireAuth() {
 	if c.credStore != nil {
 		_, _ = c.credStore.MarkState("expired", "登录凭证已失效")
 	}
-	if c.authExpired != nil {
-		c.authExpired()
+	c.automationMu.RLock()
+	handler := c.authExpired
+	c.automationMu.RUnlock()
+	if handler != nil {
+		handler()
 	}
 }

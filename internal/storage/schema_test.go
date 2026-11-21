@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"database/sql"
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
@@ -264,7 +266,113 @@ func TestWriteMigratedJSONAtomicPreRenameFaultCleansTemp(t *testing.T) {
 	if string(got) != orig {
 		t.Fatalf("original file altered after pre-rename fault: %s", got)
 	}
-	if tmps, _ := filepath.Glob(path + ".tmp-*"); len(tmps) != 0 {
+	if tmps, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".trace-"+filepath.Base(path)+".*.tmp")); len(tmps) != 0 {
 		t.Fatalf("temp files leaked after pre-rename fault: %v", tmps)
+	}
+}
+
+func TestSchemaGuardCorruptFileDoesNotOverwritePremigrateBackup(t *testing.T) {
+	dir := t.TempDir()
+	uiPath := filepath.Join(dir, "ui-state.json")
+	origBackup := uiPath + ".premigrate-1"
+	const savedV1 = `{"version":1,"lastRoute":"/saved-v1"}`
+	if err := os.WriteFile(origBackup, []byte(savedV1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(uiPath, []byte("{corrupt json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dir, "library.db")
+	origDBBackup := dbPath + ".premigrate-1"
+	if err := os.WriteFile(origDBBackup, []byte("precious-v1-db"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dbPath, []byte("not-a-sqlite-file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	backups, err := GuardDataSchemas(dir, DataSchemas)
+	if err != nil {
+		t.Fatalf("GuardDataSchemas on corrupt files: %v", err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("expected 0 premigrate backups for corrupt files, got %v", backups)
+	}
+	gotUI, _ := os.ReadFile(origBackup)
+	if string(gotUI) != savedV1 {
+		t.Fatalf("existing ui-state .premigrate-1 was clobbered: %q", gotUI)
+	}
+	gotDB, _ := os.ReadFile(origDBBackup)
+	if string(gotDB) != "precious-v1-db" {
+		t.Fatalf("existing library.db .premigrate-1 was clobbered: %q", gotDB)
+	}
+}
+
+func TestSchemaGuardReadsUncheckpointedWALUserVersion(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "library.db")
+	db, _, _, err := OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := StampSQLiteSchema(db, 1); err != nil {
+		t.Fatal(err)
+	}
+	// Hold a read transaction on a second connection so page 1 stays in -wal
+	// when the first connection commits user_version = 5.
+	reader, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	tx, err := reader.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cnt int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM t`).Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.Exec(`PRAGMA wal_autocheckpoint = 0`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 5`); err != nil {
+		t.Fatal(err)
+	}
+	// Copy main + wal files to a second directory while the WAL is uncheckpointed
+	// to simulate a crash before checkpoint without touching the live handles.
+	snapDir := t.TempDir()
+	for _, suffix := range []string{"", "-wal"} {
+		data, rErr := os.ReadFile(dbPath + suffix)
+		if rErr != nil {
+			t.Fatalf("read %s: %v", dbPath+suffix, rErr)
+		}
+		if wErr := os.WriteFile(filepath.Join(snapDir, "library.db"+suffix), data, 0o600); wErr != nil {
+			t.Fatal(wErr)
+		}
+	}
+	_ = tx.Rollback()
+	_ = reader.Close()
+	_ = db.Close()
+
+	// Verify main DB header still reads version 1 so the test truly exercises WAL parsing.
+	mainBytes, err := os.ReadFile(filepath.Join(snapDir, "library.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mainVer := int(int32(binary.BigEndian.Uint32(mainBytes[60:64]))); mainVer != 1 {
+		t.Fatalf("expected uncheckpointed main header version 1, got %d", mainVer)
+	}
+
+	ver, exists, err := ReadSchemaVersion(filepath.Join(snapDir, "library.db"), SchemaSQLite)
+	if err != nil || !exists || ver != 5 {
+		t.Fatalf("ReadSchemaVersion(uncheckpointed WAL) = (%d, %v, %v), want (5, true, nil)", ver, exists, err)
+	}
+	if _, err := GuardDataSchemas(snapDir, DataSchemas); !IsNewerData(err) {
+		t.Fatalf("GuardDataSchemas on uncheckpointed v5 WAL = %v, want NewerDataError", err)
 	}
 }

@@ -35,11 +35,11 @@ func TestV011BilibiliFixtureCompatibilityAndEntropyIsolation(t *testing.T) {
 		"uname": "SyntheticV011User",
 		"state": "logged_in"
 	}`)
-	biliCipher, err := encryptBytesWithEntropy(v011JSON, []byte("trace:bilibili:credential:v1"))
+	biliPath := filepath.Join(credDir, BilibiliFileName)
+	biliCipher, err := protectFor(biliPath, v011JSON, []byte("trace:bilibili:credential:v1"))
 	if err != nil {
 		t.Fatalf("encrypt v0.1.1 synthetic fixture: %v", err)
 	}
-	biliPath := filepath.Join(credDir, BilibiliFileName)
 	if err := os.WriteFile(biliPath, biliCipher, 0o600); err != nil {
 		t.Fatal(err)
 	}

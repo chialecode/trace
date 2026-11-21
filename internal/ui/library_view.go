@@ -18,8 +18,36 @@ type libraryTile struct {
 	video bool
 }
 
+func (a *App) libraryTilesFingerprint() uint64 {
+	h := newFNV64a()
+	for i := range a.LibraryItems {
+		it := &a.LibraryItems[i]
+		fnvWriteStr(h, it.ItemKey)
+		fnvWriteStr(h, it.Title)
+		fnvWriteStr(h, it.Author.Name)
+		fnvWriteInt64(h, int64(len(it.Media)))
+		for j := range it.Media {
+			m := &it.Media[j]
+			fnvWriteStr(h, m.Role)
+			fnvWriteStr(h, m.Path)
+			fnvWriteInt64(h, int64(m.Duration))
+		}
+	}
+	return h.Sum64()
+}
+
 func (a *App) libraryTiles() []libraryTile {
-	var tiles []libraryTile
+	sig := libraryTilesSig{
+		rev:  a.cacheStateRev,
+		n:    len(a.LibraryItems),
+		kind: a.LibraryKindFilter,
+		hash: a.libraryTilesFingerprint(),
+	}
+	st := a.fs()
+	if st.libTiles != nil && st.libTilesSig == sig {
+		return st.libTiles
+	}
+	tiles := make([]libraryTile, 0, len(a.LibraryItems))
 	for _, item := range a.LibraryItems {
 		index := 0
 		for _, media := range item.Media {
@@ -33,10 +61,16 @@ func (a *App) libraryTiles() []libraryTile {
 			}
 		}
 	}
+	st.libTilesSig = sig
+	st.libTiles = tiles
 	return tiles
 }
 
 func (a *App) renderLibraryRoute(c *ui.Context) {
+	if a.Transfer.ImportPage {
+		a.renderImportPage(c)
+		return
+	}
 	// The kinds and sources are in the context panel; a narrow window
 	// without it has them here (DEC-039).
 	if !a.panelShown {
@@ -58,7 +92,16 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 	ui.Column(c).FillWidth().Padding(10, 16).Gap(8).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).Children(func() {
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			input := ui.TextInput(c, &a.LibrarySearch).Label("媒体库搜索框").Placeholder("搜索标题或作者…").Grow(1)
+			st := a.fs()
 			if input.Changed() {
+				if input.Composing() {
+					st.librarySearchDirty = true
+				} else {
+					st.librarySearchDirty = false
+					a.reloadLibraryItems()
+				}
+			} else if st.librarySearchDirty && !input.Composing() {
+				st.librarySearchDirty = false
 				a.reloadLibraryItems()
 			}
 			a.renderLibraryRefreshButton(c)
@@ -113,7 +156,8 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 						btnLabel = "按作者筛选 " + aKey
 					}
 					ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-						a.renderAccountAvatar(c, aSite, author.Name, aUID, author.Mid, 28, false, "", nil, author.Face)
+						// Offline library view: use local avatar or initial fallback only (0 remote requests).
+						a.renderAccountAvatar(c, aSite, author.Name, aUID, author.Mid, 28, false, "", nil)
 						if OutlinePillButton(c, author.Name, btnLabel).Clicked() {
 							if aSite == "bilibili" && author.Mid > 0 {
 								a.LibraryCreatorMid = author.Mid
@@ -135,10 +179,13 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 		}
 	})
 	if a.LibraryError != "" {
-		ui.Text(c, a.LibraryError).FontSize(13).TextColor(ColorError)
-		if OutlinePillButton(c, "重试", "重试媒体库分页").Clicked() {
-			a.loadLibraryPage(a.libraryOffset == 0)
-		}
+		ui.Box(c).FillWidth().Padding(8, 16, 0, 16).Children(func() {
+			renderErrorBanner(c, "", a.LibraryError, func() {
+				if OutlinePillButton(c, "重试", "重试媒体库分页").Clicked() {
+					a.loadLibraryPage(a.libraryOffset == 0)
+				}
+			})
+		})
 	}
 	tiles := a.libraryTiles()
 	if len(tiles) == 0 {
@@ -163,10 +210,16 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 	thumbSize := tileWidth * 9 / 16
 	rows := (len(tiles) + cols - 1) / cols
 	_, last := a.LibraryListState.Visible()
-	if last >= rows-2 && a.LibraryHasMore && a.LibraryError == "" {
+	if last >= 0 && last >= rows-2 && a.LibraryHasMore && a.LibraryError == "" {
 		a.loadLibraryPage(false)
 	}
-	a.LibraryListState.Key = func(row int) any { return tiles[row*cols].item.ItemKey + ":" + tiles[row*cols].file.Path }
+	a.LibraryListState.Key = func(row int) any {
+		idx := row * cols
+		if idx < 0 || idx >= len(tiles) {
+			return row
+		}
+		return tiles[idx].item.ItemKey + ":" + tiles[idx].file.Path
+	}
 	ui.List(c, &a.LibraryListState, rows, func(row int) {
 		ui.Row(c).FillWidth().Padding(10, 16).Gap(16).AlignItems(ui.Start).Children(func() {
 			for col := 0; col < cols; col++ {
@@ -182,17 +235,22 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 	}).Label("媒体库网格列表").Grow(1).FillWidth()
 }
 
-func (a *App) renderLibraryTile(c *ui.Context, tile libraryTile, thumbSize float32) {
-	item := tile.item
-	rel := tile.file.Path
-	if tile.video {
-		for _, media := range item.Media {
-			if media.Role == "cover" {
-				rel = media.Path
-				break
-			}
+func libraryTileCoverRel(tile libraryTile) string {
+	if !tile.video {
+		return tile.file.Path
+	}
+	for _, media := range tile.item.Media {
+		if media.Role == "cover" && media.Path != "" {
+			return media.Path
 		}
 	}
+	// Never pass a raw video/live_segment (.mp4) path into image decoding.
+	return ""
+}
+
+func (a *App) renderLibraryTile(c *ui.Context, tile libraryTile, thumbSize float32) {
+	item := tile.item
+	rel := libraryTileCoverRel(tile)
 	tileKey := item.ItemKey
 	if tile.index > 0 {
 		tileKey += ":" + tile.file.Path
@@ -201,7 +259,8 @@ func (a *App) renderLibraryTile(c *ui.Context, tile libraryTile, thumbSize float
 
 	ui.Column(c).Grow(1).Basis(0).Gap(8).ClipX().Children(func() {
 		label := "媒体缩略图 " + tileKey
-		button := ui.ButtonBase(c).Label(label).Tooltip(strings.Split(item.Text+item.Desc, "\n")[0]).FillWidth().Height(thumbSize).Radius(14).Clip()
+		tipLine, _, _ := strings.Cut(firstNonEmptyStrUI(item.Text, item.Desc, item.Title), "\n")
+		button := ui.ButtonBase(c).Label(label).Tooltip(tipLine).FillWidth().Height(thumbSize).Radius(14).Clip()
 		button.Children(func() {
 			// Everything in the library is cached: no status dot (DEC-039).
 			a.renderMediaThumb(c, item.ItemKey, rel, item.Title, FormatDuration(tile.file.Duration), "", tile.video, 0, thumbSize)
@@ -230,7 +289,7 @@ func (a *App) renderLibraryTile(c *ui.Context, tile libraryTile, thumbSize float
 					a.openLibraryTile(tile)
 				}
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(4).ClipX().Children(func() {
-					ui.Text(c, authorLine).FontSize(12).SingleLine().TextColor(ColorTextMuted)
+					ui.Text(c, authorLine).FontSize(12).SingleLine().TextColor(ColorTextMuted).Shrink(1)
 					renderSiteSmallBadgeWithDot(c, item.Site, "媒体库站点："+tileKey)
 				})
 			})
@@ -259,14 +318,57 @@ func (a *App) requestLibraryDelete(item library.ItemMetadata) {
 		a.showError(err)
 		return
 	}
+	total := item.TotalBytes
+	// A dynamic takes along the videos only it references.
+	for _, key := range plan.ItemKeys {
+		if key == item.ItemKey {
+			continue
+		}
+		if ref, ok, err := a.backend.GetLibraryItem(key); err == nil && ok {
+			total += ref.TotalBytes
+		}
+	}
 	a.DeleteConfirm = DeleteConfirmState{
 		Open:        true,
 		Item:        item,
 		Plan:        plan,
 		FileCount:   len(plan.RegisteredFiles),
-		TotalBytes:  item.TotalBytes,
+		TotalBytes:  total,
 		DeleteFiles: true,
 	}
+}
+
+// renderCachedPostMenu is the "⋯" of a cached post in a subscription's 内容
+// tab: local actions only, no site requests.
+func (a *App) renderCachedPostMenu(c *ui.Context, postKey string, item library.ItemMetadata) {
+	menuKey := "cached-post:" + postKey
+	open := a.PostMenuKey == menuKey
+	MoreMenuButton(c, "帖子更多："+postKey, 28, &open, func(m *ui.Menu) {
+		if m.Item("在资源管理器中显示").Chosen() {
+			a.showError(a.backend.OpenItemFolder(item.ItemKey))
+		}
+		m.Separator()
+		if m.Item("删除").Danger().Chosen() {
+			a.requestLibraryDelete(item)
+		}
+	})
+	keyedMenuOpen(&a.PostMenuKey, menuKey, open)
+}
+
+// deleteConfirmTitle names the item in the delete dialog; a dynamic often
+// has no title, so its text stands in.
+func deleteConfirmTitle(item library.ItemMetadata) string {
+	if t := strings.TrimSpace(item.Title); t != "" {
+		return t
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(firstNonEmptyStrUI(item.Text, item.Desc)), "\n")
+	if r := []rune(line); len(r) > 40 {
+		line = string(r[:40]) + "…"
+	}
+	if line != "" {
+		return line
+	}
+	return itemKindLabel(item.Kind)
 }
 
 func (a *App) openLibraryTile(tile libraryTile) {
@@ -301,6 +403,7 @@ func (a *App) openLibraryTile(tile libraryTile) {
 
 // OpenLibraryItemDetail opens the local detail view on RouteLibraryItem without making network requests.
 func (a *App) OpenLibraryItemDetail(item library.ItemMetadata) {
+	a.closeLivePreview()
 	if a.CurrentRoute != RouteLibraryItem {
 		a.PreviousRoute = a.CurrentRoute
 	}

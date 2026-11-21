@@ -34,8 +34,8 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// F-043: the view calls Advance every frame; with decoding on the UI thread a
-// slow decoder froze the window (13 s per call for a real 4K file).
+// The view calls Advance every frame; decoding off the UI thread prevents a
+// slow decoder from freezing the window.
 func TestAdvanceNeverDecodesOnTheUIThread(t *testing.T) {
 	dec := &slowDecoder{SynthDecoder: NewSynthDecoder(64, 36, 30*time.Second, 30), delay: 150 * time.Millisecond}
 	c := NewController(Options{AudioSink: NewNullAudioSink()})

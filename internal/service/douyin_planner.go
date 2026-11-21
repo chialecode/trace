@@ -28,6 +28,13 @@ func (p *douyinWorkPlanner) ReportAutomaticError(ctx context.Context, err error)
 	}
 }
 
+func (p *douyinWorkPlanner) ResolvePlayRedirect(ctx context.Context, playURL string) (string, error) {
+	if err := p.backend.requireSiteLogin(site.Douyin); err != nil {
+		return "", err
+	}
+	return p.backend.douyin.ResolvePlayRedirect(ctx, playURL)
+}
+
 func (p *douyinWorkPlanner) PlanWorkDownload(ctx context.Context, targetID string, opts download.WorkPlanOptions) (download.WorkDownloadPlan, error) {
 	if err := p.backend.requireSiteLogin(site.Douyin); err != nil {
 		return download.WorkDownloadPlan{}, err
@@ -94,6 +101,7 @@ func (p *douyinWorkPlanner) PlanWorkDownload(ctx context.Context, targetID strin
 			}
 		}
 		plan.VideoURLs = append([]string(nil), selected.URLs...)
+		plan.NeedSetToken = selected.NeedSetToken
 		plan.VideoGear = selected.GearName
 		plan.QualityName = selected.QualityLabel
 		plan.Codec = selected.Codec
@@ -128,6 +136,7 @@ func (p *douyinWorkPlanner) PlanWorkDownload(ctx context.Context, targetID strin
 			}
 			if pg.VideoStream != nil {
 				item.VideoURLs = append([]string(nil), pg.VideoStream.URLs...)
+				item.NeedSetToken = pg.VideoStream.NeedSetToken
 				item.DurationSec = pg.VideoStream.DurationSec
 				item.Gear = pg.VideoStream.GearName
 				item.QualityName = pg.VideoStream.QualityLabel

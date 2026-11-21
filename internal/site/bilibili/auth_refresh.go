@@ -53,7 +53,7 @@ func GenerateCorrespondPath(tsMillis int64) (string, error) {
 
 // CheckAndRefreshCookie executes the 5-step Bilibili Cookie renewal flow when needed.
 // If a previous run completed step 4 (cookie/refresh) and failed before step 5 (confirm/refresh),
-// it resumes directly at step 5 using the new bili_jct and pendingOldRefreshToken (C08).
+// it resumes directly at step 5 using the new bili_jct and pendingOldRefreshToken.
 func (c *Client) CheckAndRefreshCookie(ctx context.Context) (credential.Status, error) {
 	ctx, unlock := c.beginSequence(ctx, true)
 	defer unlock()
@@ -62,14 +62,14 @@ func (c *Client) CheckAndRefreshCookie(ctx context.Context) (credential.Status, 
 	}
 
 	st := c.credStore.Status()
-	if st.Source == "manual" {
-		// DEC-031: Manual cookie login does not auto-renew.
+	if st.Source != "qr" {
+		// DEC-031 / DEC-062 ③: Manual and remote-pushed cookies do not auto-renew.
 		return st, nil
 	}
 
 	refreshToken, confirmPending, pendingOldRT := c.credStore.RefreshState()
 
-	// Resume Step 5 if Step 4 already succeeded earlier (C08).
+	// Resume Step 5 if Step 4 already succeeded earlier.
 	if confirmPending && pendingOldRT != "" {
 		newCSRF := c.credStore.CSRF()
 		if err := c.postConfirmRefresh(ctx, newCSRF, pendingOldRT); err != nil {
@@ -100,7 +100,7 @@ func (c *Client) CheckAndRefreshCookie(ctx context.Context) (credential.Status, 
 		st, stateErr := c.credStore.MarkState("refresh_failed", "站点提示需要续期 Cookie，但当前缺少 refresh_token，请重新扫码或补充导入")
 		return st, errors.Join(&SiteError{
 			Kind:     ErrKindAuthRequired,
-			Endpoint: infoURL,
+			Endpoint: "/x/passport-login/web/cookie/info",
 			Message:  "缺少 refresh_token，无法自动续期 Cookie",
 		}, stateErr)
 	}
@@ -115,13 +115,18 @@ func (c *Client) CheckAndRefreshCookie(ctx context.Context) (credential.Status, 
 	corrURL := strings.TrimRight(c.endpoints.WWWBase, "/") + "/correspond/1/" + correspondPath
 	_, corrRaw, err := c.doAPIRequest(ctx, http.MethodGet, corrURL, nil, "", true)
 	if err != nil {
+		var se *SiteError
+		if errors.As(err, &se) {
+			se.Endpoint = "/correspond/1/"
+		}
+		c.ReportAutomaticError(ctx, err)
 		return c.credStore.Status(), err
 	}
 	m := reCorrespondDiv.FindSubmatch(corrRaw)
 	if len(m) < 2 {
 		return c.credStore.Status(), &SiteError{
 			Kind:     ErrKindSchemaChanged,
-			Endpoint: corrURL,
+			Endpoint: "/correspond/1/",
 			Message:  "无法从 correspond 页面提取 refresh_csrf",
 		}
 	}
@@ -153,6 +158,14 @@ func (c *Client) CheckAndRefreshCookie(ctx context.Context) (credential.Status, 
 		var se *SiteError
 		if errors.As(err, &se) && (se.Code == -101 || se.Code == 86095) {
 			expSt, stateErr := c.credStore.MarkState("expired", "Cookie 自动续期失效，请重新扫码登录")
+			if se.Code == 86095 {
+				c.automationMu.RLock()
+				handler := c.authExpired
+				c.automationMu.RUnlock()
+				if handler != nil {
+					handler()
+				}
+			}
 			return expSt, errors.Join(err, stateErr)
 		}
 		st, stateErr := c.credStore.MarkState("refresh_failed", "Cookie 自动续期失败，将在下一周期重试")
@@ -199,7 +212,7 @@ func (c *Client) CheckAndRefreshCookie(ctx context.Context) (credential.Status, 
 		return c.credStore.Status(), err
 	}
 
-	// Step 5: POST /x/passport-login/web/confirm/refresh using NEW bili_jct and OLD refresh_token (C08)
+	// Step 5: POST /x/passport-login/web/confirm/refresh using NEW bili_jct and OLD refresh_token
 	newCSRF := newCookies["bili_jct"]
 	if err := c.postConfirmRefresh(ctx, newCSRF, refreshToken); err != nil {
 		// Step 4 is already persisted; next startup/check will retry Step 5 directly.

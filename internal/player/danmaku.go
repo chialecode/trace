@@ -42,22 +42,48 @@ type PositionedDanmaku struct {
 	Mode     int
 }
 
-// DanmakuEngine provides sub-millisecond frame layout over tens of thousands of danmaku items (PR-3, C22).
+// DanmakuEngine provides sub-millisecond frame layout over tens of thousands of danmaku items.
 type DanmakuEngine struct {
 	items []DanmakuItem
 }
 
+func isSupportedDanmakuMode(mode int) bool {
+	return mode >= 1 && mode <= 6
+}
+
+func clampDanmakuFontSize(fontSize int) float32 {
+	if fontSize <= 0 {
+		return 15
+	}
+	if fontSize < 12 {
+		return 12
+	}
+	if fontSize > 20 {
+		return 20
+	}
+	return float32(fontSize)
+}
+
 // NewDanmakuEngine creates a sorted DanmakuEngine from items.
 func NewDanmakuEngine(items []DanmakuItem) *DanmakuEngine {
-	copied := make([]DanmakuItem, len(items))
-	copy(copied, items)
-	for i := range copied {
-		if copied[i].FontSize <= 0 {
-			copied[i].FontSize = 20
+	copied := make([]DanmakuItem, 0, len(items))
+	for _, it := range items {
+		if math.IsNaN(it.TimeSec) || math.IsInf(it.TimeSec, 0) || it.TimeSec < 0 {
+			continue
 		}
-		if copied[i].WidthPx <= 0 {
-			copied[i].WidthPx = estimateTextWidth(copied[i].Text, copied[i].FontSize)
+		if it.Mode == 0 {
+			it.Mode = 1
 		}
+		if !isSupportedDanmakuMode(it.Mode) {
+			continue
+		}
+		if it.FontSize <= 0 {
+			it.FontSize = 15
+		}
+		if it.WidthPx <= 0 {
+			it.WidthPx = estimateTextWidth(it.Text, it.FontSize)
+		}
+		copied = append(copied, it)
 	}
 	sort.SliceStable(copied, func(i, j int) bool {
 		if copied[i].TimeSec != copied[j].TimeSec {
@@ -111,10 +137,13 @@ func ParseDanmakuXML(xmlBytes []byte) (*DanmakuEngine, error) {
 			continue
 		}
 		tSec, err := strconv.ParseFloat(parts[0], 64)
-		if err != nil {
+		if err != nil || math.IsNaN(tSec) || math.IsInf(tSec, 0) || tSec < 0 {
 			continue
 		}
 		mode, _ := strconv.Atoi(parts[1])
+		if !isSupportedDanmakuMode(mode) {
+			continue
+		}
 		fontSize, _ := strconv.Atoi(parts[2])
 		colVal, _ := strconv.ParseUint(parts[3], 10, 32)
 		idStr := ""
@@ -144,7 +173,7 @@ func (e *DanmakuEngine) Count() int {
 
 // LayoutFrame computes all visible danmaku positions at playback time tSec.
 // Uses binary search over [tSec - DanmakuRollDuration, tSec] and track collision avoidance
-// so 10,000+ items take < 1ms per frame (PR-3, C22).
+// so 10,000+ items take < 1ms per frame.
 // Optional density limits how many original entries per second are shown.
 // Selection is stable across frames and seeks; omitted density is unlimited.
 func (e *DanmakuEngine) LayoutFrame(
@@ -154,7 +183,7 @@ func (e *DanmakuEngine) LayoutFrame(
 	opacity float64,
 	density ...string,
 ) []PositionedDanmaku {
-	if e == nil || len(e.items) == 0 || viewportW <= 0 || viewportH <= 0 {
+	if e == nil || len(e.items) == 0 || viewportW <= 0 || viewportH <= 0 || math.IsNaN(tSec) || math.IsInf(tSec, 0) {
 		return nil
 	}
 	if areaRatio <= 0 || areaRatio > 1.0 {
@@ -185,7 +214,14 @@ func (e *DanmakuEngine) LayoutFrame(
 	var bottomOccupied [36]bool
 
 	alpha := uint8(opacity*255.0 + 0.5)
+	initCap := maxTracks * 2
+	if rem := len(e.items) - startIdx; rem < initCap {
+		initCap = rem
+	}
 	var out []PositionedDanmaku
+	if initCap > 0 {
+		out = make([]PositionedDanmaku, 0, initCap)
+	}
 	perSecond := 0
 	if len(density) > 0 {
 		perSecond = danmakuPerSecond(density[0])
@@ -210,6 +246,7 @@ func (e *DanmakuEngine) LayoutFrame(
 			B: uint8(it.ColorRGB & 0xFF),
 			A: alpha,
 		}
+		fontSize := clampDanmakuFontSize(it.FontSize)
 
 		switch it.Mode {
 		case 4: // Bottom pinned
@@ -240,7 +277,7 @@ func (e *DanmakuEngine) LayoutFrame(
 				Y:        y,
 				Width:    it.WidthPx,
 				Height:   DanmakuTrackHeight,
-				FontSize: 15,
+				FontSize: fontSize,
 				Color:    col,
 				Mode:     it.Mode,
 			})
@@ -273,12 +310,12 @@ func (e *DanmakuEngine) LayoutFrame(
 				Y:        y,
 				Width:    it.WidthPx,
 				Height:   DanmakuTrackHeight,
-				FontSize: 15,
+				FontSize: fontSize,
 				Color:    col,
 				Mode:     it.Mode,
 			})
 
-		default: // Rolling (modes 1, 2, 3)
+		case 1, 2, 3, 6: // Rolling
 			if elapsed > DanmakuRollDuration {
 				continue
 			}
@@ -312,7 +349,7 @@ func (e *DanmakuEngine) LayoutFrame(
 				Y:        y,
 				Width:    it.WidthPx,
 				Height:   DanmakuTrackHeight,
-				FontSize: 15,
+				FontSize: fontSize,
 				Color:    col,
 				Mode:     1,
 			})
@@ -344,10 +381,7 @@ func danmakuPerSecond(density string) int {
 }
 
 func estimateTextWidth(s string, fontSize int) float32 {
-	if fontSize <= 0 {
-		fontSize = 16
-	}
-	scale := float32(15.0)
+	scale := clampDanmakuFontSize(fontSize)
 	var width float32
 	for _, r := range s {
 		if r <= 0x7F {

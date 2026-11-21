@@ -24,6 +24,7 @@
 | 数据文件、缓存、下载、媒体协议、信息流 | [数据与缓存设计](docs/design/data-and-cache.md) |
 | 订阅、检查更新、定时规则、自动缓存 | [订阅设计](docs/design/subscriptions.md) |
 | 直播状态与录制 | [直播设计](docs/design/live.md) |
+| 远程版、上传、订阅与资源库的导入导出 | [远程设计](docs/design/remote.md) |
 | UI、文案、交互 | [界面规范](docs/ui.md) |
 | 站点协议 | [哔哩哔哩协议资料](docs/research/bilibili.md)、[抖音协议资料](docs/research/douyin.md) |
 

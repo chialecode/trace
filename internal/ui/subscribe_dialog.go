@@ -28,6 +28,7 @@ type SubscribePickerState struct {
 func (a *App) OpenSubscribePicker(acct subscription.AccountRef) {
 	if subs, err := a.backend.ListSubscriptions(); err == nil {
 		a.Subscriptions = subs
+		a.subsRev++
 	}
 	acct.Site = normalizeSiteIDUI(acct.Site)
 	acct.Name = firstNonEmptyStrUI(acct.Name, acct.UniqueID, acct.UID)
@@ -45,12 +46,13 @@ func (a *App) closeSubscribePicker() {
 // subscribeAsNew starts a subscription named after the account.
 func (a *App) subscribeAsNew() {
 	acct := a.SubscribePicker.Account
-	if _, err := a.backend.CreateSubscription(acct.Name, "", []subscription.AccountRef{acct}, subscription.DefaultSubRules()); err != nil {
+	subName := clampRunes(firstNonEmptyStrUI(acct.Name, acct.UniqueID, acct.UID), 64)
+	if _, err := a.backend.CreateSubscription(subName, "", []subscription.AccountRef{acct}, subscription.DefaultSubRules()); err != nil {
 		a.SubscribePicker.Error = userErrorText(err)
 		return
 	}
 	a.closeSubscribePicker()
-	a.BannerInfo = "已新建订阅：" + acct.Name
+	a.BannerInfo = "已新建订阅：" + subName
 	a.RefreshData()
 }
 
@@ -90,32 +92,14 @@ func (a *App) renderSubscribePickerOverlay(c *ui.Context, w, h float32) {
 	if !a.SubscribePicker.Open {
 		return
 	}
-	if c.Shortcut(0, ui.KeyEscape) {
-		a.closeSubscribePicker()
-		return
-	}
 	cardW := min(float32(520), max(float32(320), w-40))
 	cardH := min(float32(560), max(float32(320), h-80))
-	dlg := ui.DialogBase(c, &a.SubscribePicker.Open, func(backdrop, panel ui.Element) {
-		backdrop.Label("关闭加入订阅对话框（点击空白处）").Background(ui.RGBA(15, 20, 25, 0.55))
-		panel.
-			Label("加入订阅对话框").
-			Column().
-			Size(cardW, cardH).
-			Padding(20).
-			Radius(16).
-			Background(ColorBgMain).
-			Border(1, ColorBorder).
-			Shadow(0, 12, 40, 0, ui.RGBA(0, 0, 0, 0.24)).
-			Gap(12).
-			Clip().
-			Children(func() {
-				a.renderSubscribePickerBody(c)
-			})
-	})
-	if dlg.Dismissed() {
-		a.closeSubscribePicker()
-	}
+	renderDialog(c, &a.SubscribePicker.Open,
+		"关闭加入订阅对话框（点击空白处）", "加入订阅对话框",
+		cardW, cardH, a.closeSubscribePicker,
+		func() {
+			a.renderSubscribePickerBody(c)
+		})
 }
 
 func (a *App) renderSubscribePickerBody(c *ui.Context) {
@@ -130,7 +114,7 @@ func (a *App) renderSubscribePickerBody(c *ui.Context) {
 		a.renderAccountAvatar(c, acct.Site, acct.Name, acct.UID, mid, 40, false, "", nil, acct.Face)
 		ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-				ui.Text(c, "订阅 "+acct.Name).FontSize(17).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				ui.Text(c, "订阅 "+acct.Name).FontSize(17).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
 				renderSiteSmallBadgeWithDot(c, acct.Site, "加入订阅账号站点")
 			})
 			ui.Text(c, "加入一个现有订阅（同一个人的多个账号放在一起），或者新建一个订阅。").FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
@@ -159,12 +143,7 @@ func (a *App) renderSubscribePickerBody(c *ui.Context) {
 		}
 	})
 
-	filtered := make([]subscription.Subscription, 0, len(a.Subscriptions))
-	for _, sub := range a.Subscriptions {
-		if ruleBatchMatchesQuery(sub, st.CommittedQuery) {
-			filtered = append(filtered, sub)
-		}
-	}
+	filtered := a.filteredSubscriptions(strings.ToLower(strings.TrimSpace(st.CommittedQuery)))
 	ui.Column(c).Grow(1).FillWidth().Border(1, ColorBorder).Radius(12).Background(ColorBgMain).Clip().Children(func() {
 		switch {
 		case len(a.Subscriptions) == 0:
@@ -176,7 +155,16 @@ func (a *App) renderSubscribePickerBody(c *ui.Context) {
 				ui.Text(c, "没有匹配的订阅").FontSize(13).TextColor(ColorTextMuted).SingleLine()
 			})
 		default:
+			st.ListState.Key = func(i int) any {
+				if i < 0 || i >= len(filtered) {
+					return i
+				}
+				return filtered[i].ID
+			}
 			ui.List(c, &st.ListState, len(filtered), func(i int) {
+				if i < 0 || i >= len(filtered) {
+					return
+				}
 				sub := filtered[i]
 				name := firstNonEmptyStrUI(sub.Name, sub.Uname, sub.ID)
 				row := ui.ButtonBase(c).
@@ -213,10 +201,7 @@ func (a *App) renderSubscribePickerBody(c *ui.Context) {
 	})
 
 	if st.Error != "" {
-		ui.Row(c).FillWidth().Padding(8, 12).Radius(8).Background(ColorErrorBg).AlignItems(ui.Center).Gap(6).Children(func() {
-			DrawIcon(c, "alert-circle", 15, ColorError, 1.8)
-			ui.Text(c, st.Error).Label("加入订阅错误").FontSize(12).TextColor(ColorError).MaxLines(2).Grow(1)
-		})
+		renderErrorBanner(c, "加入订阅错误", st.Error, nil)
 	}
 	ui.Row(c).FillWidth().Justify(ui.End).Children(func() {
 		if OutlinePillButton(c, "取消", "取消加入订阅").Clicked() {

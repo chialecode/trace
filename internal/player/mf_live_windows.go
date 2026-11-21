@@ -124,10 +124,12 @@ type mfAsyncReadOutcome struct {
 }
 
 type mfLiveByteStream struct {
-	com      mfByteStreamCOMHeader
-	comAddr  uintptr
-	refCount atomic.Int32
-	attrs    uintptr
+	com           mfByteStreamCOMHeader
+	comAddr       uintptr
+	refCount      atomic.Int32
+	ownerReleased atomic.Bool
+	attrs         uintptr
+	mfStarted     bool
 
 	mu             sync.Mutex
 	cond           *sync.Cond
@@ -140,7 +142,6 @@ type mfLiveByteStream struct {
 	eof            bool
 	closed         bool
 	pendingReads   map[uintptr]mfAsyncReadOutcome
-	lastOutcome    mfAsyncReadOutcome
 
 	wg        sync.WaitGroup
 	cleanOnce sync.Once
@@ -181,10 +182,17 @@ func initMFLiveByteStreamVtbl() {
 					*ppv = this
 					return hrOK
 				}
-				if *riid == iidIMFAttributes && bs.attrs != 0 {
-					_ = vcall(bs.attrs, 1) // AddRef
-					*ppv = bs.attrs
-					return hrOK
+				if *riid == iidIMFAttributes {
+					bs.mu.Lock()
+					attrs := bs.attrs
+					if attrs != 0 && !bs.closed {
+						_ = vcall(attrs, 1) // AddRef while locked so finalize cannot release concurrently
+						*ppv = attrs
+						bs.mu.Unlock()
+						return hrOK
+					}
+					bs.mu.Unlock()
+					return hrENoIface
 				}
 				return hrENoIface
 			}),
@@ -200,15 +208,7 @@ func initMFLiveByteStreamVtbl() {
 				if bs == nil {
 					return 0
 				}
-				rc := bs.refCount.Add(-1)
-				if rc <= 0 {
-					bs.abort()
-					mfLiveStreamMapMu.Lock()
-					delete(mfLiveStreamMap, this)
-					mfLiveStreamMapMu.Unlock()
-					return 0
-				}
-				return uintptr(rc)
+				return uintptr(bs.releaseRef())
 			}),
 			GetCapabilities: syscall.NewCallback(func(this uintptr, pdwCaps *uint32) uintptr {
 				if pdwCaps == nil {
@@ -323,32 +323,41 @@ func initMFLiveByteStreamVtbl() {
 					comRelease(asyncRes)
 					return hrEAbort
 				}
+				bs.refCount.Add(1)
 				bs.wg.Add(1)
 				bs.mu.Unlock()
 
 				go func() {
+					defer bs.releaseRef()
 					defer bs.wg.Done()
 					var n int
 					status := hrOK
 					if cb > 0 {
 						tmp := make([]byte, int(cb))
 						n, status = bs.readBlocking(tmp)
-						if n > 0 {
+						// Guard native buffer write under bs.mu against concurrent abort/teardown.
+						bs.mu.Lock()
+						if bs.closed {
+							n = 0
+							status = hrEAbort
+						} else if n > 0 {
 							copy(unsafe.Slice(pb, n), tmp[:n])
 						}
+						bs.pendingReads[asyncRes] = mfAsyncReadOutcome{n: uint32(n), hr: status}
+						bs.mu.Unlock()
+					} else {
+						bs.mu.Lock()
+						if bs.closed {
+							status = hrEAbort
+						}
+						bs.pendingReads[asyncRes] = mfAsyncReadOutcome{n: 0, hr: status}
+						bs.mu.Unlock()
 					}
-					bs.mu.Lock()
-					out := mfAsyncReadOutcome{n: uint32(n), hr: status}
-					bs.pendingReads[asyncRes] = out
-					bs.lastOutcome = out
-					bs.mu.Unlock()
 
 					_ = vcall(asyncRes, 6, status)    // IMFAsyncResult::SetStatus
 					_ = vcall(pCallback, 4, asyncRes) // IMFAsyncCallback::Invoke
-
-					bs.mu.Lock()
-					delete(bs.pendingReads, asyncRes)
-					bs.mu.Unlock()
+					// Retain pendingReads[asyncRes] until EndRead consumes it (which MF may
+					// invoke asynchronously after Invoke returns) or finalize cleans leftovers.
 					comRelease(asyncRes)
 				}()
 				return hrOK
@@ -366,8 +375,10 @@ func initMFLiveByteStreamVtbl() {
 				out, ok := bs.pendingReads[pResult]
 				if ok {
 					delete(bs.pendingReads, pResult)
+				} else if bs.closed {
+					out = mfAsyncReadOutcome{n: 0, hr: hrEAbort}
 				} else {
-					out = bs.lastOutcome
+					out = mfAsyncReadOutcome{n: 0, hr: hrEInvalidArg}
 				}
 				bs.mu.Unlock()
 				*pcbRead = out.n
@@ -420,24 +431,40 @@ func initMFLiveByteStreamVtbl() {
 
 func newMFLiveByteStream(src *liveFMP4Source) (*mfLiveByteStream, error) {
 	initMFLiveByteStreamVtbl()
-	f, err := openSharedReadFile(src.path)
-	if err != nil {
-		return nil, err
+	ensureProcessMTA()
+
+	var mfErr error
+	var attrs uintptr
+	withThreadMTA(func() {
+		r1, _, _ := procMFStartup.Call(mfVersionWin10, 0)
+		if int32(r1) < 0 {
+			mfErr = fmt.Errorf("mf: MFStartup failed: 0x%08x", uint32(r1))
+			return
+		}
+		if hr, _, _ := procMFCreateAttributes.Call(uintptr(unsafe.Pointer(&attrs)), 2); int32(hr) >= 0 && attrs != 0 {
+			if mime, mErr := windows.UTF16PtrFromString("video/mp4"); mErr == nil {
+				_ = vcall(attrs, 25, uintptr(unsafe.Pointer(&guidMFByteStreamContentType)), uintptr(unsafe.Pointer(mime))) // SetString
+			}
+			if name, nErr := windows.UTF16PtrFromString("live.mp4"); nErr == nil {
+				_ = vcall(attrs, 25, uintptr(unsafe.Pointer(&guidMFByteStreamOriginName)), uintptr(unsafe.Pointer(name))) // SetString
+			}
+		}
+	})
+	if mfErr != nil {
+		return nil, mfErr
 	}
 
-	var attrs uintptr
-	if hr, _, _ := procMFCreateAttributes.Call(uintptr(unsafe.Pointer(&attrs)), 2); int32(hr) >= 0 && attrs != 0 {
-		if mime, mErr := windows.UTF16PtrFromString("video/mp4"); mErr == nil {
-			_ = vcall(attrs, 25, uintptr(unsafe.Pointer(&guidMFByteStreamContentType)), uintptr(unsafe.Pointer(mime))) // SetString
-		}
-		if name, nErr := windows.UTF16PtrFromString("live.mp4"); nErr == nil {
-			_ = vcall(attrs, 25, uintptr(unsafe.Pointer(&guidMFByteStreamOriginName)), uintptr(unsafe.Pointer(name))) // SetString
-		}
+	f, err := openSharedReadFile(src.path)
+	if err != nil {
+		comRelease(attrs)
+		_, _, _ = procMFShutdown.Call()
+		return nil, err
 	}
 
 	bs := &mfLiveByteStream{
 		com:            mfByteStreamCOMHeader{lpVtbl: &mfLiveVtbl},
 		attrs:          attrs,
+		mfStarted:      true,
 		file:           f,
 		realFileCursor: src.startFileOff,
 		pendingReads:   make(map[uintptr]mfAsyncReadOutcome),
@@ -461,13 +488,18 @@ func newMFLiveByteStream(src *liveFMP4Source) (*mfLiveByteStream, error) {
 	mfLiveStreamMap[bs.comAddr] = bs
 	mfLiveStreamMapMu.Unlock()
 
-	committedEnd, ended := src.subscribe(func(nextCommitted int64, nextEnded bool, nextClosed bool) {
+	committedEnd, ended, closed := src.subscribe(func(nextCommitted int64, nextEnded bool, nextClosed bool) {
 		if nextClosed {
 			bs.abort()
 			return
 		}
 		bs.onSourceUpdate(nextCommitted, nextEnded)
 	})
+	if closed {
+		bs.abort()
+		bs.releaseOwner()
+		return nil, context.Canceled
+	}
 	bs.onSourceUpdate(committedEnd, ended)
 	return bs, nil
 }
@@ -622,134 +654,69 @@ func (bs *mfLiveByteStream) abort() {
 	}
 }
 
-func (bs *mfLiveByteStream) releaseOwner() {
-	if bs.comAddr == 0 {
-		return
+func (bs *mfLiveByteStream) releaseRef() int32 {
+	rc := bs.refCount.Add(-1)
+	if rc <= 0 {
+		bs.abort()
+		bs.finalize()
+		return 0
 	}
-	comRelease(bs.comAddr)
+	return rc
 }
 
-func (bs *mfLiveByteStream) waitClosed() {
-	bs.abort()
-	bs.wg.Wait()
+func (bs *mfLiveByteStream) finalize() {
 	bs.cleanOnce.Do(func() {
 		mfLiveStreamMapMu.Lock()
 		delete(mfLiveStreamMap, bs.comAddr)
 		mfLiveStreamMapMu.Unlock()
-		comRelease(bs.attrs)
+
+		bs.mu.Lock()
+		attrs := bs.attrs
 		bs.attrs = 0
+		clear(bs.pendingReads)
+		mfStarted := bs.mfStarted
+		bs.mfStarted = false
+		bs.mu.Unlock()
+
+		comRelease(attrs)
+		if mfStarted {
+			_, _, _ = procMFShutdown.Call()
+		}
 	})
 }
 
-func openLiveMFReader(byteStream uintptr, forVideo bool) (*MFDecoder, error) {
-	_, _, _ = procCoInitializeEx.Call(0, coinitMultithreaded)
-	r1, _, _ := procMFStartup.Call(mfVersionWin10, 0)
-	if int32(r1) < 0 {
-		return nil, fmt.Errorf("mf: MFStartup failed: 0x%08x", uint32(r1))
+func (bs *mfLiveByteStream) releaseOwner() {
+	if bs.comAddr == 0 || !bs.ownerReleased.CompareAndSwap(false, true) {
+		return
 	}
-	modes := videoReaderModes
-	if !forVideo {
-		modes = []readerMode{{name: "audio"}}
-	}
-	var lastErr error
-	for _, mode := range modes {
-		dec, err := openLiveMFReaderMode(byteStream, forVideo, mode)
-		if err == nil {
-			return dec, nil
-		}
-		lastErr = err
-	}
-	_, _, _ = procMFShutdown.Call()
-	return nil, lastErr
+	_ = bs.releaseRef()
 }
 
-func openLiveMFReaderMode(byteStream uintptr, forVideo bool, mode readerMode) (*MFDecoder, error) {
-	var device, manager uintptr
-	if mode.hardware {
-		if device, manager = newDXGIDeviceManager(); manager == 0 {
-			return nil, fmt.Errorf("mf: no GPU video device")
-		}
-	}
-	release := func() {
-		comRelease(manager)
-		comRelease(device)
-	}
+func (bs *mfLiveByteStream) waitReads() {
+	bs.abort()
+	bs.wg.Wait()
+}
 
-	var attrs uintptr
-	hr, _, _ := procMFCreateAttributes.Call(uintptr(unsafe.Pointer(&attrs)), 3)
-	if int32(hr) < 0 {
-		release()
-		return nil, fmt.Errorf("mf: MFCreateAttributes failed: 0x%08x", uint32(hr))
-	}
-	defer comRelease(attrs)
-	switch {
-	case mode.advanced:
-		_ = comSetUINT32(attrs, &guidMFSourceReaderEnableAdvancedVideoProcessing, 1)
-	case forVideo:
-		_ = comSetUINT32(attrs, &guidMFSourceReaderEnableVideoProcessing, 1)
-	}
-	if manager != 0 {
-		_ = comSetUINT32(attrs, &guidMFReadWriteEnableHardwareTransforms, 1)
-		if err := comSetUnknown(attrs, &guidMFSourceReaderD3DManager, manager); err != nil {
-			release()
-			return nil, err
-		}
-	}
+func (bs *mfLiveByteStream) waitClosed() {
+	bs.waitReads()
+	bs.mu.Lock()
+	clear(bs.pendingReads)
+	bs.mu.Unlock()
+}
 
-	var reader uintptr
-	hr, _, _ = procMFCreateSourceReaderFromByteStream.Call(
-		byteStream,
-		attrs,
-		uintptr(unsafe.Pointer(&reader)),
-	)
-	if int32(hr) < 0 || reader == 0 {
-		release()
-		return nil, fmt.Errorf("mf: MFCreateSourceReaderFromByteStream failed: 0x%08x", uint32(hr))
-	}
-
-	dec := &MFDecoder{
-		reader:      reader,
-		hasVideo:    forVideo,
-		videoFormat: "none",
-		device:      device,
-		manager:     manager,
-		hardware:    manager != 0,
-		mode:        mode.name,
-		sampleRate:  48000,
-		channels:    2,
-	}
-	if forVideo {
-		dec.fps = 30.0
-	}
-	fail := func(err error) (*MFDecoder, error) {
-		dec.releaseCOM()
-		return nil, err
-	}
-	_ = vcall(reader, 4, mfSourceReaderAllStreams, 0)
-	if forVideo {
-		_ = vcall(reader, 4, mfSourceReaderFirstVideoStream, 1)
-		if err := dec.configureVideoStream(mode.advanced); err != nil {
-			return fail(err)
+func openLiveMFReader(byteStream uintptr, forVideo bool) (*MFDecoder, error) {
+	return openMFReaderWithFactory(forVideo, false, func(attrs uintptr) (uintptr, error) {
+		var reader uintptr
+		hr, _, _ := procMFCreateSourceReaderFromByteStream.Call(
+			byteStream,
+			attrs,
+			uintptr(unsafe.Pointer(&reader)),
+		)
+		if int32(hr) < 0 || reader == 0 {
+			return 0, fmt.Errorf("mf: MFCreateSourceReaderFromByteStream failed: 0x%08x", uint32(hr))
 		}
-		dec.sourceHasVideo = true
-		var native uintptr
-		if hr := vcall(reader, 5, mfSourceReaderFirstAudioStream, 0, uintptr(unsafe.Pointer(&native))); int32(hr) >= 0 && native != 0 {
-			comRelease(native)
-			dec.hasAudio = true
-		}
-	} else {
-		var videoNative uintptr
-		if hr := vcall(reader, 5, mfSourceReaderFirstVideoStream, 0, uintptr(unsafe.Pointer(&videoNative))); int32(hr) >= 0 && videoNative != 0 {
-			comRelease(videoNative)
-			dec.sourceHasVideo = true
-		}
-		_ = vcall(reader, 4, mfSourceReaderFirstAudioStream, 1)
-		dec.configureAudioStream()
-		if !dec.hasAudio {
-			return fail(fmt.Errorf("mf: no decodable audio stream"))
-		}
-	}
-	return dec, nil
+		return reader, nil
+	})
 }
 
 type liveMFDecoder struct {
@@ -784,11 +751,18 @@ func openLivePreviewPlatform(ctx context.Context, path string, opts LivePreviewO
 		return nil, err
 	}
 
+	var cancelMu sync.Mutex
+	activeStreams := []*mfLiveByteStream{vbs}
 	openDone := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			vbs.abort()
+			cancelMu.Lock()
+			streams := append([]*mfLiveByteStream(nil), activeStreams...)
+			cancelMu.Unlock()
+			for _, s := range streams {
+				s.abort()
+			}
 			src.abort()
 		case <-openDone:
 		}
@@ -797,9 +771,12 @@ func openLivePreviewPlatform(ctx context.Context, path string, opts LivePreviewO
 	videoDec, err := openLiveMFReader(vbs.comPtr(), true)
 	if err != nil {
 		close(openDone)
-		vbs.releaseOwner()
 		vbs.waitClosed()
+		vbs.releaseOwner()
 		_ = src.Close()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		if IsMissingCodecError(err) {
 			return nil, ErrMissingCodec
 		}
@@ -808,30 +785,40 @@ func openLivePreviewPlatform(ctx context.Context, path string, opts LivePreviewO
 
 	var abs *mfLiveByteStream
 	var audioDec *MFDecoder
-	if src.hasAudio {
+	if ctx.Err() == nil && src.hasAudio {
 		if aStream, aErr := newMFLiveByteStream(src); aErr == nil {
-			if aDec, rErr := openLiveMFReader(aStream.comPtr(), false); rErr == nil {
+			cancelMu.Lock()
+			activeStreams = append(activeStreams, aStream)
+			cancelMu.Unlock()
+			if ctx.Err() != nil {
+				aStream.waitClosed()
+				aStream.releaseOwner()
+			} else if aDec, rErr := openLiveMFReader(aStream.comPtr(), false); rErr == nil {
 				abs = aStream
 				audioDec = aDec
 			} else {
-				aStream.releaseOwner()
 				aStream.waitClosed()
+				aStream.releaseOwner()
 			}
 		}
 	}
 	close(openDone)
 
 	if err := ctx.Err(); err != nil {
+		if abs != nil {
+			abs.waitReads()
+		}
+		vbs.waitReads()
 		if audioDec != nil {
 			_ = audioDec.Close()
 		}
 		_ = videoDec.Close()
 		if abs != nil {
-			abs.releaseOwner()
 			abs.waitClosed()
+			abs.releaseOwner()
 		}
-		vbs.releaseOwner()
 		vbs.waitClosed()
+		vbs.releaseOwner()
 		_ = src.Close()
 		return nil, err
 	}
@@ -1036,6 +1023,15 @@ func (d *liveMFDecoder) abort() {
 func (d *liveMFDecoder) Close() error {
 	d.abort()
 	d.closeOnce.Do(func() {
+		// Wait for all in-flight BeginRead goroutines to complete with E_ABORT
+		// while IMFSourceReader and native MF buffers are still alive, then
+		// release readers before dropping the owner COM refs on the byte streams.
+		if d.abs != nil {
+			d.abs.waitReads()
+		}
+		if d.vbs != nil {
+			d.vbs.waitReads()
+		}
 		if d.audio != nil {
 			_ = d.audio.Close()
 		}
@@ -1043,12 +1039,12 @@ func (d *liveMFDecoder) Close() error {
 			_ = d.video.Close()
 		}
 		if d.abs != nil {
-			d.abs.releaseOwner()
 			d.abs.waitClosed()
+			d.abs.releaseOwner()
 		}
 		if d.vbs != nil {
-			d.vbs.releaseOwner()
 			d.vbs.waitClosed()
+			d.vbs.releaseOwner()
 		}
 		if d.src != nil {
 			_ = d.src.Close()

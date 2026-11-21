@@ -80,10 +80,6 @@ func TestSettingsCorruptRecoveryAndUnknownFields(t *testing.T) {
 	}
 }
 
-func TestSettingsSanitizeAndCorruptRecovery(t *testing.T) {
-	TestSettingsCorruptRecoveryAndUnknownFields(t)
-}
-
 func TestSettingsCanToggleRulesAndRestoreDefaults(t *testing.T) {
 	dir := t.TempDir()
 	store, _, _, err := Open(filepath.Join(dir, "settings.json"), filepath.Join(dir, "cache"))
@@ -111,5 +107,42 @@ func TestSettingsCanToggleRulesAndRestoreDefaults(t *testing.T) {
 	loaded, _, _, err := Open(filepath.Join(dir, "settings.json"), filepath.Join(dir, "cache"))
 	if err != nil || loaded.Get().ScheduledCheck || !loaded.Get().Danmaku {
 		t.Fatalf("saved settings did not round trip: %+v %v", loaded, err)
+	}
+}
+
+func TestSettingsCloneIsolatesRemoteSlicesAndPollInterval(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	store, _, _, err := Open(path, filepath.Join(dir, "cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := store.Get()
+	next.Live.PollIntervalSeconds = 45
+	next.Remote.Connections = []RemoteConnection{{ID: "r1", Name: "srv", URL: "https://example.com"}}
+	next.Remote.PendingCookies = []PendingCookie{{Site: "bilibili", Since: "2026-01-01T00:00:00Z"}}
+	updated, err := store.Update(next)
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.LiveCheckIntervalMin != 1 || updated.Live.PollIntervalSeconds != 60 {
+		t.Fatalf("45s poll interval = (%d min, %d sec), want (1, 60)", updated.LiveCheckIntervalMin, updated.Live.PollIntervalSeconds)
+	}
+	// Mutating caller or returned slices must not mutate committed state.
+	next.Remote.Connections[0].Name = "mutated-input"
+	updated.Remote.Connections[0].Name = "mutated-return"
+	next.Remote.PendingCookies[0].Site = "douyin"
+	updated.Remote.PendingCookies[0].Site = "douyin"
+	got := store.Get()
+	if got.Remote.Connections[0].Name != "srv" || got.Remote.PendingCookies[0].Site != "bilibili" {
+		t.Fatalf("committed Remote slices were aliased: %+v", got.Remote)
+	}
+
+	newerPath := filepath.Join(dir, "newer-settings.json")
+	if err := os.WriteFile(newerPath, []byte(`{"version":5}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := Open(newerPath, filepath.Join(dir, "cache")); err == nil {
+		t.Fatal("Open(version=5) succeeded, want NewerDataError")
 	}
 }

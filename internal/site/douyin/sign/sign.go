@@ -231,30 +231,67 @@ func (s *nativeSigner) Sign(ctx context.Context, in SignInput) (SignResult, erro
 	}
 
 	// Stage 2: ArgusSecurityPlugin query & header signing.
+	var stage2Query string
+	stamp := strconv.FormatInt(nowMs/1000, 10)
 	if useRawStage1 {
 		orderedPairs, err = parseRawQueryOrder(in.RawQuery)
 		if err != nil {
 			return SignResult{}, err
 		}
-	}
-	orderedPairs = append(orderedPairs, Pair{Key: QueryParamABogus, Value: sig1})
-
-	if verifyFp != "" {
-		if !containsPairKey(orderedPairs, "verifyFp") {
-			orderedPairs = append(orderedPairs, Pair{Key: "verifyFp", Value: verifyFp})
+		if containsPairKey(orderedPairs, "timestamp") {
+			// Must replace existing timestamp in place.
+			orderedPairs = append(orderedPairs, Pair{Key: QueryParamABogus, Value: sig1})
+			if verifyFp != "" {
+				if !containsPairKey(orderedPairs, "verifyFp") {
+					orderedPairs = append(orderedPairs, Pair{Key: "verifyFp", Value: verifyFp})
+				}
+				if !containsPairKey(orderedPairs, "fp") {
+					orderedPairs = append(orderedPairs, Pair{Key: "fp", Value: verifyFp})
+				}
+			}
+			if !containsPairKey(orderedPairs, HeaderUIFID) {
+				orderedPairs = append(orderedPairs, Pair{Key: HeaderUIFID, Value: uifid})
+			}
+			setOrAppendPair(&orderedPairs, "timestamp", stamp)
+			stage2Query = SerializePairs(orderedPairs)
+		} else {
+			// Preserve exact Stage-1 raw query bytes and append Stage-2 parameters.
+			extra := []Pair{{Key: QueryParamABogus, Value: sig1}}
+			if verifyFp != "" {
+				if !containsPairKey(orderedPairs, "verifyFp") {
+					extra = append(extra, Pair{Key: "verifyFp", Value: verifyFp})
+				}
+				if !containsPairKey(orderedPairs, "fp") {
+					extra = append(extra, Pair{Key: "fp", Value: verifyFp})
+				}
+			}
+			if !containsPairKey(orderedPairs, HeaderUIFID) {
+				extra = append(extra, Pair{Key: HeaderUIFID, Value: uifid})
+			}
+			extra = append(extra, Pair{Key: "timestamp", Value: stamp})
+			extraEncoded := SerializePairs(extra)
+			if stage1Query == "" {
+				stage2Query = extraEncoded
+			} else {
+				stage2Query = stage1Query + "&" + extraEncoded
+			}
 		}
-		if !containsPairKey(orderedPairs, "fp") {
-			orderedPairs = append(orderedPairs, Pair{Key: "fp", Value: verifyFp})
+	} else {
+		orderedPairs = append(orderedPairs, Pair{Key: QueryParamABogus, Value: sig1})
+		if verifyFp != "" {
+			if !containsPairKey(orderedPairs, "verifyFp") {
+				orderedPairs = append(orderedPairs, Pair{Key: "verifyFp", Value: verifyFp})
+			}
+			if !containsPairKey(orderedPairs, "fp") {
+				orderedPairs = append(orderedPairs, Pair{Key: "fp", Value: verifyFp})
+			}
 		}
+		if !containsPairKey(orderedPairs, HeaderUIFID) {
+			orderedPairs = append(orderedPairs, Pair{Key: HeaderUIFID, Value: uifid})
+		}
+		setOrAppendPair(&orderedPairs, "timestamp", stamp)
+		stage2Query = SerializePairs(orderedPairs)
 	}
-	if !containsPairKey(orderedPairs, HeaderUIFID) {
-		orderedPairs = append(orderedPairs, Pair{Key: HeaderUIFID, Value: uifid})
-	}
-
-	stamp := strconv.FormatInt(nowMs/1000, 10)
-	setOrAppendPair(&orderedPairs, "timestamp", stamp)
-
-	stage2Query := SerializePairs(orderedPairs)
 	preimage := uifid + "_" + stamp + "_" + secSDKSalt + "_" + stage2Query
 	md5Digest := md5.Sum([]byte(preimage))
 	secSig := hex.EncodeToString(md5Digest[:])
@@ -398,12 +435,12 @@ func decodeQueryComponent(s string) (string, error) {
 			out = append(out, ' ')
 		case '%':
 			if i+2 >= len(s) {
-				return "", fmt.Errorf("douyin/sign: invalid percent escape in %q", s)
+				return "", fmt.Errorf("douyin/sign: truncated percent escape at offset %d", i)
 			}
 			hi, ok1 := fromHexNibble(s[i+1])
 			lo, ok2 := fromHexNibble(s[i+2])
 			if !ok1 || !ok2 {
-				return "", fmt.Errorf("douyin/sign: invalid percent hex in %q", s)
+				return "", fmt.Errorf("douyin/sign: invalid percent hex escape at offset %d", i)
 			}
 			out = append(out, (hi<<4)|lo)
 			i += 2

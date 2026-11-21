@@ -95,7 +95,7 @@ func (a *App) enqueueCacheAll(siteID string) {
 		req.AvatarURL = a.CurrentDouyinUser.AvatarURL
 		req.Works = append(req.Works, a.CurrentDouyinWorks...)
 		req.Cursor = a.DouyinWorksNextCursor
-		req.HasMore = a.DouyinWorksHasMore
+		req.HasMore = a.DouyinWorksHasMore || (len(a.CurrentDouyinWorks) == 0 && a.DouyinWorksError != "")
 	case siteID == "bilibili" && a.CurrentUser != nil:
 		req.User = strconv.FormatInt(a.CurrentUser.Mid, 10)
 		req.UserName = firstNonEmptyStrUI(a.CurrentUser.Name, req.User)
@@ -109,12 +109,12 @@ func (a *App) enqueueCacheAll(siteID string) {
 			req.List = "dynamics"
 			req.Dynamics = append(req.Dynamics, a.UserDynamics...)
 			req.Cursor = a.UserDynamicsNext
-			req.HasMore = a.UserDynamicsHasMore
+			req.HasMore = a.UserDynamicsHasMore || (len(a.UserDynamics) == 0 && a.UserDynamicsError != "")
 		}
 	default:
 		return
 	}
-	request(a, "cache-queue-"+siteID+"-"+req.List, func(ctx context.Context) (service.CacheQueueTask, error) {
+	request(a, "cache-queue-"+siteID+"-"+req.List+"-"+req.User, func(ctx context.Context) (service.CacheQueueTask, error) {
 		return a.backend.EnqueueCacheQueue(ctx, req)
 	}, func(service.CacheQueueTask) {
 		a.BannerInfo = "已加入缓存队列，会在后台慢慢缓存"

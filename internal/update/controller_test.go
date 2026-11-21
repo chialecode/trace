@@ -241,3 +241,73 @@ func TestUpdateNoticeAfterUpdate(t *testing.T) {
 		t.Fatal("notice not dismissed")
 	}
 }
+
+type blockingEngine struct {
+	checkEntered chan struct{}
+	releaseCheck chan struct{}
+	installs     int
+}
+
+func (e *blockingEngine) Enabled() bool { return true }
+func (e *blockingEngine) Check(ctx context.Context) (*Release, error) {
+	if e.checkEntered != nil {
+		select {
+		case e.checkEntered <- struct{}{}:
+		default:
+		}
+	}
+	if e.releaseCheck != nil {
+		select {
+		case <-e.releaseCheck:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return &Release{Version: "0.2.0", Notes: "n"}, nil
+}
+func (e *blockingEngine) Install(ctx context.Context, progress func(downloaded, total int64)) error {
+	e.installs++
+	return nil
+}
+
+func TestControllerDoesNotSpinWhileBusyAndHandsOffInstallSafely(t *testing.T) {
+	eng := &blockingEngine{
+		checkEntered: make(chan struct{}, 1),
+		releaseCheck: make(chan struct{}),
+	}
+	var changes int
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	c := NewController(Options{
+		Engine:         eng,
+		CurrentVersion: "0.1.0",
+		Prefs:          func() Prefs { return Prefs{AutoCheck: true, AutoDownload: true} },
+		Now:            func() time.Time { return now },
+		FirstDelay:     time.Millisecond,
+		OnChange:       func() { changes++ },
+	})
+	// Advance clock past FirstDelay so Start's due check is already overdue.
+	now = now.Add(time.Minute)
+	done := make(chan struct{})
+	go func() {
+		c.CheckNow(context.Background())
+		close(done)
+	}()
+	<-eng.checkEntered
+
+	// While CheckNow holds busy=true, untilNextCheck must NOT return 0 (spin).
+	if d := c.untilNextCheck(now); d <= 0 {
+		t.Fatalf("untilNextCheck while busy = %v, want > 0", d)
+	}
+	// Concurrent CheckNow/Download must be ignored without panic or extra OnChange flood.
+	beforeChanges := changes
+	c.CheckNow(context.Background())
+	c.Download(context.Background())
+	if changes != beforeChanges {
+		t.Fatalf("busy no-op fired OnChange (%d -> %d)", beforeChanges, changes)
+	}
+	close(eng.releaseCheck)
+	<-done
+	if st := c.State(); st.Phase != PhaseReady || eng.installs != 1 {
+		t.Fatalf("after handoff: phase=%s installs=%d", st.Phase, eng.installs)
+	}
+}

@@ -25,7 +25,12 @@ type AccountWorks struct {
 // Totals below zero are ignored.
 func (m *Manager) RecordAccountWorks(siteID, uid string, total int) error {
 	siteID, uid = strings.ToLower(strings.TrimSpace(siteID)), strings.TrimSpace(uid)
-	if m == nil || m.updatesDB == nil || siteID == "" || uid == "" || total < 0 {
+	if m == nil || siteID == "" || uid == "" || total < 0 {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.updatesDB == nil {
 		return nil
 	}
 	now := m.nowFunc().UTC().Format(time.RFC3339)
@@ -39,7 +44,12 @@ func (m *Manager) RecordAccountWorks(siteID, uid string, total int) error {
 // MarkFullCacheSweep records when a full-cache sweep of the account started.
 func (m *Manager) MarkFullCacheSweep(siteID, uid string, at time.Time) error {
 	siteID, uid = strings.ToLower(strings.TrimSpace(siteID)), strings.TrimSpace(uid)
-	if m == nil || m.updatesDB == nil || siteID == "" || uid == "" {
+	if m == nil || siteID == "" || uid == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.updatesDB == nil {
 		return nil
 	}
 	_, err := m.updatesDB.Exec(`
@@ -52,7 +62,12 @@ func (m *Manager) MarkFullCacheSweep(siteID, uid string, at time.Time) error {
 // ListAccountWorks returns every stored row, keyed "site:uid".
 func (m *Manager) ListAccountWorks() (map[string]AccountWorks, error) {
 	out := map[string]AccountWorks{}
-	if m == nil || m.updatesDB == nil {
+	if m == nil {
+		return out, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.updatesDB == nil {
 		return out, nil
 	}
 	rows, err := m.updatesDB.Query(`SELECT site, uid, works_total, works_at, full_cache_at FROM account_works`)

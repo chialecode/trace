@@ -24,10 +24,42 @@ type partJob struct {
 	qualityName string
 }
 
-// finishPartAsync converts a part while the session records the next one.
-// Converting a long part takes tens of seconds (3.3 GB took about 40); a
-// live playlist keeps only the last few seconds, so converting it in the
-// recording loop lost the segments published meanwhile (dev 2026-11-18).
+func roundedLiveDurationSec(sec float64) int {
+	if sec <= 0 || math.IsNaN(sec) || math.IsInf(sec, 0) {
+		return 0
+	}
+	return max(1, int(math.Round(sec)))
+}
+
+func removeFileWithRetry(path string) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		err = os.Remove(path)
+		if err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
+	}
+	return err
+}
+
+func (m *Manager) finishContext() (context.Context, context.CancelFunc) {
+	m.mu.Lock()
+	stopping := m.stopping
+	deadline := m.stopDeadline
+	timeout := m.finalizeTimeout
+	m.mu.Unlock()
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if stopping && !deadline.IsZero() {
+		return context.WithDeadline(context.Background(), deadline)
+	}
+	return context.WithTimeout(context.Background(), timeout)
+}
+
+// finishPartAsync converts a part while the session records the next one, so
+// converting a long part never stalls playlist polling or loses segments.
 // Parts of a session convert one at a time and in order; the session waits
 // for them before it ends.
 func (m *Manager) finishPartAsync(sess *recordSession, job partJob) {
@@ -56,23 +88,24 @@ func (sess *recordSession) waitPartsFinished() {
 }
 
 // finishPart converts a recorded part to MP4 and registers it in the
-// session's manifest; the .part goes once the manifest names the MP4. A
-// failed conversion keeps the .part and records the incident. The error is
-// the manifest's: the session cannot go on without it.
+// session's manifest; PendingParts retains the .part entry until the manifest
+// save succeeds, and the .part file is removed only after commit. A failed
+// conversion keeps the .part and records the incident.
 func (m *Manager) finishPart(sess *recordSession, job partJob) error {
-	finishCtx, cancel := context.WithTimeout(context.Background(), m.finalizeTimeout)
+	finishCtx, cancel := m.finishContext()
 	summary, conversionErr := convertPart(finishCtx, job.path, filepath.Join(sess.itemDir, job.partRel))
 	cancel()
 	if conversionErr != nil {
+		reason := "直播录像转换失败：" + sanitizeLiveError(conversionErr)
 		m.mu.Lock()
 		addLiveMissing(&sess.itemMeta, job.pending, "转换失败，临时片段已保留")
-		sess.lastErr = "直播录像转换失败：" + conversionErr.Error()
+		sess.lastErr = reason
 		m.mu.Unlock()
 		m.recordSessionIncident(sess, library.LiveIncident{
 			Kind:   library.LiveIncidentConvertFailed,
-			At:     m.nowFunc().UTC().Format(time.RFC3339),
+			At:     m.now().UTC().Format(time.RFC3339),
 			Part:   job.pending,
-			Reason: "直播录像转换失败：" + library.SanitizeLiveIncidentText(conversionErr.Error()),
+			Reason: reason,
 		}, true)
 		return m.writeSessionMeta(sess, false)
 	}
@@ -80,18 +113,53 @@ func (m *Manager) finishPart(sess *recordSession, job partJob) error {
 	if codec == "" && len(summary.Codecs) > 0 {
 		codec = summary.Codecs[0]
 	}
-	m.mu.Lock()
-	sess.itemMeta.Media = mergeLiveMedia(sess.itemMeta.Media, library.MediaFile{Role: "live_segment", Path: job.partRel, Bytes: summary.FileBytes, SHA256: summary.SHA256, Duration: int(math.Round(summary.DurationSec)), Width: summary.Width, Height: summary.Height})
-	sess.itemMeta.PendingParts = removePending(sess.itemMeta.PendingParts, job.pending)
-	clearLiveCheckpoint(&sess.itemMeta, job.pending)
-	clearLiveMissing(&sess.itemMeta, job.pending)
-	sess.itemMeta.Live.Segments = mergeLiveSegment(sess.itemMeta.Live.Segments, library.LiveSegmentInfo{File: job.partRel, Bytes: summary.FileBytes, SHA256: summary.SHA256, DurationSec: summary.DurationSec, Codec: codec, Width: summary.Width, Height: summary.Height, Quality: job.quality, QualityName: job.qualityName})
-	sess.segments = append(sess.segments, job.partRel)
-	m.mu.Unlock()
-	if err := m.writeSessionMeta(sess, false); err != nil {
+	mediaEntry := library.MediaFile{
+		Role:     "live_segment",
+		Path:     job.partRel,
+		Bytes:    summary.FileBytes,
+		SHA256:   summary.SHA256,
+		Duration: roundedLiveDurationSec(summary.DurationSec),
+		Width:    summary.Width,
+		Height:   summary.Height,
+	}
+	segEntry := library.LiveSegmentInfo{
+		File:        job.partRel,
+		Bytes:       summary.FileBytes,
+		SHA256:      summary.SHA256,
+		DurationSec: summary.DurationSec,
+		Codec:       codec,
+		Width:       summary.Width,
+		Height:      summary.Height,
+		Quality:     job.quality,
+		QualityName: job.qualityName,
+	}
+	applyPart := func(meta *library.ItemMetadata) {
+		meta.Media = mergeLiveMedia(meta.Media, mediaEntry)
+		meta.PendingParts = removePending(meta.PendingParts, job.pending)
+		clearLiveCheckpoint(meta, job.pending)
+		clearLiveMissing(meta, job.pending)
+		if meta.Live != nil {
+			meta.Live.Segments = mergeLiveSegment(meta.Live.Segments, segEntry)
+		}
+	}
+
+	var notify *RoomState
+	if err := m.commitSessionMeta(sess, false, applyPart, func() {
+		sess.segments = append(sess.segments, job.partRel)
+		if st, ok := m.syncSessionRoomStateLocked(sess); ok {
+			cp := st
+			notify = &cp
+		}
+	}); err != nil {
 		return err
 	}
-	_ = os.Remove(job.path)
+
+	_ = removeFileWithRetry(job.path)
+	if notify != nil && m.onState != nil {
+		leave := sess.enterExternal()
+		m.onState(*notify)
+		leave()
+	}
 	return nil
 }
 
@@ -106,24 +174,52 @@ func (m *Manager) saveSession(sess *recordSession) error {
 // change (only what the library derives is taken back). fromLoop also
 // records the sequence the loop reached; a background part leaves it.
 func (m *Manager) writeSessionMeta(sess *recordSession, fromLoop bool) error {
+	return m.commitSessionMeta(sess, fromLoop, nil, nil)
+}
+
+// commitSessionMeta atomically applies mutate to a snapshot, persists it via
+// m.lib.SaveItem, and only commits mutate + onSavedLocked back into sess once
+// persistence succeeds.
+func (m *Manager) commitSessionMeta(
+	sess *recordSession,
+	fromLoop bool,
+	mutate func(meta *library.ItemMetadata),
+	onSavedLocked func(),
+) error {
 	sess.saveMu.Lock()
 	defer sess.saveMu.Unlock()
 	m.mu.Lock()
-	if fromLoop {
+	if fromLoop && sess.itemMeta.Live != nil {
 		sess.itemMeta.Live.LastSequence, sess.itemMeta.Live.HasSequence = sess.lastSequence, sess.hasSequence
 	}
-	sess.itemMeta.Live.Incidents = cloneIncidents(sess.incidents)
 	metaCopy := snapshotItemMeta(sess.itemMeta)
-	m.mu.Unlock()
-	saved, err := m.lib.SaveItem(sess.itemDir, metaCopy)
-	if err == nil {
-		m.mu.Lock()
-		sess.itemMeta.Version, sess.itemMeta.Site, sess.itemMeta.Kind = saved.Version, saved.Site, saved.Kind
-		sess.itemMeta.RawID, sess.itemMeta.ItemKey, sess.itemMeta.ItemDir = saved.RawID, saved.ItemKey, saved.ItemDir
-		sess.itemMeta.CachedAt, sess.itemMeta.TotalBytes, sess.itemMeta.Status = saved.CachedAt, saved.TotalBytes, saved.Status
-		m.mu.Unlock()
+	if mutate != nil {
+		mutate(&metaCopy)
 	}
-	return err
+	if metaCopy.Live != nil {
+		metaCopy.Live.Incidents = cloneIncidents(sess.incidents)
+	}
+	m.mu.Unlock()
+
+	saved, err := m.lib.SaveItem(sess.itemDir, metaCopy)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if mutate != nil {
+		mutate(&sess.itemMeta)
+	}
+	if sess.itemMeta.Live != nil {
+		sess.itemMeta.Live.Incidents = cloneIncidents(sess.incidents)
+	}
+	sess.itemMeta.Version, sess.itemMeta.Site, sess.itemMeta.Kind = saved.Version, saved.Site, saved.Kind
+	sess.itemMeta.RawID, sess.itemMeta.ItemKey, sess.itemMeta.ItemDir = saved.RawID, saved.ItemKey, saved.ItemDir
+	sess.itemMeta.CachedAt, sess.itemMeta.TotalBytes, sess.itemMeta.Status = saved.CachedAt, saved.TotalBytes, saved.Status
+	if onSavedLocked != nil {
+		onSavedLocked()
+	}
+	m.mu.Unlock()
+	return nil
 }
 
 // saveCheckpoint applies update to the manifest and writes it as the
@@ -133,7 +229,9 @@ func (m *Manager) saveCheckpoint(sess *recordSession, update func(meta *library.
 	defer sess.saveMu.Unlock()
 	m.mu.Lock()
 	update(&sess.itemMeta)
-	sess.itemMeta.Live.Incidents = cloneIncidents(sess.incidents)
+	if sess.itemMeta.Live != nil {
+		sess.itemMeta.Live.Incidents = cloneIncidents(sess.incidents)
+	}
 	metaCopy := snapshotItemMeta(sess.itemMeta)
 	m.mu.Unlock()
 	_, err := m.lib.SaveRecordingCheckpoint(sess.itemDir, metaCopy)

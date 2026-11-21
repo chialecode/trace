@@ -15,13 +15,13 @@ var (
 
 const belowNormalPriorityClass = 0x00004000
 
-// LowerCurrentProcessPriority sets the current process priority to BELOW_NORMAL_PRIORITY_CLASS (§6).
+// LowerCurrentProcessPriority sets the current process priority to BELOW_NORMAL_PRIORITY_CLASS.
 func LowerCurrentProcessPriority() {
 	h, _, _ := procGetCurrentProc.Call()
 	_, _, _ = procSetPriorityClassW.Call(h, uintptr(belowNormalPriorityClass))
 }
 
-// SetSubprocessQuiet configures cmd so it hides console windows and runs at BELOW_NORMAL_PRIORITY_CLASS (§6).
+// SetSubprocessQuiet configures cmd so it hides console windows and runs at BELOW_NORMAL_PRIORITY_CLASS.
 func SetSubprocessQuiet(cmd *exec.Cmd) {
 	if cmd == nil {
 		return

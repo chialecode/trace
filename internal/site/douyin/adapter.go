@@ -48,10 +48,10 @@ func (a *Adapter) MatchURL(u *url.URL) bool {
 	if id, ok := site.DetectHostSite(host); ok {
 		return id == site.Douyin
 	}
-	if !a.client.allowLocalhost || !isLoopbackHost(host) {
+	if !a.client.allowLocalhost || !site.IsLoopbackHost(host) {
 		return false
 	}
-	segs := splitPathSegments(u.Path)
+	segs := site.SplitCleanPath(u.Path)
 	if len(segs) >= 1 {
 		switch strings.ToLower(segs[0]) {
 		case "short", "aweme", "webcast", "douyin":
@@ -182,6 +182,11 @@ func (a *Adapter) CheckLiveStatus(ctx context.Context, uid string, cachedWebRID 
 // SelectLiveStream implements site.LiveProvider.
 func (a *Adapter) SelectLiveStream(ctx context.Context, uid string, roomOrWebRID string, codecOrder []string) (site.LiveStreamPlan, error) {
 	return a.client.SelectLiveStream(ctx, uid, roomOrWebRID, codecOrder)
+}
+
+// ResolvePlayRedirect resolves an authenticated Douyin play redirector URL into a cookieless CDN URL.
+func (a *Adapter) ResolvePlayRedirect(ctx context.Context, playURL string) (string, error) {
+	return a.client.ResolvePlayRedirect(ctx, playURL)
 }
 
 // FetchCreatorPosts implements site.SubscriptionFetcher for Douyin incremental update checking.

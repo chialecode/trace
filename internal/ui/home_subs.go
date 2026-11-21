@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/subscription"
@@ -15,12 +14,13 @@ import (
 // they are built again only when it changes, never in every frame.
 type homeSubsSig struct {
 	site     string
-	subs     *subscription.Subscription
+	subsRev  int
 	subsN    int
-	authors  *library.ItemAuthor
+	statsRev int
 	authorsN int
 	live     uint64
-	seen     int
+	seenRev  int
+	seenN    int
 }
 
 // homeSubscriptionRows lists the subscriptions in the Home panel (DEC-053
@@ -35,12 +35,15 @@ func (a *App) homeSubscriptionRows() []HomeUpdatedActor {
 	}
 	a.loadHomeBaseline()
 	site := normalizeSiteFilter(a.FeedSiteFilter)
-	sig := homeSubsSig{site: site, subsN: len(a.Subscriptions), authorsN: len(a.libraryStatistics.Authors), live: a.liveSignature(), seen: len(a.homeSeenLocal)}
-	if sig.subsN > 0 {
-		sig.subs = &a.Subscriptions[0]
-	}
-	if sig.authorsN > 0 {
-		sig.authors = &a.libraryStatistics.Authors[0]
+	sig := homeSubsSig{
+		site:     site,
+		subsRev:  a.subsRev,
+		subsN:    len(a.Subscriptions),
+		statsRev: a.statsRev,
+		authorsN: len(a.libraryStatistics.Authors),
+		live:     a.liveSignature(),
+		seenRev:  a.homeSeenRev,
+		seenN:    len(a.homeSeenLocal),
 	}
 	if a.homeSubRowsValid && sig == a.homeSubRowsSig {
 		return a.homeSubRows
@@ -63,7 +66,7 @@ func (a *App) homeSubscriptionRows() []HomeUpdatedActor {
 		a.homeSubIndex[sub.ID] = i
 		actor := a.homeSubscriptionActor(sub, latest)
 		all[actor.Key] = actor
-		isLive := a.subscriptionLiveOn(sub, site)
+		isLive := a.subscriptionLiveOnSite(sub, site)
 		live[actor.Key] = isLive
 		if actor.LatestTs > 0 || isLive {
 			candidates = append(candidates, actor)
@@ -187,27 +190,41 @@ func (a *App) homeSubUnread(actor HomeUpdatedActor) bool {
 	return seen > 0 && actor.LatestTs > seen
 }
 
-// subscriptionLiveOn tells whether a subscription is live now on the sites
-// of the site filter.
-func (a *App) subscriptionLiveOn(sub subscription.Subscription, siteFilter string) bool {
-	switch normalizeSiteFilter(siteFilter) {
-	case "bilibili":
+// subscriptionLiveOnSite reports whether sub has a live account matching
+// siteFilter ("all", "bilibili", or "douyin"). Unlike findSubscriptionLiveAccount,
+// a live or recording account on one site never masks a live account on another.
+func (a *App) subscriptionLiveOnSite(sub subscription.Subscription, siteFilter string) bool {
+	filter := normalizeSiteFilter(siteFilter)
+	if filter == "all" || filter == "bilibili" {
 		if rm := a.findSubscriptionLiveRoom(sub); rm != nil && rm.LiveStatus == 1 {
 			return true
 		}
-		st := a.findSubscriptionLiveAccount(sub)
-		return st != nil && st.LiveStatus == 1 && strings.EqualFold(st.Site, "bilibili")
-	case "douyin":
-		st := a.findSubscriptionLiveAccount(sub)
-		return st != nil && st.LiveStatus == 1 && strings.EqualFold(st.Site, "douyin")
 	}
-	return a.isSubscriptionLive(sub)
+	for i := range a.LiveAccounts {
+		st := &a.LiveAccounts[i]
+		if st.LiveStatus != 1 {
+			continue
+		}
+		stSite := normalizeSiteIDUI(st.Site)
+		if filter != "all" && stSite != filter {
+			continue
+		}
+		for _, acc := range sub.Accounts {
+			if normalizeSiteIDUI(acc.Site) == stSite && st.UID == acc.UID {
+				return true
+			}
+		}
+		if len(sub.Accounts) == 0 && normalizeSiteIDUI(sub.Site) == stSite && st.UID != "" && st.UID == subscriptionPrimaryUID(sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // homeSubLive is the live ring of a row of Home.
 func (a *App) homeSubLive(actor HomeUpdatedActor) bool {
 	if i, ok := a.homeSubIndex[actor.SubID]; ok && i < len(a.Subscriptions) && a.Subscriptions[i].ID == actor.SubID {
-		return a.subscriptionLiveOn(a.Subscriptions[i], a.FeedSiteFilter)
+		return a.subscriptionLiveOnSite(a.Subscriptions[i], a.FeedSiteFilter)
 	}
 	return false
 }

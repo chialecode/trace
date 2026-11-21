@@ -14,10 +14,8 @@ import (
 	"github.com/chialecode/trace/internal/download"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/service"
-	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/douyin"
 	"github.com/chialecode/trace/internal/sitecheck"
-	"github.com/chialecode/trace/internal/storage"
 )
 
 // ACT-015: cache one user-named Douyin video end to end through the production
@@ -121,6 +119,7 @@ func runAct015(parentCtx context.Context, run act015Run, root, outPath string) (
 	}
 	ck := &act010Checker{
 		gate:           gate,
+		apiLimits:      act015APILimits,
 		vod:            &mediaBudget{name: "vod", maxRequests: act015MaxVODRequests, maxBytes: act015MaxVODBytes},
 		live:           &mediaBudget{name: "live"},
 		minSpacing:     act010DefaultSpacing,
@@ -167,7 +166,7 @@ func runAct015(parentCtx context.Context, run act015Run, root, outPath string) (
 
 	rc = act010Receipt{
 		Act:            run.label,
-		Commit:         sourceCommit(root),
+		Commit:         resolveReceiptCommit(root),
 		StartedAt:      time.Now().UTC().Format(time.RFC3339),
 		Verifications:  make(map[string]any),
 		APIStatusCodes: ck.apiStatusCodes,
@@ -182,34 +181,9 @@ func runAct015(parentCtx context.Context, run act015Run, root, outPath string) (
 	ctx, cancel := context.WithTimeout(parentCtx, act015Timeout)
 	defer cancel()
 
-	runStep := func(name string, fn func(f map[string]any) error) bool {
-		if stopped := ck.stopReason(); stopped != "" {
-			rc.Steps = append(rc.Steps, step{Name: name, Skipped: true, Error: "stopped earlier: " + stopped})
-			return false
-		}
-		f := map[string]any{}
-		start := time.Now()
-		err := fn(f)
-		st := step{Name: name, OK: err == nil, Facts: f, Duration: time.Since(start).Milliseconds()}
-		if err != nil {
-			st.ErrKind = site.KindOf(err)
-			if errors.Is(err, sitecheck.ErrQuotaExceeded) {
-				st.ErrKind = "quota"
-			}
-			st.Error = redactor.scrubError(err.Error())
-			switch st.ErrKind {
-			case site.ErrKindRiskControl, site.ErrKindRateLimited, site.ErrKindAuthRequired:
-				ck.tripStop(st.ErrKind)
-			}
-		}
-		if len(st.Facts) == 0 {
-			st.Facts = nil
-		}
-		rc.Steps = append(rc.Steps, st)
-		return st.OK
-	}
+	runner := newDouyinStepRunner(&rc.Steps, ck, redactor)
 
-	runStep("login_with_cookie", func(f map[string]any) error {
+	runner.run("login_with_cookie", func(f map[string]any) error {
 		st, err := b.LoginWithCookie(ctx, "douyin", rawCookie, "")
 		redactor.addIDs(st.UID, st.SecUID)
 		redactor.addHandles(st.UniqueID)
@@ -218,7 +192,7 @@ func runAct015(parentCtx context.Context, run act015Run, root, outPath string) (
 	})
 
 	var itemKey string
-	runStep("cache_video", func(f map[string]any) error {
+	runner.run("cache_video", func(f map[string]any) error {
 		if err := b.DownloadManager().Start(ctx); err != nil {
 			return err
 		}
@@ -257,7 +231,7 @@ func runAct015(parentCtx context.Context, run act015Run, root, outPath string) (
 		}
 	})
 
-	runStep("verify_cached_item", func(f map[string]any) error {
+	runner.run("verify_cached_item", func(f map[string]any) error {
 		if itemKey == "" {
 			return errors.New("no cached item")
 		}
@@ -313,38 +287,6 @@ func runAct015(parentCtx context.Context, run act015Run, root, outPath string) (
 	})
 
 	closeBackend()
-	rc.TempMediaDeleted = cleanup()
-	rc.APIUsage = gate.Usage()
-	rc.VODMedia = mediaUsage{Requests: int(ck.vod.requests.Load()), Bytes: ck.vod.bytes.Load()}
-	rc.StoppedBy = ck.stopReason()
-	rc.Redirects = ck.redirectShapes()
-	rc.Passed = rc.StoppedBy == "" && rc.TempMediaDeleted
-	for _, s := range rc.Steps {
-		if !s.OK {
-			rc.Passed = false
-		}
-	}
-	rc.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	rc.SecretScanClean = true
-	rawJSON, err := json.MarshalIndent(rc, "", "  ")
-	if err != nil {
-		return rc, err
-	}
-	if err := redactor.verifyJSONClean(string(rawJSON), &rc); err != nil {
-		rc.SecretScanClean, rc.Passed = false, false
-		return rc, err
-	}
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return rc, err
-	}
-	if err := storage.WriteFileAtomic(outPath, rawJSON, 0o644); err != nil {
-		return rc, err
-	}
-	if !rc.Passed {
-		if rc.StoppedBy != "" {
-			return rc, fmt.Errorf("%s stopped by %s", run.id, rc.StoppedBy)
-		}
-		return rc, fmt.Errorf("%s completed with step failures", run.id)
-	}
-	return rc, nil
+	err = finalizeAct010Receipt(run.id, &rc, outPath, gate, ck, redactor, cleanup())
+	return rc, err
 }

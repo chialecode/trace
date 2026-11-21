@@ -82,8 +82,8 @@ type singleMP4Inspection struct {
 }
 
 // EnsureSingleMP4 validates a progressive single-file MP4 on disk (without requiring elst),
-// rejects CENC-encrypted tracks and >2s duration mismatches, and relocates moov before mdat
-// on disk with bounded memory when moov trails mdat.
+// rejects CENC-encrypted tracks and duration mismatches exceeding max(2s, 3%), and relocates
+// moov before mdat on disk with bounded memory when moov trails mdat.
 func EnsureSingleMP4(path string, expectedDurationSec float64) (MuxTrackSummary, error) {
 	return EnsureSingleMP4Context(context.Background(), path, expectedDurationSec)
 }

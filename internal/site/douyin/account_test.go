@@ -109,7 +109,7 @@ func TestPOSTSignFormBodyFeedsABogusAndGETUnchanged(t *testing.T) {
 	if r.method != http.MethodPost || r.path != pathListCollection || r.body != "count=20&cursor=0" {
 		t.Fatalf("request = %s %s body=%q", r.method, r.path, r.body)
 	}
-	if r.header.Get("Content-Type") != formContentType || r.header.Get("Referer") != "https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection" || r.header.Get("Origin") != accountOrigin {
+	if r.header.Get("Content-Type") != formContentType || r.header.Get("Referer") != "https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection" || r.header.Get("Origin") != DefaultOrigin {
 		t.Fatalf("headers = %v", r.header)
 	}
 	if r.header.Get("x-secsdk-csrf-token") != "" {

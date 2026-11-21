@@ -39,6 +39,23 @@ func (m *Manager) SetNowFunc(fn func() time.Time) {
 	m.mu.Unlock()
 }
 
+func (m *Manager) now() time.Time {
+	m.mu.Lock()
+	fn := m.nowFunc
+	m.mu.Unlock()
+	if fn == nil {
+		return time.Now()
+	}
+	return fn()
+}
+
+func (m *Manager) nowLocked() time.Time {
+	if m.nowFunc == nil {
+		return time.Now()
+	}
+	return m.nowFunc()
+}
+
 func roundDurationSec(sec float64) float64 {
 	if sec <= 0 || math.IsNaN(sec) || math.IsInf(sec, 0) {
 		return 0
@@ -66,6 +83,16 @@ func dropResolvedConvertFailed(list []library.LiveIncident, part string) []libra
 		keep = append(keep, inc)
 	}
 	return keep
+}
+
+func hasConvertFailedIncident(list []library.LiveIncident, part string) bool {
+	partBase := filepath.Base(strings.TrimSpace(part))
+	for _, inc := range list {
+		if inc.Kind == library.LiveIncidentConvertFailed && inc.Part == partBase {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeSingleIncident(inc library.LiveIncident) (library.LiveIncident, bool) {
@@ -164,16 +191,6 @@ func (m *Manager) initSessionIncidents(sess *recordSession) {
 	}
 }
 
-func (m *Manager) syncSessionIncidentsLocked(sess *recordSession) (RoomState, bool) {
-	if sess == nil {
-		return RoomState{}, false
-	}
-	if sess.itemMeta.Live != nil {
-		sess.itemMeta.Live.Incidents = cloneIncidents(sess.incidents)
-	}
-	return m.syncSessionRoomStateLocked(sess)
-}
-
 func (m *Manager) recordSessionIncident(sess *recordSession, inc library.LiveIncident, notifyState bool) {
 	if sess == nil {
 		return
@@ -181,7 +198,7 @@ func (m *Manager) recordSessionIncident(sess *recordSession, inc library.LiveInc
 	var notify *RoomState
 	m.mu.Lock()
 	if inc.At == "" {
-		inc.At = m.nowFunc().UTC().Format(time.RFC3339)
+		inc.At = m.nowLocked().UTC().Format(time.RFC3339)
 	}
 	sess.incidents, _, _ = appendCoalescedIncident(sess.incidents, inc)
 	if st, ok := m.syncSessionRoomStateLocked(sess); ok && notifyState {
@@ -194,7 +211,9 @@ func (m *Manager) recordSessionIncident(sess *recordSession, inc library.LiveInc
 	m.mu.Unlock()
 
 	if notify != nil && m.onState != nil {
+		leave := sess.enterExternal()
 		m.onState(*notify)
+		leave()
 	}
 }
 
@@ -263,7 +282,9 @@ func (m *Manager) markSessionReconnected(sess *recordSession, recoveredAt time.T
 	m.mu.Unlock()
 
 	if notify != nil && m.onState != nil {
+		leave := sess.enterExternal()
 		m.onState(*notify)
+		leave()
 	}
 }
 
@@ -301,8 +322,7 @@ func (m *Manager) observeTransferSpeed(
 		if actualByteRate < mediaByteRate*0.95 {
 			isSlow = true
 		}
-	}
-	if !isSlow && sess.nominalByteRate > 0 && wallSec >= 0.2 {
+	} else if sess.nominalByteRate > 0 && wallSec >= 0.2 {
 		if actualByteRate < sess.nominalByteRate*0.90 {
 			isSlow = true
 		}
@@ -353,7 +373,9 @@ func (m *Manager) observeTransferSpeed(
 	m.mu.Unlock()
 
 	if notify != nil && m.onState != nil {
+		leave := sess.enterExternal()
 		m.onState(*notify)
+		leave()
 	}
 }
 
@@ -391,7 +413,7 @@ func isDiskFullError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, syscall.ENOSPC) {
+	if errors.Is(err, syscall.ENOSPC) || isPlatformDiskFullError(err) {
 		return true
 	}
 	msg := err.Error()

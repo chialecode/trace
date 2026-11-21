@@ -1,5 +1,5 @@
 // Package build is what tools/package and tools/release share: the version
-// of a build (W1), the MyGo configuration of each channel, the -ldflags
+// of a build, the MyGo configuration of each channel, the -ldflags
 // that carry the build information into the program, and the files that
 // describe a package.
 package build
@@ -10,10 +10,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/chialecode/trace/internal/appdirs"
@@ -63,7 +67,7 @@ func IdentityOf(channel string) Identity {
 	}
 }
 
-// Publisher and copyright of the packages (W6).
+// Publisher and copyright of the packages.
 const (
 	Publisher = "chialecode"
 	Copyright = "© 2026 chialecode"
@@ -396,20 +400,83 @@ func splitLines(s string) []string {
 	return out
 }
 
+var signalExit = func(sig os.Signal) {
+	if sig == syscall.SIGTERM {
+		os.Exit(143)
+	}
+	os.Exit(130)
+}
+
 // WithConfig writes the channel configuration as mygo.json for the time of
-// run and puts the repository's back afterwards, also when run fails:
-// `mygo build` reads mygo.json from the project root only.
-func WithConfig(path string, channelConfig []byte, run func() error) (err error) {
+// run and puts the repository's back afterwards, also when run fails or
+// receives SIGINT/SIGTERM: `mygo build` reads mygo.json from the project root
+// only.
+func WithConfig(path string, channelConfig []byte, run func() error) error {
+	return withConfigSignals(path, channelConfig, run, nil)
+}
+
+func withConfigSignals(path string, channelConfig []byte, run func() error, sigCh chan os.Signal) (err error) {
 	orig, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
-	if err := os.WriteFile(path, channelConfig, 0o644); err != nil {
+	perm := os.FileMode(0o644)
+	if st, serr := os.Stat(path); serr == nil {
+		if p := st.Mode().Perm(); p != 0 {
+			perm = p
+		}
+	}
+	if err := os.WriteFile(path, channelConfig, perm); err != nil {
 		return fmt.Errorf("write channel %s: %w", path, err)
 	}
+
+	var restoreOnce sync.Once
+	var restoreErr error
+	restore := func() error {
+		restoreOnce.Do(func() {
+			if rerr := os.WriteFile(path, orig, perm); rerr != nil {
+				restoreErr = fmt.Errorf("restore %s: %w", path, rerr)
+			}
+		})
+		return restoreErr
+	}
+
+	ownCh := sigCh == nil
+	if ownCh {
+		sigCh = make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	}
+	done := make(chan struct{})
+	var gotSig atomic.Value
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		select {
+		case sig := <-sigCh:
+			gotSig.Store(sig)
+			_ = restore()
+			if ownCh {
+				signal.Stop(sigCh)
+			}
+			if signalExit != nil {
+				signalExit(sig)
+			}
+		case <-done:
+		}
+	}()
+
 	defer func() {
-		if rerr := os.WriteFile(path, orig, 0o644); rerr != nil && err == nil {
-			err = fmt.Errorf("restore %s: %w", path, rerr)
+		close(done)
+		if ownCh {
+			signal.Stop(sigCh)
+		}
+		wg.Wait()
+		if rerr := restore(); rerr != nil && err == nil {
+			err = rerr
+		}
+		if sig, ok := gotSig.Load().(os.Signal); ok && err == nil {
+			err = fmt.Errorf("interrupted by signal %v", sig)
 		}
 	}()
 	return run()

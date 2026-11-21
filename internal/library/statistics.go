@@ -15,16 +15,16 @@ func (s *Store) Statistics() (Statistics, error) {
 	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(total_bytes), 0) FROM library_items`).Scan(&stats.Items, &stats.Bytes); err != nil {
 		return stats, err
 	}
-	// A collaboration video cached for a member is listed under that member,
-	// whose folder holds it, not under the uploader (DEC-061).
+	// A collaboration or forwarded video cached under another creator's folder is
+	// listed under that creator in the media library, not under the uploader (DEC-056, DEC-061).
 	rows, err := s.db.Query(`
 		SELECT site, owner_uid, MAX(owner_mid), MAX(owner_name), MAX(owner_face), COALESCE(MAX(pub_ts), 0)
 		FROM (
 			SELECT site, pub_ts,
-				CASE WHEN ` + collabSQL + ` THEN ` + viaUIDSQL + ` ELSE author_uid END AS owner_uid,
-				CASE WHEN ` + collabSQL + ` THEN 0 ELSE mid END AS owner_mid,
-				CASE WHEN ` + collabSQL + ` THEN COALESCE(json_extract(json_data, '$.via.name'), '') ELSE author_name END AS owner_name,
-				CASE WHEN ` + collabSQL + ` THEN '' ELSE author_face END AS owner_face
+				CASE WHEN ` + viaOwnerSQL + ` THEN ` + viaUIDSQL + ` ELSE author_uid END AS owner_uid,
+				CASE WHEN ` + viaOwnerSQL + ` THEN 0 ELSE mid END AS owner_mid,
+				CASE WHEN ` + viaOwnerSQL + ` THEN COALESCE(json_extract(json_data, '$.via.name'), '') ELSE author_name END AS owner_name,
+				CASE WHEN ` + viaOwnerSQL + ` THEN '' ELSE author_face END AS owner_face
 			FROM library_items
 		)
 		WHERE owner_uid != ''
@@ -54,6 +54,14 @@ func (s *Store) Statistics() (Statistics, error) {
 // for a member other than the uploader (DEC-056).
 const collabSQL = "(json_extract(json_data, '$.via.reason') = '" + ViaCollab + "' AND COALESCE(" + viaUIDSQL + ", '') != '')"
 
+// viaForwardSQL matches library_items rows cached solely because another
+// creator forwarded them (stored in the forwarder's forwards/ folder, DEC-056).
+const viaForwardSQL = "(json_extract(json_data, '$.via.reason') = '" + ViaForward + "' AND COALESCE(" + viaUIDSQL + ", '') != '')"
+
+// viaOwnerSQL matches library_items rows stored under via.uid's folder
+// (collaboration videos and forwarded content, DEC-056, DEC-061, DEC-063).
+const viaOwnerSQL = "(json_extract(json_data, '$.via.reason') IN ('" + ViaCollab + "', '" + ViaForward + "') AND COALESCE(" + viaUIDSQL + ", '') != '')"
+
 // LatestPubByAuthor returns the newest cached pub_ts for each (site, author_uid)
 // across library_items and cached feed_items, supporting multi-site HomeSeen baselines.
 func (s *Store) LatestPubByAuthor() ([]ItemAuthor, error) {
@@ -64,15 +72,16 @@ func (s *Store) LatestPubByAuthor() ([]ItemAuthor, error) {
 		FROM (
 			SELECT site, author_uid, mid, author_name, author_face, pub_ts
 			FROM library_items
-			WHERE author_uid != '' AND pub_ts > 0
+			WHERE author_uid != '' AND pub_ts > 0 AND NOT ` + viaForwardSQL + `
 			UNION ALL
 			SELECT site, ` + viaUIDSQL + `, 0, COALESCE(json_extract(json_data, '$.via.name'), ''), '', pub_ts
 			FROM library_items
-			WHERE ` + collabSQL + ` AND pub_ts > 0
+			WHERE ` + viaOwnerSQL + ` AND pub_ts > 0
 			UNION ALL
 			SELECT site, author_uid, mid, author_name, author_face, pub_ts
 			FROM feed_items
 			WHERE cached = 1 AND author_uid != '' AND pub_ts > 0
+			  AND NOT (kind = 'video' AND EXISTS (SELECT 1 FROM item_refs r WHERE r.to_key = feed_items.feed_key))
 		)
 		GROUP BY site, author_uid
 		ORDER BY 6 DESC, site, author_uid

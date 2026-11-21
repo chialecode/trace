@@ -95,10 +95,15 @@ func OpenHistory(path string) (*HistoryStore, string, error) {
 		if bErr != nil {
 			return nil, "", bErr
 		}
-		_ = WriteJSONAtomic(path, s.data, 0o600)
+		if wErr := WriteJSONAtomic(path, s.data, 0o600); wErr != nil {
+			return nil, backup, wErr
+		}
 		return s, backup, nil
 	}
 
+	if loaded.Version > 1 {
+		return nil, "", &NewerDataError{File: filepath.Base(path), Found: loaded.Version, Supported: 1}
+	}
 	if loaded.Version <= 0 {
 		loaded.Version = 1
 	}
@@ -337,12 +342,15 @@ var sensitiveMarkers = []string{
 	"sessdata=",
 	"bili_jct=",
 	"dedeuserid=",
+	"dedeuserid__ckmd5=",
+	"ac_time_value=",
 	"refresh_token=",
 	"access_key=",
 	"w_rid=",
 	"upsig=",
 	"sessionid=",
 	"sessionid_ss=",
+	"sid_tt=",
 	"sid_guard=",
 	"uid_tt=",
 	"odin_tt=",
@@ -351,6 +359,8 @@ var sensitiveMarkers = []string{
 	"x-bogus=",
 	"__ac_signature=",
 	"x-signature=",
+	"x-signature/",
+	"x-secsdk-web-signature",
 	"x-secsdk-csrf-token",
 }
 
@@ -394,11 +404,21 @@ func sanitizeCanonicalURL(rawURL, site, kind, id string) string {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL != "" {
 		if u, err := url.Parse(rawURL); err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" {
-			u.Scheme = "https"
-			u.User = nil
-			u.RawQuery = ""
-			u.Fragment = ""
-			return u.String()
+			lowerPath := strings.ToLower(u.Path)
+			pathSafe := true
+			for _, m := range sensitiveMarkers {
+				if strings.Contains(lowerPath, m) {
+					pathSafe = false
+					break
+				}
+			}
+			if pathSafe {
+				u.Scheme = "https"
+				u.User = nil
+				u.RawQuery = ""
+				u.Fragment = ""
+				return u.String()
+			}
 		}
 	}
 	if normalizeHistorySite(site) == "douyin" {

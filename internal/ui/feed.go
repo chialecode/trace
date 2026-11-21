@@ -162,7 +162,7 @@ func (a *App) loadFeedEdge(before bool) {
 	}
 	page, err := a.backend.FeedPage(req)
 	if err != nil {
-		a.FeedError = err.Error()
+		a.FeedError = userErrorText(err)
 		a.feedFailedBefore = before
 		a.showError(err)
 		return
@@ -303,6 +303,7 @@ func (a *App) markSubscriptionSeen(actor HomeUpdatedActor) {
 	}
 	next[actor.Key] = actor.LatestTs
 	a.homeSeenLocal = next
+	a.homeSeenRev++
 	if a.backend.GetUIState().HomeSeen[actor.Key] >= actor.LatestTs {
 		return
 	}

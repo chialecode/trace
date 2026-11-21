@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -22,7 +23,19 @@ const (
 	douyinSignPkg = internalPref + "site/douyin/sign"
 	credPkg       = internalPref + "credential"
 	uiPkg         = internalPref + "ui"
+	serverCmd     = modulePrefix + "cmd/trace-server"
 )
+
+// serverForbidden are the packages trace-server must not link: the window,
+// player and shell, so the Linux build stays small and needs no cgo
+// (docs/design/remote.md §2).
+var serverForbidden = []string{
+	"github.com/egoist/mygo",
+	internalPref + "ui",
+	internalPref + "player",
+	internalPref + "shell",
+	internalPref + "locales",
+}
 
 var allowedMyGoPackages = map[string]bool{
 	internalPref + "shell":  true,
@@ -82,6 +95,7 @@ func main() {
 		{"go vet ./...", checkGoVet},
 		{"go test ./...", checkGoTest},
 		{"dependency direction", checkDependencyDirection},
+		{"trace-server linux build", checkServerBuild},
 		{"tools/checkdocs", checkDocs},
 		{"git diff --check HEAD", checkGitDiff},
 	}
@@ -100,8 +114,13 @@ func main() {
 }
 
 func runCmd(name string, args ...string) (string, error) {
+	return runCmdWithEnv(nil, name, args...)
+}
+
+func runCmdWithEnv(extraEnv []string, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "TRACE_QUIET=1")
+	cmd.Env = append(cmd.Env, extraEnv...)
 	appdirs.SetSubprocessQuiet(cmd)
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -111,7 +130,7 @@ func runCmd(name string, args ...string) (string, error) {
 }
 
 func checkGofmt() error {
-	out, err := runCmd("gofmt", "-l", "main.go", "internal", "tools")
+	out, err := runCmd("gofmt", "-l", "main.go", "cmd", "internal", "tools")
 	if err != nil {
 		return fmt.Errorf("gofmt failed: %w\n%s", err, out)
 	}
@@ -142,12 +161,34 @@ func checkGoTest() error {
 	return nil
 }
 
-func checkDependencyDirection() error {
-	out, err := runCmd("go", "list", "-f", "{{.ImportPath}}|{{join .Imports \",\"}}|{{join .Deps \",\"}}", "./internal/...", "./tools/...")
-	if err != nil {
-		return fmt.Errorf("go list failed: %w\n%s", err, out)
+func dependencyCheckTargets(hostGOOS string) []string {
+	if hostGOOS == "" || hostGOOS == "linux" {
+		return []string{"linux"}
 	}
-	return validateDependencyOutput(out)
+	return []string{hostGOOS, "linux"}
+}
+
+func checkDependencyDirection() error {
+	return checkDependencyDirectionWith(dependencyCheckTargets(runtime.GOOS), func(goos string) (string, error) {
+		extra := []string{"GOOS=" + goos}
+		if goos == "linux" {
+			extra = append(extra, "GOARCH=amd64")
+		}
+		return runCmdWithEnv(extra, "go", "list", "-f", "{{.ImportPath}}|{{join .Imports \",\"}}|{{join .Deps \",\"}}", "./cmd/...", "./internal/...", "./tools/...")
+	})
+}
+
+func checkDependencyDirectionWith(targets []string, listFn func(goos string) (string, error)) error {
+	for _, goos := range targets {
+		out, err := listFn(goos)
+		if err != nil {
+			return fmt.Errorf("go list (GOOS=%s) failed: %w\n%s", goos, err, out)
+		}
+		if err := validateDependencyOutput(out); err != nil {
+			return fmt.Errorf("GOOS=%s: %w", goos, err)
+		}
+	}
+	return nil
 }
 
 // validateDependencyOutput validates newline-separated `go list` records formatted either as
@@ -324,6 +365,42 @@ func validatePackageDeps(pkg string, imports []string, deps []string) error {
 		}
 	}
 
+	// 9. trace-server links no window, player or shell code.
+	if pkg == serverCmd {
+		for _, dep := range deps {
+			for _, forbidden := range serverForbidden {
+				if hasPkgOrSubpkg(dep, forbidden) {
+					return fmt.Errorf("server size violation: %s depends on %s", pkg, dep)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// checkServerBuild cross-compiles trace-server for linux/amd64 and
+// linux/arm64 without cgo and vets the tree for Linux.
+func checkServerBuild() error {
+	dir, err := os.MkdirTemp("", "trace-check-server-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	for _, arch := range []string{"amd64", "arm64"} {
+		cmd := exec.Command("go", "build", "-trimpath", "-o", filepath.Join(dir, "trace-server-"+arch), "./cmd/trace-server")
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+arch, "TRACE_QUIET=1")
+		appdirs.SetSubprocessQuiet(cmd)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("linux/%s: %w\n%s", arch, err, out)
+		}
+	}
+	cmd := exec.Command("go", "vet", "./...")
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "TRACE_QUIET=1")
+	appdirs.SetSubprocessQuiet(cmd)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("GOOS=linux go vet: %w\n%s", err, out)
+	}
 	return nil
 }
 

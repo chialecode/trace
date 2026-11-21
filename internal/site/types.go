@@ -64,6 +64,7 @@ func DefaultDouyinMediaHosts() []string {
 		"douyinpic.com",
 		"byteimg.com",
 		"douyinstatic.com",
+		"bytednsdoc.com",
 		"bdxiguaimg.com",
 		"snssdk.com",
 		"bytevcloudcdn.com",
@@ -416,12 +417,6 @@ type URLMatcher interface {
 type DownloadPlanner interface {
 	SiteID() ID
 	PlanDownload(ctx context.Context, targetID string, page int) (DownloadPlan, error)
-}
-
-// DownloadExecutor executes a queued download item for its site.
-type DownloadExecutor interface {
-	SiteID() ID
-	ExecuteDownload(ctx context.Context, itemKey string) error
 }
 
 // LiveProvider queries creator live broadcast status and selects live recording streams.

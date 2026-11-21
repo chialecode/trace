@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -23,7 +22,6 @@ import (
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/site/douyin"
 	"github.com/chialecode/trace/internal/sitecheck"
-	"github.com/chialecode/trace/internal/storage"
 )
 
 // ACT-020: one read-only pass over the signed-in accounts' own lists (我的)
@@ -84,10 +82,11 @@ func act020Classify(r *http.Request) (siteName, cat string) {
 }
 
 type act020Checker struct {
-	gate     *sitecheck.Gate
-	mu       sync.Mutex
-	stopped  map[string]string // site -> reason
-	statuses map[string]int    // cat:status
+	gate      *sitecheck.Gate
+	apiLimits map[string]int
+	mu        sync.Mutex
+	stopped   map[string]string // site -> reason
+	statuses  map[string]int    // cat:status
 	// shapes keeps only the top-level key names of the 观看历史 probe.
 	historyKeys []string
 	historyList string
@@ -118,6 +117,9 @@ func (c *act020Checker) wrap(base http.RoundTripper) http.RoundTripper {
 		}
 		if reason := c.stopReason(siteName); reason != "" {
 			return nil, fmt.Errorf("act020 %s halted (%s)", siteName, reason)
+		}
+		if err := checkAPICategoryAllowed(c.apiLimits, cat); err != nil {
+			return nil, err
 		}
 		if err := c.gate.AcquireAPI(cat); err != nil {
 			return nil, err
@@ -216,7 +218,7 @@ func runAct020Main(root, out string) {
 }
 
 func runAct020(parent context.Context, root, outPath string) (act020Receipt, error) {
-	rc := act020Receipt{Act: act020Label, Commit: sourceCommit(root), Limits: act020Limits, Verdicts: map[string]string{}, pages: map[string]*act020PageLog{}}
+	rc := act020Receipt{Act: act020Label, Commit: resolveReceiptCommit(root), Limits: act020Limits, Verdicts: map[string]string{}, pages: map[string]*act020PageLog{}}
 	biliCookie, err := readCookie(root)
 	if err != nil {
 		return rc, errors.New("bilibili cookie: " + err.Error())
@@ -239,7 +241,7 @@ func runAct020(parent context.Context, root, outPath string) (act020Receipt, err
 	if err := gate.BeginRun(); err != nil {
 		return rc, err
 	}
-	ck := &act020Checker{gate: gate, stopped: map[string]string{}, statuses: map[string]int{}}
+	ck := &act020Checker{gate: gate, apiLimits: act020Limits, stopped: map[string]string{}, statuses: map[string]int{}}
 
 	work, err := os.MkdirTemp("", "trace-"+act020ID+"-")
 	if err != nil {
@@ -281,31 +283,22 @@ func runAct020(parent context.Context, root, outPath string) (act020Receipt, err
 	ctx, cancel := context.WithTimeout(parent, act020Timeout)
 	defer cancel()
 
+	stopKinds := map[string]bool{
+		site.ErrKindRiskControl:  true,
+		site.ErrKindRateLimited:  true,
+		site.ErrKindAuthRequired: true,
+		site.ErrKindBackoff:      true,
+	}
 	runStep := func(siteName, name string, fn func(f map[string]any) error) bool {
-		if reason := ck.stopReason(siteName); reason != "" {
-			rc.Steps = append(rc.Steps, step{Name: name, Skipped: true, Error: "stopped earlier: " + reason})
-			return false
+		r := stepRunner{
+			steps:       &rc.Steps,
+			stopReason:  func() string { return ck.stopReason(siteName) },
+			tripStop:    func(reason string) { ck.stop(siteName, reason) },
+			classifyErr: site.KindOf,
+			scrubErr:    func(msg string) string { return act020Scrub(redactor.scrubError(msg)) },
+			stopOnKinds: stopKinds,
 		}
-		f := map[string]any{}
-		start := time.Now()
-		err := fn(f)
-		st := step{Name: name, OK: err == nil, Facts: f, Duration: time.Since(start).Milliseconds()}
-		if err != nil {
-			st.ErrKind = site.KindOf(err)
-			if errors.Is(err, sitecheck.ErrQuotaExceeded) {
-				st.ErrKind = "quota"
-			}
-			st.Error = act020Scrub(redactor.scrubError(err.Error()))
-			switch st.ErrKind {
-			case site.ErrKindRiskControl, site.ErrKindRateLimited, site.ErrKindAuthRequired, site.ErrKindBackoff:
-				ck.stop(siteName, st.ErrKind)
-			}
-		}
-		if len(st.Facts) == 0 {
-			st.Facts = nil
-		}
-		rc.Steps = append(rc.Steps, st)
-		return st.OK
+		return r.run(name, fn)
 	}
 	// page records what a page says about the list without its content.
 	page := func(f map[string]any, key string, p service.AccountPage, check func(service.AccountItem) bool) {
@@ -617,26 +610,11 @@ func runAct020(parent context.Context, root, outPath string) (act020Receipt, err
 	}
 	rc.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	rc.SecretScanClean = true
-	raw, err := json.MarshalIndent(rc, "", "  ")
-	if err != nil {
-		return rc, err
-	}
-	if err := redactor.verifyJSONClean(string(raw), nil); err != nil {
+	if err := writeCleanReceipt(outPath, rc,
+		func(raw string) error { return redactor.verifyJSONClean(raw, nil) },
+		func(raw string) error { return act020NoHandles(redactor, raw) },
+	); err != nil {
 		rc.SecretScanClean, rc.Passed = false, false
-		return rc, err
-	}
-	if err := act020NoHandles(redactor, string(raw)); err != nil {
-		rc.SecretScanClean, rc.Passed = false, false
-		return rc, err
-	}
-	if hits := sitecheck.ScanTextForSecrets(string(raw)); len(hits) > 0 {
-		rc.SecretScanClean, rc.Passed = false, false
-		return rc, fmt.Errorf("receipt secret scan hit %d pattern(s)", len(hits))
-	}
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return rc, err
-	}
-	if err := storage.WriteFileAtomic(outPath, raw, 0o644); err != nil {
 		return rc, err
 	}
 	if !rc.Passed {
@@ -645,13 +623,11 @@ func runAct020(parent context.Context, root, outPath string) (act020Receipt, err
 	return rc, nil
 }
 
-var reAct020URL = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://\S+`)
-
 // act020Scrub replaces URLs (scheme://…) and caps the length. It keeps the
 // rest of the message: the ACT-020 run of 2026-11-14 cut at the "http" of
 // "http=200" and lost the reason of D-V2.
 func act020Scrub(s string) string {
-	s = reAct020URL.ReplaceAllString(s, "[URL]")
+	s = redactURLs(s)
 	if r := []rune(s); len(r) > 160 {
 		s = string(r[:160])
 	}

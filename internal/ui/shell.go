@@ -5,12 +5,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/chialecode/trace/internal/credential"
+	"github.com/chialecode/trace/internal/library"
+	"github.com/chialecode/trace/internal/subscription"
 	"github.com/egoist/mygo/ui"
 )
 
 // The window is an icon rail, a context panel for the page, and the page
-// (DEC-039, docs/ui.md §1): the rail and the panel never scroll with the page.
-// The rail is 52 wide (DEC-046 ④).
+// (docs/ui.md §1): the rail and the panel never scroll with the page.
 const railWidth = 52
 
 // contextPanelWidth is the width of the panel beside the rail on the current
@@ -46,6 +48,10 @@ func (a *App) pageWidth(contentW float32) float32 {
 		}
 	case RouteSettings:
 		return min(contentW, 860)
+	case RouteLibrary:
+		if a.Transfer.ImportPage {
+			return min(contentW, 760)
+		}
 	case RouteMine:
 		// Rows read like the user page's uploads; the Douyin grid uses the width.
 		if !mineIsWorkGrid(a.Mine.Site, a.Mine.Kind) || !a.mineShowsList() {
@@ -55,6 +61,39 @@ func (a *App) pageWidth(contentW float32) float32 {
 	return contentW
 }
 
+// primaryAccountSummary picks the primary signed-in account (Bilibili first,
+// then Douyin), falling back to an expired account when neither is signed in.
+func (a *App) primaryAccountSummary() (acct credential.Status, acctSite, uid, name, tip string) {
+	bili := a.backend.StatusOf("bilibili")
+	dy := a.backend.StatusOf("douyin")
+	acct, acctSite = bili, "bilibili"
+	if !bili.LoggedIn {
+		if dy.LoggedIn || (bili.State != "expired" && dy.State == "expired") {
+			acct, acctSite = dy, "douyin"
+		}
+	}
+	uid = firstNonEmptyStrUI(acct.SecUID, acct.UID)
+	name = acct.Uname
+	switch {
+	case name != "":
+	case acct.LoggedIn && acctSite == "bilibili":
+		name = fmt.Sprintf("UID %d", acct.Mid)
+	case acct.LoggedIn && acctSite == "douyin":
+		name = firstNonEmptyStrUI(acct.UniqueID, acct.UID, "抖音账号")
+	case acct.State == "expired":
+		name = "登录已过期"
+	default:
+		name = "未登录"
+	}
+	tip = name
+	if acctSite == "bilibili" && acct.Mid > 0 {
+		tip = fmt.Sprintf("%s (UID %d)", name, acct.Mid)
+	} else if acctSite == "douyin" && acct.UniqueID != "" {
+		tip = fmt.Sprintf("%s (抖音号 %s)", name, acct.UniqueID)
+	}
+	return acct, acctSite, uid, name, tip
+}
+
 // renderRail draws the icon rail: the pages, then the account and Settings
 // at the bottom. Every entry is an icon with its name as tooltip and label.
 func (a *App) renderRail(c *ui.Context) {
@@ -62,7 +101,7 @@ func (a *App) renderRail(c *ui.Context) {
 	anyLive := a.anyLiveRoomActive()
 	// The mark sits level with the panel's title, in the strip that moves
 	// the window under a hidden title bar (it is not a button), so the
-	// first page button lines up with the panel's first row (DEC-057).
+	// first page button lines up with the panel's first row.
 	ui.Column(c).Fill().Padding(12, 0, 12, 0).AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
 		ui.Column(c).AlignItems(ui.Center).Gap(6).Children(func() {
 			ui.Box(c).Label("TRACE 标志").Size(40, 32).Center().Children(func() {
@@ -78,7 +117,7 @@ func (a *App) renderRail(c *ui.Context) {
 				switch nav.Route {
 				case RouteSubscriptions:
 					// The orange dot only means someone subscribed is live now
-					// (not unread); the tooltip says so (2026-11-15 feedback).
+					// (not unread); the tooltip says so.
 					dot = anyLive
 					if dot {
 						tip = "订阅 · 有订阅正在直播"
@@ -95,34 +134,9 @@ func (a *App) renderRail(c *ui.Context) {
 			}
 		})
 
-		acct := a.backend.StatusOf("bilibili")
-		acctSite := "bilibili"
-		if !acct.LoggedIn {
-			if dy := a.backend.StatusOf("douyin"); dy.LoggedIn {
-				acct = dy
-				acctSite = "douyin"
-			}
-		}
-		name := acct.Uname
-		switch {
-		case name != "":
-		case acct.LoggedIn && acctSite == "bilibili":
-			name = fmt.Sprintf("UID %d", acct.Mid)
-		case acct.LoggedIn && acctSite == "douyin":
-			name = firstNonEmptyStrUI(acct.UniqueID, acct.UID, "抖音账号")
-		case acct.State == "expired":
-			name = "登录已过期"
-		default:
-			name = "未登录"
-		}
-		tip := name
-		if acctSite == "bilibili" && acct.Mid > 0 {
-			tip = fmt.Sprintf("%s (UID %d)", name, acct.Mid)
-		} else if acctSite == "douyin" && acct.UniqueID != "" {
-			tip = fmt.Sprintf("%s (抖音号 %s)", name, acct.UniqueID)
-		}
+		acct, acctSite, acctUID, name, tip := a.primaryAccountSummary()
 		ui.Column(c).AlignItems(ui.Center).Gap(10).Children(func() {
-			a.renderAccountAvatar(c, acctSite, name, firstNonEmptyStrUI(acct.SecUID, acct.UID), acct.Mid, 32, false, "账号："+tip, func() {
+			a.renderAccountAvatar(c, acctSite, name, acctUID, acct.Mid, 32, false, "账号："+tip, func() {
 				if a.backend.HasAnyLogin() {
 					a.SettingsCategory = "account"
 					a.Navigate(RouteSettings)
@@ -234,7 +248,7 @@ func panelIconItem(c *ui.Context, icon, text, label string, active bool) bool {
 }
 
 // renderHomePanel: the whole timeline, the 3-segment site filter right below
-// "全部动态", then the subscriptions without any section title (DEC-053 ②):
+// "全部动态", then the subscriptions without any section title:
 // live first (ringed), then unread (a dot), then read. The list is
 // virtualized for a thousand subscriptions.
 func (a *App) renderHomePanel(c *ui.Context) {
@@ -298,8 +312,16 @@ func (a *App) renderSubscriptionsPanel(c *ui.Context) {
 			}
 		})
 		subs := a.Subscriptions
-		a.SubPanelListState.Key = func(i int) any { return subs[i].ID }
+		a.SubPanelListState.Key = func(i int) any {
+			if i >= 0 && i < len(subs) {
+				return subs[i].ID
+			}
+			return i
+		}
 		ui.List(c, &a.SubPanelListState, len(subs), func(i int) {
+			if i < 0 || i >= len(subs) {
+				return
+			}
 			s := subs[i]
 			ui.Column(c).FillWidth().Padding(1, 8).Children(func() {
 				active := a.SubDetailOpen && a.SelectedSubID == s.ID
@@ -315,93 +337,142 @@ func (a *App) renderSubscriptionsPanel(c *ui.Context) {
 	})
 }
 
+func (a *App) libraryPanelRows() []libraryPanelRow {
+	stats := a.libraryStatistics
+	var subsFirst *subscription.Subscription
+	if len(a.Subscriptions) > 0 {
+		subsFirst = &a.Subscriptions[0]
+	}
+	var authorsFirst *library.ItemAuthor
+	if len(stats.Authors) > 0 {
+		authorsFirst = &stats.Authors[0]
+	}
+	sig := libraryPanelSig{
+		subsRev:      a.subsRev,
+		subsN:        len(a.Subscriptions),
+		subsFirst:    subsFirst,
+		statsRev:     a.statsRev,
+		authorsN:     len(stats.Authors),
+		authorsFirst: authorsFirst,
+	}
+	if a.libraryPanelValid && a.libraryPanelSig == sig {
+		return a.libraryPanelRowsCache
+	}
+	ownedKeys := make(map[string]bool, len(a.Subscriptions)*2)
+	ownedMids := make(map[int64]bool, len(a.Subscriptions))
+	rows := make([]libraryPanelRow, 0, len(a.Subscriptions)+len(stats.Authors))
+	for _, sub := range a.Subscriptions {
+		rows = append(rows, libraryPanelRow{isSub: true, sub: sub})
+		for _, account := range sub.Accounts {
+			normSite := normalizeSiteIDUI(account.Site)
+			uid := strings.TrimSpace(account.UID)
+			if uid != "" {
+				ownedKeys[normSite+":"+uid] = true
+			}
+			if normSite == "bilibili" {
+				if id, err := strconv.ParseInt(uid, 10, 64); err == nil && id > 0 {
+					ownedMids[id] = true
+				}
+			}
+		}
+	}
+	for _, author := range stats.Authors {
+		aSite := normalizeSiteIDUI(author.Site)
+		aUID := strings.TrimSpace(author.UID)
+		if aUID == "" && author.Mid > 0 {
+			aUID = strconv.FormatInt(author.Mid, 10)
+		}
+		aKey := aSite + ":" + aUID
+		if ownedKeys[aKey] || (aSite == "bilibili" && ownedMids[author.Mid]) {
+			continue
+		}
+		rows = append(rows, libraryPanelRow{
+			author:    author,
+			site:      aSite,
+			uid:       aUID,
+			authorKey: aKey,
+		})
+	}
+	a.libraryPanelRowsCache = rows
+	a.libraryPanelSig = sig
+	a.libraryPanelValid = true
+	return rows
+}
+
+var libraryPanelKinds = [5]struct{ key, icon, text, label string }{
+	{"", "library", "全部", "筛选类型：全部类型"},
+	{"video", "video", "视频", "筛选类型：视频"},
+	{"image", "image", "图片", "筛选类型：图片"},
+	{"live", "live", "直播录像", "筛选类型：直播录制"},
+	{"forward", "share", "转发", "筛选类型：转发"},
+}
+
 // renderLibraryPanel holds the library's filters: the kind, then the 来源
-// section (site 3-segment switcher + subscription or creator).
+// section (site 3-segment switcher + virtualized subscriptions and creators).
 func (a *App) renderLibraryPanel(c *ui.Context) {
 	stats := a.libraryStatistics
+	rows := a.libraryPanelRows()
+	showSources := len(rows) > 0 || a.LibraryCreatorMid != 0 || a.LibraryAuthorKey != "" || a.LibrarySubFilter != ""
+
 	ui.Column(c).Fill().ClipX().Children(func() {
 		panelTitle(c, "媒体库")
-		ui.Scroll(c).Grow(1).FillWidth().Children(func() {
-			ui.Column(c).FillWidth().Padding(0, 8, 12, 8).Gap(2).ClipX().Children(func() {
-				for _, k := range []struct{ key, icon, text, label string }{
-					{"", "library", "全部", "筛选类型：全部类型"},
-					{"video", "video", "视频", "筛选类型：视频"},
-					{"image", "image", "图片", "筛选类型：图片"},
-					{"live", "live", "直播录像", "筛选类型：直播录制"},
-					{"forward", "share", "转发", "筛选类型：转发"},
-				} {
-					kind := k
-					if panelIconItem(c, kind.icon, kind.text, kind.label, a.LibraryKindFilter == kind.key) {
-						a.LibraryKindFilter = kind.key
-						a.selectLibraryFilter()
-					}
+		ui.Column(c).FillWidth().Padding(0, 8, 4, 8).Gap(2).Shrink(0).ClipX().Children(func() {
+			for _, kind := range libraryPanelKinds {
+				k := kind
+				if panelIconItem(c, k.icon, k.text, k.label, a.LibraryKindFilter == k.key) {
+					a.LibraryKindFilter = k.key
+					a.selectLibraryFilter()
 				}
+			}
 
-				panelSection(c, "来源")
-				ui.Row(c).FillWidth().Padding(2, 2, 4, 2).Children(func() {
-					renderThreeSegmentSiteFilter(c, "媒体库站点筛选：", a.LibrarySiteFilter, func(next string) {
-						a.LibrarySiteFilter = normalizeSiteFilter(next)
-						a.selectLibraryFilter()
-					})
+			panelSection(c, "来源")
+			ui.Row(c).FillWidth().Padding(2, 2, 4, 2).Children(func() {
+				renderThreeSegmentSiteFilter(c, "媒体库站点筛选：", a.LibrarySiteFilter, func(next string) {
+					a.LibrarySiteFilter = normalizeSiteFilter(next)
+					a.selectLibraryFilter()
 				})
+			})
 
-				ownedKeys := make(map[string]bool)
-				ownedMids := make(map[int64]bool)
-				for _, sub := range a.Subscriptions {
-					for _, account := range sub.Accounts {
-						normSite := normalizeSiteIDUI(account.Site)
-						uid := strings.TrimSpace(account.UID)
-						if uid != "" {
-							ownedKeys[normSite+":"+uid] = true
-						}
-						if normSite == "bilibili" {
-							if id, err := strconv.ParseInt(uid, 10, 64); err == nil && id > 0 {
-								ownedMids[id] = true
-							}
-						}
-					}
-				}
-				var others int
-				for _, author := range stats.Authors {
-					aSite := normalizeSiteIDUI(author.Site)
-					aUID := strings.TrimSpace(author.UID)
-					if aUID == "" && author.Mid > 0 {
-						aUID = strconv.FormatInt(author.Mid, 10)
-					}
-					if !ownedKeys[aSite+":"+aUID] && !(aSite == "bilibili" && ownedMids[author.Mid]) {
-						others++
-					}
-				}
-				if len(a.Subscriptions) == 0 && others == 0 && a.LibraryCreatorMid == 0 && a.LibraryAuthorKey == "" && a.LibrarySubFilter == "" {
-					return
-				}
+			if showSources {
 				if panelIconItem(c, "subscriptions", "全部来源", "清除UP主筛选", a.LibraryCreatorMid == 0 && a.LibraryAuthorKey == "" && a.LibrarySubFilter == "") {
 					a.LibraryCreatorMid, a.LibraryAuthorKey, a.LibrarySubFilter = 0, "", ""
 					a.selectLibraryFilter()
 				}
-				for _, s := range a.Subscriptions {
-					sub := s
-					active := a.LibrarySubFilter == sub.ID
-					if panelItem(c, "媒体库订阅筛选："+sub.ID, active, func() {
-						pSite, pUID := subscriptionPrimarySiteAndUID(sub)
-						a.renderAccountAvatar(c, pSite, sub.Name, pUID, sub.Mid, 24, false, "", nil, sub.Face)
-						panelItemText(c, sub.Name, active)
-					}) {
-						a.LibrarySubFilter, a.LibraryCreatorMid, a.LibraryAuthorKey = sub.ID, 0, ""
-						a.selectLibraryFilter()
-					}
+			}
+		})
+
+		if len(rows) > 0 {
+			a.LibraryPanelListState.Key = func(i int) any {
+				if i < 0 || i >= len(rows) {
+					return i
 				}
-				for _, au := range stats.Authors {
-					author := au
-					aSite := normalizeSiteIDUI(author.Site)
-					aUID := strings.TrimSpace(author.UID)
-					if aUID == "" && author.Mid > 0 {
-						aUID = strconv.FormatInt(author.Mid, 10)
+				if rows[i].isSub {
+					return "sub:" + rows[i].sub.ID
+				}
+				return "author:" + rows[i].authorKey
+			}
+			ui.List(c, &a.LibraryPanelListState, len(rows), func(i int) {
+				if i < 0 || i >= len(rows) {
+					return
+				}
+				row := rows[i]
+				ui.Column(c).FillWidth().Padding(1, 8).Children(func() {
+					if row.isSub {
+						sub := row.sub
+						active := a.LibrarySubFilter == sub.ID
+						if panelItem(c, "媒体库订阅筛选："+sub.ID, active, func() {
+							pSite, pUID := subscriptionPrimarySiteAndUID(sub)
+							a.renderAccountAvatar(c, pSite, sub.Name, pUID, sub.Mid, 24, false, "", nil, sub.Face)
+							panelItemText(c, sub.Name, active)
+						}) {
+							a.LibrarySubFilter, a.LibraryCreatorMid, a.LibraryAuthorKey = sub.ID, 0, ""
+							a.selectLibraryFilter()
+						}
+						return
 					}
-					aKey := aSite + ":" + aUID
-					if ownedKeys[aKey] || (aSite == "bilibili" && ownedMids[author.Mid]) {
-						continue
-					}
+					author := row.author
+					aSite := row.site
+					aKey := row.authorKey
 					label := fmt.Sprintf("按UP主筛选 %d", author.Mid)
 					active := aSite == "bilibili" && author.Mid > 0 && a.LibraryCreatorMid == author.Mid && a.LibraryAuthorKey == ""
 					if aSite == "douyin" || author.Mid <= 0 {
@@ -411,7 +482,7 @@ func (a *App) renderLibraryPanel(c *ui.Context) {
 						active = true
 					}
 					if panelItem(c, label, active, func() {
-						a.renderAccountAvatar(c, aSite, author.Name, aUID, author.Mid, 24, false, "", nil, author.Face)
+						a.renderAccountAvatar(c, aSite, author.Name, row.uid, author.Mid, 24, false, "", nil, author.Face)
 						panelItemText(c, author.Name, active)
 					}) {
 						if aSite == "bilibili" && author.Mid > 0 {
@@ -421,9 +492,12 @@ func (a *App) renderLibraryPanel(c *ui.Context) {
 						}
 						a.selectLibraryFilter()
 					}
-				}
-			})
-		})
+				})
+			}).Label("媒体库来源列表").Grow(1).FillWidth()
+		} else {
+			ui.Box(c).Grow(1).FillWidth()
+		}
+
 		ui.Row(c).FillWidth().Padding(10, 18, 14, 18).Shrink(0).BorderWidth(1, 0, 0, 0).BorderColor(ColorBorder).Children(func() {
 			ui.Text(c, fmt.Sprintf("%d 项 · %s", stats.Items, FormatBytes(stats.Bytes))).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 		})
@@ -522,8 +596,16 @@ func (a *App) renderHistoryPanel(c *ui.Context) {
 					itemMenuKey := entrySite + ":" + entry.Kind + ":" + entry.ID
 					legacyMenuKey := entry.Kind + ":" + entry.ID
 					itemMenuOpen := a.HistoryItemMenuID == itemMenuKey || a.HistoryItemMenuID == legacyMenuKey || a.HistoryItemMenuID == entry.ID
-					avatarBmp := a.lookupHistoryThumbBitmap(entry.AvatarThumb)
-					coverBmp := a.lookupHistoryThumbBitmap(entry.CoverThumb)
+					showAvatar := entry.Kind == "user" || (entry.CoverThumb == "" && entry.Kind != "video" && entry.Kind != "note" && entry.Kind != "live")
+					var avatarBmp, coverBmp *ui.Bitmap
+					if showAvatar {
+						avatarBmp = a.lookupHistoryThumbBitmap(entry.AvatarThumb)
+					} else {
+						coverBmp = a.lookupHistoryThumbBitmap(entry.CoverThumb)
+						if coverBmp == nil {
+							avatarBmp = a.lookupHistoryThumbBitmap(entry.AvatarThumb)
+						}
+					}
 
 					row := ui.Row(c).FillWidth().Radius(8).Padding(5, 6, 5, 8).Gap(6).AlignItems(ui.Center).ClipX()
 					if active {
@@ -542,7 +624,7 @@ func (a *App) renderHistoryPanel(c *ui.Context) {
 							Justify(ui.Start).
 							ClipX()
 						bodyBtn.Children(func() {
-							if entry.Kind == "user" || (entry.CoverThumb == "" && entry.Kind != "video" && entry.Kind != "note" && entry.Kind != "live") {
+							if showAvatar {
 								a.renderAvatarWithBitmap(c, author, mid, 32, false, "", nil, avatarBmp)
 							} else {
 								ui.Box(c).Size(44, 30).Radius(5).Background(ColorBgMain).Border(1, ColorBorder).Clip().Shrink(0).Center().Children(func() {
@@ -607,7 +689,9 @@ func (a *App) renderHistoryPanel(c *ui.Context) {
 						})
 						moreBtn.PopoverMenuButton(func(m *ui.Menu) {
 							if entry.CanonicalURL != "" && m.Item("在浏览器中打开").Chosen() {
-								_ = a.backend.Desktop().OpenExternalURL(entry.CanonicalURL)
+								if err := a.backend.Desktop().OpenExternalURL(entry.CanonicalURL); err != nil {
+									a.showError(err)
+								}
 							}
 							if m.Item("删除").Danger().Chosen() {
 								a.showError(a.backend.RemoveHistoryForSite(entrySite, entry.Kind, entry.ID))

@@ -47,17 +47,18 @@ func headingVersion(s string) string {
 	return s
 }
 
-// ensureChangelog returns the notes of version from the changelog; without
+// draftChangelog returns the notes of version from the changelog; without
 // a section it drafts one from the subjects of the commits merged into
-// main since lastTag and writes it in, reporting that it drafted.
-func ensureChangelog(path, version, lastTag, root string) (string, bool, error) {
+// main since lastTag and returns the updated changelog text without
+// modifying path on disk.
+func draftChangelog(path, version, lastTag, root string) (notes, fullText string, drafted bool, err error) {
 	raw, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", false, err
+		return "", "", false, err
 	}
 	text := string(raw)
-	if notes := changelogSection(text, version); notes != "" {
-		return notes, false, nil
+	if existing := changelogSection(text, version); existing != "" {
+		return existing, text, false, nil
 	}
 	rng := "HEAD"
 	if lastTag != "" {
@@ -65,17 +66,30 @@ func ensureChangelog(path, version, lastTag, root string) (string, bool, error) 
 	}
 	out, err := build.Git(root, "log", "--first-parent", "--format=%s", rng)
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
-	notes := draftNotes(out)
+	notes = draftNotes(out)
 	if strings.TrimSpace(text) == "" {
 		text = changelogHeader
 	}
-	text = insertSection(text, version, notes)
-	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+	fullText = insertSection(text, version, notes)
+	return notes, fullText, true, nil
+}
+
+// ensureChangelog returns the notes of version from the changelog; without
+// a section it drafts one from the subjects of the commits merged into
+// main since lastTag and writes it in, reporting that it drafted.
+func ensureChangelog(path, version, lastTag, root string) (string, bool, error) {
+	notes, fullText, drafted, err := draftChangelog(path, version, lastTag, root)
+	if err != nil {
 		return "", false, err
 	}
-	return notes, true, nil
+	if drafted {
+		if err := os.WriteFile(path, []byte(fullText), 0o644); err != nil {
+			return "", false, err
+		}
+	}
+	return notes, drafted, nil
 }
 
 // draftNotes turns commit subjects into list items, newest first.
@@ -135,11 +149,19 @@ func attestManifest(path string, key ed25519.PrivateKey) error {
 // user's authorization.
 func publishRelease(root, version, dir string, files []string, notes string) error {
 	tag := "v" + version
-	notesFile := filepath.Join(os.TempDir(), "trace-release-notes-"+version+".md")
-	if err := os.WriteFile(notesFile, []byte(strings.TrimSpace(notes)+"\n"), 0o644); err != nil {
+	f, err := os.CreateTemp("", "trace-release-notes-*.md")
+	if err != nil {
 		return err
 	}
+	notesFile := f.Name()
 	defer os.Remove(notesFile)
+	if _, err := f.WriteString(strings.TrimSpace(notes) + "\n"); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
 	head, err := build.Git(root, "rev-parse", "HEAD")
 	if err != nil {
 		return err

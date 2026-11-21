@@ -69,7 +69,11 @@ func OpenGate(ledgerDir string, limits Limits) (*Gate, error) {
 		UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
 		Categories: make(map[string]int),
 	}
-	if raw, err := os.ReadFile(ledgerPath); err == nil && len(raw) > 0 {
+	raw, err := os.ReadFile(ledgerPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("sitecheck: read %s: %w", ledgerPath, err)
+	}
+	if err == nil && len(raw) > 0 {
 		if uErr := json.Unmarshal(raw, &u); uErr != nil {
 			return nil, fmt.Errorf("sitecheck: parse %s: %w", ledgerPath, uErr)
 		}
@@ -84,16 +88,20 @@ func OpenGate(ledgerDir string, limits Limits) (*Gate, error) {
 	}, nil
 }
 
+func cloneUsage(in Usage) Usage {
+	cp := in
+	cp.Categories = make(map[string]int, len(in.Categories))
+	for k, v := range in.Categories {
+		cp.Categories[k] = v
+	}
+	return cp
+}
+
 // Usage returns a snapshot of the current usage counters.
 func (g *Gate) Usage() Usage {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	cp := g.usage
-	cp.Categories = make(map[string]int, len(g.usage.Categories))
-	for k, v := range g.usage.Categories {
-		cp.Categories[k] = v
-	}
-	return cp
+	return cloneUsage(g.usage)
 }
 
 // BeginRun checks and increments the run counter before starting a site-check run.
@@ -103,8 +111,9 @@ func (g *Gate) BeginRun() error {
 	if g.limits.MaxRuns > 0 && g.usage.Runs >= g.limits.MaxRuns {
 		return fmt.Errorf("%w: runs %d/%d", ErrQuotaExceeded, g.usage.Runs, g.limits.MaxRuns)
 	}
-	g.usage.Runs++
-	return g.saveLocked()
+	next := cloneUsage(g.usage)
+	next.Runs++
+	return g.commitUsageLocked(next)
 }
 
 // AcquireAPI checks and reserves 1 API call of the given category BEFORE the HTTP request is sent.
@@ -115,20 +124,28 @@ func (g *Gate) AcquireAPI(category string) error {
 	if g.limits.MaxAPICalls > 0 && g.usage.APICalls >= g.limits.MaxAPICalls {
 		return fmt.Errorf("%w: apiCalls %d/%d", ErrQuotaExceeded, g.usage.APICalls, g.limits.MaxAPICalls)
 	}
-	if maxCat, ok := g.limits.MaxByCategory[category]; ok && maxCat > 0 {
-		cur := g.categoryCountLocked(category)
+	if len(g.limits.MaxByCategory) > 0 {
+		maxCat, ok := g.limits.MaxByCategory[category]
+		if !ok || maxCat <= 0 {
+			return fmt.Errorf("%w: category %s not allowed", ErrQuotaExceeded, category)
+		}
+		cur := categoryCount(g.usage, category)
 		if cur >= maxCat {
 			return fmt.Errorf("%w: category %s %d/%d", ErrQuotaExceeded, category, cur, maxCat)
 		}
 	}
 
-	g.usage.APICalls++
-	g.incrementCategoryLocked(category)
-	return g.saveLocked()
+	next := cloneUsage(g.usage)
+	next.APICalls++
+	incrementCategory(&next, category)
+	return g.commitUsageLocked(next)
 }
 
 // AcquireMedia checks and reserves media file/byte quota BEFORE downloading media bytes.
 func (g *Gate) AcquireMedia(expectedBytes int64) error {
+	if expectedBytes < 0 {
+		return fmt.Errorf("sitecheck: invalid negative expectedBytes %d", expectedBytes)
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.limits.MaxMediaFiles > 0 && g.usage.MediaFiles >= g.limits.MaxMediaFiles {
@@ -137,9 +154,10 @@ func (g *Gate) AcquireMedia(expectedBytes int64) error {
 	if g.limits.MaxMediaBytes > 0 && g.usage.MediaBytes+expectedBytes > g.limits.MaxMediaBytes {
 		return fmt.Errorf("%w: mediaBytes %d+%d/%d", ErrQuotaExceeded, g.usage.MediaBytes, expectedBytes, g.limits.MaxMediaBytes)
 	}
-	g.usage.MediaFiles++
-	g.usage.MediaBytes += expectedBytes
-	return g.saveLocked()
+	next := cloneUsage(g.usage)
+	next.MediaFiles++
+	next.MediaBytes += expectedBytes
+	return g.commitUsageLocked(next)
 }
 
 // WrapTransport wraps base RoundTripper so every outgoing request is gated by AcquireAPI before transmission.
@@ -167,57 +185,61 @@ func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
 
-func (g *Gate) categoryCountLocked(category string) int {
+func categoryCount(u Usage, category string) int {
 	switch category {
 	case "nav":
-		return g.usage.NavCalls
+		return u.NavCalls
 	case "dynamic_feed":
-		return g.usage.DynamicFeeds
+		return u.DynamicFeeds
 	case "video_view":
-		return g.usage.VideoViews
+		return u.VideoViews
 	case "playurl":
-		return g.usage.PlayURLCalls
+		return u.PlayURLCalls
 	case "dynamic_detail":
-		return g.usage.DynamicDetails
+		return u.DynamicDetails
 	case "space_read":
-		return g.usage.SpaceReads
+		return u.SpaceReads
 	case "qr":
-		return g.usage.QRCalls
+		return u.QRCalls
 	default:
-		return g.usage.Categories[category]
+		return u.Categories[category]
 	}
 }
 
-func (g *Gate) incrementCategoryLocked(category string) {
+func incrementCategory(u *Usage, category string) {
 	switch category {
 	case "nav":
-		g.usage.NavCalls++
+		u.NavCalls++
 	case "dynamic_feed":
-		g.usage.DynamicFeeds++
+		u.DynamicFeeds++
 	case "video_view":
-		g.usage.VideoViews++
+		u.VideoViews++
 	case "playurl":
-		g.usage.PlayURLCalls++
+		u.PlayURLCalls++
 	case "dynamic_detail":
-		g.usage.DynamicDetails++
+		u.DynamicDetails++
 	case "space_read":
-		g.usage.SpaceReads++
+		u.SpaceReads++
 	case "qr":
-		g.usage.QRCalls++
+		u.QRCalls++
 	}
-	if g.usage.Categories == nil {
-		g.usage.Categories = make(map[string]int)
+	if u.Categories == nil {
+		u.Categories = make(map[string]int)
 	}
-	g.usage.Categories[category]++
+	u.Categories[category]++
 }
 
-func (g *Gate) saveLocked() error {
-	g.usage.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	raw, err := json.MarshalIndent(g.usage, "", "  ")
+func (g *Gate) commitUsageLocked(next Usage) error {
+	next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	raw, err := json.MarshalIndent(next, "", "  ")
 	if err != nil {
 		return err
 	}
-	return storage.WriteFileAtomic(g.ledgerPath, raw, 0o600)
+	if err := storage.WriteFileAtomic(g.ledgerPath, raw, 0o600); err != nil {
+		return err
+	}
+	g.usage = next
+	return nil
 }
 
 var secretReceiptMarkers = []string{
@@ -235,7 +257,7 @@ var secretReceiptMarkers = []string{
 	"msToken=",
 }
 
-var signedReceiptURLRe = regexp.MustCompile(`(?i)https?://[^\s"'<>` + "`" + `]*(?:a_bogus=[A-Za-z0-9%+/=._-]{4,}|x-(?:secsdk-web-)?signature(?:=[A-Za-z0-9%+/=._-]{4,}|/[A-Za-z0-9%+/=._-]{4,}))`)
+var signedReceiptURLRe = regexp.MustCompile(`(?i)https?://[^\s"'<>` + "`" + `]*?(a_bogus|x-(?:secsdk-web-)?signature)(?:=[A-Za-z0-9%+/=._-]{4,}|/[A-Za-z0-9%+/=._-]{4,})`)
 
 // ScanTextForSecrets checks an arbitrary text or JSON payload for Bilibili/Douyin Cookie markers
 // and signed URLs containing a_bogus= or x-signature.
@@ -246,8 +268,8 @@ func ScanTextForSecrets(text string) []string {
 			findings = append(findings, fmt.Sprintf("contains secret marker %q", marker))
 		}
 	}
-	if m := signedReceiptURLRe.FindString(text); m != "" {
-		findings = append(findings, fmt.Sprintf("contains signed URL %q", m))
+	if m := signedReceiptURLRe.FindStringSubmatch(text); len(m) >= 2 {
+		findings = append(findings, fmt.Sprintf("contains signed URL marker %q (redacted)", strings.ToLower(m[1])))
 	}
 	return findings
 }

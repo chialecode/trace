@@ -59,10 +59,10 @@ func splitSyntheticHLSInitAndFrag(t *testing.T) ([]byte, []byte) {
 	return initBuf.Bytes(), fragBuf.Bytes()
 }
 
-// M4-K33: Even when legacy LiveSettings carries MaxConcurrentRecordings=1,
+// Even when legacy LiveSettings carries MaxConcurrentRecordings=1,
 // starting 5 live recordings simultaneously (3 Bilibili HLS + 2 Douyin HTTP-FLV) succeeds for all 5
 // with zero "已达到同时录制上限" errors, and all 5 finalize valid MP4 segments.
-func TestConcurrentRecordingsUnlimited_M4K33(t *testing.T) {
+func TestConcurrentRecordingsUnlimited(t *testing.T) {
 	initBytes, fragBytes := splitSyntheticHLSInitAndFrag(t)
 	flvBytes := buildSyntheticFLVBytes(t, "avc", 45)
 
@@ -264,11 +264,11 @@ func TestConcurrentRecordingsUnlimited_M4K33(t *testing.T) {
 	}
 }
 
-// M4-K34: Collects all 5 incident types (lost_segments, reconnect, slow, disk, convert_failed)
+// Collects all 5 incident types (lost_segments, reconnect, slow, disk, convert_failed)
 // strictly from recording data with 0 extra site/CDN requests, injectable clock (no 30s sleep),
 // real-time visibility while recording, item.json persistence without URL/Cookie leaks,
 // 1-minute per-kind coalescing, and 200-entry cap.
-func TestLiveRecordingIncidentsAllFiveKindsCoalesceAndCap_M4K34(t *testing.T) {
+func TestLiveRecordingIncidentsAllFiveKindsCoalesceAndCap(t *testing.T) {
 	// --- Part A: Coalescing (<= 60s merges, > 60s separates) & 200-entry cap ---
 	var coalesced []library.LiveIncident
 	baseT := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
@@ -531,7 +531,7 @@ func TestLiveRecordingIncidentsAllFiveKindsCoalesceAndCap_M4K34(t *testing.T) {
 	}
 	waitUntilRoomIdle(t, mgr, "douyin:live:7400000000000007801", 6*time.Second)
 
-	// --- Part D: Orphan corrupt .part recovery -> records 'convert_failed' with F-004 reason ---
+	// --- Part D: Orphan corrupt .part recovery -> records 'convert_failed' reason ---
 	orphanDir := filepath.Join(cacheDir, "bilibili", "live", "9602-corrupt")
 	if err := os.MkdirAll(orphanDir, 0o755); err != nil {
 		t.Fatal(err)

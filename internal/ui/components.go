@@ -9,6 +9,7 @@ import (
 	"github.com/chialecode/trace/internal/download"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site/bilibili"
+	"github.com/chialecode/trace/internal/subscription"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -66,8 +67,25 @@ type PostCardData struct {
 	LibItem       *library.ItemMetadata
 	InHomeFeed    bool
 	Offline       bool
+	LocalManage   bool // cached post with a local-only "⋯" (show in folder, delete)
 	OpenBtnLabel  string
 	CacheBtnLabel string
+}
+
+// homePostSubscription is the subscription a Home post belongs to: its
+// author's, or for a co-creation cached for a subscribed account (via
+// collab) that account's.
+func (a *App) homePostSubscription(post PostCardData) (subscription.Subscription, bool) {
+	if !post.InHomeFeed {
+		return subscription.Subscription{}, false
+	}
+	if sub, ok := a.subscriptionForAuthor(post.Site, post.AuthorUID, post.Mid); ok {
+		return sub, true
+	}
+	if post.LibItem != nil && post.LibItem.Via != nil && post.LibItem.Via.Reason == library.ViaCollab {
+		return a.subscriptionForAuthor(post.Site, post.LibItem.Via.UID, 0)
+	}
+	return subscription.Subscription{}, false
 }
 
 // renderAvatar renders a circular avatar with deterministic color + initial fallback and an optional orange live ring.
@@ -83,8 +101,10 @@ func (a *App) renderAvatarWithBitmap(c *ui.Context, name string, mid int64, size
 	bg := AvatarColor(name, mid)
 	glyph := FirstGlyph(name)
 	fontSz := max(12, size*0.42)
+	skipRemote := a.pendingLocalAvatar
+	a.pendingLocalAvatar = false
 	bmp := customBmp
-	if bmp == nil {
+	if bmp == nil && !skipRemote {
 		face := firstImageURL(faces)
 		if face == "" {
 			face = a.faceURL(mid)
@@ -271,29 +291,25 @@ func (a *App) renderExpandableText(c *ui.Context, key string, text string) {
 	})
 }
 
-// renderPostImageGrid shows a post's images as the site does (DEC-040): one
-// image at its own proportions, so nothing is cut off; two or more as square
-// cells in two (2 or 4 images) or three columns, up to nine.
+// renderPostImageGrid shows a post's images as the site does: one image at its
+// own proportions so nothing is cut off; two or more as square cells in two
+// (2 or 4 images) or three columns, up to nine.
 func (a *App) renderPostImageGrid(c *ui.Context, post PostCardData) {
 	n := len(post.Images)
 	if n == 0 {
 		return
 	}
-	var urls []string
-	var rels []string
-	var liveURLs []string
-	for _, img := range post.Images {
-		if post.Offline {
-			urls = append(urls, "")
-			liveURLs = append(liveURLs, "")
-		} else {
-			urls = append(urls, img.URL)
-			liveURLs = append(liveURLs, img.LiveURL)
-		}
-		rels = append(rels, img.RelPath)
-	}
-
 	openAt := func(idx int) {
+		urls := make([]string, n)
+		rels := make([]string, n)
+		liveURLs := make([]string, n)
+		for i, img := range post.Images {
+			if !post.Offline {
+				urls[i] = img.URL
+				liveURLs[i] = img.LiveURL
+			}
+			rels[i] = img.RelPath
+		}
 		a.openPostImageViewer(post.ItemKey, post.Site, urls, rels, liveURLs, idx)
 	}
 
@@ -408,8 +424,10 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 			authorFace = ""
 		}
 		// On Home the avatar opens the author's subscription; the user page
-		// (a parse) only opens for an author without one (DEC-057).
-		if sub, ok := a.subscriptionForAuthor(post.Site, post.AuthorUID, post.Mid); ok && post.InHomeFeed {
+		// (a parse) only opens for an author without one.
+		homeSub, homeSubOK := a.homePostSubscription(post)
+		if homeSubOK {
+			sub := homeSub
 			openCreator = func() { a.OpenSubscriptionDetail(sub) }
 		} else if !post.Offline {
 			openCreator = func() {
@@ -450,6 +468,17 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 					} else {
 						ui.Text(c, authorName).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 					}
+					// On Home the subscription's name follows the account in
+					// smaller accent text, unless it only repeats the account.
+					if homeSubOK && strings.TrimSpace(homeSub.Name) != "" && strings.TrimSpace(homeSub.Name) != strings.TrimSpace(authorName) {
+						subName := strings.TrimSpace(homeSub.Name)
+						subBtn := ui.ButtonBase(c).Label("主页订阅名：" + post.Key).Padding(0).Shrink(1).Children(func() {
+							ui.Text(c, subName).FontSize(13).FontWeight(500).TextColor(ColorAccent).SingleLine()
+						})
+						if subBtn.Clicked() {
+							openCreator()
+						}
+					}
 					if post.InHomeFeed {
 						renderSiteSmallBadgeWithDot(c, post.Site, "主页作者站点："+post.Key)
 					}
@@ -473,7 +502,7 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 					// One dot for the whole post: its own state and its
 					// video's, the worse of the two (images and the video
 					// card carry none). Home lists cached posts only and
-					// draws no dot (DEC-046 ⑦).
+					// draws no dot.
 					if dot := postDotStatus(post); !post.InHomeFeed && dot != "" && dot != "none" {
 						label := post.DotLabel
 						if dot != post.DotStatus {
@@ -481,7 +510,9 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 						}
 						DrawStatusDot(c, dot, label)
 					}
-					if post.Offline {
+					if post.LocalManage && post.LibItem != nil {
+						a.renderCachedPostMenu(c, post.Key, *post.LibItem)
+					} else if post.Offline {
 						if post.LibItem != nil {
 							a.renderLibraryItemMoreMenu(c, *post.LibItem, 28)
 						}
@@ -571,12 +602,17 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 				})
 				if vCard.Clicked() {
 					if v.Cached && v.ItemKey != "" {
-						if it, ok, err := a.backend.GetLibraryItem(v.ItemKey); err == nil && ok {
+						it, ok, err := a.backend.GetLibraryItem(v.ItemKey)
+						if err != nil {
+							a.showError(err)
+						} else if ok {
 							a.OpenPlayerOverlay(it)
 						}
 					} else if !post.Offline {
 						if isDouyinVideo {
 							a.OpenDouyinWork(v.BVID, "video", v.Title, post.AuthorName, post.AuthorUID, v.CoverURL, v.Duration)
+						} else if a.CurrentRoute == RouteUser && a.CurrentUser != nil {
+							a.openVideoFor(v.BVID, v.Title, post.AuthorName, post.Mid, v.CoverURL, v.Duration, a.CurrentUser.Mid)
 						} else {
 							a.OpenVideo(v.BVID, v.Title, post.AuthorName, post.Mid, v.CoverURL, v.Duration)
 						}
@@ -587,6 +623,10 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 			// 5. Forwarded Origin Quote Box
 			if post.Origin != nil {
 				orig := post.Origin
+				origFace := orig.AuthorFace
+				if post.Offline {
+					origFace = ""
+				}
 				ui.Column(c).
 					FillWidth().
 					Padding(10, 12).
@@ -597,7 +637,7 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 					ClipX().
 					Children(func() {
 						ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-							a.renderAvatar(c, orig.AuthorName, orig.Mid, 20, false, "", nil)
+							a.renderAvatar(c, orig.AuthorName, orig.Mid, 20, false, "", nil, origFace)
 							ui.Text(c, "@"+orig.AuthorName).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 							if orig.TypeLabel != "" {
 								ui.Text(c, "· "+orig.TypeLabel).FontSize(12).TextColor(ColorTextMuted).SingleLine()
@@ -616,12 +656,12 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 	})
 }
 
-// postDotStatus is the single status shown for a post: the worse of the
-// post's own state and its video's (failed, then caching, then partial, then
-// complete). A post whose video is only partly cached is yellow.
 // videoCoverWidth is the width of a video's cover in a post.
 const videoCoverWidth = 200
 
+// postDotStatus is the single status shown for a post: the worse of the
+// post's own state and its video's (failed, then caching, then partial, then
+// complete). A post whose video is only partly cached is yellow.
 func postDotStatus(post PostCardData) string {
 	dot := post.DotStatus
 	if post.Video != nil && dotRank(post.Video.Status) > dotRank(dot) {
@@ -660,10 +700,8 @@ func (a *App) postMenuItems(c *ui.Context, m *ui.Menu, post PostCardData) {
 			case "dynamic":
 				targetURL = "https://www.douyin.com/note/" + post.RawID
 			case "live":
-				if post.LibItem != nil && post.LibItem.Live != nil {
-					if post.LibItem.Live.WebRID != "" {
-						targetURL = "https://live.douyin.com/" + post.LibItem.Live.WebRID
-					}
+				if post.LibItem != nil && post.LibItem.Live != nil && post.LibItem.Live.WebRID != "" {
+					targetURL = "https://live.douyin.com/" + post.LibItem.Live.WebRID
 				}
 			default:
 				targetURL = "https://www.douyin.com/video/" + post.RawID
@@ -685,7 +723,9 @@ func (a *App) postMenuItems(c *ui.Context, m *ui.Menu, post PostCardData) {
 		return
 	}
 	if m.Item("在浏览器中打开").Chosen() {
-		_ = a.backend.Desktop().OpenExternalURL(targetURL)
+		if err := a.backend.Desktop().OpenExternalURL(targetURL); err != nil {
+			a.showError(err)
+		}
 	}
 	if m.Item("复制链接").Chosen() {
 		c.WriteClipboard(targetURL)
@@ -694,331 +734,41 @@ func (a *App) postMenuItems(c *ui.Context, m *ui.Menu, post PostCardData) {
 	}
 }
 
-// cachePost queues an uncached post: a Douyin work, a Bilibili dynamic with its linked videos, or a video.
+// cachePost queues an uncached post off the UI thread: a Douyin work,
+// a Bilibili dynamic with its linked videos, or a Bilibili video.
 func (a *App) cachePost(post PostCardData) {
 	if normalizeSiteIDUI(post.Site) == "douyin" && post.RawID != "" {
 		a.cacheDouyinWorkNow(post.RawID)
 		return
 	}
+	backend := a.backend
 	if post.DynItem != nil {
 		dynCopy := *post.DynItem
-		_, err := a.backend.EnqueueDynamicCache(context.Background(), download.DynamicEnqueueRequest{
-			DynamicID:         dynCopy.ID,
-			Item:              &dynCopy,
-			CacheLinkedVideos: true,
-		})
-		a.showError(err)
-		if err == nil {
+		requestGuarded(a, "cache-dyn:"+dynCopy.ID, nil, func(ctx context.Context) (struct{}, error) {
+			_, err := backend.EnqueueDynamicCache(ctx, download.DynamicEnqueueRequest{
+				DynamicID:         dynCopy.ID,
+				Item:              &dynCopy,
+				CacheLinkedVideos: true,
+			})
+			return struct{}{}, err
+		}, func(struct{}) {
 			a.BannerInfo = "已加入缓存队列：" + dynCopy.ID
-		}
-		a.RefreshData()
-	} else if post.Kind == "video" && post.RawID != "" {
-		_, err := a.backend.EnqueueVideoCache(context.Background(), download.VideoEnqueueRequest{BVID: post.RawID})
-		a.showError(err)
-		if err == nil {
-			a.BannerInfo = "已加入缓存队列：" + post.RawID
-		}
-		a.RefreshData()
-	}
-}
-
-// formatLiveRecordingSpec formats the live stream quality and codec (e.g. "原画 · AVC")
-// from LiveRecordingInfo, falling back to Segments[i] when needed.
-func formatLiveRecordingSpec(liveInfo *library.LiveRecordingInfo, segPath string) string {
-	if liveInfo == nil {
-		return ""
-	}
-	qName, qn, codec := liveInfo.QualityName, liveInfo.Quality, liveInfo.Codec
-	if segPath != "" {
-		for _, seg := range liveInfo.Segments {
-			if seg.File == segPath {
-				if seg.QualityName != "" || seg.Quality > 0 || seg.Codec != "" {
-					qName, qn, codec = seg.QualityName, seg.Quality, seg.Codec
-				}
-				break
-			}
-		}
-	}
-	if qName == "" && qn == 0 && codec == "" && len(liveInfo.Segments) > 0 {
-		s0 := liveInfo.Segments[0]
-		qName, qn, codec = s0.QualityName, s0.Quality, s0.Codec
-	}
-	return bilibili.FormatLiveQualitySpec(qName, qn, codec)
-}
-
-// itemKindLabel names a cached item's kind for people, never the internal value.
-func itemKindLabel(kind string) string {
-	switch kind {
-	case "dynamic":
-		return "动态"
-	case "live":
-		return "直播录像"
-	}
-	return "视频"
-}
-
-// feedEntryToPostCard converts a library.FeedEntry into a PostCardData for /home.
-// feedEntryToPostCard returns the card for a feed entry, built once until
-// tasks or the library change (see App.postCards).
-func (a *App) feedEntryToPostCard(entry library.FeedEntry) PostCardData {
-	return a.cachedPostCard("feed:"+entry.FeedKey, func() PostCardData { return a.buildFeedPostCard(entry) })
-}
-
-func (a *App) cachedPostCard(key string, build func() PostCardData) PostCardData {
-	if card, ok := a.postCards[key]; ok {
-		return card
-	}
-	card := build()
-	if a.postCards == nil {
-		a.postCards = make(map[string]PostCardData)
-	}
-	if len(a.postCards) > 600 {
-		clear(a.postCards)
-	}
-	a.postCards[key] = card
-	return card
-}
-
-func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
-	typeLabel := itemKindLabel(entry.Kind)
-	dot := entry.CacheStatus
-	if entry.Cached && dot == "" {
-		dot = "green"
-	}
-
-	var libPtr *library.ItemMetadata
-	var relCover string
-	var qualityTag string
-	var durationStr string
-	var images []PostImage
-	var notePages []douyinNoteRenderPage
-	authorUID := strings.TrimSpace(entry.AuthorUID)
-
-	if entry.Cached && entry.ItemKey != "" {
-		if item, ok, err := a.backend.GetLibraryItem(entry.ItemKey); err == nil && ok {
-			libPtr = &item
-			if authorUID == "" {
-				authorUID = strings.TrimSpace(item.Author.UID)
-			}
-			if item.TypeLabel != "" {
-				typeLabel = item.TypeLabel
-			} else if normalizeSiteIDUI(entry.Site) == "douyin" && entry.Kind == "dynamic" {
-				typeLabel = "图文"
-			}
-			for _, m := range item.Media {
-				if m.Role == "cover" && relCover == "" {
-					relCover = m.Path
-				} else if m.Role == "image" {
-					images = append(images, PostImage{
-						RelPath: m.Path,
-						Width:   m.Width,
-						Height:  m.Height,
-						Live:    m.Motion != "",
-					})
-				}
-			}
-			if len(item.NotePages) > 0 {
-				notePages = buildDouyinNoteRenderPages(nil, &item)
-			}
-			if len(item.Parts) > 0 {
-				p0 := item.Parts[0]
-				if p0.Duration > 0 {
-					durationStr = FormatDuration(p0.Duration)
-				}
-				var qParts []string
-				if p0.Video.QualityName != "" {
-					qParts = append(qParts, p0.Video.QualityName)
-				}
-				if p0.Audio.Name != "" {
-					qParts = append(qParts, p0.Audio.Name)
-				}
-				qualityTag = strings.Join(qParts, " · ")
-			} else if item.DouyinVideo != nil {
-				qualityTag = formatDouyinVideoSpec(item.DouyinVideo, "", "")
-			} else if item.Live != nil {
-				qualityTag = formatLiveRecordingSpec(item.Live, "")
-			}
-		}
-	}
-
-	var videoCard *PostVideo
-	text := entry.Summary
-	if entry.Kind == "video" || entry.Kind == "live" {
-		// A video's description belongs beside its cover, not above it.
-		text = ""
-		if durationStr == "" && libPtr != nil && libPtr.Duration > 0 {
-			durationStr = FormatDuration(libPtr.Duration)
-		}
-		videoCard = &PostVideo{
-			BVID:       entry.RawID,
-			Title:      entry.Title,
-			Desc:       entry.Summary,
-			CoverURL:   entry.CoverURL,
-			RelCover:   relCover,
-			Duration:   durationStr,
-			ItemKey:    entry.ItemKey,
-			Cached:     entry.Cached,
-			Status:     dot,
-			QualityTag: qualityTag,
-		}
-	} else if libPtr != nil && len(libPtr.Videos) > 0 {
-		refKey := library.CanonicalItemKey(entry.Site, "video", libPtr.Videos[0])
-		if refItem, ok, err := a.backend.GetLibraryItem(refKey); err == nil && ok {
-			var refCover, refDur, refQTag string
-			for _, m := range refItem.Media {
-				if m.Role == "cover" && refCover == "" {
-					refCover = m.Path
-				}
-			}
-			if len(refItem.Parts) > 0 {
-				p0 := refItem.Parts[0]
-				if p0.Duration > 0 {
-					refDur = FormatDuration(p0.Duration)
-				}
-				var qParts []string
-				if p0.Video.QualityName != "" {
-					qParts = append(qParts, p0.Video.QualityName)
-				}
-				if p0.Audio.Name != "" {
-					qParts = append(qParts, p0.Audio.Name)
-				}
-				refQTag = strings.Join(qParts, " · ")
-			}
-			if refDur == "" && refItem.Duration > 0 {
-				refDur = FormatDuration(refItem.Duration)
-			}
-			refDot := library.ComputeDotState(refItem).Dot
-			videoCard = &PostVideo{
-				BVID:       refItem.RawID,
-				Title:      firstNonEmptyStrUI(refItem.Title, entry.Title),
-				Desc:       refItem.Desc,
-				RelCover:   refCover,
-				Duration:   refDur,
-				ItemKey:    refItem.ItemKey,
-				Cached:     true,
-				Status:     refDot,
-				QualityTag: refQTag,
-			}
-		}
-	}
-
-	return PostCardData{
-		Key:        entry.FeedKey,
-		ItemKey:    entry.ItemKey,
-		Site:       entry.Site,
-		Kind:       entry.Kind,
-		RawID:      entry.RawID,
-		Mid:        entry.Mid,
-		AuthorUID:  authorUID,
-		AuthorName: entry.AuthorName,
-		AuthorFace: entry.AuthorFace,
-		PubTs:      entry.PubTs,
-		TypeLabel:  typeLabel,
-		Title:      entry.Title,
-		Text:       text,
-		URL:        entry.CanonicalURL,
-		Cached:     entry.Cached,
-		DotStatus:  dot,
-		DotLabel:   "已缓存：" + entry.RawID,
-		Images:     images,
-		NotePages:  notePages,
-		Video:      videoCard,
-		LibItem:    libPtr,
-		InHomeFeed: true,
-	}
-}
-
-// dynamicItemToPostCard converts a bilibili.DynamicItem into a PostCardData for /user and /subscriptions.
-func (a *App) dynamicItemToPostCard(d bilibili.DynamicItem, openLabel, cacheLabel string) PostCardData {
-	return a.cachedPostCard("dyn:"+d.ID+"|"+openLabel+"|"+cacheLabel, func() PostCardData {
-		return a.buildDynamicPostCard(d, openLabel, cacheLabel)
-	})
-}
-
-func (a *App) buildDynamicPostCard(d bilibili.DynamicItem, openLabel, cacheLabel string) PostCardData {
-	typeLabel := d.TypeLabel
-	if typeLabel == "" {
-		typeLabel = d.Type
-	}
-	var imgs []PostImage
-	for _, im := range d.Images {
-		imgs = append(imgs, PostImage{
-			URL:     im.URL,
-			Width:   im.Width,
-			Height:  im.Height,
-			Live:    im.LiveURL != "",
-			LiveURL: im.LiveURL,
+			a.RefreshData()
+		}, func(err error) {
+			a.showError(err)
+			a.RefreshData()
 		})
-	}
-	var vid *PostVideo
-	if len(d.Videos) > 0 {
-		v0 := d.Videos[0]
-		dur := v0.DurationText
-		if dur == "" && v0.DurationSec > 0 {
-			dur = FormatDuration(v0.DurationSec)
-		}
-		vid = &PostVideo{
-			BVID:     v0.BVID,
-			Title:    v0.Title,
-			Desc:     v0.Desc,
-			CoverURL: v0.Cover,
-			Duration: dur,
-		}
-		if v0.BVID != "" {
-			vKey := library.CanonicalItemKey("bilibili", "video", v0.BVID)
-			if vItem, ok, err := a.backend.GetLibraryItem(vKey); err == nil && ok {
-				vid.ItemKey = vItem.ItemKey
-				vid.Cached = true
-				vid.Status = library.ComputeDotState(vItem).Dot
-				for _, m := range vItem.Media {
-					if m.Role == "cover" && vid.RelCover == "" {
-						vid.RelCover = m.Path
-					}
-				}
-			}
-		}
-	}
-	var orig *PostCardData
-	if d.Origin != nil {
-		o := a.buildDynamicPostCard(*d.Origin, "", "")
-		orig = &o
-	}
-
-	dotStatus := ""
-	itemKey := library.CanonicalItemKey("bilibili", "dynamic", d.ID)
-	var hasItem bool
-	if it, ok, err := a.backend.GetLibraryItem(itemKey); err == nil && ok {
-		hasItem = true
-		dotStatus = library.ComputeDotState(it).Dot
-	}
-	if st, ok := a.backend.States([]string{itemKey})[itemKey]; ok && st.Dot != "" && st.Dot != "none" {
-		dotStatus = st.Dot
-	}
-
-	dCopy := d
-	return PostCardData{
-		Key:           "dyn:" + d.ID,
-		ItemKey:       itemKey,
-		Site:          "bilibili",
-		Kind:          "dynamic",
-		RawID:         d.ID,
-		Mid:           d.Author.Mid,
-		AuthorName:    d.Author.Name,
-		AuthorFace:    d.Author.Face,
-		PubTs:         d.PubTs,
-		TypeLabel:     typeLabel,
-		Title:         d.Title,
-		Text:          d.Text,
-		URL:           d.CanonicalURL,
-		Pinned:        d.Pinned,
-		Degraded:      d.Degraded,
-		Cached:        hasItem || (dotStatus != "" && dotStatus != "none"),
-		DotStatus:     dotStatus,
-		Images:        imgs,
-		Video:         vid,
-		Origin:        orig,
-		DynItem:       &dCopy,
-		OpenBtnLabel:  openLabel,
-		CacheBtnLabel: cacheLabel,
+	} else if post.Kind == "video" && post.RawID != "" {
+		bvid := post.RawID
+		requestGuarded(a, "cache-vid:"+bvid, nil, func(ctx context.Context) (struct{}, error) {
+			_, err := backend.EnqueueVideoCache(ctx, download.VideoEnqueueRequest{BVID: bvid})
+			return struct{}{}, err
+		}, func(struct{}) {
+			a.BannerInfo = "已加入缓存队列：" + bvid
+			a.RefreshData()
+		}, func(err error) {
+			a.showError(err)
+			a.RefreshData()
+		})
 	}
 }

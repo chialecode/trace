@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/chialecode/trace/internal/site"
 )
 
 // DynamicMedia describes an image attached to a dynamic post.
@@ -126,7 +128,7 @@ func (c *Client) DynamicDetail(ctx context.Context, dynID string) (DynamicItem, 
 	if item.ID == "" {
 		return DynamicItem{}, &SiteError{
 			Kind:     ErrKindSchemaChanged,
-			Endpoint: fullURL,
+			Endpoint: site.SanitizeEndpoint(fullURL),
 			Message:  "动态详情响应缺少 id_str",
 		}
 	}
@@ -304,7 +306,7 @@ func parseDynamicEntry(raw rawDynamicEntry) DynamicItem {
 			}
 		}
 	default:
-		// Graceful degradation for unsupported/future dynamic types (C12).
+		// Graceful degradation for unsupported/future dynamic types.
 		item.TypeLabel = "其他动态"
 		item.Degraded = true
 		if item.Text == "" && item.Title == "" {

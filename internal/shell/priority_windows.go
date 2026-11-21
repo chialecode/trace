@@ -31,7 +31,21 @@ const (
 	th32csSnapProcess        = 0x00000002
 )
 
-type processMemoryCountersEx struct {
+type processMemoryCountersEx1 struct {
+	CB                         uint32
+	PageFaultCount             uint32
+	PeakWorkingSetSize         uintptr
+	WorkingSetSize             uintptr
+	QuotaPeakPagedPoolUsage    uintptr
+	QuotaPagedPoolUsage        uintptr
+	QuotaPeakNonPagedPoolUsage uintptr
+	QuotaNonPagedPoolUsage     uintptr
+	PagefileUsage              uintptr
+	PeakPagefileUsage          uintptr
+	PrivateUsage               uintptr
+}
+
+type processMemoryCountersEx2 struct {
 	CB                         uint32
 	PageFaultCount             uint32
 	PeakWorkingSetSize         uintptr
@@ -60,7 +74,7 @@ type processEntry32W struct {
 	ExeFile         [260]uint16
 }
 
-// SetBelowNormalPriority sets the current process priority to BELOW_NORMAL_PRIORITY_CLASS (§6.10).
+// SetBelowNormalPriority sets the current process priority to BELOW_NORMAL_PRIORITY_CLASS.
 func SetBelowNormalPriority() error {
 	h, _, _ := procGetCurrentProcess.Call()
 	r1, _, err := procSetPriorityClass.Call(h, uintptr(belowNormalPriorityClass))
@@ -103,17 +117,23 @@ func TrimWorkingSet() {
 }
 
 // CurrentProcessMemoryBytes returns the resident working set, the private
-// working set (Task Manager "Memory", the NFR-RES-001 metric; 0 when the OS
-// predates PROCESS_MEMORY_COUNTERS_EX2) and the committed private bytes.
+// working set (Task Manager "Memory"; 0 when the OS predates
+// PROCESS_MEMORY_COUNTERS_EX2) and the committed private bytes.
 func CurrentProcessMemoryBytes() (workingSet, privateWorkingSet, privateBytes int64) {
 	h, _, _ := procGetCurrentProcess.Call()
-	var pmc processMemoryCountersEx
-	pmc.CB = uint32(unsafe.Sizeof(pmc))
-	r1, _, _ := procK32GetProcessMemInfo.Call(h, uintptr(unsafe.Pointer(&pmc)), uintptr(pmc.CB))
-	if r1 == 0 {
+	var pmc2 processMemoryCountersEx2
+	pmc2.CB = uint32(unsafe.Sizeof(pmc2))
+	r1, _, _ := procK32GetProcessMemInfo.Call(h, uintptr(unsafe.Pointer(&pmc2)), uintptr(pmc2.CB))
+	if r1 != 0 {
+		return int64(pmc2.WorkingSetSize), int64(pmc2.PrivateWorkingSetSize), int64(pmc2.PrivateUsage)
+	}
+	var pmc1 processMemoryCountersEx1
+	pmc1.CB = uint32(unsafe.Sizeof(pmc1))
+	r2, _, _ := procK32GetProcessMemInfo.Call(h, uintptr(unsafe.Pointer(&pmc1)), uintptr(pmc1.CB))
+	if r2 == 0 {
 		return 0, 0, 0
 	}
-	return int64(pmc.WorkingSetSize), int64(pmc.PrivateWorkingSetSize), int64(pmc.PrivateUsage)
+	return int64(pmc1.WorkingSetSize), 0, int64(pmc1.PrivateUsage)
 }
 
 // CountWebView2Processes counts running msedgewebview2.exe child processes owned by parentPID (or any if parentPID == 0).

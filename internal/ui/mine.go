@@ -41,6 +41,11 @@ type mineList struct {
 	State   ui.ListState
 	gen     int
 	seen    map[string]bool
+
+	// Cached date-grouped history rows (invalidated on item count or local day change).
+	histRows   []mineRow
+	histItemN  int
+	histDayKey string
 }
 
 // MineState is the in-memory state of 我的.
@@ -76,9 +81,16 @@ func (a *App) mineAccountID(siteID string) string {
 }
 
 // mineOnAccountChanged clears a site's lists after a sign-out, an expiry or
-// a different account; a renewal of the same account keeps them.
+// a different account; a renewal of the same account keeps them. When siteID
+// is empty (broadcast account change), every site is checked.
 func (a *App) mineOnAccountChanged(siteID string) {
-	if a.Mine.Lists == nil || siteID == "" {
+	if a.Mine.Lists == nil {
+		return
+	}
+	if siteID == "" {
+		for _, s := range mineSites {
+			a.mineOnAccountChanged(s.ID)
+		}
 		return
 	}
 	id := a.mineAccountID(siteID)
@@ -353,10 +365,14 @@ func (a *App) mineLoadFolders(siteID, kind string) {
 	}
 	delete(a.Mine.FolderErr, fk)
 	// Only a sign-out or another account invalidates folders; choosing another
-	// function meanwhile must not drop them (that would request them again).
+	// function meanwhile must not drop them. Including clearGen in the pending
+	// key ensures a new account's folder load is never deduplicated behind an
+	// old account's still-in-flight request.
 	gen := a.Mine.clearGen
 	backend := a.backend
-	requestGuarded(a, "mine-folders:"+fk, func() bool { return a.Mine.Folders != nil && a.Mine.clearGen == gen }, func(ctx context.Context) ([]service.AccountFolder, error) {
+	requestGuarded(a, fmt.Sprintf("mine-folders:%s#%d", fk, gen), func() bool {
+		return a.Mine.Folders != nil && a.Mine.clearGen == gen
+	}, func(ctx context.Context) ([]service.AccountFolder, error) {
 		return backend.AccountFolders(ctx, siteID, kind)
 	}, func(fs []service.AccountFolder) {
 		a.Mine.Folders[fk] = fs
@@ -373,7 +389,7 @@ func (a *App) mineChooseFolder(id string) {
 	a.mineEnsureList()
 }
 
-// mineClearSite forgets every list of siteID (sign-out, expiry or a new account).
+// mineClearSite forgets every list and folder selection of siteID (sign-out, expiry or a new account).
 func (a *App) mineClearSite(siteID string) {
 	if a.Mine.Lists == nil || siteID == "" {
 		return
@@ -387,6 +403,10 @@ func (a *App) mineClearSite(siteID string) {
 	for k := range a.Mine.Folders {
 		if strings.HasPrefix(k, prefix) {
 			delete(a.Mine.Folders, k)
+		}
+	}
+	for k := range a.Mine.Folder {
+		if strings.HasPrefix(k, prefix) {
 			delete(a.Mine.Folder, k)
 		}
 	}
@@ -503,7 +523,7 @@ func (a *App) renderMineHeaderActions(c *ui.Context) {
 			a.mineRefresh()
 		}
 		if m.Item("在浏览器中打开").Chosen() {
-			_ = a.backend.Desktop().OpenExternalURL(a.mineSiteURL(a.Mine.Site, a.Mine.Kind))
+			a.showError(a.backend.Desktop().OpenExternalURL(a.mineSiteURL(a.Mine.Site, a.Mine.Kind)))
 		}
 	})
 	keyedMenuOpen(&a.PostMenuKey, "mine:header", open)
@@ -590,6 +610,31 @@ func (a *App) renderMinePlaceholders(c *ui.Context, siteID, kind string) {
 	})
 }
 
+func mineFolderDisplayNames(folders []service.AccountFolder) []string {
+	names := make([]string, len(folders))
+	counts := make(map[string]int, len(folders))
+	for i, f := range folders {
+		name := f.Title
+		if f.Count > 0 || f.ID != service.AccountFolderAll {
+			name = fmt.Sprintf("%s · %d", f.Title, f.Count)
+		}
+		if f.Private {
+			name += " · 私密"
+		}
+		names[i] = name
+		counts[name]++
+	}
+	// Disambiguate colliding display names so ui.Select can address every folder distinctly.
+	seen := make(map[string]int, len(folders))
+	for i, name := range names {
+		if counts[name] > 1 {
+			seen[name]++
+			names[i] = fmt.Sprintf("%s (%d)", name, seen[name])
+		}
+	}
+	return names
+}
+
 // renderMineToolbar draws the folder dropdown, the 全部/未看完 switch or the count.
 func (a *App) renderMineToolbar(c *ui.Context, siteID, kind string, l *mineList) {
 	fk := mineFnKey(siteID, kind)
@@ -628,19 +673,12 @@ func (a *App) renderMineToolbar(c *ui.Context, siteID, kind string, l *mineList)
 			}
 			return
 		}
-		names := make([]string, len(folders))
+		names := mineFolderDisplayNames(folders)
 		shown := ""
 		for i, f := range folders {
-			name := f.Title
-			if f.Count > 0 || f.ID != service.AccountFolderAll {
-				name = fmt.Sprintf("%s · %d", f.Title, f.Count)
-			}
-			if f.Private {
-				name += " · 私密"
-			}
-			names[i] = name
 			if f.ID == current {
-				shown = name
+				shown = names[i]
+				break
 			}
 		}
 		label := "收藏夹选择"
@@ -704,44 +742,70 @@ func mineHistoryRows(items []service.AccountItem, now time.Time) []mineRow {
 	return rows
 }
 
+func (l *mineList) cachedHistoryRows(now time.Time) []mineRow {
+	dayKey := now.Local().Format("2006-01-02")
+	if l.histRows != nil && l.histItemN == len(l.Items) && l.histDayKey == dayKey {
+		return l.histRows
+	}
+	l.histRows = mineHistoryRows(l.Items, now)
+	l.histItemN = len(l.Items)
+	l.histDayKey = dayKey
+	return l.histRows
+}
+
 func (a *App) renderMineRows(c *ui.Context, siteID, kind string, l *mineList) {
 	var rows []mineRow
-	if kind == service.AccountHistory {
-		rows = mineHistoryRows(l.Items, mineNow())
-	} else {
-		rows = make([]mineRow, len(l.Items))
-		for i := range l.Items {
-			rows[i] = mineRow{item: i}
-		}
+	isHistory := kind == service.AccountHistory
+	if isHistory {
+		rows = l.cachedHistoryRows(mineNow())
 	}
-	total := len(rows) + 1 // + footer
+	rowCount := len(l.Items)
+	if isHistory {
+		rowCount = len(rows)
+	}
+	total := rowCount + 1 // + footer
 	_, last := l.State.Visible()
-	if last >= total-2 && l.HasMore && l.Err == "" && !a.pending[a.minePendingKey(a.mineListKey(), l)] {
+	if last >= 0 && last >= total-2 && l.HasMore && l.Err == "" && !a.isPending(a.minePendingKey(a.mineListKey(), l)) {
 		a.mineLoadMore()
 	}
 	l.State.Key = func(i int) any {
-		if i >= len(rows) {
+		if i < 0 || i >= rowCount {
 			return "mine-footer"
 		}
-		if rows[i].item < 0 {
-			return "h:" + rows[i].heading
+		if isHistory {
+			if rows[i].item < 0 {
+				return fmt.Sprintf("h:%d:%s", i, rows[i].heading)
+			}
+			idx := rows[i].item
+			if idx >= len(l.Items) {
+				return i
+			}
+			it := l.Items[idx]
+			return it.Kind + ":" + it.ID + ":" + strconv.Itoa(idx)
 		}
-		it := l.Items[rows[i].item]
-		return it.Kind + ":" + it.ID + ":" + strconv.Itoa(rows[i].item)
+		it := l.Items[i]
+		return it.Kind + ":" + it.ID + ":" + strconv.Itoa(i)
 	}
 	ui.List(c, &l.State, total, func(i int) {
-		if i >= len(rows) {
+		if i < 0 || i >= rowCount {
 			a.renderMineFooter(c, l)
 			return
 		}
-		r := rows[i]
-		if r.item < 0 {
-			ui.Row(c).FillWidth().Padding(12, 16, 4, 16).Children(func() {
-				ui.Text(c, r.heading).Label("历史分组：" + r.heading).FontSize(12).FontWeight(500).TextColor(ColorTextMuted).SingleLine()
-			})
+		itemIdx := i
+		if isHistory {
+			r := rows[i]
+			if r.item < 0 {
+				ui.Row(c).FillWidth().Padding(12, 16, 4, 16).Children(func() {
+					ui.Text(c, r.heading).Label("历史分组：" + r.heading).FontSize(12).FontWeight(500).TextColor(ColorTextMuted).SingleLine()
+				})
+				return
+			}
+			itemIdx = r.item
+		}
+		if itemIdx < 0 || itemIdx >= len(l.Items) {
 			return
 		}
-		it := l.Items[r.item]
+		it := l.Items[itemIdx]
 		if it.Kind == service.AccountItemUser {
 			a.renderMineUserRow(c, it)
 			return
@@ -830,8 +894,8 @@ func (a *App) renderMineUserRow(c *ui.Context, it service.AccountItem) {
 		a.renderMineVideoRow(c, service.AccountHistory, it)
 		return
 	}
-	owner, owned := a.backend.OwnerOfAccount(it.Site, it.ID)
 	mid, _ := strconv.ParseInt(it.ID, 10, 64)
+	owner, owned := a.ownerOfAccountInMemory(it.Site, it.ID, mid)
 	ui.Row(c).FillWidth().Padding(10, 16).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).ClipX().Children(func() {
 		body := ui.ButtonBase(c).Label("我的用户：" + firstNonEmptyStrUI(it.Title, it.ID)).Grow(1).Padding(0).Gap(12).AlignItems(ui.Center).Justify(ui.Start).ClipX()
 		body.Children(func() {
@@ -869,7 +933,7 @@ func (a *App) renderMineUserRow(c *ui.Context, it service.AccountItem) {
 				a.mineSubscribe(it)
 			}
 			if it.BrowserURL != "" && m.Item("在浏览器中打开").Chosen() {
-				_ = a.backend.Desktop().OpenExternalURL(it.BrowserURL)
+				a.showError(a.backend.Desktop().OpenExternalURL(it.BrowserURL))
 			}
 		})
 		keyedMenuOpen(&a.PostMenuKey, key, open)
@@ -887,21 +951,24 @@ func (a *App) mineSubscribe(it service.AccountItem) {
 }
 
 func (a *App) renderMineWorkGrid(c *ui.Context, width float32, l *mineList) {
-	cols := douyinUserGridColumns(a.pageWidth(width))
+	cols := douyinUserGridColumns(width)
 	gridRows := (len(l.Items) + cols - 1) / cols
 	total := gridRows + 1
 	_, last := l.State.Visible()
-	if last >= gridRows-1 && l.HasMore && l.Err == "" && !a.pending[a.minePendingKey(a.mineListKey(), l)] {
+	if last >= 0 && last >= gridRows-1 && l.HasMore && l.Err == "" && !a.isPending(a.minePendingKey(a.mineListKey(), l)) {
 		a.mineLoadMore()
 	}
 	l.State.Key = func(i int) any {
-		if i < gridRows {
-			return "mine-row-" + l.Items[i*cols].ID
+		if i >= 0 && i < gridRows {
+			idx := i * cols
+			if idx < len(l.Items) {
+				return "mine-row-" + l.Items[idx].ID
+			}
 		}
 		return "mine-footer"
 	}
 	ui.List(c, &l.State, total, func(i int) {
-		if i >= gridRows {
+		if i < 0 || i >= gridRows {
 			a.renderMineFooter(c, l)
 			return
 		}
@@ -950,7 +1017,7 @@ func (a *App) renderMineUnsupportedWorkCard(c *ui.Context, it service.AccountIte
 			ui.Box(c).Absolute().Bottom(6).Right(6).Radius(14).Background(ui.RGBA(255, 255, 255, 0.88)).Children(func() {
 				MoreMenuButton(c, "作品更多："+it.ID, 26, &open, func(m *ui.Menu) {
 					if m.Item("在浏览器中打开").Chosen() {
-						_ = a.backend.Desktop().OpenExternalURL(it.BrowserURL)
+						a.showError(a.backend.Desktop().OpenExternalURL(it.BrowserURL))
 					}
 				})
 			})

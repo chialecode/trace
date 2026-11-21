@@ -123,10 +123,35 @@ func (s *mineStub) OwnerOfAccount(siteID, uid string) (subscription.Subscription
 	return o, ok
 }
 
+func (s *mineStub) ListSubscriptions() ([]subscription.Subscription, error) {
+	base, err := s.BackendAPI.ListSubscriptions()
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := append([]subscription.Subscription(nil), base...)
+	seen := make(map[string]bool, len(out))
+	for _, sub := range out {
+		seen[sub.ID] = true
+	}
+	for _, sub := range s.owners {
+		if !seen[sub.ID] {
+			seen[sub.ID] = true
+			out = append(out, sub)
+		}
+	}
+	return out, nil
+}
+
 func (s *mineStub) CreateSubscription(name, note string, accounts []subscription.AccountRef, rules subscription.SubRules) (subscription.Subscription, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sub := subscription.Subscription{ID: "sub-" + accounts[0].UID, Name: name}
+	sub := subscription.Subscription{
+		ID:       "sub-" + accounts[0].UID,
+		Name:     name,
+		Accounts: append([]subscription.AccountRef(nil), accounts...),
+	}
 	s.owners[accounts[0].Site+":"+accounts[0].UID] = sub
 	return sub, nil
 }

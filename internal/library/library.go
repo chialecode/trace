@@ -1,24 +1,16 @@
 package library
 
 import (
-	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/storage"
 )
 
@@ -55,6 +47,9 @@ type Store struct {
 	extraRoots         []string
 	rootsFilePath      string
 	pendingDeletesPath string
+	node               *ItemNode
+	onSaved            []func(ItemMetadata)
+	allowMovedFiles    bool
 }
 
 // Open initializes the library SQLite schema in db and sets the active cacheDir.
@@ -91,319 +86,27 @@ func OpenWithDataDir(db *sql.DB, cacheDir, dataDir string) (*Store, error) {
 	return s, nil
 }
 
-var (
-	migrateV2HookMu sync.Mutex
-	migrateV2Hook   func(tx *sql.Tx) error
-)
-
-// SetMigrateV2HookForTest installs a fault-injection callback invoked inside
-// the v1 -> v2 SQLite migration transaction right before PRAGMA user_version = 2.
-func SetMigrateV2HookForTest(fn func(tx *sql.Tx) error) func() {
-	migrateV2HookMu.Lock()
-	prev := migrateV2Hook
-	migrateV2Hook = fn
-	migrateV2HookMu.Unlock()
-	return func() {
-		migrateV2HookMu.Lock()
-		migrateV2Hook = prev
-		migrateV2HookMu.Unlock()
-	}
+// SetAllowMovedFiles configures remote/export mode (remote.md §6.1), where
+// uploaded files may be moved or deleted from the export folder without
+// demoting saved or queried items to missing_files. Default is false.
+func (s *Store) SetAllowMovedFiles(allow bool) {
+	s.mu.Lock()
+	s.allowMovedFiles = allow
+	s.mu.Unlock()
 }
 
-func (s *Store) initSchema() error {
-	v, err := storage.CheckSQLiteSchema(s.db, "library.db", CurrentSchemaVersion)
-	if err != nil {
-		return err
-	}
-	if v < CurrentSchemaVersion {
-		return s.migrateSchemaToV2()
-	}
-	for _, q := range schemaV2Statements() {
-		if _, err := s.db.Exec(q); err != nil {
-			return fmt.Errorf("library: init schema: %w", err)
-		}
-	}
-	return nil
+// AllowMovedFiles reports whether remote/export allow-moved-files mode is active.
+func (s *Store) AllowMovedFiles() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.allowMovedFiles
 }
 
-func schemaV2Statements() []string {
-	return []string{
-		`CREATE TABLE IF NOT EXISTS library_items (
-			item_key TEXT PRIMARY KEY,
-			site TEXT NOT NULL,
-			kind TEXT NOT NULL,
-			raw_id TEXT NOT NULL,
-			mid INTEGER NOT NULL DEFAULT 0,
-			author_uid TEXT NOT NULL DEFAULT '',
-			author_name TEXT NOT NULL DEFAULT '',
-			author_face TEXT NOT NULL DEFAULT '',
-			title TEXT NOT NULL DEFAULT '',
-			summary TEXT NOT NULL DEFAULT '',
-			cover_path TEXT NOT NULL DEFAULT '',
-			canonical_url TEXT NOT NULL DEFAULT '',
-			pub_ts INTEGER NOT NULL DEFAULT 0,
-			cached_at TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL DEFAULT 'complete',
-			item_dir TEXT NOT NULL DEFAULT '',
-			total_bytes INTEGER NOT NULL DEFAULT 0,
-			upgrade_available INTEGER NOT NULL DEFAULT 0,
-			upgrade_hint TEXT NOT NULL DEFAULT '',
-			json_data TEXT NOT NULL
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_library_items_pub_ts ON library_items(pub_ts DESC);`,
-		`CREATE INDEX IF NOT EXISTS idx_library_items_mid ON library_items(mid);`,
-		`CREATE INDEX IF NOT EXISTS idx_library_items_site_author ON library_items(site, author_uid);`,
-		`CREATE INDEX IF NOT EXISTS idx_library_items_via ON library_items(site, json_extract(json_data, '$.via.uid'));`,
-		`CREATE TABLE IF NOT EXISTS item_refs (
-			from_key TEXT NOT NULL,
-			to_key TEXT NOT NULL,
-			PRIMARY KEY (from_key, to_key)
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_item_refs_to ON item_refs(to_key);`,
-		`CREATE TABLE IF NOT EXISTS feed_items (
-			feed_key TEXT PRIMARY KEY,
-			site TEXT NOT NULL,
-			kind TEXT NOT NULL,
-			raw_id TEXT NOT NULL,
-			mid INTEGER NOT NULL DEFAULT 0,
-			author_uid TEXT NOT NULL DEFAULT '',
-			author_name TEXT NOT NULL DEFAULT '',
-			author_face TEXT NOT NULL DEFAULT '',
-			title TEXT NOT NULL DEFAULT '',
-			summary TEXT NOT NULL DEFAULT '',
-			cover_url TEXT NOT NULL DEFAULT '',
-			canonical_url TEXT NOT NULL DEFAULT '',
-			pub_ts INTEGER NOT NULL DEFAULT 0,
-			discovered_at TEXT NOT NULL DEFAULT '',
-			cached INTEGER NOT NULL DEFAULT 0,
-			cache_status TEXT NOT NULL DEFAULT '',
-			item_key TEXT NOT NULL DEFAULT ''
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_feed_items_pub_ts ON feed_items(pub_ts DESC);`,
-		`CREATE INDEX IF NOT EXISTS idx_feed_items_mid ON feed_items(mid);`,
-		`CREATE INDEX IF NOT EXISTS idx_feed_items_site_author ON feed_items(site, author_uid);`,
-		`CREATE TABLE IF NOT EXISTS download_tasks (
-			task_id TEXT PRIMARY KEY,
-			site TEXT NOT NULL,
-			kind TEXT NOT NULL,
-			source TEXT NOT NULL DEFAULT 'manual',
-			target_id TEXT NOT NULL,
-			cid INTEGER NOT NULL DEFAULT 0,
-			page INTEGER NOT NULL DEFAULT 1,
-			title TEXT NOT NULL DEFAULT '',
-			part_title TEXT NOT NULL DEFAULT '',
-			mid INTEGER NOT NULL DEFAULT 0,
-			author_uid TEXT NOT NULL DEFAULT '',
-			author_name TEXT NOT NULL DEFAULT '',
-			author_face TEXT NOT NULL DEFAULT '',
-			cover_url TEXT NOT NULL DEFAULT '',
-			cache_linked_videos INTEGER NOT NULL DEFAULT 0,
-			status TEXT NOT NULL DEFAULT 'queued',
-			pause_reason TEXT NOT NULL DEFAULT '',
-			error_kind TEXT NOT NULL DEFAULT '',
-			error_message TEXT NOT NULL DEFAULT '',
-			quality_hint TEXT NOT NULL DEFAULT '',
-			bytes_downloaded INTEGER NOT NULL DEFAULT 0,
-			total_bytes INTEGER NOT NULL DEFAULT 0,
-			progress REAL NOT NULL DEFAULT 0,
-			item_key TEXT NOT NULL DEFAULT '',
-			item_dir TEXT NOT NULL DEFAULT '',
-			files_json TEXT NOT NULL DEFAULT '[]',
-			attempts_json TEXT NOT NULL DEFAULT '[]',
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_download_tasks_site_author ON download_tasks(site, author_uid);`,
-		`CREATE TABLE IF NOT EXISTS task_attempts (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			task_id TEXT NOT NULL,
-			attempt_time TEXT NOT NULL,
-			file_path TEXT NOT NULL,
-			offset_bytes INTEGER NOT NULL DEFAULT 0,
-			host TEXT NOT NULL DEFAULT '',
-			attempt_num INTEGER NOT NULL DEFAULT 1,
-			error_kind TEXT NOT NULL DEFAULT '',
-			http_status INTEGER NOT NULL DEFAULT 0
-		);`,
-	}
-}
-
-func (s *Store) migrateSchemaToV2() error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("library: begin schema v2 migration: %w", err)
-	}
-	defer tx.Rollback()
-
-	baseTables := []string{
-		`CREATE TABLE IF NOT EXISTS library_items (
-			item_key TEXT PRIMARY KEY,
-			site TEXT NOT NULL,
-			kind TEXT NOT NULL,
-			raw_id TEXT NOT NULL,
-			mid INTEGER NOT NULL DEFAULT 0,
-			author_uid TEXT NOT NULL DEFAULT '',
-			author_name TEXT NOT NULL DEFAULT '',
-			author_face TEXT NOT NULL DEFAULT '',
-			title TEXT NOT NULL DEFAULT '',
-			summary TEXT NOT NULL DEFAULT '',
-			cover_path TEXT NOT NULL DEFAULT '',
-			canonical_url TEXT NOT NULL DEFAULT '',
-			pub_ts INTEGER NOT NULL DEFAULT 0,
-			cached_at TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL DEFAULT 'complete',
-			item_dir TEXT NOT NULL DEFAULT '',
-			total_bytes INTEGER NOT NULL DEFAULT 0,
-			upgrade_available INTEGER NOT NULL DEFAULT 0,
-			upgrade_hint TEXT NOT NULL DEFAULT '',
-			json_data TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS item_refs (
-			from_key TEXT NOT NULL,
-			to_key TEXT NOT NULL,
-			PRIMARY KEY (from_key, to_key)
-		);`,
-		`CREATE TABLE IF NOT EXISTS feed_items (
-			feed_key TEXT PRIMARY KEY,
-			site TEXT NOT NULL,
-			kind TEXT NOT NULL,
-			raw_id TEXT NOT NULL,
-			mid INTEGER NOT NULL DEFAULT 0,
-			author_uid TEXT NOT NULL DEFAULT '',
-			author_name TEXT NOT NULL DEFAULT '',
-			author_face TEXT NOT NULL DEFAULT '',
-			title TEXT NOT NULL DEFAULT '',
-			summary TEXT NOT NULL DEFAULT '',
-			cover_url TEXT NOT NULL DEFAULT '',
-			canonical_url TEXT NOT NULL DEFAULT '',
-			pub_ts INTEGER NOT NULL DEFAULT 0,
-			discovered_at TEXT NOT NULL DEFAULT '',
-			cached INTEGER NOT NULL DEFAULT 0,
-			cache_status TEXT NOT NULL DEFAULT '',
-			item_key TEXT NOT NULL DEFAULT ''
-		);`,
-		`CREATE TABLE IF NOT EXISTS download_tasks (
-			task_id TEXT PRIMARY KEY,
-			site TEXT NOT NULL,
-			kind TEXT NOT NULL,
-			source TEXT NOT NULL DEFAULT 'manual',
-			target_id TEXT NOT NULL,
-			cid INTEGER NOT NULL DEFAULT 0,
-			page INTEGER NOT NULL DEFAULT 1,
-			title TEXT NOT NULL DEFAULT '',
-			part_title TEXT NOT NULL DEFAULT '',
-			mid INTEGER NOT NULL DEFAULT 0,
-			author_uid TEXT NOT NULL DEFAULT '',
-			author_name TEXT NOT NULL DEFAULT '',
-			author_face TEXT NOT NULL DEFAULT '',
-			cover_url TEXT NOT NULL DEFAULT '',
-			cache_linked_videos INTEGER NOT NULL DEFAULT 0,
-			status TEXT NOT NULL DEFAULT 'queued',
-			pause_reason TEXT NOT NULL DEFAULT '',
-			error_kind TEXT NOT NULL DEFAULT '',
-			error_message TEXT NOT NULL DEFAULT '',
-			quality_hint TEXT NOT NULL DEFAULT '',
-			bytes_downloaded INTEGER NOT NULL DEFAULT 0,
-			total_bytes INTEGER NOT NULL DEFAULT 0,
-			progress REAL NOT NULL DEFAULT 0,
-			item_key TEXT NOT NULL DEFAULT '',
-			item_dir TEXT NOT NULL DEFAULT '',
-			files_json TEXT NOT NULL DEFAULT '[]',
-			attempts_json TEXT NOT NULL DEFAULT '[]',
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS task_attempts (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			task_id TEXT NOT NULL,
-			attempt_time TEXT NOT NULL,
-			file_path TEXT NOT NULL,
-			offset_bytes INTEGER NOT NULL DEFAULT 0,
-			host TEXT NOT NULL DEFAULT '',
-			attempt_num INTEGER NOT NULL DEFAULT 1,
-			error_kind TEXT NOT NULL DEFAULT '',
-			http_status INTEGER NOT NULL DEFAULT 0
-		);`,
-	}
-	for _, q := range baseTables {
-		if _, err := tx.Exec(q); err != nil {
-			return fmt.Errorf("library: migrate schema v2 base table: %w", err)
-		}
-	}
-
-	for _, tbl := range []string{"library_items", "feed_items", "download_tasks"} {
-		hasCol, err := tableHasColumnTx(tx, tbl, "author_uid")
-		if err != nil {
-			return err
-		}
-		if !hasCol {
-			if _, err := tx.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN author_uid TEXT NOT NULL DEFAULT ''`, tbl)); err != nil {
-				return fmt.Errorf("library: add author_uid on %s: %w", tbl, err)
-			}
-		}
-		if _, err := tx.Exec(fmt.Sprintf(`UPDATE %s SET author_uid = CASE WHEN mid > 0 THEN CAST(mid AS TEXT) ELSE '' END WHERE author_uid = ''`, tbl)); err != nil {
-			return fmt.Errorf("library: backfill author_uid on %s: %w", tbl, err)
-		}
-	}
-
-	indexes := []string{
-		`CREATE INDEX IF NOT EXISTS idx_library_items_pub_ts ON library_items(pub_ts DESC);`,
-		`CREATE INDEX IF NOT EXISTS idx_library_items_mid ON library_items(mid);`,
-		`CREATE INDEX IF NOT EXISTS idx_library_items_site_author ON library_items(site, author_uid);`,
-		`CREATE INDEX IF NOT EXISTS idx_library_items_via ON library_items(site, json_extract(json_data, '$.via.uid'));`,
-		`CREATE INDEX IF NOT EXISTS idx_item_refs_to ON item_refs(to_key);`,
-		`CREATE INDEX IF NOT EXISTS idx_feed_items_pub_ts ON feed_items(pub_ts DESC);`,
-		`CREATE INDEX IF NOT EXISTS idx_feed_items_mid ON feed_items(mid);`,
-		`CREATE INDEX IF NOT EXISTS idx_feed_items_site_author ON feed_items(site, author_uid);`,
-		`CREATE INDEX IF NOT EXISTS idx_download_tasks_site_author ON download_tasks(site, author_uid);`,
-	}
-	for _, q := range indexes {
-		if _, err := tx.Exec(q); err != nil {
-			return fmt.Errorf("library: create schema v2 index: %w", err)
-		}
-	}
-
-	migrateV2HookMu.Lock()
-	hook := migrateV2Hook
-	migrateV2HookMu.Unlock()
-	if hook != nil {
-		if err := hook(tx); err != nil {
-			return err
-		}
-	}
-
-	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, CurrentSchemaVersion)); err != nil {
-		return fmt.Errorf("library: stamp user_version %d: %w", CurrentSchemaVersion, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("library: commit schema v2 migration: %w", err)
-	}
-	_, _ = s.db.Exec(`PRAGMA wal_checkpoint(PASSIVE)`)
-	return nil
-}
-
-func tableHasColumnTx(tx *sql.Tx, table, column string) (bool, error) {
-	rows, err := tx.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			cid        int
-			name, ctyp string
-			notNull    int
-			dflt       sql.NullString
-			pk         int
-		)
-		if err := rows.Scan(&cid, &name, &ctyp, &notNull, &dflt, &pk); err != nil {
-			return false, err
-		}
-		if strings.EqualFold(name, column) {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
+// LibraryRoots returns all registered library root folders (active cacheDir first).
+func (s *Store) LibraryRoots() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.allRootsLocked()
 }
 
 func (s *Store) loadRootsLocked() error {
@@ -428,8 +131,12 @@ func (s *Store) loadRootsLocked() error {
 	s.extraRoots = nil
 	for _, r := range payload.Roots {
 		clean := filepath.Clean(strings.TrimSpace(r))
-		if clean != "" && !seen[strings.ToLower(clean)] {
-			seen[strings.ToLower(clean)] = true
+		if clean == "" || clean == "." {
+			continue
+		}
+		k := pathKey(clean)
+		if !seen[k] {
+			seen[k] = true
 			s.extraRoots = append(s.extraRoots, clean)
 		}
 	}
@@ -458,7 +165,7 @@ func (s *Store) allRootsLocked() []string {
 		if clean == "" || clean == "." {
 			return
 		}
-		key := strings.ToLower(clean)
+		key := pathKey(clean)
 		if !seen[key] {
 			seen[key] = true
 			out = append(out, clean)
@@ -469,96 +176,6 @@ func (s *Store) allRootsLocked() []string {
 		add(r)
 	}
 	return out
-}
-
-type pendingDeleteRecord struct {
-	ItemKey         string   `json:"itemKey"`
-	ItemDir         string   `json:"itemDir"`
-	RegisteredFiles []string `json:"registeredFiles"`
-}
-
-func (s *Store) readPendingDeletesLocked() ([]pendingDeleteRecord, error) {
-	if s.pendingDeletesPath == "" {
-		return nil, nil
-	}
-	raw, err := os.ReadFile(s.pendingDeletesPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("library: 删除账本读取失败: %w", err)
-	}
-	var list []pendingDeleteRecord
-	if err := json.Unmarshal(raw, &list); err != nil {
-		// Keep the original ledger in place: treating it as empty could resurrect
-		// files whose deletion was already committed before a crash.
-		return nil, fmt.Errorf("library: 删除账本损坏，原文件已保留: %w", err)
-	}
-	return list, nil
-}
-
-func (s *Store) writePendingDeletesLocked(list []pendingDeleteRecord) error {
-	if s.pendingDeletesPath == "" {
-		return nil
-	}
-	if len(list) == 0 {
-		err := os.Remove(s.pendingDeletesPath)
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	return storage.WriteJSONAtomic(s.pendingDeletesPath, list, 0o600)
-}
-
-func (s *Store) cleanupPendingDeletesLocked() error {
-	pending, err := s.readPendingDeletesLocked()
-	if err != nil {
-		return err
-	}
-	if len(pending) == 0 {
-		return nil
-	}
-	var remaining []pendingDeleteRecord
-	for _, rec := range pending {
-		validRoot := false
-		for _, root := range s.allRootsLocked() {
-			if _, err := EnsureWithinRoot(root, rec.ItemDir); err == nil && !strings.EqualFold(root, rec.ItemDir) {
-				validRoot = true
-				break
-			}
-		}
-		if !validRoot {
-			remaining = append(remaining, rec)
-			continue
-		}
-		var exists int
-		if err := s.db.QueryRow(`SELECT COUNT(1) FROM library_items WHERE item_key = ?`, rec.ItemKey).Scan(&exists); err != nil {
-			return err
-		}
-		if exists > 0 {
-			// Re-cached since pending delete was recorded; skip cleanup.
-			continue
-		}
-		allGone := true
-		for _, f := range rec.RegisteredFiles {
-			rel, err := filepath.Rel(rec.ItemDir, f)
-			if err != nil || !safeRegisteredPath(rec.ItemDir, filepath.ToSlash(rel)) {
-				allGone = false
-				continue
-			}
-			if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
-				allGone = false
-			}
-		}
-		if rec.ItemDir != "" {
-			removeEmptyDirsBottomUp(rec.ItemDir)
-		}
-		if !allGone {
-			remaining = append(remaining, rec)
-		}
-	}
-	return s.writePendingDeletesLocked(remaining)
 }
 
 // CacheDir returns the current root cache directory.
@@ -598,12 +215,19 @@ func (s *Store) saveItemLocked(itemDir string, meta ItemMetadata, checkHash ...b
 	}
 	meta.ItemDir = filepath.Clean(itemDir)
 
-	missing, totalBytes := verifyItemFiles(meta.ItemDir, &meta, checkHash...)
-	meta.TotalBytes = totalBytes
-	if missing && meta.Status != "recording" && meta.Status != "failed" && meta.Status != "partial" {
-		meta.Status = "missing_files"
-	} else if meta.Status == "" || (meta.Status == "missing_files" && !missing) {
-		meta.Status = "complete"
+	if s.allowMovedFiles {
+		meta.TotalBytes = sumItemBytesAllowMoved(meta.ItemDir, &meta)
+		if meta.Status == "" {
+			meta.Status = "complete"
+		}
+	} else {
+		missing, totalBytes := verifyItemFiles(meta.ItemDir, &meta, checkHash...)
+		meta.TotalBytes = totalBytes
+		if missing && meta.Status != "recording" && meta.Status != "failed" && meta.Status != "partial" {
+			meta.Status = "missing_files"
+		} else if meta.Status == "" || (meta.Status == "missing_files" && !missing) {
+			meta.Status = "complete"
+		}
 	}
 
 	itemJSONPath := filepath.Join(meta.ItemDir, "item.json")
@@ -615,6 +239,15 @@ func (s *Store) saveItemLocked(itemDir string, meta ItemMetadata, checkHash ...b
 	} else if !os.IsNotExist(err) {
 		return ItemMetadata{}, err
 	}
+	if meta.CachedBy == nil && s.node != nil {
+		n := *s.node
+		meta.CachedBy = &n
+	}
+	// The folder may have been emptied and removed by an upload (rclone
+	// move); the manifest is written into a new one (remote.md §6.1).
+	if err := os.MkdirAll(meta.ItemDir, 0o700); err != nil {
+		return ItemMetadata{}, err
+	}
 	if err := storage.WriteJSONAtomic(itemJSONPath, meta, 0o600); err != nil {
 		return ItemMetadata{}, err
 	}
@@ -622,600 +255,34 @@ func (s *Store) saveItemLocked(itemDir string, meta ItemMetadata, checkHash ...b
 	if err := s.upsertItemRowLocked(meta); err != nil {
 		return ItemMetadata{}, err
 	}
+	for _, fn := range s.onSaved {
+		fn(meta)
+	}
 	return meta, nil
 }
 
-// RebuildIndex walks all registered library roots for item.json files, backs up corrupt files,
-// checks media file integrity (including hashes), and rebuilds the SQLite library_items index.
-func (s *Store) RebuildIndex() (RebuildReport, error) {
-	return s.rebuildIndex(true)
-}
-
-// RefreshIndex is the media library's "刷新": the same scan as RebuildIndex,
-// but files are only checked for presence and size (no hashing), so it stays
-// quick on large libraries. The report lists what changed on disk.
-func (s *Store) RefreshIndex() (RebuildReport, error) {
-	return s.rebuildIndex(false)
-}
-
-type indexedItem struct {
-	site, kind, title, status, itemDir string
-}
-
-func (s *Store) indexedItemsLocked() (map[string]indexedItem, error) {
-	rows, err := s.db.Query(`SELECT item_key, site, kind, title, status, item_dir FROM library_items`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make(map[string]indexedItem)
-	for rows.Next() {
-		var key string
-		var it indexedItem
-		if err := rows.Scan(&key, &it.site, &it.kind, &it.title, &it.status, &it.itemDir); err != nil {
-			return nil, err
-		}
-		out[key] = it
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) rebuildIndex(checkHash bool) (RebuildReport, error) {
+// OnSaved registers fn to run after every manifest SaveItem (and recording
+// checkpoint) writes. fn runs with the store locked, so it must only hand
+// the item on (the uploader queues it) and never call back into the store.
+func (s *Store) OnSaved(fn func(ItemMetadata)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	var report RebuildReport
-	previous, err := s.indexedItemsLocked()
-	if err != nil {
-		return report, err
-	}
-	roots := s.allRootsLocked()
-	if err := os.MkdirAll(s.cacheDir, 0o700); err != nil {
-		return report, err
-	}
-
-	pendingMap := make(map[string]bool)
-	pending, err := s.readPendingDeletesLocked()
-	if err != nil {
-		return report, err
-	}
-	for _, p := range pending {
-		pendingMap[p.ItemKey] = true
-	}
-
-	seenKeys := make(map[string]bool)
-	for _, root := range roots {
-		if _, err := os.Stat(root); err != nil {
-			return report, err
-		}
-		if err := rejectDirectoryLinks(root); err != nil {
-			return report, err
-		}
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if d.Type()&os.ModeSymlink != 0 {
-				if d.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if d.IsDir() {
-				return nil
-			}
-			if !strings.EqualFold(d.Name(), "item.json") {
-				return nil
-			}
-			if report.Scanned >= 100000 {
-				return fmt.Errorf("library: 清单扫描超过单轮上限，索引清理未执行")
-			}
-			report.Scanned++
-
-			raw, rErr := os.ReadFile(path)
-			if rErr != nil {
-				return rErr
-			}
-			meta, pErr := ParseItemMetadata(raw)
-			if pErr != nil {
-				backup, bErr := storage.BackupCorruptFile(path)
-				if bErr == nil && backup != "" {
-					report.CorruptBackedUp = append(report.CorruptBackedUp, backup)
-				}
-				return bErr
-			}
-			if pendingMap[meta.ItemKey] || seenKeys[meta.ItemKey] {
-				return nil
-			}
-
-			itemDir := filepath.Dir(path)
-			if _, err := EnsureWithinRoot(root, itemDir); err != nil {
-				return err
-			}
-			meta.ItemDir = filepath.Clean(itemDir)
-			missing, totalBytes, missingPaths := verifyItemFilesDetail(meta.ItemDir, &meta, checkHash)
-			meta.TotalBytes = totalBytes
-			if missing && meta.Status != "recording" && meta.Status != "failed" && meta.Status != "partial" {
-				if prev, ok := previous[meta.ItemKey]; ok && prev.status != "missing_files" {
-					report.NewlyMissing = append(report.NewlyMissing, ChangedItem{ItemKey: meta.ItemKey, Site: meta.Site, Kind: meta.Kind, Title: meta.Title, ItemDir: meta.ItemDir, Files: missingPaths})
-				}
-				meta.Status = "missing_files"
-				report.MissingFiles++
-				if err := storage.WriteJSONAtomic(path, meta, 0o600); err != nil {
-					return err
-				}
-			} else if meta.Status == "missing_files" && !missing {
-				meta.Status = "complete"
-				if err := storage.WriteJSONAtomic(path, meta, 0o600); err != nil {
-					return err
-				}
-			}
-
-			if err := s.upsertItemRowLocked(meta); err != nil {
-				return err
-			}
-			seenKeys[meta.ItemKey] = true
-			report.Indexed++
-			return nil
-		})
-		if err != nil {
-			return report, err
-		}
-	}
-
-	rows, err := s.db.Query(`SELECT item_key FROM library_items`)
-	if err != nil {
-		return report, err
-	}
-	var stale []string
-	for rows.Next() {
-		var k string
-		if err := rows.Scan(&k); err != nil {
-			rows.Close()
-			return report, err
-		}
-		if !seenKeys[k] {
-			stale = append(stale, k)
-			if prev, ok := previous[k]; ok && !pendingMap[k] {
-				report.Removed = append(report.Removed, ChangedItem{ItemKey: k, Site: prev.site, Kind: prev.kind, Title: prev.title, ItemDir: prev.itemDir})
-			}
-		}
-	}
-	rowErr := rows.Err()
-	if err := errors.Join(rowErr, rows.Close()); err != nil {
-		return report, err
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return report, err
-	}
-	defer tx.Rollback()
-	for _, k := range stale {
-		if _, err := tx.Exec(`DELETE FROM library_items WHERE item_key = ?`, k); err != nil {
-			return report, err
-		}
-		if _, err := tx.Exec(`DELETE FROM item_refs WHERE from_key = ? OR to_key = ?`, k, k); err != nil {
-			return report, err
-		}
-		if _, err := tx.Exec(`UPDATE feed_items SET cached = 0, cache_status = '', item_key = '' WHERE item_key = ?`, k); err != nil {
-			return report, err
-		}
-	}
-	return report, tx.Commit()
-}
-
-// AddLibraryRoot scans an existing cache folder (including bilibili/* and douyin/*/{works,lives}/*)
-// or legacy trace-data folder containing library/, and indexes its items without moving files
-// or overwriting existing keys (FR-LIB-006).
-func (s *Store) AddLibraryRoot(selectedDir string) (AddRootReport, error) {
-	if strings.TrimSpace(selectedDir) == "" || !filepath.IsAbs(selectedDir) {
-		return AddRootReport{}, fmt.Errorf("library: folder path cannot be empty")
-	}
-	selectedDir = filepath.Clean(selectedDir)
-	info, err := os.Lstat(selectedDir)
-	if err != nil {
-		return AddRootReport{}, fmt.Errorf("library: stat folder: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return AddRootReport{}, fmt.Errorf("library: symlink root folder is not allowed")
-	}
-	if !info.IsDir() {
-		return AddRootReport{}, fmt.Errorf("library: %s is not a directory", selectedDir)
-	}
-
-	// Check if selectedDir is a legacy portable trace-data directory containing a library/ subdirectory (even without settings.json!).
-	scanRoot := selectedDir
-	libSub := filepath.Join(selectedDir, "library")
-	if lInfo, lErr := os.Lstat(libSub); lErr == nil && lInfo.IsDir() && lInfo.Mode()&os.ModeSymlink == 0 {
-		scanRoot = libSub
-	} else {
-		// Also check optional settings.json inside selectedDir.
-		setBytes, sErr := os.ReadFile(filepath.Join(selectedDir, "settings.json"))
-		if sErr == nil {
-			var cfg struct {
-				CacheRoot string `json:"cacheRoot"`
-				CacheDir  string `json:"cacheDir"`
-			}
-			if json.Unmarshal(setBytes, &cfg) == nil {
-				cand := strings.TrimSpace(cfg.CacheRoot)
-				if cand == "" {
-					cand = strings.TrimSpace(cfg.CacheDir)
-				}
-				if cand != "" {
-					if !filepath.IsAbs(cand) {
-						cand = filepath.Join(selectedDir, cand)
-					}
-					if cInfo, cErr := os.Lstat(cand); cErr == nil && cInfo.IsDir() && cInfo.Mode()&os.ModeSymlink == 0 {
-						scanRoot = filepath.Clean(cand)
-					}
-				}
-			}
-		}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	report := AddRootReport{Root: scanRoot}
-	if err := rejectDirectoryLinks(scanRoot); err != nil {
-		return report, err
-	}
-	oldRoots := append([]string(nil), s.extraRoots...)
-	found := false
-	for _, r := range s.allRootsLocked() {
-		found = found || strings.EqualFold(r, scanRoot)
-	}
-	if !found {
-		s.extraRoots = append(s.extraRoots, scanRoot)
-	}
-	// Register the recovery root before importing any index rows. A failed
-	// ledger write must not leave rows whose source disappears after restart.
-	if err := s.saveRootsLocked(); err != nil {
-		s.extraRoots = oldRoots
-		return report, err
-	}
-	err = filepath.WalkDir(scanRoot, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		// Never follow symlinks or junctions (INV-08).
-		if d.Type()&os.ModeSymlink != 0 {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if !strings.EqualFold(d.Name(), "item.json") {
-			return nil
-		}
-		if report.Scanned >= 100000 {
-			return fmt.Errorf("library: 清单扫描超过单轮上限")
-		}
-		report.Scanned++
-
-		raw, rErr := os.ReadFile(path)
-		if rErr != nil {
-			return rErr
-		}
-		meta, pErr := ParseItemMetadata(raw)
-		if pErr != nil {
-			return nil
-		}
-
-		// If itemKey already exists in index, keep existing item and count as Skipped.
-		var existingCount int
-		if err := s.db.QueryRow(`SELECT COUNT(1) FROM library_items WHERE item_key = ?`, meta.ItemKey).Scan(&existingCount); err != nil {
-			return err
-		}
-		if existingCount > 0 {
-			report.Skipped++
-			return nil
-		}
-
-		itemDir := filepath.Dir(path)
-		if _, err := EnsureWithinRoot(scanRoot, itemDir); err != nil {
-			return err
-		}
-		meta.ItemDir = filepath.Clean(itemDir)
-		missing, totalBytes := verifyItemFiles(meta.ItemDir, &meta)
-		meta.TotalBytes = totalBytes
-		if missing && meta.Status != "recording" && meta.Status != "failed" && meta.Status != "partial" {
-			meta.Status = "missing_files"
-		}
-		if uErr := s.upsertItemRowLocked(meta); uErr != nil {
-			return uErr
-		}
-		report.Added++
-		return nil
-	})
-	return report, err
-}
-
-// MediaPath resolves and validates a whitelisted media file path belonging to key (INV-08).
-// It rejects '.', '..', backslashes, colons, null bytes, unregistered filenames, and symlinks/junctions.
-func (s *Store) MediaPath(key, relPath string) (string, error) {
-	relPath = strings.TrimSpace(relPath)
-	if relPath == "" {
-		return "", fmt.Errorf("library: empty relative media path")
-	}
-	if strings.ContainsRune(relPath, 0) || strings.ContainsRune(relPath, '\\') || strings.ContainsRune(relPath, ':') {
-		return "", fmt.Errorf("library: forbidden characters in media path")
-	}
-	if filepath.IsAbs(relPath) || strings.HasPrefix(relPath, "/") {
-		return "", fmt.Errorf("library: media path must be relative")
-	}
-	segments := strings.Split(relPath, "/")
-	for _, seg := range segments {
-		if seg == "" || seg == "." || seg == ".." {
-			return "", fmt.Errorf("library: invalid segment %q in media path", seg)
-		}
-	}
-
-	meta, ok, err := s.GetItem(key)
-	if err != nil {
-		return "", err
-	}
-	if !ok || meta.ItemDir == "" {
-		return "", fmt.Errorf("library: item %q not found", key)
-	}
-
-	normRel := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relPath)))
-	if !isRegisteredInManifest(meta, normRel) {
-		return "", fmt.Errorf("library: file %q is not registered in item %q manifest", relPath, key)
-	}
-
-	fullPath, err := EnsureWithinRoot(meta.ItemDir, filepath.Join(meta.ItemDir, filepath.FromSlash(normRel)))
-	if err != nil {
-		return "", err
-	}
-
-	if !safeRegisteredPath(meta.ItemDir, relPath) {
-		return "", fmt.Errorf("library: media path contains a link or invalid segment")
-	}
-
-	// Check Lstat on every segment from meta.ItemDir to fullPath and EvalSymlinks to reject symlinks/junctions.
-	dirInfo, err := os.Lstat(meta.ItemDir)
-	if err != nil {
-		return "", err
-	}
-	if isLinkLike(dirInfo.Mode()) {
-		return "", fmt.Errorf("library: item directory is a symlink")
-	}
-	fileInfo, err := os.Lstat(fullPath)
-	if err != nil {
-		return "", err
-	}
-	if isLinkLike(fileInfo.Mode()) || fileInfo.IsDir() {
-		return "", fmt.Errorf("library: media target is a symlink or directory")
-	}
-
-	evalRoot, err1 := filepath.EvalSymlinks(meta.ItemDir)
-	evalTarget, err2 := filepath.EvalSymlinks(fullPath)
-	if err1 != nil || err2 != nil {
-		return "", fmt.Errorf("library: symlink evaluation failed")
-	}
-	if _, err := EnsureWithinRoot(evalRoot, evalTarget); err != nil {
-		return "", fmt.Errorf("library: symlink target escapes item directory")
-	}
-	return fullPath, nil
-}
-
-func cleanManifestRel(p string) string {
-	p = strings.TrimSpace(p)
-	if p == "" {
-		return ""
-	}
-	return filepath.ToSlash(filepath.Clean(filepath.FromSlash(p)))
-}
-
-func isRegisteredInManifest(meta ItemMetadata, normRel string) bool {
-	if normRel == "" {
-		return false
-	}
-	for _, m := range meta.Media {
-		if cleanManifestRel(m.Path) == normRel || cleanManifestRel(m.Motion) == normRel {
-			return true
-		}
-	}
-	for _, p := range meta.Parts {
-		if cleanManifestRel(p.File) == normRel ||
-			cleanManifestRel(p.Danmaku) == normRel ||
-			cleanManifestRel(p.Audio.SavedAs) == normRel {
-			return true
-		}
-		for _, sub := range p.Subtitles {
-			if cleanManifestRel(sub) == normRel {
-				return true
-			}
-		}
-	}
-	if meta.DouyinVideo != nil && cleanManifestRel(meta.DouyinVideo.File) == normRel {
-		return true
-	}
-	for _, np := range meta.NotePages {
-		if cleanManifestRel(np.Image) == normRel ||
-			cleanManifestRel(np.Cover) == normRel ||
-			cleanManifestRel(np.Motion) == normRel ||
-			cleanManifestRel(np.Video) == normRel {
-			return true
-		}
-		if np.VideoInfo != nil && cleanManifestRel(np.VideoInfo.File) == normRel {
-			return true
-		}
-	}
-	if meta.Music != nil {
-		if cleanManifestRel(meta.Music.File) == normRel || cleanManifestRel(meta.Music.Cover) == normRel {
-			return true
-		}
-	}
-	if meta.Live != nil {
-		for _, seg := range meta.Live.Segments {
-			if cleanManifestRel(seg.File) == normRel {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func verifyItemFiles(itemDir string, meta *ItemMetadata, checkHash ...bool) (missing bool, totalBytes int64) {
-	missing, totalBytes, _ = verifyItemFilesDetail(itemDir, meta, len(checkHash) == 0 || checkHash[0])
-	return missing, totalBytes
-}
-
-// verifyItemFilesDetail is verifyItemFiles that also returns the manifest
-// paths that are missing, empty or no longer match the recorded size/hash.
-func verifyItemFilesDetail(itemDir string, meta *ItemMetadata, hash bool) (missing bool, totalBytes int64, missingPaths []string) {
-	checkHash := []bool{hash}
-	checkedPaths := make(map[string]bool)
-	noted := make(map[string]bool)
-	note := func(rel string) {
-		if rel = cleanManifestRel(strings.TrimSpace(rel)); rel != "" && !noted[rel] {
-			noted[rel] = true
-			missingPaths = append(missingPaths, rel)
-		}
-	}
-
-	checkRel := func(rel string) bool {
-		rel = strings.TrimSpace(rel)
-		if rel == "" {
-			return true
-		}
-		full, err := ResolveItemPath(itemDir, rel)
-		if err != nil {
-			note(rel)
-			return false
-		}
-		info, err := os.Lstat(full)
-		if err != nil || info.IsDir() || info.Size() == 0 {
-			note(rel)
-			return false
-		}
-		norm := cleanManifestRel(rel)
-		if !checkedPaths[norm] {
-			checkedPaths[norm] = true
-			totalBytes += info.Size()
-		}
-		return true
-	}
-
-	for i := range meta.Media {
-		rel := meta.Media[i].Path
-		if !checkRel(rel) {
-			missing = true
-		} else if full, err := ResolveItemPath(itemDir, rel); err == nil {
-			info, err := os.Lstat(full)
-			if err != nil {
-				missing = true
-				continue
-			}
-			if meta.Media[i].Bytes > 0 && meta.Media[i].Bytes != info.Size() {
-				missing = true
-				note(rel)
-			} else if meta.Media[i].Bytes == 0 {
-				meta.Media[i].Bytes = info.Size()
-			}
-			if meta.Media[i].SHA256 != "" && (len(checkHash) == 0 || checkHash[0]) {
-				if !VerifyMediaFile(itemDir, meta.Media[i], true) {
-					missing = true
-					note(rel)
-				}
-			}
-		}
-		if meta.Media[i].Motion != "" && !checkRel(meta.Media[i].Motion) {
-			missing = true
-		}
-	}
-
-	for _, part := range meta.Parts {
-		if part.File != "" && !checkRel(part.File) {
-			missing = true
-		}
-		if part.Danmaku != "" && !checkRel(part.Danmaku) {
-			missing = true
-		}
-		if part.Audio.SavedAs != "" && !checkRel(part.Audio.SavedAs) {
-			missing = true
-		}
-		for _, sub := range part.Subtitles {
-			if sub != "" && !checkRel(sub) {
-				missing = true
-			}
-		}
-	}
-
-	if meta.DouyinVideo != nil && meta.DouyinVideo.File != "" && !checkRel(meta.DouyinVideo.File) {
-		missing = true
-	}
-
-	for _, np := range meta.NotePages {
-		for _, rel := range []string{np.Image, np.Cover, np.Motion, np.Video} {
-			if rel != "" && !checkRel(rel) {
-				missing = true
-			}
-		}
-		if np.VideoInfo != nil && np.VideoInfo.File != "" && !checkRel(np.VideoInfo.File) {
-			missing = true
-		}
-	}
-
-	if meta.Music != nil {
-		if meta.Music.File != "" && !checkRel(meta.Music.File) {
-			missing = true
-		}
-		if meta.Music.Cover != "" && !checkRel(meta.Music.Cover) {
-			missing = true
-		}
-	}
-
-	if meta.Live != nil {
-		for _, seg := range meta.Live.Segments {
-			if seg.File != "" && !checkRel(seg.File) {
-				missing = true
-			}
-		}
-	}
-
-	hasStructuredMedia := len(meta.Media) > 0 || len(meta.Parts) > 0 ||
-		(meta.DouyinVideo != nil && meta.DouyinVideo.File != "") ||
-		len(meta.NotePages) > 0 ||
-		(meta.Music != nil && meta.Music.File != "") ||
-		(meta.Live != nil && len(meta.Live.Segments) > 0)
-	if !hasStructuredMedia && meta.Kind != "dynamic" && meta.Status != "partial" && meta.Status != "recording" {
-		missing = true
-	}
-	return missing, totalBytes, missingPaths
-}
-
-// VerifyMediaFile checks a registered file without rewriting its expected size.
-func VerifyMediaFile(itemDir string, file MediaFile, checkHash bool) bool {
-	full, err := ResolveItemPath(itemDir, file.Path)
-	if err != nil {
-		return false
-	}
-	info, err := os.Lstat(full)
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || file.Bytes > 0 && info.Size() != file.Bytes {
-		return false
-	}
-	if !checkHash || file.SHA256 == "" {
-		return true
-	}
-	f, err := os.Open(full)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return false
-	}
-	return strings.EqualFold(hex.EncodeToString(h.Sum(nil)), file.SHA256)
+	s.onSaved = append(s.onSaved, fn)
 }
 
 func (s *Store) upsertItemRowLocked(meta ItemMetadata) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := upsertItemRowTx(tx, meta); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func upsertItemRowTx(tx *sql.Tx, meta ItemMetadata) error {
 	SanitizeItemMetadata(&meta)
 	jsonBytes, err := json.Marshal(meta)
 	if err != nil {
@@ -1252,11 +319,6 @@ func (s *Store) upsertItemRowLocked(meta ItemMetadata) error {
 	}
 	_, authorUID := NormalizeAuthorUID(meta.Site, meta.Author.UID, meta.Author.Mid)
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	_, err = tx.Exec(`
 		INSERT INTO library_items (
 			item_key, site, kind, raw_id, mid, author_uid, author_name, author_face,
@@ -1324,10 +386,7 @@ func (s *Store) upsertItemRowLocked(meta ItemMetadata) error {
 		meta.Title, summary, coverPath, meta.URL, meta.PubTs, meta.CachedAt,
 		meta.Status, meta.ItemKey,
 	)
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
+	return err
 }
 
 // UpsertFeedEntry inserts or updates an online-discovered item in the unified feed without overwriting existing cache linkage.
@@ -1408,8 +467,16 @@ func (s *Store) UpsertFeedEntry(entry FeedEntry) error {
 // GetItem retrieves a single cached ItemMetadata by canonical itemKey ("<site>:<kind>:<id>"), short key ("<kind>:<id>"), or rawID.
 func (s *Store) GetItem(keyOrID string) (ItemMetadata, bool, error) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.getItemLocked(keyOrID)
+	allowMoved := s.allowMovedFiles
+	meta, ok, err := s.getItemLocked(keyOrID)
+	s.mu.RUnlock()
+	if err != nil || !ok {
+		return meta, ok, err
+	}
+	if !allowMoved {
+		refreshItemFileState(&meta)
+	}
+	return meta, true, nil
 }
 
 func (s *Store) getItemLocked(keyOrID string) (ItemMetadata, bool, error) {
@@ -1423,15 +490,15 @@ func (s *Store) getItemLocked(keyOrID string) (ItemMetadata, bool, error) {
 	var upHint string
 
 	var err error
-	switch strings.Count(keyOrID, ":") {
-	case 0:
+	switch {
+	case strings.Count(keyOrID, ":") == 0:
 		err = s.db.QueryRow(`
 			SELECT json_data, item_dir, status, total_bytes, upgrade_available, upgrade_hint
 			FROM library_items
 			WHERE item_key = ? OR raw_id = ?
 			LIMIT 1
 		`, keyOrID, keyOrID).Scan(&jsonStr, &itemDir, &status, &totalBytes, &upAvail, &upHint)
-	case 1:
+	case strings.Count(keyOrID, ":") == 1 || strings.HasPrefix(strings.ToLower(keyOrID), "live:"):
 		err = s.db.QueryRow(`
 			SELECT json_data, item_dir, status, total_bytes, upgrade_available, upgrade_hint
 			FROM library_items
@@ -1466,7 +533,6 @@ func (s *Store) getItemLocked(keyOrID string) (ItemMetadata, bool, error) {
 	meta.TotalBytes = totalBytes
 	meta.UpgradeAvailable = upAvail == 1
 	meta.UpgradeHint = upHint
-	refreshItemFileState(&meta)
 	return meta, true, nil
 }
 
@@ -1477,22 +543,170 @@ func refreshItemFileState(meta *ItemMetadata) {
 	}
 }
 
+func (s *Store) fetchItemsBatchLocked(itemKeys, rawIDs []string, byKey, byRaw map[string]ItemMetadata) {
+	const chunkSize = 400
+	queryChunk := func(col string, vals []string) {
+		for start := 0; start < len(vals); start += chunkSize {
+			end := min(start+chunkSize, len(vals))
+			chunk := vals[start:end]
+			ph := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+			args := make([]any, len(chunk))
+			for i, v := range chunk {
+				args[i] = v
+			}
+			rows, err := s.db.Query(`SELECT item_key, raw_id, json_data, item_dir, status, total_bytes, upgrade_available, upgrade_hint FROM library_items WHERE `+col+` IN (`+ph+`)`, args...)
+			if err != nil {
+				continue
+			}
+			for rows.Next() {
+				var itemKey, rawID, jsonStr, itemDir, status, upHint string
+				var totalBytes int64
+				var upAvail int
+				if err := rows.Scan(&itemKey, &rawID, &jsonStr, &itemDir, &status, &totalBytes, &upAvail, &upHint); err != nil {
+					continue
+				}
+				meta, err := ParseItemMetadata([]byte(jsonStr))
+				if err != nil {
+					continue
+				}
+				meta.ItemDir = itemDir
+				meta.Status = status
+				meta.TotalBytes = totalBytes
+				meta.UpgradeAvailable = upAvail == 1
+				meta.UpgradeHint = upHint
+				byKey[itemKey] = meta
+				if _, exists := byRaw[rawID]; !exists {
+					byRaw[rawID] = meta
+				}
+			}
+			_ = rows.Close()
+		}
+	}
+	if len(itemKeys) > 0 {
+		queryChunk("item_key", itemKeys)
+	}
+	if len(rawIDs) > 0 {
+		queryChunk("raw_id", rawIDs)
+	}
+}
+
 // States computes batch DotState for the given item keys (FR-CACHE-004).
 func (s *Store) States(keys []string) map[string]DotState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	out := make(map[string]DotState, len(keys))
+	if len(keys) == 0 {
+		return out
+	}
+
+	seenKey := make(map[string]bool, len(keys))
+	seenRaw := make(map[string]bool)
+	var itemKeys, rawIDs []string
+	addKey := func(k string) {
+		if k != "" && !seenKey[k] {
+			seenKey[k] = true
+			itemKeys = append(itemKeys, k)
+		}
+	}
+	for _, raw := range keys {
+		k := strings.TrimSpace(raw)
+		if k == "" {
+			continue
+		}
+		switch {
+		case strings.Count(k, ":") == 0:
+			addKey(k)
+			if !seenRaw[k] {
+				seenRaw[k] = true
+				rawIDs = append(rawIDs, k)
+			}
+		case strings.Count(k, ":") == 1 || strings.HasPrefix(strings.ToLower(k), "live:"):
+			addKey(k)
+			addKey("bilibili:" + k)
+		default:
+			if strings.HasPrefix(strings.ToLower(k), "douyin:note:") {
+				addKey("douyin:dynamic:" + k[len("douyin:note:"):])
+			} else {
+				addKey(k)
+			}
+		}
+	}
+
+	byKey := make(map[string]ItemMetadata, len(itemKeys))
+	byRaw := make(map[string]ItemMetadata, len(rawIDs))
+
+	s.mu.RLock()
+	allowMoved := s.allowMovedFiles
+	s.fetchItemsBatchLocked(itemKeys, rawIDs, byKey, byRaw)
+
+	// Fetch any videos referenced by matched dynamics in one extra batched query.
+	var refKeys []string
+	seenRef := make(map[string]bool)
+	for _, meta := range byKey {
+		if meta.Kind == "dynamic" && len(meta.Videos) > 0 {
+			for _, vid := range meta.Videos {
+				vk := CanonicalItemKey(meta.Site, "video", vid)
+				if _, ok := byKey[vk]; !ok && !seenRef[vk] {
+					seenRef[vk] = true
+					refKeys = append(refKeys, vk)
+				}
+			}
+		}
+	}
+	if len(refKeys) > 0 {
+		s.fetchItemsBatchLocked(refKeys, nil, byKey, byRaw)
+	}
+	s.mu.RUnlock()
+
+	// Refresh on-disk file state outside the store lock once per unique item.
+	if !allowMoved {
+		for k, meta := range byKey {
+			refreshItemFileState(&meta)
+			byKey[k] = meta
+		}
+		for r, meta := range byRaw {
+			if updated, ok := byKey[meta.ItemKey]; ok {
+				byRaw[r] = updated
+			}
+		}
+	}
+
+	lookup := func(k string) (ItemMetadata, bool) {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			return ItemMetadata{}, false
+		}
+		switch {
+		case strings.Count(k, ":") == 0:
+			if m, ok := byKey[k]; ok {
+				return m, true
+			}
+			m, ok := byRaw[k]
+			return m, ok
+		case strings.Count(k, ":") == 1 || strings.HasPrefix(strings.ToLower(k), "live:"):
+			if m, ok := byKey[k]; ok {
+				return m, true
+			}
+			m, ok := byKey["bilibili:"+k]
+			return m, ok
+		default:
+			normKey := k
+			if strings.HasPrefix(strings.ToLower(normKey), "douyin:note:") {
+				normKey = "douyin:dynamic:" + normKey[len("douyin:note:"):]
+			}
+			m, ok := byKey[normKey]
+			return m, ok
+		}
+	}
+
 	for _, k := range keys {
-		meta, ok, err := s.getItemLocked(k)
-		if err != nil || !ok {
+		meta, ok := lookup(k)
+		if !ok {
 			out[k] = DotState{Key: k, Dot: "none", Label: "未缓存"}
 			continue
 		}
 		dot := ComputeDotState(meta)
 		if meta.Kind == "dynamic" && len(meta.Videos) > 0 {
 			for _, vid := range meta.Videos {
-				vMeta, vOk, _ := s.getItemLocked(CanonicalItemKey(meta.Site, "video", vid))
+				vMeta, vOk := byKey[CanonicalItemKey(meta.Site, "video", vid)]
 				if !vOk {
 					dot.Dot = "red"
 					dot.Label = "引用视频缺失"
@@ -1514,822 +728,6 @@ func (s *Store) States(keys []string) map[string]DotState {
 		out[k] = dot
 	}
 	return out
-}
-
-// forwardContentSQL matches library_items rows that are forwarded posts or
-// content cached because of one (media library "转发", DEC-056).
-const forwardContentSQL = "(json_extract(json_data, '$.via.reason') = 'forward' OR (kind = 'dynamic' AND json_extract(json_data, '$.dynamicType') = 'DYNAMIC_TYPE_FORWARD'))"
-
-// viaUIDSQL is the indexed expression for the creator an item was cached for
-// (idx_library_items_via).
-const viaUIDSQL = "json_extract(json_data, '$.via.uid')"
-
-// appendLibrarySiteAndAuthorClauses is appendSiteAndAuthorClauses for
-// library_items: an author filter also matches items cached for that creator
-// under their folder (collaboration videos and forwarded content, DEC-056).
-func appendLibrarySiteAndAuthorClauses(clauses []string, args []any, siteFilter string, mid int64, authorUID string, mids []int64, refs []AuthorRef) ([]string, []any) {
-	return appendSiteAndAuthorClausesVia(clauses, args, "", siteFilter, mid, authorUID, mids, refs, true)
-}
-
-// appendSiteAndAuthorClauses is the author filter for feed_items (colPrefix
-// "f."): an author's feed also has the collaboration videos cached for them
-// under their folder, though the uploader is someone else (DEC-061).
-func appendSiteAndAuthorClauses(clauses []string, args []any, colPrefix, siteFilter string, mid int64, authorUID string, mids []int64, refs []AuthorRef) ([]string, []any) {
-	return appendSiteAndAuthorClausesVia(clauses, args, colPrefix, siteFilter, mid, authorUID, mids, refs, false)
-}
-
-// collabItemKeysSQL selects the item keys of collaboration videos cached for
-// one of a site's creators; the site and creator placeholders follow.
-func collabItemKeysSQL(n int) string {
-	ph := strings.TrimSuffix(strings.Repeat("?,", n), ",")
-	return "(SELECT item_key FROM library_items WHERE site = ? AND " + viaUIDSQL + " IN (" + ph + ") AND json_extract(json_data, '$.via.reason') = '" + ViaCollab + "')"
-}
-
-func appendSiteAndAuthorClausesVia(clauses []string, args []any, colPrefix, siteFilter string, mid int64, authorUID string, mids []int64, refs []AuthorRef, withVia bool) ([]string, []any) {
-	normSiteFilter := strings.ToLower(strings.TrimSpace(siteFilter))
-	if normSiteFilter != "" && normSiteFilter != "all" {
-		clauses = append(clauses, colPrefix+"site = ?")
-		args = append(args, normSiteFilter)
-	}
-
-	var collected []AuthorRef
-	seen := make(map[string]bool)
-	addRef := func(site, uid string) {
-		uid = strings.TrimSpace(uid)
-		if uid == "" {
-			return
-		}
-		site = strings.ToLower(strings.TrimSpace(site))
-		if site == "" {
-			if normSiteFilter != "" && normSiteFilter != "all" {
-				site = normSiteFilter
-			} else {
-				site = "bilibili"
-			}
-		}
-		k := site + "\x00" + uid
-		if !seen[k] {
-			seen[k] = true
-			collected = append(collected, AuthorRef{Site: site, UID: uid})
-		}
-	}
-	if mid > 0 {
-		addRef("bilibili", strconv.FormatInt(mid, 10))
-	}
-	if strings.TrimSpace(authorUID) != "" {
-		addRef("", authorUID)
-	}
-	for _, m := range mids {
-		if m > 0 {
-			addRef("bilibili", strconv.FormatInt(m, 10))
-		}
-	}
-	for _, r := range refs {
-		addRef(r.Site, r.UID)
-	}
-	if len(collected) == 0 {
-		return clauses, args
-	}
-
-	bySite := make(map[string][]string)
-	var siteOrder []string
-	for _, r := range collected {
-		if _, ok := bySite[r.Site]; !ok {
-			siteOrder = append(siteOrder, r.Site)
-		}
-		bySite[r.Site] = append(bySite[r.Site], r.UID)
-	}
-	var orParts []string
-	for _, st := range siteOrder {
-		uids := bySite[st]
-		cols := []string{colPrefix + "author_uid"}
-		if withVia {
-			cols = append(cols, viaUIDSQL)
-		}
-		for _, col := range cols {
-			if len(uids) == 1 {
-				orParts = append(orParts, "("+colPrefix+"site = ? AND "+col+" = ?)")
-				args = append(args, st, uids[0])
-			} else {
-				ph := make([]string, len(uids))
-				args = append(args, st)
-				for i, u := range uids {
-					ph[i] = "?"
-					args = append(args, u)
-				}
-				orParts = append(orParts, "("+colPrefix+"site = ? AND "+col+" IN ("+strings.Join(ph, ",")+"))")
-			}
-		}
-		if !withVia && colPrefix != "" {
-			orParts = append(orParts, "("+colPrefix+"item_key IN "+collabItemKeysSQL(len(uids))+")")
-			args = append(args, st)
-			for _, u := range uids {
-				args = append(args, u)
-			}
-		}
-	}
-	if len(orParts) == 1 {
-		clauses = append(clauses, orParts[0])
-	} else {
-		clauses = append(clauses, "("+strings.Join(orParts, " OR ")+")")
-	}
-	return clauses, args
-}
-
-// ListItems returns cached library items matching filter.
-func (s *Store) ListItems(filter FeedFilter) ([]ItemMetadata, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var clauses []string
-	var args []any
-	switch filter.Kind {
-	case "image":
-		clauses = append(clauses, "(EXISTS (SELECT 1 FROM json_each(json_data, '$.media') WHERE json_extract(value, '$.role') = 'image') OR EXISTS (SELECT 1 FROM json_each(json_data, '$.notePages') WHERE json_extract(value, '$.kind') IN ('image', 'motion')))")
-		if filter.ExcludeForward {
-			clauses = append(clauses, "NOT "+forwardContentSQL)
-		}
-	case "forward":
-		clauses = append(clauses, forwardContentSQL)
-	case "", "all":
-	default:
-		clauses = append(clauses, "kind = ?")
-		args = append(args, filter.Kind)
-		if filter.ExcludeForward {
-			clauses = append(clauses, "NOT "+forwardContentSQL)
-		}
-	}
-	clauses, args = appendLibrarySiteAndAuthorClauses(clauses, args, filter.Site, filter.Mid, filter.AuthorUID, filter.Authors, filter.AuthorRefs)
-	if kw := strings.TrimSpace(filter.Keyword); kw != "" {
-		clauses = append(clauses, "(title LIKE ? OR summary LIKE ? OR author_name LIKE ? OR raw_id LIKE ?)")
-		pat := "%" + kw + "%"
-		args = append(args, pat, pat, pat, pat)
-	}
-
-	query := `SELECT json_data, item_dir, status, total_bytes, upgrade_available, upgrade_hint FROM library_items`
-	if len(clauses) > 0 {
-		query += " WHERE " + strings.Join(clauses, " AND ")
-	}
-	if strings.EqualFold(filter.Sort, "cached_at") {
-		query += " ORDER BY cached_at DESC, item_key DESC"
-	} else if strings.EqualFold(filter.Sort, "oldest") {
-		query += " ORDER BY pub_ts ASC, item_key ASC"
-	} else {
-		query += " ORDER BY pub_ts DESC, item_key DESC"
-	}
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = 200
-	}
-	query += fmt.Sprintf(" LIMIT %d OFFSET %d", limit, max(0, filter.Offset))
-
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []ItemMetadata
-	for rows.Next() {
-		var jsonStr, itemDir, status, upHint string
-		var totalBytes int64
-		var upAvail int
-		if err := rows.Scan(&jsonStr, &itemDir, &status, &totalBytes, &upAvail, &upHint); err != nil {
-			return nil, err
-		}
-		meta, err := ParseItemMetadata([]byte(jsonStr))
-		if err != nil {
-			continue
-		}
-		meta.ItemDir = itemDir
-		meta.Status = status
-		meta.TotalBytes = totalBytes
-		meta.UpgradeAvailable = upAvail == 1
-		meta.UpgradeHint = upHint
-		refreshItemFileState(&meta)
-		out = append(out, meta)
-	}
-	return out, rows.Err()
-}
-
-// FeedPage implements bidirectional keyset pagination over (pub_ts, feed_key) for the home feed (FR-FEED-001).
-// It excludes videos that are referenced by a cached dynamic item so videos referenced by dynamics do not appear twice.
-func (s *Store) FeedPage(req FeedPageRequest) (FeedPageResult, error) {
-	if req.Direction == "around" && req.Cursor != nil {
-		pivot, err := s.feedAnchorCursor(req)
-		if err != nil || pivot == nil {
-			return FeedPageResult{}, err
-		}
-		beforeReq := req
-		beforeReq.Cursor = pivot
-		beforeReq.Order = "newest"
-		beforeReq.Direction = "newer"
-		beforeReq.Limit = 30
-		before, err := s.FeedPage(beforeReq)
-		if err != nil {
-			return FeedPageResult{}, err
-		}
-		afterReq := beforeReq
-		afterReq.Direction = "older"
-		cursor := *pivot
-		cursor.Key += "\x00"
-		afterReq.Cursor = &cursor
-		after, err := s.FeedPage(afterReq)
-		if err != nil {
-			return FeedPageResult{}, err
-		}
-		result := after
-		result.Items = append(before.Items, after.Items...)
-		if req.Order == "oldest" {
-			for i, j := 0, len(result.Items)-1; i < j; i, j = i+1, j-1 {
-				result.Items[i], result.Items[j] = result.Items[j], result.Items[i]
-			}
-		}
-		if len(result.Items) > 0 {
-			first, last := result.Items[0], result.Items[len(result.Items)-1]
-			result.PrevCursor = &FeedCursor{PubTs: first.PubTs, Key: first.FeedKey}
-			result.NextCursor = &FeedCursor{PubTs: last.PubTs, Key: last.FeedKey}
-		}
-		return result, nil
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	order := strings.ToLower(strings.TrimSpace(req.Order))
-	if order != "oldest" {
-		order = "newest"
-	}
-	dir := strings.ToLower(strings.TrimSpace(req.Direction))
-	if dir != "newer" {
-		dir = "older"
-	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 30
-	}
-
-	clauses, args := feedPageClauses(req)
-
-	// Determine SQL comparison and sort order for keyset cursor (pub_ts, feed_key).
-	// For "newest" (DESC):
-	//   - direction="older": (pub_ts < c.PubTs OR (pub_ts = c.PubTs AND feed_key < c.Key)) ORDER BY pub_ts DESC, feed_key DESC
-	//   - direction="newer": (pub_ts > c.PubTs OR (pub_ts = c.PubTs AND feed_key > c.Key)) ORDER BY pub_ts ASC, feed_key ASC (then reverse)
-	// For "oldest" (ASC):
-	//   - direction="older": (pub_ts > c.PubTs OR (pub_ts = c.PubTs AND feed_key > c.Key)) ORDER BY pub_ts ASC, feed_key ASC
-	//   - direction="newer": (pub_ts < c.PubTs OR (pub_ts = c.PubTs AND feed_key < c.Key)) ORDER BY pub_ts DESC, feed_key DESC (then reverse)
-	wantDesc := (order == "newest" && dir == "older") || (order == "oldest" && dir == "newer")
-	reverseAfter := dir == "newer"
-
-	if req.Cursor != nil && (req.Cursor.Key != "" || req.Cursor.PubTs > 0) {
-		if wantDesc {
-			clauses = append(clauses, "(f.pub_ts < ? OR (f.pub_ts = ? AND f.feed_key < ?))")
-		} else {
-			clauses = append(clauses, "(f.pub_ts > ? OR (f.pub_ts = ? AND f.feed_key > ?))")
-		}
-		args = append(args, req.Cursor.PubTs, req.Cursor.PubTs, req.Cursor.Key)
-	}
-
-	query := `
-		SELECT
-			f.feed_key, f.site, f.kind, f.raw_id, f.mid, f.author_uid, f.author_name, f.author_face,
-			f.title, f.summary, f.cover_url, f.canonical_url, f.pub_ts, f.discovered_at,
-			f.cached, f.cache_status, f.item_key,
-			COALESCE(l.item_dir, ''), COALESCE(l.upgrade_available, 0), COALESCE(l.upgrade_hint, '')
-		FROM feed_items f
-		LEFT JOIN library_items l ON f.item_key = l.item_key
-		WHERE ` + strings.Join(clauses, " AND ")
-
-	if wantDesc {
-		query += " ORDER BY f.pub_ts DESC, f.feed_key DESC"
-	} else {
-		query += " ORDER BY f.pub_ts ASC, f.feed_key ASC"
-	}
-	query += fmt.Sprintf(" LIMIT %d", limit+1)
-
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return FeedPageResult{}, err
-	}
-	defer rows.Close()
-
-	var items []FeedEntry
-	for rows.Next() {
-		var e FeedEntry
-		var cachedInt, upAvail int
-		if err := rows.Scan(
-			&e.FeedKey, &e.Site, &e.Kind, &e.RawID, &e.Mid, &e.AuthorUID, &e.AuthorName, &e.AuthorFace,
-			&e.Title, &e.Summary, &e.CoverURL, &e.CanonicalURL, &e.PubTs, &e.DiscoveredAt,
-			&cachedInt, &e.CacheStatus, &e.ItemKey,
-			&e.ItemDir, &upAvail, &e.UpgradeHint,
-		); err != nil {
-			return FeedPageResult{}, err
-		}
-		if e.AuthorUID == "" && e.Mid > 0 && e.Site == "bilibili" {
-			e.AuthorUID = strconv.FormatInt(e.Mid, 10)
-		}
-		e.Cached = cachedInt == 1
-		e.UpgradeAvailable = upAvail == 1
-		items = append(items, e)
-	}
-	if err := rows.Err(); err != nil {
-		return FeedPageResult{}, err
-	}
-
-	hasMore := false
-	if len(items) > limit {
-		hasMore = true
-		items = items[:limit]
-	}
-	if reverseAfter && len(items) > 1 {
-		for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
-			items[i], items[j] = items[j], items[i]
-		}
-	}
-
-	var res FeedPageResult
-	res.Items = items
-	res.HasMore = hasMore
-	if len(items) > 0 {
-		first := items[0]
-		last := items[len(items)-1]
-		res.PrevCursor = &FeedCursor{PubTs: first.PubTs, Key: first.FeedKey}
-		res.NextCursor = &FeedCursor{PubTs: last.PubTs, Key: last.FeedKey}
-	}
-	return res, nil
-}
-
-func feedPageClauses(req FeedPageRequest) ([]string, []any) {
-	clauses := []string{"NOT (f.kind = 'video' AND EXISTS (SELECT 1 FROM item_refs r WHERE r.to_key = f.feed_key))"}
-	var args []any
-	if req.CachedOnly {
-		clauses = append(clauses, "f.cached = 1")
-	}
-	if req.Kind != "" && req.Kind != "all" {
-		clauses = append(clauses, "f.kind = ?")
-		args = append(args, req.Kind)
-	}
-	clauses, args = appendSiteAndAuthorClauses(clauses, args, "f.", req.Site, 0, "", req.Authors, req.AuthorRefs)
-	return clauses, args
-}
-
-// Resolve a surviving key first; otherwise choose the newest item at or before
-// the saved timestamp (the earliest item if everything is newer). Resolving the
-// pivot before paging also handles more than one page of equal timestamps.
-func (s *Store) feedAnchorCursor(req FeedPageRequest) (*FeedCursor, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	clauses, args := feedPageClauses(req)
-	base := `SELECT f.feed_key, f.pub_ts FROM feed_items f WHERE ` + strings.Join(clauses, " AND ")
-	var pivot FeedCursor
-	if req.Cursor.Key != "" {
-		keyArgs := append(append([]any(nil), args...), req.Cursor.Key)
-		err := s.db.QueryRow(base+` AND f.feed_key = ?`, keyArgs...).Scan(&pivot.Key, &pivot.PubTs)
-		if err == nil {
-			return &pivot, nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
-	}
-	if req.Cursor.PubTs > 0 {
-		tsArgs := append(append([]any(nil), args...), req.Cursor.PubTs)
-		err := s.db.QueryRow(base+` AND f.pub_ts <= ? ORDER BY f.pub_ts DESC, f.feed_key DESC LIMIT 1`, tsArgs...).Scan(&pivot.Key, &pivot.PubTs)
-		if err == nil {
-			return &pivot, nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
-	}
-	order := "DESC"
-	if req.Cursor.PubTs > 0 {
-		order = "ASC"
-	}
-	err := s.db.QueryRow(base+" ORDER BY f.pub_ts "+order+", f.feed_key "+order+" LIMIT 1", args...).Scan(&pivot.Key, &pivot.PubTs)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	return &pivot, err
-}
-
-// NewerCount returns the number of feed items published more recently than the given anchor (pubTs, key).
-func (s *Store) NewerCount(anchorPubTs int64, anchorKey string) (int, error) {
-	return s.newerCount(anchorPubTs, anchorKey, false)
-}
-func (s *Store) NewerCachedCount(anchorPubTs int64, anchorKey string) (int, error) {
-	return s.newerCount(anchorPubTs, anchorKey, true)
-}
-func (s *Store) newerCount(anchorPubTs int64, anchorKey string, cachedOnly bool) (int, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if anchorPubTs <= 0 && anchorKey == "" {
-		return 0, nil
-	}
-	var count int
-	err := s.db.QueryRow(`
-		SELECT COUNT(1) FROM feed_items f
-		WHERE (? = 0 OR f.cached = 1) AND NOT (f.kind = 'video' AND EXISTS (SELECT 1 FROM item_refs r WHERE r.to_key = f.feed_key))
-		  AND (f.pub_ts > ? OR (f.pub_ts = ? AND f.feed_key > ?))
-	`, cachedOnly, anchorPubTs, anchorPubTs, anchorKey).Scan(&count)
-	return count, err
-}
-
-// QueryFeed queries the unified feed (both online-discovered and locally cached items) ordered by pub_ts DESC.
-func (s *Store) QueryFeed(filter FeedFilter) ([]FeedEntry, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var clauses []string
-	var args []any
-	if filter.Kind != "" && filter.Kind != "all" {
-		clauses = append(clauses, "f.kind = ?")
-		args = append(args, filter.Kind)
-	}
-	clauses, args = appendSiteAndAuthorClauses(clauses, args, "f.", filter.Site, filter.Mid, filter.AuthorUID, filter.Authors, filter.AuthorRefs)
-	if filter.CachedOnly {
-		clauses = append(clauses, "f.cached = 1")
-	}
-	if kw := strings.TrimSpace(filter.Keyword); kw != "" {
-		clauses = append(clauses, "(f.title LIKE ? OR f.summary LIKE ? OR f.author_name LIKE ? OR f.raw_id LIKE ?)")
-		pat := "%" + kw + "%"
-		args = append(args, pat, pat, pat, pat)
-	}
-
-	query := `
-		SELECT
-			f.feed_key, f.site, f.kind, f.raw_id, f.mid, f.author_uid, f.author_name, f.author_face,
-			f.title, f.summary, f.cover_url, f.canonical_url, f.pub_ts, f.discovered_at,
-			f.cached, f.cache_status, f.item_key,
-			COALESCE(l.item_dir, ''), COALESCE(l.upgrade_available, 0), COALESCE(l.upgrade_hint, '')
-		FROM feed_items f
-		LEFT JOIN library_items l ON f.item_key = l.item_key
-	`
-	if len(clauses) > 0 {
-		query += " WHERE " + strings.Join(clauses, " AND ")
-	}
-	if strings.EqualFold(filter.Sort, "oldest") {
-		query += " ORDER BY f.pub_ts ASC, f.feed_key ASC"
-	} else {
-		query += " ORDER BY f.pub_ts DESC, f.feed_key DESC"
-	}
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = 200
-	}
-	query += fmt.Sprintf(" LIMIT %d OFFSET %d", limit, max(0, filter.Offset))
-
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []FeedEntry
-	for rows.Next() {
-		var e FeedEntry
-		var cachedInt, upAvail int
-		if err := rows.Scan(
-			&e.FeedKey, &e.Site, &e.Kind, &e.RawID, &e.Mid, &e.AuthorUID, &e.AuthorName, &e.AuthorFace,
-			&e.Title, &e.Summary, &e.CoverURL, &e.CanonicalURL, &e.PubTs, &e.DiscoveredAt,
-			&cachedInt, &e.CacheStatus, &e.ItemKey,
-			&e.ItemDir, &upAvail, &e.UpgradeHint,
-		); err != nil {
-			return nil, err
-		}
-		if e.AuthorUID == "" && e.Mid > 0 && e.Site == "bilibili" {
-			e.AuthorUID = strconv.FormatInt(e.Mid, 10)
-		}
-		e.Cached = cachedInt == 1
-		e.UpgradeAvailable = upAvail == 1
-		out = append(out, e)
-	}
-	return out, rows.Err()
-}
-
-// PlanDelete computes the exact DeletePlan for an item without modifying disk or DB (FR-LIB-003, INV-09).
-func (s *Store) PlanDelete(itemKey string) (DeletePlan, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.planDeleteLocked(itemKey)
-}
-
-func (s *Store) planDeleteLocked(itemKey string) (DeletePlan, error) {
-	meta, ok, err := s.getItemLocked(itemKey)
-	if err != nil {
-		return DeletePlan{}, err
-	}
-	if !ok {
-		return DeletePlan{}, fmt.Errorf("library: item %q not found", itemKey)
-	}
-	if meta.Status == "recording" {
-		return DeletePlan{}, fmt.Errorf("library: 正在录制的直播条目不能删除，请先停止录制")
-	}
-
-	plan := DeletePlan{
-		TargetKey: meta.ItemKey,
-		ItemKeys:  []string{meta.ItemKey},
-	}
-
-	itemsToDelete := []ItemMetadata{meta}
-
-	// If deleting a dynamic item that references videos, check if each referenced video is shared or directly cached.
-	if meta.Kind == "dynamic" && len(meta.Videos) > 0 {
-		for _, vid := range meta.Videos {
-			vidKey := CanonicalItemKey(meta.Site, "video", vid)
-			vMeta, vOk, _ := s.getItemLocked(vidKey)
-			if !vOk {
-				continue
-			}
-			var otherRefs int
-			_ = s.db.QueryRow(`SELECT COUNT(1) FROM item_refs WHERE to_key = ? AND from_key != ?`, vidKey, meta.ItemKey).Scan(&otherRefs)
-			if otherRefs > 0 || vMeta.DirectCached {
-				plan.PreservedSharedVideos = append(plan.PreservedSharedVideos, vidKey)
-			} else {
-				plan.ItemKeys = append(plan.ItemKeys, vidKey)
-				itemsToDelete = append(itemsToDelete, vMeta)
-			}
-		}
-	}
-
-	seenFiles := make(map[string]bool)
-	seenUserFiles := make(map[string]bool)
-	for _, it := range itemsToDelete {
-		regFiles, userFiles := collectRegisteredAndUserFiles(it)
-		for _, f := range regFiles {
-			if !seenFiles[f] {
-				seenFiles[f] = true
-				plan.RegisteredFiles = append(plan.RegisteredFiles, f)
-			}
-		}
-		for _, uf := range userFiles {
-			if !seenUserFiles[uf] {
-				seenUserFiles[uf] = true
-				plan.PreservedUserFiles = append(plan.PreservedUserFiles, uf)
-			}
-		}
-	}
-	return plan, nil
-}
-
-func collectRegisteredAndUserFiles(meta ItemMetadata) (registeredAbs []string, userRel []string) {
-	if meta.ItemDir == "" {
-		return nil, nil
-	}
-	itemDir := filepath.Clean(meta.ItemDir)
-	regRel := make(map[string]bool)
-	addRel := func(rel string) {
-		rel = strings.TrimSpace(rel)
-		if rel == "" {
-			return
-		}
-		norm := strings.ToLower(filepath.ToSlash(filepath.Clean(filepath.FromSlash(rel))))
-		if !safeRegisteredPath(itemDir, rel) {
-			return
-		}
-		if !regRel[norm] {
-			regRel[norm] = true
-			registeredAbs = append(registeredAbs, filepath.Join(itemDir, filepath.FromSlash(rel)))
-		}
-	}
-
-	for _, m := range meta.Media {
-		addRel(m.Path)
-		addRel(m.Motion)
-	}
-	for _, part := range meta.PendingParts {
-		addRel(part)
-		if meta.Kind == "live" && strings.HasPrefix(part, "part-") && strings.HasSuffix(part, ".mp4.part") {
-			// Both names are reserved before recording starts. A crash after the
-			// final rename can leave the MP4 present before its media row is saved.
-			addRel(strings.TrimSuffix(part, ".part"))
-		}
-	}
-	for _, p := range meta.Parts {
-		addRel(p.File)
-		addRel(p.Danmaku)
-		addRel(p.Audio.SavedAs)
-		for _, sub := range p.Subtitles {
-			addRel(sub)
-		}
-	}
-	if meta.DouyinVideo != nil {
-		addRel(meta.DouyinVideo.File)
-	}
-	for _, np := range meta.NotePages {
-		addRel(np.Image)
-		addRel(np.Cover)
-		addRel(np.Motion)
-		addRel(np.Video)
-		if np.VideoInfo != nil {
-			addRel(np.VideoInfo.File)
-		}
-	}
-	if meta.Music != nil {
-		addRel(meta.Music.File)
-		addRel(meta.Music.Cover)
-	}
-	if meta.Live != nil {
-		for _, seg := range meta.Live.Segments {
-			addRel(seg.File)
-		}
-	}
-	addRel("orig.json")
-
-	// Scan itemDir for *.part files (which belong to TRACE) and user-owned files (which MUST be preserved).
-	_ = filepath.WalkDir(itemDir, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil || d.IsDir() {
-			return nil
-		}
-		rel, rErr := filepath.Rel(itemDir, path)
-		if rErr != nil {
-			return nil
-		}
-		norm := strings.ToLower(filepath.ToSlash(rel))
-		if norm == "item.json" {
-			return nil
-		}
-		if strings.HasSuffix(norm, ".part") && regRel[strings.TrimSuffix(norm, ".part")] {
-			addRel(rel)
-			return nil
-		}
-		if !regRel[norm] {
-			userRel = append(userRel, filepath.ToSlash(rel))
-		}
-		return nil
-	})
-
-	// item.json is always deleted last among registered files.
-	addRel("item.json")
-	return registeredAbs, userRel
-}
-
-// Delete executes PlanDelete: removes only registered files and empty directories, never recursive RemoveAll (INV-09).
-func (s *Store) Delete(itemKey string) (DeletePlan, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.deleteWithPlanLocked(itemKey, true)
-}
-
-// DeleteItem removes an item from the index and optionally deletes its registered files from disk (INV-09).
-// It NEVER calls os.RemoveAll on the item directory; user-placed files are strictly preserved.
-func (s *Store) DeleteItem(itemKey string, deleteFiles bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, err := s.deleteWithPlanLocked(itemKey, deleteFiles)
-	return err
-}
-
-func (s *Store) deleteWithPlanLocked(itemKey string, deleteFiles bool) (DeletePlan, error) {
-	plan, err := s.planDeleteLocked(itemKey)
-	if err != nil {
-		return DeletePlan{}, err
-	}
-
-	var itemDirs []string
-	for _, k := range plan.ItemKeys {
-		if m, ok, _ := s.getItemLocked(k); ok && m.ItemDir != "" {
-			itemDirs = append(itemDirs, m.ItemDir)
-		}
-	}
-
-	// 1. Write pending-deletes.json before deleting files (data-and-cache.md §2.8).
-	if deleteFiles && len(plan.RegisteredFiles) > 0 {
-		pending, err := s.readPendingDeletesLocked()
-		if err != nil {
-			return plan, err
-		}
-		for _, k := range plan.ItemKeys {
-			m, ok, _ := s.getItemLocked(k)
-			if ok {
-				regFiles, _ := collectRegisteredAndUserFiles(m)
-				pending = append(pending, pendingDeleteRecord{
-					ItemKey:         k,
-					ItemDir:         m.ItemDir,
-					RegisteredFiles: regFiles,
-				})
-			}
-		}
-		if err := s.writePendingDeletesLocked(pending); err != nil {
-			return plan, err
-		}
-	}
-
-	// 2. Remove from index and references.
-	tx, err := s.db.Begin()
-	if err != nil {
-		return plan, err
-	}
-	defer tx.Rollback()
-	for _, k := range plan.ItemKeys {
-		if _, err := tx.Exec(`DELETE FROM library_items WHERE item_key = ?`, k); err != nil {
-			return plan, err
-		}
-		if _, err := tx.Exec(`DELETE FROM item_refs WHERE from_key = ? OR to_key = ?`, k, k); err != nil {
-			return plan, err
-		}
-		if _, err := tx.Exec(`UPDATE feed_items SET cached = 0, cache_status = '', item_key = '' WHERE item_key = ?`, k); err != nil {
-			return plan, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return plan, err
-	}
-
-	// 3. Delete only registered files one by one, then remove empty directories bottom-up (NEVER os.RemoveAll).
-	if deleteFiles {
-		allRemoved := true
-		var removeErrors []error
-		for _, f := range plan.RegisteredFiles {
-			if rErr := os.Remove(f); rErr != nil && !os.IsNotExist(rErr) {
-				allRemoved = false
-				removeErrors = append(removeErrors, rErr)
-			}
-		}
-		roots := s.allRootsLocked()
-		for _, dir := range itemDirs {
-			removeEmptyDirsBottomUp(dir)
-			removeEmptyAuthorDirs(dir, roots)
-		}
-		if allRemoved {
-			// Clear completed keys from pending-deletes.json.
-			pending, err := s.readPendingDeletesLocked()
-			if err != nil {
-				return plan, err
-			}
-			doneSet := make(map[string]bool, len(plan.ItemKeys))
-			for _, k := range plan.ItemKeys {
-				doneSet[k] = true
-			}
-			var rem []pendingDeleteRecord
-			for _, p := range pending {
-				if !doneSet[p.ItemKey] {
-					rem = append(rem, p)
-				}
-			}
-			if err := s.writePendingDeletesLocked(rem); err != nil {
-				return plan, err
-			}
-		}
-		if !allRemoved {
-			return plan, errors.Join(removeErrors...)
-		}
-	}
-
-	return plan, nil
-}
-
-// removeEmptyDirsBottomUp removes empty subdirectories (such as images/) and the item directory itself
-// ONLY if they are completely empty (using os.Remove, never os.RemoveAll).
-func removeEmptyDirsBottomUp(itemDir string) {
-	itemDir = filepath.Clean(itemDir)
-	if itemDir == "" || itemDir == "." {
-		return
-	}
-	var dirs []string
-	_ = filepath.WalkDir(itemDir, func(path string, d fs.DirEntry, err error) error {
-		if err == nil && d.IsDir() {
-			dirs = append(dirs, path)
-		}
-		return nil
-	})
-	// Sort deepest paths first.
-	sort.Slice(dirs, func(i, j int) bool {
-		return len(dirs[i]) > len(dirs[j])
-	})
-	for _, d := range dirs {
-		entries, err := os.ReadDir(d)
-		if err == nil && len(entries) == 0 {
-			_ = os.Remove(d)
-		}
-	}
-}
-
-// removeEmptyAuthorDirs removes the now-empty kind folder (videos/, works/…)
-// and author folder above a deleted item, so deleting a creator's last item
-// leaves no empty folders (2026-11-15 user feedback). It only climbs inside a
-// library root, never removes the root or its site folder (<root>/bilibili),
-// and uses os.Remove, which fails on any folder that still has files.
-func removeEmptyAuthorDirs(itemDir string, roots []string) {
-	itemDir = filepath.Clean(itemDir)
-	for _, root := range roots {
-		root = filepath.Clean(root)
-		rel, err := filepath.Rel(root, itemDir)
-		if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-			continue
-		}
-		// <site>/<author>/<kind>/<item>: remove <kind>, then <author>.
-		depth := len(strings.Split(filepath.ToSlash(rel), "/"))
-		dir := filepath.Dir(itemDir)
-		for depth--; depth >= 2; depth-- {
-			if os.Remove(dir) != nil {
-				return
-			}
-			dir = filepath.Dir(dir)
-		}
-		return
-	}
 }
 
 // MigrateCacheDir changes the active cache directory, optionally moving registered files to newDir,
@@ -2361,207 +759,16 @@ func (s *Store) listAllItemsLocked() ([]ItemMetadata, error) {
 		if err := rows.Scan(&jsonStr, &itemDir, &status, &totalBytes, &upAvail, &upHint); err != nil {
 			return nil, err
 		}
-		if meta, err := ParseItemMetadata([]byte(jsonStr)); err != nil {
+		meta, err := ParseItemMetadata([]byte(jsonStr))
+		if err != nil {
 			return nil, err
-		} else {
-			meta.ItemDir = itemDir
-			meta.Status = status
-			meta.TotalBytes = totalBytes
-			meta.UpgradeAvailable = upAvail == 1
-			meta.UpgradeHint = upHint
-			out = append(out, meta)
 		}
+		meta.ItemDir = itemDir
+		meta.Status = status
+		meta.TotalBytes = totalBytes
+		meta.UpgradeAvailable = upAvail == 1
+		meta.UpgradeHint = upHint
+		out = append(out, meta)
 	}
 	return out, rows.Err()
-}
-
-// UpgradeCandidates returns up to 50 cached video items ordered by oldest UpgradeCheckedAt first (FR-CACHE-006).
-func (s *Store) UpgradeCandidates(limit int) ([]ItemMetadata, error) {
-	if limit <= 0 || limit > 50 {
-		limit = 50
-	}
-	items, err := s.ListItems(FeedFilter{Site: "bilibili", Kind: "video", Limit: 500})
-	if err != nil {
-		return nil, err
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		ti, _ := time.Parse(time.RFC3339, items[i].UpgradeCheckedAt)
-		tj, _ := time.Parse(time.RFC3339, items[j].UpgradeCheckedAt)
-		if !ti.Equal(tj) {
-			return ti.Before(tj)
-		}
-		return items[i].PubTs < items[j].PubTs
-	})
-	if len(items) > limit {
-		items = items[:limit]
-	}
-	return items, nil
-}
-
-// CheckUpgradeKeys probes the given video keys (or all candidates if keys is empty) for quality upgrades.
-// When force is false, items checked within the last 24 hours are skipped without network requests (FR-CACHE-006).
-func (s *Store) CheckUpgradeKeys(ctx context.Context, client *bilibili.Client, keys []string, force bool, opts bilibili.PlaySelectionOptions) ([]ItemMetadata, error) {
-	if client == nil {
-		return nil, fmt.Errorf("library: bilibili client is nil")
-	}
-
-	var candidates []ItemMetadata
-	if len(keys) == 0 {
-		var err error
-		candidates, err = s.UpgradeCandidates(50)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		for _, k := range keys {
-			m, ok, err := s.GetItem(k)
-			if err != nil {
-				return nil, &bilibili.SiteError{Kind: "storage", Message: "读取缓存记录失败", Err: err}
-			}
-			if ok && m.Kind == "video" {
-				candidates = append(candidates, m)
-			}
-		}
-	}
-
-	var upgradable []ItemMetadata
-	now := time.Now().UTC()
-	nowStr := now.Format(time.RFC3339)
-
-	for _, meta := range candidates {
-		if err := ctx.Err(); err != nil {
-			return upgradable, err
-		}
-		if len(meta.Parts) == 0 {
-			continue
-		}
-		if !force && meta.UpgradeCheckedAt != "" {
-			if lastT, err := time.Parse(time.RFC3339, meta.UpgradeCheckedAt); err == nil && now.Sub(lastT) < 24*time.Hour {
-				if meta.UpgradeAvailable {
-					upgradable = append(upgradable, meta)
-				}
-				continue
-			}
-		}
-
-		// Probe P1 only (data-and-cache.md §2.7).
-		part := &meta.Parts[0]
-		if part.CID <= 0 {
-			continue
-		}
-		plan, err := client.PlayURL(ctx, meta.RawID, part.CID, opts)
-		if err != nil {
-			return upgradable, err
-		}
-
-		part.Available = PartAvailableInfo{
-			AcceptQuality: plan.Available.AcceptQuality,
-			Formats:       plan.Available.Formats,
-			Returned:      plan.Available.Returned,
-			BestVideo:     plan.Available.BestVideo,
-			BestAudio:     plan.Available.BestAudio,
-			HasDolby:      plan.Available.HasDolby,
-			HasFlac:       plan.Available.HasFlac,
-			ProbedAt:      nowStr,
-			Downgraded:    plan.Available.Downgraded,
-			DowngradeHint: plan.Available.DowngradeHint,
-		}
-
-		var hints []string
-		if bilibili.QualityRank(plan.Video.Quality) > bilibili.QualityRank(part.Video.Quality) {
-			hints = append(hints, fmt.Sprintf("P%02d 视频可由 %s (%d) 升级至 %s (%d)",
-				part.Page,
-				bilibili.QualityName(part.Video.Quality), part.Video.Quality,
-				plan.Video.QualityName, plan.Video.Quality,
-			))
-		}
-		if plan.Audio != nil && audioPriority(plan.Audio.Quality) > audioPriority(part.Audio.Quality) {
-			hints = append(hints, fmt.Sprintf("P%02d 音频可由 %s 升级至 %s",
-				part.Page,
-				part.Audio.Name,
-				plan.Audio.Name,
-			))
-		}
-
-		meta.UpgradeCheckedAt = nowStr
-		meta.UpgradeAvailable = len(hints) > 0
-		meta.UpgradeHint = strings.Join(hints, "；")
-		updated, err := s.SaveItem(meta.ItemDir, meta)
-		if err != nil {
-			return upgradable, &bilibili.SiteError{Kind: "storage", Message: "画质探测结果保存失败", Err: err}
-		}
-		if updated.UpgradeAvailable {
-			upgradable = append(upgradable, updated)
-		}
-	}
-
-	sort.SliceStable(upgradable, func(i, j int) bool {
-		return upgradable[i].PubTs > upgradable[j].PubTs
-	})
-	return upgradable, nil
-}
-
-// CheckQualityUpgrade probes cached video items against the Bilibili PlayURL API (with force=true for direct calls).
-func (s *Store) CheckQualityUpgrade(ctx context.Context, client *bilibili.Client, opts bilibili.PlaySelectionOptions) ([]ItemMetadata, error) {
-	return s.CheckUpgradeKeys(ctx, client, nil, true, opts)
-}
-
-func audioPriority(id int) int {
-	switch id {
-	case 30251:
-		return 50
-	case 30250:
-		return 40
-	case 30280:
-		return 30
-	case 30232:
-		return 20
-	case 30216:
-		return 10
-	default:
-		return 0
-	}
-}
-
-func safeRegisteredPath(root, rel string) bool {
-	if rejectDirectoryLinksRecent(root) != nil {
-		return false
-	}
-	if rel == "" || filepath.IsAbs(rel) || strings.ContainsAny(rel, "\\:\x00") {
-		return false
-	}
-	current := root
-	for _, part := range strings.Split(rel, "/") {
-		if part == "" || part == "." || part == ".." {
-			return false
-		}
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return false
-		}
-		if isLinkLike(info.Mode()) {
-			return false
-		}
-	}
-	info, err := os.Lstat(root)
-	return err == nil && info.IsDir() && !isLinkLike(info.Mode())
-}
-
-// isLinkLike reports symlinks and other reparse points. Since Go 1.23 a
-// Windows directory junction reports ModeIrregular instead of ModeSymlink.
-func isLinkLike(mode os.FileMode) bool {
-	return mode&(os.ModeSymlink|os.ModeIrregular) != 0
-}
-
-// ResolveItemPath validates an item-relative path before a registered file is
-// read, written, or removed. The final file may be absent, but links are rejected.
-func ResolveItemPath(root, rel string) (string, error) {
-	if !safeRegisteredPath(root, rel) {
-		return "", fmt.Errorf("library: unsafe item-relative path")
-	}
-	return EnsureWithinRoot(root, filepath.Join(root, filepath.FromSlash(rel)))
 }

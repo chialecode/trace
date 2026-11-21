@@ -93,7 +93,7 @@ TRACE 以订阅为逻辑入口（DEC-026）：一个订阅代表一个被追踪�
 - 这一轮因风控、限流或未登录停止时不建任务。已经缓存过的动态（索引里已有）只记 `auto_task_id` 为已有条目，不重复建任务。
 
 <a id="full-cache"></a>
-- **全部缓存（DEC-061 ①）**：规则的 `fullCache` 打开时，后台每 10 分钟看一次哪些账号到期（`updates.db` 的 `account_works.full_cache_at` 为空或早于 7 天前，`FullCacheInterval`），按上次全部缓存时间从早到晚，为它建一个 DEC-050 ① 的缓存队列（哔哩哔哩列表 `videos`，抖音 `works`，`origin = "full_cache"`），并把 `full_cache_at` 记为现在。队列自己从新到旧翻完整个列表，已缓存或正在缓存的直接跳过，没缓存的按慢速、不规律的节奏一条一条缓存，遇到风控、限流或额度用完照常等待。每个站点同时只有一个没结束的缓存队列时才开新的，所以全部缓存的账号一个接一个做，也不和用户自己点的“全部缓存”同时跑。取消的队列不会马上重开，等下一个 7 天。抖音开始前读一次账号资料（自动请求，退避或额度用完时跳过）记下作品总数。
+- **全部缓存（DEC-061 ①）**：规则的 `fullCache` 打开时，后台每 10 分钟看一次哪些账号到期（`updates.db` 的 `account_works.full_cache_at` 为空或早于 7 天前，`FullCacheInterval`），按上次全部缓存时间从早到晚，为它建一个 DEC-050 ① 的缓存队列（哔哩哔哩列表 `videos`，抖音 `works`，`origin = "full_cache"`），并把 `full_cache_at` 记为现在。队列自己从新到旧翻完整个列表，完整缓存了的、正在缓存的、已暂停的（在任务页继续）和只是可以升级画质的直接跳过；没缓存的、失败的和缓存了但不完整的（部分完成、有缺失记录、分 P 没有文件，DEC-063 ③，`library.NeedsCompletion`）按慢速、不规律的节奏一条一条缓存，不完整的再缓存一次时保留已有的有效文件、只补缺的部分；遇到风控、限流或额度用完照常等待。每个站点同时只有一个没结束的缓存队列时才开新的，所以全部缓存的账号一个接一个做，也不和用户自己点的“全部缓存”同时跑。取消的队列不会马上重开，等下一个 7 天。抖音开始前读一次账号资料（自动请求，退避或额度用完时跳过）记下作品总数。
 
 <a id="account-works"></a>
 - **作品总数与已缓存数（DEC-061 ②）**：`account_works(site, uid, works_total, works_at, full_cache_at)` 记每个账号上次解析时站点给的作品总数（`-1` 表示还不知道）：打开哔哩哔哩用户页（`card` 的 `archive_count`）、读投稿列表第一页（`arc/search` 的总数，包括全部缓存翻的第一页）、打开抖音用户页或全部缓存开始时（资料的 `aweme_count`）。`SubscriptionAccountWorks()` 只读本机：总数来自这张表，已缓存数由 `library.CountCachedWorks` 从 `library_items` 数（哔哩哔哩 `kind = video` 且投稿人是他或 `via` 是为他缓存的合作视频，抖音 `kind` 为 `video` 或 `dynamic`）。

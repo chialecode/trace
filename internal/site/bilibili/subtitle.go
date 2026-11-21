@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/chialecode/trace/internal/site"
 )
 
 // SubtitleBodyItem represents a single cue in a Bilibili JSON subtitle file.
@@ -32,7 +34,7 @@ type SubtitleTrack struct {
 	SRT         []byte `json:"-"`
 }
 
-// Subtitles fetches available CC subtitle tracks from /x/player/wbi/v2 and converts each track to WebVTT and SRT (C13).
+// Subtitles fetches available CC subtitle tracks from /x/player/wbi/v2 and converts each track to WebVTT and SRT.
 func (c *Client) Subtitles(ctx context.Context, bvid string, cid int64, includeAI ...bool) ([]SubtitleTrack, error) {
 	allowAI := len(includeAI) == 0 || includeAI[0]
 	return c.MissingSubtitles(ctx, bvid, cid, allowAI, nil)
@@ -133,17 +135,17 @@ func ConvertSubtitleToVTTAndSRT(items []SubtitleBodyItem) (vtt []byte, srt []byt
 		if text == "" || math.IsNaN(it.From) || math.IsNaN(it.To) || math.IsInf(it.From, 0) || math.IsInf(it.To, 0) || it.To <= it.From || it.From < 0 {
 			continue
 		}
-		text = html.EscapeString(text)
 		// A blank line ends a cue. Preserve deliberate line breaks without letting
 		// subtitle text manufacture a new timestamp block.
 		text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
 		for strings.Contains(text, "\n\n") {
 			text = strings.ReplaceAll(text, "\n\n", "\n")
 		}
+		vttText := html.EscapeString(text)
 		vttBuf.WriteString(fmt.Sprintf("%s --> %s\n%s\n\n",
 			formatTimestamp(it.From, '.'),
 			formatTimestamp(it.To, '.'),
-			text,
+			vttText,
 		))
 		srtBuf.WriteString(fmt.Sprintf("%d\n%s --> %s\n%s\n\n",
 			idx,
@@ -171,12 +173,15 @@ func formatTimestamp(sec float64, millisSep byte) string {
 }
 
 func (c *Client) subtitleBytes(ctx context.Context, rawURL string) ([]byte, error) {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.User != nil || !c.isAllowedMediaURL(u) {
+	if err := c.ValidateMediaURL(rawURL); err != nil {
+		return nil, &SiteError{Kind: ErrKindBadRequest, Message: "字幕地址不受支持"}
+	}
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
 		return nil, &SiteError{Kind: ErrKindBadRequest, Message: "字幕地址不受支持"}
 	}
 	host := strings.ToLower(u.Hostname())
-	if !(c.allowLocalhost && (host == "127.0.0.1" || host == "localhost")) && host != "hdslb.com" && !strings.HasSuffix(host, ".hdslb.com") {
+	if !(c.allowLocalhost && site.IsLoopbackHost(host)) && host != "hdslb.com" && !strings.HasSuffix(host, ".hdslb.com") {
 		return nil, &SiteError{Kind: ErrKindBadRequest, Message: "字幕地址不受支持"}
 	}
 	endAPI, err := c.beginAPI(ctx)
@@ -191,11 +196,13 @@ func (c *Client) subtitleBytes(ctx context.Context, rawURL string) ([]byte, erro
 	req.Header.Set("User-Agent", DefaultUserAgent)
 	resp, err := c.apiClient.Do(req)
 	if err != nil {
-		return nil, &SiteError{Kind: ErrKindNetwork, Message: "字幕下载失败"}
+		return nil, &SiteError{Kind: ErrKindNetwork, Message: "字幕下载失败", Err: site.UnwrapURLError(err)}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, classifyHTTPStatus(resp.StatusCode, "subtitle")
+		statusErr := classifyHTTPStatus(resp.StatusCode, "subtitle")
+		c.ReportAutomaticError(ctx, statusErr)
+		return nil, statusErr
 	}
 	const limit = 5 * 1024 * 1024
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))

@@ -72,36 +72,26 @@ func (a *App) localLiveLibraryItems() []library.ItemMetadata {
 		})
 		if err == nil {
 			a.liveLibItemsCache = items
-			a.liveLibItemsCacheRev = targetRev
 		}
+		// Cache errors too for this rev so steady 60 FPS frames don't hammer SQLite.
+		a.liveLibItemsCacheRev = targetRev
 	}
 	seen := make(map[string]bool, len(a.liveLibItemsCache)+len(a.LibraryItems))
 	var out []library.ItemMetadata
-	for _, it := range a.liveLibItemsCache {
-		if it.Kind != "live" {
-			continue
+	for _, src := range [][]library.ItemMetadata{a.liveLibItemsCache, a.LibraryItems} {
+		for _, it := range src {
+			if it.Kind != "live" {
+				continue
+			}
+			key := firstNonEmptyStrUI(it.ItemKey, it.ItemDir, it.RawID)
+			if key != "" && seen[key] {
+				continue
+			}
+			if key != "" {
+				seen[key] = true
+			}
+			out = append(out, it)
 		}
-		key := firstNonEmptyStrUI(it.ItemKey, it.ItemDir, it.RawID)
-		if key != "" && seen[key] {
-			continue
-		}
-		if key != "" {
-			seen[key] = true
-		}
-		out = append(out, it)
-	}
-	for _, it := range a.LibraryItems {
-		if it.Kind != "live" {
-			continue
-		}
-		key := firstNonEmptyStrUI(it.ItemKey, it.ItemDir, it.RawID)
-		if key != "" && seen[key] {
-			continue
-		}
-		if key != "" {
-			seen[key] = true
-		}
-		out = append(out, it)
 	}
 	return out
 }
@@ -172,8 +162,91 @@ func parseSessionRefTime(startedAt, endedAt, cachedAt string, pubTs int64, incid
 	return time.Time{}
 }
 
+func (a *App) liveSessionsFingerprint() uint64 {
+	h := newFNV64a()
+	fnvWriteInt64(h, int64(a.cacheStateRev))
+	fnvWriteInt64(h, int64(a.liveLibItemsCacheRev))
+	fnvWriteInt64(h, int64(len(a.liveLibItemsCache)))
+	fnvWriteInt64(h, int64(len(a.LibraryItems)))
+	fnvWriteInt64(h, int64(len(a.LiveRooms)))
+	for i := range a.LiveRooms {
+		r := &a.LiveRooms[i]
+		fnvWriteInt64(h, r.RoomID)
+		fnvWriteInt64(h, r.UID)
+		if r.Recording {
+			fnvWriteInt64(h, 1)
+		} else {
+			fnvWriteInt64(h, 0)
+		}
+		fnvWriteInt64(h, int64(r.RecordSegments))
+		fnvWriteInt64(h, r.RecordBytes)
+		fnvWriteInt64(h, int64(r.RecordDurationSec))
+		fnvWriteInt64(h, int64(len(r.Incidents)))
+		fnvWriteStr(h, r.RecordItemDir)
+		fnvWriteStr(h, r.Title)
+	}
+	fnvWriteInt64(h, int64(len(a.LiveAccounts)))
+	for i := range a.LiveAccounts {
+		st := &a.LiveAccounts[i]
+		if normalizeSiteIDUI(st.Site) != "douyin" {
+			continue
+		}
+		fnvWriteStr(h, st.UID)
+		fnvWriteStr(h, st.RoomID)
+		if st.Recording {
+			fnvWriteInt64(h, 1)
+		} else {
+			fnvWriteInt64(h, 0)
+		}
+		fnvWriteInt64(h, int64(st.RecordSegments))
+		fnvWriteInt64(h, st.RecordBytes)
+		fnvWriteInt64(h, int64(st.RecordDurationSec))
+		fnvWriteInt64(h, int64(len(st.Incidents)))
+		fnvWriteStr(h, st.RecordItemDir)
+		fnvWriteStr(h, st.Title)
+	}
+	for i := range a.LibraryItems {
+		it := &a.LibraryItems[i]
+		if it.Kind != "live" {
+			continue
+		}
+		fnvWriteStr(h, it.ItemKey)
+		fnvWriteStr(h, it.Status)
+		if it.Live != nil {
+			fnvWriteInt64(h, int64(len(it.Live.Incidents)))
+		}
+	}
+	return h.Sum64()
+}
+
+type liveSessionInput struct {
+	site        string
+	recKey      string
+	defaultKey  string
+	itemDir     string
+	uid         string
+	mid         int64
+	face        string
+	roomID      string
+	uname       string
+	title       string
+	qualSpec    string
+	recording   bool
+	durationSec int
+	totalBytes  int64
+	segments    int
+	incidents   []library.LiveIncident
+}
+
 func (a *App) collectLiveSessions() []liveIncidentSession {
+	// Ensure liveLibItemsCache is populated for current cacheStateRev before hashing.
 	libItems := a.localLiveLibraryItems()
+	fp := a.liveSessionsFingerprint()
+	st := a.fs()
+	if st.liveSessionsSet && st.liveSessionsHash == fp {
+		return st.liveSessions
+	}
+
 	matchedLibIdx := make(map[int]bool)
 
 	matchLibForState := func(siteID, roomID, uid, itemDir string, active bool, incs []library.LiveIncident) *library.ItemMetadata {
@@ -233,29 +306,24 @@ func (a *App) collectLiveSessions() []liveIncidentSession {
 	}
 
 	var sessions []liveIncidentSession
-
-	for _, room := range a.LiveRooms {
-		roomDec := strconv.FormatInt(room.RoomID, 10)
-		uidStr := strconv.FormatInt(room.UID, 10)
-		matched := matchLibForState("bilibili", roomDec, uidStr, room.RecordItemDir, room.Recording, room.Incidents)
-		if !room.Recording && matched == nil && len(room.Incidents) == 0 {
-			continue
+	appendFromInput := func(in liveSessionInput) {
+		matched := matchLibForState(in.site, in.roomID, in.uid, in.itemDir, in.recording, in.incidents)
+		if !in.recording && matched == nil && len(in.incidents) == 0 {
+			return
 		}
-		// If finished and already represented by a library item, let the library item loop build it
-		// (hydrating any in-memory incidents if the manifest had none).
-		if !room.Recording && matched != nil {
-			if matched.Live == nil && len(room.Incidents) > 0 {
-				matched.Live = &library.LiveRecordingInfo{Incidents: library.SanitizeLiveIncidents(room.Incidents)}
-			} else if matched.Live != nil && len(matched.Live.Incidents) == 0 && len(room.Incidents) > 0 {
-				matched.Live.Incidents = library.SanitizeLiveIncidents(room.Incidents)
+		if !in.recording && matched != nil {
+			if matched.Live == nil && len(in.incidents) > 0 {
+				matched.Live = &library.LiveRecordingInfo{Incidents: library.SanitizeLiveIncidents(in.incidents)}
+			} else if matched.Live != nil && len(matched.Live.Incidents) == 0 && len(in.incidents) > 0 {
+				matched.Live.Incidents = library.SanitizeLiveIncidents(in.incidents)
 			}
 			sessions = append(sessions, buildSessionFromLibraryItem(*matched))
-			continue
+			return
 		}
 
-		incs := library.SanitizeLiveIncidents(room.Incidents)
+		incs := library.SanitizeLiveIncidents(in.incidents)
 		startedAt := ""
-		key := fmt.Sprintf("bilibili:live:%d", room.RoomID)
+		key := in.defaultKey
 		if matched != nil {
 			if len(incs) == 0 && matched.Live != nil {
 				incs = library.SanitizeLiveIncidents(matched.Live.Incidents)
@@ -276,23 +344,47 @@ func (a *App) collectLiveSessions() []liveIncidentSession {
 		}
 		sessions = append(sessions, liveIncidentSession{
 			Key:         key,
-			RecKey:      fmt.Sprintf("bilibili:live:%d", room.RoomID),
-			ItemDir:     room.RecordItemDir,
-			Site:        "bilibili",
-			UID:         uidStr,
-			Mid:         room.UID,
-			RoomID:      roomDec,
-			Uname:       firstNonEmptyStrUI(room.Uname, fmt.Sprintf("UID %d", room.UID)),
-			Title:       firstNonEmptyStrUI(room.Title, "哔哩哔哩直播"),
-			QualSpec:    bilibili.FormatLiveQualitySpec(room.QualityName, room.Quality, room.Codec),
-			Recording:   room.Recording,
+			RecKey:      in.recKey,
+			ItemDir:     in.itemDir,
+			Site:        in.site,
+			UID:         in.uid,
+			Mid:         in.mid,
+			Face:        in.face,
+			RoomID:      in.roomID,
+			Uname:       in.uname,
+			Title:       in.title,
+			QualSpec:    in.qualSpec,
+			Recording:   in.recording,
 			StartedAt:   startedAt,
 			RefTime:     refTime,
-			DurationSec: int(room.RecordDurationSec),
-			TotalBytes:  room.RecordBytes,
-			Segments:    max(1, room.RecordSegments),
+			DurationSec: in.durationSec,
+			TotalBytes:  in.totalBytes,
+			Segments:    max(1, in.segments),
 			Incidents:   incs,
 			LibraryItem: matched,
+		})
+	}
+
+	for _, room := range a.LiveRooms {
+		roomDec := strconv.FormatInt(room.RoomID, 10)
+		uidStr := strconv.FormatInt(room.UID, 10)
+		recKey := fmt.Sprintf("bilibili:live:%d", room.RoomID)
+		appendFromInput(liveSessionInput{
+			site:        "bilibili",
+			recKey:      recKey,
+			defaultKey:  recKey,
+			itemDir:     room.RecordItemDir,
+			uid:         uidStr,
+			mid:         room.UID,
+			roomID:      roomDec,
+			uname:       firstNonEmptyStrUI(room.Uname, fmt.Sprintf("UID %d", room.UID)),
+			title:       firstNonEmptyStrUI(room.Title, "哔哩哔哩直播"),
+			qualSpec:    bilibili.FormatLiveQualitySpec(room.QualityName, room.Quality, room.Codec),
+			recording:   room.Recording,
+			durationSec: int(room.RecordDurationSec),
+			totalBytes:  room.RecordBytes,
+			segments:    room.RecordSegments,
+			incidents:   room.Incidents,
 		})
 	}
 
@@ -300,61 +392,23 @@ func (a *App) collectLiveSessions() []liveIncidentSession {
 		if normalizeSiteIDUI(acct.Site) != "douyin" {
 			continue
 		}
-		matched := matchLibForState("douyin", acct.RoomID, acct.UID, acct.RecordItemDir, acct.Recording, acct.Incidents)
-		if !acct.Recording && matched == nil && len(acct.Incidents) == 0 {
-			continue
-		}
-		if !acct.Recording && matched != nil {
-			if matched.Live == nil && len(acct.Incidents) > 0 {
-				matched.Live = &library.LiveRecordingInfo{Incidents: library.SanitizeLiveIncidents(acct.Incidents)}
-			} else if matched.Live != nil && len(matched.Live.Incidents) == 0 && len(acct.Incidents) > 0 {
-				matched.Live.Incidents = library.SanitizeLiveIncidents(acct.Incidents)
-			}
-			sessions = append(sessions, buildSessionFromLibraryItem(*matched))
-			continue
-		}
-
-		incs := library.SanitizeLiveIncidents(acct.Incidents)
 		recKey := firstNonEmptyStrUI(acct.RecordingKey, acct.AccountKey, acct.RoomID, acct.UID)
-		startedAt := ""
-		key := recKey
-		if matched != nil {
-			if len(incs) == 0 && matched.Live != nil {
-				incs = library.SanitizeLiveIncidents(matched.Live.Incidents)
-			}
-			if matched.Live != nil {
-				startedAt = matched.Live.StartedAt
-			}
-			if matched.ItemKey != "" {
-				key = matched.ItemKey
-			}
-		}
-		if startedAt == "" && len(incs) > 0 {
-			startedAt = incs[0].At
-		}
-		refTime := parseSessionRefTime(startedAt, "", "", 0, incs)
-		if refTime.IsZero() {
-			refTime = time.Now()
-		}
-		sessions = append(sessions, liveIncidentSession{
-			Key:         key,
-			RecKey:      recKey,
-			ItemDir:     acct.RecordItemDir,
-			Site:        "douyin",
-			UID:         acct.UID,
-			Face:        acct.Face,
-			RoomID:      acct.RoomID,
-			Uname:       firstNonEmptyStrUI(acct.Uname, acct.UID, "抖音主播"),
-			Title:       firstNonEmptyStrUI(acct.Title, "抖音直播"),
-			QualSpec:    formatLiveAccountQualitySpec(acct),
-			Recording:   acct.Recording,
-			StartedAt:   startedAt,
-			RefTime:     refTime,
-			DurationSec: int(acct.RecordDurationSec),
-			TotalBytes:  acct.RecordBytes,
-			Segments:    max(1, acct.RecordSegments),
-			Incidents:   incs,
-			LibraryItem: matched,
+		appendFromInput(liveSessionInput{
+			site:        "douyin",
+			recKey:      recKey,
+			defaultKey:  recKey,
+			itemDir:     acct.RecordItemDir,
+			uid:         acct.UID,
+			face:        acct.Face,
+			roomID:      acct.RoomID,
+			uname:       firstNonEmptyStrUI(acct.Uname, acct.UID, "抖音主播"),
+			title:       firstNonEmptyStrUI(acct.Title, "抖音直播"),
+			qualSpec:    formatLiveAccountQualitySpec(acct),
+			recording:   acct.Recording,
+			durationSec: int(acct.RecordDurationSec),
+			totalBytes:  acct.RecordBytes,
+			segments:    acct.RecordSegments,
+			incidents:   acct.Incidents,
 		})
 	}
 
@@ -374,6 +428,10 @@ func (a *App) collectLiveSessions() []liveIncidentSession {
 		}
 		return sessions[i].Key > sessions[j].Key
 	})
+
+	st.liveSessionsHash = fp
+	st.liveSessions = sessions
+	st.liveSessionsSet = true
 	return sessions
 }
 
@@ -388,11 +446,7 @@ func buildSessionFromLibraryItem(it library.ItemMetadata) liveIncidentSession {
 		roomID = liveInfoRoomIDString(it.Live)
 		segCount = len(it.Live.Segments)
 		incs = library.SanitizeLiveIncidents(it.Live.Incidents)
-		if siteID == "bilibili" {
-			qualSpec = bilibili.FormatLiveQualitySpec(it.Live.QualityName, it.Live.Quality, it.Live.Codec)
-		} else {
-			qualSpec = firstNonEmptyStrUI(it.Live.QualityName, strings.ToUpper(it.Live.Codec))
-		}
+		qualSpec = formatLiveRecordingSpec(it.Live, "")
 	}
 	if segCount <= 0 {
 		for _, m := range it.Media {
@@ -533,14 +587,10 @@ func (a *App) renderRecentFinishedLiveSection(c *ui.Context, activeRows []active
 				ClipX().
 				Children(func() {
 					ui.Row(c).Grow(1).Gap(10).AlignItems(ui.Center).ClipX().Children(func() {
-						if sess.Site == "bilibili" && sess.Mid > 0 {
-							a.renderAvatar(c, sess.Uname, sess.Mid, 36, false, "", nil)
-						} else {
-							a.renderAccountAvatar(c, sess.Site, sess.Uname, sess.UID, sess.Mid, 36, false, "", nil, sess.Face)
-						}
+						a.renderAccountAvatar(c, sess.Site, sess.Uname, sess.UID, sess.Mid, 36, false, "", nil, sess.Face)
 						ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
 							ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-								ui.Text(c, sess.Uname+" · "+sess.Title).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								ui.Text(c, sess.Uname+" · "+sess.Title).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
 								renderSiteSmallBadgeWithDot(c, sess.Site, "最近录制站点："+sess.Key)
 								if sess.QualSpec != "" {
 									ui.Text(c, "· "+sess.QualSpec).Shrink(0).FontSize(12).TextColor(ColorTextMuted).SingleLine()
@@ -595,14 +645,15 @@ func (a *App) dismissedLiveSessionKeys() map[string]bool {
 }
 
 func (a *App) dismissLiveSessions(keys ...string) {
-	dismissed := a.dismissedLiveSessionKeys()
 	now := time.Now().UTC().Format(time.RFC3339)
 	var add []string
 	for _, k := range keys {
 		if k = strings.TrimSpace(k); k != "" {
-			dismissed[k] = true
 			add = append(add, k)
 		}
+	}
+	if len(add) == 0 {
+		return
 	}
 	if _, err := a.backend.MutateUIState(func(st *uistate.State) {
 		if st.DismissedLiveSessions == nil {
@@ -613,6 +664,11 @@ func (a *App) dismissLiveSessions(keys ...string) {
 		}
 	}); err != nil {
 		a.showError(fmt.Errorf("保存任务列表失败：%w", err))
+		return
+	}
+	dismissed := a.dismissedLiveSessionKeys()
+	for _, k := range add {
+		dismissed[k] = true
 	}
 }
 
@@ -630,8 +686,6 @@ func (a *App) clearLiveSessionIncidents(sess liveIncidentSession) {
 	}
 	a.liveLibItemsCacheRev = 0
 	a.cacheStateRev++
-	a.LiveRooms = a.backend.ListLiveRooms()
-	a.LiveAccounts = a.backend.ListLiveAccounts()
 	a.RefreshData()
 }
 
@@ -651,16 +705,22 @@ func matchesIncidentSessionFocus(sess liveIncidentSession, focus string) bool {
 
 func (a *App) renderTasksIncidentsView(c *ui.Context) {
 	allSessions := a.collectLiveSessions()
-	var sessions []liveIncidentSession
+	cutoff := time.Now().Add(-recentLiveIncidentWindow)
+	var recentSessions, olderSessions []liveIncidentSession
 	for _, sess := range allSessions {
-		if len(sess.Incidents) > 0 {
-			sessions = append(sessions, sess)
+		if len(sess.Incidents) == 0 {
+			continue
+		}
+		if sess.Recording || (!sess.RefTime.IsZero() && !sess.RefTime.Before(cutoff)) {
+			recentSessions = append(recentSessions, sess)
+		} else {
+			olderSessions = append(olderSessions, sess)
 		}
 	}
 
 	ui.Scroll(c).Grow(1).FillWidth().ClipX().Children(func() {
 		ui.Column(c).FillWidth().Padding(16).Gap(12).ClipX().Children(func() {
-			if len(sessions) == 0 {
+			if len(recentSessions) == 0 && len(olderSessions) == 0 {
 				ui.Column(c).Label("录制异常空状态").FillWidth().Padding(48, 16).AlignItems(ui.Center).Gap(8).Children(func() {
 					ui.Text(c, "最近没有录制异常").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 					ui.Text(c, "录制过程中如果遇到断流重连、分片丢失、下载过慢、空间不足或收尾转换失败，会按场次记录在这里。").
@@ -669,126 +729,135 @@ func (a *App) renderTasksIncidentsView(c *ui.Context) {
 				return
 			}
 
-			for _, item := range sessions {
-				sess := item
-				focused := matchesIncidentSessionFocus(sess, a.SelectedLiveIncidentKey)
-				borderCol := ColorBorder
-				if focused {
-					borderCol = ColorAccent
-				} else if sess.Recording {
-					borderCol = ColorLive
+			if len(recentSessions) == 0 && len(olderSessions) > 0 {
+				ui.Text(c, "最近 7 天没有录制异常").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+			}
+			for _, item := range recentSessions {
+				a.renderLiveIncidentSessionCard(c, item)
+			}
+			if len(olderSessions) > 0 {
+				ui.Text(c, fmt.Sprintf("更早的记录（7 天前，共 %d 场）", len(olderSessions))).
+					FontSize(12).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
+				for _, item := range olderSessions {
+					a.renderLiveIncidentSessionCard(c, item)
 				}
-
-				ui.Column(c).
-					Label("录制异常场次："+sess.Key).
-					FillWidth().
-					Padding(14).
-					Radius(16).
-					Background(ColorBgMain).
-					Border(1, borderCol).
-					Gap(10).
-					ClipX().
-					Children(func() {
-						ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(10).ClipX().Children(func() {
-							ui.Row(c).Grow(1).AlignItems(ui.Center).Gap(10).ClipX().Children(func() {
-								if sess.Site == "bilibili" && sess.Mid > 0 {
-									a.renderAvatar(c, sess.Uname, sess.Mid, 38, sess.Recording, "", nil)
-								} else {
-									a.renderAccountAvatar(c, sess.Site, sess.Uname, sess.UID, sess.Mid, 38, sess.Recording, "", nil, sess.Face)
-								}
-								ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
-									ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-										if sess.Recording {
-											ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(ColorLive).Children(func() {
-												ui.Text(c, "录制中").FontSize(11).FontWeight(600).TextColor(ColorWhite).SingleLine()
-											})
-										} else {
-											ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(ColorBgSecondary).Children(func() {
-												ui.Text(c, "已结束").FontSize(11).FontWeight(500).TextColor(ColorTextMuted).SingleLine()
-											})
-										}
-										ui.Text(c, sess.Uname+" · "+sess.Title).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-										renderSiteSmallBadgeWithDot(c, sess.Site, "异常场次站点："+sess.Key)
-										ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(ColorWarnBg).Children(func() {
-											ui.Text(c, fmt.Sprintf("⚠ %d 处异常", len(sess.Incidents))).
-												FontSize(11).FontWeight(600).TextColor(ColorLive).SingleLine()
-										})
-									})
-									var subParts []string
-									if st := formatIncidentSessionStart(sess.StartedAt, sess.RefTime); st != "" {
-										subParts = append(subParts, "开始时间 "+st)
-									}
-									if sess.RoomID != "" {
-										subParts = append(subParts, "直播间 "+sess.RoomID)
-									}
-									if sess.QualSpec != "" {
-										subParts = append(subParts, sess.QualSpec)
-									}
-									ui.Text(c, strings.Join(subParts, " · ")).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-								})
-							})
-
-							ui.Row(c).Shrink(0).AlignItems(ui.Center).Gap(8).Children(func() {
-								if sess.Recording {
-									if OutlinePillButton(c, "查看正在录制", "查看异常正在录制："+sess.Key).Clicked() {
-										a.selectTasksLive()
-									}
-								} else {
-									if sess.LibraryItem != nil {
-										if OutlinePillButton(c, "查看录像详情", "打开异常录像详情："+sess.Key).Clicked() {
-											a.openLiveIncidentLibraryItem(*sess.LibraryItem)
-										}
-									}
-									if DangerOutlinePillButton(c, "删除记录", "删除录制异常记录："+sess.Key).Clicked() {
-										a.clearLiveSessionIncidents(sess)
-									}
-								}
-							})
-						})
-
-						ui.Column(c).
-							FillWidth().
-							BorderWidth(1, 0, 0, 0).
-							BorderColor(ColorBorder).
-							Padding(8, 0, 0, 0).
-							Gap(6).
-							ClipX().
-							Children(func() {
-								for idx, rawInc := range sess.Incidents {
-									inc := rawInc
-									ui.Row(c).
-										Label(fmt.Sprintf("异常条目：%s#%d", sess.Key, idx)).
-										FillWidth().
-										Padding(6, 10).
-										Radius(10).
-										Background(ColorBgSecondary).
-										AlignItems(ui.Center).
-										Gap(10).
-										ClipX().
-										Children(func() {
-											clockText := firstNonEmptyStrUI(formatIncidentTimeText(inc.At), "--:--:--")
-											ui.Text(c, clockText).
-												FontSize(12).
-												FontWeight(500).
-												TextColor(ColorTextMuted).
-												Shrink(0).
-												SingleLine()
-											tagText, tagColor, tagBg := incidentKindBadgeStyle(inc)
-											ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(tagBg).Children(func() {
-												ui.Text(c, tagText).FontSize(11).FontWeight(600).TextColor(tagColor).SingleLine()
-											})
-											ui.Text(c, formatIncidentDetailText(inc)).
-												FontSize(13).
-												TextColor(ColorTextMain).
-												Grow(1).
-												MaxLines(2)
-										})
-								}
-							})
-					})
 			}
 		})
 	})
+}
+
+func (a *App) renderLiveIncidentSessionCard(c *ui.Context, sess liveIncidentSession) {
+	focused := matchesIncidentSessionFocus(sess, a.SelectedLiveIncidentKey)
+	borderCol := ColorBorder
+	if focused {
+		borderCol = ColorAccent
+	} else if sess.Recording {
+		borderCol = ColorLive
+	}
+
+	ui.Column(c).
+		Label("录制异常场次："+sess.Key).
+		FillWidth().
+		Padding(14).
+		Radius(16).
+		Background(ColorBgMain).
+		Border(1, borderCol).
+		Gap(10).
+		ClipX().
+		Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(10).ClipX().Children(func() {
+				ui.Row(c).Grow(1).AlignItems(ui.Center).Gap(10).ClipX().Children(func() {
+					a.renderAccountAvatar(c, sess.Site, sess.Uname, sess.UID, sess.Mid, 38, sess.Recording, "", nil, sess.Face)
+					ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
+						ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
+							if sess.Recording {
+								ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(ColorLive).Children(func() {
+									ui.Text(c, "录制中").FontSize(11).FontWeight(600).TextColor(ColorWhite).SingleLine()
+								})
+							} else {
+								ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(ColorBgSecondary).Children(func() {
+									ui.Text(c, "已结束").FontSize(11).FontWeight(500).TextColor(ColorTextMuted).SingleLine()
+								})
+							}
+							ui.Text(c, sess.Uname+" · "+sess.Title).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
+							renderSiteSmallBadgeWithDot(c, sess.Site, "异常场次站点："+sess.Key)
+							ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(ColorWarnBg).Children(func() {
+								ui.Text(c, fmt.Sprintf("⚠ %d 处异常", len(sess.Incidents))).
+									FontSize(11).FontWeight(600).TextColor(ColorLive).SingleLine()
+							})
+						})
+						var subParts []string
+						if st := formatIncidentSessionStart(sess.StartedAt, sess.RefTime); st != "" {
+							subParts = append(subParts, "开始时间 "+st)
+						}
+						if sess.RoomID != "" {
+							subParts = append(subParts, "直播间 "+sess.RoomID)
+						}
+						if sess.QualSpec != "" {
+							subParts = append(subParts, sess.QualSpec)
+						}
+						ui.Text(c, strings.Join(subParts, " · ")).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					})
+				})
+
+				ui.Row(c).Shrink(0).AlignItems(ui.Center).Gap(8).Children(func() {
+					if sess.Recording {
+						if OutlinePillButton(c, "查看正在录制", "查看异常正在录制："+sess.Key).Clicked() {
+							a.selectTasksLive()
+						}
+					} else {
+						if sess.LibraryItem != nil {
+							if OutlinePillButton(c, "查看录像详情", "打开异常录像详情："+sess.Key).Clicked() {
+								a.openLiveIncidentLibraryItem(*sess.LibraryItem)
+							}
+						}
+						if DangerOutlinePillButton(c, "删除记录", "删除录制异常记录："+sess.Key).Clicked() {
+							a.clearLiveSessionIncidents(sess)
+						}
+					}
+				})
+			})
+
+			ui.Column(c).
+				FillWidth().
+				BorderWidth(1, 0, 0, 0).
+				BorderColor(ColorBorder).
+				Padding(8, 0, 0, 0).
+				Gap(6).
+				ClipX().
+				Children(func() {
+					for idx, rawInc := range sess.Incidents {
+						inc := rawInc
+						ui.Row(c).
+							Label(fmt.Sprintf("异常条目：%s#%d", sess.Key, idx)).
+							FillWidth().
+							Padding(6, 10).
+							Radius(10).
+							Background(ColorBgSecondary).
+							AlignItems(ui.Center).
+							Gap(10).
+							ClipX().
+							Children(func() {
+								clockText := firstNonEmptyStrUI(formatIncidentTimeText(inc.At), "--:--:--")
+								ui.Text(c, clockText).
+									FontSize(12).
+									FontWeight(500).
+									TextColor(ColorTextMuted).
+									Shrink(0).
+									SingleLine()
+								tagText, tagColor, tagBg := incidentKindBadgeStyle(inc)
+								ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(tagBg).Children(func() {
+									ui.Text(c, tagText).FontSize(11).FontWeight(600).TextColor(tagColor).SingleLine()
+								})
+								ui.Text(c, formatIncidentDetailText(inc)).
+									FontSize(13).
+									TextColor(ColorTextMain).
+									Grow(1).
+									MaxLines(2)
+							})
+					}
+				})
+		})
 }
 
 func formatIncidentSessionStart(startedAt string, fallback time.Time) string {
@@ -804,20 +873,7 @@ func formatIncidentSessionStart(startedAt string, fallback time.Time) string {
 }
 
 func formatIncidentTimeText(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	t, err := time.Parse(time.RFC3339, raw)
-	if err != nil {
-		return raw
-	}
-	local := t.Local()
-	now := time.Now()
-	if local.Year() == now.Year() && local.YearDay() == now.YearDay() {
-		return local.Format("15:04:05")
-	}
-	return local.Format("01-02 15:04:05")
+	return formatRFC3339Clock(raw, true)
 }
 
 func formatIncidentSeconds(sec float64) string {
@@ -899,7 +955,7 @@ func formatIncidentDetailText(inc library.LiveIncident) string {
 		desc = firstNonEmptyStrUI(inc.Reason, "录制异常")
 	}
 	if inc.Count > 1 {
-		desc += fmt.Sprintf("（合并 %d 次）", inc.Count)
+		desc += fmt.Sprintf("（累计 %d 次）", inc.Count)
 	}
 	return desc
 }

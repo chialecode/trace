@@ -8,7 +8,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Hardware-accelerated decoding (F-043). A D3D11 device handed to the Source
+// Hardware-accelerated decoding. A D3D11 device handed to the Source
 // Reader through an IMFDXGIDeviceManager lets Media Foundation use the GPU
 // decoder and the GPU video processor for color conversion and scaling.
 // Every step is optional: any failure falls back to the software path.

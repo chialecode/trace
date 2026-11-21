@@ -1,4 +1,4 @@
-// Command release builds a release of TRACE (W5): from the commit that is
+// Command release builds a release of TRACE: from the commit that is
 // the latest of origin/main, it works out the version, runs tools/check,
 // builds and signs the release package, rehearses installing and updating
 // it under the ptest identity, and puts the files in dist/trace/.
@@ -210,7 +210,13 @@ func run(o options) (releaseResult, error) {
 		return res, err
 	}
 
-	notes, drafted, err := ensureChangelog(filepath.Join(o.root, changelogName), version, lastTag(line, tags), o.root)
+	var notes, draftedText string
+	var drafted bool
+	if o.allowDirty {
+		notes, draftedText, drafted, err = draftChangelog(filepath.Join(o.root, changelogName), version, lastTag(line, tags), o.root)
+	} else {
+		notes, drafted, err = ensureChangelog(filepath.Join(o.root, changelogName), version, lastTag(line, tags), o.root)
+	}
 	if err != nil {
 		return res, err
 	}
@@ -221,8 +227,8 @@ func run(o options) (releaseResult, error) {
 		}
 	}
 
-	// The notes of the GitHub Release (the publish job reads them).
-	if err := os.MkdirAll(filepath.Join(o.root, filepath.FromSlash(resultDir)), 0o755); err != nil {
+	// Clean stale artifacts/release/ files before writing this run's notes & receipts.
+	if err := cleanReleaseArtifactsDir(o.root); err != nil {
 		return res, err
 	}
 	if err := os.WriteFile(filepath.Join(o.root, filepath.FromSlash(resultDir), "notes.md"), []byte(strings.TrimSpace(notes)+"\n"), 0o644); err != nil {
@@ -248,9 +254,21 @@ func run(o options) (releaseResult, error) {
 		zero := 0
 		deltas = &zero
 	}
+	cfgChangelog := changelogName
+	if o.allowDirty && drafted {
+		tmpChangelog := filepath.Join(staging, changelogName)
+		if err := os.WriteFile(tmpChangelog, []byte(draftedText), 0o644); err != nil {
+			return res, err
+		}
+		relChangelog, err := filepath.Rel(o.root, tmpChangelog)
+		if err != nil {
+			return res, err
+		}
+		cfgChangelog = filepath.ToSlash(relChangelog)
+	}
 	cfgUpdates := *up
 	cfgUpdates.Deltas = deltas
-	cfgUpdates.Changelog = filepath.Join(o.root, changelogName)
+	cfgUpdates.Changelog = cfgChangelog
 	logf("==> [release] building and signing TRACE %s...", version)
 	builtDir, files, err := buildChannel(o.root, o.build, base, info, &cfgUpdates, key, staging)
 	if err != nil {
@@ -269,6 +287,13 @@ func run(o options) (releaseResult, error) {
 
 	logf("==> [release] rehearsing install, update and uninstall under the ptest identity...")
 	rr, err := o.rehearse(rehearsalInput{Root: o.root, Base: base, Version: version, Commit: commit, Build: o.build, Logf: logf})
+	if err == nil && !rr.OthersSame {
+		rr.Status = "failed"
+		if rr.Reason == "" {
+			rr.Reason = "release or development installation changed during rehearsal"
+		}
+		err = errors.New(rr.Reason)
+	}
 	if werr := writeJSON(filepath.Join(o.root, filepath.FromSlash(resultDir), "rehearsal.json"), rr); werr != nil && err == nil {
 		err = werr
 	}
@@ -345,7 +370,7 @@ func writeNotices(root, dir string, info build.Info) error {
 	return os.WriteFile(filepath.Join(dir, "VERSION.txt"), []byte(build.VersionFile(info)), 0o644)
 }
 
-// checkReleaseFiles checks that a release has what W5 lists.
+// checkReleaseFiles checks that a release has every expected artifact.
 func checkReleaseFiles(dir, version string) error {
 	want := []string{
 		build.SetupName(build.ChannelStable, version), "trace-" + version + "-windows-amd64.tar.gz",
@@ -483,6 +508,50 @@ func runToolsCheck(root string) error {
 		return fmt.Errorf("%w\n%s", err, tail)
 	}
 	return nil
+}
+
+// cleanReleaseArtifactsDir empties <root>/artifacts/release/ safely before a
+// new run, refusing symlinks or anything outside <root>/artifacts/.
+func cleanReleaseArtifactsDir(root string) error {
+	artifactsRoot, err := filepath.Abs(filepath.Join(root, "artifacts"))
+	if err != nil {
+		return err
+	}
+	outDir, err := filepath.Abs(filepath.Join(root, filepath.FromSlash(resultDir)))
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(artifactsRoot, outDir)
+	if err != nil || rel != "release" {
+		return fmt.Errorf("refusing to clean unexpected release artifacts directory %s", outDir)
+	}
+	for _, p := range []string{artifactsRoot, outDir} {
+		st, err := os.Lstat(p)
+		if os.IsNotExist(err) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if st.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			return fmt.Errorf("refusing to clean symlinked release artifacts directory %s", p)
+		}
+		if !st.IsDir() {
+			return fmt.Errorf("release artifacts path %s is not a directory", p)
+		}
+	}
+	if _, err := os.Lstat(outDir); err == nil {
+		entries, err := os.ReadDir(outDir)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := os.RemoveAll(filepath.Join(outDir, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return os.MkdirAll(outDir, 0o755)
 }
 
 func writeJSON(path string, v any) error {

@@ -56,10 +56,11 @@ func (w *qrBitmapWriter) Write(matrix qrcode.Matrix) error {
 	const border = 4
 	w.image = image.NewRGBA(image.Rect(0, 0, (matrix.Width()+2*border)*w.scale, (matrix.Height()+2*border)*w.scale))
 	draw.Draw(w.image, w.image.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
+	black := image.NewUniform(color.Black)
 	matrix.Iterate(qrcode.IterDirection_ROW, func(x, y int, value qrcode.QRValue) {
 		if value.IsSet() {
 			r := image.Rect((x+border)*w.scale, (y+border)*w.scale, (x+border+1)*w.scale, (y+border+1)*w.scale)
-			draw.Draw(w.image, r, image.NewUniform(color.Black), image.Point{}, draw.Src)
+			draw.Draw(w.image, r, black, image.Point{}, draw.Src)
 		}
 	})
 	return nil

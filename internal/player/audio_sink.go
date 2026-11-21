@@ -8,7 +8,7 @@ import (
 )
 
 // AudioSink abstracts audio playback so automated tests, prototypes, uishots, and smoke
-// use NullAudioSink without ever opening a hardware audio device or emitting sound (§6.1).
+// use NullAudioSink without ever opening a hardware audio device or emitting sound.
 type AudioSink interface {
 	Open(dec audio.Decoder) error
 	Play()

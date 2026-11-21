@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -131,5 +134,184 @@ func TestFormatFocusFailure(t *testing.T) {
 	})
 	if withoutDetail != "traySnap.StealFocusDetected = true (fgPid=99)" {
 		t.Fatalf("unexpected formatted focus failure without detail: %q", withoutDetail)
+	}
+}
+
+func makeDirLink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err == nil {
+		return
+	} else if runtime.GOOS != "windows" {
+		t.Fatalf("os.Symlink(%s, %s): %v", target, link, err)
+	}
+	// On non-elevated Windows without Developer Mode, fall back to an NTFS
+	// directory junction (which os.Lstat also reports as a symlink/reparse point).
+	out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput()
+	if err != nil {
+		t.Fatalf("mklink /J %s %s: %v\n%s", link, target, err, out)
+	}
+}
+
+func TestCleanArtifactsOutDir(t *testing.T) {
+	repo := t.TempDir()
+	artifactsRoot := filepath.Join(repo, "artifacts")
+	smokeDir := filepath.Join(artifactsRoot, "smoke")
+	siblingDir := filepath.Join(artifactsRoot, "uishots")
+	distDir := filepath.Join(repo, "dist")
+
+	for _, d := range []string{smokeDir, siblingDir, distDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite := func(path, data string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite(filepath.Join(repo, "keep-root.txt"), "root")
+	mustWrite(filepath.Join(distDir, "keep-dist.txt"), "dist")
+	mustWrite(filepath.Join(siblingDir, "keep-sibling.txt"), "sibling")
+	mustWrite(filepath.Join(smokeDir, "stale.json"), "stale")
+
+	t.Run("valid category subdir cleaned without touching sibling", func(t *testing.T) {
+		if err := cleanArtifactsOutDirIn(artifactsRoot, smokeDir); err != nil {
+			t.Fatalf("cleanArtifactsOutDirIn valid dir: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(smokeDir, "stale.json")); !os.IsNotExist(err) {
+			t.Fatalf("stale file not removed: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(siblingDir, "keep-sibling.txt")); err != nil {
+			t.Fatalf("sibling artifacts file touched: %v", err)
+		}
+	})
+
+	t.Run("refuses repo root (-out .)", func(t *testing.T) {
+		if err := cleanArtifactsOutDirIn(artifactsRoot, repo); err == nil {
+			t.Fatal("expected error for repo root")
+		}
+		if _, err := os.Stat(filepath.Join(repo, "keep-root.txt")); err != nil {
+			t.Fatalf("repo root file deleted: %v", err)
+		}
+	})
+
+	t.Run("refuses dist (-out dist)", func(t *testing.T) {
+		if err := cleanArtifactsOutDirIn(artifactsRoot, distDir); err == nil {
+			t.Fatal("expected error for dist")
+		}
+		if _, err := os.Stat(filepath.Join(distDir, "keep-dist.txt")); err != nil {
+			t.Fatalf("dist file deleted: %v", err)
+		}
+	})
+
+	t.Run("refuses artifacts root itself", func(t *testing.T) {
+		if err := cleanArtifactsOutDirIn(artifactsRoot, artifactsRoot); err == nil {
+			t.Fatal("expected error for artifacts root itself")
+		}
+		if _, err := os.Stat(filepath.Join(siblingDir, "keep-sibling.txt")); err != nil {
+			t.Fatalf("sibling artifacts file deleted: %v", err)
+		}
+	})
+
+	t.Run("refuses traversal outside artifacts", func(t *testing.T) {
+		if err := cleanArtifactsOutDirIn(artifactsRoot, filepath.Join(artifactsRoot, "..", "dist")); err == nil {
+			t.Fatal("expected error for path traversal")
+		}
+		if _, err := os.Stat(filepath.Join(distDir, "keep-dist.txt")); err != nil {
+			t.Fatalf("dist file deleted via traversal: %v", err)
+		}
+	})
+
+	t.Run("refuses symlinked output dir and symlinked ancestor", func(t *testing.T) {
+		outside := filepath.Join(t.TempDir(), "victim")
+		nested := filepath.Join(outside, "sub")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(filepath.Join(outside, "precious.txt"), "keep")
+		mustWrite(filepath.Join(nested, "precious-sub.txt"), "keep-sub")
+
+		linkOut := filepath.Join(artifactsRoot, "link-smoke")
+		makeDirLink(t, outside, linkOut)
+
+		if err := cleanArtifactsOutDirIn(artifactsRoot, linkOut); err == nil {
+			t.Fatal("expected error for symlinked output dir")
+		}
+		if err := cleanArtifactsOutDirIn(artifactsRoot, filepath.Join(linkOut, "sub")); err == nil {
+			t.Fatal("expected error for nested path under symlinked ancestor")
+		}
+		if _, err := os.Stat(filepath.Join(outside, "precious.txt")); err != nil {
+			t.Fatalf("symlink target deleted: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(nested, "precious-sub.txt")); err != nil {
+			t.Fatalf("nested symlink target deleted: %v", err)
+		}
+	})
+
+	t.Run("refuses symlinked artifacts root", func(t *testing.T) {
+		outside := filepath.Join(t.TempDir(), "outside-artifacts")
+		sub := filepath.Join(outside, "smoke")
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(filepath.Join(sub, "keep.txt"), "keep")
+		linkRoot := filepath.Join(t.TempDir(), "artifacts-link")
+		makeDirLink(t, outside, linkRoot)
+
+		if err := cleanArtifactsOutDirIn(linkRoot, filepath.Join(linkRoot, "smoke")); err == nil {
+			t.Fatal("expected error for symlinked artifacts root")
+		}
+		if _, err := os.Stat(filepath.Join(sub, "keep.txt")); err != nil {
+			t.Fatalf("target under symlinked root deleted: %v", err)
+		}
+	})
+}
+
+func TestBuildSmokeChildEnvForcesQuiet(t *testing.T) {
+	inherited := []string{"PATH=/usr/bin", "TRACE_QUIET=0", "trace_quiet=false", "OTHER=ok"}
+	env := buildSmokeChildEnv(inherited, "l", "a", "u", "d", "t", "s")
+	var quietVals []string
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.EqualFold(k, "TRACE_QUIET") {
+			quietVals = append(quietVals, v)
+		}
+	}
+	if len(quietVals) != 1 || quietVals[0] != "1" {
+		t.Fatalf("TRACE_QUIET values = %v, want [1]", quietVals)
+	}
+}
+
+func TestFormatSmokeFailureIncludesEarlyError(t *testing.T) {
+	earlyErr := errors.New("missing trace.exe in /pkg")
+	msg := formatSmokeFailure(SmokeReceipt{DurationMs: 12}, earlyErr)
+	if !strings.Contains(msg, "missing trace.exe") || strings.Contains(msg, "[]") {
+		t.Fatalf("unexpected failure message: %q", msg)
+	}
+}
+
+func TestHasTokenLeakChecksRestartOutput(t *testing.T) {
+	dir := t.TempDir()
+	tok := "secret-smoke-token-1234"
+	if hasTokenLeak(dir, tok, "first run ok", "restart ok") {
+		t.Fatal("unexpected leak reported on clean outputs")
+	}
+	if !hasTokenLeak(dir, tok, "first run ok", "restarted with "+tok) {
+		t.Fatal("expected leak in restart output to be detected")
+	}
+}
+
+func TestWriteServerReceiptInChecksBounds(t *testing.T) {
+	repo := t.TempDir()
+	allowed := filepath.Join(repo, "artifacts")
+	if err := writeServerReceiptIn(allowed, filepath.Join(repo, "dist"), ServerSmokeReceipt{Passed: true}); err == nil {
+		t.Fatal("expected error writing server receipt outside artifacts")
+	}
+	out := filepath.Join(allowed, "smoke-server")
+	if err := writeServerReceiptIn(allowed, out, ServerSmokeReceipt{Passed: true}); err != nil {
+		t.Fatalf("writeServerReceiptIn valid dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "smoke.json")); err != nil {
+		t.Fatalf("smoke.json not written: %v", err)
 	}
 }

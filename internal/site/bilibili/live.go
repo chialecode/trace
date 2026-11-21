@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/chialecode/trace/internal/site"
 )
 
 // MaxLiveBatchUIDs is the maximum number of UIDs queried per get_status_info_by_uids call.
@@ -74,18 +76,10 @@ func LiveQualityFallbackName(qn int) string {
 
 // FormatLiveQualitySpec formats quality name (or qn fallback) and codec into "原画 · AVC".
 func FormatLiveQualitySpec(qualityName string, quality int, codec string) string {
-	qName := strings.TrimSpace(qualityName)
-	if qName == "" && quality > 0 {
-		qName = LiveQualityFallbackName(quality)
+	if strings.TrimSpace(qualityName) == "" && quality > 0 {
+		qualityName = LiveQualityFallbackName(quality)
 	}
-	cName := strings.ToUpper(strings.TrimSpace(codec))
-	if qName != "" && cName != "" {
-		return qName + " · " + cName
-	}
-	if qName != "" {
-		return qName
-	}
-	return cName
+	return site.FormatLiveQualitySpec(qualityName, quality, codec)
 }
 
 // RoomInit resolves a room_id or short_id via /room/v1/Room/room_init.
@@ -121,14 +115,14 @@ func (c *Client) RoomInit(ctx context.Context, roomOrShortID int64) (LiveRoomIni
 		return LiveRoomInit{}, &SiteError{
 			Kind:     ErrKindBlocked,
 			Code:     203,
-			Endpoint: fullURL,
+			Endpoint: site.SanitizeEndpoint(fullURL),
 			Message:  "该直播间已加密或封禁，不支持打开或录制",
 		}
 	}
 	if raw.RoomID <= 0 {
 		return LiveRoomInit{}, &SiteError{
 			Kind:     ErrKindUnavailable,
-			Endpoint: fullURL,
+			Endpoint: site.SanitizeEndpoint(fullURL),
 			Message:  "未找到对应的直播间",
 		}
 	}
@@ -296,7 +290,7 @@ func (c *Client) LiveRoomPlayInfo(ctx context.Context, roomID int64, codecOrder 
 		return LivePlaySelection{}, &SiteError{
 			Kind:     ErrKindBlocked,
 			Code:     203,
-			Endpoint: fullURL,
+			Endpoint: site.SanitizeEndpoint(fullURL),
 			Message:  "该直播间已加密 (203)，不支持打开或录制",
 		}
 	}
@@ -398,7 +392,7 @@ func (c *Client) LiveRoomPlayInfo(ctx context.Context, roomID int64, codecOrder 
 	if len(candidates) == 0 {
 		return LivePlaySelection{}, &SiteError{
 			Kind:     ErrKindUnavailable,
-			Endpoint: fullURL,
+			Endpoint: site.SanitizeEndpoint(fullURL),
 			Message:  "这个直播间现在没有提供可录制的流格式",
 		}
 	}

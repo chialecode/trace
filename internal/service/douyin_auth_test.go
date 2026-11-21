@@ -497,8 +497,19 @@ func TestPerSiteExpiryAndLogoutIsolation(t *testing.T) {
 	if err != nil || !ok || biliDetail.Task.Status != "queued" {
 		t.Fatalf("expected dl-bili-active to remain queued, got %+v (ok=%v err=%v)", biliDetail.Task, ok, err)
 	}
-	if activeTasks, activeRecs := h.backend.ActiveWork(); activeTasks != 1 || activeRecs != 1 {
-		t.Fatalf("expected ActiveWork=(1, 1) after Douyin expiry (Bilibili task+recording untouched), got (%d, %d)", activeTasks, activeRecs)
+	// Auth expiry stops live recordings asynchronously to avoid self-deadlock
+	// when triggered from a live recording or site-client lock; wait briefly for StopForSite.
+	var activeTasks, activeRecs int
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		activeTasks, activeRecs = h.backend.ActiveWork()
+		if activeTasks == 1 && activeRecs == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected ActiveWork=(1, 1) after Douyin expiry (Bilibili task+recording untouched), got (%d, %d)", activeTasks, activeRecs)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	for _, acct := range h.backend.ListLiveAccounts() {
 		if acct.Site == "douyin" && acct.Recording {

@@ -46,7 +46,11 @@ func (m *Manager) CheckPlan() []AccountCheckPlan {
 	cfg := m.subSettings
 	now := m.nowFunc()
 	next := m.nextRunAt
-	subs, err := m.listLocked()
+	if !cfg.Enabled {
+		next = time.Time{}
+	}
+	subs, err := m.listSubsOnlyLocked()
+	accStates, _ := m.listAccountStatesLocked()
 	type entry struct {
 		plan AccountCheckPlan
 		last string
@@ -56,7 +60,7 @@ func (m *Manager) CheckPlan() []AccountCheckPlan {
 		for _, sub := range subs {
 			for _, acc := range sub.Accounts {
 				siteName := normalizeSchedulerSite(acc.Site)
-				st, _, _ := m.getAccountStateLocked(siteName, acc.UID)
+				st := accStates[siteName+":"+acc.UID]
 				p := AccountCheckPlan{
 					SubID: sub.ID, SubName: sub.Name, Site: siteName, UID: acc.UID, Name: acc.Name,
 					AutoRecord:    sub.Rules.AutoRecord || sub.LiveAutoRecord,
@@ -72,7 +76,9 @@ func (m *Manager) CheckPlan() []AccountCheckPlan {
 	}
 	m.mu.Unlock()
 
-	if !next.After(now) {
+	if !cfg.Enabled {
+		next = time.Time{}
+	} else if !next.After(now) {
 		var ok bool
 		if next, ok = NextRunTime(cfg, now); !ok {
 			next = time.Time{}
@@ -116,7 +122,12 @@ func (m *Manager) CheckPlan() []AccountCheckPlan {
 		first := 0
 		inBackoff, until := m.IsSiteInBackoff(siteName)
 		if inBackoff {
-			for t := runAt(first); !t.IsZero() && t.Before(until); t = runAt(first) {
+			const maxBackoffAdvance = 10000
+			for steps := 0; steps < maxBackoffAdvance; steps++ {
+				t := runAt(first)
+				if t.IsZero() || !t.Before(until) {
+					break
+				}
 				first++
 			}
 		}

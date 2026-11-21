@@ -198,6 +198,17 @@ func TestUpdateSourceCorruptManifestRejected(t *testing.T) {
 	if !errors.Is(err, ErrRejected) {
 		t.Fatalf("manifest with a non-version: %v", err)
 	}
+	for _, badVer := range []string{"-1.0.0", "+1.2.3", "1.-2.3"} {
+		r.manifest = []byte(`{"version":"` + badVer + `","url":"https://x/y","size":1,"signature":"x"}`)
+		if _, err := r.source("0.1.1").Manifest(context.Background(), false); !errors.Is(err, ErrRejected) {
+			t.Fatalf("signed version %q accepted: %v", badVer, err)
+		}
+	}
+	r.publish(t, "0.1.2", []byte("archive of 0.1.2"), nil)
+	r.manifest = append(r.manifest, []byte(` {"extra":true}`)...)
+	if _, err := r.source("0.1.1").Manifest(context.Background(), false); !errors.Is(err, ErrRejected) {
+		t.Fatalf("trailing JSON accepted: %v", err)
+	}
 }
 
 func TestUpdateSourceNotNewerIsNoUpdate(t *testing.T) {

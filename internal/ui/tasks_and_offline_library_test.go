@@ -15,6 +15,7 @@ import (
 	"github.com/chialecode/trace/internal/download"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/live"
+	"github.com/chialecode/trace/internal/player"
 	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
@@ -289,7 +290,7 @@ func TestLibraryHasNoSortToggleAndIgnoresLegacyCachedAtSort(t *testing.T) {
 		Media: []library.MediaFile{{Role: "video", Path: "video.mp4"}},
 	})
 
-	app2 := NewApp(raw, nil)
+	app2 := NewApp(raw, player.NewNullAudioSink())
 	defer app2.Close()
 	app2.LibrarySort = "cached_at" // legacy in-memory value must also be ignored
 	app2.Navigate(RouteLibrary)
@@ -557,6 +558,36 @@ func TestTasksBadgeCountsOnlyActiveDownloadTasks(t *testing.T) {
 	}
 }
 
+// The live manager's room list also carries Douyin states. A Douyin recording
+// must show once, as Douyin, and never again as a Bilibili row.
+func TestDouyinRoomStateNotShownAsBilibiliRecording(t *testing.T) {
+	app, _, cleanup := newTestUIApp(t)
+	defer cleanup()
+
+	managerRooms := []live.RoomState{
+		{Site: "bilibili", RoomID: 101, UID: 20001, Uname: "B站主播", Recording: true},
+		{Site: "douyin", RoomIDStr: "7300000000000000001", AccountUID: "sec_1", Uname: "抖音主播", Recording: true},
+	}
+	app.LiveRooms = bilibiliLiveRooms(managerRooms)
+	app.mergeLiveRooms(managerRooms)
+	app.LiveAccounts = []service.LiveAccountState{{Site: "douyin", UID: "sec_1", Uname: "抖音主播", RoomID: "7300000000000000001", Recording: true}}
+
+	if len(app.LiveRooms) != 1 || app.LiveRooms[0].RoomID != 101 {
+		t.Fatalf("LiveRooms should keep only the Bilibili room, got %+v", app.LiveRooms)
+	}
+	rows := app.collectActiveLiveRows()
+	var sites []string
+	for _, r := range rows {
+		sites = append(sites, r.Site+":"+r.Uname)
+	}
+	if strings.Join(sites, ",") != "bilibili:B站主播,douyin:抖音主播" {
+		t.Fatalf("active live rows = %v, want one Bilibili and one Douyin row", sites)
+	}
+	if got := app.activeLiveRecordingCount(); got != 2 {
+		t.Fatalf("activeLiveRecordingCount() = %d, want 2", got)
+	}
+}
+
 type tasksQueueAndLiveStub struct {
 	*spyOfflineLibraryBackend
 	queue      []service.CacheQueueTask
@@ -648,8 +679,8 @@ func (s *tasksQueueAndLiveStub) StopLiveRecording(roomID int64) (live.RoomState,
 	return s.spyOfflineLibraryBackend.StopLiveRecording(roomID)
 }
 
-// Tasks page sidebar offers four uniform entries (Download Tasks, Cache Queue,
-// Live Recordings, Incidents, DEC-057); the Cache Queue page lists one card per
+// Tasks page sidebar offers uniform entries (Download Tasks, Cache Queue,
+// Live Recordings, Incidents, Check Plan, Transfers; DEC-057); the Cache Queue page lists one card per
 // queue that opens to its recent items, pause/resume/cancel/remove work without
 // deleting cached items, and narrow windows (<1000px) fall back to the top
 // segmented selector without overflow.

@@ -1,12 +1,9 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +14,8 @@ import (
 	"github.com/chialecode/trace/internal/appdirs"
 	"github.com/chialecode/trace/internal/sitecheck"
 	"github.com/chialecode/trace/internal/storage"
+	"github.com/chialecode/trace/internal/upload/fakerclone"
+	"github.com/chialecode/trace/tools/internal/build"
 )
 
 type RuntimeStateSnapshot struct {
@@ -75,26 +74,62 @@ type SmokeReceipt struct {
 }
 
 func main() {
+	// Run as rclone for the server smoke's uploads (before flag parsing:
+	// the arguments are rclone's).
+	if fakerclone.Enabled() {
+		os.Exit(fakerclone.Main(os.Args[1:]))
+	}
 	appdirs.LowerCurrentProcessPriority()
 
 	pkgFlag := flag.String("pkg", "dist/trace-dev", "packaged application directory")
 	outFlag := flag.String("out", "artifacts/smoke", "output directory for smoke receipt")
+	serverFlag := flag.Bool("server", false, "smoke trace-server instead of the desktop package (receipt in artifacts/smoke-server)")
+	serverBin := flag.String("server-bin", "", "trace-server program to smoke (built from ./cmd/trace-server when empty)")
 	flag.Parse()
+	if *serverFlag {
+		out := *outFlag
+		if out == "artifacts/smoke" {
+			out = "artifacts/smoke-server"
+		}
+		os.Exit(runServerSmokeMain(*serverBin, out))
+	}
+
+	if _, err := validateArtifactsOutDir(defaultArtifactsRoot(), *outFlag); err != nil {
+		fmt.Fprintf(os.Stderr, "smoke FAILED: %v\n", err)
+		os.Exit(1)
+	}
 
 	started := time.Now()
 	receipt, err := runSmoke(*pkgFlag, *outFlag)
 	receipt.DurationMs = time.Since(started).Milliseconds()
+	if err != nil {
+		receipt.Passed = false
+		if len(receipt.Failures) == 0 {
+			receipt.Failures = append(receipt.Failures, err.Error())
+		}
+	}
 
 	if writeErr := writeReceipt(*outFlag, receipt); writeErr != nil {
 		fmt.Fprintf(os.Stderr, "smoke: write receipt error: %v\n", writeErr)
 		os.Exit(1)
 	}
 	if err != nil || !receipt.Passed {
-		fmt.Fprintf(os.Stderr, "smoke FAILED (%dms): %v\n", receipt.DurationMs, receipt.Failures)
+		fmt.Fprintf(os.Stderr, "%s\n", formatSmokeFailure(receipt, err))
 		os.Exit(1)
 	}
 	fmt.Printf("smoke PASSED in %dms (quietMode=%s, trayPrivateWS=%.2f MiB, trayCommit=%.2f MiB, webview2=%d)\n",
 		receipt.DurationMs, receipt.QuietMode, float64(receipt.TrayPrivateWorkingSet)/(1024*1024), float64(receipt.TrayPrivateCommitBytes)/(1024*1024), receipt.WebView2ProcessCount)
+}
+
+func formatSmokeFailure(receipt SmokeReceipt, err error) string {
+	switch {
+	case err != nil && (len(receipt.Failures) == 0 || (len(receipt.Failures) == 1 && receipt.Failures[0] == err.Error())):
+		return fmt.Sprintf("smoke FAILED (%dms): %v", receipt.DurationMs, err)
+	case err != nil:
+		return fmt.Sprintf("smoke FAILED (%dms): %v; failures: %v", receipt.DurationMs, err, receipt.Failures)
+	default:
+		return fmt.Sprintf("smoke FAILED (%dms): %v", receipt.DurationMs, receipt.Failures)
+	}
 }
 
 func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
@@ -120,7 +155,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 	if st, err := os.Stat(exePath); err != nil || st.IsDir() {
 		return receipt, fmt.Errorf("missing trace.exe in %s", absPkg)
 	}
-	if err := verifyPackageChecksums(absPkg); err != nil {
+	if _, err := build.VerifySums(absPkg, "SHA256SUMS.txt"); err != nil {
 		fail("checksum verification: %v", err)
 	} else {
 		receipt.ChecksumsVerified = true
@@ -154,32 +189,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 	}
 	receipt.TempSocketIsolated = true
 
-	quietEnv := os.Getenv("TRACE_QUIET")
-	if quietEnv == "" {
-		quietEnv = "1"
-	}
-
-	baseEnv := filterEnv(os.Environ(),
-		"LOCALAPPDATA", "APPDATA", "USERPROFILE", "HOME",
-		"TEMP", "TMP", "TMPDIR",
-		"TRACE_DATA_DIR", "TRACE_CACHE_DIR", "TRACE_DOCUMENTS_DIR",
-		"TRACE_QUIET", "TRACE_SMOKE_DIR",
-		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-	)
-	childEnv := append(baseEnv,
-		"LOCALAPPDATA="+localAppData,
-		"APPDATA="+appData,
-		"USERPROFILE="+userProfile,
-		"HOME="+userProfile,
-		"TRACE_DOCUMENTS_DIR="+docsDir,
-		"TEMP="+tempDir,
-		"TMP="+tempDir,
-		"TRACE_QUIET="+quietEnv,
-		"TRACE_SMOKE_DIR="+smokeCtrlDir,
-		"HTTP_PROXY=http://127.0.0.1:1",
-		"HTTPS_PROXY=http://127.0.0.1:1",
-		"NO_PROXY=127.0.0.1,localhost",
-	)
+	childEnv := buildSmokeChildEnv(os.Environ(), localAppData, appData, userProfile, docsDir, tempDir, smokeCtrlDir)
 
 	// 3. Start primary trace.exe in quiet mode
 	cmd := exec.Command(exePath)
@@ -189,9 +199,11 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 	if err := cmd.Start(); err != nil {
 		return receipt, fmt.Errorf("start trace.exe: %w", err)
 	}
+	waited := false
 	defer func() {
-		if cmd.Process != nil {
+		if cmd.Process != nil && !waited {
 			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
 		}
 	}()
 
@@ -214,12 +226,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 	if raw, err := os.ReadFile(filepath.Join(absPkg, "VERSION.txt")); err != nil {
 		fail("read VERSION.txt: %v", err)
 	} else {
-		fields := map[string]string{}
-		for _, line := range strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n") {
-			if k, v, ok := strings.Cut(line, "="); ok {
-				fields[strings.TrimSpace(k)] = strings.TrimSpace(v)
-			}
-		}
+		fields := build.ParseVersionFile(string(raw))
 		if fields["version"] == "" || fields["version"] != readySnap.Version || fields["commit"] != readySnap.Commit || fields["built_at"] != readySnap.BuildTime || fields["channel"] != readySnap.Channel {
 			fail("the program reports %s/%s/%s/%s, VERSION.txt %s/%s/%s/%s", readySnap.Version, readySnap.Commit, readySnap.BuildTime, readySnap.Channel, fields["version"], fields["commit"], fields["built_at"], fields["channel"])
 		} else {
@@ -325,6 +332,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 
 	// 8. Quit cleanly
 	_ = sendSmokeCommand(smokeCtrlDir, "quit")
+	waited = true
 	waitDone := make(chan error, 1)
 	go func() {
 		waitDone <- cmd.Wait()
@@ -333,6 +341,7 @@ func runSmoke(pkgDir, outDir string) (SmokeReceipt, error) {
 	case <-waitDone:
 	case <-time.After(8 * time.Second):
 		_ = cmd.Process.Kill()
+		<-waitDone
 		fail("trace.exe did not exit within 8s after quit command")
 	}
 
@@ -438,44 +447,28 @@ func waitForSnapshot(path string, timeout time.Duration) (RuntimeStateSnapshot, 
 	return snap, fmt.Errorf("timed out waiting for %s", filepath.Base(path))
 }
 
-func verifyPackageChecksums(pkgDir string) error {
-	raw, err := os.ReadFile(filepath.Join(pkgDir, "SHA256SUMS.txt"))
-	if err != nil {
-		return err
-	}
-	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
-	if len(lines) == 0 {
-		return fmt.Errorf("empty SHA256SUMS.txt")
-	}
-	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		wantSum := strings.ToLower(fields[0])
-		fileName := fields[len(fields)-1]
-		gotSum, err := sha256Hex(filepath.Join(pkgDir, fileName))
-		if err != nil {
-			return fmt.Errorf("hash %s: %w", fileName, err)
-		}
-		if gotSum != wantSum {
-			return fmt.Errorf("%s sha256=%s, want %s", fileName, gotSum, wantSum)
-		}
-	}
-	return nil
-}
-
-func sha256Hex(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+func buildSmokeChildEnv(inherited []string, localAppData, appData, userProfile, docsDir, tempDir, smokeCtrlDir string) []string {
+	baseEnv := filterEnv(inherited,
+		"LOCALAPPDATA", "APPDATA", "USERPROFILE", "HOME",
+		"TEMP", "TMP", "TMPDIR",
+		"TRACE_DATA_DIR", "TRACE_CACHE_DIR", "TRACE_DOCUMENTS_DIR",
+		"TRACE_QUIET", "TRACE_SMOKE_DIR",
+		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+	)
+	return append(baseEnv,
+		"LOCALAPPDATA="+localAppData,
+		"APPDATA="+appData,
+		"USERPROFILE="+userProfile,
+		"HOME="+userProfile,
+		"TRACE_DOCUMENTS_DIR="+docsDir,
+		"TEMP="+tempDir,
+		"TMP="+tempDir,
+		"TRACE_QUIET=1",
+		"TRACE_SMOKE_DIR="+smokeCtrlDir,
+		"HTTP_PROXY=http://127.0.0.1:1",
+		"HTTPS_PROXY=http://127.0.0.1:1",
+		"NO_PROXY=127.0.0.1,localhost",
+	)
 }
 
 func verifyNoUppercaseTrace(root string) error {
@@ -553,22 +546,91 @@ func filterEnv(env []string, removeKeys ...string) []string {
 	return out
 }
 
-func cleanArtifactsOutDir(outDir string) error {
+func defaultArtifactsRoot() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "artifacts"
+	}
+	cur := cwd
+	for {
+		if st, err := os.Stat(filepath.Join(cur, "go.mod")); err == nil && !st.IsDir() {
+			return filepath.Join(cur, "artifacts")
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return filepath.Join(cwd, "artifacts")
+		}
+		cur = parent
+	}
+}
+
+func validateArtifactsOutDir(allowedRoot, outDir string) (string, error) {
+	if strings.TrimSpace(outDir) == "" {
+		return "", fmt.Errorf("empty output directory")
+	}
+	absAllowed, err := filepath.Abs(allowedRoot)
+	if err != nil {
+		return "", err
+	}
 	absOut, err := filepath.Abs(outDir)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(absAllowed, absOut)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("refusing to clean output directory %s outside %s", absOut, absAllowed)
+	}
+	if st, err := os.Lstat(absAllowed); err == nil {
+		if st.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			return "", fmt.Errorf("refusing to clean through symlinked artifacts root %s", absAllowed)
+		}
+		if !st.IsDir() {
+			return "", fmt.Errorf("artifacts root %s is not a directory", absAllowed)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	cur := absAllowed
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		st, err := os.Lstat(cur)
+		if os.IsNotExist(err) {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		if st.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			return "", fmt.Errorf("refusing to clean symlinked output directory %s", cur)
+		}
+		if !st.IsDir() {
+			return "", fmt.Errorf("output path %s is not a directory", cur)
+		}
+	}
+	return absOut, nil
+}
+
+func cleanArtifactsOutDir(outDir string) error {
+	return cleanArtifactsOutDirIn(defaultArtifactsRoot(), outDir)
+}
+
+func cleanArtifactsOutDirIn(allowedRoot, outDir string) error {
+	absOut, err := validateArtifactsOutDir(allowedRoot, outDir)
 	if err != nil {
 		return err
 	}
-	if st, err := os.Lstat(absOut); err == nil {
-		if st.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to clean symlinked output directory %s", absOut)
-		}
+	if _, err := os.Lstat(absOut); err == nil {
 		entries, err := os.ReadDir(absOut)
 		if err != nil {
 			return err
 		}
 		for _, e := range entries {
-			_ = os.RemoveAll(filepath.Join(absOut, e.Name()))
+			if err := os.RemoveAll(filepath.Join(absOut, e.Name())); err != nil {
+				return err
+			}
 		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 	return os.MkdirAll(absOut, 0o755)
 }

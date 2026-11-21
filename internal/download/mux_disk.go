@@ -76,11 +76,9 @@ func MuxDASHFilesContext(ctx context.Context, videoPath, audioPath, outPath stri
 	var chunks []diskChunk
 	for i, track := range tracks {
 		trak := track.file.Init.Moov.Traks[0]
-		ensureTrackElst(init.Moov, trak, track.duration)
-		// Defragment shifts the media edit by the first tfdt; preserve that origin.
-		if trak.Edts != nil && len(trak.Edts.Elst) > 0 && len(trak.Edts.Elst[0].Entries) > 0 {
-			trak.Edts.Elst[0].Entries[0].MediaTime = int64(track.origin)
-		}
+		// Defragment shifts the media edit by the first tfdt; preserve that origin
+		// when synthesizing a new edit list without clobbering an existing elst.
+		ensureTrackElst(init.Moov, trak, track.duration, int64(track.origin))
 		if i > 0 {
 			init.Moov.AddChild(trak)
 			init.Moov.Mvex.AddChild(track.file.Init.Moov.Mvex.Trexs[0])
@@ -103,16 +101,19 @@ func MuxDASHFilesContext(ctx context.Context, videoPath, audioPath, outPath stri
 	if err != nil {
 		return MuxTrackSummary{}, err
 	}
-	defer os.Remove(combined.Name())
-	defer combined.Close()
+	combinedPath := combined.Name()
 	writer := contextIO{File: combined, ctx: ctx}
 	if err := init.Encode(writer); err != nil {
+		_ = combined.Close()
+		_ = os.Remove(combinedPath)
 		return MuxTrackSummary{}, err
 	}
 	copyBuffer := make([]byte, 64*1024)
 	for i, chunk := range chunks {
 		fragment, err := mp4.CreateFragment(uint32(i+1), chunk.id)
 		if err != nil {
+			_ = combined.Close()
+			_ = os.Remove(combinedPath)
 			return MuxTrackSummary{}, err
 		}
 		var payload uint64
@@ -122,21 +123,29 @@ func MuxDASHFilesContext(ctx context.Context, videoPath, audioPath, outPath stri
 		}
 		fragment.Mdat.SetLazyDataSize(payload)
 		if err := fragment.Encode(writer); err != nil {
+			_ = combined.Close()
+			_ = os.Remove(combinedPath)
 			return MuxTrackSummary{}, err
 		}
 		for _, sample := range chunk.track.samples[chunk.first:chunk.end] {
 			if err := ctx.Err(); err != nil {
+				_ = combined.Close()
+				_ = os.Remove(combinedPath)
 				return MuxTrackSummary{}, err
 			}
 			if _, err := io.CopyBuffer(writer, io.NewSectionReader(chunk.track.source, sample.offset, int64(sample.sample.Size)), copyBuffer); err != nil {
+				_ = combined.Close()
+				_ = os.Remove(combinedPath)
 				return MuxTrackSummary{}, err
 			}
 		}
 	}
 	if err := combined.Sync(); err != nil {
+		_ = combined.Close()
+		_ = os.Remove(combinedPath)
 		return MuxTrackSummary{}, err
 	}
-	return writeProgressiveDisk(ctx, combined, outPath)
+	return writeProgressiveDisk(ctx, combined, combinedPath, outPath)
 }
 
 func readDiskTrack(ctx context.Context, path, handler string, id uint32) (*diskTrack, error) {
@@ -206,7 +215,22 @@ func readDiskTrack(ctx context.Context, path, handler string, id uint32) (*diskT
 	return result, nil
 }
 
-func writeProgressiveDisk(ctx context.Context, source *os.File, outPath string) (MuxTrackSummary, error) {
+// writeProgressiveDisk defragments source into outPath and takes ownership of
+// closing and removing sourcePath as soon as defragmentation finishes so peak
+// disk usage stays bounded before optional edit-list rewriting.
+func writeProgressiveDisk(ctx context.Context, source *os.File, sourcePath, outPath string) (MuxTrackSummary, error) {
+	cleanupSource := func() {
+		if source != nil {
+			_ = source.Close()
+			source = nil
+		}
+		if sourcePath != "" {
+			_ = os.Remove(sourcePath)
+			sourcePath = ""
+		}
+	}
+	defer cleanupSource()
+
 	if _, err := source.Seek(0, io.SeekStart); err != nil {
 		return MuxTrackSummary{}, err
 	}
@@ -221,11 +245,15 @@ func writeProgressiveDisk(ctx context.Context, source *os.File, outPath string) 
 	}
 	defer os.Remove(out.Name())
 	if err := mp4.Defragment(file, reader, contextIO{File: out, ctx: ctx}); err != nil {
-		out.Close()
+		_ = out.Close()
 		return MuxTrackSummary{}, err
 	}
+	// Release the combined fragmented staging file before addProgressiveEdits
+	// so at most two copies exist on disk instead of three.
+	cleanupSource()
+
 	if err := out.Sync(); err != nil {
-		out.Close()
+		_ = out.Close()
 		return MuxTrackSummary{}, err
 	}
 	if err := out.Close(); err != nil {
@@ -257,17 +285,32 @@ func addProgressiveEdits(ctx context.Context, path string) error {
 	reader := contextIO{File: source, ctx: ctx}
 	file, err := mp4.DecodeFile(reader, mp4.WithDecodeMode(mp4.DecModeLazyMdat))
 	if err != nil {
-		source.Close()
+		_ = source.Close()
 		return err
 	}
 	if file.Moov == nil || file.Mdat == nil {
-		source.Close()
+		_ = source.Close()
 		return fmt.Errorf("download: 合并后缺少 moov/mdat")
 	}
 	oldSize := file.Moov.Size()
+	needsRewrite := false
 	for _, track := range file.Moov.Traks {
 		if track.Edts == nil || len(track.Edts.Elst) == 0 {
-			ensureTrackElst(file.Moov, track, track.Mdia.Mdhd.Duration)
+			var mediaDur uint64
+			if track.Mdia != nil && track.Mdia.Mdhd != nil {
+				mediaDur = track.Mdia.Mdhd.Duration
+			}
+			if ensureTrackElst(file.Moov, track, mediaDur, 0) {
+				needsRewrite = true
+			}
+		}
+	}
+	if !needsRewrite {
+		return source.Close()
+	}
+	for _, track := range file.Moov.Traks {
+		if track.Mdia == nil || track.Mdia.Minf == nil || track.Mdia.Minf.Stbl == nil {
+			continue
 		}
 		stbl := track.Mdia.Minf.Stbl
 		if stbl.Stco != nil {
@@ -285,6 +328,9 @@ func addProgressiveEdits(ctx context.Context, path string) error {
 	}
 	delta := file.Moov.Size() - oldSize
 	for _, track := range file.Moov.Traks {
+		if track.Mdia == nil || track.Mdia.Minf == nil || track.Mdia.Minf.Stbl == nil {
+			continue
+		}
 		if offsets := track.Mdia.Minf.Stbl.Co64; offsets != nil {
 			for i := range offsets.ChunkOffset {
 				offsets.ChunkOffset[i] += delta
@@ -293,7 +339,7 @@ func addProgressiveEdits(ctx context.Context, path string) error {
 	}
 	out, err := os.CreateTemp(filepath.Dir(path), ".trace-edits-*.part")
 	if err != nil {
-		source.Close()
+		_ = source.Close()
 		return err
 	}
 	defer os.Remove(out.Name())

@@ -35,6 +35,7 @@ func IsKind(err error, kind string) bool {
 }
 
 func classifyBiliCode(code int, message string, hasVoucher bool, endpoint string) *SiteError {
+	endpoint = site.SanitizeEndpoint(endpoint)
 	if hasVoucher {
 		return &SiteError{
 			Kind:     ErrKindRiskControl,
@@ -86,6 +87,13 @@ func classifyBiliCode(code int, message string, hasVoucher bool, endpoint string
 			Endpoint: endpoint,
 			Message:  "目标内容不存在或已下架",
 		}
+	case 4101152:
+		return &SiteError{
+			Kind:     ErrKindUnavailable,
+			Code:     code,
+			Endpoint: endpoint,
+			Message:  "动态不可见或已删除",
+		}
 	case -400:
 		return &SiteError{
 			Kind:     ErrKindBadRequest,
@@ -104,6 +112,7 @@ func classifyBiliCode(code int, message string, hasVoucher bool, endpoint string
 }
 
 func classifyHTTPStatus(status int, endpoint string) *SiteError {
+	endpoint = site.SanitizeEndpoint(endpoint)
 	switch status {
 	case 401:
 		return &SiteError{

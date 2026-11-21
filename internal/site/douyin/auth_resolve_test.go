@@ -70,7 +70,7 @@ func newDeterministicEntropy(seed byte) io.Reader {
 	return bytes.NewReader(buf)
 }
 
-// TestLoginWithCookieFailureModesAndSuccess verifies M3-K04:
+// TestLoginWithCookieFailureModesAndSuccess verifies manual Cookie login validation and persistence:
 //   - 3 distinct failure modes (invalid_input with 0 requests, auth_required, risk_control)
 //   - existing active credentials are never overwritten or expired on candidate login failure
 //   - raw secret Cookie values are never echoed in error messages
@@ -440,7 +440,7 @@ func TestVerifyCredentialExpiryPreFlightAndGuestControl(t *testing.T) {
 	}
 }
 
-// TestExtractShareURLAndResolvePriority verifies M3-K06:
+// TestExtractShareURLAndResolvePriority verifies share-text URL extraction and route priority:
 //   - mixed Chinese/Emoji share text & glued /7.46 oral-code stripping
 //   - <= 5 HTTPS whitelisted hops stopping immediately once target ID is extracted
 //   - modal_id/vid priority BEFORE /user/ and discovery paths

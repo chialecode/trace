@@ -320,10 +320,20 @@ func (c *Controller) SetSubtitles(tracks []SubtitleTrack) {
 	c.subtitles = make(map[string]SubtitleTrack, len(tracks))
 	c.subOrder = make([]string, 0, len(tracks))
 	for _, t := range tracks {
+		t.buildIndex()
 		c.subtitles[t.Lang] = t
 		c.subOrder = append(c.subOrder, t.Lang)
 	}
 
+}
+
+// IsPlaying reports whether media playback is currently active without computing
+// danmaku or subtitle overlays.
+func (c *Controller) IsPlaying() bool {
+	c.mu.Lock()
+	playing := c.playing && c.dec != nil
+	c.mu.Unlock()
+	return playing
 }
 
 // Play starts or resumes playback.
@@ -675,19 +685,20 @@ func (c *Controller) Snapshot(viewportW, viewportH float32) StateSnapshot {
 	dmCount := 0
 	if c.danmakuEngine != nil {
 		dmCount = c.danmakuEngine.Count()
-		if c.danmakuVisible {
+	}
+	activeSub := ""
+	var subOpts []string
+	if viewportW > 1 && viewportH > 1 {
+		if c.danmakuEngine != nil && c.danmakuVisible {
 			visibleDm = c.danmakuEngine.LayoutFrame(posSec, viewportW, viewportH, c.danmakuArea, c.danmakuOpacity, c.danmakuDensity)
 		}
-	}
-
-	activeSub := ""
-	if c.activeSubLang != "" {
-		if track, ok := c.subtitles[c.activeSubLang]; ok {
-			activeSub = ActiveCueAt(track.Cues, posSec)
+		if c.activeSubLang != "" {
+			if track, ok := c.subtitles[c.activeSubLang]; ok {
+				activeSub = track.activeCueAt(posSec)
+			}
 		}
+		subOpts = append([]string(nil), c.subOrder...)
 	}
-
-	subOpts := append([]string(nil), c.subOrder...)
 	return StateSnapshot{
 		Open:            true,
 		Playing:         c.playing,

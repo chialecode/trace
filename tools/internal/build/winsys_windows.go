@@ -3,6 +3,7 @@
 package build
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/chialecode/trace/internal/appdirs"
@@ -93,11 +95,21 @@ func processImage(pid uint32) (string, error) {
 
 // RunQuiet runs exe with args, without a window, and waits for it.
 func RunQuiet(exe string, args, env []string) error {
-	cmd := exec.Command(exe, args...)
+	return RunQuietContext(context.Background(), exe, args, env)
+}
+
+// RunQuietContext runs exe with args, without a window, and waits for it
+// until ctx is done.
+func RunQuietContext(ctx context.Context, exe string, args, env []string) error {
+	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = filepath.Dir(exe)
 	cmd.Env = env
+	cmd.WaitDelay = 2 * time.Second
 	appdirs.SetSubprocessQuiet(cmd)
 	if out, err := cmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("%s: %w", filepath.Base(exe), ctx.Err())
+		}
 		return fmt.Errorf("%s: %w %s", filepath.Base(exe), err, strings.TrimSpace(string(out)))
 	}
 	return nil

@@ -22,7 +22,7 @@ import (
 	"github.com/chialecode/trace/internal/subscription"
 )
 
-// C32: Live state transitions (0/2 -> 1 notifies, 2=carousel does NOT notify/record),
+// Live state transitions (0/2 -> 1 notifies, 2=carousel does NOT notify/record),
 // HLS fMP4 recording, and disconnect rollover into registered part files.
 func TestLiveTransitionsCarouselFilterAndRecordingRollover(t *testing.T) {
 	vM4S, err := download.BuildSyntheticVideoM4S(30, 30)
@@ -222,12 +222,17 @@ func TestLiveTransitionsCarouselFilterAndRecordingRollover(t *testing.T) {
 
 	// Wait for recording session to finish after ENDLIST.
 	deadline := time.Now().Add(5 * time.Second)
+	finished := false
 	for time.Now().Before(deadline) {
 		rooms := liveMgr.ListRooms()
 		if len(rooms) == 1 && !rooms[0].Recording {
+			finished = true
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+	if !finished {
+		t.Fatalf("timed out waiting for room 8888 to finish recording: %+v", liveMgr.ListRooms())
 	}
 
 	for _, name := range []string{"part-001.mp4", "part-002.mp4", "item.json"} {
@@ -257,9 +262,9 @@ func TestLiveTransitionsCarouselFilterAndRecordingRollover(t *testing.T) {
 	}
 }
 
-// C32 & R-14: 60s status batch cache, HLS sequence/discontinuity/MAP rollover,
-// conversion failure keeping .part as partial, disk space < 1 GiB stop, maxRecordings limit,
-// and manual stop suppressing auto-restart during the same broadcast.
+// 60s status batch cache, HLS sequence/discontinuity/MAP rollover,
+// conversion failure keeping .part as partial, disk space < 1 GiB stop,
+// unlimited concurrent recordings, and manual stop suppressing auto-restart.
 func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 	vM4S, err := download.BuildSyntheticVideoM4S(30, 30)
 	if err != nil {
@@ -421,8 +426,8 @@ func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 	liveMgr.hlsPollInterval = 20 * time.Millisecond
 	liveMgr.reconnectWait = 20 * time.Millisecond
 
-	now := time.Date(2026, 11, 7, 15, 0, 0, 0, time.UTC)
-	liveMgr.nowFunc = func() time.Time { return now }
+	clock := newFakeAdvanceClock(time.Date(2026, 11, 7, 15, 0, 0, 0, time.UTC))
+	liveMgr.SetNowFunc(clock.Now)
 	var freeDisk atomic.Uint64
 	freeDisk.Store(10 << 30)
 	liveMgr.freeBytesFunc = func(string) (uint64, error) { return freeDisk.Load(), nil }
@@ -434,12 +439,12 @@ func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 	if err != nil || len(st1) != 2 || statusHits.Load() != 1 {
 		t.Fatalf("Status call 1: len=%d hits=%d err=%v", len(st1), statusHits.Load(), err)
 	}
-	now = now.Add(30 * time.Second)
+	clock.Advance(30 * time.Second)
 	_, err = liveMgr.Status(ctx, []int64{2001, 2002})
 	if err != nil || statusHits.Load() != 1 {
 		t.Fatalf("Status call within 60s should use cache, hits=%d err=%v", statusHits.Load(), err)
 	}
-	now = now.Add(31 * time.Second)
+	clock.Advance(31 * time.Second)
 	_, err = liveMgr.Status(ctx, []int64{2001})
 	if err != nil || statusHits.Load() != 2 {
 		t.Fatalf("Status call after 60s should re-fetch, hits=%d err=%v", statusHits.Load(), err)
@@ -459,6 +464,7 @@ func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 	}
 	// Wait for 9001 to finish
 	deadline := time.Now().Add(5 * time.Second)
+	finished9001 := false
 	for time.Now().Before(deadline) {
 		rooms := liveMgr.ListRooms()
 		active := false
@@ -468,9 +474,13 @@ func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 			}
 		}
 		if !active {
+			finished9001 = true
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	if !finished9001 {
+		t.Fatalf("timed out waiting for room 9001 to finish recording")
 	}
 	for _, f := range []string{"part-001.mp4", "part-002.mp4"} {
 		if _, err := os.Stat(filepath.Join(rec1.RecordItemDir, f)); err != nil {
@@ -478,14 +488,15 @@ func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 		}
 	}
 
-	// 3. Conversion failure preserves .part on disk and marks item "partial" (R-14)
-	now = now.Add(10 * time.Second)
+	// 3. Conversion failure preserves .part on disk and marks item "partial"
+	clock.Advance(10 * time.Second)
 	corruptMode.Store(true)
 	recCorrupt, err := liveMgr.StartRecording(ctx, 9002)
 	if err != nil {
 		t.Fatalf("StartRecording 9002 corrupt: %v", err)
 	}
 	deadline = time.Now().Add(5 * time.Second)
+	finished9002 := false
 	for time.Now().Before(deadline) {
 		rooms := liveMgr.ListRooms()
 		active := false
@@ -495,9 +506,13 @@ func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 			}
 		}
 		if !active {
+			finished9002 = true
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	if !finished9002 {
+		t.Fatalf("timed out waiting for room 9002 to finish recording")
 	}
 	partPath := filepath.Join(recCorrupt.RecordItemDir, "part-001.mp4.part")
 	if _, err := os.Stat(partPath); err != nil {

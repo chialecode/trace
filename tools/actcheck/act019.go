@@ -124,6 +124,25 @@ func hostClass(host string) string {
 	return "*." + strings.Join(parts[len(parts)-2:], ".")
 }
 
+func clipBytesInt64(clip map[string]any) int64 {
+	switch v := clip["bytes"].(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
+func sortMotionClipsByBytes(clips []map[string]any) {
+	sort.SliceStable(clips, func(i, j int) bool {
+		return clipBytesInt64(clips[i]) < clipBytesInt64(clips[j])
+	})
+}
+
 func runAct019Main(root, out string) {
 	if out == "" {
 		out = filepath.Join(root, "artifacts", "site-check", act019ID+".json")
@@ -137,7 +156,6 @@ func runAct019Main(root, out string) {
 	if err != nil {
 		fatal("cookie: " + err.Error())
 	}
-	actID, apiLimits = act019ID, act019APILimits
 	gate, err := sitecheck.OpenGate(filepath.Join(root, ".local", "site-check"), sitecheck.Limits{
 		ActID: act019ID, MaxRuns: 1, MaxAPICalls: act019MaxAPI, MaxByCategory: act019APILimits,
 	})
@@ -148,12 +166,12 @@ func runAct019Main(root, out string) {
 		fatal(err.Error())
 	}
 	ck := &checker{
-		gate:     gate,
-		vod:      &mediaBudget{name: "cdn", maxRequests: act019MaxCDN, maxBytes: act019MaxCDNBytes},
-		live:     &mediaBudget{name: "live", maxRequests: 0, maxBytes: 0},
-		statuses: map[string]int{},
+		gate:      gate,
+		apiLimits: act019APILimits,
+		vod:       &mediaBudget{name: "cdn", maxRequests: act019MaxCDN, maxBytes: act019MaxCDNBytes},
+		live:      &mediaBudget{name: "live", maxRequests: 0, maxBytes: 0},
+		statuses:  map[string]int{},
 	}
-	ck.stopped.Store("")
 	sniff := &detailSniff{picKeys: map[string]int{}, liveExts: map[string]int{}, liveHosts: map[string]int{}}
 	var ctMu sync.Mutex
 	contentTypes := map[string]int{}
@@ -206,48 +224,28 @@ func runAct019Main(root, out string) {
 	}
 	defer b.Close()
 
-	rc := receipt{Act: act019Label, StartedAt: time.Now().UTC().Format(time.RFC3339), StatusCounts: ck.statuses,
-		Limits: map[string]any{"api": act019APILimits, "apiTotal": act019MaxAPI, "cdnRequests": act019MaxCDN, "cdnBytes": act019MaxCDNBytes}}
+	rc := receipt{
+		Act:          act019Label,
+		Commit:       resolveReceiptCommit(root),
+		StartedAt:    time.Now().UTC().Format(time.RFC3339),
+		StatusCounts: ck.statuses,
+		Limits:       map[string]any{"api": act019APILimits, "apiTotal": act019MaxAPI, "cdnRequests": act019MaxCDN, "cdnBytes": act019MaxCDNBytes},
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	run := func(name string, fn func(f map[string]any) error) bool {
-		if s, _ := ck.stopped.Load().(string); s != "" {
-			rc.Steps = append(rc.Steps, step{Name: name, Skipped: true, Error: "stopped earlier: " + s})
-			return false
-		}
-		f := map[string]any{}
-		start := time.Now()
-		err := fn(f)
-		st := step{Name: name, OK: err == nil, Facts: f, Duration: time.Since(start).Milliseconds()}
-		if errors.Is(err, errSkip) {
-			st.OK, st.Skipped = true, true
-		} else if err != nil {
-			st.ErrKind = bilibili.KindOf(err)
-			st.Error = redact(redactID(err.Error(), tg.OpusID), cookie)
-			switch st.ErrKind {
-			case bilibili.ErrKindRiskControl, bilibili.ErrKindRateLimited, bilibili.ErrKindAuthRequired:
-				ck.stopped.Store(st.ErrKind)
-			}
-			if errors.Is(err, sitecheck.ErrQuotaExceeded) {
-				st.ErrKind = "quota"
-			}
-		}
-		if len(st.Facts) == 0 {
-			st.Facts = nil
-		}
-		rc.Steps = append(rc.Steps, st)
-		return err == nil
-	}
+	runner := newBilibiliStepRunner(&rc.Steps, ck, func(s string) string {
+		return redact(redactID(s, tg.OpusID), cookie)
+	})
 
-	run("login_with_cookie", func(f map[string]any) error {
+	runner.run("login_with_cookie", func(f map[string]any) error {
 		st, err := b.ImportCookie(ctx, cookie, "")
 		f["loggedIn"] = st.LoggedIn
 		return err
 	})
 
 	var itemKey string
-	run("cache_live_photo_post", func(f map[string]any) error {
+	runner.run("cache_live_photo_post", func(f map[string]any) error {
 		if err := b.DownloadManager().Start(ctx); err != nil {
 			return err
 		}
@@ -283,7 +281,7 @@ func runAct019Main(root, out string) {
 		return errors.New("cache did not finish within 3 minutes")
 	})
 
-	run("parse_live_url", func(f map[string]any) error {
+	runner.run("parse_live_url", func(f map[string]any) error {
 		sniff.mu.Lock()
 		defer sniff.mu.Unlock()
 		f["detailResponses"], f["majorTypes"], f["pics"], f["picsWithLiveURL"] = sniff.responses, sniff.majorType, sniff.pics, sniff.livePics
@@ -297,7 +295,7 @@ func runAct019Main(root, out string) {
 		return nil
 	})
 
-	run("inspect_motion_clips", func(f map[string]any) error {
+	runner.run("inspect_motion_clips", func(f map[string]any) error {
 		if itemKey == "" {
 			return errSkip
 		}
@@ -345,7 +343,7 @@ func runAct019Main(root, out string) {
 			}
 			clips = append(clips, c)
 		}
-		sort.Slice(clips, func(i, j int) bool { return fmt.Sprint(clips[i]["bytes"]) < fmt.Sprint(clips[j]["bytes"]) })
+		sortMotionClipsByBytes(clips)
 		f["stills"], f["stillsWithMotion"], f["clips"] = stills, linked, clips
 		ctMu.Lock()
 		f["mediaContentTypes"] = contentTypes
@@ -358,7 +356,7 @@ func runAct019Main(root, out string) {
 
 	rc.APIUsage = gate.Usage()
 	rc.VODMedia = mediaUsage{int(ck.vod.requests.Load()), ck.vod.bytes.Load()}
-	rc.StoppedBy, _ = ck.stopped.Load().(string)
+	rc.StoppedBy = ck.stopReason()
 	rc.Passed = rc.StoppedBy == ""
 	for _, s := range rc.Steps {
 		if !s.OK {
@@ -366,18 +364,21 @@ func runAct019Main(root, out string) {
 		}
 	}
 	rc.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	out2, _ := json.MarshalIndent(rc, "", "  ")
-	text := string(out2)
-	for _, secret := range []string{cookieValue(cookie, "SESSDATA"), cookieValue(cookie, "bili_jct"), strings.TrimSpace(tg.OpusID)} {
-		if secret != "" && strings.Contains(text, secret) {
-			fatal("receipt would contain a secret or the target id; not written")
-		}
-	}
-	if strings.Contains(text, "http://") || strings.Contains(text, "https://") {
-		fatal("receipt would contain a URL; not written")
-	}
-	_ = os.MkdirAll(filepath.Dir(out), 0o755)
-	if err := os.WriteFile(out, out2, 0o644); err != nil {
+	opusID := strings.TrimSpace(tg.OpusID)
+	if err := writeCleanReceipt(out, rc,
+		func(text string) error {
+			return verifyCookieValuesAbsent(text, cookie, "SESSDATA", "bili_jct")
+		},
+		func(text string) error {
+			if opusID != "" && strings.Contains(text, opusID) {
+				return errors.New("receipt would contain the target id; not written")
+			}
+			if strings.Contains(text, "http://") || strings.Contains(text, "https://") {
+				return errors.New("receipt would contain a URL; not written")
+			}
+			return nil
+		},
+	); err != nil {
 		fatal(err.Error())
 	}
 	fmt.Printf("%s passed=%v stoppedBy=%q api=%d cdn=%d/%dB receipt=%s\n",

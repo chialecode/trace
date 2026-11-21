@@ -83,6 +83,21 @@ func (b *bitmapCache) reset() {
 	b.bytes = 0
 }
 
+// purgeNil drops cached miss/placeholder entries (bmp == nil) whose keys are
+// not currently pending, so newly downloaded covers, avatars, or thumbnails
+// can be decoded without evicting valid cached bitmaps.
+func (b *bitmapCache) purgeNil(pending map[string]bool) {
+	for k, e := range b.entries {
+		if e.bmp != nil {
+			continue
+		}
+		if pending["thumb:"+k] || pending["avatar:"+k] || pending["hist-thumb:"+k] || pending[k] {
+			continue
+		}
+		b.remove(k)
+	}
+}
+
 func (b *bitmapCache) len() int { return len(b.entries) }
 
 func (b *bitmapCache) evict(keep string) {

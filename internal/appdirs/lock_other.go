@@ -3,6 +3,7 @@
 package appdirs
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,21 +29,16 @@ func LockDataDir(dataDir string) (*Lock, error) {
 
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
-		return nil, ErrAlreadyLocked
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, ErrAlreadyLocked
+		}
+		return nil, fmt.Errorf("appdirs: lock %s: %w", lockPath, err)
 	}
 
 	return &Lock{
 		path: lockPath,
 		file: f,
 	}, nil
-}
-
-// Path returns the locked file path.
-func (l *Lock) Path() string {
-	if l == nil {
-		return ""
-	}
-	return l.path
 }
 
 // Release unlocks and closes the lock file.

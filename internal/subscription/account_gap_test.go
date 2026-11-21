@@ -17,8 +17,8 @@ import (
 	"github.com/chialecode/trace/internal/storage"
 )
 
-// C32 (scaled): accounts in one round are spaced by the configured interval
-// (2s in production); the first account is not delayed.
+// Accounts in one round are spaced by the configured interval (2s in
+// production); the first account is not delayed.
 func TestCheckRoundSpacesAccountsByInterval(t *testing.T) {
 	const gap = 150 * time.Millisecond
 	var mu sync.Mutex

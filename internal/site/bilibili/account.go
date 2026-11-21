@@ -149,7 +149,7 @@ func (c *Client) FavResources(ctx context.Context, mediaID string, pn int) (FavP
 		return FavPage{}, err
 	}
 	mediaID = strings.TrimSpace(mediaID)
-	if _, err := strconv.ParseInt(mediaID, 10, 64); err != nil || mediaID == "" {
+	if id, err := strconv.ParseInt(mediaID, 10, 64); err != nil || id <= 0 {
 		return FavPage{}, &SiteError{Kind: ErrKindBadRequest, Endpoint: ep, Message: "收藏夹编号无效"}
 	}
 	if pn <= 0 {

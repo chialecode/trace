@@ -1,17 +1,16 @@
 # 交付状态
 
-更新：2026-11-19（2026-11-19 反馈 [DEC-061](../decisions.md#dec-061)：A 实现缓存规则“全部缓存”（每 7 天按慢速缓存队列补齐账号的全部作品）、订阅账号的作品数与已缓存数、为某个账号缓存的合作视频在信息流和媒体库作者列表里算在这个账号下；M4 已经 PR #8 合并为 `main @ a613735`；合并后的实机反馈 [DEC-059](../decisions.md#dec-059)：A 修了主页订阅信息流点头像闪退、录制异常重复显示、换段时在录制循环里转换导致丢片段，任务页加“检查计划”；第二次反馈 [DEC-060](../decisions.md#dec-060)：合并视频的时长校验放宽到 2 秒或 3%，手动刷新与检查更新查到开播也开始录制，“检查计划”可手动检查全部或单个账号，抖音开播检查改为按间隔限速、不占每小时额度并在软件中说明规则；在本地分支 `codex/m4-feedback-0118`）。此前：2026-11-17（A 审查第四轮 B 的实现并自审第五轮，修复 3 个 P2，新增加入订阅对话框 DEC-058；第五轮反馈：A 实现 DEC-056 转发与合作视频的存放位置、DEC-057 任务页删除与缓存队列卡片、图标栏、主页头像打开订阅、切换站点更快、全部账号、抖音私密账号；第四轮反馈：A 修直播录制收尾与序号重置，B 完成主页调整 DEC-053（回到上次阅读位置、侧栏订阅未读圆点）；此前 M4 实机反馈第一轮及补充：A 修复 7 项，B 完成 DEC-049 ①～③ 与 DEC-050 ①② 共 5 项实现，A 集中审查收敛；第二轮反馈 8 条 DEC-051：A 处理 4 项，B 完成 U1/L1/S1/S2/D2 共 4 项功能调整与正本文档同步，A 集中审查收敛）。本页只写已实现的能力、当前阶段、已知限制、LOOP 和开发与上游事项，不按轮次追加。
+更新：2026-11-21（M5 远程版、上传与导入导出及全仓库代码审查、重构与依赖更新在分支 `codex/m5-remote` 全部收敛并通过门禁、截图与双冒烟，待推送并经 CI 合并至 `main`；M4 及合并后的三轮实机反馈已合并为 `main @ 8327803`）。本页只写已实现的能力、当前阶段、已知限制、LOOP 和开发与上游事项，不按轮次追加。
 
 ## 当前阶段
 
-**M4（我的：登录账号的站点内容）**（[当前计划 TRACE-M4-01](stage-plan.md)，DEC-047）：分支 `codex/m4-account`，基点 `main @ f080483`。
+**M5（远程版、上传与导入导出）**（[当前计划 TRACE-M5-01](stage-plan.md)，DEC-062）：分支 `codex/m5-remote`，基点 `main @ 8327803`。
 
-- **状态**：B 已于 2026-11-14 完成 C0、W1～W6 与必测用例 M4-K01～K15；A 同日集中审查，直接修了 2 个 P2（F-001、F-002），审查收敛（[阶段报告 §6](stage-report.md#a-review)）。用户随后给了第一轮实机反馈（8 条）与 2026-11-15 补充（4 条）：A 直接修了 7 项（缓存规则缩起闪退、直播录像转换失败、抖音订阅头像重启后丢失、实况照片翻到即播、抖音“喜欢”空响应连带“收藏”失败、托盘原生两项菜单、抖音用户页卡顿，F-003～F-009，[阶段报告 §7](stage-report.md#feedback-1)）；**B 已于 2026-11-15 完成交给 B 的 5 项功能调整**（解析页侧栏“最近解析”与居中大输入框、媒体库固定发布时间排序与纯离线详情、任务角标只数下载任务及任务页侧栏与直播录制实时预览、用户页“全部缓存”慢速不规律队列，DEC-049 ①～③、DEC-050 ①②，M4-K16～K31 全部通过，[阶段报告 §8](stage-report.md#b-feedback-1)），A 同日集中审查，直接修了 2 个 P2（F-010 缓存队列失败条目不等待、F-011 窄窗解析页找不到最近解析），审查收敛（[阶段报告 §9](stage-report.md#a-review-feedback-1)）。用户随后给了第二轮实机反馈 8 条（[DEC-051](../decisions.md#dec-051)）：A 直接处理了 4 项（删除后清掉空的作者文件夹、订阅图标橙点的说明、订阅头像两站点存本机、更新开发版时关闭并重开），并检查本机日志修了下载进度刷屏与闪退不留记录（F-012～F-015，[阶段报告 §10](stage-report.md#feedback-2)）；**B 已于 2026-11-15 完成交给 B 的 4 项功能调整与正本文档同步**（U1 设置“更新”页与 `update-history.json`、L1 不限同时录制数与“录制异常” `live.incidents`、S1 订阅详情“内容 / 账号”标签、S2 缓存规则批量选择订阅 `SetSubscriptionsRule`、D2 正本文档同步，M4-K32～K38，[计划 §13](stage-plan.md#feedback-2)，默认值 [Q-018](../../USER-ACTIONS.md#q-018)，[阶段报告 §11](stage-report.md#b-feedback-2)），A 同日集中审查，直接修了 1 个 P2（F-016 开发版“设置 › 更新”仅在卸载项版本高于运行版本时提示重启生效，并将预发布数字段比较升为 64 位整数），审查收敛（[阶段报告 §12](stage-report.md#a-review-feedback-2)）。用户 2026-11-16 第四轮反馈：A 修了哔哩哔哩直播录制的两个缺陷（收尾转换误把 HLS `EXTINF` 之和当时长基准，导致长分段都停在 `.part`；重新推流后的新序号被记成上亿段“分片丢失”），本机两场录像已在启动恢复时转换完成；没有直播间的 UP 主空间页提示“解析接口数据字段失败”（直播状态接口返回空数组），已修复，界面显示的错误也会写进运行日志；缓存规则的“默认”改为内置、全关、不可修改，新订阅都用它（[DEC-054](../decisions.md#dec-054)）；媒体库加“刷新”，弹窗列出在资源管理器里删掉的文件（[DEC-055](../decisions.md#dec-055)）；主页“回到上次阅读的位置”和侧栏订阅列表加未读圆点记为 [DEC-053](../decisions.md#dec-053)，**B 已于 2026-11-16 完成**（H1 各站点筛选的阅读位置 `homePositions`、H2 侧栏订阅列表与窄窗头像条、D3 文档，M4-K39～K43 全部通过，[计划 §14](stage-plan.md#feedback-4)，按用户对 [Q-019](../../USER-ACTIONS.md#q-019) 的答复：站点筛选分别记位置，侧栏不加分节标题、正在直播的排最前，[阶段报告 §15](stage-report.md#b-feedback-4)），待 A 审查；抖音“分段异常”在本机数据里找不到，用户答复下次出现再反馈（[阶段报告 §14](stage-report.md#feedback-4)）。第五轮反馈（7 条与 3 条补充）A 已实现：[DEC-056](../decisions.md#dec-056)（转发存到转发者的 `forwards/`、媒体库“转发”筛选，合作视频存到为之缓存的成员下）与 [DEC-057](../decisions.md#dec-057)（任务里的记录都能删除、缓存队列改为卡片并显示封面、图标栏上移、主页头像打开订阅、切换站点筛选从 2.4～3.5 秒降到首次约 0.7 秒与切回 10 ms 左右、订阅“全部账号”、抖音私密账号照常请求作品），[阶段报告 §16](stage-report.md#feedback-5)；抖音私密账号用户已实机确认可以列出作品。2026-11-17 A 审查第四轮 B 的实现并自审第五轮，修复 3 个 P2（界面写 `ui-state.json` 会覆盖更新器的写入、私密账号把风控与限流显示成看不到、切换速度测试按耗时判断），按用户要求新增“加入订阅”对话框（[DEC-058](../decisions.md#dec-058)），审查收敛（[阶段报告 §17](stage-report.md#a-review-feedback-4-5)）。本机 TRACE Dev 已更新至 `0.1.2-dev.202611161744`；推送与合并（[ACT-021](../../USER-ACTIONS.md#act-021)）用户 2026-11-17 已授权：审查收敛后推送、创建 PR，CI 通过后合并。实现细节按 [Q-015](../../USER-ACTIONS.md#q-015)、[Q-016](../../USER-ACTIONS.md#q-016)、[Q-017](../../USER-ACTIONS.md#q-017)、[Q-018](../../USER-ACTIONS.md#q-018) 的默认值。
-- 需求 FR-ACCT-001～005（[需求 §2.9](../requirements.md#account-scope)）已实现；验收 AC-45～53 自动化与截图通过。[ACT-020](../../USER-ACTIONS.md#act-020) 跑了 1 次：哔哩哔哩四项与抖音关注真实通过；抖音“喜欢”停下。同日按用户反馈复查 1 次：抖音“收藏”真实通过（18 条），“喜欢”对非浏览器请求固定回 0 字节，现在如实提示且不再打开抖音退避；收藏夹没有真实证据，“观看历史”不显示（LOOP-014）。
+- **状态**：M5 全部范围（C0、D1、W1～W9、M5-K01～K24）、2026-11-20 实机反馈修复（DEC-063）及 2026-11-21 全仓库代码审查、缺陷修复、质量重构、依赖更新（`mp4ff` v0.63.0、PR #9 并入）、无用代码/文档清理、开发版下载/归属/任务卡片修复及订阅“内容”里删除已缓存条目（DEC-064）均已收敛，门禁、截图、桌面与远程冒烟、`-server` 打包全部通过（[阶段报告](stage-report.md#full-audit-20261121)），本机开发版已更新到 `0.1.3-dev.202611210644`。需求 FR-REMOTE-001～008（[需求 §2.10](../requirements.md#remote-scope)）已实现；AC-56～64 自动化通过，其中真实 VPS、真实站点 Cookie 与 Google Drive 的部分仍是 `not-run`，等用户做 [H-003](../../USER-ACTIONS.md#h-003)。设计正本是[远程设计](../design/remote.md)，默认值见 [Q-022](../../USER-ACTIONS.md#q-022)。
 
 ## 上一阶段
 
-**M3（抖音视频与直播）**：经 PR #7 squash 合并为 `main @ f080483`（[M3 计划](https://github.com/chialecode/trace/blob/f080483/docs/delivery/stage-plan.md)、[M3 报告](https://github.com/chialecode/trace/blob/f080483/docs/delivery/stage-report.md)，含第六轮实机反馈 DEC-046 与 A 的两次集中审查）。真实站点：ACT-010～ACT-012、ACT-014～ACT-019 各按授权运行（抖音登录对照、纯 Go 签名、置顶翻页、图文、点播下载、直播 FLV 短录、原画优先缓存、哔哩哔哩实况）。M2（安装与更新）合并为 `main @ c17bd87`，第一个正式版 [v0.1.1](https://github.com/chialecode/trace/releases/tag/v0.1.1) 于 2026-11-12 发布。实机体验 [H-001](../../USER-ACTIONS.md#h-001) 与安装更新检查 [H-002](../../USER-ACTIONS.md#h-002) 仍为 `not-run`，产品验收未开始。
+**M4（我的：登录账号的站点内容）**：经 PR #8 squash 合并为 `main @ a613735`，合并后的三轮实机反馈（DEC-059～061）经 PR #10 合并为 `main @ 8327803`（[M4 计划](https://github.com/chialecode/trace/blob/8327803/docs/delivery/stage-plan.md)、[M4 报告](https://github.com/chialecode/trace/blob/8327803/docs/delivery/stage-report.md)，含五轮实机反馈与 A 的各次集中审查）。需求 FR-ACCT-001～005 已实现，AC-45～53 自动化与截图通过；[ACT-020](../../USER-ACTIONS.md#act-020) 真实检查了哔哩哔哩四项与抖音关注、收藏，抖音“喜欢”对非浏览器请求固定回 0 字节，现在如实提示（LOOP-014）。实机检查 H-001 第 28～36 步仍是 not-run。上上阶段 M3 经 PR #7 合并为 `main @ f080483`（[M3 计划](https://github.com/chialecode/trace/blob/f080483/docs/delivery/stage-plan.md)、[M3 报告](https://github.com/chialecode/trace/blob/f080483/docs/delivery/stage-report.md)）。
 
 ## 已实现能力
 
@@ -32,6 +31,8 @@
 
 - **我的：登录账号的站点内容（FR-ACCT-001～005）**：图标栏第三项“我的”，侧栏“哔哩哔哩”“抖音”两组默认折叠、手风琴展开，窄窗在页面里选择；`AccountService`（`AccountSections`/`AccountFolders`/`AccountPage`）在发请求前检查登录、功能与站点熔断，风控与限流记入该站点的自动停止，列表只在内存里、日志只记功能名、页数与条数；哔哩哔哩关注（分组）、收藏夹（`list-all` + `resource/list`）、稍后再看（WBI，“全部 / 未看完”）、历史记录（游标三元组、按日分组）；抖音关注（`max_time`）、喜欢、收藏（`listcollection` 表单 POST 体参与 `a_bogus`，收藏夹 `collects_id_str`），第 1 页空壳判“登录已失效或被拦截”；条目经 `OpenLink` 打开详情，“⋯”提供缓存、复制链接、在浏览器中打开、加入订阅；全部只读。
 
+- **远程版、上传与导入导出（FR-REMOTE-001～008、DEC-062）**：无界面的 `cmd/trace-server`（`linux/amd64`、`linux/arm64`，`CGO_ENABLED=0`，不链接 MyGo、界面、播放器与外壳）有 `init`、`run`、`token`、`upload-test`、`rclone-filter`、`version`；`go run ./tools/package -server` 打成带 systemd 示例与中文部署说明的 tar.gz。HTTPS（TLS 1.3、自签名证书按连接码里的指纹固定）+ 只存哈希的令牌，同一地址 1 分钟失败 5 次封 10 分钟，请求体上限 1 MiB，协议不同 409。远程用服务层的远程配置运行：不续期、不做全部缓存与补更早内容，Cookie 推送先校验再保存（Linux 上用数据目录里的随机密钥 AES-GCM 加密）。订阅快照整体替换并保留账号起点；内置上传逐条目调用 rclone，先传媒体文件、最后传 `item.json`，确认后只删刚上传的登记文件，失败按 1/5/15/60 分钟退避并分类说明。所有写了一半的文件都是 `*.part` 或 `.trace-*`（含 DASH 分轨）。本地“设置 › 远程”连接、查看状态、同步订阅与 Cookie，本地续期或重新登录后自动推送，推送不了标“Cookie 待同步”并重试。媒体库“⋯ → 导入…”只读扫描后按六类预览、冲突逐条或批量选保留本地 / 用导入的 / 合并，复制先写 `.part` 校验再改名、可中断续做、默认不动来源；“⋯ → 导出…”按全部或当前筛选导出可再导入的文件夹；两台机器各录一部分的直播合并后段号连续；进度在任务页“导入导出”。订阅页可导出、导入 `trace-subscriptions.json`（不含 Cookie），导入先预览。条目清单新增可选的 `cachedBy`，数据结构版本仍是 2。
+
 安装与更新：实现、自动化测试与 ptest 演练通过，v0.1.1 已发布，实机未验收（H-002）：
 
 - **版本号与设置“更新”页（FR-UPD-001、DEC-051 ①）**：正式版 `0.1.x`（还没有发布时从 `0.1.1` 开始），开发版 `<下一个正式版>-dev.<UTC 时间>`；版本、通道、提交与构建时间注入程序，“设置 › 更新”（位于“关于”之前，“关于”页指向“更新”）、诊断、日志、文件属性、安装包名、卸载项与 `VERSION.txt` 一致（[工程规则 §2.1](../dev-rules/engineering.md#versions)）。
@@ -41,7 +42,7 @@
 - **发布（AC-31、AC-33）**：`go run ./tools/release` 检查、签名构建、ptest 升级演练后放进 `dist/trace/`，只有授权后才发布；`.github/workflows/release.yml` 每周检查、构建、演练，发布受仓库变量控制（[工程规则 §2.3、§4.2](../dev-rules/engineering.md#release)）。
 - **安装体验（FR-STORE-001）**：两个通道各自的图标、中文安装界面、发布者 `chialecode` 与版权，安装包名带版本。
 
-已知限制：没有可用 GPU 的电脑走软件解码，界面不会卡死，但高分辨率 60 fps 视频可能掉帧；本机没有 cgo 工具链，`go test -race` 无法运行（记为 `not-run`）；大于 2 GiB 的 `co64` 大文件门控默认未执行；抖音直播仅提供 HLS（MPEG-TS）或为纯音频电台模式时不录制并说明原因（见 LOOP-008、LOOP-009）；抖音真实直播的 HEVC（`CodecID=12`/`hvc1`）流没在真实站点见到，只由合成测试覆盖（ACT-014 的直播间只给 AVC）。
+已知限制：没有可用 GPU 的电脑走软件解码，界面不会卡死，但高分辨率 60 fps 视频可能掉帧；本机没有 cgo 工具链，`go test -race` 无法运行（记为 `not-run`）；大于 2 GiB 的 `co64` 大文件门控默认未执行；抖音直播仅提供 HLS（MPEG-TS）或为纯音频电台模式时不录制并说明原因（见 LOOP-008、LOOP-009）；抖音真实直播的 HEVC（`CodecID=12`/`hvc1`）流没在真实站点见到，只由合成测试覆盖（ACT-014 的直播间只给 AVC）；远程版只经本机、WSL Ubuntu 与假站点、假 rclone 验证，真实 VPS、真实 Cookie 推送与 Google Drive 是 `not-run`（H-003）；本地一次只连一个远程；导入、导出与订阅文件的路径直接输入，没有系统的文件夹选择框；Windows 上的远程冒烟不能发控制台信号，改为结束进程后再启动（`SIGTERM` 收尾在 Linux 上验证）。
 
 <a id="loop"></a>
 ## 后续 LOOP（Agent 侧）
@@ -52,27 +53,27 @@
 | LOOP-002 | 在线播放（不缓存直接播放：Referer 代理、流式解码） | M1 已实现 FR-LIB-002 的本机播放（抖音图文配乐与混排视频页支持在线预览暂存），完整 FR-PLAY-001 在线播放仍在后续范围 |
 | LOOP-003 | 任务详情显示每个文件的进度 | 已实现（FR-CACHE-009） |
 | LOOP-004 | 直播录制的 HTTP-FLV 后备（FLV 标签解析、时间戳修正、转 MP4） | 已实现（FR-DY-009、FR-LIVE-004，[直播设计 §2.1](../design/live.md#flv)） |
-| LOOP-005 | 远程服务器（VPS）无头录制模式与轻量 Web 配置界面 | 通过 `INV-05` 与 `service.Backend` 接口保持后端与 `mygo/ui` 解耦（[架构设计 §9](../design/architecture.md#headless-ext)）；需要时直接为 `internal/service` 增加轻量 `net/http` JSON/Web 控制台或 `mygo/ui` WASM 前端 |
+| LOOP-005 | 远程版的网页配置界面 | 无头远程版已实现（FR-REMOTE-001～008，[远程设计](../design/remote.md)），由本地“设置 › 远程”管理；以后需要网页时，在 `internal/remoteserver` 的 HTTPS 接口上加轻量网页或 `mygo/ui` WASM 前端（[架构设计 §9](../design/architecture.md#headless-ext)） |
 | LOOP-006 | 更新的深化：差分更新的体积、更新说明的排版、Windows 代码签名、winget / Microsoft Store、测试版通道、更新失败时的回退帮助 | 安装与更新已贯通完整流程（[M2 计划 §7](https://github.com/chialecode/trace/blob/15e229c/docs/delivery/stage-plan.md)）；按反馈再排 |
-| LOOP-007 | 代码注释里残留的旧计划与问题编号（如“R8”“F-043”“C22”） | 文档、测试名及 M3 改动的全部 Go 文件已清理为直接描述；未触及的文件在后续改到时顺手清理 |
+| LOOP-007 | 代码注释里残留的旧计划与问题编号（如“R8”“F-043”“C22”） | 已在全仓库代码审查与重构中全部清理为直接描述 |
 | LOOP-008 | 抖音直播的 HLS-TS 后备（MPEG-TS 解复用，候选 `github.com/bluenviron/mediacommon/v2`） | 当前只录 HTTP-FLV；直播间只有 HLS 时录制失败并说明原因。真实检查或用户反馈出现这种直播间时再做（[选型 §4](../research/2026-11-12-douyin.md#a-review)） |
 | LOOP-009 | 纯音频（语音电台）直播录制 | 当前识别语音直播并明确提示暂不支持录制；后续需要时为纯 AAC 直播流补单音频轨 `.m4a` 收尾与播放 |
-| LOOP-010 | 抖音扫码登录与关注列表批量导入 | 当前按 DEC-043 提供粘贴 Cookie 登录；M4 的“我的 › 抖音 › 关注”可以逐个浏览并加入订阅（FR-ACCT-005），像哔哩哔哩那样按分组批量导入仍在后续；扫码按 FR-AUTH-006 单独研究协议与风控成本 |
+| LOOP-010 | 抖音扫码登录与关注列表批量导入 | 当前按 DEC-043 提供粘贴 Cookie 登录；“我的 › 抖音 › 关注”可以逐个浏览并加入订阅（FR-ACCT-005），像哔哩哔哩那样按分组批量导入仍在后续；扫码按 FR-AUTH-006 单独研究协议与风控成本 |
 | LOOP-011 | 抖音缓存作者目录可读命名与订阅网格主动查询开播状态 | 当前作者目录采用 `sec_uid` 的 SHA-256 前 12 位防止改名冲突，订阅网格复用最近一次开播结果避免逐人高频请求（Q-014 第 5 条）；按实机体验反馈评估 |
 | LOOP-012 | 清零 `download`、`live`、`subscription`、`library` 对 `site/bilibili` 的历史直接引用 | `tools/check` 已锁定现有引用者名单、抖音实现全程经 `internal/site` 接口零耦合；后续可平滑收敛旧哔哩哔哩调用点 |
 | LOOP-013 | 抖音直播 FLV 的 CDN 302 跳转修复后的真实录制 | ACT-012 确认 FLV 第一跳 `302` 到白名单外的 HTTPS 443 域名，A 已改为“第一跳查白名单、之后只允许 HTTPS 443 公共域名”（[直播设计](../design/live.md)读流一节）。已解决：[ACT-014](../../USER-ACTIONS.md#act-014) 真实录制通过（AVC 720p，21.56 秒）。以后如果跳转目标变成 IP 或非 443 端口，录制会报“已拦截”，再按日志评估是否放开 |
 | LOOP-014 | 抖音“我的”的真实验证与“观看历史” | ACT-020 与 2026-11-14 的复查（[抖音协议 §12](../research/douyin.md#account-lists)）：关注、全部收藏真实通过；“喜欢”对非浏览器请求固定回 HTTP 200、0 字节（加网页参数和 `DOWNGRADE` 头都一样），现在提示“只给浏览器里的抖音网页”，不打开退避；要拿到需要浏览器通道（Q-016 第 1 条）。收藏夹（`collects/list`、`collects/video/list`）与 `history/read` 还没有真实证据，观看历史入口按 Q-015 第 3 条隐藏（`douyin.WatchHistoryEnabled=false`）；最后一页是否会给 `aweme_list: null` 仍待确认（现在任何一页都按空壳处理） |
-| LOOP-015 | 冒烟偶发“抢焦点” | 2026-11-15 托盘改为原生菜单（F-008）后的开发版 `0.1.2-dev.202611150223` 在 17 次冒烟中有 2 次在 `tray` 与 `restored` 快照报 `StealFocusDetected = true`。B 对同一开发包又连跑 15 次、新开发包连跑 10 次，**都没有复现**，所以根因没有确认。B 做了不放宽检查的加固：安静模式不挂托盘的单击与右键回调、不切全屏（`TestQuietModeSuppressesTrayClickAndMenu`），`reuse_window` 与 `second_instance` 也核对焦点，并新增 `StealFocusDetail`（阶段名、窗口类名与可见性，不含标题）。冒烟中没有人点托盘，所以“托盘回调抢焦点”只是可能的原因之一。下次再出现时按 `StealFocusDetail` 定位具体窗口（[阶段报告 §8、§9](stage-report.md#b-feedback-1)） |
-| LOOP-016 | 一个站点登录失效时，另一个站点的缓存队列也停下 | `TriggerAuthExpired` 调用 `PauseAllActiveWork`。对仍登录的站点，缓存队列按 `app_closed` 暂停，显示“已暂停（应用关闭）”，本次运行内不会自动继续（重启后或点“继续”恢复）；下载任务按原有逻辑全部 `auth_required` 暂停。影响小（需要先有一个站点登录失效），按反馈再改成只暂停失效的站点（A 审查 2026-11-15，[阶段报告 §9](stage-report.md#a-review-feedback-1)） |
+| LOOP-015 | 冒烟偶发“抢焦点” | 2026-11-15 托盘改为原生菜单（F-008）后的开发版 `0.1.2-dev.202611150223` 在 17 次冒烟中有 2 次在 `tray` 与 `restored` 快照报 `StealFocusDetected = true`。B 对同一开发包又连跑 15 次、新开发包连跑 10 次，**都没有复现**，所以根因没有确认。B 做了不放宽检查的加固：安静模式不挂托盘的单击与右键回调、不切全屏（`TestQuietModeSuppressesTrayClickAndMenu`），`reuse_window` 与 `second_instance` 也核对焦点，并新增 `StealFocusDetail`（阶段名、窗口类名与可见性，不含标题）。冒烟中没有人点托盘，所以“托盘回调抢焦点”只是可能的原因之一。下次再出现时按 `StealFocusDetail` 定位具体窗口（[阶段报告 §8、§9](https://github.com/chialecode/trace/blob/8327803/docs/delivery/stage-report.md#b-feedback-1)） |
+| LOOP-016 | 一个站点登录失效时，另一个站点的缓存队列也停下 | 已解决：`PauseAllActiveWork` 现按站点检查活跃凭证，只暂停未登录或已失效的站点，不再暂停仍登录站点的缓存队列、下载任务或直播录制 |
 
 <a id="issues"></a>
 ## 开发与上游事项
 
 | 编号 | 内容 | 状态 |
 | --- | --- | --- |
-| OSS-001 | MyGo 持续高频迭代（当前 `v0.8.3`） | 按 DEC-032 不保留旧版兼容包袱，持续同步 MyGo 最新版；后端核心包不依赖 MyGo（INV-05），只有 `main.go`、`internal/shell`、`internal/ui`、`internal/player`、`internal/locales`、`tools/uishots` 引用 MyGo。MyGo 的更新签名只覆盖更新包内容、不含版本号，TRACE 在清单里加了版本证明；MyGo 的更新不改卸载项的版本，TRACE 在更新后第一次启动时改；MyGo 自己的“应用正在运行”安装提示仍是英文 |
+| OSS-001 | MyGo 持续高频迭代（当前 `v0.9.0`） | 按 DEC-032 不保留旧版兼容包袱，持续同步 MyGo 最新版；后端核心包不依赖 MyGo（INV-05），只有 `main.go`、`internal/shell`、`internal/ui`、`internal/player`、`internal/locales`、`tools/uishots` 引用 MyGo。MyGo 的更新签名只覆盖更新包内容、不含版本号，TRACE 在清单里加了版本证明；MyGo 的更新不改卸载项的版本，TRACE 在更新后第一次启动时改；MyGo 自己的“应用正在运行”安装提示仍是英文 |
 | OSS-002 | Windows Media Foundation（`IMFSourceReader`）纯 Go COM 调用与 `mygo/audio` 音画同步 | 合成 AVC/AAC 与纯音频（WAV/AAC）读取、Seek 与静音测试通过；真实音频设备体验留 H-001 |
-| OSS-003 | `mp4ff` v0.62.0 渐进式 MP4（1 秒交错 + `elst`）、单文件 MP4 流式 `moov` 前置重排及最高音轨后备 | 小样本合并/轨道/时长、尾置 `moov` 磁盘流式前置重排（含 32 位偏移升级 `co64` 合成测试）与失败保留旧文件回归通过；最高 FLAC/杜比另存，主 MP4 用 AAC；真实 FLAC-in-MP4 解码未验证（[媒体选型](../research/2026-11-05-media.md#hires-audio)） |
+| OSS-003 | `mp4ff` v0.63.0 渐进式 MP4（1 秒交错 + `elst`）、单文件 MP4 流式 `moov` 前置重排及最高音轨后备 | 小样本合并/轨道/时长、尾置 `moov` 磁盘流式前置重排（含 32 位偏移升级 `co64` 合成测试）与失败保留旧文件回归通过；最高 FLAC/杜比另存，主 MP4 用 AAC；真实 FLAC-in-MP4 解码未验证（[媒体选型](../research/2026-11-05-media.md#hires-audio)） |
 | OSS-004 | 纯 Go 弹幕排版器与 WebVTT 字幕在 `mygo/ui` 中的叠加性能 | 测试验证：10,000 条弹幕在时间窗二分查找 + 轨道防重叠下单帧耗时远低于 `1 ms` 目标，Seek 无残留 |
 | OSS-005 | 直播录像用 `mp4ff` `Defragment` 把 fMP4（含 HLS fMP4 与 HTTP-FLV 按 GOP 重封装的 fMP4）转普通 MP4 | 默认小样本（AVC、`CodecID=12` HEVC、Enhanced FLV `hvc1` + AAC）转换与登记恢复通过；大于 2 GiB 与稀疏 `co64` 门控未执行，不能记为已验证 |
 | OSS-006 | `mygo/ui` 窗口关闭到托盘销毁窗口、释放纹理并在同一进程内反复重建 | 托盘测试与最新 `tools/smoke` 通过；真实隐藏窗口、单实例与隔离数据锁/路径检查通过；内存数值见[M3 报告](https://github.com/chialecode/trace/blob/f080483/docs/delivery/stage-report.md)及 `artifacts/smoke/smoke.json` |

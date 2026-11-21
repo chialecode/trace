@@ -4,62 +4,75 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/chialecode/trace/internal/appdirs"
-	"github.com/chialecode/trace/internal/update"
 	"github.com/chialecode/trace/tools/internal/build"
 )
 
 const (
-	ptestIdentifier = "io.github.chialecode.trace-ptest"
-	exitTimeout     = 30 * time.Second
-	readyTimeout    = 3 * time.Minute
+	ptestIdentifier    = "io.github.chialecode.trace-ptest"
+	exitTimeout        = 30 * time.Second
+	quitRequestTimeout = 15 * time.Second
+	readyTimeout       = 3 * time.Minute
 )
 
 // rehearsal installs, updates, rejects a tampered update and uninstalls
-// TRACE under the ptest identity only (W5). The release and development
+// TRACE under the ptest identity only. The release and development
 // identities are only read, before and after, to show they did not change.
 type rehearsal struct {
-	in      rehearsalInput
-	res     *rehearsalResult
-	work    string
-	dataDir string
-	env     []string
-	exe     string
-	dir     string
-	server  *localRelease
+	in               rehearsalInput
+	res              *rehearsalResult
+	work             string
+	dataDir          string
+	env              []string
+	exe              string
+	dir              string
+	server           *localRelease
+	snapshotOthersFn func() identitySnapshot
 }
 
 func runRehearsal(in rehearsalInput) (rehearsalResult, error) {
-	start := time.Now()
 	res := newRehearsalResult(in)
-	r := &rehearsal{in: in, res: &res}
-	err := r.run()
-	r.cleanup()
-	res.ElapsedMs = time.Since(start).Milliseconds()
+	r := &rehearsal{in: in, res: &res, snapshotOthersFn: snapshotOthers}
+	return r.execute(r.run, r.cleanup)
+}
+
+func (r *rehearsal) execute(runFn func() error, cleanupFn func()) (rehearsalResult, error) {
+	start := time.Now()
+	snapFn := r.snapshotOthersFn
+	if snapFn == nil {
+		snapFn = snapshotOthers
+	}
+	othersBefore := snapFn()
+	err := runFn()
+	cleanupFn()
+	// Re-verify release and development identities AFTER cleanup completes.
+	r.res.OthersSame = fmt.Sprint(snapFn()) == fmt.Sprint(othersBefore)
+	r.res.ElapsedMs = time.Since(start).Milliseconds()
 	if r.server != nil {
-		res.Requests = r.server.log()
+		r.res.Requests = r.server.log()
+	}
+	if err == nil && !r.res.OthersSame {
+		err = errors.New("release or development installation changed during the ptest rehearsal")
 	}
 	if err != nil {
-		res.Status, res.Reason = "failed", err.Error()
-		return res, err
+		r.res.Status, r.res.Reason = "failed", err.Error()
+		return *r.res, err
 	}
-	res.Status = "passed"
-	return res, nil
+	r.res.Status = "passed"
+	return *r.res, nil
 }
 
 func (r *rehearsal) logf(format string, args ...any) {
@@ -100,9 +113,6 @@ func snapshotOthers() identitySnapshot {
 }
 
 func (r *rehearsal) run() error {
-	others := snapshotOthers()
-	defer func() { r.res.OthersSame = fmt.Sprint(snapshotOthers()) == fmt.Sprint(others) }()
-
 	localAppData := os.Getenv("LOCALAPPDATA")
 	if localAppData == "" {
 		return errors.New("LOCALAPPDATA is not set")
@@ -131,8 +141,12 @@ func (r *rehearsal) run() error {
 	if err := os.WriteFile(changelog, []byte(notes), 0o644); err != nil {
 		return err
 	}
+	relChangelog, err := filepath.Rel(r.in.Root, changelog)
+	if err != nil {
+		return err
+	}
 	zero := 0
-	up := &build.Updates{PublicKey: pubText, URL: "https://rehearsal.invalid/trace-ptest", Changelog: changelog, Deltas: &zero}
+	up := &build.Updates{PublicKey: pubText, URL: "https://rehearsal.invalid/trace-ptest", Changelog: filepath.ToSlash(relChangelog), Deltas: &zero}
 	built := map[string]string{}
 	for _, v := range []string{r.res.OldVersion, r.res.NewVersion} {
 		v := v
@@ -168,12 +182,7 @@ func (r *rehearsal) run() error {
 		if err != nil || !ok {
 			return "", fmt.Errorf("no uninstall entry after the install: %v", err)
 		}
-		if e.Version != r.res.OldVersion {
-			return "", fmt.Errorf("DisplayVersion %q", e.Version)
-		}
-		r.dir, r.exe = e.Location, filepath.Join(e.Location, "trace.exe")
-		r.res.InstallDir = e.Location
-		return "DisplayVersion " + e.Version + " · " + e.Location, nil
+		return r.recordInstalledOld(e)
 	}); err != nil {
 		return err
 	}
@@ -195,7 +204,7 @@ func (r *rehearsal) run() error {
 
 	// The next launch meets a tampered update: a newer version whose
 	// archive was changed after it was signed.
-	if err := r.serveTampered(newDir, key); err != nil {
+	if err := r.server.serveTampered(newDir, r.res.NewVersion, r.res.Tampered, key); err != nil {
 		return err
 	}
 
@@ -319,10 +328,24 @@ func (r *rehearsal) clearEarlier() (string, error) {
 	return strings.Join(notes, "；"), nil
 }
 
+// recordInstalledOld records the installed ptest directory and executable
+// immediately upon finding the uninstall entry so cleanup() still uninstalls
+// ptest if the DisplayVersion check fails.
+func (r *rehearsal) recordInstalledOld(e build.InstallEntry) (string, error) {
+	r.dir, r.exe = e.Location, filepath.Join(e.Location, "trace.exe")
+	r.res.InstallDir = e.Location
+	if e.Version != r.res.OldVersion {
+		return "", fmt.Errorf("DisplayVersion %q", e.Version)
+	}
+	return "DisplayVersion " + e.Version + " · " + e.Location, nil
+}
+
 // quit asks the running ptest TRACE to quit for the update and waits.
 func (r *rehearsal) quit() (string, error) {
 	start := time.Now()
-	if err := build.RunQuiet(r.exe, []string{"--quit-for-update"}, r.env); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), quitRequestTimeout)
+	defer cancel()
+	if err := build.RunQuietContext(ctx, r.exe, []string{"--quit-for-update"}, r.env); err != nil {
 		return "", err
 	}
 	for {
@@ -419,39 +442,6 @@ func (r *rehearsal) waitState(timeout time.Duration, what string, ok func(uiUpda
 	}
 }
 
-// serveTampered makes the local release offer a newer version whose
-// archive is the new one with one byte changed: its attestation is valid,
-// its signature no longer matches the content.
-func (r *rehearsal) serveTampered(newDir string, key ed25519.PrivateKey) error {
-	raw, err := os.ReadFile(filepath.Join(newDir, manifestName))
-	if err != nil {
-		return err
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return err
-	}
-	archiveName := "trace-ptest-" + r.res.NewVersion + "-windows-amd64.tar.gz"
-	archive, err := os.ReadFile(filepath.Join(newDir, archiveName))
-	if err != nil {
-		return err
-	}
-	archive[len(archive)/2] ^= 0xff
-	tamperedName := "trace-ptest-" + r.res.Tampered + "-windows-amd64.tar.gz"
-	sig, _ := m["signature"].(string)
-	m["version"] = r.res.Tampered
-	m["notes"] = "- 被篡改的更新包"
-	m["url"] = "https://rehearsal.invalid/trace-ptest/" + tamperedName
-	m[update.AttestationField] = update.SignAttestation(key, r.res.Tampered, sig)
-	manifest, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return err
-	}
-	r.server.set(map[string][]byte{manifestName: manifest, tamperedName: archive})
-	r.server.tamperedArchive = tamperedName
-	return nil
-}
-
 func (r *rehearsal) cleanup() {
 	if r.dir != "" {
 		if running, _ := build.RunningIn(r.dir); running && r.exe != "" {
@@ -470,82 +460,3 @@ func (r *rehearsal) cleanup() {
 		_ = os.RemoveAll(r.work)
 	}
 }
-
-// localRelease serves the files of a release on the loopback interface,
-// as GitHub would: the ptest identity alone may be pointed at it.
-type localRelease struct {
-	base            string
-	srv             *http.Server
-	mu              sync.Mutex
-	files           map[string][]byte
-	requests        []string
-	tamperedArchive string
-}
-
-func startLocalRelease() (*localRelease, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, err
-	}
-	l := &localRelease{base: "http://" + ln.Addr().String() + "/trace-ptest", files: map[string][]byte{}}
-	l.srv = &http.Server{Handler: http.HandlerFunc(l.handle), ReadHeaderTimeout: 10 * time.Second}
-	go func() { _ = l.srv.Serve(ln) }()
-	return l, nil
-}
-
-func (l *localRelease) handle(w http.ResponseWriter, req *http.Request) {
-	name := path.Base(req.URL.Path)
-	l.mu.Lock()
-	l.requests = append(l.requests, req.Method+" "+name)
-	data, ok := l.files[name]
-	l.mu.Unlock()
-	if !ok {
-		http.NotFound(w, req)
-		return
-	}
-	http.ServeContent(w, req, name, time.Time{}, bytes.NewReader(data))
-}
-
-func (l *localRelease) serveDir(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	files := map[string][]byte{}
-	for _, e := range entries {
-		if n := e.Name(); e.Type().IsRegular() && (n == manifestName || strings.HasSuffix(n, ".tar.gz")) {
-			raw, err := os.ReadFile(filepath.Join(dir, n))
-			if err != nil {
-				return err
-			}
-			files[n] = raw
-		}
-	}
-	l.set(files)
-	return nil
-}
-
-func (l *localRelease) set(files map[string][]byte) {
-	l.mu.Lock()
-	l.files = files
-	l.mu.Unlock()
-}
-
-func (l *localRelease) served(name string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, r := range l.requests {
-		if strings.HasSuffix(r, " "+name) {
-			return true
-		}
-	}
-	return false
-}
-
-func (l *localRelease) log() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return append([]string(nil), l.requests...)
-}
-
-func (l *localRelease) close() { _ = l.srv.Close() }

@@ -758,7 +758,7 @@ func TestSchemaV2FaultInjectionMatrixAndBackupAbort(t *testing.T) {
 				if bakErr != nil || string(bakBytes) != string(origBytes) {
 					t.Fatalf("%s.premigrate-1 missing or mismatched: %v", targetFile, bakErr)
 				}
-				matches, _ := filepath.Glob(filepath.Join(env.dataDir, targetFile+".tmp-*"))
+				matches, _ := filepath.Glob(filepath.Join(env.dataDir, ".trace-"+targetFile+".*.tmp"))
 				if len(matches) != 0 {
 					t.Fatalf("temp files leaked after pre-rename fault: %v", matches)
 				}

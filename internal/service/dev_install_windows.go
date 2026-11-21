@@ -3,8 +3,6 @@
 package service
 
 import (
-	"errors"
-
 	"github.com/chialecode/trace/internal/update"
 	"golang.org/x/sys/windows/registry"
 )
@@ -20,7 +18,7 @@ func ReadSystemInstalledDevVersion() string {
 
 func readRegistryDisplayVersion(root registry.Key, subkey string) string {
 	k, err := registry.OpenKey(root, subkey, registry.QUERY_VALUE)
-	if errors.Is(err, registry.ErrNotExist) || err != nil {
+	if err != nil {
 		return ""
 	}
 	defer k.Close()

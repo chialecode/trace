@@ -339,7 +339,7 @@ TRACE 登录确认判定式（缺一不可；精确未登录错误码在 [ACT-01
 | `images[i].download_url_list[]` | **带抖音水印图地址**（URL 模板常含 `tplv-dy-water` 或 `watermark` 字样），TRACE 选流时**跳过不用** |
 | **`images[i].live_photo_type`** 与 **`images[i].clip_type`** | **实况照片（Live Photo）标识**：普通静态图无 `video`（或 `video: null`）；实况照片单页携带 `live_photo_type == 1`（常见伴随 `clip_type == 5`，其他循环模式可能有不同非零 `clip_type`），且同级带非空 `images[i].video` 对象（仅在 PC Web `aid=6383` 接口完整返回，移动端分享 HTML 常缺失该字段） |
 | **`images[i].video.play_addr.url_list[]`**（及 `images[i].video.bit_rate[]`） | **实况照片对应的无水印动态短片**（通常为 3～5 秒、带声音的 H.264/H.265 MP4 单文件，含 `width`、`height`、`duration`、`data_size`）。若声明 `live_photo_type == 1` 但缺失 `video.play_addr.url_list`，应视为结构异常而非静默退化为静态图 |
-| `music.play_url.url_list[]` 与 `music.is_original_sound` | 图集配乐/原声 MP3/M4A 地址（可能为空——部分受版权保护曲目 `play_url` 下无 `url_list`）。注意：**判断是否为作者原声应读布尔值 `music.is_original_sound`（而非 `music.is_original`，后者表示音乐人发行曲目）** |
+| `music.play_url.url_list[]` 与 `music.is_original_sound` | 图集配乐/原声 MP3/M4A 地址（可能为空——部分受版权保护曲目 `play_url` 下无 `url_list`）。注意：**判断是否为作者原声应读布尔值 `music.is_original_sound`（而非 `music.is_original`，后者表示音乐人发行曲目）**。`url_list` 为空时 TRACE 改用顶层 `video.play_addr` 的地址（下一行：图文上它装的就是配乐），下载后仍按字节判断是不是音频；2026-11-21 实测确认部分空 `play_url` 图文的顶层 `video.play_addr` 指向字节静态域 `*.bytednsdoc.com`（返回有效 MP3 音频），已将 `bytednsdoc.com` 加入抖音媒体域名白名单，且配乐跳转与直播一样允许任意公网 HTTPS 443 域名（IP、本地主机名与 HTTP 仍拦截），失败原因写出具体错误分类与说明 |
 | **视频页（图文里混排的视频，`实测（ACT-010 V-04，2026-11-13）`）** | 抖音图文支持把静态图、实况照片、独立视频页与配乐混排在同一条 `images[]` 作品中：单页含非空 `images[i].video.play_addr`（或 `bit_rate[]`）且 `live_photo_type != 1` 时，按**视频页**解析（按 §6.5 同等规则选无水印单文件 MP4 流，以 `images[i].url_list` 作该页封面；实测混排样本在 `aweme/detail` 与无 Cookie CDN 拉取/容器校验中一次通过）。未知形态单页不报错，保底保存 `images[i].url_list` 图片并标记 `unknownKind` |
 | **外层 `aweme.video.play_addr`（必防陷阱！）** | 在图文作品上，顶层 `aweme.video.play_addr` 依然存在，但它里面装的是**背景音乐音频文件**（如 `.mp3` / 音频流），**绝不是视频画面**！解析器必须先判 `len(images) > 0` 走图文分支，绝不能先看 `video.play_addr != nil` 把图文误当成普通视频下载 |
 
@@ -395,8 +395,8 @@ TRACE 登录确认判定式（缺一不可；精确未登录错误码在 [ACT-01
    - **抖音常规点播视频（含实况照片动态短片）直接返回音视频已交错封装好的完整单文件 MP4**（含视频轨 H.264/HEVC 与音频轨 AAC），下载校验字节长度一致后直接原子落盘即可播放，**无需二次混流合并**！（唯独图文作品若同时保存多张静态图、实况短片与独立配乐音频，按条目目录内多文件组织）。
 2. **必要请求头与凭证隔离铁律**：
    - 必带 `User-Agent`（与 API 相同的桌面 Chrome UA）与 `Referer: https://www.douyin.com/`；
-   - **禁止向媒体 CDN 域名发送用户登录 Cookie**（常见官方点播与图片 CDN 后缀：`*.douyinvod.com`、`*.zjcdn.com`、`*.douyinpic.com`、`*.byteimg.com`、`*.douyinstatic.com`、`*.bdxiguaimg.com`、`*.snssdk.com`）。CDN 鉴权完全依靠 URL 查询串或路径中的签名参数，不带 Cookie 既防止会话凭证跨边缘节点泄露，也避免异常会话绑定限速。
-   - 特例：极少数作品标记 `video.is_need_set_cookie == true` 且仅能走 `www.douyin.com/aweme/v1/play/` 302 跳转时，只有发往 `www.douyin.com` 的首跳属于主站域，302 落到 CDN 域名后的拉流请求仍**绝不转发 Cookie**。
+   - **禁止向媒体 CDN 域名发送用户登录 Cookie**（常见官方点播、配乐与图片 CDN 后缀：`*.douyinvod.com`、`*.zjcdn.com`、`*.douyinpic.com`、`*.byteimg.com`、`*.douyinstatic.com`、`*.bytednsdoc.com`、`*.bdxiguaimg.com`、`*.snssdk.com`）。CDN 鉴权完全依靠 URL 查询串或路径中的签名参数，不带 Cookie 既防止会话凭证跨边缘节点泄露，也避免异常会话绑定限速。
+   - 特例（2026-11-21 实测证实）：部分图文视频页、实况片段或视频的 `video` 节点标记 `need_set_token == true` 或 `is_need_set_cookie == true`，其直链 `v26-web*.douyinvod.com` 携带 `ply_type=3` 策略参数、直接拉取固定返回 HTTP 403；此时 TRACE 先由已登录的 `Client.ResolvePlayRedirect` 向 `www.douyin.com/aweme/v1/play/` 发带 Cookie 且禁止自动重定向（`noRedirect`）的单次首跳，校验响应 `Location` 为合法公网 HTTPS 443 媒体地址后，再走无 Cookie 的分段下载器拉取（后续 CDN 边缘 302 仍严格要求公网 HTTPS 443，且**绝不向任何 CDN 域名发送 Cookie**）。普通未标 `need_set_token` 的作品仍优先走直链 CDN，仅在直链刷新后仍持续 403/404 时再回退该首跳解析。
 3. **`Range` 分段拉取与断点续传**：
    - 抖音点播 CDN（`*.douyinvod.com` 等）标准支持 `Range: bytes=<start>-<end>` 并返回 `HTTP 206 Partial Content` 与 `Content-Range`（`源码阅读（本机参考索引中的用户视频列表解析实现、抖音签名与访问上下文实现，2026-11-12）`；具体 8 MiB 分段表现将在 [ACT-010](#act-010) 实测核对）。
    - TRACE 可直接复用[媒体与存储选型 §5](2026-11-05-media.md#download)的分段 `Range` 下载器与 `.part` 续传机制，并根据 `play_addr.data_size` 或首个 `206` 的 `Content-Range` 总长度做严格完整性校验（防提前断连残缺文件入库）。

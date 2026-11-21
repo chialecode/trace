@@ -74,7 +74,7 @@ func TestTasksCheckPlanSection(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && app.pending["check-updates"] {
+	for time.Now().Before(deadline) && app.isPending("check-updates") {
 		settle(tt, 1)
 		time.Sleep(10 * time.Millisecond)
 	}

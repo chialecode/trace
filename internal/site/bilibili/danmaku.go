@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/chialecode/trace/internal/site"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -32,7 +33,7 @@ type DanmakuElem struct {
 }
 
 // DanmakuXML fetches all 6-minute protobuf danmaku segments for cid, deduplicates by idStr,
-// sorts by progress ascending, and returns standard Bilibili XML bytes (C13).
+// sorts by progress ascending, and returns standard Bilibili XML bytes.
 func (c *Client) DanmakuXML(ctx context.Context, cid int64, durationSec int) ([]byte, error) {
 	if err := c.RequireAuth("/x/v2/dm/web/seg.so"); err != nil {
 		return nil, err
@@ -59,12 +60,14 @@ func (c *Client) DanmakuXML(ctx context.Context, cid int64, durationSec int) ([]
 		q.Set("oid", strconv.FormatInt(cid, 10))
 		q.Set("segment_index", strconv.Itoa(segIdx))
 		fullURL := strings.TrimRight(c.endpoints.APIBase, "/") + "/x/v2/dm/web/seg.so?" + q.Encode()
+		safeEndpoint := site.SanitizeEndpoint(fullURL)
 
 		resp, raw, err := c.doAPIRequest(ctx, http.MethodGet, fullURL, nil, "", true)
 		if err != nil {
 			if segIdx > 1 && resp != nil && resp.StatusCode == http.StatusNotFound {
 				break
 			}
+			c.ReportAutomaticError(ctx, err)
 			return nil, err
 		}
 		if len(raw) == 0 {
@@ -72,12 +75,13 @@ func (c *Client) DanmakuXML(ctx context.Context, cid int64, durationSec int) ([]
 		}
 		// Check if response is a JSON error envelope rather than protobuf.
 		if raw[0] == '{' && bytes.Contains(raw, []byte(`"code"`)) {
-			if segIdx > 1 {
-				break
+			if _, envErr := c.decodeBiliEnvelope(raw, safeEndpoint, true); envErr != nil {
+				c.ReportAutomaticError(ctx, envErr)
+				return nil, envErr
 			}
 			return nil, &SiteError{
 				Kind:     ErrKindUnavailable,
-				Endpoint: fullURL,
+				Endpoint: safeEndpoint,
 				Message:  "弹幕接口返回错误响应",
 			}
 		}
@@ -86,7 +90,7 @@ func (c *Client) DanmakuXML(ctx context.Context, cid int64, durationSec int) ([]
 		if err != nil {
 			return nil, &SiteError{
 				Kind:     ErrKindSchemaChanged,
-				Endpoint: fullURL,
+				Endpoint: safeEndpoint,
 				Message:  "解析弹幕 protobuf 分片失败",
 				Err:      err,
 			}

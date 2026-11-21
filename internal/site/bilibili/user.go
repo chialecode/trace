@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chialecode/trace/internal/site"
 )
 
 var reSpaceRenderData = regexp.MustCompile(`<script\s+id=["']__RENDER_DATA__["'][^>]*>([^<]+)</script>`)
@@ -186,7 +188,7 @@ func isValidSpaceAccessID(id string) bool {
 	return true
 }
 
-func (c *Client) ensureSpaceWebID(ctx context.Context, mid int64) string {
+func (c *Client) ensureSpaceWebID(ctx context.Context, mid int64) (string, error) {
 	now := c.nowFunc()
 	c.webIDMu.Lock()
 	if c.webIDCache == nil {
@@ -194,7 +196,7 @@ func (c *Client) ensureSpaceWebID(ctx context.Context, mid int64) string {
 	}
 	if entry, ok := c.webIDCache[mid]; ok && now.Sub(entry.FetchedAt) < 30*time.Minute {
 		c.webIDMu.Unlock()
-		return entry.Value
+		return entry.Value, nil
 	}
 	c.webIDMu.Unlock()
 
@@ -203,7 +205,15 @@ func (c *Client) ensureSpaceWebID(ctx context.Context, mid int64) string {
 	if spaceBase != "" && (strings.Contains(spaceBase, "127.0.0.1") || strings.Contains(spaceBase, "localhost") || !c.allowLocalhost) {
 		spaceURL := fmt.Sprintf("%s/%d", spaceBase, mid)
 		_, raw, err := c.doAPIRequest(ctx, http.MethodGet, spaceURL, nil, "", true)
-		if err == nil && len(raw) > 0 {
+		if err != nil {
+			if ctx.Err() != nil || site.IsRoundStop(err) || site.IsKind(err, ErrKindQuota) || site.IsKind(err, ErrKindBackoff) {
+				c.ReportAutomaticError(ctx, err)
+				return "", err
+			}
+			// Non-fatal space HTML miss (e.g. 404): degrade without poisoning cache.
+			return "", nil
+		}
+		if len(raw) > 0 {
 			if len(raw) > 2*1024*1024 {
 				raw = raw[:2*1024*1024]
 			}
@@ -230,10 +240,10 @@ func (c *Client) ensureSpaceWebID(ctx context.Context, mid int64) string {
 		FetchedAt: now,
 	}
 	c.webIDMu.Unlock()
-	return webID
+	return webID, nil
 }
 
-// UserVideos fetches a page of creator videos from /x/space/wbi/arc/search with required WBI, dm_img, and w_webid parameters (C11, C12).
+// UserVideos fetches a page of creator videos from /x/space/wbi/arc/search with required WBI, dm_img, and w_webid parameters.
 func (c *Client) UserVideos(ctx context.Context, mid int64, pn, ps int, order, keyword string) (UserVideosPage, error) {
 	if err := c.RequireAuth("/x/space/wbi/arc/search"); err != nil {
 		return UserVideosPage{}, err
@@ -268,7 +278,11 @@ func (c *Client) UserVideos(ctx context.Context, mid int64, pn, ps int, order, k
 	params.Set("dm_img_str", "bm8gd2ViZ2")
 	params.Set("dm_cover_img_str", "bm8gd2ViZ2")
 	params.Set("dm_img_inter", `{"ds":[],"wh":[0,0,0],"of":[0,0,0]}`)
-	if webID := c.ensureSpaceWebID(ctx, mid); webID != "" {
+	webID, err := c.ensureSpaceWebID(ctx, mid)
+	if err != nil {
+		return UserVideosPage{}, err
+	}
+	if webID != "" {
 		params.Set("w_webid", webID)
 	}
 

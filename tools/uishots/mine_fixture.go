@@ -121,15 +121,7 @@ func (b *screenshotBackend) AccountPage(_ context.Context, siteID, kind, folder,
 	return service.AccountPage{Items: []service.AccountItem{}}, nil
 }
 
-// mineShotScene is one 我的 screenshot scene.
-type mineShotScene struct {
-	Name            string
-	Setup           func()
-	RequiredLabels  []string
-	ForbiddenLabels []string
-}
-
-func mineShotScenes(app *ui.App, fb *screenshotBackend) []mineShotScene {
+func mineShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 	open := func(siteID, kind string) func() {
 		return func() {
 			app.PlayerOverlay.Open, app.ImageViewer.Open = false, false
@@ -140,7 +132,7 @@ func mineShotScenes(app *ui.App, fb *screenshotBackend) []mineShotScene {
 			app.OpenMine(siteID, kind)
 		}
 	}
-	return []mineShotScene{
+	return []sceneSpec{
 		{Name: "mine-folded", Setup: open("", ""),
 			RequiredLabels:  []string{"我的站点：哔哩哔哩", "我的站点：抖音"},
 			ForbiddenLabels: []string{"我的功能：哔哩哔哩 收藏夹", "我的功能：抖音 喜欢", "我的虚拟列表"}},

@@ -330,7 +330,9 @@ func Open(path string) (*Store, bool, string, error) {
 		if bErr != nil {
 			return nil, false, "", bErr
 		}
-		_ = storage.WriteJSONAtomic(path, def, 0o600)
+		if wErr := storage.WriteJSONAtomic(path, def, 0o600); wErr != nil {
+			return nil, true, backup, wErr
+		}
 		return s, true, backup, nil
 	}
 	if loaded.Version > CurrentSchemaVersion {
@@ -400,7 +402,7 @@ func (s *Store) Mutate(fn func(*State)) (State, error) {
 	defer s.mu.Unlock()
 	next := cloneState(s.current)
 	fn(&next)
-	norm := Normalize(next)
+	norm := cloneState(Normalize(next))
 	if err := storage.WriteJSONAtomic(s.path, norm, 0o600); err != nil {
 		return State{}, err
 	}
@@ -410,7 +412,7 @@ func (s *Store) Mutate(fn func(*State)) (State, error) {
 
 // Update saves the updated UI state atomically.
 func (s *Store) Update(next State) (State, error) {
-	norm := Normalize(next)
+	norm := cloneState(Normalize(next))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := storage.WriteJSONAtomic(s.path, norm, 0o600); err != nil {

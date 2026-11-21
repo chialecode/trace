@@ -12,7 +12,7 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// M4-K33 & M4-K35:
+// Live recording settings and Tasks › 录制异常 UI (DEC-051 ③, DEC-057 ①):
 // 1. Settings "订阅与直播" does not render "同时录制数".
 // 2. When N == 0 recent incident sessions exist, Tasks sidebar & narrow < 1000 segmented bar show "录制异常" (no "(0)") and empty state "最近没有录制异常".
 // 3. When active + recent (< 7 days) + older (> 7 days) sessions have incidents:
@@ -22,7 +22,7 @@ import (
 //   - "录制异常" page renders per-session streamer/room, site badge, start time, incident occurrence time, Chinese type explanation, and affected duration/segments.
 //   - Finished recordings open offline local detail (/library/item) with 0 network requests.
 //   - Narrow window (< 1000) top segmented bar exposes "录制异常（2）" and switches cleanly.
-func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI_M4K33_M4K35(t *testing.T) {
+func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
 	posted := make(chan func(), 64)
@@ -33,7 +33,7 @@ func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI_M4K33_M4K35(t *testing.
 	spy := &spyOfflineLibraryBackend{BackendAPI: rawBackend}
 	app.backend = spy
 
-	// --- 1. M4-K33: Settings "订阅与直播" has NO "同时录制数" ---
+	// --- 1. Settings "订阅与直播" has NO "同时录制数" ---
 	app.Navigate(RouteSettings)
 	app.SettingsCategory = "subscription"
 	tt := ui.NewTester(app.View, 1280, 860)
@@ -43,10 +43,10 @@ func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI_M4K33_M4K35(t *testing.
 		t.Fatal("expected Settings subscription category to render 定时检查更新")
 	}
 	if tt.HasText("同时录制数") {
-		t.Fatal("M4-K33: Settings '订阅与直播' must NOT render '同时录制数'")
+		t.Fatal("Settings '订阅与直播' must NOT render '同时录制数'")
 	}
 
-	// --- 2. M4-K35: N == 0 -> "录制异常" without "(0)" + clear empty state ---
+	// --- 2. N == 0 -> "录制异常" without "(0)" + clear empty state ---
 	app.Navigate(RouteTasks)
 	tt.Frame()
 
@@ -54,7 +54,7 @@ func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI_M4K33_M4K35(t *testing.
 		t.Fatal("expected Tasks sidebar to render '录制异常'")
 	}
 	if tt.HasText("录制异常（0）") || tt.HasText("录制异常(0)") {
-		t.Fatal("M4-K35: when N == 0, sidebar must show '录制异常' WITHOUT '(0)'")
+		t.Fatal("when N == 0, sidebar must show '录制异常' WITHOUT '(0)'")
 	}
 	if err := tt.Click("任务侧栏：录制异常"); err != nil {
 		t.Fatal(err)

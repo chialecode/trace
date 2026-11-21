@@ -21,14 +21,6 @@ func makeBlob(b []byte) windows.DataBlob {
 	}
 }
 
-func encryptBytes(plain []byte) ([]byte, error) {
-	return encryptBytesWithEntropy(plain, dpapiEntropy)
-}
-
-func decryptBytes(cipher []byte) ([]byte, error) {
-	return decryptBytesWithEntropy(cipher, dpapiEntropy)
-}
-
 func encryptBytesWithEntropy(plain []byte, entropy []byte) ([]byte, error) {
 	if len(entropy) == 0 {
 		entropy = dpapiEntropy
@@ -97,4 +89,15 @@ func decryptBytesWithEntropy(cipher []byte, entropy []byte) ([]byte, error) {
 	out := make([]byte, outBlob.Size)
 	copy(out, unsafe.Slice(outBlob.Data, outBlob.Size))
 	return out, nil
+}
+
+// EnsureKeyFile has nothing to do on Windows: DPAPI keeps the key.
+func EnsureKeyFile(string) error { return nil }
+
+func protectFor(_ string, plain, entropy []byte) ([]byte, error) {
+	return encryptBytesWithEntropy(plain, entropy)
+}
+
+func unprotectFor(_ string, data, entropy []byte) ([]byte, error) {
+	return decryptBytesWithEntropy(data, entropy)
 }

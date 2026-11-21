@@ -437,73 +437,21 @@ func formatAccountKey(siteID site.ID, uid string) string {
 }
 
 func mapRoomToAccountState(rs live.RoomState) LiveAccountState {
-	if strings.EqualFold(rs.Site, string(site.Douyin)) {
-		uidStr := strings.TrimSpace(rs.AccountUID)
-		accountKey := ""
-		if uidStr != "" {
-			accountKey = formatAccountKey(site.Douyin, uidStr)
-		}
-		roomStr := strings.TrimSpace(rs.RoomIDStr)
-		if roomStr == "" && rs.RoomID > 0 {
-			roomStr = strconv.FormatInt(rs.RoomID, 10)
-		}
-		recKey := strings.TrimSpace(rs.RoomKey)
-		if recKey == "" && roomStr != "" {
-			recKey = "douyin:live:" + roomStr
-		}
-		audioOnly := rs.AudioOnly || rs.LiveState == site.LiveStateAudioOnly
-		liveStatus := rs.LiveStatus
-		if audioOnly {
-			liveStatus = 1
-		}
-		transport := firstNonEmpty(rs.Transport, string(site.LiveTransportHTTPFLV))
-		partPath := firstNonEmpty(rs.RecordPartPath, resolveRecordingPartPath(rs.RecordItemDir))
-		return LiveAccountState{
-			Site:              string(site.Douyin),
-			AccountKey:        accountKey,
-			RecordingKey:      recKey,
-			UID:               uidStr,
-			RoomID:            roomStr,
-			WebRID:            rs.WebRID,
-			Uname:             rs.Uname,
-			Face:              rs.Face,
-			Title:             rs.Title,
-			Cover:             rs.Cover,
-			AreaName:          rs.AreaName,
-			NoRoom:            rs.LiveState == site.LiveStateNone,
-			LiveStatus:        liveStatus,
-			LiveSince:         rs.LiveSince,
-			StatusText:        rs.StatusText,
-			QualityName:       rs.QualityName,
-			Codec:             rs.Codec,
-			Transport:         transport,
-			AudioOnly:         audioOnly,
-			Recording:         rs.Recording,
-			RecordSession:     rs.RecordSession,
-			RecordDurationSec: rs.RecordDurationSec,
-			RecordSpeedBps:    rs.RecordSpeedBps,
-			RecordBytes:       rs.RecordBytes,
-			RecordSegments:    rs.RecordSegments,
-			RecordItemDir:     rs.RecordItemDir,
-			RecordPartPath:    partPath,
-			RecordPartIndex:   rs.RecordPartIndex,
-			RecordPartBytes:   rs.RecordPartBytes,
-			RecordPartReady:   rs.RecordPartReady,
-			PreviewSupported:  rs.PreviewSupported,
-			PreviewReason:     rs.PreviewReason,
-			StopReason:        rs.StopReason,
-			LastError:         rs.LastError,
-			UpdatedAt:         rs.UpdatedAt,
-		}
+	isDouyin := strings.EqualFold(rs.Site, string(site.Douyin))
+	siteID := site.Bilibili
+	if isDouyin {
+		siteID = site.Douyin
 	}
 
 	uidStr := strings.TrimSpace(rs.AccountUID)
-	accountKey := ""
-	if rs.UID > 0 {
+	var mid int64
+	if !isDouyin && rs.UID > 0 {
 		uidStr = strconv.FormatInt(rs.UID, 10)
+		mid = rs.UID
 	}
+	accountKey := ""
 	if uidStr != "" {
-		accountKey = formatAccountKey(site.Bilibili, uidStr)
+		accountKey = formatAccountKey(siteID, uidStr)
 	}
 	roomStr := strings.TrimSpace(rs.RoomIDStr)
 	if roomStr == "" && rs.RoomID > 0 {
@@ -511,35 +459,64 @@ func mapRoomToAccountState(rs live.RoomState) LiveAccountState {
 	}
 	recKey := strings.TrimSpace(rs.RoomKey)
 	if recKey == "" && roomStr != "" {
-		recKey = "bilibili:live:" + roomStr
+		recKey = string(siteID) + ":live:" + roomStr
 	}
-	noRoom := rs.RoomID <= 0
-	statusText := rs.StatusText
-	if noRoom && statusText == "" {
-		statusText = "未开通直播间"
+
+	var (
+		noRoom     bool
+		audioOnly  bool
+		liveStatus int
+		statusText string
+		transport  string
+		webRID     string
+	)
+	if isDouyin {
+		audioOnly = rs.AudioOnly || rs.LiveState == site.LiveStateAudioOnly
+		liveStatus = rs.LiveStatus
+		if audioOnly {
+			liveStatus = 1
+		}
+		noRoom = rs.LiveState == site.LiveStateNone
+		statusText = rs.StatusText
+		transport = firstNonEmpty(rs.Transport, string(site.LiveTransportHTTPFLV))
+		webRID = rs.WebRID
+	} else {
+		audioOnly = rs.AudioOnly
+		liveStatus = rs.LiveStatus
+		noRoom = rs.RoomID <= 0
+		statusText = rs.StatusText
+		if noRoom && statusText == "" {
+			statusText = "未开通直播间"
+		}
+		transport = firstNonEmpty(rs.Transport, string(site.LiveTransportHLSFMP4))
 	}
-	transport := firstNonEmpty(rs.Transport, string(site.LiveTransportHLSFMP4))
-	partPath := firstNonEmpty(rs.RecordPartPath, resolveRecordingPartPath(rs.RecordItemDir))
+
+	partPath := rs.RecordPartPath
+	if partPath == "" && rs.Recording {
+		partPath = resolveRecordingPartPath(rs.RecordItemDir)
+	}
+
 	return LiveAccountState{
-		Site:              string(site.Bilibili),
+		Site:              string(siteID),
 		AccountKey:        accountKey,
 		RecordingKey:      recKey,
 		UID:               uidStr,
-		Mid:               rs.UID,
+		Mid:               mid,
 		RoomID:            roomStr,
+		WebRID:            webRID,
 		Uname:             rs.Uname,
 		Face:              rs.Face,
 		Title:             rs.Title,
 		Cover:             rs.Cover,
 		AreaName:          rs.AreaName,
 		NoRoom:            noRoom,
-		LiveStatus:        rs.LiveStatus,
+		LiveStatus:        liveStatus,
 		LiveSince:         rs.LiveSince,
 		StatusText:        statusText,
 		QualityName:       rs.QualityName,
 		Codec:             rs.Codec,
 		Transport:         transport,
-		AudioOnly:         rs.AudioOnly,
+		AudioOnly:         audioOnly,
 		Recording:         rs.Recording,
 		RecordSession:     rs.RecordSession,
 		RecordDurationSec: rs.RecordDurationSec,
@@ -557,71 +534,6 @@ func mapRoomToAccountState(rs live.RoomState) LiveAccountState {
 		StopReason:        rs.StopReason,
 		LastError:         rs.LastError,
 		UpdatedAt:         rs.UpdatedAt,
-	}
-}
-
-func mapBilibiliRoomToAccountState(rs live.RoomState) LiveAccountState {
-	return mapRoomToAccountState(rs)
-}
-
-func mapSiteLiveStatusToAccountState(st site.LiveStatus) LiveAccountState {
-	siteStr := string(st.Site)
-	if siteStr == "" {
-		siteStr = string(site.Douyin)
-	}
-	accountKey := ""
-	if st.AccountUID != "" {
-		accountKey = formatAccountKey(site.ID(siteStr), st.AccountUID)
-	}
-	recKey := ""
-	if st.RoomID != "" {
-		recKey = siteStr + ":live:" + st.RoomID
-	}
-	liveStatus := 0
-	statusText := "未开播"
-	noRoom := false
-	audioOnly := false
-	switch st.Status {
-	case site.LiveStateLive:
-		liveStatus = 1
-		statusText = "直播中"
-	case site.LiveStateAudioOnly:
-		liveStatus = 1
-		audioOnly = true
-		statusText = "纯语音直播"
-	case site.LiveStateRound:
-		liveStatus = 2
-		statusText = "轮播中"
-	case site.LiveStateNone:
-		noRoom = true
-		statusText = "未开通直播间"
-	default:
-		statusText = "未开播"
-	}
-	transport := string(site.LiveTransportHTTPFLV)
-	if st.Site == site.Bilibili {
-		transport = string(site.LiveTransportHLSFMP4)
-	}
-	return LiveAccountState{
-		Site:         siteStr,
-		AccountKey:   accountKey,
-		RecordingKey: recKey,
-		UID:          st.AccountUID,
-		RoomID:       st.RoomID,
-		WebRID:       st.WebRID,
-		Uname:        st.Uname,
-		Face:         st.Face,
-		Title:        st.Title,
-		Cover:        st.Cover,
-		AreaName:     st.AreaName,
-		NoRoom:       noRoom,
-		LiveStatus:   liveStatus,
-		LiveSince:    st.LiveSince,
-		StatusText:   statusText,
-		QualityName:  st.QualityName,
-		Codec:        st.Codec,
-		Transport:    transport,
-		AudioOnly:    audioOnly,
 	}
 }
 

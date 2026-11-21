@@ -93,9 +93,9 @@ func TestHomePanelListsLiveRooms(t *testing.T) {
 	}
 }
 
-// Fourth-round feedback: a post shows one plain dot. A cached post whose
-// video is complete shows only the post's green dot (no second mark on the
-// video card); one whose video is partly cached shows a single yellow dot.
+// A post shows one plain dot. A cached post whose video is complete shows only
+// the post's green dot (no second mark on the video card); one whose video is
+// partly cached shows a single yellow dot.
 func TestPostShowsOneDotForItsWholeContent(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()

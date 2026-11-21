@@ -239,17 +239,17 @@ func (b *s1TrackingBackend) OpenLink(_ context.Context, raw string) (*service.Op
 	}, nil
 }
 
-// M4-K36: Subscription detail defaults to "内容", renders cached items across all linked
+// Subscription detail defaults to "内容", renders cached items across all linked
 // Bilibili + Douyin accounts (including live recordings) with virtualized pagination and
 // strictly 0 site HTTP requests, shows proper empty state without extra primary buttons,
-// and guards 0-account subscriptions from querying the entire library.
-func TestM4K36_SubscriptionDetailContentTabCrossSiteZeroRequestsAndEmptyState(t *testing.T) {
+// and guards 0-account subscriptions from querying the entire library (DEC-051 ⑦).
+func TestSubscriptionDetailContentTabCrossSiteZeroRequestsAndEmptyState(t *testing.T) {
 	var siteHTTPRequests atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/x/web-interface/nav", func(w http.ResponseWriter, r *http.Request) {
 		siteHTTPRequests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"code":0,"data":{"isLogin":true,"mid":12345,"uname":"S1测试用户"}}`)
+		_, _ = fmt.Fprint(w, `{"code":0,"data":{"isLogin":true,"mid":12345,"uname":"测试用户"}}`)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		siteHTTPRequests.Add(1)
@@ -575,6 +575,49 @@ func TestM4K36_SubscriptionDetailContentTabCrossSiteZeroRequestsAndEmptyState(t 
 		t.Fatalf("expected 0 LiveStatus queries on subscription content tab, got %d", got)
 	}
 
+	// Each cached post has a local-only "⋯" (show in folder, delete); deleting
+	// a dynamic removes it from the feed and its registered files from disk.
+	app.SubFeedListState.ScrollTo(0, ui.Start)
+	tt.Frame()
+	dynFeedKey := ""
+	for _, e := range app.SubFeedItems {
+		if e.Title == "甲的B站图文动态" {
+			dynFeedKey = e.FeedKey
+		}
+	}
+	if dynFeedKey == "" {
+		t.Fatal("B站 dynamic missing from subscription feed")
+	}
+	if got := menuItems(t, tt, "帖子更多："+dynFeedKey); strings.Join(got, ",") != "在资源管理器中显示,-,删除" {
+		t.Fatalf("content post menu = %v", got)
+	}
+	tt.Frame()
+	chooseMenuItem(t, tt, "帖子更多："+dynFeedKey, "删除")
+	tt.Frame()
+	if !app.DeleteConfirm.Open || !tt.HasText("动态：甲的B站图文动态") {
+		t.Fatalf("expected delete confirmation naming the dynamic, open=%v", app.DeleteConfirm.Open)
+	}
+	if err := tt.Click("确认删除"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	drainPosted(posted)
+	tt.Frame()
+	if len(app.SubFeedItems) == 0 || app.SubFeedItems[0].Title != "甲的抖音最新作品" {
+		t.Fatalf("after delete the feed should reload from the newest post, got %d items", len(app.SubFeedItems))
+	}
+	for _, e := range app.SubFeedItems {
+		if e.Title == "甲的B站图文动态" {
+			t.Fatal("deleted dynamic still in subscription feed")
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dynDir, "img1.png")); !os.IsNotExist(err) {
+		t.Fatalf("deleted dynamic's image still on disk: %v", err)
+	}
+	if got := siteHTTPRequests.Load(); got != 0 {
+		t.Fatalf("expected 0 site HTTP requests after deleting from content tab, got %d", got)
+	}
+
 	// Empty state for subscription with 0 cached items: exact copy, hint for "⋯" -> "检查更新", no extra primary button.
 	app.OpenSubscriptionDetail(subEmpty)
 	tt.Frame()
@@ -605,10 +648,10 @@ func TestM4K36_SubscriptionDetailContentTabCrossSiteZeroRequestsAndEmptyState(t 
 	}
 }
 
-// M4-K36: "账号" tab merges live status per row, provides direct start/stop recording
+// "账号" tab merges live status per row, provides direct start/stop recording
 // for live/recording accounts, puts secondary actions in each row's "⋯" menu, omits
 // duplicate recorded-lives list, and keeps bottom "关联另一个账号" intact.
-func TestM4K36_SubscriptionDetailAccountsTabLiveRecordingAndMoreMenu(t *testing.T) {
+func TestSubscriptionDetailAccountsTabLiveRecordingAndMoreMenu(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
 	rawBackend := app.backend.(*service.Backend)
@@ -852,9 +895,9 @@ func TestM4K36_SubscriptionDetailAccountsTabLiveRecordingAndMoreMenu(t *testing.
 	}
 }
 
-// M4-K36: Legacy SubDetailTab="live" in ui-state.json, route parameters, or in-memory
+// Legacy SubDetailTab="live" in ui-state.json, route parameters, or in-memory
 // field normalizes to "accounts", while empty or unknown values default to "content".
-func TestM4K36_LegacyLiveTabNormalizesToAccounts(t *testing.T) {
+func TestLegacyLiveTabNormalizesToAccounts(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
 	rawBackend := app.backend.(*service.Backend)
@@ -924,9 +967,9 @@ func TestM4K36_LegacyLiveTabNormalizesToAccounts(t *testing.T) {
 	}
 }
 
-// M4-K36 + F-005 / F-013: Both "内容" and "账号" tabs prefer local avatar copies (0 remote
+// Both "内容" and "账号" tabs prefer local avatar copies (0 remote
 // FetchImage calls) and have no horizontal overflow across 1280 / 1000 / 720 widths.
-func TestM4K36_SubscriptionDetailThreeWidthsAndLocalAvatars(t *testing.T) {
+func TestSubscriptionDetailThreeWidthsAndLocalAvatars(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
 	rawBackend := app.backend.(*service.Backend)

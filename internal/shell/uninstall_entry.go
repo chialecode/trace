@@ -22,11 +22,19 @@ func syncUninstallVersion(store uninstallEntry, identifier, installDir, version 
 	if store == nil || identifier == "" || version == "" || version == appdirs.UnversionedBuild {
 		return false, nil
 	}
+	cleanInstallDir := strings.TrimSpace(installDir)
+	if cleanInstallDir == "" {
+		return false, nil
+	}
 	location, current, ok, err := store.Read(identifier)
 	if err != nil || !ok {
 		return false, err
 	}
-	if !strings.EqualFold(filepath.Clean(strings.Trim(location, `"`)), filepath.Clean(installDir)) || current == version {
+	cleanLocation := strings.TrimSpace(strings.Trim(location, `"`))
+	if cleanLocation == "" {
+		return false, nil
+	}
+	if !strings.EqualFold(filepath.Clean(cleanLocation), filepath.Clean(cleanInstallDir)) || current == version {
 		return false, nil
 	}
 	return true, store.SetVersion(identifier, version)

@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// The development build installs itself on this machine after packaging
-// (W2): it finds TRACE Dev in the per-user uninstall entries, asks a
+// The development build installs itself on this machine after packaging:
+// it finds TRACE Dev in the per-user uninstall entries, asks a
 // running TRACE Dev to save its work and quit, installs the new package
 // silently, checks the installed version and then starts TRACE Dev in the
 // tray (--background), whether it was running or not: the user keeps the
@@ -19,15 +19,16 @@ import (
 // ptest identities.
 
 const (
-	devIdentifier   = "io.github.chialecode.trace-dev"
-	devDisplayName  = "TRACE Dev"
-	devExeName      = "trace.exe"
-	quitTimeout     = 30 * time.Second
-	quitPoll        = 250 * time.Millisecond
-	flagQuitUpdate  = "--quit-for-update"
-	flagBackground  = "--background"
-	installDevEnv   = "TRACE_DEV_AUTO_INSTALL"
-	installResultTo = "artifacts/package/install-dev.json"
+	devIdentifier      = "io.github.chialecode.trace-dev"
+	devDisplayName     = "TRACE Dev"
+	devExeName         = "trace.exe"
+	quitTimeout        = 30 * time.Second
+	quitRequestTimeout = 15 * time.Second
+	quitPoll           = 250 * time.Millisecond
+	flagQuitUpdate     = "--quit-for-update"
+	flagBackground     = "--background"
+	installDevEnv      = "TRACE_DEV_AUTO_INSTALL"
+	installResultTo    = "artifacts/package/install-dev.json"
 )
 
 // installEntry is what the uninstall entry of an identity says.

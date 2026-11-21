@@ -18,11 +18,47 @@ type subAccountRow struct {
 	Sub                             subscription.Subscription
 }
 
+func (a *App) subscriptionsAccountsFingerprint() uint64 {
+	h := newFNV64a()
+	for i := range a.Subscriptions {
+		sub := &a.Subscriptions[i]
+		fnvWriteStr(h, sub.ID)
+		fnvWriteStr(h, sub.Name)
+		fnvWriteStr(h, sub.Uname)
+		fnvWriteStr(h, sub.Note)
+		fnvWriteStr(h, sub.Face)
+		fnvWriteStr(h, sub.Avatar.Site)
+		fnvWriteStr(h, sub.Avatar.UID)
+		fnvWriteInt64(h, sub.Mid)
+		fnvWriteInt64(h, int64(len(sub.Accounts)))
+		for j := range sub.Accounts {
+			acc := &sub.Accounts[j]
+			fnvWriteStr(h, acc.Site)
+			fnvWriteStr(h, acc.UID)
+			fnvWriteStr(h, acc.UniqueID)
+			fnvWriteStr(h, acc.Name)
+			fnvWriteStr(h, acc.Face)
+		}
+	}
+	return h.Sum64()
+}
+
 // subscriptionAccountRows lists every account of every subscription under
-// the site filter, by site and then name.
+// the site filter, by site and then name (cached per subscription snapshot + site filter).
 func (a *App) subscriptionAccountRows(siteFilter string) []subAccountRow {
 	siteFilter = normalizeSiteFilter(siteFilter)
-	var rows []subAccountRow
+	sig := subAccountRowsSig{
+		subsRev: a.subsRev,
+		subsN:   len(a.Subscriptions),
+		site:    siteFilter,
+		hash:    a.subscriptionsAccountsFingerprint(),
+	}
+	st := a.fs()
+	if st.subAccRows != nil && st.subAccRowsSig == sig {
+		return st.subAccRows
+	}
+
+	rows := make([]subAccountRow, 0, len(a.Subscriptions))
 	for _, sub := range a.Subscriptions {
 		for _, acc := range sub.Accounts {
 			siteID := normalizeSiteIDUI(acc.Site)
@@ -44,6 +80,8 @@ func (a *App) subscriptionAccountRows(siteFilter string) []subAccountRow {
 		}
 		return rows[i].UID < rows[j].UID
 	})
+	st.subAccRowsSig = sig
+	st.subAccRows = rows
 	return rows
 }
 
@@ -99,8 +137,16 @@ func (a *App) renderSubscriptionAccountsView(c *ui.Context) {
 			})
 			return
 		}
-		a.SubAccountsListState.Key = func(i int) any { return rows[i].Site + ":" + rows[i].UID + ":" + rows[i].Sub.ID }
+		a.SubAccountsListState.Key = func(i int) any {
+			if i < 0 || i >= len(rows) {
+				return i
+			}
+			return rows[i].Site + ":" + rows[i].UID + ":" + rows[i].Sub.ID
+		}
 		ui.List(c, &a.SubAccountsListState, len(rows), func(i int) {
+			if i < 0 || i >= len(rows) {
+				return
+			}
 			a.renderSubscriptionAccountRow(c, rows[i])
 		}).Label("订阅账号列表").Grow(1).FillWidth()
 	})
@@ -128,7 +174,7 @@ func (a *App) renderSubscriptionAccountRow(c *ui.Context, r subAccountRow) {
 		a.renderAccountAvatar(c, r.Site, r.Name, r.UID, mid, 36, false, "", nil, r.Face)
 		ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-				ui.Text(c, r.Name).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				ui.Text(c, r.Name).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
 				renderSiteSmallBadgeWithDot(c, r.Site, "订阅账号站点："+r.Site+":"+r.UID)
 			})
 			id := "UID " + r.UID
@@ -140,9 +186,9 @@ func (a *App) renderSubscriptionAccountRow(c *ui.Context, r subAccountRow) {
 			}
 			ui.Text(c, id).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 		})
-		ui.Row(c).Shrink(0).AlignItems(ui.Center).Gap(6).Padding(4, 10).Radius(999).Background(ColorBgSecondary).Children(func() {
-			ui.Text(c, "订阅").FontSize(11).TextColor(ColorTextMuted).SingleLine()
-			ui.Text(c, r.Sub.Name).Label("所属订阅：" + r.Site + ":" + r.UID).FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+		ui.Row(c).Shrink(0).MaxWidth(180).AlignItems(ui.Center).Gap(6).Padding(4, 10).Radius(999).Background(ColorBgSecondary).ClipX().Children(func() {
+			ui.Text(c, "订阅").FontSize(11).TextColor(ColorTextMuted).SingleLine().Shrink(0)
+			ui.Text(c, r.Sub.Name).Label("所属订阅：" + r.Site + ":" + r.UID).FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
 		})
 	})
 	if row.Clicked() {

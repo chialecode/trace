@@ -20,7 +20,7 @@ func TestHistoryStoreCapDedupAndSanitize(t *testing.T) {
 		t.Fatalf("unexpected backup %q", backup)
 	}
 
-	// Record 205 items (with cached thumbnails on item 1 and item 10) to verify 200 cap and thumbnail eviction cleanup (C03, R11).
+	// Record 205 items (with cached thumbnails on item 1 and item 10) to verify the 200-item cap and thumbnail eviction cleanup.
 	thumb1, err := store.SaveThumb("video", "BV1xx411c001", "cover", ".png", []byte("png-1"))
 	if err != nil || thumb1 == "" || strings.ContainsAny(thumb1, "?&=") {
 		t.Fatalf("SaveThumb 1: name=%q err=%v", thumb1, err)
@@ -91,14 +91,14 @@ func TestHistoryStoreCapDedupAndSanitize(t *testing.T) {
 		t.Fatalf("expected ThumbPath(%q) to exist, got %q err=%v", thumb10Av, p, err)
 	}
 
-	// Reject any traversal or signed query strings in ThumbPath and sanitizeThumbFileName (R11).
+	// Reject any traversal or signed query strings in ThumbPath and sanitizeThumbFileName.
 	for _, bad := range []string{"../history.json", "cover.jpg?upsig=secret", "cover.jpg&w_rid=123", `sub\cover.jpg`} {
 		if _, err := store.ThumbPath(bad); err == nil {
 			t.Fatalf("expected ThumbPath to reject %q", bad)
 		}
 	}
 
-	// Remove single item BV1xx411c010 -> removes entry AND deletes its avatar & cover thumbnails (R11).
+	// Remove single item BV1xx411c010 -> removes entry AND deletes its avatar & cover thumbnails.
 	if err := store.Remove("video", "BV1xx411c010"); err != nil {
 		t.Fatalf("Remove BV1xx411c010: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestHistoryStoreCapDedupAndSanitize(t *testing.T) {
 		t.Fatalf("expected Remove to delete cover thumbnail %q", thumb10Cv)
 	}
 
-	// Save another thumbnail and test Clear() removes all entries and all thumbnails (R11).
+	// Save another thumbnail and test Clear() removes all entries and all thumbnails.
 	thumb205, err := store.SaveThumb("video", "BV1xx411c205", "cover", ".jpg", []byte("jpg-205"))
 	if err != nil {
 		t.Fatalf("SaveThumb 205: %v", err)
@@ -149,10 +149,6 @@ func TestHistoryStoreCapDedupAndSanitize(t *testing.T) {
 	}
 }
 
-func TestAtomicWriteAndHistoryCap(t *testing.T) {
-	TestHistoryStoreCapDedupAndSanitize(t)
-}
-
 func TestOpenSQLiteCorruptRecovery(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "library.db")
@@ -175,5 +171,51 @@ func TestOpenSQLiteCorruptRecovery(t *testing.T) {
 	}
 	if _, err := os.Stat(backupPath); err != nil {
 		t.Fatalf("backup file not found at %q: %v", backupPath, err)
+	}
+}
+
+func TestOpenSQLiteDoesNotRenameOnOperationalError(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "library.db")
+	// Directory at dbPath causes a non-corruption open error: must NOT rename or recreate.
+	if err := os.Mkdir(dbPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db, recovered, backupPath, err := OpenSQLite(dbPath)
+	if err == nil || db != nil || recovered || backupPath != "" {
+		t.Fatalf("OpenSQLite(dir) = (%v, %v, %q, %v), want error without recovery", db, recovered, backupPath, err)
+	}
+	if matches, _ := filepath.Glob(dbPath + ".corrupt-*"); len(matches) != 0 {
+		t.Fatalf("unexpected corrupt backup created on operational error: %v", matches)
+	}
+}
+
+func TestOpenHistoryNewerVersionAndPathSecretSanitize(t *testing.T) {
+	dir := t.TempDir()
+	newerPath := filepath.Join(dir, "newer.json")
+	if err := os.WriteFile(newerPath, []byte(`{"version":9,"items":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := OpenHistory(newerPath); !IsNewerData(err) {
+		t.Fatalf("OpenHistory(version=9) err = %v, want NewerDataError", err)
+	}
+
+	histPath := filepath.Join(dir, "history.json")
+	store, _, err := OpenHistory(histPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Record(HistoryEntry{
+		Site:         "douyin",
+		Kind:         "video",
+		ID:           "7300000000000000001",
+		Title:        "test",
+		CanonicalURL: "https://cdn.example.com/x-signature/secret-token/video.mp4",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items := store.List()
+	if len(items) != 1 || strings.Contains(items[0].CanonicalURL, "secret-token") {
+		t.Fatalf("path secret was not sanitized: %+v", items)
 	}
 }

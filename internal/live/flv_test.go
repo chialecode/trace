@@ -349,7 +349,7 @@ func TestFLVRemuxDomesticCodecID12HEVCAndEnhancedFLVHVC1(t *testing.T) {
 		fb := newFLVBuilder(0x05)
 		hvcC := buildHEVCDecConfBytes(t, vps, sps, pps, 4)
 
-		// Enhanced Metadata (PacketType=5) must be skipped cleanly.
+		// Enhanced Metadata (PacketType=4) must be skipped cleanly.
 		fb.writeEnhancedVideo(0, 1, flvExPacketMetadata, "hvc1", []byte("hdr-info-ignored"))
 		// SequenceStart (PacketType=0)
 		fb.writeEnhancedVideo(0, 1, flvExPacketSequenceStart, "hvc1", hvcC)

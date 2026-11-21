@@ -70,6 +70,8 @@ func (a *App) createPreviewedSubscription() {
 	if input != "" && a.AddSubPreviewOwner != nil {
 		sub, err = a.backend.MoveSubscriptionAccount(a.AddSubPreview.Site, a.AddSubPreview.UID, sub.ID)
 		if err != nil {
+			// Roll back the empty subscription so a retry does not leave orphans.
+			_ = a.backend.DeleteSubscription(sub.ID)
 			a.showError(err)
 			return
 		}
@@ -92,7 +94,7 @@ func (a *App) refreshVisibleLive() {
 		}
 		return backend.LiveStatuses(ctx, keys)
 	}, func(states []service.LiveAccountState) {
-		a.LiveRooms = backend.ListLiveRooms()
+		a.LiveRooms = bilibiliLiveRooms(backend.ListLiveRooms())
 		a.mergeLiveAccountStates(states)
 	}, a.handleVisibleLiveError)
 }
@@ -116,7 +118,7 @@ func (a *App) startAccountLiveRecording(siteID, uid, roomOrWebRID string) {
 		}
 		return a.backend.StartLiveRecordingByAccount(ctx, accountKey)
 	}, func(state service.LiveAccountState) {
-		a.LiveRooms = a.backend.ListLiveRooms()
+		a.LiveRooms = bilibiliLiveRooms(a.backend.ListLiveRooms())
 		a.mergeLiveAccountStates([]service.LiveAccountState{state})
 	})
 }
@@ -126,7 +128,7 @@ func (a *App) stopAccountLiveRecording(recKey string) {
 	request(a, "live-stop-key-"+recKey, func(context.Context) (service.LiveAccountState, error) {
 		return a.backend.StopLiveRecordingByKey(recKey)
 	}, func(state service.LiveAccountState) {
-		a.LiveRooms = a.backend.ListLiveRooms()
+		a.LiveRooms = bilibiliLiveRooms(a.backend.ListLiveRooms())
 		a.mergeLiveAccountStates([]service.LiveAccountState{state})
 	})
 }
@@ -162,10 +164,6 @@ func (a *App) logoutSiteAccount(siteID string) {
 	})
 }
 
-func (a *App) logoutAccount() {
-	a.logoutSiteAccount(firstNonEmptyStrUI(a.ConfirmLogoutSite, string(site.Bilibili)))
-}
-
 func checkSummaryMessage(sum subscription.CheckSummary) string {
 	if sum.Canceled {
 		return fmt.Sprintf("已取消检查（%d/%d 个账号）", sum.CheckedCreators, sum.TotalCreators)
@@ -192,20 +190,26 @@ func checkSummaryMessage(sum subscription.CheckSummary) string {
 }
 
 func (a *App) checkQualityUpgrades() {
-	if a.pending["upgrade-check"] {
+	a.mu.Lock()
+	if a.closed || a.pending["upgrade-check"] {
+		a.mu.Unlock()
 		return
 	}
-	ctx, cancel := context.WithCancel(a.ctx)
+	dispatch := a.dispatch
+	baseCtx := a.ctx
+	a.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(baseCtx)
 	a.upgradeCancel, a.UpgradeDone, a.UpgradeTotal = cancel, 0, 0
 	backend := a.backend
 	progress := func(done, total int) {
 		apply := func() {
-			if !a.closed && a.pending["upgrade-check"] {
+			if !a.isClosed() && a.isPending("upgrade-check") {
 				a.UpgradeDone, a.UpgradeTotal = done, total
 			}
 		}
-		if a.dispatch != nil {
-			a.dispatch(apply)
+		if dispatch != nil {
+			dispatch(apply)
 		} else {
 			apply()
 		}
@@ -255,6 +259,13 @@ func (a *App) openImportFollowingsModal() {
 		a.LoginError = "请先登录哔哩哔哩账号后再从 B 站关注列表导入"
 		return
 	}
+	a.importFollowingsSeq++
 	a.ImportSubModalOpen, a.ImportGroup = true, "全部关注"
-	request(a, "following-groups", a.backend.RelationTags, func(groups []bilibili.RelationTag) { a.ImportGroups = groups; a.loadImportPage(true) })
+	seq := a.importFollowingsSeq
+	requestGuarded(a, "following-groups", func() bool {
+		return a.ImportSubModalOpen && a.importFollowingsSeq == seq
+	}, a.backend.RelationTags, func(groups []bilibili.RelationTag) {
+		a.ImportGroups = groups
+		a.loadImportPage(true)
+	}, nil)
 }

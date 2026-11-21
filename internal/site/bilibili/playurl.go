@@ -94,7 +94,7 @@ type SelectedAudioStream struct {
 	URLs      []string `json:"-"`
 }
 
-// AvailableStreams records all qualities returned vs accepted by the platform for item.json and upgrade checks (C21, C27).
+// AvailableStreams records all qualities returned vs accepted by the platform for item.json and upgrade checks.
 type AvailableStreams struct {
 	AcceptQuality []int    `json:"acceptQuality"`
 	Formats       []string `json:"formats"`
@@ -277,6 +277,13 @@ func (c *Client) PlayURL(ctx context.Context, bvid string, cid int64, opts PlayS
 			urls = append(urls, d.BackupURL...)
 		}
 		urls = prioritizeCDNURLs(urls)
+		if len(urls) == 0 {
+			return PlayPlan{}, &SiteError{
+				Kind:     ErrKindUnavailable,
+				Endpoint: "/x/player/wbi/playurl",
+				Message:  "接口未返回可用的视频流地址",
+			}
+		}
 		qn := raw.Quality
 		if qn <= 0 {
 			qn = 64
@@ -400,32 +407,42 @@ func selectDashAudio(
 		}
 	}
 
-	if dolby != nil && len(dolby.Audio) > 0 && trackPrimaryURL(dolby.Audio[0]) != "" {
-		if bestID == 0 {
-			bestID = 30250
-		}
-		if opts.PreferDolbyAudio {
-			t := dolby.Audio[0]
-			if t.ID == 0 {
-				t.ID = 30250
+	if dolby != nil {
+		for _, t := range dolby.Audio {
+			if trackPrimaryURL(t) == "" {
+				continue
 			}
-			name, ext := AudioQualityInfo(t.ID)
-			return &SelectedAudioStream{
-				Quality:   t.ID,
-				Name:      name,
-				Codecs:    firstNonEmpty(t.Codecs, "ec-3"),
-				SavedExt:  ext,
-				Bandwidth: t.Bandwidth,
-				URLs:      collectTrackURLs(t),
-			}, bestID
+			if bestID == 0 {
+				bestID = 30250
+			}
+			if opts.PreferDolbyAudio {
+				if t.ID == 0 {
+					t.ID = 30250
+				}
+				name, ext := AudioQualityInfo(t.ID)
+				return &SelectedAudioStream{
+					Quality:   t.ID,
+					Name:      name,
+					Codecs:    firstNonEmpty(t.Codecs, "ec-3"),
+					SavedExt:  ext,
+					Bandwidth: t.Bandwidth,
+					URLs:      collectTrackURLs(t),
+				}, bestID
+			}
+			break
 		}
 	}
 
-	if len(normal) == 0 {
+	var sorted []rawDashTrack
+	for _, t := range normal {
+		if trackPrimaryURL(t) != "" {
+			sorted = append(sorted, t)
+		}
+	}
+	if len(sorted) == 0 {
 		return nil, bestID
 	}
 
-	sorted := append([]rawDashTrack(nil), normal...)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		if audioRank(sorted[i].ID) != audioRank(sorted[j].ID) {
 			return audioRank(sorted[i].ID) > audioRank(sorted[j].ID)

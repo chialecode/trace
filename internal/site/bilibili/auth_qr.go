@@ -113,7 +113,7 @@ func (c *Client) CancelQR(flowID string) {
 }
 
 // PollQR polls the status of the QR login session identified by flowID.
-// Late responses for canceled or superseded flowIDs are ignored and never write credentials (C06).
+// Late responses for canceled or superseded flowIDs are ignored and never write credentials.
 func (c *Client) PollQR(ctx context.Context, flowID string) (QRPollResult, error) {
 	ctx, unlock := c.beginSequence(ctx, false)
 	defer unlock()
@@ -124,15 +124,18 @@ func (c *Client) PollQR(ctx context.Context, flowID string) (QRPollResult, error
 		c.qrMu.Unlock()
 		return QRPollResult{FlowID: flowID, State: "waiting", Message: "正在检查扫码状态"}, nil
 	}
+	claimedPoll := false
 	if active != nil && active.FlowID == flowID {
 		active.Polling = true
+		claimedPoll = true
 	}
 	c.qrMu.Unlock()
 	defer func() {
-		c.qrMu.Lock()
-		if active != nil {
-			active.Polling = false
+		if !claimedPoll {
+			return
 		}
+		c.qrMu.Lock()
+		active.Polling = false
 		c.qrMu.Unlock()
 	}()
 
@@ -207,8 +210,8 @@ func (c *Client) PollQR(ctx context.Context, flowID string) (QRPollResult, error
 		}, nil
 	case 0:
 		cookies := credential.ExtractSetCookies(resp.Cookies())
-		if len(cookies) == 0 && pollData.URL != "" {
-			// Fallback: extract query params from pollData.URL if Set-Cookie wasn't used.
+		if (cookies["SESSDATA"] == "" || cookies["bili_jct"] == "") && pollData.URL != "" {
+			// Fallback: extract query params from pollData.URL when Set-Cookie omits required keys.
 			if u, pErr := url.Parse(pollData.URL); pErr == nil {
 				rawMap := make(map[string]string)
 				for k, vals := range u.Query() {
@@ -216,7 +219,11 @@ func (c *Client) PollQR(ctx context.Context, flowID string) (QRPollResult, error
 						rawMap[k] = vals[0]
 					}
 				}
-				cookies = credential.FilterCookieMap(rawMap)
+				for k, v := range credential.FilterCookieMap(rawMap) {
+					if cookies[k] == "" {
+						cookies[k] = v
+					}
+				}
 			}
 		}
 
@@ -229,6 +236,21 @@ func (c *Client) PollQR(ctx context.Context, flowID string) (QRPollResult, error
 		}
 
 		c.qrMu.Lock()
+		stillValid := c.activeQR != nil && c.activeQR.FlowID == flowID && c.qrHistory[flowID] == "active" && c.nowFunc().Before(active.ExpiresAt) && ctx.Err() == nil
+		c.qrMu.Unlock()
+		if !stillValid {
+			return QRPollResult{
+				FlowID:  flowID,
+				State:   "canceled",
+				Message: "扫码流程已取消",
+				Account: c.currentAccountStatus(),
+			}, nil
+		}
+
+		// Notify external account-replacement hook outside c.qrMu to prevent lock-order inversion.
+		c.prepareAccountReplacement(mid)
+
+		c.qrMu.Lock()
 		if c.activeQR == nil || c.activeQR.FlowID != flowID || c.qrHistory[flowID] != "active" || !c.nowFunc().Before(active.ExpiresAt) || ctx.Err() != nil {
 			c.qrMu.Unlock()
 			return QRPollResult{
@@ -239,7 +261,6 @@ func (c *Client) PollQR(ctx context.Context, flowID string) (QRPollResult, error
 			}, nil
 		}
 		var st credential.Status
-		c.prepareAccountReplacement(mid)
 		if c.credStore != nil {
 			var saveErr error
 			st, saveErr = c.credStore.SaveQR(cookies, pollData.RefreshToken, mid, uname, face)

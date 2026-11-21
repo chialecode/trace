@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Schedule of the automatic checks (Q-012): once a minute after launch,
+// Schedule of the automatic checks: once a minute after launch,
 // then every 24 hours while TRACE runs.
 const (
 	FirstCheckDelay = time.Minute
@@ -223,11 +223,15 @@ func (c *Controller) Start(ctx context.Context) {
 
 // PrefsChanged re-evaluates the schedule after the user changed a setting.
 func (c *Controller) PrefsChanged() {
+	c.poke()
+	c.changed()
+}
+
+func (c *Controller) poke() {
 	select {
 	case c.wake <- struct{}{}:
 	default:
 	}
-	c.changed()
 }
 
 // DueAt returns when the next automatic check is due, and false when none
@@ -252,12 +256,20 @@ func (c *Controller) dueAtLocked() (time.Time, bool) {
 }
 
 func (c *Controller) untilNextCheck(now time.Time) time.Duration {
-	due, ok := c.DueAt()
+	c.mu.Lock()
+	busy := c.busy
+	due, ok := c.dueAtLocked()
+	c.mu.Unlock()
 	if !ok {
 		return time.Hour
 	}
 	if d := due.Sub(now); d > 0 {
 		return d
+	}
+	if busy {
+		// Wait for the in-flight manual check or download to finish and poke
+		// c.wake, rather than spinning on a zero-duration timer.
+		return 5 * time.Second
 	}
 	return 0
 }
@@ -286,11 +298,15 @@ func (c *Controller) CheckNow(ctx context.Context) {
 func (c *Controller) check(ctx context.Context, manual bool) {
 	c.mu.Lock()
 	if c.busy || c.installed {
+		notify := false
 		if manual && c.installed && c.state.Release != nil {
 			c.state.Message, c.state.MessageError = fmt.Sprintf("新版本 %s 已就绪，重启以更新", c.state.Release.Version), false
+			notify = true
 		}
 		c.mu.Unlock()
-		c.changed()
+		if notify {
+			c.changed()
+		}
 		return
 	}
 	c.busy = true
@@ -310,9 +326,9 @@ func (c *Controller) check(ctx context.Context, manual bool) {
 	c.lastRun = now
 	c.state.LastCheck = now
 	c.state.LastCheckResult = checkResult
-	c.busy = false
 	autoDownload := c.opts.Prefs().AutoDownload
 	startDownload := false
+	var downloadRel Release
 	switch {
 	case err != nil:
 		c.state.Phase = prev
@@ -336,6 +352,7 @@ func (c *Controller) check(ctx context.Context, manual bool) {
 		c.opts.Logf("update check: %s is available", r.Version)
 		if autoDownload {
 			startDownload = true
+			downloadRel = r
 			c.state.Phase = PhaseDownloading
 		} else {
 			c.state.Phase = PhaseAvailable
@@ -343,6 +360,10 @@ func (c *Controller) check(ctx context.Context, manual bool) {
 				c.state.Message, c.state.MessageError = fmt.Sprintf("有新版本 %s", r.Version), false
 			}
 		}
+	}
+	if !startDownload {
+		c.busy = false
+		c.poke()
 	}
 	c.mu.Unlock()
 	if c.opts.SaveLastCheck != nil {
@@ -361,7 +382,7 @@ func (c *Controller) check(ctx context.Context, manual bool) {
 	}
 	c.changed()
 	if startDownload {
-		c.install(ctx, manual)
+		c.install(ctx, downloadRel, manual)
 	}
 }
 
@@ -373,19 +394,28 @@ func (c *Controller) Download(ctx context.Context) {
 		c.mu.Unlock()
 		return
 	}
+	c.busy = true
+	rel := *c.state.Release
 	c.state.Phase = PhaseDownloading
 	c.state.Message, c.state.MessageError = "", false
 	c.mu.Unlock()
 	c.changed()
-	c.install(ctx, true)
+	c.install(ctx, rel, true)
 }
 
-func (c *Controller) install(ctx context.Context, report bool) {
+// install runs Engine.Install for rel. Callers must already hold c.busy = true.
+func (c *Controller) install(ctx context.Context, rel Release, report bool) {
 	c.mu.Lock()
-	c.busy = true
-	rel := *c.state.Release
 	c.state.Downloaded, c.state.Total = 0, 0
 	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		if c.busy {
+			c.busy = false
+			c.poke()
+		}
+		c.mu.Unlock()
+	}()
 	last := time.Time{}
 	err := c.opts.Engine.Install(ctx, func(done, total int64) {
 		c.mu.Lock()
@@ -414,6 +444,7 @@ func (c *Controller) install(ctx context.Context, report bool) {
 			c.state.Message, c.state.MessageError = fmt.Sprintf("新版本 %s 已就绪", rel.Version), false
 		}
 	}
+	c.poke()
 	c.mu.Unlock()
 	if err == nil && c.opts.SaveReady != nil {
 		c.opts.SaveReady(rel.Version, rel.Notes)
@@ -473,30 +504,43 @@ func (c *Controller) changed() {
 	}
 }
 
+// classifyUpdateError returns whether err is a verification rejection and a
+// sanitized user-facing reason shared by Describe and FormatCheckResult.
+func classifyUpdateError(err error) (rejected bool, detail string) {
+	if IsRejection(err) {
+		return true, MsgRejected
+	}
+	var st *HTTPStatusError
+	if errors.As(err, &st) {
+		if st.Status == 404 {
+			return false, "还没有发布的版本"
+		}
+		return false, fmt.Sprintf("更新服务器返回 HTTP %d", st.Status)
+	}
+	var ne net.Error
+	if errors.As(err, &ne) || errors.Is(err, context.DeadlineExceeded) {
+		return false, "无法连接 GitHub，请检查网络或代理"
+	}
+	reason := SanitizeHistoryText(err.Error(), nil)
+	reason = strings.TrimPrefix(reason, msgCheckFailed+"：")
+	reason = strings.TrimPrefix(reason, msgHistoryFailedPrefix+"：")
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return false, "请求异常"
+	}
+	return false, shorten(reason, 80)
+}
+
 // Describe turns an update error into what the user reads.
 func Describe(err error) string {
 	if err == nil {
 		return ""
 	}
-	if IsRejection(err) {
-		return MsgRejected
+	rejected, detail := classifyUpdateError(err)
+	if rejected {
+		return detail
 	}
-	var st *HTTPStatusError
-	if errors.As(err, &st) {
-		if st.Status == 404 {
-			return msgCheckFailed + "：还没有发布的版本"
-		}
-		return fmt.Sprintf("%s：更新服务器返回 HTTP %d", msgCheckFailed, st.Status)
-	}
-	var ne net.Error
-	if errors.As(err, &ne) || errors.Is(err, context.DeadlineExceeded) {
-		return msgCheckFailed + "：无法连接 GitHub，请检查网络或代理"
-	}
-	reason := SanitizeHistoryText(err.Error(), nil)
-	if reason == "" {
-		return msgCheckFailed + "：请求异常"
-	}
-	return msgCheckFailed + "：" + shorten(reason, 80)
+	return msgCheckFailed + "：" + detail
 }
 
 // IsRejection reports an update that failed verification, by TRACE's

@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 
@@ -44,7 +43,7 @@ func TestShortPathNamesAreNotLinksButJunctionsAre(t *testing.T) {
 	if err := rejectDirectoryLinks(short); err != nil {
 		t.Fatalf("short path taken for a link: %v", err)
 	}
-	if !safeRegisteredPath(short, "part-001.mp4") {
+	if !safeRegisteredPathStrict(short, "part-001.mp4") || !safeRegisteredPathRead(short, "part-001.mp4") {
 		t.Fatal("a registered file under a short path was refused")
 	}
 
@@ -57,8 +56,4 @@ func TestShortPathNamesAreNotLinksButJunctionsAre(t *testing.T) {
 	if err := rejectDirectoryLinks(junction); err == nil {
 		t.Fatal("a junction was not rejected")
 	}
-}
-
-func samePath(a, b string) bool {
-	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }

@@ -62,7 +62,7 @@ func (a *App) refreshLiveAccounts(c *ui.Context, ids []int64) {
 			due = append(due, id)
 		}
 	}
-	if len(due) == 0 || a.pending["visible-live"] {
+	if len(due) == 0 || a.isPending("visible-live") {
 		return
 	}
 	// Failed attempts also wait for the next interval; a repaint never retries.

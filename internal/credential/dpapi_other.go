@@ -7,34 +7,135 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"sync"
 )
 
-var defaultEntropy = []byte(BilibiliEntropy)
+// On Linux and other systems there is no DPAPI. Credentials are sealed with
+// AES-256-GCM under a random 32-byte key kept next to them in KeyFileName
+// (0600), created the first time one is written. This only stops a
+// credential file copied away on its own; whoever can read the key file (the
+// same user or root) can read the credentials (docs/design/remote.md §5).
 
-func deriveFallbackKey(entropy []byte) [32]byte {
-	if len(entropy) == 0 {
-		entropy = defaultEntropy
+var cipherHeader = []byte("TRACEK1")
+
+var keyMu sync.Mutex
+
+// errNoKey means the key file is gone: what it sealed cannot be read and is
+// treated as no credential.
+var errNoKey = errors.New("credential: key file missing")
+
+// EnsureKeyFile creates the key file of dir when it is missing.
+func EnsureKeyFile(dir string) error {
+	key, err := loadKey(dir, true)
+	clear(key)
+	return err
+}
+
+func readExistingKeyFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
 	}
-	buf := make([]byte, 0, len(entropy)+len(":fallback"))
-	buf = append(buf, entropy...)
-	buf = append(buf, ":fallback"...)
-	return sha256.Sum256(buf)
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("credential: key file %s must not be a symlink", KeyFileName)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("credential: key file %s is not a regular file", KeyFileName)
+	}
+	if info.Mode().Perm() != 0o600 {
+		if err := os.Chmod(path, 0o600); err != nil {
+			return nil, fmt.Errorf("credential: chmod key file: %w", err)
+		}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) != 32 {
+		clear(raw)
+		return nil, fmt.Errorf("credential: key file has the wrong size")
+	}
+	return raw, nil
 }
 
-func encryptBytes(plain []byte) ([]byte, error) {
-	return encryptBytesWithEntropy(plain, defaultEntropy)
+func loadKey(dir string, create bool) ([]byte, error) {
+	keyMu.Lock()
+	defer keyMu.Unlock()
+	path := filepath.Join(dir, KeyFileName)
+	raw, err := readExistingKeyFile(path)
+	if err == nil {
+		return raw, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if !create {
+		return nil, errNoKey
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		clear(key)
+		return nil, err
+	}
+	tmp, err := os.CreateTemp(dir, ".trace-key-*.tmp")
+	if err != nil {
+		clear(key)
+		return nil, err
+	}
+	tmpPath := tmp.Name()
+	cleanupTmp := func() { _ = os.Remove(tmpPath) }
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		cleanupTmp()
+		clear(key)
+		return nil, err
+	}
+	if _, err := tmp.Write(key); err != nil {
+		_ = tmp.Close()
+		cleanupTmp()
+		clear(key)
+		return nil, err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanupTmp()
+		clear(key)
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanupTmp()
+		clear(key)
+		return nil, err
+	}
+	linkErr := os.Link(tmpPath, path)
+	cleanupTmp()
+	if linkErr != nil {
+		clear(key)
+		if errors.Is(linkErr, os.ErrExist) {
+			return readExistingKeyFile(path)
+		}
+		return nil, linkErr
+	}
+	return key, nil
 }
 
-func decryptBytes(cipherData []byte) ([]byte, error) {
-	return decryptBytesWithEntropy(cipherData, defaultEntropy)
-}
-
-func encryptBytesWithEntropy(plain []byte, entropy []byte) ([]byte, error) {
-	key := deriveFallbackKey(entropy)
-	block, err := aes.NewCipher(key[:])
+// protectFor seals plain for the file at path; entropy binds it to its site
+// (sealed data of one site never opens as another's).
+func protectFor(path string, plain, entropy []byte) ([]byte, error) {
+	key, err := loadKey(filepath.Dir(path), true)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(key)
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
@@ -46,17 +147,20 @@ func encryptBytesWithEntropy(plain []byte, entropy []byte) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
-	out := gcm.Seal(nonce, nonce, plain, nil)
-	return append([]byte("DPAPI1"), out...), nil
+	out := append(append([]byte{}, cipherHeader...), nonce...)
+	return gcm.Seal(out, nonce, plain, entropy), nil
 }
 
-func decryptBytesWithEntropy(cipherData []byte, entropy []byte) ([]byte, error) {
-	if !bytes.HasPrefix(cipherData, []byte("DPAPI1")) {
+func unprotectFor(path string, data, entropy []byte) ([]byte, error) {
+	if !bytes.HasPrefix(data, cipherHeader) {
 		return nil, fmt.Errorf("credential: invalid cipher header")
 	}
-	raw := cipherData[6:]
-	key := deriveFallbackKey(entropy)
-	block, err := aes.NewCipher(key[:])
+	key, err := loadKey(filepath.Dir(path), false)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(key)
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
@@ -64,10 +168,9 @@ func decryptBytesWithEntropy(cipherData []byte, entropy []byte) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
+	raw := data[len(cipherHeader):]
 	if len(raw) < gcm.NonceSize() {
 		return nil, fmt.Errorf("credential: cipher too short")
 	}
-	nonce := raw[:gcm.NonceSize()]
-	ct := raw[gcm.NonceSize():]
-	return gcm.Open(nil, nonce, ct, nil)
+	return gcm.Open(nil, raw[:gcm.NonceSize()], raw[gcm.NonceSize():], entropy)
 }

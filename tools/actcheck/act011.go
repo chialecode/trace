@@ -2,22 +2,17 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/douyin"
 	"github.com/chialecode/trace/internal/sitecheck"
-	"github.com/chialecode/trace/internal/storage"
 )
 
 const (
@@ -62,7 +57,7 @@ var act012Followup = liveFollowup{
 }
 
 // ACT-014: ACT-012 reached the CDN and recorded that both FLV 302 hops go to an
-// HTTPS 443 domain outside the live allow-list, which the recorder refused (F-004).
+// HTTPS 443 domain outside the live allow-list, which the recorder refused.
 // After the redirect-hop policy fix this repeats the same bounded recording once.
 var act014Followup = liveFollowup{
 	id:          "act014",
@@ -74,10 +69,7 @@ var act014Followup = liveFollowup{
 }
 
 // Kept for the ACT-011 tests.
-var (
-	act011MaxAPICalls = act011Followup.maxAPICalls
-	act011APILimits   = act011Followup.apiLimits
-)
+var act011MaxAPICalls = act011Followup.maxAPICalls
 
 func runAct011Main(root, out string, recordFor time.Duration) {
 	runLiveFollowupMain(act011Followup, root, out, recordFor)
@@ -163,18 +155,7 @@ func runLiveFollowup(parentCtx context.Context, fu liveFollowup, cfg act010Confi
 	redactor := newAct010Redactor()
 	redactor.addCookieHeader(rawCookie)
 	redactor.addCookieMap(cleanedInitial)
-	for _, u := range tg.Users {
-		redactor.addIDs(u.SecUID)
-		redactor.addURLs(u.URL)
-	}
-	for _, w := range tg.Works {
-		redactor.addIDs(w.AwemeID)
-		redactor.addURLs(w.URL)
-	}
-	for _, lr := range tg.LiveRooms {
-		redactor.addIDs(lr.WebRID)
-		redactor.addURLs(lr.URL)
-	}
+	addAct010TargetsToRedactor(redactor, tg)
 
 	gate, err := sitecheck.OpenGate(filepath.Join(root, ".local", "site-check"), sitecheck.Limits{
 		ActID:         fu.id,
@@ -191,6 +172,7 @@ func runLiveFollowup(parentCtx context.Context, fu liveFollowup, cfg act010Confi
 
 	ck := &act010Checker{
 		gate:           gate,
+		apiLimits:      fu.apiLimits,
 		vod:            &mediaBudget{name: "vod", maxRequests: 0, maxBytes: 0},
 		live:           &mediaBudget{name: "live", maxRequests: fu.maxLiveReqs, maxBytes: act010MaxLiveBytes},
 		hls:            &mediaBudget{name: "hls_playlist", maxRequests: fu.maxHLSReqs, maxBytes: act011MaxHLSBytes},
@@ -258,6 +240,7 @@ func runLiveFollowup(parentCtx context.Context, fu liveFollowup, cfg act010Confi
 
 	rc = act010Receipt{
 		Act:            fu.label,
+		Commit:         resolveReceiptCommit(root),
 		StartedAt:      time.Now().UTC().Format(time.RFC3339),
 		Verifications:  make(map[string]any),
 		APIStatusCodes: ck.apiStatusCodes,
@@ -275,54 +258,14 @@ func runLiveFollowup(parentCtx context.Context, fu liveFollowup, cfg act010Confi
 			"minSpacingMs":      spacing.Milliseconds(),
 		},
 	}
-	// The check runs the working tree through `go run`, so the receipt names the
-	// source it ran (HEAD plus -dirty), not the last packaged build.
-	rc.Commit = sourceCommit(root)
 
 	ctx, cancel := context.WithTimeout(parentCtx, 3*time.Minute)
 	defer cancel()
 
-	runStep := func(name string, fn func(facts map[string]any) error) bool {
-		if stopped := ck.stopReason(); stopped != "" {
-			rc.Steps = append(rc.Steps, step{
-				Name:    name,
-				Skipped: true,
-				Error:   "stopped earlier: " + stopped,
-			})
-			return false
-		}
-		facts := make(map[string]any)
-		start := time.Now()
-		err := fn(facts)
-		st := step{
-			Name:     name,
-			OK:       err == nil,
-			Facts:    facts,
-			Duration: time.Since(start).Milliseconds(),
-		}
-		if errors.Is(err, errSkip) {
-			st.OK = true
-			st.Skipped = true
-		} else if err != nil {
-			st.ErrKind = site.KindOf(err)
-			if errors.Is(err, sitecheck.ErrQuotaExceeded) {
-				st.ErrKind = "quota"
-			}
-			st.Error = redactor.scrubError(err.Error())
-			switch st.ErrKind {
-			case site.ErrKindRiskControl, site.ErrKindRateLimited, site.ErrKindAuthRequired:
-				ck.tripStop(st.ErrKind)
-			}
-		}
-		if len(st.Facts) == 0 {
-			st.Facts = nil
-		}
-		rc.Steps = append(rc.Steps, st)
-		return st.OK
-	}
+	runner := newDouyinStepRunner(&rc.Steps, ck, redactor)
 
 	// Step 1: Verify Cookie session via profile/self (<= 1 call).
-	runStep("v01_auth_session", func(f map[string]any) error {
+	runner.run("v01_auth_session", func(f map[string]any) error {
 		st, loginErr := dyClient.LoginWithCookie(ctx, rawCookie)
 		ck.mu.Lock()
 		authCode := ck.lastAuthCode
@@ -340,7 +283,7 @@ func runLiveFollowup(parentCtx context.Context, fu liveFollowup, cfg act010Confi
 
 	// Step 2: V-06 offline reflow/info probe with room_id=2 (<= 1 call; ACT-011 only).
 	if fu.offlineProbe {
-		runStep("v06_offline_reflow_room_id_2", func(f map[string]any) error {
+		runner.run("v06_offline_reflow_room_id_2", func(f map[string]any) error {
 			targetSec := tg.Users[0].SecUID
 			offDetail, offErr := dyClient.ReflowRoomInfo(ctx, "2", targetSec)
 			v06 := map[string]any{}
@@ -366,7 +309,7 @@ func runLiveFollowup(parentCtx context.Context, fu liveFollowup, cfg act010Confi
 	}
 
 	// Step 3: V-07 live room enter (<= 2 calls: initial + 1 reconnect spare), HLS .m3u8 (<= 1), and FLV <=25s remux.
-	runStep("v07_live_enter_and_record", func(f map[string]any) error {
+	runner.run("v07_live_enter_and_record", func(f map[string]any) error {
 		primaryWebRID := tg.LiveRooms[0].WebRID
 		activeRoom, err := dyClient.EnterLiveRoom(ctx, primaryWebRID, "")
 		if err != nil {
@@ -376,152 +319,20 @@ func runLiveFollowup(parentCtx context.Context, fu liveFollowup, cfg act010Confi
 		f["roomStatus"] = activeRoom.RoomStatus
 		f["audioOnly"] = activeRoom.AudioOnly
 
-		if activeRoom.RoomStatus != 2 {
-			f["status"] = "not-run"
-			f["reason"] = "live room offline"
-			rc.Verifications["V-07"] = map[string]any{
-				"status": "not-run",
-				"reason": "live room offline",
-			}
-			return errSkip
-		}
-		if activeRoom.AudioOnly {
-			f["status"] = "not-run"
-			f["reason"] = "live room in audio-only mode"
-			rc.Verifications["V-07"] = map[string]any{
-				"status": "not-run",
-				"reason": "live room in audio-only mode",
-			}
-			return errSkip
-		}
-
-		streamCaps := inspectRoomStreamCapabilities(activeRoom, cfg.AllowLocalhost)
-		f["streamCapabilities"] = streamCaps
-
-		var hlsSummary map[string]any
-		if hlsURL, _ := streamCaps["sampleHlsUrl"].(string); hlsURL != "" && fu.maxHLSReqs > 0 {
-			delete(streamCaps, "sampleHlsUrl")
-			req, rErr := http.NewRequestWithContext(ctx, http.MethodGet, hlsURL, nil)
-			if rErr == nil {
-				liveSpec.ApplyHeaders(req)
-				resp, hErr := mediaHTTP.Do(req)
-				if hErr != nil {
-					if ck.stopReason() != "" || errors.Is(hErr, sitecheck.ErrQuotaExceeded) {
-						return hErr
-					}
-				} else {
-					_, _ = io.Copy(io.Discard, resp.Body)
-					_ = resp.Body.Close()
-					ck.mu.Lock()
-					if len(ck.playlists) > 0 {
-						hlsSummary = ck.playlists[len(ck.playlists)-1]
-					}
-					ck.mu.Unlock()
-				}
-			}
-		} else {
-			delete(streamCaps, "sampleHlsUrl")
-		}
-
-		plan, err := douyin.SelectFLVStreamFromRoom(activeRoom, nil, liveSpec, cfg.AllowLocalhost)
-		if err != nil {
-			return err
-		}
-
-		ck.liveStreamActive.Store(true)
-		defer ck.liveStreamActive.Store(false)
-
-		recSummary, recErr := recordShortFLV(ctx, liveHTTP, plan, workDir, recordFor, ck)
-		if recErr != nil && ck.stopReason() == "" && !errors.Is(recErr, sitecheck.ErrQuotaExceeded) &&
-			int(ck.live.requests.Load()) < act010MaxLiveConns && gate.Usage().Categories["web_enter"] < fu.apiLimits["web_enter"] {
-			// Use the single authorized web_enter reconnect spare to refresh FLV stream URLs once.
-			ck.liveStreamActive.Store(false)
-			refreshed, reErr := dyClient.EnterLiveRoom(ctx, primaryWebRID, activeRoom.OwnerSecUID)
-			ck.liveStreamActive.Store(true)
-			if reErr == nil && refreshed.RoomStatus == 2 && !refreshed.AudioOnly {
-				redactor.addIDs(refreshed.OwnerSecUID, refreshed.OwnerUID, refreshed.OwnerShortID, refreshed.ResponseWebRID, refreshed.RoomID)
-				if refreshedPlan, pErr := douyin.SelectFLVStreamFromRoom(refreshed, nil, liveSpec, cfg.AllowLocalhost); pErr == nil {
-					recSummary, recErr = recordShortFLV(ctx, liveHTTP, refreshedPlan, workDir, recordFor, ck)
-				}
-			}
-		}
-		if redirectBlocked != "" {
-			f["productionRedirectBlocked"] = redirectBlocked
-		}
-		if recErr != nil {
-			return recErr
-		}
-
-		if hlsSummary != nil {
-			recSummary["hlsPlaylist"] = hlsSummary
-		}
-		recSummary["hlsPlaylistRequests"] = int(ck.hls.requests.Load())
-		recSummary["originHasFLV"] = streamCaps["originHasFLV"]
-		recSummary["originHasHLS"] = streamCaps["originHasHLS"]
-		recSummary["status"] = "completed"
-		for k, v := range recSummary {
-			f[k] = v
-		}
-		rc.Verifications["V-07"] = recSummary
-		return nil
+		return probeAndRecordDouyinLive(ctx, activeRoom, dyClient, mediaHTTP, liveHTTP, gate, ck, redactor, &rc, f, douyinLiveProbeOptions{
+			allowLocalhost:   cfg.AllowLocalhost,
+			fetchHLS:         fu.maxHLSReqs > 0,
+			recordHLSCount:   true,
+			recordFor:        recordFor,
+			workDir:          workDir,
+			allowReconnect:   true,
+			reconnectWebRID:  primaryWebRID,
+			maxLiveReqs:      fu.maxLiveReqs,
+			maxWebEnterCalls: fu.apiLimits["web_enter"],
+			redirectBlocked:  &redirectBlocked,
+		})
 	})
 
-	rc.TempMediaDeleted = cleanupWorkDir()
-	rc.APIUsage = gate.Usage()
-	rc.VODMedia = mediaUsage{
-		Requests: int(ck.vod.requests.Load()),
-		Bytes:    ck.vod.bytes.Load(),
-	}
-	rc.LiveMedia = mediaUsage{
-		Requests: int(ck.live.requests.Load()),
-		Bytes:    ck.live.bytes.Load(),
-	}
-	rc.StoppedBy = ck.stopReason()
-	rc.Redirects = ck.redirectShapes()
-	rc.Passed = rc.StoppedBy == "" && rc.TempMediaDeleted
-	for _, s := range rc.Steps {
-		if !s.OK {
-			rc.Passed = false
-		}
-	}
-	rc.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-
-	rc.SecretScanClean = true
-	rawJSON, err := json.MarshalIndent(rc, "", "  ")
-	if err != nil {
-		return rc, err
-	}
-	if err := redactor.verifyJSONClean(string(rawJSON), &rc); err != nil {
-		rc.SecretScanClean = false
-		rc.Passed = false
-		return rc, err
-	}
-
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return rc, err
-	}
-	if err := storage.WriteFileAtomic(outPath, rawJSON, 0o644); err != nil {
-		return rc, err
-	}
-	if !rc.Passed {
-		if rc.StoppedBy != "" {
-			return rc, fmt.Errorf("%s stopped by %s", fu.id, rc.StoppedBy)
-		}
-		return rc, fmt.Errorf("%s completed with step failures", fu.id)
-	}
-	return rc, nil
-}
-
-// sourceCommit returns the short HEAD commit of root, with -dirty when tracked
-// files differ from it; empty when git is unavailable.
-func sourceCommit(root string) string {
-	out, err := exec.Command("git", "-C", root, "rev-parse", "--short=12", "HEAD").Output()
-	if err != nil {
-		return ""
-	}
-	commit := strings.TrimSpace(string(out))
-	if status, err := exec.Command("git", "-C", root, "status", "--porcelain", "--untracked-files=no").Output(); err == nil && len(strings.TrimSpace(string(status))) > 0 {
-		commit += "-dirty"
-	}
-	return commit
+	err = finalizeAct010Receipt(fu.id, &rc, outPath, gate, ck, redactor, cleanupWorkDir())
+	return rc, err
 }

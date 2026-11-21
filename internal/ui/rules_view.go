@@ -32,8 +32,8 @@ func (a *App) ruleUseCount(id string) int {
 	return n
 }
 
-func (a *App) savedRuleName(id, fallback string) string {
-	for _, r := range a.backend.ListCacheRules() {
+func savedRuleNameFromList(rules []subscription.CacheRule, id, fallback string) string {
+	for _, r := range rules {
 		if r.ID == id && r.Name != "" {
 			return r.Name
 		}
@@ -78,11 +78,11 @@ func (a *App) renderCacheRulesSettings(c *ui.Context) {
 			}
 			// Read the draft again: the click above may have just closed it.
 			if a.RuleDraft != nil && a.RuleDraft.ID == rule.ID {
-				a.renderRuleEditor(c)
+				a.renderRuleEditor(c, rules)
 			}
 		}
 		if a.RuleDraft != nil && a.RuleDraft.ID == "" {
-			a.renderRuleEditor(c)
+			a.renderRuleEditor(c, rules)
 		} else {
 			ui.Row(c).FillWidth().Padding(14, 0).Children(func() {
 				if OutlinePillButton(c, "新建规则", "新建缓存规则").Clicked() {
@@ -94,13 +94,13 @@ func (a *App) renderCacheRulesSettings(c *ui.Context) {
 	})
 }
 
-func (a *App) renderRuleEditor(c *ui.Context) {
+func (a *App) renderRuleEditor(c *ui.Context, rules []subscription.CacheRule) {
 	d := a.RuleDraft
 	if d == nil {
 		return
 	}
 	if d.ID == subscription.DefaultRuleID {
-		a.renderDefaultRuleDetails(c)
+		a.renderDefaultRuleDetails(c, rules)
 		return
 	}
 	ui.Column(c).FillWidth().Padding(4, 0, 14, 16).Gap(0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).ClipX().Children(func() {
@@ -133,7 +133,7 @@ func (a *App) renderRuleEditor(c *ui.Context) {
 				ui.Text(c, fmt.Sprintf("使用这条规则的订阅（%d）", a.ruleUseCount(d.ID))).
 					FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
 				if OutlinePillButton(c, "选择订阅…", "选择订阅…").Clicked() {
-					a.openRuleBatchDialog(d.ID, a.savedRuleName(d.ID, d.Name))
+					a.openRuleBatchDialog(d.ID, savedRuleNameFromList(rules, d.ID, d.Name))
 				}
 			})
 		}
@@ -144,7 +144,7 @@ func (a *App) renderRuleEditor(c *ui.Context) {
 			if d.ID != "" && d.ID != subscription.DefaultRuleID {
 				if DangerOutlinePillButton(c, "删除", "删除缓存规则").Clicked() {
 					if err := a.backend.DeleteCacheRule(d.ID); err != nil {
-						a.RuleError = err.Error()
+						a.RuleError = userErrorText(err)
 					} else {
 						a.RuleDraft = nil
 						a.refreshSubscriptions()
@@ -159,7 +159,7 @@ func (a *App) renderRuleEditor(c *ui.Context) {
 			}
 			if AccentPillButton(c, "保存", "保存缓存规则").Clicked() {
 				if _, err := a.backend.SaveCacheRule(*d); err != nil {
-					a.RuleError = err.Error()
+					a.RuleError = userErrorText(err)
 				} else {
 					a.RuleDraft, a.RuleError = nil, ""
 					a.refreshSubscriptions()
@@ -171,7 +171,7 @@ func (a *App) renderRuleEditor(c *ui.Context) {
 
 // renderDefaultRuleDetails shows the built-in rule, which cannot be edited
 // (DEC-054): what it does, and which subscriptions use it.
-func (a *App) renderDefaultRuleDetails(c *ui.Context) {
+func (a *App) renderDefaultRuleDetails(c *ui.Context, rules []subscription.CacheRule) {
 	ui.Column(c).FillWidth().Padding(4, 0, 14, 16).Gap(0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).ClipX().Children(func() {
 		ui.Text(c, "不定时检查、不自动缓存、不录制直播；新订阅默认使用，不能修改。").
 			Label("默认规则说明").FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
@@ -179,7 +179,7 @@ func (a *App) renderDefaultRuleDetails(c *ui.Context) {
 			ui.Text(c, fmt.Sprintf("使用这条规则的订阅（%d）", a.ruleUseCount(subscription.DefaultRuleID))).
 				FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
 			if OutlinePillButton(c, "选择订阅…", "选择订阅…").Clicked() {
-				a.openRuleBatchDialog(subscription.DefaultRuleID, a.savedRuleName(subscription.DefaultRuleID, "默认"))
+				a.openRuleBatchDialog(subscription.DefaultRuleID, savedRuleNameFromList(rules, subscription.DefaultRuleID, "默认"))
 			}
 		})
 	})
@@ -211,12 +211,7 @@ func ToggleChip(c *ui.Context, text, label string, on bool) ui.Element {
 func (a *App) renderSubscriptionRuleButton(c *ui.Context, sub *subscription.Subscription) {
 	rules := a.backend.ListCacheRules()
 	curRuleID := effectiveSubRuleID(*sub)
-	current := "默认"
-	for _, r := range rules {
-		if r.ID == curRuleID {
-			current = r.Name
-		}
-	}
+	current := savedRuleNameFromList(rules, curRuleID, "默认")
 	open := a.SubRuleMenuOpen
 	btn := ui.ButtonBase(c).Label("订阅缓存规则："+current).Tooltip("缓存规则").Padding(6, 12).Gap(6).AlignItems(ui.Center).Radius(999).Border(1, ColorBorderStrong).Shrink(0)
 	if btn.Hovered() || open {
@@ -234,7 +229,8 @@ func (a *App) renderSubscriptionRuleButton(c *ui.Context, sub *subscription.Subs
 				_, err := a.backend.SetSubscriptionRule(sub.ID, rule.ID)
 				a.showError(err)
 				if err == nil {
-					a.BannerInfo = fmt.Sprintf("「%s」改用规则「%s」", sub.Name, rule.Name)
+					subDisplay := firstNonEmptyStrUI(sub.Name, sub.Uname, sub.ID)
+					a.BannerInfo = fmt.Sprintf("「%s」改用规则「%s」", subDisplay, rule.Name)
 				}
 				a.refreshSubscriptions()
 			}

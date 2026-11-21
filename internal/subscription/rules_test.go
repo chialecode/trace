@@ -161,7 +161,7 @@ func TestSharedRuleEditsApplyToAllItsSubscriptions(t *testing.T) {
 	}
 }
 
-// M4-K37: SetSubscriptionsRule updates newly selected subscriptions, reverts
+// SetSubscriptionsRule updates newly selected subscriptions, reverts
 // unselected former members of a non-default rule to DefaultRuleID, leaves
 // subscriptions on other rules untouched, writes subscriptions.json once, and
 // rolls back completely on validation or write errors.

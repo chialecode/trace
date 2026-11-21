@@ -128,7 +128,7 @@ func runRealHiddenWindowHelper(outPath string) error {
 				res.StealFocusDetectedAny = true
 			}
 
-			// Reopen real hidden MyGo window 5 times and measure recreate latency < 2s (PR-4, C35)
+			// Reopen real hidden MyGo window 5 times and measure recreate latency < 2s.
 			for i := 0; i < 5; i++ {
 				t0 := time.Now()
 				stepDone := make(chan struct{})
@@ -179,7 +179,7 @@ func runRealHiddenWindowHelper(outPath string) error {
 	return helperErr
 }
 
-// TestQuietModeTrayIconCloseToTrayAndMemory verifies C35, C36, and PR-4(1):
+// TestQuietModeTrayIconCloseToTrayAndMemory verifies:
 //   - QuietMode resolution on dev/source vs release/stable (release/stable ignores TRACE_QUIET)
 //   - Tray icon PNG rendering (with and without active work indicator dot)
 //   - Real MyGo hidden window CloseToTray & RestoreFromTray lifecycle: real window & bitmaps destroyed,

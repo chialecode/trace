@@ -107,7 +107,9 @@ func (m *Manager) beginSessionPart(sess *recordSession, partIndex int, partPath 
 	}
 	m.mu.Unlock()
 	if notify != nil && m.onState != nil {
+		leave := sess.enterExternal()
 		m.onState(*notify)
+		leave()
 	}
 }
 
@@ -130,7 +132,9 @@ func (m *Manager) commitSessionPart(sess *recordSession, bytesWritten int64, dur
 	}
 	m.mu.Unlock()
 	if notify != nil && m.onState != nil {
+		leave := sess.enterExternal()
 		m.onState(*notify)
+		leave()
 	}
 }
 
@@ -158,7 +162,9 @@ func (m *Manager) endSessionPart(sess *recordSession) {
 	}
 	m.mu.Unlock()
 	if notify != nil && m.onState != nil {
+		leave := sess.enterExternal()
 		m.onState(*notify)
+		leave()
 	}
 }
 
@@ -179,32 +185,8 @@ func (m *Manager) syncSessionRoomStateLocked(sess *recordSession) (RoomState, bo
 	if !ok {
 		return RoomState{}, false
 	}
-	if st.Site == "" {
-		st.Site = string(site.Bilibili)
-	}
-	if st.AccountUID == "" && st.UID > 0 {
-		st.AccountUID = strconv.FormatInt(st.UID, 10)
-	}
-	if st.RoomIDStr == "" && st.RoomID > 0 {
-		st.RoomIDStr = strconv.FormatInt(st.RoomID, 10)
-		st.RoomKey = "bilibili:live:" + st.RoomIDStr
-	}
-	st.Recording = true
-	st.RecordSession = sess.sessionID
-	st.RecordDurationSec = m.nowFunc().Sub(sess.startedAt).Seconds()
-	st.RecordBytes = sess.bytesTotal
-	st.RecordSegments = len(sess.segments)
-	st.RecordItemDir = sess.itemDir
-	if sess.quality > 0 {
-		st.Quality = sess.quality
-	}
-	if sess.qualityName != "" {
-		st.QualityName = sess.qualityName
-	}
-	if sess.codec != "" {
-		st.Codec = sess.codec
-	}
-	hydrateSessionPreviewFieldsLocked(&st, sess)
+	m.normalizeBilibiliRoomStateLocked(&st)
+	m.hydrateBilibiliStateFromSessionLocked(&st, sess)
 	m.states[sess.roomID] = st
 	return st, true
 }
@@ -224,17 +206,17 @@ func (m *Manager) RecordingPreview(key string) (RecordingPreview, bool) {
 
 	if sess := m.matchBilibiliSessionLocked(target); sess != nil {
 		st := m.states[sess.roomID]
-		return m.buildBilibiliPreviewLocked(st, sess), true
+		return m.buildPreviewLocked(site.Bilibili, st, sess), true
 	}
 	if sess := m.matchDouyinSessionLocked(target); sess != nil {
 		st := m.douyinStates[sess.stateKey]
-		return m.buildDouyinPreviewLocked(st, sess), true
+		return m.buildPreviewLocked(site.Douyin, st, sess), true
 	}
 	if st, ok := m.matchBilibiliStateLocked(target); ok {
-		return m.buildBilibiliPreviewLocked(st, nil), true
+		return m.buildPreviewLocked(site.Bilibili, st, nil), true
 	}
 	if st, ok := m.matchDouyinStateLocked(target); ok {
-		return m.buildDouyinPreviewLocked(st, nil), true
+		return m.buildPreviewLocked(site.Douyin, st, nil), true
 	}
 	return RecordingPreview{}, false
 }
@@ -243,10 +225,13 @@ func (m *Manager) matchBilibiliSessionLocked(target string) *recordSession {
 	trimmed := target
 	switch {
 	case strings.HasPrefix(target, "bilibili:live:"):
-		trimmed = strings.TrimPrefix(target, "bilibili:live:")
+		trimmed = strings.TrimSpace(strings.TrimPrefix(target, "bilibili:live:"))
+		if trimmed == "" {
+			return nil
+		}
 	case strings.HasPrefix(target, "bilibili:user:"):
-		uid, err := strconv.ParseInt(strings.TrimPrefix(target, "bilibili:user:"), 10, 64)
-		if err != nil {
+		uid, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(target, "bilibili:user:")), 10, 64)
+		if err != nil || uid <= 0 {
 			return nil
 		}
 		for _, sess := range m.sessions {
@@ -256,8 +241,8 @@ func (m *Manager) matchBilibiliSessionLocked(target string) *recordSession {
 		}
 		return nil
 	case strings.HasPrefix(target, "bilibili:"):
-		rest := strings.TrimPrefix(target, "bilibili:")
-		if num, err := strconv.ParseInt(rest, 10, 64); err == nil {
+		rest := strings.TrimSpace(strings.TrimPrefix(target, "bilibili:"))
+		if num, err := strconv.ParseInt(rest, 10, 64); err == nil && num > 0 {
 			if sess := m.sessions[num]; sess != nil {
 				return sess
 			}
@@ -269,18 +254,25 @@ func (m *Manager) matchBilibiliSessionLocked(target string) *recordSession {
 		}
 		return nil
 	case strings.HasPrefix(target, "live:"):
-		sid := strings.TrimPrefix(target, "live:")
+		sid := strings.TrimSpace(strings.TrimPrefix(target, "live:"))
+		if sid == "" {
+			return nil
+		}
 		for _, sess := range m.sessions {
-			if sess != nil && sess.sessionID == sid {
+			if sess != nil && sess.sessionID != "" && sess.sessionID == sid {
 				return sess
 			}
 		}
+		return nil
 	case strings.HasPrefix(target, "douyin:"):
 		return nil
 	}
 
+	if trimmed == "" {
+		return nil
+	}
 	for _, sess := range m.sessions {
-		if sess != nil && sess.sessionID == trimmed {
+		if sess != nil && sess.sessionID != "" && sess.sessionID == trimmed {
 			return sess
 		}
 	}
@@ -298,20 +290,24 @@ func (m *Manager) matchBilibiliSessionLocked(target string) *recordSession {
 }
 
 func (m *Manager) matchDouyinSessionLocked(target string) *recordSession {
-	candidates := []string{target}
-	switch {
-	case strings.HasPrefix(target, "bilibili:"):
+	if strings.HasPrefix(target, "bilibili:") {
 		return nil
-	case strings.HasPrefix(target, "douyin:live:"):
-		candidates = append(candidates, strings.TrimPrefix(target, "douyin:live:"))
-	case strings.HasPrefix(target, "douyin:user:"):
-		candidates = append(candidates, strings.TrimPrefix(target, "douyin:user:"))
-	case strings.HasPrefix(target, "douyin:web:"):
-		candidates = append(candidates, strings.TrimPrefix(target, "douyin:web:"))
-	case strings.HasPrefix(target, "douyin:"):
-		candidates = append(candidates, strings.TrimPrefix(target, "douyin:"))
-	case strings.HasPrefix(target, "live:"):
-		candidates = append(candidates, strings.TrimPrefix(target, "live:"))
+	}
+	var candidates []string
+	hadPrefix := false
+	for _, pfx := range []string{"douyin:live:", "douyin:user:", "douyin:web:", "douyin:", "live:"} {
+		if strings.HasPrefix(target, pfx) {
+			hadPrefix = true
+			rest := strings.TrimSpace(strings.TrimPrefix(target, pfx))
+			if rest == "" {
+				return nil
+			}
+			candidates = append(candidates, target, rest)
+			break
+		}
+	}
+	if !hadPrefix {
+		candidates = []string{target}
 	}
 
 	for _, c := range candidates {
@@ -325,7 +321,7 @@ func (m *Manager) matchDouyinSessionLocked(target string) *recordSession {
 			if sess == nil {
 				continue
 			}
-			if sess.stateKey == c || sess.accountUID == c || sess.webRID == c || sess.roomIDStr == c || sess.sessionID == c {
+			if sess.stateKey == c || sess.accountUID == c || (sess.webRID != "" && sess.webRID == c) || sess.roomIDStr == c || sess.sessionID == c {
 				return sess
 			}
 		}
@@ -339,19 +335,30 @@ func (m *Manager) matchBilibiliStateLocked(target string) (RoomState, bool) {
 	}
 	trimmed := target
 	byUIDOnly := false
+	hasBiliPrefix := false
 	switch {
 	case strings.HasPrefix(target, "bilibili:live:"):
-		trimmed = strings.TrimPrefix(target, "bilibili:live:")
+		trimmed = strings.TrimSpace(strings.TrimPrefix(target, "bilibili:live:"))
+		hasBiliPrefix = true
 	case strings.HasPrefix(target, "bilibili:user:"):
-		trimmed = strings.TrimPrefix(target, "bilibili:user:")
+		trimmed = strings.TrimSpace(strings.TrimPrefix(target, "bilibili:user:"))
 		byUIDOnly = true
+		hasBiliPrefix = true
 	case strings.HasPrefix(target, "bilibili:"):
-		trimmed = strings.TrimPrefix(target, "bilibili:")
+		trimmed = strings.TrimSpace(strings.TrimPrefix(target, "bilibili:"))
+		hasBiliPrefix = true
+	}
+	if hasBiliPrefix && trimmed == "" {
+		return RoomState{}, false
 	}
 	num, err := strconv.ParseInt(trimmed, 10, 64)
 	if err != nil || num <= 0 {
+		sid := strings.TrimSpace(strings.TrimPrefix(target, "live:"))
+		if sid == "" {
+			return RoomState{}, false
+		}
 		for _, st := range m.states {
-			if target != "" && st.RecordSession == strings.TrimPrefix(target, "live:") {
+			if st.RecordSession != "" && st.RecordSession == sid {
 				return st, true
 			}
 		}
@@ -374,15 +381,18 @@ func (m *Manager) matchDouyinStateLocked(target string) (RoomState, bool) {
 	if strings.HasPrefix(target, "bilibili:") {
 		return RoomState{}, false
 	}
-	if st, ok := m.douyinStates[target]; ok {
-		return m.hydrateDouyinStateLocked(st), true
-	}
 	trimmed := target
 	for _, pfx := range []string{"douyin:live:", "douyin:user:", "douyin:web:", "douyin:", "live:"} {
 		if strings.HasPrefix(target, pfx) {
-			trimmed = strings.TrimPrefix(target, pfx)
+			trimmed = strings.TrimSpace(strings.TrimPrefix(target, pfx))
+			if trimmed == "" {
+				return RoomState{}, false
+			}
 			break
 		}
+	}
+	if st, ok := m.douyinStates[target]; ok {
+		return m.hydrateDouyinStateLocked(st), true
 	}
 	if st, ok := m.douyinStates["douyin:live:"+trimmed]; ok {
 		return m.hydrateDouyinStateLocked(st), true
@@ -391,121 +401,22 @@ func (m *Manager) matchDouyinStateLocked(target string) (RoomState, bool) {
 		return m.hydrateDouyinStateLocked(st), true
 	}
 	for _, st := range m.douyinStates {
-		if st.RoomIDStr == trimmed || st.AccountUID == trimmed || st.WebRID == trimmed || st.RoomKey == trimmed {
+		if st.RoomIDStr == trimmed || st.AccountUID == trimmed || (st.WebRID != "" && st.WebRID == trimmed) || st.RoomKey == trimmed || (st.RecordSession != "" && st.RecordSession == trimmed) {
 			return m.hydrateDouyinStateLocked(st), true
 		}
 	}
 	return RoomState{}, false
 }
 
-func (m *Manager) buildBilibiliPreviewLocked(st RoomState, sess *recordSession) RecordingPreview {
+func (m *Manager) buildPreviewLocked(siteID site.ID, st RoomState, sess *recordSession) RecordingPreview {
+	isDouyin := siteID == site.Douyin
+	defaultTransport := string(site.LiveTransportHLSFMP4)
+	if isDouyin {
+		defaultTransport = string(site.LiveTransportHTTPFLV)
+	}
+
 	roomID := st.RoomID
 	uid := st.UID
-	uname := st.Uname
-	title := st.Title
-	codec := st.Codec
-	quality := st.Quality
-	qualityName := st.QualityName
-	transport := firstNonEmpty(st.Transport, string(site.LiveTransportHLSFMP4))
-	itemDir := st.RecordItemDir
-	stopReason := st.StopReason
-	lastErr := st.LastError
-	durSec := st.RecordDurationSec
-	speedBps := st.RecordSpeedBps
-	bytesWritten := st.RecordBytes
-	segments := st.RecordSegments
-	incidents := cloneIncidents(st.Incidents)
-
-	var partPath, previewReason string
-	var partIndex int
-	var partBytes int64
-	var partDur float64
-	var partReady, previewSupported, recording bool
-
-	if sess != nil {
-		recording = true
-		if sess.roomID > 0 {
-			roomID = sess.roomID
-		}
-		if sess.uid > 0 {
-			uid = sess.uid
-		}
-		uname = firstNonEmpty(uname, sess.uname)
-		title = firstNonEmpty(title, sess.title)
-		codec = firstNonEmpty(sess.codec, codec)
-		if sess.quality > 0 {
-			quality = sess.quality
-		}
-		qualityName = firstNonEmpty(sess.qualityName, qualityName)
-		transport = firstNonEmpty(sess.streamTransport, transport)
-		itemDir = firstNonEmpty(sess.itemDir, itemDir)
-		stopReason = firstNonEmpty(sess.stopReason, stopReason)
-		lastErr = firstNonEmpty(sess.lastErr, lastErr)
-		durSec = m.nowFunc().Sub(sess.startedAt).Seconds()
-		if sess.lastSpeedBps > 0 {
-			speedBps = sess.lastSpeedBps
-		}
-		bytesWritten = sess.bytesTotal
-		segments = len(sess.segments)
-		incidents = cloneIncidents(sess.incidents)
-		partPath = sess.activePartPath
-		partIndex = sess.activePartIndex
-		partBytes = sess.activePartBytes
-		partDur = sess.activePartDur
-		partReady = sess.activePartReady
-		previewSupported = sess.previewSupport
-		previewReason = sess.previewReason
-	}
-	if qualityName == "" && quality > 0 {
-		qualityName = bilibili.LiveQualityFallbackName(quality)
-	}
-	roomStr := st.RoomIDStr
-	if roomStr == "" && roomID > 0 {
-		roomStr = strconv.FormatInt(roomID, 10)
-	}
-	uidStr := st.AccountUID
-	if uidStr == "" && uid > 0 {
-		uidStr = strconv.FormatInt(uid, 10)
-	}
-	recKey := st.RoomKey
-	if recKey == "" && roomStr != "" {
-		recKey = "bilibili:live:" + roomStr
-	}
-
-	return RecordingPreview{
-		RecordingKey:     recKey,
-		Site:             string(site.Bilibili),
-		AccountUID:       uidStr,
-		RoomID:           roomID,
-		RoomIDStr:        roomStr,
-		Uname:            uname,
-		Title:            title,
-		Codec:            codec,
-		Quality:          quality,
-		QualityName:      qualityName,
-		Transport:        transport,
-		AudioOnly:        false,
-		Recording:        recording,
-		PartPath:         partPath,
-		PartIndex:        partIndex,
-		PartBytes:        partBytes,
-		PartDurationSec:  partDur,
-		PartReady:        partReady,
-		PreviewSupported: previewSupported,
-		PreviewReason:    previewReason,
-		ItemDir:          itemDir,
-		DurationSec:      durSec,
-		SpeedBps:         speedBps,
-		BytesWritten:     bytesWritten,
-		Segments:         segments,
-		Incidents:        incidents,
-		StopReason:       stopReason,
-		LastError:        lastErr,
-	}
-}
-
-func (m *Manager) buildDouyinPreviewLocked(st RoomState, sess *recordSession) RecordingPreview {
-	roomID := st.RoomID
 	roomStr := st.RoomIDStr
 	uidStr := st.AccountUID
 	webRID := st.WebRID
@@ -514,8 +425,8 @@ func (m *Manager) buildDouyinPreviewLocked(st RoomState, sess *recordSession) Re
 	codec := st.Codec
 	quality := st.Quality
 	qualityName := st.QualityName
-	transport := firstNonEmpty(st.Transport, string(site.LiveTransportHTTPFLV))
-	audioOnly := st.AudioOnly || st.LiveState == site.LiveStateAudioOnly
+	transport := firstNonEmpty(st.Transport, defaultTransport)
+	audioOnly := isDouyin && (st.AudioOnly || st.LiveState == site.LiveStateAudioOnly)
 	itemDir := st.RecordItemDir
 	stopReason := st.StopReason
 	lastErr := st.LastError
@@ -539,6 +450,9 @@ func (m *Manager) buildDouyinPreviewLocked(st RoomState, sess *recordSession) Re
 		if sess.roomID > 0 {
 			roomID = sess.roomID
 		}
+		if sess.uid > 0 {
+			uid = sess.uid
+		}
 		roomStr = firstNonEmpty(sess.roomIDStr, roomStr)
 		uidStr = firstNonEmpty(sess.accountUID, uidStr)
 		webRID = firstNonEmpty(sess.webRID, webRID)
@@ -550,11 +464,13 @@ func (m *Manager) buildDouyinPreviewLocked(st RoomState, sess *recordSession) Re
 		}
 		qualityName = firstNonEmpty(sess.qualityName, qualityName)
 		transport = firstNonEmpty(sess.streamTransport, transport)
-		audioOnly = audioOnly || sess.audioOnly
+		if isDouyin {
+			audioOnly = audioOnly || sess.audioOnly
+		}
 		itemDir = firstNonEmpty(sess.itemDir, itemDir)
 		stopReason = firstNonEmpty(sess.stopReason, stopReason)
 		lastErr = firstNonEmpty(sess.lastErr, lastErr)
-		durSec = m.nowFunc().Sub(sess.startedAt).Seconds()
+		durSec = m.nowLocked().Sub(sess.startedAt).Seconds()
 		if sess.lastSpeedBps > 0 {
 			speedBps = sess.lastSpeedBps
 		}
@@ -569,17 +485,23 @@ func (m *Manager) buildDouyinPreviewLocked(st RoomState, sess *recordSession) Re
 		previewSupported = sess.previewSupport
 		previewReason = sess.previewReason
 	}
+	if !isDouyin && qualityName == "" && quality > 0 {
+		qualityName = bilibili.LiveQualityFallbackName(quality)
+	}
 	if roomStr == "" && roomID > 0 {
 		roomStr = strconv.FormatInt(roomID, 10)
 	}
+	if !isDouyin && uidStr == "" && uid > 0 {
+		uidStr = strconv.FormatInt(uid, 10)
+	}
 	recKey := st.RoomKey
 	if recKey == "" && roomStr != "" {
-		recKey = "douyin:live:" + roomStr
+		recKey = string(siteID) + ":live:" + roomStr
 	}
 
 	return RecordingPreview{
 		RecordingKey:     recKey,
-		Site:             string(site.Douyin),
+		Site:             string(siteID),
 		AccountUID:       uidStr,
 		RoomID:           roomID,
 		RoomIDStr:        roomStr,

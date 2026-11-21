@@ -23,11 +23,10 @@ func (s *livePhotoStub) StagePreviewMedia(_ context.Context, siteID, rawURL, _ s
 	return s.clip, nil
 }
 
-// DEC-046 ①: a Bilibili live photo plays its motion clip inside the viewer,
-// online before caching (staged from the Bilibili CDN) and from the cached
-// clip afterwards, without leaving the viewer. It plays as soon as the viewer
-// shows it (2026-11-14 feedback: a still that needs a button looked broken);
-// the play button stays for replaying.
+// A Bilibili live photo plays its motion clip inside the viewer, online before
+// caching (staged from the Bilibili CDN) and from the cached clip afterwards,
+// without leaving the viewer. It plays as soon as the viewer shows it so the
+// user does not see an inert still; the play button stays for replaying.
 func TestBilibiliLivePhotoPlaysInTheViewer(t *testing.T) {
 	app, stub, _, cleanup := newDouyinUITestHarness(t)
 	defer cleanup()

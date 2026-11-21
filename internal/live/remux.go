@@ -16,6 +16,7 @@ const (
 	videoTimescale uint32 = 90000
 
 	defaultSingleTrackWaitMs int64 = 3000
+	defaultKeyframeWaitMs    int64 = 30_000
 	defaultMinKeyframeMs     int64 = 1000
 	defaultMaxFragmentMs     int64 = 2000
 	defaultMaxFragmentBytes  int64 = 4 * 1024 * 1024
@@ -24,6 +25,8 @@ const (
 
 	preKeyframeAudioKeepWindowMs int64 = 100
 	maxPreKeyframeAudioSamples   int   = 256
+	maxBufferedAudioSamples      int   = 512
+	maxPreInitAudioSamples       int   = 1024
 )
 
 // ErrNoVideoKeyframe indicates the FLV stream ended before a decodable video keyframe arrived.
@@ -191,7 +194,7 @@ func (rm *FLVRemuxer) WritePart(
 			if errors.Is(err, io.EOF) {
 				rm.eofReached = true
 				if !ps.started {
-					if ps.preAudioSeen {
+					if ps.preAudioSeen && !ps.preVideoSeen && ps.activeVideoCfg == nil {
 						return FLVCheckpoint{}, &UnsupportedCodecError{
 							Media:  "stream",
 							Codec:  "audio-only",
@@ -207,8 +210,11 @@ func (rm *FLVRemuxer) WritePart(
 			}
 			// On truncated tail or read error after valid frames were buffered, flush already-verified
 			// complete samples before surfacing the stream error so checkpoints stay current.
+			// Never swallow storage/disk-full errors from flushing.
 			if ps.started && (errors.Is(err, ErrFLVTruncated) || (!IsFLVFormatError(err) && !IsUnsupportedCodec(err))) {
-				_ = ps.flushFinal()
+				if flushErr := ps.flushFinal(); flushErr != nil && (isDiskFullError(flushErr) || liveStopReason(flushErr) == "storage") {
+					return ps.lastCheckpoint, flushErr
+				}
 			}
 			return ps.lastCheckpoint, err
 		}
@@ -242,6 +248,7 @@ func (rm *FLVRemuxer) WritePart(
 
 		case ParsedTagVideoConfig:
 			newCfg := pkt.VideoConfig
+			ps.preVideoSeen = true
 			if ps.started && ps.activeVideoCfg != nil {
 				if bytes.Equal(newCfg.Canonical, ps.activeVideoCfg.Canonical) {
 					// Identical parameter-set resend: update wire NALU prefix length if needed, do not split.
@@ -324,7 +331,8 @@ type partWriterState struct {
 	activeVideoCfg *VideoConfig
 	activeAudioCfg *AudioConfig
 
-	// Pre-keyframe audio tracking (detects >3s audio-only streams and preserves simultaneous t=0 AAC).
+	// Pre-keyframe track presence (detects >3s audio-only streams without killing >3s GOP video streams).
+	preVideoSeen     bool
 	preAudioSeen     bool
 	preAudioUnwrap   tsUnwrapper
 	preAudioOriginMs int64
@@ -353,6 +361,7 @@ type partWriterState struct {
 	lastVideoDur  uint32
 	lastAudioDur  uint32
 
+	encodeBuf          bytes.Buffer
 	seqNumber          uint32
 	writtenBytes       int64
 	flushedVideoEndDTS uint64
@@ -364,6 +373,7 @@ type partWriterState struct {
 }
 
 func (ps *partWriterState) handleVideoFrame(pkt ParsedTag) (rollover bool, err error) {
+	ps.preVideoSeen = true
 	if ps.activeVideoCfg == nil || ps.activeVideoCfg.Codec != pkt.VideoCodec {
 		return false, nil
 	}
@@ -491,20 +501,22 @@ func (ps *partWriterState) handleAudioFrame(pkt ParsedTag) (rollover bool, err e
 		if !ps.preAudioSeen {
 			ps.preAudioSeen = true
 			ps.preAudioOriginMs = aMs
-		} else if aMs-ps.preAudioOriginMs > ps.opts.SingleTrackWaitMs {
-			return false, &UnsupportedCodecError{
-				Media:  "stream",
-				Codec:  "audio-only",
-				Reason: "超过 3 秒仅收到音频包而无视频关键帧",
+		} else if elapsedMs := aMs - ps.preAudioOriginMs; !ps.preVideoSeen && ps.activeVideoCfg == nil {
+			if elapsedMs > ps.opts.SingleTrackWaitMs {
+				return false, &UnsupportedCodecError{
+					Media:  "stream",
+					Codec:  "audio-only",
+					Reason: "超过 3 秒仅收到音频包而无视频关键帧",
+				}
 			}
+		} else if elapsedMs > max(ps.opts.SingleTrackWaitMs*10, defaultKeyframeWaitMs) {
+			return false, ErrNoVideoKeyframe
 		}
 		if ps.activeAudioCfg != nil {
-			cp := make([]byte, len(pkt.RawPayload))
-			copy(cp, pkt.RawPayload)
 			ps.preAudioPackets = append(ps.preAudioPackets, preKeyframeAudioPacket{
 				rawTS:       pkt.Timestamp,
 				unwrappedMs: aMs,
-				data:        cp,
+				data:        pkt.RawPayload,
 			})
 			if len(ps.preAudioPackets) > maxPreKeyframeAudioSamples {
 				ps.preAudioPackets = ps.preAudioPackets[len(ps.preAudioPackets)-maxPreKeyframeAudioSamples:]
@@ -525,7 +537,8 @@ func (ps *partWriterState) handleAudioFrame(pkt ParsedTag) (rollover bool, err e
 }
 
 func (ps *partWriterState) appendAudioSample(rawTS uint32, rawPayload []byte) (rollover bool, err error) {
-	unwrappedMs := ps.audioUnwrap.unwrap(rawTS)
+	candidateUnwrap := ps.audioUnwrap.clone()
+	unwrappedMs := candidateUnwrap.unwrap(rawTS)
 	relMs := unwrappedMs - ps.originMs
 	if ps.hasPrevAudio {
 		deltaMs := relMs - ps.prevAudioMs
@@ -538,8 +551,9 @@ func (ps *partWriterState) appendAudioSample(rawTS uint32, rawPayload []byte) (r
 			ps.prevAudioMs = relMs
 		}
 	} else {
+		// Drop out-of-window initial audio instead of rolling over in an infinite 1-frame loop.
 		if relMs < -ps.opts.MaxBackwardJumpMs || relMs > ps.opts.MaxForwardJumpMs {
-			return true, nil
+			return false, nil
 		}
 		if relMs < 0 {
 			relMs = 0
@@ -547,6 +561,7 @@ func (ps *partWriterState) appendAudioSample(rawTS uint32, rawPayload []byte) (r
 		ps.prevAudioMs = relMs
 		ps.hasPrevAudio = true
 	}
+	ps.audioUnwrap = candidateUnwrap
 
 	dts := mulDiv64(uint64(relMs), uint64(ps.activeAudioCfg.SampleRate), 1000)
 	if len(ps.aBuf) > 0 || ps.minAudioDTS > 0 {
@@ -576,14 +591,32 @@ func (ps *partWriterState) appendAudioSample(rawTS uint32, rawPayload []byte) (r
 		ps.lastAudioDur = uint32(dur64)
 	}
 
-	dataCopy := make([]byte, len(rawPayload))
-	copy(dataCopy, rawPayload)
 	ps.aBuf = append(ps.aBuf, bufferedMediaSample{
 		dts:        dts,
 		isKeyframe: true,
-		data:       dataCopy,
+		data:       rawPayload,
 	})
-	ps.bufferedBytes += int64(len(dataCopy))
+	ps.bufferedBytes += int64(len(rawPayload))
+
+	// Bound audio buffer memory if the video track stalls while audio continues arriving.
+	if ps.initWritten && ps.initHasAudio {
+		if len(ps.aBuf) >= maxBufferedAudioSamples || ps.bufferedBytes >= ps.opts.MaxFragmentBytes {
+			if err := ps.flushAudioOnly(); err != nil {
+				return false, err
+			}
+		}
+	} else if !ps.initWritten && len(ps.aBuf) > maxPreInitAudioSamples {
+		excess := len(ps.aBuf) - maxPreInitAudioSamples
+		for i := 0; i < excess; i++ {
+			ps.bufferedBytes -= int64(len(ps.aBuf[i].data))
+		}
+		if ps.bufferedBytes < 0 {
+			ps.bufferedBytes = 0
+		}
+		kept := make([]bufferedMediaSample, maxPreInitAudioSamples)
+		copy(kept, ps.aBuf[excess:])
+		ps.aBuf = kept
+	}
 	return false, nil
 }
 
@@ -600,8 +633,35 @@ func (ps *partWriterState) flushPending(flushAll bool) error {
 			return err
 		}
 	}
+	vFlush, aFlush := ps.selectFlushSamples(flushAll)
+	if len(vFlush) == 0 && len(aFlush) == 0 {
+		return nil
+	}
+	frag, err := ps.buildMediaFragment(vFlush, aFlush)
+	if err != nil {
+		return err
+	}
+	return ps.writeAndCheckpointFragment(frag)
+}
 
-	var vFlush []bufferedMediaSample
+// flushAudioOnly drains buffered audio samples while preserving any in-flight video lookahead frame.
+func (ps *partWriterState) flushAudioOnly() error {
+	if !ps.initWritten || !ps.initHasAudio || len(ps.aBuf) < 2 {
+		return nil
+	}
+	split := len(ps.aBuf) - 1
+	aFlush := ps.aBuf[:split]
+	remaining := make([]bufferedMediaSample, 1)
+	remaining[0] = ps.aBuf[split]
+	ps.aBuf = remaining
+	frag, err := ps.buildMediaFragment(nil, aFlush)
+	if err != nil {
+		return err
+	}
+	return ps.writeAndCheckpointFragment(frag)
+}
+
+func (ps *partWriterState) selectFlushSamples(flushAll bool) (vFlush, aFlush []bufferedMediaSample) {
 	if flushAll {
 		if len(ps.vBuf) > 0 {
 			lastIdx := len(ps.vBuf) - 1
@@ -622,7 +682,6 @@ func (ps *partWriterState) flushPending(flushAll bool) error {
 		ps.vBuf = nil
 	}
 
-	var aFlush []bufferedMediaSample
 	if ps.initHasAudio && len(ps.aBuf) > 0 {
 		if flushAll {
 			lastIdx := len(ps.aBuf) - 1
@@ -660,11 +719,10 @@ func (ps *partWriterState) flushPending(flushAll bool) error {
 	} else if !ps.initHasAudio {
 		ps.aBuf = nil
 	}
+	return vFlush, aFlush
+}
 
-	if len(vFlush) == 0 && len(aFlush) == 0 {
-		return nil
-	}
-
+func (ps *partWriterState) buildMediaFragment(vFlush, aFlush []bufferedMediaSample) (*mp4.Fragment, error) {
 	var trackIDs []uint32
 	if len(vFlush) > 0 {
 		trackIDs = append(trackIDs, 1)
@@ -676,7 +734,7 @@ func (ps *partWriterState) flushPending(flushAll bool) error {
 	ps.seqNumber++
 	frag, err := mp4.CreateMultiTrackFragment(ps.seqNumber, trackIDs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	videoSyncFlags := mp4.SyncSampleFlags
@@ -702,7 +760,7 @@ func (ps *partWriterState) flushPending(flushAll bool) error {
 			DecodeTime: s.dts,
 			Data:       s.data,
 		}, 1); err != nil {
-			return err
+			return nil, err
 		}
 		ps.flushedVideoEndDTS = s.dts + uint64(dur)
 		ps.flushedVideoDur += uint64(dur)
@@ -722,19 +780,22 @@ func (ps *partWriterState) flushPending(flushAll bool) error {
 			DecodeTime: s.dts,
 			Data:       s.data,
 		}, 2); err != nil {
-			return err
+			return nil, err
 		}
 		ps.flushedAudioEndDTS = s.dts + uint64(dur)
 		ps.flushedAudioDur += uint64(dur)
 		ps.minAudioDTS = ps.flushedAudioEndDTS
 		ps.flushedAnyAudio = true
 	}
+	return frag, nil
+}
 
-	var fragBuf bytes.Buffer
-	if err := frag.Encode(&fragBuf); err != nil {
+func (ps *partWriterState) writeAndCheckpointFragment(frag *mp4.Fragment) error {
+	ps.encodeBuf.Reset()
+	if err := frag.Encode(&ps.encodeBuf); err != nil {
 		return err
 	}
-	n, err := ps.target.Write(fragBuf.Bytes())
+	n, err := ps.target.Write(ps.encodeBuf.Bytes())
 	ps.writtenBytes += int64(n)
 	if err != nil {
 		return err
@@ -743,7 +804,6 @@ func (ps *partWriterState) flushPending(flushAll bool) error {
 		return err
 	}
 
-	// Recompute remaining buffered payload size.
 	var remBytes int64
 	for _, s := range ps.vBuf {
 		remBytes += int64(len(s.data))
@@ -819,11 +879,11 @@ func (ps *partWriterState) writeInitSegment() error {
 		}
 	}
 
-	var initBuf bytes.Buffer
-	if err := init.Encode(&initBuf); err != nil {
+	ps.encodeBuf.Reset()
+	if err := init.Encode(&ps.encodeBuf); err != nil {
 		return fmt.Errorf("live: 编码 fMP4 InitSegment 失败: %w", err)
 	}
-	n, err := ps.target.Write(initBuf.Bytes())
+	n, err := ps.target.Write(ps.encodeBuf.Bytes())
 	ps.writtenBytes += int64(n)
 	if err != nil {
 		return err

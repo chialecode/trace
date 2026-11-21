@@ -34,7 +34,7 @@ func workflowJobs(t *testing.T) (string, map[string]string) {
 	return head, jobs
 }
 
-// release.yml (W8, M2-K11): weekly and manual; every action pinned to a
+// release.yml: weekly and manual; every action pinned to a
 // full commit; no setup-go; least permissions per job; the signing secret
 // only in the build step of the release environment; publishing only
 // with the repository variable, and from a job that runs no repository
@@ -105,5 +105,19 @@ func TestReleaseWorkflow(t *testing.T) {
 	}
 	if strings.Contains(jobs["check"]+jobs["build"], "contents: write") {
 		t.Fatal("a job before publish can write")
+	}
+	if strings.Contains(pub, "grep -qx") || !strings.Contains(pub, "grep -Fqx") {
+		t.Fatal("publish job must use fixed-string grep -Fqx instead of regex grep -qx")
+	}
+}
+
+func TestCIWorkflowHardening(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	if !strings.Contains(text, "persist-credentials: false") {
+		t.Fatal("ci.yml checkout must set persist-credentials: false")
 	}
 }

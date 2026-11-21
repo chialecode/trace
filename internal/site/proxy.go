@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 )
@@ -21,6 +22,10 @@ type proxyConfig struct {
 	custom *url.URL
 }
 
+type systemProxyHolder struct {
+	fn func(*http.Request) (*url.URL, error)
+}
+
 var (
 	currentProxy atomic.Pointer[proxyConfig]
 	// systemProxy answers "follow the system". It reads only the HTTP(S)_PROXY
@@ -28,18 +33,23 @@ var (
 	// (SetSystemProxyFunc: MyGo's netproxy, which on Windows reads WinHTTP's
 	// view of the user's proxy, manual, PAC or automatic detection, and lets
 	// those variables decide when set).
-	systemProxy = http.ProxyFromEnvironment
+	systemProxy atomic.Pointer[systemProxyHolder]
+	proxyGen    atomic.Uint64
 )
 
 // SetSystemProxyFunc installs how "follow the system" finds the proxy; the
 // shell calls it once at startup, before any request.
 func SetSystemProxyFunc(fn func(*http.Request) (*url.URL, error)) {
 	if fn != nil {
-		systemProxy = fn
+		systemProxy.Store(&systemProxyHolder{fn: fn})
+		proxyGen.Add(1)
 	}
 }
 
-func init() { currentProxy.Store(&proxyConfig{mode: ProxySystem}) }
+func init() {
+	currentProxy.Store(&proxyConfig{mode: ProxySystem})
+	systemProxy.Store(&systemProxyHolder{fn: http.ProxyFromEnvironment})
+}
 
 // ParseProxyURL checks a custom proxy address: http://, https://, socks5://
 // or socks5h://, with a host and port and nothing after them. An account and
@@ -68,6 +78,10 @@ func ParseProxyURL(raw string) (*url.URL, error) {
 	if u.Hostname() == "" || u.Port() == "" {
 		return nil, errors.New("代理地址要写主机和端口，例如 127.0.0.1:7890")
 	}
+	portNum, portErr := strconv.Atoi(u.Port())
+	if portErr != nil || portNum < 1 || portNum > 65535 {
+		return nil, errors.New("代理端口要在 1 到 65535 之间")
+	}
 	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("代理地址只写协议、主机和端口")
 	}
@@ -94,6 +108,7 @@ func SetProxy(mode, custom string) error {
 		return errors.New("未知的代理方式：" + mode)
 	}
 	currentProxy.Store(cfg)
+	proxyGen.Add(1)
 	return nil
 }
 
@@ -103,7 +118,7 @@ func ProxyMode() string { return currentProxy.Load().mode }
 // Proxy is the http.Transport Proxy hook all site transports share. Loopback
 // targets are always reached directly.
 func Proxy(req *http.Request) (*url.URL, error) {
-	if isLoopbackHost(req.URL.Hostname()) {
+	if IsLoopbackHost(req.URL.Hostname()) {
 		return nil, nil
 	}
 	cfg := currentProxy.Load()
@@ -114,11 +129,15 @@ func Proxy(req *http.Request) (*url.URL, error) {
 		u := *cfg.custom
 		return &u, nil
 	}
-	return systemProxy(req)
+	if h := systemProxy.Load(); h != nil && h.fn != nil {
+		return h.fn(req)
+	}
+	return http.ProxyFromEnvironment(req)
 }
 
-func isLoopbackHost(host string) bool {
-	host = strings.ToLower(host)
+// IsLoopbackHost reports whether host refers to localhost or a loopback IP.
+func IsLoopbackHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return true
 	}

@@ -28,17 +28,21 @@ func (a *App) startQRLogin() {
 	a.cancelQRLogin()
 	revision := a.qrRevision
 	a.LoginError, a.QRStatusText = "", "正在获取二维码…"
-	requestGuarded(a, fmt.Sprintf("qr-start-%d", revision), func() bool { return a.qrRevision == revision }, a.backend.StartQRLogin, func(session bilibili.QRSession) {
+	requestGuarded(a, fmt.Sprintf("qr-start-%d", revision), func() bool {
+		return a.qrRevision == revision && a.CurrentRoute == RouteLogin
+	}, a.backend.StartQRLogin, func(session bilibili.QRSession) {
 		a.QRSession = session
 		a.QRBitmap = ui.NewBitmap(bilibili.RenderQRRGBA(session.URL, 6))
 		a.QRStatusText = "未扫码，请使用哔哩哔哩手机客户端扫码"
 		// Testers without an event loop remain deterministic and use manual polls.
-		if a.dispatch == nil {
+		a.mu.Lock()
+		dispatch := a.dispatch
+		a.mu.Unlock()
+		if dispatch == nil {
 			return
 		}
 		ctx, cancel := context.WithCancel(a.ctx)
 		a.qrCancel = cancel
-		dispatch := a.dispatch
 		go func() {
 			ticker := time.NewTicker(2 * time.Second)
 			defer ticker.Stop()
@@ -47,8 +51,11 @@ func (a *App) startQRLogin() {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
+					if a.isClosed() {
+						return
+					}
 					dispatch(func() {
-						if !a.closed && a.qrRevision == revision {
+						if !a.isClosed() && a.CurrentRoute == RouteLogin && a.qrRevision == revision {
 							a.pollQRLogin()
 						}
 					})
@@ -63,7 +70,9 @@ func (a *App) pollQRLogin() {
 	if flow == "" {
 		return
 	}
-	requestGuarded(a, "qr-poll-"+flow, func() bool { return a.qrRevision == revision && a.QRSession.FlowID == flow }, func(ctx context.Context) (bilibili.QRPollResult, error) {
+	requestGuarded(a, "qr-poll-"+flow, func() bool {
+		return a.qrRevision == revision && a.QRSession.FlowID == flow && a.CurrentRoute == RouteLogin
+	}, func(ctx context.Context) (bilibili.QRPollResult, error) {
 		return a.backend.PollQRLogin(ctx, flow)
 	}, func(result bilibili.QRPollResult) {
 		a.QRStatusText = result.Message
@@ -78,13 +87,22 @@ func (a *App) pollQRLogin() {
 	}, func(err error) { a.LoginError = userErrorText(err) })
 }
 
+func (a *App) clearUnsentLoginInputs() {
+	a.ManualCookieInput = ""
+	a.ManualRefreshInput = ""
+	a.DouyinCookieInput = ""
+}
+
 func (a *App) importManualCookie() {
 	rawCookie, rawRefresh := a.ManualCookieInput, a.ManualRefreshInput
 	a.ManualCookieInput, a.ManualRefreshInput, a.LoginError = "", "", ""
-	requestGuarded(a, "manual-login", nil, func(ctx context.Context) (credential.Status, error) {
-		status, err := a.backend.ImportCookie(ctx, rawCookie, rawRefresh)
+	if a.isPending("manual-login") {
 		rawCookie, rawRefresh = "", ""
-		return status, err
+		return
+	}
+	requestGuarded(a, "manual-login", nil, func(ctx context.Context) (credential.Status, error) {
+		defer func() { rawCookie, rawRefresh = "", "" }()
+		return a.backend.ImportCookie(ctx, rawCookie, rawRefresh)
 	}, func(status credential.Status) {
 		if status.LoggedIn {
 			a.cancelQRLogin()
@@ -102,12 +120,16 @@ func (a *App) importDouyinCookie() {
 		a.LoginError = "缺少 sessionid"
 		return
 	}
-	requestGuarded(a, "douyin-cookie-login", nil, func(ctx context.Context) (credential.Status, error) {
-		status, err := a.backend.LoginWithCookie(ctx, string(site.Douyin), rawCookie, "")
+	if a.isPending("douyin-cookie-login") {
 		rawCookie = ""
-		return status, err
+		return
+	}
+	requestGuarded(a, "douyin-cookie-login", nil, func(ctx context.Context) (credential.Status, error) {
+		defer func() { rawCookie = "" }()
+		return a.backend.LoginWithCookie(ctx, string(site.Douyin), rawCookie, "")
 	}, func(status credential.Status) {
 		if status.LoggedIn {
+			a.cancelQRLogin()
 			handle := strings.TrimSpace(status.UniqueID)
 			if handle == "" {
 				handle = strings.TrimSpace(status.UID)
