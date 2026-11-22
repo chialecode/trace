@@ -214,3 +214,187 @@ func TestCheckDependencyDirectionTargetsAndLinuxOnlyViolation(t *testing.T) {
 		t.Fatalf("expected GOOS=linux violation, got %v", err)
 	}
 }
+
+func TestWeiboDependencyDirectionRules(t *testing.T) {
+	cases := []struct {
+		name      string
+		record    string
+		wantError string
+	}{
+		// internal/site/weibo allowed vs upper-layer & cross-site violations
+		{
+			name:   "weibo allowed stdlib site and credential deps",
+			record: "github.com/chialecode/trace/internal/site/weibo|context,net/http,github.com/chialecode/trace/internal/site,github.com/chialecode/trace/internal/credential",
+		},
+		{
+			name:      "weibo depending on storage rejected",
+			record:    "github.com/chialecode/trace/internal/site/weibo|github.com/chialecode/trace/internal/storage",
+			wantError: "layer violation",
+		},
+		{
+			name:      "weibo depending on library rejected",
+			record:    "github.com/chialecode/trace/internal/site/weibo|github.com/chialecode/trace/internal/library",
+			wantError: "layer violation",
+		},
+		{
+			name:      "weibo depending on download rejected",
+			record:    "github.com/chialecode/trace/internal/site/weibo|github.com/chialecode/trace/internal/download",
+			wantError: "layer violation",
+		},
+		{
+			name:      "weibo depending on subscription rejected",
+			record:    "github.com/chialecode/trace/internal/site/weibo|github.com/chialecode/trace/internal/subscription",
+			wantError: "layer violation",
+		},
+		{
+			name:      "weibo depending on live rejected",
+			record:    "github.com/chialecode/trace/internal/site/weibo|github.com/chialecode/trace/internal/live",
+			wantError: "layer violation",
+		},
+		{
+			name:      "weibo depending on service rejected",
+			record:    "github.com/chialecode/trace/internal/site/weibo|github.com/chialecode/trace/internal/service",
+			wantError: "layer violation",
+		},
+		{
+			name:      "weibo depending on ui rejected",
+			record:    "github.com/chialecode/trace/internal/site/weibo|github.com/chialecode/trace/internal/ui",
+			wantError: "layer violation",
+		},
+		{
+			name:      "weibo depending on bilibili rejected",
+			record:    "github.com/chialecode/trace/internal/site/weibo|github.com/chialecode/trace/internal/site/bilibili",
+			wantError: "cross-site violation",
+		},
+		{
+			name:      "weibo depending on douyin rejected",
+			record:    "github.com/chialecode/trace/internal/site/weibo|github.com/chialecode/trace/internal/site/douyin",
+			wantError: "cross-site violation",
+		},
+
+		// existing site packages must not depend on internal/site/weibo
+		{
+			name:   "bilibili without weibo accepted",
+			record: "github.com/chialecode/trace/internal/site/bilibili|context,github.com/chialecode/trace/internal/site,github.com/chialecode/trace/internal/credential",
+		},
+		{
+			name:      "bilibili depending on weibo rejected",
+			record:    "github.com/chialecode/trace/internal/site/bilibili|github.com/chialecode/trace/internal/site/weibo",
+			wantError: "cross-site violation",
+		},
+		{
+			name:   "douyin without weibo accepted",
+			record: "github.com/chialecode/trace/internal/site/douyin|context,github.com/chialecode/trace/internal/site,github.com/chialecode/trace/internal/credential",
+		},
+		{
+			name:      "douyin depending on weibo rejected",
+			record:    "github.com/chialecode/trace/internal/site/douyin|github.com/chialecode/trace/internal/site/weibo",
+			wantError: "cross-site violation",
+		},
+
+		// core packages may use internal/site but must not depend on internal/site/weibo
+		{
+			name:   "download using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/download|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "download depending on weibo rejected",
+			record:    "github.com/chialecode/trace/internal/download|github.com/chialecode/trace/internal/site/weibo",
+			wantError: "decoupling violation",
+		},
+		{
+			name:   "live using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/live|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "live depending on weibo rejected",
+			record:    "github.com/chialecode/trace/internal/live|github.com/chialecode/trace/internal/site/weibo",
+			wantError: "decoupling violation",
+		},
+		{
+			name:   "subscription using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/subscription|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "subscription depending on weibo rejected",
+			record:    "github.com/chialecode/trace/internal/subscription|github.com/chialecode/trace/internal/site/weibo",
+			wantError: "decoupling violation",
+		},
+		{
+			name:   "library using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/library|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "library depending on weibo rejected",
+			record:    "github.com/chialecode/trace/internal/library|github.com/chialecode/trace/internal/site/weibo",
+			wantError: "decoupling violation",
+		},
+		{
+			name:   "storage using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/storage|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "storage depending on weibo rejected",
+			record:    "github.com/chialecode/trace/internal/storage|github.com/chialecode/trace/internal/site/weibo",
+			wantError: "decoupling violation",
+		},
+		{
+			name:   "settings using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/settings|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "settings depending on weibo rejected",
+			record:    "github.com/chialecode/trace/internal/settings|github.com/chialecode/trace/internal/site/weibo",
+			wantError: "decoupling violation",
+		},
+		{
+			name:   "uistate using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/uistate|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "uistate depending on weibo rejected",
+			record:    "github.com/chialecode/trace/internal/uistate|github.com/chialecode/trace/internal/site/weibo",
+			wantError: "decoupling violation",
+		},
+
+		// internal/ui must not directly import internal/site/weibo (transitive via service is allowed)
+		{
+			name:   "ui transitively depending on weibo via service accepted",
+			record: "github.com/chialecode/trace/internal/ui|github.com/chialecode/trace/internal/service|github.com/chialecode/trace/internal/service,github.com/chialecode/trace/internal/site/weibo",
+		},
+		{
+			name:      "ui directly importing weibo rejected",
+			record:    "github.com/chialecode/trace/internal/ui|github.com/chialecode/trace/internal/service,github.com/chialecode/trace/internal/site/weibo|github.com/chialecode/trace/internal/service,github.com/chialecode/trace/internal/site/weibo",
+			wantError: "ui decoupling violation",
+		},
+
+		// cmd/trace-server remains free of MyGo/UI even with weibo wired via service
+		{
+			name:   "trace-server with service and weibo accepted",
+			record: "github.com/chialecode/trace/cmd/trace-server|github.com/chialecode/trace/internal/remoteserver|github.com/chialecode/trace/internal/service,github.com/chialecode/trace/internal/site/weibo",
+		},
+		{
+			name:      "trace-server depending on ui rejected",
+			record:    "github.com/chialecode/trace/cmd/trace-server|github.com/chialecode/trace/internal/remoteserver|github.com/chialecode/trace/internal/ui",
+			wantError: "server size violation",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateDependencyOutput(tc.record)
+			if tc.wantError == "" {
+				if err != nil {
+					t.Fatalf("expected record to pass, got error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantError)
+			}
+			if !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.wantError)
+			}
+		})
+	}
+}

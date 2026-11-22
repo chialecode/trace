@@ -24,6 +24,12 @@ func (b *screenshotBackend) AccountSections(siteID string) []service.AccountSect
 			{Site: siteID, Kind: service.AccountHistory, Label: "历史记录", Available: true},
 		}
 	}
+	if siteID == "weibo" {
+		return []service.AccountSection{
+			{Site: siteID, Kind: service.AccountFollowing, Label: "关注", Available: true},
+			{Site: siteID, Kind: service.AccountFavorites, Label: "收藏", Available: true},
+		}
+	}
 	return []service.AccountSection{
 		{Site: siteID, Kind: service.AccountFollowing, Label: "关注", Available: true},
 		{Site: siteID, Kind: service.AccountLikes, Label: "喜欢", Available: true},
@@ -104,6 +110,62 @@ func (b *screenshotBackend) AccountPage(_ context.Context, siteID, kind, folder,
 			items = append(items, it)
 		}
 		return service.AccountPage{Items: items, Total: len(items)}, nil
+	case "weibo/following":
+		users := []struct{ uid, name, sign string }{
+			{"500000001", "技术频道_微博", "系统工程与媒体工具开发笔记"},
+			{"500000002", "微博科技博主", "每周分享桌面架构与图形渲染"},
+			{"500000003", "合成摄影日记", "胶片风光与长文笔记"},
+		}
+		for _, u := range users {
+			items = append(items, service.AccountItem{
+				Kind:       service.AccountItemUser,
+				Site:       "weibo",
+				ID:         u.uid,
+				Title:      u.name,
+				Signature:  u.sign,
+				OpenURL:    "https://weibo.com/u/" + u.uid,
+				BrowserURL: "https://weibo.com/u/" + u.uid,
+			})
+		}
+		return service.AccountPage{Items: items, Total: len(items)}, nil
+	case "weibo/favorites":
+		for i := 0; i < 4; i++ {
+			mid := fmt.Sprintf("50000000000000%02d", 11+i)
+			p := service.WeiboPostView{
+				Mid:          mid,
+				Author:       service.WeiboAuthorDTO{UID: "500000002", ScreenName: "微博科技博主"},
+				CreatedAt:    now.Add(-time.Duration(i+1) * 4 * time.Hour).Unix(),
+				Text:         fmt.Sprintf("收藏示例微博 #%d：分享一套跨平台媒体缓存与离线归档工具链实践笔记。\n第二行检验收藏列表正文行高与段落间距。", i+1),
+				CanonicalURL: "https://weibo.com/500000002/" + mid,
+				CacheKey:     "weibo:dynamic:" + mid,
+			}
+			if i == 1 {
+				p.IsRetweet = true
+				p.Text = "转发收藏这条图文和视频并茂的原微博，方便离线反复参考。"
+				p.Retweeted = &service.WeiboPostView{
+					Mid:       "5000000000000088",
+					Author:    service.WeiboAuthorDTO{UID: "500000003", ScreenName: "合成设计周刊"},
+					CreatedAt: now.Add(-12 * time.Hour).Unix(),
+					Text:      "原微博正文：桌面端中文排印建议将正文行高设为 1.6 倍，让多段落动态读起来更加从容清晰。",
+					Images:    []service.WeiboMediaItemDTO{{Index: 1, Kind: "image", Width: 800, Height: 600}},
+					Video:     &service.WeiboVideoDTO{ObjectID: "1034:5000000088", Title: "桌面字体排印实战演示", DurationSec: 84},
+				}
+			}
+			items = append(items, service.AccountItem{
+				Kind:       service.AccountItemPost,
+				Site:       "weibo",
+				ID:         mid,
+				Title:      p.Text,
+				Author:     p.Author.ScreenName,
+				AuthorID:   p.Author.UID,
+				FavAt:      p.CreatedAt,
+				OpenURL:    p.CanonicalURL,
+				BrowserURL: p.CanonicalURL,
+				CacheKey:   p.CacheKey,
+				Post:       &p,
+			})
+		}
+		return service.AccountPage{Items: items, HasMore: false, Total: len(items)}, nil
 	case "douyin/likes", "douyin/collection":
 		for i := 0; i < 8; i++ {
 			id := fmt.Sprintf("73500000000000%04d", i)
@@ -134,8 +196,8 @@ func mineShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 	}
 	return []sceneSpec{
 		{Name: "mine-folded", Setup: open("", ""),
-			RequiredLabels:  []string{"我的站点：哔哩哔哩", "我的站点：抖音"},
-			ForbiddenLabels: []string{"我的功能：哔哩哔哩 收藏夹", "我的功能：抖音 喜欢", "我的虚拟列表"}},
+			RequiredLabels:  []string{"我的站点：哔哩哔哩", "我的站点：抖音", "我的站点：微博"},
+			ForbiddenLabels: []string{"我的功能：哔哩哔哩 收藏夹", "我的功能：抖音 喜欢", "我的功能：微博 关注", "我的虚拟列表"}},
 		{Name: "mine-bili-favorites", Setup: open("bilibili", service.AccountFavorites),
 			RequiredLabels:  []string{"收藏夹选择", "我的虚拟列表", "我的条目：已失效", "我的更多菜单"},
 			ForbiddenLabels: []string{"我的条目更多：gone"}},
@@ -149,6 +211,12 @@ func mineShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 			RequiredLabels: []string{"我的作品虚拟列表"}},
 		{Name: "mine-douyin-collection", Setup: open("douyin", service.AccountCollection),
 			RequiredLabels: []string{"收藏夹选择", "我的作品虚拟列表"}},
+		{Name: "mine-weibo-following", Setup: open("weibo", service.AccountFollowing),
+			RequiredLabels:  []string{"我的虚拟列表", "我的用户：微博科技博主"},
+			ForbiddenLabels: []string{"关注分组选择", "我的功能：微博 赞过"}},
+		{Name: "mine-weibo-favorites", Setup: open("weibo", service.AccountFavorites),
+			RequiredLabels:  []string{"我的虚拟列表", "我的微博行：5000000000000011", "我的微博：5000000000000011"},
+			ForbiddenLabels: []string{"我的功能：微博 赞过"}},
 		{Name: "mine-logged-out", Setup: func() {
 			open("douyin", "")()
 			fb.mineDouyinOut = true

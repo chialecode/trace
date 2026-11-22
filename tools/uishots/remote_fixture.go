@@ -71,6 +71,7 @@ func shotRemoteView() *service.RemoteView {
 			Sites: []remote.SiteStatus{
 				{Site: "bilibili", State: remote.SiteValid, Uname: "TRACE演示账号", CookieSyncedAt: at(26 * time.Hour)},
 				{Site: "douyin", State: remote.SiteNone},
+				{Site: "weibo", State: remote.SiteValid, Uname: "TRACE微博演示账号", CookieSyncedAt: at(12 * time.Hour)},
 			},
 			Subscriptions: remote.SubscriptionsInfo{Subscriptions: 4, Accounts: 9, SyncedAt: at(3 * time.Hour), Hash: "a1b2c3"},
 			Checks: []remote.CheckRow{

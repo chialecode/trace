@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/chialecode/trace/internal/download"
@@ -20,6 +21,9 @@ func (b *Backend) EnqueueVideoCache(ctx context.Context, req download.VideoEnque
 	if err := b.requireSiteLogin(site.Bilibili); err != nil {
 		return nil, err
 	}
+	if req.Detail != nil && req.Detail.Author.Mid > 0 && req.Detail.Author.Face != "" {
+		b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(req.Detail.Author.Mid, 10), req.Detail.Author.Face)
+	}
 	tasks, err := b.dl.EnqueueVideo(ctx, req)
 	if err != nil {
 		b.logError("EnqueueVideoCache", err)
@@ -36,6 +40,14 @@ func (b *Backend) EnqueueDynamicCache(ctx context.Context, req download.DynamicE
 	}
 	if err := b.requireSiteLogin(site.Bilibili); err != nil {
 		return download.Task{}, err
+	}
+	if req.Item != nil {
+		if req.Item.Author.Mid > 0 && req.Item.Author.Face != "" {
+			b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(req.Item.Author.Mid, 10), req.Item.Author.Face)
+		}
+		if req.Item.Origin != nil && req.Item.Origin.Author.Mid > 0 && req.Item.Origin.Author.Face != "" {
+			b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(req.Item.Origin.Author.Mid, 10), req.Item.Origin.Author.Face)
+		}
 	}
 	task, err := b.dl.EnqueueDynamic(ctx, req)
 	if err != nil {
@@ -87,6 +99,79 @@ func (b *Backend) enqueueDouyinWorkWithSource(ctx context.Context, awemeID, sour
 		return download.Task{}, err
 	}
 	b.events.PublishSite(EventTaskUpdated, string(site.Douyin), "enqueued:"+t.TargetID)
+	return t, nil
+}
+
+// CacheWeiboPost enqueues a Weibo post (mid or mblogid) for local caching,
+// reusing an in-memory plan when available (zero signed URLs on disk).
+// via optionally supplies forwarding placement (DEC-056).
+func (b *Backend) CacheWeiboPost(ctx context.Context, mid string, via *library.ItemVia) (download.Task, error) {
+	if err := b.requireDesktop(); err != nil {
+		return download.Task{}, err
+	}
+	if err := b.requireSiteLogin(site.Weibo); err != nil {
+		return download.Task{}, err
+	}
+	return b.enqueueWeiboPostWithSource(ctx, mid, "manual", via, nil)
+}
+
+// CacheWeiboVideo enqueues a standalone 1034:<id> Weibo video page for local caching.
+// When the video has a host post, the planner normalizes it to weibo:dynamic:<mid>;
+// otherwise it caches under weibo:video:1034_<id>.
+func (b *Backend) CacheWeiboVideo(ctx context.Context, oid string) (download.Task, error) {
+	if err := b.requireDesktop(); err != nil {
+		return download.Task{}, err
+	}
+	if err := b.requireSiteLogin(site.Weibo); err != nil {
+		return download.Task{}, err
+	}
+	cleanOID := strings.TrimSpace(oid)
+	if strings.HasPrefix(cleanOID, "1034_") {
+		cleanOID = "1034:" + strings.TrimPrefix(cleanOID, "1034_")
+	}
+	t, err := b.dl.EnqueueWeiboWork(ctx, download.WeiboWorkEnqueueRequest{
+		TargetID: cleanOID,
+		Kind:     "video",
+		Source:   "manual",
+	})
+	if err != nil {
+		b.logError("CacheWeiboVideo", err)
+		return download.Task{}, err
+	}
+	b.events.PublishSite(EventTaskUpdated, string(site.Weibo), "enqueued:"+t.TargetID)
+	return t, nil
+}
+
+func (b *Backend) enqueueWeiboPostWithSource(
+	ctx context.Context,
+	mid, source string,
+	via *library.ItemVia,
+	explicitPlan *download.WorkDownloadPlan,
+) (download.Task, error) {
+	if err := b.requireSiteLogin(site.Weibo); err != nil {
+		return download.Task{}, err
+	}
+	cleanMid := strings.TrimSpace(mid)
+	plan := explicitPlan
+	if plan == nil && b.weiboPostCache != nil {
+		if cachedPost, ok := b.weiboPostCache.get(cleanMid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution()); ok {
+			if built, bErr := b.buildWeiboWorkPlanFromPost(cachedPost); bErr == nil {
+				plan = &built
+			}
+		}
+	}
+	t, err := b.dl.EnqueueWeiboWork(ctx, download.WeiboWorkEnqueueRequest{
+		TargetID: cleanMid,
+		Kind:     "dynamic",
+		Source:   source,
+		Plan:     plan,
+		Via:      via,
+	})
+	if err != nil {
+		b.logError("CacheWeiboPost", err)
+		return download.Task{}, err
+	}
+	b.events.PublishSite(EventTaskUpdated, string(site.Weibo), "enqueued:"+t.TargetID)
 	return t, nil
 }
 
@@ -180,6 +265,47 @@ func (b *Backend) RetryTask(taskID string) (download.Task, error) {
 		return download.Task{}, err
 	}
 	return b.dl.Retry(taskID)
+}
+
+// RetryAllTasks re-queues all actionable failed, partial, and non-user-paused
+// download tasks whose owning site is currently logged in.
+func (b *Backend) RetryAllTasks() (download.BatchRetryResult, error) {
+	if err := b.requireAnyLogin(); err != nil {
+		return download.BatchRetryResult{}, err
+	}
+	allowedSites := make(map[string]bool, len(site.All()))
+	for _, sid := range site.All() {
+		allowedSites[string(sid)] = b.requireSiteLogin(sid) == nil
+	}
+	res, err := b.dl.RetryActionable(allowedSites)
+	if err != nil {
+		return res, err
+	}
+	if res.Retried > 0 {
+		b.events.Publish(EventTaskUpdated, "retried:all")
+	}
+	if res.Retried == 0 && res.SkippedAuth > 0 {
+		if len(res.MissingAuthSites) == 1 {
+			if sid, ok := site.ParseID(res.MissingAuthSites[0]); ok {
+				return res, b.requireSiteLogin(sid)
+			}
+		}
+		names := make([]string, 0, len(res.MissingAuthSites))
+		for _, raw := range res.MissingAuthSites {
+			if name := site.DisplayName(raw); name != "" {
+				names = append(names, name)
+			}
+		}
+		msg := "请先登录对应站点后再重试"
+		if len(names) > 0 {
+			msg = "请先登录" + strings.Join(names, "、") + "后再重试"
+		}
+		return res, &site.Error{
+			Kind:    site.ErrKindAuthRequired,
+			Message: msg,
+		}
+	}
+	return res, nil
 }
 
 // CancelTask cancels a download task and removes incomplete .part files.
@@ -422,6 +548,7 @@ func (b *Backend) DeleteLibraryItem(itemKey string, deleteFiles bool) error {
 	if err := b.lib.DeleteItem(itemKey, deleteFiles); err != nil {
 		return err
 	}
+	b.pruneAccountAvatars()
 	b.events.Publish(EventLibraryChanged, "deleted:"+itemKey)
 	return nil
 }

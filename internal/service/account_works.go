@@ -127,7 +127,7 @@ func (b *Backend) startDueFullCacheSweeps(ctx context.Context, now time.Time) []
 			siteID := site.ID(strings.ToLower(strings.TrimSpace(acc.Site)))
 			uid := strings.TrimSpace(acc.UID)
 			key := string(siteID) + ":" + uid
-			if uid == "" || seen[key] || (siteID != site.Bilibili && siteID != site.Douyin) {
+			if uid == "" || seen[key] || !siteID.Valid() {
 				continue
 			}
 			seen[key] = true
@@ -147,10 +147,18 @@ func (b *Backend) startDueFullCacheSweeps(ctx context.Context, now time.Time) []
 		if busy[c.siteID] || b.requireSiteLogin(c.siteID) != nil {
 			continue
 		}
-		list := "videos"
-		if c.siteID == site.Douyin {
+		var list string
+		switch c.siteID {
+		case site.Bilibili:
+			list = "videos"
+		case site.Douyin:
 			list = "works"
 			b.refreshDouyinWorksTotal(ctx, c.acc.UID, now)
+		case site.Weibo:
+			list = "posts"
+			b.refreshWeiboWorksTotal(ctx, c.acc.UID, now)
+		default:
+			continue
 		}
 		task, err := b.EnqueueCacheQueue(ctx, CacheQueueRequest{
 			Site:      string(c.siteID),
@@ -189,4 +197,21 @@ func (b *Backend) refreshDouyinWorksTotal(ctx context.Context, secUID string, no
 		return
 	}
 	b.recordAccountWorks(site.Douyin, firstNonEmpty(prof.SecUID, secUID), prof.AwemeCount)
+}
+
+// refreshWeiboWorksTotal reads a Weibo account's statuses_count before its periodic
+// full-cache sweep while honoring Weibo's backoff and hourly quota.
+func (b *Backend) refreshWeiboWorksTotal(ctx context.Context, uid string, now time.Time) {
+	if b.weibo == nil || b.queue == nil {
+		return
+	}
+	if blocked, _ := b.queue.siteBackoffOrQuotaEnd(site.Weibo, now); blocked {
+		return
+	}
+	prof, err := b.weibo.GetUserProfile(site.WithAutomaticRequests(ctx, "full_cache"), uid)
+	if err != nil {
+		b.logError("FullCacheSweep.WeiboProfile", err)
+		return
+	}
+	b.recordAccountWorks(site.Weibo, firstNonEmpty(prof.UID, uid), prof.StatusesCount)
 }

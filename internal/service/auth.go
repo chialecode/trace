@@ -15,7 +15,8 @@ import (
 // HasAnyLogin reports whether at least one supported site has an active credential.
 func (b *Backend) HasAnyLogin() bool {
 	return (b.cred != nil && b.cred.HasActiveCredential()) ||
-		(b.douyinCred != nil && b.douyinCred.HasActiveCredential())
+		(b.douyinCred != nil && b.douyinCred.HasActiveCredential()) ||
+		(b.weiboCred != nil && b.weiboCred.HasActiveCredential())
 }
 
 func (b *Backend) requireAnyLogin() error {
@@ -24,7 +25,7 @@ func (b *Backend) requireAnyLogin() error {
 	}
 	return &site.Error{
 		Kind:    site.ErrKindAuthRequired,
-		Message: "请先登录哔哩哔哩或抖音账号",
+		Message: "请先登录哔哩哔哩、抖音或微博账号",
 	}
 }
 
@@ -48,11 +49,20 @@ func (b *Backend) requireSiteLogin(siteID site.ID) error {
 			Kind:    site.ErrKindAuthRequired,
 			Message: "请先在设置中粘贴 Cookie 登录抖音",
 		}
+	case site.Weibo:
+		if b.weiboCred != nil && b.weiboCred.HasActiveCredential() {
+			return nil
+		}
+		return &site.Error{
+			Site:    site.Weibo,
+			Kind:    site.ErrKindAuthRequired,
+			Message: "请先登录微博",
+		}
 	default:
 		return &site.Error{
 			Site:    siteID,
-			Kind:    site.ErrKindAuthRequired,
-			Message: "请先登录对应站点账号",
+			Kind:    site.ErrKindBadRequest,
+			Message: "不支持的站点标识: " + strings.TrimSpace(string(siteID)),
 		}
 	}
 }
@@ -63,12 +73,25 @@ func normalizeSiteID(raw string) (site.ID, error) {
 		return site.Bilibili, nil
 	case string(site.Douyin):
 		return site.Douyin, nil
+	case string(site.Weibo):
+		return site.Weibo, nil
 	default:
 		return "", &site.Error{
 			Kind:    site.ErrKindBadRequest,
 			Message: "不支持的站点标识: " + strings.TrimSpace(raw),
 		}
 	}
+}
+
+func normalizeExplicitSiteID(raw string) (site.ID, error) {
+	id, ok := site.ParseID(raw)
+	if !ok {
+		return "", &site.Error{
+			Kind:    site.ErrKindBadRequest,
+			Message: "不支持的站点标识: " + strings.TrimSpace(raw),
+		}
+	}
+	return id, nil
 }
 
 // AccountStatus returns the desensitized Bilibili account status (never exposing raw cookies or tokens).
@@ -84,7 +107,7 @@ func (b *Backend) Statuses() map[string]credential.Status {
 	return b.credMgr.Statuses()
 }
 
-// StatusOf returns the desensitized credential status for a specific site ("bilibili" or "douyin").
+// StatusOf returns the desensitized credential status for a specific site ("bilibili", "douyin", or "weibo").
 func (b *Backend) StatusOf(siteID string) credential.Status {
 	if b.credMgr == nil {
 		return credential.Status{}
@@ -101,38 +124,48 @@ func (b *Backend) Renewal(siteID string) RenewalStatus {
 	if b.profile == ProfileRemote {
 		return RenewalStatus{Site: string(id), Available: false, Reason: "由本地续期"}
 	}
-	if id == site.Douyin {
+	switch id {
+	case site.Douyin:
 		return RenewalStatus{
 			Site:      string(site.Douyin),
 			Available: false,
 			Reason:    "不可用，粘贴的 Cookie 与浏览器共用会话；过期后请重新粘贴",
 		}
-	}
-	st := b.cred.Status()
-	if !st.LoggedIn {
+	case site.Weibo:
 		return RenewalStatus{
-			Site:      string(site.Bilibili),
+			Site:      string(site.Weibo),
 			Available: false,
-			Reason:    "未登录",
+			Reason:    "不可用，粘贴的 Cookie 与浏览器共用会话；过期后请重新粘贴",
 		}
-	}
-	if st.Source == "qr" && st.HasRefreshToken {
-		var lastErr string
-		if st.State == "refresh_failed" {
-			lastErr = st.Message
+	case site.Bilibili:
+		st := b.cred.Status()
+		if !st.LoggedIn {
+			return RenewalStatus{
+				Site:      string(site.Bilibili),
+				Available: false,
+				Reason:    "未登录",
+			}
+		}
+		if st.Source == "qr" && st.HasRefreshToken {
+			var lastErr string
+			if st.State == "refresh_failed" {
+				lastErr = st.Message
+			}
+			return RenewalStatus{
+				Site:          string(site.Bilibili),
+				Available:     true,
+				LastRenewedAt: st.LastRenewedAt,
+				LastError:     lastErr,
+			}
 		}
 		return RenewalStatus{
 			Site:          string(site.Bilibili),
-			Available:     true,
+			Available:     false,
+			Reason:        "不可用：粘贴的 Cookie 与浏览器共用会话，续期会让浏览器那边掉线。过期后请重新粘贴，或改用扫码登录",
 			LastRenewedAt: st.LastRenewedAt,
-			LastError:     lastErr,
 		}
-	}
-	return RenewalStatus{
-		Site:          string(site.Bilibili),
-		Available:     false,
-		Reason:        "不可用：粘贴的 Cookie 与浏览器共用会话，续期会让浏览器那边掉线。过期后请重新粘贴，或改用扫码登录",
-		LastRenewedAt: st.LastRenewedAt,
+	default:
+		return RenewalStatus{Site: string(id), Available: false, Reason: "不支持的站点"}
 	}
 }
 
@@ -159,7 +192,16 @@ func (b *Backend) BootstrapAuth(ctx context.Context) (credential.Status, error) 
 		"抖音登录已失效，任务已暂停",
 		"无法确认抖音登录状态，请稍后重试",
 	)
-	return biliOut, errors.Join(biliErr, dyErr)
+	_, wbErr := b.verifyBootstrapSite(
+		ctx,
+		site.Weibo,
+		b.weiboCred,
+		b.weibo.VerifyCredential,
+		func(err error) bool { return site.IsKind(err, site.ErrKindAuthRequired) },
+		"微博登录已失效，任务已暂停",
+		"无法确认微博登录状态，请稍后重试",
+	)
+	return biliOut, errors.Join(biliErr, dyErr, wbErr)
 }
 
 func (b *Backend) verifyBootstrapSite(
@@ -201,21 +243,33 @@ func (b *Backend) VerifyAccount(ctx context.Context) (credential.Status, error) 
 	return st, err
 }
 
-// VerifySiteAccount verifies the stored credential for the specified site ("bilibili" or "douyin").
+// VerifySiteAccount verifies the stored credential for the specified site ("bilibili", "douyin", or "weibo").
 func (b *Backend) VerifySiteAccount(ctx context.Context, siteID string) (credential.Status, error) {
 	id, err := normalizeSiteID(siteID)
 	if err != nil {
 		return credential.Status{}, err
 	}
-	if id == site.Bilibili {
+	switch id {
+	case site.Bilibili:
 		return b.VerifyAccount(ctx)
+	case site.Douyin:
+		st, vErr := b.douyin.VerifyCredential(ctx)
+		if vErr != nil && site.IsKind(vErr, site.ErrKindAuthRequired) {
+			b.pauseSiteActiveWork(site.Douyin, "auth_required", "抖音登录已失效，任务已暂停")
+		}
+		b.events.PublishSite(EventAccountChanged, string(site.Douyin), st.State)
+		return st, vErr
+	case site.Weibo:
+		st, vErr := b.weibo.VerifyCredential(ctx)
+		if vErr != nil && site.IsKind(vErr, site.ErrKindAuthRequired) {
+			b.clearWeiboMemoryCaches()
+			b.pauseSiteActiveWork(site.Weibo, "auth_required", "微博登录已失效，任务已暂停")
+		}
+		b.events.PublishSite(EventAccountChanged, string(site.Weibo), st.State)
+		return st, vErr
+	default:
+		return credential.Status{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点标识: " + strings.TrimSpace(siteID)}
 	}
-	st, vErr := b.douyin.VerifyCredential(ctx)
-	if vErr != nil && site.IsKind(vErr, site.ErrKindAuthRequired) {
-		b.pauseSiteActiveWork(site.Douyin, "auth_required", "抖音登录已失效，任务已暂停")
-	}
-	b.events.PublishSite(EventAccountChanged, string(site.Douyin), st.State)
-	return st, vErr
 }
 
 // StartQRLogin starts a new QR code login session and invalidates any previous QR session.
@@ -275,29 +329,49 @@ func (b *Backend) ImportCookie(ctx context.Context, rawCookie, rawRefreshToken s
 	return st, nil
 }
 
-// LoginWithCookie validates and imports a pasted Cookie for the target site ("bilibili" or "douyin").
+// LoginWithCookie validates and imports a pasted Cookie for the target site ("bilibili", "douyin", or "weibo").
 func (b *Backend) LoginWithCookie(ctx context.Context, siteID, rawCookie, rawRefreshToken string) (credential.Status, error) {
 	id, err := normalizeSiteID(siteID)
 	if err != nil {
 		return credential.Status{}, err
 	}
-	if id == site.Bilibili {
+	switch id {
+	case site.Bilibili:
 		return b.ImportCookie(ctx, rawCookie, rawRefreshToken)
+	case site.Douyin:
+		prevAuthPaused := b.snapshotAuthPausedQueueIDs(site.Douyin)
+		prev := b.douyinCred.Status()
+		st, lErr := b.douyin.LoginWithCookie(ctx, rawCookie)
+		if lErr != nil {
+			b.logError("LoginWithCookie.Douyin", lErr)
+			return b.douyinCred.Status(), lErr
+		}
+		switched := prev.LoggedIn && prev.SecUID != "" && prev.SecUID != st.SecUID
+		if switched {
+			b.pauseSiteActiveWork(site.Douyin, "auth_required", "抖音登录账号已变更，任务已暂停")
+		}
+		b.logInfo(fmt.Sprintf("douyin cookie imported: state=%s uid=%s", st.State, firstNonEmpty(st.UniqueID, st.UID)))
+		b.finishSiteLogin(site.Douyin, st.LoggedIn, st.State, switched, prevAuthPaused)
+		return st, nil
+	case site.Weibo:
+		prevAuthPaused := b.snapshotAuthPausedQueueIDs(site.Weibo)
+		prev := b.weiboCred.Status()
+		st, lErr := b.weibo.LoginWithCookie(ctx, rawCookie)
+		if lErr != nil {
+			b.logError("LoginWithCookie.Weibo", lErr)
+			return b.weiboCred.Status(), lErr
+		}
+		switched := prev.LoggedIn && prev.UID != "" && prev.UID != st.UID
+		if switched {
+			b.clearWeiboMemoryCaches()
+			b.pauseSiteActiveWork(site.Weibo, "auth_required", "微博登录账号已变更，任务已暂停")
+		}
+		b.logInfo(fmt.Sprintf("weibo cookie imported: state=%s uid=%s", st.State, st.UID))
+		b.finishSiteLogin(site.Weibo, st.LoggedIn, st.State, switched, prevAuthPaused)
+		return st, nil
+	default:
+		return credential.Status{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点标识: " + strings.TrimSpace(siteID)}
 	}
-	prevAuthPaused := b.snapshotAuthPausedQueueIDs(site.Douyin)
-	prev := b.douyinCred.Status()
-	st, lErr := b.douyin.LoginWithCookie(ctx, rawCookie)
-	if lErr != nil {
-		b.logError("LoginWithCookie.Douyin", lErr)
-		return b.douyinCred.Status(), lErr
-	}
-	switched := prev.LoggedIn && prev.SecUID != "" && prev.SecUID != st.SecUID
-	if switched {
-		b.pauseSiteActiveWork(site.Douyin, "auth_required", "抖音登录账号已变更，任务已暂停")
-	}
-	b.logInfo(fmt.Sprintf("douyin cookie imported: state=%s uid=%s", st.State, firstNonEmpty(st.UniqueID, st.UID)))
-	b.finishSiteLogin(site.Douyin, st.LoggedIn, st.State, switched, prevAuthPaused)
-	return st, nil
 }
 
 func (b *Backend) finishSiteLogin(siteID site.ID, loggedIn bool, state string, switched bool, prevAuthPaused []string) {
@@ -355,19 +429,35 @@ func (b *Backend) LogoutSite(siteID string) (credential.Status, error) {
 	if err != nil {
 		return credential.Status{}, err
 	}
-	if id == site.Bilibili {
+	switch id {
+	case site.Bilibili:
 		return b.Logout()
+	case site.Douyin:
+		b.pauseSiteActiveWork(site.Douyin, "auth_required", "已退出抖音登录，任务已暂停")
+		lErr := b.douyin.LogoutCredential()
+		st := b.douyinCred.Status()
+		if lErr != nil {
+			b.logError("LogoutSite.Douyin", lErr)
+		} else {
+			b.logInfo("douyin account logged out and credentials cleared")
+		}
+		b.events.PublishSite(EventAccountChanged, string(site.Douyin), st.State)
+		return st, lErr
+	case site.Weibo:
+		b.clearWeiboMemoryCaches()
+		b.pauseSiteActiveWork(site.Weibo, "auth_required", "已退出微博登录，任务已暂停")
+		lErr := b.weibo.LogoutCredential()
+		st := b.weiboCred.Status()
+		if lErr != nil {
+			b.logError("LogoutSite.Weibo", lErr)
+		} else {
+			b.logInfo("weibo account logged out and credentials cleared")
+		}
+		b.events.PublishSite(EventAccountChanged, string(site.Weibo), st.State)
+		return st, lErr
+	default:
+		return credential.Status{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点标识: " + strings.TrimSpace(siteID)}
 	}
-	b.pauseSiteActiveWork(site.Douyin, "auth_required", "已退出抖音登录，任务已暂停")
-	lErr := b.douyin.LogoutCredential()
-	st := b.douyinCred.Status()
-	if lErr != nil {
-		b.logError("LogoutSite.Douyin", lErr)
-	} else {
-		b.logInfo("douyin account logged out and credentials cleared")
-	}
-	b.events.PublishSite(EventAccountChanged, string(site.Douyin), st.State)
-	return st, lErr
 }
 
 func (b *Backend) runRenewalLoop(ctx context.Context) {

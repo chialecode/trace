@@ -648,3 +648,104 @@ func TestExportRejectsLibraryOverlapAndFiltersMissingFiles(t *testing.T) {
 		t.Fatalf("exported manifest registered files = %+v, want only P01.mp4", files)
 	}
 }
+
+func TestTransferWeiboRetweetPreservesOriginAndFromOrigin(t *testing.T) {
+	ctx := context.Background()
+	srcLib := newLib(t)
+	dstLib := newLib(t)
+
+	const (
+		fwdUID  = "1000000051"
+		origUID = "1000000099"
+		mid     = "5000000000006001"
+	)
+	meta := library.ItemMetadata{
+		Version:     1,
+		ID:          "dynamic:" + mid,
+		Site:        "weibo",
+		Kind:        "dynamic",
+		Status:      "complete",
+		Title:       "外层转发评语",
+		Text:        "外层转发评语",
+		DynamicType: "forward",
+		TypeLabel:   "转发",
+		URL:         "https://weibo.com/" + fwdUID + "/Q6001",
+		PubTs:       1763900000,
+		Author:      library.ItemAuthor{Site: "weibo", UID: fwdUID, Name: "转发博主"},
+		Via:         &library.ItemVia{Reason: library.ViaForward, Site: "weibo", UID: fwdUID, Name: "转发博主", DynamicID: mid},
+		Origin: &library.ItemOrigin{
+			Site:         "weibo",
+			ID:           "5000000000009001",
+			MblogID:      "Q9001",
+			CanonicalURL: "https://weibo.com/" + origUID + "/Q9001",
+			Author:       library.ItemAuthor{Site: "weibo", UID: origUID, Name: "原博主"},
+			PubTs:        1763890000,
+			Text:         "完整的原博正文与多图",
+			Card:         &library.ItemRichCard{Kind: "article", Label: "头条文章", Title: "原博文章", URL: "https://weibo.com/ttarticle/p/show?id=1"},
+		},
+		NotePages: []library.NotePageRecord{
+			{Index: 1, Kind: "image", Image: "images/01.jpg", FromOrigin: false},
+			{Index: 2, Kind: "image", Image: "images/02.jpg", FromOrigin: true},
+		},
+	}
+	dir := filepath.Join(srcLib.CacheDir(), "weibo", fwdUID, "forwards", mid)
+	if err := os.MkdirAll(filepath.Join(dir, "images"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []struct {
+		rel  string
+		data []byte
+		orig bool
+	}{
+		{"images/01.jpg", []byte("outer-img-data"), false},
+		{"images/02.jpg", []byte("origin-img-data"), true},
+	} {
+		full := filepath.Join(dir, filepath.FromSlash(f.rel))
+		if err := os.WriteFile(full, f.data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		meta.Media = append(meta.Media, library.MediaFile{
+			Role:       "image",
+			Path:       f.rel,
+			FromOrigin: f.orig,
+			Bytes:      int64(len(f.data)),
+			SHA256:     shaOf(f.data),
+		})
+	}
+	savedSrc, err := srcLib.SaveItem(dir, meta)
+	if err != nil {
+		t.Fatalf("SaveItem(src): %v", err)
+	}
+
+	exportDir := filepath.Join(t.TempDir(), "export")
+	es, err := Export(ctx, []library.ItemMetadata{savedSrc}, srcLib, exportDir, nil)
+	if err != nil || es.Items != 1 || es.Files != 2 {
+		t.Fatalf("Export = %+v err=%v", es, err)
+	}
+	plan, err := Scan(ctx, exportDir, dstLib, nil)
+	if err != nil || len(plan.Entries) != 1 || plan.Entries[0].Category != CategoryNew {
+		t.Fatalf("Scan = %+v err=%v", plan.Entries, err)
+	}
+	if plan.Entries[0].RelDir != "weibo/"+fwdUID+"/forwards/"+mid {
+		t.Fatalf("exported RelDir = %q, want weibo/%s/forwards/%s", plan.Entries[0].RelDir, fwdUID, mid)
+	}
+	if _, err := Apply(ctx, plan, Choices{}, dstLib, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	got, ok, err := dstLib.GetItem("weibo:dynamic:" + mid)
+	if err != nil || !ok {
+		t.Fatalf("GetItem(dst): ok=%v err=%v", ok, err)
+	}
+	if got.Origin == nil || got.Origin.Author.UID != origUID || got.Origin.Text != "完整的原博正文与多图" || got.Origin.Card == nil || got.Origin.Card.Kind != "article" {
+		t.Fatalf("imported Origin mismatch: %+v", got.Origin)
+	}
+	if len(got.NotePages) != 2 || got.NotePages[0].FromOrigin || !got.NotePages[1].FromOrigin {
+		t.Fatalf("imported NotePages FromOrigin mismatch: %+v", got.NotePages)
+	}
+	if len(got.Media) != 2 || got.Media[0].FromOrigin || !got.Media[1].FromOrigin {
+		t.Fatalf("imported Media FromOrigin mismatch: %+v", got.Media)
+	}
+	if got.Via == nil || got.Via.Reason != library.ViaForward || got.Via.UID != fwdUID {
+		t.Fatalf("imported Via mismatch: %+v", got.Via)
+	}
+}

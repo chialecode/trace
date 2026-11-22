@@ -73,6 +73,7 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 				ui.Row(c).AlignItems(ui.Center).Gap(10).Grow(1).ClipX().Children(func() {
 					if a.CurrentRoute == RouteVideo || a.CurrentRoute == RouteUser ||
 						a.CurrentRoute == RouteDouyinWork || a.CurrentRoute == RouteDouyinUser ||
+						a.CurrentRoute == RouteWeiboPost || a.CurrentRoute == RouteWeiboUser ||
 						a.CurrentRoute == RouteLibraryItem ||
 						(a.CurrentRoute == RouteLibrary && a.Transfer.ImportPage) ||
 						(a.CurrentRoute == RouteSubscriptions && a.SubDetailOpen) ||
@@ -203,6 +204,11 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 		a.renderDouyinWorkRoute(c, winH)
 	case RouteDouyinUser:
 		a.renderDouyinUserRoute(c, width)
+	case RouteWeiboPost:
+		_, winH := c.Size()
+		a.renderWeiboPostRoute(c, winH)
+	case RouteWeiboUser:
+		a.renderWeiboUserRoute(c)
 	case RouteLibrary:
 		a.renderLibraryRoute(c)
 	case RouteLibraryItem:
@@ -283,6 +289,25 @@ func (a *App) routeTitle() string {
 			return a.CurrentDouyinUser.Nickname
 		}
 		return "抖音作者"
+	case RouteWeiboPost:
+		if a.Opening != nil {
+			if a.Opening.Kind == "video" {
+				return "微博视频"
+			}
+			return "微博"
+		}
+		if a.CurrentWeiboPost == nil && a.CurrentWeiboVideo != nil {
+			return "微博视频"
+		}
+		return "微博"
+	case RouteWeiboUser:
+		if a.Opening != nil {
+			return firstNonEmptyStrUI(a.Opening.AuthorName, "微博用户")
+		}
+		if a.CurrentWeiboUser != nil && a.CurrentWeiboUser.ScreenName != "" {
+			return a.CurrentWeiboUser.ScreenName
+		}
+		return "微博用户"
 	case RouteLibrary:
 		if a.Transfer.ImportPage {
 			return "导入"
@@ -296,6 +321,9 @@ func (a *App) routeTitle() string {
 			case "note":
 				return "图文"
 			case "dynamic":
+				if normalizeSiteIDUI(a.CurrentLibraryDetail.Site) == "weibo" {
+					return "微博"
+				}
 				if normalizeSiteIDUI(a.CurrentLibraryDetail.Site) == "douyin" || len(a.CurrentLibraryDetail.NotePages) > 0 {
 					return "图文"
 				}
@@ -308,10 +336,14 @@ func (a *App) routeTitle() string {
 	case RouteSettings:
 		return settingsCategoryLabel(a.SettingsCategory)
 	case RouteLogin:
-		if normalizeSiteIDUI(a.LoginSite) == "douyin" {
+		switch normalizeSiteIDUI(a.LoginSite) {
+		case "douyin":
 			return "登录抖音"
+		case "weibo":
+			return "登录微博"
+		default:
+			return "登录哔哩哔哩"
 		}
-		return "登录哔哩哔哩"
 	default:
 		return "TRACE"
 	}
@@ -319,6 +351,36 @@ func (a *App) routeTitle() string {
 
 func (a *App) renderRouteHeaderActions(c *ui.Context) {
 	switch a.CurrentRoute {
+	case RouteHome:
+		if !a.backend.HasAnyLogin() {
+			return
+		}
+		running := a.HomeRefreshRunning || a.isPending("home-refresh")
+		btn := ui.ButtonBase(c).
+			Label("主页刷新").
+			Tooltip("刷新").
+			Size(34, 34).
+			Radius(999).
+			Center().
+			Shrink(0).
+			Disabled(running)
+		if btn.Hovered() && !running {
+			btn.Background(ColorHover)
+		}
+		btn.Children(func() {
+			if running {
+				ui.Spinner(c).Size(15, 15)
+				return
+			}
+			col := ColorTextMuted
+			if btn.Hovered() {
+				col = ColorTextMain
+			}
+			DrawIcon(c, "refresh", 16, col, 1.8)
+		})
+		if btn.Clicked() && !running {
+			a.refreshHomeFromDisk()
+		}
 	case RouteMine:
 		a.renderMineHeaderActions(c)
 	case RouteSubscriptions:
@@ -341,7 +403,7 @@ func (a *App) renderRouteHeaderActions(c *ui.Context) {
 				if m.Item("检查全部").Disabled(checkingUpdates).Chosen() {
 					a.checkAllSubscriptions()
 				}
-				if m.Item("从 B 站关注列表导入").Chosen() {
+				if m.Item("从关注列表导入").Chosen() {
 					a.openImportFollowingsModal()
 				}
 				if m.Item("导出订阅…").Chosen() {
@@ -444,7 +506,7 @@ func (a *App) renderOpening(c *ui.Context) {
 		})
 	})
 	if p.Title != "" {
-		ui.Text(c, p.Title).FontSize(18).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
+		ui.Text(c, p.Title).FontSize(18).LineHeight(LineHeightHeading).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
 	}
 	if p.Kind == "video" {
 		a.renderMediaThumb(c, "", "", p.Title, p.Duration, "", false, 0, 300, p.CoverURL)

@@ -19,10 +19,11 @@ type WorkPlanOptions struct {
 	CodecOrder   []string
 }
 
-// PlannedNotePage describes one 1-based page in a Douyin image or mixed note.
+// PlannedNotePage describes one 1-based page in a Douyin/Weibo image or mixed note.
 type PlannedNotePage struct {
 	Index         int
 	Kind          string // "image", "live_photo", "video", "unknown"
+	FromOrigin    bool
 	UnknownKind   string
 	UnknownReason string
 	Width         int
@@ -49,36 +50,55 @@ type PlannedMusic struct {
 	PlayURLs    []string
 }
 
-// WorkDownloadPlan holds rich metadata and ephemeral CDN URLs for caching a Douyin video or note.
+// WorkDownloadPlan holds rich metadata and ephemeral CDN URLs for caching a Douyin or Weibo work.
 type WorkDownloadPlan struct {
-	Site           site.ID
-	Kind           string // "video" or "dynamic" ("note" / "image_note" normalized to "dynamic")
-	TargetID       string
-	Title          string
-	Desc           string
-	CanonicalURL   string
-	PubTs          int64
-	DurationSec    int
-	AuthorUID      string
-	AuthorUniqueID string
-	AuthorName     string
-	AuthorFace     string
-	CoverURLs      []string
-	VideoURLs      []string
-	NeedSetToken   bool
-	OriginalURLs   []string // untranscoded source (原画), tried before VideoURLs
-	VideoGear      string
-	QualityName    string
-	Codec          string
-	Width          int
-	Height         int
-	FPS            int
-	Bitrate        int64
-	AvailableGears []string
-	DowngradeHint  string
-	Pages          []PlannedNotePage
-	Music          *PlannedMusic
-	Transport      site.MediaTransportSpec
+	Site                    site.ID
+	ItemKey                 string // optional canonical key override (e.g. "weibo:dynamic:<mid>" or "weibo:video:<oid>")
+	Kind                    string // "video" or "dynamic" ("note" / "image_note" normalized to "dynamic")
+	TargetID                string
+	Title                   string
+	Desc                    string
+	CanonicalURL            string
+	PubTs                   int64
+	DurationSec             int
+	AuthorUID               string
+	AuthorUniqueID          string
+	AuthorName              string
+	AuthorFace              string
+	CoverURLs               []string
+	VideoURLs               []string
+	NeedSetToken            bool
+	OriginalURLs            []string // untranscoded source (原画), tried before VideoURLs
+	VideoGear               string
+	QualityName             string
+	Codec                   string
+	Width                   int
+	Height                  int
+	FPS                     int
+	Bitrate                 int64
+	AvailableGears          []string
+	DowngradeHint           string
+	IsForward               bool
+	IsFastRetweet           bool
+	OriginID                string
+	OriginMblogID           string
+	OriginCanonicalURL      string
+	OriginAuthorUID         string
+	OriginAuthorName        string
+	OriginAuthorFace        string
+	OriginPubTs             int64
+	OriginText              string
+	OriginVideoTitle        string
+	OriginUnavailable       bool
+	OriginUnavailableReason string
+	OriginCard              *site.RichCardSummary
+	Card                    *site.RichCardSummary
+	VideoFromOrigin         bool
+	VisibleType             int
+	VisibleLabel            string
+	Pages                   []PlannedNotePage
+	Music                   *PlannedMusic
+	Transport               site.MediaTransportSpec
 }
 
 // WorkPlanner plans rich work downloads for a site without exposing site-private packages to download.
@@ -183,17 +203,38 @@ func (a *basicSitePlannerAdapter) PlanWorkDownload(ctx context.Context, targetID
 	return convertSiteDownloadPlan(p), nil
 }
 
+// WorkDownloadPlanFromSite converts a cross-site site.DownloadPlan into a rich WorkDownloadPlan.
+func WorkDownloadPlanFromSite(p site.DownloadPlan) WorkDownloadPlan {
+	return convertSiteDownloadPlan(p)
+}
+
 func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 	kind := "video"
-	if p.Kind == "image_note" || p.Kind == "note" || p.Kind == "dynamic" || len(p.Images) > 0 {
+	if p.Site == site.Weibo {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.ItemKey)), "weibo:video:") ||
+			strings.EqualFold(strings.TrimSpace(p.Kind), "video") {
+			kind = "video"
+		} else {
+			kind = "dynamic"
+		}
+	} else if p.Kind == "image_note" || p.Kind == "note" || p.Kind == "dynamic" || len(p.Images) > 0 {
 		kind = "dynamic"
 	}
-	canonicalURL := ""
-	if p.Site == site.Douyin && p.TargetID != "" {
-		if kind == "dynamic" {
-			canonicalURL = "https://www.douyin.com/note/" + p.TargetID
-		} else {
-			canonicalURL = "https://www.douyin.com/video/" + p.TargetID
+	canonicalURL := strings.TrimSpace(p.CanonicalURL)
+	if canonicalURL == "" && p.TargetID != "" {
+		switch p.Site {
+		case site.Douyin:
+			if kind == "dynamic" {
+				canonicalURL = "https://www.douyin.com/note/" + p.TargetID
+			} else {
+				canonicalURL = "https://www.douyin.com/video/" + p.TargetID
+			}
+		case site.Weibo:
+			if kind == "video" {
+				canonicalURL = "https://weibo.com/tv/show/" + strings.Replace(p.TargetID, "1034_", "1034:", 1)
+			} else {
+				canonicalURL = "https://weibo.com/detail/" + p.TargetID
+			}
 		}
 	}
 	pages := make([]PlannedNotePage, 0, len(p.Images))
@@ -202,17 +243,29 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 		if idx <= 0 {
 			idx = i + 1
 		}
-		pageKind := "image"
-		if len(img.VideoURLs) > 0 {
-			pageKind = "live_photo"
+		pageKind := strings.ToLower(strings.TrimSpace(img.MediaRole))
+		switch pageKind {
+		case "image", "gif", "live_photo", "motion", "video":
+		default:
+			if len(img.VideoURLs) > 0 {
+				pageKind = "live_photo"
+			} else {
+				pageKind = "image"
+			}
 		}
 		pages = append(pages, PlannedNotePage{
-			Index:     idx,
-			Kind:      pageKind,
-			Width:     img.Width,
-			Height:    img.Height,
-			ImageURLs: append([]string(nil), img.ImageURLs...),
-			VideoURLs: append([]string(nil), img.VideoURLs...),
+			Index:       idx,
+			Kind:        pageKind,
+			FromOrigin:  img.FromOrigin,
+			Width:       img.Width,
+			Height:      img.Height,
+			DurationSec: img.DurationSec,
+			ImageURLs:   append([]string(nil), img.ImageURLs...),
+			VideoURLs:   append([]string(nil), img.VideoURLs...),
+			QualityName: img.QualityLabel,
+			Codec:       img.VideoCodec,
+			FPS:         img.FPS,
+			Bitrate:     img.Bitrate,
 		})
 	}
 	var music *PlannedMusic
@@ -222,30 +275,67 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 		}
 	}
 	transport := p.Media
-	if len(transport.AllowedDomains) == 0 && p.Site == site.Douyin {
-		transport = site.DouyinVODTransport("", false)
+	if len(transport.AllowedDomains) == 0 {
+		switch p.Site {
+		case site.Douyin:
+			transport = site.DouyinVODTransport("", false)
+		case site.Weibo:
+			transport = site.WeiboMediaTransport("", false)
+		}
+	}
+	var originCard *site.RichCardSummary
+	if p.OriginCard != nil {
+		cp := *p.OriginCard
+		originCard = &cp
+	}
+	var outerCard *site.RichCardSummary
+	if p.Card != nil {
+		cp := *p.Card
+		outerCard = &cp
 	}
 	return WorkDownloadPlan{
-		Site:         p.Site,
-		Kind:         kind,
-		TargetID:     p.TargetID,
-		Title:        p.Title,
-		Desc:         p.Desc,
-		CanonicalURL: canonicalURL,
-		PubTs:        p.PubTs,
-		DurationSec:  p.DurationSec,
-		AuthorUID:    p.AuthorUID,
-		AuthorName:   p.AuthorName,
-		CoverURLs:    append([]string(nil), p.CoverURLs...),
-		VideoURLs:    append([]string(nil), p.VideoURLs...),
-		OriginalURLs: append([]string(nil), p.OriginalURLs...),
-		QualityName:  p.QualityLabel,
-		Codec:        p.VideoCodec,
-		Width:        p.Width,
-		Height:       p.Height,
-		Pages:        pages,
-		Music:        music,
-		Transport:    transport,
+		Site:                    p.Site,
+		ItemKey:                 strings.TrimSpace(p.ItemKey),
+		Kind:                    kind,
+		TargetID:                p.TargetID,
+		Title:                   p.Title,
+		Desc:                    p.Desc,
+		CanonicalURL:            canonicalURL,
+		PubTs:                   p.PubTs,
+		DurationSec:             p.DurationSec,
+		AuthorUID:               p.AuthorUID,
+		AuthorName:              p.AuthorName,
+		AuthorFace:              p.AuthorFace,
+		CoverURLs:               append([]string(nil), p.CoverURLs...),
+		VideoURLs:               append([]string(nil), p.VideoURLs...),
+		OriginalURLs:            append([]string(nil), p.OriginalURLs...),
+		QualityName:             p.QualityLabel,
+		Codec:                   p.VideoCodec,
+		Width:                   p.Width,
+		Height:                  p.Height,
+		FPS:                     p.FPS,
+		Bitrate:                 p.Bitrate,
+		IsForward:               p.IsForward,
+		IsFastRetweet:           p.IsFastRetweet,
+		OriginID:                p.OriginID,
+		OriginMblogID:           p.OriginMblogID,
+		OriginCanonicalURL:      p.OriginCanonicalURL,
+		OriginAuthorUID:         p.OriginAuthorUID,
+		OriginAuthorName:        p.OriginAuthorName,
+		OriginAuthorFace:        p.OriginAuthorFace,
+		OriginPubTs:             p.OriginPubTs,
+		OriginText:              p.OriginText,
+		OriginVideoTitle:        p.OriginVideoTitle,
+		OriginUnavailable:       p.OriginUnavailable,
+		OriginUnavailableReason: p.OriginUnavailableReason,
+		OriginCard:              originCard,
+		Card:                    outerCard,
+		VideoFromOrigin:         p.VideoFromOrigin,
+		VisibleType:             p.VisibleType,
+		VisibleLabel:            p.VisibleLabel,
+		Pages:                   pages,
+		Music:                   music,
+		Transport:               transport,
 	}
 }
 
@@ -448,15 +538,16 @@ func (m *Manager) reportSiteAutomaticError(ctx context.Context, siteStr string, 
 	if err == nil {
 		return
 	}
-	if siteStr == "" || siteStr == string(site.Bilibili) {
+	switch id := site.ID(strings.ToLower(strings.TrimSpace(siteStr))); id {
+	case site.Bilibili:
 		if m.client != nil {
 			m.client.ReportAutomaticError(ctx, err)
 		}
-		return
-	}
-	if planner, ok := m.getWorkPlanner(site.ID(siteStr)); ok {
-		if rep, ok := planner.(SiteErrorReporter); ok {
-			rep.ReportAutomaticError(ctx, err)
+	case site.Douyin, site.Weibo:
+		if planner, ok := m.getWorkPlanner(id); ok {
+			if rep, ok := planner.(SiteErrorReporter); ok {
+				rep.ReportAutomaticError(ctx, err)
+			}
 		}
 	}
 }
@@ -578,13 +669,17 @@ func (m *Manager) resolveDouyinItemDir(t *Task, kind, normUID, awemeID string) (
 }
 
 func (m *Manager) makeSinglePlanRefresher(ctx context.Context, targetID string, planner WorkPlanner) func() (WorkDownloadPlan, error) {
+	return m.makeSinglePlanRefresherForSite(ctx, site.Douyin, targetID, planner)
+}
+
+func (m *Manager) makeSinglePlanRefresherForSite(ctx context.Context, siteID site.ID, targetID string, planner WorkPlanner) func() (WorkDownloadPlan, error) {
 	var once sync.Once
 	var cached WorkDownloadPlan
 	var cachedErr error
 	return func() (WorkDownloadPlan, error) {
 		once.Do(func() {
 			if planner == nil {
-				cachedErr = &site.Error{Site: site.Douyin, Kind: site.ErrKindUnavailable, Message: "无法刷新过期的媒体地址"}
+				cachedErr = &site.Error{Site: siteID, Kind: site.ErrKindUnavailable, Message: "无法刷新过期的媒体地址"}
 				return
 			}
 			m.mu.Lock()

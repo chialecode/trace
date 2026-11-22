@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -19,13 +20,16 @@ func TestScanDirForSecrets(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, "credentials"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "logs", "app.log"), []byte("2026-11-12T12:00:00Z INFO startup ok site=douyin state=logged_in\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "logs", "app.log"), []byte("2026-11-21T12:00:00Z INFO startup ok site=douyin site=weibo state=logged_in\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "ui-state.json"), []byte(`{"activeRoute":"/home","siteFilter":"all"}`), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "ui-state.json"), []byte(`{"activeRoute":"/home","siteFilter":"weibo"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(dir, "credentials", "douyin.bin"), []byte{0x01, 0x00, 0xfe, 0x99, 0x42, 0xaa, 0xbb, 0xcc}, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "credentials", "weibo.bin"), []byte{0x02, 0x00, 0xfd, 0x88, 0x53, 0xdd, 0xee, 0xff}, 0o600); err != nil {
 			t.Fatal(err)
 		}
 
@@ -98,6 +102,72 @@ func TestScanDirForSecrets(t *testing.T) {
 			name:     "douyin signed URL with x-secsdk-web-signature",
 			fileName: "cache.log",
 			content:  "GET https://www.douyin.com/aweme/v1/web/aweme/post/?x-secsdk-web-signature=0123456789abcdef0123456789abcdef",
+			wantSub:  "signed URL",
+		},
+		{
+			name:     "weibo SUB cookie",
+			fileName: "app.log",
+			content:  "header Cookie: SUB=_2A25SynthWeiboSub0001",
+			wantSub:  "SUB=",
+		},
+		{
+			name:     "weibo SUBP cookie",
+			fileName: "app.log",
+			content:  "SUBP=0033WrSXqPxfM725SynthSubp",
+			wantSub:  "SUBP=",
+		},
+		{
+			name:     "weibo XSRF-TOKEN cookie",
+			fileName: "app.log",
+			content:  "XSRF-TOKEN=AbCdEfGh123456_7890",
+			wantSub:  "XSRF-TOKEN=",
+		},
+		{
+			name:     "weibo X-XSRF-TOKEN header",
+			fileName: "app.log",
+			content:  "req header X-XSRF-TOKEN: AbCdEfGh123456_7890",
+			wantSub:  "X-XSRF-TOKEN:",
+		},
+		{
+			name:     "weibo WBPSESS cookie",
+			fileName: "app.log",
+			content:  "WBPSESS=Dt2hbAUaXSynthWbpsess01==",
+			wantSub:  "WBPSESS=",
+		},
+		{
+			name:     "weibo SCF cookie",
+			fileName: "app.log",
+			content:  "SCF=AlSynthScfToken0123456789",
+			wantSub:  "SCF=",
+		},
+		{
+			name:     "weibo ALF cookie",
+			fileName: "app.log",
+			content:  "ALF=1795000000",
+			wantSub:  "ALF=",
+		},
+		{
+			name:     "weibo SSOLoginState cookie",
+			fileName: "app.log",
+			content:  "SSOLoginState=1763700000",
+			wantSub:  "SSOLoginState=",
+		},
+		{
+			name:     "weibo signed video URL with ssig",
+			fileName: "item.json",
+			content:  `{"url":"https://f.video.weibocdn.com/o0/synth01.mp4?Expires=1763700000&ssig=AbCdEf1234&KID=unistore,video"}`,
+			wantSub:  "signed URL",
+		},
+		{
+			name:     "weibo signed video URL with Expires and KID",
+			fileName: "item.json",
+			content:  `{"url":"https://f.video.weibocdn.com/o0/synth02.mp4?Expires=1763700000&KID=unistore,video"}`,
+			wantSub:  "signed URL",
+		},
+		{
+			name:     "weibo percent-encoded livephoto signed URL",
+			fileName: "cache.log",
+			content:  "GET https://video.weibo.com/media/play?livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2F001synth.mov%3FExpires%3D1763700000%26ssig%3DEncLiveSig1234%26KID%3Dunistore%2Cvideo",
 			wantSub:  "signed URL",
 		},
 	}
@@ -313,5 +383,11 @@ func TestWriteServerReceiptInChecksBounds(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(out, "smoke.json")); err != nil {
 		t.Fatalf("smoke.json not written: %v", err)
+	}
+}
+
+func TestWeiboFakeRemoteSmokeAndSentinels(t *testing.T) {
+	if err := runWeiboFakeRemoteSmoke(context.Background()); err != nil {
+		t.Fatalf("runWeiboFakeRemoteSmoke failed: %v", err)
 	}
 }

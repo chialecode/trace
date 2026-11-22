@@ -45,14 +45,20 @@ func looksLikeDisguisedTextBody(head []byte) bool {
 	if len(trimmed) == 0 {
 		return false
 	}
-	lower := bytes.ToLower(trimmed[:min(len(trimmed), 32)])
+	lower := bytes.ToLower(trimmed[:min(len(trimmed), 256)])
 	if bytes.HasPrefix(lower, []byte("<!doctype html")) ||
 		bytes.HasPrefix(lower, []byte("<html")) ||
 		bytes.HasPrefix(lower, []byte("<head")) ||
-		bytes.HasPrefix(lower, []byte("<body")) {
+		bytes.HasPrefix(lower, []byte("<body")) ||
+		bytes.HasPrefix(lower, []byte("<?xml")) {
 		return true
 	}
-	if trimmed[0] == '{' && (bytes.Contains(lower, []byte(`"status_code"`)) || bytes.Contains(lower, []byte(`"code"`)) || bytes.Contains(lower, []byte(`"error"`))) {
+	if trimmed[0] == '{' && (bytes.Contains(lower, []byte(`"status_code"`)) ||
+		bytes.Contains(lower, []byte(`"code"`)) ||
+		bytes.Contains(lower, []byte(`"error"`)) ||
+		bytes.Contains(lower, []byte(`"ok"`)) ||
+		bytes.Contains(lower, []byte(`"errno"`)) ||
+		bytes.Contains(lower, []byte(`"msg"`))) {
 		return true
 	}
 	return false

@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
+	"io"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -20,10 +24,12 @@ import (
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 
+	"github.com/chialecode/trace/internal/download"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/site/douyin"
+	"github.com/chialecode/trace/internal/site/weibo"
 	"github.com/chialecode/trace/internal/storage"
 )
 
@@ -78,8 +84,19 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 		return nil, err
 	}
 
-	if siteID == site.Douyin {
+	switch siteID {
+	case site.Douyin:
 		return b.openDouyinLink(ctx, normalizedInput)
+	case site.Weibo:
+		return b.openWeiboLink(ctx, normalizedInput)
+	case site.Bilibili:
+		// Continue below with Bilibili handler.
+	default:
+		return nil, &site.Error{
+			Site:    siteID,
+			Kind:    site.ErrKindBadRequest,
+			Message: "不支持的站点标识: " + string(siteID),
+		}
 	}
 
 	target, err := b.bili.ResolveLink(ctx, normalizedInput)
@@ -119,6 +136,9 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 			return nil, err
 		}
 		out.Video = &vd
+		if vd.Author.Mid > 0 && vd.Author.Face != "" {
+			b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(vd.Author.Mid, 10), vd.Author.Face)
+		}
 		if item, ok, _ := b.lib.GetItem(vd.BVID); ok {
 			out.CachedItem = &item
 		}
@@ -157,6 +177,9 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 			return nil, err
 		}
 		out.User = &space
+		if space.Mid > 0 && space.Face != "" {
+			b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(space.Mid, 10), space.Face)
+		}
 		b.recordAccountWorks(site.Bilibili, strconv.FormatInt(space.Mid, 10), space.ArchiveCount)
 		if dyns, dErr := b.bili.UserDynamics(ctx, target.Mid, ""); dErr == nil {
 			out.UserDynamics = &dyns
@@ -184,6 +207,12 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 			return nil, err
 		}
 		out.Dynamic = &dyn
+		if dyn.Author.Mid > 0 && dyn.Author.Face != "" {
+			b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(dyn.Author.Mid, 10), dyn.Author.Face)
+		}
+		if dyn.Origin != nil && dyn.Origin.Author.Mid > 0 && dyn.Origin.Author.Face != "" {
+			b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(dyn.Origin.Author.Mid, 10), dyn.Origin.Author.Face)
+		}
 		if item, ok, _ := b.lib.GetItem(library.CanonicalItemKey("bilibili", "dynamic", dyn.ID)); ok {
 			out.CachedItem = &item
 		}
@@ -233,6 +262,9 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 			return nil, err
 		}
 		out.User = &space
+		if space.Mid > 0 && space.Face != "" {
+			b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(space.Mid, 10), space.Face)
+		}
 		b.recordAccountWorks(site.Bilibili, strconv.FormatInt(space.Mid, 10), space.ArchiveCount)
 		if dyns, dErr := b.bili.UserDynamics(ctx, room.UID, ""); dErr == nil {
 			out.UserDynamics = &dyns
@@ -401,7 +433,12 @@ func (b *Backend) openDouyinLink(ctx context.Context, normalizedInput string) (*
 // they come back the page shows them (IsPrivate is cleared, PrivateVisible set);
 // otherwise it says the account is private, without an error.
 func (b *Backend) firstDouyinUserWorks(ctx context.Context, uv *DouyinUserView) (*DouyinUserWorksPage, string) {
-	wp, err := b.DouyinUserWorks(ctx, uv.SecUID, "")
+	known := &douyin.UserProfile{
+		SecUID:     uv.SecUID,
+		AwemeCount: uv.AwemeCount,
+		IsPrivate:  uv.IsPrivate,
+	}
+	wp, err := b.douyinUserWorks(ctx, uv.SecUID, "", known)
 	if uv.IsPrivate {
 		if err == nil && wp != nil && len(wp.Works) > 0 {
 			uv.IsPrivate = false
@@ -420,6 +457,224 @@ func (b *Backend) firstDouyinUserWorks(ctx context.Context, uv *DouyinUserView) 
 		return nil, err.Error()
 	}
 	return wp, ""
+}
+
+func (b *Backend) openWeiboLink(ctx context.Context, normalizedInput string) (*OpenLinkResult, error) {
+	target, err := b.weibo.ResolveLink(ctx, normalizedInput)
+	if err != nil {
+		b.logError("OpenLink.WeiboResolve", err)
+		return nil, err
+	}
+	out := &OpenLinkResult{
+		Site:       string(site.Weibo),
+		SiteTarget: &target,
+		Target: bilibili.ResolveTarget{
+			Kind:         target.Kind,
+			ID:           target.ID,
+			CanonicalURL: target.CanonicalURL,
+			Unsupported:  target.Unsupported,
+			Reason:       target.Reason,
+		},
+	}
+
+	switch target.Kind {
+	case "dynamic":
+		hintUID := firstNonEmpty(target.HintAuthorUID, target.AuthorUID)
+		pv, err := b.WeiboPost(ctx, target.ID)
+		if err != nil {
+			return nil, err
+		}
+		if hintUID != "" {
+			pv.ForwarderHintUID = hintUID
+			pv.ForwarderHintName = b.resolveWeiboForwarderHintName(hintUID, pv.Author.UID, pv.Author.ScreenName)
+			out.SiteTarget.HintAuthorUID = hintUID
+		}
+		out.WeiboPost = pv
+		out.CachedItem = pv.CachedItem
+		out.Target.ID = pv.Mid
+		out.SiteTarget.ID = pv.Mid
+		out.SiteTarget.AuthorUID = pv.Author.UID
+		out.SiteTarget.MblogID = pv.MblogID
+		out.SiteTarget.CanonicalURL = pv.CanonicalURL
+		title := weiboPostSummaryTitle(pv)
+		if err := b.lib.UpsertFeedEntry(library.FeedEntry{
+			Site:         string(site.Weibo),
+			Kind:         "dynamic",
+			RawID:        pv.Mid,
+			AuthorUID:    pv.Author.UID,
+			AuthorName:   pv.Author.ScreenName,
+			AuthorFace:   weibo.SafePublicImageURL(pv.Author.AvatarURL),
+			Title:        title,
+			Summary:      pv.Text,
+			CoverURL:     weiboPostPublicCoverURL(pv),
+			CanonicalURL: pv.CanonicalURL,
+			PubTs:        pv.CreatedAt,
+		}); err != nil {
+			return nil, &site.Error{Site: site.Weibo, Kind: "storage", Message: "解析记录写入失败", Err: err}
+		}
+		out.HistoryThumbs = &HistoryThumbJob{
+			Site:      string(site.Weibo),
+			Kind:      "dynamic",
+			ID:        pv.Mid,
+			AvatarURL: pv.Author.AvatarURL,
+			CoverURL:  weiboPostThumbCoverURL(pv),
+		}
+		if err := b.history.Record(storage.HistoryEntry{
+			Site:         string(site.Weibo),
+			Kind:         "dynamic",
+			ID:           pv.Mid,
+			Title:        title,
+			Subtitle:     pv.Author.ScreenName,
+			CanonicalURL: pv.CanonicalURL,
+			DurationText: formatHistoryDuration(weiboPostDuration(pv)),
+		}); err != nil {
+			return nil, &site.Error{Site: site.Weibo, Kind: "storage", Message: "历史记录写入失败", Err: err}
+		}
+
+	case "video":
+		vv, err := b.WeiboVideo(ctx, target.ID)
+		if err != nil {
+			return nil, err
+		}
+		out.WeiboVideo = vv
+		if vv.HostPost != nil {
+			pv := vv.HostPost
+			out.WeiboPost = pv
+			out.CachedItem = pv.CachedItem
+			out.Target.Kind = "dynamic"
+			out.Target.ID = pv.Mid
+			out.SiteTarget.Kind = "dynamic"
+			out.SiteTarget.ID = pv.Mid
+			out.SiteTarget.AuthorUID = pv.Author.UID
+			out.SiteTarget.MblogID = pv.MblogID
+			out.SiteTarget.CanonicalURL = pv.CanonicalURL
+			title := weiboPostSummaryTitle(pv)
+			if err := b.lib.UpsertFeedEntry(library.FeedEntry{
+				Site:         string(site.Weibo),
+				Kind:         "dynamic",
+				RawID:        pv.Mid,
+				AuthorUID:    pv.Author.UID,
+				AuthorName:   pv.Author.ScreenName,
+				AuthorFace:   weibo.SafePublicImageURL(pv.Author.AvatarURL),
+				Title:        title,
+				Summary:      pv.Text,
+				CoverURL:     weiboPostPublicCoverURL(pv),
+				CanonicalURL: pv.CanonicalURL,
+				PubTs:        pv.CreatedAt,
+			}); err != nil {
+				return nil, &site.Error{Site: site.Weibo, Kind: "storage", Message: "解析记录写入失败", Err: err}
+			}
+			out.HistoryThumbs = &HistoryThumbJob{
+				Site:      string(site.Weibo),
+				Kind:      "dynamic",
+				ID:        pv.Mid,
+				AvatarURL: pv.Author.AvatarURL,
+				CoverURL:  weiboPostThumbCoverURL(pv),
+			}
+			if err := b.history.Record(storage.HistoryEntry{
+				Site:         string(site.Weibo),
+				Kind:         "dynamic",
+				ID:           pv.Mid,
+				Title:        title,
+				Subtitle:     pv.Author.ScreenName,
+				CanonicalURL: pv.CanonicalURL,
+				DurationText: formatHistoryDuration(weiboPostDuration(pv)),
+			}); err != nil {
+				return nil, &site.Error{Site: site.Weibo, Kind: "storage", Message: "历史记录写入失败", Err: err}
+			}
+		} else {
+			out.CachedItem = vv.CachedItem
+			rawID := strings.ReplaceAll(vv.ObjectID, ":", "_")
+			title := firstNonEmpty(vv.Title, "微博视频 "+vv.ObjectID)
+			if err := b.lib.UpsertFeedEntry(library.FeedEntry{
+				Site:         string(site.Weibo),
+				Kind:         "video",
+				RawID:        rawID,
+				AuthorUID:    vv.AuthorUID,
+				AuthorName:   vv.AuthorName,
+				Title:        title,
+				CoverURL:     weiboVideoPublicCoverURL(vv.Video),
+				CanonicalURL: vv.CanonicalURL,
+			}); err != nil {
+				return nil, &site.Error{Site: site.Weibo, Kind: "storage", Message: "解析记录写入失败", Err: err}
+			}
+			out.HistoryThumbs = &HistoryThumbJob{
+				Site:     string(site.Weibo),
+				Kind:     "video",
+				ID:       rawID,
+				CoverURL: weiboVideoThumbCoverURL(vv.Video),
+			}
+			if err := b.history.Record(storage.HistoryEntry{
+				Site:         string(site.Weibo),
+				Kind:         "video",
+				ID:           rawID,
+				Title:        title,
+				Subtitle:     vv.AuthorName,
+				CanonicalURL: vv.CanonicalURL,
+				DurationText: formatHistoryDuration(weiboVideoDuration(vv.Video)),
+			}); err != nil {
+				return nil, &site.Error{Site: site.Weibo, Kind: "storage", Message: "历史记录写入失败", Err: err}
+			}
+		}
+
+	case "user":
+		uid := firstNonEmpty(target.AuthorUID, target.ID)
+		uv, err := b.WeiboUser(ctx, uid)
+		if err != nil {
+			return nil, err
+		}
+		out.WeiboUser = uv
+		out.Target.ID = uv.UID
+		out.SiteTarget.ID = uv.UID
+		out.SiteTarget.AuthorUID = uv.UID
+		out.SiteTarget.CanonicalURL = uv.CanonicalURL
+		known := &weibo.UserProfile{
+			UID:           uv.UID,
+			ScreenName:    uv.ScreenName,
+			StatusesCount: uv.StatusesCount,
+			BlockText:     uv.BlockText,
+		}
+		if postsPage, _, pErr := b.weiboUserPosts(ctx, uv.UID, "", weibo.FeatureAll, known); pErr == nil {
+			out.WeiboUserPosts = postsPage
+		} else {
+			b.logError("OpenLink.WeiboUserPosts", pErr)
+			out.WeiboUserPostsError = pErr.Error()
+		}
+		out.HistoryThumbs = &HistoryThumbJob{
+			Site:      string(site.Weibo),
+			Kind:      "user",
+			ID:        uv.UID,
+			AvatarURL: uv.AvatarURL,
+		}
+		if err := b.history.Record(storage.HistoryEntry{
+			Site:         string(site.Weibo),
+			Kind:         "user",
+			ID:           uv.UID,
+			Title:        uv.ScreenName,
+			Subtitle:     uv.Description,
+			CanonicalURL: uv.CanonicalURL,
+		}); err != nil {
+			return nil, &site.Error{Site: site.Weibo, Kind: "storage", Message: "历史记录写入失败", Err: err}
+		}
+
+	case "live":
+		return nil, &site.Error{
+			Site:        site.Weibo,
+			Kind:        site.ErrKindUnsupportedLink,
+			Unsupported: true,
+			Message:     "微博直播暂不支持录制，可以在浏览器中打开",
+		}
+
+	default:
+		return nil, &site.Error{
+			Site:        site.Weibo,
+			Kind:        site.ErrKindUnsupportedLink,
+			Unsupported: true,
+			Message:     firstNonEmpty(target.Reason, "暂不支持这种微博链接"),
+		}
+	}
+
+	return out, nil
 }
 
 func formatHistoryDuration(seconds int) string {
@@ -486,11 +741,18 @@ func (b *Backend) fetchHistoryThumbForSite(ctx context.Context, siteID site.ID, 
 			return storage.HistoryThumbnail{}
 		}
 		raw, _, err = b.douyin.FetchImageLimited(ctx, rawURL, storage.MaxHistoryThumbBytes)
-	default:
+	case site.Weibo:
+		if b.weibo == nil {
+			return storage.HistoryThumbnail{}
+		}
+		raw, _, err = b.weibo.FetchImageLimited(ctx, rawURL, storage.MaxHistoryThumbBytes)
+	case site.Bilibili:
 		if b.bili == nil {
 			return storage.HistoryThumbnail{}
 		}
 		raw, err = b.bili.FetchImageLimited(ctx, rawURL, storage.MaxHistoryThumbBytes)
+	default:
+		return storage.HistoryThumbnail{}
 	}
 	if err != nil || len(raw) == 0 || len(raw) > storage.MaxHistoryThumbBytes {
 		return storage.HistoryThumbnail{}
@@ -566,7 +828,7 @@ func (b *Backend) RemoveHistoryForSite(siteID, kind, id string) error {
 	return b.history.RemoveBySite(siteID, kind, id)
 }
 
-// FetchImage fetches a whitelisted Bilibili or Douyin cover/avatar/note image without sending Cookie.
+// FetchImage fetches a whitelisted Bilibili, Douyin, or Weibo cover/avatar/post image without sending Cookie.
 func (b *Backend) FetchImage(ctx context.Context, rawURL string) ([]byte, error) {
 	if err := b.requireAnyLogin(); err != nil {
 		return nil, err
@@ -575,11 +837,18 @@ func (b *Backend) FetchImage(ctx context.Context, rawURL string) ([]byte, error)
 	if err := b.requireSiteLogin(imgSite); err != nil {
 		return nil, err
 	}
-	if imgSite == site.Douyin {
+	switch imgSite {
+	case site.Douyin:
 		data, _, err := b.douyin.FetchImage(ctx, rawURL)
 		return data, err
+	case site.Weibo:
+		data, _, err := b.weibo.FetchImage(ctx, rawURL)
+		return data, err
+	case site.Bilibili:
+		return b.bili.FetchImage(ctx, rawURL)
+	default:
+		return nil, &site.Error{Site: imgSite, Kind: site.ErrKindBadRequest, Message: "不支持的图片站点"}
 	}
-	return b.bili.FetchImage(ctx, rawURL)
 }
 
 func (b *Backend) detectImageSite(rawURL string) site.ID {
@@ -588,6 +857,9 @@ func (b *Backend) detectImageSite(rawURL string) site.ID {
 		return site.Bilibili
 	}
 	host := strings.ToLower(u.Hostname())
+	if site.MatchDomainSuffix(host, site.DefaultWeiboMediaHosts()) || site.IsWeiboLivePhotoInitialURL(rawURL) {
+		return site.Weibo
+	}
 	if site.MatchDomainSuffix(host, site.DefaultDouyinMediaHosts()) {
 		return site.Douyin
 	}
@@ -595,6 +867,17 @@ func (b *Backend) detectImageSite(rawURL string) site.ID {
 		return id
 	}
 	if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+		if b.weibo != nil {
+			ep := b.weibo.Endpoints()
+			for _, candidate := range []string{ep.PCBasicInfo, ep.ProfileInfo, ep.StatusesShow} {
+				if cu, cErr := url.Parse(candidate); cErr == nil && strings.EqualFold(cu.Host, u.Host) {
+					if strings.HasPrefix(u.Path, "/bfs/") {
+						return site.Bilibili
+					}
+					return site.Weibo
+				}
+			}
+		}
 		if b.douyin != nil {
 			ep := b.douyin.Endpoints()
 			for _, candidate := range []string{ep.ProfileSelf, ep.AwemeDetail, ep.LiveWebEnter} {
@@ -606,10 +889,19 @@ func (b *Backend) detectImageSite(rawURL string) site.ID {
 				}
 			}
 		}
+		if strings.HasPrefix(u.Path, "/weibo") || strings.HasPrefix(u.Path, "/sinaimg/") || strings.HasPrefix(u.Path, "/weibocdn/") || strings.HasPrefix(u.Path, "/livephoto/") {
+			return site.Weibo
+		}
 		if strings.HasPrefix(u.Path, "/douyin") || strings.HasPrefix(u.Path, "/obj/") || strings.HasPrefix(u.Path, "/tos-") {
 			return site.Douyin
 		}
-		if b.douyinCred != nil && b.douyinCred.HasActiveCredential() && (b.cred == nil || !b.cred.HasActiveCredential()) {
+		biliActive := b.cred != nil && b.cred.HasActiveCredential()
+		dyActive := b.douyinCred != nil && b.douyinCred.HasActiveCredential()
+		wbActive := b.weiboCred != nil && b.weiboCred.HasActiveCredential()
+		if wbActive && !biliActive && !dyActive {
+			return site.Weibo
+		}
+		if dyActive && !biliActive {
 			return site.Douyin
 		}
 	}
@@ -669,6 +961,9 @@ func (b *Backend) DouyinWork(ctx context.Context, awemeID string) (*DouyinWorkVi
 			cached = &item
 		}
 	}
+	if detail.Author.SecUID != "" && detail.Author.AvatarURL != "" {
+		b.rememberAccountAvatar(string(site.Douyin), detail.Author.SecUID, detail.Author.AvatarURL)
+	}
 	if detail.Author.SecUID != "" && detail.Author.WebRID != "" {
 		b.syncDouyinAccountWebRID(detail.Author.SecUID, detail.Author.WebRID)
 	}
@@ -698,6 +993,9 @@ func (b *Backend) DouyinUser(ctx context.Context, secUID string) (*DouyinUserVie
 	}
 	if b.subs != nil {
 		_ = b.subs.UpdateAccountSnapshot(string(site.Douyin), prof.SecUID, prof.Nickname, prof.AvatarURL, prof.UniqueID)
+	}
+	if prof.SecUID != "" && prof.AvatarURL != "" {
+		b.rememberAccountAvatar(string(site.Douyin), prof.SecUID, prof.AvatarURL)
 	}
 	b.recordAccountWorks(site.Douyin, prof.SecUID, prof.AwemeCount)
 	if prof.WebRID != "" {
@@ -742,13 +1040,20 @@ func (b *Backend) DouyinUser(ctx context.Context, secUID string) (*DouyinUserVie
 
 // DouyinUserWorks fetches one paginated grid page of a Douyin creator's works.
 func (b *Backend) DouyinUserWorks(ctx context.Context, secUID, cursor string) (*DouyinUserWorksPage, error) {
+	return b.douyinUserWorks(ctx, secUID, cursor, nil)
+}
+
+func (b *Backend) douyinUserWorks(ctx context.Context, secUID, cursor string, known *douyin.UserProfile) (*DouyinUserWorksPage, error) {
 	if err := b.requireSiteLogin(site.Douyin); err != nil {
 		return nil, err
 	}
+	cleanCursor := strings.TrimSpace(cursor)
 	page, err := b.douyin.ListUserPosts(ctx, douyin.UserPostsRequest{
-		SecUID:        strings.TrimSpace(secUID),
-		MaxCursor:     strings.TrimSpace(cursor),
-		StreamOptions: douyin.StreamSelectOptions{PreferredCodec: b.preferredDouyinCodec()},
+		SecUID:            strings.TrimSpace(secUID),
+		MaxCursor:         cleanCursor,
+		KnownProfile:      known,
+		CrossCheckProfile: known == nil && (cleanCursor == "" || cleanCursor == "0"),
+		StreamOptions:     douyin.StreamSelectOptions{PreferredCodec: b.preferredDouyinCodec()},
 	})
 	if err != nil {
 		b.logError("DouyinUserWorks", err)
@@ -765,6 +1070,334 @@ func (b *Backend) DouyinUserWorks(ctx context.Context, secUID, cursor string) (*
 		UncertainEmpty:  page.UncertainEmpty,
 		UncertainReason: page.UncertainReason,
 	}, nil
+}
+
+// WeiboPost fetches and maps a single Weibo post by mid or mblogid.
+func (b *Backend) WeiboPost(ctx context.Context, mid string) (*WeiboPostView, error) {
+	if err := b.requireSiteLogin(site.Weibo); err != nil {
+		return nil, err
+	}
+	codec := b.preferredWeiboCodec()
+	maxRes := b.currentWeiboMaxResolution()
+	post, err := b.weibo.GetPost(ctx, strings.TrimSpace(mid), weibo.PostOptions{
+		StreamOptions: weibo.StreamSelectOptions{
+			PreferredCodec: codec,
+			MaxResolution:  maxRes,
+		},
+	})
+	if err != nil {
+		b.logError("WeiboPost", err)
+		return nil, err
+	}
+	b.rememberWeiboPostAvatars(post)
+	b.weiboPostCache.put(post, codec, maxRes)
+	cacheKey := weibo.PostItemKey(post.Mid)
+	var cached *library.ItemMetadata
+	if item, ok, _ := b.lib.GetItem(cacheKey); ok {
+		cached = &item
+	}
+	st := b.States([]string{cacheKey})[cacheKey]
+	return mapWeiboPostView(post, cached, st), nil
+}
+
+// WeiboVideo fetches a standalone 1034:<id> Weibo video page.
+// If the video resolves to a host Weibo post, HostPost is populated and CacheKey normalizes to weibo:dynamic:<mid>;
+// otherwise CacheKey is weibo:video:<oid_underscored>.
+func (b *Backend) WeiboVideo(ctx context.Context, oid string) (*WeiboVideoView, error) {
+	if err := b.requireSiteLogin(site.Weibo); err != nil {
+		return nil, err
+	}
+	codec := b.preferredWeiboCodec()
+	maxRes := b.currentWeiboMaxResolution()
+	vr, err := b.weibo.GetVideo(ctx, strings.TrimSpace(oid), weibo.PostOptions{
+		StreamOptions: weibo.StreamSelectOptions{
+			PreferredCodec: codec,
+			MaxResolution:  maxRes,
+		},
+	})
+	if err != nil {
+		b.logError("WeiboVideo", err)
+		return nil, err
+	}
+	if vr.HostPost != nil {
+		b.rememberWeiboPostAvatars(vr.HostPost)
+		b.weiboPostCache.put(vr.HostPost, codec, maxRes)
+		hostKey := weibo.PostItemKey(vr.HostPost.Mid)
+		var cached *library.ItemMetadata
+		if item, ok, _ := b.lib.GetItem(hostKey); ok {
+			cached = &item
+		}
+		st := b.States([]string{hostKey})[hostKey]
+		hostView := mapWeiboPostView(vr.HostPost, cached, st)
+		return &WeiboVideoView{
+			ObjectID:     vr.ObjectID,
+			HostMid:      vr.HostPost.Mid,
+			HostPost:     hostView,
+			Title:        firstNonEmpty(vr.Title, weiboPostSummaryTitle(hostView)),
+			AuthorUID:    firstNonEmpty(vr.AuthorUID, hostView.Author.UID),
+			AuthorName:   firstNonEmpty(vr.AuthorName, hostView.Author.ScreenName),
+			Video:        mapWeiboVideoDTO(vr.Video),
+			CanonicalURL: firstNonEmpty(hostView.CanonicalURL, vr.CanonicalURL),
+			CacheKey:     hostView.CacheKey,
+			CacheState:   hostView.CacheState,
+			CachedItem:   hostView.CachedItem,
+		}, nil
+	}
+	videoKey := weibo.VideoItemKey(vr.ObjectID)
+	var cached *library.ItemMetadata
+	if item, ok, _ := b.lib.GetItem(videoKey); ok {
+		cached = &item
+	}
+	st := b.States([]string{videoKey})[videoKey]
+	return &WeiboVideoView{
+		ObjectID:     vr.ObjectID,
+		HostMid:      vr.HostMid,
+		Title:        vr.Title,
+		AuthorUID:    vr.AuthorUID,
+		AuthorName:   vr.AuthorName,
+		Video:        mapWeiboVideoDTO(vr.Video),
+		CanonicalURL: vr.CanonicalURL,
+		CacheKey:     videoKey,
+		CacheState:   st,
+		CachedItem:   cached,
+	}, nil
+}
+
+// WeiboUser fetches a Weibo creator's profile, saves statuses_count into account_works,
+// and refreshes the local avatar cache for subscribed accounts.
+func (b *Backend) WeiboUser(ctx context.Context, uid string) (*WeiboUserView, error) {
+	if err := b.requireSiteLogin(site.Weibo); err != nil {
+		return nil, err
+	}
+	targetUID := strings.TrimSpace(uid)
+	if targetUID == "" || strings.EqualFold(targetUID, "self") {
+		targetUID = b.weiboCred.Status().UID
+		if targetUID == "" {
+			selfProf, sErr := b.weibo.GetSelfProfile(ctx)
+			if sErr != nil {
+				return nil, sErr
+			}
+			targetUID = selfProf.UID
+		}
+	}
+	prof, err := b.weibo.GetUserProfile(ctx, targetUID)
+	if err != nil {
+		b.logError("WeiboUser", err)
+		return nil, err
+	}
+	if b.subs != nil {
+		_ = b.subs.UpdateAccountSnapshot(string(site.Weibo), prof.UID, prof.ScreenName, prof.AvatarURL, "")
+	}
+	if prof.UID != "" && prof.AvatarURL != "" {
+		b.rememberAccountAvatar(string(site.Weibo), prof.UID, prof.AvatarURL)
+	}
+	b.recordAccountWorks(site.Weibo, prof.UID, prof.StatusesCount)
+	return mapWeiboUserView(prof), nil
+}
+
+// WeiboUserPosts fetches one paginated timeline page for a Weibo creator.
+// Cursor encodes (page, since_id) via weibo.FormatCursor / weibo.ParseCursor.
+func (b *Backend) WeiboUserPosts(ctx context.Context, uid, cursor string) (*WeiboUserPostsPage, error) {
+	page, _, err := b.weiboUserPosts(ctx, uid, cursor, weibo.FeatureAll, nil)
+	return page, err
+}
+
+func (b *Backend) weiboUserPosts(
+	ctx context.Context,
+	uid, cursor string,
+	feature int,
+	known *weibo.UserProfile,
+) (*WeiboUserPostsPage, []weibo.Post, error) {
+	if err := b.requireSiteLogin(site.Weibo); err != nil {
+		return nil, nil, err
+	}
+	pageNum, sinceID := weibo.ParseCursor(cursor)
+	codec := b.preferredWeiboCodec()
+	maxRes := b.currentWeiboMaxResolution()
+	page, err := b.weibo.GetUserPosts(ctx, weibo.UserPostsRequest{
+		UID:               strings.TrimSpace(uid),
+		Page:              pageNum,
+		SinceID:           sinceID,
+		Feature:           feature,
+		KnownProfile:      known,
+		CrossCheckProfile: known == nil && pageNum == 1,
+		StreamOptions: weibo.StreamSelectOptions{
+			PreferredCodec: codec,
+			MaxResolution:  maxRes,
+		},
+	})
+	if err != nil {
+		b.logError("WeiboUserPosts", err)
+		return nil, nil, err
+	}
+	keys := make([]string, 0, len(page.Posts))
+	for i := range page.Posts {
+		if page.Posts[i].Mid != "" {
+			keys = append(keys, weibo.PostItemKey(page.Posts[i].Mid))
+		}
+	}
+	var states map[string]library.DotState
+	if len(keys) > 0 {
+		states = b.States(keys)
+	}
+	ownerUID := strings.TrimSpace(uid)
+	if normUID, uErr := site.NormalizeUID(site.Weibo, ownerUID); uErr == nil {
+		ownerUID = normUID
+	}
+	ownerName := ""
+	if known != nil {
+		ownerName = strings.TrimSpace(known.ScreenName)
+	}
+	if ownerName == "" && page.Author != nil {
+		ownerName = strings.TrimSpace(page.Author.ScreenName)
+	}
+	if ownerName == "" && ownerUID != "" {
+		ownerName = b.resolveWeiboForwarderHintName(ownerUID, "", "")
+	}
+
+	views := make([]WeiboPostView, 0, len(page.Posts))
+	for i := range page.Posts {
+		p := &page.Posts[i]
+		b.weiboPostCache.put(p, codec, maxRes)
+		k := weibo.PostItemKey(p.Mid)
+		v := *mapWeiboPostView(p, nil, states[k])
+		if ownerUID != "" && (p.IsRetweet || p.IsFastRetweet || p.Author.UID != ownerUID) {
+			v.ForwarderHintUID = ownerUID
+			v.ForwarderHintName = ownerName
+		}
+		views = append(views, v)
+	}
+	nextCursor := ""
+	if page.HasMore {
+		nextCursor = weibo.FormatCursor(page.NextPage, page.NextSinceID)
+	}
+	totalWorks := page.Total
+	if totalWorks == 0 && known != nil && known.StatusesCount > 0 {
+		totalWorks = known.StatusesCount
+	}
+	if totalWorks == 0 && page.Author != nil && page.Author.StatusesCount > 0 {
+		totalWorks = page.Author.StatusesCount
+	}
+	if pageNum == 1 && totalWorks > 0 {
+		if normUID, uErr := site.NormalizeUID(site.Weibo, uid); uErr == nil {
+			b.recordAccountWorks(site.Weibo, normUID, totalWorks)
+		}
+	}
+	return &WeiboUserPostsPage{
+		Posts:             views,
+		Page:              page.Page,
+		NextCursor:        nextCursor,
+		HasMore:           page.HasMore,
+		BottomTipsVisible: page.BottomTipsVisible,
+		BottomTipsText:    page.BottomTipsText,
+		UncertainEmpty:    page.UncertainEmpty,
+		UncertainReason:   page.UncertainReason,
+		TotalWorks:        totalWorks,
+	}, page.Posts, nil
+}
+
+func weiboPostSummaryTitle(pv *WeiboPostView) string {
+	if pv == nil {
+		return ""
+	}
+	raw := firstNonEmpty(pv.Text, pv.TextRaw)
+	if raw == "" && pv.Video != nil {
+		raw = pv.Video.Title
+	}
+	if raw == "" && pv.Card != nil {
+		raw = pv.Card.Title
+	}
+	if raw == "" && pv.Retweeted != nil {
+		raw = firstNonEmpty(pv.Retweeted.Text, pv.Retweeted.TextRaw)
+	}
+	return trimQueueSummaryTitle(firstNonEmpty(raw, "微博 "+pv.Mid))
+}
+
+func weiboPostPublicCoverURL(pv *WeiboPostView) string {
+	if pv == nil {
+		return ""
+	}
+	for _, img := range pv.Images {
+		if u := weibo.SafePublicImageURL(firstNonEmpty(img.PublicPreviewURL, img.ImageURL)); u != "" {
+			return u
+		}
+	}
+	if pv.Video != nil {
+		if u := weibo.SafePublicImageURL(firstNonEmpty(pv.Video.PublicCoverURL, pv.Video.CoverURL)); u != "" {
+			return u
+		}
+	}
+	if pv.Card != nil {
+		if u := weibo.SafePublicImageURL(pv.Card.CoverURL); u != "" {
+			return u
+		}
+	}
+	if pv.Retweeted != nil {
+		return weiboPostPublicCoverURL(pv.Retweeted)
+	}
+	return ""
+}
+
+func weiboPostThumbCoverURL(pv *WeiboPostView) string {
+	if pv == nil {
+		return ""
+	}
+	for _, img := range pv.Images {
+		if u := firstNonEmpty(img.ImageURL, img.PublicPreviewURL); u != "" {
+			return u
+		}
+	}
+	if pv.Video != nil {
+		if u := firstNonEmpty(pv.Video.CoverURL, pv.Video.PublicCoverURL); u != "" {
+			return u
+		}
+	}
+	if pv.Card != nil && pv.Card.CoverURL != "" {
+		return pv.Card.CoverURL
+	}
+	if pv.Retweeted != nil {
+		return weiboPostThumbCoverURL(pv.Retweeted)
+	}
+	return ""
+}
+
+func weiboPostDuration(pv *WeiboPostView) int {
+	if pv == nil {
+		return 0
+	}
+	if pv.Video != nil && pv.Video.DurationSec > 0 {
+		return pv.Video.DurationSec
+	}
+	for _, img := range pv.Images {
+		if img.DurationSec > 0 {
+			return img.DurationSec
+		}
+	}
+	if pv.Retweeted != nil {
+		return weiboPostDuration(pv.Retweeted)
+	}
+	return 0
+}
+
+func weiboVideoPublicCoverURL(v *WeiboVideoDTO) string {
+	if v == nil {
+		return ""
+	}
+	return weibo.SafePublicImageURL(firstNonEmpty(v.PublicCoverURL, v.CoverURL))
+}
+
+func weiboVideoThumbCoverURL(v *WeiboVideoDTO) string {
+	if v == nil {
+		return ""
+	}
+	return firstNonEmpty(v.CoverURL, v.PublicCoverURL)
+}
+
+func weiboVideoDuration(v *WeiboVideoDTO) int {
+	if v == nil {
+		return 0
+	}
+	return v.DurationSec
 }
 
 // DouyinLive queries a Douyin live room by web_rid and returns normalized room and anchor state.
@@ -858,9 +1491,9 @@ func (b *Backend) DouyinLive(ctx context.Context, webRID string) (*DouyinLiveVie
 	}, nil
 }
 
-// StagePreviewMedia downloads a whitelisted CDN audio/video clip (e.g. uncached Douyin note BGM
-// or note video page) without sending Cookie into <DataDir>/cache/preview/ and returns its local file path
-// for playback via internal/player.
+// StagePreviewMedia downloads a whitelisted CDN audio/video clip (e.g. uncached Douyin note BGM,
+// note video page, or Weibo LivePhoto clip) without sending Cookie into <DataDir>/cache/preview/
+// and returns its local file path for playback via internal/player.
 func (b *Backend) StagePreviewMedia(ctx context.Context, siteID, rawURL, ext string) (string, error) {
 	id, err := normalizeSiteID(siteID)
 	if err != nil {
@@ -874,10 +1507,27 @@ func (b *Backend) StagePreviewMedia(ctx context.Context, siteID, rawURL, ext str
 		return "", &site.Error{Site: id, Kind: site.ErrKindBadRequest, Message: "媒体预览地址为空"}
 	}
 	var data []byte
+	isWeiboLivePhoto := false
 	switch id {
 	case site.Douyin:
 		var fetchErr error
 		data, _, fetchErr = b.douyin.FetchImageLimited(ctx, rawURL, maxPreviewMediaBytes)
+		if fetchErr != nil {
+			return "", fetchErr
+		}
+	case site.Weibo:
+		if b.weibo == nil {
+			return "", &site.Error{Site: site.Weibo, Kind: site.ErrKindUnavailable, Message: "微博客户端未初始化"}
+		}
+		liveSpec := b.weibo.LivePhotoMediaTransport()
+		normalizedURL := normalizeWeiboPreviewURL(rawURL, liveSpec.AllowLocalhost)
+		isWeiboLivePhoto = site.IsWeiboLivePhotoInitialURL(normalizedURL)
+		spec := b.weibo.MediaTransport()
+		if isWeiboLivePhoto {
+			spec = liveSpec
+		}
+		var fetchErr error
+		data, fetchErr = b.fetchWeiboPreviewMedia(ctx, spec, normalizedURL, maxPreviewMediaBytes)
 		if fetchErr != nil {
 			return "", fetchErr
 		}
@@ -887,9 +1537,13 @@ func (b *Backend) StagePreviewMedia(ctx context.Context, siteID, rawURL, ext str
 		if fetchErr != nil {
 			return "", fetchErr
 		}
+	default:
+		return "", &site.Error{Site: id, Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
 	}
 	safeExt := ".mp4"
 	switch strings.ToLower(strings.TrimSpace(ext)) {
+	case ".mov", "mov":
+		safeExt = ".mov"
 	case ".mp3", "mp3":
 		safeExt = ".mp3"
 	case ".m4a", "m4a":
@@ -900,15 +1554,206 @@ func (b *Backend) StagePreviewMedia(ctx context.Context, siteID, rawURL, ext str
 		safeExt = ".ogg"
 	case ".wav", "wav":
 		safeExt = ".wav"
+	case ".jpg", "jpg", ".jpeg", "jpeg":
+		safeExt = ".jpg"
+	case ".png", "png":
+		safeExt = ".png"
+	case ".gif", "gif":
+		safeExt = ".gif"
+	case ".webp", "webp":
+		safeExt = ".webp"
+	}
+	needsLivePhotoMP4 := id == site.Weibo && (isWeiboLivePhoto || safeExt == ".mov" || isQuickTimeContainerBytes(data))
+	if needsLivePhotoMP4 {
+		safeExt = ".mp4"
 	}
 	sum := sha256.Sum256([]byte(string(id) + "\x00" + rawURL))
 	fileName := fmt.Sprintf("preview_%s_%x%s", string(id), sum[:16], safeExt)
 	fullPath := filepath.Join(b.previewDir, fileName)
-	if err := storage.WriteFileAtomic(fullPath, data, 0o600); err != nil {
-		return "", err
+	if needsLivePhotoMP4 {
+		if err := os.MkdirAll(b.previewDir, 0o700); err != nil {
+			return "", err
+		}
+		stagePath := storage.TempSiblingPath(fullPath)
+		cleanupStage := true
+		defer func() {
+			if cleanupStage {
+				_ = os.Remove(stagePath)
+			}
+		}()
+		if err := os.WriteFile(stagePath, data, 0o600); err != nil {
+			return "", err
+		}
+		if _, _, err := download.EnsureLivePhotoMP4Context(ctx, stagePath, 0); err != nil {
+			return "", err
+		}
+		if err := os.Rename(stagePath, fullPath); err != nil {
+			return "", err
+		}
+		cleanupStage = false
+	} else {
+		if err := storage.WriteFileAtomic(fullPath, data, 0o600); err != nil {
+			return "", err
+		}
 	}
 	prunePreviewDir(b.previewDir, fullPath, maxPreviewDirBytes, maxPreviewDirFiles)
 	return fullPath, nil
+}
+
+func normalizeWeiboPreviewURL(raw string, allowLocalhost bool) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if strings.HasPrefix(s, "//") {
+		return "https:" + s
+	}
+	if strings.HasPrefix(strings.ToLower(s), "http://") {
+		if allowLocalhost {
+			if u, err := url.Parse(s); err == nil && site.IsLoopbackHost(u.Hostname()) {
+				return s
+			}
+		}
+		return "https://" + s[len("http://"):]
+	}
+	return s
+}
+
+func isQuickTimeContainerBytes(data []byte) bool {
+	return len(data) >= 12 && string(data[4:8]) == "ftyp" && string(data[8:12]) == "qt  "
+}
+
+func looksLikePreviewHTMLOrJSON(data []byte) bool {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return true
+	}
+	if trimmed[0] == '{' || trimmed[0] == '[' || trimmed[0] == '<' {
+		lower := strings.ToLower(string(trimmed[:min(len(trimmed), 256)]))
+		if strings.HasPrefix(lower, "<!doctype") || strings.HasPrefix(lower, "<html") || strings.HasPrefix(lower, "<head") || strings.HasPrefix(lower, "<script") || strings.HasPrefix(lower, "<body") {
+			return true
+		}
+		if trimmed[0] == '{' || trimmed[0] == '[' {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *Backend) resolveWeiboForwarderHintName(hintUID, postAuthorUID, postAuthorName string) string {
+	hintUID = strings.TrimSpace(hintUID)
+	if hintUID == "" {
+		return ""
+	}
+	if strings.TrimSpace(postAuthorUID) == hintUID && strings.TrimSpace(postAuthorName) != "" {
+		return strings.TrimSpace(postAuthorName)
+	}
+	if b.subs != nil {
+		if sub, acc, ok := b.subs.GetAccount(string(site.Weibo), hintUID); ok {
+			return firstNonEmpty(acc.Name, sub.Name)
+		}
+	}
+	return ""
+}
+
+func (b *Backend) fetchWeiboPreviewMedia(ctx context.Context, spec site.MediaTransportSpec, rawURL string, maxBytes int64) ([]byte, error) {
+	if err := spec.ValidateURL(rawURL); err != nil {
+		return nil, err
+	}
+	if maxBytes <= 0 {
+		maxBytes = maxPreviewMediaBytes
+	}
+
+	var rt http.RoundTripper
+	var ownedTransport *http.Transport
+	if b.weiboPreviewRT != nil {
+		rt = b.weiboPreviewRT
+	} else {
+		ownedTransport = &http.Transport{
+			Proxy: site.Proxy,
+			DialContext: site.NewGuardedMediaDialer(
+				site.Weibo,
+				spec.AllowLocalhost,
+				&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second},
+				"媒体地址解析到受限的本地或内网地址",
+			).DialContext,
+		}
+		defer ownedTransport.CloseIdleConnections()
+		rt = ownedTransport
+		if spec.AllowLocalhost {
+			rt = site.LoopbackTransport(ownedTransport)
+		}
+	}
+	if b.weiboPreviewWrap != nil {
+		rt = b.weiboPreviewWrap(rt)
+	}
+
+	const maxHops = 5
+	client := &http.Client{
+		Transport: rt,
+		Timeout:   30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= maxHops {
+				return &site.Error{Site: site.Weibo, Kind: site.ErrKindBlocked, Message: "微博预览媒体重定向次数过多"}
+			}
+			if err := spec.ValidateRedirectURL(req.URL.String()); err != nil {
+				return err
+			}
+			req.Header.Del("Cookie")
+			spec.ApplyHeaders(req)
+			return nil
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, &site.Error{Site: site.Weibo, Kind: site.ErrKindBadRequest, Message: "无效的微博预览媒体地址", Err: site.UnwrapURLError(err)}
+	}
+	req.Header.Del("Cookie")
+	spec.ApplyHeaders(req)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		var se *site.Error
+		if errors.As(err, &se) {
+			return nil, se
+		}
+		return nil, &site.Error{Site: site.Weibo, Kind: site.ErrKindNetwork, Message: "拉取微博预览媒体失败", Err: site.UnwrapURLError(err)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		kind := site.ErrKindUnavailable
+		switch resp.StatusCode {
+		case 414, 418, 432:
+			kind = site.ErrKindRiskControl
+		case http.StatusTooManyRequests:
+			kind = site.ErrKindRateLimited
+		}
+		return nil, &site.Error{
+			Site:       site.Weibo,
+			Kind:       kind,
+			HTTPStatus: resp.StatusCode,
+			Message:    fmt.Sprintf("微博预览媒体返回 HTTP %d", resp.StatusCode),
+		}
+	}
+
+	ct := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+	if strings.HasPrefix(ct, "text/html") || strings.HasPrefix(ct, "application/json") || strings.HasPrefix(ct, "text/plain") {
+		return nil, &site.Error{Site: site.Weibo, Kind: site.ErrKindBlocked, Message: "微博预览媒体响应类型异常: " + ct}
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, &site.Error{Site: site.Weibo, Kind: site.ErrKindNetwork, Message: "读取微博预览媒体失败", Err: err}
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, &site.Error{Site: site.Weibo, Kind: site.ErrKindBlocked, Message: "微博预览媒体体积超出安全上限"}
+	}
+	if looksLikePreviewHTMLOrJSON(data) {
+		return nil, &site.Error{Site: site.Weibo, Kind: site.ErrKindBlocked, Message: "微博预览媒体响应内容疑似伪装页面"}
+	}
+	return data, nil
 }
 
 func prunePreviewDir(dir, keepPath string, maxBytes int64, maxFiles int) {

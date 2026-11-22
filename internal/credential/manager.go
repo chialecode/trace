@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Manager owns isolated per-site credential stores (bilibili.bin and douyin.bin)
+// Manager owns isolated per-site credential stores (bilibili.bin, douyin.bin, and weibo.bin)
 // so expiry, logout, and encryption entropy remain strictly independent per site.
 type Manager struct {
 	dir    string
@@ -18,12 +18,14 @@ func normalizeSiteID(raw string) string {
 		return SiteBilibili
 	case SiteDouyin:
 		return SiteDouyin
+	case SiteWeibo:
+		return SiteWeibo
 	default:
 		return ""
 	}
 }
 
-// OpenManager opens bilibili.bin and douyin.bin inside credDir with isolated DPAPI entropies.
+// OpenManager opens bilibili.bin, douyin.bin, and weibo.bin inside credDir with isolated entropies.
 // Any corrupt or wrong-entropy files are backed up and reported in backups without failing startup.
 func OpenManager(credDir string) (*Manager, []string, error) {
 	biliStore, biliBackup, err := Open(filepath.Join(credDir, BilibiliFileName))
@@ -34,6 +36,10 @@ func OpenManager(credDir string) (*Manager, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	wbStore, wbBackup, err := OpenWeibo(filepath.Join(credDir, WeiboFileName))
+	if err != nil {
+		return nil, nil, err
+	}
 	var backups []string
 	if biliBackup != "" {
 		backups = append(backups, biliBackup)
@@ -41,11 +47,15 @@ func OpenManager(credDir string) (*Manager, []string, error) {
 	if dyBackup != "" {
 		backups = append(backups, dyBackup)
 	}
+	if wbBackup != "" {
+		backups = append(backups, wbBackup)
+	}
 	return &Manager{
 		dir: credDir,
 		stores: map[string]*Store{
 			SiteBilibili: biliStore,
 			SiteDouyin:   dyStore,
+			SiteWeibo:    wbStore,
 		},
 	}, backups, nil
 }
@@ -63,7 +73,7 @@ func NewManagerFromStores(stores map[string]*Store) *Manager {
 	return m
 }
 
-// Store returns the credential Store for siteID ("bilibili" or "douyin"), or nil if unknown.
+// Store returns the credential Store for siteID ("bilibili", "douyin", or "weibo"), or nil if unknown.
 func (m *Manager) Store(siteID string) *Store {
 	if m == nil {
 		return nil
@@ -81,6 +91,11 @@ func (m *Manager) Douyin() *Store {
 	return m.Store(SiteDouyin)
 }
 
+// Weibo returns the Weibo credential Store.
+func (m *Manager) Weibo() *Store {
+	return m.Store(SiteWeibo)
+}
+
 // Status returns the desensitized Status for siteID.
 func (m *Manager) Status(siteID string) Status {
 	st := m.Store(siteID)
@@ -94,12 +109,26 @@ func (m *Manager) Status(siteID string) Status {
 	return st.Status()
 }
 
-// Statuses returns desensitized account statuses keyed by site ID ("bilibili", "douyin").
+// Statuses returns desensitized account statuses keyed by site ID ("bilibili", "douyin", "weibo").
 func (m *Manager) Statuses() map[string]Status {
 	return map[string]Status{
 		SiteBilibili: m.Status(SiteBilibili),
 		SiteDouyin:   m.Status(SiteDouyin),
+		SiteWeibo:    m.Status(SiteWeibo),
 	}
+}
+
+// Renewal reports whether automatic credential renewal is available for siteID.
+func (m *Manager) Renewal(siteID string) RenewalInfo {
+	st := m.Store(siteID)
+	if st == nil {
+		return RenewalInfo{
+			Site:      strings.TrimSpace(siteID),
+			Available: false,
+			Reason:    ErrUnknownSite.Error(),
+		}
+	}
+	return st.Renewal()
 }
 
 // HasActiveCredential reports whether siteID holds an active login credential.
@@ -131,16 +160,21 @@ func (m *Manager) Clear(siteID string) error {
 	return st.Clear()
 }
 
-// RedactString scrubs secrets stored across ALL managed site stores from in.
+// RedactString scrubs secrets stored across ALL managed site stores as well as
+// Weibo sensitive cookie/SSO fields (raw and URL-encoded) from in.
 func (m *Manager) RedactString(in string) string {
-	if in == "" || m == nil {
-		return in
+	if in == "" {
+		return ""
 	}
-	var allSecrets []string
-	for _, id := range []string{SiteBilibili, SiteDouyin} {
-		if st := m.stores[id]; st != nil {
-			allSecrets = append(allSecrets, st.collectSecrets()...)
+	out := in
+	if m != nil {
+		var allSecrets []string
+		for _, id := range []string{SiteBilibili, SiteDouyin, SiteWeibo} {
+			if st := m.stores[id]; st != nil {
+				allSecrets = append(allSecrets, st.collectSecrets()...)
+			}
 		}
+		out = redactWithSecrets(out, allSecrets)
 	}
-	return redactWithSecrets(in, allSecrets)
+	return redactWeiboSensitiveFields(out)
 }

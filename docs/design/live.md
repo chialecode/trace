@@ -1,6 +1,6 @@
 # 技术设计：直播
 
-开播状态、手动与自动录制、录像条目（FR-LIVE-001、FR-LIVE-002、FR-LIVE-004，DEC-027）；抖音直播见第 5 节（FR-DY-008、FR-DY-009，DEC-043）。第 1～4 节写的是哔哩哔哩，录制器的输入、换段、收尾与恢复两个站点共用。协议见[协议资料 §20](../research/bilibili.md#live)，录制路线的选型见[订阅、弹幕与直播选型 §3](../research/2026-11-07-subscriptions-live.md#recording)，订阅规则见[订阅设计](subscriptions.md)。
+开播状态、手动与自动录制、录像条目（FR-LIVE-001、FR-LIVE-002、FR-LIVE-004，DEC-027）；抖音直播见第 5 节（FR-DY-008、FR-DY-009，DEC-043）；微博暂不支持开播巡检与录制（第 6 节，DEC-065）。第 1～4 节写的是哔哩哔哩，录制器的输入、换段、收尾与恢复与抖音共用。协议见[协议资料 §20](../research/bilibili.md#live)，录制路线的选型见[订阅、弹幕与直播选型 §3](../research/2026-11-07-subscriptions-live.md#recording)，订阅规则见[订阅设计](subscriptions.md)。
 
 <a id="status"></a>
 ## 1. 开播状态
@@ -70,3 +70,11 @@
 - **录制**：按第 2.1 节；断流或地址失效时重新调 `web/enter` 取新地址，状态变为 `4` 就正常结束；连续 5 分钟取不到流结束；风控、验证、未登录立即结束并记原因，不重试。
 - **录像条目**：键 `douyin:live:<room_id>`（`room_id` 每场唯一，不受直播间号变化影响），文件夹见[数据 §2.1](data-and-cache.md#cache)；清单记当时用的直播间号、本场 `room_id`、主播 `sec_uid` 与昵称、标题、清晰度与编码、每段的文件与校验值、结束原因与可选 `live.incidents`；不记流地址。同一场（同一个 `room_id`）中途重新开始用同一个条目。其余同第 4 节。
 - **自动录制**同第 3 节，“这一场”以 `room_id` 区分。
+
+<a id="weibo"></a>
+## 6. 微博（暂不支持开播巡检与录制，DEC-065）
+
+微博直播暂不纳入开播巡检与录制（[Q-023](../../USER-ACTIONS.md#q-023) 第 2 条，FR-WB-010）：
+
+- **零请求排除**：`internal/live`、`internal/subscription` 与 `internal/service` 明确将 `site.Weibo` 排除在开播轮询、批量状态查询（`LiveStatuses` / `StatusByAccountKeys`）、检查更新后的开播查询、自动录制账号筛选（`ListAutoRecordAccounts`）以及 `LiveCheckEvery`（返回 0）之外，不对微博发出任何直播相关请求。
+- **明确拒绝与文案**：对任意 `weibo:*` 账号键或微博直播间调用开播查询、开始录制或停止录制，一律拒绝（不回落到哔哩哔哩）并返回 `live.WeiboLiveUnsupportedMessage`（“微博直播暂不支持录制”）。订阅规则开启“开播自动录制”时，任务页“检查计划”对微博账号标明“微博直播暂不支持录制”，订阅详情“账号”行不显示开播状态与录制按钮。解析微博直播链接或浏览微博内嵌直播卡片时提示“微博直播暂不支持录制，可以在浏览器中打开”（0 请求），`OpenLiveInBrowser` 直接打开微博直播网页。

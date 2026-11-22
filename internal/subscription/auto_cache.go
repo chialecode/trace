@@ -71,7 +71,10 @@ func (m *Manager) evaluateAutoCacheRulesForSites(ctx context.Context, abortedSit
 		}
 
 		for _, acc := range s.Accounts {
-			accSite := normalizeSchedulerSite(acc.Site)
+			accSite := normalizeLegacyAccountSite(acc.Site)
+			if !site.ID(accSite).Valid() {
+				continue
+			}
 			if abortedSites != nil && abortedSites[accSite] != "" {
 				continue
 			}
@@ -283,10 +286,14 @@ func (m *Manager) findCachedLibraryKey(siteName, dynID string) string {
 	}
 	var keys []string
 	switch normalizeSchedulerSite(siteName) {
+	case string(site.Bilibili):
+		keys = []string{"bilibili:dynamic:" + dynID, "bilibili:video:" + dynID, dynID}
 	case string(site.Douyin):
 		keys = []string{"douyin:video:" + dynID, "douyin:dynamic:" + dynID}
+	case string(site.Weibo):
+		keys = []string{"weibo:dynamic:" + dynID, "weibo:video:" + dynID}
 	default:
-		keys = []string{"bilibili:dynamic:" + dynID, "bilibili:video:" + dynID, dynID}
+		return ""
 	}
 	for _, k := range keys {
 		if _, ok, _ := m.lib.GetItem(k); ok {

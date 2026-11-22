@@ -233,3 +233,102 @@ func TestCheckdocsNestedFencesAndCodeBlockHeadings(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckdocsWeiboSecretsAndPlaceholders(t *testing.T) {
+	emptyRefDir := filepath.Join(t.TempDir(), "nonexistent")
+	t.Setenv("TRACE_REFERENCE_DIR", emptyRefDir)
+
+	leaks := []struct {
+		name      string
+		line      string
+		want      string
+		rawSecret string
+	}{
+		{"weibo_sub", "Cookie: SUB=_2A25SynthSubToken0001abcdef", "contains Cookie/token value", "_2A25SynthSubToken0001abcdef"},
+		{"weibo_subp", "Cookie: SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D", "contains Cookie/token value", "0033WrSXqPxfM725Ws9jqgMF55529P9D"},
+		{"weibo_xsrf_token", "Cookie: XSRF-TOKEN=AbCdEfGh123456_7890-XyZ", "contains Cookie/token value", "AbCdEfGh123456_7890-XyZ"},
+		{"weibo_wbpsess", "Cookie: WBPSESS=Dt2hbAUaXSynthWbpsess0123==", "contains Cookie/token value", "Dt2hbAUaXSynthWbpsess0123=="},
+		{"weibo_scf", "Cookie: SCF=AlSynthScfToken0123456789._-", "contains Cookie/token value", "AlSynthScfToken0123456789._-"},
+		{"weibo_alf", "Cookie: ALF=1795000000", "contains Cookie/token value", "1795000000"},
+		{"weibo_sso_login_state", "Cookie: SSOLoginState=1763700000", "contains Cookie/token value", "1763700000"},
+		{"weibo_suhb", "Cookie: SUHB=02M_SynthSuhb001", "contains Cookie/token value", "02M_SynthSuhb001"},
+		{"weibo_pc_token", "Cookie: PC_TOKEN=0123456789abcdef0123456789abcdef", "contains Cookie/token value", "0123456789abcdef0123456789abcdef"},
+		{"weibo_t_wm", "Cookie: _T_WM=fedcba9876543210fedcba9876543210", "contains Cookie/token value", "fedcba9876543210fedcba9876543210"},
+		{"weibo_video_signed_url", "CDN: https://f.video.weibocdn.com/o0/synth01.mp4?Expires=1763700000&ssig=AbCdEf%2B12%3D&KID=unistore,video", "contains signed URL", "AbCdEf%2B12%3D"},
+		{"weibo_livephoto_signed_url", "CDN: https://livephoto.us.sinaimg.cn/001synth.mov?ssig=9f8e7d6c5b&Expires=1763700000&KID=unistore,video", "contains signed URL", "9f8e7d6c5b"},
+		{"weibo_expires_kid_url", "CDN: https://f.video.weibocdn.com/o0/synth02.mp4?Expires=1763700000&KID=unistore,video", "contains signed URL", "1763700000"},
+		{"weibo_kid_expires_url", "CDN: https://f.video.weibocdn.com/o0/synth03.mp4?KID=unistore,video&Expires=1763700000", "contains signed URL", "1763700000"},
+		{"weibo_bare_signed_query", "Query: Expires=1763700000&ssig=SynthSig9876&KID=unistore,video", "contains signed URL", "SynthSig9876"},
+		{"weibo_qmarkless_amp_url", "CDN: https://f.video.weibocdn.com/o0/synth01.mp4&ssig=SecretSig1234", "contains signed URL", "SecretSig1234"},
+		{"weibo_qmarkless_json_amp_url", `CDN: https://f.video.weibocdn.com/o0/synth01.mp4\u0026ssig=SecretJsonSig5678`, "contains signed URL", "SecretJsonSig5678"},
+		{"weibo_livephoto_encoded_url", "CDN: https://video.weibo.com/media/play?livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2F001synth.mov%3FExpires%3D1763700000%26ssig%3DEncLiveSig1234%26KID%3Dunistore%2Cvideo", "contains signed URL", "EncLiveSig1234"},
+		{"weibo_livephoto_encoded_exp_kid", "CDN: https://video.weibo.com/media/play?livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2F001synth.mov%3FExpires%3D1763700001%26KID%3Dunistore%2Cvideo", "contains signed URL", "1763700001"},
+		{"weibo_livephoto_encoded_bare", "Encoded: https%3A%2F%2Flivephoto.us.sinaimg.cn%2F001synth.mov%3FExpires%3D1763700002%26ssig%3DBareEncSig9999%26KID%3Dunistore%2Cvideo", "contains signed URL", "BareEncSig9999"},
+	}
+	for _, tc := range leaks {
+		t.Run(tc.name, func(t *testing.T) {
+			caseDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(caseDir, "LEAK.md"), []byte("# Leak\n\n"+tc.line+"\n"), 0o600); err != nil {
+				t.Fatalf("write LEAK.md (%s): %v", tc.name, err)
+			}
+			gotFindings, _, err := Run(caseDir, emptyRefDir)
+			if err != nil {
+				t.Fatalf("Run(%s): %v", tc.name, err)
+			}
+			joinedGot := strings.Join(gotFindings, "\n")
+			if !strings.Contains(joinedGot, tc.want) {
+				t.Fatalf("%s: expected finding %q, got: %v", tc.name, tc.want, gotFindings)
+			}
+			if strings.Contains(joinedGot, tc.rawSecret) {
+				t.Fatalf("%s: raw secret %q leaked into finding output: %s", tc.name, tc.rawSecret, joinedGot)
+			}
+			if !strings.Contains(joinedGot, "<redacted>") {
+				t.Fatalf("%s: expected <redacted> in finding output: %s", tc.name, joinedGot)
+			}
+		})
+	}
+
+	t.Run("placeholders and public URLs allowed", func(t *testing.T) {
+		dir := t.TempDir()
+		safeDoc := strings.Join([]string{
+			"# Weibo Safe Placeholders",
+			"",
+			"- Cookie placeholders: `SUB=<合成占位>`, `SUB=<synthetic>`, `XSRF-TOKEN=<合成占位>`, `WBPSESS=<synthetic>`, `SUBP=<placeholder>`, `SCF=<placeholder>`, `ALF=<Unix秒>`, `SSOLoginState=<Unix秒>`.",
+			"- Bare key mentions: `SUB=` / `SUBP=` / `XSRF-TOKEN=` / `WBPSESS=` / `SUB=...` / `SUB=[REDACTED]`.",
+			"- Lowercase query parameter: `/library?type=&sub=subscription_0001&mid=`.",
+			"- Signed URL placeholders: `Expires=<Unix秒>&ssig=<合成签名>&KID=unistore,video`.",
+			"- Full URL placeholders: `https://f.video.weibocdn.com/o0/demo.mp4?Expires=<Unix秒>&ssig=<合成签名>&KID=unistore,video`.",
+			"- Reordered URL placeholder: `https://f.video.weibocdn.com/o0/demo.mp4?KID=unistore,video&Expires=<Unix秒>&ssig=<合成签名>`.",
+			"- Encoded LivePhoto placeholder: `https://video.weibo.com/media/play?livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2F001synth.mov%3FExpires%3D<Unix秒>%26ssig%3D<合成签名>%26KID%3Dunistore%2Cvideo`.",
+			"- Public image URL: `https://wx1.sinaimg.cn/large/001SynThPic01ly1synthetic00001.jpg`.",
+		}, "\n")
+		if err := os.WriteFile(filepath.Join(dir, "SAFE.md"), []byte(safeDoc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		findings, _, err := Run(dir, emptyRefDir)
+		if err != nil || len(findings) != 0 {
+			t.Fatalf("unexpected findings for Weibo placeholders: %v (err=%v)", findings, err)
+		}
+	})
+
+	t.Run("actual docs/research/weibo.md has no secret false positives", func(t *testing.T) {
+		weiboDocPath := filepath.Join("..", "..", "docs", "research", "weibo.md")
+		raw, err := os.ReadFile(weiboDocPath)
+		if err != nil {
+			t.Fatalf("read %s: %v", weiboDocPath, err)
+		}
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "weibo.md"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		findings, _, err := Run(dir, emptyRefDir)
+		if err != nil {
+			t.Fatalf("Run on weibo.md copy: %v", err)
+		}
+		for _, f := range findings {
+			if strings.Contains(f, "Cookie/token") || strings.Contains(f, "signed URL") {
+				t.Fatalf("false positive on docs/research/weibo.md: %s", f)
+			}
+		}
+	})
+}

@@ -28,6 +28,10 @@ func normalizeAppRoute(route string) string {
 		return RouteDouyinWork
 	case strings.HasPrefix(trimmed, RouteDouyinUser+"/"):
 		return RouteDouyinUser
+	case strings.HasPrefix(trimmed, RouteWeiboPost+"/"):
+		return RouteWeiboPost
+	case strings.HasPrefix(trimmed, RouteWeiboUser+"/"):
+		return RouteWeiboUser
 	case strings.HasPrefix(trimmed, RouteSettings+"/"):
 		return RouteSettings
 	case strings.HasPrefix(trimmed, RouteSubscriptions+"/"):
@@ -43,6 +47,8 @@ func normalizeSiteFilter(siteFilter string) string {
 		return string(site.Bilibili)
 	case string(site.Douyin):
 		return string(site.Douyin)
+	case string(site.Weibo):
+		return string(site.Weibo)
 	default:
 		return "all"
 	}
@@ -52,6 +58,8 @@ func routeExclusiveSite(route string) string {
 	switch normalizeAppRoute(route) {
 	case RouteDouyinWork, RouteDouyinUser:
 		return string(site.Douyin)
+	case RouteWeiboPost, RouteWeiboUser:
+		return string(site.Weibo)
 	case RouteVideo, RouteUser:
 		return string(site.Bilibili)
 	default:
@@ -63,6 +71,8 @@ func siteExpiredLoginPrompt(siteID string) string {
 	switch siteID {
 	case string(site.Douyin):
 		return "抖音登录已失效，请重新粘贴 Cookie"
+	case string(site.Weibo):
+		return "微博登录已失效，请重新粘贴 Cookie"
 	default:
 		return "登录已失效，请重新登录"
 	}
@@ -72,6 +82,8 @@ func siteExpiredTopNotice(siteID string) string {
 	switch siteID {
 	case string(site.Douyin):
 		return "抖音登录已失效，抖音相关任务与录制已暂停；可前往设置重新粘贴 Cookie"
+	case string(site.Weibo):
+		return "微博登录已失效，微博相关任务已暂停；可前往设置重新粘贴 Cookie"
 	case string(site.Bilibili):
 		return "哔哩哔哩登录已失效，B 站相关任务与录制已暂停；可前往设置重新登录"
 	default:
@@ -87,6 +99,13 @@ func (a *App) currentRouteRequiresSite(siteID string) bool {
 			return true
 		}
 		if a.CurrentRoute == RouteDouyinWork && a.CurrentLibraryDetail == nil {
+			return true
+		}
+	case string(site.Weibo):
+		if a.CurrentRoute == RouteWeiboUser {
+			return true
+		}
+		if a.CurrentRoute == RouteWeiboPost && a.CurrentLibraryDetail == nil {
 			return true
 		}
 	case string(site.Bilibili):
@@ -123,7 +142,7 @@ func (a *App) closeAllModalsAndOverlays() {
 }
 
 func (a *App) handleSiteAccountLoss(evSite, kind string) {
-	if evSite == string(site.Bilibili) && a.ImportSubModalOpen {
+	if a.ImportSubModalOpen && (evSite == normalizeSiteIDUI(a.ImportSite) || evSite == "") {
 		a.ImportSubModalOpen = false
 	}
 	if !a.backend.HasAnyLogin() {
@@ -131,10 +150,10 @@ func (a *App) handleSiteAccountLoss(evSite, kind string) {
 		if kind == "expired" {
 			reason = siteExpiredLoginPrompt(evSite)
 		}
-		if evSite == string(site.Douyin) || (evSite == "" && routeExclusiveSite(a.CurrentRoute) == string(site.Douyin)) {
-			a.LoginSite = string(site.Douyin)
-		} else if evSite == string(site.Bilibili) {
-			a.LoginSite = string(site.Bilibili)
+		if id, ok := site.ParseID(evSite); ok {
+			a.LoginSite = string(id)
+		} else if excl := routeExclusiveSite(a.CurrentRoute); excl != "" {
+			a.LoginSite = excl
 		}
 		a.TriggerAuthExpired(reason)
 		return
@@ -180,8 +199,8 @@ func (a *App) TriggerAuthExpired(reason string) {
 	if a.CurrentRoute != RouteLogin {
 		a.SavedRoute = a.CurrentRoute
 	}
-	if routeExclusiveSite(a.SavedRoute) == string(site.Douyin) {
-		a.LoginSite = string(site.Douyin)
+	if excl := routeExclusiveSite(a.SavedRoute); excl != "" {
+		a.LoginSite = excl
 	}
 	a.CurrentRoute = RouteLogin
 	a.LoginError = reason
@@ -197,11 +216,10 @@ func (a *App) CompleteLogin() {
 	a.BannerLoginSite = ""
 	a.clearUnsentLoginInputs()
 	if a.expiredNoticeShown != nil {
-		if a.backend.StatusOf(string(site.Bilibili)).LoggedIn {
-			delete(a.expiredNoticeShown, string(site.Bilibili))
-		}
-		if a.backend.StatusOf(string(site.Douyin)).LoggedIn {
-			delete(a.expiredNoticeShown, string(site.Douyin))
+		for _, id := range site.All() {
+			if a.backend.StatusOf(string(id)).LoggedIn {
+				delete(a.expiredNoticeShown, string(id))
+			}
 		}
 	}
 	a.visibleLiveNextRead = nil
@@ -227,10 +245,42 @@ func (a *App) OpenLoginForSite(siteID string) {
 	a.Navigate(RouteLogin)
 }
 
+// currentReturnRoute encodes the active route plus sub-page context (such as a
+// specific subscription detail view and its tab) so NavigateBack restores it.
+func (a *App) currentReturnRoute() string {
+	if a.CurrentRoute == RouteSubscriptions {
+		if a.SubDetailOpen && a.SelectedSubID != "" {
+			return fmt.Sprintf("%s/%s?tab=%s", RouteSubscriptions, a.SelectedSubID, normalizeSubDetailTab(a.SubDetailTab))
+		}
+		if a.SubAccountsOpen {
+			return RouteSubscriptions + "/accounts"
+		}
+	}
+	return a.CurrentRoute
+}
+
+func (a *App) pushPreviousRoute(from string) {
+	if from == "" || normalizeAppRoute(from) == RouteLogin {
+		return
+	}
+	a.PreviousRoute = from
+	if n := len(a.navBackStack); n == 0 || a.navBackStack[n-1] != from {
+		a.navBackStack = append(a.navBackStack, from)
+		if len(a.navBackStack) > 24 {
+			a.navBackStack = a.navBackStack[len(a.navBackStack)-24:]
+		}
+	}
+}
+
 // Navigate switches the active route and persists it in ui-state.json.
 func (a *App) Navigate(route string) {
-	rawRoute := route
-	route = normalizeAppRoute(route)
+	a.navigate(route, false)
+}
+
+func (a *App) navigate(rawRoute string, fromBack bool) {
+	from := a.currentReturnRoute()
+	prevRoute := a.CurrentRoute
+	route := normalizeAppRoute(rawRoute)
 	a.BannerError = ""
 	a.openSeq++
 	a.Opening = nil
@@ -238,6 +288,7 @@ func (a *App) Navigate(route string) {
 	a.SubAccountMenuKey = ""
 	a.DouyinCardMenuID = ""
 	a.DouyinUserSubMenuOpen = false
+	a.WeiboUserSubMenuOpen = false
 	a.HistoryHeaderMenuOpen = false
 	a.HistoryClearConfirmOpen = false
 	a.HistoryItemMenuID = ""
@@ -257,6 +308,7 @@ func (a *App) Navigate(route string) {
 	}
 	if route == RouteSubscriptions {
 		a.SubDetailOpen = false
+		a.SubAccountsOpen = false
 		a.SubMoreMenuOpen = false
 		a.SubManageMenuOpen = false
 		a.SubManageModalMode = ""
@@ -273,16 +325,16 @@ func (a *App) Navigate(route string) {
 	}
 	if route != RouteLogin && route != RouteSettings && !a.backend.HasAnyLogin() {
 		a.SavedRoute = route
-		if routeExclusiveSite(route) == string(site.Douyin) {
-			a.LoginSite = string(site.Douyin)
+		if excl := routeExclusiveSite(route); excl != "" {
+			a.LoginSite = excl
 		}
 		route = RouteLogin
 	}
 	if route != RouteTasks {
 		a.closeLivePreview()
 	}
-	if a.CurrentRoute != route && a.CurrentRoute != RouteLogin {
-		a.PreviousRoute = a.CurrentRoute
+	if !fromBack && prevRoute != route && prevRoute != RouteLogin {
+		a.pushPreviousRoute(from)
 	}
 	a.CurrentRoute = route
 	if route == RouteHome && a.backend.HasAnyLogin() {
@@ -318,14 +370,24 @@ func (a *App) OpenSubscriptionDetail(sub subscription.Subscription) {
 // NavigateBack returns to PreviousRoute or RouteHome (or RouteLibrary from RouteLibraryItem).
 func (a *App) NavigateBack() {
 	target := a.PreviousRoute
-	if target == "" || target == a.CurrentRoute {
+	if n := len(a.navBackStack); n > 0 && a.navBackStack[n-1] == target {
+		a.navBackStack = a.navBackStack[:n-1]
+		if len(a.navBackStack) > 0 {
+			a.PreviousRoute = a.navBackStack[len(a.navBackStack)-1]
+		} else {
+			a.PreviousRoute = ""
+		}
+	} else {
+		a.PreviousRoute = ""
+	}
+	if target == "" || target == a.currentReturnRoute() {
 		if a.CurrentRoute == RouteLibraryItem {
 			target = RouteLibrary
 		} else {
 			target = RouteHome
 		}
 	}
-	a.Navigate(target)
+	a.navigate(target, true)
 }
 
 func (a *App) syncLiveAccountsFromBackend() {
@@ -604,6 +666,14 @@ type douyinCacheContext struct {
 	ForName string
 }
 
+// weiboCacheContext is the creator page a Weibo post was opened from so caching
+// a retweet or fast-retweet stores it under that creator's forwards/ folder.
+type weiboCacheContext struct {
+	Mid     string
+	ForUID  string
+	ForName string
+}
+
 // cacheForMid is the creator a video page caches bvid for (0: its uploader).
 func (a *App) cacheForMid(bvid string) int64 {
 	if a.videoCacheFor.BVID != "" && strings.EqualFold(a.videoCacheFor.BVID, strings.TrimSpace(bvid)) {
@@ -618,6 +688,61 @@ func (a *App) douyinWorkCacheFor(awemeID string) (string, string) {
 		return a.douyinCacheFor.ForUID, a.douyinCacheFor.ForName
 	}
 	return "", ""
+}
+
+// weiboCacheContextFor returns the active forwarder/profile context matching post.
+func (a *App) weiboCacheContextFor(post *service.WeiboPostView) (string, string) {
+	if post == nil {
+		return "", ""
+	}
+	forUID := strings.TrimSpace(a.weiboCacheFor.ForUID)
+	if forUID == "" {
+		return "", ""
+	}
+	if ctxMid := strings.TrimSpace(a.weiboCacheFor.Mid); ctxMid != "" &&
+		ctxMid != strings.TrimSpace(post.Mid) &&
+		ctxMid != strings.TrimSpace(post.MblogID) {
+		return "", ""
+	}
+	return forUID, strings.TrimSpace(a.weiboCacheFor.ForName)
+}
+
+// weiboCacheViaFor resolves the ItemVia forwarder attribution when caching post
+// from the current detail page (using active weiboCacheFor or URL ForwarderHintUID).
+func (a *App) weiboCacheViaFor(post *service.WeiboPostView) *library.ItemVia {
+	forUID, forName := a.weiboCacheContextFor(post)
+	return weiboCacheViaForContext(post, forUID, forName)
+}
+
+// weiboCacheViaForContext resolves ItemVia for caching a Weibo post either from
+// an explicit creator profile (forUID/forName) or from a direct URL ForwarderHintUID.
+func weiboCacheViaForContext(post *service.WeiboPostView, forUID, forName string) *library.ItemVia {
+	if post == nil {
+		return nil
+	}
+	forUID = strings.TrimSpace(forUID)
+	forName = strings.TrimSpace(forName)
+	authorUID := strings.TrimSpace(post.Author.UID)
+	if forUID != "" && (post.IsRetweet || post.IsFastRetweet || post.Retweeted != nil || authorUID != forUID) {
+		return &library.ItemVia{
+			Reason:    library.ViaForward,
+			Site:      string(site.Weibo),
+			UID:       forUID,
+			Name:      firstNonEmptyStrUI(forName, forUID),
+			DynamicID: strings.TrimSpace(post.Mid),
+		}
+	}
+	hintUID := strings.TrimSpace(post.ForwarderHintUID)
+	if hintUID != "" && (post.IsFastRetweet || (authorUID != "" && authorUID != hintUID)) {
+		return &library.ItemVia{
+			Reason:    library.ViaForward,
+			Site:      string(site.Weibo),
+			UID:       hintUID,
+			Name:      firstNonEmptyStrUI(post.ForwarderHintName, hintUID),
+			DynamicID: strings.TrimSpace(post.Mid),
+		}
+	}
+	return nil
 }
 
 // OpeningPreview is what a clicked card already knows about the link it
@@ -723,6 +848,88 @@ func (a *App) OpenDouyinUser(secUID, name string) {
 	})
 }
 
+// OpenWeiboPost opens a single Weibo post detail page by mid or canonical URL.
+// Direct opening clears any prior creator-page weiboCacheFor context.
+func (a *App) OpenWeiboPost(mid, title, authorName, authorUID, coverURL, canonicalURL string) {
+	a.openWeiboPostForPreview(mid, title, authorName, authorUID, coverURL, canonicalURL, "", "")
+}
+
+// OpenWeiboPostFor opens a single Weibo post from creator forUID's profile page
+// so caching a retweet or fast-retweet on the detail page places it under forUID.
+func (a *App) OpenWeiboPostFor(mid, canonicalURL, title, forUID, forName string) {
+	a.openWeiboPostForPreview(mid, title, forName, forUID, "", canonicalURL, forUID, forName)
+}
+
+func (a *App) openWeiboPostForPreview(mid, title, authorName, authorUID, coverURL, canonicalURL, forUID, forName string) {
+	mid = strings.TrimSpace(mid)
+	forUID = strings.TrimSpace(forUID)
+	forName = strings.TrimSpace(forName)
+	raw := strings.TrimSpace(canonicalURL)
+	if raw == "" {
+		if mid == "" {
+			return
+		}
+		owner := firstNonEmptyStrUI(forUID, authorUID)
+		if owner != "" {
+			raw = fmt.Sprintf("https://weibo.com/%s/%s", strings.TrimSpace(owner), mid)
+		} else {
+			raw = "https://weibo.com/detail/" + mid
+		}
+	}
+	if forUID != "" {
+		a.weiboCacheFor = weiboCacheContext{Mid: mid, ForUID: forUID, ForName: forName}
+	} else {
+		a.weiboCacheFor = weiboCacheContext{}
+	}
+	a.openLinkCore(raw, &OpeningPreview{
+		Site:       string(site.Weibo),
+		Kind:       "dynamic",
+		Title:      title,
+		AuthorName: authorName,
+		AuthorUID:  authorUID,
+		CoverURL:   coverURL,
+	})
+}
+
+// OpenWeiboVideo opens a Weibo video page by oid or canonical URL.
+func (a *App) OpenWeiboVideo(oid, title, authorName, authorUID, coverURL, duration string) {
+	oid = strings.TrimSpace(oid)
+	if oid == "" {
+		return
+	}
+	raw := oid
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		raw = "https://weibo.com/tv/show/" + oid
+	}
+	a.openLink(raw, &OpeningPreview{
+		Site:       string(site.Weibo),
+		Kind:       "video",
+		Title:      title,
+		AuthorName: authorName,
+		AuthorUID:  authorUID,
+		CoverURL:   coverURL,
+		Duration:   duration,
+	})
+}
+
+// OpenWeiboUser opens a Weibo user's profile page by numeric UID or canonical URL.
+func (a *App) OpenWeiboUser(uid, name string) {
+	uid = strings.TrimSpace(uid)
+	if uid == "" {
+		return
+	}
+	raw := uid
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		raw = "https://weibo.com/u/" + uid
+	}
+	a.openLink(raw, &OpeningPreview{
+		Site:       string(site.Weibo),
+		Kind:       "user",
+		AuthorName: name,
+		AuthorUID:  uid,
+	})
+}
+
 // RetryOpening opens the link of a failed preview again.
 func (a *App) RetryOpening() {
 	if a.Opening == nil {
@@ -730,10 +937,15 @@ func (a *App) RetryOpening() {
 	}
 	p := *a.Opening
 	p.Err = ""
-	a.openLink(p.raw, &p)
+	a.openLinkCore(p.raw, &p)
 }
 
 func (a *App) openLink(raw string, preview *OpeningPreview) {
+	a.weiboCacheFor = weiboCacheContext{}
+	a.openLinkCore(raw, preview)
+}
+
+func (a *App) openLinkCore(raw string, preview *OpeningPreview) {
 	a.LastParseError = ""
 	a.BannerError = ""
 	a.BannerLoginSite = ""
@@ -743,13 +955,21 @@ func (a *App) openLink(raw string, preview *OpeningPreview) {
 		p := *preview
 		p.raw, p.seq, p.Err = raw, seq, ""
 		route := RouteVideo
-		if p.Site == string(site.Douyin) {
+		switch p.Site {
+		case string(site.Douyin):
 			route = RouteDouyinWork
 			if p.Kind == "user" || p.Kind == "live" {
 				route = RouteDouyinUser
 			}
-		} else if p.Kind == "user" || p.Kind == "live" {
-			route = RouteUser
+		case string(site.Weibo):
+			route = RouteWeiboPost
+			if p.Kind == "user" {
+				route = RouteWeiboUser
+			}
+		default:
+			if p.Kind == "user" || p.Kind == "live" {
+				route = RouteUser
+			}
 		}
 		if a.CurrentRoute == RouteHome && route != RouteHome {
 			a.flushHomePosition()
@@ -758,13 +978,14 @@ func (a *App) openLink(raw string, preview *OpeningPreview) {
 			a.closeLivePreview()
 		}
 		if a.CurrentRoute != route {
-			a.PreviousRoute = a.CurrentRoute
+			a.pushPreviousRoute(a.currentReturnRoute())
 		}
 		a.CurrentRoute = route
 		a.CurrentLibraryDetail = nil
 		a.Opening = &p
 		a.PostMenuKey = ""
 		a.DouyinCardMenuID = ""
+		a.WeiboUserSubMenuOpen = false
 		a.HistoryHeaderMenuOpen = false
 		a.HistoryClearConfirmOpen = false
 		a.HistoryItemMenuID = ""
@@ -846,6 +1067,10 @@ func (a *App) applyParseResult(res *service.OpenLinkResult) {
 		a.applyDouyinParseResult(res)
 		return
 	}
+	if res.Site == string(site.Weibo) || res.WeiboPost != nil || res.WeiboVideo != nil || res.WeiboUser != nil {
+		a.applyWeiboParseResult(res)
+		return
+	}
 	switch res.Target.Kind {
 	case "video":
 		a.CurrentLibraryDetail = nil
@@ -860,7 +1085,7 @@ func (a *App) applyParseResult(res *service.OpenLinkResult) {
 			}
 		}
 		if a.CurrentRoute != RouteVideo {
-			a.PreviousRoute = a.CurrentRoute
+			a.pushPreviousRoute(a.currentReturnRoute())
 		}
 		a.CurrentRoute = RouteVideo
 	case "user", "live":
@@ -887,7 +1112,7 @@ func (a *App) applyParseResult(res *service.OpenLinkResult) {
 			a.UserVideosError = ""
 		}
 		if a.CurrentRoute != RouteUser {
-			a.PreviousRoute = a.CurrentRoute
+			a.pushPreviousRoute(a.currentReturnRoute())
 		}
 		a.CurrentRoute = RouteUser
 		if res.LiveRoom != nil {
@@ -907,7 +1132,7 @@ func (a *App) applyParseResult(res *service.OpenLinkResult) {
 		a.CurrentDynamic = res.Dynamic
 		a.CurrentVideo = nil
 		if a.CurrentRoute != RouteVideo {
-			a.PreviousRoute = a.CurrentRoute
+			a.pushPreviousRoute(a.currentReturnRoute())
 		}
 		a.CurrentRoute = RouteVideo
 	}
@@ -923,7 +1148,7 @@ func (a *App) applyDouyinParseResult(res *service.OpenLinkResult) {
 		a.CurrentLibraryDetail = nil
 		a.CurrentDouyinWork = res.DouyinWork
 		if a.CurrentRoute != RouteDouyinWork {
-			a.PreviousRoute = a.CurrentRoute
+			a.pushPreviousRoute(a.currentReturnRoute())
 		}
 		a.CurrentRoute = RouteDouyinWork
 	case "user", "live":
@@ -956,15 +1181,16 @@ func (a *App) applyDouyinParseResult(res *service.OpenLinkResult) {
 			a.DouyinWorksNextCursor = res.DouyinUserWorks.NextCursor
 			a.DouyinWorksHasMore = res.DouyinUserWorks.HasMore
 			if res.DouyinUserWorks.UncertainEmpty {
-				a.DouyinWorksAuthExpired = true
+				a.DouyinWorksAuthExpired = false
 				a.DouyinWorksHasMore = false
+				a.DouyinWorksError = firstNonEmptyStrUI(res.DouyinUserWorks.UncertainReason, "首屏无可浏览公开作品（可能为仅好友可见或受限），可稍后重试")
 			}
 		}
 		if uv != nil && uv.LiveRoom != nil {
 			a.mergeLiveAccountStates([]service.LiveAccountState{*uv.LiveRoom})
 		}
 		if a.CurrentRoute != RouteDouyinUser {
-			a.PreviousRoute = a.CurrentRoute
+			a.pushPreviousRoute(a.currentReturnRoute())
 		}
 		a.CurrentRoute = RouteDouyinUser
 	}
@@ -986,9 +1212,14 @@ func (a *App) LoadMoreDouyinWorks() {
 			return
 		}
 		if page.UncertainEmpty {
-			a.DouyinWorksAuthExpired = true
 			a.DouyinWorksHasMore = false
-			a.DouyinWorksError = ""
+			if cursor == "" {
+				a.DouyinWorksAuthExpired = false
+				a.DouyinWorksError = firstNonEmptyStrUI(page.UncertainReason, "首屏无可浏览公开作品（可能为仅好友可见或受限），可稍后重试")
+			} else {
+				a.DouyinWorksAuthExpired = true
+				a.DouyinWorksError = ""
+			}
 			return
 		}
 		seen := make(map[string]bool, len(a.CurrentDouyinWorks))
@@ -1020,6 +1251,103 @@ func (a *App) LoadMoreDouyinWorks() {
 			return
 		}
 		a.DouyinWorksError = userErrorText(err)
+	})
+}
+
+func (a *App) applyWeiboParseResult(res *service.OpenLinkResult) {
+	kind := res.Target.Kind
+	if res.SiteTarget != nil && res.SiteTarget.Kind != "" {
+		kind = res.SiteTarget.Kind
+	}
+	if kind == "user" || (res.WeiboUser != nil && res.WeiboPost == nil && res.WeiboVideo == nil) {
+		a.CurrentWeiboUser = res.WeiboUser
+		a.WeiboUserListState = &ui.ListState{}
+		a.WeiboUserSubMenuOpen = false
+		a.CurrentWeiboPosts = nil
+		a.WeiboPostsNextCursor = ""
+		a.WeiboPostsHasMore = false
+		a.WeiboPostsError = res.WeiboUserPostsError
+		a.WeiboPostsAuthExpired = false
+		a.WeiboPostsUncertainEmpty = false
+		a.WeiboBottomTipsVisible = false
+		a.WeiboBottomTipsText = ""
+		if res.WeiboUserPosts != nil {
+			a.CurrentWeiboPosts = res.WeiboUserPosts.Posts
+			a.WeiboPostsNextCursor = res.WeiboUserPosts.NextCursor
+			a.WeiboPostsHasMore = res.WeiboUserPosts.HasMore
+			a.WeiboBottomTipsVisible = res.WeiboUserPosts.BottomTipsVisible
+			a.WeiboBottomTipsText = res.WeiboUserPosts.BottomTipsText
+			if res.WeiboUserPosts.UncertainEmpty {
+				a.WeiboPostsUncertainEmpty = true
+				a.WeiboPostsHasMore = false
+				a.WeiboPostsError = firstNonEmptyStrUI(res.WeiboUserPosts.UncertainReason, "微博返回了异常空列表，可能是风控或受限，可稍后重试")
+			}
+		}
+		if a.CurrentRoute != RouteWeiboUser {
+			a.pushPreviousRoute(a.currentReturnRoute())
+		}
+		a.CurrentRoute = RouteWeiboUser
+		return
+	}
+	a.CurrentLibraryDetail = nil
+	a.CurrentWeiboPost = res.WeiboPost
+	a.CurrentWeiboVideo = res.WeiboVideo
+	if a.CurrentRoute != RouteWeiboPost {
+		a.pushPreviousRoute(a.currentReturnRoute())
+	}
+	a.CurrentRoute = RouteWeiboPost
+}
+
+// LoadMoreWeiboPosts fetches the next page of a Weibo creator's timeline while
+// preserving already loaded posts on risk-control, empty-shell, or auth errors.
+func (a *App) LoadMoreWeiboPosts() {
+	if a.CurrentWeiboUser == nil || a.CurrentWeiboUser.UID == "" {
+		return
+	}
+	uid, cursor := a.CurrentWeiboUser.UID, a.WeiboPostsNextCursor
+	requestGuarded(a, "weibo-posts-"+uid, func() bool {
+		return a.CurrentWeiboUser != nil && a.CurrentWeiboUser.UID == uid
+	}, func(ctx context.Context) (*service.WeiboUserPostsPage, error) {
+		return a.backend.WeiboUserPosts(ctx, uid, cursor)
+	}, func(page *service.WeiboUserPostsPage) {
+		if a.CurrentWeiboUser == nil || a.CurrentWeiboUser.UID != uid || page == nil {
+			return
+		}
+		if page.UncertainEmpty {
+			a.WeiboPostsUncertainEmpty = true
+			a.WeiboPostsHasMore = false
+			a.WeiboPostsError = firstNonEmptyStrUI(page.UncertainReason, "微博返回了异常空列表，可能是风控或受限，可稍后重试")
+			return
+		}
+		seen := make(map[string]bool, len(a.CurrentWeiboPosts))
+		for _, p := range a.CurrentWeiboPosts {
+			seen[p.Mid] = true
+		}
+		for _, p := range page.Posts {
+			if p.Mid != "" && !seen[p.Mid] {
+				a.CurrentWeiboPosts = append(a.CurrentWeiboPosts, p)
+				seen[p.Mid] = true
+			}
+		}
+		a.WeiboPostsAuthExpired = false
+		a.WeiboPostsUncertainEmpty = false
+		a.WeiboPostsError = ""
+		a.WeiboPostsNextCursor = page.NextCursor
+		a.WeiboPostsHasMore = page.HasMore
+		if page.BottomTipsVisible {
+			a.WeiboBottomTipsVisible = true
+			if page.BottomTipsText != "" {
+				a.WeiboBottomTipsText = page.BottomTipsText
+			}
+		}
+	}, func(err error) {
+		if site.IsKind(err, site.ErrKindAuthRequired) {
+			a.WeiboPostsAuthExpired = true
+			a.WeiboPostsHasMore = false
+			a.WeiboPostsError = ""
+			return
+		}
+		a.WeiboPostsError = userErrorText(err)
 	})
 }
 

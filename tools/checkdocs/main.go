@@ -18,8 +18,9 @@ var (
 	refHeadingRe       = regexp.MustCompile(`(?m)^###\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\s*$`)
 	winAbsPathRe       = regexp.MustCompile(`(?i)\b[a-zA-Z]:\\[A-Za-z0-9_.-]+`)
 	unixHomeRe         = regexp.MustCompile(`(?:/Users/[A-Za-z0-9_.-]+|/home/[a-zA-Z0-9._-]+/)`)
-	cookieLeakRe       = regexp.MustCompile(`(?i)(?:\b(?:SESSDATA|bili_jct|DedeUserID__ckMd5|ac_time_value|sessionid|sessionid_ss|sid_guard|msToken|UIFID|UIFID_TEMP|ttwid|odin_tt|sid_tt|uid_tt|uid_tt_ss|__ac_signature)=[A-Za-z0-9%_][A-Za-z0-9%|._-]{5,}|\btrace-remote:(?:[0-9]+:)?[A-Za-z0-9_=-]{8,})`)
-	signedURLLeakRe    = regexp.MustCompile(`(?i)https?://[^\s"'<>` + "`" + `]*(?:a_bogus=[A-Za-z0-9%+/=._-]{4,}|x-(?:secsdk-web-)?signature(?:=[A-Za-z0-9%+/=._-]{4,}|/[A-Za-z0-9%+/=._-]{4,}))`)
+	cookieLeakRe       = regexp.MustCompile(`(?i)(?:\b(?:SESSDATA|bili_jct|DedeUserID__ckMd5|ac_time_value|sessionid|sessionid_ss|sid_guard|msToken|UIFID|UIFID_TEMP|ttwid|odin_tt|sid_tt|uid_tt|uid_tt_ss|__ac_signature)=[A-Za-z0-9%_][A-Za-z0-9%|._-]{5,}|\btrace-remote:(?:[0-9]+:)?[A-Za-z0-9_=-]{8,}|(?-i:\b(?:SUB|SUBP|XSRF-TOKEN|WBPSESS|SCF|ALF|SSOLoginState|SUHB|PC_TOKEN|_T_WM)=[A-Za-z0-9%_-][A-Za-z0-9%|._+/=-]{7,}))`)
+	signedURLLeakRe    = regexp.MustCompile(`(?i)https?://[^\s"'<>` + "`" + `]*(?:x-(?:secsdk-web-)?signature/[A-Za-z0-9%+/=._-]{4,}|\?(?:[^\s"'<>` + "`" + `]*(?:&|\\u0026|&amp;|%3f|%26))?(?:a_bogus=[A-Za-z0-9%+/=._-]{4,}|x-(?:secsdk-web-)?signature=[A-Za-z0-9%+/=._-]{4,}|ssig(?:=|%3d)[A-Za-z0-9%+/=._-]{4,}|expires(?:=|%3d)[0-9]{9,}[^\s"'<>` + "`" + `]*(?:&|\\u0026|&amp;|%26)kid(?:=|%3d)[A-Za-z0-9%,._-]{3,}|kid(?:=|%3d)[A-Za-z0-9%,._-]{3,}[^\s"'<>` + "`" + `]*(?:&|\\u0026|&amp;|%26)expires(?:=|%3d)[0-9]{9,}))`)
+	signedQueryLeakRe  = regexp.MustCompile(`(?i)(?:^|[\s"'` + "`" + `?&]|\\u0026|&amp;|%3f|%26)(?:ssig(?:=|%3d)[A-Za-z0-9%+/=._-]{4,}|expires(?:=|%3d)[0-9]{9,}[^\s"'<>` + "`" + `]*(?:&|\\u0026|&amp;|%26)kid(?:=|%3d)[A-Za-z0-9%,._-]{3,}|kid(?:=|%3d)[A-Za-z0-9%,._-]{3,}[^\s"'<>` + "`" + `]*(?:&|\\u0026|&amp;|%26)expires(?:=|%3d)[0-9]{9,})`)
 	signedURLPathSigRe = regexp.MustCompile(`(?i)(x-(?:secsdk-web-)?signature/)[^/\s?"'<>` + "`" + `]+`)
 )
 
@@ -108,6 +109,8 @@ func Run(rootDir string, refDirOverride string) ([]string, string, error) {
 		}
 		if m := signedURLLeakRe.FindString(text); m != "" {
 			findings = append(findings, fmt.Sprintf("%s: contains signed URL %q", relPath, redactSignedURL(m)))
+		} else if m := signedQueryLeakRe.FindString(text); m != "" {
+			findings = append(findings, fmt.Sprintf("%s: contains signed URL %q", relPath, redactSignedQuery(m)))
 		}
 
 		// 3. Check reference project names (if reference index was found)
@@ -193,9 +196,42 @@ func redactSecretMatch(m string) string {
 
 func redactSignedURL(m string) string {
 	if base, _, ok := strings.Cut(m, "?"); ok {
-		m = base + "?<redacted>"
+		return signedURLPathSigRe.ReplaceAllString(base, "${1}<redacted>") + "?<redacted>"
 	}
-	return signedURLPathSigRe.ReplaceAllString(m, "${1}<redacted>")
+	if red := signedURLPathSigRe.ReplaceAllString(m, "${1}<redacted>"); red != m {
+		return red
+	}
+	return "<redacted>"
+}
+
+func redactSignedQuery(m string) string {
+	trimmed := strings.TrimLeft(m, " \t\r\n\"'`?&")
+	for {
+		lower := strings.ToLower(trimmed)
+		switch {
+		case strings.HasPrefix(lower, `\u0026`):
+			trimmed = trimmed[len(`\u0026`):]
+		case strings.HasPrefix(lower, "&amp;"):
+			trimmed = trimmed[len("&amp;"):]
+		case strings.HasPrefix(lower, "%3f"):
+			trimmed = trimmed[len("%3f"):]
+		case strings.HasPrefix(lower, "%26"):
+			trimmed = trimmed[len("%26"):]
+		default:
+			goto done
+		}
+	}
+done:
+	if k, _, ok := strings.Cut(trimmed, "="); ok && k != "" {
+		if idx := strings.Index(strings.ToLower(k), "%3d"); idx > 0 {
+			return k[:idx] + "=<redacted>"
+		}
+		return k + "=<redacted>"
+	}
+	if idx := strings.Index(strings.ToLower(trimmed), "%3d"); idx > 0 {
+		return trimmed[:idx] + "=<redacted>"
+	}
+	return "<redacted>"
 }
 
 func parseFenceOpen(trimmed string) (byte, int) {

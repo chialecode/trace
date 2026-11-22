@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -366,5 +367,107 @@ func TestHistoryMultiSiteIsolationAndEmptySiteDefault(t *testing.T) {
 	}
 	if len(store.List()) != 0 {
 		t.Fatalf("credential marker ID should be rejected: %+v", store.List())
+	}
+}
+
+func TestHistoryWeiboCanonicalURLsSensitiveMarkersAndUnknownSiteIsolation(t *testing.T) {
+	historyPath := filepath.Join(t.TempDir(), "history.json")
+	store, _, err := OpenHistory(historyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Weibo entries with empty CanonicalURL use explicit Weibo URLs and never fall back to Bilibili.
+	cases := []struct {
+		entry   HistoryEntry
+		wantURL string
+	}{
+		{
+			entry:   HistoryEntry{Site: "weibo", Kind: "dynamic", ID: "5000000000000001", Title: "合成微博正文"},
+			wantURL: "https://weibo.com/detail/5000000000000001",
+		},
+		{
+			entry:   HistoryEntry{Site: "weibo", Kind: "video", ID: "1034_5000000000000001", Title: "合成独立视频"},
+			wantURL: "https://weibo.com/tv/show/1034:5000000000000001",
+		},
+		{
+			entry:   HistoryEntry{Site: "weibo", Kind: "user", ID: "1000000001", Title: "合成博主"},
+			wantURL: "https://weibo.com/u/1000000001",
+		},
+		{
+			entry:   HistoryEntry{Site: "weibo", Kind: "dynamic", ID: "5000000000000002", Title: "带签名链接", CanonicalURL: "https://weibo.com/1000000001/O00000002?Expires=1999999999&ssig=SYNTHSIG01&KID=unistore,video"},
+			wantURL: "https://weibo.com/1000000001/O00000002",
+		},
+		{
+			entry:   HistoryEntry{Site: "unknownsite", Kind: "dynamic", ID: "999001", Title: "未知站点"},
+			wantURL: "",
+		},
+	}
+	for _, tc := range cases {
+		if err := store.Record(tc.entry); err != nil {
+			t.Fatalf("Record(%+v): %v", tc.entry, err)
+		}
+	}
+	byKey := make(map[string]HistoryEntry)
+	for _, it := range store.List() {
+		byKey[historyKey(it)] = it
+	}
+	for _, tc := range cases {
+		got, ok := byKey[historyKey(tc.entry)]
+		if !ok {
+			t.Fatalf("missing recorded entry %+v", tc.entry)
+		}
+		if got.CanonicalURL != tc.wantURL {
+			t.Fatalf("entry (%s,%s,%s) CanonicalURL = %q, want %q", tc.entry.Site, tc.entry.Kind, tc.entry.ID, got.CanonicalURL, tc.wantURL)
+		}
+		if tc.entry.Site != "bilibili" && strings.Contains(got.CanonicalURL, "bilibili.com") {
+			t.Fatalf("non-bilibili entry fell back to bilibili URL: %+v", got)
+		}
+	}
+
+	// 2. Weibo cookie & signed URL markers are rejected in IDs and redacted in titles/subtitles.
+	sensitiveSamples := []string{
+		"SUB=SYNTHETIC_SUB_TOKEN",
+		"SUBP=SYNTHETIC_SUBP_TOKEN",
+		"XSRF-TOKEN=SYNTHETIC_XSRF",
+		"WBPSESS=SYNTHETIC_WBPSESS",
+		"SCF=SYNTHETIC_SCF",
+		"ALF=1999999999",
+		"SSOLoginState=1999999999",
+		"ssig=SYNTHETIC_SSIG",
+		"KID=unistore,video",
+		"livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2F001.mov%3FExpires%3D1999999999%26ssig%3DENCODED_SSIG_TOK%26KID%3Dunistore%2Cvideo",
+		"SUB%3DENCODED_SUB_TOK",
+	}
+	for i, sample := range sensitiveSamples {
+		if err := store.Record(HistoryEntry{Site: "weibo", Kind: "dynamic", ID: sample, Title: "ignored"}); err != nil {
+			t.Fatal(err)
+		}
+		id := "50000000000009" + strconv.Itoa(10+i)
+		if err := store.Record(HistoryEntry{
+			Site:         "weibo",
+			Kind:         "dynamic",
+			ID:           id,
+			Title:        "leaked " + sample,
+			Subtitle:     "sub " + sample,
+			CanonicalURL: "https://weibo.com/" + sample + "/detail",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rawBytes, err := os.ReadFile(historyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := string(rawBytes)
+	for _, forbidden := range []string{
+		"SYNTHETIC_SUB_TOKEN", "SYNTHETIC_SUBP_TOKEN", "SYNTHETIC_XSRF",
+		"SYNTHETIC_WBPSESS", "SYNTHETIC_SCF", "SYNTHETIC_SSIG", "SYNTHSIG01",
+		"ENCODED_SSIG_TOK", "ENCODED_SUB_TOK", "unistore",
+	} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("history.json leaked sensitive Weibo token %q:\n%s", forbidden, raw)
+		}
 	}
 }

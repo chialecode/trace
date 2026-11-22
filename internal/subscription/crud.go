@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 )
 
@@ -77,23 +79,25 @@ func (m *Manager) Create(name, note string, accounts []AccountRef, rules SubRule
 }
 
 // OwnerOf returns the Subscription that currently owns <site>:<uid>, if any.
-func (m *Manager) OwnerOf(site, uid string) (Subscription, bool) {
+func (m *Manager) OwnerOf(siteName, uid string) (Subscription, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.ownerOfLocked(normalizeSchedulerSite(site), uid)
+	return m.ownerOfLocked(siteName, uid)
 }
 
-func (m *Manager) ownerOfLocked(site, uid string) (Subscription, bool) {
-	site = normalizeSchedulerSite(site)
-	if site == "bilibili" {
-		if id, err := strconv.ParseInt(uid, 10, 64); err == nil && id > 0 {
-			uid = strconv.FormatInt(id, 10)
-		}
+func (m *Manager) ownerOfLocked(siteName, uid string) (Subscription, bool) {
+	siteID, ok := site.ParseID(siteName)
+	if !ok {
+		return Subscription{}, false
+	}
+	normSite := string(siteID)
+	if normUID, err := site.NormalizeUID(siteID, uid); err == nil {
+		uid = normUID
 	}
 	if err := m.ensureSubsCacheLocked(); err != nil {
 		return Subscription{}, false
 	}
-	if idx, ok := m.ownerIndex[site+":"+uid]; ok && idx >= 0 && idx < len(m.subsCache) {
+	if idx, ok := m.ownerIndex[normSite+":"+uid]; ok && idx >= 0 && idx < len(m.subsCache) {
 		return cloneSubscription(m.subsCache[idx]), true
 	}
 	return Subscription{}, false
@@ -127,12 +131,14 @@ func (m *Manager) rekeyLegacySubIDLocked(sub *Subscription, removedSite, removed
 }
 
 // Unlink removes <site>:<uid> from subscription subID while preserving its account_state and update_item rows in updates.db (subscriptions.md §2).
-func (m *Manager) Unlink(subID, site, uid string) (result Subscription, resultErr error) {
-	site = normalizeSchedulerSite(site)
-	if site == "bilibili" {
-		if id, err := strconv.ParseInt(uid, 10, 64); err == nil && id > 0 {
-			uid = strconv.FormatInt(id, 10)
-		}
+func (m *Manager) Unlink(subID, siteName, uid string) (result Subscription, resultErr error) {
+	siteID, ok := site.ParseID(siteName)
+	if !ok {
+		return Subscription{}, fmt.Errorf("subscription: 不支持的站点 %q", siteName)
+	}
+	normSite := string(siteID)
+	if normUID, err := site.NormalizeUID(siteID, uid); err == nil {
+		uid = normUID
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -152,7 +158,7 @@ func (m *Manager) Unlink(subID, site, uid string) (result Subscription, resultEr
 	}
 	var kept []AccountRef
 	for _, a := range target.Accounts {
-		if a.Site == site && a.UID == uid {
+		if a.Site == normSite && a.UID == uid {
 			continue
 		}
 		kept = append(kept, a)
@@ -165,11 +171,11 @@ func (m *Manager) Unlink(subID, site, uid string) (result Subscription, resultEr
 	} else {
 		target.Mid = 0
 	}
-	if err := m.rekeyLegacySubIDLocked(&target, site, uid); err != nil {
+	if err := m.rekeyLegacySubIDLocked(&target, normSite, uid); err != nil {
 		return Subscription{}, err
 	}
 	nowStr := m.nowFunc().UTC().Format(time.RFC3339)
-	if _, err := m.updatesDB.Exec(`UPDATE account_state SET unlinked_at = ? WHERE site = ? AND uid = ?`, nowStr, site, uid); err != nil {
+	if _, err := m.updatesDB.Exec(`UPDATE account_state SET unlinked_at = ? WHERE site = ? AND uid = ?`, nowStr, normSite, uid); err != nil {
 		return Subscription{}, err
 	}
 	syncSubFields(&target, m.nowFunc())
@@ -183,20 +189,22 @@ func (m *Manager) Unlink(subID, site, uid string) (result Subscription, resultEr
 }
 
 // Move atomically moves <site>:<uid> from its current owner subscription to toSubID under a single lock and single file write.
-func (m *Manager) Move(site, uid, toSubID string) (result Subscription, resultErr error) {
-	normAcc, err := NormalizeAndValidateAccount(AccountRef{Site: site, UID: uid})
+func (m *Manager) Move(siteName, uid, toSubID string) (result Subscription, resultErr error) {
+	normAcc, err := NormalizeAndValidateAccount(AccountRef{Site: siteName, UID: uid})
 	if err != nil {
 		return Subscription{}, err
 	}
-	site, uid = normAcc.Site, normAcc.UID
+	normSite, normUID := normAcc.Site, normAcc.UID
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	before, snapshotErr := m.listSubsOnlyLocked()
 	if snapshotErr != nil {
 		return Subscription{}, snapshotErr
 	}
+	beforeRules := slices.Clone(m.rules)
 	defer func() {
 		if resultErr != nil {
+			m.rules = beforeRules
 			resultErr = errors.Join(resultErr, m.restoreSubscriptionViewLocked(before))
 		}
 	}()
@@ -206,7 +214,7 @@ func (m *Manager) Move(site, uid, toSubID string) (result Subscription, resultEr
 		return Subscription{}, fmt.Errorf("subscription: destination %s not found", toSubID)
 	}
 	for _, account := range dest.Accounts {
-		if account.Site == site && account.UID == uid {
+		if normalizeLegacyAccountSite(account.Site) == normSite && account.UID == normUID {
 			return dest, nil
 		}
 	}
@@ -214,34 +222,40 @@ func (m *Manager) Move(site, uid, toSubID string) (result Subscription, resultEr
 		return Subscription{}, fmt.Errorf("subscription: destination subscription already has 20 accounts")
 	}
 
+	now := m.nowFunc()
+	nowStr := now.UTC().Format(time.RFC3339)
+
 	var movedAcc AccountRef
 	foundAcc := false
-	owner, owned := m.ownerOfLocked(site, uid)
+	owner, owned := m.ownerOfLocked(normSite, normUID)
 	if !owned {
 		return Subscription{}, fmt.Errorf("subscription: 待迁移账号尚未关联订阅")
 	}
 	if owner.ID != dest.ID && owner.SubID != dest.SubID {
 		var kept []AccountRef
 		for _, a := range owner.Accounts {
-			if a.Site == site && a.UID == uid {
+			if normalizeLegacyAccountSite(a.Site) == normSite && a.UID == normUID {
 				movedAcc = a
+				movedAcc.Site = normSite
+				movedAcc.UID = normUID
 				foundAcc = true
 				continue
 			}
 			kept = append(kept, a)
 		}
 		owner.Accounts = kept
-		if len(kept) > 0 && kept[0].Site == "bilibili" {
+		if len(kept) > 0 && normalizeLegacyAccountSite(kept[0].Site) == string(site.Bilibili) {
 			if parsedMid, pErr := strconv.ParseInt(kept[0].UID, 10, 64); pErr == nil {
 				owner.Mid = parsedMid
 			}
 		} else {
 			owner.Mid = 0
 		}
-		if err := m.rekeyLegacySubIDLocked(&owner, site, uid); err != nil {
+		if err := m.rekeyLegacySubIDLocked(&owner, normSite, normUID); err != nil {
 			return Subscription{}, err
 		}
-		syncSubFields(&owner, m.nowFunc())
+		owner.UpdatedAt = nowStr
+		syncSubFields(&owner, now)
 		if err := m.upsertRowLocked(owner); err != nil {
 			return Subscription{}, err
 		}
@@ -249,14 +263,14 @@ func (m *Manager) Move(site, uid, toSubID string) (result Subscription, resultEr
 
 	if !foundAcc {
 		movedAcc = AccountRef{
-			Site:    site,
-			UID:     uid,
-			AddedAt: m.nowFunc().UTC().Format(time.RFC3339),
+			Site:    normSite,
+			UID:     normUID,
+			AddedAt: nowStr,
 		}
 	}
 	alreadyInDest := false
 	for _, a := range dest.Accounts {
-		if a.Site == site && a.UID == uid {
+		if normalizeLegacyAccountSite(a.Site) == normSite && a.UID == normUID {
 			alreadyInDest = true
 			break
 		}
@@ -264,7 +278,8 @@ func (m *Manager) Move(site, uid, toSubID string) (result Subscription, resultEr
 	if !alreadyInDest {
 		dest.Accounts = append(dest.Accounts, movedAcc)
 	}
-	syncSubFields(&dest, m.nowFunc())
+	dest.UpdatedAt = nowStr
+	syncSubFields(&dest, now)
 	if err := m.upsertRowLocked(dest); err != nil {
 		return Subscription{}, err
 	}
@@ -272,6 +287,113 @@ func (m *Manager) Move(site, uid, toSubID string) (result Subscription, resultEr
 		return Subscription{}, err
 	}
 	return dest, nil
+}
+
+// MoveToNew atomically moves <site>:<uid> from its current owner subscription into a
+// newly created subscription under a single lock and a single subscriptions.json write.
+// Account metadata (UniqueID, WebRID, Name, Face, AddedAt) and updates.db state/items
+// remain intact with zero network requests and without setting unlinked_at.
+func (m *Manager) MoveToNew(siteName, uid, name, note string, rules SubRules) (result Subscription, resultErr error) {
+	if err := validateSubscriptionInput(name, note, nil); err != nil {
+		return Subscription{}, err
+	}
+	if strings.TrimSpace(name) == "" {
+		return Subscription{}, fmt.Errorf("subscription: name is required")
+	}
+	normAcc, err := NormalizeAndValidateAccount(AccountRef{Site: siteName, UID: uid})
+	if err != nil {
+		return Subscription{}, err
+	}
+	normSite, normUID := normAcc.Site, normAcc.UID
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	before, snapshotErr := m.listSubsOnlyLocked()
+	if snapshotErr != nil {
+		return Subscription{}, snapshotErr
+	}
+	beforeRules := slices.Clone(m.rules)
+	defer func() {
+		if resultErr != nil {
+			m.rules = beforeRules
+			resultErr = errors.Join(resultErr, m.restoreSubscriptionViewLocked(before))
+		}
+	}()
+
+	owner, owned := m.ownerOfLocked(normSite, normUID)
+	if !owned {
+		return Subscription{}, fmt.Errorf("subscription: 待迁移账号尚未关联订阅")
+	}
+
+	now := m.nowFunc()
+	nowStr := now.UTC().Format(time.RFC3339)
+
+	var movedAcc AccountRef
+	foundAcc := false
+	var kept []AccountRef
+	for _, a := range owner.Accounts {
+		if normalizeLegacyAccountSite(a.Site) == normSite && a.UID == normUID {
+			movedAcc = a
+			movedAcc.Site = normSite
+			movedAcc.UID = normUID
+			foundAcc = true
+			continue
+		}
+		kept = append(kept, a)
+	}
+	if !foundAcc {
+		movedAcc = AccountRef{
+			Site:    normSite,
+			UID:     normUID,
+			AddedAt: nowStr,
+		}
+	}
+
+	owner.Accounts = kept
+	if len(kept) > 0 && normalizeLegacyAccountSite(kept[0].Site) == string(site.Bilibili) {
+		if parsedMid, pErr := strconv.ParseInt(kept[0].UID, 10, 64); pErr == nil {
+			owner.Mid = parsedMid
+		}
+	} else {
+		owner.Mid = 0
+	}
+	if err := m.rekeyLegacySubIDLocked(&owner, normSite, normUID); err != nil {
+		return Subscription{}, err
+	}
+	owner.UpdatedAt = nowStr
+	syncSubFields(&owner, now)
+	if err := m.upsertRowLocked(owner); err != nil {
+		return Subscription{}, err
+	}
+
+	var rnd [16]byte
+	_, _ = rand.Read(rnd[:])
+	id := hex.EncodeToString(rnd[:])
+	sub := Subscription{
+		ID:             id,
+		SubID:          id,
+		Name:           strings.TrimSpace(name),
+		Note:           strings.TrimSpace(note),
+		Avatar:         AvatarRef{Site: movedAcc.Site, UID: movedAcc.UID},
+		CreatedAt:      nowStr,
+		UpdatedAt:      nowStr,
+		Accounts:       []AccountRef{movedAcc},
+		Rules:          rules,
+		Enabled:        rules.ScheduledCheck,
+		LiveAutoRecord: rules.AutoRecord,
+	}
+	if sub.Rules.AutoCache.Enabled && sub.Rules.AutoCache.Since == "" {
+		sub.Rules.AutoCache.Since = nowStr
+	}
+	syncSubFields(&sub, now)
+	m.bindRuleLocked(&sub)
+	if err := m.upsertRowLocked(sub); err != nil {
+		return Subscription{}, err
+	}
+	if err := m.writeSubscriptionsToDiskLocked(); err != nil {
+		return Subscription{}, err
+	}
+	return sub, nil
 }
 
 // SetRules updates the automation rules for subID, setting or clearing Rules.AutoCache.Since per subscriptions.md §4.
@@ -304,6 +426,18 @@ func (m *Manager) SetRules(subID string, rules SubRules) (result Subscription, r
 
 // Upsert creates or updates a creator subscription idempotently.
 func (m *Manager) Upsert(in Subscription) (result Subscription, resultErr error) {
+	// Legacy v1 callers of Upsert may omit AccountRef.Site for Bilibili accounts;
+	// non-empty unknown site identifiers are still rejected by NormalizeAndValidateAccount.
+	if len(in.Accounts) > 0 {
+		accs := make([]AccountRef, len(in.Accounts))
+		copy(accs, in.Accounts)
+		for i := range accs {
+			if strings.TrimSpace(accs[i].Site) == "" {
+				accs[i].Site = string(site.Bilibili)
+			}
+		}
+		in.Accounts = accs
+	}
 	if err := validateSubscriptionInput(in.Name, in.Note, in.Accounts); err != nil {
 		return Subscription{}, err
 	}
@@ -376,7 +510,7 @@ func (m *Manager) Upsert(in Subscription) (result Subscription, resultErr error)
 	}
 	syncSubFields(&in, now)
 	for _, account := range in.Accounts {
-		if owner, exists := m.ownerOfLocked(firstNonEmptyStr(account.Site, "bilibili"), account.UID); exists && owner.ID != in.ID {
+		if owner, exists := m.ownerOfLocked(account.Site, account.UID); exists && owner.ID != in.ID {
 			return owner, ErrAccountConflict
 		}
 	}
@@ -440,6 +574,92 @@ func upsertSubscriptionRow(executor subscriptionExecutor, in Subscription) error
 		string(rawBytes), in.CreatedAt, in.UpdatedAt,
 	)
 	return err
+}
+
+// ImportAccountRefsResult summarizes a multi-site following import batch.
+type ImportAccountRefsResult struct {
+	Created int `json:"created"`
+	Skipped int `json:"skipped"`
+}
+
+// ImportAccountRefs creates one subscription per unowned account in accounts
+// using the supplied name/face snapshots with zero extra network requests.
+// Already-subscribed accounts (matched by canonical <site>:<uid>) and
+// duplicates within the same batch are skipped without touching existing
+// subscriptions or watermarks. All new subscriptions are persisted atomically
+// in a single subscriptions.json write.
+func (m *Manager) ImportAccountRefs(accounts []AccountRef, rules SubRules) (result ImportAccountRefsResult, resultErr error) {
+	if len(accounts) == 0 {
+		return ImportAccountRefsResult{}, nil
+	}
+	normalized := make([]AccountRef, 0, len(accounts))
+	for _, acc := range accounts {
+		norm, err := NormalizeAndValidateAccount(acc)
+		if err != nil {
+			return ImportAccountRefsResult{}, err
+		}
+		normalized = append(normalized, norm)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	before, snapshotErr := m.listSubsOnlyLocked()
+	if snapshotErr != nil {
+		return ImportAccountRefsResult{}, snapshotErr
+	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, m.restoreSubscriptionViewLocked(before))
+		}
+	}()
+
+	now := m.nowFunc()
+	nowStr := now.UTC().Format(time.RFC3339)
+	seen := make(map[string]bool, len(normalized))
+	for _, norm := range normalized {
+		key := norm.Site + ":" + norm.UID
+		if seen[key] {
+			result.Skipped++
+			continue
+		}
+		seen[key] = true
+		if _, owned := m.ownerOfLocked(norm.Site, norm.UID); owned {
+			result.Skipped++
+			continue
+		}
+		if norm.AddedAt == "" {
+			norm.AddedAt = nowStr
+		}
+		var rnd [16]byte
+		_, _ = rand.Read(rnd[:])
+		id := hex.EncodeToString(rnd[:])
+		subRules := rules
+		if subRules.AutoCache.Enabled && subRules.AutoCache.Since == "" {
+			subRules.AutoCache.Since = nowStr
+		}
+		sub := Subscription{
+			ID:             id,
+			SubID:          id,
+			Name:           strings.TrimSpace(norm.Name),
+			CreatedAt:      nowStr,
+			UpdatedAt:      nowStr,
+			Accounts:       []AccountRef{norm},
+			Rules:          subRules,
+			Enabled:        subRules.ScheduledCheck,
+			LiveAutoRecord: subRules.AutoRecord,
+		}
+		syncSubFields(&sub, now)
+		if err := m.upsertRowLocked(sub); err != nil {
+			return ImportAccountRefsResult{}, err
+		}
+		result.Created++
+	}
+	if result.Created > 0 {
+		if err := m.writeSubscriptionsToDiskLocked(); err != nil {
+			return ImportAccountRefsResult{}, err
+		}
+	}
+	return result, nil
 }
 
 // ImportCreators idempotently imports a batch of creators without overwriting existing watermarks.

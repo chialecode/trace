@@ -767,13 +767,13 @@ func TestSubscriptionDetailAccountsTabLiveRecordingAndMoreMenu(t *testing.T) {
 	}
 
 	// Verify row "⋯" menu items: no-room omits "在浏览器中观看", offline/live with room includes it.
-	if got := strings.Join(menuItems(t, tt, "订阅账号更多：bilibili:6001"), ","); got != "打开主页,用作头像,刷新直播状态,-,解除关联" {
+	if got := strings.Join(menuItems(t, tt, "订阅账号更多：bilibili:6001"), ","); got != "打开主页,用作头像,刷新直播状态,更改关联订阅,-,解除关联" {
 		t.Fatalf("no-room account menu = %q", got)
 	}
-	if got := strings.Join(menuItems(t, tt, "订阅账号更多：bilibili:6002"), ","); got != "打开主页,在浏览器中观看,用作头像,刷新直播状态,-,解除关联" {
+	if got := strings.Join(menuItems(t, tt, "订阅账号更多：bilibili:6002"), ","); got != "打开主页,在浏览器中观看,用作头像,刷新直播状态,更改关联订阅,-,解除关联" {
 		t.Fatalf("offline-with-room account menu = %q", got)
 	}
-	if got := strings.Join(menuItems(t, tt, "订阅账号更多：douyin:MS4wLjABAAAA_dy_live"), ","); got != "打开主页,在浏览器中观看,用作头像,刷新直播状态,-,解除关联" {
+	if got := strings.Join(menuItems(t, tt, "订阅账号更多：douyin:MS4wLjABAAAA_dy_live"), ","); got != "打开主页,在浏览器中观看,用作头像,刷新直播状态,更改关联订阅,-,解除关联" {
 		t.Fatalf("douyin live account menu = %q", got)
 	}
 
@@ -921,11 +921,11 @@ func TestLegacyLiveTabNormalizesToAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uistate.CurrentSchemaVersion != 2 {
-		t.Fatalf("uistate.CurrentSchemaVersion = %d, want 2", uistate.CurrentSchemaVersion)
+	if uistate.CurrentSchemaVersion != 3 {
+		t.Fatalf("uistate.CurrentSchemaVersion = %d, want 3", uistate.CurrentSchemaVersion)
 	}
 	if updated.Version != uistate.CurrentSchemaVersion || updated.SubDetailTab != "accounts" {
-		t.Fatalf("expected UpdateUIState(live) -> Version=2, SubDetailTab=accounts, got %+v", updated)
+		t.Fatalf("expected UpdateUIState(live) -> Version=%d, SubDetailTab=accounts, got %+v", uistate.CurrentSchemaVersion, updated)
 	}
 	app2 := NewApp(rawBackend, player.NewNullAudioSink())
 	defer app2.Close()

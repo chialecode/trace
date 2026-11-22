@@ -99,18 +99,36 @@ func (a *App) renderTasksDownloadsView(c *ui.Context) {
 			if a.TaskActionError != "" {
 				renderErrorBanner(c, "", a.TaskActionError, nil)
 			}
+			retryable := 0
 			finished := 0
 			for _, t := range a.Tasks {
+				if download.IsRetryableTask(t) {
+					retryable++
+				}
 				if t.Status == "completed" || t.Status == "canceled" {
 					finished++
 				}
 			}
-			if finished > 0 {
-				ui.Row(c).FillWidth().Justify(ui.End).Children(func() {
-					if OutlinePillButton(c, fmt.Sprintf("清除已结束（%d）", finished), "清除已结束的任务").Clicked() {
-						a.TaskRemoveConfirmID = ""
-						_, err := a.backend.RemoveFinishedTasks()
-						a.finishTaskAction(err)
+			if retryable > 0 || finished > 0 {
+				ui.Row(c).FillWidth().Justify(ui.End).AlignItems(ui.Center).Gap(8).Wrap().Children(func() {
+					if retryable > 0 {
+						if AccentPillButton(c, fmt.Sprintf("批量重试（%d）", retryable), "批量重试失败或已暂停的任务").Clicked() {
+							a.TaskRemoveConfirmID = ""
+							res, err := a.backend.RetryAllTasks()
+							a.finishTaskAction(err)
+							if err != nil {
+								a.BannerInfo = ""
+							} else {
+								a.BannerInfo = formatBatchRetryInfo(res)
+							}
+						}
+					}
+					if finished > 0 {
+						if OutlinePillButton(c, fmt.Sprintf("清除已结束（%d）", finished), "清除已结束的任务").Clicked() {
+							a.TaskRemoveConfirmID = ""
+							_, err := a.backend.RemoveFinishedTasks()
+							a.finishTaskAction(err)
+						}
 					}
 				})
 			}
@@ -129,6 +147,38 @@ func (a *App) renderTasksDownloadsView(c *ui.Context) {
 			}
 		})
 	})
+}
+
+func formatBatchRetrySites(sites []string) string {
+	var labels []string
+	seen := make(map[string]bool, len(sites))
+	for _, s := range sites {
+		label := siteFullLabel(s)
+		if label == "" || seen[label] {
+			continue
+		}
+		seen[label] = true
+		labels = append(labels, label)
+	}
+	if len(labels) == 0 {
+		return "对应站点"
+	}
+	return strings.Join(labels, "、")
+}
+
+func formatBatchRetryInfo(res download.BatchRetryResult) string {
+	switch {
+	case res.Retried > 0 && res.SkippedAuth > 0:
+		return fmt.Sprintf("已重新排队 %d 个任务；另有 %d 个任务需先登录%s", res.Retried, res.SkippedAuth, formatBatchRetrySites(res.MissingAuthSites))
+	case res.Retried > 0 && res.SkippedDuplicate > 0:
+		return fmt.Sprintf("已重新排队 %d 个任务（跳过 %d 个已在队列中的重复任务）", res.Retried, res.SkippedDuplicate)
+	case res.Retried > 0:
+		return fmt.Sprintf("已重新排队 %d 个任务", res.Retried)
+	case res.Retried == 0 && res.SkippedDuplicate > 0:
+		return fmt.Sprintf("对应作品已在队列中（跳过 %d 个重复任务）", res.SkippedDuplicate)
+	default:
+		return ""
+	}
 }
 
 func (a *App) renderDownloadTaskCard(c *ui.Context, task download.Task) {

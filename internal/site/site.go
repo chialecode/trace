@@ -16,6 +16,7 @@ type ID string
 const (
 	Bilibili ID = "bilibili"
 	Douyin   ID = "douyin"
+	Weibo    ID = "weibo"
 )
 
 // Errors returned by site and account-key validation helpers.
@@ -27,12 +28,12 @@ var (
 
 // All returns all supported site identifiers in canonical UI order.
 func All() []ID {
-	return []ID{Bilibili, Douyin}
+	return []ID{Bilibili, Douyin, Weibo}
 }
 
 // Valid reports whether id is a known site identifier.
 func (id ID) Valid() bool {
-	return id == Bilibili || id == Douyin
+	return id == Bilibili || id == Douyin || id == Weibo
 }
 
 // ParseID normalizes a raw site string into a known ID.
@@ -42,6 +43,8 @@ func ParseID(raw string) (ID, bool) {
 		return Bilibili, true
 	case Douyin:
 		return Douyin, true
+	case Weibo:
+		return Weibo, true
 	default:
 		return "", false
 	}
@@ -54,6 +57,8 @@ func (id ID) DisplayName() string {
 		return "B 站"
 	case Douyin:
 		return "抖音"
+	case Weibo:
+		return "微博"
 	default:
 		return strings.TrimSpace(string(id))
 	}
@@ -70,6 +75,7 @@ func DisplayName(raw string) string {
 // NormalizeUID validates and normalizes a per-site account UID:
 //   - bilibili: positive decimal integer mid (leading zeros stripped)
 //   - douyin: case-sensitive sec_uid preserved verbatim (including consecutive underscores)
+//   - weibo: 5..19 digit positive decimal uid (leading zeros stripped)
 func NormalizeUID(siteID ID, uid string) (string, error) {
 	if !siteID.Valid() {
 		return "", ErrUnknownSite
@@ -106,6 +112,18 @@ func NormalizeUID(siteID ID, uid string) (string, error) {
 			}
 		}
 		return trimmed, nil
+
+	case Weibo:
+		for _, r := range trimmed {
+			if r < '0' || r > '9' {
+				return "", ErrInvalidUID
+			}
+		}
+		norm := strings.TrimLeft(trimmed, "0")
+		if len(norm) < 5 || len(norm) > 19 {
+			return "", ErrInvalidUID
+		}
+		return norm, nil
 
 	default:
 		return "", ErrUnknownSite

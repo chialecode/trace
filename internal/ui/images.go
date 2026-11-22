@@ -39,7 +39,7 @@ func (a *App) lookupRemoteBitmap(rawURL string) *ui.Bitmap {
 		a.mu.Unlock()
 		return nil
 	}
-	if a.dispatch == nil || a.CurrentRoute == RouteHome || a.CurrentRoute == RouteLibrary || a.CurrentRoute == RouteLibraryItem || (a.CurrentRoute == RouteSubscriptions && a.SubDetailOpen && normalizeSubDetailTab(a.SubDetailTab) == "content") || (a.CurrentRoute == RouteVideo && a.CurrentLibraryDetail != nil) || (a.CurrentRoute == RouteDouyinWork && a.CurrentLibraryDetail != nil) {
+	if a.dispatch == nil || a.CurrentRoute == RouteHome || a.CurrentRoute == RouteLibrary || a.CurrentRoute == RouteLibraryItem || (a.CurrentRoute == RouteSubscriptions && a.SubDetailOpen && normalizeSubDetailTab(a.SubDetailTab) == "content") || (a.CurrentRoute == RouteVideo && a.CurrentLibraryDetail != nil) || (a.CurrentRoute == RouteDouyinWork && a.CurrentLibraryDetail != nil) || (a.CurrentRoute == RouteWeiboPost && a.CurrentLibraryDetail != nil) {
 		a.mu.Unlock()
 		return nil
 	}
@@ -220,6 +220,12 @@ func (a *App) faceURLForAccount(siteID, uid string) string {
 	}
 	if a.CurrentDouyinWork != nil && (a.CurrentDouyinWork.Author.SecUID == uid || a.CurrentDouyinWork.Author.UID == uid) && a.CurrentDouyinWork.Author.AvatarURL != "" {
 		return a.CurrentDouyinWork.Author.AvatarURL
+	}
+	if a.CurrentWeiboUser != nil && a.CurrentWeiboUser.UID == uid && a.CurrentWeiboUser.AvatarURL != "" {
+		return a.CurrentWeiboUser.AvatarURL
+	}
+	if a.CurrentWeiboPost != nil && a.CurrentWeiboPost.Author.UID == uid && a.CurrentWeiboPost.Author.AvatarURL != "" {
+		return a.CurrentWeiboPost.Author.AvatarURL
 	}
 	a.ensureFaceIndex()
 	return a.acctFaceIndex[siteID+":"+uid]

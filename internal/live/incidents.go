@@ -461,7 +461,8 @@ func (m *Manager) ClearIdleIncidents(siteID, roomID, uid string) bool {
 	}
 	var changed []RoomState
 	m.mu.Lock()
-	if strings.EqualFold(strings.TrimSpace(siteID), "douyin") {
+	switch strings.ToLower(strings.TrimSpace(siteID)) {
+	case "douyin":
 		for k, st := range m.douyinStates {
 			if matches(st) {
 				st.Incidents = nil
@@ -469,7 +470,7 @@ func (m *Manager) ClearIdleIncidents(siteID, roomID, uid string) bool {
 				changed = append(changed, st)
 			}
 		}
-	} else {
+	case "", "bilibili":
 		for k, st := range m.states {
 			if matches(st) {
 				st.Incidents = nil
@@ -477,6 +478,8 @@ func (m *Manager) ClearIdleIncidents(siteID, roomID, uid string) bool {
 				changed = append(changed, st)
 			}
 		}
+	default:
+		// Weibo and unknown sites have no tracked live rooms.
 	}
 	onState := m.onState
 	m.mu.Unlock()

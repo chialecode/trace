@@ -25,5 +25,8 @@ func LaunchDetached(string, []string, []string) error                   { return
 func AppEnv(extra ...string) []string                                   { return extra }
 
 func LaunchDetachedOutsideJob(string, []string, []string) (bool, error) { return false, errWindowsOnly }
+func LaunchInstalledOutsideJob(string, []string, []string) (bool, error) {
+	return false, errWindowsOnly
+}
 
 func RunningIn(string) (bool, error) { return false, errWindowsOnly }

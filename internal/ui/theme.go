@@ -58,6 +58,15 @@ var (
 // the system's Chinese font for what Inter lacks.
 const UIFont = "Inter"
 
+// Multiline text line-height multipliers. Strictly never apply these to
+// .SingleLine() elements (buttons, badges, single-line metadata) so pill
+// heights and toolbar alignments stay identical.
+const (
+	LineHeightBody    = float32(1.6)  // primary multiline post/dynamic/retweet/description bodies
+	LineHeightCompact = float32(1.45) // 2–3 line titles, video card descriptions, rich cards, bios, notices
+	LineHeightHeading = float32(1.35) // 18–20px detail headlines & dense 2-line grid titles
+)
+
 func init() { UseAccent(os.Getenv("TRACE_UI_ACCENT")) }
 
 // UseAccent sets the accent: "green", or the default blue for anything

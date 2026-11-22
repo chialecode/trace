@@ -414,12 +414,15 @@ func (m *Manager) pollLoop(ctx context.Context) {
 					auto := sub.Rules.AutoRecord || sub.LiveAutoRecord
 					includeBili := cfg.PollEnabled || auto
 					for _, acc := range sub.Accounts {
-						switch acc.Site {
-						case string(site.Douyin):
+						switch site.ID(strings.ToLower(strings.TrimSpace(acc.Site))) {
+						case site.Douyin:
 							if auto {
 								hasDouyinAuto = true
 							}
-						case "", string(site.Bilibili):
+						case site.Weibo:
+							// Weibo live polling & recording are unsupported; never issue requests.
+							continue
+						case "", site.Bilibili:
 							if auto {
 								hasBiliAuto = true
 							}
@@ -429,6 +432,8 @@ func (m *Manager) pollLoop(ctx context.Context) {
 									biliUIDs = append(biliUIDs, uid)
 								}
 							}
+						default:
+							continue
 						}
 					}
 					if sub.Mid > 0 {
@@ -558,7 +563,9 @@ func (m *Manager) addSessionBytes(sess *recordSession, delta int64) {
 	speedBps := int64(float64(sess.bytesTotal-sess.reportBytes) / elapsed.Seconds())
 	sess.lastSpeedBps = speedBps
 	var st RoomState
-	if sess.siteID == string(site.Douyin) {
+	var updated bool
+	switch sess.siteID {
+	case string(site.Douyin):
 		st = m.douyinStates[sess.stateKey]
 		st.RecordBytes = sess.bytesTotal
 		st.RecordDurationSec = now.Sub(sess.startedAt).Seconds()
@@ -567,7 +574,8 @@ func (m *Manager) addSessionBytes(sess *recordSession, delta int64) {
 		st.Recording = true
 		hydrateSessionPreviewFieldsLocked(&st, sess)
 		m.douyinStates[sess.stateKey] = st
-	} else {
+		updated = true
+	case "", string(site.Bilibili):
 		st = m.states[sess.roomID]
 		m.normalizeBilibiliRoomStateLocked(&st)
 		st.RecordBytes = sess.bytesTotal
@@ -577,11 +585,12 @@ func (m *Manager) addSessionBytes(sess *recordSession, delta int64) {
 		st.Recording = true
 		hydrateSessionPreviewFieldsLocked(&st, sess)
 		m.states[sess.roomID] = st
+		updated = true
 	}
 	sess.reportAt = now
 	sess.reportBytes = sess.bytesTotal
 	m.mu.Unlock()
-	if m.onState != nil {
+	if updated && m.onState != nil {
 		leave := sess.enterExternal()
 		m.onState(st)
 		leave()
@@ -674,6 +683,8 @@ func (m *Manager) CancelRecordingsForSite(siteID site.ID, reason string) {
 			}
 			session.cancel()
 		}
+	case site.Weibo:
+		// Weibo live recording is unsupported; nothing to cancel.
 	}
 }
 
@@ -707,6 +718,8 @@ func (m *Manager) StopForSite(siteID site.ID, reason string) {
 				waitChs = append(waitChs, session.doneCh)
 			}
 		}
+	case site.Weibo:
+		// Weibo live recording is unsupported; nothing to stop.
 	}
 	timeout := m.finalizeTimeout
 	m.mu.Unlock()

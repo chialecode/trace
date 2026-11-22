@@ -12,6 +12,7 @@ import (
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/site/douyin"
+	"github.com/chialecode/trace/internal/site/weibo"
 )
 
 // AccountService serves 我的 (FR-ACCT-001～005, DEC-047): read-only lists of the
@@ -44,6 +45,7 @@ const (
 const (
 	AccountItemVideo       = "video"
 	AccountItemWork        = "work"
+	AccountItemPost        = "post"
 	AccountItemUser        = "user"
 	AccountItemUnsupported = "unsupported"
 )
@@ -94,6 +96,8 @@ type AccountItem struct {
 	OwnerName  string `json:"ownerName,omitempty"`
 	// Douyin works only: the same card the user page renders.
 	Work *DouyinWorkCardDTO `json:"work,omitempty"`
+	// Weibo posts only: the normalized post card for 我的 › 微博.
+	Post *WeiboPostView `json:"post,omitempty"`
 }
 
 // AccountPage is one page of an account list. Cursor is opaque; "" asks for the first page.
@@ -106,8 +110,12 @@ type AccountPage struct {
 
 var _ AccountService = (*Backend)(nil)
 
-// accountWatchHistoryEnabled mirrors douyin.WatchHistoryEnabled so tests can flip it.
-var accountWatchHistoryEnabled = douyin.WatchHistoryEnabled
+// Feature flags mirroring site package defaults so tests can flip them without mutating constants.
+var (
+	accountWatchHistoryEnabled      = douyin.WatchHistoryEnabled
+	accountWeiboLikesEnabled        = weibo.LikesEnabled
+	accountWeiboFollowGroupsEnabled = weibo.FollowGroupsEnabled
+)
 
 // AccountSections lists the functions of siteID; a site that is not signed in
 // gets a single unavailable "login" entry and nothing else.
@@ -128,6 +136,14 @@ func (b *Backend) AccountSections(siteID string) []AccountSection {
 		labels = [][2]string{{AccountFollowing, "关注"}, {AccountLikes, "喜欢"}, {AccountCollection, "收藏"}}
 		if accountWatchHistoryEnabled {
 			labels = append(labels, [2]string{AccountWatchHistory, "观看历史"})
+		}
+	case site.Weibo:
+		if b.weiboCred != nil {
+			st = b.weiboCred.Status()
+		}
+		labels = [][2]string{{AccountFollowing, "关注"}, {AccountFavorites, "收藏"}}
+		if accountWeiboLikesEnabled {
+			labels = append(labels, [2]string{AccountLikes, "赞过"})
 		}
 	default:
 		return nil
@@ -191,6 +207,18 @@ func (b *Backend) AccountFolders(ctx context.Context, siteID, kind string) ([]Ac
 			}
 			cursor = page.NextCursor
 		}
+	case sid == site.Weibo && kind == AccountFollowing:
+		if !accountWeiboFollowGroupsEnabled {
+			return nil, nil
+		}
+		groups, err := b.weibo.ListFollowGroups(ctx)
+		if err != nil {
+			return nil, b.accountFail(sid, kind, err)
+		}
+		out = append(out, AccountFolder{ID: AccountFolderAll, Title: "全部关注", IsDefault: true})
+		for _, g := range groups {
+			out = append(out, AccountFolder{ID: g.ID, Title: g.Title, Count: g.Count})
+		}
 	default:
 		return nil, nil
 	}
@@ -212,6 +240,10 @@ func (b *Backend) AccountPage(ctx context.Context, siteID, kind, folderID, curso
 		page, err = b.biliAccountPage(ctx, kind, folderID, pageNo, raw)
 	case site.Douyin:
 		page, err = b.douyinAccountPage(ctx, kind, folderID, raw)
+	case site.Weibo:
+		page, err = b.weiboAccountPage(ctx, kind, folderID, pageNo)
+	default:
+		err = &site.Error{Site: sid, Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
 	}
 	if err != nil {
 		return AccountPage{}, b.accountFail(sid, kind, err)
@@ -401,11 +433,116 @@ func (b *Backend) douyinAccountPage(ctx context.Context, kind, folderID, raw str
 	return out, nil
 }
 
+func (b *Backend) snapshotWeiboAccountSeen(bucket string, reset bool) (map[string]bool, uint64) {
+	return b.snapshotWeiboSeenMap(&b.accountWeiboSeen, bucket, reset)
+}
+
+func (b *Backend) mergeWeiboAccountSeen(bucket string, gen uint64, seen map[string]bool) {
+	b.mergeWeiboSeenMap(&b.accountWeiboSeen, bucket, gen, seen)
+}
+
+func (b *Backend) weiboAccountPage(ctx context.Context, kind, folderID string, pn int) (AccountPage, error) {
+	selfUID := ""
+	if b.weiboCred != nil {
+		selfUID = strings.TrimSpace(b.weiboCred.Status().UID)
+	}
+	if selfUID == "" {
+		return AccountPage{}, &site.Error{Site: site.Weibo, Kind: site.ErrKindAuthRequired, Message: "缺少登录账号的微博 UID，请重新登录微博"}
+	}
+	if pn <= 0 {
+		pn = 1
+	}
+
+	switch kind {
+	case AccountFollowing:
+		bucket := kind + ":" + strings.TrimSpace(folderID)
+		seen, gen := b.snapshotWeiboAccountSeen(bucket, pn <= 1)
+		var p *weibo.FollowingPage
+		var err error
+		if folderID == "" || folderID == AccountFolderAll {
+			p, err = b.weibo.ListFollowing(ctx, selfUID, pn, seen)
+		} else {
+			if !accountWeiboFollowGroupsEnabled {
+				return AccountPage{}, &site.Error{Site: site.Weibo, Kind: site.ErrKindBadRequest, Message: "不支持的功能"}
+			}
+			p, err = b.weibo.ListFollowGroupMembers(ctx, selfUID, folderID, pn, seen)
+		}
+		if err != nil {
+			return AccountPage{}, err
+		}
+		b.mergeWeiboAccountSeen(bucket, gen, seen)
+		out := AccountPage{HasMore: p.HasMore, Total: p.Total, Cursor: p.NextCursor, Items: make([]AccountItem, 0, len(p.Users))}
+		for _, u := range p.Users {
+			out.Items = append(out.Items, b.accountUser(site.Weibo, u.UID, u.ScreenName, u.AvatarURL, u.Description, ""))
+		}
+		return out, nil
+
+	case AccountFavorites:
+		seen, gen := b.snapshotWeiboAccountSeen(kind, pn <= 1)
+		p, err := b.weibo.ListFavorites(ctx, selfUID, pn, seen)
+		if err != nil {
+			return AccountPage{}, err
+		}
+		b.mergeWeiboAccountSeen(kind, gen, seen)
+		return b.mapWeiboAccountPostsPage(p), nil
+
+	case AccountLikes:
+		if !accountWeiboLikesEnabled {
+			return AccountPage{}, &site.Error{Site: site.Weibo, Kind: site.ErrKindBadRequest, Message: "不支持的功能"}
+		}
+		seen, gen := b.snapshotWeiboAccountSeen(kind, pn <= 1)
+		p, err := b.weibo.ListLikes(ctx, selfUID, pn, seen)
+		if err != nil {
+			return AccountPage{}, err
+		}
+		b.mergeWeiboAccountSeen(kind, gen, seen)
+		return b.mapWeiboAccountPostsPage(p), nil
+
+	default:
+		return AccountPage{}, &site.Error{Site: site.Weibo, Kind: site.ErrKindBadRequest, Message: "不支持的功能"}
+	}
+}
+
+func (b *Backend) mapWeiboAccountPostsPage(p *weibo.AccountPostsPage) AccountPage {
+	if p == nil {
+		return AccountPage{}
+	}
+	out := AccountPage{
+		HasMore: p.HasMore,
+		Total:   p.Total,
+		Items:   make([]AccountItem, 0, len(p.Posts)),
+	}
+	for i := range p.Posts {
+		post := &p.Posts[i]
+		pv := mapWeiboPostView(post, nil, library.DotState{})
+		openURL := firstNonEmpty(safeBrowserURL(post.CanonicalURL), "https://weibo.com/detail/"+post.Mid)
+		it := AccountItem{
+			Kind:       AccountItemPost,
+			Site:       string(site.Weibo),
+			ID:         post.Mid,
+			Title:      weiboPostSummaryTitle(pv),
+			Cover:      weiboPostThumbCoverURL(pv),
+			Author:     post.Author.ScreenName,
+			AuthorID:   post.Author.UID,
+			Duration:   weiboPostDuration(pv),
+			OpenURL:    openURL,
+			BrowserURL: safeBrowserURL(openURL),
+			CacheKey:   pv.CacheKey,
+			Post:       pv,
+		}
+		out.Items = append(out.Items, it)
+	}
+	return out
+}
+
 func (b *Backend) accountUser(sid site.ID, uid, name, face, sign, uniqueID string) AccountItem {
 	it := AccountItem{Kind: AccountItemUser, Site: string(sid), ID: uid, Title: name, Cover: face, Signature: firstLine(sign), UniqueID: uniqueID, AccountKey: formatAccountKey(sid, uid)}
-	if sid == site.Douyin {
+	switch sid {
+	case site.Douyin:
 		it.OpenURL = "https://www.douyin.com/user/" + uid
-	} else {
+	case site.Weibo:
+		it.OpenURL = "https://weibo.com/u/" + uid
+	case site.Bilibili:
 		it.OpenURL = "https://space.bilibili.com/" + uid
 	}
 	it.BrowserURL = safeBrowserURL(it.OpenURL)
@@ -434,7 +571,7 @@ func (b *Backend) accountGate(siteID, kind string) (site.ID, error) {
 		}
 	}
 	if err := b.requireSiteLogin(sid); err != nil {
-		if sid != site.Bilibili && sid != site.Douyin {
+		if !sid.Valid() {
 			return "", &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
 		}
 		return "", err
@@ -493,7 +630,7 @@ func parseHistoryCursor(raw string) (bilibili.HistoryCursor, error) {
 }
 
 // accountBrowserHosts are the only hosts 我的 offers to open in the browser.
-var accountBrowserHosts = []string{"bilibili.com", "b23.tv", "douyin.com"}
+var accountBrowserHosts = []string{"bilibili.com", "b23.tv", "douyin.com", "weibo.com", "weibo.cn"}
 
 // safeBrowserURL returns raw only when it is an https URL on a site host.
 func safeBrowserURL(raw string) string {

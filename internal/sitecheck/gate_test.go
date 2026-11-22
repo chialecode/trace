@@ -200,3 +200,86 @@ func TestGateCategoryStrictnessAndErrors(t *testing.T) {
 		t.Fatal("OpenGate on directory ledger succeeded, want error")
 	}
 }
+
+func TestScanSecretsWeiboCookiesSignedURLsAndPlaceholders(t *testing.T) {
+	badCases := []struct {
+		name      string
+		payload   string
+		rawSecret string
+	}{
+		{"weibo-sub", `{"cookie":"SUB=_2A25SynthSubToken0001abcdef"}`, "_2A25SynthSubToken0001abcdef"},
+		{"weibo-subp", `{"cookie":"SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D"}`, "0033WrSXqPxfM725Ws9jqgMF55529P9D"},
+		{"weibo-xsrf-token", `{"cookie":"XSRF-TOKEN=AbCdEfGh123456_7890-XyZ"}`, "AbCdEfGh123456_7890-XyZ"},
+		{"weibo-wbpsess", `{"cookie":"WBPSESS=Dt2hbAUaXSynthWbpsess0123=="}`, "Dt2hbAUaXSynthWbpsess0123=="},
+		{"weibo-scf", `{"cookie":"SCF=AlSynthScfToken0123456789._-"}`, "AlSynthScfToken0123456789._-"},
+		{"weibo-alf", `{"cookie":"ALF=1795000000"}`, "1795000000"},
+		{"weibo-sso-login-state", `{"cookie":"SSOLoginState=1763700000"}`, "1763700000"},
+		{"weibo-suhb", `{"cookie":"SUHB=02M_SynthSuhb001"}`, "02M_SynthSuhb001"},
+		{"weibo-pc-token", `{"cookie":"PC_TOKEN=0123456789abcdef0123456789abcdef"}`, "0123456789abcdef0123456789abcdef"},
+		{"weibo-t-wm", `{"cookie":"_T_WM=fedcba9876543210fedcba9876543210"}`, "fedcba9876543210fedcba9876543210"},
+		{"weibo-video-signed-url", `{"media":"https://f.video.weibocdn.com/o0/synth01.mp4?Expires=1763700000&ssig=AbCdEf%2B12%3D&KID=unistore,video"}`, "AbCdEf%2B12%3D"},
+		{"weibo-video-signed-url-json-escaped", `{"media":"https://f.video.weibocdn.com/o0/synth01.mp4?Expires=1763700000\u0026ssig=JsonEscSig987\u0026KID=unistore,video"}`, "JsonEscSig987"},
+		{"weibo-livephoto-signed-url", `{"media":"https://livephoto.us.sinaimg.cn/001synth.mov?ssig=9f8e7d6c5b&Expires=1763700000&KID=unistore,video"}`, "9f8e7d6c5b"},
+		{"weibo-expires-kid-url", `{"media":"https://f.video.weibocdn.com/o0/synth02.mp4?Expires=1763700000&KID=unistore,video"}`, "1763700000"},
+		{"weibo-kid-expires-url-json-escaped", `{"media":"https://f.video.weibocdn.com/o0/synth03.mp4?KID=unistore,video\u0026Expires=1763700000"}`, "1763700000"},
+		{"weibo-bare-signed-query", `{"query":"Expires=1763700000&ssig=BareQuerySig1&KID=unistore,video"}`, "BareQuerySig1"},
+		{"weibo-qmarkless-amp-url", `{"media":"https://f.video.weibocdn.com/o0/synth01.mp4&ssig=SecretSig1234"}`, "SecretSig1234"},
+		{"weibo-livephoto-encoded-url", `{"media":"https://video.weibo.com/media/play?livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2F001synth.mov%3FExpires%3D1763700000%26ssig%3DEncLiveSig1234%26KID%3Dunistore%2Cvideo"}`, "EncLiveSig1234"},
+		{"weibo-livephoto-encoded-exp-kid", `{"media":"https://video.weibo.com/media/play?livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2F001synth.mov%3FExpires%3D1763700001%26KID%3Dunistore%2Cvideo"}`, "1763700001"},
+		{"weibo-livephoto-encoded-kid-exp", `{"media":"https://video.weibo.com/media/play?livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2F001synth.mov%3FKID%3Dunistore%2Cvideo%26Expires%3D1763700002"}`, "1763700002"},
+	}
+
+	for _, tc := range badCases {
+		t.Run(tc.name, func(t *testing.T) {
+			badDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(badDir, tc.name+".json"), []byte(tc.payload), 0o600); err != nil {
+				t.Fatalf("write bad receipt %s: %v", tc.name, err)
+			}
+			findings, err := ScanReceiptsForSecrets(badDir)
+			if err != nil {
+				t.Fatalf("ScanReceiptsForSecrets(%s): %v", tc.name, err)
+			}
+			if len(findings) == 0 {
+				t.Fatalf("expected secret finding for %s, got none", tc.name)
+			}
+			for _, f := range findings {
+				if strings.Contains(f, tc.rawSecret) {
+					t.Fatalf("ScanReceiptsForSecrets(%s) echoed raw secret %q in finding: %s", tc.name, tc.rawSecret, f)
+				}
+			}
+		})
+	}
+
+	safeCases := []struct {
+		name    string
+		payload string
+	}{
+		{"placeholders-angle-zh", `{"note":"SUB=<合成占位>; XSRF-TOKEN=<合成占位>; WBPSESS=<合成占位>"}`},
+		{"placeholders-angle-en", `{"note":"SUB=<synthetic>; SUBP=<synthetic>; SCF=<synthetic>; ALF=<synthetic>; SSOLoginState=<synthetic>"}`},
+		{"placeholders-json-escaped", `{"note":"SUB=\u003c合成占位\u003e; Expires=\u003cUnix秒\u003e\u0026ssig=\u003c合成签名\u003e\u0026KID=unistore,video"}`},
+		{"placeholders-url-signed", `{"note":"https://f.video.weibocdn.com/o0/demo.mp4?Expires=<Unix秒>&ssig=<合成签名>&KID=unistore,video"}`},
+		{"placeholders-url-reordered", `{"note":"https://f.video.weibocdn.com/o0/demo.mp4?KID=unistore,video&Expires=<Unix秒>&ssig=<合成签名>"}`},
+		{"placeholders-livephoto-encoded", `{"note":"https://video.weibo.com/media/play?livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2F001synth.mov%3FExpires%3D<Unix秒>%26ssig%3D<合成签名>%26KID%3Dunistore%2Cvideo"}`},
+		{"bare-key-names", `{"note":"SUB= SUBP= XSRF-TOKEN= WBPSESS= SUB=... SUB=[REDACTED]"}`},
+		{"lowercase-sub-query", `{"route":"/library?type=&sub=subscription_123456&mid="}`},
+		{"public-image-url", `{"image":"https://wx1.sinaimg.cn/large/001SynThPic01ly1synthetic00001.jpg"}`},
+	}
+	for _, tc := range safeCases {
+		t.Run("safe_"+tc.name, func(t *testing.T) {
+			if findings := ScanTextForSecrets(tc.payload); len(findings) != 0 {
+				t.Fatalf("false positive on %s: %v", tc.name, findings)
+			}
+		})
+	}
+
+	t.Run("safe_actual_weibo_md", func(t *testing.T) {
+		weiboDocPath := filepath.Join("..", "..", "docs", "research", "weibo.md")
+		raw, err := os.ReadFile(weiboDocPath)
+		if err != nil {
+			t.Fatalf("read %s: %v", weiboDocPath, err)
+		}
+		if findings := ScanTextForSecrets(string(raw)); len(findings) != 0 {
+			t.Fatalf("false positive on docs/research/weibo.md: %v", findings)
+		}
+	})
+}

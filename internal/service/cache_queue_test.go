@@ -1094,7 +1094,7 @@ func TestCacheQueuePrivacySentinel(t *testing.T) {
 	}
 	jsonText := string(rawJSON)
 	var parsed cacheQueueFile
-	if err := json.Unmarshal(rawJSON, &parsed); err != nil || parsed.Version != 1 {
+	if err := json.Unmarshal(rawJSON, &parsed); err != nil || parsed.Version != cacheQueueSchemaVersion {
 		t.Fatalf("invalid cache-queue.json schema: version=%d err=%v", parsed.Version, err)
 	}
 	for _, tok := range append([]string{"http://", "https://", "?"}, forbiddenTokens...) {

@@ -19,10 +19,14 @@ import (
 )
 
 func normalizeSiteIDUI(v string) string {
-	if strings.EqualFold(strings.TrimSpace(v), "douyin") {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "douyin":
 		return "douyin"
+	case "weibo":
+		return "weibo"
+	default:
+		return "bilibili"
 	}
-	return "bilibili"
 }
 
 func subscriptionPrimarySiteAndUID(sub subscription.Subscription) (string, string) {
@@ -63,7 +67,7 @@ func renderSiteSmallBadgeWithDot(c *ui.Context, siteID, accessLabel string) {
 	renderSiteSmallBadge(c, siteID, accessLabel)
 }
 
-// renderThreeSegmentSiteFilter renders the 3-segment "全部 / B 站 / 抖音" switcher.
+// renderThreeSegmentSiteFilter renders the 4-way "全部 / B 站 / 抖音 / 微博" switcher.
 func renderThreeSegmentSiteFilter(c *ui.Context, labelPrefix, current string, onSelect func(string)) {
 	cur := normalizeSiteFilter(current)
 	opts := []struct {
@@ -73,6 +77,7 @@ func renderThreeSegmentSiteFilter(c *ui.Context, labelPrefix, current string, on
 		{"all", "全部"},
 		{"bilibili", "B 站"},
 		{"douyin", "抖音"},
+		{"weibo", "微博"},
 	}
 	ui.Row(c).
 		FillWidth().
@@ -81,6 +86,7 @@ func renderThreeSegmentSiteFilter(c *ui.Context, labelPrefix, current string, on
 		Background(ColorBgMain).
 		Border(1, ColorBorder).
 		Gap(2).
+		ClipX().
 		Children(func() {
 			for _, opt := range opts {
 				o := opt
@@ -89,10 +95,11 @@ func renderThreeSegmentSiteFilter(c *ui.Context, labelPrefix, current string, on
 					Label(labelPrefix+o.Text).
 					Grow(1).
 					Basis(0).
-					Padding(5, 8).
+					Padding(5, 4).
 					Radius(6).
 					Justify(ui.Center).
-					AlignItems(ui.Center)
+					AlignItems(ui.Center).
+					ClipX()
 				if active {
 					btn.Background(ColorBgSecondary)
 				} else if btn.Hovered() {
@@ -114,7 +121,7 @@ func renderThreeSegmentSiteFilter(c *ui.Context, labelPrefix, current string, on
 		})
 }
 
-// renderTwoSegmentLoginSiteSwitcher renders the top "哔哩哔哩 / 抖音" switcher on /login.
+// renderTwoSegmentLoginSiteSwitcher renders the top "哔哩哔哩 / 抖音 / 微博" switcher on /login.
 func renderTwoSegmentLoginSiteSwitcher(c *ui.Context, current string, onSelect func(string)) {
 	cur := normalizeSiteIDUI(current)
 	opts := []struct {
@@ -123,6 +130,7 @@ func renderTwoSegmentLoginSiteSwitcher(c *ui.Context, current string, onSelect f
 	}{
 		{"bilibili", "哔哩哔哩"},
 		{"douyin", "抖音"},
+		{"weibo", "微博"},
 	}
 	ui.Row(c).
 		FillWidth().
@@ -131,6 +139,7 @@ func renderTwoSegmentLoginSiteSwitcher(c *ui.Context, current string, onSelect f
 		Background(ColorBgMain).
 		Border(1, ColorBorder).
 		Gap(4).
+		ClipX().
 		Children(func() {
 			for _, opt := range opts {
 				o := opt
@@ -139,10 +148,11 @@ func renderTwoSegmentLoginSiteSwitcher(c *ui.Context, current string, onSelect f
 					Label("登录站点："+o.Text).
 					Grow(1).
 					Basis(0).
-					Padding(7, 12).
+					Padding(7, 10).
 					Radius(8).
 					Justify(ui.Center).
-					AlignItems(ui.Center)
+					AlignItems(ui.Center).
+					ClipX()
 				if active {
 					btn.Background(ColorAccentBg)
 				} else if btn.Hovered() {
@@ -356,7 +366,7 @@ func (a *App) renderRichHashtagText(c *ui.Context, key, text string) {
 		}
 	}
 
-	ui.Column(c).FillWidth().Gap(4).ClipX().Children(func() {
+	ui.Column(c).FillWidth().Gap(6).ClipX().Children(func() {
 		for _, para := range strings.Split(shown, "\n") {
 			line := strings.TrimSpace(para)
 			if line == "" {
@@ -371,16 +381,16 @@ func (a *App) renderRichHashtagText(c *ui.Context, key, text string) {
 				}
 			}
 			if !hasTag {
-				ui.Text(c, line).FontSize(15).TextColor(ColorTextMain)
+				ui.Text(c, line).FontSize(15).LineHeight(LineHeightBody).TextColor(ColorTextMain)
 				continue
 			}
 			ui.Row(c).FillWidth().Wrap().Gap(2).AlignItems(ui.Center).Children(func() {
 				for _, sp := range spans {
 					s := sp
 					if s.Hashtag {
-						ui.Text(c, s.Text).FontSize(15).FontWeight(600).TextColor(ColorAccent)
+						ui.Text(c, s.Text).FontSize(15).LineHeight(LineHeightBody).FontWeight(600).TextColor(ColorAccent)
 					} else {
-						ui.Text(c, s.Text).FontSize(15).TextColor(ColorTextMain)
+						ui.Text(c, s.Text).FontSize(15).LineHeight(LineHeightBody).TextColor(ColorTextMain)
 					}
 				}
 			})

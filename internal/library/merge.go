@@ -60,6 +60,18 @@ func cloneItemMetadataSlices(meta ItemMetadata) ItemMetadata {
 		v := *meta.Via
 		meta.Via = &v
 	}
+	if meta.Card != nil {
+		c := *meta.Card
+		meta.Card = &c
+	}
+	if meta.Origin != nil {
+		o := *meta.Origin
+		if o.Card != nil {
+			oc := *o.Card
+			o.Card = &oc
+		}
+		meta.Origin = &o
+	}
 	if meta.Live != nil {
 		lv := *meta.Live
 		lv.Segments = append([]LiveSegmentInfo(nil), lv.Segments...)
@@ -106,18 +118,20 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 	}
 
 	// Media: by path; local wins (live segments merged below when both have Live).
-	have := map[string]bool{}
-	for _, m := range out.Media {
-		have[strings.ToLower(cleanManifestRel(m.Path))] = true
+	have := map[string]int{}
+	for i, m := range out.Media {
+		have[strings.ToLower(cleanManifestRel(m.Path))] = i
 	}
 	for _, m := range imported.Media {
 		key := strings.ToLower(cleanManifestRel(m.Path))
 		if importedLiveSegPaths[key] {
 			continue
 		}
-		if !have[key] {
+		if idx, exists := have[key]; !exists {
+			have[key] = len(out.Media)
 			out.Media = append(out.Media, m)
-			have[key] = true
+		} else if !out.Media[idx].FromOrigin && m.FromOrigin {
+			out.Media[idx].FromOrigin = true
 		}
 	}
 
@@ -181,6 +195,9 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 		if dst.Video == "" {
 			dst.Video = src.Video
 		}
+		if !dst.FromOrigin && src.FromOrigin {
+			dst.FromOrigin = true
+		}
 		if dst.VideoInfo == nil && src.VideoInfo != nil {
 			vi := *src.VideoInfo
 			dst.VideoInfo = &vi
@@ -224,6 +241,64 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 	if out.Via == nil && imported.Via != nil {
 		v := *imported.Via
 		out.Via = &v
+	}
+	if out.Card == nil && imported.Card != nil {
+		c := *imported.Card
+		out.Card = &c
+	}
+	if imported.Origin != nil {
+		if out.Origin == nil {
+			o := *imported.Origin
+			if o.Card != nil {
+				oc := *o.Card
+				o.Card = &oc
+			}
+			out.Origin = &o
+		} else {
+			if out.Origin.Site == "" {
+				out.Origin.Site = imported.Origin.Site
+			}
+			if out.Origin.ID == "" {
+				out.Origin.ID = imported.Origin.ID
+			}
+			if out.Origin.MblogID == "" {
+				out.Origin.MblogID = imported.Origin.MblogID
+			}
+			if out.Origin.CanonicalURL == "" {
+				out.Origin.CanonicalURL = imported.Origin.CanonicalURL
+			}
+			if out.Origin.Author.UID == "" {
+				out.Origin.Author.UID = imported.Origin.Author.UID
+			}
+			if out.Origin.Author.Site == "" {
+				out.Origin.Author.Site = imported.Origin.Author.Site
+			}
+			if out.Origin.Author.Name == "" {
+				out.Origin.Author.Name = imported.Origin.Author.Name
+			}
+			if out.Origin.Author.Face == "" {
+				out.Origin.Author.Face = imported.Origin.Author.Face
+			}
+			if out.Origin.PubTs == 0 {
+				out.Origin.PubTs = imported.Origin.PubTs
+			}
+			if out.Origin.Title == "" {
+				out.Origin.Title = imported.Origin.Title
+			}
+			if out.Origin.Text == "" {
+				out.Origin.Text = imported.Origin.Text
+			}
+			if out.Origin.UnavailableReason == "" {
+				out.Origin.UnavailableReason = imported.Origin.UnavailableReason
+			}
+			if !out.Origin.VideoFromOrigin && imported.Origin.VideoFromOrigin {
+				out.Origin.VideoFromOrigin = true
+			}
+			if out.Origin.Card == nil && imported.Origin.Card != nil {
+				oc := *imported.Origin.Card
+				out.Origin.Card = &oc
+			}
+		}
 	}
 
 	var renames []SegmentRename
@@ -299,11 +374,13 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 				if contentKey != "" {
 					byContent[contentKey] = true
 				}
-				if !have[strings.ToLower(cleanManifestRel(seg.File))] {
+				if _, exists := have[strings.ToLower(cleanManifestRel(seg.File))]; !exists {
 					if m, ok := importedMediaByPath[strings.ToLower(cleanManifestRel(origFile))]; ok {
 						m.Path = seg.File
+						have[strings.ToLower(cleanManifestRel(seg.File))] = len(out.Media)
 						out.Media = append(out.Media, m)
 					} else {
+						have[strings.ToLower(cleanManifestRel(seg.File))] = len(out.Media)
 						out.Media = append(out.Media, MediaFile{
 							Role:   "live_segment",
 							Path:   seg.File,
@@ -311,7 +388,6 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 							SHA256: seg.SHA256,
 						})
 					}
-					have[strings.ToLower(cleanManifestRel(seg.File))] = true
 				}
 			}
 

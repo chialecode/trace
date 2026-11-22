@@ -112,7 +112,7 @@ func (a *App) renderTasksQueueView(c *ui.Context) {
 			if len(a.CacheQueue) == 0 {
 				ui.Column(c).FillWidth().Padding(40, 16).AlignItems(ui.Center).Gap(8).Children(func() {
 					ui.Text(c, "当前没有缓存队列任务").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-					ui.Text(c, "在 UP 主或抖音作者主页右上角点「⋯ → 全部缓存」，会在后台按安全节奏慢慢缓存全部内容。").
+					ui.Text(c, "在 UP 主、抖音作者或微博博主主页右上角点「⋯ → 全部缓存」，会在后台按安全节奏慢慢缓存全部内容。").
 						FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
 				})
 				return
@@ -254,6 +254,9 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 
 			if cur.StopReason != "" && !strings.Contains(formatQueueSidebarStatus(cur), cur.StopReason) {
 				ui.Text(c, "原因："+cur.StopReason).FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
+			}
+			if cur.Note != "" && cur.Note != cur.StopReason {
+				ui.Text(c, cur.Note).FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
 			}
 			if cur.Status == service.CacheQueueRunning && cur.ActiveTitle != "" {
 				ui.Text(c, "当前正在缓存："+cur.ActiveTitle).FontSize(12).FontWeight(600).TextColor(ColorAccent).SingleLine()

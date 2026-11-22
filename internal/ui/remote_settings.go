@@ -474,6 +474,8 @@ func siteDisplayName(id string) string {
 		return "哔哩哔哩"
 	case "douyin":
 		return "抖音"
+	case "weibo":
+		return "微博"
 	}
 	return id
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/chialecode/trace/internal/site"
@@ -103,14 +104,15 @@ func collectBilibiliRefreshTargets(subList []subscription.Subscription, selected
 
 	for _, s := range subList {
 		for _, acc := range s.Accounts {
-			if acc.Site != "" && acc.Site != string(site.Bilibili) {
+			accSite := strings.ToLower(strings.TrimSpace(acc.Site))
+			if accSite != "" && accSite != string(site.Bilibili) {
 				continue
 			}
 			if uid, pErr := strconv.ParseInt(acc.UID, 10, 64); pErr == nil && uid > 0 {
 				mergeSub(uid, s)
 			}
 		}
-		if s.Mid > 0 {
+		if s.Mid > 0 && (s.Site == "" || strings.EqualFold(strings.TrimSpace(s.Site), string(site.Bilibili))) {
 			mergeSub(s.Mid, s)
 		}
 	}

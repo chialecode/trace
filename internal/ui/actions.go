@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 )
@@ -69,42 +70,80 @@ func (a *App) saveSettings() {
 }
 
 func (a *App) loadImportPage(reset bool) {
+	siteID := a.ImportSite
+	if siteID != string(site.Weibo) {
+		siteID = string(site.Bilibili)
+	}
+	if !a.backend.StatusOf(siteID).LoggedIn {
+		a.ImportError = "请先登录" + siteFullLabel(siteID)
+		return
+	}
 	page := a.ImportPage + 1
 	if reset {
 		page = 1
 		a.importFollowingsSeq++
 	}
 	seq := a.importFollowingsSeq
-	tag, _ := strconv.ParseInt(a.ImportGroup, 10, 64)
-	for _, group := range a.ImportGroups {
-		if group.Name == a.ImportGroup {
-			tag = group.TagID
-			break
+	groupID := ""
+	if a.ImportGroup != "" && a.ImportGroup != "全部关注" {
+		groupID = a.ImportGroup
+		for _, g := range a.ImportGroupsDTO {
+			if g.Name == a.ImportGroup {
+				groupID = g.ID
+				break
+			}
 		}
 	}
 	group := a.ImportGroup
-	reqKey := fmt.Sprintf("followings:%d:%s:%d", seq, group, page)
+	reqKey := fmt.Sprintf("followings:%s:%d:%s:%d", siteID, seq, group, page)
 	requestGuarded(a, reqKey, func() bool {
-		return a.ImportSubModalOpen && a.ImportGroup == group && a.importFollowingsSeq == seq
-	}, func(ctx context.Context) ([]bilibili.FollowingUser, error) {
-		return a.backend.RelationFollowings(ctx, tag, page, 50)
-	}, func(users []bilibili.FollowingUser) {
+		return a.ImportSubModalOpen && a.ImportSite == siteID && a.ImportGroup == group && a.importFollowingsSeq == seq
+	}, func(ctx context.Context) (service.FollowingCreatorsPageDTO, error) {
+		return a.backend.FollowingCreatorsPage(ctx, siteID, groupID, page)
+	}, func(pg service.FollowingCreatorsPageDTO) {
 		a.ImportError = ""
 		if reset {
+			a.ImportCreators = nil
 			a.ImportFollowings = nil
+			a.ImportSelectedKeys = make(map[string]bool)
 			a.ImportSelectedMids = make(map[int64]bool)
 		}
-		seen := make(map[int64]bool, len(a.ImportFollowings))
-		for _, user := range a.ImportFollowings {
-			seen[user.Mid] = true
+		if a.ImportSelectedKeys == nil {
+			a.ImportSelectedKeys = make(map[string]bool)
 		}
-		for _, user := range users {
-			if !seen[user.Mid] {
-				a.ImportFollowings = append(a.ImportFollowings, user)
-				seen[user.Mid] = true
+		if a.ImportSelectedMids == nil {
+			a.ImportSelectedMids = make(map[int64]bool)
+		}
+		seen := make(map[string]bool, len(a.ImportCreators))
+		for _, c := range a.ImportCreators {
+			seen[normalizeSiteIDUI(c.Site)+":"+c.UID] = true
+		}
+		for _, item := range pg.Items {
+			norm := normalizeSiteIDUI(firstNonEmptyStrUI(item.Site, siteID))
+			item.Site = norm
+			k := norm + ":" + item.UID
+			if item.UID == "" || seen[k] {
+				continue
+			}
+			a.ImportCreators = append(a.ImportCreators, item)
+			seen[k] = true
+			if norm == string(site.Bilibili) {
+				mid, _ := strconv.ParseInt(item.UID, 10, 64)
+				a.ImportFollowings = append(a.ImportFollowings, bilibili.FollowingUser{
+					Mid:   mid,
+					Uname: item.Name,
+					Face:  item.Face,
+					Sign:  item.Sign,
+				})
 			}
 		}
-		a.ImportPage, a.ImportHasMore = page, len(users) == 50
+		if pg.Page > 0 {
+			a.ImportPage = pg.Page
+		} else {
+			a.ImportPage = page
+		}
+		a.ImportHasMore = pg.HasMore
+		a.ImportGroupsEnabled = pg.GroupsEnabled && len(a.ImportGroupsDTO) > 0
 	}, func(err error) { a.ImportError = userErrorText(err); a.showError(err) })
 }
 
@@ -132,7 +171,7 @@ func (a *App) selectedSubscriptionAccountKeys() []string {
 			var keys []string
 			for _, acc := range sub.Accounts {
 				siteID, ok := site.ParseID(firstNonEmptyStrUI(acc.Site, string(site.Bilibili)))
-				if !ok || strings.TrimSpace(acc.UID) == "" {
+				if !ok || siteID == site.Weibo || strings.TrimSpace(acc.UID) == "" {
 					continue
 				}
 				keys = append(keys, site.AccountKey(siteID, acc.UID))

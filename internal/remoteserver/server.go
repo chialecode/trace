@@ -390,7 +390,7 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request, body []byte) {
 		writeJSON(w, http.StatusOK, info)
 	case strings.HasPrefix(path, "credentials/") && (r.Method == http.MethodPut || r.Method == http.MethodDelete):
 		siteID := strings.ToLower(strings.TrimPrefix(path, "credentials/"))
-		if siteID != string(site.Bilibili) && siteID != string(site.Douyin) {
+		if !site.ID(siteID).Valid() {
 			writeError(w, http.StatusNotFound, remote.CodeNotFound, "不支持这个站点", nil)
 			return
 		}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chialecode/trace/internal/site"
+	"github.com/chialecode/trace/internal/site/weibo"
 	"github.com/chialecode/trace/internal/storage"
 	"github.com/chialecode/trace/internal/subscription"
 )
@@ -23,7 +24,7 @@ import (
 
 const avatarRefreshAge = 7 * 24 * time.Hour
 
-var avatarFileRe = regexp.MustCompile(`^(bilibili|douyin)-[0-9a-f]{20}\.png$`)
+var avatarFileRe = regexp.MustCompile(`^(bilibili|douyin|weibo)-[0-9a-f]{20}\.png$`)
 
 func (b *Backend) avatarDir() string {
 	if b.loc.DataDir == "" {
@@ -35,7 +36,7 @@ func (b *Backend) avatarDir() string {
 func avatarFileName(siteID, uid string) string {
 	siteID = strings.ToLower(strings.TrimSpace(siteID))
 	uid = strings.TrimSpace(uid)
-	if (siteID != string(site.Bilibili) && siteID != string(site.Douyin)) || uid == "" {
+	if !site.ID(siteID).Valid() || uid == "" {
 		return ""
 	}
 	sum := sha256.Sum256([]byte(siteID + ":" + uid))
@@ -56,14 +57,17 @@ func (b *Backend) AccountAvatarPath(siteID, uid string) string {
 }
 
 // rememberAvatar fetches and atomically saves a local PNG avatar in the background
-// when it is missing or older than avatarRefreshAge, enforcing INV-07 per-site login
-// before issuing any CDN request.
+// when it is missing or older than avatarRefreshAge, enforcing desktop-only profile
+// and INV-07 per-site login before issuing any CDN request.
 func (b *Backend) rememberAvatar(siteID, uid, rawFace string, defaultBilibili bool, onSaved func(normSite string)) {
+	if b.profile == ProfileRemote {
+		return
+	}
 	normSite := strings.ToLower(strings.TrimSpace(siteID))
 	if normSite == "" && defaultBilibili {
 		normSite = string(site.Bilibili)
 	}
-	if (normSite != string(site.Bilibili) && normSite != string(site.Douyin)) || strings.TrimSpace(rawFace) == "" {
+	if !site.ID(normSite).Valid() || strings.TrimSpace(rawFace) == "" {
 		return
 	}
 	sid := site.ID(normSite)
@@ -74,7 +78,7 @@ func (b *Backend) rememberAvatar(siteID, uid, rawFace string, defaultBilibili bo
 	if name == "" || dir == "" {
 		return
 	}
-	if (sid == site.Douyin && b.douyin == nil) || (sid == site.Bilibili && b.bili == nil) {
+	if (sid == site.Douyin && b.douyin == nil) || (sid == site.Bilibili && b.bili == nil) || (sid == site.Weibo && b.weibo == nil) {
 		return
 	}
 	path := filepath.Join(dir, name)
@@ -123,6 +127,18 @@ func (b *Backend) rememberAccountAvatars(accounts []subscription.AccountRef) {
 	}
 }
 
+func (b *Backend) rememberWeiboPostAvatars(post *weibo.Post) {
+	if post == nil {
+		return
+	}
+	if post.Author.UID != "" && post.Author.AvatarURL != "" {
+		b.rememberAccountAvatar(string(site.Weibo), post.Author.UID, post.Author.AvatarURL)
+	}
+	if post.Retweeted != nil && post.Retweeted.Author.UID != "" && post.Retweeted.Author.AvatarURL != "" {
+		b.rememberAccountAvatar(string(site.Weibo), post.Retweeted.Author.UID, post.Retweeted.Author.AvatarURL)
+	}
+}
+
 // rememberQueueAvatar caches a local PNG copy of a queue account's avatar (for Bilibili or Douyin)
 // so cache-queue.json never needs to store remote avatar URLs or query strings.
 func (b *Backend) rememberQueueAvatar(siteID, uid, rawFace string) {
@@ -133,7 +149,7 @@ func (b *Backend) rememberQueueAvatar(siteID, uid, rawFace string) {
 	})
 }
 
-// pruneAccountAvatars removes local avatars of accounts no subscription or cache queue task uses.
+// pruneAccountAvatars removes local avatars of accounts no subscription, cache queue task, or library item uses.
 func (b *Backend) pruneAccountAvatars() {
 	dir := b.avatarDir()
 	if dir == "" || b.subs == nil {
@@ -158,6 +174,17 @@ func (b *Backend) pruneAccountAvatars() {
 	if b.queue != nil {
 		for _, k := range b.queue.avatarKeys() {
 			keep[k] = true
+		}
+	}
+	if b.lib != nil {
+		authors, err := b.lib.DistinctAuthorRefs()
+		if err != nil {
+			return
+		}
+		for _, au := range authors {
+			if name := avatarFileName(au.Site, au.UID); name != "" {
+				keep[name] = true
+			}
 		}
 	}
 	for _, e := range entries {

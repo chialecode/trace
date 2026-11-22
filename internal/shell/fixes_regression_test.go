@@ -202,13 +202,13 @@ func TestCrashOutputPreservesExistingWhenBackupNameCollides(t *testing.T) {
 }
 
 func TestRenderTrayIconPNGCachingReturnsIndependentCopies(t *testing.T) {
-	idle1 := RenderTrayIconPNG(false)
-	idle2 := RenderTrayIconPNG(false)
+	idle1 := RenderTrayIconPNG(false, false)
+	idle2 := RenderTrayIconPNG(false, false)
 	if !bytes.Equal(idle1, idle2) {
 		t.Fatal("cached idle tray icons differed")
 	}
 	idle1[0] ^= 0xff
-	if bytes.Equal(idle1, RenderTrayIconPNG(false)) {
+	if bytes.Equal(idle1, RenderTrayIconPNG(false, false)) {
 		t.Fatal("mutating returned slice corrupted cached tray icon PNG")
 	}
 }

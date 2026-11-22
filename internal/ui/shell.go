@@ -25,7 +25,7 @@ func (a *App) contextPanelWidth(w float32) float32 {
 			return 232
 		}
 		return 72
-	case RouteHome, RouteSubscriptions, RouteMine, RouteLibrary, RouteLibraryItem, RouteTasks, RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser:
+	case RouteHome, RouteSubscriptions, RouteMine, RouteLibrary, RouteLibraryItem, RouteTasks, RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser, RouteWeiboPost, RouteWeiboUser:
 		if w >= 1280 {
 			return 272
 		}
@@ -40,7 +40,7 @@ func (a *App) contextPanelWidth(w float32) float32 {
 // grids and lists of rows use the whole width.
 func (a *App) pageWidth(contentW float32) float32 {
 	switch a.CurrentRoute {
-	case RouteHome, RouteVideo, RouteUser, RouteDouyinWork, RouteLibraryItem, RouteLogin:
+	case RouteHome, RouteVideo, RouteUser, RouteDouyinWork, RouteWeiboPost, RouteWeiboUser, RouteLibraryItem, RouteLogin:
 		return min(contentW, 680)
 	case RouteSubscriptions:
 		if a.SubDetailOpen {
@@ -62,14 +62,28 @@ func (a *App) pageWidth(contentW float32) float32 {
 }
 
 // primaryAccountSummary picks the primary signed-in account (Bilibili first,
-// then Douyin), falling back to an expired account when neither is signed in.
+// then Douyin, then Weibo), falling back to an expired account when none is signed in.
 func (a *App) primaryAccountSummary() (acct credential.Status, acctSite, uid, name, tip string) {
-	bili := a.backend.StatusOf("bilibili")
-	dy := a.backend.StatusOf("douyin")
-	acct, acctSite = bili, "bilibili"
-	if !bili.LoggedIn {
-		if dy.LoggedIn || (bili.State != "expired" && dy.State == "expired") {
-			acct, acctSite = dy, "douyin"
+	order := []string{"bilibili", "douyin", "weibo"}
+	statuses := make([]credential.Status, len(order))
+	for i, s := range order {
+		statuses[i] = a.backend.StatusOf(s)
+	}
+	acct, acctSite = statuses[0], order[0]
+	found := false
+	for i, st := range statuses {
+		if st.LoggedIn {
+			acct, acctSite = st, order[i]
+			found = true
+			break
+		}
+	}
+	if !found {
+		for i, st := range statuses {
+			if st.State == "expired" {
+				acct, acctSite = st, order[i]
+				break
+			}
 		}
 	}
 	uid = firstNonEmptyStrUI(acct.SecUID, acct.UID)
@@ -80,6 +94,8 @@ func (a *App) primaryAccountSummary() (acct credential.Status, acctSite, uid, na
 		name = fmt.Sprintf("UID %d", acct.Mid)
 	case acct.LoggedIn && acctSite == "douyin":
 		name = firstNonEmptyStrUI(acct.UniqueID, acct.UID, "抖音账号")
+	case acct.LoggedIn && acctSite == "weibo":
+		name = firstNonEmptyStrUI(acct.UID, "微博账号")
 	case acct.State == "expired":
 		name = "登录已过期"
 	default:
@@ -90,6 +106,8 @@ func (a *App) primaryAccountSummary() (acct credential.Status, acctSite, uid, na
 		tip = fmt.Sprintf("%s (UID %d)", name, acct.Mid)
 	} else if acctSite == "douyin" && acct.UniqueID != "" {
 		tip = fmt.Sprintf("%s (抖音号 %s)", name, acct.UniqueID)
+	} else if acctSite == "weibo" && acct.UID != "" {
+		tip = fmt.Sprintf("%s (UID %s)", name, acct.UID)
 	}
 	return acct, acctSite, uid, name, tip
 }
@@ -111,7 +129,7 @@ func (a *App) renderRail(c *ui.Context) {
 				nav := item
 				active := a.CurrentRoute == nav.Route ||
 					(nav.Route == RouteLibrary && a.CurrentRoute == RouteLibraryItem) ||
-					(nav.Route == RouteParse && (a.CurrentRoute == RouteVideo || a.CurrentRoute == RouteUser || a.CurrentRoute == RouteDouyinWork || a.CurrentRoute == RouteDouyinUser))
+					(nav.Route == RouteParse && (a.CurrentRoute == RouteVideo || a.CurrentRoute == RouteUser || a.CurrentRoute == RouteDouyinWork || a.CurrentRoute == RouteDouyinUser || a.CurrentRoute == RouteWeiboPost || a.CurrentRoute == RouteWeiboUser))
 				badge, dot := 0, false
 				tip := nav.Label
 				switch nav.Route {
@@ -197,7 +215,7 @@ func (a *App) renderContextPanel(c *ui.Context, width float32) {
 		a.renderTasksPanel(c)
 	case RouteMine:
 		a.renderMinePanel(c)
-	case RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser:
+	case RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser, RouteWeiboPost, RouteWeiboUser:
 		a.renderHistoryPanel(c)
 	}
 }
@@ -475,7 +493,7 @@ func (a *App) renderLibraryPanel(c *ui.Context) {
 					aKey := row.authorKey
 					label := fmt.Sprintf("按UP主筛选 %d", author.Mid)
 					active := aSite == "bilibili" && author.Mid > 0 && a.LibraryCreatorMid == author.Mid && a.LibraryAuthorKey == ""
-					if aSite == "douyin" || author.Mid <= 0 {
+					if aSite != "bilibili" || author.Mid <= 0 {
 						label = "按作者筛选 " + aKey
 						active = a.LibraryAuthorKey == aKey
 					} else if a.LibraryAuthorKey == aKey {
@@ -585,6 +603,8 @@ func (a *App) renderHistoryPanel(c *ui.Context) {
 					case "dynamic":
 						if entrySite == "douyin" {
 							kindLabel = "图文"
+						} else if entrySite == "weibo" {
+							kindLabel = "微博"
 						} else {
 							kindLabel = "动态"
 						}
@@ -712,12 +732,23 @@ func (a *App) renderHistoryPanel(c *ui.Context) {
 
 // isCurrentHistoryEntry reports whether the page shows this history entry.
 func (a *App) isCurrentHistoryEntry(siteID, kind, id string) bool {
-	if normalizeSiteIDUI(siteID) == "douyin" {
+	switch normalizeSiteIDUI(siteID) {
+	case "douyin":
 		switch kind {
 		case "video", "note", "dynamic":
 			return a.CurrentRoute == RouteDouyinWork && a.CurrentDouyinWork != nil && a.CurrentDouyinWork.ID == id
 		case "user", "live":
 			return a.CurrentRoute == RouteDouyinUser && a.CurrentDouyinUser != nil && (a.CurrentDouyinUser.SecUID == id || a.CurrentDouyinUser.WebRID == id)
+		}
+		return false
+	case "weibo":
+		switch kind {
+		case "dynamic", "note":
+			return a.CurrentRoute == RouteWeiboPost && a.CurrentWeiboPost != nil && a.CurrentWeiboPost.Mid == id
+		case "video":
+			return a.CurrentRoute == RouteWeiboPost && ((a.CurrentWeiboVideo != nil && a.CurrentWeiboVideo.ObjectID == id) || (a.CurrentWeiboPost != nil && a.CurrentWeiboPost.Mid == id))
+		case "user":
+			return a.CurrentRoute == RouteWeiboUser && a.CurrentWeiboUser != nil && a.CurrentWeiboUser.UID == id
 		}
 		return false
 	}

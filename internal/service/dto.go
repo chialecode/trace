@@ -11,6 +11,7 @@ import (
 	"github.com/chialecode/trace/internal/live"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/douyin"
+	"github.com/chialecode/trace/internal/site/weibo"
 )
 
 // RenewalStatus summarizes automatic session renewal capability and state for a site.
@@ -169,6 +170,194 @@ type DouyinLiveView struct {
 	AudioOnly    bool              `json:"audioOnly,omitempty"`
 	CanonicalURL string            `json:"canonicalUrl"`
 	State        *LiveAccountState `json:"state,omitempty"`
+}
+
+// WeiboAuthorDTO holds normalized Weibo creator metadata for UI rendering
+// without requiring internal/ui to import internal/site/weibo.
+type WeiboAuthorDTO struct {
+	UID            string `json:"uid"`
+	ScreenName     string `json:"screenName"`
+	AvatarURL      string `json:"avatarUrl,omitempty"`
+	Domain         string `json:"domain,omitempty"`
+	Description    string `json:"description,omitempty"`
+	Verified       bool   `json:"verified,omitempty"`
+	VerifiedType   int    `json:"verifiedType,omitempty"`
+	VerifiedReason string `json:"verifiedReason,omitempty"`
+	StatusesCount  int    `json:"statusesCount,omitempty"`
+	FollowersCount int64  `json:"followersCount,omitempty"`
+	FriendsCount   int64  `json:"friendsCount,omitempty"`
+}
+
+// WeiboStatsDTO holds online-only engagement counters for a Weibo post (never cached to disk per DEC-040).
+type WeiboStatsDTO struct {
+	RepostsCount   int64 `json:"repostsCount"`
+	CommentsCount  int64 `json:"commentsCount"`
+	AttitudesCount int64 `json:"attitudesCount"`
+}
+
+// WeiboMediaItemDTO represents one ordered media attachment (image, GIF, LivePhoto, or mixed video).
+type WeiboMediaItemDTO struct {
+	Index             int    `json:"index"` // 1-based
+	PicID             string `json:"picId,omitempty"`
+	ObjectID          string `json:"objectId,omitempty"`
+	Kind              string `json:"kind"` // "image", "gif", "live_photo", "video"
+	FromOrigin        bool   `json:"fromOrigin,omitempty"`
+	Width             int    `json:"width,omitempty"`
+	Height            int    `json:"height,omitempty"`
+	DurationSec       int    `json:"durationSec,omitempty"`
+	ImageURL          string `json:"imageUrl,omitempty"`
+	PublicPreviewURL  string `json:"publicPreviewUrl,omitempty"`
+	MotionURL         string `json:"motionUrl,omitempty"`
+	NeedsLivePhotoHop bool   `json:"needsLivePhotoHop,omitempty"`
+	Codec             string `json:"codec,omitempty"`
+	QualityLabel      string `json:"qualityLabel,omitempty"`
+	FPS               int    `json:"fps,omitempty"`
+	Bitrate           int64  `json:"bitrate,omitempty"`
+}
+
+// WeiboVideoDTO holds normalized progressive MP4 video metadata attached to a Weibo post or 1034: page.
+type WeiboVideoDTO struct {
+	ObjectID       string `json:"objectId,omitempty"`
+	Title          string `json:"title,omitempty"`
+	DurationSec    int    `json:"durationSec,omitempty"`
+	CoverURL       string `json:"coverUrl,omitempty"`
+	PublicCoverURL string `json:"publicCoverUrl,omitempty"`
+	VideoURL       string `json:"videoUrl,omitempty"`
+	Codec          string `json:"codec,omitempty"`
+	QualityLabel   string `json:"qualityLabel,omitempty"`
+	QualityDesc    string `json:"qualityDesc,omitempty"`
+	Width          int    `json:"width,omitempty"`
+	Height         int    `json:"height,omitempty"`
+	FPS            int    `json:"fps,omitempty"`
+	Bitrate        int64  `json:"bitrate,omitempty"`
+	Size           int64  `json:"size,omitempty"`
+}
+
+// WeiboRichCardDTO represents a degraded non-media card (article, vote, music, webpage, live).
+type WeiboRichCardDTO struct {
+	Kind        string `json:"kind"` // "article", "vote", "music", "webpage", "live"
+	Label       string `json:"label"`
+	Title       string `json:"title,omitempty"`
+	Desc        string `json:"desc,omitempty"`
+	URL         string `json:"url,omitempty"`
+	CoverURL    string `json:"coverUrl,omitempty"`
+	ObjectID    string `json:"objectId,omitempty"`
+	Unsupported bool   `json:"unsupported"`
+}
+
+// WeiboPostView holds the normalized UI-facing view of a single Weibo post.
+type WeiboPostView struct {
+	Mid               string                `json:"mid"`
+	MblogID           string                `json:"mblogid,omitempty"`
+	Author            WeiboAuthorDTO        `json:"author"`
+	CreatedAt         int64                 `json:"createdAt"`
+	Text              string                `json:"text"`
+	TextRaw           string                `json:"textRaw,omitempty"`
+	IsLongText        bool                  `json:"isLongText,omitempty"`
+	LongTextFetched   bool                  `json:"longTextFetched,omitempty"`
+	Source            string                `json:"source,omitempty"`
+	RegionName        string                `json:"regionName,omitempty"`
+	EditCount         int                   `json:"editCount,omitempty"`
+	IsTop             bool                  `json:"isTop,omitempty"`
+	IsRetweet         bool                  `json:"isRetweet,omitempty"`
+	IsFastRetweet     bool                  `json:"isFastRetweet,omitempty"`
+	OriMid            string                `json:"oriMid,omitempty"`
+	Retweeted         *WeiboPostView        `json:"retweeted,omitempty"`
+	OriginIncomplete  bool                  `json:"originIncomplete,omitempty"`
+	ForwarderHintUID  string                `json:"forwarderHintUid,omitempty"`
+	ForwarderHintName string                `json:"forwarderHintName,omitempty"`
+	RuleType          string                `json:"ruleType"` // "forward", "video", "draw", "word"
+	VisibleType       int                   `json:"visibleType,omitempty"`
+	VisibleLabel      string                `json:"visibleLabel,omitempty"`
+	Images            []WeiboMediaItemDTO   `json:"images,omitempty"`
+	Video             *WeiboVideoDTO        `json:"video,omitempty"`
+	Card              *WeiboRichCardDTO     `json:"card,omitempty"`
+	Stats             WeiboStatsDTO         `json:"stats"`
+	Unavailable       bool                  `json:"unavailable,omitempty"`
+	UnavailableReason string                `json:"unavailableReason,omitempty"`
+	CanonicalURL      string                `json:"canonicalUrl"`
+	CacheKey          string                `json:"cacheKey"`
+	CacheState        library.DotState      `json:"cacheState"`
+	CachedItem        *library.ItemMetadata `json:"cachedItem,omitempty"`
+}
+
+// WeiboVideoView holds the result of opening a standalone 1034:<id> Weibo video page.
+// When HostPost is non-nil, the video resolved to its host post (weibo:dynamic:<mid>);
+// otherwise it uses the standalone key weibo:video:1034_<id>.
+type WeiboVideoView struct {
+	ObjectID     string                `json:"objectId"`
+	HostMid      string                `json:"hostMid,omitempty"`
+	HostPost     *WeiboPostView        `json:"hostPost,omitempty"`
+	Title        string                `json:"title,omitempty"`
+	AuthorUID    string                `json:"authorUid,omitempty"`
+	AuthorName   string                `json:"authorName,omitempty"`
+	Video        *WeiboVideoDTO        `json:"video,omitempty"`
+	CanonicalURL string                `json:"canonicalUrl"`
+	CacheKey     string                `json:"cacheKey"`
+	CacheState   library.DotState      `json:"cacheState"`
+	CachedItem   *library.ItemMetadata `json:"cachedItem,omitempty"`
+}
+
+// WeiboUserView holds a Weibo creator's profile header fields.
+type WeiboUserView struct {
+	UID             string `json:"uid"`
+	ScreenName      string `json:"screenName"`
+	AvatarURL       string `json:"avatarUrl,omitempty"`
+	Description     string `json:"description,omitempty"`
+	StatusesCount   int    `json:"statusesCount"`
+	FollowersCount  int64  `json:"followersCount"`
+	FriendsCount    int64  `json:"friendsCount"`
+	Verified        bool   `json:"verified,omitempty"`
+	VerifiedType    int    `json:"verifiedType,omitempty"`
+	VerifiedReason  string `json:"verifiedReason,omitempty"`
+	Domain          string `json:"domain,omitempty"`
+	CoverImagePhone string `json:"coverImagePhone,omitempty"`
+	BlockText       string `json:"blockText,omitempty"`
+	CanonicalURL    string `json:"canonicalUrl"`
+}
+
+// WeiboUserPostsPage holds one paginated page of a Weibo creator's timeline.
+type WeiboUserPostsPage struct {
+	Posts             []WeiboPostView `json:"posts"`
+	Page              int             `json:"page"`
+	NextCursor        string          `json:"nextCursor,omitempty"`
+	HasMore           bool            `json:"hasMore"`
+	BottomTipsVisible bool            `json:"bottomTipsVisible,omitempty"`
+	BottomTipsText    string          `json:"bottomTipsText,omitempty"`
+	UncertainEmpty    bool            `json:"uncertainEmpty,omitempty"`
+	UncertainReason   string          `json:"uncertainReason,omitempty"`
+	TotalWorks        int             `json:"totalWorks,omitempty"`
+}
+
+// FollowingGroupDTO represents a selectable following group for a site in the import dialog.
+type FollowingGroupDTO struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Count int    `json:"count,omitempty"`
+}
+
+// FollowingCreatorDTO represents one creator returned by a site's following list.
+type FollowingCreatorDTO struct {
+	Site         string `json:"site"`
+	UID          string `json:"uid"`
+	Name         string `json:"name"`
+	Face         string `json:"face,omitempty"`
+	Sign         string `json:"sign,omitempty"`
+	Subscribed   bool   `json:"subscribed"`
+	OwnerSubID   string `json:"ownerSubId,omitempty"`
+	OwnerSubName string `json:"ownerSubName,omitempty"`
+}
+
+// FollowingCreatorsPageDTO holds one page of a site's following list for subscription import.
+type FollowingCreatorsPageDTO struct {
+	Site          string                `json:"site"`
+	Items         []FollowingCreatorDTO `json:"items"`
+	Page          int                   `json:"page"`
+	NextPage      int                   `json:"nextPage,omitempty"`
+	NextCursor    string                `json:"nextCursor,omitempty"`
+	Total         int                   `json:"total,omitempty"`
+	HasMore       bool                  `json:"hasMore"`
+	GroupsEnabled bool                  `json:"groupsEnabled"`
 }
 
 // LiveAccountState describes the unified live broadcast and recording state of any <site>:<uid>
@@ -425,6 +614,183 @@ func mapDouyinUserView(u *douyin.UserProfile, liveRoom *LiveAccountState) *Douyi
 	}
 }
 
+func mapWeiboAuthorDTO(a weibo.AuthorSummary) WeiboAuthorDTO {
+	return WeiboAuthorDTO{
+		UID:            a.UID,
+		ScreenName:     a.ScreenName,
+		AvatarURL:      a.AvatarURL,
+		Domain:         a.Domain,
+		Description:    a.Description,
+		Verified:       a.Verified,
+		VerifiedType:   a.VerifiedType,
+		VerifiedReason: a.VerifiedReason,
+		StatusesCount:  a.StatusesCount,
+		FollowersCount: a.FollowersCount,
+		FriendsCount:   a.FriendsCount,
+	}
+}
+
+func mapWeiboVideoDTO(v *weibo.VideoAsset) *WeiboVideoDTO {
+	if v == nil {
+		return nil
+	}
+	out := &WeiboVideoDTO{
+		ObjectID:       v.ObjectID,
+		Title:          v.Title,
+		DurationSec:    v.DurationSec,
+		CoverURL:       firstNonEmpty(v.CoverURL, v.PublicCoverURL),
+		PublicCoverURL: v.PublicCoverURL,
+	}
+	if v.Selected != nil {
+		out.VideoURL = v.Selected.URL
+		out.Codec = v.Selected.Codec
+		out.QualityLabel = v.Selected.QualityLabel
+		out.QualityDesc = v.Selected.QualityDesc
+		out.Width = v.Selected.Width
+		out.Height = v.Selected.Height
+		out.FPS = v.Selected.FPS
+		out.Bitrate = v.Selected.Bitrate
+		out.Size = v.Selected.Size
+		if out.DurationSec <= 0 && v.Selected.DurationSec > 0 {
+			out.DurationSec = v.Selected.DurationSec
+		}
+	}
+	return out
+}
+
+func mapWeiboRichCardDTO(c *weibo.RichCard) *WeiboRichCardDTO {
+	if c == nil {
+		return nil
+	}
+	return &WeiboRichCardDTO{
+		Kind:        c.Kind,
+		Label:       c.Label,
+		Title:       c.Title,
+		Desc:        c.Desc,
+		URL:         c.URL,
+		CoverURL:    c.CoverURL,
+		ObjectID:    c.ObjectID,
+		Unsupported: c.Unsupported,
+	}
+}
+
+func mapWeiboMediaItems(assets []weibo.ImageAsset) []WeiboMediaItemDTO {
+	if len(assets) == 0 {
+		return nil
+	}
+	out := make([]WeiboMediaItemDTO, 0, len(assets))
+	for i, img := range assets {
+		idx := img.Index
+		if idx <= 0 {
+			idx = i + 1
+		}
+		dto := WeiboMediaItemDTO{
+			Index:             idx,
+			PicID:             img.PicID,
+			ObjectID:          img.ObjectID,
+			Kind:              img.Kind,
+			FromOrigin:        img.FromOrigin,
+			Width:             img.Width,
+			Height:            img.Height,
+			DurationSec:       img.DurationSec,
+			ImageURL:          firstNonEmpty(img.URL, img.PublicPreviewURL),
+			PublicPreviewURL:  img.PublicPreviewURL,
+			MotionURL:         img.MotionURL,
+			NeedsLivePhotoHop: img.NeedsLivePhotoHop,
+		}
+		if img.VideoStream != nil {
+			dto.Codec = img.VideoStream.Codec
+			dto.QualityLabel = img.VideoStream.QualityLabel
+			dto.FPS = img.VideoStream.FPS
+			dto.Bitrate = img.VideoStream.Bitrate
+			if dto.MotionURL == "" {
+				dto.MotionURL = img.VideoStream.URL
+			}
+			if dto.Width == 0 {
+				dto.Width = img.VideoStream.Width
+			}
+			if dto.Height == 0 {
+				dto.Height = img.VideoStream.Height
+			}
+			if dto.DurationSec == 0 {
+				dto.DurationSec = img.VideoStream.DurationSec
+			}
+		}
+		out = append(out, dto)
+	}
+	return out
+}
+
+func mapWeiboPostView(p *weibo.Post, cached *library.ItemMetadata, cacheState library.DotState) *WeiboPostView {
+	if p == nil {
+		return nil
+	}
+	cacheKey := ""
+	if strings.TrimSpace(p.Mid) != "" {
+		cacheKey = weibo.PostItemKey(p.Mid)
+	}
+	if cacheState.Key == "" && cacheKey != "" {
+		cacheState.Key = cacheKey
+	}
+	out := &WeiboPostView{
+		Mid:               p.Mid,
+		MblogID:           p.MblogID,
+		Author:            mapWeiboAuthorDTO(p.Author),
+		CreatedAt:         p.CreatedAt,
+		Text:              p.Text,
+		TextRaw:           p.TextRaw,
+		IsLongText:        p.IsLongText,
+		LongTextFetched:   p.LongTextFetched,
+		Source:            p.Source,
+		RegionName:        p.RegionName,
+		EditCount:         p.EditCount,
+		IsTop:             p.IsTop,
+		IsRetweet:         p.IsRetweet,
+		IsFastRetweet:     p.IsFastRetweet,
+		OriMid:            p.OriMid,
+		OriginIncomplete:  p.OriginIncomplete,
+		RuleType:          p.RuleType,
+		VisibleType:       p.Visible.Type,
+		VisibleLabel:      p.Visible.Label,
+		Images:            mapWeiboMediaItems(p.Images),
+		Video:             mapWeiboVideoDTO(p.Video),
+		Card:              mapWeiboRichCardDTO(p.Card),
+		Stats:             WeiboStatsDTO{RepostsCount: p.Stats.RepostsCount, CommentsCount: p.Stats.CommentsCount, AttitudesCount: p.Stats.AttitudesCount},
+		Unavailable:       p.Unavailable,
+		UnavailableReason: p.UnavailableReason,
+		CanonicalURL:      p.CanonicalURL,
+		CacheKey:          cacheKey,
+		CacheState:        cacheState,
+		CachedItem:        cached,
+	}
+	if p.Retweeted != nil {
+		out.Retweeted = mapWeiboPostView(p.Retweeted, nil, library.DotState{})
+	}
+	return out
+}
+
+func mapWeiboUserView(u *weibo.UserProfile) *WeiboUserView {
+	if u == nil {
+		return nil
+	}
+	return &WeiboUserView{
+		UID:             u.UID,
+		ScreenName:      u.ScreenName,
+		AvatarURL:       u.AvatarURL,
+		Description:     u.Description,
+		StatusesCount:   u.StatusesCount,
+		FollowersCount:  u.FollowersCount,
+		FriendsCount:    u.FriendsCount,
+		Verified:        u.Verified,
+		VerifiedType:    u.VerifiedType,
+		VerifiedReason:  u.VerifiedReason,
+		Domain:          u.Domain,
+		CoverImagePhone: u.CoverImagePhone,
+		BlockText:       u.BlockText,
+		CanonicalURL:    u.CanonicalURL,
+	}
+}
+
 func formatAccountKey(siteID site.ID, uid string) string {
 	if key, err := site.FormatAccountKey(siteID, uid); err == nil {
 		return key
@@ -437,15 +803,23 @@ func formatAccountKey(siteID site.ID, uid string) string {
 }
 
 func mapRoomToAccountState(rs live.RoomState) LiveAccountState {
-	isDouyin := strings.EqualFold(rs.Site, string(site.Douyin))
-	siteID := site.Bilibili
-	if isDouyin {
+	var siteID site.ID
+	switch strings.ToLower(strings.TrimSpace(rs.Site)) {
+	case "", string(site.Bilibili):
+		siteID = site.Bilibili
+	case string(site.Douyin):
 		siteID = site.Douyin
+	case string(site.Weibo):
+		siteID = site.Weibo
+	default:
+		siteID = site.ID(strings.ToLower(strings.TrimSpace(rs.Site)))
 	}
+	isDouyin := siteID == site.Douyin
+	isBilibili := siteID == site.Bilibili
 
 	uidStr := strings.TrimSpace(rs.AccountUID)
 	var mid int64
-	if !isDouyin && rs.UID > 0 {
+	if isBilibili && rs.UID > 0 {
 		uidStr = strconv.FormatInt(rs.UID, 10)
 		mid = rs.UID
 	}

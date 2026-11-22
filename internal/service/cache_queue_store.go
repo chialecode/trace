@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -30,7 +29,7 @@ const (
 	CacheQueueStopped        = "stopped"
 
 	cacheQueueFileName       = "cache-queue.json"
-	cacheQueueSchemaVersion  = 1
+	cacheQueueSchemaVersion  = 2
 	maxCacheQueueRecentItems = 30
 )
 
@@ -99,19 +98,21 @@ func (rt *realCacheQueueTimer) Stop() bool {
 	return rt.t.Stop()
 }
 
-// CacheQueueRequest asks to enqueue an entire creator list ("dynamics", "videos", or "works")
+// CacheQueueRequest asks to enqueue an entire creator list ("dynamics", "videos", "works", or "posts")
 // for conservative newest-to-oldest background caching.
 type CacheQueueRequest struct {
-	Site      string                   `json:"site"`
-	List      string                   `json:"list"`
-	User      string                   `json:"user"`
-	UserName  string                   `json:"userName"`
-	AvatarURL string                   `json:"avatarUrl"`
-	Dynamics  []bilibili.DynamicItem   `json:"-"`
-	Videos    []bilibili.UserVideoItem `json:"-"`
-	Works     []DouyinWorkCardDTO      `json:"-"`
-	Cursor    string                   `json:"cursor"`
-	HasMore   bool                     `json:"hasMore"`
+	Site           string                   `json:"site"`
+	List           string                   `json:"list"`
+	User           string                   `json:"user"`
+	UserName       string                   `json:"userName"`
+	AvatarURL      string                   `json:"avatarUrl"`
+	Dynamics       []bilibili.DynamicItem   `json:"-"`
+	Videos         []bilibili.UserVideoItem `json:"-"`
+	Works          []DouyinWorkCardDTO      `json:"-"`
+	WeiboPosts     []WeiboPostView          `json:"-"`
+	Cursor         string                   `json:"cursor"`
+	HasMore        bool                     `json:"hasMore"`
+	CompletionNote string                   `json:"completionNote,omitempty"`
 	// Origin is QueueOriginFullCache when a full-cache rule started the run
 	// (DEC-061); empty for "全部缓存" on a user page.
 	Origin string `json:"origin,omitempty"`
@@ -141,6 +142,7 @@ type CacheQueueTask struct {
 	StatusText       string                 `json:"statusText"`
 	PauseReason      string                 `json:"pauseReason,omitempty"`
 	StopReason       string                 `json:"stopReason,omitempty"`
+	Note             string                 `json:"note,omitempty"`
 	Cursor           string                 `json:"cursor,omitempty"`
 	HasMore          bool                   `json:"hasMore"`
 	CachedCount      int                    `json:"cachedCount"`
@@ -182,6 +184,7 @@ type cacheQueueRecord struct {
 	Status             string                 `json:"status"`
 	PauseReason        string                 `json:"pauseReason,omitempty"`
 	StopReason         string                 `json:"stopReason,omitempty"`
+	Note               string                 `json:"note,omitempty"`
 	NextRunAt          string                 `json:"nextRunAt,omitempty"`
 	CreatedAt          string                 `json:"createdAt"`
 	UpdatedAt          string                 `json:"updatedAt"`
@@ -193,6 +196,7 @@ type cacheQueueRuntime struct {
 	pageIdx                int
 	pageNextCursor         string
 	pageNextHasMore        bool
+	pageCompletionNote     string
 	pageLoaded             bool
 	seenKeys               map[string]bool
 	nextPartEnqueuers      []queuePartEnqueuer
@@ -227,41 +231,6 @@ var (
 	queueSecretKVPattern  = regexp.MustCompile(`(?i)\b(?:` + secretKeyNamesPattern + `)["'\\]*\s*[=:][^\s;"'<>]*|\btrace-remote:\S+|\bbearer\s+\S+`)
 )
 
-// guardCacheQueueSchema checks <dataDir>/cache-queue.json before databases open:
-// files written by a newer schema version are refused; corrupt files are backed up.
-func guardCacheQueueSchema(dataDir string) (string, error) {
-	if strings.TrimSpace(dataDir) == "" {
-		return "", nil
-	}
-	path := filepath.Join(dataDir, cacheQueueFileName)
-	raw, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	var probe struct {
-		Version int `json:"version"`
-	}
-	if jErr := json.Unmarshal(raw, &probe); jErr != nil {
-		backup, bErr := storage.BackupCorruptFile(path)
-		if bErr != nil {
-			return "", bErr
-		}
-		_ = os.Remove(path)
-		return backup, nil
-	}
-	if probe.Version > cacheQueueSchemaVersion {
-		return "", &storage.NewerDataError{
-			File:      cacheQueueFileName,
-			Found:     probe.Version,
-			Supported: cacheQueueSchemaVersion,
-		}
-	}
-	return "", nil
-}
-
 func newCacheQueueManager(b *Backend, path string, clock CacheQueueClock, rng CacheQueueRand, pacing *CacheQueuePacing) (*cacheQueueManager, string, error) {
 	if clock == nil {
 		clock = realCacheQueueClock{}
@@ -273,16 +242,17 @@ func newCacheQueueManager(b *Backend, path string, clock CacheQueueClock, rng Ca
 	if pacing != nil {
 		cfg = *pacing
 	}
+	siteWake := make(map[site.ID]chan struct{}, len(site.All()))
+	for _, sid := range site.All() {
+		siteWake[sid] = make(chan struct{}, 1)
+	}
 	m := &cacheQueueManager{
-		b:      b,
-		path:   path,
-		clock:  clock,
-		rng:    rng,
-		pacing: cfg,
-		siteWake: map[site.ID]chan struct{}{
-			site.Bilibili: make(chan struct{}, 1),
-			site.Douyin:   make(chan struct{}, 1),
-		},
+		b:        b,
+		path:     path,
+		clock:    clock,
+		rng:      rng,
+		pacing:   cfg,
+		siteWake: siteWake,
 	}
 	backup, err := m.loadFromDiskLocked()
 	if err != nil {
@@ -339,6 +309,22 @@ func (m *cacheQueueManager) loadFromDiskLocked() (string, error) {
 			},
 		})
 	}
+	if doc.Version < cacheQueueSchemaVersion {
+		oldVersion := doc.Version
+		if oldVersion <= 0 {
+			oldVersion = 1
+		}
+		backupPath := fmt.Sprintf("%s.premigrate-%d", m.path, oldVersion)
+		if info, statErr := os.Stat(backupPath); statErr != nil || info.IsDir() {
+			if _, bErr := storage.BackupBeforeMigration(m.path, oldVersion); bErr != nil {
+				return "", fmt.Errorf("service: back up %s before migration: %w", cacheQueueFileName, bErr)
+			}
+		}
+		migratedDoc := m.buildPersistDocLocked()
+		if err := storage.WriteMigratedJSONAtomic(m.path, migratedDoc, 0o600); err != nil {
+			return "", err
+		}
+	}
 	return "", nil
 }
 
@@ -368,6 +354,17 @@ func sanitizeCursor(c string) string {
 	return c
 }
 
+// sanitizeQueueCursor validates pagination cursors persisted in cache-queue.json.
+// Allows a colon for Weibo's "<page>:<since_id>" format while rejecting URLs,
+// query strings, whitespace, and path separators.
+func sanitizeQueueCursor(c string) string {
+	c = strings.TrimSpace(c)
+	if c == "" || strings.Contains(c, "://") || strings.ContainsAny(c, "?=&;/\\ \t\r\n\"'<>") {
+		return ""
+	}
+	return c
+}
+
 func sanitizeItemKey(k string) string {
 	k = strings.TrimSpace(k)
 	if strings.ContainsAny(k, "?=&;/\\ \t\r\n") || strings.Contains(k, "://") {
@@ -392,10 +389,11 @@ func sanitizeQueueRecord(r cacheQueueRecord) cacheQueueRecord {
 	if !avatarFileRe.MatchString(r.AvatarKey) {
 		r.AvatarKey = ""
 	}
-	r.Cursor = sanitizeCursor(r.Cursor)
+	r.Cursor = sanitizeQueueCursor(r.Cursor)
 	r.ActiveItemKey = sanitizeItemKey(r.ActiveItemKey)
 	r.ActiveTitle = sanitizeQueueText(r.ActiveTitle)
 	r.StopReason = sanitizeQueueText(r.StopReason)
+	r.Note = sanitizeQueueText(r.Note)
 	r.PauseReason = sanitizeCursor(r.PauseReason)
 	r.NextRunAt = sanitizeCursorFallbackRFC3339(r.NextRunAt)
 	r.CreatedAt = sanitizeCursorFallbackRFC3339(r.CreatedAt)
@@ -469,13 +467,7 @@ func isUnfinishedQueueStatus(status string) bool {
 	return status != CacheQueueCompleted && status != CacheQueueStopped
 }
 
-func (m *cacheQueueManager) saveLocked() error {
-	if strings.TrimSpace(m.path) == "" {
-		return nil
-	}
-	if len(m.tasks) == 0 && !m.fileExists {
-		return nil
-	}
+func (m *cacheQueueManager) buildPersistDocLocked() cacheQueueFile {
 	doc := cacheQueueFile{
 		Version: cacheQueueSchemaVersion,
 		Tasks:   make([]cacheQueueRecord, 0, len(m.tasks)),
@@ -485,11 +477,23 @@ func (m *cacheQueueManager) saveLocked() error {
 		rec.UserName = m.sanitizeText(rec.UserName)
 		rec.ActiveTitle = m.sanitizeText(rec.ActiveTitle)
 		rec.StopReason = m.sanitizeText(rec.StopReason)
+		rec.Note = m.sanitizeText(rec.Note)
 		for i := range rec.RecentItems {
 			rec.RecentItems[i].Title = m.sanitizeText(rec.RecentItems[i].Title)
 		}
 		doc.Tasks = append(doc.Tasks, rec)
 	}
+	return doc
+}
+
+func (m *cacheQueueManager) saveLocked() error {
+	if strings.TrimSpace(m.path) == "" {
+		return nil
+	}
+	if len(m.tasks) == 0 && !m.fileExists {
+		return nil
+	}
+	doc := m.buildPersistDocLocked()
 	if err := storage.WriteJSONAtomic(m.path, doc, 0o600); err != nil {
 		return err
 	}
@@ -592,6 +596,9 @@ func (m *cacheQueueManager) statusTextLocked(rec cacheQueueRecord) string {
 		}
 		return firstNonEmpty(rec.StopReason, "已暂停")
 	case CacheQueueCompleted:
+		if rec.Note != "" {
+			return "已完成（" + rec.Note + "）"
+		}
 		return "已完成（已到列表末尾）"
 	case CacheQueueStopped:
 		return firstNonEmpty(rec.StopReason, "已停止")
@@ -629,6 +636,7 @@ func (m *cacheQueueManager) toDTOLocked(e *cacheQueueEntry) CacheQueueTask {
 		StatusText:       m.statusTextLocked(rec),
 		PauseReason:      rec.PauseReason,
 		StopReason:       rec.StopReason,
+		Note:             rec.Note,
 		Cursor:           rec.Cursor,
 		HasMore:          rec.HasMore,
 		CachedCount:      rec.CachedCount,

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -484,6 +485,8 @@ func verifyNoUppercaseTrace(root string) error {
 	})
 }
 
+var reSmokeWeiboXSRFHeader = regexp.MustCompile(`(?i)\bX-XSRF-TOKEN[ \t]*:[ \t]*[A-Za-z0-9%_-][A-Za-z0-9%|._+/=-]{7,}`)
+
 func scanDirForSecrets(root string) error {
 	extraMarkers := []string{
 		"SENTINEL_",
@@ -508,6 +511,9 @@ func scanDirForSecrets(root string) error {
 		text := string(raw)
 		if findings := sitecheck.ScanTextForSecrets(text); len(findings) > 0 {
 			return fmt.Errorf("%s in %s", findings[0], filepath.Base(path))
+		}
+		if reSmokeWeiboXSRFHeader.MatchString(text) {
+			return fmt.Errorf("found secret marker %q in %s", "X-XSRF-TOKEN:", filepath.Base(path))
 		}
 		for _, m := range extraMarkers {
 			if strings.Contains(text, m) {

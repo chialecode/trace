@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -338,4 +339,67 @@ func (a *App) closeHomeActorFeed() {
 	a.FeedScroll = ui.ScrollState{}
 	a.FeedItems = nil
 	a.loadInitialFeed()
+}
+
+// refreshHomeFromDisk performs an offline local disk sync (0 network requests)
+// and reloads the Home timeline and sidebar subscription list / unread dots
+// while preserving the active site or subscription filter.
+func (a *App) refreshHomeFromDisk() {
+	if a.HomeRefreshRunning || a.isPending("home-refresh") || !a.backend.HasAnyLogin() {
+		return
+	}
+	a.HomeRefreshRunning = true
+	backend := a.backend
+	requestGuarded(a, "home-refresh", nil, func(context.Context) (library.RebuildReport, error) {
+		return backend.RefreshLibrary()
+	}, func(library.RebuildReport) {
+		a.HomeRefreshRunning = false
+		a.purgeMissingImages()
+		a.postCards = nil
+		a.cacheStateRev++
+		a.homeFilterViews = nil
+		a.savedMain = nil
+		a.refreshSubscriptions()
+		a.refreshLibraryStatistics()
+		a.homeSeenLocal = a.backend.GetUIState().HomeSeen
+		a.homeSeenRev++
+		a.homeSubOrder = nil
+		a.homeSubRowsValid = false
+		rows := a.homeSubscriptionRows()
+
+		if a.HomeActorFilter != nil {
+			actor := *a.HomeActorFilter
+			for _, r := range rows {
+				if r.Key == actor.Key || (actor.SubID != "" && r.SubID == actor.SubID) {
+					actor = r
+					break
+				}
+			}
+			a.openHomeActorFeed(actor)
+			return
+		}
+		req := library.FeedPageRequest{
+			Order:      "newest",
+			CachedOnly: true,
+			Site:       feedSiteParam(a.FeedSiteFilter),
+			Authors:    a.FeedAuthorsFilter,
+			AuthorRefs: a.FeedAuthorRefsFilter,
+			Limit:      60,
+		}
+		page, err := a.backend.FeedPage(req)
+		if err != nil {
+			a.FeedError = userErrorText(err)
+			a.showError(err)
+			return
+		}
+		a.FeedError = ""
+		a.FeedItems = page.Items
+		a.feedMoreBefore = false
+		a.feedMoreAfter = page.HasMore
+		a.resetFeedListState()
+		a.FeedListState.ScrollTo(0, ui.Start)
+	}, func(err error) {
+		a.HomeRefreshRunning = false
+		a.showError(fmt.Errorf("刷新主页失败：%w", err))
+	})
 }

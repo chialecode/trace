@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 )
 
 var (
 	reHTTPPrefix      = regexp.MustCompile(`(?i)https?://`)
-	reBareKnownDomain = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9._/-])((?:v\.douyin\.com|www\.douyin\.com|m\.douyin\.com|live\.douyin\.com|iesdouyin\.com|www\.iesdouyin\.com|v\.amemv\.com|webcast\.amemv\.com|mall\.douyin\.com|haohuo\.jinritemai\.com|b23\.tv|www\.b23\.tv|acg\.tv|www\.bilibili\.com|m\.bilibili\.com|space\.bilibili\.com|live\.bilibili\.com|t\.bilibili\.com)/[^\s"'<>` + "`" + `]+)`)
+	reBareKnownDomain = regexp.MustCompile(`(?:^|[^A-Za-z0-9._/-])((?i:v\.douyin\.com|www\.douyin\.com|m\.douyin\.com|live\.douyin\.com|iesdouyin\.com|www\.iesdouyin\.com|v\.amemv\.com|webcast\.amemv\.com|mall\.douyin\.com|haohuo\.jinritemai\.com|b23\.tv|www\.b23\.tv|acg\.tv|www\.bilibili\.com|m\.bilibili\.com|space\.bilibili\.com|live\.bilibili\.com|t\.bilibili\.com|www\.weibo\.com|video\.weibo\.com|live\.weibo\.com|weibointl\.api\.weibo\.com|weibo\.com|m\.weibo\.cn|share\.api\.weibo\.cn|weibo\.cn|t\.cn)/[^\x00-\x20\x7f-\x{10FFFF}"'<>` + "`" + `\\]+)`)
 	reDouyinGluedCode = regexp.MustCompile(`^(https?://v\.(?:douyin|amemv)\.com/[A-Za-z0-9_-]+)/\d+(?:\.\d+)?/?$`)
 	reDouyinSecUID    = regexp.MustCompile(`^MS4wLjAB[A-Za-z0-9_-]+$`)
 	reBiliBV          = regexp.MustCompile(`(?i)\bBV1[1-9A-NP-Za-km-z]{9}\b`)
@@ -33,35 +34,133 @@ var (
 		"amemv.com",
 		"jinritemai.com",
 	}
+	weiboDispatchDomains = []string{
+		"weibo.com",
+		"weibo.cn",
+		"t.cn",
+	}
 )
 
-// ExtractShareURL extracts the first HTTP(S) or known bare-domain URL from mixed share text,
+type extractedURLCandidate struct {
+	start int
+	end   int
+	url   string
+}
+
+func cleanExtractedURL(raw string) (string, bool) {
+	candidate := strings.TrimRight(raw, ".,;:!?)]}")
+	if candidate == "" || candidate == "https://" || candidate == "http://" {
+		return "", false
+	}
+	if m := reDouyinGluedCode.FindStringSubmatch(candidate); len(m) == 2 {
+		candidate = m[1] + "/"
+	}
+	return candidate, true
+}
+
+func isWeiboShortHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	return h == "t.cn" || strings.HasSuffix(h, ".t.cn")
+}
+
+func extractURLHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
+// ExtractShareURL extracts an HTTP(S) or known bare-domain URL from mixed share text,
 // stripping glued Chinese/Emoji suffixes, trailing sentence punctuation, and Douyin oral-code tails.
+// When multiple URLs appear and the first is a Weibo t.cn short link, explicit in-site Weibo
+// domain URLs take priority over t.cn.
 func ExtractShareURL(text string) (string, bool) {
 	s := strings.TrimSpace(text)
 	if s == "" {
 		return "", false
 	}
 
-	var candidate string
-	if loc := reHTTPPrefix.FindStringIndex(s); len(loc) == 2 {
-		candidate = scanASCIIURLToken(s[loc[0]:])
-	} else if loc := reBareKnownDomain.FindStringSubmatchIndex(s); len(loc) >= 4 {
-		candidate = "https://" + scanASCIIURLToken(s[loc[2]:])
-	}
-	if candidate == "" {
-		return "", false
+	var httpCandidates []extractedURLCandidate
+	for pos := 0; pos < len(s); {
+		loc := reHTTPPrefix.FindStringIndex(s[pos:])
+		if len(loc) != 2 {
+			break
+		}
+		start := pos + loc[0]
+		token := scanASCIIURLToken(s[start:])
+		end := start + len(token)
+		if end <= start {
+			pos = start + (loc[1] - loc[0])
+			continue
+		}
+		if cleaned, ok := cleanExtractedURL(token); ok {
+			httpCandidates = append(httpCandidates, extractedURLCandidate{
+				start: start,
+				end:   end,
+				url:   cleaned,
+			})
+		}
+		pos = end
 	}
 
-	candidate = strings.TrimRight(candidate, ".,;:!?)]}")
-	if candidate == "https://" || candidate == "http://" {
-		return "", false
+	var bareCandidates []extractedURLCandidate
+	for _, loc := range reBareKnownDomain.FindAllStringSubmatchIndex(s, -1) {
+		if len(loc) < 4 {
+			continue
+		}
+		start := loc[2]
+		token := scanASCIIURLToken(s[start:])
+		end := start + len(token)
+		if end <= start {
+			continue
+		}
+		overlaps := false
+		for _, hc := range httpCandidates {
+			if start < hc.end && end > hc.start {
+				overlaps = true
+				break
+			}
+		}
+		if !overlaps {
+			for _, bc := range bareCandidates {
+				if start < bc.end && end > bc.start {
+					overlaps = true
+					break
+				}
+			}
+		}
+		if overlaps {
+			continue
+		}
+		if cleaned, ok := cleanExtractedURL("https://" + token); ok {
+			bareCandidates = append(bareCandidates, extractedURLCandidate{
+				start: start,
+				end:   end,
+				url:   cleaned,
+			})
+		}
 	}
 
-	if m := reDouyinGluedCode.FindStringSubmatch(candidate); len(m) == 2 {
-		candidate = m[1] + "/"
+	candidates := make([]extractedURLCandidate, 0, len(httpCandidates)+len(bareCandidates))
+	candidates = append(candidates, httpCandidates...)
+	candidates = append(candidates, bareCandidates...)
+	if len(candidates) == 0 {
+		return "", false
 	}
-	return candidate, true
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].start < candidates[j].start
+	})
+
+	if isWeiboShortHost(extractURLHost(candidates[0].url)) {
+		for _, c := range candidates[1:] {
+			host := extractURLHost(c.url)
+			if id, ok := DetectHostSite(host); ok && id == Weibo && !isWeiboShortHost(host) {
+				return c.url, true
+			}
+		}
+	}
+	return candidates[0].url, true
 }
 
 func scanASCIIURLToken(s string) string {
@@ -88,6 +187,9 @@ func DetectHostSite(host string) (ID, bool) {
 	}
 	if MatchDomainSuffix(h, douyinDispatchDomains) {
 		return Douyin, true
+	}
+	if MatchDomainSuffix(h, weiboDispatchDomains) {
+		return Weibo, true
 	}
 	return "", false
 }

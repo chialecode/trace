@@ -10,6 +10,7 @@ import (
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
+	"github.com/chialecode/trace/internal/site/weibo"
 )
 
 type queuePartEnqueuer func(ctx context.Context) ([]string, error)
@@ -32,6 +33,23 @@ type queueCandidate struct {
 }
 
 type queuePager func(ctx context.Context, cursor string) (items []queueCandidate, nextCursor string, hasMore bool, err error)
+
+type queueStepMeta struct {
+	completionNote string
+}
+
+type queueStepMetaKey struct{}
+
+func withQueueStepMeta(ctx context.Context) (context.Context, *queueStepMeta) {
+	meta := &queueStepMeta{}
+	return context.WithValue(ctx, queueStepMetaKey{}, meta), meta
+}
+
+func setQueueStepCompletionNote(ctx context.Context, note string) {
+	if meta, ok := ctx.Value(queueStepMetaKey{}).(*queueStepMeta); ok && meta != nil {
+		meta.completionNote = strings.TrimSpace(note)
+	}
+}
 
 func normalizeCacheQueueTarget(rawSite, rawList, rawUser string) (site.ID, string, string, error) {
 	siteID, err := normalizeSiteID(rawSite)
@@ -66,19 +84,36 @@ func normalizeCacheQueueTarget(rawSite, rawList, rawUser string) (site.ID, strin
 		}
 		return site.Douyin, "works", secUID, nil
 
+	case site.Weibo:
+		if list == "" {
+			list = "posts"
+		}
+		if list != "posts" {
+			return "", "", "", &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "不支持的微博列表类型"}
+		}
+		normUID, uerr := site.NormalizeUID(site.Weibo, rawUser)
+		if uerr != nil {
+			return "", "", "", &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "微博用户 UID 无效"}
+		}
+		return site.Weibo, "posts", normUID, nil
+
 	default:
 		return "", "", "", &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
 	}
 }
 
 func cacheQueueListLabel(siteID, list string) string {
-	if siteID == string(site.Douyin) {
+	switch strings.ToLower(strings.TrimSpace(siteID)) {
+	case string(site.Douyin):
 		return "作品"
+	case string(site.Weibo):
+		return "微博"
+	default:
+		if list == "videos" {
+			return "投稿"
+		}
+		return "动态"
 	}
-	if list == "videos" {
-		return "投稿"
-	}
-	return "动态"
 }
 
 func (b *Backend) buildQueueLoadedAndPager(siteID site.ID, list, normUser string, req CacheQueueRequest) ([]queueCandidate, queuePager, error) {
@@ -99,6 +134,10 @@ func (b *Backend) buildQueueLoadedAndPager(siteID site.ID, list, normUser string
 	case siteID == site.Douyin:
 		for _, w := range req.Works {
 			loaded = append(loaded, b.workQueueCandidate(w, normUser, req.UserName))
+		}
+	case siteID == site.Weibo:
+		for _, p := range req.WeiboPosts {
+			loaded = append(loaded, b.weiboPostViewQueueCandidate(p))
 		}
 	}
 	return loaded, pager, nil
@@ -172,6 +211,63 @@ func (b *Backend) buildQueuePager(siteID site.ID, list, normUser, userName strin
 				out = append(out, b.workQueueCandidate(w, secUID, userName))
 			}
 			return out, res.NextCursor, res.HasMore && res.NextCursor != "", nil
+		}, nil
+
+	case siteID == site.Weibo:
+		uid, uerr := site.NormalizeUID(site.Weibo, normUser)
+		if uerr != nil {
+			return nil, &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "微博用户 UID 无效"}
+		}
+		return func(ctx context.Context, cursor string) ([]queueCandidate, string, bool, error) {
+			feature := weibo.FeatureAll
+			if b.weiboFullCacheUseFeatureOriginal() {
+				feature = weibo.FeatureOriginal
+			}
+			pageNum, sinceID := weibo.ParseCursor(cursor)
+			page, err := b.weibo.GetUserPosts(ctx, weibo.UserPostsRequest{
+				UID:               uid,
+				Page:              pageNum,
+				SinceID:           sinceID,
+				Feature:           feature,
+				CrossCheckProfile: pageNum == 1,
+				StreamOptions: weibo.StreamSelectOptions{
+					PreferredCodec: b.preferredWeiboCodec(),
+					MaxResolution:  b.currentWeiboMaxResolution(),
+				},
+			})
+			if err != nil {
+				return nil, "", false, err
+			}
+			if pageNum == 1 {
+				if page.Author != nil && page.Author.StatusesCount > 0 {
+					b.recordAccountWorks(site.Weibo, uid, page.Author.StatusesCount)
+				} else if page.Total > 0 {
+					b.recordAccountWorks(site.Weibo, uid, page.Total)
+				}
+			}
+			if page.UncertainEmpty {
+				return nil, "", false, &site.Error{
+					Site:    site.Weibo,
+					Kind:    site.ErrKindRiskControl,
+					Message: firstNonEmpty(page.UncertainReason, "微博返回空列表，可能被拦截或登录已失效"),
+				}
+			}
+			if page.BottomTipsVisible {
+				setQueueStepCompletionNote(ctx, firstNonEmpty(page.BottomTipsText, "已到达博主设置的可见范围"))
+			}
+			out := make([]queueCandidate, 0, len(page.Posts))
+			for i := range page.Posts {
+				out = append(out, b.weiboPostQueueCandidate(page.Posts[i]))
+			}
+			nextCursor := ""
+			hasMore := page.HasMore && !page.BottomTipsVisible
+			if hasMore {
+				nextCursor = weibo.FormatCursor(page.NextPage, page.NextSinceID)
+				if nextCursor == "" {
+					hasMore = false
+				}
+			}
+			return out, nextCursor, hasMore, nil
 		}, nil
 
 	default:
@@ -330,6 +426,72 @@ func (b *Backend) workQueueCandidate(w DouyinWorkCardDTO, forUID, forName string
 				taskIDs: []string{t.TaskID},
 				itemKey: firstNonEmpty(t.ItemKey, key),
 				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, title, id)),
+			}, nil
+		},
+	}
+}
+
+func isWeiboNonOriginalPost(isRetweet, isFastRetweet bool, hasRetweeted bool, oriMid, ruleType string) bool {
+	return isRetweet || isFastRetweet || hasRetweeted || strings.TrimSpace(oriMid) != "" || strings.EqualFold(strings.TrimSpace(ruleType), weibo.RuleTypeForward)
+}
+
+// weiboPostQueueCandidate converts a list-fetched Weibo post into a cache queue candidate.
+// Full cache only caches original posts (skipping retweets and fast-retweets) and reuses
+// the in-memory list payload to build a download plan when complete (zero signed URLs on disk).
+func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
+	postCopy := p
+	mid := strings.TrimSpace(postCopy.Mid)
+	key := ""
+	if mid != "" {
+		key = weibo.PostItemKey(mid)
+	}
+	title := trimQueueSummaryTitle(firstNonEmpty(postCopy.Text, postCopy.TextRaw, mid))
+	nonOriginal := isWeiboNonOriginalPost(postCopy.IsRetweet, postCopy.IsFastRetweet, postCopy.Retweeted != nil, postCopy.OriMid, postCopy.RuleType)
+	return queueCandidate{
+		key:         key,
+		title:       title,
+		uncacheable: nonOriginal || postCopy.Unavailable,
+		enqueue: func(ctx context.Context) (queueEnqueued, error) {
+			var planPtr *download.WorkDownloadPlan
+			if canReuseWeiboPostPlan(&postCopy) {
+				if built, err := b.buildWeiboWorkPlanFromPost(&postCopy); err == nil {
+					planPtr = &built
+				}
+			}
+			t, err := b.enqueueWeiboPostWithSource(ctx, mid, "queue", nil, planPtr)
+			if err != nil {
+				return queueEnqueued{}, err
+			}
+			return queueEnqueued{
+				taskIDs: []string{t.TaskID},
+				itemKey: firstNonEmpty(t.ItemKey, key),
+				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, title, mid)),
+			}, nil
+		},
+	}
+}
+
+func (b *Backend) weiboPostViewQueueCandidate(p WeiboPostView) queueCandidate {
+	mid := strings.TrimSpace(p.Mid)
+	key := p.CacheKey
+	if key == "" && mid != "" {
+		key = weibo.PostItemKey(mid)
+	}
+	title := trimQueueSummaryTitle(firstNonEmpty(p.Text, p.TextRaw, mid))
+	nonOriginal := isWeiboNonOriginalPost(p.IsRetweet, p.IsFastRetweet, p.Retweeted != nil, p.OriMid, p.RuleType)
+	return queueCandidate{
+		key:         key,
+		title:       title,
+		uncacheable: nonOriginal || p.Unavailable,
+		enqueue: func(ctx context.Context) (queueEnqueued, error) {
+			t, err := b.enqueueWeiboPostWithSource(ctx, mid, "queue", nil, nil)
+			if err != nil {
+				return queueEnqueued{}, err
+			}
+			return queueEnqueued{
+				taskIDs: []string{t.TaskID},
+				itemKey: firstNonEmpty(t.ItemKey, key),
+				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, title, mid)),
 			}, nil
 		},
 	}

@@ -118,8 +118,8 @@ func (m *Manager) scheduleLoop(ctx context.Context, checkOnStartup bool) {
 }
 
 // RunScheduledRound executes a scheduled check round across enabled sites, respecting per-site backoff,
-// per-site account caps (Bilibili <=30, Douyin <=20), per-site hourly token buckets (Bilibili 200/hr, Douyin 120/hr),
-// per-site exponential backoff, and rule-based auto-cache.
+// per-site account caps (Bilibili <=30, Douyin <=20, Weibo <=20), per-site hourly token buckets
+// (Bilibili 200/hr, Douyin 120/hr, Weibo 100/hr), per-site exponential backoff, and rule-based auto-cache.
 func (m *Manager) RunScheduledRound(ctx context.Context) (CheckSummary, error) {
 	m.mu.Lock()
 	enabled := m.subSettings.Enabled
@@ -157,5 +157,12 @@ func (m *Manager) CheckAccount(ctx context.Context, subID, siteName, uid string)
 	if subID == "" || uid == "" {
 		return CheckSummary{}, fmt.Errorf("subscription: no account selected")
 	}
-	return m.executeMultiSiteRound(ctx, 0, false, subID, normalizeSchedulerSite(siteName), uid)
+	siteID, ok := site.ParseID(siteName)
+	if !ok {
+		return CheckSummary{}, fmt.Errorf("subscription: 不支持的站点 %q", siteName)
+	}
+	if normUID, err := site.NormalizeUID(siteID, uid); err == nil {
+		uid = normUID
+	}
+	return m.executeMultiSiteRound(ctx, 0, false, subID, string(siteID), uid)
 }

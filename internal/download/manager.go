@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -647,6 +648,7 @@ func (m *Manager) Pause(taskID string) (Task, error) {
 // Resume transitions a paused, failed, or partial task back to "queued".
 func (m *Manager) Resume(taskID string) (Task, error) {
 	m.mu.Lock()
+	delete(m.initialPlans, taskID)
 	_, storageFault := m.taskFaults.Load(taskID)
 	if storageFault {
 		if cancel := m.activeRun[taskID]; cancel != nil {
@@ -673,6 +675,187 @@ func (m *Manager) Resume(taskID string) (Task, error) {
 // Retry resets a failed, partial, or paused task to "queued" so missing files are re-fetched.
 func (m *Manager) Retry(taskID string) (Task, error) {
 	return m.Resume(taskID)
+}
+
+// IsRetryableTask reports whether t is an actionable failed, partial, or
+// non-user-paused task eligible for batch retry. Explicit user pauses
+// (pause_reason == "user") and terminal tasks (completed, canceled) return false.
+func IsRetryableTask(t Task) bool {
+	if t.Status == "failed" || t.Status == "partial" {
+		return true
+	}
+	if (t.Status == "paused" || strings.HasPrefix(t.Status, "paused_")) && strings.TrimSpace(t.PauseReason) != "user" {
+		return true
+	}
+	return false
+}
+
+// BatchRetryResult summarizes a batch retry operation across actionable download tasks.
+type BatchRetryResult struct {
+	Retried          int      `json:"retried"`
+	SkippedAuth      int      `json:"skippedAuth"`
+	SkippedDuplicate int      `json:"skippedDuplicate"`
+	MissingAuthSites []string `json:"missingAuthSites,omitempty"`
+}
+
+func normalizeTaskSite(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return string(site.Bilibili)
+	}
+	if id, ok := site.ParseID(trimmed); ok {
+		return string(id)
+	}
+	return strings.ToLower(trimmed)
+}
+
+type taskDedupKey struct {
+	site     string
+	kind     string
+	targetID string
+	cid      int64
+}
+
+// RetryActionable re-queues all actionable failed, partial, and non-user-paused
+// tasks whose normalized site is permitted in allowedSites, deduplicating by
+// (site, kind, target_id, cid) against active/queued tasks and within the batch.
+func (m *Manager) RetryActionable(allowedSites map[string]bool) (BatchRetryResult, error) {
+	type retryCandidate struct {
+		taskID       string
+		storageFault bool
+	}
+
+	m.mu.Lock()
+	rows, err := m.db.Query(`SELECT` + taskSelectColumns + `
+		FROM download_tasks
+		ORDER BY julianday(updated_at) DESC, rowid DESC
+	`)
+	if err != nil {
+		m.mu.Unlock()
+		return BatchRetryResult{}, err
+	}
+	var allTasks []Task
+	for rows.Next() {
+		t, scanErr := scanTask(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			m.mu.Unlock()
+			return BatchRetryResult{}, scanErr
+		}
+		allTasks = append(allTasks, t)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		m.mu.Unlock()
+		return BatchRetryResult{}, err
+	}
+
+	activeKeys := make(map[taskDedupKey]bool)
+	for _, raw := range allTasks {
+		eff := m.withTaskFault(raw)
+		if eff.Status == "queued" || eff.Status == "running" {
+			dk := taskDedupKey{
+				site:     normalizeTaskSite(eff.Site),
+				kind:     eff.Kind,
+				targetID: eff.TargetID,
+				cid:      eff.CID,
+			}
+			activeKeys[dk] = true
+		}
+	}
+
+	var (
+		res        BatchRetryResult
+		missingSet = make(map[string]bool)
+		candidates []retryCandidate
+	)
+	for _, raw := range allTasks {
+		eff := m.withTaskFault(raw)
+		if !IsRetryableTask(eff) {
+			continue
+		}
+		normSite := normalizeTaskSite(eff.Site)
+		if !allowedSites[normSite] {
+			res.SkippedAuth++
+			missingSet[normSite] = true
+			continue
+		}
+		dk := taskDedupKey{
+			site:     normSite,
+			kind:     eff.Kind,
+			targetID: eff.TargetID,
+			cid:      eff.CID,
+		}
+		if activeKeys[dk] {
+			res.SkippedDuplicate++
+			continue
+		}
+		activeKeys[dk] = true
+		_, storageFault := m.taskFaults.Load(eff.TaskID)
+		candidates = append(candidates, retryCandidate{
+			taskID:       eff.TaskID,
+			storageFault: storageFault,
+		})
+	}
+	if len(missingSet) > 0 {
+		res.MissingAuthSites = make([]string, 0, len(missingSet))
+		for s := range missingSet {
+			res.MissingAuthSites = append(res.MissingAuthSites, s)
+		}
+		sort.Strings(res.MissingAuthSites)
+	}
+
+	var retriedIDs []string
+	if len(candidates) > 0 {
+		tx, txErr := m.db.Begin()
+		if txErr != nil {
+			m.mu.Unlock()
+			return BatchRetryResult{}, txErr
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		var updated []retryCandidate
+		for _, cand := range candidates {
+			execRes, execErr := tx.Exec(`
+				UPDATE download_tasks
+				SET status = 'queued', pause_reason = '', error_kind = '', error_message = '', updated_at = ?
+				WHERE task_id = ?
+				  AND (
+					status IN ('failed', 'partial')
+					OR ((status = 'paused' OR status LIKE 'paused_%') AND COALESCE(TRIM(pause_reason), '') != 'user')
+					OR (? AND status = 'running')
+				  )
+			`, now, cand.taskID, cand.storageFault)
+			if execErr != nil {
+				_ = tx.Rollback()
+				m.mu.Unlock()
+				return BatchRetryResult{}, execErr
+			}
+			if n, _ := execRes.RowsAffected(); n > 0 {
+				updated = append(updated, cand)
+				retriedIDs = append(retriedIDs, cand.taskID)
+			}
+		}
+		if commitErr := tx.Commit(); commitErr != nil {
+			m.mu.Unlock()
+			return BatchRetryResult{}, commitErr
+		}
+		for _, cand := range updated {
+			if cand.storageFault {
+				if cancel := m.activeRun[cand.taskID]; cancel != nil {
+					cancel()
+				}
+			}
+			delete(m.initialPlans, cand.taskID)
+			m.taskFaults.Delete(cand.taskID)
+		}
+		res.Retried = len(retriedIDs)
+	}
+	m.mu.Unlock()
+
+	if len(retriedIDs) > 0 {
+		m.emitTasksByID(retriedIDs)
+		m.notifyWake()
+	}
+	return res, nil
 }
 
 // Cancel stops a task, marks it "canceled", and cleans up any incomplete .part files.
@@ -851,12 +1034,11 @@ func (m *Manager) launchAvailableWorkers() {
 
 func (m *Manager) runTask(ctx context.Context, t Task) {
 	if t.Source == "auto" {
-		ctx = bilibili.WithAutomaticRequests(ctx, "download")
+		ctx = site.WithAutomaticRequests(ctx, "download")
 	}
 	var err error
-	if t.Site == string(site.Douyin) {
-		err = m.executeDouyinTask(ctx, &t)
-	} else {
+	switch site.ID(strings.ToLower(strings.TrimSpace(t.Site))) {
+	case site.Bilibili:
 		switch t.Kind {
 		case "video":
 			err = m.executeVideoTask(ctx, &t)
@@ -868,6 +1050,16 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 			err = m.executeUpgradeTask(ctx, &t)
 		default:
 			err = fmt.Errorf("unsupported download task kind %q", t.Kind)
+		}
+	case site.Douyin:
+		err = m.executeDouyinTask(ctx, &t)
+	case site.Weibo:
+		err = m.executeWeiboTask(ctx, &t)
+	default:
+		err = &site.Error{
+			Site:    site.ID(strings.TrimSpace(t.Site)),
+			Kind:    site.ErrKindBadRequest,
+			Message: fmt.Sprintf("不支持的下载站点: %q", t.Site),
 		}
 	}
 
@@ -888,7 +1080,7 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 			return
 		}
 		errKind := classifyDownloadError(err)
-		if errKind == bilibili.ErrKindAuthRequired {
+		if errKind == site.ErrKindAuthRequired {
 			t.Status, t.PauseReason = "paused", "auth_required"
 			t.ErrorKind = errKind
 			t.ErrorMessage = "已暂停（登录已失效）：" + err.Error()
@@ -896,14 +1088,14 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 			m.pauseSitePeers(t.Site, t.TaskID, "auth_required", errKind, "已暂停（登录已失效）："+err.Error())
 			return
 		}
-		if errKind == bilibili.ErrKindQuota || errKind == bilibili.ErrKindBackoff {
+		if errKind == site.ErrKindQuota || errKind == site.ErrKindBackoff {
 			t.Status, t.PauseReason = "paused", errKind
 		}
-		if (errKind == bilibili.ErrKindUnavailable || errKind == bilibili.ErrKindBlocked) && t.Site != string(site.Douyin) {
+		if (errKind == site.ErrKindUnavailable || errKind == site.ErrKindBlocked) && t.Site == string(site.Bilibili) {
 			t.Status = "partial"
 		}
 		// Risk control or rate limit pauses this task and queued/running tasks of the same site only (data-and-cache.md §2.4).
-		if errKind == bilibili.ErrKindRiskControl || errKind == bilibili.ErrKindRateLimited {
+		if errKind == site.ErrKindRiskControl || errKind == site.ErrKindRateLimited {
 			t.Status = "paused"
 			t.PauseReason = "risk_control"
 			t.ErrorKind = errKind
@@ -943,8 +1135,9 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 }
 
 func (m *Manager) pauseSitePeers(siteID, triggeringTaskID, pauseReason, errKind, msg string) {
+	siteID = strings.ToLower(strings.TrimSpace(siteID))
 	if siteID == "" {
-		siteID = string(site.Bilibili)
+		return
 	}
 	m.mu.Lock()
 	for id, fn := range m.activeRun {

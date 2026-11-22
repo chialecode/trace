@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,6 +24,7 @@ import (
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/site/douyin"
+	"github.com/chialecode/trace/internal/site/weibo"
 	"github.com/chialecode/trace/internal/storage"
 	"github.com/chialecode/trace/internal/subscription"
 	"github.com/chialecode/trace/internal/uistate"
@@ -31,52 +33,63 @@ import (
 
 // Backend coordinates all TRACE domain packages without importing any UI framework.
 type Backend struct {
-	loc                 appdirs.Locations
-	db                  *sql.DB
-	updatesDB           *sql.DB
-	settings            *settings.Store
-	uiState             *uistate.Store
-	history             *storage.HistoryStore
-	credMgr             *credential.Manager
-	cred                *credential.Store
-	douyinCred          *credential.Store
-	bili                *bilibili.Client
-	douyin              *douyin.Client
-	biliAdapter         *bilibili.Adapter
-	douyinAdapter       *douyin.Adapter
-	registry            *site.Registry
-	lib                 *library.Store
-	dl                  *download.Manager
-	queue               *cacheQueueManager
-	subs                *subscription.Manager
-	live                *live.Manager
-	desktop             Desktop
-	events              *eventBus
-	bgCtx               context.Context
-	bgCancel            context.CancelFunc
-	renewalWake         chan struct{}
-	bgMu                sync.Mutex
-	bgClosing           bool
-	bgWg                sync.WaitGroup
-	logMu               sync.Mutex
-	lastUserError       string
-	lastUserErrorAt     time.Time
-	settingsMu          sync.Mutex
-	syncStateMu         sync.Mutex
-	avatarInflight      sync.Map
-	logPath             string
-	previewDir          string
-	corruptFiles        []string
-	updateHistory       *update.HistoryStore
-	installedDevVersion func() string
-	profile             Profile
-	logMirror           io.Writer
-	recentErrors        []RecentError
-	startedAt           time.Time
-	remote              *remoteLink
-	cacheGate           func() error
-	transferOnce        sync.Once
-	transferState       *transferJobs
+	loc                         appdirs.Locations
+	db                          *sql.DB
+	updatesDB                   *sql.DB
+	settings                    *settings.Store
+	uiState                     *uistate.Store
+	history                     *storage.HistoryStore
+	credMgr                     *credential.Manager
+	cred                        *credential.Store
+	douyinCred                  *credential.Store
+	weiboCred                   *credential.Store
+	bili                        *bilibili.Client
+	douyin                      *douyin.Client
+	weibo                       *weibo.Client
+	biliAdapter                 *bilibili.Adapter
+	douyinAdapter               *douyin.Adapter
+	weiboAdapter                *weibo.Adapter
+	weiboPostCache              *weiboPostPlanCache
+	weiboMemMu                  sync.Mutex
+	weiboMemGen                 uint64
+	accountWeiboSeen            map[string]map[string]bool
+	weiboFollowingSeen          map[string]map[string]bool
+	weiboPreviewRT              http.RoundTripper
+	weiboPreviewWrap            func(http.RoundTripper) http.RoundTripper
+	fullCacheUseFeatureOriginal bool
+	registry                    *site.Registry
+	lib                         *library.Store
+	dl                          *download.Manager
+	queue                       *cacheQueueManager
+	subs                        *subscription.Manager
+	live                        *live.Manager
+	desktop                     Desktop
+	events                      *eventBus
+	bgCtx                       context.Context
+	bgCancel                    context.CancelFunc
+	renewalWake                 chan struct{}
+	bgMu                        sync.Mutex
+	bgClosing                   bool
+	bgWg                        sync.WaitGroup
+	logMu                       sync.Mutex
+	lastUserError               string
+	lastUserErrorAt             time.Time
+	settingsMu                  sync.Mutex
+	syncStateMu                 sync.Mutex
+	avatarInflight              sync.Map
+	logPath                     string
+	previewDir                  string
+	corruptFiles                []string
+	updateHistory               *update.HistoryStore
+	installedDevVersion         func() string
+	profile                     Profile
+	logMirror                   io.Writer
+	recentErrors                []RecentError
+	startedAt                   time.Time
+	remote                      *remoteLink
+	cacheGate                   func() error
+	transferOnce                sync.Once
+	transferState               *transferJobs
 }
 
 // NewBackend initializes all storage, credential, site, library, download, subscription, and live components.
@@ -101,13 +114,13 @@ func NewBackend(opts Options) (*Backend, error) {
 	if err := update.GuardHistorySchema(loc.DataDir); err != nil {
 		return nil, err
 	}
-	if _, err := storage.GuardDataSchemas(loc.DataDir, storage.DataSchemas); err != nil {
+	allSchemas := append(append([]storage.SchemaFile(nil), storage.DataSchemas...), storage.SchemaFile{
+		Name:    cacheQueueFileName,
+		Kind:    storage.SchemaJSON,
+		Current: cacheQueueSchemaVersion,
+	})
+	if _, err := storage.GuardDataSchemas(loc.DataDir, allSchemas); err != nil {
 		return nil, err
-	}
-	if queueCorruptBackup, err := guardCacheQueueSchema(loc.DataDir); err != nil {
-		return nil, err
-	} else if queueCorruptBackup != "" {
-		corruptBackups = append(corruptBackups, queueCorruptBackup)
 	}
 
 	settingsPath := filepath.Join(loc.DataDir, "settings.json")
@@ -170,6 +183,7 @@ func NewBackend(opts Options) (*Backend, error) {
 	}
 	credStore := credMgr.Store(credential.SiteBilibili)
 	douyinCredStore := credMgr.Store(credential.SiteDouyin)
+	weiboCredStore := credMgr.Weibo()
 
 	var (
 		db        *sql.DB
@@ -255,28 +269,33 @@ func NewBackend(opts Options) (*Backend, error) {
 	bgCtx, bgCancel = context.WithCancel(context.Background())
 
 	b := &Backend{
-		profile:      opts.Profile,
-		logMirror:    opts.LogMirror,
-		startedAt:    time.Now(),
-		loc:          loc,
-		db:           db,
-		updatesDB:    updatesDB,
-		settings:     setStore,
-		uiState:      uiStore,
-		history:      histStore,
-		credMgr:      credMgr,
-		cred:         credStore,
-		douyinCred:   douyinCredStore,
-		lib:          libStore,
-		desktop:      desk,
-		events:       evBus,
-		bgCtx:        bgCtx,
-		bgCancel:     bgCancel,
-		renewalWake:  make(chan struct{}, 1),
-		remote:       &remoteLink{},
-		logPath:      filepath.Join(loc.LogsDir, "trace.log"),
-		previewDir:   previewDir,
-		corruptFiles: corruptBackups,
+		profile:                     opts.Profile,
+		logMirror:                   opts.LogMirror,
+		startedAt:                   time.Now(),
+		loc:                         loc,
+		db:                          db,
+		updatesDB:                   updatesDB,
+		settings:                    setStore,
+		uiState:                     uiStore,
+		history:                     histStore,
+		credMgr:                     credMgr,
+		cred:                        credStore,
+		douyinCred:                  douyinCredStore,
+		weiboCred:                   weiboCredStore,
+		weiboPostCache:              newWeiboPostPlanCache(nil),
+		accountWeiboSeen:            make(map[string]map[string]bool),
+		weiboFollowingSeen:          make(map[string]map[string]bool),
+		fullCacheUseFeatureOriginal: opts.FullCacheUseFeatureOriginal,
+		lib:                         libStore,
+		desktop:                     desk,
+		events:                      evBus,
+		bgCtx:                       bgCtx,
+		bgCancel:                    bgCancel,
+		renewalWake:                 make(chan struct{}, 1),
+		remote:                      &remoteLink{},
+		logPath:                     filepath.Join(loc.LogsDir, "trace.log"),
+		previewDir:                  previewDir,
+		corruptFiles:                corruptBackups,
 	}
 	if err := b.initUpdateHistory(opts); err != nil {
 		return nil, err
@@ -295,11 +314,23 @@ func NewBackend(opts Options) (*Backend, error) {
 	dyClient := douyin.NewClient(dyOpts)
 	dyAdapter := douyin.NewAdapter(dyClient)
 
+	wbOpts := opts.WeiboOpts
+	wbOpts.CredStore = weiboCredStore
+	if wbOpts.PreferredCodec == nil {
+		wbOpts.PreferredCodec = b.preferredWeiboCodec
+	}
+	wbClient := weibo.NewClient(wbOpts)
+	wbAdapter := weibo.NewAdapter(wbClient)
+
 	b.bili = biliClient
 	b.douyin = dyClient
+	b.weibo = wbClient
+	b.weiboPreviewRT = wbOpts.Transport
+	b.weiboPreviewWrap = wbOpts.WrapTransport
 	b.biliAdapter = biliAdapter
 	b.douyinAdapter = dyAdapter
-	b.registry = site.NewRegistry(biliAdapter, dyAdapter)
+	b.weiboAdapter = wbAdapter
+	b.registry = site.NewRegistry(biliAdapter, dyAdapter, wbAdapter)
 
 	taskLog := newTaskStatusLog()
 	dlMgr, err := download.NewManager(db, libStore, biliClient, curSettings.Download, func(t download.Task) {
@@ -323,6 +354,7 @@ func NewBackend(opts Options) (*Backend, error) {
 	}
 	b.dl = dlMgr
 	dlMgr.RegisterWorkPlanner(&douyinWorkPlanner{backend: b})
+	dlMgr.RegisterWorkPlanner(&weiboWorkPlanner{backend: b})
 
 	subsPath := filepath.Join(loc.DataDir, "subscriptions.json")
 	subMgr, err := subscription.NewManagerWithUpdatesDB(db, updatesDB, subsPath, libStore, dlMgr, biliClient, curSettings.Subscription, func(sum subscription.CheckSummary) {
@@ -390,7 +422,16 @@ func NewBackend(opts Options) (*Backend, error) {
 			subMgr.RecordSiteAutomaticStop(string(site.Douyin), site.KindOf(err))
 		},
 	)
+	wbClient.SetAutomaticRequestHandlers(
+		func(_ context.Context, source string, _ string) error {
+			return subMgr.SiteAutomaticRequestAllowedFor(string(site.Weibo), source)
+		},
+		func(_ string, err error) {
+			subMgr.RecordSiteAutomaticStop(string(site.Weibo), site.KindOf(err))
+		},
+	)
 	subMgr.RegisterFetcher(dyAdapter)
+	subMgr.RegisterFetcher(wbAdapter)
 	subMgr.SetSiteAuthCheck(func(siteID site.ID) bool {
 		return b.credMgr.HasActiveCredential(string(siteID))
 	})
@@ -398,6 +439,20 @@ func NewBackend(opts Options) (*Backend, error) {
 		// The update came from the subscribed account's works list: a
 		// co-creation by someone else goes to that account's folder.
 		t, err := b.enqueueDouyinWorkWithSource(ctx, item.DynID, "auto", item.UID, b.subscribedAccountName(site.Douyin, item.UID))
+		return t.TaskID, err
+	})
+	subMgr.RegisterAutoCacheEnqueuer(site.Weibo, func(ctx context.Context, item subscription.UpdateItem) (string, error) {
+		var via *library.ItemVia
+		if strings.EqualFold(strings.TrimSpace(item.Type), weibo.RuleTypeForward) {
+			via = &library.ItemVia{
+				Reason:    library.ViaForward,
+				Site:      string(site.Weibo),
+				UID:       strings.TrimSpace(item.UID),
+				Name:      b.subscribedAccountName(site.Weibo, item.UID),
+				DynamicID: strings.TrimSpace(item.DynID),
+			}
+		}
+		t, err := b.enqueueWeiboPostWithSource(ctx, item.DynID, "auto", via, nil)
 		return t.TaskID, err
 	})
 	if opts.Profile != ProfileRemote {
@@ -437,6 +492,12 @@ func NewBackend(opts Options) (*Backend, error) {
 		msg := firstNonEmpty(reason, "抖音登录已失效，任务已暂停")
 		b.pauseSiteActiveWorkAsync(site.Douyin, "auth_required", msg)
 		evBus.PublishSite(EventAccountChanged, string(site.Douyin), "expired")
+	})
+	wbClient.SetAuthExpiredHandler(func(reason string) {
+		msg := firstNonEmpty(reason, "微博登录已失效，任务已暂停")
+		b.clearWeiboMemoryCaches()
+		b.pauseSiteActiveWorkAsync(site.Weibo, "auth_required", msg)
+		evBus.PublishSite(EventAccountChanged, string(site.Weibo), "expired")
 	})
 
 	build := appdirs.BuildInfo()
@@ -590,6 +651,83 @@ func (b *Backend) BilibiliClient() *bilibili.Client {
 // DouyinClient returns the underlying Douyin site client.
 func (b *Backend) DouyinClient() *douyin.Client {
 	return b.douyin
+}
+
+// WeiboClient returns the underlying Weibo site client.
+func (b *Backend) WeiboClient() *weibo.Client {
+	return b.weibo
+}
+
+// SetWeiboFullCacheUseFeatureOriginal toggles whether Weibo full-cache queues
+// request feature=1 (server-side original filter) instead of feature=0 with local filtering.
+func (b *Backend) SetWeiboFullCacheUseFeatureOriginal(enabled bool) {
+	b.weiboMemMu.Lock()
+	b.fullCacheUseFeatureOriginal = enabled
+	b.weiboMemMu.Unlock()
+}
+
+func (b *Backend) weiboFullCacheUseFeatureOriginal() bool {
+	b.weiboMemMu.Lock()
+	defer b.weiboMemMu.Unlock()
+	return b.fullCacheUseFeatureOriginal
+}
+
+func (b *Backend) clearWeiboMemoryCaches() {
+	if b.weiboPostCache != nil {
+		b.weiboPostCache.clear()
+	}
+	b.weiboMemMu.Lock()
+	b.weiboMemGen++
+	clear(b.accountWeiboSeen)
+	clear(b.weiboFollowingSeen)
+	b.weiboMemMu.Unlock()
+}
+
+func (b *Backend) snapshotWeiboSeenMap(store *map[string]map[string]bool, bucket string, reset bool) (map[string]bool, uint64) {
+	b.weiboMemMu.Lock()
+	defer b.weiboMemMu.Unlock()
+	gen := b.weiboMemGen
+	if reset {
+		if *store != nil {
+			delete(*store, bucket)
+		}
+		return make(map[string]bool), gen
+	}
+	if *store == nil || (*store)[bucket] == nil {
+		return make(map[string]bool), gen
+	}
+	src := (*store)[bucket]
+	cp := make(map[string]bool, len(src))
+	for k, v := range src {
+		if v {
+			cp[k] = true
+		}
+	}
+	return cp, gen
+}
+
+func (b *Backend) mergeWeiboSeenMap(store *map[string]map[string]bool, bucket string, gen uint64, seen map[string]bool) {
+	if len(seen) == 0 {
+		return
+	}
+	b.weiboMemMu.Lock()
+	defer b.weiboMemMu.Unlock()
+	if b.weiboMemGen != gen {
+		return
+	}
+	if *store == nil {
+		*store = make(map[string]map[string]bool)
+	}
+	dst := (*store)[bucket]
+	if dst == nil {
+		dst = make(map[string]bool, len(seen))
+		(*store)[bucket] = dst
+	}
+	for k, v := range seen {
+		if v {
+			dst[k] = true
+		}
+	}
 }
 
 // CredentialManager returns the multi-site credential manager.

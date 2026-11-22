@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/chialecode/trace/internal/library"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/storage"
 )
@@ -100,10 +101,17 @@ func (m *Manager) enqueueSingleTaskWithPlan(in Task, initialPlan *WorkDownloadPl
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	in.Site = strings.ToLower(strings.TrimSpace(in.Site))
 	if in.Site == "" {
-		in.Site = "bilibili"
+		in.Site = string(site.Bilibili)
+	} else if !site.ID(in.Site).Valid() {
+		return Task{}, &site.Error{
+			Site:    site.ID(in.Site),
+			Kind:    site.ErrKindBadRequest,
+			Message: "不支持的下载站点: " + in.Site,
+		}
 	}
-	if in.AuthorUID == "" && in.Mid > 0 && in.Site == "bilibili" {
+	if in.AuthorUID == "" && in.Mid > 0 && in.Site == string(site.Bilibili) {
 		in.AuthorUID = strconv.FormatInt(in.Mid, 10)
 	}
 
@@ -275,6 +283,17 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool) {
 	t.ErrorMessage = ""
 	t.UpdatedAt = now
 	return t, true
+}
+
+func (m *Manager) resetFileProgress(t *Task, relPath string) {
+	relID := taskFileIdentity(relPath)
+	for i := range t.Files {
+		if taskFileIdentity(t.Files[i].Path) == relID {
+			t.Files[i].DownloadedBytes = 0
+			t.Files[i].TotalBytes = 0
+			t.Files[i].SpeedBps = 0
+		}
+	}
 }
 
 func (m *Manager) setFileProgress(t *Task, role, relPath, status string, downloaded, total, speed int64) {

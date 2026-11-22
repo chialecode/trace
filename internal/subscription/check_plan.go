@@ -15,6 +15,9 @@ const (
 	PlanUnauth    = "unauth"    // its site is not signed in
 )
 
+// WeiboLiveUnsupportedMessage explains that Weibo live checking and recording are unsupported.
+const WeiboLiveUnsupportedMessage = "微博直播暂不支持录制"
+
 // AccountCheckPlan tells when an account was last checked for updates and
 // when a scheduled round should check it next (Tasks › 检查计划).
 type AccountCheckPlan struct {
@@ -24,6 +27,7 @@ type AccountCheckPlan struct {
 	UID           string `json:"uid"`
 	Name          string `json:"name"`
 	AutoRecord    bool   `json:"autoRecord,omitempty"`
+	LiveNote      string `json:"liveNote,omitempty"`
 	LastCheckedAt string `json:"lastCheckedAt,omitempty"`
 	LastKind      string `json:"lastKind,omitempty"`
 	Note          string `json:"note,omitempty"`
@@ -58,12 +62,22 @@ func (m *Manager) CheckPlan() []AccountCheckPlan {
 	var entries []entry
 	if err == nil {
 		for _, sub := range subs {
+			ruleAutoRecord := sub.Rules.AutoRecord || sub.LiveAutoRecord
 			for _, acc := range sub.Accounts {
-				siteName := normalizeSchedulerSite(acc.Site)
+				siteName := normalizeLegacyAccountSite(acc.Site)
 				st := accStates[siteName+":"+acc.UID]
+				autoRecord := ruleAutoRecord
+				liveNote := ""
+				if siteName == string(site.Weibo) {
+					autoRecord = false
+					if ruleAutoRecord {
+						liveNote = WeiboLiveUnsupportedMessage
+					}
+				}
 				p := AccountCheckPlan{
 					SubID: sub.ID, SubName: sub.Name, Site: siteName, UID: acc.UID, Name: acc.Name,
-					AutoRecord:    sub.Rules.AutoRecord || sub.LiveAutoRecord,
+					AutoRecord:    autoRecord,
+					LiveNote:      liveNote,
 					LastCheckedAt: st.LastCheckedAt, LastKind: st.LastKind, Note: st.Note,
 					Plan: PlanScheduled,
 				}
@@ -131,7 +145,13 @@ func (m *Manager) CheckPlan() []AccountCheckPlan {
 				first++
 			}
 		}
-		roundCap := max(SiteScheduledRoundCap(siteName), 1)
+		roundCap := SiteScheduledRoundCap(siteName)
+		if roundCap <= 0 {
+			for _, i := range idx {
+				entries[i].plan.Plan = PlanOff
+			}
+			continue
+		}
 		for pos, i := range idx {
 			if at := runAt(first + pos/roundCap); !at.IsZero() {
 				entries[i].plan.NextAt = at.UTC().Format(time.RFC3339)

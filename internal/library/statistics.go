@@ -1,6 +1,9 @@
 package library
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 type Statistics struct {
 	Items   int          `json:"items"`
@@ -52,15 +55,15 @@ func (s *Store) Statistics() (Statistics, error) {
 
 // collabSQL matches library_items rows that are collaboration videos cached
 // for a member other than the uploader (DEC-056).
-const collabSQL = "(json_extract(json_data, '$.via.reason') = '" + ViaCollab + "' AND COALESCE(" + viaUIDSQL + ", '') != '')"
+const collabSQL = "(COALESCE(json_extract(json_data, '$.via.reason'), '') = '" + ViaCollab + "' AND COALESCE(" + viaUIDSQL + ", '') != '')"
 
 // viaForwardSQL matches library_items rows cached solely because another
 // creator forwarded them (stored in the forwarder's forwards/ folder, DEC-056).
-const viaForwardSQL = "(json_extract(json_data, '$.via.reason') = '" + ViaForward + "' AND COALESCE(" + viaUIDSQL + ", '') != '')"
+const viaForwardSQL = "(COALESCE(json_extract(json_data, '$.via.reason'), '') = '" + ViaForward + "' AND COALESCE(" + viaUIDSQL + ", '') != '')"
 
 // viaOwnerSQL matches library_items rows stored under via.uid's folder
 // (collaboration videos and forwarded content, DEC-056, DEC-061, DEC-063).
-const viaOwnerSQL = "(json_extract(json_data, '$.via.reason') IN ('" + ViaCollab + "', '" + ViaForward + "') AND COALESCE(" + viaUIDSQL + ", '') != '')"
+const viaOwnerSQL = "(COALESCE(json_extract(json_data, '$.via.reason'), '') IN ('" + ViaCollab + "', '" + ViaForward + "') AND COALESCE(" + viaUIDSQL + ", '') != '')"
 
 // LatestPubByAuthor returns the newest cached pub_ts for each (site, author_uid)
 // across library_items and cached feed_items, supporting multi-site HomeSeen baselines.
@@ -82,6 +85,7 @@ func (s *Store) LatestPubByAuthor() ([]ItemAuthor, error) {
 			FROM feed_items
 			WHERE cached = 1 AND author_uid != '' AND pub_ts > 0
 			  AND NOT (kind = 'video' AND EXISTS (SELECT 1 FROM item_refs r WHERE r.to_key = feed_items.feed_key))
+			  AND NOT (item_key != '' AND EXISTS (SELECT 1 FROM library_items li WHERE li.item_key = feed_items.item_key AND COALESCE(json_extract(li.json_data, '$.via.reason'), '') = '` + ViaForward + `' AND COALESCE(json_extract(li.json_data, '$.via.uid'), '') != '' AND json_extract(li.json_data, '$.via.uid') != feed_items.author_uid))
 		)
 		GROUP BY site, author_uid
 		ORDER BY 6 DESC, site, author_uid
@@ -102,6 +106,54 @@ func (s *Store) LatestPubByAuthor() ([]ItemAuthor, error) {
 			}
 		}
 		out = append(out, au)
+	}
+	return out, rows.Err()
+}
+
+// DistinctAuthorRefs returns every distinct (site, uid) referenced as either
+// the publisher (author) or the via target of any cached item in library_items.
+func (s *Store) DistinctAuthorRefs() ([]AuthorRef, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(`
+		SELECT DISTINCT
+			site,
+			author_uid,
+			mid,
+			COALESCE(json_extract(json_data, '$.via.site'), ''),
+			COALESCE(json_extract(json_data, '$.via.uid'), '')
+		FROM library_items
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := make(map[string]bool)
+	var out []AuthorRef
+	add := func(siteID, uid string, mid int64) {
+		normSite, normUID := NormalizeAuthorUID(siteID, uid, mid)
+		if normSite == "" || normUID == "" {
+			return
+		}
+		k := normSite + ":" + normUID
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, AuthorRef{Site: normSite, UID: normUID})
+		}
+	}
+	for rows.Next() {
+		var siteID, authorUID, viaSite, viaUID string
+		var mid int64
+		if err := rows.Scan(&siteID, &authorUID, &mid, &viaSite, &viaUID); err != nil {
+			return nil, err
+		}
+		add(siteID, authorUID, mid)
+		if strings.TrimSpace(viaUID) != "" {
+			if strings.TrimSpace(viaSite) == "" {
+				viaSite = siteID
+			}
+			add(viaSite, viaUID, 0)
+		}
 	}
 	return out, rows.Err()
 }
