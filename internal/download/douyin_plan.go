@@ -19,11 +19,12 @@ type WorkPlanOptions struct {
 	CodecOrder   []string
 }
 
-// PlannedNotePage describes one 1-based page in a Douyin/Weibo image or mixed note.
+// PlannedNotePage describes one 1-based page in a Douyin/Weibo/X image or mixed note.
 type PlannedNotePage struct {
 	Index         int
-	Kind          string // "image", "live_photo", "video", "unknown"
+	Kind          string // "image", "gif", "live_photo", "video", "unknown"
 	FromOrigin    bool
+	HLSOnly       bool
 	UnknownKind   string
 	UnknownReason string
 	Width         int
@@ -39,6 +40,14 @@ type PlannedNotePage struct {
 	Bitrate       int64
 }
 
+// PlannedThreadPart describes one author self-reply segment saved into the same item (e.g. X threads).
+type PlannedThreadPart struct {
+	ID           string
+	PubTs        int64
+	Text         string
+	MediaIndexes []int
+}
+
 // PlannedMusic describes background music metadata and candidate URLs on a Douyin note.
 type PlannedMusic struct {
 	ID          string
@@ -50,10 +59,10 @@ type PlannedMusic struct {
 	PlayURLs    []string
 }
 
-// WorkDownloadPlan holds rich metadata and ephemeral CDN URLs for caching a Douyin or Weibo work.
+// WorkDownloadPlan holds rich metadata and ephemeral CDN URLs for caching a Douyin, Weibo, or X work.
 type WorkDownloadPlan struct {
 	Site                    site.ID
-	ItemKey                 string // optional canonical key override (e.g. "weibo:dynamic:<mid>" or "weibo:video:<oid>")
+	ItemKey                 string // optional canonical key override (e.g. "weibo:dynamic:<mid>", "weibo:video:<oid>", "x:dynamic:<status_id>")
 	Kind                    string // "video" or "dynamic" ("note" / "image_note" normalized to "dynamic")
 	TargetID                string
 	Title                   string
@@ -67,6 +76,7 @@ type WorkDownloadPlan struct {
 	AuthorFace              string
 	CoverURLs               []string
 	VideoURLs               []string
+	HLSOnly                 bool
 	NeedSetToken            bool
 	OriginalURLs            []string // untranscoded source (原画), tried before VideoURLs
 	VideoGear               string
@@ -84,6 +94,7 @@ type WorkDownloadPlan struct {
 	OriginMblogID           string
 	OriginCanonicalURL      string
 	OriginAuthorUID         string
+	OriginAuthorUniqueID    string
 	OriginAuthorName        string
 	OriginAuthorFace        string
 	OriginPubTs             int64
@@ -97,6 +108,7 @@ type WorkDownloadPlan struct {
 	VisibleType             int
 	VisibleLabel            string
 	Pages                   []PlannedNotePage
+	Thread                  []PlannedThreadPart
 	Music                   *PlannedMusic
 	Transport               site.MediaTransportSpec
 }
@@ -210,12 +222,18 @@ func WorkDownloadPlanFromSite(p site.DownloadPlan) WorkDownloadPlan {
 
 func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 	kind := "video"
+	hlsOnly := false
 	if p.Site == site.Weibo {
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.ItemKey)), "weibo:video:") ||
 			strings.EqualFold(strings.TrimSpace(p.Kind), "video") {
 			kind = "video"
 		} else {
 			kind = "dynamic"
+		}
+	} else if p.Site == site.X {
+		kind = "dynamic"
+		if strings.EqualFold(strings.TrimSpace(p.Kind), "hls_only") {
+			hlsOnly = true
 		}
 	} else if p.Kind == "image_note" || p.Kind == "note" || p.Kind == "dynamic" || len(p.Images) > 0 {
 		kind = "dynamic"
@@ -235,6 +253,8 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 			} else {
 				canonicalURL = "https://weibo.com/detail/" + p.TargetID
 			}
+		case site.X:
+			canonicalURL = "https://x.com/i/web/status/" + p.TargetID
 		}
 	}
 	pages := make([]PlannedNotePage, 0, len(p.Images))
@@ -244,8 +264,14 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 			idx = i + 1
 		}
 		pageKind := strings.ToLower(strings.TrimSpace(img.MediaRole))
+		pageHLSOnly := false
 		switch pageKind {
 		case "image", "gif", "live_photo", "motion", "video":
+		case "animated_gif":
+			pageKind = "gif"
+		case "hls_only":
+			pageKind = "video"
+			pageHLSOnly = true
 		default:
 			if len(img.VideoURLs) > 0 {
 				pageKind = "live_photo"
@@ -257,6 +283,7 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 			Index:       idx,
 			Kind:        pageKind,
 			FromOrigin:  img.FromOrigin,
+			HLSOnly:     pageHLSOnly,
 			Width:       img.Width,
 			Height:      img.Height,
 			DurationSec: img.DurationSec,
@@ -281,6 +308,8 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 			transport = site.DouyinVODTransport("", false)
 		case site.Weibo:
 			transport = site.WeiboMediaTransport("", false)
+		case site.X:
+			transport = site.XMediaTransport("", false)
 		}
 	}
 	var originCard *site.RichCardSummary
@@ -308,6 +337,7 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 		AuthorFace:              p.AuthorFace,
 		CoverURLs:               append([]string(nil), p.CoverURLs...),
 		VideoURLs:               append([]string(nil), p.VideoURLs...),
+		HLSOnly:                 hlsOnly,
 		OriginalURLs:            append([]string(nil), p.OriginalURLs...),
 		QualityName:             p.QualityLabel,
 		Codec:                   p.VideoCodec,
@@ -543,7 +573,7 @@ func (m *Manager) reportSiteAutomaticError(ctx context.Context, siteStr string, 
 		if m.client != nil {
 			m.client.ReportAutomaticError(ctx, err)
 		}
-	case site.Douyin, site.Weibo:
+	case site.Douyin, site.Weibo, site.X:
 		if planner, ok := m.getWorkPlanner(id); ok {
 			if rep, ok := planner.(SiteErrorReporter); ok {
 				rep.ReportAutomaticError(ctx, err)

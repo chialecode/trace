@@ -92,6 +92,7 @@ func (a *App) clearUnsentLoginInputs() {
 	a.ManualRefreshInput = ""
 	a.DouyinCookieInput = ""
 	a.WeiboCookieInput = ""
+	a.XCookieInput = ""
 }
 
 func (a *App) importManualCookie() {
@@ -215,6 +216,65 @@ func weiboLoginErrorMessage(err error) string {
 		return "微博认为这个 Cookie 没有登录、只是访客态或已过期"
 	case site.ErrKindRiskControl, site.ErrKindRateLimited:
 		return "微博要求验证或触发风控，请先在浏览器里正常打开一次微博再复制 Cookie"
+	default:
+		return userErrorText(err)
+	}
+}
+
+func (a *App) importXCookie() {
+	rawCookie := a.XCookieInput
+	// Clear input immediately upon submit before async network validation finishes.
+	a.XCookieInput = ""
+	a.LoginError = ""
+	if strings.TrimSpace(rawCookie) == "" {
+		a.LoginError = "缺少 auth_token 或 ct0（请复制包含 auth_token 与 ct0 的完整 X Cookie）"
+		return
+	}
+	if a.isPending("x-cookie-login") {
+		rawCookie = ""
+		return
+	}
+	requestGuarded(a, "x-cookie-login", nil, func(ctx context.Context) (credential.Status, error) {
+		defer func() { rawCookie = "" }()
+		return a.backend.LoginWithCookie(ctx, string(site.X), rawCookie, "")
+	}, func(status credential.Status) {
+		if status.LoggedIn {
+			a.cancelQRLogin()
+			handle := strings.TrimPrefix(strings.TrimSpace(status.UniqueID), "@")
+			uid := strings.TrimSpace(status.UID)
+			if status.Uname != "" && handle != "" {
+				a.BannerInfo = fmt.Sprintf("已登录 X：%s (@%s)", status.Uname, handle)
+			} else if handle != "" {
+				a.BannerInfo = fmt.Sprintf("已登录 X：@%s", handle)
+			} else if status.Uname != "" {
+				a.BannerInfo = fmt.Sprintf("已登录 X：%s", status.Uname)
+			} else if uid != "" {
+				a.BannerInfo = fmt.Sprintf("已登录 X：ID %s", uid)
+			}
+			a.CompleteLogin()
+		}
+	}, func(err error) {
+		a.LoginError = xLoginErrorMessage(err)
+	})
+}
+
+func xLoginErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch site.KindOf(err) {
+	case site.ErrKindInvalidInput:
+		msg := userErrorText(err)
+		if strings.Contains(msg, "8 KiB") || strings.Contains(msg, "控制字符") || strings.Contains(msg, "auth_token") || strings.Contains(msg, "ct0") {
+			return msg
+		}
+		return "缺少 auth_token 或 ct0（请复制包含 auth_token 与 ct0 的完整 X Cookie）"
+	case site.ErrKindAuthRequired:
+		return "X 认为这个 Cookie 没有登录或已过期，请重新粘贴"
+	case site.ErrKindRiskControl:
+		return "X 要求验证或账号被临时锁定，TRACE 已停止 X 的全部自动请求，请先在浏览器里处理"
+	case site.ErrKindRateLimited:
+		return userErrorText(err)
 	default:
 		return userErrorText(err)
 	}

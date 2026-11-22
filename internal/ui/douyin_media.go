@@ -17,6 +17,8 @@ type douyinNoteRenderPage struct {
 	Index         int
 	Kind          string // "image", "live_photo", "video", "unknown"
 	IsGIF         bool
+	HLSOnly       bool
+	HLSOnlyNotice string
 	ImageURL      string
 	ImageRel      string
 	MotionURL     string
@@ -274,6 +276,10 @@ func (a *App) renderBGMBar(c *ui.Context, key, title, author string, original bo
 		})
 }
 
+func (a *App) viewerInlinePageIsLoopMuted(idx int) bool {
+	return idx >= 0 && idx < len(a.ImageViewer.InlineLoopMuted) && a.ImageViewer.InlineLoopMuted[idx]
+}
+
 // stopViewerInlinePlayback stops any inline live-photo motion or video page playing inside ImageViewer.
 // By design (docs/ui.md §3.4), stopping inline playback does NOT auto-resume the note's BGM bar.
 func (a *App) stopViewerInlinePlayback() {
@@ -286,6 +292,7 @@ func (a *App) stopViewerInlinePlayback() {
 	a.ImageViewer.InlineLoading = false
 	a.ImageViewer.InlineError = ""
 	a.ImageViewer.InlineMediaPath = ""
+	a.ImageViewer.InlineLoopPaused = false
 }
 
 // startViewerInlinePage starts playing a live-photo motion clip or mixed-note video page inline inside ImageViewer.
@@ -363,6 +370,12 @@ func (a *App) startViewerInlinePage(pageIndex int) {
 			return
 		}
 		a.viewerPlayer.SetVolume(a.PlayerOverlay.Volume)
+		if a.viewerInlinePageIsLoopMuted(pageIndex) {
+			a.viewerPlayer.SetMuted(true)
+		} else if a.backend != nil {
+			a.viewerPlayer.SetMuted(a.backend.GetUIState().Player.Muted)
+		}
+		a.ImageViewer.InlineLoopPaused = false
 		a.viewerPlayer.Play()
 	}, func(err error) {
 		a.ImageViewer.InlineLoading = false
@@ -378,9 +391,11 @@ func (a *App) toggleViewerInlinePlay() {
 	if !a.ImageViewer.Open || !a.ImageViewer.InlineActive || !playerLoaded(a.viewerPlayer) {
 		return
 	}
-	if !playerPlaying(a.viewerPlayer) {
+	wasPlaying := playerPlaying(a.viewerPlayer)
+	if !wasPlaying {
 		a.pauseBGM()
 	}
+	a.ImageViewer.InlineLoopPaused = wasPlaying
 	a.viewerPlayer.TogglePlay()
 }
 
@@ -399,6 +414,7 @@ func (a *App) openNotePagesViewer(itemKey, siteID string, pages []douyinNoteRend
 	inlinePaths := make([]string, len(pages))
 	inlineURLs := make([]string, len(pages))
 	inlineDurs := make([]int, len(pages))
+	inlineLoopMuted := make([]bool, len(pages))
 
 	offline := a.CurrentRoute == RouteLibrary || a.CurrentRoute == RouteLibraryItem
 	for i, pg := range pages {
@@ -417,6 +433,7 @@ func (a *App) openNotePagesViewer(itemKey, siteID string, pages []douyinNoteRend
 		}
 		kinds[i] = normKind
 		inlineDurs[i] = pg.DurationSec
+		inlineLoopMuted[i] = pg.IsGIF && normKind == "video"
 		switch normKind {
 		case "live_photo":
 			if itemKey != "" && pg.MotionRel != "" && a.backend != nil {
@@ -446,6 +463,8 @@ func (a *App) openNotePagesViewer(itemKey, siteID string, pages []douyinNoteRend
 	a.ImageViewer.InlineMediaPaths = inlinePaths
 	a.ImageViewer.InlineMediaURLs = inlineURLs
 	a.ImageViewer.InlineDurations = inlineDurs
+	a.ImageViewer.InlineLoopMuted = inlineLoopMuted
+	a.ImageViewer.InlineLoopPaused = false
 	a.ImageViewer.InlineSite = firstNonEmptyStrUI(siteID, "douyin")
 
 	idx := a.ImageViewer.Index
@@ -488,6 +507,7 @@ func buildDouyinNoteRenderPages(work *service.DouyinWorkView, cached *library.It
 			pg := douyinNoteRenderPage{
 				Index:       rec.Index,
 				Kind:        kind,
+				IsGIF:       rec.GIF,
 				ImageRel:    firstNonEmptyStrUI(rec.Image, rec.Cover),
 				MotionRel:   rec.Motion,
 				VideoRel:    rec.Video,
@@ -593,14 +613,25 @@ func (a *App) renderNotePagesGrid(c *ui.Context, itemKey, siteID string, pages [
 				ui.Text(c, "实况").FontSize(11).FontWeight(600).TextColor(ColorWhite).SingleLine()
 			})
 		case "video":
-			ui.Row(c).Label(fmt.Sprintf("视频页标记 %d", pageNum)).Absolute().Left(0).Top(0).Right(0).Bottom(0).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
-				ui.Box(c).Size(38, 38).Radius(19).Background(ui.RGBA(0, 0, 0, 0.58)).Center().Children(func() {
-					DrawIcon(c, "play", 18, ColorWhite, 2.0)
+			if pg.IsGIF {
+				ui.Box(c).Label(fmt.Sprintf("动图标记 %d", pageNum)).Absolute().Left(6).Top(6).Padding(1, 6).Radius(4).Background(ui.RGBA(0, 0, 0, 0.58)).Children(func() {
+					ui.Text(c, "GIF").FontSize(11).FontWeight(600).TextColor(ColorWhite).SingleLine()
 				})
-			})
-			if pg.DurationSec > 0 {
-				ui.Box(c).Absolute().Bottom(6).Right(6).Padding(2, 6).Radius(4).Background(ui.RGBA(0, 0, 0, 0.72)).Children(func() {
-					ui.Text(c, FormatDuration(pg.DurationSec)).FontSize(11).FontWeight(600).TextColor(ColorWhite).SingleLine()
+			} else {
+				ui.Row(c).Label(fmt.Sprintf("视频页标记 %d", pageNum)).Absolute().Left(0).Top(0).Right(0).Bottom(0).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
+					ui.Box(c).Size(38, 38).Radius(19).Background(ui.RGBA(0, 0, 0, 0.58)).Center().Children(func() {
+						DrawIcon(c, "play", 18, ColorWhite, 2.0)
+					})
+				})
+				if pg.DurationSec > 0 {
+					ui.Box(c).Absolute().Bottom(6).Right(6).Padding(2, 6).Radius(4).Background(ui.RGBA(0, 0, 0, 0.72)).Children(func() {
+						ui.Text(c, FormatDuration(pg.DurationSec)).FontSize(11).FontWeight(600).TextColor(ColorWhite).SingleLine()
+					})
+				}
+			}
+			if pg.HLSOnly {
+				ui.Box(c).Label(fmt.Sprintf("分段流标记 %d", pageNum)).Absolute().Bottom(6).Left(6).Padding(2, 6).Radius(4).Background(ui.RGBA(0, 0, 0, 0.72)).Children(func() {
+					ui.Text(c, "分段流").FontSize(10).FontWeight(600).TextColor(ColorWhite).SingleLine()
 				})
 			}
 		case "unknown":

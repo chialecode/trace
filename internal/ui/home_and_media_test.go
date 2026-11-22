@@ -27,6 +27,11 @@ func (b *libraryCountingBackend) GetLibraryItem(key string) (library.ItemMetadat
 	return b.BackendAPI.GetLibraryItem(key)
 }
 
+func (b *libraryCountingBackend) GetLibraryItemMetaOnly(key string) (library.ItemMetadata, bool, error) {
+	b.gets++
+	return b.BackendAPI.GetLibraryItemMetaOnly(key)
+}
+
 // DEC-040 (frame drops while scrolling Home): redrawing the timeline does
 // not query the library for every visible post on every frame; a task or
 // library event rebuilds the cards once.

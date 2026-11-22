@@ -12,7 +12,7 @@ import (
 
 var (
 	reHTTPPrefix      = regexp.MustCompile(`(?i)https?://`)
-	reBareKnownDomain = regexp.MustCompile(`(?:^|[^A-Za-z0-9._/-])((?i:v\.douyin\.com|www\.douyin\.com|m\.douyin\.com|live\.douyin\.com|iesdouyin\.com|www\.iesdouyin\.com|v\.amemv\.com|webcast\.amemv\.com|mall\.douyin\.com|haohuo\.jinritemai\.com|b23\.tv|www\.b23\.tv|acg\.tv|www\.bilibili\.com|m\.bilibili\.com|space\.bilibili\.com|live\.bilibili\.com|t\.bilibili\.com|www\.weibo\.com|video\.weibo\.com|live\.weibo\.com|weibointl\.api\.weibo\.com|weibo\.com|m\.weibo\.cn|share\.api\.weibo\.cn|weibo\.cn|t\.cn)/[^\x00-\x20\x7f-\x{10FFFF}"'<>` + "`" + `\\]+)`)
+	reBareKnownDomain = regexp.MustCompile(`(?:^|[^A-Za-z0-9._/@-])((?i:v\.douyin\.com|www\.douyin\.com|m\.douyin\.com|live\.douyin\.com|iesdouyin\.com|www\.iesdouyin\.com|v\.amemv\.com|webcast\.amemv\.com|mall\.douyin\.com|haohuo\.jinritemai\.com|b23\.tv|www\.b23\.tv|acg\.tv|www\.bilibili\.com|m\.bilibili\.com|space\.bilibili\.com|live\.bilibili\.com|t\.bilibili\.com|www\.weibo\.com|video\.weibo\.com|live\.weibo\.com|weibointl\.api\.weibo\.com|weibo\.com|m\.weibo\.cn|share\.api\.weibo\.cn|weibo\.cn|t\.cn|www\.x\.com|mobile\.x\.com|m\.x\.com|x\.com|www\.twitter\.com|mobile\.twitter\.com|m\.twitter\.com|twitter\.com|t\.co|(?:(?:www|[digm])\.)?(?:fxtwitter\.com|fixupx\.com|vxtwitter\.com|fixvx\.com|twittpr\.com)|(?:www\.)?(?:nitter\.net|xcancel\.com|periscope\.tv|pscp\.tv))/[^\x00-\x20\x7f-\x{10FFFF}"'<>` + "`" + `\\]+)`)
 	reDouyinGluedCode = regexp.MustCompile(`^(https?://v\.(?:douyin|amemv)\.com/[A-Za-z0-9_-]+)/\d+(?:\.\d+)?/?$`)
 	reDouyinSecUID    = regexp.MustCompile(`^MS4wLjAB[A-Za-z0-9_-]+$`)
 	reBiliBV          = regexp.MustCompile(`(?i)\bBV1[1-9A-NP-Za-km-z]{9}\b`)
@@ -39,6 +39,20 @@ var (
 		"weibo.cn",
 		"t.cn",
 	}
+	xDispatchDomains = []string{
+		"x.com",
+		"twitter.com",
+		"t.co",
+		"fxtwitter.com",
+		"fixupx.com",
+		"vxtwitter.com",
+		"fixvx.com",
+		"twittpr.com",
+		"nitter.net",
+		"xcancel.com",
+		"periscope.tv",
+		"pscp.tv",
+	}
 )
 
 type extractedURLCandidate struct {
@@ -63,6 +77,11 @@ func isWeiboShortHost(host string) bool {
 	return h == "t.cn" || strings.HasSuffix(h, ".t.cn")
 }
 
+func isXShortHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	return h == "t.co" || strings.HasSuffix(h, ".t.co")
+}
+
 func extractURLHost(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
@@ -73,8 +92,8 @@ func extractURLHost(raw string) string {
 
 // ExtractShareURL extracts an HTTP(S) or known bare-domain URL from mixed share text,
 // stripping glued Chinese/Emoji suffixes, trailing sentence punctuation, and Douyin oral-code tails.
-// When multiple URLs appear and the first is a Weibo t.cn short link, explicit in-site Weibo
-// domain URLs take priority over t.cn.
+// When multiple URLs appear and the first is a Weibo t.cn or X t.co short link, explicit
+// same-site (or X mirror) URLs take priority over the short link.
 func ExtractShareURL(text string) (string, bool) {
 	s := strings.TrimSpace(text)
 	if s == "" {
@@ -160,6 +179,14 @@ func ExtractShareURL(text string) (string, bool) {
 			}
 		}
 	}
+	if isXShortHost(extractURLHost(candidates[0].url)) {
+		for _, c := range candidates[1:] {
+			host := extractURLHost(c.url)
+			if id, ok := DetectHostSite(host); ok && id == X && !isXShortHost(host) {
+				return c.url, true
+			}
+		}
+	}
 	return candidates[0].url, true
 }
 
@@ -190,6 +217,9 @@ func DetectHostSite(host string) (ID, bool) {
 	}
 	if MatchDomainSuffix(h, weiboDispatchDomains) {
 		return Weibo, true
+	}
+	if MatchDomainSuffix(h, xDispatchDomains) {
+		return X, true
 	}
 	return "", false
 }

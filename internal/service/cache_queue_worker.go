@@ -716,7 +716,7 @@ func (m *cacheQueueManager) finishItemOutcomeLocked(entry *cacheQueueEntry, cach
 
 	// If the current page buffer is exhausted and there are no further pages, complete immediately.
 	if entry.rt.pageLoaded && entry.rt.pageIdx >= len(entry.rt.pageItems) && !entry.rt.pageNextHasMore {
-		entry.rec.Cursor = sanitizeQueueCursor(entry.rt.pageNextCursor)
+		entry.rec.Cursor = sanitizeQueueCursorForSite(site.ID(entry.rec.Site), entry.rt.pageNextCursor)
 		entry.rec.HasMore = false
 		entry.rec.ProcessedKeys = nil
 		if entry.rt.pageCompletionNote != "" {
@@ -777,7 +777,7 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 
 	// Exhausted current buffered page? Advance persistent cursor.
 	if entry.rt.pageLoaded && entry.rt.pageIdx >= len(entry.rt.pageItems) {
-		entry.rec.Cursor = sanitizeQueueCursor(entry.rt.pageNextCursor)
+		entry.rec.Cursor = sanitizeQueueCursorForSite(siteID, entry.rt.pageNextCursor)
 		entry.rec.HasMore = entry.rt.pageNextHasMore
 		entry.rec.ProcessedKeys = nil
 		completionNote := entry.rt.pageCompletionNote
@@ -870,7 +870,7 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 			return
 		}
 		if len(items) == 0 {
-			cleanNext := sanitizeQueueCursor(nextCursor)
+			cleanNext := sanitizeQueueCursorForSite(siteID, nextCursor)
 			if nextMore && cleanNext != "" && cleanNext != entry.rec.Cursor {
 				entry.rec.Cursor = cleanNext
 				entry.rec.HasMore = true

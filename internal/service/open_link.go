@@ -30,6 +30,7 @@ import (
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/site/douyin"
 	"github.com/chialecode/trace/internal/site/weibo"
+	"github.com/chialecode/trace/internal/site/x"
 	"github.com/chialecode/trace/internal/storage"
 )
 
@@ -89,6 +90,8 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 		return b.openDouyinLink(ctx, normalizedInput)
 	case site.Weibo:
 		return b.openWeiboLink(ctx, normalizedInput)
+	case site.X:
+		return b.openXLink(ctx, normalizedInput)
 	case site.Bilibili:
 		// Continue below with Bilibili handler.
 	default:
@@ -677,6 +680,133 @@ func (b *Backend) openWeiboLink(ctx context.Context, normalizedInput string) (*O
 	return out, nil
 }
 
+func (b *Backend) openXLink(ctx context.Context, normalizedInput string) (*OpenLinkResult, error) {
+	target, err := b.x.ResolveLink(ctx, normalizedInput)
+	if err != nil {
+		b.logError("OpenLink.XResolve", err)
+		return nil, err
+	}
+	out := &OpenLinkResult{
+		Site:       string(site.X),
+		SiteTarget: &target,
+		Target: bilibili.ResolveTarget{
+			Kind:         target.Kind,
+			ID:           target.ID,
+			CanonicalURL: target.CanonicalURL,
+			Unsupported:  target.Unsupported,
+			Reason:       target.Reason,
+		},
+	}
+
+	switch target.Kind {
+	case "dynamic":
+		pv, err := b.XPost(ctx, target.ID)
+		if err != nil {
+			return nil, err
+		}
+		out.XPost = pv
+		out.CachedItem = pv.CachedItem
+		out.Target.ID = pv.ID
+		out.SiteTarget.ID = pv.ID
+		out.SiteTarget.AuthorUID = pv.Author.RestID
+		out.SiteTarget.CanonicalURL = pv.CanonicalURL
+		title := xPostSummaryTitle(pv)
+		authorName := xPostAuthorDisplayName(pv.Author)
+		if err := b.lib.UpsertFeedEntry(library.FeedEntry{
+			Site:         string(site.X),
+			Kind:         "dynamic",
+			RawID:        pv.ID,
+			AuthorUID:    pv.Author.RestID,
+			AuthorName:   authorName,
+			AuthorFace:   x.SafePublicImageURL(pv.Author.AvatarURL),
+			Title:        title,
+			Summary:      pv.Text,
+			CoverURL:     xPostPublicCoverURL(pv),
+			CanonicalURL: pv.CanonicalURL,
+			PubTs:        pv.CreatedAt,
+		}); err != nil {
+			return nil, &site.Error{Site: site.X, Kind: "storage", Message: "解析记录写入失败", Err: err}
+		}
+		out.HistoryThumbs = &HistoryThumbJob{
+			Site:      string(site.X),
+			Kind:      "dynamic",
+			ID:        pv.ID,
+			AvatarURL: pv.Author.AvatarURL,
+			CoverURL:  xPostThumbCoverURL(pv),
+		}
+		if err := b.history.Record(storage.HistoryEntry{
+			Site:         string(site.X),
+			Kind:         "dynamic",
+			ID:           pv.ID,
+			Title:        title,
+			Subtitle:     authorName,
+			CanonicalURL: pv.CanonicalURL,
+			DurationText: formatHistoryDuration(xPostDuration(pv)),
+		}); err != nil {
+			return nil, &site.Error{Site: site.X, Kind: "storage", Message: "历史记录写入失败", Err: err}
+		}
+
+	case "user":
+		uid := firstNonEmpty(target.AuthorUID, target.ID)
+		uv, err := b.XUser(ctx, uid)
+		if err != nil {
+			return nil, err
+		}
+		out.XUser = uv
+		out.Target.ID = uv.RestID
+		out.SiteTarget.ID = uv.RestID
+		out.SiteTarget.AuthorUID = uv.RestID
+		out.SiteTarget.CanonicalURL = uv.CanonicalURL
+		known := &x.UserProfile{
+			RestID:        uv.RestID,
+			ScreenName:    uv.ScreenName,
+			Name:          uv.Name,
+			StatusesCount: uv.StatusesCount,
+			Protected:     uv.Protected,
+		}
+		if postsPage, _, pErr := b.xUserPosts(ctx, uv.RestID, "", known); pErr == nil {
+			out.XUserPosts = postsPage
+		} else {
+			b.logError("OpenLink.XUserPosts", pErr)
+			out.XUserPostsError = pErr.Error()
+		}
+		out.HistoryThumbs = &HistoryThumbJob{
+			Site:      string(site.X),
+			Kind:      "user",
+			ID:        uv.RestID,
+			AvatarURL: uv.AvatarURL,
+		}
+		if err := b.history.Record(storage.HistoryEntry{
+			Site:         string(site.X),
+			Kind:         "user",
+			ID:           uv.RestID,
+			Title:        formatXDisplayName(uv.Name, uv.ScreenName),
+			Subtitle:     uv.Description,
+			CanonicalURL: uv.CanonicalURL,
+		}); err != nil {
+			return nil, &site.Error{Site: site.X, Kind: "storage", Message: "历史记录写入失败", Err: err}
+		}
+
+	case "live":
+		return nil, &site.Error{
+			Site:        site.X,
+			Kind:        site.ErrKindUnsupportedLink,
+			Unsupported: true,
+			Message:     x.LiveUnsupportedText,
+		}
+
+	default:
+		return nil, &site.Error{
+			Site:        site.X,
+			Kind:        site.ErrKindUnsupportedLink,
+			Unsupported: true,
+			Message:     firstNonEmpty(target.Reason, "暂不支持这种 X 链接"),
+		}
+	}
+
+	return out, nil
+}
+
 func formatHistoryDuration(seconds int) string {
 	if seconds <= 0 {
 		return ""
@@ -746,6 +876,11 @@ func (b *Backend) fetchHistoryThumbForSite(ctx context.Context, siteID site.ID, 
 			return storage.HistoryThumbnail{}
 		}
 		raw, _, err = b.weibo.FetchImageLimited(ctx, rawURL, storage.MaxHistoryThumbBytes)
+	case site.X:
+		if b.x == nil {
+			return storage.HistoryThumbnail{}
+		}
+		raw, _, err = b.x.FetchImageLimited(ctx, rawURL, storage.MaxHistoryThumbBytes)
 	case site.Bilibili:
 		if b.bili == nil {
 			return storage.HistoryThumbnail{}
@@ -828,7 +963,7 @@ func (b *Backend) RemoveHistoryForSite(siteID, kind, id string) error {
 	return b.history.RemoveBySite(siteID, kind, id)
 }
 
-// FetchImage fetches a whitelisted Bilibili, Douyin, or Weibo cover/avatar/post image without sending Cookie.
+// FetchImage fetches a whitelisted Bilibili, Douyin, Weibo, or X cover/avatar/post image without sending Cookie.
 func (b *Backend) FetchImage(ctx context.Context, rawURL string) ([]byte, error) {
 	if err := b.requireAnyLogin(); err != nil {
 		return nil, err
@@ -844,6 +979,9 @@ func (b *Backend) FetchImage(ctx context.Context, rawURL string) ([]byte, error)
 	case site.Weibo:
 		data, _, err := b.weibo.FetchImage(ctx, rawURL)
 		return data, err
+	case site.X:
+		data, _, err := b.x.FetchImage(ctx, rawURL)
+		return data, err
 	case site.Bilibili:
 		return b.bili.FetchImage(ctx, rawURL)
 	default:
@@ -857,6 +995,9 @@ func (b *Backend) detectImageSite(rawURL string) site.ID {
 		return site.Bilibili
 	}
 	host := strings.ToLower(u.Hostname())
+	if site.MatchDomainSuffix(host, site.DefaultXMediaHosts()) {
+		return site.X
+	}
 	if site.MatchDomainSuffix(host, site.DefaultWeiboMediaHosts()) || site.IsWeiboLivePhotoInitialURL(rawURL) {
 		return site.Weibo
 	}
@@ -867,6 +1008,17 @@ func (b *Backend) detectImageSite(rawURL string) site.ID {
 		return id
 	}
 	if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+		if b.x != nil {
+			ep := b.x.Endpoints()
+			for _, candidate := range []string{ep.HomeURL, ep.AccountSettings, ep.GraphQLBase} {
+				if cu, cErr := url.Parse(candidate); cErr == nil && strings.EqualFold(cu.Host, u.Host) {
+					if strings.HasPrefix(u.Path, "/bfs/") {
+						return site.Bilibili
+					}
+					return site.X
+				}
+			}
+		}
 		if b.weibo != nil {
 			ep := b.weibo.Endpoints()
 			for _, candidate := range []string{ep.PCBasicInfo, ep.ProfileInfo, ep.StatusesShow} {
@@ -889,6 +1041,11 @@ func (b *Backend) detectImageSite(rawURL string) site.ID {
 				}
 			}
 		}
+		if strings.HasPrefix(u.Path, "/xcdn/") || strings.HasPrefix(u.Path, "/twimg/") ||
+			strings.HasPrefix(u.Path, "/profile_images/") || strings.HasPrefix(u.Path, "/ext_tw_video_thumb/") ||
+			strings.HasPrefix(u.Path, "/amplify_video_thumb/") || strings.HasPrefix(u.Path, "/tweet_video_thumb/") {
+			return site.X
+		}
 		if strings.HasPrefix(u.Path, "/weibo") || strings.HasPrefix(u.Path, "/sinaimg/") || strings.HasPrefix(u.Path, "/weibocdn/") || strings.HasPrefix(u.Path, "/livephoto/") {
 			return site.Weibo
 		}
@@ -898,6 +1055,10 @@ func (b *Backend) detectImageSite(rawURL string) site.ID {
 		biliActive := b.cred != nil && b.cred.HasActiveCredential()
 		dyActive := b.douyinCred != nil && b.douyinCred.HasActiveCredential()
 		wbActive := b.weiboCred != nil && b.weiboCred.HasActiveCredential()
+		xActive := b.xCred != nil && b.xCred.HasActiveCredential()
+		if xActive && !biliActive && !dyActive && !wbActive {
+			return site.X
+		}
 		if wbActive && !biliActive && !dyActive {
 			return site.Weibo
 		}
@@ -1400,6 +1561,315 @@ func weiboVideoDuration(v *WeiboVideoDTO) int {
 	return v.DurationSec
 }
 
+// XPost fetches and maps a single X post by Snowflake status_id via GraphQL TweetDetail.
+func (b *Backend) XPost(ctx context.Context, statusID string) (*XPostDTO, error) {
+	if err := b.requireSiteLogin(site.X); err != nil {
+		return nil, err
+	}
+	post, err := b.x.GetPost(ctx, strings.TrimSpace(statusID))
+	if err != nil {
+		b.logError("XPost", err)
+		return nil, err
+	}
+	b.rememberXPostAvatars(post)
+	b.xPostCache.put(post, true)
+	cacheKey := x.PostItemKey(post.ID)
+	var cached *library.ItemMetadata
+	if item, ok, _ := b.lib.GetItem(cacheKey); ok {
+		cached = &item
+	}
+	st := b.States([]string{cacheKey})[cacheKey]
+	return mapXPostDTO(post, cached, st), nil
+}
+
+// XUser fetches an X creator's profile by permanent rest_id (or "self"), updates
+// subscription snapshots & statuses_count, and attaches local subscription ownership.
+func (b *Backend) XUser(ctx context.Context, restID string) (*XUserDTO, error) {
+	if err := b.requireSiteLogin(site.X); err != nil {
+		return nil, err
+	}
+	targetUID := strings.TrimSpace(restID)
+	if targetUID == "" || strings.EqualFold(targetUID, "self") {
+		targetUID = b.xCred.Status().UID
+		if targetUID == "" {
+			selfProf, sErr := b.x.GetSelfProfile(ctx)
+			if sErr != nil {
+				return nil, sErr
+			}
+			targetUID = selfProf.RestID
+		}
+	}
+	prof, err := b.x.GetUserByRestId(ctx, targetUID)
+	if err != nil {
+		b.logError("XUser", err)
+		return nil, err
+	}
+	return b.finalizeXUserProfile(prof), nil
+}
+
+// XUserByScreenName resolves an X creator's profile by mutable @screen_name.
+func (b *Backend) XUserByScreenName(ctx context.Context, screenName string) (*XUserDTO, error) {
+	if err := b.requireSiteLogin(site.X); err != nil {
+		return nil, err
+	}
+	prof, err := b.x.GetUserByScreenName(ctx, strings.TrimSpace(screenName))
+	if err != nil {
+		b.logError("XUserByScreenName", err)
+		return nil, err
+	}
+	return b.finalizeXUserProfile(prof), nil
+}
+
+func (b *Backend) finalizeXUserProfile(prof *x.UserProfile) *XUserDTO {
+	if prof == nil {
+		return nil
+	}
+	displayName := firstNonEmpty(prof.Name, prof.ScreenName, prof.RestID)
+	if b.subs != nil {
+		_ = b.subs.UpdateAccountSnapshot(string(site.X), prof.RestID, displayName, prof.AvatarURL, prof.ScreenName)
+	}
+	if prof.RestID != "" && prof.AvatarURL != "" {
+		b.rememberAccountAvatar(string(site.X), prof.RestID, prof.AvatarURL)
+	}
+	b.recordAccountWorks(site.X, prof.RestID, prof.StatusesCount)
+	var ownerSubID, ownerSubName string
+	if sub, ok := b.OwnerOfAccount(string(site.X), prof.RestID); ok {
+		ownerSubID = sub.ID
+		ownerSubName = sub.Name
+	}
+	return mapXUserDTO(prof, ownerSubID, ownerSubName)
+}
+
+// XUserPosts fetches one paginated timeline page for an X creator via GraphQL UserTweets.
+func (b *Backend) XUserPosts(ctx context.Context, restID, cursor string) (*XUserPostsPageDTO, error) {
+	page, _, err := b.xUserPosts(ctx, restID, cursor, nil)
+	return page, err
+}
+
+func (b *Backend) xUserPosts(
+	ctx context.Context,
+	restID, cursor string,
+	known *x.UserProfile,
+) (*XUserPostsPageDTO, []x.Post, error) {
+	if err := b.requireSiteLogin(site.X); err != nil {
+		return nil, nil, err
+	}
+	cleanCursor := strings.TrimSpace(cursor)
+	page, err := b.x.GetUserTweets(ctx, x.UserTweetsRequest{
+		RestID:            strings.TrimSpace(restID),
+		Cursor:            cleanCursor,
+		KnownProfile:      known,
+		CrossCheckProfile: known == nil && cleanCursor == "",
+	})
+	if err != nil {
+		b.logError("XUserPosts", err)
+		return nil, nil, err
+	}
+	keys := make([]string, 0, len(page.Posts))
+	for i := range page.Posts {
+		if page.Posts[i].ID != "" {
+			keys = append(keys, x.PostItemKey(page.Posts[i].ID))
+		}
+	}
+	var states map[string]library.DotState
+	if len(keys) > 0 {
+		states = b.States(keys)
+	}
+	ownerUID := strings.TrimSpace(restID)
+	if normUID, uErr := site.NormalizeUID(site.X, ownerUID); uErr == nil {
+		ownerUID = normUID
+	}
+	ownerName := ""
+	if known != nil {
+		ownerName = formatXDisplayName(known.Name, known.ScreenName)
+	}
+	if ownerName == "" && page.Author != nil {
+		ownerName = formatXDisplayName(page.Author.Name, page.Author.ScreenName)
+	}
+	if ownerName == "" && ownerUID != "" {
+		ownerName = b.resolveXForwarderHintName(ownerUID, "", "")
+	}
+
+	views := make([]XPostDTO, 0, len(page.Posts))
+	for i := range page.Posts {
+		p := &page.Posts[i]
+		b.xPostCache.put(p, false)
+		k := x.PostItemKey(p.ID)
+		v := *mapXPostDTO(p, nil, states[k])
+		if ownerUID != "" && (p.IsRetweet || p.IsQuote || p.Author.RestID != ownerUID) {
+			v.ForwarderHintUID = ownerUID
+			v.ForwarderHintName = ownerName
+		}
+		views = append(views, v)
+	}
+	var authorDTO *XAuthorDTO
+	if page.Author != nil {
+		a := mapXAuthorDTO(*page.Author)
+		authorDTO = &a
+	}
+	totalWorks := 0
+	if known != nil && known.StatusesCount > 0 {
+		totalWorks = known.StatusesCount
+	}
+	if totalWorks == 0 && page.Author != nil && page.Author.StatusesCount > 0 {
+		totalWorks = page.Author.StatusesCount
+	}
+	if cleanCursor == "" && totalWorks > 0 && ownerUID != "" {
+		b.recordAccountWorks(site.X, ownerUID, totalWorks)
+	}
+	bottomTipsText := strings.TrimSpace(page.BottomTipsText)
+	bottomTipsVisible := page.BottomTipsVisible
+	if page.ReachedVisibleLimit && bottomTipsText == "" {
+		bottomTipsText = x.VisibleTimelineLimitText
+		bottomTipsVisible = true
+	}
+	nextCursor := ""
+	if page.HasMore {
+		nextCursor = page.NextCursor
+	}
+	return &XUserPostsPageDTO{
+		Posts:               views,
+		NextCursor:          nextCursor,
+		HasMore:             page.HasMore,
+		ReachedVisibleLimit: page.ReachedVisibleLimit,
+		BottomTipsVisible:   bottomTipsVisible,
+		BottomTipsText:      bottomTipsText,
+		UncertainEmpty:      page.UncertainEmpty,
+		UncertainReason:     page.UncertainReason,
+		Author:              authorDTO,
+		TotalWorks:          totalWorks,
+	}, page.Posts, nil
+}
+
+func formatXDisplayName(name, screenName string) string {
+	name = strings.TrimSpace(name)
+	handle := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(screenName), "@"))
+	switch {
+	case name != "" && handle != "":
+		if strings.EqualFold(name, handle) || strings.EqualFold(name, "@"+handle) {
+			return "@" + handle
+		}
+		return name + " (@" + handle + ")"
+	case name != "":
+		return name
+	case handle != "":
+		return "@" + handle
+	default:
+		return ""
+	}
+}
+
+func xPostAuthorDisplayName(a XAuthorDTO) string {
+	return firstNonEmpty(formatXDisplayName(a.Name, a.ScreenName), a.RestID)
+}
+
+func xPostSummaryTitle(pv *XPostDTO) string {
+	if pv == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(pv.Text)
+	if raw == "" && pv.Card != nil {
+		raw = strings.TrimSpace(pv.Card.Title)
+	}
+	if raw == "" && pv.Retweeted != nil {
+		raw = strings.TrimSpace(pv.Retweeted.Text)
+	}
+	if raw == "" && pv.Quoted != nil {
+		raw = strings.TrimSpace(pv.Quoted.Text)
+	}
+	return trimQueueSummaryTitle(firstNonEmpty(raw, "X 帖子 "+pv.ID))
+}
+
+func xPostPublicCoverURL(pv *XPostDTO) string {
+	if pv == nil {
+		return ""
+	}
+	for _, m := range pv.Media {
+		if u := x.SafePublicImageURL(firstNonEmpty(m.PublicPreviewURL, m.ImageURL)); u != "" {
+			return u
+		}
+	}
+	if pv.Card != nil {
+		if u := x.SafePublicImageURL(pv.Card.CoverURL); u != "" {
+			return u
+		}
+	}
+	if pv.Retweeted != nil {
+		if u := xPostPublicCoverURL(pv.Retweeted); u != "" {
+			return u
+		}
+	}
+	if pv.Quoted != nil {
+		if u := xPostPublicCoverURL(pv.Quoted); u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+func xPostThumbCoverURL(pv *XPostDTO) string {
+	if pv == nil {
+		return ""
+	}
+	for _, m := range pv.Media {
+		if u := firstNonEmpty(m.PublicPreviewURL, m.ImageURL); u != "" {
+			return u
+		}
+	}
+	if pv.Card != nil && pv.Card.CoverURL != "" {
+		return pv.Card.CoverURL
+	}
+	if pv.Retweeted != nil {
+		if u := xPostThumbCoverURL(pv.Retweeted); u != "" {
+			return u
+		}
+	}
+	if pv.Quoted != nil {
+		if u := xPostThumbCoverURL(pv.Quoted); u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+func xPostDuration(pv *XPostDTO) int {
+	if pv == nil {
+		return 0
+	}
+	for _, m := range pv.Media {
+		if m.DurationSec > 0 {
+			return m.DurationSec
+		}
+	}
+	if pv.Retweeted != nil {
+		if d := xPostDuration(pv.Retweeted); d > 0 {
+			return d
+		}
+	}
+	if pv.Quoted != nil {
+		if d := xPostDuration(pv.Quoted); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+func (b *Backend) resolveXForwarderHintName(hintUID, postAuthorUID, postAuthorName string) string {
+	hintUID = strings.TrimSpace(hintUID)
+	if hintUID == "" {
+		return ""
+	}
+	if strings.TrimSpace(postAuthorUID) == hintUID && strings.TrimSpace(postAuthorName) != "" {
+		return strings.TrimSpace(postAuthorName)
+	}
+	if b.subs != nil {
+		if sub, acc, ok := b.subs.GetAccount(string(site.X), hintUID); ok {
+			return firstNonEmpty(formatXDisplayName(acc.Name, acc.UniqueID), acc.Name, sub.Name)
+		}
+	}
+	return ""
+}
+
 // DouyinLive queries a Douyin live room by web_rid and returns normalized room and anchor state.
 func (b *Backend) DouyinLive(ctx context.Context, webRID string) (*DouyinLiveView, error) {
 	if err := b.requireSiteLogin(site.Douyin); err != nil {
@@ -1534,6 +2004,15 @@ func (b *Backend) StagePreviewMedia(ctx context.Context, siteID, rawURL, ext str
 	case site.Bilibili:
 		var fetchErr error
 		data, fetchErr = b.bili.FetchImageLimited(ctx, rawURL, maxPreviewMediaBytes)
+		if fetchErr != nil {
+			return "", fetchErr
+		}
+	case site.X:
+		if b.x == nil {
+			return "", &site.Error{Site: site.X, Kind: site.ErrKindUnavailable, Message: "X 客户端未初始化"}
+		}
+		var fetchErr error
+		data, _, fetchErr = b.x.FetchImageLimited(ctx, rawURL, maxPreviewMediaBytes)
 		if fetchErr != nil {
 			return "", fetchErr
 		}

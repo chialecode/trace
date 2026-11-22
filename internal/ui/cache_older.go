@@ -46,6 +46,15 @@ func (a *App) currentUserQueueTarget(siteID string) (normSite, user, list string
 			return "", "", "", false
 		}
 		return "weibo", user, "posts", true
+	case normSite == "x" && a.CurrentXUser != nil:
+		if a.CurrentXUser.Protected && len(a.CurrentXPosts) == 0 {
+			return "", "", "", false
+		}
+		user = strings.TrimSpace(a.CurrentXUser.RestID)
+		if user == "" {
+			return "", "", "", false
+		}
+		return "x", user, "posts", true
 	case normSite == "bilibili" && a.CurrentUser != nil:
 		if a.CurrentUser.Mid <= 0 {
 			return "", "", "", false
@@ -112,6 +121,20 @@ func (a *App) enqueueCacheAll(siteID string) {
 		req.HasMore = a.WeiboPostsHasMore || (len(a.CurrentWeiboPosts) == 0 && a.WeiboPostsError != "")
 		if a.WeiboBottomTipsVisible && a.WeiboBottomTipsText != "" {
 			req.CompletionNote = a.WeiboBottomTipsText
+		}
+	case siteID == "x" && a.CurrentXUser != nil:
+		if a.CurrentXUser.Protected && len(a.CurrentXPosts) == 0 {
+			return
+		}
+		req.List = "posts"
+		req.User = a.CurrentXUser.RestID
+		req.UserName = firstNonEmptyStrUI(a.CurrentXUser.Name, a.CurrentXUser.ScreenName, a.CurrentXUser.RestID)
+		req.AvatarURL = a.CurrentXUser.AvatarURL
+		req.XPosts = append(req.XPosts, a.CurrentXPosts...)
+		req.Cursor = a.XPostsNextCursor
+		req.HasMore = a.XPostsHasMore || (len(a.CurrentXPosts) == 0 && a.XPostsError != "")
+		if a.XBottomTipsVisible && a.XBottomTipsText != "" {
+			req.CompletionNote = a.XBottomTipsText
 		}
 	case siteID == "bilibili" && a.CurrentUser != nil:
 		req.User = strconv.FormatInt(a.CurrentUser.Mid, 10)

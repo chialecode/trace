@@ -20,6 +20,7 @@ type RemoteUIState struct {
 	Info                                              string
 	FetchedAt                                         time.Time
 	ConfirmRemove                                     bool
+	ConfirmPushXOpen                                  bool
 }
 
 // remoteRefreshEvery is how often the page re-reads the remote while it is
@@ -298,15 +299,19 @@ func (a *App) renderRemoteSites(c *ui.Context, v service.RemoteView, info servic
 				ui.Text(c, line).FontSize(12).TextColor(ColorTextMuted).Grow(1).MaxLines(2)
 				local := a.backend.StatusOf(row.Site)
 				if local.LoggedIn && OutlinePillButton(c, "同步 Cookie", "同步Cookie到远程："+row.Site).Disabled(pushing).Clicked() && !pushing {
-					a.pushRemoteCookie(row.Site)
+					if strings.EqualFold(row.Site, "x") {
+						a.Remote.ConfirmPushXOpen = true
+					} else {
+						a.pushRemoteCookie(row.Site)
+					}
 				}
 				if row.State != remote.SiteNone && DangerOutlinePillButton(c, "清除远程登录", "清除远程登录："+row.Site).Disabled(clearing).Clicked() && !clearing {
 					a.clearRemoteCookie(row.Site)
 				}
 			})
 		}
-		ui.Text(c, "本机登录、扫码或续期成功后会自动把 Cookie 推送到远程；远程不续期，Cookie 失效时这里显示“需要重新同步”。").
-			FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
+		ui.Text(c, "B 站、抖音、微博本机登录或续期后会自动推送 Cookie 到远程；X 不会自动推送，需要手动点击“同步 Cookie”并确认云服务器网络风险。远程不续期，Cookie 失效时这里显示“需要重新同步”。").
+			FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
 	})
 }
 
@@ -476,6 +481,8 @@ func siteDisplayName(id string) string {
 		return "抖音"
 	case "weibo":
 		return "微博"
+	case "x":
+		return "X"
 	}
 	return id
 }

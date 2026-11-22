@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -12,6 +13,27 @@ import (
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
 )
+
+// WeiboImageUnavailableReason is recorded when all candidate URLs for a non-GIF Weibo image
+// return Sina CDN's HTTP-200 deleted-image placeholder GIF (or 404/410).
+const WeiboImageUnavailableReason = "图片已在源站失效"
+
+type weiboPlaceholderGIFError struct{}
+
+func (e *weiboPlaceholderGIFError) Error() string { return WeiboImageUnavailableReason }
+
+func (e *weiboPlaceholderGIFError) Unwrap() error {
+	return &site.Error{
+		Site:    site.Weibo,
+		Kind:    site.ErrKindUnavailable,
+		Message: WeiboImageUnavailableReason,
+	}
+}
+
+func isWeiboPlaceholderError(err error) bool {
+	var target *weiboPlaceholderGIFError
+	return errors.As(err, &target)
+}
 
 // WeiboWorkEnqueueRequest specifies a Weibo post (mid) or standalone video object (1034:<id>)
 // to enqueue for local caching.
@@ -386,11 +408,15 @@ func (m *Manager) executeWeiboSingleVideoTask(
 		refreshCover := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
 			return fresh.CoverURLs, nil
 		})
-		if coverMedia, cErr := m.cacheDouyinSniffedImage(ctx, t, itemDir, previous, exists, "cover", "cover", plan.CoverURLs, 0, 0, plan.Transport, refreshCover); cErr != nil {
+		if coverMedia, cErr := m.cacheWeiboStillImage(ctx, t, itemDir, previous, exists, "cover", "cover", plan.CoverURLs, 0, 0, plan.Transport, refreshCover); cErr != nil {
 			if isSiteStopError(cErr) || isStorageError(cErr) || ctx.Err() != nil {
 				return cErr
 			}
-			addMissing(&meta, "cover", "封面保存失败 ("+classifyDownloadError(cErr)+")")
+			coverReason := "封面保存失败 (" + classifyDownloadError(cErr) + ")"
+			if isWeiboPlaceholderError(cErr) {
+				coverReason = "封面" + WeiboImageUnavailableReason
+			}
+			addMissing(&meta, "cover", coverReason)
 		} else if coverMedia != nil {
 			coverMedia.FromOrigin = plan.VideoFromOrigin
 			meta.Media = replaceRoleMedia(meta.Media, "cover", *coverMedia)
@@ -617,13 +643,17 @@ func (m *Manager) executeWeiboPostTask(
 		refreshCover := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
 			return fresh.CoverURLs, nil
 		})
-		if coverMedia, cErr := m.cacheDouyinSniffedImage(ctx, t, itemDir, previous, exists, "cover", "cover", plan.CoverURLs, 0, 0, plan.Transport, refreshCover); cErr != nil {
+		if coverMedia, cErr := m.cacheWeiboStillImage(ctx, t, itemDir, previous, exists, "cover", "cover", plan.CoverURLs, 0, 0, plan.Transport, refreshCover); cErr != nil {
 			if isSiteStopError(cErr) || isStorageError(cErr) || ctx.Err() != nil {
 				return cErr
 			}
+			coverReason := "封面保存失败 (" + classifyDownloadError(cErr) + ")"
+			if isWeiboPlaceholderError(cErr) {
+				coverReason = "封面" + WeiboImageUnavailableReason
+			}
 			missing = append(missing, library.MissingRecord{
 				Item:   "cover",
-				Reason: "封面保存失败 (" + classifyDownloadError(cErr) + ")",
+				Reason: coverReason,
 			})
 		} else if coverMedia != nil {
 			if plan.Card == nil && plan.OriginCard != nil {
@@ -649,7 +679,7 @@ func (m *Manager) executeWeiboPostTask(
 		}
 
 		switch pageKind {
-		case "image", "gif":
+		case "gif":
 			refreshImg := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
 				if p, ok := findPlannedPage(fresh.Pages, pageIdx, i); ok {
 					return p.ImageURLs, nil
@@ -661,7 +691,39 @@ func (m *Manager) executeWeiboPostTask(
 				if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
 					return imgErr
 				}
+				reason := fmt.Sprintf("第 %02d 张动图下载失败 (%s)", pageIdx, classifyDownloadError(imgErr))
+				missing = append(missing, library.MissingRecord{Item: fmt.Sprintf("page_%02d", pageIdx), Reason: reason})
+				partialErrors = append(partialErrors, reason)
+				notePages = append(notePages, library.NotePageRecord{Index: pageIdx, Kind: "image", FromOrigin: page.FromOrigin, Width: page.Width, Height: page.Height})
+				continue
+			}
+			imgMedia.FromOrigin = page.FromOrigin
+			mediaFiles = append(mediaFiles, *imgMedia)
+			notePages = append(notePages, library.NotePageRecord{
+				Index:      pageIdx,
+				Kind:       "image",
+				FromOrigin: page.FromOrigin,
+				Image:      imgMedia.Path,
+				Width:      page.Width,
+				Height:     page.Height,
+			})
+
+		case "image":
+			refreshImg := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
+				if p, ok := findPlannedPage(fresh.Pages, pageIdx, i); ok {
+					return p.ImageURLs, nil
+				}
+				return nil, nil
+			})
+			imgMedia, imgErr := m.cacheWeiboStillImage(ctx, t, itemDir, previous, exists, "image", prefix, page.ImageURLs, page.Width, page.Height, plan.Transport, refreshImg)
+			if imgErr != nil {
+				if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
+					return imgErr
+				}
 				reason := fmt.Sprintf("第 %02d 张图片下载失败 (%s)", pageIdx, classifyDownloadError(imgErr))
+				if isWeiboPlaceholderError(imgErr) {
+					reason = fmt.Sprintf("第 %02d 张%s", pageIdx, WeiboImageUnavailableReason)
+				}
 				missing = append(missing, library.MissingRecord{Item: fmt.Sprintf("page_%02d", pageIdx), Reason: reason})
 				partialErrors = append(partialErrors, reason)
 				notePages = append(notePages, library.NotePageRecord{Index: pageIdx, Kind: "image", FromOrigin: page.FromOrigin, Width: page.Width, Height: page.Height})
@@ -685,16 +747,17 @@ func (m *Manager) executeWeiboPostTask(
 				}
 				return nil, nil
 			})
-			imgMedia, imgErr := m.cacheDouyinSniffedImage(ctx, t, itemDir, previous, exists, "image", prefix, page.ImageURLs, page.Width, page.Height, plan.Transport, refreshImg)
+			imgMedia, imgErr := m.cacheWeiboStillImage(ctx, t, itemDir, previous, exists, "image", prefix, page.ImageURLs, page.Width, page.Height, plan.Transport, refreshImg)
 			if imgErr != nil {
 				if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
 					return imgErr
 				}
 				reason := fmt.Sprintf("第 %02d 张实况静帧下载失败 (%s)", pageIdx, classifyDownloadError(imgErr))
+				if isWeiboPlaceholderError(imgErr) {
+					reason = fmt.Sprintf("第 %02d 张实况静帧：%s", pageIdx, WeiboImageUnavailableReason)
+				}
 				missing = append(missing, library.MissingRecord{Item: fmt.Sprintf("page_%02d", pageIdx), Reason: reason})
 				partialErrors = append(partialErrors, reason)
-				notePages = append(notePages, library.NotePageRecord{Index: pageIdx, Kind: "motion", FromOrigin: page.FromOrigin, Width: page.Width, Height: page.Height, Duration: page.DurationSec})
-				continue
 			}
 
 			motionRel := fmt.Sprintf("images/%02d_live.mp4", pageIdx)
@@ -709,10 +772,12 @@ func (m *Manager) executeWeiboPostTask(
 				Index:      pageIdx,
 				Kind:       "motion",
 				FromOrigin: page.FromOrigin,
-				Image:      imgMedia.Path,
 				Width:      page.Width,
 				Height:     page.Height,
 				Duration:   page.DurationSec,
+			}
+			if imgMedia != nil {
+				rec.Image = imgMedia.Path
 			}
 			if mErr != nil {
 				if isSiteStopError(mErr) || isStorageError(mErr) || ctx.Err() != nil {
@@ -723,15 +788,19 @@ func (m *Manager) executeWeiboPostTask(
 				partialErrors = append(partialErrors, reason)
 			} else if motionMedia != nil {
 				motionMedia.FromOrigin = page.FromOrigin
-				imgMedia.Motion = motionMedia.Path
+				if imgMedia != nil {
+					imgMedia.Motion = motionMedia.Path
+				}
 				rec.Motion = motionMedia.Path
 				if motionMedia.Duration > 0 {
 					rec.Duration = motionMedia.Duration
 				}
 				mediaFiles = append(mediaFiles, *motionMedia)
 			}
-			imgMedia.FromOrigin = page.FromOrigin
-			mediaFiles = append(mediaFiles, *imgMedia)
+			if imgMedia != nil {
+				imgMedia.FromOrigin = page.FromOrigin
+				mediaFiles = append(mediaFiles, *imgMedia)
+			}
 			notePages = append(notePages, rec)
 
 		case "video":
@@ -743,12 +812,15 @@ func (m *Manager) executeWeiboPostTask(
 					}
 					return nil, nil
 				})
-				coverMedia, cErr := m.cacheDouyinSniffedImage(ctx, t, itemDir, previous, exists, "cover", prefix, page.ImageURLs, page.Width, page.Height, plan.Transport, refreshPageCover)
+				coverMedia, cErr := m.cacheWeiboStillImage(ctx, t, itemDir, previous, exists, "cover", prefix, page.ImageURLs, page.Width, page.Height, plan.Transport, refreshPageCover)
 				if cErr != nil {
 					if isSiteStopError(cErr) || isStorageError(cErr) || ctx.Err() != nil {
 						return cErr
 					}
 					reason := fmt.Sprintf("第 %02d 项视频封面下载失败 (%s)", pageIdx, classifyDownloadError(cErr))
+					if isWeiboPlaceholderError(cErr) {
+						reason = fmt.Sprintf("第 %02d 项视频封面：%s", pageIdx, WeiboImageUnavailableReason)
+					}
 					missing = append(missing, library.MissingRecord{Item: fmt.Sprintf("page_%02d.cover", pageIdx), Reason: reason})
 					partialErrors = append(partialErrors, reason)
 				} else if coverMedia != nil {
@@ -817,7 +889,7 @@ func (m *Manager) executeWeiboPostTask(
 					}
 					return nil, nil
 				})
-				if imgMedia, imgErr := m.cacheDouyinSniffedImage(ctx, t, itemDir, previous, exists, "image", prefix, page.ImageURLs, page.Width, page.Height, plan.Transport, refreshUnknownImg); imgErr != nil {
+				if imgMedia, imgErr := m.cacheWeiboStillImage(ctx, t, itemDir, previous, exists, "image", prefix, page.ImageURLs, page.Width, page.Height, plan.Transport, refreshUnknownImg); imgErr != nil {
 					if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
 						return imgErr
 					}
@@ -885,6 +957,257 @@ func (m *Manager) executeWeiboPostTask(
 	t.ItemKey = saved.ItemKey
 	finalSaved = true
 	return nil
+}
+
+func (m *Manager) cacheWeiboStillImage(
+	ctx context.Context,
+	t *Task,
+	itemDir string,
+	previous library.ItemMetadata,
+	exists bool,
+	role string,
+	relStem string,
+	urls []string,
+	width, height int,
+	transport site.MediaTransportSpec,
+	refreshURLs func() ([]string, error),
+) (*library.MediaFile, error) {
+	if exists {
+		for _, mf := range previous.Media {
+			if mf.Role == role && strings.HasPrefix(mf.Path, relStem+".") && m.mediaAlreadyCompleted(previous, mf) {
+				// Builds before the placeholder check saved Sina's HTTP-200
+				// "image deleted" GIF as if it were the picture. Never reuse
+				// it: drop the placeholder and try the source again.
+				if strings.EqualFold(filepath.Ext(mf.Path), ".gif") {
+					if full, rErr := library.ResolveItemPath(itemDir, mf.Path); rErr == nil {
+						firstURL := ""
+						if len(urls) > 0 {
+							firstURL = urls[0]
+						}
+						if looksLikeWeiboPlaceholderGIF(full, firstURL, width, height) {
+							_ = os.Remove(full)
+							continue
+						}
+					}
+				}
+				m.setFileProgress(t, role, mf.Path, "completed", mf.Bytes, mf.Bytes, 0)
+				cp := mf
+				return &cp, nil
+			}
+		}
+	}
+
+	tempRel := relStem + imgSuffix
+	m.adoptLegacyStaging(t, itemDir, relStem, ".imgtmp", imgSuffix)
+	tempFull, err := library.ResolveItemPath(itemDir, tempRel)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.claimTaskFile(t, itemDir, tempRel, tempFull); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(tempFull), 0o700); err != nil {
+		return nil, err
+	}
+
+	spec := m.transportRangeSpec(transport, role, false)
+	tried := make(map[string]bool)
+	sawPlaceholder := false
+	var lastErr error
+
+	tryCandidates := func(cands []string, allowAlreadyTriedExact bool) (int64, string, string, bool, error) {
+		for _, cand := range cands {
+			cand = strings.TrimSpace(cand)
+			if cand == "" {
+				continue
+			}
+			if !allowAlreadyTriedExact && tried[cand] {
+				continue
+			}
+			tried[cand] = true
+			// Clear any stale temp file before trying the next candidate URL.
+			_ = os.Remove(tempFull)
+			_ = os.Remove(tempFull + ".part")
+			m.resetFileProgress(t, tempRel)
+
+			n, sha, ct, dlErr := m.downloadRange(ctx, spec, []string{cand}, tempFull, t)
+			if dlErr != nil {
+				if ctx.Err() != nil {
+					return 0, "", "", false, ctx.Err()
+				}
+				_ = os.Remove(tempFull)
+				if isSiteStopError(dlErr) || isStorageError(dlErr) {
+					return 0, "", "", false, dlErr
+				}
+				lastErr = dlErr
+				continue
+			}
+			if looksLikeWeiboPlaceholderGIF(tempFull, cand, width, height) {
+				_ = os.Remove(tempFull)
+				sawPlaceholder = true
+				lastErr = &weiboPlaceholderGIFError{}
+				continue
+			}
+			ext, sErr := sniffImageExtension(tempFull, ct)
+			if sErr != nil {
+				_ = os.Remove(tempFull)
+				lastErr = &site.Error{Site: transport.Site, Kind: site.ErrKindSchemaChanged, Message: sErr.Error()}
+				continue
+			}
+			return n, sha, ext, true, nil
+		}
+		return 0, "", "", false, nil
+	}
+
+	initialCands := expandWeiboImageCandidates(urls)
+	n, sha, ext, ok, fatalErr := tryCandidates(initialCands, false)
+	if fatalErr != nil {
+		if ctx.Err() == nil && !fileOrPartExists(tempFull) {
+			m.removeTempTaskProgress(t, tempRel)
+		}
+		return nil, fatalErr
+	}
+	if !ok && refreshURLs != nil && (sawPlaceholder || lastErr == nil || site.IsKind(lastErr, site.ErrKindForbidden) || site.IsKind(lastErr, site.ErrKindUnavailable)) {
+		freshURLs, rErr := refreshURLs()
+		if rErr != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if isSiteStopError(rErr) || isStorageError(rErr) {
+				if !fileOrPartExists(tempFull) {
+					m.removeTempTaskProgress(t, tempRel)
+				}
+				return nil, rErr
+			}
+		} else if len(freshURLs) > 0 {
+			// Try any exact refreshed URLs first, then newly derived fallbacks not yet attempted.
+			n, sha, ext, ok, fatalErr = tryCandidates(freshURLs, true)
+			if fatalErr != nil {
+				if ctx.Err() == nil && !fileOrPartExists(tempFull) {
+					m.removeTempTaskProgress(t, tempRel)
+				}
+				return nil, fatalErr
+			}
+			if !ok {
+				n, sha, ext, ok, fatalErr = tryCandidates(expandWeiboImageCandidates(freshURLs), false)
+				if fatalErr != nil {
+					if ctx.Err() == nil && !fileOrPartExists(tempFull) {
+						m.removeTempTaskProgress(t, tempRel)
+					}
+					return nil, fatalErr
+				}
+			}
+		}
+	}
+	if !ok {
+		if ctx.Err() == nil {
+			_ = os.Remove(tempFull)
+			_ = os.Remove(tempFull + ".part")
+			m.removeTempTaskProgress(t, tempRel)
+		}
+		if sawPlaceholder {
+			return nil, &weiboPlaceholderGIFError{}
+		}
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, &site.Error{Site: site.Weibo, Kind: site.ErrKindUnavailable, Message: "图片下载地址列表为空"}
+	}
+
+	finalRel := relStem + ext
+	finalFull, err := library.ResolveItemPath(itemDir, finalRel)
+	if err != nil {
+		if ctx.Err() == nil {
+			_ = os.Remove(tempFull)
+			m.removeTempTaskProgress(t, tempRel)
+		}
+		return nil, err
+	}
+	if err := m.claimTaskFile(t, itemDir, finalRel, finalFull); err != nil {
+		if ctx.Err() == nil {
+			_ = os.Remove(tempFull)
+			m.removeTempTaskProgress(t, tempRel)
+		}
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tempFull, finalFull); err != nil {
+		if ctx.Err() == nil {
+			_ = os.Remove(tempFull)
+			m.removeTempTaskProgress(t, tempRel)
+		}
+		return nil, err
+	}
+	m.removeTempTaskProgress(t, tempRel)
+	m.setFileProgress(t, role, finalRel, "completed", n, n, 0)
+	return &library.MediaFile{
+		Role:   role,
+		Path:   finalRel,
+		Bytes:  n,
+		SHA256: sha,
+		Width:  width,
+		Height: height,
+	}, nil
+}
+
+// expandWeiboImageCandidates preserves the caller's ordered URLs first and appends
+// deduplicated alternate wx1..wx4.sinaimg.cn edge hosts and alternate size tiers
+// (/large/, /mw2000/, /orj1080/, /bmiddle/) so a deleted-image placeholder GIF or
+// missing edge tier automatically falls back before giving up.
+func expandWeiboImageCandidates(urls []string) []string {
+	var out []string
+	seen := make(map[string]bool, len(urls)*4)
+	add := func(u string) {
+		u = strings.TrimSpace(u)
+		if u != "" && !seen[u] {
+			seen[u] = true
+			out = append(out, u)
+		}
+	}
+	for _, raw := range urls {
+		add(raw)
+	}
+	altHosts := []string{"wx1.sinaimg.cn", "wx2.sinaimg.cn", "wx3.sinaimg.cn", "wx4.sinaimg.cn"}
+	// Only upgrade to the original-size /large/ tier; never downgrade to
+	// recompressed /mw2000/, /orj1080/ or /bmiddle/ copies (originals only,
+	// user request 2026-11-24).
+	knownTiers := []string{"/large/", "/mw2000/", "/orj1080/", "/bmiddle/", "/mw690/", "/mw1024/", "/orj360/", "/orj480/"}
+	for _, raw := range urls {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" {
+			continue
+		}
+		host := strings.ToLower(u.Hostname())
+		if host != "sinaimg.cn" && !strings.HasSuffix(host, ".sinaimg.cn") {
+			continue
+		}
+		if host == "wx1.sinaimg.cn" || host == "wx2.sinaimg.cn" || host == "wx3.sinaimg.cn" || host == "wx4.sinaimg.cn" {
+			for _, h := range altHosts {
+				if h == host {
+					continue
+				}
+				cp := *u
+				cp.Host = h
+				add(cp.String())
+			}
+		}
+		for _, tier := range knownTiers {
+			if strings.HasPrefix(u.Path, tier) {
+				if tier != "/large/" {
+					cp := *u
+					cp.Path = "/large/" + strings.TrimPrefix(u.Path, tier)
+					add(cp.String())
+				}
+				break
+			}
+		}
+	}
+	return out
 }
 
 func (m *Manager) cacheWeiboLivePhotoClip(

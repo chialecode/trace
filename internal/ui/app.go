@@ -35,6 +35,8 @@ const (
 	RouteDouyinUser    = "/douyin/user"
 	RouteWeiboPost     = "/weibo/post"
 	RouteWeiboUser     = "/weibo/user"
+	RouteXPost         = "/x/post"
+	RouteXUser         = "/x/user"
 	RouteLibrary       = "/library"
 	RouteLibraryItem   = "/library/item"
 	RouteTasks         = "/tasks"
@@ -54,11 +56,13 @@ type ImageViewerState struct {
 	InlineMediaPaths []string // per page: resolved local motion/video file path
 	InlineMediaURLs  []string // per page: online motion/video URL for uncached preview
 	InlineDurations  []int    // per page: duration in seconds when known
+	InlineLoopMuted  []bool   // per page: true for looping muted GIF MP4s (e.g. X animated_gif)
 	InlineActive     bool
 	InlinePageIndex  int
 	InlineLoading    bool
 	InlineError      string
 	InlineMediaPath  string
+	InlineLoopPaused bool
 	Index            int
 	Zoom             float32
 	PanX             float32
@@ -96,6 +100,8 @@ type PlayerOverlayState struct {
 	SubtitleOptions  []string
 	MoreMenuOpen     bool
 	Fullscreen       bool
+	LoopMuted        bool
+	LoopPaused       bool
 	LastActiveAt     time.Time
 	ControlsHidden   bool
 	volumeScrubbing  bool
@@ -277,7 +283,7 @@ type App struct {
 	HistoryItemMenuID       string
 
 	// Login Page
-	LoginSite             string // "bilibili" | "douyin" | "weibo"
+	LoginSite             string // "bilibili" | "douyin" | "weibo" | "x"
 	LoginTab              string // "qr" | "cookie"
 	QRSession             bilibili.QRSession
 	QRBitmap              *ui.Bitmap
@@ -289,6 +295,8 @@ type App struct {
 	DouyinCookieComposing bool
 	WeiboCookieInput      string
 	WeiboCookieComposing  bool
+	XCookieInput          string
+	XCookieComposing      bool
 	LoginError            string
 	qrRevision            uint64
 	qrCancel              context.CancelFunc
@@ -345,6 +353,21 @@ type App struct {
 	WeiboUserSubMenuOpen     bool
 	weiboFilteredEmpty       bool
 
+	// X Post & Creator Browsing
+	CurrentXPost         *service.XPostDTO
+	CurrentXUser         *service.XUserDTO
+	CurrentXPosts        []service.XPostDTO
+	XPostsNextCursor     string
+	XPostsHasMore        bool
+	XPostsError          string
+	XPostsAuthExpired    bool
+	XPostsUncertainEmpty bool
+	XBottomTipsVisible   bool
+	XBottomTipsText      string
+	XUserListState       *ui.ListState
+	XUserSubMenuOpen     bool
+	xFilteredEmpty       bool
+
 	// Mine is the in-memory state of 我的 (never written to ui-state.json).
 	Mine             MineState
 	DouyinCardMenuID string
@@ -398,6 +421,10 @@ type App struct {
 	douyinFilteredEmpty bool
 	// cacheStateRev changes whenever tasks or the library change.
 	cacheStateRev int
+	// libraryRev changes ONLY when the library changes (not on 1s download ticks).
+	libraryRev int
+	// libraryItemsDirty tracks off-route library changes to reload lazily on /library.
+	libraryItemsDirty bool
 	// cardLocals caches work cards' dots and local covers for cacheStateRev.
 	cardLocals    map[string]workCardLocal
 	cardLocalsRev int
@@ -467,10 +494,11 @@ type App struct {
 	AccountPreviewOwner string
 	ImportSubModalOpen  bool
 	importFollowingsSeq uint64
-	ImportSite          string // "bilibili" | "weibo"
+	ImportSite          string // "bilibili" | "weibo" | "x"
 	ImportFollowings    []bilibili.FollowingUser
 	ImportCreators      []service.FollowingCreatorDTO
 	ImportPage          int
+	ImportCursor        string
 	ImportHasMore       bool
 	ImportGroup         string
 	ImportGroups        []bilibili.RelationTag
@@ -508,6 +536,7 @@ type App struct {
 	videoCacheFor     videoCacheContext
 	douyinCacheFor    douyinCacheContext
 	weiboCacheFor     weiboCacheContext
+	xCacheFor         xCacheContext
 	libraryOffset     int
 	LibraryAuthorMenu bool
 	ExpandedItemKey   string
@@ -521,6 +550,7 @@ type App struct {
 	liveLibItemsCacheRev    int
 	CacheQueue              []service.CacheQueueTask
 	Tasks                   []download.Task
+	TasksListState          ui.ListState
 	ExpandedTaskID          string
 	TaskRemoveConfirmID     string
 	TaskActionError         string
@@ -667,7 +697,7 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 	}
 	app.resetFeedListState()
 	app.resetSubFeedListState()
-	app.UserDynListState, app.UserVidListState, app.DouyinUserListState, app.WeiboUserListState = &ui.ListState{}, &ui.ListState{}, &ui.ListState{}, &ui.ListState{}
+	app.UserDynListState, app.UserVidListState, app.DouyinUserListState, app.WeiboUserListState, app.XUserListState = &ui.ListState{}, &ui.ListState{}, &ui.ListState{}, &ui.ListState{}, &ui.ListState{}
 	app.RefreshData()
 	app.applyInitialSubscriptionRoute(uiSt.LastRoute)
 	return app
@@ -837,25 +867,36 @@ func (a *App) handleBackendEvent(ev service.Event) {
 		}
 		a.refreshTasks()
 		if ev.Type == service.EventLibraryChanged {
+			a.libraryRev++
 			a.purgeMissingImages()
 			a.subFeedDirty = true
-			a.refreshLibraryStatistics()
-			if len(a.FeedItems) == 0 && a.HomeActorFilter == nil {
-				a.loadInitialFeed()
-			}
-			if a.HomeActorFilter == nil && len(a.FeedItems) > 0 {
-				a.feedMoreBefore = true
-			}
-			if a.CurrentRoute == RouteLibraryItem {
-				a.libraryOffset = 0
-				a.loadLibraryPage(true)
-				if a.CurrentLibraryDetail != nil {
-					if it, ok, err := a.backend.GetLibraryItem(a.CurrentLibraryDetail.ItemKey); err == nil && ok {
-						a.CurrentLibraryDetail = &it
-					}
-				}
+			if ev.Message == "refreshed" && (a.HomeRefreshRunning || a.LibraryRefresh.Running) {
+				a.libraryItemsDirty = a.CurrentRoute != RouteLibrary && a.CurrentRoute != RouteLibraryItem
 			} else {
-				a.reloadLibraryItems()
+				a.refreshLibraryStatistics()
+				a.refreshAccountWorks()
+				if len(a.FeedItems) == 0 && a.HomeActorFilter == nil {
+					a.loadInitialFeed()
+				}
+				if a.HomeActorFilter == nil && len(a.FeedItems) > 0 {
+					a.feedMoreBefore = true
+				}
+				switch a.CurrentRoute {
+				case RouteLibraryItem:
+					a.libraryItemsDirty = false
+					a.libraryOffset = 0
+					a.loadLibraryPage(true)
+					if a.CurrentLibraryDetail != nil {
+						if it, ok, err := a.backend.GetLibraryItem(a.CurrentLibraryDetail.ItemKey); err == nil && ok {
+							a.CurrentLibraryDetail = &it
+						}
+					}
+				case RouteLibrary:
+					a.libraryItemsDirty = false
+					a.reloadLibraryItems()
+				default:
+					a.libraryItemsDirty = true
+				}
 			}
 		}
 		if ev.Type == service.EventSubscriptionChecked {
@@ -878,6 +919,8 @@ func (a *App) RefreshData() {
 	}
 	a.postCards = nil
 	a.cacheStateRev++
+	a.libraryRev++
+	a.libraryItemsDirty = false
 	a.subFeedDirty = true
 	a.cachedDiagAt = time.Time{}
 	a.HistoryItems = a.backend.ListHistory()
@@ -980,13 +1023,25 @@ func (a *App) View(c *ui.Context) {
 
 	if a.PlayerOverlay.Open {
 		a.player.Advance(0)
-		if a.player.Snapshot(1, 1).Playing {
+		snap := a.player.Snapshot(1, 1)
+		if snap.Playing {
+			c.Invalidate()
+		} else if a.PlayerOverlay.LoopMuted && !a.PlayerOverlay.LoopPaused && snap.Open && snap.DurationSec > 0 && snap.PositionSec >= snap.DurationSec-0.05 {
+			a.player.SetMuted(true)
+			a.player.Seek(0)
+			a.player.Play()
 			c.Invalidate()
 		}
 	}
 	if a.ImageViewer.Open && a.ImageViewer.InlineActive && a.viewerPlayer != nil {
 		a.viewerPlayer.Advance(0)
-		if a.viewerPlayer.Snapshot(1, 1).Playing {
+		snap := a.viewerPlayer.Snapshot(1, 1)
+		if snap.Playing {
+			c.Invalidate()
+		} else if a.viewerInlinePageIsLoopMuted(a.ImageViewer.InlinePageIndex) && !a.ImageViewer.InlineLoopPaused && snap.Open && snap.DurationSec > 0 && snap.PositionSec >= snap.DurationSec-0.05 {
+			a.viewerPlayer.SetMuted(true)
+			a.viewerPlayer.Seek(0)
+			a.viewerPlayer.Play()
 			c.Invalidate()
 		}
 	}
@@ -1078,6 +1133,9 @@ func (a *App) View(c *ui.Context) {
 	// Overlays & Modals
 	if a.ConfirmLogoutOpen {
 		a.renderLogoutConfirmOverlay(c, w, h)
+	}
+	if a.Remote.ConfirmPushXOpen {
+		a.renderRemotePushXConfirmOverlay(c, w, h)
 	}
 	if a.DeleteConfirm.Open {
 		a.renderDeleteConfirmOverlay(c, w, h)

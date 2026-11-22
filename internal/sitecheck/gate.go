@@ -77,6 +77,9 @@ func OpenGate(ledgerDir string, limits Limits) (*Gate, error) {
 		if uErr := json.Unmarshal(raw, &u); uErr != nil {
 			return nil, fmt.Errorf("sitecheck: parse %s: %w", ledgerPath, uErr)
 		}
+		if strings.TrimSpace(u.ActID) == "" {
+			u.ActID = actID
+		}
 		if u.Categories == nil {
 			u.Categories = make(map[string]int)
 		}
@@ -186,24 +189,38 @@ func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func categoryCount(u Usage, category string) int {
+	count := u.Categories[category]
 	switch category {
 	case "nav":
-		return u.NavCalls
+		if u.NavCalls > count {
+			return u.NavCalls
+		}
 	case "dynamic_feed":
-		return u.DynamicFeeds
+		if u.DynamicFeeds > count {
+			return u.DynamicFeeds
+		}
 	case "video_view":
-		return u.VideoViews
+		if u.VideoViews > count {
+			return u.VideoViews
+		}
 	case "playurl":
-		return u.PlayURLCalls
+		if u.PlayURLCalls > count {
+			return u.PlayURLCalls
+		}
 	case "dynamic_detail":
-		return u.DynamicDetails
+		if u.DynamicDetails > count {
+			return u.DynamicDetails
+		}
 	case "space_read":
-		return u.SpaceReads
+		if u.SpaceReads > count {
+			return u.SpaceReads
+		}
 	case "qr":
-		return u.QRCalls
-	default:
-		return u.Categories[category]
+		if u.QRCalls > count {
+			return u.QRCalls
+		}
 	}
+	return count
 }
 
 func incrementCategory(u *Usage, category string) {
@@ -262,10 +279,82 @@ var (
 	weiboSecretCookieRe = regexp.MustCompile(`\b(SUB|SUBP|XSRF-TOKEN|WBPSESS|SCF|ALF|SSOLoginState|SUHB|PC_TOKEN|_T_WM)=[A-Za-z0-9%_-][A-Za-z0-9%|._+/=-]{7,}`)
 	weiboSignedSSigRe   = regexp.MustCompile(`(?i)(?:^|[\s"'` + "`" + `?&]|\\u0026|&amp;|%3f|%26)ssig(?:=|%3d)[A-Za-z0-9%+/=._-]{4,}`)
 	weiboSignedExpKIDRe = regexp.MustCompile(`(?i)(?:^|[\s"'` + "`" + `?&]|\\u0026|&amp;|%3f|%26)(?:expires(?:=|%3d)[0-9]{9,}[^\s"'<>` + "`" + `]*(?:&|\\u0026|&amp;|%26)kid(?:=|%3d)[A-Za-z0-9%,._-]{3,}|kid(?:=|%3d)[A-Za-z0-9%,._-]{3,}[^\s"'<>` + "`" + `]*(?:&|\\u0026|&amp;|%26)expires(?:=|%3d)[0-9]{9,})`)
+
+	// X Cookie, CSRF header, Bearer token, and signed/private media URL patterns (docs/research/x.md §15.1 #20).
+	xSecretCookieRawRe  = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_]|\\[nrt]|%3f|%26|%3b|%20|%3d|%3a|%22|%27|%2c|%0a|%0d|%09)(auth_token|ct0|kdt)=(?:\\?["'])?([A-Za-z0-9](?:[A-Za-z0-9._+/=-]|%2b|%2f|%3d|%7c){7,})`)
+	xSecretCookieEncRe  = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_]|\\[nrt]|%3f|%26|%3b|%20|%3d|%3a|%22|%27|%2c|%0a|%0d|%09)(auth_token|ct0|kdt)%3d(?:%22|%27)?([A-Za-z0-9](?:[A-Za-z0-9._-]|%2b|%2f|%3d|%7c){7,})`)
+	xSecretCookieJSONRe = regexp.MustCompile(`(?i)\\?"(auth_token|ct0|kdt)\\?"[ \t]*:[ \t]*\\?"([A-Za-z0-9](?:[A-Za-z0-9._+/=-]|%2b|%2f|%3d|%7c){7,})\\?"`)
+	xCSRFHeaderRe       = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_-]|\\[nrt]|%20)x-csrf-token(?:[ \t]*:[ \t]*(?:\\?["'])?|:\[)([A-Za-z0-9](?:[A-Za-z0-9._+/=-]|%2b|%2f|%3d|%7c){7,})`)
+	xCSRFHeaderEncRe    = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_-]|\\[nrt]|%3f|%26|%3b|%20|%3d|%3a|%22|%27|%2c|%0a|%0d|%09)x-csrf-token(?:%3a(?:%20|\+)*|:(?:%20)+)(?:%22|%27)?([A-Za-z0-9](?:[A-Za-z0-9._-]|%2b|%2f|%3d|%7c){7,})`)
+	xCSRFKVRe           = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_-]|\\[nrt]|%3f|%26|%3b|%20|%3d|%3a|%22|%27|%2c|%0a|%0d|%09)x-csrf-token=(?:\\?["'])?([A-Za-z0-9](?:[A-Za-z0-9._+/=-]|%2b|%2f|%3d|%7c){7,})`)
+	xCSRFKVEncRe        = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_-]|\\[nrt]|%3f|%26|%3b|%20|%3d|%3a|%22|%27|%2c|%0a|%0d|%09)x-csrf-token%3d(?:%22|%27)?([A-Za-z0-9](?:[A-Za-z0-9._-]|%2b|%2f|%3d|%7c){7,})`)
+	xCSRFJSONRe         = regexp.MustCompile(`(?i)\\?"x-csrf-token\\?"[ \t]*:[ \t]*\\?"([A-Za-z0-9](?:[A-Za-z0-9._+/=-]|%2b|%2f|%3d|%7c){7,})\\?"`)
+	xAuthBearerHeaderRe = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_-]|\\[nrt]|%20)authorization(?:[ \t]*:[ \t]*(?:\\?["'])?|:\[)bearer[ \t]+([A-Za-z0-9](?:[A-Za-z0-9._+/=-]|%2b|%2f|%3d|%7c){11,})`)
+	xAuthBearerJSONRe   = regexp.MustCompile(`(?i)\\?"authorization\\?"[ \t]*:[ \t]*\\?"bearer[ \t]+([A-Za-z0-9](?:[A-Za-z0-9._+/=-]|%2b|%2f|%3d|%7c){11,})\\?"`)
+	xAuthBearerEncRe    = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_-]|\\[nrt]|%3f|%26|%3b|%20|%3d|%3a|%22|%27|%2c|%0a|%0d|%09)authorization(?:%3a(?:%20|\+)*|:(?:%20)+)(?:%22|%27)?bearer(?:%20|\+)+([A-Za-z0-9](?:[A-Za-z0-9._-]|%2b|%2f|%3d|%7c){11,})`)
+	xBareBearerRe       = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_-]|\\[nrt])bearer[ \t]+([A-Za-z0-9](?:[A-Za-z0-9._+/=-]|%2b|%2f|%3d|%7c){15,})`)
+	xBearerJSONRe       = regexp.MustCompile(`(?i)\\?"bearer(?:_?token)?\\?"[ \t]*:[ \t]*\\?"([A-Za-z0-9](?:[A-Za-z0-9._+/=-]|%2b|%2f|%3d|%7c){15,})\\?"`)
+	xRawWebBearerRe     = regexp.MustCompile(`(?:^|[^A-Za-z0-9_]|\\[nrt]|(?i:%20|%3a|%3d|%22|%27))(A{18,}(?:[A-Za-z0-9._+/=-]|(?i:%2b|%2f|%3d|%7c)){16,})`)
+	xSignedMediaURLRe   = regexp.MustCompile(`(?i)https?(?:://|%3a%2f%2f)(?:[A-Za-z0-9-]+\.)*(?:twimg\.com|pscp\.tv|periscope\.tv)(?:/|%2f)[^\s"'<>` + "`" + `]*?(?:\?|&|\\u0026|&amp;|%3f|%26)(x-amz-signature|x-amz-security-token|x-amz-credential|signature|sig|hmac|hdnts|policy|key-pair-id|token|auth)(?:=|%3d)([A-Za-z0-9][A-Za-z0-9%+/=._~-]{5,})`)
+	xPrivateTonURLRe    = regexp.MustCompile(`(?i)https?(?:://|%3a%2f%2f)ton\.(?:x|twitter)\.com(?:/|%2f)([^\s"'` + "`" + `]+)`)
 )
 
-// ScanTextForSecrets checks an arbitrary text or JSON payload for Bilibili/Douyin/Weibo Cookie
-// markers and signed URLs containing a_bogus=, x-signature, or Weibo ssig=/Expires=/KID=.
+func isLikelyTokenValue(v string, minLen int, plainAlphaMin int) bool {
+	if len(v) < minLen {
+		return false
+	}
+	allHex := true
+	hasLower := false
+	hasInternalUpper := false
+	hasPunct := false
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c >= '0' && c <= '9', c == '_', c == '%', c == '+', c == '/', c == '=':
+			return true
+		case c >= 'a' && c <= 'f':
+			hasLower = true
+		case c >= 'A' && c <= 'F':
+			if i > 0 {
+				hasInternalUpper = true
+			}
+		case c >= 'g' && c <= 'z':
+			allHex = false
+			hasLower = true
+		case c >= 'A' && c <= 'Z':
+			allHex = false
+			if i > 0 {
+				hasInternalUpper = true
+			}
+		case c == '-' || c == '.':
+			allHex = false
+			hasPunct = true
+		default:
+			allHex = false
+		}
+	}
+	if allHex || (hasLower && hasInternalUpper) {
+		return true
+	}
+	return !hasPunct && len(v) >= plainAlphaMin
+}
+
+func isPlaceholderURLPath(path string) bool {
+	if len(path) < 4 {
+		return true
+	}
+	if strings.HasPrefix(path, "[") || strings.HasPrefix(path, ".") {
+		return true
+	}
+	if strings.ContainsAny(path, "<>") {
+		return true
+	}
+	lower := strings.ToLower(path)
+	return strings.Contains(lower, `\u003c`) || strings.Contains(lower, "%3c")
+}
+
+// ScanTextForSecrets checks an arbitrary text or JSON payload for Bilibili/Douyin/Weibo/X
+// Cookie/CSRF/Bearer markers and signed or private media URLs.
 func ScanTextForSecrets(text string) []string {
 	var findings []string
 	for _, marker := range secretReceiptMarkers {
@@ -280,6 +369,70 @@ func ScanTextForSecrets(text string) []string {
 			findings = append(findings, fmt.Sprintf("contains secret marker %q (redacted)", m[1]+"="))
 		}
 	}
+	seenXKeys := make(map[string]bool)
+	for _, re := range []*regexp.Regexp{xSecretCookieRawRe, xSecretCookieEncRe, xSecretCookieJSONRe} {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			if len(m) < 3 || !isLikelyTokenValue(m[2], 8, 24) {
+				continue
+			}
+			key := strings.ToLower(m[1])
+			if !seenXKeys[key] {
+				seenXKeys[key] = true
+				findings = append(findings, fmt.Sprintf("contains secret marker %q (redacted)", key+"="))
+			}
+		}
+	}
+	csrfFound := false
+	for _, re := range []*regexp.Regexp{xCSRFHeaderRe, xCSRFHeaderEncRe, xCSRFKVRe, xCSRFKVEncRe, xCSRFJSONRe} {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			if len(m) >= 2 && isLikelyTokenValue(m[1], 8, 24) {
+				csrfFound = true
+				break
+			}
+		}
+		if csrfFound {
+			break
+		}
+	}
+	if csrfFound {
+		findings = append(findings, `contains secret marker "x-csrf-token" (redacted)`)
+	}
+	bearerFound := false
+	for _, re := range []*regexp.Regexp{xAuthBearerHeaderRe, xAuthBearerJSONRe, xAuthBearerEncRe} {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			if len(m) >= 2 && isLikelyTokenValue(m[1], 12, 32) {
+				bearerFound = true
+				break
+			}
+		}
+		if bearerFound {
+			break
+		}
+	}
+	if !bearerFound {
+		for _, re := range []*regexp.Regexp{xBareBearerRe, xBearerJSONRe} {
+			for _, m := range re.FindAllStringSubmatch(text, -1) {
+				if len(m) >= 2 && isLikelyTokenValue(m[1], 16, 32) {
+					bearerFound = true
+					break
+				}
+			}
+			if bearerFound {
+				break
+			}
+		}
+	}
+	if !bearerFound {
+		for _, m := range xRawWebBearerRe.FindAllStringSubmatch(text, -1) {
+			if len(m) >= 2 && strings.Trim(m[1], "A") != "" {
+				bearerFound = true
+				break
+			}
+		}
+	}
+	if bearerFound {
+		findings = append(findings, `contains secret marker "Authorization: Bearer" (redacted)`)
+	}
 	if m := signedReceiptURLRe.FindStringSubmatch(text); len(m) >= 2 {
 		findings = append(findings, fmt.Sprintf("contains signed URL marker %q (redacted)", strings.ToLower(m[1])))
 	}
@@ -287,6 +440,15 @@ func ScanTextForSecrets(text string) []string {
 		findings = append(findings, `contains signed URL marker "ssig" (redacted)`)
 	} else if weiboSignedExpKIDRe.MatchString(text) {
 		findings = append(findings, `contains signed URL marker "expires+kid" (redacted)`)
+	}
+	if m := xSignedMediaURLRe.FindStringSubmatch(text); len(m) >= 3 {
+		findings = append(findings, fmt.Sprintf("contains signed URL marker %q (redacted)", "x:"+strings.ToLower(m[1])))
+	}
+	for _, m := range xPrivateTonURLRe.FindAllStringSubmatch(text, -1) {
+		if len(m) >= 2 && !isPlaceholderURLPath(m[1]) {
+			findings = append(findings, `contains signed URL marker "x:ton-media" (redacted)`)
+			break
+		}
 	}
 	return findings
 }

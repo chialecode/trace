@@ -106,26 +106,46 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 	var notePages []douyinNoteRenderPage
 	var origNotePages []douyinNoteRenderPage
 	var weiboCard *service.WeiboRichCardDTO
+	var xCard *service.XRichCardDTO
+	var hlsOnlyNotice string
+	var threadCount int
 	authorUID := strings.TrimSpace(entry.AuthorUID)
+	authorHandle := ""
+	normSite := normalizeSiteIDUI(entry.Site)
 
 	if entry.Cached && entry.ItemKey != "" {
-		if item, ok, err := a.backend.GetLibraryItem(entry.ItemKey); err == nil && ok {
+		if item, ok, err := a.backend.GetLibraryItemMetaOnly(entry.ItemKey); err == nil && ok {
 			libPtr = &item
 			if authorUID == "" {
 				authorUID = strings.TrimSpace(item.Author.UID)
 			}
+			authorHandle = strings.TrimSpace(item.Author.UniqueID)
+			threadCount = len(item.Thread)
 			if item.TypeLabel != "" {
 				typeLabel = item.TypeLabel
-			} else if normalizeSiteIDUI(entry.Site) == "douyin" && entry.Kind == "dynamic" {
+			} else if normSite == "douyin" && entry.Kind == "dynamic" {
 				typeLabel = "图文"
-			} else if normalizeSiteIDUI(entry.Site) == "weibo" && entry.Kind == "dynamic" {
+			} else if normSite == "weibo" && entry.Kind == "dynamic" {
 				if item.Via != nil && item.Via.Reason == library.ViaForward || item.Origin != nil {
 					typeLabel = "转发微博"
 				} else {
 					typeLabel = "微博"
 				}
+			} else if normSite == "x" && entry.Kind == "dynamic" {
+				if item.Origin != nil && strings.TrimSpace(item.Text) != "" {
+					typeLabel = "引用帖子"
+				} else if item.Via != nil && item.Via.Reason == library.ViaForward || item.Origin != nil {
+					typeLabel = "转发帖子"
+				} else {
+					typeLabel = "帖子"
+				}
 			}
-			weiboCard = libraryRichCardToWeiboDTO(item.Card)
+			if normSite == "x" {
+				xCard = libraryRichCardToXDTO(item.Card)
+				hlsOnlyNotice = xMissingHLSNotice(item.Missing)
+			} else {
+				weiboCard = libraryRichCardToWeiboDTO(item.Card)
+			}
 			var hasLocalVideo bool
 			var localVideoDur int
 			for _, m := range item.Media {
@@ -163,7 +183,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 							Width:   m.Width,
 							Height:  m.Height,
 							Live:    m.Motion != "",
-							IsGIF:   strings.HasSuffix(strings.ToLower(m.Path), ".gif"),
+							IsGIF:   m.GIF || strings.HasSuffix(strings.ToLower(m.Path), ".gif"),
 						})
 					}
 				}
@@ -214,7 +234,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 			Status:     dot,
 			QualityTag: qualityTag,
 		}
-	} else if normalizeSiteIDUI(entry.Site) == "weibo" && libPtr != nil && itemHasVideoRole(*libPtr) && videoBelongsToOrigin && !hasVideoNotePage(origNotePages) {
+	} else if (normSite == "weibo" || normSite == "x") && libPtr != nil && itemHasVideoRole(*libPtr) && videoBelongsToOrigin && !hasVideoNotePage(origNotePages) {
 		_, origRelCover, origDur, _ := cachedItemHasVideoForScope(libPtr, true, false)
 		origDurStr := durationStr
 		if origDur > 0 {
@@ -228,9 +248,13 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 			origTitle = libPtr.Origin.Title
 			origID = firstNonEmptyStrUI(libPtr.Origin.ID, entry.RawID)
 		}
+		defaultVidTitle := "微博视频"
+		if normSite == "x" {
+			defaultVidTitle = "X 视频"
+		}
 		origVideo = &PostVideo{
 			BVID:       origID,
-			Title:      firstNonEmptyStrUI(origTitle, "微博视频"),
+			Title:      firstNonEmptyStrUI(origTitle, defaultVidTitle),
 			Desc:       "",
 			CoverURL:   "",
 			RelCover:   origRelCover,
@@ -240,13 +264,17 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 			Status:     dot,
 			QualityTag: qualityTag,
 		}
-	} else if normalizeSiteIDUI(entry.Site) == "weibo" && libPtr != nil && len(notePages) == 0 && len(images) == 0 && itemHasVideoRole(*libPtr) && !videoBelongsToOrigin {
+	} else if (normSite == "weibo" || normSite == "x") && libPtr != nil && len(notePages) == 0 && len(images) == 0 && itemHasVideoRole(*libPtr) && !videoBelongsToOrigin {
 		if durationStr == "" && libPtr.Duration > 0 {
 			durationStr = FormatDuration(libPtr.Duration)
 		}
+		defaultVidTitle := "微博视频"
+		if normSite == "x" {
+			defaultVidTitle = "X 视频"
+		}
 		videoCard = &PostVideo{
 			BVID:       entry.RawID,
-			Title:      firstNonEmptyStrUI(libPtr.Title, entry.Title, "微博视频"),
+			Title:      firstNonEmptyStrUI(libPtr.Title, entry.Title, defaultVidTitle),
 			Desc:       "",
 			CoverURL:   entry.CoverURL,
 			RelCover:   relCover,
@@ -258,7 +286,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		}
 	} else if libPtr != nil && len(libPtr.Videos) > 0 {
 		refKey := library.CanonicalItemKey(entry.Site, "video", libPtr.Videos[0])
-		if refItem, ok, err := a.backend.GetLibraryItem(refKey); err == nil && ok {
+		if refItem, ok, err := a.backend.GetLibraryItemMetaOnly(refKey); err == nil && ok {
 			var refCover, refDur, refQTag string
 			for _, m := range refItem.Media {
 				if m.Role == "cover" && refCover == "" {
@@ -290,7 +318,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		}
 	}
 
-	if normalizeSiteIDUI(entry.Site) == "weibo" && entry.Kind == "dynamic" && text != "" && title != "" {
+	if (normSite == "weibo" || normSite == "x") && entry.Kind == "dynamic" && text != "" && title != "" {
 		cleanTitle := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(title), "…"), "..."))
 		if cleanTitle != "" && strings.HasPrefix(strings.TrimSpace(text), cleanTitle) {
 			title = ""
@@ -298,7 +326,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 	}
 	if libPtr != nil && libPtr.Origin != nil {
 		orig := libPtr.Origin
-		if normalizeSiteIDUI(entry.Site) == "weibo" {
+		if normSite == "weibo" || normSite == "x" {
 			text = firstNonEmptyStrUI(libPtr.Text, entry.Summary)
 			cleanTitle := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(title), "…"), "..."))
 			if title == text || (cleanTitle != "" && strings.HasPrefix(strings.TrimSpace(text), cleanTitle)) || (orig.Title != "" && title == orig.Title) {
@@ -306,35 +334,56 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 			}
 		}
 		if orig.Unavailable {
-			originUnavailable = firstNonEmptyStrUI(orig.UnavailableReason, "原微博已删除或不可查看")
+			fallback := "原微博已删除或不可查看"
+			if normSite == "x" {
+				fallback = "原帖已删除或不可查看"
+			}
+			originUnavailable = firstNonEmptyStrUI(orig.UnavailableReason, fallback)
 		} else {
 			origSite := firstNonEmptyStrUI(orig.Site, entry.Site)
+			origNorm := normalizeSiteIDUI(origSite)
 			origType := ""
 			switch {
 			case origVideo != nil:
 				origType = "视频"
 			case len(origNotePages) > 0 || len(origImages) > 0:
 				origType = "图文"
-			case normalizeSiteIDUI(origSite) == "weibo":
+			case origNorm == "weibo":
 				origType = "微博"
+			case origNorm == "x":
+				origType = "帖子"
+			}
+			var origWeiboCard *service.WeiboRichCardDTO
+			var origXCard *service.XRichCardDTO
+			if origNorm == "x" {
+				origXCard = libraryRichCardToXDTO(orig.Card)
+			} else {
+				origWeiboCard = libraryRichCardToWeiboDTO(orig.Card)
+			}
+			defaultOrigAuthor := "原博主"
+			if origNorm == "x" {
+				defaultOrigAuthor = "原帖作者"
 			}
 			origin = &PostCardData{
-				ItemKey:    entry.ItemKey,
-				Site:       origSite,
-				AuthorUID:  orig.Author.UID,
-				AuthorName: firstNonEmptyStrUI(orig.Author.Name, "原博主"),
-				AuthorFace: "",
-				PubTs:      orig.PubTs,
-				TypeLabel:  origType,
-				Title:      orig.Title,
-				Text:       orig.Text,
-				URL:        orig.CanonicalURL,
-				WeiboMid:   orig.ID,
-				NotePages:  origNotePages,
-				Images:     origImages,
-				Video:      origVideo,
-				WeiboCard:  libraryRichCardToWeiboDTO(orig.Card),
-				Offline:    true,
+				ItemKey:      entry.ItemKey,
+				Site:         origSite,
+				AuthorUID:    orig.Author.UID,
+				AuthorName:   firstNonEmptyStrUI(orig.Author.Name, orig.Author.UniqueID, defaultOrigAuthor),
+				AuthorHandle: orig.Author.UniqueID,
+				AuthorFace:   "",
+				PubTs:        orig.PubTs,
+				TypeLabel:    origType,
+				Title:        orig.Title,
+				Text:         orig.Text,
+				URL:          orig.CanonicalURL,
+				WeiboMid:     orig.ID,
+				XStatusID:    orig.ID,
+				NotePages:    origNotePages,
+				Images:       origImages,
+				Video:        origVideo,
+				WeiboCard:    origWeiboCard,
+				XCard:        origXCard,
+				Offline:      true,
 			}
 		}
 	}
@@ -348,6 +397,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		Mid:               entry.Mid,
 		AuthorUID:         authorUID,
 		AuthorName:        entry.AuthorName,
+		AuthorHandle:      authorHandle,
 		AuthorFace:        entry.AuthorFace,
 		PubTs:             entry.PubTs,
 		TypeLabel:         typeLabel,
@@ -362,6 +412,10 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		Video:             videoCard,
 		WeiboCard:         weiboCard,
 		WeiboMid:          entry.RawID,
+		XCard:             xCard,
+		XStatusID:         entry.RawID,
+		HLSOnlyNotice:     hlsOnlyNotice,
+		ThreadCount:       threadCount,
 		Origin:            origin,
 		OriginUnavailable: originUnavailable,
 		LibItem:           libPtr,
@@ -407,7 +461,7 @@ func (a *App) buildDynamicPostCard(d bilibili.DynamicItem, openLabel, cacheLabel
 		}
 		if v0.BVID != "" {
 			vKey := library.CanonicalItemKey("bilibili", "video", v0.BVID)
-			if vItem, ok, err := a.backend.GetLibraryItem(vKey); err == nil && ok {
+			if vItem, ok, err := a.backend.GetLibraryItemMetaOnly(vKey); err == nil && ok {
 				vid.ItemKey = vItem.ItemKey
 				vid.Cached = true
 				vid.Status = library.ComputeDotState(vItem).Dot
@@ -436,7 +490,7 @@ func (a *App) buildDynamicPostCard(d bilibili.DynamicItem, openLabel, cacheLabel
 	dotStatus := ""
 	itemKey := library.CanonicalItemKey("bilibili", "dynamic", d.ID)
 	var hasItem bool
-	if it, ok, err := a.backend.GetLibraryItem(itemKey); err == nil && ok {
+	if it, ok, err := a.backend.GetLibraryItemMetaOnly(itemKey); err == nil && ok {
 		hasItem = true
 		dotStatus = library.ComputeDotState(it).Dot
 	}

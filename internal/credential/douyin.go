@@ -240,6 +240,7 @@ func (s *Store) UpdateDouyinProfile(profile DouyinProfile) (Status, error) {
 // Set-Cookie headers into an active credential without touching core identity cookies:
 //   - douyin: ttwid, UIFID, UIFID_TEMP, uifid, msToken, s_v_web_id, __ac_nonce, __ac_signature
 //   - weibo:  XSRF-TOKEN only
+//   - x:      ct0 only (validated against ^[A-Za-z0-9]+$; invalid values return ErrInvalidXCT0)
 func (s *Store) MergeContextCookies(cookies map[string]string) error {
 	switch s.Site() {
 	case SiteDouyin:
@@ -284,6 +285,13 @@ func (s *Store) MergeContextCookies(cookies map[string]string) error {
 		next.Cookies["XSRF-TOKEN"] = xsrf
 		next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		return s.persistRecordLocked(next)
+
+	case SiteX:
+		rawCT0, hasCT0 := cookies["ct0"]
+		if !hasCT0 {
+			return nil
+		}
+		return s.SyncXCT0(rawCT0)
 
 	default:
 		return s.requireSite(SiteDouyin)

@@ -87,14 +87,17 @@ func (a *App) renderRuleBatchOverlay(c *ui.Context, w, h float32) {
 func (a *App) renderLogoutConfirmOverlay(c *ui.Context, w, h float32) {
 	targetSite := normalizeSiteIDUI(a.ConfirmLogoutSite)
 	titleText := "退出登录？"
-	bodyText := "退出后会暂停哔哩哔哩的缓存任务并停止录制，抖音与微博不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
+	bodyText := "退出后会暂停哔哩哔哩的缓存任务并停止录制，抖音、微博与 X 不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
 	switch targetSite {
 	case "douyin":
 		titleText = "退出抖音登录？"
-		bodyText = "退出后会暂停抖音的缓存任务并停止抖音录制，哔哩哔哩与微博不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
+		bodyText = "退出后会暂停抖音的缓存任务并停止抖音录制，哔哩哔哩、微博与 X 不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
 	case "weibo":
 		titleText = "退出微博登录？"
-		bodyText = "退出后会暂停微博的缓存任务，哔哩哔哩与抖音不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
+		bodyText = "退出后会暂停微博的缓存任务，哔哩哔哩、抖音与 X 不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
+	case "x":
+		titleText = "退出 X 登录？"
+		bodyText = "退出后会暂停 X 的缓存任务，哔哩哔哩、抖音与微博不受影响。已缓存的文件会保留，重新登录后可以继续任务。"
 	}
 	renderConfirmDialog(
 		c,
@@ -110,6 +113,25 @@ func (a *App) renderLogoutConfirmOverlay(c *ui.Context, w, h float32) {
 		true,
 		func() {
 			a.logoutSiteAccount(targetSite)
+		},
+	)
+}
+
+func (a *App) renderRemotePushXConfirmOverlay(c *ui.Context, w, h float32) {
+	renderConfirmDialog(
+		c,
+		&a.Remote.ConfirmPushXOpen,
+		"关闭同步XCookie确认对话框（点击空白处）",
+		"同步XCookie风险确认对话框",
+		"确认同步 X Cookie 到远程？",
+		"在云服务器的网络上用网页 Cookie 访问 X，被要求验证或锁号的可能明显更高，不建议本地和远程同时用同一个账号。本次确认仅对这一次同步生效。",
+		"取消",
+		"取消同步XCookie到远程",
+		"仍然同步",
+		"确认同步XCookie到远程",
+		true,
+		func() {
+			a.pushRemoteCookie("x")
 		},
 	)
 }

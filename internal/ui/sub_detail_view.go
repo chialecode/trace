@@ -455,13 +455,20 @@ func (a *App) renderSubscriptionContentTab(c *ui.Context, sub *subscription.Subs
 }
 
 func formatSubscriptionAccountIdent(acc subscription.AccountRef) string {
-	if normalizeSiteIDUI(acc.Site) == "douyin" {
+	switch normalizeSiteIDUI(acc.Site) {
+	case "douyin":
 		if acc.UniqueID != "" {
 			return "抖音号：" + acc.UniqueID
 		}
 		return "ID：" + acc.UID
+	case "x":
+		if h := strings.TrimPrefix(strings.TrimSpace(acc.UniqueID), "@"); h != "" {
+			return "@" + h
+		}
+		return "ID:" + acc.UID
+	default:
+		return "UID:" + acc.UID
 	}
-	return "UID:" + acc.UID
 }
 
 type subAccountLiveView struct {
@@ -491,7 +498,7 @@ func (a *App) lookupSubAccountLiveView(acc subscription.AccountRef) subAccountLi
 		startLabel:   "开始录制 " + accountKey,
 		stopLabel:    "停止录制 " + accountKey,
 	}
-	if accSite == "weibo" {
+	if accSite == "weibo" || accSite == "x" {
 		return lv
 	}
 
@@ -594,6 +601,8 @@ func (a *App) openAccountUserPage(accSite, uid, name string) {
 		a.OpenDouyinUser(uid, name)
 	case "weibo":
 		a.OpenWeiboUser(uid, name)
+	case "x":
+		a.OpenXUser(uid, name)
 	default:
 		if mid, err := strconv.ParseInt(uid, 10, 64); err == nil && mid > 0 {
 			a.OpenUser(mid, name)
@@ -631,7 +640,7 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 			for _, accItem := range accounts {
 				acc := accItem
 				accSite := normalizeSiteIDUI(acc.Site)
-				isWeibo := accSite == "weibo"
+				isNoLive := accSite == "weibo" || accSite == "x"
 				var uidNum int64
 				if accSite == "bilibili" {
 					_, _ = fmt.Sscanf(acc.UID, "%d", &uidNum)
@@ -655,7 +664,7 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 					ClipX().
 					Children(func() {
 						ui.Row(c).AlignItems(ui.Center).Gap(10).Grow(1).ClipX().Children(func() {
-							a.renderAccountAvatar(c, accSite, acc.Name, acc.UID, uidNum, 40, !isWeibo && (lv.isLive || lv.isRecording), "打开关联账号主页："+accSite+":"+acc.UID, openAccountPage, acc.Face)
+							a.renderAccountAvatar(c, accSite, acc.Name, acc.UID, uidNum, 40, !isNoLive && (lv.isLive || lv.isRecording), "打开关联账号主页："+accSite+":"+acc.UID, openAccountPage, acc.Face)
 							ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
 								ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
 									nameBtn := ui.ButtonBase(c).Label("订阅账号主页：" + accSite + ":" + acc.UID).Padding(0).Shrink(1).Children(func() {
@@ -667,7 +676,7 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 									renderSiteSmallBadgeWithDot(c, accSite, "订阅详情账号站点："+accSite+":"+acc.UID)
 									ui.Text(c, "· "+formatSubscriptionAccountIdent(acc)).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
 								})
-								if !isWeibo {
+								if !isNoLive {
 									ui.Text(c, liveText).FontSize(12).FontWeight(liveWeight).TextColor(liveColor).SingleLine()
 								}
 								if works := a.accountWorksText(accSite, acc.UID); works != "" {
@@ -677,7 +686,7 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 						})
 
 						ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
-							if !isWeibo {
+							if !isNoLive {
 								if lv.isRecording {
 									if DangerOutlinePillButton(c, "停止录制", lv.stopLabel).Clicked() {
 										if accSite == "bilibili" && lv.biliRoomID > 0 {
@@ -702,7 +711,7 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 								if m.Item("打开主页").Chosen() {
 									openAccountPage()
 								}
-								if !isWeibo && lv.hasRoom {
+								if !isNoLive && lv.hasRoom {
 									if m.Item("在浏览器中观看").Chosen() {
 										if accSite == "douyin" {
 											a.showError(a.backend.OpenLiveInBrowser("douyin", lv.roomOrWebRID))
@@ -719,7 +728,7 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 										a.RefreshData()
 									}
 								}
-								if !isWeibo && m.Item("刷新直播状态").Chosen() {
+								if !isNoLive && m.Item("刷新直播状态").Chosen() {
 									a.refreshSingleAccountLive(accSite, acc.UID)
 								}
 								if m.Item("更改关联订阅").Chosen() {

@@ -398,3 +398,216 @@ func TestWeiboDependencyDirectionRules(t *testing.T) {
 		})
 	}
 }
+
+func TestXDependencyDirectionRules(t *testing.T) {
+	cases := []struct {
+		name      string
+		record    string
+		wantError string
+	}{
+		// internal/site/x allowed vs upper-layer & cross-site violations
+		{
+			name:   "x allowed stdlib site and credential deps",
+			record: "github.com/chialecode/trace/internal/site/x|context,net/http,github.com/chialecode/trace/internal/site,github.com/chialecode/trace/internal/credential",
+		},
+		{
+			name:      "x depending on storage rejected",
+			record:    "github.com/chialecode/trace/internal/site/x|github.com/chialecode/trace/internal/storage",
+			wantError: "layer violation",
+		},
+		{
+			name:      "x depending on library rejected",
+			record:    "github.com/chialecode/trace/internal/site/x|github.com/chialecode/trace/internal/library",
+			wantError: "layer violation",
+		},
+		{
+			name:      "x depending on download rejected",
+			record:    "github.com/chialecode/trace/internal/site/x|github.com/chialecode/trace/internal/download",
+			wantError: "layer violation",
+		},
+		{
+			name:      "x depending on subscription rejected",
+			record:    "github.com/chialecode/trace/internal/site/x|github.com/chialecode/trace/internal/subscription",
+			wantError: "layer violation",
+		},
+		{
+			name:      "x depending on live rejected",
+			record:    "github.com/chialecode/trace/internal/site/x|github.com/chialecode/trace/internal/live",
+			wantError: "layer violation",
+		},
+		{
+			name:      "x depending on service rejected",
+			record:    "github.com/chialecode/trace/internal/site/x|github.com/chialecode/trace/internal/service",
+			wantError: "layer violation",
+		},
+		{
+			name:      "x depending on ui rejected",
+			record:    "github.com/chialecode/trace/internal/site/x|github.com/chialecode/trace/internal/ui",
+			wantError: "layer violation",
+		},
+		{
+			name:      "x depending on bilibili rejected",
+			record:    "github.com/chialecode/trace/internal/site/x|github.com/chialecode/trace/internal/site/bilibili",
+			wantError: "cross-site violation",
+		},
+		{
+			name:      "x depending on douyin rejected",
+			record:    "github.com/chialecode/trace/internal/site/x|github.com/chialecode/trace/internal/site/douyin",
+			wantError: "cross-site violation",
+		},
+		{
+			name:      "x depending on weibo rejected",
+			record:    "github.com/chialecode/trace/internal/site/x|github.com/chialecode/trace/internal/site/weibo",
+			wantError: "cross-site violation",
+		},
+		{
+			name:      "x subpackage depending on weibo rejected",
+			record:    "github.com/chialecode/trace/internal/site/x/txid|github.com/chialecode/trace/internal/site/weibo",
+			wantError: "cross-site violation",
+		},
+
+		// existing site packages must not depend on internal/site/x
+		{
+			name:   "bilibili without x accepted",
+			record: "github.com/chialecode/trace/internal/site/bilibili|context,github.com/chialecode/trace/internal/site,github.com/chialecode/trace/internal/credential",
+		},
+		{
+			name:      "bilibili depending on x rejected",
+			record:    "github.com/chialecode/trace/internal/site/bilibili|github.com/chialecode/trace/internal/site/x",
+			wantError: "cross-site violation",
+		},
+		{
+			name:   "douyin without x accepted",
+			record: "github.com/chialecode/trace/internal/site/douyin|context,github.com/chialecode/trace/internal/site,github.com/chialecode/trace/internal/credential",
+		},
+		{
+			name:      "douyin depending on x rejected",
+			record:    "github.com/chialecode/trace/internal/site/douyin|github.com/chialecode/trace/internal/site/x",
+			wantError: "cross-site violation",
+		},
+		{
+			name:   "weibo without x accepted",
+			record: "github.com/chialecode/trace/internal/site/weibo|context,github.com/chialecode/trace/internal/site,github.com/chialecode/trace/internal/credential",
+		},
+		{
+			name:      "weibo depending on x rejected",
+			record:    "github.com/chialecode/trace/internal/site/weibo|github.com/chialecode/trace/internal/site/x",
+			wantError: "cross-site violation",
+		},
+
+		// core packages may use internal/site but must not depend on internal/site/x
+		{
+			name:   "download using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/download|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "download depending on x rejected",
+			record:    "github.com/chialecode/trace/internal/download|github.com/chialecode/trace/internal/site/x",
+			wantError: "decoupling violation",
+		},
+		{
+			name:   "live using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/live|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "live depending on x rejected",
+			record:    "github.com/chialecode/trace/internal/live|github.com/chialecode/trace/internal/site/x",
+			wantError: "decoupling violation",
+		},
+		{
+			name:   "subscription using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/subscription|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "subscription depending on x rejected",
+			record:    "github.com/chialecode/trace/internal/subscription|github.com/chialecode/trace/internal/site/x",
+			wantError: "decoupling violation",
+		},
+		{
+			name:   "library using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/library|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "library depending on x rejected",
+			record:    "github.com/chialecode/trace/internal/library|github.com/chialecode/trace/internal/site/x",
+			wantError: "decoupling violation",
+		},
+		{
+			name:   "storage using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/storage|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "storage depending on x rejected",
+			record:    "github.com/chialecode/trace/internal/storage|github.com/chialecode/trace/internal/site/x",
+			wantError: "decoupling violation",
+		},
+		{
+			name:   "settings using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/settings|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "settings depending on x rejected",
+			record:    "github.com/chialecode/trace/internal/settings|github.com/chialecode/trace/internal/site/x",
+			wantError: "decoupling violation",
+		},
+		{
+			name:   "uistate using internal/site accepted",
+			record: "github.com/chialecode/trace/internal/uistate|github.com/chialecode/trace/internal/site|github.com/chialecode/trace/internal/site",
+		},
+		{
+			name:      "uistate depending on x rejected",
+			record:    "github.com/chialecode/trace/internal/uistate|github.com/chialecode/trace/internal/site/x",
+			wantError: "decoupling violation",
+		},
+
+		// internal/ui must not directly import internal/site/x (transitive via service is allowed)
+		{
+			name:   "ui transitively depending on x via service accepted",
+			record: "github.com/chialecode/trace/internal/ui|github.com/chialecode/trace/internal/service|github.com/chialecode/trace/internal/service,github.com/chialecode/trace/internal/site/x",
+		},
+		{
+			name:      "ui directly importing x rejected",
+			record:    "github.com/chialecode/trace/internal/ui|github.com/chialecode/trace/internal/service,github.com/chialecode/trace/internal/site/x|github.com/chialecode/trace/internal/service,github.com/chialecode/trace/internal/site/x",
+			wantError: "ui decoupling violation",
+		},
+		{
+			name:      "ui directly importing x subpackage rejected",
+			record:    "github.com/chialecode/trace/internal/ui|github.com/chialecode/trace/internal/site/x/txid|github.com/chialecode/trace/internal/site/x/txid",
+			wantError: "ui decoupling violation",
+		},
+
+		// cmd/trace-server remains free of MyGo/UI even with x wired via service
+		{
+			name:   "trace-server with service and x accepted",
+			record: "github.com/chialecode/trace/cmd/trace-server|github.com/chialecode/trace/internal/remoteserver|github.com/chialecode/trace/internal/service,github.com/chialecode/trace/internal/site/x",
+		},
+		{
+			name:      "trace-server depending on ui rejected with x",
+			record:    "github.com/chialecode/trace/cmd/trace-server|github.com/chialecode/trace/internal/remoteserver|github.com/chialecode/trace/internal/service,github.com/chialecode/trace/internal/site/x,github.com/chialecode/trace/internal/ui",
+			wantError: "server size violation",
+		},
+		{
+			name:      "trace-server depending on mygo rejected with x",
+			record:    "github.com/chialecode/trace/cmd/trace-server|github.com/chialecode/trace/internal/remoteserver|github.com/chialecode/trace/internal/site/x,github.com/egoist/mygo/ui",
+			wantError: "INV-05 violation",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateDependencyOutput(tc.record)
+			if tc.wantError == "" {
+				if err != nil {
+					t.Fatalf("expected record to pass, got error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantError)
+			}
+			if !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.wantError)
+			}
+		})
+	}
+}

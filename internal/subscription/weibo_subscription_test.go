@@ -146,8 +146,8 @@ func TestSubscriptionsV2ToV3MigrationBackupAndNewerRejection(t *testing.T) {
 	if diskDoc.Version != SubscriptionsSchemaVersion {
 		t.Fatalf("migrated subscriptions.json version = %d, want %d", diskDoc.Version, SubscriptionsSchemaVersion)
 	}
-	if SubscriptionsSchemaVersion != 3 {
-		t.Fatalf("SubscriptionsSchemaVersion = %d, want 3", SubscriptionsSchemaVersion)
+	if SubscriptionsSchemaVersion != 4 {
+		t.Fatalf("SubscriptionsSchemaVersion = %d, want 4", SubscriptionsSchemaVersion)
 	}
 
 	// Link a Weibo account (with leading zeros and signed face URL) and verify persistence.
@@ -208,23 +208,23 @@ func TestSubscriptionsV2ToV3MigrationBackupAndNewerRejection(t *testing.T) {
 		t.Fatalf("v2 guard modified v3 subscriptions.json on disk")
 	}
 
-	// 5. Reject subscriptions.json version > 3 with NewerDataError and zero disk mutation.
-	v4Dir := t.TempDir()
-	v4SubsPath := filepath.Join(v4Dir, "subscriptions.json")
-	v4Raw := `{"version":4,"subscriptions":[]}`
-	if err := os.WriteFile(v4SubsPath, []byte(v4Raw), 0o600); err != nil {
+	// 5. Reject subscriptions.json version > current with NewerDataError and zero disk mutation.
+	vNextDir := t.TempDir()
+	vNextSubsPath := filepath.Join(vNextDir, "subscriptions.json")
+	vNextRaw := fmt.Sprintf(`{"version":%d,"subscriptions":[]}`, SubscriptionsSchemaVersion+1)
+	if err := os.WriteFile(vNextSubsPath, []byte(vNextRaw), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v4DB, _, _, err := storage.OpenSQLite(filepath.Join(v4Dir, "updates.db"))
+	vNextDB, _, _, err := storage.OpenSQLite(filepath.Join(vNextDir, "updates.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v4DB.Close()
-	if _, err := NewManagerWithUpdatesDB(v4DB, v4DB, v4SubsPath, nil, nil, nil, settings.Default(v4Dir).Subscription, nil); !storage.IsNewerData(err) {
-		t.Fatalf("expected NewerDataError for subscriptions.json version 4, got %v", err)
+	defer vNextDB.Close()
+	if _, err := NewManagerWithUpdatesDB(vNextDB, vNextDB, vNextSubsPath, nil, nil, nil, settings.Default(vNextDir).Subscription, nil); !storage.IsNewerData(err) {
+		t.Fatalf("expected NewerDataError for subscriptions.json version %d, got %v", SubscriptionsSchemaVersion+1, err)
 	}
-	if got, _ := os.ReadFile(v4SubsPath); string(got) != v4Raw {
-		t.Fatalf("version 4 subscriptions.json was modified on disk")
+	if got, _ := os.ReadFile(vNextSubsPath); string(got) != vNextRaw {
+		t.Fatalf("version %d subscriptions.json was modified on disk", SubscriptionsSchemaVersion+1)
 	}
 
 	// 6. Reject updates.db user_version > 2 with NewerDataError.
@@ -311,7 +311,7 @@ func TestPerSiteBranchValuesUnknownSiteRejectionAndThreeWayIsolation(t *testing.
 	}
 
 	// Unknown / empty sites must NEVER fall back to Bilibili in any scheduler, lookup, or validation API.
-	for _, badSite := range []string{"", "unknown", "x"} {
+	for _, badSite := range []string{"", "unknown", "unknown_site"} {
 		if _, err := NormalizeAndValidateAccount(AccountRef{Site: badSite, UID: "1000000001"}); err == nil {
 			t.Fatalf("NormalizeAndValidateAccount(%q) should fail", badSite)
 		}

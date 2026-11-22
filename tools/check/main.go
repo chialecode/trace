@@ -22,6 +22,7 @@ const (
 	douyinPkg     = internalPref + "site/douyin"
 	douyinSignPkg = internalPref + "site/douyin/sign"
 	weiboPkg      = internalPref + "site/weibo"
+	xPkg          = internalPref + "site/x"
 	credPkg       = internalPref + "credential"
 	uiPkg         = internalPref + "ui"
 	serverCmd     = modulePrefix + "cmd/trace-server"
@@ -292,7 +293,7 @@ func validatePackageDeps(pkg string, imports []string, deps []string) error {
 					return fmt.Errorf("layer violation: %s depends on %s", pkg, dep)
 				}
 			}
-			if hasPkgOrSubpkg(dep, douyinPkg) || hasPkgOrSubpkg(dep, weiboPkg) {
+			if hasPkgOrSubpkg(dep, douyinPkg) || hasPkgOrSubpkg(dep, weiboPkg) || hasPkgOrSubpkg(dep, xPkg) {
 				return fmt.Errorf("cross-site violation: %s depends on %s", pkg, dep)
 			}
 		}
@@ -306,7 +307,7 @@ func validatePackageDeps(pkg string, imports []string, deps []string) error {
 					return fmt.Errorf("layer violation: %s depends on %s", pkg, dep)
 				}
 			}
-			if hasPkgOrSubpkg(dep, bilibiliPkg) || hasPkgOrSubpkg(dep, weiboPkg) {
+			if hasPkgOrSubpkg(dep, bilibiliPkg) || hasPkgOrSubpkg(dep, weiboPkg) || hasPkgOrSubpkg(dep, xPkg) {
 				return fmt.Errorf("cross-site violation: %s depends on %s", pkg, dep)
 			}
 		}
@@ -320,7 +321,21 @@ func validatePackageDeps(pkg string, imports []string, deps []string) error {
 					return fmt.Errorf("layer violation: %s depends on %s", pkg, dep)
 				}
 			}
-			if hasPkgOrSubpkg(dep, bilibiliPkg) || hasPkgOrSubpkg(dep, douyinPkg) {
+			if hasPkgOrSubpkg(dep, bilibiliPkg) || hasPkgOrSubpkg(dep, douyinPkg) || hasPkgOrSubpkg(dep, xPkg) {
+				return fmt.Errorf("cross-site violation: %s depends on %s", pkg, dep)
+			}
+		}
+	}
+
+	// 4c. internal/site/x (and subpackages): no upper-layer deps and no cross-site deps.
+	if hasPkgOrSubpkg(pkg, xPkg) {
+		for _, dep := range deps {
+			for _, forbidden := range forbiddenUpperSiteDeps {
+				if hasPkgOrSubpkg(dep, forbidden) {
+					return fmt.Errorf("layer violation: %s depends on %s", pkg, dep)
+				}
+			}
+			if hasPkgOrSubpkg(dep, bilibiliPkg) || hasPkgOrSubpkg(dep, douyinPkg) || hasPkgOrSubpkg(dep, weiboPkg) {
 				return fmt.Errorf("cross-site violation: %s depends on %s", pkg, dep)
 			}
 		}
@@ -338,11 +353,11 @@ func validatePackageDeps(pkg string, imports []string, deps []string) error {
 		}
 	}
 
-	// 6. Core managers & storage packages must never depend on internal/site/douyin or internal/site/weibo.
+	// 6. Core managers & storage packages must never depend on internal/site/douyin, internal/site/weibo, or internal/site/x.
 	for _, corePkg := range siteAgnosticCorePackages {
 		if hasPkgOrSubpkg(pkg, corePkg) {
 			for _, dep := range deps {
-				if hasPkgOrSubpkg(dep, douyinPkg) || hasPkgOrSubpkg(dep, weiboPkg) {
+				if hasPkgOrSubpkg(dep, douyinPkg) || hasPkgOrSubpkg(dep, weiboPkg) || hasPkgOrSubpkg(dep, xPkg) {
 					return fmt.Errorf("decoupling violation: %s depends on %s", pkg, dep)
 				}
 			}
@@ -370,11 +385,11 @@ func validatePackageDeps(pkg string, imports []string, deps []string) error {
 		}
 	}
 
-	// 8. internal/ui must not import internal/site/douyin or internal/site/weibo directly (only service DTOs).
+	// 8. internal/ui must not import internal/site/douyin, internal/site/weibo, or internal/site/x directly (only service DTOs).
 	// Transitive dependency via internal/service is permitted.
 	if hasPkgOrSubpkg(pkg, uiPkg) {
 		for _, imp := range imports {
-			if hasPkgOrSubpkg(imp, douyinPkg) || hasPkgOrSubpkg(imp, weiboPkg) {
+			if hasPkgOrSubpkg(imp, douyinPkg) || hasPkgOrSubpkg(imp, weiboPkg) || hasPkgOrSubpkg(imp, xPkg) {
 				return fmt.Errorf("ui decoupling violation: %s directly imports %s", pkg, imp)
 			}
 		}

@@ -113,3 +113,24 @@ func TestBlockedAddressExtendedRangesAndFakeIPAllowed(t *testing.T) {
 		}
 	}
 }
+
+func TestGuardedMediaDialerBlocksPrivateXMediaHosts(t *testing.T) {
+	g := NewGuardedMediaDialer(X, false, &net.Dialer{Timeout: 2 * time.Second}, "blocked")
+	g.proxyFunc = func(*http.Request) (*url.URL, error) { return nil, nil }
+	g.resolver = func(_ context.Context, host string) ([]net.IPAddr, error) {
+		switch host {
+		case "pbs.twimg.com":
+			return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+		case "video.twimg.com":
+			return []net.IPAddr{{IP: net.ParseIP("10.0.0.8")}}, nil
+		default:
+			return nil, &net.DNSError{Err: "not found", Name: host, IsNotFound: true}
+		}
+	}
+	for _, addr := range []string{"pbs.twimg.com:443", "video.twimg.com:443"} {
+		_, err := g.DialContext(context.Background(), "tcp", addr)
+		if !IsKind(err, ErrKindBlocked) || SiteOf(err) != X {
+			t.Fatalf("DialContext(%q) err = %v, want site=x kind=blocked", addr, err)
+		}
+	}
+}

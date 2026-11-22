@@ -92,8 +92,8 @@ func TestSchemaGuardCurrentDataUntouched(t *testing.T) {
 	dir := t.TempDir()
 	for name, body := range map[string]string{
 		"settings.json":      `{"version":1}`,
-		"ui-state.json":      `{"version":3,"feedFilter":{"kind":"all","site":"weibo"}}`,
-		"subscriptions.json": `{"version":3,"subscriptions":[]}`,
+		"ui-state.json":      `{"version":4,"feedFilter":{"kind":"all","site":"x"}}`,
+		"subscriptions.json": `{"version":4,"subscriptions":[]}`,
 		"history.json":       `not json at all`,
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
@@ -378,19 +378,13 @@ func TestSchemaGuardReadsUncheckpointedWALUserVersion(t *testing.T) {
 }
 
 func TestSchemaGuardV2ToV3BackupIdempotencyAndNewerDataRejection(t *testing.T) {
-	wantVersions := map[string]int{
-		"settings.json":      1,
-		"ui-state.json":      3,
-		"history.json":       1,
-		"subscriptions.json": 3,
-		"library.db":         2,
-		"updates.db":         2,
-	}
-	for name, want := range wantVersions {
-		sf, ok := SchemaFor(name)
-		if !ok || sf.Current != want {
-			t.Fatalf("SchemaFor(%q) = (%+v, %v), want Current=%d", name, sf, ok, want)
-		}
+	v3Schemas := []SchemaFile{
+		{Name: "settings.json", Kind: SchemaJSON, Current: 1},
+		{Name: "ui-state.json", Kind: SchemaJSON, Current: 3},
+		{Name: "history.json", Kind: SchemaJSON, Current: 1},
+		{Name: "subscriptions.json", Kind: SchemaJSON, Current: 3},
+		{Name: "library.db", Kind: SchemaSQLite, Current: 2},
+		{Name: "updates.db", Kind: SchemaSQLite, Current: 2},
 	}
 
 	dir := t.TempDir()
@@ -419,7 +413,7 @@ func TestSchemaGuardV2ToV3BackupIdempotencyAndNewerDataRejection(t *testing.T) {
 		_ = db.Close()
 	}
 
-	backups, err := GuardDataSchemas(dir, DataSchemas)
+	backups, err := GuardDataSchemas(dir, v3Schemas)
 	if err != nil {
 		t.Fatalf("GuardDataSchemas v2->v3: %v", err)
 	}
@@ -440,7 +434,7 @@ func TestSchemaGuardV2ToV3BackupIdempotencyAndNewerDataRejection(t *testing.T) {
 		}
 	}
 
-	// Once files are upgraded to v3, GuardDataSchemas is a no-op (idempotent).
+	// Once files are upgraded to v3, v3 GuardDataSchemas is a no-op (idempotent).
 	uiV3 := `{"version":3,"feedFilter":{"kind":"all","site":"weibo"}}`
 	subsV3 := `{"version":3,"subscriptions":[]}`
 	if err := os.WriteFile(filepath.Join(dir, "ui-state.json"), []byte(uiV3), 0o600); err != nil {
@@ -449,7 +443,7 @@ func TestSchemaGuardV2ToV3BackupIdempotencyAndNewerDataRejection(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "subscriptions.json"), []byte(subsV3), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	backups2, err := GuardDataSchemas(dir, DataSchemas)
+	backups2, err := GuardDataSchemas(dir, v3Schemas)
 	if err != nil || len(backups2) != 0 {
 		t.Fatalf("idempotent GuardDataSchemas on v3 = (%v, %v), want (nil, nil)", backups2, err)
 	}
@@ -471,18 +465,157 @@ func TestSchemaGuardV2ToV3BackupIdempotencyAndNewerDataRejection(t *testing.T) {
 		t.Fatalf("v2 guard modified v3 ui-state.json: %s", gotUI)
 	}
 
-	// Current v3 build refuses v4+ files without writing backups.
+	// Simulated v3 build refuses v4+ files without writing backups.
 	v4Dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(v4Dir, "ui-state.json"), []byte(`{"version":4}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(v4Dir, "ui-state.json"), []byte(`{"version":4,"feedFilter":{"kind":"all","site":"x"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(v4Dir, "subscriptions.json"), []byte(`{"version":2}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := GuardDataSchemas(v4Dir, DataSchemas); !IsNewerData(err) {
+	if _, err := GuardDataSchemas(v4Dir, v3Schemas); !IsNewerData(err) {
 		t.Fatalf("v3 GuardDataSchemas on v4 ui-state = %v, want NewerDataError", err)
 	}
 	if matches, _ := filepath.Glob(filepath.Join(v4Dir, "*.premigrate-*")); len(matches) != 0 {
 		t.Fatalf("GuardDataSchemas created backups before rejecting v4: %v", matches)
+	}
+}
+
+func TestSchemaGuardV3ToV4BackupIdempotencyAndDowngradeRejection(t *testing.T) {
+	wantVersions := map[string]int{
+		"settings.json":      1,
+		"ui-state.json":      4,
+		"history.json":       1,
+		"subscriptions.json": 4,
+		"library.db":         2,
+		"updates.db":         2,
+	}
+	for name, want := range wantVersions {
+		sf, ok := SchemaFor(name)
+		if !ok || sf.Current != want {
+			t.Fatalf("SchemaFor(%q) = (%+v, %v), want Current=%d", name, sf, ok, want)
+		}
+	}
+
+	dir := t.TempDir()
+	uiV3 := `{"version":3,"feedFilter":{"kind":"all","site":"weibo"}}`
+	subsV3 := `{"version":3,"subscriptions":[]}`
+	if err := os.WriteFile(filepath.Join(dir, "ui-state.json"), []byte(uiV3), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ui-state.json.premigrate-2"), []byte(`{"version":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "subscriptions.json"), []byte(subsV3), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "subscriptions.json.premigrate-2"), []byte(`{"version":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "history.json"), []byte(`{"version":1,"items":[{"site":"x","kind":"dynamic","id":"1000000000000000009","title":"synth","canonicalUrl":"https://x.com/i/web/status/1000000000000000009"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, dbName := range []string{"library.db", "updates.db"} {
+		db, _, _, err := OpenSQLite(filepath.Join(dir, dbName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := StampSQLiteSchema(db, 2); err != nil {
+			t.Fatal(err)
+		}
+		_ = db.Close()
+	}
+
+	backups, err := GuardDataSchemas(dir, DataSchemas)
+	if err != nil {
+		t.Fatalf("GuardDataSchemas v3->v4: %v", err)
+	}
+	if len(backups) != 2 {
+		t.Fatalf("expected 2 backups (ui-state.json + subscriptions.json), got %v", backups)
+	}
+	for name, orig := range map[string]string{
+		"ui-state.json":      uiV3,
+		"subscriptions.json": subsV3,
+	} {
+		matches, _ := filepath.Glob(filepath.Join(dir, name+".premigrate-*"))
+		if len(matches) != 1 || filepath.Base(matches[0]) != name+".premigrate-3" {
+			t.Fatalf("%s premigrate backups = %v, want only .premigrate-3", name, matches)
+		}
+		got, err := os.ReadFile(matches[0])
+		if err != nil || string(got) != orig {
+			t.Fatalf("%s backup content = %q err=%v, want %q", name, got, err, orig)
+		}
+	}
+	for _, unchanged := range []string{"history.json", "settings.json", "library.db", "updates.db"} {
+		if matches, _ := filepath.Glob(filepath.Join(dir, unchanged+".premigrate-*")); len(matches) != 0 {
+			t.Fatalf("unexpected premigrate backup for unchanged %s: %v", unchanged, matches)
+		}
+	}
+
+	// Mid-migration failure after .premigrate-3 keeps original v3 file and backup intact.
+	restore := SetBeforeMigrationRenameHookForTest(func(targetPath, tmpPath string) error {
+		return errors.New("simulated v3->v4 pre-rename failure")
+	})
+	if err := WriteMigratedJSONAtomic(filepath.Join(dir, "ui-state.json"), map[string]any{"version": 4}, 0o600); err == nil {
+		restore()
+		t.Fatal("expected pre-rename failure")
+	}
+	restore()
+	if stillV3, _ := os.ReadFile(filepath.Join(dir, "ui-state.json")); string(stillV3) != uiV3 {
+		t.Fatalf("v3 ui-state.json altered on mid-migration failure: %s", stillV3)
+	}
+	if bakStillV3, _ := os.ReadFile(filepath.Join(dir, "ui-state.json.premigrate-3")); string(bakStillV3) != uiV3 {
+		t.Fatalf("ui-state.json.premigrate-3 altered on mid-migration failure: %s", bakStillV3)
+	}
+
+	// Once files are upgraded to v4, GuardDataSchemas is a no-op (idempotent).
+	uiV4 := `{"version":4,"feedFilter":{"kind":"all","site":"x"}}`
+	subsV4 := `{"version":4,"subscriptions":[{"id":"s1","accounts":[{"site":"x","uid":"1000000000000000001"}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "ui-state.json"), []byte(uiV4), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "subscriptions.json"), []byte(subsV4), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backups2, err := GuardDataSchemas(dir, DataSchemas)
+	if err != nil || len(backups2) != 0 {
+		t.Fatalf("idempotent GuardDataSchemas on v4 = (%v, %v), want (nil, nil)", backups2, err)
+	}
+
+	// Older v3 build refuses v4 data without modifying any file.
+	v3Schemas := []SchemaFile{
+		{Name: "settings.json", Kind: SchemaJSON, Current: 1},
+		{Name: "ui-state.json", Kind: SchemaJSON, Current: 3},
+		{Name: "history.json", Kind: SchemaJSON, Current: 1},
+		{Name: "subscriptions.json", Kind: SchemaJSON, Current: 3},
+		{Name: "library.db", Kind: SchemaSQLite, Current: 2},
+		{Name: "updates.db", Kind: SchemaSQLite, Current: 2},
+	}
+	if _, err := GuardDataSchemas(dir, v3Schemas); !IsNewerData(err) {
+		t.Fatalf("v3 GuardDataSchemas on v4 data = %v, want NewerDataError", err)
+	}
+	if gotUI, _ := os.ReadFile(filepath.Join(dir, "ui-state.json")); string(gotUI) != uiV4 {
+		t.Fatalf("v3 guard modified v4 ui-state.json: %s", gotUI)
+	}
+	if gotSubs, _ := os.ReadFile(filepath.Join(dir, "subscriptions.json")); string(gotSubs) != subsV4 {
+		t.Fatalf("v3 guard modified v4 subscriptions.json: %s", gotSubs)
+	}
+
+	// Current v4 build refuses v5+ files without writing backups.
+	v5Dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(v5Dir, "ui-state.json"), []byte(`{"version":5}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(v5Dir, "subscriptions.json"), []byte(`{"version":3}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := GuardDataSchemas(v5Dir, DataSchemas); !IsNewerData(err) {
+		t.Fatalf("v4 GuardDataSchemas on v5 ui-state = %v, want NewerDataError", err)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(v5Dir, "*.premigrate-*")); len(matches) != 0 {
+		t.Fatalf("GuardDataSchemas created backups before rejecting v5: %v", matches)
 	}
 }

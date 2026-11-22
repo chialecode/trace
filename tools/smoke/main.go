@@ -487,7 +487,11 @@ func verifyNoUppercaseTrace(root string) error {
 
 var reSmokeWeiboXSRFHeader = regexp.MustCompile(`(?i)\bX-XSRF-TOKEN[ \t]*:[ \t]*[A-Za-z0-9%_-][A-Za-z0-9%|._+/=-]{7,}`)
 
-func scanDirForSecrets(root string) error {
+// scanTextForSecrets scans a single log, status, or file payload for leaked Bilibili,
+// Douyin, Weibo, and X secrets (including auth_token=, ct0=, kdt=, x-csrf-token,
+// Authorization: Bearer, and signed/private media URLs via sitecheck.ScanTextForSecrets)
+// plus smoke-only markers, without echoing raw secret values.
+func scanTextForSecrets(text, source string) error {
 	extraMarkers := []string{
 		"SENTINEL_",
 		"UIFID=",
@@ -500,6 +504,21 @@ func scanDirForSecrets(root string) error {
 		"uid_tt_ss=",
 		"__ac_signature=",
 	}
+	if findings := sitecheck.ScanTextForSecrets(text); len(findings) > 0 {
+		return fmt.Errorf("%s in %s", findings[0], source)
+	}
+	if reSmokeWeiboXSRFHeader.MatchString(text) {
+		return fmt.Errorf("found secret marker %q in %s", "X-XSRF-TOKEN:", source)
+	}
+	for _, m := range extraMarkers {
+		if strings.Contains(text, m) {
+			return fmt.Errorf("found secret marker %q in %s", m, source)
+		}
+	}
+	return nil
+}
+
+func scanDirForSecrets(root string) error {
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -508,19 +527,7 @@ func scanDirForSecrets(root string) error {
 		if rErr != nil {
 			return nil
 		}
-		text := string(raw)
-		if findings := sitecheck.ScanTextForSecrets(text); len(findings) > 0 {
-			return fmt.Errorf("%s in %s", findings[0], filepath.Base(path))
-		}
-		if reSmokeWeiboXSRFHeader.MatchString(text) {
-			return fmt.Errorf("found secret marker %q in %s", "X-XSRF-TOKEN:", filepath.Base(path))
-		}
-		for _, m := range extraMarkers {
-			if strings.Contains(text, m) {
-				return fmt.Errorf("found secret marker %q in %s", m, filepath.Base(path))
-			}
-		}
-		return nil
+		return scanTextForSecrets(string(raw), filepath.Base(path))
 	})
 }
 

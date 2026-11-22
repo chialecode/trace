@@ -548,10 +548,10 @@ func TestThreeSiteAuthIsolationAndWeiboCookieVerification(t *testing.T) {
 		t.Fatal("Weibo auto-renewal should not be available")
 	}
 
-	// Statuses lists all 3 sites; Bilibili & Douyin remain unlogged and send 0 requests.
+	// Statuses lists all supported sites; Bilibili & Douyin remain unlogged and send 0 requests.
 	statuses := h.backend.Statuses()
-	if len(statuses) != 3 {
-		t.Fatalf("Statuses count = %d, want 3 (%+v)", len(statuses), statuses)
+	if len(statuses) != len(site.All()) {
+		t.Fatalf("Statuses count = %d, want %d (%+v)", len(statuses), len(site.All()), statuses)
 	}
 	if _, err := h.backend.OpenLink(ctx, "https://www.bilibili.com/video/BV1xx411c7mD"); err == nil {
 		t.Fatal("unlogged Bilibili OpenLink unexpectedly succeeded")

@@ -158,6 +158,9 @@ func subscriptionAccountsSummary(sub subscription.Subscription) string {
 	if n := counts["weibo"]; n > 0 {
 		parts = append(parts, "微博 "+strconv.Itoa(n))
 	}
+	if n := counts["x"]; n > 0 {
+		parts = append(parts, "X "+strconv.Itoa(n))
+	}
 	if len(parts) == 0 {
 		return "没有关联账号"
 	}

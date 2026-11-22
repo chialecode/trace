@@ -24,7 +24,7 @@ func (a *App) renderAddSubOverlay(c *ui.Context, w, h float32) {
 		cardW, 0, a.closeAddSubOverlay,
 		func() {
 			ui.Text(c, "添加订阅").FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-			ui.Text(c, "建立一个订阅并可选关联哔哩哔哩、抖音或微博账号（主页链接、分享文本或 UID）。").FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
+			ui.Text(c, "建立一个订阅并可选关联哔哩哔哩、抖音、微博或 X 账号（主页链接、分享文本或 UID）。").FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
 
 			ui.TextInput(c, &a.AddSubName).
 				Label("新订阅名称").
@@ -108,10 +108,7 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 	if st.importFollowingsListState == nil {
 		st.importFollowingsListState = &ui.ListState{}
 	}
-	curSite := a.ImportSite
-	if curSite != string(site.Weibo) {
-		curSite = string(site.Bilibili)
-	}
+	curSite := normalizeImportSite(a.ImportSite)
 	siteLoggedIn := a.backend.StatusOf(curSite).LoggedIn
 
 	renderDialog(c, &a.ImportSubModalOpen,
@@ -123,6 +120,7 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 				renderSegmentedPills(c, curSite, []segmentedChoice{
 					{Key: string(site.Bilibili), Text: "哔哩哔哩", Label: "关注导入站点：哔哩哔哩"},
 					{Key: string(site.Weibo), Text: "微博", Label: "关注导入站点：微博"},
+					{Key: string(site.X), Text: "X", Label: "关注导入站点：X"},
 				}, func(next string) {
 					if next != curSite {
 						a.selectImportSite(next)
@@ -131,8 +129,12 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 			})
 
 			if !siteLoggedIn {
+				prompt := "请先登录" + siteFullLabel(curSite)
+				if curSite == string(site.X) {
+					prompt = "请先登录 X"
+				}
 				ui.Column(c).Grow(1).FillWidth().Padding(32, 16).AlignItems(ui.Center).Justify(ui.Center).Gap(12).Children(func() {
-					ui.Text(c, "请先登录"+siteFullLabel(curSite)).Label("关注导入未登录提示").FontSize(14).TextColor(ColorTextMuted).SingleLine()
+					ui.Text(c, prompt).Label("关注导入未登录提示").FontSize(14).TextColor(ColorTextMuted).SingleLine()
 					if AccentPillButton(c, "去登录", "关注导入去登录").Clicked() {
 						a.ImportSubModalOpen = false
 						a.OpenLoginForSite(curSite)
@@ -183,7 +185,7 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 			kw := strings.ToLower(strings.TrimSpace(st.importSearchApplied))
 			visible := make([]service.FollowingCreatorDTO, 0, len(a.ImportCreators))
 			for _, u := range a.ImportCreators {
-				if kw != "" && !strings.Contains(strings.ToLower(u.Name), kw) && !strings.Contains(strings.ToLower(u.Sign), kw) {
+				if kw != "" && !strings.Contains(strings.ToLower(u.Name), kw) && !strings.Contains(strings.ToLower(u.Sign), kw) && !strings.Contains(strings.ToLower(u.UniqueID), kw) {
 					continue
 				}
 				visible = append(visible, u)
@@ -248,7 +250,12 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 						Children(func() {
 							a.renderAccountAvatar(c, uSite, u.Name, u.UID, mid, 34, false, "", nil, u.Face)
 							ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
-								ui.Text(c, firstNonEmptyStrUI(u.Name, u.UID)).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
+									ui.Text(c, firstNonEmptyStrUI(u.Name, u.UniqueID, u.UID)).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
+									if uSite == string(site.X) && strings.TrimSpace(u.UniqueID) != "" {
+										ui.Text(c, "@"+strings.TrimPrefix(strings.TrimSpace(u.UniqueID), "@")).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(0)
+									}
+								})
 								if u.Sign != "" {
 									ui.Text(c, u.Sign).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 								}

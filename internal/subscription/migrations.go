@@ -1,9 +1,12 @@
 package subscription
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math/big"
 	"net/url"
 	"strconv"
 	"strings"
@@ -17,7 +20,7 @@ import (
 )
 
 // SubscriptionsSchemaVersion is the on-disk schema version for subscriptions.json.
-const SubscriptionsSchemaVersion = 3
+const SubscriptionsSchemaVersion = 4
 
 // UpdatesDBSchemaVersion is the SQLite PRAGMA user_version for updates.db.
 const UpdatesDBSchemaVersion = 2
@@ -33,6 +36,8 @@ const (
 	DefaultDouyinHourlyQuota = 120
 	// DefaultWeiboHourlyQuota is the shared automatic request limit per hour for Weibo.
 	DefaultWeiboHourlyQuota = 100
+	// DefaultXHourlyQuota is the shared automatic request limit per hour for X (NFR-NET-005).
+	DefaultXHourlyQuota = 60
 )
 
 var (
@@ -293,6 +298,8 @@ func SiteHourlyQuotaLimit(siteName string) int {
 		return DefaultDouyinHourlyQuota
 	case string(site.Weibo):
 		return DefaultWeiboHourlyQuota
+	case string(site.X):
+		return DefaultXHourlyQuota
 	default:
 		return 0
 	}
@@ -459,10 +466,72 @@ func (m *Manager) consumeSiteQuotaTokensLocked(siteName string, n int) bool {
 	return m.saveSiteSchedulerStateLocked(normSite, st) == nil
 }
 
+type rateLimitResetProvider interface {
+	RateLimitResetAt() time.Time
+}
+
+func extractRateLimitResetAt(err error) time.Time {
+	if err == nil {
+		return time.Time{}
+	}
+	var p rateLimitResetProvider
+	if errors.As(err, &p) && p != nil {
+		return p.RateLimitResetAt()
+	}
+	return time.Time{}
+}
+
+func defaultRateLimitJitter() time.Duration {
+	n, err := rand.Int(rand.Reader, big.NewInt(61))
+	if err != nil {
+		return 30 * time.Second
+	}
+	return time.Duration(n.Int64()) * time.Second
+}
+
+// SetRateLimitJitterFunc overrides the 0..60s jitter added after a site's
+// rate-limit reset timestamp (for deterministic tests).
+func (m *Manager) SetRateLimitJitterFunc(fn func() time.Duration) {
+	m.mu.Lock()
+	if fn == nil {
+		m.rateLimitJitterFunc = defaultRateLimitJitter
+	} else {
+		m.rateLimitJitterFunc = fn
+	}
+	m.mu.Unlock()
+}
+
+func (m *Manager) nextRateLimitJitterLocked() time.Duration {
+	fn := m.rateLimitJitterFunc
+	if fn == nil {
+		fn = defaultRateLimitJitter
+	}
+	d := fn()
+	if d < 0 {
+		return 0
+	}
+	if d > time.Minute {
+		return time.Minute
+	}
+	return d
+}
+
 // RecordSiteAutomaticStop records a risk-control or rate-limit stop for siteName and advances its exponential backoff.
 func (m *Manager) RecordSiteAutomaticStop(siteName, kind string) {
+	m.RecordSiteAutomaticStopUntil(siteName, kind, time.Time{})
+}
+
+// RecordSiteAutomaticStopUntil records a stop for siteName. When kind is
+// ErrKindRateLimited and resetAt is non-zero, backoff pauses until resetAt plus
+// 0..60s jitter (capped at 24h) instead of doubling exponentially; risk_control
+// and unanchored rate limits use exponential backoff up to 24h.
+func (m *Manager) RecordSiteAutomaticStopUntil(siteName, kind string, resetAt time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.recordSiteAutomaticStopLocked(siteName, kind, resetAt)
+}
+
+func (m *Manager) recordSiteAutomaticStopLocked(siteName, kind string, resetAt time.Time) {
 	normSite := normalizeSchedulerSite(siteName)
 	if normSite == "" {
 		return
@@ -470,10 +539,38 @@ func (m *Manager) RecordSiteAutomaticStop(siteName, kind string) {
 	state := m.getSiteSchedulerStateLocked(normSite)
 	now := m.nowFunc().UTC()
 	if previous, err := time.Parse(time.RFC3339, state.LastStopAt); err == nil && now.Sub(previous) < time.Second && state.LastStopReason == kind {
-		return
+		if resetAt.IsZero() {
+			return
+		}
+		if curUntil, uErr := time.Parse(time.RFC3339, state.BackoffUntil); uErr == nil && !curUntil.Before(resetAt.UTC()) {
+			return
+		}
 	}
 	state.LastStopReason, state.LastStopAt = kind, now.Format(time.RFC3339)
 	if kind != site.ErrKindRiskControl && kind != site.ErrKindRateLimited {
+		_ = m.saveSiteSchedulerStateLocked(normSite, state)
+		return
+	}
+	if kind == site.ErrKindRateLimited && !resetAt.IsZero() {
+		jitter := m.nextRateLimitJitterLocked()
+		until := resetAt.UTC().Add(jitter)
+		if !until.After(now) {
+			until = now.Add(max(jitter, time.Second))
+		}
+		maxUntil := now.Add(24 * time.Hour)
+		if until.After(maxUntil) {
+			until = maxUntil
+		}
+		if existingUntil, uErr := time.Parse(time.RFC3339, state.BackoffUntil); uErr == nil && existingUntil.After(until) {
+			until = existingUntil
+		}
+		if state.ConsecutiveFailures < 1 {
+			state.ConsecutiveFailures = 1
+		}
+		if state.BackoffLevel < 1 {
+			state.BackoffLevel = 1
+		}
+		state.BackoffUntil = until.Format(time.RFC3339)
 		_ = m.saveSiteSchedulerStateLocked(normSite, state)
 		return
 	}
@@ -583,9 +680,39 @@ func NormalizeAndValidateAccount(acc AccountRef) (AccountRef, error) {
 		acc.Face = sanitizeAccountFace(site.Weibo, acc.Face)
 		return acc, nil
 
+	case site.X:
+		normUID, err := site.NormalizeUID(site.X, acc.UID)
+		if err != nil {
+			return AccountRef{}, fmt.Errorf("subscription: 账号必须是有效的 X 用户 ID")
+		}
+		handle, err := normalizeXScreenNameSnapshot(acc.UniqueID)
+		if err != nil {
+			return AccountRef{}, err
+		}
+		acc.Site = string(site.X)
+		acc.UID = normUID
+		acc.UniqueID = handle
+		acc.WebRID = ""
+		acc.Face = sanitizeAccountFace(site.X, acc.Face)
+		return acc, nil
+
 	default:
 		return AccountRef{}, fmt.Errorf("subscription: 不支持的站点 %q", acc.Site)
 	}
+}
+
+func normalizeXScreenNameSnapshot(raw string) (string, error) {
+	cleaned := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "@"))
+	if utf8.RuneCountInString(cleaned) > 64 {
+		runes := []rune(cleaned)
+		cleaned = string(runes[:64])
+	}
+	for _, r := range cleaned {
+		if unicode.IsSpace(r) || r < 0x20 || r == 0x7f || r == '/' || r == '\\' || r == ':' || r == '?' || r == '#' {
+			return "", fmt.Errorf("subscription: X screen_name 格式无效")
+		}
+	}
+	return cleaned, nil
 }
 
 func validateStrictDouyinUID(uid string) error {
@@ -628,6 +755,8 @@ func sanitizeAccountFace(s site.ID, face string) string {
 		"sign=", "signature=", "expires=",
 		"ssig=", "kid=", "sub=", "subp=", "xsrf-token=", "wbpsess=",
 		"scf=", "alf=", "ssologinstate=", "livephoto=",
+		"auth_token=", "ct0=", "kdt=", "twid=", "guest_id=",
+		"x-csrf-token", "authorization:",
 	} {
 		if strings.Contains(lower, marker) || strings.Contains(unescaped, marker) {
 			return ""
@@ -642,8 +771,80 @@ func sanitizeAccountFace(s site.ID, face string) string {
 		if strings.Contains(trimmed, "?") || strings.Contains(lower, "%3f") || isWeiboEphemeralMediaURL(lower) || isWeiboEphemeralMediaURL(unescaped) {
 			return ""
 		}
+	case site.X:
+		if isXEphemeralMediaURL(lower) || isXEphemeralMediaURL(unescaped) {
+			return ""
+		}
+		if strings.Contains(trimmed, "?") || strings.Contains(lower, "%3f") {
+			if !isCleanXPublicImageURL(trimmed) {
+				return ""
+			}
+		}
 	}
 	return trimmed
+}
+
+// isXEphemeralMediaURL reports whether lowerURL targets X video/HLS/private/live
+// media hosts or extensions that must never be persisted in snapshots or account metadata.
+func isXEphemeralMediaURL(lowerURL string) bool {
+	for _, host := range []string{
+		"video.twimg.com",
+		"video-s.twimg.com",
+		"ton.x.com",
+		"ton.twitter.com",
+		"pscp.tv",
+		"periscope.tv",
+	} {
+		if strings.Contains(lowerURL, host) {
+			return true
+		}
+	}
+	pathPart := lowerURL
+	if idx := strings.IndexAny(pathPart, "?#"); idx >= 0 {
+		pathPart = pathPart[:idx]
+	}
+	for _, ext := range []string{".mp4", ".mov", ".m3u8", ".flv", ".ts", ".m4s", ".aac"} {
+		if strings.HasSuffix(pathPart, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// isCleanXPublicImageURL allows public pbs.twimg.com image URLs whose query
+// string carries only benign format/name parameters (e.g. ?format=jpg&name=orig).
+func isCleanXPublicImageURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.User != nil {
+		return false
+	}
+	if !strings.EqualFold(u.Hostname(), "pbs.twimg.com") {
+		return false
+	}
+	if strings.Contains(strings.ToLower(u.RawPath), "%3f") || strings.Contains(strings.ToLower(u.Path), "%3f") {
+		return false
+	}
+	q, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return false
+	}
+	for k, vals := range q {
+		lk := strings.ToLower(strings.TrimSpace(k))
+		if lk != "format" && lk != "name" {
+			return false
+		}
+		for _, v := range vals {
+			if v == "" || len(v) > 32 {
+				return false
+			}
+			for _, r := range v {
+				if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 // isWeiboEphemeralMediaURL reports whether lowerURL targets Weibo video or
@@ -706,6 +907,20 @@ func normalizeSubscriptionAccountForLoad(acc AccountRef) (AccountRef, bool) {
 		acc.UniqueID = ""
 		acc.WebRID = ""
 		acc.Face = sanitizeAccountFace(site.Weibo, acc.Face)
+		return acc, true
+	case site.X:
+		normUID, err := site.NormalizeUID(site.X, acc.UID)
+		if err != nil {
+			return AccountRef{}, false
+		}
+		acc.UID = normUID
+		if handle, hErr := normalizeXScreenNameSnapshot(acc.UniqueID); hErr == nil {
+			acc.UniqueID = handle
+		} else {
+			acc.UniqueID = ""
+		}
+		acc.WebRID = ""
+		acc.Face = sanitizeAccountFace(site.X, acc.Face)
 		return acc, true
 	default:
 		return AccountRef{}, false

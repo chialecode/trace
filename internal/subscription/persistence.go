@@ -114,6 +114,13 @@ func (m *Manager) listSubsOnlyLocked() ([]Subscription, error) {
 	return out, nil
 }
 
+func (m *Manager) effectiveMaxSchemaVersion() int {
+	if m.maxSchemaVersion > 0 {
+		return m.maxSchemaVersion
+	}
+	return SubscriptionsSchemaVersion
+}
+
 func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 	m.invalidateSubsCacheLocked()
 	if m.subsPath == "" {
@@ -129,23 +136,24 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 		return err
 	}
 
+	supportedVersion := m.effectiveMaxSchemaVersion()
 	var rawVersion struct {
 		Version *int `json:"version"`
 	}
 	needsMigration := false
 	fromVersion := 1
 	if err := json.Unmarshal(raw, &rawVersion); err == nil {
-		if rawVersion.Version != nil && *rawVersion.Version > SubscriptionsSchemaVersion {
+		if rawVersion.Version != nil && *rawVersion.Version > supportedVersion {
 			return &storage.NewerDataError{
 				File:      filepath.Base(m.subsPath),
 				Found:     *rawVersion.Version,
-				Supported: SubscriptionsSchemaVersion,
+				Supported: supportedVersion,
 			}
 		}
 		if rawVersion.Version != nil && *rawVersion.Version > 0 {
 			fromVersion = *rawVersion.Version
 		}
-		needsMigration = rawVersion.Version == nil || *rawVersion.Version < SubscriptionsSchemaVersion
+		needsMigration = rawVersion.Version == nil || *rawVersion.Version < supportedVersion
 	}
 
 	prevRules := append([]CacheRule(nil), m.rules...)
@@ -418,6 +426,10 @@ func syncSubFields(s *Subscription, now time.Time) {
 			if norm, err := site.NormalizeUID(site.Weibo, s.Accounts[i].UID); err == nil {
 				s.Accounts[i].UID = norm
 			}
+		case site.X:
+			if norm, err := site.NormalizeUID(site.X, s.Accounts[i].UID); err == nil {
+				s.Accounts[i].UID = norm
+			}
 		}
 	}
 
@@ -467,6 +479,12 @@ func syncSubFields(s *Subscription, now time.Time) {
 				s.Name = firstNonEmptyStr(s.Uname, firstNonEmptyStr(s.Accounts[0].UniqueID, s.Accounts[0].UID))
 			case site.Weibo:
 				s.Name = firstNonEmptyStr(s.Uname, "微博用户 "+s.Accounts[0].UID)
+			case site.X:
+				fallback := "X 用户 " + s.Accounts[0].UID
+				if handle := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s.Accounts[0].UniqueID), "@")); handle != "" {
+					fallback = "@" + handle
+				}
+				s.Name = firstNonEmptyStr(s.Uname, fallback)
 			default:
 				s.Name = firstNonEmptyStr(s.Uname, s.Accounts[0].UID)
 			}

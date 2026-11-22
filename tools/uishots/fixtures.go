@@ -38,6 +38,7 @@ type screenshotBackend struct {
 	rooms           []live.RoomState
 	dyStatus        credential.Status
 	wbStatus        credential.Status
+	xStatus         credential.Status
 	schedulers      map[string]service.SiteSchedulerStatus
 	liveAccts       []service.LiveAccountState
 	queue           []service.CacheQueueTask
@@ -81,6 +82,7 @@ func (b *screenshotBackend) Statuses() map[string]credential.Status {
 		"bilibili": bili,
 		"douyin":   b.dyStatus,
 		"weibo":    b.wbStatus,
+		"x":        b.xStatus,
 	}
 }
 
@@ -93,16 +95,19 @@ func (b *screenshotBackend) StatusOf(siteID string) credential.Status {
 		return b.dyStatus
 	case "weibo":
 		return b.wbStatus
+	case "x":
+		return b.xStatus
 	}
 	return b.BackendAPI.StatusOf(siteID)
 }
 
 func (b *screenshotBackend) HasAnyLogin() bool {
-	return b.BackendAPI.HasAnyLogin() || b.dyStatus.LoggedIn || b.wbStatus.LoggedIn
+	return b.BackendAPI.HasAnyLogin() || b.dyStatus.LoggedIn || b.wbStatus.LoggedIn || b.xStatus.LoggedIn
 }
 
 func (b *screenshotBackend) FollowingGroups(_ context.Context, siteID string) ([]service.FollowingGroupDTO, error) {
-	if strings.EqualFold(strings.TrimSpace(siteID), "weibo") {
+	switch strings.ToLower(strings.TrimSpace(siteID)) {
+	case "weibo", "x":
 		return nil, nil
 	}
 	return []service.FollowingGroupDTO{
@@ -112,7 +117,8 @@ func (b *screenshotBackend) FollowingGroups(_ context.Context, siteID string) ([
 }
 
 func (b *screenshotBackend) FollowingCreatorsPage(_ context.Context, siteID, _ string, page int) (service.FollowingCreatorsPageDTO, error) {
-	if strings.EqualFold(strings.TrimSpace(siteID), "weibo") {
+	switch strings.ToLower(strings.TrimSpace(siteID)) {
+	case "weibo":
 		return service.FollowingCreatorsPageDTO{
 			Site: "weibo",
 			Page: max(1, page),
@@ -120,6 +126,18 @@ func (b *screenshotBackend) FollowingCreatorsPage(_ context.Context, siteID, _ s
 				{Site: "weibo", UID: "500000001", Name: "技术频道_微博", Sign: "系统工程与媒体工具开发笔记", Subscribed: true, OwnerSubName: "技术频道_Alpha"},
 				{Site: "weibo", UID: "500000002", Name: "合成摄影日记", Sign: "胶片与风光摄影日常"},
 				{Site: "weibo", UID: "500000003", Name: "合成设计周刊", Sign: "每周分享桌面界面与字体排印"},
+			},
+			HasMore:       false,
+			GroupsEnabled: false,
+		}, nil
+	case "x":
+		return service.FollowingCreatorsPageDTO{
+			Site: "x",
+			Page: max(1, page),
+			Items: []service.FollowingCreatorDTO{
+				{Site: "x", UID: "1000000000000000001", UniqueID: "alpha_x", Name: "技术频道_X", Sign: "系统工程与跨平台媒体工具实践", Subscribed: true, OwnerSubName: "技术频道_Alpha"},
+				{Site: "x", UID: "1000000000000000004", UniqueID: "synth_x_dev", Name: "合成X开发者", Sign: "每周分享 Go 与桌面界面工程"},
+				{Site: "x", UID: "1000000000000000005", UniqueID: "synth_x_photo", Name: "合成X摄影师", Sign: "胶片与风光摄影归档"},
 			},
 			HasMore:       false,
 			GroupsEnabled: false,
@@ -135,6 +153,10 @@ func (b *screenshotBackend) FollowingCreatorsPage(_ context.Context, siteID, _ s
 		HasMore:       false,
 		GroupsEnabled: true,
 	}, nil
+}
+
+func (b *screenshotBackend) FollowingCreatorsPageWithCursor(ctx context.Context, siteID, groupID, _ string) (service.FollowingCreatorsPageDTO, error) {
+	return b.FollowingCreatorsPage(ctx, siteID, groupID, 1)
 }
 
 func (b *screenshotBackend) SchedulerStatuses() map[string]service.SiteSchedulerStatus {
@@ -224,8 +246,13 @@ type fixtureEnv struct {
 	backend           *screenshotBackend
 	douyinSecUID      string
 	weiboUID          string
+	xUID              string
+	xHandle           string
+	xOnlyUID          string
+	xOnlyHandle       string
 	primarySub        subscription.Subscription
 	auroraSub         subscription.Subscription
+	xOnlySub          subscription.Subscription
 	batchRule         subscription.CacheRule
 	savedItem         library.ItemMetadata
 	savedLiveItem     library.ItemMetadata
@@ -235,6 +262,8 @@ type fixtureEnv struct {
 	savedDouyinNote   library.ItemMetadata
 	savedWeiboPost    library.ItemMetadata
 	savedWeiboRetweet library.ItemMetadata
+	savedXPost        library.ItemMetadata
+	savedXRetweet     library.ItemMetadata
 }
 
 func (e *fixtureEnv) close() {
@@ -253,6 +282,10 @@ func seedFixtures() (env *fixtureEnv, err error) {
 	env = &fixtureEnv{
 		douyinSecUID: "MS4wLjABAAAA_uishots_creator_01",
 		weiboUID:     "500000001",
+		xUID:         "1000000000000000001",
+		xHandle:      "alpha_x",
+		xOnlyUID:     "1000000000000000006",
+		xOnlyHandle:  "synth_x_col",
 	}
 	defer func() {
 		if err != nil {
@@ -358,6 +391,14 @@ func seedFixtures() (env *fixtureEnv, err error) {
 			}); wbErr == nil {
 				env.primarySub = wbLinked
 			}
+			if xLinked, xErr := b.LinkSubscriptionAccountRef(env.primarySub.ID, subscription.AccountRef{
+				Site:     "x",
+				UID:      env.xUID,
+				UniqueID: env.xHandle,
+				Name:     "技术频道_X",
+			}); xErr == nil {
+				env.primarySub = xLinked
+			}
 		}
 	}
 	env.auroraSub, _ = b.CreateSubscription("极光纪实", "高原延时与图文手记", []subscription.AccountRef{
@@ -369,6 +410,14 @@ func seedFixtures() (env *fixtureEnv, err error) {
 			Name:     "极光纪实",
 		},
 	}, subscription.SubRules{ScheduledCheck: true})
+	env.xOnlySub, _ = b.CreateSubscription("X 合成专栏", "仅关联 X 账号，用于校验无直播状态与无录制按钮", []subscription.AccountRef{
+		{
+			Site:     "x",
+			UID:      env.xOnlyUID,
+			UniqueID: env.xOnlyHandle,
+			Name:     "X 合成专栏",
+		},
+	}, subscription.DefaultSubRules())
 
 	videoOnlyRule, err := b.SaveCacheRule(subscription.CacheRule{
 		Name:           "只存视频",
@@ -787,7 +836,112 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		return nil, err
 	}
 
-	// Seed recent parse history with local avatar & cover thumbnails in <DataDir>/thumbs/ across Bilibili, Douyin, and Weibo
+	// Seed cached X original post (newest PubTs so Library top rows display all 4 sites simultaneously)
+	// and cached X quote/retweet with self-reply thread and HLS-only missing notice.
+	xPostDir := filepath.Join(loc.DefaultCacheDir, "x", env.xOnlyUID+"_"+env.xOnlyHandle, "posts", "1000000000000000009")
+	if err := os.MkdirAll(filepath.Join(xPostDir, "images"), 0o700); err != nil {
+		return nil, err
+	}
+	_ = os.WriteFile(filepath.Join(xPostDir, "images", "01.png"), coverBuf.Bytes(), 0o600)
+	env.savedXPost, err = b.LibraryStore().SaveItem(xPostDir, library.ItemMetadata{
+		Version:   1,
+		ID:        "1000000000000000009",
+		RawID:     "1000000000000000009",
+		Site:      "x",
+		Kind:      "dynamic",
+		TypeLabel: "帖子",
+		Status:    "complete",
+		Title:     "X 长文与原图混排归档示例",
+		Text:      "X 帖子归档示例：完整保存 note_tweet 长帖正文、原图与静音循环 GIF，四站点凭证与限流彼此隔离。",
+		URL:       "https://x.com/" + env.xOnlyHandle + "/status/1000000000000000009",
+		PubTs:     1710004600,
+		CachedAt:  "2026-03-02T12:05:00Z",
+		Author: library.ItemAuthor{
+			Site:     "x",
+			UID:      env.xOnlyUID,
+			UniqueID: env.xOnlyHandle,
+			Name:     "X 合成专栏",
+		},
+		Media: []library.MediaFile{
+			{Role: "image", Path: "images/01.png", Width: 320, Height: 200},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	xRetweetDir := filepath.Join(loc.DefaultCacheDir, "x", env.xUID+"_"+env.xHandle, "forwards", "1000000000000000015")
+	if err := os.MkdirAll(filepath.Join(xRetweetDir, "images"), 0o700); err != nil {
+		return nil, err
+	}
+	_ = os.WriteFile(filepath.Join(xRetweetDir, "images", "01.png"), coverBuf.Bytes(), 0o600)
+	_ = os.WriteFile(filepath.Join(xRetweetDir, "images", "02.png"), portraitBuf.Bytes(), 0o600)
+	_ = os.WriteFile(filepath.Join(xRetweetDir, "images", "02.mp4"), mp4Raw, 0o600)
+	env.savedXRetweet, err = b.LibraryStore().SaveItem(xRetweetDir, library.ItemMetadata{
+		Version:     1,
+		ID:          "1000000000000000015",
+		RawID:       "1000000000000000015",
+		Site:        "x",
+		Kind:        "dynamic",
+		DynamicType: "forward",
+		TypeLabel:   "引用帖子",
+		Status:      "partial",
+		Title:       "引用推荐：X 长帖线程与原图离线归档演示",
+		Text:        "引用推荐：将 X 长帖正文、作者自回复串、原图与 GIF 动图统一保存在本地媒体库，断网也能完整阅读。",
+		URL:         "https://x.com/" + env.xHandle + "/status/1000000000000000015",
+		PubTs:       1709979000,
+		CachedAt:    "2026-03-02T12:20:00Z",
+		Author: library.ItemAuthor{
+			Site:     "x",
+			UID:      env.xUID,
+			UniqueID: env.xHandle,
+			Name:     "技术频道_X",
+		},
+		Via: &library.ItemVia{
+			Reason:    library.ViaForward,
+			Site:      "x",
+			UID:       env.xUID,
+			Name:      "技术频道_X",
+			DynamicID: "1000000000000000015",
+		},
+		Origin: &library.ItemOrigin{
+			Site:         "x",
+			ID:           "1000000000000000088",
+			CanonicalURL: "https://x.com/synth_x_dev/status/1000000000000000088",
+			Author: library.ItemAuthor{
+				Site:     "x",
+				UID:      "1000000000000000004",
+				UniqueID: "synth_x_dev",
+				Name:     "合成X开发者",
+			},
+			PubTs: 1709974000,
+			Text:  "原帖说明：采用纯标准库实现雪花 ID 校验、前端元数据运行时发现与四站点限流退避隔离。",
+		},
+		NotePages: []library.NotePageRecord{
+			{Index: 1, Kind: "image", FromOrigin: true, Image: "images/01.png", Width: 320, Height: 200},
+			{Index: 2, Kind: "video", GIF: true, FromOrigin: true, Image: "images/02.png", Video: "images/02.mp4", Width: 270, Height: 360, Duration: 3},
+		},
+		Media: []library.MediaFile{
+			{Role: "image", Path: "images/01.png", FromOrigin: true, Width: 320, Height: 200},
+			{Role: "cover", Path: "images/02.png", FromOrigin: true, Width: 270, Height: 360},
+			{Role: "video", Path: "images/02.mp4", GIF: true, FromOrigin: true, Duration: 3},
+		},
+		Thread: []library.ItemThreadPart{
+			{
+				ID:    "1000000000000000016",
+				PubTs: 1709979300,
+				Text:  "自回复补充：媒体 CDN 与 t.co 跳转全程不带 Cookie，签名参数不落盘。",
+			},
+		},
+		Missing: []library.MissingRecord{
+			{Item: "hls_video_1", Reason: "这条视频只有分段流，暂不支持缓存"},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Seed recent parse history with local avatar & cover thumbnails in <DataDir>/thumbs/ across all 4 sites.
 	avatarImg := image.NewRGBA(image.Rect(0, 0, 80, 80))
 	for y := 0; y < 80; y++ {
 		for x := 0; x < 80; x++ {
@@ -821,6 +975,10 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		{"douyin", "MS4wLjABAAAA_uishots_creator_02", 145},
 		{"weibo", env.weiboUID, 15},
 		{"weibo", "500000002", 110},
+		{"x", env.xUID, 45},
+		{"x", env.xOnlyUID, 125},
+		{"x", "1000000000000000004", 190},
+		{"x", "1000000000000000005", 220},
 	}
 	for _, at := range avatarTargets {
 		avImg := image.NewRGBA(image.Rect(0, 0, 80, 80))
@@ -848,6 +1006,9 @@ func seedFixtures() (env *fixtureEnv, err error) {
 	histCvDy, _ := b.HistoryStore().SaveThumb("video", "7388001001", "cover", ".png", portraitBuf.Bytes())
 	histAvWb, _ := b.HistoryStore().SaveThumb("dynamic", "5000000000000001", "avatar", ".png", avatarBuf.Bytes())
 	histCvWb, _ := b.HistoryStore().SaveThumb("dynamic", "5000000000000001", "cover", ".png", coverBuf.Bytes())
+	histAvX, _ := b.HistoryStore().SaveThumb("dynamic", "1000000000000000009", "avatar", ".png", avatarBuf.Bytes())
+	histCvX, _ := b.HistoryStore().SaveThumb("dynamic", "1000000000000000009", "cover", ".png", coverBuf.Bytes())
+	histAvXUser, _ := b.HistoryStore().SaveThumb("user", env.xUID, "avatar", ".png", avatarBuf.Bytes())
 	_ = b.HistoryStore().Record(storage.HistoryEntry{
 		Site:         "weibo",
 		Kind:         "dynamic",
@@ -857,6 +1018,25 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		CanonicalURL: "https://weibo.com/500000001/5000000000000001",
 		AvatarThumb:  histAvWb,
 		CoverThumb:   histCvWb,
+	})
+	_ = b.HistoryStore().Record(storage.HistoryEntry{
+		Site:         "x",
+		Kind:         "user",
+		ID:           env.xUID,
+		Title:        "技术频道_X",
+		Subtitle:     "@" + env.xHandle,
+		CanonicalURL: "https://x.com/" + env.xHandle,
+		AvatarThumb:  histAvXUser,
+	})
+	_ = b.HistoryStore().Record(storage.HistoryEntry{
+		Site:         "x",
+		Kind:         "dynamic",
+		ID:           "1000000000000000009",
+		Title:        "X 长文与原图混排归档示例",
+		Subtitle:     "X 合成专栏",
+		CanonicalURL: "https://x.com/" + env.xOnlyHandle + "/status/1000000000000000009",
+		AvatarThumb:  histAvX,
+		CoverThumb:   histCvX,
 	})
 	_ = b.HistoryStore().Record(storage.HistoryEntry{
 		Site:         "douyin",
@@ -910,6 +1090,15 @@ func seedFixtures() (env *fixtureEnv, err error) {
 			UID:      "100000001",
 			Uname:    "TRACE微博演示账号",
 		},
+		xStatus: credential.Status{
+			Site:     "x",
+			LoggedIn: true,
+			State:    "logged_in",
+			Source:   "manual",
+			UID:      "1000000000000000000",
+			UniqueID: "trace_x_demo",
+			Uname:    "TRACE X 演示账号",
+		},
 		schedulers: map[string]service.SiteSchedulerStatus{
 			"bilibili": {
 				Site:        "bilibili",
@@ -931,6 +1120,12 @@ func seedFixtures() (env *fixtureEnv, err error) {
 				DisplayName: "微博",
 				LastCheckAt: "2026-11-12T10:10:00Z",
 				NextCheckAt: "2026-11-12T11:10:00Z",
+			},
+			"x": {
+				Site:        "x",
+				DisplayName: "X",
+				LastCheckAt: "2026-11-12T10:15:00Z",
+				NextCheckAt: "2026-11-12T11:15:00Z",
 			},
 		},
 	}
@@ -1067,14 +1262,27 @@ func (e *fixtureEnv) seedRecentAndLive(app *ui.App) {
 			CachedCount:  12,
 			SkippedCount: 3,
 		},
+		{
+			ID:           "cq_demo_x",
+			Site:         "x",
+			User:         e.xUID,
+			UserName:     "技术频道_X",
+			List:         "posts",
+			ListLabel:    "帖子",
+			Status:       service.CacheQueueCompleted,
+			StatusText:   "已完成",
+			Note:         "已到达 X 时间线可见上限，已缓存全部可见原创帖子",
+			CachedCount:  24,
+			SkippedCount: 6,
+		},
 	}
 	app.CacheQueue = e.backend.ListCacheQueue()
 }
 
 func (e *fixtureEnv) injectMixedHomeFeed(app *ui.App) {
 	app.PopulateSyntheticFeed(5000)
-	if len(app.FeedItems) > 3 {
-		// Showcase B 站, 微博, and 抖音 author badges simultaneously on Home.
+	if len(app.FeedItems) > 4 {
+		// Showcase B 站, 微博, X, and 抖音 author badges simultaneously on Home across all 3 widths.
 		app.FeedItems[1] = library.FeedEntry{
 			FeedKey:      e.savedWeiboPost.ItemKey,
 			Site:         "weibo",
@@ -1083,13 +1291,27 @@ func (e *fixtureEnv) injectMixedHomeFeed(app *ui.App) {
 			AuthorUID:    e.weiboUID,
 			AuthorName:   "技术频道_微博",
 			Title:        e.savedWeiboPost.Title,
-			Summary:      e.savedWeiboPost.Text,
+			Summary:      e.savedWeiboPost.Title,
 			CanonicalURL: e.savedWeiboPost.URL,
 			PubTs:        app.FeedItems[0].PubTs - 60,
 			Cached:       true,
 			CacheStatus:  "green",
 		}
 		app.FeedItems[2] = library.FeedEntry{
+			FeedKey:      e.savedXPost.ItemKey,
+			Site:         "x",
+			Kind:         "dynamic",
+			RawID:        e.savedXPost.RawID,
+			AuthorUID:    e.xOnlyUID,
+			AuthorName:   "X 合成专栏",
+			Title:        e.savedXPost.Title,
+			Summary:      e.savedXPost.Title,
+			CanonicalURL: e.savedXPost.URL,
+			PubTs:        app.FeedItems[0].PubTs - 90,
+			Cached:       true,
+			CacheStatus:  "green",
+		}
+		app.FeedItems[3] = library.FeedEntry{
 			FeedKey:      e.savedDouyinNote.ItemKey,
 			Site:         "douyin",
 			Kind:         "dynamic",

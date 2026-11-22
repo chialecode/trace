@@ -384,6 +384,24 @@ var sensitiveMarkers = []string{
 	"subp%3d",
 	"xsrf-token%3d",
 	"wbpsess%3d",
+	"auth_token=",
+	"ct0=",
+	"kdt=",
+	"twid=",
+	"guest_id=",
+	"x-csrf-token",
+	"authorization: bearer",
+	"authorization:bearer",
+	"auth_token%3d",
+	"ct0%3d",
+	"kdt%3d",
+	"twid%3d",
+	"guest_id%3d",
+	"x-csrf-token%3d",
+	"x-csrf-token%3a",
+	"authorization%3a%20bearer",
+	"authorization%3a+bearer",
+	"authorization%3abearer",
 }
 
 func sanitizeHistoryEntry(e HistoryEntry) (HistoryEntry, bool) {
@@ -470,6 +488,15 @@ func sanitizeCanonicalURL(rawURL, site, kind, id string) string {
 		case "live":
 			cleanID := strings.TrimPrefix(id, "live:")
 			return "https://weibo.com/l/wblive/p/show/" + cleanID
+		default:
+			return ""
+		}
+	case "x":
+		switch kind {
+		case "dynamic", "post", "video":
+			return "https://x.com/i/web/status/" + id
+		case "user":
+			return "https://x.com/i/user/" + id
 		default:
 			return ""
 		}

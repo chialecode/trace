@@ -12,6 +12,7 @@ import (
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/douyin"
 	"github.com/chialecode/trace/internal/site/weibo"
+	"github.com/chialecode/trace/internal/site/x"
 )
 
 // RenewalStatus summarizes automatic session renewal capability and state for a site.
@@ -329,6 +330,168 @@ type WeiboUserPostsPage struct {
 	TotalWorks        int             `json:"totalWorks,omitempty"`
 }
 
+// XAuthorDTO holds normalized X creator summary fields for UI rendering
+// without requiring internal/ui to import internal/site/x.
+type XAuthorDTO struct {
+	RestID         string `json:"restId"`
+	ScreenName     string `json:"screenName"`
+	Name           string `json:"name"`
+	AvatarURL      string `json:"avatarUrl,omitempty"`
+	Description    string `json:"description,omitempty"`
+	Verified       bool   `json:"verified,omitempty"`
+	IsBlueVerified bool   `json:"isBlueVerified,omitempty"`
+	Protected      bool   `json:"protected,omitempty"`
+	StatusesCount  int    `json:"statusesCount,omitempty"`
+	MediaCount     int    `json:"mediaCount,omitempty"`
+	FollowersCount int64  `json:"followersCount,omitempty"`
+	FriendsCount   int64  `json:"friendsCount,omitempty"`
+}
+
+// XStatsDTO holds online-only engagement counters for an X post (never persisted per DEC-040).
+type XStatsDTO struct {
+	ReplyCount    int64 `json:"replyCount"`
+	RetweetCount  int64 `json:"retweetCount"`
+	LikeCount     int64 `json:"likeCount"`
+	QuoteCount    int64 `json:"quoteCount"`
+	BookmarkCount int64 `json:"bookmarkCount"`
+	ViewCount     int64 `json:"viewCount"`
+}
+
+// XURLEntityDTO holds one restored t.co -> expanded URL mapping from a post's entities.
+type XURLEntityDTO struct {
+	ShortURL    string `json:"shortUrl,omitempty"`
+	ExpandedURL string `json:"expandedUrl,omitempty"`
+	DisplayURL  string `json:"displayUrl,omitempty"`
+}
+
+// XMediaItemDTO represents one ordered media attachment (photo, GIF, or video, up to 4 items).
+type XMediaItemDTO struct {
+	Index            int    `json:"index"` // 1-based
+	MediaKey         string `json:"mediaKey,omitempty"`
+	Kind             string `json:"kind"` // "photo", "gif", "video"
+	GIF              bool   `json:"gif,omitempty"`
+	FromOrigin       bool   `json:"fromOrigin,omitempty"`
+	Width            int    `json:"width,omitempty"`
+	Height           int    `json:"height,omitempty"`
+	DurationMS       int64  `json:"durationMs,omitempty"`
+	DurationSec      int    `json:"durationSec,omitempty"`
+	AltText          string `json:"altText,omitempty"`
+	ImageURL         string `json:"imageUrl,omitempty"`
+	PublicPreviewURL string `json:"publicPreviewUrl,omitempty"`
+	VideoURL         string `json:"videoUrl,omitempty"`
+	VideoBitrate     int64  `json:"videoBitrate,omitempty"`
+	QualityLabel     string `json:"qualityLabel,omitempty"`
+	HLSOnly          bool   `json:"hlsOnly,omitempty"`
+	HLSOnlyNotice    string `json:"hlsOnlyNotice,omitempty"`
+}
+
+// XPollOptionDTO represents one option in an X poll summary.
+type XPollOptionDTO struct {
+	Position int    `json:"position"`
+	Label    string `json:"label"`
+	Votes    int64  `json:"votes,omitempty"`
+}
+
+// XPollSummaryDTO holds online-only poll summary fields for an X post.
+type XPollSummaryDTO struct {
+	Options    []XPollOptionDTO `json:"options"`
+	EndTime    string           `json:"endTime,omitempty"`
+	Final      bool             `json:"final,omitempty"`
+	TotalVotes int64            `json:"totalVotes,omitempty"`
+}
+
+// XRichCardDTO represents a degraded non-media card (poll, URL card, X Article, Broadcast/Spaces).
+type XRichCardDTO struct {
+	Kind        string `json:"kind"` // "vote", "webpage", "article", "live"
+	Label       string `json:"label"`
+	Title       string `json:"title,omitempty"`
+	Desc        string `json:"desc,omitempty"`
+	URL         string `json:"url,omitempty"`
+	CoverURL    string `json:"coverUrl,omitempty"`
+	Unsupported bool   `json:"unsupported"`
+}
+
+// XPostDTO holds the normalized UI-facing view of a single X post.
+type XPostDTO struct {
+	ID                      string                `json:"id"`
+	Author                  XAuthorDTO            `json:"author"`
+	CreatedAt               int64                 `json:"createdAt"`
+	Text                    string                `json:"text"`
+	IsLongText              bool                  `json:"isLongText,omitempty"`
+	ConversationID          string                `json:"conversationId,omitempty"`
+	InReplyToStatusID       string                `json:"inReplyToStatusId,omitempty"`
+	InReplyToUserID         string                `json:"inReplyToUserId,omitempty"`
+	InReplyToScreenName     string                `json:"inReplyToScreenName,omitempty"`
+	SelfThreadID            string                `json:"selfThreadId,omitempty"`
+	Pinned                  bool                  `json:"pinned,omitempty"`
+	IsPreviewDisplay        bool                  `json:"isPreviewDisplay,omitempty"`
+	VisibilityLabel         string                `json:"visibilityLabel,omitempty"`
+	PossiblySensitive       bool                  `json:"possiblySensitive,omitempty"`
+	WithheldInCountries     []string              `json:"withheldInCountries,omitempty"`
+	EditTweetIDs            []string              `json:"editTweetIds,omitempty"`
+	IsEdited                bool                  `json:"isEdited,omitempty"`
+	IsRetweet               bool                  `json:"isRetweet,omitempty"`
+	IsQuote                 bool                  `json:"isQuote,omitempty"`
+	Retweeted               *XPostDTO             `json:"retweeted,omitempty"`
+	Quoted                  *XPostDTO             `json:"quoted,omitempty"`
+	OriginUnavailable       bool                  `json:"originUnavailable,omitempty"`
+	OriginUnavailableReason string                `json:"originUnavailableReason,omitempty"`
+	ForwarderHintUID        string                `json:"forwarderHintUid,omitempty"`
+	ForwarderHintName       string                `json:"forwarderHintName,omitempty"`
+	ThreadAncestors         []XPostDTO            `json:"threadAncestors,omitempty"`
+	Thread                  []XPostDTO            `json:"thread,omitempty"`
+	RuleType                string                `json:"ruleType"` // "forward", "video", "draw", "word"
+	Media                   []XMediaItemDTO       `json:"media,omitempty"`
+	HasHLSOnlyVideo         bool                  `json:"hasHlsOnlyVideo,omitempty"`
+	Poll                    *XPollSummaryDTO      `json:"poll,omitempty"`
+	Card                    *XRichCardDTO         `json:"card,omitempty"`
+	Stats                   XStatsDTO             `json:"stats"`
+	URLs                    []XURLEntityDTO       `json:"urls,omitempty"`
+	CanonicalURL            string                `json:"canonicalUrl"`
+	Unavailable             bool                  `json:"unavailable,omitempty"`
+	UnavailableReason       string                `json:"unavailableReason,omitempty"`
+	UnavailableKind         string                `json:"unavailableKind,omitempty"`
+	CacheKey                string                `json:"cacheKey"`
+	CacheState              library.DotState      `json:"cacheState"`
+	CachedItem              *library.ItemMetadata `json:"cachedItem,omitempty"`
+}
+
+// XUserDTO holds an X creator's profile header fields and local subscription status.
+type XUserDTO struct {
+	RestID         string   `json:"restId"`
+	ScreenName     string   `json:"screenName"`
+	Name           string   `json:"name"`
+	Description    string   `json:"description,omitempty"`
+	AvatarURL      string   `json:"avatarUrl,omitempty"`
+	BannerURL      string   `json:"bannerUrl,omitempty"`
+	Verified       bool     `json:"verified,omitempty"`
+	IsBlueVerified bool     `json:"isBlueVerified,omitempty"`
+	FollowersCount int64    `json:"followersCount"`
+	FriendsCount   int64    `json:"friendsCount"`
+	StatusesCount  int      `json:"statusesCount"`
+	MediaCount     int      `json:"mediaCount,omitempty"`
+	Protected      bool     `json:"protected,omitempty"`
+	PinnedTweetIDs []string `json:"pinnedTweetIds,omitempty"`
+	CanonicalURL   string   `json:"canonicalUrl"`
+	Subscribed     bool     `json:"subscribed,omitempty"`
+	OwnerSubID     string   `json:"ownerSubId,omitempty"`
+	OwnerSubName   string   `json:"ownerSubName,omitempty"`
+}
+
+// XUserPostsPageDTO holds one paginated page of an X creator's timeline.
+type XUserPostsPageDTO struct {
+	Posts               []XPostDTO  `json:"posts"`
+	NextCursor          string      `json:"nextCursor,omitempty"`
+	HasMore             bool        `json:"hasMore"`
+	ReachedVisibleLimit bool        `json:"reachedVisibleLimit,omitempty"`
+	BottomTipsVisible   bool        `json:"bottomTipsVisible,omitempty"`
+	BottomTipsText      string      `json:"bottomTipsText,omitempty"`
+	UncertainEmpty      bool        `json:"uncertainEmpty,omitempty"`
+	UncertainReason     string      `json:"uncertainReason,omitempty"`
+	Author              *XAuthorDTO `json:"author,omitempty"`
+	TotalWorks          int         `json:"totalWorks,omitempty"`
+}
+
 // FollowingGroupDTO represents a selectable following group for a site in the import dialog.
 type FollowingGroupDTO struct {
 	ID    string `json:"id"`
@@ -340,6 +503,7 @@ type FollowingGroupDTO struct {
 type FollowingCreatorDTO struct {
 	Site         string `json:"site"`
 	UID          string `json:"uid"`
+	UniqueID     string `json:"uniqueId,omitempty"`
 	Name         string `json:"name"`
 	Face         string `json:"face,omitempty"`
 	Sign         string `json:"sign,omitempty"`
@@ -788,6 +952,235 @@ func mapWeiboUserView(u *weibo.UserProfile) *WeiboUserView {
 		CoverImagePhone: u.CoverImagePhone,
 		BlockText:       u.BlockText,
 		CanonicalURL:    u.CanonicalURL,
+	}
+}
+
+func mapXAuthorDTO(a x.AuthorSummary) XAuthorDTO {
+	return XAuthorDTO{
+		RestID:         a.RestID,
+		ScreenName:     a.ScreenName,
+		Name:           a.Name,
+		AvatarURL:      a.AvatarURL,
+		Description:    a.Description,
+		Verified:       a.Verified,
+		IsBlueVerified: a.IsBlueVerified,
+		Protected:      a.Protected,
+		StatusesCount:  a.StatusesCount,
+		MediaCount:     a.MediaCount,
+		FollowersCount: a.FollowersCount,
+		FriendsCount:   a.FriendsCount,
+	}
+}
+
+func mapXRichCardDTO(c *x.RichCard) *XRichCardDTO {
+	if c == nil {
+		return nil
+	}
+	return &XRichCardDTO{
+		Kind:        c.Kind,
+		Label:       c.Label,
+		Title:       c.Title,
+		Desc:        c.Desc,
+		URL:         c.URL,
+		CoverURL:    c.CoverURL,
+		Unsupported: c.Unsupported,
+	}
+}
+
+func mapXPollSummaryDTO(p *x.PollSummary) *XPollSummaryDTO {
+	if p == nil {
+		return nil
+	}
+	opts := make([]XPollOptionDTO, 0, len(p.Options))
+	for _, o := range p.Options {
+		opts = append(opts, XPollOptionDTO{
+			Position: o.Position,
+			Label:    o.Label,
+			Votes:    o.Votes,
+		})
+	}
+	return &XPollSummaryDTO{
+		Options:    opts,
+		EndTime:    p.EndTime,
+		Final:      p.Final,
+		TotalVotes: p.TotalVotes,
+	}
+}
+
+func formatXMediaQualityLabel(width, height int, bitrate int64) string {
+	switch {
+	case height >= 2160 || width >= 3840:
+		return "2160P"
+	case height >= 1440 || width >= 2560:
+		return "1440P"
+	case height >= 1080 || width >= 1920:
+		return "1080P"
+	case height >= 720 || width >= 1280:
+		return "720P"
+	case height >= 480 || width >= 854:
+		return "480P"
+	case height > 0:
+		return strconv.Itoa(height) + "P"
+	case bitrate > 0:
+		return strconv.FormatInt(bitrate/1000, 10) + "kbps"
+	default:
+		return ""
+	}
+}
+
+func mapXMediaItems(items []x.MediaItem) []XMediaItemDTO {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]XMediaItemDTO, 0, len(items))
+	for i, m := range items {
+		idx := m.Index
+		if idx <= 0 {
+			idx = i + 1
+		}
+		dto := XMediaItemDTO{
+			Index:            idx,
+			MediaKey:         m.MediaKey,
+			Kind:             m.Kind,
+			GIF:              m.GIF || m.Kind == x.MediaKindGIF,
+			FromOrigin:       m.FromOrigin,
+			Width:            m.Width,
+			Height:           m.Height,
+			DurationMS:       m.DurationMS,
+			DurationSec:      m.DurationSec,
+			AltText:          m.AltText,
+			ImageURL:         firstNonEmpty(m.ImageURL, m.PublicPreviewURL),
+			PublicPreviewURL: m.PublicPreviewURL,
+			VideoBitrate:     m.VideoBitrate,
+			QualityLabel:     formatXMediaQualityLabel(m.Width, m.Height, m.VideoBitrate),
+			HLSOnly:          m.HLSOnly,
+			HLSOnlyNotice:    m.HLSOnlyNotice,
+		}
+		if !m.HLSOnly {
+			dto.VideoURL = m.VideoURL
+		}
+		if dto.HLSOnly && dto.HLSOnlyNotice == "" {
+			dto.HLSOnlyNotice = x.HLSOnlyNoticeText
+		}
+		out = append(out, dto)
+	}
+	return out
+}
+
+func mapXPostDTO(p *x.Post, cached *library.ItemMetadata, cacheState library.DotState) *XPostDTO {
+	if p == nil {
+		return nil
+	}
+	cacheKey := ""
+	if strings.TrimSpace(p.ID) != "" {
+		cacheKey = x.PostItemKey(p.ID)
+	}
+	if cacheState.Key == "" && cacheKey != "" {
+		cacheState.Key = cacheKey
+	}
+	var urls []XURLEntityDTO
+	if len(p.URLs) > 0 {
+		urls = make([]XURLEntityDTO, 0, len(p.URLs))
+		for _, u := range p.URLs {
+			urls = append(urls, XURLEntityDTO{
+				ShortURL:    u.ShortURL,
+				ExpandedURL: u.ExpandedURL,
+				DisplayURL:  u.DisplayURL,
+			})
+		}
+	}
+	out := &XPostDTO{
+		ID:                      p.ID,
+		Author:                  mapXAuthorDTO(p.Author),
+		CreatedAt:               p.CreatedAt,
+		Text:                    p.Text,
+		IsLongText:              p.IsLongText,
+		ConversationID:          p.ConversationID,
+		InReplyToStatusID:       p.InReplyToStatusID,
+		InReplyToUserID:         p.InReplyToUserID,
+		InReplyToScreenName:     p.InReplyToScreenName,
+		SelfThreadID:            p.SelfThreadID,
+		Pinned:                  p.Pinned,
+		IsPreviewDisplay:        p.IsPreviewDisplay,
+		VisibilityLabel:         p.VisibilityLabel,
+		PossiblySensitive:       p.PossiblySensitive,
+		WithheldInCountries:     append([]string(nil), p.WithheldInCountries...),
+		EditTweetIDs:            append([]string(nil), p.EditTweetIDs...),
+		IsEdited:                p.IsEdited,
+		IsRetweet:               p.IsRetweet,
+		IsQuote:                 p.IsQuote,
+		OriginUnavailable:       p.OriginUnavailable,
+		OriginUnavailableReason: p.OriginUnavailableReason,
+		RuleType:                p.RuleType,
+		Media:                   mapXMediaItems(p.Media),
+		HasHLSOnlyVideo:         p.HasHLSOnlyVideo,
+		Poll:                    mapXPollSummaryDTO(p.Poll),
+		Card:                    mapXRichCardDTO(p.Card),
+		Stats: XStatsDTO{
+			ReplyCount:    p.Stats.ReplyCount,
+			RetweetCount:  p.Stats.RetweetCount,
+			LikeCount:     p.Stats.LikeCount,
+			QuoteCount:    p.Stats.QuoteCount,
+			BookmarkCount: p.Stats.BookmarkCount,
+			ViewCount:     p.Stats.ViewCount,
+		},
+		URLs:              urls,
+		CanonicalURL:      p.CanonicalURL,
+		Unavailable:       p.Unavailable,
+		UnavailableReason: p.UnavailableReason,
+		UnavailableKind:   p.UnavailableKind,
+		CacheKey:          cacheKey,
+		CacheState:        cacheState,
+		CachedItem:        cached,
+	}
+	if p.Retweeted != nil {
+		out.Retweeted = mapXPostDTO(p.Retweeted, nil, library.DotState{})
+	}
+	if p.Quoted != nil {
+		out.Quoted = mapXPostDTO(p.Quoted, nil, library.DotState{})
+	}
+	if len(p.ThreadAncestors) > 0 {
+		out.ThreadAncestors = make([]XPostDTO, 0, len(p.ThreadAncestors))
+		for i := range p.ThreadAncestors {
+			if mapped := mapXPostDTO(&p.ThreadAncestors[i], nil, library.DotState{}); mapped != nil {
+				out.ThreadAncestors = append(out.ThreadAncestors, *mapped)
+			}
+		}
+	}
+	if len(p.Thread) > 0 {
+		out.Thread = make([]XPostDTO, 0, len(p.Thread))
+		for i := range p.Thread {
+			if mapped := mapXPostDTO(&p.Thread[i], nil, library.DotState{}); mapped != nil {
+				out.Thread = append(out.Thread, *mapped)
+			}
+		}
+	}
+	return out
+}
+
+func mapXUserDTO(u *x.UserProfile, ownerSubID, ownerSubName string) *XUserDTO {
+	if u == nil {
+		return nil
+	}
+	return &XUserDTO{
+		RestID:         u.RestID,
+		ScreenName:     u.ScreenName,
+		Name:           u.Name,
+		Description:    u.Description,
+		AvatarURL:      u.AvatarURL,
+		BannerURL:      u.BannerURL,
+		Verified:       u.Verified,
+		IsBlueVerified: u.IsBlueVerified,
+		FollowersCount: u.FollowersCount,
+		FriendsCount:   u.FriendsCount,
+		StatusesCount:  u.StatusesCount,
+		MediaCount:     u.MediaCount,
+		Protected:      u.Protected,
+		PinnedTweetIDs: append([]string(nil), u.PinnedTweetIDs...),
+		CanonicalURL:   u.CanonicalURL,
+		Subscribed:     strings.TrimSpace(ownerSubID) != "",
+		OwnerSubID:     ownerSubID,
+		OwnerSubName:   ownerSubName,
 	}
 }
 

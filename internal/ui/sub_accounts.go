@@ -96,8 +96,11 @@ func (a *App) accountWorksText(siteID, uid string) string {
 		return ""
 	}
 	noun := "作品"
-	if normSite == "weibo" {
+	switch normSite {
+	case "weibo":
 		noun = "微博"
+	case "x":
+		noun = "帖子"
 	}
 	if w.Total < 0 {
 		return fmt.Sprintf("已缓存 %d · %s总数在打开主页后统计", w.Cached, noun)
@@ -125,7 +128,7 @@ func (a *App) renderSubscriptionAccountsView(c *ui.Context) {
 	rows := a.subscriptionAccountRows(a.SubAccountsSite)
 	ui.Column(c).Grow(1).FillWidth().Padding(16, 16, 0, 16).Gap(10).ClipX().Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
-			ui.Row(c).Width(280).Shrink(1).Children(func() {
+			ui.Row(c).Width(330).Shrink(1).Children(func() {
 				renderThreeSegmentSiteFilter(c, "订阅账号站点筛选：", normalizeSiteFilter(a.SubAccountsSite), func(next string) {
 					a.SubAccountsSite = normalizeSiteFilter(next)
 					a.SubAccountsListState.ScrollTo(0, ui.Start)
@@ -195,6 +198,12 @@ func (a *App) renderSubscriptionAccountRow(c *ui.Context, r subAccountRow) {
 					id := "UID " + r.UID
 					if r.Site == "douyin" {
 						id = "抖音号 " + firstNonEmptyStrUI(r.UniqueID, "未知")
+					} else if r.Site == "x" {
+						if h := strings.TrimPrefix(strings.TrimSpace(r.UniqueID), "@"); h != "" {
+							id = "@" + h
+						} else {
+							id = "ID " + r.UID
+						}
 					}
 					if works := a.accountWorksText(r.Site, r.UID); works != "" {
 						id += " · " + works

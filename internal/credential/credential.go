@@ -19,14 +19,17 @@ const (
 	SiteBilibili = "bilibili"
 	SiteDouyin   = "douyin"
 	SiteWeibo    = "weibo"
+	SiteX        = "x"
 
 	BilibiliFileName = "bilibili.bin"
 	DouyinFileName   = "douyin.bin"
 	WeiboFileName    = "weibo.bin"
+	XFileName        = "x.bin"
 
 	BilibiliEntropy = "trace:bilibili:credential:v1"
 	DouyinEntropy   = "trace:douyin:credential:v1"
 	WeiboEntropy    = "trace:weibo:credential:v1"
+	XEntropy        = "trace:x:credential:v1"
 
 	// MaxCookieInputBytes is the maximum allowed byte length for manual cookie import.
 	MaxCookieInputBytes = 8192
@@ -39,6 +42,10 @@ var (
 	ErrMissingRequiredKeys      = errors.New("credential: missing required cookie key SESSDATA")
 	ErrMissingDouyinSession     = errors.New("credential: missing required cookie key sessionid")
 	ErrMissingWeiboSub          = errors.New("credential: missing required cookie key SUB")
+	ErrMissingXAuthToken        = errors.New("credential: missing required cookie key auth_token")
+	ErrMissingXCT0              = errors.New("credential: missing required cookie key ct0")
+	ErrInvalidXCT0              = errors.New("credential: invalid ct0 cookie format")
+	ErrInvalidXTWID             = errors.New("credential: invalid twid cookie format")
 	ErrNotLoggedIn              = errors.New("credential: no active credential")
 	ErrUnknownSite              = errors.New("credential: unsupported site")
 )
@@ -232,7 +239,12 @@ func OpenWeibo(path string) (*Store, string, error) {
 	return openWithConfig(SiteWeibo, []byte(WeiboEntropy), path)
 }
 
-// OpenSite loads the credential store for siteID ("bilibili", "douyin", or "weibo") from path.
+// OpenX loads the X credential store from path using XEntropy.
+func OpenX(path string) (*Store, string, error) {
+	return openWithConfig(SiteX, []byte(XEntropy), path)
+}
+
+// OpenSite loads the credential store for siteID ("bilibili", "douyin", "weibo", or "x") from path.
 func OpenSite(siteID string, path string) (*Store, string, error) {
 	switch normalizeSiteID(siteID) {
 	case SiteBilibili:
@@ -241,6 +253,8 @@ func OpenSite(siteID string, path string) (*Store, string, error) {
 		return OpenDouyin(path)
 	case SiteWeibo:
 		return OpenWeibo(path)
+	case SiteX:
+		return OpenX(path)
 	default:
 		return nil, "", ErrUnknownSite
 	}
@@ -331,7 +345,7 @@ func openWithConfig(siteID string, entropy []byte, path string) (*Store, string,
 	return s, "", nil
 }
 
-// Site returns the site identifier ("bilibili", "douyin", or "weibo") managed by this Store.
+// Site returns the site identifier ("bilibili", "douyin", "weibo", or "x") managed by this Store.
 func (s *Store) Site() string {
 	if s == nil {
 		return ""
@@ -350,6 +364,8 @@ func (s *Store) filterCookies(in map[string]string) map[string]string {
 		return CleanDouyinCookieMap(in)
 	case SiteWeibo:
 		return CleanWeiboCookieMap(in)
+	case SiteX:
+		return CleanXCookieMap(in)
 	default:
 		return map[string]string{}
 	}
@@ -366,6 +382,8 @@ func (s *Store) hasRequiredCookies(cookies map[string]string) bool {
 		return hasDouyinSession(cookies)
 	case SiteWeibo:
 		return hasWeiboSession(cookies)
+	case SiteX:
+		return hasXSession(cookies)
 	default:
 		return false
 	}
@@ -382,6 +400,8 @@ func (s *Store) orderedCookieKeys() []string {
 		return AllowedDouyinCookieKeys
 	case SiteWeibo:
 		return AllowedWeiboCookieKeys
+	case SiteX:
+		return AllowedXCookieKeys
 	default:
 		return nil
 	}
@@ -402,6 +422,12 @@ func (s *Store) Renewal() RenewalInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	switch s.site {
+	case SiteX:
+		return RenewalInfo{
+			Site:      SiteX,
+			Available: false,
+			Reason:    XManualRenewalUnavailableReason,
+		}
 	case SiteWeibo:
 		return RenewalInfo{
 			Site:      SiteWeibo,
@@ -797,7 +823,7 @@ func isNonSecretCookieValue(key, val string) bool {
 }
 
 // RedactString replaces any stored cookie values or refresh tokens present in in with [REDACTED].
-// For Weibo stores, it also scrubs Weibo sensitive field key=value pairs (raw and URL-encoded).
+// It also scrubs Weibo sensitive fields (for Weibo stores) and X auth/CSRF/Bearer fields across all sites.
 func (s *Store) RedactString(in string) string {
 	if in == "" {
 		return ""
@@ -806,7 +832,7 @@ func (s *Store) RedactString(in string) string {
 	if s != nil && s.site == SiteWeibo {
 		out = redactWeiboSensitiveFields(out)
 	}
-	return out
+	return redactXSensitiveFields(out)
 }
 
 func redactWithSecrets(in string, secrets []string) string {

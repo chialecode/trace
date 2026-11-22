@@ -77,6 +77,7 @@ type pendingUpdateRow struct {
 // watermarkTracker shares pinned-aware baseline & incremental watermark
 // tracking across both Bilibili and cross-site fetchers (INV-12).
 type watermarkTracker struct {
+	siteID          site.ID
 	bestNonPinnedID string
 	bestNonPinnedTs int64
 	bestPinnedID    string
@@ -84,24 +85,77 @@ type watermarkTracker struct {
 	baselinePinned  []string
 }
 
+func compareUint64ID(a, b string) (int, bool) {
+	av, errA := strconv.ParseUint(strings.TrimSpace(a), 10, 64)
+	bv, errB := strconv.ParseUint(strings.TrimSpace(b), 10, 64)
+	if errA != nil || errB != nil {
+		return 0, false
+	}
+	switch {
+	case av < bv:
+		return -1, true
+	case av > bv:
+		return 1, true
+	default:
+		return 0, true
+	}
+}
+
+func isNewerWatermarkCandidate(siteID site.ID, candID string, candTs int64, curID string, curTs int64) bool {
+	if siteID == site.X {
+		if strings.TrimSpace(candID) == "" {
+			return false
+		}
+		if strings.TrimSpace(curID) == "" {
+			return true
+		}
+		if cmp, ok := compareUint64ID(candID, curID); ok {
+			return cmp > 0
+		}
+		return compareNumericID(candID, curID) > 0
+	}
+	return candTs > curTs || (candTs == curTs && compareNumericID(candID, curID) > 0)
+}
+
 func (w *watermarkTracker) observe(id string, pubTs int64, isPinned, isBaseline bool) {
 	if isPinned {
 		if isBaseline {
 			w.baselinePinned = append(w.baselinePinned, id)
 		}
-		if pubTs > w.bestPinnedTs || (pubTs == w.bestPinnedTs && compareNumericID(id, w.bestPinnedID) > 0) {
+		if isNewerWatermarkCandidate(w.siteID, id, pubTs, w.bestPinnedID, w.bestPinnedTs) {
 			w.bestPinnedTs = pubTs
 			w.bestPinnedID = id
 		}
 		return
 	}
-	if pubTs > w.bestNonPinnedTs || (pubTs == w.bestNonPinnedTs && compareNumericID(id, w.bestNonPinnedID) > 0) {
+	if isNewerWatermarkCandidate(w.siteID, id, pubTs, w.bestNonPinnedID, w.bestNonPinnedTs) {
 		w.bestNonPinnedTs = pubTs
 		w.bestNonPinnedID = id
 	}
 }
 
 func (w *watermarkTracker) apply(accState *AccountState, isBaseline bool) (updatedTs int64, updatedID string) {
+	if w.siteID == site.X {
+		if isBaseline {
+			if w.bestNonPinnedID != "" {
+				accState.NewestTs = w.bestNonPinnedTs
+				accState.NewestID = w.bestNonPinnedID
+				return w.bestNonPinnedTs, w.bestNonPinnedID
+			}
+			if w.bestPinnedID != "" {
+				accState.NewestTs = w.bestPinnedTs
+				accState.NewestID = w.bestPinnedID
+				return w.bestPinnedTs, w.bestPinnedID
+			}
+			return 0, ""
+		}
+		if w.bestNonPinnedID != "" && isNewerWatermarkCandidate(site.X, w.bestNonPinnedID, w.bestNonPinnedTs, accState.NewestID, accState.NewestTs) {
+			accState.NewestTs = w.bestNonPinnedTs
+			accState.NewestID = w.bestNonPinnedID
+			return w.bestNonPinnedTs, w.bestNonPinnedID
+		}
+		return 0, ""
+	}
 	if isBaseline {
 		if w.bestNonPinnedTs > 0 {
 			accState.NewestTs = w.bestNonPinnedTs
@@ -331,7 +385,7 @@ func (m *Manager) checkFetcherAccount(
 
 	var pendingFeed []library.FeedEntry
 	var pendingItems []pendingUpdateRow
-	var wm watermarkTracker
+	wm := watermarkTracker{siteID: siteID}
 
 	lastHasMore := false
 
@@ -360,6 +414,16 @@ func (m *Manager) checkFetcherAccount(
 
 		for _, post := range page.Posts {
 			postID := strings.TrimSpace(post.ID)
+			if siteID == site.X {
+				if isPromotedXPost(post) {
+					continue
+				}
+				normID, idErr := site.NormalizeUID(site.X, postID)
+				if idErr != nil {
+					continue
+				}
+				postID = normID
+			}
 			if postID == "" || seenIDs[postID] {
 				continue
 			}
@@ -368,7 +432,7 @@ func (m *Manager) checkFetcherAccount(
 			isNonMonotonic := post.IsTop || post.IsFastRetweet
 			isBaselinePinned := !isBaseline && m.wasPinnedOnBaseline(acc.Site, acc.UID, postID)
 			if !isBaseline && !isNonMonotonic {
-				if isBaselinePinned || postAtOrBeforeWatermark(postID, post.PubTs, accState) {
+				if isBaselinePinned || postAtOrBeforeWatermarkForSite(siteID, postID, post.PubTs, accState) {
 					reachedBaseline = true
 					break
 				}
@@ -376,7 +440,7 @@ func (m *Manager) checkFetcherAccount(
 
 			wm.observe(postID, post.PubTs, isNonMonotonic, isBaseline)
 
-			normType := normalizeFetcherPostType(post.Type)
+			normType := normalizeSitePostType(siteID, post.Type)
 			if siteID == site.Weibo && post.IsFastRetweet {
 				normType = "forward"
 			}
@@ -399,7 +463,7 @@ func (m *Manager) checkFetcherAccount(
 				if isBaselinePinned {
 					continue
 				}
-				if isNonMonotonic && postAtOrBeforeWatermark(postID, post.PubTs, accState) {
+				if isNonMonotonic && postAtOrBeforeWatermarkForSite(siteID, postID, post.PubTs, accState) {
 					continue
 				}
 				pendingItems = append(pendingItems, pendingUpdateRow{
@@ -433,9 +497,11 @@ func (m *Manager) checkFetcherAccount(
 			if nextCursor == "" || nextCursor == cursor {
 				break
 			}
-			if _, prevSince, ok1 := strings.Cut(cursor, ":"); ok1 && prevSince != "" {
-				if _, nextSince, ok2 := strings.Cut(nextCursor, ":"); ok2 && nextSince == prevSince {
-					break
+			if siteID == site.Weibo {
+				if _, prevSince, ok1 := strings.Cut(cursor, ":"); ok1 && prevSince != "" {
+					if _, nextSince, ok2 := strings.Cut(nextCursor, ":"); ok2 && nextSince == prevSince {
+						break
+					}
 				}
 			}
 		}
@@ -480,6 +546,28 @@ func (m *Manager) checkFetcherAccount(
 	return out, nil
 }
 
+func postAtOrBeforeWatermarkForSite(siteID site.ID, postID string, pubTs int64, accState *AccountState) bool {
+	if accState == nil {
+		return false
+	}
+	if accState.NewestID != "" && postID == accState.NewestID {
+		return true
+	}
+	if siteID == site.X {
+		if accState.NewestID != "" {
+			if cmp, ok := compareUint64ID(postID, accState.NewestID); ok {
+				return cmp <= 0
+			}
+			return compareNumericID(postID, accState.NewestID) <= 0
+		}
+		if accState.NewestTs > 0 && pubTs > 0 {
+			return pubTs <= accState.NewestTs
+		}
+		return false
+	}
+	return postAtOrBeforeWatermark(postID, pubTs, accState)
+}
+
 func postAtOrBeforeWatermark(postID string, pubTs int64, accState *AccountState) bool {
 	if accState == nil {
 		return false
@@ -499,6 +587,35 @@ func postAtOrBeforeWatermark(postID string, pubTs int64, accState *AccountState)
 	return false
 }
 
+func isPromotedXPost(post site.CreatorPost) bool {
+	idLower := strings.ToLower(strings.TrimSpace(post.ID))
+	if strings.HasPrefix(idLower, "promoted") {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(post.Type)) {
+	case "promoted", "ad", "advertisement":
+		return true
+	}
+	raw := strings.TrimSpace(post.Snapshot)
+	if raw != "" {
+		var meta struct {
+			Promoted         bool   `json:"promoted"`
+			IsPromoted       bool   `json:"isPromoted"`
+			EntryID          string `json:"entryId"`
+			PromotedMetadata any    `json:"promotedMetadata"`
+		}
+		if json.Unmarshal([]byte(raw), &meta) == nil {
+			if meta.Promoted || meta.IsPromoted || meta.PromotedMetadata != nil {
+				return true
+			}
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(meta.EntryID)), "promoted") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func fetcherPostFeedKindAndURL(siteID site.ID, uid, postID, normType, rawSnapshot string) (feedKind, canonicalURL string) {
 	switch siteID {
 	case site.Douyin:
@@ -508,6 +625,11 @@ func fetcherPostFeedKindAndURL(siteID site.ID, uid, postID, normType, rawSnapsho
 		return "video", "https://www.douyin.com/video/" + postID
 	case site.Weibo:
 		return "dynamic", weiboCanonicalPostURL(uid, postID, rawSnapshot)
+	case site.X:
+		if trimmed := strings.TrimSpace(postID); trimmed != "" {
+			return "dynamic", "https://x.com/i/web/status/" + trimmed
+		}
+		return "dynamic", ""
 	case site.Bilibili:
 		return "dynamic", "https://t.bilibili.com/" + postID
 	default:
@@ -571,6 +693,10 @@ func (m *Manager) applyPage1AuthorAndLiveHint(sub *Subscription, acc AccountRef,
 		if liveWebRID != "" && validateOptionalDouyinToken(liveWebRID, "webRid") != nil {
 			liveWebRID = ""
 		}
+	} else if siteID == site.X {
+		if handle, err := normalizeXScreenNameSnapshot(page.UniqueID); err == nil {
+			cleanUniqueID = handle
+		}
 	}
 
 	updatedAcc := acc
@@ -589,6 +715,8 @@ func (m *Manager) applyPage1AuthorAndLiveHint(sub *Subscription, acc AccountRef,
 				if liveWebRID != "" {
 					sub.Accounts[i].WebRID = liveWebRID
 				}
+			} else if siteID == site.X && cleanUniqueID != "" {
+				sub.Accounts[i].UniqueID = cleanUniqueID
 			}
 			updatedAcc = sub.Accounts[i]
 		}
@@ -685,6 +813,24 @@ func normalizeDynamicType(rawType string) string {
 	}
 }
 
+func normalizeSitePostType(siteID site.ID, raw string) string {
+	if siteID == site.X {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "forward", "retweet", "quote", "repost":
+			return "forward"
+		case "video":
+			return "video"
+		case "draw", "note", "image", "image_note", "photo", "gif", "animated_gif", "mixed":
+			return "draw"
+		case "word", "text", "poll", "card", "article", "other", "":
+			return "word"
+		default:
+			return "word"
+		}
+	}
+	return normalizeFetcherPostType(raw)
+}
+
 func normalizeFetcherPostType(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "video":
@@ -716,7 +862,7 @@ func sanitizeSnapshotJSON(siteID site.ID, raw string, post site.CreatorPost) str
 	fallback := map[string]any{
 		"id":    post.ID,
 		"pubTs": post.PubTs,
-		"type":  normalizeFetcherPostType(post.Type),
+		"type":  normalizeSitePostType(siteID, post.Type),
 		"title": post.Title,
 	}
 	if cleanCover := sanitizeAccountFace(siteID, post.CoverURL); cleanCover != "" {
@@ -734,6 +880,9 @@ func scrubSignedValues(siteID site.ID, v any) any {
 			if siteID == site.Weibo && isWeiboEphemeralSnapshotKey(k) {
 				continue
 			}
+			if siteID == site.X && isXEphemeralSnapshotKey(k) {
+				continue
+			}
 			out[k] = scrubSignedValues(siteID, elem)
 		}
 		return out
@@ -748,10 +897,45 @@ func scrubSignedValues(siteID site.ID, v any) any {
 		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "//") {
 			return sanitizeAccountFace(siteID, val)
 		}
+		if siteID == site.X && hasXSecretMarker(lower) {
+			return ""
+		}
 		return val
 	default:
 		return v
 	}
+}
+
+func hasXSecretMarker(lower string) bool {
+	for _, marker := range []string{
+		"auth_token=", "auth_token%3d",
+		"ct0=", "ct0%3d",
+		"kdt=", "kdt%3d",
+		"x-csrf-token",
+		"authorization: bearer", "authorization:bearer",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isXEphemeralSnapshotKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "videourl", "video_url", "videourls", "video_urls",
+		"videoinfo", "video_info", "variants", "streams",
+		"streamurl", "stream_url", "hlsurl", "hls_url", "m3u8url", "m3u8_url",
+		"mp4url", "mp4_url", "playbackurl", "playback_url",
+		"gifurl", "gif_url",
+		"stats", "favoritecount", "favorite_count",
+		"retweetcount", "retweet_count", "replycount", "reply_count",
+		"quotecount", "quote_count", "bookmarkcount", "bookmark_count",
+		"viewcount", "view_count", "views",
+		"cookie", "cookies", "auth_token", "ct0", "authorization", "bearer":
+		return true
+	}
+	return false
 }
 
 func isWeiboEphemeralSnapshotKey(key string) bool {

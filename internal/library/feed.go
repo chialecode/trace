@@ -160,12 +160,12 @@ func (s *Store) ListItems(filter FeedFilter) ([]ItemMetadata, error) {
 	var args []any
 	switch filter.Kind {
 	case "image":
-		clauses = append(clauses, "(EXISTS (SELECT 1 FROM json_each(json_data, '$.media') WHERE json_extract(value, '$.role') = 'image') OR EXISTS (SELECT 1 FROM json_each(json_data, '$.notePages') WHERE json_extract(value, '$.kind') IN ('image', 'motion')))")
+		clauses = append(clauses, "(EXISTS (SELECT 1 FROM json_each(json_data, '$.media') WHERE json_extract(value, '$.role') = 'image' OR COALESCE(json_extract(value, '$.gif'), 0) = 1) OR EXISTS (SELECT 1 FROM json_each(json_data, '$.notePages') WHERE json_extract(value, '$.kind') IN ('image', 'motion') OR COALESCE(json_extract(value, '$.gif'), 0) = 1))")
 		if filter.ExcludeForward {
 			clauses = append(clauses, "NOT "+forwardContentSQL)
 		}
 	case "video":
-		clauses = append(clauses, "(kind = 'video' OR EXISTS (SELECT 1 FROM json_each(json_data, '$.media') WHERE json_extract(value, '$.role') = 'video') OR EXISTS (SELECT 1 FROM json_each(json_data, '$.notePages') WHERE json_extract(value, '$.kind') = 'video'))")
+		clauses = append(clauses, "(kind = 'video' OR EXISTS (SELECT 1 FROM json_each(json_data, '$.media') WHERE json_extract(value, '$.role') = 'video' AND COALESCE(json_extract(value, '$.gif'), 0) = 0) OR EXISTS (SELECT 1 FROM json_each(json_data, '$.notePages') WHERE json_extract(value, '$.kind') = 'video' AND COALESCE(json_extract(value, '$.gif'), 0) = 0))")
 		if filter.ExcludeForward {
 			clauses = append(clauses, "NOT "+forwardContentSQL)
 		}

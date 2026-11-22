@@ -72,6 +72,12 @@ func cloneItemMetadataSlices(meta ItemMetadata) ItemMetadata {
 		}
 		meta.Origin = &o
 	}
+	if len(meta.Thread) > 0 {
+		meta.Thread = append([]ItemThreadPart(nil), meta.Thread...)
+		for i := range meta.Thread {
+			meta.Thread[i].MediaIndexes = append([]int(nil), meta.Thread[i].MediaIndexes...)
+		}
+	}
 	if meta.Live != nil {
 		lv := *meta.Live
 		lv.Segments = append([]LiveSegmentInfo(nil), lv.Segments...)
@@ -130,8 +136,13 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 		if idx, exists := have[key]; !exists {
 			have[key] = len(out.Media)
 			out.Media = append(out.Media, m)
-		} else if !out.Media[idx].FromOrigin && m.FromOrigin {
-			out.Media[idx].FromOrigin = true
+		} else {
+			if !out.Media[idx].FromOrigin && m.FromOrigin {
+				out.Media[idx].FromOrigin = true
+			}
+			if !out.Media[idx].GIF && m.GIF {
+				out.Media[idx].GIF = true
+			}
 		}
 	}
 
@@ -198,6 +209,9 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 		if !dst.FromOrigin && src.FromOrigin {
 			dst.FromOrigin = true
 		}
+		if !dst.GIF && src.GIF {
+			dst.GIF = true
+		}
 		if dst.VideoInfo == nil && src.VideoInfo != nil {
 			vi := *src.VideoInfo
 			dst.VideoInfo = &vi
@@ -246,6 +260,12 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 		c := *imported.Card
 		out.Card = &c
 	}
+	if len(out.Thread) == 0 && len(imported.Thread) > 0 {
+		out.Thread = append([]ItemThreadPart(nil), imported.Thread...)
+		for i := range out.Thread {
+			out.Thread[i].MediaIndexes = append([]int(nil), out.Thread[i].MediaIndexes...)
+		}
+	}
 	if imported.Origin != nil {
 		if out.Origin == nil {
 			o := *imported.Origin
@@ -272,6 +292,9 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 			}
 			if out.Origin.Author.Site == "" {
 				out.Origin.Author.Site = imported.Origin.Author.Site
+			}
+			if out.Origin.Author.UniqueID == "" {
+				out.Origin.Author.UniqueID = imported.Origin.Author.UniqueID
 			}
 			if out.Origin.Author.Name == "" {
 				out.Origin.Author.Name = imported.Origin.Author.Name
@@ -409,6 +432,9 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 			}
 			if imported.Live.StartedAt != "" && (lv.StartedAt == "" || imported.Live.StartedAt < lv.StartedAt) {
 				lv.StartedAt = imported.Live.StartedAt
+			}
+			if imported.Live.LastSequenceAt != "" && (lv.LastSequenceAt == "" || imported.Live.LastSequenceAt > lv.LastSequenceAt) {
+				lv.LastSequenceAt = imported.Live.LastSequenceAt
 			}
 			lv.PendingFile, lv.PendingBytes, lv.PendingDuration = "", 0, 0
 			out.Live = &lv

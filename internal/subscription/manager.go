@@ -195,12 +195,14 @@ type Manager struct {
 	onAuthorAvatar         func(siteID, uid, rawFace string)
 	siteLiveCheck          func(ctx context.Context, accounts []AccountRef) error
 	sleepFunc              func(ctx context.Context, d time.Duration) error
+	rateLimitJitterFunc    func() time.Duration
 	siteIntervals          map[string]time.Duration
 	accountIntervalTouched bool
 
 	accountInterval      time.Duration
 	corruptRecovered     bool
 	duplicateAccountWarn bool
+	maxSchemaVersion     int
 
 	checking    bool
 	checkCancel context.CancelFunc
@@ -248,21 +250,22 @@ func NewManagerWithUpdatesDB(
 		updatesDB = db
 	}
 	m := &Manager{
-		db:                 db,
-		updatesDB:          updatesDB,
-		subsPath:           subsPath,
-		lib:                lib,
-		dl:                 dl,
-		client:             client,
-		subSettings:        subSettings,
-		onEvent:            onEvent,
-		nowFunc:            time.Now,
-		fetchers:           make(map[site.ID]site.SubscriptionFetcher),
-		autoCacheEnqueuers: make(map[site.ID]AutoCacheEnqueueFunc),
-		sleepFunc:          defaultSubscriptionSleep,
-		siteIntervals:      make(map[string]time.Duration),
-		accountInterval:    DefaultBilibiliAccountInterval,
-		schedWake:          make(chan struct{}, 1),
+		db:                  db,
+		updatesDB:           updatesDB,
+		subsPath:            subsPath,
+		lib:                 lib,
+		dl:                  dl,
+		client:              client,
+		subSettings:         subSettings,
+		onEvent:             onEvent,
+		nowFunc:             time.Now,
+		fetchers:            make(map[site.ID]site.SubscriptionFetcher),
+		autoCacheEnqueuers:  make(map[site.ID]AutoCacheEnqueueFunc),
+		sleepFunc:           defaultSubscriptionSleep,
+		rateLimitJitterFunc: defaultRateLimitJitter,
+		siteIntervals:       make(map[string]time.Duration),
+		accountInterval:     DefaultBilibiliAccountInterval,
+		schedWake:           make(chan struct{}, 1),
 	}
 	if err := m.initSchema(); err != nil {
 		return nil, err

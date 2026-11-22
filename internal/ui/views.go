@@ -74,6 +74,7 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 					if a.CurrentRoute == RouteVideo || a.CurrentRoute == RouteUser ||
 						a.CurrentRoute == RouteDouyinWork || a.CurrentRoute == RouteDouyinUser ||
 						a.CurrentRoute == RouteWeiboPost || a.CurrentRoute == RouteWeiboUser ||
+						a.CurrentRoute == RouteXPost || a.CurrentRoute == RouteXUser ||
 						a.CurrentRoute == RouteLibraryItem ||
 						(a.CurrentRoute == RouteLibrary && a.Transfer.ImportPage) ||
 						(a.CurrentRoute == RouteSubscriptions && a.SubDetailOpen) ||
@@ -209,6 +210,11 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 		a.renderWeiboPostRoute(c, winH)
 	case RouteWeiboUser:
 		a.renderWeiboUserRoute(c)
+	case RouteXPost:
+		_, winH := c.Size()
+		a.renderXPostRoute(c, winH)
+	case RouteXUser:
+		a.renderXUserRoute(c)
 	case RouteLibrary:
 		a.renderLibraryRoute(c)
 	case RouteLibraryItem:
@@ -308,6 +314,16 @@ func (a *App) routeTitle() string {
 			return a.CurrentWeiboUser.ScreenName
 		}
 		return "微博用户"
+	case RouteXPost:
+		return "帖子"
+	case RouteXUser:
+		if a.Opening != nil {
+			return firstNonEmptyStrUI(a.Opening.AuthorName, "X 用户")
+		}
+		if a.CurrentXUser != nil {
+			return firstNonEmptyStrUI(a.CurrentXUser.Name, a.CurrentXUser.ScreenName, "X 用户")
+		}
+		return "X 用户"
 	case RouteLibrary:
 		if a.Transfer.ImportPage {
 			return "导入"
@@ -321,6 +337,9 @@ func (a *App) routeTitle() string {
 			case "note":
 				return "图文"
 			case "dynamic":
+				if normalizeSiteIDUI(a.CurrentLibraryDetail.Site) == "x" {
+					return "帖子"
+				}
 				if normalizeSiteIDUI(a.CurrentLibraryDetail.Site) == "weibo" {
 					return "微博"
 				}
@@ -341,6 +360,8 @@ func (a *App) routeTitle() string {
 			return "登录抖音"
 		case "weibo":
 			return "登录微博"
+		case "x":
+			return "登录 X"
 		default:
 			return "登录哔哩哔哩"
 		}
@@ -476,13 +497,15 @@ func (a *App) renderQuickParseBox(c *ui.Context, inputLabel string) {
 }
 
 // finishTaskAction shows a sanitized failed task action and logs the raw error.
+// It refreshes only the task & queue lists rather than triggering a full RefreshData.
 func (a *App) finishTaskAction(err error) {
 	a.TaskActionError = ""
 	if err != nil {
 		a.backend.LogUserError(err)
 		a.TaskActionError = "操作没有完成：" + userErrorText(err)
 	}
-	a.RefreshData()
+	a.cacheStateRev++
+	a.refreshTasks()
 }
 
 // renderOpening shows the page of a link being opened with what the clicked

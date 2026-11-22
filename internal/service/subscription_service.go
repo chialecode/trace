@@ -10,6 +10,7 @@ import (
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/site/weibo"
+	"github.com/chialecode/trace/internal/site/x"
 	"github.com/chialecode/trace/internal/subscription"
 )
 
@@ -270,6 +271,32 @@ func (b *Backend) PreviewAccount(ctx context.Context, input string) (subscriptio
 		}
 		return b.subs.PreviewResolvedAccount(acc)
 
+	case site.X:
+		target, rErr := b.x.ResolveLink(ctx, normalized)
+		if rErr != nil {
+			return subscription.AccountRef{}, nil, rErr
+		}
+		if target.Kind != "user" {
+			return subscription.AccountRef{}, nil, &site.Error{
+				Site:    site.X,
+				Kind:    site.ErrKindBadRequest,
+				Message: "请粘贴 X 用户主页链接或分享文本",
+			}
+		}
+		uv, uErr := b.XUser(ctx, firstNonEmpty(target.AuthorUID, target.ID))
+		if uErr != nil {
+			return subscription.AccountRef{}, nil, uErr
+		}
+		acc := subscription.AccountRef{
+			Site:     string(site.X),
+			UID:      uv.RestID,
+			UniqueID: uv.ScreenName,
+			Name:     firstNonEmpty(uv.Name, uv.ScreenName, uv.RestID),
+			Face:     uv.AvatarURL,
+			AddedAt:  time.Now().UTC().Format(time.RFC3339),
+		}
+		return b.subs.PreviewResolvedAccount(acc)
+
 	case site.Bilibili:
 		target, err := b.bili.ResolveLink(ctx, normalized)
 		if err != nil {
@@ -410,6 +437,8 @@ func (b *Backend) SchedulerStatuses() map[string]SiteSchedulerStatus {
 			label = "抖音"
 		case site.Weibo:
 			label = "微博"
+		case site.X:
+			label = "X"
 		default:
 			label = id.DisplayName()
 		}
@@ -425,7 +454,11 @@ func (b *Backend) SchedulerStatuses() map[string]SiteSchedulerStatus {
 				st.BackingOff = true
 				st.CurrentInterval = lvlText
 				st.BackoffUntil = until.UTC().Format("2006-01-02T15:04:05Z07:00")
-				st.BackoffSummary = fmt.Sprintf("%s：因风控放慢到 %s，%s 恢复", label, lvlText, until.Local().Format("1 月 2 日 15:04"))
+				if id == site.X && raw.LastStopReason == site.ErrKindRateLimited {
+					st.BackoffSummary = fmt.Sprintf("%s：触发限流暂停，%s 恢复", label, until.Local().Format("1 月 2 日 15:04"))
+				} else {
+					st.BackoffSummary = fmt.Sprintf("%s：因风控放慢到 %s，%s 恢复", label, lvlText, until.Local().Format("1 月 2 日 15:04"))
+				}
 			}
 		}
 		out[key] = st
@@ -556,6 +589,12 @@ func (b *Backend) FollowingGroups(ctx context.Context, siteID string) ([]Followi
 			})
 		}
 		return out, nil
+
+	case site.X:
+		if err := b.requireSiteLogin(site.X); err != nil {
+			return nil, err
+		}
+		return nil, nil
 
 	case site.Douyin:
 		return nil, &site.Error{
@@ -708,6 +747,24 @@ func (b *Backend) FollowingCreatorsPage(ctx context.Context, siteID, groupID str
 			GroupsEnabled: accountWeiboFollowGroupsEnabled,
 		}, nil
 
+	case site.X:
+		if err := b.requireSiteLogin(site.X); err != nil {
+			return FollowingCreatorsPageDTO{}, err
+		}
+		cursor := ""
+		if page > 1 {
+			cursor = b.getXFollowingCursor(page)
+			if cursor == "" {
+				return FollowingCreatorsPageDTO{
+					Site:          string(site.X),
+					Page:          page,
+					HasMore:       false,
+					GroupsEnabled: false,
+				}, nil
+			}
+		}
+		return b.xFollowingCreatorsPage(ctx, cursor, page, page <= 1)
+
 	case site.Douyin:
 		return FollowingCreatorsPageDTO{}, &site.Error{
 			Site:        site.Douyin,
@@ -719,6 +776,93 @@ func (b *Backend) FollowingCreatorsPage(ctx context.Context, siteID, groupID str
 	default:
 		return FollowingCreatorsPageDTO{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点标识: " + strings.TrimSpace(siteID)}
 	}
+}
+
+// FollowingCreatorsPageWithCursor returns one page of followed creators using an opaque string cursor
+// (used directly by X GraphQL Following pagination; Bilibili/Weibo parse an optional decimal page number).
+func (b *Backend) FollowingCreatorsPageWithCursor(ctx context.Context, siteID, groupID, cursor string) (FollowingCreatorsPageDTO, error) {
+	id, err := normalizeSiteID(siteID)
+	if err != nil {
+		return FollowingCreatorsPageDTO{}, err
+	}
+	cleanCursor := strings.TrimSpace(cursor)
+	if id == site.X {
+		if err := b.requireSiteLogin(site.X); err != nil {
+			return FollowingCreatorsPageDTO{}, err
+		}
+		pageNum := 1
+		if cleanCursor != "" {
+			pageNum = 0
+		}
+		return b.xFollowingCreatorsPage(ctx, cleanCursor, pageNum, cleanCursor == "")
+	}
+	page := 1
+	if cleanCursor != "" {
+		if p, pErr := strconv.Atoi(cleanCursor); pErr == nil && p > 0 {
+			page = p
+		}
+	}
+	return b.FollowingCreatorsPage(ctx, siteID, groupID, page)
+}
+
+func (b *Backend) xFollowingCreatorsPage(ctx context.Context, cursor string, page int, reset bool) (FollowingCreatorsPageDTO, error) {
+	selfUID := ""
+	if b.xCred != nil {
+		selfUID = strings.TrimSpace(b.xCred.Status().UID)
+	}
+	if selfUID == "" {
+		return FollowingCreatorsPageDTO{}, &site.Error{
+			Site:    site.X,
+			Kind:    site.ErrKindAuthRequired,
+			Message: "缺少登录账号的 X rest_id，请重新登录 X",
+		}
+	}
+	seen, gen := b.snapshotXSeenMap(&b.xFollowingSeen, "all", reset)
+	res, err := b.x.ListFollowing(ctx, selfUID, cursor, seen)
+	if err != nil {
+		return FollowingCreatorsPageDTO{}, err
+	}
+	b.mergeXSeenMap(&b.xFollowingSeen, "all", gen, seen)
+	items := make([]FollowingCreatorDTO, 0, len(res.Users))
+	for _, u := range res.Users {
+		dto := b.mapXFollowingCreatorDTO(u)
+		items = append(items, dto)
+	}
+	nextPage := 0
+	if res.HasMore && res.NextCursor != "" && page > 0 {
+		nextPage = page + 1
+		b.setXFollowingCursor(nextPage, res.NextCursor, gen, reset)
+	} else if reset {
+		b.setXFollowingCursor(0, "", gen, true)
+	}
+	return FollowingCreatorsPageDTO{
+		Site:          string(site.X),
+		Items:         items,
+		Page:          page,
+		NextPage:      nextPage,
+		NextCursor:    res.NextCursor,
+		HasMore:       res.HasMore && strings.TrimSpace(res.NextCursor) != "",
+		GroupsEnabled: false,
+	}, nil
+}
+
+func (b *Backend) mapXFollowingCreatorDTO(u x.FollowingUser) FollowingCreatorDTO {
+	dto := FollowingCreatorDTO{
+		Site:     string(site.X),
+		UID:      u.RestID,
+		UniqueID: u.ScreenName,
+		Name:     firstNonEmpty(u.Name, u.ScreenName, u.RestID),
+		Face:     u.AvatarURL,
+		Sign:     firstLine(u.Description),
+	}
+	if b.subs != nil {
+		if owner, owned := b.subs.OwnerOf(string(site.X), u.RestID); owned {
+			dto.Subscribed = true
+			dto.OwnerSubID = owner.ID
+			dto.OwnerSubName = owner.Name
+		}
+	}
+	return dto
 }
 
 // ImportFollowingCreators atomically imports selected creators for siteID into subscriptions
@@ -742,11 +886,12 @@ func (b *Backend) ImportFollowingCreators(siteID string, creators []FollowingCre
 			continue
 		}
 		refs = append(refs, subscription.AccountRef{
-			Site:    string(id),
-			UID:     uid,
-			Name:    strings.TrimSpace(c.Name),
-			Face:    strings.TrimSpace(c.Face),
-			AddedAt: nowStr,
+			Site:     string(id),
+			UID:      uid,
+			UniqueID: strings.TrimSpace(c.UniqueID),
+			Name:     strings.TrimSpace(c.Name),
+			Face:     strings.TrimSpace(c.Face),
+			AddedAt:  nowStr,
 		})
 	}
 	res, err := b.subs.ImportAccountRefs(refs, rules)

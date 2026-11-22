@@ -112,7 +112,7 @@ func (a *App) renderTasksQueueView(c *ui.Context) {
 			if len(a.CacheQueue) == 0 {
 				ui.Column(c).FillWidth().Padding(40, 16).AlignItems(ui.Center).Gap(8).Children(func() {
 					ui.Text(c, "当前没有缓存队列任务").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-					ui.Text(c, "在 UP 主、抖音作者或微博博主主页右上角点「⋯ → 全部缓存」，会在后台按安全节奏慢慢缓存全部内容。").
+					ui.Text(c, "在 UP 主、抖音作者、微博博主或 X 用户主页右上角点「⋯ → 全部缓存」，会在后台按安全节奏慢慢缓存全部内容。").
 						FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
 				})
 				return
@@ -297,7 +297,7 @@ func (a *App) renderCacheQueueRecent(c *ui.Context, cur service.CacheQueueTask) 
 				}
 				row.Children(func() {
 					coverKey, coverRel := a.queueRecentCover(ri.ItemKey)
-					a.renderMediaThumb(c, coverKey, coverRel, ri.Title, "", "", false, 72, 44)
+					a.renderMediaThumbEdge(c, coverKey, coverRel, avatarThumbEdge, ri.Title, "", "", false, 72, 44)
 					ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 						ui.Text(c, firstNonEmptyStrUI(ri.Title, ri.ItemKey)).FontSize(13).FontWeight(500).TextColor(ColorTextMain).SingleLine()
 						if ts := formatRFC3339Clock(ri.CachedAt, false); ts != "" {
@@ -314,29 +314,32 @@ func (a *App) renderCacheQueueRecent(c *ui.Context, cur service.CacheQueueTask) 
 
 // queueRecentCover is the item and file that picture a cached item in the
 // queue's recent list or downloads list: its cover or first image, else the
-// cover of the video a dynamic refers to (cached per cacheStateRev).
+// cover of the video a dynamic refers to (cached per libraryRev, capped at 500
+// entries, and queried via GetLibraryItemMetaOnly to avoid disk EvalSymlinks).
 func (a *App) queueRecentCover(itemKey string) (string, string) {
 	if itemKey == "" || a.backend == nil {
 		return itemKey, ""
 	}
-	if a.queueCoversRev != a.cacheStateRev {
-		a.queueCovers, a.queueCoversRev = nil, a.cacheStateRev
+	if a.queueCoversRev != a.libraryRev {
+		a.queueCovers, a.queueCoversRev = nil, a.libraryRev
 	}
 	if got, ok := a.queueCovers[itemKey]; ok {
 		return got[0], got[1]
 	}
 	if a.queueCovers == nil {
 		a.queueCovers = make(map[string][2]string)
+	} else if len(a.queueCovers) >= 500 {
+		clear(a.queueCovers)
 	}
 	got := [2]string{itemKey, ""}
-	if item, ok, err := a.backend.GetLibraryItem(itemKey); err == nil && ok {
+	if item, ok, err := a.backend.GetLibraryItemMetaOnly(itemKey); err == nil && ok {
 		got[1] = libraryItemCoverRel(item)
 		for _, vid := range item.Videos {
 			if got[1] != "" {
 				break
 			}
 			vKey := library.CanonicalItemKey(item.Site, "video", vid)
-			if v, ok, err := a.backend.GetLibraryItem(vKey); err == nil && ok {
+			if v, ok, err := a.backend.GetLibraryItemMetaOnly(vKey); err == nil && ok {
 				if rel := libraryItemCoverRel(v); rel != "" {
 					got = [2]string{vKey, rel}
 				}

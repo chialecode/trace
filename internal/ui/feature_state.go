@@ -32,13 +32,14 @@ type featureState struct {
 	livePreviewMuted    bool
 
 	// Cached TaskDetail for the currently expanded download task.
-	taskDetailID     string
-	taskDetailRev    int
-	taskDetailStatus string
-	taskDetailBytes  int64
-	taskDetailFileN  int
-	taskDetail       download.TaskDetail
-	taskDetailOK     bool
+	taskDetailID        string
+	taskDetailRev       int
+	taskDetailUpdatedAt string
+	taskDetailStatus    string
+	taskDetailBytes     int64
+	taskDetailFileN     int
+	taskDetail          download.TaskDetail
+	taskDetailOK        bool
 
 	// Cached live sessions + incidents fingerprint.
 	liveSessionsHash uint64

@@ -17,6 +17,7 @@ const (
 	Bilibili ID = "bilibili"
 	Douyin   ID = "douyin"
 	Weibo    ID = "weibo"
+	X        ID = "x"
 )
 
 // Errors returned by site and account-key validation helpers.
@@ -28,12 +29,12 @@ var (
 
 // All returns all supported site identifiers in canonical UI order.
 func All() []ID {
-	return []ID{Bilibili, Douyin, Weibo}
+	return []ID{Bilibili, Douyin, Weibo, X}
 }
 
 // Valid reports whether id is a known site identifier.
 func (id ID) Valid() bool {
-	return id == Bilibili || id == Douyin || id == Weibo
+	return id == Bilibili || id == Douyin || id == Weibo || id == X
 }
 
 // ParseID normalizes a raw site string into a known ID.
@@ -45,12 +46,14 @@ func ParseID(raw string) (ID, bool) {
 		return Douyin, true
 	case Weibo:
 		return Weibo, true
+	case X:
+		return X, true
 	default:
 		return "", false
 	}
 }
 
-// DisplayName returns the user-facing Chinese label for the site.
+// DisplayName returns the user-facing label for the site.
 func (id ID) DisplayName() string {
 	switch id {
 	case Bilibili:
@@ -59,12 +62,14 @@ func (id ID) DisplayName() string {
 		return "抖音"
 	case Weibo:
 		return "微博"
+	case X:
+		return "X"
 	default:
 		return strings.TrimSpace(string(id))
 	}
 }
 
-// DisplayName returns the user-facing Chinese label for a raw site string.
+// DisplayName returns the user-facing label for a raw site string.
 func DisplayName(raw string) string {
 	if id, ok := ParseID(raw); ok {
 		return id.DisplayName()
@@ -76,6 +81,7 @@ func DisplayName(raw string) string {
 //   - bilibili: positive decimal integer mid (leading zeros stripped)
 //   - douyin: case-sensitive sec_uid preserved verbatim (including consecutive underscores)
 //   - weibo: 5..19 digit positive decimal uid (leading zeros stripped)
+//   - x: 1..20 digit positive uint64 rest_id (leading zeros stripped)
 func NormalizeUID(siteID ID, uid string) (string, error) {
 	if !siteID.Valid() {
 		return "", ErrUnknownSite
@@ -121,6 +127,21 @@ func NormalizeUID(siteID ID, uid string) (string, error) {
 		}
 		norm := strings.TrimLeft(trimmed, "0")
 		if len(norm) < 5 || len(norm) > 19 {
+			return "", ErrInvalidUID
+		}
+		return norm, nil
+
+	case X:
+		for _, r := range trimmed {
+			if r < '0' || r > '9' {
+				return "", ErrInvalidUID
+			}
+		}
+		norm := strings.TrimLeft(trimmed, "0")
+		if len(norm) == 0 || len(norm) > 20 {
+			return "", ErrInvalidUID
+		}
+		if _, err := strconv.ParseUint(norm, 10, 64); err != nil {
 			return "", ErrInvalidUID
 		}
 		return norm, nil

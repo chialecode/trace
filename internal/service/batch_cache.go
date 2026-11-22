@@ -11,6 +11,7 @@ import (
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/site/weibo"
+	"github.com/chialecode/trace/internal/site/x"
 )
 
 type queuePartEnqueuer func(ctx context.Context) ([]string, error)
@@ -97,6 +98,19 @@ func normalizeCacheQueueTarget(rawSite, rawList, rawUser string) (site.ID, strin
 		}
 		return site.Weibo, "posts", normUID, nil
 
+	case site.X:
+		if list == "" {
+			list = "posts"
+		}
+		if list != "posts" {
+			return "", "", "", &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "不支持的 X 列表类型"}
+		}
+		normUID, uerr := site.NormalizeUID(site.X, rawUser)
+		if uerr != nil {
+			return "", "", "", &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "X 用户 rest_id 无效"}
+		}
+		return site.X, "posts", normUID, nil
+
 	default:
 		return "", "", "", &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
 	}
@@ -108,6 +122,8 @@ func cacheQueueListLabel(siteID, list string) string {
 		return "作品"
 	case string(site.Weibo):
 		return "微博"
+	case string(site.X):
+		return "帖子"
 	default:
 		if list == "videos" {
 			return "投稿"
@@ -138,6 +154,10 @@ func (b *Backend) buildQueueLoadedAndPager(siteID site.ID, list, normUser string
 	case siteID == site.Weibo:
 		for _, p := range req.WeiboPosts {
 			loaded = append(loaded, b.weiboPostViewQueueCandidate(p))
+		}
+	case siteID == site.X:
+		for _, p := range req.XPosts {
+			loaded = append(loaded, b.xPostDTOQueueCandidate(p))
 		}
 	}
 	return loaded, pager, nil
@@ -263,6 +283,52 @@ func (b *Backend) buildQueuePager(siteID site.ID, list, normUser, userName strin
 			hasMore := page.HasMore && !page.BottomTipsVisible
 			if hasMore {
 				nextCursor = weibo.FormatCursor(page.NextPage, page.NextSinceID)
+				if nextCursor == "" {
+					hasMore = false
+				}
+			}
+			return out, nextCursor, hasMore, nil
+		}, nil
+
+	case siteID == site.X:
+		uid, uerr := site.NormalizeUID(site.X, normUser)
+		if uerr != nil {
+			return nil, &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "X 用户 rest_id 无效"}
+		}
+		totalFetched := 0
+		return func(ctx context.Context, cursor string) ([]queueCandidate, string, bool, error) {
+			cleanCursor := strings.TrimSpace(cursor)
+			page, err := b.x.GetUserTweets(ctx, x.UserTweetsRequest{
+				RestID:            uid,
+				Cursor:            cleanCursor,
+				CrossCheckProfile: cleanCursor == "",
+				TotalFetched:      totalFetched,
+			})
+			if err != nil {
+				return nil, "", false, err
+			}
+			totalFetched += len(page.Posts)
+			if cleanCursor == "" && page.Author != nil && page.Author.StatusesCount > 0 {
+				b.recordAccountWorks(site.X, uid, page.Author.StatusesCount)
+			}
+			if page.UncertainEmpty {
+				return nil, "", false, &site.Error{
+					Site:    site.X,
+					Kind:    site.ErrKindRiskControl,
+					Message: firstNonEmpty(page.UncertainReason, "X 返回空列表，可能被拦截或登录已失效"),
+				}
+			}
+			if page.ReachedVisibleLimit || page.BottomTipsVisible {
+				setQueueStepCompletionNote(ctx, firstNonEmpty(page.BottomTipsText, x.VisibleTimelineLimitText))
+			}
+			out := make([]queueCandidate, 0, len(page.Posts))
+			for i := range page.Posts {
+				out = append(out, b.xPostQueueCandidate(page.Posts[i]))
+			}
+			nextCursor := ""
+			hasMore := page.HasMore && !page.ReachedVisibleLimit && !page.BottomTipsVisible
+			if hasMore {
+				nextCursor = strings.TrimSpace(page.NextCursor)
 				if nextCursor == "" {
 					hasMore = false
 				}
@@ -492,6 +558,72 @@ func (b *Backend) weiboPostViewQueueCandidate(p WeiboPostView) queueCandidate {
 				taskIDs: []string{t.TaskID},
 				itemKey: firstNonEmpty(t.ItemKey, key),
 				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, title, mid)),
+			}, nil
+		},
+	}
+}
+
+func isXNonOriginalPost(isRetweet, isQuote, hasRetweeted, hasQuoted bool, ruleType string) bool {
+	return isRetweet || isQuote || hasRetweeted || hasQuoted || strings.EqualFold(strings.TrimSpace(ruleType), x.RuleTypeForward)
+}
+
+// xPostQueueCandidate converts a list-fetched X post into a cache queue candidate.
+// Full cache only caches original posts (skipping retweets and quotes) and reuses
+// the in-memory list payload to build a download plan when complete.
+func (b *Backend) xPostQueueCandidate(p x.Post) queueCandidate {
+	postCopy := p
+	id := strings.TrimSpace(postCopy.ID)
+	key := ""
+	if id != "" {
+		key = x.PostItemKey(id)
+	}
+	title := trimQueueSummaryTitle(firstNonEmpty(postCopy.Text, id))
+	nonOriginal := isXNonOriginalPost(postCopy.IsRetweet, postCopy.IsQuote, postCopy.Retweeted != nil, postCopy.Quoted != nil, postCopy.RuleType)
+	return queueCandidate{
+		key:         key,
+		title:       title,
+		uncacheable: nonOriginal || postCopy.Unavailable,
+		enqueue: func(ctx context.Context) (queueEnqueued, error) {
+			var planPtr *download.WorkDownloadPlan
+			if canReuseXPostPlan(&postCopy, false) {
+				if built, err := b.buildXWorkPlanFromPost(&postCopy); err == nil {
+					planPtr = &built
+				}
+			}
+			t, err := b.enqueueXPostWithSource(ctx, id, "queue", nil, planPtr)
+			if err != nil {
+				return queueEnqueued{}, err
+			}
+			return queueEnqueued{
+				taskIDs: []string{t.TaskID},
+				itemKey: firstNonEmpty(t.ItemKey, key),
+				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, title, id)),
+			}, nil
+		},
+	}
+}
+
+func (b *Backend) xPostDTOQueueCandidate(p XPostDTO) queueCandidate {
+	id := strings.TrimSpace(p.ID)
+	key := p.CacheKey
+	if key == "" && id != "" {
+		key = x.PostItemKey(id)
+	}
+	title := trimQueueSummaryTitle(firstNonEmpty(p.Text, id))
+	nonOriginal := isXNonOriginalPost(p.IsRetweet, p.IsQuote, p.Retweeted != nil, p.Quoted != nil, p.RuleType)
+	return queueCandidate{
+		key:         key,
+		title:       title,
+		uncacheable: nonOriginal || p.Unavailable,
+		enqueue: func(ctx context.Context) (queueEnqueued, error) {
+			t, err := b.enqueueXPostWithSource(ctx, id, "queue", nil, nil)
+			if err != nil {
+				return queueEnqueued{}, err
+			}
+			return queueEnqueued{
+				taskIDs: []string{t.TaskID},
+				itemKey: firstNonEmpty(t.ItemKey, key),
+				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, title, id)),
 			}, nil
 		},
 	}

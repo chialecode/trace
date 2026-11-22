@@ -24,6 +24,8 @@ func normalizeSiteIDUI(v string) string {
 		return "douyin"
 	case "weibo":
 		return "weibo"
+	case "x":
+		return "x"
 	default:
 		return "bilibili"
 	}
@@ -67,7 +69,8 @@ func renderSiteSmallBadgeWithDot(c *ui.Context, siteID, accessLabel string) {
 	renderSiteSmallBadge(c, siteID, accessLabel)
 }
 
-// renderThreeSegmentSiteFilter renders the 4-way "全部 / B 站 / 抖音 / 微博" switcher.
+// renderThreeSegmentSiteFilter renders the 5-way "全部 / B 站 / 抖音 / 微博 / X" switcher
+// with compact spacing so it fits cleanly inside narrow panels and 720px viewports.
 func renderThreeSegmentSiteFilter(c *ui.Context, labelPrefix, current string, onSelect func(string)) {
 	cur := normalizeSiteFilter(current)
 	opts := []struct {
@@ -78,6 +81,7 @@ func renderThreeSegmentSiteFilter(c *ui.Context, labelPrefix, current string, on
 		{"bilibili", "B 站"},
 		{"douyin", "抖音"},
 		{"weibo", "微博"},
+		{"x", "X"},
 	}
 	ui.Row(c).
 		FillWidth().
@@ -95,7 +99,7 @@ func renderThreeSegmentSiteFilter(c *ui.Context, labelPrefix, current string, on
 					Label(labelPrefix+o.Text).
 					Grow(1).
 					Basis(0).
-					Padding(5, 4).
+					Padding(5, 2).
 					Radius(6).
 					Justify(ui.Center).
 					AlignItems(ui.Center).
@@ -121,7 +125,7 @@ func renderThreeSegmentSiteFilter(c *ui.Context, labelPrefix, current string, on
 		})
 }
 
-// renderTwoSegmentLoginSiteSwitcher renders the top "哔哩哔哩 / 抖音 / 微博" switcher on /login.
+// renderTwoSegmentLoginSiteSwitcher renders the top "哔哩哔哩 / 抖音 / 微博 / X" switcher on /login.
 func renderTwoSegmentLoginSiteSwitcher(c *ui.Context, current string, onSelect func(string)) {
 	cur := normalizeSiteIDUI(current)
 	opts := []struct {
@@ -131,6 +135,7 @@ func renderTwoSegmentLoginSiteSwitcher(c *ui.Context, current string, onSelect f
 		{"bilibili", "哔哩哔哩"},
 		{"douyin", "抖音"},
 		{"weibo", "微博"},
+		{"x", "X"},
 	}
 	ui.Row(c).
 		FillWidth().
@@ -148,7 +153,7 @@ func renderTwoSegmentLoginSiteSwitcher(c *ui.Context, current string, onSelect f
 					Label("登录站点："+o.Text).
 					Grow(1).
 					Basis(0).
-					Padding(7, 10).
+					Padding(7, 8).
 					Radius(8).
 					Justify(ui.Center).
 					AlignItems(ui.Center).

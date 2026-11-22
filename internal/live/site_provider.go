@@ -23,6 +23,10 @@ const (
 	// WeiboLiveUnsupportedMessage is the user-facing notice when Weibo live
 	// status or recording is requested.
 	WeiboLiveUnsupportedMessage = "微博直播暂不支持录制"
+
+	// XLiveUnsupportedMessage is the user-facing notice when X live or Spaces
+	// status or recording is requested.
+	XLiveUnsupportedMessage = "X 直播与 Spaces 暂不支持录制"
 )
 
 func errWeiboLiveUnsupported() error {
@@ -31,6 +35,15 @@ func errWeiboLiveUnsupported() error {
 		Kind:        site.ErrKindUnavailable,
 		Unsupported: true,
 		Message:     WeiboLiveUnsupportedMessage,
+	}
+}
+
+func errXLiveUnsupported() error {
+	return &site.Error{
+		Site:        site.X,
+		Kind:        site.ErrKindUnavailable,
+		Unsupported: true,
+		Message:     XLiveUnsupportedMessage,
 	}
 }
 
@@ -56,9 +69,9 @@ type WebRIDSyncFunc func(siteID site.ID, uid, webRID string, invalidated bool)
 type SiteBackoffChecker func(siteID site.ID) (bool, time.Time)
 
 // RegisterSiteProvider registers a cross-site LiveProvider (such as Douyin or Bilibili).
-// Weibo live recording/polling is unsupported, so any Weibo provider is ignored.
+// Weibo and X live recording/polling are unsupported, so their providers are ignored.
 func (m *Manager) RegisterSiteProvider(provider site.LiveProvider) {
-	if provider == nil || provider.SiteID() == site.Weibo {
+	if provider == nil || provider.SiteID() == site.Weibo || provider.SiteID() == site.X {
 		return
 	}
 	m.mu.Lock()
@@ -147,7 +160,7 @@ func (m *Manager) hasSiteAuth(siteID site.ID) bool {
 			return checker.HasAuth()
 		}
 		return true
-	case site.Weibo:
+	case site.Weibo, site.X:
 		return false
 	default:
 		return false
@@ -209,7 +222,7 @@ func (m *Manager) syncWebRID(siteID site.ID, uid, webRID string, invalidated boo
 }
 
 // StartRecordingByKey dispatches live recording start by canonical room/account key or numeric Bilibili room ID.
-// Any Weibo key ("weibo:*") is rejected explicitly without issuing any network request.
+// Any Weibo ("weibo:*") or X ("x:*") key is rejected explicitly without issuing any network request.
 func (m *Manager) StartRecordingByKey(ctx context.Context, key string) (RoomState, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -219,6 +232,8 @@ func (m *Manager) StartRecordingByKey(ctx context.Context, key string) (RoomStat
 	switch {
 	case strings.HasPrefix(lowerKey, "weibo:"):
 		return RoomState{Site: string(site.Weibo)}, errWeiboLiveUnsupported()
+	case strings.HasPrefix(lowerKey, "x:"):
+		return RoomState{Site: string(site.X)}, errXLiveUnsupported()
 	case strings.HasPrefix(key, "douyin:live:"):
 		rid := strings.TrimSpace(strings.TrimPrefix(key, "douyin:live:"))
 		if rid == "" {
@@ -290,7 +305,7 @@ func (m *Manager) StartRecordingByKey(ctx context.Context, key string) (RoomStat
 }
 
 // StopRecordingByKey stops an active Bilibili or Douyin live recording by room key, account key, or room ID.
-// Any Weibo key ("weibo:*") is rejected explicitly without falling through to other sites.
+// Any Weibo ("weibo:*") or X ("x:*") key is rejected explicitly without falling through to other sites.
 func (m *Manager) StopRecordingByKey(key string) (RoomState, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -300,6 +315,8 @@ func (m *Manager) StopRecordingByKey(key string) (RoomState, error) {
 	switch {
 	case strings.HasPrefix(lowerKey, "weibo:"):
 		return RoomState{Site: string(site.Weibo)}, errWeiboLiveUnsupported()
+	case strings.HasPrefix(lowerKey, "x:"):
+		return RoomState{Site: string(site.X)}, errXLiveUnsupported()
 	case strings.HasPrefix(key, "douyin:live:"):
 		rest := strings.TrimSpace(strings.TrimPrefix(key, "douyin:live:"))
 		if rest == "" {
@@ -411,8 +428,8 @@ func (m *Manager) LiveCheckTimes() map[string]time.Time {
 
 // LiveCheckEvery estimates how often an auto-record account of siteID has
 // its live status checked, n being that site's auto-record accounts:
-// Bilibili checks them all each round, Douyin within its budget; Weibo and
-// unknown sites return 0 (never fall back to Bilibili).
+// Bilibili checks them all each round, Douyin within its budget; Weibo, X,
+// and unknown sites return 0 (never fall back to Bilibili).
 func (m *Manager) LiveCheckEvery(siteID site.ID, n int) time.Duration {
 	switch siteID {
 	case site.Bilibili:
@@ -421,7 +438,7 @@ func (m *Manager) LiveCheckEvery(siteID site.ID, n int) time.Duration {
 		return time.Duration(max(m.liveSettings.PollIntervalSeconds, 60)) * time.Second
 	case site.Douyin:
 		return m.DouyinLiveCheckEvery(n)
-	case site.Weibo:
+	case site.Weibo, site.X:
 		return 0
 	default:
 		return 0

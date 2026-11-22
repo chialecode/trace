@@ -111,7 +111,7 @@ type recordSession struct {
 	nextPart                 int
 	lastSequence             int64
 	hasSequence              bool
-	lastSequenceAt           time.Time // when lastSequence was written in this run; zero after a restart
+	lastSequenceAt           time.Time // wall-clock anchor for HLS lastSequence (seeded on resume; cleared on transport switch)
 	segmentDuration          float64
 	wroteMedia               bool
 	quality                  int
@@ -419,8 +419,8 @@ func (m *Manager) pollLoop(ctx context.Context) {
 							if auto {
 								hasDouyinAuto = true
 							}
-						case site.Weibo:
-							// Weibo live polling & recording are unsupported; never issue requests.
+						case site.Weibo, site.X:
+							// Weibo and X live polling & recording are unsupported; never issue requests.
 							continue
 						case "", site.Bilibili:
 							if auto {
@@ -436,7 +436,7 @@ func (m *Manager) pollLoop(ctx context.Context) {
 							continue
 						}
 					}
-					if sub.Mid > 0 {
+					if sub.Mid > 0 && (sub.Site == "" || strings.EqualFold(strings.TrimSpace(sub.Site), string(site.Bilibili))) {
 						if auto {
 							hasBiliAuto = true
 						}
@@ -683,8 +683,8 @@ func (m *Manager) CancelRecordingsForSite(siteID site.ID, reason string) {
 			}
 			session.cancel()
 		}
-	case site.Weibo:
-		// Weibo live recording is unsupported; nothing to cancel.
+	case site.Weibo, site.X:
+		// Weibo and X live recording are unsupported; nothing to cancel.
 	}
 }
 
@@ -718,8 +718,8 @@ func (m *Manager) StopForSite(siteID site.ID, reason string) {
 				waitChs = append(waitChs, session.doneCh)
 			}
 		}
-	case site.Weibo:
-		// Weibo live recording is unsupported; nothing to stop.
+	case site.Weibo, site.X:
+		// Weibo and X live recording are unsupported; nothing to stop.
 	}
 	timeout := m.finalizeTimeout
 	m.mu.Unlock()

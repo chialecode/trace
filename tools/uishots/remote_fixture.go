@@ -72,6 +72,7 @@ func shotRemoteView() *service.RemoteView {
 				{Site: "bilibili", State: remote.SiteValid, Uname: "TRACE演示账号", CookieSyncedAt: at(26 * time.Hour)},
 				{Site: "douyin", State: remote.SiteNone},
 				{Site: "weibo", State: remote.SiteValid, Uname: "TRACE微博演示账号", CookieSyncedAt: at(12 * time.Hour)},
+				{Site: "x", State: remote.SiteNone},
 			},
 			Subscriptions: remote.SubscriptionsInfo{Subscriptions: 4, Accounts: 9, SyncedAt: at(3 * time.Hour), Hash: "a1b2c3"},
 			Checks: []remote.CheckRow{
@@ -162,7 +163,16 @@ func remoteShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 			fb.remote.conn, fb.remote.view = shotRemoteConn(), shotRemoteView()
 			app.Remote.View, app.Remote.FetchedAt = fb.remote.view, time.Now()
 			settings()
-		}, RequiredLabels: []string{"同步订阅"}, ForbiddenLabels: []string{"远程错误"}},
+		}, RequiredLabels: []string{"同步订阅", "远程站点：x", "同步Cookie到远程：x"}, ForbiddenLabels: []string{"远程错误"}},
+		{Name: "settings-remote-push-x-confirm", Setup: func() {
+			reset()
+			fb.remote.conn, fb.remote.view = shotRemoteConn(), shotRemoteView()
+			app.Remote.View, app.Remote.FetchedAt = fb.remote.view, time.Now()
+			app.Remote.ConfirmPushXOpen = true
+			settings()
+		}, RequiredLabels: []string{"同步XCookie风险确认对话框", "取消同步XCookie到远程", "确认同步XCookie到远程"},
+			RequiredTexts: []string{"确认同步 X Cookie 到远程？", "在云服务器的网络上用网页 Cookie 访问 X", "本次确认仅对这一次同步生效"},
+		},
 		{Name: "settings-remote-unreachable", Setup: func() {
 			reset()
 			fb.remote.conn = shotRemoteConn()

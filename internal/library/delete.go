@@ -319,6 +319,7 @@ func (s *Store) deleteWithPlanLocked(itemKey string, deleteFiles bool) (DeletePl
 	if err := tx.Commit(); err != nil {
 		return plan, err
 	}
+	s.mutationSeq++
 
 	// 3. Delete only registered files one by one, then remove empty directories bottom-up (NEVER os.RemoveAll).
 	if deleteFiles {

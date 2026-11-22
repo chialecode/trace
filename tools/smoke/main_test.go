@@ -20,10 +20,10 @@ func TestScanDirForSecrets(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, "credentials"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "logs", "app.log"), []byte("2026-11-21T12:00:00Z INFO startup ok site=douyin site=weibo state=logged_in\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "logs", "app.log"), []byte("2026-11-22T12:00:00Z INFO startup ok site=douyin site=weibo site=x state=logged_in\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "ui-state.json"), []byte(`{"activeRoute":"/home","siteFilter":"weibo"}`), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "ui-state.json"), []byte(`{"activeRoute":"/home","siteFilter":"x"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(dir, "credentials", "douyin.bin"), []byte{0x01, 0x00, 0xfe, 0x99, 0x42, 0xaa, 0xbb, 0xcc}, 0o600); err != nil {
@@ -32,9 +32,35 @@ func TestScanDirForSecrets(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "credentials", "weibo.bin"), []byte{0x02, 0x00, 0xfd, 0x88, 0x53, 0xdd, 0xee, 0xff}, 0o600); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.WriteFile(filepath.Join(dir, "credentials", "x.bin"), []byte{0x03, 0x00, 0xfc, 0x77, 0x64, 0x11, 0x22, 0x33}, 0o600); err != nil {
+			t.Fatal(err)
+		}
 
 		if err := scanDirForSecrets(dir); err != nil {
 			t.Fatalf("expected clean directory to pass secret scan, got: %v", err)
+		}
+	})
+
+	t.Run("x placeholders and public media URLs pass without false positives", func(t *testing.T) {
+		dir := t.TempDir()
+		cleanText := strings.Join([]string{
+			`auth_token=<合成占位>; ct0=<合成占位>; kdt=<合成占位>; twid=<合成占位>; guest_id=<合成占位>`,
+			`auth_token=<synthetic>; ct0=[REDACTED]; kdt=...`,
+			`x-csrf-token: [REDACTED]`,
+			`x-csrf-token: required`,
+			`Authorization: Bearer <公开网页端固定 Bearer 令牌>`,
+			`Authorization: Bearer [REDACTED]`,
+			`https://pbs.twimg.com/media/Synthetic01?format=jpg&name=orig`,
+			`https://video.twimg.com/ext_tw_video/1000000000000000009/pu/vid/avc1/1280x720/synth.mp4?tag=12`,
+			`https://abs.twimg.com/responsive-web/client-web/ondemand.s.synth1a.js`,
+			`https://video.twimg.com/ext_tw_video/1000000000000000009/pu/pl/synth.m3u8?tag=12&token=<合成签名>`,
+			`https://ton.x.com/i/ton/data/<合成路径>`,
+		}, "\n")
+		if err := os.WriteFile(filepath.Join(dir, "x-safe.log"), []byte(cleanText), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := scanDirForSecrets(dir); err != nil {
+			t.Fatalf("expected X placeholders & public URLs to pass without false positives, got: %v", err)
 		}
 	})
 
@@ -170,6 +196,63 @@ func TestScanDirForSecrets(t *testing.T) {
 			content:  "GET https://video.weibo.com/media/play?livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2F001synth.mov%3FExpires%3D1763700000%26ssig%3DEncLiveSig1234%26KID%3Dunistore%2Cvideo",
 			wantSub:  "signed URL",
 		},
+		{
+			name:     "x auth_token cookie",
+			fileName: "app.log",
+			content:  "header Cookie: auth_token=0123456789abcdef0123456789abcdef01234567",
+			wantSub:  "auth_token=",
+		},
+		{
+			name:     "x auth_token percent-encoded",
+			fileName: "app.log",
+			content:  "query auth_token%3D0123456789abcdef0123456789abcdef01234567",
+			wantSub:  "auth_token=",
+		},
+		{
+			name:     "x ct0 cookie",
+			fileName: "app.log",
+			content:  "header Cookie: ct0=abcdef0123456789abcdef0123456789",
+			wantSub:  "ct0=",
+		},
+		{
+			name:     "x kdt cookie",
+			fileName: "app.log",
+			content:  "header Cookie: kdt=synthKdtDeviceToken000123456789",
+			wantSub:  "kdt=",
+		},
+		{
+			name:     "x x-csrf-token header",
+			fileName: "app.log",
+			content:  "req header x-csrf-token: abcdef0123456789abcdef0123456789",
+			wantSub:  "x-csrf-token",
+		},
+		{
+			name:     "x Authorization Bearer header",
+			fileName: "app.log",
+			content:  "req header Authorization: Bearer AAAAAAAAAAAAAAAAAAAAASynthSmokeBearer0001%3D%3D",
+			wantSub:  "Authorization: Bearer",
+		},
+		{
+			name:     "x signed video URL with token",
+			fileName: "item.json",
+			content:  `{"url":"https://video.twimg.com/ext_tw_video/1000000000000000009/pu/pl/synth.m3u8?tag=12&token=synth_hls_sig_01234567"}`,
+			wantSub:  "signed URL",
+		},
+		{
+			name:     "x private ton.x.com URL",
+			fileName: "cache.log",
+			content:  `{"media":"https://ton.x.com/i/ton/data/dm/1000000000000000009/synth_private_dm.jpg"}`,
+			wantSub:  "signed URL",
+		},
+	}
+
+	rawSecrets := []string{
+		"0123456789abcdef0123456789abcdef01234567",
+		"abcdef0123456789abcdef0123456789",
+		"synthKdtDeviceToken000123456789",
+		"AAAAAAAAAAAAAAAAAAAAASynthSmokeBearer0001%3D%3D",
+		"synth_hls_sig_01234567",
+		"synth_private_dm.jpg",
 	}
 
 	for _, tc := range cases {
@@ -185,6 +268,11 @@ func TestScanDirForSecrets(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantSub) || !strings.Contains(err.Error(), tc.fileName) {
 				t.Fatalf("unexpected error %q, want substrings %q and %q", err.Error(), tc.wantSub, tc.fileName)
+			}
+			for _, secret := range rawSecrets {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("scanDirForSecrets echoed raw secret %q in error %q", secret, err.Error())
+				}
 			}
 		})
 	}
@@ -389,5 +477,11 @@ func TestWriteServerReceiptInChecksBounds(t *testing.T) {
 func TestWeiboFakeRemoteSmokeAndSentinels(t *testing.T) {
 	if err := runWeiboFakeRemoteSmoke(context.Background()); err != nil {
 		t.Fatalf("runWeiboFakeRemoteSmoke failed: %v", err)
+	}
+}
+
+func TestXFakeRemoteSmokeAndSentinels(t *testing.T) {
+	if err := runXFakeRemoteSmoke(context.Background()); err != nil {
+		t.Fatalf("runXFakeRemoteSmoke failed: %v", err)
 	}
 }

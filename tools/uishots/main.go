@@ -222,5 +222,5 @@ func runUIShots(outDir string) error {
 	env.seedRecentAndLive(app)
 	composeGuardPassed := verifyComposeGuard(app)
 	scenes := buildAllScenes(env, app)
-	return runScenesAndWriteReport(outDir, app, scenes, composeGuardPassed)
+	return runScenesAndWriteReport(outDir, env, app, scenes, composeGuardPassed)
 }

@@ -415,10 +415,11 @@ func (a *App) OpenLibraryItemDetail(item library.ItemMetadata) {
 	a.CurrentDouyinWork = nil
 	a.CurrentWeiboPost = nil
 	a.CurrentWeiboVideo = nil
+	a.CurrentXPost = nil
 	a.CurrentDynamic = nil
 	a.SelectedPartPages = make(map[int]bool)
 	a.UpgradeAvailable = false
-	if siteID := normalizeSiteIDUI(item.Site); siteID == "douyin" || siteID == "weibo" || item.Kind == "dynamic" || item.Kind == "live" {
+	if siteID := normalizeSiteIDUI(item.Site); siteID == "douyin" || siteID == "weibo" || siteID == "x" || item.Kind == "dynamic" || item.Kind == "live" {
 		a.CurrentVideo = nil
 		a.CurrentVideoItemKey = ""
 		return
@@ -561,6 +562,12 @@ func libraryItemParseInput(item library.ItemMetadata) string {
 		}
 		return rawID
 	}
+	if siteID == "x" {
+		if rawID != "" {
+			return "https://x.com/i/web/status/" + rawID
+		}
+		return rawID
+	}
 	switch item.Kind {
 	case "dynamic":
 		if rawID != "" {
@@ -611,6 +618,9 @@ func (a *App) renderLibraryItemRoute(c *ui.Context, viewportHeight float32) {
 			}
 		case "weibo":
 			a.renderWeiboPostRoute(c, viewportHeight)
+			return
+		case "x":
+			a.renderXPostRoute(c, viewportHeight)
 			return
 		}
 	}

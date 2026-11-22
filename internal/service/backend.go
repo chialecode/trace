@@ -25,6 +25,7 @@ import (
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/site/douyin"
 	"github.com/chialecode/trace/internal/site/weibo"
+	"github.com/chialecode/trace/internal/site/x"
 	"github.com/chialecode/trace/internal/storage"
 	"github.com/chialecode/trace/internal/subscription"
 	"github.com/chialecode/trace/internal/uistate"
@@ -43,12 +44,15 @@ type Backend struct {
 	cred                        *credential.Store
 	douyinCred                  *credential.Store
 	weiboCred                   *credential.Store
+	xCred                       *credential.Store
 	bili                        *bilibili.Client
 	douyin                      *douyin.Client
 	weibo                       *weibo.Client
+	x                           *x.Client
 	biliAdapter                 *bilibili.Adapter
 	douyinAdapter               *douyin.Adapter
 	weiboAdapter                *weibo.Adapter
+	xAdapter                    *x.Adapter
 	weiboPostCache              *weiboPostPlanCache
 	weiboMemMu                  sync.Mutex
 	weiboMemGen                 uint64
@@ -56,6 +60,12 @@ type Backend struct {
 	weiboFollowingSeen          map[string]map[string]bool
 	weiboPreviewRT              http.RoundTripper
 	weiboPreviewWrap            func(http.RoundTripper) http.RoundTripper
+	xPostCache                  *xPostPlanCache
+	xMemMu                      sync.Mutex
+	xMemGen                     uint64
+	accountXSeen                map[string]map[string]bool
+	xFollowingSeen              map[string]map[string]bool
+	xFollowingCursors           map[int]string
 	fullCacheUseFeatureOriginal bool
 	registry                    *site.Registry
 	lib                         *library.Store
@@ -184,6 +194,7 @@ func NewBackend(opts Options) (*Backend, error) {
 	credStore := credMgr.Store(credential.SiteBilibili)
 	douyinCredStore := credMgr.Store(credential.SiteDouyin)
 	weiboCredStore := credMgr.Weibo()
+	xCredStore := credMgr.X()
 
 	var (
 		db        *sql.DB
@@ -282,9 +293,14 @@ func NewBackend(opts Options) (*Backend, error) {
 		cred:                        credStore,
 		douyinCred:                  douyinCredStore,
 		weiboCred:                   weiboCredStore,
+		xCred:                       xCredStore,
 		weiboPostCache:              newWeiboPostPlanCache(nil),
 		accountWeiboSeen:            make(map[string]map[string]bool),
 		weiboFollowingSeen:          make(map[string]map[string]bool),
+		xPostCache:                  newXPostPlanCache(nil),
+		accountXSeen:                make(map[string]map[string]bool),
+		xFollowingSeen:              make(map[string]map[string]bool),
+		xFollowingCursors:           make(map[int]string),
 		fullCacheUseFeatureOriginal: opts.FullCacheUseFeatureOriginal,
 		lib:                         libStore,
 		desktop:                     desk,
@@ -322,15 +338,22 @@ func NewBackend(opts Options) (*Backend, error) {
 	wbClient := weibo.NewClient(wbOpts)
 	wbAdapter := weibo.NewAdapter(wbClient)
 
+	xOpts := opts.XOpts
+	xOpts.CredStore = xCredStore
+	xClient := x.NewClient(xOpts)
+	xAdapter := x.NewAdapter(xClient)
+
 	b.bili = biliClient
 	b.douyin = dyClient
 	b.weibo = wbClient
+	b.x = xClient
 	b.weiboPreviewRT = wbOpts.Transport
 	b.weiboPreviewWrap = wbOpts.WrapTransport
 	b.biliAdapter = biliAdapter
 	b.douyinAdapter = dyAdapter
 	b.weiboAdapter = wbAdapter
-	b.registry = site.NewRegistry(biliAdapter, dyAdapter, wbAdapter)
+	b.xAdapter = xAdapter
+	b.registry = site.NewRegistry(biliAdapter, dyAdapter, wbAdapter, xAdapter)
 
 	taskLog := newTaskStatusLog()
 	dlMgr, err := download.NewManager(db, libStore, biliClient, curSettings.Download, func(t download.Task) {
@@ -353,8 +376,43 @@ func NewBackend(opts Options) (*Backend, error) {
 		return nil, err
 	}
 	b.dl = dlMgr
+	dlMgr.SetOnTaskBatchUpdate(func(action string, tasks []download.Task) {
+		if len(tasks) == 0 {
+			return
+		}
+		var firstSite string
+		singleSite := true
+		seenSites := make(map[string]struct{}, 4)
+		for _, t := range tasks {
+			taskLog.changed(t.TaskID, t.Status)
+			if t.Site != "" {
+				seenSites[t.Site] = struct{}{}
+				if firstSite == "" {
+					firstSite = t.Site
+				} else if firstSite != t.Site {
+					singleSite = false
+				}
+			}
+		}
+		b.logInfo(fmt.Sprintf("download batch %s: %d tasks", action, len(tasks)))
+		msg := "batch:" + action + ":" + strconv.Itoa(len(tasks))
+		if action == "retry_batch" {
+			msg = "retried:all"
+		}
+		if singleSite && firstSite != "" && action != "retry_batch" {
+			evBus.PublishSite(EventTaskUpdated, firstSite, msg)
+		} else {
+			evBus.Publish(EventTaskUpdated, msg)
+		}
+		if b.queue != nil {
+			for s := range seenSites {
+				b.queue.onDownloadUpdated(s)
+			}
+		}
+	})
 	dlMgr.RegisterWorkPlanner(&douyinWorkPlanner{backend: b})
 	dlMgr.RegisterWorkPlanner(&weiboWorkPlanner{backend: b})
+	dlMgr.RegisterWorkPlanner(&xWorkPlanner{backend: b})
 
 	subsPath := filepath.Join(loc.DataDir, "subscriptions.json")
 	subMgr, err := subscription.NewManagerWithUpdatesDB(db, updatesDB, subsPath, libStore, dlMgr, biliClient, curSettings.Subscription, func(sum subscription.CheckSummary) {
@@ -430,8 +488,24 @@ func NewBackend(opts Options) (*Backend, error) {
 			subMgr.RecordSiteAutomaticStop(string(site.Weibo), site.KindOf(err))
 		},
 	)
+	xClient.SetAutomaticRequestHandlers(
+		func(_ context.Context, source string, _ string) error {
+			return subMgr.SiteAutomaticRequestAllowedFor(string(site.X), source)
+		},
+		func(_ string, err error) {
+			b.recordXAutomaticStop(err)
+		},
+	)
+	userCT0Handler := opts.XOpts.OnCT0Updated
+	xClient.SetCT0UpdatedHandler(func(newCT0 string) {
+		b.logInfo("x ct0 synced")
+		if userCT0Handler != nil {
+			userCT0Handler(newCT0)
+		}
+	})
 	subMgr.RegisterFetcher(dyAdapter)
 	subMgr.RegisterFetcher(wbAdapter)
+	subMgr.RegisterFetcher(xAdapter)
 	subMgr.SetSiteAuthCheck(func(siteID site.ID) bool {
 		return b.credMgr.HasActiveCredential(string(siteID))
 	})
@@ -453,6 +527,20 @@ func NewBackend(opts Options) (*Backend, error) {
 			}
 		}
 		t, err := b.enqueueWeiboPostWithSource(ctx, item.DynID, "auto", via, nil)
+		return t.TaskID, err
+	})
+	subMgr.RegisterAutoCacheEnqueuer(site.X, func(ctx context.Context, item subscription.UpdateItem) (string, error) {
+		var via *library.ItemVia
+		if strings.EqualFold(strings.TrimSpace(item.Type), x.RuleTypeForward) {
+			via = &library.ItemVia{
+				Reason:    library.ViaForward,
+				Site:      string(site.X),
+				UID:       strings.TrimSpace(item.UID),
+				Name:      b.subscribedAccountName(site.X, item.UID),
+				DynamicID: strings.TrimSpace(item.DynID),
+			}
+		}
+		t, err := b.enqueueXPostWithSource(ctx, item.DynID, "auto", via, nil)
 		return t.TaskID, err
 	})
 	if opts.Profile != ProfileRemote {
@@ -498,6 +586,12 @@ func NewBackend(opts Options) (*Backend, error) {
 		b.clearWeiboMemoryCaches()
 		b.pauseSiteActiveWorkAsync(site.Weibo, "auth_required", msg)
 		evBus.PublishSite(EventAccountChanged, string(site.Weibo), "expired")
+	})
+	xClient.SetAuthExpiredHandler(func(reason string) {
+		msg := firstNonEmpty(reason, "X 登录已失效，任务已暂停")
+		b.clearXMemoryCaches()
+		b.pauseSiteActiveWorkAsync(site.X, "auth_required", msg)
+		evBus.PublishSite(EventAccountChanged, string(site.X), "expired")
 	})
 
 	build := appdirs.BuildInfo()
@@ -658,6 +752,31 @@ func (b *Backend) WeiboClient() *weibo.Client {
 	return b.weibo
 }
 
+// XClient returns the underlying X site client.
+func (b *Backend) XClient() *x.Client {
+	return b.x
+}
+
+func (b *Backend) recordXAutomaticStop(err error) {
+	if b == nil || b.subs == nil || err == nil {
+		return
+	}
+	kind := site.KindOf(err)
+	if kind == site.ErrKindRateLimited {
+		if rl, ok := x.RateLimitDetails(err); ok {
+			until := rl.BlockedUntil
+			if until.IsZero() {
+				until = rl.ResetAt
+			}
+			if !until.IsZero() {
+				b.subs.RecordSiteAutomaticStopUntil(string(site.X), kind, until)
+				return
+			}
+		}
+	}
+	b.subs.RecordSiteAutomaticStop(string(site.X), kind)
+}
+
 // SetWeiboFullCacheUseFeatureOriginal toggles whether Weibo full-cache queues
 // request feature=1 (server-side original filter) instead of feature=0 with local filtering.
 func (b *Backend) SetWeiboFullCacheUseFeatureOriginal(enabled bool) {
@@ -727,6 +846,88 @@ func (b *Backend) mergeWeiboSeenMap(store *map[string]map[string]bool, bucket st
 		if v {
 			dst[k] = true
 		}
+	}
+}
+
+func (b *Backend) clearXMemoryCaches() {
+	if b.xPostCache != nil {
+		b.xPostCache.clear()
+	}
+	b.xMemMu.Lock()
+	b.xMemGen++
+	clear(b.accountXSeen)
+	clear(b.xFollowingSeen)
+	clear(b.xFollowingCursors)
+	b.xMemMu.Unlock()
+}
+
+func (b *Backend) snapshotXSeenMap(store *map[string]map[string]bool, bucket string, reset bool) (map[string]bool, uint64) {
+	b.xMemMu.Lock()
+	defer b.xMemMu.Unlock()
+	gen := b.xMemGen
+	if reset {
+		if *store != nil {
+			delete(*store, bucket)
+		}
+		return make(map[string]bool), gen
+	}
+	if *store == nil || (*store)[bucket] == nil {
+		return make(map[string]bool), gen
+	}
+	src := (*store)[bucket]
+	cp := make(map[string]bool, len(src))
+	for k, v := range src {
+		if v {
+			cp[k] = true
+		}
+	}
+	return cp, gen
+}
+
+func (b *Backend) mergeXSeenMap(store *map[string]map[string]bool, bucket string, gen uint64, seen map[string]bool) {
+	if len(seen) == 0 {
+		return
+	}
+	b.xMemMu.Lock()
+	defer b.xMemMu.Unlock()
+	if b.xMemGen != gen {
+		return
+	}
+	if *store == nil {
+		*store = make(map[string]map[string]bool)
+	}
+	dst := (*store)[bucket]
+	if dst == nil {
+		dst = make(map[string]bool, len(seen))
+		(*store)[bucket] = dst
+	}
+	for k, v := range seen {
+		if v {
+			dst[k] = true
+		}
+	}
+}
+
+func (b *Backend) getXFollowingCursor(page int) string {
+	b.xMemMu.Lock()
+	defer b.xMemMu.Unlock()
+	if page <= 1 || b.xFollowingCursors == nil {
+		return ""
+	}
+	return b.xFollowingCursors[page]
+}
+
+func (b *Backend) setXFollowingCursor(page int, cursor string, gen uint64, reset bool) {
+	b.xMemMu.Lock()
+	defer b.xMemMu.Unlock()
+	if b.xMemGen != gen {
+		return
+	}
+	if b.xFollowingCursors == nil || reset {
+		b.xFollowingCursors = make(map[int]string)
+	}
+	if strings.TrimSpace(cursor) != "" {
+		b.xFollowingCursors[page] = strings.TrimSpace(cursor)
 	}
 }
 
@@ -832,7 +1033,7 @@ func (b *Backend) MutateUIState(fn func(*uistate.State)) (uistate.State, error) 
 // recordings that quitting would pause or end.
 func (b *Backend) ActiveWork() (tasks, recordings int) {
 	if b.dl != nil {
-		if list, err := b.dl.ListTasks(); err == nil {
+		if list, err := b.dl.ListNonTerminalTasks(); err == nil {
 			for _, t := range list {
 				if t.Status == "running" || t.Status == "queued" {
 					tasks++

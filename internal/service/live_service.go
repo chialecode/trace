@@ -64,6 +64,8 @@ func (b *Backend) LiveStatuses(ctx context.Context, accountKeys []string) ([]Liv
 			douyinUIDs = append(douyinUIDs, uid)
 		case site.Weibo:
 			// Weibo live status polling is intentionally excluded (0 requests).
+		case site.X:
+			// X broadcasts & Spaces live status polling is intentionally excluded (0 requests).
 		}
 	}
 
@@ -172,6 +174,16 @@ func (b *Backend) OpenLiveInBrowser(siteID, roomOrWebRID string) error {
 			}
 		}
 		return b.desktop.OpenExternalURL("https://weibo.com/l/wblive/p/show/" + clean)
+	case site.X:
+		if safe := safeBrowserURL(clean); safe != "" {
+			return b.desktop.OpenExternalURL(safe)
+		}
+		for _, r := range clean {
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || r == '-') {
+				return &site.Error{Site: site.X, Kind: site.ErrKindBadRequest, Message: "无效的 X 直播或 Space 链接"}
+			}
+		}
+		return b.desktop.OpenExternalURL("https://x.com/i/broadcasts/" + clean)
 	default:
 		return &site.Error{Site: id, Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
 	}
@@ -197,6 +209,14 @@ func (b *Backend) StartLiveRecordingByAccount(ctx context.Context, accountKey st
 			Kind:        site.ErrKindUnavailable,
 			Unsupported: true,
 			Message:     live.WeiboLiveUnsupportedMessage,
+		}
+	}
+	if siteID == site.X {
+		return LiveAccountState{}, &site.Error{
+			Site:        site.X,
+			Kind:        site.ErrKindUnavailable,
+			Unsupported: true,
+			Message:     live.XLiveUnsupportedMessage,
 		}
 	}
 	if err := b.requireSiteLogin(siteID); err != nil {
@@ -243,6 +263,14 @@ func (b *Backend) StartLiveRecordingByRoom(ctx context.Context, siteID, roomOrWe
 			Kind:        site.ErrKindUnavailable,
 			Unsupported: true,
 			Message:     live.WeiboLiveUnsupportedMessage,
+		}
+	}
+	if id == site.X {
+		return LiveAccountState{}, &site.Error{
+			Site:        site.X,
+			Kind:        site.ErrKindUnavailable,
+			Unsupported: true,
+			Message:     live.XLiveUnsupportedMessage,
 		}
 	}
 	if err := b.requireSiteLogin(id); err != nil {

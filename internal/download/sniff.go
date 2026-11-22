@@ -2,8 +2,11 @@ package download
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"image/color"
+	"image/gif"
 	"io"
 	"mime"
 	"net/url"
@@ -56,10 +59,105 @@ func looksLikeDisguisedTextBody(head []byte) bool {
 	if trimmed[0] == '{' && (bytes.Contains(lower, []byte(`"status_code"`)) ||
 		bytes.Contains(lower, []byte(`"code"`)) ||
 		bytes.Contains(lower, []byte(`"error"`)) ||
+		bytes.Contains(lower, []byte(`"errors"`)) ||
+		bytes.Contains(lower, []byte(`"message"`)) ||
 		bytes.Contains(lower, []byte(`"ok"`)) ||
 		bytes.Contains(lower, []byte(`"errno"`)) ||
 		bytes.Contains(lower, []byte(`"msg"`))) {
 		return true
+	}
+	return false
+}
+
+// looksLikeWeiboPlaceholderGIF reports whether filePath (downloaded for a non-GIF Weibo image slot)
+// matches Sina CDN's HTTP-200 deleted/unavailable placeholder GIF (a small single-frame static
+// GIF returned instead of a 404 for purged .jpg/.png/.webp assets, typically 480x360 grayscale).
+// Genuine multi-frame animated GIFs and non-GIF files always return false.
+func looksLikeWeiboPlaceholderGIF(filePath, requestedURL string, expectedW, expectedH int) bool {
+	info, err := os.Stat(filePath)
+	if err != nil || info.IsDir() || info.Size() <= 0 || info.Size() > 128*1024 {
+		return false
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var hdr [10]byte
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		return false
+	}
+	if !bytes.Equal(hdr[:6], []byte("GIF87a")) && !bytes.Equal(hdr[:6], []byte("GIF89a")) {
+		return false
+	}
+	gifW := int(binary.LittleEndian.Uint16(hdr[6:8]))
+	gifH := int(binary.LittleEndian.Uint16(hdr[8:10]))
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return false
+	}
+	decoded, err := gif.DecodeAll(f)
+	if err != nil || decoded == nil {
+		return false
+	}
+	// Multi-frame animated GIFs are genuine animations, not static deleted-image placeholders.
+	if len(decoded.Image) > 1 {
+		return false
+	}
+	// Signal 1: Sina CDN returned a static 1-frame GIF for a URL explicitly naming a non-GIF image format.
+	if u, perr := url.Parse(strings.TrimSpace(requestedURL)); perr == nil {
+		host := strings.ToLower(u.Hostname())
+		if host == "sinaimg.cn" || strings.HasSuffix(host, ".sinaimg.cn") {
+			lp := strings.ToLower(u.Path)
+			if strings.HasSuffix(lp, ".jpg") || strings.HasSuffix(lp, ".jpeg") || strings.HasSuffix(lp, ".png") || strings.HasSuffix(lp, ".webp") {
+				return true
+			}
+		}
+	}
+	// Signal 2: Declared image dimensions disagree with the tiny static GIF returned for a non-GIF slot.
+	if expectedW > 0 && expectedH > 0 && (gifW != expectedW || gifH != expectedH) && info.Size() <= 32*1024 {
+		return true
+	}
+	// Signal 3: Canonical 480x360 small static grayscale Sina placeholder GIF (observed ~8-9 KiB).
+	if gifW == 480 && gifH == 360 && info.Size() <= 32*1024 && isGrayscaleGIF(decoded) {
+		return true
+	}
+	return false
+}
+
+func isGrayscaleGIF(decoded *gif.GIF) bool {
+	if decoded == nil || len(decoded.Image) == 0 {
+		return false
+	}
+	checkPalette := func(p color.Palette) bool {
+		if len(p) == 0 {
+			return false
+		}
+		for _, c := range p {
+			r, g, b, _ := c.RGBA()
+			r8, g8, b8 := int(r>>8), int(g>>8), int(b>>8)
+			drg := r8 - g8
+			if drg < 0 {
+				drg = -drg
+			}
+			dgb := g8 - b8
+			if dgb < 0 {
+				dgb = -dgb
+			}
+			drb := r8 - b8
+			if drb < 0 {
+				drb = -drb
+			}
+			if drg > 4 || dgb > 4 || drb > 4 {
+				return false
+			}
+		}
+		return true
+	}
+	if len(decoded.Image[0].Palette) > 0 {
+		return checkPalette(decoded.Image[0].Palette)
+	}
+	if gp, ok := decoded.Config.ColorModel.(color.Palette); ok {
+		return checkPalette(gp)
 	}
 	return false
 }

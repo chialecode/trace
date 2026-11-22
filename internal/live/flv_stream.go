@@ -136,8 +136,10 @@ func (m *Manager) recordFLVPartWithTransport(
 		sess.segmentDuration = cp.DurationSec
 		m.mu.Lock()
 		sess.wroteMedia = true
-		sess.lastSequence = cp.Sequence
-		sess.hasSequence = true
+		// Keep HTTP-FLV GOP chunk numbering isolated from HLS MEDIA-SEQUENCE tracking.
+		sess.lastSequence = 0
+		sess.hasSequence = false
+		sess.lastSequenceAt = time.Time{}
 		if cp.Codec != "" {
 			sess.codec = cp.Codec
 		}
@@ -148,8 +150,8 @@ func (m *Manager) recordFLVPartWithTransport(
 			if cp.Codec != "" {
 				meta.Live.Codec = cp.Codec
 			}
-			meta.Live.LastSequence = cp.Sequence
-			meta.Live.HasSequence = true
+			meta.Live.LastSequence = 0
+			meta.Live.HasSequence = false
 			meta.Live.PendingFile = partBase
 			meta.Live.PendingBytes = cp.BytesWritten
 			meta.Live.PendingDuration = cp.DurationSec

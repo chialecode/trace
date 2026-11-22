@@ -24,6 +24,11 @@ func (s *libraryReadCounter) GetLibraryItem(key string) (library.ItemMetadata, b
 	return s.douyinStubBackend.GetLibraryItem(key)
 }
 
+func (s *libraryReadCounter) GetLibraryItemMetaOnly(key string) (library.ItemMetadata, bool, error) {
+	s.itemReads++
+	return s.douyinStubBackend.GetLibraryItemMetaOnly(key)
+}
+
 // A Douyin user page with hundreds of works loaded (after 缓存更早的内容 or
 // long scrolling) must not read the library on every frame: that made it
 // stutter (2026-11-15 feedback). A state change re-reads only what is shown.

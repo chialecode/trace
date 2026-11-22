@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -82,7 +83,7 @@ func NormalizeRawID(kind, id string) string {
 	id = strings.TrimSpace(id)
 	lower := strings.ToLower(id)
 	cleanKind := strings.ToLower(strings.TrimSpace(kind))
-	for _, site := range []string{"bilibili:", "douyin:", "weibo:"} {
+	for _, site := range []string{"bilibili:", "douyin:", "weibo:", "x:"} {
 		if strings.HasPrefix(lower, site) {
 			id = id[len(site):]
 			lower = lower[len(site):]
@@ -219,6 +220,47 @@ func WeiboPostDir(cacheRoot, uid, id string, forward bool) (string, error) {
 		return "", err
 	}
 	cleanID := strings.ReplaceAll(NormalizeRawID("dynamic", id), ":", "_")
+	if err := ValidateSafeIDSegment(cleanID); err != nil {
+		return "", err
+	}
+	bucket := "posts"
+	if forward {
+		bucket = "forwards"
+	}
+	return EnsureWithinRoot(cacheRoot, filepath.Join(creatorDir, bucket, cleanID))
+}
+
+// XCreatorDir resolves <cacheRoot>/x/<rest_id>.
+func XCreatorDir(cacheRoot, restID string) (string, error) {
+	if strings.TrimSpace(cacheRoot) == "" {
+		return "", fmt.Errorf("library: cacheRoot cannot be empty")
+	}
+	trimmed := strings.TrimSpace(restID)
+	if trimmed == "" {
+		return "", fmt.Errorf("library: invalid x rest_id")
+	}
+	for _, r := range trimmed {
+		if r < '0' || r > '9' {
+			return "", fmt.Errorf("library: invalid x rest_id")
+		}
+	}
+	cleanUID := strings.TrimLeft(trimmed, "0")
+	if len(cleanUID) == 0 || len(cleanUID) > 20 {
+		return "", fmt.Errorf("library: invalid x rest_id")
+	}
+	if _, err := strconv.ParseUint(cleanUID, 10, 64); err != nil {
+		return "", fmt.Errorf("library: invalid x rest_id")
+	}
+	return EnsureWithinRoot(cacheRoot, filepath.Join(cacheRoot, "x", cleanUID))
+}
+
+// XPostDir resolves <cacheRoot>/x/<rest_id>/posts/<status_id> or <cacheRoot>/x/<rest_id>/forwards/<status_id>.
+func XPostDir(cacheRoot, restID, statusID string, forward bool) (string, error) {
+	creatorDir, err := XCreatorDir(cacheRoot, restID)
+	if err != nil {
+		return "", err
+	}
+	cleanID := NormalizeRawID("dynamic", statusID)
 	if err := ValidateSafeIDSegment(cleanID); err != nil {
 		return "", err
 	}

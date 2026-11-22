@@ -39,7 +39,7 @@ func (a *App) lookupRemoteBitmap(rawURL string) *ui.Bitmap {
 		a.mu.Unlock()
 		return nil
 	}
-	if a.dispatch == nil || a.CurrentRoute == RouteHome || a.CurrentRoute == RouteLibrary || a.CurrentRoute == RouteLibraryItem || (a.CurrentRoute == RouteSubscriptions && a.SubDetailOpen && normalizeSubDetailTab(a.SubDetailTab) == "content") || (a.CurrentRoute == RouteVideo && a.CurrentLibraryDetail != nil) || (a.CurrentRoute == RouteDouyinWork && a.CurrentLibraryDetail != nil) || (a.CurrentRoute == RouteWeiboPost && a.CurrentLibraryDetail != nil) {
+	if a.dispatch == nil || a.CurrentRoute == RouteHome || a.CurrentRoute == RouteLibrary || a.CurrentRoute == RouteLibraryItem || (a.CurrentRoute == RouteSubscriptions && a.SubDetailOpen && normalizeSubDetailTab(a.SubDetailTab) == "content") || (a.CurrentRoute == RouteVideo && a.CurrentLibraryDetail != nil) || (a.CurrentRoute == RouteDouyinWork && a.CurrentLibraryDetail != nil) || (a.CurrentRoute == RouteWeiboPost && a.CurrentLibraryDetail != nil) || (a.CurrentRoute == RouteXPost && a.CurrentLibraryDetail != nil) {
 		a.mu.Unlock()
 		return nil
 	}
@@ -226,6 +226,12 @@ func (a *App) faceURLForAccount(siteID, uid string) string {
 	}
 	if a.CurrentWeiboPost != nil && a.CurrentWeiboPost.Author.UID == uid && a.CurrentWeiboPost.Author.AvatarURL != "" {
 		return a.CurrentWeiboPost.Author.AvatarURL
+	}
+	if a.CurrentXUser != nil && (a.CurrentXUser.RestID == uid || strings.EqualFold(a.CurrentXUser.ScreenName, uid)) && a.CurrentXUser.AvatarURL != "" {
+		return a.CurrentXUser.AvatarURL
+	}
+	if a.CurrentXPost != nil && (a.CurrentXPost.Author.RestID == uid || strings.EqualFold(a.CurrentXPost.Author.ScreenName, uid)) && a.CurrentXPost.Author.AvatarURL != "" {
+		return a.CurrentXPost.Author.AvatarURL
 	}
 	a.ensureFaceIndex()
 	return a.acctFaceIndex[siteID+":"+uid]

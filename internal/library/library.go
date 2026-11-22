@@ -40,7 +40,9 @@ type ChangedItem struct {
 
 // Store manages the local cache library (item.json files + SQLite index + unified feed).
 type Store struct {
+	rebuildMu          sync.Mutex
 	mu                 sync.RWMutex
+	mutationSeq        uint64
 	db                 *sql.DB
 	cacheDir           string
 	dataDir            string
@@ -49,6 +51,7 @@ type Store struct {
 	pendingDeletesPath string
 	node               *ItemNode
 	onSaved            []func(ItemMetadata)
+	onRebuildWalk      func()
 	allowMovedFiles    bool
 }
 
@@ -258,6 +261,7 @@ func (s *Store) saveItemLocked(itemDir string, meta ItemMetadata, checkHash ...b
 	if err := s.upsertItemRowLocked(meta); err != nil {
 		return ItemMetadata{}, err
 	}
+	s.mutationSeq++
 	for _, fn := range s.onSaved {
 		fn(meta)
 	}
@@ -430,6 +434,9 @@ func (s *Store) UpsertFeedEntry(entry FeedEntry) error {
 	case "weibo":
 		entry.CoverURL = sanitizeWeiboManifestURL(entry.CoverURL)
 		entry.AuthorFace = sanitizeWeiboManifestURL(entry.AuthorFace)
+	case "x":
+		entry.CoverURL = sanitizeXManifestURL(entry.CoverURL)
+		entry.AuthorFace = sanitizeXManifestURL(entry.AuthorFace)
 	default:
 		entry.CoverURL = stripURLQueryAndFragment(entry.CoverURL)
 		entry.AuthorFace = stripURLQueryAndFragment(entry.AuthorFace)
@@ -471,6 +478,9 @@ func (s *Store) UpsertFeedEntry(entry FeedEntry) error {
 		cachedInt, cachedStatus, itemKey,
 		cachedInt, cachedStatus, cachedStatus, itemKey, itemKey,
 	)
+	if err == nil {
+		s.mutationSeq++
+	}
 	return err
 }
 
@@ -487,6 +497,16 @@ func (s *Store) GetItem(keyOrID string) (ItemMetadata, bool, error) {
 		refreshItemFileState(&meta)
 	}
 	return meta, true, nil
+}
+
+// GetItemMetaOnly retrieves a single cached ItemMetadata from the SQLite index
+// without verifying files on disk (no os.Lstat / EvalSymlinks syscalls).
+// Useful for UI card/thumbnail cover lookups where RefreshIndex / States handle
+// disk integrity checks.
+func (s *Store) GetItemMetaOnly(keyOrID string) (ItemMetadata, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.getItemLocked(keyOrID)
 }
 
 func (s *Store) getItemLocked(keyOrID string) (ItemMetadata, bool, error) {

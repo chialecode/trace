@@ -127,6 +127,16 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 	if meta.Live == nil {
 		meta.Live = &library.LiveRecordingInfo{RoomID: st.RoomID, LiveSince: st.LiveSince, StartedAt: now.Format(time.RFC3339)}
 	}
+	var resumedSeqAt time.Time
+	if ts, parseErr := time.Parse(time.RFC3339Nano, meta.Live.LastSequenceAt); parseErr == nil && !ts.IsZero() {
+		resumedSeqAt = ts.UTC()
+	} else if ts, parseErr := time.Parse(time.RFC3339, meta.Live.EndedAt); parseErr == nil && !ts.IsZero() {
+		resumedSeqAt = ts.UTC()
+	} else if ts, parseErr := time.Parse(time.RFC3339, meta.Live.StartedAt); parseErr == nil && !ts.IsZero() {
+		resumedSeqAt = ts.UTC()
+	} else if st.LiveSince > 0 {
+		resumedSeqAt = time.Unix(st.LiveSince, 0).UTC()
+	}
 	meta.Live.EndedAt, meta.Live.StopReason = "", ""
 	meta.Live.Quality = playSel.Quality
 	meta.Live.QualityName = playSel.QualityName
@@ -150,6 +160,14 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 	if playSel.Format == "flv" || playSel.Protocol == "http_stream" {
 		initialTransport = string(site.LiveTransportHTTPFLV)
 	}
+	var initLastSeq int64
+	var initHasSeq bool
+	var initLastSeqAt time.Time
+	if initialTransport == string(site.LiveTransportHLSFMP4) && savedMeta.Live != nil && savedMeta.Live.HasSequence {
+		initLastSeq = savedMeta.Live.LastSequence
+		initHasSeq = true
+		initLastSeqAt = resumedSeqAt
+	}
 	sess := &recordSession{
 		siteID:          string(site.Bilibili),
 		coverURL:        st.Cover,
@@ -166,8 +184,9 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 		cancel:          recCancel,
 		doneCh:          make(chan struct{}),
 		nextPart:        nextPartNumber(savedMeta),
-		lastSequence:    savedMeta.Live.LastSequence,
-		hasSequence:     savedMeta.Live.HasSequence,
+		lastSequence:    initLastSeq,
+		hasSequence:     initHasSeq,
+		lastSequenceAt:  initLastSeqAt,
 		quality:         playSel.Quality,
 		qualityName:     playSel.QualityName,
 		codec:           playSel.Codec,

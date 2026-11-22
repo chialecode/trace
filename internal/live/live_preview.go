@@ -201,7 +201,8 @@ func (m *Manager) syncSessionRoomStateLocked(sess *recordSession) (RoomState, bo
 // session IDs ("live:<session>"), room IDs, UIDs, or Douyin web_rids, and never performs network I/O.
 func (m *Manager) RecordingPreview(key string) (RecordingPreview, bool) {
 	target := strings.TrimSpace(key)
-	if target == "" || strings.HasPrefix(strings.ToLower(target), "weibo:") {
+	lowerTarget := strings.ToLower(target)
+	if target == "" || strings.HasPrefix(lowerTarget, "weibo:") || strings.HasPrefix(lowerTarget, "x:") {
 		return RecordingPreview{}, false
 	}
 
@@ -268,7 +269,7 @@ func (m *Manager) matchBilibiliSessionLocked(target string) *recordSession {
 			}
 		}
 		return nil
-	case strings.HasPrefix(target, "douyin:"), strings.HasPrefix(strings.ToLower(target), "weibo:"):
+	case strings.HasPrefix(target, "douyin:"), strings.HasPrefix(strings.ToLower(target), "weibo:"), strings.HasPrefix(strings.ToLower(target), "x:"):
 		return nil
 	default:
 		if strings.Contains(target, ":") {
@@ -298,7 +299,8 @@ func (m *Manager) matchBilibiliSessionLocked(target string) *recordSession {
 }
 
 func (m *Manager) matchDouyinSessionLocked(target string) *recordSession {
-	if strings.HasPrefix(target, "bilibili:") || strings.HasPrefix(strings.ToLower(target), "weibo:") {
+	lowerTarget := strings.ToLower(target)
+	if strings.HasPrefix(target, "bilibili:") || strings.HasPrefix(lowerTarget, "weibo:") || strings.HasPrefix(lowerTarget, "x:") {
 		return nil
 	}
 	var candidates []string
@@ -338,7 +340,8 @@ func (m *Manager) matchDouyinSessionLocked(target string) *recordSession {
 }
 
 func (m *Manager) matchBilibiliStateLocked(target string) (RoomState, bool) {
-	if strings.HasPrefix(target, "douyin:") || strings.HasPrefix(strings.ToLower(target), "weibo:") {
+	lowerTarget := strings.ToLower(target)
+	if strings.HasPrefix(target, "douyin:") || strings.HasPrefix(lowerTarget, "weibo:") || strings.HasPrefix(lowerTarget, "x:") {
 		return RoomState{}, false
 	}
 	trimmed := target
@@ -386,7 +389,8 @@ func (m *Manager) matchBilibiliStateLocked(target string) (RoomState, bool) {
 }
 
 func (m *Manager) matchDouyinStateLocked(target string) (RoomState, bool) {
-	if strings.HasPrefix(target, "bilibili:") || strings.HasPrefix(strings.ToLower(target), "weibo:") {
+	lowerTarget := strings.ToLower(target)
+	if strings.HasPrefix(target, "bilibili:") || strings.HasPrefix(lowerTarget, "weibo:") || strings.HasPrefix(lowerTarget, "x:") {
 		return RoomState{}, false
 	}
 	trimmed := target

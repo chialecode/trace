@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,7 +49,10 @@ const verifiedDirTTL = 3 * time.Second
 
 var verifiedDirs sync.Map // pathKey(dir) -> time.Time verified
 
+var dirLinkCheckCount atomic.Int64
+
 func checkSingleDirLink(current string) (exists bool, err error) {
+	dirLinkCheckCount.Add(1)
 	info, err := os.Lstat(current)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -109,25 +113,29 @@ func rejectDirectoryLinksRecent(dir string) error {
 	return checkDirectoryLinks(dir, true)
 }
 
-func safeRegisteredPathChecked(root, rel string, allowAncestorCache bool) bool {
+// validateItemDirRead checks ancestors above root via the recent-dir cache and
+// always checks root itself fresh via checkSingleDirLink (data-and-cache.md §3).
+// Callers verifying multiple files inside the same item folder call this once
+// per item instead of repeating EvalSymlinks / GetLongPathNameW per file.
+func validateItemDirRead(root string) (string, error) {
 	root = filepath.Clean(root)
-	if allowAncestorCache {
-		// Cache only ancestors strictly above root; always check root itself
-		// and every relative segment fresh (data-and-cache.md §3).
-		parent := filepath.Dir(root)
-		if parent != root {
-			if rejectDirectoryLinksRecent(parent) != nil {
-				return false
-			}
-		}
-		if exists, err := checkSingleDirLink(root); err != nil || !exists {
-			return false
-		}
-	} else {
-		if rejectDirectoryLinks(root) != nil {
-			return false
+	parent := filepath.Dir(root)
+	if parent != root {
+		if err := rejectDirectoryLinksRecent(parent); err != nil {
+			return "", err
 		}
 	}
+	exists, err := checkSingleDirLink(root)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", fmt.Errorf("library: item directory does not exist")
+	}
+	return root, nil
+}
+
+func safeRelativeSegments(root, rel string) bool {
 	if rel == "" || filepath.IsAbs(rel) || strings.ContainsAny(rel, "\\:\x00") {
 		return false
 	}
@@ -147,6 +155,25 @@ func safeRegisteredPathChecked(root, rel string, allowAncestorCache bool) bool {
 		if isLinkLike(info.Mode()) {
 			return false
 		}
+	}
+	return true
+}
+
+func safeRegisteredPathChecked(root, rel string, allowAncestorCache bool) bool {
+	root = filepath.Clean(root)
+	if allowAncestorCache {
+		// Cache only ancestors strictly above root; always check root itself
+		// and every relative segment fresh (data-and-cache.md §3).
+		if _, err := validateItemDirRead(root); err != nil {
+			return false
+		}
+	} else {
+		if rejectDirectoryLinks(root) != nil {
+			return false
+		}
+	}
+	if !safeRelativeSegments(root, rel) {
+		return false
 	}
 	info, err := os.Lstat(root)
 	return err == nil && info.IsDir() && !isLinkLike(info.Mode())
@@ -179,6 +206,15 @@ func resolveItemPathRead(root, rel string) (string, error) {
 		return "", fmt.Errorf("library: unsafe item-relative path")
 	}
 	return EnsureWithinRoot(root, filepath.Join(root, filepath.FromSlash(rel)))
+}
+
+// resolveVerifiedItemPathRead validates every relative segment fresh against a
+// root already checked by validateItemDirRead within the same item verification.
+func resolveVerifiedItemPathRead(verifiedRoot, rel string) (string, error) {
+	if !safeRelativeSegments(verifiedRoot, rel) {
+		return "", fmt.Errorf("library: unsafe item-relative path")
+	}
+	return EnsureWithinRoot(verifiedRoot, filepath.Join(verifiedRoot, filepath.FromSlash(rel)))
 }
 
 // MediaPath resolves and validates a whitelisted media file path belonging to key (INV-08).

@@ -157,6 +157,9 @@ func (b *Backend) startDueFullCacheSweeps(ctx context.Context, now time.Time) []
 		case site.Weibo:
 			list = "posts"
 			b.refreshWeiboWorksTotal(ctx, c.acc.UID, now)
+		case site.X:
+			list = "posts"
+			b.refreshXWorksTotal(ctx, c.acc.UID, now)
 		default:
 			continue
 		}
@@ -214,4 +217,21 @@ func (b *Backend) refreshWeiboWorksTotal(ctx context.Context, uid string, now ti
 		return
 	}
 	b.recordAccountWorks(site.Weibo, firstNonEmpty(prof.UID, uid), prof.StatusesCount)
+}
+
+// refreshXWorksTotal reads an X account's statuses_count before its periodic
+// full-cache sweep while honoring X's backoff and hourly quota.
+func (b *Backend) refreshXWorksTotal(ctx context.Context, restID string, now time.Time) {
+	if b.x == nil || b.queue == nil {
+		return
+	}
+	if blocked, _ := b.queue.siteBackoffOrQuotaEnd(site.X, now); blocked {
+		return
+	}
+	prof, err := b.x.GetUserByRestId(site.WithAutomaticRequests(ctx, "full_cache"), restID)
+	if err != nil {
+		b.logError("FullCacheSweep.XProfile", err)
+		return
+	}
+	b.recordAccountWorks(site.X, firstNonEmpty(prof.RestID, restID), prof.StatusesCount)
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/weibo"
+	"github.com/chialecode/trace/internal/site/x"
 	"github.com/chialecode/trace/internal/storage"
 	"github.com/chialecode/trace/internal/subscription"
 )
@@ -24,7 +25,7 @@ import (
 
 const avatarRefreshAge = 7 * 24 * time.Hour
 
-var avatarFileRe = regexp.MustCompile(`^(bilibili|douyin|weibo)-[0-9a-f]{20}\.png$`)
+var avatarFileRe = regexp.MustCompile(`^(bilibili|douyin|weibo|x)-[0-9a-f]{20}\.png$`)
 
 func (b *Backend) avatarDir() string {
 	if b.loc.DataDir == "" {
@@ -78,7 +79,7 @@ func (b *Backend) rememberAvatar(siteID, uid, rawFace string, defaultBilibili bo
 	if name == "" || dir == "" {
 		return
 	}
-	if (sid == site.Douyin && b.douyin == nil) || (sid == site.Bilibili && b.bili == nil) || (sid == site.Weibo && b.weibo == nil) {
+	if (sid == site.Douyin && b.douyin == nil) || (sid == site.Bilibili && b.bili == nil) || (sid == site.Weibo && b.weibo == nil) || (sid == site.X && b.x == nil) {
 		return
 	}
 	path := filepath.Join(dir, name)
@@ -136,6 +137,21 @@ func (b *Backend) rememberWeiboPostAvatars(post *weibo.Post) {
 	}
 	if post.Retweeted != nil && post.Retweeted.Author.UID != "" && post.Retweeted.Author.AvatarURL != "" {
 		b.rememberAccountAvatar(string(site.Weibo), post.Retweeted.Author.UID, post.Retweeted.Author.AvatarURL)
+	}
+}
+
+func (b *Backend) rememberXPostAvatars(post *x.Post) {
+	if post == nil {
+		return
+	}
+	if post.Author.RestID != "" && post.Author.AvatarURL != "" {
+		b.rememberAccountAvatar(string(site.X), post.Author.RestID, post.Author.AvatarURL)
+	}
+	if post.Retweeted != nil && post.Retweeted.Author.RestID != "" && post.Retweeted.Author.AvatarURL != "" {
+		b.rememberAccountAvatar(string(site.X), post.Retweeted.Author.RestID, post.Retweeted.Author.AvatarURL)
+	}
+	if post.Quoted != nil && post.Quoted.Author.RestID != "" && post.Quoted.Author.AvatarURL != "" {
+		b.rememberAccountAvatar(string(site.X), post.Quoted.Author.RestID, post.Quoted.Author.AvatarURL)
 	}
 }
 
