@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	github.com/Eyevinn/mp4ff v0.63.0
-	github.com/egoist/mygo v0.9.0
+	github.com/egoist/mygo v0.9.1
 	github.com/yeqown/go-qrcode/v2 v2.3.0
 	golang.org/x/image v0.48.0
 	golang.org/x/sys v0.50.0
