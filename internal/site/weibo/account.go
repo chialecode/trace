@@ -172,7 +172,7 @@ func (c *Client) listFriendsInternal(ctx context.Context, selfUID, listID string
 	if nextCursor == "0" {
 		nextCursor = ""
 	}
-	total := int(parseJSONInt64(container["total_number"]))
+	total := parseJSONInt(container["total_number"])
 
 	users := parseFollowingUsers(rawList, seen, c.allowLocalhost)
 	var hasMore bool
@@ -269,9 +269,9 @@ func (c *Client) ListFollowingContent(ctx context.Context, page int, nextCursor 
 		}
 	}
 
-	total := int(parseJSONInt64(env.Data.Follows.TotalNumber))
+	total := parseJSONInt(env.Data.Follows.TotalNumber)
 	if total == 0 {
-		total = int(parseJSONInt64(env.Data.TotalNumber))
+		total = parseJSONInt(env.Data.TotalNumber)
 	}
 	users := parseFollowingUsers(env.Data.Follows.Users, seen, c.allowLocalhost)
 	hasMore := len(env.Data.Follows.Users) > 0 && outCursor != ""
@@ -384,7 +384,7 @@ func (c *Client) ListFollowGroups(ctx context.Context) ([]FollowGroup, error) {
 			ID:    id,
 			Title: title,
 			Type:  strings.TrimSpace(rawNumberOrString(typeRaw)),
-			Count: int(parseJSONInt64(countRaw)),
+			Count: parseJSONInt(countRaw),
 		})
 	}
 
@@ -496,7 +496,7 @@ func (c *Client) ListFavorites(ctx context.Context, selfUID string, page int, se
 		}
 	}
 
-	total := int(parseJSONInt64(dataMap["total_number"]))
+	total := parseJSONInt(dataMap["total_number"])
 	posts, err := c.parseAccountPostEntries(rawEntries, seen)
 	if err != nil {
 		return nil, err
@@ -647,9 +647,9 @@ func (c *Client) ListLikes(ctx context.Context, selfUID string, page int, seen m
 		}
 	}
 
-	total := int(parseJSONInt64(dataMap["total"]))
+	total := parseJSONInt(dataMap["total"])
 	if total == 0 {
-		total = int(parseJSONInt64(dataMap["total_number"]))
+		total = parseJSONInt(dataMap["total_number"])
 	}
 	posts, err := c.parseAccountPostEntries(rawEntries, seen)
 	if err != nil {

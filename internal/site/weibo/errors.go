@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -780,6 +781,19 @@ func parseJSONInt64(raw json.RawMessage) int64 {
 		return int64(f)
 	}
 	return 0
+}
+
+// parseJSONInt is parseJSONInt64 bounded to the 32-bit range, so the result
+// fits int on every platform. Counts, sizes and type codes never come close.
+func parseJSONInt(raw json.RawMessage) int {
+	v := parseJSONInt64(raw)
+	if v > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if v < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int(v)
 }
 
 func parseJSONFloat64(raw json.RawMessage) float64 {

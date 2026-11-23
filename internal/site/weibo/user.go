@@ -376,8 +376,8 @@ func (c *Client) GetUserPosts(ctx context.Context, req UserPostsRequest) (*UserP
 	if nextSinceID == "0" {
 		nextSinceID = ""
 	}
-	total := int(parseJSONInt64(dataMap["total"]))
-	statusVisible := int(parseJSONInt64(dataMap["status_visible"]))
+	total := parseJSONInt(dataMap["total"])
+	statusVisible := parseJSONInt(dataMap["status_visible"])
 	bottomTipsVisible := parseJSONBoolOrInt(dataMap["bottom_tips_visible"])
 	bottomTipsText := strings.TrimSpace(parseJSONString(dataMap["bottom_tips_text"]))
 
