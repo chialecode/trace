@@ -259,9 +259,9 @@ func (u *rawWeiboUser) toAuthorSummary(allowLocalhost bool) AuthorSummary {
 		Domain:         strings.TrimSpace(u.Domain),
 		Description:    strings.TrimSpace(u.Description),
 		Verified:       u.Verified,
-		VerifiedType:   int(parseJSONInt64(u.VerifiedType)),
+		VerifiedType:   parseJSONInt(u.VerifiedType),
 		VerifiedReason: strings.TrimSpace(u.VerifiedReason),
-		StatusesCount:  int(parseJSONInt64(u.StatusesCount)),
+		StatusesCount:  parseJSONInt(u.StatusesCount),
 		FollowersCount: parseJSONInt64(u.FollowersCount),
 		FriendsCount:   parseJSONInt64(u.FriendsCount),
 	}
@@ -985,7 +985,7 @@ func (c *Client) parseRawPostInternal(rp *rawPost, opt PostOptions, isRetweetChi
 		LongTextFetched:  longTextFetched,
 		Source:           stripHTMLText(rp.Source),
 		RegionName:       strings.TrimSpace(rp.RegionName),
-		EditCount:        int(parseJSONInt64(rp.EditCount)),
+		EditCount:        parseJSONInt(rp.EditCount),
 		IsTop:            isTop,
 		IsRetweet:        retweeted != nil || isFastRetweet,
 		IsFastRetweet:    isFastRetweet,
@@ -1162,7 +1162,7 @@ func needsOriginMediaFetch(rpRT *rawPost, parsedRT *Post) bool {
 	if strings.TrimSpace(parsedRT.Mid) == "" && strings.TrimSpace(parsedRT.MblogID) == "" {
 		return false
 	}
-	picNum := int(parseJSONInt64(rpRT.PicNum))
+	picNum := parseJSONInt(rpRT.PicNum)
 	if len(rpRT.PicIDs) > len(parsedRT.Images) || picNum > len(parsedRT.Images) {
 		return true
 	}
@@ -1300,7 +1300,7 @@ func parseVisibility(raw *struct {
 	if raw == nil {
 		return VisibilityInfo{Type: 0, Label: "公开"}
 	}
-	vType := int(parseJSONInt64(raw.Type))
+	vType := parseJSONInt(raw.Type)
 	listID := strings.TrimSpace(rawNumberOrString(raw.ListID))
 	if listID == "0" {
 		listID = ""
@@ -1440,8 +1440,8 @@ func (c *Client) buildImageAsset(index int, picID string, pi *rawPicInfo, rewrit
 			continue
 		}
 		seenURL[u] = true
-		w := int(parseJSONInt64(v.Width))
-		h := int(parseJSONInt64(v.Height))
+		w := parseJSONInt(v.Width)
+		h := parseJSONInt(v.Height)
 		cands = append(cands, tierCand{
 			priority: i,
 			url:      u,
@@ -1728,7 +1728,7 @@ func (c *Client) selectVideoStreams(mi *rawMediaInfo, opts StreamSelectOptions) 
 		qualityDesc := ""
 		if entry.Meta != nil {
 			label = strings.TrimSpace(entry.Meta.Label)
-			qualityIdx = int(parseJSONInt64(entry.Meta.QualityIndex))
+			qualityIdx = parseJSONInt(entry.Meta.QualityIndex)
 			qualityLabel = strings.TrimSpace(entry.Meta.QualityLabel)
 			qualityDesc = strings.TrimSpace(entry.Meta.QualityDesc)
 		}
@@ -1740,8 +1740,8 @@ func (c *Client) selectVideoStreams(mi *rawMediaInfo, opts StreamSelectOptions) 
 			continue
 		}
 
-		w := int(parseJSONInt64(entry.PlayInfo.Width))
-		h := int(parseJSONInt64(entry.PlayInfo.Height))
+		w := parseJSONInt(entry.PlayInfo.Width)
+		h := parseJSONInt(entry.PlayInfo.Height)
 		fps := int(parseJSONFloat64(entry.PlayInfo.FPS) + 0.5)
 		bitrate := parseJSONInt64(entry.PlayInfo.Bitrate)
 		size := parseJSONInt64(entry.PlayInfo.Size)
