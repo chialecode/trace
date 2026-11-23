@@ -150,8 +150,18 @@ func (m *Manager) evaluateAutoCacheRulesForSites(ctx context.Context, abortedSit
 					abortedSites[c.site] = kind
 				}
 				if kind == site.ErrKindRiskControl || kind == site.ErrKindRateLimited || kind == site.ErrKindAuthRequired {
-					m.RecordSiteAutomaticStop(c.site, kind)
+					m.RecordSiteAutomaticStopUntil(c.site, kind, extractRateLimitResetAt(enqErr))
 				}
+			}
+			backlogBySub[c.subID]++
+			totalBacklog++
+		case site.ErrKindSchemaChanged:
+			if c.site == string(site.X) && haltedSites[c.site] == "" {
+				haltedSites[c.site] = kind
+				if abortedSites != nil && abortedSites[c.site] == "" {
+					abortedSites[c.site] = kind
+				}
+				m.RecordSiteAutomaticStop(c.site, kind)
 			}
 			backlogBySub[c.subID]++
 			totalBacklog++
@@ -292,6 +302,8 @@ func (m *Manager) findCachedLibraryKey(siteName, dynID string) string {
 		keys = []string{"douyin:video:" + dynID, "douyin:dynamic:" + dynID}
 	case string(site.Weibo):
 		keys = []string{"weibo:dynamic:" + dynID, "weibo:video:" + dynID}
+	case string(site.X):
+		keys = []string{"x:dynamic:" + dynID}
 	default:
 		return ""
 	}

@@ -320,8 +320,8 @@ func TestExtractShareURLAndRegistryDispatch(t *testing.T) {
 
 func TestWeiboSiteIDAndAccountKey(t *testing.T) {
 	all := All()
-	if len(all) != 3 || all[0] != Bilibili || all[1] != Douyin || all[2] != Weibo {
-		t.Fatalf("All() = %v, want [bilibili douyin weibo]", all)
+	if len(all) != 4 || all[0] != Bilibili || all[1] != Douyin || all[2] != Weibo || all[3] != X {
+		t.Fatalf("All() = %v, want [bilibili douyin weibo x]", all)
 	}
 	if !Weibo.Valid() {
 		t.Fatal("Weibo.Valid() = false, want true")
@@ -641,5 +641,408 @@ func TestWeiboMediaTransportAndLivePhotoInitialHop(t *testing.T) {
 	}
 	if IsWeiboLivePhotoInitialURL("https://livephoto.us.sinaimg.cn/synthetic.mov") {
 		t.Fatal("IsWeiboLivePhotoInitialURL returned true for sinaimg.cn")
+	}
+}
+
+func TestXSiteIDAndAccountKey(t *testing.T) {
+	all := All()
+	if len(all) != 4 || all[0] != Bilibili || all[1] != Douyin || all[2] != Weibo || all[3] != X {
+		t.Fatalf("All() = %v, want [bilibili douyin weibo x]", all)
+	}
+	if !X.Valid() {
+		t.Fatal("X.Valid() = false, want true")
+	}
+	if got := X.DisplayName(); got != "X" {
+		t.Fatalf("X.DisplayName() = %q, want %q", got, "X")
+	}
+	if got := DisplayName("x"); got != "X" {
+		t.Fatalf("DisplayName(x) = %q, want %q", got, "X")
+	}
+	if id, ok := ParseID(" X "); !ok || id != X {
+		t.Fatalf("ParseID(X) = (%q, %v), want (x, true)", id, ok)
+	}
+
+	validUIDs := map[string]string{
+		"1":                     "1",
+		"12":                    "12",
+		"00012":                 "12",
+		"1000000000000000001":   "1000000000000000001",
+		"001000000000000000001": "1000000000000000001",
+		"9223372036854775807":   "9223372036854775807",
+		"18446744073709551615":  "18446744073709551615", // math.MaxUint64
+	}
+	for raw, want := range validUIDs {
+		got, err := NormalizeUID(X, raw)
+		if err != nil || got != want {
+			t.Fatalf("NormalizeUID(X, %q) = (%q, %v), want (%q, nil)", raw, got, err, want)
+		}
+	}
+
+	invalidUIDs := []string{
+		"",
+		"   ",
+		"0",
+		"00000",
+		"18446744073709551616",  // math.MaxUint64 + 1
+		"99999999999999999999",  // 20 digits > uint64
+		"100000000000000000000", // 21 digits
+		"-1000000000000000001",
+		"+1000000000000000001",
+		"100000a000001",
+		"100000 000001",
+		"@example_user",
+		"example_user",
+	}
+	for _, bad := range invalidUIDs {
+		if got, err := NormalizeUID(X, bad); !errors.Is(err, ErrInvalidUID) {
+			t.Fatalf("NormalizeUID(X, %q) = (%q, %v), want ErrInvalidUID", bad, got, err)
+		}
+	}
+
+	xKey, err := FormatAccountKey(X, "001000000000000000001")
+	if err != nil || xKey != "x:1000000000000000001" {
+		t.Fatalf("FormatAccountKey(X) = (%q, %v), want (x:1000000000000000001, nil)", xKey, err)
+	}
+	if got := AccountKey(X, "001000000000000000001"); got != "x:1000000000000000001" {
+		t.Fatalf("AccountKey(X) = %q, want x:1000000000000000001", got)
+	}
+	parsedSite, parsedUID, err := ParseAccountKey(xKey)
+	if err != nil || parsedSite != X || parsedUID != "1000000000000000001" {
+		t.Fatalf("ParseAccountKey(%q) = (%q, %q, %v), want (x, 1000000000000000001, nil)", xKey, parsedSite, parsedUID, err)
+	}
+	for _, bad := range []string{
+		"X:1000000000000000001",
+		"x:0",
+		"x:",
+		"x:18446744073709551616",
+		"x:example_user",
+	} {
+		if _, _, err := ParseAccountKey(bad); err == nil {
+			t.Fatalf("ParseAccountKey(%q) unexpectedly succeeded", bad)
+		}
+	}
+
+	xErr := &Error{Site: X, Kind: ErrKindRateLimited, HTTPStatus: 429, Message: "X 限流"}
+	if got := xErr.Error(); got != "x [rate_limited http=429]: X 限流" {
+		t.Fatalf("X Error() = %q", got)
+	}
+	if SiteOf(xErr) != X {
+		t.Fatalf("SiteOf(xErr) = %q, want x", SiteOf(xErr))
+	}
+}
+
+func TestXRegistryDispatchAndShareTextPriority(t *testing.T) {
+	xHosts := []string{
+		"x.com",
+		"www.x.com",
+		"mobile.x.com",
+		"m.x.com",
+		"twitter.com",
+		"www.twitter.com",
+		"mobile.twitter.com",
+		"m.twitter.com",
+		"t.co",
+		"fxtwitter.com",
+		"www.fxtwitter.com",
+		"d.fxtwitter.com",
+		"i.fxtwitter.com",
+		"g.fxtwitter.com",
+		"m.fxtwitter.com",
+		"fixupx.com",
+		"d.fixupx.com",
+		"vxtwitter.com",
+		"i.vxtwitter.com",
+		"fixvx.com",
+		"g.fixvx.com",
+		"twittpr.com",
+		"m.twittpr.com",
+		"nitter.net",
+		"www.nitter.net",
+		"xcancel.com",
+		"www.xcancel.com",
+		"periscope.tv",
+		"pscp.tv",
+	}
+	for _, host := range xHosts {
+		if got, ok := DetectHostSite(host); !ok || got != X {
+			t.Fatalf("DetectHostSite(%q) = (%q, %v), want (x, true)", host, got, ok)
+		}
+	}
+	for _, host := range []string{
+		"box.com",
+		"fix.com",
+		"myx.com",
+		"not-t.co",
+		"t.com",
+		"x.com.evil.net",
+		"twitter.com.evil.net",
+		"eviltwitter.com",
+		"evilfxtwitter.com",
+		"pbs.twimg.com",
+		"video.twimg.com",
+		"abs.twimg.com",
+	} {
+		if got, ok := DetectHostSite(host); ok {
+			t.Fatalf("DetectHostSite(%q) = (%q, true), want false", host, got)
+		}
+	}
+
+	extractCases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "x share text with explicit status link",
+			in:   "看看 @example_user 的帖子 https://x.com/example_user/status/1000000000000000009?s=20，很有意思",
+			want: "https://x.com/example_user/status/1000000000000000009?s=20",
+		},
+		{
+			name: "prefer explicit x.com link over earlier t.co",
+			in:   "正文外链 https://t.co/Synthetic01 原帖 https://x.com/example_user/status/1000000000000000009。",
+			want: "https://x.com/example_user/status/1000000000000000009",
+		},
+		{
+			name: "prefer explicit twitter.com link over earlier http t.co",
+			in:   "短链 http://t.co/Synthetic01 见 https://mobile.twitter.com/example_user/status/1000000000000000009!",
+			want: "https://mobile.twitter.com/example_user/status/1000000000000000009",
+		},
+		{
+			name: "prefer mirror link over earlier t.co",
+			in:   "外链 https://t.co/Synthetic01 镜像 https://d.fxtwitter.com/example_user/status/1000000000000000009",
+			want: "https://d.fxtwitter.com/example_user/status/1000000000000000009",
+		},
+		{
+			name: "prefer bare x.com over earlier t.co",
+			in:   "先看 https://t.co/Synthetic01 再看 x.com/example_user/status/1000000000000000009！",
+			want: "https://x.com/example_user/status/1000000000000000009",
+		},
+		{
+			name: "prefer glued bare x.com over glued bare t.co",
+			in:   "看帖t.co/Synthetic01，原帖x.com/example_user/status/1000000000000000009！",
+			want: "https://x.com/example_user/status/1000000000000000009",
+		},
+		{
+			name: "prefer bare mirror over bare t.co",
+			in:   "先看 t.co/Synthetic01 再看 xcancel.com/example_user/status/1000000000000000009",
+			want: "https://xcancel.com/example_user/status/1000000000000000009",
+		},
+		{
+			name: "keep explicit x.com link when t.co follows",
+			in:   "原帖 https://x.com/example_user/status/1000000000000000009 附 https://t.co/Synthetic01",
+			want: "https://x.com/example_user/status/1000000000000000009",
+		},
+		{
+			name: "keep mirror link when t.co follows",
+			in:   "镜像 https://fixupx.com/example_user/status/1000000000000000009 附 https://t.co/Synthetic01",
+			want: "https://fixupx.com/example_user/status/1000000000000000009",
+		},
+		{
+			name: "fallback to t.co when no explicit x or mirror link exists",
+			in:   "分享短链 https://t.co/Synthetic01。",
+			want: "https://t.co/Synthetic01",
+		},
+		{
+			name: "bare t.co link",
+			in:   "打开 t.co/Synthetic01 查看",
+			want: "https://t.co/Synthetic01",
+		},
+		{
+			name: "bare www.x.com link",
+			in:   "查看 www.x.com/example_user/status/1000000000000000009",
+			want: "https://www.x.com/example_user/status/1000000000000000009",
+		},
+		{
+			name: "bare mobile.x.com link",
+			in:   "查看 mobile.x.com/example_user",
+			want: "https://mobile.x.com/example_user",
+		},
+		{
+			name: "bare m.twitter.com link",
+			in:   "查看 m.twitter.com/example_user/status/1000000000000000009",
+			want: "https://m.twitter.com/example_user/status/1000000000000000009",
+		},
+		{
+			name: "bare vxtwitter mirror with subdomain",
+			in:   "查看 i.vxtwitter.com/example_user/status/1000000000000000009",
+			want: "https://i.vxtwitter.com/example_user/status/1000000000000000009",
+		},
+		{
+			name: "bare fixvx mirror",
+			in:   "查看 fixvx.com/example_user/status/1000000000000000009",
+			want: "https://fixvx.com/example_user/status/1000000000000000009",
+		},
+		{
+			name: "bare twittpr mirror with subdomain",
+			in:   "查看 m.twittpr.com/example_user/status/1000000000000000009",
+			want: "https://m.twittpr.com/example_user/status/1000000000000000009",
+		},
+		{
+			name: "bare nitter.net mirror",
+			in:   "查看 nitter.net/example_user/status/1000000000000000009#m",
+			want: "https://nitter.net/example_user/status/1000000000000000009#m",
+		},
+		{
+			name: "bare periscope.tv broadcast",
+			in:   "直播 periscope.tv/w/1SyntheticBcastId",
+			want: "https://periscope.tv/w/1SyntheticBcastId",
+		},
+		{
+			name: "bare pscp.tv broadcast",
+			in:   "直播 pscp.tv/w/1SyntheticBcastId",
+			want: "https://pscp.tv/w/1SyntheticBcastId",
+		},
+		{
+			name: "inner x url in external query stays external",
+			in:   "https://evil.example/jump?u=https://x.com/example_user/status/1000000000000000009",
+			want: "https://evil.example/jump?u=https://x.com/example_user/status/1000000000000000009",
+		},
+	}
+	for _, tc := range extractCases {
+		got, ok := ExtractShareURL(tc.in)
+		if !ok || got != tc.want {
+			t.Fatalf("%s: ExtractShareURL(%q) = (%q, %v), want (%q, true)", tc.name, tc.in, got, ok, tc.want)
+		}
+	}
+
+	// Host boundary checks: lookalike bare domains must NEVER match x.com or t.co or mirrors.
+	for _, nonMatch := range []string{
+		"打开 box.com/example_user/status/1000000000000000009 查看",
+		"打开 fix.com/example_user/status/1000000000000000009 查看",
+		"打开 myx.com/example_user/status/1000000000000000009 查看",
+		"打开 not-t.co/Synthetic01 查看",
+		"打开 a_x.com/example_user 查看",
+		"打开 evil.x.com/example_user 查看",
+		"打开 example.org/x.com/example_user 查看",
+		"联系 user@x.com/example_user 查看",
+		"打开 x.com.evil.net/example_user 查看",
+		"打开 t.com/Synthetic01 查看",
+		"打开 ad.fxtwitter.com/example_user/status/1000000000000000009 查看",
+	} {
+		if got, ok := ExtractShareURL(nonMatch); ok {
+			t.Fatalf("ExtractShareURL(%q) unexpectedly matched %q", nonMatch, got)
+		}
+	}
+
+	biliStub := &stubResolver{id: Bilibili}
+	dyStub := &stubResolver{id: Douyin}
+	wbStub := &stubResolver{id: Weibo}
+	xStub := &stubResolver{id: X}
+	reg := NewRegistry(biliStub, dyStub, wbStub, xStub)
+
+	// Share text with t.co + x.com dispatches x.com to X.
+	res, err := reg.Resolve(context.Background(), "外链 https://t.co/Synthetic01 原帖 https://x.com/example_user/status/1000000000000000009")
+	if err != nil || res.Site != X || res.ID != "https://x.com/example_user/status/1000000000000000009" {
+		t.Fatalf("Registry.Resolve x share = (%+v, %v)", res, err)
+	}
+
+	// Mirror and t.co and Periscope dispatch to X.
+	for _, in := range []string{
+		"https://fxtwitter.com/example_user/status/1000000000000000009",
+		"https://t.co/Synthetic01",
+		"https://periscope.tv/w/1SyntheticBcastId",
+		"https://pscp.tv/w/1SyntheticBcastId",
+	} {
+		res, err := reg.Resolve(context.Background(), in)
+		if err != nil || res.Site != X || res.ID != in {
+			t.Fatalf("Registry.Resolve(%q) = (%+v, %v), want X", in, res, err)
+		}
+	}
+
+	// Pure <19 digits still route to Bilibili (never X).
+	beforeX := xStub.calls
+	for _, num := range []string{"12", "1000000001", "5000000000000001"} {
+		res, err := reg.Resolve(context.Background(), num)
+		if err != nil || res.Site != Bilibili || res.ID != num {
+			t.Fatalf("Registry.Resolve(%q) = (%+v, %v), want Bilibili", num, res, err)
+		}
+	}
+
+	// Pure 19 digits stay ambiguous; bare @handle and lookalike domains must NOT route to X.
+	beforeBili, beforeDy, beforeWb := biliStub.calls, dyStub.calls, wbStub.calls
+	for _, rejected := range []string{
+		"1000000000000000009",
+		"10000000000000000001",
+		"@example_user",
+		"box.com/example_user/status/1000000000000000009",
+		"fix.com/example_user/status/1000000000000000009",
+		"myx.com/example_user/status/1000000000000000009",
+		"not-t.co/Synthetic01",
+		"https://box.com/example_user/status/1000000000000000009",
+		"https://not-t.co/Synthetic01",
+		"https://evil.example/jump?u=https://x.com/example_user/status/1000000000000000009",
+	} {
+		if _, err := reg.Resolve(context.Background(), rejected); !IsKind(err, ErrKindBadRequest) {
+			t.Fatalf("Registry.Resolve(%q) err = %v, want bad_request", rejected, err)
+		}
+	}
+	if xStub.calls != beforeX || biliStub.calls != beforeBili || dyStub.calls != beforeDy || wbStub.calls != beforeWb {
+		t.Fatalf("rejected inputs invoked resolvers: x=%d->%d bili=%d->%d dy=%d->%d wb=%d->%d",
+			beforeX, xStub.calls, beforeBili, biliStub.calls, beforeDy, dyStub.calls, beforeWb, wbStub.calls)
+	}
+}
+
+func TestXMediaTransportPolicy(t *testing.T) {
+	hosts := DefaultXMediaHosts()
+	if len(hosts) != 2 || hosts[0] != "pbs.twimg.com" || hosts[1] != "video.twimg.com" {
+		t.Fatalf("DefaultXMediaHosts() = %v, want [pbs.twimg.com video.twimg.com]", hosts)
+	}
+
+	spec := XMediaTransport("", false)
+	if spec.Site != X || spec.UserAgent != DefaultUserAgent || spec.Referer != "" || spec.Origin != "" || spec.PublicRedirects {
+		t.Fatalf("unexpected XMediaTransport spec: %+v", spec)
+	}
+
+	for _, okURL := range []string{
+		"https://pbs.twimg.com/media/SyntheticMedia01?format=jpg&name=orig",
+		"https://pbs.twimg.com/profile_images/1000000000000000001/synth_400x400.jpg",
+		"https://video.twimg.com/ext_tw_video/1000000000000000009/pu/vid/avc1/1280x720/synth.mp4?tag=12",
+		"https://video.twimg.com/tweet_video/SyntheticGif01.mp4",
+	} {
+		if err := spec.ValidateURL(okURL); err != nil {
+			t.Fatalf("XMediaTransport.ValidateURL(%q) failed: %v", okURL, err)
+		}
+		if err := spec.ValidateRedirectURL(okURL); err != nil {
+			t.Fatalf("XMediaTransport.ValidateRedirectURL(%q) failed: %v", okURL, err)
+		}
+	}
+
+	for _, badURL := range []string{
+		"http://pbs.twimg.com/media/SyntheticMedia01?format=jpg&name=orig",
+		"https://video.twimg.com:8443/tweet_video/SyntheticGif01.mp4",
+		"https://abs.twimg.com/responsive-web/client-web/main.synth.js",
+		"https://ton.x.com/i/ton/data/dm/synth.jpg",
+		"https://cdn.syndication.twimg.com/tweet-result?id=1000000000000000009",
+		"https://twimg.com/media/synth.jpg",
+		"https://x.com/example_user/status/1000000000000000009",
+		"https://evil-pbs.twimg.com/media/synth.jpg",
+		"https://edge.example.net/synth.mp4",
+		"https://127.0.0.1/media/synth.jpg",
+	} {
+		if err := spec.ValidateURL(badURL); !IsKind(err, ErrKindBlocked) {
+			t.Fatalf("XMediaTransport.ValidateURL(%q) = %v, want blocked", badURL, err)
+		}
+		if err := spec.ValidateRedirectURL(badURL); !IsKind(err, ErrKindBlocked) {
+			t.Fatalf("XMediaTransport.ValidateRedirectURL(%q) = %v, want blocked", badURL, err)
+		}
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "https://video.twimg.com/tweet_video/SyntheticGif01.mp4", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Cookie", "auth_token=must_never_reach_cdn; ct0=must_never_reach_cdn")
+	req.Header.Set("Authorization", "Bearer must_never_reach_cdn")
+	req.Header.Set("X-Csrf-Token", "must_never_reach_cdn")
+	req.Header.Set("Referer", "https://x.com/example_user/status/1000000000000000009")
+	req.Header.Set("Origin", "https://x.com")
+	spec.ApplyHeaders(req)
+	for _, hdr := range []string{"Cookie", "Authorization", "X-Csrf-Token", "Referer", "Origin"} {
+		if got := req.Header.Get(hdr); got != "" {
+			t.Fatalf("XMediaTransport.ApplyHeaders did not strip %s: %q", hdr, got)
+		}
+	}
+	if got := req.Header.Get("User-Agent"); got != DefaultUserAgent {
+		t.Fatalf("User-Agent = %q, want %q", got, DefaultUserAgent)
 	}
 }

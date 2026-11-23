@@ -30,7 +30,7 @@ type HomePosition struct {
 }
 
 // HomePositionSites are the site filters whose positions are kept.
-var HomePositionSites = []string{"all", "bilibili", "douyin", "weibo"}
+var HomePositionSites = []string{"all", "bilibili", "douyin", "weibo", "x"}
 
 // State represents the persistent UI state stored in ui-state.json.
 type State struct {
@@ -41,7 +41,7 @@ type State struct {
 	FeedFilter   FeedFilter       `json:"feedFilter"`
 	Anchor       FeedAnchor       `json:"anchor"`
 	HomeSeen     map[string]int64 `json:"homeSeen,omitempty"`
-	// HomePositions keeps, per site filter ("all", "bilibili", "douyin", "weibo"),
+	// HomePositions keeps, per site filter ("all", "bilibili", "douyin", "weibo", "x"),
 	// where the main timeline was read; optional, schema version 2+.
 	HomePositions map[string]HomePosition `json:"homePositions,omitempty"`
 	// DismissedLiveSessions are finished recordings removed from Tasks ›
@@ -103,7 +103,7 @@ type PlayerState struct {
 }
 
 // CurrentSchemaVersion is the schema version written to ui-state.json.
-const CurrentSchemaVersion = 3
+const CurrentSchemaVersion = 4
 
 // NormalizeSubDetailTab normalizes subscription detail tab values (DEC-051 ⑦).
 // Legacy "live" maps to "accounts"; empty or unknown values default to "content".
@@ -201,7 +201,7 @@ func Normalize(st State) State {
 		st.FeedFilter.Kind = "all"
 	}
 	switch strings.ToLower(strings.TrimSpace(st.FeedFilter.Site)) {
-	case "all", "bilibili", "douyin", "weibo":
+	case "all", "bilibili", "douyin", "weibo", "x":
 		st.FeedFilter.Site = strings.ToLower(strings.TrimSpace(st.FeedFilter.Site))
 	default:
 		st.FeedFilter.Site = "all"
@@ -306,7 +306,12 @@ type Store struct {
 
 // Open loads ui-state.json from path. Corrupt files are backed up and reset to Default().
 func Open(path string) (*Store, bool, string, error) {
+	return openWithSchemaVersion(path, CurrentSchemaVersion)
+}
+
+func openWithSchemaVersion(path string, supportedVersion int) (*Store, bool, string, error) {
 	def := Default()
+	def.Version = supportedVersion
 	s := &Store{
 		path:    path,
 		current: def,
@@ -337,14 +342,14 @@ func Open(path string) (*Store, bool, string, error) {
 		}
 		return s, true, backup, nil
 	}
-	if loaded.Version > CurrentSchemaVersion {
+	if loaded.Version > supportedVersion {
 		return nil, false, "", &storage.NewerDataError{
 			File:      "ui-state.json",
 			Found:     loaded.Version,
-			Supported: CurrentSchemaVersion,
+			Supported: supportedVersion,
 		}
 	}
-	if loaded.Version < CurrentSchemaVersion {
+	if loaded.Version < supportedVersion {
 		oldVersion := loaded.Version
 		if oldVersion <= 0 {
 			oldVersion = 1
@@ -355,8 +360,9 @@ func Open(path string) (*Store, bool, string, error) {
 				loaded.FeedFilter.Site = "all"
 			}
 		}
-		loaded.Version = CurrentSchemaVersion
+		loaded.Version = supportedVersion
 		norm := Normalize(loaded)
+		norm.Version = supportedVersion
 		backupPath := fmt.Sprintf("%s.premigrate-%d", path, oldVersion)
 		if info, statErr := os.Stat(backupPath); errors.Is(statErr, os.ErrNotExist) || statErr != nil || info.IsDir() {
 			if _, bErr := storage.BackupBeforeMigration(path, oldVersion); bErr != nil {
@@ -370,7 +376,9 @@ func Open(path string) (*Store, bool, string, error) {
 		return s, false, "", nil
 	}
 
-	s.current = Normalize(loaded)
+	norm := Normalize(loaded)
+	norm.Version = supportedVersion
+	s.current = norm
 	return s, false, "", nil
 }
 

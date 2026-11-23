@@ -27,3 +27,12 @@ func durationMismatch(gotSec, expectedSec float64) string {
 	}
 	return fmt.Sprintf("MP4 时长 %.1f 秒与站点给的 %.1f 秒相差超过 %.1f 秒", gotSec, expectedSec, tol)
 }
+
+// trackLengthsDisagree reports whether the muxed audio and video tracks differ
+// by more than durationTolerance of the longer one. A fixed 2 s limit refused
+// whole long videos: Bilibili's separately transcoded streams can differ by a
+// few seconds (dev 2026-11-23: a 564.0 s video stream with a 569.1 s audio
+// stream, 0.9 %, failed on every retry). Short videos keep the 2 s limit.
+func trackLengthsDisagree(summary MuxTrackSummary) bool {
+	return summary.MaxTrackDiffSec > durationTolerance(summary.DurationSec)
+}

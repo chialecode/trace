@@ -41,7 +41,10 @@ func (a *App) refreshLibraryFromDisk() {
 		return backend.RefreshLibrary()
 	}, func(rep library.RebuildReport) {
 		a.LibraryRefresh = LibraryRefreshState{Open: true, Report: rep}
+		a.libraryRev++
+		a.libraryItemsDirty = false
 		a.refreshLibraryStatistics()
+		a.refreshAccountWorks()
 		a.reloadLibraryItems()
 	}, func(err error) {
 		a.LibraryRefresh.Running = false

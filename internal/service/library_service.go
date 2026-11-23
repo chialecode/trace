@@ -175,6 +175,51 @@ func (b *Backend) enqueueWeiboPostWithSource(
 	return t, nil
 }
 
+// CacheXPost enqueues an X post (Snowflake status_id) for local caching,
+// reusing a complete in-memory plan when available (zero CDN URLs persisted).
+// via optionally supplies forwarding placement (DEC-056).
+func (b *Backend) CacheXPost(ctx context.Context, statusID string, via *library.ItemVia) (download.Task, error) {
+	if err := b.requireDesktop(); err != nil {
+		return download.Task{}, err
+	}
+	if err := b.requireSiteLogin(site.X); err != nil {
+		return download.Task{}, err
+	}
+	return b.enqueueXPostWithSource(ctx, statusID, "manual", via, nil)
+}
+
+func (b *Backend) enqueueXPostWithSource(
+	ctx context.Context,
+	statusID, source string,
+	via *library.ItemVia,
+	explicitPlan *download.WorkDownloadPlan,
+) (download.Task, error) {
+	if err := b.requireSiteLogin(site.X); err != nil {
+		return download.Task{}, err
+	}
+	cleanID := strings.TrimSpace(statusID)
+	plan := explicitPlan
+	if plan == nil && b.xPostCache != nil {
+		if cachedPost, ok := b.xPostCache.get(cleanID); ok {
+			if built, bErr := b.buildXWorkPlanFromPost(cachedPost); bErr == nil {
+				plan = &built
+			}
+		}
+	}
+	t, err := b.dl.EnqueueXWork(ctx, download.XWorkEnqueueRequest{
+		TargetID: cleanID,
+		Source:   source,
+		Plan:     plan,
+		Via:      via,
+	})
+	if err != nil {
+		b.logError("CacheXPost", err)
+		return download.Task{}, err
+	}
+	b.events.PublishSite(EventTaskUpdated, string(site.X), "enqueued:"+t.TargetID)
+	return t, nil
+}
+
 // CacheSupplement re-downloads missing danmaku/subtitle/cover sidecars for an already cached Bilibili video without re-downloading video/audio.
 func (b *Backend) CacheSupplement(ctx context.Context, bvid string) (download.Task, error) {
 	if err := b.requireDesktop(); err != nil {
@@ -209,12 +254,12 @@ func (b *Backend) Upgrade(ctx context.Context, key string) (download.Task, error
 	return task, nil
 }
 
-// ListDownloadTasks returns all download tasks across sites.
+// ListDownloadTasks returns download task summaries across sites (use TaskDetail for Files/Attempts).
 func (b *Backend) ListDownloadTasks() ([]download.Task, error) {
 	if err := b.requireAnyLogin(); err != nil {
 		return nil, err
 	}
-	return b.dl.ListTasks()
+	return b.dl.ListTasksSummary()
 }
 
 // TaskDetail returns per-file progress and sanitized attempt history for a download task.
@@ -280,9 +325,6 @@ func (b *Backend) RetryAllTasks() (download.BatchRetryResult, error) {
 	res, err := b.dl.RetryActionable(allowedSites)
 	if err != nil {
 		return res, err
-	}
-	if res.Retried > 0 {
-		b.events.Publish(EventTaskUpdated, "retried:all")
 	}
 	if res.Retried == 0 && res.SkippedAuth > 0 {
 		if len(res.MissingAuthSites) == 1 {
@@ -405,6 +447,15 @@ func (b *Backend) GetLibraryItem(keyOrID string) (library.ItemMetadata, bool, er
 	return b.lib.GetItem(keyOrID)
 }
 
+// GetLibraryItemMetaOnly returns cached item metadata from the SQLite index without
+// per-item filesystem symlink/stat resolution (for card covers & feed summaries).
+func (b *Backend) GetLibraryItemMetaOnly(keyOrID string) (library.ItemMetadata, bool, error) {
+	if err := b.requireAnyLogin(); err != nil {
+		return library.ItemMetadata{}, false, err
+	}
+	return b.lib.GetItemMetaOnly(keyOrID)
+}
+
 // MediaPath validates and resolves a registered relative file path within a cached item.
 func (b *Backend) MediaPath(key, relPath string) (string, error) {
 	if err := b.requireAnyLogin(); err != nil {
@@ -425,7 +476,7 @@ func (b *Backend) States(keys []string) map[string]library.DotState {
 	out := b.lib.States(keys)
 	activeProgress := make(map[string]float64)
 	latest := make(map[string]download.Task)
-	if tasks, err := b.dl.ListTasks(); err == nil {
+	if tasks, err := b.dl.ListNonTerminalTasks(); err == nil {
 		for _, t := range tasks {
 			for _, key := range []string{t.ItemKey, t.TargetID} {
 				if key == "" {

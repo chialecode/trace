@@ -128,8 +128,8 @@ func TestUIStateV1ToV2MigrationIdempotencyAndPreRenameFault(t *testing.T) {
 		t.Fatalf("expected on-disk version %d, got v=%d exists=%v err=%v", CurrentSchemaVersion, v, exists, err)
 	}
 
-	// Subsequent user selection of "bilibili", "douyin", or "weibo" is preserved across restarts.
-	for _, chosen := range []string{"bilibili", "douyin", "weibo"} {
+	// Subsequent user selection of "bilibili", "douyin", "weibo", or "x" is preserved across restarts.
+	for _, chosen := range []string{"bilibili", "douyin", "weibo", "x"} {
 		if _, err := store.Mutate(func(s *State) {
 			s.FeedFilter.Site = chosen
 		}); err != nil {
@@ -145,36 +145,36 @@ func TestUIStateV1ToV2MigrationIdempotencyAndPreRenameFault(t *testing.T) {
 		store = reopened
 	}
 
-	// Empty site in v3 defaults to "all".
-	v3EmptySite := `{"version":3,"feedFilter":{"kind":"all","site":""}}`
-	if err := os.WriteFile(path, []byte(v3EmptySite), 0o600); err != nil {
+	// Empty site in v4 defaults to "all".
+	v4EmptySite := `{"version":4,"feedFilter":{"kind":"all","site":""}}`
+	if err := os.WriteFile(path, []byte(v4EmptySite), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	reopened3, _, _, err := Open(path)
+	reopened4, _, _, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := reopened3.Get().FeedFilter.Site; got != "all" {
-		t.Fatalf("empty site in v3 should default to all, got %q", got)
+	if got := reopened4.Get().FeedFilter.Site; got != "all" {
+		t.Fatalf("empty site in v4 should default to all, got %q", got)
 	}
 
-	// Newer version (>3) is rejected without writing.
-	v4Raw := `{"version":4,"feedFilter":{"kind":"all","site":"weibo"}}`
-	if err := os.WriteFile(path, []byte(v4Raw), 0o600); err != nil {
+	// Newer version (>4) is rejected without writing.
+	v5Raw := `{"version":5,"feedFilter":{"kind":"all","site":"x"}}`
+	if err := os.WriteFile(path, []byte(v5Raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := Open(path); !storage.IsNewerData(err) {
-		t.Fatalf("expected NewerDataError on v4 ui-state, got %v", err)
+		t.Fatalf("expected NewerDataError on v5 ui-state, got %v", err)
 	}
 	afterNewer, _ := os.ReadFile(path)
-	if string(afterNewer) != v4Raw {
-		t.Fatalf("v4 ui-state.json modified on NewerDataError: %s", afterNewer)
+	if string(afterNewer) != v5Raw {
+		t.Fatalf("v5 ui-state.json modified on NewerDataError: %s", afterNewer)
 	}
 }
 
 func TestUIStateSubDetailTabNormalization(t *testing.T) {
-	if CurrentSchemaVersion != 3 {
-		t.Fatalf("CurrentSchemaVersion = %d, want 3", CurrentSchemaVersion)
+	if CurrentSchemaVersion != 4 {
+		t.Fatalf("CurrentSchemaVersion = %d, want 4", CurrentSchemaVersion)
 	}
 	for _, tc := range []struct {
 		in   string
@@ -196,20 +196,20 @@ func TestUIStateSubDetailTabNormalization(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ui-state.json")
 
-	// Legacy subDetailTab="live" in v3 ui-state.json maps to "accounts".
-	if err := os.WriteFile(path, []byte(`{"version":3,"lastRoute":"/subscriptions","subDetailTab":"live"}`), 0o600); err != nil {
+	// Legacy subDetailTab="live" in v4 ui-state.json maps to "accounts".
+	if err := os.WriteFile(path, []byte(`{"version":4,"lastRoute":"/subscriptions","subDetailTab":"live"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	store, recovered, _, err := Open(path)
 	if err != nil || recovered {
 		t.Fatalf("Open legacy subDetailTab=live: recovered=%v err=%v", recovered, err)
 	}
-	if got := store.Get(); got.SubDetailTab != "accounts" || got.Version != 3 {
-		t.Fatalf("expected SubDetailTab=accounts and Version=3, got %+v", got)
+	if got := store.Get(); got.SubDetailTab != "accounts" || got.Version != 4 {
+		t.Fatalf("expected SubDetailTab=accounts and Version=4, got %+v", got)
 	}
 
 	// Route query param ?tab=live also maps to "accounts" when subDetailTab is omitted.
-	if err := os.WriteFile(path, []byte(`{"version":3,"lastRoute":"/subscriptions/sub-1?tab=live"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"version":4,"lastRoute":"/subscriptions/sub-1?tab=live"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	storeRoute, _, _, err := Open(path)
@@ -221,7 +221,7 @@ func TestUIStateSubDetailTabNormalization(t *testing.T) {
 	}
 
 	// Omitted or unknown subDetailTab defaults to "content".
-	if err := os.WriteFile(path, []byte(`{"version":3,"lastRoute":"/subscriptions","subDetailTab":"legacy-updates"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"version":4,"lastRoute":"/subscriptions","subDetailTab":"legacy-updates"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	storeDefault, _, _, err := Open(path)
@@ -238,14 +238,14 @@ func TestUIStateSubDetailTabNormalization(t *testing.T) {
 func TestHomePositionsAreOptionalAndPerSiteFilter(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ui-state.json")
-	if err := os.WriteFile(path, []byte(`{"version":3,"lastRoute":"/home","anchor":{"order":"newest","key":"k1","pubTs":10}}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"version":4,"lastRoute":"/home","anchor":{"order":"newest","key":"k1","pubTs":10}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	store, recovered, _, err := Open(path)
 	if err != nil || recovered {
 		t.Fatalf("Open without homePositions: recovered=%v err=%v", recovered, err)
 	}
-	if got := store.Get(); got.HomePositions != nil || got.Anchor.Key != "k1" || got.Version != 3 {
+	if got := store.Get(); got.HomePositions != nil || got.Anchor.Key != "k1" || got.Version != 4 {
 		t.Fatalf("old file read differently: %+v", got)
 	}
 	next, err := store.Mutate(func(st *State) {
@@ -254,13 +254,18 @@ func TestHomePositionsAreOptionalAndPerSiteFilter(t *testing.T) {
 			"Bilibili":    {Key: "b", PubTs: 4, OffsetPx: -3},
 			"douyin":      {},
 			"Weibo":       {Key: "weibo:dynamic:5000000000000001", PubTs: 1700000001, OffsetPx: 24},
+			"X":           {Key: "x:dynamic:1000000000000000009", PubTs: 1700000002, OffsetPx: 18},
 			"unknownsite": {Key: "u", PubTs: 1},
 		}
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(next.HomePositions) != 3 || next.HomePositions["all"].OffsetPx != 12 || next.HomePositions["bilibili"].OffsetPx != 0 || next.HomePositions["weibo"].Key != "weibo:dynamic:5000000000000001" {
+	if len(next.HomePositions) != 4 ||
+		next.HomePositions["all"].OffsetPx != 12 ||
+		next.HomePositions["bilibili"].OffsetPx != 0 ||
+		next.HomePositions["weibo"].Key != "weibo:dynamic:5000000000000001" ||
+		next.HomePositions["x"].Key != "x:dynamic:1000000000000000009" {
 		t.Fatalf("unexpected normalized positions: %+v", next.HomePositions)
 	}
 	reopened, _, _, err := Open(path)
@@ -268,9 +273,10 @@ func TestHomePositionsAreOptionalAndPerSiteFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := reopened.Get()
-	if got.Version != 3 ||
+	if got.Version != 4 ||
 		got.HomePositions["all"] != (HomePosition{Key: "a", PubTs: 5, OffsetPx: 12}) ||
-		got.HomePositions["weibo"] != (HomePosition{Key: "weibo:dynamic:5000000000000001", PubTs: 1700000001, OffsetPx: 24}) {
+		got.HomePositions["weibo"] != (HomePosition{Key: "weibo:dynamic:5000000000000001", PubTs: 1700000001, OffsetPx: 24}) ||
+		got.HomePositions["x"] != (HomePosition{Key: "x:dynamic:1000000000000000009", PubTs: 1700000002, OffsetPx: 18}) {
 		t.Fatalf("positions not kept: %+v", got.HomePositions)
 	}
 	got.HomePositions["all"] = HomePosition{Key: "changed"}
@@ -292,7 +298,7 @@ func TestUIStateV2ToV3MigrationBackupIdempotencyAndWeiboPersistence(t *testing.T
 
 	// Pre-rename fault preserves original v2 file on disk.
 	restore := storage.SetBeforeMigrationRenameHookForTest(func(targetPath, tmpPath string) error {
-		return errors.New("simulated v2->v3 pre-rename fault")
+		return errors.New("simulated v2->current pre-rename fault")
 	})
 	if _, _, _, err := Open(path); err == nil {
 		restore()
@@ -305,17 +311,17 @@ func TestUIStateV2ToV3MigrationBackupIdempotencyAndWeiboPersistence(t *testing.T
 		t.Fatalf("v2 file altered on pre-rename fault: %s err=%v", afterFault, err)
 	}
 
-	// Successful v2->v3 migration creates .premigrate-2, prunes .premigrate-1, and preserves v2 user choice "bilibili".
+	// Successful migration creates .premigrate-2, prunes .premigrate-1, and preserves v2 user choice "bilibili".
 	store, recovered, _, err := Open(path)
 	if err != nil || recovered {
-		t.Fatalf("Open v2->v3: recovered=%v err=%v", recovered, err)
+		t.Fatalf("Open v2 migration: recovered=%v err=%v", recovered, err)
 	}
 	st := store.Get()
-	if st.Version != 3 || st.FeedFilter.Site != "bilibili" || st.FeedFilter.Kind != "dynamic" {
-		t.Fatalf("unexpected v2->v3 migrated state: %+v", st)
+	if st.Version != CurrentSchemaVersion || st.FeedFilter.Site != "bilibili" || st.FeedFilter.Kind != "dynamic" {
+		t.Fatalf("unexpected v2 migrated state: %+v", st)
 	}
 	if st.HomePositions["bilibili"].Key != "k2" {
-		t.Fatalf("v2->v3 dropped bilibili homePosition: %+v", st.HomePositions)
+		t.Fatalf("v2 migration dropped bilibili homePosition: %+v", st.HomePositions)
 	}
 	matches, _ := filepath.Glob(path + ".premigrate-*")
 	if len(matches) != 1 || filepath.Base(matches[0]) != "ui-state.json.premigrate-2" {
@@ -341,7 +347,7 @@ func TestUIStateV2ToV3MigrationBackupIdempotencyAndWeiboPersistence(t *testing.T
 		t.Fatal(err)
 	}
 	got := reopened.Get()
-	if got.Version != 3 || got.FeedFilter.Site != "weibo" || got.HomePositions["weibo"].Key != "weibo:dynamic:5000000000000001" || got.HomePositions["weibo"].OffsetPx != 36 {
+	if got.Version != CurrentSchemaVersion || got.FeedFilter.Site != "weibo" || got.HomePositions["weibo"].Key != "weibo:dynamic:5000000000000001" || got.HomePositions["weibo"].OffsetPx != 36 {
 		t.Fatalf("weibo state not persisted across reopen: %+v", got)
 	}
 	// Idempotent reopen leaves .premigrate-2 intact.
@@ -365,6 +371,110 @@ func TestUIStateV2ToV3MigrationBackupIdempotencyAndWeiboPersistence(t *testing.T
 	stillV2, err := os.ReadFile(blockedPath)
 	if err != nil || string(stillV2) != v2Raw {
 		t.Fatalf("v2 file mutated after blocked migration backup: %q err=%v", stillV2, err)
+	}
+}
+
+func TestUIStateV3ToV4MigrationBackupIdempotencyDowngradeAndXPersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ui-state.json")
+	v3Raw := `{"version":3,"lastRoute":"/home","feedFilter":{"kind":"dynamic","site":"weibo"},"homePositions":{"all":{"key":"k1","pubTs":100,"offsetPx":10},"weibo":{"key":"weibo:dynamic:5000000000000001","pubTs":1730000000,"offsetPx":16}}}`
+	if err := os.WriteFile(path, []byte(v3Raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".premigrate-2", []byte(`{"version":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulated mid-migration pre-rename failure keeps BOTH original v3 file and .premigrate-3 backup intact.
+	restore := storage.SetBeforeMigrationRenameHookForTest(func(targetPath, tmpPath string) error {
+		return errors.New("simulated v3->v4 pre-rename fault")
+	})
+	if _, _, _, err := Open(path); err == nil {
+		restore()
+		t.Fatal("expected pre-rename fault to abort Open")
+	}
+	restore()
+
+	afterFault, err := os.ReadFile(path)
+	if err != nil || string(afterFault) != v3Raw {
+		t.Fatalf("v3 file altered on pre-rename fault: %s err=%v", afterFault, err)
+	}
+	bakAfterFault, err := os.ReadFile(path + ".premigrate-3")
+	if err != nil || string(bakAfterFault) != v3Raw {
+		t.Fatalf("premigrate-3 missing or altered after pre-rename fault: %q err=%v", bakAfterFault, err)
+	}
+
+	// Successful v3->v4 migration leaves only .premigrate-3 (pruning .premigrate-2) and preserves existing v3 state.
+	store, recovered, _, err := Open(path)
+	if err != nil || recovered {
+		t.Fatalf("Open v3->v4: recovered=%v err=%v", recovered, err)
+	}
+	st := store.Get()
+	if st.Version != 4 || st.FeedFilter.Site != "weibo" || st.FeedFilter.Kind != "dynamic" {
+		t.Fatalf("unexpected v3->v4 migrated state: %+v", st)
+	}
+	if st.HomePositions["weibo"].Key != "weibo:dynamic:5000000000000001" {
+		t.Fatalf("v3->v4 dropped weibo homePosition: %+v", st.HomePositions)
+	}
+	matches, _ := filepath.Glob(path + ".premigrate-*")
+	if len(matches) != 1 || filepath.Base(matches[0]) != "ui-state.json.premigrate-3" {
+		t.Fatalf("expected only ui-state.json.premigrate-3, got %v", matches)
+	}
+
+	// Persisting "x" filter and reading position survives reopen cleanly and idempotently.
+	if _, err := store.Mutate(func(s *State) {
+		s.FeedFilter.Site = "x"
+		if s.HomePositions == nil {
+			s.HomePositions = make(map[string]HomePosition)
+		}
+		s.HomePositions["x"] = HomePosition{Key: "x:dynamic:1000000000000000009", PubTs: 1795327200, OffsetPx: 42}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, _, _, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reopened.Get()
+	if got.Version != 4 || got.FeedFilter.Site != "x" || got.HomePositions["x"].Key != "x:dynamic:1000000000000000009" || got.HomePositions["x"].OffsetPx != 42 {
+		t.Fatalf("x state not persisted across reopen: %+v", got)
+	}
+	bakAfterReopen, _ := os.ReadFile(matches[0])
+	if string(bakAfterReopen) != v3Raw {
+		t.Fatalf("idempotent reopen altered .premigrate-3")
+	}
+
+	// Downgrade guard: simulated old v3 version constant refuses to open or write v4 ui-state.json with site="x".
+	v4DiskBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := openWithSchemaVersion(path, 3); !storage.IsNewerData(err) {
+		t.Fatalf("expected old v3 opener to reject v4 ui-state.json with NewerDataError, got %v", err)
+	}
+	if _, err := storage.GuardDataSchemas(dir, []storage.SchemaFile{{Name: "ui-state.json", Kind: storage.SchemaJSON, Current: 3}}); !storage.IsNewerData(err) {
+		t.Fatalf("expected old v3 schema guard to reject v4 ui-state.json with NewerDataError, got %v", err)
+	}
+	v4DiskAfter, _ := os.ReadFile(path)
+	if string(v4DiskBefore) != string(v4DiskAfter) {
+		t.Fatalf("old v3 guard modified v4 ui-state.json on disk")
+	}
+
+	// Directory blocking .premigrate-3 fails closed without mutating v3 file.
+	blockedDir := t.TempDir()
+	blockedPath := filepath.Join(blockedDir, "ui-state.json")
+	if err := os.WriteFile(blockedPath, []byte(v3Raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(blockedPath+".premigrate-3", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := Open(blockedPath); err == nil {
+		t.Fatal("expected migration to fail closed when .premigrate-3 is a directory")
+	}
+	stillV3, err := os.ReadFile(blockedPath)
+	if err != nil || string(stillV3) != v3Raw {
+		t.Fatalf("v3 file mutated after blocked migration backup: %q err=%v", stillV3, err)
 	}
 }
 

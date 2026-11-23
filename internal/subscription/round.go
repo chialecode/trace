@@ -18,6 +18,8 @@ const (
 	DefaultDouyinRoundAccountCap = 20
 	// DefaultWeiboRoundAccountCap is the maximum Weibo accounts checked in one scheduled round.
 	DefaultWeiboRoundAccountCap = 20
+	// DefaultXRoundAccountCap is the maximum X accounts checked in one scheduled round.
+	DefaultXRoundAccountCap = 15
 
 	// DefaultBilibiliAccountInterval is the minimum spacing between two Bilibili accounts in a check round.
 	DefaultBilibiliAccountInterval = 2 * time.Second
@@ -25,6 +27,8 @@ const (
 	DefaultDouyinAccountInterval = 2500 * time.Millisecond
 	// DefaultWeiboAccountInterval is the minimum spacing between two Weibo accounts in a check round.
 	DefaultWeiboAccountInterval = 3 * time.Second
+	// DefaultXAccountInterval is the minimum spacing between two X accounts in a check round.
+	DefaultXAccountInterval = 5 * time.Second
 )
 
 // AutoCacheEnqueueFunc enqueues an automatic cache task (with source="auto") for a discovered update item
@@ -64,6 +68,8 @@ func SiteScheduledRoundCap(siteName string) int {
 		return DefaultDouyinRoundAccountCap
 	case string(site.Weibo):
 		return DefaultWeiboRoundAccountCap
+	case string(site.X):
+		return DefaultXRoundAccountCap
 	default:
 		return 0
 	}
@@ -183,6 +189,11 @@ func (m *Manager) siteAccountIntervalLocked(siteName string) time.Duration {
 			return 0
 		}
 		return DefaultWeiboAccountInterval
+	case site.X:
+		if m.accountIntervalTouched && m.accountInterval == 0 {
+			return 0
+		}
+		return DefaultXAccountInterval
 	default:
 		return 0
 	}
@@ -276,7 +287,7 @@ func (m *Manager) UpdateAccountSnapshot(siteName, uid, name, face, uniqueID stri
 				owner.Accounts[i].Face = normAcc.Face
 				changed = true
 			}
-			if normAcc.Site == string(site.Douyin) && normAcc.UniqueID != "" && owner.Accounts[i].UniqueID != normAcc.UniqueID {
+			if (normAcc.Site == string(site.Douyin) || normAcc.Site == string(site.X)) && normAcc.UniqueID != "" && owner.Accounts[i].UniqueID != normAcc.UniqueID {
 				owner.Accounts[i].UniqueID = normAcc.UniqueID
 				changed = true
 			}
@@ -294,13 +305,13 @@ func (m *Manager) UpdateAccountSnapshot(siteName, uid, name, face, uniqueID stri
 }
 
 // ListAutoRecordAccounts returns all linked accounts on subscriptions that have Rules.AutoRecord enabled,
-// optionally filtered by siteName (empty siteName returns all live-capable sites; Weibo is always excluded).
+// optionally filtered by siteName (empty siteName returns all live-capable sites; Weibo and X are always excluded).
 func (m *Manager) ListAutoRecordAccounts(siteName string) []AccountRef {
 	rawFilter := strings.ToLower(strings.TrimSpace(siteName))
 	var filterSite string
 	if rawFilter != "" {
 		id, ok := site.ParseID(rawFilter)
-		if !ok || id == site.Weibo {
+		if !ok || id == site.Weibo || id == site.X {
 			return nil
 		}
 		filterSite = string(id)
@@ -318,7 +329,7 @@ func (m *Manager) ListAutoRecordAccounts(siteName string) []AccountRef {
 		}
 		for _, a := range s.Accounts {
 			accSite := normalizeLegacyAccountSite(a.Site)
-			if accSite == string(site.Weibo) || !site.ID(accSite).Valid() {
+			if accSite == string(site.Weibo) || accSite == string(site.X) || !site.ID(accSite).Valid() {
 				continue
 			}
 			if filterSite != "" && accSite != filterSite {
@@ -394,6 +405,8 @@ func unloggedSiteSkipMessage(siteName string) string {
 		return "未登录抖音，已跳过"
 	case string(site.Weibo):
 		return "未登录微博，已跳过"
+	case string(site.X):
+		return "未登录 X，已跳过"
 	default:
 		return "未登录" + strings.TrimSpace(siteName) + "，已跳过"
 	}
@@ -437,10 +450,14 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 		}
 		if accSite != "" {
 			targetSite := site.ID(accSite)
+			msg := "请先登录" + targetSite.DisplayName()
+			if targetSite == site.X {
+				msg = "请先登录 X"
+			}
 			return CheckSummary{}, &site.Error{
 				Site:    targetSite,
 				Kind:    site.ErrKindAuthRequired,
-				Message: "请先登录" + targetSite.DisplayName(),
+				Message: msg,
 			}
 		}
 		if m.client != nil {
@@ -595,18 +612,20 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 			continue
 		}
 
-		if isScheduled {
+		if isScheduled || site.ID(siteName) == site.X {
 			if inBackoff, _ := m.IsSiteInBackoff(siteName); inBackoff {
 				summary.DeferredByBackoff = true
 				summary.SiteDeferredByBackoff = append(summary.SiteDeferredByBackoff, siteName)
 				abortedSites[siteName] = site.ErrKindBackoff
 				continue
 			}
+		}
+		if isScheduled {
 			var requiredTokens int
 			switch site.ID(siteName) {
 			case site.Bilibili:
 				requiredTokens = 3*len(candidates) + 2
-			case site.Douyin, site.Weibo:
+			case site.Douyin, site.Weibo, site.X:
 				requiredTokens = 2 * len(candidates)
 			default:
 				requiredTokens = 1
@@ -635,6 +654,7 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 	wholeRoundAborted := false
 	var checkedAccounts []AccountRef
 	checkedCountBySite := make(map[string]int)
+	siteStopResetAt := make(map[string]time.Time)
 	subsDirtyDisk := false
 
 	flushSubsDisk := func() error {
@@ -729,6 +749,17 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 
 				if errKind == site.ErrKindRiskControl || errKind == site.ErrKindRateLimited || errKind == site.ErrKindAuthRequired {
 					summary.StoppedByRiskControl = true
+					if summary.SiteStopped == nil {
+						summary.SiteStopped = make(map[string]string)
+					}
+					summary.SiteStopped[siteName] = errKind
+					abortedSites[siteName] = errKind
+					if resetAt := extractRateLimitResetAt(checkErr); !resetAt.IsZero() {
+						siteStopResetAt[siteName] = resetAt
+					}
+					break
+				}
+				if siteName == string(site.X) && errKind == site.ErrKindSchemaChanged {
 					if summary.SiteStopped == nil {
 						summary.SiteStopped = make(map[string]string)
 					}
@@ -837,7 +868,7 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 			continue
 		}
 		stopKind := abortedSites[siteName]
-		if err := m.finalizeSiteRoundSchedulerState(siteName, roundStart, stopKind, checkedCountBySite[siteName], wholeRoundAborted); err != nil {
+		if err := m.finalizeSiteRoundSchedulerState(siteName, roundStart, stopKind, siteStopResetAt[siteName], checkedCountBySite[siteName], wholeRoundAborted); err != nil {
 			return summary, err
 		}
 	}
@@ -861,6 +892,13 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 				switch reason {
 				case site.ErrKindRiskControl, site.ErrKindRateLimited, site.ErrKindAuthRequired:
 					summary.StoppedByRiskControl = true
+					if summary.SiteStopped == nil {
+						summary.SiteStopped = make(map[string]string)
+					}
+					if summary.SiteStopped[sName] == "" {
+						summary.SiteStopped[sName] = reason
+					}
+				case site.ErrKindSchemaChanged:
 					if summary.SiteStopped == nil {
 						summary.SiteStopped = make(map[string]string)
 					}
@@ -936,8 +974,8 @@ func (m *Manager) runPostRoundLiveCheck(
 	var eligible []AccountRef
 	for _, a := range checkedAccounts {
 		s := normalizeLegacyAccountSite(a.Site)
-		if s == string(site.Weibo) || !site.ID(s).Valid() {
-			continue // Weibo live status check is unsupported (0 requests).
+		if s == string(site.Weibo) || s == string(site.X) || !site.ID(s).Valid() {
+			continue // Weibo and X live status checks are unsupported (0 requests).
 		}
 		if abortedSites[s] != "" {
 			continue
@@ -1013,6 +1051,7 @@ func (m *Manager) finalizeSiteRoundSchedulerState(
 	siteName string,
 	roundStart time.Time,
 	stopKind string,
+	resetAt time.Time,
 	checkedCount int,
 	wholeRoundAborted bool,
 ) error {
@@ -1022,10 +1061,40 @@ func (m *Manager) finalizeSiteRoundSchedulerState(
 	schedSt := m.getSiteSchedulerStateLocked(siteName)
 	now := m.nowFunc().UTC()
 
-	// Exponential backoff applies only to risk_control and rate_limited
-	// (subscriptions.md §3). Auth expiry records the stop reason without
-	// locking the site into a 2-24h backoff after the user re-authenticates.
+	// Backoff applies only to risk_control and rate_limited (subscriptions.md §3).
+	// Rate limits carrying an explicit reset timestamp pause until reset + 0..60s jitter;
+	// risk_control and unanchored rate limits use exponential backoff up to 24h.
+	// Auth expiry and schema drift record the stop reason without locking the site into
+	// exponential backoff after recovery.
 	if stopKind == site.ErrKindRiskControl || stopKind == site.ErrKindRateLimited {
+		if stopKind == site.ErrKindRateLimited && !resetAt.IsZero() {
+			if prevAt, err := time.Parse(time.RFC3339, schedSt.LastStopAt); err == nil && !prevAt.Before(roundStart.Truncate(time.Second)) && schedSt.LastStopReason == stopKind {
+				if curUntil, uErr := time.Parse(time.RFC3339, schedSt.BackoffUntil); uErr == nil && !curUntil.Before(resetAt.UTC()) {
+					return nil
+				}
+			}
+			jitter := m.nextRateLimitJitterLocked()
+			until := resetAt.UTC().Add(jitter)
+			if !until.After(now) {
+				until = now.Add(max(jitter, time.Second))
+			}
+			if maxUntil := now.Add(24 * time.Hour); until.After(maxUntil) {
+				until = maxUntil
+			}
+			if curUntil, uErr := time.Parse(time.RFC3339, schedSt.BackoffUntil); uErr == nil && curUntil.After(until) {
+				until = curUntil
+			}
+			if schedSt.ConsecutiveFailures < 1 {
+				schedSt.ConsecutiveFailures = 1
+			}
+			if schedSt.BackoffLevel < 1 {
+				schedSt.BackoffLevel = 1
+			}
+			schedSt.LastStopReason = stopKind
+			schedSt.LastStopAt = now.Format(time.RFC3339)
+			schedSt.BackoffUntil = until.Format(time.RFC3339)
+			return m.saveSiteSchedulerStateLocked(siteName, schedSt)
+		}
 		// Avoid double-incrementing if the site client's automatic breaker already recorded this stop during the round.
 		if prevAt, err := time.Parse(time.RFC3339, schedSt.LastStopAt); err == nil && !prevAt.Before(roundStart.Truncate(time.Second)) && schedSt.LastStopReason == stopKind && schedSt.BackoffUntil != "" {
 			return nil
@@ -1044,7 +1113,7 @@ func (m *Manager) finalizeSiteRoundSchedulerState(
 		return m.saveSiteSchedulerStateLocked(siteName, schedSt)
 	}
 
-	if stopKind == site.ErrKindAuthRequired {
+	if stopKind == site.ErrKindAuthRequired || stopKind == site.ErrKindSchemaChanged {
 		schedSt.LastStopReason = stopKind
 		schedSt.LastStopAt = now.Format(time.RFC3339)
 		return m.saveSiteSchedulerStateLocked(siteName, schedSt)

@@ -13,9 +13,42 @@ import (
 	"github.com/chialecode/trace/internal/site/bilibili"
 )
 
+type rateLimitResetAtProvider interface {
+	RateLimitResetAt() time.Time
+}
+
 func userErrorText(err error) string {
 	if err == nil {
 		return ""
+	}
+	if site.SiteOf(err) == site.X {
+		switch site.KindOf(err) {
+		case site.ErrKindRiskControl:
+			return "X 要求验证或账号被临时锁定，TRACE 已停止 X 的全部自动请求，请先在浏览器里处理"
+		case site.ErrKindAuthRequired:
+			var se *site.Error
+			if errors.As(err, &se) && strings.TrimSpace(se.Message) != "" {
+				return strings.TrimSpace(se.Message)
+			}
+			return "请先登录 X"
+		case site.ErrKindRateLimited:
+			var se *site.Error
+			if errors.As(err, &se) && strings.TrimSpace(se.Message) != "" {
+				return strings.TrimSpace(se.Message)
+			}
+			var rl rateLimitResetAtProvider
+			if errors.As(err, &rl) && !rl.RateLimitResetAt().IsZero() {
+				wait := time.Until(rl.RateLimitResetAt())
+				mins := 1
+				if wait > 0 {
+					if m := int(wait.Minutes()) + 1; m > 1 {
+						mins = m
+					}
+				}
+				return fmt.Sprintf("X 限流，约 %d 分钟后再试（预计 %s 恢复）", mins, rl.RateLimitResetAt().Local().Format("15:04"))
+			}
+			return "X 限流，请稍后再试"
+		}
 	}
 	var se *site.Error
 	if errors.As(err, &se) && strings.TrimSpace(se.Message) != "" {
@@ -69,23 +102,34 @@ func (a *App) saveSettings() {
 	a.DraftSettings = updated
 }
 
-func (a *App) loadImportPage(reset bool) {
-	siteID := a.ImportSite
-	if siteID != string(site.Weibo) {
-		siteID = string(site.Bilibili)
+func normalizeImportSite(siteID string) string {
+	switch strings.ToLower(strings.TrimSpace(siteID)) {
+	case string(site.Weibo):
+		return string(site.Weibo)
+	case string(site.X):
+		return string(site.X)
+	default:
+		return string(site.Bilibili)
 	}
+}
+
+func (a *App) loadImportPage(reset bool) {
+	siteID := normalizeImportSite(a.ImportSite)
 	if !a.backend.StatusOf(siteID).LoggedIn {
 		a.ImportError = "请先登录" + siteFullLabel(siteID)
 		return
 	}
 	page := a.ImportPage + 1
+	cursor := a.ImportCursor
 	if reset {
 		page = 1
+		cursor = ""
+		a.ImportCursor = ""
 		a.importFollowingsSeq++
 	}
 	seq := a.importFollowingsSeq
 	groupID := ""
-	if a.ImportGroup != "" && a.ImportGroup != "全部关注" {
+	if siteID != string(site.X) && a.ImportGroup != "" && a.ImportGroup != "全部关注" {
 		groupID = a.ImportGroup
 		for _, g := range a.ImportGroupsDTO {
 			if g.Name == a.ImportGroup {
@@ -95,10 +139,13 @@ func (a *App) loadImportPage(reset bool) {
 		}
 	}
 	group := a.ImportGroup
-	reqKey := fmt.Sprintf("followings:%s:%d:%s:%d", siteID, seq, group, page)
+	reqKey := fmt.Sprintf("followings:%s:%d:%s:%d:%s", siteID, seq, group, page, cursor)
 	requestGuarded(a, reqKey, func() bool {
-		return a.ImportSubModalOpen && a.ImportSite == siteID && a.ImportGroup == group && a.importFollowingsSeq == seq
+		return a.ImportSubModalOpen && normalizeImportSite(a.ImportSite) == siteID && a.ImportGroup == group && a.importFollowingsSeq == seq
 	}, func(ctx context.Context) (service.FollowingCreatorsPageDTO, error) {
+		if siteID == string(site.X) {
+			return a.backend.FollowingCreatorsPageWithCursor(ctx, siteID, "", cursor)
+		}
 		return a.backend.FollowingCreatorsPage(ctx, siteID, groupID, page)
 	}, func(pg service.FollowingCreatorsPageDTO) {
 		a.ImportError = ""
@@ -142,6 +189,7 @@ func (a *App) loadImportPage(reset bool) {
 		} else {
 			a.ImportPage = page
 		}
+		a.ImportCursor = strings.TrimSpace(pg.NextCursor)
 		a.ImportHasMore = pg.HasMore
 		a.ImportGroupsEnabled = pg.GroupsEnabled && len(a.ImportGroupsDTO) > 0
 	}, func(err error) { a.ImportError = userErrorText(err); a.showError(err) })
@@ -171,7 +219,7 @@ func (a *App) selectedSubscriptionAccountKeys() []string {
 			var keys []string
 			for _, acc := range sub.Accounts {
 				siteID, ok := site.ParseID(firstNonEmptyStrUI(acc.Site, string(site.Bilibili)))
-				if !ok || siteID == site.Weibo || strings.TrimSpace(acc.UID) == "" {
+				if !ok || siteID == site.Weibo || siteID == site.X || strings.TrimSpace(acc.UID) == "" {
 					continue
 				}
 				keys = append(keys, site.AccountKey(siteID, acc.UID))

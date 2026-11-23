@@ -25,6 +25,8 @@ type sceneSpec struct {
 	PanelRequiredLabels  []string
 	NarrowRequiredLabels []string
 	ForbiddenLabels      []string
+	RequiredTexts        []string
+	ForbiddenTexts       []string
 	// TitleBar simulates the hidden title bar's window buttons (DEC-046 ④).
 	TitleBar mygoui.TitleBar
 	// Frames is how many more frames the scene needs to settle, as a
@@ -54,8 +56,13 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 	fixtureBackend := env.backend
 	douyinSecUID := env.douyinSecUID
 	weiboUID := env.weiboUID
+	xUID := env.xUID
+	xHandle := env.xHandle
+	xOnlyUID := env.xOnlyUID
+	xOnlyHandle := env.xOnlyHandle
 	primarySub := env.primarySub
 	auroraSub := env.auroraSub
+	xOnlySub := env.xOnlySub
 	batchRule := env.batchRule
 	savedItem := env.savedItem
 	savedLiveItem := env.savedLiveItem
@@ -65,6 +72,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 	savedDouyinNote := env.savedDouyinNote
 	savedWeiboPost := env.savedWeiboPost
 	savedWeiboRetweet := env.savedWeiboRetweet
+	savedXPost := env.savedXPost
+	savedXRetweet := env.savedXRetweet
 	seedRecentAndLive := func() { env.seedRecentAndLive(app) }
 	injectMixedHomeFeed := func() { env.injectMixedHomeFeed(app) }
 
@@ -94,8 +103,10 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"主页站点筛选：B 站",
 				"主页站点筛选：抖音",
 				"主页站点筛选：微博",
+				"主页站点筛选：X",
 				"主页作者站点：bilibili:video:SYNTH_0001",
 				"主页作者站点：" + savedWeiboPost.ItemKey,
+				"主页作者站点：" + savedXPost.ItemKey,
 				"主页作者站点：" + savedDouyinNote.ItemKey,
 			},
 			// DEC-053 ②: the subscriptions in the panel, or the avatar
@@ -161,6 +172,11 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅详情账号站点：bilibili:20001",
 				"订阅详情账号站点：douyin:" + douyinSecUID,
 				"订阅详情账号站点：weibo:" + weiboUID,
+				"订阅详情账号站点：x:" + xUID,
+				"订阅详情账号站点：x:" + xOnlyUID,
+				"订阅账号站点：x:" + xUID,
+				"订阅账号站点：x:" + xOnlyUID,
+				"订阅网格站点",
 				"用户页站点标记",
 			},
 		},
@@ -211,10 +227,17 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.SubAccountsSite = "all"
 			},
 			RequiredLabels: []string{
+				"订阅账号站点筛选：全部",
+				"订阅账号站点筛选：B 站",
+				"订阅账号站点筛选：抖音",
+				"订阅账号站点筛选：微博",
+				"订阅账号站点筛选：X",
 				"订阅账号列表",
 				"订阅账号：bilibili:20001",
 				"所属订阅：bilibili:20001",
 				"全部账号更多：bilibili:20001",
+				"订阅账号：x:" + xUID,
+				"订阅账号站点：x:" + xUID,
 			},
 			PanelRequiredLabels: []string{"订阅侧栏：全部账号"},
 		},
@@ -277,11 +300,13 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅详情账号站点：bilibili:20001",
 				"订阅详情账号站点：douyin:" + douyinSecUID,
 				"订阅详情账号站点：weibo:" + weiboUID,
+				"订阅详情账号站点：x:" + xUID,
 				"开始录制 9001",
 				"停止录制 douyin:" + douyinSecUID,
 				"订阅账号更多：bilibili:20001",
 				"订阅账号更多：douyin:" + douyinSecUID,
 				"订阅账号更多：weibo:" + weiboUID,
+				"订阅账号更多：x:" + xUID,
 				"关联账号输入",
 				"预览关联账号",
 			},
@@ -289,6 +314,38 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅内容信息流列表",
 				"开始录制 weibo:" + weiboUID,
 				"停止录制 weibo:" + weiboUID,
+				"开始录制 x:" + xUID,
+				"停止录制 x:" + xUID,
+			},
+		},
+		{
+			Name: "subscription-accounts-x",
+			Setup: func() {
+				seedRecentAndLive()
+				if xOnlySub.ID != "" {
+					app.OpenSubscriptionDetail(xOnlySub)
+					app.SubDetailTab = "accounts"
+				}
+			},
+			RequiredLabels: []string{
+				"订阅标签：内容",
+				"订阅标签：账号",
+				"订阅详情账号站点：x:" + xOnlyUID,
+				"订阅账号更多：x:" + xOnlyUID,
+			},
+			RequiredTexts: []string{
+				"@" + xOnlyHandle,
+			},
+			ForbiddenLabels: []string{
+				"订阅内容信息流列表",
+				"开始录制 x:" + xOnlyUID,
+				"停止录制 x:" + xOnlyUID,
+			},
+			ForbiddenTexts: []string{
+				"未开播",
+				"直播中",
+				"录制中",
+				"未开通直播间",
 			},
 		},
 		{
@@ -316,12 +373,52 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"关注导入对话框",
 				"关注导入站点：哔哩哔哩",
 				"关注导入站点：微博",
+				"关注导入站点：X",
 				"关注导入虚拟列表",
 				"勾选导入 500000002",
 			},
 			ForbiddenLabels: []string{
 				"关注分组",
 				"勾选导入 " + weiboUID,
+			},
+		},
+		{
+			Name: "import-followings-x",
+			Setup: func() {
+				seedRecentAndLive()
+				app.Navigate(ui.RouteSubscriptions)
+				app.SubDetailOpen, app.SubAccountsOpen = false, false
+				app.ImportSubModalOpen = true
+				app.ImportSite = "x"
+				app.ImportGroup = "全部关注"
+				app.ImportSearch = ""
+				app.ImportError = ""
+				app.ImportGroupsDTO = nil
+				app.ImportGroupsEnabled = false
+				app.ImportCreators = []service.FollowingCreatorDTO{
+					{Site: "x", UID: xUID, UniqueID: xHandle, Name: "技术频道_X", Sign: "系统工程与跨平台媒体工具实践", Subscribed: true, OwnerSubName: "技术频道_Alpha"},
+					{Site: "x", UID: "1000000000000000004", UniqueID: "synth_x_dev", Name: "合成X开发者", Sign: "每周分享 Go 与桌面界面工程"},
+					{Site: "x", UID: "1000000000000000005", UniqueID: "synth_x_photo", Name: "合成X摄影师", Sign: "胶片与风光摄影归档"},
+				}
+				app.ImportSelectedKeys = map[string]bool{"x:1000000000000000004": true}
+				app.ImportHasMore = false
+			},
+			RequiredLabels: []string{
+				"关注导入对话框",
+				"关注导入站点：哔哩哔哩",
+				"关注导入站点：微博",
+				"关注导入站点：X",
+				"关注导入虚拟列表",
+				"勾选导入 1000000000000000004",
+			},
+			RequiredTexts: []string{
+				"@" + xHandle,
+				"@synth_x_dev",
+				"已在订阅「技术频道_Alpha」中",
+			},
+			ForbiddenLabels: []string{
+				"关注分组",
+				"勾选导入 " + xUID,
 			},
 		},
 		{
@@ -374,10 +471,19 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"账号分组：哔哩哔哩",
 				"账号分组：抖音",
 				"账号分组：微博",
+				"账号分组：X",
 				"重新粘贴抖音Cookie",
 				"退出抖音登录",
 				"重新粘贴微博Cookie",
 				"退出微博登录",
+				"重新粘贴XCookie",
+				"退出X登录",
+			},
+			RequiredTexts: []string{
+				"X（原 Twitter）",
+				"@trace_x_demo",
+				"粘贴的 Cookie 不续期",
+				"风险说明",
 			},
 		},
 		{
@@ -401,6 +507,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			RequiredLabels: []string{
 				"链接解析输入框",
 				"立即解析",
+				"历史站点：x:1000000000000000009",
 			},
 			PanelRequiredLabels: []string{
 				"最近解析更多",
@@ -409,6 +516,12 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"历史站点：bilibili:BV1xx411c7mD",
 				"历史站点：douyin:7388001001",
 				"历史站点：weibo:5000000000000001",
+				"历史站点：x:1000000000000000009",
+				"历史站点：x:" + xUID,
+			},
+			RequiredTexts: []string{
+				"帖子",
+				"X 用户",
 			},
 			ForbiddenLabels: []string{"快速解析输入框"},
 		},
@@ -423,6 +536,23 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			RequiredLabels: []string{
 				"链接解析输入框",
 				"立即解析",
+			},
+			ForbiddenLabels: []string{"快速解析输入框"},
+		},
+		{
+			Name: "parse-x-spaces",
+			Setup: func() {
+				app.Navigate(ui.RouteParse)
+				app.HistoryItems = b.ListHistory()
+				app.ParsePageInput = "https://x.com/i/spaces/1SyntheticSpaceId"
+				app.LastParseError = "X 直播与 Spaces 暂不支持录制，可以在浏览器中打开"
+			},
+			RequiredLabels: []string{
+				"链接解析输入框",
+				"立即解析",
+			},
+			RequiredTexts: []string{
+				"X 直播与 Spaces 暂不支持录制，可以在浏览器中打开",
 			},
 			ForbiddenLabels: []string{"快速解析输入框"},
 		},
@@ -467,6 +597,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"媒体库站点筛选：全部",
 				"媒体库站点筛选：B 站",
 				"媒体库站点筛选：抖音",
+				"媒体库站点筛选：微博",
+				"媒体库站点筛选：X",
 			},
 			ForbiddenLabels: []string{
 				"缓存视频",
@@ -1034,6 +1166,536 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 		},
 		{
+			Name: "x-user",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.UserListFilter = "all"
+				app.CurrentXUser = &service.XUserDTO{
+					RestID:         xUID,
+					ScreenName:     xHandle,
+					Name:           "技术频道_X",
+					Description:    "系统工程、纯 Go 桌面架构与四站点离线归档笔记",
+					IsBlueVerified: true,
+					FollowersCount: 128400,
+					FriendsCount:   95,
+					StatusesCount:  3240,
+					CanonicalURL:   "https://x.com/" + xHandle,
+				}
+				app.CurrentXPosts = []service.XPostDTO{
+					{
+						ID:           "1000000000000000009",
+						Author:       service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+						CreatedAt:    1710004600,
+						Text:         "置顶公告：本账号整理系统编程、多媒体封装与跨平台离线归档实践，支持四站点独立凭证与限流退避。",
+						Pinned:       true,
+						CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000009",
+						CacheKey:     savedXPost.ItemKey,
+					},
+					{
+						ID:           "1000000000000000010",
+						Author:       service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+						CreatedAt:    1710004200,
+						Text:         "时间线翻页与去重说明：沿用游标分页并在到达平台可见上限时给出明确提示。",
+						CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000010",
+						CacheKey:     "x:dynamic:1000000000000000010",
+					},
+				}
+				app.XPostsHasMore = false
+				app.XPostsError = ""
+				app.XPostsAuthExpired = false
+				app.XPostsUncertainEmpty = false
+				app.XBottomTipsVisible = true
+				app.XBottomTipsText = "已到达 X 时间线可见上限"
+				app.XUserSubMenuOpen = false
+				app.XUserListState = &mygoui.ListState{}
+				app.CurrentRoute = ui.RouteXUser
+			},
+			RequiredLabels: []string{
+				"用户页站点标记",
+				"X认证标记",
+				"X帖子总数",
+				"X主页更多",
+				"用户页筛选：全部",
+				"用户页筛选：未缓存",
+				"X用户列表",
+				"X时间线可见上限提示",
+			},
+			RequiredTexts: []string{
+				"@" + xHandle,
+				"置顶",
+				"已到达 X 时间线可见上限",
+			},
+		},
+		{
+			Name: "x-user-protected",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.UserListFilter = "all"
+				app.CurrentXUser = &service.XUserDTO{
+					RestID:         "1000000000000000002",
+					ScreenName:     "protected_synth",
+					Name:           "受保护合成账号",
+					Description:    "仅限已获批准的关注者查看帖子",
+					Protected:      true,
+					FollowersCount: 42,
+					FriendsCount:   15,
+					StatusesCount:  18,
+					CanonicalURL:   "https://x.com/protected_synth",
+				}
+				app.CurrentXPosts = nil
+				app.XPostsHasMore = false
+				app.XPostsError = ""
+				app.XPostsAuthExpired = false
+				app.XPostsUncertainEmpty = false
+				app.XBottomTipsVisible = false
+				app.XBottomTipsText = ""
+				app.XUserSubMenuOpen = false
+				app.XUserListState = &mygoui.ListState{}
+				app.CurrentRoute = ui.RouteXUser
+			},
+			RequiredLabels: []string{
+				"用户页站点标记",
+				"X受保护账号提示",
+				"X用户列表",
+			},
+			RequiredTexts: []string{
+				"@protected_synth",
+				"受保护的账号",
+				"该账号帖子受保护，当前不可查看",
+			},
+			ForbiddenLabels: []string{
+				"X空壳提示",
+				"X时间线可见上限提示",
+			},
+		},
+		{
+			Name: "x-user-empty-shell",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.UserListFilter = "all"
+				app.CurrentXUser = &service.XUserDTO{
+					RestID:         "1000000000000000003",
+					ScreenName:     "limited_synth",
+					Name:           "风控测试X账号",
+					Description:    "用于验证假空壳/风控拦截错误与原地重试按钮",
+					FollowersCount: 3100,
+					FriendsCount:   40,
+					StatusesCount:  256,
+					CanonicalURL:   "https://x.com/limited_synth",
+				}
+				app.CurrentXPosts = nil
+				app.XPostsHasMore = false
+				app.XPostsAuthExpired = false
+				app.XPostsUncertainEmpty = true
+				app.XPostsError = "X 返回了异常空列表（账号标注有 256 条帖子），可能是风控或限流，可稍后重试"
+				app.XBottomTipsVisible = false
+				app.XBottomTipsText = ""
+				app.XUserSubMenuOpen = false
+				app.XUserListState = &mygoui.ListState{}
+				app.CurrentRoute = ui.RouteXUser
+			},
+			RequiredLabels: []string{
+				"用户页站点标记",
+				"X空壳提示",
+				"重试加载X帖子",
+			},
+			RequiredTexts: []string{
+				"@limited_synth",
+				"异常空列表",
+			},
+			ForbiddenLabels: []string{
+				"X时间线可见上限提示",
+				"X受保护账号提示",
+			},
+		},
+		{
+			Name: "x-post",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.CurrentXPost = &service.XPostDTO{
+					ID:              "1000000000000000011",
+					Author:          service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+					CreatedAt:       1710004800,
+					Text:            "长帖 note_tweet 正文示例：完整展开超过 280 字符的长文内容，不截断末尾段落，同时按原始顺序展示最多 4 项混排附件（含原图、静音循环 GIF 与视频页）。",
+					IsLongText:      true,
+					IsEdited:        true,
+					VisibilityLabel: "仅关注者可回复",
+					Media: []service.XMediaItemDTO{
+						{Index: 1, Kind: "photo", ImageURL: "https://pbs.twimg.com/media/Synthetic01?format=jpg&name=orig", Width: 1200, Height: 900},
+						{Index: 2, Kind: "gif", GIF: true, ImageURL: "https://pbs.twimg.com/tweet_video_thumb/SyntheticGif02.jpg", VideoURL: "https://video.twimg.com/tweet_video/SyntheticGif02.mp4", Width: 640, Height: 360},
+						{Index: 3, Kind: "video", ImageURL: "https://pbs.twimg.com/ext_tw_video_thumb/SyntheticVid03.jpg", VideoURL: "https://video.twimg.com/ext_tw_video/1000000000000000011/pu/vid/avc1/1280x720/synth.mp4", DurationSec: 42, Width: 1280, Height: 720},
+						{Index: 4, Kind: "photo", ImageURL: "https://pbs.twimg.com/media/Synthetic04?format=jpg&name=orig", Width: 1080, Height: 1080},
+					},
+					Stats:        service.XStatsDTO{ReplyCount: 18, RetweetCount: 64, LikeCount: 920, QuoteCount: 9, BookmarkCount: 145, ViewCount: 24800},
+					CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000011",
+					CacheKey:     "x:dynamic:1000000000000000011",
+				}
+				app.CurrentRoute = ui.RouteXPost
+			},
+			RequiredLabels: []string{
+				"X详情站点标记",
+				"X已编辑标记",
+				"X可见性说明",
+				"缓存当前X帖子",
+				"X帖子正文",
+				"查看图文页 1",
+				"动图标记 2",
+				"视频页标记 3",
+				"查看图文页 4",
+			},
+			RequiredTexts: []string{
+				"@" + xHandle,
+				"note_tweet",
+				"GIF",
+			},
+		},
+		{
+			Name: "x-post-thread",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.CurrentXPost = &service.XPostDTO{
+					ID:         "1000000000000000012",
+					Author:     service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+					CreatedAt:  1710004900,
+					Text:       "长帖线程主帖（note_tweet）：第 1 条详细阐述四站点独立凭证隔离、前端元数据运行时发现与 64 位雪花 ID 校验方案，后续自回复紧随其后一并展示并缓存。",
+					IsLongText: true,
+					Thread: []service.XPostDTO{
+						{
+							ID:           "1000000000000000013",
+							Author:       service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+							CreatedAt:    1710004960,
+							Text:         "自回复 #2：前端元数据仅驻留内存、单飞刷新且 10 分钟冷却，abs.twimg.com 请求恒不带 Cookie。",
+							CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000013",
+						},
+						{
+							ID:           "1000000000000000014",
+							Author:       service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+							CreatedAt:    1710005020,
+							Text:         "自回复 #3：缓存主帖时将此刻的作者自回复串一并写入同一条离线清单，避免碎片化条目。",
+							CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000014",
+						},
+					},
+					Stats:        service.XStatsDTO{ReplyCount: 25, RetweetCount: 80, LikeCount: 1120, QuoteCount: 14, BookmarkCount: 210, ViewCount: 38200},
+					CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000012",
+					CacheKey:     "x:dynamic:1000000000000000012",
+				}
+				app.CurrentRoute = ui.RouteXPost
+			},
+			RequiredLabels: []string{
+				"X详情站点标记",
+				"缓存当前X帖子",
+				"X帖子正文",
+				"X作者自回复串",
+				"X串条目：1000000000000000013",
+				"查看X串帖子：1000000000000000013",
+				"X串条目：1000000000000000014",
+				"X在线统计",
+			},
+			RequiredTexts: []string{
+				"作者自回复串（2 条）",
+				"自回复 #2",
+				"自回复 #3",
+			},
+		},
+		{
+			Name: "x-post-retweet-deleted",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.CurrentXPost = &service.XPostDTO{
+					ID:        "1000000000000000017",
+					Author:    service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+					CreatedAt: 1710005050,
+					Text:      "转发附言：当原帖已被作者删除、受保护或地区屏蔽时，保留外层转发内容并安全降级展示不可用提示。",
+					IsRetweet: true,
+					Retweeted: &service.XPostDTO{
+						ID:                "1000000000000000099",
+						Unavailable:       true,
+						UnavailableReason: "原帖已被作者删除或不可查看",
+					},
+					Stats:        service.XStatsDTO{ReplyCount: 6, RetweetCount: 19, LikeCount: 240, ViewCount: 5400},
+					CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000017",
+					CacheKey:     "x:dynamic:1000000000000000017",
+				}
+				app.CurrentRoute = ui.RouteXPost
+			},
+			RequiredLabels: []string{
+				"X详情站点标记",
+				"X帖子正文",
+				"X原帖不可用提示",
+				"X在线统计",
+			},
+			RequiredTexts: []string{
+				"原帖已被作者删除或不可查看",
+			},
+		},
+		{
+			Name: "x-post-quote",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.CurrentXPost = &service.XPostDTO{
+					ID:        "1000000000000000018",
+					Author:    service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+					CreatedAt: 1710005100,
+					Text:      "引用评论：这套纯标准库 MP4 重排与零 Cookie 媒体白名单设计非常克制，适合长期本地归档。",
+					IsQuote:   true,
+					Quoted: &service.XPostDTO{
+						ID:           "1000000000000000088",
+						Author:       service.XAuthorDTO{RestID: "1000000000000000004", ScreenName: "synth_x_dev", Name: "合成X开发者"},
+						CreatedAt:    1710004100,
+						Text:         "被引用的原帖正文：支持原图、静音循环 GIF 与最高码率 MP4，本地离线随时回看。",
+						CanonicalURL: "https://x.com/synth_x_dev/status/1000000000000000088",
+						Media: []service.XMediaItemDTO{
+							{Index: 1, Kind: "photo", ImageURL: "https://pbs.twimg.com/media/SyntheticQuote01?format=jpg&name=orig", Width: 1200, Height: 675},
+						},
+					},
+					Stats:        service.XStatsDTO{ReplyCount: 11, RetweetCount: 45, LikeCount: 680, QuoteCount: 7, BookmarkCount: 92, ViewCount: 19400},
+					CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000018",
+					CacheKey:     "x:dynamic:1000000000000000018",
+				}
+				app.CurrentRoute = ui.RouteXPost
+			},
+			RequiredLabels: []string{
+				"X详情站点标记",
+				"缓存当前X帖子",
+				"X帖子正文",
+				"X原帖卡片",
+				"打开X原帖：1000000000000000088",
+				"X在线统计",
+			},
+			RequiredTexts: []string{
+				"@synth_x_dev",
+				"引用帖子",
+			},
+		},
+		{
+			Name: "x-post-video",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.CurrentXPost = &service.XPostDTO{
+					ID:        "1000000000000000019",
+					Author:    service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+					CreatedAt: 1710005150,
+					Text:      "单视频帖示例：自动挑选最高码率单文件 MP4，CDN 请求不带 Cookie 与 Referer。",
+					Media: []service.XMediaItemDTO{
+						{
+							Index:        1,
+							Kind:         "video",
+							ImageURL:     "https://pbs.twimg.com/ext_tw_video_thumb/SyntheticVid19.jpg",
+							VideoURL:     "https://video.twimg.com/ext_tw_video/1000000000000000019/pu/vid/avc1/1920x1080/synth.mp4",
+							DurationSec:  128,
+							Width:        1920,
+							Height:       1080,
+							VideoBitrate: 5120000,
+							QualityLabel: "1080P",
+						},
+					},
+					Stats:        service.XStatsDTO{ReplyCount: 34, RetweetCount: 120, LikeCount: 2450, BookmarkCount: 310, ViewCount: 64200},
+					CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000019",
+					CacheKey:     "x:dynamic:1000000000000000019",
+				}
+				app.CurrentRoute = ui.RouteXPost
+			},
+			RequiredLabels: []string{
+				"X详情站点标记",
+				"缓存当前X帖子",
+				"X视频卡片",
+				"X视频规格",
+				"X在线统计",
+			},
+			RequiredTexts: []string{
+				"X 视频",
+				"单视频帖示例",
+			},
+		},
+		{
+			Name: "x-post-cards",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.CurrentXPost = &service.XPostDTO{
+					ID:        "1000000000000000020",
+					Author:    service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+					CreatedAt: 1710005200,
+					Text:      "投票、X Articles 与外链卡片安全降级示例：只展示摘要与“在浏览器中打开”，不出现视频缓存入口。",
+					Poll: &service.XPollSummaryDTO{
+						Options: []service.XPollOptionDTO{
+							{Position: 1, Label: "纯标准库协议客户端", Votes: 780},
+							{Position: 2, Label: "第三方重依赖框架", Votes: 220},
+						},
+						EndTime:    "2026-11-23 12:00 UTC",
+						Final:      true,
+						TotalVotes: 1000,
+					},
+					Card: &service.XRichCardDTO{
+						Kind:        "article",
+						Label:       "X Articles",
+						Title:       "桌面端多站点离线媒体库与凭证隔离实践",
+						Desc:        "探讨四站点独立凭证加密、限流刹车与前端元数据运行时发现。",
+						URL:         "https://x.com/i/article/1000000000000000020",
+						Unsupported: true,
+					},
+					Quoted: &service.XPostDTO{
+						ID:           "1000000000000000089",
+						Author:       service.XAuthorDTO{RestID: "1000000000000000004", ScreenName: "synth_x_dev", Name: "合成X开发者"},
+						CreatedAt:    1710004500,
+						Text:         "附外链卡片摘要示例。",
+						CanonicalURL: "https://x.com/synth_x_dev/status/1000000000000000089",
+						Card: &service.XRichCardDTO{
+							Kind:  "webpage",
+							Label: "链接卡片",
+							Title: "开放标准与协议说明文档",
+							Desc:  "示例外链预览卡片，仅在浏览器中打开。",
+							URL:   "https://example.invalid/trace-spec",
+						},
+					},
+					Stats:        service.XStatsDTO{ReplyCount: 15, RetweetCount: 42, LikeCount: 510, ViewCount: 11200},
+					CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000020",
+					CacheKey:     "x:dynamic:1000000000000000020",
+				}
+				app.CurrentRoute = ui.RouteXPost
+			},
+			RequiredLabels: []string{
+				"X详情站点标记",
+				"X投票卡片",
+				"X投票浏览器打开",
+				"X卡片：article",
+				"X卡片浏览器打开：article",
+				"X卡片：webpage",
+				"X卡片浏览器打开：webpage",
+				"X在线统计",
+			},
+			RequiredTexts: []string{
+				"纯标准库协议客户端",
+				"X Articles",
+				"链接卡片",
+			},
+			ForbiddenLabels: []string{
+				"缓存当前X帖子",
+			},
+		},
+		{
+			Name: "x-post-live-card",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.CurrentXPost = &service.XPostDTO{
+					ID:        "1000000000000000025",
+					Author:    service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+					CreatedAt: 1710005250,
+					Text:      "正在开启技术架构交流 Spaces，点击下方卡片可在浏览器中收听。",
+					Card: &service.XRichCardDTO{
+						Kind:        "live",
+						Label:       "直播 / Spaces",
+						Title:       "合成技术交流 Spaces 语音间",
+						Desc:        "讨论四站点只读协议隔离与离线归档策略。",
+						URL:         "https://x.com/i/spaces/1SyntheticSpaceId",
+						Unsupported: true,
+					},
+					Stats:        service.XStatsDTO{ReplyCount: 9, RetweetCount: 22, LikeCount: 310, ViewCount: 8200},
+					CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000025",
+					CacheKey:     "x:dynamic:1000000000000000025",
+				}
+				app.CurrentRoute = ui.RouteXPost
+			},
+			RequiredLabels: []string{
+				"X详情站点标记",
+				"X卡片：live",
+				"X卡片浏览器打开：live",
+				"X在线统计",
+			},
+			RequiredTexts: []string{
+				"直播 / Spaces",
+				"X 直播与 Spaces 暂不支持录制，可以在浏览器中打开。",
+			},
+			ForbiddenLabels: []string{
+				"缓存当前X帖子",
+			},
+		},
+		{
+			Name: "x-post-offline",
+			Setup: func() {
+				app.Opening = nil
+				app.OpenLibraryItemDetail(savedXRetweet)
+			},
+			RequiredLabels: []string{
+				"本机详情站点标记",
+				"X离线正文",
+				"X离线缺失提示：1",
+				"X离线原帖卡片",
+				"X作者自回复串",
+				"X离线串条目：1",
+			},
+			RequiredTexts: []string{
+				"@" + xHandle,
+				"这条视频只有分段流，暂不支持缓存",
+				"@synth_x_dev",
+				"自回复补充",
+			},
+			ForbiddenLabels: []string{
+				"缓存当前X帖子",
+				"X在线统计",
+			},
+		},
+		{
+			Name: "home-x",
+			Setup: func() {
+				app.ImageViewer.Open = false
+				app.PlayerOverlay.Open = false
+				app.DeleteConfirm.Open = false
+				app.Navigate(ui.RouteHome)
+				seedRecentAndLive()
+				app.FeedSiteFilter = "x"
+				app.FeedItems = []library.FeedEntry{
+					{
+						FeedKey:      savedXRetweet.ItemKey,
+						ItemKey:      savedXRetweet.ItemKey,
+						Site:         "x",
+						Kind:         "dynamic",
+						RawID:        savedXRetweet.RawID,
+						AuthorUID:    xUID,
+						AuthorName:   "技术频道_X",
+						Title:        savedXRetweet.Title,
+						Summary:      savedXRetweet.Text,
+						CanonicalURL: savedXRetweet.URL,
+						PubTs:        savedXRetweet.PubTs,
+						Cached:       true,
+						CacheStatus:  "yellow",
+					},
+					{
+						FeedKey:      savedXPost.ItemKey,
+						ItemKey:      savedXPost.ItemKey,
+						Site:         "x",
+						Kind:         "dynamic",
+						RawID:        savedXPost.RawID,
+						AuthorUID:    xOnlyUID,
+						AuthorName:   "X 合成专栏",
+						Title:        savedXPost.Title,
+						Summary:      savedXPost.Text,
+						CanonicalURL: savedXPost.URL,
+						PubTs:        savedXPost.PubTs,
+						Cached:       true,
+						CacheStatus:  "green",
+					},
+				}
+				app.FeedListState = &mygoui.ListState{}
+			},
+			RequiredLabels: []string{
+				"主页站点筛选：X",
+				"主页作者站点：" + savedXRetweet.ItemKey,
+				"转发原内容：" + savedXRetweet.ItemKey,
+				"查看图文页 1",
+				"动图标记 2",
+			},
+		},
+		{
 			Name: "library",
 			Setup: func() {
 				app.LibrarySiteFilter = "all"
@@ -1045,10 +1707,12 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"媒体库站点筛选：B 站",
 				"媒体库站点筛选：抖音",
 				"媒体库站点筛选：微博",
+				"媒体库站点筛选：X",
 				"媒体更多：" + savedDynamicItem.ItemKey,
 				"媒体库站点：" + savedDynamicItem.ItemKey,
 				"媒体库站点：" + savedDouyinVideo.ItemKey,
 				"媒体库站点：" + savedWeiboPost.ItemKey,
+				"媒体库站点：" + savedXPost.ItemKey,
 			},
 		},
 		{
@@ -1075,6 +1739,18 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.Navigate(ui.RouteTasks)
 				app.TasksSection = "downloads"
 				app.Tasks = []download.Task{
+					{
+						TaskID:          "task_demo_x",
+						Site:            "x",
+						Kind:            "dynamic",
+						TargetID:        "1000000000000000019",
+						Title:           "正在缓存：X 1080P 单文件 MP4 与长帖线程归档",
+						Status:          "running",
+						QualityHint:     "1080P · 5120 kbps",
+						BytesDownloaded: 3145728,
+						TotalBytes:      6291456,
+						Progress:        0.50,
+					},
 					{
 						TaskID:          "task_demo_wb",
 						Site:            "weibo",
@@ -1130,6 +1806,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.ExpandedTaskID = ""
 			},
 			RequiredLabels: []string{
+				"任务站点：task_demo_x",
 				"任务站点：task_demo_wb",
 				"任务站点：task_demo_dy",
 				"任务站点：task_demo_run",
@@ -1154,9 +1831,11 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"缓存队列卡片：cq_demo_bili",
 				"缓存队列卡片：cq_demo_dy",
 				"缓存队列卡片：cq_demo_wb",
+				"缓存队列卡片：cq_demo_x",
 				"展开缓存队列：cq_demo_bili",
 				"队列详情站点：cq_demo_bili",
 				"队列详情站点：cq_demo_wb",
+				"队列详情站点：cq_demo_x",
 				"队列详情计数：cq_demo_bili",
 				"暂停缓存队列：cq_demo_bili",
 				"取消缓存队列：cq_demo_bili",
@@ -1247,6 +1926,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"检查计划行 bilibili:20001",
 				"检查计划行 douyin:" + douyinSecUID,
 				"检查计划行 weibo:" + weiboUID,
+				"检查计划行 x:" + xUID,
 			},
 			PanelRequiredLabels: []string{
 				"任务侧栏：录制异常",
@@ -1287,7 +1967,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.QRBitmap = mygoui.NewBitmap(bilibili.RenderQRRGBA("https://passport.bilibili.com/h5-app/passport/login/scan?qrcode_key=demo", 6))
 				app.QRStatusText = "等待扫码（86101）"
 			},
-			RequiredLabels: []string{"登录站点：哔哩哔哩", "登录站点：抖音", "登录站点：微博"},
+			RequiredLabels: []string{"登录站点：哔哩哔哩", "登录站点：抖音", "登录站点：微博", "登录站点：X"},
 		},
 		{
 			Name: "login-douyin",
@@ -1300,6 +1980,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"登录站点：哔哩哔哩",
 				"登录站点：抖音",
 				"登录站点：微博",
+				"登录站点：X",
 				"抖音已登录摘要",
 				"抖音Cookie输入框",
 				"验证并登录抖音",
@@ -1317,9 +1998,44 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"登录站点：哔哩哔哩",
 				"登录站点：抖音",
 				"登录站点：微博",
+				"登录站点：X",
 				"微博已登录摘要",
 				"微博Cookie输入框",
 				"验证并登录微博",
+			},
+			ForbiddenLabels: []string{"刷新登录二维码"},
+		},
+		{
+			Name: "login-x",
+			Setup: func() {
+				app.LoginSite = "x"
+				app.XCookieInput = ""
+				app.LoginError = ""
+				app.SavedRoute = ""
+				app.Navigate(ui.RouteLogin)
+			},
+			RequiredLabels: []string{
+				"登录站点：哔哩哔哩",
+				"登录站点：抖音",
+				"登录站点：微博",
+				"登录站点：X",
+				"X已登录摘要",
+				"XCookie输入框",
+				"X登录风险提示",
+				"验证并登录X",
+			},
+			RequiredTexts: []string{
+				"登录 X（原 Twitter）",
+				"使用前请注意",
+				"不是官方开放 API",
+				"服务条款",
+				"限流",
+				"临时锁号",
+				"封号",
+				"专门账号",
+				"只读不写",
+				"不保存账号密码",
+				"自动续期",
 			},
 			ForbiddenLabels: []string{"刷新登录二维码"},
 		},

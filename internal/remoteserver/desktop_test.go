@@ -20,13 +20,14 @@ import (
 // pairHarness is a desktop backend connected to a real remote API (the
 // remote's backend in remote mode), both on the same fake site.
 type pairHarness struct {
-	desktop *service.Backend
-	remote  *service.Backend
-	server  *Server
-	https   *httptest.Server
-	down    atomic.Bool
-	code    string
-	bili    *fakeBili
+	desktop  *service.Backend
+	remote   *service.Backend
+	server   *Server
+	https    *httptest.Server
+	down     atomic.Bool
+	code     string
+	bili     *fakeBili
+	deskLogs syncBuffer
 }
 
 func newPair(t *testing.T) *pairHarness {
@@ -59,7 +60,7 @@ func newPair(t *testing.T) *pairHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bo := service.Options{Locations: loc, Desktop: service.NewMockDesktop(), DisableBgWorkers: true}
+	bo := service.Options{Locations: loc, Desktop: service.NewMockDesktop(), DisableBgWorkers: true, LogMirror: &p.deskLogs}
 	p.bili.options(&bo)
 	p.desktop, err = service.NewBackend(bo)
 	if err != nil {
@@ -169,7 +170,9 @@ func TestDesktopPushesCookieAfterLoginAndRetriesPending(t *testing.T) {
 	if _, err := p.desktop.ImportCookie(ctx, sentinelCookie(), ""); err != nil {
 		t.Fatalf("local login: %v", err)
 	}
-	waitFor(t, "the automatic push", func() bool { return p.remoteSite(t).State == remote.SiteValid })
+	waitFor(t, "the automatic push", func() bool {
+		return p.remoteSite(t).State == remote.SiteValid && strings.Contains(p.deskLogs.String(), "cookie pushed to the remote: site=bilibili")
+	})
 	if acc := p.remote.AccountStatus(); acc.Source != service.CredentialSourceRemotePush || acc.HasRefreshToken {
 		t.Fatalf("remote credential = %+v, want pushed without a refresh token", acc)
 	}

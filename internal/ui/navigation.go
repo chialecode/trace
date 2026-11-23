@@ -32,6 +32,10 @@ func normalizeAppRoute(route string) string {
 		return RouteWeiboPost
 	case strings.HasPrefix(trimmed, RouteWeiboUser+"/"):
 		return RouteWeiboUser
+	case strings.HasPrefix(trimmed, RouteXPost+"/"):
+		return RouteXPost
+	case strings.HasPrefix(trimmed, RouteXUser+"/"):
+		return RouteXUser
 	case strings.HasPrefix(trimmed, RouteSettings+"/"):
 		return RouteSettings
 	case strings.HasPrefix(trimmed, RouteSubscriptions+"/"):
@@ -49,6 +53,8 @@ func normalizeSiteFilter(siteFilter string) string {
 		return string(site.Douyin)
 	case string(site.Weibo):
 		return string(site.Weibo)
+	case string(site.X):
+		return string(site.X)
 	default:
 		return "all"
 	}
@@ -60,6 +66,8 @@ func routeExclusiveSite(route string) string {
 		return string(site.Douyin)
 	case RouteWeiboPost, RouteWeiboUser:
 		return string(site.Weibo)
+	case RouteXPost, RouteXUser:
+		return string(site.X)
 	case RouteVideo, RouteUser:
 		return string(site.Bilibili)
 	default:
@@ -73,6 +81,8 @@ func siteExpiredLoginPrompt(siteID string) string {
 		return "抖音登录已失效，请重新粘贴 Cookie"
 	case string(site.Weibo):
 		return "微博登录已失效，请重新粘贴 Cookie"
+	case string(site.X):
+		return "X 登录已失效，请重新粘贴 Cookie"
 	default:
 		return "登录已失效，请重新登录"
 	}
@@ -84,6 +94,8 @@ func siteExpiredTopNotice(siteID string) string {
 		return "抖音登录已失效，抖音相关任务与录制已暂停；可前往设置重新粘贴 Cookie"
 	case string(site.Weibo):
 		return "微博登录已失效，微博相关任务已暂停；可前往设置重新粘贴 Cookie"
+	case string(site.X):
+		return "X 登录已失效，X 相关任务已暂停；可前往设置重新粘贴 Cookie"
 	case string(site.Bilibili):
 		return "哔哩哔哩登录已失效，B 站相关任务与录制已暂停；可前往设置重新登录"
 	default:
@@ -108,6 +120,13 @@ func (a *App) currentRouteRequiresSite(siteID string) bool {
 		if a.CurrentRoute == RouteWeiboPost && a.CurrentLibraryDetail == nil {
 			return true
 		}
+	case string(site.X):
+		if a.CurrentRoute == RouteXUser {
+			return true
+		}
+		if a.CurrentRoute == RouteXPost && a.CurrentLibraryDetail == nil {
+			return true
+		}
 	case string(site.Bilibili):
 		if a.CurrentRoute == RouteUser {
 			return true
@@ -129,6 +148,7 @@ func (a *App) closeAllModalsAndOverlays() {
 	a.stopBGM()
 	a.ImportSubModalOpen = false
 	a.ConfirmLogoutOpen = false
+	a.Remote.ConfirmPushXOpen = false
 	a.DeleteConfirm.Open = false
 	a.RestartConfirmOpen = false
 	a.AddSubDialogOpen = false
@@ -289,6 +309,7 @@ func (a *App) navigate(rawRoute string, fromBack bool) {
 	a.DouyinCardMenuID = ""
 	a.DouyinUserSubMenuOpen = false
 	a.WeiboUserSubMenuOpen = false
+	a.XUserSubMenuOpen = false
 	a.HistoryHeaderMenuOpen = false
 	a.HistoryClearConfirmOpen = false
 	a.HistoryItemMenuID = ""
@@ -299,6 +320,7 @@ func (a *App) navigate(rawRoute string, fromBack bool) {
 	if a.CurrentRoute == RouteSettings && route != RouteSettings {
 		a.Remote.CodeInput = ""
 		a.Remote.TokenInput = ""
+		a.Remote.ConfirmPushXOpen = false
 	}
 	if route != RouteLibraryItem {
 		a.CurrentLibraryDetail = nil
@@ -337,6 +359,10 @@ func (a *App) navigate(rawRoute string, fromBack bool) {
 		a.pushPreviousRoute(from)
 	}
 	a.CurrentRoute = route
+	if (route == RouteLibrary || route == RouteLibraryItem) && a.libraryItemsDirty && a.backend.HasAnyLogin() {
+		a.libraryItemsDirty = false
+		a.reloadLibraryItems()
+	}
 	if route == RouteHome && a.backend.HasAnyLogin() {
 		if len(a.FeedItems) == 0 {
 			a.loadInitialFeed()
@@ -512,7 +538,6 @@ func (a *App) refreshLibraryStatistics() {
 	}
 	a.libraryStatistics = stats
 	a.statsRev++
-	a.refreshAccountWorks()
 }
 
 func (a *App) refreshTasks() {
@@ -674,6 +699,14 @@ type weiboCacheContext struct {
 	ForName string
 }
 
+// xCacheContext is the creator page an X post was opened from so caching a
+// retweet stores it under that creator's forwards/ folder.
+type xCacheContext struct {
+	StatusID string
+	ForUID   string
+	ForName  string
+}
+
 // cacheForMid is the creator a video page caches bvid for (0: its uploader).
 func (a *App) cacheForMid(bvid string) int64 {
 	if a.videoCacheFor.BVID != "" && strings.EqualFold(a.videoCacheFor.BVID, strings.TrimSpace(bvid)) {
@@ -740,6 +773,59 @@ func weiboCacheViaForContext(post *service.WeiboPostView, forUID, forName string
 			UID:       hintUID,
 			Name:      firstNonEmptyStrUI(post.ForwarderHintName, hintUID),
 			DynamicID: strings.TrimSpace(post.Mid),
+		}
+	}
+	return nil
+}
+
+// xCacheContextFor returns the active forwarder/profile context matching post.
+func (a *App) xCacheContextFor(post *service.XPostDTO) (string, string) {
+	if post == nil {
+		return "", ""
+	}
+	forUID := strings.TrimSpace(a.xCacheFor.ForUID)
+	if forUID == "" {
+		return "", ""
+	}
+	if ctxID := strings.TrimSpace(a.xCacheFor.StatusID); ctxID != "" && ctxID != strings.TrimSpace(post.ID) {
+		return "", ""
+	}
+	return forUID, strings.TrimSpace(a.xCacheFor.ForName)
+}
+
+// xCacheViaFor resolves the ItemVia forwarder attribution when caching post
+// from the current detail page (using active xCacheFor or URL ForwarderHintUID).
+func (a *App) xCacheViaFor(post *service.XPostDTO) *library.ItemVia {
+	forUID, forName := a.xCacheContextFor(post)
+	return xCacheViaForContext(post, forUID, forName)
+}
+
+// xCacheViaForContext resolves ItemVia for caching an X post either from an
+// explicit creator profile (forUID/forName) or from a direct URL ForwarderHintUID.
+func xCacheViaForContext(post *service.XPostDTO, forUID, forName string) *library.ItemVia {
+	if post == nil {
+		return nil
+	}
+	forUID = strings.TrimSpace(forUID)
+	forName = strings.TrimSpace(forName)
+	authorUID := strings.TrimSpace(post.Author.RestID)
+	if forUID != "" && (post.IsRetweet || post.Retweeted != nil || (authorUID != "" && authorUID != forUID)) {
+		return &library.ItemVia{
+			Reason:    library.ViaForward,
+			Site:      string(site.X),
+			UID:       forUID,
+			Name:      firstNonEmptyStrUI(forName, forUID),
+			DynamicID: strings.TrimSpace(post.ID),
+		}
+	}
+	hintUID := strings.TrimSpace(post.ForwarderHintUID)
+	if hintUID != "" && (post.IsRetweet || (authorUID != "" && authorUID != hintUID)) {
+		return &library.ItemVia{
+			Reason:    library.ViaForward,
+			Site:      string(site.X),
+			UID:       hintUID,
+			Name:      firstNonEmptyStrUI(post.ForwarderHintName, hintUID),
+			DynamicID: strings.TrimSpace(post.ID),
 		}
 	}
 	return nil
@@ -930,6 +1016,78 @@ func (a *App) OpenWeiboUser(uid, name string) {
 	})
 }
 
+// OpenXPost opens a single X post detail page by status ID or canonical URL.
+func (a *App) OpenXPost(statusID, title, authorName, authorUID, coverURL, canonicalURL string) {
+	a.openXPostForPreview(statusID, title, authorName, authorUID, coverURL, canonicalURL, "", "")
+}
+
+// OpenXPostFor opens an X post from creator forUID's profile page so caching a
+// retweet on the detail page attributes it under forUID.
+func (a *App) OpenXPostFor(statusID, canonicalURL, title, forUID, forName string) {
+	a.openXPostForPreview(statusID, title, forName, forUID, "", canonicalURL, forUID, forName)
+}
+
+func (a *App) openXPostForPreview(statusID, title, authorName, authorUID, coverURL, canonicalURL, forUID, forName string) {
+	statusID = strings.TrimSpace(statusID)
+	forUID = strings.TrimSpace(forUID)
+	forName = strings.TrimSpace(forName)
+	raw := strings.TrimSpace(canonicalURL)
+	if raw == "" {
+		if statusID == "" {
+			return
+		}
+		raw = "https://x.com/i/web/status/" + statusID
+	}
+	if forUID != "" {
+		a.xCacheFor = xCacheContext{StatusID: statusID, ForUID: forUID, ForName: forName}
+	} else {
+		a.xCacheFor = xCacheContext{}
+	}
+	a.openLinkCore(raw, &OpeningPreview{
+		Site:       string(site.X),
+		Kind:       "dynamic",
+		Title:      title,
+		AuthorName: authorName,
+		AuthorUID:  authorUID,
+		CoverURL:   coverURL,
+	})
+}
+
+func isAllDigitsUI(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// OpenXUser opens an X user's profile page by numeric rest_id, @screen_name, or URL.
+func (a *App) OpenXUser(uidOrHandle, name string) {
+	raw := strings.TrimSpace(uidOrHandle)
+	if raw == "" {
+		return
+	}
+	authorUID := raw
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		if isAllDigitsUI(raw) {
+			raw = "https://x.com/i/user/" + raw
+		} else {
+			handle := strings.TrimPrefix(raw, "@")
+			raw = "https://x.com/" + handle
+		}
+	}
+	a.openLink(raw, &OpeningPreview{
+		Site:       string(site.X),
+		Kind:       "user",
+		AuthorName: name,
+		AuthorUID:  authorUID,
+	})
+}
+
 // RetryOpening opens the link of a failed preview again.
 func (a *App) RetryOpening() {
 	if a.Opening == nil {
@@ -942,6 +1100,7 @@ func (a *App) RetryOpening() {
 
 func (a *App) openLink(raw string, preview *OpeningPreview) {
 	a.weiboCacheFor = weiboCacheContext{}
+	a.xCacheFor = xCacheContext{}
 	a.openLinkCore(raw, preview)
 }
 
@@ -966,6 +1125,11 @@ func (a *App) openLinkCore(raw string, preview *OpeningPreview) {
 			if p.Kind == "user" {
 				route = RouteWeiboUser
 			}
+		case string(site.X):
+			route = RouteXPost
+			if p.Kind == "user" {
+				route = RouteXUser
+			}
 		default:
 			if p.Kind == "user" || p.Kind == "live" {
 				route = RouteUser
@@ -986,6 +1150,7 @@ func (a *App) openLinkCore(raw string, preview *OpeningPreview) {
 		a.PostMenuKey = ""
 		a.DouyinCardMenuID = ""
 		a.WeiboUserSubMenuOpen = false
+		a.XUserSubMenuOpen = false
 		a.HistoryHeaderMenuOpen = false
 		a.HistoryClearConfirmOpen = false
 		a.HistoryItemMenuID = ""
@@ -1069,6 +1234,10 @@ func (a *App) applyParseResult(res *service.OpenLinkResult) {
 	}
 	if res.Site == string(site.Weibo) || res.WeiboPost != nil || res.WeiboVideo != nil || res.WeiboUser != nil {
 		a.applyWeiboParseResult(res)
+		return
+	}
+	if res.Site == string(site.X) || res.XPost != nil || res.XUser != nil || res.XUserPosts != nil {
+		a.applyXParseResult(res)
 		return
 	}
 	switch res.Target.Kind {
@@ -1348,6 +1517,102 @@ func (a *App) LoadMoreWeiboPosts() {
 			return
 		}
 		a.WeiboPostsError = userErrorText(err)
+	})
+}
+
+func (a *App) applyXParseResult(res *service.OpenLinkResult) {
+	kind := res.Target.Kind
+	if res.SiteTarget != nil && res.SiteTarget.Kind != "" {
+		kind = res.SiteTarget.Kind
+	}
+	if kind == "user" || (res.XUser != nil && res.XPost == nil) {
+		a.CurrentXUser = res.XUser
+		a.XUserListState = &ui.ListState{}
+		a.XUserSubMenuOpen = false
+		a.CurrentXPosts = nil
+		a.XPostsNextCursor = ""
+		a.XPostsHasMore = false
+		a.XPostsError = res.XUserPostsError
+		a.XPostsAuthExpired = false
+		a.XPostsUncertainEmpty = false
+		a.XBottomTipsVisible = false
+		a.XBottomTipsText = ""
+		if res.XUserPosts != nil {
+			a.CurrentXPosts = res.XUserPosts.Posts
+			a.XPostsNextCursor = res.XUserPosts.NextCursor
+			a.XPostsHasMore = res.XUserPosts.HasMore
+			if res.XUserPosts.ReachedVisibleLimit || res.XUserPosts.BottomTipsVisible {
+				a.XBottomTipsVisible = true
+				a.XBottomTipsText = firstNonEmptyStrUI(res.XUserPosts.BottomTipsText, "已到达 X 时间线可见上限")
+			}
+			if res.XUserPosts.UncertainEmpty {
+				a.XPostsUncertainEmpty = true
+				a.XPostsHasMore = false
+				a.XPostsError = firstNonEmptyStrUI(res.XUserPosts.UncertainReason, "X 返回了异常空列表，可能是限流、风控或受限，可稍后重试")
+			}
+		}
+		if a.CurrentRoute != RouteXUser {
+			a.pushPreviousRoute(a.currentReturnRoute())
+		}
+		a.CurrentRoute = RouteXUser
+		return
+	}
+	a.CurrentLibraryDetail = nil
+	a.CurrentXPost = res.XPost
+	if a.CurrentRoute != RouteXPost {
+		a.pushPreviousRoute(a.currentReturnRoute())
+	}
+	a.CurrentRoute = RouteXPost
+}
+
+// LoadMoreXPosts fetches the next page of an X creator's timeline while
+// preserving already loaded posts on rate-limit, risk-control, fake-shell, or auth errors.
+func (a *App) LoadMoreXPosts() {
+	if a.CurrentXUser == nil || a.CurrentXUser.RestID == "" {
+		return
+	}
+	uid, cursor := a.CurrentXUser.RestID, a.XPostsNextCursor
+	requestGuarded(a, "x-posts-"+uid, func() bool {
+		return a.CurrentXUser != nil && a.CurrentXUser.RestID == uid
+	}, func(ctx context.Context) (*service.XUserPostsPageDTO, error) {
+		return a.backend.XUserPosts(ctx, uid, cursor)
+	}, func(page *service.XUserPostsPageDTO) {
+		if a.CurrentXUser == nil || a.CurrentXUser.RestID != uid || page == nil {
+			return
+		}
+		if page.UncertainEmpty {
+			a.XPostsUncertainEmpty = true
+			a.XPostsHasMore = false
+			a.XPostsError = firstNonEmptyStrUI(page.UncertainReason, "X 返回了异常空列表，可能是限流、风控或受限，可稍后重试")
+			return
+		}
+		seen := make(map[string]bool, len(a.CurrentXPosts))
+		for _, p := range a.CurrentXPosts {
+			seen[p.ID] = true
+		}
+		for _, p := range page.Posts {
+			if p.ID != "" && !seen[p.ID] {
+				a.CurrentXPosts = append(a.CurrentXPosts, p)
+				seen[p.ID] = true
+			}
+		}
+		a.XPostsAuthExpired = false
+		a.XPostsUncertainEmpty = false
+		a.XPostsError = ""
+		a.XPostsNextCursor = page.NextCursor
+		a.XPostsHasMore = page.HasMore
+		if page.ReachedVisibleLimit || page.BottomTipsVisible {
+			a.XBottomTipsVisible = true
+			a.XBottomTipsText = firstNonEmptyStrUI(page.BottomTipsText, "已到达 X 时间线可见上限")
+		}
+	}, func(err error) {
+		if site.IsKind(err, site.ErrKindAuthRequired) {
+			a.XPostsAuthExpired = true
+			a.XPostsHasMore = false
+			a.XPostsError = ""
+			return
+		}
+		a.XPostsError = userErrorText(err)
 	})
 }
 

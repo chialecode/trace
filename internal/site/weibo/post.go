@@ -1462,9 +1462,16 @@ func (c *Client) buildImageAsset(index int, picID string, pi *rawPicInfo, rewrit
 		}
 	}
 	primary := cands[bestIdx]
+	// Fallbacks are full-resolution tiers only. bmiddle and the thumbnail are
+	// recompressed previews; saving one when the original fails would pass a
+	// lower-quality picture off as the original (user request 2026-11-24).
+	// A tier with known dimensions smaller than the primary is skipped too.
 	fallbacks := make([]string, 0, len(cands)-1)
 	for i, cand := range cands {
-		if i == bestIdx {
+		if i == bestIdx || !isFullResolutionTier(orderedVariants, cand.priority, pi) {
+			continue
+		}
+		if primary.area > 0 && cand.area > 0 && cand.area < primary.area {
 			continue
 		}
 		fallbacks = append(fallbacks, cand.url)
@@ -2294,4 +2301,15 @@ func (c *Client) preferredCodec() string {
 		}
 	}
 	return "avc"
+}
+
+// isFullResolutionTier reports whether orderedVariants[priority] is one of the
+// original-size pic_infos tiers (largest, original, woriginal, large, mw2000),
+// as opposed to the recompressed bmiddle preview or the thumbnail.
+func isFullResolutionTier(orderedVariants []*rawPicVariant, priority int, pi *rawPicInfo) bool {
+	if pi == nil || priority < 0 || priority >= len(orderedVariants) {
+		return false
+	}
+	v := orderedVariants[priority]
+	return v != nil && (v == pi.Largest || v == pi.Original || v == pi.WOriginal || v == pi.Large || v == pi.MW2000)
 }

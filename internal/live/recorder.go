@@ -88,15 +88,27 @@ func (m *Manager) runRecordingSession(ctx context.Context, sess *recordSession, 
 			}
 		},
 		recordPart: func(ctx context.Context, flvConn **activeFLVConn, partPath string) (int64, error) {
+			nextTransport := string(site.LiveTransportHLSFMP4)
 			if selection.Format == "flv" || selection.Protocol == "http_stream" {
-				m.beginSessionPart(sess, sess.nextPart, partPath, string(site.LiveTransportHTTPFLV))
+				nextTransport = string(site.LiveTransportHTTPFLV)
+			}
+			m.mu.Lock()
+			switchedTransport := sess.streamTransport != "" && sess.streamTransport != nextTransport
+			if switchedTransport || nextTransport == string(site.LiveTransportHTTPFLV) {
+				sess.lastSequence = 0
+				sess.hasSequence = false
+				sess.lastSequenceAt = time.Time{}
+			}
+			m.mu.Unlock()
+			if nextTransport == string(site.LiveTransportHTTPFLV) {
+				m.beginSessionPart(sess, sess.nextPart, partPath, nextTransport)
 				return m.recordBilibiliFLVPart(ctx, sess, selection.URLs, flvConn, partPath)
 			}
 			if *flvConn != nil {
 				_ = (*flvConn).Close()
 				*flvConn = nil
 			}
-			m.beginSessionPart(sess, sess.nextPart, partPath, string(site.LiveTransportHLSFMP4))
+			m.beginSessionPart(sess, sess.nextPart, partPath, nextTransport)
 			return m.recordHLSSegment(ctx, sess, selection.URLs, partPath, true)
 		},
 		reportStopError: func(ctx context.Context, err error, reason string) {
@@ -182,6 +194,9 @@ func (m *Manager) runSessionLoop(ctx context.Context, sess *recordSession, drive
 		m.setSessionStop(sess, reason, err)
 	}
 
+	const maxConsecutiveTransientHLSSchemaRetries = 2
+	hasRecordedMedia := len(sess.segments) > 0
+	consecutiveTransientSchema := 0
 	var lostAt time.Time
 	for ctx.Err() == nil {
 		m.mu.Lock()
@@ -275,7 +290,9 @@ func (m *Manager) runSessionLoop(ctx context.Context, sess *recordSession, drive
 			}
 			sess.nextPart++
 			if wroteMedia {
+				hasRecordedMedia = true
 				lostAt = time.Time{}
+				consecutiveTransientSchema = 0
 			}
 		} else {
 			_ = removeFileWithRetry(path)
@@ -313,9 +330,15 @@ func (m *Manager) runSessionLoop(ctx context.Context, sess *recordSession, drive
 				}, true)
 			}
 			if reason := liveStopReason(recordErr); reason != "" {
-				driver.reportStopError(ctx, recordErr, reason)
-				m.setSessionStop(sess, reason, recordErr)
-				break
+				if isTransientHLSSchemaError(recordErr) && hasRecordedMedia && consecutiveTransientSchema < maxConsecutiveTransientHLSSchemaRetries {
+					consecutiveTransientSchema++
+				} else {
+					driver.reportStopError(ctx, recordErr, reason)
+					m.setSessionStop(sess, reason, recordErr)
+					break
+				}
+			} else {
+				consecutiveTransientSchema = 0
 			}
 			m.mu.Lock()
 			sess.lastErr = sanitizeLiveError(recordErr)

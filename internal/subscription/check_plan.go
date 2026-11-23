@@ -18,6 +18,9 @@ const (
 // WeiboLiveUnsupportedMessage explains that Weibo live checking and recording are unsupported.
 const WeiboLiveUnsupportedMessage = "微博直播暂不支持录制"
 
+// XLiveUnsupportedMessage explains that X live and Spaces checking and recording are unsupported.
+const XLiveUnsupportedMessage = "X 直播与 Spaces 暂不支持录制"
+
 // AccountCheckPlan tells when an account was last checked for updates and
 // when a scheduled round should check it next (Tasks › 检查计划).
 type AccountCheckPlan struct {
@@ -68,10 +71,16 @@ func (m *Manager) CheckPlan() []AccountCheckPlan {
 				st := accStates[siteName+":"+acc.UID]
 				autoRecord := ruleAutoRecord
 				liveNote := ""
-				if siteName == string(site.Weibo) {
+				switch siteName {
+				case string(site.Weibo):
 					autoRecord = false
 					if ruleAutoRecord {
 						liveNote = WeiboLiveUnsupportedMessage
+					}
+				case string(site.X):
+					autoRecord = false
+					if ruleAutoRecord {
+						liveNote = XLiveUnsupportedMessage
 					}
 				}
 				p := AccountCheckPlan{

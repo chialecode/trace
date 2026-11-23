@@ -266,7 +266,7 @@ func writeProgressiveDisk(ctx context.Context, source *os.File, sourcePath, outP
 	if err != nil {
 		return summary, err
 	}
-	if !summary.MoovBeforeMdat || summary.MaxTrackDiffSec > 2 {
+	if !summary.MoovBeforeMdat || trackLengthsDisagree(summary) {
 		return summary, fmt.Errorf("download: MP4 布局或音视频时长校验失败")
 	}
 	if err := os.Rename(out.Name(), outPath); err != nil {

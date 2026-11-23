@@ -30,6 +30,13 @@ func (b *screenshotBackend) AccountSections(siteID string) []service.AccountSect
 			{Site: siteID, Kind: service.AccountFavorites, Label: "收藏", Available: true},
 		}
 	}
+	if siteID == "x" {
+		return []service.AccountSection{
+			{Site: siteID, Kind: service.AccountFollowing, Label: "关注", Available: true},
+			{Site: siteID, Kind: service.AccountBookmarks, Label: "书签", Available: true},
+			{Site: siteID, Kind: service.AccountLikes, Label: "喜欢", Available: true},
+		}
+	}
 	return []service.AccountSection{
 		{Site: siteID, Kind: service.AccountFollowing, Label: "关注", Available: true},
 		{Site: siteID, Kind: service.AccountLikes, Label: "喜欢", Available: true},
@@ -166,6 +173,88 @@ func (b *screenshotBackend) AccountPage(_ context.Context, siteID, kind, folder,
 			})
 		}
 		return service.AccountPage{Items: items, HasMore: false, Total: len(items)}, nil
+	case "x/following":
+		users := []struct{ uid, handle, name, sign string }{
+			{"1000000000000000001", "alpha_x", "技术频道_X", "系统工程与跨平台媒体工具实践"},
+			{"1000000000000000004", "synth_x_dev", "合成X开发者", "每周分享 Go 桌面应用与协议解析笔记"},
+			{"1000000000000000005", "synth_x_photo", "合成X摄影师", "原图风光与胶片摄影归档"},
+		}
+		for _, u := range users {
+			items = append(items, service.AccountItem{
+				Kind:       service.AccountItemUser,
+				Site:       "x",
+				ID:         u.uid,
+				UniqueID:   u.handle,
+				Title:      u.name,
+				Signature:  u.sign,
+				OpenURL:    "https://x.com/" + u.handle,
+				BrowserURL: "https://x.com/" + u.handle,
+			})
+		}
+		return service.AccountPage{Items: items, HasMore: false, Total: len(items)}, nil
+	case "x/bookmarks":
+		for i := 0; i < 3; i++ {
+			id := fmt.Sprintf("10000000000000000%02d", 21+i)
+			p := service.XPostDTO{
+				ID:           id,
+				Author:       service.XAuthorDTO{RestID: "1000000000000000004", ScreenName: "synth_x_dev", Name: "合成X开发者"},
+				CreatedAt:    now.Add(-time.Duration(i+1) * 3 * time.Hour).Unix(),
+				Text:         fmt.Sprintf("书签示例帖子 #%d：整理 X 长帖、原图与 GIF 静音循环离线归档方案。", i+1),
+				CanonicalURL: "https://x.com/synth_x_dev/status/" + id,
+				CacheKey:     "x:dynamic:" + id,
+			}
+			if i == 1 {
+				p.IsQuote = true
+				p.Text = "引用收藏这条架构总结，便于后续反复查阅。"
+				p.Quoted = &service.XPostDTO{
+					ID:           "1000000000000000088",
+					Author:       service.XAuthorDTO{RestID: "1000000000000000005", ScreenName: "synth_x_photo", Name: "合成X摄影师"},
+					CreatedAt:    now.Add(-10 * time.Hour).Unix(),
+					Text:         "原帖内容：四站点采用独立加密文件与独立限流退避，单站风控不拖累其他站点。",
+					CanonicalURL: "https://x.com/synth_x_photo/status/1000000000000000088",
+				}
+			}
+			items = append(items, service.AccountItem{
+				Kind:       service.AccountItemPost,
+				Site:       "x",
+				ID:         id,
+				Title:      p.Text,
+				Author:     p.Author.Name,
+				AuthorID:   p.Author.RestID,
+				FavAt:      p.CreatedAt,
+				OpenURL:    p.CanonicalURL,
+				BrowserURL: p.CanonicalURL,
+				CacheKey:   p.CacheKey,
+				XPost:      &p,
+			})
+		}
+		return service.AccountPage{Items: items, HasMore: false, Total: len(items)}, nil
+	case "x/likes":
+		for i := 0; i < 3; i++ {
+			id := fmt.Sprintf("10000000000000000%02d", 31+i)
+			p := service.XPostDTO{
+				ID:           id,
+				Author:       service.XAuthorDTO{RestID: "1000000000000000005", ScreenName: "synth_x_photo", Name: "合成X摄影师"},
+				CreatedAt:    now.Add(-time.Duration(i+2) * 5 * time.Hour).Unix(),
+				Text:         fmt.Sprintf("喜欢示例帖子 #%d：原图摄影与 MP4 封装质量核验记录。", i+1),
+				CanonicalURL: "https://x.com/synth_x_photo/status/" + id,
+				CacheKey:     "x:dynamic:" + id,
+			}
+			items = append(items, service.AccountItem{
+				Kind:       service.AccountItemPost,
+				Site:       "x",
+				ID:         id,
+				Title:      p.Text,
+				Author:     p.Author.Name,
+				AuthorID:   p.Author.RestID,
+				FavAt:      p.CreatedAt,
+				OpenURL:    p.CanonicalURL,
+				BrowserURL: p.CanonicalURL,
+				CacheKey:   p.CacheKey,
+				XPost:      &p,
+			})
+		}
+		return service.AccountPage{Items: items, HasMore: false, Total: len(items)}, nil
 	case "douyin/likes", "douyin/collection":
 		for i := 0; i < 8; i++ {
 			id := fmt.Sprintf("73500000000000%04d", i)
@@ -196,8 +285,8 @@ func mineShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 	}
 	return []sceneSpec{
 		{Name: "mine-folded", Setup: open("", ""),
-			RequiredLabels:  []string{"我的站点：哔哩哔哩", "我的站点：抖音", "我的站点：微博"},
-			ForbiddenLabels: []string{"我的功能：哔哩哔哩 收藏夹", "我的功能：抖音 喜欢", "我的功能：微博 关注", "我的虚拟列表"}},
+			RequiredLabels:  []string{"我的站点：哔哩哔哩", "我的站点：抖音", "我的站点：微博", "我的站点：X"},
+			ForbiddenLabels: []string{"我的功能：哔哩哔哩 收藏夹", "我的功能：抖音 喜欢", "我的功能：微博 关注", "我的功能：X 关注", "我的功能：X 书签", "我的功能：X 喜欢", "我的虚拟列表"}},
 		{Name: "mine-bili-favorites", Setup: open("bilibili", service.AccountFavorites),
 			RequiredLabels:  []string{"收藏夹选择", "我的虚拟列表", "我的条目：已失效", "我的更多菜单"},
 			ForbiddenLabels: []string{"我的条目更多：gone"}},
@@ -217,6 +306,18 @@ func mineShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 		{Name: "mine-weibo-favorites", Setup: open("weibo", service.AccountFavorites),
 			RequiredLabels:  []string{"我的虚拟列表", "我的微博行：5000000000000011", "我的微博：5000000000000011"},
 			ForbiddenLabels: []string{"我的功能：微博 赞过"}},
+		{Name: "mine-x-following", Setup: open("x", service.AccountFollowing),
+			RequiredLabels:  []string{"我的虚拟列表", "我的用户：技术频道_X"},
+			RequiredTexts:   []string{"@alpha_x", "@synth_x_dev"},
+			ForbiddenLabels: []string{"关注分组选择", "我的功能：X 列表"}},
+		{Name: "mine-x-bookmarks", Setup: open("x", service.AccountBookmarks),
+			RequiredLabels:  []string{"我的虚拟列表", "我的X帖子行：1000000000000000021", "我的X帖子：1000000000000000021"},
+			RequiredTexts:   []string{"书签示例帖子 #1", "@synth_x_dev"},
+			ForbiddenLabels: []string{"收藏夹选择", "我的功能：X 列表"}},
+		{Name: "mine-x-likes", Setup: open("x", service.AccountLikes),
+			RequiredLabels:  []string{"我的虚拟列表", "我的X帖子行：1000000000000000031", "我的X帖子：1000000000000000031"},
+			RequiredTexts:   []string{"喜欢示例帖子 #1", "@synth_x_photo"},
+			ForbiddenLabels: []string{"我的功能：X 列表"}},
 		{Name: "mine-logged-out", Setup: func() {
 			open("douyin", "")()
 			fb.mineDouyinOut = true

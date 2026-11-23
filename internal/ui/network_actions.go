@@ -144,6 +144,8 @@ func siteFullLabel(siteID string) string {
 		return "抖音"
 	case string(site.Weibo):
 		return "微博"
+	case string(site.X):
+		return "X"
 	default:
 		return "哔哩哔哩"
 	}
@@ -261,24 +263,26 @@ func (a *App) checkQualityUpgrades() {
 func (a *App) openImportFollowingsModal() {
 	biliIn := a.backend.StatusOf(string(site.Bilibili)).LoggedIn
 	wbIn := a.backend.StatusOf(string(site.Weibo)).LoggedIn
-	if !biliIn && !wbIn {
+	xIn := a.backend.StatusOf(string(site.X)).LoggedIn
+	if !biliIn && !wbIn && !xIn {
 		a.OpenLoginForSite(string(site.Bilibili))
-		a.LoginError = "请先登录哔哩哔哩或微博账号后再从关注列表导入"
+		a.LoginError = "请先登录哔哩哔哩、微博或 X 账号后再从关注列表导入"
 		return
 	}
 	targetSite := string(site.Bilibili)
-	if !biliIn && wbIn {
-		targetSite = string(site.Weibo)
+	if !biliIn {
+		if wbIn {
+			targetSite = string(site.Weibo)
+		} else if xIn {
+			targetSite = string(site.X)
+		}
 	}
 	a.ImportSubModalOpen = true
 	a.selectImportSite(targetSite)
 }
 
 func (a *App) selectImportSite(siteID string) {
-	norm := string(site.Bilibili)
-	if strings.EqualFold(strings.TrimSpace(siteID), string(site.Weibo)) {
-		norm = string(site.Weibo)
-	}
+	norm := normalizeImportSite(siteID)
 	a.importFollowingsSeq++
 	a.ImportSite = norm
 	a.ImportGroup = "全部关注"
@@ -290,12 +294,21 @@ func (a *App) selectImportSite(siteID string) {
 	a.ImportGroups = nil
 	a.ImportGroupsEnabled = false
 	a.ImportPage = 0
+	a.ImportCursor = ""
 	a.ImportHasMore = false
 	a.ImportSelectedKeys = make(map[string]bool)
 	a.ImportSelectedMids = make(map[int64]bool)
 
 	if !a.backend.StatusOf(norm).LoggedIn {
-		a.ImportError = "请先登录" + siteFullLabel(norm)
+		if norm == string(site.X) {
+			a.ImportError = "请先登录 X"
+		} else {
+			a.ImportError = "请先登录" + siteFullLabel(norm)
+		}
+		return
+	}
+	if norm == string(site.X) {
+		a.loadImportPage(true)
 		return
 	}
 	seq := a.importFollowingsSeq

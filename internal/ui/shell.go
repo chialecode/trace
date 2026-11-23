@@ -25,7 +25,7 @@ func (a *App) contextPanelWidth(w float32) float32 {
 			return 232
 		}
 		return 72
-	case RouteHome, RouteSubscriptions, RouteMine, RouteLibrary, RouteLibraryItem, RouteTasks, RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser, RouteWeiboPost, RouteWeiboUser:
+	case RouteHome, RouteSubscriptions, RouteMine, RouteLibrary, RouteLibraryItem, RouteTasks, RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser, RouteWeiboPost, RouteWeiboUser, RouteXPost, RouteXUser:
 		if w >= 1280 {
 			return 272
 		}
@@ -40,7 +40,7 @@ func (a *App) contextPanelWidth(w float32) float32 {
 // grids and lists of rows use the whole width.
 func (a *App) pageWidth(contentW float32) float32 {
 	switch a.CurrentRoute {
-	case RouteHome, RouteVideo, RouteUser, RouteDouyinWork, RouteWeiboPost, RouteWeiboUser, RouteLibraryItem, RouteLogin:
+	case RouteHome, RouteVideo, RouteUser, RouteDouyinWork, RouteWeiboPost, RouteWeiboUser, RouteXPost, RouteXUser, RouteLibraryItem, RouteLogin:
 		return min(contentW, 680)
 	case RouteSubscriptions:
 		if a.SubDetailOpen {
@@ -62,9 +62,9 @@ func (a *App) pageWidth(contentW float32) float32 {
 }
 
 // primaryAccountSummary picks the primary signed-in account (Bilibili first,
-// then Douyin, then Weibo), falling back to an expired account when none is signed in.
+// then Douyin, then Weibo, then X), falling back to an expired account when none is signed in.
 func (a *App) primaryAccountSummary() (acct credential.Status, acctSite, uid, name, tip string) {
-	order := []string{"bilibili", "douyin", "weibo"}
+	order := []string{"bilibili", "douyin", "weibo", "x"}
 	statuses := make([]credential.Status, len(order))
 	for i, s := range order {
 		statuses[i] = a.backend.StatusOf(s)
@@ -96,6 +96,12 @@ func (a *App) primaryAccountSummary() (acct credential.Status, acctSite, uid, na
 		name = firstNonEmptyStrUI(acct.UniqueID, acct.UID, "抖音账号")
 	case acct.LoggedIn && acctSite == "weibo":
 		name = firstNonEmptyStrUI(acct.UID, "微博账号")
+	case acct.LoggedIn && acctSite == "x":
+		if h := strings.TrimPrefix(strings.TrimSpace(acct.UniqueID), "@"); h != "" {
+			name = "@" + h
+		} else {
+			name = firstNonEmptyStrUI(acct.UID, "X 账号")
+		}
 	case acct.State == "expired":
 		name = "登录已过期"
 	default:
@@ -108,6 +114,12 @@ func (a *App) primaryAccountSummary() (acct credential.Status, acctSite, uid, na
 		tip = fmt.Sprintf("%s (抖音号 %s)", name, acct.UniqueID)
 	} else if acctSite == "weibo" && acct.UID != "" {
 		tip = fmt.Sprintf("%s (UID %s)", name, acct.UID)
+	} else if acctSite == "x" {
+		if h := strings.TrimPrefix(strings.TrimSpace(acct.UniqueID), "@"); h != "" {
+			tip = fmt.Sprintf("%s (@%s)", name, h)
+		} else if acct.UID != "" {
+			tip = fmt.Sprintf("%s (ID %s)", name, acct.UID)
+		}
 	}
 	return acct, acctSite, uid, name, tip
 }
@@ -129,7 +141,7 @@ func (a *App) renderRail(c *ui.Context) {
 				nav := item
 				active := a.CurrentRoute == nav.Route ||
 					(nav.Route == RouteLibrary && a.CurrentRoute == RouteLibraryItem) ||
-					(nav.Route == RouteParse && (a.CurrentRoute == RouteVideo || a.CurrentRoute == RouteUser || a.CurrentRoute == RouteDouyinWork || a.CurrentRoute == RouteDouyinUser || a.CurrentRoute == RouteWeiboPost || a.CurrentRoute == RouteWeiboUser))
+					(nav.Route == RouteParse && (a.CurrentRoute == RouteVideo || a.CurrentRoute == RouteUser || a.CurrentRoute == RouteDouyinWork || a.CurrentRoute == RouteDouyinUser || a.CurrentRoute == RouteWeiboPost || a.CurrentRoute == RouteWeiboUser || a.CurrentRoute == RouteXPost || a.CurrentRoute == RouteXUser))
 				badge, dot := 0, false
 				tip := nav.Label
 				switch nav.Route {
@@ -215,7 +227,7 @@ func (a *App) renderContextPanel(c *ui.Context, width float32) {
 		a.renderTasksPanel(c)
 	case RouteMine:
 		a.renderMinePanel(c)
-	case RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser, RouteWeiboPost, RouteWeiboUser:
+	case RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser, RouteWeiboPost, RouteWeiboUser, RouteXPost, RouteXUser:
 		a.renderHistoryPanel(c)
 	}
 }
@@ -597,14 +609,22 @@ func (a *App) renderHistoryPanel(c *ui.Context) {
 					kindLabel := "视频"
 					switch entry.Kind {
 					case "user":
-						kindLabel = "用户"
+						if entrySite == "x" {
+							kindLabel = "X 用户"
+						} else {
+							kindLabel = "用户"
+						}
 					case "note":
 						kindLabel = "图文"
+					case "post":
+						kindLabel = "帖子"
 					case "dynamic":
 						if entrySite == "douyin" {
 							kindLabel = "图文"
 						} else if entrySite == "weibo" {
 							kindLabel = "微博"
+						} else if entrySite == "x" {
+							kindLabel = "帖子"
 						} else {
 							kindLabel = "动态"
 						}
@@ -749,6 +769,14 @@ func (a *App) isCurrentHistoryEntry(siteID, kind, id string) bool {
 			return a.CurrentRoute == RouteWeiboPost && ((a.CurrentWeiboVideo != nil && a.CurrentWeiboVideo.ObjectID == id) || (a.CurrentWeiboPost != nil && a.CurrentWeiboPost.Mid == id))
 		case "user":
 			return a.CurrentRoute == RouteWeiboUser && a.CurrentWeiboUser != nil && a.CurrentWeiboUser.UID == id
+		}
+		return false
+	case "x":
+		switch kind {
+		case "dynamic", "post", "note":
+			return a.CurrentRoute == RouteXPost && a.CurrentXPost != nil && a.CurrentXPost.ID == id
+		case "user":
+			return a.CurrentRoute == RouteXUser && a.CurrentXUser != nil && (a.CurrentXUser.RestID == id || strings.EqualFold(a.CurrentXUser.ScreenName, id))
 		}
 		return false
 	}

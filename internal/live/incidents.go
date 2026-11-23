@@ -478,8 +478,10 @@ func (m *Manager) ClearIdleIncidents(siteID, roomID, uid string) bool {
 				changed = append(changed, st)
 			}
 		}
+	case "weibo", "x":
+		// Weibo and X have no tracked live rooms.
 	default:
-		// Weibo and unknown sites have no tracked live rooms.
+		// Unknown sites have no tracked live rooms.
 	}
 	onState := m.onState
 	m.mu.Unlock()

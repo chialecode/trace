@@ -23,6 +23,8 @@ func (a *App) closePlayerOverlay() {
 	a.PlayerOverlay.Open = false
 	a.PlayerOverlay.MoreMenuOpen = false
 	a.PlayerOverlay.VolumeMenuOpen = false
+	a.PlayerOverlay.LoopMuted = false
+	a.PlayerOverlay.LoopPaused = false
 	_ = a.player.Close()
 }
 
@@ -35,6 +37,8 @@ func (a *App) closeImageViewer() {
 	}
 	a.ImageViewer.Open = false
 	a.ImageViewer.Bitmaps = nil
+	a.ImageViewer.InlineLoopMuted = nil
+	a.ImageViewer.InlineLoopPaused = false
 }
 
 func playerAreaName(area float64) string {

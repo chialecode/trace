@@ -286,10 +286,10 @@ func (a *App) renderCheckPlanHead(c *ui.Context, rows []service.AccountCheckRow,
 			head = "下一轮定时检查：" + formatPlanTime(next, now)
 		}
 		ui.Text(c, head).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-		ui.Text(c, fmt.Sprintf("更新检查：每轮每个站点最多检查 B 站 %d 个、抖音 %d 个、微博 %d 个账号，上次检查得早的先查；额度不足或退避时顺延。",
-			subscription.DefaultBilibiliRoundAccountCap, subscription.DefaultDouyinRoundAccountCap, subscription.DefaultWeiboRoundAccountCap)).
+		ui.Text(c, fmt.Sprintf("更新检查：每轮每个站点最多检查 B 站 %d 个、抖音 %d 个、微博 %d 个、X %d 个账号，上次检查得早的先查；额度不足或退避时顺延。",
+			subscription.DefaultBilibiliRoundAccountCap, subscription.DefaultDouyinRoundAccountCap, subscription.DefaultWeiboRoundAccountCap, subscription.DefaultXRoundAccountCap)).
 			FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
-		ui.Text(c, fmt.Sprintf("开播检查（只针对开了“开播录制”的订阅）：B 站每轮查全部；抖音每个账号单独查、两次至少隔 %d 秒，一轮最多 %d 个，超过后轮流查；微博暂不支持直播录制；不占每小时额度。完整规则见设置 › 订阅与直播。",
+		ui.Text(c, fmt.Sprintf("开播检查（只针对开了“开播录制”的订阅）：B 站每轮查全部；抖音每个账号单独查、两次至少隔 %d 秒，一轮最多 %d 个，超过后轮流查；微博与 X 暂不支持直播录制；不占每小时额度。完整规则见设置 › 订阅与直播。",
 			int(live.DefaultDouyinLiveGap/time.Second), douyinLiveChecksPerRound(a.DraftSettings.Live.PollIntervalSeconds))).
 			FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
 	})
@@ -330,7 +330,7 @@ func (a *App) renderCheckPlanRow(c *ui.Context, row service.AccountCheckRow, now
 				ui.Box(c).Label("检查计划直播说明：" + key).FillWidth().Children(func() {
 					ui.Text(c, row.LiveNote).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 				})
-			} else if row.AutoRecord && row.Site != "weibo" {
+			} else if row.AutoRecord && row.Site != "weibo" && row.Site != "x" {
 				live := "开播检查：本次运行还没有查过"
 				if row.LiveCheckedAt != "" {
 					live = "开播检查：上次 " + formatPlanTime(row.LiveCheckedAt, now)

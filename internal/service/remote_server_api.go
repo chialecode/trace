@@ -73,7 +73,7 @@ func (b *Backend) ServerStatus() remote.Status {
 	}
 
 	if b.dl != nil {
-		if tasks, err := b.dl.ListTasks(); err == nil {
+		if tasks, err := b.dl.ListTasksSummary(); err == nil {
 			var done []remote.TaskRow
 			for _, t := range tasks {
 				switch t.Status {
@@ -211,6 +211,8 @@ func (b *Backend) AcceptPushedCredential(ctx context.Context, siteID, cookie str
 		st, err = b.LoginWithCookie(ctx, string(site.Douyin), cookie, "")
 	case site.Weibo:
 		st, err = b.LoginWithCookie(ctx, string(site.Weibo), cookie, "")
+	case site.X:
+		st, err = b.LoginWithCookie(ctx, string(site.X), cookie, "")
 	default:
 		return remote.SiteStatus{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点标识: " + strings.TrimSpace(siteID)}
 	}
@@ -248,7 +250,7 @@ func (b *Backend) ClearPushedCredential(siteID string) error {
 		return err
 	}
 	switch id {
-	case site.Bilibili, site.Douyin, site.Weibo:
+	case site.Bilibili, site.Douyin, site.Weibo, site.X:
 		_, err = b.LogoutSite(string(id))
 	default:
 		return &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点标识: " + strings.TrimSpace(siteID)}

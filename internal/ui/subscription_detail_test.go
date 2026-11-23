@@ -921,8 +921,8 @@ func TestLegacyLiveTabNormalizesToAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uistate.CurrentSchemaVersion != 3 {
-		t.Fatalf("uistate.CurrentSchemaVersion = %d, want 3", uistate.CurrentSchemaVersion)
+	if uistate.CurrentSchemaVersion != 4 {
+		t.Fatalf("uistate.CurrentSchemaVersion = %d, want 4", uistate.CurrentSchemaVersion)
 	}
 	if updated.Version != uistate.CurrentSchemaVersion || updated.SubDetailTab != "accounts" {
 		t.Fatalf("expected UpdateUIState(live) -> Version=%d, SubDetailTab=accounts, got %+v", uistate.CurrentSchemaVersion, updated)

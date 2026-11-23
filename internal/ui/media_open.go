@@ -422,6 +422,23 @@ func (a *App) openPlayerFile(item library.ItemMetadata, selected string) {
 	a.openPlayerSegment(item, index)
 }
 
+func isGIFLibrarySegment(item library.ItemMetadata, relPath string) bool {
+	if relPath == "" {
+		return false
+	}
+	for _, m := range item.Media {
+		if m.Path == relPath && m.GIF {
+			return true
+		}
+	}
+	for _, np := range item.NotePages {
+		if (np.Video == relPath || np.Image == relPath) && np.GIF {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) openPlayerSegment(item library.ItemMetadata, index int) {
 	a.closeLivePreview()
 	_ = a.player.Close()
@@ -441,10 +458,13 @@ func (a *App) openPlayerSegment(item library.ItemMetadata, index int) {
 	a.PlayerOverlay.MediaPath = ""
 	a.PlayerOverlay.SeekNormalized = 0
 	a.PlayerOverlay.SubtitleOptions = []string{"关闭"}
+	a.PlayerOverlay.LoopMuted = false
+	a.PlayerOverlay.LoopPaused = false
 	if index < 0 || index >= len(a.PlayerOverlay.Segments) {
 		a.PlayerOverlay.LoadError = "没有已登记的可播放视频，请补全缓存或检查文件。"
 		return
 	}
+	a.PlayerOverlay.LoopMuted = isGIFLibrarySegment(item, a.PlayerOverlay.Segments[index])
 	mediaPath, err := a.backend.MediaPath(item.ItemKey, a.PlayerOverlay.Segments[index])
 	if err != nil {
 		a.PlayerOverlay.LoadError = "视频文件不可访问：" + err.Error()
@@ -541,6 +561,9 @@ func (a *App) openPlayerSegment(item library.ItemMetadata, index int) {
 		}
 		a.player.SetSubtitles(res.tracks)
 		a.applyPlayerPrefs()
+		if a.PlayerOverlay.LoopMuted {
+			a.player.SetMuted(true)
+		}
 		a.player.Play() // videos start playing as soon as they open
 	}, func(err error) {
 		a.PlayerOverlay.Loading = false
@@ -557,6 +580,10 @@ func (a *App) openPlayerSegment(item library.ItemMetadata, index int) {
 // openRemoteVideoPreview stages an uncached online video via Backend.StagePreviewMedia
 // (allowlisted CDN, zero Cookie) and plays it in PlayerOverlay.
 func (a *App) openRemoteVideoPreview(siteID, title, rawURL string) {
+	a.openRemoteVideoPreviewOpts(siteID, title, rawURL, false)
+}
+
+func (a *App) openRemoteVideoPreviewOpts(siteID, title, rawURL string, loopMuted bool) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" || a.backend == nil {
 		return
@@ -584,6 +611,8 @@ func (a *App) openRemoteVideoPreview(siteID, title, rawURL string) {
 	a.PlayerOverlay.MediaPath = ""
 	a.PlayerOverlay.SeekNormalized = 0
 	a.PlayerOverlay.SubtitleOptions = []string{"关闭"}
+	a.PlayerOverlay.LoopMuted = loopMuted
+	a.PlayerOverlay.LoopPaused = false
 
 	a.playerOpenSeq++
 	seq := a.playerOpenSeq
@@ -622,6 +651,9 @@ func (a *App) openRemoteVideoPreview(siteID, title, rawURL string) {
 			return
 		}
 		a.applyPlayerPrefs()
+		if a.PlayerOverlay.LoopMuted {
+			a.player.SetMuted(true)
+		}
 		a.player.Play()
 	}, func(err error) {
 		a.PlayerOverlay.Loading = false

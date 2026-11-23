@@ -26,11 +26,25 @@ func (s *Store) RefreshIndex() (RebuildReport, error) {
 }
 
 type indexedItem struct {
-	site, kind, title, status, itemDir string
+	site            string
+	kind            string
+	title           string
+	status          string
+	itemDir         string
+	totalBytes      int64
+	jsonData        string
+	feedCached      int
+	feedCacheStatus string
+	feedItemKey     string
 }
 
 func (s *Store) indexedItemsLocked() (map[string]indexedItem, error) {
-	rows, err := s.db.Query(`SELECT item_key, site, kind, title, status, item_dir FROM library_items`)
+	rows, err := s.db.Query(`
+		SELECT l.item_key, l.site, l.kind, l.title, l.status, l.item_dir, l.total_bytes, l.json_data,
+		       COALESCE(f.cached, 0), COALESCE(f.cache_status, ''), COALESCE(f.item_key, '')
+		FROM library_items l
+		LEFT JOIN feed_items f ON f.feed_key = l.item_key
+	`)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +53,10 @@ func (s *Store) indexedItemsLocked() (map[string]indexedItem, error) {
 	for rows.Next() {
 		var key string
 		var it indexedItem
-		if err := rows.Scan(&key, &it.site, &it.kind, &it.title, &it.status, &it.itemDir); err != nil {
+		if err := rows.Scan(
+			&key, &it.site, &it.kind, &it.title, &it.status, &it.itemDir, &it.totalBytes, &it.jsonData,
+			&it.feedCached, &it.feedCacheStatus, &it.feedItemKey,
+		); err != nil {
 			return nil, err
 		}
 		out[key] = it
@@ -47,31 +64,68 @@ func (s *Store) indexedItemsLocked() (map[string]indexedItem, error) {
 	return out, rows.Err()
 }
 
+func indexedItemMatches(prev indexedItem, meta ItemMetadata, jsonData string) bool {
+	return prev.status == meta.Status &&
+		prev.totalBytes == meta.TotalBytes &&
+		prev.itemDir == meta.ItemDir &&
+		prev.jsonData == jsonData &&
+		prev.feedCached == 1 &&
+		prev.feedCacheStatus == meta.Status &&
+		prev.feedItemKey == meta.ItemKey
+}
+
+// rebuildAfterWalkHook is a test-only hook fired after rebuildIndex finishes its
+// unlocked filesystem walk and before it acquires s.mu.Lock() for the final phase.
+var rebuildAfterWalkHook func()
+
 func (s *Store) rebuildIndex(checkHash bool) (RebuildReport, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Serialize overlapping scans without holding s.mu across disk I/O so UI
+	// reads (GetItem, FeedPage, Statistics, CountCachedWorks) never block.
+	s.rebuildMu.Lock()
+	defer s.rebuildMu.Unlock()
 
 	var report RebuildReport
+
+	s.mu.RLock()
+	startSeq := s.mutationSeq
+	cacheDir := s.cacheDir
 	previous, err := s.indexedItemsLocked()
 	if err != nil {
+		s.mu.RUnlock()
 		return report, err
 	}
 	roots := s.allRootsLocked()
-	if err := os.MkdirAll(s.cacheDir, 0o700); err != nil {
+	pending, err := s.readPendingDeletesLocked()
+	if err != nil {
+		s.mu.RUnlock()
+		return report, err
+	}
+	walkHook := s.onRebuildWalk
+	s.mu.RUnlock()
+
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return report, err
 	}
 
-	pendingMap := make(map[string]bool)
-	pending, err := s.readPendingDeletesLocked()
-	if err != nil {
-		return report, err
-	}
+	pendingMap := make(map[string]bool, len(pending))
 	for _, p := range pending {
 		pendingMap[p.ItemKey] = true
 	}
 
-	seenKeys := make(map[string]bool)
-	var discovered []ItemMetadata
+	if walkHook != nil {
+		walkHook()
+	}
+
+	type scannedItem struct {
+		path            string
+		meta            ItemMetadata
+		jsonData        string
+		diskWriteNeeded bool
+		missingFiles    bool
+		newlyMissing    *ChangedItem
+	}
+	seenKeys := make(map[string]bool, len(previous))
+	var discovered []scannedItem
 	for _, root := range roots {
 		if _, err := os.Stat(root); err != nil {
 			return report, err
@@ -103,6 +157,9 @@ func (s *Store) rebuildIndex(checkHash bool) (RebuildReport, error) {
 
 			raw, rErr := os.ReadFile(path)
 			if rErr != nil {
+				if os.IsNotExist(rErr) {
+					return nil
+				}
 				return rErr
 			}
 			meta, pErr := ParseItemMetadata(raw)
@@ -122,27 +179,44 @@ func (s *Store) rebuildIndex(checkHash bool) (RebuildReport, error) {
 				return err
 			}
 			meta.ItemDir = filepath.Clean(itemDir)
+			prevStatus := meta.Status
+			prevTotalBytes := meta.TotalBytes
 			missing, totalBytes, missingPaths := verifyItemFilesDetail(meta.ItemDir, &meta, checkHash)
 			meta.TotalBytes = totalBytes
+			diskWriteNeeded := false
+			missingFiles := false
+			var newlyMissing *ChangedItem
 			if missing && meta.Status != "recording" && meta.Status != "failed" && meta.Status != "partial" {
 				if prev, ok := previous[meta.ItemKey]; ok && prev.status != "missing_files" {
-					report.NewlyMissing = append(report.NewlyMissing, ChangedItem{ItemKey: meta.ItemKey, Site: meta.Site, Kind: meta.Kind, Title: meta.Title, ItemDir: meta.ItemDir, Files: missingPaths})
+					ci := ChangedItem{ItemKey: meta.ItemKey, Site: meta.Site, Kind: meta.Kind, Title: meta.Title, ItemDir: meta.ItemDir, Files: missingPaths}
+					newlyMissing = &ci
 				}
 				meta.Status = "missing_files"
-				report.MissingFiles++
-				if err := storage.WriteJSONAtomic(path, meta, 0o600); err != nil {
-					return err
+				missingFiles = true
+				if prevStatus != "missing_files" || meta.TotalBytes != prevTotalBytes {
+					diskWriteNeeded = true
 				}
 			} else if meta.Status == "missing_files" && !missing {
 				meta.Status = "complete"
-				if err := storage.WriteJSONAtomic(path, meta, 0o600); err != nil {
-					return err
-				}
+				diskWriteNeeded = true
 			}
 
-			discovered = append(discovered, meta)
+			sanitized := meta
+			SanitizeItemMetadata(&sanitized)
+			jsonBytes, mErr := json.Marshal(sanitized)
+			if mErr != nil {
+				return mErr
+			}
+
+			discovered = append(discovered, scannedItem{
+				path:            path,
+				meta:            sanitized,
+				jsonData:        string(jsonBytes),
+				diskWriteNeeded: diskWriteNeeded,
+				missingFiles:    missingFiles,
+				newlyMissing:    newlyMissing,
+			})
 			seenKeys[meta.ItemKey] = true
-			report.Indexed++
 			return nil
 		})
 		if err != nil {
@@ -150,12 +224,107 @@ func (s *Store) rebuildIndex(checkHash bool) (RebuildReport, error) {
 		}
 	}
 
+	if hook := rebuildAfterWalkHook; hook != nil {
+		hook()
+	}
+
 	var stale []string
-	for k, prev := range previous {
+	for k := range previous {
 		if !seenKeys[k] {
 			stale = append(stale, k)
-			if !pendingMap[k] {
-				report.Removed = append(report.Removed, ChangedItem{ItemKey: k, Site: prev.site, Kind: prev.kind, Title: prev.title, ItemDir: prev.itemDir})
+		}
+	}
+
+	// Acquire s.mu.Lock() only for the final diff, disk manifest updates, and SQLite commit.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current := previous
+	currentPending := pendingMap
+	mutatedDuringWalk := s.mutationSeq != startSeq
+	if mutatedDuringWalk {
+		current, err = s.indexedItemsLocked()
+		if err != nil {
+			return report, err
+		}
+		latestPending, pErr := s.readPendingDeletesLocked()
+		if pErr != nil {
+			return report, pErr
+		}
+		currentPending = make(map[string]bool, len(latestPending))
+		for _, p := range latestPending {
+			currentPending[p.ItemKey] = true
+		}
+	}
+
+	toUpsert := make([]scannedItem, 0, len(discovered))
+	for _, sc := range discovered {
+		k := sc.meta.ItemKey
+		if currentPending[k] {
+			continue
+		}
+		if mutatedDuringWalk {
+			if prev, wasInPrev := previous[k]; wasInPrev {
+				cur, stillInCur := current[k]
+				if !stillInCur || cur != prev {
+					// Deleted or updated by a concurrent SaveItem/Delete while we walked.
+					continue
+				}
+			} else if _, nowInCur := current[k]; nowInCur {
+				// Created by a concurrent SaveItem/AddLibraryRoot while we walked.
+				continue
+			}
+			// Even if a concurrent SaveItem wrote identical SQLite metadata while
+			// restoring files on disk, re-verify before overwriting item.json.
+			if sc.diskWriteNeeded {
+				if _, statErr := os.Stat(sc.path); statErr != nil {
+					continue
+				}
+				recheck := sc.meta
+				stillMissing, _, _ := verifyItemFilesDetail(recheck.ItemDir, &recheck, false)
+				if stillMissing != sc.missingFiles {
+					continue
+				}
+			}
+		}
+		report.Indexed++
+		if sc.missingFiles {
+			report.MissingFiles++
+		}
+		if sc.newlyMissing != nil {
+			report.NewlyMissing = append(report.NewlyMissing, *sc.newlyMissing)
+		}
+		if !checkHash && !sc.diskWriteNeeded {
+			if cur, ok := current[k]; ok && indexedItemMatches(cur, sc.meta, sc.jsonData) {
+				continue
+			}
+		}
+		toUpsert = append(toUpsert, sc)
+	}
+
+	toDelete := make([]string, 0, len(stale))
+	for _, k := range stale {
+		prev := previous[k]
+		if mutatedDuringWalk {
+			cur, stillInCur := current[k]
+			if !stillInCur || cur != prev {
+				continue
+			}
+		}
+		toDelete = append(toDelete, k)
+		if !currentPending[k] {
+			report.Removed = append(report.Removed, ChangedItem{ItemKey: k, Site: prev.site, Kind: prev.kind, Title: prev.title, ItemDir: prev.itemDir})
+		}
+	}
+
+	if len(toUpsert) == 0 && len(toDelete) == 0 {
+		return report, nil
+	}
+
+	for _, sc := range toUpsert {
+		if sc.diskWriteNeeded {
+			if err := storage.WriteJSONAtomic(sc.path, sc.meta, 0o600); err != nil {
+				return report, err
 			}
 		}
 	}
@@ -165,12 +334,12 @@ func (s *Store) rebuildIndex(checkHash bool) (RebuildReport, error) {
 		return report, err
 	}
 	defer tx.Rollback()
-	for _, meta := range discovered {
-		if err := upsertItemRowTx(tx, meta); err != nil {
+	for _, sc := range toUpsert {
+		if err := upsertItemRowTx(tx, sc.meta); err != nil {
 			return report, err
 		}
 	}
-	for _, k := range stale {
+	for _, k := range toDelete {
 		if _, err := tx.Exec(`DELETE FROM library_items WHERE item_key = ?`, k); err != nil {
 			return report, err
 		}
@@ -181,12 +350,16 @@ func (s *Store) rebuildIndex(checkHash bool) (RebuildReport, error) {
 			return report, err
 		}
 	}
-	return report, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return report, err
+	}
+	s.mutationSeq++
+	return report, nil
 }
 
 // AddLibraryRoot scans an existing cache folder (including bilibili/*, douyin/*/{works,lives}/*,
-// and weibo/*/{posts,forwards}/*) or legacy trace-data folder containing library/, and indexes its
-// items without moving files or overwriting existing keys (FR-LIB-006).
+// weibo/*/{posts,forwards}/*, and x/*/{posts,forwards}/*) or legacy trace-data folder containing
+// library/, and indexes its items without moving files or overwriting existing keys (FR-LIB-006).
 func (s *Store) AddLibraryRoot(selectedDir string) (AddRootReport, error) {
 	if strings.TrimSpace(selectedDir) == "" || !filepath.IsAbs(selectedDir) {
 		return AddRootReport{}, fmt.Errorf("library: folder path cannot be empty")
@@ -233,6 +406,8 @@ func (s *Store) AddLibraryRoot(selectedDir string) (AddRootReport, error) {
 		}
 	}
 
+	s.rebuildMu.Lock()
+	defer s.rebuildMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -332,6 +507,7 @@ func (s *Store) AddLibraryRoot(selectedDir string) (AddRootReport, error) {
 	if err := tx.Commit(); err != nil {
 		return report, err
 	}
+	s.mutationSeq++
 	return report, nil
 }
 

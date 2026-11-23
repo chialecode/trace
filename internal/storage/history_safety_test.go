@@ -471,3 +471,129 @@ func TestHistoryWeiboCanonicalURLsSensitiveMarkersAndUnknownSiteIsolation(t *tes
 		}
 	}
 }
+
+func TestHistoryXCanonicalURLsSensitiveMarkersAndV1Preservation(t *testing.T) {
+	dir := t.TempDir()
+	historyPath := filepath.Join(dir, "history.json")
+	store, _, err := OpenHistory(historyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. X entries with empty CanonicalURL use explicit x.com fallbacks and never fall back to Bilibili,
+	// while explicit x.com URLs strip query strings and preserve clean canonical paths.
+	cases := []struct {
+		entry   HistoryEntry
+		wantURL string
+	}{
+		{
+			entry:   HistoryEntry{Site: "x", Kind: "dynamic", ID: "1000000000000000009", Title: "合成 X 帖子"},
+			wantURL: "https://x.com/i/web/status/1000000000000000009",
+		},
+		{
+			entry:   HistoryEntry{Site: "x", Kind: "post", ID: "1000000000000000010", Title: "合成 X post 别名"},
+			wantURL: "https://x.com/i/web/status/1000000000000000010",
+		},
+		{
+			entry:   HistoryEntry{Site: "x", Kind: "user", ID: "1000000000000000001", Title: "合成 X 用户"},
+			wantURL: "https://x.com/i/user/1000000000000000001",
+		},
+		{
+			entry:   HistoryEntry{Site: "x", Kind: "dynamic", ID: "1000000000000000011", Title: "带追踪参数链接", CanonicalURL: "https://x.com/example_user/status/1000000000000000011?s=20&t=SYNTH_TRACK"},
+			wantURL: "https://x.com/example_user/status/1000000000000000011",
+		},
+	}
+	for _, tc := range cases {
+		if err := store.RecordWithThumbs(tc.entry, HistoryThumbnail{Role: "cover", Ext: ".jpg", Data: []byte("thumb-" + tc.entry.ID)}); err != nil {
+			t.Fatalf("RecordWithThumbs(%+v): %v", tc.entry, err)
+		}
+	}
+
+	// Also record a Bilibili entry with the same numeric ID to prove site isolation.
+	if err := store.Record(HistoryEntry{Site: "bilibili", Kind: "dynamic", ID: "1000000000000000009", Title: "同ID B站动态"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify history.json remains schema version 1 and preserves all site="x" entries across reload and subsequent saves.
+	v, exists, err := ReadSchemaVersion(historyPath, SchemaJSON)
+	if err != nil || !exists || v != 1 {
+		t.Fatalf("history.json version must stay 1, got v=%d exists=%v err=%v", v, exists, err)
+	}
+	reopened, _, err := OpenHistory(historyPath)
+	if err != nil {
+		t.Fatalf("reopen history.json v1 with site=x: %v", err)
+	}
+	if err := reopened.RemoveBySite("bilibili", "dynamic", "1000000000000000009"); err != nil {
+		t.Fatalf("RemoveBySite bilibili: %v", err)
+	}
+	byKey := make(map[string]HistoryEntry)
+	for _, it := range reopened.List() {
+		byKey[historyKey(it)] = it
+	}
+	for _, tc := range cases {
+		got, ok := byKey[historyKey(tc.entry)]
+		if !ok {
+			t.Fatalf("site=x entry lost across v1 reload/save: %+v", tc.entry)
+		}
+		if got.Site != "x" || got.CanonicalURL != tc.wantURL {
+			t.Fatalf("entry (%s,%s,%s) = (site=%q, url=%q), want (x, %q)", tc.entry.Site, tc.entry.Kind, tc.entry.ID, got.Site, got.CanonicalURL, tc.wantURL)
+		}
+	}
+
+	// 2. X cookie, CSRF, and Bearer token markers (raw & URL-encoded) are rejected in IDs and redacted in text/URL paths.
+	sensitiveSamples := []string{
+		"auth_token=SYNTHETIC_X_AUTH_TOKEN_01",
+		"ct0=SYNTHETIC_X_CT0_TOKEN_02",
+		"kdt=SYNTHETIC_X_KDT_TOKEN_03",
+		"twid=u%3DSYNTHETIC_X_TWID_04",
+		"guest_id=v1%3ASYNTHETIC_X_GUEST_05",
+		"x-csrf-token: SYNTHETIC_X_CSRF_HDR_06",
+		"Authorization: Bearer SYNTHETIC_X_BEARER_07",
+		"auth_token%3DSYNTHETIC_X_AUTH_ENC_08",
+		"ct0%3dSYNTHETIC_X_CT0_ENC_09",
+		"kdt%3DSYNTHETIC_X_KDT_ENC_10",
+		"x-csrf-token%3DSYNTHETIC_X_CSRF_ENC_11",
+		"Authorization%3A%20Bearer%20SYNTHETIC_X_BEARER_ENC_12",
+	}
+	for i, sample := range sensitiveSamples {
+		if err := reopened.Record(HistoryEntry{Site: "x", Kind: "dynamic", ID: sample, Title: "ignored"}); err != nil {
+			t.Fatal(err)
+		}
+		id := "10000000000000099" + strconv.Itoa(10+i)
+		if err := reopened.Record(HistoryEntry{
+			Site:         "x",
+			Kind:         "dynamic",
+			ID:           id,
+			Title:        "leaked " + sample,
+			Subtitle:     "sub " + sample,
+			CanonicalURL: "https://x.com/" + sample + "/status/" + id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rawBytes, err := os.ReadFile(historyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := string(rawBytes)
+	for _, forbidden := range []string{
+		"SYNTH_TRACK",
+		"SYNTHETIC_X_AUTH_TOKEN_01",
+		"SYNTHETIC_X_CT0_TOKEN_02",
+		"SYNTHETIC_X_KDT_TOKEN_03",
+		"SYNTHETIC_X_TWID_04",
+		"SYNTHETIC_X_GUEST_05",
+		"SYNTHETIC_X_CSRF_HDR_06",
+		"SYNTHETIC_X_BEARER_07",
+		"SYNTHETIC_X_AUTH_ENC_08",
+		"SYNTHETIC_X_CT0_ENC_09",
+		"SYNTHETIC_X_KDT_ENC_10",
+		"SYNTHETIC_X_CSRF_ENC_11",
+		"SYNTHETIC_X_BEARER_ENC_12",
+	} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("history.json leaked sensitive X token %q:\n%s", forbidden, raw)
+		}
+	}
+}

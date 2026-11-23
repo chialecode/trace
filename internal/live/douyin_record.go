@@ -264,8 +264,6 @@ func (m *Manager) StartDouyinRecording(ctx context.Context, uid, roomOrWebRID st
 		startedAt:       now,
 		reportAt:        now,
 		nextPart:        nextPartNumber(savedMeta),
-		lastSequence:    savedMeta.Live.LastSequence,
-		hasSequence:     savedMeta.Live.HasSequence,
 		quality:         plan.Quality,
 		qualityName:     plan.QualityName,
 		codec:           plan.Codec,

@@ -13,6 +13,7 @@ import (
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/site/douyin"
 	"github.com/chialecode/trace/internal/site/weibo"
+	"github.com/chialecode/trace/internal/site/x"
 )
 
 // AccountService serves 我的 (FR-ACCT-001～005, DEC-047): read-only lists of the
@@ -31,9 +32,11 @@ const (
 	AccountFavorites    = "favorites"     // 哔哩哔哩收藏夹
 	AccountToView       = "toview"        // 哔哩哔哩稍后再看
 	AccountHistory      = "history"       // 哔哩哔哩历史记录
-	AccountLikes        = "likes"         // 抖音喜欢
+	AccountLikes        = "likes"         // 抖音/微博/X 喜欢
 	AccountCollection   = "collection"    // 抖音收藏
 	AccountWatchHistory = "watch_history" // 抖音观看历史（条件）
+	AccountBookmarks    = "bookmarks"     // X 书签
+	AccountLists        = "lists"         // X 列表（条件，默认关闭）
 	AccountLogin        = "login"         // 未登录或失效时的唯一条目
 
 	// Folder ids that are not site ids.
@@ -98,6 +101,8 @@ type AccountItem struct {
 	Work *DouyinWorkCardDTO `json:"work,omitempty"`
 	// Weibo posts only: the normalized post card for 我的 › 微博.
 	Post *WeiboPostView `json:"post,omitempty"`
+	// X posts only: the normalized post card for 我的 › X.
+	XPost *XPostDTO `json:"xPost,omitempty"`
 }
 
 // AccountPage is one page of an account list. Cursor is opaque; "" asks for the first page.
@@ -115,6 +120,8 @@ var (
 	accountWatchHistoryEnabled      = douyin.WatchHistoryEnabled
 	accountWeiboLikesEnabled        = weibo.LikesEnabled
 	accountWeiboFollowGroupsEnabled = weibo.FollowGroupsEnabled
+	accountXBookmarkFoldersEnabled  = x.BookmarkFoldersEnabled
+	accountXListsEnabled            = x.ListsEnabled
 )
 
 // AccountSections lists the functions of siteID; a site that is not signed in
@@ -144,6 +151,14 @@ func (b *Backend) AccountSections(siteID string) []AccountSection {
 		labels = [][2]string{{AccountFollowing, "关注"}, {AccountFavorites, "收藏"}}
 		if accountWeiboLikesEnabled {
 			labels = append(labels, [2]string{AccountLikes, "赞过"})
+		}
+	case site.X:
+		if b.xCred != nil {
+			st = b.xCred.Status()
+		}
+		labels = [][2]string{{AccountFollowing, "关注"}, {AccountBookmarks, "书签"}, {AccountLikes, "喜欢"}}
+		if accountXListsEnabled {
+			labels = append(labels, [2]string{AccountLists, "列表"})
 		}
 	default:
 		return nil
@@ -219,6 +234,11 @@ func (b *Backend) AccountFolders(ctx context.Context, siteID, kind string) ([]Ac
 		for _, g := range groups {
 			out = append(out, AccountFolder{ID: g.ID, Title: g.Title, Count: g.Count})
 		}
+	case sid == site.X && kind == AccountBookmarks:
+		if !accountXBookmarkFoldersEnabled {
+			return nil, nil
+		}
+		out = append(out, AccountFolder{ID: AccountFolderAll, Title: "全部书签", IsDefault: true})
 	default:
 		return nil, nil
 	}
@@ -242,6 +262,8 @@ func (b *Backend) AccountPage(ctx context.Context, siteID, kind, folderID, curso
 		page, err = b.douyinAccountPage(ctx, kind, folderID, raw)
 	case site.Weibo:
 		page, err = b.weiboAccountPage(ctx, kind, folderID, pageNo)
+	case site.X:
+		page, err = b.xAccountPage(ctx, kind, folderID, pageNo, raw)
 	default:
 		err = &site.Error{Site: sid, Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
 	}
@@ -535,6 +557,116 @@ func (b *Backend) mapWeiboAccountPostsPage(p *weibo.AccountPostsPage) AccountPag
 	return out
 }
 
+func (b *Backend) snapshotXAccountSeen(bucket string, reset bool) (map[string]bool, uint64) {
+	return b.snapshotXSeenMap(&b.accountXSeen, bucket, reset)
+}
+
+func (b *Backend) mergeXAccountSeen(bucket string, gen uint64, seen map[string]bool) {
+	b.mergeXSeenMap(&b.accountXSeen, bucket, gen, seen)
+}
+
+func (b *Backend) xAccountPage(ctx context.Context, kind, folderID string, pn int, raw string) (AccountPage, error) {
+	selfUID := ""
+	if b.xCred != nil {
+		selfUID = strings.TrimSpace(b.xCred.Status().UID)
+	}
+	if selfUID == "" {
+		return AccountPage{}, &site.Error{Site: site.X, Kind: site.ErrKindAuthRequired, Message: "缺少登录账号的 X rest_id，请重新登录 X"}
+	}
+	reset := pn <= 1 && strings.TrimSpace(raw) == ""
+	switch kind {
+	case AccountFollowing:
+		seen, gen := b.snapshotXAccountSeen(kind, reset)
+		p, err := b.x.ListFollowing(ctx, selfUID, raw, seen)
+		if err != nil {
+			return AccountPage{}, err
+		}
+		b.mergeXAccountSeen(kind, gen, seen)
+		out := AccountPage{
+			HasMore: p.HasMore && strings.TrimSpace(p.NextCursor) != "",
+			Cursor:  p.NextCursor,
+			Items:   make([]AccountItem, 0, len(p.Users)),
+		}
+		for _, u := range p.Users {
+			out.Items = append(out.Items, b.accountUser(site.X, u.RestID, firstNonEmpty(u.Name, u.ScreenName, u.RestID), u.AvatarURL, u.Description, u.ScreenName))
+		}
+		return out, nil
+
+	case AccountBookmarks:
+		if folderID != "" && folderID != AccountFolderAll && !accountXBookmarkFoldersEnabled {
+			return AccountPage{}, &site.Error{Site: site.X, Kind: site.ErrKindBadRequest, Message: "X 书签文件夹暂未开放"}
+		}
+		seen, gen := b.snapshotXAccountSeen(kind, reset)
+		p, err := b.x.ListBookmarks(ctx, raw, seen)
+		if err != nil {
+			return AccountPage{}, err
+		}
+		b.mergeXAccountSeen(kind, gen, seen)
+		return b.mapXAccountPostsPage(p), nil
+
+	case AccountLikes:
+		seen, gen := b.snapshotXAccountSeen(kind, reset)
+		p, err := b.x.ListLikes(ctx, selfUID, raw, seen)
+		if err != nil {
+			return AccountPage{}, err
+		}
+		b.mergeXAccountSeen(kind, gen, seen)
+		return b.mapXAccountPostsPage(p), nil
+
+	case AccountLists:
+		if !accountXListsEnabled {
+			return AccountPage{}, &site.Error{Site: site.X, Kind: site.ErrKindBadRequest, Message: "不支持的功能"}
+		}
+		return AccountPage{}, &site.Error{Site: site.X, Kind: site.ErrKindUnavailable, Unsupported: true, Message: "X 列表浏览暂未开放"}
+
+	default:
+		return AccountPage{}, &site.Error{Site: site.X, Kind: site.ErrKindBadRequest, Message: "不支持的功能"}
+	}
+}
+
+func (b *Backend) mapXAccountPostsPage(p *x.AccountPostsPage) AccountPage {
+	if p == nil {
+		return AccountPage{}
+	}
+	keys := make([]string, 0, len(p.Posts))
+	for i := range p.Posts {
+		if p.Posts[i].ID != "" {
+			keys = append(keys, x.PostItemKey(p.Posts[i].ID))
+		}
+	}
+	var states map[string]library.DotState
+	if len(keys) > 0 {
+		states = b.States(keys)
+	}
+	out := AccountPage{
+		HasMore: p.HasMore && strings.TrimSpace(p.NextCursor) != "",
+		Cursor:  p.NextCursor,
+		Items:   make([]AccountItem, 0, len(p.Posts)),
+	}
+	for i := range p.Posts {
+		post := &p.Posts[i]
+		key := x.PostItemKey(post.ID)
+		pv := mapXPostDTO(post, nil, states[key])
+		openURL := firstNonEmpty(safeBrowserURL(post.CanonicalURL), "https://x.com/i/web/status/"+post.ID)
+		it := AccountItem{
+			Kind:       AccountItemPost,
+			Site:       string(site.X),
+			ID:         post.ID,
+			Title:      xPostSummaryTitle(pv),
+			Cover:      xPostThumbCoverURL(pv),
+			Author:     xPostAuthorDisplayName(pv.Author),
+			AuthorID:   post.Author.RestID,
+			Duration:   xPostDuration(pv),
+			OpenURL:    openURL,
+			BrowserURL: safeBrowserURL(openURL),
+			CacheKey:   pv.CacheKey,
+			XPost:      pv,
+		}
+		out.Items = append(out.Items, it)
+	}
+	return out
+}
+
 func (b *Backend) accountUser(sid site.ID, uid, name, face, sign, uniqueID string) AccountItem {
 	it := AccountItem{Kind: AccountItemUser, Site: string(sid), ID: uid, Title: name, Cover: face, Signature: firstLine(sign), UniqueID: uniqueID, AccountKey: formatAccountKey(sid, uid)}
 	switch sid {
@@ -542,6 +674,8 @@ func (b *Backend) accountUser(sid site.ID, uid, name, face, sign, uniqueID strin
 		it.OpenURL = "https://www.douyin.com/user/" + uid
 	case site.Weibo:
 		it.OpenURL = "https://weibo.com/u/" + uid
+	case site.X:
+		it.OpenURL = "https://x.com/i/user/" + uid
 	case site.Bilibili:
 		it.OpenURL = "https://space.bilibili.com/" + uid
 	}
@@ -593,7 +727,11 @@ func (b *Backend) accountFail(sid site.ID, kind string, err error) error {
 	k := site.KindOf(err)
 	b.Logf("account.%s.%s error=%s", sid, kind, k)
 	if (k == site.ErrKindRiskControl || k == site.ErrKindRateLimited) && b.subs != nil {
-		b.subs.RecordSiteAutomaticStop(string(sid), k)
+		if sid == site.X {
+			b.recordXAutomaticStop(err)
+		} else {
+			b.subs.RecordSiteAutomaticStop(string(sid), k)
+		}
 	}
 	return err
 }
@@ -630,7 +768,7 @@ func parseHistoryCursor(raw string) (bilibili.HistoryCursor, error) {
 }
 
 // accountBrowserHosts are the only hosts 我的 offers to open in the browser.
-var accountBrowserHosts = []string{"bilibili.com", "b23.tv", "douyin.com", "weibo.com", "weibo.cn"}
+var accountBrowserHosts = []string{"bilibili.com", "b23.tv", "douyin.com", "weibo.com", "weibo.cn", "x.com", "twitter.com"}
 
 // safeBrowserURL returns raw only when it is an https URL on a site host.
 func safeBrowserURL(raw string) string {

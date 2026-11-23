@@ -23,6 +23,21 @@ import (
 // playlist windows), rather than as a restarted stream's new numbering.
 const hlsSequenceGapSlackSec = 30.0
 
+// transientHLSSchemaError wraps a schema_changed SiteError triggered by a
+// malformed M3U8 playlist or truncated fMP4 media fragment so runSessionLoop
+// can attempt a bounded stream reconnect when media has already been recorded.
+type transientHLSSchemaError struct {
+	err *bilibili.SiteError
+}
+
+func (e *transientHLSSchemaError) Error() string { return e.err.Error() }
+func (e *transientHLSSchemaError) Unwrap() error { return e.err }
+
+func isTransientHLSSchemaError(err error) bool {
+	var te *transientHLSSchemaError
+	return errors.As(err, &te)
+}
+
 func (m *Manager) fetchLiveBytes(ctx context.Context, targetURL string) ([]byte, error) {
 	return m.fetchLiveLimitedBytes(ctx, targetURL, 32*1024*1024)
 }
@@ -168,19 +183,21 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 			return written, &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindBlocked, Message: "不支持加密的直播分片"}
 		}
 		if !playlist.valid {
-			return written, &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindSchemaChanged, Message: "直播播放列表结构不完整：" + playlist.invalidReason}
+			return written, &transientHLSSchemaError{
+				err: &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindSchemaChanged, Message: "直播播放列表结构不完整：" + playlist.invalidReason},
+			}
 		}
 		m.markSessionReconnected(sess, m.now(), false, partBase)
 
 		m.mu.Lock()
-		lastSeq, hasSeq, wroteMedia := sess.lastSequence, sess.hasSequence, sess.wroteMedia
+		lastSeq, hasSeq, wroteMedia, lastSeqAt := sess.lastSequence, sess.hasSequence, sess.wroteMedia, sess.lastSequenceAt
 		m.mu.Unlock()
 
 		if hasSeq && len(playlist.segments) > 0 && playlist.segments[len(playlist.segments)-1].seq < lastSeq {
 			// A sequence reset starts a new part even when the same init URI is
 			// reused. Keeping the old watermark would skip the new broadcast data.
 			m.mu.Lock()
-			sess.lastSequence, sess.hasSequence = 0, false
+			sess.lastSequence, sess.hasSequence, sess.lastSequenceAt = 0, false, time.Time{}
 			m.mu.Unlock()
 			return written, errSegmentRollover
 		}
@@ -229,7 +246,9 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 				return written, err
 			}
 			if !validLiveFragment(fragment) {
-				return written, &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindSchemaChanged, Message: "直播媒体分片不完整"}
+				return written, &transientHLSSchemaError{
+					err: &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindSchemaChanged, Message: "直播媒体分片不完整"},
+				}
 			}
 			n, err := f.Write(fragment)
 			written += int64(n)
@@ -251,36 +270,66 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 				if targetDur <= 0 {
 					targetDur = 1.0
 				}
-				// A gap longer than the time since the previous segment cannot be
-				// lost media: the restarted stream numbers its segments from a new
-				// base (seen jumping by 100 million after a reconnect).
-				if lostSec := float64(dropped) * targetDur; sess.lastSequenceAt.IsZero() || lostSec <= fetchEnd.Sub(sess.lastSequenceAt).Seconds()+hlsSequenceGapSlackSec {
-					atStr := fetchEnd.UTC().Format(time.RFC3339)
-					m.recordSessionIncident(sess, library.LiveIncident{
-						Kind:         library.LiveIncidentLostSegments,
-						At:           atStr,
-						EndedAt:      atStr,
-						DurationSec:  lostSec,
-						LostSegments: dropped,
-						Count:        1,
-						Part:         partBase,
-						Reason:       fmt.Sprintf("HLS 媒体分片序号跳号，丢失 %d 段", dropped),
-					}, true)
+				// A gap longer than the wall-clock time since the previous segment
+				// cannot be lost media: the restarted stream numbers its segments
+				// from a new base (seen jumping by 100 million after a reconnect).
+				// Never bypass this guard when lastSequenceAt is unset; fall back to
+				// persisted session anchors and treat unanchored jumps as rebases.
+				refTime := lastSeqAt
+				if refTime.IsZero() {
+					m.mu.Lock()
+					if sess.itemMeta.Live != nil {
+						if ts, parseErr := time.Parse(time.RFC3339Nano, sess.itemMeta.Live.LastSequenceAt); parseErr == nil && !ts.IsZero() {
+							refTime = ts
+						} else if ts, parseErr := time.Parse(time.RFC3339, sess.itemMeta.Live.EndedAt); parseErr == nil && !ts.IsZero() {
+							refTime = ts
+						} else if ts, parseErr := time.Parse(time.RFC3339, sess.itemMeta.Live.StartedAt); parseErr == nil && !ts.IsZero() {
+							refTime = ts
+						} else if sess.itemMeta.Live.LiveSince > 0 {
+							refTime = time.Unix(sess.itemMeta.Live.LiveSince, 0)
+						}
+					}
+					if refTime.IsZero() {
+						refTime = sess.startedAt
+					}
+					m.mu.Unlock()
+				}
+				lostSec := float64(dropped) * targetDur
+				if !refTime.IsZero() {
+					elapsedSec := fetchEnd.Sub(refTime).Seconds()
+					if elapsedSec < 0 {
+						elapsedSec = 0
+					}
+					if lostSec <= elapsedSec+hlsSequenceGapSlackSec {
+						atStr := fetchEnd.UTC().Format(time.RFC3339)
+						m.recordSessionIncident(sess, library.LiveIncident{
+							Kind:         library.LiveIncidentLostSegments,
+							At:           atStr,
+							EndedAt:      atStr,
+							DurationSec:  lostSec,
+							LostSegments: dropped,
+							Count:        1,
+							Part:         partBase,
+							Reason:       fmt.Sprintf("HLS 媒体分片序号跳号，丢失 %d 段", dropped),
+						}, true)
+					}
 				}
 			}
 			m.observeTransferSpeed(sess, fetchStart, fetchEnd, int64(len(fragment)), segment.duration, partBase)
 
-			lastSeq, hasSeq, wroteMedia = segment.seq, true, true
-			sess.lastSequenceAt = fetchEnd
+			lastSeq, hasSeq, wroteMedia, lastSeqAt = segment.seq, true, true, fetchEnd
 			sess.segmentDuration += segment.duration
 			dur := sess.segmentDuration
 			m.mu.Lock()
-			sess.lastSequence, sess.hasSequence, sess.wroteMedia = lastSeq, hasSeq, wroteMedia
+			sess.lastSequence, sess.hasSequence, sess.wroteMedia, sess.lastSequenceAt = lastSeq, hasSeq, wroteMedia, lastSeqAt
 			m.mu.Unlock()
 
 			m.commitSessionPart(sess, written, dur)
 			if err := m.saveCheckpoint(sess, func(meta *library.ItemMetadata) {
 				meta.Live.LastSequence, meta.Live.HasSequence = lastSeq, hasSeq
+				if !lastSeqAt.IsZero() {
+					meta.Live.LastSequenceAt = lastSeqAt.UTC().Format(time.RFC3339Nano)
+				}
 				meta.Live.PendingFile = partBase
 				meta.Live.PendingBytes, meta.Live.PendingDuration = written, dur
 			}); err != nil {

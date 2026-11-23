@@ -109,6 +109,14 @@ func DefaultWeiboMediaHosts() []string {
 	}
 }
 
+// DefaultXMediaHosts returns the official X image, thumbnail, GIF, and VOD CDN domains.
+func DefaultXMediaHosts() []string {
+	return []string{
+		"pbs.twimg.com",
+		"video.twimg.com",
+	}
+}
+
 // BilibiliMediaTransport returns the standard Bilibili media CDN transport policy.
 func BilibiliMediaTransport(allowLocalhost bool) MediaTransportSpec {
 	return MediaTransportSpec{
@@ -178,6 +186,23 @@ func WeiboLivePhotoMediaTransport(userAgent string, allowLocalhost bool) MediaTr
 		{Host: "video.weibo.com", Path: "/media/play"},
 	}
 	return spec
+}
+
+// XMediaTransport returns the standard X image, GIF, and video CDN transport policy.
+// Per x.md §6.2 & §15.1 #15: no Cookie, no Referer, no Origin, and PublicRedirects disabled.
+func XMediaTransport(userAgent string, allowLocalhost bool) MediaTransportSpec {
+	if strings.TrimSpace(userAgent) == "" {
+		userAgent = DefaultUserAgent
+	}
+	return MediaTransportSpec{
+		Site:            X,
+		AllowedDomains:  DefaultXMediaHosts(),
+		UserAgent:       userAgent,
+		Referer:         "",
+		Origin:          "",
+		AllowLocalhost:  allowLocalhost,
+		PublicRedirects: false,
+	}
 }
 
 // IsWeiboLivePhotoInitialURL reports whether rawURL targets the Weibo LivePhoto
@@ -326,20 +351,28 @@ func IsPublicDNSName(host string) bool {
 	return true
 }
 
-// ApplyHeaders sets configured UA/Referer/Origin headers and explicitly strips Cookie.
+// ApplyHeaders sets configured UA/Referer/Origin headers and explicitly strips
+// Cookie, Authorization, and X-Csrf-Token (plus Referer/Origin when unset) so
+// user session secrets and unneeded headers never reach CDN edges or redirects.
 func (m MediaTransportSpec) ApplyHeaders(req *http.Request) {
 	if req == nil {
 		return
 	}
 	req.Header.Del("Cookie")
+	req.Header.Del("Authorization")
+	req.Header.Del("X-Csrf-Token")
 	if m.UserAgent != "" {
 		req.Header.Set("User-Agent", m.UserAgent)
 	}
 	if m.Referer != "" {
 		req.Header.Set("Referer", m.Referer)
+	} else {
+		req.Header.Del("Referer")
 	}
 	if m.Origin != "" {
 		req.Header.Set("Origin", m.Origin)
+	} else {
+		req.Header.Del("Origin")
 	}
 }
 

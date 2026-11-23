@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -185,22 +186,23 @@ func TestCacheQueueSchemaV1ToV2MigrationBackupIdempotencyAndNewerRejection(t *te
 		t.Fatal(".premigrate-1 was modified on subsequent reopens")
 	}
 
-	// 2. Newer schema version (> 2) must be rejected with storage.NewerDataError before opening DBs or mutating disk.
+	// 2. Newer schema version (> cacheQueueSchemaVersion) must be rejected with storage.NewerDataError before opening DBs or mutating disk.
 	locNewer := testLocations(t)
 	if err := os.MkdirAll(locNewer.DataDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	newerPath := filepath.Join(locNewer.DataDir, cacheQueueFileName)
-	newerBytes := []byte(`{"version":3,"tasks":[]}`)
+	futureVer := cacheQueueSchemaVersion + 1
+	newerBytes := []byte(fmt.Sprintf(`{"version":%d,"tasks":[]}`, futureVer))
 	if err := os.WriteFile(newerPath, newerBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewBackend(Options{Locations: locNewer, Desktop: NewMockDesktop(), DisableBgWorkers: true}); err == nil {
-		t.Fatal("NewBackend accepted cache-queue.json version 3")
+		t.Fatalf("NewBackend accepted cache-queue.json version %d", futureVer)
 	} else {
 		var nde *storage.NewerDataError
-		if !errors.As(err, &nde) || nde.File != cacheQueueFileName || nde.Found != 3 || nde.Supported != cacheQueueSchemaVersion {
-			t.Fatalf("err = %v, want *storage.NewerDataError for cache-queue.json v3", err)
+		if !errors.As(err, &nde) || nde.File != cacheQueueFileName || nde.Found != futureVer || nde.Supported != cacheQueueSchemaVersion {
+			t.Fatalf("err = %v, want *storage.NewerDataError for cache-queue.json v%d", err, futureVer)
 		}
 	}
 	if _, statErr := os.Stat(filepath.Join(locNewer.DataDir, "library.db")); !os.IsNotExist(statErr) {

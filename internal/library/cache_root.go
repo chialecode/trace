@@ -49,5 +49,6 @@ func (s *Store) ChangeCacheDir(dir string, persist func() error) error {
 			return errors.Join(err, s.saveRootsLocked())
 		}
 	}
+	s.mutationSeq++
 	return nil
 }

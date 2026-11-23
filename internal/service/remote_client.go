@@ -293,7 +293,8 @@ func (b *Backend) PushCredentialToRemote(ctx context.Context, siteID string) (re
 	}
 	st, err := client.PushCredential(ctx, string(id), remote.CredentialPush{Cookie: store.CookieHeader()})
 	if err != nil {
-		if remote.KindOf(err) != remote.KindRejected {
+		// X cookies require explicit user confirmation per push and never enter background auto-retry.
+		if id != site.X && remote.KindOf(err) != remote.KindRejected {
 			b.markRemoteCookiePending(string(id), true)
 		}
 		b.logError("PushCredentialToRemote", err)
@@ -368,6 +369,11 @@ func (b *Backend) retryPendingRemoteCookies(ctx context.Context) bool {
 	}
 	pushed := false
 	for _, s := range info.PendingCookies {
+		// Never silently auto-push X cookies in background retry (x.md §15.1 #18).
+		if strings.EqualFold(strings.TrimSpace(s), string(site.X)) {
+			b.markRemoteCookiePending(s, false)
+			continue
+		}
 		if _, err := b.PushCredentialToRemote(ctx, s); err == nil {
 			pushed = true
 		} else if remote.KindOf(err) == remote.KindRejected {
@@ -404,9 +410,10 @@ func (b *Backend) runRemoteCookieRetry(ctx context.Context) {
 
 // afterLocalLogin pushes a site's new Cookie to the remote after a local
 // login or renewal (remote.md §5), in the background. Nothing happens when
-// no remote is connected, or on the remote itself.
+// no remote is connected, on the remote itself, or for site.X (X cookies
+// must NEVER auto-push due to datacenter IP risk; x.md §15.1 #18).
 func (b *Backend) afterLocalLogin(id site.ID) {
-	if b.profile == ProfileRemote {
+	if b.profile == ProfileRemote || id == site.X {
 		return
 	}
 	if _, ok := b.RemoteConnection(); !ok {

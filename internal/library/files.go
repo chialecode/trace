@@ -163,32 +163,40 @@ func verifyItemFilesDetail(itemDir string, meta *ItemMetadata, hash bool) (missi
 		}
 	}
 
-	checkRel := func(rel string) (os.FileInfo, bool) {
+	// Validate itemDir (and its recent ancestor chain) once per item instead of
+	// repeating EvalSymlinks + GetLongPathNameW for every media file in the folder.
+	verifiedDir, dirErr := validateItemDirRead(itemDir)
+
+	checkRel := func(rel string) (string, os.FileInfo, bool) {
 		rel = strings.TrimSpace(rel)
 		if rel == "" {
-			return nil, true
+			return "", nil, true
 		}
-		full, err := resolveItemPathRead(itemDir, rel)
+		if dirErr != nil {
+			note(rel)
+			return "", nil, false
+		}
+		full, err := resolveVerifiedItemPathRead(verifiedDir, rel)
 		if err != nil {
 			note(rel)
-			return nil, false
+			return "", nil, false
 		}
 		info, err := os.Lstat(full)
 		if err != nil || info.IsDir() || info.Size() == 0 {
 			note(rel)
-			return nil, false
+			return "", nil, false
 		}
 		norm := cleanManifestRel(rel)
 		if !checkedPaths[norm] {
 			checkedPaths[norm] = true
 			totalBytes += info.Size()
 		}
-		return info, true
+		return full, info, true
 	}
 
 	for i := range meta.Media {
 		rel := meta.Media[i].Path
-		info, ok := checkRel(rel)
+		full, info, ok := checkRel(rel)
 		if !ok {
 			missing = true
 		} else if info != nil {
@@ -199,14 +207,14 @@ func verifyItemFilesDetail(itemDir string, meta *ItemMetadata, hash bool) (missi
 				meta.Media[i].Bytes = info.Size()
 			}
 			if meta.Media[i].SHA256 != "" && hash {
-				if !VerifyMediaFile(itemDir, meta.Media[i], true) {
+				if !info.Mode().IsRegular() || !verifyFileSHA256(full, meta.Media[i].SHA256) {
 					missing = true
 					note(rel)
 				}
 			}
 		}
 		if meta.Media[i].Motion != "" {
-			if _, ok := checkRel(meta.Media[i].Motion); !ok {
+			if _, _, ok := checkRel(meta.Media[i].Motion); !ok {
 				missing = true
 			}
 		}
@@ -217,7 +225,7 @@ func verifyItemFilesDetail(itemDir string, meta *ItemMetadata, hash bool) (missi
 		if norm == "" || checkedPaths[norm] || noted[norm] {
 			return
 		}
-		if _, ok := checkRel(f.Path); !ok {
+		if _, _, ok := checkRel(f.Path); !ok {
 			missing = true
 		}
 	})
@@ -240,6 +248,7 @@ func verifyItemFilesDetail(itemDir string, meta *ItemMetadata, hash bool) (missi
 func sumItemBytesAllowMoved(itemDir string, meta *ItemMetadata) int64 {
 	seen := make(map[string]bool)
 	var totalBytes int64
+	verifiedDir, dirErr := validateItemDirRead(itemDir)
 	addFile := func(rel string, recordedBytes int64) int64 {
 		norm := cleanManifestRel(rel)
 		if norm == "" || seen[strings.ToLower(norm)] {
@@ -247,9 +256,11 @@ func sumItemBytesAllowMoved(itemDir string, meta *ItemMetadata) int64 {
 		}
 		seen[strings.ToLower(norm)] = true
 		size := recordedBytes
-		if full, err := resolveItemPathRead(itemDir, rel); err == nil {
-			if info, err := os.Lstat(full); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
-				size = info.Size()
+		if dirErr == nil {
+			if full, err := resolveVerifiedItemPathRead(verifiedDir, rel); err == nil {
+				if info, err := os.Lstat(full); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+					size = info.Size()
+				}
 			}
 		}
 		totalBytes += size
@@ -272,6 +283,19 @@ func sumItemBytesAllowMoved(itemDir string, meta *ItemMetadata) int64 {
 	return totalBytes
 }
 
+func verifyFileSHA256(full, expectedSHA string) bool {
+	f, err := os.Open(full)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return false
+	}
+	return strings.EqualFold(hex.EncodeToString(h.Sum(nil)), expectedSHA)
+}
+
 // VerifyMediaFile checks a registered file without rewriting its expected size.
 func VerifyMediaFile(itemDir string, file MediaFile, checkHash bool) bool {
 	full, err := resolveItemPathRead(itemDir, file.Path)
@@ -285,16 +309,7 @@ func VerifyMediaFile(itemDir string, file MediaFile, checkHash bool) bool {
 	if !checkHash || file.SHA256 == "" {
 		return true
 	}
-	f, err := os.Open(full)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return false
-	}
-	return strings.EqualFold(hex.EncodeToString(h.Sum(nil)), file.SHA256)
+	return verifyFileSHA256(full, file.SHA256)
 }
 
 // RemoveItemFile deletes one file of an indexed item after it was uploaded

@@ -138,7 +138,7 @@ func (a *App) renderHomeRoute(c *ui.Context) {
 				return
 			}
 			ui.Text(c, "还没有缓存的内容").FontSize(17).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-			ui.Text(c, "到「解析」里打开一位 UP 主、抖音作者或微博博主，在动态、作品或微博上点「缓存」").
+			ui.Text(c, "到「解析」里打开一位 UP 主、抖音作者、微博博主或 X 用户，在动态、作品、微博或帖子上点「缓存」").
 				FontSize(14).TextColor(ColorTextMuted).MaxLines(2)
 			if AccentPillButton(c, "去解析", "去解析链接").Clicked() {
 				a.Navigate(RouteParse)

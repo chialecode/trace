@@ -213,6 +213,7 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 	biliRenew := a.backend.Renewal("bilibili")
 	dyAcct := a.backend.StatusOf("douyin")
 	wbAcct := a.backend.StatusOf("weibo")
+	xAcct := a.backend.StatusOf("x")
 
 	ui.Column(c).FillWidth().Gap(0).ClipX().Children(func() {
 		// Group 1: 哔哩哔哩 (docs/ui.md §3.7)
@@ -328,7 +329,9 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 		ui.Column(c).
 			Label("账号分组：微博").
 			FillWidth().
-			Padding(18, 0, 0, 0).
+			Padding(18, 0, 18, 0).
+			BorderWidth(0, 0, 1, 0).
+			BorderColor(ColorBorder).
 			Gap(12).
 			ClipX().
 			Children(func() {
@@ -366,6 +369,66 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 						ui.Text(c, "未登录微博账号").FontSize(13).TextColor(ColorTextMuted).SingleLine()
 						if AccentPillButton(c, "登录微博", "登录微博").Clicked() {
 							a.OpenLoginForSite("weibo")
+						}
+					})
+				}
+			})
+
+		// Group 4: X（原 Twitter） (x.md §12.3 #1, §15.1 #19)
+		ui.Column(c).
+			Label("账号分组：X").
+			FillWidth().
+			Padding(18, 0, 0, 0).
+			Gap(12).
+			ClipX().
+			Children(func() {
+				ui.Text(c, "X（原 Twitter）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+
+				if xAcct.LoggedIn || xAcct.State == "expired" {
+					xHandle := strings.TrimPrefix(strings.TrimSpace(xAcct.UniqueID), "@")
+					xUID := strings.TrimSpace(xAcct.UID)
+					identLine := "ID：—"
+					if xHandle != "" && xUID != "" {
+						identLine = fmt.Sprintf("@%s · ID %s", xHandle, xUID)
+					} else if xHandle != "" {
+						identLine = "@" + xHandle
+					} else if xUID != "" {
+						identLine = "ID " + xUID
+					}
+					statusTag := ""
+					if xAcct.State == "expired" {
+						statusTag = " · 已过期"
+					}
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).ClipX().Children(func() {
+						a.renderAccountAvatar(c, "x", firstNonEmptyStrUI(xAcct.Uname, xHandle, "X 用户"), xUID, 0, 48, false, "", nil, xAcct.Face)
+						ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
+							ui.Text(c, firstNonEmptyStrUI(xAcct.Uname, xHandle, "X 用户")).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+							ui.Text(c, identLine+" · 登录方式：粘贴 Cookie"+statusTag).
+								FontSize(13).TextColor(ColorTextMuted).SingleLine()
+						})
+					})
+
+					ui.Text(c, "自动续期：不可用，粘贴的 Cookie 不续期；过期后请重新粘贴").
+						FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
+					ui.Text(c, "风险说明：X 网页接口非官方 API，存在限流、验证、临时锁号或封号风险；TRACE 只读不写，建议使用专门账号。").
+						FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
+
+					ui.Row(c).Gap(8).Wrap().Children(func() {
+						if OutlinePillButton(c, "重新粘贴", "重新粘贴XCookie").Clicked() {
+							a.OpenLoginForSite("x")
+						}
+						if DangerOutlinePillButton(c, "退出登录", "退出X登录").Clicked() {
+							a.ConfirmLogoutSite = "x"
+							a.ConfirmLogoutOpen = true
+						}
+					})
+				} else {
+					ui.Text(c, "风险说明：X 网页接口非官方 API，存在限流、验证、临时锁号或封号风险；TRACE 只读不写，建议使用专门账号。").
+						FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(12).Children(func() {
+						ui.Text(c, "未登录 X 账号").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+						if AccentPillButton(c, "登录 X", "登录X").Clicked() {
+							a.OpenLoginForSite("x")
 						}
 					})
 				}

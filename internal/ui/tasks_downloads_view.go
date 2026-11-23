@@ -15,8 +15,10 @@ func (a *App) lookupTaskDetailCached(task download.Task) (download.TaskDetail, b
 		return download.TaskDetail{}, false
 	}
 	st := a.fs()
+	revMatch := task.UpdatedAt != "" || st.taskDetailRev == a.cacheStateRev
 	if st.taskDetailID == task.TaskID &&
-		st.taskDetailRev == a.cacheStateRev &&
+		revMatch &&
+		st.taskDetailUpdatedAt == task.UpdatedAt &&
 		st.taskDetailStatus == task.Status &&
 		st.taskDetailBytes == task.BytesDownloaded &&
 		st.taskDetailFileN == len(task.Files) {
@@ -25,6 +27,7 @@ func (a *App) lookupTaskDetailCached(task download.Task) (download.TaskDetail, b
 	detail, ok, _ := a.backend.TaskDetail(task.TaskID)
 	st.taskDetailID = task.TaskID
 	st.taskDetailRev = a.cacheStateRev
+	st.taskDetailUpdatedAt = task.UpdatedAt
 	st.taskDetailStatus = task.Status
 	st.taskDetailBytes = task.BytesDownloaded
 	st.taskDetailFileN = len(task.Files)
@@ -72,80 +75,109 @@ func (a *App) startUpgradeCandidate(it library.ItemMetadata) {
 }
 
 func (a *App) renderTasksDownloadsView(c *ui.Context) {
-	ui.Scroll(c).Grow(1).FillWidth().ClipX().Children(func() {
-		ui.Column(c).FillWidth().Padding(16).Gap(12).ClipX().Children(func() {
-			if len(a.UpgradeCandidates) > 0 {
-				ui.Column(c).FillWidth().Padding(14).Radius(16).Background(ColorInfoBlueBg).Border(1, ColorInfoBlue).Gap(8).ClipX().Children(func() {
-					ui.Text(c, fmt.Sprintf("可升级画质视频（%d）", len(a.UpgradeCandidates))).FontSize(14).FontWeight(600).TextColor(ColorInfoBlue).SingleLine()
-					for _, cand := range a.UpgradeCandidates {
-						it := cand
-						reqKey := "upgrade-cand:" + firstNonEmptyStrUI(it.ItemKey, it.RawID)
-						busy := a.isPending(reqKey)
-						ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
-							ui.Text(c, fmt.Sprintf("%s（%s）", it.Title, it.UpgradeHint)).
-								FontSize(13).TextColor(ColorTextMain).SingleLine().Grow(1).Shrink(1)
-							btnText := "升级缓存"
-							if busy {
-								btnText = "提交中…"
-							}
-							if AccentPillButton(c, btnText, "升级缓存："+it.RawID).Disabled(busy).Clicked() && !busy {
-								a.startUpgradeCandidate(it)
+	ui.Column(c).Grow(1).FillWidth().ClipX().Children(func() {
+		retryable := 0
+		finished := 0
+		for _, t := range a.Tasks {
+			if download.IsRetryableTask(t) {
+				retryable++
+			}
+			if t.Status == "completed" || t.Status == "canceled" {
+				finished++
+			}
+		}
+		hasToolbar := len(a.UpgradeCandidates) > 0 || a.TaskActionError != "" || retryable > 0 || finished > 0
+		if hasToolbar {
+			ui.Column(c).FillWidth().Padding(16, 16, 8, 16).Gap(10).Shrink(0).ClipX().Children(func() {
+				if len(a.UpgradeCandidates) > 0 {
+					ui.Scroll(c).FillWidth().MaxHeight(220).ClipX().Children(func() {
+						ui.Column(c).FillWidth().Padding(14).Radius(16).Background(ColorInfoBlueBg).Border(1, ColorInfoBlue).Gap(8).ClipX().Children(func() {
+							ui.Text(c, fmt.Sprintf("可升级画质视频（%d）", len(a.UpgradeCandidates))).FontSize(14).FontWeight(600).TextColor(ColorInfoBlue).SingleLine()
+							for _, cand := range a.UpgradeCandidates {
+								it := cand
+								reqKey := "upgrade-cand:" + firstNonEmptyStrUI(it.ItemKey, it.RawID)
+								busy := a.isPending(reqKey)
+								ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
+									ui.Text(c, fmt.Sprintf("%s（%s）", it.Title, it.UpgradeHint)).
+										FontSize(13).TextColor(ColorTextMain).SingleLine().Grow(1).Shrink(1)
+									btnText := "升级缓存"
+									if busy {
+										btnText = "提交中…"
+									}
+									if AccentPillButton(c, btnText, "升级缓存："+it.RawID).Disabled(busy).Clicked() && !busy {
+										a.startUpgradeCandidate(it)
+									}
+								})
 							}
 						})
-					}
-				})
-			}
+					})
+				}
 
-			if a.TaskActionError != "" {
-				renderErrorBanner(c, "", a.TaskActionError, nil)
-			}
-			retryable := 0
-			finished := 0
-			for _, t := range a.Tasks {
-				if download.IsRetryableTask(t) {
-					retryable++
+				if a.TaskActionError != "" {
+					renderErrorBanner(c, "", a.TaskActionError, nil)
 				}
-				if t.Status == "completed" || t.Status == "canceled" {
-					finished++
-				}
-			}
-			if retryable > 0 || finished > 0 {
-				ui.Row(c).FillWidth().Justify(ui.End).AlignItems(ui.Center).Gap(8).Wrap().Children(func() {
-					if retryable > 0 {
-						if AccentPillButton(c, fmt.Sprintf("批量重试（%d）", retryable), "批量重试失败或已暂停的任务").Clicked() {
-							a.TaskRemoveConfirmID = ""
-							res, err := a.backend.RetryAllTasks()
-							a.finishTaskAction(err)
-							if err != nil {
-								a.BannerInfo = ""
-							} else {
-								a.BannerInfo = formatBatchRetryInfo(res)
+				if retryable > 0 || finished > 0 {
+					ui.Row(c).FillWidth().Justify(ui.End).AlignItems(ui.Center).Gap(8).Wrap().Children(func() {
+						if retryable > 0 {
+							if AccentPillButton(c, fmt.Sprintf("批量重试（%d）", retryable), "批量重试失败或已暂停的任务").Clicked() {
+								a.TaskRemoveConfirmID = ""
+								res, err := a.backend.RetryAllTasks()
+								a.finishTaskAction(err)
+								if err != nil {
+									a.BannerInfo = ""
+								} else {
+									a.BannerInfo = formatBatchRetryInfo(res)
+								}
 							}
 						}
-					}
-					if finished > 0 {
-						if OutlinePillButton(c, fmt.Sprintf("清除已结束（%d）", finished), "清除已结束的任务").Clicked() {
-							a.TaskRemoveConfirmID = ""
-							_, err := a.backend.RemoveFinishedTasks()
-							a.finishTaskAction(err)
+						if finished > 0 {
+							if OutlinePillButton(c, fmt.Sprintf("清除已结束（%d）", finished), "清除已结束的任务").Clicked() {
+								a.TaskRemoveConfirmID = ""
+								_, err := a.backend.RemoveFinishedTasks()
+								a.finishTaskAction(err)
+							}
 						}
-					}
-				})
-			}
+					})
+				}
+			})
+		}
 
-			if len(a.Tasks) == 0 {
-				ui.Column(c).FillWidth().Padding(40, 16).AlignItems(ui.Center).Gap(8).Children(func() {
-					ui.Text(c, "当前没有缓存任务").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-					ui.Text(c, "在动态或视频详情上点「缓存」后，下载进度与子文件详情会显示在这里。").FontSize(13).TextColor(ColorTextMuted)
-				})
+		if len(a.Tasks) == 0 {
+			ui.Column(c).FillWidth().Padding(40, 16).AlignItems(ui.Center).Gap(8).Children(func() {
+				ui.Text(c, "当前没有缓存任务").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				ui.Text(c, "在动态、帖子或视频详情上点「缓存」后，下载进度与子文件详情会显示在这里。").FontSize(13).TextColor(ColorTextMuted)
+			})
+			return
+		}
+
+		tasks := a.Tasks
+		a.TasksListState.Key = func(i int) any {
+			if i >= 0 && i < len(tasks) {
+				return tasks[i].TaskID
+			}
+			return i
+		}
+		topPad := float32(16)
+		if hasToolbar {
+			topPad = 4
+		}
+		ui.List(c, &a.TasksListState, len(tasks), func(i int) {
+			if i < 0 || i >= len(tasks) {
 				return
 			}
-
-			for _, t := range a.Tasks {
-				task := t
-				a.renderDownloadTaskCard(c, task)
+			task := tasks[i]
+			padTop := float32(0)
+			if i == 0 {
+				padTop = topPad
 			}
-		})
+			padBottom := float32(12)
+			if i == len(tasks)-1 {
+				padBottom = 16
+			}
+			ui.Column(c).FillWidth().Padding(padTop, 16, padBottom, 16).ClipX().Children(func() {
+				a.renderDownloadTaskCard(c, task)
+			})
+		}).Label("下载任务列表").Grow(1).FillWidth()
 	})
 }
 
@@ -207,7 +239,7 @@ func (a *App) renderDownloadTaskCard(c *ui.Context, task download.Task) {
 		Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Start).Gap(12).ClipX().Children(func() {
 				coverKey, coverRel := a.queueRecentCover(task.ItemKey)
-				a.renderMediaThumb(c, coverKey, coverRel, task.Title, "", task.Status, false, 96, 58)
+				a.renderMediaThumbEdge(c, coverKey, coverRel, avatarThumbEdge, task.Title, "", task.Status, false, 96, 58)
 
 				ui.Column(c).Grow(1).Shrink(1).Gap(6).ClipX().Children(func() {
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {

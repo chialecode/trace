@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -328,6 +329,123 @@ func TestCheckdocsWeiboSecretsAndPlaceholders(t *testing.T) {
 		for _, f := range findings {
 			if strings.Contains(f, "Cookie/token") || strings.Contains(f, "signed URL") {
 				t.Fatalf("false positive on docs/research/weibo.md: %s", f)
+			}
+		}
+	})
+}
+
+func TestCheckdocsXSecretsAndPlaceholders(t *testing.T) {
+	emptyRefDir := filepath.Join(t.TempDir(), "nonexistent")
+	t.Setenv("TRACE_REFERENCE_DIR", emptyRefDir)
+
+	synthAuth := "0123456789abcdef0123456789abcdef01234567"
+	synthCT0 := "abcdef0123456789abcdef0123456789"
+	synthKDT := "synthKdtDeviceToken000123456789"
+	synthWebBearer := "AAAAAAAAAAAAAAAAAAAAASynthWebBearer0001%3D%3D"
+
+	leaks := []struct {
+		name      string
+		line      string
+		want      string
+		rawSecret string
+	}{
+		{"x_auth_token", "Cookie: auth_token=" + synthAuth, "contains Cookie/token value", synthAuth},
+		{"x_auth_token_quoted", `Cookie: auth_token="` + synthAuth + `"`, "contains Cookie/token value", synthAuth},
+		{"x_auth_token_encoded", "Encoded: auth_token%3D" + synthAuth, "contains Cookie/token value", synthAuth},
+		{"x_auth_token_query_escaped", "Query: " + url.QueryEscape("Cookie: auth_token="+synthAuth+"; ct0="+synthCT0+"; kdt="+synthKDT), "contains Cookie/token value", synthAuth},
+		{"x_auth_token_json", `JSON: {"auth_token":"` + synthAuth + `"}`, "contains Cookie/token value", synthAuth},
+		{"x_ct0", "Cookie: ct0=" + synthCT0, "contains Cookie/token value", synthCT0},
+		{"x_ct0_encoded", "Encoded: ct0%3d" + synthCT0, "contains Cookie/token value", synthCT0},
+		{"x_ct0_json", `JSON: {"ct0":"` + synthCT0 + `"}`, "contains Cookie/token value", synthCT0},
+		{"x_kdt", "Cookie: kdt=" + synthKDT, "contains Cookie/token value", synthKDT},
+		{"x_kdt_encoded", "Encoded: kdt%3D" + synthKDT, "contains Cookie/token value", synthKDT},
+		{"x_kdt_json", `JSON: {"kdt":"` + synthKDT + `"}`, "contains Cookie/token value", synthKDT},
+		{"x_csrf_header", "x-csrf-token: " + synthCT0, "contains Cookie/token value", synthCT0},
+		{"x_csrf_header_upper_quoted", `X-CSRF-Token: "` + synthCT0 + `"`, "contains Cookie/token value", synthCT0},
+		{"x_csrf_kv", "x-csrf-token=" + synthCT0, "contains Cookie/token value", synthCT0},
+		{"x_csrf_kv_encoded", "x-csrf-token%3D" + synthCT0, "contains Cookie/token value", synthCT0},
+		{"x_csrf_query_escaped", url.QueryEscape("x-csrf-token: " + synthCT0), "contains Cookie/token value", synthCT0},
+		{"x_csrf_path_escaped", url.PathEscape("x-csrf-token: " + synthCT0), "contains Cookie/token value", synthCT0},
+		{"x_csrf_json", `JSON: {"x-csrf-token":"` + synthCT0 + `"}`, "contains Cookie/token value", synthCT0},
+		{"x_bearer_header", "Authorization: Bearer " + synthWebBearer, "contains Cookie/token value", synthWebBearer},
+		{"x_bearer_json", `JSON: {"Authorization":"Bearer AAAAAAAAAAAAAAAAAAAAASynthJsonBearer0002%2F%3D"}`, "contains Cookie/token value", "AAAAAAAAAAAAAAAAAAAAASynthJsonBearer0002%2F%3D"},
+		{"x_bearer_query_escaped", url.QueryEscape("Authorization: Bearer SYNTH_BEARER_ENC_507"), "contains Cookie/token value", "SYNTH_BEARER_ENC_507"},
+		{"x_bearer_path_escaped", url.PathEscape("Authorization: Bearer SYNTH_BEARER_PATH_508"), "contains Cookie/token value", "SYNTH_BEARER_PATH_508"},
+		{"x_bearer_bare", "Token: `Bearer AAAAAAAAAAAAAAAAAAAAASynthBareBearer0003`", "contains Cookie/token value", "AAAAAAAAAAAAAAAAAAAAASynthBareBearer0003"},
+		{"x_bearer_raw_literal", "Literal: `AAAAAAAAAAAAAAAAAAAAASynthRawWebBearer0005%3D%3D`", "contains Cookie/token value", "AAAAAAAAAAAAAAAAAAAAASynthRawWebBearer0005%3D%3D"},
+		{"x_signed_hls_token", "HLS: https://video.twimg.com/ext_tw_video/1000000000000000009/pu/pl/synth.m3u8?tag=12&token=synth_hls_sig_01234567", "contains signed URL", "synth_hls_sig_01234567"},
+		{"x_signed_hls_json_amp", `HLS: https://video.twimg.com/ext_tw_video/1000000000000000009/pu/pl/synth.m3u8?tag=12\u0026token=synth_hls_json_01234567`, "contains signed URL", "synth_hls_json_01234567"},
+		{"x_signed_cloudfront_mp4", "CDN: https://video.twimg.com/amplify_video/1000000000000000009/vid/synth.mp4?Expires=1763700000&Signature=AbCdEfGh12345678&Key-Pair-Id=APKASYNTH0001", "contains signed URL", "AbCdEfGh12345678"},
+		{"x_signed_hdnts_mp4", "CDN: https://video-s.twimg.com/ext_tw_video/1000000000000000009/pu/vid/synth.mp4?hdnts=exp=1763700000~acl=/ext_tw_video/*~hmac=0123456789abcdef0123456789abcdef", "contains signed URL", "0123456789abcdef0123456789abcdef"},
+		{"x_signed_encoded_url", "Encoded: https%3A%2F%2Fvideo.twimg.com%2Fext_tw_video%2F1000000000000000009%2Fpu%2Fpl%2Fsynth.m3u8%3Ftag%3D12%26token%3Dsynth_enc_sig_01234567", "contains signed URL", "synth_enc_sig_01234567"},
+		{"x_signed_pscp_live", "Live: https://prod-fastly-us.video.pscp.tv/Transcoding/v1/hls/synth/playlist.m3u8?token=synth_pscp_sig_01234567", "contains signed URL", "synth_pscp_sig_01234567"},
+		{"x_private_ton_x", "DM: https://ton.x.com/i/ton/data/dm/1000000000000000009/synth_private_dm.jpg", "contains signed URL", "synth_private_dm.jpg"},
+		{"x_private_ton_twitter", "DM: https://ton.twitter.com/i/ton/data/dm/1000000000000000009/synth_private_dm2.jpg", "contains signed URL", "synth_private_dm2.jpg"},
+	}
+
+	for _, tc := range leaks {
+		t.Run(tc.name, func(t *testing.T) {
+			caseDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(caseDir, "LEAK.md"), []byte("# Leak\n\n"+tc.line+"\n"), 0o600); err != nil {
+				t.Fatalf("write LEAK.md (%s): %v", tc.name, err)
+			}
+			gotFindings, _, err := Run(caseDir, emptyRefDir)
+			if err != nil {
+				t.Fatalf("Run(%s): %v", tc.name, err)
+			}
+			joinedGot := strings.Join(gotFindings, "\n")
+			if !strings.Contains(joinedGot, tc.want) {
+				t.Fatalf("%s: expected finding %q, got: %v", tc.name, tc.want, gotFindings)
+			}
+			if strings.Contains(joinedGot, tc.rawSecret) {
+				t.Fatalf("%s: raw secret %q leaked into finding output: %s", tc.name, tc.rawSecret, joinedGot)
+			}
+			if !strings.Contains(joinedGot, "<redacted>") {
+				t.Fatalf("%s: expected <redacted> in finding output: %s", tc.name, joinedGot)
+			}
+		})
+	}
+
+	t.Run("placeholders and public URLs allowed", func(t *testing.T) {
+		dir := t.TempDir()
+		safeDoc := strings.Join([]string{
+			"# X Safe Placeholders",
+			"",
+			"- Cookie placeholders: `auth_token=<合成占位>`, `ct0=<合成占位>`, `kdt=<合成占位>`, `twid=<合成占位>`, `guest_id=<合成占位>`.",
+			"- English placeholders: `auth_token=<synthetic>`, `ct0=<synthetic>`, `kdt=<synthetic>`, `x-csrf-token: <ct0>`.",
+			"- Bare key mentions: `auth_token=` / `ct0=` / `kdt=` / `Set-Cookie: ct0=...` / `auth_token=[REDACTED]` / `x-csrf-token: [REDACTED]`.",
+			"- Bearer placeholders: `Bearer <公开网页端固定 Bearer 令牌>`, `Authorization: Bearer <令牌>`, `Authorization: Bearer [REDACTED]`, App-Only Bearer Token, Bearer authentication-mechanism.",
+			"- Public image & avatar URLs: `https://pbs.twimg.com/media/Synthetic01?format=jpg&name=orig`, `https://pbs.twimg.com/profile_images/1000000000000000001/synth_400x400.jpg`.",
+			"- Public GIF & progressive MP4 URLs: `https://video.twimg.com/tweet_video/SyntheticGif01.mp4`, `https://video.twimg.com/ext_tw_video/1000000000000000009/pu/vid/avc1/1280x720/synth.mp4?tag=12`.",
+			"- Public static script URL: `https://abs.twimg.com/responsive-web/client-web/ondemand.s.<hash>a.js`.",
+			"- Signed/private URL placeholders: `https://video.twimg.com/ext_tw_video/1000000000000000009/pu/pl/synth.m3u8?tag=12&token=<合成签名>`, `https://cdn.syndication.twimg.com/tweet-result?id=<id>&token=<token>`, `https://ton.x.com/i/ton/data/<合成路径>`.",
+		}, "\n")
+		if err := os.WriteFile(filepath.Join(dir, "SAFE.md"), []byte(safeDoc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		findings, _, err := Run(dir, emptyRefDir)
+		if err != nil || len(findings) != 0 {
+			t.Fatalf("unexpected findings for X placeholders: %v (err=%v)", findings, err)
+		}
+	})
+
+	t.Run("actual docs/research/x.md has no secret false positives", func(t *testing.T) {
+		xDocPath := filepath.Join("..", "..", "docs", "research", "x.md")
+		raw, err := os.ReadFile(xDocPath)
+		if err != nil {
+			t.Fatalf("read %s: %v", xDocPath, err)
+		}
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "x.md"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		findings, _, err := Run(dir, emptyRefDir)
+		if err != nil {
+			t.Fatalf("Run on x.md copy: %v", err)
+		}
+		for _, f := range findings {
+			if strings.Contains(f, "Cookie/token") || strings.Contains(f, "signed URL") {
+				t.Fatalf("false positive on docs/research/x.md: %s", f)
 			}
 		}
 	})

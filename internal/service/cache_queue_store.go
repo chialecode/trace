@@ -29,7 +29,7 @@ const (
 	CacheQueueStopped        = "stopped"
 
 	cacheQueueFileName       = "cache-queue.json"
-	cacheQueueSchemaVersion  = 2
+	cacheQueueSchemaVersion  = 3
 	maxCacheQueueRecentItems = 30
 )
 
@@ -110,6 +110,7 @@ type CacheQueueRequest struct {
 	Videos         []bilibili.UserVideoItem `json:"-"`
 	Works          []DouyinWorkCardDTO      `json:"-"`
 	WeiboPosts     []WeiboPostView          `json:"-"`
+	XPosts         []XPostDTO               `json:"-"`
 	Cursor         string                   `json:"cursor"`
 	HasMore        bool                     `json:"hasMore"`
 	CompletionNote string                   `json:"completionNote,omitempty"`
@@ -229,6 +230,7 @@ var (
 	queueFullURLPattern   = regexp.MustCompile(`(?i)https?://[^\s"'<>]+`)
 	queueQueryTailPattern = regexp.MustCompile(`\?[A-Za-z0-9_.-]+=[^\s"'<>]*`)
 	queueSecretKVPattern  = regexp.MustCompile(`(?i)\b(?:` + secretKeyNamesPattern + `)["'\\]*\s*[=:][^\s;"'<>]*|\btrace-remote:\S+|\bbearer\s+\S+`)
+	xQueueCursorPattern   = regexp.MustCompile(`^[A-Za-z0-9+/|_.-]{1,512}={0,2}$`)
 )
 
 func newCacheQueueManager(b *Backend, path string, clock CacheQueueClock, rng CacheQueueRand, pacing *CacheQueuePacing) (*cacheQueueManager, string, error) {
@@ -365,6 +367,24 @@ func sanitizeQueueCursor(c string) string {
 	return c
 }
 
+// sanitizeQueueCursorForSite validates site-specific cursors for cache-queue.json.
+// X GraphQL Bottom cursors may use Base64 ("+", "/", trailing "=") or pipe tokens,
+// so site.X accepts a strict printable token pattern while still rejecting URLs,
+// query strings, control characters, and credential key-value substrings.
+func sanitizeQueueCursorForSite(siteID site.ID, c string) string {
+	if siteID == site.X {
+		c = strings.TrimSpace(c)
+		if c == "" || strings.Contains(c, "://") || !xQueueCursorPattern.MatchString(c) {
+			return ""
+		}
+		if queueSecretKVPattern.MatchString(c) {
+			return ""
+		}
+		return c
+	}
+	return sanitizeQueueCursor(c)
+}
+
 func sanitizeItemKey(k string) string {
 	k = strings.TrimSpace(k)
 	if strings.ContainsAny(k, "?=&;/\\ \t\r\n") || strings.Contains(k, "://") {
@@ -389,7 +409,7 @@ func sanitizeQueueRecord(r cacheQueueRecord) cacheQueueRecord {
 	if !avatarFileRe.MatchString(r.AvatarKey) {
 		r.AvatarKey = ""
 	}
-	r.Cursor = sanitizeQueueCursor(r.Cursor)
+	r.Cursor = sanitizeQueueCursorForSite(siteID, r.Cursor)
 	r.ActiveItemKey = sanitizeItemKey(r.ActiveItemKey)
 	r.ActiveTitle = sanitizeQueueText(r.ActiveTitle)
 	r.StopReason = sanitizeQueueText(r.StopReason)

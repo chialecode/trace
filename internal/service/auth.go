@@ -16,7 +16,8 @@ import (
 func (b *Backend) HasAnyLogin() bool {
 	return (b.cred != nil && b.cred.HasActiveCredential()) ||
 		(b.douyinCred != nil && b.douyinCred.HasActiveCredential()) ||
-		(b.weiboCred != nil && b.weiboCred.HasActiveCredential())
+		(b.weiboCred != nil && b.weiboCred.HasActiveCredential()) ||
+		(b.xCred != nil && b.xCred.HasActiveCredential())
 }
 
 func (b *Backend) requireAnyLogin() error {
@@ -25,7 +26,7 @@ func (b *Backend) requireAnyLogin() error {
 	}
 	return &site.Error{
 		Kind:    site.ErrKindAuthRequired,
-		Message: "请先登录哔哩哔哩、抖音或微博账号",
+		Message: "请先登录哔哩哔哩、抖音、微博或 X 账号",
 	}
 }
 
@@ -58,6 +59,15 @@ func (b *Backend) requireSiteLogin(siteID site.ID) error {
 			Kind:    site.ErrKindAuthRequired,
 			Message: "请先登录微博",
 		}
+	case site.X:
+		if b.xCred != nil && b.xCred.HasActiveCredential() {
+			return nil
+		}
+		return &site.Error{
+			Site:    site.X,
+			Kind:    site.ErrKindAuthRequired,
+			Message: "请先登录 X",
+		}
 	default:
 		return &site.Error{
 			Site:    siteID,
@@ -75,6 +85,8 @@ func normalizeSiteID(raw string) (site.ID, error) {
 		return site.Douyin, nil
 	case string(site.Weibo):
 		return site.Weibo, nil
+	case string(site.X):
+		return site.X, nil
 	default:
 		return "", &site.Error{
 			Kind:    site.ErrKindBadRequest,
@@ -136,6 +148,12 @@ func (b *Backend) Renewal(siteID string) RenewalStatus {
 			Site:      string(site.Weibo),
 			Available: false,
 			Reason:    "不可用，粘贴的 Cookie 与浏览器共用会话；过期后请重新粘贴",
+		}
+	case site.X:
+		return RenewalStatus{
+			Site:      string(site.X),
+			Available: false,
+			Reason:    credential.XManualRenewalUnavailableReason,
 		}
 	case site.Bilibili:
 		st := b.cred.Status()
@@ -201,7 +219,16 @@ func (b *Backend) BootstrapAuth(ctx context.Context) (credential.Status, error) 
 		"微博登录已失效，任务已暂停",
 		"无法确认微博登录状态，请稍后重试",
 	)
-	return biliOut, errors.Join(biliErr, dyErr, wbErr)
+	_, xErr := b.verifyBootstrapSite(
+		ctx,
+		site.X,
+		b.xCred,
+		b.x.VerifyCredential,
+		func(err error) bool { return site.IsKind(err, site.ErrKindAuthRequired) },
+		"X 登录已失效，任务已暂停",
+		"无法确认 X 登录状态，请稍后重试",
+	)
+	return biliOut, errors.Join(biliErr, dyErr, wbErr, xErr)
 }
 
 func (b *Backend) verifyBootstrapSite(
@@ -218,6 +245,11 @@ func (b *Backend) verifyBootstrapSite(
 	}
 	verified, err := verify(ctx)
 	if err != nil && isAuthErr(err) {
+		if siteID == site.Weibo {
+			b.clearWeiboMemoryCaches()
+		} else if siteID == site.X {
+			b.clearXMemoryCaches()
+		}
 		b.pauseSiteActiveWork(siteID, "auth_required", expiredMsg)
 	} else if err != nil {
 		var stateErr error
@@ -227,6 +259,11 @@ func (b *Backend) verifyBootstrapSite(
 			verified = store.Status()
 		}
 	} else if !verified.LoggedIn {
+		if siteID == site.Weibo {
+			b.clearWeiboMemoryCaches()
+		} else if siteID == site.X {
+			b.clearXMemoryCaches()
+		}
 		b.pauseSiteActiveWork(siteID, "auth_required", expiredMsg)
 	}
 	b.events.PublishSite(EventAccountChanged, string(siteID), verified.State)
@@ -266,6 +303,14 @@ func (b *Backend) VerifySiteAccount(ctx context.Context, siteID string) (credent
 			b.pauseSiteActiveWork(site.Weibo, "auth_required", "微博登录已失效，任务已暂停")
 		}
 		b.events.PublishSite(EventAccountChanged, string(site.Weibo), st.State)
+		return st, vErr
+	case site.X:
+		st, vErr := b.x.VerifyCredential(ctx)
+		if vErr != nil && site.IsKind(vErr, site.ErrKindAuthRequired) {
+			b.clearXMemoryCaches()
+			b.pauseSiteActiveWork(site.X, "auth_required", "X 登录已失效，任务已暂停")
+		}
+		b.events.PublishSite(EventAccountChanged, string(site.X), st.State)
 		return st, vErr
 	default:
 		return credential.Status{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点标识: " + strings.TrimSpace(siteID)}
@@ -369,6 +414,22 @@ func (b *Backend) LoginWithCookie(ctx context.Context, siteID, rawCookie, rawRef
 		b.logInfo(fmt.Sprintf("weibo cookie imported: state=%s uid=%s", st.State, st.UID))
 		b.finishSiteLogin(site.Weibo, st.LoggedIn, st.State, switched, prevAuthPaused)
 		return st, nil
+	case site.X:
+		prevAuthPaused := b.snapshotAuthPausedQueueIDs(site.X)
+		prev := b.xCred.Status()
+		st, lErr := b.x.LoginWithCookie(ctx, rawCookie)
+		if lErr != nil {
+			b.logError("LoginWithCookie.X", lErr)
+			return b.xCred.Status(), lErr
+		}
+		switched := prev.LoggedIn && prev.UID != "" && prev.UID != st.UID
+		if switched {
+			b.clearXMemoryCaches()
+			b.pauseSiteActiveWork(site.X, "auth_required", "X 登录账号已变更，任务已暂停")
+		}
+		b.logInfo(fmt.Sprintf("x cookie imported: state=%s uid=%s", st.State, st.UID))
+		b.finishSiteLogin(site.X, st.LoggedIn, st.State, switched, prevAuthPaused)
+		return st, nil
 	default:
 		return credential.Status{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点标识: " + strings.TrimSpace(siteID)}
 	}
@@ -454,6 +515,18 @@ func (b *Backend) LogoutSite(siteID string) (credential.Status, error) {
 			b.logInfo("weibo account logged out and credentials cleared")
 		}
 		b.events.PublishSite(EventAccountChanged, string(site.Weibo), st.State)
+		return st, lErr
+	case site.X:
+		b.clearXMemoryCaches()
+		b.pauseSiteActiveWork(site.X, "auth_required", "已退出 X 登录，任务已暂停")
+		lErr := b.x.LogoutCredential()
+		st := b.xCred.Status()
+		if lErr != nil {
+			b.logError("LogoutSite.X", lErr)
+		} else {
+			b.logInfo("x account logged out and credentials cleared")
+		}
+		b.events.PublishSite(EventAccountChanged, string(site.X), st.State)
 		return st, lErr
 	default:
 		return credential.Status{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的站点标识: " + strings.TrimSpace(siteID)}

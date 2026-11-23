@@ -37,6 +37,7 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 	ready := !a.PlayerOverlay.Loading && a.PlayerOverlay.LoadError == "" && !a.PlayerOverlay.DecoderMissing
 	if ready && c.Shortcut(0, ui.KeySpace) {
 		a.wakePlayerControls(now)
+		a.PlayerOverlay.LoopPaused = snap.Playing
 		a.player.TogglePlay()
 	}
 	if ready && snap.DurationSec > 0 && c.Shortcut(0, ui.KeyLeft) {
@@ -330,6 +331,7 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 							}
 							if FloatingCircleButton(c, playIcon, "播放器播放暂停", 38).Disabled(!ready).Clicked() {
 								a.wakePlayerControls(now)
+								a.PlayerOverlay.LoopPaused = snap.Playing
 								a.player.TogglePlay()
 							}
 

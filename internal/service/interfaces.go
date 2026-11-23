@@ -14,6 +14,7 @@ import (
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/site/douyin"
 	"github.com/chialecode/trace/internal/site/weibo"
+	"github.com/chialecode/trace/internal/site/x"
 	"github.com/chialecode/trace/internal/storage"
 	"github.com/chialecode/trace/internal/subscription"
 	"github.com/chialecode/trace/internal/uistate"
@@ -26,6 +27,7 @@ type Options struct {
 	BilibiliOpts                bilibili.ClientOptions
 	DouyinOpts                  douyin.ClientOptions
 	WeiboOpts                   weibo.ClientOptions
+	XOpts                       x.ClientOptions
 	FullCacheUseFeatureOriginal bool
 	Desktop                     Desktop
 	DisableBgWorkers            bool
@@ -67,6 +69,10 @@ type OpenLinkResult struct {
 	WeiboUser            *WeiboUserView             `json:"weiboUser,omitempty"`
 	WeiboUserPosts       *WeiboUserPostsPage        `json:"weiboUserPosts,omitempty"`
 	WeiboUserPostsError  string                     `json:"weiboUserPostsError,omitempty"`
+	XPost                *XPostDTO                  `json:"xPost,omitempty"`
+	XUser                *XUserDTO                  `json:"xUser,omitempty"`
+	XUserPosts           *XUserPostsPageDTO         `json:"xUserPosts,omitempty"`
+	XUserPostsError      string                     `json:"xUserPostsError,omitempty"`
 	CachedItem           *library.ItemMetadata      `json:"cachedItem,omitempty"`
 	// HistoryThumbs names the images of the recent-parse entry. OpenLink
 	// records the entry without waiting for them; FetchHistoryThumbs adds
@@ -141,6 +147,10 @@ type ParseService interface {
 	WeiboVideo(ctx context.Context, oid string) (*WeiboVideoView, error)
 	WeiboUser(ctx context.Context, uid string) (*WeiboUserView, error)
 	WeiboUserPosts(ctx context.Context, uid, cursor string) (*WeiboUserPostsPage, error)
+	XPost(ctx context.Context, statusID string) (*XPostDTO, error)
+	XUser(ctx context.Context, restID string) (*XUserDTO, error)
+	XUserByScreenName(ctx context.Context, screenName string) (*XUserDTO, error)
+	XUserPosts(ctx context.Context, restID, cursor string) (*XUserPostsPageDTO, error)
 	StagePreviewMedia(ctx context.Context, siteID, rawURL, ext string) (string, error)
 	FetchHistoryThumbs(ctx context.Context, job HistoryThumbJob) error
 	FetchImage(ctx context.Context, rawURL string) ([]byte, error)
@@ -165,6 +175,7 @@ type CacheService interface {
 	CacheDouyinWorkFor(ctx context.Context, awemeID, forUID, forName string) (download.Task, error)
 	CacheWeiboPost(ctx context.Context, mid string, via *library.ItemVia) (download.Task, error)
 	CacheWeiboVideo(ctx context.Context, oid string) (download.Task, error)
+	CacheXPost(ctx context.Context, statusID string, via *library.ItemVia) (download.Task, error)
 	ListCacheQueue() []CacheQueueTask
 	FindCacheQueueTask(siteID, user, list string) (CacheQueueTask, bool)
 	EnqueueCacheQueue(ctx context.Context, req CacheQueueRequest) (CacheQueueTask, error)
@@ -206,6 +217,7 @@ type LibraryService interface {
 	LibraryStatistics() (library.Statistics, error)
 	ListLibraryItems(filter library.FeedFilter) ([]library.ItemMetadata, error)
 	GetLibraryItem(keyOrID string) (library.ItemMetadata, bool, error)
+	GetLibraryItemMetaOnly(keyOrID string) (library.ItemMetadata, bool, error)
 	MediaPath(key, relPath string) (string, error)
 	PlanDelete(key string) (library.DeletePlan, error)
 	Delete(key string) error
@@ -281,6 +293,7 @@ type FollowingService interface {
 	ImportCreators(users []bilibili.FollowingUser, scope, autoCache string, liveNotify, liveAutoRecord bool) (int, error)
 	FollowingGroups(ctx context.Context, siteID string) ([]FollowingGroupDTO, error)
 	FollowingCreatorsPage(ctx context.Context, siteID, groupID string, page int) (FollowingCreatorsPageDTO, error)
+	FollowingCreatorsPageWithCursor(ctx context.Context, siteID, groupID, cursor string) (FollowingCreatorsPageDTO, error)
 	ImportFollowingCreators(siteID string, creators []FollowingCreatorDTO, rules subscription.SubRules) (subscription.ImportAccountRefsResult, error)
 }
 

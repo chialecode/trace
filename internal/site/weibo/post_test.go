@@ -2,9 +2,11 @@ package weibo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -872,5 +874,44 @@ func TestGetPostRetweetOriginEnrichmentHoistedVideoDegradationAndHintUID(t *test
 	}
 	if resolved.HintAuthorUID != "1000000001" || resolved.AuthorUID != "1000000001" {
 		t.Fatalf("ResolveLink HintAuthorUID=%q AuthorUID=%q, want 1000000001", resolved.HintAuthorUID, resolved.AuthorUID)
+	}
+}
+
+// Originals only (user request 2026-11-24): when the original fails, the
+// recompressed bmiddle preview, the thumbnail and smaller tiers must never be
+// offered as fallbacks.
+func TestBuildImageAssetFallbacksAreFullResolutionOnly(t *testing.T) {
+	v := func(tier string, w, h int) *rawPicVariant {
+		return &rawPicVariant{
+			URL:    "https://wx1.sinaimg.cn/" + tier + "/SynthPid0001.jpg",
+			Width:  json.RawMessage(strconv.Itoa(w)),
+			Height: json.RawMessage(strconv.Itoa(h)),
+		}
+	}
+	pi := &rawPicInfo{
+		PicID:     "SynthPid0001",
+		Type:      "pic",
+		Thumbnail: v("orj360", 360, 540),
+		BMiddle:   v("bmiddle", 440, 660),
+		MW2000:    v("mw2000", 1333, 2000),
+		Large:     v("large", 2048, 3072),
+		Largest:   v("largest", 2048, 3072),
+	}
+	asset, ok := (&Client{}).buildImageAsset(1, "SynthPid0001", pi, nil)
+	if !ok {
+		t.Fatal("buildImageAsset returned !ok")
+	}
+	if !strings.Contains(asset.URL, "/largest/") {
+		t.Fatalf("primary = %q, want the largest tier", asset.URL)
+	}
+	for _, fb := range asset.FallbackURLs {
+		for _, bad := range []string{"/bmiddle/", "/orj360/", "/mw2000/"} {
+			if strings.Contains(fb, bad) {
+				t.Fatalf("fallback %q is a compressed or smaller tier; fallbacks=%v", fb, asset.FallbackURLs)
+			}
+		}
+	}
+	if len(asset.FallbackURLs) != 1 || !strings.Contains(asset.FallbackURLs[0], "/large/") {
+		t.Fatalf("fallbacks = %v, want only the same-size /large/ tier", asset.FallbackURLs)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/chialecode/trace/internal/library"
+	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/subscription"
 	"github.com/chialecode/trace/internal/uistate"
 	"github.com/egoist/mygo/ui"
@@ -341,27 +342,122 @@ func (a *App) closeHomeActorFeed() {
 	a.loadInitialFeed()
 }
 
+type homeRefreshSnapshot struct {
+	subs     []subscription.Subscription
+	subsErr  error
+	works    map[string]service.AccountWorks
+	stats    library.Statistics
+	statsErr error
+	homeSeen map[string]int64
+	page     library.FeedPageResult
+	pageErr  error
+	hasActor bool
+	actorKey string
+	site     string
+}
+
 // refreshHomeFromDisk performs an offline local disk sync (0 network requests)
 // and reloads the Home timeline and sidebar subscription list / unread dots
-// while preserving the active site or subscription filter.
+// while preserving the active site or subscription filter. All post-refresh
+// SQLite reads run inside the background goroutine so the UI thread applies
+// the refreshed snapshot in one lightweight pass without stalling frames.
 func (a *App) refreshHomeFromDisk() {
 	if a.HomeRefreshRunning || a.isPending("home-refresh") || !a.backend.HasAnyLogin() {
 		return
 	}
 	a.HomeRefreshRunning = true
 	backend := a.backend
-	requestGuarded(a, "home-refresh", nil, func(context.Context) (library.RebuildReport, error) {
-		return backend.RefreshLibrary()
-	}, func(library.RebuildReport) {
+	siteFilter := feedSiteParam(a.FeedSiteFilter)
+	hasActor := a.HomeActorFilter != nil
+	var actorSnap HomeUpdatedActor
+	if hasActor {
+		actorSnap = *a.HomeActorFilter
+	}
+	authors := append([]int64(nil), a.FeedAuthorsFilter...)
+	authorRefs := append([]library.AuthorRef(nil), a.FeedAuthorRefsFilter...)
+
+	requestGuarded(a, "home-refresh", nil, func(context.Context) (homeRefreshSnapshot, error) {
+		if _, err := backend.RefreshLibrary(); err != nil {
+			return homeRefreshSnapshot{}, err
+		}
+		subs, subsErr := backend.ListSubscriptions()
+		works := backend.SubscriptionAccountWorks()
+		stats, statsErr := backend.LibraryStatistics()
+		homeSeen := backend.GetUIState().HomeSeen
+
+		req := library.FeedPageRequest{
+			Order:      "newest",
+			CachedOnly: true,
+			Site:       siteFilter,
+			Limit:      60,
+		}
+		if hasActor {
+			var matchedRefs []library.AuthorRef
+			var matchedAuthors []int64
+			if subsErr == nil && actorSnap.SubID != "" {
+				for _, s := range subs {
+					if s.ID == actorSnap.SubID {
+						matchedRefs = subscriptionAuthorRefs(s)
+						if s.Mid > 0 {
+							matchedAuthors = []int64{s.Mid}
+						}
+						break
+					}
+				}
+			}
+			switch {
+			case len(matchedRefs) > 0:
+				req.AuthorRefs = matchedRefs
+			case len(actorSnap.AuthorRefs) > 0:
+				req.AuthorRefs = actorSnap.AuthorRefs
+			case len(matchedAuthors) > 0:
+				req.Authors = matchedAuthors
+			default:
+				req.Authors = actorSnap.Authors
+			}
+		} else {
+			req.Authors = authors
+			req.AuthorRefs = authorRefs
+		}
+		page, pageErr := backend.FeedPage(req)
+		return homeRefreshSnapshot{
+			subs:     subs,
+			subsErr:  subsErr,
+			works:    works,
+			stats:    stats,
+			statsErr: statsErr,
+			homeSeen: homeSeen,
+			page:     page,
+			pageErr:  pageErr,
+			hasActor: hasActor,
+			actorKey: actorSnap.Key,
+			site:     siteFilter,
+		}, nil
+	}, func(snap homeRefreshSnapshot) {
 		a.HomeRefreshRunning = false
 		a.purgeMissingImages()
 		a.postCards = nil
 		a.cacheStateRev++
+		a.libraryRev++
+		a.subFeedDirty = true
+		a.libraryItemsDirty = a.CurrentRoute != RouteLibrary && a.CurrentRoute != RouteLibraryItem
 		a.homeFilterViews = nil
 		a.savedMain = nil
-		a.refreshSubscriptions()
-		a.refreshLibraryStatistics()
-		a.homeSeenLocal = a.backend.GetUIState().HomeSeen
+
+		if snap.subsErr != nil {
+			a.showError(snap.subsErr)
+		} else {
+			a.Subscriptions = snap.subs
+			a.subsRev++
+			a.accountWorks = snap.works
+		}
+		if snap.statsErr != nil {
+			a.showError(fmt.Errorf("读取媒体库统计失败：%w", snap.statsErr))
+		} else {
+			a.libraryStatistics = snap.stats
+			a.statsRev++
+		}
+		a.homeSeenLocal = snap.homeSeen
 		a.homeSeenRev++
 		a.homeSubOrder = nil
 		a.homeSubRowsValid = false
@@ -375,29 +471,40 @@ func (a *App) refreshHomeFromDisk() {
 					break
 				}
 			}
+			if snap.hasActor && snap.actorKey == actor.Key && snap.site == feedSiteParam(a.FeedSiteFilter) && snap.pageErr == nil {
+				a.markSubscriptionSeen(actor)
+				actorCopy := actor
+				a.HomeActorFilter = &actorCopy
+				a.FeedAuthorsFilter = append([]int64(nil), actor.Authors...)
+				a.FeedAuthorRefsFilter = append([]library.AuthorRef(nil), actor.AuthorRefs...)
+				a.FeedItems = snap.page.Items
+				a.FeedError = ""
+				a.feedMoreBefore = false
+				a.feedMoreAfter = snap.page.HasMore
+				a.FeedScroll = ui.ScrollState{}
+				a.resetFeedListState()
+				a.FeedListState.ScrollTo(0, ui.Start)
+				return
+			}
 			a.openHomeActorFeed(actor)
 			return
 		}
-		req := library.FeedPageRequest{
-			Order:      "newest",
-			CachedOnly: true,
-			Site:       feedSiteParam(a.FeedSiteFilter),
-			Authors:    a.FeedAuthorsFilter,
-			AuthorRefs: a.FeedAuthorRefsFilter,
-			Limit:      60,
-		}
-		page, err := a.backend.FeedPage(req)
-		if err != nil {
-			a.FeedError = userErrorText(err)
-			a.showError(err)
+		if !snap.hasActor && snap.site == feedSiteParam(a.FeedSiteFilter) {
+			if snap.pageErr != nil {
+				a.FeedError = userErrorText(snap.pageErr)
+				a.showError(snap.pageErr)
+				return
+			}
+			a.FeedError = ""
+			a.FeedItems = snap.page.Items
+			a.feedMoreBefore = false
+			a.feedMoreAfter = snap.page.HasMore
+			a.FeedScroll = ui.ScrollState{}
+			a.resetFeedListState()
+			a.FeedListState.ScrollTo(0, ui.Start)
 			return
 		}
-		a.FeedError = ""
-		a.FeedItems = page.Items
-		a.feedMoreBefore = false
-		a.feedMoreAfter = page.HasMore
-		a.resetFeedListState()
-		a.FeedListState.ScrollTo(0, ui.Start)
+		a.loadInitialFeed()
 	}, func(err error) {
 		a.HomeRefreshRunning = false
 		a.showError(fmt.Errorf("刷新主页失败：%w", err))

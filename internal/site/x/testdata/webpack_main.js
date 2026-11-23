@@ -1,0 +1,23 @@
+(self.webpackChunk_synthetic_web=self.webpackChunk_synthetic_web||[]).push([[100],{
+  1001:function(e){e.exports={authorization:"Bearer SYNTHETIC_WEB_BEARER_TOKEN_0001"}},
+  1002:function(e){e.exports={queryId:"SynthMutationIgnore99",operationName:"UserByScreenName",operationType:"mutation",metadata:{featureSwitches:["ignored_mutation_switch"]}}},
+  2001:function(e){e.exports={queryId:"SynthQidUserByScreenName01",operationName:"UserByScreenName",operationType:"query",metadata:{featureSwitches:["hidden_profile_subscriptions_enabled","responsive_web_graphql_exclude_directive_enabled","responsive_web_graphql_skip_user_profile_image_extensions_enabled"],fieldToggles:["withAuxiliaryUserLabels"]}}},
+  2002:function(e){e.exports={queryId:"SynthQidUserByRestId02",operationName:"UserByRestId",operationType:"query",metadata:{featureSwitches:["hidden_profile_subscriptions_enabled","responsive_web_graphql_exclude_directive_enabled"],fieldToggles:["withAuxiliaryUserLabels"]}}},
+  2003:function(e){e.exports={queryId:"SynthQidUserTweets03",operationName:"UserTweets",operationType:"query",metadata:{featureSwitches:["creator_subscriptions_tweet_preview_api_enabled","responsive_web_graphql_exclude_directive_enabled","longform_notetweets_consumption_enabled"],fieldToggles:["withArticlePlainText"]}}},
+  2004:function(e){e.exports={queryId:"SynthQidTweetDetail04",operationName:"TweetDetail",operationType:"query",metadata:{featureSwitches:["creator_subscriptions_tweet_preview_api_enabled","responsive_web_graphql_exclude_directive_enabled","longform_notetweets_consumption_enabled"],fieldToggles:["withArticleRichContentState","withArticlePlainText","withGrokAnalyze"]}}},
+  2005:function(e){e.exports={queryId:"SynthQidFollowing05",operationName:"Following",operationType:"query",metadata:{featureSwitches:["responsive_web_graphql_exclude_directive_enabled","verified_phone_label_enabled"]}}},
+  2006:function(e){e.exports={queryId:"SynthQidBookmarks06",operationName:"Bookmarks",operationType:"query",metadata:{featureSwitches:["responsive_web_graphql_exclude_directive_enabled","longform_notetweets_consumption_enabled"]}}},
+  2007:function(e){e.exports={queryId:"SynthQidLikes07",operationName:"Likes",operationType:"query",metadata:{featureSwitches:["responsive_web_graphql_exclude_directive_enabled","verified_phone_label_enabled"]}}},
+  9001:function(e){e.exports={defaultConfig:{
+    hidden_profile_subscriptions_enabled:{value:!0},
+    responsive_web_graphql_exclude_directive_enabled:{value:!0},
+    responsive_web_graphql_skip_user_profile_image_extensions_enabled:{value:!1},
+    creator_subscriptions_tweet_preview_api_enabled:{value:!0},
+    longform_notetweets_consumption_enabled:{value:!0},
+    verified_phone_label_enabled:{value:!1},
+    withAuxiliaryUserLabels:{value:!1},
+    withArticleRichContentState:{value:!0},
+    withArticlePlainText:{value:!1},
+    withGrokAnalyze:{value:!1}
+  }}}
+}]);

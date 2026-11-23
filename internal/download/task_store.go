@@ -29,6 +29,17 @@ const taskSelectColumns = `
 	bytes_downloaded, total_bytes, progress, item_key, item_dir,
 	files_json, attempts_json, created_at, updated_at, via_json`
 
+const taskSummarySelectColumns = `
+	task_id, site, kind, source, target_id, cid, page, title, part_title,
+	mid, author_uid, author_name, author_face, cover_url, cache_linked_videos,
+	status, pause_reason, error_kind, error_message, quality_hint,
+	bytes_downloaded, total_bytes, progress, item_key, item_dir,
+	created_at, updated_at, via_json`
+
+const taskListOrderSQL = `
+	ORDER BY CASE WHEN status IN ('running', 'queued') THEN 0 WHEN status IN ('paused', 'failed', 'partial') THEN 1 ELSE 2 END,
+		julianday(updated_at) DESC, rowid DESC`
+
 func (m *Manager) initSchema() error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS download_tasks (
@@ -89,6 +100,9 @@ func (m *Manager) initSchema() error {
 		`ALTER TABLE download_tasks ADD COLUMN via_json TEXT NOT NULL DEFAULT ''`,
 	} {
 		_, _ = m.db.Exec(alter)
+	}
+	if _, err := m.db.Exec(`CREATE INDEX IF NOT EXISTS idx_download_tasks_status_updated ON download_tasks(status, updated_at)`); err != nil {
+		return err
 	}
 	return nil
 }
@@ -190,10 +204,7 @@ func (m *Manager) findActiveOrQueuedLocked(siteID, kind, targetID string, cid in
 // tasks, with the most recently updated task first within each group.
 func (m *Manager) ListTasks() ([]Task, error) {
 	rows, err := m.db.Query(`SELECT` + taskSelectColumns + `
-		FROM download_tasks
-		ORDER BY CASE WHEN status IN ('running', 'queued') THEN 0 WHEN status IN ('paused', 'failed', 'partial') THEN 1 ELSE 2 END,
-			julianday(updated_at) DESC, rowid DESC
-	`)
+		FROM download_tasks` + taskListOrderSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -213,6 +224,80 @@ func (m *Manager) ListTasks() ([]Task, error) {
 	rows.Close()
 	for i := range out {
 		m.fillPartialReason(&out[i])
+	}
+	return out, nil
+}
+
+// ListTasksSummary returns all tasks in the same order as ListTasks without
+// reading or deserializing files_json and attempts_json. Callers that need
+// per-file progress or attempt logs should call TaskDetail(taskID).
+func (m *Manager) ListTasksSummary() ([]Task, error) {
+	return m.queryTaskSummaries(`SELECT` + taskSummarySelectColumns + `
+		FROM download_tasks` + taskListOrderSQL)
+}
+
+// ListNonTerminalTasks returns only non-terminal tasks (excluding completed and
+// canceled rows) without deserializing files_json or attempts_json.
+func (m *Manager) ListNonTerminalTasks() ([]Task, error) {
+	return m.queryTaskSummaries(`SELECT` + taskSummarySelectColumns + `
+		FROM download_tasks
+		WHERE status NOT IN ('completed', 'canceled')` + taskListOrderSQL)
+}
+
+func (m *Manager) queryTaskSummaries(query string, args ...any) ([]Task, error) {
+	rows, err := m.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Task
+	for rows.Next() {
+		t, err := scanTaskSummary(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m.withTaskFault(t))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range out {
+		m.fillPartialReason(&out[i])
+	}
+	return out, nil
+}
+
+func (m *Manager) listTasksSummaryByIDs(ids []string) ([]Task, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	const chunkSize = 400
+	byID := make(map[string]Task, len(ids))
+	for start := 0; start < len(ids); start += chunkSize {
+		end := min(start+chunkSize, len(ids))
+		chunk := ids[start:end]
+		ph := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		batch, err := m.queryTaskSummaries(`SELECT`+taskSummarySelectColumns+`
+			FROM download_tasks
+			WHERE task_id IN (`+ph+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range batch {
+			byID[t.TaskID] = t
+		}
+	}
+	out := make([]Task, 0, len(byID))
+	for _, id := range ids {
+		if t, ok := byID[id]; ok {
+			out = append(out, t)
+		}
 	}
 	return out, nil
 }
@@ -472,8 +557,9 @@ func (m *Manager) fillPartialReason(task *Task) {
 	if strings.TrimSpace(task.ErrorMessage) != "" || strings.TrimSpace(task.LastError) != "" || strings.TrimSpace(task.ItemKey) == "" {
 		return
 	}
-	if meta, ok, err := m.lib.GetItem(task.ItemKey); err == nil && ok && len(meta.Missing) > 0 {
+	if meta, ok, err := m.lib.GetItemMetaOnly(task.ItemKey); err == nil && ok && len(meta.Missing) > 0 {
 		task.ErrorMessage = summarizeMissingReasons(meta.Missing)
+		task.LastError = task.ErrorMessage
 	}
 }
 
@@ -582,6 +668,28 @@ func scanTask(r rowScanner) (Task, error) {
 	if attemptsRaw != "" {
 		_ = json.Unmarshal([]byte(attemptsRaw), &t.Attempts)
 	}
+	return t, err
+}
+
+func scanTaskSummary(r rowScanner) (Task, error) {
+	var t Task
+	var linkedInt int
+	var viaRaw string
+	err := r.Scan(
+		&t.TaskID, &t.Site, &t.Kind, &t.Source, &t.TargetID, &t.CID, &t.Page, &t.Title, &t.PartTitle,
+		&t.Mid, &t.AuthorUID, &t.AuthorName, &t.AuthorFace, &t.CoverURL, &linkedInt,
+		&t.Status, &t.PauseReason, &t.ErrorKind, &t.ErrorMessage, &t.QualityHint,
+		&t.BytesDownloaded, &t.TotalBytes, &t.Progress, &t.ItemKey, &t.ItemDir,
+		&t.CreatedAt, &t.UpdatedAt, &viaRaw,
+	)
+	if viaRaw != "" {
+		var via library.ItemVia
+		if json.Unmarshal([]byte(viaRaw), &via) == nil && via.UID != "" {
+			t.Via = &via
+		}
+	}
+	t.LastError = t.ErrorMessage
+	t.CacheLinkedVideos = linkedInt == 1
 	return t, err
 }
 

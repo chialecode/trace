@@ -5,6 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"image"
+	"image/color"
+	"image/gif"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1600,5 +1603,434 @@ func assertNoSentinelsInTreeAndDB(t *testing.T, cacheDir, dbPath, eventLog strin
 		if rErr == nil {
 			checkContent(p, string(raw), globalSentinels)
 		}
+	}
+}
+
+func syntheticWeiboPlaceholderGIF480x360(t *testing.T) []byte {
+	t.Helper()
+	palette := color.Palette{
+		color.RGBA{R: 240, G: 240, B: 240, A: 255},
+		color.RGBA{R: 180, G: 180, B: 180, A: 255},
+		color.RGBA{R: 120, G: 120, B: 120, A: 255},
+	}
+	img := image.NewPaletted(image.Rect(0, 0, 480, 360), palette)
+	for y := 150; y < 210; y++ {
+		for x := 180; x < 300; x++ {
+			img.SetColorIndex(x, y, 2)
+		}
+	}
+	var buf bytes.Buffer
+	if err := gif.Encode(&buf, img, nil); err != nil {
+		t.Fatalf("encode placeholder gif: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestWeiboPlaceholderGIFDetectionFallbackAndGenuineGIFPreservation(t *testing.T) {
+	placeholderGIF := syntheticWeiboPlaceholderGIF480x360(t)
+	genuineGIF := syntheticGIFMini()
+	realJPEG := syntheticJPEGMini()
+
+	var (
+		fallbackWX1Hits atomic.Int32
+		fallbackWX2Hits atomic.Int32
+		allDeadHits     atomic.Int32
+	)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := strings.ToLower(r.Host)
+		if host == "" {
+			host = strings.ToLower(r.URL.Host)
+		}
+		switch {
+		// Case (a): primary wx1 returns Sina 480x360 deleted-image placeholder GIF, fallback wx2 returns real JPEG.
+		case host == "wx1.sinaimg.cn" && r.URL.Path == "/large/fallback_pic.jpg":
+			fallbackWX1Hits.Add(1)
+			w.Header().Set("Content-Type", "image/gif")
+			w.Header().Set("Content-Length", strconv.Itoa(len(placeholderGIF)))
+			_, _ = w.Write(placeholderGIF)
+
+		case host == "wx2.sinaimg.cn" && r.URL.Path == "/large/fallback_pic.jpg":
+			fallbackWX2Hits.Add(1)
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Header().Set("Content-Length", strconv.Itoa(len(realJPEG)))
+			_, _ = w.Write(realJPEG)
+
+		// Case (b): ALL hosts and size tiers return the 480x360 deleted-image placeholder GIF.
+		case strings.HasSuffix(host, ".sinaimg.cn") && strings.HasSuffix(r.URL.Path, "/purged_pic.jpg"):
+			allDeadHits.Add(1)
+			w.Header().Set("Content-Type", "image/gif")
+			w.Header().Set("Content-Length", strconv.Itoa(len(placeholderGIF)))
+			_, _ = w.Write(placeholderGIF)
+
+		// Case (c): genuine Weibo GIF slot returns GIF89a (must NEVER be rejected).
+		case host == "wx1.sinaimg.cn" && r.URL.Path == "/large/genuine_anim.gif":
+			w.Header().Set("Content-Type", "image/gif")
+			w.Header().Set("Content-Length", strconv.Itoa(len(genuineGIF)))
+			_, _ = w.Write(genuineGIF)
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	mgr, libStore, _, _, _ := setupDouyinDownloadTestEnv(t, http.NotFoundHandler(), 2)
+	mgr.SetMediaTransportWrap(func(_ http.RoundTripper) http.RoundTripper {
+		return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			resp := rec.Result()
+			resp.Request = req
+			return resp, nil
+		})
+	})
+
+	planner := newFakeWeiboSitePlanner()
+	mgr.RegisterSitePlanner(planner)
+	strictTransport := site.WeiboMediaTransport("TRACE-Test-UA", false)
+
+	// (a) Placeholder GIF on primary wx1 rotates to fallback host wx2 and saves real JPEG cleanly.
+	const midFallback = "5000000000006001"
+	planner.setPlan(midFallback, func(_ int) (site.DownloadPlan, error) {
+		return site.DownloadPlan{
+			Site:       site.Weibo,
+			ItemKey:    "weibo:dynamic:" + midFallback,
+			TargetID:   midFallback,
+			Kind:       "image_note",
+			AuthorUID:  "1000000001",
+			AuthorName: "合成博主",
+			Title:      "占位图切换节点成功",
+			PubTs:      1763820100,
+			Images: []site.MediaImageAsset{
+				{Index: 1, MediaRole: "image", Width: 1440, Height: 1080, ImageURLs: []string{"https://wx1.sinaimg.cn/large/fallback_pic.jpg"}},
+			},
+			Media: strictTransport,
+		}, nil
+	})
+	tA, err := mgr.EnqueueWeiboWork(context.Background(), WeiboWorkEnqueueRequest{TargetID: midFallback})
+	if err != nil {
+		t.Fatalf("EnqueueWeiboWork(fallback): %v", err)
+	}
+	doneA := waitForTaskTerminal(t, mgr, tA.TaskID, 10*time.Second)
+	if doneA.Status != "completed" {
+		t.Fatalf("case (a) status=%s err=%s, want completed", doneA.Status, doneA.ErrorMessage)
+	}
+	if fallbackWX1Hits.Load() == 0 || fallbackWX2Hits.Load() == 0 {
+		t.Fatalf("expected wx1 placeholder hit + wx2 fallback hit, got wx1=%d wx2=%d", fallbackWX1Hits.Load(), fallbackWX2Hits.Load())
+	}
+	metaA, ok, err := libStore.GetItem("weibo:dynamic:" + midFallback)
+	if err != nil || !ok || metaA.Status != "complete" || len(metaA.NotePages) != 1 || metaA.NotePages[0].Image != "images/01.jpg" {
+		t.Fatalf("case (a) unexpected meta: ok=%v err=%v status=%q pages=%+v", ok, err, metaA.Status, metaA.NotePages)
+	}
+
+	// (b) All tiers/hosts + 1x GetPost refresh return placeholder GIF -> recorded as missing ("图片已在源站失效"), partial yellow dot, NEVER fake complete!
+	const midPurged = "5000000000006002"
+	planner.setPlan(midPurged, func(_ int) (site.DownloadPlan, error) {
+		return site.DownloadPlan{
+			Site:       site.Weibo,
+			ItemKey:    "weibo:dynamic:" + midPurged,
+			TargetID:   midPurged,
+			Kind:       "image_note",
+			AuthorUID:  "1000000001",
+			AuthorName: "合成博主",
+			Title:      "全部占位图记缺失",
+			PubTs:      1763820200,
+			Images: []site.MediaImageAsset{
+				{Index: 1, MediaRole: "image", Width: 1440, Height: 1080, ImageURLs: []string{"https://wx1.sinaimg.cn/large/purged_pic.jpg"}},
+			},
+			Media: strictTransport,
+		}, nil
+	})
+	tB, err := mgr.EnqueueWeiboWork(context.Background(), WeiboWorkEnqueueRequest{TargetID: midPurged})
+	if err != nil {
+		t.Fatalf("EnqueueWeiboWork(purged): %v", err)
+	}
+	doneB := waitForTaskTerminal(t, mgr, tB.TaskID, 10*time.Second)
+	if doneB.Status != "partial" {
+		t.Fatalf("case (b) status=%s err=%s, want partial (never fake complete)", doneB.Status, doneB.ErrorMessage)
+	}
+	if planner.callCount(midPurged) != 2 {
+		t.Fatalf("case (b) expected 1 initial + 1 GetPost refresh, got %d calls", planner.callCount(midPurged))
+	}
+	if allDeadHits.Load() < 2 {
+		t.Fatalf("case (b) expected fallback candidates to be tried, got %d hits", allDeadHits.Load())
+	}
+	metaB, ok, err := libStore.GetItem("weibo:dynamic:" + midPurged)
+	if err != nil || !ok || metaB.Status != "partial" || len(metaB.Missing) != 1 || !strings.Contains(metaB.Missing[0].Reason, WeiboImageUnavailableReason) {
+		t.Fatalf("case (b) unexpected meta: ok=%v err=%v status=%q missing=%+v", ok, err, metaB.Status, metaB.Missing)
+	}
+	if dot := library.ComputeDotState(metaB); dot.Dot != "yellow" {
+		t.Fatalf("case (b) expected yellow dot, got %+v", dot)
+	}
+	if _, err := os.Stat(filepath.Join(metaB.ItemDir, "images", "01.gif")); !os.IsNotExist(err) {
+		t.Fatalf("case (b) placeholder GIF must NOT be saved as images/01.gif (stat err=%v)", err)
+	}
+
+	// (c) Genuine Weibo GIF slot (MediaRole="gif") must NEVER be rejected.
+	const midGenuineGIF = "5000000000006003"
+	planner.setPlan(midGenuineGIF, func(_ int) (site.DownloadPlan, error) {
+		return site.DownloadPlan{
+			Site:       site.Weibo,
+			ItemKey:    "weibo:dynamic:" + midGenuineGIF,
+			TargetID:   midGenuineGIF,
+			Kind:       "image_note",
+			AuthorUID:  "1000000001",
+			AuthorName: "合成博主",
+			Title:      "真实动图保留",
+			PubTs:      1763820300,
+			Images: []site.MediaImageAsset{
+				{Index: 1, MediaRole: "gif", Width: 480, Height: 360, ImageURLs: []string{"https://wx1.sinaimg.cn/large/genuine_anim.gif"}},
+			},
+			Media: strictTransport,
+		}, nil
+	})
+	tC, err := mgr.EnqueueWeiboWork(context.Background(), WeiboWorkEnqueueRequest{TargetID: midGenuineGIF})
+	if err != nil {
+		t.Fatalf("EnqueueWeiboWork(genuine gif): %v", err)
+	}
+	doneC := waitForTaskTerminal(t, mgr, tC.TaskID, 10*time.Second)
+	if doneC.Status != "completed" {
+		t.Fatalf("case (c) status=%s err=%s, want completed", doneC.Status, doneC.ErrorMessage)
+	}
+	metaC, ok, err := libStore.GetItem("weibo:dynamic:" + midGenuineGIF)
+	if err != nil || !ok || metaC.Status != "complete" || len(metaC.NotePages) != 1 || metaC.NotePages[0].Image != "images/01.gif" {
+		t.Fatalf("case (c) unexpected meta: ok=%v err=%v status=%q pages=%+v", ok, err, metaC.Status, metaC.NotePages)
+	}
+	savedBytes, err := os.ReadFile(filepath.Join(metaC.ItemDir, "images", "01.gif"))
+	if err != nil || !bytes.Equal(savedBytes, genuineGIF) {
+		t.Fatalf("case (c) genuine GIF not preserved verbatim: err=%v len=%d", err, len(savedBytes))
+	}
+}
+
+func TestWeiboLivePhotoPlaceholderStillFrameStillDownloadsMotionClip(t *testing.T) {
+	placeholderGIF := syntheticWeiboPlaceholderGIF480x360(t)
+	movBytes, origSamples := buildSyntheticQuickTimeLivePhotoMov(t, true, true)
+	const liveSig = "LivePhotoMotionKeepSig001"
+
+	var liveClipHits atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := strings.ToLower(r.Host)
+		if host == "" {
+			host = strings.ToLower(r.URL.Host)
+		}
+		switch {
+		case strings.HasSuffix(host, ".sinaimg.cn") && strings.HasSuffix(r.URL.Path, "/purged_live_still.jpg"):
+			w.Header().Set("Content-Type", "image/gif")
+			w.Header().Set("Content-Length", strconv.Itoa(len(placeholderGIF)))
+			_, _ = w.Write(placeholderGIF)
+
+		case host == "video.weibo.com" && r.URL.Path == "/media/play":
+			http.Redirect(w, r, "https://livephoto.us.sinaimg.cn/kept_motion.mov?Expires=1763703600&ssig="+liveSig+"&KID=unistore,video", http.StatusFound)
+
+		case host == "livephoto.us.sinaimg.cn" && r.URL.Path == "/kept_motion.mov":
+			liveClipHits.Add(1)
+			serveRangeBytes(w, r, movBytes, "video/quicktime", 0, nil)
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	mgr, libStore, _, _, _ := setupDouyinDownloadTestEnv(t, http.NotFoundHandler(), 2)
+	mgr.SetMediaTransportWrap(func(_ http.RoundTripper) http.RoundTripper {
+		return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			resp := rec.Result()
+			resp.Request = req
+			return resp, nil
+		})
+	})
+
+	planner := newFakeWeiboSitePlanner()
+	mgr.RegisterSitePlanner(planner)
+	strictTransport := site.WeiboMediaTransport("TRACE-Test-UA", false)
+
+	const midLive = "5000000000006004"
+	planner.setPlan(midLive, func(_ int) (site.DownloadPlan, error) {
+		return site.DownloadPlan{
+			Site:       site.Weibo,
+			ItemKey:    "weibo:dynamic:" + midLive,
+			TargetID:   midLive,
+			Kind:       "image_note",
+			AuthorUID:  "1000000001",
+			AuthorName: "合成博主",
+			Title:      "实况静帧失效仍缓存动态视频",
+			PubTs:      1763820400,
+			Images: []site.MediaImageAsset{
+				{
+					Index:       1,
+					MediaRole:   "live_photo",
+					Width:       1080,
+					Height:      1440,
+					DurationSec: 2,
+					ImageURLs:   []string{"https://wx1.sinaimg.cn/large/purged_live_still.jpg"},
+					VideoURLs:   []string{"https://video.weibo.com/media/play?livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2Fkept_motion.mov"},
+				},
+			},
+			Media: strictTransport,
+		}, nil
+	})
+
+	tk, err := mgr.EnqueueWeiboWork(context.Background(), WeiboWorkEnqueueRequest{TargetID: midLive})
+	if err != nil {
+		t.Fatalf("EnqueueWeiboWork(livephoto placeholder still): %v", err)
+	}
+	done := waitForTaskTerminal(t, mgr, tk.TaskID, 10*time.Second)
+	if done.Status != "partial" {
+		t.Fatalf("status=%s err=%s, want partial", done.Status, done.ErrorMessage)
+	}
+	if liveClipHits.Load() == 0 {
+		t.Fatalf("expected motion clip download to still be attempted when still frame is placeholder GIF")
+	}
+
+	meta, ok, err := libStore.GetItem("weibo:dynamic:" + midLive)
+	if err != nil || !ok {
+		t.Fatalf("GetItem: ok=%v err=%v", ok, err)
+	}
+	if meta.Status != "partial" {
+		t.Fatalf("meta.Status=%q, want partial", meta.Status)
+	}
+	if dot := library.ComputeDotState(meta); dot.Dot != "yellow" {
+		t.Fatalf("expected yellow dot, got %+v", dot)
+	}
+	if len(meta.Missing) != 1 || meta.Missing[0].Item != "page_01" || !strings.Contains(meta.Missing[0].Reason, WeiboImageUnavailableReason) {
+		t.Fatalf("expected single missing still-frame reason %q, got %+v", WeiboImageUnavailableReason, meta.Missing)
+	}
+	if len(meta.NotePages) != 1 || meta.NotePages[0].Kind != "motion" || meta.NotePages[0].Image != "" || meta.NotePages[0].Motion != "images/01_live.mp4" {
+		t.Fatalf("unexpected NotePages: %+v", meta.NotePages)
+	}
+	if _, statErr := os.Stat(filepath.Join(meta.ItemDir, "images", "01.gif")); !os.IsNotExist(statErr) {
+		t.Fatalf("placeholder GIF must not be saved as images/01.gif (statErr=%v)", statErr)
+	}
+
+	savedClip, err := os.ReadFile(filepath.Join(meta.ItemDir, "images", "01_live.mp4"))
+	if err != nil {
+		t.Fatalf("expected images/01_live.mp4 to be saved: %v", err)
+	}
+	parsedClip, err := mp4.DecodeFile(bytes.NewReader(savedClip))
+	if err != nil {
+		t.Fatalf("decode saved images/01_live.mp4: %v", err)
+	}
+	if gotSamples := extractTrackSamplePayloads(t, savedClip, parsedClip); len(gotSamples) != len(origSamples) {
+		t.Fatalf("saved motion clip sample count=%d, want %d", len(gotSamples), len(origSamples))
+	}
+}
+
+// A placeholder GIF saved by a build before the placeholder check (seen in
+// real use, 2026-11-23) must not be reused on retry: it is removed and the
+// picture is fetched again.
+func TestWeiboRetryDropsPreviouslySavedPlaceholderGIF(t *testing.T) {
+	placeholderGIF := syntheticWeiboPlaceholderGIF480x360(t)
+	realJPEG := syntheticJPEGMini()
+
+	var stillHits atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/restored_still.jpg") {
+			stillHits.Add(1)
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Header().Set("Content-Length", strconv.Itoa(len(realJPEG)))
+			_, _ = w.Write(realJPEG)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	mgr, libStore, _, _, _ := setupDouyinDownloadTestEnv(t, http.NotFoundHandler(), 2)
+	cacheDir := libStore.CacheDir()
+	mgr.SetMediaTransportWrap(func(_ http.RoundTripper) http.RoundTripper {
+		return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			resp := rec.Result()
+			resp.Request = req
+			return resp, nil
+		})
+	})
+
+	const mid = "5000000000006099"
+	itemKey := "weibo:dynamic:" + mid
+	itemDir := filepath.Join(cacheDir, "weibo", "1000000001", "posts", mid)
+	if err := os.MkdirAll(filepath.Join(itemDir, "images"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(itemDir, "images", "01.gif"), placeholderGIF, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(placeholderGIF)
+	if _, err := libStore.SaveItem(itemDir, library.ItemMetadata{
+		Version: 1, ID: "dynamic:" + mid, Site: "weibo", Kind: "dynamic", Status: "complete",
+		Title:  "旧版保存的占位图",
+		Author: library.ItemAuthor{Site: "weibo", UID: "1000000001", Name: "合成博主"},
+		Media: []library.MediaFile{{
+			Role: "image", Path: "images/01.gif", Bytes: int64(len(placeholderGIF)),
+			SHA256: hex.EncodeToString(sum[:]),
+		}},
+		NotePages: []library.NotePageRecord{{Index: 1, Kind: "image", Image: "images/01.gif", Width: 1080, Height: 1440}},
+	}); err != nil {
+		t.Fatalf("seed placeholder item: %v", err)
+	}
+
+	planner := newFakeWeiboSitePlanner()
+	mgr.RegisterSitePlanner(planner)
+	strictTransport := site.WeiboMediaTransport("TRACE-Test-UA", false)
+	planner.setPlan(mid, func(_ int) (site.DownloadPlan, error) {
+		return site.DownloadPlan{
+			Site: site.Weibo, ItemKey: itemKey, TargetID: mid, Kind: "image_note",
+			AuthorUID: "1000000001", AuthorName: "合成博主", Title: "旧版保存的占位图", PubTs: 1763820400,
+			Images: []site.MediaImageAsset{{
+				Index: 1, MediaRole: "image", Width: 1080, Height: 1440,
+				ImageURLs: []string{"https://wx1.sinaimg.cn/large/restored_still.jpg"},
+			}},
+			Media: strictTransport,
+		}, nil
+	})
+
+	tk, err := mgr.EnqueueWeiboWork(context.Background(), WeiboWorkEnqueueRequest{TargetID: mid})
+	if err != nil {
+		t.Fatalf("EnqueueWeiboWork: %v", err)
+	}
+	done := waitForTaskTerminal(t, mgr, tk.TaskID, 10*time.Second)
+	if done.Status != "completed" {
+		t.Fatalf("status=%s err=%s, want completed", done.Status, done.ErrorMessage)
+	}
+	if stillHits.Load() == 0 {
+		t.Fatalf("placeholder GIF was reused; the picture was never fetched again")
+	}
+	if _, statErr := os.Stat(filepath.Join(itemDir, "images", "01.gif")); !os.IsNotExist(statErr) {
+		t.Fatalf("old placeholder images/01.gif must be removed (statErr=%v)", statErr)
+	}
+	meta, ok, err := libStore.GetItem(itemKey)
+	if err != nil || !ok {
+		t.Fatalf("GetItem: ok=%v err=%v", ok, err)
+	}
+	if len(meta.NotePages) != 1 || meta.NotePages[0].Image != "images/01.jpg" {
+		t.Fatalf("expected images/01.jpg after retry, got %+v", meta.NotePages)
+	}
+}
+
+// Originals only (user request 2026-11-24): the retry expansion may switch
+// CDN hosts and upgrade to /large/, but never downgrade to a recompressed tier.
+func TestExpandWeiboImageCandidatesNeverDowngrades(t *testing.T) {
+	got := expandWeiboImageCandidates([]string{
+		"https://wx2.sinaimg.cn/large/SynthPid0002.jpg",
+		"https://wx3.sinaimg.cn/mw2000/SynthPid0002.jpg",
+	})
+	sawUpgrade := false
+	for _, u := range got {
+		for _, bad := range []string{"/bmiddle/", "/orj1080/", "/orj360/", "/mw690/"} {
+			if strings.Contains(u, bad) {
+				t.Fatalf("candidate %q downgrades to a compressed tier; all=%v", u, got)
+			}
+		}
+		if u == "https://wx3.sinaimg.cn/large/SynthPid0002.jpg" {
+			sawUpgrade = true
+		}
+	}
+	if !sawUpgrade {
+		t.Fatalf("expected /mw2000/ to be upgraded to /large/; got %v", got)
+	}
+	if !strings.Contains(strings.Join(got, " "), "https://wx1.sinaimg.cn/large/SynthPid0002.jpg") {
+		t.Fatalf("expected alternate CDN host for /large/; got %v", got)
 	}
 }

@@ -127,17 +127,18 @@ type keyedLock struct {
 
 // Manager coordinates queued and active download tasks with concurrency limits and circuit breaking.
 type Manager struct {
-	mu           sync.Mutex
-	itemLockMu   sync.Mutex
-	itemLocks    map[string]*keyedLock
-	db           *sql.DB
-	lib          *library.Store
-	client       *bilibili.Client
-	dlSettings   settings.DownloadSettings
-	onTaskUpdate func(Task)
-	notifyMu     sync.Mutex
-	lastNotify   map[string]taskNotification
-	taskFaults   sync.Map
+	mu                sync.Mutex
+	itemLockMu        sync.Mutex
+	itemLocks         map[string]*keyedLock
+	db                *sql.DB
+	lib               *library.Store
+	client            *bilibili.Client
+	dlSettings        settings.DownloadSettings
+	onTaskUpdate      func(Task)
+	onTaskBatchUpdate func(action string, tasks []Task)
+	notifyMu          sync.Mutex
+	lastNotify        map[string]taskNotification
+	taskFaults        sync.Map
 
 	chunkSize    int64
 	backoffScale time.Duration
@@ -348,11 +349,55 @@ func (m *Manager) pauseTasksWhereLocked(reason, errKind, message, whereClause st
 	return ids, nil
 }
 
-func (m *Manager) emitTasksByID(ids []string) {
-	for _, id := range ids {
-		if t, ok, err := m.GetTask(id); err == nil && ok {
-			m.emitUpdate(t)
+// SetOnTaskBatchUpdate registers a coalesced notification callback for batch
+// task transitions (PauseAll, PauseForSite, RetryActionable, site circuit-breaker).
+// When set, batch operations invoke fn once with all affected task summaries
+// instead of emitting M separate onTaskUpdate callbacks.
+func (m *Manager) SetOnTaskBatchUpdate(fn func(action string, tasks []Task)) {
+	m.notifyMu.Lock()
+	m.onTaskBatchUpdate = fn
+	m.notifyMu.Unlock()
+}
+
+func (m *Manager) emitBatchTasks(action string, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	m.notifyMu.Lock()
+	batchFn := m.onTaskBatchUpdate
+	singleFn := m.onTaskUpdate
+	m.notifyMu.Unlock()
+	if batchFn == nil && singleFn == nil {
+		return
+	}
+	tasks, err := m.listTasksSummaryByIDs(ids)
+	if err != nil || len(tasks) == 0 {
+		return
+	}
+	if batchFn != nil {
+		now := time.Now()
+		m.notifyMu.Lock()
+		if m.lastNotify == nil {
+			m.lastNotify = make(map[string]taskNotification)
 		}
+		for i := range tasks {
+			if tasks[i].ErrorMessage == "" && tasks[i].LastError != "" {
+				tasks[i].ErrorMessage = tasks[i].LastError
+			}
+			tasks[i].LastError = tasks[i].ErrorMessage
+			switch tasks[i].Status {
+			case "completed", "failed", "canceled", "partial":
+				delete(m.lastNotify, tasks[i].TaskID)
+			default:
+				m.lastNotify[tasks[i].TaskID] = taskNotification{status: tasks[i].Status, at: now}
+			}
+		}
+		m.notifyMu.Unlock()
+		batchFn(action, tasks)
+		return
+	}
+	for _, t := range tasks {
+		m.emitUpdate(t)
 	}
 }
 
@@ -376,7 +421,7 @@ func (m *Manager) PauseAll(reason, message string) {
 	}
 	m.mu.Unlock()
 	if err == nil {
-		m.emitTasksByID(ids)
+		m.emitBatchTasks("pause_all", ids)
 	}
 }
 
@@ -414,7 +459,7 @@ func (m *Manager) PauseForSite(siteID site.ID, reason, message string) {
 	}
 	m.mu.Unlock()
 	if err == nil {
-		m.emitTasksByID(ids)
+		m.emitBatchTasks("pause_site", ids)
 	}
 	m.notifyWake()
 }
@@ -726,8 +771,9 @@ func (m *Manager) RetryActionable(allowedSites map[string]bool) (BatchRetryResul
 	}
 
 	m.mu.Lock()
-	rows, err := m.db.Query(`SELECT` + taskSelectColumns + `
+	rows, err := m.db.Query(`SELECT` + taskSummarySelectColumns + `
 		FROM download_tasks
+		WHERE status NOT IN ('completed', 'canceled')
 		ORDER BY julianday(updated_at) DESC, rowid DESC
 	`)
 	if err != nil {
@@ -736,7 +782,7 @@ func (m *Manager) RetryActionable(allowedSites map[string]bool) (BatchRetryResul
 	}
 	var allTasks []Task
 	for rows.Next() {
-		t, scanErr := scanTask(rows)
+		t, scanErr := scanTaskSummary(rows)
 		if scanErr != nil {
 			_ = rows.Close()
 			m.mu.Unlock()
@@ -852,7 +898,7 @@ func (m *Manager) RetryActionable(allowedSites map[string]bool) (BatchRetryResul
 	m.mu.Unlock()
 
 	if len(retriedIDs) > 0 {
-		m.emitTasksByID(retriedIDs)
+		m.emitBatchTasks("retry_batch", retriedIDs)
 		m.notifyWake()
 	}
 	return res, nil
@@ -1055,6 +1101,8 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 		err = m.executeDouyinTask(ctx, &t)
 	case site.Weibo:
 		err = m.executeWeiboTask(ctx, &t)
+	case site.X:
+		err = m.executeXTask(ctx, &t)
 	default:
 		err = &site.Error{
 			Site:    site.ID(strings.TrimSpace(t.Site)),
@@ -1155,6 +1203,6 @@ func (m *Manager) pauseSitePeers(siteID, triggeringTaskID, pauseReason, errKind,
 	)
 	m.mu.Unlock()
 	if err == nil {
-		m.emitTasksByID(ids)
+		m.emitBatchTasks("pause_site", ids)
 	}
 }

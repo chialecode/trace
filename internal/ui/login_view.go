@@ -198,6 +198,101 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 						return
 					}
 
+					if loginSite == "x" {
+						ui.Column(c).Gap(4).Children(func() {
+							ui.Text(c, "登录 X（原 Twitter）").FontSize(20).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+							ui.Text(c, "TRACE 需要登录后才能解析和缓存 X（原 Twitter）内容").
+								FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
+						})
+
+						if siteStatus.LoggedIn {
+							xHandle := strings.TrimPrefix(strings.TrimSpace(siteStatus.UniqueID), "@")
+							xUID := strings.TrimSpace(siteStatus.UID)
+							identLine := "ID：—"
+							if xHandle != "" && xUID != "" {
+								identLine = fmt.Sprintf("@%s · ID %s", xHandle, xUID)
+							} else if xHandle != "" {
+								identLine = "@" + xHandle
+							} else if xUID != "" {
+								identLine = "ID " + xUID
+							}
+							ui.Row(c).
+								Label("X已登录摘要").
+								FillWidth().
+								Padding(12, 14).
+								Radius(12).
+								Background(ColorBgMain).
+								Border(1, ColorBorder).
+								AlignItems(ui.Center).
+								Gap(10).
+								ClipX().
+								Children(func() {
+									a.renderAccountAvatar(c, "x", firstNonEmptyStrUI(siteStatus.Uname, xHandle, "X 用户"), xUID, 0, 40, false, "", nil, siteStatus.Face)
+									ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
+										ui.Text(c, firstNonEmptyStrUI(siteStatus.Uname, xHandle, "X 用户")).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+										ui.Text(c, identLine).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+									})
+								})
+						}
+
+						ui.Column(c).
+							FillWidth().
+							Padding(16).
+							Radius(12).
+							Background(ColorBgMain).
+							Border(1, ColorBorder).
+							Gap(10).
+							ClipX().
+							Children(func() {
+								ui.Text(c, "粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								ui.Text(c, "1. 在桌面浏览器打开 x.com 并登录账号\n2. 按 F12 打开开发者工具 → 网络 (Network)，刷新页面并点开发往 x.com 的任意请求\n3. 复制请求头 (Request Headers) 中的整段 Cookie 粘贴到下方（至少包含 auth_token 与 ct0）").
+									FontSize(12).TextColor(ColorTextMuted).MaxLines(5)
+
+								xBusy := a.isPending("x-cookie-login")
+								inp := ui.TextInput(c, &a.XCookieInput).
+									Password().
+									Placeholder("粘贴 Cookie（至少包含 auth_token 与 ct0）").
+									Label("XCookie输入框").
+									FillWidth()
+								wasComposing := a.XCookieComposing
+								a.XCookieComposing = inp.Composing()
+								if inp.Submitted() && !inp.Composing() && !wasComposing && !xBusy {
+									a.importXCookie()
+								}
+
+								// Mandatory neutral factual risk disclosure ABOVE the submit button (x.md §12.3 #1 & §15.1 #19).
+								ui.Column(c).
+									Label("X登录风险提示").
+									FillWidth().
+									Padding(10, 12).
+									Radius(10).
+									Background(ColorWarnBg).
+									Border(1, ColorDotYellow).
+									Gap(4).
+									ClipX().
+									Children(func() {
+										ui.Text(c, "使用前请注意").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+										ui.Text(c, "X 网页端接口不是官方开放 API，X 服务条款与自动化规则限制未经授权的自动化访问。用网页 Cookie 请求 X 存在触发限流、要求验证、临时锁号甚至封号的风险，强烈建议使用专门账号或可承受风控的小号（本工具不会阻止你粘贴自己的账号）。").
+											FontSize(12).TextColor(ColorTextMain).MaxLines(6)
+										ui.Text(c, "TRACE 只读不写，不保存账号密码，也不对粘贴的 Cookie 自动续期；若遇到验证或锁号会立即停止 X 的全部自动请求。").
+											FontSize(12).TextColor(ColorTextMuted).MaxLines(4)
+									})
+
+								ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
+									ui.Text(c, "凭证只保存在这台电脑上，并按当前 Windows 用户加密").
+										FontSize(12).TextColor(ColorTextMuted).SingleLine()
+									label := "验证并登录"
+									if xBusy {
+										label = "正在验证…"
+									}
+									if AccentPillButton(c, label, "验证并登录X").Disabled(xBusy).Clicked() && !xBusy {
+										a.importXCookie()
+									}
+								})
+							})
+						return
+					}
+
 					ui.Column(c).Gap(4).Children(func() {
 						ui.Text(c, "登录哔哩哔哩").FontSize(20).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 						ui.Text(c, "TRACE 需要登录后才能解析和缓存").

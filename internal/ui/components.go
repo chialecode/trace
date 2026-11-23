@@ -51,6 +51,7 @@ type PostCardData struct {
 	Mid               int64
 	AuthorUID         string
 	AuthorName        string
+	AuthorHandle      string
 	AuthorFace        string
 	PubTs             int64
 	TypeLabel         string
@@ -58,6 +59,7 @@ type PostCardData struct {
 	Text              string
 	URL               string
 	Pinned            bool
+	IsEdited          bool
 	Degraded          bool
 	Cached            bool
 	DotStatus         string
@@ -74,6 +76,12 @@ type PostCardData struct {
 	WeiboCard         *service.WeiboRichCardDTO
 	WeiboMid          string
 	WeiboCacheVia     *library.ItemVia
+	XCard             *service.XRichCardDTO
+	XPoll             *service.XPollSummaryDTO
+	XStatusID         string
+	XCacheVia         *library.ItemVia
+	HLSOnlyNotice     string
+	ThreadCount       int
 	OnOpenPost        func()
 	DynItem           *bilibili.DynamicItem
 	LibItem           *library.ItemMetadata
@@ -366,6 +374,25 @@ func (a *App) renderMediaThumb(
 	return a.renderMediaThumbWithBitmap(c, nil, itemKey, relPath, title, durationText, dotStatus, showPlayIcon, width, height, remoteURLs...)
 }
 
+// renderMediaThumbEdge renders a cover/thumbnail decoded to fit maxEdge pixels
+// (e.g. avatarThumbEdge = 256 for small 96x58 task cards) instead of full 960px.
+func (a *App) renderMediaThumbEdge(
+	c *ui.Context,
+	itemKey string,
+	relPath string,
+	maxEdge int,
+	title string,
+	durationText string,
+	dotStatus string,
+	showPlayIcon bool,
+	width float32,
+	height float32,
+	remoteURLs ...string,
+) ui.Element {
+	bmp := a.lookupLocalBitmapEdge(itemKey, relPath, maxEdge)
+	return a.renderMediaThumbWithBitmap(c, bmp, itemKey, "", title, durationText, dotStatus, showPlayIcon, width, height, remoteURLs...)
+}
+
 // renderMediaThumbWithBitmap renders a rounded cover/thumbnail box using customBmp if provided, or local/remote bitmap, falling back to stylized placeholder.
 func (a *App) renderMediaThumbWithBitmap(
 	c *ui.Context,
@@ -644,6 +671,12 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 						a.OpenWeiboUser(post.AuthorUID, post.AuthorName)
 					}
 					return
+				case "x":
+					target := firstNonEmptyStrUI(post.AuthorUID, post.AuthorHandle)
+					if target != "" {
+						a.OpenXUser(target, post.AuthorName)
+					}
+					return
 				}
 				a.OpenUser(post.Mid, post.AuthorName)
 			}
@@ -678,6 +711,8 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 							authorName = "未知作者"
 						case "weibo":
 							authorName = "未知博主"
+						case "x":
+							authorName = "未知用户"
 						default:
 							authorName = "未知 UP 主"
 						}
@@ -691,6 +726,11 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 						}
 					} else {
 						ui.Text(c, authorName).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+					}
+					if normalizeSiteIDUI(post.Site) == "x" {
+						if h := strings.TrimPrefix(strings.TrimSpace(post.AuthorHandle), "@"); h != "" {
+							ui.Text(c, "@"+h).FontSize(13).TextColor(ColorTextMuted).SingleLine().Shrink(1)
+						}
 					}
 					// On Home the subscription's name follows the account in
 					// smaller accent text, unless it only repeats the account.
@@ -734,6 +774,11 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 					if post.VisibleLabel != "" {
 						ui.Box(c).Padding(1, 6).Radius(4).Background(ColorBgSecondary).Children(func() {
 							ui.Text(c, post.VisibleLabel).FontSize(11).TextColor(ColorTextMuted).SingleLine()
+						})
+					}
+					if post.IsEdited {
+						ui.Box(c).Padding(1, 6).Radius(4).Background(ColorBgSecondary).Children(func() {
+							ui.Text(c, "已编辑").FontSize(11).TextColor(ColorTextMuted).SingleLine()
 						})
 					}
 					if post.Pinned {
@@ -810,6 +855,29 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 			if post.WeiboCard != nil {
 				a.renderWeiboRichCard(c, post.WeiboCard, post.Offline || post.LocalManage)
 			}
+			// 3c. X Poll / Rich Card / HLS-only Notice / Thread Hint
+			if post.XPoll != nil {
+				a.renderXPollCard(c, post.XPoll, post.URL, post.Offline || post.LocalManage)
+			}
+			if post.XCard != nil {
+				a.renderXRichCard(c, post.XCard, post.URL, post.Offline || post.LocalManage)
+			}
+			if post.HLSOnlyNotice != "" {
+				a.renderXHLSOnlyNotice(c, post.HLSOnlyNotice, post.URL, post.Offline || post.LocalManage)
+			}
+			if post.ThreadCount > 0 {
+				threadHint := fmt.Sprintf("含 %d 条作者自回复串", post.ThreadCount)
+				if post.OnOpenPost != nil && !post.Offline {
+					tBtn := ui.ButtonBase(c).Padding(2, 0).Justify(ui.Start).Children(func() {
+						ui.Text(c, threadHint+" · 查看完整串").FontSize(12).TextColor(ColorInfoBlue).SingleLine()
+					})
+					if tBtn.Clicked() {
+						post.OnOpenPost()
+					}
+				} else {
+					ui.Text(c, threadHint).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+				}
+			}
 
 			// 4. Attached Video Card (16:9 horizontal for Bilibili/live/Weibo, 3:4 vertical cover on left for Douyin video)
 			if post.Video != nil {
@@ -826,11 +894,17 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 					origFace = ""
 				}
 				origAuthorName := firstNonEmptyStrUI(orig.AuthorName, "原博主")
+				if origSite == "x" {
+					origAuthorName = firstNonEmptyStrUI(orig.AuthorName, orig.AuthorHandle, "原帖作者")
+				}
 				origItemKey := firstNonEmptyStrUI(orig.ItemKey, post.ItemKey)
 				var openOrigAuthor func()
 				if !origOffline && origSite == "weibo" && strings.TrimSpace(orig.AuthorUID) != "" {
 					origUID := strings.TrimSpace(orig.AuthorUID)
 					openOrigAuthor = func() { a.OpenWeiboUser(origUID, origAuthorName) }
+				} else if !origOffline && origSite == "x" && (strings.TrimSpace(orig.AuthorUID) != "" || strings.TrimSpace(orig.AuthorHandle) != "") {
+					origTarget := firstNonEmptyStrUI(orig.AuthorUID, orig.AuthorHandle)
+					openOrigAuthor = func() { a.OpenXUser(origTarget, origAuthorName) }
 				}
 
 				box := ui.Column(c).
@@ -849,13 +923,26 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 						a.renderAccountAvatar(c, origSite, origAuthorName, orig.AuthorUID, orig.Mid, 20, false, "", openOrigAuthor, origFace)
 						if openOrigAuthor != nil {
 							btn := ui.ButtonBase(c).Padding(0).Children(func() {
-								ui.Text(c, "@"+origAuthorName).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								display := "@" + origAuthorName
+								if origSite == "x" {
+									display = origAuthorName
+								}
+								ui.Text(c, display).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 							})
 							if btn.Clicked() {
 								openOrigAuthor()
 							}
 						} else {
-							ui.Text(c, "@"+origAuthorName).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+							display := "@" + origAuthorName
+							if origSite == "x" {
+								display = origAuthorName
+							}
+							ui.Text(c, display).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+						}
+						if origSite == "x" {
+							if h := strings.TrimPrefix(strings.TrimSpace(orig.AuthorHandle), "@"); h != "" {
+								ui.Text(c, "@"+h).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
+							}
 						}
 						if orig.TypeLabel != "" {
 							ui.Text(c, "· "+orig.TypeLabel).FontSize(12).TextColor(ColorTextMuted).SingleLine()
@@ -890,6 +977,15 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 					if orig.WeiboCard != nil {
 						a.renderWeiboRichCard(c, orig.WeiboCard, origOffline)
 					}
+					if orig.XPoll != nil {
+						a.renderXPollCard(c, orig.XPoll, orig.URL, origOffline)
+					}
+					if orig.XCard != nil {
+						a.renderXRichCard(c, orig.XCard, orig.URL, origOffline)
+					}
+					if orig.HLSOnlyNotice != "" {
+						a.renderXHLSOnlyNotice(c, orig.HLSOnlyNotice, orig.URL, origOffline)
+					}
 					if orig.Incomplete && !post.Offline {
 						hintText := "原微博含更多文字或媒体，点开查看完整内容"
 						if post.OnOpenPost != nil {
@@ -908,7 +1004,11 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 				})
 			} else if unavailableText := func() string {
 				if post.Origin != nil && post.Origin.Unavailable {
-					return firstNonEmptyStrUI(post.Origin.UnavailableReason, post.OriginUnavailable, "原微博已删除或不可查看")
+					fallback := "原微博已删除或不可查看"
+					if normalizeSiteIDUI(post.Site) == "x" {
+						fallback = "原帖已删除或不可查看"
+					}
+					return firstNonEmptyStrUI(post.Origin.UnavailableReason, post.OriginUnavailable, fallback)
 				}
 				return strings.TrimSpace(post.OriginUnavailable)
 			}(); unavailableText != "" {
@@ -999,6 +1099,14 @@ func (a *App) renderPostVideoCard(c *ui.Context, post PostCardData, v *PostVideo
 				} else if v.BVID != "" {
 					a.OpenWeiboVideo(v.BVID, v.Title, post.AuthorName, post.AuthorUID, v.CoverURL, v.Duration)
 				}
+			} else if normalizeSiteIDUI(post.Site) == "x" {
+				if post.OnOpenPost != nil {
+					post.OnOpenPost()
+				} else if post.XStatusID != "" {
+					a.OpenXPost(post.XStatusID, v.Title, post.AuthorName, post.AuthorUID, v.CoverURL, post.URL)
+				} else if isOrigin && post.Origin != nil && post.Origin.XStatusID != "" {
+					a.OpenXPost(post.Origin.XStatusID, v.Title, post.Origin.AuthorName, post.Origin.AuthorUID, v.CoverURL, post.Origin.URL)
+				}
 			} else if a.CurrentRoute == RouteUser && a.CurrentUser != nil {
 				a.openVideoFor(v.BVID, v.Title, post.AuthorName, post.Mid, v.CoverURL, v.Duration, a.CurrentUser.Mid)
 			} else {
@@ -1065,6 +1173,8 @@ func (a *App) postMenuItems(c *ui.Context, m *ui.Menu, post PostCardData) {
 			} else {
 				targetURL = "https://weibo.com/detail/" + post.RawID
 			}
+		case "x":
+			targetURL = "https://x.com/i/web/status/" + post.RawID
 		default:
 			switch post.Kind {
 			case "video":
@@ -1109,6 +1219,11 @@ func (a *App) cachePost(post PostCardData) {
 			} else {
 				a.cacheWeiboPostNow(post.RawID, post.WeiboCacheVia)
 			}
+		}
+		return
+	case "x":
+		if post.RawID != "" {
+			a.cacheXPostNow(post.RawID, post.XCacheVia)
 		}
 		return
 	}

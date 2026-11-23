@@ -436,6 +436,8 @@ func credentialReason(err error) string {
 		return "站点确认这个 Cookie 未登录或已失效"
 	case site.ErrKindRiskControl, site.ErrKindRateLimited:
 		return "站点暂时限制了远程的请求，请稍后再同步"
+	case site.ErrKindSchemaChanged:
+		return "站点前端或接口结构已变化，暂时无法校验这个 Cookie"
 	case site.ErrKindNetwork:
 		return "远程连不上站点，请检查远程的网络"
 	}

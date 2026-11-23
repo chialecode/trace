@@ -25,6 +25,7 @@ var mineSites = []struct{ ID, Name, Short string }{
 	{string(site.Bilibili), "哔哩哔哩", "B 站"},
 	{string(site.Douyin), "抖音", "抖音"},
 	{string(site.Weibo), "微博", "微博"},
+	{string(site.X), "X", "X"},
 }
 
 // mineNow is the clock for the history date groups (tests pin it).
@@ -134,6 +135,10 @@ func mineKindLabel(siteID, kind string) string {
 			return "收藏"
 		}
 		return "收藏夹"
+	case service.AccountBookmarks:
+		return "书签"
+	case service.AccountLists:
+		return "列表"
 	case service.AccountToView:
 		return "稍后再看"
 	case service.AccountHistory:
@@ -157,6 +162,10 @@ func mineKindIcon(kind string) string {
 		return "user"
 	case service.AccountFavorites, service.AccountCollection:
 		return "star"
+	case service.AccountBookmarks:
+		return "bookmark"
+	case service.AccountLists:
+		return "grid"
 	case service.AccountToView:
 		return "clock"
 	case service.AccountHistory, service.AccountWatchHistory:
@@ -173,6 +182,10 @@ func mineEmptyText(kind string) string {
 		return "还没有关注"
 	case service.AccountFavorites, service.AccountCollection:
 		return "收藏夹是空的"
+	case service.AccountBookmarks:
+		return "书签是空的"
+	case service.AccountLists:
+		return "还没有列表"
 	case service.AccountToView:
 		return "稍后再看是空的"
 	case service.AccountHistory, service.AccountWatchHistory:
@@ -218,6 +231,27 @@ func (a *App) mineSiteURL(siteID, kind string) string {
 			}
 		}
 		return "https://weibo.com/"
+	}
+	if siteID == string(site.X) {
+		st := a.backend.StatusOf(siteID)
+		handle := strings.TrimPrefix(strings.TrimSpace(st.UniqueID), "@")
+		switch kind {
+		case service.AccountFollowing:
+			if handle != "" {
+				return "https://x.com/" + handle + "/following"
+			}
+		case service.AccountBookmarks:
+			return "https://x.com/i/bookmarks"
+		case service.AccountLikes:
+			if handle != "" {
+				return "https://x.com/" + handle + "/likes"
+			}
+		case service.AccountLists:
+			if handle != "" {
+				return "https://x.com/" + handle + "/lists"
+			}
+		}
+		return "https://x.com/"
 	}
 	switch kind {
 	case service.AccountFollowing:
@@ -571,7 +605,15 @@ func (a *App) renderMineRoute(c *ui.Context, width float32) {
 	siteID, kind := a.Mine.Site, a.Mine.Kind
 	for _, sec := range a.backend.AccountSections(siteID) {
 		if !sec.Available {
-			a.renderMineCenterNote(c, sec.Reason+"，登录"+mineSiteShort(siteID)+"后才能查看", "去登录", func() { a.OpenLoginForSite(siteID) })
+			msg := sec.Reason + "，登录" + mineSiteShort(siteID) + "后才能查看"
+			if siteID == string(site.X) {
+				if sec.Reason == "登录已失效" {
+					msg = "X 登录已失效，请重新登录"
+				} else {
+					msg = "请先登录 X 后才能查看"
+				}
+			}
+			a.renderMineCenterNote(c, msg, "去登录", func() { a.OpenLoginForSite(siteID) })
 			return
 		}
 	}
@@ -835,6 +877,10 @@ func (a *App) renderMineRows(c *ui.Context, siteID, kind string, l *mineList) {
 			return
 		}
 		if it.Kind == service.AccountItemPost {
+			if it.Site == string(site.X) || it.XPost != nil {
+				a.renderMineXPostRow(c, it)
+				return
+			}
 			a.renderMineWeiboPostRow(c, it)
 			return
 		}
@@ -937,6 +983,8 @@ func (a *App) renderMineUserRow(c *ui.Context, it service.AccountItem) {
 				})
 				if it.Site == string(site.Douyin) && it.UniqueID != "" {
 					ui.Text(c, "抖音号 "+it.UniqueID).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+				} else if it.Site == string(site.X) && strings.TrimSpace(it.UniqueID) != "" {
+					ui.Text(c, "@"+strings.TrimPrefix(strings.TrimSpace(it.UniqueID), "@")).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 				}
 				if it.Signature != "" {
 					ui.Text(c, it.Signature).FontSize(12).TextColor(ColorTextMuted).SingleLine()
@@ -949,6 +997,8 @@ func (a *App) renderMineUserRow(c *ui.Context, it service.AccountItem) {
 				a.OpenDouyinUser(it.ID, it.Title)
 			case string(site.Weibo):
 				a.OpenWeiboUser(it.ID, it.Title)
+			case string(site.X):
+				a.OpenXUser(it.ID, it.Title)
 			default:
 				a.OpenUser(mid, it.Title)
 			}
@@ -975,7 +1025,7 @@ func (a *App) renderMineUserRow(c *ui.Context, it service.AccountItem) {
 // pages' 订阅 button does: into an existing subscription or a new one.
 func (a *App) mineSubscribe(it service.AccountItem) {
 	acct := subscription.AccountRef{Site: it.Site, UID: it.ID, Name: firstNonEmptyStrUI(it.Title, it.ID), Face: it.Cover}
-	if it.Site == string(site.Douyin) {
+	if it.Site == string(site.Douyin) || it.Site == string(site.X) {
 		acct.UniqueID = it.UniqueID
 	}
 	a.OpenSubscribePicker(acct)
@@ -1153,6 +1203,197 @@ func (a *App) renderMineWeiboPostRow(c *ui.Context, it service.AccountItem) {
 				} else if card.OriginUnavailable != "" {
 					ui.Row(c).
 						Label("我的微博转发不可用："+post.Mid).
+						FillWidth().
+						Padding(8, 10).
+						Radius(10).
+						Background(ColorBgSecondary).
+						Border(1, ColorBorder).
+						AlignItems(ui.Center).
+						Gap(6).
+						ClipX().
+						Children(func() {
+							DrawIcon(c, "alert-circle", 14, ColorTextMuted, 1.75)
+							ui.Text(c, card.OriginUnavailable).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+						})
+				}
+			})
+		})
+}
+
+func (a *App) renderMineXPostRow(c *ui.Context, it service.AccountItem) {
+	var post service.XPostDTO
+	if it.XPost != nil {
+		post = *it.XPost
+	} else {
+		post = service.XPostDTO{
+			ID:           it.ID,
+			Text:         it.Title,
+			CreatedAt:    it.FavAt,
+			CanonicalURL: firstNonEmptyStrUI(it.BrowserURL, it.OpenURL, "https://x.com/i/web/status/"+it.ID),
+			Author: service.XAuthorDTO{
+				RestID: it.AuthorID,
+				Name:   it.Author,
+			},
+		}
+	}
+	if post.ID == "" {
+		post.ID = it.ID
+	}
+	if post.CanonicalURL == "" {
+		post.CanonicalURL = firstNonEmptyStrUI(it.BrowserURL, it.OpenURL, "https://x.com/i/web/status/"+post.ID)
+	}
+	card := a.xPostToPostCard(post, nil)
+	card.Key = "mine-x:" + post.ID
+	card.OpenBtnLabel = "我的X帖子：" + post.ID
+
+	authorUID := strings.TrimSpace(card.AuthorUID)
+	authorHandle := strings.TrimPrefix(strings.TrimSpace(card.AuthorHandle), "@")
+	authorName := firstNonEmptyStrUI(card.AuthorName, authorHandle, "未知用户")
+	openPost := func() {
+		a.OpenXPost(post.ID, clampRunes(firstNonEmptyStrUI(post.Text, it.Title), 40), authorName, authorUID, it.Cover, post.CanonicalURL)
+	}
+	openAuthor := func() {
+		if target := firstNonEmptyStrUI(authorUID, authorHandle); target != "" {
+			a.OpenXUser(target, authorName)
+		}
+	}
+	owner, owned := a.ownerOfAccountInMemory(string(site.X), authorUID, 0)
+
+	ui.Row(c).
+		Label("我的X帖子行："+post.ID).
+		FillWidth().
+		Padding(12, 16).
+		Gap(12).
+		AlignItems(ui.Start).
+		BorderWidth(0, 0, 1, 0).
+		BorderColor(ColorBorder).
+		Background(ColorBgMain).
+		ClipX().
+		Children(func() {
+			a.renderAccountAvatar(c, "x", authorName, authorUID, 0, 38, false, "", openAuthor, card.AuthorFace)
+			ui.Column(c).Grow(1).Gap(6).ClipX().Children(func() {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(6).ClipX().Children(func() {
+					ui.Row(c).AlignItems(ui.Center).Gap(6).Grow(1).ClipX().Children(func() {
+						authorBtn := ui.ButtonBase(c).Padding(0).Children(func() {
+							ui.Text(c, authorName).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+						})
+						if authorBtn.Clicked() {
+							openAuthor()
+						}
+						if authorHandle != "" {
+							ui.Text(c, "@"+authorHandle).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
+						}
+						if post.CreatedAt > 0 {
+							ui.Text(c, "· "+FormatRelativeTime(post.CreatedAt)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+						}
+						if card.TypeLabel != "" {
+							ui.Text(c, "· "+card.TypeLabel).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+						}
+					})
+					ui.Row(c).AlignItems(ui.Center).Gap(6).Shrink(0).Children(func() {
+						if dot := postDotStatus(card); dot != "" && dot != "none" {
+							DrawStatusDot(c, dot, card.DotLabel)
+						}
+						menuKey := "mine-x-menu:" + post.ID
+						open := a.PostMenuKey == menuKey
+						MoreMenuButton(c, "我的条目更多："+post.ID, 28, &open, func(m *ui.Menu) {
+							if !card.Cached && (card.DotStatus == "" || card.DotStatus == "none") && card.CacheBtnLabel != "" && post.ID != "" {
+								if m.Item("缓存").Chosen() {
+									a.cacheXPostNow(post.ID, card.XCacheVia)
+								}
+							}
+							if authorUID != "" {
+								if owned {
+									if m.Item("打开订阅“" + owner.Name + "”").Chosen() {
+										a.OpenSubscriptionDetail(owner)
+									}
+								} else if m.Item("加入订阅").Chosen() {
+									a.OpenSubscribePicker(subscription.AccountRef{
+										Site:     string(site.X),
+										UID:      authorUID,
+										UniqueID: authorHandle,
+										Name:     authorName,
+										Face:     card.AuthorFace,
+									})
+								}
+							}
+							if post.CanonicalURL != "" {
+								if m.Item("复制链接").Chosen() {
+									c.WriteClipboard(post.CanonicalURL)
+									c.Toast("已复制链接")
+									a.BannerInfo = "已复制链接"
+								}
+								if m.Item("在浏览器中打开").Chosen() {
+									a.showError(a.backend.Desktop().OpenExternalURL(post.CanonicalURL))
+								}
+							}
+						})
+						keyedMenuOpen(&a.PostMenuKey, menuKey, open)
+					})
+				})
+
+				bodyBtn := ui.ButtonBase(c).Label("我的X帖子：" + post.ID).FillWidth().Padding(0).Justify(ui.Start).AlignItems(ui.Start).ClipX()
+				bodyBtn.Children(func() {
+					text := firstNonEmptyStrUI(post.Text, it.Title, "帖子 "+post.ID)
+					ui.Text(c, text).FontSize(14).LineHeight(LineHeightBody).TextColor(ColorTextMain).MaxLines(4)
+				})
+				if bodyBtn.Clicked() {
+					openPost()
+				}
+				if card.Origin != nil && !card.Origin.Unavailable {
+					orig := card.Origin
+					origBtn := ui.ButtonBase(c).
+						Label("我的X转发内容："+post.ID).
+						FillWidth().
+						Padding(8, 10).
+						Radius(10).
+						Background(ColorBgSecondary).
+						Border(1, ColorBorder).
+						Justify(ui.Start).
+						AlignItems(ui.Start).
+						ClipX()
+					if origBtn.Hovered() {
+						origBtn.Background(ColorHover)
+					}
+					origBtn.Children(func() {
+						ui.Column(c).FillWidth().Gap(4).ClipX().Children(func() {
+							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
+								ui.Text(c, firstNonEmptyStrUI(orig.AuthorName, orig.AuthorHandle, "原帖作者")).FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								if h := strings.TrimPrefix(strings.TrimSpace(orig.AuthorHandle), "@"); h != "" {
+									ui.Text(c, "@"+h).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
+								}
+								if orig.PubTs > 0 {
+									ui.Text(c, "· "+FormatRelativeTime(orig.PubTs)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+								}
+							})
+							if strings.TrimSpace(orig.Text) != "" {
+								ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightBody).TextColor(ColorTextMain).MaxLines(3)
+							}
+							var parts []string
+							if len(orig.NotePages) > 0 {
+								parts = append(parts, fmt.Sprintf("含 %d 项媒体", len(orig.NotePages)))
+							}
+							if orig.Video != nil {
+								vPart := "视频"
+								if orig.Video.Duration != "" && orig.Video.Duration != "00:00" {
+									vPart += " (" + orig.Video.Duration + ")"
+								}
+								parts = append(parts, vPart)
+							}
+							if orig.XCard != nil {
+								parts = append(parts, firstNonEmptyStrUI(xCardKindLabel(orig.XCard), "卡片")+" · "+orig.XCard.Title)
+							}
+							if len(parts) > 0 {
+								ui.Text(c, strings.Join(parts, " · ")).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+							}
+						})
+					})
+					if origBtn.Clicked() {
+						openPost()
+					}
+				} else if card.OriginUnavailable != "" {
+					ui.Row(c).
+						Label("我的X转发不可用："+post.ID).
 						FillWidth().
 						Padding(8, 10).
 						Radius(10).

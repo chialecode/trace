@@ -17,14 +17,14 @@
 
 截至 2026-11-21，本资料为**纯静态调研成果**：
 
-- **真实站点请求**：`0` 次（严格遵守 [M6 阶段计划修订 0](../delivery/stage-plan.md#research) 红线：未向 `weibo.com`、`weibo.cn`、`m.weibo.cn`、`sina.com.cn`、`sinaimg.cn`、`weibocdn.com`、`t.cn` 等任何微博与新浪域名发过请求，未做浏览器访问）。
+- **真实站点请求**：`0` 次（严格遵守 [M6 阶段计划修订 0](https://github.com/chialecode/trace/blob/b75cf80/docs/delivery/stage-plan.md#research) 红线：未向 `weibo.com`、`weibo.cn`、`m.weibo.cn`、`sina.com.cn`、`sinaimg.cn`、`weibocdn.com`、`t.cn` 等任何微博与新浪域名发过请求，未做浏览器访问）。
 - **静态已确认事实（仍待真实验证锁定线上现行行为）**：
   - `mid <-> mblogid` 7 位十进制 / 4 字符 Base62 分段互转算法与 8 组确定性合成测试向量（已在本地纯数学脚本完成双向自检，零网络请求，见[§3.2](#base62)）。
   - PC Ajax 主协议栈（`weibo.com/ajax/*`）相比移动 H5（`m.weibo.cn`）在超过 9 图、图文视频混排 `mix_media_info`、多档视频 `playback_list`、单域会话一致性上的结构优势与核心字段路径（见[§4](#post) 与[§6](#user-feed)）。
   - TRACE 现有代码接入面（`internal/site`、`internal/credential`、`internal/download`、`internal/subscription`、`internal/live`、`cmd/trace-server`）的跨站接口、无 Cookie 媒体白名单、独立额度/退避/熔断边界（`源码阅读（仓库代码，2026-11-21）`）。
   - Go 开源生态中受维护、许可合规、可直接导入的第三方微博客户端/扫码/签名库为 **0 个**，微博 MVP 无需新增 Go 依赖（见[§10](#oss)）。
 - **核心 `unknown` 汇总**：共整理为 **14 项 MVP 核心必验项（`V-01`～`V-14`）** 与 **5 项条件验证项（`V-15`～`V-19`，仅在纳入扫码或直播时执行）**，覆盖无 Cookie 严格登录对照、Cookie 最小子集与跨域通用性、`t.cn` 跳转、`/n/` 与个性域名换 `uid`、长微博内联、去水印路径、GIF/实况 `.mov` 容器、视频无 Cookie vs 登录画质、不存在/不可见错误码与 `visible.type` 枚举、`mymblog` 分页/快转/半年可见、CDN `Range` 与 302 域、以及“我的”关注分组/收藏/赞过，详见[第 11 节](#verify-list)。
-- **产品原则基线**：延续 [DEC-065](../decisions.md#dec-065)（M6 微博作为第三个站点，先调研后定范围）、[DEC-043](../decisions.md#dec-043)（每站点独立登录与凭证、按站点先登录再发业务请求、无访客产品模式、额度/退避/熔断独立、小字站点标签）、[DEC-044](../decisions.md#dec-044)（只按本文规格洁净室独立实现，不翻译参考代码）、[DEC-047](../decisions.md#dec-047)（“我的”严格只读且仅驻留内存）、[DEC-056](../decisions.md#dec-056)（转发内容存转发者 `forwards/` 目录并记录 `via`）与 [DEC-062](../decisions.md#dec-062)（`trace-server` 无 GUI 依赖、只同步订阅与 Cookie、不做远端续期与全量缓存）。
+- **产品原则基线**：延续 [DEC-065](../decisions.md#dec-065)（微博作为第三个站点，先调研后定范围）、[DEC-043](../decisions.md#dec-043)（每站点独立登录与凭证、按站点先登录再发业务请求、无访客产品模式、额度/退避/熔断独立、小字站点标签）、[DEC-044](../decisions.md#dec-044)（只按本文规格洁净室独立实现，不翻译参考代码）、[DEC-047](../decisions.md#dec-047)（“我的”严格只读且仅驻留内存）、[DEC-056](../decisions.md#dec-056)（转发内容存转发者 `forwards/` 目录并记录 `via`）与 [DEC-062](../decisions.md#dec-062)（`trace-server` 无 GUI 依赖、只同步订阅与 Cookie、不做远端续期与全量缓存）。
 
 <a id="auth"></a>
 ## 2. 登录与凭证（R-A）
@@ -59,7 +59,7 @@
      - `https://login.sina.com.cn/sso/crossdomain?...` → 在 `.sina.com.cn` 下写通行证 Cookie（`社区资料（2026-11-21）`）。
      - `https://passport.weibo.cn/sso/crossdomain?...`（若列表包含）→ 在 `.weibo.cn` 下写移动 H5 域 Cookie（当前线上 `crossDomainUrlList` 是否必然包含 `.weibo.cn` 记为 `unknown`）（`社区资料（2026-11-21）`）。
    - 跳转链完成后，调用[§2.4](#login-verify)的严格登录校验接口确认 `uid` 一致并同步拿到当前 `XSRF-TOKEN`（`推测（2026-11-21）`）。
-   - **MVP 取舍提示**：鉴于扫码登录涉及两代 SSO 端点与多域跳转链，对照抖音先例（[DEC-043](../decisions.md#dec-043)），推荐 M6 MVP 先采用**粘贴 Cookie 登录**，扫码登录放进后续 loop（见[§12.3](#q-drafts) `Q-WB-1`）。
+   - **MVP 取舍提示**：鉴于扫码登录涉及两代 SSO 端点与多域跳转链，对照抖音先例（[DEC-043](../decisions.md#dec-043)），推荐微博 MVP 先采用**粘贴 Cookie 登录**，扫码登录放进后续 loop（见[§12.3](#q-drafts) `Q-WB-1`）。
 
 <a id="cookie-clean"></a>
 ### 2.2 粘贴 Cookie 字段分类、清洗与脱敏规则
@@ -310,7 +310,7 @@
    - 当存在非空 `mix_media_info.items[]` 时，**优先按 `mix_media_info.items` 顺序解析**（每项 `type == "pic"` 取 `item.data` 同 `PicInfo`，`type == "video"` 取 `item.data.media_info` 与 `item.data.object_id`），否则再走 `pic_ids`+`pic_infos` 与 `page_info`（`社区资料（2026-11-21）`；实际结构列 **V-08**）。该结构可直接映射到仓库现有 `site.DownloadPlan{Kind: "image_note", Images: []MediaImageAsset}` 混排模型（`源码阅读（仓库代码，2026-11-21）`）。
 3. **各尺寸档位与去平台水印边界**：
    - `pic_infos[id]` 内常见尺寸对象（含 `{url, width, height, cut_type, type}`）：`thumbnail`、`bmiddle`、`large`、`mw2000`、`original`、`largest`、`largecover`（`社区资料（2026-11-21）`）。
-   - **默认最高清优先级**：`largest` → `original` → `mw2000` → `large` → `bmiddle`（并在非空档位中核对 `width * height` 最大者）（`源码阅读（多站点订阅参考，2026-11-21）`、`社区资料（2026-11-21）`）。
+   - **默认最高清优先级**：`largest` → `original` → `mw2000` → `large` → `bmiddle`（并在非空档位中核对 `width * height` 最大者）。TRACE 只缓存原图：备用地址只用与原图同尺寸的档位，不退到 `bmiddle` 与缩略图（2026-11-24 用户要求）（`源码阅读（多站点订阅参考，2026-11-21）`、`社区资料（2026-11-21）`）。
    - **去平台水印变体（`unknown`，列 V-07）**：单链接解析参考观察到 `sinaimg.cn` 的 `/mw690/`、`/mw2000/`、`/large/`、`/woriginal/` 可能带右下角平台昵称水印，改写路径为 `/osj1080/` 或 `/oslarge/` 可去水印（`源码阅读（单链接解析参考，2026-11-21）`）；社区另见原图下载接口 `GET https://weibo.com/ajax/common/download?pid=<pic_id>`（`社区资料（2026-11-21）`）。但 `/osj1080/` 可能限宽 1080px、`/oslarge/` 对部分 PNG/GIF/历史图可能 404、`common/download` 是否需登录 Cookie 均为 `unknown`。**推荐策略**：MVP 默认使用 `largest` / `original` 直链保证原分辨率与动图完整，待 **V-07** 实测确认无损后再评估去水印开关（见 [§12.3](#q-drafts) `Q-WB-6`）。
 4. **GIF 动图（`type == "gif"`）**：
    - `pic_infos[id].type == "gif"` 同时给出 `largest.url`（原始 `.gif`，`wx1..4.sinaimg.cn`）与 `video`（转码 MP4，常见 `g.us.sinaimg.cn` 或 `f.video.weibocdn.com`，带签名）（`社区资料（2026-11-21）`）。推荐默认保存 `largest.url` 原始 `.gif`（与看图面板兼容、无签名过期风险），在 **V-08** 中确认其确为多帧 GIF 而非静态首帧。
@@ -550,7 +550,7 @@
 | **多站点管理层** | `internal/live/manager.go`、`site_provider.go`、`douyin_*.go` 当前硬编码 B 站与抖音双分支 | 即使仅做 HTTP-FLV，也需把 `Manager` 重构为按 `site.ID` 泛化或新增微博状态机，估算需 **`+900–1,400` 生产 LOC + `~1,000` 测试 LOC** |
 | **自动开播巡检** | B 站 50 UID 批量；抖音 `web_rid` + `profile/other` + `check_alive` | 微博无固定房间号与批量接口，高频拉 `mymblog` 会放大整站风控风险并挤占订阅额度 |
 
-**明确建议：M6 MVP 暂不做微博直播录制与自动开播巡检，延后至后续 loop（[§12.3](#q-drafts) `Q-WB-2`）**。MVP 仅需低成本做好两件事：① 链接解析器识别 `weibo.com/l/wblive/...`、`live.weibo.com/...` 并返回 `Kind: "live", Unsupported: true` 引导浏览器打开；② 微博正文与主页中的直播卡片安全降级展示标题/封面/提示与浏览器打开入口。待后续完成 **V-16～V-19** 实测确认 HTTPS/443 + 免 Cookie HTTP-FLV 稳定后，再在独立 loop 按“单链接手动 FLV 录制 → 视轻量开播字段情况决定是否加自动巡检”推进。
+**明确建议：微博 MVP 暂不做微博直播录制与自动开播巡检，延后至后续 loop（[§12.3](#q-drafts) `Q-WB-2`）**。MVP 仅需低成本做好两件事：① 链接解析器识别 `weibo.com/l/wblive/...`、`live.weibo.com/...` 并返回 `Kind: "live", Unsupported: true` 引导浏览器打开；② 微博正文与主页中的直播卡片安全降级展示标题/封面/提示与浏览器打开入口。待后续完成 **V-16～V-19** 实测确认 HTTPS/443 + 免 Cookie HTTP-FLV 稳定后，再在独立 loop 按“单链接手动 FLV 录制 → 视轻量开播字段情况决定是否加自动巡检”推进。
 
 <a id="errors"></a>
 ## 9. 错误、风控与请求节奏（R-H）
@@ -605,7 +605,7 @@
 <a id="oss"></a>
 ## 10. 开源选型与自研规模评估（R-I）
 
-按 [M6 阶段计划修订 0 §3](../delivery/stage-plan.md#research-delivery) 与[来源与安全 §1](../dev-rules/sources-and-safety.md#open-source)，因 Go 生态中**无**值得对比引入的第三方微博库（0 个满足维护、许可合规与可导入条件），不另建 `docs/research/2026-11-21-weibo.md`，将完整检索记录、候选排除表、零依赖结论、自研规模估算与 `LOOP-008` 复核统一记于本节。
+按 [M6 阶段计划修订 0 §3](https://github.com/chialecode/trace/blob/b75cf80/docs/delivery/stage-plan.md#research-delivery) 与[来源与安全 §1](../dev-rules/sources-and-safety.md#open-source)，因 Go 生态中**无**值得对比引入的第三方微博库（0 个满足维护、许可合规与可导入条件），不另建 `docs/research/2026-11-21-weibo.md`，将完整检索记录、候选排除表、零依赖结论、自研规模估算与 `LOOP-008` 复核统一记于本节。
 
 <a id="oss-search"></a>
 ### 10.1 Go 生态微博库系统检索记录（查询日期：2026-11-21）
@@ -678,7 +678,7 @@
 | [`github.com/asticode/go-astits`](https://github.com/asticode/go-astits) | `v1.17.0`（`2026-10-29`） | **`v1.17.0`**（未变） | 未归档，活跃（最新提交 `2026-11-02`，617 stars）；**MIT** | 仅拆 188B TS/PES，不含 Annex-B AU 组装、ADTS 拆帧、B 帧 DTS 推导与 33-bit 回绕；不单独选用（由 `mediacommon/v2` 封装） |
 | [`github.com/Eyevinn/mp4ff`](https://github.com/Eyevinn/mp4ff)（已有） | `v0.62.0` | **`v0.63.0`**（`2026-11-13`，仓库已升级） | 未归档，极活跃（最新提交 `2026-11-20`，669 stars）；**MIT** | 负责 fMP4 分片与 `Defragment` 收尾，继续复用 |
 
-**结论**：因建议 M6 延后微博直播，`LOOP-008` 继续延后、本阶段不引入 `mediacommon/v2`；未来若抖音或微博实测确需录制纯 HLS-TS 直播间，在 `v2.10.0+` 满 7 天冷却期后一次为全站补齐 HLS-TS 录制输入。
+**结论**：因建议微博 MVP 延后直播，`LOOP-008` 继续延后、暂不引入 `mediacommon/v2`；未来若抖音或微博实测确需录制纯 HLS-TS 直播间，在 `v2.10.0+` 满 7 天冷却期后一次为全站补齐 HLS-TS 录制输入。
 
 <a id="verify-list"></a>
 ## 11. 待真实验证清单与最小有界检查程序
@@ -790,10 +790,10 @@
 
 | 草案编号 | 问题 | 推荐默认值 | 备选方案 | 理由与可逆性 |
 | --- | --- | --- | --- | --- |
-| **Q-WB-1** | 微博登录方式：首版仅做粘贴 Cookie，还是同步做网页扫码登录？ | **M6 MVP 仅做粘贴 Cookie 登录**（严格清洗、无 Cookie 对照校验、不自动续期），网页扫码放后续 loop | 本阶段同步实现 SSO 扫码登录（需先测 V-15 + 新增 250–350 LOC 与人工真机扫码验证） | 对齐抖音成功先例（DEC-043）；微博 SSO 存在 v1/v2 两代跳转链不确定性；粘贴 Cookie 零风险上线，扫码随时可在 loop 增量补齐（可逆） |
-| **Q-WB-2** | 微博直播录制：是否纳入 M6 MVP？ | **延后至后续 loop**；MVP 仅识别直播链接与博文直播卡片并提示“暂不支持录制，可在浏览器中打开” | 本阶段同步做 HTTP-FLV 录制（需先过 V-16～V-19，额外 `+900–1,400` LOC；若仅 HLS-TS 还需引入 `LOOP-008` `mediacommon/v2` `+~2.1 MiB`） | 微博直播无固定房间号与批量查询接口、两套房间接口信封分歧、HTTP/80 与免 Cookie CDN 均未知，高频拉 `mymblog` 巡检会拖累订阅风控；后续可逆开启（可逆） |
-| **Q-WB-3** | “我的 › 微博”纳入范围（关注、收藏、赞过） | **M6 MVP 纳入只读“关注”与“收藏”**；“赞过”与“按自定义分组查成员”仅在 V-13 / V-14 实测通过后才开放入口，否则隐藏记 LOOP | ① 整个“我的 › 微博”放后续 loop；② 无视实测保留“赞过”占位提示 | `all_fav` 与全量关注已有较清晰 PC Ajax 契约；“赞过”缺乏现代实证，按实测门控可避免重演抖音“喜欢”接口空包问题（可逆） |
-| **Q-WB-4** | 是否支持从微博关注列表批量导入订阅？ | **M6 MVP 支持**（对称 B 站 `FR-SUBS-003`；若 V-13 证实分组成员接口则附分组筛选，否则先全量勾选导入） | 延后至后续 loop，仅支持手动粘贴主页链接订阅 | 关注列表接口已直接返回稳定 `uid`、昵称与头像，零额外详情请求且对多博主迁移极实用（可逆） |
+| **Q-WB-1** | 微博登录方式：首版仅做粘贴 Cookie，还是同步做网页扫码登录？ | **微博 MVP 仅做粘贴 Cookie 登录**（严格清洗、无 Cookie 对照校验、不自动续期），网页扫码放后续 loop | 同步实现 SSO 扫码登录（需先测 V-15 + 新增 250–350 LOC 与人工真机扫码验证） | 对齐抖音成功先例（DEC-043）；微博 SSO 存在 v1/v2 两代跳转链不确定性；粘贴 Cookie 零风险上线，扫码随时可在 loop 增量补齐（可逆） |
+| **Q-WB-2** | 微博直播录制：是否纳入微博 MVP？ | **延后至后续 loop**；MVP 仅识别直播链接与博文直播卡片并提示“暂不支持录制，可在浏览器中打开” | 同步做 HTTP-FLV 录制（需先过 V-16～V-19，额外 `+900–1,400` LOC；若仅 HLS-TS 还需引入 `LOOP-008` `mediacommon/v2` `+~2.1 MiB`） | 微博直播无固定房间号与批量查询接口、两套房间接口信封分歧、HTTP/80 与免 Cookie CDN 均未知，高频拉 `mymblog` 巡检会拖累订阅风控；后续可逆开启（可逆） |
+| **Q-WB-3** | “我的 › 微博”纳入范围（关注、收藏、赞过） | **微博 MVP 纳入只读“关注”与“收藏”**；“赞过”与“按自定义分组查成员”仅在 V-13 / V-14 实测通过后才开放入口，否则隐藏记 LOOP | ① 整个“我的 › 微博”放后续 loop；② 无视实测保留“赞过”占位提示 | `all_fav` 与全量关注已有较清晰 PC Ajax 契约；“赞过”缺乏现代实证，按实测门控可避免重演抖音“喜欢”接口空包问题（可逆） |
+| **Q-WB-4** | 是否支持从微博关注列表批量导入订阅？ | **微博 MVP 支持**（对称 B 站 `FR-SUBS-003`；若 V-13 证实分组成员接口则附分组筛选，否则先全量勾选导入） | 延后至后续 loop，仅支持手动粘贴主页链接订阅 | 关注列表接口已直接返回稳定 `uid`、昵称与头像，零额外详情请求且对多博主迁移极实用（可逆） |
 | **Q-WB-5** | 纯数字输入在解析框的归属（微博 8～10 位 `uid` / 16 位 `mid` 与 B 站 UID 重叠） | **保持现状**：`<19` 位纯数字继续默认解析为哔哩哔哩 UID，不自动猜测为微博；微博通过完整链接、裸域名链接或分享文本解析 | 新增显式前缀（如 `wb:<uid>`），或对纯数字弹窗让用户选站点 | 避免破坏 B 站老用户直接贴纯数字 UID 的既有习惯；后续随时可追加 `wb:` 前缀（可逆） |
 | **Q-WB-6** | 实况照片 `.mov` 缓存与图片去平台水印策略 | 实况照片同时保存静帧与伴侣动态片段（若 V-12 发现 `mp4ff` 不认 `.mov` `ftyp=qt  `，做轻量容器兼容而非引外部库）；正文图片默认保存 `largest`/`original` 直链，待 V-07 证实无损后再评估去水印开关 | 实况暂只存静帧；或默认强行把路径改写为 `/osj1080/` | `/osj1080/` 可能缩放到 1080px、`/oslarge/` 存在 404 风险；先保原分辨率与动图完整最稳妥（可逆） |
 | **Q-WB-7** | 微博自动请求节奏与每小时配额默认值 | API 串行 `1200 ms + 0～400 ms` 抖动、每小时自动额度 `<= 100` 次、单轮检查 `<= 20` 账号、账号间隔 `>= 3 s`，独立退避与熔断 | 对齐抖音 `120` 次/小时，或更保守 `60` 次/小时 | 微博对短时高频与 `414`/`432` 敏感且长微博需额外 `longtext` 请求；保守起步可在实测后按需调整（可逆） |
@@ -803,12 +803,12 @@
 
 1. **认证会话、风控边界与空列表歧义（R-A / R-E / R-H）**：新浪访客体系同样签发 `SUB` Cookie，PC `weibo.com/ajax/setting/getBasicInfo` 的无 Cookie 精确失败码、`X-XSRF-TOKEN` 在 GET 请求上的强校验边界、`SSOLoginState` 对跨站 `432` 的影响，以及博主“半年/三天可见”与风控静默抽空壳的真实响应细节均须由 **V-01、V-04、V-05、V-10** 实测锁定，否则存在误判已登录或漏检更新的风险。
 2. **快转（`ori_mid`）时间乱序、实况 `.mov` 容器与 CDN 302 域边界（R-C / R-D / R-E）**：微博时间线特有的快转与外人推广卡若未从早停逻辑中剔除，会在遇到旧原博快转时截断整页新微博；同时实况照片 `.mov`（`ftyp=qt  `）与 `mp4ff` 的兼容性、视频 CDN `f.video.weibocdn.com` 的无 Cookie + `Range` + 是否 302 跨外域，以及 `visible.type` `6`/`10` 的社区分歧，都必须经 **V-05、V-07、V-08、V-10、V-11、V-12** 实测锁死。
-3. **直播无固定房间号的高风控低收益与“赞过 / 分组成员”契约缺失（R-F / R-G）**：微博直播 `live_id` 每次开播变化且无按 `uid` 批量查询接口，两套房间接口信封分歧、HTTP/80 明文及免 Cookie CDN / HLS-TS 均未知（因此推荐 M6 MVP 延后直播）；而“我赞过的微博”与“按自定义 `list_id` 拉分组成员”缺乏 2025–2026 现代实证，必须以 **V-13、V-14** 实测为上线门槛，严防无契约盲上导致类似抖音“喜欢”接口空包问题。
+3. **直播无固定房间号的高风控低收益与“赞过 / 分组成员”契约缺失（R-F / R-G）**：微博直播 `live_id` 每次开播变化且无按 `uid` 批量查询接口，两套房间接口信封分歧、HTTP/80 明文及免 Cookie CDN / HLS-TS 均未知（因此推荐微博 MVP 延后直播）；而“我赞过的微博”与“按自定义 `list_id` 拉分组成员”缺乏 2025–2026 现代实证，必须以 **V-13、V-14** 实测为上线门槛，严防无契约盲上导致类似抖音“喜欢”接口空包问题。
 
 <a id="a-review"></a>
 ## 13. A 审阅定稿（2026-11-21）
 
-A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1～12 节，抽查了其中引用的仓库代码事实（`credential.MaxCookieInputBytes = 8192`、`Manager.RedactString`、`download.looksLikeDisguisedTextBody`、`download.EnsureSingleMP4Context`、`site.DefaultDouyinMediaHosts`、`site/registry.go` 的 `reBareKnownDomain` 与 19 位纯数字规则、`subscription.SiteHourlyQuotaLimit`），都属实；另发现 `SiteHourlyQuotaLimit` 与 `normalizeSchedulerSite` 对不认识的站点**落回哔哩哔哩的数值**，这类“默认按哔哩哔哩”的分支是接入第三个站点时最容易漏的地方（见 13.2 第 1 条）。本机参考索引里没有专门的微博条目，相关的是多站点订阅、单链接解析与直播录制三个功能领域；A 抽查了多站点订阅参考里的微博部分，与第 2.4、4.1 节一致（登录 UID 取自 `m.weibo.cn/api/config`，超过 9 张图回退 PC `ajax/statuses/show`）。范围按 [Q-023](../../USER-ACTIONS.md#q-023) 的推荐默认值定稿，计划见[阶段计划](../delivery/stage-plan.md)，需求见[需求 §2.11](../requirements.md#weibo-scope)。
+A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1～12 节，抽查了其中引用的仓库代码事实（`credential.MaxCookieInputBytes = 8192`、`Manager.RedactString`、`download.looksLikeDisguisedTextBody`、`download.EnsureSingleMP4Context`、`site.DefaultDouyinMediaHosts`、`site/registry.go` 的 `reBareKnownDomain` 与 19 位纯数字规则、`subscription.SiteHourlyQuotaLimit`），都属实；另发现 `SiteHourlyQuotaLimit` 与 `normalizeSchedulerSite` 对不认识的站点**落回哔哩哔哩的数值**，这类“默认按哔哩哔哩”的分支是接入第三个站点时最容易漏的地方（见 13.2 第 1 条）。本机参考索引里没有专门的微博条目，相关的是多站点订阅、单链接解析与直播录制三个功能领域；A 抽查了多站点订阅参考里的微博部分，与第 2.4、4.1 节一致（登录 UID 取自 `m.weibo.cn/api/config`，超过 9 张图回退 PC `ajax/statuses/show`）。范围按 [Q-023](../../USER-ACTIONS.md#q-023) 的推荐默认值定稿，计划见[M6 计划](https://github.com/chialecode/trace/blob/b75cf80/docs/delivery/stage-plan.md)，需求见[需求 §2.11](../requirements.md#weibo-scope)。
 
 <a id="a-review-choices"></a>
 ### 13.1 实现采用的取舍

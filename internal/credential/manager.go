@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Manager owns isolated per-site credential stores (bilibili.bin, douyin.bin, and weibo.bin)
+// Manager owns isolated per-site credential stores (bilibili.bin, douyin.bin, weibo.bin, and x.bin)
 // so expiry, logout, and encryption entropy remain strictly independent per site.
 type Manager struct {
 	dir    string
@@ -20,12 +20,14 @@ func normalizeSiteID(raw string) string {
 		return SiteDouyin
 	case SiteWeibo:
 		return SiteWeibo
+	case SiteX:
+		return SiteX
 	default:
 		return ""
 	}
 }
 
-// OpenManager opens bilibili.bin, douyin.bin, and weibo.bin inside credDir with isolated entropies.
+// OpenManager opens bilibili.bin, douyin.bin, weibo.bin, and x.bin inside credDir with isolated entropies.
 // Any corrupt or wrong-entropy files are backed up and reported in backups without failing startup.
 func OpenManager(credDir string) (*Manager, []string, error) {
 	biliStore, biliBackup, err := Open(filepath.Join(credDir, BilibiliFileName))
@@ -40,6 +42,10 @@ func OpenManager(credDir string) (*Manager, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	xStore, xBackup, err := OpenX(filepath.Join(credDir, XFileName))
+	if err != nil {
+		return nil, nil, err
+	}
 	var backups []string
 	if biliBackup != "" {
 		backups = append(backups, biliBackup)
@@ -50,12 +56,16 @@ func OpenManager(credDir string) (*Manager, []string, error) {
 	if wbBackup != "" {
 		backups = append(backups, wbBackup)
 	}
+	if xBackup != "" {
+		backups = append(backups, xBackup)
+	}
 	return &Manager{
 		dir: credDir,
 		stores: map[string]*Store{
 			SiteBilibili: biliStore,
 			SiteDouyin:   dyStore,
 			SiteWeibo:    wbStore,
+			SiteX:        xStore,
 		},
 	}, backups, nil
 }
@@ -73,7 +83,7 @@ func NewManagerFromStores(stores map[string]*Store) *Manager {
 	return m
 }
 
-// Store returns the credential Store for siteID ("bilibili", "douyin", or "weibo"), or nil if unknown.
+// Store returns the credential Store for siteID ("bilibili", "douyin", "weibo", or "x"), or nil if unknown.
 func (m *Manager) Store(siteID string) *Store {
 	if m == nil {
 		return nil
@@ -96,6 +106,11 @@ func (m *Manager) Weibo() *Store {
 	return m.Store(SiteWeibo)
 }
 
+// X returns the X credential Store.
+func (m *Manager) X() *Store {
+	return m.Store(SiteX)
+}
+
 // Status returns the desensitized Status for siteID.
 func (m *Manager) Status(siteID string) Status {
 	st := m.Store(siteID)
@@ -109,12 +124,13 @@ func (m *Manager) Status(siteID string) Status {
 	return st.Status()
 }
 
-// Statuses returns desensitized account statuses keyed by site ID ("bilibili", "douyin", "weibo").
+// Statuses returns desensitized account statuses keyed by site ID ("bilibili", "douyin", "weibo", "x").
 func (m *Manager) Statuses() map[string]Status {
 	return map[string]Status{
 		SiteBilibili: m.Status(SiteBilibili),
 		SiteDouyin:   m.Status(SiteDouyin),
 		SiteWeibo:    m.Status(SiteWeibo),
+		SiteX:        m.Status(SiteX),
 	}
 }
 
@@ -161,7 +177,7 @@ func (m *Manager) Clear(siteID string) error {
 }
 
 // RedactString scrubs secrets stored across ALL managed site stores as well as
-// Weibo sensitive cookie/SSO fields (raw and URL-encoded) from in.
+// Weibo and X sensitive cookie, CSRF, and Authorization Bearer fields (raw and URL-encoded) from in.
 func (m *Manager) RedactString(in string) string {
 	if in == "" {
 		return ""
@@ -169,12 +185,13 @@ func (m *Manager) RedactString(in string) string {
 	out := in
 	if m != nil {
 		var allSecrets []string
-		for _, id := range []string{SiteBilibili, SiteDouyin, SiteWeibo} {
+		for _, id := range []string{SiteBilibili, SiteDouyin, SiteWeibo, SiteX} {
 			if st := m.stores[id]; st != nil {
 				allSecrets = append(allSecrets, st.collectSecrets()...)
 			}
 		}
 		out = redactWithSecrets(out, allSecrets)
 	}
-	return redactWeiboSensitiveFields(out)
+	out = redactWeiboSensitiveFields(out)
+	return redactXSensitiveFields(out)
 }
