@@ -1,0 +1,8 @@
+#!/bin/sh
+# Local pre-push gate. Enable once per clone: git config --local core.hooksPath .githooks
+# Runs the repository gate (gofmt, go vet, go test, dependency direction, remote build, docs, whitespace).
+# Skip once with `git push --no-verify` and say why in the PR; a hook never replaces
+# the remote `main-protection` ruleset and its required `repository-quality` check.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+TRACE_QUIET=1 go run ./tools/check
