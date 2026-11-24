@@ -24,7 +24,7 @@
 | --- | --- | --- |
 | `TRACE_DATA_DIR=tmp/dev-data mygo dev` | 开发模式：Go 改动自动重编译并重启原生窗口应用 | 已实测：冷编译 `2.9s`、增量重编译 `0.98s`（NFR-DEV-001，满足 10 秒以内目标） |
 | `go run ./tools/check` | 全部质量门禁（见第 3 节），任一失败就以非零退出 | 已实现并实测通过；最新范围与用时见[b75cf80 报告](https://github.com/chialecode/trace/blob/b75cf80/docs/delivery/stage-report.md) |
-| `go run ./tools/deps [-audit]` | [依赖盘点](workflow.md#dependency-inventory)：列出直接依赖模块与 `go` 行满 7 天的新版本，只出报告；`-audit` 用固定版本的 `govulncheck` 查代码实际调用到的已知漏洞，未登记在 `tools/deps/exceptions.json` 或例外过了复查日期则退出码 1，跑不起来退出码 2（`not-run`）。阶段开始与 B 交付前各跑一次，要联网 | 已实现；2026-11-14 首次运行：盘点 2 项满龄（`golang.org/x/sys`、`go` 1.27.4），`-audit` 有 1 条被调用的标准库漏洞（升到 Go 1.27.4 可修），7 条在没调用到的依赖模块里 |
+| `go run ./tools/deps [-audit]` | [依赖盘点](workflow.md#dependency-inventory)：列出直接依赖模块与 `go` 行满 7 天的新版本，只出报告；`-audit` 用固定版本的 `govulncheck` 查代码实际调用到的已知漏洞，未登记在 `tools/deps/exceptions.json` 或例外过了复查日期则退出码 1，跑不起来退出码 2（`not-run`）。[每周维护](workflow.md#dependency-inventory)与发布前各跑一次，要联网 | 已实现；2026-11-14 首次运行：盘点 2 项满龄（`golang.org/x/sys`、`go` 1.27.4），`-audit` 有 1 条被调用的标准库漏洞（升到 Go 1.27.4 可修），7 条在没调用到的依赖模块里 |
 | `go run ./tools/package [-install \| -install-only]` | 构建开发版：按[版本号](#versions)算出 `<下一个正式版>-dev.<UTC 时间>`，临时把 `mygo.json` 换成开发版配置（`trace-dev` 身份、开发版图标、发布者、中文目录，不带更新），经 `MYGO_LDFLAGS` 注入版本、通道、提交与构建时间，运行 `mygo build -platform windows/amd64`；先在 `dist/.staging-<时间>/` 生成安装包 `trace-dev-setup-<版本>-amd64.exe`、解包的 `trace.exe`、`THIRD-PARTY-NOTICES.txt`、`VERSION.txt`、`SHA256SUMS.txt` 并校验，再替换 `dist/trace-dev/` 中登记的文件。只打包，不动本机开发版；`-install` 打包后再[安装到本机](#dev-install)，`-install-only` 只安装 `dist/trace-dev/` 里现有的包。许可文件逐字收录 Go 模块和标准库的 LICENSE/NOTICE；精确版本的官方补充见下，其他缺许可模块会停止打包 | 已实现并实测通过；最新产物与安装结果见[b75cf80 报告](https://github.com/chialecode/trace/blob/b75cf80/docs/delivery/stage-report.md) |
 | `go run ./tools/package -server` | 构建远程版：版本号同开发版，`CGO_ENABLED=0 GOOS=linux`、`-trimpath -ldflags "-s -w …"` 交叉编译 `./cmd/trace-server` 的 `amd64` 与 `arm64`，每个架构打一个 `trace-server-<版本>-linux-<架构>.tar.gz`（顶层一个同名文件夹，含 `trace-server`、`cmd/trace-server/deploy/` 里的 `trace-server.service` 与 `README.md`、`THIRD-PARTY-NOTICES.txt`、`VERSION.txt`），以 `SHA256SUMS` 登记，先在 `dist/.staging-server-<时间>/` 生成再替换 `dist/trace-server/` 里登记的文件。不能与 `-install` 同用 | 已实现并实测通过；体积与 WSL 解包核对见[b75cf80 报告](https://github.com/chialecode/trace/blob/b75cf80/docs/delivery/stage-report.md) |
 | `go run ./tools/release [-allow-dirty] [-offline] [-plan] [-publish]` | [发布正式版](#release)：检查、构建、签名、ptest 升级演练，产物放进 `dist/trace/` | 已实现；`-allow-dirty -offline` 演练实测通过，没有发布过 |
@@ -32,7 +32,7 @@
 | `go run ./tools/smoke -pkg dist/trace-dev -out artifacts/smoke` | 包冒烟：在临时的 `LOCALAPPDATA`、`APPDATA`、`USERPROFILE`、“文档”与 `TEMP`/`TMP` 目录下，以[安静模式](#quiet-tests)启动 `trace.exe`，检查进程存活、程序报告的版本、提交与构建时间与 `VERSION.txt` 一致、无 `msedgewebview2.exe` 子进程、`library.db`、`updates.db` 与 `mygo/` 建在数据目录里、临时 `APPDATA` 与用户主目录下没有新文件夹、单实例与数据目录锁生效、托盘关闭与重建正常、日志无凭证；`HTTP(S)_PROXY` 指向本机关闭的端口，保证不访问真实站点 | 已实现并实测通过，`quietMode=hidden`、`webview2=0`；最新内存与用时见[b75cf80 报告](https://github.com/chialecode/trace/blob/b75cf80/docs/delivery/stage-report.md) |
 | `go run ./tools/smoke -server [-server-bin <程序>]` | 远程冒烟（[远程 §7](../design/remote.md#status)）：不给 `-server-bin` 时用本机 `go build ./cmd/trace-server`。在临时目录 `init` → `run` → 用连接码读状态 → 同步合成订阅快照 → 冒烟程序自己充当 rclone（`internal/upload/fakerclone`）上传一个合成条目并确认本机文件已删 → 停止；Linux 发 `SIGTERM` 并确认正常退出、数据目录锁已释放，Windows 改为结束进程后再启动一次；检查数据目录文件权限（Linux）与令牌没有出现在任何文件和输出里。`HTTP(S)_PROXY` 指向本机关闭的端口。回执 `artifacts/smoke-server/smoke.json` | 已实现并实测通过（Windows 本机构建；WSL Ubuntu 用 `-server` 包里的 Linux 程序）；CI 在 `tools/check` 之后运行 |
 | `go run ./tools/uishots -out artifacts/uishots` | 界面截图与断言：用 `mygo/ui` 的 `ui.NewTester` 在 1280、1000、720 三档宽度下渲染全部必测页面与状态，直接将 `tt.Image()` 编码为 PNG 截图并写出结构化布局/无障碍断言回执 `assertions.json` | 已实现并实测通过：当前 98 个场景、294 张 PNG，覆盖解析页侧栏与居中大输入框（含微博直播、X 直播与 Spaces 链接提示）、主页纯图标离线刷新按钮与五项站点筛选（全部 / B 站 / 抖音 / 微博 / X，720 宽无溢出断言）、主页缓存微博转发（`home-weibo-retweet`）与 X 筛选（`home-x`）、媒体库离线本机详情（`/library/item`）、任务页六组侧栏（下载任务虚拟化列表、缓存队列详情、直播录制行内“⚠ N 处异常”与实时预览、录制异常、含微博与 X 及直播不支持说明的检查计划、导入导出）、“我的”（折叠、哔哩哔哩四项、抖音三项、微博关注与收藏、X 关注/书签/喜欢、未登录、风控错误、窄窗选择）、订阅详情（“内容”跨站已缓存信息流、“账号”合并直播状态与微博/X 账号无录制按钮断言）、全部账号（含五项筛选、行尾“⋯”与“更改关联订阅”对话框 `move-account-picker`）、关注导入（哔哩哔哩/微博/X 站点切换）、设置“缓存规则”（含批量“选择订阅…”）、“设置 › 账号”四组（含微博与 X 不续期及风险说明）、“设置 › 远程”（含微博与 X 行、X 推送机房 IP 风险确认框 `settings-remote-push-x-confirm`、未连接/已连接/无法连接）、“设置 › 更新”及“关于”、绿色强调色预览（Q-011）、播放选项与音量面板、抖音用户页与作品/图文、登录页四站点分段（含 X 风险提示位于提交按钮上方断言 `login-x`）、微博用户页与单条微博详情，以及 X 用户页（置顶、可见上限、受保护、假空壳错误）与单条 X 帖子详情（长帖混排含 GIF、线程、转帖原帖已删、引用帖、视频、投票/文章/外链卡片、直播/Spaces 卡片、离线详情）、六处“微博”与“X”小字及订阅网格无站点小字断言 |
-| `go run ./tools/actcheck -act <act006\|act007\|act010\|act011\|act012\|act014\|act015～020\|act022\|act024\|act025>` | 真实站点有界检查：读取 `.local/site-check/` 的检查对象与持久化账本（发出前超额即拒），在 USER-ACTIONS 写明的额度内串行执行，遇挑战、限流或未登录立即停止，输出脱敏回执 `artifacts/site-check/<act>.json` | 已实现（含微博 `act022`、X `act024` 与拆包补测 `act025` 的独立账本、预算门禁、停止条件与回执脱敏）；合成门禁测试在 `tools/actcheck` 内，真实请求只在用户授权对应 ACT 项且账本未满时运行 |
+| `go run ./tools/actcheck -act <act006\|act007\|act010\|act011\|act012\|act014\|act015～020\|act022\|act024\|act025>` | 真实站点有界检查：读取 `.local/site-check/` 的检查对象与持久化账本（发出前超额即拒），在授权写明的额度内（[真实站点请求](workflow.md#site-requests)）串行执行，遇挑战、限流或未登录立即停止，输出脱敏回执 `artifacts/site-check/<act>.json` | 已实现（含微博 `act022`、X `act024` 与拆包补测 `act025` 的独立账本、预算门禁、停止条件与回执脱敏）；合成门禁测试在 `tools/actcheck` 内，真实请求只在对应授权有效且账本未满时运行 |
 
 `reedsolomon v1.0.0` 模块归档缺少 LICENSE；官方下一提交只增加 MIT LICENSE、源码未变。其固定来源、SHA-256 与精确版本补充保存在 [tools/internal/build/licenses/README.md](../../tools/internal/build/licenses/README.md)，由打包工具嵌入通知，升级到自带许可的模块后移除；打包不依赖在线查许可。
 
@@ -48,10 +48,10 @@
 <a id="dev-install"></a>
 ### 2.2 开发版自动安装到本机
 
-**什么时候装**（2026-11-13 用户要求、11-14 纠正）：每次需要用户人工检查时——B 交付整个阶段、A 审查修复或返工后、按用户反馈修复后请用户复查——交接的 Agent 先执行 `go run ./tools/package -install`，让用户检查时用的就是要检查的版本，装好的版本写进交接说明与报告；不让用户自己打包或安装。某个工作包或小功能做完、只为自动验证的 `go run ./tools/package` 都不装。安装只在这个命令里，不在 `go test` 与 `tools/check` 里：
+**什么时候装**：每次合并进 `main` 后（本机拉取 `main` 后），以及请用户实机检查前，Agent 执行 `go run ./tools/package -install`，让本机开发版始终是最新的 `main`、用户检查时用的就是要检查的版本；装好的版本写进 PR 或 issue 评论，不让用户自己打包或安装。只为自动验证的 `go run ./tools/package` 不装。安装只在这个命令里，不在 `go test` 与 `tools/check` 里：
 
 1. `TRACE_DEV_AUTO_INSTALL=0` 或 `CI=true` 时跳过并说明。
-2. 读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.trace-dev` 的 `InstallLocation` 与 `DisplayVersion`；没装就跳过（第一次请手动运行安装包）。只碰开发版，不读写正式版与 ptest 的安装。
+2. 读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.trace-dev` 的 `InstallLocation` 与 `DisplayVersion`；没装就跳过（第一次请手动运行安装包；首次安装改为自动见 [#42](https://github.com/chialecode/trace/issues/42)）。只碰开发版，不读写正式版与 ptest 的安装。
 3. 开发版在运行时，用它的程序带 `--quit-for-update` 启动一次：作为第二个实例把参数转给运行中的 TRACE Dev，它不弹确认，按托盘“退出”的方式暂停缓存任务、收尾录制、保存界面状态，记下“为更新而退出”与窗口是否打开，然后退出。工具最多等 30 秒，没退出就放弃这次安装、不强杀，说明原因。
 4. 用新包静默安装（`/S`），从卸载项核对已装版本等于新版本。
 5. 安装成功后**总是**以 `--background` 在托盘打开 TRACE Dev（[DEC-052](../decisions.md#dec-052)，用户常驻运行开发版），不论原来是否在运行、窗口是否打开；TRACE 遇到“为本机安装而退出”的记录且带 `--background` 时留在托盘（正式版应用内更新仍按记录恢复窗口）。工具本身在作业对象里时（Agent 命令沙箱可能禁止子进程脱离作业、命令结束即结束作业里的全部进程），先请桌面外壳启动 TRACE Dev（`build.LaunchInstalledOutsideJob`：explorer.exe 的 `Shell.Application.ShellExecute`，再等它出现并取进程号）：它成为 explorer 的子进程，不在命令的任何作业里，环境变量取 explorer 的（2026-11-22 用户要求）。外壳启动不了，或工具不在作业里时，请求新进程脱离当前命令的作业对象（`CREATE_BREAKAWAY_FROM_JOB`）；作业不允许脱离时照常启动，并在结果里记 `inJob=true`、提示从开始菜单打开一次。发布演练要给程序指定环境变量，仍只用脱离作业的方式启动。
@@ -70,7 +70,7 @@
 4. 用正式版配置（`trace` 身份、正式版图标、`updates` 指向 GitHub Releases）与私钥构建并签名，在更新清单里加上 TRACE 的版本证明 `traceAttestation`（见[架构 §8](../design/architecture.md#updates)）；产物：安装包 `trace-setup-<版本>-amd64.exe`、更新包 `trace-<版本>-windows-amd64.tar.gz`、清单 `update-windows-amd64.json`、差分包（有上一版时，`-offline` 不做）、`install.ps1`、`VERSION.txt`、`THIRD-PARTY-NOTICES.txt`、`SHA256SUMS`。
 5. 在 ptest 身份下演练（`TRACE_RUN_INSTALLER_TEST=1` 的测试跑同一段）：发现 ptest 已装时先退出并卸载、旧数据移到 `%LOCALAPPDATA%\trace-ptest.previous`；用同一份源码构建 `<版本>-rehearsal.1` 与 `.2`（只在这次演练里生成的临时密钥签名，不带差分包），静默安装 `.1`，以 `--background` 与安静模式启动并让它从本机回环地址上的假发布源（`TRACE_PTEST_UPDATE_URL`，只有 ptest 身份读它）检查、下载、校验并替换；`--quit-for-update` 让它退出后重开，核对运行的版本、卸载项版本与数据；再让它遇到一个改过内容的 `.3` 更新包并核对被拒绝、程序文件不变；最后卸载，核对卸载项与安装目录删除、数据目录保留。全程只读正式版与开发版的卸载项、前后比较不变。结果写 `artifacts/release/rehearsal.json`；演练失败就停下，`dist/trace/` 不变。
 6. 校验通过后替换 `dist/trace/` 里登记在 `SHA256SUMS` 中的文件；结果写 `artifacts/release/release.json`。
-7. 只有带 `-publish` 且用户已授权（ACT-009，或对话里对这一次的明确授权，以 `TRACE_RELEASE_PUBLISH=1` 表示）时，才用 `gh` 创建草稿 Release `v<版本>` 并上传（清单最后上传），核对文件齐全后改为正式的最新 Release。默认只生成文件与演练。
+7. 只有带 `-publish` 且用户已授权（每周自动发布已按原 [ACT-009](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-009) 授权打开，或对话里对这一次的明确授权，以 `TRACE_RELEASE_PUBLISH=1` 表示）时，才用 `gh` 创建草稿 Release `v<版本>` 并上传（清单最后上传），核对文件齐全后改为正式的最新 Release。默认只生成文件与演练。
 
 `-plan` 给每周的 workflow 用：输出 `release=true|false` 与 `version=`（上次发布的标签以来 `main` 没有新提交就是 `false`，还没有标签时是 `true`）。
 
@@ -112,32 +112,29 @@
 
 ### 3.2 结果与证据
 
-报告记命令、退出码、样本、实际观察、被测版本和局限。`not-run`、`blocked` 不算通过；局部通过只覆盖那个子集。只改文档时，只重跑文档检查和 `git diff --check`；源码变了，旧包和旧结果只证明原来的输入。
+PR 的“验证”一节记命令、退出码、样本、实际观察、被测版本和局限。`not-run`、`blocked` 不算通过；局部通过只覆盖那个子集。只改文档时，只重跑文档检查和 `git diff --check`；源码变了，旧包和旧结果只证明原来的输入。
 
 <a id="git"></a>
 ## 4. Git
 
-默认分支 main，远端 [chialecode/trace](https://github.com/chialecode/trace)，main 只经 PR 集成、squash 合并，每个阶段在 main 上留一个提交。
+默认分支 `main`，远端 [chialecode/trace](https://github.com/chialecode/trace)，`main` 只经 PR 集成、squash 合并。
 
-- 阶段编号从 M1 开始递增（M 表示 Milestone，DEC-034）。人读标签与编号用大写，如正文和 PR 标题中的 `M2`、计划编号 `M2-W01`、`M2-A-01`、`M2-K01`；路径、文件名、分支、提交 scope、数据目录中的阶段部分用小写，如 `m2-stage-cases.json`、`codex/m2-desktop-workbench`、`feat(m1)`、`m1-ledger-3`（DEC-035）。一个阶段一个分支、一个提交、一个 PR；不按角色、轮次、工作包拆提交，push 前全部 amend 进阶段提交，提交消息在收尾时改写成对最终结果的描述。
-- 阶段编号独立于 GitHub PR 编号（DEC-036）：PR 标题标明所实现的阶段，但 PR 的序号与创建顺序不决定阶段编号；未来 bot 创建的 PR 同样如此。
-- 阶段参数约定：接受大小写并统一记录小写，例如 `verify-stage --stage M2` 与 `verify-stage --stage m2` 都应规范化为 `m2`（DEC-035）。当前仓库的 `tools/check`、`tools/uishots`、`tools/package`、`tools/smoke` 没有阶段参数，也没有 `verify-stage` 命令；后续建立此类工具时按本约定实现。
-- 新阶段默认从更新后的 main 建分支；依赖未合并阶段时，在计划里写明基点。
-- amend 前核对远端引用；已推送的提交默认追加修复，改写远端须用户另行授权，并使用指定旧 SHA 的 `--force-with-lease`。
+- 一个 issue 一个小 PR，分支 `<type>/<issue号>-<简短描述>`（如 `fix/42-tray-restore`），Conventional Commits，每个提交 `git commit -s`（DCO，用当前提交者的 Git 身份）；PR 合并时 squash 成一个提交，分支里提交几次都可以（[每次改动的流程](workflow.md#change-loop)）。
+- 阶段编号（`M1`～，M 表示 Milestone，DEC-034）只用于路线与验收：人读标签大写，机器标识中的阶段部分小写，命令行阶段参数接受大小写并规范化为小写（DEC-035）；阶段编号独立于 GitHub PR 与 issue 编号（DEC-036）。
 - 提交前按明确路径暂存，审阅差异，运行相关门禁和 `git diff --check`。消息格式 `type(scope): 具体结果`，正文写最终行为、验证和限制，不写未经验收的“完成”。
-- 提交带 DCO：`git commit -s` 或 `git commit --amend -s`，用当前提交者的 Git 身份。
-- push、PR、合并、发布分别需要用户授权；push 只推指定分支，不用 `--all`/`--mirror`，不推备份分支和 `dist/` 包。
+- push 与建 PR 长期授权；低风险 PR 由 Agent 在 CI 与独立审查通过后用 `gh pr merge <号> --squash --match-head-commit <头提交>` 合并，[高风险](workflow.md#high-risk) PR 由用户合并；发布正式版、改远端设置与规则集、改写已推送历史需要用户对具体动作授权（改写时用指定旧 SHA 的 `--force-with-lease`）。
+- push 只推指定分支，不用 `--all`/`--mirror`，不推备份分支和 `dist/` 包；不轮询长挂命令（如 `gh pr checks --watch`）。
 - 本仓设置 `core.autocrlf=false`、`pull.ff=only`、`fetch.prune=true`。
 
 <a id="remote"></a>
 <a id="remote-ci"></a>
 ### 4.1 远端保护与 CI
 
-GitHub 上 main 的规则集：只能经 PR 写入，禁止强推和删除，保持线性历史，只允许 squash 合并，所有讨论必须解决，必需检查为 `repository-quality`；Actions 只允许固定 SHA 的 `actions/checkout`，token 只读，来自 fork 的 PR 运行 workflow 前须维护者批准（所有外部贡献者）。为防止垃圾内容，外部只开放 Discussions：关闭 Issues、Wiki 和 Projects，PR 仅协作者可创建；安全问题走私密漏洞报告。远端设置以 GitHub 实际回读为准。
+GitHub 上 main 的规则集：只能经 PR 写入，禁止强推和删除，保持线性历史，只允许 squash 合并，所有讨论必须解决，必需检查为 `repository-quality`；Actions 只允许 `actions/checkout`、`actions/upload-artifact`、`actions/download-artifact` 且远端强制固定完整 SHA，token 只读，来自 fork 的 PR 运行 workflow 前须维护者批准（所有外部贡献者）。仓库开启 [Issues](https://github.com/chialecode/trace/issues)（只允许协作者创建）与 [Discussions](https://github.com/chialecode/trace/discussions)，关闭 Wiki 与 Projects；PR 仅协作者可创建；允许自动合并与更新分支，合并后删除分支；网页提交要求 DCO 签名；安全问题走私密漏洞报告。远端设置的镜像是 [`.github/repository-settings.json`](../../.github/repository-settings.json)、[`.github/rulesets/main.json`](../../.github/rulesets/main.json) 与 [`.github/actions-policy.json`](../../.github/actions-policy.json)，以 GitHub 实际回读为准，改远端设置时同步更新镜像。
 
 CI 文件 `.github/workflows/ci.yml` 的 job 名必须是 `repository-quality`，在 Ubuntu 上运行 `go run ./tools/check`，再运行远程冒烟 `go run ./tools/smoke -server`（真实 Linux 进程与 `SIGTERM`）；Go 用 runner 预装版本或 `GOTOOLCHAIN` 自动下载，不引入未许可的 action。CI 不替代本地的 Windows 构建与界面检查：Linux 上 DPAPI 与 Media Foundation 换成非 Windows 桩或合成后端（`internal/credential/dpapi_other.go`、`internal/player/mf_other.go`），依赖 Windows 文件共享锁的测试段落跳过（`internal/library/lock_other_test.go`）；没有显示器时，托盘测试里打开真实隐藏窗口的段落跳过（`internal/shell/shell_test.go`，Windows 本机照常运行）。本机没有 cgo 工具链，`go test -race` 无法运行，记为 not-run。本机只完成 Linux `go vet` 与测试包交叉编译，未运行真实 Ubuntu CI；交叉编译的退出成功不等于 Linux 测试通过。
 
-**Dependabot**（[.github/dependabot.yml](../../.github/dependabot.yml)，DEC-048）：Go 模块每周、Actions 每月，冷却期 7 天，同主版本更新合为一组（`golang.org/x/*` 单独一组），关闭自动 rebase，不自动合并。版本更新 PR 在阶段开始时集中处理（[开发流程 §5.5](workflow.md#dependency-inventory)），所以纯依赖更新不会单独触发每周发布。Dependabot 告警与自动安全修复 PR 已打开（2026-11-14 用户授权，Agent 经 API 打开并核对）；安全修复 PR 不受冷却期限制，有就尽快评审合并。
+**Dependabot**（[.github/dependabot.yml](../../.github/dependabot.yml)，DEC-048）：Go 模块每周、Actions 每月，冷却期 7 天，同主版本更新合为一组（`golang.org/x/*` 单独一组），关闭自动 rebase，不自动合并。版本更新 PR 在[每周维护](workflow.md#dependency-inventory)时处理，CI 通过后按低风险合并。Dependabot 告警与自动安全修复 PR 已打开（2026-11-14 用户授权，Agent 经 API 打开并核对）；安全修复 PR 不受冷却期限制，有就尽快评审合并。
 
 <a id="release-workflow"></a>
 ### 4.2 每周发布（`release.yml`）
@@ -148,9 +145,9 @@ CI 文件 `.github/workflows/ci.yml` 的 job 名必须是 `repository-quality`�
 | --- | --- | --- | --- |
 | `check` | Ubuntu | `contents: read`，没有 secret | `go run ./tools/release -plan`：上次发布以来 `main` 没有新提交就输出 `release=false`，后面的 job 都跳过；否则运行 `go run ./tools/check` |
 | `build` | `windows-2025`，`release` 环境 | `contents: read` | `go run ./tools/release`：检查、构建、签名与 ptest 演练；私钥 secret 只出现在这一步；产物（`dist/trace/` 与 `artifacts/release/`）用 `upload-artifact` 传出 |
-| `publish` | Ubuntu | `contents: write` | 只在仓库变量 `TRACE_RELEASE_PUBLISH=1`（ACT-009 授权后由 A 设置）时运行；不检出、不运行仓库代码：`download-artifact` 取产物，`sha256sum -c SHA256SUMS` 与 `VERSION.txt` 核对后用 `gh` 建草稿 Release、上传（清单最后）、核对文件齐全再改为正式的最新 Release |
+| `publish` | Ubuntu | `contents: write` | 只在仓库变量 `TRACE_RELEASE_PUBLISH=1`（用户授权每周自动发布后设置）时运行；不检出、不运行仓库代码：`download-artifact` 取产物，`sha256sum -c SHA256SUMS` 与 `VERSION.txt` 核对后用 `gh` 建草稿 Release、上传（清单最后）、核对文件齐全再改为正式的最新 Release |
 
-Action 一律固定完整 SHA（`actions/checkout` v7.0.1、`actions/upload-artifact` v7.0.2、`actions/download-artifact` v8.0.2），不加 `setup-go`（Go 用 `GOTOOLCHAIN=auto`），不引入第三方 Action。这些固定写法由 `tools/release/workflow_test.go` 静态检查（固定 SHA、各 job 权限、secret 只在签名步骤、发布受变量控制、发布 job 不运行仓库代码）。仓库侧的设置（`release` 环境只允许 `main` 部署、secret、Action 允许列表加入两个 artifact action）是 ACT-008，由用户授权后 A 完成。
+Action 一律固定完整 SHA（`actions/checkout` v7.0.1、`actions/upload-artifact` v7.0.2、`actions/download-artifact` v8.0.2），不加 `setup-go`（Go 用 `GOTOOLCHAIN=auto`），不引入第三方 Action。这些固定写法由 `tools/release/workflow_test.go` 静态检查（固定 SHA、各 job 权限、secret 只在签名步骤、发布受变量控制、发布 job 不运行仓库代码）。仓库侧的设置（`release` 环境只允许 `main` 部署、secret `MYGO_UPDATER_PRIVATE_KEY`、Action 允许列表）已在 2026-11-09 完成；私钥备份见 [#20](https://github.com/chialecode/trace/issues/20)。
 
 <a id="generated-outputs"></a>
 ## 5. 生成物
@@ -160,8 +157,8 @@ Action 一律固定完整 SHA（`actions/checkout` v7.0.1、`actions/upload-arti
 | 位置 | 内容与去留 |
 | --- | --- |
 | `build/`、`tmp/` | 构建缓存与开发数据，随时可删，由构建重建 |
-| `dist/<通道>/`（`dist/trace-dev/`、`dist/trace/`、`dist/trace-server/`） | 每个通道只有最新一份（DEC-025、DEC-029）。`dist/trace-server/`（`tools/package -server`）：两个架构的 `trace-server-<版本>-linux-<架构>.tar.gz` 与 `SHA256SUMS`。`dist/trace-dev/`（`tools/package`）：安装包 `trace-dev-setup-<版本>-amd64.exe`，以及解包的 `trace.exe`（冒烟用）、`THIRD-PARTY-NOTICES.txt`、`VERSION.txt`、`SHA256SUMS.txt`。`dist/trace/`（`tools/release`）：Release 上传的全部文件——安装包 `trace-setup-<版本>-amd64.exe`、更新包与清单、差分包、`install.ps1`、`VERSION.txt`、`THIRD-PARTY-NOTICES.txt`，以 `SHA256SUMS` 登记。工具先在 `dist/.staging-<时间>/`（发布为 `dist/.release-*`、演练为 `dist/.rehearsal-*`，用完删除）生成并校验，再替换上一份登记的文件，目录里其他文件不动。数据不在包旁（DEC-029），替换包不会碰到用户数据。安装包由 MyGo 用 NSIS（`v3.13`，见第 1 节）生成：各通道的 `windows.installerInclude`（`assets/installer/<通道>.nsh` + `shortcuts.nsh`，由 `ChannelConfig` 设置）按 FR-STORE-001 处理快捷方式；按用户安装到 `%LOCALAPPDATA%\Programs\<目录名>`、开始菜单快捷方式、中文安装界面、可在“设置 > 应用”卸载；卸载只删安装目录。旧的带日期的包目录（`dist/trace-<版本>-windows-x64-<日期>[-序号]/`）里可能有用户数据，工具不删，按 USER-ACTIONS 的[本机文件](../../USER-ACTIONS.md#local-files)处理 |
-| `artifacts/<类别>/` | 一次性脚本、截图、日志和测量结果，每类只留最近一次（DEC-025）：类别为 `smoke`、`smoke-server`（远程冒烟；WSL 里用 Linux 包跑的那次另放 `smoke-server-linux`）、`uishots`、`package`（`install-dev.json`）、`release`（`release.json`、`rehearsal.json`、`notes.md`）、`site-check`、`review`；写新一次前，工具只清空该类别目录里的内容（确认路径在 `artifacts/<类别>/` 内、不是链接，不跨目录通配）。阶段报告引用的证据就是这一份 |
+| `dist/<通道>/`（`dist/trace-dev/`、`dist/trace/`、`dist/trace-server/`） | 每个通道只有最新一份（DEC-025、DEC-029）。`dist/trace-server/`（`tools/package -server`）：两个架构的 `trace-server-<版本>-linux-<架构>.tar.gz` 与 `SHA256SUMS`。`dist/trace-dev/`（`tools/package`）：安装包 `trace-dev-setup-<版本>-amd64.exe`，以及解包的 `trace.exe`（冒烟用）、`THIRD-PARTY-NOTICES.txt`、`VERSION.txt`、`SHA256SUMS.txt`。`dist/trace/`（`tools/release`）：Release 上传的全部文件——安装包 `trace-setup-<版本>-amd64.exe`、更新包与清单、差分包、`install.ps1`、`VERSION.txt`、`THIRD-PARTY-NOTICES.txt`，以 `SHA256SUMS` 登记。工具先在 `dist/.staging-<时间>/`（发布为 `dist/.release-*`、演练为 `dist/.rehearsal-*`，用完删除）生成并校验，再替换上一份登记的文件，目录里其他文件不动。数据不在包旁（DEC-029），替换包不会碰到用户数据。安装包由 MyGo 用 NSIS（`v3.13`，见第 1 节）生成：各通道的 `windows.installerInclude`（`assets/installer/<通道>.nsh` + `shortcuts.nsh`，由 `ChannelConfig` 设置）按 FR-STORE-001 处理快捷方式；按用户安装到 `%LOCALAPPDATA%\Programs\<目录名>`、开始菜单快捷方式、中文安装界面、可在“设置 > 应用”卸载；卸载只删安装目录。旧的带日期的包目录（`dist/trace-<版本>-windows-x64-<日期>[-序号]/`）里可能有用户数据，工具不删，按 [#27](https://github.com/chialecode/trace/issues/27) 处理 |
+| `artifacts/<类别>/` | 一次性脚本、截图、日志和测量结果，每类只留最近一次（DEC-025）：类别为 `smoke`、`smoke-server`（远程冒烟；WSL 里用 Linux 包跑的那次另放 `smoke-server-linux`）、`uishots`、`package`（`install-dev.json`）、`release`（`release.json`、`rehearsal.json`、`notes.md`）、`site-check`、`review`；写新一次前，工具只清空该类别目录里的内容（确认路径在 `artifacts/<类别>/` 内、不是链接，不跨目录通配）。PR 里引用的证据就是这一份 |
 | `.local/site-secrets/`、`.local/site-check/` | 本机 Cookie 与真实检查记录；不删，不入库 |
 
-一次性命令的输出写进所属跑次目录，不散落在仓库根。入库的只有可公开、经审阅的最终摘要，写在阶段报告里。
+一次性命令的输出写进所属跑次目录，不散落在仓库根。入库的只有可公开、经审阅的最终摘要，写在 PR 里。

@@ -1,17 +1,17 @@
 # 哔哩哔哩协议资料
 
-核对：2026-11-07（第 16～20 节关注列表、登录续期、弹幕、字幕、直播已完成 [ACT-005](../../USER-ACTIONS.md#act-005) 真实站点有界检查与夹具验证；第 21 节是 2026-11-14 的静态调研，待 ACT-020 真实检查）。内容是社区观察到的网页协议，加上 TRACE 自己计算的固定向量。端点不是站点对 TRACE 的稳定承诺；站点改版后要重新核对。规则见[站点规则](../dev-rules/sources-and-safety.md#site-rules)。
+核对：2026-11-07（第 16～20 节关注列表、登录续期、弹幕、字幕、直播已完成 [ACT-005](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-005) 真实站点有界检查与夹具验证；第 21 节是 2026-11-14 的静态调研，待 ACT-020 真实检查）。内容是社区观察到的网页协议，加上 TRACE 自己计算的固定向量。端点不是站点对 TRACE 的稳定承诺；站点改版后要重新核对。规则见[站点规则](../dev-rules/sources-and-safety.md#site-rules)。
 
 ## 1. 验证状态
 
-本页协议在真实站点上做过 [ACT-002](../../USER-ACTIONS.md#act-002)、[ACT-003](../../USER-ACTIONS.md#act-003)（2026-11-04）、[ACT-004](../../USER-ACTIONS.md#act-004)（2026-11-05）与 [ACT-005](../../USER-ACTIONS.md#act-005)（2026-11-07）有界检查：
+本页协议在真实站点上做过 [ACT-002](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-002)、[ACT-003](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-003)（2026-11-04）、[ACT-004](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-004)（2026-11-05）与 [ACT-005](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-005)（2026-11-07）有界检查：
 
 - **ACT-002 第一轮**：访客 `nav`、`card` 通过，投稿列表 `arc/search` 第 1 页返回 `-412` / HTTP 412，按停止条件停止；已登录因测试 Cookie 失效（`nav` 返回 `-101`）停止。
 - **ACT-002 第二轮**（更新 Cookie 后）：访客的 `nav`、`card`、带 `dm_img_*` 与 `w_webid` 的 `arc/search` 第 1 页、`wbi/view`（按 `bvid` 与 `aid`）、`qrcode/generate` 通过；已登录的 `nav`、`card`、`arc/search` 第 1、2 页、`wbi/view` 通过。访客态没有请求第 2 页。
 - **ACT-003（动态列表与缓存，仅已登录态）**：`nav`（`isLogin=true`）、`feed/space` 第 1 页（13 条，含 `DYNAMIC_TYPE_AV`、`DYNAMIC_TYPE_DRAW`、`DYNAMIC_TYPE_FORWARD`、`DYNAMIC_TYPE_LIVE_RCMD`）与第 2 页（12 条，按 `offset` 翻页）通过；从第 1 页取一条图文动态下载原图（1 张，`3,208,287` 字节）通过；从第 1 页取一条视频动态请求 `wbi/view` 与 `player/wbi/playurl`（`qn=80` 请求返回 `qn=112` AVC 视频流与 `30280` 192K 音频流），下载双流（视频 `96,039,012` 字节、音频 `3,831,296` 字节）并用 `mp4ff` 合并为渐进式 MP4（`99,895,351` 字节，解析时长 `136.51s` 与期望 `136.51s` 误差 `0.00s`）通过。单条动态详情 `/x/polymer/web-dynamic/v1/detail` 因前两页列表已含完整条目未在真实站点触发（`0/2`），由合成夹具验证。
 - **2026-11-04 下载观察**：用登录 Cookie 下载一条约 6 MB 的视频流时，CDN 发出 524,288 字节（512 KiB）后关闭了连接（见第 15 节）。
-- **ACT-004 真实站点检查（2026-11-05）**：走正式代码对真实站点执行 1 次全部通过：登录校验 `nav`、`feed/space` 第 1 页（13 条）、图文动态缓存（原图 1 张，`3,208,287` 字节，SHA-256 校验通过）、视频动态缓存（1P，`qn=127` 请求返回最高可用 `qn=116` `1080P 60帧` AVC `1080×1920@60.000` 视频流与 `30280` `192K` 音频流，返回与可用清晰度列表均为 `[116, 80, 64, 32, 16]`；视频流经 `upos-sz-mirrorhwo1.bilivideo.com` 3 个 8 MiB Range 分段拉取共 `17,394,145` 字节，音频流经 `upos-sz-mirrorcos.bilivideo.com` 1 段 `205,332` 字节，断连 0、重试 0；`mp4ff` 合并 MP4 `17,601,607` 字节，时长 `12.93s` 与站点 `13s` 误差 `0.07s`，`moov` 在前、交错存放、两轨带 `elst`）以及画质升级探测（`CheckUpgrade` 更新 `upgradeCheckedAt` 与最高可用档 `116` / `30280`，24 小时内二次非强制探测跳过）全部通过（[ACT-004](../../USER-ACTIONS.md#act-004)）。另记一次计划外的请求：2026-11-05 第一次包冒烟时，打开的登录页按设计立即请求了二维码，向 `qrcode/generate` 发出约 1 次、`qrcode/poll` 约 5 次请求（无凭证、未扫码），没有遇到错误；之后冒烟改为把应用的网络请求指向本机关闭的端口。
-- **ACT-005 真实站点检查（2026-11-07）**：第 16～20 节对真实站点执行 1 次全部通过：用 `card` 创建订阅并对目标用户执行 2 次检查更新（第 1 次读取 `feed/space` 第 1 页 12 条建立起点、未读数 0；第 2 次读取第 1 页匹配起点即停、未读数 0）；探测 2 个视频的 `wbi/view` 与 `player/wbi/v2`（均正常返回 `code=0`，所探 2 个视频本身无 CC 字幕轨），对 18 秒视频拉取第 1 段 protobuf 弹幕 `/x/v2/dm/wbi/web/seg.so` 解出 107 条弹幕并生成 `9,976` 字节标准 XML；读取登录账号的关注分组 `/x/relation/tags`（2 个分组）与关注列表第 1 页 `/x/relation/followings`（第 1 页 50 条、总计 244）；查询 `/x/passport-login/web/cookie/info`（返回 `refresh=true` 与毫秒时间戳，按规则不执行刷新）；查询目标用户开播状态 `/room/v1/Room/get_status_info_by_uids`（`live_status=2` 识别为 `round` 轮播）；对指定直播间调用 `/room/v1/Room/room_init`（返回 `live_status=1` 直播中）、`get_status_info_by_uids` 与 `/xlive/web-room/v2/index/getRoomPlayInfo`（不带 WBI 签名直接返回 `http_hls`/`fmp4` `avc` `qn=10000` 原画流），经 `d1--cn-gotcha207.bilivideo.com` 拉取 HLS 播放列表与 fMP4 分片（35 次请求、`8,899,963` 字节，0 断连），停止录制后收尾转成渐进式 MP4（`9,073,932` 字节，时长 `21.01s`，`moov` 在前）并校验通过（[ACT-005](../../USER-ACTIONS.md#act-005)）。
+- **ACT-004 真实站点检查（2026-11-05）**：走正式代码对真实站点执行 1 次全部通过：登录校验 `nav`、`feed/space` 第 1 页（13 条）、图文动态缓存（原图 1 张，`3,208,287` 字节，SHA-256 校验通过）、视频动态缓存（1P，`qn=127` 请求返回最高可用 `qn=116` `1080P 60帧` AVC `1080×1920@60.000` 视频流与 `30280` `192K` 音频流，返回与可用清晰度列表均为 `[116, 80, 64, 32, 16]`；视频流经 `upos-sz-mirrorhwo1.bilivideo.com` 3 个 8 MiB Range 分段拉取共 `17,394,145` 字节，音频流经 `upos-sz-mirrorcos.bilivideo.com` 1 段 `205,332` 字节，断连 0、重试 0；`mp4ff` 合并 MP4 `17,601,607` 字节，时长 `12.93s` 与站点 `13s` 误差 `0.07s`，`moov` 在前、交错存放、两轨带 `elst`）以及画质升级探测（`CheckUpgrade` 更新 `upgradeCheckedAt` 与最高可用档 `116` / `30280`，24 小时内二次非强制探测跳过）全部通过（[ACT-004](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-004)）。另记一次计划外的请求：2026-11-05 第一次包冒烟时，打开的登录页按设计立即请求了二维码，向 `qrcode/generate` 发出约 1 次、`qrcode/poll` 约 5 次请求（无凭证、未扫码），没有遇到错误；之后冒烟改为把应用的网络请求指向本机关闭的端口。
+- **ACT-005 真实站点检查（2026-11-07）**：第 16～20 节对真实站点执行 1 次全部通过：用 `card` 创建订阅并对目标用户执行 2 次检查更新（第 1 次读取 `feed/space` 第 1 页 12 条建立起点、未读数 0；第 2 次读取第 1 页匹配起点即停、未读数 0）；探测 2 个视频的 `wbi/view` 与 `player/wbi/v2`（均正常返回 `code=0`，所探 2 个视频本身无 CC 字幕轨），对 18 秒视频拉取第 1 段 protobuf 弹幕 `/x/v2/dm/wbi/web/seg.so` 解出 107 条弹幕并生成 `9,976` 字节标准 XML；读取登录账号的关注分组 `/x/relation/tags`（2 个分组）与关注列表第 1 页 `/x/relation/followings`（第 1 页 50 条、总计 244）；查询 `/x/passport-login/web/cookie/info`（返回 `refresh=true` 与毫秒时间戳，按规则不执行刷新）；查询目标用户开播状态 `/room/v1/Room/get_status_info_by_uids`（`live_status=2` 识别为 `round` 轮播）；对指定直播间调用 `/room/v1/Room/room_init`（返回 `live_status=1` 直播中）、`get_status_info_by_uids` 与 `/xlive/web-room/v2/index/getRoomPlayInfo`（不带 WBI 签名直接返回 `http_hls`/`fmp4` `avc` `qn=10000` 原画流），经 `d1--cn-gotcha207.bilivideo.com` 拉取 HLS 播放列表与 fMP4 分片（35 次请求、`8,899,963` 字节，0 断连），停止录制后收尾转成渐进式 MP4（`9,073,932` 字节，时长 `21.01s`，`moov` 在前）并校验通过（[ACT-005](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-005)）。
 
 所以访客态投稿列表确实会被拦截（同一天先 `-412`、后通过），客户端必须保持 500ms 间隔，遇到 `-352` / `-412` 立即停止。TRACE 只做登录模式（DEC-018），访客结果只作历史记录。
 
@@ -193,7 +193,7 @@ dm_img_list=[] dm_img_str=bm8gd2ViZ2 dm_cover_img_str=bm8gd2ViZ2 dm_img_inter={"
 
 来源（查询 2026-11-04、2026-11-05）：社区整理的[视频流 URL 文档](https://sessionhu.github.io/bilibili-API-collect/docs/video/videostream_url.html)（清晰度代码、`fnval` 位、杜比与无损音频字段）；动态列表的参数与字段来自本机参考索引中一个多站点订阅项目的 B 站路由（只读事实，未复制代码）。
 
-证据等级（第 16～20 节）：**核** = 社区文档与本机参考索引中的实现一致；**社** = 只有社区文档；**参** = 只有参考实现；**未** = 没有核实或说法不一。已在夹具测试与 [ACT-005](../../USER-ACTIONS.md#act-005) 真实站点有界检查中验证。
+证据等级（第 16～20 节）：**核** = 社区文档与本机参考索引中的实现一致；**社** = 只有社区文档；**参** = 只有参考实现；**未** = 没有核实或说法不一。已在夹具测试与 [ACT-005](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-005) 真实站点有界检查中验证。
 
 <a id="followings"></a>
 ## 16. 关注列表与分组（已真实检查）
@@ -314,7 +314,7 @@ dm_img_list=[] dm_img_str=bm8gd2ViZ2 dm_cover_img_str=bm8gd2ViZ2 dm_img_inter={"
 
 **写操作**（不在 TRACE 范围，只记边界）：取消收藏 `fav/resource/batch-deal`、删除历史 `history/delete`、移出稍后再看 `toview/v2/dels` 等都是带 `csrf` 的 POST，TRACE 不调用（DEC-047）。
 
-**真实检查结果**（[ACT-020](../../USER-ACTIONS.md#act-020)，2026-11-14，1 次，经生产 `AccountService`，脱敏回执 `artifacts/site-check/act020.json`；以下各条改为（核））：
+**真实检查结果**（[ACT-020](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-020)，2026-11-14，1 次，经生产 `AccountService`，脱敏回执 `artifacts/site-check/act020.json`；以下各条改为（核））：
 
 - B-V0 关注（第 16 节接口经“我的”复用）：3 个分组，第 1 页 20 人、`total` 247、字段齐全。
 - B-V1 `list-all`：4 个收藏夹，恰好 1 个默认收藏夹（`attr` 第 1 位为 0）且排第一；本账号没有私密收藏夹，私密位只由合成测试覆盖。

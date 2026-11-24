@@ -1,5 +1,5 @@
 // Command actcheck runs an authorized, quota-gated real-site check
-// (USER-ACTIONS ACT-006, ACT-007, ACT-010 to ACT-012, ACT-014 to ACT-020, ACT-022, ACT-024, ACT-025). Every request passes a persistent
+// (authorizations ACT-006, ACT-007, ACT-010 to ACT-012, ACT-014 to ACT-020, ACT-022, ACT-024, ACT-025). Every request passes a persistent
 // quota ledger before it is sent; risk control, rate limits, auth expiry or a
 // challenge stop the run. The receipt holds categories, counts, sizes and
 // quality only: no Cookie, signed URL or account data.
@@ -29,9 +29,9 @@ import (
 	"github.com/chialecode/trace/internal/sitecheck"
 )
 
-// actQuota mirrors one USER-ACTIONS authorization. Each act has its own
+// actQuota mirrors one real-site authorization. Each act has its own
 // persistent ledger, so a used-up act can never be rerun under a new name
-// without a new entry here and in USER-ACTIONS.
+// without a new entry here and a new authorization (docs/dev-rules/workflow.md#site-requests).
 type actQuota struct {
 	label   string
 	maxRuns int

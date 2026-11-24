@@ -173,7 +173,7 @@ tools/internal/build/         打包共用：版本号、通道配置、-ldflags
 <a id="x-client"></a>
 ### 4.4 X 客户端
 
-协议见[X 协议与官方 API 资料](../research/x.md)，A 的定稿与取舍见其 [§15](../research/x.md#a-review)，选型见[选型表](../research/2026-11-22-x.md)。当前除 ACT-024 已核对 2 次前端静态获取外，完整线上接口验证仍待 [ACT-025](../../USER-ACTIONS.md#act-025)。
+协议见[X 协议与官方 API 资料](../research/x.md)，A 的定稿与取舍见其 [§15](../research/x.md#a-review)，选型见[选型表](../research/2026-11-22-x.md)。当前除 ACT-024 已核对 2 次前端静态获取外，完整线上接口验证仍待 [ACT-025](https://github.com/chialecode/trace/issues/18)。
 
 - 独立 `http.Client`：API 超时 15 秒、响应上限 4 MiB（前端静态脚本上限 8 MiB），不自动跟随跳转；全局串行间隔 `4000 ms + 0～2000 ms` 随机抖动（NFR-NET-005），与哔哩哔哩、抖音、微博的间隔、额度、退避与熔断完全独立。不实现 `x-xp-forwarded-for`。
 - **运行时纯内存发现前端元数据（`frontend.go`）**：仓库不存公开网页 Bearer、`queryId`、`features`/`fieldToggles` 键与事务头密钥的真实字面量。需要时单飞依次请求 `x.com/home`（带登录 Cookie，与浏览器一致）与 `abs.twimg.com/responsive-web/` 下的 `main.*.js`、`ondemand.s.*.js`（**不带 Cookie**，仅放行这一主机与路径前缀，单文件上限 8 MiB；这些请求同样计入 X 的串行闸与每小时额度），结果只放内存（默认 TTL 1 小时，因漂移触发的重新发现每 10 分钟最多 1 次）。核心发现提取公开 Bearer、事务头密钥材料及 5 项核心操作（`UserByScreenName`、`UserByRestId`、`UserTweets`、`TweetDetail`、`Following`）；可选“我的 › X”操作（`Bookmarks`、`Likes`）与核心解耦，若被前端拆包在 `main.*.js` 之外，仅在调用对应功能时按需从首页 webpack 分包映射中最多单飞拉取 1～2 个候选懒加载分包（同享无 Cookie、`abs.twimg.com/responsive-web/`、≤ 8 MiB、冷却与额度约束），单个可选操作缺失时仅该操作报 `schema_changed`、不阻塞核心 5 项操作与 X 登录；核心缺失或冷却期内仍漂移时报 `schema_changed` 并只停 X。合成夹具同时覆盖 webpack 与 Vite（`x-web`）产物形态。

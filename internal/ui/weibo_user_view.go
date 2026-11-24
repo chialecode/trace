@@ -34,7 +34,7 @@ func (a *App) filteredWeiboPostIndices(uid string) []int {
 	return a.uncachedIndices("weibo:posts:"+uid, a.weiboPostKeys(a.CurrentWeiboPosts))
 }
 
-// renderWeiboUserRoute draws /weibo/user/:uid (docs/ui.md, stage-plan §4.8):
+// renderWeiboUserRoute draws /weibo/user/:uid (docs/ui.md):
 // header matching Bilibili user page structure, single "微博" list with
 // "全部 / 未缓存" filter, pinned badge, visibility-window hint, and distinct
 // empty-shell vs genuine 0 posts vs normal end states.

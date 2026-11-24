@@ -54,7 +54,7 @@ const (
 	act022NonexistentSynthMid       = "9999999999999999"
 )
 
-// act022APILimits matches USER-ACTIONS.md ACT-022 quota breakdown exactly (sum == 37).
+// act022APILimits matches the ACT-022 authorization's quota breakdown exactly (sum == 37).
 var act022APILimits = map[string]int{
 	"login":         5,
 	"resolve_user":  2,

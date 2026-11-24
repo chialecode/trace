@@ -493,7 +493,7 @@ func (a *Adapter) FetchCreatorPosts(ctx context.Context, uid string, cursor stri
 }
 
 // postSnapshot is the persisted subset of Post stored in updates.db CreatorPost.Snapshot.
-// Per DEC-040 and stage-plan §4.7, it omits online-only engagement Stats and strips all signed URLs.
+// Per DEC-040 and the Weibo design (DEC-065), it omits online-only engagement Stats and strips all signed URLs.
 type postSnapshot struct {
 	Mid               string          `json:"mid"`
 	MblogID           string          `json:"mblogid"`

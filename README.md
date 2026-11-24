@@ -6,12 +6,12 @@ TRACE 是一个 Windows 桌面应用（并附带面向 Linux VPS 的无界面远
 
 ## 状态
 
-当前阶段在[当前计划](docs/delivery/stage-plan.md)里，已实现的能力见[交付状态](docs/delivery/status.md)，构建、门禁、打包与冒烟命令见[工程规则](docs/dev-rules/engineering.md#commands)。
+已实现的能力见[需求](docs/requirements.md)的状态列，阶段路线、上游事项与已知限制见[路线与验收](docs/delivery/roadmap.md)，进行中的需求、缺陷与后续迭代项见 [Issues](https://github.com/chialecode/trace/issues)；构建、门禁、打包与冒烟命令见[工程规则](docs/dev-rules/engineering.md#commands)。
 
 ## 入口
 
 - 参与开发：先读 [AGENTS](AGENTS.md)，再看[文档索引](docs/README.md)。
-- 需要你处理的事：[USER-ACTIONS](USER-ACTIONS.md)。
+- 需要你处理的事：[`needs-user` issue](https://github.com/chialecode/trace/issues?q=is%3Aissue+label%3Aneeds-user)。
 - 贡献方式：[CONTRIBUTING](CONTRIBUTING.md)；安全问题：[SECURITY](SECURITY.md)。
 
 ## 许可

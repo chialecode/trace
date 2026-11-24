@@ -52,7 +52,7 @@ const (
 	act024OpBookmarkFolders       = "BookmarkFoldersSlice"
 )
 
-// act024APILimits matches USER-ACTIONS.md ACT-024 quota breakdown exactly (sum == 32).
+// act024APILimits matches the ACT-024 authorization's quota breakdown exactly (sum == 32).
 // Pre-existing preflight usage in .local/site-check/usage-act024.json (`apiCalls=1, login=1`)
 // is preserved via sitecheck.OpenGate so login has <= 4 new calls and total has <= 31 new calls.
 var act024APILimits = map[string]int{
@@ -116,7 +116,7 @@ var (
 	reAct024QuotedString      = regexp.MustCompile(`["']([A-Za-z_][A-Za-z0-9_]*)["']`)
 )
 
-// act024Targets supports all fields from both docs/delivery/stage-plan.md §4.10
+// act024Targets supports all fields from both the X check plan
 // and the local .local/site-check/targets-x.json schema.
 type act024Targets struct {
 	Version        int                  `json:"version"`
@@ -389,7 +389,7 @@ func validateAct024ShortLinkURL(raw string, allowLocalhost bool) error {
 }
 
 // selectAct024DetailPosts chooses up to max (3) posts for TweetDetail, prioritizing
-// video, deletedOrigin, and tcoLink (matching USER-ACTIONS.md ACT-024 status) before
+// video, deletedOrigin, and tcoLink (matching the ACT-024 authorization) before
 // longText, thread, mixed, gif, images, poll, card, and remaining posts.
 func selectAct024DetailPosts(posts []parsedAct024Post, maxCount int) []parsedAct024Post {
 	if maxCount <= 0 || len(posts) == 0 {
@@ -1183,7 +1183,7 @@ func (c *act024Checker) noteRedirect(cat string, r *http.Request, resp *http.Res
 }
 
 // isForbiddenXPathOrOp explicitly blocks SearchTimeline, live/Spaces, official API v2,
-// login/onboarding flows, and any mutating/write operations per USER-ACTIONS.md ACT-024.
+// login/onboarding flows, and any mutating/write operations per the ACT-024 authorization.
 func isForbiddenXPathOrOp(method, p string) bool {
 	if !strings.EqualFold(method, http.MethodGet) {
 		return true
