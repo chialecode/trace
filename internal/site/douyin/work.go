@@ -37,6 +37,7 @@ type StreamSelectOptions struct {
 
 // SelectedVODStream describes a normalized non-watermark progressive MP4 stream candidate.
 type SelectedVODStream struct {
+	URI          string   `json:"uri,omitempty"`
 	Tier         int      `json:"tier"`
 	QualityLabel string   `json:"qualityLabel"`
 	GearName     string   `json:"gearName,omitempty"`
@@ -55,6 +56,7 @@ type SelectedVODStream struct {
 type NotePage struct {
 	Index         int                `json:"index"` // 1-based
 	Kind          string             `json:"kind"`  // NotePageImage, NotePageLivePhoto, NotePageVideo, NotePageUnknown
+	URI           string             `json:"uri,omitempty"`
 	Width         int                `json:"width,omitempty"`
 	Height        int                `json:"height,omitempty"`
 	ImageURLs     []string           `json:"-"`
@@ -112,6 +114,7 @@ type WorkDetail struct {
 	Author            AuthorSummary       `json:"author"`
 	Stats             WorkStats           `json:"stats"`
 	CoverURLs         []string            `json:"-"`
+	MediaID           string              `json:"mediaId,omitempty"`
 	Video             *SelectedVODStream  `json:"video,omitempty"`
 	AvailableStreams  []SelectedVODStream `json:"availableStreams,omitempty"`
 	OriginalURLs      []string            `json:"-"` // untranscoded source (原画) via the play redirector
@@ -481,6 +484,7 @@ func parseAwemeWork(node *rawAwemeNode, opts StreamSelectOptions, allowLocalhost
 	if node.Video != nil {
 		work.CoverURLs = extractCoverURLs(node.Video, allowLocalhost)
 		work.DurationSec = normalizeDurationSec(node.Video.Duration, node.Duration)
+		work.MediaID = extractVideoURI(node.Video)
 		candidates := collectVODStreams(node.Video, opts, allowLocalhost)
 		if len(candidates) > 0 {
 			work.Kind = WorkKindVideo
@@ -488,6 +492,9 @@ func parseAwemeWork(node *rawAwemeNode, opts StreamSelectOptions, allowLocalhost
 			best := candidates[0]
 			if best.DurationSec == 0 {
 				best.DurationSec = work.DurationSec
+			}
+			if work.MediaID == "" {
+				work.MediaID = best.URI
 			}
 			work.Video = &best
 			work.AvailableStreams = candidates
@@ -515,6 +522,7 @@ func parseAwemeWork(node *rawAwemeNode, opts StreamSelectOptions, allowLocalhost
 
 func parseNotePage(pageIndex int, img rawNoteImage, opts StreamSelectOptions, allowLocalhost bool) (NotePage, error) {
 	imgURLs := filterNoteImageURLs(img.URLList, allowLocalhost)
+	pageURI := sanitizeMediaURI(img.URI)
 
 	// 1. Live Photo page: live_photo_type == 1 -> MUST carry valid motion clip in img.Video!
 	if img.LivePhotoType == 1 {
@@ -540,6 +548,7 @@ func parseNotePage(pageIndex int, img rawNoteImage, opts StreamSelectOptions, al
 		return NotePage{
 			Index:       pageIndex,
 			Kind:        NotePageLivePhoto,
+			URI:         firstNonEmpty(pageURI, best.URI),
 			Width:       firstPositive(img.Width, best.Width),
 			Height:      firstPositive(img.Height, best.Height),
 			ImageURLs:   imgURLs,
@@ -558,6 +567,7 @@ func parseNotePage(pageIndex int, img rawNoteImage, opts StreamSelectOptions, al
 			return NotePage{
 				Index:       pageIndex,
 				Kind:        NotePageVideo,
+				URI:         firstNonEmpty(best.URI, pageURI),
 				Width:       firstPositive(best.Width, img.Width),
 				Height:      firstPositive(best.Height, img.Height),
 				ImageURLs:   imgURLs,
@@ -580,6 +590,7 @@ func parseNotePage(pageIndex int, img rawNoteImage, opts StreamSelectOptions, al
 		return NotePage{
 			Index:         pageIndex,
 			Kind:          NotePageUnknown,
+			URI:           pageURI,
 			Width:         img.Width,
 			Height:        img.Height,
 			ImageURLs:     imgURLs,
@@ -591,6 +602,7 @@ func parseNotePage(pageIndex int, img rawNoteImage, opts StreamSelectOptions, al
 	return NotePage{
 		Index:     pageIndex,
 		Kind:      NotePageImage,
+		URI:       pageURI,
 		Width:     img.Width,
 		Height:    img.Height,
 		ImageURLs: imgURLs,
@@ -625,6 +637,7 @@ func collectVODStreams(v *rawVideoNode, opts StreamSelectOptions, allowLocalhost
 
 	durSec := normalizeDurationSec(v.Duration, 0)
 	needSetToken := v.NeedSetToken || v.IsNeedSetCookie
+	baseURI := extractVideoURI(v)
 	var out []SelectedVODStream
 
 	for _, br := range v.BitRate {
@@ -648,6 +661,7 @@ func collectVODStreams(v *rawVideoNode, opts StreamSelectOptions, allowLocalhost
 		dataSize, _ := br.PlayAddr.DataSize.Int64()
 
 		out = append(out, SelectedVODStream{
+			URI:          firstNonEmpty(baseURI, sanitizeMediaURI(br.PlayAddr.URI)),
 			Tier:         tier,
 			QualityLabel: label,
 			GearName:     br.GearName,
@@ -678,6 +692,7 @@ func collectVODStreams(v *rawVideoNode, opts StreamSelectOptions, allowLocalhost
 			tier, label := classifyResolutionTier(w, h, "", 0)
 			sz, _ := addr.DataSize.Int64()
 			out = append(out, SelectedVODStream{
+				URI:          firstNonEmpty(baseURI, sanitizeMediaURI(addr.URI)),
 				Tier:         tier,
 				QualityLabel: label,
 				Codec:        codec,
@@ -917,7 +932,71 @@ func noteMusicWithFallback(music *MusicInfo, video *rawVideoNode, allowLocalhost
 	return &out
 }
 
-var reVideoURI = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
+var (
+	reVideoURI = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
+	reMediaSeg = regexp.MustCompile(`^[A-Za-z0-9_-]{2,128}$`)
+)
+
+func extractVideoURI(v *rawVideoNode) string {
+	if v == nil {
+		return ""
+	}
+	for _, box := range []*rawURLContainer{v.PlayAddr, v.PlayAddrH264, v.PlayAddr265} {
+		if box != nil {
+			if tok := sanitizeMediaURI(box.URI); tok != "" {
+				return tok
+			}
+		}
+	}
+	for _, br := range v.BitRate {
+		if br.PlayAddr != nil {
+			if tok := sanitizeMediaURI(br.PlayAddr.URI); tok != "" {
+				return tok
+			}
+		}
+	}
+	return ""
+}
+
+// sanitizeMediaURI normalizes a Douyin video_id or TOS image object URI into a
+// clean, URL-free, slash-free media identifier token (or "" when unsafe).
+func sanitizeMediaURI(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" || len(s) > 160 {
+		return ""
+	}
+	if strings.Contains(s, "://") || strings.Contains(s, "..") || strings.ContainsAny(s, "?#&=\\ \t\r\n\"'<>:") {
+		return ""
+	}
+	lower := strings.ToLower(s)
+	for _, bad := range []string{".com", ".cn", ".net", ".org", ".tv", "douyinvod", "byteimg", "zjcdn", "sessionid", "cookie", "token"} {
+		if strings.Contains(lower, bad) {
+			return ""
+		}
+	}
+	if !strings.Contains(s, "/") {
+		if reMediaSeg.MatchString(s) {
+			return s
+		}
+		return ""
+	}
+	parts := strings.Split(s, "/")
+	if len(parts) > 4 {
+		return ""
+	}
+	cleanParts := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if !reMediaSeg.MatchString(p) {
+			return ""
+		}
+		cleanParts = append(cleanParts, p)
+	}
+	joined := strings.Join(cleanParts, "_")
+	if len(joined) > 160 {
+		return cleanParts[len(cleanParts)-1]
+	}
+	return joined
+}
 
 // originalSourceURLs builds the play redirector URL for the untranscoded source
 // (原画): ratio=default with watermark=0. It is the same public, watermark-free

@@ -85,12 +85,36 @@ func (b *Backend) CacheDouyinWorkFor(ctx context.Context, awemeID, forUID, forNa
 // enqueueDouyinWorkWithSource enqueues a work; forUID is the account whose
 // works list it came from (empty when unknown, e.g. a parsed link).
 func (b *Backend) enqueueDouyinWorkWithSource(ctx context.Context, awemeID, source, forUID, forName string) (download.Task, error) {
+	return b.enqueueDouyinWorkWithPlan(ctx, awemeID, source, forUID, forName, nil)
+}
+
+func (b *Backend) enqueueDouyinWorkWithPlan(
+	ctx context.Context,
+	awemeID, source, forUID, forName string,
+	explicitPlan *download.WorkDownloadPlan,
+) (download.Task, error) {
 	if err := b.requireSiteLogin(site.Douyin); err != nil {
 		return download.Task{}, err
 	}
+	cleanID := strings.TrimSpace(awemeID)
+	mode := download.ConflictResolutionFromContext(ctx)
+	plan := explicitPlan
+	if plan == nil && mode == "" && b.douyinWorkCache != nil {
+		if cachedDetail, ok := b.douyinWorkCache.get(cleanID, b.preferredDouyinCodec()); ok {
+			if built, bErr := b.buildDouyinWorkPlanFromDetail(ctx, cachedDetail, b.currentWorkPlanOptions()); bErr == nil {
+				plan = &built
+			}
+		}
+	}
+	if plan != nil && mode != "" {
+		cp := *plan
+		cp.ConflictResolution = mode
+		plan = &cp
+	}
 	t, err := b.dl.EnqueueDouyinWork(ctx, download.DouyinWorkEnqueueRequest{
-		AwemeID: strings.TrimSpace(awemeID),
+		AwemeID: cleanID,
 		Source:  source,
+		Plan:    plan,
 		ForUID:  strings.TrimSpace(forUID),
 		ForName: strings.TrimSpace(forName),
 	})
@@ -152,13 +176,19 @@ func (b *Backend) enqueueWeiboPostWithSource(
 		return download.Task{}, err
 	}
 	cleanMid := strings.TrimSpace(mid)
+	mode := download.ConflictResolutionFromContext(ctx)
 	plan := explicitPlan
-	if plan == nil && b.weiboPostCache != nil {
+	if plan == nil && mode == "" && b.weiboPostCache != nil {
 		if cachedPost, ok := b.weiboPostCache.get(cleanMid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution()); ok {
 			if built, bErr := b.buildWeiboWorkPlanFromPost(cachedPost); bErr == nil {
 				plan = &built
 			}
 		}
+	}
+	if plan != nil && mode != "" {
+		cp := *plan
+		cp.ConflictResolution = mode
+		plan = &cp
 	}
 	t, err := b.dl.EnqueueWeiboWork(ctx, download.WeiboWorkEnqueueRequest{
 		TargetID: cleanMid,
@@ -198,13 +228,19 @@ func (b *Backend) enqueueXPostWithSource(
 		return download.Task{}, err
 	}
 	cleanID := strings.TrimSpace(statusID)
+	mode := download.ConflictResolutionFromContext(ctx)
 	plan := explicitPlan
-	if plan == nil && b.xPostCache != nil {
+	if plan == nil && mode == "" && b.xPostCache != nil {
 		if cachedPost, ok := b.xPostCache.get(cleanID); ok {
 			if built, bErr := b.buildXWorkPlanFromPost(cachedPost); bErr == nil {
 				plan = &built
 			}
 		}
+	}
+	if plan != nil && mode != "" {
+		cp := *plan
+		cp.ConflictResolution = mode
+		plan = &cp
 	}
 	t, err := b.dl.EnqueueXWork(ctx, download.XWorkEnqueueRequest{
 		TargetID: cleanID,

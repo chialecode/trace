@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/chialecode/trace/internal/download"
+	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/weibo"
 )
@@ -212,17 +213,38 @@ func (p *weiboWorkPlanner) PlanWorkDownload(ctx context.Context, targetID string
 		if err != nil {
 			return download.WorkDownloadPlan{}, err
 		}
+		var plan download.WorkDownloadPlan
 		if vr.HostPost != nil {
-			return p.backend.buildWeiboWorkPlanFromPost(vr.HostPost)
+			plan, err = p.backend.buildWeiboWorkPlanFromPost(vr.HostPost)
+		} else {
+			plan, err = p.backend.buildWeiboWorkPlanFromStandaloneVideo(vr)
 		}
-		return p.backend.buildWeiboWorkPlanFromStandaloneVideo(vr)
+		if err != nil {
+			return download.WorkDownloadPlan{}, err
+		}
+		plan.ConflictResolution = download.ConflictResolutionFromContext(ctx)
+		return plan, nil
 	}
 
 	post, err := p.backend.weibo.GetPost(ctx, cleanTarget, postOpt)
 	if err != nil {
 		return download.WorkDownloadPlan{}, err
 	}
-	return p.backend.buildWeiboWorkPlanFromPost(post)
+	plan, err := p.backend.buildWeiboWorkPlanFromPost(post)
+	if err != nil {
+		return download.WorkDownloadPlan{}, err
+	}
+	plan.ConflictResolution = download.ConflictResolutionFromContext(ctx)
+	return plan, nil
+}
+
+func weiboImageMediaID(img weibo.ImageAsset) string {
+	picTok := library.SanitizeMediaToken(img.PicID)
+	objTok := library.SanitizeMediaToken(img.ObjectID)
+	if img.Kind == weibo.MediaKindVideo {
+		return firstNonEmpty(objTok, picTok)
+	}
+	return firstNonEmpty(picTok, objTok)
 }
 
 func (b *Backend) buildWeiboWorkPlanFromPost(post *weibo.Post) (download.WorkDownloadPlan, error) {
@@ -239,11 +261,42 @@ func (b *Backend) buildWeiboWorkPlanFromPost(post *weibo.Post) (download.WorkDow
 		return download.WorkDownloadPlan{}, err
 	}
 	plan := download.WorkDownloadPlanFromSite(sitePlan)
-	_, video := post.EffectiveMedia()
+	plan.EditCount = max(0, post.EditCount)
+	images, video := post.EffectiveMedia()
 	if video != nil {
 		plan.AvailableGears = collectWeiboVideoGears(video)
 		if video.Selected != nil && plan.VideoGear == "" {
 			plan.VideoGear = firstNonEmpty(video.Selected.Label, video.Selected.QualityLabel)
+		}
+		if len(plan.Pages) == 0 {
+			if oid := library.SanitizeMediaToken(video.ObjectID); oid != "" {
+				plan.MediaID = oid
+				plan.AssetIDs = []string{oid}
+			}
+		}
+	}
+	if len(plan.Pages) > 0 {
+		var assetIDs []string
+		for i := 0; i < len(plan.Pages) && i < len(images); i++ {
+			mid := weiboImageMediaID(images[i])
+			plan.Pages[i].MediaID = mid
+			if mid != "" {
+				assetIDs = append(assetIDs, mid)
+			}
+			if images[i].VideoStream != nil {
+				if plan.Pages[i].Gear == "" {
+					plan.Pages[i].Gear = firstNonEmpty(images[i].VideoStream.Label, images[i].VideoStream.QualityLabel)
+				}
+				if plan.Pages[i].Bitrate == 0 {
+					plan.Pages[i].Bitrate = images[i].VideoStream.Bitrate
+				}
+				if plan.Pages[i].FPS == 0 {
+					plan.Pages[i].FPS = images[i].VideoStream.FPS
+				}
+			}
+		}
+		if len(assetIDs) > 0 {
+			plan.AssetIDs = assetIDs
 		}
 	}
 	return plan, nil
@@ -298,6 +351,10 @@ func (b *Backend) buildWeiboWorkPlanFromStandaloneVideo(vr *weibo.VideoPageResul
 	plan := download.WorkDownloadPlanFromSite(sitePlan)
 	plan.AvailableGears = collectWeiboVideoGears(vr.Video)
 	plan.VideoGear = firstNonEmpty(sel.Label, sel.QualityLabel)
+	if oid := library.SanitizeMediaToken(firstNonEmpty(vr.Video.ObjectID, vr.ObjectID)); oid != "" {
+		plan.MediaID = oid
+		plan.AssetIDs = []string{oid}
+	}
 	return plan, nil
 }
 

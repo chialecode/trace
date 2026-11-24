@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/chialecode/trace/internal/download"
+	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/x"
 )
@@ -209,7 +211,30 @@ func (p *xWorkPlanner) PlanWorkDownload(ctx context.Context, targetID string, _ 
 	if err != nil {
 		return download.WorkDownloadPlan{}, err
 	}
-	return p.backend.buildXWorkPlanFromPost(post)
+	plan, err := p.backend.buildXWorkPlanFromPost(post)
+	if err != nil {
+		return download.WorkDownloadPlan{}, err
+	}
+	plan.ConflictResolution = download.ConflictResolutionFromContext(ctx)
+	return plan, nil
+}
+
+func xEditMetadata(post *x.Post) (editCount int, editTs int64) {
+	if post == nil {
+		return 0, 0
+	}
+	if len(post.EditTweetIDs) > 1 {
+		editCount = len(post.EditTweetIDs) - 1
+		latest := strings.TrimSpace(post.EditTweetIDs[len(post.EditTweetIDs)-1])
+		if latest != "" && latest != strings.TrimSpace(post.ID) {
+			if sf, err := strconv.ParseUint(latest, 10, 64); err == nil && sf > (1<<40) {
+				editTs = int64(((sf >> 22) + 1288834974657) / 1000)
+			}
+		}
+	} else if post.IsEdited {
+		editCount = 1
+	}
+	return editCount, editTs
 }
 
 func (b *Backend) buildXWorkPlanFromPost(post *x.Post) (download.WorkDownloadPlan, error) {
@@ -227,6 +252,7 @@ func (b *Backend) buildXWorkPlanFromPost(post *x.Post) (download.WorkDownloadPla
 	}
 	plan := download.WorkDownloadPlanFromSite(sitePlan)
 	plan.AuthorUniqueID = strings.TrimSpace(post.Author.ScreenName)
+	plan.EditCount, plan.EditTs = xEditMetadata(post)
 
 	var originPost *x.Post
 	if post.IsRetweet && post.Retweeted != nil {
@@ -262,6 +288,10 @@ func (b *Backend) buildXWorkPlanFromPost(post *x.Post) (download.WorkDownloadPla
 		if plan.VideoGear == "" {
 			plan.VideoGear = firstNonEmpty(plan.QualityName, formatXMediaQualityLabel(singleVideo.Width, singleVideo.Height, singleVideo.VideoBitrate))
 		}
+		if mk := library.SanitizeMediaToken(singleVideo.MediaKey); mk != "" {
+			plan.MediaID = mk
+			plan.AssetIDs = []string{mk}
+		}
 	case singleVideo != nil && hasThreadExtraMedia:
 		// Convert focal single video into a page so thread media can download in order.
 		plan.Kind = "image_note"
@@ -272,12 +302,17 @@ func (b *Backend) buildXWorkPlanFromPost(post *x.Post) (download.WorkDownloadPla
 		plan.HLSOnly = true
 		plan.Pages = nil
 		plan.VideoURLs = nil
+		if mk := library.SanitizeMediaToken(mediaItems[0].MediaKey); mk != "" {
+			plan.MediaID = mk
+			plan.AssetIDs = []string{mk}
+		}
 		if plan.DowngradeHint == "" {
 			plan.DowngradeHint = firstNonEmpty(mediaItems[0].HLSOnlyNotice, x.HLSOnlyNoticeText)
 		}
 	default:
 		for i := 0; i < len(plan.Pages) && i < len(mediaItems); i++ {
 			m := mediaItems[i]
+			plan.Pages[i].MediaID = library.SanitizeMediaToken(m.MediaKey)
 			if m.GIF || m.Kind == x.MediaKindGIF {
 				plan.Pages[i].Kind = "gif"
 			}
@@ -340,6 +375,18 @@ func (b *Backend) buildXWorkPlanFromPost(post *x.Post) (download.WorkDownloadPla
 		}
 	}
 
+	if len(plan.Pages) > 0 {
+		var assetIDs []string
+		for _, pg := range plan.Pages {
+			if pg.MediaID != "" {
+				assetIDs = append(assetIDs, pg.MediaID)
+			}
+		}
+		if len(assetIDs) > 0 {
+			plan.AssetIDs = assetIDs
+		}
+	}
+
 	return plan, nil
 }
 
@@ -381,6 +428,7 @@ func buildXPlannedPageFromMedia(m x.MediaItem, index int) download.PlannedNotePa
 	return download.PlannedNotePage{
 		Index:       index,
 		Kind:        kind,
+		MediaID:     library.SanitizeMediaToken(m.MediaKey),
 		FromOrigin:  m.FromOrigin,
 		HLSOnly:     m.HLSOnly,
 		ImageURLs:   imgURLs,

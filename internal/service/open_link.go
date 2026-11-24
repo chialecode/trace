@@ -442,7 +442,7 @@ func (b *Backend) firstDouyinUserWorks(ctx context.Context, uv *DouyinUserView) 
 		AwemeCount: uv.AwemeCount,
 		IsPrivate:  uv.IsPrivate,
 	}
-	wp, err := b.douyinUserWorks(ctx, uv.SecUID, "", known)
+	wp, _, err := b.douyinUserWorks(ctx, uv.SecUID, "", known)
 	if uv.IsPrivate {
 		if err == nil && wp != nil && len(wp.Works) > 0 {
 			uv.IsPrivate = false
@@ -1113,13 +1113,15 @@ func (b *Backend) DouyinWork(ctx context.Context, awemeID string) (*DouyinWorkVi
 	if err := b.requireSiteLogin(site.Douyin); err != nil {
 		return nil, err
 	}
+	codec := b.preferredDouyinCodec()
 	detail, err := b.douyin.GetWorkDetail(ctx, awemeID, douyin.StreamSelectOptions{
-		PreferredCodec: b.preferredDouyinCodec(),
+		PreferredCodec: codec,
 	})
 	if err != nil {
 		b.logError("DouyinWork", err)
 		return nil, err
 	}
+	b.douyinWorkCache.put(detail, codec)
 	var cached *library.ItemMetadata
 	cacheKey := douyinCacheKeyForKind(detail.Kind, detail.ID)
 	if cacheKey != "" {
@@ -1206,28 +1208,31 @@ func (b *Backend) DouyinUser(ctx context.Context, secUID string) (*DouyinUserVie
 
 // DouyinUserWorks fetches one paginated grid page of a Douyin creator's works.
 func (b *Backend) DouyinUserWorks(ctx context.Context, secUID, cursor string) (*DouyinUserWorksPage, error) {
-	return b.douyinUserWorks(ctx, secUID, cursor, nil)
+	page, _, err := b.douyinUserWorks(ctx, secUID, cursor, nil)
+	return page, err
 }
 
-func (b *Backend) douyinUserWorks(ctx context.Context, secUID, cursor string, known *douyin.UserProfile) (*DouyinUserWorksPage, error) {
+func (b *Backend) douyinUserWorks(ctx context.Context, secUID, cursor string, known *douyin.UserProfile) (*DouyinUserWorksPage, []douyin.WorkDetail, error) {
 	if err := b.requireSiteLogin(site.Douyin); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cleanCursor := strings.TrimSpace(cursor)
+	codec := b.preferredDouyinCodec()
 	page, err := b.douyin.ListUserPosts(ctx, douyin.UserPostsRequest{
 		SecUID:            strings.TrimSpace(secUID),
 		MaxCursor:         cleanCursor,
 		KnownProfile:      known,
 		CrossCheckProfile: known == nil && (cleanCursor == "" || cleanCursor == "0"),
-		StreamOptions:     douyin.StreamSelectOptions{PreferredCodec: b.preferredDouyinCodec()},
+		StreamOptions:     douyin.StreamSelectOptions{PreferredCodec: codec},
 	})
 	if err != nil {
 		b.logError("DouyinUserWorks", err)
-		return nil, err
+		return nil, nil, err
 	}
 	cards := make([]DouyinWorkCardDTO, 0, len(page.Works))
-	for _, w := range page.Works {
-		cards = append(cards, mapDouyinWorkCard(w))
+	for i := range page.Works {
+		b.douyinWorkCache.put(&page.Works[i], codec)
+		cards = append(cards, mapDouyinWorkCard(page.Works[i]))
 	}
 	return &DouyinUserWorksPage{
 		Works:           cards,
@@ -1235,7 +1240,7 @@ func (b *Backend) douyinUserWorks(ctx context.Context, secUID, cursor string, kn
 		HasMore:         page.HasMore,
 		UncertainEmpty:  page.UncertainEmpty,
 		UncertainReason: page.UncertainReason,
-	}, nil
+	}, page.Works, nil
 }
 
 // WeiboPost fetches and maps a single Weibo post by mid or mblogid.
