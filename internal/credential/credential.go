@@ -192,6 +192,10 @@ func parseRawCookieHeader(rawCookie string) map[string]string {
 	return pairs
 }
 
+func isSafeCookieKey(k string) bool {
+	return len(k) > 0 && len(k) <= 128 && isValidCookieTokenName(k)
+}
+
 func isSafeCookieValue(v string) bool {
 	return v != "" && !strings.ContainsAny(v, "\r\n;")
 }
@@ -494,6 +498,9 @@ func (s *Store) CookieHeader() string {
 	defer s.mu.RUnlock()
 	if !s.isActiveRecordLocked() {
 		return ""
+	}
+	if s.site == SiteDouyin {
+		return FormatDouyinCookieHeader(s.rec.Cookies)
 	}
 	var pairs []string
 	for _, k := range s.orderedCookieKeys() {
@@ -816,7 +823,7 @@ func isNonSecretCookieValue(key, val string) bool {
 		return true
 	}
 	switch strings.ToLower(strings.TrimSpace(val)) {
-	case "true", "false", "null":
+	case "true", "false", "null", "none", "undefined":
 		return true
 	}
 	return false

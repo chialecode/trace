@@ -72,15 +72,7 @@ func isSecretDouyinCookie(key, val string) bool {
 	if reAct010AllDigits.MatchString(v) && len(v) < 12 {
 		return false
 	}
-	if credential.IsStrippedDouyinCookieKey(key) {
-		return true
-	}
-	for _, allowed := range credential.AllowedDouyinCookieKeys {
-		if strings.EqualFold(allowed, key) {
-			return true
-		}
-	}
-	return false
+	return true
 }
 
 func (r *act010Redactor) addCookieHeader(raw string) {
@@ -111,8 +103,7 @@ func (r *act010Redactor) addCookieValuesFromStore(store *credential.Store) {
 	if store == nil {
 		return
 	}
-	for _, k := range credential.AllowedDouyinCookieKeys {
-		v := store.CookieValue(k)
+	for k, v := range store.Cookies() {
 		if isSecretDouyinCookie(k, v) {
 			r.mu.Lock()
 			r.cookies[v] = true
