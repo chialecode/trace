@@ -483,8 +483,9 @@
 ### 7.2 我的收藏
 
 - **端点与参数**：`GET https://weibo.com/ajax/favorites/all_fav?uid=<self_uid>&page=<1..N>&with_total=true`（可选收藏标签目录：`GET https://weibo.com/ajax/favorites/tags?is_show_total=1`）（`社区资料（2026-11-21）`）。
-- **返回与翻页**：`{"ok": 1, "data": {"status": [<RawPost>, ...], "total_number": <int>}}`（**注意键名为 `data.status` 而非 `data.list`**）；单条对象与 `mymblog` 同构，可直接复用[第 4 节](#post)解析并打开单条微博详情页；`ok == 1` 且 `data.status == []` 为正常翻到底（`社区资料（2026-11-21）`；第 1→2 页契约与深度上限列 **V-13**）。
-- **限制**：仅限登录账号本人；每页约 `20` 条；长微博仍需在点开详情或缓存时按需补拉 `longtext`。
+- **返回与翻页**：`{"ok": 1, "data": {"status": [<RawPost>, ...], "total_number": <int>}}`（**注意键名为 `data.status` 而非 `data.list`**，单元素可为直接 `<RawPost>` 或 `{"status": <RawPost>, ...}` 包裹对象，须优先解包内层 `status` 避免外层字段遮蔽 `idstr`）；`ok == 1` 且 `data.status == []` 为正常翻到底（`社区资料（2026-11-21）`；第 1→2 页契约与深度上限列 **V-13**）。
+- **媒体与转发字段差异（2026-11 修正）**：`all_fav` 返回的微博对象及内嵌 `retweeted_status` 常省略完整 `pic_infos` 或视频 `playback_list`，解析器须按顺序覆盖：① `mix_media_info.items`（含无内联流的混排视频封面占位）；② `pic_ids` + `pic_infos`（部分缺失项回退补齐）；③ `pics` 数组或数字键映射（含 `large.url`、`videoSrc` 与 `live_photo`）；④ 无 `pic_infos` 时的 `pic_ids` / `pic_urls` / `original_pic` / `bmiddle_pic` / `thumbnail_pic`（将 `sinaimg.cn` 缩略段提升至 `/large/`，保留扩展名并强制 HTTPS）；⑤ 视频 `page_info.urls` / `media_info.{mp4_hd_mp4, hevc_mp4_hd, mp4_ld_mp4, urls}`，以及省略直链时保留 `object_type=video` 封面、标题与时长供列表渲染视频卡片（不误归为普通网页卡）。简略回退条目置 `MediaIncomplete = true`，点开详情或触发缓存下载时仍调 `statuses/show` 补抓完整原图与实况/视频流。
+- **限制**：仅限登录账号本人；每页约 `20` 条；长微博与简略媒体在点开详情或缓存时按需补拉 `statuses/show` / `longtext`。
 
 <a id="mine-likes"></a>
 ### 7.3 我赞过的微博（高不确定度，须实测门控）

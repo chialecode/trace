@@ -65,7 +65,7 @@ func (s *mineStub) StatusOf(siteID string) credential.Status {
 func (s *mineStub) HasAnyLogin() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.logged["bilibili"] || s.logged["douyin"]
+	return s.logged["bilibili"] || s.logged["douyin"] || s.logged["weibo"] || s.logged["x"]
 }
 
 func (s *mineStub) AccountSections(siteID string) []service.AccountSection {
@@ -74,18 +74,31 @@ func (s *mineStub) AccountSections(siteID string) []service.AccountSection {
 	if !s.logged[siteID] {
 		return []service.AccountSection{{Site: siteID, Kind: service.AccountLogin, Label: "未登录", Reason: "未登录"}}
 	}
-	if siteID == "bilibili" {
+	switch siteID {
+	case "bilibili":
 		return []service.AccountSection{
 			{Site: siteID, Kind: service.AccountFollowing, Label: "关注", Available: true},
 			{Site: siteID, Kind: service.AccountFavorites, Label: "收藏夹", Available: true},
 			{Site: siteID, Kind: service.AccountToView, Label: "稍后再看", Available: true},
 			{Site: siteID, Kind: service.AccountHistory, Label: "历史记录", Available: true},
 		}
-	}
-	return []service.AccountSection{
-		{Site: siteID, Kind: service.AccountFollowing, Label: "关注", Available: true},
-		{Site: siteID, Kind: service.AccountLikes, Label: "喜欢", Available: true},
-		{Site: siteID, Kind: service.AccountCollection, Label: "收藏", Available: true},
+	case "weibo":
+		return []service.AccountSection{
+			{Site: siteID, Kind: service.AccountFollowing, Label: "关注", Available: true},
+			{Site: siteID, Kind: service.AccountFavorites, Label: "收藏", Available: true},
+		}
+	case "x":
+		return []service.AccountSection{
+			{Site: siteID, Kind: service.AccountFollowing, Label: "关注", Available: true},
+			{Site: siteID, Kind: service.AccountBookmarks, Label: "书签", Available: true},
+			{Site: siteID, Kind: service.AccountLikes, Label: "喜欢", Available: true},
+		}
+	default:
+		return []service.AccountSection{
+			{Site: siteID, Kind: service.AccountFollowing, Label: "关注", Available: true},
+			{Site: siteID, Kind: service.AccountLikes, Label: "喜欢", Available: true},
+			{Site: siteID, Kind: service.AccountCollection, Label: "收藏", Available: true},
+		}
 	}
 }
 
@@ -162,6 +175,15 @@ func (s *mineStub) OpenLink(ctx context.Context, raw string) (*service.OpenLinkR
 	s.mu.Unlock()
 	if strings.Contains(raw, "douyin.com") {
 		return nil, errors.New("stub: douyin not opened in this test")
+	}
+	if strings.Contains(raw, "weibo.com/") {
+		parts := strings.Split(strings.TrimRight(raw, "/"), "/")
+		mid := parts[len(parts)-1]
+		return &service.OpenLinkResult{
+			Site:       string(site.Weibo),
+			SiteTarget: &site.ResolveTarget{Site: site.Weibo, Kind: "dynamic", ID: mid, CanonicalURL: raw},
+			WeiboPost:  &service.WeiboPostView{Mid: mid, Text: "打开的收藏微博详情", Author: service.WeiboAuthorDTO{UID: "500001", ScreenName: "收藏详情博主"}},
+		}, nil
 	}
 	return s.BackendAPI.OpenLink(ctx, raw)
 }
@@ -600,5 +622,140 @@ func TestMineUnsupportedDouyinWorkIsNotClickable(t *testing.T) {
 	}
 	if _, found := tt.Find("作品更多：" + bad.ID); !found {
 		t.Fatal("the unsupported work lacks 在浏览器中打开")
+	}
+}
+
+func TestMineWeiboFavoritesPostAndRetweetMediaViewerAndNavigation(t *testing.T) {
+	app, stub, cleanup := newMineApp(t)
+	defer cleanup()
+	stub.logged["weibo"] = true
+	stub.logged["x"] = true
+
+	const (
+		imgMid = "5000000000009101"
+		rtMid  = "5000000000009102"
+		vidMid = "5000000000009103"
+	)
+	imgPost := service.WeiboPostView{
+		Mid:          imgMid,
+		Author:       service.WeiboAuthorDTO{UID: "500001", ScreenName: "收藏配图博主"},
+		CreatedAt:    1731000000,
+		Text:         "原帖带普通图片与实况照片",
+		CanonicalURL: "https://weibo.com/500001/" + imgMid,
+		CacheKey:     "weibo:dynamic:" + imgMid,
+		Images: []service.WeiboMediaItemDTO{
+			{Index: 1, Kind: "image", ImageURL: "https://wx1.sinaimg.cn/large/syn_m1.jpg", Width: 800, Height: 600},
+			{Index: 2, Kind: "live_photo", ImageURL: "https://wx1.sinaimg.cn/large/syn_m2.jpg", MotionURL: "https://video.weibo.com/media/play?livephoto=syn2", Width: 600, Height: 800},
+		},
+	}
+	rtPost := service.WeiboPostView{
+		Mid:              rtMid,
+		Author:           service.WeiboAuthorDTO{UID: "500002", ScreenName: "收藏转发博主"},
+		CreatedAt:        1730990000,
+		Text:             "转发配图与视频并茂的原微博",
+		IsRetweet:        true,
+		OriginIncomplete: true,
+		CanonicalURL:     "https://weibo.com/500002/" + rtMid,
+		CacheKey:         "weibo:dynamic:" + rtMid,
+		Retweeted: &service.WeiboPostView{
+			Mid:       "5000000000008888",
+			Author:    service.WeiboAuthorDTO{UID: "500009", ScreenName: "被转发原作者"},
+			CreatedAt: 1730980000,
+			Text:      "被转发原博正文内容展示",
+			Images: []service.WeiboMediaItemDTO{
+				{Index: 1, Kind: "gif", FromOrigin: true, ImageURL: "https://wx2.sinaimg.cn/large/syn_rt_gif.gif", Width: 640, Height: 480},
+			},
+			Video: &service.WeiboVideoDTO{
+				ObjectID:    "1034:5000000000008888",
+				Title:       "被转发原博视频标题",
+				CoverURL:    "https://wx2.sinaimg.cn/large/syn_rt_vid.jpg",
+				DurationSec: 75,
+			},
+		},
+	}
+	vidPost := service.WeiboPostView{
+		Mid:          vidMid,
+		Author:       service.WeiboAuthorDTO{UID: "500003", ScreenName: "收藏视频博主"},
+		CreatedAt:    1730970000,
+		Text:         "原创收藏视频微博",
+		CanonicalURL: "https://weibo.com/500003/" + vidMid,
+		CacheKey:     "weibo:dynamic:" + vidMid,
+		Video: &service.WeiboVideoDTO{
+			ObjectID:    "1034:" + vidMid,
+			Title:       "原创收藏视频封面标题",
+			CoverURL:    "https://wx3.sinaimg.cn/large/syn_outer_vid.jpg",
+			DurationSec: 40,
+		},
+	}
+
+	stub.pages["weibo/favorites//"] = service.AccountPage{
+		Total: 3,
+		Items: []service.AccountItem{
+			{Kind: service.AccountItemPost, Site: "weibo", ID: imgMid, Title: imgPost.Text, Author: imgPost.Author.ScreenName, AuthorID: imgPost.Author.UID, OpenURL: imgPost.CanonicalURL, BrowserURL: imgPost.CanonicalURL, CacheKey: imgPost.CacheKey, Post: &imgPost},
+			{Kind: service.AccountItemPost, Site: "weibo", ID: rtMid, Title: rtPost.Text, Author: rtPost.Author.ScreenName, AuthorID: rtPost.Author.UID, OpenURL: rtPost.CanonicalURL, BrowserURL: rtPost.CanonicalURL, CacheKey: rtPost.CacheKey, Post: &rtPost},
+			{Kind: service.AccountItemPost, Site: "weibo", ID: vidMid, Title: vidPost.Text, Author: vidPost.Author.ScreenName, AuthorID: vidPost.Author.UID, OpenURL: vidPost.CanonicalURL, BrowserURL: vidPost.CanonicalURL, CacheKey: vidPost.CacheKey, Post: &vidPost},
+		},
+	}
+
+	app.OpenMine("weibo", service.AccountFavorites)
+	tt := ui.NewTester(app.View, 1280, 1100)
+	tt.Frame()
+	tt.Frame()
+
+	// 1. Outer images (including LivePhoto badge), retweet quote box, retweet GIF badge, retweet video card, and outer video card all render!
+	for _, label := range []string{
+		"我的微博行：" + imgMid,
+		"查看图文页 1",
+		"查看图文页 2",
+		"实况标记 2",
+		"我的微博转发内容：" + rtMid,
+		"我的微博转发正文：" + rtMid,
+		"动图标记 1",
+		"播放原视频卡片：" + rtPost.CacheKey,
+		"原微博未完整提示：mine-wb:" + rtMid,
+		"播放视频卡片：" + vidPost.CacheKey,
+	} {
+		if _, ok := tt.Find(label); !ok {
+			t.Fatalf("missing expected label %q in Mine › Weibo Favorites", label)
+		}
+	}
+	for _, txt := range []string{"@被转发原作者", "被转发原博正文内容展示", "被转发原博视频标题", "原创收藏视频封面标题"} {
+		if !tt.HasText(txt) {
+			t.Fatalf("missing expected text %q in Mine › Weibo Favorites", txt)
+		}
+	}
+
+	// 2. Clicking an image opens ImageViewer inline on RouteMine without navigating away.
+	if err := tt.Click("查看图文页 2"); err != nil {
+		t.Fatalf("click image cell: %v", err)
+	}
+	tt.Frame()
+	if !app.ImageViewer.Open || app.ImageViewer.InlineSite != "weibo" || app.ImageViewer.Index != 1 || app.CurrentRoute != RouteMine {
+		t.Fatalf("unexpected ImageViewer state: open=%v site=%q idx=%d route=%s", app.ImageViewer.Open, app.ImageViewer.InlineSite, app.ImageViewer.Index, app.CurrentRoute)
+	}
+	app.closeImageViewer()
+	tt.Frame()
+
+	// 3. Clicking uncached retweeted video card opens Weibo post detail and NavigateBack returns to Mine.
+	if err := tt.Click("播放原视频卡片：" + rtPost.CacheKey); err != nil {
+		t.Fatalf("click retweet video card: %v", err)
+	}
+	tt.Frame()
+	if app.CurrentRoute != RouteWeiboPost || app.CurrentWeiboPost == nil || app.CurrentWeiboPost.Mid != rtMid {
+		t.Fatalf("expected RouteWeiboPost for %s, got route=%s post=%+v", rtMid, app.CurrentRoute, app.CurrentWeiboPost)
+	}
+	app.NavigateBack()
+	tt.Frame()
+	if app.CurrentRoute != RouteMine {
+		t.Fatalf("expected NavigateBack to return to RouteMine, got %s", app.CurrentRoute)
+	}
+
+	// 4. Narrow 720px layout has zero horizontal overflow.
+	ttNarrow := ui.NewTester(app.View, 720, 960)
+	ttNarrow.Frame()
+	centerRect, ok := ttNarrow.Find("中栏内容")
+	rowRect, okRow := ttNarrow.Find("我的微博行：" + imgMid)
+	if !ok || !okRow || centerRect.X+centerRect.W > 720.5 || rowRect.X+rowRect.W > 720.5 {
+		t.Fatalf("narrow 720px overflow: center=%+v row=%+v", centerRect, rowRect)
 	}
 }

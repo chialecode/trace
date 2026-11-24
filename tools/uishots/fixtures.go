@@ -45,10 +45,20 @@ type screenshotBackend struct {
 	updateHist      *update.History
 	installedDevVer string
 	// 我的 fixtures (mine_fixture.go): lists come from memory, never the network.
-	mineDouyinOut bool
-	mineErr       map[string]error // site/kind
+	mineDouyinOut  bool
+	mineErr        map[string]error // site/kind
+	mineMediaPaths map[string]string
 	// 远程 / 导入导出 fixtures (remote_fixture.go).
 	remote remoteFixture
+}
+
+func (b *screenshotBackend) MediaPath(itemKey, relPath string) (string, error) {
+	if b.mineMediaPaths != nil {
+		if p, ok := b.mineMediaPaths[itemKey+"::"+relPath]; ok && p != "" {
+			return p, nil
+		}
+	}
+	return b.BackendAPI.MediaPath(itemKey, relPath)
 }
 
 func (b *screenshotBackend) GetUpdateHistory() update.History {
@@ -1072,6 +1082,15 @@ func seedFixtures() (env *fixtureEnv, err error) {
 
 	env.backend = &screenshotBackend{
 		BackendAPI: b,
+		mineMediaPaths: map[string]string{
+			"weibo:dynamic:5000000000000011::images/01.png": filepath.Join(wbPostDir, "img_01.png"),
+			"weibo:dynamic:5000000000000011::images/02.png": filepath.Join(wbRetweetDir, "images", "02.png"),
+			"weibo:dynamic:5000000000000012::images/01.png": filepath.Join(wbRetweetDir, "images", "01.png"),
+			"weibo:dynamic:5000000000000012::images/02.png": filepath.Join(wbRetweetDir, "images", "02.png"),
+			"weibo:dynamic:5000000000000013::cover.png":     filepath.Join(wbRetweetDir, "cover.png"),
+			"x:dynamic:1000000000000000021::images/01.png":  filepath.Join(xPostDir, "images", "01.png"),
+			"x:dynamic:1000000000000000022::images/01.png":  filepath.Join(xRetweetDir, "images", "01.png"),
+		},
 		dyStatus: credential.Status{
 			Site:     "douyin",
 			LoggedIn: true,
