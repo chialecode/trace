@@ -42,9 +42,12 @@ const (
 	// DefaultStaticAssetTimeout is the per-request timeout for fetching static JS bundles.
 	DefaultStaticAssetTimeout = 15 * time.Second
 
-	maxStaticAssetRedirects   = 3
-	maxLazyChunksPerOperation = 2
-	maxLazyCandidatesPerOp    = 8
+	maxStaticAssetRedirects    = 3
+	maxLazyChunksPerOperation  = 2
+	maxSpecificLazyChunksPerOp = 4
+	highConfidenceLazyScore    = 70
+	maxLazyCandidatesPerOp     = 12
+	maxRetainedManifestChunks  = 4096
 )
 
 // Read-only GraphQL operation names used by TRACE for X (x.md §15.1 #8).
@@ -149,9 +152,21 @@ type FrontendMetadata struct {
 	MainJSURL    string                          `json:"-"`
 	OndemandURL  string                          `json:"-"`
 
-	featureDefaults map[string]bool     `json:"-"`
-	lazyChunkURLs   map[string][]string `json:"-"`
-	fetchedLazyURLs map[string]bool     `json:"-"`
+	featureDefaults map[string]bool           `json:"-"`
+	lazyChunkURLs   map[string][]string       `json:"-"`
+	lazyChunkScores map[string]map[string]int `json:"-"`
+	chunkURLByID    map[string]string         `json:"-"`
+	fetchedLazyURLs map[string]bool           `json:"-"`
+}
+
+// FeatureDefault looks up a boolean featureSwitch / fieldToggle default value discovered
+// from main.*.js or home HTML (__INITIAL_STATE__).
+func (m *FrontendMetadata) FeatureDefault(key string) (bool, bool) {
+	if m == nil || len(m.featureDefaults) == 0 {
+		return false, false
+	}
+	v, ok := m.featureDefaults[key]
+	return v, ok
 }
 
 // FetchedLazyChunkURLs returns a sorted defensive copy of lazy chunk URLs fetched so far
@@ -214,8 +229,41 @@ func (m *FrontendMetadata) cloneWithLazyUpdates(
 		OndemandURL:     m.OndemandURL,
 		featureDefaults: m.featureDefaults,
 		lazyChunkURLs:   m.lazyChunkURLs,
+		lazyChunkScores: m.lazyChunkScores,
+		chunkURLByID:    m.chunkURLByID,
 		fetchedLazyURLs: fetched,
 	}
+}
+
+func (m *FrontendMetadata) cloneWithExtraOpFeatures(opName string, extra map[string]bool) *FrontendMetadata {
+	if m == nil || len(extra) == 0 {
+		return m
+	}
+	spec, ok := m.Operations[opName]
+	if !ok || spec.QueryID == "" {
+		return m
+	}
+	mergedFeatures := make(map[string]bool, len(spec.Features)+len(extra))
+	for k, v := range spec.Features {
+		mergedFeatures[k] = v
+	}
+	changed := false
+	for k, v := range extra {
+		if cur, exists := mergedFeatures[k]; !exists || cur != v {
+			mergedFeatures[k] = v
+			changed = true
+		}
+	}
+	if !changed {
+		return m
+	}
+	updatedSpec := GraphQLOperationSpec{
+		OperationName: spec.OperationName,
+		QueryID:       spec.QueryID,
+		Features:      mergedFeatures,
+		FieldToggles:  spec.FieldToggles,
+	}
+	return m.cloneWithLazyUpdates(map[string]GraphQLOperationSpec{opName: updatedSpec}, nil)
 }
 
 // String returns a redacted summary that never exposes the Bearer token.
@@ -269,6 +317,10 @@ type ParsedHomeHTML struct {
 	MainJSURL       string
 	OndemandJSURL   string
 	LazyChunkURLs   map[string][]string
+
+	lazyChunkScores map[string]map[string]int
+	chunkURLByID    map[string]string
+	opChunkIDs      map[string]map[string]bool
 }
 
 // FrontendDiscoveryConfig configures runtime frontend metadata discovery.
@@ -429,6 +481,22 @@ func (d *FrontendDiscovery) Current() *FrontendMetadata {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.current
+}
+
+// MergeOperationFeatures publishes an updated immutable FrontendMetadata snapshot in memory
+// with extra non-null boolean feature switches merged into opName's GraphQLOperationSpec.
+func (d *FrontendDiscovery) MergeOperationFeatures(opName string, extra map[string]bool) *FrontendMetadata {
+	if d == nil || len(extra) == 0 {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.current == nil {
+		return nil
+	}
+	updated := d.current.cloneWithExtraOpFeatures(opName, extra)
+	d.current = updated
+	return updated
 }
 
 // Ensure returns cached in-memory frontend metadata if present and fresh, or triggers
@@ -602,7 +670,7 @@ func (d *FrontendDiscovery) EnsureOperation(ctx context.Context, opName string) 
 }
 
 func (d *FrontendDiscovery) startOpFlightLocked(ctx context.Context, opName string, baseMeta *FrontendMetadata) *opDiscoveryFlight {
-	flightTimeout := d.assetTimeout*maxLazyChunksPerOperation + 10*time.Second
+	flightTimeout := d.assetTimeout*maxSpecificLazyChunksPerOp + 10*time.Second
 	if flightTimeout < 30*time.Second {
 		flightTimeout = 30 * time.Second
 	}
@@ -702,22 +770,51 @@ func (d *FrontendDiscovery) resolveLazyOperation(
 		return nil, nil, nil
 	}
 
-	discoveredOps := make(map[string]GraphQLOperationSpec)
-	var fetchedURLs []string
-	fetchedCount := 0
-
+	type lazyQueueItem struct {
+		url   string
+		score int
+	}
+	scoreMap := baseMeta.lazyChunkScores[opName]
+	queue := make([]lazyQueueItem, 0, len(candidates)+4)
+	queuedSet := make(map[string]bool, len(candidates)+4)
+	fetchedSet := make(map[string]bool, len(baseMeta.fetchedLazyURLs)+4)
+	for u := range baseMeta.fetchedLazyURLs {
+		fetchedSet[u] = true
+	}
 	for _, rawURL := range candidates {
-		if fetchedCount >= maxLazyChunksPerOperation {
-			break
-		}
 		u, err := ValidateStaticAssetURL(rawURL, d.allowLocalhost)
 		if err != nil {
 			continue
 		}
-		cleanURL := u.String()
-		if baseMeta.fetchedLazyURLs != nil && baseMeta.fetchedLazyURLs[cleanURL] {
+		clean := u.String()
+		if queuedSet[clean] {
 			continue
 		}
+		queuedSet[clean] = true
+		sc := scoreMap[clean]
+		if sc == 0 {
+			sc = scoreLazyChunkName(opName, urlBaseName(clean))
+		}
+		queue = append(queue, lazyQueueItem{url: clean, score: sc})
+	}
+
+	discoveredOps := make(map[string]GraphQLOperationSpec)
+	var fetchedURLs []string
+	fetchedCount := 0
+
+	for idx := 0; idx < len(queue); idx++ {
+		if fetchedCount >= maxSpecificLazyChunksPerOp {
+			break
+		}
+		item := queue[idx]
+		if fetchedCount >= maxLazyChunksPerOperation && item.score < highConfidenceLazyScore {
+			continue
+		}
+		cleanURL := item.url
+		if fetchedSet[cleanURL] {
+			continue
+		}
+		fetchedSet[cleanURL] = true
 		fetchedCount++
 		body, fetchErr := d.runCharged(ctx, FrontendRequestLazyChunk, cleanURL, func() ([]byte, error) {
 			return d.fetchStaticAsset(ctx, cleanURL)
@@ -735,7 +832,8 @@ func (d *FrontendDiscovery) resolveLazyOperation(
 		}
 		fetchedURLs = append(fetchedURLs, cleanURL)
 
-		chunkSpecs := parseLazyChunkOperations(string(body), baseMeta.featureDefaults)
+		bodyStr := string(body)
+		chunkSpecs := parseLazyChunkOperations(bodyStr, baseMeta.featureDefaults)
 		for k, spec := range chunkSpecs {
 			if _, already := baseMeta.Operations[k]; !already {
 				discoveredOps[k] = spec
@@ -743,6 +841,40 @@ func (d *FrontendDiscovery) resolveLazyOperation(
 		}
 		if spec, ok := discoveredOps[opName]; ok && spec.QueryID != "" {
 			break
+		}
+
+		// Follow direct child chunk references (e.g. route wrapper calling n.e(chunkId) or
+		// dynamic import("./...")) within the bounded high-confidence budget.
+		if fetchedCount < maxSpecificLazyChunksPerOp && item.score >= highConfidenceLazyScore {
+			const childScore = 92
+			childURLs := extractChildChunkURLsFromLazyJS(bodyStr, cleanURL, baseMeta.chunkURLByID)
+			var newChildren []lazyQueueItem
+			for _, rawChild := range childURLs {
+				cu, cErr := ValidateStaticAssetURL(rawChild, d.allowLocalhost)
+				if cErr != nil {
+					continue
+				}
+				cleanChild := cu.String()
+				if queuedSet[cleanChild] || fetchedSet[cleanChild] {
+					continue
+				}
+				queuedSet[cleanChild] = true
+				newChildren = append(newChildren, lazyQueueItem{url: cleanChild, score: childScore})
+			}
+			if len(newChildren) > 0 {
+				insertAt := len(queue)
+				for j := idx + 1; j < len(queue); j++ {
+					if queue[j].score < childScore {
+						insertAt = j
+						break
+					}
+				}
+				updated := make([]lazyQueueItem, 0, len(queue)+len(newChildren))
+				updated = append(updated, queue[:insertAt]...)
+				updated = append(updated, newChildren...)
+				updated = append(updated, queue[insertAt:]...)
+				queue = updated
+			}
 		}
 	}
 
@@ -852,10 +984,24 @@ func (d *FrontendDiscovery) discover(ctx context.Context) (*FrontendMetadata, er
 	}
 
 	featureDefaults := scanAllFeatureDefaults(string(mainBody), string(homeBody))
-	lazyURLs := filterAndMergeLazyChunkURLs(
+	mainLazyRes := extractLazyChunksFromMainJS(
+		string(mainBody),
+		mainURL,
+		parsedHome.chunkURLByID,
+		parsedHome.opChunkIDs,
+	)
+	lazyURLs, lazyScores := filterAndMergeLazyChunkResults(
 		d.allowLocalhost,
-		parsedHome.LazyChunkURLs,
-		extractLazyChunkURLsFromMainJS(string(mainBody), mainURL),
+		lazyChunkExtractionResult{
+			urls:   parsedHome.LazyChunkURLs,
+			scores: parsedHome.lazyChunkScores,
+		},
+		mainLazyRes,
+	)
+	mergedChunkMap := filterAndMergeChunkIDMap(
+		d.allowLocalhost,
+		parsedHome.chunkURLByID,
+		mainLazyRes.chunkURLByID,
 	)
 
 	return &FrontendMetadata{
@@ -868,6 +1014,8 @@ func (d *FrontendDiscovery) discover(ctx context.Context) (*FrontendMetadata, er
 		OndemandURL:     ondemandURL.String(),
 		featureDefaults: featureDefaults,
 		lazyChunkURLs:   lazyURLs,
+		lazyChunkScores: lazyScores,
+		chunkURLByID:    mergedChunkMap,
 		fetchedLazyURLs: make(map[string]bool),
 	}, nil
 }
@@ -1104,18 +1252,30 @@ var (
 	reMainFile     = regexp.MustCompile(`^main[.-][A-Za-z0-9_-]+\.js$`)
 	reOndemandFile = regexp.MustCompile(`^ondemand\.s[.-][A-Za-z0-9_-]+\.js$`)
 
-	reWebpackOndemandDirect = regexp.MustCompile(`["']ondemand\.s["']\s*:\s*["']([A-Za-z0-9_-]{4,64})["']`)
-	reWebpackOndemandNumID  = regexp.MustCompile(`(?:\b|["'])(\d+)["']?\s*:\s*["']ondemand\.s["']`)
-	reWebpackChunkNumID     = regexp.MustCompile(`(?:\b|["'])(\d+)["']?\s*:\s*["']([A-Za-z0-9_.~-]{3,160})["']`)
-	reWebpackChunkDirect    = regexp.MustCompile(`["']([A-Za-z0-9_.~-]{3,160})["']\s*:\s*["']([A-Za-z0-9_-]{4,32})["']`)
-	reWebpackHexHash        = regexp.MustCompile(`^[0-9a-f]{6,16}$`)
-	reScriptCloseTag        = regexp.MustCompile(`(?i)</script\b`)
-	reNoModuleAttr          = regexp.MustCompile(`(?i)\snomodule(?:\s*=|\s|>|/)`)
-	reInlineFullMainURL     = regexp.MustCompile(`https?://[^\s"'` + "`" + `<>)]+/main[.-][A-Za-z0-9_-]+\.js`)
-	reInlineFullOndemandURL = regexp.MustCompile(`https?://[^\s"'` + "`" + `<>)]+/ondemand\.s[.-][A-Za-z0-9_-]+\.js`)
-	reRelativeOndemandRef   = regexp.MustCompile(`["']((?:\./|\.\./|/responsive-web/)?[A-Za-z0-9_./-]*ondemand\.s[.-][A-Za-z0-9_-]+\.js)["']`)
-	reInlineJSAssetURL      = regexp.MustCompile(`https?://[^\s"'` + "`" + `<>)]+/[A-Za-z0-9_.~-]+\.js`)
-	reRelativeJSAssetRef    = regexp.MustCompile(`["']((?:\./|\.\./|/responsive-web/)[A-Za-z0-9_.~/-]+\.js)["']`)
+	reWebpackOndemandDirect   = regexp.MustCompile(`["']ondemand\.s["']\s*:\s*["']([A-Za-z0-9_.-]{4,128})["']`)
+	reWebpackOndemandNumID    = regexp.MustCompile(`(?:\b|["'])(\d+)["']?\s*:\s*["']ondemand\.s["']`)
+	reWebpackChunkNumID       = regexp.MustCompile(`(?:\b|["'])(\d{1,8})["']?\s*:\s*["']([A-Za-z0-9_.~+-]{2,512})["']`)
+	reWebpackTernaryName1     = regexp.MustCompile(`\b(\d{1,8})\s*===?\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\?\s*["']([A-Za-z0-9_.~+-]{2,512})["']`)
+	reWebpackTernaryName2     = regexp.MustCompile(`\b[A-Za-z_$][A-Za-z0-9_$]*\s*===?\s*(\d{1,8})\s*\?\s*["']([A-Za-z0-9_.~+-]{2,512})["']`)
+	reWebpackNumericHashEntry = regexp.MustCompile(`(?:\b|["'])(\d{1,8})["']?\s*:\s*["']([A-Za-z0-9_.-]{4,128})["']`)
+	reWebpackChunkDirect      = regexp.MustCompile(`(?:["']([A-Za-z0-9_.~+-]{2,512})["']|(?:[{,]\s*)([A-Za-z_$][A-Za-z0-9_$]{2,120}))\s*:\s*["']([A-Za-z0-9_./~-]{4,256})["']`)
+	reWebpackRuntimeSuffix    = regexp.MustCompile(`\}\s*\[[^\]]{1,32}\]\s*\+\s*["']([A-Za-z0-9_.-]*\.js)["']`)
+	reWebpackHexHash          = regexp.MustCompile(`^[0-9a-f]{6,32}$`)
+	reWebpackHexHashWithA     = regexp.MustCompile(`^[0-9a-f]{6,31}a?$`)
+	reWebpackSimpleHash       = regexp.MustCompile(`^[A-Za-z0-9_-]{4,64}$`)
+	reWebpackEnsureCall       = regexp.MustCompile(`\b[A-Za-z_$][A-Za-z0-9_$]*\.e\(\s*(?:(\d{1,8})|["']([A-Za-z0-9_.~+-]{2,512})["'])\s*\)`)
+	reWebpackPromiseAll       = regexp.MustCompile(`Promise\.all\(\s*\[([^\]]+)\]\s*\)`)
+	reBookmarksRoutePath      = regexp.MustCompile(`["'](?:/i/bookmarks|/bookmarks)["']`)
+	reLikesRoutePath          = regexp.MustCompile(`["'](?:/i/user/[^"']{1,64}/likes|/:[A-Za-z0-9_]+/likes)["']`)
+	reInitialStateMarker      = regexp.MustCompile(`__INITIAL_STATE__\s*=\s*\{`)
+	reInlineScriptBlock       = regexp.MustCompile(`(?is)<script\b([^>]*)>(.*?)</script>`)
+	reScriptCloseTag          = regexp.MustCompile(`(?i)</script\b`)
+	reNoModuleAttr            = regexp.MustCompile(`(?i)\snomodule(?:\s*=|\s|>|/)`)
+	reInlineFullMainURL       = regexp.MustCompile(`https?://[^\s"'` + "`" + `<>)]+/main[.-][A-Za-z0-9_-]+\.js`)
+	reInlineFullOndemandURL   = regexp.MustCompile(`https?://[^\s"'` + "`" + `<>)]+/ondemand\.s[.-][A-Za-z0-9_-]+\.js`)
+	reRelativeOndemandRef     = regexp.MustCompile(`["']((?:\./|\.\./|/responsive-web/|assets/|chunks/|client-web/)?[A-Za-z0-9_./-]*ondemand\.s[.-][A-Za-z0-9_-]+\.js)["']`)
+	reInlineJSAssetURL        = regexp.MustCompile(`https?://[^\s"'` + "`" + `<>)]+/[A-Za-z0-9_.~+-]+\.js`)
+	reRelativeJSAssetRef      = regexp.MustCompile(`["']((?:\./|\.\./|/responsive-web/|assets/|chunks/|client-web/)[A-Za-z0-9_.~+/-]+\.js)["']`)
 )
 
 // ParseHomeHTML extracts the twitter-site-verification key, 4 loading-x-anim SVG
@@ -1241,7 +1401,14 @@ func ParseHomeHTML(html string) (ParsedHomeHTML, error) {
 			tagURLs = append(tagURLs, cand.url)
 		}
 	}
-	out.LazyChunkURLs = extractLazyChunkURLsFromHTML(html, out.MainJSURL, tagURLs)
+	htmlLazyRes := extractLazyChunksFromHTML(html, out.MainJSURL, tagURLs)
+	out.LazyChunkURLs = htmlLazyRes.urls
+	out.lazyChunkScores = htmlLazyRes.scores
+	out.chunkURLByID = htmlLazyRes.chunkURLByID
+	out.opChunkIDs = htmlLazyRes.opChunkIDs
+	if out.OndemandJSURL == "" && htmlLazyRes.ondemandURL != "" {
+		out.OndemandJSURL = htmlLazyRes.ondemandURL
+	}
 
 	return out, nil
 }
@@ -1273,23 +1440,26 @@ func extractOndemandURLFromHTML(html, mainJSURL string) string {
 	if m := pickPreferredAssetURL(reInlineFullOndemandURL.FindAllString(html, -1)); m != "" {
 		return m
 	}
-	baseURL, baseErr := url.Parse(mainJSURL)
 
 	// Vite relative or root-relative import/reference inside inline <script type="module">.
-	if baseErr == nil {
-		if m := reRelativeOndemandRef.FindStringSubmatch(html); len(m) == 2 {
-			if ref, err := url.Parse(m[1]); err == nil {
-				return baseURL.ResolveReference(ref).String()
-			}
+	if m := reRelativeOndemandRef.FindStringSubmatch(html); len(m) == 2 {
+		if resolved := resolveRelativeAssetURL(mainJSURL, m[1]); resolved != "" {
+			return resolved
 		}
 	}
 
-	// Classic webpack chunk hash map: direct "ondemand.s":"<hash>"
-	if m := reWebpackOndemandDirect.FindStringSubmatch(html); len(m) == 2 {
-		return resolveWebpackChunkURL(mainJSURL, "ondemand.s", m[1])
+	// Scan each inline <script> block independently so chunk IDs never bleed across </script>.
+	for _, block := range extractNonLegacyInlineScripts(html) {
+		bm := parseWebpackBlockManifest(block, mainJSURL)
+		if bm.ondemandURL != "" {
+			return bm.ondemandURL
+		}
 	}
 
-	// Classic webpack numeric chunk ID indirection: 42:"ondemand.s" / "42":"ondemand.s" ... 42:"<hash>"
+	// Fallback for synthetic snippets without enclosing </script>.
+	if m := reWebpackOndemandDirect.FindStringSubmatch(html); len(m) == 2 {
+		return resolveWebpackChunkURLWithSuffix(mainJSURL, "ondemand.s", m[1], "a.js")
+	}
 	if u := extractWebpackNumericOndemandURL(html, mainJSURL, true); u != "" {
 		return u
 	}
@@ -1298,7 +1468,6 @@ func extractOndemandURLFromHTML(html, mainJSURL string) string {
 }
 
 func extractWebpackNumericOndemandURL(src, mainJSURL string, stopAtScriptClose bool) string {
-	const maxPostMatchWindow = 256 * 1024
 	locs := reWebpackOndemandNumID.FindAllStringSubmatchIndex(src, -1)
 	if len(locs) == 0 {
 		return ""
@@ -1310,24 +1479,21 @@ func extractWebpackNumericOndemandURL(src, mainJSURL string, stopAtScriptClose b
 		}
 		chunkID := src[loc[2]:loc[3]]
 		tail := src[loc[1]:]
-		if len(tail) > maxPostMatchWindow {
-			tail = tail[:maxPostMatchWindow]
-		}
 		if stopAtScriptClose {
 			if closeLoc := reScriptCloseTag.FindStringIndex(tail); closeLoc != nil {
 				tail = tail[:closeLoc[0]]
 			}
 		}
-		hashRe := regexp.MustCompile(`(?:\b|["'])` + regexp.QuoteMeta(chunkID) + `["']?\s*:\s*["']([A-Za-z0-9_-]{4,64})["']`)
+		hashRe := regexp.MustCompile(`(?:\b|["'])` + regexp.QuoteMeta(chunkID) + `["']?\s*:\s*["']([A-Za-z0-9_.-]{4,64})["']`)
 		for _, hm := range hashRe.FindAllStringSubmatch(tail, -1) {
 			if len(hm) != 2 || hm[1] == "ondemand.s" {
 				continue
 			}
 			if reWebpackHexHash.MatchString(hm[1]) {
-				return resolveWebpackChunkURL(mainJSURL, "ondemand.s", hm[1])
+				return resolveWebpackChunkURLWithSuffix(mainJSURL, "ondemand.s", hm[1], "a.js")
 			}
 			if fallbackURL == "" {
-				fallbackURL = resolveWebpackChunkURL(mainJSURL, "ondemand.s", hm[1])
+				fallbackURL = resolveWebpackChunkURLWithSuffix(mainJSURL, "ondemand.s", hm[1], "a.js")
 			}
 		}
 	}
@@ -1363,15 +1529,20 @@ func extractOndemandURLFromMainJS(mainJS string, mainURL *url.URL) string {
 		return m
 	}
 	if mainURL != nil {
+		mainJSURL := mainURL.String()
 		if m := reRelativeOndemandRef.FindStringSubmatch(mainJS); len(m) == 2 {
-			if ref, err := url.Parse(m[1]); err == nil {
-				return mainURL.ResolveReference(ref).String()
+			if resolved := resolveRelativeAssetURL(mainJSURL, m[1]); resolved != "" {
+				return resolved
 			}
 		}
-		if m := reWebpackOndemandDirect.FindStringSubmatch(mainJS); len(m) == 2 {
-			return resolveWebpackChunkURL(mainURL.String(), "ondemand.s", m[1])
+		bm := parseWebpackBlockManifest(mainJS, mainJSURL)
+		if bm.ondemandURL != "" {
+			return bm.ondemandURL
 		}
-		if u := extractWebpackNumericOndemandURL(mainJS, mainURL.String(), false); u != "" {
+		if m := reWebpackOndemandDirect.FindStringSubmatch(mainJS); len(m) == 2 {
+			return resolveWebpackChunkURLWithSuffix(mainJSURL, "ondemand.s", m[1], "a.js")
+		}
+		if u := extractWebpackNumericOndemandURL(mainJS, mainJSURL, false); u != "" {
 			return u
 		}
 	}
@@ -1385,7 +1556,409 @@ type scoredLazyChunk struct {
 	order     int
 }
 
-func extractLazyChunkURLsFromHTML(html, mainJSURL string, tagURLs []string) map[string][]string {
+type lazyChunkExtractionResult struct {
+	urls         map[string][]string
+	scores       map[string]map[string]int
+	chunkURLByID map[string]string
+	opChunkIDs   map[string]map[string]bool
+	ondemandURL  string
+}
+
+type webpackRuntimeTableSpan struct {
+	start  int
+	end    int
+	suffix string
+}
+
+type webpackBlockManifest struct {
+	ondemandURL  string
+	namedChunks  []webpackNamedChunkURL
+	chunkURLByID map[string]string
+	opChunkIDs   map[string]map[string]bool
+}
+
+type webpackNamedChunkURL struct {
+	chunkID   string
+	chunkName string
+	url       string
+}
+
+func extractNonLegacyInlineScripts(html string) []string {
+	matches := reInlineScriptBlock.FindAllStringSubmatch(html, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	blocks := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) != 3 {
+			continue
+		}
+		openAttrs, body := m[1], m[2]
+		if strings.TrimSpace(body) == "" || reNoModuleAttr.MatchString("<script "+openAttrs+">") {
+			continue
+		}
+		attrs := parseHTMLAttrs("<script " + openAttrs + ">")
+		if src := strings.TrimSpace(attrs["src"]); src != "" && isLegacyAssetURL(src) {
+			continue
+		}
+		blocks = append(blocks, body)
+	}
+	return blocks
+}
+
+func findInitialStateSpans(src string) [][2]int {
+	locs := reInitialStateMarker.FindAllStringIndex(src, -1)
+	if len(locs) == 0 {
+		return nil
+	}
+	var spans [][2]int
+	for _, loc := range locs {
+		bracePos := loc[1] - 1
+		if endPos := findMatchingCloseBrace(src, bracePos, len(src)); endPos > bracePos {
+			spans = append(spans, [2]int{bracePos, endPos})
+		}
+	}
+	return spans
+}
+
+func posInSpans(pos int, spans [][2]int) bool {
+	for _, sp := range spans {
+		if pos >= sp[0] && pos <= sp[1] {
+			return true
+		}
+	}
+	return false
+}
+
+func findRuntimeHashTableSpans(src string) []webpackRuntimeTableSpan {
+	locs := reWebpackRuntimeSuffix.FindAllStringSubmatchIndex(src, -1)
+	if len(locs) == 0 {
+		return nil
+	}
+	var spans []webpackRuntimeTableSpan
+	for _, loc := range locs {
+		if len(loc) < 4 || loc[2] < 0 || loc[3] < 0 {
+			continue
+		}
+		closeBracePos := loc[0]
+		suffix := src[loc[2]:loc[3]]
+		openBracePos := findEnclosingBraceStartBounded(src, closeBracePos, len(src))
+		if openBracePos >= 0 && openBracePos < closeBracePos {
+			spans = append(spans, webpackRuntimeTableSpan{
+				start:  openBracePos,
+				end:    closeBracePos,
+				suffix: suffix,
+			})
+		}
+	}
+	return spans
+}
+
+func suffixForPos(pos int, runtimeSpans []webpackRuntimeTableSpan) (string, bool) {
+	for _, sp := range runtimeSpans {
+		if pos >= sp.start && pos <= sp.end {
+			return sp.suffix, true
+		}
+	}
+	return "a.js", false
+}
+
+func parseWebpackBlockManifest(src, mainJSURL string) webpackBlockManifest {
+	var out webpackBlockManifest
+	if strings.TrimSpace(src) == "" {
+		return out
+	}
+
+	initialStateSpans := findInitialStateSpans(src)
+	runtimeSpans := findRuntimeHashTableSpans(src)
+	out.chunkURLByID = make(map[string]string)
+	out.opChunkIDs = make(map[string]map[string]bool)
+
+	recordOpChunkID := func(chunkID, chunkName string) {
+		if chunkID == "" {
+			return
+		}
+		for _, opName := range OptionalOperations() {
+			if scoreLazyChunkName(opName, chunkName) >= highConfidenceLazyScore {
+				if out.opChunkIDs[opName] == nil {
+					out.opChunkIDs[opName] = make(map[string]bool)
+				}
+				out.opChunkIDs[opName][chunkID] = true
+			}
+		}
+	}
+
+	// 1. Direct name -> hash / filename mappings (both quoted and unquoted keys).
+	for _, loc := range reWebpackChunkDirect.FindAllStringSubmatchIndex(src, -1) {
+		if len(loc) < 8 || posInSpans(loc[0], initialStateSpans) {
+			continue
+		}
+		var chunkName string
+		quotedKey := false
+		if loc[2] >= 0 && loc[3] >= 0 {
+			chunkName = src[loc[2]:loc[3]]
+			quotedKey = true
+		} else if loc[4] >= 0 && loc[5] >= 0 {
+			chunkName = src[loc[4]:loc[5]]
+		}
+		val := src[loc[6]:loc[7]]
+		if !isSafeWebpackChunkName(chunkName) {
+			continue
+		}
+		suffix, inRuntime := suffixForPos(loc[0], runtimeSpans)
+
+		if chunkName == "ondemand.s" {
+			resolved := resolveWebpackDirectValue(mainJSURL, chunkName, val, suffix)
+			if resolved != "" && out.ondemandURL == "" {
+				out.ondemandURL = resolved
+			}
+			continue
+		}
+
+		isExplicit := isExplicitWebpackChunkName(chunkName)
+		isBareOpt := matchesAnyOptionalChunk(chunkName)
+		if !isExplicit && !isBareOpt {
+			continue
+		}
+		// Require hex hash or .js suffix or confirmed runtime map for unquoted/bare keys
+		// (prevents matching incidental JS properties like `{Bookmarks: "Timeline"}`).
+		isJSPath := strings.HasSuffix(strings.ToLower(val), ".js")
+		if !isJSPath && !reWebpackSimpleHash.MatchString(val) {
+			continue
+		}
+		if (!quotedKey || !isExplicit || strings.EqualFold(chunkName, "api")) &&
+			!isJSPath && !inRuntime && !reWebpackHexHashWithA.MatchString(val) {
+			continue
+		}
+
+		resolved := resolveWebpackDirectValue(mainJSURL, chunkName, val, suffix)
+		if resolved == "" {
+			continue
+		}
+		if len(out.chunkURLByID) < maxRetainedManifestChunks {
+			out.chunkURLByID[chunkName] = resolved
+		}
+		recordOpChunkID(chunkName, chunkName)
+		if isBareOpt {
+			out.namedChunks = append(out.namedChunks, webpackNamedChunkURL{
+				chunkID:   chunkName,
+				chunkName: chunkName,
+				url:       resolved,
+			})
+		}
+	}
+
+	// 2. Collect numeric chunkID -> chunkName entries (both object map and ternary expressions).
+	type nameEntry struct {
+		chunkID   string
+		chunkName string
+		endPos    int
+	}
+	var nameEntries []nameEntry
+	nameByID := make(map[string]string)
+
+	addNameEntry := func(chunkID, chunkName string, startPos, endPos int) {
+		if posInSpans(startPos, initialStateSpans) || !isSafeWebpackChunkName(chunkName) {
+			return
+		}
+		if reWebpackHexHashWithA.MatchString(chunkName) && !matchesAnyOptionalChunk(chunkName) {
+			return
+		}
+		if chunkName != "ondemand.s" && !isExplicitWebpackChunkName(chunkName) && !matchesAnyOptionalChunk(chunkName) {
+			return
+		}
+		if _, exists := nameByID[chunkID]; !exists {
+			nameByID[chunkID] = chunkName
+		}
+		nameEntries = append(nameEntries, nameEntry{
+			chunkID:   chunkID,
+			chunkName: chunkName,
+			endPos:    endPos,
+		})
+	}
+
+	for _, loc := range reWebpackChunkNumID.FindAllStringSubmatchIndex(src, -1) {
+		if len(loc) >= 6 && loc[2] >= 0 && loc[4] >= 0 {
+			addNameEntry(src[loc[2]:loc[3]], src[loc[4]:loc[5]], loc[0], loc[1])
+		}
+	}
+	for _, re := range []*regexp.Regexp{reWebpackTernaryName1, reWebpackTernaryName2} {
+		for _, loc := range re.FindAllStringSubmatchIndex(src, -1) {
+			if len(loc) >= 6 && loc[2] >= 0 && loc[4] >= 0 {
+				addNameEntry(src[loc[2]:loc[3]], src[loc[4]:loc[5]], loc[0], loc[1])
+			}
+		}
+	}
+
+	// 3. Collect all numeric chunkID -> value candidates in this script block (linear O(N) pass).
+	type hashEntry struct {
+		val       string
+		startPos  int
+		suffix    string
+		inRuntime bool
+	}
+	hashesByID := make(map[string][]hashEntry)
+	allHashLocs := reWebpackNumericHashEntry.FindAllStringSubmatchIndex(src, -1)
+	for _, loc := range allHashLocs {
+		if len(loc) < 6 || loc[2] < 0 || loc[4] < 0 || posInSpans(loc[0], initialStateSpans) {
+			continue
+		}
+		cid := src[loc[2]:loc[3]]
+		val := src[loc[4]:loc[5]]
+		suffix, inRuntime := suffixForPos(loc[0], runtimeSpans)
+		hashesByID[cid] = append(hashesByID[cid], hashEntry{
+			val:       val,
+			startPos:  loc[0],
+			suffix:    suffix,
+			inRuntime: inRuntime,
+		})
+
+		// Unnamed numeric chunks inside a confirmed runtime hash table `{...}[e]+"a.js"`
+		// resolve to `<chunkID>.<hash><suffix>` so Promise.all / route loaders can reach them.
+		if inRuntime && len(out.chunkURLByID) < maxRetainedManifestChunks {
+			if _, hasName := nameByID[cid]; !hasName && reWebpackHexHashWithA.MatchString(val) {
+				out.chunkURLByID[cid] = resolveWebpackDirectValue(mainJSURL, cid, val, suffix)
+			}
+		}
+	}
+
+	// Resolve each named chunkID against hashesByID (preferring hex hashes after nameEntry,
+	// then hex hashes before nameEntry in the same script, then non-hex synthetic tokens).
+	confirmedHashBraceStarts := make(map[int]string)
+	for _, ne := range nameEntries {
+		list := hashesByID[ne.chunkID]
+		if len(list) == 0 {
+			continue
+		}
+		var hexAfter, hexBefore, otherAfter, otherBefore *hashEntry
+		for i := range list {
+			he := &list[i]
+			if he.val == ne.chunkName {
+				continue
+			}
+			isHex := reWebpackHexHash.MatchString(he.val) || (he.suffix == ".js" && reWebpackHexHashWithA.MatchString(he.val))
+			if he.startPos >= ne.endPos {
+				if isHex && hexAfter == nil {
+					hexAfter = he
+				} else if !isHex && otherAfter == nil && reWebpackSimpleHash.MatchString(he.val) {
+					otherAfter = he
+				}
+			} else {
+				if isHex && hexBefore == nil {
+					hexBefore = he
+				} else if !isHex && otherBefore == nil && reWebpackSimpleHash.MatchString(he.val) {
+					otherBefore = he
+				}
+			}
+		}
+		var chosen *hashEntry
+		switch {
+		case hexAfter != nil:
+			chosen = hexAfter
+		case hexBefore != nil:
+			chosen = hexBefore
+		case otherAfter != nil:
+			chosen = otherAfter
+		case otherBefore != nil:
+			chosen = otherBefore
+		}
+		if chosen == nil {
+			continue
+		}
+		resolved := resolveWebpackDirectValue(mainJSURL, ne.chunkName, chosen.val, chosen.suffix)
+		if resolved == "" {
+			continue
+		}
+		if !chosen.inRuntime {
+			if openPos := findEnclosingBraceStartBounded(src, chosen.startPos, 256*1024); openPos >= 0 {
+				confirmedHashBraceStarts[openPos] = chosen.suffix
+			}
+		}
+		if ne.chunkName == "ondemand.s" {
+			if out.ondemandURL == "" {
+				out.ondemandURL = resolved
+			}
+			continue
+		}
+		if len(out.chunkURLByID) < maxRetainedManifestChunks {
+			out.chunkURLByID[ne.chunkID] = resolved
+		}
+		recordOpChunkID(ne.chunkID, ne.chunkName)
+		if matchesAnyOptionalChunk(ne.chunkName) {
+			out.namedChunks = append(out.namedChunks, webpackNamedChunkURL{
+				chunkID:   ne.chunkID,
+				chunkName: ne.chunkName,
+				url:       resolved,
+			})
+		}
+	}
+
+	// Also register unnamed numeric hex entries from any hash object that resolved at least
+	// one named chunk (e.g. standalone hash tables assigned to a variable).
+	if len(confirmedHashBraceStarts) > 0 && len(out.chunkURLByID) < maxRetainedManifestChunks {
+		type spanWithSuffix struct {
+			start  int
+			end    int
+			suffix string
+		}
+		var confirmedSpans []spanWithSuffix
+		for openPos, sfx := range confirmedHashBraceStarts {
+			if endPos := findMatchingCloseBrace(src, openPos, len(src)); endPos > openPos {
+				confirmedSpans = append(confirmedSpans, spanWithSuffix{start: openPos, end: endPos, suffix: sfx})
+			}
+		}
+		for cid, list := range hashesByID {
+			if len(out.chunkURLByID) >= maxRetainedManifestChunks {
+				break
+			}
+			if _, exists := out.chunkURLByID[cid]; exists {
+				continue
+			}
+			if _, hasName := nameByID[cid]; hasName {
+				continue
+			}
+			for _, he := range list {
+				if !reWebpackHexHashWithA.MatchString(he.val) {
+					continue
+				}
+				for _, sp := range confirmedSpans {
+					if he.startPos >= sp.start && he.startPos <= sp.end {
+						out.chunkURLByID[cid] = resolveWebpackDirectValue(mainJSURL, cid, he.val, sp.suffix)
+						break
+					}
+				}
+				if _, ok := out.chunkURLByID[cid]; ok {
+					break
+				}
+			}
+		}
+	}
+
+	return out
+}
+
+func resolveWebpackDirectValue(mainJSURL, chunkName, val, suffix string) string {
+	trimmed := strings.TrimSpace(val)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "https://") || strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "//") {
+		return normalizeProtocolRelativeURL(trimmed)
+	}
+	if strings.HasSuffix(strings.ToLower(trimmed), ".js") {
+		if strings.Contains(trimmed, "/") {
+			return resolveRelativeAssetURL(mainJSURL, trimmed)
+		}
+		return resolveRelativeAssetURL(mainJSURL, "./"+trimmed)
+	}
+	return resolveWebpackChunkURLWithSuffix(mainJSURL, chunkName, trimmed, suffix)
+}
+
+func extractLazyChunksFromHTML(html, mainJSURL string, tagURLs []string) lazyChunkExtractionResult {
+	var res lazyChunkExtractionResult
+	res.chunkURLByID = make(map[string]string)
+	res.opChunkIDs = make(map[string]map[string]bool)
+
 	perOp := make(map[string][]scoredLazyChunk)
 	order := 0
 	addCand := func(rawURL, chunkName string) {
@@ -1415,51 +1988,87 @@ func extractLazyChunkURLsFromHTML(html, mainJSURL string, tagURLs []string) map[
 		}
 	}
 
-	// 2. Full inline JS URLs and relative JS references (e.g. Vite modulepreload/import).
+	// 2. Full inline JS URLs and relative JS references (e.g. Vite modulepreload/import/__vite__mapDeps).
 	for _, u := range reInlineJSAssetURL.FindAllString(html, -1) {
 		addCand(u, urlBaseName(u))
 	}
-	if baseURL, err := url.Parse(mainJSURL); err == nil {
-		for _, m := range reRelativeJSAssetRef.FindAllStringSubmatch(html, -1) {
-			if len(m) != 2 {
-				continue
-			}
-			if ref, rErr := url.Parse(m[1]); rErr == nil {
-				resolved := baseURL.ResolveReference(ref).String()
+	for _, m := range reRelativeJSAssetRef.FindAllStringSubmatch(html, -1) {
+		if len(m) == 2 {
+			if resolved := resolveRelativeAssetURL(mainJSURL, m[1]); resolved != "" {
 				addCand(resolved, urlBaseName(resolved))
 			}
 		}
 	}
 
-	// 3. Classic webpack chunk maps (both 2-table numeric chunk IDs and direct name->hash maps).
-	extractWebpackLazyChunkCandidates(html, mainJSURL, true, addCand)
+	// 3. Per-<script> webpack manifests (isolated per inline script so IDs never bleed across </script>).
+	blocks := extractNonLegacyInlineScripts(html)
+	if len(blocks) == 0 && strings.TrimSpace(html) != "" {
+		blocks = []string{html}
+	}
+	for _, block := range blocks {
+		bm := parseWebpackBlockManifest(block, mainJSURL)
+		if res.ondemandURL == "" && bm.ondemandURL != "" {
+			res.ondemandURL = bm.ondemandURL
+		}
+		for _, nc := range bm.namedChunks {
+			addCand(nc.url, nc.chunkName)
+		}
+		for k, v := range bm.chunkURLByID {
+			if len(res.chunkURLByID) >= maxRetainedManifestChunks {
+				break
+			}
+			if _, exists := res.chunkURLByID[k]; !exists {
+				res.chunkURLByID[k] = v
+			}
+		}
+		for opName, ids := range bm.opChunkIDs {
+			if res.opChunkIDs[opName] == nil {
+				res.opChunkIDs[opName] = make(map[string]bool)
+			}
+			for id := range ids {
+				res.opChunkIDs[opName][id] = true
+			}
+		}
+	}
 
-	return rankLazyChunkMap(perOp)
+	res.urls, res.scores = rankLazyChunkMapWithScores(perOp)
+	return res
 }
 
-func extractLazyChunkURLsFromMainJS(mainJS string, mainURL *url.URL) map[string][]string {
+func extractLazyChunksFromMainJS(
+	mainJS string,
+	mainURL *url.URL,
+	homeChunkURLByID map[string]string,
+	homeOpChunkIDs map[string]map[string]bool,
+) lazyChunkExtractionResult {
+	var res lazyChunkExtractionResult
 	if mainJS == "" || mainURL == nil {
-		return nil
+		return res
 	}
 	mainJSURL := mainURL.String()
 	perOp := make(map[string][]scoredLazyChunk)
 	order := 0
+	addExplicit := func(opName, rawURL, chunkName string, score int) {
+		if rawURL == "" || score <= 0 || isLegacyAssetURL(rawURL) || isIgnoredChunkName(chunkName) {
+			return
+		}
+		order++
+		perOp[opName] = append(perOp[opName], scoredLazyChunk{
+			url:       rawURL,
+			chunkName: chunkName,
+			score:     score,
+			order:     order,
+		})
+	}
 	addCand := func(rawURL, chunkName string) {
 		if rawURL == "" || isLegacyAssetURL(rawURL) {
 			return
 		}
 		for _, opName := range OptionalOperations() {
 			sc := scoreLazyChunkName(opName, chunkName)
-			if sc <= 0 {
-				continue
+			if sc > 0 {
+				addExplicit(opName, rawURL, chunkName, sc)
 			}
-			order++
-			perOp[opName] = append(perOp[opName], scoredLazyChunk{
-				url:       rawURL,
-				chunkName: chunkName,
-				score:     sc,
-				order:     order,
-			})
 		}
 	}
 
@@ -1467,85 +2076,189 @@ func extractLazyChunkURLsFromMainJS(mainJS string, mainURL *url.URL) map[string]
 		addCand(u, urlBaseName(u))
 	}
 	for _, m := range reRelativeJSAssetRef.FindAllStringSubmatch(mainJS, -1) {
-		if len(m) != 2 {
-			continue
-		}
-		if ref, rErr := url.Parse(m[1]); rErr == nil {
-			resolved := mainURL.ResolveReference(ref).String()
-			addCand(resolved, urlBaseName(resolved))
-		}
-	}
-	extractWebpackLazyChunkCandidates(mainJS, mainJSURL, false, addCand)
-
-	return rankLazyChunkMap(perOp)
-}
-
-func extractWebpackLazyChunkCandidates(
-	src, mainJSURL string,
-	stopAtScriptClose bool,
-	add func(rawURL, chunkName string),
-) {
-	const maxPostMatchWindow = 256 * 1024
-
-	// A. Direct name->hash map: "bundle.Bookmarks":"<hash>", "shared~bundle.Bookmarks":"<hash>", "endpoints":"<hash>"
-	for _, m := range reWebpackChunkDirect.FindAllStringSubmatch(src, -1) {
-		if len(m) != 3 {
-			continue
-		}
-		chunkName, hash := m[1], m[2]
-		if !isSafeWebpackChunkName(chunkName) || !isExplicitWebpackChunkName(chunkName) {
-			continue
-		}
-		if strings.EqualFold(chunkName, "api") && !reWebpackHexHash.MatchString(hash) {
-			continue
-		}
-		if !matchesAnyOptionalChunk(chunkName) {
-			continue
-		}
-		add(resolveWebpackChunkURL(mainJSURL, chunkName, hash), chunkName)
-	}
-
-	// B. Two-table numeric chunk ID map: 412:"bundle.Bookmarks" ... 412:"<hash>"
-	for _, loc := range reWebpackChunkNumID.FindAllStringSubmatchIndex(src, -1) {
-		if len(loc) < 6 || loc[2] < 0 || loc[3] < 0 || loc[4] < 0 || loc[5] < 0 {
-			continue
-		}
-		chunkID := src[loc[2]:loc[3]]
-		chunkName := src[loc[4]:loc[5]]
-		if !isSafeWebpackChunkName(chunkName) || !matchesAnyOptionalChunk(chunkName) {
-			continue
-		}
-		tail := src[loc[1]:]
-		if len(tail) > maxPostMatchWindow {
-			tail = tail[:maxPostMatchWindow]
-		}
-		if stopAtScriptClose {
-			if closeLoc := reScriptCloseTag.FindStringIndex(tail); closeLoc != nil {
-				tail = tail[:closeLoc[0]]
+		if len(m) == 2 {
+			if resolved := resolveRelativeAssetURL(mainJSURL, m[1]); resolved != "" {
+				addCand(resolved, urlBaseName(resolved))
 			}
 		}
-		hashRe := regexp.MustCompile(`(?:\b|["'])` + regexp.QuoteMeta(chunkID) + `["']?\s*:\s*["']([A-Za-z0-9_-]{4,32})["']`)
-		var bestHash, fallbackHash string
-		for _, hm := range hashRe.FindAllStringSubmatch(tail, -1) {
-			if len(hm) != 2 || hm[1] == chunkName {
+	}
+
+	bm := parseWebpackBlockManifest(mainJS, mainJSURL)
+	res.ondemandURL = bm.ondemandURL
+	res.chunkURLByID = bm.chunkURLByID
+	for _, nc := range bm.namedChunks {
+		addCand(nc.url, nc.chunkName)
+	}
+
+	combinedChunkURLs := make(map[string]string, len(homeChunkURLByID)+len(bm.chunkURLByID))
+	for k, v := range homeChunkURLByID {
+		combinedChunkURLs[k] = v
+	}
+	for k, v := range bm.chunkURLByID {
+		if _, exists := combinedChunkURLs[k]; !exists {
+			combinedChunkURLs[k] = v
+		}
+	}
+
+	combinedOpIDs := make(map[string]map[string]bool)
+	for _, opName := range OptionalOperations() {
+		combinedOpIDs[opName] = make(map[string]bool)
+		for id := range homeOpChunkIDs[opName] {
+			combinedOpIDs[opName][id] = true
+		}
+		for id := range bm.opChunkIDs[opName] {
+			combinedOpIDs[opName][id] = true
+		}
+	}
+
+	// 1. Co-loaded Promise.all([n.e(a), n.e(b), ...]) sibling chunks in main.*.js:
+	// when a route loads bundle.Bookmarks alongside an unnamed/shared split chunk (e.g. 4812.<hash>a.js),
+	// link that sibling chunk directly to OpBookmarks (and symmetrically for OpLikes).
+	if len(combinedChunkURLs) > 0 {
+		for _, m := range reWebpackPromiseAll.FindAllStringSubmatch(mainJS, -1) {
+			if len(m) != 2 {
 				continue
 			}
-			if reWebpackHexHash.MatchString(hm[1]) {
-				bestHash = hm[1]
-				break
+			ids := extractEnsureChunkIDs(m[1])
+			if len(ids) < 2 {
+				continue
 			}
-			if fallbackHash == "" {
-				fallbackHash = hm[1]
+			for _, opName := range OptionalOperations() {
+				matchedOp := false
+				for _, cid := range ids {
+					if combinedOpIDs[opName][cid] || scoreLazyChunkName(opName, cid) >= highConfidenceLazyScore {
+						matchedOp = true
+						break
+					}
+				}
+				if !matchedOp {
+					continue
+				}
+				for _, cid := range ids {
+					if combinedOpIDs[opName][cid] {
+						continue
+					}
+					if u := combinedChunkURLs[cid]; u != "" {
+						base := urlBaseName(u)
+						if !isIgnoredChunkName(base) {
+							addExplicit(opName, u, base, 96)
+						}
+					}
+				}
 			}
-		}
-		chosen := bestHash
-		if chosen == "" {
-			chosen = fallbackHash
-		}
-		if chosen != "" {
-			add(resolveWebpackChunkURL(mainJSURL, chunkName, chosen), chunkName)
 		}
 	}
+
+	// 2. Route-definition discovery in main.*.js (e.g. path:"/i/bookmarks" -> loader n.e(...) or import(...))
+	// so even 100% numeric unnamed chunk builds locate the exact route bundles.
+	extractRouteLinkedChunks(mainJS, mainJSURL, reBookmarksRoutePath, OpBookmarks, combinedChunkURLs, addExplicit)
+	extractRouteLinkedChunks(mainJS, mainJSURL, reLikesRoutePath, OpLikes, combinedChunkURLs, addExplicit)
+
+	res.urls, res.scores = rankLazyChunkMapWithScores(perOp)
+	return res
+}
+
+func extractRouteLinkedChunks(
+	mainJS, mainJSURL string,
+	routeRe *regexp.Regexp,
+	opName string,
+	chunkURLByID map[string]string,
+	addExplicit func(opName, rawURL, chunkName string, score int),
+) {
+	locs := routeRe.FindAllStringIndex(mainJS, -1)
+	for _, loc := range locs {
+		win, ok := extractEnclosingJSObject(mainJS, loc[0])
+		if !ok || len(win) > 8192 {
+			start := max(0, loc[0]-400)
+			end := min(len(mainJS), loc[1]+800)
+			win = mainJS[start:end]
+		}
+		for _, cid := range extractEnsureChunkIDs(win) {
+			if u := chunkURLByID[cid]; u != "" {
+				base := urlBaseName(u)
+				if !isIgnoredChunkName(base) {
+					addExplicit(opName, u, base, 94)
+				}
+			}
+		}
+		for _, u := range reInlineJSAssetURL.FindAllString(win, -1) {
+			base := urlBaseName(u)
+			if !isIgnoredChunkName(base) {
+				addExplicit(opName, u, base, 94)
+			}
+		}
+		for _, m := range reRelativeJSAssetRef.FindAllStringSubmatch(win, -1) {
+			if len(m) == 2 {
+				if resolved := resolveRelativeAssetURL(mainJSURL, m[1]); resolved != "" {
+					base := urlBaseName(resolved)
+					if !isIgnoredChunkName(base) {
+						addExplicit(opName, uOrEmpty(resolved), base, 94)
+					}
+				}
+			}
+		}
+	}
+}
+
+func uOrEmpty(s string) string { return s }
+
+func extractEnsureChunkIDs(snippet string) []string {
+	matches := reWebpackEnsureCall.FindAllStringSubmatch(snippet, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(matches))
+	ids := make([]string, 0, len(matches))
+	for _, m := range matches {
+		cid := m[1]
+		if cid == "" {
+			cid = m[2]
+		}
+		if cid == "" || seen[cid] {
+			continue
+		}
+		seen[cid] = true
+		ids = append(ids, cid)
+	}
+	return ids
+}
+
+func extractChildChunkURLsFromLazyJS(lazyJS, lazyURL string, chunkURLByID map[string]string) []string {
+	if lazyJS == "" {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	push := func(u string) {
+		if u == "" || isLegacyAssetURL(u) || seen[u] {
+			return
+		}
+		base := urlBaseName(u)
+		if isIgnoredChunkName(base) {
+			return
+		}
+		seen[u] = true
+		out = append(out, u)
+	}
+
+	if len(chunkURLByID) > 0 {
+		for _, cid := range extractEnsureChunkIDs(lazyJS) {
+			if u := chunkURLByID[cid]; u != "" {
+				push(u)
+			}
+		}
+	}
+	for _, u := range reInlineJSAssetURL.FindAllString(lazyJS, -1) {
+		push(u)
+	}
+	for _, m := range reRelativeJSAssetRef.FindAllStringSubmatch(lazyJS, -1) {
+		if len(m) == 2 {
+			if resolved := resolveRelativeAssetURL(lazyURL, m[1]); resolved != "" {
+				push(resolved)
+			}
+		}
+	}
+	return out
 }
 
 func isSafeWebpackChunkName(name string) bool {
@@ -1559,9 +2272,14 @@ func isExplicitWebpackChunkName(name string) bool {
 	lower := strings.ToLower(strings.TrimSpace(name))
 	return strings.HasPrefix(lower, "bundle.") ||
 		strings.HasPrefix(lower, "shared~") ||
+		strings.HasPrefix(lower, "vendors~") ||
+		strings.HasPrefix(lower, "default~") ||
 		strings.HasPrefix(lower, "loader.") ||
 		strings.HasPrefix(lower, "ondemand.") ||
 		strings.HasPrefix(lower, "chunk.") ||
+		strings.HasPrefix(lower, "route.") ||
+		strings.HasPrefix(lower, "page.") ||
+		strings.HasPrefix(lower, "modules.") ||
 		strings.HasPrefix(lower, "graphql.") ||
 		lower == "endpoints" ||
 		strings.HasPrefix(lower, "endpoints.") ||
@@ -1577,13 +2295,13 @@ func matchesAnyOptionalChunk(chunkName string) bool {
 	return false
 }
 
-func scoreLazyChunkName(opName, chunkName string) int {
+func isIgnoredChunkName(chunkName string) bool {
 	name := strings.ToLower(strings.TrimSpace(chunkName))
 	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, " \t\r\n?#\\") {
-		return 0
+		return true
 	}
 	name = strings.TrimSuffix(name, ".js")
-	if name == "" ||
+	return name == "" ||
 		reMainFile.MatchString(name+".js") ||
 		reOndemandFile.MatchString(name+".js") ||
 		name == "ondemand.s" ||
@@ -1595,21 +2313,38 @@ func scoreLazyChunkName(opName, chunkName string) int {
 		strings.Contains(name, "icons") ||
 		strings.HasPrefix(name, "vendor") ||
 		strings.HasPrefix(name, "runtime") ||
-		strings.HasPrefix(name, "polyfills") {
+		strings.HasPrefix(name, "polyfills")
+}
+
+func scoreLazyChunkName(opName, chunkName string) int {
+	if isIgnoredChunkName(chunkName) {
 		return 0
 	}
+	name := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(chunkName)), ".js")
 
 	switch opName {
 	case OpBookmarks:
 		switch {
-		case name == "bundle.bookmarks" || strings.HasPrefix(name, "bundle.bookmarks.") || strings.HasPrefix(name, "bundle.bookmarks-"):
-			return 110
-		case strings.Contains(name, "bundle.bookmarks"):
-			return 100
-		case name == "bookmarks" || strings.HasPrefix(name, "bookmarks.") || strings.HasPrefix(name, "bookmarks-"):
-			return 95
+		case name == "bundle.bookmarks" || strings.HasPrefix(name, "bundle.bookmarks.") || strings.HasPrefix(name, "bundle.bookmarks-") ||
+			name == "bundle.bookmark" || strings.HasPrefix(name, "bundle.bookmark.") || strings.HasPrefix(name, "bundle.bookmark-"):
+			return 115
+		case strings.Contains(name, "loader.") && hasAnyChunkToken(name, "bookmark", "bookmarks", "bookmarktimeline", "bookmarkstimeline"):
+			return 112
+		case strings.Contains(name, "bundle.bookmarks") ||
+			strings.Contains(name, "bundle.bookmark.") ||
+			strings.Contains(name, "bundle.bookmark~") ||
+			strings.HasSuffix(name, "bundle.bookmark"):
+			return 108
+		case name == "bookmarks" || strings.HasPrefix(name, "bookmarks.") || strings.HasPrefix(name, "bookmarks-") ||
+			name == "bookmark" || strings.HasPrefix(name, "bookmark.") || strings.HasPrefix(name, "bookmark-") ||
+			hasAnyChunkToken(name, "bookmarktimeline", "bookmarkstimeline"):
+			return 102
+		case hasAnyChunkToken(name, "bookmark", "bookmarks"):
+			return 98
 		case strings.Contains(name, "bookmark"):
-			return 80
+			// Secondary bookmark chunks (such as bundle.BookmarkFolders) stay >= highConfidenceLazyScore
+			// if needed, while ranking strictly behind primary Bookmark / loader / shared chunks.
+			return 75
 		case name == "endpoints" || strings.Contains(name, "endpoints") || strings.Contains(name, "graphql"):
 			return 50
 		case name == "api" || strings.HasPrefix(name, "api.") || strings.HasPrefix(name, "api-"):
@@ -1617,18 +2352,25 @@ func scoreLazyChunkName(opName, chunkName string) int {
 		}
 	case OpLikes:
 		switch {
-		case name == "bundle.likes" || strings.HasPrefix(name, "bundle.likes.") || strings.HasPrefix(name, "bundle.likes-"):
-			return 110
-		case strings.Contains(name, "bundle.likes"):
-			return 100
-		case name == "likes" || strings.HasPrefix(name, "likes.") || strings.HasPrefix(name, "likes-"):
-			return 95
-		case containsChunkToken(name, "likes"):
-			return 80
-		case name == "bundle.profile" || strings.HasPrefix(name, "bundle.profile.") || strings.HasPrefix(name, "bundle.profile-"):
-			return 65
-		case strings.Contains(name, "bundle.profile"):
-			return 60
+		case name == "bundle.likes" || strings.HasPrefix(name, "bundle.likes.") || strings.HasPrefix(name, "bundle.likes-") ||
+			name == "bundle.like" || strings.HasPrefix(name, "bundle.like.") || strings.HasPrefix(name, "bundle.like-"):
+			return 115
+		case strings.Contains(name, "loader.") && hasAnyChunkToken(name, "likes", "like", "likestimeline", "favoritestimeline"):
+			return 112
+		case strings.Contains(name, "bundle.likes") ||
+			strings.Contains(name, "bundle.like.") ||
+			strings.Contains(name, "bundle.like~") ||
+			strings.HasSuffix(name, "bundle.like"):
+			return 108
+		case name == "likes" || strings.HasPrefix(name, "likes.") || strings.HasPrefix(name, "likes-") ||
+			hasAnyChunkToken(name, "likestimeline", "favoritestimeline"):
+			return 102
+		case hasAnyChunkToken(name, "likes"):
+			return 98
+		case name == "bundle.profile" || strings.HasPrefix(name, "bundle.profile.") || strings.HasPrefix(name, "bundle.profile-") ||
+			strings.Contains(name, "bundle.profile") ||
+			(strings.Contains(name, "loader.") && hasAnyChunkToken(name, "profile")):
+			return 75
 		case name == "endpoints" || strings.Contains(name, "endpoints") || strings.Contains(name, "graphql"):
 			return 50
 		case name == "api" || strings.HasPrefix(name, "api.") || strings.HasPrefix(name, "api-"):
@@ -1639,22 +2381,29 @@ func scoreLazyChunkName(opName, chunkName string) int {
 }
 
 func containsChunkToken(name, token string) bool {
+	return hasAnyChunkToken(name, token)
+}
+
+func hasAnyChunkToken(name string, tokens ...string) bool {
 	parts := strings.FieldsFunc(name, func(r rune) bool {
 		return r == '.' || r == '~' || r == '-' || r == '_' || r == '/'
 	})
 	for _, p := range parts {
-		if p == token {
-			return true
+		for _, want := range tokens {
+			if p == want {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func rankLazyChunkMap(perOp map[string][]scoredLazyChunk) map[string][]string {
+func rankLazyChunkMapWithScores(perOp map[string][]scoredLazyChunk) (map[string][]string, map[string]map[string]int) {
 	if len(perOp) == 0 {
-		return nil
+		return nil, nil
 	}
-	out := make(map[string][]string, len(perOp))
+	outURLs := make(map[string][]string, len(perOp))
+	outScores := make(map[string]map[string]int, len(perOp))
 	for opName, list := range perOp {
 		if len(list) == 0 {
 			continue
@@ -1669,54 +2418,116 @@ func rankLazyChunkMap(perOp map[string][]scoredLazyChunk) map[string][]string {
 			return list[i].order < list[j].order
 		})
 		seen := make(map[string]bool, len(list))
+		scores := make(map[string]int, min(len(list), maxLazyCandidatesPerOp))
 		urls := make([]string, 0, min(len(list), maxLazyCandidatesPerOp))
 		for _, item := range list {
 			if seen[item.url] {
+				if item.score > scores[item.url] {
+					scores[item.url] = item.score
+				}
 				continue
 			}
 			seen[item.url] = true
+			scores[item.url] = item.score
 			urls = append(urls, item.url)
 			if len(urls) >= maxLazyCandidatesPerOp {
 				break
 			}
 		}
 		if len(urls) > 0 {
-			out[opName] = urls
+			outURLs[opName] = urls
+			outScores[opName] = scores
 		}
 	}
-	if len(out) == 0 {
-		return nil
+	if len(outURLs) == 0 {
+		return nil, nil
 	}
-	return out
+	return outURLs, outScores
 }
 
-func filterAndMergeLazyChunkURLs(allowLocalhost bool, maps ...map[string][]string) map[string][]string {
-	out := make(map[string][]string)
+func filterAndMergeLazyChunkResults(
+	allowLocalhost bool,
+	results ...lazyChunkExtractionResult,
+) (map[string][]string, map[string]map[string]int) {
+	type mergedItem struct {
+		url   string
+		score int
+		order int
+	}
+	outURLs := make(map[string][]string)
+	outScores := make(map[string]map[string]int)
 	for _, opName := range OptionalOperations() {
-		seen := make(map[string]bool)
-		var urls []string
-		for _, m := range maps {
-			for _, rawURL := range m[opName] {
+		byURL := make(map[string]*mergedItem)
+		var items []*mergedItem
+		order := 0
+		for _, r := range results {
+			for _, rawURL := range r.urls[opName] {
 				u, err := ValidateStaticAssetURL(rawURL, allowLocalhost)
 				if err != nil {
 					continue
 				}
 				clean := u.String()
-				if seen[clean] {
+				sc := r.scores[opName][rawURL]
+				if sc == 0 {
+					sc = r.scores[opName][clean]
+				}
+				if sc == 0 {
+					sc = scoreLazyChunkName(opName, urlBaseName(clean))
+				}
+				if existing, ok := byURL[clean]; ok {
+					if sc > existing.score {
+						existing.score = sc
+					}
 					continue
 				}
-				seen[clean] = true
-				urls = append(urls, clean)
-				if len(urls) >= maxLazyCandidatesPerOp {
-					break
-				}
-			}
-			if len(urls) >= maxLazyCandidatesPerOp {
-				break
+				order++
+				item := &mergedItem{url: clean, score: sc, order: order}
+				byURL[clean] = item
+				items = append(items, item)
 			}
 		}
-		if len(urls) > 0 {
-			out[opName] = urls
+		if len(items) == 0 {
+			continue
+		}
+		sort.SliceStable(items, func(i, j int) bool {
+			if items[i].score != items[j].score {
+				return items[i].score > items[j].score
+			}
+			return items[i].order < items[j].order
+		})
+		if len(items) > maxLazyCandidatesPerOp {
+			items = items[:maxLazyCandidatesPerOp]
+		}
+		urls := make([]string, 0, len(items))
+		scores := make(map[string]int, len(items))
+		for _, it := range items {
+			urls = append(urls, it.url)
+			scores[it.url] = it.score
+		}
+		outURLs[opName] = urls
+		outScores[opName] = scores
+	}
+	if len(outURLs) == 0 {
+		return nil, nil
+	}
+	return outURLs, outScores
+}
+
+func filterAndMergeChunkIDMap(allowLocalhost bool, maps ...map[string]string) map[string]string {
+	out := make(map[string]string)
+	for _, m := range maps {
+		for k, rawURL := range m {
+			if len(out) >= maxRetainedManifestChunks {
+				return out
+			}
+			if _, exists := out[k]; exists {
+				continue
+			}
+			u, err := ValidateStaticAssetURL(rawURL, allowLocalhost)
+			if err != nil {
+				continue
+			}
+			out[k] = u.String()
 		}
 	}
 	if len(out) == 0 {
@@ -1725,16 +2536,59 @@ func filterAndMergeLazyChunkURLs(allowLocalhost bool, maps ...map[string][]strin
 	return out
 }
 
+func resolveRelativeAssetURL(baseJSURL, relRef string) string {
+	trimmed := strings.TrimSpace(relRef)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "https://") || strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "//") {
+		return normalizeProtocolRelativeURL(trimmed)
+	}
+	baseU, err := url.Parse(baseJSURL)
+	if err != nil {
+		return ""
+	}
+	refU, err := url.Parse(trimmed)
+	if err != nil {
+		return ""
+	}
+	// Handle Vite __vite__mapDeps / webpack publicPath-relative paths like
+	// "assets/Bookmarks-xxx.js", "chunks/Bookmarks-xxx.js", or "client-web/bundle.Bookmarks.js"
+	// when baseJSURL already sits inside "/assets/" or "/client-web/".
+	if !strings.HasPrefix(trimmed, ".") && !strings.HasPrefix(trimmed, "/") {
+		if slash := strings.IndexByte(trimmed, '/'); slash > 0 {
+			firstSeg := trimmed[:slash]
+			baseDir := path.Dir(baseU.Path)
+			lastDirSeg := path.Base(baseDir)
+			if lastDirSeg == firstSeg || (lastDirSeg == "assets" && firstSeg == "chunks") {
+				parentCopy := *baseU
+				parentCopy.Path = strings.TrimSuffix(path.Dir(baseDir), "/") + "/"
+				parentCopy.RawQuery = ""
+				parentCopy.Fragment = ""
+				return parentCopy.ResolveReference(refU).String()
+			}
+		}
+	}
+	return baseU.ResolveReference(refU).String()
+}
+
 func resolveWebpackChunkURL(mainJSURL, chunkName, hash string) string {
+	return resolveWebpackChunkURLWithSuffix(mainJSURL, chunkName, hash, "a.js")
+}
+
+func resolveWebpackChunkURLWithSuffix(mainJSURL, chunkName, hash, suffix string) string {
+	if suffix == "" {
+		suffix = "a.js"
+	}
 	u, err := url.Parse(mainJSURL)
 	if err != nil {
-		return "https://" + StaticAssetHost + StaticAssetPathPrefix + "client-web/" + chunkName + "." + hash + "a.js"
+		return "https://" + StaticAssetHost + StaticAssetPathPrefix + "client-web/" + chunkName + "." + hash + suffix
 	}
 	dir := path.Dir(u.Path)
 	if dir == "." || dir == "/" {
 		dir = StaticAssetPathPrefix + "client-web"
 	}
-	file := chunkName + "." + hash + "a.js"
+	file := chunkName + "." + hash + suffix
 	u.Path = strings.TrimSuffix(dir, "/") + "/" + file
 	u.RawQuery = ""
 	u.Fragment = ""
@@ -1771,25 +2625,85 @@ func parseHTMLAttrs(tag string) map[string]string {
 	return attrs
 }
 
-// ---------- main.*.js Parsing (Webpack + Vite) ----------
+// ---------- main.*.js & Lazy Chunk Operation Parsing (Webpack + Vite) ----------
+
+const graphqlOperationMatchNames = `UserByScreenName|UserByRestId|UserTweets|TweetDetail|Following|Bookmarks|BookmarkTimeline|BookmarksTimeline|Likes`
 
 var (
 	reExplicitBearerLit = regexp.MustCompile(`["'` + "`" + `]Bearer\s+([A-Za-z0-9%+/=._-]{16,256})["'` + "`" + `]`)
 	reNamedBearerAssign = regexp.MustCompile(`(?i)\b(?:bearer[_]?token|webBearer|public[_]?bearer)\b\s*[:=]\s*["'` + "`" + `]([A-Za-z0-9%+/=._-]{16,256})["'` + "`" + `]`)
 	reClassicWebBearer  = regexp.MustCompile(`["'` + "`" + `](A{16,}[A-Za-z0-9%+/=_-]{40,200})["'` + "`" + `]`)
 	reValidQueryID      = regexp.MustCompile(`^[A-Za-z0-9_-]{6,64}$`)
-	reOpNameMatch       = regexp.MustCompile(`(?:["']?operationName["']?|["']?name["']?)\s*:\s*["'](UserByScreenName|UserByRestId|UserTweets|TweetDetail|Following|Bookmarks|Likes)["']`)
+	reValidFeatureKey   = regexp.MustCompile(`^[A-Za-z0-9_.-]{3,128}$`)
+	reOpNameMatch       = regexp.MustCompile(`(?:["'` + "`" + `]?operationName["'` + "`" + `]?|["'` + "`" + `]?name["'` + "`" + `]?)\s*:\s*["'` + "`" + `](` + graphqlOperationMatchNames + `)["'` + "`" + `]`)
+	reOpNameAssign      = regexp.MustCompile(`(?:\.\s*(?:operationName|name)|\b(?:operationName|name))\s*=\s*["'` + "`" + `](` + graphqlOperationMatchNames + `)["'` + "`" + `]`)
+	reHarmonyExportCall = regexp.MustCompile(`\.d\(\s*[A-Za-z_$][A-Za-z0-9_$]*\s*,\s*(\{[^}]{10,600}\})\s*\)`)
+	reHarmonyGetterProp = regexp.MustCompile(`(?:["']?([A-Za-z_$][A-Za-z0-9_$]*)["']?)\s*:\s*(?:function\s*\(\s*\)\s*\{\s*return\s*([^;}]+?)\s*;?\s*\}|\(\s*\)\s*=>\s*([^,}]+))`)
+	reAssignQIDProp     = regexp.MustCompile(`(?:\.\s*(?:queryId|id|doc_id|query_id)|\b(?:queryId|id|doc_id|query_id))\s*=\s*(?:["'` + "`" + `]([A-Za-z0-9_-]{6,64})["'` + "`" + `]|([A-Za-z_$][A-Za-z0-9_$]*))`)
+	reAssignOpTypeProp  = regexp.MustCompile(`(?:\.\s*(?:operationType|operationKind)|\b(?:operationType|operationKind))\s*=\s*(?:["'` + "`" + `]([A-Za-z]+)["'` + "`" + `]|([A-Za-z_$][A-Za-z0-9_$]*))`)
+	reAssignMetaProp    = regexp.MustCompile(`(?:\.\s*(?:metadata|features|featureSwitches|fieldToggles)|\b(?:metadata|features|featureSwitches|fieldToggles))\s*=\s*`)
+	reShallowQIDField   = regexp.MustCompile(`(?:["'` + "`" + `]?(?:queryId|id|doc_id|query_id)["'` + "`" + `]?)\s*:\s*["'` + "`" + `]([A-Za-z0-9_-]{6,64})["'` + "`" + `]`)
+	reShallowOpType     = regexp.MustCompile(`(?:["'` + "`" + `]?(?:operationType|operationKind)["'` + "`" + `]?)\s*:\s*["'` + "`" + `]([A-Za-z]+)["'` + "`" + `]`)
+	reShallowFeatArray  = regexp.MustCompile(`["'` + "`" + `]?featureSwitches["'` + "`" + `]?\s*:\s*(\[[^\]]*\])`)
+	reShallowToggArray  = regexp.MustCompile(`["'` + "`" + `]?fieldToggles["'` + "`" + `]?\s*:\s*(\[[^\]]*\])`)
 	reValueBoolDefault  = regexp.MustCompile(`(?:["']([A-Za-z0-9_.-]+)["']|\b([A-Za-z_][A-Za-z0-9_]*))\s*:\s*\{\s*["']?value["']?\s*:\s*(true|false|!0|!1)\b`)
 	reFlatBoolDefault   = regexp.MustCompile(`(?:["']([A-Za-z0-9_.-]+)["']|\b([A-Za-z_][A-Za-z0-9_]*))\s*:\s*(true|false|!0|!1)\b`)
+	reNullFeaturesErr   = regexp.MustCompile(`(?i)features cannot be null\s*:\s*([^\r\n"'}\]]+)`)
 )
 
+// jsIdent represents an unquoted JavaScript identifier encountered as a property value
+// (e.g. `queryId: i` or `metadata: a`) so local module-scoped bindings can be resolved.
+type jsIdent string
+
 type rawOpCandidate struct {
-	opName            string
+	canonicalOp       string
+	wireOpName        string
+	isAlias           bool
 	queryID           string
 	featuresMap       map[string]bool
 	featureSwitchKeys []string
 	fieldTogglesMap   map[string]bool
 	fieldToggleKeys   []string
+}
+
+func canonicalGraphQLOpName(rawName string) (canonical string, isAlias bool, ok bool) {
+	switch rawName {
+	case OpUserByScreenName, OpUserByRestId, OpUserTweets, OpTweetDetail, OpFollowing, OpBookmarks, OpLikes:
+		return rawName, false, true
+	case "BookmarkTimeline", "BookmarksTimeline":
+		return OpBookmarks, true, true
+	default:
+		return "", false, false
+	}
+}
+
+// ExtractNullFeatureNames parses missing feature switch names from an X HTTP 400
+// "The following features cannot be null: a, b, c" response body.
+func ExtractNullFeatureNames(body []byte) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	matches := reNullFeaturesErr.FindAllSubmatch(body, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, m := range matches {
+		if len(m) < 2 {
+			continue
+		}
+		for _, part := range strings.Split(string(m[1]), ",") {
+			key := strings.TrimSpace(part)
+			key = strings.Trim(key, `"'`+"`"+`.:;`)
+			if key == "" || !reValidFeatureKey.MatchString(key) || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, key)
+		}
+	}
+	return out
 }
 
 // ParseMainBundle extracts the public web Bearer token, the 5 core GraphQL operations
@@ -1847,41 +2761,235 @@ func parseLazyChunkOperations(chunkJS string, baseDefaults map[string]bool) map[
 	return materializeOperationSpecs(candidates, defaults)
 }
 
+func shouldReplaceOpCandidate(prev rawOpCandidate, exists bool, next rawOpCandidate) bool {
+	if !exists {
+		return true
+	}
+	// Canonical operation names (e.g. "Bookmarks") strictly take precedence over aliases
+	// (e.g. "BookmarkTimeline").
+	if prev.isAlias && !next.isAlias {
+		return true
+	}
+	if !prev.isAlias && next.isAlias {
+		return false
+	}
+	return candidateScore(next.featuresMap, next.featureSwitchKeys) > candidateScore(prev.featuresMap, prev.featureSwitchKeys)
+}
+
 func extractOperationCandidates(js string) map[string]rawOpCandidate {
 	candidates := make(map[string]rawOpCandidate, 7)
-	for _, loc := range reOpNameMatch.FindAllStringSubmatchIndex(js, -1) {
-		opName := js[loc[2]:loc[3]]
-		objSrc, ok := extractEnclosingJSObject(js, loc[0])
-		if !ok {
-			continue
+	putCand := func(cand rawOpCandidate) {
+		if cand.canonicalOp == "" || !reValidQueryID.MatchString(cand.queryID) {
+			return
 		}
-		parsedObj, ok := parseJSObject(objSrc)
-		if !ok {
-			continue
+		prev, exists := candidates[cand.canonicalOp]
+		if shouldReplaceOpCandidate(prev, exists, cand) {
+			candidates[cand.canonicalOp] = cand
 		}
+	}
 
-		cand, valid := decodeOperationCandidate(opName, parsedObj)
+	// Pass 1: Object literals `{ queryId/id/doc_id, operationName/name, ... }` (including
+	// Relay `{ params: {...} }`, hoisted local identifiers, spread/shorthand properties,
+	// and shallow window fallback when enclosing AST exceeds object parser bounds).
+	for _, loc := range reOpNameMatch.FindAllStringSubmatchIndex(js, -1) {
+		rawOpName := js[loc[2]:loc[3]]
+		var (
+			cand  rawOpCandidate
+			valid bool
+		)
+		if objSrc, ok := extractEnclosingJSObject(js, loc[0]); ok {
+			if parsedObj, ok2 := parseJSObject(objSrc); ok2 {
+				cand, valid = decodeOperationCandidateScoped(rawOpName, parsedObj, js, loc[0])
+			}
+		}
 		if !valid {
-			// Check one outer level for wrapped shapes like { params: { ... } }
 			outerStart := findEnclosingBraceStart(js, loc[0])
 			if outerStart > 0 {
 				if outerSrc, ok2 := extractEnclosingJSObject(js, outerStart-1); ok2 {
 					if outerObj, ok3 := parseJSObject(outerSrc); ok3 {
-						cand, valid = decodeOperationCandidate(opName, outerObj)
+						cand, valid = decodeOperationCandidateScoped(rawOpName, outerObj, js, outerStart)
 					}
 				}
 			}
 		}
 		if !valid {
-			continue
+			cand, valid = extractShallowWindowCandidate(js, loc[0], loc[1], rawOpName)
 		}
-
-		prev, exists := candidates[opName]
-		if !exists || candidateScore(cand.featuresMap, cand.featureSwitchKeys) > candidateScore(prev.featuresMap, prev.featureSwitchKeys) {
-			candidates[opName] = cand
+		if valid {
+			putCand(cand)
 		}
 	}
+
+	// Pass 2: CommonJS / ESM property or variable assignments
+	// (e.g. `t.queryId="..."; t.operationName="Bookmarks"; t.metadata={...}`).
+	for _, loc := range reOpNameAssign.FindAllStringSubmatchIndex(js, -1) {
+		rawOpName := js[loc[2]:loc[3]]
+		if cand, ok := extractAssignedOperationCandidate(js, loc[0], rawOpName); ok {
+			putCand(cand)
+		}
+	}
+
+	// Pass 3: Webpack 5 Harmony ESM export descriptors
+	// (e.g. `n.d(t,{metadata:()=>a,operationName:()=>r,operationType:()=>o,queryId:()=>i})`).
+	for _, loc := range reHarmonyExportCall.FindAllStringSubmatchIndex(js, -1) {
+		if len(loc) < 4 || loc[2] < 0 || loc[3] < 0 {
+			continue
+		}
+		desc := js[loc[2]:loc[3]]
+		if !strings.Contains(desc, "operationName") && !strings.Contains(desc, "name") {
+			continue
+		}
+		if !strings.Contains(desc, "queryId") && !strings.Contains(desc, "id") && !strings.Contains(desc, "doc_id") {
+			continue
+		}
+		if cand, ok := extractHarmonyExportCandidate(js, loc[0], desc); ok {
+			putCand(cand)
+		}
+	}
+
 	return candidates
+}
+
+func extractShallowWindowCandidate(js string, matchStart, matchEnd int, rawOpName string) (rawOpCandidate, bool) {
+	canonical, isAlias, ok := canonicalGraphQLOpName(rawOpName)
+	if !ok {
+		return rawOpCandidate{}, false
+	}
+	modStart, modEnd := enclosingModuleBounds(js, matchStart)
+	winStart := max(modStart, matchStart-600)
+	winEnd := min(modEnd, matchEnd+2400)
+	win := js[winStart:winEnd]
+
+	if tm := reShallowOpType.FindStringSubmatch(win); len(tm) == 2 {
+		if !strings.EqualFold(tm[1], "query") {
+			return rawOpCandidate{}, false
+		}
+	}
+	qm := reShallowQIDField.FindStringSubmatch(win)
+	if len(qm) != 2 || !reValidQueryID.MatchString(qm[1]) {
+		return rawOpCandidate{}, false
+	}
+	out := rawOpCandidate{
+		canonicalOp: canonical,
+		wireOpName:  rawOpName,
+		isAlias:     isAlias,
+		queryID:     qm[1],
+	}
+	if fm := reShallowFeatArray.FindStringSubmatch(win); len(fm) == 2 {
+		p := &jsParser{s: fm[1]}
+		if arr, ok := p.parseArray(); ok {
+			if keys, ok2 := toStringSlice(arr); ok2 {
+				out.featureSwitchKeys = append(out.featureSwitchKeys, keys...)
+			}
+		}
+	}
+	if tm := reShallowToggArray.FindStringSubmatch(win); len(tm) == 2 {
+		p := &jsParser{s: tm[1]}
+		if arr, ok := p.parseArray(); ok {
+			if keys, ok2 := toStringSlice(arr); ok2 {
+				out.fieldToggleKeys = append(out.fieldToggleKeys, keys...)
+			}
+		}
+	}
+	return out, true
+}
+
+func extractAssignedOperationCandidate(js string, anchorPos int, rawOpName string) (rawOpCandidate, bool) {
+	canonical, isAlias, ok := canonicalGraphQLOpName(rawOpName)
+	if !ok {
+		return rawOpCandidate{}, false
+	}
+	modStart, modEnd := enclosingModuleBounds(js, anchorPos)
+	winStart := max(modStart, anchorPos-2048)
+	winEnd := min(modEnd, anchorPos+2048)
+	win := js[winStart:winEnd]
+
+	for _, tm := range reAssignOpTypeProp.FindAllStringSubmatch(win, -1) {
+		opType := tm[1]
+		if opType == "" && tm[2] != "" {
+			if resolved, ok := resolveLocalJSIdent(js, anchorPos, tm[2]).(string); ok {
+				opType = resolved
+			}
+		}
+		if opType != "" && !strings.EqualFold(opType, "query") {
+			return rawOpCandidate{}, false
+		}
+	}
+
+	var qid string
+	for _, qm := range reAssignQIDProp.FindAllStringSubmatch(win, -1) {
+		candQID := qm[1]
+		if candQID == "" && qm[2] != "" && qm[2] != "void" && qm[2] != "undefined" {
+			if resolved, ok := resolveLocalJSIdent(js, anchorPos, qm[2]).(string); ok {
+				candQID = resolved
+			}
+		}
+		if reValidQueryID.MatchString(candQID) {
+			qid = candQID
+			break
+		}
+	}
+	if qid == "" {
+		return rawOpCandidate{}, false
+	}
+
+	out := rawOpCandidate{
+		canonicalOp: canonical,
+		wireOpName:  rawOpName,
+		isAlias:     isAlias,
+		queryID:     qid,
+	}
+
+	for _, loc := range reAssignMetaProp.FindAllStringIndex(win, -1) {
+		propAssign := win[loc[0]:loc[1]]
+		p := &jsParser{s: win, i: loc[1]}
+		val := resolveMaybeIdent(p.parseValue(), js, anchorPos)
+		switch {
+		case strings.Contains(propAssign, "metadata"):
+			if m, ok := val.(map[string]any); ok {
+				applyCandidateSwitchSource(&out, m, js, anchorPos)
+			}
+		case strings.Contains(propAssign, "features"):
+			if fMap, ok := toBoolMap(val); ok {
+				out.featuresMap = mergeBoolMaps(out.featuresMap, fMap)
+			}
+		case strings.Contains(propAssign, "featureSwitches"):
+			if fsMap, ok := toBoolMap(val); ok {
+				out.featuresMap = mergeBoolMaps(out.featuresMap, fsMap)
+			} else if fsList, ok := toStringSlice(val); ok {
+				out.featureSwitchKeys = append(out.featureSwitchKeys, fsList...)
+			}
+		case strings.Contains(propAssign, "fieldToggles"):
+			if ftMap, ok := toBoolMap(val); ok {
+				out.fieldTogglesMap = mergeBoolMaps(out.fieldTogglesMap, ftMap)
+			} else if ftList, ok := toStringSlice(val); ok {
+				out.fieldToggleKeys = append(out.fieldToggleKeys, ftList...)
+			}
+		}
+	}
+
+	return out, true
+}
+
+func extractHarmonyExportCandidate(js string, anchorPos int, descriptor string) (rawOpCandidate, bool) {
+	props := make(map[string]any)
+	for _, m := range reHarmonyGetterProp.FindAllStringSubmatch(descriptor, -1) {
+		key := m[1]
+		expr := strings.TrimSpace(m[2])
+		if expr == "" {
+			expr = strings.TrimSpace(m[3])
+		}
+		expr = strings.TrimPrefix(expr, "(")
+		expr = strings.TrimSuffix(expr, ")")
+		p := &jsParser{s: expr}
+		props[key] = resolveMaybeIdent(p.parseValue(), js, anchorPos)
+	}
+
+	rawOpName := firstStringField(props, "operationName", "name")
+	if rawOpName == "" {
+		return rawOpCandidate{}, false
+	}
+	return decodeOperationCandidateScoped(rawOpName, props, js, anchorPos)
 }
 
 func collectCandidateSwitchKeys(candidates map[string]rawOpCandidate) map[string]struct{} {
@@ -1929,8 +3037,13 @@ func materializeOperationSpecs(
 			}
 		}
 
+		wireName := cand.wireOpName
+		if wireName == "" {
+			wireName = opName
+		}
+
 		ops[opName] = GraphQLOperationSpec{
-			OperationName: opName,
+			OperationName: wireName,
 			QueryID:       cand.queryID,
 			Features:      features,
 			FieldToggles:  fieldToggles,
@@ -1968,54 +3081,88 @@ func candidateScore(m map[string]bool, keys []string) int {
 }
 
 func decodeOperationCandidate(expectedOp string, obj map[string]any) (rawOpCandidate, bool) {
-	var out rawOpCandidate
+	return decodeOperationCandidateScoped(expectedOp, obj, "", 0)
+}
 
-	// Unwrap Vite/Relay { params: { id, name, metadata } } wrapper if present.
-	if params, ok := obj["params"].(map[string]any); ok {
-		obj = params
+func decodeOperationCandidateScoped(expectedOp string, obj map[string]any, fullJS string, anchorPos int) (rawOpCandidate, bool) {
+	var out rawOpCandidate
+	canonical, isAlias, ok := canonicalGraphQLOpName(expectedOp)
+	if !ok {
+		return out, false
 	}
 
-	opName := firstStringField(obj, "operationName", "name")
+	// Unwrap Vite/Relay `{ params: { id, name, metadata } }` wrapper (inline or hoisted ident).
+	if rawParams, hasParams := obj["params"]; hasParams {
+		if params, ok := resolveMaybeIdent(rawParams, fullJS, anchorPos).(map[string]any); ok {
+			obj = params
+		}
+	}
+
+	opName := firstStringFieldScoped(obj, fullJS, anchorPos, "operationName", "name")
 	if opName != expectedOp {
 		return out, false
 	}
-	opType := strings.ToLower(firstStringField(obj, "operationType", "operationKind"))
+	opType := strings.ToLower(firstStringFieldScoped(obj, fullJS, anchorPos, "operationType", "operationKind"))
 	if opType != "" && opType != "query" {
 		return out, false
 	}
 
-	qid := firstStringField(obj, "queryId", "id")
+	qid := firstStringFieldScoped(obj, fullJS, anchorPos, "queryId", "id", "doc_id", "query_id")
 	if !reValidQueryID.MatchString(qid) {
 		return out, false
 	}
 
-	out.opName = opName
+	out.canonicalOp = canonical
+	out.wireOpName = opName
+	out.isAlias = isAlias
 	out.queryID = qid
 
-	extractSwitches := func(src map[string]any) {
-		if src == nil {
-			return
+	applyCandidateSwitchSource(&out, obj, fullJS, anchorPos)
+	if rawMeta, hasMeta := obj["metadata"]; hasMeta {
+		if meta, ok := resolveMaybeIdent(rawMeta, fullJS, anchorPos).(map[string]any); ok {
+			applyCandidateSwitchSource(&out, meta, fullJS, anchorPos)
 		}
-		if fMap, ok := toBoolMap(src["features"]); ok && len(fMap) > 0 {
+	}
+	return out, true
+}
+
+func applyCandidateSwitchSource(out *rawOpCandidate, src map[string]any, fullJS string, anchorPos int) {
+	if out == nil || src == nil {
+		return
+	}
+	if rawFeat, ok := src["features"]; ok {
+		resolved := resolveMaybeIdent(rawFeat, fullJS, anchorPos)
+		if fMap, ok2 := toBoolMap(resolved); ok2 && len(fMap) > 0 {
 			out.featuresMap = mergeBoolMaps(out.featuresMap, fMap)
 		}
-		if fsMap, ok := toBoolMap(src["featureSwitches"]); ok && len(fsMap) > 0 {
+	}
+	if rawFS, ok := src["featureSwitches"]; ok {
+		resolved := resolveMaybeIdent(rawFS, fullJS, anchorPos)
+		if fsMap, ok2 := toBoolMap(resolved); ok2 && len(fsMap) > 0 {
 			out.featuresMap = mergeBoolMaps(out.featuresMap, fsMap)
-		} else if fsList, ok := toStringSlice(src["featureSwitches"]); ok && len(fsList) > 0 {
+		} else if fsList, ok2 := toStringSlice(resolved); ok2 && len(fsList) > 0 {
 			out.featureSwitchKeys = append(out.featureSwitchKeys, fsList...)
 		}
-		if ftMap, ok := toBoolMap(src["fieldToggles"]); ok && len(ftMap) > 0 {
+	}
+	if rawFT, ok := src["fieldToggles"]; ok {
+		resolved := resolveMaybeIdent(rawFT, fullJS, anchorPos)
+		if ftMap, ok2 := toBoolMap(resolved); ok2 && len(ftMap) > 0 {
 			out.fieldTogglesMap = mergeBoolMaps(out.fieldTogglesMap, ftMap)
-		} else if ftList, ok := toStringSlice(src["fieldToggles"]); ok && len(ftList) > 0 {
+		} else if ftList, ok2 := toStringSlice(resolved); ok2 && len(ftList) > 0 {
 			out.fieldToggleKeys = append(out.fieldToggleKeys, ftList...)
 		}
 	}
+}
 
-	extractSwitches(obj)
-	if meta, ok := obj["metadata"].(map[string]any); ok {
-		extractSwitches(meta)
+func resolveMaybeIdent(v any, fullJS string, anchorPos int) any {
+	id, ok := v.(jsIdent)
+	if !ok || id == "" || fullJS == "" {
+		return v
 	}
-	return out, true
+	if resolved := resolveLocalJSIdent(fullJS, anchorPos, string(id)); resolved != nil {
+		return resolved
+	}
+	return v
 }
 
 func firstStringField(m map[string]any, keys ...string) string {
@@ -2025,6 +3172,150 @@ func firstStringField(m map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstStringFieldScoped(m map[string]any, fullJS string, anchorPos int, keys ...string) string {
+	for _, k := range keys {
+		raw, exists := m[k]
+		if !exists {
+			continue
+		}
+		if s, ok := resolveMaybeIdent(raw, fullJS, anchorPos).(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func enclosingModuleBounds(js string, anchorPos int) (int, int) {
+	if js == "" {
+		return 0, 0
+	}
+	if anchorPos < 0 {
+		anchorPos = 0
+	}
+	if anchorPos > len(js) {
+		anchorPos = len(js)
+	}
+	// Walk outward up to 4 enclosing braces to find an enclosing webpack/AMD module
+	// function body `{ ... }` (`function(...){` or `(...)=>{`) so minified single-letter
+	// identifiers never resolve from a neighboring module in the same chunk.
+	cur := anchorPos
+	for depth := 0; depth < 4 && cur > 0; depth++ {
+		openPos := findEnclosingBraceStartBounded(js, cur, 32768)
+		if openPos < 0 {
+			break
+		}
+		if isFunctionBodyOpenBrace(js, openPos) {
+			closePos := findMatchingCloseBrace(js, openPos, openPos+131072)
+			if closePos > openPos {
+				return openPos + 1, closePos
+			}
+			return openPos + 1, min(len(js), openPos+32768)
+		}
+		cur = openPos
+	}
+	return max(0, anchorPos-16384), min(len(js), anchorPos+16384)
+}
+
+func isFunctionBodyOpenBrace(js string, bracePos int) bool {
+	i := bracePos - 1
+	for i >= 0 && (js[i] == ' ' || js[i] == '\t' || js[i] == '\r' || js[i] == '\n') {
+		i--
+	}
+	if i < 0 {
+		return false
+	}
+	if js[i] == ')' {
+		return true
+	}
+	if i >= 1 && js[i-1] == '=' && js[i] == '>' {
+		return true
+	}
+	return false
+}
+
+func resolveLocalJSIdent(js string, anchorPos int, ident string) any {
+	if js == "" || ident == "" || ident == "null" || ident == "undefined" || ident == "void" {
+		return nil
+	}
+	modStart, modEnd := enclosingModuleBounds(js, anchorPos)
+	if modStart >= modEnd {
+		return nil
+	}
+	scope := js[modStart:modEnd]
+	relAnchor := anchorPos - modStart
+
+	// Scan for `<boundary><ident>\s*=\s*` (not `==` or `=>`) inside the enclosing module scope,
+	// preferring the closest non-void binding before anchorPos, then closest after anchorPos.
+	var bestVal any
+	bestBeforeDist := int(1 << 30)
+	bestAfterDist := int(1 << 30)
+	foundBefore := false
+
+	searchFrom := 0
+	for searchFrom < len(scope) {
+		idx := strings.Index(scope[searchFrom:], ident)
+		if idx < 0 {
+			break
+		}
+		pos := searchFrom + idx
+		searchFrom = pos + len(ident)
+
+		if pos > 0 && isJSIdentChar(scope[pos-1]) {
+			continue
+		}
+		if pos > 0 && scope[pos-1] == '.' {
+			continue
+		}
+		afterIdent := pos + len(ident)
+		if afterIdent < len(scope) && isJSIdentChar(scope[afterIdent]) {
+			continue
+		}
+		eqPos := afterIdent
+		for eqPos < len(scope) && (scope[eqPos] == ' ' || scope[eqPos] == '\t' || scope[eqPos] == '\r' || scope[eqPos] == '\n') {
+			eqPos++
+		}
+		if eqPos >= len(scope) || scope[eqPos] != '=' {
+			continue
+		}
+		if eqPos+1 < len(scope) && (scope[eqPos+1] == '=' || scope[eqPos+1] == '>') {
+			continue
+		}
+		if eqPos > 0 && (scope[eqPos-1] == '!' || scope[eqPos-1] == '<' || scope[eqPos-1] == '>') {
+			continue
+		}
+
+		p := &jsParser{s: scope, i: eqPos + 1}
+		val := p.parseValue()
+		if val == nil {
+			continue
+		}
+		if _, isIdent := val.(jsIdent); isIdent {
+			continue
+		}
+
+		if pos <= relAnchor {
+			dist := relAnchor - pos
+			if !foundBefore || dist < bestBeforeDist {
+				foundBefore = true
+				bestBeforeDist = dist
+				bestVal = val
+			}
+		} else if !foundBefore {
+			dist := pos - relAnchor
+			if dist < bestAfterDist {
+				bestAfterDist = dist
+				bestVal = val
+			}
+		}
+	}
+
+	return bestVal
+}
+
+func isJSIdentChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$'
 }
 
 func toBoolMap(v any) (map[string]bool, bool) {
@@ -2148,7 +3439,13 @@ func parseJSBoolToken(tok string) bool {
 // ---------- Bounded JS Object Extractor & Mini Parser ----------
 
 func findEnclosingBraceStart(src string, pos int) int {
-	const maxBackScan = 8192
+	return findEnclosingBraceStartBounded(src, pos, 32768)
+}
+
+func findEnclosingBraceStartBounded(src string, pos, maxBackScan int) int {
+	if pos > len(src) {
+		pos = len(src)
+	}
 	limit := pos - maxBackScan
 	if limit < 0 {
 		limit = 0
@@ -2178,19 +3475,16 @@ func findEnclosingBraceStart(src string, pos int) int {
 	return -1
 }
 
-func extractEnclosingJSObject(src string, pos int) (string, bool) {
-	start := findEnclosingBraceStart(src, pos)
-	if start < 0 {
-		return "", false
+func findMatchingCloseBrace(src string, openBracePos, endLimit int) int {
+	if openBracePos < 0 || openBracePos >= len(src) || src[openBracePos] != '{' {
+		return -1
 	}
-	const maxObjLen = 32768
-	endLimit := start + maxObjLen
 	if endLimit > len(src) {
 		endLimit = len(src)
 	}
 	depth := 0
 	inStr := byte(0)
-	for i := start; i < endLimit; i++ {
+	for i := openBracePos; i < endLimit; i++ {
 		c := src[i]
 		if inStr != 0 {
 			if c == '\\' {
@@ -2222,11 +3516,24 @@ func extractEnclosingJSObject(src string, pos int) (string, bool) {
 		case '}':
 			depth--
 			if depth == 0 {
-				return src[start : i+1], true
+				return i
 			}
 		}
 	}
-	return "", false
+	return -1
+}
+
+func extractEnclosingJSObject(src string, pos int) (string, bool) {
+	start := findEnclosingBraceStart(src, pos)
+	if start < 0 {
+		return "", false
+	}
+	const maxObjLen = 131072
+	endPos := findMatchingCloseBrace(src, start, start+maxObjLen)
+	if endPos < 0 {
+		return "", false
+	}
+	return src[start : endPos+1], true
 }
 
 func isEscapedAt(s string, idx int) bool {
@@ -2293,17 +3600,78 @@ func (p *jsParser) parseObject() (map[string]any, bool) {
 			p.i++
 			return obj, true
 		}
+
+		// Handle object spread `{ ...base, queryId: "..." }`.
+		if strings.HasPrefix(p.s[p.i:], "...") {
+			p.i += 3
+			p.skipUnknownExpr()
+			p.skipWS()
+			if p.i < len(p.s) && p.s[p.i] == ',' {
+				p.i++
+				continue
+			}
+			if p.i < len(p.s) && p.s[p.i] == '}' {
+				p.i++
+				return obj, true
+			}
+			return nil, false
+		}
+
+		// Handle computed property keys `{ [expr]: val }`.
+		if p.s[p.i] == '[' {
+			p.skipBalancedBracket('[', ']')
+			p.skipWS()
+			if p.i < len(p.s) && p.s[p.i] == ':' {
+				p.i++
+				_ = p.parseValue()
+			} else if p.i < len(p.s) && p.s[p.i] == '(' {
+				p.skipMethodTail()
+			}
+			p.skipWS()
+			if p.i < len(p.s) && p.s[p.i] == ',' {
+				p.i++
+				continue
+			}
+			if p.i < len(p.s) && p.s[p.i] == '}' {
+				p.i++
+				return obj, true
+			}
+			return nil, false
+		}
+
 		key, ok := p.parseKey()
 		if !ok {
 			return nil, false
 		}
 		p.skipWS()
-		if p.i >= len(p.s) || p.s[p.i] != ':' {
+		if p.i >= len(p.s) {
 			return nil, false
 		}
-		p.i++
-		val := p.parseValue()
-		obj[key] = val
+
+		// Handle `async method(){}` or `get prop(){}` / `set prop(v){}` modifiers.
+		if (key == "async" || key == "get" || key == "set") && p.s[p.i] != ':' && p.s[p.i] != ',' && p.s[p.i] != '}' && p.s[p.i] != '(' {
+			if p.s[p.i] == '[' {
+				p.skipBalancedBracket('[', ']')
+			} else {
+				_, _ = p.parseKey()
+			}
+			p.skipWS()
+		}
+
+		if p.i < len(p.s) && p.s[p.i] == '(' {
+			// ES6 method shorthand `foo() { ... }`.
+			p.skipMethodTail()
+		} else if p.i < len(p.s) && (p.s[p.i] == ',' || p.s[p.i] == '}') {
+			// ES6 property shorthand `{ queryId, operationName: "Bookmarks", metadata }`.
+			obj[key] = jsIdent(key)
+		} else if p.i < len(p.s) && p.s[p.i] == ':' {
+			p.i++
+			val := p.parseValue()
+			obj[key] = val
+		} else {
+			return nil, false
+		}
+
 		p.skipWS()
 		if p.i < len(p.s) && p.s[p.i] == ',' {
 			p.i++
@@ -2314,6 +3682,41 @@ func (p *jsParser) parseObject() (map[string]any, bool) {
 			return obj, true
 		}
 		return nil, false
+	}
+}
+
+func (p *jsParser) skipBalancedBracket(openCh, closeCh byte) {
+	if p.i >= len(p.s) || p.s[p.i] != openCh {
+		return
+	}
+	depth := 0
+	for p.i < len(p.s) {
+		c := p.s[p.i]
+		if c == '"' || c == '\'' || c == '`' {
+			_, _ = p.parseString()
+			continue
+		}
+		if c == openCh {
+			depth++
+		} else if c == closeCh {
+			depth--
+			if depth == 0 {
+				p.i++
+				return
+			}
+		}
+		p.i++
+	}
+}
+
+func (p *jsParser) skipMethodTail() {
+	p.skipWS()
+	if p.i < len(p.s) && p.s[p.i] == '(' {
+		p.skipBalancedBracket('(', ')')
+	}
+	p.skipWS()
+	if p.i < len(p.s) && p.s[p.i] == '{' {
+		p.skipBalancedBracket('{', '}')
 	}
 }
 
@@ -2333,7 +3736,12 @@ func (p *jsParser) parseArray() ([]any, bool) {
 			p.i++
 			return arr, true
 		}
-		arr = append(arr, p.parseValue())
+		if strings.HasPrefix(p.s[p.i:], "...") {
+			p.i += 3
+			p.skipUnknownExpr()
+		} else {
+			arr = append(arr, p.parseValue())
+		}
 		p.skipWS()
 		if p.i < len(p.s) && p.s[p.i] == ',' {
 			p.i++
@@ -2358,7 +3766,7 @@ func (p *jsParser) parseKey() (string, bool) {
 	start := p.i
 	for p.i < len(p.s) {
 		c := p.s[p.i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$' {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$' || c == '-' {
 			p.i++
 			continue
 		}
@@ -2458,6 +3866,26 @@ func (p *jsParser) parseValue() any {
 		p.i += 2
 		return false
 	}
+
+	// Capture simple unquoted JS identifier references (e.g. `queryId: i`, `metadata: a`)
+	// when immediately followed by an object/array delimiter or end-of-expression.
+	if c := p.s[p.i]; (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$' {
+		start := p.i
+		for p.i < len(p.s) && isJSIdentChar(p.s[p.i]) {
+			p.i++
+		}
+		ident := p.s[start:p.i]
+		save := p.i
+		p.skipWS()
+		if p.i >= len(p.s) || p.s[p.i] == ',' || p.s[p.i] == '}' || p.s[p.i] == ']' || p.s[p.i] == ';' {
+			if ident == "null" || ident == "undefined" {
+				return nil
+			}
+			return jsIdent(ident)
+		}
+		p.i = save
+	}
+
 	p.skipUnknownExpr()
 	return nil
 }
@@ -2466,8 +3894,7 @@ func (p *jsParser) isTokenEnd(idx int) bool {
 	if idx >= len(p.s) {
 		return true
 	}
-	c := p.s[idx]
-	return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$')
+	return !isJSIdentChar(p.s[idx])
 }
 
 func (p *jsParser) skipUnknownExpr() {

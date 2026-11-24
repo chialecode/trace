@@ -197,59 +197,9 @@ func (c *Client) ListBookmarks(ctx context.Context, cursor string, seen map[stri
 		}
 	}
 
-	var instructions []rawTimelineInstruction
-	found := false
-	for _, key := range []string{"bookmark_timeline_v2", "bookmark_timeline", "bookmarks"} {
-		if raw, ok := dataMap[key]; ok && !isJSONNull(raw) {
-			var container map[string]json.RawMessage
-			if err := decodeJSONUseNumber(raw, &container); err != nil {
-				return nil, &site.Error{
-					Site:     SiteID,
-					Kind:     site.ErrKindSchemaChanged,
-					Endpoint: endpoint,
-					Message:  "解析 X 书签时间线结构失败",
-					Err:      err,
-				}
-			}
-			if tlRaw, ok2 := container["timeline"]; ok2 && !isJSONNull(tlRaw) {
-				var tlMap map[string]json.RawMessage
-				if err := decodeJSONUseNumber(tlRaw, &tlMap); err != nil {
-					return nil, &site.Error{
-						Site:     SiteID,
-						Kind:     site.ErrKindSchemaChanged,
-						Endpoint: endpoint,
-						Message:  "解析 X 书签时间线 timeline 结构失败",
-						Err:      err,
-					}
-				}
-				if instrRaw, hasInstr := tlMap["instructions"]; hasInstr && !isJSONNull(instrRaw) {
-					if err := decodeJSONUseNumber(instrRaw, &instructions); err != nil {
-						return nil, &site.Error{
-							Site:     SiteID,
-							Kind:     site.ErrKindSchemaChanged,
-							Endpoint: endpoint,
-							Message:  "解析 X 书签时间线 instructions 失败",
-							Err:      err,
-						}
-					}
-					found = true
-					break
-				}
-			}
-			if instrRaw, hasInstr := container["instructions"]; hasInstr && !isJSONNull(instrRaw) {
-				if err := decodeJSONUseNumber(instrRaw, &instructions); err != nil {
-					return nil, &site.Error{
-						Site:     SiteID,
-						Kind:     site.ErrKindSchemaChanged,
-						Endpoint: endpoint,
-						Message:  "解析 X 书签时间线 instructions 失败",
-						Err:      err,
-					}
-				}
-				found = true
-				break
-			}
-		}
+	instructions, found, pErr := extractBookmarkTimelineInstructions(dataMap, endpoint)
+	if pErr != nil {
+		return nil, pErr
 	}
 	if !found {
 		se := &site.Error{
@@ -263,6 +213,85 @@ func (c *Client) ListBookmarks(ctx context.Context, cursor string, seen map[stri
 	}
 
 	return c.parseAccountTimelinePosts(instructions, reqCursor, seen), nil
+}
+
+func extractBookmarkTimelineInstructions(dataMap map[string]json.RawMessage, endpoint string) ([]rawTimelineInstruction, bool, error) {
+	scopes := []map[string]json.RawMessage{dataMap}
+	if rawViewer, ok := dataMap["viewer"]; ok && !isJSONNull(rawViewer) {
+		var viewerMap map[string]json.RawMessage
+		if err := decodeJSONUseNumber(rawViewer, &viewerMap); err == nil && len(viewerMap) > 0 {
+			scopes = append(scopes, viewerMap)
+			if rawUR, ok2 := viewerMap["user_results"]; ok2 && !isJSONNull(rawUR) {
+				var urMap map[string]json.RawMessage
+				if err := decodeJSONUseNumber(rawUR, &urMap); err == nil {
+					if rawRes, ok3 := urMap["result"]; ok3 && !isJSONNull(rawRes) {
+						var resMap map[string]json.RawMessage
+						if err := decodeJSONUseNumber(rawRes, &resMap); err == nil && len(resMap) > 0 {
+							scopes = append(scopes, resMap)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	for _, scope := range scopes {
+		for _, key := range []string{"bookmark_timeline_v2", "bookmark_timeline", "bookmarks"} {
+			raw, ok := scope[key]
+			if !ok || isJSONNull(raw) {
+				continue
+			}
+			var container map[string]json.RawMessage
+			if err := decodeJSONUseNumber(raw, &container); err != nil {
+				return nil, false, &site.Error{
+					Site:     SiteID,
+					Kind:     site.ErrKindSchemaChanged,
+					Endpoint: endpoint,
+					Message:  "解析 X 书签时间线结构失败",
+					Err:      err,
+				}
+			}
+			if tlRaw, ok2 := container["timeline"]; ok2 && !isJSONNull(tlRaw) {
+				var tlMap map[string]json.RawMessage
+				if err := decodeJSONUseNumber(tlRaw, &tlMap); err != nil {
+					return nil, false, &site.Error{
+						Site:     SiteID,
+						Kind:     site.ErrKindSchemaChanged,
+						Endpoint: endpoint,
+						Message:  "解析 X 书签时间线 timeline 结构失败",
+						Err:      err,
+					}
+				}
+				if instrRaw, hasInstr := tlMap["instructions"]; hasInstr && !isJSONNull(instrRaw) {
+					var instructions []rawTimelineInstruction
+					if err := decodeJSONUseNumber(instrRaw, &instructions); err != nil {
+						return nil, false, &site.Error{
+							Site:     SiteID,
+							Kind:     site.ErrKindSchemaChanged,
+							Endpoint: endpoint,
+							Message:  "解析 X 书签时间线 instructions 失败",
+							Err:      err,
+						}
+					}
+					return instructions, true, nil
+				}
+			}
+			if instrRaw, hasInstr := container["instructions"]; hasInstr && !isJSONNull(instrRaw) {
+				var instructions []rawTimelineInstruction
+				if err := decodeJSONUseNumber(instrRaw, &instructions); err != nil {
+					return nil, false, &site.Error{
+						Site:     SiteID,
+						Kind:     site.ErrKindSchemaChanged,
+						Endpoint: endpoint,
+						Message:  "解析 X 书签时间线 instructions 失败",
+						Err:      err,
+					}
+				}
+				return instructions, true, nil
+			}
+		}
+	}
+	return nil, false, nil
 }
 
 // ListLikes lists the signed-in account's own liked posts via GraphQL Likes (read-only, in-memory).
