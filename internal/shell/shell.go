@@ -296,6 +296,10 @@ func captureWindowSize(win *mygo.Window) (int, int, bool) {
 	return w, h, true
 }
 
+// mainWindowButtonsTheme keeps hidden-titlebar caption glyphs dark over the
+// fixed white (#ffffff) workbench even when Windows is in dark mode.
+const mainWindowButtonsTheme = mygo.ThemeLight
+
 func (s *Shell) openOrRestoreMainWindow() {
 	s.mu.Lock()
 	if s.quitting {
@@ -351,6 +355,7 @@ func (s *Shell) openOrRestoreMainWindow() {
 		Content:         mygoui.View(uiApp.View),
 	}
 	win := mygo.NewWindow(winOpts)
+	win.SetWindowButtonsTheme(mainWindowButtonsTheme)
 	winClosed := &atomic.Bool{}
 	uiApp.BindFullscreenHandler(func(full bool) {
 		if s.quiet == "" && !winClosed.Load() {
