@@ -541,32 +541,40 @@ type App struct {
 	DeleteConfirm     DeleteConfirmState
 
 	// Tasks Page
-	TasksSection            string // "downloads" | "queue" | "live" | "incidents" | "checks" | "transfers"
-	SelectedCacheQueueID    string
-	SelectedLiveIncidentKey string
-	liveLibItemsCache       []library.ItemMetadata
-	liveLibItemsCacheRev    int
-	CacheQueue              []service.CacheQueueTask
-	Tasks                   []download.Task
-	TasksListState          ui.ListState
-	ExpandedTaskID          string
-	TaskRemoveConfirmID     string
-	TaskActionError         string
-	UpgradeCandidates       []library.ItemMetadata
-	UpgradeDone             int
-	UpgradeTotal            int
-	upgradeCancel           context.CancelFunc
-	LivePreviewKey          string
-	LivePreviewTitle        string
-	LivePreviewPartPath     string
-	LivePreviewPartIndex    int
-	LivePreviewLoading      bool
-	LivePreviewUnsupported  bool
-	LivePreviewReason       string
-	LivePreviewError        string
-	livePreviewOpenSeq      int
-	livePreviewCancel       context.CancelFunc
-	livePreviewOpener       func(ctx context.Context, path string, opts player.LivePreviewOptions) (player.MediaDecoder, error)
+	TasksSection              string // "downloads" | "queue" | "conflicts" | "live" | "incidents" | "checks" | "transfers"
+	SelectedCacheQueueID      string
+	SelectedLiveIncidentKey   string
+	liveLibItemsCache         []library.ItemMetadata
+	liveLibItemsCacheRev      int
+	CacheQueue                []service.CacheQueueTask
+	CacheConflicts            []service.CacheConflictDTO
+	CacheConflictPendingCount int
+	conflictsLoadedBackend    service.BackendAPI
+	conflictsLoadedOnTasks    bool
+	ConflictBatchChoice       string
+	ConflictBatchConfirmOpen  bool
+	ConflictReplaceConfirmID  string
+	ConflictActionError       string
+	Tasks                     []download.Task
+	TasksListState            ui.ListState
+	ExpandedTaskID            string
+	TaskRemoveConfirmID       string
+	TaskActionError           string
+	UpgradeCandidates         []library.ItemMetadata
+	UpgradeDone               int
+	UpgradeTotal              int
+	upgradeCancel             context.CancelFunc
+	LivePreviewKey            string
+	LivePreviewTitle          string
+	LivePreviewPartPath       string
+	LivePreviewPartIndex      int
+	LivePreviewLoading        bool
+	LivePreviewUnsupported    bool
+	LivePreviewReason         string
+	LivePreviewError          string
+	livePreviewOpenSeq        int
+	livePreviewCancel         context.CancelFunc
+	livePreviewOpener         func(ctx context.Context, path string, opts player.LivePreviewOptions) (player.MediaDecoder, error)
 
 	// Settings Page
 	SettingsCategory string // "account" | "download" | "quality" | "rules" | "subscription" | "storage" | "general" | "network" | "remote" | "logs" | "update" | "about"
@@ -647,35 +655,36 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{
-		ctx:                ctx,
-		cancel:             cancel,
-		pending:            make(map[string]bool),
-		imageQueue:         make(chan struct{}, 2),
-		ExpandedPosts:      make(map[string]bool),
-		expiredNoticeShown: make(map[string]bool),
-		backend:            backend,
-		player:             ctrl,
-		bgmPlayer:          bgmCtrl,
-		viewerPlayer:       viewerCtrl,
-		livePreviewPlayer:  livePreviewCtrl,
-		CurrentRoute:       initialRoute,
-		LoginSite:          loginSite,
-		LoginTab:           "qr",
-		FeedSortOrder:      "newest",
-		FeedSiteFilter:     normalizeSiteFilter(uiSt.FeedFilter.Site),
-		SelectedPartPages:  make(map[int]bool),
-		UserTab:            "dynamics",
-		SubDetailTab:       normalizeSubDetailTab(uiSt.SubDetailTab),
-		ImportSite:         string(site.Bilibili),
-		ImportSelectedMids: make(map[int64]bool),
-		ImportSelectedKeys: make(map[string]bool),
-		LibrarySiteFilter:  "all",
-		LibrarySort:        "pub_ts",
-		TasksSection:       "downloads",
-		SettingsCategory:   "account",
-		DraftSettings:      s,
-		CacheDirInput:      s.CacheDir,
-		MoveExistingFiles:  true,
+		ctx:                 ctx,
+		cancel:              cancel,
+		pending:             make(map[string]bool),
+		imageQueue:          make(chan struct{}, 2),
+		ExpandedPosts:       make(map[string]bool),
+		expiredNoticeShown:  make(map[string]bool),
+		backend:             backend,
+		player:              ctrl,
+		bgmPlayer:           bgmCtrl,
+		viewerPlayer:        viewerCtrl,
+		livePreviewPlayer:   livePreviewCtrl,
+		CurrentRoute:        initialRoute,
+		LoginSite:           loginSite,
+		LoginTab:            "qr",
+		FeedSortOrder:       "newest",
+		FeedSiteFilter:      normalizeSiteFilter(uiSt.FeedFilter.Site),
+		SelectedPartPages:   make(map[int]bool),
+		UserTab:             "dynamics",
+		SubDetailTab:        normalizeSubDetailTab(uiSt.SubDetailTab),
+		ImportSite:          string(site.Bilibili),
+		ImportSelectedMids:  make(map[int64]bool),
+		ImportSelectedKeys:  make(map[string]bool),
+		LibrarySiteFilter:   "all",
+		LibrarySort:         "pub_ts",
+		TasksSection:        "downloads",
+		ConflictBatchChoice: service.DefaultConflictChoice,
+		SettingsCategory:    "account",
+		DraftSettings:       s,
+		CacheDirInput:       s.CacheDir,
+		MoveExistingFiles:   true,
 		PlayerOverlay: PlayerOverlayState{
 			DanmakuEnabled:  uiSt.Player.DanmakuVisible,
 			DanmakuOpacity:  uiSt.Player.DanmakuOpacity,
@@ -856,6 +865,9 @@ func (a *App) handleBackendEvent(ev service.Event) {
 	case service.EventCacheQueueUpdated:
 		a.cacheStateRev++
 		a.CacheQueue = a.backend.ListCacheQueue()
+	case service.EventCacheConflictsChanged:
+		a.cacheStateRev++
+		a.refreshCacheConflicts()
 	case service.EventTaskUpdated, service.EventLibraryChanged, service.EventSubscriptionChecked, service.EventLiveUpdated:
 		a.postCards = nil
 		a.cacheStateRev++
@@ -943,6 +955,7 @@ func (a *App) RefreshData() {
 	a.liveLibItemsCacheRev = 0
 	a.reloadLibraryItems()
 	a.refreshTasks()
+	a.refreshCacheConflicts()
 	a.refreshTransferJobs()
 }
 
@@ -1064,6 +1077,15 @@ func (a *App) View(c *ui.Context) {
 	}
 	if h <= 0 {
 		h = 860
+	}
+
+	if a.CurrentRoute == RouteTasks {
+		if !a.conflictsLoadedOnTasks || a.conflictsLoadedBackend != a.backend {
+			a.conflictsLoadedOnTasks = true
+			a.refreshCacheConflicts()
+		}
+	} else {
+		a.conflictsLoadedOnTasks = false
 	}
 
 	panelW := a.contextPanelWidth(w)

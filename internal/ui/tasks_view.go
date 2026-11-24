@@ -9,7 +9,7 @@ import (
 
 func (a *App) effectiveTasksSection() string {
 	switch a.TasksSection {
-	case "queue", "live", "incidents", "checks", "transfers":
+	case "queue", "conflicts", "live", "incidents", "checks", "transfers":
 		return a.TasksSection
 	default:
 		return "downloads"
@@ -84,8 +84,8 @@ func (a *App) cacheQueueNavText() string {
 	return fmt.Sprintf("缓存队列（%d）", n)
 }
 
-// renderTasksPanel renders the context sidebar on RouteTasks: six uniform
-// entries 下载任务、缓存队列、直播录制、录制异常、检查计划、导入导出; the queues
+// renderTasksPanel renders the context sidebar on RouteTasks: seven uniform
+// entries 下载任务、缓存队列、内容冲突、直播录制、录制异常、检查计划、导入导出; the queues
 // themselves are listed on the 缓存队列 page (DEC-057).
 func (a *App) renderTasksPanel(c *ui.Context) {
 	sec := a.effectiveTasksSection()
@@ -101,6 +101,9 @@ func (a *App) renderTasksPanel(c *ui.Context) {
 				}
 				if panelIconItem(c, "clock", a.cacheQueueNavText(), "任务侧栏：缓存队列", sec == "queue") {
 					a.selectTasksQueue("")
+				}
+				if panelIconItem(c, "copy", a.conflictsNavText(), "任务侧栏：内容冲突", sec == "conflicts") {
+					a.selectTasksConflicts()
 				}
 				if panelIconItem(c, "live", fmt.Sprintf("直播录制（%d）", activeLive), "任务侧栏：直播录制", sec == "live") {
 					a.selectTasksLive()
@@ -130,6 +133,7 @@ func (a *App) renderTasksNarrowSelector(c *ui.Context) {
 	}{
 		{"downloads", fmt.Sprintf("下载任务（%d）", activeDL), "任务分段：下载任务"},
 		{"queue", a.cacheQueueNavText(), "任务分段：缓存队列"},
+		{"conflicts", a.conflictsNavText(), "任务分段：内容冲突"},
 		{"live", fmt.Sprintf("直播录制（%d）", activeLive), "任务分段：直播录制"},
 		{"incidents", a.liveIncidentsNavText(), "任务分段：录制异常"},
 		{"checks", "检查计划", "任务分段：检查计划"},
@@ -172,6 +176,8 @@ func (a *App) renderTasksNarrowSelector(c *ui.Context) {
 						a.selectTasksDownloads()
 					case "queue":
 						a.selectTasksQueue("")
+					case "conflicts":
+						a.selectTasksConflicts()
 					case "live":
 						a.selectTasksLive()
 					case "incidents":
@@ -187,7 +193,7 @@ func (a *App) renderTasksNarrowSelector(c *ui.Context) {
 }
 
 // renderTasksRoute renders the active section of RouteTasks (Downloads, Cache Queue,
-// Live Recordings, Live Incidents, Check Plan, or Transfers).
+// Cache Conflicts, Live Recordings, Live Incidents, Check Plan, or Transfers).
 func (a *App) renderTasksRoute(c *ui.Context) {
 	if !a.panelShown {
 		a.renderTasksNarrowSelector(c)
@@ -195,6 +201,8 @@ func (a *App) renderTasksRoute(c *ui.Context) {
 	switch a.effectiveTasksSection() {
 	case "queue":
 		a.renderTasksQueueView(c)
+	case "conflicts":
+		a.renderTasksConflictsView(c)
 	case "live":
 		a.renderTasksLiveView(c)
 	case "incidents":
