@@ -181,7 +181,7 @@ func runRealHiddenWindowHelper(outPath string) error {
 
 // TestQuietModeTrayIconCloseToTrayAndMemory verifies:
 //   - QuietMode resolution on dev/source vs release/stable (release/stable ignores TRACE_QUIET)
-//   - Tray icon PNG rendering (with and without active work indicator dot)
+//   - Tray icon PNG rendering (static per channel without passive activity dot; DEV badge on dev)
 //   - Real MyGo hidden window CloseToTray & RestoreFromTray lifecycle: real window & bitmaps destroyed,
 //     background events continue without blocking, GC + FreeOSMemory keeps working set < 60 MB,
 //     0 msedgewebview2.exe processes, GetForegroundWindow never becomes a TRACE window in quiet mode,
@@ -203,13 +203,17 @@ func TestQuietModeTrayIconCloseToTrayAndMemory(t *testing.T) {
 	}
 	t.Setenv("TRACE_QUIET", "1")
 
-	// Verify Tray PNG generation
+	// Verify Tray PNG generation: static without activity dot, DEV badge on dev channel.
 	idlePNG := RenderTrayIconPNG(false, false)
 	activePNG := RenderTrayIconPNG(false, true)
-	if bytes.Equal(idlePNG, activePNG) {
-		t.Fatalf("expected active tray icon PNG to differ from idle tray icon PNG")
+	if !bytes.Equal(idlePNG, activePNG) {
+		t.Fatalf("expected tray icon PNG to stay static without passive activity dot")
 	}
-	if img, err := png.Decode(bytes.NewReader(activePNG)); err != nil || img.Bounds().Dx() != 32 {
+	devPNG := RenderTrayIconPNG(true, false)
+	if bytes.Equal(idlePNG, devPNG) {
+		t.Fatalf("expected dev tray icon PNG with DEV badge to differ from stable tray icon PNG")
+	}
+	if img, err := png.Decode(bytes.NewReader(devPNG)); err != nil || img.Bounds().Dx() != 32 {
 		t.Fatalf("expected valid 32x32 tray PNG, got err=%v", err)
 	}
 

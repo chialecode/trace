@@ -128,7 +128,6 @@ func (a *App) primaryAccountSummary() (acct credential.Status, acctSite, uid, na
 // at the bottom. Every entry is an icon with its name as tooltip and label.
 func (a *App) renderRail(c *ui.Context) {
 	workCount := a.activeWorkCount()
-	anyLive := a.anyLiveRoomActive()
 	// The mark sits level with the panel's title, in the strip that moves
 	// the window under a hidden title bar (it is not a button), so the
 	// first page button lines up with the panel's first row.
@@ -142,23 +141,15 @@ func (a *App) renderRail(c *ui.Context) {
 				active := a.CurrentRoute == nav.Route ||
 					(nav.Route == RouteLibrary && a.CurrentRoute == RouteLibraryItem) ||
 					(nav.Route == RouteParse && (a.CurrentRoute == RouteVideo || a.CurrentRoute == RouteUser || a.CurrentRoute == RouteDouyinWork || a.CurrentRoute == RouteDouyinUser || a.CurrentRoute == RouteWeiboPost || a.CurrentRoute == RouteWeiboUser || a.CurrentRoute == RouteXPost || a.CurrentRoute == RouteXUser))
-				badge, dot := 0, false
+				badge := 0
 				tip := nav.Label
-				switch nav.Route {
-				case RouteSubscriptions:
-					// The orange dot only means someone subscribed is live now
-					// (not unread); the tooltip says so.
-					dot = anyLive
-					if dot {
-						tip = "订阅 · 有订阅正在直播"
-					}
-				case RouteTasks:
+				if nav.Route == RouteTasks {
 					badge = workCount
 					if badge > 0 {
 						tip = fmt.Sprintf("任务 · %d 个下载排队或进行中", badge)
 					}
 				}
-				if railButtonTip(c, nav.Icon, nav.Label, tip, active, badge, dot) {
+				if railButtonTip(c, nav.Icon, nav.Label, tip, active, badge) {
 					a.Navigate(nav.Route)
 				}
 			}
@@ -174,19 +165,19 @@ func (a *App) renderRail(c *ui.Context) {
 					a.Navigate(RouteLogin)
 				}
 			}, acct.Face)
-			if railButton(c, "settings", "设置", a.CurrentRoute == RouteSettings, 0, false) {
+			if railButton(c, "settings", "设置", a.CurrentRoute == RouteSettings, 0) {
 				a.Navigate(RouteSettings)
 			}
 		})
 	})
 }
 
-func railButton(c *ui.Context, icon, label string, active bool, badge int, dot bool) bool {
-	return railButtonTip(c, icon, label, label, active, badge, dot)
+func railButton(c *ui.Context, icon, label string, active bool, badge int) bool {
+	return railButtonTip(c, icon, label, label, active, badge)
 }
 
 // railButtonTip is railButton with a tooltip that can explain the mark.
-func railButtonTip(c *ui.Context, icon, label, tooltip string, active bool, badge int, dot bool) bool {
+func railButtonTip(c *ui.Context, icon, label, tooltip string, active bool, badge int) bool {
 	btn := ui.ButtonBase(c).Label(label).Tooltip(tooltip).Size(40, 40).Radius(10).Center()
 	if active {
 		btn.Background(ColorAccentBg)
@@ -195,8 +186,7 @@ func railButtonTip(c *ui.Context, icon, label, tooltip string, active bool, badg
 	}
 	btn.Children(func() {
 		DrawNavIcon(c, icon, active)
-		switch {
-		case badge > 0:
+		if badge > 0 {
 			text := strconv.Itoa(badge)
 			if badge > 99 {
 				text = "99+"
@@ -204,8 +194,6 @@ func railButtonTip(c *ui.Context, icon, label, tooltip string, active bool, badg
 			ui.Box(c).Absolute().Top(3).Right(1).Padding(1, 5).Radius(999).Background(ColorAccent).Children(func() {
 				ui.Text(c, text).FontSize(10).FontWeight(600).TextColor(ColorWhite).SingleLine()
 			})
-		case dot:
-			ui.Box(c).Absolute().Top(7).Right(7).Size(8, 8).Radius(4).Background(ColorLive)
 		}
 	})
 	return btn.Clicked()

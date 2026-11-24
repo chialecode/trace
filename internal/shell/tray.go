@@ -16,39 +16,29 @@ const trayIconSize = 32
 
 var (
 	trayIconOnce sync.Once
-	// trayIcons is indexed by trayIconIndex.
-	trayIcons [4][]byte
+	// trayIcons caches the static 32x32 PNG tray icons for badge=false and badge=true.
+	trayIcons [2][]byte
 )
-
-func trayIconIndex(badge, hasActiveWork bool) int {
-	i := 0
-	if badge {
-		i += 2
-	}
-	if hasActiveWork {
-		i++
-	}
-	return i
-}
 
 // RenderTrayIconPNG returns the cached 32x32 PNG tray icon: the application
 // icon's mark (internal/brandicon), so the development and test identities
 // show the same amber "DEV" badge in the lower right as their application
-// icon (badge), with an amber dot in the upper right while cache tasks or
-// live recordings run.
-func RenderTrayIconPNG(badge, hasActiveWork bool) []byte {
+// icon (badge). Active cache tasks and live recordings never add an upper-right
+// amber activity dot on the tray icon.
+func RenderTrayIconPNG(badge, _ bool) []byte {
 	trayIconOnce.Do(func() {
-		for _, b := range []bool{false, true} {
-			for _, w := range []bool{false, true} {
-				data, err := brandicon.PNG(trayIconSize, brandicon.Options{Badge: b, Activity: w})
-				if err != nil {
-					panic(fmt.Sprintf("tray icon: %v", err)) // encoding an in-memory RGBA image does not fail
-				}
-				trayIcons[trayIconIndex(b, w)] = data
+		for i, b := range []bool{false, true} {
+			data, err := brandicon.PNG(trayIconSize, brandicon.Options{Badge: b, Activity: false})
+			if err != nil {
+				panic(fmt.Sprintf("tray icon: %v", err)) // encoding an in-memory RGBA image does not fail
 			}
+			trayIcons[i] = data
 		}
 	})
-	return bytes.Clone(trayIcons[trayIconIndex(badge, hasActiveWork)])
+	if badge {
+		return bytes.Clone(trayIcons[1])
+	}
+	return bytes.Clone(trayIcons[0])
 }
 
 // trayBadge reports whether the channel's tray icon carries the "DEV" badge:
@@ -64,7 +54,6 @@ type trayMenuEntry struct {
 }
 
 // trayMenuEntries is the whole tray menu: open and quit.
-// The status shows in the icon's tooltip instead.
 func (s *Shell) trayMenuEntries() []trayMenuEntry {
 	return []trayMenuEntry{
 		{label: "打开 " + s.loc.DisplayName, run: s.RestoreFromTray},
@@ -86,11 +75,8 @@ func (s *Shell) handleTrayRightClick(show func([]trayMenuEntry)) {
 	show(s.trayMenuEntries())
 }
 
-func formatTrayStatusLabel(displayName string, activeTasks, activeRecs int) string {
-	if activeTasks == 0 && activeRecs == 0 {
-		return displayName
-	}
-	return fmt.Sprintf("%s · 正在缓存 %d 项 · 录制 %d 场", displayName, activeTasks, activeRecs)
+func formatTrayStatusLabel(displayName string, _, _ int) string {
+	return displayName
 }
 
 func (s *Shell) activeWorkCounts() (int, int) {
@@ -137,7 +123,6 @@ func (s *Shell) setupTray() {
 		}
 		s.mu.Lock()
 		s.tray = tray
-		s.trayLastHasWork = hasWork
 		s.trayLastTooltip = tooltip
 		s.trayHasState = true
 		s.mu.Unlock()
@@ -219,7 +204,6 @@ func (s *Shell) refreshTrayState() {
 	// Query backend state off-lock while still tracked under s.trayWg so
 	// stopTrayRefresh() drains all backend reads before backend.Close().
 	tasks, recs := s.activeWorkCounts()
-	hasWork := tasks > 0 || recs > 0
 	tooltip := formatTrayStatusLabel(displayName, tasks, recs)
 
 	s.mu.Lock()
@@ -227,11 +211,10 @@ func (s *Shell) refreshTrayState() {
 		s.mu.Unlock()
 		return
 	}
-	if s.trayHasState && !s.trayWantDirty && s.trayLastHasWork == hasWork && s.trayLastTooltip == tooltip {
+	if s.trayHasState && !s.trayWantDirty && s.trayLastTooltip == tooltip {
 		s.mu.Unlock()
 		return
 	}
-	s.trayWantHasWork = hasWork
 	s.trayWantTooltip = tooltip
 	s.trayWantDirty = true
 	if s.trayApplyQueued {
@@ -267,18 +250,16 @@ func (s *Shell) applyTrayStateOnMain() {
 			s.mu.Unlock()
 			return
 		}
-		hasWork := s.trayWantHasWork
 		tooltip := s.trayWantTooltip
 		s.trayWantDirty = false
-		iconChanged := !s.trayHasState || s.trayLastHasWork != hasWork
+		iconNeedsInit := !s.trayHasState
 		tooltipChanged := !s.trayHasState || s.trayLastTooltip != tooltip
 		s.trayHasState = true
-		s.trayLastHasWork = hasWork
 		s.trayLastTooltip = tooltip
 		s.mu.Unlock()
 
-		if iconChanged {
-			_ = tray.SetIcon(RenderTrayIconPNG(trayBadge(s.loc.Channel), hasWork), false)
+		if iconNeedsInit {
+			_ = tray.SetIcon(RenderTrayIconPNG(trayBadge(s.loc.Channel), false), false)
 		}
 		if tooltipChanged {
 			tray.SetToolTip(tooltip)

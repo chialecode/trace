@@ -32,20 +32,6 @@ func (a *App) activeWorkCount() int {
 	return n
 }
 
-func (a *App) anyLiveRoomActive() bool {
-	for _, r := range a.LiveRooms {
-		if r.LiveStatus == 1 {
-			return true
-		}
-	}
-	for _, acct := range a.LiveAccounts {
-		if acct.LiveStatus == 1 {
-			return true
-		}
-	}
-	return false
-}
-
 // renderCenterColumn draws the page: a top bar (back, title, and the
 // page's actions) that never scrolls, then the page body.
 func (a *App) renderCenterColumn(c *ui.Context, width float32) {
