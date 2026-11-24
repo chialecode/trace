@@ -1052,12 +1052,14 @@ func TestCacheQueuePrivacySentinel(t *testing.T) {
 		t.Fatalf("EnqueueCacheQueue douyin: %v", err)
 	}
 
-	// Both sites cache 2 items (1 inter-item timer per site).
-	for step := 0; step < 2; step++ {
+	// Both sites cache 2 items (1 inter-item timer per site). The sites run in
+	// parallel, so both timers may already be pending when the clock advances;
+	// count the timers that actually fired instead of assuming one per step.
+	for fired := 0; fired < 2; {
 		if h.clock.ActiveTimerCount() == 0 {
 			_, _ = h.clock.WaitForPendingTimer(t, 3*time.Second)
 		}
-		h.clock.Advance(45 * time.Second)
+		fired += h.clock.Advance(45 * time.Second)
 	}
 	waitQueuePredicate(t, b, tBili.ID, "bili completed", func(qt CacheQueueTask) bool {
 		return qt.Status == CacheQueueCompleted
