@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/ui"
@@ -142,20 +143,58 @@ func (b *screenshotBackend) AccountPage(_ context.Context, siteID, kind, folder,
 				Mid:          mid,
 				Author:       service.WeiboAuthorDTO{UID: "500000002", ScreenName: "微博科技博主"},
 				CreatedAt:    now.Add(-time.Duration(i+1) * 4 * time.Hour).Unix(),
-				Text:         fmt.Sprintf("收藏示例微博 #%d：分享一套跨平台媒体缓存与离线归档工具链实践笔记。\n第二行检验收藏列表正文行高与段落间距。", i+1),
+				Text:         fmt.Sprintf("收藏示例微博 #%d：分享一套跨平台媒体缓存与离线归档工具链实践笔记。", i+1),
 				CanonicalURL: "https://weibo.com/500000002/" + mid,
 				CacheKey:     "weibo:dynamic:" + mid,
 			}
-			if i == 1 {
+			switch i {
+			case 0:
+				p.Images = []service.WeiboMediaItemDTO{
+					{Index: 1, Kind: "image", Width: 800, Height: 600},
+					{Index: 2, Kind: "live_photo", Width: 600, Height: 800},
+				}
+				p.CachedItem = &library.ItemMetadata{
+					ItemKey: p.CacheKey,
+					NotePages: []library.NotePageRecord{
+						{Index: 1, Kind: "image", Image: "images/01.png", Width: 800, Height: 600},
+						{Index: 2, Kind: "motion", Image: "images/02.png", Motion: "images/02_live.mp4", Width: 600, Height: 800, Duration: 3},
+					},
+				}
+			case 1:
 				p.IsRetweet = true
-				p.Text = "转发收藏这条图文和视频并茂的原微博，方便离线反复参考。"
+				p.Text = "转发收藏这条原图与实况照片配图微博，方便后续对照。"
 				p.Retweeted = &service.WeiboPostView{
 					Mid:       "5000000000000088",
 					Author:    service.WeiboAuthorDTO{UID: "500000003", ScreenName: "合成设计周刊"},
 					CreatedAt: now.Add(-12 * time.Hour).Unix(),
-					Text:      "原微博正文：桌面端中文排印建议将正文行高设为 1.6 倍，让多段落动态读起来更加从容清晰。",
-					Images:    []service.WeiboMediaItemDTO{{Index: 1, Kind: "image", Width: 800, Height: 600}},
-					Video:     &service.WeiboVideoDTO{ObjectID: "1034:5000000088", Title: "桌面字体排印实战演示", DurationSec: 84},
+					Text:      "原微博正文：桌面端中文排印建议将正文行高设为 1.6 倍，原帖与转发帖配图在收藏列表中直接展开预览。",
+					Images: []service.WeiboMediaItemDTO{
+						{Index: 1, Kind: "image", FromOrigin: true, Width: 800, Height: 600},
+						{Index: 2, Kind: "live_photo", FromOrigin: true, Width: 600, Height: 800},
+					},
+				}
+				p.CachedItem = &library.ItemMetadata{
+					ItemKey: p.CacheKey,
+					NotePages: []library.NotePageRecord{
+						{Index: 1, Kind: "image", FromOrigin: true, Image: "images/01.png", Width: 800, Height: 600},
+						{Index: 2, Kind: "motion", FromOrigin: true, Image: "images/02.png", Motion: "images/02_live.mp4", Width: 600, Height: 800, Duration: 3},
+					},
+				}
+			case 2:
+				p.IsRetweet = true
+				p.Text = "转发收藏这条高清演示视频，点开即可进入详情或离线缓存。"
+				p.Retweeted = &service.WeiboPostView{
+					Mid:       "5000000000000089",
+					Author:    service.WeiboAuthorDTO{UID: "500000001", ScreenName: "技术频道_微博"},
+					CreatedAt: now.Add(-18 * time.Hour).Unix(),
+					Text:      "原微博视频：单文件 MP4 封装与多清晰度选流实战演示。",
+					Video:     &service.WeiboVideoDTO{ObjectID: "1034:5000000089", Title: "桌面字体排印实战演示", DurationSec: 84, QualityLabel: "1080P", Codec: "avc"},
+				}
+				p.CachedItem = &library.ItemMetadata{
+					ItemKey: p.CacheKey,
+					Media: []library.MediaFile{
+						{Role: "cover", Path: "cover.png", FromOrigin: true, Width: 480, Height: 200},
+					},
 				}
 			}
 			items = append(items, service.AccountItem{

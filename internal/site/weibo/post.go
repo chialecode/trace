@@ -181,6 +181,7 @@ type Post struct {
 	IsFastRetweet     bool            `json:"isFastRetweet,omitempty"`
 	OriMid            string          `json:"oriMid,omitempty"`
 	Retweeted         *Post           `json:"retweeted,omitempty"`
+	MediaIncomplete   bool            `json:"mediaIncomplete,omitempty"`
 	OriginIncomplete  bool            `json:"originIncomplete,omitempty"`
 	RuleType          string          `json:"ruleType"` // RuleTypeForward, RuleTypeVideo, RuleTypeDraw, RuleTypeWord
 	Visible           VisibilityInfo  `json:"visible"`
@@ -338,11 +339,15 @@ type rawMediaInfo struct {
 	StreamURL    string             `json:"stream_url"`
 	StreamURLHD  string             `json:"stream_url_hd"`
 	MP4HDURL     string             `json:"mp4_hd_url"`
+	MP4HDMP4     string             `json:"mp4_hd_mp4"`
 	MP4SDURL     string             `json:"mp4_sd_url"`
+	MP4LDMP4     string             `json:"mp4_ld_mp4"`
 	MP4720P      string             `json:"mp4_720p_mp4"`
 	H265MP4HD    string             `json:"h265_mp4_hd"`
+	HEVCMP4HD    string             `json:"hevc_mp4_hd"`
 	HEVCMP4720P  string             `json:"hevc_mp4_720p"`
 	ReplayHD     string             `json:"replay_hd"`
+	URLs         map[string]string  `json:"urls"`
 	LiveStatus   json.RawMessage    `json:"live_status"`
 	Duration     json.RawMessage    `json:"duration"`
 	PlaybackList []rawPlaybackEntry `json:"playback_list"`
@@ -354,16 +359,22 @@ type rawMediaInfo struct {
 }
 
 type rawPageInfo struct {
-	Type       json.RawMessage `json:"type"`
-	ObjectType string          `json:"object_type"`
-	ObjectID   string          `json:"object_id"`
-	PageURL    string          `json:"page_url"`
-	PageTitle  string          `json:"page_title"`
-	PageDesc   string          `json:"page_desc"`
-	Content1   string          `json:"content1"`
-	Content2   string          `json:"content2"`
-	PagePic    json.RawMessage `json:"page_pic"`
-	MediaInfo  *rawMediaInfo   `json:"media_info"`
+	Type       json.RawMessage   `json:"type"`
+	ObjectType string            `json:"object_type"`
+	ObjectID   string            `json:"object_id"`
+	PageURL    string            `json:"page_url"`
+	PageTitle  string            `json:"page_title"`
+	PageDesc   string            `json:"page_desc"`
+	Content1   string            `json:"content1"`
+	Content2   string            `json:"content2"`
+	PagePic    json.RawMessage   `json:"page_pic"`
+	URLs       map[string]string `json:"urls"`
+	PicInfo    *struct {
+		PicBig    *rawPicVariant `json:"pic_big"`
+		PicMiddle *rawPicVariant `json:"pic_middle"`
+		PicSmall  *rawPicVariant `json:"pic_small"`
+	} `json:"pic_info"`
+	MediaInfo *rawMediaInfo `json:"media_info"`
 }
 
 type rawMixMediaItem struct {
@@ -422,6 +433,12 @@ type rawPost struct {
 	PicNum          json.RawMessage        `json:"pic_num"`
 	PicIDs          []string               `json:"pic_ids"`
 	PicInfos        map[string]*rawPicInfo `json:"pic_infos"`
+	Pics            json.RawMessage        `json:"pics"`
+	PicURLs         json.RawMessage        `json:"pic_urls"`
+	LivePhoto       []string               `json:"live_photo"`
+	ThumbnailPic    string                 `json:"thumbnail_pic"`
+	BMiddlePic      string                 `json:"bmiddle_pic"`
+	OriginalPic     string                 `json:"original_pic"`
 	MixMediaIDs     []string               `json:"mix_media_ids"`
 	MixMediaInfo    *rawMixMediaInfo       `json:"mix_media_info"`
 	PageInfo        *rawPageInfo           `json:"page_info"`
@@ -923,23 +940,26 @@ func (c *Client) parseRawPostInternal(rp *rawPost, opt PostOptions, isRetweetChi
 
 	vis := parseVisibility(rp.Visible)
 
-	// Parse images / mixed media strictly in mix_media_info.items or pic_ids order (weibo.md §4.4).
-	images := c.parsePostMediaItems(rp, opt)
+	// Parse images / mixed media strictly in mix_media_info.items or pic_ids order (weibo.md §4.4),
+	// falling back to pics / pic_ids / pic_urls / legacy pic fields when pic_infos is omitted (e.g. all_fav).
+	images, mediaItemsIncomplete := c.parsePostMediaItemsWithMeta(rp, opt)
 
 	// Parse page_info as either downloadable video OR degraded rich card (weibo.md §4.5, §4.6).
 	video, card := c.parsePageInfo(rp.PageInfo, opt.StreamOptions)
 
 	// If mix_media_info had only 1 item and it is a video (0 images), promote to single Video for §13.1 #4.
-	if video == nil && len(images) == 1 && images[0].Kind == MediaKindVideo && images[0].VideoStream != nil {
+	if video == nil && len(images) == 1 && images[0].Kind == MediaKindVideo {
 		item := images[0]
-		sel := *item.VideoStream
 		video = &VideoAsset{
 			ObjectID:       item.ObjectID,
 			DurationSec:    item.DurationSec,
 			PublicCoverURL: item.PublicPreviewURL,
 			CoverURL:       item.URL,
-			Selected:       &sel,
-			Streams:        []VideoStream{sel},
+		}
+		if item.VideoStream != nil {
+			sel := *item.VideoStream
+			video.Selected = &sel
+			video.Streams = []VideoStream{sel}
 		}
 		images = nil
 	}
@@ -960,6 +980,9 @@ func (c *Client) parseRawPostInternal(rp *rawPost, opt PostOptions, isRetweetChi
 		if video != nil {
 			if retweeted.Video == nil || videoAssetIsRicher(video, retweeted.Video) {
 				retweeted.Video = video
+				if video.Selected == nil {
+					retweeted.MediaIncomplete = true
+				}
 			}
 			video = nil
 		}
@@ -968,6 +991,7 @@ func (c *Client) parseRawPostInternal(rp *rawPost, opt PostOptions, isRetweetChi
 		}
 	}
 
+	mediaIncomplete := mediaItemsIncomplete || (video != nil && video.Selected == nil)
 	originIncomplete := false
 	if rp.RetweetedStatus != nil && retweeted != nil && !retweeted.Unavailable {
 		originIncomplete = needsOriginPostFetch(rp.RetweetedStatus, retweeted)
@@ -991,6 +1015,7 @@ func (c *Client) parseRawPostInternal(rp *rawPost, opt PostOptions, isRetweetChi
 		IsFastRetweet:    isFastRetweet,
 		OriMid:           oriMid,
 		Retweeted:        retweeted,
+		MediaIncomplete:  mediaIncomplete,
 		OriginIncomplete: originIncomplete,
 		Visible:          vis,
 		Images:           images,
@@ -1096,10 +1121,19 @@ func (p *Post) EffectiveMediaWithOrigin() ([]ImageAsset, *VideoAsset, bool) {
 }
 
 func videoAssetIsRicher(cand, cur *VideoAsset) bool {
-	if cur == nil || cur.Selected == nil {
-		return cand != nil && cand.Selected != nil
+	if cur == nil {
+		return cand != nil
 	}
-	if cand == nil || cand.Selected == nil {
+	if cand == nil {
+		return false
+	}
+	if cur.Selected == nil {
+		if cand.Selected != nil {
+			return true
+		}
+		return cur.CoverURL == "" && cand.CoverURL != ""
+	}
+	if cand.Selected == nil {
 		return false
 	}
 	if cur.LegacyFallback && !cand.LegacyFallback {
@@ -1162,6 +1196,9 @@ func needsOriginMediaFetch(rpRT *rawPost, parsedRT *Post) bool {
 	if strings.TrimSpace(parsedRT.Mid) == "" && strings.TrimSpace(parsedRT.MblogID) == "" {
 		return false
 	}
+	if parsedRT.MediaIncomplete {
+		return true
+	}
 	picNum := parseJSONInt(rpRT.PicNum)
 	if len(rpRT.PicIDs) > len(parsedRT.Images) || picNum > len(parsedRT.Images) {
 		return true
@@ -1169,7 +1206,10 @@ func needsOriginMediaFetch(rpRT *rawPost, parsedRT *Post) bool {
 	if len(rpRT.MixMediaIDs) > len(parsedRT.Images) {
 		return true
 	}
-	if parsedRT.Video == nil {
+	if parsedRT.Video == nil || parsedRT.Video.Selected == nil {
+		if parsedRT.Video != nil && parsedRT.Video.Selected == nil {
+			return true
+		}
 		if rpRT.PageInfo != nil && rawPageInfoLooksLikeVideo(rpRT.PageInfo) {
 			return true
 		}
@@ -1212,7 +1252,7 @@ func classifyPostRuleType(p *Post) string {
 	if len(p.Images) > 0 {
 		return RuleTypeDraw
 	}
-	if p.Video != nil && p.Video.Selected != nil {
+	if p.Video != nil {
 		return RuleTypeVideo
 	}
 	return RuleTypeWord
@@ -1316,9 +1356,18 @@ func parseVisibility(raw *struct {
 }
 
 func (c *Client) parsePostMediaItems(rp *rawPost, opt PostOptions) []ImageAsset {
+	items, _ := c.parsePostMediaItemsWithMeta(rp, opt)
+	return items
+}
+
+func (c *Client) parsePostMediaItemsWithMeta(rp *rawPost, opt PostOptions) ([]ImageAsset, bool) {
+	if rp == nil {
+		return nil, false
+	}
 	// Priority 1: mix_media_info.items[] preserves exact author ordering of mixed pics + videos (weibo.md §4.4 #2).
 	if rp.MixMediaInfo != nil && len(rp.MixMediaInfo.Items) > 0 {
 		out := make([]ImageAsset, 0, len(rp.MixMediaInfo.Items))
+		incomplete := false
 		for _, item := range rp.MixMediaInfo.Items {
 			itemType := strings.ToLower(strings.TrimSpace(item.Type))
 			switch itemType {
@@ -1339,27 +1388,44 @@ func (c *Client) parsePostMediaItems(rp *rawPost, opt PostOptions) []ImageAsset 
 
 			case "video":
 				var mv struct {
-					ObjectID  string          `json:"object_id"`
-					PagePic   json.RawMessage `json:"page_pic"`
-					MediaInfo *rawMediaInfo   `json:"media_info"`
+					ObjectID  string            `json:"object_id"`
+					PagePic   json.RawMessage   `json:"page_pic"`
+					URLs      map[string]string `json:"urls"`
+					MediaInfo *rawMediaInfo     `json:"media_info"`
 				}
 				dec := json.NewDecoder(bytes.NewReader(item.Data))
 				dec.UseNumber()
-				if err := dec.Decode(&mv); err != nil || mv.MediaInfo == nil {
+				if err := dec.Decode(&mv); err != nil {
 					continue
 				}
-				streams, _ := c.selectVideoStreams(mv.MediaInfo, opt.StreamOptions)
-				if len(streams) == 0 {
-					continue
-				}
-				sel := streams[0]
-				coverURL := extractPagePicURL(mv.PagePic, mv.MediaInfo, c.allowLocalhost)
+				streams, _ := c.selectVideoStreamsWithPageURLs(mv.MediaInfo, mv.URLs, opt.StreamOptions)
+				coverURL := promoteSinaimgPreviewToLarge(extractPagePicURL(mv.PagePic, mv.MediaInfo, c.allowLocalhost), c.allowLocalhost)
 				oid := strings.TrimSpace(mv.ObjectID)
 				if oid == "" {
 					oid = strings.TrimSpace(item.ID)
 				}
+				if len(streams) == 0 {
+					if coverURL == "" && oid == "" {
+						continue
+					}
+					durSec := 0
+					if mv.MediaInfo != nil {
+						durSec = int(parseJSONFloat64(mv.MediaInfo.Duration) + 0.5)
+					}
+					incomplete = true
+					out = append(out, ImageAsset{
+						Index:            len(out) + 1,
+						ObjectID:         oid,
+						Kind:             MediaKindVideo,
+						DurationSec:      durSec,
+						PublicPreviewURL: SafePublicImageURL(coverURL),
+						URL:              coverURL,
+					})
+					continue
+				}
+				sel := streams[0]
 				durSec := sel.DurationSec
-				if durSec == 0 {
+				if durSec == 0 && mv.MediaInfo != nil {
 					durSec = int(parseJSONFloat64(mv.MediaInfo.Duration) + 0.5)
 				}
 				out = append(out, ImageAsset{
@@ -1378,30 +1444,87 @@ func (c *Client) parsePostMediaItems(rp *rawPost, opt PostOptions) []ImageAsset 
 			}
 		}
 		if len(out) > 0 {
-			return out
+			return out, incomplete
 		}
 	}
 
 	// Priority 2: pic_ids[] slice order indexing pic_infos[id] (supports >9 / 10..18+ images, never iterates map!).
 	if len(rp.PicIDs) > 0 && len(rp.PicInfos) > 0 {
 		out := make([]ImageAsset, 0, len(rp.PicIDs))
+		var fallbackByID map[string]ImageAsset
+		incomplete := false
 		for _, picID := range rp.PicIDs {
 			picID = strings.TrimSpace(picID)
 			if picID == "" {
 				continue
 			}
-			pi := rp.PicInfos[picID]
+			if pi := rp.PicInfos[picID]; pi != nil {
+				if asset, ok := c.buildImageAsset(len(out)+1, picID, pi, opt.ImageURLRewriter); ok {
+					out = append(out, asset)
+					continue
+				}
+			}
+			if fallbackByID == nil {
+				fallbackByID = make(map[string]ImageAsset, len(rp.PicIDs))
+				for _, fb := range c.buildMobilePicAssets(rp, opt.ImageURLRewriter) {
+					if fb.PicID != "" {
+						fallbackByID[fb.PicID] = fb
+					}
+				}
+				for _, fb := range c.buildPicIDFallbackAssets(rp, opt.ImageURLRewriter) {
+					if fb.PicID != "" {
+						if _, exists := fallbackByID[fb.PicID]; !exists {
+							fallbackByID[fb.PicID] = fb
+						}
+					}
+				}
+			}
+			if fb, ok := fallbackByID[picID]; ok {
+				fb.Index = len(out) + 1
+				out = append(out, fb)
+				incomplete = true
+			}
+		}
+		if len(out) > 0 {
+			return out, incomplete
+		}
+	}
+
+	// Priority 3: mobile/favorites pics[] array or numeric-keyed object (preserves slice/index order).
+	if mobileAssets := c.buildMobilePicAssets(rp, opt.ImageURLRewriter); len(mobileAssets) > 0 {
+		return mobileAssets, false
+	}
+
+	// Priority 4: pic_infos map without pic_ids (sorted deterministically by key).
+	if len(rp.PicInfos) > 0 {
+		keys := make([]string, 0, len(rp.PicInfos))
+		for k := range rp.PicInfos {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		out := make([]ImageAsset, 0, len(keys))
+		for _, k := range keys {
+			pi := rp.PicInfos[k]
 			if pi == nil {
 				continue
 			}
-			if asset, ok := c.buildImageAsset(len(out)+1, picID, pi, opt.ImageURLRewriter); ok {
+			if asset, ok := c.buildImageAsset(len(out)+1, strings.TrimSpace(k), pi, opt.ImageURLRewriter); ok {
 				out = append(out, asset)
 			}
 		}
-		return out
+		if len(out) > 0 {
+			return out, false
+		}
 	}
 
-	return nil
+	// Priority 5: abbreviated pic_ids / pic_urls / original_pic / bmiddle_pic / thumbnail_pic without pic_infos
+	// (common in ajax/favorites/all_fav and abbreviated retweeted_status). Mark incomplete=true so GetPost and
+	// download planning still upgrade LivePhotos / largest original tiers when statuses/show has pic_infos.
+	if fallbackAssets := c.buildPicIDFallbackAssets(rp, opt.ImageURLRewriter); len(fallbackAssets) > 0 {
+		return fallbackAssets, true
+	}
+
+	return nil, false
 }
 
 func (c *Client) buildImageAsset(index int, picID string, pi *rawPicInfo, rewriter func(picID, rawURL string) (string, bool)) (ImageAsset, bool) {
@@ -1632,22 +1755,25 @@ func (c *Client) parsePageInfo(pi *rawPageInfo, opts StreamSelectOptions) (*Vide
 		}
 	}
 
-	// 6. Downloadable VOD video (object_type == "video" or type == "11"/"video" with media_info).
-	if pi.MediaInfo != nil && (objType == "video" || pageType == "11" || pageType == "video" || len(pi.MediaInfo.PlaybackList) > 0) {
-		streams, legacy := c.selectVideoStreams(pi.MediaInfo, opts)
+	// 6. Downloadable VOD video (object_type == "video" or type == "11"/"video" or 1034: oid).
+	if rawPageInfoLooksLikeVideo(pi) {
+		streams, legacy := c.selectVideoStreamsWithPageURLs(pi.MediaInfo, pi.URLs, opts)
+		cover := extractPageInfoCoverURL(pi, c.allowLocalhost)
+		vidTitle := title
+		if vidTitle == "" && pi.MediaInfo != nil {
+			vidTitle = strings.TrimSpace(pi.MediaInfo.VideoTitle)
+		}
+		if vidTitle == "" && pi.MediaInfo != nil {
+			vidTitle = strings.TrimSpace(pi.MediaInfo.Name)
+		}
+		durSec := 0
+		if pi.MediaInfo != nil {
+			durSec = int(parseJSONFloat64(pi.MediaInfo.Duration) + 0.5)
+		}
 		if len(streams) > 0 {
 			sel := streams[0]
-			cover := extractPagePicURL(pi.PagePic, pi.MediaInfo, c.allowLocalhost)
-			vidTitle := title
-			if vidTitle == "" {
-				vidTitle = strings.TrimSpace(pi.MediaInfo.VideoTitle)
-			}
-			if vidTitle == "" {
-				vidTitle = strings.TrimSpace(pi.MediaInfo.Name)
-			}
-			durSec := sel.DurationSec
-			if durSec == 0 {
-				durSec = int(parseJSONFloat64(pi.MediaInfo.Duration) + 0.5)
+			if sel.DurationSec > 0 {
+				durSec = sel.DurationSec
 			}
 			return &VideoAsset{
 				ObjectID:       strings.TrimSpace(pi.ObjectID),
@@ -1658,6 +1784,18 @@ func (c *Client) parsePageInfo(pi *rawPageInfo, opts StreamSelectOptions) (*Vide
 				Selected:       &sel,
 				Streams:        streams,
 				LegacyFallback: legacy,
+			}, nil
+		}
+		// Abbreviated video page_info (common in all_fav and embedded retweeted_status) omits inline
+		// stream URLs: preserve cover, title, duration, and object_id as an incomplete VideoAsset so
+		// list views render the video cover card instead of misclassifying it as a webpage link.
+		if pi.MediaInfo == nil || len(pi.MediaInfo.PlaybackList) == 0 {
+			return &VideoAsset{
+				ObjectID:       strings.TrimSpace(pi.ObjectID),
+				Title:          vidTitle,
+				DurationSec:    durSec,
+				PublicCoverURL: SafePublicImageURL(cover),
+				CoverURL:       cover,
 			}, nil
 		}
 	}
@@ -1794,11 +1932,14 @@ func (c *Client) selectVideoStreams(mi *rawMediaInfo, opts StreamSelectOptions) 
 		tier  int
 	}{
 		{label: "mp4_720p_mp4", url: mi.MP4720P, codec: "avc", tier: 720},
+		{label: "mp4_hd_mp4", url: mi.MP4HDMP4, codec: "avc", tier: 720},
 		{label: "mp4_hd_url", url: mi.MP4HDURL, codec: "avc", tier: 720},
 		{label: "stream_url_hd", url: mi.StreamURLHD, codec: "avc", tier: 720},
 		{label: "hevc_mp4_720p", url: mi.HEVCMP4720P, codec: "hevc", tier: 720},
+		{label: "hevc_mp4_hd", url: mi.HEVCMP4HD, codec: "hevc", tier: 720},
 		{label: "h265_mp4_hd", url: mi.H265MP4HD, codec: "hevc", tier: 720},
 		{label: "mp4_sd_url", url: mi.MP4SDURL, codec: "avc", tier: 480},
+		{label: "mp4_ld_mp4", url: mi.MP4LDMP4, codec: "avc", tier: 360},
 		{label: "stream_url", url: mi.StreamURL, codec: "avc", tier: 480},
 		{label: "replay_hd", url: mi.ReplayHD, codec: "avc", tier: 720},
 	}
@@ -1826,6 +1967,11 @@ func (c *Client) selectVideoStreams(mi *rawMediaInfo, opts StreamSelectOptions) 
 	if len(legacyStreams) > 0 {
 		sortVideoStreams(legacyStreams, prefCodec, opts.MaxResolution)
 		return legacyStreams, true
+	}
+	if len(mi.URLs) > 0 {
+		if compStreams := parseComponentVideoStreams(mi.URLs, "", "", mediaDur, opts, c.allowLocalhost); len(compStreams) > 0 {
+			return compStreams, true
+		}
 	}
 	return nil, false
 }
