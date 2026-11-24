@@ -6,8 +6,7 @@ import (
 	"github.com/chialecode/trace/internal/appdirs"
 )
 
-// The tray menu only opens the window and quits (2026-11-15 feedback); the
-// status lives in the tooltip.
+// The tray menu only opens the window and quits (DEC-050 ③).
 func TestTrayMenuOnlyOpensAndQuits(t *testing.T) {
 	s := &Shell{loc: appdirs.Locations{DisplayName: "TRACE Dev"}}
 	entries := s.trayMenuEntries()
