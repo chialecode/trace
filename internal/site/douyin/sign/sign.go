@@ -40,7 +40,7 @@ const (
 	alphabetWire = "Dkdpgh2ZmsQB80/MfvV36XI1R45-WUAlEixNLwoqYTOPuzKFjJnry79HbGcaStCe"
 
 	secSDKSalt    = "A96D855A08C0A9707F8BEF0D9A527E4E"
-	msTokenChars  = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-"
+	msTokenChars  = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
 	msTokenRandom = 126
 )
 

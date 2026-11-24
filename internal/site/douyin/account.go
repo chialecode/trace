@@ -38,9 +38,9 @@ const (
 	pathCollectsVideos = "/aweme/v1/web/collects/video/list/"
 	pathHistoryRead    = "/aweme/v1/web/history/read/"
 	shellMessage       = "抖音返回了空壳，登录已失效或被拦截"
-	// likesRefusedMessage: 喜欢 answers every non-browser request with HTTP 200
-	// and no body, while the same session reads 收藏 fine (douyin.md §12).
-	likesRefusedMessage  = "抖音只把“喜欢”列表给浏览器里的抖音网页，TRACE 取不到；其他功能不受影响"
+	// likesRefusedMessage guides users with legacy/incomplete cookies to copy a complete
+	// Cookie from the Mijn/Likes tab while keeping single-endpoint isolation (no site backoff).
+	likesRefusedMessage  = "抖音“喜欢”列表返回空响应：请在浏览器打开抖音「我的 → 喜欢」页面后重新复制完整 Cookie 更新登录；其他功能不受影响"
 	cursorStalledMessage = "抖音列表的翻页位置没有前进，已停止翻页"
 )
 
@@ -148,14 +148,26 @@ func (c *Client) Favorites(ctx context.Context, selfSecUID, cursor string) (*Acc
 	}
 	cursor = normCursor(cursor)
 	ep := c.accountEndpoint(pathFavorite)
-	params := c.profile.CommonWebParams(c.webID, "",
-		sign.Pair{Key: "sec_user_id", Value: selfSecUID},
-		sign.Pair{Key: "max_cursor", Value: cursor},
+	business := []sign.Pair{
+		{Key: "sec_user_id", Value: selfSecUID},
+		{Key: "max_cursor", Value: cursor},
+	}
+	if cursor == "0" {
+		business = append(business, sign.Pair{Key: "min_cursor", Value: "0"})
+	}
+	business = append(business,
 		sign.Pair{Key: "count", Value: strconv.Itoa(favoritePageSize)},
+		sign.Pair{Key: "publish_video_strategy_type", Value: "2"},
+		sign.Pair{Key: "pc_libra_divert", Value: "Windows"},
+		sign.Pair{Key: "update_version_code", Value: collectVersionCode},
 	)
+	params := collectVersion(c.profile.CommonWebParams(c.webID, "", business...))
 	raw, err := c.doAPIRequest(ctx, apiRequestSpec{
-		endpoint: ep, referer: "https://www.douyin.com/user/self?showTab=like", origin: DefaultOrigin,
-		params: params, requireSign: true, emptyMeans: likesRefusedMessage,
+		endpoint:    ep,
+		referer:     "https://www.douyin.com/user/self?showTab=like",
+		params:      params,
+		requireSign: true,
+		emptyMeans:  likesRefusedMessage,
 	})
 	if err != nil {
 		return nil, err
@@ -293,10 +305,14 @@ func (c *Client) WatchHistory(ctx context.Context, cursor string) (*AccountWorks
 
 // accountGet sends one signed account request (GET, or POST when form is set) and decodes the top-level object.
 func (c *Client) accountGet(ctx context.Context, ep, referer string, params, form []sign.Pair) (map[string]json.RawMessage, error) {
+	origin := ""
+	if form != nil {
+		origin = DefaultOrigin
+	}
 	raw, err := c.doAPIRequest(ctx, apiRequestSpec{
 		endpoint:    ep,
 		referer:     referer,
-		origin:      DefaultOrigin,
+		origin:      origin,
 		params:      params,
 		requireSign: true,
 		form:        form,

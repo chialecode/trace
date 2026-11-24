@@ -2,12 +2,16 @@ package credential
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
 
-// AllowedDouyinCookieKeys defines the Douyin identity, companion identity, and access-context
-// cookie keys retained from user-pasted Cookie headers (per douyin.md §3.1).
+// AllowedDouyinCookieKeys defines the prioritized primary Douyin identity, companion identity,
+// and access-context cookie keys emitted first in outbound Cookie headers (per douyin.md §3.1).
+// Additional safe RFC 6265 cookies not matching IsStrippedDouyinCookieKey (such as UCP/SSO
+// sid_ucp_v1, ssid_ucp_v1, sso_uid_tt, d_ticket, x-web-secsdk-uid, _waftokenid, UIFIDTEMP)
+// are also retained with original case and appended in deterministic lexicographical order.
 var AllowedDouyinCookieKeys = []string{
 	// Core identity (at least one of sessionid or sessionid_ss is required)
 	"sessionid",
@@ -33,10 +37,44 @@ var AllowedDouyinCookieKeys = []string{
 	"__ac_signature",
 }
 
+// douyinUIFIDKeys mirrors sign.ExtractUIFID's exact 6-key lookup priority (#sign-spec §A.7.2).
+var douyinUIFIDKeys = [...]string{
+	"uifid",
+	"uifid_temp",
+	"uifidtemp",
+	"UIFID",
+	"UIFID_TEMP",
+	"UIFIDTEMP",
+}
+
+// douyinMergeableContextKeys lists non-identity access-context and gateway cookies that may
+// be refreshed from response Set-Cookie headers without ever overwriting core identity keys.
+var douyinMergeableContextKeys = [...]string{
+	"ttwid",
+	"UIFID",
+	"UIFID_TEMP",
+	"UIFIDTEMP",
+	"uifid",
+	"uifid_temp",
+	"uifidtemp",
+	"msToken",
+	"s_v_web_id",
+	"__ac_nonce",
+	"__ac_signature",
+	"d_ticket",
+	"x-web-secsdk-uid",
+	"_waftokenid",
+	"ttcid",
+	"tt_scid",
+}
+
 var (
 	exactDouyinKeySet = func() map[string]string {
-		m := make(map[string]string, len(AllowedDouyinCookieKeys))
+		m := make(map[string]string, len(AllowedDouyinCookieKeys)+len(douyinUIFIDKeys))
 		for _, k := range AllowedDouyinCookieKeys {
+			m[k] = k
+		}
+		for _, k := range douyinUIFIDKeys {
 			m[k] = k
 		}
 		return m
@@ -46,6 +84,10 @@ var (
 		m := make(map[string]string, len(AllowedDouyinCookieKeys))
 		for _, k := range AllowedDouyinCookieKeys {
 			lower := strings.ToLower(k)
+			if strings.HasPrefix(lower, "uifid") {
+				// Preserve exact case across all 6 UIFID/uifid* variants without folding.
+				continue
+			}
 			if _, exists := m[lower]; !exists {
 				m[lower] = k
 			}
@@ -81,16 +123,46 @@ func IsStrippedDouyinCookieKey(name string) bool {
 	}
 }
 
+func isDouyinIdentityCookieKey(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if strings.HasPrefix(lower, "passport_") || strings.HasPrefix(lower, "sso_") || strings.HasPrefix(lower, "toutiao_sso_") {
+		return true
+	}
+	switch lower {
+	case "sessionid", "sessionid_ss", "sid_tt", "uid_tt", "uid_tt_ss",
+		"sid_guard", "odin_tt", "is_staff_user", "login_time",
+		"sid_ucp_v1", "ssid_ucp_v1", "n_mh":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSafeDouyinCookieValue(v string) bool {
+	if v == "" {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if c <= 0x20 || c >= 0x7F || c == ';' {
+			return false
+		}
+	}
+	return true
+}
+
 func canonicalDouyinCookieKey(rawKey string) (string, bool) {
 	trimmed := strings.TrimSpace(rawKey)
-	if trimmed == "" || IsStrippedDouyinCookieKey(trimmed) {
+	if !isSafeCookieKey(trimmed) || IsStrippedDouyinCookieKey(trimmed) {
 		return "", false
 	}
 	if exact, ok := exactDouyinKeySet[trimmed]; ok {
 		return exact, true
 	}
-	canonical, ok := foldDouyinKeyLookup[strings.ToLower(trimmed)]
-	return canonical, ok
+	if canonical, ok := foldDouyinKeyLookup[strings.ToLower(trimmed)]; ok {
+		return canonical, true
+	}
+	return trimmed, true
 }
 
 func hasDouyinSession(cookies map[string]string) bool {
@@ -100,11 +172,43 @@ func hasDouyinSession(cookies map[string]string) bool {
 	return cookies["sessionid"] != "" || cookies["sessionid_ss"] != ""
 }
 
+// FormatDouyinCookieHeader serializes cleaned Douyin cookies for outbound Cookie headers:
+// primary keys in AllowedDouyinCookieKeys order first, followed by remaining non-blacklisted
+// safe RFC 6265 keys in deterministic lexicographical order.
+func FormatDouyinCookieHeader(cookies map[string]string) string {
+	if len(cookies) == 0 {
+		return ""
+	}
+	emitted := make(map[string]bool, len(cookies))
+	pairs := make([]string, 0, len(cookies))
+	for _, k := range AllowedDouyinCookieKeys {
+		v := cookies[k]
+		if v == "" || !isSafeCookieKey(k) || !isSafeDouyinCookieValue(v) || IsStrippedDouyinCookieKey(k) {
+			continue
+		}
+		pairs = append(pairs, k+"="+v)
+		emitted[k] = true
+	}
+	var extraKeys []string
+	for k, v := range cookies {
+		if emitted[k] || v == "" || !isSafeCookieKey(k) || !isSafeDouyinCookieValue(v) || IsStrippedDouyinCookieKey(k) {
+			continue
+		}
+		extraKeys = append(extraKeys, k)
+	}
+	sort.Strings(extraKeys)
+	for _, k := range extraKeys {
+		pairs = append(pairs, k+"="+cookies[k])
+	}
+	return strings.Join(pairs, "; ")
+}
+
 // ParseDouyinCookieInput parses and cleans a user-pasted Douyin Cookie header string.
 // It enforces the 8 KiB limit, strips dynamic browser-bound tickets (bd_ticket_guard_*,
 // _bd_ticket_crypt_cookie, __security_*, x_tt_token, sdk_source_info, fpk1, fpk2),
-// retains identity & access-context keys, requires sessionid or sessionid_ss
-// (rejecting ttwid/msToken-only guest cookies), and never echoes secret values in errors.
+// validates RFC 6265 safe key/value characters, retains all non-blacklisted cookies,
+// requires sessionid or sessionid_ss (rejecting ttwid/msToken-only guest cookies),
+// and never echoes secret values in errors.
 func ParseDouyinCookieInput(rawCookie string) (map[string]string, error) {
 	if len(rawCookie) > MaxCookieInputBytes {
 		return nil, ErrInputTooLarge
@@ -117,14 +221,16 @@ func ParseDouyinCookieInput(rawCookie string) (map[string]string, error) {
 	return cleaned, nil
 }
 
-// CleanDouyinCookieMap filters a map of cookies to Douyin identity and context keys,
-// stripping browser-bound dynamic tickets and empty values.
+// CleanDouyinCookieMap filters a map of Douyin cookies by stripping browser-bound dynamic
+// tickets (IsStrippedDouyinCookieKey), rejecting unsafe RFC 6265 keys or values, and retaining
+// all other valid identity and context cookies while preserving original key case.
 func CleanDouyinCookieMap(in map[string]string) map[string]string {
 	out := make(map[string]string)
-	// First apply case-folded matches, then exact-case matches so UIFID and uifid never clobber each other.
+	// First apply case-folded backbone matches and arbitrary extension keys,
+	// then apply exact-case backbone/UIFID matches so exact keys win on case collisions.
 	for k, v := range in {
 		v = strings.TrimSpace(strings.Trim(strings.TrimSpace(v), `"'`))
-		if !isSafeCookieValue(v) {
+		if !isSafeDouyinCookieValue(v) {
 			continue
 		}
 		trimmedKey := strings.TrimSpace(k)
@@ -137,11 +243,11 @@ func CleanDouyinCookieMap(in map[string]string) map[string]string {
 	}
 	for k, v := range in {
 		v = strings.TrimSpace(strings.Trim(strings.TrimSpace(v), `"'`))
-		if !isSafeCookieValue(v) {
+		if !isSafeDouyinCookieValue(v) {
 			continue
 		}
 		trimmedKey := strings.TrimSpace(k)
-		if exact, isExact := exactDouyinKeySet[trimmedKey]; isExact && !IsStrippedDouyinCookieKey(exact) {
+		if exact, isExact := exactDouyinKeySet[trimmedKey]; isExact && isSafeCookieKey(exact) && !IsStrippedDouyinCookieKey(exact) {
 			out[exact] = v
 		}
 	}
@@ -238,7 +344,8 @@ func (s *Store) UpdateDouyinProfile(profile DouyinProfile) (Status, error) {
 
 // MergeContextCookies merges non-identity context cookies received from response
 // Set-Cookie headers into an active credential without touching core identity cookies:
-//   - douyin: ttwid, UIFID, UIFID_TEMP, uifid, msToken, s_v_web_id, __ac_nonce, __ac_signature
+//   - douyin: ttwid, UIFID*, uifid*, msToken, s_v_web_id, __ac_nonce, __ac_signature,
+//     d_ticket, x-web-secsdk-uid, _waftokenid, ttcid, tt_scid
 //   - weibo:  XSRF-TOKEN only
 //   - x:      ct0 only (validated against ^[A-Za-z0-9]+$; invalid values return ErrInvalidXCT0)
 func (s *Store) MergeContextCookies(cookies map[string]string) error {
@@ -255,7 +362,10 @@ func (s *Store) MergeContextCookies(cookies map[string]string) error {
 		}
 		next := s.cloneRecord(s.rec)
 		changed := false
-		for _, k := range []string{"ttwid", "UIFID", "UIFID_TEMP", "uifid", "msToken", "s_v_web_id", "__ac_nonce", "__ac_signature"} {
+		for _, k := range douyinMergeableContextKeys {
+			if isDouyinIdentityCookieKey(k) {
+				continue
+			}
 			if v := cleaned[k]; v != "" && next.Cookies[k] != v {
 				next.Cookies[k] = v
 				changed = true
@@ -298,15 +408,16 @@ func (s *Store) MergeContextCookies(cookies map[string]string) error {
 	}
 }
 
-// UIFID returns the active uifid / UIFID / UIFID_TEMP token for ArgusSecurityPlugin signing, or empty string.
+// UIFID returns the active uifid / uifid_temp / uifidtemp / UIFID / UIFID_TEMP / UIFIDTEMP
+// token for ArgusSecurityPlugin signing (#sign-spec §A.7.2), or empty string.
 func (s *Store) UIFID() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.rec == nil || s.rec.State == "expired" || s.rec.State == "logged_out" || s.rec.State == "decrypt_failed" {
+	if !s.isActiveRecordLocked() {
 		return ""
 	}
-	for _, k := range []string{"uifid", "UIFID", "UIFID_TEMP"} {
-		if v := s.rec.Cookies[k]; v != "" {
+	for _, k := range douyinUIFIDKeys {
+		if v := strings.TrimSpace(s.rec.Cookies[k]); v != "" {
 			return v
 		}
 	}
