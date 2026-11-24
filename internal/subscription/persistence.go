@@ -1,12 +1,14 @@
 package subscription
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,32 @@ import (
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/storage"
 )
+
+// AccountSiteOrderRank returns the canonical display/storage order rank for a
+// site identifier matching site.All() (bilibili -> douyin -> weibo -> x).
+// Empty legacy site strings map to bilibili; unknown sites sort last.
+func AccountSiteOrderRank(siteName string) int {
+	norm := normalizeLegacyAccountSite(siteName)
+	all := site.All()
+	for i, id := range all {
+		if string(id) == norm {
+			return i
+		}
+	}
+	return len(all)
+}
+
+// SortAccountsBySiteOrder sorts accounts in-place by canonical site order
+// (bilibili -> douyin -> weibo -> x) while preserving the relative order of
+// multiple accounts on the same site (DEC-071).
+func SortAccountsBySiteOrder(accounts []AccountRef) {
+	if len(accounts) < 2 {
+		return
+	}
+	slices.SortStableFunc(accounts, func(a, b AccountRef) int {
+		return cmp.Compare(AccountSiteOrderRank(a.Site), AccountSiteOrderRank(b.Site))
+	})
+}
 
 func cloneSubscription(s Subscription) Subscription {
 	if s.Accounts != nil {
@@ -444,6 +472,7 @@ func syncSubFields(s *Subscription, now time.Time) {
 			AddedAt: s.CreatedAt,
 		}}
 	}
+	SortAccountsBySiteOrder(s.Accounts)
 	if len(s.Accounts) > 0 {
 		primary := &s.Accounts[0]
 		if primary.Site == "" {
@@ -458,14 +487,19 @@ func syncSubFields(s *Subscription, now time.Time) {
 		} else {
 			s.Mid = 0
 		}
-		s.Uname, s.Face = primary.Name, primary.Face
+		avatarFace := primary.Face
 		avatarLinked := false
 		for _, account := range s.Accounts {
-			avatarLinked = avatarLinked || account.Site == s.Avatar.Site && account.UID == s.Avatar.UID
+			if account.Site == s.Avatar.Site && account.UID == s.Avatar.UID {
+				avatarLinked = true
+				avatarFace = account.Face
+				break
+			}
 		}
 		if !avatarLinked {
 			s.Avatar = AvatarRef{Site: primary.Site, UID: primary.UID}
 		}
+		s.Uname, s.Face = primary.Name, avatarFace
 	} else {
 		s.Avatar = AvatarRef{}
 		s.Face = ""

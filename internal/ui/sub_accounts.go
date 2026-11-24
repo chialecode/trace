@@ -73,8 +73,9 @@ func (a *App) subscriptionAccountRows(siteFilter string) []subAccountRow {
 		}
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].Site != rows[j].Site {
-			return rows[i].Site < rows[j].Site
+		ri, rj := subscription.AccountSiteOrderRank(rows[i].Site), subscription.AccountSiteOrderRank(rows[j].Site)
+		if ri != rj {
+			return ri < rj
 		}
 		if rows[i].Name != rows[j].Name {
 			return rows[i].Name < rows[j].Name
