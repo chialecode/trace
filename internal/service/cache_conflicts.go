@@ -398,9 +398,13 @@ func (b *Backend) executeConflictResolution(ctx context.Context, rec cacheConfli
 			if len(vd.Pages) == 0 {
 				return fmt.Errorf("%w：源站视频已无可用分P", ErrRemoteDegradedRefused)
 			}
-			// Pre-probe P1 PlayURL so preview-only / restricted videos are hard-blocked before enqueueing.
-			if _, pErr := b.bili.PlayURL(resCtx, vd.BVID, vd.Pages[0].CID, b.bilibiliPlaySelectionOpts()); pErr != nil {
-				return wrapDegradedIfRemoteInvalid(pErr)
+			// Pre-probe P1 PlayURL so preview-only / restricted videos are hard-blocked before enqueueing,
+			// unless P1's CID already exists as a verified local V1 part (mixed V2 edit Invariant #3, where
+			// executeBilibiliVideoConflictReplace reuses local P1 even if P1's remote PlayURL expired).
+			if !localMetaHasVerifiedPartCID(localMeta, vd.Pages[0].CID) {
+				if _, pErr := b.bili.PlayURL(resCtx, vd.BVID, vd.Pages[0].CID, b.bilibiliPlaySelectionOpts()); pErr != nil {
+					return wrapDegradedIfRemoteInvalid(pErr)
+				}
 			}
 			var forMid int64
 			if via != nil && via.Reason == library.ViaCollab {
@@ -572,9 +576,31 @@ func (b *Backend) executeConflictResolution(ctx context.Context, rec cacheConfli
 	}
 }
 
+func localMetaHasVerifiedPartCID(meta library.ItemMetadata, cid int64) bool {
+	if cid <= 0 || strings.TrimSpace(meta.ItemDir) == "" {
+		return false
+	}
+	for _, lp := range meta.Parts {
+		if lp.CID != cid || strings.TrimSpace(lp.File) == "" {
+			continue
+		}
+		for _, mf := range meta.Media {
+			if strings.EqualFold(mf.Path, lp.File) && library.VerifyMediaFile(meta.ItemDir, mf, true) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (b *Backend) waitConflictTasks(ctx context.Context, taskIDs []string) error {
 	if len(taskIDs) == 0 {
 		return nil
+	}
+	if b.dl != nil {
+		if err := b.dl.WaitTasks(ctx, taskIDs...); err != nil {
+			return wrapDegradedIfRemoteInvalid(err)
+		}
 	}
 	wakeCh := make(chan struct{}, 1)
 	unsub := b.SubscribeEvents(func(ev Event) {
@@ -1927,7 +1953,7 @@ func (b *Backend) probeBilibiliCachedVideo(
 		if freshMeta.ItemDir != "" {
 			_, _ = b.lib.SaveItem(freshMeta.ItemDir, freshMeta)
 		}
-		t, uErr := b.dl.Upgrade(probeCtx, itemKey)
+		t, uErr := b.dl.UpgradeWithSource(probeCtx, itemKey, "queue")
 		if uErr != nil {
 			return queueEnqueued{}, uErr
 		}

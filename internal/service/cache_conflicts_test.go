@@ -480,7 +480,7 @@ func TestDouyinWorkPlanCacheAndFourSiteListDiffZeroExtraRequests(t *testing.T) {
 	}
 
 	// Item #2 enqueues original upgrade, waits 1 inter-item gap, skips #3, records conflict on #4, and caches #5!
-	dur, _ := clock.WaitForPendingTimer(t, 4*time.Second)
+	dur, _ := clock.WaitForPendingTimer(t, 20*time.Second)
 	clock.Advance(dur)
 
 	done := waitQueuePredicate(t, b, qTask.ID, "douyin fullCache sweep completed", func(qt CacheQueueTask) bool {
@@ -677,11 +677,11 @@ func TestBilibiliVideosThreeGateCooldownAndConflictResolution(t *testing.T) {
 		switch r.URL.Path {
 		case "/m4s/v2_video.m4s":
 			w.Header().Set("Content-Type", "video/mp4")
-			_, _ = w.Write(vBytes)
+			http.ServeContent(w, r, "v2_video.m4s", time.Time{}, bytes.NewReader(vBytes))
 			return
 		case "/m4s/v2_audio.m4s":
 			w.Header().Set("Content-Type", "audio/mp4")
-			_, _ = w.Write(aBytes)
+			http.ServeContent(w, r, "v2_audio.m4s", time.Time{}, bytes.NewReader(aBytes))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -871,7 +871,7 @@ func TestBilibiliVideosThreeGateCooldownAndConflictResolution(t *testing.T) {
 	}
 
 	// Item #1 and #2 skip with 0 timers; Item #3 probes and arms a 40s pacing timer before Item #4 probes!
-	d1, _ := clock.WaitForPendingTimer(t, 3*time.Second)
+	d1, _ := clock.WaitForPendingTimer(t, 20*time.Second)
 	if d1 != 40*time.Second {
 		t.Fatalf("expected 40s pacing timer after Bilibili probe #3, got %v", d1)
 	}

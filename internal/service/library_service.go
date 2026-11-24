@@ -273,12 +273,18 @@ func (b *Backend) CacheSupplement(ctx context.Context, bvid string) (download.Ta
 	return task, nil
 }
 
-// Upgrade enqueues a quality upgrade download task for a cached Bilibili video item.
+// Upgrade enqueues a quality upgrade download task for a cached item across supported sites.
 func (b *Backend) Upgrade(ctx context.Context, key string) (download.Task, error) {
 	if err := b.requireDesktop(); err != nil {
 		return download.Task{}, err
 	}
-	if err := b.requireSiteLogin(site.Bilibili); err != nil {
+	targetSite := site.Bilibili
+	if parts := strings.SplitN(strings.TrimSpace(key), ":", 3); len(parts) == 3 {
+		if parsed, sErr := normalizeExplicitSiteID(parts[0]); sErr == nil {
+			targetSite = parsed
+		}
+	}
+	if err := b.requireSiteLogin(targetSite); err != nil {
 		return download.Task{}, err
 	}
 	task, err := b.dl.Upgrade(ctx, key)
@@ -286,7 +292,7 @@ func (b *Backend) Upgrade(ctx context.Context, key string) (download.Task, error
 		b.logError("Upgrade", err)
 		return download.Task{}, err
 	}
-	b.events.PublishSite(EventTaskUpdated, string(site.Bilibili), "enqueued:upgrade:"+key)
+	b.events.PublishSite(EventTaskUpdated, string(targetSite), "enqueued:upgrade:"+key)
 	return task, nil
 }
 
