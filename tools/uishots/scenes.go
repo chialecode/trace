@@ -113,7 +113,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			// strip in a narrow window; no section titles.
 			PanelRequiredLabels:  []string{"主页订阅列表"},
 			NarrowRequiredLabels: []string{"主页订阅头像条", "主页订阅头像：全部动态"},
-			ForbiddenLabels:      []string{"正在直播", "有更新"},
+			ForbiddenLabels:      []string{"正在直播", "有更新", "快速解析输入框", "快速解析提交"},
 		},
 		{
 			// DEC-053 ①: a new session back where the timeline was read.
@@ -2061,8 +2061,9 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.ImageViewer.Open = false
 				app.Navigate(ui.RouteLibrary)
 			},
-			TitleBar:       mygoui.TitleBar{Height: 32, Right: 138},
-			RequiredLabels: []string{"窗口拖动区", "页面顶部栏", "快速解析输入框"},
+			TitleBar:        mygoui.TitleBar{Height: 32, Right: 138},
+			RequiredLabels:  []string{"窗口拖动区", "页面顶部栏", "媒体库更多菜单"},
+			ForbiddenLabels: []string{"快速解析输入框", "快速解析提交"},
 		},
 		{
 			Name: "player",

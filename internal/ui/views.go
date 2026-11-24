@@ -46,11 +46,9 @@ func (a *App) anyLiveRoomActive() bool {
 	return false
 }
 
-// renderCenterColumn draws the page: a top bar (back, title, the paste box,
-// the page's actions) that never scrolls, then the page body.
+// renderCenterColumn draws the page: a top bar (back, title, and the
+// page's actions) that never scrolls, then the page body.
 func (a *App) renderCenterColumn(c *ui.Context, width float32) {
-	parseBox := a.CurrentRoute != RouteParse && a.CurrentRoute != RouteLogin && a.CurrentRoute != RouteSettings
-	parseInline := parseBox && width >= 640
 	// Under the hidden title bar the top bar moves the window and keeps its
 	// controls clear of the window buttons.
 	rightPad := float32(16)
@@ -125,16 +123,8 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 					}
 					ui.Text(c, a.routeTitle()).FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 				})
-				if parseInline {
-					ui.Box(c).Width(min(360, width*0.46)).Shrink(1).Children(func() {
-						a.renderQuickParseBox(c, "快速解析输入框")
-					})
-				}
 				a.renderRouteHeaderActions(c)
 			})
-			if parseBox && !parseInline {
-				a.renderQuickParseBox(c, "快速解析输入框")
-			}
 
 			// Never show unrelated background loading state on RouteParse.
 			if a.hasForegroundPending() && a.CurrentRoute != RouteParse {
@@ -461,39 +451,6 @@ func (a *App) renderRouteHeaderActions(c *ui.Context) {
 			}
 		})
 	}
-}
-
-func (a *App) renderQuickParseBox(c *ui.Context, inputLabel string) {
-	ui.Row(c).
-		FillWidth().
-		Height(36).
-		Padding(0, 4, 0, 12).
-		Radius(999).
-		Background(ColorBgMain).
-		Border(1, ColorBorder).
-		Gap(8).
-		AlignItems(ui.Center).
-		ClipX().
-		Children(func() {
-			DrawIcon(c, "link", 16, ColorTextMuted, 1.6)
-			inp := ui.TextInputBase(c, &a.QuickParseInput).
-				Placeholder("粘贴链接、分享文本或 UID 解析").
-				Label(inputLabel).
-				Padding(4, 2).
-				Grow(1)
-			wasComposing := a.QuickParseComposing
-			a.QuickParseComposing = inp.Composing()
-			if inp.Submitted() && !inp.Composing() && !wasComposing {
-				q := a.QuickParseInput
-				a.QuickParseInput = ""
-				a.SubmitParse(q)
-			}
-			if AccentPillButton(c, "解析", "快速解析提交").Clicked() {
-				q := a.QuickParseInput
-				a.QuickParseInput = ""
-				a.SubmitParse(q)
-			}
-		})
 }
 
 // finishTaskAction shows a sanitized failed task action and logs the raw error.

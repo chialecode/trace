@@ -271,9 +271,7 @@ type App struct {
 	ExpandedPosts map[string]bool
 	PostMenuKey   string
 
-	// Quick Parse & Parse Page
-	QuickParseInput         string
-	QuickParseComposing     bool
+	// Parse Page
 	ParsePageInput          string
 	ParseInputComposing     bool
 	LastParseError          string

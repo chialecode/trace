@@ -34,9 +34,15 @@ func TestImmersiveTitleBarKeepsControlsClearOfWindowButtons(t *testing.T) {
 		if !ok || top.Y != 0 {
 			t.Fatalf("width=%d: the page's top bar does not reach the window top: %+v", w, top)
 		}
-		parse, ok := tt.Find("快速解析输入框")
-		if ok && parse.Y < bar.Height && parse.X+parse.W > float32(w)-bar.Right {
-			t.Fatalf("width=%d: the paste box %+v sits under the window buttons", w, parse)
+		if _, ok := tt.Find("快速解析输入框"); ok {
+			t.Fatalf("width=%d: unexpected quick-parse input in page top bar", w)
+		}
+		more, ok := tt.Find("媒体库更多菜单")
+		if !ok {
+			t.Fatalf("width=%d: missing library header more menu", w)
+		}
+		if more.Y < bar.Height && more.X+more.W > float32(w)-bar.Right {
+			t.Fatalf("width=%d: the library more menu %+v sits under the window buttons", w, more)
 		}
 		if drag, ok := tt.Find("窗口拖动区"); !ok || drag.Y != 0 || drag.H != bar.Height {
 			t.Fatalf("width=%d: no drag strip above the rail: %+v", w, drag)
@@ -93,5 +99,170 @@ func TestHomePostsDrawNoStatusDot(t *testing.T) {
 	post.InHomeFeed = true
 	if _, ok := render(post).Find("部分缓存：合成"); ok {
 		t.Fatal("a Home post draws a status dot")
+	}
+}
+
+// DEC-069: page top bars omit the header quick-parse box at every width while
+// keeping page titles and route-specific header actions intact; parsing lives
+// solely on /parse.
+func TestPageHeadersOmitQuickParseAndKeepRouteActions(t *testing.T) {
+	app, _, cleanup := newTestUIApp(t)
+	defer cleanup()
+	if _, err := app.backend.ImportCookie(context.Background(), "SESSDATA=fixture; DedeUserID=12345", ""); err != nil {
+		t.Fatal(err)
+	}
+	app.CompleteLogin()
+	app.PopulateSyntheticFeed(5)
+
+	type routeCheck struct {
+		name           string
+		setup          func()
+		requiredLabels []string
+	}
+	checks := []routeCheck{
+		{
+			name:           "home",
+			setup:          func() { app.Navigate(RouteHome) },
+			requiredLabels: []string{"页面顶部栏", "主页刷新"},
+		},
+		{
+			name: "subscriptions",
+			setup: func() {
+				app.SubDetailOpen = false
+				app.Navigate(RouteSubscriptions)
+			},
+			requiredLabels: []string{"页面顶部栏", "添加订阅", "订阅更多菜单"},
+		},
+		{
+			name: "mine-list",
+			setup: func() {
+				app.Navigate(RouteMine)
+				app.Mine.Site = "bilibili"
+				app.Mine.Kind = "following"
+				app.Mine.Picker = false
+			},
+			requiredLabels: []string{"页面顶部栏", "我的更多菜单"},
+		},
+		{
+			name:           "parse",
+			setup:          func() { app.Navigate(RouteParse) },
+			requiredLabels: []string{"页面顶部栏", "链接解析输入框", "立即解析"},
+		},
+		{
+			name: "library",
+			setup: func() {
+				app.Transfer.ImportPage = false
+				app.Navigate(RouteLibrary)
+			},
+			requiredLabels: []string{"页面顶部栏", "媒体库更多菜单"},
+		},
+		{
+			name: "tasks-downloads",
+			setup: func() {
+				app.TasksSection = "downloads"
+				app.Navigate(RouteTasks)
+			},
+			requiredLabels: []string{"页面顶部栏", "检查画质升级"},
+		},
+		{
+			name:           "video",
+			setup:          func() { app.CurrentRoute = RouteVideo },
+			requiredLabels: []string{"页面顶部栏", "返回"},
+		},
+		{
+			name:           "user",
+			setup:          func() { app.CurrentRoute = RouteUser },
+			requiredLabels: []string{"页面顶部栏", "返回"},
+		},
+		{
+			name:           "douyin-work",
+			setup:          func() { app.CurrentRoute = RouteDouyinWork },
+			requiredLabels: []string{"页面顶部栏", "返回"},
+		},
+		{
+			name:           "douyin-user",
+			setup:          func() { app.CurrentRoute = RouteDouyinUser },
+			requiredLabels: []string{"页面顶部栏", "返回"},
+		},
+		{
+			name:           "weibo-post",
+			setup:          func() { app.CurrentRoute = RouteWeiboPost },
+			requiredLabels: []string{"页面顶部栏", "返回"},
+		},
+		{
+			name:           "weibo-user",
+			setup:          func() { app.CurrentRoute = RouteWeiboUser },
+			requiredLabels: []string{"页面顶部栏", "返回"},
+		},
+		{
+			name:           "x-post",
+			setup:          func() { app.CurrentRoute = RouteXPost },
+			requiredLabels: []string{"页面顶部栏", "返回"},
+		},
+		{
+			name:           "x-user",
+			setup:          func() { app.CurrentRoute = RouteXUser },
+			requiredLabels: []string{"页面顶部栏", "返回"},
+		},
+		{
+			name:           "library-item",
+			setup:          func() { app.CurrentRoute = RouteLibraryItem },
+			requiredLabels: []string{"页面顶部栏", "返回"},
+		},
+		{
+			name:           "settings",
+			setup:          func() { app.Navigate(RouteSettings) },
+			requiredLabels: []string{"页面顶部栏"},
+		},
+		{
+			name:           "login",
+			setup:          func() { app.Navigate(RouteLogin) },
+			requiredLabels: []string{"页面顶部栏", "返回"},
+		},
+	}
+
+	for _, rc := range checks {
+		for _, w := range []int{1280, 1000, 720} {
+			rc.setup()
+			tt := ui.NewTester(app.View, w, 860)
+			tt.Frame()
+
+			title := app.routeTitle()
+			if !tt.HasText(title) {
+				t.Fatalf("route=%s width=%d: missing page title %q", rc.name, w, title)
+			}
+			for _, label := range rc.requiredLabels {
+				r, ok := tt.Find(label)
+				if !ok || r.W <= 0 || r.H <= 0 || r.X+r.W > float32(w)+0.5 {
+					t.Fatalf("route=%s width=%d: expected control %q visible within bounds, got %+v (ok=%v)", rc.name, w, label, r, ok)
+				}
+			}
+			for _, forbidden := range []string{"快速解析输入框", "快速解析提交"} {
+				if r, ok := tt.Find(forbidden); ok {
+					t.Fatalf("route=%s width=%d: unexpected header quick-parse control %q at %+v", rc.name, w, forbidden, r)
+				}
+			}
+			if tt.HasText("粘贴链接、分享文本或 UID 解析") {
+				t.Fatalf("route=%s width=%d: unexpected quick-parse placeholder text", rc.name, w)
+			}
+			if rc.name != "parse" {
+				if _, ok := tt.Find("链接解析输入框"); ok {
+					t.Fatalf("route=%s width=%d: /parse input should only appear on /parse", rc.name, w)
+				}
+			}
+		}
+	}
+
+	// Parsing on /parse continues to work cleanly.
+	app.Navigate(RouteParse)
+	tt := ui.NewTester(app.View, 1280, 860)
+	app.ParsePageInput = "BV1xx411c7mD"
+	tt.Frame()
+	if err := tt.Click("立即解析"); err != nil {
+		t.Fatalf("failed to click 立即解析 on /parse: %v", err)
+	}
+	tt.Frame()
+	if app.CurrentRoute != RouteVideo || app.CurrentVideo == nil {
+		t.Fatalf("expected /parse submit to open /video, got route=%s video=%+v", app.CurrentRoute, app.CurrentVideo)
 	}
 }

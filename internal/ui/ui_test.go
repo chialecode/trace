@@ -138,9 +138,9 @@ func TestThreeColumnResponsiveFixedSidebarsComposeAndVirtualList(t *testing.T) {
 			t.Fatalf("width=%d: horizontal overflow detected: left=%+v center=%+v", w, leftRect, centerRect)
 		}
 
-		// DEC-039: a 64px icon rail; on Home a context panel beside it from
-		// 1000px (272 / 240), none at 720 where the paste box stays in the
-		// page's top bar.
+		// DEC-039, DEC-046 ④, DEC-069: a 52px icon rail; on Home a context panel
+		// beside it from 1000px (272 / 240), none at 720; the page top bar keeps
+		// the title and route actions without any header quick-parse box.
 		if leftRect.W != railWidth {
 			t.Fatalf("width=%d: expected icon rail width %d, got %v", w, railWidth, leftRect.W)
 		}
@@ -153,8 +153,14 @@ func TestThreeColumnResponsiveFixedSidebarsComposeAndVirtualList(t *testing.T) {
 		} else if !okP || panelRect.W != wantPanel || panelRect.X != leftRect.X+leftRect.W || panelRect.X+panelRect.W > centerRect.X+0.5 {
 			t.Fatalf("width=%d: context panel %+v (%v), want width %v between rail %+v and page %+v", w, panelRect, okP, wantPanel, leftRect, centerRect)
 		}
-		if inlineParse, okQ := tt.Find("快速解析输入框"); !okQ || inlineParse.W <= 0 || inlineParse.X+inlineParse.W > float32(w)+0.5 {
-			t.Fatalf("width=%d: expected the paste box in the top bar, got %+v (%v)", w, inlineParse, okQ)
+		if topBar, okT := tt.Find("页面顶部栏"); !okT || topBar.W <= 0 || topBar.X+topBar.W > float32(w)+0.5 {
+			t.Fatalf("width=%d: expected valid page top bar, got %+v (%v)", w, topBar, okT)
+		}
+		if refreshBtn, okR := tt.Find("主页刷新"); !okR || refreshBtn.W <= 0 || refreshBtn.X+refreshBtn.W > float32(w)+0.5 {
+			t.Fatalf("width=%d: expected Home refresh button in top bar, got %+v (%v)", w, refreshBtn, okR)
+		}
+		if _, okQ := tt.Find("快速解析输入框"); okQ {
+			t.Fatalf("width=%d: unexpected quick-parse input in page top bar", w)
 		}
 		// Scroll the page: the rail and the panel do not move.
 		tt.Scroll(centerRect.X+centerRect.W/2, centerRect.Y+300, 0, 600)
