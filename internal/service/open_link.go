@@ -35,9 +35,10 @@ import (
 )
 
 const (
-	maxPreviewMediaBytes = 64 * 1024 * 1024  // 64 MiB safety cap for uncached note BGM / clip preview
-	maxPreviewDirBytes   = 256 * 1024 * 1024 // 256 MiB total cache budget for preview directory
-	maxPreviewDirFiles   = 32                // max staged preview files kept simultaneously
+	maxPreviewMediaBytes     = site.DefaultMaxImageBytes // 128 MiB safety cap for uncached note BGM / clip / GIF preview
+	maxPreviewDirBytes       = 512 * 1024 * 1024         // 512 MiB total cache budget for preview directory
+	maxPreviewDirFiles       = 32                        // max staged preview files kept simultaneously
+	maxHistoryThumbSourcePix = 100_000_000               // 100 MP source decode ceiling (covers Weibo long images before downscaling to <=640px PNG)
 )
 
 // Resolve dispatches user input via site.Registry after enforcing per-site login gates with zero pre-auth network requests.
@@ -863,6 +864,10 @@ func (b *Backend) fetchHistoryThumbForSite(ctx context.Context, siteID site.ID, 
 	if strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "http://127.0.0.1") && !strings.HasPrefix(rawURL, "http://localhost") {
 		rawURL = "https://" + strings.TrimPrefix(rawURL, "http://")
 	}
+	sourceLimit := int64(storage.MaxHistoryThumbBytes)
+	if role == "cover" {
+		sourceLimit = site.DefaultMaxImageBytes
+	}
 	var raw []byte
 	var err error
 	switch siteID {
@@ -870,30 +875,30 @@ func (b *Backend) fetchHistoryThumbForSite(ctx context.Context, siteID site.ID, 
 		if b.douyin == nil {
 			return storage.HistoryThumbnail{}
 		}
-		raw, _, err = b.douyin.FetchImageLimited(ctx, rawURL, storage.MaxHistoryThumbBytes)
+		raw, _, err = b.douyin.FetchImageLimited(ctx, rawURL, sourceLimit)
 	case site.Weibo:
 		if b.weibo == nil {
 			return storage.HistoryThumbnail{}
 		}
-		raw, _, err = b.weibo.FetchImageLimited(ctx, rawURL, storage.MaxHistoryThumbBytes)
+		raw, _, err = b.weibo.FetchImageLimited(ctx, rawURL, sourceLimit)
 	case site.X:
 		if b.x == nil {
 			return storage.HistoryThumbnail{}
 		}
-		raw, _, err = b.x.FetchImageLimited(ctx, rawURL, storage.MaxHistoryThumbBytes)
+		raw, _, err = b.x.FetchImageLimited(ctx, rawURL, sourceLimit)
 	case site.Bilibili:
 		if b.bili == nil {
 			return storage.HistoryThumbnail{}
 		}
-		raw, err = b.bili.FetchImageLimited(ctx, rawURL, storage.MaxHistoryThumbBytes)
+		raw, err = b.bili.FetchImageLimited(ctx, rawURL, sourceLimit)
 	default:
 		return storage.HistoryThumbnail{}
 	}
-	if err != nil || len(raw) == 0 || len(raw) > storage.MaxHistoryThumbBytes {
+	if err != nil || len(raw) == 0 || int64(len(raw)) > sourceLimit {
 		return storage.HistoryThumbnail{}
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
-	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > 24_000_000 {
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > maxHistoryThumbSourcePix {
 		return storage.HistoryThumbnail{}
 	}
 	img, _, err := image.Decode(bytes.NewReader(raw))
@@ -906,10 +911,10 @@ func (b *Backend) fetchHistoryThumbForSite(ctx context.Context, siteID site.ID, 
 		maxSide = 128
 	}
 	if w > maxSide {
-		h, w = max(1, h*maxSide/w), maxSide
+		h, w = max(1, int(int64(h)*int64(maxSide)/int64(w))), maxSide
 	}
 	if h > maxSide {
-		w, h = max(1, w*maxSide/h), maxSide
+		w, h = max(1, int(int64(w)*int64(maxSide)/int64(h))), maxSide
 	}
 	small := image.NewRGBA(image.Rect(0, 0, w, h))
 	draw.ApproxBiLinear.Scale(small, small.Bounds(), img, img.Bounds(), draw.Src, nil)

@@ -268,15 +268,18 @@ func (c *Client) MediaHTTPClient() (*http.Client, time.Duration) {
 	return c.mediaClient, c.mediaIdleTimeout
 }
 
+// MaxImageBytes is the maximum image/preview payload accepted by FetchImageLimited.
+const MaxImageBytes = site.DefaultMaxImageBytes
+
 // FetchImage reads a public original image without sending login cookies.
 func (c *Client) FetchImage(ctx context.Context, rawURL string) ([]byte, error) {
-	return c.FetchImageLimited(ctx, rawURL, 50*1024*1024)
+	return c.FetchImageLimited(ctx, rawURL, MaxImageBytes)
 }
 
 // FetchImageLimited applies the caller's smaller byte limit before reading a
-// public image body. History thumbnails use 10 MiB; original viewing uses 50 MiB.
+// public image body. History thumbnails use 10 MiB; original viewing uses 128 MiB.
 func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes int64) ([]byte, error) {
-	if maxBytes <= 0 || maxBytes > 50*1024*1024 {
+	if maxBytes <= 0 || maxBytes > MaxImageBytes {
 		return nil, &SiteError{Kind: ErrKindBadRequest, Message: "图片大小上限无效"}
 	}
 	if err := c.RequireAuth("image"); err != nil {

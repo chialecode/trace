@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -630,4 +632,105 @@ func TestProbeRawReturnsUnfilteredStatusAndBody(t *testing.T) {
 	if !errors.Is(cErr, context.Canceled) {
 		t.Fatalf("cancelled ProbeRaw err = %v, want context.Canceled", cErr)
 	}
+}
+
+type trackingReadCloser struct {
+	io.Reader
+	bytesRead atomic.Int64
+	closed    atomic.Bool
+}
+
+func (r *trackingReadCloser) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.bytesRead.Add(int64(n))
+	return n, err
+}
+
+func (r *trackingReadCloser) Close() error {
+	r.closed.Store(true)
+	return nil
+}
+
+func TestFetchImageAllowsLargeOriginalsAboveJSONBodyCapAndBoundsOversize(t *testing.T) {
+	// 5 MiB synthetic JPEG payload (> 4 MiB defaultMaxBodyBytes) must succeed on default Weibo Client.
+	const fiveMiB = 5 * 1024 * 1024
+	largeJPEG := make([]byte, fiveMiB)
+	copy(largeJPEG, []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10})
+	largeJPEG[len(largeJPEG)-2] = 0xff
+	largeJPEG[len(largeJPEG)-1] = 0xd9
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/large-original.jpg":
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Header().Set("Content-Length", strconv.Itoa(len(largeJPEG)))
+			_, _ = w.Write(largeJPEG)
+		case "/chunked-over-custom-cap.gif":
+			w.Header().Set("Content-Type", "image/gif")
+			// Flush headers without Content-Length so chunked read path is exercised.
+			w.(http.Flusher).Flush()
+			_, _ = w.Write(bytes.Repeat([]byte("G"), 2048))
+		}
+	}))
+	defer srv.Close()
+
+	store := newTestWeiboStore(t, "SUB=SYNTHETIC_SUB_IMG_LARGE")
+	defaultClient := newFastTestClient(t, srv.URL, store)
+	if defaultClient.maxImageBytes != site.DefaultMaxImageBytes {
+		t.Fatalf("defaultClient.maxImageBytes = %d, want %d", defaultClient.maxImageBytes, site.DefaultMaxImageBytes)
+	}
+	if defaultClient.maxBodyBytes != defaultMaxBodyBytes {
+		t.Fatalf("defaultClient.maxBodyBytes = %d, want %d", defaultClient.maxBodyBytes, defaultMaxBodyBytes)
+	}
+
+	got, ct, err := defaultClient.FetchImage(context.Background(), srv.URL+"/large-original.jpg")
+	if err != nil {
+		t.Fatalf("FetchImage(5 MiB original) failed: %v", err)
+	}
+	if len(got) != fiveMiB || ct != "image/jpeg" {
+		t.Fatalf("FetchImage(5 MiB original) = (%d bytes, %q), want (%d, image/jpeg)", len(got), ct, fiveMiB)
+	}
+
+	// Declared Content-Length exceeding maxBytes must fail fast BEFORE reading response body bytes.
+	tracked := &trackingReadCloser{Reader: bytes.NewReader(bytes.Repeat([]byte("X"), 4096))}
+	customClient := NewClient(ClientOptions{
+		CredStore:      store,
+		MinInterval:    -1,
+		AllowLocalhost: true,
+		MaxImageBytes:  1024,
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				ContentLength: 4096,
+				Header:        http.Header{"Content-Type": []string{"image/png"}},
+				Body:          tracked,
+				Request:       req,
+			}, nil
+		}),
+	})
+	_, _, err = customClient.FetchImage(context.Background(), "https://wx1.sinaimg.cn/large/001SynThOversize.png")
+	if !site.IsKind(err, site.ErrKindBlocked) || !strings.Contains(err.Error(), "微博图片体积超出安全上限") {
+		t.Fatalf("declared oversize FetchImage err = %v, want blocked 安全上限", err)
+	}
+	if tracked.bytesRead.Load() != 0 || !tracked.closed.Load() {
+		t.Fatalf("declared oversize body must close with 0 bytes read, got read=%d closed=%v", tracked.bytesRead.Load(), tracked.closed.Load())
+	}
+
+	// Chunked/unknown Content-Length exceeding custom MaxImageBytes also returns blocked 安全上限.
+	smallCapClient := NewClient(ClientOptions{
+		CredStore:      store,
+		MinInterval:    -1,
+		AllowLocalhost: true,
+		MaxImageBytes:  1024,
+	})
+	_, _, err = smallCapClient.FetchImage(context.Background(), srv.URL+"/chunked-over-custom-cap.gif")
+	if !site.IsKind(err, site.ErrKindBlocked) || !strings.Contains(err.Error(), "微博图片体积超出安全上限") {
+		t.Fatalf("chunked oversize FetchImage err = %v, want blocked 安全上限", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }

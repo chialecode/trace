@@ -822,7 +822,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 7. **检查更新**：没有起点时只读第 1 页；之后每个账号每次最多 2 页；第 6.3、6.5 节的置顶、快转、推广卡片与不确定空结果规则照用。
 8. **请求节奏**：采用第 9.3 节的建议值，写成 [NFR-NET-004](../requirements.md#nfr)。
 9. **媒体白名单**：后缀 `sinaimg.cn`、`weibocdn.com`；`video.weibo.com` 只为实况首跳 `/media/play` 单独放行；`Referer: https://weibo.com/`，不带 Cookie；视频与实况的 `PublicRedirects` 默认关，V-12 发现跳到第三方边缘域名时再照抖音的做法打开。
-10. **图片与水印**：默认按 `largest` → `original` → `mw2000` → `large` 取最大的一档；V-07 证实 `oslarge`（或 `ajax/common/download`）无损、无水印且不需要 Cookie 时改为默认用它、失败回退 `largest`，否则保持（Q-023 第 6 条）。
+10. **图片与水印**：默认按 `largest` → `original` → `mw2000` → `large` 取最大的一档；微博原图、长图与多帧 GIF 经常超过 JSON 接口的 4 MiB 上限乃至 50 MiB，因此在线原图读取（`FetchImage`）、预览暂存与分段下载统一采用单张 128 MiB 上限与按次读取空闲超时（不与 JSON 响应的 4 MiB 上限混用）；V-07 证实 `oslarge`（或 `ajax/common/download`）无损、无水印且不需要 Cookie 时改为默认用它、失败回退 `largest`，否则保持（Q-023 第 6 条）。
 11. **实况片段容器**：按实际容器保存，用 `mp4ff` 校验有视频轨与 `moov`；应用内播放器打不开 `.mov` 时用 `mp4ff` 无损改封装成 `.mp4`（不转码、不加依赖）。
 12. **直播**：不录制、不巡检；直播链接与直播卡片按第 8.4 节提示；微博账号不进开播检查。
 13. **我的**：关注先按社区资料较完整的 `ajax/friendships/friends?uid=<自己>` 实现（`followContent` 可作备选），收藏 `ajax/favorites/all_fav`；“赞过”与关注分组各有一个开关常量，默认关，V-13、V-14 通过后才打开（同抖音观看历史的做法）。

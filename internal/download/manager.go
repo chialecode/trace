@@ -22,8 +22,8 @@ import (
 // DefaultRangeChunkSize is the 8 MiB closed-interval segment size required by data-and-cache.md §2.4.
 const DefaultRangeChunkSize int64 = 8 * 1024 * 1024
 
-// MaxImageFileBytes is the 50 MiB per-image limit required by data-and-cache.md §2.4.
-const MaxImageFileBytes int64 = 50 * 1024 * 1024
+// MaxImageFileBytes is the 128 MiB per-image limit required by data-and-cache.md §2.4.
+const MaxImageFileBytes int64 = site.DefaultMaxImageBytes
 
 // TaskFileProgress tracks per-file download state within a Task.
 type TaskFileProgress struct {

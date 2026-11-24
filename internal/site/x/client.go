@@ -149,7 +149,9 @@ type ClientOptions struct {
 	RateLimitJitterMax      time.Duration // <0 sets 0; 0 uses DefaultRateLimitJitterMax (60s)
 	APITimeout              time.Duration
 	RedirectTimeout         time.Duration
+	MediaIdleTimeout        time.Duration
 	MaxBodyBytes            int64
+	MaxImageBytes           int64
 	Transport               http.RoundTripper
 	AssetTransport          http.RoundTripper // optional override for abs.twimg.com frontend assets
 	WrapTransport           func(http.RoundTripper) http.RoundTripper
@@ -178,8 +180,10 @@ type Client struct {
 	httpClient         *http.Client
 	redirectClient     *http.Client
 	mediaClient        *http.Client
+	mediaIdleTimeout   time.Duration
 	discovery          *FrontendDiscovery
 	maxBodyBytes       int64
+	maxImageBytes      int64
 	allowLocalhost     bool
 	rateLimitJitterMax time.Duration
 
@@ -257,6 +261,14 @@ func NewClient(opts ClientOptions) *Client {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxBodyBytes
 	}
+	maxImageBytes := opts.MaxImageBytes
+	if maxImageBytes <= 0 {
+		maxImageBytes = site.DefaultMaxImageBytes
+	}
+	mediaIdleTimeout := opts.MediaIdleTimeout
+	if mediaIdleTimeout <= 0 {
+		mediaIdleTimeout = 30 * time.Second
+	}
 
 	apiTransport := opts.Transport
 	redirectTransport := opts.Transport
@@ -325,7 +337,9 @@ func NewClient(opts ClientOptions) *Client {
 		endpoints:          endpoints,
 		profile:            profile,
 		clientLanguage:     clientLang,
+		mediaIdleTimeout:   mediaIdleTimeout,
 		maxBodyBytes:       maxBytes,
+		maxImageBytes:      maxImageBytes,
 		allowLocalhost:     opts.AllowLocalhost,
 		rateLimitJitterMax: rlJitter,
 		serialGate:         make(chan struct{}, 1),
@@ -350,7 +364,7 @@ func NewClient(opts ClientOptions) *Client {
 	}
 	c.mediaClient = &http.Client{
 		Transport:     mediaTransport,
-		Timeout:       apiTimeout,
+		Timeout:       0,
 		CheckRedirect: noRedirect,
 	}
 
@@ -1393,7 +1407,7 @@ func (c *Client) ValidateMediaURL(rawURL string) error {
 
 // FetchImage fetches an X CDN image (pbs.twimg.com) without sending Cookie, Referer, or Origin.
 func (c *Client) FetchImage(ctx context.Context, rawURL string) ([]byte, string, error) {
-	return c.FetchImageLimited(ctx, rawURL, c.maxBodyBytes)
+	return c.FetchImageLimited(ctx, rawURL, c.maxImageBytes)
 }
 
 // FetchImageLimited fetches up to maxBytes of an X CDN image with Cookie/Authorization/CSRF/Referer
@@ -1408,7 +1422,7 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 		return nil, "", err
 	}
 	if maxBytes <= 0 {
-		maxBytes = c.maxBodyBytes
+		maxBytes = c.maxImageBytes
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalized, nil)
@@ -1431,7 +1445,14 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 			Err:     site.UnwrapURLError(err),
 		}
 	}
-	defer resp.Body.Close()
+	body := site.WrapIdleReadCloser(resp.Body, c.mediaIdleTimeout, func() error {
+		return &site.Error{
+			Site:    SiteID,
+			Kind:    site.ErrKindNetwork,
+			Message: "读取 X 图片超时",
+		}
+	})
+	defer body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", &site.Error{
@@ -1451,7 +1472,15 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 		}
 	}
 
-	data, err := readBoundedBody(resp.Body, maxBytes)
+	if resp.ContentLength > maxBytes {
+		return nil, "", &site.Error{
+			Site:    SiteID,
+			Kind:    site.ErrKindBlocked,
+			Message: "X 图片体积超出安全上限",
+		}
+	}
+
+	data, err := readBoundedBody(body, maxBytes)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
 			return nil, "", &site.Error{
