@@ -3,7 +3,7 @@ name: Release
 # Weekly release of TRACE: every Monday 00:00 UTC (08:00 Beijing time)
 # or by hand. It builds only when main has changes merged since the last
 # release, and publishes only once the user has turned publishing on
-# (repository variable TRACE_RELEASE_PUBLISH=1, USER-ACTIONS ACT-009); a
+# (repository variable TRACE_RELEASE_PUBLISH=1, authorized by the user); a
 # manual run only builds unless its "publish" input is set as well.
 on:
   schedule:

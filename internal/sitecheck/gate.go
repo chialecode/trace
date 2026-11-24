@@ -36,7 +36,7 @@ type Usage struct {
 	Categories     map[string]int `json:"categories,omitempty"`
 }
 
-// Limits defines the maximum allowed operations under an ACT authorization in USER-ACTIONS.md.
+// Limits defines the maximum allowed operations under one real-site authorization (docs/dev-rules/workflow.md#site-requests).
 type Limits struct {
 	ActID         string         `json:"actId"`
 	MaxRuns       int            `json:"maxRuns"`

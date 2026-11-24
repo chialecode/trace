@@ -158,7 +158,7 @@ func run(o options) (releaseResult, error) {
 		return res, errors.New("-publish cannot be used with -allow-dirty: a rehearsal is never published")
 	}
 	if o.publish && strings.TrimSpace(o.getenv(publishAuthEnv)) != "1" {
-		return res, fmt.Errorf("publishing needs the user's authorization (USER-ACTIONS ACT-009, or for this one release in the conversation), given as %s=1", publishAuthEnv)
+		return res, fmt.Errorf("publishing needs the user's authorization (weekly publishing enabled by the user, or for this one release in the conversation), given as %s=1", publishAuthEnv)
 	}
 	if o.publish && o.offline {
 		return res, errors.New("-publish cannot be used with -offline: a release checks its version against the tags and Releases on GitHub")

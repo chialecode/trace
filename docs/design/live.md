@@ -65,7 +65,7 @@
 协议见[抖音协议 §5.2、§8](../research/douyin.md#live)，取舍见其 [§11](../research/douyin.md#a-review)。
 
 - **开播状态**：抖音没有按人批量查询的接口，每个账号一次请求，所以只在三种时候查——打开用户页或订阅详情（只查这些账号，60 秒内不重复）、手动检查更新（用作品列表第 1 页里的 `author.room_id`，不另请求）、对选用了“开播自动录制”规则的账号定时巡检（每个账号间隔 ≥ 90 秒，计入抖音的每小时额度）。巡检**按设置的间隔，请求之间至少隔 6 秒**（DEC-060 ⑤，取代 DEC-059 ②）：每轮（默认 3 分钟）把账号按上次查的时间排好、最早的先查（新加的账号最先查），两个请求之间至少等 6 秒，一轮最多发 `间隔 / 6 秒` 个请求（3 分钟一轮 30 个）；有已知直播间时其中 1 次用来批量核对是否已下播（一轮只有 1 次时不核对，录制自己会发现下播）。账号不超过一轮的上限时每个账号每轮都查；超过后轮流查，每个账号约每 `⌈账号数 / 每轮次数⌉ × 间隔` 查一次，即每多一个账号约多 6 秒，不随一个固定的小时预算成比例拉长。一轮的起点按间隔排，轮内的等待不推后下一轮。开播相关的请求（巡检、开始与恢复录制，自动来源 `live`）**不占每小时额度**，额度全部留给定时检查更新与自动缓存；退避期内照样暂停，风控、限流照样让站点进入退避。设置页“开播检查间隔”下列出这套规则和当前实际间隔，任务页“检查计划”顶部有摘要（DEC-060 ④⑤）。**不论从哪里查到开播都开始录制**（DEC-060 ②）：订阅开了“开播录制”的账号，巡检、手动刷新开播状态（账号页、订阅详情，算作它的一次开播检查）、检查更新时作品列表里的 `author.room_id` 任何一处发现开播，都按巡检的同一条件开始录制（手动停过的这一场除外；从作品列表得知的开播在开始录制取流时由 `web/enter` 再确认，已下播就不录）。哔哩哔哩同样：手动刷新与检查更新顺带查到的开播也开始录制。订阅网格与主页侧栏订阅列表的直播圈显示最近一次查到的结果，不为渲染发请求。
-- **查询方式**：主播的身份只认 `sec_uid`。账号上缓存的 `webRid` 只是“最近一次能用的直播间号”：有它时调 `webcast/room/web/enter`，并核对返回的主播 `sec_uid`，对不上、不存在或不可看时清掉缓存改走下一步；没有时调 `user/profile/other` 看 `room_id`，开播时再用 `reflow/info`（支持 1～24 位正整数 `room_id`，离线占位 `room_id=2` 见 [ACT-011](../../USER-ACTIONS.md#act-011)）换到房间号并写回订阅（[订阅 §1](subscriptions.md#model)）。同一个直播间可能有两个数字（主播的数字抖音号不变，另一个会变，用户 2026-11-13 观察，[协议 V-08](../research/douyin.md#act-010)）；真实检查（ACT-010 V-08）已确认两种号码均经 `web/enter` 指向同一主播 `sec_uid`，确认数字 `short_id` 可用时缓存优先存它。内层房间状态 `2` 是直播中、`4` 是已下播，其他按未开播；语音直播仅凭外层 `data.room_status == 1`、`live_type_audio == true` 或纯音频 `stream_url` 判定（不把外层 `data.enter_mode == 1` 误判为语音房），按“开播但不能录”显示。
+- **查询方式**：主播的身份只认 `sec_uid`。账号上缓存的 `webRid` 只是“最近一次能用的直播间号”：有它时调 `webcast/room/web/enter`，并核对返回的主播 `sec_uid`，对不上、不存在或不可看时清掉缓存改走下一步；没有时调 `user/profile/other` 看 `room_id`，开播时再用 `reflow/info`（支持 1～24 位正整数 `room_id`，离线占位 `room_id=2` 见 [ACT-011](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-011)）换到房间号并写回订阅（[订阅 §1](subscriptions.md#model)）。同一个直播间可能有两个数字（主播的数字抖音号不变，另一个会变，用户 2026-11-13 观察，[协议 V-08](../research/douyin.md#act-010)）；真实检查（ACT-010 V-08）已确认两种号码均经 `web/enter` 指向同一主播 `sec_uid`，确认数字 `short_id` 可用时缓存优先存它。内层房间状态 `2` 是直播中、`4` 是已下播，其他按未开播；语音直播仅凭外层 `data.room_status == 1`、`live_type_audio == true` 或纯音频 `stream_url` 判定（不把外层 `data.enter_mode == 1` 误判为语音房），按“开播但不能录”显示。
 - **取流**：从 `stream_data` 里按 `origin > uhd > hd > sd > ld` 取第一档有 FLV 地址的（排除 `only_audio=1`），没有新结构时用旧的 `flv_pull_url`（`ORIGIN > FULL_HD1 > HD1 > SD1 > SD2`）；编码从 `sdk_params` 预判、以第一个视频参数集为准，H.264 与 H.265 都录（DEC-043 ⑤），清晰度显示为“原画 · HEVC”这类格式。只有 HLS 地址时录制失败并说明（LOOP-008）。
 - **录制**：按第 2.1 节；断流或地址失效时重新调 `web/enter` 取新地址，状态变为 `4` 就正常结束；连续 5 分钟取不到流结束；风控、验证、未登录立即结束并记原因，不重试。
 - **录像条目**：键 `douyin:live:<room_id>`（`room_id` 每场唯一，不受直播间号变化影响），文件夹见[数据 §2.1](data-and-cache.md#cache)；清单记当时用的直播间号、本场 `room_id`、主播 `sec_uid` 与昵称、标题、清晰度与编码、每段的文件与校验值、结束原因与可选 `live.incidents`；不记流地址。同一场（同一个 `room_id`）中途重新开始用同一个条目。其余同第 4 节。
@@ -74,7 +74,7 @@
 <a id="weibo"></a>
 ## 6. 微博（暂不支持开播巡检与录制，DEC-065）
 
-微博直播暂不纳入开播巡检与录制（[Q-023](../../USER-ACTIONS.md#q-023) 第 2 条，FR-WB-010）：
+微博直播暂不纳入开播巡检与录制（[Q-023](https://github.com/chialecode/trace/issues/22) 第 2 条，FR-WB-010）：
 
 - **零请求排除**：`internal/live`、`internal/subscription` 与 `internal/service` 明确将 `site.Weibo` 排除在开播轮询、批量状态查询（`LiveStatuses` / `StatusByAccountKeys`）、检查更新后的开播查询、自动录制账号筛选（`ListAutoRecordAccounts`）以及 `LiveCheckEvery`（返回 0）之外，不对微博发出任何直播相关请求。
 - **明确拒绝与文案**：对任意 `weibo:*` 账号键或微博直播间调用开播查询、开始录制或停止录制，一律拒绝（不回落到哔哩哔哩）并返回 `live.WeiboLiveUnsupportedMessage`（“微博直播暂不支持录制”）。订阅规则开启“开播自动录制”时，任务页“检查计划”对微博账号标明“微博直播暂不支持录制”，订阅详情“账号”行不显示开播状态与录制按钮。解析微博直播链接或浏览微博内嵌直播卡片时提示“微博直播暂不支持录制，可以在浏览器中打开”（0 请求），`OpenLiveInBrowser` 直接打开微博直播网页。
@@ -82,7 +82,7 @@
 <a id="x"></a>
 ## 7. X（暂不支持开播巡检与录制，DEC-066）
 
-X 视频直播（Broadcasts）与 Spaces 语音暂不纳入开播巡检与录制（[Q-024](../../USER-ACTIONS.md#q-024) 第 5 条，FR-X-010）：
+X 视频直播（Broadcasts）与 Spaces 语音暂不纳入开播巡检与录制（[Q-024](https://github.com/chialecode/trace/issues/21) 第 5 条，FR-X-010）：
 
 - **零请求排除**：`internal/live`、`internal/subscription` 与 `internal/service` 明确将 `site.X` 排除在开播轮询、批量与缓存状态查询（`LiveStatuses` / `StatusByAccountKeys` / `CachedAccountState`）、检查更新后的开播查询、自动录制账号筛选（`ListAutoRecordAccounts`）、实时预览以及 `LiveCheckEvery`（返回 0）之外，不对 X 发出任何直播相关请求。
 - **明确拒绝与文案**：对任意 `x:*` 账号键调用开播查询、开始录制、停止录制或实时预览，一律拒绝（不回落到哔哩哔哩）并返回 `live.XLiveUnsupportedMessage`（“X 直播与 Spaces 暂不支持录制”）。订阅规则开启“开播自动录制”时，任务页“检查计划”对 X 账号标明“X 直播与 Spaces 暂不支持录制”，订阅详情“账号”行不显示开播状态与录制按钮。解析 X 直播/Spaces 链接或浏览帖内直播/Spaces 卡片时提示“X 直播与 Spaces 暂不支持录制，可以在浏览器中打开”（0 请求），`OpenLiveInBrowser` 直接打开对应 X 网页。

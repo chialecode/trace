@@ -1,14 +1,14 @@
 # TRACE 路线与验收
 
-本页回答“先做什么、做到什么程度算基本可用、怎样判定完成”。需求的正本是[需求](../requirements.md)，实际做到哪、验证到什么程度只在[交付状态](status.md)维护；不能从本页的范围或预期判断功能已经通过。
+本页回答“先做什么、做到什么程度算基本可用、怎样判定完成”。需求的正本是[需求](../requirements.md)，实际做到哪以[需求](../requirements.md)的状态列与 `main` 上的代码为准，真实站点与人工检查的进展在 [`needs-user` issue](https://github.com/chialecode/trace/issues?q=is%3Aissue+label%3Aneeds-user) 里跟踪；不能从本页的范围或预期判断功能已经通过。
 
 <a id="principles"></a>
 ## 1. 交付原则
 
 - **先贯通全部基本功能的 MVP，再按反馈 loop 迭代**（DEC-004；用户 2026-11-07 重申）。每项基本能力先做出第 3 节“MVP 必须”的完整流程，再处理“可由 loop 深化”的部分；不等一个功能的全部打磨项清零才推进下一个基本功能。
 - **MVP 不放宽底线**：数据正确、凭证隔离、真实状态（风控、限流、未登录、网络、不可得、格式变化、存储失败分别说明）、只删登记过的文件、规则请求的频率上限，都不因 MVP 放宽。
-- **以完整可用的流程为交付单位**：一个阶段的计划覆盖整个阶段（[开发流程 §2](../dev-rules/workflow.md#agent-handoff)），按第 3 节列出该阶段要贯通的流程；不以内部测试轮次或单个示例为交接单位。
-- 不影响基本使用、没有数据或真实状态风险的问题记为[交付状态的 LOOP](status.md#loop)；产品取舍进 USER-ACTIONS 的 Q 项。MVP 达成、阶段合并、产品验收（人工检查）与对外发布是不同的事实。
+- **以完整可用的流程为交付单位**：每个 issue 做成一个小 PR（[开发流程 §2](../dev-rules/workflow.md#change-loop)），一个阶段要贯通的流程按第 3 节列出；不以内部测试轮次或单个示例为交付单位。
+- 不影响基本使用、没有数据或真实状态风险的问题建成 [`feature` issue](https://github.com/chialecode/trace/issues?q=is%3Aissue+label%3Afeature)；产品取舍建 [`needs-user` issue](https://github.com/chialecode/trace/issues?q=is%3Aissue+label%3Aneeds-user)。MVP 达成、阶段合并、产品验收（人工检查）与对外发布是不同的事实。
 
 <a id="scope"></a>
 ## 2. 能力范围
@@ -60,7 +60,7 @@
 | 微博（DEC-065） | 粘贴 Cookie 登录（严格确认已登录、不续期），三个站点登录互不影响；分享文本、`t.cn` 短链与各类微博、视频、用户链接解析，不支持的链接给提示且不发请求；单条微博详情（长微博全文、转发与原微博不可见的说明、超过 9 张图、GIF、实况、混排、视频、文章与直播等卡片的摘要）与用户微博列表（置顶、翻页、可见范围提示、空壳与真空区分）；缓存视频（最高档单文件 MP4）与正文图片（原图、实况片段、混排），转发存转发者文件夹；订阅关联微博账号、检查更新（置顶与快转不打断）、自动缓存、全部缓存原创；从微博关注列表导入；我的 › 微博的关注与收藏；站点小字“微博”与按站点筛选；微博的额度、退避与熔断独立；远程版推送微博 Cookie 与同步微博订阅 | 扫码登录、直播状态与录制、赞过与关注分组（ACT-022 确认后）、原创筛选、评论、头条文章正文、视频合集、去水印开关、画质升级提醒 |
 | X（DEC-066） | 粘贴 Cookie 登录（登录页如实说明账号风险、严格确认已登录、不续期），四个站点登录互不影响；分享文本、`t.co` 短链、镜像与各类帖子、用户链接解析，不支持的链接给提示且不发请求；单条帖子详情（长帖全文、作者线程、转帖与引用及原帖不可见的说明、图片 GIF 视频混排、投票卡片文章直播等的摘要）与用户帖子列表（置顶、翻页、可见上限、受保护、空壳与真空区分）；缓存视频（最高码率单文件 MP4）与正文图片（原图、GIF、混排、线程），转帖与引用存转帖者文件夹；订阅关联 X 账号、检查更新（置顶不打断、外层 ID 判新）、自动缓存、全部缓存原创；从 X 关注列表导入；我的 › X 的关注、书签与喜欢；站点小字“X”与五项筛选；X 的保守节奏、主动刹车、遇限流与风控即停，额度、退避与熔断独立；前端变化时只停 X 并说明；远程版确认风险后推送 X Cookie 与同步 X 订阅 | 官方 API 路线、直播与 Spaces、只有分段流的视频、回复与媒体标签、书签文件夹与列表（ACT-024 确认后）、线程续帖、按时间回溯、文章正文、编辑历史、评论 |
 
-每个阶段按“A 制定覆盖整个阶段的计划 → B 连续实现与自测 → A 集中复核 → 用户授权后 push/PR/合并”推进；用户的人工检查、反馈与决定记在 USER-ACTIONS，任何时候处理，不阻塞这条流水线，反馈带来的修复进入当时正在进行的阶段。
+每次改动按[每次改动的流程](../dev-rules/workflow.md#change-loop)推进：issue → 小 PR → CI 与独立审查 → 合并；用户的人工检查、反馈与决定在 `needs-user` issue 里任何时候处理，不阻塞这条流水线，反馈带来的修复建成新的 issue。
 
 <a id="acceptance"></a>
 ## 4. 验收场景
@@ -156,4 +156,24 @@
 | AC-87 | 站点标记、直播降级与远程：六处小字显示“X”，主页与媒体库可按“全部 / B 站 / 抖音 / 微博 / X”筛选，三种宽度无横向滚动；X 账号在订阅“账号”里不显示开播状态与录制按钮，开播自动录制的规则对 X 账号写明“X 直播与 Spaces 暂不支持录制”且不发请求；登录 X 后不会自动推送给远程，确认风险说明后才推送，远程校验后保存，订阅同步后远程按规则检查 X 账号 | 夹具、自动化、`tools/uishots` 与假站点远程冒烟通过（实机见 H-001 第 40 步与 H-003） |
 | AC-88 | 前端变化与数据升级：X 前端的接口编号或参数变化时（合成），TRACE 最多重新获取一次前端信息，仍失败时只停 X 并说明“X 返回格式变了”，另外三个站点照常；从上一版的数据目录升级后 `subscriptions.json`、`ui-state.json` 为版本 4、`cache-queue.json` 为版本 3，留下备份，原有内容与行为不变；含 X 账号的数据被旧版本程序打开时拒绝写入并说明 | 夹具与自动化通过（只经合成样本验证；ACT-024 仅完成 2 次前端静态核对并确认 `Bookmarks` 拆包，真实站点部分仍为 `not-run`，待 ACT-025） |
 
-AC-01～04、AC-08～11、AC-15、AC-17、AC-19～22 的哔哩哔哩真实站点部分需要真实请求或人工操作，分别对应 USER-ACTIONS 的 ACT-004、ACT-005 和 H-001；AC-28、29、32 的实机部分对应 H-002；AC-35～38、AC-41 的真实站点部分对应 ACT-010 与 ACT-011；AC-46～51 的真实站点部分对应 ACT-020；AC-56～64 在真实 VPS 与网盘上的部分对应 H-003；AC-65、67～70、75 的真实站点部分原对应 ACT-022（因第 6 步本机缺陷中断未出正式回执），现待后续补测 ACT-023；AC-77、79～82、86、88 的真实站点部分原对应 ACT-024（仅完成 2 次前端静态核对并确认 `Bookmarks` 拆包，完整实测因账本 `runs=1/1` 用尽未运行），现仍为 `not-run`，待后续补测 ACT-025。合成测试通过不等于这些场景通过；X 网页前端变动频繁，首次真实使用仍可能需要跟进修复。
+AC-01～04、AC-08～11、AC-15、AC-17、AC-19～22 的哔哩哔哩真实站点部分需要真实请求或人工操作，分别对应原 [USER-ACTIONS](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md) 的 ACT-004、ACT-005 和 H-001（现 [#24](https://github.com/chialecode/trace/issues/24)）；AC-28、29、32 的实机部分对应 H-002（[#25](https://github.com/chialecode/trace/issues/25)）；AC-35～38、AC-41 的真实站点部分对应 ACT-010 与 ACT-011；AC-46～51 的真实站点部分对应 ACT-020；AC-56～64 在真实 VPS 与网盘上的部分对应 H-003（[#26](https://github.com/chialecode/trace/issues/26)）；AC-65、67～70、75 的真实站点部分原对应 ACT-022（因第 6 步本机缺陷中断未出正式回执），现待后续补测 ACT-023（[#19](https://github.com/chialecode/trace/issues/19)）；AC-77、79～82、86、88 的真实站点部分原对应 ACT-024（仅完成 2 次前端静态核对并确认 `Bookmarks` 拆包，完整实测因账本 `runs=1/1` 用尽未运行），现仍为 `not-run`，待后续补测 ACT-025（[#18](https://github.com/chialecode/trace/issues/18)）。合成测试通过不等于这些场景通过；X 网页前端变动频繁，首次真实使用仍可能需要跟进修复。
+
+<a id="oss"></a>
+<a id="limits"></a>
+## 5. 上游事项与已知限制
+
+选型与实现中发现的上游风险、平台差异与待验证假设登记在这里（`OSS-*`，只增不改号）；能做的后续工作建成 issue。
+
+| 编号 | 内容 | 状态 |
+| --- | --- | --- |
+| OSS-001 | MyGo 持续高频迭代（当前 `v0.9.1`） | 按 DEC-032 不保留旧版兼容包袱，持续同步 MyGo 最新版；后端核心包不依赖 MyGo（INV-05），只有 `main.go`、`internal/shell`、`internal/ui`、`internal/player`、`internal/locales`、`tools/uishots` 引用 MyGo。MyGo 的更新签名只覆盖更新包内容、不含版本号，TRACE 在清单里加了版本证明；MyGo 的更新不改卸载项的版本，TRACE 在更新后第一次启动时改；MyGo 自己的“应用正在运行”安装提示仍是英文 |
+| OSS-002 | Windows Media Foundation（`IMFSourceReader`）纯 Go COM 调用与 `mygo/audio` 音画同步 | 合成 AVC/AAC 与纯音频（WAV/AAC）读取、Seek 与静音测试通过；真实音频设备体验留 H-001 |
+| OSS-003 | `mp4ff` v0.63.0 渐进式 MP4（1 秒交错 + `elst`）、单文件 MP4 流式 `moov` 前置重排、QuickTime `.mov` 实况片段无损改封装及最高音轨后备 | 小样本合并/轨道/时长、尾置 `moov` 磁盘流式前置重排（含 32 位偏移升级 `co64` 合成测试）、QuickTime `ftyp=qt  ` `.mov` 无损改封装为 ISO BMFF `.mp4`（`EnsureLivePhotoMP4Context`）与失败保留旧文件回归通过；最高 FLAC/杜比另存，主 MP4 用 AAC；真实 FLAC-in-MP4 解码未验证（[媒体选型](../research/2026-11-05-media.md#hires-audio)） |
+| OSS-004 | 纯 Go 弹幕排版器与 WebVTT 字幕在 `mygo/ui` 中的叠加性能 | 测试验证：10,000 条弹幕在时间窗二分查找 + 轨道防重叠下单帧耗时远低于 `1 ms` 目标，Seek 无残留 |
+| OSS-005 | 直播录像用 `mp4ff` `Defragment` 把 fMP4（含 HLS fMP4 与 HTTP-FLV 按 GOP 重封装的 fMP4）转普通 MP4 | 默认小样本（AVC、`CodecID=12` HEVC、Enhanced FLV `hvc1` + AAC）转换与登记恢复通过；大于 2 GiB 与稀疏 `co64` 门控未执行，不能记为已验证 |
+| OSS-006 | `mygo/ui` 窗口关闭到托盘销毁窗口、释放纹理并在同一进程内反复重建 | 托盘测试与最新 `tools/smoke` 通过；真实隐藏窗口、单实例与隔离数据锁/路径检查通过；内存数值见 [b75cf80 报告](https://github.com/chialecode/trace/blob/b75cf80/docs/delivery/stage-report.md)及 `artifacts/smoke/smoke.json` |
+| OSS-007 | MyGo 调用 NSIS（`v3.13`）生成按用户安装包（`%LOCALAPPDATA%\Programs\trace[-dev]`） | 开发版、正式版与 ptest 安装包都已生成；ptest 的静默安装、更新与卸载演练通过；安装界面的实机外观与 SmartScreen 体验在 H-002，not-run。安装包本身没有文件属性里的版本信息（MyGo 的 NSIS 脚本不写），程序与卸载项有 |
+| OSS-008 | 二维码传递模块归档遗漏 LICENSE | 已核对官方仅增加 MIT LICENSE 的下一提交，将许可原文作为精确版本补充嵌入通知，其他缺许可模块停止打包（[来源与移除条件](../../tools/internal/build/licenses/README.md)） |
+| OSS-009 | 抖音网页签名（`a_bogus`、`x-secsdk-web-signature`）由 TRACE 按协议规格自写；站点前端约每 3～6 个月局部收紧一次 | 签名模块隔离在 `internal/site/douyin/sign`（纯标准库，不联网、不读凭证），国标 SM3 向量、规格附录固定向量及 ACT-010 真实站点 V-02 全部通过；未来失效时抖音请求按风控停下并建“站点限制” `blocked` issue，不影响哔哩哔哩（[选型 §4](../research/2026-11-12-douyin.md#a-review)） |
+
+已知限制：没有可用 GPU 的电脑走软件解码，界面不会卡死，但高分辨率 60 fps 视频可能掉帧；本机没有 cgo 工具链，`go test -race` 无法运行（记为 `not-run`）；大于 2 GiB 的 `co64` 大文件门控默认未执行；抖音直播仅提供 HLS（MPEG-TS）或为纯音频电台模式时不录制并说明原因（见 [LOOP-008](https://github.com/chialecode/trace/issues/32)、[LOOP-009](https://github.com/chialecode/trace/issues/33)）；抖音真实直播的 HEVC（`CodecID=12`/`hvc1`）流没在真实站点见到，只由合成测试覆盖（ACT-014 的直播间只给 AVC）；微博目前只经合成样本与自动化测试验证（ACT-022 单次运行在步骤 6 因本机 typed-nil 异常中断且未写出脱敏回执，本机缺陷已修，完整真实站点校验与 AC-65/67～70/75 的真实站点部分仍待 [ACT-023](https://github.com/chialecode/trace/issues/19)），微博扫码登录、直播录制、赞过与关注分组、去水印开关均暂未开放（见 FR-WB-010、[LOOP-017](https://github.com/chialecode/trace/issues/39)）；**X 目前只经合成样本验证（ACT-024 仅完成 2 次前端静态核对并确认 `Bookmarks` 拆包，完整实测待 [ACT-025](https://github.com/chialecode/trace/issues/18)）；AC-77、79～82、86、88 的真实站点部分仍为 `not-run`**，且 X 网页前端变动频繁，首次真实使用仍可能需要跟进修复；X 官方 API、直播与 Spaces、`x-xp-forwarded-for`、仅 HLS 视频、回复与媒体标签、书签文件夹与列表等暂未开放（见 FR-X-010、[LOOP-018](https://github.com/chialecode/trace/issues/40)）；远程版只经本机、WSL Ubuntu 与假站点、假 rclone 验证，真实 VPS、真实 Cookie 推送与 Google Drive 是 `not-run`（H-003）；本地一次只连一个远程；导入、导出与订阅文件的路径直接输入，没有系统的文件夹选择框；Windows 上的远程冒烟不能发控制台信号，改为结束进程后再启动（`SIGTERM` 收尾在 Linux 上验证）。

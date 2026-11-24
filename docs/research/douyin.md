@@ -1,10 +1,10 @@
 # 抖音网页协议资料
 
-核对：2026-11-12 调研定稿；2026-11-13 按 [ACT-010](../../USER-ACTIONS.md#act-010) 执行 1 次有界真实站点检查并回写结论（脱敏回执 `artifacts/site-check/act010.json`，账本 `apiCalls=15/18`）。内容整理自公开网页技术资料、本机参考索引只读源码观察到的协议现象与 ACT-010 实测记录，端点不是站点对 TRACE 的稳定承诺；站点改版后要重新核对。规则见[站点规则](../dev-rules/sources-and-safety.md#site-rules)与[凭证与真实站点请求](../dev-rules/sources-and-safety.md#credentials)。
+核对：2026-11-12 调研定稿；2026-11-13 按 [ACT-010](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-010) 执行 1 次有界真实站点检查并回写结论（脱敏回执 `artifacts/site-check/act010.json`，账本 `apiCalls=15/18`）。内容整理自公开网页技术资料、本机参考索引只读源码观察到的协议现象与 ACT-010 实测记录，端点不是站点对 TRACE 的稳定承诺；站点改版后要重新核对。规则见[站点规则](../dev-rules/sources-and-safety.md#site-rules)与[凭证与真实站点请求](../dev-rules/sources-and-safety.md#credentials)。
 
 证据等级说明（全篇逐节标注查询或实测日期）：
 
-- `实测（ACT-010，2026-11-13）`：使用 TRACE 正式代码在 [ACT-010](../../USER-ACTIONS.md#act-010) 授权额度内对抖音线上接口实测验证的结论。
+- `实测（ACT-010，2026-11-13）`：使用 TRACE 正式代码在 [ACT-010](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-010) 授权额度内对抖音线上接口实测验证的结论。
 - `官方文档`：标准规范或浏览器/平台公开文档。
 - `源码阅读（功能领域，2026-11-12）`：本机参考索引对应功能领域实现与脱敏回放夹具中直接核实的请求构造、响应结构或异常处理现象（严格只读事实，未复制任何代码）。
 - `社区资料（2026-11-12）`：公开技术社区与协议整理资料的观察记录。
@@ -562,7 +562,7 @@ TRACE 登录确认判定式（缺一不可；精确未登录错误码在 [ACT-01
 
 ### 10.1 静态调研无法 100% 拍板的待验证项汇总（`unknown` 清单）
 
-以下项目在公开资料与本机参考索引源码中存在多分支演进或缺乏最新线上回执，必须在 [ACT-010](../../USER-ACTIONS.md#act-010) 授权下用小额真实请求最终锁定：
+以下项目在公开资料与本机参考索引源码中存在多分支演进或缺乏最新线上回执，必须在 [ACT-010](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-010) 授权下用小额真实请求最终锁定：
 
 | 编号 | 待验证问题 | 当前静态认知与备选分支 | 对应章节 |
 | --- | --- | --- | --- |
@@ -577,7 +577,7 @@ TRACE 登录确认判定式（缺一不可；精确未登录错误码在 [ACT-01
 
 ### 10.2 供 Agent A 写入 `ACT-010` 的最小真实站点检查程序与额度建议
 
-仿照 `USER-ACTIONS.md` 中 [ACT-004](../../USER-ACTIONS.md#act-004)、[ACT-005](../../USER-ACTIONS.md#act-005)、[ACT-007](../../USER-ACTIONS.md#act-007) 的有界检查体例，建议 Agent A 在用户提供测试 Cookie 与检查对象后，按以下最小额度表申请并执行一次有界验证（全程串行、间隔 >= 1.2 秒）：
+仿照 `USER-ACTIONS.md` 中 [ACT-004](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-004)、[ACT-005](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-005)、[ACT-007](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-007) 的有界检查体例，建议 Agent A 在用户提供测试 Cookie 与检查对象后，按以下最小额度表申请并执行一次有界验证（全程串行、间隔 >= 1.2 秒）：
 
 | 步骤 | 接口 / 目标域名 | 用途（对应待验证项） | 最多请求次数 | 体积 / 时长上限 |
 | --- | --- | --- | --- | --- |
@@ -595,7 +595,7 @@ TRACE 登录确认判定式（缺一不可；精确未登录错误码在 [ACT-01
 <a id="a-review"></a>
 ## 11. A 审阅定稿与 ACT-010 实测结论（2026-11-12 定稿，2026-11-13 更新）
 
-A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1～10 节，抽查了其中引用的仓库代码事实（`storage/schema.go` 各文件结构版本均为 1、`uistate` 空站点归一为 `bilibili`、下载熔断全局生效、`validateVideoOutput` 强制 `moov` 在前与 `elst`、播放器只按“先有视频轨”打开文件、`scheduler_state` 只有单行），都属实。2026-11-13 B 按 [ACT-010](../../USER-ACTIONS.md#act-010) 运行 `go run ./tools/actcheck -act act010` 1 次（账本 `runs=1`、接口与播放列表请求 `15/18`、点播与图片 CDN 请求 `6/16` 共 `10,602,566` 字节、`stoppedBy=""`；脱敏回执 `artifacts/site-check/act010.json`）。下面是实现采用的取舍与 V-01～V-08 核对状态：
+A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1～10 节，抽查了其中引用的仓库代码事实（`storage/schema.go` 各文件结构版本均为 1、`uistate` 空站点归一为 `bilibili`、下载熔断全局生效、`validateVideoOutput` 强制 `moov` 在前与 `elst`、播放器只按“先有视频轨”打开文件、`scheduler_state` 只有单行），都属实。2026-11-13 B 按 [ACT-010](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-010) 运行 `go run ./tools/actcheck -act act010` 1 次（账本 `runs=1`、接口与播放列表请求 `15/18`、点播与图片 CDN 请求 `6/16` 共 `10,602,566` 字节、`stoppedBy=""`；脱敏回执 `artifacts/site-check/act010.json`）。下面是实现采用的取舍与 V-01～V-08 核对状态：
 
 ### 11.1 V-01～V-08 实测核对状态（2026-11-13）
 
@@ -626,7 +626,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 | 直播状态来源 | 有 `web_rid` 的账号用 `web/enter`；没有的用 `profile/other` 的 `room_id`（检查更新时用 `aweme/post` 第 1 页的 `author.room_id`，不额外请求），开播时经 `reflow/info` 补上 `web_rid` 并保存。每次用缓存的 `web_rid` 都核对返回的主播 `sec_uid`：对不上、或返回不存在/不可看时清掉缓存，改走 `room_id` 路线（同一次检查最多多 1 次请求）。`web/enter` 接受数字 `short_id` 时优先缓存 `short_id` 形式；语音房仅凭外层 `room_status == 1`、`live_type_audio == true` 或纯音频 `stream_url` 判定。`check_alive` 只用于巡检已知场次是否结束 | 在线 `reflow/info` 与双号 `web/enter` 已在 V-06/V-08 验证；离线 `room_id=2` 与 FLV 短录待 `ACT-011` |
 | 请求节奏 | 采用 §9.3：抖音 API 全局间隔 1000 ms + 0～300 ms 抖动、串行；规则触发的请求每小时 ≤ 120 次；每轮检查最多 20 个抖音账号、账号之间 ≥ 2.5 秒；开播巡检只对选用了“开播自动录制”规则的账号，每个账号间隔 ≥ 90 秒。都与哔哩哔哩分开计数和退避 | 真实检查后可收紧，放宽要用户确认 |
 | 图文混排 | 图文的每一页按类型处理：图片、实况照片、视频页（§6.4 规则），认不出的页保存图片并记明；视频页的选流与校验同视频作品 | V-04 已在真实混排图文样本上验证通过 |
-| 真实检查程序 | [ACT-010](../../USER-ACTIONS.md#act-010) 已执行 1 次；未跑完的两个子项由独立小额检查 `ACT-011`（`-act act011`）承接；§10 保留调研时的初稿 | — |
+| 真实检查程序 | [ACT-010](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-010) 已执行 1 次；未跑完的两个子项由独立小额检查 `ACT-011`（`-act act011`）承接；§10 保留调研时的初稿 | — |
 | 空响应判定 | 严格按 §9.2 真值表；任何不确定的空结果都不当成“没有作品”或“到底了”，订阅检查记为“本轮结果不完整”，不移动起点 | — |
 
 <a id="account-lists"></a>
@@ -654,7 +654,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 - **收藏的合集与音乐**（`mix/listcollection`、`music/listcollection`）：TRACE 还不能打开合集与音乐页（FR-FEED-002），本阶段不做。
 - **写操作**（取消喜欢、取消收藏、取消关注）不调用（DEC-047）。
 
-**真实检查结果**（[ACT-020](../../USER-ACTIONS.md#act-020)，2026-11-14，1 次，脱敏回执 `artifacts/site-check/act020.json`）：
+**真实检查结果**（[ACT-020](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-020)，2026-11-14，1 次，脱敏回执 `artifacts/site-check/act020.json`）：
 
 - D-V1 关注（核）：第 1、2 页各 20 人，`max_time` 游标推进、页间 0 重复、字段齐全，`total` 95。
 - D-V2 喜欢（未）：HTTP 200，但客户端按第 9.2 节判为 `risk_control`（空壳、非 JSON 验证页或挑战字段之一；回执的错误原文被当时的脱敏规则截断，脱敏已修正）。按站点规则立即停止抖音，没有重试。
