@@ -35,8 +35,12 @@ func subscriptionPrimarySiteAndUID(sub subscription.Subscription) (string, strin
 	if strings.TrimSpace(sub.Avatar.UID) != "" {
 		return normalizeSiteIDUI(sub.Avatar.Site), strings.TrimSpace(sub.Avatar.UID)
 	}
-	if len(sub.Accounts) > 0 && strings.TrimSpace(sub.Accounts[0].UID) != "" {
-		return normalizeSiteIDUI(sub.Accounts[0].Site), strings.TrimSpace(sub.Accounts[0].UID)
+	if len(sub.Accounts) > 0 {
+		accs := append([]subscription.AccountRef(nil), sub.Accounts...)
+		subscription.SortAccountsBySiteOrder(accs)
+		if strings.TrimSpace(accs[0].UID) != "" {
+			return normalizeSiteIDUI(accs[0].Site), strings.TrimSpace(accs[0].UID)
+		}
 	}
 	if sub.Mid > 0 {
 		return "bilibili", fmt.Sprintf("%d", sub.Mid)

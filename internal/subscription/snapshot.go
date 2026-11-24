@@ -1,6 +1,7 @@
 package subscription
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,18 @@ import (
 
 	"github.com/chialecode/trace/internal/storage"
 )
+
+// SortSnapshotAccountsBySiteOrder sorts snapshot accounts in-place by canonical
+// site order (bilibili -> douyin -> weibo -> x), keeping stable relative order
+// for multiple accounts on the same site (DEC-071).
+func SortSnapshotAccountsBySiteOrder(accounts []SnapshotAccount) {
+	if len(accounts) < 2 {
+		return
+	}
+	slices.SortStableFunc(accounts, func(a, b SnapshotAccount) int {
+		return cmp.Compare(AccountSiteOrderRank(a.Site), AccountSiteOrderRank(b.Site))
+	})
+}
 
 // The subscription snapshot is both the file 导出订阅 writes
 // (trace-subscriptions.json) and what the desktop sends to the remote
@@ -119,6 +132,7 @@ func ParseSnapshot(raw []byte) (Snapshot, error) {
 			seen[key] = true
 			accs = append(accs, SnapshotAccount{Site: ref.Site, UID: ref.UID, UniqueID: ref.UniqueID, WebRID: ref.WebRID, Name: ref.Name, Face: ref.Face})
 		}
+		SortSnapshotAccountsBySiteOrder(accs)
 		sub.Accounts = accs
 	}
 	return snap, nil
@@ -143,8 +157,10 @@ func (s Snapshot) Hash() string {
 	}{Format: s.Format, Version: s.Version, Rules: s.Rules, Settings: s.Settings}
 	for _, x := range s.Subscriptions {
 		item := sub{ID: x.ID, Name: x.Name, Note: x.Note, RuleID: x.RuleID, Since: x.AutoCacheSince}
-		for _, a := range x.Accounts {
-			item.Accounts = append(item.Accounts, acc{a.Site, a.UID})
+		ordered := append([]SnapshotAccount(nil), x.Accounts...)
+		SortSnapshotAccountsBySiteOrder(ordered)
+		for _, a := range ordered {
+			item.Accounts = append(item.Accounts, acc{normalizeLegacyAccountSite(a.Site), a.UID})
 		}
 		content.Subs = append(content.Subs, item)
 	}
@@ -181,6 +197,7 @@ func (m *Manager) Snapshot() (Snapshot, error) {
 		for _, a := range s.Accounts {
 			out.Accounts = append(out.Accounts, SnapshotAccount{Site: a.Site, UID: a.UID, UniqueID: a.UniqueID, WebRID: a.WebRID, Name: a.Name, Face: a.Face})
 		}
+		SortSnapshotAccountsBySiteOrder(out.Accounts)
 		snap.Subscriptions = append(snap.Subscriptions, out)
 	}
 	return snap, nil

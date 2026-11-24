@@ -210,7 +210,9 @@ func (a *App) loadMoreSubscriptionFeed(sub *subscription.Subscription) {
 
 func subscriptionEffectiveAccounts(sub subscription.Subscription) []subscription.AccountRef {
 	if len(sub.Accounts) > 0 {
-		return sub.Accounts
+		out := append([]subscription.AccountRef(nil), sub.Accounts...)
+		subscription.SortAccountsBySiteOrder(out)
+		return out
 	}
 	pSite, pUID := subscriptionPrimarySiteAndUID(sub)
 	if pUID != "" {
@@ -347,9 +349,11 @@ func (a *App) renderSubscriptionDetailHeader(c *ui.Context, sub *subscription.Su
 				ui.Column(c).FillWidth().Padding(10, 12).Radius(12).Background(ColorBgMain).Border(1, ColorBorder).Gap(8).Children(func() {
 					ui.Text(c, "选择关联账号作为订阅头像").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 					ui.Row(c).Gap(8).Wrap().Children(func() {
-						for _, accItem := range sub.Accounts {
+						for _, accItem := range subscriptionEffectiveAccounts(*sub) {
 							acc := accItem
-							if OutlinePillButton(c, "使用 "+firstNonEmptyStrUI(acc.Name, "UID:"+acc.UID), "订阅头像："+acc.UID).Clicked() {
+							accSite := normalizeSiteIDUI(acc.Site)
+							choiceText := "使用 " + firstNonEmptyStrUI(acc.Name, "UID:"+acc.UID) + " · " + siteDisplayName(accSite)
+							if OutlinePillButton(c, choiceText, "订阅头像："+accSite+":"+acc.UID).Clicked() {
 								sub.Avatar = subscription.AvatarRef{Site: acc.Site, UID: acc.UID}
 								_, err := a.backend.UpsertSubscription(*sub)
 								a.showError(err)

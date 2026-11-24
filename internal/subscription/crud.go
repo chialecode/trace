@@ -681,7 +681,16 @@ func (m *Manager) ImportCreators(users []bilibili.FollowingUser, scope, autoCach
 			existing.Name = existing.Uname
 			existing.Face = firstNonEmptyStr(u.Face, existing.Face)
 			existing.Sign = firstNonEmptyStr(u.Sign, existing.Sign)
-			if len(existing.Accounts) > 0 {
+			uidStr := strconv.FormatInt(u.Mid, 10)
+			matched := false
+			for i := range existing.Accounts {
+				if normalizeLegacyAccountSite(existing.Accounts[i].Site) == string(site.Bilibili) && existing.Accounts[i].UID == uidStr {
+					existing.Accounts[i].Name = existing.Uname
+					existing.Accounts[i].Face = firstNonEmptyStr(u.Face, existing.Accounts[i].Face)
+					matched = true
+				}
+			}
+			if !matched && len(existing.Accounts) > 0 {
 				existing.Accounts[0].Name = existing.Uname
 				existing.Accounts[0].Face = existing.Face
 			}

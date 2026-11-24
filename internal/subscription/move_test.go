@@ -103,7 +103,8 @@ func TestMoveAcrossAllThreeSitesMetadataAvatarSyncBaselineAndRollback(t *testing
 		t.Fatalf("expected src avatar re-synced to bilibili:1001 after moving avatar account, got accounts=%+v avatar=%+v", srcAfterWB.Accounts, srcAfterWB.Avatar)
 	}
 
-	// 2. Move Douyin from subSrc to subDest; UniqueID, WebRID, Name, AddedAt preserved verbatim.
+	// 2. Move Douyin from subSrc to subDest; UniqueID, WebRID, Name, AddedAt preserved verbatim,
+	//    canonical site order places Douyin before Weibo, and subDest.Avatar stays on Weibo.
 	movedDest, err = mgr.Move("douyin", dyUID, subDest.ID)
 	if err != nil {
 		t.Fatalf("Move douyin: %v", err)
@@ -111,20 +112,25 @@ func TestMoveAcrossAllThreeSitesMetadataAvatarSyncBaselineAndRollback(t *testing
 	if len(movedDest.Accounts) != 2 {
 		t.Fatalf("expected 2 accounts on dest, got %+v", movedDest.Accounts)
 	}
-	dyAcc := movedDest.Accounts[1]
+	dyAcc := movedDest.Accounts[0]
 	if dyAcc.Site != "douyin" || dyAcc.UID != dyUID || dyAcc.UniqueID != "dy_handle_move" || dyAcc.WebRID != "998877" ||
-		dyAcc.Name != "抖音甲" || dyAcc.AddedAt != "2026-11-11T02:00:00Z" {
-		t.Fatalf("moved douyin metadata mismatch: %+v", dyAcc)
+		dyAcc.Name != "抖音甲" || dyAcc.AddedAt != "2026-11-11T02:00:00Z" || movedDest.Accounts[1].Site != "weibo" {
+		t.Fatalf("moved douyin metadata/order mismatch: %+v", movedDest.Accounts)
+	}
+	if movedDest.Avatar != (AvatarRef{Site: "weibo", UID: wbUID}) {
+		t.Fatalf("expected dest avatar preserved on weibo, got %+v", movedDest.Avatar)
 	}
 
 	// 3. Move last account (Bilibili) from subSrc to subDest:
+	//    subDest orders [bilibili, douyin, weibo] while keeping its Weibo avatar;
 	//    subSrc becomes empty -> Avatar cleared, Face cleared, Mid=0, Name & Rules preserved.
 	movedDest, err = mgr.Move("bilibili", "001001", subDest.ID)
 	if err != nil {
 		t.Fatalf("Move bilibili: %v", err)
 	}
-	if len(movedDest.Accounts) != 3 || movedDest.Accounts[2].Face != biliFace || movedDest.Accounts[2].AddedAt != "2026-11-10T01:00:00Z" {
-		t.Fatalf("moved bilibili metadata mismatch: %+v", movedDest.Accounts)
+	if len(movedDest.Accounts) != 3 || movedDest.Accounts[0].Site != "bilibili" || movedDest.Accounts[0].Face != biliFace ||
+		movedDest.Accounts[0].AddedAt != "2026-11-10T01:00:00Z" || movedDest.Accounts[1].Site != "douyin" || movedDest.Accounts[2].Site != "weibo" {
+		t.Fatalf("moved bilibili metadata/order mismatch: %+v", movedDest.Accounts)
 	}
 	all, err = mgr.List()
 	if err != nil {
