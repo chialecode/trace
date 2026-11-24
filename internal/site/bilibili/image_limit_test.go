@@ -75,7 +75,7 @@ func TestInvalidImageLimitDoesNotStartRequest(t *testing.T) {
 	client, _, srv := newTestLoggedClient(t, http.NotFoundHandler(), -1)
 	tr := &imageLimitTransport{t: t}
 	client.mediaClient.Transport = tr
-	for _, limit := range []int64{0, -1, 50*1024*1024 + 1} {
+	for _, limit := range []int64{0, -1, MaxImageBytes + 1} {
 		if _, err := client.FetchImageLimited(context.Background(), srv.URL+"/image.png", limit); KindOf(err) != ErrKindBadRequest {
 			t.Fatalf("invalid limit %d was accepted: %v", limit, err)
 		}

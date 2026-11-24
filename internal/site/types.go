@@ -12,6 +12,12 @@ import (
 // DefaultUserAgent is the desktop Chrome User-Agent used when a site spec does not override it.
 const DefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
+// DefaultMaxImageBytes is the bounded per-image byte ceiling (128 MiB) shared
+// across online image fetches, preview staging, and range downloads so Weibo
+// original largest images, long images, and multi-frame GIFs succeed without
+// unbounded memory or disk growth.
+const DefaultMaxImageBytes int64 = 128 * 1024 * 1024
+
 // ResolveTarget describes a normalized target parsed or resolved from user input.
 type ResolveTarget struct {
 	Site          ID     `json:"site"`

@@ -16,8 +16,14 @@ import (
 )
 
 // maxImageReadBytes caps local image reads before os.ReadFile so a mis-referenced
-// multi-GB media file (e.g. a coverless video) is never loaded into memory.
-const maxImageReadBytes = 32 << 20
+// multi-GB media file (e.g. a coverless video) is never loaded into memory, while
+// matching the 128 MiB image download ceiling for large originals, long images, and GIFs.
+const (
+	maxImageReadBytes     = 128 << 20
+	maxImageDecodePixels  = int64(100_000_000)
+	viewerMaxBitmapEdge   = 8192
+	viewerMaxBitmapPixels = int64(16_777_216)
+)
 
 // Thumbnail requests use public, cookie-free image fetching. A failed fetch is
 // retried after a pause (a few times at most), so one network hiccup does not
@@ -60,7 +66,7 @@ func (a *App) lookupRemoteBitmap(rawURL string) *ui.Bitmap {
 		if err != nil {
 			return nil, err
 		}
-		if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 24_000_000 {
+		if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > maxImageDecodePixels {
 			return nil, errors.New("image dimensions out of range")
 		}
 		img, _, err := image.Decode(bytes.NewReader(raw))
@@ -69,10 +75,10 @@ func (a *App) lookupRemoteBitmap(rawURL string) *ui.Bitmap {
 		}
 		w, h := config.Width, config.Height
 		if w > 640 {
-			h, w = max(1, h*640/w), 640
+			h, w = max(1, int(int64(h)*640/int64(w))), 640
 		}
 		if h > 640 {
-			w, h = max(1, w*640/h), 640
+			w, h = max(1, int(int64(w)*640/int64(h))), 640
 		}
 		small := image.NewRGBA(image.Rect(0, 0, w, h))
 		draw.ApproxBiLinear.Scale(small, small.Bounds(), img, img.Bounds(), draw.Src, nil)
@@ -265,7 +271,7 @@ func loadThumbBitmap(path string, maxEdge int) *ui.Bitmap {
 		return nil
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
-	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > 40_000_000 {
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > maxImageDecodePixels {
 		return nil
 	}
 	img, _, err := image.Decode(bytes.NewReader(raw))
@@ -274,10 +280,10 @@ func loadThumbBitmap(path string, maxEdge int) *ui.Bitmap {
 	}
 	w, h := cfg.Width, cfg.Height
 	if w > maxEdge {
-		h, w = max(1, h*maxEdge/w), maxEdge
+		h, w = max(1, int(int64(h)*int64(maxEdge)/int64(w))), maxEdge
 	}
 	if h > maxEdge {
-		w, h = max(1, w*maxEdge/h), maxEdge
+		w, h = max(1, int(int64(w)*int64(maxEdge)/int64(h))), maxEdge
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
 	if w == cfg.Width && h == cfg.Height {

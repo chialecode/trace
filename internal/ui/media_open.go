@@ -9,6 +9,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/player"
 	"github.com/egoist/mygo/ui"
+	xdraw "golang.org/x/image/draw"
 )
 
 // thumbMaxEdge bounds decoded thumbnails: a single post image or a card at
@@ -358,19 +360,48 @@ func loadBitmapFromFile(path string) *ui.Bitmap {
 
 func decodeImageBytesToBitmap(raw []byte) *ui.Bitmap {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
-	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > 40_000_000 {
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > maxImageDecodePixels {
 		return nil
 	}
 	img, _, err := image.Decode(bytes.NewReader(raw))
 	if err != nil || img == nil {
 		return nil
 	}
-	if rgba, ok := img.(*image.RGBA); ok {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= 0 || h <= 0 {
+		return nil
+	}
+	if w > viewerMaxBitmapEdge {
+		h, w = max(1, int(int64(h)*viewerMaxBitmapEdge/int64(w))), viewerMaxBitmapEdge
+	}
+	if h > viewerMaxBitmapEdge {
+		w, h = max(1, int(int64(w)*viewerMaxBitmapEdge/int64(h))), viewerMaxBitmapEdge
+	}
+	if int64(w)*int64(h) > viewerMaxBitmapPixels {
+		ratio := math.Sqrt(float64(viewerMaxBitmapPixels) / float64(int64(w)*int64(h)))
+		w = max(1, int(float64(w)*ratio))
+		h = max(1, int(float64(h)*ratio))
+		for int64(w)*int64(h) > viewerMaxBitmapPixels {
+			if w >= h && w > 1 {
+				w--
+			} else if h > 1 {
+				h--
+			} else {
+				break
+			}
+		}
+	}
+	if w == b.Dx() && h == b.Dy() {
+		if rgba, ok := img.(*image.RGBA); ok && b.Min == (image.Point{}) {
+			return ui.NewBitmap(rgba)
+		}
+		rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+		draw.Draw(rgba, rgba.Bounds(), img, b.Min, draw.Src)
 		return ui.NewBitmap(rgba)
 	}
-	b := img.Bounds()
-	rgba := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
-	draw.Draw(rgba, rgba.Bounds(), img, b.Min, draw.Src)
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+	xdraw.ApproxBiLinear.Scale(rgba, rgba.Bounds(), img, b, xdraw.Src, nil)
 	return ui.NewBitmap(rgba)
 }
 

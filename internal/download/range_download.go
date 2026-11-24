@@ -634,7 +634,7 @@ func (m *Manager) fetchRangeSegment(
 		return segmentResult{newOffset: offset}, rawCT, &site.Error{
 			Site:    spec.site,
 			Kind:    site.ErrKindSchemaChanged,
-			Message: "图片超过 50 MiB",
+			Message: "图片超过 128 MiB",
 		}
 	}
 

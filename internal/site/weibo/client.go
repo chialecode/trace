@@ -32,11 +32,13 @@ const (
 	// DefaultOrigin is the Origin header used on Weibo POST requests such as /tv/api/component.
 	DefaultOrigin = "https://weibo.com"
 
-	defaultMinInterval     = 1200 * time.Millisecond
-	defaultJitterMax       = 400 * time.Millisecond
-	defaultAPITimeout      = 15 * time.Second
-	defaultRedirectTimeout = 10 * time.Second
-	defaultMaxBodyBytes    = 4 * 1024 * 1024 // 4 MiB
+	defaultMinInterval      = 1200 * time.Millisecond
+	defaultJitterMax        = 400 * time.Millisecond
+	defaultAPITimeout       = 15 * time.Second
+	defaultRedirectTimeout  = 10 * time.Second
+	defaultMediaIdleTimeout = 30 * time.Second
+	defaultMaxBodyBytes     = 4 * 1024 * 1024 // 4 MiB (JSON API responses)
+	defaultMaxImageBytes    = site.DefaultMaxImageBytes
 )
 
 // Endpoints holds configurable Weibo PC Ajax API URLs for production and httptest fixtures.
@@ -153,7 +155,9 @@ type ClientOptions struct {
 	JitterMax        time.Duration
 	APITimeout       time.Duration
 	RedirectTimeout  time.Duration
+	MediaIdleTimeout time.Duration
 	MaxBodyBytes     int64
+	MaxImageBytes    int64
 	Transport        http.RoundTripper
 	WrapTransport    func(http.RoundTripper) http.RoundTripper
 	AllowLocalhost   bool
@@ -175,7 +179,9 @@ type Client struct {
 	httpClient       *http.Client
 	redirectClient   *http.Client
 	mediaClient      *http.Client
+	mediaIdleTimeout time.Duration
 	maxBodyBytes     int64
+	maxImageBytes    int64
 	allowLocalhost   bool
 	imageURLRewriter func(picID, rawURL string) (string, bool)
 
@@ -237,6 +243,14 @@ func NewClient(opts ClientOptions) *Client {
 	maxBytes := opts.MaxBodyBytes
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxBodyBytes
+	}
+	maxImageBytes := opts.MaxImageBytes
+	if maxImageBytes <= 0 {
+		maxImageBytes = defaultMaxImageBytes
+	}
+	mediaIdleTimeout := opts.MediaIdleTimeout
+	if mediaIdleTimeout <= 0 {
+		mediaIdleTimeout = defaultMediaIdleTimeout
 	}
 
 	apiTransport := opts.Transport
@@ -303,7 +317,9 @@ func NewClient(opts ClientOptions) *Client {
 		cred:             opts.CredStore,
 		endpoints:        opts.Endpoints.withDefaults(),
 		profile:          profile,
+		mediaIdleTimeout: mediaIdleTimeout,
 		maxBodyBytes:     maxBytes,
+		maxImageBytes:    maxImageBytes,
 		allowLocalhost:   opts.AllowLocalhost,
 		imageURLRewriter: opts.ImageURLRewriter,
 		serialGate:       make(chan struct{}, 1),
@@ -327,7 +343,7 @@ func NewClient(opts ClientOptions) *Client {
 	}
 	c.mediaClient = &http.Client{
 		Transport:     mediaTransport,
-		Timeout:       apiTimeout,
+		Timeout:       0, // Enforced per-read via ResponseHeaderTimeout + WrapIdleReadCloser so large originals/GIFs do not hit the 15s API wall clock
 		CheckRedirect: noRedirect,
 	}
 	return c
@@ -942,7 +958,7 @@ func (c *Client) ValidateMediaURL(rawURL string) error {
 
 // FetchImage fetches a Weibo CDN image (cover/avatar/post image) without sending any Cookie.
 func (c *Client) FetchImage(ctx context.Context, rawURL string) ([]byte, string, error) {
-	return c.FetchImageLimited(ctx, rawURL, c.maxBodyBytes)
+	return c.FetchImageLimited(ctx, rawURL, c.maxImageBytes)
 }
 
 // FetchImageLimited fetches up to maxBytes of a Weibo CDN image with Referer: https://weibo.com/
@@ -957,7 +973,7 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 		return nil, "", err
 	}
 	if maxBytes <= 0 {
-		maxBytes = c.maxBodyBytes
+		maxBytes = c.maxImageBytes
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalized, nil)
@@ -980,7 +996,14 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 			Err:     site.UnwrapURLError(err),
 		}
 	}
-	defer resp.Body.Close()
+	body := site.WrapIdleReadCloser(resp.Body, c.mediaIdleTimeout, func() error {
+		return &site.Error{
+			Site:    site.Weibo,
+			Kind:    site.ErrKindNetwork,
+			Message: "读取微博图片超时",
+		}
+	})
+	defer body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", &site.Error{
@@ -1000,7 +1023,15 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 		}
 	}
 
-	data, err := readBoundedBody(resp.Body, maxBytes)
+	if resp.ContentLength > maxBytes {
+		return nil, "", &site.Error{
+			Site:    site.Weibo,
+			Kind:    site.ErrKindBlocked,
+			Message: "微博图片体积超出安全上限",
+		}
+	}
+
+	data, err := readBoundedBody(body, maxBytes)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
 			return nil, "", &site.Error{

@@ -89,23 +89,25 @@ func (e Endpoints) withDefaults() Endpoints {
 
 // ClientOptions configures a Douyin Client.
 type ClientOptions struct {
-	CredStore       *credential.Store
-	Endpoints       Endpoints
-	UserAgent       string
-	WebID           string
-	Signer          sign.Signer
-	MinInterval     time.Duration
-	JitterMax       time.Duration
-	APITimeout      time.Duration
-	RedirectTimeout time.Duration
-	MaxBodyBytes    int64
-	Transport       http.RoundTripper
-	WrapTransport   func(http.RoundTripper) http.RoundTripper
-	AllowLocalhost  bool
-	Now             func() time.Time
-	Sleep           func(ctx context.Context, d time.Duration) error
-	Entropy         io.Reader
-	PreferredCodec  func() string
+	CredStore        *credential.Store
+	Endpoints        Endpoints
+	UserAgent        string
+	WebID            string
+	Signer           sign.Signer
+	MinInterval      time.Duration
+	JitterMax        time.Duration
+	APITimeout       time.Duration
+	RedirectTimeout  time.Duration
+	MediaIdleTimeout time.Duration
+	MaxBodyBytes     int64
+	MaxImageBytes    int64
+	Transport        http.RoundTripper
+	WrapTransport    func(http.RoundTripper) http.RoundTripper
+	AllowLocalhost   bool
+	Now              func() time.Time
+	Sleep            func(ctx context.Context, d time.Duration) error
+	Entropy          io.Reader
+	PreferredCodec   func() string
 }
 
 type liveWebRIDEntry struct {
@@ -117,16 +119,18 @@ type liveWebRIDEntry struct {
 // Outbound API requests are serialized (concurrency = 1) with 1000ms + 0..300ms jitter pacing,
 // 15s timeout, 4 MiB body limit, manual redirect handling, and strict Cookie/CDN separation.
 type Client struct {
-	cred           *credential.Store
-	endpoints      Endpoints
-	profile        BrowserProfile
-	webID          string
-	signer         sign.Signer
-	httpClient     *http.Client
-	redirectClient *http.Client
-	mediaClient    *http.Client
-	maxBodyBytes   int64
-	allowLocalhost bool
+	cred             *credential.Store
+	endpoints        Endpoints
+	profile          BrowserProfile
+	webID            string
+	signer           sign.Signer
+	httpClient       *http.Client
+	redirectClient   *http.Client
+	mediaClient      *http.Client
+	mediaIdleTimeout time.Duration
+	maxBodyBytes     int64
+	maxImageBytes    int64
+	allowLocalhost   bool
 
 	serialGate  chan struct{}
 	paceMu      sync.Mutex
@@ -206,6 +210,14 @@ func NewClient(opts ClientOptions) *Client {
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxBodyBytes
 	}
+	maxImageBytes := opts.MaxImageBytes
+	if maxImageBytes <= 0 {
+		maxImageBytes = site.DefaultMaxImageBytes
+	}
+	mediaIdleTimeout := opts.MediaIdleTimeout
+	if mediaIdleTimeout <= 0 {
+		mediaIdleTimeout = 30 * time.Second
+	}
 
 	apiTransport := opts.Transport
 	mediaTransport := opts.Transport
@@ -250,21 +262,23 @@ func NewClient(opts ClientOptions) *Client {
 	}
 
 	c := &Client{
-		cred:           opts.CredStore,
-		endpoints:      opts.Endpoints.withDefaults(),
-		profile:        profile,
-		webID:          webID,
-		signer:         signer,
-		maxBodyBytes:   maxBytes,
-		allowLocalhost: opts.AllowLocalhost,
-		serialGate:     make(chan struct{}, 1),
-		minInterval:    minInterval,
-		jitterMax:      jitterMax,
-		nowFn:          nowFn,
-		sleepFn:        sleepFn,
-		entropy:        ent,
-		prefCodecFn:    opts.PreferredCodec,
-		webRIDByUser:   make(map[string]liveWebRIDEntry),
+		cred:             opts.CredStore,
+		endpoints:        opts.Endpoints.withDefaults(),
+		profile:          profile,
+		webID:            webID,
+		signer:           signer,
+		mediaIdleTimeout: mediaIdleTimeout,
+		maxBodyBytes:     maxBytes,
+		maxImageBytes:    maxImageBytes,
+		allowLocalhost:   opts.AllowLocalhost,
+		serialGate:       make(chan struct{}, 1),
+		minInterval:      minInterval,
+		jitterMax:        jitterMax,
+		nowFn:            nowFn,
+		sleepFn:          sleepFn,
+		entropy:          ent,
+		prefCodecFn:      opts.PreferredCodec,
+		webRIDByUser:     make(map[string]liveWebRIDEntry),
 	}
 	c.httpClient = &http.Client{
 		Transport:     apiTransport,
@@ -278,7 +292,7 @@ func NewClient(opts ClientOptions) *Client {
 	}
 	c.mediaClient = &http.Client{
 		Transport:     mediaTransport,
-		Timeout:       apiTimeout,
+		Timeout:       0,
 		CheckRedirect: noRedirect,
 	}
 	return c
@@ -1319,7 +1333,7 @@ func (c *Client) ValidateMediaURL(rawURL string) error {
 
 // FetchImage fetches a Douyin cover/avatar/note image without sending Cookie and without stripping '@'.
 func (c *Client) FetchImage(ctx context.Context, rawURL string) ([]byte, string, error) {
-	return c.FetchImageLimited(ctx, rawURL, c.maxBodyBytes)
+	return c.FetchImageLimited(ctx, rawURL, c.maxImageBytes)
 }
 
 // FetchImageLimited fetches up to maxBytes of a Douyin CDN image, preserving full query signatures
@@ -1334,7 +1348,7 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 		return nil, "", err
 	}
 	if maxBytes <= 0 {
-		maxBytes = c.maxBodyBytes
+		maxBytes = c.maxImageBytes
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalized, nil)
@@ -1357,7 +1371,14 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 			Err:     site.UnwrapURLError(err),
 		}
 	}
-	defer resp.Body.Close()
+	body := site.WrapIdleReadCloser(resp.Body, c.mediaIdleTimeout, func() error {
+		return &site.Error{
+			Site:    site.Douyin,
+			Kind:    site.ErrKindNetwork,
+			Message: "读取抖音图片超时",
+		}
+	})
+	defer body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", &site.Error{
@@ -1377,7 +1398,15 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 		}
 	}
 
-	data, err := readBoundedBody(resp.Body, maxBytes)
+	if resp.ContentLength > maxBytes {
+		return nil, "", &site.Error{
+			Site:    site.Douyin,
+			Kind:    site.ErrKindBlocked,
+			Message: "抖音图片体积超出安全上限",
+		}
+	}
+
+	data, err := readBoundedBody(body, maxBytes)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
 			return nil, "", &site.Error{

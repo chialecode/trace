@@ -707,10 +707,33 @@ func TestOversizedImageRejectedBeforeCreatingPartFile(t *testing.T) {
 	}
 	_, _, err := mgr.downloadFileWithRange(context.Background(), []string{srv.URL + "/media/huge.jpg"}, dest, &task)
 	if !site.IsKind(err, site.ErrKindSchemaChanged) {
-		t.Fatalf("expected schema_changed for >50MiB image, got %v", err)
+		t.Fatalf("expected schema_changed for >128MiB image, got %v", err)
 	}
 	if _, statErr := os.Stat(dest + ".part"); !os.IsNotExist(statErr) {
 		t.Fatalf("expected no .part file created for oversized image, stat err=%v", statErr)
+	}
+
+	// Verify an image above the old 50 MiB ceiling (e.g. 60 MiB declared total) is accepted on segment 0 under the 128 MiB limit.
+	const sixtyMiB int64 = 60 * 1024 * 1024
+	mux.HandleFunc("/media/weibo_long_60m.gif", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/gif")
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-5/%d", sixtyMiB))
+		w.Header().Set("Content-Length", "6")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("GIF89a"))
+	})
+	part60 := filepath.Join(dir, "weibo_long_60m.gif.part")
+	task60 := Task{
+		TaskID:  "t-60m",
+		ItemDir: dir,
+		Files:   []TaskFileProgress{{Owned: true, Role: "image", Path: "weibo_long_60m.gif", Status: "downloading"}},
+	}
+	res60, err := mgr.fetchSingleSegment(context.Background(), srv.URL+"/media/weibo_long_60m.gif", part60, 0, 5, 0, &task60)
+	if err != nil {
+		t.Fatalf("expected 60 MiB image segment 0 to succeed under 128 MiB ceiling, got %v", err)
+	}
+	if res60.totalSize != sixtyMiB || res60.newOffset != 6 {
+		t.Fatalf("unexpected 60 MiB segment result: %+v", res60)
 	}
 }
 

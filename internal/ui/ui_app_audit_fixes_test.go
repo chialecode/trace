@@ -967,3 +967,58 @@ func TestAccountAvatarAndHistoryThumbDecodeOffUIThread(t *testing.T) {
 		t.Fatal("expected decoded history thumb bitmap after async completion")
 	}
 }
+
+func TestDecodeImageBytesToBitmapBoundsTallLongImagesAndHighMegapixelOriginals(t *testing.T) {
+	encodeSyntheticPNG := func(w, h int) []byte {
+		img := image.NewPaletted(image.Rect(0, 0, w, h), color.Palette{
+			color.RGBA{R: 245, G: 247, B: 250, A: 255},
+			color.RGBA{R: 26, G: 115, B: 232, A: 255},
+		})
+		img.SetColorIndex(0, 0, 1)
+		img.SetColorIndex(w-1, h-1, 1)
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			t.Fatalf("encode %dx%d png: %v", w, h, err)
+		}
+		return buf.Bytes()
+	}
+
+	// 1. Standard image stays 1:1.
+	normalBMP := decodeImageBytesToBitmap(encodeSyntheticPNG(1200, 800))
+	if normalBMP == nil {
+		t.Fatal("expected normal 1200x800 PNG to decode")
+	}
+	if bw, bh := normalBMP.Size(); bw != 1200 || bh != 800 {
+		t.Fatalf("normal bitmap size = %dx%d, want 1200x800", bw, bh)
+	}
+
+	// 2. Tall Weibo long image (1080x25000 = 27 MP, > old 24 MP cap and > 8192 D3D11 edge) decodes and downscales within viewerMaxBitmapEdge.
+	tallRaw := encodeSyntheticPNG(1080, 25000)
+	tallBMP := decodeImageBytesToBitmap(tallRaw)
+	if tallBMP == nil {
+		t.Fatal("expected tall 1080x25000 Weibo long image to decode")
+	}
+	if bw, bh := tallBMP.Size(); bh != viewerMaxBitmapEdge || bw <= 0 || bw > viewerMaxBitmapEdge {
+		t.Fatalf("tall long image bitmap size = %dx%d, want height=%d and proportional width", bw, bh, viewerMaxBitmapEdge)
+	}
+
+	// Also verify loadThumbBitmap handles the same tall long image cleanly.
+	tallPath := filepath.Join(t.TempDir(), "long_weibo.png")
+	if err := os.WriteFile(tallPath, tallRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if thumbBMP := loadThumbBitmap(tallPath, thumbMaxEdge); thumbBMP == nil {
+		t.Fatal("expected loadThumbBitmap to decode 1080x25000 Weibo long image")
+	} else if tw, th := thumbBMP.Size(); th != thumbMaxEdge || tw <= 0 {
+		t.Fatalf("tall thumb size = %dx%d, want height=%d", tw, th, thumbMaxEdge)
+	}
+
+	// 3. High-megapixel camera image (6000x5000 = 30 MP, both edges <= 8192) is bounded to viewerMaxBitmapPixels.
+	hiResBMP := decodeImageBytesToBitmap(encodeSyntheticPNG(6000, 5000))
+	if hiResBMP == nil {
+		t.Fatal("expected 6000x5000 image to decode")
+	}
+	if bw, bh := hiResBMP.Size(); int64(bw)*int64(bh) > viewerMaxBitmapPixels || bw <= 0 || bh <= 0 {
+		t.Fatalf("high-MP bitmap size = %dx%d (%d px), exceeds viewerMaxBitmapPixels=%d", bw, bh, int64(bw)*int64(bh), viewerMaxBitmapPixels)
+	}
+}
