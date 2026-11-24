@@ -105,6 +105,12 @@ func (m *Manager) saveLiveCover(ctx context.Context, sess *recordSession) error 
 		}
 		return nil
 	}
+	if len(raw) == 0 || site.LooksLikeDisguisedImageText(raw) || site.LooksLikeExpiredPlaceholderImageBytes(raw, coverURL, 0, 0, false) {
+		m.mu.Lock()
+		addLiveMissing(&sess.itemMeta, "cover", "封面保存失败")
+		m.mu.Unlock()
+		return nil
+	}
 	return m.commitLiveCover(sess, site.Bilibili, rel, sanitizeLiveURL(coverURL), raw)
 }
 
@@ -153,6 +159,9 @@ func (m *Manager) saveDouyinLiveCover(ctx context.Context, sess *recordSession, 
 	defer reader.Close()
 	raw, err := io.ReadAll(io.LimitReader(reader, maxLiveCoverBytes+1))
 	if err != nil || len(raw) < 8 || int64(len(raw)) > maxLiveCoverBytes {
+		return nil
+	}
+	if site.LooksLikeDisguisedImageText(raw) || site.LooksLikeExpiredPlaceholderImageBytes(raw, coverURL, 0, 0, false) {
 		return nil
 	}
 	ext := sniffLiveCoverExt(raw, resp.Header.Get("Content-Type"))

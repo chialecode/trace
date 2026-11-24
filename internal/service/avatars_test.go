@@ -1,7 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/gif"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,5 +196,122 @@ func TestDouyinUserRemembersLocalAvatar(t *testing.T) {
 	}
 	if path == "" {
 		t.Fatal("DouyinUser did not save local avatar PNG")
+	}
+}
+
+func TestStaleLocalAvatarAndHistoryThumbNeverOverwrittenByExpiredPlaceholder(t *testing.T) {
+	h := newWeiboThreeSiteHarness(t)
+	ctx := context.Background()
+	if _, err := h.backend.LoginWithCookie(ctx, "weibo", synthWeiboCookie(), ""); err != nil {
+		t.Fatalf("weibo login: %v", err)
+	}
+
+	// Build a synthetic Sina 480x360 grayscale deleted-image placeholder GIF served on a local server.
+	palette := color.Palette{
+		color.RGBA{R: 240, G: 240, B: 240, A: 255},
+		color.RGBA{R: 120, G: 120, B: 120, A: 255},
+	}
+	phImg := image.NewPaletted(image.Rect(0, 0, 480, 360), palette)
+	var phBuf bytes.Buffer
+	if err := gif.Encode(&phBuf, phImg, nil); err != nil {
+		t.Fatal(err)
+	}
+	placeholderGIF := phBuf.Bytes()
+
+	deadSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/placeholder.jpg") {
+			w.Header().Set("Content-Type", "image/gif")
+			_, _ = w.Write(placeholderGIF)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer deadSrv.Close()
+
+	// 1. Seed a valid Weibo subscription avatar, backdate ModTime past 7 days, and refresh against placeholder/404.
+	validFace := h.wbSrv.URL + "/cdn/avatar_creator.png"
+	if _, err := h.backend.CreateSubscription("合成微博创作者", "", []subscription.AccountRef{{
+		Site: "weibo",
+		UID:  synthWeiboUID,
+		Name: synthWeiboName,
+		Face: validFace,
+	}}, subscription.DefaultSubRules()); err != nil {
+		t.Fatalf("CreateSubscription(weibo): %v", err)
+	}
+
+	var avatarPath string
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline) && avatarPath == ""; time.Sleep(20 * time.Millisecond) {
+		avatarPath = h.backend.AccountAvatarPath("weibo", synthWeiboUID)
+	}
+	if avatarPath == "" {
+		t.Fatal("initial Weibo local avatar was not saved")
+	}
+	origAvatarBytes, err := os.ReadFile(avatarPath)
+	if err != nil || len(origAvatarBytes) == 0 {
+		t.Fatalf("read initial avatar: err=%v len=%d", err, len(origAvatarBytes))
+	}
+
+	staleTime := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(avatarPath, staleTime, staleTime); err != nil {
+		t.Fatalf("Chtimes(avatarPath): %v", err)
+	}
+
+	// Trigger background avatar refresh with both Sina placeholder GIF and HTTP 404.
+	h.backend.rememberAccountAvatar("weibo", synthWeiboUID, deadSrv.URL+"/placeholder.jpg")
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if _, busy := h.backend.avatarInflight.Load(filepath.Base(avatarPath)); !busy {
+			break
+		}
+	}
+	h.backend.rememberAccountAvatar("weibo", synthWeiboUID, deadSrv.URL+"/missing404.jpg")
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if _, busy := h.backend.avatarInflight.Load(filepath.Base(avatarPath)); !busy {
+			break
+		}
+	}
+
+	afterAvatarBytes, err := os.ReadFile(avatarPath)
+	if err != nil || !bytes.Equal(afterAvatarBytes, origAvatarBytes) {
+		t.Fatalf("stale valid local avatar was overwritten or deleted by expired placeholder/404: err=%v len=%d", err, len(afterAvatarBytes))
+	}
+	if got := h.backend.AccountAvatarPath("weibo", synthWeiboUID); got != avatarPath {
+		t.Fatalf("AccountAvatarPath after expired refresh = %q, want %q", got, avatarPath)
+	}
+
+	// 2. Seed valid history cover & avatar thumbs via OpenLink + FetchHistoryThumbs, then re-run FetchHistoryThumbs with placeholder/404 URLs.
+	res, err := h.backend.OpenLink(ctx, "https://weibo.com/"+synthWeiboUID+"/"+synthWeiboMidPlain)
+	if err != nil || res.HistoryThumbs == nil {
+		t.Fatalf("OpenLink(weibo): res=%+v err=%v", res, err)
+	}
+	if err := h.backend.FetchHistoryThumbs(ctx, *res.HistoryThumbs); err != nil {
+		t.Fatalf("FetchHistoryThumbs(initial): %v", err)
+	}
+	histBefore := h.backend.ListHistory()
+	if len(histBefore) == 0 || histBefore[0].CoverThumb == "" {
+		t.Fatalf("expected initial CoverThumb in history: %+v", histBefore)
+	}
+	origCoverName := histBefore[0].CoverThumb
+	origCoverPath, err := h.backend.HistoryThumbPath(origCoverName)
+	if err != nil {
+		t.Fatalf("HistoryThumbPath: %v", err)
+	}
+	origCoverBytes, err := os.ReadFile(origCoverPath)
+	if err != nil || len(origCoverBytes) == 0 {
+		t.Fatalf("read initial history cover thumb: %v", err)
+	}
+
+	expiredJob := *res.HistoryThumbs
+	expiredJob.CoverURL = deadSrv.URL + "/placeholder.jpg"
+	expiredJob.AvatarURL = deadSrv.URL + "/missing404.jpg"
+	if err := h.backend.FetchHistoryThumbs(ctx, expiredJob); err != nil {
+		t.Fatalf("FetchHistoryThumbs(expired placeholder): %v", err)
+	}
+	histAfter := h.backend.ListHistory()
+	if len(histAfter) == 0 || histAfter[0].CoverThumb != origCoverName {
+		t.Fatalf("history CoverThumb degraded after expired FetchHistoryThumbs: got %+v, want %q", histAfter, origCoverName)
+	}
+	afterCoverBytes, err := os.ReadFile(origCoverPath)
+	if err != nil || !bytes.Equal(afterCoverBytes, origCoverBytes) {
+		t.Fatalf("existing history cover thumb file overwritten or deleted: err=%v", err)
 	}
 }

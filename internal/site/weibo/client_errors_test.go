@@ -4,9 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"image"
+	"image/color"
+	"image/gif"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -726,6 +731,93 @@ func TestFetchImageAllowsLargeOriginalsAboveJSONBodyCapAndBoundsOversize(t *test
 	_, _, err = smallCapClient.FetchImage(context.Background(), srv.URL+"/chunked-over-custom-cap.gif")
 	if !site.IsKind(err, site.ErrKindBlocked) || !strings.Contains(err.Error(), "微博图片体积超出安全上限") {
 		t.Fatalf("chunked oversize FetchImage err = %v, want blocked 安全上限", err)
+	}
+}
+
+func TestFetchImageRecoversFromPlaceholderViaPublicCDNFallbackWithoutCookie(t *testing.T) {
+	palette := color.Palette{
+		color.RGBA{R: 240, G: 240, B: 240, A: 255},
+		color.RGBA{R: 120, G: 120, B: 120, A: 255},
+	}
+	phImg := image.NewPaletted(image.Rect(0, 0, 480, 360), palette)
+	var phBuf bytes.Buffer
+	if err := gif.Encode(&phBuf, phImg, nil); err != nil {
+		t.Fatal(err)
+	}
+	placeholderGIF := phBuf.Bytes()
+
+	realImg := image.NewNRGBA(image.Rect(0, 0, 32, 32))
+	realImg.SetNRGBA(0, 0, color.NRGBA{R: 10, G: 120, B: 220, A: 255})
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, realImg); err != nil {
+		t.Fatal(err)
+	}
+	realPNG := pngBuf.Bytes()
+
+	var (
+		edgeHits     atomic.Int32
+		fallbackHits atomic.Int32
+		leakedHeader atomic.Bool
+	)
+	store := newTestWeiboStore(t, "SUB=SYNTHETIC_SUB_FALLBACK_01")
+	client := NewClient(ClientOptions{
+		CredStore:   store,
+		MinInterval: -1,
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			host := strings.ToLower(req.URL.Hostname())
+			if strings.HasSuffix(host, ".sinaimg.cn") {
+				edgeHits.Add(1)
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					ContentLength: int64(len(placeholderGIF)),
+					Header:        http.Header{"Content-Type": []string{"image/gif"}},
+					Body:          io.NopCloser(bytes.NewReader(placeholderGIF)),
+					Request:       req,
+				}, nil
+			}
+			if host == "fallback.local.example" {
+				fallbackHits.Add(1)
+				for _, h := range []string{"Cookie", "Authorization", "Referer", "Origin"} {
+					if req.Header.Get(h) != "" {
+						leakedHeader.Store(true)
+					}
+				}
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					ContentLength: int64(len(realPNG)),
+					Header:        http.Header{"Content-Type": []string{"image/png"}},
+					Body:          io.NopCloser(bytes.NewReader(realPNG)),
+					Request:       req,
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Request:    req,
+			}, nil
+		}),
+		ImageCDNFallbackProviders: []site.PublicImageCDNProvider{{
+			Name:           "local-archive",
+			AllowedDomains: []string{"fallback.local.example"},
+			MaxRedirects:   1,
+			BuildURL: func(_ *url.URL, clean string) (string, bool) {
+				return "https://fallback.local.example/web/0id_/" + clean, true
+			},
+		}},
+	})
+
+	got, ct, err := client.FetchImage(context.Background(), "https://wx1.sinaimg.cn/large/001SynthOnlineDead.jpg")
+	if err != nil {
+		t.Fatalf("FetchImage fallback failed: %v", err)
+	}
+	if ct != "image/png" || !bytes.Equal(got, realPNG) {
+		t.Fatalf("FetchImage fallback = (%q, %d bytes), want (image/png, %d bytes)", ct, len(got), len(realPNG))
+	}
+	if edgeHits.Load() < 4 || fallbackHits.Load() != 1 {
+		t.Fatalf("expected wx1..wx4 edge rotation (>=4 hits) + 1 fallback hit, got edges=%d fallback=%d", edgeHits.Load(), fallbackHits.Load())
+	}
+	if leakedHeader.Load() {
+		t.Fatal("Cookie/Referer/Origin leaked to public CDN fallback")
 	}
 }
 

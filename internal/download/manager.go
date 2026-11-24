@@ -140,10 +140,11 @@ type Manager struct {
 	lastNotify        map[string]taskNotification
 	taskFaults        sync.Map
 
-	chunkSize    int64
-	backoffScale time.Duration
-	mediaWrap    func(http.RoundTripper) http.RoundTripper
-	transports   map[mediaTransportKey]*http.Transport
+	chunkSize            int64
+	backoffScale         time.Duration
+	mediaWrap            func(http.RoundTripper) http.RoundTripper
+	cdnFallbackProviders []site.PublicImageCDNProvider
+	transports           map[mediaTransportKey]*http.Transport
 
 	planners     map[site.ID]WorkPlanner
 	initialPlans map[string]WorkDownloadPlan
