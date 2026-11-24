@@ -39,10 +39,11 @@
 | --- | --- | --- | --- |
 | `User-Agent` | 固定桌面 Chrome UA，例如 `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36`（与签名和查询参数使用同一常量） | 同左 | 同左 |
 | `Referer` | `https://www.douyin.com/`（作品/用户页可带对应页面路径，根路径通用） | `https://live.douyin.com/`（或 `https://live.douyin.com/<web_rid>`） | 点播用 `https://www.douyin.com/`；直播流用 `https://live.douyin.com/` |
-| `Origin` | GET 接口通常省略或 `https://www.douyin.com` | `https://live.douyin.com` | 直播拉流带 `https://live.douyin.com`；点播可省略 |
+| `Origin` | 同源 `GET` 接口省略，`POST` 表单接口（如 `listcollection`）带 `https://www.douyin.com` | `https://live.douyin.com` | 直播拉流带 `https://live.douyin.com`；点播可省略 |
 | `Accept` | `application/json, text/plain, */*` | `application/json, text/plain, */*` | `*/*` |
 | `Accept-Language` | `zh-CN,zh;q=0.9,en;q=0.8` | 同左 | 可省略 |
 | `sec-ch-ua` / `sec-ch-ua-platform` / `sec-ch-ua-mobile` | 与 `User-Agent` 主版本号和 `"Windows"`、`?0` 严格一致 | 同左 | 不必携带 |
+| `Sec-Fetch-Site` / `Sec-Fetch-Mode` / `Sec-Fetch-Dest` | 同源 `same-origin`（跨子域 `same-site`） / `cors` / `empty` | 同源 `same-origin`（跨站如 `webcast.amemv.com` 为 `cross-site`） / `cors` / `empty` | 不必携带 |
 | `Cookie` | **必带**用户登录 Cookie（DEC-043） | `live.douyin.com` **必带**（含 `ttwid` 与登录态） | **不带登录 Cookie**（避免向边缘/第三方 CDN 泄露凭证，见[第 7 节](#media-cdn)） |
 
 主站 `/aweme/v1/web/*` 公共查询参数基线（`源码阅读（本机参考索引中的抖音签名与访问上下文实现、用户视频列表解析实现，2026-11-12）`）：
@@ -105,9 +106,9 @@
 | 分类 | 字段名 | 作用与处理策略 |
 | --- | --- | --- |
 | **核心身份态（必需）** | `sessionid`、`sessionid_ss` | 主登录会话令牌（通常两者同值，32 位十六进制字符串）。**本地预检至少要求存在非空 `sessionid`（或 `sessionid_ss`）**；两者皆无时直接本地报错“未检测到登录会话字段（sessionid）”，不发网络请求 |
-| **配套身份态（强烈建议保留）** | `sid_tt`、`uid_tt`、`uid_tt_ss`、`sid_guard`、`odin_tt`、`passport_csrf_token`、`passport_csrf_token_default`、`is_staff_user`、`login_time` | ByteDance Passport 统一身份与会话元数据。其中 `sid_guard` URL 解码后形如 `<token>\|<签发Unix秒>\|<有效期秒，常见5184000即60天>\|<到期GMT时间>`，可用于本地辅助展示签发信息，但**不能代替服务端登录校验** |
-| **访问上下文与风控 Cookie（建议保留）** | `ttwid`、`UIFID`、`UIFID_TEMP`、`uifid`、`msToken`、`s_v_web_id`、`__ac_nonce`、`__ac_signature` | `ttwid` 为直播接口必需；`UIFID` / `UIFID_TEMP` / `uifid` 供网关 `uifid` 校验使用；`msToken` 与 URL 参数对齐。用户从正常浏览过抖音首页/直播页的浏览器复制时通常已包含 |
-| **浏览器内存密钥绑定的动态票据（建议入库或发包前剔除）** | `bd_ticket_guard_client_data`、`bd_ticket_guard_web_version`、`bd_ticket_guard_ree_public_key`、`_bd_ticket_crypt_cookie`、`__security_mc_1_s_sdk`、`__security_server_data_status`、`x_tt_token`、`sdk_source_info`、`fpk1`、`fpk2` | 依赖浏览器内不可导出的临时公私钥对动态签名；客户端脱离原浏览器上下文重放过期值容易被网关判为异常，参考实现统一在会话清洗阶段剥离（`源码阅读（本机参考索引中的抖音签名与访问上下文实现，2026-11-12）`；剥离对 `profile/self` 与 `aweme/post` 的实测影响列入 [ACT-010](#act-010) 核对） |
+| **配套身份态（强烈建议保留）** | `sid_tt`、`uid_tt`、`uid_tt_ss`、`sid_guard`、`odin_tt`、`passport_csrf_token`、`passport_csrf_token_default`、`is_staff_user`、`login_time`、`sid_ucp_v1`、`ssid_ucp_v1`、`sso_uid_tt`、`sso_uid_tt_ss`、`passport_auth_status`、`passport_auth_status_ss`、`n_mh` | ByteDance Passport 与统一通行证（UCP / SSO）身份及会话元数据。其中 `sid_guard` URL 解码后形如 `<token>\|<签发Unix秒>\|<有效期秒，常见5184000即60天>\|<到期GMT时间>`，可用于本地辅助展示签发信息，但**不能代替服务端登录校验** |
+| **访问上下文与风控 Cookie（建议保留）** | `ttwid`、`UIFID`、`UIFID_TEMP`、`UIFIDTEMP`、`uifid`、`uifid_temp`、`uifidtemp`、`msToken`、`s_v_web_id`、`__ac_nonce`、`__ac_signature`、`d_ticket`、`x-web-secsdk-uid`、`_waftokenid`、`ttcid`、`tt_scid` | `ttwid` 为直播接口必需；6 种 `uifid*`/`UIFID*` 变体供网关 `uifid` 二阶段签名使用；`msToken`（回退字符集 `A-Za-z0-9_-` 加 `==`，会话内固定复用）在出站 `Cookie` 头与 URL 查询串间保持同步；`s_v_web_id` 仅保留真实值、缺失时不伪造假 `verify_*`；TRACE 按“剔除下表动态票据黑名单 + 校验 RFC 6265 安全键值”保留用户粘贴的其余全部合法 Cookie（按主干键优先、扩展键字典序稳定序列化） |
+| **浏览器内存密钥绑定的动态票据（必须入库与发包前剔除）** | `bd_ticket_guard_client_data`、`bd_ticket_guard_web_version`、`bd_ticket_guard_ree_public_key`（及 `bd_ticket_guard_*`）、`_bd_ticket_crypt_cookie`、`__security_mc_1_s_sdk`、`__security_server_data_status`（及 `__security_*`）、`x_tt_token`、`sdk_source_info`、`fpk1`、`fpk2` | 依赖浏览器内不可导出的临时公私钥对动态签名；客户端脱离原浏览器上下文重放过期值容易被网关判为异常，参考实现统一在会话清洗阶段剥离（`源码阅读（本机参考索引中的抖音签名与访问上下文实现，2026-11-12）`；剥离对 `profile/self` 与 `aweme/post` 的实测影响已在 [ACT-010](#status) 核对通过） |
 
 ### 3.2 如何严格确认“确实已登录”（与不带 Cookie 对照）
 
@@ -615,7 +616,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 | 问题 | 定稿 | 依据与边界 |
 | --- | --- | --- |
 | 登录确认 | 只用 `user/profile/self` 判定（§3.2 三个条件），不用 `query/user` 与心跳接口；未登录与风控分别归类，风控不清除已保存的凭证 | V-01 已实测确认 |
-| 粘贴 Cookie 的处理 | 保留 §3.1 的核心身份态、配套身份态和访问上下文三类字段，丢弃“浏览器内存密钥绑定的动态票据”；至少要有 `sessionid` 或 `sessionid_ss`，只有 `ttwid`/`msToken` 的视为未登录；不向 `bytedance.com` 匿名注册 `ttwid`，缺 `ttwid` 时提示从打开过抖音网页的浏览器重新复制 | V-02 已实测确认剥离动态票据且无初始 `msToken` 时各端点正常通过 |
+| 粘贴 Cookie 的处理 | 按 §3.1 剔除“浏览器内存密钥绑定的动态票据”黑名单并做 RFC 6265 安全键值校验，原样保留其余全部合法身份态与访问上下文 Cookie（含 `sid_ucp_v1`、`ssid_ucp_v1`、`d_ticket`、`x-web-secsdk-uid`、`_waftokenid` 及全部 6 种 `uifid*`/`UIFID*` 变体）；至少要有 `sessionid` 或 `sessionid_ss`，只有 `ttwid`/`msToken` 的视为未登录；缺失 `msToken` 时生成 URL-safe（`A-Za-z0-9_-` + `==`）会话级回退值并同步写入出站 `Cookie` 头；缺失 `s_v_web_id` 时不伪造假 `verify_*`；不向 `bytedance.com` 匿名注册 `ttwid`，缺 `ttwid` 时提示从打开过抖音网页的浏览器重新复制 | V-02 与 ACT-026 已实测确认 |
 | 签名 | `a_bogus` 用 `dhzx` 形态；`uifid` 存在时对 §2.3 列出的受保护路径加 `x-secsdk-web-signature`；签名模块在 `internal/site/douyin` 内部隔离，对外只暴露“输入请求上下文、输出完整查询串与附加请求头”。实现来源见[选型 §4](2026-11-12-douyin.md#a-review) | V-02 已实测通过 |
 | 链接识别 | 按 §4.3 的优先级；纯 19 位数字不猜类型、提示改贴链接；`sec_uid`（`MS4wLjAB` 开头）可以直接输入；`/user/self` 映射到当前登录账号 | — |
 | 用户主键 | 抖音账号以 `sec_uid` 为主键；`uid` 只作诊断；抖音号只显示；`web_rid` 只作为账号上**可失效的缓存**（“最近一次能用的直播间号”），不当身份 | V-08 已实测确认两种房间号均可进入同一直播间，优先缓存已确认的数字 `short_id` |
@@ -637,7 +638,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 | 功能 | 方法与路径 | 必要参数（另加公共参数） | 返回 | 网关签名 |
 | --- | --- | --- | --- | --- |
 | 关注列表 | `GET /aweme/v1/web/user/following/list/` | `user_id=<自己的 sec_uid>`、`sec_user_id=<同>`、`offset=0`、`count=20`、`source_type=1`、`gps_access=0`、`address_book_access=0`、`min_change=0`；第 2 页起加 `max_time=<上一页的 min_time>` | `followings[]`（个别版本为 `follow_list`/`user_list`）、`has_more`、`min_time`、`max_time`、`total` | 不在 14 条受保护路径里（只要 `a_bogus`） |
-| 喜欢 | `GET /aweme/v1/web/aweme/favorite/` | `sec_user_id=<自己的 sec_uid>`、`max_cursor`（首页 0）、`count=18` | `aweme_list`、`has_more`、`max_cursor` | 受保护 |
+| 喜欢 | `GET /aweme/v1/web/aweme/favorite/` | `sec_user_id=<自己的 sec_uid>`、`max_cursor`（首页 0，首页另附 `min_cursor=0`）、`count=18`、`publish_video_strategy_type=2`、`pc_libra_divert=Windows`、`update_version_code=170400`、`version_code=170400`、`version_name=17.4.0`（同源 `GET` 不带 `Origin`） | `aweme_list`、`has_more`、`max_cursor` | 受保护 |
 | 全部收藏 | **`POST`** `/aweme/v1/web/aweme/listcollection/` | 查询串：公共参数 + `publish_video_strategy_type=2`、`version_code=170400`、`version_name=17.4.0`；表单体 `count=20&cursor=<首页 0>`，`Content-Type: application/x-www-form-urlencoded`；`Referer: https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection` | `aweme_list`、`has_more`、`cursor` | 受保护；`a_bogus` 的请求体链用这段表单体（附录 A 的 `db`） |
 | 收藏夹列表 | `GET /aweme/v1/web/collects/list/` | `cursor`（首页 0）、`count=10`、`version_code=170400`、`version_name=17.4.0` | `collects_list[].{collects_id_str, collects_name, collects_cover.url_list, total_number?, status?}`、`has_more`、`cursor` | 受保护 |
 | 收藏夹内容 | `GET /aweme/v1/web/collects/video/list/` | `collects_id=<collects_id_str>`、`cursor`、`count=10`、`version_code`、`version_name` | `aweme_list`、`has_more`、`cursor` | 受保护 |
@@ -666,7 +667,15 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 - 喜欢（核：拒绝）：三种请求都是 HTTP 200、`Content-Type: text/plain`、**0 字节**——按上表发送；加网页同款的 `min_cursor=0`、`whale_cut_token=`、`cut_version=1`、`publish_video_strategy_type=2`；再加 `x-secsdk-csrf-token: DOWNGRADE`。同一会话里 `profile/self` 与全部收藏都正常，所以这不是登录失效或整站风控，而是这个接口不回应非浏览器发出的请求。测试 Cookie 有 `UIFID`，没有 `s_v_web_id` 与 `msToken`（客户端生成回退值）；这两个字段是否就是缺口未知（未）。两个能拿到喜欢列表的开源实现都经真实浏览器发这一个请求（无界面浏览器打开用户页取响应，或桌面版的隐藏登录窗口代发）。
 - 全部收藏（核）：POST 按上表发送，第 1 页 18 条、`has_more=1`，不需要 `DOWNGRADE` 头。
 - 用户看到“收藏”也空，是因为“喜欢”的 0 字节被当成风控、打开了整个抖音的退避，随后的收藏请求在发出前就被拒（日志只有两条 `account.douyin.likes error=risk_control`）。
-- 处理：喜欢的 0 字节改判为 `unavailable`，说明“只给浏览器里的抖音网页”，**不打开退避**；其余接口的 0 字节仍按第 9.2 节判风控。收藏夹与观看历史仍未实测。是否为喜欢加一条浏览器通道见 USER-ACTIONS Q-016。
+- 处理：喜欢的 0 字节改判为 `unavailable`，引导用户在浏览器打开抖音「我的 → 喜欢」页面后重新复制完整 Cookie 更新登录，**不打开退避**；其余接口的 0 字节仍按第 9.2 节判风控。
+
+**P0 修复与只读复查**（ACT-026，2026-11-24，常设授权下 1 次运行，脱敏回执 `artifacts/site-check/act026.json`，账本 `apiCalls=5/9`，媒体请求 `0`，0 次 403/429/444、0 次 `bdturing-verify` 挑战）：
+
+- **Step 0 离线输入核对（0 网络请求）**：本机沿用的测试 Cookie 含 `sessionid`、`sid_ucp_v1`、`d_ticket`、`uifid`，但**仍不含 `s_v_web_id` 与 `msToken`**。
+- **登录确认（`dy_login` / `profile/self`）**：保留扩展非黑名单 Cookie、同步会话级 `msToken`、补齐 `Sec-Fetch-*` 请求头后，HTTP 200 JSON 一次通过（响应头含 `bd-ticket-guard-result`，无 `bdturing-verify`）。
+- **D-V2 喜欢（`aweme/favorite`，[#52](https://github.com/chialecode/trace/issues/52)）**：返回 HTTP 200、`Content-Type: text/plain`、**0 字节空响应**，响应头明确含 **`bd-ticket-guard-result`**（无 `bdturing-verify`）。对照同轮同一 Go 标准库 TLS 连接下的 `collects/list` 与 `history/read`（两者响应头均无 `bd-ticket-guard-result`，且全部返回完整 JSON），排除“Go 标准库 TLS 指纹被一刀切拒绝”，锁定剩余缺口为：① 旧测试 Cookie 文件缺失浏览器滑块/指纹 SDK 写入的 `s_v_web_id`（导致二阶段签名未附 `verifyFp`/`fp`），以及 ② `favorite` 接口下发 `bd-ticket-guard-result`（若补齐真实 `s_v_web_id` 后仍返回 0 字节与 `bd-ticket-guard-result`，则需进一步评估纯 Go 标准库 ECDSA P-256 `bd-ticket-guard` 票据握手）。客户端按 `ErrKindUnavailable` 单接口隔离提示重贴完整 Cookie，不阻断其他接口。
+- **D-V4 收藏夹列表（`collects/list`，核，关联 [#37](https://github.com/chialecode/trace/issues/37)）**：HTTP 200 `application/json`，`status_code=0`、`folders=0`、`has_more=false` 通过；因该测试账号下 `0` 个自定义收藏夹，`collects/video/list` 未触发请求，仍为 `not-run`。
+- **D-V5 观看历史（`history/read`，核，关联 [#37](https://github.com/chialecode/trace/issues/37)）**：`GET /aweme/v1/web/history/read/`（`max_cursor=0&count=20`）**第 1、2 页全部实测通过**——返回 HTTP 200 `application/json`，顶层键为 `aweme_date`、`aweme_list`、`has_more`、`max_cursor`、`status_code`、`status_msg`；第 1 页解析出 `19` 条作品（`has_more=true`），以返回的 `max_cursor` 翻第 2 页解析出 `20` 条作品（`has_more=true`、游标正常推进、跨页 `0` 重复）。协议形态已锁定，界面入口开关 `WatchHistoryEnabled` 留归 [#37](https://github.com/chialecode/trace/issues/37) 独立 PR 开放。
 
 <a id="sign-spec"></a>
 ## 附录：签名规格
