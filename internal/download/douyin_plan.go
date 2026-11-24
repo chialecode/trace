@@ -23,6 +23,7 @@ type WorkPlanOptions struct {
 type PlannedNotePage struct {
 	Index         int
 	Kind          string // "image", "gif", "live_photo", "video", "unknown"
+	MediaID       string `json:"mediaId,omitempty"`
 	FromOrigin    bool
 	HLSOnly       bool
 	UnknownKind   string
@@ -110,6 +111,11 @@ type WorkDownloadPlan struct {
 	Pages                   []PlannedNotePage
 	Thread                  []PlannedThreadPart
 	Music                   *PlannedMusic
+	MediaID                 string   // clean platform media ID for single-video works
+	EditTs                  int64    // sanitized remote edit timestamp
+	EditCount               int      // sanitized remote edit counter
+	AssetIDs                []string // sanitized ordered platform asset IDs
+	ConflictResolution      string   // explicit "keep_both" or "use_remote" when resolving a conflict
 	Transport               site.MediaTransportSpec
 }
 

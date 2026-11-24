@@ -13,6 +13,11 @@ import (
 // CurrentSchemaVersion is the SQLite PRAGMA user_version written to library.db.
 const CurrentSchemaVersion = 2
 
+// CurrentCacheStandardVersion identifies the current cache completeness and
+// media/metadata enrichment baseline recorded on newly cached or re-verified
+// item.json manifests (item.json schema version remains 1).
+const CurrentCacheStandardVersion = 2
+
 // ItemMetadata is the canonical on-disk schema for item.json (INV-02).
 // It is backward-compatible with earlier TRACE item.json files in trace-data/library/.
 type ItemMetadata struct {
@@ -62,6 +67,23 @@ type ItemMetadata struct {
 	// CachedBy is the TRACE installation that cached the item (DEC-062 ⑧);
 	// optional, older manifests have none.
 	CachedBy *ItemNode `json:"cachedBy,omitempty"`
+	// CacheStandardVersion records the cache capability baseline under which
+	// this item was cached or verified; 0 means an older manifest.
+	CacheStandardVersion int `json:"cacheStandardVersion,omitempty"`
+	// RecheckedAt is the RFC3339 timestamp of the last full-cache / deep
+	// update inspection for this item.
+	RecheckedAt string `json:"recheckedAt,omitempty"`
+	// EditTs and EditCount record sanitized source edit metadata for detecting
+	// substantive post/work revisions across full-cache sweeps.
+	EditTs    int64 `json:"editTs,omitempty"`
+	EditCount int   `json:"editCount,omitempty"`
+	// AssetIDs stores sanitized platform media identifiers (never URLs, query
+	// strings, paths, or credentials) in order for V1-vs-V2 diffing.
+	AssetIDs []string `json:"assetIds,omitempty"`
+	// ArchivedOf is the canonical item key ("<site>:<kind>:<raw_id>") of the
+	// live item when this entry is an independent archived V1 snapshot created
+	// by "保留两版" (keep_both).
+	ArchivedOf string `json:"archivedOf,omitempty"`
 
 	// Runtime-populated fields
 	ItemKey    string `json:"itemKey,omitempty"`
@@ -219,8 +241,15 @@ func (m ItemMetadata) IsForwardContent() bool {
 	return m.Kind == "dynamic" && (strings.EqualFold(dt, "DYNAMIC_TYPE_FORWARD") || strings.EqualFold(dt, "forward"))
 }
 
+// IsArchivedSnapshot reports whether the item is an independent archived prior
+// version ("保留两版") pointing to its original canonical item key.
+func (m ItemMetadata) IsArchivedSnapshot() bool {
+	return strings.TrimSpace(m.ArchivedOf) != ""
+}
+
 // DouyinVideoInfo records Douyin single-file video gear/stream metadata and available gears.
 type DouyinVideoInfo struct {
+	MediaID        string   `json:"mediaId,omitempty"`
 	File           string   `json:"file,omitempty"`
 	Gear           string   `json:"gear,omitempty"`
 	QualityName    string   `json:"qualityName,omitempty"`
@@ -236,6 +265,7 @@ type DouyinVideoInfo struct {
 type NotePageRecord struct {
 	Index       int              `json:"index"`
 	Kind        string           `json:"kind"` // "image", "motion", "video", "unknown"
+	MediaID     string           `json:"mediaId,omitempty"`
 	GIF         bool             `json:"gif,omitempty"`
 	FromOrigin  bool             `json:"fromOrigin,omitempty"`
 	UnknownKind string           `json:"unknownKind,omitempty"`
@@ -529,6 +559,8 @@ func ParseItemMetadata(raw []byte) (ItemMetadata, error) {
 		RawPubTs            any   `json:"pubTs"`
 		RawCachedAt         any   `json:"cachedAt"`
 		RawUpgradeCheckedAt any   `json:"upgradeCheckedAt"`
+		RawRecheckedAt      any   `json:"recheckedAt"`
+		RawEditTs           any   `json:"editTs"`
 	}
 	if err := json.Unmarshal(raw, &flex); err != nil {
 		return ItemMetadata{}, err
@@ -575,6 +607,8 @@ func ParseItemMetadata(raw []byte) (ItemMetadata, error) {
 	meta.PubTs = parseFlexibleUnix(flex.RawPubTs)
 	meta.CachedAt = parseFlexibleTimestamp(flex.RawCachedAt)
 	meta.UpgradeCheckedAt = parseFlexibleTimestamp(flex.RawUpgradeCheckedAt)
+	meta.RecheckedAt = parseFlexibleTimestamp(flex.RawRecheckedAt)
+	meta.EditTs = parseFlexibleUnix(flex.RawEditTs)
 	if len(flex.RawVideos) > 0 {
 		videos := make([]string, 0, len(flex.RawVideos))
 		for _, v := range flex.RawVideos {
@@ -717,6 +751,148 @@ func SanitizeItemMetadata(meta *ItemMetadata) {
 	if meta.Origin != nil {
 		sanitizeItemOrigin(meta.Origin, meta.Site)
 	}
+	sanitizeManifestConflictFields(meta)
+}
+
+func sanitizeManifestConflictFields(meta *ItemMetadata) {
+	if meta == nil {
+		return
+	}
+	if meta.CacheStandardVersion < 0 {
+		meta.CacheStandardVersion = 0
+	}
+	meta.RecheckedAt = strings.TrimSpace(meta.RecheckedAt)
+	if hasSignedOrQueryMarkers(meta.RecheckedAt) || isRemoteOrSignedURL(meta.RecheckedAt) || containsXForbiddenTextMarkers(meta.RecheckedAt) {
+		meta.RecheckedAt = ""
+	}
+	if meta.EditTs < 0 {
+		meta.EditTs = 0
+	}
+	if meta.EditCount < 0 {
+		meta.EditCount = 0
+	}
+	if len(meta.AssetIDs) > 0 {
+		cleaned := make([]string, 0, len(meta.AssetIDs))
+		for _, raw := range meta.AssetIDs {
+			if tok := SanitizeMediaToken(raw); tok != "" {
+				cleaned = append(cleaned, tok)
+			}
+		}
+		if len(cleaned) == 0 {
+			meta.AssetIDs = nil
+		} else {
+			meta.AssetIDs = cleaned
+		}
+	} else {
+		meta.AssetIDs = nil
+	}
+	if canon, ok := ValidateCanonicalItemKey(meta.ArchivedOf); ok {
+		selfKey := strings.TrimSpace(meta.ItemKey)
+		if selfKey == "" && strings.TrimSpace(meta.Kind) != "" && strings.TrimSpace(meta.ID) != "" {
+			selfKey = CanonicalItemKey(meta.Site, meta.Kind, meta.ID)
+		}
+		if selfKey != "" && strings.EqualFold(canon, selfKey) {
+			meta.ArchivedOf = ""
+		} else {
+			meta.ArchivedOf = canon
+		}
+	} else {
+		meta.ArchivedOf = ""
+	}
+	if meta.DouyinVideo != nil {
+		meta.DouyinVideo.MediaID = SanitizeMediaToken(meta.DouyinVideo.MediaID)
+	}
+	for i := range meta.NotePages {
+		meta.NotePages[i].MediaID = SanitizeMediaToken(meta.NotePages[i].MediaID)
+		if meta.NotePages[i].VideoInfo != nil {
+			meta.NotePages[i].VideoInfo.MediaID = SanitizeMediaToken(meta.NotePages[i].VideoInfo.MediaID)
+		}
+	}
+}
+
+// SanitizeMediaToken validates a platform media/asset identifier (e.g. Douyin
+// vid/uri token, Weibo pic_id or object_id, X media_key, Bilibili cid/bvid) and
+// returns "" if it contains any URL, domain, query string, path separator,
+// traversal segment, whitespace, control character, or credential marker.
+func SanitizeMediaToken(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || len(trimmed) > 160 {
+		return ""
+	}
+	if isRemoteOrSignedURL(trimmed) || hasSignedOrQueryMarkers(trimmed) || containsXForbiddenTextMarkers(trimmed) {
+		return ""
+	}
+	if strings.Contains(trimmed, "..") || strings.Contains(trimmed, "://") || strings.Contains(trimmed, "::") {
+		return ""
+	}
+	first, last := trimmed[0], trimmed[len(trimmed)-1]
+	if first == '.' || first == ':' || last == '.' || last == ':' {
+		return ""
+	}
+	for i := 0; i < len(trimmed); i++ {
+		c := trimmed[i]
+		ok := (c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '_' || c == '-' || c == ':' || c == '.'
+		if !ok {
+			return ""
+		}
+	}
+	lower := strings.ToLower(trimmed)
+	for _, forbidden := range []string{
+		".com", ".cn", ".tv", ".net", ".org", ".io",
+		"weibocdn", "sinaimg", "twimg", "douyinvod", "byteimg", "hdslb", "bilivideo", "pscp", "periscope",
+		"cookie", "bearer", "sessdata", "bili_jct", "sessionid", "auth_token",
+	} {
+		if strings.Contains(lower, forbidden) {
+			return ""
+		}
+	}
+	return trimmed
+}
+
+// ValidateCanonicalItemKey validates raw as a canonical "<site>:<kind>:<raw_id>"
+// item key for supported sites/kinds and returns the normalized key and true, or
+// ("", false) when invalid or containing unsafe characters/markers.
+func ValidateCanonicalItemKey(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || len(trimmed) > 200 {
+		return "", false
+	}
+	if isRemoteOrSignedURL(trimmed) || hasSignedOrQueryMarkers(trimmed) || containsXForbiddenTextMarkers(trimmed) {
+		return "", false
+	}
+	parts := strings.SplitN(trimmed, ":", 3)
+	if len(parts) != 3 {
+		return "", false
+	}
+	site := strings.ToLower(strings.TrimSpace(parts[0]))
+	switch site {
+	case "bilibili", "douyin", "weibo", "x":
+	default:
+		return "", false
+	}
+	kind := strings.ToLower(strings.TrimSpace(parts[1]))
+	if site == "douyin" && kind == "note" {
+		kind = "dynamic"
+	}
+	switch kind {
+	case "video", "dynamic", "live":
+	default:
+		return "", false
+	}
+	rawID := strings.TrimSpace(parts[2])
+	if site == "weibo" && kind == "video" {
+		rawID = strings.ReplaceAll(rawID, ":", "_")
+	}
+	if rawID == "" || NormalizeRawID(kind, rawID) != rawID {
+		return "", false
+	}
+	if err := ValidateSafeIDSegment(rawID); err != nil {
+		return "", false
+	}
+	return site + ":" + kind + ":" + rawID, true
 }
 
 func sanitizeItemOrigin(orig *ItemOrigin, defaultSite string) {

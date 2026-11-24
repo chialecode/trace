@@ -348,6 +348,7 @@ type BackendAPI interface {
 	RemoteService
 	SubscriptionTransferService
 	TransferService
+	ConflictService
 }
 
 var _ BackendAPI = (*Backend)(nil)

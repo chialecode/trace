@@ -18,6 +18,8 @@ const (
 	EventLiveUpdated         EventType = "live.updated"
 	// EventTransferUpdated is an import or export job's progress.
 	EventTransferUpdated EventType = "transfer.updated"
+	// EventCacheConflictsChanged notifies the UI that pending/failed cache conflicts changed.
+	EventCacheConflictsChanged EventType = "conflicts:changed"
 )
 
 // Event carries a backend state change notification.

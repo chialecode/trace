@@ -80,24 +80,25 @@ type Task struct {
 	// author (a co-creation found in their works list): the item goes to
 	// their folder with this via. Kept in via_json so a resumed task still
 	// writes it.
-	Via             *library.ItemVia   `json:"via,omitempty"`
-	ProgressOwner   *Task              `json:"-"`
-	ProgressPrefix  string             `json:"-"`
-	Status          string             `json:"status"` // "queued", "running", "paused", "completed", "failed", "canceled", "partial"
-	PauseReason     string             `json:"pauseReason,omitempty"`
-	ErrorKind       string             `json:"errorKind,omitempty"`
-	ErrorMessage    string             `json:"errorMessage,omitempty"`
-	LastError       string             `json:"lastError,omitempty"`
-	QualityHint     string             `json:"qualityHint,omitempty"`
-	BytesDownloaded int64              `json:"bytesDownloaded"`
-	TotalBytes      int64              `json:"totalBytes"`
-	Progress        float64            `json:"progress"`
-	ItemKey         string             `json:"itemKey,omitempty"`
-	ItemDir         string             `json:"itemDir,omitempty"`
-	Files           []TaskFileProgress `json:"files,omitempty"`
-	Attempts        []TaskAttempt      `json:"attempts,omitempty"`
-	CreatedAt       string             `json:"createdAt"`
-	UpdatedAt       string             `json:"updatedAt"`
+	Via                *library.ItemVia   `json:"via,omitempty"`
+	ConflictResolution string             `json:"-"` // explicit "keep_both" or "use_remote" during conflict resolution
+	ProgressOwner      *Task              `json:"-"`
+	ProgressPrefix     string             `json:"-"`
+	Status             string             `json:"status"` // "queued", "running", "paused", "completed", "failed", "canceled", "partial"
+	PauseReason        string             `json:"pauseReason,omitempty"`
+	ErrorKind          string             `json:"errorKind,omitempty"`
+	ErrorMessage       string             `json:"errorMessage,omitempty"`
+	LastError          string             `json:"lastError,omitempty"`
+	QualityHint        string             `json:"qualityHint,omitempty"`
+	BytesDownloaded    int64              `json:"bytesDownloaded"`
+	TotalBytes         int64              `json:"totalBytes"`
+	Progress           float64            `json:"progress"`
+	ItemKey            string             `json:"itemKey,omitempty"`
+	ItemDir            string             `json:"itemDir,omitempty"`
+	Files              []TaskFileProgress `json:"files,omitempty"`
+	Attempts           []TaskAttempt      `json:"attempts,omitempty"`
+	CreatedAt          string             `json:"createdAt"`
+	UpdatedAt          string             `json:"updatedAt"`
 }
 
 // VideoEnqueueRequest specifies a video (and optional page subset) to cache.
@@ -136,6 +137,7 @@ type Manager struct {
 	dlSettings        settings.DownloadSettings
 	onTaskUpdate      func(Task)
 	onTaskBatchUpdate func(action string, tasks []Task)
+	onConflict        func(ConflictNotice)
 	notifyMu          sync.Mutex
 	lastNotify        map[string]taskNotification
 	taskFaults        sync.Map
