@@ -143,7 +143,7 @@ PR 只要碰到下列任一项就是高风险，加 `risk:high`，Agent 不自�
 
 每周（或开始一批较大改动前）做一次，结果写在维护 PR 里：
 
-1. **Dependabot**：版本更新 PR（[.github/dependabot.yml](../../.github/dependabot.yml)，DEC-048）CI 通过后按低风险合并；改到构建、打包或运行时主版本的按高风险处理。**安全修复随时尽快处理**，不等每周。
+1. **Dependabot**：Go 模块的版本更新 PR（[.github/dependabot.yml](../../.github/dependabot.yml)，DEC-048）CI 通过后按低风险合并，改到构建、打包或运行时主版本的按高风险处理；GitHub Actions 的更新 PR 改的是 `.github/workflows/`，按[高风险](#high-risk)加 `risk:high` 等用户合并。**安全修复随时尽快处理**，不等每周。
 2. **盘点**：运行 `go run ./tools/deps`，它列出直接依赖的模块和 `go.mod` 的 `go` 行里满 7 天的更新版本，以及还没满 7 天的。满 7 天的默认全部升级（`go get <模块>@<版本>`、改 `go` 行后 `go mod tidy`），跑 `go run ./tools/check`；升级失败就回退，在 PR 写明尝试的版本、失败命令与复查条件。Go 模块的新主版本是另一个路径（`/v2`），不在盘点里，需要时看模块自己的发行记录。
 3. **漏洞**：运行 `go run ./tools/deps -audit`（固定版本的 `govulncheck`）。代码调用到的漏洞先升级修复；确实无法修复或不适用的，登记到 `tools/deps/exceptions.json`，写明原因和复查日期 `reviewBy`。只在依赖模块里、代码没调用到的漏洞不算失败。发布前与 `go run ./tools/check` 一起再跑一次，`-audit` 失败（退出码 1）时不发布。两个命令都要联网，跑不起来退出码 2，记为 `not-run`。
 4. **无用文件**：不论是否纳入 Git，按内容决定原样保留、精炼、提炼后删除或直接删除；仍有效的结论先写进正本或 issue。Git 历史就是归档，需要回看时用固定提交链接。构建与测试产物只保留最新一份（[生成物](engineering.md#generated-outputs)）。

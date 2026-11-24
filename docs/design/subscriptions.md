@@ -116,5 +116,5 @@ TRACE 以订阅为逻辑入口（DEC-026）：一个订阅代表一个被追踪�
 <a id="following-import"></a>
 ## 5. 从关注列表导入（FR-SUBS-003、FR-WB-007、FR-X-007）
 
-- 支持哔哩哔哩、微博与 X（抖音的关注导入待实现，DEC-043、LOOP-010）：入口写“从关注列表导入”，对话框内可在哔哩哔哩、微博与 X 间切换，没登录所选站点时提示先登录。哔哩哔哩读登录账号自己的关注列表与关注分组（[协议资料 §16](../research/bilibili.md#followings)），每页 50 个，既有 `RelationTags` / `RelationFollowings` / `ImportCreators` 保持不变；微博经多站点接口（`FollowingGroups`、`FollowingCreatorsPage`、`ImportFollowingCreators`）读 `friendships/friends`，分组筛选只在 `weibo.FollowGroupsEnabled` 打开后提供；X 经 `FollowingCreatorsPageWithCursor` 按字符串游标滚动加载 `Following` 列表、无分组（`FollowingGroups("x")` 返回空）并保留 `UniqueID`（`@handle`）；翻页均由前端滚动触发，不预取。
+- 支持哔哩哔哩、微博与 X（抖音的关注导入待实现，DEC-043、[LOOP-010](https://github.com/chialecode/trace/issues/34)）：入口写“从关注列表导入”，对话框内可在哔哩哔哩、微博与 X 间切换，没登录所选站点时提示先登录。哔哩哔哩读登录账号自己的关注列表与关注分组（[协议资料 §16](../research/bilibili.md#followings)），每页 50 个，既有 `RelationTags` / `RelationFollowings` / `ImportCreators` 保持不变；微博经多站点接口（`FollowingGroups`、`FollowingCreatorsPage`、`ImportFollowingCreators`）读 `friendships/friends`，分组筛选只在 `weibo.FollowGroupsEnabled` 打开后提供；X 经 `FollowingCreatorsPageWithCursor` 按字符串游标滚动加载 `Following` 列表、无分组（`FollowingGroups("x")` 返回空）并保留 `UniqueID`（`@handle`）；翻页均由前端滚动触发，不预取。
 - 批量导入（`ImportCreators` / `ImportAccountRefs`）：对每个还不属于任何订阅的账号原子建一个订阅，名称、头像用列表里的昵称和头像，不额外发请求；返回建立和跳过的数量。导入只写本机文件，不调用站点的写接口（INV-11）。

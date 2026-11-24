@@ -75,7 +75,7 @@
 `-plan` 给每周的 workflow 用：输出 `release=true|false` 与 `version=`（上次发布的标签以来 `main` 没有新提交就是 `false`，还没有标签时是 `true`）。
 
 <a id="update-key"></a>
-**更新签名密钥**：Ed25519，公钥在 `mygo.json` 的 `updates.publicKey`（正式版构建内置）。私钥不入库、不打印：本机放在 `%APPDATA%\trace-release\update-signing.key`（公钥 `update-signing.pub` 在同一目录；由 A 用 `mygo keygen` 生成后改名移到这里，用户按 ACT-008 备份），`tools/release` 读入后先从自己的环境里删掉这个变量（`tools/check` 及其测试、`git`、`gh`、演练里的 TRACE 都不继承），只交给 MyGo 构建子进程的 `MYGO_UPDATER_PRIVATE_KEY` 并在进程内签版本证明；CI 上来自 `release` 环境的 secret `MYGO_UPDATER_PRIVATE_KEY`。缺私钥或私钥与公钥不配对时失败，从不生成新密钥、不打不签名的正式版。目前只用这一把密钥。**换密钥**（私钥泄露或计划轮换时）：① 用 `mygo keygen -o <新目录>` 生成新密钥对（它写出的是 `mygo-update.key` / `mygo-update.pub`，切换时改名为 `update-signing.key` / `update-signing.pub`），保存与备份新私钥；② 发布一个过渡版本：用**旧**私钥签名（已安装的 TRACE 只认旧公钥），程序里内置**新**公钥（MyGo 的校验公钥与 TRACE 的 `internal/update.publicKey` 都换成新的）——MyGo 的构建要求签名私钥与 `updates.publicKey` 配对，所以这一步要先改 `tools/release` 并用 ptest 演练，单独写计划；③ 过渡版本发布后，把 `mygo.json` 的 `updates.publicKey`、本机密钥文件与 CI secret 换成新密钥，之后的版本用新私钥签名；④ 没更新到过渡版本的旧版本无法再联网更新，在发布说明里请这些用户手动下载安装。私钥丢失时无法做第 ② 步，只能走第 ④ 步。
+**更新签名密钥**：Ed25519，公钥在 `mygo.json` 的 `updates.publicKey`（正式版构建内置）。私钥不入库、不打印：本机放在 `%APPDATA%\trace-release\update-signing.key`（公钥 `update-signing.pub` 在同一目录；用 `mygo keygen` 生成后改名移到这里，私钥备份见 [#20](https://github.com/chialecode/trace/issues/20)），`tools/release` 读入后先从自己的环境里删掉这个变量（`tools/check` 及其测试、`git`、`gh`、演练里的 TRACE 都不继承），只交给 MyGo 构建子进程的 `MYGO_UPDATER_PRIVATE_KEY` 并在进程内签版本证明；CI 上来自 `release` 环境的 secret `MYGO_UPDATER_PRIVATE_KEY`。缺私钥或私钥与公钥不配对时失败，从不生成新密钥、不打不签名的正式版。目前只用这一把密钥。**换密钥**（私钥泄露或计划轮换时）：① 用 `mygo keygen -o <新目录>` 生成新密钥对（它写出的是 `mygo-update.key` / `mygo-update.pub`，切换时改名为 `update-signing.key` / `update-signing.pub`），保存与备份新私钥；② 发布一个过渡版本：用**旧**私钥签名（已安装的 TRACE 只认旧公钥），程序里内置**新**公钥（MyGo 的校验公钥与 TRACE 的 `internal/update.publicKey` 都换成新的）——MyGo 的构建要求签名私钥与 `updates.publicKey` 配对，所以这一步要先改 `tools/release` 并用 ptest 演练，单独写计划；③ 过渡版本发布后，把 `mygo.json` 的 `updates.publicKey`、本机密钥文件与 CI secret 换成新密钥，之后的版本用新私钥签名；④ 没更新到过渡版本的旧版本无法再联网更新，在发布说明里请这些用户手动下载安装。私钥丢失时无法做第 ② 步，只能走第 ④ 步。
 
 <a id="quality-gates"></a>
 ## 3. 质量门禁
@@ -134,7 +134,7 @@ GitHub 上 main 的规则集：只能经 PR 写入，禁止强推和删除，保
 
 CI 文件 `.github/workflows/ci.yml` 的 job 名必须是 `repository-quality`，在 Ubuntu 上运行 `go run ./tools/check`，再运行远程冒烟 `go run ./tools/smoke -server`（真实 Linux 进程与 `SIGTERM`）；Go 用 runner 预装版本或 `GOTOOLCHAIN` 自动下载，不引入未许可的 action。CI 不替代本地的 Windows 构建与界面检查：Linux 上 DPAPI 与 Media Foundation 换成非 Windows 桩或合成后端（`internal/credential/dpapi_other.go`、`internal/player/mf_other.go`），依赖 Windows 文件共享锁的测试段落跳过（`internal/library/lock_other_test.go`）；没有显示器时，托盘测试里打开真实隐藏窗口的段落跳过（`internal/shell/shell_test.go`，Windows 本机照常运行）。本机没有 cgo 工具链，`go test -race` 无法运行，记为 not-run。本机只完成 Linux `go vet` 与测试包交叉编译，未运行真实 Ubuntu CI；交叉编译的退出成功不等于 Linux 测试通过。
 
-**Dependabot**（[.github/dependabot.yml](../../.github/dependabot.yml)，DEC-048）：Go 模块每周、Actions 每月，冷却期 7 天，同主版本更新合为一组（`golang.org/x/*` 单独一组），关闭自动 rebase，不自动合并。版本更新 PR 在[每周维护](workflow.md#dependency-inventory)时处理，CI 通过后按低风险合并。Dependabot 告警与自动安全修复 PR 已打开（2026-11-14 用户授权，Agent 经 API 打开并核对）；安全修复 PR 不受冷却期限制，有就尽快评审合并。
+**Dependabot**（[.github/dependabot.yml](../../.github/dependabot.yml)，DEC-048）：Go 模块每周、Actions 每月，冷却期 7 天，同主版本更新合为一组（`golang.org/x/*` 单独一组），关闭自动 rebase，不自动合并。版本更新 PR 在[每周维护](workflow.md#dependency-inventory)时处理：Go 模块的 CI 通过后按低风险合并；Actions 的会改到 `.github/workflows/`，属于[高风险](workflow.md#high-risk)，加 `risk:high` 等用户合并。Dependabot 告警与自动安全修复 PR 已打开（2026-11-14 用户授权，Agent 经 API 打开并核对）；安全修复 PR 不受冷却期限制，有就尽快评审合并。
 
 <a id="release-workflow"></a>
 ### 4.2 每周发布（`release.yml`）
