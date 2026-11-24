@@ -1976,3 +1976,403 @@ func TestFrontendDiscoveryLazyChunkSecurityAndQuotaGuards(t *testing.T) {
 		}
 	})
 }
+
+func TestFrontendDiscoveryWebpackRealisticSplitBookmarksAndLikes(t *testing.T) {
+	baseHome := string(mustReadTestdata(t, "webpack_home.html"))
+	baseMain := string(mustReadTestdata(t, "webpack_main.js"))
+	ondemandBytes := mustReadTestdata(t, "webpack_ondemand.js")
+	routeChunkBytes := mustReadTestdata(t, "webpack_lazy_bookmark_route.js")
+	harmonyBMBytes := mustReadTestdata(t, "webpack_lazy_bookmarks_harmony.js")
+	coreOnlyMain := stripOptionalOpsFromWebpackMain(baseMain)
+
+	t.Run("singular_bundle_bookmark_route_wrapper_and_harmony_esm_child_chunk", func(t *testing.T) {
+		// Exercises:
+		// 1) Hash map BEFORE ternary chunk-name expression in the same <script>
+		// 2) Runtime `}[e]+".js"` suffix (hashes already ending in 'a', no double "aa.js")
+		// 3) Singular "bundle.Bookmark" + "bundle.BookmarkFolders" + unnamed numeric chunk 4812
+		// 4) 2nd-hop child chunk `n.e(4812)` inside webpack_lazy_bookmark_route.js
+		// 5) Webpack 5 Harmony `n.d(t, {...})` with hoisted vars & decoy neighbor/mutation modules
+		// 6) Nested `data.viewer.bookmark_timeline_v2` response in ListBookmarks
+		initialState := `<script>window.__INITIAL_STATE__={"featureSwitch":{"defaultConfig":{"graphql_timeline_v2_bookmark_timeline":{"value":true}}}};</script>`
+		runtimeScript := `window.__SYNTH_RUNTIME__ = function(e){` +
+			`var h={412:"a1b2c3d4a",203:"11223344a",204:"55667788a",4812:"99aabbcca"};` +
+			`return (412===e?"ondemand.s":203===e?"bundle.Bookmark":204===e?"bundle.BookmarkFolders":e)+"."+{412:"a1b2c3d4a",203:"11223344a",204:"55667788a",4812:"99aabbcca"}[e]+".js";` +
+			`};`
+		mutHome := strings.Replace(baseHome, "<script>", initialState+"\n  <script>", 1)
+		mutHome = strings.Replace(
+			mutHome,
+			`window.__SYNTH_WEBPACK_CHUNKS__ = {
+      "vendor": "synth99",
+      "ondemand.s": "synth02"
+    };`,
+			runtimeScript,
+			1,
+		)
+
+		var routeHits, harmonyHits, foldersHits, gqlHits atomic.Int32
+		var sawAssetLeak atomic.Bool
+		var sawFeaturesJSON atomic.Value
+
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/responsive-web/") {
+				if r.Header.Get("Cookie") != "" || r.Header.Get("Authorization") != "" ||
+					r.Header.Get("X-Csrf-Token") != "" || r.Header.Get("Referer") != "" || r.Header.Get("Origin") != "" {
+					sawAssetLeak.Store(true)
+				}
+			}
+			switch r.URL.Path {
+			case "/home":
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = w.Write([]byte(mutHome))
+			case "/responsive-web/client-web/main.synth01a.js":
+				_, _ = w.Write([]byte(coreOnlyMain))
+			case "/responsive-web/client-web/ondemand.s.a1b2c3d4a.js":
+				_, _ = w.Write(ondemandBytes)
+			case "/responsive-web/client-web/bundle.Bookmark.11223344a.js":
+				routeHits.Add(1)
+				_, _ = w.Write(routeChunkBytes)
+			case "/responsive-web/client-web/4812.99aabbcca.js":
+				harmonyHits.Add(1)
+				_, _ = w.Write(harmonyBMBytes)
+			case "/responsive-web/client-web/bundle.BookmarkFolders.55667788a.js":
+				foldersHits.Add(1)
+				_, _ = w.Write([]byte(`/* folders UI only */ var folders = 1;`))
+			case "/i/api/graphql/SynthHarmonyBookmarksQid06/Bookmarks":
+				gqlHits.Add(1)
+				if r.Header.Get("x-client-transaction-id") == "" {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				sawFeaturesJSON.Store(r.URL.Query().Get("features"))
+				w.Header().Set("Content-Type", "application/json")
+				tweet := makeTimelineTweet("1791257321273778901", "1000000000000000010", "creator_one", "", "Harmony bookmarked post")
+				_, _ = w.Write([]byte(`{"data":{"viewer":{"bookmark_timeline_v2":{"timeline":{"instructions":[{"type":"TimelineAddEntries","entries":[` +
+					makeTweetEntry("tweet-1791257321273778901", tweet) +
+					`]}]}}}}}`))
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer ts.Close()
+
+		store := newTestXStore(t, "auth_token=SYNTH_HARMONY_BM; ct0=SynthCT0HarmonyBM01")
+		client := NewClient(ClientOptions{
+			CredStore: store,
+			Endpoints: Endpoints{
+				HomeURL:         ts.URL + "/home",
+				AccountSettings: ts.URL + "/i/api/1.1/account/settings.json",
+				GraphQLBase:     ts.URL + "/i/api/graphql",
+			},
+			MinInterval:    -1,
+			AllowLocalhost: true,
+			AssetTransport: newAbsRewriteTransport(t, ts),
+		})
+
+		page, err := client.ListBookmarks(context.Background(), "", nil)
+		if err != nil {
+			t.Fatalf("ListBookmarks failed: %v", err)
+		}
+		if len(page.Posts) != 1 || page.Posts[0].ID != "1791257321273778901" {
+			t.Fatalf("unexpected Bookmarks posts: %+v", page.Posts)
+		}
+		if sawAssetLeak.Load() {
+			t.Fatal("static chunk request leaked auth/cookie/referer/origin headers")
+		}
+		if routeHits.Load() != 1 || harmonyHits.Load() != 1 || foldersHits.Load() != 0 || gqlHits.Load() != 1 {
+			t.Fatalf("unexpected hit counts: route=%d harmony=%d folders=%d gql=%d (want 1,1,0,1)",
+				routeHits.Load(), harmonyHits.Load(), foldersHits.Load(), gqlHits.Load())
+		}
+
+		rawFeat, _ := sawFeaturesJSON.Load().(string)
+		var featMap map[string]bool
+		if err := json.Unmarshal([]byte(rawFeat), &featMap); err != nil {
+			t.Fatalf("unmarshal features param %q: %v", rawFeat, err)
+		}
+		if !featMap["graphql_timeline_v2_bookmark_timeline"] ||
+			!featMap["responsive_web_graphql_exclude_directive_enabled"] ||
+			!featMap["longform_notetweets_consumption_enabled"] {
+			t.Fatalf("missing expected Bookmarks features: %+v", featMap)
+		}
+	})
+
+	t.Run("long_shared_chunk_name_over_160_chars_and_cjs_assigned_likes", func(t *testing.T) {
+		longSharedName := "shared~bundle.Account~bundle.Analytics~bundle.Birdwatch~bundle.BookmarkFolders~bundle.Bookmarks~bundle.Communities~bundle.DirectMessages~bundle.Explore~bundle.Lists~bundle.Notifications~bundle.Profile~bundle.Search~bundle.Settings"
+		if len(longSharedName) <= 180 {
+			t.Fatalf("expected >180 char chunk name, got %d", len(longSharedName))
+		}
+		splitHome := strings.Replace(
+			baseHome,
+			`"ondemand.s": "synth02"`,
+			`412:"ondemand.s",601:"`+longSharedName+`",702:"loader.Likes"}; window.__SYNTH_HASHES__ = {412:"a1b2c3d4",601:"ab12cd34",702:"ef56ab78"`,
+			1,
+		)
+		cjsLikesChunk := []byte(`(self.webpackChunk_synthetic_web=self.webpackChunk_synthetic_web||[]).push([[702],{` +
+			`7020:function(e,t){"use strict";Object.defineProperty(t,"__esModule",{value:!0});t.metadata=t.operationType=t.operationName=t.queryId=void 0;` +
+			`const q="SynthCJSLikesQid07",m={featureSwitches:["responsive_web_graphql_exclude_directive_enabled","verified_phone_label_enabled"]};` +
+			`t.queryId=q,t.operationName="Likes",t.operationType="query",t.metadata=m;}` +
+			`}]);`)
+
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/responsive-web/client-web/main.synth01a.js":
+				_, _ = w.Write([]byte(coreOnlyMain))
+			case "/responsive-web/client-web/ondemand.s.a1b2c3d4a.js":
+				_, _ = w.Write(ondemandBytes)
+			case "/responsive-web/client-web/" + longSharedName + ".ab12cd34a.js":
+				_, _ = w.Write(harmonyBMBytes)
+			case "/responsive-web/client-web/loader.Likes.ef56ab78a.js":
+				_, _ = w.Write(cjsLikesChunk)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer ts.Close()
+
+		disc := NewFrontendDiscovery(FrontendDiscoveryConfig{
+			FetchHome:      func(ctx context.Context, homeURL string) ([]byte, error) { return []byte(splitHome), nil },
+			AssetTransport: newAbsRewriteTransport(t, ts),
+		})
+		_, bmSpec, err := disc.EnsureOperation(context.Background(), OpBookmarks)
+		if err != nil || bmSpec.QueryID != "SynthHarmonyBookmarksQid06" {
+			t.Fatalf("EnsureOperation(Bookmarks) on >160-char shared chunk = (%+v, %v)", bmSpec, err)
+		}
+		_, lkSpec, err := disc.EnsureOperation(context.Background(), OpLikes)
+		if err != nil || lkSpec.QueryID != "SynthCJSLikesQid07" {
+			t.Fatalf("EnsureOperation(Likes) on CJS assigned chunk = (%+v, %v)", lkSpec, err)
+		}
+		if !lkSpec.Features["responsive_web_graphql_exclude_directive_enabled"] || lkSpec.Features["verified_phone_label_enabled"] {
+			t.Fatalf("unexpected CJS Likes features: %+v", lkSpec.Features)
+		}
+	})
+
+	t.Run("pure_numeric_route_loader_in_main_js_without_named_bookmark_chunk", func(t *testing.T) {
+		numericHome := strings.Replace(
+			baseHome,
+			`"ondemand.s": "synth02"`,
+			`412:"ondemand.s"}; var u=function(e){return e+"."+{412:"a1b2c3d4",7701:"ee11ff22"}[e]+"a.js"}; var unused={0:0`,
+			1,
+		)
+		mainWithRoute := coreOnlyMain + "\n" + `var routes=[{path:"/i/bookmarks",loader:()=>Promise.all([n.e(7701)]).then(n.bind(n,48120))}];`
+
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/responsive-web/client-web/main.synth01a.js":
+				_, _ = w.Write([]byte(mainWithRoute))
+			case "/responsive-web/client-web/ondemand.s.a1b2c3d4a.js":
+				_, _ = w.Write(ondemandBytes)
+			case "/responsive-web/client-web/7701.ee11ff22a.js":
+				_, _ = w.Write(harmonyBMBytes)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer ts.Close()
+
+		disc := NewFrontendDiscovery(FrontendDiscoveryConfig{
+			FetchHome:      func(ctx context.Context, homeURL string) ([]byte, error) { return []byte(numericHome), nil },
+			AssetTransport: newAbsRewriteTransport(t, ts),
+		})
+		_, bmSpec, err := disc.EnsureOperation(context.Background(), OpBookmarks)
+		if err != nil || bmSpec.QueryID != "SynthHarmonyBookmarksQid06" {
+			t.Fatalf("EnsureOperation(Bookmarks) via /i/bookmarks route numeric chunk = (%+v, %v)", bmSpec, err)
+		}
+	})
+}
+
+func TestFrontendDiscoveryViteMapDepsAndOperationAliases(t *testing.T) {
+	viteHome := mustReadTestdata(t, "vite_home.html")
+	viteMain := string(mustReadTestdata(t, "vite_main.js"))
+	viteOndemand := mustReadTestdata(t, "vite_ondemand.js")
+	viteLazyBM := mustReadTestdata(t, "vite_lazy_bookmarks.js")
+
+	idxBM := strings.Index(viteMain, "export const BookmarksQuery")
+	idxLk := strings.Index(viteMain, "export const LikesQuery")
+	if idxBM < 0 || idxLk < 0 || idxBM >= idxLk {
+		t.Fatalf("unexpected vite_main.js structure")
+	}
+
+	t.Run("vite_mapdeps_assets_prefix_dedup_and_es6_spread_shorthand", func(t *testing.T) {
+		// __vite__mapDeps lists "assets/BookmarksTimeline-vite04.js" without leading "./"
+		// while main sits at "/responsive-web/x-web/assets/main-vite01.js".
+		mapDeps := `const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/BookmarksTimeline-vite04.js"])))=>i.map(i=>d[i]);`
+		splitViteMain := viteMain[:idxBM] + mapDeps + "\n\n" + viteMain[idxLk:]
+
+		var lazyHits atomic.Int32
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/responsive-web/x-web/assets/main-vite01.js":
+				_, _ = w.Write([]byte(splitViteMain))
+			case "/responsive-web/x-web/assets/ondemand.s-vite02.js":
+				_, _ = w.Write(viteOndemand)
+			case "/responsive-web/x-web/assets/BookmarksTimeline-vite04.js":
+				lazyHits.Add(1)
+				_, _ = w.Write(viteLazyBM)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer ts.Close()
+
+		disc := NewFrontendDiscovery(FrontendDiscoveryConfig{
+			FetchHome:      func(ctx context.Context, homeURL string) ([]byte, error) { return viteHome, nil },
+			AssetTransport: newAbsRewriteTransport(t, ts),
+		})
+		_, spec, err := disc.EnsureOperation(context.Background(), OpBookmarks)
+		if err != nil || spec.QueryID != "SynthViteLazyBookmarksQid06" {
+			t.Fatalf("Vite __vite__mapDeps EnsureOperation(Bookmarks) = (%+v, %v)", spec, err)
+		}
+		if spec.OperationName != OpBookmarks {
+			t.Fatalf("spec.OperationName = %q, want %q", spec.OperationName, OpBookmarks)
+		}
+		if lazyHits.Load() != 1 {
+			t.Fatalf("expected 1 lazy hit, got %d", lazyHits.Load())
+		}
+	})
+
+	t.Run("bookmark_timeline_alias_fallback_and_canonical_precedence", func(t *testing.T) {
+		aliasOnlyChunk := []byte(`export const BookmarkTimelineQuery = { params: { id: "SynthAliasBookmarkTimeline06", name: "BookmarkTimeline", operationKind: "query", metadata: { featureSwitches: ["responsive_web_graphql_exclude_directive_enabled", "longform_notetweets_consumption_enabled"] } } };`)
+		splitViteMain := viteMain[:idxBM] + `const loadBM = () => import("./Bookmarks-alias01.js");` + "\n\n" + viteMain[idxLk:]
+
+		var aliasGQLHits atomic.Int32
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/home":
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = w.Write(viteHome)
+			case "/responsive-web/x-web/assets/main-vite01.js":
+				_, _ = w.Write([]byte(splitViteMain))
+			case "/responsive-web/x-web/assets/ondemand.s-vite02.js":
+				_, _ = w.Write(viteOndemand)
+			case "/responsive-web/x-web/assets/Bookmarks-alias01.js":
+				_, _ = w.Write(aliasOnlyChunk)
+			case "/i/api/graphql/SynthAliasBookmarkTimeline06/BookmarkTimeline":
+				aliasGQLHits.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":{"bookmark_timeline_v2":{"timeline":{"instructions":[]}}}}`))
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer ts.Close()
+
+		store := newTestXStore(t, "auth_token=SYNTH_ALIAS_BM; ct0=SynthCT0AliasBM01")
+		client := NewClient(ClientOptions{
+			CredStore: store,
+			Endpoints: Endpoints{
+				HomeURL:         ts.URL + "/home",
+				AccountSettings: ts.URL + "/i/api/1.1/account/settings.json",
+				GraphQLBase:     ts.URL + "/i/api/graphql",
+			},
+			MinInterval:    -1,
+			AllowLocalhost: true,
+			AssetTransport: newAbsRewriteTransport(t, ts),
+		})
+		if _, err := client.ListBookmarks(context.Background(), "", nil); err != nil {
+			t.Fatalf("ListBookmarks with BookmarkTimeline alias failed: %v", err)
+		}
+		if aliasGQLHits.Load() != 1 {
+			t.Fatalf("expected 1 hit on /BookmarkTimeline alias endpoint, got %d", aliasGQLHits.Load())
+		}
+
+		// When canonical "Bookmarks" and alias "BookmarkTimeline" both exist, canonical strictly wins.
+		bothSpecs := parseLazyChunkOperations(
+			string(aliasOnlyChunk)+"\n"+`export const CanonicalBM = { queryId: "SynthCanonicalBM06", operationName: "Bookmarks", operationType: "query", metadata: { featureSwitches: [] } };`,
+			nil,
+		)
+		gotBM, ok := bothSpecs[OpBookmarks]
+		if !ok || gotBM.QueryID != "SynthCanonicalBM06" || gotBM.OperationName != OpBookmarks {
+			t.Fatalf("canonical Bookmarks did not win over alias: %+v (ok=%v)", gotBM, ok)
+		}
+	})
+}
+
+func TestGraphQLMissingNullFeaturesSelfHealOnRefreshReplay(t *testing.T) {
+	baseHome := string(mustReadTestdata(t, "webpack_home.html"))
+	baseMain := string(mustReadTestdata(t, "webpack_main.js"))
+	ondemandBytes := mustReadTestdata(t, "webpack_ondemand.js")
+	coreOnlyMain := stripOptionalOpsFromWebpackMain(baseMain)
+
+	initialState := `<script>window.__INITIAL_STATE__={"featureSwitch":{"defaultConfig":{"rweb_custom_bm_flag":{"value":true},"rweb_disabled_bm_flag":{"value":false}}}};</script>`
+	splitHome := strings.Replace(baseHome, "<script>", initialState+"\n  <script>", 1)
+	splitHome = strings.Replace(
+		splitHome,
+		`"ondemand.s": "synth02"`,
+		`"ondemand.s": "synth02", "bundle.Bookmarks": "bmheal01"`,
+		1,
+	)
+	minimalBMChunk := []byte(`(self.webpackChunk_synthetic_web=self.webpackChunk_synthetic_web||[]).push([[203],{` +
+		`2006:function(e){e.exports={queryId:"SynthHealBMQid06",operationName:"Bookmarks",operationType:"query",metadata:{featureSwitches:["responsive_web_graphql_exclude_directive_enabled"]}}}` +
+		`}]);`)
+
+	var gqlAttempts atomic.Int32
+	var breakerCalls atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/home":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(splitHome))
+		case "/responsive-web/client-web/main.synth01a.js":
+			_, _ = w.Write([]byte(coreOnlyMain))
+		case "/responsive-web/client-web/ondemand.s.synth02a.js":
+			_, _ = w.Write(ondemandBytes)
+		case "/responsive-web/client-web/bundle.Bookmarks.bmheal01a.js":
+			_, _ = w.Write(minimalBMChunk)
+		case "/i/api/graphql/SynthHealBMQid06/Bookmarks":
+			attempt := gqlAttempts.Add(1)
+			var feats map[string]bool
+			_ = json.Unmarshal([]byte(r.URL.Query().Get("features")), &feats)
+			_, hasTimelineFlag := feats["graphql_timeline_v2_bookmark_timeline"]
+			_, hasCustomFlag := feats["rweb_custom_bm_flag"]
+			_, hasDisabledFlag := feats["rweb_disabled_bm_flag"]
+			if !hasTimelineFlag || !hasCustomFlag || !hasDisabledFlag {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"errors":[{"code":336,"message":"The following features cannot be null: graphql_timeline_v2_bookmark_timeline, rweb_custom_bm_flag, rweb_disabled_bm_flag"}]}`))
+				return
+			}
+			if !feats["graphql_timeline_v2_bookmark_timeline"] || !feats["rweb_custom_bm_flag"] || feats["rweb_disabled_bm_flag"] {
+				t.Errorf("attempt %d unexpected healed feature values: %+v", attempt, feats)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"bookmark_timeline_v2":{"timeline":{"instructions":[]}}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	store := newTestXStore(t, "auth_token=SYNTH_HEAL_BM; ct0=SynthCT0HealBM01")
+	client := NewClient(ClientOptions{
+		CredStore: store,
+		Endpoints: Endpoints{
+			HomeURL:         ts.URL + "/home",
+			AccountSettings: ts.URL + "/i/api/1.1/account/settings.json",
+			GraphQLBase:     ts.URL + "/i/api/graphql",
+		},
+		MinInterval:    -1,
+		AllowLocalhost: true,
+		AssetTransport: newAbsRewriteTransport(t, ts),
+	})
+	client.SetAutomaticRequestHandlers(nil, func(_ string, _ error) {
+		breakerCalls.Add(1)
+	})
+
+	// First call hits 400 features_cannot_be_null -> refreshes once, heals missing flags from __INITIAL_STATE__, replays once -> succeeds!
+	if _, err := client.ListBookmarks(context.Background(), "", nil); err != nil {
+		t.Fatalf("first ListBookmarks self-heal failed: %v", err)
+	}
+	if gqlAttempts.Load() != 2 {
+		t.Fatalf("expected 2 GraphQL attempts (initial 400 + 1 healed replay), got %d", gqlAttempts.Load())
+	}
+
+	// Second call reuses the merged features in memory immediately without another 400!
+	if _, err := client.ListBookmarks(context.Background(), "", nil); err != nil {
+		t.Fatalf("second ListBookmarks failed: %v", err)
+	}
+	if gqlAttempts.Load() != 3 {
+		t.Fatalf("expected 3 total GraphQL attempts after cached 2nd call, got %d", gqlAttempts.Load())
+	}
+	if breakerCalls.Load() != 0 {
+		t.Fatalf("unexpected circuit breaker calls: %d", breakerCalls.Load())
+	}
+}
