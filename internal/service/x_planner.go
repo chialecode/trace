@@ -310,6 +310,7 @@ func (b *Backend) buildXWorkPlanFromPost(post *x.Post) (download.WorkDownloadPla
 				ID:           strings.TrimSpace(tp.ID),
 				PubTs:        tp.CreatedAt,
 				Text:         strings.TrimSpace(tp.Text),
+				Links:        x.BuildPostLinks(tp),
 				MediaIndexes: idxs,
 			})
 		}

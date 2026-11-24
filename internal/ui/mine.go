@@ -1159,11 +1159,17 @@ func (a *App) renderMineWeiboPostRow(c *ui.Context, it service.AccountItem) {
 				})
 
 				bodyBtn := ui.ButtonBase(c).Label("我的微博：" + post.Mid).FillWidth().Padding(0).Justify(ui.Start).AlignItems(ui.Start).ClipX()
+				bodyLinkClicked := false
 				bodyBtn.Children(func() {
 					text := firstNonEmptyStrUI(post.Text, post.TextRaw, it.Title, "微博 "+post.Mid)
-					ui.Text(c, text).FontSize(14).LineHeight(LineHeightBody).TextColor(ColorTextMain).MaxLines(4)
+					bodyLinkClicked = a.renderRichText(c, text, card.Links, richTextOptions{
+						MaxLines:   4,
+						FontSize:   14,
+						LineHeight: LineHeightBody,
+						TextColor:  ColorTextMain,
+					})
 				})
-				if bodyBtn.Clicked() {
+				if bodyBtn.Clicked() && !bodyLinkClicked {
 					openPost()
 				}
 				if len(card.NotePages) > 0 {
@@ -1229,10 +1235,16 @@ func (a *App) renderMineWeiboPostRow(c *ui.Context, it service.AccountItem) {
 									Justify(ui.Start).
 									AlignItems(ui.Start).
 									ClipX()
+								origLinkClicked := false
 								origTextBtn.Children(func() {
-									ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightBody).TextColor(ColorTextMain).MaxLines(4)
+									origLinkClicked = a.renderRichText(c, orig.Text, orig.Links, richTextOptions{
+										MaxLines:   4,
+										FontSize:   13,
+										LineHeight: LineHeightBody,
+										TextColor:  ColorTextMain,
+									})
 								})
-								if origTextBtn.Clicked() {
+								if origTextBtn.Clicked() && !origLinkClicked {
 									openPost()
 								}
 							}
@@ -1395,11 +1407,17 @@ func (a *App) renderMineXPostRow(c *ui.Context, it service.AccountItem) {
 				})
 
 				bodyBtn := ui.ButtonBase(c).Label("我的X帖子：" + post.ID).FillWidth().Padding(0).Justify(ui.Start).AlignItems(ui.Start).ClipX()
+				bodyLinkClicked := false
 				bodyBtn.Children(func() {
 					text := firstNonEmptyStrUI(post.Text, it.Title, "帖子 "+post.ID)
-					ui.Text(c, text).FontSize(14).LineHeight(LineHeightBody).TextColor(ColorTextMain).MaxLines(4)
+					bodyLinkClicked = a.renderRichText(c, text, card.Links, richTextOptions{
+						MaxLines:   4,
+						FontSize:   14,
+						LineHeight: LineHeightBody,
+						TextColor:  ColorTextMain,
+					})
 				})
-				if bodyBtn.Clicked() {
+				if bodyBtn.Clicked() && !bodyLinkClicked {
 					openPost()
 				}
 				if len(card.NotePages) > 0 {
@@ -1469,10 +1487,16 @@ func (a *App) renderMineXPostRow(c *ui.Context, it service.AccountItem) {
 									Justify(ui.Start).
 									AlignItems(ui.Start).
 									ClipX()
+								origLinkClicked := false
 								origTextBtn.Children(func() {
-									ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightBody).TextColor(ColorTextMain).MaxLines(4)
+									origLinkClicked = a.renderRichText(c, orig.Text, orig.Links, richTextOptions{
+										MaxLines:   4,
+										FontSize:   13,
+										LineHeight: LineHeightBody,
+										TextColor:  ColorTextMain,
+									})
 								})
-								if origTextBtn.Clicked() {
+								if origTextBtn.Clicked() && !origLinkClicked {
 									openPost()
 								}
 							}

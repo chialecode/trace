@@ -359,6 +359,7 @@ func (m *Manager) executeXSingleVideoTask(
 		Origin:       originMeta,
 		Card:         cardMeta,
 		Thread:       threadParts,
+		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
 	}
 
 	finalSaved := false
@@ -939,6 +940,7 @@ func (m *Manager) executeXPostTask(
 		Origin:       originMeta,
 		Card:         cardMeta,
 		Thread:       threadParts,
+		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
 	}
 
 	saved, saveErr := m.lib.SaveItem(itemDir, meta)
@@ -1061,6 +1063,7 @@ func hasXOriginSignal(plan WorkDownloadPlan) bool {
 		strings.TrimSpace(plan.OriginAuthorUID) != "" ||
 		strings.TrimSpace(plan.OriginAuthorName) != "" ||
 		strings.TrimSpace(plan.OriginText) != "" ||
+		len(plan.OriginLinks) > 0 ||
 		plan.OriginUnavailable ||
 		plan.OriginCard != nil ||
 		plan.VideoFromOrigin ||
@@ -1110,19 +1113,22 @@ func buildXTextAndThread(rawID string, plan WorkDownloadPlan, previous library.I
 		for _, seg := range plan.Thread {
 			id := strings.TrimSpace(seg.ID)
 			txt := strings.TrimSpace(seg.Text)
-			if id == "" && txt == "" && len(seg.MediaIndexes) == 0 {
+			links := buildWeiboItemLinks(seg.Links, nil)
+			if id == "" && txt == "" && len(links) == 0 && len(seg.MediaIndexes) == 0 {
 				continue
 			}
 			thread = append(thread, library.ItemThreadPart{
 				ID:           id,
 				PubTs:        seg.PubTs,
 				Text:         txt,
+				Links:        links,
 				MediaIndexes: append([]int(nil), seg.MediaIndexes...),
 			})
 		}
 	} else if len(previous.Thread) > 0 {
 		thread = make([]library.ItemThreadPart, len(previous.Thread))
 		for i, seg := range previous.Thread {
+			seg.Links = append([]library.ItemLink(nil), seg.Links...)
 			seg.MediaIndexes = append([]int(nil), seg.MediaIndexes...)
 			thread[i] = seg
 		}
@@ -1149,6 +1155,7 @@ func buildXItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) *lib
 	if !hasXOriginSignal(plan) {
 		if previous.Origin != nil {
 			cp := *previous.Origin
+			cp.Links = append([]library.ItemLink(nil), cp.Links...)
 			if cp.Card != nil {
 				cc := *cp.Card
 				cp.Card = &cc
@@ -1166,6 +1173,10 @@ func buildXItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) *lib
 	if originCanonical == "" && originID != "" {
 		originCanonical = xFallbackCanonicalURL(originID)
 	}
+	var prevOriginLinks []library.ItemLink
+	if previous.Origin != nil {
+		prevOriginLinks = previous.Origin.Links
+	}
 	return &library.ItemOrigin{
 		Site:         string(site.X),
 		ID:           originID,
@@ -1180,6 +1191,7 @@ func buildXItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) *lib
 		PubTs:             plan.OriginPubTs,
 		Title:             strings.TrimSpace(plan.OriginVideoTitle),
 		Text:              strings.TrimSpace(plan.OriginText),
+		Links:             buildWeiboItemLinks(plan.OriginLinks, prevOriginLinks),
 		Card:              buildWeiboItemRichCard(plan.OriginCard, nil),
 		Unavailable:       plan.OriginUnavailable,
 		UnavailableReason: strings.TrimSpace(plan.OriginUnavailableReason),

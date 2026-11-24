@@ -495,6 +495,13 @@ type MediaImageAsset struct {
 	VideoURLs    []string `json:"-"`
 }
 
+// TextLink pairs a human-readable link label with a safe HTTP(S) target URL
+// extracted from a post body (DEC-073).
+type TextLink struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
 // DownloadPlan describes resolved media streams and metadata for caching an item locally.
 type DownloadPlan struct {
 	Site                    ID               `json:"site"`
@@ -507,6 +514,7 @@ type DownloadPlan struct {
 	AuthorFace              string           `json:"authorFace,omitempty"`
 	Title                   string           `json:"title,omitempty"`
 	Desc                    string           `json:"desc,omitempty"`
+	Links                   []TextLink       `json:"links,omitempty"`
 	PubTs                   int64            `json:"pubTs,omitempty"`
 	DurationSec             int              `json:"durationSec,omitempty"`
 	VideoCodec              string           `json:"videoCodec,omitempty"`
@@ -526,6 +534,7 @@ type DownloadPlan struct {
 	OriginAuthorFace        string           `json:"originAuthorFace,omitempty"`
 	OriginPubTs             int64            `json:"originPubTs,omitempty"`
 	OriginText              string           `json:"originText,omitempty"`
+	OriginLinks             []TextLink       `json:"originLinks,omitempty"`
 	OriginVideoTitle        string           `json:"originVideoTitle,omitempty"`
 	OriginUnavailable       bool             `json:"originUnavailable,omitempty"`
 	OriginUnavailableReason string           `json:"originUnavailableReason,omitempty"`

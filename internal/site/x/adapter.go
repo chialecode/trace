@@ -134,6 +134,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		originUID, originName, originFace string
 		originPubTs                       int64
 		originText                        string
+		originLinks                       []site.TextLink
 		originUnavailable                 bool
 		originUnavailableReason           string
 		originCard                        *site.RichCardSummary
@@ -153,6 +154,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		originFace = SafePublicImageURL(originPost.Author.AvatarURL)
 		originPubTs = originPost.CreatedAt
 		originText = scrubSignedURLTokensInText(originPost.FullThreadText())
+		originLinks = BuildPostLinks(originPost)
 		originUnavailable = originPost.Unavailable || post.OriginUnavailable
 		originUnavailableReason = firstNonEmpty(post.OriginUnavailableReason, originPost.UnavailableReason)
 		originCard = toRichCardSummary(originPost.Card)
@@ -162,6 +164,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 	}
 
 	outerCard := toRichCardSummary(post.Card)
+	outerLinks := BuildPostLinks(post)
 	authorName := formatAuthorDisplayName(post.Author)
 
 	// Single progressive MP4 video (NOT GIF, NOT HLS-only) -> Kind "single_mp4" (x.md §15.1 #9).
@@ -182,6 +185,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 			AuthorFace:              SafePublicImageURL(post.Author.AvatarURL),
 			Title:                   title,
 			Desc:                    desc,
+			Links:                   outerLinks,
 			PubTs:                   post.CreatedAt,
 			DurationSec:             singleVideo.DurationSec,
 			VideoCodec:              "avc",
@@ -197,6 +201,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 			OriginAuthorFace:        originFace,
 			OriginPubTs:             originPubTs,
 			OriginText:              originText,
+			OriginLinks:             originLinks,
 			OriginUnavailable:       originUnavailable,
 			OriginUnavailableReason: originUnavailableReason,
 			OriginCard:              originCard,
@@ -280,6 +285,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		AuthorFace:              SafePublicImageURL(post.Author.AvatarURL),
 		Title:                   title,
 		Desc:                    desc,
+		Links:                   outerLinks,
 		PubTs:                   post.CreatedAt,
 		IsForward:               post.IsForward(),
 		OriginID:                originID,
@@ -289,6 +295,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		OriginAuthorFace:        originFace,
 		OriginPubTs:             originPubTs,
 		OriginText:              originText,
+		OriginLinks:             originLinks,
 		OriginUnavailable:       originUnavailable,
 		OriginUnavailableReason: originUnavailableReason,
 		OriginCard:              originCard,

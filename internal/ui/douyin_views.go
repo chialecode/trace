@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/chialecode/trace/internal/download"
 	"github.com/chialecode/trace/internal/library"
@@ -351,71 +350,15 @@ func splitHashtagSpans(text string) []richTextSpan {
 	return spans
 }
 
-// renderRichHashtagText renders body text with #话题 highlighted in ColorAccent and 6-line / 280-char clamping.
+// renderRichHashtagText renders body text with clickable hyperlinks, #话题 highlighted
+// in ColorAccent, and 6-line / 280-char clamping.
 func (a *App) renderRichHashtagText(c *ui.Context, key, text string) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return
-	}
-	if a.ExpandedPosts == nil {
-		a.ExpandedPosts = make(map[string]bool)
-	}
-	lines := strings.Count(text, "\n") + 1
-	needsClamp := lines > 6 || utf8.RuneCountInString(text) > 280
-	expanded := a.ExpandedPosts[key]
-	shown := text
-	if needsClamp && !expanded {
-		allLines := strings.Split(shown, "\n")
-		if len(allLines) > 6 {
-			shown = strings.Join(allLines[:6], "\n")
-		}
-		if utf8.RuneCountInString(shown) > 280 {
-			r := []rune(shown)
-			shown = string(r[:280]) + "…"
-		}
-	}
-
-	ui.Column(c).FillWidth().Gap(6).ClipX().Children(func() {
-		for _, para := range strings.Split(shown, "\n") {
-			line := strings.TrimSpace(para)
-			if line == "" {
-				continue
-			}
-			spans := splitHashtagSpans(line)
-			hasTag := false
-			for _, sp := range spans {
-				if sp.Hashtag {
-					hasTag = true
-					break
-				}
-			}
-			if !hasTag {
-				ui.Text(c, line).FontSize(15).LineHeight(LineHeightBody).TextColor(ColorTextMain)
-				continue
-			}
-			ui.Row(c).FillWidth().Wrap().Gap(2).AlignItems(ui.Center).Children(func() {
-				for _, sp := range spans {
-					s := sp
-					if s.Hashtag {
-						ui.Text(c, s.Text).FontSize(15).LineHeight(LineHeightBody).FontWeight(600).TextColor(ColorAccent)
-					} else {
-						ui.Text(c, s.Text).FontSize(15).LineHeight(LineHeightBody).TextColor(ColorTextMain)
-					}
-				}
-			})
-		}
-		if needsClamp {
-			toggleText := "展开"
-			if expanded {
-				toggleText = "收起"
-			}
-			btn := ui.ButtonBase(c).Label("正文展开收起："+key).Padding(2, 0).Children(func() {
-				ui.Text(c, toggleText).FontSize(13).FontWeight(600).TextColor(ColorInfoBlue).SingleLine()
-			})
-			if btn.Clicked() {
-				a.ExpandedPosts[key] = !expanded
-			}
-		}
+	a.renderRichText(c, text, nil, richTextOptions{
+		ClampKey:          key,
+		FontSize:          15,
+		LineHeight:        LineHeightBody,
+		TextColor:         ColorTextMain,
+		HighlightHashtags: true,
 	})
 }
 
