@@ -124,7 +124,7 @@ PR 的“验证”一节记命令、退出码、样本、实际观察、被测�
 - 提交前按明确路径暂存，审阅差异，运行相关门禁和 `git diff --check`。消息格式 `type(scope): 具体结果`，正文写最终行为、验证和限制，不写未经验收的“完成”。
 - push 与建 PR 长期授权；低风险 PR 由 Agent 在 CI 与独立审查通过后用 `gh pr merge <号> --squash --match-head-commit <头提交>` 合并，[高风险](workflow.md#high-risk) PR 由用户合并；发布正式版、改远端设置与规则集、改写已推送历史需要用户对具体动作授权（改写时用指定旧 SHA 的 `--force-with-lease`）。
 - push 只推指定分支，不用 `--all`/`--mirror`，不推备份分支和 `dist/` 包；不轮询长挂命令（如 `gh pr checks --watch`）。
-- 本仓设置 `core.autocrlf=false`、`pull.ff=only`、`fetch.prune=true`。
+- 本仓设置 `core.autocrlf=false`、`pull.ff=only`、`fetch.prune=true`，并执行一次 `git config --local core.hooksPath .githooks` 启用 [`pre-push`](../../.githooks/pre-push)：每次 `git push` 前自动跑 `go run ./tools/check`。确需跳过时用 `git push --no-verify`，并在 PR 里写明原因；hook 不代替远端规则集。
 
 <a id="remote"></a>
 <a id="remote-ci"></a>
