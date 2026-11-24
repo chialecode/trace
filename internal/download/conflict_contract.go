@@ -3,7 +3,9 @@ package download
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/chialecode/trace/internal/library"
 )
@@ -15,6 +17,14 @@ const (
 	ConflictResolveKeepLocal = "keep_local"
 	ConflictResolveKeepBoth  = "keep_both"
 	ConflictResolveUseRemote = "use_remote"
+)
+
+// Sanitized conflict reason kinds emitted by the download-layer tripwire.
+const (
+	ConflictReasonParts    = "part_changed"
+	ConflictReasonMedia    = "media_changed"
+	ConflictReasonText     = "text_edited"
+	ConflictReasonMismatch = "resource_mismatch"
 )
 
 var (
@@ -47,6 +57,31 @@ func ConflictResolutionFromContext(ctx context.Context) string {
 	}
 	v, _ := ctx.Value(conflictResolutionCtxKey{}).(string)
 	return strings.TrimSpace(v)
+}
+
+func normalizeConflictResolution(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case ConflictResolveKeepBoth:
+		return ConflictResolveKeepBoth
+	case ConflictResolveUseRemote:
+		return ConflictResolveUseRemote
+	case ConflictResolveKeepLocal:
+		return ConflictResolveKeepLocal
+	default:
+		return ConflictResolveNone
+	}
+}
+
+func effectiveConflictResolution(ctx context.Context, vals ...string) string {
+	if m := normalizeConflictResolution(ConflictResolutionFromContext(ctx)); m != "" {
+		return m
+	}
+	for _, v := range vals {
+		if m := normalizeConflictResolution(v); m != "" {
+			return m
+		}
+	}
+	return ConflictResolveNone
 }
 
 // ConflictNotice carries strictly sanitized V1-vs-V2 conflict metadata (zero
@@ -84,10 +119,240 @@ func (m *Manager) emitConflict(n ConflictNotice) {
 	if m == nil {
 		return
 	}
+	n = sanitizeConflictNotice(n)
 	m.mu.Lock()
 	fn := m.onConflict
 	m.mu.Unlock()
 	if fn != nil {
 		fn(n)
 	}
+}
+
+func (m *Manager) storeTaskResolutionAndPages(taskID, mode string, pages []int) {
+	if m == nil || taskID == "" {
+		return
+	}
+	mode = normalizeConflictResolution(mode)
+	m.mu.Lock()
+	if m.conflictResolutions == nil {
+		m.conflictResolutions = make(map[string]string)
+	}
+	if mode != "" {
+		m.conflictResolutions[taskID] = mode
+		if ip, ok := m.initialPlans[taskID]; ok && ip.ConflictResolution == "" {
+			ip.ConflictResolution = mode
+			m.initialPlans[taskID] = ip
+		}
+	}
+	if len(pages) > 0 {
+		if m.conflictPages == nil {
+			m.conflictPages = make(map[string][]int)
+		}
+		m.conflictPages[taskID] = append([]int(nil), pages...)
+	}
+	m.mu.Unlock()
+}
+
+func (m *Manager) taskResolutionAndPages(taskID string) (string, []int) {
+	if m == nil || taskID == "" {
+		return "", nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mode := m.conflictResolutions[taskID]
+	if mode == "" {
+		if ip, ok := m.initialPlans[taskID]; ok {
+			mode = ip.ConflictResolution
+		}
+	}
+	pages := append([]int(nil), m.conflictPages[taskID]...)
+	return normalizeConflictResolution(mode), pages
+}
+
+func (m *Manager) clearTaskResolutionStateLocked(taskID string) {
+	delete(m.conflictResolutions, taskID)
+	delete(m.conflictPages, taskID)
+}
+
+func (m *Manager) recordTaskOutcome(taskID string, err error) {
+	if m == nil || taskID == "" {
+		return
+	}
+	m.taskWaitMu.Lock()
+	if m.taskOutcomes == nil {
+		m.taskOutcomes = make(map[string]error)
+	}
+	if err == nil {
+		delete(m.taskOutcomes, taskID)
+	} else {
+		if len(m.taskOutcomes) >= 1024 {
+			for k := range m.taskOutcomes {
+				delete(m.taskOutcomes, k)
+				break
+			}
+		}
+		m.taskOutcomes[taskID] = err
+	}
+	m.broadcastTaskWaitLocked()
+	m.taskWaitMu.Unlock()
+}
+
+func (m *Manager) clearTaskOutcome(taskID string) {
+	if m == nil || taskID == "" {
+		return
+	}
+	m.taskWaitMu.Lock()
+	delete(m.taskOutcomes, taskID)
+	m.taskWaitMu.Unlock()
+}
+
+func (m *Manager) getTaskOutcome(taskID string) error {
+	if m == nil || taskID == "" {
+		return nil
+	}
+	m.taskWaitMu.Lock()
+	defer m.taskWaitMu.Unlock()
+	return m.taskOutcomes[taskID]
+}
+
+func (m *Manager) notifyTaskWaiters() {
+	if m == nil {
+		return
+	}
+	m.taskWaitMu.Lock()
+	m.broadcastTaskWaitLocked()
+	m.taskWaitMu.Unlock()
+}
+
+func (m *Manager) broadcastTaskWaitLocked() {
+	if m.taskWaitCh != nil {
+		close(m.taskWaitCh)
+	}
+	m.taskWaitCh = make(chan struct{})
+}
+
+func (m *Manager) taskWaitChannel() <-chan struct{} {
+	m.taskWaitMu.Lock()
+	defer m.taskWaitMu.Unlock()
+	if m.taskWaitCh == nil {
+		m.taskWaitCh = make(chan struct{})
+	}
+	return m.taskWaitCh
+}
+
+func (m *Manager) isTaskRunning(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.activeRun[taskID]
+	return ok
+}
+
+// WaitTasks blocks until all specified tasks leave queued/running state (or ctx
+// is canceled), waking reactively on task transitions without busy-spinning.
+// It returns nil when every task succeeded, or the task error preserving
+// ErrRemoteDegradedRefused and ErrConflictDetected sentinel wrapping.
+func (m *Manager) WaitTasks(ctx context.Context, taskIDs ...string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m == nil {
+		return ctx.Err()
+	}
+	seen := make(map[string]bool, len(taskIDs))
+	ids := make([]string, 0, len(taskIDs))
+	for _, raw := range taskIDs {
+		id := strings.TrimSpace(raw)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return ctx.Err()
+	}
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		waitCh := m.taskWaitChannel()
+
+		stillActive := false
+		for _, id := range ids {
+			if m.isTaskRunning(id) {
+				stillActive = true
+				break
+			}
+			t, ok, err := m.GetTask(id)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			switch t.Status {
+			case "queued", "running":
+				stillActive = true
+			case "completed":
+				continue
+			case "partial":
+				if rawErr := m.getTaskOutcome(id); rawErr != nil &&
+					(errors.Is(rawErr, ErrRemoteDegradedRefused) || errors.Is(rawErr, ErrConflictDetected)) {
+					return rawErr
+				}
+			case "failed", "canceled", "paused":
+				if rawErr := m.getTaskOutcome(id); rawErr != nil {
+					return rawErr
+				}
+				return reconstructStoppedTaskError(t)
+			default:
+				if strings.HasPrefix(t.Status, "paused_") {
+					if rawErr := m.getTaskOutcome(id); rawErr != nil {
+						return rawErr
+					}
+					return reconstructStoppedTaskError(t)
+				}
+				stillActive = true
+			}
+			if stillActive {
+				break
+			}
+		}
+		if !stillActive {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-waitCh:
+		case <-ticker.C:
+		}
+	}
+}
+
+func reconstructStoppedTaskError(t Task) error {
+	msg := strings.TrimSpace(firstNonEmptyStr(t.ErrorMessage, t.LastError))
+	if strings.Contains(msg, ErrRemoteDegradedRefused.Error()) {
+		if msg == ErrRemoteDegradedRefused.Error() {
+			return ErrRemoteDegradedRefused
+		}
+		return fmt.Errorf("%w: %s", ErrRemoteDegradedRefused, msg)
+	}
+	if strings.Contains(msg, ErrConflictDetected.Error()) {
+		if msg == ErrConflictDetected.Error() {
+			return ErrConflictDetected
+		}
+		return fmt.Errorf("%w: %s", ErrConflictDetected, msg)
+	}
+	if t.Status == "canceled" {
+		return context.Canceled
+	}
+	if msg != "" {
+		return errors.New(msg)
+	}
+	return fmt.Errorf("download task %s ended with status %s", t.TaskID, t.Status)
 }

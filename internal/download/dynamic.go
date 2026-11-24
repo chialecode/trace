@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -20,8 +21,36 @@ import (
 )
 
 func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error) {
+	unlock, err := m.lockItem(ctx, "dynamic:"+t.TargetID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	storedMode, _ := m.taskResolutionAndPages(t.TaskID)
+	mode := effectiveConflictResolution(ctx, t.ConflictResolution, storedMode)
+
+	previous, exists, err := m.lib.GetItem("dynamic:" + t.TargetID)
+	if err != nil {
+		return err
+	}
+	if exists && previous.ItemDir != "" {
+		_ = library.RecoverInterruptedItemSwap(previous.ItemDir, previous)
+		previous, exists, err = m.lib.GetItem("dynamic:" + t.TargetID)
+		if err != nil {
+			return err
+		}
+	}
+	hasProtectedLocal := exists && localHasProtectedContent(previous)
+
 	dyn, err := m.client.DynamicDetail(ctx, t.TargetID)
 	if err != nil {
+		if hasProtectedLocal && isDegradedSiteError(err) {
+			return wrapRemoteDegraded(err)
+		}
 		return err
 	}
 
@@ -55,11 +84,7 @@ func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error
 	if err != nil {
 		return err
 	}
-	previous, exists, err := m.lib.GetItem("dynamic:" + dyn.ID)
-	if err != nil {
-		return err
-	}
-	if exists {
+	if exists && previous.ItemDir != "" {
 		itemDir = previous.ItemDir
 	} else if t.ItemDir != "" {
 		checked, dirErr := library.EnsureWithinRoot(cacheRoot, t.ItemDir)
@@ -72,6 +97,35 @@ func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error
 		return err
 	}
 	t.ItemDir = itemDir
+	t.ItemKey = library.CanonicalItemKey("bilibili", "dynamic", dyn.ID)
+
+	var videoRefs []string
+	var dynAssets []string
+	for _, video := range dyn.Videos {
+		if video.BVID != "" {
+			videoRefs = append(videoRefs, "video:"+video.BVID)
+			if tok := library.SanitizeMediaToken(video.BVID); tok != "" {
+				dynAssets = append(dynAssets, tok)
+			}
+		}
+	}
+	for _, img := range dyn.Images {
+		if tok := cleanBilibiliImageIdentity(img.URL); tok != "" {
+			dynAssets = append(dynAssets, tok)
+		}
+	}
+
+	if hasProtectedLocal {
+		notice, isConflict, degErr := classifyBilibiliDynamicVsLocal(previous, dyn, videoRefs, t)
+		if degErr != nil {
+			return degErr
+		}
+		if isConflict && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
+			m.emitConflict(notice)
+			return ErrConflictDetected
+		}
+		return m.executeBilibiliDynamicStaged(ctx, t, dyn, previous, itemDir, authorDir, cacheRoot, forward, multiPart, videoRefs, dynAssets, mode, isConflict)
+	}
 
 	for idx, img := range dyn.Images {
 		ext := guessImageExt(img.URL)
@@ -85,14 +139,7 @@ func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error
 
 	var mediaFiles []library.MediaFile
 	var partialErrors []string
-	var videoRefs []string
 	finalSaved := false
-	for _, video := range dyn.Videos {
-		if video.BVID != "" {
-			videoRefs = append(videoRefs, "video:"+video.BVID)
-		}
-	}
-	t.ItemKey = library.CanonicalItemKey("bilibili", "dynamic", dyn.ID)
 	defer func() {
 		if result == nil || finalSaved {
 			return
@@ -284,6 +331,7 @@ func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error
 		Videos:  videoRefs,
 		Missing: missing,
 	}
+	stampCacheStandardAndAssets(&meta, 0, 0, dynAssets)
 
 	savedMeta, saveErr := m.lib.SaveItem(itemDir, meta)
 	if saveErr != nil {
@@ -448,4 +496,262 @@ func dedupeDynamicVideos(in []bilibili.DynamicVideoRef) []bilibili.DynamicVideoR
 		out = append(out, v)
 	}
 	return out
+}
+
+func (m *Manager) executeBilibiliDynamicStaged(
+	ctx context.Context,
+	t *Task,
+	dyn bilibili.DynamicItem,
+	previous library.ItemMetadata,
+	itemDir, authorDir, cacheRoot string,
+	forward bool,
+	multiPart string,
+	videoRefs []string,
+	dynAssets []string,
+	mode string,
+	isConflict bool,
+) error {
+	stageDir := filepath.Join(itemDir, library.SwapStageDirPrefix+newSwapToken())
+	if err := os.MkdirAll(stageDir, 0o700); err != nil {
+		return err
+	}
+	defer func() {
+		_ = library.RemoveTempSubdirSafe(itemDir, stageDir)
+	}()
+
+	var mediaFiles []library.MediaFile
+	var partialErrors []string
+
+	// Monotonic orig.json protection (Invariant #4): never lose valid local orig.json!
+	if dyn.Origin != nil {
+		origBytes, err := json.MarshalIndent(dyn.Origin, "", "  ")
+		if err != nil {
+			return err
+		}
+		n, sha, err := writeBytesToStage(stageDir, "orig.json", origBytes)
+		if err != nil {
+			return err
+		}
+		mediaFiles = append(mediaFiles, library.MediaFile{Role: "snapshot", Path: "orig.json", Bytes: n, SHA256: sha})
+	} else if !isConflict && mediaIsValid(previous, "orig.json") {
+		if mf, err := copyLocalMediaToStageAs(previous, "orig.json", "orig.json", "snapshot", stageDir); err == nil {
+			mediaFiles = append(mediaFiles, *mf)
+		}
+	}
+
+	localBySource := make(map[string]library.MediaFile, len(previous.Media))
+	for _, mf := range previous.Media {
+		if mf.Role == "image" && mf.Source != "" && mediaIsValid(previous, mf.Path) {
+			localBySource[bilibiliSourceKey(mf.Source)] = mf
+		}
+	}
+
+	stageSub := cloneStageSubtask(t, stageDir)
+	defer func() {
+		t.Attempts = stageSub.Attempts
+	}()
+
+	for idx, img := range dyn.Images {
+		ext := guessImageExt(img.URL)
+		relName := fmt.Sprintf("images/%02d%s", idx+1, ext)
+		cleanSrc := bilibiliSourceKey(img.URL)
+		localImg, hasSameSource := localBySource[cleanSrc]
+
+		var still library.MediaFile
+		reusedStill := false
+		if !isConflict && hasSameSource {
+			if copied, cErr := copyLocalMediaToStageAs(previous, localImg.Path, relName, "image", stageDir); cErr == nil {
+				still = *copied
+				reusedStill = true
+			}
+		}
+		if !reusedStill {
+			stagedImg, sErr := stagedFullPath(stageDir, relName)
+			if sErr != nil {
+				return sErr
+			}
+			n, sha, dlErr := m.downloadFileWithRange(ctx, []string{img.URL}, stagedImg, &stageSub)
+			if dlErr != nil {
+				// Invariant #3: reuse verified local image on mixed V2 edits when CDN expired!
+				if hasSameSource {
+					if copied, cErr := copyLocalMediaToStageAs(previous, localImg.Path, relName, "image", stageDir); cErr == nil {
+						still = *copied
+						reusedStill = true
+					}
+				}
+				if !reusedStill {
+					if isStopError(dlErr) || isStorageError(dlErr) || ctx.Err() != nil {
+						return dlErr
+					}
+					if isDegradedSiteError(dlErr) && isConflict {
+						return wrapRemoteDegraded(dlErr)
+					}
+					partialErrors = append(partialErrors, fmt.Sprintf("img_%02d: %v", idx+1, dlErr))
+					continue
+				}
+			} else {
+				still = library.MediaFile{
+					Role:   "image",
+					Path:   relName,
+					Bytes:  n,
+					SHA256: sha,
+					Source: img.URL,
+					Width:  img.Width,
+					Height: img.Height,
+				}
+			}
+		}
+		m.setFileProgress(t, "image", relName, "completed", still.Bytes, still.Bytes, 0)
+
+		// LivePhoto motion clip
+		if img.LiveURL != "" {
+			mRel := motionRelName(idx, img.LiveURL)
+			var motionMF *library.MediaFile
+			if hasSameSource && localImg.Motion != "" && mediaIsValid(previous, localImg.Motion) {
+				if copiedM, mErr := copyLocalMediaToStageAs(previous, localImg.Motion, mRel, "motion", stageDir); mErr == nil {
+					motionMF = copiedM
+				}
+			}
+			if motionMF == nil {
+				stagedMotion, mErr := stagedFullPath(stageDir, mRel)
+				if mErr != nil {
+					return mErr
+				}
+				rawStage := stagedMotion + stageSuffix
+				_, _, dlErr := m.downloadFileWithRange(ctx, []string{img.LiveURL}, rawStage, &stageSub)
+				if dlErr == nil {
+					if summary, vErr := EnsureSingleMP4Context(ctx, rawStage, 0); vErr == nil {
+						if rErr := os.Rename(rawStage, stagedMotion); rErr == nil {
+							motionMF = &library.MediaFile{
+								Role:     "motion",
+								Path:     mRel,
+								Bytes:    summary.FileBytes,
+								SHA256:   summary.SHA256,
+								Source:   img.LiveURL,
+								Width:    summary.Width,
+								Height:   summary.Height,
+								Duration: int(math.Round(summary.DurationSec)),
+							}
+						}
+					} else {
+						_ = os.Remove(rawStage)
+					}
+				} else if isStopError(dlErr) || isStorageError(dlErr) || ctx.Err() != nil {
+					return dlErr
+				}
+			}
+			if motionMF != nil {
+				still.Motion = motionMF.Path
+				mediaFiles = append(mediaFiles, *motionMF)
+			} else {
+				partialErrors = append(partialErrors, fmt.Sprintf("img_%02d 实况下载失败", idx+1))
+			}
+		} else if !isConflict && hasSameSource && localImg.Motion != "" && mediaIsValid(previous, localImg.Motion) {
+			mRel := fmt.Sprintf("images/%02d_live%s", idx+1, filepath.Ext(localImg.Motion))
+			if copiedM, mErr := copyLocalMediaToStageAs(previous, localImg.Motion, mRel, "motion", stageDir); mErr == nil {
+				still.Motion = copiedM.Path
+				mediaFiles = append(mediaFiles, *copiedM)
+			}
+		}
+		mediaFiles = append(mediaFiles, still)
+	}
+
+	for _, v := range dyn.Videos {
+		if v.BVID == "" || !t.CacheLinkedVideos {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		detail, err := m.client.VideoDetail(ctx, v.BVID)
+		if err != nil {
+			return err
+		}
+		for _, page := range detail.Pages {
+			if multiPart == "first" && page.Page != 1 {
+				continue
+			}
+			vidTask := Task{
+				Site:               "bilibili",
+				Kind:               "video",
+				TargetID:           v.BVID,
+				CID:                page.CID,
+				Page:               page.Page,
+				Source:             t.Source,
+				ConflictResolution: mode,
+				LinkedVideo:        true,
+				ProgressOwner:      t,
+				ProgressPrefix:     "videos/" + v.BVID + "/",
+				Attempts:           t.Attempts,
+			}
+			switch {
+			case detail.Author.Mid == dyn.Author.Mid:
+			case forward:
+				if dir, dirErr := library.EnsureWithinRoot(cacheRoot, filepath.Join(authorDir, "forwards", detail.BVID)); dirErr == nil {
+					vidTask.ItemDir, vidTask.ViaName, vidTask.ViaDynamicID = dir, dyn.Author.Name, dyn.ID
+				}
+			case detail.HasStaffMember(dyn.Author.Mid):
+				if dir, dirErr := library.EnsureWithinRoot(cacheRoot, filepath.Join(authorDir, "videos", detail.BVID)); dirErr == nil {
+					vidTask.ItemDir = dir
+				}
+			}
+			if err := m.executeVideoTask(ctx, &vidTask); err != nil {
+				t.Attempts = vidTask.Attempts
+				if errors.Is(err, ErrConflictDetected) || errors.Is(err, ErrRemoteDegradedRefused) || isStopError(err) || isStorageError(err) || ctx.Err() != nil {
+					return err
+				}
+				partialErrors = append(partialErrors, fmt.Sprintf("video %s P%d: %v", v.BVID, page.Page, err))
+			} else {
+				t.Attempts = vidTask.Attempts
+			}
+		}
+	}
+
+	if len(partialErrors) > 0 && isConflict {
+		return wrapRemoteDegradedMsg(fmt.Sprintf("新版部分媒体已失效，已保留本地原文件 (%s)", strings.Join(partialErrors, "; ")))
+	}
+
+	status := "complete"
+	var missing []library.MissingRecord
+	if len(partialErrors) > 0 {
+		status = "partial"
+		t.Status = "partial"
+		for _, pe := range partialErrors {
+			missing = append(missing, library.MissingRecord{Item: "media", Reason: pe})
+		}
+	}
+	v2Text := dyn.Text
+	if !isConflict {
+		v2Text = preserveMonotonicText(previous.Text, dyn.Text, false)
+	}
+	v2Meta := library.ItemMetadata{
+		Version:     1,
+		ID:          "dynamic:" + dyn.ID,
+		Site:        "bilibili",
+		Kind:        "dynamic",
+		Status:      status,
+		Title:       dyn.Title,
+		Text:        v2Text,
+		DynamicType: dyn.Type,
+		TypeLabel:   dyn.TypeLabel,
+		URL:         dyn.CanonicalURL,
+		PubTs:       dyn.PubTs,
+		CachedAt:    previous.CachedAt,
+		Author:      library.ItemAuthor{Mid: dyn.Author.Mid, Name: dyn.Author.Name, Face: dyn.Author.Face},
+		Media:       mediaFiles,
+		Videos:      videoRefs,
+		Missing:     missing,
+		Via:         previous.Via,
+	}
+	stampCacheStandardAndAssets(&v2Meta, 0, 0, dynAssets)
+
+	saved, err := m.commitStagedItemSwap(itemDir, previous, true, v2Meta, stageDir, mode)
+	if err != nil {
+		return err
+	}
+	t.ItemKey = saved.ItemKey
+	if len(partialErrors) > 0 {
+		return fmt.Errorf("部分媒体下载失败 (%s)", strings.Join(partialErrors, "; "))
+	}
+	return nil
 }

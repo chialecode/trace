@@ -147,8 +147,13 @@ type Manager struct {
 	mediaWrap    func(http.RoundTripper) http.RoundTripper
 	transports   map[mediaTransportKey]*http.Transport
 
-	planners     map[site.ID]WorkPlanner
-	initialPlans map[string]WorkDownloadPlan
+	planners            map[site.ID]WorkPlanner
+	initialPlans        map[string]WorkDownloadPlan
+	conflictResolutions map[string]string
+	conflictPages       map[string][]int
+	taskWaitMu          sync.Mutex
+	taskWaitCh          chan struct{}
+	taskOutcomes        map[string]error
 
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -170,21 +175,25 @@ func NewManager(
 		dlSettings.MaxConcurrentTasks = 2
 	}
 	m := &Manager{
-		itemLocks:    make(map[string]*keyedLock),
-		db:           db,
-		lib:          lib,
-		client:       client,
-		dlSettings:   dlSettings,
-		onTaskUpdate: onUpdate,
-		lastNotify:   make(map[string]taskNotification),
-		chunkSize:    DefaultRangeChunkSize,
-		backoffScale: time.Second,
-		transports:   make(map[mediaTransportKey]*http.Transport),
-		planners:     make(map[site.ID]WorkPlanner),
-		initialPlans: make(map[string]WorkDownloadPlan),
-		wakeCh:       make(chan struct{}, 1),
-		activeRun:    make(map[string]context.CancelFunc),
-		activeSite:   make(map[string]string),
+		itemLocks:           make(map[string]*keyedLock),
+		db:                  db,
+		lib:                 lib,
+		client:              client,
+		dlSettings:          dlSettings,
+		onTaskUpdate:        onUpdate,
+		lastNotify:          make(map[string]taskNotification),
+		chunkSize:           DefaultRangeChunkSize,
+		backoffScale:        time.Second,
+		transports:          make(map[mediaTransportKey]*http.Transport),
+		planners:            make(map[site.ID]WorkPlanner),
+		initialPlans:        make(map[string]WorkDownloadPlan),
+		conflictResolutions: make(map[string]string),
+		conflictPages:       make(map[string][]int),
+		taskWaitCh:          make(chan struct{}),
+		taskOutcomes:        make(map[string]error),
+		wakeCh:              make(chan struct{}, 1),
+		activeRun:           make(map[string]context.CancelFunc),
+		activeSite:          make(map[string]string),
 	}
 	if err := m.initSchema(); err != nil {
 		return nil, err
@@ -422,6 +431,7 @@ func (m *Manager) PauseAll(reason, message string) {
 		m.taskFaults.Range(func(key, _ any) bool { m.taskFaults.Delete(key); return true })
 	}
 	m.mu.Unlock()
+	m.notifyTaskWaiters()
 	if err == nil {
 		m.emitBatchTasks("pause_all", ids)
 	}
@@ -460,6 +470,7 @@ func (m *Manager) PauseForSite(siteID site.ID, reason, message string) {
 		}
 	}
 	m.mu.Unlock()
+	m.notifyTaskWaiters()
 	if err == nil {
 		m.emitBatchTasks("pause_site", ids)
 	}
@@ -482,11 +493,21 @@ func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]
 	if err := m.client.RequireAuth("download:video"); err != nil {
 		return nil, err
 	}
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = "manual"
+	}
+	if (source == "auto" || source == "queue") && site.AutomaticRequestSource(ctx) == "" {
+		ctx = site.WithAutomaticRequests(ctx, "download")
+	}
+	mode := normalizeConflictResolution(ConflictResolutionFromContext(ctx))
+	candKey := library.CanonicalItemKey("bilibili", "video", req.BVID)
+
 	detail := req.Detail
 	if detail == nil {
 		vd, err := m.client.VideoDetail(ctx, req.BVID)
 		if err != nil {
-			return nil, err
+			return nil, m.wrapDegradedIfLocalProtected(candKey, mode, err)
 		}
 		detail = &vd
 	}
@@ -496,21 +517,72 @@ func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]
 		pageSet[p] = true
 	}
 
-	source := req.Source
-	if source == "" {
-		source = "manual"
-	}
-
 	m.mu.Lock()
 	multiPart := m.dlSettings.MultiPart
 	m.mu.Unlock()
+	itemKey := library.CanonicalItemKey("bilibili", "video", detail.BVID)
 	itemDir := ""
-	if req.ForMid > 0 && req.ForMid != detail.Author.Mid && detail.HasStaffMember(req.ForMid) {
+	if existing, exists, gErr := m.lib.GetItem(itemKey); gErr == nil && exists && existing.ItemDir != "" {
+		itemDir = existing.ItemDir
+	} else if req.ForMid > 0 && req.ForMid != detail.Author.Mid && detail.HasStaffMember(req.ForMid) {
 		root := m.lib.CacheDir()
 		if dir, err := library.EnsureWithinRoot(root, filepath.Join(root, "bilibili", strconv.FormatInt(req.ForMid, 10), "videos", detail.BVID)); err == nil {
 			itemDir = dir
 		}
 	}
+
+	var planHint *WorkDownloadPlan
+	if mode != "" {
+		planHint = &WorkDownloadPlan{ConflictResolution: mode}
+	}
+
+	// When resolving a V1-vs-V2 conflict ("keep_both" or "use_remote"), enqueue a
+	// single whole-video task so all target pages are staged, verified, archived
+	// once, and swapped atomically together.
+	if mode == ConflictResolveKeepBoth || mode == ConflictResolveUseRemote {
+		var selectedPages []int
+		var firstVP bilibili.VideoPage
+		for _, vp := range detail.Pages {
+			if len(pageSet) == 0 && multiPart == "first" && vp.Page != 1 {
+				continue
+			}
+			if len(pageSet) > 0 && !pageSet[vp.Page] {
+				continue
+			}
+			if firstVP.CID == 0 {
+				firstVP = vp
+			}
+			selectedPages = append(selectedPages, vp.Page)
+		}
+		if len(selectedPages) == 0 && len(detail.Pages) > 0 {
+			firstVP = detail.Pages[0]
+			selectedPages = []int{firstVP.Page}
+		}
+		t, err := m.enqueueSingleTaskWithPlan(Task{
+			Site:               "bilibili",
+			Kind:               "video",
+			Source:             source,
+			TargetID:           detail.BVID,
+			CID:                firstVP.CID,
+			Page:               max(1, firstVP.Page),
+			Title:              detail.Title,
+			PartTitle:          firstVP.Title,
+			Mid:                detail.Author.Mid,
+			AuthorName:         detail.Author.Name,
+			AuthorFace:         detail.Author.Face,
+			CoverURL:           detail.Cover,
+			ItemKey:            itemKey,
+			ItemDir:            itemDir,
+			ConflictResolution: mode,
+		}, planHint)
+		if err != nil {
+			return nil, err
+		}
+		m.storeTaskResolutionAndPages(t.TaskID, mode, selectedPages)
+		m.notifyWake()
+		return []Task{t}, nil
+	}
+
 	var tasks []Task
 	for _, vp := range detail.Pages {
 		if len(pageSet) == 0 && multiPart == "first" && vp.Page != 1 {
@@ -519,24 +591,28 @@ func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]
 		if len(pageSet) > 0 && !pageSet[vp.Page] {
 			continue
 		}
-		t, err := m.enqueueSingleTask(Task{
-			Site:       "bilibili",
-			Kind:       "video",
-			Source:     source,
-			TargetID:   detail.BVID,
-			CID:        vp.CID,
-			Page:       vp.Page,
-			Title:      detail.Title,
-			PartTitle:  vp.Title,
-			Mid:        detail.Author.Mid,
-			AuthorName: detail.Author.Name,
-			AuthorFace: detail.Author.Face,
-			CoverURL:   detail.Cover,
-			ItemKey:    library.CanonicalItemKey("bilibili", "video", detail.BVID),
-			ItemDir:    itemDir,
-		})
+		t, err := m.enqueueSingleTaskWithPlan(Task{
+			Site:               "bilibili",
+			Kind:               "video",
+			Source:             source,
+			TargetID:           detail.BVID,
+			CID:                vp.CID,
+			Page:               vp.Page,
+			Title:              detail.Title,
+			PartTitle:          vp.Title,
+			Mid:                detail.Author.Mid,
+			AuthorName:         detail.Author.Name,
+			AuthorFace:         detail.Author.Face,
+			CoverURL:           detail.Cover,
+			ItemKey:            itemKey,
+			ItemDir:            itemDir,
+			ConflictResolution: mode,
+		}, planHint)
 		if err != nil {
 			return tasks, err
+		}
+		if mode != "" {
+			m.storeTaskResolutionAndPages(t.TaskID, mode, nil)
 		}
 		tasks = append(tasks, t)
 	}
@@ -549,35 +625,49 @@ func (m *Manager) EnqueueDynamic(ctx context.Context, req DynamicEnqueueRequest)
 	if err := m.client.RequireAuth("download:dynamic"); err != nil {
 		return Task{}, err
 	}
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = "manual"
+	}
+	if (source == "auto" || source == "queue") && site.AutomaticRequestSource(ctx) == "" {
+		ctx = site.WithAutomaticRequests(ctx, "download")
+	}
+	mode := normalizeConflictResolution(ConflictResolutionFromContext(ctx))
+	candKey := library.CanonicalItemKey("bilibili", "dynamic", req.DynamicID)
+
 	dyn := req.Item
 	if dyn == nil {
 		fetched, err := m.client.DynamicDetail(ctx, req.DynamicID)
 		if err != nil {
-			return Task{}, err
+			return Task{}, m.wrapDegradedIfLocalProtected(candKey, mode, err)
 		}
 		dyn = &fetched
 	}
 
-	source := req.Source
-	if source == "" {
-		source = "manual"
+	var planHint *WorkDownloadPlan
+	if mode != "" {
+		planHint = &WorkDownloadPlan{ConflictResolution: mode}
 	}
 
-	t, err := m.enqueueSingleTask(Task{
-		Site:              "bilibili",
-		Kind:              "dynamic",
-		Source:            source,
-		TargetID:          dyn.ID,
-		Page:              1,
-		Title:             dyn.Title,
-		Mid:               dyn.Author.Mid,
-		AuthorName:        dyn.Author.Name,
-		AuthorFace:        dyn.Author.Face,
-		CacheLinkedVideos: true,
-		ItemKey:           library.CanonicalItemKey("bilibili", "dynamic", dyn.ID),
-	})
+	t, err := m.enqueueSingleTaskWithPlan(Task{
+		Site:               "bilibili",
+		Kind:               "dynamic",
+		Source:             source,
+		TargetID:           dyn.ID,
+		Page:               1,
+		Title:              dyn.Title,
+		Mid:                dyn.Author.Mid,
+		AuthorName:         dyn.Author.Name,
+		AuthorFace:         dyn.Author.Face,
+		CacheLinkedVideos:  true,
+		ItemKey:            library.CanonicalItemKey("bilibili", "dynamic", dyn.ID),
+		ConflictResolution: mode,
+	}, planHint)
 	if err != nil {
 		return Task{}, err
+	}
+	if mode != "" {
+		m.storeTaskResolutionAndPages(t.TaskID, mode, nil)
 	}
 	m.notifyWake()
 	return t, nil
@@ -588,6 +678,7 @@ func (m *Manager) CacheSupplement(ctx context.Context, bvid string) (Task, error
 	if err := m.client.RequireAuth("download:supplement"); err != nil {
 		return Task{}, err
 	}
+	mode := normalizeConflictResolution(ConflictResolutionFromContext(ctx))
 	meta, ok, err := m.lib.GetItem(bvid)
 	if err != nil {
 		return Task{}, err
@@ -595,55 +686,125 @@ func (m *Manager) CacheSupplement(ctx context.Context, bvid string) (Task, error
 	if !ok {
 		return Task{}, fmt.Errorf("download: video %s is not in local library", bvid)
 	}
-	t, err := m.enqueueSingleTask(Task{
-		Site:       "bilibili",
-		Kind:       "supplement",
-		Source:     "manual",
-		TargetID:   meta.RawID,
-		Page:       1,
-		Title:      meta.Title,
-		PartTitle:  "补存弹幕和字幕",
-		Mid:        meta.Author.Mid,
-		AuthorName: meta.Author.Name,
-		AuthorFace: meta.Author.Face,
-		ItemKey:    meta.ItemKey,
-		ItemDir:    meta.ItemDir,
-	})
+	var planHint *WorkDownloadPlan
+	if mode != "" {
+		planHint = &WorkDownloadPlan{ConflictResolution: mode}
+	}
+	t, err := m.enqueueSingleTaskWithPlan(Task{
+		Site:               "bilibili",
+		Kind:               "supplement",
+		Source:             "manual",
+		TargetID:           meta.RawID,
+		Page:               1,
+		Title:              meta.Title,
+		PartTitle:          "补存弹幕和字幕",
+		Mid:                meta.Author.Mid,
+		AuthorName:         meta.Author.Name,
+		AuthorFace:         meta.Author.Face,
+		ItemKey:            meta.ItemKey,
+		ItemDir:            meta.ItemDir,
+		ConflictResolution: mode,
+	}, planHint)
 	if err != nil {
 		return Task{}, err
+	}
+	if mode != "" {
+		m.storeTaskResolutionAndPages(t.TaskID, mode, nil)
 	}
 	m.notifyWake()
 	return t, nil
 }
 
-// Upgrade enqueues an upgrade task for a cached video that re-downloads only upgradable parts and atomically replaces old files after verification (data-and-cache.md §2.7).
+// Upgrade enqueues a manual upgrade task for a cached item.
 func (m *Manager) Upgrade(ctx context.Context, keyOrBVID string) (Task, error) {
-	if err := m.client.RequireAuth("download:upgrade"); err != nil {
-		return Task{}, err
+	return m.UpgradeWithSource(ctx, keyOrBVID, "manual")
+}
+
+// UpgradeWithSource enqueues an upgrade task for a cached item across all 4
+// supported sites, recording source ("manual", "queue", or "auto") for quota
+// accounting and propagating any ConflictResolutionFromContext(ctx).
+func (m *Manager) UpgradeWithSource(ctx context.Context, key, source string) (Task, error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = "manual"
 	}
-	meta, ok, err := m.lib.GetItem(keyOrBVID)
+	mode := normalizeConflictResolution(ConflictResolutionFromContext(ctx))
+
+	lowerKey := strings.ToLower(strings.TrimSpace(key))
+	if !strings.HasPrefix(lowerKey, "douyin:") && !strings.HasPrefix(lowerKey, "weibo:") && !strings.HasPrefix(lowerKey, "x:") {
+		if err := m.client.RequireAuth("download:upgrade"); err != nil {
+			return Task{}, err
+		}
+	}
+
+	meta, ok, err := m.lib.GetItem(key)
 	if err != nil {
 		return Task{}, err
 	}
 	if !ok {
-		return Task{}, fmt.Errorf("download: item %s is not in local library", keyOrBVID)
+		return Task{}, fmt.Errorf("download: item %s is not in local library", key)
 	}
-	t, err := m.enqueueSingleTask(Task{
-		Site:       "bilibili",
-		Kind:       "upgrade",
-		Source:     "manual",
-		TargetID:   meta.RawID,
-		Page:       1,
-		Title:      meta.Title,
-		PartTitle:  "画质升级",
-		Mid:        meta.Author.Mid,
-		AuthorName: meta.Author.Name,
-		AuthorFace: meta.Author.Face,
-		ItemKey:    meta.ItemKey,
-		ItemDir:    meta.ItemDir,
-	})
+
+	siteID := site.ID(strings.ToLower(strings.TrimSpace(meta.Site)))
+	if siteID == "" {
+		siteID = site.Bilibili
+	}
+	switch siteID {
+	case site.Bilibili:
+		if err := m.client.RequireAuth("download:upgrade"); err != nil {
+			return Task{}, err
+		}
+	case site.Douyin, site.Weibo, site.X:
+		planner, hasPlanner := m.getWorkPlanner(siteID)
+		if !hasPlanner {
+			return Task{}, &site.Error{Site: siteID, Kind: site.ErrKindUnavailable, Message: "下载规划器尚未初始化"}
+		}
+		if checker, ok := planner.(SiteAuthChecker); ok {
+			if err := checker.RequireAuth("download:upgrade"); err != nil {
+				return Task{}, err
+			}
+		}
+	default:
+		return Task{}, &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "不支持的下载站点: " + string(siteID)}
+	}
+
+	targetID := meta.RawID
+	if siteID == site.Weibo && meta.Kind == "video" && strings.HasPrefix(targetID, "1034_") {
+		targetID = "1034:" + strings.TrimPrefix(targetID, "1034_")
+	}
+
+	var viaCopy *library.ItemVia
+	if meta.Via != nil {
+		cp := *meta.Via
+		viaCopy = &cp
+	}
+	var planHint *WorkDownloadPlan
+	if mode != "" {
+		planHint = &WorkDownloadPlan{ConflictResolution: mode}
+	}
+
+	t, err := m.enqueueSingleTaskWithPlan(Task{
+		Site:               string(siteID),
+		Kind:               "upgrade",
+		Source:             source,
+		TargetID:           targetID,
+		Page:               1,
+		Title:              meta.Title,
+		PartTitle:          "画质升级",
+		Mid:                meta.Author.Mid,
+		AuthorUID:          meta.Author.UID,
+		AuthorName:         meta.Author.Name,
+		AuthorFace:         meta.Author.Face,
+		ItemKey:            meta.ItemKey,
+		ItemDir:            meta.ItemDir,
+		Via:                viaCopy,
+		ConflictResolution: mode,
+	}, planHint)
 	if err != nil {
 		return Task{}, err
+	}
+	if mode != "" {
+		m.storeTaskResolutionAndPages(t.TaskID, mode, nil)
 	}
 	m.notifyWake()
 	return t, nil
@@ -688,6 +849,7 @@ func (m *Manager) Pause(taskID string) (Task, error) {
 	m.taskFaults.Delete(taskID)
 	t, _, err := m.GetTask(taskID)
 	m.emitUpdate(t)
+	m.notifyTaskWaiters()
 	m.notifyWake()
 	return t, err
 }
@@ -713,8 +875,10 @@ func (m *Manager) Resume(taskID string) (Task, error) {
 		return Task{}, err
 	}
 	m.taskFaults.Delete(taskID)
+	m.clearTaskOutcome(taskID)
 	t, _, err := m.GetTask(taskID)
 	m.emitUpdate(t)
+	m.notifyTaskWaiters()
 	m.notifyWake()
 	return t, err
 }
@@ -934,6 +1098,7 @@ func (m *Manager) Cancel(taskID string) (Task, error) {
 		cleanTaskPartFiles(t)
 	}
 	m.emitUpdate(t)
+	m.notifyTaskWaiters()
 	m.notifyWake()
 	return t, err
 }
@@ -977,10 +1142,13 @@ func (m *Manager) Remove(taskID string) error {
 		return err
 	}
 	delete(m.initialPlans, taskID)
+	m.clearTaskResolutionStateLocked(taskID)
 	m.taskFaults.Delete(taskID)
+	m.clearTaskOutcome(taskID)
 	m.notifyMu.Lock()
 	delete(m.lastNotify, taskID)
 	m.notifyMu.Unlock()
+	m.notifyTaskWaiters()
 	return nil
 }
 
@@ -1074,15 +1242,22 @@ func (m *Manager) launchAvailableWorkers() {
 			delete(m.activeRun, t.TaskID)
 			delete(m.activeSite, t.TaskID)
 			delete(m.initialPlans, t.TaskID)
+			m.clearTaskResolutionStateLocked(t.TaskID)
 			m.mu.Unlock()
+			m.notifyTaskWaiters()
 			m.notifyWake()
 		}(nextTask, taskCtx, taskCancel)
 	}
 }
 
 func (m *Manager) runTask(ctx context.Context, t Task) {
-	if t.Source == "auto" {
+	if t.Source == "auto" || t.Source == "queue" {
 		ctx = site.WithAutomaticRequests(ctx, "download")
+	}
+	storedMode, _ := m.taskResolutionAndPages(t.TaskID)
+	if mode := effectiveConflictResolution(ctx, t.ConflictResolution, storedMode); mode != "" {
+		t.ConflictResolution = mode
+		ctx = WithConflictResolution(ctx, mode)
 	}
 	var err error
 	switch site.ID(strings.ToLower(strings.TrimSpace(t.Site))) {
@@ -1115,10 +1290,29 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 
 	if ctx.Err() != nil {
 		// Task was paused, canceled, or Manager stopped; preserve the state set by Pause/Cancel.
+		m.notifyTaskWaiters()
 		return
 	}
 
 	if err != nil {
+		if errors.Is(err, ErrConflictDetected) {
+			t.Status = "failed"
+			t.PauseReason = ""
+			t.ErrorKind = "conflict"
+			t.ErrorMessage = err.Error()
+			m.persistTaskProgress(t)
+			m.recordTaskOutcome(t.TaskID, err)
+			return
+		}
+		if errors.Is(err, ErrRemoteDegradedRefused) {
+			t.Status = "failed"
+			t.PauseReason = ""
+			t.ErrorKind = "degraded"
+			t.ErrorMessage = err.Error()
+			m.persistTaskProgress(t)
+			m.recordTaskOutcome(t.TaskID, err)
+			return
+		}
 		m.reportSiteAutomaticError(ctx, t.Site, err)
 		var netPause *networkPauseError
 		if errors.As(err, &netPause) {
@@ -1127,6 +1321,7 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 			t.ErrorKind = site.ErrKindNetwork
 			t.ErrorMessage = netPause.Error()
 			m.persistTaskProgress(t)
+			m.recordTaskOutcome(t.TaskID, err)
 			return
 		}
 		errKind := classifyDownloadError(err)
@@ -1136,6 +1331,7 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 			t.ErrorMessage = "已暂停（登录已失效）：" + err.Error()
 			m.persistTaskProgress(t)
 			m.pauseSitePeers(t.Site, t.TaskID, "auth_required", errKind, "已暂停（登录已失效）："+err.Error())
+			m.recordTaskOutcome(t.TaskID, err)
 			return
 		}
 		if errKind == site.ErrKindQuota || errKind == site.ErrKindBackoff {
@@ -1153,6 +1349,7 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 			m.persistTaskProgress(t)
 			msg := fmt.Sprintf("检测到站点风控或频率限制 (%s)，已自动暂停同站点排队任务: %s", errKind, err.Error())
 			m.pauseSitePeers(t.Site, t.TaskID, "risk_control", errKind, msg)
+			m.recordTaskOutcome(t.TaskID, err)
 			return
 		}
 		if t.Status == "paused" {
@@ -1163,6 +1360,7 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 				t.ErrorMessage = err.Error()
 			}
 			m.persistTaskProgress(t)
+			m.recordTaskOutcome(t.TaskID, err)
 			return
 		}
 		if t.Status != "partial" {
@@ -1171,6 +1369,7 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 		t.ErrorKind = errKind
 		t.ErrorMessage = err.Error()
 		m.persistTaskProgress(t)
+		m.recordTaskOutcome(t.TaskID, err)
 		return
 	}
 
@@ -1182,6 +1381,7 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 	t.PauseReason = ""
 	t.Progress = 1.0
 	m.persistTaskProgress(t)
+	m.recordTaskOutcome(t.TaskID, nil)
 }
 
 func (m *Manager) pauseSitePeers(siteID, triggeringTaskID, pauseReason, errKind, msg string) {

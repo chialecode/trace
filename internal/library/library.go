@@ -86,6 +86,9 @@ func OpenWithDataDir(db *sql.DB, cacheDir, dataDir string) (*Store, error) {
 	if err := s.cleanupPendingDeletesLocked(); err != nil {
 		return nil, err
 	}
+	if err := s.recoverInterruptedSwapsLocked(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -576,8 +579,15 @@ func normalizeLookupKey(k string) string {
 
 func refreshItemFileState(meta *ItemMetadata) {
 	if missing, actualBytes := verifyItemFiles(meta.ItemDir, meta, false); missing && meta.Status != "recording" {
-		meta.Status = "missing_files"
-		meta.TotalBytes = actualBytes
+		if hasInterruptedSwapDirs(meta.ItemDir) && RecoverInterruptedItemSwap(meta.ItemDir, *meta) == nil {
+			missing, actualBytes = verifyItemFiles(meta.ItemDir, meta, false)
+		}
+		if missing {
+			meta.Status = "missing_files"
+			meta.TotalBytes = actualBytes
+		} else {
+			meta.TotalBytes = actualBytes
+		}
 	}
 }
 
