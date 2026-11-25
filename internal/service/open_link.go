@@ -32,6 +32,7 @@ import (
 	"github.com/chialecode/trace/internal/site/weibo"
 	"github.com/chialecode/trace/internal/site/x"
 	"github.com/chialecode/trace/internal/storage"
+	"github.com/chialecode/trace/internal/subscription"
 )
 
 const (
@@ -895,6 +896,12 @@ func (b *Backend) fetchHistoryThumbForSite(ctx context.Context, siteID site.ID, 
 		return storage.HistoryThumbnail{}
 	}
 	if err != nil || len(raw) == 0 || int64(len(raw)) > sourceLimit {
+		return storage.HistoryThumbnail{}
+	}
+	if site.LooksLikeDisguisedImageText(raw) || site.LooksLikeExpiredPlaceholderImageBytes(raw, rawURL, 0, 0, false) {
+		return storage.HistoryThumbnail{}
+	}
+	if _, ok := site.SniffImageMagicBytes(raw); !ok {
 		return storage.HistoryThumbnail{}
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
@@ -2291,4 +2298,18 @@ func prunePreviewDir(dir, keepPath string, maxBytes int64, maxFiles int) {
 			remaining--
 		}
 	}
+}
+
+// OpenExternalLink validates rawURL strictly as an HTTP/HTTPS URL without
+// credentials or control characters and opens it via the Desktop shell adapter
+// (recorded in memory without launching external processes under MockDesktop / TRACE_QUIET).
+func (b *Backend) OpenExternalLink(rawURL string) error {
+	clean, err := subscription.ValidateCustomLinkURL(rawURL)
+	if err != nil {
+		return err
+	}
+	if b.desktop == nil {
+		return fmt.Errorf("desktop handler unavailable")
+	}
+	return b.desktop.OpenExternalURL(clean)
 }

@@ -26,8 +26,9 @@ const (
 )
 
 type activeFLVConn struct {
-	body    io.ReadCloser
-	remuxer *FLVRemuxer
+	body      io.ReadCloser
+	remuxer   *FLVRemuxer
+	sourceURL string
 }
 
 func (c *activeFLVConn) Close() error {
@@ -85,15 +86,20 @@ func (m *Manager) recordFLVPartWithTransport(
 		m.mu.Lock()
 		idleDur := m.flvIdleTimeout
 		m.mu.Unlock()
-		body, err := OpenHTTPFLVStream(ctx, transport, urls, idleDur)
+		body, openedURL, err := openHTTPFLVStreamWithCallback(ctx, transport, urls, idleDur, func(failedURL string) {
+			if ctx.Err() == nil {
+				m.noteSessionFailedHost(sess, failedURL)
+			}
+		})
 		if err != nil {
 			return 0, err
 		}
 		m.markSessionReconnected(sess, m.now(), true, partBase)
 		remuxer := NewFLVRemuxer(bufio.NewReaderSize(body, flvReadBufferSize), FLVRemuxOptions{})
 		*connPtr = &activeFLVConn{
-			body:    body,
-			remuxer: remuxer,
+			body:      body,
+			remuxer:   remuxer,
+			sourceURL: openedURL,
 		}
 	}
 
@@ -104,9 +110,48 @@ func (m *Manager) recordFLVPartWithTransport(
 	if err != nil {
 		return 0, err
 	}
+
+	_, _, _, cpInterval := m.hlsTimeouts()
+	var checkpointedBytes int64
+	var lastCheckpointAt time.Time
+	var lastCPCodec string
+	var lastCPDur float64
+	var lastCPIncidents int
+	var lastCPSlow bool
+
+	flushFLVCheckpoint := func(bytesWritten int64, durSec float64, codec string) error {
+		if err := m.saveCheckpoint(sess, func(meta *library.ItemMetadata) {
+			if codec != "" {
+				meta.Live.Codec = codec
+			}
+			meta.Live.LastSequence = 0
+			meta.Live.HasSequence = false
+			meta.Live.PendingFile = partBase
+			meta.Live.PendingBytes = bytesWritten
+			meta.Live.PendingDuration = durSec
+		}); err != nil {
+			return err
+		}
+		checkpointedBytes = bytesWritten
+		lastCheckpointAt = m.now()
+		if codec != "" {
+			lastCPCodec = codec
+		}
+		return nil
+	}
+
 	defer func() {
+		syncStart := time.Now()
 		if sErr := f.Sync(); sErr != nil && result == nil {
 			result = sErr
+		} else if dur := time.Since(syncStart); dur >= slowLiveIOThreshold {
+			m.logEvent("WARN", "live slow_io: op=flv_fsync site=%s room=%s part=%s bytes=%d dur_ms=%d",
+				liveLogSite(sess), liveLogRoom(sess), partBase, written, dur.Milliseconds())
+		}
+		if written > checkpointedBytes {
+			if cpErr := flushFLVCheckpoint(written, lastCPDur, lastCPCodec); cpErr != nil && result == nil {
+				result = cpErr
+			}
 		}
 		if cErr := f.Close(); cErr != nil && result == nil {
 			result = cErr
@@ -129,11 +174,11 @@ func (m *Manager) recordFLVPartWithTransport(
 			written = cp.BytesWritten
 			m.addSessionBytes(sess, delta)
 		}
-		prevCheckAt = checkNow
 		if cp.DurationSec > prevDur {
 			prevDur = cp.DurationSec
 		}
 		sess.segmentDuration = cp.DurationSec
+		lastCPDur = cp.DurationSec
 		m.mu.Lock()
 		sess.wroteMedia = true
 		// Keep HTTP-FLV GOP chunk numbering isolated from HLS MEDIA-SEQUENCE tracking.
@@ -143,23 +188,42 @@ func (m *Manager) recordFLVPartWithTransport(
 		if cp.Codec != "" {
 			sess.codec = cp.Codec
 		}
+		incCount := len(sess.incidents)
+		slowActive := sess.slow.activeIdx >= 0
 		m.mu.Unlock()
 
 		m.commitSessionPart(sess, cp.BytesWritten, cp.DurationSec)
-		return m.saveCheckpoint(sess, func(meta *library.ItemMetadata) {
-			if cp.Codec != "" {
-				meta.Live.Codec = cp.Codec
+		codecChanged := cp.Codec != "" && cp.Codec != lastCPCodec
+		incidentChanged := incCount != lastCPIncidents || slowActive != lastCPSlow
+		shouldCheckpoint := checkpointedBytes == 0 || codecChanged || incidentChanged || cpInterval <= 0 || m.now().Sub(lastCheckpointAt) >= cpInterval
+		if shouldCheckpoint {
+			if err := flushFLVCheckpoint(cp.BytesWritten, cp.DurationSec, cp.Codec); err != nil {
+				return err
 			}
-			meta.Live.LastSequence = 0
-			meta.Live.HasSequence = false
-			meta.Live.PendingFile = partBase
-			meta.Live.PendingBytes = cp.BytesWritten
-			meta.Live.PendingDuration = cp.DurationSec
-		})
+			lastCPIncidents = incCount
+			lastCPSlow = slowActive
+		} else if cp.Codec != "" {
+			lastCPCodec = cp.Codec
+		}
+		// Advance prevCheckAt after checkpoint persistence so local disk/manifest I/O
+		// wait is never charged against the next chunk's network download speed.
+		prevCheckAt = m.now()
+		return nil
 	})
 	if cp.BytesWritten > written {
 		m.addSessionBytes(sess, cp.BytesWritten-written)
 		written = cp.BytesWritten
+	}
+	if cp.DurationSec > lastCPDur {
+		lastCPDur = cp.DurationSec
+	}
+	if cp.Codec != "" {
+		lastCPCodec = cp.Codec
+	}
+	if wErr != nil && !errors.Is(wErr, errSegmentRollover) && ctx.Err() == nil && liveStopReason(wErr) == "" {
+		if *connPtr != nil && (*connPtr).sourceURL != "" {
+			m.noteSessionFailedHost(sess, (*connPtr).sourceURL)
+		}
 	}
 	return written, wErr
 }
@@ -168,6 +232,11 @@ func (m *Manager) recordFLVPartWithTransport(
 // enforcing a 10s connect/header timeout, per-read idle timeout, <=5 redirect hops (ValidateRedirectURL),
 // Referer/Origin headers with Cookie stripped, and rejecting HTML/JSON disguised responses.
 func OpenHTTPFLVStream(ctx context.Context, transport site.MediaTransportSpec, urls []string, idleTimeout time.Duration) (io.ReadCloser, error) {
+	rc, _, err := openHTTPFLVStreamWithCallback(ctx, transport, urls, idleTimeout, nil)
+	return rc, err
+}
+
+func openHTTPFLVStreamWithCallback(ctx context.Context, transport site.MediaTransportSpec, urls []string, idleTimeout time.Duration, onFail func(string)) (io.ReadCloser, string, error) {
 	if idleTimeout <= 0 {
 		idleTimeout = defaultFLVIdleTimeout
 	}
@@ -186,9 +255,9 @@ func OpenHTTPFLVStream(ctx context.Context, transport site.MediaTransportSpec, u
 	}
 	if len(cleanURLs) == 0 {
 		if lastValidateErr != nil {
-			return nil, lastValidateErr
+			return nil, "", lastValidateErr
 		}
-		return nil, &site.Error{Site: transport.Site, Kind: site.ErrKindUnavailable, Message: "直播拉流地址列表为空"}
+		return nil, "", &site.Error{Site: transport.Site, Kind: site.ErrKindUnavailable, Message: "直播拉流地址列表为空"}
 	}
 
 	httpClient, tr := newLiveTransportClientWithTransport(transport, defaultFLVConnectTimeout)
@@ -213,7 +282,10 @@ func OpenHTTPFLVStream(ctx context.Context, transport site.MediaTransportSpec, u
 				lastErr = se
 				if site.IsRoundStop(se) || se.Kind == site.ErrKindBlocked {
 					tr.CloseIdleConnections()
-					return nil, se
+					return nil, "", se
+				}
+				if onFail != nil {
+					onFail(targetURL)
 				}
 				continue
 			}
@@ -223,16 +295,23 @@ func OpenHTTPFLVStream(ctx context.Context, transport site.MediaTransportSpec, u
 				Message: "连接直播流节点失败",
 				Err:     site.UnwrapURLError(err),
 			}
+			if onFail != nil {
+				onFail(targetURL)
+			}
 			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 			_ = resp.Body.Close()
 			se := mapLiveHTTPStatus(transport.Site, resp.StatusCode)
 			lastErr = se
 			if site.IsRoundStop(se) {
 				tr.CloseIdleConnections()
-				return nil, se
+				return nil, "", se
+			}
+			if onFail != nil {
+				onFail(targetURL)
 			}
 			continue
 		}
@@ -241,7 +320,7 @@ func OpenHTTPFLVStream(ctx context.Context, transport site.MediaTransportSpec, u
 		if badErr := checkLiveFLVContentType(transport.Site, ct); badErr != nil {
 			_ = resp.Body.Close()
 			tr.CloseIdleConnections()
-			return nil, badErr
+			return nil, "", badErr
 		}
 
 		timeoutSec := max(1, int(idleTimeout.Seconds()))
@@ -252,13 +331,13 @@ func OpenHTTPFLVStream(ctx context.Context, transport site.MediaTransportSpec, u
 				Message: fmt.Sprintf("直播流超过 %d 秒无数据返回", timeoutSec),
 			}
 		})
-		return &transportCloseReadCloser{ReadCloser: idleBody, tr: tr}, nil
+		return &transportCloseReadCloser{ReadCloser: idleBody, tr: tr}, targetURL, nil
 	}
 	tr.CloseIdleConnections()
 	if lastErr != nil {
-		return nil, lastErr
+		return nil, "", lastErr
 	}
-	return nil, &site.Error{Site: transport.Site, Kind: site.ErrKindNetwork, Message: "无法连接任何直播流节点"}
+	return nil, "", &site.Error{Site: transport.Site, Kind: site.ErrKindNetwork, Message: "无法连接任何直播流节点"}
 }
 
 func newLiveTransportClient(spec site.MediaTransportSpec, connectTimeout time.Duration) *http.Client {

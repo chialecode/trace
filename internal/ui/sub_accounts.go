@@ -40,6 +40,12 @@ func (a *App) subscriptionsAccountsFingerprint() uint64 {
 			fnvWriteStr(h, acc.Name)
 			fnvWriteStr(h, acc.Face)
 		}
+		fnvWriteInt64(h, int64(len(sub.Links)))
+		for j := range sub.Links {
+			lnk := &sub.Links[j]
+			fnvWriteStr(h, lnk.Label)
+			fnvWriteStr(h, lnk.URL)
+		}
 	}
 	return h.Sum64()
 }

@@ -557,6 +557,7 @@ func (m *Manager) executeWeiboSingleVideoTask(
 			Via:          via,
 			Origin:       originMeta,
 			Card:         cardMeta,
+			Links:        buildWeiboItemLinks(plan.Links, previous.Links),
 		}
 		stampCacheStandardAndAssets(&v2Meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
 		saved, err := m.commitStagedItemSwap(itemDir, previous, true, v2Meta, stageDir, mode)
@@ -594,6 +595,7 @@ func (m *Manager) executeWeiboSingleVideoTask(
 		Via:          via,
 		Origin:       originMeta,
 		Card:         cardMeta,
+		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
 	}
 
 	finalSaved := false
@@ -894,6 +896,7 @@ func (m *Manager) executeWeiboPostTask(
 			Via:          via,
 			Origin:       originMeta,
 			Card:         cardMeta,
+			Links:        buildWeiboItemLinks(plan.Links, previous.Links),
 		}
 		saved, sErr := m.lib.SaveItem(itemDir, partialMeta)
 		if sErr != nil {
@@ -999,7 +1002,7 @@ func (m *Manager) executeWeiboPostTask(
 					}
 					return nil, nil
 				})
-				imgMedia, imgErr = m.cacheDouyinSniffedImage(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, "image", prefix, page.ImageURLs, page.Width, page.Height, plan.Transport, refreshImg)
+				imgMedia, imgErr = m.cacheWeiboStillImageOpts(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, "image", prefix, page.ImageURLs, page.Width, page.Height, true, plan.Transport, refreshImg)
 				if imgErr != nil && hasProtectedLocal && canReuseLocal && reusableLP.Image != "" && ctx.Err() == nil && !isStorageError(imgErr) {
 					if copied, rErr := copyLocalMediaToStageAs(previous, reusableLP.Image, prefix, "image", workDir); rErr == nil {
 						imgMedia, imgErr = copied, nil
@@ -1014,6 +1017,9 @@ func (m *Manager) executeWeiboPostTask(
 					return wrapRemoteDegraded(imgErr)
 				}
 				reason := fmt.Sprintf("第 %02d 张动图下载失败 (%s)", pageIdx, classifyDownloadError(imgErr))
+				if isWeiboPlaceholderError(imgErr) {
+					reason = fmt.Sprintf("第 %02d 张%s", pageIdx, WeiboImageUnavailableReason)
+				}
 				missing = append(missing, library.MissingRecord{Item: fmt.Sprintf("page_%02d", pageIdx), Reason: reason})
 				partialErrors = append(partialErrors, reason)
 				notePages = append(notePages, library.NotePageRecord{Index: pageIdx, Kind: "image", MediaID: cleanPageMediaID, FromOrigin: page.FromOrigin, Width: page.Width, Height: page.Height})
@@ -1336,6 +1342,8 @@ func (m *Manager) executeWeiboPostTask(
 		t.ErrorMessage = summarizeMissingReasons(missing)
 	}
 
+	mediaFiles, notePages = preserveValidPreviousImagesForStage(itemDir, workDir, previous, exists && !isConflict, mediaFiles, notePages)
+
 	meta := library.ItemMetadata{
 		Version:     1,
 		ID:          itemKind + ":" + rawID,
@@ -1364,6 +1372,7 @@ func (m *Manager) executeWeiboPostTask(
 		Via:          via,
 		Origin:       originMeta,
 		Card:         cardMeta,
+		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
 	}
 	stampCacheStandardAndAssets(&meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
 
@@ -1399,29 +1408,32 @@ func (m *Manager) cacheWeiboStillImage(
 	transport site.MediaTransportSpec,
 	refreshURLs func() ([]string, error),
 ) (*library.MediaFile, error) {
+	return m.cacheWeiboStillImageOpts(ctx, t, itemDir, previous, exists, role, relStem, urls, width, height, false, transport, refreshURLs)
+}
+
+func (m *Manager) cacheWeiboStillImageOpts(
+	ctx context.Context,
+	t *Task,
+	itemDir string,
+	previous library.ItemMetadata,
+	exists bool,
+	role string,
+	relStem string,
+	urls []string,
+	width, height int,
+	isGIFSlot bool,
+	transport site.MediaTransportSpec,
+	refreshURLs func() ([]string, error),
+) (*library.MediaFile, error) {
 	inSwapStage := isSwapStageDir(itemDir)
-	if !inSwapStage && exists {
-		for _, mf := range previous.Media {
-			if mf.Role == role && strings.HasPrefix(mf.Path, relStem+".") && m.mediaAlreadyCompleted(previous, mf) {
-				// Builds before the placeholder check saved Sina's HTTP-200
-				// "image deleted" GIF as if it were the picture. Never reuse
-				// it: drop the placeholder and try the source again.
-				if strings.EqualFold(filepath.Ext(mf.Path), ".gif") {
-					if full, rErr := library.ResolveItemPath(itemDir, mf.Path); rErr == nil {
-						firstURL := ""
-						if len(urls) > 0 {
-							firstURL = urls[0]
-						}
-						if looksLikeWeiboPlaceholderGIF(full, firstURL, width, height) {
-							_ = os.Remove(full)
-							continue
-						}
-					}
-				}
-				m.setFileProgress(t, role, mf.Path, "completed", mf.Bytes, mf.Bytes, 0)
-				cp := mf
-				return &cp, nil
-			}
+	firstURL := ""
+	if len(urls) > 0 {
+		firstURL = urls[0]
+	}
+	if !inSwapStage {
+		if kept, ok := m.findExistingValidImageSlot(t, itemDir, previous, exists, role, relStem, firstURL, width, height, isGIFSlot); ok {
+			m.setFileProgress(t, role, kept.Path, "completed", kept.Bytes, kept.Bytes, 0)
+			return kept, nil
 		}
 	}
 
@@ -1445,6 +1457,7 @@ func (m *Manager) cacheWeiboStillImage(
 
 	spec := m.transportRangeSpec(transport, role, false)
 	tried := make(map[string]bool)
+	var fallbackURLPool []string
 	sawPlaceholder := false
 	var lastErr error
 
@@ -1454,6 +1467,7 @@ func (m *Manager) cacheWeiboStillImage(
 			if cand == "" {
 				continue
 			}
+			fallbackURLPool = append(fallbackURLPool, cand)
 			if !allowAlreadyTriedExact && tried[cand] {
 				continue
 			}
@@ -1475,7 +1489,7 @@ func (m *Manager) cacheWeiboStillImage(
 				lastErr = dlErr
 				continue
 			}
-			if looksLikeWeiboPlaceholderGIF(tempFull, cand, width, height) {
+			if site.LooksLikeExpiredPlaceholderImageFile(tempFull, cand, width, height, isGIFSlot) {
 				_ = os.Remove(tempFull)
 				sawPlaceholder = true
 				lastErr = &weiboPlaceholderGIFError{}
@@ -1530,6 +1544,14 @@ func (m *Manager) cacheWeiboStillImage(
 					return nil, fatalErr
 				}
 			}
+		}
+	}
+	if !ok && site.ShouldAttemptImageCDNFallback(lastErr, sawPlaceholder) {
+		if len(fallbackURLPool) == 0 {
+			fallbackURLPool = initialCands
+		}
+		if fbN, fbSHA, fbExt, fbOK := m.tryPublicImageCDNFallbackToFile(ctx, fallbackURLPool, width, height, isGIFSlot, tempFull, transport.AllowLocalhost, transport.UserAgent); fbOK {
+			n, sha, ext, ok = fbN, fbSHA, fbExt, true
 		}
 	}
 	if !ok {
@@ -1853,6 +1875,7 @@ func buildWeiboItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) 
 	hasOriginContent := strings.TrimSpace(plan.OriginAuthorUID) != "" ||
 		strings.TrimSpace(plan.OriginAuthorName) != "" ||
 		strings.TrimSpace(plan.OriginText) != "" ||
+		len(plan.OriginLinks) > 0 ||
 		plan.OriginUnavailable ||
 		plan.OriginCard != nil ||
 		plan.VideoFromOrigin ||
@@ -1862,6 +1885,7 @@ func buildWeiboItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) 
 	if !hasOriginContent {
 		if previous.Origin != nil {
 			cp := *previous.Origin
+			cp.Links = append([]library.ItemLink(nil), cp.Links...)
 			if cp.Card != nil {
 				cc := *cp.Card
 				cp.Card = &cc
@@ -1883,6 +1907,10 @@ func buildWeiboItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) 
 	if norm, err := site.NormalizeUID(site.Weibo, originUID); err == nil {
 		originUID = norm
 	}
+	var prevOriginLinks []library.ItemLink
+	if previous.Origin != nil {
+		prevOriginLinks = previous.Origin.Links
+	}
 	return &library.ItemOrigin{
 		Site:         string(site.Weibo),
 		ID:           strings.TrimSpace(plan.OriginID),
@@ -1897,11 +1925,37 @@ func buildWeiboItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) 
 		PubTs:             plan.OriginPubTs,
 		Title:             strings.TrimSpace(plan.OriginVideoTitle),
 		Text:              strings.TrimSpace(plan.OriginText),
+		Links:             buildWeiboItemLinks(plan.OriginLinks, prevOriginLinks),
 		Card:              buildWeiboItemRichCard(plan.OriginCard, nil),
 		Unavailable:       plan.OriginUnavailable,
 		UnavailableReason: strings.TrimSpace(plan.OriginUnavailableReason),
 		VideoFromOrigin:   plan.VideoFromOrigin,
 	}
+}
+
+func buildWeiboItemLinks(links []site.TextLink, prev []library.ItemLink) []library.ItemLink {
+	if len(links) == 0 {
+		if len(prev) == 0 {
+			return nil
+		}
+		return append([]library.ItemLink(nil), prev...)
+	}
+	out := make([]library.ItemLink, 0, len(links))
+	for _, l := range links {
+		lbl := strings.TrimSpace(l.Label)
+		u := strings.TrimSpace(l.URL)
+		if lbl == "" || u == "" {
+			continue
+		}
+		out = append(out, library.ItemLink{
+			Label: lbl,
+			URL:   u,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func buildWeiboItemRichCard(card *site.RichCardSummary, prev *library.ItemRichCard) *library.ItemRichCard {

@@ -20,11 +20,12 @@ import (
 
 // Sentinels that must never reach a file or the log.
 const (
-	acctSentinelTitle = "SENTINEL_FAV_TITLE_7f3a"
-	acctSentinelName  = "SENTINEL_FOLLOW_NICK_9b2c"
-	acctSentinelDY    = "SENTINEL_DY_LIKE_DESC_4e1d"
-	acctSelfSecUID    = "MS4wLjABAAAA_synth_self_account_000001"
-	acctFollowSecUID  = "MS4wLjABAAAA_synth_follow_acct_0000003"
+	acctSentinelTitle     = "SENTINEL_FAV_TITLE_7f3a"
+	acctSentinelName      = "SENTINEL_FOLLOW_NICK_9b2c"
+	acctSentinelDY        = "SENTINEL_DY_LIKE_DESC_4e1d"
+	acctSentinelDYHistory = "SENTINEL_DY_HIST_DESC_8c4f"
+	acctSelfSecUID        = "MS4wLjABAAAA_synth_self_account_000001"
+	acctFollowSecUID      = "MS4wLjABAAAA_synth_follow_acct_0000003"
 )
 
 type accountHarness struct {
@@ -142,6 +143,12 @@ func newAccountHarness(t *testing.T) *accountHarness {
 			fmt.Fprint(w, `{"status_code":0,"collects_list":[{"collects_id_str":"7300000000000000127","collects_name":"做饭","total_number":3}],"has_more":false,"cursor":1}`)
 		case "/aweme/v1/web/collects/video/list/":
 			fmt.Fprintf(w, `{"status_code":0,"aweme_list":[%s],"has_more":false,"cursor":1}`, node("7350000000000000333", "夹里"))
+		case "/aweme/v1/web/history/read/":
+			if r.URL.Query().Get("max_cursor") == "1732400100" {
+				fmt.Fprintf(w, `{"status_code":0,"status_msg":"","aweme_date":{"7350000000000000445":1732400050},"aweme_list":[%s],"has_more":0,"max_cursor":0}`, node("7350000000000000445", "历史第二页"))
+				return
+			}
+			fmt.Fprintf(w, `{"status_code":0,"status_msg":"","aweme_date":{"7350000000000000444":1732400200},"aweme_list":[%s,{"aweme_id":"7350000000000000446","aweme_type":101,"desc":"直播占位"}],"has_more":1,"max_cursor":1732400100}`, node("7350000000000000444", acctSentinelDYHistory))
 		default:
 			http.NotFound(w, r)
 		}
@@ -219,12 +226,17 @@ func TestAccountSectionsLoginGate(t *testing.T) {
 	for _, s := range h.b.AccountSections("douyin") {
 		kinds = append(kinds, s.Kind)
 	}
-	if strings.Join(kinds, ",") != "following,likes,collection" {
-		t.Fatalf("douyin sections = %v (观看历史 must stay hidden)", kinds)
+	if strings.Join(kinds, ",") != "following,likes,collection,watch_history" {
+		t.Fatalf("douyin sections = %v, want following,likes,collection,watch_history", kinds)
 	}
+	// Feature gate still blocks watch_history cleanly when disabled.
+	prevWatchHistory := accountWatchHistoryEnabled
+	accountWatchHistoryEnabled = false
+	defer func() { accountWatchHistoryEnabled = prevWatchHistory }()
 	if _, err := h.b.AccountPage(ctx, "douyin", AccountWatchHistory, "", ""); !site.IsKind(err, site.ErrKindBadRequest) {
-		t.Fatalf("hidden 观看历史 must be refused: %v", err)
+		t.Fatalf("disabled 观看历史 must be refused: %v", err)
 	}
+	accountWatchHistoryEnabled = prevWatchHistory
 	if _, err := h.b.LogoutSite("bilibili"); err != nil {
 		t.Fatal(err)
 	}
@@ -344,9 +356,29 @@ func TestAccountDouyinListsMapping(t *testing.T) {
 	if err != nil || len(one.Items) != 1 {
 		t.Fatalf("folder = %+v err=%v", one, err)
 	}
+	wh1, err := h.b.AccountPage(ctx, "douyin", AccountWatchHistory, "", "")
+	if err != nil || len(wh1.Items) != 2 || !wh1.HasMore || wh1.Cursor == "" {
+		t.Fatalf("watch history p1 = %+v err=%v", wh1, err)
+	}
+	if wh1.Items[0].Kind != AccountItemWork || wh1.Items[0].Work == nil || wh1.Items[0].CacheKey != "douyin:video:7350000000000000444" {
+		t.Fatalf("watch history work = %+v", wh1.Items[0])
+	}
+	if wh1.Items[1].Kind != AccountItemUnsupported || wh1.Items[1].TypeLabel != "暂不支持的作品" || wh1.Items[1].BrowserURL != "https://www.douyin.com/video/7350000000000000446" {
+		t.Fatalf("watch history unsupported = %+v", wh1.Items[1])
+	}
+	wh2, err := h.b.AccountPage(ctx, "douyin", AccountWatchHistory, "", wh1.Cursor)
+	if err != nil || len(wh2.Items) != 1 || wh2.HasMore || wh2.Cursor != "" || wh2.Items[0].ID != "7350000000000000445" {
+		t.Fatalf("watch history p2 = %+v err=%v", wh2, err)
+	}
 	h.dyMode.Store("shell")
 	if _, err := h.b.AccountPage(ctx, "douyin", AccountLikes, "", ""); !site.IsKind(err, site.ErrKindRiskControl) || !strings.Contains(err.Error(), "登录已失效或被拦截") {
 		t.Fatalf("shell must not look empty: %v", err)
+	}
+	h2 := newAccountHarness(t)
+	h2.login(t, "douyin")
+	h2.dyMode.Store("shell")
+	if _, err := h2.b.AccountPage(ctx, "douyin", AccountWatchHistory, "", ""); !site.IsKind(err, site.ErrKindRiskControl) || !strings.Contains(err.Error(), "登录已失效或被拦截") {
+		t.Fatalf("watch history shell must not look empty: %v", err)
 	}
 }
 
@@ -406,7 +438,7 @@ func TestAccountPrivacySentinels(t *testing.T) {
 	historyBefore := len(h.b.ListHistory())
 	for _, c := range []struct{ s, k, f string }{
 		{"bilibili", AccountFollowing, AccountFolderAll}, {"bilibili", AccountFavorites, ""}, {"bilibili", AccountToView, ""}, {"bilibili", AccountHistory, ""},
-		{"douyin", AccountFollowing, ""}, {"douyin", AccountLikes, ""}, {"douyin", AccountCollection, ""},
+		{"douyin", AccountFollowing, ""}, {"douyin", AccountLikes, ""}, {"douyin", AccountCollection, ""}, {"douyin", AccountWatchHistory, ""},
 	} {
 		if _, err := h.b.AccountFolders(ctx, c.s, c.k); err != nil {
 			t.Fatalf("%s/%s folders: %v", c.s, c.k, err)
@@ -422,6 +454,12 @@ func TestAccountPrivacySentinels(t *testing.T) {
 	joined := strings.Join(logs, "\n")
 	if !strings.Contains(joined, "account.bilibili.favorites page=1 items=3") {
 		t.Fatalf("log lacks the list summary:\n%s", joined)
+	}
+	if !strings.Contains(joined, "account.douyin.watch_history page=1 items=2") {
+		t.Fatalf("log lacks douyin watch_history summary:\n%s", joined)
+	}
+	if strings.Contains(joined, acctSentinelDYHistory) {
+		t.Fatalf("watch_history sentinel leaked into recent logs")
 	}
 	scanForSentinels(t, h.b)
 
@@ -450,7 +488,7 @@ func scanForSentinels(t *testing.T, b *Backend) {
 			if rErr != nil {
 				return nil
 			}
-			for _, s := range []string{acctSentinelTitle, acctSentinelName, acctSentinelDY} {
+			for _, s := range []string{acctSentinelTitle, acctSentinelName, acctSentinelDY, acctSentinelDYHistory} {
 				if strings.Contains(string(raw), s) {
 					t.Errorf("sentinel %s leaked into %s", s, path)
 				}

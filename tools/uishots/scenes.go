@@ -255,6 +255,10 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅标签：内容",
 				"订阅标签：账号",
 				"订阅管理菜单",
+				"订阅自定义链接栏",
+				"打开订阅链接：link3.cc/alpha_tech",
+				"打开订阅链接：创作手记",
+				"管理订阅自定义链接",
 				"订阅内容信息流列表",
 				"主页作者站点：" + savedDynamicItem.ItemKey,
 				"主页作者站点：" + savedDouyinVideo.ItemKey,
@@ -262,6 +266,28 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			ForbiddenLabels: []string{
 				"关联账号输入",
 				"开始录制 9001",
+			},
+		},
+		{
+			Name: "subscription-links-dialog",
+			Setup: func() {
+				seedRecentAndLive()
+				if primarySub.ID != "" {
+					app.SubDetailTab = "content"
+					app.OpenSubscriptionDetail(primarySub)
+					app.OpenSubLinksModal(primarySub)
+				}
+			},
+			RequiredLabels: []string{
+				"订阅自定义链接对话框",
+				"对话框打开订阅链接 1",
+				"对话框打开订阅链接 2",
+				"编辑订阅链接 1",
+				"删除订阅链接 1",
+				"新订阅链接名称",
+				"新订阅链接地址",
+				"确认添加订阅链接",
+				"关闭自定义链接对话框",
 			},
 		},
 		{
@@ -280,6 +306,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅管理菜单",
 			},
 			ForbiddenLabels: []string{
+				"订阅自定义链接栏",
 				"订阅内容信息流列表",
 				"关联账号输入",
 			},
@@ -822,10 +849,14 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				}
 				app.CurrentWeiboPosts = []service.WeiboPostView{
 					{
-						Mid:          "5000000000000001",
-						Author:       service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博"},
-						CreatedAt:    1710004500,
-						Text:         "置顶公告：本账号整理系统编程、多媒体封装与跨平台桌面工具实践笔记。\n定期更新离线归档与界面排印优化记录。",
+						Mid:       "5000000000000001",
+						Author:    service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博"},
+						CreatedAt: 1710004500,
+						Text:      "置顶公告：本账号整理系统编程、多媒体封装与跨平台桌面工具实践笔记，索引汇总见 专栏目录 与 #系统工程#。\n定期更新离线归档与界面排印优化记录。",
+						Links: []service.TextLinkDTO{
+							{Label: "专栏目录", URL: "https://weibo.com/ttarticle/p/show?id=2309405000000000000001"},
+							{Label: "#系统工程#", URL: "https://s.weibo.com/weibo?q=%23%E7%B3%BB%E7%BB%9F%E5%B7%A5%E7%A8%8B%23"},
+						},
 						IsTop:        true,
 						CanonicalURL: "https://weibo.com/" + weiboUID + "/5000000000000001",
 						CacheKey:     savedWeiboPost.ItemKey,
@@ -928,10 +959,14 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 					}
 				}
 				app.CurrentWeiboPost = &service.WeiboPostView{
-					Mid:             "5000000000000010",
-					Author:          service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博", VerifiedReason: "数码科技领域创作者"},
-					CreatedAt:       1710004800,
-					Text:            "长微博正文示例：完整保留长微博全文、超过 9 张图按原始顺序展示（共 11 项，含实况照片、GIF 动图与混排视频页），同时保留可见范围标记与转发原微博降级提示。",
+					Mid:       "5000000000000010",
+					Author:    service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博", VerifiedReason: "数码科技领域创作者"},
+					CreatedAt: 1710004800,
+					Text:      "长微博正文示例：完整保留长微博全文、超过 9 张图按原始顺序展示（共 11 项，含实况照片、GIF 动图与混排视频页），配套文档见 网页链接 与 #桌面客户端#，同时保留可见范围标记与转发原微博降级提示。",
+					Links: []service.TextLinkDTO{
+						{Label: "网页链接", URL: "https://example.com/weibo-longtext-guide"},
+						{Label: "#桌面客户端#", URL: "https://s.weibo.com/weibo?q=%23%E6%A1%8C%E9%9D%A2%E5%AE%A2%E6%88%B7%E7%AB%AF%23"},
+					},
 					IsLongText:      true,
 					LongTextFetched: true,
 					Source:          "微博网页版",
@@ -953,6 +988,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"微博详情站点标记",
 				"微博可见范围标记",
 				"微博正文",
+				"打开链接：网页链接",
+				"打开链接：#桌面客户端#",
 				"查看图文页 1",
 				"实况标记 2",
 				"动图标记 3",

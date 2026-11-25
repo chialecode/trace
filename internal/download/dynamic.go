@@ -179,63 +179,27 @@ func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error
 
 	for idx, img := range dyn.Images {
 		ext := guessImageExt(img.URL)
-		relName := fmt.Sprintf("images/%02d%s", idx+1, ext)
+		relStem := fmt.Sprintf("images/%02d", idx+1)
+		relName := relStem + ext
 		// Existing manifests retain their registered names and location.
 		if exists {
 			for _, media := range previous.Media {
-				if media.Role == "image" && media.Source == img.URL {
+				if media.Role == "image" && (media.Source == img.URL || strings.HasPrefix(media.Path, relStem+".")) {
 					relName = media.Path
 					break
 				}
 			}
 		}
-		fullPath := filepath.Join(itemDir, relName)
 
-		// If image already exists on disk from an earlier partial attempt, reuse it without re-downloading.
-		if mediaIsValid(previous, relName) {
-			info, statErr := os.Stat(fullPath)
-			if statErr != nil {
-				return statErr
-			}
-			m.setFileProgress(t, "image", relName, "completed", info.Size(), info.Size(), 0)
-			for _, media := range previous.Media {
-				if media.Path == relName {
-					still := media
-					motion, err := m.cacheLiveMotion(ctx, t, itemDir, previous, exists, idx, img.LiveURL, &partialErrors)
-					if err != nil {
-						return err
-					}
-					if motion != nil {
-						still.Motion = motion.Path
-						mediaFiles = append(mediaFiles, *motion)
-					}
-					mediaFiles = append(mediaFiles, still)
-					break
-				}
-			}
-			continue
-		}
-
-		m.setFileProgress(t, "image", relName, "downloading", 0, 0, 0)
-		n, sha, dlErr := m.downloadFileWithRange(ctx, []string{img.URL}, fullPath, t)
+		savedStill, dlErr := m.downloadBilibiliImageStaged(ctx, t, itemDir, previous, exists, "image", relName, img.URL, img.Width, img.Height)
 		if dlErr != nil {
-			m.setFileProgress(t, "image", relName, "failed", 0, 0, 0)
 			if isStopError(dlErr) || isStorageError(dlErr) || ctx.Err() != nil {
 				return dlErr
 			}
 			partialErrors = append(partialErrors, fmt.Sprintf("img_%02d: %v", idx+1, dlErr))
 			continue
 		}
-		m.setFileProgress(t, "image", relName, "completed", n, n, 0)
-		still := library.MediaFile{
-			Role:   "image",
-			Path:   relName,
-			Bytes:  n,
-			SHA256: sha,
-			Source: img.URL,
-			Width:  img.Width,
-			Height: img.Height,
-		}
+		still := *savedStill
 		motion, err := m.cacheLiveMotion(ctx, t, itemDir, previous, exists, idx, img.LiveURL, &partialErrors)
 		if err != nil {
 			return err
@@ -308,6 +272,8 @@ func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error
 			missing = append(missing, library.MissingRecord{Item: "media", Reason: pe})
 		}
 	}
+
+	mediaFiles, _ = preserveValidPreviousImages(itemDir, previous, exists, mediaFiles, nil)
 
 	meta := library.ItemMetadata{
 		Version:     1,
@@ -720,6 +686,7 @@ func (m *Manager) executeBilibiliDynamicStaged(
 			missing = append(missing, library.MissingRecord{Item: "media", Reason: pe})
 		}
 	}
+	mediaFiles, _ = preserveValidPreviousImagesForStage(itemDir, stageDir, previous, !isConflict, mediaFiles, nil)
 	v2Text := dyn.Text
 	if !isConflict {
 		v2Text = preserveMonotonicText(previous.Text, dyn.Text, false)

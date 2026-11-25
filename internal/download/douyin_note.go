@@ -525,6 +525,8 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 		t.ErrorMessage = summarizeMissingReasons(missing)
 	}
 
+	mediaFiles, notePages = preserveValidPreviousImagesForStage(itemDir, workDir, previous, exists && !isConflict, mediaFiles, notePages)
+
 	meta := library.ItemMetadata{
 		Version:     1,
 		ID:          "dynamic:" + t.TargetID,
@@ -588,13 +590,14 @@ func (m *Manager) cacheDouyinSniffedImage(
 	refreshURLs func() ([]string, error),
 ) (*library.MediaFile, error) {
 	inSwapStage := isSwapStageDir(itemDir)
-	if !inSwapStage && exists {
-		for _, mf := range previous.Media {
-			if mf.Role == role && strings.HasPrefix(mf.Path, relStem+".") && m.mediaAlreadyCompleted(previous, mf) {
-				m.setFileProgress(t, role, mf.Path, "completed", mf.Bytes, mf.Bytes, 0)
-				cp := mf
-				return &cp, nil
-			}
+	firstURL := ""
+	if len(urls) > 0 {
+		firstURL = urls[0]
+	}
+	if !inSwapStage {
+		if kept, ok := m.findExistingValidImageSlot(t, itemDir, previous, exists, role, relStem, firstURL, width, height, false); ok {
+			m.setFileProgress(t, role, kept.Path, "completed", kept.Bytes, kept.Bytes, 0)
+			return kept, nil
 		}
 	}
 
@@ -616,6 +619,29 @@ func (m *Manager) cacheDouyinSniffedImage(
 		return nil, err
 	}
 	n, sha, ct, err := m.downloadWithTransportRefreshCT(ctx, transport, urls, tempFull, role, t, refreshURLs)
+	var ext string
+	if err == nil {
+		if site.LooksLikeExpiredPlaceholderImageFile(tempFull, firstURL, width, height, false) {
+			_ = os.Remove(tempFull)
+			err = &site.Error{Site: transport.Site, Kind: site.ErrKindUnavailable, Message: WeiboImageUnavailableReason}
+			if fbN, fbSHA, fbExt, fbOK := m.tryPublicImageCDNFallbackToFile(ctx, urls, width, height, false, tempFull, transport.AllowLocalhost, transport.UserAgent); fbOK {
+				n, sha, ext, err = fbN, fbSHA, fbExt, nil
+			}
+		} else {
+			var sErr error
+			ext, sErr = sniffImageExtension(tempFull, ct)
+			if sErr != nil {
+				_ = os.Remove(tempFull)
+				err = &site.Error{Site: transport.Site, Kind: site.ErrKindSchemaChanged, Message: sErr.Error()}
+			}
+		}
+	} else if !isSiteStopError(err) && !isStorageError(err) && ctx.Err() == nil && site.ShouldAttemptImageCDNFallback(err, false) {
+		_ = os.Remove(tempFull)
+		_ = os.Remove(tempFull + ".part")
+		if fbN, fbSHA, fbExt, fbOK := m.tryPublicImageCDNFallbackToFile(ctx, urls, width, height, false, tempFull, transport.AllowLocalhost, transport.UserAgent); fbOK {
+			n, sha, ext, err = fbN, fbSHA, fbExt, nil
+		}
+	}
 	if err != nil {
 		if ctx.Err() == nil {
 			_ = os.Remove(tempFull)
@@ -624,14 +650,6 @@ func (m *Manager) cacheDouyinSniffedImage(
 			}
 		}
 		return nil, err
-	}
-	ext, err := sniffImageExtension(tempFull, ct)
-	if err != nil {
-		if ctx.Err() == nil {
-			_ = os.Remove(tempFull)
-			m.removeTempTaskProgress(t, tempRel)
-		}
-		return nil, &site.Error{Site: transport.Site, Kind: site.ErrKindSchemaChanged, Message: err.Error()}
 	}
 	finalRel := relStem + ext
 	writeFinalRel := finalRel

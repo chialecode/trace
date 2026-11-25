@@ -642,7 +642,7 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
 				ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 					ui.Text(c, "安装位置").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-					ui.Text(c, firstNonEmptyStrUI(loc.InstallDir, ".")).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					ui.Text(c, firstNonEmptyStrUI(loc.InstallDir, ".")).FontSize(12).Font(MonoFont).TextColor(ColorTextMuted).SingleLine()
 				})
 				if OutlinePillButton(c, "打开文件夹", "打开安装目录").Clicked() {
 					if err := a.backend.Desktop().OpenPath(firstNonEmptyStrUI(loc.InstallDir, ".")); err != nil {
@@ -653,7 +653,7 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
 				ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 					ui.Text(c, "数据目录").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-					ui.Text(c, diag.DataDir).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					ui.Text(c, diag.DataDir).FontSize(12).Font(MonoFont).TextColor(ColorTextMuted).SingleLine()
 				})
 				if OutlinePillButton(c, "打开数据文件夹", "打开数据文件夹").Clicked() {
 					if err := a.backend.OpenDataFolder("data"); err != nil {
@@ -665,7 +665,7 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 				ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 					ui.Text(c, fmt.Sprintf("缓存位置（已缓存 %d 项 · %s）", stats.Items, FormatBytes(stats.Bytes))).
 						FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-					ui.Text(c, diag.CacheDir).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					ui.Text(c, diag.CacheDir).FontSize(12).Font(MonoFont).TextColor(ColorTextMuted).SingleLine()
 				})
 				ui.Row(c).Gap(6).Wrap().Children(func() {
 					if OutlinePillButton(c, "打开缓存文件夹", "打开缓存文件夹").Clicked() {
@@ -818,7 +818,7 @@ func (a *App) renderLogsSettings(c *ui.Context) {
 			ui.Box(c).FillWidth().Height(260).Padding(10, 12).Radius(10).Background(ColorBgMain).Border(1, ColorBorder).Clip().Children(func() {
 				if len(logLines) == 0 {
 					if a.runtimeLogError == "" {
-						ui.Text(c, "暂无运行日志记录").FontSize(12).Font("monospace").TextColor(ColorTextMuted).SingleLine()
+						ui.Text(c, "暂无运行日志记录").FontSize(12).Font(MonoFont).TextColor(ColorTextMuted).SingleLine()
 					}
 					return
 				}
@@ -827,7 +827,7 @@ func (a *App) renderLogsSettings(c *ui.Context) {
 						return
 					}
 					ui.Box(c).FillWidth().Padding(0, 0, 4, 0).ClipX().Children(func() {
-						ui.Text(c, logLines[i]).FontSize(12).Font("monospace").TextColor(ColorTextMain).MaxLines(2)
+						ui.Text(c, logLines[i]).FontSize(12).Font(MonoFont).TextColor(ColorTextMain).MaxLines(2)
 					})
 				}).Label("运行日志列表").Fill()
 			})

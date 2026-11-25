@@ -92,6 +92,7 @@ type VisibilityInfo struct {
 type URLStructItem struct {
 	ShortURL     string `json:"shortUrl,omitempty"`
 	LongURL      string `json:"longUrl,omitempty"`
+	OriURL       string `json:"oriUrl,omitempty"`
 	URLTitle     string `json:"urlTitle,omitempty"`
 	InlinePicURL string `json:"-"`
 }
@@ -189,10 +190,12 @@ type Post struct {
 	Video             *VideoAsset     `json:"video,omitempty"`
 	Card              *RichCard       `json:"card,omitempty"`
 	Stats             PostStats       `json:"stats"`
+	Links             []site.TextLink `json:"links,omitempty"`
 	URLMappings       []URLStructItem `json:"urlMappings,omitempty"`
 	CanonicalURL      string          `json:"canonicalUrl"`
 	Unavailable       bool            `json:"unavailable,omitempty"`
 	UnavailableReason string          `json:"unavailableReason,omitempty"`
+	rawHTML           string          `json:"-"`
 }
 
 // VideoPageResult holds the result of resolving a standalone 1034:<oid> video page via /tv/api/component.
@@ -928,7 +931,7 @@ func (c *Client) parseRawPostInternal(rp *rawPost, opt PostOptions, isRetweetChi
 	if textRaw == "" && strings.TrimSpace(rp.Text) != "" {
 		textRaw = stripHTMLText(rp.Text)
 	}
-	displayText := restoreShortURLsInText(textRaw, urlMappings)
+	displayText, postLinks := extractWeiboTextAndLinks(rp.Text, textRaw, urlMappings, c.allowLocalhost)
 
 	oriMid := strings.TrimSpace(rawNumberOrString(rp.OriMid))
 	isFastRetweet := oriMid != "" && oriMid != "0"
@@ -1026,8 +1029,10 @@ func (c *Client) parseRawPostInternal(rp *rawPost, opt PostOptions, isRetweetChi
 			CommentsCount:  parseJSONInt64(rp.CommentsCount),
 			AttitudesCount: parseJSONInt64(rp.AttitudesCount),
 		},
+		Links:        postLinks,
 		URLMappings:  urlMappings,
 		CanonicalURL: canonicalPostURL(author.UID, mid, mblogID),
+		rawHTML:      rp.Text,
 	}
 	post.RuleType = classifyPostRuleType(post)
 	return post, nil
@@ -1279,13 +1284,13 @@ func needsLongTextFetch(rp *rawPost) bool {
 	return utf8.RuneCountInString(trimmed) <= 140
 }
 
-func applyLongText(post *Post, lt *LongTextData, _ bool) {
+func applyLongText(post *Post, lt *LongTextData, allowLocalhost bool) {
 	if post == nil || lt == nil || lt.LongTextContent == "" {
 		return
 	}
 	post.TextRaw = lt.LongTextContent
 	post.URLMappings = mergeURLMappings(post.URLMappings, lt.URLMappings)
-	post.Text = restoreShortURLsInText(post.TextRaw, post.URLMappings)
+	post.Text, post.Links = extractWeiboTextAndLinks(post.rawHTML, post.TextRaw, post.URLMappings, allowLocalhost)
 	post.LongTextFetched = true
 }
 
@@ -2314,8 +2319,9 @@ func parseURLStruct(items []rawURLStruct, allowLocalhost bool) []URLStructItem {
 	for _, it := range items {
 		shortU := strings.TrimSpace(it.ShortURL)
 		longU := strings.TrimSpace(it.LongURL)
+		oriU := strings.TrimSpace(it.OriURL)
 		if longU == "" {
-			longU = strings.TrimSpace(it.OriURL)
+			longU = oriU
 		}
 		title := strings.TrimSpace(it.URLTitle)
 		var inlinePic string
@@ -2341,12 +2347,13 @@ func parseURLStruct(items []rawURLStruct, allowLocalhost bool) []URLStructItem {
 				}
 			}
 		}
-		if shortU == "" && longU == "" && title == "" && inlinePic == "" {
+		if shortU == "" && longU == "" && oriU == "" && title == "" && inlinePic == "" {
 			continue
 		}
 		out = append(out, URLStructItem{
 			ShortURL:     shortU,
 			LongURL:      longU,
+			OriURL:       oriU,
 			URLTitle:     title,
 			InlinePicURL: inlinePic,
 		})

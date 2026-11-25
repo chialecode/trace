@@ -448,6 +448,12 @@ func (m *Manager) Upsert(in Subscription) (result Subscription, resultErr error)
 		}
 		in.Accounts[i] = norm
 	}
+	normLinks, err := NormalizeAndValidateCustomLinks(in.Links)
+	if err != nil {
+		return Subscription{}, err
+	}
+	linksProvided := in.Links != nil
+	in.Links = normLinks
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	before, snapshotErr := m.listSubsOnlyLocked()
@@ -485,6 +491,9 @@ func (m *Manager) Upsert(in Subscription) (result Subscription, resultErr error)
 		}
 		if len(in.Accounts) == 0 {
 			in.Accounts = existing.Accounts
+		}
+		if !linksProvided && len(existing.Links) > 0 {
+			in.Links = cloneCustomLinks(existing.Links)
 		}
 		// Respect explicit toggle changes on either legacy (Enabled/LiveAutoRecord)
 		// or modern (Rules.ScheduledCheck/AutoRecord) fields before syncSubFields ORs them.

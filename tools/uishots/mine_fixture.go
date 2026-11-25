@@ -42,6 +42,7 @@ func (b *screenshotBackend) AccountSections(siteID string) []service.AccountSect
 		{Site: siteID, Kind: service.AccountFollowing, Label: "关注", Available: true},
 		{Site: siteID, Kind: service.AccountLikes, Label: "喜欢", Available: true},
 		{Site: siteID, Kind: service.AccountCollection, Label: "收藏", Available: true},
+		{Site: siteID, Kind: service.AccountWatchHistory, Label: "观看历史", Available: true},
 	}
 }
 
@@ -294,9 +295,12 @@ func (b *screenshotBackend) AccountPage(_ context.Context, siteID, kind, folder,
 			})
 		}
 		return service.AccountPage{Items: items, HasMore: false, Total: len(items)}, nil
-	case "douyin/likes", "douyin/collection":
+	case "douyin/likes", "douyin/collection", "douyin/watch_history":
 		for i := 0; i < 8; i++ {
 			id := fmt.Sprintf("73500000000000%04d", i)
+			if kind == service.AccountWatchHistory {
+				id = fmt.Sprintf("75500000000000%04d", i)
+			}
 			k := "video"
 			if i%3 == 1 {
 				k = "note"
@@ -325,7 +329,7 @@ func mineShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 	return []sceneSpec{
 		{Name: "mine-folded", Setup: open("", ""),
 			RequiredLabels:  []string{"我的站点：哔哩哔哩", "我的站点：抖音", "我的站点：微博", "我的站点：X"},
-			ForbiddenLabels: []string{"我的功能：哔哩哔哩 收藏夹", "我的功能：抖音 喜欢", "我的功能：微博 关注", "我的功能：X 关注", "我的功能：X 书签", "我的功能：X 喜欢", "我的虚拟列表"}},
+			ForbiddenLabels: []string{"我的功能：哔哩哔哩 收藏夹", "我的功能：抖音 喜欢", "我的功能：抖音 观看历史", "我的功能：微博 关注", "我的功能：X 关注", "我的功能：X 书签", "我的功能：X 喜欢", "我的虚拟列表"}},
 		{Name: "mine-bili-favorites", Setup: open("bilibili", service.AccountFavorites),
 			RequiredLabels:  []string{"收藏夹选择", "我的虚拟列表", "我的条目：已失效", "我的更多菜单"},
 			ForbiddenLabels: []string{"我的条目更多：gone"}},
@@ -339,6 +343,9 @@ func mineShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 			RequiredLabels: []string{"我的作品虚拟列表"}},
 		{Name: "mine-douyin-collection", Setup: open("douyin", service.AccountCollection),
 			RequiredLabels: []string{"收藏夹选择", "我的作品虚拟列表"}},
+		{Name: "mine-douyin-watch-history", Setup: open("douyin", service.AccountWatchHistory),
+			RequiredLabels:  []string{"我的作品虚拟列表", "我的更多菜单"},
+			ForbiddenLabels: []string{"收藏夹选择"}},
 		{Name: "mine-weibo-following", Setup: open("weibo", service.AccountFollowing),
 			RequiredLabels:  []string{"我的虚拟列表", "我的用户：微博科技博主"},
 			ForbiddenLabels: []string{"关注分组选择", "我的功能：微博 赞过"}},
@@ -360,7 +367,7 @@ func mineShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 		{Name: "mine-logged-out", Setup: func() {
 			open("douyin", "")()
 			fb.mineDouyinOut = true
-		}, RequiredLabels: []string{"我的登录：抖音"}, ForbiddenLabels: []string{"我的功能：抖音 喜欢"}},
+		}, RequiredLabels: []string{"我的登录：抖音"}, ForbiddenLabels: []string{"我的功能：抖音 喜欢", "我的功能：抖音 观看历史"}},
 		{Name: "mine-risk-error", Setup: func() {
 			fb.mineDouyinOut = false
 			fb.mineErr = map[string]error{"bilibili/history": &site.Error{Site: site.Bilibili, Kind: site.ErrKindRiskControl, Code: -352, Message: "请求触发风控拦截，已停止自动请求"}}

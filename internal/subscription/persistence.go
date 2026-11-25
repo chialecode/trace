@@ -48,6 +48,9 @@ func cloneSubscription(s Subscription) Subscription {
 	if s.Accounts != nil {
 		s.Accounts = append([]AccountRef(nil), s.Accounts...)
 	}
+	if s.Links != nil {
+		s.Links = slices.Clone(s.Links)
+	}
 	if s.Rules.AutoCache.Types != nil {
 		s.Rules.AutoCache.Types = append([]string(nil), s.Rules.AutoCache.Types...)
 	}
@@ -432,6 +435,7 @@ func syncSubFields(s *Subscription, now time.Time) {
 		runes := []rune(s.Note)
 		s.Note = string(runes[:500])
 	}
+	s.Links = normalizeCustomLinksForLoad(s.Links)
 	if s.Site == "" {
 		s.Site = "bilibili"
 	}

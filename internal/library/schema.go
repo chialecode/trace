@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // CurrentSchemaVersion is the SQLite PRAGMA user_version written to library.db.
@@ -64,6 +66,9 @@ type ItemMetadata struct {
 	// Thread records author self-reply thread segments cached together into the
 	// same item (e.g. X author self-reply threads). Optional; older manifests have none.
 	Thread []ItemThreadPart `json:"thread,omitempty"`
+	// Links records human-readable hyperlink labels and safe HTTP(S) destination
+	// URLs extracted from the post body (DEC-073). Optional; older manifests have none.
+	Links []ItemLink `json:"links,omitempty"`
 	// CachedBy is the TRACE installation that cached the item (DEC-062 ⑧);
 	// optional, older manifests have none.
 	CachedBy *ItemNode `json:"cachedBy,omitempty"`
@@ -204,13 +209,21 @@ type ItemRichCard struct {
 	URL   string `json:"url,omitempty"`
 }
 
+// ItemLink records one human-readable hyperlink label paired with its safe
+// external HTTP(S) target URL inside item.json (DEC-073).
+type ItemLink struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
 // ItemThreadPart records one author self-reply segment persisted inside the same
 // cached item (e.g. X author self-reply threads). Optional; library.db stays v2.
 type ItemThreadPart struct {
-	ID           string `json:"id,omitempty"`
-	PubTs        int64  `json:"pubTs,omitempty"`
-	Text         string `json:"text,omitempty"`
-	MediaIndexes []int  `json:"mediaIndexes,omitempty"`
+	ID           string     `json:"id,omitempty"`
+	PubTs        int64      `json:"pubTs,omitempty"`
+	Text         string     `json:"text,omitempty"`
+	Links        []ItemLink `json:"links,omitempty"`
+	MediaIndexes []int      `json:"mediaIndexes,omitempty"`
 }
 
 // ItemOrigin records the retweeted/forwarded original post snapshot inside item.json.
@@ -225,6 +238,7 @@ type ItemOrigin struct {
 	PubTs             int64         `json:"pubTs,omitempty"`
 	Title             string        `json:"title,omitempty"`
 	Text              string        `json:"text,omitempty"`
+	Links             []ItemLink    `json:"links,omitempty"`
 	Card              *ItemRichCard `json:"card,omitempty"`
 	Unavailable       bool          `json:"unavailable,omitempty"`
 	UnavailableReason string        `json:"unavailableReason,omitempty"`
@@ -730,12 +744,14 @@ func SanitizeItemMetadata(meta *ItemMetadata) {
 			meta.Text = scrubManifestFreeText(meta.Text)
 		}
 	}
+	meta.Links = sanitizeItemLinks(meta.Links)
 	if len(meta.Thread) > 0 {
 		cleaned := make([]ItemThreadPart, 0, len(meta.Thread))
 		for _, part := range meta.Thread {
 			part.ID = strings.TrimSpace(part.ID)
 			part.Text = scrubManifestFreeText(part.Text)
-			if part.ID == "" && part.Text == "" && len(part.MediaIndexes) == 0 {
+			part.Links = sanitizeItemLinks(part.Links)
+			if part.ID == "" && part.Text == "" && len(part.Links) == 0 && len(part.MediaIndexes) == 0 {
 				continue
 			}
 			cleaned = append(cleaned, part)
@@ -907,6 +923,7 @@ func sanitizeItemOrigin(orig *ItemOrigin, defaultSite string) {
 	orig.MblogID = strings.TrimSpace(orig.MblogID)
 	orig.Title = scrubManifestFreeText(orig.Title)
 	orig.Text = scrubManifestFreeText(orig.Text)
+	orig.Links = sanitizeItemLinks(orig.Links)
 	orig.UnavailableReason = scrubManifestFreeText(orig.UnavailableReason)
 
 	authorSite := orig.Author.Site
@@ -966,6 +983,66 @@ func sanitizeItemRichCard(card *ItemRichCard) {
 	card.Title = scrubManifestFreeText(card.Title)
 	card.Desc = scrubManifestFreeText(card.Desc)
 	card.URL = sanitizeRichCardURL(card.URL)
+}
+
+const maxItemLinksPerManifest = 64
+
+func sanitizeItemLinks(links []ItemLink) []ItemLink {
+	if len(links) == 0 {
+		return nil
+	}
+	out := make([]ItemLink, 0, min(len(links), maxItemLinksPerManifest))
+	for _, link := range links {
+		cleanURL := sanitizeItemLinkURL(link.URL)
+		if cleanURL == "" {
+			continue
+		}
+		label := scrubManifestFreeText(link.Label)
+		label = strings.Join(strings.Fields(label), " ")
+		if utf8.RuneCountInString(label) > 120 {
+			runes := []rune(label)
+			label = string(runes[:120]) + "…"
+		}
+		if label == "" {
+			label = "网页链接"
+		}
+		out = append(out, ItemLink{
+			Label: label,
+			URL:   cleanURL,
+		})
+		if len(out) >= maxItemLinksPerManifest {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sanitizeItemLinkURL(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return ""
+	}
+	for _, r := range trimmed {
+		if r <= 0x1f || r == 0x7f || unicode.IsSpace(r) || r == '\\' {
+			return ""
+		}
+	}
+	clean := sanitizeRichCardURL(trimmed)
+	if clean == "" {
+		return ""
+	}
+	u, err := url.Parse(clean)
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "sinaimg.cn" || strings.HasSuffix(host, ".sinaimg.cn") || host == "pbs.twimg.com" {
+		return ""
+	}
+	return clean
 }
 
 func isForbiddenXMediaHost(host string) bool {

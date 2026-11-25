@@ -46,6 +46,7 @@ type PlannedThreadPart struct {
 	ID           string
 	PubTs        int64
 	Text         string
+	Links        []site.TextLink
 	MediaIndexes []int
 }
 
@@ -68,6 +69,7 @@ type WorkDownloadPlan struct {
 	TargetID                string
 	Title                   string
 	Desc                    string
+	Links                   []site.TextLink
 	CanonicalURL            string
 	PubTs                   int64
 	DurationSec             int
@@ -100,6 +102,7 @@ type WorkDownloadPlan struct {
 	OriginAuthorFace        string
 	OriginPubTs             int64
 	OriginText              string
+	OriginLinks             []site.TextLink
 	OriginVideoTitle        string
 	OriginUnavailable       bool
 	OriginUnavailableReason string
@@ -335,6 +338,7 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 		TargetID:                p.TargetID,
 		Title:                   p.Title,
 		Desc:                    p.Desc,
+		Links:                   append([]site.TextLink(nil), p.Links...),
 		CanonicalURL:            canonicalURL,
 		PubTs:                   p.PubTs,
 		DurationSec:             p.DurationSec,
@@ -361,6 +365,7 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 		OriginAuthorFace:        p.OriginAuthorFace,
 		OriginPubTs:             p.OriginPubTs,
 		OriginText:              p.OriginText,
+		OriginLinks:             append([]site.TextLink(nil), p.OriginLinks...),
 		OriginVideoTitle:        p.OriginVideoTitle,
 		OriginUnavailable:       p.OriginUnavailable,
 		OriginUnavailableReason: p.OriginUnavailableReason,

@@ -297,6 +297,9 @@ func (a *App) renderSubscriptionDetailHeader(c *ui.Context, sub *subscription.Su
 							a.SubNote = sub.Note
 							a.SubManageModalMode = "note"
 						}
+						if m.Item("自定义链接").Chosen() {
+							a.openSubLinksModal(*sub)
+						}
 						if m.Item("更换头像").Chosen() {
 							a.SubManageModalMode = "avatar"
 						}
@@ -309,6 +312,10 @@ func (a *App) renderSubscriptionDetailHeader(c *ui.Context, sub *subscription.Su
 					a.SubManageMenuOpen = open
 				})
 			})
+
+			if len(sub.Links) > 0 {
+				a.renderSubscriptionCustomLinksRow(c, sub)
+			}
 
 			switch a.SubManageModalMode {
 			case "rename":
@@ -400,6 +407,79 @@ func (a *App) renderSubscriptionDetailHeader(c *ui.Context, sub *subscription.Su
 		{Key: "content", Text: "内容", AccessLabel: "订阅标签：内容"},
 		{Key: "accounts", Text: "账号", AccessLabel: "订阅标签：账号"},
 	}, func(key string) { a.setSubDetailTab(key) })
+}
+
+func (a *App) openSubscriptionCustomLink(rawURL string) {
+	if a.backend == nil {
+		return
+	}
+	if err := a.backend.OpenExternalLink(rawURL); err != nil {
+		a.showError(err)
+	}
+}
+
+func (a *App) renderSubscriptionCustomLinksRow(c *ui.Context, sub *subscription.Subscription) {
+	seenLabels := make(map[string]int, len(sub.Links))
+	ui.Row(c).
+		Label("订阅自定义链接栏").
+		FillWidth().
+		Gap(6).
+		Wrap().
+		AlignItems(ui.Center).
+		ClipX().
+		Children(func() {
+			for _, item := range sub.Links {
+				lnk := item
+				display := lnk.DisplayLabel()
+				if display == "" {
+					display = lnk.URL
+				}
+				seenLabels[display]++
+				chipLabel := "打开订阅链接：" + display
+				if seenLabels[display] > 1 {
+					chipLabel = fmt.Sprintf("%s #%d", chipLabel, seenLabels[display])
+				}
+				chip := ui.ButtonBase(c).
+					Label(chipLabel).
+					Tooltip(lnk.URL).
+					Padding(4, 10).
+					Radius(999).
+					Background(ColorBgMain).
+					Border(1, ColorBorder).
+					Gap(5).
+					AlignItems(ui.Center).
+					MaxWidth(260).
+					ClipX()
+				if chip.Hovered() {
+					chip.Background(ColorAccentBg).BorderColor(ColorAccent)
+				}
+				chip.Children(func() {
+					DrawIcon(c, "external-link", 12, ColorAccent, 1.75)
+					ui.Text(c, display).FontSize(12).FontWeight(500).TextColor(ColorAccent).SingleLine().Shrink(1)
+				})
+				if chip.Clicked() {
+					a.openSubscriptionCustomLink(lnk.URL)
+				}
+			}
+
+			manageBtn := ui.ButtonBase(c).
+				Label("管理订阅自定义链接").
+				Tooltip("添加或编辑自定义链接").
+				Padding(4, 10).
+				Radius(999).
+				Background(ColorBgMain).
+				Border(1, ColorBorder).
+				AlignItems(ui.Center)
+			if manageBtn.Hovered() {
+				manageBtn.Background(ColorHover)
+			}
+			manageBtn.Children(func() {
+				ui.Text(c, "管理链接").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+			})
+			if manageBtn.Clicked() {
+				a.openSubLinksModal(*sub)
+			}
+		})
 }
 
 func (a *App) renderSubscriptionContentTab(c *ui.Context, sub *subscription.Subscription) {

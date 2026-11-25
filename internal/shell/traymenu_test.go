@@ -4,7 +4,14 @@ import (
 	"testing"
 
 	"github.com/chialecode/trace/internal/appdirs"
+	"github.com/egoist/mygo"
 )
+
+func TestMainWindowButtonsUseLightThemeForWhiteWorkbench(t *testing.T) {
+	if mainWindowButtonsTheme != mygo.ThemeLight {
+		t.Fatalf("mainWindowButtonsTheme = %q, want %q", mainWindowButtonsTheme, mygo.ThemeLight)
+	}
+}
 
 // The tray menu only opens the window and quits (DEC-050 ③).
 func TestTrayMenuOnlyOpensAndQuits(t *testing.T) {

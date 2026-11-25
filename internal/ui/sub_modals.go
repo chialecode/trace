@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -328,6 +329,315 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 						}
 					}
 				})
+			})
+		})
+}
+
+// SubLinksModalState holds the modal state for adding, editing, and removing
+// custom external links attached to a subscription (DEC-074).
+type SubLinksModalState struct {
+	Open          bool
+	SubID         string
+	SubName       string
+	Links         []subscription.CustomLink
+	NewLabel      string
+	NewURL        string
+	NewComposing  bool
+	EditIndex     int
+	EditLabel     string
+	EditURL       string
+	EditComposing bool
+	Error         string
+}
+
+// OpenSubLinksModal opens the custom external links management dialog for sub.
+func (a *App) OpenSubLinksModal(sub subscription.Subscription) {
+	a.openSubLinksModal(sub)
+}
+
+func (a *App) openSubLinksModal(sub subscription.Subscription) {
+	a.SubManageModalMode = ""
+	a.SubLinks = SubLinksModalState{
+		Open:      true,
+		SubID:     sub.ID,
+		SubName:   firstNonEmptyStrUI(sub.Name, sub.Uname, sub.ID),
+		Links:     slices.Clone(sub.Links),
+		EditIndex: -1,
+	}
+}
+
+func (a *App) closeSubLinksModal() {
+	a.SubLinks.Open = false
+	a.SubLinks.Error = ""
+	a.SubLinks.NewComposing = false
+	a.SubLinks.EditComposing = false
+	a.SubLinks.EditIndex = -1
+}
+
+func (a *App) persistSubLinksModal(next []subscription.CustomLink, successBanner string) bool {
+	if a.backend == nil {
+		return false
+	}
+	norm, err := subscription.NormalizeAndValidateCustomLinks(next)
+	if err != nil {
+		a.SubLinks.Error = userErrorText(err)
+		return false
+	}
+	updated, err := a.backend.SetSubscriptionLinks(a.SubLinks.SubID, norm)
+	if err != nil {
+		a.SubLinks.Error = userErrorText(err)
+		return false
+	}
+	a.SubLinks.Links = slices.Clone(updated.Links)
+	a.SubLinks.Error = ""
+	if successBanner != "" {
+		a.BannerInfo = successBanner
+	}
+	a.RefreshData()
+	return true
+}
+
+func (a *App) addSubCustomLink() {
+	st := &a.SubLinks
+	norm, err := subscription.NormalizeAndValidateCustomLink(subscription.CustomLink{
+		Label: st.NewLabel,
+		URL:   st.NewURL,
+	})
+	if err != nil {
+		st.Error = userErrorText(err)
+		return
+	}
+	for _, existing := range st.Links {
+		if existing.URL == norm.URL {
+			st.Error = "该链接已存在"
+			return
+		}
+	}
+	if len(st.Links) >= subscription.MaxSubscriptionCustomLinks {
+		st.Error = fmt.Sprintf("一个订阅最多添加 %d 个自定义链接", subscription.MaxSubscriptionCustomLinks)
+		return
+	}
+	next := append(slices.Clone(st.Links), norm)
+	if a.persistSubLinksModal(next, "已添加自定义链接") {
+		st.NewLabel = ""
+		st.NewURL = ""
+		st.NewComposing = false
+	}
+}
+
+func (a *App) saveEditedSubCustomLink() {
+	st := &a.SubLinks
+	if st.EditIndex < 0 || st.EditIndex >= len(st.Links) {
+		st.EditIndex = -1
+		return
+	}
+	norm, err := subscription.NormalizeAndValidateCustomLink(subscription.CustomLink{
+		Label: st.EditLabel,
+		URL:   st.EditURL,
+	})
+	if err != nil {
+		st.Error = userErrorText(err)
+		return
+	}
+	for i, existing := range st.Links {
+		if i != st.EditIndex && existing.URL == norm.URL {
+			st.Error = "该链接已存在"
+			return
+		}
+	}
+	next := slices.Clone(st.Links)
+	next[st.EditIndex] = norm
+	if a.persistSubLinksModal(next, "已更新自定义链接") {
+		st.EditIndex = -1
+		st.EditLabel = ""
+		st.EditURL = ""
+		st.EditComposing = false
+	}
+}
+
+func (a *App) removeSubCustomLink(idx int) {
+	st := &a.SubLinks
+	if idx < 0 || idx >= len(st.Links) {
+		return
+	}
+	next := make([]subscription.CustomLink, 0, len(st.Links)-1)
+	next = append(next, st.Links[:idx]...)
+	next = append(next, st.Links[idx+1:]...)
+	if a.persistSubLinksModal(next, "已移除自定义链接") {
+		if st.EditIndex == idx {
+			st.EditIndex = -1
+			st.EditLabel = ""
+			st.EditURL = ""
+			st.EditComposing = false
+		} else if st.EditIndex > idx {
+			st.EditIndex--
+		}
+	}
+}
+
+func (a *App) renderSubLinksOverlay(c *ui.Context, w, h float32) {
+	if !a.SubLinks.Open {
+		return
+	}
+	cardW := min(float32(520), max(float32(320), w-40))
+	maxListH := max(float32(140), min(float32(280), h-360))
+	st := &a.SubLinks
+
+	renderDialog(c, &a.SubLinks.Open,
+		"关闭自定义链接对话框（点击空白处）", "订阅自定义链接对话框",
+		cardW, 0, a.closeSubLinksModal,
+		func() {
+			ui.Column(c).FillWidth().Gap(4).ClipX().Children(func() {
+				ui.Text(c, "自定义链接").FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				ui.Text(c, fmt.Sprintf("为「%s」保存聚合页或个人主页（如 link3.cc、linktr.ee，仅支持 http:// 或 https://）。", st.SubName)).
+					FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+			})
+
+			if len(st.Links) == 0 {
+				ui.Column(c).
+					FillWidth().
+					Padding(18, 12).
+					Radius(12).
+					Background(ColorBgMain).
+					Border(1, ColorBorder).
+					AlignItems(ui.Center).
+					Children(func() {
+						ui.Text(c, "还没有添加自定义链接").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+					})
+			} else {
+				linksSnap := slices.Clone(st.Links)
+				ui.Scroll(c).FillWidth().MaxHeight(maxListH).ClipX().Children(func() {
+					ui.Column(c).FillWidth().Gap(8).ClipX().Children(func() {
+						for idx, lnkItem := range linksSnap {
+							i := idx
+							lnk := lnkItem
+							if st.EditIndex == i {
+								ui.Column(c).
+									FillWidth().
+									Padding(10, 12).
+									Radius(12).
+									Background(ColorBgMain).
+									Border(1, ColorAccent).
+									Gap(8).
+									ClipX().
+									Children(func() {
+										editLabelInp := ui.TextInput(c, &st.EditLabel).
+											Label("编辑订阅链接名称").
+											Placeholder("显示名称（可选，留空自动取域名与路径）").
+											FillWidth()
+										editURLInp := ui.TextInput(c, &st.EditURL).
+											Label("编辑订阅链接地址").
+											Placeholder("https://link3.cc/...").
+											FillWidth()
+										wasEditComposing := st.EditComposing
+										st.EditComposing = editLabelInp.Composing() || editURLInp.Composing()
+										submitEdit := (editLabelInp.Submitted() || editURLInp.Submitted()) && !st.EditComposing && !wasEditComposing
+										ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
+											if OutlinePillButton(c, "取消", "取消编辑订阅链接").Clicked() {
+												st.EditIndex = -1
+												st.EditLabel = ""
+												st.EditURL = ""
+												st.EditComposing = false
+												st.Error = ""
+											}
+											if OutlinePillButton(c, "保存", "保存编辑订阅链接").Clicked() || submitEdit {
+												a.saveEditedSubCustomLink()
+											}
+										})
+									})
+								continue
+							}
+
+							display := lnk.DisplayLabel()
+							ui.Row(c).
+								FillWidth().
+								Padding(8, 12).
+								Radius(12).
+								Background(ColorBgMain).
+								Border(1, ColorBorder).
+								AlignItems(ui.Center).
+								Justify(ui.SpaceBetween).
+								Gap(8).
+								ClipX().
+								Children(func() {
+									openBtn := ui.ButtonBase(c).
+										Label(fmt.Sprintf("对话框打开订阅链接 %d", i+1)).
+										Tooltip(lnk.URL).
+										Grow(1).
+										Shrink(1).
+										Padding(2, 0).
+										Gap(8).
+										AlignItems(ui.Center).
+										Justify(ui.Start).
+										ClipX()
+									openBtn.Children(func() {
+										DrawIcon(c, "external-link", 14, ColorAccent, 1.75)
+										ui.Column(c).Grow(1).Shrink(1).Gap(2).ClipX().Children(func() {
+											ui.Text(c, display).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+											ui.Text(c, lnk.URL).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+										})
+									})
+									if openBtn.Clicked() {
+										a.openSubscriptionCustomLink(lnk.URL)
+									}
+
+									ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
+										if OutlinePillButton(c, "编辑", fmt.Sprintf("编辑订阅链接 %d", i+1)).Clicked() {
+											st.EditIndex = i
+											st.EditLabel = lnk.Label
+											st.EditURL = lnk.URL
+											st.EditComposing = false
+											st.Error = ""
+										}
+										if DangerOutlinePillButton(c, "删除", fmt.Sprintf("删除订阅链接 %d", i+1)).Clicked() {
+											a.removeSubCustomLink(i)
+										}
+									})
+								})
+						}
+					})
+				})
+			}
+
+			ui.Column(c).
+				FillWidth().
+				Padding(12).
+				Radius(12).
+				Background(ColorBgMain).
+				Border(1, ColorBorder).
+				Gap(8).
+				ClipX().
+				Children(func() {
+					ui.Text(c, "添加链接").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+					newLabelInp := ui.TextInput(c, &st.NewLabel).
+						Label("新订阅链接名称").
+						Placeholder("显示名称（可选，如 Link3 / 个人主页；留空自动生成）").
+						FillWidth()
+					var urlComposing, urlSubmitted, addClicked bool
+					ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).ClipX().Children(func() {
+						newURLInp := ui.TextInput(c, &st.NewURL).
+							Label("新订阅链接地址").
+							Placeholder("https://link3.cc/...").
+							Grow(1)
+						urlComposing = newURLInp.Composing()
+						urlSubmitted = newURLInp.Submitted()
+						addClicked = AccentPillButton(c, "添加", "确认添加订阅链接").Clicked()
+					})
+					wasNewComposing := st.NewComposing
+					st.NewComposing = newLabelInp.Composing() || urlComposing
+					if addClicked || ((newLabelInp.Submitted() || urlSubmitted) && !st.NewComposing && !wasNewComposing) {
+						a.addSubCustomLink()
+					}
+				})
+
+			if st.Error != "" {
+				renderErrorBanner(c, "订阅自定义链接错误", st.Error, nil)
+			}
+
+			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
+				if OutlinePillButton(c, "关闭", "关闭自定义链接对话框").Clicked() {
+					a.closeSubLinksModal()
+				}
 			})
 		})
 }

@@ -631,7 +631,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 | 空响应判定 | 严格按 §9.2 真值表；任何不确定的空结果都不当成“没有作品”或“到底了”，订阅检查记为“本轮结果不完整”，不移动起点 | — |
 
 <a id="account-lists"></a>
-## 12. 登录账号的关注、喜欢与收藏（ACT-020 部分真实检查）
+## 12. 登录账号的关注、喜欢、收藏与观看历史（ACT-020 / ACT-026 真实检查）
 
 用于“我的”（FR-ACCT-005，DEC-047）。查询 2026-11-14。来源：本机参考索引中“用户视频列表解析”和“抖音签名与访问上下文”两个领域的实现（本地副本 2026-11-09 更新；只读协议事实，不复制代码，DEC-044），以及 GitHub REST 读到的公开元数据。全部只读，只看登录账号自己；作品条目与第 6.1 节 `aweme_detail` 同构，复用同一个解析；请求节奏、错误与风控判定沿用第 9 节，签名沿用[附录](#sign-spec)。
 
@@ -642,6 +642,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 | 全部收藏 | **`POST`** `/aweme/v1/web/aweme/listcollection/` | 查询串：公共参数 + `publish_video_strategy_type=2`、`version_code=170400`、`version_name=17.4.0`；表单体 `count=20&cursor=<首页 0>`，`Content-Type: application/x-www-form-urlencoded`；`Referer: https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection` | `aweme_list`、`has_more`、`cursor` | 受保护；`a_bogus` 的请求体链用这段表单体（附录 A 的 `db`） |
 | 收藏夹列表 | `GET /aweme/v1/web/collects/list/` | `cursor`（首页 0）、`count=10`、`version_code=170400`、`version_name=17.4.0` | `collects_list[].{collects_id_str, collects_name, collects_cover.url_list, total_number?, status?}`、`has_more`、`cursor` | 受保护 |
 | 收藏夹内容 | `GET /aweme/v1/web/collects/video/list/` | `collects_id=<collects_id_str>`、`cursor`、`count=10`、`version_code`、`version_name` | `aweme_list`、`has_more`、`cursor` | 受保护 |
+| 观看历史 | `GET /aweme/v1/web/history/read/` | `max_cursor`（首页 0）、`count=20`；`Referer: https://www.douyin.com/user/self?showTab=record` | `aweme_list`、`has_more`、`max_cursor`、`aweme_date`、`status_code`、`status_msg` | 不在 14 条受保护路径里（`a_bogus`） |
 
 要点（参；关注已核，其余待真实检查）：
 
@@ -650,7 +651,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 - **全部收藏只认 POST**：`GET` 返回 404 `Unsupported path(Janus)`；POST 不带 `Referer` 也不带 `Origin` 时只返回 7 字节、没有列表（参，2026-10-17 观察），所以按表里的 `Referer` 与 TRACE 公共的 `Origin` 发送。参考实现另发 `x-secsdk-csrf-token: DOWNGRADE`，观察到不必需；TRACE 先不发，真实检查被拒时再加。
 - **游标字段名**：收藏类接口的下一页游标在 `cursor`，少数响应在 `max_cursor`；两个都认，以先出现的非零值为准。游标不前进且 `has_more` 为真时停下并按 `schema_changed` 说明，不死循环。
 - **空响应**：喜欢接口对“别人的私密喜欢列表”返回 HTTP 200 加 0 字节，或 `aweme_list: null` 且没有 `has_more`。TRACE 只查自己，所以第 1 页出现这两种形态时**不当成“还没有喜欢”**：`aweme_list: null` 按第 9.2 节的空壳规则判为“登录已失效或被拦截”并停下；0 字节是这个接口对非浏览器请求的固定回答（见下方复查），判为 `unavailable`，不打开退避；`aweme_list: []` 加 `has_more: 0` 才是真正为空。其余四个接口同理：有 `has_more` 字段的空列表才算空。
-- **观看历史**：参考实现里只有路径常量 `GET /aweme/v1/web/history/read/`，没有参数、返回结构与实测记录（未）。TRACE 不按猜测实现产品功能：ACT-020 用 `max_cursor=0&count=20` 试 1 次，返回 `aweme_list` 与 `has_more` 才在 B 实现并显示“观看历史”；否则不显示入口，记为 LOOP。
+- **观看历史**（核，ACT-026 D-V5）：`GET /aweme/v1/web/history/read/` 使用 `max_cursor`（首页 `0`）与 `count=20`，`Referer: https://www.douyin.com/user/self?showTab=record`，返回 `aweme_list`、`has_more`、`max_cursor`、`aweme_date`、`status_code`、`status_msg`。实测第 1、2 页游标正常推进且跨页 0 重复，已开启 `WatchHistoryEnabled=true` 开放界面入口（[#73](https://github.com/chialecode/trace/issues/73)，部分推进 [#37](https://github.com/chialecode/trace/issues/37)）；`aweme_date` 的值形态未单列实测样本，界面保持 3:4 网格不按日期分组。
 - **稍后再看**：抖音 App 有这个功能，但 2026-11-14 网页检索与两个本机参考里都没有网页接口（未）；用户同日另行网页搜索（看过 CSDN、知乎等结果）也没有找到，TRACE 不做。
 - **收藏的合集与音乐**（`mix/listcollection`、`music/listcollection`）：TRACE 还不能打开合集与音乐页（FR-FEED-002），本阶段不做。
 - **写操作**（取消喜欢、取消收藏、取消关注）不调用（DEC-047）。
@@ -675,7 +676,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 - **登录确认（`dy_login` / `profile/self`）**：保留扩展非黑名单 Cookie、同步会话级 `msToken`、补齐 `Sec-Fetch-*` 请求头后，HTTP 200 JSON 一次通过（响应头含 `bd-ticket-guard-result`，无 `bdturing-verify`）。
 - **D-V2 喜欢（`aweme/favorite`，[#52](https://github.com/chialecode/trace/issues/52)）**：返回 HTTP 200、`Content-Type: text/plain`、**0 字节空响应**，响应头明确含 **`bd-ticket-guard-result`**（无 `bdturing-verify`）。对照同轮同一 Go 标准库 TLS 连接下的 `collects/list` 与 `history/read`（两者响应头均无 `bd-ticket-guard-result`，且全部返回完整 JSON），排除“Go 标准库 TLS 指纹被一刀切拒绝”，锁定剩余缺口为：① 旧测试 Cookie 文件缺失浏览器滑块/指纹 SDK 写入的 `s_v_web_id`（导致二阶段签名未附 `verifyFp`/`fp`），以及 ② `favorite` 接口下发 `bd-ticket-guard-result`（若补齐真实 `s_v_web_id` 后仍返回 0 字节与 `bd-ticket-guard-result`，则需进一步评估纯 Go 标准库 ECDSA P-256 `bd-ticket-guard` 票据握手）。客户端按 `ErrKindUnavailable` 单接口隔离提示重贴完整 Cookie，不阻断其他接口。
 - **D-V4 收藏夹列表（`collects/list`，核，关联 [#37](https://github.com/chialecode/trace/issues/37)）**：HTTP 200 `application/json`，`status_code=0`、`folders=0`、`has_more=false` 通过；因该测试账号下 `0` 个自定义收藏夹，`collects/video/list` 未触发请求，仍为 `not-run`。
-- **D-V5 观看历史（`history/read`，核，关联 [#37](https://github.com/chialecode/trace/issues/37)）**：`GET /aweme/v1/web/history/read/`（`max_cursor=0&count=20`）**第 1、2 页全部实测通过**——返回 HTTP 200 `application/json`，顶层键为 `aweme_date`、`aweme_list`、`has_more`、`max_cursor`、`status_code`、`status_msg`；第 1 页解析出 `19` 条作品（`has_more=true`），以返回的 `max_cursor` 翻第 2 页解析出 `20` 条作品（`has_more=true`、游标正常推进、跨页 `0` 重复）。协议形态已锁定，界面入口开关 `WatchHistoryEnabled` 留归 [#37](https://github.com/chialecode/trace/issues/37) 独立 PR 开放。
+- **D-V5 观看历史（`history/read`，核，关联 [#37](https://github.com/chialecode/trace/issues/37)、[#73](https://github.com/chialecode/trace/issues/73)）**：`GET /aweme/v1/web/history/read/`（`max_cursor=0&count=20`）**第 1、2 页全部实测通过**——返回 HTTP 200 `application/json`，顶层键为 `aweme_date`、`aweme_list`、`has_more`、`max_cursor`、`status_code`、`status_msg`；第 1 页解析出 `19` 条作品（`has_more=true`），以返回的 `max_cursor` 翻第 2 页解析出 `20` 条作品（`has_more=true`、游标正常推进、跨页 `0` 重复）。协议形态已锁定，界面入口开关 `WatchHistoryEnabled` 已在 [#73](https://github.com/chialecode/trace/issues/73) 设为 `true` 开放。
 
 <a id="sign-spec"></a>
 ## 附录：签名规格

@@ -430,6 +430,12 @@ func seedFixtures() (env *fixtureEnv, err error) {
 			}); xErr == nil {
 				env.primarySub = xLinked
 			}
+			if withLinks, lErr := b.SetSubscriptionLinks(env.primarySub.ID, []subscription.CustomLink{
+				{URL: "https://link3.cc/alpha_tech"},
+				{Label: "创作手记", URL: "https://linktr.ee/alpha_notes"},
+			}); lErr == nil {
+				env.primarySub = withLinks
+			}
 		}
 	}
 	env.auroraSub, _ = b.CreateSubscription("极光纪实", "高原延时与图文手记", []subscription.AccountRef{
@@ -784,10 +790,14 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		TypeLabel: "微博",
 		Status:    "complete",
 		Title:     "微博长文与多图实况示例",
-		Text:      "微博图文归档示例：按原始顺序保存图片、GIF 与实况静帧。\n多段落中文正文采用更舒展的行高排印，让长动态在桌面阅读时层次清晰、不拥挤。",
-		URL:       "https://weibo.com/500000001/5000000000000001",
-		PubTs:     1710004500,
-		CachedAt:  "2026-03-02T12:00:00Z",
+		Text:      "微博图文归档示例：保存图片与实况静帧，详见 架构手记 与 #离线媒体库#。\n多段落中文正文采用舒展行高排印，桌面阅读层次清晰。",
+		Links: []library.ItemLink{
+			{Label: "架构手记", URL: "https://weibo.com/ttarticle/p/show?id=2309405000000000000001"},
+			{Label: "#离线媒体库#", URL: "https://s.weibo.com/weibo?q=%23%E7%A6%BB%E7%BA%BF%E5%AA%92%E4%BD%93%E5%BA%93%23"},
+		},
+		URL:      "https://weibo.com/500000001/5000000000000001",
+		PubTs:    1710004500,
+		CachedAt: "2026-03-02T12:00:00Z",
 		Author: library.ItemAuthor{
 			Site: "weibo",
 			UID:  env.weiboUID,
@@ -883,10 +893,13 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		TypeLabel: "帖子",
 		Status:    "complete",
 		Title:     "X 长文与原图混排归档示例",
-		Text:      "X 帖子归档示例：完整保存 note_tweet 长帖正文、原图与静音循环 GIF，四站点凭证与限流彼此隔离。",
-		URL:       "https://x.com/" + env.xOnlyHandle + "/status/1000000000000000009",
-		PubTs:     1710004600,
-		CachedAt:  "2026-03-02T12:05:00Z",
+		Text:      "X 帖子归档示例：完整保存 note_tweet 长帖正文、原图与静音循环 GIF，发布说明见 example.dev/release-notes，四站点凭证与限流彼此隔离。",
+		Links: []library.ItemLink{
+			{Label: "example.dev/release-notes", URL: "https://example.dev/release-notes"},
+		},
+		URL:      "https://x.com/" + env.xOnlyHandle + "/status/1000000000000000009",
+		PubTs:    1710004600,
+		CachedAt: "2026-03-02T12:05:00Z",
 		Author: library.ItemAuthor{
 			Site:     "x",
 			UID:      env.xOnlyUID,

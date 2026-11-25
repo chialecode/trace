@@ -2,11 +2,8 @@ package download
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"image/color"
-	"image/gif"
 	"io"
 	"mime"
 	"net/url"
@@ -74,151 +71,11 @@ func looksLikeDisguisedTextBody(head []byte) bool {
 // GIF returned instead of a 404 for purged .jpg/.png/.webp assets, typically 480x360 grayscale).
 // Genuine multi-frame animated GIFs and non-GIF files always return false.
 func looksLikeWeiboPlaceholderGIF(filePath, requestedURL string, expectedW, expectedH int) bool {
-	info, err := os.Stat(filePath)
-	if err != nil || info.IsDir() || info.Size() <= 0 || info.Size() > 128*1024 {
-		return false
-	}
-	f, err := os.Open(filePath)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	var hdr [10]byte
-	if _, err := io.ReadFull(f, hdr[:]); err != nil {
-		return false
-	}
-	if !bytes.Equal(hdr[:6], []byte("GIF87a")) && !bytes.Equal(hdr[:6], []byte("GIF89a")) {
-		return false
-	}
-	gifW := int(binary.LittleEndian.Uint16(hdr[6:8]))
-	gifH := int(binary.LittleEndian.Uint16(hdr[8:10]))
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return false
-	}
-	decoded, err := gif.DecodeAll(f)
-	if err != nil || decoded == nil {
-		return false
-	}
-	// Multi-frame animated GIFs are genuine animations, not static deleted-image placeholders.
-	if len(decoded.Image) > 1 {
-		return false
-	}
-	// Signal 1: Sina CDN returned a static 1-frame GIF for a URL explicitly naming a non-GIF image format.
-	if u, perr := url.Parse(strings.TrimSpace(requestedURL)); perr == nil {
-		host := strings.ToLower(u.Hostname())
-		if host == "sinaimg.cn" || strings.HasSuffix(host, ".sinaimg.cn") {
-			lp := strings.ToLower(u.Path)
-			if strings.HasSuffix(lp, ".jpg") || strings.HasSuffix(lp, ".jpeg") || strings.HasSuffix(lp, ".png") || strings.HasSuffix(lp, ".webp") {
-				return true
-			}
-		}
-	}
-	// Signal 2: Declared image dimensions disagree with the tiny static GIF returned for a non-GIF slot.
-	if expectedW > 0 && expectedH > 0 && (gifW != expectedW || gifH != expectedH) && info.Size() <= 32*1024 {
-		return true
-	}
-	// Signal 3: Canonical 480x360 small static grayscale Sina placeholder GIF (observed ~8-9 KiB).
-	if gifW == 480 && gifH == 360 && info.Size() <= 32*1024 && isGrayscaleGIF(decoded) {
-		return true
-	}
-	return false
-}
-
-func isGrayscaleGIF(decoded *gif.GIF) bool {
-	if decoded == nil || len(decoded.Image) == 0 {
-		return false
-	}
-	checkPalette := func(p color.Palette) bool {
-		if len(p) == 0 {
-			return false
-		}
-		for _, c := range p {
-			r, g, b, _ := c.RGBA()
-			r8, g8, b8 := int(r>>8), int(g>>8), int(b>>8)
-			drg := r8 - g8
-			if drg < 0 {
-				drg = -drg
-			}
-			dgb := g8 - b8
-			if dgb < 0 {
-				dgb = -dgb
-			}
-			drb := r8 - b8
-			if drb < 0 {
-				drb = -drb
-			}
-			if drg > 4 || dgb > 4 || drb > 4 {
-				return false
-			}
-		}
-		return true
-	}
-	if len(decoded.Image[0].Palette) > 0 {
-		return checkPalette(decoded.Image[0].Palette)
-	}
-	if gp, ok := decoded.Config.ColorModel.(color.Palette); ok {
-		return checkPalette(gp)
-	}
-	return false
+	return site.LooksLikeExpiredPlaceholderImageFile(filePath, requestedURL, expectedW, expectedH, false)
 }
 
 func sniffImageExtension(filePath, contentType string) (string, error) {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	var head [32]byte
-	n, _ := io.ReadFull(f, head[:])
-	b := head[:n]
-
-	switch {
-	case len(b) >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF:
-		return ".jpg", nil
-	case len(b) >= 8 && bytes.Equal(b[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}):
-		return ".png", nil
-	case len(b) >= 12 && bytes.Equal(b[:4], []byte("RIFF")) && bytes.Equal(b[8:12], []byte("WEBP")):
-		return ".webp", nil
-	case len(b) >= 6 && (bytes.Equal(b[:6], []byte("GIF87a")) || bytes.Equal(b[:6], []byte("GIF89a"))):
-		return ".gif", nil
-	case len(b) >= 12 && bytes.Equal(b[4:8], []byte("ftyp")):
-		brand := string(b[8:12])
-		switch brand {
-		case "avif", "avis":
-			return ".avif", nil
-		case "heic", "heix", "hevc", "hevx", "mif1", "msf1":
-			return ".heic", nil
-		}
-	}
-
-	mt, _, _ := mime.ParseMediaType(contentType)
-	switch strings.ToLower(strings.TrimSpace(mt)) {
-	case "image/jpeg", "image/jpg":
-		if len(b) >= 4 && !looksLikeDisguisedTextBody(b) {
-			return ".jpg", nil
-		}
-	case "image/png":
-		if len(b) >= 4 && !looksLikeDisguisedTextBody(b) {
-			return ".png", nil
-		}
-	case "image/webp":
-		if len(b) >= 4 && !looksLikeDisguisedTextBody(b) {
-			return ".webp", nil
-		}
-	case "image/gif":
-		if len(b) >= 4 && !looksLikeDisguisedTextBody(b) {
-			return ".gif", nil
-		}
-	case "image/avif":
-		if len(b) >= 4 && !looksLikeDisguisedTextBody(b) {
-			return ".avif", nil
-		}
-	case "image/heic", "image/heif":
-		if len(b) >= 4 && !looksLikeDisguisedTextBody(b) {
-			return ".heic", nil
-		}
-	}
-	return "", errors.New("文件头不是受支持的图片格式")
+	return site.SniffImageExtensionFile(filePath, contentType)
 }
 
 func sniffAudioExtension(filePath, contentType string) (string, error) {

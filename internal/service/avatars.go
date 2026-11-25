@@ -51,10 +51,15 @@ func (b *Backend) AccountAvatarPath(siteID, uid string) string {
 		return ""
 	}
 	path := filepath.Join(dir, name)
-	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+	if !isValidLocalAvatarFile(path) {
 		return ""
 	}
 	return path
+}
+
+func isValidLocalAvatarFile(path string) bool {
+	ext, sz, _, ok := site.ValidateExistingImageFile(path, "", 0, 0, false)
+	return ok && sz > 0 && ext == ".png"
 }
 
 // rememberAvatar fetches and atomically saves a local PNG avatar in the background
@@ -83,7 +88,7 @@ func (b *Backend) rememberAvatar(siteID, uid, rawFace string, defaultBilibili bo
 		return
 	}
 	path := filepath.Join(dir, name)
-	if info, err := os.Stat(path); err == nil && time.Since(info.ModTime()) < avatarRefreshAge {
+	if info, err := os.Stat(path); err == nil && time.Since(info.ModTime()) < avatarRefreshAge && isValidLocalAvatarFile(path) {
 		return
 	}
 	if _, busy := b.avatarInflight.LoadOrStore(name, struct{}{}); busy {
@@ -95,6 +100,9 @@ func (b *Backend) rememberAvatar(siteID, uid, rawFace string, defaultBilibili bo
 		defer cancel()
 		thumb := b.fetchHistoryThumbForSite(fetchCtx, sid, "avatar", rawFace)
 		if len(thumb.Data) == 0 || fetchCtx.Err() != nil {
+			return
+		}
+		if ext, ok := site.SniffImageMagicBytes(thumb.Data); !ok || ext != ".png" || site.LooksLikeExpiredPlaceholderImageBytes(thumb.Data, rawFace, 0, 0, false) {
 			return
 		}
 		if err := os.MkdirAll(dir, 0o700); err != nil {

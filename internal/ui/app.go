@@ -473,6 +473,7 @@ type App struct {
 	Transfer         TransferUIState
 	SubFile          SubFileUIState
 	subImportGen     uint64
+	SubLinks         SubLinksModalState
 	AddSubDialogOpen bool
 	// SubscribePicker subscribes to an account: into an existing
 	// subscription or a new one (DEC-058).
@@ -1165,6 +1166,9 @@ func (a *App) View(c *ui.Context) {
 	}
 	if a.AddSubDialogOpen {
 		a.renderAddSubOverlay(c, w, h)
+	}
+	if a.SubLinks.Open {
+		a.renderSubLinksOverlay(c, w, h)
 	}
 	if a.ImportSubModalOpen {
 		a.renderImportSubOverlay(c, w, h)

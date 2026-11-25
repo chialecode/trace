@@ -98,6 +98,7 @@ func (s *mineStub) AccountSections(siteID string) []service.AccountSection {
 			{Site: siteID, Kind: service.AccountFollowing, Label: "关注", Available: true},
 			{Site: siteID, Kind: service.AccountLikes, Label: "喜欢", Available: true},
 			{Site: siteID, Kind: service.AccountCollection, Label: "收藏", Available: true},
+			{Site: siteID, Kind: service.AccountWatchHistory, Label: "观看历史", Available: true},
 		}
 	}
 }
@@ -757,5 +758,181 @@ func TestMineWeiboFavoritesPostAndRetweetMediaViewerAndNavigation(t *testing.T) 
 	rowRect, okRow := ttNarrow.Find("我的微博行：" + imgMid)
 	if !ok || !okRow || centerRect.X+centerRect.W > 720.5 || rowRect.X+rowRect.W > 720.5 {
 		t.Fatalf("narrow 720px overflow: center=%+v row=%+v", centerRect, rowRect)
+	}
+}
+
+func mineDouyinWorks(prefix string, n int) []service.AccountItem {
+	out := make([]service.AccountItem, n)
+	for i := range out {
+		id := fmt.Sprintf("%s%02d", prefix, i)
+		kind := "video"
+		if i%3 == 1 {
+			kind = "note"
+		}
+		card := service.DouyinWorkCardDTO{
+			ID:           id,
+			Kind:         kind,
+			Title:        "观看历史作品 " + id,
+			DurationSec:  20 + i*5,
+			CanonicalURL: "https://www.douyin.com/video/" + id,
+			CacheKey:     "douyin:video:" + id,
+		}
+		out[i] = service.AccountItem{
+			Kind:       service.AccountItemWork,
+			Site:       "douyin",
+			ID:         id,
+			Title:      card.Title,
+			Author:     "抖音作者甲",
+			AuthorID:   "MS4wLjABAAAA_dy_author_000001",
+			OpenURL:    card.CanonicalURL,
+			BrowserURL: card.CanonicalURL,
+			CacheKey:   card.CacheKey,
+			Work:       &card,
+		}
+	}
+	return out
+}
+
+func TestMineDouyinWatchHistoryGridPaginationDetailBackAndSignOut(t *testing.T) {
+	app, stub, cleanup := newMineApp(t)
+	defer cleanup()
+	stub.logged["douyin"] = true
+
+	page1 := mineDouyinWorks("7550000000000001", 25)
+	page2 := mineDouyinWorks("7550000000000002", 6)
+	page2[0] = page1[1] // duplicate across pages must be dropped
+	stub.pages["douyin/watch_history//"] = service.AccountPage{Items: page1, HasMore: true, Cursor: "2|1732400100"}
+	stub.pages["douyin/watch_history//2|1732400100"] = service.AccountPage{Items: page2, HasMore: false}
+
+	app.Navigate(RouteMine)
+	tt := ui.NewTester(app.View, 1280, 860)
+	tt.Frame()
+	if err := tt.Click("我的站点：抖音"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	for _, label := range []string{"关注", "喜欢", "收藏", "观看历史"} {
+		if _, ok := tt.Find("我的功能：抖音 " + label); !ok {
+			t.Fatalf("expanded 抖音 lacks %s", label)
+		}
+	}
+	if err := tt.Click("我的功能：抖音 观看历史"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	tt.Frame()
+	if got := app.routeTitle(); got != "观看历史 · 抖音" {
+		t.Fatalf("title = %q, want 观看历史 · 抖音", got)
+	}
+	if got := app.mineSiteURL("douyin", service.AccountWatchHistory); got != "https://www.douyin.com/user/self?showTab=record" {
+		t.Fatalf("mineSiteURL = %q", got)
+	}
+	if _, ok := tt.Find("收藏夹选择"); ok {
+		t.Fatal("watch history should not show folder dropdown")
+	}
+	if _, ok := tt.Find("我的作品虚拟列表"); !ok {
+		t.Fatal("watch history work grid missing")
+	}
+	if got := menuItems(t, tt, "作品更多："+page1[0].ID); strings.Join(got, ",") != "缓存,复制链接,在浏览器中打开" {
+		t.Fatalf("watch history work menu = %v", got)
+	}
+
+	// Scroll to load page 2 once and deduplicate across pages.
+	l := app.mineCurrentList()
+	if l == nil || len(l.Items) != 25 || !l.HasMore {
+		t.Fatalf("page 1 list = %+v", l)
+	}
+	listRect, _ := tt.Find("我的作品虚拟列表")
+	for i := 0; i < 10; i++ {
+		tt.Scroll(listRect.X+listRect.W/2, listRect.Y+listRect.H/2, 0, 1500)
+		tt.Frame()
+	}
+	if stub.calls["douyin/watch_history//2|1732400100"] != 1 {
+		t.Fatalf("page 2 calls = %d, want 1", stub.calls["douyin/watch_history//2|1732400100"])
+	}
+	if len(l.Items) != 30 || l.HasMore {
+		t.Fatalf("after page 2: items=%d more=%v", len(l.Items), l.HasMore)
+	}
+	if _, ok := tt.Find("我的没有更多"); !ok {
+		t.Fatal("end of watch history not shown")
+	}
+
+	// Opening detail and navigating back preserves the list and scroll position without re-requesting.
+	firstVisible, _ := l.State.Visible()
+	if firstVisible == 0 {
+		t.Fatal("watch history grid did not scroll")
+	}
+	callsBefore := stub.callCount()
+	app.OpenDouyinWork(page1[0].ID, "video", page1[0].Title, page1[0].Author, page1[0].AuthorID, "", "0:20")
+	if app.CurrentRoute != RouteDouyinWork || app.PreviousRoute != RouteMine {
+		t.Fatalf("open work: route=%s prev=%s", app.CurrentRoute, app.PreviousRoute)
+	}
+	tt.Frame()
+	app.NavigateBack()
+	tt.Frame()
+	if app.CurrentRoute != RouteMine || app.mineCurrentList() != l || stub.callCount() != callsBefore {
+		t.Fatalf("back: route=%s same=%v calls %d->%d", app.CurrentRoute, app.mineCurrentList() == l, callsBefore, stub.callCount())
+	}
+	if afterVisible, _ := l.State.Visible(); afterVisible != firstVisible {
+		t.Fatalf("scroll position lost: %d -> %d", firstVisible, afterVisible)
+	}
+
+	// Narrow 720px chooser exposes 观看历史 and opens grid with zero horizontal overflow.
+	app.Mine.Picker = true
+	ttNarrow := ui.NewTester(app.View, 720, 800)
+	ttNarrow.Frame()
+	if _, ok := ttNarrow.Find("我的功能：抖音 观看历史"); !ok {
+		t.Fatal("narrow chooser lacks 观看历史")
+	}
+	if err := ttNarrow.Click("我的功能：抖音 观看历史"); err != nil {
+		t.Fatal(err)
+	}
+	ttNarrow.Frame()
+	centerRect, ok := ttNarrow.Find("中栏内容")
+	if !ok || centerRect.X+centerRect.W > 720.5 {
+		t.Fatalf("narrow watch history overflow: %+v", centerRect)
+	}
+	if err := ttNarrow.Click("返回我的功能列表"); err != nil {
+		t.Fatal(err)
+	}
+	ttNarrow.Frame()
+	if _, ok := ttNarrow.Find("我的选择列表"); !ok {
+		t.Fatal("back from narrow watch history did not return to chooser")
+	}
+
+	// Error and genuine empty state on first page.
+	app.mineClearSite("douyin")
+	stub.errs["douyin/watch_history//"] = &site.Error{Site: site.Douyin, Kind: site.ErrKindRiskControl, Message: "抖音返回了空壳，登录已失效或被拦截"}
+	app.mineSelect("douyin", service.AccountWatchHistory)
+	ttErr := ui.NewTester(app.View, 1280, 860)
+	ttErr.Frame()
+	if _, ok := ttErr.Find("我的列表为空"); ok {
+		t.Fatal("watch history error shown as empty")
+	}
+	if _, ok := ttErr.Find("我的重试"); !ok {
+		t.Fatal("watch history error lacks retry")
+	}
+	delete(stub.errs, "douyin/watch_history//")
+	stub.pages["douyin/watch_history//"] = service.AccountPage{Items: []service.AccountItem{}, HasMore: false}
+	if err := ttErr.Click("我的重试"); err != nil {
+		t.Fatal(err)
+	}
+	ttErr.Frame()
+	if _, ok := ttErr.Find("我的列表为空"); !ok {
+		t.Fatal("genuine empty watch history not shown")
+	}
+
+	// Sign-out clears Douyin watch history from memory immediately.
+	stub.mu.Lock()
+	stub.logged["douyin"] = false
+	stub.mu.Unlock()
+	app.handleBackendEvent(service.Event{Type: service.EventAccountChanged, Site: "douyin", Message: "logged_out"})
+	for k := range app.Mine.Lists {
+		if strings.HasPrefix(k, "douyin/") {
+			t.Fatalf("douyin list %s kept after sign-out", k)
+		}
+	}
+	if app.Mine.Kind != "" {
+		t.Fatalf("douyin watch history stayed selected after sign-out: %q", app.Mine.Kind)
 	}
 }
