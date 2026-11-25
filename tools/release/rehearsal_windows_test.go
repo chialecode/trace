@@ -19,8 +19,8 @@ import (
 )
 
 func TestSplitUninstallCommand(t *testing.T) {
-	exe, args := splitCommand(`"C:\Users\u\AppData\Local\Programs\trace-ptest\Uninstall.exe" /S`)
-	if exe != `C:\Users\u\AppData\Local\Programs\trace-ptest\Uninstall.exe` || strings.Join(args, " ") != "/S" {
+	exe, args := splitCommand(`"C:\Users\u\AppData\Local\Programs\trace-test\Uninstall.exe" /S`)
+	if exe != `C:\Users\u\AppData\Local\Programs\trace-test\Uninstall.exe` || strings.Join(args, " ") != "/S" {
 		t.Fatalf("%q %v", exe, args)
 	}
 	if exe, args := splitCommand(`C:\x\Uninstall.exe`); exe != `C:\x\Uninstall.exe` || len(args) != 0 {
@@ -32,13 +32,13 @@ func TestRecordInstalledOldSetsDirBeforeVersionCheck(t *testing.T) {
 	res := newRehearsalResult(rehearsalInput{Version: "0.1.2"})
 	r := &rehearsal{res: &res}
 	_, err := r.recordInstalledOld(build.InstallEntry{
-		Location: `C:\Users\u\AppData\Local\Programs\trace-ptest`,
+		Location: `C:\Users\u\AppData\Local\Programs\trace-test`,
 		Version:  "0.1.1-wrong",
 	})
 	if err == nil || !strings.Contains(err.Error(), "DisplayVersion") {
 		t.Fatalf("expected DisplayVersion mismatch error, got %v", err)
 	}
-	if r.dir != `C:\Users\u\AppData\Local\Programs\trace-ptest` || r.exe != filepath.Join(r.dir, "trace.exe") {
+	if r.dir != `C:\Users\u\AppData\Local\Programs\trace-test` || r.exe != filepath.Join(r.dir, "trace.exe") {
 		t.Fatalf("r.dir=%q r.exe=%q not set before version failure", r.dir, r.exe)
 	}
 	if r.res.InstallDir != r.dir {
@@ -88,7 +88,7 @@ func TestLocalReleaseServesAndTampers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	archiveName := "trace-ptest-0.1.2-rehearsal.2-windows-amd64.tar.gz"
+	archiveName := "trace-test-0.1.2-rehearsal.2-windows-amd64.tar.gz"
 	origArchive := []byte("0123456789abcdef")
 	if err := os.WriteFile(filepath.Join(dir, archiveName), origArchive, 0o644); err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestLocalReleaseServesAndTampers(t *testing.T) {
 	manifestRaw, _ := json.Marshal(map[string]any{
 		"version":   "0.1.2-rehearsal.2",
 		"signature": "c2ln",
-		"url":       "https://rehearsal.invalid/trace-ptest/" + archiveName,
+		"url":       "https://rehearsal.invalid/trace-test/" + archiveName,
 	})
 	if err := os.WriteFile(filepath.Join(dir, manifestName), manifestRaw, 0o644); err != nil {
 		t.Fatal(err)
@@ -143,13 +143,13 @@ func TestLocalReleaseServesAndTampers(t *testing.T) {
 }
 
 // The installer rehearsal installs, updates through a local
-// release, rejects a tampered update and uninstalls TRACE under the ptest
+// release, rejects a tampered update and uninstalls TRACE under the trace-test
 // identity. It builds two packages and takes minutes, so it only runs with
 // TRACE_RUN_INSTALLER_TEST=1 (go test -timeout 20m); tools/release runs it
 // on every release.
 func TestInstallerRehearsal(t *testing.T) {
 	if os.Getenv("TRACE_RUN_INSTALLER_TEST") != "1" {
-		t.Skip("set TRACE_RUN_INSTALLER_TEST=1 to install, update and uninstall TRACE PTest")
+		t.Skip("set TRACE_RUN_INSTALLER_TEST=1 to install, update and uninstall TRACE Test")
 	}
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {

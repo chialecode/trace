@@ -5,13 +5,13 @@
 <a id="storage"></a>
 ## 1. 数据目录、设置与索引
 
-- **通道与位置**（DEC-029）：构建时用 `-ldflags -X` 写入通道：`release`（`go run ./tools/release`）、`dev`（`go run ./tools/package`）或只在升级演练里构建的 `ptest`；`mygo dev`、`go run`、测试等没有写入通道的构建是 `source`。
+- **通道与位置**（DEC-029）：构建时用 `-ldflags -X` 写入通道：`release`（`go run ./tools/release`）、`dev`（`go run ./tools/package`）或只在升级演练里构建的 `test`；`mygo dev`、`go run`、测试等没有写入通道的构建是 `source`。
 
   | 通道 | 安装目录（默认） | 数据目录 | 缓存位置（默认，可改） | 名称与标识 |
   | --- | --- | --- | --- | --- |
   | `release` | `%LOCALAPPDATA%\Programs\trace` | `%LOCALAPPDATA%\trace` | `<文档>\trace` | 显示名“TRACE”；文件名一律小写 `trace`（`trace.exe`、安装目录、`mygo.json` 的 `name`/`slug`/`installDirName`）；`io.github.chialecode.trace` |
   | `dev` | `%LOCALAPPDATA%\Programs\trace-dev` | `%LOCALAPPDATA%\trace-dev` | `<文档>\trace-dev` | 显示名“TRACE Dev”；文件名一律小写 `trace-dev`；`io.github.chialecode.trace-dev` |
-  | `ptest` | `%LOCALAPPDATA%\Programs\trace-ptest` | `%LOCALAPPDATA%\trace-ptest` | 演练时指向临时目录 | 显示名“TRACE PTest”；`io.github.chialecode.trace-ptest`；只用于安装与更新演练（[工程规则 §2.3](../dev-rules/engineering.md#release)） |
+  | `test` | `%LOCALAPPDATA%\Programs\trace-test` | `%LOCALAPPDATA%\trace-test` | 演练时指向临时目录 | 显示名“TRACE Test”；`io.github.chialecode.trace-test`；只用于安装与更新演练（[工程规则 §2.3](../dev-rules/engineering.md#release)） |
   | `source` | 不安装 | 必须由 `TRACE_DATA_DIR` 指定（工程规则用 `tmp/dev-data`）；没设置时用 `%LOCALAPPDATA%\trace-dev`，由数据目录锁避免与已安装的开发版同时打开 | 同 `dev` | `mygo.json` 的名称；`mygo dev` 自己的单实例标识是 `<identifier>.dev` |
 
   `<文档>` 是系统登记的“文档”文件夹（`SHGetKnownFolderPath(FOLDERID_Documents)`，可能被重定向到别的盘或 OneDrive），不是简单的 `%USERPROFILE%\Documents`。`TRACE_DATA_DIR` 对所有通道都优先（测试与冒烟用）。数据目录或缓存位置不能创建、不可写时，启动后显示明确的错误，不悄悄换到别处。安装目录只放程序文件（卸载时整个删除），任何数据都不写进去（INV-14）。

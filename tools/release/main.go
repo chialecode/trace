@@ -1,7 +1,7 @@
 // Command release builds a release of TRACE: from the commit that is
 // the latest of origin/main, it works out the version, runs tools/check,
 // builds and signs the release package, rehearses installing and updating
-// it under the ptest identity, and puts the files in dist/trace/.
+// it under the trace-test identity, and puts the files in dist/trace/.
 //
 //	go run ./tools/release                # a release from origin/main
 //	go run ./tools/release -allow-dirty   # a rehearsal from the work tree
@@ -53,7 +53,7 @@ type options struct {
 	keyFile    string
 	// runCheck runs tools/check; tests replace it.
 	runCheck func(root string) error
-	// rehearse runs the ptest rehearsal; tests replace it.
+	// rehearse runs the trace-test rehearsal; tests replace it.
 	rehearse func(r rehearsalInput) (rehearsalResult, error)
 	// build runs the MyGo build; tests replace it.
 	build func(root, out, ldflags string, env []string) (string, error)
@@ -285,7 +285,7 @@ func run(o options) (releaseResult, error) {
 		return res, err
 	}
 
-	logf("==> [release] rehearsing install, update and uninstall under the ptest identity...")
+	logf("==> [release] rehearsing install, update and uninstall under the trace-test identity...")
 	rr, err := o.rehearse(rehearsalInput{Root: o.root, Base: base, Version: version, Commit: commit, Build: o.build, Logf: logf})
 	if err == nil && !rr.OthersSame {
 		rr.Status = "failed"

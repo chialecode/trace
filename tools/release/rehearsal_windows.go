@@ -22,14 +22,14 @@ import (
 )
 
 const (
-	ptestIdentifier    = "io.github.chialecode.trace-ptest"
+	testIdentifier     = "io.github.chialecode.trace-test"
 	exitTimeout        = 30 * time.Second
 	quitRequestTimeout = 15 * time.Second
 	readyTimeout       = 3 * time.Minute
 )
 
 // rehearsal installs, updates, rejects a tampered update and uninstalls
-// TRACE under the ptest identity only. The release and development
+// TRACE under the trace-test identity only. The release and development
 // identities are only read, before and after, to show they did not change.
 type rehearsal struct {
 	in               rehearsalInput
@@ -65,7 +65,7 @@ func (r *rehearsal) execute(runFn func() error, cleanupFn func()) (rehearsalResu
 		r.res.Requests = r.server.log()
 	}
 	if err == nil && !r.res.OthersSame {
-		err = errors.New("release or development installation changed during the ptest rehearsal")
+		err = errors.New("release or development installation changed during the trace-test rehearsal")
 	}
 	if err != nil {
 		r.res.Status, r.res.Reason = "failed", err.Error()
@@ -117,7 +117,7 @@ func (r *rehearsal) run() error {
 	if localAppData == "" {
 		return errors.New("LOCALAPPDATA is not set")
 	}
-	r.dataDir = filepath.Join(localAppData, appdirs.AppNameForChannel("ptest"))
+	r.dataDir = filepath.Join(localAppData, appdirs.AppNameForChannel("test"))
 	var err error
 	if err := os.MkdirAll(filepath.Join(r.in.Root, "dist"), 0o755); err != nil {
 		return err
@@ -126,7 +126,7 @@ func (r *rehearsal) run() error {
 		return err
 	}
 
-	if err := r.step("清理以前的 ptest 安装", r.clearEarlier); err != nil {
+	if err := r.step("清理以前的 trace-test 安装", r.clearEarlier); err != nil {
 		return err
 	}
 
@@ -146,12 +146,12 @@ func (r *rehearsal) run() error {
 		return err
 	}
 	zero := 0
-	up := &build.Updates{PublicKey: pubText, URL: "https://rehearsal.invalid/trace-ptest", Changelog: filepath.ToSlash(relChangelog), Deltas: &zero}
+	up := &build.Updates{PublicKey: pubText, URL: "https://rehearsal.invalid/trace-test", Changelog: filepath.ToSlash(relChangelog), Deltas: &zero}
 	built := map[string]string{}
 	for _, v := range []string{r.res.OldVersion, r.res.NewVersion} {
 		v := v
-		if err := r.step("构建 ptest "+v, func() (string, error) {
-			info := build.Info{Version: v, Channel: build.ChannelPtest, Commit: r.in.Commit, BuildTime: time.Now().UTC().Format(time.RFC3339)}
+		if err := r.step("构建 trace-test "+v, func() (string, error) {
+			info := build.Info{Version: v, Channel: build.ChannelTest, Commit: r.in.Commit, BuildTime: time.Now().UTC().Format(time.RFC3339)}
 			dir, _, err := buildChannel(r.in.Root, r.in.Build, r.in.Base, info, up, key, filepath.Join(r.work, v))
 			built[v] = dir
 			return dir, err
@@ -169,16 +169,16 @@ func (r *rehearsal) run() error {
 		return err
 	}
 	r.env = build.AppEnv(
-		"TRACE_PTEST_UPDATE_URL="+r.server.base,
+		"TRACE_TEST_UPDATE_URL="+r.server.base,
 		"TRACE_QUIET=1",
 		"TRACE_CACHE_DIR="+filepath.Join(r.work, "cache"),
 	)
 
 	if err := r.step("静默安装旧版", func() (string, error) {
-		if err := build.RunQuiet(filepath.Join(oldDir, build.SetupName(build.ChannelPtest, r.res.OldVersion)), []string{"/S"}, build.AppEnv()); err != nil {
+		if err := build.RunQuiet(filepath.Join(oldDir, build.SetupName(build.ChannelTest, r.res.OldVersion)), []string{"/S"}, build.AppEnv()); err != nil {
 			return "", err
 		}
-		e, ok, err := build.LookupInstall(ptestIdentifier)
+		e, ok, err := build.LookupInstall(testIdentifier)
 		if err != nil || !ok {
 			return "", fmt.Errorf("no uninstall entry after the install: %v", err)
 		}
@@ -221,7 +221,7 @@ func (r *rehearsal) run() error {
 		}
 		deadline := time.Now().Add(20 * time.Second)
 		for {
-			e, ok, err := build.LookupInstall(ptestIdentifier)
+			e, ok, err := build.LookupInstall(testIdentifier)
 			if err == nil && ok && e.Version == r.res.NewVersion {
 				break
 			}
@@ -294,11 +294,11 @@ func (r *rehearsal) run() error {
 	})
 }
 
-// clearEarlier stops and uninstalls a ptest installation left from an
+// clearEarlier stops and uninstalls a trace-test installation left from an
 // earlier rehearsal and puts its data aside, so this one starts fresh.
 func (r *rehearsal) clearEarlier() (string, error) {
 	var notes []string
-	if e, ok, err := build.LookupInstall(ptestIdentifier); err != nil {
+	if e, ok, err := build.LookupInstall(testIdentifier); err != nil {
 		return "", err
 	} else if ok {
 		r.dir, r.exe = e.Location, filepath.Join(e.Location, "trace.exe")
@@ -310,7 +310,7 @@ func (r *rehearsal) clearEarlier() (string, error) {
 		if err := r.uninstall(); err != nil {
 			return "", err
 		}
-		notes = append(notes, "卸载了以前的 ptest "+e.Version)
+		notes = append(notes, "卸载了以前的 trace-test "+e.Version)
 	}
 	if _, err := os.Stat(r.dataDir); err == nil {
 		aside := r.dataDir + ".previous"
@@ -318,19 +318,19 @@ func (r *rehearsal) clearEarlier() (string, error) {
 			return "", err
 		}
 		if err := os.Rename(r.dataDir, aside); err != nil {
-			return "", fmt.Errorf("put the earlier ptest data aside: %w", err)
+			return "", fmt.Errorf("put the earlier trace-test data aside: %w", err)
 		}
-		notes = append(notes, "以前的 ptest 数据移到 "+filepath.Base(aside))
+		notes = append(notes, "以前的 trace-test 数据移到 "+filepath.Base(aside))
 	}
 	if len(notes) == 0 {
-		return "没有以前的 ptest 安装", nil
+		return "没有以前的 trace-test 安装", nil
 	}
 	return strings.Join(notes, "；"), nil
 }
 
-// recordInstalledOld records the installed ptest directory and executable
+// recordInstalledOld records the installed trace-test directory and executable
 // immediately upon finding the uninstall entry so cleanup() still uninstalls
-// ptest if the DisplayVersion check fails.
+// trace-test if the DisplayVersion check fails.
 func (r *rehearsal) recordInstalledOld(e build.InstallEntry) (string, error) {
 	r.dir, r.exe = e.Location, filepath.Join(e.Location, "trace.exe")
 	r.res.InstallDir = e.Location
@@ -340,7 +340,7 @@ func (r *rehearsal) recordInstalledOld(e build.InstallEntry) (string, error) {
 	return "DisplayVersion " + e.Version + " · " + e.Location, nil
 }
 
-// quit asks the running ptest TRACE to quit for the update and waits.
+// quit asks the running trace-test TRACE to quit for the update and waits.
 func (r *rehearsal) quit() (string, error) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), quitRequestTimeout)
@@ -357,16 +357,16 @@ func (r *rehearsal) quit() (string, error) {
 			return fmt.Sprintf("%d ms 内退出", time.Since(start).Milliseconds()), nil
 		}
 		if time.Since(start) > exitTimeout {
-			return "", fmt.Errorf("TRACE PTest did not quit within %s (not killed)", exitTimeout)
+			return "", fmt.Errorf("TRACE Test did not quit within %s (not killed)", exitTimeout)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
 }
 
-// uninstall runs the ptest uninstaller silently and waits until the entry
+// uninstall runs the trace-test uninstaller silently and waits until the entry
 // and the install directory are gone.
 func (r *rehearsal) uninstall() error {
-	e, ok, err := build.LookupInstall(ptestIdentifier)
+	e, ok, err := build.LookupInstall(testIdentifier)
 	if err != nil || !ok {
 		return err
 	}
@@ -383,7 +383,7 @@ func (r *rehearsal) uninstall() error {
 	}
 	deadline := time.Now().Add(time.Minute)
 	for {
-		_, still, _ := build.LookupInstall(ptestIdentifier)
+		_, still, _ := build.LookupInstall(testIdentifier)
 		_, statErr := os.Stat(filepath.Join(e.Location, "trace.exe"))
 		if !still && errors.Is(statErr, os.ErrNotExist) {
 			return nil
@@ -447,7 +447,7 @@ func (r *rehearsal) cleanup() {
 		if running, _ := build.RunningIn(r.dir); running && r.exe != "" {
 			_, _ = r.quit()
 		}
-		if _, ok, _ := build.LookupInstall(ptestIdentifier); ok {
+		if _, ok, _ := build.LookupInstall(testIdentifier); ok {
 			if err := r.uninstall(); err != nil {
 				r.logf("cleanup: %v", err)
 			}
