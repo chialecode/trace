@@ -204,6 +204,13 @@ func (s *Store) SaveItem(itemDir string, meta ItemMetadata) (ItemMetadata, error
 	return s.saveItem(itemDir, meta, true)
 }
 
+// SaveItemMetadataOnly writes updated item.json metadata (e.g. text/links normalization)
+// and updates the SQLite index without touching media files or re-hashing large files.
+// It still verifies ownership, regular-file safety, and exact byte sizes.
+func (s *Store) SaveItemMetadataOnly(itemDir string, meta ItemMetadata) (ItemMetadata, error) {
+	return s.saveItem(itemDir, meta, false)
+}
+
 func normalizeItemMetadataForSave(itemDir string, meta ItemMetadata) ItemMetadata {
 	if meta.Version <= 0 {
 		meta.Version = 1

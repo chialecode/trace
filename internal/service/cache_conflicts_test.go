@@ -995,3 +995,176 @@ func TestBilibiliVideosThreeGateCooldownAndConflictResolution(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyInlineURLConflictNormalizationAndAutoResolution(t *testing.T) {
+	const (
+		cid    = "100808c9a1f5c18abbfc31cecd32f45a14ddc1"
+		oriURL = "sinaweibo://pageinfo?containerid=" + cid + "&extparam=合成超话%23tabbar_follow%3D5012"
+	)
+
+	// 1. NormalizeConflictText treats legacy inline parenthesized URLs & newline vs space identically,
+	// while still distinguishing substantive text edits.
+	legacyText := "合成超话 (" + oriURL + ")\n我是正文第一句，附 参考文档 (https://example.com/guide?ref=1) 与 旧站 (http://example.org/p)。"
+	cleanRemote := "合成超话 我是正文第一句，附 参考文档 与 旧站。"
+	if gotL, gotR := download.NormalizeConflictText(legacyText), download.NormalizeConflictText(cleanRemote); gotL != gotR {
+		t.Fatalf("NormalizeConflictText mismatch:\nlocal =%q\nremote=%q", gotL, gotR)
+	}
+	if gotL, gotR := download.NormalizeConflictText("#合成[超话]# 今日记录"), download.NormalizeConflictText("合成超话 今日记录"); gotL != gotR {
+		t.Fatalf("supertopic markup NormalizeConflictText mismatch: %q vs %q", gotL, gotR)
+	}
+	if download.NormalizeConflictText(legacyText) == download.NormalizeConflictText("合成超话 我把正文改成了完全不同的内容。") {
+		t.Fatal("NormalizeConflictText must not collapse genuinely edited text")
+	}
+
+	// 2. inspectWeiboCachedPost no longer triggers a false text conflict for legacy cached Weibo posts,
+	// while a real text edit still reports text_edited.
+	clock := newFakeQueueClock(time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC))
+	b := newBatchTestBackend(t, clock)
+
+	wbLegacyMeta := library.ItemMetadata{
+		ItemKey:   "weibo:dynamic:5090000000000201",
+		Site:      "weibo",
+		Kind:      "dynamic",
+		Status:    "complete",
+		Text:      legacyText,
+		Desc:      legacyText,
+		AssetIDs:  []string{"005XpicLeg01"},
+		NotePages: []library.NotePageRecord{{Index: 1, Kind: "image", MediaID: "005XpicLeg01", Image: "images/01.jpg"}},
+	}
+	wbCleanRemote := weibo.Post{
+		Mid:    "5090000000000201",
+		Author: weibo.AuthorSummary{UID: "51001", ScreenName: "微博作者"},
+		Text:   cleanRemote,
+		Links: []site.TextLink{
+			{Label: "合成超话", URL: "https://weibo.com/p/" + cid},
+			{Label: "参考文档", URL: "https://example.com/guide?ref=1"},
+		},
+		Images: []weibo.ImageAsset{{Index: 1, PicID: "005XpicLeg01", Kind: weibo.MediaKindImage, URL: "https://wx1.sinaimg.cn/large/005XpicLeg01.jpg"}},
+	}
+	if dec := b.inspectWeiboCachedPost(wbCleanRemote, wbLegacyMeta, QueueOriginFullCache); dec.action != inspectSkipNoOp {
+		t.Fatalf("legacy inline URL vs clean remote = %+v, want inspectSkipNoOp", dec)
+	}
+
+	wbEditedRemote := wbCleanRemote
+	wbEditedRemote.Text = "合成超话 我把正文改成了完全不同的内容。"
+	if dec := b.inspectWeiboCachedPost(wbEditedRemote, wbLegacyMeta, QueueOriginFullCache); dec.action != inspectConflict || dec.conflict.ReasonKind != ConflictReasonText {
+		t.Fatalf("genuinely edited remote = %+v, want text_edited conflict", dec)
+	}
+
+	// 3. Existing pending false-positive conflict on disk auto-resolves on load/list,
+	// migrating local item.json to clean Text + safe Links[] while preserving CachedAt and media untouched;
+	// a genuinely edited pending conflict remains pending!
+	imgBytes := []byte("ORIGINAL_LOCAL_IMAGE_BYTES_UNTOUCHED")
+	itemDirFalse := filepath.Join(b.lib.CacheDir(), "weibo", "51001", "posts", "5090000000000202")
+	imgMF := writeVerifiedLocalFile(t, itemDirFalse, "images/01.jpg", imgBytes, "image", 800, 600, 0)
+	const origCachedAt = "2026-03-01T08:30:00Z"
+	if _, err := b.lib.SaveItem(itemDirFalse, library.ItemMetadata{
+		Version:   1,
+		ID:        "dynamic:5090000000000202",
+		Site:      "weibo",
+		Kind:      "dynamic",
+		Status:    "complete",
+		Title:     "合成超话 (" + oriURL + ")",
+		Desc:      legacyText,
+		Text:      legacyText,
+		URL:       "https://weibo.com/51001/5090000000000202",
+		PubTs:     1720001000,
+		CachedAt:  origCachedAt,
+		Author:    library.ItemAuthor{Site: "weibo", UID: "51001", Name: "微博作者"},
+		Media:     []library.MediaFile{imgMF},
+		AssetIDs:  []string{"005XpicLeg02"},
+		NotePages: []library.NotePageRecord{{Index: 1, Kind: "image", MediaID: "005XpicLeg02", Image: "images/01.jpg", Width: 800, Height: 600}},
+	}); err != nil {
+		t.Fatalf("SaveItem(false positive): %v", err)
+	}
+
+	itemDirReal := filepath.Join(b.lib.CacheDir(), "weibo", "51001", "posts", "5090000000000203")
+	imgMFReal := writeVerifiedLocalFile(t, itemDirReal, "images/01.jpg", imgBytes, "image", 800, 600, 0)
+	if _, err := b.lib.SaveItem(itemDirReal, library.ItemMetadata{
+		Version:   1,
+		ID:        "dynamic:5090000000000203",
+		Site:      "weibo",
+		Kind:      "dynamic",
+		Status:    "complete",
+		Title:     "真实编辑测试",
+		Desc:      legacyText,
+		Text:      legacyText,
+		URL:       "https://weibo.com/51001/5090000000000203",
+		PubTs:     1720001100,
+		CachedAt:  origCachedAt,
+		Author:    library.ItemAuthor{Site: "weibo", UID: "51001", Name: "微博作者"},
+		Media:     []library.MediaFile{imgMFReal},
+		AssetIDs:  []string{"005XpicReal03"},
+		NotePages: []library.NotePageRecord{{Index: 1, Kind: "image", MediaID: "005XpicReal03", Image: "images/01.jpg", Width: 800, Height: 600}},
+	}); err != nil {
+		t.Fatalf("SaveItem(real edit): %v", err)
+	}
+
+	falseFP := download.WorkConflictFingerprint("weibo", "dynamic", "5090000000000202", []string{"005XpicLeg02"}, 0, 1, 0, cleanRemote)
+	realFP := download.WorkConflictFingerprint("weibo", "dynamic", "5090000000000203", []string{"005XpicReal03"}, 0, 1, 0, "合成超话 真正被作者编辑过的全新正文")
+	if _, _, err := b.conflicts.recordOrUpdate(cacheConflictRecord{
+		ItemKey:           "weibo:dynamic:5090000000000202",
+		Site:              "weibo",
+		Kind:              "dynamic",
+		TargetID:          "5090000000000202",
+		Title:             "旧格式误报",
+		ReasonKind:        ConflictReasonText,
+		LocalSummary:      "共 1 项媒体",
+		RemoteSummary:     "源站微博正文内容已修改",
+		RemoteFingerprint: falseFP,
+		State:             ConflictStatePending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := b.conflicts.recordOrUpdate(cacheConflictRecord{
+		ItemKey:           "weibo:dynamic:5090000000000203",
+		Site:              "weibo",
+		Kind:              "dynamic",
+		TargetID:          "5090000000000203",
+		Title:             "真实编辑冲突",
+		ReasonKind:        ConflictReasonText,
+		LocalSummary:      "共 1 项媒体",
+		RemoteSummary:     "源站微博正文内容已修改",
+		RemoteFingerprint: realFP,
+		State:             ConflictStatePending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := b.ListCacheConflicts()
+	if err != nil {
+		t.Fatalf("ListCacheConflicts: %v", err)
+	}
+	if len(list) != 1 || list[0].ItemKey != "weibo:dynamic:5090000000000203" {
+		t.Fatalf("expected only genuine conflict to remain, got %+v", list)
+	}
+	if b.PendingCacheConflictCount() != 1 {
+		t.Fatalf("PendingCacheConflictCount = %d, want 1", b.PendingCacheConflictCount())
+	}
+
+	// Verify auto-migrated item.json has clean text, safe Links[], preserved CachedAt, v1 schema, and untouched image file.
+	migrated, ok, err := b.lib.GetItem("weibo:dynamic:5090000000000202")
+	if err != nil || !ok {
+		t.Fatalf("GetItem migrated failed: ok=%v err=%v", ok, err)
+	}
+	if migrated.Version != 1 || migrated.CachedAt != origCachedAt {
+		t.Fatalf("migrated metadata altered version/cachedAt: v=%d cachedAt=%q", migrated.Version, migrated.CachedAt)
+	}
+	wantMigratedText := "合成超话\n我是正文第一句，附 参考文档 与 旧站。"
+	if migrated.Text != wantMigratedText || migrated.Desc != wantMigratedText {
+		t.Fatalf("migrated Text/Desc = (%q, %q), want %q", migrated.Text, migrated.Desc, wantMigratedText)
+	}
+	if strings.Contains(migrated.Title, "sinaweibo://") {
+		t.Fatalf("migrated Title still contains sinaweibo://: %q", migrated.Title)
+	}
+	if len(migrated.Links) != 3 ||
+		migrated.Links[0] != (library.ItemLink{Label: "合成超话", URL: "https://weibo.com/p/" + cid}) ||
+		migrated.Links[1] != (library.ItemLink{Label: "参考文档", URL: "https://example.com/guide?ref=1"}) ||
+		migrated.Links[2] != (library.ItemLink{Label: "旧站", URL: "http://example.org/p"}) {
+		t.Fatalf("migrated Links = %+v", migrated.Links)
+	}
+	gotImg, rErr := os.ReadFile(filepath.Join(itemDirFalse, "images", "01.jpg"))
+	if rErr != nil || string(gotImg) != string(imgBytes) {
+		t.Fatalf("local image file was touched during legacy text migration: err=%v bytes=%q", rErr, string(gotImg))
+	}
+}

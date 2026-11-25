@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -305,5 +306,95 @@ func TestTasksConflictsDiffModalEscapeClosesTopMediaOverlayFirst(t *testing.T) {
 	tt.Frame()
 	if app.ConflictDiff.Open {
 		t.Fatal("expected second Escape to close ConflictDiff modal")
+	}
+}
+
+func TestTasksConflictsDiffModalRendersClickableLinksAndAsymmetry(t *testing.T) {
+	app, _, cleanup := newTestUIApp(t)
+	defer cleanup()
+
+	rawBackend := app.backend.(*service.Backend)
+	desk := rawBackend.Desktop().(*service.MockDesktop)
+	const cid = "100808c9a1f5c18abbfc31cecd32f45a14ddc1"
+
+	conflict := service.CacheConflictDTO{
+		ID:          "conflict_links_1",
+		ItemKey:     "weibo:dynamic:5090000000000401",
+		Site:        "weibo",
+		Kind:        "dynamic",
+		TargetID:    "5090000000000401",
+		Title:       "超话链接对比",
+		ReasonKind:  service.ConflictReasonText,
+		ReasonLabel: "正文编辑",
+		State:       service.ConflictStatePending,
+	}
+	_, locSegs, remSegs := service.DiffTextSideBySide("摄影超话 旧正文内容", "摄影超话 新正文内容与 勘误说明")
+	app.OpenTasksConflicts()
+	app.OpenConflictDiffModalWithData(service.CacheConflictDiffDTO{
+		Conflict:    conflict,
+		Local:       service.ConflictDiffSideDTO{Heading: "本地已缓存（旧版 V1）", Text: "摄影超话 旧正文内容"},
+		Remote:      service.ConflictDiffSideDTO{Heading: "源站当前（新版 V2）", Text: "摄影超话 新正文内容与 勘误说明"},
+		TextChanged: true,
+		LocalText:   locSegs,
+		RemoteText:  remSegs,
+		LocalLinks: []service.TextLinkDTO{
+			{Label: "摄影超话", URL: "https://weibo.com/p/" + cid},
+			{Label: "恶意脚本", URL: "javascript:alert(1)"},
+		},
+		RemoteLinks: []service.TextLinkDTO{
+			{Label: "摄影超话", URL: "https://weibo.com/p/" + cid},
+			{Label: "勘误说明", URL: "https://example.com/errata"},
+		},
+	})
+
+	tt := ui.NewTester(app.View, 1280, 860)
+	tt.Frame()
+
+	for _, want := range []string{"正文超链接（本地）", "正文超链接（源站）", "本地对比超链接：摄影超话", "源站对比超链接：摄影超话", "源站对比超链接：勘误说明"} {
+		if _, ok := tt.Find(want); !ok {
+			t.Fatalf("missing expected conflict diff link element %q", want)
+		}
+	}
+	if _, ok := tt.Find("本地对比超链接：恶意脚本"); ok {
+		t.Fatal("unsafe javascript: link must NEVER render as clickable pill in conflict diff modal")
+	}
+
+	if err := tt.Click("本地对比超链接：摄影超话"); err != nil {
+		t.Fatalf("Click local link pill failed: %v", err)
+	}
+	if err := tt.Click("源站对比超链接：勘误说明"); err != nil {
+		t.Fatalf("Click remote link pill failed: %v", err)
+	}
+	actions := desk.Actions()
+	if !slices.Contains(actions, service.RecordedAction{Kind: "url", Target: "https://weibo.com/p/" + cid}) ||
+		!slices.Contains(actions, service.RecordedAction{Kind: "url", Target: "https://example.com/errata"}) {
+		t.Fatalf("expected conflict diff link clicks recorded in MockDesktop, got %+v", actions)
+	}
+
+	// Narrow 720px window must render link pills without horizontal overflow.
+	ttNarrow := ui.NewTester(app.View, 720, 860)
+	ttNarrow.Frame()
+	if rect, ok := ttNarrow.Find("内容冲突对比弹窗"); !ok {
+		t.Fatal("expected diff modal to render at 720px")
+	} else if rect.X < -0.5 || rect.X+rect.W > 720.5 {
+		t.Fatalf("720px diff modal with links overflows horizontally: %+v", rect)
+	}
+
+	// Asymmetric links: local has 0 links, remote has 1 link -> local explicitly shows （无超链接）.
+	app.OpenConflictDiffModalWithData(service.CacheConflictDiffDTO{
+		Conflict:    conflict,
+		Local:       service.ConflictDiffSideDTO{Heading: "本地已缓存（旧版 V1）", Text: "纯文字旧版"},
+		Remote:      service.ConflictDiffSideDTO{Heading: "源站当前（新版 V2）", Text: "新版补充 摄影超话"},
+		TextChanged: true,
+		LocalText:   []service.ConflictTextSegment{{Text: "纯文字旧版", Kind: "removed"}},
+		RemoteText:  []service.ConflictTextSegment{{Text: "新版补充 摄影超话", Kind: "added"}},
+		RemoteLinks: []service.TextLinkDTO{{Label: "摄影超话", URL: "https://weibo.com/p/" + cid}},
+	})
+	tt.Frame()
+	if !tt.HasText("（无超链接）") {
+		t.Fatal("expected explicit （无超链接） indicator on side without hyperlinks")
+	}
+	if _, ok := tt.Find("源站对比超链接：摄影超话"); !ok {
+		t.Fatal("expected remote hyperlink pill to remain visible on asymmetric diff")
 	}
 }

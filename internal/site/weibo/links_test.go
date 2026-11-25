@@ -62,8 +62,73 @@ func TestNormalizeWeiboJumpURL(t *testing.T) {
 			want: "",
 		},
 		{
-			name: "reject app custom scheme",
+			name: "sinaweibo pageinfo supertopic rewritten to desktop url",
+			in:   "sinaweibo://pageinfo?containerid=100808c9a1f5c18abbfc31cecd32f45a14ddc1&extparam=%E5%90%88%E6%88%90%23tabbar_follow%3D5012",
+			want: "https://weibo.com/p/100808c9a1f5c18abbfc31cecd32f45a14ddc1",
+		},
+		{
+			name: "sinaweibo pageinfo with unescaped CJK extparam",
+			in:   "sinaweibo://pageinfo?containerid=100808synth_01-ab&extparam=合成超话",
+			want: "https://weibo.com/p/100808synth_01-ab",
+		},
+		{
+			name: "sinaweibo pageinfo profile container",
+			in:   "sinaweibo://pageinfo?containerid=1005051000000001",
+			want: "https://weibo.com/p/1005051000000001",
+		},
+		{
+			name: "sinaweibo userinfo rewritten to desktop profile url",
 			in:   "sinaweibo://userinfo?uid=1000000001",
+			want: "https://weibo.com/u/1000000001",
+		},
+		{
+			name: "sinaurl wrapping safe sinaweibo pageinfo",
+			in:   "https://weibo.cn/sinaurl?u=sinaweibo%3A%2F%2Fpageinfo%3Fcontainerid%3D100808synth01",
+			want: "https://weibo.com/p/100808synth01",
+		},
+		{
+			name: "reject unknown sinaweibo custom path",
+			in:   "sinaweibo://browser?url=https%3A%2F%2Fexample.com",
+			want: "",
+		},
+		{
+			name: "reject sinaweibo detail custom scheme",
+			in:   "sinaweibo://detail?mblogid=O00000001",
+			want: "",
+		},
+		{
+			name: "reject sinaweibo pageinfo invalid containerid",
+			in:   "sinaweibo://pageinfo?containerid=100808../evil",
+			want: "",
+		},
+		{
+			name: "reject sinaweibo pageinfo extra path",
+			in:   "sinaweibo://pageinfo/extra?containerid=100808synth01",
+			want: "",
+		},
+		{
+			name: "reject sinaweibo pageinfo signed marker",
+			in:   "sinaweibo://pageinfo?containerid=100808synth01&ssig=syn_secret&Expires=1800000000",
+			want: "",
+		},
+		{
+			name: "reject sinaweibo pageinfo credential query",
+			in:   "sinaweibo://pageinfo?containerid=100808synth01&SUB=syn_cookie",
+			want: "",
+		},
+		{
+			name: "reject sinaweibo pageinfo userinfo credentials",
+			in:   "sinaweibo://user:secret@pageinfo?containerid=100808synth01",
+			want: "",
+		},
+		{
+			name: "reject sinaweibo userinfo invalid uid",
+			in:   "sinaweibo://userinfo?uid=1234",
+			want: "",
+		},
+		{
+			name: "reject sinaweibo userinfo leading zero uid",
+			in:   "sinaweibo://userinfo?uid=0123456",
 			want: "",
 		},
 		{
@@ -131,5 +196,67 @@ func TestExtractWeiboTextAndLinksRichAnchorsAndDuplicateLabels(t *testing.T) {
 		if links[i].Label != w[0] || links[i].URL != w[1] {
 			t.Fatalf("links[%d] = %+v, want {Label:%q URL:%q}", i, links[i], w[0], w[1])
 		}
+	}
+}
+
+func TestExtractWeiboTextAndLinksSuperTopicOriURLOnly(t *testing.T) {
+	const (
+		cid    = "100808c9a1f5c18abbfc31cecd32f45a14ddc1"
+		oriURL = "sinaweibo://pageinfo?containerid=" + cid + "&extparam=%E5%90%88%E6%88%90%23tabbar_follow%3D5012"
+		wantU  = "https://weibo.com/p/" + cid
+	)
+
+	cases := []struct {
+		name     string
+		rawHTML  string
+		rawText  string
+		mappings []URLStructItem
+		wantText string
+	}{
+		{
+			name:    "hash supertopic markup with empty long_url and ori_url sinaweibo",
+			rawHTML: "",
+			rawText: "#合成[超话]# 今日实拍记录",
+			mappings: []URLStructItem{
+				{ShortURL: "http://t.cn/A6SUP01", LongURL: "", OriURL: oriURL, URLTitle: "合成超话"},
+			},
+			wantText: "合成超话 今日实拍记录",
+		},
+		{
+			name:    "plain supertopic title with both long_url and ori_url sinaweibo",
+			rawHTML: "",
+			rawText: "合成超话 今日实拍记录",
+			mappings: []URLStructItem{
+				{ShortURL: "", LongURL: oriURL, OriURL: oriURL, URLTitle: "合成超话"},
+			},
+			wantText: "合成超话 今日实拍记录",
+		},
+		{
+			name:    "t.cn short url resolved through sinaweibo ori_url",
+			rawHTML: "",
+			rawText: "http://t.cn/A6SUP02 今日实拍记录",
+			mappings: []URLStructItem{
+				{ShortURL: "http://t.cn/A6SUP02", LongURL: "http://t.cn/A6SUP02", OriURL: oriURL, URLTitle: "合成超话"},
+			},
+			wantText: "合成超话 今日实拍记录",
+		},
+		{
+			name:     "html anchor directly carrying sinaweibo pageinfo href",
+			rawHTML:  `<a href="sinaweibo://pageinfo?containerid=` + cid + `&amp;extparam=合成超话">合成超话</a> 今日实拍记录`,
+			rawText:  "",
+			wantText: "合成超话 今日实拍记录",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotText, gotLinks := extractWeiboTextAndLinks(tc.rawHTML, tc.rawText, tc.mappings, false)
+			if gotText != tc.wantText {
+				t.Fatalf("text = %q, want %q", gotText, tc.wantText)
+			}
+			if len(gotLinks) != 1 || gotLinks[0].Label != "合成超话" || gotLinks[0].URL != wantU {
+				t.Fatalf("links = %+v, want [{Label:合成超话 URL:%s}]", gotLinks, wantU)
+			}
+		})
 	}
 }

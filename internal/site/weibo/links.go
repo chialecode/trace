@@ -13,10 +13,12 @@ import (
 )
 
 var (
-	reAnchorTag      = regexp.MustCompile(`(?is)<a\b([^>]*)>(.*?)</a>`)
-	reAnchorHrefAttr = regexp.MustCompile(`(?is)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))`)
-	reAnchorDataURL  = regexp.MustCompile(`(?is)\bdata-url\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))`)
-	rePostPathRel    = regexp.MustCompile(`^/\d{5,20}/[A-Za-z0-9]{6,24}/?$`)
+	reAnchorTag       = regexp.MustCompile(`(?is)<a\b([^>]*)>(.*?)</a>`)
+	reAnchorHrefAttr  = regexp.MustCompile(`(?is)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))`)
+	reAnchorDataURL   = regexp.MustCompile(`(?is)\bdata-url\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))`)
+	rePostPathRel     = regexp.MustCompile(`^/\d{5,20}/[A-Za-z0-9]{6,24}/?$`)
+	reSafeContainerID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{5,63}$`)
+	reSafeWeiboUID    = regexp.MustCompile(`^[1-9][0-9]{4,18}$`)
 )
 
 type parsedHTMLAnchor struct {
@@ -30,6 +32,12 @@ type shortURLResolution struct {
 	Label           string
 	TargetURL       string
 	MediaAttachment bool
+	Consumed        bool
+}
+
+type directAnchorCandidate struct {
+	Link     site.TextLink
+	ShortKey string
 }
 
 type positionedLink struct {
@@ -38,10 +46,128 @@ type positionedLink struct {
 	Link  site.TextLink
 }
 
+// RewriteSafeSinaWeiboAppURL converts strictly allowlisted Weibo mobile deep links
+// into canonical desktop HTTPS URLs:
+//   - sinaweibo://pageinfo?containerid=<cid>... -> https://weibo.com/p/<cid>
+//   - sinaweibo://userinfo?uid=<5..19 digits>   -> https://weibo.com/u/<uid>
+//
+// Any other sinaweibo:// path, non-sinaweibo scheme, userinfo credentials,
+// control characters, whitespace, backslashes, or signed/credential query
+// parameters are rejected with "".
+func RewriteSafeSinaWeiboAppURL(raw string) string {
+	s := strings.TrimSpace(html.UnescapeString(strings.TrimSpace(raw)))
+	if s == "" || !strings.HasPrefix(strings.ToLower(s), "sinaweibo://") {
+		return ""
+	}
+	for _, r := range s {
+		if r <= 0x1f || r == 0x7f || unicode.IsSpace(r) || r == '\\' {
+			return ""
+		}
+	}
+	if HasSignedQueryMarker(s) || hasUnsafeWeiboCredentialQueryMarker(s) {
+		return ""
+	}
+	u, err := url.Parse(s)
+	if err != nil || !strings.EqualFold(u.Scheme, "sinaweibo") || u.User != nil || u.Port() != "" {
+		return ""
+	}
+	if u.Path != "" && u.Path != "/" {
+		return ""
+	}
+	q := u.Query()
+	for key, vals := range q {
+		if isUnsafeWeiboCredentialQueryKey(key) {
+			return ""
+		}
+		for _, v := range vals {
+			if HasSignedQueryMarker(v) || hasUnsafeWeiboCredentialQueryMarker(v) {
+				return ""
+			}
+		}
+	}
+	switch strings.ToLower(u.Host) {
+	case "pageinfo":
+		cids := q["containerid"]
+		if len(cids) != 1 {
+			return ""
+		}
+		cid := strings.TrimSpace(cids[0])
+		if !reSafeContainerID.MatchString(cid) || HasSignedQueryMarker(cid) {
+			return ""
+		}
+		return "https://weibo.com/p/" + cid
+	case "userinfo":
+		uids := q["uid"]
+		if len(uids) != 1 {
+			return ""
+		}
+		uid := strings.TrimSpace(uids[0])
+		if !reSafeWeiboUID.MatchString(uid) {
+			return ""
+		}
+		return "https://weibo.com/u/" + uid
+	default:
+		return ""
+	}
+}
+
+func isUnsafeWeiboCredentialQueryKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "ssig", "expires", "kid",
+		"sub", "subp", "wbpsess", "xsrf-token", "x-xsrf-token",
+		"gsid", "scf", "alf", "alc", "suhb", "pc_token", "ssologinstate", "_t_wm",
+		"auth_token", "token", "access_token", "sessionid", "sessdata",
+		"bili_jct", "cookie", "password", "passwd", "secret":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasUnsafeWeiboCredentialQueryMarker(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if lower == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"sub=", "sub%3d", "subp=", "subp%3d",
+		"wbpsess=", "wbpsess%3d", "xsrf-token=", "xsrf-token%3d",
+		"gsid=", "gsid%3d", "scf=", "scf%3d", "alf=", "alf%3d",
+		"suhb=", "suhb%3d", "pc_token=", "pc_token%3d",
+		"ssologinstate=", "ssologinstate%3d",
+		"auth_token=", "auth_token%3d", "access_token=", "access_token%3d",
+		"sessionid=", "sessionid%3d", "sessdata=", "sessdata%3d",
+	} {
+		idx := strings.Index(lower, marker)
+		for idx >= 0 {
+			if idx == 0 || isQueryBoundaryByte(lower[idx-1]) {
+				return true
+			}
+			next := strings.Index(lower[idx+len(marker):], marker)
+			if next < 0 {
+				break
+			}
+			idx += len(marker) + next
+		}
+	}
+	return false
+}
+
+func isQueryBoundaryByte(b byte) bool {
+	switch b {
+	case '?', '&', ';', '#', '/', '%':
+		return true
+	default:
+		return false
+	}
+}
+
 // NormalizeWeiboJumpURL resolves a Weibo HTML href or url_struct URL into a safe
-// external HTTP(S) jump URL, unwrapping sinaurl redirects and resolving protocol-less
-// or root-relative Weibo links while rejecting non-HTTP(S) schemes, userinfo,
-// control characters, media CDN assets, and signed media tokens.
+// external HTTP(S) jump URL, converting allowlisted sinaweibo:// app links
+// (pageinfo?containerid=... and userinfo?uid=...), unwrapping sinaurl redirects,
+// and resolving protocol-less or root-relative Weibo links while rejecting other
+// non-HTTP(S) schemes, userinfo, control characters, media CDN assets, and signed
+// media tokens.
 func NormalizeWeiboJumpURL(rawHref string, allowLocalhost bool) string {
 	s := strings.TrimSpace(html.UnescapeString(strings.TrimSpace(rawHref)))
 	if s == "" {
@@ -51,6 +177,10 @@ func NormalizeWeiboJumpURL(rawHref string, allowLocalhost bool) string {
 		if r <= 0x1f || r == 0x7f || unicode.IsSpace(r) || r == '\\' {
 			return ""
 		}
+	}
+
+	if strings.HasPrefix(strings.ToLower(s), "sinaweibo://") {
+		return RewriteSafeSinaWeiboAppURL(s)
 	}
 
 	if strings.HasPrefix(s, "//") {
@@ -64,6 +194,9 @@ func NormalizeWeiboJumpURL(rawHref string, allowLocalhost bool) string {
 
 	// Unwrap up to 2 levels of Weibo redirect wrappers (e.g. weibo.cn/sinaurl?u=...).
 	for hop := 0; hop < 2; hop++ {
+		if strings.HasPrefix(strings.ToLower(s), "sinaweibo://") {
+			return RewriteSafeSinaWeiboAppURL(s)
+		}
 		u, err := url.Parse(s)
 		if err != nil || u.Host == "" || u.User != nil {
 			return ""
@@ -90,6 +223,10 @@ func NormalizeWeiboJumpURL(rawHref string, allowLocalhost bool) string {
 			continue
 		}
 		break
+	}
+
+	if strings.HasPrefix(strings.ToLower(s), "sinaweibo://") {
+		return RewriteSafeSinaWeiboAppURL(s)
 	}
 
 	u, err := url.Parse(s)
@@ -304,9 +441,11 @@ func extractWeiboTextAndLinks(rawHTML, rawText string, urlMappings []URLStructIt
 		return res
 	}
 
+	var urlStructAnchors []directAnchorCandidate
+
 	for _, item := range urlMappings {
 		shortU := strings.TrimSpace(item.ShortURL)
-		label := cleanWeiboLinkLabel(item.URLTitle)
+		label := normalizeSuperTopicLabel(cleanWeiboLinkLabel(item.URLTitle))
 		longMedia := isWeiboMediaOrSignedStreamURL(item.LongURL)
 		oriMedia := isWeiboMediaOrSignedStreamURL(item.OriURL)
 
@@ -314,14 +453,18 @@ func extractWeiboTextAndLinks(rawHTML, rawText string, urlMappings []URLStructIt
 		if !longMedia {
 			target = NormalizeWeiboJumpURL(item.LongURL, allowLocalhost)
 		}
-		if target == "" && !oriMedia {
-			target = NormalizeWeiboJumpURL(item.OriURL, allowLocalhost)
+		if (target == "" || isWeiboShortTCNURL(target)) && !oriMedia {
+			if oriTarget := NormalizeWeiboJumpURL(item.OriURL, allowLocalhost); oriTarget != "" {
+				target = oriTarget
+			}
 		}
 		isMedia := (longMedia || oriMedia) && target == ""
 		if target == "" && !isMedia && shortU != "" {
 			target = NormalizeWeiboJumpURL(shortU, allowLocalhost)
 		}
+		shortKey := ""
 		if shortU != "" {
+			shortKey = normalizeShortURLKey(shortU)
 			res := registerShort(shortU)
 			if res != nil {
 				if res.Label == "" && label != "" {
@@ -330,15 +473,21 @@ func extractWeiboTextAndLinks(rawHTML, rawText string, urlMappings []URLStructIt
 				if isMedia {
 					res.MediaAttachment = true
 					res.TargetURL = ""
-				} else if res.TargetURL == "" && target != "" {
+				} else if (res.TargetURL == "" || isWeiboShortTCNURL(res.TargetURL)) && target != "" {
 					res.TargetURL = target
 				}
 			}
 		}
+		if !isMedia && label != "" && target != "" {
+			urlStructAnchors = append(urlStructAnchors, directAnchorCandidate{
+				Link:     site.TextLink{Label: label, URL: target},
+				ShortKey: shortKey,
+			})
+		}
 	}
 
 	anchors := extractHTMLAnchors(rawHTML)
-	var directAnchors []site.TextLink
+	var directCandidates []directAnchorCandidate
 	for _, a := range anchors {
 		candShort := ""
 		if strings.Contains(strings.ToLower(a.DataURL), "://t.cn/") {
@@ -348,42 +497,52 @@ func extractWeiboTextAndLinks(rawHTML, rawText string, urlMappings []URLStructIt
 		}
 
 		resolvedHref := NormalizeWeiboJumpURL(a.Href, allowLocalhost)
-		if resolvedHref == "" && a.DataURL != "" && candShort == "" {
-			resolvedHref = NormalizeWeiboJumpURL(a.DataURL, allowLocalhost)
+		if (resolvedHref == "" || isWeiboShortTCNURL(resolvedHref)) && a.DataURL != "" && candShort == "" {
+			if alt := NormalizeWeiboJumpURL(a.DataURL, allowLocalhost); alt != "" {
+				resolvedHref = alt
+			}
 		}
+		anchorLabel := normalizeSuperTopicLabel(a.Label)
 
 		if candShort != "" {
+			shortKey := normalizeShortURLKey(candShort)
 			res := registerShort(candShort)
 			if res != nil {
 				if !res.MediaAttachment {
-					if (res.TargetURL == "" || strings.Contains(strings.ToLower(res.TargetURL), "://t.cn/")) && resolvedHref != "" {
+					if (res.TargetURL == "" || isWeiboShortTCNURL(res.TargetURL)) && resolvedHref != "" {
 						res.TargetURL = resolvedHref
 					}
 					if res.TargetURL == "" {
 						res.TargetURL = NormalizeWeiboJumpURL(candShort, allowLocalhost)
 					}
 				}
-				if a.Label != "" && (res.Label == "" || (res.Label == "网页链接" && a.Label != "网页链接" && !strings.HasPrefix(strings.ToLower(a.Label), "http"))) {
-					res.Label = a.Label
+				if anchorLabel != "" && (res.Label == "" || (res.Label == "网页链接" && anchorLabel != "网页链接" && !strings.HasPrefix(strings.ToLower(anchorLabel), "http"))) {
+					res.Label = anchorLabel
 				}
-				// Also keep as fallback direct anchor in case baseText came from stripHTMLText(rawHTML) where t.cn was already replaced by label.
+				// Also keep as fallback direct anchor in case baseText came from stripHTMLText(rawHTML)
+				// or text_raw uses "#名称[超话]#" / "名称超话" instead of the raw t.cn short URL.
 				if !res.MediaAttachment && res.TargetURL != "" {
 					lbl := res.Label
 					if lbl == "" {
-						lbl = a.Label
+						lbl = anchorLabel
 					}
 					if lbl != "" {
-						directAnchors = append(directAnchors, site.TextLink{Label: lbl, URL: res.TargetURL})
+						directCandidates = append(directCandidates, directAnchorCandidate{
+							Link:     site.TextLink{Label: lbl, URL: res.TargetURL},
+							ShortKey: shortKey,
+						})
 					}
 				}
 				continue
 			}
 		}
 
-		if resolvedHref != "" && a.Label != "" {
-			directAnchors = append(directAnchors, site.TextLink{
-				Label: a.Label,
-				URL:   resolvedHref,
+		if resolvedHref != "" && anchorLabel != "" {
+			directCandidates = append(directCandidates, directAnchorCandidate{
+				Link: site.TextLink{
+					Label: anchorLabel,
+					URL:   resolvedHref,
+				},
 			})
 		}
 	}
@@ -399,6 +558,44 @@ func extractWeiboTextAndLinks(rawHTML, rawText string, urlMappings []URLStructIt
 
 	// Replace t.cn short URLs left-to-right while tracking exact byte spans of emitted link labels.
 	cleanText, positioned := replaceShortURLsWithLabels(baseText, shortMap, shortOrder)
+
+	// Build active direct anchors from unconsumed HTML anchors and unconsumed url_struct entries
+	// (e.g. Weibo super-topics where url_struct carries ori_url sinaweibo://pageinfo?containerid=...
+	// while text_raw carries "#名称[超话]#" or "名称超话" without a raw t.cn token).
+	directAnchors := make([]site.TextLink, 0, len(directCandidates)+len(urlStructAnchors))
+	seenDirectKey := make(map[string]bool, len(directCandidates)+len(urlStructAnchors))
+	appendDirect := func(cand directAnchorCandidate) {
+		if cand.Link.Label == "" || cand.Link.URL == "" {
+			return
+		}
+		if cand.ShortKey != "" {
+			if res, ok := shortMap[cand.ShortKey]; ok && res != nil && res.Consumed {
+				return
+			}
+		}
+		dedupKey := cand.Link.Label + "\x00" + cand.Link.URL
+		if cand.ShortKey != "" {
+			dedupKey = cand.ShortKey + "\x00" + dedupKey
+		}
+		if seenDirectKey[dedupKey] {
+			return
+		}
+		seenDirectKey[dedupKey] = true
+		directAnchors = append(directAnchors, cand.Link)
+	}
+	for _, cand := range directCandidates {
+		appendDirect(cand)
+	}
+	for _, cand := range urlStructAnchors {
+		// Skip url_struct fallback if an HTML anchor already registered the exact same (label, url) or shortKey.
+		if cand.ShortKey != "" && seenDirectKey[cand.ShortKey+"\x00"+cand.Link.Label+"\x00"+cand.Link.URL] {
+			continue
+		}
+		if seenDirectKey[cand.Link.Label+"\x00"+cand.Link.URL] {
+			continue
+		}
+		appendDirect(cand)
+	}
 
 	// Normalize Weibo super-topic markup "#名称[超话]#" -> "名称超话" when matching a super-topic anchor.
 	cleanText, positioned = normalizeSuperTopicMarkup(cleanText, positioned, directAnchors)
@@ -509,6 +706,7 @@ func replaceShortURLsWithLabels(text string, shortMap map[string]*shortURLResolu
 		}
 		sb.WriteString(text[pos:bestIdx])
 		res := bestTok.res
+		res.Consumed = true
 		switch {
 		case res.MediaAttachment:
 			if res.Label != "" {
@@ -623,6 +821,21 @@ func findUnclaimedLabel(text, label string, from int, claimed []positionedLink) 
 		cur = idx + 1
 	}
 	return -1
+}
+
+func isWeiboShortTCNURL(raw string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(raw)), "://t.cn/")
+}
+
+func normalizeSuperTopicLabel(label string) string {
+	s := strings.TrimSpace(label)
+	if strings.HasPrefix(s, "#") && strings.HasSuffix(s, "[超话]#") {
+		topic := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "#"), "[超话]#"))
+		if topic != "" {
+			return topic + "超话"
+		}
+	}
+	return s
 }
 
 func isShortURLCodeByte(b byte) bool {
