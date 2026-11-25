@@ -18,10 +18,11 @@ const (
 )
 
 type cachedWeiboPostEntry struct {
-	post       weibo.Post
-	codec      string
-	maxRes     int
-	capturedAt time.Time
+	post            weibo.Post
+	codec           string
+	maxRes          int
+	removeWatermark bool
+	capturedAt      time.Time
 }
 
 // weiboPostPlanCache keeps recently fetched Weibo posts strictly in memory so
@@ -43,7 +44,7 @@ func newWeiboPostPlanCache(nowFn func() time.Time) *weiboPostPlanCache {
 	}
 }
 
-func (c *weiboPostPlanCache) put(post *weibo.Post, codec string, maxRes int) {
+func (c *weiboPostPlanCache) put(post *weibo.Post, codec string, maxRes int, removeWatermark bool) {
 	if c == nil || !canReuseWeiboPostPlan(post) {
 		return
 	}
@@ -71,14 +72,15 @@ func (c *weiboPostPlanCache) put(post *weibo.Post, codec string, maxRes int) {
 		}
 	}
 	c.entries[mid] = cachedWeiboPostEntry{
-		post:       *post,
-		codec:      codec,
-		maxRes:     maxRes,
-		capturedAt: now,
+		post:            *post,
+		codec:           codec,
+		maxRes:          maxRes,
+		removeWatermark: removeWatermark,
+		capturedAt:      now,
 	}
 }
 
-func (c *weiboPostPlanCache) get(mid, codec string, maxRes int) (*weibo.Post, bool) {
+func (c *weiboPostPlanCache) get(mid, codec string, maxRes int, removeWatermark bool) (*weibo.Post, bool) {
 	if c == nil {
 		return nil, false
 	}
@@ -97,7 +99,7 @@ func (c *weiboPostPlanCache) get(mid, codec string, maxRes int) (*weibo.Post, bo
 		delete(c.entries, mid)
 		return nil, false
 	}
-	if ent.codec != codec || ent.maxRes != maxRes {
+	if ent.codec != codec || ent.maxRes != maxRes || ent.removeWatermark != removeWatermark {
 		return nil, false
 	}
 	cp := ent.post
@@ -383,6 +385,20 @@ func (b *Backend) currentWeiboMaxResolution() int {
 		return 0
 	}
 	return parseDouyinQualityCap(b.settings.Get().Download.VideoQuality)
+}
+
+func (b *Backend) weiboRemoveWatermarkEnabled() bool {
+	if b == nil || b.settings == nil {
+		return true
+	}
+	return b.settings.Get().WeiboRemoveWatermark
+}
+
+func (b *Backend) rewriteWeiboImageURL(_ string, rawURL string) (string, bool) {
+	if !b.weiboRemoveWatermarkEnabled() {
+		return "", false
+	}
+	return weibo.RewriteWatermarkFreeImageURL(rawURL)
 }
 
 func resolveWeiboCodecFromOrder(order []string, fallback string) string {

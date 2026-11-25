@@ -996,11 +996,25 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 	if err == nil {
 		return data, ct, nil
 	}
+	fallbackBase := normalized
+	if osFallback, ok := fallbackFromOSLargeURL(normalized); ok &&
+		ctx.Err() == nil && !site.IsRoundStop(err) && !site.IsCircuitBreak(err) &&
+		transportSpec.ValidateURL(osFallback) == nil {
+		fallbackBase = osFallback
+		fbData, fbCT, fbPlaceholder, fbErr := c.fetchSingleWeiboImage(ctx, transportSpec, osFallback, maxBytes)
+		if fbErr == nil {
+			return fbData, fbCT, nil
+		}
+		err = fbErr
+		if fbPlaceholder {
+			sawPlaceholder = true
+		}
+	}
 	if !site.ShouldAttemptImageCDNFallback(err, sawPlaceholder) {
 		return nil, "", err
 	}
 
-	for _, altURL := range alternateWeiboEdgeURLs(normalized) {
+	for _, altURL := range alternateWeiboEdgeURLs(fallbackBase) {
 		if ctx.Err() != nil {
 			return nil, "", ctx.Err()
 		}
@@ -1023,7 +1037,7 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 		IdleReadTimeout: c.mediaIdleTimeout,
 		UserAgent:       c.profile.UserAgent,
 	}
-	if fbData, fbCT, _, fbOK := site.FetchPublicImageCDNFallback(ctx, fbCfg, normalized, maxBytes, 0, 0, false); fbOK {
+	if fbData, fbCT, _, fbOK := site.FetchPublicImageCDNFallback(ctx, fbCfg, fallbackBase, maxBytes, 0, 0, false); fbOK {
 		return fbData, fbCT, nil
 	}
 	return nil, "", err
@@ -1113,6 +1127,15 @@ func (c *Client) fetchSingleWeiboImage(ctx context.Context, transportSpec site.M
 			Site:    site.Weibo,
 			Kind:    site.ErrKindUnavailable,
 			Message: "微博图片已在源站失效",
+		}
+	}
+	if _, isOSLarge := fallbackFromOSLargeURL(targetURL); isOSLarge {
+		if _, ok := site.SniffImageMagicBytes(data); !ok {
+			return nil, "", false, &site.Error{
+				Site:    site.Weibo,
+				Kind:    site.ErrKindSchemaChanged,
+				Message: "微博去水印图片文件头无效",
+			}
 		}
 	}
 	return data, ct, false, nil

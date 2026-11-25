@@ -14,21 +14,22 @@ import (
 
 // douyinNoteRenderPage normalizes an online or locally cached Douyin note page for grid and viewer rendering.
 type douyinNoteRenderPage struct {
-	Index         int
-	Kind          string // "image", "live_photo", "video", "unknown"
-	IsGIF         bool
-	HLSOnly       bool
-	HLSOnlyNotice string
-	ImageURL      string
-	ImageRel      string
-	MotionURL     string
-	MotionRel     string
-	VideoURL      string
-	VideoRel      string
-	Width         int
-	Height        int
-	DurationSec   int
-	UnknownReason string
+	Index             int
+	Kind              string // "image", "live_photo", "video", "unknown"
+	IsGIF             bool
+	HLSOnly           bool
+	HLSOnlyNotice     string
+	ImageURL          string
+	FallbackImageURLs []string
+	ImageRel          string
+	MotionURL         string
+	MotionRel         string
+	VideoURL          string
+	VideoRel          string
+	Width             int
+	Height            int
+	DurationSec       int
+	UnknownReason     string
 }
 
 // ============================================================================
@@ -408,6 +409,7 @@ func (a *App) openNotePagesViewer(itemKey, siteID string, pages []douyinNoteRend
 		return
 	}
 	urls := make([]string, len(pages))
+	fallbackURLs := make([][]string, len(pages))
 	localStills := make([]string, len(pages))
 	rels := make([]string, len(pages))
 	kinds := make([]string, len(pages))
@@ -420,6 +422,9 @@ func (a *App) openNotePagesViewer(itemKey, siteID string, pages []douyinNoteRend
 	for i, pg := range pages {
 		if !offline {
 			urls[i] = pg.ImageURL
+			if len(pg.FallbackImageURLs) > 0 {
+				fallbackURLs[i] = append([]string(nil), pg.FallbackImageURLs...)
+			}
 		}
 		rels[i] = pg.ImageRel
 		if itemKey != "" && pg.ImageRel != "" && a.backend != nil {
@@ -456,7 +461,7 @@ func (a *App) openNotePagesViewer(itemKey, siteID string, pages []douyinNoteRend
 		}
 	}
 
-	a.OpenImageViewer(urls, localStills, index)
+	a.OpenImageViewerWithFallbacks(urls, fallbackURLs, localStills, index)
 	a.ImageViewer.ItemKey = itemKey
 	a.ImageViewer.RelPaths = rels
 	a.ImageViewer.InlinePageKinds = kinds
@@ -599,7 +604,7 @@ func (a *App) renderNotePagesGrid(c *ui.Context, itemKey, siteID string, pages [
 		if bmp := a.lookupLocalBitmap(itemKey, pg.ImageRel); bmp != nil {
 			return bmp
 		}
-		return a.lookupRemoteBitmap(pg.ImageURL)
+		return a.lookupRemoteBitmapWithFallbacks(pg.ImageURL, pg.FallbackImageURLs)
 	}
 	renderCell := func(bmp *ui.Bitmap, pg douyinNoteRenderPage, pageNum int) {
 		ui.Box(c).Absolute().Left(0).Top(0).Right(0).Bottom(0).Background(ColorBgSecondary).Children(func() {

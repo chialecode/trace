@@ -1257,6 +1257,7 @@ func (b *Backend) WeiboPost(ctx context.Context, mid string) (*WeiboPostView, er
 	}
 	codec := b.preferredWeiboCodec()
 	maxRes := b.currentWeiboMaxResolution()
+	removeWM := b.weiboRemoveWatermarkEnabled()
 	post, err := b.weibo.GetPost(ctx, strings.TrimSpace(mid), weibo.PostOptions{
 		StreamOptions: weibo.StreamSelectOptions{
 			PreferredCodec: codec,
@@ -1268,7 +1269,7 @@ func (b *Backend) WeiboPost(ctx context.Context, mid string) (*WeiboPostView, er
 		return nil, err
 	}
 	b.rememberWeiboPostAvatars(post)
-	b.weiboPostCache.put(post, codec, maxRes)
+	b.weiboPostCache.put(post, codec, maxRes, removeWM)
 	cacheKey := weibo.PostItemKey(post.Mid)
 	var cached *library.ItemMetadata
 	if item, ok, _ := b.lib.GetItem(cacheKey); ok {
@@ -1287,6 +1288,7 @@ func (b *Backend) WeiboVideo(ctx context.Context, oid string) (*WeiboVideoView, 
 	}
 	codec := b.preferredWeiboCodec()
 	maxRes := b.currentWeiboMaxResolution()
+	removeWM := b.weiboRemoveWatermarkEnabled()
 	vr, err := b.weibo.GetVideo(ctx, strings.TrimSpace(oid), weibo.PostOptions{
 		StreamOptions: weibo.StreamSelectOptions{
 			PreferredCodec: codec,
@@ -1299,7 +1301,7 @@ func (b *Backend) WeiboVideo(ctx context.Context, oid string) (*WeiboVideoView, 
 	}
 	if vr.HostPost != nil {
 		b.rememberWeiboPostAvatars(vr.HostPost)
-		b.weiboPostCache.put(vr.HostPost, codec, maxRes)
+		b.weiboPostCache.put(vr.HostPost, codec, maxRes, removeWM)
 		hostKey := weibo.PostItemKey(vr.HostPost.Mid)
 		var cached *library.ItemMetadata
 		if item, ok, _ := b.lib.GetItem(hostKey); ok {
@@ -1433,10 +1435,11 @@ func (b *Backend) weiboUserPosts(
 		ownerName = b.resolveWeiboForwarderHintName(ownerUID, "", "")
 	}
 
+	removeWM := b.weiboRemoveWatermarkEnabled()
 	views := make([]WeiboPostView, 0, len(page.Posts))
 	for i := range page.Posts {
 		p := &page.Posts[i]
-		b.weiboPostCache.put(p, codec, maxRes)
+		b.weiboPostCache.put(p, codec, maxRes, removeWM)
 		k := weibo.PostItemKey(p.Mid)
 		v := *mapWeiboPostView(p, nil, states[k])
 		if ownerUID != "" && (p.IsRetweet || p.IsFastRetweet || p.Author.UID != ownerUID) {

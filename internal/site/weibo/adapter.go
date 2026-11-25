@@ -260,7 +260,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		}
 		imgURLs = append(imgURLs, img.FallbackURLs...)
 		if len(coverURLs) == 0 && len(imgURLs) > 0 {
-			coverURLs = []string{imgURLs[0]}
+			coverURLs = append([]string(nil), imgURLs...)
 		}
 
 		var vidURLs []string

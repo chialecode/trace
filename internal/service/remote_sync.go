@@ -66,6 +66,7 @@ func (b *Backend) SubscriptionSnapshot() (subscription.Snapshot, error) {
 }
 
 func snapshotSettings(s settings.Settings) subscription.SnapshotSettings {
+	wbNoWM := s.WeiboRemoveWatermark
 	return subscription.SnapshotSettings{
 		VideoQuality:         s.VideoQuality,
 		CodecOrder:           append([]string(nil), s.CodecOrder...),
@@ -75,6 +76,7 @@ func snapshotSettings(s settings.Settings) subscription.SnapshotSettings {
 		Danmaku:              s.Danmaku,
 		Subtitles:            s.Subtitles,
 		AISubtitles:          s.AISubtitles,
+		WeiboRemoveWatermark: &wbNoWM,
 		CheckIntervalMin:     s.CheckIntervalMin,
 		LiveCheckIntervalMin: s.LiveCheckIntervalMin,
 	}
@@ -103,6 +105,9 @@ func applySnapshotSettings(s settings.Settings, in subscription.SnapshotSettings
 	s.Danmaku, s.Download.SaveDanmaku = in.Danmaku, in.Danmaku
 	s.Subtitles, s.Download.SaveSubtitles = in.Subtitles, in.Subtitles
 	s.AISubtitles, s.Download.IncludeAI = in.AISubtitles, in.AISubtitles
+	if in.WeiboRemoveWatermark != nil {
+		s.WeiboRemoveWatermark = *in.WeiboRemoveWatermark
+	}
 	if in.CheckIntervalMin > 0 {
 		s.CheckIntervalMin, s.Subscription.IntervalMinutes = in.CheckIntervalMin, in.CheckIntervalMin
 	}
