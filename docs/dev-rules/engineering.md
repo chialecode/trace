@@ -52,7 +52,7 @@
 
 1. `TRACE_DEV_AUTO_INSTALL=0` 或 `CI=true` 时跳过并说明。
 2. 读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.trace-dev` 的 `InstallLocation` 与 `DisplayVersion`；没有卸载项就是首次安装，同样静默完成（装到默认的 `%LOCALAPPDATA%\Programs\trace-dev`），结果记 `firstInstall=true`（[DEC-076](../decisions.md#dec-076)）。只碰开发版，不读写正式版与 trace-test 的安装。
-3. **窗口开着时推迟**：开发版在运行且有用户看得见的窗口（最小化也算，隐藏到托盘不算）时，说明用户正在用，每 2 秒检查一次，等窗口关闭、隐藏到托盘或程序退出；最多等 10 分钟，仍开着就跳过这次安装（跳过不算失败），结果记 `reason=window_open` 并提示关窗或隐藏到托盘后运行 `go run ./tools/package -install-only`。
+3. **窗口开着时推迟**：开发版在运行且有用户看得见的窗口（最小化与在别的虚拟桌面上都算，隐藏到托盘不算）时，说明用户正在用，每 2 秒检查一次，等窗口关闭、隐藏到托盘或程序退出；最多等 10 分钟，仍开着就跳过这次安装（跳过不算失败），结果记 `reason=window_open` 并提示关窗或隐藏到托盘后运行 `go run ./tools/package -install-only`。所以 `-install` 最多要等十来分钟：Agent 给这条命令至少 11 分钟或放到后台运行，不要因命令超时把它中途结束（结果文件只在结束时写）。看不到用户桌面的环境（受限的作业或会话）里窗口检测会出错，安装就以 `process_check_failed` 失败而不会当作没有窗口。
 4. 开发版在托盘运行时，用它的程序带 `--quit-for-update` 启动一次：作为第二个实例把参数转给运行中的 TRACE Dev，它不弹确认，按托盘“退出”的方式暂停缓存任务、收尾录制、保存界面状态，记下“为更新而退出”与窗口是否打开，然后退出。工具最多等 30 秒，没退出就放弃这次安装、不强杀，说明原因。
 5. 用新包静默安装（`/S`），从卸载项核对已装版本等于新版本。安装包也认 `/RELAUNCH`：静默安装完成后启动 TRACE（与作者其他桌面应用一致）；`tools/package` 不用它，而是自己在作业对象外启动（下一步）。
 6. 安装成功后**总是**以 `--background` 在托盘打开 TRACE Dev（[DEC-052](../decisions.md#dec-052)，用户常驻运行开发版），不论原来是否在运行、窗口是否打开；TRACE 遇到“为本机安装而退出”的记录且带 `--background` 时留在托盘（正式版应用内更新仍按记录恢复窗口）。工具本身在作业对象里时（Agent 命令沙箱可能禁止子进程脱离作业、命令结束即结束作业里的全部进程），先请桌面外壳启动 TRACE Dev（`build.LaunchInstalledOutsideJob`：explorer.exe 的 `Shell.Application.ShellExecute`，再等它出现并取进程号）：它成为 explorer 的子进程，不在命令的任何作业里，环境变量取 explorer 的（2026-11-22 用户要求）。外壳启动不了，或工具不在作业里时，请求新进程脱离当前命令的作业对象（`CREATE_BREAKAWAY_FROM_JOB`）；作业不允许脱离时照常启动，并在结果里记 `inJob=true`、提示从开始菜单打开一次。发布演练要给程序指定环境变量，仍只用脱离作业的方式启动。

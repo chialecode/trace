@@ -233,6 +233,12 @@ func (d *devInstaller) closeInstalled(res *installResult, exe string) error {
 			}
 		}
 		res.DeferMs = d.Now().Sub(deferStart).Milliseconds()
+		// It may have exited between the last two checks.
+		if running {
+			if running, err = d.Procs.Running(exe); err != nil {
+				return failure("process_check_failed", "检查 %s 是否在运行：%w", devDisplayName, err)
+			}
+		}
 		if !running {
 			return nil
 		}

@@ -25,6 +25,7 @@ const (
 	gwlExStyle     = ^uintptr(19) // GWL_EXSTYLE, -20
 	wsExToolWindow = 0x00000080
 	dwmwaCloaked   = 14
+	dwmCloakedApp  = 0x1 // the app cloaked it; DWM_CLOAKED_SHELL (another virtual desktop) still counts
 )
 
 // One callback for every WindowOpen call: syscall.NewCallback slots are
@@ -50,8 +51,9 @@ func enumWindow(hwnd uintptr, _ uintptr) uintptr {
 }
 
 // windowPerceivable: a visible, unowned top-level window that is not a tool
-// window and not cloaked. A minimized window is still visible; a window
-// hidden to the tray is not.
+// window and not cloaked by the app itself. A minimized window is still
+// visible, and so is one on another virtual desktop (the shell cloaks it);
+// a window hidden to the tray is not.
 func windowPerceivable(hwnd uintptr) bool {
 	if !windows.IsWindowVisible(windows.HWND(hwnd)) {
 		return false
@@ -63,7 +65,7 @@ func windowPerceivable(hwnd uintptr) bool {
 		return false
 	}
 	var cloaked uint32
-	if r, _, _ := procDwmGetWindowAttribute.Call(hwnd, dwmwaCloaked, uintptr(unsafe.Pointer(&cloaked)), unsafe.Sizeof(cloaked)); r == 0 && cloaked != 0 {
+	if r, _, _ := procDwmGetWindowAttribute.Call(hwnd, dwmwaCloaked, uintptr(unsafe.Pointer(&cloaked)), unsafe.Sizeof(cloaked)); r == 0 && cloaked&dwmCloakedApp != 0 {
 		return false
 	}
 	return true
@@ -80,10 +82,14 @@ func WindowOpen(exe string) (bool, error) {
 	windowMu.Lock()
 	defer windowMu.Unlock()
 	windowPIDs, windowFound = pids, false
-	// EnumWindows reports an error when the callback stops it early.
-	_ = windows.EnumWindows(windowEnumCB, nil)
+	// EnumWindows also reports an error when the callback stops it early, that
+	// is when a window was found; any other error must not read as "no window".
+	err = windows.EnumWindows(windowEnumCB, nil)
 	found := windowFound
 	windowPIDs = nil
+	if err != nil && !found {
+		return false, err
+	}
 	return found, nil
 }
 
