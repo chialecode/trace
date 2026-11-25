@@ -10,11 +10,13 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/chialecode/trace/internal/appdirs"
 	"golang.org/x/sys/windows"
 )
 
 var (
 	user32                    = windows.NewLazySystemDLL("user32.dll")
+	procEnumWindows           = user32.NewProc("EnumWindows")
 	procGetWindow             = user32.NewProc("GetWindow")
 	procGetWindowLongPtrW     = user32.NewProc("GetWindowLongPtrW")
 	procDwmGetWindowAttribute = windows.NewLazySystemDLL("dwmapi.dll").NewProc("DwmGetWindowAttribute")
@@ -31,14 +33,16 @@ const (
 // One callback for every WindowOpen call: syscall.NewCallback slots are
 // never freed, and -install polls every 2 s for up to 10 minutes.
 var (
-	windowMu      sync.Mutex
-	windowPIDs    map[uint32]bool
-	windowFound   bool
-	windowEnumCB  uintptr
-	windowCBSetup sync.Once
+	windowMu        sync.Mutex
+	windowPIDs      map[uint32]bool
+	windowFound     bool
+	windowEnumCount int
+	windowEnumCB    uintptr
+	windowCBSetup   sync.Once
 )
 
 func enumWindow(hwnd uintptr, _ uintptr) uintptr {
+	windowEnumCount++
 	var pid uint32
 	if _, err := windows.GetWindowThreadProcessId(windows.HWND(hwnd), &pid); err != nil || !windowPIDs[pid] {
 		return 1
@@ -71,26 +75,58 @@ func windowPerceivable(hwnd uintptr) bool {
 	return true
 }
 
+// interpretEnumWindowsResult interprets the raw Win32 EnumWindows return value
+// without mapping (r1=0, GetLastError=0) to syscall.EINVAL. On an isolated
+// empty Windows desktop (zero top-level windows), EnumWindows returns FALSE
+// with ERROR_SUCCESS (0); golang.org/x/sys/windows.EnumWindows turns that into
+// syscall.EINVAL ("invalid argument").
+func interpretEnumWindowsResult(r1 uintptr, e1 syscall.Errno, found bool, enumCount int) (bool, error) {
+	if found {
+		return true, nil
+	}
+	if uint32(r1) != 0 {
+		return false, nil
+	}
+	if e1 == 0 {
+		_ = enumCount
+		return false, nil
+	}
+	return false, e1
+}
+
 // WindowOpen reports whether a process running the executable at exe shows
 // a window the user can see (minimized counts, hidden to the tray does not).
 func WindowOpen(exe string) (bool, error) {
+	return WindowOpenForDataDir(exe, "")
+}
+
+// WindowOpenForDataDir reports whether a process running exe shows a window
+// the user can see. When dataDir holds a live runtime-window.json written by
+// one of those running PIDs, it trusts that state directly so cross-desktop
+// sandboxes accurately observe the interactive desktop's window state.
+func WindowOpenForDataDir(exe, dataDir string) (bool, error) {
 	pids, err := processIDs(exe)
 	if err != nil || len(pids) == 0 {
 		return false, err
 	}
+	if dataDir != "" {
+		if st, ok := appdirs.ReadRuntimeWindowState(dataDir); ok && pids[uint32(st.PID)] {
+			return st.WindowOpen, nil
+		}
+	}
 	windowCBSetup.Do(func() { windowEnumCB = syscall.NewCallback(enumWindow) })
 	windowMu.Lock()
 	defer windowMu.Unlock()
-	windowPIDs, windowFound = pids, false
-	// EnumWindows also reports an error when the callback stops it early, that
-	// is when a window was found; any other error must not read as "no window".
-	err = windows.EnumWindows(windowEnumCB, nil)
+	windowPIDs, windowFound, windowEnumCount = pids, false, 0
+	r1, _, lastErr := procEnumWindows.Call(windowEnumCB, 0)
 	found := windowFound
+	count := windowEnumCount
 	windowPIDs = nil
-	if err != nil && !found {
-		return false, err
+	var errno syscall.Errno
+	if e, ok := lastErr.(syscall.Errno); ok {
+		errno = e
 	}
-	return found, nil
+	return interpretEnumWindowsResult(r1, errno, found, count)
 }
 
 // processIDs lists the processes that run the executable at exe.

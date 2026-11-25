@@ -186,6 +186,7 @@ func Run() error {
 			if backend != nil {
 				_ = backend.Close()
 			}
+			appdirs.RemoveRuntimeWindowState(loc.DataDir, os.Getpid())
 			if lockHandle != nil {
 				_ = lockHandle.Release()
 			}
@@ -265,6 +266,7 @@ func Run() error {
 
 	mygo.App.WhenReady(func() {
 		sh.setupTray()
+		sh.recordRuntimeWindowState(false)
 		if decision.OpenWindow {
 			sh.openOrRestoreMainWindow()
 		}
@@ -299,6 +301,10 @@ func captureWindowSize(win *mygo.Window) (int, int, bool) {
 // fixed white (#ffffff) workbench even when Windows is in dark mode.
 const mainWindowButtonsTheme = mygo.ThemeLight
 
+func (s *Shell) recordRuntimeWindowState(open bool) {
+	_ = appdirs.WriteRuntimeWindowState(s.loc.DataDir, os.Getpid(), open)
+}
+
 func (s *Shell) openOrRestoreMainWindow() {
 	s.mu.Lock()
 	if s.quitting {
@@ -316,6 +322,7 @@ func (s *Shell) openOrRestoreMainWindow() {
 		} else if quiet == "inactive" {
 			w.ShowInactive()
 		}
+		s.recordRuntimeWindowState(quiet != "hidden")
 		s.checkForegroundSafety("reuse_window")
 		return
 	}
@@ -400,6 +407,7 @@ func (s *Shell) openOrRestoreMainWindow() {
 	s.closingToTray = false
 	s.mu.Unlock()
 
+	s.recordRuntimeWindowState(s.quiet != "hidden")
 	s.checkForegroundSafety("open_window")
 }
 
@@ -484,6 +492,7 @@ func (s *Shell) CloseToTray() {
 	if win != nil {
 		win.Close()
 	}
+	s.recordRuntimeWindowState(false)
 
 	runtime.GC()
 	debug.FreeOSMemory()
@@ -679,6 +688,7 @@ func (s *Shell) teardown() (windowOpen bool, alreadyQuitting bool) {
 	if win != nil {
 		win.Close()
 	}
+	s.recordRuntimeWindowState(false)
 	return windowOpen, false
 }
 
