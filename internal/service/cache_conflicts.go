@@ -1203,9 +1203,26 @@ func (b *Backend) inspectWeiboCachedPost(post weibo.Post, meta library.ItemMetad
 				return makeConflict(ConflictReasonText, "源站微博正文内容已修改")
 			}
 		}
-		if fullRemoteTextAvailable && !substantiveTextChanged(localBody, post.Text) &&
-			b.conflicts != nil && b.conflicts.hasPendingTextConflictForItem(meta.ItemKey) {
-			b.reconcileLiveLegacyTextConflict(meta.ItemKey, MapSiteTextLinks(post.Links))
+		if fullRemoteTextAvailable && !substantiveTextChanged(localBody, post.Text) {
+			remoteLinks := MapSiteTextLinks(post.Links)
+			if b.conflicts != nil && b.conflicts.hasPendingTextConflictForItem(meta.ItemKey) {
+				if updated, reconciled := b.reconcileLiveLegacyTextConflict(meta.ItemKey, remoteLinks); reconciled {
+					meta = updated
+				}
+			} else if strings.TrimSpace(meta.ItemDir) != "" && b.lib != nil {
+				if cleanedMeta, hadLegacy := cleanLegacyInlineLinksInItem(meta, remoteLinks); hadLegacy {
+					if b.weiboRemoveWatermarkEnabled() && !library.WeiboNeedsNoWMBackfill(cleanedMeta, true) &&
+						cleanedMeta.CacheStandardVersion < library.WeiboCacheStandardVersion {
+						cleanedMeta.CacheStandardVersion = library.WeiboCacheStandardVersion
+					}
+					if savedMeta, sErr := b.lib.SaveItemMetadataOnly(meta.ItemDir, cleanedMeta); sErr == nil {
+						meta = savedMeta
+						if b.events != nil {
+							b.events.PublishSite(EventLibraryChanged, string(site.Weibo), meta.ItemKey)
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -1249,8 +1266,40 @@ func (b *Backend) inspectWeiboCachedPost(post weibo.Post, meta library.ItemMetad
 			return cachedInspectDecision{action: inspectEnqueue}
 		}
 	}
+	if b.weiboRemoveWatermarkEnabled() && library.WeiboNeedsNoWMBackfill(meta, true) && weiboImagesHaveWatermarkFreeCandidate(images, meta) {
+		return cachedInspectDecision{action: inspectEnqueue}
+	}
 
 	return cachedInspectDecision{action: inspectSkipNoOp}
+}
+
+func weiboImagesHaveWatermarkFreeCandidate(images []weibo.ImageAsset, meta library.ItemMetadata) bool {
+	if len(images) == 0 {
+		return false
+	}
+	for i, img := range images {
+		if img.Kind == weibo.MediaKindGIF || img.Kind == weibo.MediaKindVideo {
+			continue
+		}
+		if strings.TrimSpace(img.WatermarkFreeURL) == "" {
+			continue
+		}
+		if len(meta.NotePages) > 0 {
+			if i >= len(meta.NotePages) {
+				continue
+			}
+			pg := meta.NotePages[i]
+			if strings.TrimSpace(pg.Image) == "" || pg.GIF || strings.EqualFold(pg.Kind, "video") || strings.EqualFold(pg.Kind, "gif") {
+				continue
+			}
+			if strings.TrimSpace(pg.NoWatermark) == "" {
+				return true
+			}
+		} else {
+			return true
+		}
+	}
+	return false
 }
 
 func allMissingAreWeiboUnavailable(missing []library.MissingRecord) bool {

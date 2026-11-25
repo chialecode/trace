@@ -10,6 +10,8 @@ import (
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
+	"github.com/chialecode/trace/internal/site/douyin"
+	"github.com/chialecode/trace/internal/site/weibo"
 	"github.com/chialecode/trace/internal/uistate"
 )
 
@@ -98,17 +100,23 @@ func (b *Backend) enqueueDouyinWorkWithPlan(
 	}
 	cleanID := strings.TrimSpace(awemeID)
 	mode := download.ConflictResolutionFromContext(ctx)
+	force := download.ForceOverwriteFromContext(ctx)
 	plan := explicitPlan
-	if plan == nil && mode == "" && b.douyinWorkCache != nil {
+	if plan == nil && mode == "" && !force && b.douyinWorkCache != nil {
 		if cachedDetail, ok := b.douyinWorkCache.get(cleanID, b.preferredDouyinCodec()); ok {
 			if built, bErr := b.buildDouyinWorkPlanFromDetail(ctx, cachedDetail, b.currentWorkPlanOptions()); bErr == nil {
 				plan = &built
 			}
 		}
 	}
-	if plan != nil && mode != "" {
+	if plan != nil && (mode != "" || force) {
 		cp := *plan
-		cp.ConflictResolution = mode
+		if mode != "" {
+			cp.ConflictResolution = mode
+		}
+		if force {
+			cp.ForceOverwrite = true
+		}
 		plan = &cp
 	}
 	t, err := b.dl.EnqueueDouyinWork(ctx, download.DouyinWorkEnqueueRequest{
@@ -177,17 +185,23 @@ func (b *Backend) enqueueWeiboPostWithSource(
 	}
 	cleanMid := strings.TrimSpace(mid)
 	mode := download.ConflictResolutionFromContext(ctx)
+	force := download.ForceOverwriteFromContext(ctx)
 	plan := explicitPlan
-	if plan == nil && mode == "" && b.weiboPostCache != nil {
+	if plan == nil && mode == "" && !force && b.weiboPostCache != nil {
 		if cachedPost, ok := b.weiboPostCache.get(cleanMid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), b.weiboRemoveWatermarkEnabled()); ok {
 			if built, bErr := b.buildWeiboWorkPlanFromPost(cachedPost); bErr == nil {
 				plan = &built
 			}
 		}
 	}
-	if plan != nil && mode != "" {
+	if plan != nil && (mode != "" || force) {
 		cp := *plan
-		cp.ConflictResolution = mode
+		if mode != "" {
+			cp.ConflictResolution = mode
+		}
+		if force {
+			cp.ForceOverwrite = true
+		}
 		plan = &cp
 	}
 	t, err := b.dl.EnqueueWeiboWork(ctx, download.WeiboWorkEnqueueRequest{
@@ -229,17 +243,23 @@ func (b *Backend) enqueueXPostWithSource(
 	}
 	cleanID := strings.TrimSpace(statusID)
 	mode := download.ConflictResolutionFromContext(ctx)
+	force := download.ForceOverwriteFromContext(ctx)
 	plan := explicitPlan
-	if plan == nil && mode == "" && b.xPostCache != nil {
+	if plan == nil && mode == "" && !force && b.xPostCache != nil {
 		if cachedPost, ok := b.xPostCache.get(cleanID); ok {
 			if built, bErr := b.buildXWorkPlanFromPost(cachedPost); bErr == nil {
 				plan = &built
 			}
 		}
 	}
-	if plan != nil && mode != "" {
+	if plan != nil && (mode != "" || force) {
 		cp := *plan
-		cp.ConflictResolution = mode
+		if mode != "" {
+			cp.ConflictResolution = mode
+		}
+		if force {
+			cp.ForceOverwrite = true
+		}
 		plan = &cp
 	}
 	t, err := b.dl.EnqueueXWork(ctx, download.XWorkEnqueueRequest{
@@ -254,6 +274,218 @@ func (b *Backend) enqueueXPostWithSource(
 	}
 	b.events.PublishSite(EventTaskUpdated, string(site.X), "enqueued:"+t.TargetID)
 	return t, nil
+}
+
+// ForceRecacheItem triggers an explicit manual full redownload of an already
+// cached item across all 4 sites (DEC-079). Media is freshly downloaded and
+// verified inside .trace-stage-* without reusing local files, then atomically
+// swapped via .trace-prev-*; if the remote item is deleted, unavailable,
+// degraded, or placeholder-only, ErrRemoteDegradedRefused aborts cleanly and
+// preserves the local files untouched.
+func (b *Backend) ForceRecacheItem(ctx context.Context, itemKey string) (download.Task, error) {
+	if err := b.requireDesktop(); err != nil {
+		return download.Task{}, err
+	}
+	if b.lib == nil || b.dl == nil {
+		return download.Task{}, &site.Error{Kind: site.ErrKindUnavailable, Message: "下载服务尚未初始化"}
+	}
+	cleanKey := strings.TrimSpace(itemKey)
+	if cleanKey == "" {
+		return download.Task{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "条目键不能为空"}
+	}
+	meta, ok, err := b.lib.GetItem(cleanKey)
+	if err != nil {
+		return download.Task{}, err
+	}
+	if !ok {
+		return download.Task{}, &site.Error{Kind: site.ErrKindUnavailable, Message: "未找到该已缓存条目"}
+	}
+	if meta.Kind == "live" {
+		return download.Task{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "直播录像不支持强制重新下载"}
+	}
+	if meta.IsArchivedSnapshot() {
+		return download.Task{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "旧版归档条目不支持强制重新下载"}
+	}
+	siteID, sErr := normalizeExplicitSiteID(meta.Site)
+	if sErr != nil {
+		return download.Task{}, sErr
+	}
+	if err := b.requireSiteLogin(siteID); err != nil {
+		return download.Task{}, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	forceCtx := download.WithForceOverwrite(ctx)
+	localHadMedia := hasValidLocalMedia(meta)
+	var via *library.ItemVia
+	if meta.Via != nil {
+		cp := *meta.Via
+		via = &cp
+	}
+
+	switch siteID {
+	case site.Bilibili:
+		if meta.Kind == "video" {
+			vd, err := b.bili.VideoDetail(forceCtx, meta.RawID)
+			if err != nil {
+				return download.Task{}, wrapDegradedIfRemoteInvalid(err)
+			}
+			if vd.IsUpowerLocked() {
+				return download.Task{}, wrapDegradedIfRemoteInvalid(bilibili.NewUpowerLockedError("/x/web-interface/wbi/view"))
+			}
+			if len(vd.Pages) == 0 {
+				return download.Task{}, fmt.Errorf("%w：源站视频已无可用分P", ErrRemoteDegradedRefused)
+			}
+			if _, pErr := b.bili.PlayURL(forceCtx, vd.BVID, vd.Pages[0].CID, b.bilibiliPlaySelectionOpts()); pErr != nil {
+				return download.Task{}, wrapDegradedIfRemoteInvalid(pErr)
+			}
+			var forMid int64
+			if via != nil && via.Reason == library.ViaCollab {
+				forMid, _ = strconv.ParseInt(strings.TrimSpace(via.UID), 10, 64)
+			}
+			tasks, err := b.EnqueueVideoCache(forceCtx, download.VideoEnqueueRequest{
+				BVID:   vd.BVID,
+				Detail: &vd,
+				Source: "manual",
+				ForMid: forMid,
+			})
+			if err != nil {
+				return download.Task{}, wrapDegradedIfRemoteInvalid(err)
+			}
+			if len(tasks) == 0 {
+				return download.Task{}, fmt.Errorf("未创建强制重新下载任务")
+			}
+			return tasks[0], nil
+		}
+
+		dyn, err := b.bili.DynamicDetail(forceCtx, meta.RawID)
+		if err != nil {
+			return download.Task{}, wrapDegradedIfRemoteInvalid(err)
+		}
+		if dyn.Degraded || dyn.Blocked {
+			return download.Task{}, fmt.Errorf("%w：源站动态已不可用或受限", ErrRemoteDegradedRefused)
+		}
+		if hasSnapshotMedia(meta, "orig.json") && dyn.Origin == nil {
+			return download.Task{}, fmt.Errorf("%w：转发原动态已在源站失效", ErrRemoteDegradedRefused)
+		}
+		effImgs, effVids := effectiveBiliDynamicMedia(dyn)
+		if localHadMedia && len(effImgs) == 0 && len(effVids) == 0 {
+			return download.Task{}, fmt.Errorf("%w：源站动态已无有效媒体附件", ErrRemoteDegradedRefused)
+		}
+		return b.EnqueueDynamicCache(forceCtx, download.DynamicEnqueueRequest{
+			DynamicID: dyn.ID,
+			Item:      &dyn,
+			Source:    "manual",
+		})
+
+	case site.Douyin:
+		detail, err := b.douyin.GetWorkDetail(forceCtx, meta.RawID, douyin.StreamSelectOptions{
+			PreferredCodec: b.preferredDouyinCodec(),
+		})
+		if err != nil {
+			return download.Task{}, wrapDegradedIfRemoteInvalid(err)
+		}
+		if detail == nil || detail.Uncacheable || detail.Kind == douyin.WorkKindUnsupported {
+			reason := "源站作品当前受限或不可缓存"
+			if detail != nil && strings.TrimSpace(detail.UncacheableReason) != "" {
+				reason = detail.UncacheableReason
+			}
+			return download.Task{}, fmt.Errorf("%w：%s", ErrRemoteDegradedRefused, reason)
+		}
+		if localHadMedia {
+			if detail.Kind == douyin.WorkKindNote && len(detail.Pages) == 0 {
+				return download.Task{}, fmt.Errorf("%w：源站图文已无有效页面", ErrRemoteDegradedRefused)
+			}
+			if detail.Kind == douyin.WorkKindVideo && (detail.Video == nil || len(detail.Video.URLs) == 0) {
+				return download.Task{}, fmt.Errorf("%w：源站视频已无可用播放流", ErrRemoteDegradedRefused)
+			}
+		}
+		plan, err := b.buildDouyinWorkPlanFromDetail(forceCtx, detail, b.currentWorkPlanOptions())
+		if err != nil {
+			return download.Task{}, wrapDegradedIfRemoteInvalid(err)
+		}
+		plan.ForceOverwrite = true
+		var forUID, forName string
+		if via != nil && via.Reason == library.ViaCollab {
+			forUID, forName = via.UID, via.Name
+		}
+		return b.enqueueDouyinWorkWithPlan(forceCtx, meta.RawID, "manual", forUID, forName, &plan)
+
+	case site.Weibo:
+		postOpt := weibo.PostOptions{
+			StreamOptions: weibo.StreamSelectOptions{
+				PreferredCodec: b.preferredWeiboCodec(),
+				MaxResolution:  b.currentWeiboMaxResolution(),
+			},
+		}
+		if meta.Kind == "video" {
+			oid := meta.RawID
+			if strings.HasPrefix(oid, "1034_") {
+				oid = "1034:" + strings.TrimPrefix(oid, "1034_")
+			}
+			vr, err := b.weibo.GetVideo(forceCtx, oid, postOpt)
+			if err != nil {
+				return download.Task{}, wrapDegradedIfRemoteInvalid(err)
+			}
+			if vr == nil || (vr.HostPost == nil && (vr.Video == nil || vr.Video.Selected == nil || strings.TrimSpace(vr.Video.Selected.URL) == "")) {
+				return download.Task{}, fmt.Errorf("%w：源站微博视频已失效", ErrRemoteDegradedRefused)
+			}
+			return b.CacheWeiboVideo(forceCtx, oid)
+		}
+		post, err := b.weibo.GetPost(forceCtx, meta.RawID, postOpt)
+		if err != nil {
+			return download.Task{}, wrapDegradedIfRemoteInvalid(err)
+		}
+		if post == nil || post.Unavailable {
+			reason := "源站微博已不可见或已删除"
+			if post != nil && strings.TrimSpace(post.UnavailableReason) != "" {
+				reason = post.UnavailableReason
+			}
+			return download.Task{}, fmt.Errorf("%w：%s", ErrRemoteDegradedRefused, reason)
+		}
+		if post.Retweeted != nil && post.Retweeted.Unavailable && meta.Origin != nil && !meta.Origin.Unavailable {
+			return download.Task{}, fmt.Errorf("%w：源站转发原帖已失效", ErrRemoteDegradedRefused)
+		}
+		imgs, vid := post.EffectiveMedia()
+		if localHadMedia && len(imgs) == 0 && (vid == nil || vid.Selected == nil || strings.TrimSpace(vid.Selected.URL) == "") {
+			return download.Task{}, fmt.Errorf("%w：源站微博已无有效媒体附件", ErrRemoteDegradedRefused)
+		}
+		plan, err := b.buildWeiboWorkPlanFromPost(post)
+		if err != nil {
+			return download.Task{}, wrapDegradedIfRemoteInvalid(err)
+		}
+		plan.ForceOverwrite = true
+		return b.enqueueWeiboPostWithSource(forceCtx, meta.RawID, "manual", via, &plan)
+
+	case site.X:
+		post, err := b.x.GetPost(forceCtx, meta.RawID)
+		if err != nil {
+			return download.Task{}, wrapDegradedIfRemoteInvalid(err)
+		}
+		if post == nil || post.Unavailable || post.IsPreviewDisplay {
+			reason := "源站帖子已不可用或仅展示付费预览"
+			if post != nil && strings.TrimSpace(post.UnavailableReason) != "" {
+				reason = post.UnavailableReason
+			}
+			return download.Task{}, fmt.Errorf("%w：%s", ErrRemoteDegradedRefused, reason)
+		}
+		if post.OriginUnavailable && meta.Origin != nil && !meta.Origin.Unavailable {
+			return download.Task{}, fmt.Errorf("%w：源站引用或转推原帖已失效", ErrRemoteDegradedRefused)
+		}
+		if localHadMedia && !xPostHasValidDownloadableMedia(post) {
+			return download.Task{}, fmt.Errorf("%w：源站帖子已无有效可下载媒体", ErrRemoteDegradedRefused)
+		}
+		plan, err := b.buildXWorkPlanFromPost(post)
+		if err != nil {
+			return download.Task{}, wrapDegradedIfRemoteInvalid(err)
+		}
+		plan.ForceOverwrite = true
+		return b.enqueueXPostWithSource(forceCtx, meta.RawID, "manual", via, &plan)
+
+	default:
+		return download.Task{}, &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
+	}
 }
 
 // CacheSupplement re-downloads missing danmaku/subtitle/cover sidecars for an already cached Bilibili video without re-downloading video/audio.

@@ -49,7 +49,7 @@ func (m *cacheQueueManager) Start(ctx context.Context) {
 			if e.rec.Status == CacheQueuePaused && e.rec.PauseReason == "user" {
 				continue
 			}
-			if !loggedIn {
+			if !loggedIn && !isWeiboBackfillRecord(e.rec) {
 				if e.rec.Status != CacheQueuePaused || e.rec.PauseReason != "auth_required" {
 					e.rec.Status = CacheQueuePaused
 					e.rec.PauseReason = "auth_required"
@@ -359,7 +359,7 @@ func (m *cacheQueueManager) selectActiveSiteEntryLocked(siteID site.ID) (*cacheQ
 		if e.rec.Site != string(siteID) || e.rec.Status != CacheQueueQueued {
 			continue
 		}
-		if !m.hasSiteLogin(siteID) {
+		if !m.hasSiteLogin(siteID) && !isWeiboBackfillRecord(e.rec) {
 			e.rec.Status = CacheQueuePaused
 			e.rec.PauseReason = "auth_required"
 			e.rec.StopReason = "未登录或登录已失效，重新登录后自动继续"
@@ -434,12 +434,22 @@ func (m *cacheQueueManager) runSiteLoop(ctx context.Context, siteID site.ID) {
 				continue
 			}
 
-			if !m.hasSiteLogin(siteID) {
+			isBackfill := isWeiboBackfillRecord(entry.rec)
+			if !isBackfill && !m.hasSiteLogin(siteID) {
 				m.mu.Unlock()
 				m.pauseForSite(siteID, "auth_required", "未登录或登录已失效，重新登录后自动继续")
 				continue
 			}
-			if blocked, _ := m.siteBackoffOrQuotaEnd(siteID, m.clock.Now()); blocked {
+			pureCDNWaiting := isBackfill && entry.rec.Status == CacheQueueWaiting &&
+				(entry.rec.BackfillPhase == backfillPhaseFastCDN || entry.rec.BackfillPhase == backfillPhaseOfflineLinks)
+			if pureCDNWaiting {
+				if inBackoff, _ := m.siteRiskBackoffOnly(siteID, m.clock.Now()); inBackoff {
+					rec := m.enterWaitingBackoffLocked(entry, siteID, site.ErrKindBackoff)
+					m.mu.Unlock()
+					m.notifyState(rec)
+					continue
+				}
+			} else if blocked, _ := m.siteBackoffOrQuotaEnd(siteID, m.clock.Now()); blocked {
 				kind := site.ErrKindBackoff
 				if !m.b.subs.CanUseSiteQuotaTokens(string(siteID), 1) {
 					kind = site.ErrKindQuota
@@ -458,6 +468,11 @@ func (m *cacheQueueManager) runSiteLoop(ctx context.Context, siteID site.ID) {
 			rec := entry.rec
 			m.mu.Unlock()
 			m.notifyState(rec)
+			continue
+		}
+
+		if isWeiboBackfillRecord(entry.rec) {
+			m.advanceWeiboBackfillStep(ctx, entry)
 			continue
 		}
 

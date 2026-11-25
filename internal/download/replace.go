@@ -295,7 +295,7 @@ func stampCacheStandardAndAssets(meta *library.ItemMetadata, editTs int64, editC
 			meta.AssetIDs = cleaned
 		}
 	}
-	if meta.Status == "complete" && len(meta.Missing) == 0 {
+	if meta.Status == "complete" && len(meta.Missing) == 0 && meta.CacheStandardVersion < library.CurrentCacheStandardVersion {
 		meta.CacheStandardVersion = library.CurrentCacheStandardVersion
 	}
 }
@@ -564,7 +564,7 @@ func (m *Manager) commitStagedItemSwap(
 		placedV2 = append(placedV2, vs.liveFull)
 	}
 
-	if v2Meta.Status == "complete" && len(v2Meta.Missing) == 0 {
+	if v2Meta.Status == "complete" && len(v2Meta.Missing) == 0 && v2Meta.CacheStandardVersion < library.CurrentCacheStandardVersion {
 		v2Meta.CacheStandardVersion = library.CurrentCacheStandardVersion
 	}
 	if hook := testSwapHook; hook != nil {
@@ -917,6 +917,8 @@ func (m *Manager) executeBilibiliVideoConflictReplace(
 		expectedPages = append(expectedPages, vp.Page)
 	}
 
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite)
+
 	// Stage cover if enabled.
 	if cfg.SaveCover && detail.Cover != "" {
 		coverRel := "cover" + guessImageExt(detail.Cover)
@@ -931,17 +933,19 @@ func (m *Manager) executeBilibiliVideoConflictReplace(
 		} else if isStopError(cErr) || isStorageError(cErr) || ctx.Err() != nil {
 			return cErr
 		} else {
-			// Reuse verified local cover if present.
+			// Reuse verified local cover if present (never on manual ForceOverwrite).
 			reused := false
-			for _, mf := range localMeta.Media {
-				if mf.Role == "cover" && mediaIsValid(localMeta, mf.Path) {
-					if cn, csha, rErr := copyVerifiedFileToStage(itemDir, mf.Path, mf.SHA256, stageDir); rErr == nil {
-						cp := mf
-						cp.Bytes, cp.SHA256 = cn, csha
-						v2Media = append(v2Media, cp)
-						reused = true
+			if !forceOverwrite {
+				for _, mf := range localMeta.Media {
+					if mf.Role == "cover" && mediaIsValid(localMeta, mf.Path) {
+						if cn, csha, rErr := copyVerifiedFileToStage(itemDir, mf.Path, mf.SHA256, stageDir); rErr == nil {
+							cp := mf
+							cp.Bytes, cp.SHA256 = cn, csha
+							v2Media = append(v2Media, cp)
+							reused = true
+						}
+						break
 					}
-					break
 				}
 			}
 			if !reused {
@@ -1043,8 +1047,8 @@ func (m *Manager) executeBilibiliVideoConflictReplace(
 		partRec, partFiles, dlErr := m.stageSingleBilibiliPart(ctx, t, detail.BVID, vp, opts, cfg, stageDir, hasSameCID, lp, itemDir, localMeta)
 		if dlErr != nil {
 			// Invariant #3: on mixed V2 edits, if an unchanged CID fails remote download
-			// because CDN expired or degraded, reuse the verified local V1 part!
-			if hasSameCID && ctx.Err() == nil && !isStorageError(dlErr) {
+			// because CDN expired or degraded, reuse the verified local V1 part (never on manual ForceOverwrite).
+			if !forceOverwrite && hasSameCID && ctx.Err() == nil && !isStorageError(dlErr) {
 				reusedPart, reusedFiles, rErr := reuseLocalPartToStage(vp, lp)
 				if rErr == nil {
 					v2Parts = append(v2Parts, reusedPart)
@@ -1373,7 +1377,7 @@ func (m *Manager) stageSingleBilibiliPart(
 				if mainAudio == nil {
 					return library.VideoPartRecord{}, nil, &bilibili.SiteError{Kind: bilibili.ErrKindUnavailable, Message: "缺少可合并普通音轨"}
 				}
-			} else if hasSameCID && localPart.Audio.SavedAs != "" && localPart.Audio.SavedAs != localPart.File && mediaIsValid(localMeta, localPart.Audio.SavedAs) {
+			} else if hasSameCID && !effectiveForceOverwrite(ctx, parentTask.Source, parentTask.ForceOverwrite) && localPart.Audio.SavedAs != "" && localPart.Audio.SavedAs != localPart.File && mediaIsValid(localMeta, localPart.Audio.SavedAs) {
 				// Monotonic protection (Invariant #4): preserve verified local Hi-Res/Dolby sidecar audio!
 				sideRel := fmt.Sprintf("P%02d.audio-%d.m4a", page.Page, localPart.Audio.Quality)
 				var wantSHA string
@@ -1443,11 +1447,14 @@ func (m *Manager) stageSingleBilibiliPart(
 	})
 	m.setFileProgress(parentTask, "video", mp4Rel, "completed", summary.FileBytes, summary.FileBytes, 0)
 
-	// Supplements: preserve monotonic danmaku/subtitles when same CID, otherwise fetch fresh for V2.
+	forceOverwrite := effectiveForceOverwrite(ctx, parentTask.Source, parentTask.ForceOverwrite)
+	reuseMonotonic := hasSameCID && !forceOverwrite
+
+	// Supplements: preserve monotonic danmaku/subtitles when same CID (unless manual ForceOverwrite), otherwise fetch fresh.
 	dmRel := fmt.Sprintf("P%02d.danmaku.xml", page.Page)
 	if !cfg.SaveDanmaku {
 		part.DanmakuState = "skipped"
-	} else if hasSameCID && localPart.Danmaku != "" && mediaIsValid(localMeta, localPart.Danmaku) {
+	} else if reuseMonotonic && localPart.Danmaku != "" && mediaIsValid(localMeta, localPart.Danmaku) {
 		var wantSHA string
 		for _, mf := range localMeta.Media {
 			if mf.Path == localPart.Danmaku {
@@ -1472,14 +1479,14 @@ func (m *Manager) stageSingleBilibiliPart(
 		}
 	}
 
-	if hasSameCID && len(localPart.Chapters) > 0 {
+	if reuseMonotonic && len(localPart.Chapters) > 0 {
 		part.Chapters = append([]library.VideoChapter(nil), localPart.Chapters...)
 	}
 	if !cfg.SaveSubtitles {
 		part.SubtitleState = "skipped"
 	} else {
 		var savedLangs []string
-		if hasSameCID {
+		if reuseMonotonic {
 			for _, tr := range localPart.SubtitleTracks {
 				if mediaIsValid(localMeta, tr.VTT) && mediaIsValid(localMeta, tr.SRT) {
 					lang := library.SanitizeFileName(tr.Language)

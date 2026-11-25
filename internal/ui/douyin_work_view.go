@@ -243,6 +243,11 @@ func (a *App) renderDouyinWorkRoute(c *ui.Context, viewportHeight float32) {
 							a.showError(a.backend.Desktop().OpenExternalURL(canonicalURL))
 						}
 						if cachedItem != nil && itemKey != "" {
+							if !cachedItem.IsArchivedSnapshot() {
+								if m.Item("强制重新下载").Chosen() {
+									a.openForceRecacheConfirm(itemKey, firstNonEmptyStrUI(title, desc, awemeID))
+								}
+							}
 							if m.Item("打开文件夹").Chosen() {
 								a.showError(a.backend.OpenItemFolder(itemKey))
 							}
