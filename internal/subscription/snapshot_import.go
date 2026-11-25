@@ -220,10 +220,18 @@ func (m *Manager) ApplyImport(snap Snapshot, choices ImportChoices) (ImportPrevi
 	for _, x := range snap.Subscriptions {
 		fresh := plan.fresh[x.ID]
 		if len(fresh) == 0 {
+			if owner := plan.owner[x.ID]; owner != "" && choices.MergeExisting && len(x.Links) > 0 {
+				if i, ok := subIndex[owner]; ok {
+					current[i].Links = MergeCustomLinks(current[i].Links, x.Links)
+				}
+			}
 			continue
 		}
 		if owner := plan.owner[x.ID]; owner != "" && choices.MergeExisting {
 			if i, ok := subIndex[owner]; ok {
+				if len(x.Links) > 0 {
+					current[i].Links = MergeCustomLinks(current[i].Links, x.Links)
+				}
 				var overflow []SnapshotAccount
 				for _, a := range fresh {
 					if len(current[i].Accounts) >= 20 {

@@ -129,6 +129,18 @@ func (b *Backend) MoveSubscriptionAccountToNew(siteID, uid, name, note string, r
 	return res, err
 }
 
+// SetSubscriptionLinks validates and updates custom external links attached to subID.
+func (b *Backend) SetSubscriptionLinks(subID string, links []subscription.CustomLink) (subscription.Subscription, error) {
+	if err := b.requireAnyLogin(); err != nil {
+		return subscription.Subscription{}, err
+	}
+	res, err := b.subs.SetLinks(subID, links)
+	if err == nil {
+		b.events.Publish(EventSubscriptionChecked, "links_updated")
+	}
+	return res, err
+}
+
 // SetSubscriptionRules updates per-subscription rules and manages AutoCache.Since.
 func (b *Backend) SetSubscriptionRules(subID string, rules subscription.SubRules) (subscription.Subscription, error) {
 	if err := b.requireAnyLogin(); err != nil {

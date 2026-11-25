@@ -533,7 +533,7 @@ func TestSubscriptionGridParseStatusLogsAndTaskRemoval(t *testing.T) {
 			t.Fatalf("subscription detail still shows %s", gone)
 		}
 	}
-	if got := menuItems(t, tt, "订阅管理菜单"); strings.Join(got, ",") != "检查更新,改名,备注,更换头像,-,删除订阅" {
+	if got := menuItems(t, tt, "订阅管理菜单"); strings.Join(got, ",") != "检查更新,改名,备注,自定义链接,更换头像,-,删除订阅" {
 		t.Fatalf("订阅管理菜单 items = %v", got)
 	}
 	// Default "内容" tab shows the recorded live stream as a post card with Segments[0] quality fallback.

@@ -409,6 +409,12 @@ func seedFixtures() (env *fixtureEnv, err error) {
 			}); xErr == nil {
 				env.primarySub = xLinked
 			}
+			if withLinks, lErr := b.SetSubscriptionLinks(env.primarySub.ID, []subscription.CustomLink{
+				{URL: "https://link3.cc/alpha_tech"},
+				{Label: "创作手记", URL: "https://linktr.ee/alpha_notes"},
+			}); lErr == nil {
+				env.primarySub = withLinks
+			}
 		}
 	}
 	env.auroraSub, _ = b.CreateSubscription("极光纪实", "高原延时与图文手记", []subscription.AccountRef{
