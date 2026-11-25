@@ -59,3 +59,33 @@ func TestRuntimeLogsRefreshOncePerSecondAndShowReadFailures(t *testing.T) {
 		t.Fatal("runtime log polling continued outside the log category")
 	}
 }
+
+func TestMonospaceFontStackAndDiagnosticsReadouts(t *testing.T) {
+	if MonoFont != "JetBrains Mono, Cascadia Mono, Consolas" {
+		t.Fatalf("MonoFont = %q, want %q", MonoFont, "JetBrains Mono, Cascadia Mono, Consolas")
+	}
+	app, _, cleanup := newTestUIApp(t)
+	defer cleanup()
+	if _, err := app.backend.ImportCookie(context.Background(), "SESSDATA=fixture; DedeUserID=12345", ""); err != nil {
+		t.Fatal(err)
+	}
+	app.CompleteLogin()
+	app.runtimeLogLines = []string{
+		"2026-11-24T12:00:00Z [info] 启动完成 version=0.1.2-dev commit=abcdef1",
+		"2026-11-24T12:00:01Z [info] 媒体库索引正常 items=42",
+	}
+	app.runtimeLogsNextRead = time.Now().Add(time.Hour)
+	app.Navigate(RouteSettings)
+
+	for _, cat := range []string{"storage", "logs", "update", "about"} {
+		app.SettingsCategory = cat
+		for _, w := range []int{1280, 1000, 720} {
+			tt := ui.NewTester(app.View, w, 860)
+			tt.Frame()
+			center, ok := tt.Find("中栏内容")
+			if !ok || center.X+center.W > float32(w)+0.5 {
+				t.Fatalf("category=%s width=%d overflowed: ok=%v center=%+v", cat, w, ok, center)
+			}
+		}
+	}
+}

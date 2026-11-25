@@ -87,10 +87,10 @@ func renderBuildVersionBlock(c *ui.Context, name string, build appdirs.Build, ch
 	ui.Column(c).Label("版本信息").FillWidth().Padding(14, 0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).Gap(6).ClipX().Children(func() {
 		ui.Text(c, name).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 		ui.Row(c).Label("当前版本").FillWidth().ClipX().Children(func() {
-			ui.Text(c, versionLine(build, channel)).FontSize(13).TextColor(ColorTextMain).SingleLine()
+			ui.Text(c, versionLine(build, channel)).FontSize(13).Font(MonoFont).TextColor(ColorTextMain).SingleLine()
 		})
 		ui.Row(c).Label("提交与构建时间").FillWidth().ClipX().Children(func() {
-			ui.Text(c, buildLine(build)).FontSize(13).TextColor(ColorTextMuted).SingleLine()
+			ui.Text(c, buildLine(build)).FontSize(13).Font(MonoFont).TextColor(ColorTextMuted).SingleLine()
 		})
 	})
 }

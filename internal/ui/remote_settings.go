@@ -198,7 +198,7 @@ func (a *App) renderRemoteHeader(c *ui.Context, info service.RemoteConnectionInf
 			if len(fp) > 16 {
 				fp = fp[:8] + "…" + fp[len(fp)-8:]
 			}
-			ui.Text(c, "证书指纹 "+fp).FontSize(12).TextColor(ColorTextFaint).SingleLine()
+			ui.Text(c, "证书指纹 "+fp).FontSize(12).Font(MonoFont).TextColor(ColorTextFaint).SingleLine()
 		})
 		refreshing := a.isPending("remote-status")
 		text := "刷新"
