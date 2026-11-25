@@ -154,8 +154,9 @@ func douyinLoginErrorMessage(err error) string {
 	}
 	switch site.KindOf(err) {
 	case site.ErrKindInvalidInput:
-		if strings.Contains(err.Error(), "8 KiB") {
-			return userErrorText(err)
+		msg := userErrorText(err)
+		if strings.Contains(msg, "KiB") || strings.Contains(msg, "上限") {
+			return msg
 		}
 		return "缺少 sessionid"
 	case site.ErrKindAuthRequired:
@@ -208,7 +209,7 @@ func weiboLoginErrorMessage(err error) string {
 	switch site.KindOf(err) {
 	case site.ErrKindInvalidInput:
 		msg := userErrorText(err)
-		if strings.Contains(msg, "8 KiB") || strings.Contains(msg, "控制字符") {
+		if strings.Contains(msg, "KiB") || strings.Contains(msg, "上限") || strings.Contains(msg, "控制字符") {
 			return msg
 		}
 		return "缺少 SUB（请复制包含登录态 SUB 的完整微博 Cookie）"
@@ -265,7 +266,7 @@ func xLoginErrorMessage(err error) string {
 	switch site.KindOf(err) {
 	case site.ErrKindInvalidInput:
 		msg := userErrorText(err)
-		if strings.Contains(msg, "8 KiB") || strings.Contains(msg, "控制字符") || strings.Contains(msg, "auth_token") || strings.Contains(msg, "ct0") {
+		if strings.Contains(msg, "KiB") || strings.Contains(msg, "上限") || strings.Contains(msg, "控制字符") || strings.Contains(msg, "auth_token") || strings.Contains(msg, "ct0") {
 			return msg
 		}
 		return "缺少 auth_token 或 ct0（请复制包含 auth_token 与 ct0 的完整 X Cookie）"

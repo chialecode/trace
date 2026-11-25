@@ -461,7 +461,7 @@ func readAndValidateXCookie(root string) (string, map[string]string, error) {
 	}
 	cleaned, err := credential.ParseXCookieInput(cookieStr)
 	if err != nil {
-		return "", nil, errors.New("cookie: X test Cookie missing auth_token/ct0, contains control chars, or exceeds 8 KiB")
+		return "", nil, errors.New("cookie: X test Cookie missing auth_token/ct0, contains control chars, or exceeds 64 KiB / 32 KiB cleaned limit")
 	}
 	return cookieStr, cleaned, nil
 }

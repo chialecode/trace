@@ -39,7 +39,7 @@ type profileSelfEnvelope struct {
 // before persisting it to the credential store.
 //
 // Failure modes (never echoing raw Cookie values and never overwriting existing credentials):
-//  1. Missing sessionid/sessionid_ss (including ttwid/msToken-only guest cookies) or >8 KiB -> invalid_input (0 requests)
+//  1. Missing sessionid/sessionid_ss (including ttwid/msToken-only guest cookies), >64 KiB raw input, or >32 KiB cleaned header -> invalid_input (0 requests)
 //  2. profile/self returns unauthenticated status_code or empty/incomplete user -> auth_required
 //  3. profile/self hits captcha / gateway verification -> risk_control
 func (c *Client) LoginWithCookie(ctx context.Context, rawCookie string) (credential.Status, error) {
@@ -49,7 +49,14 @@ func (c *Client) LoginWithCookie(ctx context.Context, rawCookie string) (credent
 			return credential.Status{}, &site.Error{
 				Site:    site.Douyin,
 				Kind:    site.ErrKindInvalidInput,
-				Message: "粘贴的 Cookie 长度超过 8 KiB 上限，请只复制抖音站点的 Cookie",
+				Message: "粘贴的 Cookie 长度超过 64 KiB 上限，请只复制抖音站点的 Cookie",
+			}
+		}
+		if errors.Is(err, credential.ErrCleanedCookieTooLarge) {
+			return credential.Status{}, &site.Error{
+				Site:    site.Douyin,
+				Kind:    site.ErrKindInvalidInput,
+				Message: "清洗后的抖音 Cookie 请求头长度超过 32 KiB 上限，请只复制抖音站点的 Cookie",
 			}
 		}
 		return credential.Status{}, &site.Error{

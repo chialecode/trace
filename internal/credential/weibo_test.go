@@ -182,11 +182,27 @@ func TestWeiboStoreEntropyIsolationAndBackwardCompatibility(t *testing.T) {
 }
 
 func TestWeiboCookieParserWhitelistControlCharsAndEdgeCases(t *testing.T) {
-	// 1. Over 8 KiB input rejected without echoing secret.
+	// 1. Over 64 KiB raw input rejected without echoing secret.
 	oversized := "SUB=" + strings.Repeat("Z", MaxCookieInputBytes+32)
 	if _, err := ParseWeiboCookieInput(oversized); !errors.Is(err, ErrInputTooLarge) {
 		t.Fatalf("expected ErrInputTooLarge, got %v", err)
 	} else if strings.Contains(err.Error(), "ZZZZ") {
+		t.Fatalf("error echoed secret input: %v", err)
+	}
+
+	// 1b. Over 8 KiB raw input with non-whitelisted stats noise succeeds after cleaning.
+	over8KNoise := "SUB=synth_sub_over8k; XSRF-TOKEN=synth_xsrf_over8k; wb_view_log_big=" + strings.Repeat("W", 12000)
+	if cleaned, err := ParseWeiboCookieInput(over8KNoise); err != nil {
+		t.Fatalf("expected >8 KiB Weibo cookie with noise to succeed, got %v", err)
+	} else if cleaned["SUB"] != "synth_sub_over8k" || cleaned["XSRF-TOKEN"] != "synth_xsrf_over8k" || len(cleaned) != 2 {
+		t.Fatalf("unexpected cleaned Weibo cookies: %+v", cleaned)
+	}
+
+	// 1c. Cleaned outbound header > 32 KiB rejected without echoing secret.
+	oversizedCleaned := "SUB=" + strings.Repeat("Q", MaxCleanedCookieHeaderBytes+64)
+	if _, err := ParseWeiboCookieInput(oversizedCleaned); !errors.Is(err, ErrCleanedCookieTooLarge) {
+		t.Fatalf("expected ErrCleanedCookieTooLarge, got %v", err)
+	} else if strings.Contains(err.Error(), "QQQQ") {
 		t.Fatalf("error echoed secret input: %v", err)
 	}
 

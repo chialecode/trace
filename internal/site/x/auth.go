@@ -307,7 +307,13 @@ func parseXCookieInputError(rawCookie string) (map[string]string, error) {
 		return nil, &site.Error{
 			Site:    SiteID,
 			Kind:    site.ErrKindInvalidInput,
-			Message: "粘贴的 Cookie 长度超过 8 KiB 上限，请只复制 x.com 站点的 Cookie",
+			Message: "粘贴的 Cookie 长度超过 64 KiB 上限，请只复制 x.com 站点的 Cookie",
+		}
+	case errors.Is(err, credential.ErrCleanedCookieTooLarge):
+		return nil, &site.Error{
+			Site:    SiteID,
+			Kind:    site.ErrKindInvalidInput,
+			Message: "清洗后的 X Cookie 请求头长度超过 32 KiB 上限，请只复制 x.com 站点的 Cookie",
 		}
 	case errors.Is(err, credential.ErrInvalidCookieControlChar):
 		return nil, &site.Error{
