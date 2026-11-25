@@ -6,7 +6,7 @@
 
 - **从 Agent 命令里启动常驻程序要先脱离作业对象。** Agent 的命令沙箱结束时会结束作业里的全部进程，托盘常驻的开发版会被一起关掉；先经 `explorer.exe` 的 `Shell.Application.ShellExecute` 启动，不行再 `CREATE_BREAKAWAY_FROM_JOB`（已写进[开发版自动安装](docs/dev-rules/engineering.md#dev-install)）。证据：2026-11-22。出现 1 次。
 - **在 Windows 上用 Python 或脚本改文本文件要保留原换行符。** Python 的 `Path.write_text` 会把 `\n` 写成 `\r\n`，整个文件被改成 CRLF，文档检查与源码匹配型测试随之失败。读写用字节或 `newline=""`。证据：2026-11-24 另一个项目。出现 1 次。
-- **在 `git worktree` 工作树里先单独跑完 `go run ./tools/check`，推送时用 `git push --no-verify` 并在 PR 写明原因。** `git push` 执行 `pre-push` 钩子时会注入当前工作树的 `GIT_DIR` 环境变量，`tools/release` 测试里的 `git init`、`git commit` 与 `git tag` 继承该变量后会直接改写工作树自身的分支引用与标签，导致 `HEAD` 被测试提交覆盖并报 `tag 'v0.1.1' already exists`。证据：2026-11-25。出现 2 次。
+- **在 `git worktree` 工作树里先单独跑完 `go run ./tools/check`，推送时用 `git push --no-verify` 并在 PR 写明原因。** `git push` 执行 `pre-push` 钩子时会注入当前工作树的 `GIT_DIR` 环境变量，`tools/release` 测试里的 `git init`、`git commit` 与 `git tag` 继承该变量后会直接改写工作树自身的分支引用与标签，导致 `HEAD` 被测试提交覆盖并报 `tag 'v0.1.1' already exists`。证据：2026-11-25（含 #56）。出现 2 次。
 - **Windows 隔离沙箱桌面下不要把 `golang.org/x/sys/windows.EnumWindows` 的 `(r1=0, GetLastError=0)` 当成错误，也不要仅靠 `EnumWindows` 跨桌面判断窗口是否打开。** Agent 沙箱命令运行在零顶层窗口的隔离桌面上，`EnumWindows` 返回 `FALSE` 且 `GetLastError()==0`，`x/sys/windows` 会将其包装成 `syscall.EINVAL`（`invalid argument`），且隔离桌面看不到用户交互桌面上的窗口；应用自身在数据目录写入 `runtime-window.json`（按运行中 PID 核对），再以直接检查 `e1` 的 `EnumWindows` 兜底。证据：#84（2026-11-25）。出现 1 次。
 
 ## 解析与站点
@@ -14,6 +14,7 @@
 - **把外部 JSON 里的数字转成 `int` 前先夹住范围。** 站点返回的计数可能超过 32 位，`int(parseJSONInt64(x))` 在 32 位平台会溢出，CodeQL 也会报“不正确的整数转换”；统一用夹在 `MinInt32`～`MaxInt32` 的 `parseJSONInt`。证据：#17。出现 1 次。
 - **真实站点检查在步骤里遇到本机异常也要写出脱敏回执。** 一次检查的账本只有 1 次运行，程序在中途因本机缺陷崩溃却没写回执，等于白白用掉额度、还要另开编号重新授权；每一步都要有异常恢复，崩溃前先落盘已得结论。证据：ACT-022（2026-11-21）。出现 1 次。
 - **脱敏扫描复合格式 Cookie 时要同时登记拆分后的子令牌，并跳过布尔/空值字面量。** 部分站点 Cookie 形如 `1.0.0-<token>` 或 `<token>|<timestamp>|...`，日志或异常若只带出截取后的 `<token>` 会漏过整串匹配；而 `false`、`true` 等字面量直接送入全文秘密扫描会与回执 JSON 布尔值相撞导致拒绝落盘。证据：#52（ACT-026，2026-11-24）。出现 1 次。
+- **多同类整数字面量参数的签名/协议函数须用命名结构体或独立槽位边界测试逐项校验，不能让单测复用同一调用顺序做自循环验证。** `pickCanaryByte(digest, start, sentinel, fallback)` 三处调用把 `start` 与 `sentinel` 全部写反且自检测试复制了同样参数，宽容接口未拦截这 3 字节掩盖了缺陷，导致高敏接口 `aweme/favorite` 持续静默返回 0 字节直至单变量对照实测才定位。证据：#88（ACT-028，2026-11-25）。出现 1 次。
 
 ## CI
 

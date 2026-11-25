@@ -56,7 +56,6 @@ type SubRules struct {
 type subscriptionsFile struct {
 	Version       int            `json:"version"`
 	Subscriptions []Subscription `json:"subscriptions"`
-	CacheRules    []CacheRule    `json:"cacheRules,omitempty"`
 }
 
 // Subscription represents a tracked person / entity with one or more site accounts (DEC-026, subscriptions.md §1).
@@ -69,11 +68,10 @@ type Subscription struct {
 	CreatedAt string       `json:"createdAt"`
 	Accounts  []AccountRef `json:"accounts"`
 	Links     []CustomLink `json:"links,omitempty"`
-	Rules     SubRules     `json:"rules"`
-	// RuleID is the shared cache rule the subscription uses (DEC-040);
-	// Rules holds that rule's settings plus this subscription's own
-	// auto-cache start time.
-	RuleID string `json:"ruleId,omitempty"`
+	// Tags holds the atomic cache capability tags enabled on this subscription (DEC-070);
+	// empty ([]string{}) for new subscriptions by default.
+	Tags  []string `json:"tags"`
+	Rules SubRules `json:"rules"`
 
 	// Runtime & compatibility fields
 	SubID               string `json:"subId,omitempty"`
@@ -165,21 +163,17 @@ type CheckSummary struct {
 
 // Manager coordinates subscription persistence (subscriptions.json + .bak), updates.db state, incremental checks, and scheduling.
 type Manager struct {
-	mu sync.Mutex
-	// formerDefaultName is the name a user gave the once-editable default
-	// rule; the rule that keeps its subscriptions' settings is named after it.
-	formerDefaultName string
-	db                *sql.DB
-	updatesDB         *sql.DB
-	subsPath          string
-	lib               *library.Store
-	dl                *download.Manager
-	client            *bilibili.Client
-	subSettings       settings.SubscriptionSettings
-	rules             []CacheRule
-	onEvent           func(CheckSummary)
-	liveCheck         func(context.Context, []int64) error
-	nowFunc           func() time.Time
+	mu          sync.Mutex
+	db          *sql.DB
+	updatesDB   *sql.DB
+	subsPath    string
+	lib         *library.Store
+	dl          *download.Manager
+	client      *bilibili.Client
+	subSettings settings.SubscriptionSettings
+	onEvent     func(CheckSummary)
+	liveCheck   func(context.Context, []int64) error
+	nowFunc     func() time.Time
 
 	// In-memory index of the subscriptions table (invalidated on every write/load)
 	// so OwnerOf / findByIDOrSubIDLocked never scan SQLite or updatesDB per call.
@@ -609,8 +603,8 @@ func scanSub(r subScanner) (Subscription, error) {
 			s.Avatar = full.Avatar
 			s.Accounts = full.Accounts
 			s.Links = full.Links
+			s.Tags = full.Tags
 			s.Rules = full.Rules
-			s.RuleID = full.RuleID
 			s.AutoCacheBacklog = full.AutoCacheBacklog
 		}
 	}

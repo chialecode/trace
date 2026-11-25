@@ -35,6 +35,7 @@ type Settings struct {
 	Danmaku              bool                 `json:"danmaku"`
 	Subtitles            bool                 `json:"subtitles"`
 	AISubtitles          bool                 `json:"aiSubtitles"`
+	WeiboRemoveWatermark bool                 `json:"weiboRemoveWatermark"`
 	ScheduledCheck       bool                 `json:"scheduledCheck"`
 	CheckIntervalMin     int                  `json:"checkIntervalMin"`
 	LiveCheckIntervalMin int                  `json:"liveCheckIntervalMin"`
@@ -152,6 +153,7 @@ func Default(defaultCacheDir string) Settings {
 		Danmaku:              true,
 		Subtitles:            true,
 		AISubtitles:          true,
+		WeiboRemoveWatermark: true,
 		ScheduledCheck:       false,
 		CheckIntervalMin:     60,
 		LiveCheckIntervalMin: 3,

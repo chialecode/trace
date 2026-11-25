@@ -31,6 +31,10 @@ const (
 // retries every frame. Tests without a dispatcher use only their explicitly
 // supplied local images.
 func (a *App) lookupRemoteBitmap(rawURL string) *ui.Bitmap {
+	return a.lookupRemoteBitmapWithFallbacks(rawURL, nil)
+}
+
+func (a *App) lookupRemoteBitmapWithFallbacks(rawURL string, fallbacks []string) *ui.Bitmap {
 	if rawURL == "" {
 		return nil
 	}
@@ -51,6 +55,16 @@ func (a *App) lookupRemoteBitmap(rawURL string) *ui.Bitmap {
 	}
 	a.images.reserve(key)
 	a.mu.Unlock()
+	candidates := make([]string, 0, 1+len(fallbacks))
+	seen := map[string]bool{rawURL: true}
+	candidates = append(candidates, rawURL)
+	for _, fb := range fallbacks {
+		fb = strings.TrimSpace(fb)
+		if fb != "" && !seen[fb] {
+			seen[fb] = true
+			candidates = append(candidates, fb)
+		}
+	}
 	requestGuarded(a, key, nil, func(ctx context.Context) (*ui.Bitmap, error) {
 		select {
 		case a.imageQueue <- struct{}{}:
@@ -58,31 +72,45 @@ func (a *App) lookupRemoteBitmap(rawURL string) *ui.Bitmap {
 			return nil, ctx.Err()
 		}
 		defer func() { <-a.imageQueue }()
-		raw, err := a.backend.FetchImage(ctx, rawURL)
-		if err != nil {
-			return nil, err
+		var lastErr error
+		for _, candURL := range candidates {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			raw, err := a.backend.FetchImage(ctx, candURL)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			config, _, err := image.DecodeConfig(bytes.NewReader(raw))
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > maxImageDecodePixels {
+				lastErr = errors.New("image dimensions out of range")
+				continue
+			}
+			img, _, err := image.Decode(bytes.NewReader(raw))
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			w, h := config.Width, config.Height
+			if w > 640 {
+				h, w = max(1, int(int64(h)*640/int64(w))), 640
+			}
+			if h > 640 {
+				w, h = max(1, int(int64(w)*640/int64(h))), 640
+			}
+			small := image.NewRGBA(image.Rect(0, 0, w, h))
+			draw.ApproxBiLinear.Scale(small, small.Bounds(), img, img.Bounds(), draw.Src, nil)
+			return ui.NewBitmap(small), nil
 		}
-		config, _, err := image.DecodeConfig(bytes.NewReader(raw))
-		if err != nil {
-			return nil, err
+		if lastErr == nil {
+			lastErr = errors.New("image decode failed")
 		}
-		if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > maxImageDecodePixels {
-			return nil, errors.New("image dimensions out of range")
-		}
-		img, _, err := image.Decode(bytes.NewReader(raw))
-		if err != nil {
-			return nil, err
-		}
-		w, h := config.Width, config.Height
-		if w > 640 {
-			h, w = max(1, int(int64(h)*640/int64(w))), 640
-		}
-		if h > 640 {
-			w, h = max(1, int(int64(w)*640/int64(h))), 640
-		}
-		small := image.NewRGBA(image.Rect(0, 0, w, h))
-		draw.ApproxBiLinear.Scale(small, small.Bounds(), img, img.Bounds(), draw.Src, nil)
-		return ui.NewBitmap(small), nil
+		return nil, lastErr
 	}, func(bmp *ui.Bitmap) {
 		a.mu.Lock()
 		a.images.fill(key, bmp)

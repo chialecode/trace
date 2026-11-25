@@ -35,6 +35,8 @@ func cloneItemMetadataSlices(meta ItemMetadata) ItemMetadata {
 	meta.Parts = append([]VideoPartRecord(nil), meta.Parts...)
 	for i := range meta.Parts {
 		meta.Parts[i].Subtitles = append([]string(nil), meta.Parts[i].Subtitles...)
+		meta.Parts[i].SubtitleTracks = append([]PartSubtitleInfo(nil), meta.Parts[i].SubtitleTracks...)
+		meta.Parts[i].Chapters = append([]VideoChapter(nil), meta.Parts[i].Chapters...)
 	}
 	meta.ExpectedPages = append([]int(nil), meta.ExpectedPages...)
 	meta.NotePages = append([]NotePageRecord(nil), meta.NotePages...)
@@ -162,6 +164,8 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 	for _, p := range imported.Parts {
 		if idx, exists := pageIdx[p.Page]; !exists {
 			p.Subtitles = append([]string(nil), p.Subtitles...)
+			p.SubtitleTracks = append([]PartSubtitleInfo(nil), p.SubtitleTracks...)
+			p.Chapters = append([]VideoChapter(nil), p.Chapters...)
 			pageIdx[p.Page] = len(out.Parts)
 			out.Parts = append(out.Parts, p)
 		} else {
@@ -174,6 +178,9 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 			}
 			if cur.Audio.SavedAs == "" && p.Audio.SavedAs != "" {
 				cur.Audio.SavedAs = p.Audio.SavedAs
+			}
+			if len(cur.Chapters) == 0 && len(p.Chapters) > 0 {
+				cur.Chapters = append([]VideoChapter(nil), p.Chapters...)
 			}
 			if len(p.Subtitles) > 0 {
 				subSeen := map[string]bool{}

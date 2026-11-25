@@ -35,15 +35,12 @@ func TestFullCacheRuleSweepsAccountsOnePerSite(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = other
-	rule, err := b.SaveCacheRule(subscription.CacheRule{Name: "全部存", ScheduledCheck: true, FullCache: true})
-	if err != nil {
-		t.Fatal(err)
+	tags := []string{subscription.TagScheduledCheck, subscription.TagFullCache}
+	if !strings.Contains(subscription.TagsSummary(tags), "全部缓存") {
+		t.Fatalf("summary = %q", subscription.TagsSummary(tags))
 	}
-	if !strings.Contains(subscription.RuleSummary(rule), "全部缓存") {
-		t.Fatalf("summary = %q", subscription.RuleSummary(rule))
-	}
-	if sub, err = b.SetSubscriptionRule(sub.ID, rule.ID); err != nil || !sub.Rules.FullCache {
-		t.Fatalf("rule not applied: %+v %v", sub.Rules, err)
+	if sub, err = b.SetSubscriptionTags(sub.ID, tags); err != nil || !sub.Rules.FullCache {
+		t.Fatalf("tags not applied: %+v %v", sub.Rules, err)
 	}
 
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)

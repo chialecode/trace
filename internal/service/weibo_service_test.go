@@ -597,7 +597,7 @@ func TestThreeSiteAuthIsolationAndWeiboCookieVerification(t *testing.T) {
 	if !h.backend.StatusOf("bilibili").LoggedIn || !h.backend.StatusOf("douyin").LoggedIn {
 		t.Fatalf("LogoutSite(weibo) affected other sites: bili=%+v dy=%+v", h.backend.StatusOf("bilibili"), h.backend.StatusOf("douyin"))
 	}
-	if _, ok := h.backend.weiboPostCache.get(synthWeiboMidPlain, "", 0); ok {
+	if _, ok := h.backend.weiboPostCache.get(synthWeiboMidPlain, "", 0, true); ok {
 		t.Fatal("LogoutSite(weibo) did not clear in-memory weiboPostCache")
 	}
 	// With Bilibili & Douyin logged in but Weibo logged out, OpenLink on a Weibo URL must say "请先登录微博" with 0 requests.

@@ -757,7 +757,7 @@ func readAndValidateDouyinCookie(root string) (string, map[string]string, error)
 	}
 	cleaned, err := credential.ParseDouyinCookieInput(cookieStr)
 	if err != nil {
-		return "", nil, errors.New("cookie: Douyin test Cookie missing sessionid/sessionid_ss or exceeds 8 KiB")
+		return "", nil, errors.New("cookie: Douyin test Cookie missing sessionid/sessionid_ss or exceeds 64 KiB / 32 KiB cleaned limit")
 	}
 	return cookieStr, cleaned, nil
 }

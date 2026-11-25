@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"math"
 	"net/url"
 	"os"
@@ -12,6 +16,7 @@ import (
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
+	_ "golang.org/x/image/webp"
 )
 
 // WeiboImageUnavailableReason is recorded when all candidate URLs for a non-GIF Weibo image
@@ -1501,6 +1506,13 @@ func (m *Manager) cacheWeiboStillImageOpts(
 				lastErr = &site.Error{Site: transport.Site, Kind: site.ErrKindSchemaChanged, Message: sErr.Error()}
 				continue
 			}
+			if isWeiboOSLargeURL(cand) {
+				if vErr := validateWeiboOSLargeImageFile(tempFull, ext); vErr != nil {
+					_ = os.Remove(tempFull)
+					lastErr = &site.Error{Site: transport.Site, Kind: site.ErrKindSchemaChanged, Message: vErr.Error()}
+					continue
+				}
+			}
 			return n, sha, ext, true, nil
 		}
 		return 0, "", "", false, nil
@@ -1632,7 +1644,7 @@ func expandWeiboImageCandidates(urls []string) []string {
 	// Only upgrade to the original-size /large/ tier; never downgrade to
 	// recompressed /mw2000/, /orj1080/ or /bmiddle/ copies (originals only,
 	// user request 2026-11-24).
-	knownTiers := []string{"/large/", "/mw2000/", "/orj1080/", "/bmiddle/", "/mw690/", "/mw1024/", "/orj360/", "/orj480/"}
+	knownTiers := []string{"/oslarge/", "/large/", "/mw2000/", "/orj1080/", "/bmiddle/", "/mw690/", "/mw1024/", "/orj360/", "/orj480/"}
 	for _, raw := range urls {
 		u, err := url.Parse(strings.TrimSpace(raw))
 		if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" {
@@ -1664,6 +1676,44 @@ func expandWeiboImageCandidates(urls []string) []string {
 		}
 	}
 	return out
+}
+
+func isWeiboOSLargeURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || !site.MatchDomainSuffix(strings.ToLower(u.Hostname()), []string{"sinaimg.cn"}) {
+		return false
+	}
+	segs := site.SplitCleanPath(u.Path)
+	return len(segs) >= 2 && strings.EqualFold(segs[0], "oslarge")
+}
+
+// validateWeiboOSLargeImageFile enforces strict binary magic-byte and image-header validation
+// on /oslarge/ responses so corrupt or fake-image payloads immediately fall back to the original
+// largest/original URL instead of being saved as broken files.
+func validateWeiboOSLargeImageFile(filePath, ext string) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var head [64]byte
+	n, _ := f.Read(head[:])
+	magicExt, ok := site.SniffImageMagicBytes(head[:n])
+	if !ok {
+		return site.ErrUnsupportedImageHeader
+	}
+	if magicExt == ".avif" || magicExt == ".heic" {
+		return nil
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		return err
+	}
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return errors.New("去水印原图头部损坏或无法解码")
+	}
+	_ = ext
+	return nil
 }
 
 func (m *Manager) cacheWeiboLivePhotoClip(

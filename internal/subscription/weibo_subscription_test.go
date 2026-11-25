@@ -146,8 +146,8 @@ func TestSubscriptionsV2ToV3MigrationBackupAndNewerRejection(t *testing.T) {
 	if diskDoc.Version != SubscriptionsSchemaVersion {
 		t.Fatalf("migrated subscriptions.json version = %d, want %d", diskDoc.Version, SubscriptionsSchemaVersion)
 	}
-	if SubscriptionsSchemaVersion != 4 {
-		t.Fatalf("SubscriptionsSchemaVersion = %d, want 4", SubscriptionsSchemaVersion)
+	if SubscriptionsSchemaVersion != 5 {
+		t.Fatalf("SubscriptionsSchemaVersion = %d, want 5", SubscriptionsSchemaVersion)
 	}
 
 	// Link a Weibo account (with leading zeros and signed face URL) and verify persistence.
@@ -555,15 +555,13 @@ func TestMixedThreeSiteSubscriptionBaselinePinnedFastRetweetUncertainEmptyAndAut
 
 	mgr := openMgr()
 
-	ruleAll, err := mgr.SaveRule(CacheRule{
-		Name:           "全类型自动缓存",
-		ScheduledCheck: true,
-		AutoCache:      true,
-		Types:          []string{"video", "draw", "word", "forward"},
-		AutoRecord:     true,
-	})
-	if err != nil {
-		t.Fatalf("SaveRule: %v", err)
+	allTags := []string{
+		TagScheduledCheck,
+		TagCacheVideo,
+		TagCacheDraw,
+		TagCacheWord,
+		TagCacheForward,
+		TagAutoRecord,
 	}
 
 	dyUID := "MS4wLjABAAAA__ThreeSite_01"
@@ -579,8 +577,8 @@ func TestMixedThreeSiteSubscriptionBaselinePinnedFastRetweetUncertainEmptyAndAut
 		t.Fatalf("Create mixed 3-site subscription: %v", err)
 	}
 	now = time.Unix(1700001500, 0).UTC()
-	if _, err := mgr.SetSubscriptionRule(mixedSub.ID, ruleAll.ID); err != nil {
-		t.Fatalf("SetSubscriptionRule mixedSub: %v", err)
+	if _, err := mgr.SetSubscriptionTags(mixedSub.ID, allTags); err != nil {
+		t.Fatalf("SetSubscriptionTags mixedSub: %v", err)
 	}
 	wbSub2, err := mgr.Create("第二微博博主", "", []AccountRef{
 		{Site: "weibo", UID: wbUID2, Name: "WeiboCreatorB"},
@@ -588,8 +586,8 @@ func TestMixedThreeSiteSubscriptionBaselinePinnedFastRetweetUncertainEmptyAndAut
 	if err != nil {
 		t.Fatalf("Create wbSub2: %v", err)
 	}
-	if _, err := mgr.SetSubscriptionRule(wbSub2.ID, ruleAll.ID); err != nil {
-		t.Fatalf("SetSubscriptionRule wbSub2: %v", err)
+	if _, err := mgr.SetSubscriptionTags(wbSub2.ID, allTags); err != nil {
+		t.Fatalf("SetSubscriptionTags wbSub2: %v", err)
 	}
 
 	// Pre-cache one Weibo item to confirm auto-cache skips already-cached weibo:dynamic:<mid>.

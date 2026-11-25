@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/live"
@@ -80,12 +81,14 @@ func (a *App) renderUserRoute(c *ui.Context) {
 			return library.CanonicalItemKey("bilibili", "video", all[i].BVID)
 		})
 		_, last := a.UserVidListState.Visible()
-		if len(idx) > 0 && last > 0 && last-1 >= len(idx)-2 && a.UserVideosHasMore && a.UserVideosError == "" && !a.isPending(fmt.Sprintf("user-videos-%d", u.Mid)) {
+		pendingVidKey := fmt.Sprintf("user-videos-%d-%d", u.Mid, a.userVideosSeq)
+		if len(idx) > 0 && last > 0 && last-1 >= len(idx)-2 && a.UserVideosHasMore && a.UserVideosError == "" && !a.isPending(pendingVidKey) {
 			a.LoadMoreUserVideos()
 		}
 		rows := len(idx)
-		if rows == 0 && filtered && len(all) > 0 {
-			rows = 1 // footer only
+		emptyQueryResult := len(all) == 0 && a.UserVideosPage > 0 && a.UserVideosError == "" && !a.isPending(pendingVidKey)
+		if (rows == 0 && filtered && len(all) > 0) || emptyQueryResult {
+			rows = 1 // footer or empty-state row
 		}
 		a.UserVidListState.Key = func(i int) any {
 			if i == 0 {
@@ -102,6 +105,16 @@ func (a *App) renderUserRoute(c *ui.Context) {
 				return
 			}
 			if len(idx) == 0 {
+				if emptyQueryResult {
+					msg := "暂无投稿"
+					if strings.TrimSpace(a.UserVideosAppliedKeyword) != "" || a.UserVideosTID > 0 {
+						msg = "未找到匹配的投稿"
+					}
+					ui.Row(c).FillWidth().Padding(24, 16).Justify(ui.Center).Children(func() {
+						ui.Text(c, msg).Label("空间投稿结果为空").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+					})
+					return
+				}
 				a.renderUserFilteredEmpty(c)
 				a.renderUserListEnd(c, a.UserVideosHasMore, a.UserVideosError, "加载下一页投稿", "已加载全部投稿", a.LoadMoreUserVideos)
 				return
@@ -314,6 +327,89 @@ func (a *App) renderUserHeader(c *ui.Context, u *bilibili.UserSpace) {
 			})
 			ui.Box(c).Padding(0, 0, 6, 0).Shrink(0).Children(func() { a.renderUserListFilter(c) })
 		})
+		if a.UserTab == "videos" {
+			a.renderUserVideosToolbar(c, u)
+		}
+	})
+}
+
+func (a *App) renderUserVideosToolbar(c *ui.Context, u *bilibili.UserSpace) {
+	pendingVidKey := fmt.Sprintf("user-videos-%d-%d", u.Mid, a.userVideosSeq)
+	loading := a.isPending(pendingVidKey)
+	curOrder := bilibili.NormalizeUserVideosOrder(a.UserVideosOrder)
+	ui.Column(c).FillWidth().Padding(8, 16, 10, 16).Gap(8).BorderWidth(1, 0, 0, 0).BorderColor(ColorBorder).ClipX().Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Wrap().ClipX().Children(func() {
+			ui.Row(c).
+				Grow(1).
+				MinWidth(200).
+				Padding(4, 6, 4, 10).
+				Radius(999).
+				Background(ColorBgMain).
+				Border(1, ColorBorderStrong).
+				AlignItems(ui.Center).
+				Gap(6).
+				ClipX().
+				Children(func() {
+					inp := ui.TextInputBase(c, &a.UserVideosKeywordInput).
+						Placeholder("搜索该 UP 主投稿…").
+						Label("空间投稿搜索框").
+						FontSize(13).
+						Padding(2, 4).
+						Grow(1)
+					wasComposing := a.UserVideosKeywordComposing
+					a.UserVideosKeywordComposing = inp.Composing()
+					// Strictly submit only on Enter (outside IME composition) or Search button click.
+					if inp.Submitted() && !inp.Composing() && !wasComposing && !loading {
+						a.SubmitUserVideosSearch()
+					}
+					if strings.TrimSpace(a.UserVideosKeywordInput) != "" || strings.TrimSpace(a.UserVideosAppliedKeyword) != "" {
+						if OutlinePillButton(c, "清空", "清空空间投稿搜索").Disabled(loading).Clicked() {
+							a.ClearUserVideosSearch()
+						}
+					}
+					if AccentPillButton(c, "搜索", "搜索空间投稿").Disabled(loading).Clicked() {
+						a.SubmitUserVideosSearch()
+					}
+				})
+
+			renderSegmentedPills(c, curOrder, []segmentedChoice{
+				{Key: "pubdate", Text: "最新发布", Label: "投稿排序：最新发布"},
+				{Key: "click", Text: "最多播放", Label: "投稿排序：最多播放"},
+				{Key: "stow", Text: "最多收藏", Label: "投稿排序：最多收藏"},
+			}, func(next string) {
+				a.SetUserVideosOrder(next)
+			})
+		})
+
+		if len(a.UserVideosZones) > 0 {
+			ui.Row(c).Label("空间投稿分区筛选").FillWidth().AlignItems(ui.Center).Gap(6).Wrap().ClipX().Children(func() {
+				renderZonePill := func(tid int, text, label string) {
+					active := a.UserVideosTID == tid
+					btn := ui.ButtonBase(c).Label(label).Padding(4, 10).Radius(999)
+					if active {
+						btn.Background(ColorAccentBg).Border(1, ColorAccent)
+					} else {
+						btn.Background(ColorBgSecondary).Border(1, ColorBorder)
+					}
+					btn.Children(func() {
+						tc := ColorTextMain
+						fw := 500
+						if active {
+							tc = ColorAccent
+							fw = 600
+						}
+						ui.Text(c, text).FontSize(12).FontWeight(fw).TextColor(tc).SingleLine()
+					})
+					if btn.Clicked() {
+						a.SetUserVideosTID(tid)
+					}
+				}
+				renderZonePill(0, "全部分区", "投稿分区：全部")
+				for _, z := range a.UserVideosZones {
+					renderZonePill(z.TID, fmt.Sprintf("%s %d", z.Name, z.Count), "投稿分区："+z.Name)
+				}
+			})
+		}
 	})
 }
 

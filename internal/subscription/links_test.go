@@ -117,8 +117,8 @@ func TestCustomLinkValidationAndDerivedLabels(t *testing.T) {
 // across SQLite raw_json, disk reloads, legacy Upsert, Snapshot/ParseSnapshot/Hash,
 // ReplaceFromSnapshot (remote sync), and ApplyImport (including MergeExisting).
 func TestSubscriptionCustomLinksPersistenceSnapshotImportAndRollback(t *testing.T) {
-	if SubscriptionsSchemaVersion != 4 {
-		t.Fatalf("SubscriptionsSchemaVersion = %d, want 4 (DEC-074 optional field must not bump schema version)", SubscriptionsSchemaVersion)
+	if SubscriptionsSchemaVersion != 5 {
+		t.Fatalf("SubscriptionsSchemaVersion = %d, want 5", SubscriptionsSchemaVersion)
 	}
 
 	tmp := t.TempDir()

@@ -156,7 +156,7 @@ type ParseService interface {
 	FetchHistoryThumbs(ctx context.Context, job HistoryThumbJob) error
 	FetchImage(ctx context.Context, rawURL string) ([]byte, error)
 	UserDynamicsPage(ctx context.Context, mid int64, offset string) (bilibili.UserDynamicsPage, error)
-	UserVideosPage(ctx context.Context, mid int64, page int) (bilibili.UserVideosPage, error)
+	UserVideosPage(ctx context.Context, mid int64, page int, opts ...UserVideosPageOptions) (bilibili.UserVideosPage, error)
 }
 
 // HistoryService defines recent parse history operations.
@@ -261,13 +261,12 @@ type SubscriptionService interface {
 	MoveSubscriptionAccountToNew(site, uid, name, note string, rules subscription.SubRules) (subscription.Subscription, error)
 	SetSubscriptionLinks(subID string, links []subscription.CustomLink) (subscription.Subscription, error)
 	SetSubscriptionRules(subID string, rules subscription.SubRules) (subscription.Subscription, error)
-	// Shared cache rules: subscriptions choose one by ID.
-	ListCacheRules() []subscription.CacheRule
+	// Atomic cache capability tags (DEC-070).
+	ListCapabilityTags() []subscription.CapabilityTag
+	SetSubscriptionTags(subID string, tags []string) (subscription.Subscription, error)
+	SetTagSubscriptions(tagID string, subIDs []string) error
+	BatchUpdateSubscriptionsTags(subIDs []string, mode string, tags []string) error
 	SubscriptionAccountWorks() map[string]AccountWorks
-	SaveCacheRule(rule subscription.CacheRule) (subscription.CacheRule, error)
-	DeleteCacheRule(id string) error
-	SetSubscriptionRule(subID, ruleID string) (subscription.Subscription, error)
-	SetSubscriptionsRule(ruleID string, subIDs []string) error
 	PreviewAccount(ctx context.Context, input string) (subscription.AccountRef, *subscription.Subscription, error)
 	OwnerOfAccount(site, uid string) (subscription.Subscription, bool)
 	// AccountAvatarPath is the local copy of a subscribed account's avatar, or "".

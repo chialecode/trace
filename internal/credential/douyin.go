@@ -105,6 +105,36 @@ type DouyinProfile struct {
 	Face     string `json:"face,omitempty"`
 }
 
+// DouyinGuardState holds client-owned ECDSA P-256 keypair material and server-issued
+// bd-ticket-guard tokens bound to the active Douyin login session inside douyin.bin.
+// It is stored encrypted via DPAPI and must never appear in Status, logs, errors, or receipts.
+type DouyinGuardState struct {
+	PrivateKeyPKCS8 string `json:"private_key_pkcs8,omitempty"`
+	PublicKeySEC1   string `json:"public_key_sec1,omitempty"`
+	Ticket          string `json:"ticket,omitempty"`
+	TsSign          string `json:"ts_sign,omitempty"`
+	ClientCert      string `json:"client_cert,omitempty"`
+	UpdatedAt       string `json:"updated_at,omitempty"`
+}
+
+func cloneDouyinGuardState(in *DouyinGuardState) *DouyinGuardState {
+	if in == nil {
+		return nil
+	}
+	cp := &DouyinGuardState{
+		PrivateKeyPKCS8: strings.TrimSpace(in.PrivateKeyPKCS8),
+		PublicKeySEC1:   strings.TrimSpace(in.PublicKeySEC1),
+		Ticket:          strings.TrimSpace(in.Ticket),
+		TsSign:          strings.TrimSpace(in.TsSign),
+		ClientCert:      strings.TrimSpace(in.ClientCert),
+		UpdatedAt:       strings.TrimSpace(in.UpdatedAt),
+	}
+	if cp.PrivateKeyPKCS8 == "" && cp.PublicKeySEC1 == "" && cp.Ticket == "" && cp.TsSign == "" && cp.ClientCert == "" {
+		return nil
+	}
+	return cp
+}
+
 // IsStrippedDouyinCookieKey reports whether name is a browser-memory-bound dynamic ticket
 // that must never be persisted or replayed by TRACE.
 func IsStrippedDouyinCookieKey(name string) bool {
@@ -204,11 +234,11 @@ func FormatDouyinCookieHeader(cookies map[string]string) string {
 }
 
 // ParseDouyinCookieInput parses and cleans a user-pasted Douyin Cookie header string.
-// It enforces the 8 KiB limit, strips dynamic browser-bound tickets (bd_ticket_guard_*,
+// It enforces the 64 KiB raw input limit, strips dynamic browser-bound tickets (bd_ticket_guard_*,
 // _bd_ticket_crypt_cookie, __security_*, x_tt_token, sdk_source_info, fpk1, fpk2),
 // validates RFC 6265 safe key/value characters, retains all non-blacklisted cookies,
 // requires sessionid or sessionid_ss (rejecting ttwid/msToken-only guest cookies),
-// and never echoes secret values in errors.
+// enforces the 32 KiB cleaned outbound header limit, and never echoes secret values in errors.
 func ParseDouyinCookieInput(rawCookie string) (map[string]string, error) {
 	if len(rawCookie) > MaxCookieInputBytes {
 		return nil, ErrInputTooLarge
@@ -217,6 +247,9 @@ func ParseDouyinCookieInput(rawCookie string) (map[string]string, error) {
 	cleaned := CleanDouyinCookieMap(rawPairs)
 	if !hasDouyinSession(cleaned) {
 		return nil, ErrMissingDouyinSession
+	}
+	if len(FormatDouyinCookieHeader(cleaned)) > MaxCleanedCookieHeaderBytes {
+		return nil, ErrCleanedCookieTooLarge
 	}
 	return cleaned, nil
 }
@@ -275,8 +308,15 @@ func (s *Store) SaveDouyinManual(rawCookie string) (Status, error) {
 	return s.SaveVerifiedDouyinManual(cookies, DouyinProfile{})
 }
 
-// SaveVerifiedDouyinManual persists cleaned Douyin cookies and verified profile metadata.
+// SaveVerifiedDouyinManual persists cleaned Douyin cookies and verified profile metadata,
+// clearing any previous session's ticket-guard keypair and tokens.
 func (s *Store) SaveVerifiedDouyinManual(cookies map[string]string, profile DouyinProfile) (Status, error) {
+	return s.SaveVerifiedDouyinManualWithGuard(cookies, profile, nil)
+}
+
+// SaveVerifiedDouyinManualWithGuard persists cleaned Douyin cookies, verified profile metadata,
+// and an optional client-owned bd-ticket-guard state bound to this session.
+func (s *Store) SaveVerifiedDouyinManualWithGuard(cookies map[string]string, profile DouyinProfile, guardState *DouyinGuardState) (Status, error) {
 	if err := s.requireSite(SiteDouyin); err != nil {
 		return Status{}, err
 	}
@@ -299,11 +339,57 @@ func (s *Store) SaveVerifiedDouyinManual(cookies map[string]string, profile Douy
 		Uname:         strings.TrimSpace(profile.Uname),
 		Face:          strings.TrimSpace(profile.Face),
 		State:         "logged_in",
+		DouyinGuard:   cloneDouyinGuardState(guardState),
 	}
 	if err := s.saveRecord(rec); err != nil {
 		return Status{}, err
 	}
 	return s.Status(), nil
+}
+
+// DouyinGuard returns a copy of the stored bd-ticket-guard state for an active Douyin store, or nil.
+func (s *Store) DouyinGuard() *DouyinGuardState {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.site != SiteDouyin || !s.isActiveRecordLocked() || s.rec.DouyinGuard == nil {
+		return nil
+	}
+	return cloneDouyinGuardState(s.rec.DouyinGuard)
+}
+
+// SaveDouyinGuard updates the encrypted bd-ticket-guard session state on an active Douyin store.
+func (s *Store) SaveDouyinGuard(guardState *DouyinGuardState) error {
+	if err := s.requireSite(SiteDouyin); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.isActiveRecordLocked() {
+		return ErrNotLoggedIn
+	}
+	next := s.cloneRecord(s.rec)
+	next.DouyinGuard = cloneDouyinGuardState(guardState)
+	next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	return s.persistRecordLocked(next)
+}
+
+// DouyinGuardSecrets returns all non-empty raw guard secret strings currently stored
+// for use by in-process redactors and receipt secret scanners (never exposed to UI or logs).
+func (s *Store) DouyinGuardSecrets() []string {
+	g := s.DouyinGuard()
+	if g == nil {
+		return nil
+	}
+	var out []string
+	for _, v := range []string{g.PrivateKeyPKCS8, g.PublicKeySEC1, g.Ticket, g.TsSign, g.ClientCert} {
+		if len(v) >= 4 {
+			out = appendSecretVariants(out, v)
+		}
+	}
+	return out
 }
 
 // UpdateDouyinProfile updates cached Douyin profile metadata (uid, sec_uid, unique_id, nickname, avatar) and marks state logged_in.

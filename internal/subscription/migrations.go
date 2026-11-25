@@ -20,7 +20,7 @@ import (
 )
 
 // SubscriptionsSchemaVersion is the on-disk schema version for subscriptions.json.
-const SubscriptionsSchemaVersion = 4
+const SubscriptionsSchemaVersion = 5
 
 // UpdatesDBSchemaVersion is the SQLite PRAGMA user_version for updates.db.
 const UpdatesDBSchemaVersion = 2

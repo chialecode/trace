@@ -101,7 +101,7 @@
 
 ### 3.1 粘贴 Cookie 字段分类与清洗规则
 
-按 DEC-043，用户在设置页粘贴浏览器已登录 `www.douyin.com` 后的 `Cookie` 字符串；TRACE 用 Windows DPAPI 加密落盘（[凭证设计](../design/architecture.md#credentials)），日志与错误报告严禁输出任何 Cookie 值。
+按 DEC-043，用户在设置页粘贴浏览器已登录 `www.douyin.com` 后的 `Cookie` 字符串；原始输入上限 `64 KiB`（`MaxCookieInputBytes = 65536`，避免完整浏览器 Cookie 在剥离大体积 `bd_ticket_guard_*` 等动态噪声前被提前拒收），清洗剥离下表黑名单字段后对出站 `Cookie:` 请求头再施 `32 KiB`（`MaxCleanedCookieHeaderBytes = 32768`）防 HTTP 431 保护；TRACE 用 Windows DPAPI 加密落盘（[凭证设计](../design/architecture.md#credentials)），日志与错误报告严禁输出任何 Cookie 值。
 
 | 分类 | 字段名 | 作用与处理策略 |
 | --- | --- | --- |
@@ -631,7 +631,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 | 空响应判定 | 严格按 §9.2 真值表；任何不确定的空结果都不当成“没有作品”或“到底了”，订阅检查记为“本轮结果不完整”，不移动起点 | — |
 
 <a id="account-lists"></a>
-## 12. 登录账号的关注、喜欢、收藏与观看历史（ACT-020 / ACT-026 真实检查）
+## 12. 登录账号的关注、喜欢、收藏与观看历史（ACT-020 / ACT-026 / ACT-028 / ACT-029 真实检查）
 
 用于“我的”（FR-ACCT-005，DEC-047）。查询 2026-11-14。来源：本机参考索引中“用户视频列表解析”和“抖音签名与访问上下文”两个领域的实现（本地副本 2026-11-09 更新；只读协议事实，不复制代码，DEC-044），以及 GitHub REST 读到的公开元数据。全部只读，只看登录账号自己；作品条目与第 6.1 节 `aweme_detail` 同构，复用同一个解析；请求节奏、错误与风控判定沿用第 9 节，签名沿用[附录](#sign-spec)。
 
@@ -650,7 +650,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 - **`collects_id` 用字符串**：数字 `collects_id` 是 int64，经过 JavaScript 会丢低位；优先 `collects_id_str`。
 - **全部收藏只认 POST**：`GET` 返回 404 `Unsupported path(Janus)`；POST 不带 `Referer` 也不带 `Origin` 时只返回 7 字节、没有列表（参，2026-10-17 观察），所以按表里的 `Referer` 与 TRACE 公共的 `Origin` 发送。参考实现另发 `x-secsdk-csrf-token: DOWNGRADE`，观察到不必需；TRACE 先不发，真实检查被拒时再加。
 - **游标字段名**：收藏类接口的下一页游标在 `cursor`，少数响应在 `max_cursor`；两个都认，以先出现的非零值为准。游标不前进且 `has_more` 为真时停下并按 `schema_changed` 说明，不死循环。
-- **空响应**：喜欢接口对“别人的私密喜欢列表”返回 HTTP 200 加 0 字节，或 `aweme_list: null` 且没有 `has_more`。TRACE 只查自己，所以第 1 页出现这两种形态时**不当成“还没有喜欢”**：`aweme_list: null` 按第 9.2 节的空壳规则判为“登录已失效或被拦截”并停下；0 字节是这个接口对非浏览器请求的固定回答（见下方复查），判为 `unavailable`，不打开退避；`aweme_list: []` 加 `has_more: 0` 才是真正为空。其余四个接口同理：有 `has_more` 字段的空列表才算空。
+- **空响应**：喜欢接口对“别人的私密喜欢列表”返回 HTTP 200 加 0 字节，或 `aweme_list: null` 且没有 `has_more`。TRACE 只查自己，所以第 1 页出现这两种形态时**不当成“还没有喜欢”**：`aweme_list: null` 按第 9.2 节的空壳规则判为“登录已失效或被拦截”并停下；0 字节（例如缺少 `s_v_web_id` 等不完整 Cookie 导致网关静默拒止时）仍判为 `unavailable` 单接口隔离，提示从「我的 → 喜欢」重贴完整 Cookie 且不打开整站退避；`aweme_list: []` 加 `has_more: 0` 才是真正为空。其余四个接口同理：有 `has_more` 字段的空列表才算空。
 - **观看历史**（核，ACT-026 D-V5）：`GET /aweme/v1/web/history/read/` 使用 `max_cursor`（首页 `0`）与 `count=20`，`Referer: https://www.douyin.com/user/self?showTab=record`，返回 `aweme_list`、`has_more`、`max_cursor`、`aweme_date`、`status_code`、`status_msg`。实测第 1、2 页游标正常推进且跨页 0 重复，已开启 `WatchHistoryEnabled=true` 开放界面入口（[#73](https://github.com/chialecode/trace/issues/73)，部分推进 [#37](https://github.com/chialecode/trace/issues/37)）；`aweme_date` 的值形态未单列实测样本，界面保持 3:4 网格不按日期分组。
 - **稍后再看**：抖音 App 有这个功能，但 2026-11-14 网页检索与两个本机参考里都没有网页接口（未）；用户同日另行网页搜索（看过 CSDN、知乎等结果）也没有找到，TRACE 不做。
 - **收藏的合集与音乐**（`mix/listcollection`、`music/listcollection`）：TRACE 还不能打开合集与音乐页（FR-FEED-002），本阶段不做。
@@ -677,6 +677,33 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 - **D-V2 喜欢（`aweme/favorite`，[#52](https://github.com/chialecode/trace/issues/52)）**：返回 HTTP 200、`Content-Type: text/plain`、**0 字节空响应**，响应头明确含 **`bd-ticket-guard-result`**（无 `bdturing-verify`）。对照同轮同一 Go 标准库 TLS 连接下的 `collects/list` 与 `history/read`（两者响应头均无 `bd-ticket-guard-result`，且全部返回完整 JSON），排除“Go 标准库 TLS 指纹被一刀切拒绝”，锁定剩余缺口为：① 旧测试 Cookie 文件缺失浏览器滑块/指纹 SDK 写入的 `s_v_web_id`（导致二阶段签名未附 `verifyFp`/`fp`），以及 ② `favorite` 接口下发 `bd-ticket-guard-result`（若补齐真实 `s_v_web_id` 后仍返回 0 字节与 `bd-ticket-guard-result`，则需进一步评估纯 Go 标准库 ECDSA P-256 `bd-ticket-guard` 票据握手）。客户端按 `ErrKindUnavailable` 单接口隔离提示重贴完整 Cookie，不阻断其他接口。
 - **D-V4 收藏夹列表（`collects/list`，核，关联 [#37](https://github.com/chialecode/trace/issues/37)）**：HTTP 200 `application/json`，`status_code=0`、`folders=0`、`has_more=false` 通过；因该测试账号下 `0` 个自定义收藏夹，`collects/video/list` 未触发请求，仍为 `not-run`。
 - **D-V5 观看历史（`history/read`，核，关联 [#37](https://github.com/chialecode/trace/issues/37)、[#73](https://github.com/chialecode/trace/issues/73)）**：`GET /aweme/v1/web/history/read/`（`max_cursor=0&count=20`）**第 1、2 页全部实测通过**——返回 HTTP 200 `application/json`，顶层键为 `aweme_date`、`aweme_list`、`has_more`、`max_cursor`、`status_code`、`status_msg`；第 1 页解析出 `19` 条作品（`has_more=true`），以返回的 `max_cursor` 翻第 2 页解析出 `20` 条作品（`has_more=true`、游标正常推进、跨页 `0` 重复）。协议形态已锁定，界面入口开关 `WatchHistoryEnabled` 已在 [#73](https://github.com/chialecode/trace/issues/73) 设为 `true` 开放。
+
+**`bd-ticket-guard` 卫士签名栈实测**（ACT-027，2026-11-25，常设授权下 1 次运行，脱敏回执 `artifacts/site-check/act027.json`，账本 `apiCalls=2/6`：`dy_profile_self=1`、`dy_favorite=1`，媒体请求 `0`，`stoppedBy=""`，0 次 403/429/444、0 次 `bdturing-verify` 挑战，关联 [#74](https://github.com/chialecode/trace/issues/74)、[#52](https://github.com/chialecode/trace/issues/52)）：
+
+- **Step 0 离线输入核对（0 网络请求）**：本机沿用的测试 Cookie 含 `sessionid`、`sid_ucp_v1`、`uifid`、`d_ticket`，仍不含 `s_v_web_id` 与 `msToken`；用户粘贴的浏览器 `bd_ticket_guard_*` Cookie 继续被严格剥离。
+- **登录握手（`dy_login` / `profile/self`）**：客户端为本次会话生成独立 ECDSA P-256 密钥对（DPAPI 加密存于 `douyin.bin` 的 `douyin_guard` 字段），随请求携带 `bd-ticket-guard-version: 2`、`bd-ticket-guard-iteration-version: 1`、`bd-ticket-guard-web-version: 2` 与 65 字节未压缩 SEC1 公钥头 `bd-ticket-guard-ree-public-key`。响应返回 HTTP 200 `application/json`（登录成功），响应头精确返回 **`bd-ticket-guard-result: 1103`**，但**未下发** `bd-ticket-guard-server-data` / `tt-ticket-guard-server-data`（`hasServerDataHeader=false`、`serverIssuedTicket=false`、`serverIssuedTsSign=false`）。
+- **D-V2 喜欢（`aweme/favorite`）**：由于上一步未获得服务端签发的 `ts_sign`（`sentGuardHandshake=true`、`sentGuardSigned=false`），请求携带同会话 P-256 握手头后，响应同样返回 **`bd-ticket-guard-result: 1103`**、`HTTP 200`、`Content-Type: text/plain`、**0 字节空响应**且无 `server-data` 下发（`hasBDTuringVerify=false`）。客户端未重试、未触发整站退避，按 `ErrKindUnavailable` 单接口隔离。
+- **工程结论（核）**：实测锁定了只读接口 `profile/self` 与 `aweme/favorite` 均处于 `bd-ticket-guard` 校验之下，且在缺少服务端签发 `ts_sign` 时携带未注册公钥握手头会返回结果码 `1103`；**单纯在只读业务接口上送出新公钥不会追溯触发服务端下发 `ts_sign`/`ticket`**。
+
+**`a_bogus` 金丝雀参数根因定位与“喜欢”实测打通**（ACT-028，2026-11-25，常设授权下 1 次运行，脱敏回执 `artifacts/site-check/act028.json`，账本 `runs=1/1`、`apiCalls=6/6`：`dy_profile_self=1`、`dy_favorite=3`、`dy_spare=2`，媒体请求 `0`，串行间隔 `>= 3.2s`，`stoppedBy=""`，0 次 403/429/444、0 次 `bdturing-verify` 挑战，`secretScanClean=true`，`tempDataDeleted=true`，关联 [#52](https://github.com/chialecode/trace/issues/52)、[#74](https://github.com/chialecode/trace/issues/74)、[#88](https://github.com/chialecode/trace/issues/88)）：
+
+- **Step 0 离线输入核对（0 网络请求）**：更新后的测试 Cookie 含 `s_v_web_id`、`uifid`、`sessionid`、`sid_ucp_v1`、`d_ticket`（无 `msToken`），`resolveCookieContext` 正常解析出非空 `verifyFp`。
+- **单变量对照逐次实测**：
+  - **Call 1（`profile/self` 基线）**：携带未注册 `bd-ticket-guard-*` 握手头返回 HTTP 200 `application/json`（`18,363 B`，登录通过），响应头 `bd-ticket-guard-result: 1103` 且无 `server-data` 下发。
+  - **Call 2（`aweme/favorite` 基线）**：带 `s_v_web_id`、`verifyFp`/`fp` 与未注册握手头，但仍用旧版写反参数的 `pickCanaryByte`，返回 HTTP 200 `text/plain` `0 B`、`bd-ticket-guard-result: 1103` 及 `x-vc-bdturing-parameters`。
+  - **Call 3（`aweme/favorite` 单变量去掉未注册握手头）**：响应头 `bd-ticket-guard-result` 立即由 `1103` 恢复为 **`1101`**，但因 `a_bogus` 三路金丝雀字节仍错，继续返回 `0 B` + `x-vc-bdturing-parameters`。
+  - **Call 4（`aweme/favorite` 修正 3 处 `pickCanaryByte` 参数 + 无未注册握手头，纯 Go 标准库 TLS/HTTP2）**：`x-vc-bdturing-parameters` 消失，返回 HTTP 200 `application/json` **`1,234,192 B`**（`bd-ticket-guard-result: 1101`），顶层键 `[aweme_list, has_more, log_pb, max_cursor, sec_uid, status_code, uid]`，第 1 页 **`17` 条**、`hasMore=true`。
+  - **Call 5（`aweme/favorite` 第 2 页翻页）**：以 Call 4 的 `max_cursor` 翻第 2 页，返回 HTTP 200 `application/json` **`763,603 B`**（`bd-ticket-guard-result: 1101`），解析出 **`13` 条**、`hasMore=true`、`cursorAdvanced=true`。
+  - **Call 6（单变量精确隔离）**：保留 `account.go` 原有 `version_code=170400`/`17.4.0`、原 `Referer`、无 `Origin`、纯 Go 标准库 TLS/HTTP2、无未注册握手头，**仅修复 `pickCanaryByte` 三处参数顺序**，直接返回 HTTP 200 `application/json` **`1,219,277 B`**（`17` 条、`hasMore=true`、`bd-ticket-guard-result: 1101`）。
+- **工程结论（核）**：1) `aweme/favorite` 此前持续返回 0 字节的直接根因是 `a_bogus` 三路摘要金丝雀函数 `pickCanaryByte(digest, start, sentinel, fallback)` 把 `start` 与 `sentinel` 写反，修正为 `(3, 11, 12)` / `(4, 8, 9)` / `(5, 12, 13)` 后纯 Go 标准库即可稳定拉通两页喜欢列表，无需引入第三方 TLS 库或浏览器桥接；2) 在尚无服务端签发有效 `ts_sign` 时不再向只读接口发送未注册的 4 个 `bd-ticket-guard-*` 握手头，避免触发 `1103`（保留 `guard` 包与 `server-data` 响应解析/签名能力以便后续具备票据签发通道时启用）。
+
+**完整生产链路登录、DPAPI 落盘重读与“喜欢”实测**（ACT-029，2026-11-25，常设授权下 1 次运行，脱敏回执 `artifacts/site-check/act029.json`，账本 `runs=1/1`、`apiCalls=2/5`：`dy_profile_self=1`、`dy_favorite=1`，媒体请求 `0`，串行间隔 `>= 3.2s`，`stoppedBy=""`，0 次 403/429/444、`secretScanClean=true`、`tempDataDeleted=true`，关联 [#52](https://github.com/chialecode/trace/issues/52)、[#88](https://github.com/chialecode/trace/issues/88)、[#91](https://github.com/chialecode/trace/issues/91)）：
+
+- **Step 0 离线清洗核对（0 网络请求）**：本次本机测试 Cookie（因旧 `8 KiB` 原始输入上限被拒后用户手动截短为 `7,188 B`，共 `64` 键，不含 `msToken`/`tt_scid`/`bd_ticket_guard_client_data` 等）经 `ParseDouyinCookieInput` 清洗剥离 `10` 个黑名单动态键后保留 `54` 键（出站头 `5,895 B`），`sessionid`、`sid_ucp_v1`、`s_v_web_id`、`UIFID`、`d_ticket` 全部留存，`cleaned_has_bd_ticket_guard=false`。
+- **Call 1 生产登录（`service.NewBackend` → `LoginWithCookie` → `profile/self`）**：返回 HTTP 200 `application/json`（`18,369 B`），`loggedIn=true`、`bd-ticket-guard-result: 1101`、`sentGuardHandshake=false`、`sentGuardSigned=false`，DPAPI 加密写入 `douyin.bin`（`7,334 B`）。
+- **Step 1b DPAPI 加密落盘重读核对（0 网络请求）**：关闭原后端并独立调用 `credential.OpenDouyin` 重新解密加载 `douyin.bin`，`backupCreated=false`、`activeCredential=true`，全部 `54` 键及 `s_v_web_id`、`sid_ucp_v1`、`UIFID`、`d_ticket`、`sessionid` 100% 无损留存。
+- **Call 2 生产「我的 › 抖音 › 喜欢」（全新 `service.NewBackend` 重载 `douyin.bin` → `Backend.AccountPage(douyin, likes, "", "")`）**：出站报文携带完整两阶段签名（`sentStage2Sig=true`、`sentVerifyFpParam=true`、`sentCookieHasSVWebID=true`、`sentCookieHasUIFID=true`、`sentCookieHasMSToken=true`、`sentGuardHandshake=false`），但服务端返回 HTTP 200 `text/plain` **`0 B`**、`bd-ticket-guard-result: 1101` 并下发 **`x-vc-bdturing-parameters`**（BDTuring 动态风控/滑块挑战头）；客户端按 `ErrKindUnavailable` 单接口隔离且未触发整站退避，Call 3 第 2 页跳过。
+- **工程结论（核）**：1) 确认生产链路 `LoginWithCookie`、DPAPI 加密落盘与重读、`a_bogus` 与 Stage-2 签名传递均无数据丢失或参数回退；2) `aweme/favorite` 在 `a_bogus` 修复后仍会受服务端 `x-vc-bdturing-parameters` 动态风控挑战（或手动截短 Cookie 丢失周边上下文 / 旧 `s_v_web_id` 失效）影响返回 `0 B`；3) 将 `MaxCookieInputBytes` 由 `8 KiB` 放宽至 `64 KiB`（先剥离动态噪声再限出站头 `32 KiB`）以消除用户必须手动截短完整浏览器 Cookie 的障碍，后续需由用户在浏览器打开「我的 → 喜欢」（必要时完成站内验证）后直接粘贴未截短的完整 Cookie 复测。
 
 <a id="sign-spec"></a>
 ## 附录：签名规格
@@ -747,9 +774,9 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 2. **金丝雀字节选取函数 `canary(digest[32], offset, sentinel, fallback)`**：
    - 从下标 `i = offset` 到 `31` 顺序扫描 32 字节摘要 `digest`：返回第一个满足 `digest[i] != sentinel` 的字节；若 `digest[offset..31]` 全部等于 `sentinel`，返回 `fallback`。
 3. **三路输入摘要链**：
-   - **查询串链 `dq`**：取第 1 阶段编码后的查询串 `q`（不含 `a_bogus` 本身），以 UTF-8 拼接盐值得到字节串 `[]byte(q + "dhzx")`，做**双重 SM3**（第 2 次 SM3 的输入为第 1 次 SM3 输出的 32 个原始摘要字节）：`dq = SM3(SM3([]byte(q + "dhzx")))`。提取 3 字节：`(q0, q1, qCanary) = (dq[9], dq[18], canary(dq, 11, 3, 12))`。
-   - **请求体链 `db`**：若 `Content-Type`（忽略大小写）包含 `"multipart/form-data"`，有效请求体视为空串 `""`，否则取请求体原串 `b`（GET 请求为 `""`）。同样做双重 SM3：`db = SM3(SM3([]byte(effectiveBody + "dhzx")))`。提取 3 字节：`(b0, b1, bCanary) = (db[10], db[19], canary(db, 8, 4, 9))`。
-   - **`User-Agent` 链 `dua`**：去除 `User-Agent` 首尾空白（为空则报错），按 §A.2 第 1 条转为码元字节序列，用 3 字节密钥 `[]byte{0x00, 0x01, 0x0E}` 执行修改版 RC4，再用**字母表 A** 做 Base64 编码得到 ASCII 字符串 `uaSealed`，对其 ASCII 字节做**单次 SM3**：`dua = SM3([]byte(uaSealed))`。提取 3 字节：`(u0, u1, uCanary) = (dua[11], dua[21], canary(dua, 12, 5, 13))`。
+   - **查询串链 `dq`**：取第 1 阶段编码后的查询串 `q`（不含 `a_bogus` 本身），以 UTF-8 拼接盐值得到字节串 `[]byte(q + "dhzx")`，做**双重 SM3**（第 2 次 SM3 的输入为第 1 次 SM3 输出的 32 个原始摘要字节）：`dq = SM3(SM3([]byte(q + "dhzx")))`。提取 3 字节：`(q0, q1, qCanary) = (dq[9], dq[18], canary(dq, 3, 11, 12))`。
+   - **请求体链 `db`**：若 `Content-Type`（忽略大小写）包含 `"multipart/form-data"`，有效请求体视为空串 `""`，否则取请求体原串 `b`（GET 请求为 `""`）。同样做双重 SM3：`db = SM3(SM3([]byte(effectiveBody + "dhzx")))`。提取 3 字节：`(b0, b1, bCanary) = (db[10], db[19], canary(db, 4, 8, 9))`。
+   - **`User-Agent` 链 `dua`**：去除 `User-Agent` 首尾空白（为空则报错），按 §A.2 第 1 条转为码元字节序列，用 3 字节密钥 `[]byte{0x00, 0x01, 0x0E}` 执行修改版 RC4，再用**字母表 A** 做 Base64 编码得到 ASCII 字符串 `uaSealed`，对其 ASCII 字节做**单次 SM3**：`dua = SM3([]byte(uaSealed))`。提取 3 字节：`(u0, u1, uCanary) = (dua[11], dua[21], canary(dua, 5, 12, 13))`。
 
 ### A.4 50 槽位标量布局与固定置换表
 
@@ -768,9 +795,9 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 | `S_nr[0..1]` | 2 | `nrFlags = 0x21` 的 16 比特小端字节 `(0x21, 0)` |
 | `S_nrTag[0..3]` | 4 | 固定 `(0, 0, 0, 0)` |
 | `S_detect[0..3]` | 4 | `detectFlags = 14` 的 32 比特小端字节 `(14, 0, 0, 0)` |
-| `S_query[0..2]` | 3 | `(dq[9], dq[18], canary(dq, 11, 3, 12))` |
-| `S_body[0..2]` | 3 | `(db[10], db[19], canary(db, 8, 4, 9))` |
-| `S_ua[0..2]` | 3 | `(dua[11], dua[21], canary(dua, 12, 5, 13))` |
+| `S_query[0..2]` | 3 | `(dq[9], dq[18], canary(dq, 3, 11, 12))` |
+| `S_body[0..2]` | 3 | `(db[10], db[19], canary(db, 4, 8, 9))` |
+| `S_ua[0..2]` | 3 | `(dua[11], dua[21], canary(dua, 5, 12, 13))` |
 | `S_ink[0..5]` | 6 | `ink = nowMs - 1` 的 48 比特小端字节 `LE(ink, 0..5)` |
 | `S_tripLock` | 1 | 固定 `3` |
 | `S_page[0..3]` | 4 | `page_id`（默认 `6241`）的 32 比特小端字节 `LE(page_id, 0..3)` |
@@ -903,11 +930,11 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 - **注入熵流（39 字节，十六进制）**：
   `030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d`
 - **预期中间态与输出**：
-  - `checksum`：`0xfd`；`expanded` 长度：`132` 字节
+  - `checksum`：`0xa2`；`expanded` 长度：`132` 字节
   - 第 1 阶段签名值（`Signature`）：
-    `dJUnkqSiQoWbKd/tmcnD7tnUTLy/NB8y8TidWraTHxP4OhzcC8PoPENWaNErszEkLRBhiH17YxFMbExcTtUwZeHpwmpvSkTfdU5VVgmLZqwsGzkQErjzew6zLw0rURsql55tiIRI/UJ96VnAwHdE/BA9tKoC55WBM3OWk/ubP9B6ZMyAD3nHPBSpYhiO0HVR`
+    `dJUnkqSiQoWbKd/tmcnD7tnUTLy/NB8y8TidWJ-THNP4OhzcC8PoPxaWaxwrszEvLRBhiH17YxFMbExcTtUwZeHpwmpvSkTfdU5VVgmLZqwsGzkQErjzew6zLw0rURsql55tiIRI/UJ96VnAwHdE/BA9tKoC55WBM3OWk/ubP9B6ZMyAD3nHPBSpYhiO0nA6`
   - 第 1 阶段签名百分号编码值：
-    `dJUnkqSiQoWbKd%2FtmcnD7tnUTLy%2FNB8y8TidWraTHxP4OhzcC8PoPENWaNErszEkLRBhiH17YxFMbExcTtUwZeHpwmpvSkTfdU5VVgmLZqwsGzkQErjzew6zLw0rURsql55tiIRI%2FUJ96VnAwHdE%2FBA9tKoC55WBM3OWk%2FubP9B6ZMyAD3nHPBSpYhiO0HVR`
+    `dJUnkqSiQoWbKd%2FtmcnD7tnUTLy%2FNB8y8TidWJ-THNP4OhzcC8PoPxaWaxwrszEvLRBhiH17YxFMbExcTtUwZeHpwmpvSkTfdU5VVgmLZqwsGzkQErjzew6zLw0rURsql55tiIRI%2FUJ96VnAwHdE%2FBA9tKoC55WBM3OWk%2FubP9B6ZMyAD3nHPBSpYhiO0nA6`
   - 附加请求头 `Headers`：空（0 项）
 
 #### 向量 2：受保护路径 + `uifid` + `verifyFp`（两阶段，`len(rawBody) == 97`，`97 % 3 == 1`）
@@ -928,12 +955,12 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 - **注入熵流（38 字节，十六进制）**：
   `05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919c`
 - **预期中间态与输出**：
-  - `checksum`：`0xcd`；`expanded` 长度：`129` 字节
+  - `checksum`：`0x09`；`expanded` 长度：`129` 字节
   - 第 1 阶段签名值（`Signature`）：
-    `mv0fhqywmZWnKdKGmCcY7talj9j/rTWy6TTOboNPtxOeOqUc5mNOPYxAGNxN4MDkgWpkieIHTxzlbddcTGXzZC9kompvuOXW24VcVgvo0qqsGMvQDrbsez6FKwMNUbTqeAVvil46hUr96nVAkHQY/pAySKLC5c8BP3x6k2ucT9Bg1zgAD1c-PdSkKh52`
+    `mv0fhqywmZWnKdKGmCcY7talj9j/rTWy6TTObLPPtOKeOqUc5mNOPOcAGxqN4MDvgWpkieIHTxzlbddcTGXzZC9kompvuOXW24VcVgvo0qqsGMvQDrbsez6FKwMNUbTqeAVvil46hUr96nVAkHQY/pAySKLC5c8BP3x6k2ucT9Bg1zgAD1c-PdSkKh4d`
   - 第 2 阶段追加后参数顺序：`device_platform`, `aid`, `channel`, `aweme_id`, `msToken`, `a_bogus`, `verifyFp`, `fp`, `uifid`, `timestamp`（最终查询串末尾再拼 `&x-secsdk-web-signature=<secSig>`，不含 `x-secsdk-web-expire`）
-  - 第 2 阶段 MD5 签名值 `secSig`：`8a3f27d0959b92823749f4cf46d54644`
-  - 附加请求头 `Headers`：`uifid = "SYNTHETIC_UIFID_02"`，`x-secsdk-web-signature = "8a3f27d0959b92823749f4cf46d54644"`，`x-secsdk-web-expire = "1763000000"`
+  - 第 2 阶段 MD5 签名值 `secSig`：`0af3880f4c5d663dc11aae2013895c77`
+  - 附加请求头 `Headers`：`uifid = "SYNTHETIC_UIFID_02"`，`x-secsdk-web-signature = "0af3880f4c5d663dc11aae2013895c77"`，`x-secsdk-web-expire = "1763000000"`
 
 #### 向量 3：尾零省略边界 `len(rawBody) % 3 == 2 && checksum == 0x00` + 查询串预置 `uifid` 不重复
 
@@ -953,11 +980,40 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 | 7 | `msToken` | `SYNTHETIC_TOKEN_03` |
 
 - **注入熵流（38 字节，十六进制）**：
-  `da1623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddea`
+  `9f1623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddea`
 - **预期中间态与输出**：
   - `checksum`：**`0x00`**；因 `len(rawBody) == 98`（`98 % 3 == 2`）且尾字节 `checksum == 0x00`，触发尾零省略规则，`expanded` 长度由常规 130 字节缩减为 **`129` 字节**
   - 第 1 阶段签名值（`Signature`）：
-    `QvUnDFUjmq85OdKt8CcY7SrUG2L/rPuy5TiKRFnPHPz1chMa5mN2PYxWjNxN40DkgRBwie1HxxzlbEVczGXhZHHpqmkvSwiyxU5AV0fo0qN4GzkQDHbheuXzFwMr0csqe55XilR62UJ9gVdAirQY/Bl9tKoCQcSBB1OfkMucN9B6Z06AD3c1PptpNhiq`
+    `QvUnDFW7mq85OdKt8CcY7SrUG2L/rPuy5TiKRzcPHPz1chMa5mN2POcWjxqN40DvgRBwie1HxxzlbEVczGXhZHHpqmkvSwiyxU5AV0fo0qN4GzkQDHbheuXzFwMr0csqe55XilR62UJ9gVdAirQY/Bl9tKoCQcSBB1OfkMucN9B6Z06AD3c1PptpNhiq`
   - 第 2 阶段追加后参数顺序：`device_platform`, `aid`, `sec_user_id`, `max_cursor`, `count`, `uifid`（保持第 6 位原位，不重复追加）, `msToken`, `a_bogus`, `timestamp`
-  - 第 2 阶段 MD5 签名值 `secSig`：`668d0b177abc76c8f89e56a95b45e575`
-  - 附加请求头 `Headers`：`uifid = "SYNTHETIC_UIFID_03"`，`x-secsdk-web-signature = "668d0b177abc76c8f89e56a95b45e575"`，`x-secsdk-web-expire = "1763000000"`
+  - 第 2 阶段 MD5 签名值 `secSig`：`c35b2a84e4d5b425009f839c079320c9`
+  - 附加请求头 `Headers`：`uifid = "SYNTHETIC_UIFID_03"`，`x-secsdk-web-signature = "c35b2a84e4d5b425009f839c079320c9"`，`x-secsdk-web-expire = "1763000000"`
+
+<a id="guard-spec"></a>
+### A.9 `bd-ticket-guard`（v2，ECDSA P-256）卫士签名栈规格与合成向量
+
+来源：`公开协议分析资料（2026-11-25 查证）`、`实测（ACT-026 2026-11-24 / ACT-027、ACT-028 2026-11-25）`。供 `internal/site/douyin/guard` 仅用 Go 标准库（`crypto/ecdh`、`crypto/ecdsa`、`crypto/elliptic`、`crypto/sha256`、`crypto/x509`、`encoding/base64`、`encoding/json`）独立实现，零 `internal/credential`、零 `net/http` 依赖。
+
+1. **密钥对与公钥线编码**：
+   - 曲线：NIST **P-256**（`secp256r1` / `prime256v1`）。
+   - 私钥持久化：PKCS#8 DER 的标准 Base64，仅保存在 DPAPI 加密的 `douyin.bin` 可选字段 `douyin_guard` 中（向后兼容旧版凭证文件），登出或重新登录立即清除，纳入 `Store.collectSecrets()` 脱敏边界。
+   - 公钥头 `bd-ticket-guard-ree-public-key`：65 字节未压缩 SEC1 编码 `0x04 || X(32B 大端) || Y(32B 大端)` 的标准 Base64（88 字符，以 `'B'` 开头，含 1 个 `'='` 填充）。
+2. **请求头构造与客户端发送门禁（仅作用于 `/aweme/v1/web/user/profile/self/` 与 `/aweme/v1/web/aweme/favorite/`）**：
+   - 浏览器粘贴的 `bd_ticket_guard_*` Cookie 继续由 `IsStrippedDouyinCookieKey` 严格剥离，不写入出站 `Cookie` 头。
+   - `guard.BuildHeaders` 在仅持有密钥对时可生成 4 个握手头（`bd-ticket-guard-version: 2`、`bd-ticket-guard-iteration-version: 1`、`bd-ticket-guard-web-version: 2`、`bd-ticket-guard-ree-public-key: <65B SEC1 Base64>`，返回 `Signed=false`）；同时具备 `ts_sign` 与 `ticket` 时追加 2 个签名头（`bd-ticket-guard-web-sign-type: 1` 与 `bd-ticket-guard-client-data`，返回 `Signed=true`）：
+     - `bd-ticket-guard-client-data`: 紧凑 JSON `{"ts_sign":"<ts_sign>","req_content":"ticket,path,timestamp","req_sign":"<Base64 ASN.1 DER>","timestamp":<Unix秒>}` 的标准 Base64。
+   - **只读客户端收敛策略（ACT-028 核实）**：向只读接口发送未注册的 4 个握手头会触发 `bd-ticket-guard-result: 1103` 且不会换回 `server-data`；因此 `douyin.Client` 仅在 `Signed == true`（即会话已获得服务端签发的有效 `ts_sign` 与票据）时才向出站请求附带上述 6 个 `bd-ticket-guard-*` 头，未获 `ts_sign` 时不发未注册握手头（保持网关 `1101`），同时继续解析并采纳响应中可能下发的 `server-data`。
+3. **`req_sign` 待签原像与签名格式**：
+   - 规范路径 `path`：剥离协议、主机、查询串与片段，保证以 `/` 开头、非根路径以 `/` 结尾（例如 `/aweme/v1/web/aweme/favorite/`）。
+   - 待签 UTF-8 原像：`ticket=<ticket>&path=<path>&timestamp=<timestamp>`。
+   - 摘要与签名：对原像做 `SHA-256`，使用会话 P-256 私钥执行 **ECDSA ASN.1 DER** 签名（`SEQUENCE { INTEGER r, INTEGER s }`，对应线格式 `MEQ...` / `MEU...` / `MEY...`），再做标准 Base64 编码写入 `req_sign`。
+4. **响应头解析**：
+   - `bd-ticket-guard-result`：提取 32 位夹紧整数结果码（`0` 为校验通过；`ACT-027`/`ACT-028` 实测发未注册握手头返回 `1103`，停发后恢复 `1101`）；脱敏回执仅记录纯整数码与非敏感布尔标志。
+   - `bd-ticket-guard-server-data` / `tt-ticket-guard-server-data`（支持原样 JSON、标准/URL-safe Base64 与 URL 百分号编码包裹，并兼容 `bd-ticket-guard-ticket` / `tt-ticket-guard-ticket`、`bd-ticket-guard-client-cert` / `tt-ticket-guard-client-cert` 及对应 `Set-Cookie` 载荷）：提取 `ts_sign`（或 `ts_sign_ree`）、`ticket`、`client_cert`，变更时原子回写加密 `douyin.bin`。
+5. **确定性合成测试向量（全部采用合成输入，`internal/site/douyin/guard/guard_test.go` 回归锁定）**：
+   - 合成 P-256 私钥标量（hex）：`0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20`
+   - 派生 65 字节 SEC1 Base64 公钥（`bd-ticket-guard-ree-public-key`）：`BFFcPW6545a5BNP+yn9U/c0MwemXvzddylFa0KbDtANfRTa+OlDzGPv5pUdZAqIhUCvvDVfgjFOyzApW8X2fk1Q=`
+   - 合成票据与时间戳：`ticket = "hash.SYNTHETIC_TICKET_VECTOR_01=="`，`ts_sign = "ts.2.synthetic_ts_sign_vector_01"`，`path = "/aweme/v1/web/aweme/favorite/"`，`timestamp = 1763000000`
+   - 待签原像：`ticket=hash.SYNTHETIC_TICKET_VECTOR_01==&path=/aweme/v1/web/aweme/favorite/&timestamp=1763000000`
+   - 原像 `SHA-256`（hex）：`7d89cc558d2c5124262021f2e3c39d870f1f013d4e3b24d6197aca12b377ae2c`
+   - 可验证 ASN.1 DER 黄金签名样本（`req_sign`）：`MEYCIQCOlz2S8qpetNXEMD1pUprwHSdpdi+XzLAL/ftaNwoMvQIhAPIqAPzWaS8qs6JZH7wyzs4aNb+r5Pi9Wx1XaNOfU1px`

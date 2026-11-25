@@ -8,11 +8,13 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// RuleBatchDialogState holds UI state for the "选择订阅…" batch rule assignment modal (DEC-051 ⑧).
+// RuleBatchDialogState holds UI state for the per-tag "管理订阅…" batch
+// subscription assignment modal (DEC-051 ⑧, DEC-070).
 type RuleBatchDialogState struct {
 	Open            bool
-	RuleID          string
-	RuleName        string
+	TagID           string
+	TagName         string
+	TagDescription  string
 	SearchInput     string
 	CommittedQuery  string
 	SearchComposing bool
@@ -21,27 +23,51 @@ type RuleBatchDialogState struct {
 	Error           string
 }
 
+// MultiTagBatchDialogState holds UI state for the cross-subscription multi-tag
+// batch setup modal ("批量设置缓存标签": add / remove / replace tags across
+// multiple selected subscriptions at once, DEC-070).
+type MultiTagBatchDialogState struct {
+	Open            bool
+	Mode            string // "add" | "remove" | "replace"
+	SelectedTags    map[string]bool
+	SearchInput     string
+	CommittedQuery  string
+	SearchComposing bool
+	SelectedSubs    map[string]bool
+	ListState       ui.ListState
+	Error           string
+}
+
 func ruleBatchSubKey(sub subscription.Subscription) string {
 	return firstNonEmptyStrUI(sub.ID, sub.SubID)
 }
 
-func (a *App) openRuleBatchDialog(ruleID, ruleName string) {
+func (a *App) openRuleBatchDialog(tagID, tagName, tagDesc string) {
 	if subs, err := a.backend.ListSubscriptions(); err == nil {
 		a.Subscriptions = subs
 		a.subsRev++
 	}
+	if tagDef, ok := subscription.CapabilityTagByID(tagID); ok {
+		if tagName == "" {
+			tagName = tagDef.Name
+		}
+		if tagDesc == "" {
+			tagDesc = tagDef.Description
+		}
+	}
 	selected := make(map[string]bool, len(a.Subscriptions))
 	for _, sub := range a.Subscriptions {
 		key := ruleBatchSubKey(sub)
-		if key != "" && effectiveSubRuleID(sub) == ruleID {
+		if key != "" && subscription.HasTag(effectiveSubTags(sub), tagID) {
 			selected[key] = true
 		}
 	}
 	a.RuleBatch = RuleBatchDialogState{
-		Open:     true,
-		RuleID:   ruleID,
-		RuleName: firstNonEmptyStrUI(ruleName, "默认"),
-		Selected: selected,
+		Open:           true,
+		TagID:          tagID,
+		TagName:        firstNonEmptyStrUI(tagName, tagID),
+		TagDescription: tagDesc,
+		Selected:       selected,
 	}
 }
 
@@ -49,6 +75,25 @@ func (a *App) closeRuleBatchDialog() {
 	a.RuleBatch.Open = false
 	a.RuleBatch.Error = ""
 	a.RuleBatch.SearchComposing = false
+}
+
+func (a *App) openMultiTagBatchDialog() {
+	if subs, err := a.backend.ListSubscriptions(); err == nil {
+		a.Subscriptions = subs
+		a.subsRev++
+	}
+	a.MultiTagBatch = MultiTagBatchDialogState{
+		Open:         true,
+		Mode:         subscription.TagBatchAdd,
+		SelectedTags: make(map[string]bool),
+		SelectedSubs: make(map[string]bool, len(a.Subscriptions)),
+	}
+}
+
+func (a *App) closeMultiTagBatchDialog() {
+	a.MultiTagBatch.Open = false
+	a.MultiTagBatch.Error = ""
+	a.MultiTagBatch.SearchComposing = false
 }
 
 func ruleBatchMatchesQuery(sub subscription.Subscription, query string) bool {
@@ -73,23 +118,19 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 	if a.RuleBatch.Selected == nil {
 		a.RuleBatch.Selected = make(map[string]bool)
 	}
-	rules := a.backend.ListCacheRules()
-	ruleNames := make(map[string]string, len(rules)+1)
-	ruleNames[subscription.DefaultRuleID] = "默认"
-	for _, r := range rules {
-		if r.ID != "" && r.Name != "" {
-			ruleNames[r.ID] = r.Name
-		}
+	tagDef, ok := subscription.CapabilityTagByID(a.RuleBatch.TagID)
+	tagName := firstNonEmptyStrUI(a.RuleBatch.TagName, tagDef.Name, a.RuleBatch.TagID)
+	tagDesc := firstNonEmptyStrUI(a.RuleBatch.TagDescription, tagDef.Description)
+	if !ok && tagName == "" {
+		tagName = "缓存标签"
 	}
-	ruleName := firstNonEmptyStrUI(ruleNames[a.RuleBatch.RuleID], a.RuleBatch.RuleName, "默认")
-	isDefaultRule := a.RuleBatch.RuleID == subscription.DefaultRuleID
 
 	ui.Column(c).FillWidth().Gap(4).Children(func() {
-		ui.Text(c, fmt.Sprintf("选择使用「%s」的订阅", ruleName)).
+		ui.Text(c, fmt.Sprintf("管理「%s」的订阅", tagName)).
 			FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-		if isDefaultRule {
-			ui.Text(c, "已在用「默认」规则的订阅保持不变；勾选其他订阅可一并改回「默认」规则").
-				FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
+		if tagDesc != "" {
+			ui.Text(c, tagDesc).
+				FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
 		}
 	})
 
@@ -117,9 +158,6 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 	selectedCount := 0
 	for _, sub := range a.Subscriptions {
 		key := ruleBatchSubKey(sub)
-		if key != "" && isDefaultRule && effectiveSubRuleID(sub) == subscription.DefaultRuleID {
-			a.RuleBatch.Selected[key] = true
-		}
 		if key != "" && a.RuleBatch.Selected[key] {
 			selectedCount++
 		}
@@ -140,9 +178,6 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 			}
 			if OutlinePillButton(c, "全不选", "全不选").Disabled(len(filtered) == 0).Clicked() {
 				for _, sub := range filtered {
-					if isDefaultRule && effectiveSubRuleID(sub) == subscription.DefaultRuleID {
-						continue
-					}
 					if key := ruleBatchSubKey(sub); key != "" {
 						a.RuleBatch.Selected[key] = false
 					}
@@ -182,14 +217,11 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 				sub := filtered[idx]
 				key := ruleBatchSubKey(sub)
 				subName := firstNonEmptyStrUI(sub.Name, sub.Uname, key)
-				origRuleID := effectiveSubRuleID(sub)
-				origRuleName := firstNonEmptyStrUI(ruleNames[origRuleID], "默认")
-				lockedDefault := isDefaultRule && origRuleID == subscription.DefaultRuleID
-				checked := (key != "" && a.RuleBatch.Selected[key]) || lockedDefault
+				checked := key != "" && a.RuleBatch.Selected[key]
+				curTags := effectiveSubTags(sub)
 
 				row := ui.CheckboxBase(c, &checked).
 					Label("勾选规则订阅："+subName).
-					Disabled(lockedDefault).
 					FillWidth().
 					Padding(9, 12).
 					Gap(10).
@@ -197,11 +229,11 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 					BorderWidth(0, 0, 1, 0).
 					BorderColor(ColorBorder).
 					ClipX()
-				if row.Hovered() && !lockedDefault {
+				if row.Hovered() {
 					row.Background(ColorHover)
 				}
 				row.Children(func() {
-					renderRuleBatchCheckIndicator(c, checked, lockedDefault)
+					renderRuleBatchCheckIndicator(c, checked, false)
 					pSite, pUID := subscriptionPrimarySiteAndUID(sub)
 					a.renderAccountAvatar(c, pSite, subName, pUID, sub.Mid, 32, false, "", nil, sub.Face)
 					ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
@@ -210,13 +242,10 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 							ui.Text(c, note).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 						}
 					})
-					if origRuleID != a.RuleBatch.RuleID {
-						ui.Text(c, "当前："+origRuleName).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(0)
-					} else if lockedDefault {
-						ui.Text(c, "当前：默认").FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(0)
-					}
+					ui.Text(c, subscription.TagsSummary(curTags)).
+						FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
 				})
-				if row.Changed() && !lockedDefault && key != "" {
+				if row.Changed() && key != "" {
 					a.RuleBatch.Selected[key] = checked
 					a.RuleBatch.Error = ""
 				}
@@ -235,6 +264,245 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 		}
 		if AccentPillButton(c, applyLabel, applyLabel).Clicked() {
 			a.applyRuleBatchSelection()
+		}
+	})
+}
+
+func (a *App) renderMultiTagBatchDialogBody(c *ui.Context) {
+	if a.MultiTagBatch.SelectedTags == nil {
+		a.MultiTagBatch.SelectedTags = make(map[string]bool)
+	}
+	if a.MultiTagBatch.SelectedSubs == nil {
+		a.MultiTagBatch.SelectedSubs = make(map[string]bool)
+	}
+	if a.MultiTagBatch.Mode == "" {
+		a.MultiTagBatch.Mode = subscription.TagBatchAdd
+	}
+	allTags := a.backend.ListCapabilityTags()
+
+	ui.Column(c).FillWidth().Gap(4).Children(func() {
+		ui.Text(c, "批量设置缓存标签").
+			FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+		modeHint := "为勾选的订阅批量添加以下标签，每个订阅原有的其他标签保留不变。"
+		switch a.MultiTagBatch.Mode {
+		case subscription.TagBatchRemove:
+			modeHint = "从勾选的订阅中移除以下标签，其余标签保留不变。"
+		case subscription.TagBatchReplace:
+			modeHint = "将勾选订阅的标签统一替换为以下所选标签；不选任何标签即清空全部标签。"
+		}
+		ui.Text(c, modeHint).
+			FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+	})
+
+	modes := [3]struct {
+		mode  string
+		title string
+	}{
+		{subscription.TagBatchAdd, "添加标签"},
+		{subscription.TagBatchRemove, "移除标签"},
+		{subscription.TagBatchReplace, "替换标签"},
+	}
+	ui.Row(c).
+		FillWidth().
+		Padding(3).
+		Radius(10).
+		Background(ColorBgSecondary).
+		Gap(4).
+		Children(func() {
+			for _, m := range modes {
+				opt := m
+				active := a.MultiTagBatch.Mode == opt.mode
+				seg := ui.ButtonBase(c).
+					Label("批量模式："+opt.mode).
+					Grow(1).
+					Basis(0).
+					Padding(6, 8).
+					Radius(8).
+					Center()
+				if active {
+					seg.Background(ColorBgMain).Border(1, ColorBorder)
+				} else if seg.Hovered() {
+					seg.Background(ColorHover)
+				}
+				seg.Children(func() {
+					col := ColorTextMuted
+					weight := 500
+					if active {
+						col = ColorAccent
+						weight = 600
+					}
+					ui.Text(c, opt.title).FontSize(13).FontWeight(weight).TextColor(col).SingleLine()
+				})
+				if seg.Clicked() && a.MultiTagBatch.Mode != opt.mode {
+					a.MultiTagBatch.Mode = opt.mode
+					a.MultiTagBatch.Error = ""
+				}
+			}
+		})
+
+	selectedTagCount := 0
+	for _, t := range allTags {
+		if a.MultiTagBatch.SelectedTags[t.ID] {
+			selectedTagCount++
+		}
+	}
+
+	ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Wrap().Children(func() {
+		for _, item := range allTags {
+			tag := item
+			on := a.MultiTagBatch.SelectedTags[tag.ID]
+			chip := toggleChipSized(c, tag.Name, "批量选择标签："+tag.Name, on, 4, 10, 12).Tooltip(tag.Description)
+			if chip.Clicked() {
+				a.MultiTagBatch.SelectedTags[tag.ID] = !on
+				a.MultiTagBatch.Error = ""
+			}
+		}
+	})
+
+	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		inp := ui.TextInput(c, &a.MultiTagBatch.SearchInput).
+			Placeholder("搜索要批量设置的订阅…").
+			Label("批量订阅搜索框").
+			Grow(1)
+		a.MultiTagBatch.SearchComposing = inp.Composing()
+		if !a.MultiTagBatch.SearchComposing && a.MultiTagBatch.CommittedQuery != a.MultiTagBatch.SearchInput {
+			a.MultiTagBatch.CommittedQuery = a.MultiTagBatch.SearchInput
+			a.MultiTagBatch.ListState = ui.ListState{}
+		}
+		if a.MultiTagBatch.SearchInput != "" {
+			if OutlinePillButton(c, "清空", "清空批量订阅搜索").Clicked() {
+				a.MultiTagBatch.SearchInput = ""
+				a.MultiTagBatch.CommittedQuery = ""
+				a.MultiTagBatch.SearchComposing = false
+				a.MultiTagBatch.ListState = ui.ListState{}
+			}
+		}
+	})
+
+	filtered := make([]subscription.Subscription, 0, len(a.Subscriptions))
+	selectedSubCount := 0
+	for _, sub := range a.Subscriptions {
+		key := ruleBatchSubKey(sub)
+		if key != "" && a.MultiTagBatch.SelectedSubs[key] {
+			selectedSubCount++
+		}
+		if ruleBatchMatchesQuery(sub, a.MultiTagBatch.CommittedQuery) {
+			filtered = append(filtered, sub)
+		}
+	}
+
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			if OutlinePillButton(c, "全选", "批量订阅全选").Disabled(len(filtered) == 0).Clicked() {
+				for _, sub := range filtered {
+					if key := ruleBatchSubKey(sub); key != "" {
+						a.MultiTagBatch.SelectedSubs[key] = true
+					}
+				}
+				a.MultiTagBatch.Error = ""
+			}
+			if OutlinePillButton(c, "全不选", "批量订阅全不选").Disabled(len(filtered) == 0).Clicked() {
+				for _, sub := range filtered {
+					if key := ruleBatchSubKey(sub); key != "" {
+						a.MultiTagBatch.SelectedSubs[key] = false
+					}
+				}
+				a.MultiTagBatch.Error = ""
+			}
+		})
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			if strings.TrimSpace(a.MultiTagBatch.CommittedQuery) != "" {
+				ui.Text(c, fmt.Sprintf("匹配 %d 个", len(filtered))).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+			}
+			ui.Text(c, fmt.Sprintf("已选 %d 个订阅", selectedSubCount)).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+		})
+	})
+
+	ui.Column(c).Grow(1).FillWidth().Border(1, ColorBorder).Radius(12).Background(ColorBgMain).Clip().Children(func() {
+		switch {
+		case len(a.Subscriptions) == 0:
+			ui.Column(c).Grow(1).FillWidth().Center().Padding(24).Children(func() {
+				ui.Text(c, "还没有订阅").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+			})
+		case len(filtered) == 0:
+			ui.Column(c).Grow(1).FillWidth().Center().Padding(24).Children(func() {
+				ui.Text(c, "没有匹配的订阅").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+			})
+		default:
+			a.MultiTagBatch.ListState.Key = func(idx int) any {
+				if idx < 0 || idx >= len(filtered) {
+					return idx
+				}
+				return ruleBatchSubKey(filtered[idx])
+			}
+			ui.List(c, &a.MultiTagBatch.ListState, len(filtered), func(idx int) {
+				if idx < 0 || idx >= len(filtered) {
+					return
+				}
+				sub := filtered[idx]
+				key := ruleBatchSubKey(sub)
+				subName := firstNonEmptyStrUI(sub.Name, sub.Uname, key)
+				checked := key != "" && a.MultiTagBatch.SelectedSubs[key]
+				curTags := effectiveSubTags(sub)
+
+				row := ui.CheckboxBase(c, &checked).
+					Label("勾选批量订阅："+subName).
+					FillWidth().
+					Padding(9, 12).
+					Gap(10).
+					AlignItems(ui.Center).
+					BorderWidth(0, 0, 1, 0).
+					BorderColor(ColorBorder).
+					ClipX()
+				if row.Hovered() {
+					row.Background(ColorHover)
+				}
+				row.Children(func() {
+					renderRuleBatchCheckIndicator(c, checked, false)
+					pSite, pUID := subscriptionPrimarySiteAndUID(sub)
+					a.renderAccountAvatar(c, pSite, subName, pUID, sub.Mid, 32, false, "", nil, sub.Face)
+					ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
+						ui.Text(c, subName).FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
+						if note := strings.TrimSpace(sub.Note); note != "" {
+							ui.Text(c, note).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+						}
+					})
+					ui.Text(c, subscription.TagsSummary(curTags)).
+						FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
+				})
+				if row.Changed() && key != "" {
+					a.MultiTagBatch.SelectedSubs[key] = checked
+					a.MultiTagBatch.Error = ""
+				}
+			}).Grow(1).FillWidth()
+		}
+	})
+
+	if a.MultiTagBatch.Error != "" {
+		renderErrorBanner(c, "", a.MultiTagBatch.Error, nil)
+	}
+
+	var applyText string
+	switch a.MultiTagBatch.Mode {
+	case subscription.TagBatchRemove:
+		applyText = fmt.Sprintf("从 %d 个订阅移除标签", selectedSubCount)
+	case subscription.TagBatchReplace:
+		if selectedTagCount == 0 {
+			applyText = fmt.Sprintf("清空 %d 个订阅的标签", selectedSubCount)
+		} else {
+			applyText = fmt.Sprintf("替换 %d 个订阅的标签", selectedSubCount)
+		}
+	default:
+		applyText = fmt.Sprintf("为 %d 个订阅添加标签", selectedSubCount)
+	}
+	canApply := selectedSubCount > 0 && (a.MultiTagBatch.Mode == subscription.TagBatchReplace || selectedTagCount > 0)
+
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.End).Gap(8).Children(func() {
+		if OutlinePillButton(c, "取消", "取消批量设置标签").Clicked() {
+			a.closeMultiTagBatchDialog()
+		}
+		if AccentPillButton(c, applyText, "确认批量设置标签").Disabled(!canApply).Clicked() && canApply {
+			a.applyMultiTagBatchSelection()
 		}
 	})
 }
@@ -261,24 +529,7 @@ func renderRuleBatchCheckIndicator(c *ui.Context, checked, locked bool) {
 	}
 }
 
-func (a *App) applyRuleBatchSelection() {
-	isDefaultRule := a.RuleBatch.RuleID == subscription.DefaultRuleID
-	selectedIDs := make([]string, 0, len(a.Subscriptions))
-	for _, sub := range a.Subscriptions {
-		key := ruleBatchSubKey(sub)
-		if key == "" {
-			continue
-		}
-		lockedDefault := isDefaultRule && effectiveSubRuleID(sub) == subscription.DefaultRuleID
-		if a.RuleBatch.Selected[key] || lockedDefault {
-			selectedIDs = append(selectedIDs, key)
-		}
-	}
-	if err := a.backend.SetSubscriptionsRule(a.RuleBatch.RuleID, selectedIDs); err != nil {
-		a.RuleBatch.Error = userErrorText(err)
-		return
-	}
-	a.closeRuleBatchDialog()
+func (a *App) syncSelectedSubAfterTagBatch() {
 	if subs, err := a.backend.ListSubscriptions(); err == nil {
 		a.Subscriptions = subs
 		a.subsRev++
@@ -292,5 +543,58 @@ func (a *App) applyRuleBatchSelection() {
 				break
 			}
 		}
+	}
+}
+
+func (a *App) applyRuleBatchSelection() {
+	selectedIDs := make([]string, 0, len(a.Subscriptions))
+	for _, sub := range a.Subscriptions {
+		key := ruleBatchSubKey(sub)
+		if key != "" && a.RuleBatch.Selected[key] {
+			selectedIDs = append(selectedIDs, key)
+		}
+	}
+	if err := a.backend.SetTagSubscriptions(a.RuleBatch.TagID, selectedIDs); err != nil {
+		a.RuleBatch.Error = userErrorText(err)
+		return
+	}
+	tagName := a.RuleBatch.TagName
+	a.closeRuleBatchDialog()
+	a.syncSelectedSubAfterTagBatch()
+	a.BannerInfo = fmt.Sprintf("已更新标签「%s」的关联订阅（共 %d 个）", tagName, len(selectedIDs))
+}
+
+func (a *App) applyMultiTagBatchSelection() {
+	selectedSubIDs := make([]string, 0, len(a.Subscriptions))
+	for _, sub := range a.Subscriptions {
+		key := ruleBatchSubKey(sub)
+		if key != "" && a.MultiTagBatch.SelectedSubs[key] {
+			selectedSubIDs = append(selectedSubIDs, key)
+		}
+	}
+	var chosenTags []string
+	for _, t := range a.backend.ListCapabilityTags() {
+		if a.MultiTagBatch.SelectedTags[t.ID] {
+			chosenTags = append(chosenTags, t.ID)
+		}
+	}
+	mode := a.MultiTagBatch.Mode
+	if err := a.backend.BatchUpdateSubscriptionsTags(selectedSubIDs, mode, chosenTags); err != nil {
+		a.MultiTagBatch.Error = userErrorText(err)
+		return
+	}
+	a.closeMultiTagBatchDialog()
+	a.syncSelectedSubAfterTagBatch()
+	switch mode {
+	case subscription.TagBatchRemove:
+		a.BannerInfo = fmt.Sprintf("已从 %d 个订阅移除所选缓存标签", len(selectedSubIDs))
+	case subscription.TagBatchReplace:
+		if len(chosenTags) == 0 {
+			a.BannerInfo = fmt.Sprintf("已清空 %d 个订阅的全部缓存标签", len(selectedSubIDs))
+		} else {
+			a.BannerInfo = fmt.Sprintf("已更新 %d 个订阅的缓存标签", len(selectedSubIDs))
+		}
+	default:
+		a.BannerInfo = fmt.Sprintf("已为 %d 个订阅添加所选缓存标签", len(selectedSubIDs))
 	}
 }

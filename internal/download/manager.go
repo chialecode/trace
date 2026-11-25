@@ -512,6 +512,10 @@ func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]
 		}
 		detail = &vd
 	}
+	if detail.IsUpowerLocked() {
+		upowerErr := bilibili.NewUpowerLockedError("/x/web-interface/wbi/view")
+		return nil, m.wrapDegradedIfLocalProtected(candKey, mode, upowerErr)
+	}
 
 	pageSet := make(map[int]bool, len(req.Pages))
 	for _, p := range req.Pages {
@@ -643,6 +647,19 @@ func (m *Manager) EnqueueDynamic(ctx context.Context, req DynamicEnqueueRequest)
 			return Task{}, m.wrapDegradedIfLocalProtected(candKey, mode, err)
 		}
 		dyn = &fetched
+	}
+	if dyn.Blocked {
+		msg := strings.TrimSpace(dyn.BlockedHint)
+		if msg == "" {
+			msg = "充电专属动态：当前登录账号未开通该 UP 主充电权益，暂不支持缓存"
+		}
+		blockedErr := &bilibili.SiteError{
+			Site:     site.Bilibili,
+			Kind:     bilibili.ErrKindForbidden,
+			Endpoint: "/x/polymer/web-dynamic/v1/detail",
+			Message:  msg,
+		}
+		return Task{}, m.wrapDegradedIfLocalProtected(candKey, mode, blockedErr)
 	}
 
 	var planHint *WorkDownloadPlan

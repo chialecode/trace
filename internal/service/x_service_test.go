@@ -1105,11 +1105,10 @@ func TestXRemoteManualPushNeverAutoPushesAndServerAccepts(t *testing.T) {
 	snap := subscription.Snapshot{
 		Format:  subscription.SnapshotFormat,
 		Version: subscription.SnapshotVersion,
-		Rules:   []subscription.CacheRule{{ID: "xfull", Name: "XFull", ScheduledCheck: true, AutoCache: true, FullCache: true}},
 		Subscriptions: []subscription.SnapshotSubscription{{
-			ID:     "sub-x-1",
-			Name:   synthXCreatorName,
-			RuleID: "xfull",
+			ID:   "sub-x-1",
+			Name: synthXCreatorName,
+			Tags: []string{subscription.TagScheduledCheck, subscription.TagCacheVideo, subscription.TagFullCache},
 			Accounts: []subscription.SnapshotAccount{{
 				Site:     "x",
 				UID:      synthXCreatorRestID,

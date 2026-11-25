@@ -2,6 +2,7 @@ package douyin
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/site"
+	"github.com/chialecode/trace/internal/site/douyin/guard"
 	"github.com/chialecode/trace/internal/site/douyin/sign"
 )
 
@@ -542,4 +544,146 @@ func TestWatchHistoryPaginationAwemeDateEmptyAndErrors(t *testing.T) {
 			t.Errorf("%s: err=%v want %s", tc.name, err, tc.kind)
 		}
 	}
+}
+
+func TestTicketGuardHandshakeSigningAndLogoutRotation(t *testing.T) {
+	store := openTestDouyinCredStore(t, false)
+	const fixedTS = int64(1763000000)
+	const srvTicket = "hash.SYNTH_ISSUED_TICKET_074"
+	const srvTsSign = "ts.2.SYNTH_ISSUED_TSSIGN_074"
+
+	serverDataB64 := base64.StdEncoding.EncodeToString([]byte(`{"ticket":"` + srvTicket + `","ts_sign":"` + srvTsSign + `"}`))
+	issueServerData := true
+
+	var seen []capturedReq
+	client := NewClient(ClientOptions{
+		CredStore:   store,
+		MinInterval: -1,
+		Now:         func() time.Time { return time.Unix(fixedTS, 0).UTC() },
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			seen = append(seen, capturedReq{
+				method: req.Method,
+				path:   req.URL.Path,
+				query:  req.URL.Query(),
+				raw:    req.URL.RawQuery,
+				header: req.Header.Clone(),
+			})
+			switch req.URL.Path {
+			case "/aweme/v1/web/user/profile/self/":
+				h := map[string]string{
+					"bd-ticket-guard-result": "1101",
+				}
+				if issueServerData {
+					h["bd-ticket-guard-result"] = "0"
+					h["bd-ticket-guard-server-data"] = serverDataB64
+				}
+				return jsonHTTPResponse(200, `{"status_code":0,"user":{"uid":"770000000074","sec_uid":"`+selfSecUID+`","nickname":"卫士测试用户"}}`, h), nil
+			case pathFavorite:
+				h := map[string]string{
+					"bd-ticket-guard-result": "0",
+				}
+				if !issueServerData {
+					h["bd-ticket-guard-result"] = "1101"
+				}
+				return jsonHTTPResponse(200, `{"status_code":0,"aweme_list":[],"has_more":0,"max_cursor":0}`, h), nil
+			default:
+				return jsonHTTPResponse(404, `{}`, nil), nil
+			}
+		}),
+	})
+
+	assertNoGuardHeaders := func(label string, hdr http.Header) {
+		t.Helper()
+		for _, k := range []string{
+			guard.HeaderVersion,
+			guard.HeaderIterationVersion,
+			guard.HeaderWebVersion,
+			guard.HeaderWebSignType,
+			guard.HeaderREEPublicKey,
+			guard.HeaderClientData,
+		} {
+			if got := hdr.Get(k); got != "" {
+				t.Fatalf("%s unexpectedly sent unregistered guard header %s=%q", label, k, got)
+			}
+		}
+	}
+
+	ctx := context.Background()
+	st, err := client.LoginWithCookie(ctx, "sessionid=SYNTH_GUARD_SESS_01; UIFID=SYNTH_GUARD_UIFID_01; bd_ticket_guard_client_data=MUST_STRIP_BROWSER_GUARD")
+	if err != nil || !st.LoggedIn {
+		t.Fatalf("LoginWithCookie failed: st=%+v err=%v", st, err)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("expected 1 login request, got %d", len(seen))
+	}
+	loginHdr := seen[0].header
+	if strings.Contains(loginHdr.Get("Cookie"), "bd_ticket_guard") {
+		t.Fatalf("browser bd_ticket_guard cookie leaked into outbound Cookie: %s", loginHdr.Get("Cookie"))
+	}
+	// Without a server-issued ts_sign, read-only login must NOT attach unregistered handshake headers.
+	assertNoGuardHeaders("initial profile/self without ts_sign", loginHdr)
+
+	// Verify server-issued ticket/ts_sign were still adopted and persisted encrypted in store.
+	persisted := store.DouyinGuard()
+	if persisted == nil || persisted.PublicKeySEC1 == "" || persisted.Ticket != srvTicket || persisted.TsSign != srvTsSign {
+		t.Fatalf("persisted DouyinGuard mismatch: %+v", persisted)
+	}
+	pub1 := persisted.PublicKeySEC1
+
+	// Favorites request now has valid ts_sign + ticket, so it attaches full signed guard headers.
+	if _, err := client.Favorites(ctx, selfSecUID, ""); err != nil {
+		t.Fatalf("Favorites failed: %v", err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(seen))
+	}
+	favHdr := seen[1].header
+	if favHdr.Get(guard.HeaderVersion) != "2" ||
+		favHdr.Get(guard.HeaderIterationVersion) != "1" ||
+		favHdr.Get(guard.HeaderWebVersion) != "2" ||
+		favHdr.Get(guard.HeaderREEPublicKey) != pub1 ||
+		favHdr.Get(guard.HeaderWebSignType) != "1" {
+		t.Fatalf("unexpected favorite guard headers: %v", favHdr)
+	}
+	rawCD, err := base64.StdEncoding.DecodeString(favHdr.Get(guard.HeaderClientData))
+	if err != nil {
+		t.Fatalf("decode favorite bd-ticket-guard-client-data: %v", err)
+	}
+	var payload guard.ClientDataPayload
+	if err := json.Unmarshal(rawCD, &payload); err != nil {
+		t.Fatalf("unmarshal favorite client-data: %v", err)
+	}
+	if payload.TsSign != srvTsSign || payload.ReqContent != guard.DefaultReqContent || payload.Timestamp != fixedTS {
+		t.Fatalf("unexpected client-data payload: %+v", payload)
+	}
+	pubKey, err := guard.DecodePublicKeySEC1(pub1)
+	if err != nil {
+		t.Fatalf("DecodePublicKeySEC1 failed: %v", err)
+	}
+	wantPreimage := guard.BuildPreimage(srvTicket, pathFavorite, fixedTS)
+	if !guard.VerifyPreimageASN1(pubKey, wantPreimage, payload.ReqSign) {
+		t.Fatal("favorite req_sign failed ECDSA P-256 ASN.1 verification against bd-ticket-guard-ree-public-key")
+	}
+
+	// Logout clears guard state; subsequent login without server-data rotates to a fresh P-256
+	// keypair and must NOT send unregistered bd-ticket-guard-* headers on profile/self or favorites.
+	if err := client.LogoutCredential(); err != nil {
+		t.Fatal(err)
+	}
+	if store.DouyinGuard() != nil {
+		t.Fatal("LogoutCredential did not clear DouyinGuard")
+	}
+	issueServerData = false
+	if _, err := client.LoginWithCookie(ctx, "sessionid=SYNTH_GUARD_SESS_02; d_ticket=SYNTH_DTICKET_ONLY"); err != nil {
+		t.Fatal(err)
+	}
+	assertNoGuardHeaders("second profile/self without ts_sign", seen[2].header)
+	persisted2 := store.DouyinGuard()
+	if persisted2 == nil || persisted2.PublicKeySEC1 == "" || persisted2.PublicKeySEC1 == pub1 || persisted2.TsSign != "" {
+		t.Fatalf("expected rotated P-256 keypair without ts_sign after logout, got %+v (prev pub=%q)", persisted2, pub1)
+	}
+	if _, err := client.Favorites(ctx, selfSecUID, ""); err != nil {
+		t.Fatalf("Favorites without ts_sign failed: %v", err)
+	}
+	assertNoGuardHeaders("favorites without ts_sign", seen[3].header)
 }

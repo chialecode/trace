@@ -31,7 +31,7 @@ func TestSettingsCorruptRecoveryAndUnknownFields(t *testing.T) {
 		t.Fatalf("unexpected Q-006 defaults: scheduledCheck=%v checkIntervalMin=%d liveCheckIntervalMin=%d maxRecordings=%d",
 			got.ScheduledCheck, got.CheckIntervalMin, got.LiveCheckIntervalMin, got.MaxRecordings)
 	}
-	if got.VideoQuality != "best" || got.AudioQuality != "best" || got.MultiPart != "all" || !got.UpgradeCheckOnOpen || !got.AISubtitles {
+	if got.VideoQuality != "best" || got.AudioQuality != "best" || got.MultiPart != "all" || !got.UpgradeCheckOnOpen || !got.AISubtitles || !got.WeiboRemoveWatermark {
 		t.Fatalf("unexpected media defaults: %+v", got)
 	}
 
@@ -67,8 +67,8 @@ func TestSettingsCorruptRecoveryAndUnknownFields(t *testing.T) {
 	if got2.Concurrency != 3 || got2.Download.MaxConcurrentTasks != 3 || got2.VideoQuality != "1080" || got2.AudioQuality != "192k" || got2.MultiPart != "first" {
 		t.Fatalf("unexpected loaded settings: %+v", got2)
 	}
-	if !got2.ScheduledCheck || got2.CheckIntervalMin != 30 || got2.LiveCheckIntervalMin != 5 || got2.MaxRecordings != 3 {
-		t.Fatalf("unexpected loaded schedule/live settings: %+v", got2)
+	if !got2.ScheduledCheck || got2.CheckIntervalMin != 30 || got2.LiveCheckIntervalMin != 5 || got2.MaxRecordings != 3 || !got2.WeiboRemoveWatermark {
+		t.Fatalf("unexpected loaded schedule/live/watermark settings: %+v", got2)
 	}
 
 	// 3. Invalid validation values are rejected on Update.
@@ -87,14 +87,18 @@ func TestSettingsCanToggleRulesAndRestoreDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := store.Get()
-	next.ScheduledCheck, next.Danmaku, next.Subtitles = true, false, false
+	next.ScheduledCheck, next.Danmaku, next.Subtitles, next.WeiboRemoveWatermark = true, false, false, false
 	next.AudioQuality, next.CloseAction = "192k", "quit"
 	next.LiveCheckIntervalMin, next.Concurrency, next.MaxRecordings = 5, 3, 3
 	if _, err := store.Update(next); err != nil {
 		t.Fatal(err)
 	}
+	reloadedOff, _, _, err := Open(filepath.Join(dir, "settings.json"), filepath.Join(dir, "cache"))
+	if err != nil || reloadedOff.Get().WeiboRemoveWatermark {
+		t.Fatalf("WeiboRemoveWatermark=false did not persist across Open: %+v err=%v", reloadedOff, err)
+	}
 	next = store.Get()
-	next.ScheduledCheck, next.Danmaku, next.Subtitles = false, true, true
+	next.ScheduledCheck, next.Danmaku, next.Subtitles, next.WeiboRemoveWatermark = false, true, true, true
 	next.AudioQuality, next.CloseAction = "best", "tray"
 	next.LiveCheckIntervalMin, next.Concurrency, next.MaxRecordings = 3, 2, 2
 	after, err := store.Update(next)

@@ -1265,6 +1265,13 @@ func (a *App) applyParseResult(res *service.OpenLinkResult) {
 		a.UserDynamics = nil
 		a.UserVideos = nil
 		a.UserVideosPage = 0
+		a.UserVideosOrder = "pubdate"
+		a.UserVideosKeywordInput = ""
+		a.UserVideosKeywordComposing = false
+		a.UserVideosAppliedKeyword = ""
+		a.UserVideosTID = 0
+		a.UserVideosZones = nil
+		a.userVideosSeq++
 		a.UserDynamicsNext = ""
 		a.UserDynamicsHasMore = false
 		a.UserVideosHasMore = false
@@ -1277,6 +1284,7 @@ func (a *App) applyParseResult(res *service.OpenLinkResult) {
 		}
 		if res.UserVideos != nil {
 			a.UserVideos = res.UserVideos.Items
+			a.UserVideosZones = res.UserVideos.Zones
 			a.UserVideosPage = 1
 			a.UserVideosHasMore = len(res.UserVideos.Items) < res.UserVideos.Total
 			a.UserVideosError = ""
@@ -1645,15 +1653,85 @@ func (a *App) LoadMoreUserDynamics() {
 	}, func(err error) { a.UserDynamicsError = userErrorText(err); a.showError(err) })
 }
 
+func (a *App) resetAndLoadUserVideos() {
+	if a.CurrentUser == nil {
+		return
+	}
+	a.userVideosSeq++
+	a.UserVideos = nil
+	a.UserVideosPage = 0
+	a.UserVideosHasMore = false
+	a.UserVideosError = ""
+	a.UserVidListState = &ui.ListState{}
+	a.userIdxCacheKey = ""
+	a.LoadMoreUserVideos()
+}
+
+// SubmitUserVideosSearch explicitly runs a Bilibili space upload search for the current input.
+func (a *App) SubmitUserVideosSearch() {
+	if a.CurrentUser == nil {
+		return
+	}
+	a.UserVideosAppliedKeyword = strings.TrimSpace(a.UserVideosKeywordInput)
+	a.resetAndLoadUserVideos()
+}
+
+// ClearUserVideosSearch clears the space upload search input and reloads when a keyword was active.
+func (a *App) ClearUserVideosSearch() {
+	hadApplied := strings.TrimSpace(a.UserVideosAppliedKeyword) != ""
+	a.UserVideosKeywordInput = ""
+	a.UserVideosKeywordComposing = false
+	a.UserVideosAppliedKeyword = ""
+	if hadApplied {
+		a.resetAndLoadUserVideos()
+	}
+}
+
+// SetUserVideosOrder changes the Bilibili space upload sort order and reloads from page 1.
+func (a *App) SetUserVideosOrder(order string) {
+	next := bilibili.NormalizeUserVideosOrder(order)
+	cur := bilibili.NormalizeUserVideosOrder(a.UserVideosOrder)
+	if next == cur && a.UserVideosPage > 0 {
+		return
+	}
+	a.UserVideosOrder = next
+	a.resetAndLoadUserVideos()
+}
+
+// SetUserVideosTID changes the Bilibili space upload partition filter and reloads from page 1.
+func (a *App) SetUserVideosTID(tid int) {
+	if tid < 0 {
+		tid = 0
+	}
+	if tid == a.UserVideosTID && a.UserVideosPage > 0 {
+		return
+	}
+	a.UserVideosTID = tid
+	a.resetAndLoadUserVideos()
+}
+
 func (a *App) LoadMoreUserVideos() {
 	if a.CurrentUser == nil {
 		return
 	}
-	mid, pageNum := a.CurrentUser.Mid, a.UserVideosPage+1
-	requestGuarded(a, fmt.Sprintf("user-videos-%d", mid), func() bool { return a.CurrentUser != nil && a.CurrentUser.Mid == mid }, func(ctx context.Context) (bilibili.UserVideosPage, error) {
-		return a.backend.UserVideosPage(ctx, mid, pageNum)
+	mid := a.CurrentUser.Mid
+	pageNum := a.UserVideosPage + 1
+	seq := a.userVideosSeq
+	order := bilibili.NormalizeUserVideosOrder(a.UserVideosOrder)
+	keyword := strings.TrimSpace(a.UserVideosAppliedKeyword)
+	tid := a.UserVideosTID
+	if tid < 0 {
+		tid = 0
+	}
+	reqKey := fmt.Sprintf("user-videos-%d-%d", mid, seq)
+	requestGuarded(a, reqKey, func() bool { return a.CurrentUser != nil && a.CurrentUser.Mid == mid && a.userVideosSeq == seq }, func(ctx context.Context) (bilibili.UserVideosPage, error) {
+		return a.backend.UserVideosPage(ctx, mid, pageNum, service.UserVideosPageOptions{
+			Order:   order,
+			Keyword: keyword,
+			TID:     tid,
+		})
 	}, func(page bilibili.UserVideosPage) {
-		if a.CurrentUser == nil || a.CurrentUser.Mid != mid {
+		if a.CurrentUser == nil || a.CurrentUser.Mid != mid || a.userVideosSeq != seq {
 			return
 		}
 		seen := make(map[string]bool, len(a.UserVideos))
@@ -1666,10 +1744,19 @@ func (a *App) LoadMoreUserVideos() {
 				seen[it.BVID] = true
 			}
 		}
+		if len(page.Zones) > 0 && ((tid == 0 && keyword == "") || len(a.UserVideosZones) == 0) {
+			a.UserVideosZones = page.Zones
+		}
 		a.UserVideosError = ""
 		a.UserVideosPage = pageNum
 		a.UserVideosHasMore = len(a.UserVideos) < page.Total
-	}, func(err error) { a.UserVideosError = userErrorText(err); a.showError(err) })
+	}, func(err error) {
+		if a.CurrentUser == nil || a.CurrentUser.Mid != mid || a.userVideosSeq != seq {
+			return
+		}
+		a.UserVideosError = userErrorText(err)
+		a.showError(err)
+	})
 }
 
 // bilibiliLiveRooms keeps only Bilibili rooms. The live manager's room list

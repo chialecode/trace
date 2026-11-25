@@ -153,8 +153,8 @@ func TestSubscriptionsV3ToV4MigrationBackupFailureIdempotencyAndDowngrade(t *tes
 	if err != nil {
 		t.Fatalf("NewManagerWithUpdatesDB v3->v4: %v", err)
 	}
-	if SubscriptionsSchemaVersion != 4 {
-		t.Fatalf("SubscriptionsSchemaVersion = %d, want 4", SubscriptionsSchemaVersion)
+	if SubscriptionsSchemaVersion != 5 {
+		t.Fatalf("SubscriptionsSchemaVersion = %d, want 5", SubscriptionsSchemaVersion)
 	}
 	if UpdatesDBSchemaVersion != 2 {
 		t.Fatalf("UpdatesDBSchemaVersion = %d, want 2", UpdatesDBSchemaVersion)
@@ -178,8 +178,8 @@ func TestSubscriptionsV3ToV4MigrationBackupFailureIdempotencyAndDowngrade(t *tes
 	if err := json.Unmarshal(rawAfter, &diskDoc); err != nil {
 		t.Fatalf("unmarshal migrated subscriptions.json: %v", err)
 	}
-	if diskDoc.Version != 4 {
-		t.Fatalf("migrated subscriptions.json version = %d, want 4", diskDoc.Version)
+	if diskDoc.Version != SubscriptionsSchemaVersion {
+		t.Fatalf("migrated subscriptions.json version = %d, want %d", diskDoc.Version, SubscriptionsSchemaVersion)
 	}
 	if len(diskDoc.Subscriptions) != 1 || len(diskDoc.Subscriptions[0].Accounts) != 3 {
 		t.Fatalf("existing v3 accounts lost during migration: %+v", diskDoc.Subscriptions)
@@ -285,23 +285,23 @@ func TestSubscriptionsV3ToV4MigrationBackupFailureIdempotencyAndDowngrade(t *tes
 		t.Fatalf("downgrade check modified v4 subscriptions.json on disk")
 	}
 
-	// 6. Future v5 subscriptions.json is rejected with NewerDataError and zero disk mutation.
-	v5Dir := t.TempDir()
-	v5SubsPath := filepath.Join(v5Dir, "subscriptions.json")
-	v5Raw := `{"version":5,"subscriptions":[]}`
-	if err := os.WriteFile(v5SubsPath, []byte(v5Raw), 0o600); err != nil {
+	// 6. Future v6 subscriptions.json is rejected with NewerDataError and zero disk mutation.
+	v6Dir := t.TempDir()
+	v6SubsPath := filepath.Join(v6Dir, "subscriptions.json")
+	v6Raw := `{"version":6,"subscriptions":[]}`
+	if err := os.WriteFile(v6SubsPath, []byte(v6Raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v5DB, _, _, err := storage.OpenSQLite(filepath.Join(v5Dir, "updates.db"))
+	v6DB, _, _, err := storage.OpenSQLite(filepath.Join(v6Dir, "updates.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v5DB.Close()
-	if _, err := NewManagerWithUpdatesDB(v5DB, v5DB, v5SubsPath, nil, nil, nil, settings.Default(v5Dir).Subscription, nil); !storage.IsNewerData(err) {
-		t.Fatalf("expected NewerDataError for v5 subscriptions.json, got %v", err)
+	defer v6DB.Close()
+	if _, err := NewManagerWithUpdatesDB(v6DB, v6DB, v6SubsPath, nil, nil, nil, settings.Default(v6Dir).Subscription, nil); !storage.IsNewerData(err) {
+		t.Fatalf("expected NewerDataError for v6 subscriptions.json, got %v", err)
 	}
-	if got, _ := os.ReadFile(v5SubsPath); string(got) != v5Raw {
-		t.Fatalf("v5 subscriptions.json was modified on disk")
+	if got, _ := os.ReadFile(v6SubsPath); string(got) != v6Raw {
+		t.Fatalf("v6 subscriptions.json was modified on disk")
 	}
 }
 
@@ -751,22 +751,13 @@ func TestMixedFourSiteSubscriptionRoundXBaselineDeltaPinnedPromotedTypesAndFault
 	mgr.RegisterFetcher(wbFetcher)
 	mgr.RegisterFetcher(xFetcher)
 
-	ruleAll, err := mgr.SaveRule(CacheRule{
-		Name:           "X全类型自动缓存",
-		ScheduledCheck: true,
-		AutoCache:      true,
-		Types:          []string{"video", "draw", "word", "forward"},
-		AutoRecord:     true,
-	})
-	if err != nil {
-		t.Fatalf("SaveRule: %v", err)
-	}
-	ruleSched, err := mgr.SaveRule(CacheRule{
-		Name:           "仅定时检查",
-		ScheduledCheck: true,
-	})
-	if err != nil {
-		t.Fatalf("SaveRule sched: %v", err)
+	tagsAll := []string{
+		TagScheduledCheck,
+		TagCacheVideo,
+		TagCacheDraw,
+		TagCacheWord,
+		TagCacheForward,
+		TagAutoRecord,
 	}
 
 	// Set clock earlier than post PubTs (1710000100) so ruleAutoCache.Since covers new posts.
@@ -780,8 +771,8 @@ func TestMixedFourSiteSubscriptionRoundXBaselineDeltaPinnedPromotedTypesAndFault
 	if err != nil {
 		t.Fatalf("Create 4-site sub: %v", err)
 	}
-	if _, err := mgr.SetSubscriptionRule(sub1.ID, ruleAll.ID); err != nil {
-		t.Fatalf("SetSubscriptionRule sub1: %v", err)
+	if _, err := mgr.SetSubscriptionTags(sub1.ID, tagsAll); err != nil {
+		t.Fatalf("SetSubscriptionTags sub1: %v", err)
 	}
 	sub2, err := mgr.Create("X二号创作者", "", []AccountRef{
 		{Site: "x", UID: xUID2, Name: "合成X乙"},
@@ -789,8 +780,8 @@ func TestMixedFourSiteSubscriptionRoundXBaselineDeltaPinnedPromotedTypesAndFault
 	if err != nil {
 		t.Fatalf("Create X2 sub: %v", err)
 	}
-	if _, err := mgr.SetSubscriptionRule(sub2.ID, ruleSched.ID); err != nil {
-		t.Fatalf("SetSubscriptionRule sub2: %v", err)
+	if _, err := mgr.SetSubscriptionTags(sub2.ID, []string{TagScheduledCheck}); err != nil {
+		t.Fatalf("SetSubscriptionTags sub2: %v", err)
 	}
 
 	// Pre-cache one X video in library to verify findCachedLibraryKey("x", id) prevents duplicate auto-cache.
@@ -1110,11 +1101,6 @@ func TestXSchedulerQuotaRoundCapPacingResetBackoffAndManualCheckRules(t *testing
 	}
 	mgr.RegisterFetcher(xFetcher)
 
-	ruleSched, err := mgr.SaveRule(CacheRule{Name: "X定时", ScheduledCheck: true})
-	if err != nil {
-		t.Fatalf("SaveRule: %v", err)
-	}
-
 	xUID := func(i int) string { return fmt.Sprintf("18000000000000010%02d", i) }
 	for i := 0; i < 20; i++ {
 		sub, err := mgr.Create(
@@ -1126,8 +1112,8 @@ func TestXSchedulerQuotaRoundCapPacingResetBackoffAndManualCheckRules(t *testing
 		if err != nil {
 			t.Fatalf("Create X sub %d: %v", i, err)
 		}
-		if _, err := mgr.SetSubscriptionRule(sub.ID, ruleSched.ID); err != nil {
-			t.Fatalf("SetSubscriptionRule %d: %v", i, err)
+		if _, err := mgr.SetSubscriptionTags(sub.ID, []string{TagScheduledCheck}); err != nil {
+			t.Fatalf("SetSubscriptionTags %d: %v", i, err)
 		}
 	}
 
@@ -1276,22 +1262,13 @@ func TestXCheckPlanLiveUnsupportedNoteAndFollowingImport(t *testing.T) {
 		return id == site.Bilibili
 	})
 
-	ruleLive, err := mgr.SaveRule(CacheRule{Name: "定时含录播", ScheduledCheck: true, AutoRecord: true})
-	if err != nil {
-		t.Fatalf("SaveRule live: %v", err)
-	}
-	ruleSched, err := mgr.SaveRule(CacheRule{Name: "仅定时", ScheduledCheck: true})
-	if err != nil {
-		t.Fatalf("SaveRule sched: %v", err)
-	}
-
 	// Create Bilibili sub with AutoRecord=true, plus 16 X subs (first with AutoRecord=true, rest false).
 	biliSub, err := mgr.Create("B站播主", "", []AccountRef{{Site: "bilibili", UID: "1001", Name: "B站播主"}}, SubRules{ScheduledCheck: true, AutoRecord: true})
 	if err != nil {
 		t.Fatalf("Create bilibili sub: %v", err)
 	}
-	if _, err := mgr.SetSubscriptionRule(biliSub.ID, ruleLive.ID); err != nil {
-		t.Fatalf("SetSubscriptionRule bilibili: %v", err)
+	if _, err := mgr.SetSubscriptionTags(biliSub.ID, []string{TagScheduledCheck, TagAutoRecord}); err != nil {
+		t.Fatalf("SetSubscriptionTags bilibili: %v", err)
 	}
 	for i := 0; i < 16; i++ {
 		uid := fmt.Sprintf("18000000000000020%02d", i)
@@ -1304,12 +1281,12 @@ func TestXCheckPlanLiveUnsupportedNoteAndFollowingImport(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create X sub %d: %v", i, err)
 		}
-		targetRule := ruleSched.ID
+		targetTags := []string{TagScheduledCheck}
 		if i == 0 {
-			targetRule = ruleLive.ID
+			targetTags = []string{TagScheduledCheck, TagAutoRecord}
 		}
-		if _, err := mgr.SetSubscriptionRule(sub.ID, targetRule); err != nil {
-			t.Fatalf("SetSubscriptionRule X %d: %v", i, err)
+		if _, err := mgr.SetSubscriptionTags(sub.ID, targetTags); err != nil {
+			t.Fatalf("SetSubscriptionTags X %d: %v", i, err)
 		}
 	}
 

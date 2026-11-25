@@ -48,6 +48,7 @@ const (
 type ImageViewerState struct {
 	Open             bool
 	URLs             []string
+	FallbackURLs     [][]string
 	LocalPaths       []string
 	ItemKey          string
 	RelPaths         []string
@@ -87,6 +88,8 @@ type PlayerOverlayState struct {
 	LoadError        string
 	Segment          int
 	Segments         []string
+	Chapters         []library.VideoChapter
+	PendingSeekSec   float64
 	DecoderMissing   bool
 	MissingReason    string
 	SeekNormalized   float64
@@ -400,18 +403,25 @@ type App struct {
 	playerOpenSeq int
 
 	// User Space Page
-	CurrentUser         *bilibili.UserSpace
-	UserTab             string // "dynamics" | "videos"
-	UserDynamics        []bilibili.DynamicItem
-	UserDynamicsNext    string
-	UserDynamicsHasMore bool
-	UserDynamicsError   string
-	UserVideos          []bilibili.UserVideoItem
-	UserVideosPage      int
-	UserVideosHasMore   bool
-	UserVideosError     string
-	UserDynListState    *ui.ListState
-	UserVidListState    *ui.ListState
+	CurrentUser                *bilibili.UserSpace
+	UserTab                    string // "dynamics" | "videos"
+	UserDynamics               []bilibili.DynamicItem
+	UserDynamicsNext           string
+	UserDynamicsHasMore        bool
+	UserDynamicsError          string
+	UserVideos                 []bilibili.UserVideoItem
+	UserVideosPage             int
+	UserVideosHasMore          bool
+	UserVideosError            string
+	UserVideosOrder            string // "pubdate" | "click" | "stow"
+	UserVideosKeywordInput     string
+	UserVideosKeywordComposing bool
+	UserVideosAppliedKeyword   string
+	UserVideosTID              int
+	UserVideosZones            []bilibili.UserVideoZone
+	userVideosSeq              uint64
+	UserDynListState           *ui.ListState
+	UserVidListState           *ui.ListState
 	// UserListFilter is 全部 ("all") or 未缓存 ("uncached") on user pages (DEC-046 ⑧).
 	UserListFilter  string
 	userFilterCache uncachedFilterCache
@@ -460,10 +470,10 @@ type App struct {
 	SubFeedError     string
 	subFeedDirty     bool
 	SubRuleMenuOpen  bool
-	// RuleDraft is the cache rule being edited in Settings (ID "" = new).
-	RuleDraft *subscription.CacheRule
-	RuleError string
-	RuleBatch RuleBatchDialogState
+	// RuleBatch manages subscriptions of one capability tag; MultiTagBatch
+	// batch-adds, removes, or replaces multiple capability tags across subscriptions.
+	RuleBatch     RuleBatchDialogState
+	MultiTagBatch MultiTagBatchDialogState
 	// LibraryRefresh is the media library's "刷新" and its result dialog.
 	LibraryRefresh LibraryRefreshState
 	// Remote is Settings › 远程; Transfer is 媒体库 › 导入…/导出…; SubFile is
@@ -556,6 +566,7 @@ type App struct {
 	ConflictBatchConfirmOpen  bool
 	ConflictReplaceConfirmID  string
 	ConflictActionError       string
+	ConflictDiff              ConflictDiffModalState
 	Tasks                     []download.Task
 	TasksListState            ui.ListState
 	ExpandedTaskID            string
@@ -1176,6 +1187,9 @@ func (a *App) View(c *ui.Context) {
 	if a.RuleBatch.Open {
 		a.renderRuleBatchOverlay(c, w, h)
 	}
+	if a.MultiTagBatch.Open {
+		a.renderMultiTagBatchOverlay(c, w, h)
+	}
 	if a.SubscribePicker.Open {
 		a.renderSubscribePickerOverlay(c, w, h)
 	}
@@ -1190,6 +1204,9 @@ func (a *App) View(c *ui.Context) {
 	}
 	if a.SubFile.ImportOpen {
 		a.renderSubImportOverlay(c, w, h)
+	}
+	if a.ConflictDiff.Open {
+		a.renderConflictDiffOverlay(c, w, h)
 	}
 	if a.ImageViewer.Open {
 		a.renderImageViewerOverlay(c, w, h)

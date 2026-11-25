@@ -56,12 +56,12 @@ func TestBackendUpdateHistoryNewerVersionRefused(t *testing.T) {
 }
 
 func TestBackendUpdateHistoryCorruptRecoveryAndExistingSchemasUnchanged(t *testing.T) {
-	// Verify current data schema versions match storage.DataSchemas (ui-state.json & subscriptions.json bumped to v4 for X).
+	// Verify current data schema versions match storage.DataSchemas (ui-state.json v4, subscriptions.json v5).
 	wantSchemas := map[string]int{
 		"settings.json":      1,
 		"ui-state.json":      4,
 		"history.json":       1,
-		"subscriptions.json": 4,
+		"subscriptions.json": 5,
 		"library.db":         2,
 		"updates.db":         2,
 	}

@@ -1,12 +1,15 @@
 package bilibili
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -47,12 +50,20 @@ type UserVideoItem struct {
 	Author       string `json:"author"`
 }
 
+// UserVideoZone describes one partition bucket in /x/space/wbi/arc/search data.list.tlist.
+type UserVideoZone struct {
+	TID   int    `json:"tid"`
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
 // UserVideosPage holds a paginated slice of creator videos.
 type UserVideosPage struct {
 	Page     int             `json:"page"`
 	PageSize int             `json:"pageSize"`
 	Total    int             `json:"total"`
 	Items    []UserVideoItem `json:"items"`
+	Zones    []UserVideoZone `json:"zones,omitempty"`
 }
 
 // UserCard fetches creator profile info from /x/web-interface/card.
@@ -243,8 +254,136 @@ func (c *Client) ensureSpaceWebID(ctx context.Context, mid int64) (string, error
 	return webID, nil
 }
 
+// NormalizeUserVideosOrder normalizes a Bilibili space archive sort key to one of
+// "pubdate" (latest), "click" (most played), or "stow" (most favorited).
+func NormalizeUserVideosOrder(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "click":
+		return "click"
+	case "stow":
+		return "stow"
+	default:
+		return "pubdate"
+	}
+}
+
+func clampInt64ToInt(v int64) int {
+	if v > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if v < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int(v)
+}
+
+func parseJSONInt(raw any) (int, bool) {
+	switch v := raw.(type) {
+	case nil:
+		return 0, false
+	case int:
+		return clampInt64ToInt(int64(v)), true
+	case int64:
+		return clampInt64ToInt(v), true
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0, false
+		}
+		if v > float64(math.MaxInt32) {
+			return math.MaxInt32, true
+		}
+		if v < float64(math.MinInt32) {
+			return math.MinInt32, true
+		}
+		return int(v), true
+	case json.Number:
+		s := strings.TrimSpace(v.String())
+		if s == "" {
+			return 0, false
+		}
+		if iv, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return clampInt64ToInt(iv), true
+		}
+		if fv, err := strconv.ParseFloat(s, 64); err == nil && !math.IsNaN(fv) && !math.IsInf(fv, 0) {
+			if fv > float64(math.MaxInt32) {
+				return math.MaxInt32, true
+			}
+			if fv < float64(math.MinInt32) {
+				return math.MinInt32, true
+			}
+			return int(fv), true
+		}
+		return 0, false
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return 0, false
+		}
+		if iv, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return clampInt64ToInt(iv), true
+		}
+		if fv, err := strconv.ParseFloat(s, 64); err == nil && !math.IsNaN(fv) && !math.IsInf(fv, 0) {
+			if fv > float64(math.MaxInt32) {
+				return math.MaxInt32, true
+			}
+			if fv < float64(math.MinInt32) {
+				return math.MinInt32, true
+			}
+			return int(fv), true
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
+}
+
+func parseUserVideoZones(raw json.RawMessage) []UserVideoZone {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || trimmed[0] != '{' {
+		return nil
+	}
+	var bucket map[string]struct {
+		TID   any    `json:"tid"`
+		Name  string `json:"name"`
+		Count any    `json:"count"`
+	}
+	if err := json.Unmarshal(trimmed, &bucket); err != nil || len(bucket) == 0 {
+		return nil
+	}
+	zones := make([]UserVideoZone, 0, len(bucket))
+	seenTID := make(map[int]bool, len(bucket))
+	for key, entry := range bucket {
+		tid, ok := parseJSONInt(entry.TID)
+		if !ok || tid <= 0 {
+			tid, ok = parseJSONInt(key)
+		}
+		name := strings.TrimSpace(entry.Name)
+		if !ok || tid <= 0 || name == "" || seenTID[tid] {
+			continue
+		}
+		count, _ := parseJSONInt(entry.Count)
+		if count < 0 {
+			count = 0
+		}
+		seenTID[tid] = true
+		zones = append(zones, UserVideoZone{
+			TID:   tid,
+			Name:  name,
+			Count: count,
+		})
+	}
+	sort.SliceStable(zones, func(i, j int) bool {
+		if zones[i].Count != zones[j].Count {
+			return zones[i].Count > zones[j].Count
+		}
+		return zones[i].TID < zones[j].TID
+	})
+	return zones
+}
+
 // UserVideos fetches a page of creator videos from /x/space/wbi/arc/search with required WBI, dm_img, and w_webid parameters.
-func (c *Client) UserVideos(ctx context.Context, mid int64, pn, ps int, order, keyword string) (UserVideosPage, error) {
+// An optional tid (> 0) filters results to a specific partition; 0 (or omitted) returns all partitions.
+func (c *Client) UserVideos(ctx context.Context, mid int64, pn, ps int, order, keyword string, tid ...int) (UserVideosPage, error) {
 	if err := c.RequireAuth("/x/space/wbi/arc/search"); err != nil {
 		return UserVideosPage{}, err
 	}
@@ -260,15 +399,18 @@ func (c *Client) UserVideos(ctx context.Context, mid int64, pn, ps int, order, k
 	if ps <= 0 || ps > 50 {
 		ps = 30
 	}
-	if order == "" {
-		order = "pubdate"
+	order = NormalizeUserVideosOrder(order)
+	keyword = strings.TrimSpace(keyword)
+	zoneTID := 0
+	if len(tid) > 0 && tid[0] > 0 {
+		zoneTID = tid[0]
 	}
 
 	params := url.Values{}
 	params.Set("mid", strconv.FormatInt(mid, 10))
 	params.Set("pn", strconv.Itoa(pn))
 	params.Set("ps", strconv.Itoa(ps))
-	params.Set("tid", "0")
+	params.Set("tid", strconv.Itoa(zoneTID))
 	params.Set("order", order)
 	params.Set("keyword", keyword)
 	params.Set("platform", "web")
@@ -288,6 +430,7 @@ func (c *Client) UserVideos(ctx context.Context, mid int64, pn, ps int, order, k
 
 	var raw struct {
 		List struct {
+			TList json.RawMessage `json:"tlist"`
 			VList []struct {
 				AID         int64  `json:"aid"`
 				BVID        string `json:"bvid"`
@@ -297,15 +440,15 @@ func (c *Client) UserVideos(ctx context.Context, mid int64, pn, ps int, order, k
 				Length      string `json:"length"`
 				Created     int64  `json:"created"`
 				Play        any    `json:"play"`
-				Comment     int    `json:"comment"`
+				Comment     any    `json:"comment"`
 				Mid         int64  `json:"mid"`
 				Author      string `json:"author"`
 			} `json:"vlist"`
 		} `json:"list"`
 		Page struct {
-			PN    int `json:"pn"`
-			PS    int `json:"ps"`
-			Count int `json:"count"`
+			PN    any `json:"pn"`
+			PS    any `json:"ps"`
+			Count any `json:"count"`
 		} `json:"page"`
 	}
 
@@ -326,12 +469,13 @@ func (c *Client) UserVideos(ctx context.Context, mid int64, pn, ps int, order, k
 			}
 			seenBVID[bvid] = true
 		}
-		var playCount int
-		switch pv := v.Play.(type) {
-		case float64:
-			playCount = int(pv)
-		case string:
-			playCount, _ = strconv.Atoi(pv)
+		playCount, _ := parseJSONInt(v.Play)
+		if playCount < 0 {
+			playCount = 0
+		}
+		commentCount, _ := parseJSONInt(v.Comment)
+		if commentCount < 0 {
+			commentCount = 0
 		}
 		items = append(items, UserVideoItem{
 			BVID:         bvid,
@@ -343,17 +487,25 @@ func (c *Client) UserVideos(ctx context.Context, mid int64, pn, ps int, order, k
 			DurationSec:  parseDurationText(v.Length),
 			PubTs:        v.Created,
 			PlayCount:    playCount,
-			CommentCount: v.Comment,
+			CommentCount: commentCount,
 			Mid:          v.Mid,
 			Author:       v.Author,
 		})
 	}
 
+	pageNum, _ := parseJSONInt(raw.Page.PN)
+	pageSize, _ := parseJSONInt(raw.Page.PS)
+	totalCount, _ := parseJSONInt(raw.Page.Count)
+	if totalCount < 0 {
+		totalCount = 0
+	}
+
 	return UserVideosPage{
-		Page:     raw.Page.PN,
-		PageSize: raw.Page.PS,
-		Total:    raw.Page.Count,
+		Page:     pageNum,
+		PageSize: pageSize,
+		Total:    totalCount,
 		Items:    items,
+		Zones:    parseUserVideoZones(raw.List.TList),
 	}, nil
 }
 

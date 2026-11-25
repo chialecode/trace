@@ -51,6 +51,11 @@ func cloneSubscription(s Subscription) Subscription {
 	if s.Links != nil {
 		s.Links = slices.Clone(s.Links)
 	}
+	if s.Tags != nil {
+		s.Tags = append([]string(nil), s.Tags...)
+	} else {
+		s.Tags = []string{}
+	}
 	if s.Rules.AutoCache.Types != nil {
 		s.Rules.AutoCache.Types = append([]string(nil), s.Rules.AutoCache.Types...)
 	}
@@ -160,8 +165,6 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 	raw, err := os.ReadFile(m.subsPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			m.rules = nil
-			m.ensureDefaultRuleLocked()
 			return nil
 		}
 		return err
@@ -187,40 +190,64 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 		needsMigration = rawVersion.Version == nil || *rawVersion.Version < supportedVersion
 	}
 
-	prevRules := append([]CacheRule(nil), m.rules...)
-	m.rules = nil
-	m.ensureDefaultRuleLocked()
+	type diskSubscriptionRead struct {
+		Subscription
+		RawTags json.RawMessage `json:"tags"`
+		RuleID  string          `json:"ruleId"`
+	}
+	type diskSubscriptionsFileRead struct {
+		Version       int                    `json:"version"`
+		Subscriptions []diskSubscriptionRead `json:"subscriptions"`
+		CacheRules    []legacyCacheRule      `json:"cacheRules"`
+	}
 
-	var sf subscriptionsFile
-	if err := json.Unmarshal(raw, &sf); err != nil {
+	var sf diskSubscriptionsFileRead
+	unmarshalErr := json.Unmarshal(raw, &sf)
+	if unmarshalErr == nil {
+		for i := range sf.Subscriptions {
+			rawTagsTrim := strings.TrimSpace(string(sf.Subscriptions[i].RawTags))
+			if len(rawTagsTrim) > 0 && rawTagsTrim != "null" {
+				if err := json.Unmarshal(sf.Subscriptions[i].RawTags, &sf.Subscriptions[i].Subscription.Tags); err != nil {
+					unmarshalErr = err
+					break
+				}
+			}
+		}
+	}
+	if unmarshalErr != nil {
 		// Corrupt subscriptions.json: rename and keep, set corruptRecovered = true (data-and-cache.md §1).
 		corruptPath := fmt.Sprintf("%s.corrupt-%s", m.subsPath, m.nowFunc().UTC().Format("20060102-150405"))
 		if err := os.Rename(m.subsPath, corruptPath); err != nil {
-			m.rules = prevRules
 			return err
 		}
 		m.corruptRecovered = true
-		_, err := m.db.Exec(`DELETE FROM subscriptions`)
+		_, _ = m.db.Exec(`DELETE FROM subscriptions`)
 		m.invalidateSubsCacheLocked()
-		return err
+		return unmarshalErr
 	}
-	m.rules = sf.CacheRules
-	rebound := m.ensureDefaultRuleLocked()
+
+	legacyRulesByID := make(map[string]legacyCacheRule, len(sf.CacheRules))
+	for _, lr := range sf.CacheRules {
+		if lr.ID != "" {
+			legacyRulesByID[lr.ID] = lr
+		}
+	}
 
 	// Enforce global uniqueness of <site>:<uid> across all subscriptions (keep first, warn once).
 	seenAccounts := make(map[string]bool)
 	tx, err := m.db.Begin()
 	if err != nil {
-		m.rules = prevRules
 		return err
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`DELETE FROM subscriptions`); err != nil {
-		m.rules = prevRules
 		return err
 	}
+	now := m.nowFunc()
+	nowStr := now.UTC().Format(time.RFC3339)
 	migratedSubs := make([]Subscription, 0, len(sf.Subscriptions))
-	for _, sub := range sf.Subscriptions {
+	for _, entry := range sf.Subscriptions {
+		sub := entry.Subscription
 		hadAccounts := len(sub.Accounts) > 0
 		var cleanAccs []AccountRef
 		for _, acc := range sub.Accounts {
@@ -243,12 +270,75 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 		if hadAccounts && len(cleanAccs) == 0 {
 			sub.Mid = 0
 		}
-		syncSubFields(&sub, m.nowFunc())
-		if m.bindRuleLocked(&sub) {
-			rebound = true
+
+		rawTagsTrim := strings.TrimSpace(string(entry.RawTags))
+		hasExplicitTags := len(rawTagsTrim) > 0 && rawTagsTrim != "null"
+		if hasExplicitTags {
+			tags := NormalizeTags(sub.Tags)
+			rules := TagsToSubRules(tags)
+			if rules.AutoCache.Enabled {
+				rules.AutoCache.Since = firstNonEmptyStr(sub.Rules.AutoCache.Since, firstNonEmptyStr(sub.CreatedAt, nowStr))
+			}
+			sub.Tags = tags
+			sub.Rules = rules
+			sub.Enabled = rules.ScheduledCheck
+			sub.LiveAutoRecord = rules.AutoRecord
+			if rules.AutoCache.Enabled {
+				sub.AutoCache = "dynamic"
+			} else {
+				sub.AutoCache = "none"
+			}
+		} else {
+			// Migrate pre-v5 subscription rules / legacy CacheRule binding to capability tags with 100% fidelity.
+			if sub.Enabled {
+				sub.Rules.ScheduledCheck = true
+			}
+			if sub.LiveAutoRecord {
+				sub.Rules.AutoRecord = true
+			}
+			var tags []string
+			legacyScopeMigrated := false
+			if lr, ok := legacyRulesByID[entry.RuleID]; entry.RuleID != "" && ok &&
+				(entry.RuleID != "default" || lr.ScheduledCheck || lr.AutoCache || lr.FullCache || lr.AutoRecord) {
+				tags = legacyCacheRuleToTags(lr)
+			} else {
+				tags = SubRulesToTags(sub.Rules)
+				if !sub.Rules.AutoCache.Enabled {
+					switch strings.ToLower(strings.TrimSpace(sub.AutoCache)) {
+					case "video":
+						tags = append(tags, TagCacheVideo)
+						legacyScopeMigrated = true
+					case "dynamic", "both":
+						tags = append(tags, TagCacheVideo, TagCacheDraw, TagCacheWord, TagCacheForward)
+						legacyScopeMigrated = true
+					}
+				}
+				tags = NormalizeTags(tags)
+			}
+			rules := TagsToSubRules(tags)
+			if rules.AutoCache.Enabled {
+				switch {
+				case sub.Rules.AutoCache.Since != "":
+					rules.AutoCache.Since = sub.Rules.AutoCache.Since
+				case legacyScopeMigrated:
+					rules.AutoCache.Since = "1970-01-01T00:00:00Z"
+				default:
+					rules.AutoCache.Since = firstNonEmptyStr(sub.CreatedAt, nowStr)
+				}
+			}
+			sub.Tags = tags
+			sub.Rules = rules
+			sub.Enabled = rules.ScheduledCheck
+			sub.LiveAutoRecord = rules.AutoRecord
+			if rules.AutoCache.Enabled {
+				sub.AutoCache = "dynamic"
+			} else if sub.AutoCache == "" || sub.AutoCache == "inherit" {
+				sub.AutoCache = "none"
+			}
 		}
+
+		syncSubFields(&sub, now)
 		if err := upsertSubscriptionRow(tx, sub); err != nil {
-			m.rules = prevRules
 			return err
 		}
 		migratedSubs = append(migratedSubs, sub)
@@ -257,30 +347,21 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 		bakPath := fmt.Sprintf("%s.premigrate-%d", m.subsPath, fromVersion)
 		if info, statErr := os.Stat(bakPath); os.IsNotExist(statErr) || (statErr == nil && info.IsDir()) {
 			if _, err := storage.BackupBeforeMigration(m.subsPath, fromVersion); err != nil {
-				m.rules = prevRules
 				return fmt.Errorf("subscription: back up %s before migration: %w", filepath.Base(m.subsPath), err)
 			}
 		}
 		out := subscriptionsFile{
 			Version:       SubscriptionsSchemaVersion,
 			Subscriptions: migratedSubs,
-			CacheRules:    m.rules,
 		}
 		if err := storage.WriteMigratedJSONAtomic(m.subsPath, out, 0o600); err != nil {
-			m.rules = prevRules
 			return err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		m.rules = prevRules
 		return err
 	}
 	m.invalidateSubsCacheLocked()
-	if rebound && !needsMigration {
-		// Persist the reset default rule and the rules that keep its former
-		// subscriptions' behaviour, so the generated rule IDs stay stable.
-		return m.writeSubscriptionsToDiskLocked()
-	}
 	return nil
 }
 
@@ -292,19 +373,12 @@ func (m *Manager) writeSubscriptionsToDiskLocked() (writeErr error) {
 	if err != nil {
 		return err
 	}
-	// Every subscription names the shared rule matching its settings
-	// (new ones, imports and older per-subscription rules alike).
 	for i := range subs {
-		if m.bindRuleLocked(&subs[i]) {
-			if err := m.upsertRowLocked(subs[i]); err != nil {
-				return err
-			}
-		}
+		subs[i].Tags = SubRulesToTags(subs[i].Rules)
 	}
 	sf := subscriptionsFile{
 		Version:       SubscriptionsSchemaVersion,
 		Subscriptions: subs,
-		CacheRules:    m.rules,
 	}
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
@@ -569,7 +643,14 @@ func syncSubFields(s *Subscription, now time.Time) {
 	} else if s.Rules.AutoRecord && !s.LiveAutoRecord {
 		s.LiveAutoRecord = true
 	}
-	if len(s.Rules.AutoCache.Types) == 0 {
-		s.Rules.AutoCache.Types = []string{"video", "draw"}
+	if s.Rules.AutoCache.Enabled {
+		s.Rules.AutoCache.Types = normalizeRuleTypes(s.Rules.AutoCache.Types)
+		if len(s.Rules.AutoCache.Types) == 0 {
+			s.Rules.AutoCache.Types = []string{"video", "draw"}
+		}
+	} else {
+		s.Rules.AutoCache.Types = nil
+		s.Rules.AutoCache.Since = ""
 	}
+	s.Tags = SubRulesToTags(s.Rules)
 }

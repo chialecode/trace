@@ -1,12 +1,43 @@
 package bilibili
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/chialecode/trace/internal/site"
 )
+
+// UpowerLockedMessage explains why an unpurchased charging-exclusive video cannot be cached.
+const UpowerLockedMessage = "充电专属：当前登录账号未开通该 UP 主充电权益，暂不支持缓存"
+
+// NewUpowerLockedError constructs a structured ErrKindForbidden error before playurl is requested.
+func NewUpowerLockedError(endpoint string) *SiteError {
+	return &SiteError{
+		Site:     site.Bilibili,
+		Kind:     ErrKindForbidden,
+		Endpoint: site.SanitizeEndpoint(endpoint),
+		Message:  UpowerLockedMessage,
+	}
+}
+
+type flexBool bool
+
+func (b *flexBool) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	switch string(trimmed) {
+	case "true", "1", `"true"`, `"1"`:
+		*b = true
+	case "false", "0", "null", `"false"`, `"0"`, `""`:
+		*b = false
+	default:
+		*b = false
+	}
+	return nil
+}
 
 // AuthorInfo holds basic creator metadata.
 type AuthorInfo struct {
@@ -38,19 +69,32 @@ type VideoStat struct {
 
 // VideoDetail holds metadata and part list for a Bilibili video.
 type VideoDetail struct {
-	BVID         string       `json:"bvid"`
-	AID          int64        `json:"aid"`
-	Title        string       `json:"title"`
-	Desc         string       `json:"desc"`
-	Cover        string       `json:"cover"`
-	PubTs        int64        `json:"pubTs"`
-	Duration     int          `json:"duration"`
-	TName        string       `json:"tname,omitempty"`
-	Stat         VideoStat    `json:"stat"`
-	Author       AuthorInfo   `json:"author"`
-	Staff        []AuthorInfo `json:"staff,omitempty"` // collaboration members (联合投稿), uploader included; empty for single-author videos
-	Pages        []VideoPage  `json:"pages"`
-	CanonicalURL string       `json:"canonicalUrl"`
+	BVID              string       `json:"bvid"`
+	AID               int64        `json:"aid"`
+	Title             string       `json:"title"`
+	Desc              string       `json:"desc"`
+	Cover             string       `json:"cover"`
+	PubTs             int64        `json:"pubTs"`
+	Duration          int          `json:"duration"`
+	TName             string       `json:"tname,omitempty"`
+	Stat              VideoStat    `json:"stat"`
+	Author            AuthorInfo   `json:"author"`
+	Staff             []AuthorInfo `json:"staff,omitempty"` // collaboration members (联合投稿), uploader included; empty for single-author videos
+	Pages             []VideoPage  `json:"pages"`
+	IsUpowerExclusive bool         `json:"isUpowerExclusive,omitempty"`
+	IsUpowerPlay      bool         `json:"isUpowerPlay,omitempty"`
+	IsUpowerPreview   bool         `json:"isUpowerPreview,omitempty"`
+	CanonicalURL      string       `json:"canonicalUrl"`
+}
+
+// IsUpowerLocked reports whether this video is charging-exclusive and the signed-in account lacks full playback access.
+func (d VideoDetail) IsUpowerLocked() bool {
+	return d.IsUpowerExclusive && !d.IsUpowerPlay
+}
+
+// IsUpowerUnlocked reports whether this video is charging-exclusive and unlocked for the signed-in account.
+func (d VideoDetail) IsUpowerUnlocked() bool {
+	return d.IsUpowerExclusive && d.IsUpowerPlay
 }
 
 // VideoDetail fetches video details from /x/web-interface/wbi/view.
@@ -110,6 +154,9 @@ func (c *Client) VideoDetail(ctx context.Context, bvidOrAid string) (VideoDetail
 				Height int `json:"height"`
 			} `json:"dimension"`
 		} `json:"pages"`
+		IsUpowerExclusive flexBool `json:"is_upower_exclusive"`
+		IsUpowerPlay      flexBool `json:"is_upower_play"`
+		IsUpowerPreview   flexBool `json:"is_upower_preview"`
 	}
 
 	if err := c.doWBIGet(ctx, "/x/web-interface/wbi/view", params, &raw); err != nil {
@@ -175,9 +222,12 @@ func (c *Client) VideoDetail(ctx context.Context, bvidOrAid string) (VideoDetail
 			Name: raw.Owner.Name,
 			Face: normalizeHTTPSURL(raw.Owner.Face),
 		},
-		Staff:        staffInfos(raw.Staff),
-		Pages:        pages,
-		CanonicalURL: fmt.Sprintf("https://www.bilibili.com/video/%s", raw.BVID),
+		Staff:             staffInfos(raw.Staff),
+		Pages:             pages,
+		IsUpowerExclusive: bool(raw.IsUpowerExclusive),
+		IsUpowerPlay:      bool(raw.IsUpowerPlay),
+		IsUpowerPreview:   bool(raw.IsUpowerPreview),
+		CanonicalURL:      fmt.Sprintf("https://www.bilibili.com/video/%s", raw.BVID),
 	}, nil
 }
 

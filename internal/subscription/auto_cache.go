@@ -168,6 +168,10 @@ func (m *Manager) evaluateAutoCacheRulesForSites(ctx context.Context, abortedSit
 		case site.ErrKindUnavailable:
 			// Permanently unavailable item: mark so it is not retried forever.
 			return m.setUpdateItemTaskID(c.site, c.uid, c.dynID, "unavailable")
+		case site.ErrKindForbidden:
+			// Access-restricted item (e.g. unpurchased Bilibili upower-exclusive video/dynamic):
+			// record skip so automatic caching does not retry repeatedly.
+			return m.setUpdateItemTaskID(c.site, c.uid, c.dynID, "forbidden")
 		default:
 			backlogBySub[c.subID]++
 			totalBacklog++
@@ -242,6 +246,12 @@ func (m *Manager) evaluateAutoCacheRulesForSites(ctx context.Context, abortedSit
 				var itemPtr *bilibili.DynamicItem
 				if c.snapshot != "" && json.Unmarshal([]byte(c.snapshot), &dynItem) == nil && dynItem.ID != "" {
 					itemPtr = &dynItem
+				}
+				if itemPtr != nil && itemPtr.Blocked {
+					if err := m.setUpdateItemTaskID(c.site, c.uid, c.dynID, "forbidden"); err != nil {
+						return createdTasks, totalBacklog, err
+					}
+					continue
 				}
 				task, err := dl.EnqueueDynamic(ctx, download.DynamicEnqueueRequest{
 					DynamicID:         c.dynID,

@@ -8,186 +8,137 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// Shared cache rules (DEC-040): rules are kept in Settings → 缓存规则, and a
-// subscription only chooses one.
+// Atomic cache capability tags (DEC-070): one tag equals one cache capability.
+// Settings → 缓存标签 manages subscriptions per tag and provides cross-subscription
+// multi-tag batch updates; each subscription toggles its own tags directly.
 
-var ruleTypeChoices = []struct{ code, name string }{
-	{"video", "视频"}, {"draw", "图文"}, {"word", "文字"}, {"forward", "转发"},
-}
-
-func effectiveSubRuleID(sub subscription.Subscription) string {
-	if sub.RuleID == "" {
-		return subscription.DefaultRuleID
+func effectiveSubTags(sub subscription.Subscription) []string {
+	if sub.Tags != nil {
+		return subscription.NormalizeTags(sub.Tags)
 	}
-	return sub.RuleID
+	return subscription.SubRulesToTags(sub.Rules)
 }
 
-func (a *App) ruleUseCount(id string) int {
+func (a *App) tagUseCount(tagID string) int {
 	n := 0
 	for _, sub := range a.Subscriptions {
-		if effectiveSubRuleID(sub) == id {
+		if subscription.HasTag(effectiveSubTags(sub), tagID) {
 			n++
 		}
 	}
 	return n
 }
 
-func savedRuleNameFromList(rules []subscription.CacheRule, id, fallback string) string {
-	for _, r := range rules {
-		if r.ID == id && r.Name != "" {
-			return r.Name
-		}
+func (a *App) toggleSubscriptionTag(sub *subscription.Subscription, tagID string) {
+	if sub == nil || a.backend == nil {
+		return
 	}
-	if fallback != "" {
-		return fallback
-	}
-	return "默认"
-}
-
-// renderCacheRulesSettings lists the rules; choosing one opens its editor in
-// place, and "新建规则" adds one.
-func (a *App) renderCacheRulesSettings(c *ui.Context) {
-	rules := a.backend.ListCacheRules()
-	ui.Column(c).FillWidth().Gap(0).ClipX().Children(func() {
-		for _, r := range rules {
-			rule := r
-			editing := a.RuleDraft != nil && a.RuleDraft.ID == rule.ID
-			row := ui.ButtonBase(c).Label("缓存规则："+rule.Name).FillWidth().Padding(12, 0).Gap(12).AlignItems(ui.Center).
-				BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder)
-			row.Children(func() {
-				ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
-					ui.Text(c, rule.Name).FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
-					ui.Text(c, fmt.Sprintf("%s · %d 个订阅", subscription.RuleSummary(rule), a.ruleUseCount(rule.ID))).
-						FontSize(12).TextColor(ColorTextMuted).SingleLine()
-				})
-				icon := "chevron-down"
-				if editing {
-					icon = "chevron-up"
-				}
-				DrawIcon(c, icon, 16, ColorTextMuted, 1.6)
-			})
-			if row.Clicked() {
-				if editing {
-					a.RuleDraft = nil
-				} else {
-					draft := rule
-					draft.Types = slices.Clone(rule.Types)
-					a.RuleDraft = &draft
-				}
-				a.RuleError = ""
-			}
-			// Read the draft again: the click above may have just closed it.
-			if a.RuleDraft != nil && a.RuleDraft.ID == rule.ID {
-				a.renderRuleEditor(c, rules)
-			}
+	cur := effectiveSubTags(*sub)
+	var next []string
+	removed := false
+	for _, id := range cur {
+		if id == tagID {
+			removed = true
+			continue
 		}
-		if a.RuleDraft != nil && a.RuleDraft.ID == "" {
-			a.renderRuleEditor(c, rules)
+		next = append(next, id)
+	}
+	if !removed {
+		next = append(slices.Clone(cur), tagID)
+	}
+	next = subscription.NormalizeTags(next)
+	updated, err := a.backend.SetSubscriptionTags(sub.ID, next)
+	a.showError(err)
+	if err == nil {
+		*sub = updated
+		a.SubRules = updated.Rules
+		tagDef, _ := subscription.CapabilityTagByID(tagID)
+		tagLabel := firstNonEmptyStrUI(tagDef.Name, tagID)
+		subDisplay := firstNonEmptyStrUI(sub.Name, sub.Uname, sub.ID)
+		if removed {
+			a.BannerInfo = fmt.Sprintf("已为「%s」移除标签「%s」", subDisplay, tagLabel)
 		} else {
-			ui.Row(c).FillWidth().Padding(14, 0).Children(func() {
-				if OutlinePillButton(c, "新建规则", "新建缓存规则").Clicked() {
-					a.RuleDraft = &subscription.CacheRule{ScheduledCheck: true, Types: []string{"video", "draw"}}
-					a.RuleError = ""
-				}
-			})
+			a.BannerInfo = fmt.Sprintf("已为「%s」开启标签「%s」", subDisplay, tagLabel)
 		}
-	})
+	}
+	a.refreshSubscriptions()
 }
 
-func (a *App) renderRuleEditor(c *ui.Context, rules []subscription.CacheRule) {
-	d := a.RuleDraft
-	if d == nil {
-		return
-	}
-	if d.ID == subscription.DefaultRuleID {
-		a.renderDefaultRuleDetails(c, rules)
-		return
-	}
-	ui.Column(c).FillWidth().Padding(4, 0, 14, 16).Gap(0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).ClipX().Children(func() {
-		ui.Row(c).FillWidth().Padding(10, 0).Gap(12).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "名称").FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
-			ui.TextInput(c, &d.Name).Label("规则名称").Placeholder("例如：只存视频").Grow(1)
-		})
-		settingSwitchRow(c, "定时检查", "", "规则：定时检查", &d.ScheduledCheck)
-		settingSwitchRow(c, "自动缓存新动态", "只缓存选用这条规则之后发布的动态", "规则：自动缓存新动态", &d.AutoCache)
-		if d.AutoCache {
-			ui.Row(c).FillWidth().Padding(10, 0).Gap(8).AlignItems(ui.Center).Wrap().Children(func() {
-				ui.Text(c, "类型").FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
-				for _, tc := range ruleTypeChoices {
-					t := tc
-					on := slices.Contains(d.Types, t.code)
-					if ToggleChip(c, t.name, "规则类型："+t.name, on).Clicked() {
-						if on {
-							d.Types = slices.DeleteFunc(slices.Clone(d.Types), func(x string) bool { return x == t.code })
-						} else {
-							d.Types = append(d.Types, t.code)
+// renderCacheRulesSettings renders Settings → 缓存标签: a batch-set entry at
+// the top, followed by each capability tag's description, subscription count,
+// and per-tag "管理订阅…" dialog trigger.
+func (a *App) renderCacheRulesSettings(c *ui.Context) {
+	tags := a.backend.ListCapabilityTags()
+	ui.Column(c).FillWidth().Gap(0).ClipX().Children(func() {
+		ui.Row(c).
+			FillWidth().
+			Padding(2, 0, 14, 0).
+			BorderWidth(0, 0, 1, 0).
+			BorderColor(ColorBorder).
+			AlignItems(ui.Center).
+			Justify(ui.SpaceBetween).
+			Gap(12).
+			ClipX().
+			Children(func() {
+				ui.Text(c, "一个标签对应一项缓存能力；新增订阅默认没有任何标签，可在订阅详情单独开关，也可在此按标签或跨订阅批量管理。").
+					FontSize(13).
+					LineHeight(LineHeightCompact).
+					TextColor(ColorTextMuted).
+					MaxLines(3).
+					Grow(1)
+				ui.Row(c).Shrink(0).Children(func() {
+					if AccentPillButton(c, "批量设置标签…", "打开批量设置订阅标签").Clicked() {
+						a.openMultiTagBatchDialog()
+					}
+				})
+			})
+
+		for _, item := range tags {
+			tag := item
+			count := a.tagUseCount(tag.ID)
+			ui.Row(c).
+				Label("缓存标签行："+tag.ID).
+				FillWidth().
+				Padding(13, 0).
+				BorderWidth(0, 0, 1, 0).
+				BorderColor(ColorBorder).
+				AlignItems(ui.Center).
+				Justify(ui.SpaceBetween).
+				Gap(12).
+				ClipX().
+				Children(func() {
+					ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
+						ui.Row(c).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
+							ui.Text(c, tag.Name).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+							ui.Text(c, fmt.Sprintf("%d 个订阅", count)).
+								Label("标签订阅数：" + tag.ID).
+								FontSize(12).
+								TextColor(ColorTextMuted).
+								SingleLine()
+						})
+						ui.Text(c, tag.Description).
+							FontSize(12).
+							LineHeight(LineHeightCompact).
+							TextColor(ColorTextMuted).
+							MaxLines(2)
+					})
+					ui.Row(c).Shrink(0).Children(func() {
+						if OutlinePillButton(c, "管理订阅…", "管理标签订阅："+tag.ID).Clicked() {
+							a.openRuleBatchDialog(tag.ID, tag.Name, tag.Description)
 						}
-					}
-				}
-			})
+					})
+				})
 		}
-		settingSwitchRow(c, "全部缓存", "每 7 天检查一次每个账号的全部作品（哔哩哔哩为投稿视频），没缓存的放进缓存队列慢慢缓存", "规则：全部缓存", &d.FullCache)
-		settingSwitchRow(c, "开播自动录制", "", "规则：开播自动录制", &d.AutoRecord)
-		if d.ID != "" {
-			ui.Row(c).FillWidth().Padding(10, 0).Gap(12).AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
-				ui.Text(c, fmt.Sprintf("使用这条规则的订阅（%d）", a.ruleUseCount(d.ID))).
-					FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
-				if OutlinePillButton(c, "选择订阅…", "选择订阅…").Clicked() {
-					a.openRuleBatchDialog(d.ID, savedRuleNameFromList(rules, d.ID, d.Name))
-				}
-			})
-		}
-		if a.RuleError != "" {
-			ui.Text(c, a.RuleError).FontSize(12).TextColor(ColorError).MaxLines(2)
-		}
-		ui.Row(c).FillWidth().Padding(12, 0, 0, 0).Gap(8).AlignItems(ui.Center).Children(func() {
-			if d.ID != "" && d.ID != subscription.DefaultRuleID {
-				if DangerOutlinePillButton(c, "删除", "删除缓存规则").Clicked() {
-					if err := a.backend.DeleteCacheRule(d.ID); err != nil {
-						a.RuleError = userErrorText(err)
-					} else {
-						a.RuleDraft = nil
-						a.refreshSubscriptions()
-					}
-					return
-				}
-			}
-			ui.Box(c).Grow(1)
-			if OutlinePillButton(c, "取消", "取消编辑缓存规则").Clicked() {
-				a.RuleDraft, a.RuleError = nil, ""
-				return
-			}
-			if AccentPillButton(c, "保存", "保存缓存规则").Clicked() {
-				if _, err := a.backend.SaveCacheRule(*d); err != nil {
-					a.RuleError = userErrorText(err)
-				} else {
-					a.RuleDraft, a.RuleError = nil, ""
-					a.refreshSubscriptions()
-				}
-			}
-		})
-	})
-}
-
-// renderDefaultRuleDetails shows the built-in rule, which cannot be edited
-// (DEC-054): what it does, and which subscriptions use it.
-func (a *App) renderDefaultRuleDetails(c *ui.Context, rules []subscription.CacheRule) {
-	ui.Column(c).FillWidth().Padding(4, 0, 14, 16).Gap(0).BorderWidth(0, 0, 1, 0).BorderColor(ColorBorder).ClipX().Children(func() {
-		ui.Text(c, "不定时检查、不自动缓存、不录制直播；新订阅默认使用，不能修改。").
-			Label("默认规则说明").FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
-		ui.Row(c).FillWidth().Padding(10, 0, 0, 0).Gap(12).AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
-			ui.Text(c, fmt.Sprintf("使用这条规则的订阅（%d）", a.ruleUseCount(subscription.DefaultRuleID))).
-				FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
-			if OutlinePillButton(c, "选择订阅…", "选择订阅…").Clicked() {
-				a.openRuleBatchDialog(subscription.DefaultRuleID, savedRuleNameFromList(rules, subscription.DefaultRuleID, "默认"))
-			}
-		})
 	})
 }
 
 // ToggleChip is a small pill that is on or off.
 func ToggleChip(c *ui.Context, text, label string, on bool) ui.Element {
-	btn := ui.ButtonBase(c).Label(label).Padding(5, 12).Radius(999).AlignItems(ui.Center)
+	return toggleChipSized(c, text, label, on, 5, 12, 13)
+}
+
+func toggleChipSized(c *ui.Context, text, label string, on bool, padV, padH, fontSize float32) ui.Element {
+	btn := ui.ButtonBase(c).Label(label).Padding(padV, padH).Radius(999).AlignItems(ui.Center)
 	if on {
 		btn.Background(ColorAccentBg).Border(1, ColorAccent)
 	} else {
@@ -201,45 +152,100 @@ func ToggleChip(c *ui.Context, text, label string, on bool) ui.Element {
 		if on {
 			col = ColorAccent
 		}
-		ui.Text(c, text).FontSize(13).FontWeight(500).TextColor(col).SingleLine()
+		ui.Text(c, text).FontSize(fontSize).FontWeight(500).TextColor(col).SingleLine()
 	})
 	return btn
 }
 
-// renderSubscriptionRuleButton is the subscription's one control for its
-// automation: the rule it uses, chosen from a menu.
-func (a *App) renderSubscriptionRuleButton(c *ui.Context, sub *subscription.Subscription) {
-	rules := a.backend.ListCacheRules()
-	curRuleID := effectiveSubRuleID(*sub)
-	current := savedRuleNameFromList(rules, curRuleID, "默认")
+// renderSubscriptionTagChipsBar renders the subscription's active capability
+// tags as removable accent chips (or "无缓存标签" when empty) alongside the
+// "+ 标签" / "设置标签" popover selector so tags can be toggled directly in
+// Subscription Detail without showing inactive capabilities (DEC-070).
+func (a *App) renderSubscriptionTagChipsBar(c *ui.Context, sub *subscription.Subscription) {
+	if sub == nil {
+		return
+	}
+	activeTags := effectiveSubTags(*sub)
+	ui.Row(c).
+		Label("订阅详情缓存标签栏").
+		FillWidth().
+		Gap(6).
+		AlignItems(ui.Center).
+		Wrap().
+		Children(func() {
+			if len(activeTags) == 0 {
+				ui.Text(c, "无缓存标签").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+			} else {
+				for _, tagID := range activeTags {
+					id := tagID
+					tagDef, _ := subscription.CapabilityTagByID(id)
+					tagName := firstNonEmptyStrUI(tagDef.Name, id)
+					chip := toggleChipSized(c, tagName, "订阅缓存标签："+tagName, true, 4, 10, 12).
+						Tooltip(firstNonEmptyStrUI(tagDef.Description, tagName))
+					if chip.Clicked() {
+						a.toggleSubscriptionTag(sub, id)
+					}
+				}
+			}
+			a.renderSubscriptionRuleButton(c, sub, activeTags)
+		})
+}
+
+// renderSubscriptionRuleButton renders the inline tag-selector popover button
+// ("设置标签 ▾" when empty, or "+ 标签 ▾" when active tags are shown) to toggle
+// any capability tag, clear all tags, or jump to Settings → 缓存标签.
+func (a *App) renderSubscriptionRuleButton(c *ui.Context, sub *subscription.Subscription, activeTags []string) {
+	allTags := a.backend.ListCapabilityTags()
+	hasAny := len(activeTags) > 0
+	buttonText := "设置标签"
+	if hasAny {
+		buttonText = "+ 标签"
+	}
 	open := a.SubRuleMenuOpen
-	btn := ui.ButtonBase(c).Label("订阅缓存规则："+current).Tooltip("缓存规则").Padding(6, 12).Gap(6).AlignItems(ui.Center).Radius(999).Border(1, ColorBorderStrong).Shrink(0)
+	btn := ui.ButtonBase(c).
+		Label("订阅缓存标签菜单").
+		Tooltip(subscription.TagsSummary(activeTags)).
+		Padding(4, 10).
+		Gap(4).
+		AlignItems(ui.Center).
+		Radius(999).
+		Border(1, ColorBorderStrong).
+		Shrink(0)
 	if btn.Hovered() || open {
 		btn.Background(ColorHover)
 	}
 	btn.Children(func() {
-		ui.Text(c, "规则："+current).FontSize(13).FontWeight(500).TextColor(ColorTextMain).SingleLine()
-		DrawIcon(c, "chevron-down", 14, ColorTextMuted, 1.6)
+		ui.Text(c, buttonText).FontSize(12).FontWeight(500).TextColor(ColorTextMain).SingleLine()
+		DrawIcon(c, "chevron-down", 13, ColorTextMuted, 1.6)
 	})
 	btn.PopoverMenuButton(func(m *ui.Menu) {
-		for _, r := range rules {
-			rule := r
-			item := m.Item(rule.Name).Subtitle(subscription.RuleSummary(rule)).Checked(rule.ID == curRuleID)
-			if item.Chosen() && rule.ID != curRuleID {
-				_, err := a.backend.SetSubscriptionRule(sub.ID, rule.ID)
+		for _, item := range allTags {
+			tag := item
+			checked := subscription.HasTag(activeTags, tag.ID)
+			mi := m.Item(tag.Name).Subtitle(tag.Description).Checked(checked)
+			if mi.Chosen() {
+				a.toggleSubscriptionTag(sub, tag.ID)
+			}
+		}
+		if hasAny {
+			m.Separator()
+			if m.Item("清空全部标签").Chosen() {
+				updated, err := a.backend.SetSubscriptionTags(sub.ID, []string{})
 				a.showError(err)
 				if err == nil {
+					*sub = updated
+					a.SubRules = updated.Rules
 					subDisplay := firstNonEmptyStrUI(sub.Name, sub.Uname, sub.ID)
-					a.BannerInfo = fmt.Sprintf("「%s」改用规则「%s」", subDisplay, rule.Name)
+					a.BannerInfo = fmt.Sprintf("已清空「%s」的全部缓存标签", subDisplay)
 				}
 				a.refreshSubscriptions()
 			}
 		}
 		m.Separator()
-		if m.Item("管理缓存规则").Chosen() {
+		if m.Item("批量管理缓存标签").Chosen() {
 			a.SettingsCategory = "rules"
 			a.Navigate(RouteSettings)
 		}
-	}, ui.PopoverMenuButtonOptions{At: ui.AnchorBottomEnd, Self: ui.AnchorTopEnd, Open: &open})
+	}, ui.PopoverMenuButtonOptions{At: ui.AnchorBottomStart, Self: ui.AnchorTopStart, Open: &open})
 	a.SubRuleMenuOpen = open
 }

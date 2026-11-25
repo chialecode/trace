@@ -99,11 +99,58 @@ func TestV011BilibiliFixtureCompatibilityAndEntropyIsolation(t *testing.T) {
 }
 
 func TestDouyinCookieCleanerRulesAndBounds(t *testing.T) {
-	// 1. Over 8 KiB input rejected without echoing secret.
+	// 1. Over 64 KiB raw input rejected without echoing secret.
 	oversized := "sessionid=" + strings.Repeat("f", MaxCookieInputBytes+64)
 	if _, err := ParseDouyinCookieInput(oversized); !errors.Is(err, ErrInputTooLarge) {
 		t.Fatalf("expected ErrInputTooLarge, got %v", err)
 	} else if strings.Contains(err.Error(), "ffff") {
+		t.Fatalf("error echoed secret value: %v", err)
+	}
+
+	// 1b. Over 8 KiB realistic browser Cookie carrying large bd_ticket_guard_* dynamic noise
+	// succeeds after stripping blacklisted keys and keeps all identity/context keys intact.
+	over8KBrowser := strings.Join([]string{
+		"sessionid=synth_sess_over8k_ok",
+		"sid_ucp_v1=1.0.0-synth_ucp_over8k",
+		"s_v_web_id=verify_synth_over8k",
+		"UIFID=synth_uifid_over8k",
+		"ttwid=synth_ttwid_over8k",
+		"bd_ticket_guard_client_data=" + strings.Repeat("G", 9500),
+		"__security_mc_1_s_sdk=" + strings.Repeat("S", 2500),
+		"sdk_source_info=" + strings.Repeat("K", 1200),
+	}, "; ")
+	if len(over8KBrowser) <= 8192 {
+		t.Fatalf("test fixture must exceed 8 KiB, got %d", len(over8KBrowser))
+	}
+	cleanedOver8K, err := ParseDouyinCookieInput(over8KBrowser)
+	if err != nil {
+		t.Fatalf("expected >8 KiB Douyin cookie with bd_ticket_guard_* noise to succeed, got %v", err)
+	}
+	if cleanedOver8K["sessionid"] != "synth_sess_over8k_ok" ||
+		cleanedOver8K["sid_ucp_v1"] != "1.0.0-synth_ucp_over8k" ||
+		cleanedOver8K["s_v_web_id"] != "verify_synth_over8k" ||
+		cleanedOver8K["UIFID"] != "synth_uifid_over8k" ||
+		cleanedOver8K["ttwid"] != "synth_ttwid_over8k" {
+		t.Fatalf("missing key Douyin cookies after cleaning >8 KiB input: %+v", cleanedOver8K)
+	}
+	for _, stripped := range []string{"bd_ticket_guard_client_data", "__security_mc_1_s_sdk", "sdk_source_info"} {
+		if _, exists := cleanedOver8K[stripped]; exists {
+			t.Fatalf("stripped key %q remained after cleaning >8 KiB input", stripped)
+		}
+	}
+	if hdrLen := len(FormatDouyinCookieHeader(cleanedOver8K)); hdrLen > MaxCleanedCookieHeaderBytes || hdrLen >= 1024 {
+		t.Fatalf("unexpected cleaned header length %d after stripping noise", hdrLen)
+	}
+
+	// 1c. Raw input <= 64 KiB whose cleaned outbound Cookie header still exceeds 32 KiB
+	// is rejected with ErrCleanedCookieTooLarge without echoing secrets.
+	oversizedCleaned := "sessionid=synth_sess_clean32k_secret; bulk_non_blacklisted=" + strings.Repeat("z", MaxCleanedCookieHeaderBytes+128)
+	if len(oversizedCleaned) > MaxCookieInputBytes {
+		t.Fatalf("fixture should stay within MaxCookieInputBytes (%d), got %d", MaxCookieInputBytes, len(oversizedCleaned))
+	}
+	if _, err := ParseDouyinCookieInput(oversizedCleaned); !errors.Is(err, ErrCleanedCookieTooLarge) {
+		t.Fatalf("expected ErrCleanedCookieTooLarge, got %v", err)
+	} else if strings.Contains(err.Error(), "synth_sess_clean32k_secret") || strings.Contains(err.Error(), "zzzz") {
 		t.Fatalf("error echoed secret value: %v", err)
 	}
 
@@ -456,5 +503,115 @@ func TestManagerPerSiteIsolationAndMultiSiteRedaction(t *testing.T) {
 	}
 	if !mgr.HasActiveCredential(SiteBilibili) {
 		t.Fatal("Bilibili credential lost after clearing Douyin")
+	}
+}
+
+func TestDouyinGuardStateBackwardCompatEncryptionSentinelsAndClear(t *testing.T) {
+	credDir := filepath.Join(t.TempDir(), "credentials")
+	if err := os.MkdirAll(credDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Backward compatibility: legacy douyin.bin without "douyin_guard" opens cleanly with nil guard state.
+	legacyJSON := []byte(`{
+		"version": 1,
+		"site": "douyin",
+		"cookies": {"sessionid": "legacy_dy_sess_001", "ttwid": "legacy_dy_ttwid_001"},
+		"source": "manual",
+		"updatedAt": "2026-11-12T00:00:00Z",
+		"uid": "1000000000000009",
+		"secUid": "MS4wLjABAAAA_LEGACY_DOUYIN_01",
+		"uname": "旧版抖音凭证",
+		"state": "logged_in"
+	}`)
+	dyPath := filepath.Join(credDir, DouyinFileName)
+	legacyCipher, err := protectFor(dyPath, legacyJSON, []byte(DouyinEntropy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dyPath, legacyCipher, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr, backups, err := OpenManager(credDir)
+	if err != nil || len(backups) != 0 {
+		t.Fatalf("OpenManager legacy douyin.bin failed: err=%v backups=%v", err, backups)
+	}
+	if !mgr.Douyin().HasActiveCredential() || mgr.Douyin().DouyinGuard() != nil {
+		t.Fatalf("expected active legacy store with nil DouyinGuard, got active=%v guard=%+v", mgr.Douyin().HasActiveCredential(), mgr.Douyin().DouyinGuard())
+	}
+
+	// 2. Persist guard state on active store and verify DPAPI round-trip + sentinel redaction.
+	const (
+		sentinelPriv   = "SYNTH_GUARD_PRIVKEY_PKCS8_SENTINEL_01"
+		sentinelPub    = "SYNTH_GUARD_PUBKEY_SEC1_SENTINEL_02"
+		sentinelTicket = "hash.SYNTH_GUARD_TICKET_SENTINEL_03"
+		sentinelTsSign = "ts.2.SYNTH_GUARD_TSSIGN_SENTINEL_04"
+		sentinelCert   = "SYNTH_GUARD_CERT_SENTINEL_05"
+	)
+	if err := mgr.Douyin().SaveDouyinGuard(&DouyinGuardState{
+		PrivateKeyPKCS8: sentinelPriv,
+		PublicKeySEC1:   sentinelPub,
+		Ticket:          sentinelTicket,
+		TsSign:          sentinelTsSign,
+		ClientCert:      sentinelCert,
+		UpdatedAt:       "2026-11-25T01:00:00Z",
+	}); err != nil {
+		t.Fatalf("SaveDouyinGuard failed: %v", err)
+	}
+
+	reopened, warn, err := OpenDouyin(dyPath)
+	if err != nil || warn != "" {
+		t.Fatalf("reopen douyin.bin with guard state failed: err=%v warn=%q", err, warn)
+	}
+	gotGuard := reopened.DouyinGuard()
+	if gotGuard == nil || gotGuard.PrivateKeyPKCS8 != sentinelPriv || gotGuard.PublicKeySEC1 != sentinelPub ||
+		gotGuard.Ticket != sentinelTicket || gotGuard.TsSign != sentinelTsSign || gotGuard.ClientCert != sentinelCert {
+		t.Fatalf("reopened DouyinGuard mismatch: %+v", gotGuard)
+	}
+
+	cipherBytes, err := os.ReadFile(dyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusesJSON, _ := json.Marshal(mgr.Statuses())
+	sampleLog := strings.Join([]string{sentinelPriv, sentinelPub, sentinelTicket, sentinelTsSign, sentinelCert}, " | ")
+	redactedLog := mgr.RedactString(sampleLog)
+	for _, sec := range []string{sentinelPriv, sentinelPub, sentinelTicket, sentinelTsSign, sentinelCert} {
+		if bytes.Contains(cipherBytes, []byte(sec)) {
+			t.Fatalf("douyin.bin leaked plaintext guard secret %q", sec)
+		}
+		if bytes.Contains(statusesJSON, []byte(sec)) {
+			t.Fatalf("Statuses JSON leaked guard secret %q", sec)
+		}
+		if strings.Contains(redactedLog, sec) {
+			t.Fatalf("Manager.RedactString leaked guard secret %q: %s", sec, redactedLog)
+		}
+	}
+	if len(mgr.Douyin().DouyinGuardSecrets()) < 5 {
+		t.Fatalf("expected >=5 guard secret entries, got %d", len(mgr.Douyin().DouyinGuardSecrets()))
+	}
+
+	// 3. Re-login via SaveVerifiedDouyinManual clears old guard state; Logout clears completely.
+	if _, err := mgr.Douyin().SaveVerifiedDouyinManual(map[string]string{"sessionid": "new_dy_sess_002"}, DouyinProfile{UID: "2", SecUID: "MS4wLjABAAAA_NEW_DOUYIN_0002", Uname: "新账号"}); err != nil {
+		t.Fatal(err)
+	}
+	if mgr.Douyin().DouyinGuard() != nil {
+		t.Fatalf("expected SaveVerifiedDouyinManual to wipe old guard state, got %+v", mgr.Douyin().DouyinGuard())
+	}
+	if _, err := mgr.Douyin().SaveVerifiedDouyinManualWithGuard(map[string]string{"sessionid": "new_dy_sess_003"}, DouyinProfile{UID: "3", SecUID: "MS4wLjABAAAA_NEW_DOUYIN_0003", Uname: "新账号2"}, &DouyinGuardState{
+		PrivateKeyPKCS8: sentinelPriv,
+		PublicKeySEC1:   sentinelPub,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if mgr.Douyin().DouyinGuard() == nil {
+		t.Fatal("expected SaveVerifiedDouyinManualWithGuard to persist guard state")
+	}
+	if err := mgr.Clear(SiteDouyin); err != nil {
+		t.Fatal(err)
+	}
+	if mgr.Douyin().DouyinGuard() != nil || len(mgr.Douyin().DouyinGuardSecrets()) != 0 {
+		t.Fatal("expected Clear to remove guard state and secrets")
 	}
 }

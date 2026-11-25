@@ -82,10 +82,73 @@ type ConflictBatchResult struct {
 	SkippedBusy int `json:"skippedBusy"`
 }
 
+// ConflictTextSegment is one diff-highlighted span in side-by-side text comparison.
+// Kind is "same", "removed" (left/local side), or "added" (right/remote side).
+type ConflictTextSegment struct {
+	Text string `json:"text"`
+	Kind string `json:"kind"` // "same" | "removed" | "added"
+}
+
+// ConflictMediaSideDTO describes one image or video slot on either the local or remote side.
+// RemoteURL is transient in-memory preview metadata and is never persisted to disk.
+type ConflictMediaSideDTO struct {
+	Kind         string `json:"kind"` // "image" | "video"
+	Label        string `json:"label"`
+	Sublabel     string `json:"sublabel,omitempty"`
+	LocalItemKey string `json:"localItemKey,omitempty"`
+	LocalRelPath string `json:"localRelPath,omitempty"`
+	PlayRelPath  string `json:"playRelPath,omitempty"`
+	RemoteURL    string `json:"remoteUrl,omitempty"`
+	DurationSec  int    `json:"durationSec,omitempty"`
+	Width        int    `json:"width,omitempty"`
+	Height       int    `json:"height,omitempty"`
+	CID          int64  `json:"cid,omitempty"`
+	MediaID      string `json:"mediaId,omitempty"`
+	LivePhoto    bool   `json:"livePhoto,omitempty"`
+	GIF          bool   `json:"gif,omitempty"`
+}
+
+// ConflictMediaPairDTO aligns one local media/part slot side-by-side with its remote counterpart.
+// Status is "same", "changed", "local_only", "remote_only", or "upgradeable".
+type ConflictMediaPairDTO struct {
+	Index      int                   `json:"index"`
+	Kind       string                `json:"kind"` // "image" | "video"
+	Status     string                `json:"status"`
+	StatusText string                `json:"statusText"`
+	Local      *ConflictMediaSideDTO `json:"local,omitempty"`
+	Remote     *ConflictMediaSideDTO `json:"remote,omitempty"`
+}
+
+// ConflictDiffSideDTO holds summary and raw text for one side of the side-by-side comparison.
+type ConflictDiffSideDTO struct {
+	Heading     string `json:"heading"`
+	Summary     string `json:"summary"`
+	Title       string `json:"title,omitempty"`
+	Text        string `json:"text,omitempty"`
+	Unavailable bool   `json:"unavailable,omitempty"`
+	Note        string `json:"note,omitempty"`
+}
+
+// CacheConflictDiffDTO is the full side-by-side diff payload for the Tasks › 内容冲突 modal.
+type CacheConflictDiffDTO struct {
+	Conflict     CacheConflictDTO       `json:"conflict"`
+	Local        ConflictDiffSideDTO    `json:"local"`
+	Remote       ConflictDiffSideDTO    `json:"remote"`
+	TitleChanged bool                   `json:"titleChanged"`
+	LocalTitle   []ConflictTextSegment  `json:"localTitle,omitempty"`
+	RemoteTitle  []ConflictTextSegment  `json:"remoteTitle,omitempty"`
+	TextChanged  bool                   `json:"textChanged"`
+	LocalText    []ConflictTextSegment  `json:"localText,omitempty"`
+	RemoteText   []ConflictTextSegment  `json:"remoteText,omitempty"`
+	MediaPairs   []ConflictMediaPairDTO `json:"mediaPairs,omitempty"`
+	RemoteError  string                 `json:"remoteError,omitempty"`
+}
+
 // ConflictService manages V1-vs-V2 cache conflicts on desktop installations.
 type ConflictService interface {
 	ListCacheConflicts() ([]CacheConflictDTO, error)
 	PendingCacheConflictCount() int
+	InspectCacheConflictDiff(ctx context.Context, id string) (CacheConflictDiffDTO, error)
 	ResolveCacheConflict(ctx context.Context, id, choice string) error
 	ResolveAllCacheConflicts(ctx context.Context, choice string) (ConflictBatchResult, error)
 }

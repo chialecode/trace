@@ -284,16 +284,7 @@ func TestMixedSiteSubscriptionBaselinePinnedAutoCacheRiskIsolationAndUncertainEm
 		liveHints = append(liveHints, acc.UID+":"+roomID+":"+webRID)
 	})
 
-	// Shared cache rule: auto-cache video + draw.
-	sharedRule, err := mgr.SaveRule(CacheRule{
-		Name:           "自动缓存视频与图文",
-		ScheduledCheck: true,
-		AutoCache:      true,
-		Types:          []string{"video", "draw"},
-	})
-	if err != nil {
-		t.Fatalf("SaveRule: %v", err)
-	}
+	sharedTags := []string{TagScheduledCheck, TagCacheVideo, TagCacheDraw}
 
 	dyUID1 := "MS4wLjABAAAA__MixedCreator_A"
 	dyUID2 := "MS4wLjABAAAA__SecondCreator_B"
@@ -306,8 +297,8 @@ func TestMixedSiteSubscriptionBaselinePinnedAutoCacheRiskIsolationAndUncertainEm
 		t.Fatalf("Create mixedSub: %v", err)
 	}
 	now = time.Unix(1700001500, 0).UTC()
-	if _, err := mgr.SetSubscriptionRule(mixedSub.ID, sharedRule.ID); err != nil {
-		t.Fatalf("SetSubscriptionRule mixedSub: %v", err)
+	if _, err := mgr.SetSubscriptionTags(mixedSub.ID, sharedTags); err != nil {
+		t.Fatalf("SetSubscriptionTags mixedSub: %v", err)
 	}
 
 	dySub2, err := mgr.Create("第二抖音号", "", []AccountRef{
@@ -316,8 +307,8 @@ func TestMixedSiteSubscriptionBaselinePinnedAutoCacheRiskIsolationAndUncertainEm
 	if err != nil {
 		t.Fatalf("Create dySub2: %v", err)
 	}
-	if _, err := mgr.SetSubscriptionRule(dySub2.ID, sharedRule.ID); err != nil {
-		t.Fatalf("SetSubscriptionRule dySub2: %v", err)
+	if _, err := mgr.SetSubscriptionTags(dySub2.ID, sharedTags); err != nil {
+		t.Fatalf("SetSubscriptionTags dySub2: %v", err)
 	}
 
 	sentinel := "SYNTH_DY_SIGN_SENTINEL_9988"
@@ -832,16 +823,6 @@ func TestDouyinNewPinnedGapCursorStallSharedAutoCacheCapAndMidRoundQuota(t *test
 		return "auto-" + item.DynID, nil
 	})
 
-	rule, err := mgr.SaveRule(CacheRule{
-		Name:           "全类型自动缓存",
-		ScheduledCheck: true,
-		AutoCache:      true,
-		Types:          []string{"video", "draw"},
-	})
-	if err != nil {
-		t.Fatalf("SaveRule: %v", err)
-	}
-
 	uidPinned := "MS4wLjABAAAA__NewPinnedCreator"
 	uidGap := "MS4wLjABAAAA__GapCreator"
 	uidStall := "MS4wLjABAAAA__StallCreator"
@@ -854,8 +835,8 @@ func TestDouyinNewPinnedGapCursorStallSharedAutoCacheCapAndMidRoundQuota(t *test
 	if err != nil {
 		t.Fatalf("Create sub1: %v", err)
 	}
-	if _, err := mgr.SetSubscriptionRule(sub1.ID, rule.ID); err != nil {
-		t.Fatalf("SetSubscriptionRule: %v", err)
+	if _, err := mgr.SetSubscriptionTags(sub1.ID, []string{TagScheduledCheck, TagCacheVideo, TagCacheDraw}); err != nil {
+		t.Fatalf("SetSubscriptionTags: %v", err)
 	}
 
 	// Pre-populate one item in library.db so auto-cache skips creating a duplicate download task!

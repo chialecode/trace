@@ -381,6 +381,14 @@ func (b *Backend) videoItemQueueCandidate(v bilibili.UserVideoItem, forMid int64
 			if err != nil {
 				return queueEnqueued{}, err
 			}
+			if vd.IsUpowerLocked() {
+				b.logInfo("cache_queue skip upower-locked video key=" + itemKey)
+				return queueEnqueued{
+					itemKey:      itemKey,
+					title:        trimQueueSummaryTitle(firstNonEmpty(vd.Title, fallbackTitle, cleanID)),
+					probedNoTask: true,
+				}, nil
+			}
 			if len(vd.Pages) == 0 {
 				return queueEnqueued{}, &site.Error{Site: site.Bilibili, Kind: site.ErrKindUnavailable, Message: "视频无可用分P"}
 			}
@@ -464,8 +472,9 @@ func (b *Backend) dynamicQueueCandidate(d bilibili.DynamicItem) queueCandidate {
 	}
 	title := trimQueueSummaryTitle(firstNonEmpty(d.Title, d.Text, cleanID))
 	isLiveRcmd := strings.EqualFold(strings.TrimSpace(d.Type), "DYNAMIC_TYPE_LIVE_RCMD")
+	uncacheable := isLiveRcmd || d.Blocked
 	var inspectFn func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision
-	if !isLiveRcmd {
+	if !uncacheable {
 		inspectFn = func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
 			return b.inspectBilibiliCachedDynamic(item, meta, queueOrigin)
 		}
@@ -473,7 +482,7 @@ func (b *Backend) dynamicQueueCandidate(d bilibili.DynamicItem) queueCandidate {
 	return queueCandidate{
 		key:           itemKey,
 		title:         title,
-		uncacheable:   isLiveRcmd,
+		uncacheable:   uncacheable,
 		inspectCached: inspectFn,
 		enqueue: func(ctx context.Context) (queueEnqueued, error) {
 			t, err := b.EnqueueDynamicCache(ctx, download.DynamicEnqueueRequest{
@@ -575,7 +584,7 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 		key = weibo.PostItemKey(mid)
 	}
 	if b != nil && b.weiboPostCache != nil {
-		b.weiboPostCache.put(&postCopy, b.preferredWeiboCodec(), b.currentWeiboMaxResolution())
+		b.weiboPostCache.put(&postCopy, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), b.weiboRemoveWatermarkEnabled())
 	}
 	title := trimQueueSummaryTitle(firstNonEmpty(postCopy.Text, postCopy.TextRaw, mid))
 	nonOriginal := isWeiboNonOriginalPost(postCopy.IsRetweet, postCopy.IsFastRetweet, postCopy.Retweeted != nil, postCopy.OriMid, postCopy.RuleType)
@@ -613,7 +622,7 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 func (b *Backend) weiboPostViewQueueCandidate(p WeiboPostView) queueCandidate {
 	mid := strings.TrimSpace(p.Mid)
 	if b != nil && b.weiboPostCache != nil && mid != "" {
-		if cached, ok := b.weiboPostCache.get(mid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution()); ok {
+		if cached, ok := b.weiboPostCache.get(mid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), b.weiboRemoveWatermarkEnabled()); ok {
 			return b.weiboPostQueueCandidate(*cached)
 		}
 	}

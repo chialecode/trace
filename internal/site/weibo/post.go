@@ -1605,32 +1605,33 @@ func (c *Client) buildImageAsset(index int, picID string, pi *rawPicInfo, rewrit
 		fallbacks = append(fallbacks, cand.url)
 	}
 
-	// Optional configurable watermark-free rewrite hook (ready for ACT-022 V-07, disabled by default).
-	primaryURL := primary.url
-	if rewriter != nil {
-		if rewritten, ok := rewriter(picID, primaryURL); ok && rewritten != "" && rewritten != primaryURL {
-			fallbacks = append([]string{primaryURL}, fallbacks...)
-			primaryURL = rewritten
-		}
-	}
-
 	picType := strings.ToLower(strings.TrimSpace(pi.Type))
 	kind := MediaKindImage
 	var motionURL string
 	var gifVideoURL string
 	var needsLivePhotoHop bool
 
-	switch picType {
-	case "gif":
+	switch {
+	case picType == "gif" || isGIFImageURL(primary.url):
 		kind = MediaKindGIF
 		if v := normalizeWeiboMediaURL(pi.Video, c.allowLocalhost); v != "" {
 			gifVideoURL = v
 		}
-	case "livephoto":
+	case picType == "livephoto":
 		kind = MediaKindLivePhoto
 		motionURL = normalizeWeiboMediaURL(pi.Video, c.allowLocalhost)
 		if motionURL != "" && site.IsWeiboLivePhotoInitialURL(motionURL) {
 			needsLivePhotoHop = true
+		}
+	}
+
+	// Optional configurable lossless watermark-free rewrite hook (/oslarge/ with automatic fallback
+	// to the original largest/original URL). Animated GIFs never rewrite to avoid breaking frames.
+	primaryURL := primary.url
+	if kind != MediaKindGIF && rewriter != nil {
+		if rewritten, ok := rewriter(picID, primaryURL); ok && rewritten != "" && rewritten != primaryURL {
+			fallbacks = append([]string{primaryURL}, fallbacks...)
+			primaryURL = rewritten
 		}
 	}
 
@@ -1649,8 +1650,47 @@ func (c *Client) buildImageAsset(index int, picID string, pi *rawPicInfo, rewrit
 	}, true
 }
 
-// RewriteSinaimgPath rewrites a sinaimg.cn size segment (e.g. /mw2000/, /large/, /orj360/)
-// to targetSize (e.g. "oslarge" or "osj1080"). Provided as an opt-in helper for ACT-022 V-07.
+func isGIFImageURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		s := strings.ToLower(strings.TrimSpace(rawURL))
+		if q := strings.IndexByte(s, '?'); q >= 0 {
+			s = s[:q]
+		}
+		if f := strings.IndexByte(s, '#'); f >= 0 {
+			s = s[:f]
+		}
+		return strings.HasSuffix(s, ".gif")
+	}
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(u.Path)), ".gif")
+}
+
+// RewriteWatermarkFreeImageURL rewrites a static sinaimg.cn image URL to the lossless /oslarge/
+// path segment (never the resolution-capping /osj1080/ tier). Animated .gif URLs are left untouched.
+func RewriteWatermarkFreeImageURL(rawURL string) (string, bool) {
+	if isGIFImageURL(rawURL) {
+		return "", false
+	}
+	return RewriteSinaimgPath(rawURL, "oslarge")
+}
+
+func fallbackFromOSLargeURL(rawURL string) (string, bool) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || !site.MatchDomainSuffix(strings.ToLower(u.Hostname()), []string{"sinaimg.cn"}) {
+		return "", false
+	}
+	segs := site.SplitCleanPath(u.Path)
+	if len(segs) < 2 || !strings.EqualFold(segs[0], "oslarge") {
+		return "", false
+	}
+	segs[0] = "large"
+	cloned := *u
+	cloned.Path = "/" + strings.Join(segs, "/")
+	return cloned.String(), true
+}
+
+// RewriteSinaimgPath rewrites a sinaimg.cn size segment (e.g. /mw2000/, /large/, /orj960/)
+// to targetSize (such as "oslarge").
 func RewriteSinaimgPath(rawURL, targetSize string) (string, bool) {
 	targetSize = strings.Trim(strings.TrimSpace(targetSize), "/")
 	if targetSize == "" {
@@ -1665,7 +1705,7 @@ func RewriteSinaimgPath(rawURL, targetSize string) (string, bool) {
 		return "", false
 	}
 	switch strings.ToLower(segs[0]) {
-	case "mw690", "mw1024", "mw2000", "large", "bmiddle", "orj360", "orj480", "woriginal":
+	case "mw690", "mw1024", "mw2000", "large", "bmiddle", "orj360", "orj480", "orj960", "orj1080", "woriginal":
 		segs[0] = targetSize
 		cloned := *u
 		cloned.Path = "/" + strings.Join(segs, "/")

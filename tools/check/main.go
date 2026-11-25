@@ -15,17 +15,18 @@ import (
 )
 
 const (
-	modulePrefix  = "github.com/chialecode/trace/"
-	internalPref  = modulePrefix + "internal/"
-	sitePkg       = internalPref + "site"
-	bilibiliPkg   = internalPref + "site/bilibili"
-	douyinPkg     = internalPref + "site/douyin"
-	douyinSignPkg = internalPref + "site/douyin/sign"
-	weiboPkg      = internalPref + "site/weibo"
-	xPkg          = internalPref + "site/x"
-	credPkg       = internalPref + "credential"
-	uiPkg         = internalPref + "ui"
-	serverCmd     = modulePrefix + "cmd/trace-server"
+	modulePrefix   = "github.com/chialecode/trace/"
+	internalPref   = modulePrefix + "internal/"
+	sitePkg        = internalPref + "site"
+	bilibiliPkg    = internalPref + "site/bilibili"
+	douyinPkg      = internalPref + "site/douyin"
+	douyinSignPkg  = internalPref + "site/douyin/sign"
+	douyinGuardPkg = internalPref + "site/douyin/guard"
+	weiboPkg       = internalPref + "site/weibo"
+	xPkg           = internalPref + "site/x"
+	credPkg        = internalPref + "credential"
+	uiPkg          = internalPref + "ui"
+	serverCmd      = modulePrefix + "cmd/trace-server"
 )
 
 // serverForbidden are the packages trace-server must not link: the window,
@@ -341,8 +342,9 @@ func validatePackageDeps(pkg string, imports []string, deps []string) error {
 		}
 	}
 
-	// 5. internal/site/douyin/sign must remain pure computation (no internal/credential and no net/http).
-	if hasPkgOrSubpkg(pkg, douyinSignPkg) {
+	// 5. internal/site/douyin/sign and internal/site/douyin/guard must remain pure computation
+	// (no internal/credential and no net/http).
+	if hasPkgOrSubpkg(pkg, douyinSignPkg) || hasPkgOrSubpkg(pkg, douyinGuardPkg) {
 		for _, dep := range deps {
 			if hasPkgOrSubpkg(dep, credPkg) {
 				return fmt.Errorf("sign purity violation: %s depends on %s", pkg, dep)

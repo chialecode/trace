@@ -1088,12 +1088,22 @@ func (b *Backend) UserDynamicsPage(ctx context.Context, mid int64, offset string
 	return b.bili.UserDynamics(ctx, mid, offset)
 }
 
-func (b *Backend) UserVideosPage(ctx context.Context, mid int64, page int) (bilibili.UserVideosPage, error) {
+func (b *Backend) UserVideosPage(ctx context.Context, mid int64, page int, opts ...UserVideosPageOptions) (bilibili.UserVideosPage, error) {
 	if err := b.requireSiteLogin(site.Bilibili); err != nil {
 		return bilibili.UserVideosPage{}, err
 	}
-	res, err := b.bili.UserVideos(ctx, mid, page, 30, "pubdate", "")
-	if err == nil && page <= 1 {
+	order := "pubdate"
+	keyword := ""
+	tid := 0
+	if len(opts) > 0 {
+		order = bilibili.NormalizeUserVideosOrder(opts[0].Order)
+		keyword = strings.TrimSpace(opts[0].Keyword)
+		if opts[0].TID > 0 {
+			tid = opts[0].TID
+		}
+	}
+	res, err := b.bili.UserVideos(ctx, mid, page, 30, order, keyword, tid)
+	if err == nil && page <= 1 && keyword == "" && tid == 0 {
 		b.recordAccountWorks(site.Bilibili, strconv.FormatInt(mid, 10), res.Total)
 	}
 	return res, err
@@ -1257,6 +1267,7 @@ func (b *Backend) WeiboPost(ctx context.Context, mid string) (*WeiboPostView, er
 	}
 	codec := b.preferredWeiboCodec()
 	maxRes := b.currentWeiboMaxResolution()
+	removeWM := b.weiboRemoveWatermarkEnabled()
 	post, err := b.weibo.GetPost(ctx, strings.TrimSpace(mid), weibo.PostOptions{
 		StreamOptions: weibo.StreamSelectOptions{
 			PreferredCodec: codec,
@@ -1268,7 +1279,7 @@ func (b *Backend) WeiboPost(ctx context.Context, mid string) (*WeiboPostView, er
 		return nil, err
 	}
 	b.rememberWeiboPostAvatars(post)
-	b.weiboPostCache.put(post, codec, maxRes)
+	b.weiboPostCache.put(post, codec, maxRes, removeWM)
 	cacheKey := weibo.PostItemKey(post.Mid)
 	var cached *library.ItemMetadata
 	if item, ok, _ := b.lib.GetItem(cacheKey); ok {
@@ -1287,6 +1298,7 @@ func (b *Backend) WeiboVideo(ctx context.Context, oid string) (*WeiboVideoView, 
 	}
 	codec := b.preferredWeiboCodec()
 	maxRes := b.currentWeiboMaxResolution()
+	removeWM := b.weiboRemoveWatermarkEnabled()
 	vr, err := b.weibo.GetVideo(ctx, strings.TrimSpace(oid), weibo.PostOptions{
 		StreamOptions: weibo.StreamSelectOptions{
 			PreferredCodec: codec,
@@ -1299,7 +1311,7 @@ func (b *Backend) WeiboVideo(ctx context.Context, oid string) (*WeiboVideoView, 
 	}
 	if vr.HostPost != nil {
 		b.rememberWeiboPostAvatars(vr.HostPost)
-		b.weiboPostCache.put(vr.HostPost, codec, maxRes)
+		b.weiboPostCache.put(vr.HostPost, codec, maxRes, removeWM)
 		hostKey := weibo.PostItemKey(vr.HostPost.Mid)
 		var cached *library.ItemMetadata
 		if item, ok, _ := b.lib.GetItem(hostKey); ok {
@@ -1433,10 +1445,11 @@ func (b *Backend) weiboUserPosts(
 		ownerName = b.resolveWeiboForwarderHintName(ownerUID, "", "")
 	}
 
+	removeWM := b.weiboRemoveWatermarkEnabled()
 	views := make([]WeiboPostView, 0, len(page.Posts))
 	for i := range page.Posts {
 		p := &page.Posts[i]
-		b.weiboPostCache.put(p, codec, maxRes)
+		b.weiboPostCache.put(p, codec, maxRes, removeWM)
 		k := weibo.PostItemKey(p.Mid)
 		v := *mapWeiboPostView(p, nil, states[k])
 		if ownerUID != "" && (p.IsRetweet || p.IsFastRetweet || p.Author.UID != ownerUID) {

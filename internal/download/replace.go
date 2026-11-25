@@ -1472,6 +1472,9 @@ func (m *Manager) stageSingleBilibiliPart(
 		}
 	}
 
+	if hasSameCID && len(localPart.Chapters) > 0 {
+		part.Chapters = append([]library.VideoChapter(nil), localPart.Chapters...)
+	}
 	if !cfg.SaveSubtitles {
 		part.SubtitleState = "skipped"
 	} else {
@@ -1509,7 +1512,11 @@ func (m *Manager) stageSingleBilibiliPart(
 				}
 			}
 		}
-		tracks, sErr := m.client.MissingSubtitles(ctx, bvid, page.CID, cfg.IncludeAI, savedLangs)
+		extras, sErr := m.client.MissingSubtitlesAndChapters(ctx, bvid, page.CID, cfg.IncludeAI, savedLangs)
+		if len(extras.Chapters) > 0 {
+			part.Chapters = convertVideoChapters(extras.Chapters)
+		}
+		tracks := extras.Subtitles
 		for _, tr := range tracks {
 			if tr.ErrorKind != "" {
 				continue

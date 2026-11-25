@@ -603,9 +603,9 @@ func packScalarBlock(nowMs int64, pageID, aid uint32, infoLen, tailLen int, dq, 
 	ink := uint64(nowMs - 1)
 	ts := uint64(nowMs)
 
-	q0, q1, qc := dq[9], dq[18], pickCanaryByte(dq, 11, 3, 12)
-	b0, b1, bc := db[10], db[19], pickCanaryByte(db, 8, 4, 9)
-	u0, u1, uc := dua[11], dua[21], pickCanaryByte(dua, 12, 5, 13)
+	q0, q1, qc := dq[9], dq[18], pickCanaryByte(dq, 3, 11, 12)
+	b0, b1, bc := db[10], db[19], pickCanaryByte(db, 4, 8, 9)
+	u0, u1, uc := dua[11], dua[21], pickCanaryByte(dua, 5, 12, 13)
 
 	return [50]byte{
 		byte(ts >> 40),     // 0: S_now[5]

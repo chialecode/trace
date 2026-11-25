@@ -11,6 +11,7 @@ import (
 
 	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/site"
+	"github.com/chialecode/trace/internal/site/douyin/guard"
 )
 
 var (
@@ -38,7 +39,7 @@ type profileSelfEnvelope struct {
 // before persisting it to the credential store.
 //
 // Failure modes (never echoing raw Cookie values and never overwriting existing credentials):
-//  1. Missing sessionid/sessionid_ss (including ttwid/msToken-only guest cookies) or >8 KiB -> invalid_input (0 requests)
+//  1. Missing sessionid/sessionid_ss (including ttwid/msToken-only guest cookies), >64 KiB raw input, or >32 KiB cleaned header -> invalid_input (0 requests)
 //  2. profile/self returns unauthenticated status_code or empty/incomplete user -> auth_required
 //  3. profile/self hits captcha / gateway verification -> risk_control
 func (c *Client) LoginWithCookie(ctx context.Context, rawCookie string) (credential.Status, error) {
@@ -48,7 +49,14 @@ func (c *Client) LoginWithCookie(ctx context.Context, rawCookie string) (credent
 			return credential.Status{}, &site.Error{
 				Site:    site.Douyin,
 				Kind:    site.ErrKindInvalidInput,
-				Message: "粘贴的 Cookie 长度超过 8 KiB 上限，请只复制抖音站点的 Cookie",
+				Message: "粘贴的 Cookie 长度超过 64 KiB 上限，请只复制抖音站点的 Cookie",
+			}
+		}
+		if errors.Is(err, credential.ErrCleanedCookieTooLarge) {
+			return credential.Status{}, &site.Error{
+				Site:    site.Douyin,
+				Kind:    site.ErrKindInvalidInput,
+				Message: "清洗后的抖音 Cookie 请求头长度超过 32 KiB 上限，请只复制抖音站点的 Cookie",
 			}
 		}
 		return credential.Status{}, &site.Error{
@@ -58,12 +66,23 @@ func (c *Client) LoginWithCookie(ctx context.Context, rawCookie string) (credent
 		}
 	}
 
-	profile, refreshedCookies, usedMSToken, err := c.verifyCandidateCookies(ctx, cleaned)
+	candGuard, _ := guard.GenerateState(c.entropy, c.nowFn)
+	var candGuardPtr *guard.State
+	if candGuard.HasKeyPair() {
+		candGuardPtr = &candGuard
+	}
+	profile, refreshedCookies, usedMSToken, err := c.verifyCandidateCookies(ctx, cleaned, candGuardPtr)
 	if err != nil {
 		return credential.Status{}, err
 	}
 
 	if c.cred == nil {
+		if candGuardPtr != nil {
+			c.guardMu.Lock()
+			cp := *candGuardPtr
+			c.ephemeralGuard = &cp
+			c.guardMu.Unlock()
+		}
 		if strings.TrimSpace(refreshedCookies["msToken"]) == "" && usedMSToken != "" {
 			c.setFallbackMSToken(cookieMapSessionFingerprint(refreshedCookies), usedMSToken)
 		} else {
@@ -81,13 +100,17 @@ func (c *Client) LoginWithCookie(ctx context.Context, rawCookie string) (credent
 		}, nil
 	}
 
-	st, saveErr := c.cred.SaveVerifiedDouyinManual(refreshedCookies, credential.DouyinProfile{
+	var credGuard *credential.DouyinGuardState
+	if candGuardPtr != nil {
+		credGuard = toCredGuardState(*candGuardPtr)
+	}
+	st, saveErr := c.cred.SaveVerifiedDouyinManualWithGuard(refreshedCookies, credential.DouyinProfile{
 		UID:      profile.UID,
 		SecUID:   profile.SecUID,
 		UniqueID: profile.UniqueID,
 		Uname:    profile.Nickname,
 		Face:     profile.AvatarURL,
-	})
+	}, credGuard)
 	if saveErr != nil {
 		return credential.Status{}, saveErr
 	}
@@ -134,6 +157,7 @@ func (c *Client) VerifyCredential(ctx context.Context) (credential.Status, error
 // LogoutCredential clears the stored Douyin credential and invalidates cached live room mappings.
 func (c *Client) LogoutCredential() error {
 	c.clearFallbackMSToken()
+	c.clearEphemeralGuard()
 
 	c.liveCacheMu.Lock()
 	c.webRIDByUser = make(map[string]liveWebRIDEntry)
@@ -184,13 +208,14 @@ func (c *Client) CheckProfileSelfGuest(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) verifyCandidateCookies(ctx context.Context, cleaned map[string]string) (*SelfProfile, map[string]string, string, error) {
+func (c *Client) verifyCandidateCookies(ctx context.Context, cleaned map[string]string, candidateGuard *guard.State) (*SelfProfile, map[string]string, string, error) {
 	rawResp, err := c.doAPIRequest(ctx, apiRequestSpec{
 		endpoint:        c.endpoints.ProfileSelf,
 		referer:         DefaultReferer,
 		params:          c.profile.CommonWebParams(c.webID, ""),
 		requireSign:     true,
 		candidateCookie: cleaned,
+		candidateGuard:  candidateGuard,
 	})
 	if err != nil {
 		if site.IsKind(err, site.ErrKindRiskControl) || site.IsKind(err, site.ErrKindRateLimited) {
