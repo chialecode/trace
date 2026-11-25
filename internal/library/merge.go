@@ -64,8 +64,10 @@ func cloneItemMetadataSlices(meta ItemMetadata) ItemMetadata {
 		c := *meta.Card
 		meta.Card = &c
 	}
+	meta.Links = append([]ItemLink(nil), meta.Links...)
 	if meta.Origin != nil {
 		o := *meta.Origin
+		o.Links = append([]ItemLink(nil), o.Links...)
 		if o.Card != nil {
 			oc := *o.Card
 			o.Card = &oc
@@ -75,6 +77,7 @@ func cloneItemMetadataSlices(meta ItemMetadata) ItemMetadata {
 	if len(meta.Thread) > 0 {
 		meta.Thread = append([]ItemThreadPart(nil), meta.Thread...)
 		for i := range meta.Thread {
+			meta.Thread[i].Links = append([]ItemLink(nil), meta.Thread[i].Links...)
 			meta.Thread[i].MediaIndexes = append([]int(nil), meta.Thread[i].MediaIndexes...)
 		}
 	}
@@ -260,15 +263,20 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 		c := *imported.Card
 		out.Card = &c
 	}
+	if len(out.Links) == 0 && len(imported.Links) > 0 {
+		out.Links = append([]ItemLink(nil), imported.Links...)
+	}
 	if len(out.Thread) == 0 && len(imported.Thread) > 0 {
 		out.Thread = append([]ItemThreadPart(nil), imported.Thread...)
 		for i := range out.Thread {
+			out.Thread[i].Links = append([]ItemLink(nil), out.Thread[i].Links...)
 			out.Thread[i].MediaIndexes = append([]int(nil), out.Thread[i].MediaIndexes...)
 		}
 	}
 	if imported.Origin != nil {
 		if out.Origin == nil {
 			o := *imported.Origin
+			o.Links = append([]ItemLink(nil), o.Links...)
 			if o.Card != nil {
 				oc := *o.Card
 				o.Card = &oc
@@ -310,6 +318,9 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 			}
 			if out.Origin.Text == "" {
 				out.Origin.Text = imported.Origin.Text
+			}
+			if len(out.Origin.Links) == 0 && len(imported.Origin.Links) > 0 {
+				out.Origin.Links = append([]ItemLink(nil), imported.Origin.Links...)
 			}
 			if out.Origin.UnavailableReason == "" {
 				out.Origin.UnavailableReason = imported.Origin.UnavailableReason

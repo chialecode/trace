@@ -154,6 +154,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		originUID, originName, originFace           string
 		originPubTs                                 int64
 		originText, originVideoTitle                string
+		originLinks                                 []site.TextLink
 		originUnavailable                           bool
 		originUnavailableReason                     string
 		originCard                                  *site.RichCardSummary
@@ -172,6 +173,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 			originText = rt.TextRaw
 		}
 		originText = scrubSignedURLTokensInText(originText)
+		originLinks = sanitizeSnapshotLinks(rt.Links)
 		if rt.Video != nil {
 			originVideoTitle = strings.TrimSpace(rt.Video.Title)
 		}
@@ -185,6 +187,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		originVideoTitle = strings.TrimSpace(video.Title)
 	}
 	outerCard := toRichCardSummary(post.Card)
+	outerLinks := sanitizeSnapshotLinks(post.Links)
 
 	// Single standalone video post -> Kind "single_mp4" (still uses itemKey "weibo:dynamic:<mid>" per §13.1 #3!).
 	if len(images) == 0 && video != nil && video.Selected != nil {
@@ -205,6 +208,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 			AuthorFace:              post.Author.AvatarURL,
 			Title:                   title,
 			Desc:                    desc,
+			Links:                   outerLinks,
 			PubTs:                   post.CreatedAt,
 			DurationSec:             video.DurationSec,
 			VideoCodec:              sel.Codec,
@@ -224,6 +228,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 			OriginAuthorFace:        originFace,
 			OriginPubTs:             originPubTs,
 			OriginText:              originText,
+			OriginLinks:             originLinks,
 			OriginVideoTitle:        originVideoTitle,
 			OriginUnavailable:       originUnavailable,
 			OriginUnavailableReason: originUnavailableReason,
@@ -307,6 +312,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		AuthorFace:              post.Author.AvatarURL,
 		Title:                   title,
 		Desc:                    desc,
+		Links:                   outerLinks,
 		PubTs:                   post.CreatedAt,
 		IsForward:               post.IsRetweet,
 		IsFastRetweet:           post.IsFastRetweet,
@@ -318,6 +324,7 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		OriginAuthorFace:        originFace,
 		OriginPubTs:             originPubTs,
 		OriginText:              originText,
+		OriginLinks:             originLinks,
 		OriginVideoTitle:        originVideoTitle,
 		OriginUnavailable:       originUnavailable,
 		OriginUnavailableReason: originUnavailableReason,
@@ -517,6 +524,7 @@ type postSnapshot struct {
 	Images            []ImageAsset    `json:"images,omitempty"`
 	Video             *VideoAsset     `json:"video,omitempty"`
 	Card              *RichCard       `json:"card,omitempty"`
+	Links             []site.TextLink `json:"links,omitempty"`
 	URLMappings       []URLStructItem `json:"urlMappings,omitempty"`
 	CanonicalURL      string          `json:"canonicalUrl"`
 	Unavailable       bool            `json:"unavailable,omitempty"`
@@ -600,6 +608,7 @@ func buildPostSnapshot(p *Post) *postSnapshot {
 		Images:            images,
 		Video:             video,
 		Card:              card,
+		Links:             sanitizeSnapshotLinks(p.Links),
 		URLMappings:       mappings,
 		CanonicalURL:      SafePublicWebURL(p.CanonicalURL),
 		Unavailable:       p.Unavailable,

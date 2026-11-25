@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -100,16 +103,17 @@ func (m *Manager) runRecordingSession(ctx context.Context, sess *recordSession, 
 				sess.lastSequenceAt = time.Time{}
 			}
 			m.mu.Unlock()
+			orderedURLs := m.orderSessionURLs(sess, selection.URLs)
 			if nextTransport == string(site.LiveTransportHTTPFLV) {
 				m.beginSessionPart(sess, sess.nextPart, partPath, nextTransport)
-				return m.recordBilibiliFLVPart(ctx, sess, selection.URLs, flvConn, partPath)
+				return m.recordBilibiliFLVPart(ctx, sess, orderedURLs, flvConn, partPath)
 			}
 			if *flvConn != nil {
 				_ = (*flvConn).Close()
 				*flvConn = nil
 			}
 			m.beginSessionPart(sess, sess.nextPart, partPath, nextTransport)
-			return m.recordHLSSegment(ctx, sess, selection.URLs, partPath, true)
+			return m.recordHLSSegment(ctx, sess, orderedURLs, partPath, true)
 		},
 		reportStopError: func(ctx context.Context, err error, reason string) {
 			if m.client != nil {
@@ -194,6 +198,10 @@ func (m *Manager) runSessionLoop(ctx context.Context, sess *recordSession, drive
 		m.setSessionStop(sess, reason, err)
 	}
 
+	initPM := driver.currentMeta()
+	m.logEvent("INFO", "live record start: site=%s room=%s transport=%s codec=%s qn=%d",
+		liveLogSite(sess), liveLogRoom(sess), firstNonEmpty(sess.streamTransport, "-"), firstNonEmpty(initPM.codec, "-"), initPM.quality)
+
 	const maxConsecutiveTransientHLSSchemaRetries = 2
 	hasRecordedMedia := len(sess.segments) > 0
 	consecutiveTransientSchema := 0
@@ -260,17 +268,39 @@ func (m *Manager) runSessionLoop(ctx context.Context, sess *recordSession, drive
 		m.mu.Unlock()
 
 		n, recordErr := driver.recordPart(ctx, &flvConn, path)
+		partEndAt := m.now()
 		m.endSessionPart(sess)
 		if !errors.Is(recordErr, errSegmentRollover) && flvConn != nil {
 			_ = flvConn.Close()
 			flvConn = nil
 		}
 
+		m.mu.Lock()
+		actualCodec := firstNonEmpty(sess.codec, pm.codec)
+		wroteMedia := sess.wroteMedia
+		stoppedNow := sess.stopReason != ""
+		maxLoss := m.maxStreamLossDur
+		m.mu.Unlock()
+
+		nextHasRecordedMedia := hasRecordedMedia || (n > 0 && wroteMedia)
+		nextConsecTransient := consecutiveTransientSchema
+		nextLostAt := lostAt
+		if n > 0 && wroteMedia {
+			nextLostAt = time.Time{}
+			nextConsecTransient = 0
+		}
+		willContinue := ctx.Err() == nil && !stoppedNow
+		if willContinue && recordErr != nil && !errors.Is(recordErr, errSegmentRollover) {
+			if reason := liveStopReason(recordErr); reason != "" {
+				if !(isTransientHLSSchemaError(recordErr) && nextHasRecordedMedia && nextConsecTransient < maxConsecutiveTransientHLSSchemaRetries) {
+					willContinue = false
+				}
+			} else if !nextLostAt.IsZero() && maxLoss > 0 && partEndAt.Sub(nextLostAt) >= maxLoss {
+				willContinue = false
+			}
+		}
+
 		if n > 0 {
-			m.mu.Lock()
-			actualCodec := firstNonEmpty(sess.codec, pm.codec)
-			wroteMedia := sess.wroteMedia
-			m.mu.Unlock()
 			job := partJob{
 				path:        path,
 				partRel:     partRel,
@@ -279,7 +309,9 @@ func (m *Manager) runSessionLoop(ctx context.Context, sess *recordSession, drive
 				quality:     pm.quality,
 				qualityName: pm.qualityName,
 			}
-			if errors.Is(recordErr, errSegmentRollover) && ctx.Err() == nil {
+			if willContinue {
+				// Convert in the background across both rollovers and disconnects so
+				// a multi-GB conversion never stalls reconnect or playlist polling.
 				m.finishPartAsync(sess, job)
 			} else {
 				sess.waitPartsFinished()
@@ -342,22 +374,26 @@ func (m *Manager) runSessionLoop(ctx context.Context, sess *recordSession, drive
 			}
 			m.mu.Lock()
 			sess.lastErr = sanitizeLiveError(recordErr)
-			maxLoss := m.maxStreamLossDur
+			maxLoss = m.maxStreamLossDur
 			m.mu.Unlock()
-			now := m.now()
 			if lostAt.IsZero() {
-				lostAt = now
+				lostAt = partEndAt
 			}
-			if maxLoss > 0 && now.Sub(lostAt) >= maxLoss {
+			if maxLoss > 0 && partEndAt.Sub(lostAt) >= maxLoss {
 				m.setSessionStop(sess, "stream_timeout", recordErr)
 				break
 			}
+			m.logEvent("WARN", "live disconnect: site=%s room=%s part=%s kind=%s err=%s",
+				liveLogSite(sess), liveLogRoom(sess), pending, firstNonEmpty(site.KindOf(recordErr), "network"), sanitizeLiveError(recordErr))
+		} else {
+			m.logEvent("INFO", "live disconnect: site=%s room=%s part=%s kind=eof",
+				liveLogSite(sess), liveLogRoom(sess), pending)
 		}
 
 		// Inner reconnect loop: keep retrying wait + status check + stream
 		// re-selection until a fresh valid stream is acquired or the session stops,
 		// so transient errors never reuse an expired URL or zeroed selection.
-		m.markSessionDisconnected(sess, m.now())
+		m.markSessionDisconnected(sess, partEndAt)
 		if !m.reconnectSessionLoop(ctx, sess, driver, &lostAt) {
 			break
 		}
@@ -402,11 +438,38 @@ func (m *Manager) runSessionLoop(ctx context.Context, sess *recordSession, drive
 		driver.saveStateLocked(state)
 		m.mu.Unlock()
 	}
+	stopLevel := "INFO"
+	if state.StopReason != "ended" && state.StopReason != "user_stop" && state.StopReason != "app_closed" {
+		stopLevel = "WARN"
+	}
+	m.logEvent(stopLevel, "live record stop: site=%s room=%s reason=%s parts=%d bytes=%d",
+		liveLogSite(sess), liveLogRoom(sess), state.StopReason, state.RecordSegments, state.RecordBytes)
 	if m.onState != nil {
 		leave := sess.enterExternal()
 		m.onState(state)
 		leave()
 	}
+}
+
+func reconnectBackoffDelay(attempt int, maxWait time.Duration) time.Duration {
+	if maxWait <= 0 {
+		return 0
+	}
+	var step time.Duration
+	switch attempt {
+	case 0:
+		step = 500 * time.Millisecond
+	case 1:
+		step = 2 * time.Second
+	case 2:
+		step = 4 * time.Second
+	default:
+		step = maxWait
+	}
+	if step > maxWait {
+		return maxWait
+	}
+	return step
 }
 
 func (m *Manager) reconnectSessionLoop(
@@ -415,15 +478,18 @@ func (m *Manager) reconnectSessionLoop(
 	driver sessionDriver,
 	lostAt *time.Time,
 ) bool {
+	attempt := 0
 	for {
 		m.mu.Lock()
-		wait := m.reconnectWait
+		maxWait := m.reconnectWait
 		maxLoss := m.maxStreamLossDur
 		stopped := sess.stopReason != ""
 		m.mu.Unlock()
 		if stopped || ctx.Err() != nil {
 			return false
 		}
+		wait := reconnectBackoffDelay(attempt, maxWait)
+		attempt++
 		if wait > 0 {
 			timer := time.NewTimer(wait)
 			select {
@@ -440,6 +506,8 @@ func (m *Manager) reconnectSessionLoop(
 		outcome, err := driver.reconnect(ctx)
 		switch outcome {
 		case reconnectOK:
+			m.logEvent("INFO", "live reconnect ok: site=%s room=%s attempts=%d",
+				liveLogSite(sess), liveLogRoom(sess), attempt)
 			return true
 		case reconnectEnded:
 			m.setSessionStop(sess, "ended", nil)
@@ -536,14 +604,123 @@ func sanitizeLiveError(err error) string {
 	return "直播请求失败"
 }
 
+func (m *Manager) noteSessionFailedHost(sess *recordSession, rawURL string) {
+	if sess == nil {
+		return
+	}
+	host := liveLogHost(rawURL)
+	if host == "" || host == "-" {
+		return
+	}
+	m.mu.Lock()
+	if sess.failedHosts == nil {
+		sess.failedHosts = make(map[string]time.Time)
+	}
+	sess.failedHosts[host] = m.nowLocked()
+	m.mu.Unlock()
+}
+
+// orderSessionURLs deprioritizes CDN hosts that recently failed in this session
+// without changing the initial API order when no host has failed.
+func (m *Manager) orderSessionURLs(sess *recordSession, urls []string) []string {
+	if len(urls) <= 1 || sess == nil {
+		return urls
+	}
+	m.mu.Lock()
+	if len(sess.failedHosts) == 0 {
+		m.mu.Unlock()
+		return urls
+	}
+	now := m.nowLocked()
+	failedCopy := make(map[string]time.Time, len(sess.failedHosts))
+	for h, at := range sess.failedHosts {
+		if now.Sub(at) < failedHostTTL {
+			failedCopy[h] = at
+		} else {
+			delete(sess.failedHosts, h)
+		}
+	}
+	m.mu.Unlock()
+	if len(failedCopy) == 0 {
+		return urls
+	}
+
+	type entry struct {
+		url      string
+		failed   bool
+		failedAt time.Time
+	}
+	entries := make([]entry, len(urls))
+	for i, u := range urls {
+		h := liveLogHost(u)
+		at, bad := failedCopy[h]
+		entries[i] = entry{url: u, failed: bad, failedAt: at}
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].failed != entries[j].failed {
+			return !entries[i].failed
+		}
+		if entries[i].failed && !entries[i].failedAt.Equal(entries[j].failedAt) {
+			return entries[i].failedAt.Before(entries[j].failedAt)
+		}
+		return false
+	})
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = e.url
+	}
+	return out
+}
+
+func livePartNumber(rel string) (int, bool) {
+	base := filepath.Base(strings.TrimSpace(rel))
+	if !strings.HasPrefix(base, "part-") || !strings.HasSuffix(base, ".mp4") {
+		return 0, false
+	}
+	mid := base[len("part-") : len(base)-len(".mp4")]
+	if mid == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(mid)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 func mergeLiveMedia(files []library.MediaFile, added library.MediaFile) []library.MediaFile {
+	replaced := false
 	for i := range files {
 		if files[i].Path == added.Path {
 			files[i] = added
-			return files
+			replaced = true
+			break
 		}
 	}
-	return append(files, added)
+	if !replaced {
+		files = append(files, added)
+	}
+	var segIndices []int
+	var segEntries []library.MediaFile
+	for i, f := range files {
+		if f.Role == "live_segment" {
+			if _, ok := livePartNumber(f.Path); ok {
+				segIndices = append(segIndices, i)
+				segEntries = append(segEntries, f)
+			}
+		}
+	}
+	if len(segEntries) > 1 {
+		sort.SliceStable(segEntries, func(i, j int) bool {
+			ni, _ := livePartNumber(segEntries[i].Path)
+			nj, _ := livePartNumber(segEntries[j].Path)
+			return ni < nj
+		})
+		for k, idx := range segIndices {
+			files[idx] = segEntries[k]
+		}
+	}
+	return files
 }
 
 func removePending(values []string, value string) []string {
@@ -557,13 +734,52 @@ func removePending(values []string, value string) []string {
 }
 
 func mergeLiveSegment(segments []library.LiveSegmentInfo, added library.LiveSegmentInfo) []library.LiveSegmentInfo {
+	replaced := false
 	for i := range segments {
 		if segments[i].File == added.File {
 			segments[i] = added
-			return segments
+			replaced = true
+			break
 		}
 	}
-	return append(segments, added)
+	if !replaced {
+		segments = append(segments, added)
+	}
+	if len(segments) > 1 {
+		sort.SliceStable(segments, func(i, j int) bool {
+			ni, oki := livePartNumber(segments[i].File)
+			nj, okj := livePartNumber(segments[j].File)
+			if oki && okj {
+				return ni < nj
+			}
+			return oki && !okj
+		})
+	}
+	return segments
+}
+
+func mergeLiveSegmentPath(paths []string, added string) []string {
+	found := false
+	for _, p := range paths {
+		if p == added {
+			found = true
+			break
+		}
+	}
+	if !found {
+		paths = append(paths, added)
+	}
+	if len(paths) > 1 {
+		sort.SliceStable(paths, func(i, j int) bool {
+			ni, oki := livePartNumber(paths[i])
+			nj, okj := livePartNumber(paths[j])
+			if oki && okj {
+				return ni < nj
+			}
+			return oki && !okj
+		})
+	}
+	return paths
 }
 
 func addLiveMissing(meta *library.ItemMetadata, item, reason string) {

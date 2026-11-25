@@ -93,8 +93,11 @@ func TestGetPostLongTextInlinedAndFetchedAndURLStructRestore(t *testing.T) {
 	if longTextHits.Load() != 0 {
 		t.Fatalf("inlined longText triggered %d extra calls, want 0", longTextHits.Load())
 	}
-	if !p1.LongTextFetched || !strings.Contains(p1.Text, "合成主页 (https://weibo.com/u/1000000001)") {
+	if !p1.LongTextFetched || !strings.Contains(p1.Text, "合成主页") || strings.Contains(p1.Text, "https://weibo.com/u/1000000001") {
 		t.Fatalf("unexpected restored long text: %q", p1.Text)
+	}
+	if len(p1.Links) != 1 || p1.Links[0].Label != "合成主页" || p1.Links[0].URL != "https://weibo.com/u/1000000001" {
+		t.Fatalf("unexpected extracted links: %+v", p1.Links)
 	}
 	if p1.RuleType != RuleTypeWord || p1.Visible.Label != "公开" {
 		t.Fatalf("RuleType=%q Visible=%+v", p1.RuleType, p1.Visible)

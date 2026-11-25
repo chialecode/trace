@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/chialecode/trace/internal/download"
 	"github.com/chialecode/trace/internal/library"
@@ -57,6 +56,7 @@ type PostCardData struct {
 	TypeLabel         string
 	Title             string
 	Text              string
+	Links             []service.TextLinkDTO
 	URL               string
 	Pinned            bool
 	IsEdited          bool
@@ -481,40 +481,31 @@ func (a *App) renderMediaThumbWithBitmap(
 	return container
 }
 
-// renderExpandableText renders post or video body text with 6-line / 280-char truncation and an "展开 / 收起" toggle.
+// renderExpandableText renders post or video body text with clickable hyperlinks,
+// 6-line / 280-char truncation, and an "展开 / 收起" toggle.
 func (a *App) renderExpandableText(c *ui.Context, key string, text string) {
-	a.renderExpandableTextStyled(c, key, text, 15, ColorTextMain)
+	a.renderExpandableTextWithLinks(c, key, text, nil, 15, ColorTextMain, false)
 }
 
 func (a *App) renderExpandableTextStyled(c *ui.Context, key string, text string, fontSize float32, textColor ui.Color) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return
-	}
-	if a.ExpandedPosts == nil {
-		a.ExpandedPosts = make(map[string]bool)
-	}
-	lines := strings.Count(text, "\n") + 1
-	needsClamp := lines > 6 || utf8.RuneCountInString(text) > 280
-	expanded := a.ExpandedPosts[key]
+	a.renderExpandableTextWithLinks(c, key, text, nil, fontSize, textColor, false)
+}
 
-	ui.Column(c).FillWidth().Gap(4).Children(func() {
-		t := ui.Text(c, text).FontSize(fontSize).LineHeight(LineHeightBody).TextColor(textColor)
-		if needsClamp && !expanded {
-			t.MaxLines(6)
-		}
-		if needsClamp {
-			toggleText := "展开"
-			if expanded {
-				toggleText = "收起"
-			}
-			btn := ui.ButtonBase(c).Padding(2, 0).Children(func() {
-				ui.Text(c, toggleText).FontSize(13).FontWeight(600).TextColor(ColorInfoBlue).SingleLine()
-			})
-			if btn.Clicked() {
-				a.ExpandedPosts[key] = !expanded
-			}
-		}
+func (a *App) renderExpandableTextWithLinks(
+	c *ui.Context,
+	key string,
+	text string,
+	links []service.TextLinkDTO,
+	fontSize float32,
+	textColor ui.Color,
+	highlightHashtags bool,
+) {
+	a.renderRichText(c, text, links, richTextOptions{
+		ClampKey:          key,
+		FontSize:          fontSize,
+		LineHeight:        LineHeightBody,
+		TextColor:         textColor,
+		HighlightHashtags: highlightHashtags,
 	})
 }
 
@@ -817,15 +808,33 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 			})
 
 			// 2. Title & Body Text
-			if post.Title != "" && (post.Video == nil || post.Title != post.Video.Title) {
-				ui.Text(c, post.Title).FontSize(15).LineHeight(LineHeightCompact).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
-			}
-			if post.Text != "" && post.Text != post.Title {
-				if normalizeSiteIDUI(post.Site) == "douyin" {
-					a.renderRichHashtagText(c, post.Key, post.Text)
-				} else {
-					a.renderExpandableText(c, post.Key, post.Text)
+			isDouyinSite := normalizeSiteIDUI(post.Site) == "douyin"
+			titleText := post.Title
+			bodyText := post.Text
+			if titleText != "" && titleText == bodyText && post.Kind == "dynamic" {
+				if _, titleHasRich := parseRichTextParagraphs(titleText, post.Links, isDouyinSite); titleHasRich {
+					titleText = ""
 				}
+			}
+			if titleText != "" && (post.Video == nil || titleText != post.Video.Title) {
+				if bodyText == "" {
+					if _, titleHasRich := parseRichTextParagraphs(titleText, post.Links, isDouyinSite); titleHasRich {
+						a.renderRichText(c, titleText, post.Links, richTextOptions{
+							MaxLines:          2,
+							FontSize:          15,
+							LineHeight:        LineHeightCompact,
+							TextColor:         ColorTextMain,
+							HighlightHashtags: isDouyinSite,
+						})
+					} else {
+						ui.Text(c, titleText).FontSize(15).LineHeight(LineHeightCompact).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
+					}
+				} else {
+					ui.Text(c, titleText).FontSize(15).LineHeight(LineHeightCompact).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
+				}
+			}
+			if bodyText != "" && bodyText != titleText {
+				a.renderExpandableTextWithLinks(c, post.Key, bodyText, post.Links, 15, ColorTextMain, isDouyinSite)
 			}
 
 			if post.Degraded {
@@ -959,7 +968,7 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 						ui.Text(c, orig.Title).FontSize(13).LineHeight(LineHeightCompact).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
 					}
 					if orig.Text != "" && orig.Text != orig.Title {
-						a.renderExpandableTextStyled(c, post.Key+":orig", orig.Text, 14, ColorTextMain)
+						a.renderExpandableTextWithLinks(c, post.Key+":orig", orig.Text, orig.Links, 14, ColorTextMain, origSite == "douyin")
 					}
 					if len(orig.NotePages) > 0 {
 						a.renderNotePagesGrid(c, origItemKey, origSite, orig.NotePages, false)

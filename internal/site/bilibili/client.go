@@ -192,7 +192,10 @@ func NewClient(opts ClientOptions) *Client {
 	mediaTransport := &http.Transport{
 		Proxy:                 mediaGuard.Proxy,
 		DialContext:           mediaGuard.DialContext,
-		TLSHandshakeTimeout:   15 * time.Second,
+		MaxIdleConns:          64,
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       60 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 15 * time.Second,
 	}
 

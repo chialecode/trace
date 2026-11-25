@@ -119,3 +119,37 @@ func TestDiagnosticsUsesFullIndexCountAndReportsReadFailures(t *testing.T) {
 		t.Fatal("diagnostics reported a broken library index as healthy")
 	}
 }
+
+func TestLiveDiagnosticLogLinesStayReadableAndLeakFree(t *testing.T) {
+	b := &Backend{logPath: filepath.Join(t.TempDir(), "trace.log")}
+	samples := []string{
+		"live record start: site=bilibili room=10001 transport=hls_fmp4 codec=avc qn=10000 host=cn-edge.bilivideo.com",
+		"live disconnect: site=bilibili room=10001 part=part-001.mp4 reason=network bytes=1048576 err=EOF",
+		"live reconnected: site=bilibili room=10001 part=part-002.mp4 gap_sec=1.2",
+		"live hls segment_skip: site=bilibili room=10001 part=part-001.mp4 seq=42 status=404 host=cn-edge.bilivideo.com",
+		"live hls lost_segments: site=bilibili room=10001 part=part-001.mp4 dropped=2 from_seq=40 to_seq=43 est_sec=2.0 elapsed_sec=2.1 host=cn-edge.bilivideo.com",
+		"live hls rollover: site=bilibili room=10001 part=part-001.mp4 reason=seq_gap from_seq=40 to_seq=46",
+		"live part convert done: site=bilibili room=10001 part=part-001.mp4 bytes=2097152 dur_ms=1450",
+		"live slow_io: op=save_live_item site=bilibili room=10001 dur_ms=650",
+		"live record stop: site=bilibili room=10001 reason=ended parts=2 bytes=4194304",
+		"live recovery done: items=1 recovered=1 failed=0 interrupted=false dur_ms=820",
+	}
+	for _, msg := range samples {
+		b.writeLogLine("INFO", msg)
+	}
+	lines, err := b.RecentLogs(100)
+	if err != nil {
+		t.Fatalf("RecentLogs: %v", err)
+	}
+	if len(lines) != len(samples) {
+		t.Fatalf("got %d log lines, want %d", len(lines), len(samples))
+	}
+	for i, ln := range lines {
+		if strings.Contains(ln, "[REDACTED_LOG_LINE]") {
+			t.Fatalf("live log line %d was falsely redacted: %q (orig=%q)", i, ln, samples[i])
+		}
+		if !strings.Contains(ln, samples[i]) {
+			t.Fatalf("live log line %d missing expected message %q: got %q", i, samples[i], ln)
+		}
+	}
+}

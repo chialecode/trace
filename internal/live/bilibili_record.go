@@ -110,16 +110,33 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 	}
 	// Look up by the canonical key: "live:<room>:<since>" has two colons and
 	// would be taken as a full key without the site, never matching.
-	existing, exists, err := m.lib.GetItem(library.CanonicalItemKey("bilibili", "live", sessionID))
+	// Serialize GetItem -> SaveLiveItem -> session registration against async
+	// startup recovery committing parts for the same itemDir.
+	itemKey := library.CanonicalItemKey("bilibili", "live", sessionID)
+	var existing library.ItemMetadata
+	var exists bool
+	var unlockDir func()
+	itemDir, existing, exists, unlockDir, err = m.lockItemDirForItem(itemKey, itemDir)
 	if err != nil {
 		return st, err
 	}
+	dirUnlocked := false
+	releaseDir := func() {
+		if !dirUnlocked {
+			dirUnlocked = true
+			unlockDir()
+		}
+	}
+	defer releaseDir()
 	if exists {
 		meta = existing
 		if existing.ItemDir != "" {
 			itemDir = existing.ItemDir
 		}
 		meta.Status = "recording"
+	}
+	if hook := m.testBeforeStartSave; hook != nil {
+		hook(itemDir)
 	}
 	if err := os.MkdirAll(itemDir, 0o700); err != nil {
 		return st, err
@@ -146,7 +163,7 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 		meta.Live.Source = "auto"
 		st.Source = "auto"
 	}
-	savedMeta, err := m.lib.SaveItem(itemDir, meta)
+	savedMeta, err := m.lib.SaveLiveItem(itemDir, meta)
 	if err != nil {
 		return st, err
 	}
@@ -197,7 +214,7 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 	m.initSessionIncidents(sess)
 	for _, media := range savedMeta.Media {
 		if media.Role == "live_segment" {
-			sess.segments = append(sess.segments, media.Path)
+			sess.segments = mergeLiveSegmentPath(sess.segments, media.Path)
 			sess.bytesTotal += media.Bytes
 		}
 	}
@@ -231,6 +248,7 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 	m.states[st.RoomID] = st
 	m.wg.Add(1)
 	m.mu.Unlock()
+	releaseDir()
 
 	go m.runRecordingSession(recCtx, sess, playSel, codecOrder)
 
@@ -258,7 +276,7 @@ func (m *Manager) stopRecordingInternal(roomID int64, reason string, suppressAut
 	if ok && sess != nil && sess.stopReason == "" {
 		sess.stopReason = reason
 	}
-	timeout := m.finalizeTimeout
+	finCtx := m.finalizeCtxLocked()
 	m.mu.Unlock()
 	if !ok || sess == nil {
 		m.mu.Lock()
@@ -269,15 +287,10 @@ func (m *Manager) stopRecordingInternal(roomID int64, reason string, suppressAut
 		return st, nil
 	}
 
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
 	sess.cancel()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
 	select {
 	case <-sess.doneCh:
-	case <-timer.C:
+	case <-finCtx.Done():
 		m.mu.Lock()
 		state := m.states[roomID]
 		m.mu.Unlock()

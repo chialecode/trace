@@ -324,10 +324,20 @@ func TestBilibiliHLSRecordingPreviewSegmentRolloverAdvancesPartIndex(t *testing.
 		t.Fatalf("expected rollover to part-002.mp4.part, got %+v", pv2)
 	}
 
-	// Part 1 should already be finalized while Part 2 is actively recording!
+	// Part 1 converts asynchronously while Part 2 is actively recording.
 	finalPart1 := strings.TrimSuffix(part1Path, ".part")
-	if sum, err := download.InspectMP4File(finalPart1); err != nil || !sum.MoovBeforeMdat {
-		t.Fatalf("expected part-001.mp4 finalized during rollover: sum=%+v err=%v", sum, err)
+	var part1Sum download.MuxTrackSummary
+	var part1Err error
+	part1Deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(part1Deadline) {
+		part1Sum, part1Err = download.InspectMP4File(finalPart1)
+		if part1Err == nil && part1Sum.MoovBeforeMdat {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if part1Err != nil || !part1Sum.MoovBeforeMdat {
+		t.Fatalf("expected part-001.mp4 finalized during rollover: sum=%+v err=%v", part1Sum, part1Err)
 	}
 
 	_, _ = liveMgr.StopRecording(9002)

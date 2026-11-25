@@ -134,3 +134,92 @@ func TestGuardedMediaDialerBlocksPrivateXMediaHosts(t *testing.T) {
 		}
 	}
 }
+
+func TestGuardedMediaDialerCachesAllowedProxyDNSAndInvalidatesOnProxyChange(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	var lookups int
+	var resolveIP = "93.184.216.34"
+
+	g := NewGuardedMediaDialer(Bilibili, false, &net.Dialer{Timeout: 2 * time.Second}, "blocked")
+	g.nowFunc = func() time.Time { return now }
+	g.proxyFunc = func(*http.Request) (*url.URL, error) {
+		return url.Parse("http://127.0.0.1:7897")
+	}
+	g.resolver = func(_ context.Context, host string) ([]net.IPAddr, error) {
+		lookups++
+		return []net.IPAddr{{IP: net.ParseIP(resolveIP)}}, nil
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, "https://cn-edge.bilivideo.com/live/seg1.m4s", nil)
+	if _, err := g.Proxy(req); err != nil {
+		t.Fatalf("first Proxy() failed: %v", err)
+	}
+	if lookups != 1 {
+		t.Fatalf("lookups after first Proxy() = %d, want 1", lookups)
+	}
+
+	// Within 30s TTL: cache hit, no extra DNS lookup.
+	now = now.Add(15 * time.Second)
+	if _, err := g.Proxy(req); err != nil {
+		t.Fatalf("cached Proxy() failed: %v", err)
+	}
+	if lookups != 1 {
+		t.Fatalf("lookups within TTL = %d, want 1", lookups)
+	}
+
+	// After 30s TTL: cache expires and re-resolves.
+	now = now.Add(20 * time.Second)
+	if _, err := g.Proxy(req); err != nil {
+		t.Fatalf("post-TTL Proxy() failed: %v", err)
+	}
+	if lookups != 2 {
+		t.Fatalf("lookups after TTL = %d, want 2", lookups)
+	}
+
+	// Changing proxyGen invalidates the cache immediately even inside TTL.
+	proxyGen.Add(1)
+	if _, err := g.Proxy(req); err != nil {
+		t.Fatalf("post-proxyGen Proxy() failed: %v", err)
+	}
+	if lookups != 3 {
+		t.Fatalf("lookups after proxyGen bump = %d, want 3", lookups)
+	}
+
+	// Blocked hosts are never cached.
+	resolveIP = "10.0.0.8"
+	reqBlocked, _ := http.NewRequest(http.MethodGet, "https://blocked.bilivideo.com/live/seg1.m4s", nil)
+	for i := 1; i <= 2; i++ {
+		if _, err := g.Proxy(reqBlocked); !IsKind(err, ErrKindBlocked) {
+			t.Fatalf("blocked Proxy() call %d = %v, want blocked", i, err)
+		}
+	}
+	if lookups != 5 {
+		t.Fatalf("blocked host should never be cached: lookups = %d, want 5", lookups)
+	}
+}
+
+func TestGuardedMediaDialerCapsPerIPTimeoutOnMultiIPHosts(t *testing.T) {
+	// Verify that when a host resolves to multiple IPs and the first IP stalls,
+	// per-IP deadline capping leaves budget to dial subsequent IPs rather than
+	// consuming the entire context deadline on the first dead address.
+	g := NewGuardedMediaDialer(Bilibili, false, &net.Dialer{Timeout: 5 * time.Second}, "blocked")
+	g.proxyFunc = func(*http.Request) (*url.URL, error) { return nil, nil }
+	// Use two TEST-NET-1 addresses (192.0.2.x, public non-private in netip) so
+	// blockedAddress allows them while DialContext enforces per-IP splitting.
+	g.resolver = func(_ context.Context, _ string) ([]net.IPAddr, error) {
+		return []net.IPAddr{
+			{IP: net.ParseIP("192.0.2.1")},
+			{IP: net.ParseIP("192.0.2.2")},
+		}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := g.DialContext(ctx, "tcp", "multi-ip.example:443")
+	if err == nil {
+		t.Fatal("expected dial error against TEST-NET addresses")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("multi-IP dial took %v, expected bounded completion under context deadline", elapsed)
+	}
+}
