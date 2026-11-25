@@ -246,7 +246,7 @@ func (a *App) renderSubscriptionDetailView(c *ui.Context, sub *subscription.Subs
 	// Default "content" tab: strictly local index & manifest reads, zero site HTTP requests (DEC-051 ⑦).
 	a.ensureSubscriptionFeedLoaded(sub)
 	ui.Column(c).Grow(1).FillWidth().ClipX().Children(func() {
-		ui.Column(c).FillWidth().Padding(16, 16, 0, 16).ClipX().Children(func() {
+		ui.Column(c).FillWidth().Padding(10, 16, 0, 16).ClipX().Children(func() {
 			a.renderSubscriptionDetailHeader(c, sub)
 		})
 		a.renderSubscriptionContentTab(c, sub)
