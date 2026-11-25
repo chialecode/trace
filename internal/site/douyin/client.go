@@ -89,25 +89,26 @@ func (e Endpoints) withDefaults() Endpoints {
 
 // ClientOptions configures a Douyin Client.
 type ClientOptions struct {
-	CredStore        *credential.Store
-	Endpoints        Endpoints
-	UserAgent        string
-	WebID            string
-	Signer           sign.Signer
-	MinInterval      time.Duration
-	JitterMax        time.Duration
-	APITimeout       time.Duration
-	RedirectTimeout  time.Duration
-	MediaIdleTimeout time.Duration
-	MaxBodyBytes     int64
-	MaxImageBytes    int64
-	Transport        http.RoundTripper
-	WrapTransport    func(http.RoundTripper) http.RoundTripper
-	AllowLocalhost   bool
-	Now              func() time.Time
-	Sleep            func(ctx context.Context, d time.Duration) error
-	Entropy          io.Reader
-	PreferredCodec   func() string
+	CredStore                 *credential.Store
+	Endpoints                 Endpoints
+	UserAgent                 string
+	WebID                     string
+	Signer                    sign.Signer
+	MinInterval               time.Duration
+	JitterMax                 time.Duration
+	APITimeout                time.Duration
+	RedirectTimeout           time.Duration
+	MediaIdleTimeout          time.Duration
+	MaxBodyBytes              int64
+	MaxImageBytes             int64
+	Transport                 http.RoundTripper
+	WrapTransport             func(http.RoundTripper) http.RoundTripper
+	AllowLocalhost            bool
+	ImageCDNFallbackProviders []site.PublicImageCDNProvider
+	Now                       func() time.Time
+	Sleep                     func(ctx context.Context, d time.Duration) error
+	Entropy                   io.Reader
+	PreferredCodec            func() string
 }
 
 type liveWebRIDEntry struct {
@@ -119,18 +120,20 @@ type liveWebRIDEntry struct {
 // Outbound API requests are serialized (concurrency = 1) with 1000ms + 0..300ms jitter pacing,
 // 15s timeout, 4 MiB body limit, manual redirect handling, and strict Cookie/CDN separation.
 type Client struct {
-	cred             *credential.Store
-	endpoints        Endpoints
-	profile          BrowserProfile
-	webID            string
-	signer           sign.Signer
-	httpClient       *http.Client
-	redirectClient   *http.Client
-	mediaClient      *http.Client
-	mediaIdleTimeout time.Duration
-	maxBodyBytes     int64
-	maxImageBytes    int64
-	allowLocalhost   bool
+	cred                 *credential.Store
+	endpoints            Endpoints
+	profile              BrowserProfile
+	webID                string
+	signer               sign.Signer
+	httpClient           *http.Client
+	redirectClient       *http.Client
+	mediaClient          *http.Client
+	mediaIdleTimeout     time.Duration
+	maxBodyBytes         int64
+	maxImageBytes        int64
+	allowLocalhost       bool
+	cdnFallbackProviders []site.PublicImageCDNProvider
+	fallbackWrap         func(http.RoundTripper) http.RoundTripper
 
 	serialGate  chan struct{}
 	paceMu      sync.Mutex
@@ -265,24 +268,35 @@ func NewClient(opts ClientOptions) *Client {
 		return http.ErrUseLastResponse
 	}
 
+	var fallbackWrap func(http.RoundTripper) http.RoundTripper
+	if opts.Transport != nil {
+		fallbackWrap = func(_ http.RoundTripper) http.RoundTripper {
+			return mediaTransport
+		}
+	} else if opts.WrapTransport != nil {
+		fallbackWrap = opts.WrapTransport
+	}
+
 	c := &Client{
-		cred:             opts.CredStore,
-		endpoints:        opts.Endpoints.withDefaults(),
-		profile:          profile,
-		webID:            webID,
-		signer:           signer,
-		mediaIdleTimeout: mediaIdleTimeout,
-		maxBodyBytes:     maxBytes,
-		maxImageBytes:    maxImageBytes,
-		allowLocalhost:   opts.AllowLocalhost,
-		serialGate:       make(chan struct{}, 1),
-		minInterval:      minInterval,
-		jitterMax:        jitterMax,
-		nowFn:            nowFn,
-		sleepFn:          sleepFn,
-		entropy:          ent,
-		prefCodecFn:      opts.PreferredCodec,
-		webRIDByUser:     make(map[string]liveWebRIDEntry),
+		cred:                 opts.CredStore,
+		endpoints:            opts.Endpoints.withDefaults(),
+		profile:              profile,
+		webID:                webID,
+		signer:               signer,
+		mediaIdleTimeout:     mediaIdleTimeout,
+		maxBodyBytes:         maxBytes,
+		maxImageBytes:        maxImageBytes,
+		allowLocalhost:       opts.AllowLocalhost,
+		cdnFallbackProviders: append([]site.PublicImageCDNProvider(nil), opts.ImageCDNFallbackProviders...),
+		fallbackWrap:         fallbackWrap,
+		serialGate:           make(chan struct{}, 1),
+		minInterval:          minInterval,
+		jitterMax:            jitterMax,
+		nowFn:                nowFn,
+		sleepFn:              sleepFn,
+		entropy:              ent,
+		prefCodecFn:          opts.PreferredCodec,
+		webRIDByUser:         make(map[string]liveWebRIDEntry),
 	}
 	c.httpClient = &http.Client{
 		Transport:     apiTransport,
@@ -1481,12 +1495,18 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 	defer body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", &site.Error{
+		statusErr := &site.Error{
 			Site:       site.Douyin,
 			Kind:       site.ErrKindUnavailable,
 			HTTPStatus: resp.StatusCode,
 			Message:    fmt.Sprintf("抖音图片返回 HTTP %d", resp.StatusCode),
 		}
+		if site.ShouldAttemptImageCDNFallback(statusErr, false) {
+			if fbData, fbCT, ok := c.tryPublicImageCDNFallback(ctx, normalized, maxBytes); ok {
+				return fbData, fbCT, nil
+			}
+		}
+		return nil, "", statusErr
 	}
 
 	ct := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
@@ -1522,7 +1542,29 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 			Err:     err,
 		}
 	}
+	if site.LooksLikeExpiredPlaceholderImageBytes(data, normalized, 0, 0, false) {
+		if fbData, fbCT, ok := c.tryPublicImageCDNFallback(ctx, normalized, maxBytes); ok {
+			return fbData, fbCT, nil
+		}
+		return nil, "", &site.Error{
+			Site:    site.Douyin,
+			Kind:    site.ErrKindUnavailable,
+			Message: "抖音图片已在源站失效",
+		}
+	}
 	return data, ct, nil
+}
+
+func (c *Client) tryPublicImageCDNFallback(ctx context.Context, normalized string, maxBytes int64) ([]byte, string, bool) {
+	fbCfg := site.PublicImageCDNFallbackConfig{
+		Providers:       c.cdnFallbackProviders,
+		AllowLocalhost:  c.allowLocalhost,
+		WrapTransport:   c.fallbackWrap,
+		IdleReadTimeout: c.mediaIdleTimeout,
+		UserAgent:       c.profile.UserAgent,
+	}
+	raw, ct, _, ok := site.FetchPublicImageCDNFallback(ctx, fbCfg, normalized, maxBytes, 0, 0, false)
+	return raw, ct, ok
 }
 
 func upgradeDouyinHTTPS(raw string, allowLocalhost bool) string {

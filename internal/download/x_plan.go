@@ -911,6 +911,8 @@ func (m *Manager) executeXPostTask(
 		t.ErrorMessage = summarizeMissingReasons(missing)
 	}
 
+	mediaFiles, notePages = preserveValidPreviousImages(itemDir, previous, exists, mediaFiles, notePages)
+
 	meta := library.ItemMetadata{
 		Version:     1,
 		ID:          "dynamic:" + rawID,

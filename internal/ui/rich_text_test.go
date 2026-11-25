@@ -205,6 +205,10 @@ func TestClickableHyperlinksAcrossViewsAndCachedItems(t *testing.T) {
 	app.openExternalURL("javascript:alert(1)")
 	app.openExternalURL("file:///etc/passwd")
 	app.openExternalURL("https://user:pass@example.com/secret")
+	app.openExternalURL("http://:8080/path")
+	if _, ok := ValidateSafeJumpURL("http://:8080/path"); ok {
+		t.Fatal("ValidateSafeJumpURL must reject port-only host without hostname")
+	}
 	if got := len(desk.Actions()); got != beforeCount {
 		t.Fatalf("unsafe schemes reached Desktop! before=%d after=%d actions=%v", beforeCount, got, desk.Actions())
 	}

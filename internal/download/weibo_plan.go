@@ -687,12 +687,15 @@ func (m *Manager) executeWeiboPostTask(
 				}
 				return nil, nil
 			})
-			imgMedia, imgErr := m.cacheDouyinSniffedImage(ctx, t, itemDir, previous, exists, "image", prefix, page.ImageURLs, page.Width, page.Height, plan.Transport, refreshImg)
+			imgMedia, imgErr := m.cacheWeiboStillImageOpts(ctx, t, itemDir, previous, exists, "image", prefix, page.ImageURLs, page.Width, page.Height, true, plan.Transport, refreshImg)
 			if imgErr != nil {
 				if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
 					return imgErr
 				}
 				reason := fmt.Sprintf("第 %02d 张动图下载失败 (%s)", pageIdx, classifyDownloadError(imgErr))
+				if isWeiboPlaceholderError(imgErr) {
+					reason = fmt.Sprintf("第 %02d 张%s", pageIdx, WeiboImageUnavailableReason)
+				}
 				missing = append(missing, library.MissingRecord{Item: fmt.Sprintf("page_%02d", pageIdx), Reason: reason})
 				partialErrors = append(partialErrors, reason)
 				notePages = append(notePages, library.NotePageRecord{Index: pageIdx, Kind: "image", FromOrigin: page.FromOrigin, Width: page.Width, Height: page.Height})
@@ -922,6 +925,8 @@ func (m *Manager) executeWeiboPostTask(
 		t.ErrorMessage = summarizeMissingReasons(missing)
 	}
 
+	mediaFiles, notePages = preserveValidPreviousImages(itemDir, previous, exists, mediaFiles, notePages)
+
 	meta := library.ItemMetadata{
 		Version:     1,
 		ID:          itemKind + ":" + rawID,
@@ -974,29 +979,30 @@ func (m *Manager) cacheWeiboStillImage(
 	transport site.MediaTransportSpec,
 	refreshURLs func() ([]string, error),
 ) (*library.MediaFile, error) {
-	if exists {
-		for _, mf := range previous.Media {
-			if mf.Role == role && strings.HasPrefix(mf.Path, relStem+".") && m.mediaAlreadyCompleted(previous, mf) {
-				// Builds before the placeholder check saved Sina's HTTP-200
-				// "image deleted" GIF as if it were the picture. Never reuse
-				// it: drop the placeholder and try the source again.
-				if strings.EqualFold(filepath.Ext(mf.Path), ".gif") {
-					if full, rErr := library.ResolveItemPath(itemDir, mf.Path); rErr == nil {
-						firstURL := ""
-						if len(urls) > 0 {
-							firstURL = urls[0]
-						}
-						if looksLikeWeiboPlaceholderGIF(full, firstURL, width, height) {
-							_ = os.Remove(full)
-							continue
-						}
-					}
-				}
-				m.setFileProgress(t, role, mf.Path, "completed", mf.Bytes, mf.Bytes, 0)
-				cp := mf
-				return &cp, nil
-			}
-		}
+	return m.cacheWeiboStillImageOpts(ctx, t, itemDir, previous, exists, role, relStem, urls, width, height, false, transport, refreshURLs)
+}
+
+func (m *Manager) cacheWeiboStillImageOpts(
+	ctx context.Context,
+	t *Task,
+	itemDir string,
+	previous library.ItemMetadata,
+	exists bool,
+	role string,
+	relStem string,
+	urls []string,
+	width, height int,
+	isGIFSlot bool,
+	transport site.MediaTransportSpec,
+	refreshURLs func() ([]string, error),
+) (*library.MediaFile, error) {
+	firstURL := ""
+	if len(urls) > 0 {
+		firstURL = urls[0]
+	}
+	if kept, ok := m.findExistingValidImageSlot(t, itemDir, previous, exists, role, relStem, firstURL, width, height, isGIFSlot); ok {
+		m.setFileProgress(t, role, kept.Path, "completed", kept.Bytes, kept.Bytes, 0)
+		return kept, nil
 	}
 
 	tempRel := relStem + imgSuffix
@@ -1017,6 +1023,7 @@ func (m *Manager) cacheWeiboStillImage(
 
 	spec := m.transportRangeSpec(transport, role, false)
 	tried := make(map[string]bool)
+	var fallbackURLPool []string
 	sawPlaceholder := false
 	var lastErr error
 
@@ -1026,6 +1033,7 @@ func (m *Manager) cacheWeiboStillImage(
 			if cand == "" {
 				continue
 			}
+			fallbackURLPool = append(fallbackURLPool, cand)
 			if !allowAlreadyTriedExact && tried[cand] {
 				continue
 			}
@@ -1047,7 +1055,7 @@ func (m *Manager) cacheWeiboStillImage(
 				lastErr = dlErr
 				continue
 			}
-			if looksLikeWeiboPlaceholderGIF(tempFull, cand, width, height) {
+			if site.LooksLikeExpiredPlaceholderImageFile(tempFull, cand, width, height, isGIFSlot) {
 				_ = os.Remove(tempFull)
 				sawPlaceholder = true
 				lastErr = &weiboPlaceholderGIFError{}
@@ -1102,6 +1110,14 @@ func (m *Manager) cacheWeiboStillImage(
 					return nil, fatalErr
 				}
 			}
+		}
+	}
+	if !ok && site.ShouldAttemptImageCDNFallback(lastErr, sawPlaceholder) {
+		if len(fallbackURLPool) == 0 {
+			fallbackURLPool = initialCands
+		}
+		if fbN, fbSHA, fbExt, fbOK := m.tryPublicImageCDNFallbackToFile(ctx, fallbackURLPool, width, height, isGIFSlot, tempFull, transport.AllowLocalhost, transport.UserAgent); fbOK {
+			n, sha, ext, ok = fbN, fbSHA, fbExt, true
 		}
 	}
 	if !ok {

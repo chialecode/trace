@@ -55,7 +55,7 @@ func ValidateSafeJumpURL(rawURL string) (string, bool) {
 		}
 	}
 	u, err := url.ParseRequestURI(s)
-	if err != nil || u.Host == "" || u.User != nil {
+	if err != nil || u.Host == "" || strings.TrimSpace(u.Hostname()) == "" || u.User != nil {
 		return "", false
 	}
 	if !strings.EqualFold(u.Scheme, "https") && !strings.EqualFold(u.Scheme, "http") {
