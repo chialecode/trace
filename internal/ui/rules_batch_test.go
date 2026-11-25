@@ -435,3 +435,107 @@ func TestCapabilityTagBatchDialogsErrorRetentionAndDismissShortcuts(t *testing.T
 		t.Fatal("expected clicking backdrop to dismiss multi-tag batch dialog")
 	}
 }
+
+// DEC-038 ⑤ & Issue #101: Settings › 缓存标签 omits the top explanatory paragraph
+// and all 7 per-tag description subtitles while keeping the right-aligned
+// "批量设置标签…" button, all 7 tag names, subscription counts, and "管理订阅…"
+// actions functional across desktop and narrow widths.
+func TestSettingsCacheTagsOmitsExplanatorySubtitles(t *testing.T) {
+	app, _, cleanup := newTestUIApp(t)
+	defer cleanup()
+
+	_ = seedFiveSubscriptionsForTagBatch(t, app)
+
+	app.SettingsCategory = "rules"
+	app.Navigate(RouteSettings)
+
+	allTags := subscription.AllCapabilityTags()
+	if len(allTags) != 7 {
+		t.Fatalf("expected 7 capability tags, got %d", len(allTags))
+	}
+
+	forbiddenTop := []string{
+		"一个标签对应一项缓存能力",
+		"新增订阅默认没有任何标签",
+		"可在订阅详情单独开关",
+	}
+
+	wantCounts := map[string]int{
+		subscription.TagScheduledCheck: 4,
+		subscription.TagCacheVideo:     2,
+		subscription.TagCacheDraw:      0,
+		subscription.TagCacheWord:      0,
+		subscription.TagCacheForward:   0,
+		subscription.TagFullCache:      0,
+		subscription.TagAutoRecord:     2,
+	}
+
+	for _, width := range []int{1280, 720} {
+		tt := ui.NewTester(app.View, width, 860)
+		tt.Frame()
+
+		for _, phrase := range forbiddenTop {
+			if tt.HasText(phrase) {
+				t.Fatalf("width=%d: unexpected top explanatory subtitle %q in texts=%v", width, phrase, tt.Texts())
+			}
+		}
+
+		batchRect, ok := tt.Find("打开批量设置订阅标签")
+		if !ok || batchRect.W <= 0 || batchRect.H <= 0 || batchRect.X+batchRect.W > float32(width)+0.5 {
+			t.Fatalf("width=%d: top batch button not visible/in-bounds: ok=%v rect=%+v", width, ok, batchRect)
+		}
+		if !tt.HasText("批量设置标签…") {
+			t.Fatalf("width=%d: missing 批量设置标签… button text", width)
+		}
+
+		for _, tag := range allTags {
+			if tt.HasText(tag.Description) {
+				t.Fatalf("width=%d: tag %s description subtitle should not render on Settings › 缓存标签: %q", width, tag.ID, tag.Description)
+			}
+			rowRect, ok := tt.Find("缓存标签行：" + tag.ID)
+			if !ok || rowRect.W <= 0 || rowRect.H <= 0 || rowRect.X+rowRect.W > float32(width)+0.5 {
+				t.Fatalf("width=%d: tag row %s missing or out of bounds: ok=%v rect=%+v", width, tag.ID, ok, rowRect)
+			}
+			if !tt.HasText(tag.Name) {
+				t.Fatalf("width=%d: missing tag name %q", width, tag.Name)
+			}
+			countRect, ok := tt.Find("标签订阅数：" + tag.ID)
+			if !ok || countRect.W <= 0 || countRect.H <= 0 || countRect.Y < rowRect.Y-1 || countRect.Y+countRect.H > rowRect.Y+rowRect.H+1 {
+				t.Fatalf("width=%d: missing or misplaced count label for %s: ok=%v rect=%+v row=%+v", width, tag.ID, ok, countRect, rowRect)
+			}
+			if got := app.tagUseCount(tag.ID); got != wantCounts[tag.ID] {
+				t.Fatalf("width=%d: tag %s count=%d, want %d", width, tag.ID, got, wantCounts[tag.ID])
+			}
+			manageRect, ok := tt.Find("管理标签订阅：" + tag.ID)
+			if !ok || manageRect.W <= 0 || manageRect.H <= 0 || manageRect.X+manageRect.W > float32(width)+0.5 {
+				t.Fatalf("width=%d: manage button for %s missing or out of bounds: ok=%v rect=%+v", width, tag.ID, ok, manageRect)
+			}
+			diffRight := (batchRect.X + batchRect.W) - (manageRect.X + manageRect.W)
+			if diffRight < -2 || diffRight > 2 {
+				t.Fatalf("width=%d: top batch button right edge (%.1f) not aligned with %s manage button right edge (%.1f)",
+					width, batchRect.X+batchRect.W, tag.ID, manageRect.X+manageRect.W)
+			}
+		}
+
+		// Verify both interactive entry points still work cleanly.
+		if err := tt.Click("打开批量设置订阅标签"); err != nil {
+			t.Fatalf("width=%d: click batch button: %v", width, err)
+		}
+		tt.Frame()
+		if !app.MultiTagBatch.Open {
+			t.Fatalf("width=%d: expected multi-tag batch dialog to open", width)
+		}
+		app.closeMultiTagBatchDialog()
+		tt.Frame()
+
+		if err := tt.Click("管理标签订阅：" + subscription.TagCacheVideo); err != nil {
+			t.Fatalf("width=%d: click manage button: %v", width, err)
+		}
+		tt.Frame()
+		if !app.RuleBatch.Open || app.RuleBatch.TagID != subscription.TagCacheVideo {
+			t.Fatalf("width=%d: expected per-tag dialog for cache_video to open", width)
+		}
+		app.closeRuleBatchDialog()
+		tt.Frame()
+	}
+}

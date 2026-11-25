@@ -64,33 +64,24 @@ func (a *App) toggleSubscriptionTag(sub *subscription.Subscription, tagID string
 	a.refreshSubscriptions()
 }
 
-// renderCacheRulesSettings renders Settings → 缓存标签: a batch-set entry at
-// the top, followed by each capability tag's description, subscription count,
-// and per-tag "管理订阅…" dialog trigger.
+// renderCacheRulesSettings renders Settings → 缓存标签: a right-aligned batch-set
+// button at the top, followed by each capability tag's name, subscription count,
+// and per-tag "管理订阅…" dialog trigger (DEC-038 ⑤, DEC-070).
 func (a *App) renderCacheRulesSettings(c *ui.Context) {
 	tags := a.backend.ListCapabilityTags()
 	ui.Column(c).FillWidth().Gap(0).ClipX().Children(func() {
 		ui.Row(c).
 			FillWidth().
-			Padding(2, 0, 14, 0).
+			Padding(0, 0, 12, 0).
 			BorderWidth(0, 0, 1, 0).
 			BorderColor(ColorBorder).
 			AlignItems(ui.Center).
-			Justify(ui.SpaceBetween).
-			Gap(12).
+			Justify(ui.End).
 			ClipX().
 			Children(func() {
-				ui.Text(c, "一个标签对应一项缓存能力；新增订阅默认没有任何标签，可在订阅详情单独开关，也可在此按标签或跨订阅批量管理。").
-					FontSize(13).
-					LineHeight(LineHeightCompact).
-					TextColor(ColorTextMuted).
-					MaxLines(3).
-					Grow(1)
-				ui.Row(c).Shrink(0).Children(func() {
-					if AccentPillButton(c, "批量设置标签…", "打开批量设置订阅标签").Clicked() {
-						a.openMultiTagBatchDialog()
-					}
-				})
+				if AccentPillButton(c, "批量设置标签…", "打开批量设置订阅标签").Clicked() {
+					a.openMultiTagBatchDialog()
+				}
 			})
 
 		for _, item := range tags {
@@ -99,7 +90,7 @@ func (a *App) renderCacheRulesSettings(c *ui.Context) {
 			ui.Row(c).
 				Label("缓存标签行："+tag.ID).
 				FillWidth().
-				Padding(13, 0).
+				Padding(12, 0).
 				BorderWidth(0, 0, 1, 0).
 				BorderColor(ColorBorder).
 				AlignItems(ui.Center).
@@ -107,20 +98,13 @@ func (a *App) renderCacheRulesSettings(c *ui.Context) {
 				Gap(12).
 				ClipX().
 				Children(func() {
-					ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
-						ui.Row(c).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
-							ui.Text(c, tag.Name).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-							ui.Text(c, fmt.Sprintf("%d 个订阅", count)).
-								Label("标签订阅数：" + tag.ID).
-								FontSize(12).
-								TextColor(ColorTextMuted).
-								SingleLine()
-						})
-						ui.Text(c, tag.Description).
+					ui.Row(c).Grow(1).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
+						ui.Text(c, tag.Name).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+						ui.Text(c, fmt.Sprintf("%d 个订阅", count)).
+							Label("标签订阅数：" + tag.ID).
 							FontSize(12).
-							LineHeight(LineHeightCompact).
 							TextColor(ColorTextMuted).
-							MaxLines(2)
+							SingleLine()
 					})
 					ui.Row(c).Shrink(0).Children(func() {
 						if OutlinePillButton(c, "管理订阅…", "管理标签订阅："+tag.ID).Clicked() {
