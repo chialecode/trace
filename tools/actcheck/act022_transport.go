@@ -37,8 +37,11 @@ import (
 const (
 	act022ID                        = "act022"
 	act022Label                     = "ACT-022"
+	act023ID                        = "act023"
+	act023Label                     = "ACT-023"
 	act022MaxRuns                   = 1
 	act022MaxAPICalls               = 37
+	act023MaxAPICalls               = 35
 	act022MaxShortLinkHops          = 3
 	act022MaxShortLinkBytes   int64 = 192 << 10 // 3 hops * 64 KiB cap
 	act022MaxProbeCDNReqs           = 10
@@ -66,6 +69,20 @@ var act022APILimits = map[string]int{
 	"mine_likes":    1,
 	"formal_cache":  4,
 	"reserve":       3,
+}
+
+// act023APILimits matches the ACT-023 (Issue #19) authorization's quota breakdown exactly (sum == 35).
+var act023APILimits = map[string]int{
+	"login":         4,
+	"resolve_user":  2,
+	"user_timeline": 6,
+	"post_detail":   7,
+	"error_probe":   3,
+	"mine_follow":   4,
+	"mine_fav":      2,
+	"mine_likes":    1,
+	"formal_cache":  4,
+	"reserve":       2,
 }
 
 var act022ValidExpectTags = map[string]bool{
@@ -637,6 +654,8 @@ type act022APITelemetry struct {
 }
 
 type act022Checker struct {
+	actID          string
+	actLabel       string
 	gate           *sitecheck.Gate
 	apiLimits      map[string]int
 	shortLink      *mediaBudget
@@ -663,6 +682,20 @@ type act022Checker struct {
 	lastTelemetry  act022APITelemetry
 	redirects      []map[string]any
 	cookieOnCDNHit bool
+}
+
+func (c *act022Checker) checkerActID() string {
+	if c.actID != "" {
+		return c.actID
+	}
+	return act022ID
+}
+
+func (c *act022Checker) checkerActLabel() string {
+	if c.actLabel != "" {
+		return c.actLabel
+	}
+	return act022Label
 }
 
 func (c *act022Checker) setPhase(phase string) {
@@ -840,21 +873,23 @@ func (c *act022Checker) wrap(base http.RoundTripper) http.RoundTripper {
 		base = http.DefaultTransport
 	}
 	return roundTrip(func(r *http.Request) (*http.Response, error) {
+		actID := c.checkerActID()
+		actLabel := c.checkerActLabel()
 		if reason := c.stopReason(); reason != "" {
-			return nil, fmt.Errorf("act022 halted (%s)", reason)
+			return nil, fmt.Errorf("%s halted (%s)", actID, reason)
 		}
 
 		kind, cat, safePath := c.classify(r)
 		switch kind {
 		case act022KindUnlisted:
-			return nil, fmt.Errorf("%w: endpoint or method outside ACT-022 authorization", sitecheck.ErrQuotaExceeded)
+			return nil, fmt.Errorf("%w: endpoint or method outside %s authorization", sitecheck.ErrQuotaExceeded, actLabel)
 
 		case act022KindShortLink:
 			if r.Header.Get("Cookie") != "" {
 				c.mu.Lock()
 				c.cookieOnCDNHit = true
 				c.mu.Unlock()
-				return nil, errors.New("act022: refusing to send Cookie on t.cn short-link probe")
+				return nil, fmt.Errorf("%s: refusing to send Cookie on t.cn short-link probe", actID)
 			}
 			if err := c.shortLink.acquire(); err != nil {
 				return nil, err
@@ -873,7 +908,7 @@ func (c *act022Checker) wrap(base http.RoundTripper) http.RoundTripper {
 				c.mu.Lock()
 				c.cookieOnCDNHit = true
 				c.mu.Unlock()
-				return nil, errors.New("act022: refusing to send Cookie to probe CDN")
+				return nil, fmt.Errorf("%s: refusing to send Cookie to probe CDN", actID)
 			}
 			if c.probeCDN.bytes.Load() >= c.probeCDN.maxBytes {
 				return nil, fmt.Errorf("%w: probe CDN bytes exhausted (%d)", sitecheck.ErrQuotaExceeded, c.probeCDN.maxBytes)
@@ -887,7 +922,7 @@ func (c *act022Checker) wrap(base http.RoundTripper) http.RoundTripper {
 				c.mu.Lock()
 				c.cookieOnCDNHit = true
 				c.mu.Unlock()
-				return nil, errors.New("act022: refusing to send Cookie to formal-cache CDN")
+				return nil, fmt.Errorf("%s: refusing to send Cookie to formal-cache CDN", actID)
 			}
 			if c.cacheCDN.bytes.Load() >= c.cacheCDN.maxBytes {
 				return nil, fmt.Errorf("%w: formal-cache CDN bytes exhausted (%d)", sitecheck.ErrQuotaExceeded, c.cacheCDN.maxBytes)

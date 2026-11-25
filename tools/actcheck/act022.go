@@ -42,8 +42,44 @@ type act022Receipt struct {
 	Notes             []string         `json:"notes,omitempty"`
 }
 
+type weiboActSpec struct {
+	id                   string
+	label                string
+	maxRuns              int
+	maxAPICalls          int
+	apiLimits            map[string]int
+	migratePreUsedLedger bool
+}
+
+var (
+	weiboAct022Spec = weiboActSpec{
+		id:                   act022ID,
+		label:                act022Label,
+		maxRuns:              act022MaxRuns,
+		maxAPICalls:          act022MaxAPICalls,
+		apiLimits:            act022APILimits,
+		migratePreUsedLedger: true,
+	}
+	weiboAct023Spec = weiboActSpec{
+		id:                   act023ID,
+		label:                act023Label,
+		maxRuns:              act022MaxRuns,
+		maxAPICalls:          act023MaxAPICalls,
+		apiLimits:            act023APILimits,
+		migratePreUsedLedger: false,
+	}
+)
+
 func runAct022Main(root, out string) {
-	rc, err := runAct022(context.Background(), act022Config{
+	runWeiboActMain(root, out, weiboAct022Spec)
+}
+
+func runAct023Main(root, out string) {
+	runWeiboActMain(root, out, weiboAct023Spec)
+}
+
+func runWeiboActMain(root, out string, spec weiboActSpec) {
+	rc, err := runWeiboAct(context.Background(), spec, act022Config{
 		RootDir: root,
 		OutPath: out,
 	})
@@ -52,17 +88,17 @@ func runAct022Main(root, out string) {
 	}
 	outDisp := out
 	if outDisp == "" {
-		outDisp = filepath.Join(root, "artifacts", "site-check", act022ID+".json")
+		outDisp = filepath.Join(root, "artifacts", "site-check", spec.id+".json")
 	}
 	fmt.Printf("%s passed=%v stoppedBy=%q api=%d/%d shortHops=%d probeCdn=%d/%dB cacheCdn=%d/%dB receipt=%s\n",
-		act022Label, rc.Passed, rc.StoppedBy, rc.APIUsage.APICalls, act022MaxAPICalls,
+		spec.label, rc.Passed, rc.StoppedBy, rc.APIUsage.APICalls, spec.maxAPICalls,
 		rc.ShortLinkHops.Requests, rc.ProbeCDN.Requests, rc.ProbeCDN.Bytes,
 		rc.CacheCDN.Requests, rc.CacheCDN.Bytes, outDisp)
 	for _, s := range rc.Steps {
 		fmt.Printf("  %-30s ok=%v skipped=%v %s %s\n", s.Name, s.OK, s.Skipped, s.ErrKind, s.Error)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s error: %v\n", act022Label, err)
+		fmt.Fprintf(os.Stderr, "%s error: %v\n", spec.label, err)
 		os.Exit(1)
 	}
 	if !rc.Passed {
@@ -71,6 +107,22 @@ func runAct022Main(root, out string) {
 }
 
 func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, error) {
+	return runWeiboAct(parentCtx, weiboAct022Spec, cfg)
+}
+
+func runAct023(parentCtx context.Context, cfg act022Config) (act022Receipt, error) {
+	return runWeiboAct(parentCtx, weiboAct023Spec, cfg)
+}
+
+func originalWeiboImageURL(im weibo.ImageAsset) string {
+	if len(im.FallbackURLs) > 0 && strings.TrimSpace(im.FallbackURLs[0]) != "" &&
+		strings.Contains(strings.ToLower(im.URL), "/oslarge/") {
+		return im.FallbackURLs[0]
+	}
+	return im.URL
+}
+
+func runWeiboAct(parentCtx context.Context, spec weiboActSpec, cfg act022Config) (act022Receipt, error) {
 	var rc act022Receipt
 	root := cfg.RootDir
 	if root == "" {
@@ -78,7 +130,7 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 	}
 	outPath := cfg.OutPath
 	if outPath == "" {
-		outPath = filepath.Join(root, "artifacts", "site-check", act022ID+".json")
+		outPath = filepath.Join(root, "artifacts", "site-check", spec.id+".json")
 	}
 	spacing := cfg.MinSpacing
 	if spacing == 0 {
@@ -102,16 +154,19 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 	redactor.addTargets(tg, parsedUsers, parsedPosts)
 
 	ledgerDir := filepath.Join(root, ".local", "site-check")
-	preUsedLogin, err := migrateAct022PreUsedLedger(ledgerDir)
-	if err != nil {
-		return rc, err
+	preUsedLogin := 0
+	if spec.migratePreUsedLedger {
+		preUsedLogin, err = migrateAct022PreUsedLedger(ledgerDir)
+		if err != nil {
+			return rc, err
+		}
 	}
 
 	gate, err := sitecheck.OpenGate(ledgerDir, sitecheck.Limits{
-		ActID:         act022ID,
-		MaxRuns:       act022MaxRuns,
-		MaxAPICalls:   act022MaxAPICalls,
-		MaxByCategory: act022APILimits,
+		ActID:         spec.id,
+		MaxRuns:       spec.maxRuns,
+		MaxAPICalls:   spec.maxAPICalls,
+		MaxByCategory: spec.apiLimits,
 	})
 	if err != nil {
 		return rc, err
@@ -121,8 +176,10 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 	}
 
 	ck := &act022Checker{
+		actID:          spec.id,
+		actLabel:       spec.label,
 		gate:           gate,
-		apiLimits:      act022APILimits,
+		apiLimits:      spec.apiLimits,
 		shortLink:      &mediaBudget{name: "short_link", maxRequests: act022MaxShortLinkHops, maxBytes: act022MaxShortLinkBytes},
 		probeCDN:       &mediaBudget{name: "probe_cdn", maxRequests: act022MaxProbeCDNReqs, maxBytes: act022MaxProbeCDNBytes},
 		cacheCDN:       &mediaBudget{name: "cache_cdn", maxRequests: act022MaxCacheCDNReqs, maxBytes: act022MaxCacheCDNBytes},
@@ -133,7 +190,7 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 		apiEnvelopes:   make(map[string][]act022APITelemetry),
 	}
 
-	workDir, err := os.MkdirTemp("", "trace-"+act022ID+"-")
+	workDir, err := os.MkdirTemp("", "trace-"+spec.id+"-")
 	if err != nil {
 		return rc, err
 	}
@@ -180,7 +237,12 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 	defer closeBackend()
 
 	// Wrap DownloadManager media clients so Step 9 formal cache CDN traffic is quota-gated & cookieless.
-	backend.DownloadManager().SetMediaTransportWrap(ck.wrap)
+	backend.DownloadManager().SetMediaTransportWrap(func(base http.RoundTripper) http.RoundTripper {
+		if cfg.Transport != nil {
+			base = cfg.Transport
+		}
+		return ck.wrap(base)
+	})
 
 	wbClient := backend.WeiboClient()
 	defaultMediaSpec := wbClient.MediaTransport()
@@ -204,7 +266,7 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 	}
 
 	rc = act022Receipt{
-		Act:               act022Label,
+		Act:               spec.label,
 		Commit:            resolveReceiptCommit(root),
 		StartedAt:         time.Now().UTC().Format(time.RFC3339),
 		PreUsedLoginCalls: preUsedLogin,
@@ -212,8 +274,8 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 		PathCounts:        ck.pathCounts,
 		StatusCounts:      ck.statuses,
 		Limits: map[string]any{
-			"api":              act022APILimits,
-			"apiTotal":         act022MaxAPICalls,
+			"api":              spec.apiLimits,
+			"apiTotal":         spec.maxAPICalls,
 			"shortLinkHops":    act022MaxShortLinkHops,
 			"probeCdnRequests": act022MaxProbeCDNReqs,
 			"probeCdnBytes":    act022MaxProbeCDNBytes,
@@ -616,7 +678,7 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 		var visSummaries []map[string]any
 		for idx, hy := range halfYearUsers {
 			if idx > 0 {
-				if gate.Usage().Categories["reserve"] >= act022APILimits["reserve"] {
+				if gate.Usage().Categories["reserve"] >= spec.apiLimits["reserve"] {
 					break
 				}
 				ck.setPhase("reserve")
@@ -712,7 +774,7 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 		defer ck.setPhase("")
 
 		remainingDetail := func() int {
-			return act022APILimits["post_detail"] - gate.Usage().Categories["post_detail"]
+			return spec.apiLimits["post_detail"] - gate.Usage().Categories["post_detail"]
 		}
 
 		// V-06: longText & longRetweet
@@ -780,6 +842,8 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 				if u, uErr := url.Parse(imgs[0].URL); uErr == nil {
 					v07["firstImageHostClass"] = hostClass(u.Hostname())
 				}
+				v07["defaultWatermarkRewriteApplied"] = len(imgs[0].FallbackURLs) > 0 &&
+					strings.Contains(strings.ToLower(imgs[0].URL), "/oslarge/")
 			}
 			v07["status"] = "verified"
 		} else {
@@ -904,7 +968,7 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 				usePhase := ""
 				if remainingDetail() > 0 {
 					usePhase = "post_detail"
-				} else if gate.Usage().Categories["reserve"] < act022APILimits["reserve"] {
+				} else if gate.Usage().Categories["reserve"] < spec.apiLimits["reserve"] {
 					usePhase = "reserve"
 				}
 				if usePhase != "" {
@@ -1059,6 +1123,7 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 	// Step 7: V-07 (watermark probe), V-11 (image CDN), V-12 (video Range + LivePhoto + mp4ff).
 	// Budget: probeCDN <= 10 requests, <= 60 MiB, 0 API calls, strictly NO Cookie!
 	// -------------------------------------------------------------------------
+	oslargeUnavailableInStep7 := false
 	runner.run("v07_v11_v12_media_cdn_probes", func(f map[string]any) error {
 		var sampleImgURL, sampleGIFURL, sampleLivePhotoURL string
 		var sampleVideoURL string
@@ -1069,7 +1134,7 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 			imgs, _ := over9Post.post.EffectiveMedia()
 			for _, im := range imgs {
 				if sampleImgURL == "" && im.Kind == weibo.MediaKindImage && im.URL != "" {
-					sampleImgURL = im.URL
+					sampleImgURL = originalWeiboImageURL(im)
 					break
 				}
 			}
@@ -1078,7 +1143,7 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 			imgs, _ := mixedPost.post.EffectiveMedia()
 			for _, im := range imgs {
 				if sampleImgURL == "" && im.Kind == weibo.MediaKindImage && im.URL != "" {
-					sampleImgURL = im.URL
+					sampleImgURL = originalWeiboImageURL(im)
 				}
 				if sampleGIFURL == "" && im.Kind == weibo.MediaKindGIF && im.URL != "" {
 					sampleGIFURL = im.URL
@@ -1141,14 +1206,38 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 					}
 					wFact["available"] = false
 					wFact["errKind"] = site.KindOf(wErr)
+					if variant == "oslarge" {
+						oslargeUnavailableInStep7 = true
+					}
 				} else {
 					if wFact == nil {
 						wFact = map[string]any{}
 					}
-					wFact["available"] = true
-					if origW, ok1 := imgFact["width"].(int); ok1 {
-						if newW, ok2 := wFact["width"].(int); ok2 && origW > 0 {
-							wFact["sameOrLargerWidth"] = newW >= origW
+					origMagic, _ := imgFact["magicFormat"].(string)
+					newMagic, _ := wFact["magicFormat"].(string)
+					placeholderGIF := origMagic != "" && origMagic != "gif" && newMagic == "gif"
+					if placeholderGIF {
+						wFact["placeholderGIFDetected"] = true
+						wFact["available"] = false
+						if variant == "oslarge" {
+							oslargeUnavailableInStep7 = true
+						}
+					} else {
+						wFact["available"] = true
+					}
+					origW, okW1 := imgFact["width"].(int)
+					origH, okH1 := imgFact["height"].(int)
+					newW, okW2 := wFact["width"].(int)
+					newH, okH2 := wFact["height"].(int)
+					if okW1 && okW2 && origW > 0 {
+						wFact["sameOrLargerWidth"] = newW >= origW
+						if okH1 && okH2 && origH > 0 {
+							wFact["sameResolution"] = newW == origW && newH == origH
+						}
+					}
+					if origB, okB1 := imgFact["bytes"].(int); okB1 {
+						if newB, okB2 := wFact["bytes"].(int); okB2 {
+							wFact["bytesDelta"] = newB - origB
 						}
 					}
 				}
@@ -1421,6 +1510,10 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 			reqs := 1 // cover / metadata headroom
 			for _, im := range imgs {
 				reqs++ // image/still
+				if oslargeUnavailableInStep7 && im.Kind != weibo.MediaKindGIF &&
+					len(im.FallbackURLs) > 0 && strings.Contains(strings.ToLower(im.URL), "/oslarge/") {
+					reqs++ // account for /oslarge/ -> FallbackURLs[0] retry
+				}
 				if im.Kind == weibo.MediaKindLivePhoto && im.MotionURL != "" {
 					reqs += 2 // possible /media/play redirect + motion clip
 				}
@@ -1470,7 +1563,9 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 			return download.Task{}, errors.New("formal cache task timed out after 3m")
 		}
 
-		step9 := map[string]any{}
+		step9 := map[string]any{
+			"weiboRemoveWatermarkDefault": backend.GetSettings().WeiboRemoveWatermark,
+		}
 
 		// 9a. Cache 1 video post (or standalone 1034: video) through production CacheService.
 		if videoTargetID != "" {
@@ -1658,9 +1753,9 @@ func runAct022(parentCtx context.Context, cfg act022Config) (act022Receipt, erro
 	}
 	if !rc.Passed {
 		if rc.StoppedBy != "" {
-			return rc, fmt.Errorf("%s stopped by %s", act022ID, rc.StoppedBy)
+			return rc, fmt.Errorf("%s stopped by %s", spec.id, rc.StoppedBy)
 		}
-		return rc, fmt.Errorf("%s completed with step failures", act022ID)
+		return rc, fmt.Errorf("%s completed with step failures", spec.id)
 	}
 	return rc, nil
 }

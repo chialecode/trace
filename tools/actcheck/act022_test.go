@@ -1147,3 +1147,263 @@ func TestAct022PreflightResilience(t *testing.T) {
 		}
 	})
 }
+
+func TestAct023LimitsAndIndependentLedger(t *testing.T) {
+	sum := 0
+	for _, v := range act023APILimits {
+		sum += v
+	}
+	if sum != act023MaxAPICalls || act023MaxAPICalls != 35 {
+		t.Fatalf("act023APILimits sum = %d, max = %d, want 35", sum, act023MaxAPICalls)
+	}
+
+	env := setupAct022MockEnv(t, 0, false)
+	// Seed an already-exhausted usage-act022.json; act023 MUST NOT read, migrate, or modify it.
+	act022LedgerPath := filepath.Join(env.rootDir, ".local", "site-check", "usage-act022.json")
+	origAct022Ledger := `{"actId":"act022","runs":1,"apiCalls":22,"categories":{"login":5}}`
+	if err := os.WriteFile(act022LedgerPath, []byte(origAct022Ledger), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(env.rootDir, "artifacts", "site-check", "act023.json")
+	rc, err := runAct023(context.Background(), act022Config{
+		RootDir:        env.rootDir,
+		OutPath:        outPath,
+		MinSpacing:     -1,
+		Endpoints:      env.endpoints,
+		AllowLocalhost: true,
+	})
+	if err != nil {
+		t.Fatalf("runAct023 failed: %v (stoppedBy=%q steps=%+v)", err, rc.StoppedBy, rc.Steps)
+	}
+	if rc.Act != act023Label || !rc.Passed || rc.StoppedBy != "" || !rc.TempDataDeleted || !rc.SecretScanClean {
+		t.Fatalf("unexpected ACT-023 receipt: act=%q passed=%v stoppedBy=%q tempDel=%v secretClean=%v",
+			rc.Act, rc.Passed, rc.StoppedBy, rc.TempDataDeleted, rc.SecretScanClean)
+	}
+	if rc.PreUsedLoginCalls != 0 {
+		t.Fatalf("PreUsedLoginCalls = %d, want 0", rc.PreUsedLoginCalls)
+	}
+	if rc.APIUsage.ActID != act023ID || rc.APIUsage.Runs != 1 || rc.APIUsage.APICalls > act023MaxAPICalls {
+		t.Fatalf("ACT-023 usage mismatch: %+v", rc.APIUsage)
+	}
+	if rc.APIUsage.Categories["login"] != 3 {
+		t.Fatalf("ACT-023 login calls = %d, want 3 (1 guest + 2 login)", rc.APIUsage.Categories["login"])
+	}
+	if env.cdnCookieLeaked.Load() || env.shortLinkCookied.Load() {
+		t.Fatalf("Cookie leaked to CDN (%v) or t.cn (%v)", env.cdnCookieLeaked.Load(), env.shortLinkCookied.Load())
+	}
+
+	// Verify usage-act022.json remained untouched and usage-act023.json was created independently.
+	gotAct022Ledger, err := os.ReadFile(act022LedgerPath)
+	if err != nil || string(gotAct022Ledger) != origAct022Ledger {
+		t.Fatalf("usage-act022.json was unexpectedly modified: err=%v content=%q", err, string(gotAct022Ledger))
+	}
+	act023LedgerPath := filepath.Join(env.rootDir, ".local", "site-check", "usage-act023.json")
+	if _, err := os.Stat(act023LedgerPath); err != nil {
+		t.Fatalf("usage-act023.json missing: %v", err)
+	}
+
+	// Second run on usage-act023.json MUST be rejected before any HTTP call.
+	hitsBefore := env.apiHits.Load()
+	if _, err := runAct023(context.Background(), act022Config{
+		RootDir:        env.rootDir,
+		OutPath:        outPath,
+		MinSpacing:     -1,
+		Endpoints:      env.endpoints,
+		AllowLocalhost: true,
+	}); !errors.Is(err, sitecheck.ErrQuotaExceeded) {
+		t.Fatalf("second runAct023 err = %v, want ErrQuotaExceeded", err)
+	}
+	if env.apiHits.Load() != hitsBefore {
+		t.Fatalf("second runAct023 sent %d API calls after MaxRuns exhausted", env.apiHits.Load()-hitsBefore)
+	}
+}
+
+func TestAct023DefaultWatermarkRewriteAndFallback(t *testing.T) {
+	pngData := buildSyntheticPNGBytes(t, 32, 24)
+	mblogOver9, _ := weibo.MidToMblogID(synthWeiboMidOver9)
+	mblogMixed, _ := weibo.MidToMblogID(synthWeiboMidMixed)
+
+	for _, tc := range []struct {
+		name             string
+		oslargeAvailable bool
+	}{
+		{name: "oslarge_404_falls_back_cleanly", oslargeAvailable: false},
+		{name: "oslarge_200_lossless_succeeds", oslargeAvailable: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupAct022MockEnv(t, 0, false)
+			var oslargeHits, largeHits atomic.Int64
+
+			// Return real https://wx1.sinaimg.cn/large/... image URLs so PR #95's default
+			// weiboRemoveWatermark=true rewrites static images to /oslarge/ with /large/ fallback.
+			env.hook = func(w http.ResponseWriter, r *http.Request) bool {
+				switch {
+				case strings.HasPrefix(r.URL.Path, "/cdn/oslarge/"):
+					env.cdnHits.Add(1)
+					oslargeHits.Add(1)
+					if r.Header.Get("Cookie") != "" {
+						env.cdnCookieLeaked.Store(true)
+					}
+					if !tc.oslargeAvailable {
+						http.NotFound(w, r)
+						return true
+					}
+					w.Header().Set("Content-Type", "image/png")
+					_, _ = w.Write(pngData)
+					return true
+				case strings.HasPrefix(r.URL.Path, "/cdn/large/"):
+					largeHits.Add(1)
+					return false
+				case r.URL.Path == "/ajax/statuses/show":
+					id := r.URL.Query().Get("id")
+					if id == mblogOver9 || id == synthWeiboMidOver9 {
+						env.apiHits.Add(1)
+						w.Header().Set("Content-Type", "application/json; charset=utf-8")
+						var ids []string
+						infos := make(map[string]any, 10)
+						for i := 1; i <= 10; i++ {
+							pid := fmt.Sprintf("pic%02d", i)
+							ids = append(ids, pid)
+							infos[pid] = map[string]any{
+								"pic_id": pid,
+								"type":   "pic",
+								"largest": map[string]any{
+									"url":    fmt.Sprintf("https://wx1.sinaimg.cn/large/%s.png", pid),
+									"width":  32,
+									"height": 24,
+								},
+							}
+						}
+						payload, _ := json.Marshal(map[string]any{
+							"ok":         1,
+							"idstr":      synthWeiboMidOver9,
+							"mid":        synthWeiboMidOver9,
+							"mblogid":    mblogOver9,
+							"created_at": "Sat Nov 21 12:10:00 +0800 2026",
+							"text_raw":   "超过九图去水印测试微博",
+							"user":       map[string]any{"idstr": synthWeiboActiveUID, "screen_name": synthWeiboActiveNick},
+							"pic_ids":    ids,
+							"pic_infos":  infos,
+						})
+						_, _ = w.Write(payload)
+						return true
+					}
+					if id == mblogMixed || id == synthWeiboMidMixed {
+						env.apiHits.Add(1)
+						w.Header().Set("Content-Type", "application/json; charset=utf-8")
+						payload, _ := json.Marshal(map[string]any{
+							"ok":         1,
+							"idstr":      synthWeiboMidMixed,
+							"mid":        synthWeiboMidMixed,
+							"mblogid":    mblogMixed,
+							"created_at": "Sat Nov 21 12:15:00 +0800 2026",
+							"text_raw":   "GIF 与实况去水印混排测试",
+							"user":       map[string]any{"idstr": synthWeiboActiveUID, "screen_name": synthWeiboActiveNick},
+							"pic_ids":    []string{"g1", "lp1"},
+							"pic_infos": map[string]any{
+								"g1": map[string]any{
+									"pic_id": "g1",
+									"type":   "gif",
+									"largest": map[string]any{
+										"url":    "https://wx1.sinaimg.cn/large/anim.gif",
+										"width":  4,
+										"height": 4,
+									},
+								},
+								"lp1": map[string]any{
+									"pic_id": "lp1",
+									"type":   "livephoto",
+									"video":  env.srv.URL + "/media/play?livephoto=" + url.QueryEscape(env.srv.URL+"/cdn/live.mov?"+synthWeiboSignedVideoQS),
+									"largest": map[string]any{
+										"url":    "https://wx1.sinaimg.cn/large/still.png",
+										"width":  32,
+										"height": 24,
+									},
+								},
+							},
+						})
+						_, _ = w.Write(payload)
+						return true
+					}
+				}
+				return false
+			}
+
+			srvURL, err := url.Parse(env.srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Route https://wx1.sinaimg.cn/<path> to the local httptest.Server /cdn/<path>.
+			rewritingRT := roundTrip(func(req *http.Request) (*http.Response, error) {
+				if strings.EqualFold(req.URL.Hostname(), "wx1.sinaimg.cn") {
+					cloned := req.Clone(req.Context())
+					cloned.URL.Scheme = srvURL.Scheme
+					cloned.URL.Host = srvURL.Host
+					cloned.Host = srvURL.Host
+					cloned.URL.Path = "/cdn" + req.URL.Path
+					return env.srv.Client().Transport.RoundTrip(cloned)
+				}
+				return env.srv.Client().Transport.RoundTrip(req)
+			})
+
+			outPath := filepath.Join(env.rootDir, "artifacts", "site-check", "act023-"+tc.name+".json")
+			rc, err := runAct023(context.Background(), act022Config{
+				RootDir:        env.rootDir,
+				OutPath:        outPath,
+				MinSpacing:     -1,
+				Endpoints:      env.endpoints,
+				Transport:      rewritingRT,
+				AllowLocalhost: true,
+			})
+			if err != nil {
+				t.Fatalf("runAct023 (%s) failed: %v (stoppedBy=%q steps=%+v)", tc.name, err, rc.StoppedBy, rc.Steps)
+			}
+			if !rc.Passed || rc.StoppedBy != "" || !rc.SecretScanClean || !rc.TempDataDeleted {
+				t.Fatalf("unexpected receipt (%s): passed=%v stoppedBy=%q secretClean=%v tempDel=%v",
+					tc.name, rc.Passed, rc.StoppedBy, rc.SecretScanClean, rc.TempDataDeleted)
+			}
+			if env.cdnCookieLeaked.Load() || env.shortLinkCookied.Load() {
+				t.Fatalf("Cookie leaked to CDN (%v) or t.cn (%v)", env.cdnCookieLeaked.Load(), env.shortLinkCookied.Load())
+			}
+			if rc.APIUsage.APICalls > act023MaxAPICalls {
+				t.Fatalf("apiCalls=%d exceeded %d", rc.APIUsage.APICalls, act023MaxAPICalls)
+			}
+
+			v07, _ := rc.Verifications["V-07"].(map[string]any)
+			if v07["defaultWatermarkRewriteApplied"] != true {
+				t.Fatalf("expected V-07 defaultWatermarkRewriteApplied=true, got %+v", v07)
+			}
+			wmProbes, _ := v07["watermarkFreeProbes"].(map[string]any)
+			osProbe, _ := wmProbes["oslarge"].(map[string]any)
+			if osProbe["available"] != tc.oslargeAvailable {
+				t.Fatalf("V-07 oslarge available = %v, want %v (probe=%+v)", osProbe["available"], tc.oslargeAvailable, osProbe)
+			}
+			osjProbe, _ := wmProbes["osj1080"].(map[string]any)
+			if osjProbe["available"] != true || osjProbe["sameResolution"] != true {
+				t.Fatalf("V-07 osj1080 probe = %+v, want available=true sameResolution=true", osjProbe)
+			}
+
+			v11, _ := rc.Verifications["V-11"].(map[string]any)
+			prim, _ := v11["primaryImage"].(map[string]any)
+			if prim["status"] != http.StatusOK {
+				t.Fatalf("V-11 primaryImage status = %v, want 200", prim["status"])
+			}
+
+			step9, _ := rc.Verifications["Step9"].(map[string]any)
+			if step9["weiboRemoveWatermarkDefault"] != true || step9["status"] != "verified" {
+				t.Fatalf("Step9 = %+v, want weiboRemoveWatermarkDefault=true status=verified", step9)
+			}
+			multi, _ := step9["multiImagePost"].(map[string]any)
+			if multi["taskStatus"] != "completed" || multi["missingCount"] != 0 {
+				t.Fatalf("Step9 multiImagePost = %+v, want completed with 0 missing", multi)
+			}
+			if oslargeHits.Load() < 2 {
+				t.Fatalf("expected /oslarge/ hits in both Step 7 and Step 9, got %d", oslargeHits.Load())
+			}
+			if !tc.oslargeAvailable && largeHits.Load() < 2 {
+				t.Fatalf("expected /large/ fallback hits when /oslarge/ returns 404, got %d", largeHits.Load())
+			}
+		})
+	}
+}
