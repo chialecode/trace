@@ -74,7 +74,7 @@ func (c *Client) ensureMetadataForRequest(ctx context.Context, candidate *candid
 	return meta, nil
 }
 
-func (c *Client) refreshMetadataForRequest(ctx context.Context, reason string, candidate *candidateCookieCarrier) (*FrontendMetadata, error) {
+func (c *Client) refreshMetadataForRequest(ctx context.Context, opName, reason string, candidate *candidateCookieCarrier) (*FrontendMetadata, error) {
 	if c.discovery == nil {
 		return nil, &site.Error{
 			Site:    SiteID,
@@ -88,7 +88,9 @@ func (c *Client) refreshMetadataForRequest(ctx context.Context, reason string, c
 	}
 	meta, err := c.discovery.Refresh(callCtx, reason)
 	if err != nil {
-		c.ReportAutomaticError(ctx, err)
+		if !IsOptionalOperation(opName) {
+			c.ReportAutomaticError(ctx, err)
+		}
 		return nil, err
 	}
 	return meta, nil
@@ -159,6 +161,7 @@ func (c *Client) doGraphQL(ctx context.Context, req graphqlRequest) (*graphqlRes
 	}
 
 	refreshedOnce := false
+	var missingNullFeatures []string
 	for {
 		spec, ok := meta.Operation(req.operation)
 		if !ok || spec.QueryID == "" {
@@ -178,6 +181,29 @@ func (c *Client) doGraphQL(ctx context.Context, req graphqlRequest) (*graphqlRes
 				c.ReportAutomaticError(ctx, se)
 				return nil, se
 			}
+		}
+		if len(missingNullFeatures) > 0 {
+			extraFeats := make(map[string]bool)
+			if spec.Features == nil {
+				spec.Features = make(map[string]bool, len(missingNullFeatures))
+			}
+			for _, flagKey := range missingNullFeatures {
+				if _, exists := spec.Features[flagKey]; exists {
+					continue
+				}
+				val, hasDefault := meta.FeatureDefault(flagKey)
+				if !hasDefault && flagKey == "graphql_timeline_v2_bookmark_timeline" {
+					val = true
+				}
+				spec.Features[flagKey] = val
+				extraFeats[flagKey] = val
+			}
+			if len(extraFeats) > 0 && c.discovery != nil {
+				if updated := c.discovery.MergeOperationFeatures(req.operation, extraFeats); updated != nil {
+					meta = updated
+				}
+			}
+			missingNullFeatures = nil
 		}
 		if meta.TxID == nil {
 			se := &site.Error{
@@ -229,7 +255,10 @@ func (c *Client) doGraphQL(ctx context.Context, req graphqlRequest) (*graphqlRes
 		// Drift signal: trigger cooled-down FrontendDiscovery.Refresh AT MOST ONCE and replay ONCE.
 		if reason, drift := shouldTriggerGraphQLRefresh(rawResp.statusCode, rawResp.body); drift {
 			if !refreshedOnce {
-				refreshedMeta, rErr := c.refreshMetadataForRequest(ctx, reason, req.candidate)
+				if reason == "features_cannot_be_null" {
+					missingNullFeatures = ExtractNullFeatureNames(rawResp.body)
+				}
+				refreshedMeta, rErr := c.refreshMetadataForRequest(ctx, req.operation, reason, req.candidate)
 				if rErr != nil {
 					// Preserve schema_changed (e.g. 10m cooldown) and stop X only.
 					return nil, rErr

@@ -529,6 +529,16 @@ func (b *Backend) mapWeiboAccountPostsPage(p *weibo.AccountPostsPage) AccountPag
 	if p == nil {
 		return AccountPage{}
 	}
+	keys := make([]string, 0, len(p.Posts))
+	for i := range p.Posts {
+		if p.Posts[i].Mid != "" {
+			keys = append(keys, weibo.PostItemKey(p.Posts[i].Mid))
+		}
+	}
+	var states map[string]library.DotState
+	if len(keys) > 0 {
+		states = b.States(keys)
+	}
 	out := AccountPage{
 		HasMore: p.HasMore,
 		Total:   p.Total,
@@ -536,7 +546,8 @@ func (b *Backend) mapWeiboAccountPostsPage(p *weibo.AccountPostsPage) AccountPag
 	}
 	for i := range p.Posts {
 		post := &p.Posts[i]
-		pv := mapWeiboPostView(post, nil, library.DotState{})
+		key := weibo.PostItemKey(post.Mid)
+		pv := mapWeiboPostView(post, nil, states[key])
 		openURL := firstNonEmpty(safeBrowserURL(post.CanonicalURL), "https://weibo.com/detail/"+post.Mid)
 		it := AccountItem{
 			Kind:       AccountItemPost,

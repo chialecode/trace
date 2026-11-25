@@ -96,7 +96,7 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 							ClipX().
 							Children(func() {
 								ui.Text(c, "粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-								ui.Text(c, "1. 在桌面浏览器打开 douyin.com 并登录账号\n2. 按 F12 打开开发者工具 → 网络 (Network)，刷新页面并点开任意请求\n3. 复制请求头 (Request Headers) 中的整段 Cookie 粘贴到下方").
+								ui.Text(c, "1. 在桌面浏览器打开 douyin.com 登录，进入「我的 → 喜欢」页面\n2. 按 F12 打开开发者工具 → 网络 (Network)，刷新页面并点开任意请求\n3. 复制请求头 (Request Headers) 中的整段完整 Cookie 粘贴到下方").
 									FontSize(12).TextColor(ColorTextMuted).MaxLines(5)
 
 								dyBusy := a.isPending("douyin-cookie-login")

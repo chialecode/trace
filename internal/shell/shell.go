@@ -95,21 +95,20 @@ type Shell struct {
 	stoleFocusDetail   string
 	updates            *update.Controller
 
-	// Serialized tray refresh worker state; trayRefresh and trayDispatchMain are replaceable in tests.
-	trayMu           sync.Mutex
-	trayRunning      bool
-	trayDirty        bool
-	trayStopped      bool
-	trayWg           sync.WaitGroup
-	trayRefresh      func()
-	trayDispatchMain func(func())
-	trayLastHasWork  bool
-	trayLastTooltip  string
-	trayHasState     bool
-	trayWantHasWork  bool
-	trayWantTooltip  string
-	trayWantDirty    bool
-	trayApplyQueued  bool
+	// Serialized tray refresh worker state; trayRefresh, trayDispatchMain, and confirmQuitDialog are replaceable in tests.
+	trayMu            sync.Mutex
+	trayRunning       bool
+	trayDirty         bool
+	trayStopped       bool
+	trayWg            sync.WaitGroup
+	trayRefresh       func()
+	trayDispatchMain  func(func())
+	confirmQuitDialog func(mygo.MessageOptions) (mygo.MessageResult, error)
+	trayLastTooltip   string
+	trayHasState      bool
+	trayWantTooltip   string
+	trayWantDirty     bool
+	trayApplyQueued   bool
 }
 
 // NewShell creates a new Shell instance for the given locations and backend.
@@ -569,9 +568,13 @@ func (s *Shell) RequestQuit(force bool) {
 		}
 		s.quitConfirmOpen = true
 		displayName := s.loc.DisplayName
+		ask := s.confirmQuitDialog
+		if ask == nil {
+			ask = mygo.Dialog.Message
+		}
 		s.mu.Unlock()
 		go func() {
-			res, err := mygo.Dialog.Message(mygo.MessageOptions{
+			res, err := ask(mygo.MessageOptions{
 				Type:          mygo.MessageWarning,
 				Title:         "确认退出 " + displayName,
 				Message:       "当前仍有正在运行的缓存任务或直播录制，确定要退出吗？",

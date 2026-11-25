@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -715,4 +716,129 @@ func TestWeiboMemorySeenMapsConcurrentAccessAndPostLogoutNoRepopulation(t *testi
 	if err == nil || site.KindOf(err) != site.ErrKindAuthRequired {
 		t.Fatalf("FollowingCreatorsPage with nil weiboCred err = %v, want ErrKindAuthRequired", err)
 	}
+}
+
+func TestWeiboFavoritesAccountPageMediaRetweetCacheStateAndPlanReuseGuard(t *testing.T) {
+	favSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"ok": 1,
+			"data": {
+				"total_number": 2,
+				"status": [
+					{
+						"id": 77001,
+						"status": {
+							"idstr": "5090000000000101",
+							"mblogid": "FavMedia1",
+							"text_raw": "SYNTH_FAV_MEDIA_OUTER_POST",
+							"user": {"idstr": "5100000011", "screen_name": "SYNTH_FAV_AUTHOR_A"},
+							"pic_ids": ["synfavpic1", "synfavpic2"],
+							"bmiddle_pic": "http://wx2.sinaimg.cn/bmiddle/synfavpic1.jpg"
+						}
+					},
+					{
+						"idstr": "5090000000000102",
+						"mblogid": "FavMedia2",
+						"text_raw": "SYNTH_FAV_RETWEET_COMMENT",
+						"user": {"idstr": "5100000012", "screen_name": "SYNTH_FAV_AUTHOR_B"},
+						"retweeted_status": {
+							"idstr": "5090000000000202",
+							"mblogid": "FavOrig02",
+							"text_raw": "SYNTH_FAV_RETWEET_ORIGIN_TEXT",
+							"user": {"idstr": "5100000022", "screen_name": "SYNTH_FAV_ORIGIN_AUTHOR"},
+							"pic_ids": ["synrtfav1"],
+							"page_info": {
+								"object_type": "video",
+								"object_id": "1034:5090000000000202",
+								"page_title": "SYNTH_FAV_ORIGIN_VIDEO_TITLE",
+								"page_pic": "http://wx3.sinaimg.cn/orj360/synrtvidcover.jpg",
+								"media_info": {"duration": 52}
+							}
+						}
+					}
+				]
+			}
+		}`))
+	}))
+	defer favSrv.Close()
+
+	h := newWeiboThreeSiteHarness(t, func(opts *Options) {
+		opts.WeiboOpts.Endpoints.AllFavorites = favSrv.URL + "/ajax/favorites/all_fav"
+	})
+	ctx := context.Background()
+	if _, err := h.backend.LoginWithCookie(ctx, "weibo", synthWeiboCookie(), ""); err != nil {
+		t.Fatalf("LoginWithCookie(weibo): %v", err)
+	}
+
+	// Pre-populate item 1 in LibraryStore to verify mapWeiboAccountPostsPage populates CacheState.Dot.
+	savedDir := filepath.Join(h.loc.DefaultCacheDir, "weibo", "5100000011_creator", "posts", "5090000000000101")
+	if err := os.MkdirAll(savedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.backend.LibraryStore().SaveItem(savedDir, library.ItemMetadata{
+		ID:     "5090000000000101",
+		Site:   "weibo",
+		Kind:   "dynamic",
+		Title:  "已归档条目",
+		Author: library.ItemAuthor{UID: "5100000011", Name: "本地作者"},
+		Status: "complete",
+	}); err != nil {
+		t.Fatalf("SaveItem: %v", err)
+	}
+
+	page, err := h.backend.AccountPage(ctx, "weibo", AccountFavorites, "", "")
+	if err != nil {
+		t.Fatalf("AccountPage(weibo, favorites): %v", err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("len(Items) = %d, want 2", len(page.Items))
+	}
+
+	// Item 1: wrapped status unwrapped, 2 synthesized /large/ images mapped to Post.Images + Cover, CacheState=green.
+	it1 := page.Items[0]
+	if it1.ID != "5090000000000101" || it1.Post == nil || len(it1.Post.Images) != 2 || it1.Post.CacheState.Dot != "green" {
+		t.Fatalf("unexpected it1: %+v post=%+v", it1, it1.Post)
+	}
+	if it1.Post.Images[0].ImageURL != "https://wx2.sinaimg.cn/large/synfavpic1.jpg" || it1.Cover != "https://wx2.sinaimg.cn/large/synfavpic1.jpg" {
+		t.Fatalf("it1 image/cover = (%q, %q)", it1.Post.Images[0].ImageURL, it1.Cover)
+	}
+
+	// Item 2: retweeted origin carries synthesized image AND abbreviated video cover/title/duration + OriginIncomplete=true.
+	it2 := page.Items[1]
+	if it2.Post == nil || !it2.Post.OriginIncomplete || it2.Post.Retweeted == nil {
+		t.Fatalf("unexpected it2 retweet: %+v", it2.Post)
+	}
+	rt := it2.Post.Retweeted
+	if len(rt.Images) != 1 || rt.Images[0].ImageURL != "https://wx1.sinaimg.cn/large/synrtfav1.jpg" {
+		t.Fatalf("unexpected rt.Images: %+v", rt.Images)
+	}
+	if rt.Video == nil || rt.Video.Title != "SYNTH_FAV_ORIGIN_VIDEO_TITLE" || rt.Video.CoverURL != "https://wx3.sinaimg.cn/large/synrtvidcover.jpg" || rt.Video.DurationSec != 52 {
+		t.Fatalf("unexpected rt.Video: %+v", rt.Video)
+	}
+
+	// Verify canReuseWeiboPostPlan rejects MediaIncomplete posts so download planning fetches statuses/show.
+	incompletePost := &weibo.Post{
+		Mid:             "5090000000000101",
+		Author:          weibo.AuthorSummary{UID: "5100000011"},
+		MediaIncomplete: true,
+		Images:          []weibo.ImageAsset{{Index: 1, PicID: "synfavpic1", Kind: weibo.MediaKindImage, URL: "https://wx2.sinaimg.cn/large/synfavpic1.jpg"}},
+	}
+	if canReuseWeiboPostPlan(incompletePost) {
+		t.Fatal("canReuseWeiboPostPlan accepted MediaIncomplete=true post")
+	}
+
+	// Privacy sentinel check: zero favorite post texts or screen names persisted to disk/logs.
+	assertNoSentinelsInTree(t, h.loc.DataDir, []string{
+		"SYNTH_FAV_MEDIA_OUTER_POST",
+		"SYNTH_FAV_AUTHOR_A",
+		"SYNTH_FAV_RETWEET_COMMENT",
+		"SYNTH_FAV_RETWEET_ORIGIN_TEXT",
+		"SYNTH_FAV_ORIGIN_AUTHOR",
+		"SYNTH_FAV_ORIGIN_VIDEO_TITLE",
+	})
+	assertNoSentinelsInTree(t, h.loc.LogsDir, []string{
+		"SYNTH_FAV_MEDIA_OUTER_POST",
+		"SYNTH_FAV_RETWEET_ORIGIN_TEXT",
+	})
 }

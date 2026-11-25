@@ -41,8 +41,9 @@ type Options struct {
 	// Badge adds the amber "DEV" badge in the lower right corner
 	// (development and test identities).
 	Badge bool
-	// Activity adds an amber dot in the upper right corner, ringed in the
-	// background color (the tray icon while caching or recording runs).
+	// Activity adds an optional amber dot in the upper right corner, ringed in
+	// the background color (tray icons keep Activity false so status is checked
+	// proactively inside the app).
 	Activity bool
 }
 

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/douyin/sign"
 )
@@ -134,11 +135,14 @@ func TestPOSTSignFormBodyFeedsABogusAndGETUnchanged(t *testing.T) {
 		t.Fatalf("second form body = %q", (*seen)[1].body)
 	}
 
-	// A GET account request carries no body and no form content type.
+	// A GET account request carries no body, no form content type, no Origin header, and Sec-Fetch-* headers.
 	_, _ = client.Favorites(context.Background(), selfSecUID, "")
 	g := (*seen)[2]
-	if g.method != http.MethodGet || g.body != "" || g.header.Get("Content-Type") != "" {
-		t.Fatalf("favorite request = %s body=%q ct=%q", g.method, g.body, g.header.Get("Content-Type"))
+	if g.method != http.MethodGet || g.body != "" || g.header.Get("Content-Type") != "" || g.header.Get("Origin") != "" {
+		t.Fatalf("favorite request = %s body=%q ct=%q origin=%q", g.method, g.body, g.header.Get("Content-Type"), g.header.Get("Origin"))
+	}
+	if g.header.Get("Sec-Fetch-Site") != "same-origin" || g.header.Get("Sec-Fetch-Mode") != "cors" || g.header.Get("Sec-Fetch-Dest") != "empty" {
+		t.Fatalf("favorite Sec-Fetch headers = %v", g.header)
 	}
 }
 
@@ -234,8 +238,130 @@ func TestFavoritesShellVersusEmpty(t *testing.T) {
 		t.Errorf("login lost err=%v", err)
 	}
 	q := (*seen)[0].query
-	if q.Get("sec_user_id") != selfSecUID || q.Get("max_cursor") != "0" || q.Get("count") != "18" || q.Get("a_bogus") == "" {
+	if q.Get("sec_user_id") != selfSecUID ||
+		q.Get("max_cursor") != "0" ||
+		q.Get("min_cursor") != "0" ||
+		q.Get("count") != "18" ||
+		q.Get("version_code") != "170400" ||
+		q.Get("version_name") != "17.4.0" ||
+		q.Get("update_version_code") != "170400" ||
+		q.Get("pc_libra_divert") != "Windows" ||
+		q.Get("publish_video_strategy_type") != "2" ||
+		q.Get("a_bogus") == "" {
 		t.Fatalf("favorite query = %s", (*seen)[0].raw)
+	}
+}
+
+func TestFavoritesSessionFallbackMSTokenCookieSyncAndExtendedCookies(t *testing.T) {
+	store := openTestDouyinCredStore(t, false)
+	if _, err := store.SaveDouyinManual(strings.Join([]string{
+		"sessionid=SYNTH_SESS_NO_MS_01",
+		"sid_ucp_v1=1.0.0-SYNTH_UCP_01",
+		"d_ticket=SYNTH_DTICKET_01",
+		"UIFIDTEMP=SYNTH_UIFIDTEMP_01",
+	}, "; ")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateDouyinProfile(credential.DouyinProfile{
+		UID:    "900000000099",
+		SecUID: selfSecUID,
+		Uname:  "无msToken种子",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var seen []capturedReq
+	client := NewClient(ClientOptions{
+		CredStore:   store,
+		MinInterval: -1,
+		Now:         func() time.Time { return time.UnixMilli(1763000000000) },
+		Entropy:     newDeterministicEntropy(0x7B),
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			seen = append(seen, capturedReq{
+				method: req.Method,
+				path:   req.URL.Path,
+				query:  req.URL.Query(),
+				raw:    req.URL.RawQuery,
+				header: req.Header.Clone(),
+			})
+			return jsonHTTPResponse(200, `{"status_code":0,"aweme_list":[],"has_more":0,"max_cursor":0}`, nil), nil
+		}),
+	})
+
+	ctx := context.Background()
+	if _, err := client.Favorites(ctx, selfSecUID, ""); err != nil {
+		t.Fatalf("Favorites page 1 failed: %v", err)
+	}
+	if _, err := client.Favorites(ctx, selfSecUID, "1699"); err != nil {
+		t.Fatalf("Favorites page 2 failed: %v", err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("seen requests = %d, want 2", len(seen))
+	}
+
+	ms1 := seen[0].query.Get("msToken")
+	ms2 := seen[1].query.Get("msToken")
+	if len(ms1) != 128 || strings.Contains(ms1, "+") || strings.Contains(seen[0].raw, "%2B") {
+		t.Fatalf("invalid fallback msToken %q (raw=%s)", ms1, seen[0].raw)
+	}
+	if ms1 != ms2 {
+		t.Fatalf("session fallback msToken changed across requests: %q != %q", ms1, ms2)
+	}
+	for i, r := range seen {
+		ck := r.header.Get("Cookie")
+		if !strings.Contains(ck, "msToken="+ms1) {
+			t.Fatalf("req[%d] Cookie missing synchronized msToken: %s", i, ck)
+		}
+		if !strings.Contains(ck, "sid_ucp_v1=1.0.0-SYNTH_UCP_01") || !strings.Contains(ck, "d_ticket=SYNTH_DTICKET_01") || !strings.Contains(ck, "UIFIDTEMP=SYNTH_UIFIDTEMP_01") {
+			t.Fatalf("req[%d] Cookie missing extended keys: %s", i, ck)
+		}
+		if r.header.Get("uifid") != "SYNTH_UIFIDTEMP_01" || r.header.Get("x-secsdk-web-signature") == "" {
+			t.Fatalf("req[%d] missing stage-2 signature from UIFIDTEMP: %v", i, r.header)
+		}
+		// Missing s_v_web_id must NOT be forged into fake verifyFp/fp.
+		if r.query.Has("verifyFp") || r.query.Has("fp") || strings.Contains(ck, "s_v_web_id=") {
+			t.Fatalf("req[%d] unexpectedly forged verifyFp/s_v_web_id: query=%s cookie=%s", i, r.raw, ck)
+		}
+		if r.header.Get("Origin") != "" || r.header.Get("Sec-Fetch-Site") != "same-origin" {
+			t.Fatalf("req[%d] unexpected Origin/Sec-Fetch-Site: %v", i, r.header)
+		}
+	}
+	if seen[0].query.Get("min_cursor") != "0" {
+		t.Fatalf("page 1 missing min_cursor=0: %s", seen[0].raw)
+	}
+	if seen[1].query.Has("min_cursor") {
+		t.Fatalf("page 2 should not send min_cursor=0: %s", seen[1].raw)
+	}
+
+	// Verify Sec-Fetch-Site derivation across same-origin, same-site, and cross-site hosts.
+	liveURL, _ := url.Parse("https://live.douyin.com/webcast/room/web/enter/")
+	if got := deriveSecFetchSite(liveURL, DefaultReferer); got != "same-site" {
+		t.Fatalf("live.douyin.com with www.douyin.com referer Sec-Fetch-Site = %q, want same-site", got)
+	}
+	if got := deriveSecFetchSite(liveURL, DefaultLiveReferer); got != "same-origin" {
+		t.Fatalf("live.douyin.com with live.douyin.com referer Sec-Fetch-Site = %q, want same-origin", got)
+	}
+	amemvURL, _ := url.Parse("https://webcast.amemv.com/webcast/room/reflow/info/")
+	if got := deriveSecFetchSite(amemvURL, DefaultLiveReferer); got != "cross-site" {
+		t.Fatalf("webcast.amemv.com with live.douyin.com referer Sec-Fetch-Site = %q, want cross-site", got)
+	}
+
+	// Logout clears session fallback msToken; re-login generates a fresh session fallback.
+	if err := client.LogoutCredential(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveDouyinManual("sessionid=SYNTH_SESS_NO_MS_02"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateDouyinProfile(credential.DouyinProfile{UID: "900000000100", SecUID: selfSecUID, Uname: "新会话"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Favorites(ctx, selfSecUID, ""); err != nil {
+		t.Fatal(err)
+	}
+	ms3 := seen[2].query.Get("msToken")
+	if ms3 == "" || ms3 == ms1 {
+		t.Fatalf("expected rotated fallback msToken after logout/relogin, got %q (prev %q)", ms3, ms1)
 	}
 }
 

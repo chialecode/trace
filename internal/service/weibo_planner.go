@@ -130,8 +130,23 @@ func canReuseWeiboPostPlan(post *weibo.Post) bool {
 	if strings.TrimSpace(post.Author.UID) == "" {
 		return false
 	}
-	if post.OriginIncomplete || post.IsFastRetweet || (post.IsRetweet && post.Retweeted == nil) {
+	if post.MediaIncomplete || post.OriginIncomplete || post.IsFastRetweet || (post.IsRetweet && post.Retweeted == nil) {
 		return false
+	}
+	if post.Retweeted != nil && post.Retweeted.MediaIncomplete {
+		return false
+	}
+	for _, img := range post.Images {
+		if img.Kind == weibo.MediaKindVideo && (img.VideoStream == nil || strings.TrimSpace(img.VideoStream.URL) == "") {
+			return false
+		}
+	}
+	if post.Retweeted != nil {
+		for _, img := range post.Retweeted.Images {
+			if img.Kind == weibo.MediaKindVideo && (img.VideoStream == nil || strings.TrimSpace(img.VideoStream.URL) == "") {
+				return false
+			}
+		}
 	}
 	if post.IsLongText && !post.LongTextFetched {
 		return false

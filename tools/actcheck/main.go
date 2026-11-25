@@ -1,5 +1,5 @@
 // Command actcheck runs an authorized, quota-gated real-site check
-// (authorizations ACT-006, ACT-007, ACT-010 to ACT-012, ACT-014 to ACT-020, ACT-022, ACT-024, ACT-025). Every request passes a persistent
+// (authorizations ACT-006, ACT-007, ACT-010 to ACT-012, ACT-014 to ACT-020, ACT-022, ACT-024 to ACT-026). Every request passes a persistent
 // quota ledger before it is sent; risk control, rate limits, auth expiry or a
 // challenge stop the run. The receipt holds categories, counts, sizes and
 // quality only: no Cookie, signed URL or account data.
@@ -263,6 +263,9 @@ func main() {
 		return
 	case "act025":
 		runAct025Main(*root, *out)
+		return
+	case "act026":
+		runAct026Main(*root, *out)
 		return
 	}
 	if *recordFor > 30*time.Second {

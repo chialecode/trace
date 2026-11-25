@@ -1031,6 +1031,24 @@ func (a *App) mineSubscribe(it service.AccountItem) {
 	a.OpenSubscribePicker(acct)
 }
 
+func minePostCardCover(card PostCardData) string {
+	if card.Video != nil && card.Video.CoverURL != "" {
+		return card.Video.CoverURL
+	}
+	if len(card.NotePages) > 0 && card.NotePages[0].ImageURL != "" {
+		return card.NotePages[0].ImageURL
+	}
+	if card.Origin != nil && !card.Origin.Unavailable {
+		if card.Origin.Video != nil && card.Origin.Video.CoverURL != "" {
+			return card.Origin.Video.CoverURL
+		}
+		if len(card.Origin.NotePages) > 0 && card.Origin.NotePages[0].ImageURL != "" {
+			return card.Origin.NotePages[0].ImageURL
+		}
+	}
+	return ""
+}
+
 func (a *App) renderMineWeiboPostRow(c *ui.Context, it service.AccountItem) {
 	var post service.WeiboPostView
 	if it.Post != nil {
@@ -1059,9 +1077,11 @@ func (a *App) renderMineWeiboPostRow(c *ui.Context, it service.AccountItem) {
 
 	authorUID := strings.TrimSpace(card.AuthorUID)
 	authorName := firstNonEmptyStrUI(card.AuthorName, "未知博主")
+	cover := firstNonEmptyStrUI(it.Cover, minePostCardCover(card))
 	openPost := func() {
-		a.OpenWeiboPost(post.Mid, clampRunes(firstNonEmptyStrUI(post.Text, it.Title), 40), authorName, authorUID, it.Cover, post.CanonicalURL)
+		a.OpenWeiboPost(post.Mid, clampRunes(firstNonEmptyStrUI(post.Text, it.Title), 40), authorName, authorUID, cover, post.CanonicalURL)
 	}
+	card.OnOpenPost = openPost
 	openAuthor := func() {
 		if authorUID != "" {
 			a.OpenWeiboUser(authorUID, authorName)
@@ -1146,60 +1166,100 @@ func (a *App) renderMineWeiboPostRow(c *ui.Context, it service.AccountItem) {
 				if bodyBtn.Clicked() {
 					openPost()
 				}
+				if len(card.NotePages) > 0 {
+					a.renderNotePagesGrid(c, card.ItemKey, "weibo", card.NotePages, false)
+				} else if len(card.Images) > 0 {
+					a.renderPostImageGrid(c, card)
+				}
+				if card.WeiboCard != nil {
+					a.renderWeiboRichCard(c, card.WeiboCard, false)
+				}
+				if card.Video != nil {
+					a.renderPostVideoCard(c, card, card.Video, false)
+				}
 				if card.Origin != nil && !card.Origin.Unavailable {
 					orig := card.Origin
-					origBtn := ui.ButtonBase(c).
+					origAuthorName := firstNonEmptyStrUI(orig.AuthorName, "原博主")
+					origItemKey := firstNonEmptyStrUI(orig.ItemKey, card.ItemKey)
+					var openOrigAuthor func()
+					if origUID := strings.TrimSpace(orig.AuthorUID); origUID != "" {
+						openOrigAuthor = func() { a.OpenWeiboUser(origUID, origAuthorName) }
+					}
+					ui.Column(c).
 						Label("我的微博转发内容："+post.Mid).
 						FillWidth().
-						Padding(8, 10).
+						Padding(10, 12).
 						Radius(10).
 						Background(ColorBgSecondary).
 						Border(1, ColorBorder).
-						Justify(ui.Start).
-						AlignItems(ui.Start).
-						ClipX()
-					if origBtn.Hovered() {
-						origBtn.Background(ColorHover)
-					}
-					origBtn.Children(func() {
-						ui.Column(c).FillWidth().Gap(4).ClipX().Children(func() {
+						Gap(6).
+						ClipX().
+						Children(func() {
 							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-								ui.Text(c, "@"+firstNonEmptyStrUI(orig.AuthorName, "原博主")).FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-								if orig.TypeLabel != "" {
-									ui.Text(c, "· "+orig.TypeLabel).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+								a.renderAccountAvatar(c, "weibo", origAuthorName, orig.AuthorUID, 0, 20, false, "", openOrigAuthor, orig.AuthorFace)
+								if openOrigAuthor != nil {
+									origAuthorBtn := ui.ButtonBase(c).Padding(0).Children(func() {
+										ui.Text(c, "@"+origAuthorName).FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+									})
+									if origAuthorBtn.Clicked() {
+										openOrigAuthor()
+									}
+								} else {
+									ui.Text(c, "@"+origAuthorName).FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 								}
-								if orig.PubTs > 0 {
-									ui.Text(c, "· "+FormatRelativeTime(orig.PubTs)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+								metaBtn := ui.ButtonBase(c).Padding(0).Grow(1).Justify(ui.Start).AlignItems(ui.Center).ClipX().Children(func() {
+									ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
+										if orig.TypeLabel != "" {
+											ui.Text(c, "· "+orig.TypeLabel).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+										}
+										if orig.PubTs > 0 {
+											ui.Text(c, "· "+FormatRelativeTime(orig.PubTs)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+										}
+									})
+								})
+								if metaBtn.Clicked() {
+									openPost()
 								}
 							})
 							if strings.TrimSpace(orig.Text) != "" {
-								ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightBody).TextColor(ColorTextMain).MaxLines(3)
+								origTextBtn := ui.ButtonBase(c).
+									Label("我的微博转发正文：" + post.Mid).
+									FillWidth().
+									Padding(0).
+									Justify(ui.Start).
+									AlignItems(ui.Start).
+									ClipX()
+								origTextBtn.Children(func() {
+									ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightBody).TextColor(ColorTextMain).MaxLines(4)
+								})
+								if origTextBtn.Clicked() {
+									openPost()
+								}
 							}
-							var parts []string
 							if len(orig.NotePages) > 0 {
-								parts = append(parts, fmt.Sprintf("含 %d 项媒体", len(orig.NotePages)))
+								a.renderNotePagesGrid(c, origItemKey, "weibo", orig.NotePages, false)
+							} else if len(orig.Images) > 0 {
+								a.renderPostImageGrid(c, PostCardData{
+									ItemKey: origItemKey,
+									Site:    "weibo",
+									Images:  orig.Images,
+								})
 							}
 							if orig.Video != nil {
-								vPart := "视频 · " + firstNonEmptyStrUI(orig.Video.Title, "微博视频")
-								if orig.Video.Duration != "" && orig.Video.Duration != "00:00" {
-									vPart += " (" + orig.Video.Duration + ")"
-								}
-								parts = append(parts, vPart)
+								a.renderPostVideoCard(c, card, orig.Video, true)
 							}
 							if orig.WeiboCard != nil {
-								parts = append(parts, firstNonEmptyStrUI(weiboCardKindLabel(orig.WeiboCard), "卡片")+" · "+orig.WeiboCard.Title)
+								a.renderWeiboRichCard(c, orig.WeiboCard, false)
 							}
 							if orig.Incomplete {
-								parts = append(parts, "点开查看原微博完整内容")
-							}
-							if len(parts) > 0 {
-								ui.Text(c, strings.Join(parts, " · ")).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+								hintBtn := ui.ButtonBase(c).Label("原微博未完整提示："+card.Key).Padding(2, 0).Justify(ui.Start).AlignItems(ui.Start).Children(func() {
+									ui.Text(c, "原微博含更多文字或媒体，点开查看完整内容").FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorInfoBlue).MaxLines(2)
+								})
+								if hintBtn.Clicked() {
+									openPost()
+								}
 							}
 						})
-					})
-					if origBtn.Clicked() {
-						openPost()
-					}
 				} else if card.OriginUnavailable != "" {
 					ui.Row(c).
 						Label("我的微博转发不可用："+post.Mid).
@@ -1249,9 +1309,11 @@ func (a *App) renderMineXPostRow(c *ui.Context, it service.AccountItem) {
 	authorUID := strings.TrimSpace(card.AuthorUID)
 	authorHandle := strings.TrimPrefix(strings.TrimSpace(card.AuthorHandle), "@")
 	authorName := firstNonEmptyStrUI(card.AuthorName, authorHandle, "未知用户")
+	cover := firstNonEmptyStrUI(it.Cover, minePostCardCover(card))
 	openPost := func() {
-		a.OpenXPost(post.ID, clampRunes(firstNonEmptyStrUI(post.Text, it.Title), 40), authorName, authorUID, it.Cover, post.CanonicalURL)
+		a.OpenXPost(post.ID, clampRunes(firstNonEmptyStrUI(post.Text, it.Title), 40), authorName, authorUID, cover, post.CanonicalURL)
 	}
+	card.OnOpenPost = openPost
 	openAuthor := func() {
 		if target := firstNonEmptyStrUI(authorUID, authorHandle); target != "" {
 			a.OpenXUser(target, authorName)
@@ -1340,57 +1402,102 @@ func (a *App) renderMineXPostRow(c *ui.Context, it service.AccountItem) {
 				if bodyBtn.Clicked() {
 					openPost()
 				}
+				if len(card.NotePages) > 0 {
+					a.renderNotePagesGrid(c, card.ItemKey, "x", card.NotePages, false)
+				} else if len(card.Images) > 0 {
+					a.renderPostImageGrid(c, card)
+				}
+				if card.XPoll != nil {
+					a.renderXPollCard(c, card.XPoll, card.URL, false)
+				}
+				if card.XCard != nil {
+					a.renderXRichCard(c, card.XCard, card.URL, false)
+				}
+				if card.HLSOnlyNotice != "" {
+					a.renderXHLSOnlyNotice(c, card.HLSOnlyNotice, card.URL, false)
+				}
+				if card.Video != nil {
+					a.renderPostVideoCard(c, card, card.Video, false)
+				}
 				if card.Origin != nil && !card.Origin.Unavailable {
 					orig := card.Origin
-					origBtn := ui.ButtonBase(c).
+					origAuthorName := firstNonEmptyStrUI(orig.AuthorName, orig.AuthorHandle, "原帖作者")
+					origItemKey := firstNonEmptyStrUI(orig.ItemKey, card.ItemKey)
+					var openOrigAuthor func()
+					if origTarget := firstNonEmptyStrUI(strings.TrimSpace(orig.AuthorUID), strings.TrimPrefix(strings.TrimSpace(orig.AuthorHandle), "@")); origTarget != "" {
+						openOrigAuthor = func() { a.OpenXUser(origTarget, origAuthorName) }
+					}
+					ui.Column(c).
 						Label("我的X转发内容："+post.ID).
 						FillWidth().
-						Padding(8, 10).
+						Padding(10, 12).
 						Radius(10).
 						Background(ColorBgSecondary).
 						Border(1, ColorBorder).
-						Justify(ui.Start).
-						AlignItems(ui.Start).
-						ClipX()
-					if origBtn.Hovered() {
-						origBtn.Background(ColorHover)
-					}
-					origBtn.Children(func() {
-						ui.Column(c).FillWidth().Gap(4).ClipX().Children(func() {
+						Gap(6).
+						ClipX().
+						Children(func() {
 							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-								ui.Text(c, firstNonEmptyStrUI(orig.AuthorName, orig.AuthorHandle, "原帖作者")).FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								a.renderAccountAvatar(c, "x", origAuthorName, orig.AuthorUID, 0, 20, false, "", openOrigAuthor, orig.AuthorFace)
+								if openOrigAuthor != nil {
+									origAuthorBtn := ui.ButtonBase(c).Padding(0).Children(func() {
+										ui.Text(c, origAuthorName).FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+									})
+									if origAuthorBtn.Clicked() {
+										openOrigAuthor()
+									}
+								} else {
+									ui.Text(c, origAuthorName).FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								}
 								if h := strings.TrimPrefix(strings.TrimSpace(orig.AuthorHandle), "@"); h != "" {
 									ui.Text(c, "@"+h).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
 								}
-								if orig.PubTs > 0 {
-									ui.Text(c, "· "+FormatRelativeTime(orig.PubTs)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+								metaBtn := ui.ButtonBase(c).Padding(0).Grow(1).Justify(ui.Start).AlignItems(ui.Center).ClipX().Children(func() {
+									if orig.PubTs > 0 {
+										ui.Text(c, "· "+FormatRelativeTime(orig.PubTs)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+									}
+								})
+								if metaBtn.Clicked() {
+									openPost()
 								}
 							})
 							if strings.TrimSpace(orig.Text) != "" {
-								ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightBody).TextColor(ColorTextMain).MaxLines(3)
+								origTextBtn := ui.ButtonBase(c).
+									Label("我的X转发正文：" + post.ID).
+									FillWidth().
+									Padding(0).
+									Justify(ui.Start).
+									AlignItems(ui.Start).
+									ClipX()
+								origTextBtn.Children(func() {
+									ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightBody).TextColor(ColorTextMain).MaxLines(4)
+								})
+								if origTextBtn.Clicked() {
+									openPost()
+								}
 							}
-							var parts []string
 							if len(orig.NotePages) > 0 {
-								parts = append(parts, fmt.Sprintf("含 %d 项媒体", len(orig.NotePages)))
+								a.renderNotePagesGrid(c, origItemKey, "x", orig.NotePages, false)
+							} else if len(orig.Images) > 0 {
+								a.renderPostImageGrid(c, PostCardData{
+									ItemKey: origItemKey,
+									Site:    "x",
+									Images:  orig.Images,
+								})
 							}
 							if orig.Video != nil {
-								vPart := "视频"
-								if orig.Video.Duration != "" && orig.Video.Duration != "00:00" {
-									vPart += " (" + orig.Video.Duration + ")"
-								}
-								parts = append(parts, vPart)
+								a.renderPostVideoCard(c, card, orig.Video, true)
+							}
+							if orig.XPoll != nil {
+								a.renderXPollCard(c, orig.XPoll, orig.URL, false)
 							}
 							if orig.XCard != nil {
-								parts = append(parts, firstNonEmptyStrUI(xCardKindLabel(orig.XCard), "卡片")+" · "+orig.XCard.Title)
+								a.renderXRichCard(c, orig.XCard, orig.URL, false)
 							}
-							if len(parts) > 0 {
-								ui.Text(c, strings.Join(parts, " · ")).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+							if orig.HLSOnlyNotice != "" {
+								a.renderXHLSOnlyNotice(c, orig.HLSOnlyNotice, orig.URL, false)
 							}
 						})
-					})
-					if origBtn.Clicked() {
-						openPost()
-					}
 				} else if card.OriginUnavailable != "" {
 					ui.Row(c).
 						Label("我的X转发不可用："+post.ID).

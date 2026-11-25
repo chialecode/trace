@@ -680,21 +680,21 @@ func (c *Client) parseAccountPostEntries(rawEntries []json.RawMessage, seen map[
 	}
 	posts := make([]Post, 0, len(rawEntries))
 	for _, entry := range rawEntries {
-		var rp rawPost
-		dec := json.NewDecoder(bytes.NewReader(entry))
-		dec.UseNumber()
-		if err := dec.Decode(&rp); err != nil {
-			continue
+		// Check wrapped {"status": {...}} elements first so outer favorite metadata
+		// (e.g. wrapper-level "id" / "favorited_time") never shadows the embedded status.
+		var wrapper struct {
+			Status *rawPost `json:"status"`
 		}
-		// Handle wrapped {"status": {...}} elements gracefully if returned by favorites/all_fav.
-		if rp.midString() == "" {
-			var wrapper struct {
-				Status *rawPost `json:"status"`
-			}
-			wDec := json.NewDecoder(bytes.NewReader(entry))
-			wDec.UseNumber()
-			if wDec.Decode(&wrapper) == nil && wrapper.Status != nil {
-				rp = *wrapper.Status
+		wDec := json.NewDecoder(bytes.NewReader(entry))
+		wDec.UseNumber()
+		var rp rawPost
+		if wDec.Decode(&wrapper) == nil && wrapper.Status != nil && wrapper.Status.midString() != "" {
+			rp = *wrapper.Status
+		} else {
+			dec := json.NewDecoder(bytes.NewReader(entry))
+			dec.UseNumber()
+			if err := dec.Decode(&rp); err != nil {
+				continue
 			}
 		}
 		mid := rp.midString()

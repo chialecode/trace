@@ -252,7 +252,7 @@ tools/internal/build/         打包共用：版本号、通道配置、-ldflags
 ## 8. 窗口生命周期、托盘与单实例（DEC-030）
 
 - **单实例**：`main.go` 先 `mygo.App.SetName("trace"|"trace-dev")`（锁按应用名与标识区分，两个通道互不影响），再调用 `mygo.App.RequestSingleInstanceLock()`；不是第一个实例就退出，第一个实例在 `OnSecondInstance` 里打开（或重建）窗口并置前。另外在数据目录里用 `app.lock`（Windows `LockFileEx` 独占锁）做数据目录锁：拿不到锁时返回明确错误后退出，不打开任何数据文件（INV-14）。
-- **托盘**：`WhenReady` 里用 `mygo.NewTray` 建图标（`ID: "trace"`，16×16 与 32×32 的 PNG 由 TRACE 自己绘制：蓝底白色 “T”，与应用图标一致（DEC-046 ② 起应用图标也不带点），有进行中任务或录制时右下角加琥珀色 `#f3a115` 圆点），左键单击 → 打开窗口；Windows 下右键在指针处打开系统原生菜单（`TrackPopupMenuEx`，系统菜单字体，DEC-050 ③），只有“打开 TRACE”（开发版为“打开 TRACE Dev”）和“退出”（其他系统沿用 MyGo 菜单的同样两项）；正在缓存的任务数、缓存队列与正在录制的场次放在托盘悬停提示里更新（至多每 2 秒一次）。
+- **托盘**：`WhenReady` 里用 `mygo.NewTray` 建图标（`ID: "<appName>-tray"`，32×32 的 PNG 由 `internal/brandicon` 绘制：深灰底 `#3c4043` 白色 “T”，与应用图标一致，开发版与测试身份右下角带琥珀色 “DEV” 角标，有进行中任务或录制时也不加活动圆点，[DEC-072](../decisions.md#dec-072)），悬停提示固定为应用显示名（`"TRACE"` / `"TRACE Dev"`，不被动拼接缓存或录制计数），左键单击 → 打开窗口；Windows 下右键在指针处打开系统原生菜单（`TrackPopupMenuEx`，系统菜单字体，DEC-050 ③），只有“打开 TRACE”（开发版为“打开 TRACE Dev”）和“退出”（其他系统沿用 MyGo 菜单的同样两项）。
 - **关闭到托盘**：注册 `App.OnWindowAllClosed` 让进程在没有窗口时继续运行。原生窗口的 `OnClose` 里：设置 `closeAction=tray`（默认）时不阻止窗口关闭，原生窗口销毁，同时释放 `internal/ui` 与 `internal/player` 持有的图片缓存、视频位图纹理和事件订阅，调用 `runtime.GC()` 与 `debug.FreeOSMemory()`（NFR-RES-001）。第一次关到托盘时用 MyGo 的 `Notification` 发一条系统通知（记在 `ui-state.json` 的 `trayNotified`），之后不再重复提示。`closeAction=quit` 时关闭窗口等同托盘“退出”。
 - **重新打开**：按 `ui-state.json` 记下的最后路由和窗口位置大小调用 `mygo.NewWindow` 新建原生窗口；主页各站点筛选回到记下的阅读位置（DEC-053 ①）。界面挂载时从 `internal/service` 重新读取任务、订阅、直播与登录状态（INV-13）。
 - **退出**：托盘“退出”或窗口里的退出：有排队、进行中的任务或进行中的录制时先确认（有窗口时在窗口里弹确认框；没有窗口时托盘菜单的“退出”变成子菜单“退出（会暂停 N 个任务、结束 M 场录制）”，再点一次才退出）。确认后：任务改为“已暂停（应用关闭）”，录制按[直播 §2](live.md#recorder)收尾（限时 30 秒），然后 `App.Quit()`。

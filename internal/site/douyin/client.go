@@ -149,6 +149,10 @@ type Client struct {
 
 	liveCacheMu  sync.RWMutex
 	webRIDByUser map[string]liveWebRIDEntry
+
+	msTokenMu         sync.Mutex
+	fallbackMSToken   string
+	fallbackSessionID string
 }
 
 // NewClient constructs a configured Douyin Client.
@@ -663,9 +667,68 @@ type apiRequestSpec struct {
 const formContentType = "application/x-www-form-urlencoded"
 
 type apiRawResponse struct {
-	statusCode int
-	header     http.Header
-	body       []byte
+	statusCode  int
+	header      http.Header
+	body        []byte
+	sentMSToken string
+}
+
+func cookieMapSessionFingerprint(cookies map[string]string) string {
+	if len(cookies) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(cookies["sessionid"]) + "|" + strings.TrimSpace(cookies["sessionid_ss"])
+}
+
+func (c *Client) storeSessionFingerprint() string {
+	if c.cred == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.cred.CookieValue("sessionid")) + "|" + strings.TrimSpace(c.cred.CookieValue("sessionid_ss"))
+}
+
+func (c *Client) getOrCreateFallbackMSToken(sessionFP string) string {
+	c.msTokenMu.Lock()
+	defer c.msTokenMu.Unlock()
+	if c.fallbackMSToken != "" && c.fallbackSessionID == sessionFP {
+		return c.fallbackMSToken
+	}
+	gen, err := sign.GenerateMSToken(c.entropy)
+	if err != nil {
+		return ""
+	}
+	c.fallbackMSToken = gen
+	c.fallbackSessionID = sessionFP
+	return gen
+}
+
+func (c *Client) setFallbackMSToken(sessionFP, tok string) {
+	c.msTokenMu.Lock()
+	c.fallbackMSToken = strings.TrimSpace(tok)
+	c.fallbackSessionID = sessionFP
+	c.msTokenMu.Unlock()
+}
+
+func (c *Client) clearFallbackMSToken() {
+	c.msTokenMu.Lock()
+	c.fallbackMSToken = ""
+	c.fallbackSessionID = ""
+	c.msTokenMu.Unlock()
+}
+
+func ensureCookieHasMSToken(cookieHeader, msToken string) string {
+	cookieHeader = strings.TrimSpace(cookieHeader)
+	msToken = strings.TrimSpace(msToken)
+	if cookieHeader == "" || msToken == "" {
+		return cookieHeader
+	}
+	for _, seg := range strings.Split(cookieHeader, ";") {
+		k, v, ok := strings.Cut(strings.TrimSpace(seg), "=")
+		if ok && strings.TrimSpace(k) == "msToken" && strings.TrimSpace(v) != "" {
+			return cookieHeader
+		}
+	}
+	return cookieHeader + "; msToken=" + msToken
 }
 
 func (c *Client) resolveCookieContext(spec apiRequestSpec) (cookieHeader, msToken, uifid, verifyFp string, usingStore bool, err error) {
@@ -679,19 +742,15 @@ func (c *Client) resolveCookieContext(spec apiRequestSpec) (cookieHeader, msToke
 
 	case spec.candidateCookie != nil:
 		cleaned := credential.CleanDouyinCookieMap(spec.candidateCookie)
-		var parts []string
-		for _, k := range credential.AllowedDouyinCookieKeys {
-			if v := cleaned[k]; v != "" {
-				parts = append(parts, k+"="+v)
-			}
-		}
+		cookieHdr := credential.FormatDouyinCookieHeader(cleaned)
 		tok := strings.TrimSpace(cleaned["msToken"])
 		if tok == "" {
 			if gen, gErr := sign.GenerateMSToken(c.entropy); gErr == nil {
 				tok = gen
 			}
 		}
-		return strings.Join(parts, "; "), tok, sign.ExtractUIFID(cleaned), sign.ExtractVerifyFp(cleaned), false, nil
+		cookieHdr = ensureCookieHasMSToken(cookieHdr, tok)
+		return cookieHdr, tok, sign.ExtractUIFID(cleaned), sign.ExtractVerifyFp(cleaned), false, nil
 
 	default:
 		if authErr := c.RequireAuth(spec.endpoint); authErr != nil {
@@ -707,11 +766,12 @@ func (c *Client) resolveCookieContext(spec apiRequestSpec) (cookieHeader, msToke
 			}
 		}
 		tok := strings.TrimSpace(c.cred.MSToken())
-		if tok == "" {
-			if gen, gErr := sign.GenerateMSToken(c.entropy); gErr == nil {
-				tok = gen
-			}
+		if tok != "" {
+			c.clearFallbackMSToken()
+		} else {
+			tok = c.getOrCreateFallbackMSToken(c.storeSessionFingerprint())
 		}
+		cookieHdr = ensureCookieHasMSToken(cookieHdr, tok)
 		uifidVal := strings.TrimSpace(c.cred.UIFID())
 		fpVal := strings.TrimSpace(c.cred.CookieValue("s_v_web_id"))
 		return cookieHdr, tok, uifidVal, fpVal, true, nil
@@ -860,14 +920,17 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 			merged["msToken"] = xms
 		}
 		if len(merged) > 0 {
-			_ = c.cred.MergeContextCookies(merged)
+			if mErr := c.cred.MergeContextCookies(merged); mErr == nil && strings.TrimSpace(merged["msToken"]) != "" {
+				c.clearFallbackMSToken()
+			}
 		}
 	}
 
 	rawResp := &apiRawResponse{
-		statusCode: resp.StatusCode,
-		header:     resp.Header.Clone(),
-		body:       body,
+		statusCode:  resp.StatusCode,
+		header:      resp.Header.Clone(),
+		body:        body,
+		sentMSToken: msToken,
 	}
 	if spec.emptyMeans != "" && rawResp.statusCode == http.StatusOK && len(bytes.TrimSpace(rawResp.body)) == 0 {
 		return nil, &site.Error{Site: site.Douyin, Kind: site.ErrKindUnavailable, HTTPStatus: http.StatusOK, Endpoint: sanitizeEndpointLabel(parsedURL), Message: spec.emptyMeans}
@@ -876,6 +939,39 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 		return rawResp, err
 	}
 	return rawResp, nil
+}
+
+func deriveSecFetchSite(reqURL *url.URL, referer string) string {
+	if reqURL == nil {
+		return "same-origin"
+	}
+	refURL, err := url.Parse(strings.TrimSpace(referer))
+	if err != nil || refURL.Host == "" {
+		return "same-origin"
+	}
+	reqHost := strings.ToLower(reqURL.Hostname())
+	refHost := strings.ToLower(refURL.Hostname())
+	if site.IsLoopbackHost(reqHost) {
+		if strings.HasPrefix(reqURL.Path, "/aweme/") && (refHost == "www.douyin.com" || site.IsLoopbackHost(refHost)) {
+			return "same-origin"
+		}
+		if strings.HasPrefix(reqURL.Path, "/webcast/room/web/") && (refHost == "live.douyin.com" || site.IsLoopbackHost(refHost)) {
+			return "same-origin"
+		}
+		if refHost == "www.douyin.com" && strings.HasPrefix(reqURL.Path, "/webcast/room/web/") {
+			return "same-site"
+		}
+		return "same-origin"
+	}
+	if strings.EqualFold(reqURL.Scheme, refURL.Scheme) && reqHost == refHost && reqURL.Port() == refURL.Port() {
+		return "same-origin"
+	}
+	for _, root := range allowedAPIHosts {
+		if site.MatchDomainSuffix(reqHost, []string{root}) && site.MatchDomainSuffix(refHost, []string{root}) {
+			return "same-site"
+		}
+	}
+	return "cross-site"
 }
 
 func (c *Client) applyAPIHeaders(req *http.Request, referer, origin, cookieHeader string, extra map[string]string) {
@@ -889,6 +985,9 @@ func (c *Client) applyAPIHeaders(req *http.Request, referer, origin, cookieHeade
 		referer = DefaultReferer
 	}
 	req.Header.Set("Referer", referer)
+	req.Header.Set("Sec-Fetch-Site", deriveSecFetchSite(req.URL, referer))
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
 	if origin != "" {
 		req.Header.Set("Origin", origin)
 	}
@@ -1280,6 +1379,7 @@ func (c *Client) onClassifiedError(ctx context.Context, se *site.Error, usingSto
 }
 
 func (c *Client) markAuthExpired(reason string) {
+	c.clearFallbackMSToken()
 	if strings.TrimSpace(reason) == "" {
 		reason = "抖音登录状态已失效，请在设置页重新粘贴 Cookie"
 	}

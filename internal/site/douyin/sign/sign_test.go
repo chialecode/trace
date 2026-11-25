@@ -675,9 +675,22 @@ func TestSecSDKRulesAndValidation(t *testing.T) {
 		t.Fatalf("ExtractUIFID = %q, want %q", gotUIFID, "lower_temp")
 	}
 
-	tok, err := GenerateMSToken(bytes.NewReader(bytes.Repeat([]byte{1, 2, 3}, 50)))
+	allIndices := make([]byte, msTokenRandom)
+	for i := range allIndices {
+		allIndices[i] = byte(i)
+	}
+	tok, err := GenerateMSToken(bytes.NewReader(allIndices))
 	if err != nil || len(tok) != 128 || !strings.HasSuffix(tok, "==") {
 		t.Fatalf("GenerateMSToken = %q (len=%d), err=%v", tok, len(tok), err)
+	}
+	if strings.Contains(tok, "+") {
+		t.Fatalf("GenerateMSToken must use URL-safe '_' instead of '+': %q", tok)
+	}
+	if !strings.Contains(tok, "_") || !strings.Contains(tok, "-") {
+		t.Fatalf("GenerateMSToken across 0..63 missing '_' or '-': %q", tok)
+	}
+	if enc := EncodeComponent(tok); strings.Contains(enc, "%2B") {
+		t.Fatalf("encoded msToken unexpectedly contained %%2B: %s", enc)
 	}
 	wid, err := GenerateWebID(bytes.NewReader(bytes.Repeat([]byte{4, 5, 6}, 10)))
 	if err != nil || len(wid) != 19 || wid[0] != '7' {
