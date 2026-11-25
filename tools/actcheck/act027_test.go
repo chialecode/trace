@@ -74,8 +74,7 @@ func TestAct027HandshakeSignedLikesSecretScanAndPanicReceipt(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			switch r.URL.Path {
 			case "/aweme/v1/web/user/profile/self/":
-				seenPub = r.Header.Get(guard.HeaderREEPublicKey)
-				if seenPub == "" || strings.Contains(r.Header.Get("Cookie"), "bd_ticket_guard") {
+				if r.Header.Get(guard.HeaderREEPublicKey) != "" || r.Header.Get(guard.HeaderVersion) != "" || strings.Contains(r.Header.Get("Cookie"), "bd_ticket_guard") {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
@@ -83,10 +82,12 @@ func TestAct027HandshakeSignedLikesSecretScanAndPanicReceipt(t *testing.T) {
 				w.Header().Set("bd-ticket-guard-server-data", serverDataB64)
 				_, _ = w.Write([]byte(`{"status_code":0,"user":{"uid":"770000000027","sec_uid":"MS4wLjABAAAA_SYNTH_SELF_ACT027_USER","unique_id":"self_handle_27","nickname":"测试本人敏感昵称27"}}`))
 			case "/aweme/v1/web/aweme/favorite/":
-				if r.Header.Get(guard.HeaderREEPublicKey) != seenPub || r.Header.Get(guard.HeaderClientData) == "" || r.Header.Get(guard.HeaderWebSignType) != "1" {
+				pub := r.Header.Get(guard.HeaderREEPublicKey)
+				if pub == "" || (seenPub != "" && pub != seenPub) || r.Header.Get(guard.HeaderClientData) == "" || r.Header.Get(guard.HeaderWebSignType) != "1" {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
+				seenPub = pub
 				w.Header().Set("bd-ticket-guard-result", "0")
 				if r.URL.Query().Get("max_cursor") == "0" {
 					_, _ = w.Write([]byte(`{"status_code":0,"aweme_list":[` + synthAct026WorkNode("7300000000000000701", "喜欢作品敏感标题27A") + `],"has_more":1,"max_cursor":1700}`))
@@ -183,7 +184,7 @@ func TestAct027HandshakeSignedLikesSecretScanAndPanicReceipt(t *testing.T) {
 				likesFacts = s.Facts
 			}
 		}
-		if likesFacts["bdTicketGuardResultCode"] != -1 || likesFacts["sentGuardHandshake"] != true || likesFacts["sentGuardSigned"] != false {
+		if likesFacts["bdTicketGuardResultCode"] != -1 || likesFacts["sentGuardHandshake"] != false || likesFacts["sentGuardSigned"] != false {
 			t.Fatalf("unexpected D-V2_likes guard facts: %+v", likesFacts)
 		}
 
