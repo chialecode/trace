@@ -23,9 +23,11 @@ const (
 	collectionPageSize    = 20
 	collectFolderPage     = 10
 	collectFolderWorkPage = 10
-	// WatchHistoryEnabled gates 观看历史. It stays false until a real check
-	// confirms the endpoint's shape (ACT-020 D-V5); see douyin.md §12.
-	WatchHistoryEnabled = false
+	watchHistoryPageSize  = 20
+	// WatchHistoryEnabled gates 观看历史. Confirmed via ACT-026 D-V5 (2 pages of
+	// /aweme/v1/web/history/read/ with aweme_list, has_more, max_cursor,
+	// aweme_date, status_code, status_msg); see douyin.md §12.
+	WatchHistoryEnabled = true
 )
 
 // Account endpoint paths, joined to the API host of AwemePost so fixtures
@@ -287,14 +289,14 @@ func (c *Client) CollectFolderWorks(ctx context.Context, folderID, cursor string
 	return c.parseAccountWorks(ctx, ep, top, cursor)
 }
 
-// WatchHistory lists 观看历史. The parameters are a guess from a path name
-// only (douyin.md §12); the service shows it only when WatchHistoryEnabled.
+// WatchHistory lists 观看历史 (douyin.md §12, confirmed by ACT-026 D-V5).
+// cursor is "" for the first page; subsequent pages pass the previous max_cursor.
 func (c *Client) WatchHistory(ctx context.Context, cursor string) (*AccountWorksPage, error) {
 	cursor = normCursor(cursor)
 	ep := c.accountEndpoint(pathHistoryRead)
 	params := c.profile.CommonWebParams(c.webID, "",
 		sign.Pair{Key: "max_cursor", Value: cursor},
-		sign.Pair{Key: "count", Value: "20"},
+		sign.Pair{Key: "count", Value: strconv.Itoa(watchHistoryPageSize)},
 	)
 	top, err := c.accountGet(ctx, ep, "https://www.douyin.com/user/self?showTab=record", params, nil)
 	if err != nil {

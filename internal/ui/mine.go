@@ -260,6 +260,8 @@ func (a *App) mineSiteURL(siteID, kind string) string {
 		return "https://www.douyin.com/user/self?showTab=like"
 	case service.AccountCollection:
 		return "https://www.douyin.com/user/self?showTab=favorite_collection"
+	case service.AccountWatchHistory:
+		return "https://www.douyin.com/user/self?showTab=record"
 	}
 	return "https://www.douyin.com/user/self"
 }
@@ -852,7 +854,7 @@ func (a *App) renderMineRows(c *ui.Context, siteID, kind string, l *mineList) {
 		it := l.Items[i]
 		return it.Kind + ":" + it.ID + ":" + strconv.Itoa(i)
 	}
-	ui.List(c, &l.State, total, func(i int) {
+	ui.List(c.Key("mine-list:"+a.mineListKey()), &l.State, total, func(i int) {
 		if i < 0 || i >= rowCount {
 			a.renderMineFooter(c, l)
 			return
@@ -1535,7 +1537,7 @@ func (a *App) renderMineWorkGrid(c *ui.Context, width float32, l *mineList) {
 		}
 		return "mine-footer"
 	}
-	ui.List(c, &l.State, total, func(i int) {
+	ui.List(c.Key("mine-list:"+a.mineListKey()), &l.State, total, func(i int) {
 		if i < 0 || i >= gridRows {
 			a.renderMineFooter(c, l)
 			return

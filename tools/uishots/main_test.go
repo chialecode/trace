@@ -392,6 +392,7 @@ func TestUIShotsScenesAndStructuredAssertions(t *testing.T) {
 		"mine-bili-following",
 		"mine-douyin-likes",
 		"mine-douyin-collection",
+		"mine-douyin-watch-history",
 		"mine-logged-out",
 		"mine-risk-error",
 		"mine-narrow-chooser",

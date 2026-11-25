@@ -449,7 +449,97 @@ func TestAccountListsRequireLogin(t *testing.T) {
 	if _, err := client.CollectFolders(ctx, ""); !site.IsKind(err, site.ErrKindAuthRequired) {
 		t.Fatalf("collects err = %v", err)
 	}
-	if WatchHistoryEnabled {
-		t.Fatal("观看历史 stays off until ACT-020 D-V5 confirms the endpoint")
+	if _, err := client.WatchHistory(ctx, ""); !site.IsKind(err, site.ErrKindAuthRequired) {
+		t.Fatalf("watch history err = %v", err)
+	}
+	if !WatchHistoryEnabled {
+		t.Fatal("观看历史 should be enabled after ACT-026 D-V5 confirmed the endpoint")
+	}
+}
+
+func TestWatchHistoryPaginationAwemeDateEmptyAndErrors(t *testing.T) {
+	client, seen := accountFixtureClient(t, func(r capturedReq) (int, string) {
+		if r.path != pathHistoryRead {
+			return 404, `{}`
+		}
+		switch r.query.Get("max_cursor") {
+		case "0":
+			nodes := awemeNodes(t, "7500000000000000", 2)
+			var arr []json.RawMessage
+			_ = json.Unmarshal([]byte(nodes), &arr)
+			// Duplicate within page and an unsupported live-card item to verify dedup & non-fatal mapping.
+			arr = append(arr, arr[0], json.RawMessage(`{"aweme_id":"75000000000000009","aweme_type":101,"desc":"直播回放占位"}`))
+			b, _ := json.Marshal(arr)
+			return 200, `{"status_code":0,"status_msg":"","aweme_date":{"75000000000000000":1732400200,"75000000000000001":1732400150},"aweme_list":` + string(b) + `,"has_more":1,"max_cursor":1732400100}`
+		case "1732400100":
+			return 200, `{"status_code":0,"status_msg":"","aweme_date":{"75000000000000010":1732399900},"aweme_list":` + awemeNodes(t, "7500000000000001", 1) + `,"has_more":0,"max_cursor":0}`
+		default:
+			return 200, `{"status_code":0,"status_msg":"","aweme_date":{},"aweme_list":` + awemeNodes(t, "7500000000000002", 1) + `,"has_more":1,"max_cursor":1732400999}`
+		}
+	})
+	ctx := context.Background()
+	p1, err := client.WatchHistory(ctx, "")
+	if err != nil {
+		t.Fatalf("WatchHistory page 1 failed: %v", err)
+	}
+	r0 := (*seen)[0]
+	if r0.method != http.MethodGet || r0.path != pathHistoryRead || r0.body != "" {
+		t.Fatalf("page 1 request = %s %s body=%q", r0.method, r0.path, r0.body)
+	}
+	if r0.query.Get("max_cursor") != "0" || r0.query.Get("count") != "20" || r0.query.Get("a_bogus") == "" {
+		t.Fatalf("page 1 query = %s", r0.raw)
+	}
+	if r0.header.Get("Referer") != "https://www.douyin.com/user/self?showTab=record" || r0.header.Get("Origin") != "" {
+		t.Fatalf("page 1 headers = %v", r0.header)
+	}
+	if len(p1.Works) != 3 || !p1.HasMore || p1.NextCursor != "1732400100" {
+		t.Fatalf("p1 = works %d more=%v cursor=%q", len(p1.Works), p1.HasMore, p1.NextCursor)
+	}
+	if p1.Works[2].Kind != WorkKindUnsupported {
+		t.Fatalf("unsupported item kind = %q", p1.Works[2].Kind)
+	}
+
+	p2, err := client.WatchHistory(ctx, p1.NextCursor)
+	if err != nil {
+		t.Fatalf("WatchHistory page 2 failed: %v", err)
+	}
+	if p2.HasMore || len(p2.Works) != 1 || p2.Works[0].ID != "75000000000000010" {
+		t.Fatalf("p2 = %+v", p2)
+	}
+	if (*seen)[1].query.Get("max_cursor") != "1732400100" {
+		t.Fatalf("page 2 cursor = %q", (*seen)[1].query.Get("max_cursor"))
+	}
+
+	// Stalled cursor must fail with schema_changed instead of looping forever.
+	if _, err := client.WatchHistory(ctx, "1732400999"); !site.IsKind(err, site.ErrKindSchemaChanged) {
+		t.Fatalf("stalled cursor err = %v", err)
+	}
+
+	// Genuine empty list vs shell/error responses.
+	var status = 200
+	var body string
+	errClient, _ := accountFixtureClient(t, func(r capturedReq) (int, string) { return status, body })
+	body = `{"status_code":0,"status_msg":"","aweme_date":{},"aweme_list":[],"has_more":0,"max_cursor":0}`
+	empty, err := errClient.WatchHistory(ctx, "")
+	if err != nil || empty.HasMore || len(empty.Works) != 0 {
+		t.Fatalf("genuine empty = %+v err=%v", empty, err)
+	}
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		kind   string
+	}{
+		{"zero_bytes", 200, ``, site.ErrKindRiskControl},
+		{"null_list", 200, `{"status_code":0,"aweme_list":null,"has_more":0}`, site.ErrKindRiskControl},
+		{"missing_has_more", 200, `{"status_code":0,"aweme_list":[]}`, site.ErrKindRiskControl},
+		{"bare_status", 200, `{"status_code":0}`, site.ErrKindRiskControl},
+		{"rate_limited", 429, `{}`, site.ErrKindRateLimited},
+		{"auth_lost", 200, `{"status_code":2483,"status_msg":"请先登录"}`, site.ErrKindAuthRequired},
+	} {
+		status, body = tc.status, tc.body
+		if _, err := errClient.WatchHistory(ctx, ""); !site.IsKind(err, tc.kind) {
+			t.Errorf("%s: err=%v want %s", tc.name, err, tc.kind)
+		}
 	}
 }
