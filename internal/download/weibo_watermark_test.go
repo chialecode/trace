@@ -443,3 +443,215 @@ func TestWeiboDualSaveSkipsGIFAndBackfillsOldCachedItem(t *testing.T) {
 		t.Fatalf("companion was not monotonically preserved: ok=%v err=%v pages=%+v", ok, err, meta3.NotePages)
 	}
 }
+
+func TestWeiboConflictDeleteReorderDoesNotMisbindCompanion(t *testing.T) {
+	picAOrig := makeWatermarkTestJPEG(t, 40, 30, color.RGBA{R: 210, G: 40, B: 40, A: 255})
+	picANoWM := makeWatermarkTestJPEG(t, 24, 18, color.RGBA{R: 250, G: 120, B: 40, A: 255})
+	picBOrig := makeWatermarkTestJPEG(t, 44, 32, color.RGBA{R: 40, G: 90, B: 210, A: 255})
+	picCOrig := makeWatermarkTestJPEG(t, 38, 28, color.RGBA{R: 40, G: 180, B: 90, A: 255})
+	picCNoWM := makeWatermarkTestJPEG(t, 22, 16, color.RGBA{R: 90, G: 220, B: 140, A: 255})
+
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/large/picA.jpg":
+			return &http.Response{StatusCode: http.StatusOK, ContentLength: int64(len(picAOrig)), Header: http.Header{"Content-Type": []string{"image/jpeg"}}, Body: io.NopCloser(bytes.NewReader(picAOrig))}, nil
+		case "/oslarge/picA.jpg":
+			return &http.Response{StatusCode: http.StatusOK, ContentLength: int64(len(picANoWM)), Header: http.Header{"Content-Type": []string{"image/jpeg"}}, Body: io.NopCloser(bytes.NewReader(picANoWM))}, nil
+		case "/large/picB.jpg":
+			return &http.Response{StatusCode: http.StatusOK, ContentLength: int64(len(picBOrig)), Header: http.Header{"Content-Type": []string{"image/jpeg"}}, Body: io.NopCloser(bytes.NewReader(picBOrig))}, nil
+		case "/large/picC.jpg":
+			return &http.Response{StatusCode: http.StatusOK, ContentLength: int64(len(picCOrig)), Header: http.Header{"Content-Type": []string{"image/jpeg"}}, Body: io.NopCloser(bytes.NewReader(picCOrig))}, nil
+		case "/oslarge/picC.jpg":
+			return &http.Response{StatusCode: http.StatusOK, ContentLength: int64(len(picCNoWM)), Header: http.Header{"Content-Type": []string{"image/jpeg"}}, Body: io.NopCloser(bytes.NewReader(picCNoWM))}, nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Header: http.Header{"Content-Type": []string{"text/plain"}}, Body: io.NopCloser(strings.NewReader("missing"))}, nil
+		}
+	})
+
+	t.Run("keep_both_delete_first_image_does_not_steal_picA_companion_for_picB", func(t *testing.T) {
+		mgr, libStore, _, _, _ := setupDouyinDownloadTestEnv(t, http.NotFoundHandler(), 2)
+		mgr.SetMediaTransportWrap(func(_ http.RoundTripper) http.RoundTripper { return rt })
+		mgr.RegisterSitePlanner(newFakeWeiboSitePlanner())
+
+		// V1: [picA (has 01_nowm), picB (/oslarge/picB -> 404, no 02_nowm)].
+		planV1 := WorkDownloadPlanFromSite(site.DownloadPlan{
+			Site:         site.Weibo,
+			ItemKey:      "weibo:dynamic:5000000000009003",
+			TargetID:     "5000000000009003",
+			Kind:         "image_note",
+			CanonicalURL: "https://weibo.com/1000000001/O000002lJ",
+			AuthorUID:    "1000000001",
+			AuthorName:   "合成博主",
+			Title:        "冲突删图重排回归",
+			Desc:         "冲突删图重排回归",
+			Images: []site.MediaImageAsset{
+				{Index: 1, MediaRole: "image", Width: 40, Height: 30, ImageURLs: []string{"https://wx1.sinaimg.cn/large/picA.jpg"}, WatermarkFreeURL: "https://wx1.sinaimg.cn/oslarge/picA.jpg"},
+				{Index: 2, MediaRole: "image", Width: 44, Height: 32, ImageURLs: []string{"https://wx1.sinaimg.cn/large/picB.jpg"}, WatermarkFreeURL: "https://wx1.sinaimg.cn/oslarge/picB.jpg"},
+			},
+			Media: site.WeiboMediaTransport("Mozilla/5.0 Test", false),
+		})
+		planV1.Pages[0].MediaID = "picA"
+		planV1.Pages[1].MediaID = "picB"
+
+		task1, err := mgr.EnqueueWeiboWork(context.Background(), WeiboWorkEnqueueRequest{TargetID: planV1.TargetID, Kind: "dynamic", Plan: &planV1})
+		if err != nil {
+			t.Fatalf("EnqueueWeiboWork V1: %v", err)
+		}
+		if ft := waitForTaskTerminal(t, mgr, task1.TaskID, 10*time.Second); ft.Status != "completed" {
+			t.Fatalf("V1 task = %+v", ft)
+		}
+		v1Meta, ok, err := libStore.GetItem(planV1.ItemKey)
+		if err != nil || !ok || len(v1Meta.NotePages) != 2 || v1Meta.NotePages[0].NoWatermark != "images/01_nowm.jpg" || v1Meta.NotePages[1].NoWatermark != "" {
+			t.Fatalf("unexpected V1 state: ok=%v err=%v pages=%+v", ok, err, v1Meta.NotePages)
+		}
+
+		// V2 (keep_both): picA deleted, picB shifts to index 1 while /oslarge/picB still 404s.
+		planV2 := WorkDownloadPlanFromSite(site.DownloadPlan{
+			Site:         site.Weibo,
+			ItemKey:      planV1.ItemKey,
+			TargetID:     planV1.TargetID,
+			Kind:         "image_note",
+			CanonicalURL: planV1.CanonicalURL,
+			AuthorUID:    planV1.AuthorUID,
+			AuthorName:   planV1.AuthorName,
+			Title:        planV1.Title,
+			Desc:         planV1.Desc,
+			Images: []site.MediaImageAsset{
+				{Index: 1, MediaRole: "image", Width: 44, Height: 32, ImageURLs: []string{"https://wx1.sinaimg.cn/large/picB.jpg"}, WatermarkFreeURL: "https://wx1.sinaimg.cn/oslarge/picB.jpg"},
+			},
+			Media: site.WeiboMediaTransport("Mozilla/5.0 Test", false),
+		})
+		planV2.Pages[0].MediaID = "picB"
+		planV2.ConflictResolution = ConflictResolveKeepBoth
+
+		task2, err := mgr.EnqueueWeiboWork(WithConflictResolution(context.Background(), ConflictResolveKeepBoth), WeiboWorkEnqueueRequest{
+			TargetID: planV2.TargetID,
+			Kind:     "dynamic",
+			Plan:     &planV2,
+		})
+		if err != nil {
+			t.Fatalf("EnqueueWeiboWork V2: %v", err)
+		}
+		if ft := waitForTaskTerminal(t, mgr, task2.TaskID, 10*time.Second); ft.Status != "completed" {
+			t.Fatalf("V2 task = %+v", ft)
+		}
+
+		v2Meta, ok, err := libStore.GetItem(planV2.ItemKey)
+		if err != nil || !ok || len(v2Meta.NotePages) != 1 {
+			t.Fatalf("unexpected V2 meta: ok=%v err=%v meta=%+v", ok, err, v2Meta)
+		}
+		if v2Meta.NotePages[0].NoWatermark != "" {
+			t.Fatalf("picB must NOT inherit picA's 01_nowm.jpg, got NoWatermark=%q", v2Meta.NotePages[0].NoWatermark)
+		}
+		for _, mf := range v2Meta.Media {
+			if mf.Role == "image_nowm" {
+				t.Fatalf("V2 unexpectedly kept image_nowm %+v from deleted picA", mf)
+			}
+		}
+		if _, statErr := os.Stat(filepath.Join(v2Meta.ItemDir, "images", "01_nowm.jpg")); !os.IsNotExist(statErr) {
+			t.Fatalf("V2 directory unexpectedly contains images/01_nowm.jpg: statErr=%v", statErr)
+		}
+		gotPrimary, err := os.ReadFile(filepath.Join(v2Meta.ItemDir, filepath.FromSlash(v2Meta.NotePages[0].Image)))
+		if err != nil || !bytes.Equal(gotPrimary, picBOrig) {
+			t.Fatalf("V2 primary mismatch: err=%v len=%d want=%d", err, len(gotPrimary), len(picBOrig))
+		}
+	})
+
+	t.Run("use_remote_shift_recovers_own_previous_companion_by_original_image_stem", func(t *testing.T) {
+		mgr, libStore, _, _, _ := setupDouyinDownloadTestEnv(t, http.NotFoundHandler(), 2)
+		oslargeCDown := false
+		var mu sync.Mutex
+		rt2 := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			mu.Lock()
+			down := oslargeCDown
+			mu.Unlock()
+			if down && req.URL.Path == "/oslarge/picC.jpg" {
+				return &http.Response{StatusCode: http.StatusNotFound, Header: http.Header{"Content-Type": []string{"text/plain"}}, Body: io.NopCloser(strings.NewReader("gone"))}, nil
+			}
+			return rt(req)
+		})
+		mgr.SetMediaTransportWrap(func(_ http.RoundTripper) http.RoundTripper { return rt2 })
+		mgr.RegisterSitePlanner(newFakeWeiboSitePlanner())
+
+		// V1: [picA (has 01_nowm), picC (has 02_nowm)].
+		planV1 := WorkDownloadPlanFromSite(site.DownloadPlan{
+			Site:         site.Weibo,
+			ItemKey:      "weibo:dynamic:5000000000009004",
+			TargetID:     "5000000000009004",
+			Kind:         "image_note",
+			CanonicalURL: "https://weibo.com/1000000001/O000002lK",
+			AuthorUID:    "1000000001",
+			AuthorName:   "合成博主",
+			Title:        "冲突重排精准复用自身伴侣图",
+			Desc:         "冲突重排精准复用自身伴侣图",
+			Images: []site.MediaImageAsset{
+				{Index: 1, MediaRole: "image", Width: 40, Height: 30, ImageURLs: []string{"https://wx1.sinaimg.cn/large/picA.jpg"}, WatermarkFreeURL: "https://wx1.sinaimg.cn/oslarge/picA.jpg"},
+				{Index: 2, MediaRole: "image", Width: 38, Height: 28, ImageURLs: []string{"https://wx1.sinaimg.cn/large/picC.jpg"}, WatermarkFreeURL: "https://wx1.sinaimg.cn/oslarge/picC.jpg"},
+			},
+			Media: site.WeiboMediaTransport("Mozilla/5.0 Test", false),
+		})
+		planV1.Pages[0].MediaID = "picA"
+		planV1.Pages[1].MediaID = "picC"
+
+		task1, err := mgr.EnqueueWeiboWork(context.Background(), WeiboWorkEnqueueRequest{TargetID: planV1.TargetID, Kind: "dynamic", Plan: &planV1})
+		if err != nil {
+			t.Fatalf("EnqueueWeiboWork V1: %v", err)
+		}
+		if ft := waitForTaskTerminal(t, mgr, task1.TaskID, 10*time.Second); ft.Status != "completed" {
+			t.Fatalf("V1 task = %+v", ft)
+		}
+		// Simulate an item where NotePages[1].NoWatermark was empty so stem lookup from reusableLP.Image is exercised.
+		v1Meta, ok, err := libStore.GetItem(planV1.ItemKey)
+		if err != nil || !ok || len(v1Meta.NotePages) != 2 {
+			t.Fatalf("load V1: ok=%v err=%v", ok, err)
+		}
+		v1Meta.NotePages[1].NoWatermark = ""
+		if _, err := libStore.SaveItem(v1Meta.ItemDir, v1Meta); err != nil {
+			t.Fatalf("SaveItem V1: %v", err)
+		}
+
+		// Now /oslarge/picC expires (404), and V2 deletes picA shifting picC to index 1.
+		mu.Lock()
+		oslargeCDown = true
+		mu.Unlock()
+
+		planV2 := WorkDownloadPlanFromSite(site.DownloadPlan{
+			Site:         site.Weibo,
+			ItemKey:      planV1.ItemKey,
+			TargetID:     planV1.TargetID,
+			Kind:         "image_note",
+			CanonicalURL: planV1.CanonicalURL,
+			AuthorUID:    planV1.AuthorUID,
+			AuthorName:   planV1.AuthorName,
+			Title:        planV1.Title,
+			Desc:         planV1.Desc,
+			Images: []site.MediaImageAsset{
+				{Index: 1, MediaRole: "image", Width: 38, Height: 28, ImageURLs: []string{"https://wx1.sinaimg.cn/large/picC.jpg"}, WatermarkFreeURL: "https://wx1.sinaimg.cn/oslarge/picC.jpg"},
+			},
+			Media: site.WeiboMediaTransport("Mozilla/5.0 Test", false),
+		})
+		planV2.Pages[0].MediaID = "picC"
+		planV2.ConflictResolution = ConflictResolveUseRemote
+
+		task2, err := mgr.EnqueueWeiboWork(WithConflictResolution(context.Background(), ConflictResolveUseRemote), WeiboWorkEnqueueRequest{
+			TargetID: planV2.TargetID,
+			Kind:     "dynamic",
+			Plan:     &planV2,
+		})
+		if err != nil {
+			t.Fatalf("EnqueueWeiboWork V2: %v", err)
+		}
+		if ft := waitForTaskTerminal(t, mgr, task2.TaskID, 10*time.Second); ft.Status != "completed" {
+			t.Fatalf("V2 task = %+v", ft)
+		}
+
+		v2Meta, ok, err := libStore.GetItem(planV2.ItemKey)
+		if err != nil || !ok || len(v2Meta.NotePages) != 1 || v2Meta.NotePages[0].NoWatermark != "images/01_nowm.jpg" {
+			t.Fatalf("expected picC's own companion recovered at images/01_nowm.jpg, got ok=%v err=%v pages=%+v", ok, err, v2Meta.NotePages)
+		}
+		gotNoWM, err := os.ReadFile(filepath.Join(v2Meta.ItemDir, "images", "01_nowm.jpg"))
+		if err != nil || !bytes.Equal(gotNoWM, picCNoWM) {
+			t.Fatalf("V2 companion bytes mismatch: err=%v len=%d want picCNoWM len=%d (must not be picANoWM len=%d)", err, len(gotNoWM), len(picCNoWM), len(picANoWM))
+		}
+	})
+}

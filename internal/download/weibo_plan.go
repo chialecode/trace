@@ -1768,8 +1768,19 @@ func (m *Manager) cacheWeiboWatermarkFreeCompanion(
 		if strings.TrimSpace(reusableLP.NoWatermark) != "" && mediaIsValid(previous, reusableLP.NoWatermark) {
 			return reusableLP.NoWatermark
 		}
+		var prevNoWMStem string
+		if imgRel := strings.TrimSpace(filepath.ToSlash(reusableLP.Image)); imgRel != "" {
+			if stem := trimKnownImageExt(imgRel); stem != "" {
+				prevNoWMStem = stem + "_nowm"
+			}
+		} else if !isConflict {
+			prevNoWMStem = nowmStem
+		}
+		if prevNoWMStem == "" {
+			return ""
+		}
 		for _, mf := range previous.Media {
-			if mf.Role == "image_nowm" && strings.HasPrefix(mf.Path, nowmStem+".") && mediaIsValid(previous, mf.Path) {
+			if mf.Role == "image_nowm" && strings.HasPrefix(filepath.ToSlash(mf.Path), prevNoWMStem+".") && mediaIsValid(previous, mf.Path) {
 				return mf.Path
 			}
 		}
