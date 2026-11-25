@@ -390,6 +390,20 @@ func (h *queueDualHarness) openBackend(t *testing.T, rng CacheQueueRand) (*Backe
 	}
 }
 
+// cacheQueueTasksFinished reports whether every named task is completed or
+// stopped (the callers then check which).
+func cacheQueueTasksFinished(b *Backend, ids ...string) bool {
+	finished := 0
+	for _, task := range b.ListCacheQueue() {
+		for _, id := range ids {
+			if task.ID == id && !isUnfinishedQueueStatus(task.Status) {
+				finished++
+			}
+		}
+	}
+	return finished == len(ids)
+}
+
 func waitQueuePredicate(t *testing.T, b *Backend, id string, desc string, pred func(CacheQueueTask) bool) CacheQueueTask {
 	t.Helper()
 	deadline := time.Now().Add(4 * time.Second)
@@ -1052,14 +1066,21 @@ func TestCacheQueuePrivacySentinel(t *testing.T) {
 		t.Fatalf("EnqueueCacheQueue douyin: %v", err)
 	}
 
-	// Both sites cache 2 items (1 inter-item timer per site). The sites run in
-	// parallel, so both timers may already be pending when the clock advances;
-	// count the timers that actually fired instead of assuming one per step.
-	for fired := 0; fired < 2; {
-		if h.clock.ActiveTimerCount() == 0 {
-			_, _ = h.clock.WaitForPendingTimer(t, 3*time.Second)
+	// Both sites cache 2 items (1 inter-item wait per site) and run in parallel.
+	// Advance the clock while a wait is set until both tasks have finished,
+	// rather than counting fired timers: a site woken early (wakeSite) ends its
+	// wait without its timer firing, so a count could wait for a timer that
+	// never comes (#50).
+	deadline := time.Now().Add(10 * time.Second)
+	for !cacheQueueTasksFinished(b, tBili.ID, tDy.ID) {
+		if time.Now().After(deadline) {
+			t.Fatalf("cache queue tasks did not finish: %+v", b.ListCacheQueue())
 		}
-		fired += h.clock.Advance(45 * time.Second)
+		if h.clock.ActiveTimerCount() > 0 {
+			h.clock.Advance(45 * time.Second)
+			continue
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 	waitQueuePredicate(t, b, tBili.ID, "bili completed", func(qt CacheQueueTask) bool {
 		return qt.Status == CacheQueueCompleted

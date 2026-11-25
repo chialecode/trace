@@ -918,6 +918,17 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 	}
 
 	skippedAny := false
+	var conflictNotifications []cacheConflictRecord
+	publishConflicts := func() {
+		if m.b == nil || m.b.events == nil || len(conflictNotifications) == 0 {
+			return
+		}
+		for _, c := range conflictNotifications {
+			m.b.events.PublishSite(EventCacheConflictsChanged, c.Site, c.ItemKey)
+		}
+		conflictNotifications = nil
+	}
+
 	for entry.rt.pageIdx < len(entry.rt.pageItems) {
 		cand := entry.rt.pageItems[entry.rt.pageIdx]
 		if cand.key == "" {
@@ -931,7 +942,9 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 			entry.rt.pageIdx++
 			continue
 		}
-		if cand.uncacheable || !m.b.queueShouldCache(cand.key, states[cand.key]) {
+
+		st := states[cand.key]
+		if st.Dot == "ring" || (st.Dot == "yellow" && strings.HasPrefix(st.Label, "已暂停")) {
 			entry.rt.seenKeys[cand.key] = true
 			entry.rt.pageIdx++
 			entry.rec.SkippedCount++
@@ -942,7 +955,68 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 			continue
 		}
 
-		// Found an uncached candidate! Check backoff/quota before calling cand.enqueue.
+		runEnqueue := cand.enqueue
+		handledCached := false
+		if cand.inspectCached != nil && m.b != nil && m.b.profile != ProfileRemote && m.b.lib != nil {
+			if localMeta, exists := lookupQueueExistingItem(m.b, cand.key); exists {
+				if localMeta.IsArchivedSnapshot() {
+					entry.rt.seenKeys[cand.key] = true
+					entry.rt.pageIdx++
+					entry.rec.SkippedCount++
+					if !slices.Contains(entry.rec.ProcessedKeys, cand.key) {
+						entry.rec.ProcessedKeys = append(entry.rec.ProcessedKeys, cand.key)
+					}
+					skippedAny = true
+					continue
+				}
+				if localMeta.Status != "failed" && localMeta.Status != "missing_files" && localMeta.Status != "corrupt" {
+					dec := cand.inspectCached(localMeta, entry.rec.Origin)
+					switch dec.action {
+					case inspectSkipNoOp:
+						entry.rt.seenKeys[cand.key] = true
+						entry.rt.pageIdx++
+						entry.rec.SkippedCount++
+						if !slices.Contains(entry.rec.ProcessedKeys, cand.key) {
+							entry.rec.ProcessedKeys = append(entry.rec.ProcessedKeys, cand.key)
+						}
+						skippedAny = true
+						continue
+					case inspectConflict:
+						if m.b.conflicts != nil {
+							if saved, changed, cErr := m.b.conflicts.recordOrUpdate(dec.conflict); cErr == nil && changed {
+								conflictNotifications = append(conflictNotifications, saved)
+							}
+						}
+						entry.rt.seenKeys[cand.key] = true
+						entry.rt.pageIdx++
+						entry.rec.SkippedCount++
+						if !slices.Contains(entry.rec.ProcessedKeys, cand.key) {
+							entry.rec.ProcessedKeys = append(entry.rec.ProcessedKeys, cand.key)
+						}
+						skippedAny = true
+						continue
+					case inspectEnqueue, inspectProbePaced:
+						handledCached = true
+						if dec.enqueue != nil {
+							runEnqueue = dec.enqueue
+						}
+					}
+				}
+			}
+		}
+
+		if !handledCached && (cand.uncacheable || !m.b.queueShouldCache(cand.key, st)) {
+			entry.rt.seenKeys[cand.key] = true
+			entry.rt.pageIdx++
+			entry.rec.SkippedCount++
+			if !slices.Contains(entry.rec.ProcessedKeys, cand.key) {
+				entry.rec.ProcessedKeys = append(entry.rec.ProcessedKeys, cand.key)
+			}
+			skippedAny = true
+			continue
+		}
+
+		// Found an actionable candidate! Check backoff/quota before calling runEnqueue.
 		if blocked, _ := m.siteBackoffOrQuotaEnd(siteID, m.clock.Now()); blocked {
 			if skippedAny {
 				entry.rec.UpdatedAt = m.nowRFC3339()
@@ -953,6 +1027,7 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 			}
 			rec := m.enterWaitingBackoffLocked(entry, siteID, kind)
 			m.mu.Unlock()
+			publishConflicts()
 			m.notifyState(rec)
 			return
 		}
@@ -965,8 +1040,9 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 			skippedAny = false
 		}
 		m.mu.Unlock()
+		publishConflicts()
 
-		enq, err := cand.enqueue(stepCtx)
+		enq, err := runEnqueue(stepCtx)
 
 		m.mu.Lock()
 		stepCancel()
@@ -1003,10 +1079,17 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 			return
 		}
 
-		// Enqueue succeeded!
+		// Enqueue / probe succeeded!
 		entry.rt.seenKeys[cand.key] = true
 		entry.rt.pageIdx++
 		entry.rec.ActiveItemKey = sanitizeItemKey(firstNonEmpty(enq.itemKey, cand.key))
+		if enq.probedNoTask {
+			entry.rec.ActiveTitle = ""
+			rec := m.finishItemOutcomeLocked(entry, false)
+			m.mu.Unlock()
+			m.notifyState(rec)
+			return
+		}
 		entry.rec.ActiveTitle = sanitizeQueueText(firstNonEmpty(enq.title, cand.title))
 		if len(enq.taskIDs) == 0 {
 			// Synchronous completion (used by synthetic candidate tests with no async download task).
@@ -1035,9 +1118,31 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 		notify = &r
 	}
 	m.mu.Unlock()
+	publishConflicts()
 	if notify != nil {
 		m.notifyState(*notify)
 	}
+}
+
+func lookupQueueExistingItem(b *Backend, key string) (library.ItemMetadata, bool) {
+	if b == nil || b.lib == nil || key == "" {
+		return library.ItemMetadata{}, false
+	}
+	if meta, ok, err := b.lib.GetItem(key); err == nil && ok {
+		return meta, true
+	}
+	if strings.HasPrefix(key, "douyin:video:") {
+		alt := "douyin:dynamic:" + strings.TrimPrefix(key, "douyin:video:")
+		if meta, ok, err := b.lib.GetItem(alt); err == nil && ok {
+			return meta, true
+		}
+	} else if strings.HasPrefix(key, "douyin:dynamic:") {
+		alt := "douyin:video:" + strings.TrimPrefix(key, "douyin:dynamic:")
+		if meta, ok, err := b.lib.GetItem(alt); err == nil && ok {
+			return meta, true
+		}
+	}
+	return library.ItemMetadata{}, false
 }
 
 // queueShouldCache tells whether a cache queue (全部缓存, 定期全部缓存)

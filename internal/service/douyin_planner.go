@@ -4,11 +4,195 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/chialecode/trace/internal/download"
+	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/douyin"
 )
+
+const (
+	douyinWorkCacheMaxEntries = 128
+	douyinWorkCacheTTL        = 5 * time.Minute
+)
+
+type cachedDouyinWorkEntry struct {
+	detail     douyin.WorkDetail
+	codec      string
+	capturedAt time.Time
+}
+
+// douyinWorkPlanCache keeps recently fetched Douyin work details strictly in memory
+// so CacheDouyinWork and full-cache queue runs can reuse list/detail payloads without
+// issuing duplicate aweme/detail requests or persisting CDN URLs to disk.
+type douyinWorkPlanCache struct {
+	mu      sync.Mutex
+	entries map[string]cachedDouyinWorkEntry
+	now     func() time.Time
+}
+
+func newDouyinWorkPlanCache(nowFn func() time.Time) *douyinWorkPlanCache {
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	return &douyinWorkPlanCache{
+		entries: make(map[string]cachedDouyinWorkEntry),
+		now:     nowFn,
+	}
+}
+
+func cloneDouyinWorkDetail(d *douyin.WorkDetail) douyin.WorkDetail {
+	if d == nil {
+		return douyin.WorkDetail{}
+	}
+	cp := *d
+	cp.CoverURLs = append([]string(nil), d.CoverURLs...)
+	cp.OriginalURLs = append([]string(nil), d.OriginalURLs...)
+	cp.Hashtags = append([]string(nil), d.Hashtags...)
+	if d.Video != nil {
+		v := *d.Video
+		v.URLs = append([]string(nil), d.Video.URLs...)
+		cp.Video = &v
+	}
+	if len(d.AvailableStreams) > 0 {
+		cp.AvailableStreams = make([]douyin.SelectedVODStream, len(d.AvailableStreams))
+		for i, s := range d.AvailableStreams {
+			s.URLs = append([]string(nil), s.URLs...)
+			cp.AvailableStreams[i] = s
+		}
+	}
+	if len(d.Pages) > 0 {
+		cp.Pages = make([]douyin.NotePage, len(d.Pages))
+		for i, pg := range d.Pages {
+			pg.ImageURLs = append([]string(nil), pg.ImageURLs...)
+			if pg.VideoStream != nil {
+				vs := *pg.VideoStream
+				vs.URLs = append([]string(nil), pg.VideoStream.URLs...)
+				pg.VideoStream = &vs
+			}
+			cp.Pages[i] = pg
+		}
+	}
+	if d.Music != nil {
+		m := *d.Music
+		m.PlayURLs = append([]string(nil), d.Music.PlayURLs...)
+		cp.Music = &m
+	}
+	return cp
+}
+
+func canReuseDouyinWorkPlan(detail *douyin.WorkDetail) bool {
+	if detail == nil || strings.TrimSpace(detail.ID) == "" || detail.Uncacheable || detail.Kind == douyin.WorkKindUnsupported {
+		return false
+	}
+	if strings.TrimSpace(detail.Author.SecUID) == "" {
+		return false
+	}
+	if detail.Kind == douyin.WorkKindNote || len(detail.Pages) > 0 {
+		if len(detail.Pages) == 0 {
+			return false
+		}
+		for _, pg := range detail.Pages {
+			switch pg.Kind {
+			case douyin.NotePageLivePhoto:
+				if len(pg.ImageURLs) == 0 || pg.VideoStream == nil || len(pg.VideoStream.URLs) == 0 {
+					return false
+				}
+			case douyin.NotePageVideo:
+				if pg.VideoStream == nil || len(pg.VideoStream.URLs) == 0 {
+					return false
+				}
+			default:
+				if len(pg.ImageURLs) == 0 {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return detail.Video != nil && len(detail.Video.URLs) > 0
+}
+
+func (c *douyinWorkPlanCache) put(detail *douyin.WorkDetail, codec string) {
+	if c == nil || !canReuseDouyinWorkPlan(detail) {
+		return
+	}
+	id := strings.TrimSpace(detail.ID)
+	if id == "" {
+		return
+	}
+	now := c.now()
+	cp := cloneDouyinWorkDetail(detail)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.entries) >= douyinWorkCacheMaxEntries {
+		c.evictExpiredLocked(now)
+		for len(c.entries) >= douyinWorkCacheMaxEntries {
+			var oldestKey string
+			var oldestAt time.Time
+			for k, v := range c.entries {
+				if oldestKey == "" || v.capturedAt.Before(oldestAt) {
+					oldestKey, oldestAt = k, v.capturedAt
+				}
+			}
+			if oldestKey == "" {
+				break
+			}
+			delete(c.entries, oldestKey)
+		}
+	}
+	c.entries[id] = cachedDouyinWorkEntry{
+		detail:     cp,
+		codec:      strings.ToLower(strings.TrimSpace(codec)),
+		capturedAt: now,
+	}
+}
+
+func (c *douyinWorkPlanCache) get(awemeID, codec string) (*douyin.WorkDetail, bool) {
+	if c == nil {
+		return nil, false
+	}
+	id := strings.TrimSpace(awemeID)
+	if id == "" {
+		return nil, false
+	}
+	now := c.now()
+	wantCodec := strings.ToLower(strings.TrimSpace(codec))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ent, ok := c.entries[id]
+	if !ok {
+		return nil, false
+	}
+	if now.Sub(ent.capturedAt) > douyinWorkCacheTTL {
+		delete(c.entries, id)
+		return nil, false
+	}
+	if wantCodec != "" && ent.codec != "" && ent.codec != wantCodec {
+		return nil, false
+	}
+	cp := cloneDouyinWorkDetail(&ent.detail)
+	return &cp, true
+}
+
+func (c *douyinWorkPlanCache) clear() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	clear(c.entries)
+	c.mu.Unlock()
+}
+
+func (c *douyinWorkPlanCache) evictExpiredLocked(now time.Time) {
+	for k, v := range c.entries {
+		if now.Sub(v.capturedAt) > douyinWorkCacheTTL {
+			delete(c.entries, k)
+		}
+	}
+}
 
 type douyinWorkPlanner struct {
 	backend *Backend
@@ -46,6 +230,50 @@ func (p *douyinWorkPlanner) PlanWorkDownload(ctx context.Context, targetID strin
 	if err != nil {
 		return download.WorkDownloadPlan{}, err
 	}
+	return p.backend.buildDouyinWorkPlanFromDetail(ctx, detail, opts)
+}
+
+func (b *Backend) currentWorkPlanOptions() download.WorkPlanOptions {
+	if b == nil || b.settings == nil {
+		return download.WorkPlanOptions{}
+	}
+	dl := b.settings.Get().Download
+	return download.WorkPlanOptions{
+		VideoQuality: dl.VideoQuality,
+		CodecOrder:   append([]string(nil), dl.CodecOrder...),
+	}
+}
+
+func douyinDetailMediaID(detail *douyin.WorkDetail) string {
+	if detail == nil {
+		return ""
+	}
+	if tok := library.SanitizeMediaToken(detail.MediaID); tok != "" {
+		return tok
+	}
+	if detail.Video != nil {
+		if tok := library.SanitizeMediaToken(detail.Video.URI); tok != "" {
+			return tok
+		}
+	}
+	return ""
+}
+
+func douyinPageMediaID(pg douyin.NotePage) string {
+	imgTok := library.SanitizeMediaToken(pg.URI)
+	var vidTok string
+	if pg.VideoStream != nil {
+		vidTok = library.SanitizeMediaToken(pg.VideoStream.URI)
+	}
+	if imgTok != "" && vidTok != "" && imgTok != vidTok {
+		if comb := library.SanitizeMediaToken(imgTok + ":" + vidTok); comb != "" {
+			return comb
+		}
+	}
+	return firstNonEmpty(imgTok, vidTok)
+}
+
+func (b *Backend) buildDouyinWorkPlanFromDetail(ctx context.Context, detail *douyin.WorkDetail, opts download.WorkPlanOptions) (download.WorkDownloadPlan, error) {
 	if detail == nil || detail.Uncacheable || detail.Kind == douyin.WorkKindUnsupported {
 		msg := "该抖音作品当前不可缓存"
 		if detail != nil && strings.TrimSpace(detail.UncacheableReason) != "" {
@@ -58,6 +286,7 @@ func (p *douyinWorkPlanner) PlanWorkDownload(ctx context.Context, targetID strin
 		}
 	}
 
+	prefCodec := resolveDouyinCodecFromOrder(opts.CodecOrder, b.preferredDouyinCodec())
 	kind := "video"
 	if detail.Kind == douyin.WorkKindNote || len(detail.Pages) > 0 {
 		kind = "dynamic"
@@ -74,25 +303,31 @@ func (p *douyinWorkPlanner) PlanWorkDownload(ctx context.Context, targetID strin
 	}
 
 	if detail.Author.SecUID != "" && detail.Author.AvatarURL != "" {
-		p.backend.rememberAccountAvatar(string(site.Douyin), detail.Author.SecUID, detail.Author.AvatarURL)
+		b.rememberAccountAvatar(string(site.Douyin), detail.Author.SecUID, detail.Author.AvatarURL)
+	}
+
+	var transport site.MediaTransportSpec
+	if b != nil && b.douyin != nil {
+		transport = b.douyin.VODTransport()
 	}
 
 	plan := download.WorkDownloadPlan{
-		Site:           site.Douyin,
-		Kind:           kind,
-		TargetID:       detail.ID,
-		Title:          detail.Title,
-		Desc:           detail.Desc,
-		CanonicalURL:   detail.CanonicalURL,
-		PubTs:          detail.CreateTime,
-		DurationSec:    detail.DurationSec,
-		AuthorUID:      detail.Author.SecUID,
-		AuthorUniqueID: firstNonEmpty(detail.Author.UniqueID, detail.Author.ShortID),
-		AuthorName:     detail.Author.Nickname,
-		AuthorFace:     detail.Author.AvatarURL,
-		CoverURLs:      append([]string(nil), detail.CoverURLs...),
-		AvailableGears: gears,
-		Transport:      p.backend.douyin.VODTransport(),
+		Site:               site.Douyin,
+		Kind:               kind,
+		TargetID:           detail.ID,
+		Title:              detail.Title,
+		Desc:               detail.Desc,
+		CanonicalURL:       detail.CanonicalURL,
+		PubTs:              detail.CreateTime,
+		DurationSec:        detail.DurationSec,
+		AuthorUID:          detail.Author.SecUID,
+		AuthorUniqueID:     firstNonEmpty(detail.Author.UniqueID, detail.Author.ShortID),
+		AuthorName:         detail.Author.Nickname,
+		AuthorFace:         detail.Author.AvatarURL,
+		CoverURLs:          append([]string(nil), detail.CoverURLs...),
+		AvailableGears:     gears,
+		ConflictResolution: download.ConflictResolutionFromContext(ctx),
+		Transport:          transport,
 	}
 
 	if kind == "video" {
@@ -114,6 +349,11 @@ func (p *douyinWorkPlanner) PlanWorkDownload(ctx context.Context, targetID strin
 		plan.FPS = selected.FPS
 		plan.Bitrate = selected.BitRate
 		plan.DowngradeHint = hint
+		mediaID := firstNonEmpty(library.SanitizeMediaToken(selected.URI), douyinDetailMediaID(detail))
+		plan.MediaID = mediaID
+		if mediaID != "" {
+			plan.AssetIDs = []string{mediaID}
+		}
 		// The untranscoded source (原画) has no resolution cap of its own, so it is
 		// only tried when the quality setting asks for the highest available.
 		if parseDouyinQualityCap(opts.VideoQuality) <= 0 {
@@ -126,14 +366,20 @@ func (p *douyinWorkPlanner) PlanWorkDownload(ctx context.Context, targetID strin
 
 	if len(detail.Pages) > 0 {
 		pages := make([]download.PlannedNotePage, 0, len(detail.Pages))
+		var assetIDs []string
 		for _, pg := range detail.Pages {
+			mediaID := douyinPageMediaID(pg)
 			item := download.PlannedNotePage{
 				Index:         pg.Index,
 				Kind:          pg.Kind,
+				MediaID:       mediaID,
 				UnknownReason: pg.UnknownReason,
 				Width:         pg.Width,
 				Height:        pg.Height,
 				ImageURLs:     append([]string(nil), pg.ImageURLs...),
+			}
+			if mediaID != "" {
+				assetIDs = append(assetIDs, mediaID)
 			}
 			if pg.UnknownKind {
 				item.UnknownKind = firstNonEmpty(pg.Kind, "unknown")
@@ -157,6 +403,9 @@ func (p *douyinWorkPlanner) PlanWorkDownload(ctx context.Context, targetID strin
 			pages = append(pages, item)
 		}
 		plan.Pages = pages
+		if len(assetIDs) > 0 {
+			plan.AssetIDs = assetIDs
+		}
 	}
 
 	if detail.Music != nil && (detail.Music.Title != "" || len(detail.Music.PlayURLs) > 0) {

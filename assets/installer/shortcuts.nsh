@@ -1,5 +1,5 @@
 ﻿; TRACE installer hooks (MyGo windows.installerInclude). Each channel's file (stable.nsh, dev.nsh,
-; ptest.nsh, chosen by tools/internal/build.ChannelConfig) defines TRACE_SHORTCUT, the shortcuts'
+; test.nsh, chosen by tools/internal/build.ChannelConfig) defines TRACE_SHORTCUT, the shortcuts'
 ; file name (the channel's windows.displayName), and the development channel TRACE_DESKTOP_ON_UPDATE.
 ;
 ; MyGo always makes the Start menu shortcut and makes the desktop one from its finish page's box.
@@ -11,8 +11,13 @@
 ;   interactive install: the finish page's box chooses the desktop shortcut, a question during the
 ;     install the Start menu one (MyGo's hooks cannot add a wizard page).
 ; Release updates replace the app's files without the installer and change no shortcut.
+;
+; /RELAUNCH (silent installs only) starts TRACE once the install is done, as the other desktop
+; apps of this author do; TRACE's own "quit for update" record decides window or tray.
+; tools/package starts TRACE Dev itself instead, outside the command's job object.
 
 !include LogicLib.nsh
+!include FileFunc.nsh
 
 Var TraceFirstInstall
 Var TraceHadStartMenu
@@ -56,5 +61,18 @@ Var TraceHadStartMenu
         Delete "$SMPROGRAMS\${TRACE_SHORTCUT}.lnk"
       ${EndIf}
     ${EndIf}
+  ${EndIf}
+
+  ${If} ${Silent}
+    Push $R0
+    Push $R1
+    ${GetParameters} $R0
+    ClearErrors
+    ${GetOptions} $R0 "/RELAUNCH" $R1
+    ${IfNot} ${Errors}
+      Exec '"$INSTDIR\trace.exe"'
+    ${EndIf}
+    Pop $R1
+    Pop $R0
   ${EndIf}
 !macroend

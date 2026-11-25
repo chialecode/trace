@@ -30,7 +30,7 @@ const Repository = "chialecode/trace"
 const (
 	ChannelDev    = "dev"
 	ChannelStable = "stable"
-	ChannelPtest  = "ptest"
+	ChannelTest   = "test"
 )
 
 // Info is what a build records about itself.
@@ -60,8 +60,8 @@ func IdentityOf(channel string) Identity {
 	switch channel {
 	case ChannelDev:
 		return Identity{Slug: "trace-dev", Identifier: appdirs.IdentifierForChannel("dev"), DisplayName: "TRACE Dev", InstallDir: "trace-dev", Icon: "assets/icon-dev.png", InstallerInclude: "assets/installer/dev.nsh"}
-	case ChannelPtest:
-		return Identity{Slug: "trace-ptest", Identifier: appdirs.IdentifierForChannel("ptest"), DisplayName: "TRACE PTest", InstallDir: "trace-ptest", Icon: "assets/icon-dev.png", InstallerInclude: "assets/installer/ptest.nsh"}
+	case ChannelTest:
+		return Identity{Slug: "trace-test", Identifier: appdirs.IdentifierForChannel("test"), DisplayName: "TRACE Test", InstallDir: "trace-test", Icon: "assets/icon-dev.png", InstallerInclude: "assets/installer/test.nsh"}
 	default:
 		return Identity{Slug: "trace", Identifier: appdirs.IdentifierForChannel("stable"), DisplayName: "TRACE", InstallDir: "trace", Icon: "assets/icon.png", InstallerInclude: "assets/installer/stable.nsh"}
 	}
@@ -224,7 +224,7 @@ func (u *Updates) Feed() string {
 // ChannelConfig returns the mygo.json of a channel's build from the
 // repository's mygo.json: the channel's identity, the build's version, the
 // icon, publisher, copyright and Chinese catalogs, and updates only where
-// given (the release channel and the ptest rehearsal).
+// given (the release channel and the trace-test rehearsal).
 func ChannelConfig(base []byte, channel, version, out string, updates *Updates) ([]byte, error) {
 	var cfg map[string]any
 	if err := json.Unmarshal(base, &cfg); err != nil {

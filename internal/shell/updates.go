@@ -26,18 +26,18 @@ const (
 	FlagBackground = "--background"
 )
 
-// PtestUpdateURLEnv points the ptest identity at a local release; other
+// RehearsalUpdateURLEnv points the trace-test identity at a local release; other
 // channels ignore it.
-const PtestUpdateURLEnv = "TRACE_PTEST_UPDATE_URL"
+const RehearsalUpdateURLEnv = "TRACE_TEST_UPDATE_URL"
 
 // restartMarkerTTL is how long a quit for an update decides how the next
 // launch opens: a later manual launch opens the window as usual.
 const restartMarkerTTL = 5 * time.Minute
 
-// ptestFirstCheckDelay is when the ptest identity, pointed at a local
-// release by TRACE_PTEST_UPDATE_URL, checks for the update of the
+// rehearsalFirstCheckDelay is when the trace-test identity, pointed at a local
+// release by TRACE_TEST_UPDATE_URL, checks for the update of the
 // rehearsal.
-const ptestFirstCheckDelay = 3 * time.Second
+const rehearsalFirstCheckDelay = 3 * time.Second
 
 // LaunchArgs are the flags TRACE was started (or a second instance) with.
 type LaunchArgs struct {
@@ -187,7 +187,7 @@ func (e *mygoEngine) Install(ctx context.Context, progress func(int64, int64)) e
 }
 
 // newUpdateController wires the updates of the running build: the release
-// channel (and the ptest identity of the rehearsal) reads the feed that
+// channel (and the trace-test identity of the rehearsal) reads the feed that
 // tools/release injected through TRACE's verified source; builds without
 // updates get a disabled controller.
 func newUpdateController(backend *service.Backend, onChange func(), restart func()) *update.Controller {
@@ -203,12 +203,12 @@ func newUpdateController(backend *service.Backend, onChange func(), restart func
 				Current:     build.Version,
 				Client:      &http.Client{Transport: netproxy.Transport(), Timeout: 15 * time.Minute},
 			}
-			if appdirs.CompiledChannel() == "ptest" {
-				if base := strings.TrimRight(strings.TrimSpace(os.Getenv(PtestUpdateURLEnv)), "/"); base != "" {
+			if appdirs.CompiledChannel() == "test" {
+				if base := strings.TrimRight(strings.TrimSpace(os.Getenv(RehearsalUpdateURLEnv)), "/"); base != "" {
 					src.ManifestURL = base + "/" + path.Base(feed)
 					src.AllowLoopbackHTTP = true
 					src.Rewrite = func(raw string) string { return base + "/" + path.Base(raw) }
-					firstDelay = ptestFirstCheckDelay
+					firstDelay = rehearsalFirstCheckDelay
 				}
 			}
 			mygo.Updater.SetSource(src)

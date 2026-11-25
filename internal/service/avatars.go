@@ -200,6 +200,11 @@ func (b *Backend) pruneAccountAvatars() {
 			keep[k] = true
 		}
 	}
+	if b.conflicts != nil {
+		for _, k := range b.conflicts.avatarKeys() {
+			keep[k] = true
+		}
+	}
 	if b.lib != nil {
 		authors, err := b.lib.DistinctAuthorRefs()
 		if err != nil {

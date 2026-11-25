@@ -191,12 +191,15 @@ func TestInstallerIncludes(t *testing.T) {
 		`Delete "$SMPROGRAMS\${TRACE_SHORTCUT}.lnk"`,
 		"!ifdef TRACE_DESKTOP_ON_UPDATE",
 		"Call CreateDesktopShortcut",
+		// Silent installs restart TRACE on /RELAUNCH, like the author's other desktop apps.
+		`${GetOptions} $R0 "/RELAUNCH" $R1`,
+		`Exec '"$INSTDIR\trace.exe"'`,
 	} {
 		if !strings.Contains(common, rule) {
 			t.Fatalf("shortcuts.nsh lacks %q", rule)
 		}
 	}
-	for _, channel := range []string{ChannelStable, ChannelDev, ChannelPtest} {
+	for _, channel := range []string{ChannelStable, ChannelDev, ChannelTest} {
 		id := IdentityOf(channel)
 		text := read(id.InstallerInclude)
 		if !strings.Contains(text, `!define TRACE_SHORTCUT "`+id.DisplayName+`"`) || !strings.Contains(text, `!include "${__FILEDIR__}\shortcuts.nsh"`) {

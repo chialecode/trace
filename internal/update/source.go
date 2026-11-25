@@ -118,7 +118,7 @@ func ParsePublicKey(s string) (ed25519.PublicKey, error) {
 //
 //   - every request is HTTPS, redirects included (plain HTTP only to the
 //     loopback interface, and only when AllowLoopbackHTTP is set, which
-//     the ptest identity alone does);
+//     the trace-test identity alone does);
 //   - the manifest is complete, within the size limits, of a version
 //     newer than the running one, and carries a valid attestation of that
 //     version with the update key;
@@ -135,7 +135,7 @@ type Source struct {
 	Client            *http.Client
 	AllowLoopbackHTTP bool
 	// Rewrite, when set, maps the URLs the manifest names to where the
-	// files are served from (the ptest identity's local release).
+	// files are served from (the trace-test identity's local release).
 	Rewrite func(string) string
 
 	mu    sync.Mutex
@@ -316,7 +316,7 @@ func (e *HTTPStatusError) Error() string {
 // checkURL checks a URL the manifest names.
 func (s *Source) checkURL(raw string) error {
 	if s.Rewrite != nil {
-		// The ptest identity serves the files itself; the names still
+		// The trace-test identity serves the files itself; the names still
 		// have to be HTTPS URLs as a real release's are.
 		u, err := url.Parse(raw)
 		if err != nil || u.Scheme != "https" || u.Host == "" {

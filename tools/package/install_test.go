@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,6 +27,11 @@ type fakeMachine struct {
 	setupErr    error
 	installsVer string // DisplayVersion the installer writes
 	lookups     []string
+	// windowUntil: TRACE Dev's window stays open until then (zero: no
+	// window, the tray only); windowNever: it never closes.
+	windowUntil time.Time
+	windowNever bool
+	windowCalls int
 }
 
 func (m *fakeMachine) Lookup(id string) (installEntry, bool, error) {
@@ -44,6 +51,14 @@ func (m *fakeMachine) Running(exe string) (bool, error) {
 	return true, nil
 }
 
+func (m *fakeMachine) WindowOpen(exe string) (bool, error) {
+	m.windowCalls++
+	if !m.running[exe] {
+		return false, nil
+	}
+	return m.windowNever || m.now.Before(m.windowUntil), nil
+}
+
 func (m *fakeMachine) RequestQuit(exe string) error {
 	m.quitCalls = append(m.quitCalls, exe)
 	m.quitAsked = m.now
@@ -61,6 +76,9 @@ func (m *fakeMachine) runSetup(setup string) error {
 		return m.setupErr
 	}
 	e := m.entries[devIdentifier]
+	if e.Location == "" {
+		e.Location = devLoc // a first install goes to the default folder
+	}
 	e.Version = m.installsVer
 	m.entries[devIdentifier] = e
 	return nil
@@ -90,7 +108,7 @@ func (m *fakeMachine) installer() *devInstaller {
 		Setup: `D:\repo\dist\trace-dev\trace-dev-setup-0.1.1-dev.202611090800-amd64.exe`, Version: "0.1.1-dev.202611090800",
 		Registry: m, Procs: m, RunSetup: m.runSetup,
 		Now: func() time.Time { return m.now }, Sleep: func(d time.Duration) { m.now = m.now.Add(d) },
-		Timeout: quitTimeout,
+		Timeout: quitTimeout, WindowWait: windowWait, WindowPoll: windowPoll,
 	}
 }
 
@@ -119,11 +137,87 @@ func stableUntouched(t *testing.T, m *fakeMachine) {
 	}
 }
 
-func TestInstallDevSkipsWhenNotInstalled(t *testing.T) {
+// A machine without TRACE Dev gets its first install the same way: no quit,
+// installed into the default folder, then started in the tray.
+func TestInstallDevInstallsTheFirstTimeToo(t *testing.T) {
 	m := newMachine()
 	res, err := m.installer().Run()
-	if err != nil || !res.Skipped || res.Installed || len(m.setups) != 0 || !strings.Contains(res.Reason, "没有安装") {
-		t.Fatalf("%+v %v", res, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Installed || res.Skipped || !res.FirstInstall || res.OldVersion != "" || res.WasRunning || len(m.quitCalls) != 0 || len(m.setups) != 1 {
+		t.Fatalf("%+v quit=%v setups=%v", res, m.quitCalls, m.setups)
+	}
+	want := filepath.Join(devLoc, devExeName) + " " + flagBackground
+	if len(m.launches) != 1 || strings.Join(m.launches[0], " ") != want || !res.Relaunched || !res.Background {
+		t.Fatalf("launch %v %+v", m.launches, res)
+	}
+	if res.Identity != "trace-dev" || res.Location != devLoc || res.NewVersion != "0.1.1-dev.202611090800" {
+		t.Fatalf("%+v", res)
+	}
+	stableUntouched(t, m)
+}
+
+// The window open means the user is using TRACE Dev: wait (every 2 s) until
+// it is hidden to the tray, then ask it to quit and install.
+func TestInstallDevWaitsWhileTheWindowIsOpen(t *testing.T) {
+	m := newMachine().withDev("0.1.1-dev.202611080700", true)
+	m.windowUntil = m.now.Add(9 * time.Second)
+	m.quitAfter = time.Second
+	res, err := m.installer().Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Installed || !res.WindowOpen || !res.Deferred || !res.WasRunning || len(m.quitCalls) != 1 {
+		t.Fatalf("%+v quit=%v", res, m.quitCalls)
+	}
+	if res.DeferMs != 10000 { // five 2-second polls
+		t.Fatalf("deferred %d ms", res.DeferMs)
+	}
+	stableUntouched(t, m)
+}
+
+// Closing TRACE Dev while the install waits for its window: no quit request.
+func TestInstallDevInstallsWhenTraceDevExitsDuringTheWait(t *testing.T) {
+	m := newMachine().withDev("0.1.1-dev.202611080700", true)
+	m.windowNever = true
+	exe := filepath.Join(devLoc, devExeName)
+	sleeps := 0
+	d := m.installer()
+	d.Sleep = func(step time.Duration) {
+		m.now = m.now.Add(step)
+		if sleeps++; sleeps == 3 {
+			m.running[exe] = false
+		}
+	}
+	res, err := d.Run()
+	if err != nil || !res.Installed || !res.Deferred || len(m.quitCalls) != 0 || res.QuitMs != 0 {
+		t.Fatalf("%+v %v quit=%v", res, err, m.quitCalls)
+	}
+	stableUntouched(t, m)
+}
+
+// A window still open after 10 minutes skips this install: not a failure,
+// nothing is asked to quit and nothing is installed.
+func TestInstallDevSkipsWhenTheWindowStaysOpen(t *testing.T) {
+	m := newMachine().withDev("0.1.1-dev.202611080700", true)
+	m.windowNever = true
+	start := m.now
+	res, err := m.installer().Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Skipped || res.Installed || res.Reason != "window_open" || !res.WindowOpen || !res.Deferred {
+		t.Fatalf("%+v", res)
+	}
+	if !strings.Contains(res.Guidance, installOnlyCommand) {
+		t.Fatalf("guidance %q", res.Guidance)
+	}
+	if waited := m.now.Sub(start); waited != windowWait {
+		t.Fatalf("waited %s", waited)
+	}
+	if m.windowCalls != 301 || len(m.quitCalls) != 0 || len(m.setups) != 0 || len(m.launches) != 0 || !m.running[filepath.Join(devLoc, devExeName)] {
+		t.Fatalf("window checks %d quit=%v setups=%v launches=%v", m.windowCalls, m.quitCalls, m.setups, m.launches)
 	}
 	stableUntouched(t, m)
 }
@@ -136,7 +230,7 @@ func TestInstallDevWhenNotRunningStartsInTray(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Installed || res.WasRunning || !res.Relaunched || !res.Background || len(m.quitCalls) != 0 {
+	if !res.Installed || res.FirstInstall || res.WasRunning || res.Deferred || !res.Relaunched || !res.Background || len(m.quitCalls) != 0 {
 		t.Fatalf("%+v quit=%v", res, m.quitCalls)
 	}
 	want := filepath.Join(devLoc, devExeName) + " " + flagBackground
@@ -156,7 +250,7 @@ func TestInstallDevQuitsInstallsAndReopensInTray(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Installed || !res.WasRunning || !res.Relaunched || !res.Background || res.InJob {
+	if !res.Installed || !res.WasRunning || res.WindowOpen || res.Deferred || !res.Relaunched || !res.Background || res.InJob {
 		t.Fatalf("%+v", res)
 	}
 	if len(m.quitCalls) != 1 || m.quitCalls[0] != filepath.Join(devLoc, devExeName) {
@@ -188,8 +282,8 @@ func TestInstallDevGivesUpWhenTraceDevDoesNotQuit(t *testing.T) {
 	m.quitAfter = -1
 	start := m.now
 	res, err := m.installer().Run()
-	if err == nil || !strings.Contains(err.Error(), "30 秒内没有退出") || !strings.Contains(err.Error(), "没有强制结束") {
-		t.Fatalf("error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "30 秒内没有退出") || !strings.Contains(err.Error(), "没有强制结束") || res.Reason != "quit_timeout" {
+		t.Fatalf("error: %v (%s)", err, res.Reason)
 	}
 	if res.Installed || len(m.setups) != 0 || len(m.launches) != 0 {
 		t.Fatalf("installed anyway: %+v", res)
@@ -206,7 +300,7 @@ func TestInstallDevGivesUpWhenTraceDevDoesNotQuit(t *testing.T) {
 func TestInstallDevFailures(t *testing.T) {
 	m := newMachine().withDev("0.1.1-dev.202611080700", false)
 	m.setupErr = errors.New("exit status 2")
-	if res, err := m.installer().Run(); err == nil || res.Installed || !strings.Contains(res.Error, "静默安装失败") {
+	if res, err := m.installer().Run(); err == nil || res.Installed || !strings.Contains(res.Error, "静默安装失败") || res.Reason != "installer_failed" {
 		t.Fatalf("failed installer: %+v %v", res, err)
 	}
 
@@ -214,7 +308,7 @@ func TestInstallDevFailures(t *testing.T) {
 	m.quitAfter = 0
 	m.installsVer = "0.1.1-dev.202611080700" // the installer left the old version
 	res, err := m.installer().Run()
-	if err == nil || res.Installed || !strings.Contains(err.Error(), "不是 0.1.1-dev.202611090800") {
+	if err == nil || res.Installed || !strings.Contains(err.Error(), "不是 0.1.1-dev.202611090800") || res.Reason != "version_mismatch" {
 		t.Fatalf("version check: %+v %v", res, err)
 	}
 	if len(m.launches) != 0 {
@@ -225,13 +319,41 @@ func TestInstallDevFailures(t *testing.T) {
 
 func TestInstallDevSkipsOnRequestAndOnCI(t *testing.T) {
 	env := func(kv map[string]string) func(string) string { return func(k string) string { return kv[k] } }
-	if r := skipReason(env(map[string]string{installDevEnv: "0"})); !strings.Contains(r, installDevEnv) {
-		t.Fatalf("TRACE_DEV_AUTO_INSTALL=0: %q", r)
+	if r, g := skipReason(env(map[string]string{installDevEnv: "0"})); r != "disabled" || !strings.Contains(g, installDevEnv) {
+		t.Fatalf("TRACE_DEV_AUTO_INSTALL=0: %q %q", r, g)
 	}
-	if r := skipReason(env(map[string]string{"CI": "true"})); r == "" {
-		t.Fatal("CI=true not skipped")
+	if r, _ := skipReason(env(map[string]string{"CI": "true"})); r != "ci" {
+		t.Fatalf("CI=true: %q", r)
 	}
-	if r := skipReason(env(map[string]string{installDevEnv: "1", "CI": ""})); r != "" {
+	if r, _ := skipReason(env(map[string]string{installDevEnv: "1", "CI": ""})); r != "" {
 		t.Fatalf("skipped: %q", r)
+	}
+}
+
+// install-dev.json uses the camelCase fields shared by the author's desktop apps.
+func TestInstallResultFields(t *testing.T) {
+	m := newMachine().withDev("0.1.1-dev.202611080700", true)
+	m.windowUntil = m.now.Add(time.Second)
+	res, err := m.installer().Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "install-dev.json")
+	if err := writeInstallResult(path, res); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"identity", "installed", "skipped", "firstInstall", "oldVersion", "newVersion", "installLocation",
+		"wasRunning", "windowOpen", "deferred", "deferMs", "quitMs", "relaunched", "background", "inJob", "elapsedMs", "at"} {
+		if _, ok := got[key]; !ok {
+			t.Errorf("install-dev.json has no %q: %s", key, raw)
+		}
 	}
 }

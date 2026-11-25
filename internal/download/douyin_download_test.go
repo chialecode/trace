@@ -678,8 +678,15 @@ func TestCrossSiteDownloadCircuitBreakerAndPauseIsolation(t *testing.T) {
 	biliStarted := make(chan struct{}, 1)
 	biliGate2 := make(chan struct{})
 	biliStarted2 := make(chan struct{}, 1)
+	dyRiskGate := make(chan struct{})
+	dyRiskStarted := make(chan struct{}, 1)
 	dyHoldGate := make(chan struct{})
 	dyHoldStarted := make(chan struct{}, 1)
+	var onceBili1, onceBili2, onceRisk, onceHold sync.Once
+	closeBiliGate := func() { onceBili1.Do(func() { close(biliGate) }) }
+	closeBiliGate2 := func() { onceBili2.Do(func() { close(biliGate2) }) }
+	closeDyRiskGate := func() { onceRisk.Do(func() { close(dyRiskGate) }) }
+	closeDyHoldGate := func() { onceHold.Do(func() { close(dyHoldGate) }) }
 
 	var srvURL string
 	mux := http.NewServeMux()
@@ -711,25 +718,42 @@ func TestCrossSiteDownloadCircuitBreakerAndPauseIsolation(t *testing.T) {
 			},
 		})
 	})
-	mux.HandleFunc("/bili/dyn.jpg", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/bili/dyn.jpg", func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case biliStarted <- struct{}{}:
 		default:
 		}
-		<-biliGate
+		select {
+		case <-biliGate:
+		case <-r.Context().Done():
+			return
+		}
 		w.Header().Set("Content-Type", "image/jpeg")
 		_, _ = w.Write(syntheticJPEGMini())
 	})
-	mux.HandleFunc("/bili/dyn2.jpg", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/bili/dyn2.jpg", func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case biliStarted2 <- struct{}{}:
 		default:
 		}
-		<-biliGate2
+		select {
+		case <-biliGate2:
+		case <-r.Context().Done():
+			return
+		}
 		w.Header().Set("Content-Type", "image/jpeg")
 		_, _ = w.Write(syntheticJPEGMini())
 	})
-	mux.HandleFunc("/cdn/risk412.mp4", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/cdn/risk412.mp4", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case dyRiskStarted <- struct{}{}:
+		default:
+		}
+		select {
+		case <-dyRiskGate:
+		case <-r.Context().Done():
+			return
+		}
 		w.WriteHeader(http.StatusPreconditionFailed) // 412 -> risk_control
 	})
 	mux.HandleFunc("/cdn/ok.mp4", func(w http.ResponseWriter, r *http.Request) {
@@ -750,6 +774,12 @@ func TestCrossSiteDownloadCircuitBreakerAndPauseIsolation(t *testing.T) {
 
 	// MaxConcurrentTasks = 2 so Bilibili task + Douyin task 1 run concurrently while Douyin task 2 sits queued!
 	mgr, _, srv, _, _ := setupDouyinDownloadTestEnv(t, mux, 2)
+	t.Cleanup(func() {
+		closeBiliGate()
+		closeBiliGate2()
+		closeDyRiskGate()
+		closeDyHoldGate()
+	})
 	srvURL = srv.URL
 	planner := newFakeDouyinWorkPlanner()
 	mgr.RegisterWorkPlanner(planner)
@@ -782,10 +812,14 @@ func TestCrossSiteDownloadCircuitBreakerAndPauseIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnqueueDouyinWork(risk): %v", err)
 	}
+	// Wait until dyRisk occupies worker slot 2 before inserting dyQueued so dyQueued
+	// deterministically enters SQLite with status='queued' before 412 pauses peers.
+	<-dyRiskStarted
 	dyQueued, err := mgr.EnqueueDouyinWork(context.Background(), DouyinWorkEnqueueRequest{AwemeID: "7320000000000000002"})
 	if err != nil {
 		t.Fatalf("EnqueueDouyinWork(queued): %v", err)
 	}
+	closeDyRiskGate()
 
 	// Both Douyin tasks must pause with risk_control, while Bilibili task remains running and then completes!
 	p1 := waitForTaskStatus(t, mgr, dyRisk.TaskID, "paused", 5*time.Second)
@@ -798,7 +832,7 @@ func TestCrossSiteDownloadCircuitBreakerAndPauseIsolation(t *testing.T) {
 	if biliMid.Status == "paused" {
 		t.Fatalf("Douyin circuit breaker must NOT pause active Bilibili task: %+v", biliMid)
 	}
-	close(biliGate)
+	closeBiliGate()
 	waitForTaskStatus(t, mgr, biliTask.TaskID, "completed", 5*time.Second)
 
 	// Now verify PauseForSite(site.Douyin, "auth_required", ...) pauses running Douyin tasks without touching Bilibili!
@@ -821,13 +855,13 @@ func TestCrossSiteDownloadCircuitBreakerAndPauseIsolation(t *testing.T) {
 	<-dyHoldStarted
 
 	mgr.PauseForSite(site.Douyin, "auth_required", "抖音登录已退出")
-	close(dyHoldGate)
+	closeDyHoldGate()
 
 	dyPausedLogout := waitForTaskStatus(t, mgr, dyHoldTask.TaskID, "paused", 5*time.Second)
 	if dyPausedLogout.PauseReason != "auth_required" {
 		t.Fatalf("expected PauseReason=auth_required after PauseForSite, got %+v", dyPausedLogout)
 	}
-	close(biliGate2)
+	closeBiliGate2()
 	waitForTaskStatus(t, mgr, biliTask2.TaskID, "completed", 5*time.Second)
 }
 

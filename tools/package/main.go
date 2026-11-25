@@ -6,15 +6,16 @@
 //	go run ./tools/package -install-only # install the package in dist/trace-dev
 //	go run ./tools/package -server       # build trace-server for Linux into dist/trace-server
 //
-// The agent installs whenever the next step is the person's manual check (a
-// stage handed over, or fixes handed back for another look), so the person
-// never installs by hand; packaging only for automated checks does not install
-// (the person's rule of 2026-11-13, corrected 2026-11-14). The install is skipped with TRACE_DEV_AUTO_INSTALL=0, on CI
-// (CI=true) and when TRACE Dev is not installed. Release packages are built
-// by tools/release.
+// The agent installs after every merge into main and before the person's
+// manual checks, so the person never installs by hand; packaging only for
+// automated checks does not install (engineering.md 2.2). A machine without
+// TRACE Dev gets its first install the same way. The install is skipped with
+// TRACE_DEV_AUTO_INSTALL=0, on CI (CI=true) and while a TRACE Dev window
+// stays open for 10 minutes. Release packages are built by tools/release.
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -169,35 +170,44 @@ func buildDev(now time.Time) error {
 // writes artifacts/package/install-dev.json.
 func installDev(dir string) error {
 	resultPath := filepath.FromSlash(installResultTo)
-	if reason := skipReason(os.Getenv); reason != "" {
-		fmt.Println("==> [install-dev] " + reason)
-		return writeInstallResult(resultPath, installResult{Skipped: true, Reason: reason, At: time.Now().UTC().Format(time.RFC3339)})
+	at := time.Now().UTC().Format(time.RFC3339)
+	skip := func(reason, guidance, version string) error {
+		fmt.Println("==> [install-dev] " + guidance)
+		return writeInstallResult(resultPath, installResult{Identity: devIdentity, Skipped: true, Reason: reason, Guidance: guidance, NewVersion: version, At: at})
+	}
+	invalid := func(err error) error {
+		res := installResult{Identity: devIdentity, Reason: "package_invalid", Error: err.Error(), At: at}
+		if werr := writeInstallResult(resultPath, res); werr != nil {
+			return errors.Join(err, werr)
+		}
+		return err
+	}
+	if reason, guidance := skipReason(os.Getenv); reason != "" {
+		return skip(reason, guidance, "")
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "VERSION.txt"))
 	if err != nil {
-		return fmt.Errorf("no package in %s: %w", dir, err)
+		return invalid(fmt.Errorf("no package in %s: %w", dir, err))
 	}
 	fields := build.ParseVersionFile(string(raw))
 	version := fields["version"]
 	if fields["channel"] != build.ChannelDev || version == "" {
-		return fmt.Errorf("%s/VERSION.txt is not a development package", dir)
+		return invalid(fmt.Errorf("%s/VERSION.txt is not a development package", dir))
 	}
 	if _, err := build.VerifySums(dir, "SHA256SUMS.txt"); err != nil {
-		return fmt.Errorf("package in %s does not match SHA256SUMS.txt: %w", dir, err)
+		return invalid(fmt.Errorf("package in %s does not match SHA256SUMS.txt: %w", dir, err))
 	}
 	setup, err := filepath.Abs(filepath.Join(dir, build.SetupName(build.ChannelDev, version)))
 	if err != nil {
-		return err
+		return invalid(err)
 	}
 	reg, procs, run, err := platformInstaller()
 	if err != nil {
-		reason := err.Error() + "，跳过"
-		fmt.Println("==> [install-dev] " + reason)
-		return writeInstallResult(resultPath, installResult{Skipped: true, Reason: reason, NewVersion: version, At: time.Now().UTC().Format(time.RFC3339)})
+		return skip("unsupported_platform", err.Error()+"，跳过", version)
 	}
 	d := &devInstaller{
 		Setup: setup, Version: version, Registry: reg, Procs: procs, RunSetup: run,
-		Now: time.Now, Sleep: time.Sleep, Timeout: quitTimeout,
+		Now: time.Now, Sleep: time.Sleep, Timeout: quitTimeout, WindowWait: windowWait, WindowPoll: windowPoll,
 		Logf: func(format string, args ...any) { fmt.Printf(format+"\n", args...) },
 	}
 	res, runErr := d.Run()
@@ -208,13 +218,17 @@ func installDev(dir string) error {
 	case runErr != nil:
 		return runErr
 	case res.Skipped:
-		fmt.Println("==> [install-dev] " + res.Reason)
+		fmt.Println("==> [install-dev] " + res.Guidance)
 	default:
 		how := "已在托盘打开"
 		if res.InJob {
 			how += "；它仍在运行这个命令的作业对象里，命令结束后可能被一起结束，请从开始菜单打开一次"
 		}
-		fmt.Printf("==> [install-dev] %s %s → %s，%s（%d ms）\n", devDisplayName, strings.TrimSpace(res.OldVersion), res.NewVersion, how, res.ElapsedMs)
+		from := strings.TrimSpace(res.OldVersion)
+		if res.FirstInstall {
+			from = "首次安装"
+		}
+		fmt.Printf("==> [install-dev] %s %s → %s，%s（%d ms）\n", devDisplayName, from, res.NewVersion, how, res.ElapsedMs)
 	}
 	return nil
 }
