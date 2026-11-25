@@ -255,6 +255,10 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅标签：内容",
 				"订阅标签：账号",
 				"订阅管理菜单",
+				"订阅自定义链接栏",
+				"打开订阅链接：link3.cc/alpha_tech",
+				"打开订阅链接：创作手记",
+				"管理订阅自定义链接",
 				"订阅内容信息流列表",
 				"主页作者站点：" + savedDynamicItem.ItemKey,
 				"主页作者站点：" + savedDouyinVideo.ItemKey,
@@ -262,6 +266,28 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			ForbiddenLabels: []string{
 				"关联账号输入",
 				"开始录制 9001",
+			},
+		},
+		{
+			Name: "subscription-links-dialog",
+			Setup: func() {
+				seedRecentAndLive()
+				if primarySub.ID != "" {
+					app.SubDetailTab = "content"
+					app.OpenSubscriptionDetail(primarySub)
+					app.OpenSubLinksModal(primarySub)
+				}
+			},
+			RequiredLabels: []string{
+				"订阅自定义链接对话框",
+				"对话框打开订阅链接 1",
+				"对话框打开订阅链接 2",
+				"编辑订阅链接 1",
+				"删除订阅链接 1",
+				"新订阅链接名称",
+				"新订阅链接地址",
+				"确认添加订阅链接",
+				"关闭自定义链接对话框",
 			},
 		},
 		{
@@ -280,6 +306,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅管理菜单",
 			},
 			ForbiddenLabels: []string{
+				"订阅自定义链接栏",
 				"订阅内容信息流列表",
 				"关联账号输入",
 			},

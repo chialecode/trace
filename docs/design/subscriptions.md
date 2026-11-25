@@ -23,6 +23,9 @@ TRACE 以订阅为逻辑入口（DEC-026）：一个订阅代表一个被追踪�
       {"site": "weibo", "uid": "100000001", "name": "昵称快照", "face": "https://…", "addedAt": "…"},
       {"site": "x", "uid": "100000001", "uniqueId": "screen_name 快照", "name": "昵称快照", "face": "https://…", "addedAt": "…"}
     ],
+    "links": [
+      {"label": "可选显示名（≤ 48 字）", "url": "https://link3.cc/…"}
+    ],
     "ruleId": "default",
     "rules": {"scheduledCheck": true, "autoCache": {"enabled": false, "types": ["video", "draw"], "since": null}, "autoRecord": false}
   }],
@@ -43,6 +46,7 @@ TRACE 以订阅为逻辑入口（DEC-026）：一个订阅代表一个被追踪�
 - `site` 接受 `bilibili`、`douyin`、`weibo` 与 `x`（DEC-043、DEC-065、DEC-066）；一个订阅可以同时有四个站点的账号。单个订阅内的多个关联账号统一按固定站点顺序 `bilibili` → `douyin` → `weibo` → `x`（同 `site.All()`）稳定排列，同一站点的多个账号保持原有相对顺序（[DEC-071](../decisions.md#dec-071)）；读入、写入与快照导出/解析均维持这一顺序，已指定且仍关联的 `avatar` 保持不变，新建或失去原头像账号时回退到排序后的第一个关联账号。文件版本 1 → 2、2 → 3 与 3 → 4 的迁移见[数据 §1](data-and-cache.md#schema-v2)、[版本 3 说明](data-and-cache.md#schema-v3)与[版本 4 说明](data-and-cache.md#schema-v4)（`SubscriptionsSchemaVersion = 4`，`UpdatesDBSchemaVersion = 2` 拆开维护）。
 - 增删改、关联/移动先保护受影响记录，文件或 SQL 失败返回错误并恢复旧视图；回滚只恢复受影响行，重载使用 SQL 事务，不先清空全部订阅再逐条写入。
 - **更改关联订阅（`Move` / `MoveToNew`）**：支持跨哔哩哔哩、抖音、微博与 X 将已关联账号直接转移到另一个已有订阅（`Move`）或在同一把锁与单次原子写盘中新建订阅并移入（`MoveToNew`，经 `Backend.MoveSubscriptionAccountToNew` 暴露），无需先解除关联再重新添加；转移时保留账号快照字段（`uniqueId`、`webRid`、`name`、`face`、`addedAt`）与 `updates.db` 中的检查起点及记录（不置 `unlinked_at`），并同步更新原订阅的头像引用（失去最后一个账号时清空 `avatar` 与 `face`），零站点请求；任一步失败完整回滚内存、文件与 SQLite 视图。
+- **自定义外部链接（`CustomLink`，[DEC-074](../decisions.md#dec-074)，`internal/subscription/links.go`）**：`subscriptions[].links` 为向后兼容的可选字段（`omitempty`，不提升 `SubscriptionsSchemaVersion = 4`），用于保存该订阅对应的聚合页或个人主页（如 `link3.cc`、`linktr.ee` 等，每个订阅最多 20 条）；每条含可选 `label`（`≤ 48` 字；省略时自动提取去 `www.` 的域名与去尾部 `/` 的路径，超过 40 字截断）与必填 `url`（严格限制为带有效主机的 `http://` 或 `https://`，主机转小写并去掉默认端口 `:80`/`:443`，拒绝 `javascript:`、`file:`、控制字符、空白、UNC 路径、账号密码以及 Cookie/签名令牌查询参数；按规范化 `url` 去重）。读入文件或快照时自动剔除不合规旧项而不阻断整个文件加载；`SetLinks` 原子更新并支持失败回滚，`Upsert` 未传 `links` 时保留原有链接，`cloneSubscription`、`updates.db` 的 `raw_json`、订阅快照导出与摘要哈希（`Snapshot.Hash`）、远程同步以及勾选“合并进已有订阅”导入（`MergeExisting`）均完整保留或按规范化 `url` 合并。
 
 <a id="update-check"></a>
 ## 2. 检查更新（FR-SUB-001）

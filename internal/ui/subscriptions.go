@@ -48,6 +48,15 @@ func (a *App) filteredSubscriptions(query string) []subscription.Subscription {
 				}
 			}
 			if !matched {
+				for _, lnk := range s.Links {
+					if strings.Contains(strings.ToLower(lnk.Label), query) ||
+						strings.Contains(strings.ToLower(lnk.URL), query) {
+						matched = true
+						break
+					}
+				}
+			}
+			if !matched {
 				continue
 			}
 		}

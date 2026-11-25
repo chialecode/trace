@@ -68,6 +68,7 @@ type Subscription struct {
 	Avatar    AvatarRef    `json:"avatar"`
 	CreatedAt string       `json:"createdAt"`
 	Accounts  []AccountRef `json:"accounts"`
+	Links     []CustomLink `json:"links,omitempty"`
 	Rules     SubRules     `json:"rules"`
 	// RuleID is the shared cache rule the subscription uses (DEC-040);
 	// Rules holds that rule's settings plus this subscription's own
@@ -607,6 +608,7 @@ func scanSub(r subScanner) (Subscription, error) {
 			s.Note = full.Note
 			s.Avatar = full.Avatar
 			s.Accounts = full.Accounts
+			s.Links = full.Links
 			s.Rules = full.Rules
 			s.RuleID = full.RuleID
 			s.AutoCacheBacklog = full.AutoCacheBacklog

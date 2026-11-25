@@ -58,6 +58,11 @@ var (
 // the system's Chinese font for what Inter lacks.
 const UIFont = "Inter"
 
+// MonoFont is the monospace fallback stack for logs, diagnostic paths, and
+// version/commit/fingerprint readouts; DirectWrite falls back to the system's
+// Chinese UI font for CJK characters.
+const MonoFont = "JetBrains Mono, Cascadia Mono, Consolas"
+
 // Multiline text line-height multipliers. Strictly never apply these to
 // .SingleLine() elements (buttons, badges, single-line metadata) so pill
 // heights and toolbar alignments stay identical.
