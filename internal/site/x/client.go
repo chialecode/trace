@@ -140,31 +140,32 @@ type RateLimitState struct {
 
 // ClientOptions configures an X web protocol Client.
 type ClientOptions struct {
-	CredStore               *credential.Store
-	Endpoints               Endpoints
-	UserAgent               string
-	ClientLanguage          string
-	MinInterval             time.Duration // <0 disables pacing (tests); 0 uses DefaultMinInterval (4000ms)
-	JitterMax               time.Duration // <0 sets 0; 0 uses DefaultJitterMax (2000ms) unless MinInterval < 0
-	RateLimitJitterMax      time.Duration // <0 sets 0; 0 uses DefaultRateLimitJitterMax (60s)
-	APITimeout              time.Duration
-	RedirectTimeout         time.Duration
-	MediaIdleTimeout        time.Duration
-	MaxBodyBytes            int64
-	MaxImageBytes           int64
-	Transport               http.RoundTripper
-	AssetTransport          http.RoundTripper // optional override for abs.twimg.com frontend assets
-	WrapTransport           func(http.RoundTripper) http.RoundTripper
-	AllowLocalhost          bool
-	Now                     func() time.Time
-	Sleep                   func(ctx context.Context, d time.Duration) error
-	Entropy                 io.Reader
-	FrontendDiscovery       *FrontendDiscovery // optional pre-wired FrontendDiscovery
-	FrontendRefreshCooldown time.Duration
-	FrontendMetadataTTL     time.Duration
-	TxIDOptions             []TxIDOption
-	OnCT0Updated            func(ct0 string)
-	OnFrontendCharge        RequestChargeFunc
+	CredStore                 *credential.Store
+	Endpoints                 Endpoints
+	UserAgent                 string
+	ClientLanguage            string
+	MinInterval               time.Duration // <0 disables pacing (tests); 0 uses DefaultMinInterval (4000ms)
+	JitterMax                 time.Duration // <0 sets 0; 0 uses DefaultJitterMax (2000ms) unless MinInterval < 0
+	RateLimitJitterMax        time.Duration // <0 sets 0; 0 uses DefaultRateLimitJitterMax (60s)
+	APITimeout                time.Duration
+	RedirectTimeout           time.Duration
+	MediaIdleTimeout          time.Duration
+	MaxBodyBytes              int64
+	MaxImageBytes             int64
+	Transport                 http.RoundTripper
+	AssetTransport            http.RoundTripper // optional override for abs.twimg.com frontend assets
+	WrapTransport             func(http.RoundTripper) http.RoundTripper
+	AllowLocalhost            bool
+	ImageCDNFallbackProviders []site.PublicImageCDNProvider
+	Now                       func() time.Time
+	Sleep                     func(ctx context.Context, d time.Duration) error
+	Entropy                   io.Reader
+	FrontendDiscovery         *FrontendDiscovery // optional pre-wired FrontendDiscovery
+	FrontendRefreshCooldown   time.Duration
+	FrontendMetadataTTL       time.Duration
+	TxIDOptions               []TxIDOption
+	OnCT0Updated              func(ct0 string)
+	OnFrontendCharge          RequestChargeFunc
 }
 
 // Client is the X web protocol client.
@@ -173,19 +174,21 @@ type ClientOptions struct {
 // 353 replay, per-operation x-rate-limit-remaining <= 1 brake, runtime frontend metadata
 // discovery, x-client-transaction-id signing, and cookieless CDN & t.co handling.
 type Client struct {
-	cred               *credential.Store
-	endpoints          Endpoints
-	profile            browserProfile
-	clientLanguage     string
-	httpClient         *http.Client
-	redirectClient     *http.Client
-	mediaClient        *http.Client
-	mediaIdleTimeout   time.Duration
-	discovery          *FrontendDiscovery
-	maxBodyBytes       int64
-	maxImageBytes      int64
-	allowLocalhost     bool
-	rateLimitJitterMax time.Duration
+	cred                 *credential.Store
+	endpoints            Endpoints
+	profile              browserProfile
+	clientLanguage       string
+	httpClient           *http.Client
+	redirectClient       *http.Client
+	mediaClient          *http.Client
+	mediaIdleTimeout     time.Duration
+	discovery            *FrontendDiscovery
+	maxBodyBytes         int64
+	maxImageBytes        int64
+	allowLocalhost       bool
+	cdnFallbackProviders []site.PublicImageCDNProvider
+	fallbackWrap         func(http.RoundTripper) http.RoundTripper
+	rateLimitJitterMax   time.Duration
 
 	serialGate  chan struct{}
 	paceMu      sync.Mutex
@@ -331,26 +334,37 @@ func NewClient(opts ClientOptions) *Client {
 		return http.ErrUseLastResponse
 	}
 
+	var fallbackWrap func(http.RoundTripper) http.RoundTripper
+	if opts.Transport != nil {
+		fallbackWrap = func(_ http.RoundTripper) http.RoundTripper {
+			return mediaTransport
+		}
+	} else if opts.WrapTransport != nil {
+		fallbackWrap = opts.WrapTransport
+	}
+
 	endpoints := opts.Endpoints.withDefaults()
 	c := &Client{
-		cred:               opts.CredStore,
-		endpoints:          endpoints,
-		profile:            profile,
-		clientLanguage:     clientLang,
-		mediaIdleTimeout:   mediaIdleTimeout,
-		maxBodyBytes:       maxBytes,
-		maxImageBytes:      maxImageBytes,
-		allowLocalhost:     opts.AllowLocalhost,
-		rateLimitJitterMax: rlJitter,
-		serialGate:         make(chan struct{}, 1),
-		minInterval:        minInterval,
-		jitterMax:          jitterMax,
-		nowFn:              nowFn,
-		sleepFn:            sleepFn,
-		entropy:            ent,
-		rateLimits:         make(map[string]RateLimitState),
-		onCT0Updated:       opts.OnCT0Updated,
-		onFrontendCharge:   opts.OnFrontendCharge,
+		cred:                 opts.CredStore,
+		endpoints:            endpoints,
+		profile:              profile,
+		clientLanguage:       clientLang,
+		mediaIdleTimeout:     mediaIdleTimeout,
+		maxBodyBytes:         maxBytes,
+		maxImageBytes:        maxImageBytes,
+		allowLocalhost:       opts.AllowLocalhost,
+		cdnFallbackProviders: append([]site.PublicImageCDNProvider(nil), opts.ImageCDNFallbackProviders...),
+		fallbackWrap:         fallbackWrap,
+		rateLimitJitterMax:   rlJitter,
+		serialGate:           make(chan struct{}, 1),
+		minInterval:          minInterval,
+		jitterMax:            jitterMax,
+		nowFn:                nowFn,
+		sleepFn:              sleepFn,
+		entropy:              ent,
+		rateLimits:           make(map[string]RateLimitState),
+		onCT0Updated:         opts.OnCT0Updated,
+		onFrontendCharge:     opts.OnFrontendCharge,
 	}
 	c.httpClient = &http.Client{
 		Transport:     apiTransport,
@@ -1411,7 +1425,8 @@ func (c *Client) FetchImage(ctx context.Context, rawURL string) ([]byte, string,
 }
 
 // FetchImageLimited fetches up to maxBytes of an X CDN image with Cookie/Authorization/CSRF/Referer
-// stripped. Requires active X auth (INV-07).
+// stripped. When origin returns 403/404/410 or an expired placeholder image, eligible unsigned
+// pbs.twimg.com URLs fall back to public CDN caches (DEC-075). Requires active X auth (INV-07).
 func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes int64) ([]byte, string, error) {
 	if err := c.RequireAuth("image"); err != nil {
 		return nil, "", err
@@ -1425,9 +1440,29 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 		maxBytes = c.maxImageBytes
 	}
 
+	data, ct, sawPlaceholder, err := c.fetchSingleXImage(ctx, transportSpec, normalized, maxBytes)
+	if err == nil {
+		return data, ct, nil
+	}
+	if site.ShouldAttemptImageCDNFallback(err, sawPlaceholder) {
+		fbCfg := site.PublicImageCDNFallbackConfig{
+			Providers:       c.cdnFallbackProviders,
+			AllowLocalhost:  c.allowLocalhost,
+			WrapTransport:   c.fallbackWrap,
+			IdleReadTimeout: c.mediaIdleTimeout,
+			UserAgent:       c.profile.UserAgent,
+		}
+		if fbData, fbCT, _, fbOK := site.FetchPublicImageCDNFallback(ctx, fbCfg, normalized, maxBytes, 0, 0, false); fbOK {
+			return fbData, fbCT, nil
+		}
+	}
+	return nil, "", err
+}
+
+func (c *Client) fetchSingleXImage(ctx context.Context, transportSpec site.MediaTransportSpec, normalized string, maxBytes int64) ([]byte, string, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalized, nil)
 	if err != nil {
-		return nil, "", &site.Error{
+		return nil, "", false, &site.Error{
 			Site:    SiteID,
 			Kind:    site.ErrKindBadRequest,
 			Message: "无效的 X 图片地址",
@@ -1438,7 +1473,7 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 
 	resp, err := c.mediaClient.Do(req)
 	if err != nil {
-		return nil, "", &site.Error{
+		return nil, "", false, &site.Error{
 			Site:    SiteID,
 			Kind:    site.ErrKindNetwork,
 			Message: "拉取 X 图片失败",
@@ -1455,7 +1490,7 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 	defer body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", &site.Error{
+		return nil, "", false, &site.Error{
 			Site:       SiteID,
 			Kind:       site.ErrKindUnavailable,
 			HTTPStatus: resp.StatusCode,
@@ -1465,7 +1500,7 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 
 	ct := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
 	if strings.HasPrefix(ct, "text/html") || strings.HasPrefix(ct, "application/json") || strings.HasPrefix(ct, "text/plain") {
-		return nil, "", &site.Error{
+		return nil, "", false, &site.Error{
 			Site:    SiteID,
 			Kind:    site.ErrKindBlocked,
 			Message: "X 图片响应类型异常: " + ct,
@@ -1473,7 +1508,7 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 	}
 
 	if resp.ContentLength > maxBytes {
-		return nil, "", &site.Error{
+		return nil, "", false, &site.Error{
 			Site:    SiteID,
 			Kind:    site.ErrKindBlocked,
 			Message: "X 图片体积超出安全上限",
@@ -1483,13 +1518,13 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 	data, err := readBoundedBody(body, maxBytes)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
-			return nil, "", &site.Error{
+			return nil, "", false, &site.Error{
 				Site:    SiteID,
 				Kind:    site.ErrKindBlocked,
 				Message: "X 图片体积超出安全上限",
 			}
 		}
-		return nil, "", &site.Error{
+		return nil, "", false, &site.Error{
 			Site:    SiteID,
 			Kind:    site.ErrKindNetwork,
 			Message: "读取 X 图片失败",
@@ -1497,13 +1532,20 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 		}
 	}
 	if looksLikeHTMLOrJSONPayload(data) {
-		return nil, "", &site.Error{
+		return nil, "", false, &site.Error{
 			Site:    SiteID,
 			Kind:    site.ErrKindBlocked,
 			Message: "X 图片响应内容疑似伪装页面",
 		}
 	}
-	return data, ct, nil
+	if site.LooksLikeExpiredPlaceholderImageBytes(data, normalized, 0, 0, false) {
+		return nil, "", true, &site.Error{
+			Site:    SiteID,
+			Kind:    site.ErrKindUnavailable,
+			Message: "X 图片已在源站失效",
+		}
+	}
+	return data, ct, false, nil
 }
 
 func looksLikeHTMLOrJSONPayload(data []byte) bool {
