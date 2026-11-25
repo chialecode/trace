@@ -958,12 +958,13 @@ func TestBackfillStorageErrorPausesQueueAndPreservesPendingItem(t *testing.T) {
 	var saved library.ItemMetadata
 	b.dl.SetMediaTransportWrap(func(_ http.RoundTripper) http.RoundTripper {
 		return serviceRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-			// Simulate mid-backfill storage/filesystem corruption after GetItem succeeded:
-			// replacing itemDir/images with a regular file forces os.Lstat / os.MkdirAll
-			// during companion commit to return a real *os.PathError on both Windows & Linux!
-			imgDir := filepath.Join(saved.ItemDir, "images")
-			_ = os.RemoveAll(imgDir)
-			_ = os.WriteFile(imgDir, []byte("block-images-dir"), 0o600)
+			// Replace item.json with a non-empty directory after GetItem succeeded so
+			// WriteJSONAtomic's os.Rename(tmp, item.json) deterministically returns
+			// *os.LinkError on BOTH Linux (EISDIR) and Windows (ERROR_ACCESS_DENIED),
+			// exercising both rollbackMoved() and *os.LinkError -> site.ErrKindStorage!
+			manifestPath := filepath.Join(saved.ItemDir, "item.json")
+			_ = os.Remove(manifestPath)
+			_ = os.MkdirAll(filepath.Join(manifestPath, "nested"), 0o700)
 			return &http.Response{
 				StatusCode:    http.StatusOK,
 				ContentLength: int64(len(nowm1)),
@@ -1014,6 +1015,10 @@ func TestBackfillStorageErrorPausesQueueAndPreservesPendingItem(t *testing.T) {
 	b.queue.mu.Unlock()
 	if len(processed) != 0 {
 		t.Fatalf("storage error must NOT mark item in ProcessedKeys: %v", processed)
+	}
+	// Also verify rollbackMoved() cleaned up images/01_nowm.jpg when SaveItem failed with *os.LinkError!
+	if _, stErr := os.Lstat(filepath.Join(saved.ItemDir, "images", "01_nowm.jpg")); !os.IsNotExist(stErr) {
+		t.Fatalf("companion images/01_nowm.jpg was not rolled back after SaveItem storage failure: err=%v", stErr)
 	}
 }
 
