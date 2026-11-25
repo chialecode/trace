@@ -89,6 +89,7 @@ type SnapshotSettings struct {
 	Danmaku              bool     `json:"danmaku"`
 	Subtitles            bool     `json:"subtitles"`
 	AISubtitles          bool     `json:"aiSubtitles"`
+	WeiboRemoveWatermark *bool    `json:"weiboRemoveWatermark,omitempty"`
 	CheckIntervalMin     int      `json:"checkIntervalMin,omitempty"`
 	LiveCheckIntervalMin int      `json:"liveCheckIntervalMin,omitempty"`
 }

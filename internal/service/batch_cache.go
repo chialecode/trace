@@ -575,7 +575,7 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 		key = weibo.PostItemKey(mid)
 	}
 	if b != nil && b.weiboPostCache != nil {
-		b.weiboPostCache.put(&postCopy, b.preferredWeiboCodec(), b.currentWeiboMaxResolution())
+		b.weiboPostCache.put(&postCopy, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), b.weiboRemoveWatermarkEnabled())
 	}
 	title := trimQueueSummaryTitle(firstNonEmpty(postCopy.Text, postCopy.TextRaw, mid))
 	nonOriginal := isWeiboNonOriginalPost(postCopy.IsRetweet, postCopy.IsFastRetweet, postCopy.Retweeted != nil, postCopy.OriMid, postCopy.RuleType)
@@ -613,7 +613,7 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 func (b *Backend) weiboPostViewQueueCandidate(p WeiboPostView) queueCandidate {
 	mid := strings.TrimSpace(p.Mid)
 	if b != nil && b.weiboPostCache != nil && mid != "" {
-		if cached, ok := b.weiboPostCache.get(mid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution()); ok {
+		if cached, ok := b.weiboPostCache.get(mid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), b.weiboRemoveWatermarkEnabled()); ok {
 			return b.weiboPostQueueCandidate(*cached)
 		}
 	}

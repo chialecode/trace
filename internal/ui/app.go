@@ -48,6 +48,7 @@ const (
 type ImageViewerState struct {
 	Open             bool
 	URLs             []string
+	FallbackURLs     [][]string
 	LocalPaths       []string
 	ItemKey          string
 	RelPaths         []string

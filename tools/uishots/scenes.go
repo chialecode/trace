@@ -553,6 +553,16 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 		},
 		{
+			Name: "settings-download",
+			Setup: func() {
+				seedRecentAndLive()
+				app.SettingsCategory = "download"
+				app.Navigate(ui.RouteSettings)
+			},
+			RequiredTexts:  []string{"微博图片去平台水印"},
+			RequiredLabels: []string{"开关微博图片去水印"},
+		},
+		{
 			Name: "settings-subscription",
 			Setup: func() {
 				seedRecentAndLive()

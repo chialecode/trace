@@ -198,22 +198,23 @@ type WeiboStatsDTO struct {
 
 // WeiboMediaItemDTO represents one ordered media attachment (image, GIF, LivePhoto, or mixed video).
 type WeiboMediaItemDTO struct {
-	Index             int    `json:"index"` // 1-based
-	PicID             string `json:"picId,omitempty"`
-	ObjectID          string `json:"objectId,omitempty"`
-	Kind              string `json:"kind"` // "image", "gif", "live_photo", "video"
-	FromOrigin        bool   `json:"fromOrigin,omitempty"`
-	Width             int    `json:"width,omitempty"`
-	Height            int    `json:"height,omitempty"`
-	DurationSec       int    `json:"durationSec,omitempty"`
-	ImageURL          string `json:"imageUrl,omitempty"`
-	PublicPreviewURL  string `json:"publicPreviewUrl,omitempty"`
-	MotionURL         string `json:"motionUrl,omitempty"`
-	NeedsLivePhotoHop bool   `json:"needsLivePhotoHop,omitempty"`
-	Codec             string `json:"codec,omitempty"`
-	QualityLabel      string `json:"qualityLabel,omitempty"`
-	FPS               int    `json:"fps,omitempty"`
-	Bitrate           int64  `json:"bitrate,omitempty"`
+	Index             int      `json:"index"` // 1-based
+	PicID             string   `json:"picId,omitempty"`
+	ObjectID          string   `json:"objectId,omitempty"`
+	Kind              string   `json:"kind"` // "image", "gif", "live_photo", "video"
+	FromOrigin        bool     `json:"fromOrigin,omitempty"`
+	Width             int      `json:"width,omitempty"`
+	Height            int      `json:"height,omitempty"`
+	DurationSec       int      `json:"durationSec,omitempty"`
+	ImageURL          string   `json:"imageUrl,omitempty"`
+	FallbackURLs      []string `json:"-"`
+	PublicPreviewURL  string   `json:"publicPreviewUrl,omitempty"`
+	MotionURL         string   `json:"motionUrl,omitempty"`
+	NeedsLivePhotoHop bool     `json:"needsLivePhotoHop,omitempty"`
+	Codec             string   `json:"codec,omitempty"`
+	QualityLabel      string   `json:"qualityLabel,omitempty"`
+	FPS               int      `json:"fps,omitempty"`
+	Bitrate           int64    `json:"bitrate,omitempty"`
 }
 
 // WeiboVideoDTO holds normalized progressive MP4 video metadata attached to a Weibo post or 1034: page.
@@ -866,6 +867,7 @@ func mapWeiboMediaItems(assets []weibo.ImageAsset) []WeiboMediaItemDTO {
 			Height:            img.Height,
 			DurationSec:       img.DurationSec,
 			ImageURL:          firstNonEmpty(img.URL, img.PublicPreviewURL),
+			FallbackURLs:      append([]string(nil), img.FallbackURLs...),
 			PublicPreviewURL:  img.PublicPreviewURL,
 			MotionURL:         img.MotionURL,
 			NeedsLivePhotoHop: img.NeedsLivePhotoHop,

@@ -345,6 +345,9 @@ func NewBackend(opts Options) (*Backend, error) {
 	if wbOpts.PreferredCodec == nil {
 		wbOpts.PreferredCodec = b.preferredWeiboCodec
 	}
+	if wbOpts.ImageURLRewriter == nil {
+		wbOpts.ImageURLRewriter = b.rewriteWeiboImageURL
+	}
 	wbClient := weibo.NewClient(wbOpts)
 	wbAdapter := weibo.NewAdapter(wbClient)
 
@@ -1044,6 +1047,9 @@ func (b *Backend) UpdateSettings(next settings.Settings) (settings.Settings, err
 		return prev, err
 	}
 	_ = site.SetProxy(updated.Network.ProxyMode, updated.Network.ProxyURL) // checked above; applies at once
+	if prev.WeiboRemoveWatermark != updated.WeiboRemoveWatermark && b.weiboPostCache != nil {
+		b.weiboPostCache.clear()
+	}
 	b.dl.UpdateSettings(updated.Download)
 	b.subs.UpdateSettings(updated.Subscription)
 	b.live.UpdateSettings(updated.Live)

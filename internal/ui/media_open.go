@@ -281,6 +281,12 @@ func (a *App) openPostImageViewer(itemKey, siteID string, urls, relPaths, liveUR
 
 // OpenImageViewer opens the in-app image viewer overlay, decoding local files or fetched image bytes.
 func (a *App) OpenImageViewer(urls []string, localPaths []string, index int) {
+	a.OpenImageViewerWithFallbacks(urls, nil, localPaths, index)
+}
+
+// OpenImageViewerWithFallbacks opens the in-app image viewer overlay with optional per-image fallback URLs
+// (e.g. falling back from Weibo /oslarge/ to the original largest URL on 404, HTML, or corrupt image).
+func (a *App) OpenImageViewerWithFallbacks(urls []string, fallbackURLs [][]string, localPaths []string, index int) {
 	if len(urls) == 0 && len(localPaths) == 0 {
 		return
 	}
@@ -288,21 +294,41 @@ func (a *App) OpenImageViewer(urls []string, localPaths []string, index int) {
 	revision := a.imageViewerRevision
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.imageViewerCancel = cancel
+	sanitizeViewerURL := func(u string) string {
+		u = strings.TrimSpace(u)
+		if strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "http://127.0.0.1") && !strings.HasPrefix(u, "http://localhost") {
+			u = "https://" + strings.TrimPrefix(u, "http://")
+		}
+		return u
+	}
 	// Ensure URLs use https and never leak external Referer.
 	cleanURLs := make([]string, len(urls))
 	localPaths = append([]string(nil), localPaths...)
 	for i, u := range urls {
-		if strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "http://127.0.0.1") && !strings.HasPrefix(u, "http://localhost") {
-			u = "https://" + strings.TrimPrefix(u, "http://")
+		cleanURLs[i] = sanitizeViewerURL(u)
+	}
+	var cleanFallbacks [][]string
+	if len(fallbackURLs) > 0 {
+		cleanFallbacks = make([][]string, len(fallbackURLs))
+		for i, list := range fallbackURLs {
+			if len(list) == 0 {
+				continue
+			}
+			cands := make([]string, 0, len(list))
+			for _, u := range list {
+				if cu := sanitizeViewerURL(u); cu != "" {
+					cands = append(cands, cu)
+				}
+			}
+			cleanFallbacks[i] = cands
 		}
-		cleanURLs[i] = u
 	}
 	if index < 0 {
 		index = 0
 	}
 	total := maxInt(len(cleanURLs), len(localPaths))
 	index = min(index, total-1)
-	a.ImageViewer = ImageViewerState{Open: true, URLs: cleanURLs, LocalPaths: localPaths, Index: index, Zoom: 1, Fit: true, InlinePageIndex: -1}
+	a.ImageViewer = ImageViewerState{Open: true, URLs: cleanURLs, FallbackURLs: cleanFallbacks, LocalPaths: localPaths, Index: index, Zoom: 1, Fit: true, InlinePageIndex: -1}
 	backend := a.backend
 	requestGuarded(a, fmt.Sprintf("image-%d", revision), func() bool {
 		return a.ImageViewer.Open && a.imageViewerRevision == revision && backend.HasAnyLogin()
@@ -319,29 +345,59 @@ func (a *App) OpenImageViewer(urls []string, localPaths []string, index int) {
 				if bitmaps[i] == nil {
 					errors[i] = "本机图片无法读取或格式不支持"
 				}
-			} else if i < len(cleanURLs) && cleanURLs[i] != "" {
-				raw, err := backend.FetchImage(ctx, cleanURLs[i])
-				if err != nil {
-					errors[i] = userErrorText(err)
-				} else {
-					bitmaps[i] = decodeImageBytesToBitmap(raw)
-					if bitmaps[i] == nil {
-						errors[i] = "图片格式不支持或文件损坏"
+			} else {
+				var cands []string
+				seen := make(map[string]bool)
+				addCand := func(u string) {
+					if u != "" && !seen[u] {
+						seen[u] = true
+						cands = append(cands, u)
 					}
 				}
-			} else {
-				errors[i] = "图片未登记或路径不可访问"
+				if i < len(cleanURLs) {
+					addCand(cleanURLs[i])
+				}
+				if i < len(cleanFallbacks) {
+					for _, fb := range cleanFallbacks[i] {
+						addCand(fb)
+					}
+				}
+				if len(cands) == 0 {
+					errors[i] = "图片未登记或路径不可访问"
+					continue
+				}
+				lastErr := ""
+				for _, candURL := range cands {
+					if ctx.Err() != nil {
+						break
+					}
+					raw, err := backend.FetchImage(ctx, candURL)
+					if err != nil {
+						lastErr = userErrorText(err)
+						continue
+					}
+					if bmp := decodeImageBytesToBitmap(raw); bmp != nil {
+						bitmaps[i] = bmp
+						lastErr = ""
+						break
+					}
+					lastErr = "图片格式不支持或文件损坏"
+				}
+				if bitmaps[i] == nil && lastErr != "" {
+					errors[i] = lastErr
+				}
 			}
 		}
 		return ImageViewerState{
-			Open:       true,
-			URLs:       cleanURLs,
-			LocalPaths: localPaths,
-			Index:      index,
-			Zoom:       1,
-			Fit:        true,
-			Bitmaps:    bitmaps,
-			Errors:     errors,
+			Open:         true,
+			URLs:         cleanURLs,
+			FallbackURLs: cleanFallbacks,
+			LocalPaths:   localPaths,
+			Index:        index,
+			Zoom:         1,
+			Fit:          true,
+			Bitmaps:      bitmaps,
+			Errors:       errors,
 		}, nil
 	}, func(state ImageViewerState) {
 		a.ImageViewer.Bitmaps = state.Bitmaps

@@ -251,6 +251,27 @@ func splitLibraryMediaImagesByOrigin(item *library.ItemMetadata) (outer []PostIm
 	return outer, origin
 }
 
+func weiboMediaFallbackURLs(it service.WeiboMediaItemDTO, primary string) []string {
+	primary = strings.TrimSpace(primary)
+	var out []string
+	seen := map[string]bool{}
+	if primary != "" {
+		seen[primary] = true
+	}
+	add := func(u string) {
+		u = strings.TrimSpace(u)
+		if u != "" && !seen[u] {
+			seen[u] = true
+			out = append(out, u)
+		}
+	}
+	for _, fb := range it.FallbackURLs {
+		add(fb)
+	}
+	add(it.PublicPreviewURL)
+	return out
+}
+
 func weiboMediaItemsToRenderPages(items []service.WeiboMediaItemDTO, offline bool) []douyinNoteRenderPage {
 	if len(items) == 0 {
 		return nil
@@ -281,6 +302,7 @@ func weiboMediaItemsToRenderPages(items []service.WeiboMediaItemDTO, offline boo
 		}
 		if !offline {
 			pg.ImageURL = firstNonEmptyStrUI(it.ImageURL, it.PublicPreviewURL)
+			pg.FallbackImageURLs = weiboMediaFallbackURLs(it, pg.ImageURL)
 			if kind == "live_photo" {
 				pg.MotionURL = it.MotionURL
 			} else if kind == "video" {
@@ -342,6 +364,7 @@ func weiboMediaToNotePagesScoped(items []service.WeiboMediaItemDTO, cached *libr
 					it := items[i]
 					if pages[i].ImageURL == "" {
 						pages[i].ImageURL = firstNonEmptyStrUI(it.ImageURL, it.PublicPreviewURL)
+						pages[i].FallbackImageURLs = weiboMediaFallbackURLs(it, pages[i].ImageURL)
 					}
 					if pages[i].Kind == "live_photo" && pages[i].MotionURL == "" {
 						pages[i].MotionURL = it.MotionURL
@@ -407,6 +430,7 @@ func weiboMediaToNotePagesScoped(items []service.WeiboMediaItemDTO, cached *libr
 					it := items[i]
 					if pages[i].ImageURL == "" {
 						pages[i].ImageURL = firstNonEmptyStrUI(it.ImageURL, it.PublicPreviewURL)
+						pages[i].FallbackImageURLs = weiboMediaFallbackURLs(it, pages[i].ImageURL)
 					}
 					if pages[i].Kind == "live_photo" && pages[i].MotionURL == "" {
 						pages[i].MotionURL = it.MotionURL

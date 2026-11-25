@@ -219,15 +219,6 @@ func (c *Client) buildSingleMobilePicAsset(
 		picID = urlPicID
 	}
 
-	primaryURL := baseURL
-	var fallbacks []string
-	if rewriter != nil {
-		if rewritten, ok := rewriter(picID, primaryURL); ok && rewritten != "" && rewritten != primaryURL {
-			fallbacks = []string{primaryURL}
-			primaryURL = rewritten
-		}
-	}
-
 	rawVideo := strings.TrimSpace(mp.VideoSrc)
 	if rawVideo == "" {
 		rawVideo = strings.TrimSpace(mp.Video)
@@ -250,6 +241,15 @@ func (c *Client) buildSingleMobilePicAsset(
 		motionURL = normVideo
 		if motionURL != "" && site.IsWeiboLivePhotoInitialURL(motionURL) {
 			needsLivePhotoHop = true
+		}
+	}
+
+	primaryURL := baseURL
+	var fallbacks []string
+	if kind != MediaKindGIF && rewriter != nil {
+		if rewritten, ok := rewriter(picID, primaryURL); ok && rewritten != "" && rewritten != primaryURL {
+			fallbacks = []string{primaryURL}
+			primaryURL = rewritten
 		}
 	}
 
@@ -361,17 +361,17 @@ func (c *Client) buildPicIDFallbackAssets(rp *rawPost, rewriter func(picID, rawU
 		if picID == "" {
 			picID = urlPicID
 		}
+		kind := MediaKindImage
+		if ext == ".gif" {
+			kind = MediaKindGIF
+		}
 		primaryURL := baseURL
 		var fallbacks []string
-		if rewriter != nil {
+		if kind != MediaKindGIF && rewriter != nil {
 			if rewritten, ok := rewriter(picID, primaryURL); ok && rewritten != "" && rewritten != primaryURL {
 				fallbacks = []string{primaryURL}
 				primaryURL = rewritten
 			}
-		}
-		kind := MediaKindImage
-		if ext == ".gif" {
-			kind = MediaKindGIF
 		}
 		return ImageAsset{
 			Index:            index,

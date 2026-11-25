@@ -179,7 +179,7 @@ func (b *Backend) enqueueWeiboPostWithSource(
 	mode := download.ConflictResolutionFromContext(ctx)
 	plan := explicitPlan
 	if plan == nil && mode == "" && b.weiboPostCache != nil {
-		if cachedPost, ok := b.weiboPostCache.get(cleanMid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution()); ok {
+		if cachedPost, ok := b.weiboPostCache.get(cleanMid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), b.weiboRemoveWatermarkEnabled()); ok {
 			if built, bErr := b.buildWeiboWorkPlanFromPost(cachedPost); bErr == nil {
 				plan = &built
 			}
