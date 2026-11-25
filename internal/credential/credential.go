@@ -89,6 +89,7 @@ type Record struct {
 	Face                   string            `json:"face,omitempty"`
 	State                  string            `json:"state,omitempty"`
 	Message                string            `json:"message,omitempty"`
+	DouyinGuard            *DouyinGuardState `json:"douyin_guard,omitempty"`
 }
 
 // Read older encrypted records, while all new writes use the documented keys.
@@ -811,6 +812,13 @@ func (s *Store) collectSecrets() []string {
 	}
 	secrets = appendSecretVariants(secrets, s.rec.RefreshToken)
 	secrets = appendSecretVariants(secrets, s.rec.PendingOldRefreshToken)
+	if g := s.rec.DouyinGuard; g != nil {
+		secrets = appendSecretVariants(secrets, g.PrivateKeyPKCS8)
+		secrets = appendSecretVariants(secrets, g.PublicKeySEC1)
+		secrets = appendSecretVariants(secrets, g.Ticket)
+		secrets = appendSecretVariants(secrets, g.TsSign)
+		secrets = appendSecretVariants(secrets, g.ClientCert)
+	}
 	return secrets
 }
 
@@ -865,6 +873,10 @@ func (s *Store) saveRecord(rec *Record) error {
 func (s *Store) cloneRecord(rec *Record) *Record {
 	next := *rec
 	next.Cookies = s.filterCookies(rec.Cookies)
+	if rec.DouyinGuard != nil {
+		g := *rec.DouyinGuard
+		next.DouyinGuard = &g
+	}
 	return &next
 }
 

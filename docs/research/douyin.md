@@ -678,6 +678,13 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 - **D-V4 收藏夹列表（`collects/list`，核，关联 [#37](https://github.com/chialecode/trace/issues/37)）**：HTTP 200 `application/json`，`status_code=0`、`folders=0`、`has_more=false` 通过；因该测试账号下 `0` 个自定义收藏夹，`collects/video/list` 未触发请求，仍为 `not-run`。
 - **D-V5 观看历史（`history/read`，核，关联 [#37](https://github.com/chialecode/trace/issues/37)、[#73](https://github.com/chialecode/trace/issues/73)）**：`GET /aweme/v1/web/history/read/`（`max_cursor=0&count=20`）**第 1、2 页全部实测通过**——返回 HTTP 200 `application/json`，顶层键为 `aweme_date`、`aweme_list`、`has_more`、`max_cursor`、`status_code`、`status_msg`；第 1 页解析出 `19` 条作品（`has_more=true`），以返回的 `max_cursor` 翻第 2 页解析出 `20` 条作品（`has_more=true`、游标正常推进、跨页 `0` 重复）。协议形态已锁定，界面入口开关 `WatchHistoryEnabled` 已在 [#73](https://github.com/chialecode/trace/issues/73) 设为 `true` 开放。
 
+**`bd-ticket-guard` 卫士签名栈实测**（ACT-027，2026-11-25，常设授权下 1 次运行，脱敏回执 `artifacts/site-check/act027.json`，账本 `apiCalls=2/6`：`dy_profile_self=1`、`dy_favorite=1`，媒体请求 `0`，`stoppedBy=""`，0 次 403/429/444、0 次 `bdturing-verify` 挑战，关联 [#74](https://github.com/chialecode/trace/issues/74)、[#52](https://github.com/chialecode/trace/issues/52)）：
+
+- **Step 0 离线输入核对（0 网络请求）**：本机沿用的测试 Cookie 含 `sessionid`、`sid_ucp_v1`、`uifid`、`d_ticket`，仍不含 `s_v_web_id` 与 `msToken`；用户粘贴的浏览器 `bd_ticket_guard_*` Cookie 继续被严格剥离。
+- **登录握手（`dy_login` / `profile/self`）**：客户端为本次会话生成独立 ECDSA P-256 密钥对（DPAPI 加密存于 `douyin.bin` 的 `douyin_guard` 字段），随请求携带 `bd-ticket-guard-version: 2`、`bd-ticket-guard-iteration-version: 1`、`bd-ticket-guard-web-version: 2` 与 65 字节未压缩 SEC1 公钥头 `bd-ticket-guard-ree-public-key`。响应返回 HTTP 200 `application/json`（登录成功），响应头精确返回 **`bd-ticket-guard-result: 1103`**，但**未下发** `bd-ticket-guard-server-data` / `tt-ticket-guard-server-data`（`hasServerDataHeader=false`、`serverIssuedTicket=false`、`serverIssuedTsSign=false`）。
+- **D-V2 喜欢（`aweme/favorite`）**：由于上一步未获得服务端签发的 `ts_sign`（`sentGuardHandshake=true`、`sentGuardSigned=false`），请求携带同会话 P-256 握手头后，响应同样返回 **`bd-ticket-guard-result: 1103`**、`HTTP 200`、`Content-Type: text/plain`、**0 字节空响应**且无 `server-data` 下发（`hasBDTuringVerify=false`）。客户端未重试、未触发整站退避，按 `ErrKindUnavailable` 单接口隔离。
+- **工程结论（核）**：实测锁定了只读接口 `profile/self` 与 `aweme/favorite` 均处于 `bd-ticket-guard` 校验之下，且在缺少服务端签发 `ts_sign` 时均返回结果码 `1103`——`profile/self` 处于非强制/审计模式仍放行 JSON，而 `aweme/favorite` 处于强制拦截模式直接丢弃响应体；**单纯在只读业务接口上送出新公钥不会追溯触发服务端下发 `ts_sign`/`ticket`**（服务端票据签发需发生在 Passport/安全 SDK 会话签发链路，或具备对应的客户端证书/票据注册流程）。纯 Go `internal/site/douyin/guard` 签名栈、DPAPI 加密持久与响应票据采纳链路已由合成向量与集成测试闭环，真机攻克“喜欢”仍待后续查明 Web 端 `ts_sign` 签发入口（及补齐含 `s_v_web_id` 的测试 Cookie）后另行验证。
+
 <a id="sign-spec"></a>
 ## 附录：签名规格
 
@@ -961,3 +968,37 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
   - 第 2 阶段追加后参数顺序：`device_platform`, `aid`, `sec_user_id`, `max_cursor`, `count`, `uifid`（保持第 6 位原位，不重复追加）, `msToken`, `a_bogus`, `timestamp`
   - 第 2 阶段 MD5 签名值 `secSig`：`668d0b177abc76c8f89e56a95b45e575`
   - 附加请求头 `Headers`：`uifid = "SYNTHETIC_UIFID_03"`，`x-secsdk-web-signature = "668d0b177abc76c8f89e56a95b45e575"`，`x-secsdk-web-expire = "1763000000"`
+
+<a id="guard-spec"></a>
+### A.9 `bd-ticket-guard`（v2，ECDSA P-256）卫士签名栈规格与合成向量
+
+来源：`公开协议分析资料（2026-11-25 查证）`、`实测（ACT-026 2026-11-24 / ACT-027 2026-11-25）`。供 `internal/site/douyin/guard` 仅用 Go 标准库（`crypto/ecdh`、`crypto/ecdsa`、`crypto/elliptic`、`crypto/sha256`、`crypto/x509`、`encoding/base64`、`encoding/json`）独立实现，零 `internal/credential`、零 `net/http` 依赖。
+
+1. **密钥对与公钥线编码**：
+   - 曲线：NIST **P-256**（`secp256r1` / `prime256v1`）。
+   - 私钥持久化：PKCS#8 DER 的标准 Base64，仅保存在 DPAPI 加密的 `douyin.bin` 可选字段 `douyin_guard` 中（向后兼容旧版凭证文件），登出或重新登录立即清除，纳入 `Store.collectSecrets()` 脱敏边界。
+   - 公钥头 `bd-ticket-guard-ree-public-key`：65 字节未压缩 SEC1 编码 `0x04 || X(32B 大端) || Y(32B 大端)` 的标准 Base64（88 字符，以 `'B'` 开头，含 1 个 `'='` 填充）。
+2. **请求头构造（仅作用于已确认参与卫士校验的路径：`/aweme/v1/web/user/profile/self/` 与 `/aweme/v1/web/aweme/favorite/`）**：
+   - 浏览器粘贴的 `bd_ticket_guard_*` Cookie 继续由 `IsStrippedDouyinCookieKey` 严格剥离，不写入出站 `Cookie` 头。
+   - **握手阶段（尚无服务端签发 `ts_sign` 时）**发送 4 个头：
+     - `bd-ticket-guard-version`: `"2"`
+     - `bd-ticket-guard-iteration-version`: `"1"`
+     - `bd-ticket-guard-web-version`: `"2"`
+     - `bd-ticket-guard-ree-public-key`: `<65B SEC1 Base64>`
+   - **已获票据阶段（同时具备 `ts_sign` 与 `ticket` 时）**追加 2 个头：
+     - `bd-ticket-guard-web-sign-type`: `"1"`
+     - `bd-ticket-guard-client-data`: 紧凑 JSON `{"ts_sign":"<ts_sign>","req_content":"ticket,path,timestamp","req_sign":"<Base64 ASN.1 DER>","timestamp":<Unix秒>}` 的标准 Base64。
+3. **`req_sign` 待签原像与签名格式**：
+   - 规范路径 `path`：剥离协议、主机、查询串与片段，保证以 `/` 开头、非根路径以 `/` 结尾（例如 `/aweme/v1/web/aweme/favorite/`）。
+   - 待签 UTF-8 原像：`ticket=<ticket>&path=<path>&timestamp=<timestamp>`。
+   - 摘要与签名：对原像做 `SHA-256`，使用会话 P-256 私钥执行 **ECDSA ASN.1 DER** 签名（`SEQUENCE { INTEGER r, INTEGER s }`，对应线格式 `MEQ...` / `MEU...` / `MEY...`），再做标准 Base64 编码写入 `req_sign`。
+4. **响应头解析**：
+   - `bd-ticket-guard-result`：提取 32 位夹紧整数结果码（`0` 为校验通过；`ACT-027` 在 `profile/self` 与 `aweme/favorite` 实测收到 `1103`）；脱敏回执仅记录纯整数码与非敏感布尔标志。
+   - `bd-ticket-guard-server-data` / `tt-ticket-guard-server-data`（支持原样 JSON、标准/URL-safe Base64 与 URL 百分号编码包裹，并兼容 `bd-ticket-guard-ticket` / `tt-ticket-guard-ticket`、`bd-ticket-guard-client-cert` / `tt-ticket-guard-client-cert` 及对应 `Set-Cookie` 载荷）：提取 `ts_sign`（或 `ts_sign_ree`）、`ticket`、`client_cert`，变更时原子回写加密 `douyin.bin`。
+5. **确定性合成测试向量（全部采用合成输入，`internal/site/douyin/guard/guard_test.go` 回归锁定）**：
+   - 合成 P-256 私钥标量（hex）：`0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20`
+   - 派生 65 字节 SEC1 Base64 公钥（`bd-ticket-guard-ree-public-key`）：`BFFcPW6545a5BNP+yn9U/c0MwemXvzddylFa0KbDtANfRTa+OlDzGPv5pUdZAqIhUCvvDVfgjFOyzApW8X2fk1Q=`
+   - 合成票据与时间戳：`ticket = "hash.SYNTHETIC_TICKET_VECTOR_01=="`，`ts_sign = "ts.2.synthetic_ts_sign_vector_01"`，`path = "/aweme/v1/web/aweme/favorite/"`，`timestamp = 1763000000`
+   - 待签原像：`ticket=hash.SYNTHETIC_TICKET_VECTOR_01==&path=/aweme/v1/web/aweme/favorite/&timestamp=1763000000`
+   - 原像 `SHA-256`（hex）：`7d89cc558d2c5124262021f2e3c39d870f1f013d4e3b24d6197aca12b377ae2c`
+   - 可验证 ASN.1 DER 黄金签名样本（`req_sign`）：`MEYCIQCOlz2S8qpetNXEMD1pUprwHSdpdi+XzLAL/ftaNwoMvQIhAPIqAPzWaS8qs6JZH7wyzs4aNb+r5Pi9Wx1XaNOfU1px`
