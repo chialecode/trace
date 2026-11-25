@@ -65,6 +65,7 @@ type SnapshotSubscription struct {
 	RuleID         string            `json:"ruleId"`
 	AutoCacheSince string            `json:"autoCacheSince,omitempty"`
 	Accounts       []SnapshotAccount `json:"accounts"`
+	Links          []CustomLink      `json:"links,omitempty"`
 }
 
 // SnapshotAccount is an account of a subscription.
@@ -134,19 +135,21 @@ func ParseSnapshot(raw []byte) (Snapshot, error) {
 		}
 		SortSnapshotAccountsBySiteOrder(accs)
 		sub.Accounts = accs
+		sub.Links = normalizeCustomLinksForLoad(sub.Links)
 	}
 	return snap, nil
 }
 
 // Hash is the snapshot's content hash: subscriptions (ID, name, accounts,
-// rule, auto-cache start), rules and settings. Display data that the checks
-// refresh (account names and avatars) and the export time are not part of
-// it, so "有改动未同步" only follows real changes.
+// links, rule, auto-cache start), rules and settings. Display data that the
+// checks refresh (account names and avatars) and the export time are not part
+// of it, so "有改动未同步" only follows real changes.
 func (s Snapshot) Hash() string {
 	type acc struct{ Site, UID string }
 	type sub struct {
 		ID, Name, Note, RuleID, Since string
 		Accounts                      []acc
+		Links                         []CustomLink `json:",omitempty"`
 	}
 	content := struct {
 		Format   string
@@ -156,7 +159,14 @@ func (s Snapshot) Hash() string {
 		Settings *SnapshotSettings
 	}{Format: s.Format, Version: s.Version, Rules: s.Rules, Settings: s.Settings}
 	for _, x := range s.Subscriptions {
-		item := sub{ID: x.ID, Name: x.Name, Note: x.Note, RuleID: x.RuleID, Since: x.AutoCacheSince}
+		item := sub{
+			ID:     x.ID,
+			Name:   x.Name,
+			Note:   x.Note,
+			RuleID: x.RuleID,
+			Since:  x.AutoCacheSince,
+			Links:  normalizeCustomLinksForLoad(x.Links),
+		}
 		ordered := append([]SnapshotAccount(nil), x.Accounts...)
 		SortSnapshotAccountsBySiteOrder(ordered)
 		for _, a := range ordered {
@@ -190,7 +200,15 @@ func (m *Manager) Snapshot() (Snapshot, error) {
 	snap := Snapshot{Format: SnapshotFormat, Version: SnapshotVersion, Rules: slices.Clone(m.rules)}
 	slices.SortStableFunc(subs, func(a, b Subscription) int { return strings.Compare(a.ID, b.ID) })
 	for _, s := range subs {
-		out := SnapshotSubscription{ID: s.ID, Name: s.Name, Note: s.Note, Avatar: s.Avatar, CreatedAt: s.CreatedAt, RuleID: s.RuleID}
+		out := SnapshotSubscription{
+			ID:        s.ID,
+			Name:      s.Name,
+			Note:      s.Note,
+			Avatar:    s.Avatar,
+			CreatedAt: s.CreatedAt,
+			RuleID:    s.RuleID,
+			Links:     cloneCustomLinks(s.Links),
+		}
 		if s.Rules.AutoCache.Enabled {
 			out.AutoCacheSince = s.Rules.AutoCache.Since
 		}
@@ -207,7 +225,15 @@ func (m *Manager) Snapshot() (Snapshot, error) {
 // rule r.
 func (m *Manager) snapshotToSubscriptionLocked(x SnapshotSubscription, r CacheRule) Subscription {
 	now := m.nowFunc().UTC().Format(time.RFC3339)
-	sub := Subscription{ID: x.ID, Name: x.Name, Note: x.Note, Avatar: x.Avatar, CreatedAt: x.CreatedAt, RuleID: r.ID}
+	sub := Subscription{
+		ID:        x.ID,
+		Name:      x.Name,
+		Note:      x.Note,
+		Avatar:    x.Avatar,
+		CreatedAt: x.CreatedAt,
+		RuleID:    r.ID,
+		Links:     normalizeCustomLinksForLoad(x.Links),
+	}
 	for _, a := range x.Accounts {
 		sub.Accounts = append(sub.Accounts, AccountRef{Site: a.Site, UID: a.UID, UniqueID: a.UniqueID, WebRID: a.WebRID, Name: a.Name, Face: a.Face, AddedAt: now})
 	}

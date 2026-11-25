@@ -139,6 +139,7 @@ type AuthService interface {
 type ParseService interface {
 	Resolve(ctx context.Context, rawInput string) (site.ResolveTarget, error)
 	OpenLink(ctx context.Context, rawInput string) (*OpenLinkResult, error)
+	OpenExternalLink(rawURL string) error
 	DouyinWork(ctx context.Context, awemeID string) (*DouyinWorkView, error)
 	DouyinUser(ctx context.Context, secUID string) (*DouyinUserView, error)
 	DouyinUserWorks(ctx context.Context, secUID, cursor string) (*DouyinUserWorksPage, error)
@@ -258,6 +259,7 @@ type SubscriptionService interface {
 	UnlinkSubscriptionAccount(subID, site, uid string) (subscription.Subscription, error)
 	MoveSubscriptionAccount(site, uid, toSubID string) (subscription.Subscription, error)
 	MoveSubscriptionAccountToNew(site, uid, name, note string, rules subscription.SubRules) (subscription.Subscription, error)
+	SetSubscriptionLinks(subID string, links []subscription.CustomLink) (subscription.Subscription, error)
 	SetSubscriptionRules(subID string, rules subscription.SubRules) (subscription.Subscription, error)
 	// Shared cache rules: subscriptions choose one by ID.
 	ListCacheRules() []subscription.CacheRule

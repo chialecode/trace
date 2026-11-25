@@ -387,6 +387,7 @@ func (a *App) OpenSubscriptionDetail(sub subscription.Subscription) {
 	a.SubManageMenuOpen = false
 	a.SubAccountMenuKey = ""
 	a.SubManageModalMode = ""
+	a.closeSubLinksModal()
 	a.SubDetailTab = normalizeSubDetailTab(a.SubDetailTab)
 	a.refreshAccountWorks()
 	a.syncSelectedSubRules(sub)
