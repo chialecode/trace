@@ -234,11 +234,11 @@ func FormatDouyinCookieHeader(cookies map[string]string) string {
 }
 
 // ParseDouyinCookieInput parses and cleans a user-pasted Douyin Cookie header string.
-// It enforces the 8 KiB limit, strips dynamic browser-bound tickets (bd_ticket_guard_*,
+// It enforces the 64 KiB raw input limit, strips dynamic browser-bound tickets (bd_ticket_guard_*,
 // _bd_ticket_crypt_cookie, __security_*, x_tt_token, sdk_source_info, fpk1, fpk2),
 // validates RFC 6265 safe key/value characters, retains all non-blacklisted cookies,
 // requires sessionid or sessionid_ss (rejecting ttwid/msToken-only guest cookies),
-// and never echoes secret values in errors.
+// enforces the 32 KiB cleaned outbound header limit, and never echoes secret values in errors.
 func ParseDouyinCookieInput(rawCookie string) (map[string]string, error) {
 	if len(rawCookie) > MaxCookieInputBytes {
 		return nil, ErrInputTooLarge
@@ -247,6 +247,9 @@ func ParseDouyinCookieInput(rawCookie string) (map[string]string, error) {
 	cleaned := CleanDouyinCookieMap(rawPairs)
 	if !hasDouyinSession(cleaned) {
 		return nil, ErrMissingDouyinSession
+	}
+	if len(FormatDouyinCookieHeader(cleaned)) > MaxCleanedCookieHeaderBytes {
+		return nil, ErrCleanedCookieTooLarge
 	}
 	return cleaned, nil
 }

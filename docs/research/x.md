@@ -68,11 +68,11 @@
 | **身份交叉核对态（若存在则保留）** | `twid` | URL 编码用户 ID（格式为 `u%3D<rest_id>`，占位 `twid=<合成占位>`） | 保留用于与服务端校验返回的 `rest_id` 交叉核对；**绝不单独当作已登录证明** | `社区资料（2026-11-22）` |
 | **条件配套态（若存在则保留）** | `guest_id` | 访客标识（格式为 `v1%3A<数字>`，占位 `guest_id=<合成占位>`） | **强烈建议保留**：若端点要求 `x-xp-forwarded-for`（XPFF），其 AES 密钥派生命中 `SHA-256(base_key + urlencoded(guest_id))`，必须与 Cookie 中 `guest_id` 一致 | `社区资料（2026-11-22）` |
 | **设备信任态（可选保留）** | `kdt` | Known Device Token（已知设备标识，占位 `kdt=<合成占位>`） | 可选保留；对长期锁号风险评分的实际影响记为 `unknown`（列 **V-01**） | `社区资料（2026-11-22）` / `unknown` |
-| **应剥离的临时 / 访客 / 广告 / WAF 字段** | `att`、`gt`、`personalization_id`、`guest_id_marketing`、`guest_id_ads`、`lang`、`external_referer`、`__cf_bm` | 登录流临时令牌、未登录访客令牌、广告/追踪/语言与 ~30 分钟短命 Cloudflare 机器人检测 Cookie | **粘贴清洗时统一剥离**，减小请求头体积、避免超出 `8192` 字节上限并防止过期 `gt`/`__cf_bm` 污染请求 | `社区资料（2026-11-22）`、`推测（2026-11-22）` |
+| **应剥离的临时 / 访客 / 广告 / WAF 字段** | `att`、`gt`、`personalization_id`、`guest_id_marketing`、`guest_id_ads`、`lang`、`external_referer`、`__cf_bm` | 登录流临时令牌、未登录访客令牌、广告/追踪/语言与 ~30 分钟短命 Cloudflare 机器人检测 Cookie | **粘贴清洗时统一剥离**，减小请求头体积、避免超出清洗后 `32 KiB`（`32768` 字节）出站头上限并防止过期 `gt`/`__cf_bm` 污染请求 | `社区资料（2026-11-22）`、`推测（2026-11-22）` |
 
 **清洗与脱敏规则**（对齐 `internal/credential` 现有三站规范，`源码阅读（仓库代码，2026-11-22）`）：
 
-1. 输入超 `MaxCookieInputBytes = 8192` 字节立即报 `ErrInputTooLarge`；拒绝任何控制字符（`<0x20`、`0x7f`、`0x80..0x9f`、裸 `\r`、换行头注入）；错误消息绝不回显原始粘贴文本。
+1. 原始输入超 `MaxCookieInputBytes = 65536`（64 KiB）立即报 `ErrInputTooLarge`；拒绝任何控制字符（`<0x20`、`0x7f`、`0x80..0x9f`、裸 `\r`、换行头注入）；清洗后出站 `Cookie:` 头超 `MaxCleanedCookieHeaderBytes = 32768`（32 KiB）报 `ErrCleanedCookieTooLarge`；错误消息绝不回显原始粘贴文本。
 2. 自动剥离可选前缀 `Cookie:`，按 `;` 拆分 `name=value`（保留值内 `=`），同名键保留最后一个非空值，严格区分大小写，白名单仅保留 `auth_token`、`ct0`、`twid`、`guest_id`、`kdt`。
 3. **`ct0` 预热与要求协调**：本机多站点订阅参考曾采用“仅配置 `auth_token` → 首次发一次 `GET https://x.com` 预热从 `Set-Cookie` 拿 `ct0`”的最小配置做法（`源码阅读（多站点订阅参考，2026-11-22）`）；但面向 TRACE 桌面用户从已登录浏览器直接复制 `Cookie` 的场景，要求同时存在非空 `auth_token` 与 `ct0` 可免去登录校验时的额外首页预热请求并提前拦截无效粘贴（`推测（2026-11-22）`）。
 4. **全局脱敏红线**：`credential.Manager.RedactString` 必须登记 `x` 凭证仓，掩码所有存储的 `auth_token`、`ct0`、`twid`、`kdt`、`guest_id`（以及若启用官方 API 时的 `access_token`、`refresh_token`、`client_secret`）的原文与 URL 编解码形态，并补充 `x-csrf-token` 请求头与 JSON 键正则脱敏。

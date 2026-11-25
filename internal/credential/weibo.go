@@ -112,10 +112,10 @@ func trimMatchingQuotes(v string) string {
 }
 
 // ParseWeiboCookieInput parses and cleans a user-pasted Weibo Cookie string per weibo.md §2.2.
-// It enforces the 8 KiB limit, rejects control characters and header-injection line breaks without
+// It enforces the 64 KiB raw input limit, rejects control characters and header-injection line breaks without
 // echoing raw input, strips an optional "Cookie:" prefix, splits by ";" or newlines while preserving
 // "=" inside values, keeps the last non-empty value per case-sensitive whitelisted key, strips all
-// stats/UI fields, and requires a non-empty SUB cookie.
+// stats/UI fields, enforces the 32 KiB cleaned outbound header limit, and requires a non-empty SUB cookie.
 func ParseWeiboCookieInput(rawCookie string) (map[string]string, error) {
 	if len(rawCookie) > MaxCookieInputBytes {
 		return nil, ErrInputTooLarge
@@ -207,6 +207,9 @@ func ParseWeiboCookieInput(rawCookie string) (map[string]string, error) {
 
 	if !hasWeiboSession(out) {
 		return nil, ErrMissingWeiboSub
+	}
+	if len(formatOrderedCookieHeader(out, AllowedWeiboCookieKeys)) > MaxCleanedCookieHeaderBytes {
+		return nil, ErrCleanedCookieTooLarge
 	}
 	return out, nil
 }

@@ -71,11 +71,11 @@
 | **核心身份态（本地预检必需）** | `SUB` | 微博主身份凭证。**本地预检必须存在非空 `SUB`**，缺失时直接本地返回 `invalid_input`（0 网络请求）。**防误判红线**：新浪访客体系同样下发名为 `SUB` 的 Cookie，且前缀（如 `_2Ak` vs `_2A25`）存在跨版本变化，**绝不能仅凭存在 `SUB` 或前缀正则判定已登录**，必须通过 [§2.4](#login-verify) 服务端严格校验 | `源码阅读（单链接解析参考，2026-11-21）`、`社区资料（2026-11-21）` |
 | **核心配套态（强烈建议保留）** | `SUBP`、`ALF`、`SCF`、`WBPSESS`、`XSRF-TOKEN`、`SSOLoginState`、`SUHB`、`PC_TOKEN` | `SUBP` 配合 `SUB` 做通行证与子域校验；`ALF` 记录记住登录到期 Unix 秒；`SCF` 为安全风控标识；`WBPSESS` 维持 PC 网页会话；`XSRF-TOKEN` 镜像至 `X-XSRF-TOKEN` 请求头；`SSOLoginState` 标记 SSO 状态（注：社区偶有报告旧或冲突的 `SSOLoginState` 在 `m.weibo.cn` 触发 `432`，保留与剥离的实际影响列入 **V-01**） | `社区资料（2026-11-21）` |
 | **移动端兼容字段（若存在则保留）** | `MLOGIN`（常为 `1`）、`_T_WM` | 移动 H5 域会话标识；从桌面 `weibo.com` 复制时通常不存在 | `社区资料（2026-11-21）` |
-| **可安全剥离的动态/统计/界面字段** | `SINAGLOBAL`、`UOR`、`_s_tentry`、`Apache`、`ULV`、`WBStorage`、`wb_view_log_*`、`webim_unReadCount`、`login_sid_t`、`cross_origin_proto`、`WEIBOCN_FROM`、`M_WEIBOCN_PARAMS`、`ariaDefaultTheme`、`ariaFixed`、`ariaStatus`、`s`、`wvr`、`un` | 浏览轨迹、广告归因、未读红点、无障碍主题等纯前端统计 Cookie，剥离可减小请求头体积、避免超出 `8192` 字节上限并减少无用指纹噪声（精确最小可用子集由 **V-01** 确认） | `社区资料（2026-11-21）`、`推测（2026-11-21）` |
+| **可安全剥离的动态/统计/界面字段** | `SINAGLOBAL`、`UOR`、`_s_tentry`、`Apache`、`ULV`、`WBStorage`、`wb_view_log_*`、`webim_unReadCount`、`login_sid_t`、`cross_origin_proto`、`WEIBOCN_FROM`、`M_WEIBOCN_PARAMS`、`ariaDefaultTheme`、`ariaFixed`、`ariaStatus`、`s`、`wvr`、`un` | 浏览轨迹、广告归因、未读红点、无障碍主题等纯前端统计 Cookie，剥离可减小请求头体积、避免超出清洗后 `32 KiB`（`32768` 字节）出站头上限并减少无用指纹噪声（精确最小可用子集由 **V-01** 确认） | `社区资料（2026-11-21）`、`推测（2026-11-21）` |
 
 **清洗与脱敏规则**（对齐 `internal/credential/credential.go` 与 `douyin.go` 模式，`源码阅读（仓库代码，2026-11-21）`）：
 
-1. 输入超过 `MaxCookieInputBytes = 8192` 字节直接返回 `ErrInputTooLarge`；拒绝包含 `\r`、`\n` 或其他控制字符（防 HTTP 头注入），错误文案绝不回显原始输入。
+1. 原始输入超过 `MaxCookieInputBytes = 65536`（64 KiB）直接返回 `ErrInputTooLarge`；拒绝包含 `\r`、`\n` 或其他控制字符（防 HTTP 头注入），清洗后的出站 `Cookie:` 头超过 `MaxCleanedCookieHeaderBytes = 32768`（32 KiB）返回 `ErrCleanedCookieTooLarge`，错误文案绝不回显原始输入。
 2. 支持用户整行复制时自动剥离前缀 `Cookie:`；按 `;`（及换行兼容）拆分为 `name=value`（完整保留值中可能出现的 `=` 号，如 Base64 填充），同名键保留最后一个非空值，严格区分大小写。
 3. 采用**显式白名单保留**（仅保留上表前三类键名），剔除全部统计与界面字段；校验至少存在非空 `SUB`（否则返回专用 `ErrMissingWeiboSub`）。
 4. **全局脱敏红线**：`internal/credential/manager.go` 的 `RedactString` 必须注册 `weibo` 凭证库，将 `SUB`、`SUBP`、`SCF`、`ALF`、`ALC`、`WBPSESS`、`XSRF-TOKEN`、`SSOLoginState`、`SUHB`、`PC_TOKEN`、`_T_WM` 及扫码过程中的 `st`、`alt`、`ticket` 全部纳入掩码清单（含 URL 编解码变体），避免任何日志、错误链或诊断输出泄露凭证。
