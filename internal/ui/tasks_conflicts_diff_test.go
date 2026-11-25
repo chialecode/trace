@@ -1,0 +1,206 @@
+package ui
+
+import (
+	"context"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/chialecode/trace/internal/service"
+	"github.com/egoist/mygo/ui"
+)
+
+type conflictDiffStub struct {
+	*conflictsBackendStub
+	diffMu       sync.Mutex
+	diffToReturn service.CacheConflictDiffDTO
+	diffErr      error
+	diffCalls    int
+}
+
+func (s *conflictDiffStub) InspectCacheConflictDiff(_ context.Context, _ string) (service.CacheConflictDiffDTO, error) {
+	s.diffMu.Lock()
+	s.diffCalls++
+	dto := s.diffToReturn
+	err := s.diffErr
+	s.diffMu.Unlock()
+	if err != nil {
+		return service.CacheConflictDiffDTO{}, err
+	}
+	return dto, nil
+}
+
+func TestTasksConflictsDiffModalHighlightsTextAndAlignsMediaSideBySide(t *testing.T) {
+	app, _, cleanup := newTestUIApp(t)
+	defer cleanup()
+
+	rawBackend := app.backend.(*service.Backend)
+	_, _ = rawBackend.ImportCookie(context.Background(), "SESSDATA=synth; bili_jct=csrf; DedeUserID=12345", "")
+	saved := seedSyntheticLocalConflictItem(t, rawBackend)
+
+	conflict := service.CacheConflictDTO{
+		ID:            "conflict_diff_1",
+		ItemKey:       saved.ItemKey,
+		Site:          "bilibili",
+		Kind:          "video",
+		TargetID:      saved.RawID,
+		AuthorName:    "测试作者",
+		Title:         "视频标题 V1",
+		ReasonKind:    service.ConflictReasonParts,
+		ReasonLabel:   "分P变更",
+		LocalSummary:  "共 1 P（CID 101）",
+		RemoteSummary: "共 2 P（CID 209、210）",
+		State:         service.ConflictStatePending,
+	}
+	base := &conflictsBackendStub{
+		BackendAPI: rawBackend,
+		raw:        rawBackend,
+		conflicts:  []service.CacheConflictDTO{conflict},
+	}
+	_, locTitle, remTitle := service.DiffTextSideBySide("测试视频 V1 初版", "测试视频 V2 重制版")
+	_, locText, remText := service.DiffTextSideBySide("旧正文：1080P 单分P", "新正文：4K 双分P")
+	stub := &conflictDiffStub{
+		conflictsBackendStub: base,
+		diffToReturn: service.CacheConflictDiffDTO{
+			Conflict: conflict,
+			Local: service.ConflictDiffSideDTO{
+				Heading: "本地已缓存（旧版 V1）",
+				Summary: "共 1 P（CID 101 · 1080P）",
+				Title:   "测试视频 V1 初版",
+				Text:    "旧正文：1080P 单分P",
+			},
+			Remote: service.ConflictDiffSideDTO{
+				Heading: "源站当前（新版 V2）",
+				Summary: "共 2 P（CID 209 重制版 + P2 勘误）",
+				Title:   "测试视频 V2 重制版",
+				Text:    "新正文：4K 双分P",
+			},
+			TitleChanged: true,
+			LocalTitle:   locTitle,
+			RemoteTitle:  remTitle,
+			TextChanged:  true,
+			LocalText:    locText,
+			RemoteText:   remText,
+			MediaPairs: []service.ConflictMediaPairDTO{
+				{
+					Index:      1,
+					Kind:       "video",
+					Status:     service.ConflictDiffStatusChanged,
+					StatusText: "已变更",
+					Local:      &service.ConflictMediaSideDTO{Kind: "video", Label: "P01 初版", Sublabel: "1080P · CID 101", LocalItemKey: saved.ItemKey, LocalRelPath: "cover.png", PlayRelPath: "P01.mp4", CID: 101},
+					Remote:     &service.ConflictMediaSideDTO{Kind: "video", Label: "P01 重制", Sublabel: "4K · CID 209", CID: 209},
+				},
+				{
+					Index:      2,
+					Kind:       "image",
+					Status:     service.ConflictDiffStatusRemoteOnly,
+					StatusText: "源站新增",
+					Remote:     &service.ConflictMediaSideDTO{Kind: "image", Label: "图 2", Sublabel: "1920×1080"},
+				},
+			},
+		},
+	}
+
+	app.backend = stub
+	app.BindEventLoop(func(fn func()) { fn() })
+	app.OpenTasksConflicts()
+
+	tt := ui.NewTester(app.View, 1280, 860)
+	tt.Frame()
+
+	if _, ok := tt.Find("对比差异：conflict_diff_1"); !ok {
+		t.Fatal("missing 对比差异 button on conflict card")
+	}
+	tt.Click("对比差异：conflict_diff_1")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if app.ConflictDiff.Open && !app.ConflictDiff.Loading && app.ConflictDiff.Diff != nil && len(app.ConflictDiff.Diff.MediaPairs) == 2 {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	tt.Frame()
+
+	if !app.ConflictDiff.Open {
+		t.Fatal("expected ConflictDiff modal to open")
+	}
+	stub.diffMu.Lock()
+	calls := stub.diffCalls
+	stub.diffMu.Unlock()
+	if calls == 0 {
+		t.Fatal("expected InspectCacheConflictDiff to be called")
+	}
+	for _, wantLabel := range []string{
+		"内容冲突对比弹窗",
+		"内容冲突并列栏头",
+		"左侧列头：本地已缓存",
+		"右侧列头：源站当前",
+		"文字差异对比区",
+		"标题文字对比（本地）",
+		"标题文字对比（源站）",
+		"正文文字对比（本地）",
+		"正文文字对比（源站）",
+		"图片与视频并行视图区",
+		"媒体并列项 1（本地）",
+		"媒体并列项 1（源站）",
+		"媒体并列项 2（本地）",
+		"媒体并列项 2（源站）",
+		"对比弹窗保留两版",
+	} {
+		if _, ok := tt.Find(wantLabel); !ok {
+			t.Errorf("missing expected label %q in conflict diff modal", wantLabel)
+		}
+	}
+
+	// Verify 720px narrow window renders modal cleanly without horizontal overflow.
+	ttNarrow := ui.NewTester(app.View, 720, 860)
+	ttNarrow.Frame()
+	if rect, ok := ttNarrow.Find("内容冲突对比弹窗"); !ok {
+		t.Fatal("expected diff modal to render at 720px width")
+	} else if rect.X < -0.5 || rect.X+rect.W > 720.5 {
+		t.Fatalf("720px modal overflows horizontally: %+v", rect)
+	}
+
+	// Inline confirm for destructive replacement inside modal.
+	tt.Click("对比弹窗用新版替换")
+	tt.Frame()
+	if _, ok := tt.Find("对比弹窗确认替换栏"); !ok {
+		t.Fatal("expected inline confirm bar inside diff modal")
+	}
+	tt.Click("对比弹窗取消替换")
+	tt.Frame()
+	if _, ok := tt.Find("对比弹窗确认替换栏"); ok {
+		t.Fatal("expected inline confirm bar to close on cancel")
+	}
+
+	// Archive-first resolution from inside modal dispatches ConflictKeepBoth and closes modal.
+	tt.Click("对比弹窗保留两版")
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		base.mu.Lock()
+		n := len(base.resolveCalls)
+		base.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if app.ConflictDiff.Open {
+		t.Fatal("expected diff modal to close after clicking 保留两版")
+	}
+	base.mu.Lock()
+	rCalls := append([]conflictResolveCall(nil), base.resolveCalls...)
+	base.mu.Unlock()
+	if len(rCalls) != 1 || rCalls[0].id != "conflict_diff_1" || rCalls[0].choice != service.ConflictKeepBoth {
+		t.Fatalf("resolveCalls = %+v, want keep_both on conflict_diff_1", rCalls)
+	}
+
+	longText := strings.Repeat("中文差异测试", 10)
+	chunks := chunkDiffDisplayText(longText, 12)
+	if strings.Join(chunks, "") != longText {
+		t.Fatalf("chunkDiffDisplayText lost characters: got %q", strings.Join(chunks, ""))
+	}
+}

@@ -107,6 +107,62 @@ func (b *screenshotBackend) PendingCacheConflictCount() int {
 	return b.BackendAPI.PendingCacheConflictCount()
 }
 
+func (b *screenshotBackend) InspectCacheConflictDiff(_ context.Context, id string) (service.CacheConflictDiffDTO, error) {
+	for _, c := range b.conflicts {
+		if c.ID == id {
+			_, locTitle, remTitle := service.DiffTextSideBySide("合成演示视频：V1 初版投稿", "合成演示视频：V2 重制高清版")
+			_, locText, remText := service.DiffTextSideBySide("初版说明：1080P 单分P，含 1 张附带说明图。", "修订说明：4K HDR 双分P，补充勘误片段与新版配图。")
+			return service.CacheConflictDiffDTO{
+				Conflict: c,
+				Local: service.ConflictDiffSideDTO{
+					Heading: "本地已缓存（旧版 V1）",
+					Summary: c.LocalSummary,
+					Title:   "合成演示视频：V1 初版投稿",
+					Text:    "初版说明：1080P 单分P，含 1 张附带说明图。",
+				},
+				Remote: service.ConflictDiffSideDTO{
+					Heading: "源站当前（新版 V2）",
+					Summary: c.RemoteSummary,
+					Title:   "合成演示视频：V2 重制高清版",
+					Text:    "修订说明：4K HDR 双分P，补充勘误片段与新版配图。",
+				},
+				TitleChanged: true,
+				LocalTitle:   locTitle,
+				RemoteTitle:  remTitle,
+				TextChanged:  true,
+				LocalText:    locText,
+				RemoteText:   remText,
+				MediaPairs: []service.ConflictMediaPairDTO{
+					{
+						Index:      1,
+						Kind:       "video",
+						Status:     service.ConflictDiffStatusChanged,
+						StatusText: "已变更",
+						Local:      &service.ConflictMediaSideDTO{Kind: "video", Label: "P01 初版正片", Sublabel: "1080P · AVC · 03:20 · CID 101", LocalItemKey: c.ItemKey, LocalRelPath: "cover.jpg", PlayRelPath: "P01.mp4", DurationSec: 200, CID: 101},
+						Remote:     &service.ConflictMediaSideDTO{Kind: "video", Label: "P01 重制版", Sublabel: "4K · HEVC · 03:35 · CID 209", DurationSec: 215, CID: 209},
+					},
+					{
+						Index:      2,
+						Kind:       "video",
+						Status:     service.ConflictDiffStatusRemoteOnly,
+						StatusText: "源站新增",
+						Remote:     &service.ConflictMediaSideDTO{Kind: "video", Label: "P02 勘误补充", Sublabel: "1080P · 01:10 · CID 210", DurationSec: 70, CID: 210},
+					},
+					{
+						Index:      3,
+						Kind:       "image",
+						Status:     service.ConflictDiffStatusSame,
+						StatusText: "相同",
+						Local:      &service.ConflictMediaSideDTO{Kind: "image", Label: "封面 / 配图 1", Sublabel: "1280×720", LocalItemKey: c.ItemKey, LocalRelPath: "cover.jpg"},
+						Remote:     &service.ConflictMediaSideDTO{Kind: "image", Label: "封面 / 配图 1", Sublabel: "1280×720"},
+					},
+				},
+			}, nil
+		}
+	}
+	return b.BackendAPI.InspectCacheConflictDiff(context.Background(), id)
+}
+
 func (b *screenshotBackend) Statuses() map[string]credential.Status {
 	bili := b.BackendAPI.StatusOf("bilibili")
 	return map[string]credential.Status{

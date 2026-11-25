@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -2030,6 +2031,36 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 			ForbiddenLabels: []string{
 				"内容冲突空状态",
+			},
+		},
+		{
+			Name: "tasks-conflicts-diff",
+			Setup: func() {
+				seedRecentAndLive()
+				app.ConflictBatchChoice = service.DefaultConflictChoice
+				app.ConflictBatchConfirmOpen = false
+				app.ConflictReplaceConfirmID = ""
+				app.ConflictActionError = ""
+				app.OpenTasksConflicts()
+				if diff, err := env.backend.InspectCacheConflictDiff(context.Background(), "conflict_shot_bili"); err == nil {
+					app.OpenConflictDiffModalWithData(diff)
+				}
+			},
+			RequiredLabels: []string{
+				"内容冲突对比弹窗",
+				"内容冲突并列栏头",
+				"左侧列头：本地已缓存",
+				"右侧列头：源站当前",
+				"文字差异对比区",
+				"图片与视频并行视图区",
+				"内容冲突对比底部操作栏",
+			},
+			RequiredTexts: []string{
+				"本地已缓存（旧版 V1）",
+				"源站当前（新版 V2）",
+				"文字差异对比",
+				"图片与视频并列对比",
+				"保留两版（推荐）",
 			},
 		},
 		{

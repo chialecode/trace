@@ -556,6 +556,7 @@ type App struct {
 	ConflictBatchConfirmOpen  bool
 	ConflictReplaceConfirmID  string
 	ConflictActionError       string
+	ConflictDiff              ConflictDiffModalState
 	Tasks                     []download.Task
 	TasksListState            ui.ListState
 	ExpandedTaskID            string
@@ -1190,6 +1191,9 @@ func (a *App) View(c *ui.Context) {
 	}
 	if a.SubFile.ImportOpen {
 		a.renderSubImportOverlay(c, w, h)
+	}
+	if a.ConflictDiff.Open {
+		a.renderConflictDiffOverlay(c, w, h)
 	}
 	if a.ImageViewer.Open {
 		a.renderImageViewerOverlay(c, w, h)
