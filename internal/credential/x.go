@@ -135,11 +135,12 @@ func ParseXTWID(raw string) (string, error) {
 }
 
 // ParseXCookieInput parses and cleans a user-pasted X Cookie string per x.md §2.1.
-// It enforces the 8 KiB limit, rejects control characters and header-injection line breaks without
+// It enforces the 64 KiB raw input limit, rejects control characters and header-injection line breaks without
 // echoing raw input, strips an optional "Cookie:" prefix, splits by ";" or newlines while preserving
 // "=" inside values, keeps the last non-empty value per case-sensitive whitelisted key, strips all
 // temporary/tracking/WAF keys (att, gt, personalization_id, guest_id_marketing, guest_id_ads, lang,
-// external_referer, __cf_bm, etc.), and requires non-empty auth_token and valid alphanumeric ct0.
+// external_referer, __cf_bm, etc.), enforces the 32 KiB cleaned outbound header limit,
+// and requires non-empty auth_token and valid alphanumeric ct0.
 func ParseXCookieInput(rawCookie string) (map[string]string, error) {
 	if len(rawCookie) > MaxCookieInputBytes {
 		return nil, ErrInputTooLarge
@@ -237,6 +238,9 @@ func ParseXCookieInput(rawCookie string) (map[string]string, error) {
 	}
 	if !IsValidXCT0(out["ct0"]) {
 		return nil, ErrInvalidXCT0
+	}
+	if len(formatOrderedCookieHeader(out, AllowedXCookieKeys)) > MaxCleanedCookieHeaderBytes {
+		return nil, ErrCleanedCookieTooLarge
 	}
 	return out, nil
 }

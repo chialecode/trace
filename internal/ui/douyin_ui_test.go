@@ -667,6 +667,57 @@ func TestDouyinLoginCookieClearAndThreeFailureModes(t *testing.T) {
 	}
 }
 
+func TestLoginErrorMessagePreservesCookieLimitMessages(t *testing.T) {
+	cases := []struct {
+		name string
+		fn   func(error) string
+		err  error
+		want string
+	}{
+		{
+			name: "douyin_64kib",
+			fn:   douyinLoginErrorMessage,
+			err:  &site.Error{Site: site.Douyin, Kind: site.ErrKindInvalidInput, Message: "粘贴的 Cookie 长度超过 64 KiB 上限，请只复制抖音站点的 Cookie"},
+			want: "64 KiB",
+		},
+		{
+			name: "douyin_32kib_cleaned",
+			fn:   douyinLoginErrorMessage,
+			err:  &site.Error{Site: site.Douyin, Kind: site.ErrKindInvalidInput, Message: "清洗后的抖音 Cookie 请求头长度超过 32 KiB 上限，请只复制抖音站点的 Cookie"},
+			want: "32 KiB",
+		},
+		{
+			name: "weibo_64kib",
+			fn:   weiboLoginErrorMessage,
+			err:  &site.Error{Site: site.Weibo, Kind: site.ErrKindInvalidInput, Message: "粘贴的 Cookie 长度超过 64 KiB 上限，请只复制 weibo.com 站点的 Cookie"},
+			want: "64 KiB",
+		},
+		{
+			name: "weibo_32kib_cleaned",
+			fn:   weiboLoginErrorMessage,
+			err:  &site.Error{Site: site.Weibo, Kind: site.ErrKindInvalidInput, Message: "清洗后的微博 Cookie 请求头长度超过 32 KiB 上限，请只复制 weibo.com 站点的 Cookie"},
+			want: "32 KiB",
+		},
+		{
+			name: "x_64kib",
+			fn:   xLoginErrorMessage,
+			err:  &site.Error{Site: site.X, Kind: site.ErrKindInvalidInput, Message: "粘贴的 Cookie 长度超过 64 KiB 上限，请只复制 x.com 站点的 Cookie"},
+			want: "64 KiB",
+		},
+		{
+			name: "x_32kib_cleaned",
+			fn:   xLoginErrorMessage,
+			err:  &site.Error{Site: site.X, Kind: site.ErrKindInvalidInput, Message: "清洗后的 X Cookie 请求头长度超过 32 KiB 上限，请只复制 x.com 站点的 Cookie"},
+			want: "32 KiB",
+		},
+	}
+	for _, tc := range cases {
+		if got := tc.fn(tc.err); !strings.Contains(got, tc.want) {
+			t.Fatalf("%s: got %q, want substring %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestPerSiteAuthRoutingExpirySettingsAndSubscriptionImport verifies per-site pre-auth gates,
 // single-site vs dual-site expiry routing, /settings account two-group layout & per-site logout,
 // per-site scheduler backoff display, and Bilibili-only followings import gate.

@@ -101,7 +101,7 @@
 
 ### 3.1 粘贴 Cookie 字段分类与清洗规则
 
-按 DEC-043，用户在设置页粘贴浏览器已登录 `www.douyin.com` 后的 `Cookie` 字符串；TRACE 用 Windows DPAPI 加密落盘（[凭证设计](../design/architecture.md#credentials)），日志与错误报告严禁输出任何 Cookie 值。
+按 DEC-043，用户在设置页粘贴浏览器已登录 `www.douyin.com` 后的 `Cookie` 字符串；原始输入上限 `64 KiB`（`MaxCookieInputBytes = 65536`，避免完整浏览器 Cookie 在剥离大体积 `bd_ticket_guard_*` 等动态噪声前被提前拒收），清洗剥离下表黑名单字段后对出站 `Cookie:` 请求头再施 `32 KiB`（`MaxCleanedCookieHeaderBytes = 32768`）防 HTTP 431 保护；TRACE 用 Windows DPAPI 加密落盘（[凭证设计](../design/architecture.md#credentials)），日志与错误报告严禁输出任何 Cookie 值。
 
 | 分类 | 字段名 | 作用与处理策略 |
 | --- | --- | --- |
@@ -631,7 +631,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 | 空响应判定 | 严格按 §9.2 真值表；任何不确定的空结果都不当成“没有作品”或“到底了”，订阅检查记为“本轮结果不完整”，不移动起点 | — |
 
 <a id="account-lists"></a>
-## 12. 登录账号的关注、喜欢、收藏与观看历史（ACT-020 / ACT-026 / ACT-028 真实检查）
+## 12. 登录账号的关注、喜欢、收藏与观看历史（ACT-020 / ACT-026 / ACT-028 / ACT-029 真实检查）
 
 用于“我的”（FR-ACCT-005，DEC-047）。查询 2026-11-14。来源：本机参考索引中“用户视频列表解析”和“抖音签名与访问上下文”两个领域的实现（本地副本 2026-11-09 更新；只读协议事实，不复制代码，DEC-044），以及 GitHub REST 读到的公开元数据。全部只读，只看登录账号自己；作品条目与第 6.1 节 `aweme_detail` 同构，复用同一个解析；请求节奏、错误与风控判定沿用第 9 节，签名沿用[附录](#sign-spec)。
 
@@ -696,6 +696,14 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
   - **Call 5（`aweme/favorite` 第 2 页翻页）**：以 Call 4 的 `max_cursor` 翻第 2 页，返回 HTTP 200 `application/json` **`763,603 B`**（`bd-ticket-guard-result: 1101`），解析出 **`13` 条**、`hasMore=true`、`cursorAdvanced=true`。
   - **Call 6（单变量精确隔离）**：保留 `account.go` 原有 `version_code=170400`/`17.4.0`、原 `Referer`、无 `Origin`、纯 Go 标准库 TLS/HTTP2、无未注册握手头，**仅修复 `pickCanaryByte` 三处参数顺序**，直接返回 HTTP 200 `application/json` **`1,219,277 B`**（`17` 条、`hasMore=true`、`bd-ticket-guard-result: 1101`）。
 - **工程结论（核）**：1) `aweme/favorite` 此前持续返回 0 字节的直接根因是 `a_bogus` 三路摘要金丝雀函数 `pickCanaryByte(digest, start, sentinel, fallback)` 把 `start` 与 `sentinel` 写反，修正为 `(3, 11, 12)` / `(4, 8, 9)` / `(5, 12, 13)` 后纯 Go 标准库即可稳定拉通两页喜欢列表，无需引入第三方 TLS 库或浏览器桥接；2) 在尚无服务端签发有效 `ts_sign` 时不再向只读接口发送未注册的 4 个 `bd-ticket-guard-*` 握手头，避免触发 `1103`（保留 `guard` 包与 `server-data` 响应解析/签名能力以便后续具备票据签发通道时启用）。
+
+**完整生产链路登录、DPAPI 落盘重读与“喜欢”实测**（ACT-029，2026-11-25，常设授权下 1 次运行，脱敏回执 `artifacts/site-check/act029.json`，账本 `runs=1/1`、`apiCalls=2/5`：`dy_profile_self=1`、`dy_favorite=1`，媒体请求 `0`，串行间隔 `>= 3.2s`，`stoppedBy=""`，0 次 403/429/444、`secretScanClean=true`、`tempDataDeleted=true`，关联 [#52](https://github.com/chialecode/trace/issues/52)、[#88](https://github.com/chialecode/trace/issues/88)、[#91](https://github.com/chialecode/trace/issues/91)）：
+
+- **Step 0 离线清洗核对（0 网络请求）**：本次本机测试 Cookie（因旧 `8 KiB` 原始输入上限被拒后用户手动截短为 `7,188 B`，共 `64` 键，不含 `msToken`/`tt_scid`/`bd_ticket_guard_client_data` 等）经 `ParseDouyinCookieInput` 清洗剥离 `10` 个黑名单动态键后保留 `54` 键（出站头 `5,895 B`），`sessionid`、`sid_ucp_v1`、`s_v_web_id`、`UIFID`、`d_ticket` 全部留存，`cleaned_has_bd_ticket_guard=false`。
+- **Call 1 生产登录（`service.NewBackend` → `LoginWithCookie` → `profile/self`）**：返回 HTTP 200 `application/json`（`18,369 B`），`loggedIn=true`、`bd-ticket-guard-result: 1101`、`sentGuardHandshake=false`、`sentGuardSigned=false`，DPAPI 加密写入 `douyin.bin`（`7,334 B`）。
+- **Step 1b DPAPI 加密落盘重读核对（0 网络请求）**：关闭原后端并独立调用 `credential.OpenDouyin` 重新解密加载 `douyin.bin`，`backupCreated=false`、`activeCredential=true`，全部 `54` 键及 `s_v_web_id`、`sid_ucp_v1`、`UIFID`、`d_ticket`、`sessionid` 100% 无损留存。
+- **Call 2 生产「我的 › 抖音 › 喜欢」（全新 `service.NewBackend` 重载 `douyin.bin` → `Backend.AccountPage(douyin, likes, "", "")`）**：出站报文携带完整两阶段签名（`sentStage2Sig=true`、`sentVerifyFpParam=true`、`sentCookieHasSVWebID=true`、`sentCookieHasUIFID=true`、`sentCookieHasMSToken=true`、`sentGuardHandshake=false`），但服务端返回 HTTP 200 `text/plain` **`0 B`**、`bd-ticket-guard-result: 1101` 并下发 **`x-vc-bdturing-parameters`**（BDTuring 动态风控/滑块挑战头）；客户端按 `ErrKindUnavailable` 单接口隔离且未触发整站退避，Call 3 第 2 页跳过。
+- **工程结论（核）**：1) 确认生产链路 `LoginWithCookie`、DPAPI 加密落盘与重读、`a_bogus` 与 Stage-2 签名传递均无数据丢失或参数回退；2) `aweme/favorite` 在 `a_bogus` 修复后仍会受服务端 `x-vc-bdturing-parameters` 动态风控挑战（或手动截短 Cookie 丢失周边上下文 / 旧 `s_v_web_id` 失效）影响返回 `0 B`；3) 将 `MaxCookieInputBytes` 由 `8 KiB` 放宽至 `64 KiB`（先剥离动态噪声再限出站头 `32 KiB`）以消除用户必须手动截短完整浏览器 Cookie 的障碍，后续需由用户在浏览器打开「我的 → 喜欢」（必要时完成站内验证）后直接粘贴未截短的完整 Cookie 复测。
 
 <a id="sign-spec"></a>
 ## 附录：签名规格

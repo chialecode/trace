@@ -11,11 +11,30 @@ import (
 )
 
 func TestManualCookieParserWhitelistAndBounds(t *testing.T) {
-	// 1. Over 8 KiB input is rejected without echoing input.
+	// 1. Over 64 KiB raw input is rejected without echoing input.
 	hugeSecret := "SESSDATA=" + strings.Repeat("A", MaxCookieInputBytes+100) + "; bili_jct=csrf123"
 	if _, _, err := ParseManualCookieInput(hugeSecret, ""); !errors.Is(err, ErrInputTooLarge) {
 		t.Fatalf("expected ErrInputTooLarge, got %v", err)
 	} else if strings.Contains(err.Error(), "AAAA") {
+		t.Fatalf("error echoed secret input: %v", err)
+	}
+
+	// 1b. Over 8 KiB raw input with large non-whitelisted browser cookies succeeds after filtering.
+	over8KWithNoise := "SESSDATA=sess_after_noise_ok; bili_jct=csrf_ok; large_noise=" + strings.Repeat("N", 12000)
+	if len(over8KWithNoise) <= 8192 {
+		t.Fatalf("test fixture must exceed 8 KiB, got %d", len(over8KWithNoise))
+	}
+	if cleaned, _, err := ParseManualCookieInput(over8KWithNoise, ""); err != nil {
+		t.Fatalf("expected >8 KiB raw input with noise to succeed after filtering, got %v", err)
+	} else if cleaned["SESSDATA"] != "sess_after_noise_ok" || len(cleaned) != 2 {
+		t.Fatalf("unexpected cleaned cookies: %+v", cleaned)
+	}
+
+	// 1c. Cleaned outbound header exceeding 32 KiB is rejected without echoing secret.
+	oversizedCleaned := "SESSDATA=" + strings.Repeat("B", MaxCleanedCookieHeaderBytes+64)
+	if _, _, err := ParseManualCookieInput(oversizedCleaned, ""); !errors.Is(err, ErrCleanedCookieTooLarge) {
+		t.Fatalf("expected ErrCleanedCookieTooLarge, got %v", err)
+	} else if strings.Contains(err.Error(), "BBBB") {
 		t.Fatalf("error echoed secret input: %v", err)
 	}
 
