@@ -85,6 +85,20 @@ func TestDependencyDirectionRulesSynthetic(t *testing.T) {
 			record:    "github.com/chialecode/trace/internal/site/douyin/sign|bytes,net/http",
 			wantError: "sign purity violation",
 		},
+		{
+			name:   "internal/site/douyin/guard pure stdlib accepted",
+			record: "github.com/chialecode/trace/internal/site/douyin/guard|crypto/ecdh,crypto/ecdsa,crypto/elliptic,crypto/rand,crypto/sha256,crypto/x509,encoding/base64,encoding/json,strings,time",
+		},
+		{
+			name:      "internal/site/douyin/guard depending on credential rejected",
+			record:    "github.com/chialecode/trace/internal/site/douyin/guard|crypto/ecdsa,github.com/chialecode/trace/internal/credential",
+			wantError: "sign purity violation",
+		},
+		{
+			name:      "internal/site/douyin/guard depending on net/http rejected",
+			record:    "github.com/chialecode/trace/internal/site/douyin/guard|crypto/ecdsa,net/http",
+			wantError: "sign purity violation",
+		},
 
 		// Rule 6: download/live/subscription/library/storage/settings/uistate cannot depend on douyin;
 		// existing bilibili importers allowed, new bilibili importers rejected.

@@ -18,6 +18,7 @@ import (
 
 	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/site"
+	"github.com/chialecode/trace/internal/site/douyin/guard"
 	"github.com/chialecode/trace/internal/site/douyin/sign"
 )
 
@@ -156,6 +157,9 @@ type Client struct {
 	msTokenMu         sync.Mutex
 	fallbackMSToken   string
 	fallbackSessionID string
+
+	guardMu        sync.Mutex
+	ephemeralGuard *guard.State
 }
 
 // NewClient constructs a configured Douyin Client.
@@ -668,6 +672,7 @@ type apiRequestSpec struct {
 	requireSign     bool
 	guestNoCookie   bool
 	candidateCookie map[string]string
+	candidateGuard  *guard.State
 	// form, when non-nil, turns the request into a POST with an
 	// application/x-www-form-urlencoded body; the encoded body is also fed to
 	// the a_bogus body chain. GET requests leave it nil and are byte-identical.
@@ -728,6 +733,132 @@ func (c *Client) clearFallbackMSToken() {
 	c.fallbackMSToken = ""
 	c.fallbackSessionID = ""
 	c.msTokenMu.Unlock()
+}
+
+func (c *Client) clearEphemeralGuard() {
+	c.guardMu.Lock()
+	c.ephemeralGuard = nil
+	c.guardMu.Unlock()
+}
+
+func fromCredGuardState(in *credential.DouyinGuardState) (guard.State, bool) {
+	if in == nil {
+		return guard.State{}, false
+	}
+	st := guard.State{
+		PrivateKeyPKCS8: in.PrivateKeyPKCS8,
+		PublicKeySEC1:   in.PublicKeySEC1,
+		Ticket:          in.Ticket,
+		TsSign:          in.TsSign,
+		ClientCert:      in.ClientCert,
+		UpdatedAt:       in.UpdatedAt,
+	}
+	if _, err := guard.ParsePrivateKey(st.PrivateKeyPKCS8); err != nil {
+		return guard.State{}, false
+	}
+	return st, true
+}
+
+func toCredGuardState(in guard.State) *credential.DouyinGuardState {
+	if !in.HasKeyPair() && in.Ticket == "" && in.TsSign == "" && in.ClientCert == "" {
+		return nil
+	}
+	return &credential.DouyinGuardState{
+		PrivateKeyPKCS8: in.PrivateKeyPKCS8,
+		PublicKeySEC1:   in.PublicKeySEC1,
+		Ticket:          in.Ticket,
+		TsSign:          in.TsSign,
+		ClientCert:      in.ClientCert,
+		UpdatedAt:       in.UpdatedAt,
+	}
+}
+
+func (c *Client) prepareGuardHeaders(spec apiRequestSpec, path, fallbackTicket string, usingStore bool) (map[string]string, *guard.State) {
+	var st guard.State
+	switch {
+	case spec.candidateGuard != nil:
+		if _, err := guard.ParsePrivateKey(spec.candidateGuard.PrivateKeyPKCS8); err != nil {
+			gen, gErr := guard.GenerateState(c.entropy, c.nowFn)
+			if gErr != nil {
+				return nil, nil
+			}
+			*spec.candidateGuard = gen
+		}
+		st = *spec.candidateGuard
+
+	case usingStore && c.cred != nil:
+		loaded, ok := fromCredGuardState(c.cred.DouyinGuard())
+		if !ok {
+			gen, gErr := guard.GenerateState(c.entropy, c.nowFn)
+			if gErr != nil {
+				return nil, nil
+			}
+			loaded = gen
+			_ = c.cred.SaveDouyinGuard(toCredGuardState(loaded))
+		}
+		st = loaded
+
+	default:
+		c.guardMu.Lock()
+		if c.ephemeralGuard == nil {
+			if gen, gErr := guard.GenerateState(c.entropy, c.nowFn); gErr == nil {
+				c.ephemeralGuard = &gen
+			}
+		}
+		if c.ephemeralGuard != nil {
+			st = *c.ephemeralGuard
+		}
+		c.guardMu.Unlock()
+		if !st.HasKeyPair() {
+			return nil, nil
+		}
+	}
+
+	res, err := guard.BuildHeaders(guard.BuildHeadersInput{
+		State:          st,
+		Path:           path,
+		FallbackTicket: fallbackTicket,
+		Now:            c.nowFn,
+		Entropy:        c.entropy,
+	})
+	if err != nil {
+		return nil, nil
+	}
+	return res.Headers, &st
+}
+
+func (c *Client) adoptGuardResponse(spec apiRequestSpec, active *guard.State, usingStore bool, header http.Header, cookies []*http.Cookie) {
+	if active == nil {
+		return
+	}
+	flatHeaders := make(map[string]string, len(header))
+	for k, vals := range header {
+		if len(vals) > 0 && strings.TrimSpace(vals[0]) != "" {
+			flatHeaders[k] = vals[0]
+		}
+	}
+	rawCookies := make(map[string]string, len(cookies))
+	for _, ck := range cookies {
+		if ck != nil && ck.Value != "" {
+			rawCookies[ck.Name] = ck.Value
+		}
+	}
+	srv := guard.ParseServerResponse(flatHeaders, rawCookies)
+	next, changed := guard.MergeServerData(*active, srv, c.nowFn)
+	if !changed {
+		return
+	}
+	switch {
+	case spec.candidateGuard != nil:
+		*spec.candidateGuard = next
+	case usingStore && c.cred != nil:
+		_ = c.cred.SaveDouyinGuard(toCredGuardState(next))
+	default:
+		c.guardMu.Lock()
+		cp := next
+		c.ephemeralGuard = &cp
+		c.guardMu.Unlock()
+	}
 }
 
 func ensureCookieHasMSToken(cookieHeader, msToken string) string {
@@ -868,6 +999,25 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 		parsedURL.RawQuery = sign.SerializePairs(params)
 	}
 
+	var activeGuard *guard.State
+	if !spec.guestNoCookie && guard.IsGuardedPath(parsedURL.Path) {
+		var fallbackTicket string
+		if spec.candidateCookie != nil {
+			fallbackTicket = strings.TrimSpace(spec.candidateCookie["d_ticket"])
+		} else if usingStore && c.cred != nil {
+			fallbackTicket = strings.TrimSpace(c.cred.CookieValue("d_ticket"))
+		}
+		if gHeaders, gState := c.prepareGuardHeaders(spec, parsedURL.Path, fallbackTicket, usingStore); gState != nil {
+			activeGuard = gState
+			if extraHeaders == nil {
+				extraHeaders = make(map[string]string, len(gHeaders))
+			}
+			for k, v := range gHeaders {
+				extraHeaders[k] = v
+			}
+		}
+	}
+
 	var reqBody io.Reader
 	if method == http.MethodPost {
 		reqBody = strings.NewReader(formBody)
@@ -938,6 +1088,10 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 				c.clearFallbackMSToken()
 			}
 		}
+	}
+
+	if activeGuard != nil {
+		c.adoptGuardResponse(spec, activeGuard, usingStore, resp.Header, resp.Cookies())
 	}
 
 	rawResp := &apiRawResponse{
@@ -1394,6 +1548,7 @@ func (c *Client) onClassifiedError(ctx context.Context, se *site.Error, usingSto
 
 func (c *Client) markAuthExpired(reason string) {
 	c.clearFallbackMSToken()
+	c.clearEphemeralGuard()
 	if strings.TrimSpace(reason) == "" {
 		reason = "抖音登录状态已失效，请在设置页重新粘贴 Cookie"
 	}
