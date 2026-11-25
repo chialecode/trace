@@ -77,17 +77,13 @@ func TestBackendSubscriptionCustomLinksAndSafeOpenExternalLink(t *testing.T) {
 		t.Fatalf("updated.Links = %+v, want %+v", updated.Links, want)
 	}
 
-	// Rule changes preserve custom links.
-	rule, err := b.SaveCacheRule(subscription.CacheRule{Name: "定时规则", ScheduledCheck: true})
+	// Capability tag changes preserve custom links.
+	afterTags, err := b.SetSubscriptionTags(sub.ID, []string{subscription.TagScheduledCheck})
 	if err != nil {
-		t.Fatalf("SaveCacheRule: %v", err)
+		t.Fatalf("SetSubscriptionTags: %v", err)
 	}
-	afterRule, err := b.SetSubscriptionRule(sub.ID, rule.ID)
-	if err != nil {
-		t.Fatalf("SetSubscriptionRule: %v", err)
-	}
-	if !reflect.DeepEqual(afterRule.Links, want) {
-		t.Fatalf("SetSubscriptionRule lost Links: %+v", afterRule.Links)
+	if !reflect.DeepEqual(afterTags.Links, want) {
+		t.Fatalf("SetSubscriptionTags lost Links: %+v", afterTags.Links)
 	}
 
 	mu.Lock()

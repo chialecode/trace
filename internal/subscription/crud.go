@@ -201,10 +201,8 @@ func (m *Manager) Move(siteName, uid, toSubID string) (result Subscription, resu
 	if snapshotErr != nil {
 		return Subscription{}, snapshotErr
 	}
-	beforeRules := slices.Clone(m.rules)
 	defer func() {
 		if resultErr != nil {
-			m.rules = beforeRules
 			resultErr = errors.Join(resultErr, m.restoreSubscriptionViewLocked(before))
 		}
 	}()
@@ -312,10 +310,8 @@ func (m *Manager) MoveToNew(siteName, uid, name, note string, rules SubRules) (r
 	if snapshotErr != nil {
 		return Subscription{}, snapshotErr
 	}
-	beforeRules := slices.Clone(m.rules)
 	defer func() {
 		if resultErr != nil {
-			m.rules = beforeRules
 			resultErr = errors.Join(resultErr, m.restoreSubscriptionViewLocked(before))
 		}
 	}()
@@ -386,7 +382,6 @@ func (m *Manager) MoveToNew(siteName, uid, name, note string, rules SubRules) (r
 		sub.Rules.AutoCache.Since = nowStr
 	}
 	syncSubFields(&sub, now)
-	m.bindRuleLocked(&sub)
 	if err := m.upsertRowLocked(sub); err != nil {
 		return Subscription{}, err
 	}
@@ -495,26 +490,49 @@ func (m *Manager) Upsert(in Subscription) (result Subscription, resultErr error)
 		if !linksProvided && len(existing.Links) > 0 {
 			in.Links = cloneCustomLinks(existing.Links)
 		}
-		// Respect explicit toggle changes on either legacy (Enabled/LiveAutoRecord)
-		// or modern (Rules.ScheduledCheck/AutoRecord) fields before syncSubFields ORs them.
-		if in.Enabled != existing.Enabled && in.Rules.ScheduledCheck == existing.Rules.ScheduledCheck {
-			in.Rules.ScheduledCheck = in.Enabled
-		} else if in.Rules.ScheduledCheck != existing.Rules.ScheduledCheck && in.Enabled == existing.Enabled {
-			in.Enabled = in.Rules.ScheduledCheck
+		if in.Tags != nil && !slices.Equal(NormalizeTags(in.Tags), NormalizeTags(existing.Tags)) {
+			nextRules := TagsToSubRules(in.Tags)
+			if nextRules.AutoCache.Enabled {
+				nextRules.AutoCache.Since = firstNonEmptyStr(existing.Rules.AutoCache.Since, now.UTC().Format(time.RFC3339))
+			}
+			in.Rules = nextRules
+			in.Enabled = nextRules.ScheduledCheck
+			in.LiveAutoRecord = nextRules.AutoRecord
+			if nextRules.AutoCache.Enabled {
+				in.AutoCache = "dynamic"
+			} else {
+				in.AutoCache = "none"
+			}
+		} else {
+			// Respect explicit toggle changes on either legacy (Enabled/LiveAutoRecord)
+			// or modern (Rules.ScheduledCheck/AutoRecord) fields before syncSubFields ORs them.
+			if in.Enabled != existing.Enabled && in.Rules.ScheduledCheck == existing.Rules.ScheduledCheck {
+				in.Rules.ScheduledCheck = in.Enabled
+			} else if in.Rules.ScheduledCheck != existing.Rules.ScheduledCheck && in.Enabled == existing.Enabled {
+				in.Enabled = in.Rules.ScheduledCheck
+			}
+			if in.LiveAutoRecord != existing.LiveAutoRecord && in.Rules.AutoRecord == existing.Rules.AutoRecord {
+				in.Rules.AutoRecord = in.LiveAutoRecord
+			} else if in.Rules.AutoRecord != existing.Rules.AutoRecord && in.LiveAutoRecord == existing.LiveAutoRecord {
+				in.LiveAutoRecord = in.Rules.AutoRecord
+			}
+			// Preserve existing AutoCache rule when caller passed a legacy Upsert
+			// without AutoCache fields (and did not set AutoCache="none"), without
+			// clobbering ScheduledCheck / AutoRecord toggles.
+			if !in.Rules.AutoCache.Enabled && len(in.Rules.AutoCache.Types) == 0 && in.Rules.AutoCache.Since == "" &&
+				in.AutoCache != "none" && existing.Rules.AutoCache.Enabled {
+				in.Rules.AutoCache = existing.Rules.AutoCache
+			} else if in.Rules.AutoCache.Enabled && in.Rules.AutoCache.Since == "" && existing.Rules.AutoCache.Since != "" {
+				in.Rules.AutoCache.Since = existing.Rules.AutoCache.Since
+			}
+			if !in.Rules.FullCache && existing.Rules.FullCache && in.Tags == nil {
+				in.Rules.FullCache = existing.Rules.FullCache
+			}
 		}
-		if in.LiveAutoRecord != existing.LiveAutoRecord && in.Rules.AutoRecord == existing.Rules.AutoRecord {
-			in.Rules.AutoRecord = in.LiveAutoRecord
-		} else if in.Rules.AutoRecord != existing.Rules.AutoRecord && in.LiveAutoRecord == existing.LiveAutoRecord {
-			in.LiveAutoRecord = in.Rules.AutoRecord
-		}
-		// Preserve existing AutoCache rule when caller passed a legacy Upsert
-		// without AutoCache fields (and did not set AutoCache="none"), without
-		// clobbering ScheduledCheck / AutoRecord toggles.
-		if !in.Rules.AutoCache.Enabled && len(in.Rules.AutoCache.Types) == 0 && in.Rules.AutoCache.Since == "" &&
-			in.AutoCache != "none" && existing.Rules.AutoCache.Enabled {
-			in.Rules.AutoCache = existing.Rules.AutoCache
-		} else if in.Rules.AutoCache.Enabled && in.Rules.AutoCache.Since == "" && existing.Rules.AutoCache.Since != "" {
-			in.Rules.AutoCache.Since = existing.Rules.AutoCache.Since
+	} else if len(in.Tags) > 0 && !in.Rules.ScheduledCheck && !in.Rules.AutoCache.Enabled && !in.Rules.AutoRecord && !in.Rules.FullCache {
+		in.Rules = TagsToSubRules(in.Tags)
+		if in.Rules.AutoCache.Enabled && in.Rules.AutoCache.Since == "" {
+			in.Rules.AutoCache.Since = now.UTC().Format(time.RFC3339)
 		}
 	}
 	syncSubFields(&in, now)

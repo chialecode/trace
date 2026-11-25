@@ -302,18 +302,16 @@ func TestRemoteWeiboSubscriptionSyncCheckAutoCacheAndNoFullCache(t *testing.T) {
 	snap := subscription.Snapshot{
 		Format:  subscription.SnapshotFormat,
 		Version: subscription.SnapshotVersion,
-		Rules: []subscription.CacheRule{{
-			ID:             "r_wb",
-			Name:           "微博自动缓存规则",
-			ScheduledCheck: true,
-			AutoCache:      true,
-			Types:          []string{"draw", "video", "word"},
-			FullCache:      true,
-		}},
 		Subscriptions: []subscription.SnapshotSubscription{{
-			ID:             "sub_wb",
-			Name:           "合成微博订阅",
-			RuleID:         "r_wb",
+			ID:   "sub_wb",
+			Name: "合成微博订阅",
+			Tags: []string{
+				subscription.TagScheduledCheck,
+				subscription.TagCacheVideo,
+				subscription.TagCacheDraw,
+				subscription.TagCacheWord,
+				subscription.TagFullCache,
+			},
 			AutoCacheSince: "2026-11-18T00:00:00Z",
 			Accounts: []subscription.SnapshotAccount{{
 				Site: "weibo",

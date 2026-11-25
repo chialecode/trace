@@ -191,7 +191,7 @@ func (b *Backend) ApplySubscriptionImport(path string, choices subscription.Impo
 	if err != nil {
 		return res, err
 	}
-	b.logInfo(fmt.Sprintf("subscriptions imported: new=%d existing=%d merge=%v rules=%d", len(res.New), len(res.Existing), choices.MergeExisting, len(choices.UseImportedRules)))
+	b.logInfo(fmt.Sprintf("subscriptions imported: new=%d existing=%d merge=%v mergeTags=%v", len(res.New), len(res.Existing), choices.MergeExisting, choices.MergeTags))
 	if subs, err := b.subs.List(); err == nil {
 		for _, s := range subs {
 			b.rememberAccountAvatars(s.Accounts)

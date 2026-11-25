@@ -403,6 +403,10 @@ func (a *App) renderRouteHeaderActions(c *ui.Context) {
 				if m.Item("从关注列表导入").Chosen() {
 					a.openImportFollowingsModal()
 				}
+				if m.Item("批量设置缓存标签…").Chosen() {
+					a.openMultiTagBatchDialog()
+				}
+				m.Separator()
 				if m.Item("导出订阅…").Chosen() {
 					a.openSubExport()
 				}

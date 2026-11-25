@@ -284,7 +284,6 @@ type fixtureEnv struct {
 	primarySub        subscription.Subscription
 	auroraSub         subscription.Subscription
 	xOnlySub          subscription.Subscription
-	batchRule         subscription.CacheRule
 	savedItem         library.ItemMetadata
 	savedLiveItem     library.ItemMetadata
 	savedPartialItem  library.ItemMetadata
@@ -456,38 +455,31 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		},
 	}, subscription.DefaultSubRules())
 
-	videoOnlyRule, err := b.SaveCacheRule(subscription.CacheRule{
-		Name:           "只存视频",
-		ScheduledCheck: true,
-		AutoCache:      true,
-		Types:          []string{"video"},
-	})
-	if err != nil {
-		return nil, err
-	}
-	env.batchRule, err = b.SaveCacheRule(subscription.CacheRule{
-		Name:           "自动存视频与图文",
-		ScheduledCheck: true,
-		AutoCache:      true,
-		Types:          []string{"video", "draw"},
-	})
-	if err != nil {
-		return nil, err
-	}
 	if env.primarySub.ID != "" {
-		if updated, rErr := b.SetSubscriptionRule(env.primarySub.ID, env.batchRule.ID); rErr == nil {
+		if updated, rErr := b.SetSubscriptionTags(env.primarySub.ID, []string{
+			subscription.TagScheduledCheck,
+			subscription.TagCacheVideo,
+			subscription.TagCacheDraw,
+		}); rErr == nil {
 			env.primarySub = updated
 		}
 	}
 	if env.auroraSub.ID != "" {
-		if updated, rErr := b.SetSubscriptionRule(env.auroraSub.ID, env.batchRule.ID); rErr == nil {
+		if updated, rErr := b.SetSubscriptionTags(env.auroraSub.ID, []string{
+			subscription.TagScheduledCheck,
+			subscription.TagCacheVideo,
+			subscription.TagCacheDraw,
+		}); rErr == nil {
 			env.auroraSub = updated
 		}
 	}
 	if subsList, lErr := b.ListSubscriptions(); lErr == nil {
 		for _, s := range subsList {
 			if s.Mid == 20003 {
-				_, _ = b.SetSubscriptionRule(s.ID, videoOnlyRule.ID)
+				_, _ = b.SetSubscriptionTags(s.ID, []string{
+					subscription.TagScheduledCheck,
+					subscription.TagCacheVideo,
+				})
 			}
 		}
 	}
@@ -790,7 +782,7 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		TypeLabel: "微博",
 		Status:    "complete",
 		Title:     "微博长文与多图实况示例",
-		Text:      "微博图文归档示例：保存图片与实况静帧，详见 架构手记 与 #离线媒体库#。\n多段落中文正文采用舒展行高排印，桌面阅读层次清晰。",
+		Text:      "微博图文归档示例：保存图片与实况静帧，详见 架构手记 与 #离线媒体库#。",
 		Links: []library.ItemLink{
 			{Label: "架构手记", URL: "https://weibo.com/ttarticle/p/show?id=2309405000000000000001"},
 			{Label: "#离线媒体库#", URL: "https://s.weibo.com/weibo?q=%23%E7%A6%BB%E7%BA%BF%E5%AA%92%E4%BD%93%E5%BA%93%23"},
