@@ -11,6 +11,7 @@ import (
 
 	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/site"
+	"github.com/chialecode/trace/internal/site/douyin/guard"
 )
 
 var (
@@ -58,12 +59,23 @@ func (c *Client) LoginWithCookie(ctx context.Context, rawCookie string) (credent
 		}
 	}
 
-	profile, refreshedCookies, usedMSToken, err := c.verifyCandidateCookies(ctx, cleaned)
+	candGuard, _ := guard.GenerateState(c.entropy, c.nowFn)
+	var candGuardPtr *guard.State
+	if candGuard.HasKeyPair() {
+		candGuardPtr = &candGuard
+	}
+	profile, refreshedCookies, usedMSToken, err := c.verifyCandidateCookies(ctx, cleaned, candGuardPtr)
 	if err != nil {
 		return credential.Status{}, err
 	}
 
 	if c.cred == nil {
+		if candGuardPtr != nil {
+			c.guardMu.Lock()
+			cp := *candGuardPtr
+			c.ephemeralGuard = &cp
+			c.guardMu.Unlock()
+		}
 		if strings.TrimSpace(refreshedCookies["msToken"]) == "" && usedMSToken != "" {
 			c.setFallbackMSToken(cookieMapSessionFingerprint(refreshedCookies), usedMSToken)
 		} else {
@@ -81,13 +93,17 @@ func (c *Client) LoginWithCookie(ctx context.Context, rawCookie string) (credent
 		}, nil
 	}
 
-	st, saveErr := c.cred.SaveVerifiedDouyinManual(refreshedCookies, credential.DouyinProfile{
+	var credGuard *credential.DouyinGuardState
+	if candGuardPtr != nil {
+		credGuard = toCredGuardState(*candGuardPtr)
+	}
+	st, saveErr := c.cred.SaveVerifiedDouyinManualWithGuard(refreshedCookies, credential.DouyinProfile{
 		UID:      profile.UID,
 		SecUID:   profile.SecUID,
 		UniqueID: profile.UniqueID,
 		Uname:    profile.Nickname,
 		Face:     profile.AvatarURL,
-	})
+	}, credGuard)
 	if saveErr != nil {
 		return credential.Status{}, saveErr
 	}
@@ -134,6 +150,7 @@ func (c *Client) VerifyCredential(ctx context.Context) (credential.Status, error
 // LogoutCredential clears the stored Douyin credential and invalidates cached live room mappings.
 func (c *Client) LogoutCredential() error {
 	c.clearFallbackMSToken()
+	c.clearEphemeralGuard()
 
 	c.liveCacheMu.Lock()
 	c.webRIDByUser = make(map[string]liveWebRIDEntry)
@@ -184,13 +201,14 @@ func (c *Client) CheckProfileSelfGuest(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) verifyCandidateCookies(ctx context.Context, cleaned map[string]string) (*SelfProfile, map[string]string, string, error) {
+func (c *Client) verifyCandidateCookies(ctx context.Context, cleaned map[string]string, candidateGuard *guard.State) (*SelfProfile, map[string]string, string, error) {
 	rawResp, err := c.doAPIRequest(ctx, apiRequestSpec{
 		endpoint:        c.endpoints.ProfileSelf,
 		referer:         DefaultReferer,
 		params:          c.profile.CommonWebParams(c.webID, ""),
 		requireSign:     true,
 		candidateCookie: cleaned,
+		candidateGuard:  candidateGuard,
 	})
 	if err != nil {
 		if site.IsKind(err, site.ErrKindRiskControl) || site.IsKind(err, site.ErrKindRateLimited) {
