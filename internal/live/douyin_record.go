@@ -155,12 +155,26 @@ func (m *Manager) StartDouyinRecording(ctx context.Context, uid, roomOrWebRID st
 		return RoomState{}, err
 	}
 	itemKey := library.CanonicalItemKey("douyin", "live", roomID)
-	existingMeta, exists, err := m.lib.GetItem(itemKey)
+	var existingMeta library.ItemMetadata
+	var exists bool
+	var unlockDir func()
+	itemDir, existingMeta, exists, unlockDir, err = m.lockItemDirForItem(itemKey, itemDir)
 	if err != nil {
 		return RoomState{}, err
 	}
+	dirUnlocked := false
+	releaseDir := func() {
+		if !dirUnlocked {
+			dirUnlocked = true
+			unlockDir()
+		}
+	}
+	defer releaseDir()
 	if exists && existingMeta.ItemDir != "" {
 		itemDir = existingMeta.ItemDir
+	}
+	if hook := m.testBeforeStartSave; hook != nil {
+		hook(itemDir)
 	}
 	if err := os.MkdirAll(itemDir, 0o700); err != nil {
 		return RoomState{}, err
@@ -228,7 +242,7 @@ func (m *Manager) StartDouyinRecording(ctx context.Context, uid, roomOrWebRID st
 		meta.Live.Source = "auto"
 	}
 
-	savedMeta, err := m.lib.SaveItem(itemDir, meta)
+	savedMeta, err := m.lib.SaveLiveItem(itemDir, meta)
 	if err != nil {
 		return RoomState{}, err
 	}
@@ -277,7 +291,7 @@ func (m *Manager) StartDouyinRecording(ctx context.Context, uid, roomOrWebRID st
 	}
 	for _, media := range savedMeta.Media {
 		if media.Role == "live_segment" {
-			sess.segments = append(sess.segments, media.Path)
+			sess.segments = mergeLiveSegmentPath(sess.segments, media.Path)
 			sess.bytesTotal += media.Bytes
 		}
 	}
@@ -337,6 +351,7 @@ func (m *Manager) StartDouyinRecording(ctx context.Context, uid, roomOrWebRID st
 	}
 	m.wg.Add(1)
 	m.mu.Unlock()
+	releaseDir()
 
 	go m.runDouyinRecordingSession(recCtx, sess, plan, codecOrder)
 
@@ -381,7 +396,7 @@ func (m *Manager) StopDouyinRecording(roomOrUID string) (RoomState, error) {
 	if sess != nil && sess.stopReason == "" {
 		sess.stopReason = "user_stop"
 	}
-	timeout := m.finalizeTimeout
+	finCtx := m.finalizeCtxLocked()
 	m.mu.Unlock()
 
 	if sess == nil {
@@ -398,15 +413,10 @@ func (m *Manager) StopDouyinRecording(roomOrUID string) (RoomState, error) {
 		return RoomState{Site: string(site.Douyin)}, nil
 	}
 
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
 	sess.cancel()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
 	select {
 	case <-sess.doneCh:
-	case <-timer.C:
+	case <-finCtx.Done():
 		m.mu.Lock()
 		state := m.douyinStates[sess.stateKey]
 		m.mu.Unlock()
@@ -453,7 +463,8 @@ func (m *Manager) runDouyinRecordingSession(ctx context.Context, sess *recordSes
 		},
 		recordPart: func(ctx context.Context, flvConn **activeFLVConn, partPath string) (int64, error) {
 			m.beginSessionPart(sess, sess.nextPart, partPath, string(site.LiveTransportHTTPFLV))
-			return m.recordFLVPartWithTransport(ctx, sess, plan.Media, plan.URLs, flvConn, partPath)
+			orderedURLs := m.orderSessionURLs(sess, plan.URLs)
+			return m.recordFLVPartWithTransport(ctx, sess, plan.Media, orderedURLs, flvConn, partPath)
 		},
 		reportStopError: func(ctx context.Context, err error, reason string) {
 			if rep, ok := provider.(LiveErrorReporter); ok {

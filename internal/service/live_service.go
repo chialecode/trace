@@ -419,7 +419,7 @@ func (b *Backend) ClearLiveIncidents(itemKey, siteID, roomID, uid string) error 
 			}
 			if item.Live != nil && len(item.Live.Incidents) > 0 {
 				item.Live.Incidents = nil
-				if _, err := b.lib.SaveItem(item.ItemDir, item); err != nil {
+				if _, err := b.lib.SaveLiveItem(item.ItemDir, item); err != nil {
 					return err
 				}
 				changed = true

@@ -18,9 +18,14 @@ import (
 )
 
 const (
-	maxM3U8PlaylistBytes = 1024 * 1024 // 1 MiB playlist limit (live.md §2.3)
-	defaultMinFreeBytes  = 1 << 30     // 1 GiB minimum free disk space (live.md §2.8)
-	statusCacheTTL       = 60 * time.Second
+	maxM3U8PlaylistBytes      = 1024 * 1024 // 1 MiB playlist limit (live.md §2.3)
+	defaultMinFreeBytes       = 1 << 30     // 1 GiB minimum free disk space (live.md §2.8)
+	statusCacheTTL            = 60 * time.Second
+	defaultCheckpointInterval = 5 * time.Second
+	defaultHLSPlaylistTimeout = 8 * time.Second
+	defaultHLSSegmentTimeout  = 12 * time.Second
+	defaultHLSIdleTimeout     = 8 * time.Second
+	failedHostTTL             = 5 * time.Minute
 )
 
 var errSegmentRollover = errors.New("live: segment rollover required")
@@ -132,6 +137,9 @@ type recordSession struct {
 	nominalByteRate          float64
 	pendingReconnectAt       time.Time
 	pendingReconnectHadMedia bool
+	failedHosts              map[string]time.Time
+	avgExtinfSec             float64
+	extinfSamples            int
 	// inExternal tracks active external site-client / callback invocations on this
 	// session so re-entrant StopForSite never deadlocks waiting on doneCh.
 	inExternal atomic.Int32
@@ -166,6 +174,7 @@ type Manager struct {
 	liveSettings settings.LiveSettings
 	onNotify     func(Notification)
 	onState      func(RoomState)
+	logFunc      func(level, msg string)
 	nowFunc      func() time.Time
 
 	states            map[int64]RoomState         // keyed by RoomID (or negative UID if RoomID unknown)
@@ -193,9 +202,18 @@ type Manager struct {
 	douyinSessions     map[string]*recordSession
 	douyinStoppedRooms map[string]bool
 
-	stopping        bool
-	stopDeadline    time.Time
-	finalizeTimeout time.Duration
+	stopping             bool
+	stopDeadline         time.Time
+	finalizeTimeout      time.Duration
+	finalizeStallTimeout time.Duration
+	finalizeCtx          context.Context
+	finalizeCancel       context.CancelFunc
+	recoveringDirs       map[string]struct{}
+	dirCommitSlots       map[string]chan struct{}
+
+	// Optional test hooks for deterministic concurrency regression tests.
+	testBeforeStartSave  func(itemDir string)
+	testInRecoveryCommit func(itemDir string)
 
 	baseCtx    context.Context
 	baseCancel context.CancelFunc
@@ -204,12 +222,16 @@ type Manager struct {
 	wg         sync.WaitGroup
 
 	// Configurable intervals and thresholds for deterministic testing
-	hlsPollInterval  time.Duration
-	reconnectWait    time.Duration
-	noSegmentTimeout time.Duration
-	maxStreamLossDur time.Duration
-	minFreeBytes     uint64
-	freeBytesFunc    func(dir string) (uint64, error)
+	hlsPollInterval    time.Duration
+	checkpointInterval time.Duration
+	hlsPlaylistTimeout time.Duration
+	hlsSegmentTimeout  time.Duration
+	hlsIdleTimeout     time.Duration
+	reconnectWait      time.Duration
+	noSegmentTimeout   time.Duration
+	maxStreamLossDur   time.Duration
+	minFreeBytes       uint64
+	freeBytesFunc      func(dir string) (uint64, error)
 }
 
 // NewManager creates a live status and recording Manager.
@@ -222,6 +244,7 @@ func NewManager(
 	onState func(RoomState),
 ) *Manager {
 	baseCtx, baseCancel := context.WithCancel(context.Background())
+	finCtx, finCancel := context.WithCancel(context.Background())
 	return &Manager{
 		starting:              make(map[string]chan struct{}),
 		lib:                   lib,
@@ -250,10 +273,19 @@ func NewManager(
 		douyinSessions:        make(map[string]*recordSession),
 		douyinStoppedRooms:    make(map[string]bool),
 		finalizeTimeout:       30 * time.Second,
+		finalizeStallTimeout:  defaultFinalizeStallTimeout,
+		finalizeCtx:           finCtx,
+		finalizeCancel:        finCancel,
+		recoveringDirs:        make(map[string]struct{}),
+		dirCommitSlots:        make(map[string]chan struct{}),
 		baseCtx:               baseCtx,
 		baseCancel:            baseCancel,
 		pollWake:              make(chan struct{}, 1),
-		hlsPollInterval:       0, // 0 uses #EXT-X-TARGETDURATION clamped to [1s, 5s]
+		hlsPollInterval:       0, // 0 uses #EXT-X-TARGETDURATION/2 clamped to [500ms, 2s]
+		checkpointInterval:    defaultCheckpointInterval,
+		hlsPlaylistTimeout:    defaultHLSPlaylistTimeout,
+		hlsSegmentTimeout:     defaultHLSSegmentTimeout,
+		hlsIdleTimeout:        defaultHLSIdleTimeout,
 		reconnectWait:         6 * time.Second,
 		noSegmentTimeout:      10 * time.Second,
 		maxStreamLossDur:      5 * time.Minute,
@@ -267,6 +299,13 @@ func (m *Manager) baseCtxLocked() context.Context {
 		m.baseCtx, m.baseCancel = context.WithCancel(context.Background())
 	}
 	return m.baseCtx
+}
+
+func (m *Manager) finalizeCtxLocked() context.Context {
+	if m.finalizeCtx == nil {
+		m.finalizeCtx, m.finalizeCancel = context.WithCancel(context.Background())
+	}
+	return m.finalizeCtx
 }
 
 func (m *Manager) withManagerContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -326,10 +365,9 @@ func (m *Manager) acquireStartSlot(ctx context.Context, siteID site.ID, key stri
 	}
 }
 
-// Start recovers registered recording parts and starts background status polling.
+// Start launches asynchronous recovery of registered recording parts and starts
+// background status polling without blocking app startup on large conversions.
 func (m *Manager) Start(parentCtx context.Context) {
-	m.RecoverOrphanParts()
-
 	m.mu.Lock()
 	if m.pollCancel != nil {
 		m.mu.Unlock()
@@ -343,12 +381,23 @@ func (m *Manager) Start(parentCtx context.Context) {
 	if m.baseCancel != nil {
 		m.baseCancel()
 	}
+	if m.finalizeCancel != nil {
+		m.finalizeCancel()
+	}
 	m.baseCtx, m.baseCancel = context.WithCancel(parentCtx)
+	// Finalize/recovery work derives from Background (never parentCtx), because
+	// Backend.Close cancels parentCtx before calling live.Stop() with its 30s hook.
+	finCtx, finCancel := context.WithCancel(context.Background())
+	m.finalizeCtx, m.finalizeCancel = finCtx, finCancel
 	ctx, cancel := context.WithCancel(m.baseCtx)
 	m.pollCancel = cancel
-	m.wg.Add(1)
+	m.wg.Add(2)
 	m.mu.Unlock()
 
+	go func() {
+		defer m.wg.Done()
+		m.recoverOrphanParts(finCtx)
+	}()
 	go m.pollLoop(ctx)
 }
 
@@ -364,6 +413,7 @@ func (m *Manager) Stop() {
 	pollCancel := m.pollCancel
 	m.pollCancel = nil
 	baseCancel := m.baseCancel
+	finCancel := m.finalizeCancel
 	m.mu.Unlock()
 
 	if pollCancel != nil {
@@ -374,6 +424,17 @@ func (m *Manager) Stop() {
 	}
 	m.CancelRecordings("app_closed")
 
+	// Cancel in-flight background conversions and recovery before Stop returns so
+	// goroutines can clean up temporary files and exit cleanly before DB close.
+	finCut := timeout
+	if finCut >= 2*time.Second {
+		finCut -= 500 * time.Millisecond
+	}
+	var stopFinTimer *time.Timer
+	if finCancel != nil {
+		stopFinTimer = time.AfterFunc(finCut, finCancel)
+	}
+
 	done := make(chan struct{})
 	go func() { m.wg.Wait(); close(done) }()
 	timer := time.NewTimer(timeout)
@@ -381,6 +442,19 @@ func (m *Manager) Stop() {
 	select {
 	case <-done:
 	case <-timer.C:
+		if finCancel != nil {
+			finCancel()
+		}
+		select {
+		case <-done:
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	if stopFinTimer != nil {
+		stopFinTimer.Stop()
+	}
+	if finCancel != nil {
+		finCancel()
 	}
 }
 

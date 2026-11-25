@@ -8,6 +8,13 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
+)
+
+const (
+	proxyAllowedHostTTL      = 30 * time.Second
+	maxProxyAllowedHostCache = 128
+	multiIPDialCap           = 5 * time.Second
 )
 
 var (
@@ -29,10 +36,12 @@ type GuardedMediaDialer struct {
 	message    string
 	proxyFunc  func(*http.Request) (*url.URL, error)
 	resolver   func(ctx context.Context, host string) ([]net.IPAddr, error)
+	nowFunc    func() time.Time
 
-	mu         sync.RWMutex
-	proxyGen   uint64
-	proxyAddrs map[string]struct{}
+	mu             sync.RWMutex
+	proxyGen       uint64
+	proxyAddrs     map[string]struct{}
+	allowedHostExp map[string]time.Time
 }
 
 // NewGuardedMediaDialer returns a guard for site using the proxy chosen in
@@ -49,8 +58,16 @@ func NewGuardedMediaDialer(siteID ID, allowLocalhost bool, dialer *net.Dialer, m
 		message:    message,
 		proxyFunc:  Proxy,
 		resolver:   net.DefaultResolver.LookupIPAddr,
+		nowFunc:    time.Now,
 		proxyGen:   proxyGen.Load(),
 	}
+}
+
+func (g *GuardedMediaDialer) now() time.Time {
+	if g.nowFunc != nil {
+		return g.nowFunc()
+	}
+	return time.Now()
 }
 
 func (g *GuardedMediaDialer) isTrustedProxyAddr(addr string) bool {
@@ -67,6 +84,7 @@ func (g *GuardedMediaDialer) isTrustedProxyAddr(addr string) bool {
 	g.mu.Lock()
 	if g.proxyGen != curGen {
 		g.proxyAddrs = nil
+		g.allowedHostExp = nil
 		g.proxyGen = curGen
 	}
 	_, ok := g.proxyAddrs[key]
@@ -80,12 +98,68 @@ func (g *GuardedMediaDialer) rememberProxyAddr(addr string) {
 	g.mu.Lock()
 	if g.proxyGen != curGen {
 		g.proxyAddrs = nil
+		g.allowedHostExp = nil
 		g.proxyGen = curGen
 	}
 	if g.proxyAddrs == nil {
 		g.proxyAddrs = make(map[string]struct{})
 	}
 	g.proxyAddrs[key] = struct{}{}
+	g.mu.Unlock()
+}
+
+func (g *GuardedMediaDialer) isAllowedProxyHostCached(host string) bool {
+	key := strings.ToLower(strings.TrimSpace(host))
+	if key == "" {
+		return false
+	}
+	curGen := proxyGen.Load()
+	now := g.now()
+	g.mu.RLock()
+	if g.proxyGen == curGen {
+		exp, ok := g.allowedHostExp[key]
+		g.mu.RUnlock()
+		return ok && now.Before(exp)
+	}
+	g.mu.RUnlock()
+
+	g.mu.Lock()
+	if g.proxyGen != curGen {
+		g.proxyAddrs = nil
+		g.allowedHostExp = nil
+		g.proxyGen = curGen
+	}
+	g.mu.Unlock()
+	return false
+}
+
+func (g *GuardedMediaDialer) cacheAllowedProxyHost(host string) {
+	key := strings.ToLower(strings.TrimSpace(host))
+	if key == "" {
+		return
+	}
+	curGen := proxyGen.Load()
+	now := g.now()
+	g.mu.Lock()
+	if g.proxyGen != curGen {
+		g.proxyAddrs = nil
+		g.allowedHostExp = nil
+		g.proxyGen = curGen
+	}
+	if g.allowedHostExp == nil {
+		g.allowedHostExp = make(map[string]time.Time)
+	}
+	if len(g.allowedHostExp) >= maxProxyAllowedHostCache {
+		for k, exp := range g.allowedHostExp {
+			if !now.Before(exp) {
+				delete(g.allowedHostExp, k)
+			}
+		}
+		if len(g.allowedHostExp) >= maxProxyAllowedHostCache {
+			clear(g.allowedHostExp)
+		}
+	}
+	g.allowedHostExp[key] = now.Add(proxyAllowedHostTTL)
 	g.mu.Unlock()
 }
 
@@ -105,12 +179,18 @@ func (g *GuardedMediaDialer) Proxy(req *http.Request) (*url.URL, error) {
 		}
 		return nil, nil
 	}
-	if !g.allowLocal {
-		// The proxy resolves the media host; check what it resolves to here so a
-		// proxy does not become a way around the private-address guard.
-		if ips, lerr := g.resolver(req.Context(), req.URL.Hostname()); lerr == nil {
-			if blockedAddress(ips) {
-				return nil, g.blocked()
+	if !g.allowLocal && req != nil && req.URL != nil {
+		host := req.URL.Hostname()
+		if !g.isAllowedProxyHostCached(host) {
+			// The proxy resolves the media host; check what it resolves to here so a
+			// proxy does not become a way around the private-address guard.
+			if ips, lerr := g.resolver(req.Context(), host); lerr == nil {
+				if blockedAddress(ips) {
+					return nil, g.blocked()
+				}
+				if len(ips) > 0 {
+					g.cacheAllowedProxyHost(host)
+				}
 			}
 		}
 	}
@@ -146,11 +226,35 @@ func (g *GuardedMediaDialer) DialContext(ctx context.Context, network, addr stri
 		return nil, g.blocked()
 	}
 	var lastErr error
-	for _, ipAddr := range ips {
+	for i, ipAddr := range ips {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		conn, dErr := g.dialer.DialContext(ctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
+		attemptCtx := ctx
+		var cancel context.CancelFunc
+		if len(ips) > 1 {
+			perIP := multiIPDialCap
+			if g.dialer.Timeout > 0 && g.dialer.Timeout < perIP {
+				perIP = g.dialer.Timeout
+			}
+			if deadline, ok := ctx.Deadline(); ok {
+				rem := time.Until(deadline)
+				if rem <= 0 {
+					return nil, context.DeadlineExceeded
+				}
+				share := rem / time.Duration(len(ips)-i)
+				if share > 0 && share < perIP {
+					perIP = share
+				}
+			}
+			if perIP > 0 {
+				attemptCtx, cancel = context.WithTimeout(ctx, perIP)
+			}
+		}
+		conn, dErr := g.dialer.DialContext(attemptCtx, network, net.JoinHostPort(ipAddr.IP.String(), port))
+		if cancel != nil {
+			cancel()
+		}
 		if dErr == nil {
 			return conn, nil
 		}

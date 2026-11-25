@@ -146,6 +146,21 @@ func isRegisteredInManifest(meta ItemMetadata, normRel string) bool {
 	return found
 }
 
+type fileStatSnap struct {
+	size    int64
+	modTime int64
+	hashOK  bool
+}
+
+type hashSnapKey struct {
+	path   string
+	sha256 string
+}
+
+// verifySHA256Hook is an optional test-only hook invoked right before hashing a
+// file on disk so concurrency and TOCTOU tests can synchronize deterministically.
+var verifySHA256Hook func(full string)
+
 func verifyItemFiles(itemDir string, meta *ItemMetadata, checkHash ...bool) (missing bool, totalBytes int64) {
 	missing, totalBytes, _ = verifyItemFilesDetail(itemDir, meta, len(checkHash) == 0 || checkHash[0])
 	return missing, totalBytes
@@ -154,6 +169,37 @@ func verifyItemFiles(itemDir string, meta *ItemMetadata, checkHash ...bool) (mis
 // verifyItemFilesDetail is verifyItemFiles that also returns the manifest
 // paths that are missing, empty or no longer match the recorded size/hash.
 func verifyItemFilesDetail(itemDir string, meta *ItemMetadata, hash bool) (missing bool, totalBytes int64, missingPaths []string) {
+	missing, totalBytes, missingPaths, _ = verifyItemFilesCore(itemDir, meta, hash, nil, nil)
+	return missing, totalBytes, missingPaths
+}
+
+// verifyItemFilesWithSnaps verifies item files (including SHA-256 when hash is
+// true) and records (size, modTime, hashOK) snapshots for hashed Media entries
+// so a subsequent locked stat-only pass can detect concurrent file mutations.
+func verifyItemFilesWithSnaps(itemDir string, meta *ItemMetadata, hash bool) (missing bool, totalBytes int64, snaps map[hashSnapKey]fileStatSnap) {
+	if hash {
+		snaps = make(map[hashSnapKey]fileStatSnap, len(meta.Media))
+	}
+	missing, totalBytes, _, _ = verifyItemFilesCore(itemDir, meta, hash, snaps, nil)
+	return missing, totalBytes, snaps
+}
+
+// verifyItemFilesAgainstSnaps performs a fast stat-only verification (no
+// SHA-256 disk reads) and reports drifted=true if any media file with a
+// non-empty SHA256 appeared or changed (size or modTime) since expectedSnaps
+// was captured.
+func verifyItemFilesAgainstSnaps(itemDir string, meta *ItemMetadata, expectedSnaps map[hashSnapKey]fileStatSnap) (missing bool, totalBytes int64, drifted bool) {
+	missing, totalBytes, _, drifted = verifyItemFilesCore(itemDir, meta, false, nil, expectedSnaps)
+	return missing, totalBytes, drifted
+}
+
+func verifyItemFilesCore(
+	itemDir string,
+	meta *ItemMetadata,
+	hash bool,
+	recordSnaps map[hashSnapKey]fileStatSnap,
+	expectedSnaps map[hashSnapKey]fileStatSnap,
+) (missing bool, totalBytes int64, missingPaths []string, drifted bool) {
 	checkedPaths := make(map[string]bool)
 	noted := make(map[string]bool)
 	note := func(rel string) {
@@ -182,7 +228,7 @@ func verifyItemFilesDetail(itemDir string, meta *ItemMetadata, hash bool) (missi
 			return "", nil, false
 		}
 		info, err := os.Lstat(full)
-		if err != nil || info.IsDir() || info.Size() == 0 {
+		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 			note(rel)
 			return "", nil, false
 		}
@@ -200,16 +246,40 @@ func verifyItemFilesDetail(itemDir string, meta *ItemMetadata, hash bool) (missi
 		if !ok {
 			missing = true
 		} else if info != nil {
+			sizeOK := true
 			if meta.Media[i].Bytes > 0 && meta.Media[i].Bytes != info.Size() {
 				missing = true
+				sizeOK = false
 				note(rel)
 			} else if meta.Media[i].Bytes == 0 {
 				meta.Media[i].Bytes = info.Size()
 			}
-			if meta.Media[i].SHA256 != "" && hash {
-				if !info.Mode().IsRegular() || !verifyFileSHA256(full, meta.Media[i].SHA256) {
-					missing = true
-					note(rel)
+			if sizeOK && meta.Media[i].SHA256 != "" {
+				key := hashSnapKey{
+					path:   cleanManifestRel(rel),
+					sha256: strings.ToLower(strings.TrimSpace(meta.Media[i].SHA256)),
+				}
+				if hash {
+					okHash := info.Mode().IsRegular() && verifyFileSHA256(full, meta.Media[i].SHA256)
+					if recordSnaps != nil {
+						recordSnaps[key] = fileStatSnap{
+							size:    info.Size(),
+							modTime: info.ModTime().UnixNano(),
+							hashOK:  okHash,
+						}
+					}
+					if !okHash {
+						missing = true
+						note(rel)
+					}
+				} else if expectedSnaps != nil {
+					snap, hadSnap := expectedSnaps[key]
+					if !hadSnap || snap.size != info.Size() || snap.modTime != info.ModTime().UnixNano() {
+						drifted = true
+					} else if !snap.hashOK {
+						missing = true
+						note(rel)
+					}
 				}
 			}
 		}
@@ -238,7 +308,7 @@ func verifyItemFilesDetail(itemDir string, meta *ItemMetadata, hash bool) (missi
 	if !hasStructuredMedia && meta.Kind != "dynamic" && meta.Status != "partial" && meta.Status != "recording" {
 		missing = true
 	}
-	return missing, totalBytes, missingPaths
+	return missing, totalBytes, missingPaths, drifted
 }
 
 // sumItemBytesAllowMoved computes TotalBytes for remote/allow-moved-files mode
@@ -284,13 +354,16 @@ func sumItemBytesAllowMoved(itemDir string, meta *ItemMetadata) int64 {
 }
 
 func verifyFileSHA256(full, expectedSHA string) bool {
+	if hook := verifySHA256Hook; hook != nil {
+		hook(full)
+	}
 	f, err := os.Open(full)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := io.CopyBuffer(h, f, make([]byte, 1<<20)); err != nil {
 		return false
 	}
 	return strings.EqualFold(hex.EncodeToString(h.Sum(nil)), expectedSHA)
