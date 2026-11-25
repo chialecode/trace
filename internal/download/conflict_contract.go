@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site/bilibili"
@@ -361,15 +364,141 @@ func reconstructStoppedTaskError(t Task) error {
 	return fmt.Errorf("download task %s ended with status %s", t.TaskID, t.Status)
 }
 
-// NormalizeConflictText applies manifest URL/token scrubbing and collapses
-// whitespace so download tripwire checks and service list-level inspections
-// compare text identically without false positives on scrubbed media/signed URLs.
+var reLegacySuperTopicMarkup = regexp.MustCompile(`#([^#\r\n\[\]\s]+)\[超话\]#`)
+
+// NormalizeConflictText strips pre-DEC-073 inline parenthesized URL suffixes
+// (e.g. "名称超话 (sinaweibo://...)" / "标题 (https://...)" / "标题 (http://...)"),
+// normalizes Weibo "#名称[超话]#" markup, applies manifest URL/token scrubbing,
+// and collapses whitespace so download tripwire checks and service list-level
+// inspections compare text identically without false positives on legacy formats
+// or scrubbed media/signed URLs.
 func NormalizeConflictText(s string) string {
-	scrubbed := library.ScrubComparableManifestText(s)
+	cleaned := StripLegacyInlineURLSuffixes(s)
+	cleaned = reLegacySuperTopicMarkup.ReplaceAllString(cleaned, "${1}超话")
+	scrubbed := library.ScrubComparableManifestText(cleaned)
 	if scrubbed == "" {
 		return ""
 	}
 	return strings.Join(strings.Fields(scrubbed), " ")
+}
+
+// StripLegacyInlineURLSuffixes removes pre-DEC-073 inline parenthesized URL
+// suffixes like "标题 (sinaweibo://...)", "标题 (https://...)", "标题 (http://...)",
+// and fullwidth "标题（...）" while preserving the preceding label and all other text.
+func StripLegacyInlineURLSuffixes(s string) string {
+	if s == "" || (!strings.Contains(s, "://") && !strings.Contains(strings.ToLower(s), "://")) {
+		return s
+	}
+	var sb strings.Builder
+	sb.Grow(len(s))
+	changed := false
+
+	for i := 0; i < len(s); {
+		openASCII := s[i] == '('
+		openFull := !openASCII && strings.HasPrefix(s[i:], "（")
+		if !openASCII && !openFull {
+			_, w := utf8.DecodeRuneInString(s[i:])
+			sb.WriteString(s[i : i+w])
+			i += w
+			continue
+		}
+
+		openLen := 1
+		if openFull {
+			openLen = len("（")
+		}
+		urlStart := i + openLen
+		schemeKind := matchLegacyInlineScheme(s[urlStart:])
+		if schemeKind == "" {
+			sb.WriteString(s[i:urlStart])
+			i = urlStart
+			continue
+		}
+
+		// Require a preceding non-whitespace label character on the same line
+		// (optionally separated by spaces/tabs) so standalone "(https://...)" prose is preserved.
+		curOut := sb.String()
+		trimmedOut := strings.TrimRight(curOut, " \t")
+		if trimmedOut == "" {
+			sb.WriteString(s[i:urlStart])
+			i = urlStart
+			continue
+		}
+		lastRune, _ := utf8.DecodeLastRuneInString(trimmedOut)
+		if lastRune == '\n' || lastRune == '\r' || unicode.IsSpace(lastRune) {
+			sb.WriteString(s[i:urlStart])
+			i = urlStart
+			continue
+		}
+
+		closeEnd, ok := scanLegacyInlineParenURLEnd(s, urlStart, openASCII)
+		if !ok {
+			sb.WriteString(s[i:urlStart])
+			i = urlStart
+			continue
+		}
+
+		// Remove the horizontal whitespace immediately before "(" and the entire "(URL)" suffix.
+		if len(trimmedOut) < len(curOut) {
+			sb.Reset()
+			sb.WriteString(trimmedOut)
+		}
+		changed = true
+		i = closeEnd
+	}
+	if !changed {
+		return s
+	}
+	return sb.String()
+}
+
+func matchLegacyInlineScheme(rest string) string {
+	if len(rest) >= len("sinaweibo://") && strings.EqualFold(rest[:len("sinaweibo://")], "sinaweibo://") {
+		return "sinaweibo"
+	}
+	if len(rest) >= len("https://") && strings.EqualFold(rest[:len("https://")], "https://") {
+		return "https"
+	}
+	if len(rest) >= len("http://") && strings.EqualFold(rest[:len("http://")], "http://") {
+		return "http"
+	}
+	return ""
+}
+
+func scanLegacyInlineParenURLEnd(s string, urlStart int, openASCII bool) (closeEnd int, ok bool) {
+	schemeSep := strings.Index(s[urlStart:], "://")
+	if schemeSep < 0 {
+		return 0, false
+	}
+	bodyStart := urlStart + schemeSep + 3
+	i := urlStart
+	parenDepth := 0
+	for i < len(s) {
+		r, w := utf8.DecodeRuneInString(s[i:])
+		if r <= 0x1f || r == 0x7f || unicode.IsSpace(r) || r == '<' || r == '>' || r == '"' || r == '\'' || r == '\\' {
+			return 0, false
+		}
+		if openASCII {
+			if r == '(' {
+				parenDepth++
+			} else if r == ')' {
+				if parenDepth == 0 {
+					if i <= bodyStart {
+						return 0, false
+					}
+					return i + w, true
+				}
+				parenDepth--
+			}
+		} else if r == '）' {
+			if i <= bodyStart {
+				return 0, false
+			}
+			return i + w, true
+		}
+		i += w
+	}
+	return 0, false
 }
 
 // LooksLikeTruncatedTextPrefix reports whether shortText is a truncated snippet

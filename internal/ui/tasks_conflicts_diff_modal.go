@@ -85,6 +85,13 @@ func (a *App) loadConflictDiff(id string) {
 		if !a.ConflictDiff.Open || a.ConflictDiff.ConflictID != id {
 			return
 		}
+		if dto.AutoResolved {
+			a.closeConflictDiffModal()
+			a.BannerInfo = "已自动整理旧缓存超链接并消解该项误报冲突"
+			a.cacheStateRev++
+			a.refreshCacheConflicts()
+			return
+		}
 		cp := dto
 		a.ConflictDiff.Loading = false
 		a.ConflictDiff.Error = ""
@@ -191,9 +198,10 @@ func (a *App) renderConflictDiffOverlay(c *ui.Context, w, h float32) {
 				ui.Column(c).FillWidth().Gap(12).Padding(0, 2, 4, 2).ClipX().Children(func() {
 					hasTitle := len(diff.LocalTitle) > 0 || len(diff.RemoteTitle) > 0 || strings.TrimSpace(diff.Local.Title) != "" || strings.TrimSpace(diff.Remote.Title) != ""
 					hasText := len(diff.LocalText) > 0 || len(diff.RemoteText) > 0 || strings.TrimSpace(diff.Local.Text) != "" || strings.TrimSpace(diff.Remote.Text) != ""
+					hasLinks := len(diff.LocalLinks) > 0 || len(diff.RemoteLinks) > 0
 
-					if hasTitle || hasText {
-						a.renderConflictTextDiffSection(c, diff, hasTitle, hasText)
+					if hasTitle || hasText || hasLinks {
+						a.renderConflictTextDiffSection(c, diff, hasTitle, hasText, hasLinks)
 					}
 
 					if len(diff.MediaPairs) > 0 {
@@ -313,7 +321,7 @@ func renderConflictDiffColumnHeader(c *ui.Context, heading, summary string, unav
 		})
 }
 
-func (a *App) renderConflictTextDiffSection(c *ui.Context, diff *service.CacheConflictDiffDTO, hasTitle, hasText bool) {
+func (a *App) renderConflictTextDiffSection(c *ui.Context, diff *service.CacheConflictDiffDTO, hasTitle, hasText, hasLinks bool) {
 	ui.Column(c).Label("文字差异对比区").FillWidth().Gap(8).ClipX().Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Wrap().ClipX().Children(func() {
 			ui.Text(c, "文字差异对比").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
@@ -336,10 +344,10 @@ func (a *App) renderConflictTextDiffSection(c *ui.Context, diff *service.CacheCo
 			if len(remoteTitle) == 0 && diff.Remote.Title != "" {
 				remoteTitle = []service.ConflictTextSegment{{Text: diff.Remote.Title, Kind: "same"}}
 			}
-			renderSideBySideTextDiffPair(c, "标题", localTitle, remoteTitle, diff.TitleChanged, diff.Remote.Unavailable, "标题文字对比")
+			a.renderSideBySideTextDiffPair(c, "标题", localTitle, remoteTitle, nil, nil, false, diff.TitleChanged, diff.Remote.Unavailable, "标题文字对比")
 		}
 
-		if hasText {
+		if hasText || hasLinks {
 			localText := diff.LocalText
 			if len(localText) == 0 && diff.Local.Text != "" {
 				localText = []service.ConflictTextSegment{{Text: diff.Local.Text, Kind: "same"}}
@@ -348,7 +356,7 @@ func (a *App) renderConflictTextDiffSection(c *ui.Context, diff *service.CacheCo
 			if len(remoteText) == 0 && diff.Remote.Text != "" {
 				remoteText = []service.ConflictTextSegment{{Text: diff.Remote.Text, Kind: "same"}}
 			}
-			renderSideBySideTextDiffPair(c, "正文 / 简介", localText, remoteText, diff.TextChanged, diff.Remote.Unavailable, "正文文字对比")
+			a.renderSideBySideTextDiffPair(c, "正文 / 简介", localText, remoteText, diff.LocalLinks, diff.RemoteLinks, hasLinks, diff.TextChanged, diff.Remote.Unavailable, "正文文字对比")
 		}
 	})
 }
@@ -359,7 +367,15 @@ func renderDiffLegendBadge(c *ui.Context, text string, bg, fg ui.Color) {
 	})
 }
 
-func renderSideBySideTextDiffPair(c *ui.Context, fieldName string, localSegs, remoteSegs []service.ConflictTextSegment, changed, remoteUnavailable bool, label string) {
+func (a *App) renderSideBySideTextDiffPair(
+	c *ui.Context,
+	fieldName string,
+	localSegs, remoteSegs []service.ConflictTextSegment,
+	localLinks, remoteLinks []service.TextLinkDTO,
+	showLinks bool,
+	changed, remoteUnavailable bool,
+	label string,
+) {
 	ui.Column(c).Label(label).FillWidth().Gap(4).ClipX().Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 			ui.Text(c, fieldName).FontSize(12).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
@@ -379,13 +395,16 @@ func renderSideBySideTextDiffPair(c *ui.Context, fieldName string, localSegs, re
 				Radius(10).
 				Background(ColorBgMain).
 				Border(1, ColorBorder).
-				Gap(4).
+				Gap(6).
 				ClipX().
 				Children(func() {
 					if len(localSegs) == 0 {
 						ui.Text(c, "（空）").FontSize(12).TextColor(ColorTextMuted).SingleLine()
 					} else {
 						renderHighlightedDiffText(c, localSegs)
+					}
+					if showLinks {
+						a.renderConflictDiffLinksBar(c, localLinks, false, false)
 					}
 				})
 
@@ -398,7 +417,7 @@ func renderSideBySideTextDiffPair(c *ui.Context, fieldName string, localSegs, re
 				Radius(10).
 				Background(ColorBgMain).
 				Border(1, ColorBorder).
-				Gap(4).
+				Gap(6).
 				ClipX().
 				Children(func() {
 					if remoteUnavailable {
@@ -408,9 +427,102 @@ func renderSideBySideTextDiffPair(c *ui.Context, fieldName string, localSegs, re
 					} else {
 						renderHighlightedDiffText(c, remoteSegs)
 					}
+					if showLinks {
+						a.renderConflictDiffLinksBar(c, remoteLinks, true, remoteUnavailable)
+					}
 				})
 		})
 	})
+}
+
+func (a *App) renderConflictDiffLinksBar(c *ui.Context, links []service.TextLinkDTO, isRemote, remoteUnavailable bool) {
+	// Filter strictly at the UI boundary so unsafe schemes never render as clickable pills.
+	valid := make([]service.TextLinkDTO, 0, len(links))
+	for _, lnk := range links {
+		cleanURL, ok := ValidateSafeJumpURL(lnk.URL)
+		if !ok {
+			continue
+		}
+		lbl := strings.TrimSpace(lnk.Label)
+		if lbl == "" {
+			lbl = FormatConciseLinkLabel(cleanURL)
+		}
+		valid = append(valid, service.TextLinkDTO{Label: lbl, URL: cleanURL})
+	}
+
+	sectionLabel := "正文超链接（本地）"
+	pillPrefix := "本地对比超链接："
+	if isRemote {
+		sectionLabel = "正文超链接（源站）"
+		pillPrefix = "源站对比超链接："
+	}
+
+	ui.Column(c).
+		Label(sectionLabel).
+		FillWidth().
+		Padding(6, 0, 0, 0).
+		BorderWidth(1, 0, 0, 0).
+		BorderColor(ColorBorder).
+		Gap(4).
+		ClipX().
+		Children(func() {
+			heading := "超链接"
+			if len(valid) > 0 {
+				heading = fmt.Sprintf("超链接（%d）", len(valid))
+			}
+			ui.Text(c, heading).FontSize(11).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
+
+			if isRemote && remoteUnavailable {
+				ui.Text(c, "（源站不可用）").FontSize(11).TextColor(ColorError).SingleLine()
+				return
+			}
+			if len(valid) == 0 {
+				ui.Text(c, "（无超链接）").FontSize(11).TextColor(ColorTextMuted).SingleLine()
+				return
+			}
+
+			seenCounts := make(map[string]int, len(valid))
+			ui.Row(c).FillWidth().Wrap().Gap(6).AlignItems(ui.Center).ClipX().Children(func() {
+				for _, item := range valid {
+					lnk := item
+					seenCounts[lnk.Label]++
+					accLabel := pillPrefix + lnk.Label
+					if seenCounts[lnk.Label] > 1 {
+						accLabel = fmt.Sprintf("%s (%d)", accLabel, seenCounts[lnk.Label])
+					}
+					chip := ui.ButtonBase(c).
+						Label(accLabel).
+						Tooltip(lnk.URL).
+						Padding(3, 8).
+						Radius(999).
+						Background(ColorAccentBg).
+						Border(1, ui.RGBA(26, 115, 232, 0.25)).
+						AlignItems(ui.Center).
+						MaxWidth(260).
+						Shrink(1).
+						ClipX()
+					col := ColorAccent
+					if chip.Hovered() {
+						col = ColorAccentHover
+						chip.BorderColor(ColorAccent)
+					}
+					chip.Children(func() {
+						ui.Row(c).Gap(4).AlignItems(ui.Center).Shrink(1).ClipX().Children(func() {
+							DrawIcon(c, "link", 11, col, 1.8)
+							ui.Text(c, lnk.Label).
+								FontSize(12).
+								FontWeight(500).
+								TextColor(col).
+								SingleLine().
+								Shrink(1)
+						})
+					})
+					if chip.Clicked() {
+						a.openExternalURL(lnk.URL)
+					}
+				}
+			})
+		})
 }
 
 // renderHighlightedDiffText splits diff segments by newline and renders each line

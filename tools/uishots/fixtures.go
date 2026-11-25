@@ -132,6 +132,13 @@ func (b *screenshotBackend) InspectCacheConflictDiff(_ context.Context, id strin
 				TextChanged:  true,
 				LocalText:    locText,
 				RemoteText:   remText,
+				LocalLinks: []service.TextLinkDTO{
+					{Label: "摄影超话", URL: "https://weibo.com/p/100808synth01"},
+				},
+				RemoteLinks: []service.TextLinkDTO{
+					{Label: "摄影超话", URL: "https://weibo.com/p/100808synth01"},
+					{Label: "勘误说明", URL: "https://example.com/errata"},
+				},
 				MediaPairs: []service.ConflictMediaPairDTO{
 					{
 						Index:      1,

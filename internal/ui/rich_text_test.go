@@ -259,3 +259,55 @@ func TestMinePostRowHyperlinkJumpWithoutNavigatingAway(t *testing.T) {
 		t.Fatalf("expected Mine hyperlink click recorded in MockDesktop, got %+v", desk.Actions())
 	}
 }
+
+func TestLegacyCachedSinaWeiboAppLinksFallbackOffline(t *testing.T) {
+	app, stub, cleanup := newWeiboUITestHarness(t)
+	defer cleanup()
+
+	desk := stub.raw.Desktop().(*service.MockDesktop)
+	const cid = "100808c9a1f5c18abbfc31cecd32f45a14ddc1"
+	legacyDir := filepath.Join(stub.raw.LibraryStore().CacheDir(), "weibo", "500000001_技术频道_微博", "posts", "5000000000009188")
+	savedLegacy, err := stub.raw.LibraryStore().SaveItem(legacyDir, library.ItemMetadata{
+		Version:   1,
+		ID:        "dynamic:5000000000009188",
+		RawID:     "5000000000009188",
+		Site:      "weibo",
+		Kind:      "dynamic",
+		TypeLabel: "微博",
+		Status:    "complete",
+		Title:     "旧缓存超话链接离线展示",
+		Text: "合成超话 (sinaweibo://pageinfo?containerid=" + cid + "&extparam=合成超话)\n" +
+			"查看 主页入口 (sinaweibo://userinfo?uid=1000000001) 与 危险入口 (sinaweibo://browser?url=javascript:alert(1)) 结束。",
+		URL:      "https://weibo.com/500000001/5000000000009188",
+		PubTs:    1710006800,
+		CachedAt: "2026-03-04T10:00:00Z",
+		Author:   library.ItemAuthor{Site: "weibo", UID: "500000001", Name: "技术频道_微博"},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem(legacy sinaweibo): %v", err)
+	}
+
+	app.OpenLibraryItemDetail(savedLegacy)
+	tt := ui.NewTester(app.View, 1280, 900)
+	tt.Frame()
+
+	if tt.HasText("sinaweibo://pageinfo") || tt.HasText("sinaweibo://userinfo") {
+		t.Fatal("legacy cached sinaweibo://pageinfo or userinfo URL must render as clean clickable label")
+	}
+	if _, ok := tt.Find("打开链接：危险入口"); ok {
+		t.Fatal("unknown sinaweibo://browser link must NEVER render as clickable")
+	}
+	if err := tt.Click("打开链接：合成超话"); err != nil {
+		t.Fatalf("Click legacy supertopic link failed: %v", err)
+	}
+	if err := tt.Click("打开链接：主页入口"); err != nil {
+		t.Fatalf("Click legacy userinfo link failed: %v", err)
+	}
+	actions := desk.Actions()
+	if !slices.Contains(actions, service.RecordedAction{Kind: "url", Target: "https://weibo.com/p/" + cid}) {
+		t.Fatalf("expected converted supertopic URL in MockDesktop, got %+v", actions)
+	}
+	if !slices.Contains(actions, service.RecordedAction{Kind: "url", Target: "https://weibo.com/u/1000000001"}) {
+		t.Fatalf("expected converted userinfo URL in MockDesktop, got %+v", actions)
+	}
+}

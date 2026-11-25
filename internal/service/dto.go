@@ -262,6 +262,13 @@ type TextLinkDTO struct {
 	URL   string `json:"url"`
 }
 
+// NormalizeLegacyWeiboAppURL converts allowlisted legacy Weibo mobile deep links
+// (sinaweibo://pageinfo?containerid=... and sinaweibo://userinfo?uid=...) into
+// canonical desktop HTTPS URLs, returning "" for any unknown or unsafe input.
+func NormalizeLegacyWeiboAppURL(rawURL string) string {
+	return weibo.RewriteSafeSinaWeiboAppURL(rawURL)
+}
+
 type WeiboPostView struct {
 	Mid               string                `json:"mid"`
 	MblogID           string                `json:"mblogid,omitempty"`

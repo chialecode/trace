@@ -61,10 +61,11 @@ type cacheConflictStore struct {
 	path  string
 	clock CacheQueueClock
 
-	mu         sync.Mutex
-	records    []cacheConflictRecord
-	ignored    map[string]IgnoredRevision
-	fileExists bool
+	mu               sync.Mutex
+	records          []cacheConflictRecord
+	ignored          map[string]IgnoredRevision
+	checkedNonLegacy map[string]string
+	fileExists       bool
 }
 
 var (
@@ -80,10 +81,11 @@ func newCacheConflictStore(b *Backend, path string, clock CacheQueueClock) (*cac
 		clock = realCacheQueueClock{}
 	}
 	s := &cacheConflictStore{
-		b:       b,
-		path:    path,
-		clock:   clock,
-		ignored: make(map[string]IgnoredRevision),
+		b:                b,
+		path:             path,
+		clock:            clock,
+		ignored:          make(map[string]IgnoredRevision),
+		checkedNonLegacy: make(map[string]string),
 	}
 	backup, err := s.loadFromDiskLocked()
 	if err != nil {
@@ -530,6 +532,7 @@ func (s *cacheConflictStore) recordOrUpdate(in cacheConflictRecord) (cacheConfli
 		clean.State = ConflictStatePending
 		clean.LastError = ""
 		*cur = clean
+		delete(s.checkedNonLegacy, clean.ID)
 		if err := s.saveLocked(); err != nil {
 			*cur = prev
 			return prev, false, err
@@ -537,12 +540,89 @@ func (s *cacheConflictStore) recordOrUpdate(in cacheConflictRecord) (cacheConfli
 		return *cur, true, nil
 	}
 
+	delete(s.checkedNonLegacy, clean.ID)
 	s.records = append(s.records, clean)
 	if err := s.saveLocked(); err != nil {
 		s.records = s.records[:len(s.records)-1]
 		return cacheConflictRecord{}, false, err
 	}
 	return clean, true, nil
+}
+
+func (s *cacheConflictStore) pendingTextConflictCandidates() []cacheConflictRecord {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []cacheConflictRecord
+	for _, r := range s.records {
+		if r.State != ConflictStatePending || r.ReasonKind != ConflictReasonText {
+			continue
+		}
+		if checkedFP, ok := s.checkedNonLegacy[r.ID]; ok && checkedFP == r.RemoteFingerprint {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func (s *cacheConflictStore) markNonLegacyTextConflict(id, fingerprint string) {
+	if s == nil || id == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.checkedNonLegacy == nil {
+		s.checkedNonLegacy = make(map[string]string)
+	}
+	s.checkedNonLegacy[id] = fingerprint
+	s.mu.Unlock()
+}
+
+func (s *cacheConflictStore) pendingTextConflictForItem(itemKey string) (cacheConflictRecord, bool) {
+	if s == nil || strings.TrimSpace(itemKey) == "" {
+		return cacheConflictRecord{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.records {
+		if r.ItemKey == itemKey && r.State == ConflictStatePending && r.ReasonKind == ConflictReasonText {
+			return r, true
+		}
+	}
+	return cacheConflictRecord{}, false
+}
+
+func (s *cacheConflictStore) hasPendingTextConflictForItem(itemKey string) bool {
+	_, ok := s.pendingTextConflictForItem(itemKey)
+	return ok
+}
+
+func (s *cacheConflictStore) removePendingIfMatching(id, fingerprint string) bool {
+	if s == nil || strings.TrimSpace(id) == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.records {
+		r := s.records[i]
+		if r.ID != id || r.State != ConflictStatePending || r.ReasonKind != ConflictReasonText {
+			continue
+		}
+		if fingerprint != "" && r.RemoteFingerprint != fingerprint {
+			return false
+		}
+		prev := append([]cacheConflictRecord(nil), s.records...)
+		s.records = append(s.records[:i], s.records[i+1:]...)
+		delete(s.checkedNonLegacy, id)
+		if err := s.saveLocked(); err != nil {
+			s.records = prev
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 func (s *cacheConflictStore) count() int {

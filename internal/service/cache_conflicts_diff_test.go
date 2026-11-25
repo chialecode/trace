@@ -485,3 +485,198 @@ func TestConflictDiffMediaIDParityForDouyinWeiboAndX(t *testing.T) {
 		t.Fatalf("unexpected X remote media: %+v", xMedia)
 	}
 }
+
+func TestInspectCacheConflictDiffWeiboLinksAndLiveLegacyAutoResolve(t *testing.T) {
+	const cid = "100808c9a1f5c18abbfc31cecd32f45a14ddc1"
+	const oriURL = "sinaweibo://pageinfo?containerid=" + cid + "&extparam=合成超话"
+	const postEditedID = "5090000000000301"
+	const postLegacyID = "5090000000000302"
+	mblogEdited, err := weibo.MidToMblogID(postEditedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mblogLegacy, err := weibo.MidToMblogID(postLegacyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/ajax/setting/getBasicInfo":
+			_, _ = fmt.Fprint(w, `{"ok":1,"data":{"uid":"510000001","screen_name":"微博登录号"}}`)
+		case "/ajax/profile/info":
+			_, _ = fmt.Fprint(w, `{"ok":1,"data":{"user":{"id":510000001,"idstr":"510000001","screen_name":"微博登录号"}}}`)
+		case "/ajax/statuses/show":
+			id := r.URL.Query().Get("id")
+			switch id {
+			case mblogEdited, postEditedID:
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ok":         1,
+					"idstr":      postEditedID,
+					"mblogid":    mblogEdited,
+					"created_at": "Sat Nov 21 15:00:00 +0800 2026",
+					"text_raw":   "#合成[超话]# 新版修订正文，详见 http://t.cn/A6DOC99",
+					"url_struct": []map[string]any{
+						{"short_url": "http://t.cn/A6SUP99", "ori_url": oriURL, "url_title": "合成超话"},
+						{"short_url": "http://t.cn/A6DOC99", "long_url": "https://example.com/spec", "url_title": "规范说明"},
+						{"short_url": "http://t.cn/A6SIGN9", "long_url": "https://f.video.weibocdn.com/a.mp4?ssig=secret&Expires=1", "url_title": "签名视频"},
+					},
+					"user": map[string]any{"idstr": "51001", "screen_name": "测试博主"},
+				})
+			case mblogLegacy, postLegacyID:
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ok":         1,
+					"idstr":      postLegacyID,
+					"mblogid":    mblogLegacy,
+					"created_at": "Sat Nov 21 15:00:00 +0800 2026",
+					"text_raw":   "#合成[超话]# 正文完全未改",
+					"pic_ids":    []string{"005XpicLegacyImg"},
+					"pic_infos": map[string]any{
+						"005XpicLegacyImg": map[string]any{
+							"pic_id": "005XpicLegacyImg",
+							"type":   "pic",
+							"large":  map[string]any{"url": "https://wx1.sinaimg.cn/large/005XpicLegacyImg.jpg", "width": 800, "height": 600},
+						},
+					},
+					"url_struct": []map[string]any{
+						{"short_url": "http://t.cn/A6SUP98", "ori_url": oriURL, "url_title": "合成超话"},
+					},
+					"user": map[string]any{"idstr": "51001", "screen_name": "测试博主"},
+				})
+			default:
+				http.NotFound(w, r)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer wbSrv.Close()
+
+	loc := testLocations(t)
+	b, err := NewBackend(Options{
+		Locations:        loc,
+		Desktop:          NewMockDesktop(),
+		DisableBgWorkers: true,
+		WeiboOpts: weibo.ClientOptions{
+			Endpoints: weibo.Endpoints{
+				PCBasicInfo:  wbSrv.URL + "/ajax/setting/getBasicInfo",
+				ProfileInfo:  wbSrv.URL + "/ajax/profile/info",
+				StatusesShow: wbSrv.URL + "/ajax/statuses/show",
+			},
+			MinInterval:    -1,
+			JitterMax:      -1,
+			AllowLocalhost: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewBackend: %v", err)
+	}
+	defer b.Close()
+
+	if _, err := b.LoginWithCookie(context.Background(), "weibo", "SUB=synth_wb_diff; SUBP=synth_subp", ""); err != nil {
+		t.Fatalf("LoginWithCookie weibo: %v", err)
+	}
+
+	// Case 1: Genuine Weibo text edit surfaces both LocalLinks (extracted from legacy text) and RemoteLinks (safe only).
+	dirEdited := filepath.Join(b.lib.CacheDir(), "weibo", "51001", "posts", postEditedID)
+	if _, err := b.lib.SaveItem(dirEdited, library.ItemMetadata{
+		Version:  1,
+		ID:       "dynamic:" + postEditedID,
+		Site:     "weibo",
+		Kind:     "dynamic",
+		Status:   "complete",
+		Title:    "旧版标题",
+		Text:     "合成超话 (" + oriURL + ")\n旧版原始正文",
+		Desc:     "合成超话 (" + oriURL + ")\n旧版原始正文",
+		URL:      "https://weibo.com/51001/" + postEditedID,
+		CachedAt: "2026-03-02T09:00:00Z",
+		Author:   library.ItemAuthor{Site: "weibo", UID: "51001", Name: "测试博主"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recEdited, _, err := b.conflicts.recordOrUpdate(cacheConflictRecord{
+		ItemKey:           "weibo:dynamic:" + postEditedID,
+		Site:              "weibo",
+		Kind:              "dynamic",
+		TargetID:          postEditedID,
+		Title:             "旧版标题",
+		ReasonKind:        ConflictReasonText,
+		LocalSummary:      "纯文字微博",
+		RemoteSummary:     "源站微博正文内容已修改",
+		RemoteFingerprint: "fp_real_weibo_edit_301",
+		State:             ConflictStatePending,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	diffEdited, err := b.InspectCacheConflictDiff(context.Background(), recEdited.ID)
+	if err != nil {
+		t.Fatalf("InspectCacheConflictDiff(edited): %v", err)
+	}
+	if diffEdited.AutoResolved || !diffEdited.TextChanged {
+		t.Fatalf("expected real edit to remain unresolved with TextChanged=true, got auto=%v changed=%v", diffEdited.AutoResolved, diffEdited.TextChanged)
+	}
+	if len(diffEdited.LocalLinks) != 1 || diffEdited.LocalLinks[0] != (TextLinkDTO{Label: "合成超话", URL: "https://weibo.com/p/" + cid}) {
+		t.Fatalf("LocalLinks = %+v", diffEdited.LocalLinks)
+	}
+	if len(diffEdited.RemoteLinks) != 2 ||
+		diffEdited.RemoteLinks[0] != (TextLinkDTO{Label: "合成超话", URL: "https://weibo.com/p/" + cid}) ||
+		diffEdited.RemoteLinks[1] != (TextLinkDTO{Label: "规范说明", URL: "https://example.com/spec"}) {
+		t.Fatalf("RemoteLinks = %+v (must exclude signed media URL)", diffEdited.RemoteLinks)
+	}
+
+	// Case 2: Pre-DEC-076 image post without AssetIDs/MediaID auto-resolves during live ConflictDiff review.
+	dirLegacy := filepath.Join(b.lib.CacheDir(), "weibo", "51001", "posts", postLegacyID)
+	imgMF := writeVerifiedLocalFile(t, dirLegacy, "images/01.jpg", []byte("IMG_V1_SAFE"), "image", 800, 600, 0)
+	const origLegacyCachedAt = "2026-03-01T07:00:00Z"
+	if _, err := b.lib.SaveItem(dirLegacy, library.ItemMetadata{
+		Version:   1,
+		ID:        "dynamic:" + postLegacyID,
+		Site:      "weibo",
+		Kind:      "dynamic",
+		Status:    "complete",
+		Title:     "合成超话 (" + oriURL + ")",
+		Text:      "合成超话 (" + oriURL + ")\n正文完全未改",
+		Desc:      "合成超话 (" + oriURL + ")\n正文完全未改",
+		URL:       "https://weibo.com/51001/" + postLegacyID,
+		CachedAt:  origLegacyCachedAt,
+		Author:    library.ItemAuthor{Site: "weibo", UID: "51001", Name: "测试博主"},
+		Media:     []library.MediaFile{imgMF},
+		NotePages: []library.NotePageRecord{{Index: 1, Kind: "image", Image: "images/01.jpg", Width: 800, Height: 600}}, // no MediaID, no AssetIDs
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recLegacy, _, err := b.conflicts.recordOrUpdate(cacheConflictRecord{
+		ItemKey:           "weibo:dynamic:" + postLegacyID,
+		Site:              "weibo",
+		Kind:              "dynamic",
+		TargetID:          postLegacyID,
+		Title:             "旧缓存图博误报",
+		ReasonKind:        ConflictReasonText,
+		LocalSummary:      "共 1 项媒体",
+		RemoteSummary:     "源站微博正文内容已修改",
+		RemoteFingerprint: "fp_pre_dec076_with_remote_picid",
+		State:             ConflictStatePending,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	diffLegacy, err := b.InspectCacheConflictDiff(context.Background(), recLegacy.ID)
+	if err != nil {
+		t.Fatalf("InspectCacheConflictDiff(legacy): %v", err)
+	}
+	if !diffLegacy.AutoResolved {
+		t.Fatalf("expected live review of pre-DEC-076 legacy inline URL conflict to AutoResolved=true")
+	}
+	migrated, ok, err := b.lib.GetItem("weibo:dynamic:" + postLegacyID)
+	if err != nil || !ok || migrated.CachedAt != origLegacyCachedAt || migrated.Text != "合成超话\n正文完全未改" || len(migrated.Links) != 1 || migrated.Links[0].URL != "https://weibo.com/p/"+cid {
+		t.Fatalf("migrated pre-DEC-076 item mismatch: ok=%v err=%v meta=%+v", ok, err, migrated)
+	}
+	rem, _ := b.ListCacheConflicts()
+	if len(rem) != 1 || rem[0].ItemKey != "weibo:dynamic:"+postEditedID {
+		t.Fatalf("expected only edited conflict to remain, got %+v", rem)
+	}
+}

@@ -208,19 +208,28 @@ func tokenizeRichLine(
 ) []richSpan {
 	var matches []lineLinkMatch
 
-	// 1. Scan inline http:// and https:// URLs (and legacy "Label (https://...)" wrappers).
+	// 1. Scan inline http://, https://, and allowlisted legacy sinaweibo:// URLs
+	// (including legacy "Label (https://...)" / "Label (sinaweibo://pageinfo?containerid=...)" wrappers).
 	pos := 0
 	for pos < len(line) {
-		httpIdx := indexHTTPPrefix(line[pos:])
-		if httpIdx < 0 {
+		relIdx, isSinaWeibo := indexInlineLinkPrefix(line[pos:])
+		if relIdx < 0 {
 			break
 		}
-		urlStart := pos + httpIdx
-		rawEnd := scanRawURLEnd(line, urlStart)
+		urlStart := pos + relIdx
+		rawEnd := scanInlineURLEnd(line, urlStart, isSinaWeibo)
 		candURL, cleanEnd := trimTrailingURLPunctuation(line, urlStart, rawEnd)
-		cleanURL, ok := ValidateSafeJumpURL(candURL)
+		resolvedCand := candURL
+		if isSinaWeibo {
+			resolvedCand = service.NormalizeLegacyWeiboAppURL(candURL)
+		}
+		cleanURL, ok := ValidateSafeJumpURL(resolvedCand)
 		if !ok {
-			pos = urlStart + 4
+			if isSinaWeibo {
+				pos = urlStart + len("sinaweibo://")
+			} else {
+				pos = urlStart + 4
+			}
 			continue
 		}
 
@@ -228,7 +237,7 @@ func tokenizeRichLine(
 		matchEnd := cleanEnd
 		label := ""
 
-		// Recognize legacy "标题 (https://...)" or "标题（https://...）" from older cached items.
+		// Recognize legacy "标题 (https://...)" / "标题 (sinaweibo://...)" or fullwidth equivalents from older cached items.
 		if legStart, legEnd, legLabel, legOK := matchLegacyParenthesizedLabel(line, urlStart, cleanEnd); legOK {
 			matchStart = legStart
 			matchEnd = legEnd
@@ -348,28 +357,65 @@ func buildPlainOrHashtagSpans(segment string, highlightHashtags bool) []richSpan
 	return out
 }
 
-func indexHTTPPrefix(s string) int {
+func indexInlineLinkPrefix(s string) (idx int, isSinaWeibo bool) {
 	best := -1
-	for _, pfx := range []string{"https://", "http://", "HTTPS://", "HTTP://"} {
-		if idx := strings.Index(s, pfx); idx >= 0 && (best < 0 || idx < best) {
-			best = idx
+	bestSina := false
+	check := func(pos int, sina bool) {
+		if pos >= 0 && (best < 0 || pos < best) {
+			best = pos
+			bestSina = sina
 		}
 	}
+	for _, pfx := range []string{"https://", "http://", "HTTPS://", "HTTP://"} {
+		check(strings.Index(s, pfx), false)
+	}
+	for _, pfx := range []string{"sinaweibo://", "SINAWEIBO://"} {
+		check(strings.Index(s, pfx), true)
+	}
 	if best >= 0 {
-		return best
+		return best, bestSina
 	}
-	// Fallback case-insensitive check only if mixed-case "Http://" exists.
+	// Fallback case-insensitive check only if mixed-case scheme exists.
 	lower := strings.ToLower(s)
-	p1 := strings.Index(lower, "https://")
-	p2 := strings.Index(lower, "http://")
-	switch {
-	case p1 >= 0 && p2 >= 0:
-		return min(p1, p2)
-	case p1 >= 0:
-		return p1
-	default:
-		return p2
+	check(strings.Index(lower, "https://"), false)
+	check(strings.Index(lower, "http://"), false)
+	check(strings.Index(lower, "sinaweibo://"), true)
+	return best, bestSina
+}
+
+func scanInlineURLEnd(line string, start int, isSinaWeibo bool) int {
+	// Legacy parenthesized URLs like "名称超话 (sinaweibo://pageinfo?containerid=...&extparam=中文)"
+	// or "标题 (https://weibo.com/n/中文)" may contain unescaped non-ASCII CJK characters inside parens.
+	openASCII := start >= 1 && line[start-1] == '('
+	openFull := !openASCII && start >= len("（") && strings.HasSuffix(line[:start], "（")
+	if openASCII || openFull {
+		i := start
+		parenDepth := 0
+		for i < len(line) {
+			r, w := utf8.DecodeRuneInString(line[i:])
+			if r <= 0x20 || r == 0x7f || unicode.IsSpace(r) {
+				break
+			}
+			if r == '"' || r == '\'' || r == '<' || r == '>' || r == '`' || r == '\\' {
+				break
+			}
+			if openASCII {
+				if r == '(' {
+					parenDepth++
+				} else if r == ')' {
+					if parenDepth == 0 {
+						break
+					}
+					parenDepth--
+				}
+			} else if r == '）' {
+				break
+			}
+			i += w
+		}
+		return i
 	}
+	return scanRawURLEnd(line, start)
 }
 
 func scanRawURLEnd(s string, start int) int {

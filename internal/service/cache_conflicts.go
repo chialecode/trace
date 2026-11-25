@@ -41,6 +41,7 @@ func (b *Backend) ListCacheConflicts() ([]CacheConflictDTO, error) {
 	if b.conflicts == nil {
 		return nil, nil
 	}
+	b.reconcileLegacyInlineURLConflicts()
 	recs := b.conflicts.snapshotSorted()
 	out := make([]CacheConflictDTO, 0, len(recs))
 	for _, r := range recs {
@@ -93,6 +94,7 @@ func (b *Backend) PendingCacheConflictCount() int {
 	if b == nil || b.requireDesktop() != nil || b.conflicts == nil {
 		return 0
 	}
+	b.reconcileLegacyInlineURLConflicts()
 	return b.conflicts.count()
 }
 
@@ -1016,6 +1018,9 @@ func (b *Backend) inspectDouyinCachedWork(detail douyin.WorkDetail, meta library
 				return makeConflict(ConflictReasonText, "源站作品文案已修改")
 			}
 		}
+		if b.conflicts != nil && b.conflicts.hasPendingTextConflictForItem(meta.ItemKey) {
+			b.reconcileLiveLegacyTextConflict(meta.ItemKey, extractSafeLinksFromDiffText(detail.Desc, "douyin"))
+		}
 	}
 
 	// (c) Degraded / quality-downgraded remote -> keep V1 untouched.
@@ -1197,6 +1202,10 @@ func (b *Backend) inspectWeiboCachedPost(post weibo.Post, meta library.ItemMetad
 				}
 				return makeConflict(ConflictReasonText, "源站微博正文内容已修改")
 			}
+		}
+		if fullRemoteTextAvailable && !substantiveTextChanged(localBody, post.Text) &&
+			b.conflicts != nil && b.conflicts.hasPendingTextConflictForItem(meta.ItemKey) {
+			b.reconcileLiveLegacyTextConflict(meta.ItemKey, MapSiteTextLinks(post.Links))
 		}
 	}
 
@@ -1409,6 +1418,10 @@ func (b *Backend) inspectXCachedPost(post x.Post, meta library.ItemMetadata, que
 		if substantiveTextChanged(localFocalText, post.Text) {
 			return makeConflict(ConflictReasonText, "源站帖子正文已编辑")
 		}
+		if !unstitchedThreadOnList && !substantiveTextChanged(localFocalText, post.Text) &&
+			b.conflicts != nil && b.conflicts.hasPendingTextConflictForItem(meta.ItemKey) {
+			b.reconcileLiveLegacyTextConflict(meta.ItemKey, MapSiteTextLinks(x.BuildPostLinks(&post)))
+		}
 	}
 
 	// (c) Degraded / HLS-only / quality downgrade -> keep V1 untouched.
@@ -1584,6 +1597,9 @@ func (b *Backend) inspectBilibiliCachedDynamic(d bilibili.DynamicItem, meta libr
 		}
 		if substantiveTextChanged(meta.Title, d.Title) || substantiveTextChanged(meta.Text, d.Text) {
 			return makeConflict(ConflictReasonText, "源站动态标题或正文已修改")
+		}
+		if b.conflicts != nil && b.conflicts.hasPendingTextConflictForItem(meta.ItemKey) {
+			b.reconcileLiveLegacyTextConflict(meta.ItemKey, extractSafeLinksFromDiffText(d.Text, "bilibili"))
 		}
 
 		// (b) Newly available LivePhoto motion clip on existing dynamic images.

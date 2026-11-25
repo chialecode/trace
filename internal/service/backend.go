@@ -462,6 +462,7 @@ func NewBackend(opts Options) (*Backend, error) {
 			b.corruptFiles = append(b.corruptFiles, conflictBackup)
 		}
 		b.conflicts = conflictStore
+		b.reconcileLegacyInlineURLConflicts()
 		dlMgr.SetConflictHandler(b.recordDownloadConflictNotice)
 	}
 	// Every table of both databases now has the layout of this build.
