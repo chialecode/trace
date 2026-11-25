@@ -4,7 +4,11 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 
+	"github.com/chialecode/trace/internal/appdirs"
 	"github.com/chialecode/trace/tools/internal/build"
 )
 
@@ -19,7 +23,21 @@ type winProcesses struct{}
 
 func (winProcesses) Running(exe string) (bool, error) { return build.ProcessRunning(exe) }
 
-func (winProcesses) WindowOpen(exe string) (bool, error) { return build.WindowOpen(exe) }
+func devInstalledDataDir() string {
+	localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA"))
+	if localAppData == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || strings.TrimSpace(home) == "" {
+			return ""
+		}
+		localAppData = filepath.Join(home, "AppData", "Local")
+	}
+	return filepath.Join(localAppData, appdirs.AppNameForChannel("dev"))
+}
+
+func (winProcesses) WindowOpen(exe string) (bool, error) {
+	return build.WindowOpenForDataDir(exe, devInstalledDataDir())
+}
 
 // RequestQuit starts the executable with --quit-for-update: as a second
 // instance it hands the flag to the running TRACE Dev and exits. The helper

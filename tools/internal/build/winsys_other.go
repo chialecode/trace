@@ -20,6 +20,7 @@ var errWindowsOnly = errors.New("installing TRACE is only supported on Windows")
 func LookupInstall(string) (InstallEntry, bool, error)                  { return InstallEntry{}, false, errWindowsOnly }
 func ProcessRunning(string) (bool, error)                               { return false, errWindowsOnly }
 func WindowOpen(string) (bool, error)                                   { return false, errWindowsOnly }
+func WindowOpenForDataDir(string, string) (bool, error)                 { return false, errWindowsOnly }
 func RunQuiet(string, []string, []string) error                         { return errWindowsOnly }
 func RunQuietContext(context.Context, string, []string, []string) error { return errWindowsOnly }
 func LaunchDetached(string, []string, []string) error                   { return errWindowsOnly }
