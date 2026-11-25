@@ -23,6 +23,7 @@ type WorkPlanOptions struct {
 type PlannedNotePage struct {
 	Index         int
 	Kind          string // "image", "gif", "live_photo", "video", "unknown"
+	MediaID       string `json:"mediaId,omitempty"`
 	FromOrigin    bool
 	HLSOnly       bool
 	UnknownKind   string
@@ -45,6 +46,7 @@ type PlannedThreadPart struct {
 	ID           string
 	PubTs        int64
 	Text         string
+	Links        []site.TextLink
 	MediaIndexes []int
 }
 
@@ -67,6 +69,7 @@ type WorkDownloadPlan struct {
 	TargetID                string
 	Title                   string
 	Desc                    string
+	Links                   []site.TextLink
 	CanonicalURL            string
 	PubTs                   int64
 	DurationSec             int
@@ -99,6 +102,7 @@ type WorkDownloadPlan struct {
 	OriginAuthorFace        string
 	OriginPubTs             int64
 	OriginText              string
+	OriginLinks             []site.TextLink
 	OriginVideoTitle        string
 	OriginUnavailable       bool
 	OriginUnavailableReason string
@@ -110,6 +114,11 @@ type WorkDownloadPlan struct {
 	Pages                   []PlannedNotePage
 	Thread                  []PlannedThreadPart
 	Music                   *PlannedMusic
+	MediaID                 string   // clean platform media ID for single-video works
+	EditTs                  int64    // sanitized remote edit timestamp
+	EditCount               int      // sanitized remote edit counter
+	AssetIDs                []string // sanitized ordered platform asset IDs
+	ConflictResolution      string   // explicit "keep_both" or "use_remote" when resolving a conflict
 	Transport               site.MediaTransportSpec
 }
 
@@ -329,6 +338,7 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 		TargetID:                p.TargetID,
 		Title:                   p.Title,
 		Desc:                    p.Desc,
+		Links:                   append([]site.TextLink(nil), p.Links...),
 		CanonicalURL:            canonicalURL,
 		PubTs:                   p.PubTs,
 		DurationSec:             p.DurationSec,
@@ -355,6 +365,7 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 		OriginAuthorFace:        p.OriginAuthorFace,
 		OriginPubTs:             p.OriginPubTs,
 		OriginText:              p.OriginText,
+		OriginLinks:             append([]site.TextLink(nil), p.OriginLinks...),
 		OriginVideoTitle:        p.OriginVideoTitle,
 		OriginUnavailable:       p.OriginUnavailable,
 		OriginUnavailableReason: p.OriginUnavailableReason,
@@ -390,6 +401,19 @@ func (m *Manager) EnqueueDouyinWork(ctx context.Context, req DouyinWorkEnqueueRe
 		}
 	}
 
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = "manual"
+	}
+	if (source == "auto" || source == "queue") && site.AutomaticRequestSource(ctx) == "" {
+		ctx = site.WithAutomaticRequests(ctx, "download")
+	}
+	var reqPlanMode string
+	if req.Plan != nil {
+		reqPlanMode = req.Plan.ConflictResolution
+	}
+	mode := effectiveConflictResolution(ctx, reqPlanMode)
+
 	var plan WorkDownloadPlan
 	if req.Plan != nil {
 		plan = *req.Plan
@@ -409,7 +433,7 @@ func (m *Manager) EnqueueDouyinWork(ctx context.Context, req DouyinWorkEnqueueRe
 		m.mu.Unlock()
 		fetched, err := planner.PlanWorkDownload(ctx, awemeID, opts)
 		if err != nil {
-			return Task{}, err
+			return Task{}, m.wrapDegradedIfLocalProtected("douyin:video:"+awemeID, mode, err)
 		}
 		plan = fetched
 	}
@@ -417,6 +441,9 @@ func (m *Manager) EnqueueDouyinWork(ctx context.Context, req DouyinWorkEnqueueRe
 	plan.Site = site.Douyin
 	if plan.TargetID == "" {
 		plan.TargetID = awemeID
+	}
+	if mode != "" {
+		plan.ConflictResolution = mode
 	}
 	kind := normalizeDouyinTaskKind(firstNonEmptyStr(plan.Kind, req.Kind), len(plan.Pages) > 0)
 	plan.Kind = kind
@@ -441,8 +468,12 @@ func (m *Manager) EnqueueDouyinWork(ctx context.Context, req DouyinWorkEnqueueRe
 	}
 	itemKey := library.CanonicalItemKey("douyin", kind, plan.TargetID)
 	var via *library.ItemVia
-	if existing, exists, gErr := m.lib.GetItem(itemKey); gErr == nil && exists && existing.ItemDir != "" {
+	if existing, exists, gErr := m.fetchExistingAnyKind(itemKey); gErr == nil && exists && existing.ItemDir != "" {
 		itemDir = existing.ItemDir
+		if existing.Via != nil {
+			cp := *existing.Via
+			via = &cp
+		}
 	} else if forUID, fErr := site.NormalizeUID(site.Douyin, req.ForUID); fErr == nil && forUID != normUID {
 		if dir, dErr := library.EnsureWithinRoot(cacheRoot, filepath.Join(cacheRoot, "douyin", site.DouyinAuthorDir(forUID), "works", plan.TargetID)); dErr == nil {
 			itemDir = dir
@@ -450,10 +481,6 @@ func (m *Manager) EnqueueDouyinWork(ctx context.Context, req DouyinWorkEnqueueRe
 		}
 	}
 
-	source := strings.TrimSpace(req.Source)
-	if source == "" {
-		source = "manual"
-	}
 	coverDisplay := ""
 	if len(plan.CoverURLs) > 0 {
 		coverDisplay = sanitizeStoredURL(plan.CoverURLs[0])
@@ -468,23 +495,27 @@ func (m *Manager) EnqueueDouyinWork(ctx context.Context, req DouyinWorkEnqueueRe
 	}
 
 	t, err := m.enqueueSingleTaskWithPlan(Task{
-		Site:        string(site.Douyin),
-		Kind:        kind,
-		Source:      source,
-		TargetID:    plan.TargetID,
-		Page:        1,
-		Title:       title,
-		AuthorUID:   normUID,
-		AuthorName:  plan.AuthorName,
-		AuthorFace:  sanitizeStoredURL(plan.AuthorFace),
-		CoverURL:    coverDisplay,
-		QualityHint: plan.DowngradeHint,
-		ItemKey:     itemKey,
-		ItemDir:     itemDir,
-		Via:         via,
+		Site:               string(site.Douyin),
+		Kind:               kind,
+		Source:             source,
+		TargetID:           plan.TargetID,
+		Page:               1,
+		Title:              title,
+		AuthorUID:          normUID,
+		AuthorName:         plan.AuthorName,
+		AuthorFace:         sanitizeStoredURL(plan.AuthorFace),
+		CoverURL:           coverDisplay,
+		QualityHint:        plan.DowngradeHint,
+		ItemKey:            itemKey,
+		ItemDir:            itemDir,
+		Via:                via,
+		ConflictResolution: mode,
 	}, &plan)
 	if err != nil {
 		return Task{}, err
+	}
+	if mode != "" {
+		m.storeTaskResolutionAndPages(t.TaskID, mode, nil)
 	}
 
 	m.notifyWake()
@@ -595,7 +626,7 @@ func (m *Manager) consumeInitialOrFetchDouyinPlan(ctx context.Context, taskID, t
 	}
 	m.mu.Unlock()
 
-	if hasInitial {
+	if hasInitial && (initial.TargetID != "" || len(initial.VideoURLs) > 0 || len(initial.OriginalURLs) > 0 || len(initial.Pages) > 0) {
 		return initial, planner, nil
 	}
 	if planner == nil {
@@ -614,6 +645,9 @@ func (m *Manager) consumeInitialOrFetchDouyinPlan(ctx context.Context, taskID, t
 	if err != nil {
 		return WorkDownloadPlan{}, planner, err
 	}
+	if hasInitial && initial.ConflictResolution != "" && plan.ConflictResolution == "" {
+		plan.ConflictResolution = initial.ConflictResolution
+	}
 	if len(plan.Transport.AllowedDomains) == 0 {
 		plan.Transport = site.DouyinVODTransport("", false)
 	}
@@ -630,10 +664,17 @@ func (m *Manager) executeDouyinTask(ctx context.Context, t *Task) error {
 		return err
 	}
 
+	storedMode, _ := m.taskResolutionAndPages(t.TaskID)
+	mode := effectiveConflictResolution(ctx, t.ConflictResolution, storedMode)
+
 	plan, planner, err := m.consumeInitialOrFetchDouyinPlan(ctx, t.TaskID, t.TargetID)
 	if err != nil {
-		return err
+		return m.wrapDegradedIfLocalProtected(firstNonEmptyStr(t.ItemKey, "douyin:video:"+t.TargetID), mode, err)
 	}
+	mode = effectiveConflictResolution(ctx, t.ConflictResolution, storedMode, plan.ConflictResolution)
+	plan.ConflictResolution = mode
+	t.ConflictResolution = mode
+
 	normUID, err := site.NormalizeUID(site.Douyin, firstNonEmptyStr(plan.AuthorUID, t.AuthorUID))
 	if err != nil {
 		return &site.Error{
@@ -646,6 +687,7 @@ func (m *Manager) executeDouyinTask(ctx context.Context, t *Task) error {
 	t.AuthorUID = normUID
 
 	kind := normalizeDouyinTaskKind(firstNonEmptyStr(plan.Kind, t.Kind), len(plan.Pages) > 0)
+	plan.Kind = kind
 	t.Kind = kind
 	if kind == "dynamic" {
 		return m.executeDouyinNoteTask(ctx, t, plan, planner)
@@ -674,9 +716,16 @@ func (m *Manager) douyinItemVia(t *Task, previous library.ItemMetadata, exists b
 
 func (m *Manager) resolveDouyinItemDir(t *Task, kind, normUID, awemeID string) (library.ItemMetadata, bool, string, error) {
 	itemKey := library.CanonicalItemKey("douyin", kind, awemeID)
-	previous, exists, err := m.lib.GetItem(itemKey)
+	previous, exists, err := m.fetchExistingAnyKind(itemKey)
 	if err != nil {
 		return library.ItemMetadata{}, false, "", err
+	}
+	if exists && previous.ItemDir != "" {
+		_ = library.RecoverInterruptedItemSwap(previous.ItemDir, previous)
+		previous, exists, err = m.fetchExistingAnyKind(itemKey)
+		if err != nil {
+			return library.ItemMetadata{}, false, "", err
+		}
 	}
 	cacheRoot := m.lib.CacheDir()
 	itemDir, err := library.EnsureWithinRoot(cacheRoot, filepath.Join(cacheRoot, "douyin", site.DouyinAuthorDir(normUID), "works", awemeID))

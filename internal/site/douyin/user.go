@@ -439,6 +439,9 @@ func (c *Client) ListUserPosts(ctx context.Context, req UserPostsRequest) (*User
 		if work.Kind == WorkKindUnsupported {
 			continue
 		}
+		if work.Kind == WorkKindVideo && work.Video != nil && !work.Uncacheable {
+			work.OriginalURLs = originalSourceURLs(c.endpoints.PlayOriginal, rawNode.Video)
+		}
 		works = append(works, *work)
 	}
 

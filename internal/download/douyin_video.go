@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/chialecode/trace/internal/library"
+	"github.com/chialecode/trace/internal/settings"
 	"github.com/chialecode/trace/internal/site"
 )
 
@@ -27,7 +28,27 @@ func (m *Manager) executeDouyinVideoTask(ctx context.Context, t *Task, plan Work
 	cfg := m.dlSettings
 	m.mu.Unlock()
 
+	hasProtectedLocal := exists && localHasProtectedContent(previous)
+	mode := effectiveConflictResolution(ctx, t.ConflictResolution, plan.ConflictResolution)
+	isConflict := false
+	if hasProtectedLocal {
+		notice, conflict, degErr := classifyWorkPlanVsLocal(previous, plan, t.ItemKey, t.TargetID, t)
+		if degErr != nil {
+			return degErr
+		}
+		isConflict = conflict
+		if isConflict && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
+			m.emitConflict(notice)
+			return ErrConflictDetected
+		}
+	}
+
 	title := firstNonEmptyStr(plan.Title, plan.Desc, t.Title, "抖音视频 "+t.TargetID)
+	desc := plan.Desc
+	if hasProtectedLocal && !isConflict {
+		title = preserveMonotonicText(previous.Title, title, false)
+		desc = preserveMonotonicText(previous.Desc, desc, false)
+	}
 	canonicalURL := firstNonEmptyStr(sanitizeStoredURL(plan.CanonicalURL), "https://www.douyin.com/video/"+t.TargetID)
 	t.Title = title
 	t.AuthorName = firstNonEmptyStr(plan.AuthorName, t.AuthorName)
@@ -39,6 +60,10 @@ func (m *Manager) executeDouyinVideoTask(ctx context.Context, t *Task, plan Work
 		t.QualityHint = plan.DowngradeHint
 	}
 
+	if hasProtectedLocal {
+		return m.executeDouyinVideoStaged(ctx, t, plan, planner, cfg, previous, itemDir, title, desc, canonicalURL, mode, isConflict)
+	}
+
 	meta := library.ItemMetadata{
 		Version:  1,
 		ID:       "video:" + t.TargetID,
@@ -46,7 +71,7 @@ func (m *Manager) executeDouyinVideoTask(ctx context.Context, t *Task, plan Work
 		Kind:     "video",
 		Status:   "partial",
 		Title:    title,
-		Desc:     plan.Desc,
+		Desc:     desc,
 		URL:      canonicalURL,
 		PubTs:    plan.PubTs,
 		CachedAt: previous.CachedAt,
@@ -212,6 +237,7 @@ func (m *Manager) executeDouyinVideoTask(ctx context.Context, t *Task, plan Work
 		meta.Media = mergeMediaFiles(meta.Media, []library.MediaFile{videoMedia})
 		clearMissing(&meta, videoRel)
 		meta.DouyinVideo = &library.DouyinVideoInfo{
+			MediaID:        library.SanitizeMediaToken(plan.MediaID),
 			File:           videoRel,
 			Gear:           plan.VideoGear,
 			QualityName:    plan.QualityName,
@@ -237,6 +263,9 @@ func (m *Manager) executeDouyinVideoTask(ctx context.Context, t *Task, plan Work
 
 	if meta.DouyinVideo == nil && previous.DouyinVideo != nil {
 		cp := *previous.DouyinVideo
+		if cp.MediaID == "" {
+			cp.MediaID = library.SanitizeMediaToken(plan.MediaID)
+		}
 		meta.DouyinVideo = &cp
 	}
 
@@ -246,6 +275,7 @@ func (m *Manager) executeDouyinVideoTask(ctx context.Context, t *Task, plan Work
 		t.Status = "partial"
 		t.ErrorMessage = summarizeMissingReasons(meta.Missing)
 	}
+	stampCacheStandardAndAssets(&meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
 	saved, err := m.lib.SaveItem(itemDir, meta)
 	if err != nil {
 		return err
@@ -332,7 +362,8 @@ func (m *Manager) cacheDouyinSingleMP4(
 	planner WorkPlanner,
 	refreshURLs func() ([]string, error),
 ) (*library.MediaFile, error) {
-	if exists && mediaIsValid(previous, relPath) {
+	inSwapStage := isSwapStageDir(itemDir)
+	if !inSwapStage && exists && mediaIsValid(previous, relPath) {
 		for _, mf := range previous.Media {
 			if mf.Path == relPath {
 				m.setFileProgress(t, role, relPath, "completed", mf.Bytes, mf.Bytes, 0)
@@ -341,16 +372,22 @@ func (m *Manager) cacheDouyinSingleMP4(
 			}
 		}
 	}
-	fullPath, err := library.ResolveItemPath(itemDir, relPath)
+	writeRel := relPath
+	if inSwapStage {
+		writeRel = stagedRelPath(relPath)
+	}
+	fullPath, err := library.ResolveItemPath(itemDir, writeRel)
 	if err != nil {
 		return nil, err
 	}
-	if err := m.claimTaskFile(t, itemDir, relPath, fullPath); err != nil {
+	if err := m.claimTaskFile(t, itemDir, writeRel, fullPath); err != nil {
 		return nil, err
 	}
-	rawRel := relPath + stageSuffix
+	rawRel := writeRel + stageSuffix
 	stagingPath := fullPath + stageSuffix
-	m.adoptLegacyStaging(t, itemDir, relPath, ".raw", stageSuffix)
+	if !inSwapStage {
+		m.adoptLegacyStaging(t, itemDir, relPath, ".raw", stageSuffix)
+	}
 	if !fileOrPartExists(stagingPath) {
 		m.resetFileProgress(t, relPath)
 	}
@@ -400,6 +437,256 @@ func (m *Manager) cacheDouyinSingleMP4(
 		Height:   h,
 		Duration: dur,
 	}, nil
+}
+
+func (m *Manager) executeDouyinVideoStaged(
+	ctx context.Context,
+	t *Task,
+	plan WorkDownloadPlan,
+	planner WorkPlanner,
+	cfg settings.DownloadSettings,
+	previous library.ItemMetadata,
+	itemDir string,
+	title, desc, canonicalURL string,
+	mode string,
+	isConflict bool,
+) error {
+	stageDir := filepath.Join(itemDir, library.SwapStageDirPrefix+newSwapToken())
+	if err := os.MkdirAll(stageDir, 0o700); err != nil {
+		return err
+	}
+	defer func() {
+		_ = library.RemoveTempSubdirSafe(itemDir, stageDir)
+	}()
+
+	subTask := cloneStageSubtask(t, stageDir)
+	defer func() {
+		t.Attempts = subTask.Attempts
+	}()
+
+	refreshOncePlan := m.makeSinglePlanRefresher(ctx, t.TargetID, planner)
+	var v2Media []library.MediaFile
+	var v2Missing []library.MissingRecord
+
+	// 1. Cover: stage fresh cover on conflict, or reuse verified local cover.
+	reusedCover := false
+	if !isConflict {
+		for _, mf := range previous.Media {
+			if mf.Role == "cover" && mediaIsValid(previous, mf.Path) {
+				if copied, cErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, "cover", stageDir); cErr == nil {
+					v2Media = append(v2Media, *copied)
+					reusedCover = true
+				}
+				break
+			}
+		}
+	}
+	if !reusedCover && cfg.SaveCover && len(plan.CoverURLs) > 0 {
+		refreshCover := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
+			return fresh.CoverURLs, nil
+		})
+		if coverMedia, cErr := m.cacheDouyinSniffedImage(ctx, &subTask, stageDir, previous, false, "cover", "cover", plan.CoverURLs, 0, 0, plan.Transport, refreshCover); cErr == nil && coverMedia != nil {
+			v2Media = append(v2Media, *coverMedia)
+		} else if cErr != nil && (isSiteStopError(cErr) || isStorageError(cErr) || ctx.Err() != nil) {
+			return cErr
+		} else {
+			for _, mf := range previous.Media {
+				if mf.Role == "cover" && mediaIsValid(previous, mf.Path) {
+					if copied, rErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, "cover", stageDir); rErr == nil {
+						v2Media = append(v2Media, *copied)
+						reusedCover = true
+					}
+					break
+				}
+			}
+			if !reusedCover {
+				v2Missing = append(v2Missing, library.MissingRecord{Item: "cover", Reason: "封面保存失败"})
+			}
+		}
+	}
+
+	// 2. Single video.mp4
+	videoRel := "video.mp4"
+	var dvInfo *library.DouyinVideoInfo
+	durSec := plan.DurationSec
+
+	sameMediaID := false
+	if previous.DouyinVideo != nil && previous.DouyinVideo.MediaID != "" && plan.MediaID != "" &&
+		library.SanitizeMediaToken(previous.DouyinVideo.MediaID) == library.SanitizeMediaToken(plan.MediaID) {
+		sameMediaID = true
+	}
+
+	if !isConflict && !planUpgradesSingleVideo(previous, plan) && mediaIsValid(previous, videoRel) {
+		copied, err := copyLocalMediaToStageAs(previous, videoRel, videoRel, "video", stageDir)
+		if err != nil {
+			return err
+		}
+		v2Media = append(v2Media, *copied)
+		m.setFileProgress(t, "video", videoRel, "completed", copied.Bytes, copied.Bytes, 0)
+		if previous.DouyinVideo != nil {
+			cp := *previous.DouyinVideo
+			if cp.MediaID == "" {
+				cp.MediaID = library.SanitizeMediaToken(plan.MediaID)
+			}
+			dvInfo = &cp
+		}
+		if previous.Duration > 0 {
+			durSec = previous.Duration
+		}
+	} else {
+		stagedVideoFull, err := stagedFullPath(stageDir, videoRel)
+		if err != nil {
+			return err
+		}
+		var summary MuxTrackSummary
+		var dlErr error
+		original := false
+		if len(plan.OriginalURLs) > 0 {
+			origSummary, oErr := m.cacheDouyinOriginal(ctx, &subTask, plan, refreshOncePlan, stagedRelPath(videoRel), stagedVideoFull)
+			if oErr == nil {
+				summary, original = origSummary, true
+			} else if ctx.Err() != nil || site.IsRoundStop(oErr) || isStorageError(oErr) {
+				return oErr
+			} else {
+				dlErr = oErr
+			}
+		}
+		if !original {
+			// On safe upgrade where local already had the transcoded tier and only OriginalURLs was new,
+			// reuse verified local video if OriginalURLs failed instead of re-downloading the same tier.
+			if !isConflict && mediaIsValid(previous, videoRel) && previous.DouyinVideo != nil &&
+				plan.Width*plan.Height <= previous.DouyinVideo.Width*previous.DouyinVideo.Height {
+				copied, cErr := copyLocalMediaToStageAs(previous, videoRel, videoRel, "video", stageDir)
+				if cErr == nil {
+					v2Media = append(v2Media, *copied)
+					m.setFileProgress(t, "video", videoRel, "completed", copied.Bytes, copied.Bytes, 0)
+					cp := *previous.DouyinVideo
+					if cp.MediaID == "" {
+						cp.MediaID = library.SanitizeMediaToken(plan.MediaID)
+					}
+					dvInfo = &cp
+					if previous.Duration > 0 {
+						durSec = previous.Duration
+					}
+					goto commitVideoSwap
+				}
+			}
+			refreshVideoURLs := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
+				return fresh.VideoURLs, nil
+			})
+			vidMedia, vErr := m.cacheDouyinSingleMP4(ctx, &subTask, stageDir, previous, false, "video", videoRel, plan.VideoURLs, plan.NeedSetToken, plan.DurationSec, plan.Width, plan.Height, plan.Transport, planner, refreshVideoURLs)
+			if vErr != nil {
+				if (!isConflict || sameMediaID) && mediaIsValid(previous, videoRel) && ctx.Err() == nil && !isStorageError(vErr) {
+					if copied, cErr := copyLocalMediaToStageAs(previous, videoRel, videoRel, "video", stageDir); cErr == nil {
+						v2Media = append(v2Media, *copied)
+						if previous.DouyinVideo != nil {
+							cp := *previous.DouyinVideo
+							dvInfo = &cp
+						}
+						goto commitVideoSwap
+					}
+				}
+				if isDegradedSiteError(vErr) {
+					return wrapRemoteDegraded(vErr)
+				}
+				if dlErr != nil && isDegradedSiteError(dlErr) {
+					return wrapRemoteDegraded(dlErr)
+				}
+				return vErr
+			}
+			v2Media = append(v2Media, *vidMedia)
+			durSec = vidMedia.Duration
+			dvInfo = &library.DouyinVideoInfo{
+				MediaID:        library.SanitizeMediaToken(plan.MediaID),
+				File:           videoRel,
+				Gear:           plan.VideoGear,
+				QualityName:    plan.QualityName,
+				Codec:          plan.Codec,
+				Width:          vidMedia.Width,
+				Height:         vidMedia.Height,
+				FPS:            plan.FPS,
+				Bitrate:        plan.Bitrate,
+				AvailableGears: append([]string(nil), plan.AvailableGears...),
+			}
+			goto commitVideoSwap
+		}
+		if d := int(math.Round(summary.DurationSec)); d > 0 {
+			durSec = d
+		}
+		w, h := summary.Width, summary.Height
+		if w <= 0 {
+			w = plan.Width
+		}
+		if h <= 0 {
+			h = plan.Height
+		}
+		v2Media = append(v2Media, library.MediaFile{
+			Role:     "video",
+			Path:     videoRel,
+			Bytes:    summary.FileBytes,
+			SHA256:   summary.SHA256,
+			Width:    w,
+			Height:   h,
+			Duration: durSec,
+		})
+		m.setFileProgress(t, "video", videoRel, "completed", summary.FileBytes, summary.FileBytes, 0)
+		var br int64
+		if summary.DurationSec > 0 {
+			br = int64(float64(summary.FileBytes*8) / summary.DurationSec)
+		}
+		dvInfo = &library.DouyinVideoInfo{
+			MediaID:        library.SanitizeMediaToken(plan.MediaID),
+			File:           videoRel,
+			Gear:           douyinOriginalGear,
+			QualityName:    douyinOriginalQuality,
+			Codec:          firstNonEmptyStr(summaryPrimaryVideoCodec(summary), plan.Codec),
+			Width:          w,
+			Height:         h,
+			Bitrate:        br,
+			AvailableGears: append([]string{douyinOriginalQuality}, plan.AvailableGears...),
+		}
+	}
+
+commitVideoSwap:
+	status := "complete"
+	if len(v2Missing) > 0 {
+		status = "partial"
+		t.Status = "partial"
+		t.ErrorMessage = summarizeMissingReasons(v2Missing)
+	}
+	v2Meta := library.ItemMetadata{
+		Version:  1,
+		ID:       "video:" + t.TargetID,
+		Site:     "douyin",
+		Kind:     "video",
+		Status:   status,
+		Title:    title,
+		Desc:     desc,
+		URL:      canonicalURL,
+		PubTs:    plan.PubTs,
+		CachedAt: previous.CachedAt,
+		Duration: durSec,
+		Author: library.ItemAuthor{
+			Site:     "douyin",
+			UID:      plan.AuthorUID,
+			UniqueID: plan.AuthorUniqueID,
+			Name:     t.AuthorName,
+			Face:     t.AuthorFace,
+		},
+		Media:        v2Media,
+		DouyinVideo:  dvInfo,
+		Missing:      v2Missing,
+		DirectCached: true,
+		Via:          m.douyinItemVia(t, previous, true, itemDir),
+	}
+	stampCacheStandardAndAssets(&v2Meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
+
+	saved, err := m.commitStagedItemSwap(itemDir, previous, true, v2Meta, stageDir, mode)
+	if err != nil {
+		return err
+	}
+	t.ItemKey = saved.ItemKey
+	return nil
 }
 
 func playURLResolverOf(planner WorkPlanner) PlayURLResolver {

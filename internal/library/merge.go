@@ -64,8 +64,10 @@ func cloneItemMetadataSlices(meta ItemMetadata) ItemMetadata {
 		c := *meta.Card
 		meta.Card = &c
 	}
+	meta.Links = append([]ItemLink(nil), meta.Links...)
 	if meta.Origin != nil {
 		o := *meta.Origin
+		o.Links = append([]ItemLink(nil), o.Links...)
 		if o.Card != nil {
 			oc := *o.Card
 			o.Card = &oc
@@ -75,6 +77,7 @@ func cloneItemMetadataSlices(meta ItemMetadata) ItemMetadata {
 	if len(meta.Thread) > 0 {
 		meta.Thread = append([]ItemThreadPart(nil), meta.Thread...)
 		for i := range meta.Thread {
+			meta.Thread[i].Links = append([]ItemLink(nil), meta.Thread[i].Links...)
 			meta.Thread[i].MediaIndexes = append([]int(nil), meta.Thread[i].MediaIndexes...)
 		}
 	}
@@ -87,6 +90,7 @@ func cloneItemMetadataSlices(meta ItemMetadata) ItemMetadata {
 	meta.Missing = append([]MissingRecord(nil), meta.Missing...)
 	meta.PendingParts = append([]string(nil), meta.PendingParts...)
 	meta.Videos = append([]string(nil), meta.Videos...)
+	meta.AssetIDs = append([]string(nil), meta.AssetIDs...)
 	return meta
 }
 
@@ -102,11 +106,15 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 	if mode == MergeUseImported {
 		out := cloneItemMetadataSlices(imported)
 		out.ItemDir, out.ItemKey, out.RawID = local.ItemDir, local.ItemKey, local.RawID
+		if out.ArchivedOf == "" && local.ArchivedOf != "" {
+			out.ArchivedOf = local.ArchivedOf
+		}
 		if local.CachedBy != nil {
 			cb := *local.CachedBy
 			out.CachedBy = &cb
 		}
 		out.Missing = nil
+		sanitizeManifestConflictFields(&out)
 		return out, nil
 	}
 	out := cloneItemMetadataSlices(local)
@@ -194,6 +202,9 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 	// NotePages: supplement empty fields on existing pages, then append any extra pages.
 	for i := 0; i < len(out.NotePages) && i < len(imported.NotePages); i++ {
 		dst, src := &out.NotePages[i], imported.NotePages[i]
+		if dst.MediaID == "" {
+			dst.MediaID = src.MediaID
+		}
 		if dst.Image == "" {
 			dst.Image = src.Image
 		}
@@ -215,6 +226,8 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 		if dst.VideoInfo == nil && src.VideoInfo != nil {
 			vi := *src.VideoInfo
 			dst.VideoInfo = &vi
+		} else if dst.VideoInfo != nil && src.VideoInfo != nil && dst.VideoInfo.MediaID == "" {
+			dst.VideoInfo.MediaID = src.VideoInfo.MediaID
 		}
 	}
 	if len(out.NotePages) < len(imported.NotePages) {
@@ -230,6 +243,26 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 	if out.DouyinVideo == nil && imported.DouyinVideo != nil {
 		dv := *imported.DouyinVideo
 		out.DouyinVideo = &dv
+	} else if out.DouyinVideo != nil && imported.DouyinVideo != nil && out.DouyinVideo.MediaID == "" {
+		out.DouyinVideo.MediaID = imported.DouyinVideo.MediaID
+	}
+	if out.CacheStandardVersion == 0 && imported.CacheStandardVersion > 0 {
+		out.CacheStandardVersion = imported.CacheStandardVersion
+	}
+	if out.RecheckedAt == "" && imported.RecheckedAt != "" {
+		out.RecheckedAt = imported.RecheckedAt
+	}
+	if out.EditTs == 0 && imported.EditTs > 0 {
+		out.EditTs = imported.EditTs
+	}
+	if out.EditCount == 0 && imported.EditCount > 0 {
+		out.EditCount = imported.EditCount
+	}
+	if len(out.AssetIDs) == 0 && len(imported.AssetIDs) > 0 {
+		out.AssetIDs = append([]string(nil), imported.AssetIDs...)
+	}
+	if out.ArchivedOf == "" && imported.ArchivedOf != "" {
+		out.ArchivedOf = imported.ArchivedOf
 	}
 	if out.Music == nil && imported.Music != nil {
 		mu := *imported.Music
@@ -260,15 +293,20 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 		c := *imported.Card
 		out.Card = &c
 	}
+	if len(out.Links) == 0 && len(imported.Links) > 0 {
+		out.Links = append([]ItemLink(nil), imported.Links...)
+	}
 	if len(out.Thread) == 0 && len(imported.Thread) > 0 {
 		out.Thread = append([]ItemThreadPart(nil), imported.Thread...)
 		for i := range out.Thread {
+			out.Thread[i].Links = append([]ItemLink(nil), out.Thread[i].Links...)
 			out.Thread[i].MediaIndexes = append([]int(nil), out.Thread[i].MediaIndexes...)
 		}
 	}
 	if imported.Origin != nil {
 		if out.Origin == nil {
 			o := *imported.Origin
+			o.Links = append([]ItemLink(nil), o.Links...)
 			if o.Card != nil {
 				oc := *o.Card
 				o.Card = &oc
@@ -310,6 +348,9 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 			}
 			if out.Origin.Text == "" {
 				out.Origin.Text = imported.Origin.Text
+			}
+			if len(out.Origin.Links) == 0 && len(imported.Origin.Links) > 0 {
+				out.Origin.Links = append([]ItemLink(nil), imported.Origin.Links...)
 			}
 			if out.Origin.UnavailableReason == "" {
 				out.Origin.UnavailableReason = imported.Origin.UnavailableReason
@@ -441,6 +482,7 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 		}
 	}
 	out.PendingParts = nil
+	sanitizeManifestConflictFields(&out)
 	return out, renames
 }
 
@@ -483,6 +525,8 @@ func firstNonEmptyString(vals ...string) string {
 // cloud: the runtime fields of this installation (the item folder's
 // absolute path, the index key, the computed size) are left out.
 func PortableManifest(meta ItemMetadata) ([]byte, error) {
+	meta = cloneItemMetadataSlices(meta)
+	sanitizeManifestConflictFields(&meta)
 	meta.ItemDir, meta.ItemKey, meta.RawID, meta.TotalBytes = "", "", "", 0
 	raw, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {

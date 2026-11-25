@@ -849,10 +849,14 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				}
 				app.CurrentWeiboPosts = []service.WeiboPostView{
 					{
-						Mid:          "5000000000000001",
-						Author:       service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博"},
-						CreatedAt:    1710004500,
-						Text:         "置顶公告：本账号整理系统编程、多媒体封装与跨平台桌面工具实践笔记。\n定期更新离线归档与界面排印优化记录。",
+						Mid:       "5000000000000001",
+						Author:    service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博"},
+						CreatedAt: 1710004500,
+						Text:      "置顶公告：本账号整理系统编程、多媒体封装与跨平台桌面工具实践笔记，索引汇总见 专栏目录 与 #系统工程#。\n定期更新离线归档与界面排印优化记录。",
+						Links: []service.TextLinkDTO{
+							{Label: "专栏目录", URL: "https://weibo.com/ttarticle/p/show?id=2309405000000000000001"},
+							{Label: "#系统工程#", URL: "https://s.weibo.com/weibo?q=%23%E7%B3%BB%E7%BB%9F%E5%B7%A5%E7%A8%8B%23"},
+						},
 						IsTop:        true,
 						CanonicalURL: "https://weibo.com/" + weiboUID + "/5000000000000001",
 						CacheKey:     savedWeiboPost.ItemKey,
@@ -955,10 +959,14 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 					}
 				}
 				app.CurrentWeiboPost = &service.WeiboPostView{
-					Mid:             "5000000000000010",
-					Author:          service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博", VerifiedReason: "数码科技领域创作者"},
-					CreatedAt:       1710004800,
-					Text:            "长微博正文示例：完整保留长微博全文、超过 9 张图按原始顺序展示（共 11 项，含实况照片、GIF 动图与混排视频页），同时保留可见范围标记与转发原微博降级提示。",
+					Mid:       "5000000000000010",
+					Author:    service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博", VerifiedReason: "数码科技领域创作者"},
+					CreatedAt: 1710004800,
+					Text:      "长微博正文示例：完整保留长微博全文、超过 9 张图按原始顺序展示（共 11 项，含实况照片、GIF 动图与混排视频页），配套文档见 网页链接 与 #桌面客户端#，同时保留可见范围标记与转发原微博降级提示。",
+					Links: []service.TextLinkDTO{
+						{Label: "网页链接", URL: "https://example.com/weibo-longtext-guide"},
+						{Label: "#桌面客户端#", URL: "https://s.weibo.com/weibo?q=%23%E6%A1%8C%E9%9D%A2%E5%AE%A2%E6%88%B7%E7%AB%AF%23"},
+					},
 					IsLongText:      true,
 					LongTextFetched: true,
 					Source:          "微博网页版",
@@ -980,6 +988,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"微博详情站点标记",
 				"微博可见范围标记",
 				"微博正文",
+				"打开链接：网页链接",
+				"打开链接：#桌面客户端#",
 				"查看图文页 1",
 				"实况标记 2",
 				"动图标记 3",
@@ -1961,6 +1971,65 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 			NarrowRequiredLabels: []string{
 				"任务分段：检查计划",
+			},
+		},
+		{
+			Name: "tasks-conflicts",
+			Setup: func() {
+				seedRecentAndLive()
+				app.ConflictBatchChoice = service.DefaultConflictChoice
+				app.ConflictBatchConfirmOpen = false
+				app.ConflictActionError = ""
+				app.OpenTasksConflicts()
+				app.ConflictReplaceConfirmID = "conflict_shot_wb"
+			},
+			RequiredLabels: []string{
+				"内容冲突顶部栏",
+				"内容冲突保护说明",
+				"全部待处理方式",
+				"批量应用冲突处理",
+				"内容冲突列表",
+				"内容冲突卡片：conflict_shot_bili",
+				"冲突原因：conflict_shot_bili",
+				"冲突站点：conflict_shot_bili",
+				"冲突对比：conflict_shot_bili",
+				"保留两版：conflict_shot_bili",
+				"保留本地：conflict_shot_bili",
+				"用新版替换：conflict_shot_bili",
+				"查看本地冲突条目：conflict_shot_bili",
+				"内容冲突卡片：conflict_shot_wb",
+				"冲突原因：conflict_shot_wb",
+				"冲突站点：conflict_shot_wb",
+				"确认替换冲突栏：conflict_shot_wb",
+				"取消替换冲突：conflict_shot_wb",
+				"确认替换冲突：conflict_shot_wb",
+				"内容冲突卡片：conflict_shot_x",
+				"冲突原因：conflict_shot_x",
+				"冲突站点：conflict_shot_x",
+				"冲突失败提示：conflict_shot_x",
+			},
+			PanelRequiredLabels: []string{
+				"任务侧栏：下载任务",
+				"任务侧栏：缓存队列",
+				"任务侧栏：内容冲突",
+			},
+			NarrowRequiredLabels: []string{
+				"任务分段：下载任务",
+				"任务分段：缓存队列",
+				"任务分段：内容冲突",
+			},
+			RequiredTexts: []string{
+				"内容冲突（3）",
+				"源站内容与本地已缓存版本不一致时不会自动覆盖，默认可同时保留本地旧版与源站新版",
+				"保留两版（推荐）",
+				"分P变更",
+				"媒体替换",
+				"正文编辑",
+				"确认用源站新版替换本地已缓存内容？",
+				"（本地原文件未改动）",
+			},
+			ForbiddenLabels: []string{
+				"内容冲突空状态",
 			},
 		},
 		{

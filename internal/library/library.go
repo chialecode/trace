@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,6 +85,9 @@ func OpenWithDataDir(db *sql.DB, cacheDir, dataDir string) (*Store, error) {
 		return nil, err
 	}
 	if err := s.cleanupPendingDeletesLocked(); err != nil {
+		return nil, err
+	}
+	if err := s.recoverInterruptedSwapsLocked(); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -194,13 +198,13 @@ func (s *Store) SetCacheDir(dir string) error {
 }
 
 // SaveItem writes item.json atomically into itemDir, verifies referenced media files, and indexes it in SQLite.
+// Disk SHA-256 verification runs outside s.mu.Lock() so large media files never
+// block concurrent live checkpoints or UI library queries.
 func (s *Store) SaveItem(itemDir string, meta ItemMetadata) (ItemMetadata, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.saveItemLocked(itemDir, meta)
+	return s.saveItem(itemDir, meta, true)
 }
 
-func (s *Store) saveItemLocked(itemDir string, meta ItemMetadata, checkHash ...bool) (ItemMetadata, error) {
+func normalizeItemMetadataForSave(itemDir string, meta ItemMetadata) ItemMetadata {
 	if meta.Version <= 0 {
 		meta.Version = 1
 	}
@@ -220,22 +224,95 @@ func (s *Store) saveItemLocked(itemDir string, meta ItemMetadata, checkHash ...b
 		meta.CachedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	meta.ItemDir = filepath.Clean(itemDir)
+	return meta
+}
 
-	if s.allowMovedFiles {
-		meta.TotalBytes = sumItemBytesAllowMoved(meta.ItemDir, &meta)
-		if meta.Status == "" {
-			meta.Status = "complete"
-		}
-	} else {
-		missing, totalBytes := verifyItemFiles(meta.ItemDir, &meta, checkHash...)
-		meta.TotalBytes = totalBytes
-		if missing && meta.Status != "recording" && meta.Status != "failed" && meta.Status != "partial" {
-			meta.Status = "missing_files"
-		} else if meta.Status == "" || (meta.Status == "missing_files" && !missing) {
-			meta.Status = "complete"
+func applyVerifiedStatus(meta *ItemMetadata, missing bool, totalBytes int64) {
+	meta.TotalBytes = totalBytes
+	if missing && meta.Status != "recording" && meta.Status != "failed" && meta.Status != "partial" {
+		meta.Status = "missing_files"
+	} else if meta.Status == "" || (meta.Status == "missing_files" && !missing) {
+		meta.Status = "complete"
+	}
+}
+
+func hasMediaSHA256(media []MediaFile) bool {
+	for _, m := range media {
+		if strings.TrimSpace(m.SHA256) != "" {
+			return true
 		}
 	}
+	return false
+}
 
+func (s *Store) saveItem(itemDir string, meta ItemMetadata, checkHash bool) (ItemMetadata, error) {
+	baseMeta := normalizeItemMetadataForSave(itemDir, meta)
+	origMedia := slices.Clone(baseMeta.Media)
+	needsHash := checkHash && hasMediaSHA256(origMedia)
+
+	const maxAttempts = 2
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var (
+			hashSnaps map[hashSnapKey]fileStatSnap
+			didHash   bool
+		)
+		if needsHash {
+			s.mu.RLock()
+			allowMoved := s.allowMovedFiles
+			s.mu.RUnlock()
+
+			if !allowMoved {
+				hashWork := baseMeta
+				hashWork.Media = slices.Clone(origMedia)
+				_, _, hashSnaps = verifyItemFilesWithSnaps(hashWork.ItemDir, &hashWork, true)
+				didHash = true
+			}
+		}
+
+		s.mu.Lock()
+		work := baseMeta
+		work.Media = slices.Clone(origMedia)
+
+		if s.allowMovedFiles {
+			work.TotalBytes = sumItemBytesAllowMoved(work.ItemDir, &work)
+			if work.Status == "" {
+				work.Status = "complete"
+			}
+		} else if needsHash {
+			if !didHash {
+				// allowMovedFiles transitioned true -> false between RLock and Lock:
+				// unlock and run the unlocked hash pass instead of hashing under s.mu.
+				if attempt+1 < maxAttempts {
+					s.mu.Unlock()
+					continue
+				}
+				missing, totalBytes := verifyItemFiles(work.ItemDir, &work, false)
+				applyVerifiedStatus(&work, missing || true, totalBytes)
+			} else {
+				statMissing, statBytes, drifted := verifyItemFilesAgainstSnaps(work.ItemDir, &work, hashSnaps)
+				if drifted {
+					if attempt+1 < maxAttempts {
+						s.mu.Unlock()
+						continue
+					}
+					statMissing = true
+				}
+				applyVerifiedStatus(&work, statMissing, statBytes)
+			}
+		} else {
+			missing, totalBytes := verifyItemFiles(work.ItemDir, &work, false)
+			applyVerifiedStatus(&work, missing, totalBytes)
+		}
+
+		saved, err := s.commitSavedItemLocked(work)
+		s.mu.Unlock()
+		return saved, err
+	}
+
+	return ItemMetadata{}, fmt.Errorf("library: 保存条目校验重试超限")
+}
+
+func (s *Store) commitSavedItemLocked(meta ItemMetadata) (ItemMetadata, error) {
 	itemJSONPath := filepath.Join(meta.ItemDir, "item.json")
 	if raw, err := os.ReadFile(itemJSONPath); err == nil {
 		previous, err := ParseItemMetadata(raw)
@@ -576,8 +653,15 @@ func normalizeLookupKey(k string) string {
 
 func refreshItemFileState(meta *ItemMetadata) {
 	if missing, actualBytes := verifyItemFiles(meta.ItemDir, meta, false); missing && meta.Status != "recording" {
-		meta.Status = "missing_files"
-		meta.TotalBytes = actualBytes
+		if hasInterruptedSwapDirs(meta.ItemDir) && RecoverInterruptedItemSwap(meta.ItemDir, *meta) == nil {
+			missing, actualBytes = verifyItemFiles(meta.ItemDir, meta, false)
+		}
+		if missing {
+			meta.Status = "missing_files"
+			meta.TotalBytes = actualBytes
+		} else {
+			meta.TotalBytes = actualBytes
+		}
 	}
 }
 

@@ -23,6 +23,7 @@ func (s *Store) UpgradeCandidates(limit int) ([]ItemMetadata, error) {
 		SELECT json_data, item_dir, status, total_bytes, upgrade_available, upgrade_hint
 		FROM library_items
 		WHERE site = 'bilibili' AND kind = 'video'
+			AND ` + notArchivedSnapshotSQL + `
 	`)
 	if err != nil {
 		s.mu.RUnlock()
@@ -94,7 +95,7 @@ func (s *Store) CheckUpgradeKeys(ctx context.Context, client *bilibili.Client, k
 			if err != nil {
 				return nil, &bilibili.SiteError{Kind: "storage", Message: "读取缓存记录失败", Err: err}
 			}
-			if ok && m.Kind == "video" {
+			if ok && m.Kind == "video" && !m.IsArchivedSnapshot() {
 				candidates = append(candidates, m)
 			}
 		}

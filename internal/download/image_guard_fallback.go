@@ -293,6 +293,57 @@ func preserveValidPreviousImages(
 	return mediaFiles, notePages
 }
 
+// preserveValidPreviousImagesForStage applies preserveValidPreviousImages only when
+// allow is true (skipped on explicit V1->V2 conflict replacement/archiving so V2 keeps
+// its exact page set) and copies any newly retained previous images into workDir when
+// staging inside a .trace-stage-* subdirectory.
+func preserveValidPreviousImagesForStage(
+	itemDir, workDir string,
+	previous library.ItemMetadata,
+	allow bool,
+	mediaFiles []library.MediaFile,
+	notePages []library.NotePageRecord,
+) ([]library.MediaFile, []library.NotePageRecord) {
+	if !allow {
+		return mediaFiles, notePages
+	}
+	beforeLen := len(mediaFiles)
+	mediaFiles, notePages = preserveValidPreviousImages(itemDir, previous, true, mediaFiles, notePages)
+	if workDir != "" && workDir != itemDir && len(mediaFiles) > beforeLen {
+		prevWithDir := previous
+		if prevWithDir.ItemDir == "" {
+			prevWithDir.ItemDir = itemDir
+		}
+		kept := make([]library.MediaFile, 0, len(mediaFiles))
+		keptPaths := make(map[string]bool, len(mediaFiles))
+		for i, mf := range mediaFiles {
+			if i < beforeLen {
+				kept = append(kept, mf)
+				keptPaths[mf.Path] = true
+				continue
+			}
+			if copied, err := copyLocalMediaToStageAs(prevWithDir, mf.Path, mf.Path, mf.Role, workDir); err == nil && copied != nil {
+				cp := mf
+				cp.Bytes = copied.Bytes
+				cp.SHA256 = copied.SHA256
+				kept = append(kept, cp)
+				keptPaths[cp.Path] = true
+			}
+		}
+		mediaFiles = kept
+		if len(notePages) > 0 {
+			filteredPages := notePages[:0]
+			for _, pg := range notePages {
+				if pg.Image == "" || keptPaths[pg.Image] {
+					filteredPages = append(filteredPages, pg)
+				}
+			}
+			notePages = filteredPages
+		}
+	}
+	return mediaFiles, notePages
+}
+
 // tryPublicImageCDNFallbackToFile attempts to recover an expired unsigned public
 // static image from configured public CDN cache / web archive providers into tempFull,
 // verifying strict image magic bytes and non-placeholder status before returning ok=true.

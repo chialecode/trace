@@ -281,6 +281,9 @@ func (m *Manager) markSessionReconnected(sess *recordSession, recoveredAt time.T
 	}
 	m.mu.Unlock()
 
+	m.logEvent("INFO", "live reconnected: site=%s room=%s part=%s gap_sec=%.1f",
+		liveLogSite(sess), liveLogRoom(sess), partBase, roundDurationSec(gapSec))
+
 	if notify != nil && m.onState != nil {
 		leave := sess.enterExternal()
 		m.onState(*notify)

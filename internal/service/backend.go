@@ -53,6 +53,7 @@ type Backend struct {
 	douyinAdapter               *douyin.Adapter
 	weiboAdapter                *weibo.Adapter
 	xAdapter                    *x.Adapter
+	douyinWorkCache             *douyinWorkPlanCache
 	weiboPostCache              *weiboPostPlanCache
 	weiboMemMu                  sync.Mutex
 	weiboMemGen                 uint64
@@ -71,6 +72,7 @@ type Backend struct {
 	lib                         *library.Store
 	dl                          *download.Manager
 	queue                       *cacheQueueManager
+	conflicts                   *cacheConflictStore
 	subs                        *subscription.Manager
 	live                        *live.Manager
 	desktop                     Desktop
@@ -124,11 +126,18 @@ func NewBackend(opts Options) (*Backend, error) {
 	if err := update.GuardHistorySchema(loc.DataDir); err != nil {
 		return nil, err
 	}
-	allSchemas := append(append([]storage.SchemaFile(nil), storage.DataSchemas...), storage.SchemaFile{
-		Name:    cacheQueueFileName,
-		Kind:    storage.SchemaJSON,
-		Current: cacheQueueSchemaVersion,
-	})
+	allSchemas := append(append([]storage.SchemaFile(nil), storage.DataSchemas...),
+		storage.SchemaFile{
+			Name:    cacheQueueFileName,
+			Kind:    storage.SchemaJSON,
+			Current: cacheQueueSchemaVersion,
+		},
+		storage.SchemaFile{
+			Name:    cacheConflictsFileName,
+			Kind:    storage.SchemaJSON,
+			Current: cacheConflictsSchemaVersion,
+		},
+	)
 	if _, err := storage.GuardDataSchemas(loc.DataDir, allSchemas); err != nil {
 		return nil, err
 	}
@@ -294,6 +303,7 @@ func NewBackend(opts Options) (*Backend, error) {
 		douyinCred:                  douyinCredStore,
 		weiboCred:                   weiboCredStore,
 		xCred:                       xCredStore,
+		douyinWorkCache:             newDouyinWorkPlanCache(nil),
 		weiboPostCache:              newWeiboPostPlanCache(nil),
 		accountWeiboSeen:            make(map[string]map[string]bool),
 		weiboFollowingSeen:          make(map[string]map[string]bool),
@@ -439,6 +449,18 @@ func NewBackend(opts Options) (*Backend, error) {
 		b.corruptFiles = append(b.corruptFiles, queueLoadBackup)
 	}
 	b.queue = queueMgr
+	if opts.Profile != ProfileRemote {
+		conflictsPath := filepath.Join(loc.DataDir, cacheConflictsFileName)
+		conflictStore, conflictBackup, cErr := newCacheConflictStore(b, conflictsPath, opts.CacheQueueClock)
+		if cErr != nil {
+			return nil, cErr
+		}
+		if conflictBackup != "" {
+			b.corruptFiles = append(b.corruptFiles, conflictBackup)
+		}
+		b.conflicts = conflictStore
+		dlMgr.SetConflictHandler(b.recordDownloadConflictNotice)
+	}
 	// Every table of both databases now has the layout of this build.
 	if err := storage.StampSQLiteSchema(db, schemaVersion("library.db")); err != nil {
 		return nil, err
@@ -464,6 +486,16 @@ func NewBackend(opts Options) (*Backend, error) {
 	liveMgr.SetWebRIDSyncFunc(func(siteID site.ID, uid, webRID string, _ bool) {
 		if siteID == site.Douyin && uid != "" {
 			_ = subMgr.UpdateAccountWebRID(string(site.Douyin), uid, webRID)
+		}
+	})
+	liveMgr.SetLogFunc(func(level, msg string) {
+		switch level {
+		case "ERROR":
+			b.writeLogLine("ERROR", msg)
+		case "WARN":
+			b.writeLogLine("WARN", msg)
+		default:
+			b.writeLogLine("INFO", msg)
 		}
 	})
 	b.live = liveMgr
@@ -578,6 +610,7 @@ func NewBackend(opts Options) (*Backend, error) {
 	})
 	dyClient.SetAuthExpiredHandler(func(reason string) {
 		msg := firstNonEmpty(reason, "抖音登录已失效，任务已暂停")
+		b.clearDouyinMemoryCaches()
 		b.pauseSiteActiveWorkAsync(site.Douyin, "auth_required", msg)
 		evBus.PublishSite(EventAccountChanged, string(site.Douyin), "expired")
 	})
@@ -789,6 +822,12 @@ func (b *Backend) weiboFullCacheUseFeatureOriginal() bool {
 	b.weiboMemMu.Lock()
 	defer b.weiboMemMu.Unlock()
 	return b.fullCacheUseFeatureOriginal
+}
+
+func (b *Backend) clearDouyinMemoryCaches() {
+	if b != nil && b.douyinWorkCache != nil {
+		b.douyinWorkCache.clear()
+	}
 }
 
 func (b *Backend) clearWeiboMemoryCaches() {

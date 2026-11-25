@@ -149,6 +149,21 @@ func InspectMP4File(path string) (MuxTrackSummary, error) {
 }
 
 func InspectMP4FileContext(ctx context.Context, path string) (MuxTrackSummary, error) {
+	return inspectMP4File(ctx, path, true)
+}
+
+// InspectMP4StructureContext validates MP4 box layout, track metadata, file
+// length, and duration lazily (DecModeLazyMdat) without reading mdat sample
+// bytes or computing SHA-256. Callers that already hashed the output stream
+// while writing populate summary.SHA256 directly.
+func InspectMP4StructureContext(ctx context.Context, path string) (MuxTrackSummary, error) {
+	return inspectMP4File(ctx, path, false)
+}
+
+func inspectMP4File(ctx context.Context, path string, computeSHA256 bool) (MuxTrackSummary, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return MuxTrackSummary{}, err
@@ -158,13 +173,16 @@ func InspectMP4FileContext(ctx context.Context, path string) (MuxTrackSummary, e
 	if err != nil {
 		return MuxTrackSummary{}, err
 	}
-	hash := sha256.New()
-	if _, err := io.Copy(hash, contextIO{File: f, ctx: ctx}); err != nil {
-		return MuxTrackSummary{}, err
-	}
-	shaHex := hex.EncodeToString(hash.Sum(nil))
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return MuxTrackSummary{}, err
+	var shaHex string
+	if computeSHA256 {
+		hash := sha256.New()
+		if _, err := io.CopyBuffer(hash, contextIO{File: f, ctx: ctx}, make([]byte, 1<<20)); err != nil {
+			return MuxTrackSummary{}, err
+		}
+		shaHex = hex.EncodeToString(hash.Sum(nil))
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return MuxTrackSummary{}, err
+		}
 	}
 	parsed, err := mp4.DecodeFile(contextIO{File: f, ctx: ctx}, mp4.WithDecodeMode(mp4.DecModeLazyMdat), mp4.WithDecodeFlags(mp4.DecStartOnMoof))
 	if err != nil {

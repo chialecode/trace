@@ -10,6 +10,7 @@ import (
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
+	"github.com/chialecode/trace/internal/site/douyin"
 	"github.com/chialecode/trace/internal/site/weibo"
 	"github.com/chialecode/trace/internal/site/x"
 )
@@ -22,15 +23,17 @@ type queueEnqueued struct {
 	title        string
 	nextParts    []queuePartEnqueuer
 	pendingPages []int
+	probedNoTask bool
 }
 
 // queueCandidate is one post from a creator's user page list that the background
 // cache queue may inspect, skip, or enqueue into the download manager.
 type queueCandidate struct {
-	key         string
-	title       string
-	uncacheable bool
-	enqueue     func(ctx context.Context) (queueEnqueued, error)
+	key           string
+	title         string
+	uncacheable   bool
+	inspectCached func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision
+	enqueue       func(ctx context.Context) (queueEnqueued, error)
 }
 
 type queuePager func(ctx context.Context, cursor string) (items []queueCandidate, nextCursor string, hasMore bool, err error)
@@ -141,7 +144,7 @@ func (b *Backend) buildQueueLoadedAndPager(siteID site.ID, list, normUser string
 	switch {
 	case siteID == site.Bilibili && list == "videos":
 		for _, v := range req.Videos {
-			loaded = append(loaded, b.videoQueueCandidate(v.BVID, v.Title, queueForMid(normUser)))
+			loaded = append(loaded, b.videoItemQueueCandidate(v, queueForMid(normUser)))
 		}
 	case siteID == site.Bilibili:
 		for i := range req.Dynamics {
@@ -186,7 +189,7 @@ func (b *Backend) buildQueuePager(siteID site.ID, list, normUser, userName strin
 			}
 			out := make([]queueCandidate, 0, len(res.Items))
 			for _, v := range res.Items {
-				out = append(out, b.videoQueueCandidate(v.BVID, v.Title, mid))
+				out = append(out, b.videoItemQueueCandidate(v, mid))
 			}
 			hasMore := page*max(res.PageSize, 1) < res.Total && len(res.Items) > 0
 			return out, strconv.Itoa(page + 1), hasMore, nil
@@ -215,7 +218,7 @@ func (b *Backend) buildQueuePager(siteID site.ID, list, normUser, userName strin
 			return nil, &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "抖音用户无效"}
 		}
 		return func(ctx context.Context, cursor string) ([]queueCandidate, string, bool, error) {
-			res, err := b.DouyinUserWorks(ctx, secUID, cursor)
+			res, details, err := b.douyinUserWorks(ctx, secUID, cursor, nil)
 			if err != nil {
 				return nil, "", false, err
 			}
@@ -226,9 +229,9 @@ func (b *Backend) buildQueuePager(siteID site.ID, list, normUser, userName strin
 					Message: firstNonEmpty(res.UncertainReason, "抖音返回空作品列表，可能被拦截或登录已失效"),
 				}
 			}
-			out := make([]queueCandidate, 0, len(res.Works))
-			for _, w := range res.Works {
-				out = append(out, b.workQueueCandidate(w, secUID, userName))
+			out := make([]queueCandidate, 0, len(details))
+			for i := range details {
+				out = append(out, b.douyinDetailQueueCandidate(details[i], secUID, userName))
 			}
 			return out, res.NextCursor, res.HasMore && res.NextCursor != "", nil
 		}, nil
@@ -353,7 +356,16 @@ func queueForMid(normUser string) int64 {
 // a collaboration video they are a member of is stored under their folder
 // (DEC-056).
 func (b *Backend) videoQueueCandidate(bvid, fallbackTitle string, forMid int64) queueCandidate {
-	cleanID := strings.TrimSpace(bvid)
+	return b.videoItemQueueCandidate(bilibili.UserVideoItem{
+		BVID:  bvid,
+		Title: fallbackTitle,
+	}, forMid)
+}
+
+func (b *Backend) videoItemQueueCandidate(v bilibili.UserVideoItem, forMid int64) queueCandidate {
+	itemCopy := v
+	cleanID := strings.TrimSpace(itemCopy.BVID)
+	fallbackTitle := itemCopy.Title
 	var itemKey string
 	if cleanID != "" {
 		itemKey = library.CanonicalItemKey("bilibili", "video", cleanID)
@@ -361,6 +373,9 @@ func (b *Backend) videoQueueCandidate(bvid, fallbackTitle string, forMid int64) 
 	return queueCandidate{
 		key:   itemKey,
 		title: trimQueueSummaryTitle(fallbackTitle),
+		inspectCached: func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
+			return b.inspectBilibiliCachedVideo(itemCopy, meta, queueOrigin, forMid)
+		},
 		enqueue: func(ctx context.Context) (queueEnqueued, error) {
 			vd, err := b.bili.VideoDetail(ctx, cleanID)
 			if err != nil {
@@ -448,10 +463,18 @@ func (b *Backend) dynamicQueueCandidate(d bilibili.DynamicItem) queueCandidate {
 		itemKey = library.CanonicalItemKey("bilibili", "dynamic", cleanID)
 	}
 	title := trimQueueSummaryTitle(firstNonEmpty(d.Title, d.Text, cleanID))
+	isLiveRcmd := strings.EqualFold(strings.TrimSpace(d.Type), "DYNAMIC_TYPE_LIVE_RCMD")
+	var inspectFn func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision
+	if !isLiveRcmd {
+		inspectFn = func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
+			return b.inspectBilibiliCachedDynamic(item, meta, queueOrigin)
+		}
+	}
 	return queueCandidate{
-		key:         itemKey,
-		title:       title,
-		uncacheable: strings.EqualFold(strings.TrimSpace(d.Type), "DYNAMIC_TYPE_LIVE_RCMD"),
+		key:           itemKey,
+		title:         title,
+		uncacheable:   isLiveRcmd,
+		inspectCached: inspectFn,
 		enqueue: func(ctx context.Context) (queueEnqueued, error) {
 			t, err := b.EnqueueDynamicCache(ctx, download.DynamicEnqueueRequest{
 				DynamicID: item.ID,
@@ -470,10 +493,50 @@ func (b *Backend) dynamicQueueCandidate(d bilibili.DynamicItem) queueCandidate {
 	}
 }
 
+func (b *Backend) douyinDetailQueueCandidate(d douyin.WorkDetail, forUID, forName string) queueCandidate {
+	detailCopy := cloneDouyinWorkDetail(&d)
+	id := strings.TrimSpace(detailCopy.ID)
+	key := douyinCacheKeyForKind(detailCopy.Kind, id)
+	title := trimQueueSummaryTitle(firstNonEmpty(detailCopy.Title, detailCopy.Desc, id))
+	if b != nil && b.douyinWorkCache != nil {
+		b.douyinWorkCache.put(&detailCopy, b.preferredDouyinCodec())
+	}
+	return queueCandidate{
+		key:         key,
+		title:       title,
+		uncacheable: detailCopy.Uncacheable || detailCopy.Kind == douyin.WorkKindUnsupported,
+		inspectCached: func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
+			return b.inspectDouyinCachedWork(detailCopy, meta, queueOrigin, forUID, forName)
+		},
+		enqueue: func(ctx context.Context) (queueEnqueued, error) {
+			var planPtr *download.WorkDownloadPlan
+			if canReuseDouyinWorkPlan(&detailCopy) {
+				if built, err := b.buildDouyinWorkPlanFromDetail(ctx, &detailCopy, b.currentWorkPlanOptions()); err == nil {
+					planPtr = &built
+				}
+			}
+			t, err := b.enqueueDouyinWorkWithPlan(ctx, id, "queue", forUID, forName, planPtr)
+			if err != nil {
+				return queueEnqueued{}, err
+			}
+			return queueEnqueued{
+				taskIDs: []string{t.TaskID},
+				itemKey: firstNonEmpty(t.ItemKey, key),
+				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, title, id)),
+			}, nil
+		},
+	}
+}
+
 // workQueueCandidate enqueues one work from account forUID's works list; a
 // co-creation by someone else is stored under forUID's folder (DEC-063).
 func (b *Backend) workQueueCandidate(w DouyinWorkCardDTO, forUID, forName string) queueCandidate {
 	id := strings.TrimSpace(w.ID)
+	if b != nil && b.douyinWorkCache != nil && id != "" {
+		if cached, ok := b.douyinWorkCache.get(id, b.preferredDouyinCodec()); ok {
+			return b.douyinDetailQueueCandidate(*cached, forUID, forName)
+		}
+	}
 	key := w.CacheKey
 	if key == "" && id != "" {
 		key = douyinCacheKeyForKind(w.Kind, id)
@@ -511,12 +574,22 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 	if mid != "" {
 		key = weibo.PostItemKey(mid)
 	}
+	if b != nil && b.weiboPostCache != nil {
+		b.weiboPostCache.put(&postCopy, b.preferredWeiboCodec(), b.currentWeiboMaxResolution())
+	}
 	title := trimQueueSummaryTitle(firstNonEmpty(postCopy.Text, postCopy.TextRaw, mid))
 	nonOriginal := isWeiboNonOriginalPost(postCopy.IsRetweet, postCopy.IsFastRetweet, postCopy.Retweeted != nil, postCopy.OriMid, postCopy.RuleType)
+	var inspectFn func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision
+	if !nonOriginal {
+		inspectFn = func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
+			return b.inspectWeiboCachedPost(postCopy, meta, queueOrigin)
+		}
+	}
 	return queueCandidate{
-		key:         key,
-		title:       title,
-		uncacheable: nonOriginal || postCopy.Unavailable,
+		key:           key,
+		title:         title,
+		uncacheable:   nonOriginal || postCopy.Unavailable,
+		inspectCached: inspectFn,
 		enqueue: func(ctx context.Context) (queueEnqueued, error) {
 			var planPtr *download.WorkDownloadPlan
 			if canReuseWeiboPostPlan(&postCopy) {
@@ -539,6 +612,11 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 
 func (b *Backend) weiboPostViewQueueCandidate(p WeiboPostView) queueCandidate {
 	mid := strings.TrimSpace(p.Mid)
+	if b != nil && b.weiboPostCache != nil && mid != "" {
+		if cached, ok := b.weiboPostCache.get(mid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution()); ok {
+			return b.weiboPostQueueCandidate(*cached)
+		}
+	}
 	key := p.CacheKey
 	if key == "" && mid != "" {
 		key = weibo.PostItemKey(mid)
@@ -577,12 +655,22 @@ func (b *Backend) xPostQueueCandidate(p x.Post) queueCandidate {
 	if id != "" {
 		key = x.PostItemKey(id)
 	}
+	if b != nil && b.xPostCache != nil {
+		b.xPostCache.put(&postCopy, false)
+	}
 	title := trimQueueSummaryTitle(firstNonEmpty(postCopy.Text, id))
 	nonOriginal := isXNonOriginalPost(postCopy.IsRetweet, postCopy.IsQuote, postCopy.Retweeted != nil, postCopy.Quoted != nil, postCopy.RuleType)
+	var inspectFn func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision
+	if !nonOriginal {
+		inspectFn = func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
+			return b.inspectXCachedPost(postCopy, meta, queueOrigin)
+		}
+	}
 	return queueCandidate{
-		key:         key,
-		title:       title,
-		uncacheable: nonOriginal || postCopy.Unavailable,
+		key:           key,
+		title:         title,
+		uncacheable:   nonOriginal || postCopy.Unavailable,
+		inspectCached: inspectFn,
 		enqueue: func(ctx context.Context) (queueEnqueued, error) {
 			var planPtr *download.WorkDownloadPlan
 			if canReuseXPostPlan(&postCopy, false) {
@@ -605,6 +693,11 @@ func (b *Backend) xPostQueueCandidate(p x.Post) queueCandidate {
 
 func (b *Backend) xPostDTOQueueCandidate(p XPostDTO) queueCandidate {
 	id := strings.TrimSpace(p.ID)
+	if b != nil && b.xPostCache != nil && id != "" {
+		if cached, ok := b.xPostCache.get(id); ok {
+			return b.xPostQueueCandidate(*cached)
+		}
+	}
 	key := p.CacheKey
 	if key == "" && id != "" {
 		key = x.PostItemKey(id)

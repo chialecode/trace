@@ -30,9 +30,9 @@ internal/ui（mygo/ui 声明式视图、路由、看图层、播放层） ──
 main.go                       组装依赖、获取单实例与数据目录锁、启动服务与原生窗口
 cmd/trace-server/             无界面的远程程序（Linux）：init、run、token、upload-test 等命令；deploy/ 放 systemd 示例与中文部署说明
 mygo.json                     MyGo 打包配置：正式版身份、版本线 0.1.0、图标、发布者与版权、中文目录（i18n）、更新公钥与 GitHub 仓库；
-                              打包工具按通道临时改写（开发版 trace-dev、ptest 演练 trace-ptest）
+                              打包工具按通道临时改写（开发版 trace-dev、演练用的 trace-test）
 CHANGELOG.md                  正式版每个版本的更新内容（Release 说明与“更新内容”）
-assets/                       应用图标 icon.png（正式版）与 icon-dev.png（开发版与 ptest），tools/icons 生成
+assets/                       应用图标 icon.png（正式版）与 icon-dev.png（开发版与 trace-test），tools/icons 生成
 internal/
   shell/                      MyGo 桌面外壳适配：NewWindow、窗口关闭与重建、安静模式、托盘与菜单、单实例、通知、对话框、外部链接、在文件夹中显示；
                               启动参数（--quit-for-update、--background）、mygo.Updater 的接入与卸载项版本（updates.go）
@@ -42,7 +42,7 @@ internal/
                               我的、解析页、视频详情、用户页、媒体库（含 /library/item 离线详情与导入页）、任务页（六组侧栏、直播录制实时预览与录制异常、导入导出）、设置页（含“远程”“更新”分类与规则批量选订阅）、看图层、播放层及界面内存测试（ui.NewTester）
   player/                     原生媒体播放与叠加：Windows Media Foundation（IMFSourceReader 纯 Go COM 调用，含增长中 fMP4 .part 的只读实时预览）解码 MP4 音视频、
                               mygo/audio 音频时钟与输出、纯 Go 弹幕排版器（danmaku.go）与 WebVTT 字幕解析匹配（subtitle.go）
-  appdirs/                    构建信息（版本、通道、提交、构建时间，由 -ldflags 注入）；通道（release / dev / ptest / source）与安装、数据、缓存位置的推算，“文档”文件夹的系统登记位置，数据目录独占锁
+  appdirs/                    构建信息（版本、通道、提交、构建时间，由 -ldflags 注入）；通道（release / dev / test / source）与安装、数据、缓存位置的推算，“文档”文件夹的系统登记位置，数据目录独占锁
   site/                       站点公共层（DEC-043）：站点标识与显示名（site.go）、错误类别 Error 与 KindOf/IsKind（errors.go）、规则请求上下文标记
                               （automation.go）、链接分派与分享文本取链接（registry.go）、跨包流动的公共类型（账号键、直播状态与取流计划、
                               媒体传输规格）；不依赖任何具体站点
@@ -79,7 +79,7 @@ tools/checkdocs/              文档、公开内容与依赖方向检查
 tools/uishots/                用 ui.NewTester 渲染全部页面的必测状态与三档宽度，输出 PNG 截图与结构化断言回执 assertions.json
 tools/smoke/                  真实进程端到端冒烟（启动 trace.exe、单实例与数据目录锁、托盘关闭与重建、零杂散目录校验）；-server 是远程冒烟（server.go）
 tools/package/                开发版打包（解包文件 + NSIS 按用户安装包）与本机自动安装（install.go）；-server 打远程版的 Linux 包（server.go）
-tools/release/                正式版发布：检查、构建签名、ptest 升级演练、可选发布；release.yml 的静态检查
+tools/release/                正式版发布：检查、构建签名、trace-test 升级演练、可选发布；release.yml 的静态检查
 tools/actcheck/               真实站点有界检查程序（act006 / act007 / act010～020 / act022 / act024 / act025，账本门禁与脱敏回执）
 tools/icons/                  绘制两个通道的应用图标
 tools/internal/build/         打包共用：版本号、通道配置、-ldflags、VERSION.txt、THIRD-PARTY-NOTICES.txt、登记替换、Windows 卸载项与进程读取
@@ -263,9 +263,9 @@ tools/internal/build/         打包共用：版本号、通道配置、-ldflags
 ## 8.1 更新（FR-UPD-001～004，DEC-042、DEC-051 ①）
 
 - **分层**：检查与下载的状态机、更新源校验及检查记录在 `internal/update`（纯 Go，可测试，不依赖 MyGo）；`internal/shell/updates.go` 把它接到 `mygo.Updater`（`SetSource` 换成 TRACE 的更新源，`Check`/`Install`/`App.Relaunch`）并在启动时按版本变化写入更新记录；`internal/ui` 只经 `UpdaterAPI` 与服务接口读状态、读检查/更新历史与发命令。
-- **只在正式版启用联网更新**：只有 `tools/release` 的正式版构建带 `updates`（MyGo 注入清单地址与公钥）和 TRACE 自己的同一份地址与公钥（`internal/update.feedURL`/`publicKey`）；开发版与源码运行没有，`Enabled()` 为假，不在“设置 › 更新”显示检查按钮与开关，而是说明开发版由 Agent 打包后自动安装并重开，同时只读查询卸载项 `HKCU\...\Uninstall\io.github.chialecode.trace-dev` 的 `DisplayVersion` 展示“本机安装的开发版”（与正在运行的版本不同时提示重启生效）；“设置 › 关于”改为“版本与更新见‘更新’”入口。ptest 身份（只在演练里构建）另外可以用环境变量 `TRACE_PTEST_UPDATE_URL` 指到本机回环地址上的假发布源，并在启动 3 秒后检查；正式版与开发版不读这个变量。
+- **只在正式版启用联网更新**：只有 `tools/release` 的正式版构建带 `updates`（MyGo 注入清单地址与公钥）和 TRACE 自己的同一份地址与公钥（`internal/update.feedURL`/`publicKey`）；开发版与源码运行没有，`Enabled()` 为假，不在“设置 › 更新”显示检查按钮与开关，而是说明开发版由 Agent 打包后自动安装并重开，同时只读查询卸载项 `HKCU\...\Uninstall\io.github.chialecode.trace-dev` 的 `DisplayVersion` 展示“本机安装的开发版”（与正在运行的版本不同时提示重启生效）；“设置 › 关于”改为“版本与更新见‘更新’”入口。trace-test 身份（只在演练里构建）另外可以用环境变量 `TRACE_TEST_UPDATE_URL` 指到本机回环地址上的假发布源，并在启动 3 秒后检查；正式版与开发版不读这个变量。
 - **检查与检查记录**：启动 1 分钟后一次，之后每 24 小时一次（`State()` 暴露下次自动检查时间 `NextCheck`；“自动检查更新”关掉就不检查）；“设置 › 更新”的“立即检查”触发手动检查。请求经系统代理只访问 GitHub（清单 `releases/latest/download/update-windows-amd64.json` 与它列出的文件），只带版本与平台。每次检查结束时 `update.Controller` 往 `<数据目录>/update-history.json` 追加一条检查记录（保留最近 20 条：时间、自动/手动、脱敏结果文字如“已是最新版本”“发现 x.y.z”“检查失败：<原因>”，严禁存下载地址；开发版不联网检查、不写检查记录）。自动检查失败时静默，只写日志与检查记录；手动检查在页面显示原因。
-- **校验**（MyGo 之外 TRACE 补上的）：所有请求与重定向都必须是 HTTPS（只有 ptest 的假发布源可以是回环地址上的 HTTP）；清单最大 1 MiB、字段齐全、版本格式正确、大小在 1 GiB 内、地址都是 HTTPS；清单的 `traceAttestation` 是更新密钥对“`trace-update-v1`、版本、更新包签名”的签名——MyGo 的签名只覆盖更新包内容、不含版本号，这一条防止把旧版本的更新包标成新版本号送来；只下载清单里列出的文件，边读边核对大小与签名，不符就在读到结尾前失败。MyGo 自己核对 Ed25519 签名、差分包的起止版本，并只接受比当前新的版本。任何一条不符都拒绝，保留现版本；手动操作时显示“更新包校验失败，已保留当前版本”，日志写原因。
+- **校验**（MyGo 之外 TRACE 补上的）：所有请求与重定向都必须是 HTTPS（只有 trace-test 的假发布源可以是回环地址上的 HTTP）；清单最大 1 MiB、字段齐全、版本格式正确、大小在 1 GiB 内、地址都是 HTTPS；清单的 `traceAttestation` 是更新密钥对“`trace-update-v1`、版本、更新包签名”的签名——MyGo 的签名只覆盖更新包内容、不含版本号，这一条防止把旧版本的更新包标成新版本号送来；只下载清单里列出的文件，边读边核对大小与签名，不符就在读到结尾前失败。MyGo 自己核对 Ed25519 签名、差分包的起止版本，并只接受比当前新的版本。任何一条不符都拒绝，保留现版本；手动操作时显示“更新包校验失败，已保留当前版本”，日志写原因。
 - **下载与替换**：“自动下载更新”开着（默认）时，发现新版本就在后台 `Install`：下载、校验、解包，把程序文件换成新版本（正在运行的程序被改名放在一边，下次启动时删除）；新版本在下次启动时运行。关着时只提示“有新版本”，用户点“下载并安装”才下载。就绪的版本与说明记在 `ui-state.json`（`update.readyVersion`、`readyNotes`）。
 - **重启以更新**：没有缓存与录制时直接按托盘“退出”的路径收尾并 `App.Relaunch`；有时先确认“重启会暂停 N 个缓存任务并结束 M 场录制，重启后可以继续缓存。”。
 - **更新后启动与更新记录写入时机**（DEC-051 ①）：启动时 `DecideStartup` 发现有效版本变化（上次运行版本 `update.lastRunVersion` 与当前版本均非空、均非未注入占位，且两者不同）时，向 `update-history.json` 追加一条更新记录（保留最近 50 条：时间、旧版本、新版本、方式，不含下载地址）——开发版通道（`channel == "dev"`）记“本机打包安装”（`dev_install`）；正式版若本次启动消费了有效的 `ui-state.json` `update.restart` 标记则记“自动更新”（`auto_update`），否则记“手动安装”（`manual_install`）。正式版版本比 `update.lastRunVersion` 新时显示一次“已更新到 0.1.x”，可以展开更新内容；同时把本机卸载项（`HKCU\...\Uninstall\<标识>`，只在它的 `InstallLocation` 就是这个程序所在目录时）的 `DisplayVersion` 改成新版本，“设置 › 应用”显示的版本随之正确。

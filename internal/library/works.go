@@ -48,12 +48,14 @@ func (s *Store) CountCachedWorks(refs []AuthorRef) (map[string]int, error) {
 			SELECT site, author_uid AS owner_uid
 			FROM library_items
 			WHERE ` + qualifyingSiteKindSQL + `
+				AND ` + notArchivedSnapshotSQL + `
 				AND author_uid != ''
 				AND (site = 'douyin' OR NOT ` + viaForwardSQL + `)
 			UNION ALL
 			SELECT site, ` + viaUIDSQL + ` AS owner_uid
 			FROM library_items
 			WHERE ` + qualifyingSiteKindSQL + `
+				AND ` + notArchivedSnapshotSQL + `
 				AND (
 					(site IN ('bilibili', 'douyin') AND ` + collabSQL + ` AND ` + viaUIDSQL + ` != author_uid)
 					OR (site IN ('weibo', 'x') AND (` + viaForwardSQL + ` OR (` + collabSQL + ` AND ` + viaUIDSQL + ` != author_uid)))

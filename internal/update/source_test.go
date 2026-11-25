@@ -231,12 +231,12 @@ func TestUpdateSourceRefusesPlainHTTPFeed(t *testing.T) {
 	s := &Source{ManifestURL: srv.URL + "/update-windows-amd64.json", PublicKey: pub, Current: "0.1.1"}
 	_, err := s.Manifest(context.Background(), false)
 	if !errors.Is(err, ErrRejected) {
-		t.Fatalf("plain HTTP on loopback without the ptest allowance: %v", err)
+		t.Fatalf("plain HTTP on loopback without the trace-test allowance: %v", err)
 	}
 	s.ManifestURL = "http://example.com/update.json"
 	s.AllowLoopbackHTTP = true
 	if _, err := s.Manifest(context.Background(), false); !errors.Is(err, ErrRejected) {
-		t.Fatalf("plain HTTP to another host is refused even for ptest: %v", err)
+		t.Fatalf("plain HTTP to another host is refused even for trace-test: %v", err)
 	}
 }
 

@@ -19,6 +19,7 @@ type m3u8Playlist struct {
 	mapURI           string
 	targetDuration   float64
 	mediaSequence    int64
+	hasMediaSequence bool
 	hasDiscontinuity bool
 	segments         []m3u8Segment
 	endList          bool
@@ -146,6 +147,7 @@ func parseM3U8PlaylistDetails(content string, baseURL string) m3u8Playlist {
 			val := strings.TrimSpace(strings.TrimPrefix(line, "#EXT-X-MEDIA-SEQUENCE:"))
 			if seq, err := strconv.ParseInt(val, 10, 64); err == nil && seq >= 0 {
 				out.mediaSequence = seq
+				out.hasMediaSequence = true
 				curSeq = seq
 			}
 			continue

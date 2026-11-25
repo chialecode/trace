@@ -19,7 +19,7 @@ import (
 )
 
 // localRelease serves the files of a release on the loopback interface,
-// as GitHub would: the ptest identity alone may be pointed at it.
+// as GitHub would: the trace-test identity alone may be pointed at it.
 type localRelease struct {
 	base            string
 	srv             *http.Server
@@ -34,7 +34,7 @@ func startLocalRelease() (*localRelease, error) {
 	if err != nil {
 		return nil, err
 	}
-	l := &localRelease{base: "http://" + ln.Addr().String() + "/trace-ptest", files: map[string][]byte{}}
+	l := &localRelease{base: "http://" + ln.Addr().String() + "/trace-test", files: map[string][]byte{}}
 	l.srv = &http.Server{Handler: http.HandlerFunc(l.handle), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = l.srv.Serve(ln) }()
 	return l, nil
@@ -84,17 +84,17 @@ func (l *localRelease) serveTampered(newDir, newVersion, tamperedVersion string,
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return err
 	}
-	archiveName := "trace-ptest-" + newVersion + "-windows-amd64.tar.gz"
+	archiveName := "trace-test-" + newVersion + "-windows-amd64.tar.gz"
 	archive, err := os.ReadFile(filepath.Join(newDir, archiveName))
 	if err != nil {
 		return err
 	}
 	archive[len(archive)/2] ^= 0xff
-	tamperedName := "trace-ptest-" + tamperedVersion + "-windows-amd64.tar.gz"
+	tamperedName := "trace-test-" + tamperedVersion + "-windows-amd64.tar.gz"
 	sig, _ := m["signature"].(string)
 	m["version"] = tamperedVersion
 	m["notes"] = "- 被篡改的更新包"
-	m["url"] = "https://rehearsal.invalid/trace-ptest/" + tamperedName
+	m["url"] = "https://rehearsal.invalid/trace-test/" + tamperedName
 	m[update.AttestationField] = update.SignAttestation(key, tamperedVersion, sig)
 	manifest, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {

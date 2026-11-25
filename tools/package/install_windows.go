@@ -19,6 +19,8 @@ type winProcesses struct{}
 
 func (winProcesses) Running(exe string) (bool, error) { return build.ProcessRunning(exe) }
 
+func (winProcesses) WindowOpen(exe string) (bool, error) { return build.WindowOpen(exe) }
+
 // RequestQuit starts the executable with --quit-for-update: as a second
 // instance it hands the flag to the running TRACE Dev and exits. The helper
 // call is bounded so a hung single-instance pipe cannot block -install forever.

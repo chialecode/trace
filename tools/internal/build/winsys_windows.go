@@ -54,30 +54,8 @@ func LookupInstall(identifier string) (InstallEntry, bool, error) {
 
 // ProcessRunning reports whether a process runs the executable at exe.
 func ProcessRunning(exe string) (bool, error) {
-	want, err := filepath.Abs(exe)
-	if err != nil {
-		return false, err
-	}
-	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
-	if err != nil {
-		return false, err
-	}
-	defer windows.CloseHandle(snap)
-	var pe windows.ProcessEntry32
-	pe.Size = uint32(unsafe.Sizeof(pe))
-	for err = windows.Process32First(snap, &pe); err == nil; err = windows.Process32Next(snap, &pe) {
-		if !strings.EqualFold(windows.UTF16ToString(pe.ExeFile[:]), filepath.Base(want)) {
-			continue
-		}
-		path, perr := processImage(pe.ProcessID)
-		if perr == nil && strings.EqualFold(filepath.Clean(path), filepath.Clean(want)) {
-			return true, nil
-		}
-	}
-	if errors.Is(err, syscall.ERROR_NO_MORE_FILES) {
-		return false, nil
-	}
-	return false, err
+	pids, err := processIDs(exe)
+	return len(pids) > 0, err
 }
 
 func processImage(pid uint32) (string, error) {
@@ -379,7 +357,7 @@ func AppEnv(extra ...string) []string {
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
 		switch strings.ToUpper(k) {
-		case "TRACE_CHANNEL", "TRACE_DATA_DIR", "TRACE_CACHE_DIR", "TRACE_PORTABLE", "TRACE_QUIET", "TRACE_PTEST_UPDATE_URL", "TRACE_DOCUMENTS_DIR", "MYGO_UPDATER_PRIVATE_KEY":
+		case "TRACE_CHANNEL", "TRACE_DATA_DIR", "TRACE_CACHE_DIR", "TRACE_PORTABLE", "TRACE_QUIET", "TRACE_TEST_UPDATE_URL", "TRACE_DOCUMENTS_DIR", "MYGO_UPDATER_PRIVATE_KEY":
 			continue
 		}
 		env = append(env, kv)

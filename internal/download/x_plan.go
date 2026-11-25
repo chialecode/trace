@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/chialecode/trace/internal/library"
@@ -53,6 +54,19 @@ func (m *Manager) EnqueueXWork(ctx context.Context, req XWorkEnqueueRequest) (Ta
 		}
 	}
 
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = "manual"
+	}
+	if (source == "auto" || source == "queue") && site.AutomaticRequestSource(ctx) == "" {
+		ctx = site.WithAutomaticRequests(ctx, "download")
+	}
+	var reqPlanMode string
+	if req.Plan != nil {
+		reqPlanMode = req.Plan.ConflictResolution
+	}
+	mode := effectiveConflictResolution(ctx, reqPlanMode)
+
 	var plan WorkDownloadPlan
 	switch {
 	case req.Plan != nil:
@@ -75,7 +89,11 @@ func (m *Manager) EnqueueXWork(ctx context.Context, req XWorkEnqueueRequest) (Ta
 		m.mu.Unlock()
 		fetched, err := planner.PlanWorkDownload(ctx, rawTarget, opts)
 		if err != nil {
-			return Task{}, err
+			_, _, candKey, _, kErr := resolveXIdentity("", rawTarget)
+			if kErr != nil {
+				candKey = "x:dynamic:" + rawTarget
+			}
+			return Task{}, m.wrapDegradedIfLocalProtected(candKey, mode, err)
 		}
 		plan = fetched
 	}
@@ -83,6 +101,9 @@ func (m *Manager) EnqueueXWork(ctx context.Context, req XWorkEnqueueRequest) (Ta
 	plan.Site = site.X
 	if strings.TrimSpace(plan.TargetID) == "" {
 		plan.TargetID = rawTarget
+	}
+	if mode != "" {
+		plan.ConflictResolution = mode
 	}
 
 	itemKind, rawID, itemKey, plannerTarget, err := resolveXIdentity(plan.ItemKey, plan.TargetID)
@@ -114,7 +135,7 @@ func (m *Manager) EnqueueXWork(ctx context.Context, req XWorkEnqueueRequest) (Ta
 	if err != nil {
 		return Task{}, err
 	}
-	if existing, exists, gErr := m.lib.GetItem(itemKey); gErr == nil && exists && existing.ItemDir != "" {
+	if existing, exists, gErr := m.fetchExistingAnyKind(itemKey); gErr == nil && exists && existing.ItemDir != "" {
 		itemDir = existing.ItemDir
 		if existing.Via != nil {
 			cp := *existing.Via
@@ -124,10 +145,6 @@ func (m *Manager) EnqueueXWork(ctx context.Context, req XWorkEnqueueRequest) (Ta
 		}
 	}
 
-	source := strings.TrimSpace(req.Source)
-	if source == "" {
-		source = "manual"
-	}
 	coverDisplay := ""
 	if len(plan.CoverURLs) > 0 {
 		coverDisplay = sanitizeXTaskURL(plan.CoverURLs[0])
@@ -135,23 +152,27 @@ func (m *Manager) EnqueueXWork(ctx context.Context, req XWorkEnqueueRequest) (Ta
 	title := firstNonEmptyStr(plan.Title, plan.Desc, "X 帖子 "+rawID)
 
 	t, err := m.enqueueSingleTaskWithPlan(Task{
-		Site:        string(site.X),
-		Kind:        itemKind,
-		Source:      source,
-		TargetID:    plannerTarget,
-		Page:        1,
-		Title:       title,
-		AuthorUID:   normUID,
-		AuthorName:  plan.AuthorName,
-		AuthorFace:  sanitizeXTaskURL(plan.AuthorFace),
-		CoverURL:    coverDisplay,
-		QualityHint: plan.DowngradeHint,
-		ItemKey:     itemKey,
-		ItemDir:     itemDir,
-		Via:         via,
+		Site:               string(site.X),
+		Kind:               itemKind,
+		Source:             source,
+		TargetID:           plannerTarget,
+		Page:               1,
+		Title:              title,
+		AuthorUID:          normUID,
+		AuthorName:         plan.AuthorName,
+		AuthorFace:         sanitizeXTaskURL(plan.AuthorFace),
+		CoverURL:           coverDisplay,
+		QualityHint:        plan.DowngradeHint,
+		ItemKey:            itemKey,
+		ItemDir:            itemDir,
+		Via:                via,
+		ConflictResolution: mode,
 	}, &plan)
 	if err != nil {
 		return Task{}, err
+	}
+	if mode != "" {
+		m.storeTaskResolutionAndPages(t.TaskID, mode, nil)
 	}
 
 	m.notifyWake()
@@ -171,7 +192,7 @@ func (m *Manager) consumeInitialOrFetchXPlan(ctx context.Context, taskID, target
 	}
 	m.mu.Unlock()
 
-	if hasInitial {
+	if hasInitial && (initial.TargetID != "" || initial.AuthorUID != "" || len(initial.VideoURLs) > 0 || len(initial.Pages) > 0) {
 		initial.Site = site.X
 		initial.Transport = normalizeXMediaTransport(initial.Transport)
 		return initial, planner, nil
@@ -192,6 +213,9 @@ func (m *Manager) consumeInitialOrFetchXPlan(ctx context.Context, taskID, target
 	if err != nil {
 		return WorkDownloadPlan{}, planner, err
 	}
+	if hasInitial && initial.ConflictResolution != "" && plan.ConflictResolution == "" {
+		plan.ConflictResolution = initial.ConflictResolution
+	}
 	plan.Site = site.X
 	plan.Transport = normalizeXMediaTransport(plan.Transport)
 	return plan, planner, nil
@@ -207,10 +231,17 @@ func (m *Manager) executeXTask(ctx context.Context, t *Task) error {
 		return err
 	}
 
+	storedMode, _ := m.taskResolutionAndPages(t.TaskID)
+	mode := effectiveConflictResolution(ctx, t.ConflictResolution, storedMode)
+
 	plan, planner, err := m.consumeInitialOrFetchXPlan(ctx, t.TaskID, t.TargetID)
 	if err != nil {
-		return err
+		return m.wrapDegradedIfLocalProtected(firstNonEmptyStr(t.ItemKey, "x:dynamic:"+strings.TrimSpace(t.TargetID)), mode, err)
 	}
+	mode = effectiveConflictResolution(ctx, t.ConflictResolution, storedMode, plan.ConflictResolution)
+	plan.ConflictResolution = mode
+	t.ConflictResolution = mode
+
 	normUID, err := site.NormalizeUID(site.X, firstNonEmptyStr(plan.AuthorUID, t.AuthorUID))
 	if err != nil {
 		return &site.Error{
@@ -255,9 +286,16 @@ func (m *Manager) resolveXItemDir(
 	forward bool,
 	via *library.ItemVia,
 ) (library.ItemMetadata, bool, string, bool, *library.ItemVia, error) {
-	previous, exists, err := m.lib.GetItem(itemKey)
+	previous, exists, err := m.fetchExistingAnyKind(itemKey)
 	if err != nil {
 		return library.ItemMetadata{}, false, "", false, nil, err
+	}
+	if exists && previous.ItemDir != "" {
+		_ = library.RecoverInterruptedItemSwap(previous.ItemDir, previous)
+		previous, exists, err = m.fetchExistingAnyKind(itemKey)
+		if err != nil {
+			return library.ItemMetadata{}, false, "", false, nil, err
+		}
 	}
 	cacheRoot := m.lib.CacheDir()
 	itemDir, err := library.XPostDir(cacheRoot, folderUID, rawID, forward)
@@ -307,7 +345,34 @@ func (m *Manager) executeXSingleVideoTask(
 	cfg := m.dlSettings
 	m.mu.Unlock()
 
+	hasProtectedLocal := exists && localHasProtectedContent(previous)
+	mode := effectiveConflictResolution(ctx, t.ConflictResolution, plan.ConflictResolution)
+	resolvedKey := firstNonEmptyStr(plan.ItemKey, t.ItemKey, library.CanonicalItemKey(string(site.X), "dynamic", rawID))
+	isConflict := false
+	if hasProtectedLocal {
+		// Monotonic Origin protection before degraded check: if local had valid fromOrigin video
+		// and remote origin vanished on a safe re-check (mode == ""), preserve local without error.
+		if mode == "" && previous.Origin != nil && !previous.Origin.Unavailable && plan.OriginUnavailable && mediaIsValid(previous, "video.mp4") {
+			// Safe monotonic preservation below.
+		} else {
+			notice, conflict, degErr := classifyWorkPlanVsLocal(previous, plan, resolvedKey, rawID, t)
+			if degErr != nil {
+				return degErr
+			}
+			isConflict = conflict
+			if isConflict && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
+				m.emitConflict(notice)
+				return ErrConflictDetected
+			}
+		}
+	}
+
+	editAdvanced := (plan.EditCount > 0 && plan.EditCount > previous.EditCount) ||
+		(plan.EditTs > 0 && previous.EditTs > 0 && plan.EditTs > previous.EditTs)
 	fullText, threadParts := buildXTextAndThread(rawID, plan, previous)
+	if hasProtectedLocal && !isConflict {
+		fullText = preserveMonotonicText(previous.Text, fullText, editAdvanced)
+	}
 	title := firstNonEmptyStr(plan.Title, plan.Desc, fullText, t.Title, "X 视频 "+rawID)
 	canonicalURL := firstNonEmptyStr(sanitizeXCanonicalPageURL(plan.CanonicalURL), xFallbackCanonicalURL(rawID))
 	t.Title = title
@@ -327,8 +392,178 @@ func (m *Manager) executeXSingleVideoTask(
 		typeLabel = "转发"
 	}
 
-	originMeta := buildXItemOrigin(plan, previous)
+	originMeta, _ := preserveValidLocalOrigin(buildXItemOrigin(plan, previous), previous, isConflict)
 	cardMeta := buildWeiboItemRichCard(plan.Card, previous.Card)
+
+	if hasProtectedLocal {
+		progressiveURLs, sawHLS := filterProgressiveXVideoURLs(plan.VideoURLs)
+		if len(progressiveURLs) == 0 && (plan.HLSOnly || sawHLS || isXPlanHLSOnly(plan)) {
+			if mediaIsValid(previous, "video.mp4") {
+				return wrapRemoteDegradedMsg("源站当前仅剩 HLS 分段流，已保留本地 MP4")
+			}
+		}
+
+		stageDir := filepath.Join(itemDir, library.SwapStageDirPrefix+newSwapToken())
+		if err := os.MkdirAll(stageDir, 0o700); err != nil {
+			return err
+		}
+		defer func() {
+			_ = library.RemoveTempSubdirSafe(itemDir, stageDir)
+		}()
+		stageSub := cloneStageSubtask(t, stageDir)
+		defer func() {
+			t.Attempts = stageSub.Attempts
+		}()
+		refreshOncePlan := m.makeSinglePlanRefresherForSite(ctx, site.X, t.TargetID, planner)
+
+		var v2Media []library.MediaFile
+		var v2Missing []library.MissingRecord
+		reusedCover := false
+		if !isConflict {
+			for _, mf := range previous.Media {
+				if mf.Role == "cover" && mediaIsValid(previous, mf.Path) {
+					if copied, rErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, "cover", stageDir); rErr == nil {
+						v2Media = append(v2Media, *copied)
+						reusedCover = true
+					}
+					break
+				}
+			}
+		}
+		if !reusedCover && cfg.SaveCover && len(plan.CoverURLs) > 0 {
+			coverCandidates := buildXImageCandidateURLs(plan.CoverURLs)
+			refreshCover := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
+				return buildXImageCandidateURLs(fresh.CoverURLs), nil
+			})
+			if coverMedia, cErr := m.cacheDouyinSniffedImage(ctx, &stageSub, stageDir, previous, false, "cover", "cover", coverCandidates, 0, 0, plan.Transport, refreshCover); cErr == nil && coverMedia != nil {
+				coverMedia.FromOrigin = plan.VideoFromOrigin
+				v2Media = append(v2Media, *coverMedia)
+			} else if cErr != nil && (isSiteStopError(cErr) || isStorageError(cErr) || ctx.Err() != nil) {
+				return cErr
+			}
+		}
+
+		videoRel := "video.mp4"
+		var dvInfo *library.DouyinVideoInfo
+		durSec := plan.DurationSec
+		sameMediaID := previous.DouyinVideo != nil && previous.DouyinVideo.MediaID != "" && plan.MediaID != "" &&
+			library.SanitizeMediaToken(previous.DouyinVideo.MediaID) == library.SanitizeMediaToken(plan.MediaID)
+
+		if !isConflict && (!planUpgradesSingleVideo(previous, plan) || len(progressiveURLs) == 0) && mediaIsValid(previous, videoRel) {
+			copied, cErr := copyLocalMediaToStageAs(previous, videoRel, videoRel, "video", stageDir)
+			if cErr != nil {
+				return cErr
+			}
+			v2Media = append(v2Media, *copied)
+			if previous.DouyinVideo != nil {
+				cp := *previous.DouyinVideo
+				if cp.MediaID == "" {
+					cp.MediaID = library.SanitizeMediaToken(plan.MediaID)
+				}
+				dvInfo = &cp
+			}
+			if previous.Duration > 0 {
+				durSec = previous.Duration
+			}
+		} else if len(progressiveURLs) == 0 && (plan.HLSOnly || sawHLS || isXPlanHLSOnly(plan)) {
+			v2Missing = append(v2Missing, library.MissingRecord{Item: videoRel, Reason: XHLSOnlyMissingReason})
+		} else {
+			refreshVideoURLs := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
+				if plan.Codec != "" && fresh.Codec != "" && !strings.EqualFold(plan.Codec, fresh.Codec) {
+					return nil, &site.Error{Site: site.X, Kind: site.ErrKindUnavailable, Message: "续传地址的视频编码发生变化，已保留断点"}
+				}
+				if plan.QualityName != "" && fresh.QualityName != "" && !strings.EqualFold(plan.QualityName, fresh.QualityName) {
+					return nil, &site.Error{Site: site.X, Kind: site.ErrKindUnavailable, Message: "续传地址的清晰度档位发生变化，已保留断点"}
+				}
+				mp4s, _ := filterProgressiveXVideoURLs(fresh.VideoURLs)
+				return mp4s, nil
+			})
+			vidMedia, vErr := m.cacheXSingleMP4(ctx, &stageSub, stageDir, previous, false, videoRel, progressiveURLs, plan.DurationSec, plan.Width, plan.Height, false, plan.Transport, refreshVideoURLs)
+			if vErr != nil {
+				if (!isConflict || sameMediaID) && mediaIsValid(previous, videoRel) && ctx.Err() == nil && !isStorageError(vErr) {
+					if copied, cErr := copyLocalMediaToStageAs(previous, videoRel, videoRel, "video", stageDir); cErr == nil {
+						v2Media = append(v2Media, *copied)
+						if previous.DouyinVideo != nil {
+							cp := *previous.DouyinVideo
+							dvInfo = &cp
+						}
+						if previous.Duration > 0 {
+							durSec = previous.Duration
+						}
+					} else {
+						return vErr
+					}
+				} else {
+					if isDegradedSiteError(vErr) {
+						return wrapRemoteDegraded(vErr)
+					}
+					return vErr
+				}
+			} else {
+				vidMedia.FromOrigin = plan.VideoFromOrigin
+				v2Media = append(v2Media, *vidMedia)
+				durSec = vidMedia.Duration
+				dvInfo = &library.DouyinVideoInfo{
+					MediaID:        library.SanitizeMediaToken(plan.MediaID),
+					File:           videoRel,
+					Gear:           plan.VideoGear,
+					QualityName:    plan.QualityName,
+					Codec:          plan.Codec,
+					Width:          vidMedia.Width,
+					Height:         vidMedia.Height,
+					FPS:            plan.FPS,
+					Bitrate:        plan.Bitrate,
+					AvailableGears: append([]string(nil), plan.AvailableGears...),
+				}
+			}
+		}
+
+		status := "complete"
+		if len(v2Missing) > 0 {
+			status = "partial"
+			t.Status = "partial"
+			t.ErrorMessage = summarizeMissingReasons(v2Missing)
+		}
+		v2Meta := library.ItemMetadata{
+			Version:     1,
+			ID:          "dynamic:" + rawID,
+			Site:        string(site.X),
+			Kind:        "dynamic",
+			Status:      status,
+			Title:       title,
+			Desc:        plan.Desc,
+			Text:        fullText,
+			DynamicType: dynType,
+			TypeLabel:   typeLabel,
+			URL:         canonicalURL,
+			PubTs:       plan.PubTs,
+			CachedAt:    previous.CachedAt,
+			Duration:    durSec,
+			Author: library.ItemAuthor{
+				Site:     string(site.X),
+				UID:      plan.AuthorUID,
+				UniqueID: strings.TrimSpace(plan.AuthorUniqueID),
+				Name:     t.AuthorName,
+				Face:     t.AuthorFace,
+			},
+			Media:        v2Media,
+			DouyinVideo:  dvInfo,
+			Missing:      v2Missing,
+			DirectCached: true,
+			Via:          via,
+			Origin:       originMeta,
+			Card:         cardMeta,
+			Thread:       threadParts,
+			Links:        buildWeiboItemLinks(plan.Links, previous.Links),
+		}
+		stampCacheStandardAndAssets(&v2Meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
+		saved, err := m.commitStagedItemSwap(itemDir, previous, true, v2Meta, stageDir, mode)
+		if err != nil {
+			return err
+		}
+		t.ItemKey = saved.ItemKey
+		return nil
+	}
 
 	meta := library.ItemMetadata{
 		Version:     1,
@@ -359,6 +594,7 @@ func (m *Manager) executeXSingleVideoTask(
 		Origin:       originMeta,
 		Card:         cardMeta,
 		Thread:       threadParts,
+		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
 	}
 
 	finalSaved := false
@@ -504,6 +740,7 @@ func (m *Manager) executeXSingleVideoTask(
 		meta.Media = mergeMediaFiles(meta.Media, []library.MediaFile{videoMedia})
 		clearMissing(&meta, videoRel)
 		meta.DouyinVideo = &library.DouyinVideoInfo{
+			MediaID:        library.SanitizeMediaToken(plan.MediaID),
 			File:           videoRel,
 			Gear:           plan.VideoGear,
 			QualityName:    plan.QualityName,
@@ -518,6 +755,9 @@ func (m *Manager) executeXSingleVideoTask(
 
 	if meta.DouyinVideo == nil && previous.DouyinVideo != nil {
 		cp := *previous.DouyinVideo
+		if cp.MediaID == "" {
+			cp.MediaID = library.SanitizeMediaToken(plan.MediaID)
+		}
 		meta.DouyinVideo = &cp
 	}
 
@@ -527,6 +767,7 @@ func (m *Manager) executeXSingleVideoTask(
 		t.Status = "partial"
 		t.ErrorMessage = summarizeMissingReasons(meta.Missing)
 	}
+	stampCacheStandardAndAssets(&meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
 	saved, err := m.lib.SaveItem(itemDir, meta)
 	if err != nil {
 		return err
@@ -552,7 +793,35 @@ func (m *Manager) executeXPostTask(
 	cfg := m.dlSettings
 	m.mu.Unlock()
 
+	hasProtectedLocal := exists && localHasProtectedContent(previous)
+	mode := effectiveConflictResolution(ctx, t.ConflictResolution, plan.ConflictResolution)
+	resolvedKey := firstNonEmptyStr(plan.ItemKey, t.ItemKey, library.CanonicalItemKey(string(site.X), "dynamic", rawID))
+	isConflict := false
+	preserveOriginFiles := false
+	if hasProtectedLocal {
+		// Monotonic Origin protection (Invariant #4): if a forwarded/quoted post's Origin later
+		// became Unavailable while local V1 has valid Origin + media, keep local Origin on mode==""!
+		if mode == "" && previous.Origin != nil && !previous.Origin.Unavailable && plan.OriginUnavailable {
+			preserveOriginFiles = true
+		} else {
+			notice, conflict, degErr := classifyWorkPlanVsLocal(previous, plan, resolvedKey, rawID, t)
+			if degErr != nil {
+				return degErr
+			}
+			isConflict = conflict
+			if isConflict && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
+				m.emitConflict(notice)
+				return ErrConflictDetected
+			}
+		}
+	}
+
+	editAdvanced := (plan.EditCount > 0 && plan.EditCount > previous.EditCount) ||
+		(plan.EditTs > 0 && previous.EditTs > 0 && plan.EditTs > previous.EditTs)
 	fullText, threadParts := buildXTextAndThread(rawID, plan, previous)
+	if hasProtectedLocal && !isConflict {
+		fullText = preserveMonotonicText(previous.Text, fullText, editAdvanced)
+	}
 	title := firstNonEmptyStr(plan.Title, plan.Desc, fullText, t.Title, "X 帖子 "+rawID)
 	canonicalURL := firstNonEmptyStr(sanitizeXCanonicalPageURL(plan.CanonicalURL), xFallbackCanonicalURL(rawID))
 	t.Title = title
@@ -564,7 +833,7 @@ func (m *Manager) executeXPostTask(
 
 	dynType := "word"
 	typeLabel := "文字"
-	if len(plan.Pages) > 0 {
+	if len(plan.Pages) > 0 || (preserveOriginFiles && len(previous.NotePages) > 0) {
 		dynType = "draw"
 		typeLabel = "图文"
 	}
@@ -573,8 +842,29 @@ func (m *Manager) executeXPostTask(
 		typeLabel = "转发"
 	}
 
-	originMeta := buildXItemOrigin(plan, previous)
+	originMeta, preservedOrigin := preserveValidLocalOrigin(buildXItemOrigin(plan, previous), previous, isConflict)
+	if preservedOrigin {
+		preserveOriginFiles = true
+	}
 	cardMeta := buildWeiboItemRichCard(plan.Card, previous.Card)
+
+	workDir := itemDir
+	workTask := t
+	var stageSub Task
+	if hasProtectedLocal {
+		workDir = filepath.Join(itemDir, library.SwapStageDirPrefix+newSwapToken())
+		if err := os.MkdirAll(workDir, 0o700); err != nil {
+			return err
+		}
+		defer func() {
+			_ = library.RemoveTempSubdirSafe(itemDir, workDir)
+		}()
+		stageSub = cloneStageSubtask(t, workDir)
+		workTask = &stageSub
+		defer func() {
+			t.Attempts = stageSub.Attempts
+		}()
+	}
 
 	var mediaFiles []library.MediaFile
 	var notePages []library.NotePageRecord
@@ -583,7 +873,7 @@ func (m *Manager) executeXPostTask(
 	finalSaved := false
 
 	defer func() {
-		if result == nil || finalSaved {
+		if result == nil || finalSaved || hasProtectedLocal {
 			return
 		}
 		if !isSiteStopError(result) {
@@ -635,23 +925,59 @@ func (m *Manager) executeXPostTask(
 	refreshOncePlan := m.makeSinglePlanRefresherForSite(ctx, site.X, t.TargetID, planner)
 
 	if cfg.SaveCover && len(plan.CoverURLs) > 0 && len(plan.Pages) == 0 {
-		coverCandidates := buildXImageCandidateURLs(plan.CoverURLs)
-		refreshCover := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
-			return buildXImageCandidateURLs(fresh.CoverURLs), nil
-		})
-		if coverMedia, cErr := m.cacheDouyinSniffedImage(ctx, t, itemDir, previous, exists, "cover", "cover", coverCandidates, 0, 0, plan.Transport, refreshCover); cErr != nil {
-			if isSiteStopError(cErr) || isStorageError(cErr) || ctx.Err() != nil {
-				return cErr
+		reusedCover := false
+		if hasProtectedLocal && !isConflict {
+			for _, mf := range previous.Media {
+				if mf.Role == "cover" && mediaIsValid(previous, mf.Path) {
+					if copied, rErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, "cover", workDir); rErr == nil {
+						mediaFiles = append(mediaFiles, *copied)
+						reusedCover = true
+					}
+					break
+				}
 			}
-			missing = append(missing, library.MissingRecord{
-				Item:   "cover",
-				Reason: "封面保存失败 (" + classifyDownloadError(cErr) + ")",
+		}
+		if !reusedCover {
+			coverCandidates := buildXImageCandidateURLs(plan.CoverURLs)
+			refreshCover := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
+				return buildXImageCandidateURLs(fresh.CoverURLs), nil
 			})
-		} else if coverMedia != nil {
-			if plan.Card == nil && plan.OriginCard != nil {
-				coverMedia.FromOrigin = true
+			if coverMedia, cErr := m.cacheDouyinSniffedImage(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, "cover", "cover", coverCandidates, 0, 0, plan.Transport, refreshCover); cErr != nil {
+				if isSiteStopError(cErr) || isStorageError(cErr) || ctx.Err() != nil {
+					return cErr
+				}
+				missing = append(missing, library.MissingRecord{
+					Item:   "cover",
+					Reason: "封面保存失败 (" + classifyDownloadError(cErr) + ")",
+				})
+			} else if coverMedia != nil {
+				if plan.Card == nil && plan.OriginCard != nil {
+					coverMedia.FromOrigin = true
+				}
+				mediaFiles = append(mediaFiles, *coverMedia)
 			}
-			mediaFiles = append(mediaFiles, *coverMedia)
+		}
+	}
+
+	// Monotonic fromOrigin media preservation when remote Origin became unavailable!
+	var preservedVideo *library.DouyinVideoInfo
+	if hasProtectedLocal && !isConflict && preserveOriginFiles && len(plan.Pages) == 0 {
+		for _, mf := range previous.Media {
+			if mf.FromOrigin && mediaIsValid(previous, mf.Path) {
+				if copied, rErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, mf.Role, workDir); rErr == nil {
+					copied.FromOrigin = true
+					mediaFiles = append(mediaFiles, *copied)
+				}
+			}
+		}
+		for _, np := range previous.NotePages {
+			if np.FromOrigin {
+				notePages = append(notePages, np)
+			}
+		}
+		if previous.DouyinVideo != nil && previous.Origin != nil && previous.Origin.VideoFromOrigin && mediaIsValid(previous, previous.DouyinVideo.File) {
+			cp := *previous.DouyinVideo
+			preservedVideo = &cp
 		}
 	}
 
@@ -661,6 +987,8 @@ func (m *Manager) executeXPostTask(
 			pageIdx = i + 1
 		}
 		prefix := fmt.Sprintf("images/%02d", pageIdx)
+		cleanPageMediaID := library.SanitizeMediaToken(page.MediaID)
+		reusableLP, canReuseLocal := findReusableLocalPage(previous, page, pageIdx, isConflict)
 		pageKind := strings.ToLower(strings.TrimSpace(page.Kind))
 		if pageKind == "animated_gif" {
 			pageKind = "gif"
@@ -675,22 +1003,37 @@ func (m *Manager) executeXPostTask(
 
 		switch pageKind {
 		case "image":
-			imgCandidates := buildXImageCandidateURLs(page.ImageURLs)
-			refreshImg := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
-				if p, ok := findPlannedPage(fresh.Pages, pageIdx, i); ok {
-					return buildXImageCandidateURLs(p.ImageURLs), nil
+			var imgMedia *library.MediaFile
+			var imgErr error
+			if hasProtectedLocal && !isConflict && canReuseLocal && reusableLP.Image != "" {
+				imgMedia, _ = copyLocalMediaToStageAs(previous, reusableLP.Image, prefix, "image", workDir)
+			}
+			if imgMedia == nil {
+				imgCandidates := buildXImageCandidateURLs(page.ImageURLs)
+				refreshImg := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
+					if p, ok := findPlannedPage(fresh.Pages, pageIdx, i); ok {
+						return buildXImageCandidateURLs(p.ImageURLs), nil
+					}
+					return nil, nil
+				})
+				imgMedia, imgErr = m.cacheDouyinSniffedImage(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, "image", prefix, imgCandidates, page.Width, page.Height, plan.Transport, refreshImg)
+				if imgErr != nil && hasProtectedLocal && canReuseLocal && reusableLP.Image != "" && ctx.Err() == nil && !isStorageError(imgErr) {
+					if copied, rErr := copyLocalMediaToStageAs(previous, reusableLP.Image, prefix, "image", workDir); rErr == nil {
+						imgMedia, imgErr = copied, nil
+					}
 				}
-				return nil, nil
-			})
-			imgMedia, imgErr := m.cacheDouyinSniffedImage(ctx, t, itemDir, previous, exists, "image", prefix, imgCandidates, page.Width, page.Height, plan.Transport, refreshImg)
+			}
 			if imgErr != nil {
 				if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
 					return imgErr
 				}
+				if hasProtectedLocal && isConflict && isDegradedSiteError(imgErr) {
+					return wrapRemoteDegraded(imgErr)
+				}
 				reason := fmt.Sprintf("第 %02d 张图片下载失败 (%s)", pageIdx, classifyDownloadError(imgErr))
 				missing = append(missing, library.MissingRecord{Item: fmt.Sprintf("page_%02d", pageIdx), Reason: reason})
 				partialErrors = append(partialErrors, reason)
-				notePages = append(notePages, library.NotePageRecord{Index: pageIdx, Kind: "image", FromOrigin: page.FromOrigin, Width: page.Width, Height: page.Height})
+				notePages = append(notePages, library.NotePageRecord{Index: pageIdx, Kind: "image", MediaID: cleanPageMediaID, FromOrigin: page.FromOrigin, Width: page.Width, Height: page.Height})
 				continue
 			}
 			imgMedia.FromOrigin = page.FromOrigin
@@ -698,6 +1041,7 @@ func (m *Manager) executeXPostTask(
 			notePages = append(notePages, library.NotePageRecord{
 				Index:      pageIdx,
 				Kind:       "image",
+				MediaID:    cleanPageMediaID,
 				FromOrigin: page.FromOrigin,
 				Image:      imgMedia.Path,
 				Width:      page.Width,
@@ -708,14 +1052,26 @@ func (m *Manager) executeXPostTask(
 			// X serves animated GIFs as muted looping progressive MP4s (images/NN.mp4, role "video", gif: true) plus poster image.
 			var coverRel string
 			if len(page.ImageURLs) > 0 {
-				coverCandidates := buildXImageCandidateURLs(page.ImageURLs)
-				refreshPageCover := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
-					if p, ok := findPlannedPage(fresh.Pages, pageIdx, i); ok {
-						return buildXImageCandidateURLs(p.ImageURLs), nil
+				var coverMedia *library.MediaFile
+				var cErr error
+				if hasProtectedLocal && !isConflict && canReuseLocal && reusableLP.Cover != "" {
+					coverMedia, _ = copyLocalMediaToStageAs(previous, reusableLP.Cover, prefix, "cover", workDir)
+				}
+				if coverMedia == nil {
+					coverCandidates := buildXImageCandidateURLs(page.ImageURLs)
+					refreshPageCover := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
+						if p, ok := findPlannedPage(fresh.Pages, pageIdx, i); ok {
+							return buildXImageCandidateURLs(p.ImageURLs), nil
+						}
+						return nil, nil
+					})
+					coverMedia, cErr = m.cacheDouyinSniffedImage(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, "cover", prefix, coverCandidates, page.Width, page.Height, plan.Transport, refreshPageCover)
+					if cErr != nil && hasProtectedLocal && canReuseLocal && reusableLP.Cover != "" && ctx.Err() == nil && !isStorageError(cErr) {
+						if copied, rErr := copyLocalMediaToStageAs(previous, reusableLP.Cover, prefix, "cover", workDir); rErr == nil {
+							coverMedia, cErr = copied, nil
+						}
 					}
-					return nil, nil
-				})
-				coverMedia, cErr := m.cacheDouyinSniffedImage(ctx, t, itemDir, previous, exists, "cover", prefix, coverCandidates, page.Width, page.Height, plan.Transport, refreshPageCover)
+				}
 				if cErr != nil {
 					if isSiteStopError(cErr) || isStorageError(cErr) || ctx.Err() != nil {
 						return cErr
@@ -731,18 +1087,35 @@ func (m *Manager) executeXPostTask(
 			}
 
 			videoRel := fmt.Sprintf("images/%02d.mp4", pageIdx)
-			gifURLs, _ := filterProgressiveXVideoURLs(page.VideoURLs)
-			refreshGIFVideo := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
-				if p, ok := findPlannedPage(fresh.Pages, pageIdx, i); ok {
-					mp4s, _ := filterProgressiveXVideoURLs(p.VideoURLs)
-					return mp4s, nil
+			var vidMedia *library.MediaFile
+			var vErr error
+			if hasProtectedLocal && !isConflict && canReuseLocal && reusableLP.Video != "" {
+				if copied, rErr := copyLocalMediaToStageAs(previous, reusableLP.Video, videoRel, "video", workDir); rErr == nil {
+					copied.GIF = true
+					vidMedia = copied
 				}
-				return nil, nil
-			})
-			vidMedia, vErr := m.cacheXSingleMP4(ctx, t, itemDir, previous, exists, videoRel, gifURLs, page.DurationSec, page.Width, page.Height, true, plan.Transport, refreshGIFVideo)
+			}
+			if vidMedia == nil {
+				gifURLs, _ := filterProgressiveXVideoURLs(page.VideoURLs)
+				refreshGIFVideo := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
+					if p, ok := findPlannedPage(fresh.Pages, pageIdx, i); ok {
+						mp4s, _ := filterProgressiveXVideoURLs(p.VideoURLs)
+						return mp4s, nil
+					}
+					return nil, nil
+				})
+				vidMedia, vErr = m.cacheXSingleMP4(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, videoRel, gifURLs, page.DurationSec, page.Width, page.Height, true, plan.Transport, refreshGIFVideo)
+				if vErr != nil && hasProtectedLocal && canReuseLocal && reusableLP.Video != "" && ctx.Err() == nil && !isStorageError(vErr) {
+					if copied, rErr := copyLocalMediaToStageAs(previous, reusableLP.Video, videoRel, "video", workDir); rErr == nil {
+						copied.GIF = true
+						vidMedia, vErr = copied, nil
+					}
+				}
+			}
 			rec := library.NotePageRecord{
 				Index:      pageIdx,
 				Kind:       "video",
+				MediaID:    cleanPageMediaID,
 				GIF:        true,
 				FromOrigin: page.FromOrigin,
 				Cover:      coverRel,
@@ -753,6 +1126,9 @@ func (m *Manager) executeXPostTask(
 			if vErr != nil {
 				if isSiteStopError(vErr) || isStorageError(vErr) || ctx.Err() != nil {
 					return vErr
+				}
+				if hasProtectedLocal && isConflict && isDegradedSiteError(vErr) {
+					return wrapRemoteDegraded(vErr)
 				}
 				reason := fmt.Sprintf("第 %02d 项动图视频下载失败 (%s)", pageIdx, classifyDownloadError(vErr))
 				missing = append(missing, library.MissingRecord{Item: videoRel, Reason: reason})
@@ -771,6 +1147,7 @@ func (m *Manager) executeXPostTask(
 					rec.Height = vidMedia.Height
 				}
 				rec.VideoInfo = &library.DouyinVideoInfo{
+					MediaID:     cleanPageMediaID,
 					File:        vidMedia.Path,
 					Gear:        page.Gear,
 					QualityName: page.QualityName,
@@ -787,14 +1164,26 @@ func (m *Manager) executeXPostTask(
 		case "video":
 			var coverRel string
 			if len(page.ImageURLs) > 0 {
-				coverCandidates := buildXImageCandidateURLs(page.ImageURLs)
-				refreshPageCover := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
-					if p, ok := findPlannedPage(fresh.Pages, pageIdx, i); ok {
-						return buildXImageCandidateURLs(p.ImageURLs), nil
+				var coverMedia *library.MediaFile
+				var cErr error
+				if hasProtectedLocal && !isConflict && canReuseLocal && reusableLP.Cover != "" {
+					coverMedia, _ = copyLocalMediaToStageAs(previous, reusableLP.Cover, prefix, "cover", workDir)
+				}
+				if coverMedia == nil {
+					coverCandidates := buildXImageCandidateURLs(page.ImageURLs)
+					refreshPageCover := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
+						if p, ok := findPlannedPage(fresh.Pages, pageIdx, i); ok {
+							return buildXImageCandidateURLs(p.ImageURLs), nil
+						}
+						return nil, nil
+					})
+					coverMedia, cErr = m.cacheDouyinSniffedImage(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, "cover", prefix, coverCandidates, page.Width, page.Height, plan.Transport, refreshPageCover)
+					if cErr != nil && hasProtectedLocal && canReuseLocal && reusableLP.Cover != "" && ctx.Err() == nil && !isStorageError(cErr) {
+						if copied, rErr := copyLocalMediaToStageAs(previous, reusableLP.Cover, prefix, "cover", workDir); rErr == nil {
+							coverMedia, cErr = copied, nil
+						}
 					}
-					return nil, nil
-				})
-				coverMedia, cErr := m.cacheDouyinSniffedImage(ctx, t, itemDir, previous, exists, "cover", prefix, coverCandidates, page.Width, page.Height, plan.Transport, refreshPageCover)
+				}
 				if cErr != nil {
 					if isSiteStopError(cErr) || isStorageError(cErr) || ctx.Err() != nil {
 						return cErr
@@ -813,6 +1202,7 @@ func (m *Manager) executeXPostTask(
 			rec := library.NotePageRecord{
 				Index:      pageIdx,
 				Kind:       "video",
+				MediaID:    cleanPageMediaID,
 				FromOrigin: page.FromOrigin,
 				Cover:      coverRel,
 				Width:      page.Width,
@@ -821,23 +1211,44 @@ func (m *Manager) executeXPostTask(
 			}
 			progressiveURLs, sawHLS := filterProgressiveXVideoURLs(page.VideoURLs)
 			if len(progressiveURLs) == 0 && (page.HLSOnly || sawHLS || isXPageHLSOnly(page)) {
+				if hasProtectedLocal && canReuseLocal && reusableLP.Video != "" && mediaIsValid(previous, reusableLP.Video) {
+					return wrapRemoteDegradedMsg("源站媒体降级为 HLS 分段流，已保留本地 MP4")
+				}
 				missing = append(missing, library.MissingRecord{Item: videoRel, Reason: XHLSOnlyMissingReason})
 				partialErrors = append(partialErrors, XHLSOnlyMissingReason)
 				notePages = append(notePages, rec)
 				continue
 			}
 
-			refreshPageVideo := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
-				if p, ok := findPlannedPage(fresh.Pages, pageIdx, i); ok {
-					mp4s, _ := filterProgressiveXVideoURLs(p.VideoURLs)
-					return mp4s, nil
+			var vidMedia *library.MediaFile
+			var vErr error
+			pageUpgradesLocal := reusableLP.VideoInfo == nil ||
+				(page.Width*page.Height > reusableLP.VideoInfo.Width*reusableLP.VideoInfo.Height) ||
+				(page.Bitrate > reusableLP.VideoInfo.Bitrate && reusableLP.VideoInfo.Bitrate > 0)
+			if hasProtectedLocal && !isConflict && canReuseLocal && reusableLP.Video != "" && !pageUpgradesLocal {
+				vidMedia, _ = copyLocalMediaToStageAs(previous, reusableLP.Video, videoRel, "video", workDir)
+			}
+			if vidMedia == nil {
+				refreshPageVideo := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
+					if p, ok := findPlannedPage(fresh.Pages, pageIdx, i); ok {
+						mp4s, _ := filterProgressiveXVideoURLs(p.VideoURLs)
+						return mp4s, nil
+					}
+					return nil, nil
+				})
+				vidMedia, vErr = m.cacheXSingleMP4(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, videoRel, progressiveURLs, page.DurationSec, page.Width, page.Height, false, plan.Transport, refreshPageVideo)
+				if vErr != nil && hasProtectedLocal && canReuseLocal && reusableLP.Video != "" && ctx.Err() == nil && !isStorageError(vErr) {
+					if copied, rErr := copyLocalMediaToStageAs(previous, reusableLP.Video, videoRel, "video", workDir); rErr == nil {
+						vidMedia, vErr = copied, nil
+					}
 				}
-				return nil, nil
-			})
-			vidMedia, vErr := m.cacheXSingleMP4(ctx, t, itemDir, previous, exists, videoRel, progressiveURLs, page.DurationSec, page.Width, page.Height, false, plan.Transport, refreshPageVideo)
+			}
 			if vErr != nil {
 				if isSiteStopError(vErr) || isStorageError(vErr) || ctx.Err() != nil {
 					return vErr
+				}
+				if hasProtectedLocal && isConflict && isDegradedSiteError(vErr) {
+					return wrapRemoteDegraded(vErr)
 				}
 				reason := fmt.Sprintf("第 %02d 项视频下载失败 (%s)", pageIdx, classifyDownloadError(vErr))
 				missing = append(missing, library.MissingRecord{Item: videoRel, Reason: reason})
@@ -855,6 +1266,7 @@ func (m *Manager) executeXPostTask(
 					rec.Height = vidMedia.Height
 				}
 				rec.VideoInfo = &library.DouyinVideoInfo{
+					MediaID:     cleanPageMediaID,
 					File:        vidMedia.Path,
 					Gear:        page.Gear,
 					QualityName: page.QualityName,
@@ -878,7 +1290,7 @@ func (m *Manager) executeXPostTask(
 					}
 					return nil, nil
 				})
-				if imgMedia, imgErr := m.cacheDouyinSniffedImage(ctx, t, itemDir, previous, exists, "image", prefix, imgCandidates, page.Width, page.Height, plan.Transport, refreshUnknownImg); imgErr != nil {
+				if imgMedia, imgErr := m.cacheDouyinSniffedImage(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, "image", prefix, imgCandidates, page.Width, page.Height, plan.Transport, refreshUnknownImg); imgErr != nil {
 					if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
 						return imgErr
 					}
@@ -894,6 +1306,7 @@ func (m *Manager) executeXPostTask(
 			notePages = append(notePages, library.NotePageRecord{
 				Index:       pageIdx,
 				Kind:        "unknown",
+				MediaID:     cleanPageMediaID,
 				FromOrigin:  page.FromOrigin,
 				UnknownKind: unkTag,
 				Image:       savedImg,
@@ -910,7 +1323,7 @@ func (m *Manager) executeXPostTask(
 		t.ErrorMessage = summarizeMissingReasons(missing)
 	}
 
-	mediaFiles, notePages = preserveValidPreviousImages(itemDir, previous, exists, mediaFiles, notePages)
+	mediaFiles, notePages = preserveValidPreviousImagesForStage(itemDir, workDir, previous, exists && !isConflict, mediaFiles, notePages)
 
 	meta := library.ItemMetadata{
 		Version:     1,
@@ -934,6 +1347,7 @@ func (m *Manager) executeXPostTask(
 			Face:     t.AuthorFace,
 		},
 		Media:        mediaFiles,
+		DouyinVideo:  preservedVideo,
 		NotePages:    notePages,
 		Missing:      missing,
 		DirectCached: true,
@@ -941,6 +1355,18 @@ func (m *Manager) executeXPostTask(
 		Origin:       originMeta,
 		Card:         cardMeta,
 		Thread:       threadParts,
+		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
+	}
+	stampCacheStandardAndAssets(&meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
+
+	if hasProtectedLocal {
+		saved, swapErr := m.commitStagedItemSwap(itemDir, previous, true, meta, workDir, mode)
+		if swapErr != nil {
+			return swapErr
+		}
+		t.ItemKey = saved.ItemKey
+		finalSaved = true
+		return nil
 	}
 
 	saved, saveErr := m.lib.SaveItem(itemDir, meta)
@@ -966,7 +1392,8 @@ func (m *Manager) cacheXSingleMP4(
 	transport site.MediaTransportSpec,
 	refreshURLs func() ([]string, error),
 ) (*library.MediaFile, error) {
-	if exists && mediaIsValid(previous, relPath) {
+	inSwapStage := isSwapStageDir(itemDir)
+	if exists && !inSwapStage && mediaIsValid(previous, relPath) {
 		for _, mf := range previous.Media {
 			if mf.Path == relPath {
 				if isGIF {
@@ -978,15 +1405,23 @@ func (m *Manager) cacheXSingleMP4(
 			}
 		}
 	}
-	fullPath, err := library.ResolveItemPath(itemDir, relPath)
+	targetRel := relPath
+	if inSwapStage {
+		targetRel = stagedRelPath(relPath)
+	}
+	fullPath, err := library.ResolveItemPath(itemDir, targetRel)
 	if err != nil {
 		return nil, err
 	}
-	if err := m.claimTaskFile(t, itemDir, relPath, fullPath); err != nil {
+	if !inSwapStage {
+		if err := m.claimTaskFile(t, itemDir, relPath, fullPath); err != nil {
+			return nil, err
+		}
+	} else if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
 		return nil, err
 	}
 	m.setFileProgress(t, "video", relPath, "downloading", 0, 0, 0)
-	rawRel := relPath + stageSuffix
+	rawRel := targetRel + stageSuffix
 	stagingPath := fullPath + stageSuffix
 	if _, _, err := m.downloadWithTransportRefresh(ctx, transport, urls, stagingPath, "video", t, refreshURLs); err != nil {
 		if ctx.Err() == nil && !fileOrPartExists(stagingPath) {
@@ -1063,6 +1498,7 @@ func hasXOriginSignal(plan WorkDownloadPlan) bool {
 		strings.TrimSpace(plan.OriginAuthorUID) != "" ||
 		strings.TrimSpace(plan.OriginAuthorName) != "" ||
 		strings.TrimSpace(plan.OriginText) != "" ||
+		len(plan.OriginLinks) > 0 ||
 		plan.OriginUnavailable ||
 		plan.OriginCard != nil ||
 		plan.VideoFromOrigin ||
@@ -1112,19 +1548,22 @@ func buildXTextAndThread(rawID string, plan WorkDownloadPlan, previous library.I
 		for _, seg := range plan.Thread {
 			id := strings.TrimSpace(seg.ID)
 			txt := strings.TrimSpace(seg.Text)
-			if id == "" && txt == "" && len(seg.MediaIndexes) == 0 {
+			links := buildWeiboItemLinks(seg.Links, nil)
+			if id == "" && txt == "" && len(links) == 0 && len(seg.MediaIndexes) == 0 {
 				continue
 			}
 			thread = append(thread, library.ItemThreadPart{
 				ID:           id,
 				PubTs:        seg.PubTs,
 				Text:         txt,
+				Links:        links,
 				MediaIndexes: append([]int(nil), seg.MediaIndexes...),
 			})
 		}
 	} else if len(previous.Thread) > 0 {
 		thread = make([]library.ItemThreadPart, len(previous.Thread))
 		for i, seg := range previous.Thread {
+			seg.Links = append([]library.ItemLink(nil), seg.Links...)
 			seg.MediaIndexes = append([]int(nil), seg.MediaIndexes...)
 			thread[i] = seg
 		}
@@ -1151,6 +1590,7 @@ func buildXItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) *lib
 	if !hasXOriginSignal(plan) {
 		if previous.Origin != nil {
 			cp := *previous.Origin
+			cp.Links = append([]library.ItemLink(nil), cp.Links...)
 			if cp.Card != nil {
 				cc := *cp.Card
 				cp.Card = &cc
@@ -1168,6 +1608,10 @@ func buildXItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) *lib
 	if originCanonical == "" && originID != "" {
 		originCanonical = xFallbackCanonicalURL(originID)
 	}
+	var prevOriginLinks []library.ItemLink
+	if previous.Origin != nil {
+		prevOriginLinks = previous.Origin.Links
+	}
 	return &library.ItemOrigin{
 		Site:         string(site.X),
 		ID:           originID,
@@ -1182,6 +1626,7 @@ func buildXItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) *lib
 		PubTs:             plan.OriginPubTs,
 		Title:             strings.TrimSpace(plan.OriginVideoTitle),
 		Text:              strings.TrimSpace(plan.OriginText),
+		Links:             buildWeiboItemLinks(plan.OriginLinks, prevOriginLinks),
 		Card:              buildWeiboItemRichCard(plan.OriginCard, nil),
 		Unavailable:       plan.OriginUnavailable,
 		UnavailableReason: strings.TrimSpace(plan.OriginUnavailableReason),
