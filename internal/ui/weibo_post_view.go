@@ -615,6 +615,7 @@ func (a *App) weiboPostToPostCard(p service.WeiboPostView, fallbackUser *service
 				PubTs:      rt.CreatedAt,
 				TypeLabel:  weiboPostTypeLabel(*rt),
 				Text:       firstNonEmptyStrUI(rt.Text, rt.TextRaw),
+				Links:      weiboPostLinksUI(rt, cachedItem, true),
 				NotePages:  origNotePages,
 				Video:      origVideo,
 				WeiboCard:  rt.Card,
@@ -653,6 +654,7 @@ func (a *App) weiboPostToPostCard(p service.WeiboPostView, fallbackUser *service
 		PubTs:             p.CreatedAt,
 		TypeLabel:         weiboPostTypeLabel(p),
 		Text:              text,
+		Links:             weiboPostLinksUI(&p, cachedItem, false),
 		URL:               p.CanonicalURL,
 		Pinned:            p.IsTop,
 		VisibleLabel:      p.VisibleLabel,
@@ -855,7 +857,12 @@ func (a *App) renderWeiboOnlinePostDetail(c *ui.Context, post *service.WeiboPost
 			// 3. Full Body Text (Longtext rendered completely)
 			body := firstNonEmptyStrUI(post.Text, post.TextRaw)
 			if strings.TrimSpace(body) != "" {
-				ui.Text(c, body).Label("微博正文").FontSize(15).LineHeight(LineHeightBody).TextColor(ColorTextMain)
+				a.renderRichText(c, body, weiboPostLinksUI(post, cachedItem, false), richTextOptions{
+					Label:      "微博正文",
+					FontSize:   15,
+					LineHeight: LineHeightBody,
+					TextColor:  ColorTextMain,
+				})
 			}
 
 			// 4. Multi-image (>9 images shown in full) / GIF / LivePhoto / Mixed media in original order
@@ -1041,8 +1048,11 @@ func (a *App) renderWeiboRetweetCard(c *ui.Context, rt *service.WeiboPostView, o
 				}
 			})
 			if txt := firstNonEmptyStrUI(rt.Text, rt.TextRaw); strings.TrimSpace(txt) != "" {
-				ui.Box(c).Label("转发原微博正文").FillWidth().Children(func() {
-					ui.Text(c, txt).FontSize(14).LineHeight(LineHeightBody).TextColor(ColorTextMain)
+				a.renderRichText(c, txt, weiboPostLinksUI(rt, bindCached, true), richTextOptions{
+					Label:      "转发原微博正文",
+					FontSize:   14,
+					LineHeight: LineHeightBody,
+					TextColor:  ColorTextMain,
 				})
 			}
 			if len(rt.Images) > 0 || (offline && bindCached != nil) {
@@ -1202,8 +1212,11 @@ func (a *App) renderWeiboOfflineDetail(c *ui.Context, item library.ItemMetadata)
 				})
 			}
 			if body := firstNonEmptyStrUI(item.Text, item.Desc, item.Title); strings.TrimSpace(body) != "" {
-				ui.Box(c).Label("微博正文").FillWidth().Children(func() {
-					ui.Text(c, body).FontSize(15).LineHeight(LineHeightBody).TextColor(ColorTextMain)
+				a.renderRichText(c, body, service.MapItemLinksToDTO(item.Links), richTextOptions{
+					Label:      "微博正文",
+					FontSize:   15,
+					LineHeight: LineHeightBody,
+					TextColor:  ColorTextMain,
 				})
 			}
 			if len(outerPages) > 0 {
@@ -1226,6 +1239,7 @@ func (a *App) renderWeiboOfflineDetail(c *ui.Context, item library.ItemMetadata)
 					Author:            service.WeiboAuthorDTO{UID: orig.Author.UID, ScreenName: orig.Author.Name},
 					CreatedAt:         orig.PubTs,
 					Text:              orig.Text,
+					Links:             service.MapItemLinksToDTO(orig.Links),
 					Card:              libraryRichCardToWeiboDTO(orig.Card),
 					Unavailable:       orig.Unavailable,
 					UnavailableReason: orig.UnavailableReason,
@@ -1242,4 +1256,20 @@ func (a *App) renderWeiboOfflineDetail(c *ui.Context, item library.ItemMetadata)
 			}
 		})
 	})
+}
+
+func weiboPostLinksUI(p *service.WeiboPostView, cached *library.ItemMetadata, fromOrigin bool) []service.TextLinkDTO {
+	if p != nil && len(p.Links) > 0 {
+		return p.Links
+	}
+	if cached != nil {
+		if fromOrigin {
+			if cached.Origin != nil && len(cached.Origin.Links) > 0 {
+				return service.MapItemLinksToDTO(cached.Origin.Links)
+			}
+		} else if len(cached.Links) > 0 {
+			return service.MapItemLinksToDTO(cached.Links)
+		}
+	}
+	return nil
 }

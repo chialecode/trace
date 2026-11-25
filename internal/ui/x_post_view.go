@@ -521,6 +521,7 @@ func (a *App) xPostToPostCard(p service.XPostDTO, pageUser *service.XUserDTO) Po
 				AuthorFace:    origDTO.Author.AvatarURL,
 				PubTs:         origDTO.CreatedAt,
 				Text:          origDTO.Text,
+				Links:         xPostLinksUI(origDTO, cachedItem, true),
 				URL:           origDTO.CanonicalURL,
 				XStatusID:     origDTO.ID,
 				NotePages:     origPages,
@@ -569,6 +570,7 @@ func (a *App) xPostToPostCard(p service.XPostDTO, pageUser *service.XUserDTO) Po
 		PubTs:             p.CreatedAt,
 		TypeLabel:         typeLabel,
 		Text:              p.Text,
+		Links:             xPostLinksUI(&p, cachedItem, false),
 		URL:               firstNonEmptyStrUI(p.CanonicalURL, "https://x.com/i/web/status/"+p.ID),
 		Pinned:            p.Pinned,
 		IsEdited:          p.IsEdited,
@@ -664,7 +666,12 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 								}
 							})
 							if strings.TrimSpace(aItem.Text) != "" {
-								ui.Text(c, aItem.Text).FontSize(13).LineHeight(LineHeightBody).TextColor(ColorTextMain).MaxLines(4)
+								a.renderRichText(c, aItem.Text, xPostLinksUI(&aItem, nil, false), richTextOptions{
+									MaxLines:   4,
+									FontSize:   13,
+									LineHeight: LineHeightBody,
+									TextColor:  ColorTextMain,
+								})
 							}
 						})
 					}
@@ -780,8 +787,11 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 
 			// 3. Full Body Text (note_tweet rendered completely)
 			if strings.TrimSpace(post.Text) != "" {
-				ui.Box(c).Label("X帖子正文").FillWidth().Children(func() {
-					ui.Text(c, post.Text).FontSize(15).LineHeight(LineHeightBody).TextColor(ColorTextMain)
+				a.renderRichText(c, post.Text, xPostLinksUI(post, cachedItem, false), richTextOptions{
+					Label:      "X帖子正文",
+					FontSize:   15,
+					LineHeight: LineHeightBody,
+					TextColor:  ColorTextMain,
 				})
 			}
 
@@ -866,7 +876,11 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 										}
 									})
 									if strings.TrimSpace(tp.Text) != "" {
-										ui.Text(c, tp.Text).FontSize(14).LineHeight(LineHeightBody).TextColor(ColorTextMain)
+										a.renderRichText(c, tp.Text, xPostLinksUI(&tp, nil, false), richTextOptions{
+											FontSize:   14,
+											LineHeight: LineHeightBody,
+											TextColor:  ColorTextMain,
+										})
 									}
 									if len(tp.Media) > 0 {
 										pages := xMediaToNotePagesScoped(tp.Media, nil, false, false)
@@ -1055,7 +1069,11 @@ func (a *App) renderXOriginCard(c *ui.Context, orig *service.XPostDTO, isQuote b
 			})
 
 			if strings.TrimSpace(orig.Text) != "" {
-				ui.Text(c, orig.Text).FontSize(14).LineHeight(LineHeightBody).TextColor(ColorTextMain)
+				a.renderRichText(c, orig.Text, xPostLinksUI(orig, outerCachedItem, true), richTextOptions{
+					FontSize:   14,
+					LineHeight: LineHeightBody,
+					TextColor:  ColorTextMain,
+				})
 			}
 			if len(orig.Media) == 1 && (orig.Media[0].Kind == "video" || orig.Media[0].Kind == "gif" || orig.Media[0].GIF) && !orig.Media[0].HLSOnly {
 				a.renderXDetailVideoCard(c, orig.Media[0], outerItemKey, outerCachedItem, true, offline)
@@ -1128,8 +1146,11 @@ func (a *App) renderXOfflineDetail(c *ui.Context, item library.ItemMetadata) {
 
 			// 2. Full Body Text
 			if body := strings.TrimSpace(firstNonEmptyStrUI(item.Text, item.Desc, item.Title)); body != "" {
-				ui.Box(c).Label("X离线正文").FillWidth().Children(func() {
-					ui.Text(c, body).FontSize(15).LineHeight(LineHeightBody).TextColor(ColorTextMain)
+				a.renderRichText(c, body, service.MapItemLinksToDTO(item.Links), richTextOptions{
+					Label:      "X离线正文",
+					FontSize:   15,
+					LineHeight: LineHeightBody,
+					TextColor:  ColorTextMain,
 				})
 			}
 
@@ -1216,7 +1237,11 @@ func (a *App) renderXOfflineDetail(c *ui.Context, item library.ItemMetadata) {
 								}
 							})
 							if strings.TrimSpace(orig.Text) != "" {
-								ui.Text(c, orig.Text).FontSize(14).LineHeight(LineHeightBody).TextColor(ColorTextMain)
+								a.renderRichText(c, orig.Text, service.MapItemLinksToDTO(orig.Links), richTextOptions{
+									FontSize:   14,
+									LineHeight: LineHeightBody,
+									TextColor:  ColorTextMain,
+								})
 							}
 							if len(origPages) > 0 {
 								a.renderNotePagesGrid(c, item.ItemKey, "x", origPages, true)
@@ -1269,7 +1294,11 @@ func (a *App) renderXOfflineDetail(c *ui.Context, item library.ItemMetadata) {
 									}
 									ui.Text(c, meta).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 									if strings.TrimSpace(tp.Text) != "" {
-										ui.Text(c, tp.Text).FontSize(14).LineHeight(LineHeightBody).TextColor(ColorTextMain)
+										a.renderRichText(c, tp.Text, service.MapItemLinksToDTO(tp.Links), richTextOptions{
+											FontSize:   14,
+											LineHeight: LineHeightBody,
+											TextColor:  ColorTextMain,
+										})
 									}
 									if len(tp.MediaIndexes) > 0 {
 										var partImgs []PostImage
@@ -1338,4 +1367,40 @@ func (a *App) renderXOfflineVideoCard(c *ui.Context, item library.ItemMetadata, 
 			a.player.SetMuted(true)
 		}
 	}
+}
+
+func xPostLinksUI(p *service.XPostDTO, cached *library.ItemMetadata, fromOrigin bool) []service.TextLinkDTO {
+	if p != nil {
+		if len(p.Links) > 0 {
+			return p.Links
+		}
+		if len(p.URLs) > 0 {
+			var out []service.TextLinkDTO
+			for _, u := range p.URLs {
+				exp := firstNonEmptyStrUI(u.ExpandedURL, u.ShortURL)
+				cleanU, ok := ValidateSafeJumpURL(exp)
+				if !ok {
+					continue
+				}
+				lbl := strings.TrimSpace(u.DisplayURL)
+				if lbl == "" || strings.HasPrefix(strings.ToLower(lbl), "http://") || strings.HasPrefix(strings.ToLower(lbl), "https://") {
+					lbl = FormatConciseLinkLabel(cleanU)
+				}
+				out = append(out, service.TextLinkDTO{Label: lbl, URL: cleanU})
+			}
+			if len(out) > 0 {
+				return out
+			}
+		}
+	}
+	if cached != nil {
+		if fromOrigin {
+			if cached.Origin != nil && len(cached.Origin.Links) > 0 {
+				return service.MapItemLinksToDTO(cached.Origin.Links)
+			}
+		} else if len(cached.Links) > 0 {
+			return service.MapItemLinksToDTO(cached.Links)
+		}
+	}
+	return nil
 }

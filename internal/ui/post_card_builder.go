@@ -375,6 +375,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 				TypeLabel:    origType,
 				Title:        orig.Title,
 				Text:         orig.Text,
+				Links:        service.MapItemLinksToDTO(orig.Links),
 				URL:          orig.CanonicalURL,
 				WeiboMid:     orig.ID,
 				XStatusID:    orig.ID,
@@ -385,6 +386,14 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 				XCard:        origXCard,
 				Offline:      true,
 			}
+		}
+	}
+
+	var outerLinks []service.TextLinkDTO
+	if libPtr != nil {
+		outerLinks = service.MapItemLinksToDTO(libPtr.Links)
+		if text == "" && entry.Kind == "dynamic" {
+			text = libPtr.Text
 		}
 	}
 
@@ -403,6 +412,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		TypeLabel:         typeLabel,
 		Title:             title,
 		Text:              text,
+		Links:             outerLinks,
 		URL:               entry.CanonicalURL,
 		Cached:            entry.Cached,
 		DotStatus:         dot,
@@ -490,9 +500,11 @@ func (a *App) buildDynamicPostCard(d bilibili.DynamicItem, openLabel, cacheLabel
 	dotStatus := ""
 	itemKey := library.CanonicalItemKey("bilibili", "dynamic", d.ID)
 	var hasItem bool
+	var dynLinks []service.TextLinkDTO
 	if it, ok, err := a.backend.GetLibraryItemMetaOnly(itemKey); err == nil && ok {
 		hasItem = true
 		dotStatus = library.ComputeDotState(it).Dot
+		dynLinks = service.MapItemLinksToDTO(it.Links)
 	}
 	if st, ok := a.backend.States([]string{itemKey})[itemKey]; ok && st.Dot != "" && st.Dot != "none" {
 		dotStatus = st.Dot
@@ -512,6 +524,7 @@ func (a *App) buildDynamicPostCard(d bilibili.DynamicItem, openLabel, cacheLabel
 		TypeLabel:     typeLabel,
 		Title:         d.Title,
 		Text:          d.Text,
+		Links:         dynLinks,
 		URL:           d.CanonicalURL,
 		Pinned:        d.Pinned,
 		Degraded:      d.Degraded,

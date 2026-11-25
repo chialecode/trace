@@ -247,6 +247,12 @@ type WeiboRichCardDTO struct {
 }
 
 // WeiboPostView holds the normalized UI-facing view of a single Weibo post.
+// TextLinkDTO holds a human-readable hyperlink label paired with a safe HTTP(S) target URL (DEC-073).
+type TextLinkDTO struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
 type WeiboPostView struct {
 	Mid               string                `json:"mid"`
 	MblogID           string                `json:"mblogid,omitempty"`
@@ -254,6 +260,7 @@ type WeiboPostView struct {
 	CreatedAt         int64                 `json:"createdAt"`
 	Text              string                `json:"text"`
 	TextRaw           string                `json:"textRaw,omitempty"`
+	Links             []TextLinkDTO         `json:"links,omitempty"`
 	IsLongText        bool                  `json:"isLongText,omitempty"`
 	LongTextFetched   bool                  `json:"longTextFetched,omitempty"`
 	Source            string                `json:"source,omitempty"`
@@ -446,6 +453,7 @@ type XPostDTO struct {
 	Poll                    *XPollSummaryDTO      `json:"poll,omitempty"`
 	Card                    *XRichCardDTO         `json:"card,omitempty"`
 	Stats                   XStatsDTO             `json:"stats"`
+	Links                   []TextLinkDTO         `json:"links,omitempty"`
 	URLs                    []XURLEntityDTO       `json:"urls,omitempty"`
 	CanonicalURL            string                `json:"canonicalUrl"`
 	Unavailable             bool                  `json:"unavailable,omitempty"`
@@ -885,6 +893,46 @@ func mapWeiboMediaItems(assets []weibo.ImageAsset) []WeiboMediaItemDTO {
 	return out
 }
 
+// MapSiteTextLinks converts cross-site TextLink items to UI-facing TextLinkDTO items.
+func MapSiteTextLinks(links []site.TextLink) []TextLinkDTO {
+	if len(links) == 0 {
+		return nil
+	}
+	out := make([]TextLinkDTO, 0, len(links))
+	for _, l := range links {
+		lbl := strings.TrimSpace(l.Label)
+		u := strings.TrimSpace(l.URL)
+		if lbl == "" || u == "" {
+			continue
+		}
+		out = append(out, TextLinkDTO{Label: lbl, URL: u})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// MapItemLinksToDTO converts cached item.json ItemLink records to UI-facing TextLinkDTO items.
+func MapItemLinksToDTO(links []library.ItemLink) []TextLinkDTO {
+	if len(links) == 0 {
+		return nil
+	}
+	out := make([]TextLinkDTO, 0, len(links))
+	for _, l := range links {
+		lbl := strings.TrimSpace(l.Label)
+		u := strings.TrimSpace(l.URL)
+		if lbl == "" || u == "" {
+			continue
+		}
+		out = append(out, TextLinkDTO{Label: lbl, URL: u})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func mapWeiboPostView(p *weibo.Post, cached *library.ItemMetadata, cacheState library.DotState) *WeiboPostView {
 	if p == nil {
 		return nil
@@ -896,6 +944,10 @@ func mapWeiboPostView(p *weibo.Post, cached *library.ItemMetadata, cacheState li
 	if cacheState.Key == "" && cacheKey != "" {
 		cacheState.Key = cacheKey
 	}
+	links := MapSiteTextLinks(p.Links)
+	if len(links) == 0 && cached != nil {
+		links = MapItemLinksToDTO(cached.Links)
+	}
 	out := &WeiboPostView{
 		Mid:               p.Mid,
 		MblogID:           p.MblogID,
@@ -903,6 +955,7 @@ func mapWeiboPostView(p *weibo.Post, cached *library.ItemMetadata, cacheState li
 		CreatedAt:         p.CreatedAt,
 		Text:              p.Text,
 		TextRaw:           p.TextRaw,
+		Links:             links,
 		IsLongText:        p.IsLongText,
 		LongTextFetched:   p.LongTextFetched,
 		Source:            p.Source,
@@ -1089,6 +1142,10 @@ func mapXPostDTO(p *x.Post, cached *library.ItemMetadata, cacheState library.Dot
 			})
 		}
 	}
+	links := MapSiteTextLinks(x.BuildPostLinks(p))
+	if len(links) == 0 && cached != nil {
+		links = MapItemLinksToDTO(cached.Links)
+	}
 	out := &XPostDTO{
 		ID:                      p.ID,
 		Author:                  mapXAuthorDTO(p.Author),
@@ -1111,6 +1168,8 @@ func mapXPostDTO(p *x.Post, cached *library.ItemMetadata, cacheState library.Dot
 		IsQuote:                 p.IsQuote,
 		OriginUnavailable:       p.OriginUnavailable,
 		OriginUnavailableReason: p.OriginUnavailableReason,
+		ForwarderHintUID:        "",
+		ForwarderHintName:       "",
 		RuleType:                p.RuleType,
 		Media:                   mapXMediaItems(p.Media),
 		HasHLSOnlyVideo:         p.HasHLSOnlyVideo,
@@ -1124,6 +1183,7 @@ func mapXPostDTO(p *x.Post, cached *library.ItemMetadata, cacheState library.Dot
 			BookmarkCount: p.Stats.BookmarkCount,
 			ViewCount:     p.Stats.ViewCount,
 		},
+		Links:             links,
 		URLs:              urls,
 		CanonicalURL:      p.CanonicalURL,
 		Unavailable:       p.Unavailable,

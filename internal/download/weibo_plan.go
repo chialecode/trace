@@ -380,6 +380,7 @@ func (m *Manager) executeWeiboSingleVideoTask(
 		Via:          via,
 		Origin:       originMeta,
 		Card:         cardMeta,
+		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
 	}
 
 	finalSaved := false
@@ -953,6 +954,7 @@ func (m *Manager) executeWeiboPostTask(
 		Via:          via,
 		Origin:       originMeta,
 		Card:         cardMeta,
+		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
 	}
 
 	saved, saveErr := m.lib.SaveItem(itemDir, meta)
@@ -1429,6 +1431,7 @@ func buildWeiboItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) 
 	hasOriginContent := strings.TrimSpace(plan.OriginAuthorUID) != "" ||
 		strings.TrimSpace(plan.OriginAuthorName) != "" ||
 		strings.TrimSpace(plan.OriginText) != "" ||
+		len(plan.OriginLinks) > 0 ||
 		plan.OriginUnavailable ||
 		plan.OriginCard != nil ||
 		plan.VideoFromOrigin ||
@@ -1438,6 +1441,7 @@ func buildWeiboItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) 
 	if !hasOriginContent {
 		if previous.Origin != nil {
 			cp := *previous.Origin
+			cp.Links = append([]library.ItemLink(nil), cp.Links...)
 			if cp.Card != nil {
 				cc := *cp.Card
 				cp.Card = &cc
@@ -1449,6 +1453,10 @@ func buildWeiboItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) 
 	originUID := strings.TrimSpace(plan.OriginAuthorUID)
 	if norm, err := site.NormalizeUID(site.Weibo, originUID); err == nil {
 		originUID = norm
+	}
+	var prevOriginLinks []library.ItemLink
+	if previous.Origin != nil {
+		prevOriginLinks = previous.Origin.Links
 	}
 	return &library.ItemOrigin{
 		Site:         string(site.Weibo),
@@ -1464,11 +1472,37 @@ func buildWeiboItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) 
 		PubTs:             plan.OriginPubTs,
 		Title:             strings.TrimSpace(plan.OriginVideoTitle),
 		Text:              strings.TrimSpace(plan.OriginText),
+		Links:             buildWeiboItemLinks(plan.OriginLinks, prevOriginLinks),
 		Card:              buildWeiboItemRichCard(plan.OriginCard, nil),
 		Unavailable:       plan.OriginUnavailable,
 		UnavailableReason: strings.TrimSpace(plan.OriginUnavailableReason),
 		VideoFromOrigin:   plan.VideoFromOrigin,
 	}
+}
+
+func buildWeiboItemLinks(links []site.TextLink, prev []library.ItemLink) []library.ItemLink {
+	if len(links) == 0 {
+		if len(prev) == 0 {
+			return nil
+		}
+		return append([]library.ItemLink(nil), prev...)
+	}
+	out := make([]library.ItemLink, 0, len(links))
+	for _, l := range links {
+		lbl := strings.TrimSpace(l.Label)
+		u := strings.TrimSpace(l.URL)
+		if lbl == "" || u == "" {
+			continue
+		}
+		out = append(out, library.ItemLink{
+			Label: lbl,
+			URL:   u,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func buildWeiboItemRichCard(card *site.RichCardSummary, prev *library.ItemRichCard) *library.ItemRichCard {
