@@ -42,6 +42,7 @@ type screenshotBackend struct {
 	schedulers      map[string]service.SiteSchedulerStatus
 	liveAccts       []service.LiveAccountState
 	queue           []service.CacheQueueTask
+	conflicts       []service.CacheConflictDTO
 	updateHist      *update.History
 	installedDevVer string
 	// 我的 fixtures (mine_fixture.go): lists come from memory, never the network.
@@ -84,6 +85,26 @@ func (b *screenshotBackend) ListCacheQueue() []service.CacheQueueTask {
 		return append([]service.CacheQueueTask(nil), b.queue...)
 	}
 	return b.BackendAPI.ListCacheQueue()
+}
+
+func (b *screenshotBackend) ListCacheConflicts() ([]service.CacheConflictDTO, error) {
+	if len(b.conflicts) > 0 {
+		return append([]service.CacheConflictDTO(nil), b.conflicts...), nil
+	}
+	return b.BackendAPI.ListCacheConflicts()
+}
+
+func (b *screenshotBackend) PendingCacheConflictCount() int {
+	if len(b.conflicts) > 0 {
+		n := 0
+		for _, c := range b.conflicts {
+			if c.State != service.ConflictStateResolving {
+				n++
+			}
+		}
+		return n
+	}
+	return b.BackendAPI.PendingCacheConflictCount()
 }
 
 func (b *screenshotBackend) Statuses() map[string]credential.Status {
@@ -1309,6 +1330,59 @@ func (e *fixtureEnv) seedRecentAndLive(app *ui.App) {
 		},
 	}
 	app.CacheQueue = e.backend.ListCacheQueue()
+	e.backend.conflicts = []service.CacheConflictDTO{
+		{
+			ID:            "conflict_shot_bili",
+			ItemKey:       e.savedItem.ItemKey,
+			Site:          "bilibili",
+			Kind:          "video",
+			TargetID:      e.savedItem.RawID,
+			AuthorUID:     "20001",
+			AuthorName:    "技术频道_Alpha",
+			Title:         e.savedItem.Title,
+			DetectedAt:    time.Now().Add(-25 * time.Minute).UTC().Format(time.RFC3339),
+			ReasonKind:    service.ConflictReasonParts,
+			ReasonLabel:   service.ConflictReasonLabel(service.ConflictReasonParts),
+			LocalSummary:  "共 1 P（P1 cid=101 · 4K HDR · Hi-Res 无损）",
+			RemoteSummary: "共 2 P（P1 cid=209 重制版，新增 P2 勘误补充）",
+			State:         service.ConflictStatePending,
+		},
+		{
+			ID:            "conflict_shot_wb",
+			ItemKey:       e.savedWeiboPost.ItemKey,
+			Site:          "weibo",
+			Kind:          "dynamic",
+			TargetID:      e.savedWeiboPost.RawID,
+			AuthorUID:     e.weiboUID,
+			AuthorName:    "技术频道_微博",
+			Title:         e.savedWeiboPost.Title,
+			DetectedAt:    time.Now().Add(-50 * time.Minute).UTC().Format(time.RFC3339),
+			ReasonKind:    service.ConflictReasonMedia,
+			ReasonLabel:   service.ConflictReasonLabel(service.ConflictReasonMedia),
+			LocalSummary:  "1 张原图（480×200，已校验完整）",
+			RemoteSummary: "博主重新编辑微博，替换为 3 张修订配图",
+			State:         service.ConflictStatePending,
+		},
+		{
+			ID:            "conflict_shot_x",
+			ItemKey:       e.savedXPost.ItemKey,
+			Site:          "x",
+			Kind:          "dynamic",
+			TargetID:      e.savedXPost.RawID,
+			AuthorUID:     e.xOnlyUID,
+			AuthorName:    "X 合成专栏",
+			Title:         e.savedXPost.Title,
+			DetectedAt:    time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339),
+			ReasonKind:    service.ConflictReasonText,
+			ReasonLabel:   service.ConflictReasonLabel(service.ConflictReasonText),
+			LocalSummary:  "长帖初版正文（含 1 张原图，已完整归档）",
+			RemoteSummary: "作者编辑了帖子正文（edit_count=2）",
+			State:         service.ConflictStateFailed,
+			LastError:     "源站帖子当前不可访问或媒体已失效，已拒绝覆盖（本地原文件未改动）",
+		},
+	}
+	app.CacheConflicts, _ = e.backend.ListCacheConflicts()
+	app.CacheConflictPendingCount = e.backend.PendingCacheConflictCount()
 }
 
 func (e *fixtureEnv) injectMixedHomeFeed(app *ui.App) {

@@ -182,6 +182,10 @@ func (s *Store) rebuildIndex(checkHash bool) (RebuildReport, error) {
 			prevStatus := meta.Status
 			prevTotalBytes := meta.TotalBytes
 			missing, totalBytes, missingPaths := verifyItemFilesDetail(meta.ItemDir, &meta, checkHash)
+			if missing && hasInterruptedSwapDirs(meta.ItemDir) {
+				_ = RecoverInterruptedItemSwap(meta.ItemDir, meta)
+				missing, totalBytes, missingPaths = verifyItemFilesDetail(meta.ItemDir, &meta, checkHash)
+			}
 			meta.TotalBytes = totalBytes
 			diskWriteNeeded := false
 			missingFiles := false

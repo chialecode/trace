@@ -61,10 +61,51 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 	m.mu.Lock()
 	cfg := m.dlSettings
 	m.mu.Unlock()
+
+	storedMode, selectedPages := m.taskResolutionAndPages(t.TaskID)
+	mode := effectiveConflictResolution(ctx, t.ConflictResolution, storedMode)
+
+	preMeta, preExists, _ := m.lib.GetItem(t.TargetID)
+	if preExists && preMeta.ItemDir != "" {
+		_ = library.RecoverInterruptedItemSwap(preMeta.ItemDir, preMeta)
+		preMeta, preExists, _ = m.lib.GetItem(t.TargetID)
+	}
+
 	detail, err := m.client.VideoDetail(ctx, t.TargetID)
+	if err != nil {
+		if preExists && localHasProtectedContent(preMeta) && isDegradedSiteError(err) {
+			return wrapRemoteDegraded(err)
+		}
+		return err
+	}
+
+	meta, exists, err := m.lib.GetItem(detail.BVID)
 	if err != nil {
 		return err
 	}
+	if exists && meta.ItemDir != "" {
+		_ = library.RecoverInterruptedItemSwap(meta.ItemDir, meta)
+		meta, exists, err = m.lib.GetItem(detail.BVID)
+		if err != nil {
+			return err
+		}
+	}
+	hasProtectedLocal := exists && localHasProtectedContent(meta)
+
+	if hasProtectedLocal {
+		if mode == ConflictResolveKeepBoth || mode == ConflictResolveUseRemote {
+			return m.executeBilibiliVideoConflictReplace(ctx, t, detail, meta, mode, selectedPages)
+		}
+		notice, isConflict, degErr := classifyBilibiliVideoVsLocal(meta, detail, t)
+		if degErr != nil {
+			return degErr
+		}
+		if isConflict {
+			m.emitConflict(notice)
+			return ErrConflictDetected
+		}
+	}
+
 	var page bilibili.VideoPage
 	for _, candidate := range detail.Pages {
 		if t.CID > 0 && candidate.CID == t.CID || t.CID == 0 && candidate.Page == max(1, t.Page) {
@@ -73,14 +114,14 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 		}
 	}
 	if page.CID <= 0 {
-		return &bilibili.SiteError{Kind: bilibili.ErrKindUnavailable, Message: "请求的分 P 已不可用"}
+		unavailErr := &bilibili.SiteError{Kind: bilibili.ErrKindUnavailable, Message: "请求的分 P 已不可用"}
+		if hasProtectedLocal {
+			return wrapRemoteDegraded(unavailErr)
+		}
+		return unavailErr
 	}
 	t.CID, t.Page, t.Title, t.PartTitle = page.CID, page.Page, detail.Title, page.Title
 	t.Mid, t.AuthorName, t.AuthorFace, t.CoverURL = detail.Author.Mid, detail.Author.Name, detail.Author.Face, detail.Cover
-	meta, exists, err := m.lib.GetItem(detail.BVID)
-	if err != nil {
-		return err
-	}
 	if !exists {
 		meta = library.ItemMetadata{Version: 1, Site: "bilibili", Kind: "video", ID: "video:" + detail.BVID, Status: "partial"}
 		root := m.lib.CacheDir()
@@ -98,16 +139,7 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 		return err
 	}
 	t.ItemDir, t.ItemKey = meta.ItemDir, library.CanonicalItemKey("bilibili", "video", detail.BVID)
-	meta.Title, meta.Desc, meta.URL, meta.PubTs, meta.Duration = detail.Title, detail.Desc, detail.CanonicalURL, detail.PubTs, detail.Duration
-	meta.Author = library.ItemAuthor{Mid: detail.Author.Mid, Name: detail.Author.Name, Face: detail.Author.Face}
-	meta.DirectCached = meta.DirectCached || !t.LinkedVideo
-	for _, candidate := range detail.Pages {
-		if cfg.MultiPart == "all" || candidate.Page == page.Page {
-			if !containsPage(meta.ExpectedPages, candidate.Page) {
-				meta.ExpectedPages = append(meta.ExpectedPages, candidate.Page)
-			}
-		}
-	}
+
 	var old library.VideoPartRecord
 	for _, part := range meta.Parts {
 		if part.Page == page.Page {
@@ -115,13 +147,28 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 			break
 		}
 	}
-	// Persist the expected pages before media requests, so a paused first page
-	// never leaves a green item claiming to contain the whole video.
-	if err := m.saveVideoManifest(t, &meta); err != nil {
-		return err
+
+	// Pre-download overwrite guard (Invariant #5): NEVER mutate or save item.json
+	// before media is verified when local item already has valid cached media!
+	if !hasProtectedLocal {
+		meta.Title, meta.Desc, meta.URL, meta.PubTs, meta.Duration = detail.Title, detail.Desc, detail.CanonicalURL, detail.PubTs, detail.Duration
+		meta.Author = library.ItemAuthor{Mid: detail.Author.Mid, Name: detail.Author.Name, Face: detail.Author.Face}
+		meta.DirectCached = meta.DirectCached || !t.LinkedVideo
+		for _, candidate := range detail.Pages {
+			if cfg.MultiPart == "all" || candidate.Page == page.Page {
+				if !containsPage(meta.ExpectedPages, candidate.Page) {
+					meta.ExpectedPages = append(meta.ExpectedPages, candidate.Page)
+				}
+			}
+		}
+		// Persist the expected pages before media requests on fresh caches, so a
+		// paused first page never leaves a green item claiming to contain the whole video.
+		if err := m.saveVideoManifest(t, &meta); err != nil {
+			return err
+		}
 	}
 	defer func() {
-		if result != nil {
+		if result != nil && !hasProtectedLocal {
 			if !isStopError(result) && !mediaIsValid(meta, fmt.Sprintf("P%02d.mp4", page.Page)) && !mediaIsValid(meta, old.File) {
 				addMissing(&meta, fmt.Sprintf("P%02d.media", page.Page), "分 P 尚未完成 ("+bilibili.KindOf(result)+")")
 			}
@@ -133,10 +180,32 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 			t.Status = "partial"
 		}
 	}()
-	if err := m.saveVideoCover(ctx, t, &meta, detail.Cover, cfg); err != nil {
-		return err
+
+	applyVerifiedHeaderUpdates := func() {
+		meta.Title = preserveMonotonicText(meta.Title, detail.Title, false)
+		meta.Desc = preserveMonotonicText(meta.Desc, detail.Desc, false)
+		meta.URL, meta.PubTs, meta.Duration = detail.CanonicalURL, detail.PubTs, detail.Duration
+		meta.Author = library.ItemAuthor{Mid: detail.Author.Mid, Name: detail.Author.Name, Face: detail.Author.Face}
+		meta.DirectCached = meta.DirectCached || !t.LinkedVideo
+		for _, candidate := range detail.Pages {
+			if cfg.MultiPart == "all" || candidate.Page == page.Page {
+				if !containsPage(meta.ExpectedPages, candidate.Page) {
+					meta.ExpectedPages = append(meta.ExpectedPages, candidate.Page)
+				}
+			}
+		}
+	}
+
+	if !hasProtectedLocal {
+		if err := m.saveVideoCover(ctx, t, &meta, detail.Cover, cfg); err != nil {
+			return err
+		}
 	}
 	if !upgrade && old.File != "" && mediaIsValid(meta, old.File) {
+		applyVerifiedHeaderUpdates()
+		if err := m.saveVideoCover(ctx, t, &meta, detail.Cover, cfg); err != nil {
+			return err
+		}
 		for _, media := range meta.Media {
 			if media.Path == old.File || strings.HasPrefix(media.Path, fmt.Sprintf("P%02d.", page.Page)) {
 				m.setFileProgress(t, media.Role, media.Path, "completed", media.Bytes, media.Bytes, 0)
@@ -155,13 +224,17 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 	}
 	plan, err := m.client.PlayURL(ctx, detail.BVID, page.CID, opts)
 	if err != nil {
+		if hasProtectedLocal && isDegradedSiteError(err) {
+			return wrapRemoteDegraded(err)
+		}
 		return err
 	}
 	if upgrade {
 		if bilibili.QualityRank(plan.Video.Quality) < bilibili.QualityRank(old.Video.Quality) || old.Audio.Quality > 0 && (plan.Audio == nil || audioRank(plan.Audio.Quality) < audioRank(old.Audio.Quality)) {
-			return &bilibili.SiteError{Kind: bilibili.ErrKindUnavailable, Message: "站点当前无法提供不低于旧缓存的画质与音质，旧文件已保留"}
+			return wrapRemoteDegraded(&bilibili.SiteError{Kind: bilibili.ErrKindUnavailable, Message: "站点当前无法提供不低于旧缓存的画质与音质，旧文件已保留"})
 		}
 		if bilibili.QualityRank(plan.Video.Quality) <= bilibili.QualityRank(old.Video.Quality) && (plan.Audio == nil || audioRank(plan.Audio.Quality) <= audioRank(old.Audio.Quality)) {
+			applyVerifiedHeaderUpdates()
 			old.Available = availableRecord(plan)
 			meta.Parts = mergePartRecords(meta.Parts, old)
 			return m.saveVideoManifest(t, &meta)
@@ -220,8 +293,50 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 	var newMedia []library.MediaFile
 	var vPath, aPath string
 	var intermediate []library.MediaFile
-	part := library.VideoPartRecord{CID: page.CID, Page: page.Page, Title: page.Title, Duration: page.Duration, File: mp4Rel, Video: library.PartVideoInfo{Quality: plan.Video.Quality, QualityName: plan.Video.QualityName, CodecID: plan.Video.CodecID, Codecs: plan.Video.Codecs, Width: plan.Video.Width, Height: plan.Video.Height, FrameRate: plan.Video.FrameRate}, Available: availableRecord(plan)}
+	part := library.VideoPartRecord{
+		CID:      page.CID,
+		Page:     page.Page,
+		Title:    page.Title,
+		Duration: page.Duration,
+		File:     mp4Rel,
+		Video: library.PartVideoInfo{
+			Quality:     plan.Video.Quality,
+			QualityName: plan.Video.QualityName,
+			CodecID:     plan.Video.CodecID,
+			Codecs:      plan.Video.Codecs,
+			Width:       plan.Video.Width,
+			Height:      plan.Video.Height,
+			FrameRate:   plan.Video.FrameRate,
+		},
+		Available: availableRecord(plan),
+	}
+	// Monotonic supplement protection on same-CID upgrades/completions (Invariant #4):
+	// carry forward verified danmaku, subtitle tracks, and Hi-Res/Dolby sidecar audio!
+	if old.CID == page.CID {
+		if old.Danmaku != "" && mediaIsValid(meta, old.Danmaku) {
+			part.Danmaku = old.Danmaku
+			part.DanmakuState = "saved"
+		}
+		if len(old.Subtitles) > 0 || len(old.SubtitleTracks) > 0 {
+			for _, subRel := range old.Subtitles {
+				if mediaIsValid(meta, subRel) {
+					part.Subtitles = append(part.Subtitles, subRel)
+				}
+			}
+			for _, tr := range old.SubtitleTracks {
+				if mediaIsValid(meta, tr.VTT) && mediaIsValid(meta, tr.SRT) {
+					part.SubtitleTracks = append(part.SubtitleTracks, tr)
+				}
+			}
+			if len(part.Subtitles) > 0 && old.SubtitleState == "saved" {
+				part.SubtitleState = "saved"
+			}
+		}
+	}
+
 	var summary MuxTrackSummary
+	var stagedReadyPath string
+	var stageRelToClean string
 	if plan.Mode == "dash" {
 		// The DASH streams are only material for the MP4: they carry a
 		// temporary name the whole time, so an export folder never shows a
@@ -237,27 +352,44 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 			return err
 		}
 		intermediate = append(intermediate, library.MediaFile{Role: "video_stream", Path: vRel, Bytes: n, SHA256: hash})
-		meta.Media = mergeMediaFiles(meta.Media, append(newMedia, intermediate...))
+		if !hasProtectedLocal {
+			meta.Media = mergeMediaFiles(meta.Media, append(newMedia, intermediate...))
+		}
 		if plan.Audio != nil {
 			part.Audio = library.PartAudioInfo{Quality: plan.Audio.Quality, Name: plan.Audio.Name, SavedAs: mp4Rel}
 			mainAudio := plan.Audio
 			isHigh := plan.Audio.Quality == 30250 || plan.Audio.Quality == 30251
 			if isHigh {
 				rel := fmt.Sprintf("P%02d.audio-%d.m4a", page.Page, plan.Audio.Quality)
-				m.setFileProgress(t, "audio", rel, "downloading", 0, 0, 0)
-				n, hash, err := m.downloadStreamWithRefresh(ctx, plan.Audio.URLs, filepath.Join(meta.ItemDir, rel), t, audioURLs(plan.Audio, false))
-				if err != nil {
-					m.setFileProgress(t, "audio", rel, "failed", 0, 0, 0)
-					return err
+				if mediaIsValid(meta, rel) {
+					for _, mf := range meta.Media {
+						if mf.Path == rel {
+							part.Audio.SavedAs = rel
+							newMedia = append(newMedia, mf)
+							break
+						}
+					}
+				} else {
+					m.setFileProgress(t, "audio", rel, "downloading", 0, 0, 0)
+					n, hash, err := m.downloadStreamWithRefresh(ctx, plan.Audio.URLs, filepath.Join(meta.ItemDir, rel), t, audioURLs(plan.Audio, false))
+					if err != nil {
+						m.setFileProgress(t, "audio", rel, "failed", 0, 0, 0)
+						return err
+					}
+					part.Audio.SavedAs = rel
+					newMedia = append(newMedia, library.MediaFile{Role: "audio", Path: rel, Bytes: n, SHA256: hash})
+					if !hasProtectedLocal {
+						meta.Media = mergeMediaFiles(meta.Media, newMedia)
+					}
 				}
-				part.Audio.SavedAs = rel
-				newMedia = append(newMedia, library.MediaFile{Role: "audio", Path: rel, Bytes: n, SHA256: hash})
-				meta.Media = mergeMediaFiles(meta.Media, newMedia)
 				mainAudio = plan.FallbackAudio
 				if mainAudio == nil {
 					addMissing(&meta, fmt.Sprintf("P%02d.audio", page.Page), "最高音质已另存，但站点未提供可合并的普通音轨")
 					return &bilibili.SiteError{Kind: bilibili.ErrKindUnavailable, Message: "最高音轨已保留，缺少可播放的普通音轨，主 MP4 尚未生成"}
 				}
+			} else if old.CID == page.CID && old.Audio.SavedAs != "" && old.Audio.SavedAs != old.File && mediaIsValid(meta, old.Audio.SavedAs) {
+				// Preserve existing verified Hi-Res / Dolby sidecar audio monotonically!
+				part.Audio = old.Audio
 			}
 			if mainAudio != nil {
 				legacyA := fmt.Sprintf("P%02d.audio-%d.m4s", page.Page, mainAudio.Quality)
@@ -290,9 +422,7 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := os.Rename(mp4Path+".part", mp4Path); err != nil {
-			return err
-		}
+		stagedReadyPath = mp4Path + ".part"
 	} else {
 		stageRel := mp4Rel + stageSuffix
 		stagePath := mp4Path + stageSuffix
@@ -317,11 +447,12 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := os.Rename(stagePath, mp4Path); err != nil {
-			return err
-		}
-		m.removeTempTaskProgress(t, stageRel)
+		stagedReadyPath = stagePath
+		stageRelToClean = stageRel
 	}
+
+	prevSnapshot := meta
+	applyVerifiedHeaderUpdates()
 	m.setFileProgress(t, "video", mp4Rel, "completed", summary.FileBytes, summary.FileBytes, 0)
 	newMedia = append(newMedia, library.MediaFile{Role: "video", Path: mp4Rel, Bytes: summary.FileBytes, SHA256: summary.SHA256, Width: summary.Width, Height: summary.Height, Duration: int(math.Round(summary.DurationSec))})
 	for _, media := range intermediate {
@@ -340,21 +471,34 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 	}
 	meta.Media = mergeMediaFiles(meta.Media, newMedia)
 	clearMissing(&meta, fmt.Sprintf("P%02d.media", page.Page))
-	if cfg.SaveDanmaku {
+	if cfg.SaveDanmaku && !mediaIsValid(meta, part.Danmaku) {
 		part.DanmakuState = "pending"
 		addMissing(&meta, fmt.Sprintf("P%02d.danmaku.xml", page.Page), "等待保存弹幕")
 	}
-	if cfg.SaveSubtitles {
+	if cfg.SaveSubtitles && part.SubtitleState != "saved" {
 		part.SubtitleState = "pending"
 		addMissing(&meta, fmt.Sprintf("P%02d.subtitles", page.Page), "等待保存字幕")
 	}
 	meta.Parts = mergePartRecords(meta.Parts, part)
-	// Register the validated MP4 before any extra request can fail or expire auth.
-	if err := m.saveVideoManifest(t, &meta); err != nil {
+
+	// Swap verified MP4 over live path via .trace-prev-* backup & rollback, and
+	// register the validated MP4 before any extra request can fail or expire auth.
+	if err := swapVerifiedFileInPlace(meta.ItemDir, mp4Rel, stagedReadyPath, func() error {
+		return m.saveVideoManifest(t, &meta)
+	}); err != nil {
+		meta = prevSnapshot
 		return err
+	}
+	if stageRelToClean != "" {
+		m.removeTempTaskProgress(t, stageRelToClean)
 	}
 	for _, media := range intermediate {
 		_ = os.Remove(filepath.Join(meta.ItemDir, media.Path))
+	}
+	if hasProtectedLocal {
+		if err := m.saveVideoCover(ctx, t, &meta, detail.Cover, cfg); err != nil {
+			return err
+		}
 	}
 	if err := m.saveVideoExtras(ctx, t, &meta, &part, cfg); err != nil {
 		meta.Parts = mergePartRecords(meta.Parts, part)
@@ -386,6 +530,7 @@ func (m *Manager) saveVideoManifest(t *Task, meta *library.ItemMetadata) error {
 			meta.UpgradeAvailable, meta.UpgradeHint = true, "当前缓存低于站点可提供的最高档"
 		}
 	}
+	stampCacheStandardAndAssets(meta, 0, 0, bilibiliVideoAssetIDsFromParts(meta.Parts))
 	saved, err := m.lib.SaveItem(meta.ItemDir, *meta)
 	if err != nil {
 		return err
@@ -540,6 +685,32 @@ func (m *Manager) executeSupplementTask(ctx context.Context, t *Task) error {
 		return &bilibili.SiteError{Kind: bilibili.ErrKindUnavailable, Message: "需要先缓存视频再补存弹幕和字幕"}
 	}
 	t.ItemDir, t.ItemKey = meta.ItemDir, meta.ItemKey
+
+	storedMode, selectedPages := m.taskResolutionAndPages(t.TaskID)
+	mode := effectiveConflictResolution(ctx, t.ConflictResolution, storedMode)
+
+	// Guard CacheSupplement with the V1-vs-V2 tripwire if VideoDetail is reachable.
+	if detail, dErr := m.client.VideoDetail(ctx, meta.RawID); dErr != nil {
+		if localHasProtectedContent(meta) && isDegradedSiteError(dErr) {
+			return wrapRemoteDegraded(dErr)
+		}
+		if isStopError(dErr) || ctx.Err() != nil {
+			return dErr
+		}
+	} else if localHasProtectedContent(meta) {
+		if mode == ConflictResolveKeepBoth || mode == ConflictResolveUseRemote {
+			return m.executeBilibiliVideoConflictReplace(ctx, t, detail, meta, mode, selectedPages)
+		}
+		notice, isConflict, degErr := classifyBilibiliVideoVsLocal(meta, detail, t)
+		if degErr != nil {
+			return degErr
+		}
+		if isConflict {
+			m.emitConflict(notice)
+			return ErrConflictDetected
+		}
+	}
+
 	defer func() {
 		if len(meta.Missing) > 0 {
 			t.Status = "partial"
@@ -579,8 +750,27 @@ func (m *Manager) executeUpgradeTask(ctx context.Context, t *Task) error {
 		return &bilibili.SiteError{Kind: bilibili.ErrKindUnavailable, Message: "要升级的视频不在媒体库中"}
 	}
 	t.ItemDir, t.ItemKey = meta.ItemDir, meta.ItemKey
+
+	storedMode, selectedPages := m.taskResolutionAndPages(t.TaskID)
+	mode := effectiveConflictResolution(ctx, t.ConflictResolution, storedMode)
+	if mode == ConflictResolveKeepBoth || mode == ConflictResolveUseRemote {
+		unlock, err := m.lockItem(ctx, t.TargetID)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		detail, dErr := m.client.VideoDetail(ctx, meta.RawID)
+		if dErr != nil {
+			if localHasProtectedContent(meta) && isDegradedSiteError(dErr) {
+				return wrapRemoteDegraded(dErr)
+			}
+			return dErr
+		}
+		return m.executeBilibiliVideoConflictReplace(ctx, t, detail, meta, mode, selectedPages)
+	}
+
 	for _, part := range meta.Parts {
-		child := Task{Site: "bilibili", Kind: "video", TargetID: meta.RawID, CID: part.CID, Page: part.Page, Source: t.Source, LinkedVideo: !meta.DirectCached, ProgressOwner: t, Attempts: t.Attempts}
+		child := Task{Site: "bilibili", Kind: "video", TargetID: meta.RawID, CID: part.CID, Page: part.Page, Source: t.Source, ConflictResolution: mode, LinkedVideo: !meta.DirectCached, ProgressOwner: t, Attempts: t.Attempts}
 		if err := m.cacheVideoPart(ctx, &child, true); err != nil {
 			t.Attempts = child.Attempts
 			return err

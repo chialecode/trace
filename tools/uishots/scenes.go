@@ -1974,6 +1974,65 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 		},
 		{
+			Name: "tasks-conflicts",
+			Setup: func() {
+				seedRecentAndLive()
+				app.ConflictBatchChoice = service.DefaultConflictChoice
+				app.ConflictBatchConfirmOpen = false
+				app.ConflictActionError = ""
+				app.OpenTasksConflicts()
+				app.ConflictReplaceConfirmID = "conflict_shot_wb"
+			},
+			RequiredLabels: []string{
+				"内容冲突顶部栏",
+				"内容冲突保护说明",
+				"全部待处理方式",
+				"批量应用冲突处理",
+				"内容冲突列表",
+				"内容冲突卡片：conflict_shot_bili",
+				"冲突原因：conflict_shot_bili",
+				"冲突站点：conflict_shot_bili",
+				"冲突对比：conflict_shot_bili",
+				"保留两版：conflict_shot_bili",
+				"保留本地：conflict_shot_bili",
+				"用新版替换：conflict_shot_bili",
+				"查看本地冲突条目：conflict_shot_bili",
+				"内容冲突卡片：conflict_shot_wb",
+				"冲突原因：conflict_shot_wb",
+				"冲突站点：conflict_shot_wb",
+				"确认替换冲突栏：conflict_shot_wb",
+				"取消替换冲突：conflict_shot_wb",
+				"确认替换冲突：conflict_shot_wb",
+				"内容冲突卡片：conflict_shot_x",
+				"冲突原因：conflict_shot_x",
+				"冲突站点：conflict_shot_x",
+				"冲突失败提示：conflict_shot_x",
+			},
+			PanelRequiredLabels: []string{
+				"任务侧栏：下载任务",
+				"任务侧栏：缓存队列",
+				"任务侧栏：内容冲突",
+			},
+			NarrowRequiredLabels: []string{
+				"任务分段：下载任务",
+				"任务分段：缓存队列",
+				"任务分段：内容冲突",
+			},
+			RequiredTexts: []string{
+				"内容冲突（3）",
+				"源站内容与本地已缓存版本不一致时不会自动覆盖，默认可同时保留本地旧版与源站新版",
+				"保留两版（推荐）",
+				"分P变更",
+				"媒体替换",
+				"正文编辑",
+				"确认用源站新版替换本地已缓存内容？",
+				"（本地原文件未改动）",
+			},
+			ForbiddenLabels: []string{
+				"内容冲突空状态",
+			},
+		},
+		{
 			Name: "settings",
 			Setup: func() {
 				app.Navigate(ui.RouteSettings)

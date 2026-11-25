@@ -245,9 +245,12 @@ func (b *Backend) verifyBootstrapSite(
 	}
 	verified, err := verify(ctx)
 	if err != nil && isAuthErr(err) {
-		if siteID == site.Weibo {
+		switch siteID {
+		case site.Douyin:
+			b.clearDouyinMemoryCaches()
+		case site.Weibo:
 			b.clearWeiboMemoryCaches()
-		} else if siteID == site.X {
+		case site.X:
 			b.clearXMemoryCaches()
 		}
 		b.pauseSiteActiveWork(siteID, "auth_required", expiredMsg)
@@ -259,9 +262,12 @@ func (b *Backend) verifyBootstrapSite(
 			verified = store.Status()
 		}
 	} else if !verified.LoggedIn {
-		if siteID == site.Weibo {
+		switch siteID {
+		case site.Douyin:
+			b.clearDouyinMemoryCaches()
+		case site.Weibo:
 			b.clearWeiboMemoryCaches()
-		} else if siteID == site.X {
+		case site.X:
 			b.clearXMemoryCaches()
 		}
 		b.pauseSiteActiveWork(siteID, "auth_required", expiredMsg)
@@ -292,6 +298,7 @@ func (b *Backend) VerifySiteAccount(ctx context.Context, siteID string) (credent
 	case site.Douyin:
 		st, vErr := b.douyin.VerifyCredential(ctx)
 		if vErr != nil && site.IsKind(vErr, site.ErrKindAuthRequired) {
+			b.clearDouyinMemoryCaches()
 			b.pauseSiteActiveWork(site.Douyin, "auth_required", "抖音登录已失效，任务已暂停")
 		}
 		b.events.PublishSite(EventAccountChanged, string(site.Douyin), st.State)
@@ -393,6 +400,7 @@ func (b *Backend) LoginWithCookie(ctx context.Context, siteID, rawCookie, rawRef
 		}
 		switched := prev.LoggedIn && prev.SecUID != "" && prev.SecUID != st.SecUID
 		if switched {
+			b.clearDouyinMemoryCaches()
 			b.pauseSiteActiveWork(site.Douyin, "auth_required", "抖音登录账号已变更，任务已暂停")
 		}
 		b.logInfo(fmt.Sprintf("douyin cookie imported: state=%s uid=%s", st.State, firstNonEmpty(st.UniqueID, st.UID)))
@@ -494,6 +502,7 @@ func (b *Backend) LogoutSite(siteID string) (credential.Status, error) {
 	case site.Bilibili:
 		return b.Logout()
 	case site.Douyin:
+		b.clearDouyinMemoryCaches()
 		b.pauseSiteActiveWork(site.Douyin, "auth_required", "已退出抖音登录，任务已暂停")
 		lErr := b.douyin.LogoutCredential()
 		st := b.douyinCred.Status()
