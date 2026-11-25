@@ -30,6 +30,7 @@ func isBackgroundPendingKey(key string) bool {
 		strings.HasPrefix(key, "public-image:") ||
 		strings.HasPrefix(key, "history-thumbs-") ||
 		strings.HasPrefix(key, "open-upgrade-") ||
+		strings.HasPrefix(key, "conflict-diff:") ||
 		strings.HasPrefix(key, "visible-live:") ||
 		strings.HasPrefix(key, "user-live-")
 }

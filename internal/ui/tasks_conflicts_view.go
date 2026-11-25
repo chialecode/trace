@@ -536,6 +536,9 @@ func (a *App) renderCacheConflictCard(c *ui.Context, conflict service.CacheConfl
 					a.ConflictBatchConfirmOpen = false
 					a.ConflictReplaceConfirmID = conflict.ID
 				}
+				if OutlinePillButton(c, "对比差异", "对比差异："+conflict.ID).Disabled(resolving).Clicked() && !resolving {
+					a.OpenConflictDiffModal(conflict)
+				}
 				localDisabled := resolving || strings.TrimSpace(conflict.ItemKey) == ""
 				if OutlinePillButton(c, "查看本地", "查看本地冲突条目："+conflict.ID).Disabled(localDisabled).Clicked() && !localDisabled {
 					a.openConflictLocalItem(conflict.ItemKey)
