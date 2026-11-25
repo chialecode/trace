@@ -4,7 +4,7 @@ import (
 	"time"
 )
 
-// rehearsalInput is what the ptest rehearsal needs from the release.
+// rehearsalInput is what the trace-test rehearsal needs from the release.
 type rehearsalInput struct {
 	Root    string
 	Base    []byte
@@ -43,7 +43,7 @@ type rehearsalResult struct {
 
 func newRehearsalResult(in rehearsalInput) rehearsalResult {
 	return rehearsalResult{
-		Identity:   "io.github.chialecode.trace-ptest",
+		Identity:   "io.github.chialecode.trace-test",
 		OldVersion: in.Version + "-rehearsal.1",
 		NewVersion: in.Version + "-rehearsal.2",
 		Tampered:   in.Version + "-rehearsal.3",

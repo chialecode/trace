@@ -69,7 +69,7 @@ func TestSmokeDirDisabledOnReleaseChannels(t *testing.T) {
 			t.Fatalf("smokeDirForChannel(%q) = %q, want empty on release channel", ch, got)
 		}
 	}
-	for _, ch := range []string{"dev", "source", "ptest"} {
+	for _, ch := range []string{"dev", "source", "test"} {
 		if got := smokeDirForChannel(ch); got == "" {
 			t.Fatalf("smokeDirForChannel(%q) = empty, want smoke dir on non-release channel", ch)
 		}

@@ -44,7 +44,7 @@ func RenderTrayIconPNG(badge, _ bool) []byte {
 // trayBadge reports whether the channel's tray icon carries the "DEV" badge:
 // the development and test identities, whose application icon has it too.
 func trayBadge(channel string) bool {
-	return channel == "dev" || channel == "ptest"
+	return channel == "dev" || channel == "test"
 }
 
 // trayMenuEntry is one item of the tray menu.

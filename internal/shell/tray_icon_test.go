@@ -42,7 +42,7 @@ func amberIn(img image.Image, r image.Rectangle) bool {
 // the tray icon stays static without an upper-right amber activity dot even
 // while cache tasks or live recordings run.
 func TestTrayIconBadgeFollowsChannelAndNeverDrawsActivityDot(t *testing.T) {
-	for ch, want := range map[string]bool{"dev": true, "ptest": true, "stable": false, "": false} {
+	for ch, want := range map[string]bool{"dev": true, "test": true, "stable": false, "": false} {
 		if got := trayBadge(ch); got != want {
 			t.Errorf("trayBadge(%q) = %v, want %v", ch, got, want)
 		}

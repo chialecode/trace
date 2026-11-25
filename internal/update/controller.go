@@ -36,7 +36,7 @@ type Engine interface {
 type Phase string
 
 const (
-	PhaseDisabled    Phase = "disabled"    // a build without updates (development, ptest without a source)
+	PhaseDisabled    Phase = "disabled"    // a build without updates (development, trace-test without a source)
 	PhaseIdle        Phase = "idle"        // up to date, or not checked yet
 	PhaseChecking    Phase = "checking"    // a check is running
 	PhaseAvailable   Phase = "available"   // a newer version is there, not downloaded (automatic download is off)
@@ -116,7 +116,7 @@ type Options struct {
 	// ActiveWork counts the cache tasks a restart pauses and the
 	// recordings it ends.
 	ActiveWork func() (tasks, recordings int)
-	// FirstDelay replaces FirstCheckDelay (the ptest identity's rehearsal
+	// FirstDelay replaces FirstCheckDelay (the trace-test identity's rehearsal
 	// checks a few seconds after launch).
 	FirstDelay time.Duration
 }

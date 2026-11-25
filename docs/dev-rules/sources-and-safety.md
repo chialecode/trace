@@ -53,4 +53,4 @@
 
 - **正式版 TRACE 检查更新**（FR-UPD-003）：只访问 `github.com/chialecode/trace` 的 Releases——清单 `releases/latest/download/update-windows-amd64.json` 与清单里列出的更新包或差分包（经 GitHub 重定向到它的下载域名），一律 HTTPS，遵循系统代理；只带 MyGo 默认的请求头（版本与平台由下载的文件名体现），不带账号、Cookie 或设备信息。启动 1 分钟后一次、之后每 24 小时一次，或用户手动检查；“自动检查更新”关掉就不请求。这些请求与哔哩哔哩无关，不计入站点请求额度（NFR-NET-002）。开发版与源码运行不请求。
 - **打包与发布工具**：`tools/package` 不访问 GitHub（版本号只看本机标签）。`tools/release` 联网时用 `git ls-remote` 读 `origin` 的标签与 `main`、用 `gh release list` 读已发布的 Release、MyGo 做差分包时下载上一版的清单与更新包；`-offline` 时都不做。只有带 `-publish` 且用户已授权时才创建标签与 Release、上传文件。
-- **测试**：单元测试与 ptest 演练只用本机回环地址上的假发布源，不访问 GitHub。
+- **测试**：单元测试与 trace-test 演练只用本机回环地址上的假发布源，不访问 GitHub。

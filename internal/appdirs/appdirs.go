@@ -48,7 +48,7 @@ func BuildInfo() Build {
 
 // CompiledChannel returns the channel the build was made for, ignoring the
 // TRACE_CHANNEL override that tests and tools use: "stable", "dev" or
-// "ptest". Builds without an injected channel follow ChannelName, as
+// "test". Builds without an injected channel follow ChannelName, as
 // EffectiveChannel does.
 func CompiledChannel() string {
 	ch := strings.ToLower(strings.TrimSpace(channel))
@@ -58,8 +58,8 @@ func CompiledChannel() string {
 	switch ch {
 	case "dev", "development", "source":
 		return "dev"
-	case "ptest":
-		return "ptest"
+	case "test":
+		return "test"
 	default:
 		return "stable"
 	}
@@ -70,7 +70,7 @@ func ChannelLabel(channel string) string {
 	switch EffectiveChannel(channel) {
 	case "dev":
 		return "开发版"
-	case "ptest":
+	case "test":
 		return "测试身份"
 	default:
 		return "正式版"
@@ -107,7 +107,7 @@ type Options struct {
 	DocumentsDir string
 }
 
-// EffectiveChannel returns the normalized channel ("stable", "dev", or "ptest").
+// EffectiveChannel returns the normalized channel ("stable", "dev", or "test").
 func EffectiveChannel(override string) string {
 	ch := strings.ToLower(strings.TrimSpace(override))
 	if ch == "" {
@@ -122,8 +122,8 @@ func EffectiveChannel(override string) string {
 	switch ch {
 	case "dev", "development", "source":
 		return "dev"
-	case "ptest":
-		return "ptest"
+	case "test":
+		return "test"
 	default:
 		return "stable"
 	}
@@ -134,8 +134,8 @@ func AppNameForChannel(channel string) string {
 	switch EffectiveChannel(channel) {
 	case "dev":
 		return "trace-dev"
-	case "ptest":
-		return "trace-ptest"
+	case "test":
+		return "trace-test"
 	default:
 		return "trace"
 	}
@@ -146,8 +146,8 @@ func DisplayNameForChannel(channel string) string {
 	switch EffectiveChannel(channel) {
 	case "dev":
 		return "TRACE Dev"
-	case "ptest":
-		return "TRACE PTest"
+	case "test":
+		return "TRACE Test"
 	default:
 		return "TRACE"
 	}
@@ -158,8 +158,8 @@ func IdentifierForChannel(channel string) string {
 	switch EffectiveChannel(channel) {
 	case "dev":
 		return "io.github.chialecode.trace-dev"
-	case "ptest":
-		return "io.github.chialecode.trace-ptest"
+	case "test":
+		return "io.github.chialecode.trace-test"
 	default:
 		return "io.github.chialecode.trace"
 	}
