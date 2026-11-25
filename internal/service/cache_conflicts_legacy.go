@@ -345,7 +345,7 @@ func extractLegacyInlineLinksFromText(raw, siteID string) (cleaned string, links
 			continue
 		}
 
-		urlEnd, closeEnd, ok := scanParenthesizedInlineURL(raw, urlStart, openASCII, schemeKind == "sinaweibo")
+		urlEnd, closeEnd, ok := scanParenthesizedInlineURL(raw, urlStart, openASCII)
 		if !ok {
 			sb.WriteString(raw[i:urlStart])
 			i = urlStart
@@ -397,7 +397,7 @@ func detectLegacyURLScheme(rest string) string {
 	return ""
 }
 
-func scanParenthesizedInlineURL(s string, urlStart int, openASCII, isSinaWeibo bool) (urlEnd, closeEnd int, ok bool) {
+func scanParenthesizedInlineURL(s string, urlStart int, openASCII bool) (urlEnd, closeEnd int, ok bool) {
 	sep := strings.Index(s[urlStart:], "://")
 	if sep < 0 {
 		return 0, 0, false
@@ -407,10 +407,7 @@ func scanParenthesizedInlineURL(s string, urlStart int, openASCII, isSinaWeibo b
 	parenDepth := 0
 	for i < len(s) {
 		r, w := utf8.DecodeRuneInString(s[i:])
-		if r <= 0x1f || r == 0x7f || r == '\r' || r == '\n' || r == '<' || r == '>' || r == '"' || r == '\'' || r == '\\' {
-			return 0, 0, false
-		}
-		if !isSinaWeibo && unicode.IsSpace(r) {
+		if r <= 0x1f || r == 0x7f || unicode.IsSpace(r) || r == '<' || r == '>' || r == '"' || r == '\'' || r == '\\' {
 			return 0, 0, false
 		}
 		if openASCII {

@@ -1167,4 +1167,88 @@ func TestLegacyInlineURLConflictNormalizationAndAutoResolution(t *testing.T) {
 	if rErr != nil || string(gotImg) != string(imgBytes) {
 		t.Fatalf("local image file was touched during legacy text migration: err=%v bytes=%q", rErr, string(gotImg))
 	}
+
+	// 4. [P2 regression] Parenthesized sinaweibo:// containing whitespace must NOT be stripped or swallow prose
+	// in either NormalizeConflictText or extractLegacyInlineLinksFromText (strictly consistent with RewriteSafeSinaWeiboAppURL).
+	withSpaceA := "标题 (sinaweibo://pageinfo?containerid=" + cid + " 附带真实说明甲)"
+	withSpaceB := "标题 (sinaweibo://pageinfo?containerid=" + cid + " 附带真实说明乙)"
+	if download.NormalizeConflictText(withSpaceA) == download.NormalizeConflictText(withSpaceB) {
+		t.Fatalf("NormalizeConflictText must not swallow whitespace-containing parenthesized sinaweibo:// prose")
+	}
+	if cleanedSpace, linksSpace, changedSpace := extractLegacyInlineLinksFromText(withSpaceA, "weibo"); changedSpace || cleanedSpace != withSpaceA || len(linksSpace) != 0 {
+		t.Fatalf("extractLegacyInlineLinksFromText must reject whitespace-containing sinaweibo://: changed=%v cleaned=%q links=%+v", changedSpace, cleanedSpace, linksSpace)
+	}
+
+	// 5. [P1 regression] Truncated list-page Weibo long-text (IsLongText=true, LongTextFetched=false) or
+	// truncated-prefix long-text expansion MUST NOT auto-dismiss an existing pending text_edited conflict.
+	const longMid = "5090000000000209"
+	longDir := filepath.Join(b.lib.CacheDir(), "weibo", "51001", "posts", longMid)
+	longLegacyText := "合成超话 (" + oriURL + ")\n旧版长微博前段内容...展开"
+	savedLong, err := b.lib.SaveItem(longDir, library.ItemMetadata{
+		Version:  1,
+		ID:       "dynamic:" + longMid,
+		Site:     "weibo",
+		Kind:     "dynamic",
+		Status:   "complete",
+		Title:    "旧版长微博",
+		Text:     longLegacyText,
+		Desc:     longLegacyText,
+		URL:      "https://weibo.com/51001/" + longMid,
+		CachedAt: origCachedAt,
+		Author:   library.ItemAuthor{Site: "weibo", UID: "51001", Name: "微博作者"},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem(long legacy): %v", err)
+	}
+	if _, _, err := b.conflicts.recordOrUpdate(cacheConflictRecord{
+		ItemKey:           savedLong.ItemKey,
+		Site:              "weibo",
+		Kind:              "dynamic",
+		TargetID:          longMid,
+		Title:             "旧版长微博",
+		ReasonKind:        ConflictReasonText,
+		LocalSummary:      "纯文字微博",
+		RemoteSummary:     "源站微博正文内容已修改",
+		RemoteFingerprint: "fp_real_longtext_edit_209",
+		State:             ConflictStatePending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 5a: Unfetched long text on list page (IsLongText=true, LongTextFetched=false) -> must keep pending conflict!
+	_ = b.inspectWeiboCachedPost(weibo.Post{
+		Mid:             longMid,
+		Author:          weibo.AuthorSummary{UID: "51001", ScreenName: "微博作者"},
+		Text:            "合成超话 旧版长微博前段内容...展开",
+		IsLongText:      true,
+		LongTextFetched: false,
+	}, savedLong, QueueOriginFullCache)
+	if !b.conflicts.hasPendingTextConflictForItem(savedLong.ItemKey) {
+		t.Fatal("truncated unfetched Weibo long text must NOT auto-dismiss pending text_edited conflict")
+	}
+
+	// 5b: Long-text expansion where substantiveTextChanged is true (expanded text differs from truncated local) -> must keep pending conflict!
+	_ = b.inspectWeiboCachedPost(weibo.Post{
+		Mid:             longMid,
+		Author:          weibo.AuthorSummary{UID: "51001", ScreenName: "微博作者"},
+		Text:            "合成超话 旧版长微博前段内容以及大幅修订的后半段完整正文内容。",
+		IsLongText:      true,
+		LongTextFetched: true,
+	}, savedLong, QueueOriginFullCache)
+	if !b.conflicts.hasPendingTextConflictForItem(savedLong.ItemKey) {
+		t.Fatal("long-text expansion with substantive text difference must NOT auto-dismiss pending text_edited conflict")
+	}
+
+	// 5c: Full remote text fetched AND exact normalized equivalence -> cleanly auto-resolves!
+	_ = b.inspectWeiboCachedPost(weibo.Post{
+		Mid:             longMid,
+		Author:          weibo.AuthorSummary{UID: "51001", ScreenName: "微博作者"},
+		Text:            "合成超话 旧版长微博前段内容...展开",
+		IsLongText:      true,
+		LongTextFetched: true,
+		Links:           []site.TextLink{{Label: "合成超话", URL: "https://weibo.com/p/" + cid}},
+	}, savedLong, QueueOriginFullCache)
+	if b.conflicts.hasPendingTextConflictForItem(savedLong.ItemKey) {
+		t.Fatal("full fetched remote text with exact normalized match should auto-resolve legacy inline-URL conflict")
+	}
 }
