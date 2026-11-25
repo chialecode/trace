@@ -723,30 +723,11 @@ func durationChangedSubstantively(localSec, remoteSec int) bool {
 }
 
 func normalizeCompareText(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	s = reConflictURL.ReplaceAllString(s, "")
-	s = reConflictSpace.ReplaceAllString(s, " ")
-	return strings.TrimSpace(s)
+	return NormalizeConflictText(s)
 }
 
 func looksLikeTruncatedPrefix(shortText, fullText string) bool {
-	shortNorm := normalizeCompareText(shortText)
-	fullNorm := normalizeCompareText(fullText)
-	if shortNorm == "" || fullNorm == "" || len([]rune(fullNorm)) <= len([]rune(shortNorm)) {
-		return false
-	}
-	trimmed := strings.TrimSpace(strings.TrimRight(shortNorm, ".…"))
-	for _, suf := range []string{"全文", "展开", "查看全文"} {
-		trimmed = strings.TrimSpace(strings.TrimSuffix(trimmed, suf))
-	}
-	trimmed = strings.TrimSpace(strings.TrimRight(trimmed, ".…"))
-	if len([]rune(trimmed)) < 8 {
-		return false
-	}
-	return strings.HasPrefix(fullNorm, trimmed)
+	return LooksLikeTruncatedTextPrefix(shortText, fullText)
 }
 
 func preserveMonotonicText(localText, remoteText string, editAdvanced bool) string {
@@ -853,12 +834,8 @@ func classifyBilibiliVideoVsLocal(local library.ItemMetadata, detail bilibili.Vi
 
 	localSum := fmt.Sprintf("已缓存 %d 个分 P（%s）", max(1, len(cachedParts)), firstNonEmptyStr(local.Title, detail.BVID))
 	remoteSum := fmt.Sprintf("源站当前 %d 个分 P，%s", len(detail.Pages), diffDetail)
-	fp := computeFingerprint(
-		"bilibili", "video", detail.BVID,
-		strings.Join(remoteTokens, ","),
-		normalizeCompareText(detail.Title),
-		normalizeCompareText(detail.Desc),
-	)
+	_ = remoteTokens
+	fp := BilibiliVideoConflictFingerprint(detail.BVID, detail.Pages, detail.Title, detail.Desc)
 	return ConflictNotice{
 		ItemKey:           library.CanonicalItemKey("bilibili", "video", detail.BVID),
 		Site:              "bilibili",
@@ -1659,17 +1636,11 @@ func classifyBilibiliDynamicVsLocal(local library.ItemMetadata, dyn bilibili.Dyn
 		return ConflictNotice{}, false, nil
 	}
 
-	var imgTokens []string
+	var imgURLs []string
 	for _, img := range dyn.Images {
-		imgTokens = append(imgTokens, cleanBilibiliImageIdentity(img.URL))
+		imgURLs = append(imgURLs, img.URL)
 	}
-	fp := computeFingerprint(
-		"bilibili", "dynamic", dyn.ID,
-		strings.Join(imgTokens, ","),
-		strings.Join(videoRefs, ","),
-		normalizeCompareText(dyn.Title),
-		normalizeCompareText(dyn.Text),
-	)
+	fp := BilibiliDynamicConflictFingerprint(dyn.ID, imgURLs, videoRefs, dyn.Title, dyn.Text)
 	return ConflictNotice{
 		ItemKey:           library.CanonicalItemKey("bilibili", "dynamic", dyn.ID),
 		Site:              "bilibili",
@@ -1845,6 +1816,46 @@ func extractLocalRootText(local library.ItemMetadata) string {
 	return txt
 }
 
+func extractPlanFocalText(plan WorkDownloadPlan, rawID string) string {
+	if plan.Site == site.X && len(plan.Thread) > 0 {
+		for _, seg := range plan.Thread {
+			if strings.TrimSpace(seg.ID) == strings.TrimSpace(rawID) && strings.TrimSpace(seg.Text) != "" {
+				return strings.TrimSpace(seg.Text)
+			}
+		}
+	}
+	return firstNonEmptyStr(plan.Desc, plan.Title)
+}
+
+func extractPlanFocalShapeForFingerprint(plan WorkDownloadPlan, rawID string, planAssets []string) (remoteKind string, assets []string, pageCount int, singleVidDur int) {
+	if plan.Site == site.X && len(plan.Thread) > 0 {
+		for _, seg := range plan.Thread {
+			if strings.TrimSpace(seg.ID) == strings.TrimSpace(rawID) {
+				var focalPages []PlannedNotePage
+				for _, idx := range seg.MediaIndexes {
+					if idx >= 1 && idx <= len(plan.Pages) {
+						focalPages = append(focalPages, plan.Pages[idx-1])
+					}
+				}
+				for _, pg := range focalPages {
+					if tok := library.SanitizeMediaToken(pg.MediaID); tok != "" {
+						assets = append(assets, tok)
+					}
+				}
+				if len(focalPages) == 1 && strings.EqualFold(focalPages[0].Kind, "video") {
+					return "video", assets, 0, focalPages[0].DurationSec
+				}
+				return "dynamic", assets, len(focalPages), 0
+			}
+		}
+	}
+	planIsSingleVideo := len(plan.Pages) == 0 && (len(plan.VideoURLs) > 0 || len(plan.OriginalURLs) > 0 || plan.HLSOnly || strings.EqualFold(plan.Kind, "video"))
+	if planIsSingleVideo {
+		return "video", planAssets, 0, plan.DurationSec
+	}
+	return "dynamic", planAssets, len(plan.Pages), 0
+}
+
 func classifyWorkPlanVsLocal(local library.ItemMetadata, plan WorkDownloadPlan, itemKey, rawID string, t *Task) (ConflictNotice, bool, error) {
 	if err := checkWorkPlanDegradedVsLocal(local, plan); err != nil {
 		return ConflictNotice{}, false, err
@@ -1960,7 +1971,7 @@ func classifyWorkPlanVsLocal(local library.ItemMetadata, plan WorkDownloadPlan, 
 			(plan.EditTs > 0 && local.EditTs > 0 && plan.EditTs > local.EditTs)
 		if strings.TrimSpace(plan.Desc) != "" || editAdvanced {
 			localTxt := normalizeCompareText(extractLocalRootText(local))
-			remoteTxt := normalizeCompareText(firstNonEmptyStr(plan.Desc, plan.Title))
+			remoteTxt := normalizeCompareText(extractPlanFocalText(plan, rawID))
 			if localTxt != "" && remoteTxt != "" && localTxt != remoteTxt {
 				isLongTextExpansion := !editAdvanced && (looksLikeTruncatedPrefix(localTxt, remoteTxt) || looksLikeTruncatedPrefix(remoteTxt, localTxt))
 				if !isLongTextExpansion {
@@ -1980,16 +1991,16 @@ func classifyWorkPlanVsLocal(local library.ItemMetadata, plan WorkDownloadPlan, 
 
 	localMediaDesc := describeLocalWorkSummary(local)
 	remoteMediaDesc := describeRemotePlanSummary(plan, diffDesc)
-	fp := computeFingerprint(
+	fpKind, fpAssets, fpPages, fpVidDur := extractPlanFocalShapeForFingerprint(plan, rawID, planAssets)
+	fp := WorkConflictFingerprint(
 		string(plan.Site),
-		plan.Kind,
+		fpKind,
 		rawID,
-		strings.Join(planAssets, ","),
-		strconv.Itoa(plan.EditCount),
-		strconv.FormatInt(plan.EditTs, 10),
-		strconv.Itoa(len(plan.Pages)),
-		strconv.Itoa(plan.DurationSec),
-		normalizeCompareText(firstNonEmptyStr(plan.Desc, plan.Title)),
+		fpAssets,
+		plan.EditCount,
+		fpPages,
+		fpVidDur,
+		extractPlanFocalText(plan, rawID),
 	)
 
 	return ConflictNotice{

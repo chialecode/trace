@@ -1093,6 +1093,13 @@ func containsXForbiddenTextMarkers(s string) bool {
 		strings.Contains(lower, "periscope.tv")
 }
 
+// ScrubComparableManifestText applies the exact free-text URL/token scrubbing
+// used when persisting item.json so live remote post text and stored manifest
+// text compare identically without false conflicts on scrubbed media/signed URLs.
+func ScrubComparableManifestText(raw string) string {
+	return scrubManifestFreeText(raw)
+}
+
 func scrubManifestFreeText(raw string) string {
 	if strings.TrimSpace(raw) == "" {
 		return strings.TrimSpace(raw)

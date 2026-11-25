@@ -676,8 +676,23 @@ func (m *Manager) EnqueueDynamic(ctx context.Context, req DynamicEnqueueRequest)
 
 // CacheSupplement enqueues a task that only downloads missing/unsaved danmaku and subtitles for an existing cached video (data-and-cache.md §2.9).
 func (m *Manager) CacheSupplement(ctx context.Context, bvid string) (Task, error) {
+	return m.CacheSupplementWithSource(ctx, bvid, "")
+}
+
+// CacheSupplementWithSource enqueues a supplement task with an explicit source
+// ("manual", "queue", or "auto") so queue-triggered supplements count against
+// Bilibili's automatic hourly request quota.
+func (m *Manager) CacheSupplementWithSource(ctx context.Context, bvid, source string) (Task, error) {
 	if err := m.client.RequireAuth("download:supplement"); err != nil {
 		return Task{}, err
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		if site.AutomaticRequestSource(ctx) != "" {
+			source = "queue"
+		} else {
+			source = "manual"
+		}
 	}
 	mode := normalizeConflictResolution(ConflictResolutionFromContext(ctx))
 	meta, ok, err := m.lib.GetItem(bvid)
@@ -694,7 +709,7 @@ func (m *Manager) CacheSupplement(ctx context.Context, bvid string) (Task, error
 	t, err := m.enqueueSingleTaskWithPlan(Task{
 		Site:               "bilibili",
 		Kind:               "supplement",
-		Source:             "manual",
+		Source:             source,
 		TargetID:           meta.RawID,
 		Page:               1,
 		Title:              meta.Title,

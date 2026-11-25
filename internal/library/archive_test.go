@@ -491,4 +491,31 @@ func TestRecoverInterruptedItemSwapStartupAndRefresh(t *testing.T) {
 	if _, err := os.Stat(bootPrev); !os.IsNotExist(err) {
 		t.Fatalf("expected bootPrev cleaned up on startup, stat=%v", err)
 	}
+
+	// Case C: Missing/recreated library.db followed by RebuildIndex must recover .trace-prev-* BEFORE marking missing_files!
+	rebuildPrev := filepath.Join(itemDir, SwapPrevDirPrefix+"rebuild")
+	_ = os.MkdirAll(rebuildPrev, 0o700)
+	if err := os.Rename(filepath.Join(itemDir, "video.mp4"), filepath.Join(rebuildPrev, "video.mp4.part")); err != nil {
+		t.Fatal(err)
+	}
+	freshDBPath := filepath.Join(tmp, "library_recreated.db")
+	db3, _, _, err := storage.OpenSQLite(freshDBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db3.Close()
+	store3, err := OpenWithDataDir(db3, cacheDir, tmp)
+	if err != nil {
+		t.Fatalf("open fresh store3: %v", err)
+	}
+	if _, err := store3.RebuildIndex(); err != nil {
+		t.Fatalf("RebuildIndex after interrupted swap: %v", err)
+	}
+	gotAfterRebuild, ok, err := store3.GetItem(saved.ItemKey)
+	if err != nil || !ok || gotAfterRebuild.Status != "complete" || len(gotAfterRebuild.Missing) != 0 {
+		t.Fatalf("RebuildIndex failed to recover .trace-prev-*: got %+v ok=%v err=%v", gotAfterRebuild, ok, err)
+	}
+	if _, err := os.Stat(rebuildPrev); !os.IsNotExist(err) {
+		t.Fatalf("expected rebuildPrev cleaned up during RebuildIndex, stat=%v", err)
+	}
 }

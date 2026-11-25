@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -900,35 +901,67 @@ func TestMonotonicBilibiliUpgradeWindowsFileLockRollbackAndQueueQuota(t *testing
 		t.Fatal(err)
 	}
 
-	// 2. Test Windows open-file lock rollback during ConflictResolveKeepBoth!
-	// Hold an OS handle on P02.mp4 (without FILE_SHARE_DELETE) so P01.mp4 moves into .trace-prev-*
+	// 2a. Test Windows open-file lock rollback during ConflictResolveKeepBoth!
+	// Hold an OS handle on P02.mp4 (without FILE_SHARE_DELETE on Windows) so P01.mp4 moves into .trace-prev-*
 	// and P02.mp4 fails os.Rename -> rollback() must restore P01.mp4 AND delete the archived snapshot!
-	lockedP2, err := os.Open(filepath.Join(v1Meta.ItemDir, "P02.mp4"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	tLock, err := mgr.EnqueueVideo(WithConflictResolution(ctx, ConflictResolveKeepBoth), VideoEnqueueRequest{BVID: "BV19x411w7UP", Source: "manual"})
-	if err != nil {
-		lockedP2.Close()
-		t.Fatal(err)
-	}
-	lockErr := mgr.WaitTasks(ctx, tLock[0].TaskID)
-	_ = lockedP2.Close()
-	if lockErr == nil {
-		t.Fatalf("expected Windows file sharing violation error when P02.mp4 is open, got nil")
-	}
-	// P01.mp4 and P02.mp4 must both be present in itemDir, and no leftover .trace-prev-* or orphan archive!
-	if _, err := os.Stat(filepath.Join(v1Meta.ItemDir, "P01.mp4")); err != nil {
-		t.Fatalf("P01.mp4 was NOT rolled back after P02.mp4 lock failure: %v", err)
-	}
-	entries, _ := os.ReadDir(v1Meta.ItemDir)
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), library.SwapPrevDirPrefix) || strings.HasPrefix(e.Name(), library.SwapStageDirPrefix) {
-			t.Fatalf("leftover swap temp dir %q after rollback", e.Name())
+	if runtime.GOOS == "windows" {
+		lockedP2, err := os.Open(filepath.Join(v1Meta.ItemDir, "P02.mp4"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tLock, err := mgr.EnqueueVideo(WithConflictResolution(ctx, ConflictResolveKeepBoth), VideoEnqueueRequest{BVID: "BV19x411w7UP", Source: "manual"})
+		if err != nil {
+			lockedP2.Close()
+			t.Fatal(err)
+		}
+		lockErr := mgr.WaitTasks(ctx, tLock[0].TaskID)
+		_ = lockedP2.Close()
+		if lockErr == nil {
+			t.Fatalf("expected Windows file sharing violation error when P02.mp4 is open, got nil")
+		}
+		// P01.mp4 and P02.mp4 must both be present in itemDir, and no leftover .trace-prev-* or orphan archive!
+		if _, err := os.Stat(filepath.Join(v1Meta.ItemDir, "P01.mp4")); err != nil {
+			t.Fatalf("P01.mp4 was NOT rolled back after P02.mp4 lock failure: %v", err)
+		}
+		entries, _ := os.ReadDir(v1Meta.ItemDir)
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), library.SwapPrevDirPrefix) || strings.HasPrefix(e.Name(), library.SwapStageDirPrefix) {
+				t.Fatalf("leftover swap temp dir %q after rollback", e.Name())
+			}
+		}
+		itemsAfterRollback, _ := libStore.ListItems(library.FeedFilter{Site: "bilibili"})
+		for _, it := range itemsAfterRollback {
+			if it.ArchivedOf != "" {
+				t.Fatalf("orphan archived snapshot %s remained after rolled-back keep_both", it.ItemKey)
+			}
 		}
 	}
-	itemsAfterRollback, _ := libStore.ListItems(library.FeedFilter{Site: "bilibili"})
-	for _, it := range itemsAfterRollback {
+
+	// 2b. Cross-platform partial-backup + keep_both archive rollback via testSwapHook on P02.mp4 (runs on Linux CI too!).
+	testSwapHook = func(step, src, _ string) error {
+		if step == "backup_v1" && strings.HasSuffix(filepath.ToSlash(src), "/P02.mp4") {
+			return fmt.Errorf("injected sharing violation on P02.mp4")
+		}
+		return nil
+	}
+	tPartial, err := mgr.EnqueueVideo(WithConflictResolution(ctx, ConflictResolveKeepBoth), VideoEnqueueRequest{BVID: "BV19x411w7UP", Source: "manual"})
+	if err != nil {
+		testSwapHook = nil
+		t.Fatal(err)
+	}
+	partialErr := mgr.WaitTasks(ctx, tPartial[0].TaskID)
+	testSwapHook = nil
+	if partialErr == nil {
+		t.Fatalf("expected injected P02.mp4 backup_v1 failure")
+	}
+	if _, err := os.Stat(filepath.Join(v1Meta.ItemDir, "P01.mp4")); err != nil {
+		t.Fatalf("P01.mp4 was NOT rolled back after partial backup_v1 failure: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(v1Meta.ItemDir, "P02.mp4")); err != nil {
+		t.Fatalf("P02.mp4 missing after partial backup_v1 failure: %v", err)
+	}
+	itemsAfterPartial, _ := libStore.ListItems(library.FeedFilter{Site: "bilibili"})
+	for _, it := range itemsAfterPartial {
 		if it.ArchivedOf != "" {
 			t.Fatalf("orphan archived snapshot %s remained after rolled-back keep_both", it.ItemKey)
 		}

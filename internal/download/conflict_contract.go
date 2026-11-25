@@ -2,12 +2,16 @@ package download
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/chialecode/trace/internal/library"
+	"github.com/chialecode/trace/internal/site/bilibili"
 )
 
 // Explicit conflict resolution modes passed into download entrypoints when the
@@ -355,4 +359,139 @@ func reconstructStoppedTaskError(t Task) error {
 		return errors.New(msg)
 	}
 	return fmt.Errorf("download task %s ended with status %s", t.TaskID, t.Status)
+}
+
+// NormalizeConflictText applies manifest URL/token scrubbing and collapses
+// whitespace so download tripwire checks and service list-level inspections
+// compare text identically without false positives on scrubbed media/signed URLs.
+func NormalizeConflictText(s string) string {
+	scrubbed := library.ScrubComparableManifestText(s)
+	if scrubbed == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(scrubbed), " ")
+}
+
+// LooksLikeTruncatedTextPrefix reports whether shortText is a truncated snippet
+// (e.g. Weibo "...展开" / "…全文") of fullText.
+func LooksLikeTruncatedTextPrefix(shortText, fullText string) bool {
+	shortNorm := NormalizeConflictText(shortText)
+	fullNorm := NormalizeConflictText(fullText)
+	if shortNorm == "" || fullNorm == "" || len([]rune(fullNorm)) <= len([]rune(shortNorm)) {
+		return false
+	}
+	trimmed := strings.TrimSpace(strings.TrimRight(shortNorm, ".…"))
+	for _, suf := range []string{"查看全文", "全文", "展开"} {
+		trimmed = strings.TrimSpace(strings.TrimSuffix(trimmed, suf))
+	}
+	trimmed = strings.TrimSpace(strings.TrimRight(trimmed, ".…"))
+	if len([]rune(trimmed)) < 4 {
+		return false
+	}
+	return strings.HasPrefix(fullNorm, trimmed)
+}
+
+// ComputeConflictFingerprint returns a canonical 64-character lowercase hex
+// SHA-256 structural fingerprint shared by download tripwires and service sweeps.
+func ComputeConflictFingerprint(parts ...string) string {
+	h := sha256.New()
+	for i, p := range parts {
+		if i > 0 {
+			_, _ = h.Write([]byte{'\x1f'})
+		}
+		_, _ = h.Write([]byte(strings.TrimSpace(p)))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// BilibiliVideoConflictFingerprint computes the canonical structural fingerprint
+// for a Bilibili video across service probes and download tripwires.
+func BilibiliVideoConflictFingerprint(bvid string, pages []bilibili.VideoPage, title, desc string) string {
+	tokens := make([]string, 0, len(pages))
+	for _, pg := range pages {
+		tokens = append(tokens, fmt.Sprintf("P%02d:%d:%d", pg.Page, pg.CID, pg.Duration))
+	}
+	return ComputeConflictFingerprint(
+		"bilibili:video:"+strings.TrimSpace(bvid),
+		strings.Join(tokens, ","),
+		NormalizeConflictText(title),
+		NormalizeConflictText(desc),
+	)
+}
+
+// BilibiliDynamicConflictFingerprint computes the canonical structural
+// fingerprint for a Bilibili dynamic (including flattened origin media).
+func BilibiliDynamicConflictFingerprint(dynID string, imageURLs []string, videoBVIDs []string, title, text string) string {
+	seenImg := make(map[string]bool, len(imageURLs))
+	imgPaths := make([]string, 0, len(imageURLs))
+	for _, raw := range imageURLs {
+		p := cleanDynamicURLPathForFingerprint(raw)
+		if p != "" && !seenImg[p] {
+			seenImg[p] = true
+			imgPaths = append(imgPaths, p)
+		}
+	}
+	seenVid := make(map[string]bool, len(videoBVIDs))
+	vidRefs := make([]string, 0, len(videoBVIDs))
+	for _, raw := range videoBVIDs {
+		bvid := strings.TrimPrefix(strings.TrimSpace(raw), "video:")
+		if bvid != "" && !seenVid[bvid] {
+			seenVid[bvid] = true
+			vidRefs = append(vidRefs, "video:"+bvid)
+		}
+	}
+	return ComputeConflictFingerprint(
+		"bilibili:dynamic:"+strings.TrimSpace(dynID),
+		strings.Join(imgPaths, ","),
+		strings.Join(vidRefs, ","),
+		NormalizeConflictText(title),
+		NormalizeConflictText(text),
+	)
+}
+
+func cleanDynamicURLPathForFingerprint(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return ""
+	}
+	if u, err := url.Parse(trimmed); err == nil && u.Path != "" {
+		return u.Path
+	}
+	if idx := strings.IndexAny(trimmed, "?#"); idx >= 0 {
+		trimmed = trimmed[:idx]
+	}
+	return trimmed
+}
+
+// WorkConflictFingerprint computes the canonical structural fingerprint for a
+// Douyin, Weibo, or X work shared by service list-diff sweeps and download tripwires.
+func WorkConflictFingerprint(siteID, remoteKind, targetID string, assetIDs []string, editCount int, pageCount int, singleVideoDurationSec int, focalText string) string {
+	normSite := strings.ToLower(strings.TrimSpace(siteID))
+	normKind := "dynamic"
+	if strings.EqualFold(strings.TrimSpace(remoteKind), "video") || strings.EqualFold(strings.TrimSpace(remoteKind), "single_mp4") {
+		normKind = "video"
+	}
+	normTarget := strings.TrimSpace(targetID)
+	if normSite == "weibo" && normKind == "video" {
+		normTarget = strings.ReplaceAll(normTarget, ":", "_")
+	}
+	cleaned := make([]string, 0, len(assetIDs))
+	for _, raw := range assetIDs {
+		if tok := library.SanitizeMediaToken(raw); tok != "" {
+			cleaned = append(cleaned, tok)
+		}
+	}
+	if pageCount > 0 {
+		singleVideoDurationSec = 0
+	}
+	return ComputeConflictFingerprint(
+		normSite,
+		normKind,
+		normTarget,
+		strings.Join(cleaned, ","),
+		fmt.Sprintf("%d", max(0, editCount)),
+		fmt.Sprintf("%d", max(0, pageCount)),
+		fmt.Sprintf("%d", max(0, singleVideoDurationSec)),
+		NormalizeConflictText(focalText),
+	)
 }

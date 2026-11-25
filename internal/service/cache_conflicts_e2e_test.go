@@ -12,12 +12,15 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/chialecode/trace/internal/download"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site/bilibili"
+	"github.com/chialecode/trace/internal/site/weibo"
+	"github.com/chialecode/trace/internal/site/x"
 )
 
 func TestFullPipelineConflictKeepBothArchiveMixedReuseAndUpgradeProtection(t *testing.T) {
@@ -309,5 +312,252 @@ func TestFullPipelineConflictKeepBothArchiveMixedReuseAndUpgradeProtection(t *te
 	afterDanmaku, err := os.ReadFile(filepath.Join(dir3, "P01.danmaku.xml"))
 	if err != nil || !strings.Contains(string(afterDanmaku), "珍贵早期弹幕快照") {
 		t.Fatalf("monotonic danmaku snapshot lost during queue upgrade: err=%v got=%q", err, string(afterDanmaku))
+	}
+}
+
+func TestCrossLayerFingerprintKeepLocalSuppressionLongTextEnrichmentAndQueueSupplementQuota(t *testing.T) {
+	nowStart := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	clock := newFakeQueueClock(nowStart)
+
+	var (
+		mu      sync.Mutex
+		curCID  int64 = 50002 // V2 CID (local has V1 CID 50001)
+		biliSrv *httptest.Server
+	)
+	biliSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/x/web-interface/nav":
+			_, _ = fmt.Fprint(w, `{"code":0,"data":{"isLogin":true,"mid":778899,"uname":"测试用户","wbi_img":{"img_url":"https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png","sub_url":"https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png"}}}`)
+		case "/1001":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = fmt.Fprint(w, `<html><script id="__RENDER_DATA__" type="application/json">%7B%22access_id%22%3A%22synth_webid%22%7D</script></html>`)
+		case "/x/space/wbi/arc/search":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"page": map[string]any{"pn": 1, "ps": 30, "count": 1},
+					"list": map[string]any{
+						"vlist": []map[string]any{
+							{"bvid": "BV1fpSync0001", "aid": 51, "title": "跨层指纹一致性V2", "description": "简介V2", "length": "00:02", "created": nowStart.Add(-20 * 24 * time.Hour).Unix(), "mid": 1001, "author": "UP"},
+						},
+					},
+				},
+			})
+		case "/x/web-interface/wbi/view", "/x/web-interface/view":
+			if r.URL.Query().Get("bvid") == "BV1supQuota01" {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"code": 0,
+					"data": map[string]any{
+						"bvid": "BV1supQuota01", "aid": 52, "title": "补弹幕额度", "desc": "",
+						"pubdate": nowStart.Add(-10 * 24 * time.Hour).Unix(), "duration": 2,
+						"owner": map[string]any{"mid": 1001, "name": "UP"},
+						"pages": []map[string]any{
+							{"cid": 60001, "page": 1, "part": "P1", "duration": 2},
+						},
+					},
+				})
+				return
+			}
+			mu.Lock()
+			cid := curCID
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"bvid": "BV1fpSync0001", "aid": 51, "title": "跨层指纹一致性V2", "desc": "简介V2",
+					"pubdate": nowStart.Add(-20 * 24 * time.Hour).Unix(), "duration": 2,
+					"owner": map[string]any{"mid": 1001, "name": "UP"},
+					"pages": []map[string]any{
+						{"cid": cid, "page": 1, "part": "P1", "duration": 2},
+					},
+				},
+			})
+		case "/x/v2/dm/web/seg.so":
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(bilibili.EncodeDmSegMobileReply([]bilibili.DanmakuElem{
+				{ID: 1, IDStr: "1", Progress: 500, Mode: 1, Fontsize: 25, Color: 0xFFFFFF, Content: "补齐弹幕"},
+			}))
+		case "/x/player/wbi/v2":
+			_, _ = fmt.Fprint(w, `{"code":0,"data":{"subtitle":{"subtitles":[]}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer biliSrv.Close()
+
+	loc := testLocations(t)
+	b, err := NewBackend(Options{
+		Locations:        loc,
+		Desktop:          NewMockDesktop(),
+		DisableBgWorkers: true,
+		CacheQueueClock:  clock,
+		CacheQueueRand:   func(int) int { return 0 },
+		BilibiliOpts: bilibili.ClientOptions{
+			Endpoints: bilibili.Endpoints{
+				APIBase: biliSrv.URL, PassportBase: biliSrv.URL, WWWBase: biliSrv.URL,
+				SpaceBase: biliSrv.URL, DynamicBase: biliSrv.URL, LiveAPIBase: biliSrv.URL, LiveWebBase: biliSrv.URL,
+			},
+			PacingInterval: -1,
+			AllowLocalhost: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		_ = b.Close()
+	}()
+	if err := b.dl.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.ImportCookie(ctx, "SESSDATA=synth_fp; bili_jct=csrf_fp; DedeUserID=778899", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1) Download tripwire V2 -> keep_local -> 7-day fullCache V2 MUST stay suppressed; V3 MUST reopen!
+	dir := filepath.Join(b.lib.CacheDir(), "bilibili", "1001", "videos", "BV1fpSync0001")
+	mf := writeVerifiedLocalFile(t, dir, "P01.mp4", []byte("V1_FP_SYNC"), "video", 1920, 1080, 2)
+	if _, err := b.lib.SaveItem(dir, library.ItemMetadata{
+		Version: 1, ID: "video:BV1fpSync0001", Site: "bilibili", Kind: "video", Status: "complete",
+		Title: "旧标题V1", Desc: "旧简介", PubTs: nowStart.Add(-20 * 24 * time.Hour).Unix(), Duration: 2,
+		CacheStandardVersion: library.CurrentCacheStandardVersion,
+		Author:               library.ItemAuthor{Site: "bilibili", Mid: 1001, UID: "1001", Name: "UP"},
+		Media:                []library.MediaFile{mf},
+		Parts: []library.VideoPartRecord{{
+			CID: 50001, Page: 1, Title: "P1", Duration: 2, File: "P01.mp4",
+			Video: library.PartVideoInfo{Quality: 80, QualityName: "1080P 高清"},
+			Audio: library.PartAudioInfo{Quality: 30280, Name: "192K 高音质"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := b.EnqueueVideoCache(ctx, download.VideoEnqueueRequest{BVID: "BV1fpSync0001", Source: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wErr := b.dl.WaitTasks(ctx, tasks[0].TaskID); !errors.Is(wErr, download.ErrConflictDetected) {
+		t.Fatalf("expected ErrConflictDetected from tripwire, got %v", wErr)
+	}
+	list1, _ := b.ListCacheConflicts()
+	if len(list1) != 1 {
+		t.Fatalf("expected 1 conflict after tripwire, got %+v", list1)
+	}
+	if err := b.ResolveCacheConflict(ctx, list1[0].ID, ConflictKeepLocal); err != nil {
+		t.Fatalf("ResolveCacheConflict(keep_local): %v", err)
+	}
+
+	// Run fullCache sweep over unchanged V2: Gate A triggers probeBilibiliCachedVideo, which MUST match ignoredRevisions!
+	b.queue.Start(ctx)
+	qTask, err := b.EnqueueCacheQueue(ctx, CacheQueueRequest{Site: "bilibili", List: "videos", User: "1001", Origin: QueueOriginFullCache})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitQueuePredicate(t, b, qTask.ID, "fullCache V2 suppressed", func(qt CacheQueueTask) bool {
+		return qt.Status == CacheQueueCompleted
+	})
+	if afterV2, _ := b.ListCacheConflicts(); len(afterV2) != 0 {
+		t.Fatalf("cross-layer RemoteFingerprint mismatch falsely re-opened ignored V2 conflict: %+v", afterV2)
+	}
+
+	// Advance remote to V3 (CID 50003) and run another sweep -> conflict MUST reopen!
+	_ = b.RemoveCacheQueue(qTask.ID)
+	mu.Lock()
+	curCID = 50003
+	mu.Unlock()
+	qTaskV3, err := b.EnqueueCacheQueue(ctx, CacheQueueRequest{Site: "bilibili", List: "videos", User: "1001", Origin: QueueOriginFullCache})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitQueuePredicate(t, b, qTaskV3.ID, "fullCache V3 reopened", func(qt CacheQueueTask) bool {
+		return qt.Status == CacheQueueCompleted
+	})
+	if afterV3, _ := b.ListCacheConflicts(); len(afterV3) != 1 {
+		t.Fatalf("expected V3 CID change to reopen conflict, got %+v", afterV3)
+	}
+
+	// 2) Weibo LongText safe enrichment & scrubbed-URL text comparison false-positive check.
+	wbDir := filepath.Join(b.lib.CacheDir(), "weibo", "5001", "posts", "5099001")
+	wbImg := writeVerifiedLocalFile(t, wbDir, "images/01.jpg", []byte("WB_IMG"), "image", 800, 600, 0)
+	wbTruncMeta, err := b.lib.SaveItem(wbDir, library.ItemMetadata{
+		Version: 1, ID: "dynamic:5099001", Site: "weibo", Kind: "dynamic", Status: "complete",
+		Title: "微博长文截断", Text: "这是一段完整的微博开头摘要部分...展开",
+		Author:    library.ItemAuthor{Site: "weibo", UID: "5001", Name: "博主"},
+		Media:     []library.MediaFile{wbImg},
+		AssetIDs:  []string{"005XpicLong1"},
+		NotePages: []library.NotePageRecord{{Index: 1, Kind: "image", MediaID: "005XpicLong1", Image: "images/01.jpg", Width: 800, Height: 600}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wbLongPost := weibo.Post{
+		Mid:             "5099001",
+		IsLongText:      true,
+		LongTextFetched: true,
+		Text:            "这是一段完整的微博开头摘要部分，后面补充了第二段与第三段完整正文。",
+		Author:          weibo.AuthorSummary{UID: "5001", ScreenName: "博主"},
+		Images:          []weibo.ImageAsset{{Index: 1, PicID: "005XpicLong1", Kind: weibo.MediaKindImage, URL: "https://wx1.sinaimg.cn/large/005XpicLong1.jpg"}},
+	}
+	if dec := b.inspectWeiboCachedPost(wbLongPost, wbTruncMeta, QueueOriginFullCache); dec.action != inspectEnqueue {
+		t.Fatalf("expected truncated Weibo LongText expansion to inspectEnqueue, got action=%v conflict=%+v", dec.action, dec.conflict)
+	}
+
+	// Scrubbed media/signed URL in X & Weibo text must NOT trigger false ConflictReasonText.
+	xDir := filepath.Join(b.lib.CacheDir(), "x", "9001", "posts", "1899001")
+	xMeta, err := b.lib.SaveItem(xDir, library.ItemMetadata{
+		Version: 1, ID: "dynamic:1899001", Site: "x", Kind: "dynamic", Status: "complete",
+		Title: "X帖", Text: "Hello X post https://video.twimg.com/ext_tw_video/1/pu/vid/v.mp4?tag=12",
+		CacheStandardVersion: library.CurrentCacheStandardVersion,
+		Author:               library.ItemAuthor{Site: "x", UID: "9001", Name: "XUser"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	xSamePost := x.Post{
+		ID:     "1899001",
+		Text:   "Hello X post https://video.twimg.com/ext_tw_video/1/pu/vid/v.mp4?tag=12",
+		Author: x.AuthorSummary{RestID: "9001", Name: "XUser", ScreenName: "xuser"},
+	}
+	if dec := b.inspectXCachedPost(xSamePost, xMeta, QueueOriginFullCache); dec.action != inspectSkipNoOp {
+		t.Fatalf("scrubbed video.twimg.com URL triggered false X conflict/enqueue: action=%v conflict=%+v", dec.action, dec.conflict)
+	}
+
+	// 3) Queue-triggered CacheSupplementWithSource(..., "queue") sets Source="queue" and counts automatic quota.
+	var autoQuotaCalls atomic.Int32
+	b.bili.SetAutomaticRequestHandlers(func() error {
+		autoQuotaCalls.Add(1)
+		return b.subs.AutomaticRequestAllowed()
+	}, b.subs.RecordAutomaticStop)
+
+	supDir := filepath.Join(b.lib.CacheDir(), "bilibili", "1001", "videos", "BV1supQuota01")
+	supVid := writeVerifiedLocalFile(t, supDir, "P01.mp4", []byte("SUP_VID"), "video", 1920, 1080, 2)
+	if _, err := b.lib.SaveItem(supDir, library.ItemMetadata{
+		Version: 1, ID: "video:BV1supQuota01", Site: "bilibili", Kind: "video", Status: "complete",
+		Title: "补弹幕额度", PubTs: nowStart.Add(-10 * 24 * time.Hour).Unix(), Duration: 2,
+		Author: library.ItemAuthor{Site: "bilibili", Mid: 1001, UID: "1001", Name: "UP"},
+		Media:  []library.MediaFile{supVid},
+		Parts: []library.VideoPartRecord{{
+			CID: 60001, Page: 1, Title: "P1", Duration: 2, File: "P01.mp4",
+			Video: library.PartVideoInfo{Quality: 80, QualityName: "1080P 高清"},
+			Audio: library.PartAudioInfo{Quality: 30280, Name: "192K 高音质"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	supTask, err := b.dl.CacheSupplementWithSource(ctx, "BV1supQuota01", "queue")
+	if err != nil {
+		t.Fatalf("CacheSupplementWithSource(queue): %v", err)
+	}
+	if supTask.Source != "queue" {
+		t.Fatalf("CacheSupplementWithSource Source = %q, want queue", supTask.Source)
+	}
+	if err := b.dl.WaitTasks(ctx, supTask.TaskID); err != nil {
+		t.Fatalf("WaitTasks(CacheSupplementWithSource): %v", err)
+	}
+	if autoQuotaCalls.Load() == 0 {
+		t.Fatalf("expected queue supplement to invoke Bilibili automatic quota handler, got 0 calls")
 	}
 }

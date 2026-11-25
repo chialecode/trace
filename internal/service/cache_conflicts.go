@@ -2,8 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -807,16 +805,11 @@ func durationDiffExceeds(localSec, remoteSec int) bool {
 }
 
 func normComparableText(s string) string {
-	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+	return download.NormalizeConflictText(s)
 }
 
 func substantiveTextChanged(localText, remoteText string) bool {
 	return normComparableText(localText) != normComparableText(remoteText)
-}
-
-func hashStructuralFingerprint(parts ...string) string {
-	sum := sha256.Sum256([]byte(strings.Join(parts, "\x1f")))
-	return "fp_" + hex.EncodeToString(sum[:16])
 }
 
 func metaVideoMediaID(meta library.ItemMetadata) string {
@@ -920,20 +913,31 @@ func (b *Backend) inspectDouyinCachedWork(detail douyin.WorkDetail, meta library
 	}
 
 	var remoteAssets []string
+	singleVidDur := 0
 	if remoteKind == "video" {
 		if mid := douyinDetailMediaID(&detail); mid != "" {
 			remoteAssets = []string{mid}
 		}
+		singleVidDur = detail.DurationSec
+		if singleVidDur <= 0 && detail.Video != nil && detail.Video.DurationSec > 0 {
+			singleVidDur = detail.Video.DurationSec
+		}
 	} else {
 		for _, pg := range detail.Pages {
-			remoteAssets = append(remoteAssets, firstNonEmpty(douyinPageMediaID(pg), pg.Kind))
+			if mid := douyinPageMediaID(pg); mid != "" {
+				remoteAssets = append(remoteAssets, mid)
+			}
 		}
 	}
-	fp := hashStructuralFingerprint(
-		"douyin", remoteKind, detail.ID,
-		strings.Join(remoteAssets, ","),
-		strconv.Itoa(detail.DurationSec),
-		normComparableText(detail.Desc),
+	fp := download.WorkConflictFingerprint(
+		"douyin",
+		remoteKind,
+		detail.ID,
+		remoteAssets,
+		0,
+		len(detail.Pages),
+		singleVidDur,
+		detail.Desc,
 	)
 	originTag := firstNonEmpty(queueOrigin, "cache_queue")
 
@@ -1087,18 +1091,32 @@ func (b *Backend) inspectWeiboCachedPost(post weibo.Post, meta library.ItemMetad
 	images, singleVideo := post.EffectiveMedia()
 	remoteSingleVid := singleVideo != nil && len(images) == 0
 	var remoteAssets []string
+	fpKind := "dynamic"
+	fpPages := len(images)
+	fpVidDur := 0
 	if remoteSingleVid {
-		remoteAssets = []string{firstNonEmpty(library.SanitizeMediaToken(singleVideo.ObjectID), "video")}
+		fpKind = "video"
+		fpPages = 0
+		fpVidDur = singleVideo.DurationSec
+		if oid := library.SanitizeMediaToken(singleVideo.ObjectID); oid != "" {
+			remoteAssets = []string{oid}
+		}
 	} else {
 		for _, img := range images {
-			remoteAssets = append(remoteAssets, firstNonEmpty(weiboImageMediaID(img), img.Kind))
+			if mid := weiboImageMediaID(img); mid != "" {
+				remoteAssets = append(remoteAssets, mid)
+			}
 		}
 	}
-	fp := hashStructuralFingerprint(
-		"weibo", meta.Kind, post.Mid,
-		strconv.Itoa(post.EditCount),
-		strings.Join(remoteAssets, ","),
-		normComparableText(post.Text),
+	fp := download.WorkConflictFingerprint(
+		"weibo",
+		fpKind,
+		post.Mid,
+		remoteAssets,
+		max(0, post.EditCount),
+		fpPages,
+		fpVidDur,
+		post.Text,
 	)
 	originTag := firstNonEmpty(queueOrigin, "cache_queue")
 
@@ -1162,14 +1180,20 @@ func (b *Backend) inspectWeiboCachedPost(post weibo.Post, meta library.ItemMetad
 
 		localBody := firstNonEmpty(meta.Text, meta.Desc)
 		fullRemoteTextAvailable := !post.IsLongText || post.LongTextFetched
-		if post.EditCount > 0 && meta.EditCount > 0 && post.EditCount > meta.EditCount {
+		editAdvanced := post.EditCount > 0 && meta.EditCount > 0 && post.EditCount > meta.EditCount
+		if editAdvanced {
 			return makeConflict(ConflictReasonText, fmt.Sprintf("源站微博已重新编辑（第 %d 次编辑）", post.EditCount))
 		}
 		if fullRemoteTextAvailable && substantiveTextChanged(localBody, post.Text) {
-			if post.EditCount > 0 {
-				return makeConflict(ConflictReasonText, fmt.Sprintf("源站微博正文已编辑（第 %d 次编辑）", post.EditCount))
+			isLongTextExpansion := post.IsLongText && (strings.HasSuffix(strings.TrimSpace(localBody), "...展开") ||
+				strings.HasSuffix(strings.TrimSpace(localBody), "…展开") ||
+				download.LooksLikeTruncatedTextPrefix(localBody, post.Text))
+			if !isLongTextExpansion && !download.LooksLikeTruncatedTextPrefix(post.Text, localBody) {
+				if post.EditCount > 0 {
+					return makeConflict(ConflictReasonText, fmt.Sprintf("源站微博正文已编辑（第 %d 次编辑）", post.EditCount))
+				}
+				return makeConflict(ConflictReasonText, "源站微博正文内容已修改")
 			}
-			return makeConflict(ConflictReasonText, "源站微博正文内容已修改")
 		}
 	}
 
@@ -1243,20 +1267,40 @@ func (b *Backend) inspectXCachedPost(post x.Post, meta library.ItemMetadata, que
 
 	mediaItems, singleVideo, _ := post.EffectiveMediaWithOrigin()
 	var remoteMediaKeys []string
-	for _, m := range mediaItems {
-		remoteMediaKeys = append(remoteMediaKeys, firstNonEmpty(library.SanitizeMediaToken(m.MediaKey), m.Kind))
-	}
-	var cleanEditIDs []string
-	for _, eid := range post.EditTweetIDs {
-		if tok := library.SanitizeMediaToken(eid); tok != "" {
-			cleanEditIDs = append(cleanEditIDs, tok)
+	fpKind := "dynamic"
+	fpPages := len(mediaItems)
+	fpVidDur := 0
+	if singleVideo != nil {
+		fpKind = "video"
+		fpPages = 0
+		fpVidDur = singleVideo.DurationSec
+		if mk := library.SanitizeMediaToken(singleVideo.MediaKey); mk != "" {
+			remoteMediaKeys = []string{mk}
+		}
+	} else if len(mediaItems) == 1 && mediaItems[0].Kind == x.MediaKindVideo && !mediaItems[0].GIF {
+		fpKind = "video"
+		fpPages = 0
+		fpVidDur = mediaItems[0].DurationSec
+		if mk := library.SanitizeMediaToken(mediaItems[0].MediaKey); mk != "" {
+			remoteMediaKeys = []string{mk}
+		}
+	} else {
+		for _, m := range mediaItems {
+			if mk := library.SanitizeMediaToken(m.MediaKey); mk != "" {
+				remoteMediaKeys = append(remoteMediaKeys, mk)
+			}
 		}
 	}
-	fp := hashStructuralFingerprint(
-		"x", post.ID,
-		strings.Join(cleanEditIDs, ","),
-		strings.Join(remoteMediaKeys, ","),
-		normComparableText(post.Text),
+	xEdits, _ := xEditMetadata(&post)
+	fp := download.WorkConflictFingerprint(
+		"x",
+		fpKind,
+		post.ID,
+		remoteMediaKeys,
+		xEdits,
+		fpPages,
+		fpVidDur,
+		post.Text,
 	)
 	originTag := firstNonEmpty(queueOrigin, "cache_queue")
 
@@ -1479,9 +1523,9 @@ func (b *Backend) inspectBilibiliCachedDynamic(d bilibili.DynamicItem, meta libr
 	}
 
 	effImgs, effVids := effectiveBiliDynamicMedia(d)
-	var remoteImgPaths []string
+	var remoteImgURLs []string
 	for _, img := range effImgs {
-		remoteImgPaths = append(remoteImgPaths, urlCleanPath(img.URL))
+		remoteImgURLs = append(remoteImgURLs, img.URL)
 	}
 	var remoteBVIDs []string
 	for _, v := range effVids {
@@ -1490,13 +1534,7 @@ func (b *Backend) inspectBilibiliCachedDynamic(d bilibili.DynamicItem, meta libr
 		}
 	}
 
-	fp := hashStructuralFingerprint(
-		"bilibili", "dynamic", d.ID,
-		strings.Join(remoteImgPaths, ","),
-		strings.Join(remoteBVIDs, ","),
-		normComparableText(d.Title),
-		normComparableText(d.Text),
-	)
+	fp := download.BilibiliDynamicConflictFingerprint(d.ID, remoteImgURLs, remoteBVIDs, d.Title, d.Text)
 	originTag := firstNonEmpty(queueOrigin, "cache_queue")
 
 	if hasValidLocalCache(meta) {
@@ -1768,20 +1806,13 @@ func (b *Backend) probeBilibiliCachedVideo(
 	// Build structural fingerprint and compare cached parts' CIDs & ordering.
 	remoteByPage := make(map[int]bilibili.VideoPage, len(vd.Pages))
 	remoteCIDPage := make(map[int64]int, len(vd.Pages))
-	var pageTokens []string
 	for _, pg := range vd.Pages {
 		remoteByPage[pg.Page] = pg
 		if pg.CID > 0 {
 			remoteCIDPage[pg.CID] = pg.Page
 		}
-		pageTokens = append(pageTokens, fmt.Sprintf("P%d:%d:%d", pg.Page, pg.CID, pg.Duration))
 	}
-	fp := hashStructuralFingerprint(
-		"bilibili", "video", bvid,
-		strings.Join(pageTokens, ","),
-		normComparableText(vd.Title),
-		normComparableText(vd.Desc),
-	)
+	fp := download.BilibiliVideoConflictFingerprint(bvid, vd.Pages, vd.Title, vd.Desc)
 
 	var conflictSummary string
 	maxCachedPage := 0
@@ -1976,7 +2007,7 @@ func (b *Backend) probeBilibiliCachedVideo(
 		if freshMeta.ItemDir != "" {
 			_, _ = b.lib.SaveItem(freshMeta.ItemDir, freshMeta)
 		}
-		t, sErr := b.dl.CacheSupplement(probeCtx, freshMeta.RawID)
+		t, sErr := b.dl.CacheSupplementWithSource(probeCtx, freshMeta.RawID, "queue")
 		if sErr != nil {
 			return queueEnqueued{}, sErr
 		}
