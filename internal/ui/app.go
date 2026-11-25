@@ -460,10 +460,10 @@ type App struct {
 	SubFeedError     string
 	subFeedDirty     bool
 	SubRuleMenuOpen  bool
-	// RuleDraft is the cache rule being edited in Settings (ID "" = new).
-	RuleDraft *subscription.CacheRule
-	RuleError string
-	RuleBatch RuleBatchDialogState
+	// RuleBatch manages subscriptions of one capability tag; MultiTagBatch
+	// batch-adds, removes, or replaces multiple capability tags across subscriptions.
+	RuleBatch     RuleBatchDialogState
+	MultiTagBatch MultiTagBatchDialogState
 	// LibraryRefresh is the media library's "刷新" and its result dialog.
 	LibraryRefresh LibraryRefreshState
 	// Remote is Settings › 远程; Transfer is 媒体库 › 导入…/导出…; SubFile is
@@ -1176,6 +1176,9 @@ func (a *App) View(c *ui.Context) {
 	}
 	if a.RuleBatch.Open {
 		a.renderRuleBatchOverlay(c, w, h)
+	}
+	if a.MultiTagBatch.Open {
+		a.renderMultiTagBatchOverlay(c, w, h)
 	}
 	if a.SubscribePicker.Open {
 		a.renderSubscribePickerOverlay(c, w, h)

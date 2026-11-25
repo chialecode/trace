@@ -20,7 +20,7 @@ var settingsCategories = []struct {
 	{"account", "user", "账号"},
 	{"download", "download", "缓存与下载"},
 	{"quality", "play", "画质与音质"},
-	{"rules", "grid", "缓存规则"},
+	{"rules", "grid", "缓存标签"},
 	{"subscription", "refresh", "订阅与直播"},
 	{"storage", "folder", "存储"},
 	{"general", "sliders", "常规"},

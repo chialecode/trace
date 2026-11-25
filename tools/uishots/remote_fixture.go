@@ -132,12 +132,16 @@ func shotTransferJobs() []service.TransferJob {
 
 func shotSubPreview() *subscription.ImportPreview {
 	return &subscription.ImportPreview{
-		New: []subscription.ImportSub{{ID: "s-new", Name: "纪录片", Accounts: []string{"bilibili:30001", "bilibili:30002"}, RuleName: "自动存视频与图文"}},
+		New: []subscription.ImportSub{{
+			ID:          "s-new",
+			Name:        "纪录片",
+			Accounts:    []string{"bilibili:30001", "bilibili:30002"},
+			Tags:        []string{subscription.TagScheduledCheck, subscription.TagCacheVideo, subscription.TagCacheDraw},
+			TagsSummary: "定时检查 · 自动缓存视频 · 自动缓存图文",
+		}},
 		Existing: []subscription.ImportExistingAccount{{Site: "bilibili", UID: "20001", Name: "影视飓风", ImportedSubID: "s-tech", ImportedSub: "科技",
 			LocalSubID: "s-local", LocalSub: "数码"}},
-		Rules: []subscription.ImportRuleConflict{{ID: "rule-auto", LocalName: "自动存视频与图文", LocalSummary: "视频 1080P · 图文",
-			ImportedName: "自动存视频与图文", ImportedSummary: "视频最高画质 · 图文 · 直播录制"}},
-		NewRules: 1, Unchanged: 2,
+		Unchanged: 2,
 	}
 }
 
@@ -204,7 +208,7 @@ func remoteShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 			reset()
 			app.Navigate(ui.RouteSubscriptions)
 			app.SubDetailOpen = false
-			app.SubFile = ui.SubFileUIState{ImportOpen: true, ImportPath: `D:\backup\trace-subscriptions.json`, Preview: shotSubPreview(), UseImported: map[string]bool{}}
-		}, RequiredLabels: []string{"导入订阅对话框", "合并进已有订阅开关", "用导入的规则：rule-auto", "确认导入订阅"}},
+			app.SubFile = ui.SubFileUIState{ImportOpen: true, ImportPath: `D:\backup\trace-subscriptions.json`, Preview: shotSubPreview()}
+		}, RequiredLabels: []string{"导入订阅对话框", "合并进已有订阅开关", "合并导入缓存标签开关", "确认导入订阅"}},
 	}
 }

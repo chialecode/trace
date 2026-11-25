@@ -324,24 +324,17 @@ func TestWeiboFullCacheQueueOriginalOnlyReuseBottomTipsAndSweep(t *testing.T) {
 		t.Fatalf("RemoveCacheQueue: %v", err)
 	}
 	// Create a full_cache subscription for synthWeiboUID and trigger startDueFullCacheSweeps.
-	rule, err := h.backend.SaveCacheRule(subscription.CacheRule{
-		Name:      "微博全量规则",
-		FullCache: true,
-	})
-	if err != nil {
-		t.Fatalf("SaveCacheRule: %v", err)
-	}
 	sub, err := h.backend.CreateSubscription(
 		"微博全量订阅",
 		"",
 		[]subscription.AccountRef{{Site: "weibo", UID: synthWeiboUID, Name: synthWeiboName}},
-		subscription.SubRules{FullCache: true},
+		subscription.DefaultSubRules(),
 	)
 	if err != nil {
 		t.Fatalf("CreateSubscription: %v", err)
 	}
-	if _, err := h.backend.SetSubscriptionRule(sub.ID, rule.ID); err != nil {
-		t.Fatalf("SetSubscriptionRule: %v", err)
+	if _, err := h.backend.SetSubscriptionTags(sub.ID, []string{subscription.TagFullCache}); err != nil {
+		t.Fatalf("SetSubscriptionTags: %v", err)
 	}
 
 	started := h.backend.startDueFullCacheSweeps(ctx, time.Now())

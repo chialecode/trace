@@ -493,8 +493,7 @@ func TestRunEndToEndWithoutLeakingSecrets(t *testing.T) {
 	bg := context.Background()
 
 	snap := subscription.Snapshot{Format: subscription.SnapshotFormat, Version: subscription.SnapshotVersion,
-		Rules:         []subscription.CacheRule{{ID: "r1", Name: "合成规则", FullCache: true}},
-		Subscriptions: []subscription.SnapshotSubscription{{ID: "s1", Name: "合成订阅", RuleID: "r1", Accounts: []subscription.SnapshotAccount{{Site: "bilibili", UID: "1001", Name: "UP"}}}}}
+		Subscriptions: []subscription.SnapshotSubscription{{ID: "s1", Name: "合成订阅", Tags: []string{subscription.TagFullCache}, Accounts: []subscription.SnapshotAccount{{Site: "bilibili", UID: "1001", Name: "UP"}}}}}
 	raw, _ := json.Marshal(snap)
 	info, err := c.PutSubscriptions(bg, raw)
 	if err != nil {

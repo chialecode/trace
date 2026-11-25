@@ -519,11 +519,11 @@ func TestSubscriptionGridParseStatusLogsAndTaskRemoval(t *testing.T) {
 	if !app.SubDetailOpen || app.SelectedSubID != subA.ID {
 		t.Fatalf("expected clicking avatar to open subscription detail for %s", subA.ID)
 	}
-	// DEC-040 & DEC-051 ⑦: tabs are "内容" (default) and "账号"; no "直播", "更新", "已缓存" or "规则" tabs; the rule is one button.
+	// DEC-040, DEC-051 ⑦ & DEC-070: tabs are "内容" (default) and "账号"; no "直播", "更新", "已缓存" or "规则" tabs; capability tags show in header & inline chips.
 	if app.SubDetailTab != "content" {
 		t.Fatalf("expected default SubDetailTab=content, got %q", app.SubDetailTab)
 	}
-	for _, tabLabel := range []string{"订阅标签：内容", "订阅标签：账号", "订阅缓存规则：默认"} {
+	for _, tabLabel := range []string{"订阅标签：内容", "订阅标签：账号", "订阅缓存标签菜单", "订阅详情缓存标签栏"} {
 		if _, ok := tt.Find(tabLabel); !ok {
 			t.Fatalf("expected %s in subscription detail", tabLabel)
 		}

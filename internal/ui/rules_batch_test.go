@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/chialecode/trace/internal/service"
@@ -13,63 +14,60 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-type ruleBatchSpyBackend struct {
+type tagBatchSpyBackend struct {
 	service.BackendAPI
-	batchCalls int
-	lastRuleID string
-	lastSubIDs []string
-	forceErr   error
+	perTagCalls   int
+	lastTagID     string
+	lastTagSubIDs []string
+	multiCalls    int
+	lastMultiMode string
+	lastMultiTags []string
+	lastMultiSubs []string
+	forceErr      error
 }
 
-func (s *ruleBatchSpyBackend) SetSubscriptionsRule(ruleID string, subIDs []string) error {
-	s.batchCalls++
-	s.lastRuleID = ruleID
-	s.lastSubIDs = append([]string(nil), subIDs...)
+func (s *tagBatchSpyBackend) SetTagSubscriptions(tagID string, subIDs []string) error {
+	s.perTagCalls++
+	s.lastTagID = tagID
+	s.lastTagSubIDs = append([]string(nil), subIDs...)
 	if s.forceErr != nil {
 		return s.forceErr
 	}
-	return s.BackendAPI.SetSubscriptionsRule(ruleID, subIDs)
+	return s.BackendAPI.SetTagSubscriptions(tagID, subIDs)
 }
 
-func seedFiveSubscriptionsForRuleBatch(t *testing.T, app *App) (ruleVideo, ruleLive subscription.CacheRule, subs [5]subscription.Subscription) {
+func (s *tagBatchSpyBackend) BatchUpdateSubscriptionsTags(subIDs []string, mode string, tags []string) error {
+	s.multiCalls++
+	s.lastMultiSubs = append([]string(nil), subIDs...)
+	s.lastMultiMode = mode
+	s.lastMultiTags = append([]string(nil), tags...)
+	if s.forceErr != nil {
+		return s.forceErr
+	}
+	return s.BackendAPI.BatchUpdateSubscriptionsTags(subIDs, mode, tags)
+}
+
+func seedFiveSubscriptionsForTagBatch(t *testing.T, app *App) [5]subscription.Subscription {
 	t.Helper()
 	if _, err := app.backend.ImportCookie(context.Background(), "SESSDATA=fixture; DedeUserID=12345", ""); err != nil {
 		t.Fatal(err)
 	}
 	app.CompleteLogin()
 
-	var err error
-	ruleVideo, err = app.backend.SaveCacheRule(subscription.CacheRule{
-		Name:           "只存视频",
-		ScheduledCheck: true,
-		AutoCache:      true,
-		Types:          []string{"video"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ruleLive, err = app.backend.SaveCacheRule(subscription.CacheRule{
-		Name:           "自动录播",
-		ScheduledCheck: true,
-		AutoRecord:     true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	specs := []struct {
 		name     string
 		note     string
 		uid      string
 		acctName string
-		ruleID   string
+		tags     []string
 	}{
-		{"阿尔法", "备注日常", "5001", "AlphaOfficial", subscription.DefaultRuleID},
-		{"贝塔", "备注二创", "5002", "BetaChannel", ruleVideo.ID},
-		{"伽马", "备注评测", "5003", "GammaLab", ruleVideo.ID},
-		{"德尔塔", "备注歌回", "5004", "DeltaSinger", ruleLive.ID},
-		{"艾普西隆", "备注杂谈", "5005", "EpsilonTalk", ruleLive.ID},
+		{"阿尔法", "备注日常", "5001", "AlphaOfficial", nil},
+		{"贝塔", "备注二创", "5002", "BetaChannel", []string{subscription.TagScheduledCheck, subscription.TagCacheVideo}},
+		{"伽马", "备注评测", "5003", "GammaLab", []string{subscription.TagScheduledCheck, subscription.TagCacheVideo}},
+		{"德尔塔", "备注歌回", "5004", "DeltaSinger", []string{subscription.TagScheduledCheck, subscription.TagAutoRecord}},
+		{"艾普西隆", "备注杂谈", "5005", "EpsilonTalk", []string{subscription.TagScheduledCheck, subscription.TagAutoRecord}},
 	}
+	var subs [5]subscription.Subscription
 	for i, sp := range specs {
 		created, err := app.backend.CreateSubscription(
 			sp.name,
@@ -80,8 +78,8 @@ func seedFiveSubscriptionsForRuleBatch(t *testing.T, app *App) (ruleVideo, ruleL
 		if err != nil {
 			t.Fatal(err)
 		}
-		if sp.ruleID != subscription.DefaultRuleID {
-			created, err = app.backend.SetSubscriptionRule(created.ID, sp.ruleID)
+		if len(sp.tags) > 0 {
+			created, err = app.backend.SetSubscriptionTags(created.ID, sp.tags)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -89,24 +87,22 @@ func seedFiveSubscriptionsForRuleBatch(t *testing.T, app *App) (ruleVideo, ruleL
 		subs[i] = created
 	}
 	app.RefreshData()
-	return ruleVideo, ruleLive, subs
+	return subs
 }
 
-// In Settings › 缓存规则, expanding a rule offers "选择订阅…", supports
-// instant search (by name, note, account nickname with IME composition guard)
-// and select-all / unselect-all, applies the selection in 1 atomic write to
-// subscriptions.json, reverts unchecked former members to "默认", keeps other
-// rules untouched, and syncs both rule counts and subscription detail's rule
-// button immediately (DEC-051 ⑧).
-func TestCacheRuleBatchSelectSubscriptions(t *testing.T) {
+// In Settings › 缓存标签, clicking "管理订阅…" on a tag opens a searchable
+// checklist (with IME composition guard,全选/全不选), applies the tag membership
+// in 1 atomic write while preserving each subscription's other tags, and syncs
+// tag counts + subscription detail immediately (DEC-051 ⑧, DEC-070).
+func TestCapabilityTagBatchManageSubscriptions(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
 
-	spy := &ruleBatchSpyBackend{BackendAPI: app.backend}
+	spy := &tagBatchSpyBackend{BackendAPI: app.backend}
 	app.backend = spy
 
-	if err := app.backend.SetSubscriptionsRule(subscription.DefaultRuleID, nil); err == nil {
-		t.Fatal("expected SetSubscriptionsRule before login to require authentication")
+	if err := app.backend.SetTagSubscriptions(subscription.TagCacheVideo, nil); err == nil {
+		t.Fatal("expected SetTagSubscriptions before login to require authentication")
 	}
 
 	var ruleUpdatedEvents int
@@ -117,33 +113,29 @@ func TestCacheRuleBatchSelectSubscriptions(t *testing.T) {
 	})
 	defer unsub()
 
-	ruleVideo, ruleLive, subs := seedFiveSubscriptionsForRuleBatch(t, app)
+	subs := seedFiveSubscriptionsForTagBatch(t, app)
 
 	app.SettingsCategory = "rules"
 	app.Navigate(RouteSettings)
 	tt := ui.NewTester(app.View, 1280, 860)
 	tt.Frame()
 
-	if err := tt.Click("缓存规则：只存视频"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if !tt.HasText("使用这条规则的订阅（2）") {
-		t.Fatalf("expected editor to show 2 subscriptions using 只存视频, texts=%v", tt.Texts())
+	if app.tagUseCount(subscription.TagCacheVideo) != 2 {
+		t.Fatalf("expected 2 subscriptions with cache_video initially, got %d", app.tagUseCount(subscription.TagCacheVideo))
 	}
 
-	if err := tt.Click("选择订阅…"); err != nil {
+	if err := tt.Click("管理标签订阅：" + subscription.TagCacheVideo); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if !app.RuleBatch.Open || !tt.HasText("选择使用「只存视频」的订阅") {
-		t.Fatal("batch dialog did not open with expected title")
+	if !app.RuleBatch.Open || !tt.HasText("管理「自动缓存视频」的订阅") {
+		t.Fatalf("per-tag batch dialog did not open with expected title; texts=%v", tt.Texts())
 	}
 	if !tt.HasText("已选 2 个") || !tt.HasText("应用到 2 个订阅") {
 		t.Fatalf("expected 2 pre-selected subscriptions, texts=%v", tt.Texts())
 	}
-	if !tt.HasText("当前：默认") || !tt.HasText("当前：自动录播") {
-		t.Fatalf("expected current rule labels for subscriptions on other rules, texts=%v", tt.Texts())
+	if !tt.HasText("无缓存标签") || !tt.HasText("定时检查 · 开播录制") {
+		t.Fatalf("expected current tag summaries in checklist rows, texts=%v", tt.Texts())
 	}
 
 	// Search box: IME preedit must not prematurely filter out Chinese rows,
@@ -180,8 +172,8 @@ func TestCacheRuleBatchSelectSubscriptions(t *testing.T) {
 	}
 	tt.Frame()
 
-	// Clear all, then pick 3 subscriptions: 阿尔法 (was 默认), 贝塔 (kept 只存视频), 德尔塔 (was 自动录播).
-	// 伽马 (was 只存视频) stays unchecked -> reverts to 默认; 艾普西隆 (was 自动录播) stays 自动录播.
+	// Clear all, then select 阿尔法 (had []), 贝塔 (had [sched, video]), 德尔塔 (had [sched, record]).
+	// 伽马 (had [sched, video]) loses ONLY cache_video while keeping scheduled_check!
 	if err := tt.Click("全不选"); err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +196,7 @@ func TestCacheRuleBatchSelectSubscriptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spy.batchCalls = 0
+	spy.perTagCalls = 0
 	ruleUpdatedEvents = 0
 
 	if err := tt.Click("应用到 3 个订阅"); err != nil {
@@ -213,112 +205,194 @@ func TestCacheRuleBatchSelectSubscriptions(t *testing.T) {
 	tt.Frame()
 
 	if app.RuleBatch.Open {
-		t.Fatal("expected batch dialog to close after successful apply")
+		t.Fatal("expected per-tag batch dialog to close after apply")
 	}
-	if spy.batchCalls != 1 || ruleUpdatedEvents != 1 {
-		t.Fatalf("expected SetSubscriptionsRule once and 1 rules_updated event, got calls=%d events=%d", spy.batchCalls, ruleUpdatedEvents)
+	if spy.perTagCalls != 1 || ruleUpdatedEvents != 1 {
+		t.Fatalf("expected SetTagSubscriptions once and 1 rules_updated event, got calls=%d events=%d", spy.perTagCalls, ruleUpdatedEvents)
 	}
 	bakAfter, err := os.ReadFile(subsPath + ".bak")
 	if err != nil || !bytes.Equal(bakAfter, rawBefore) {
 		t.Fatalf("expected subscriptions.json.bak to match pre-batch file (1 atomic write), err=%v", err)
 	}
-	if !tt.HasText("使用这条规则的订阅（3）") {
-		t.Fatalf("expected rule editor count to refresh to 3 immediately, texts=%v", tt.Texts())
+	if app.tagUseCount(subscription.TagCacheVideo) != 3 {
+		t.Fatalf("expected cache_video count to refresh to 3 immediately, got %d", app.tagUseCount(subscription.TagCacheVideo))
 	}
 
-	// Verify persisted rules across all 5 subscriptions.
-	gotRule := make(map[string]string, 5)
+	gotTags := make(map[string][]string, 5)
 	for _, s := range app.Subscriptions {
-		gotRule[s.ID] = s.RuleID
+		gotTags[s.ID] = s.Tags
 	}
-	wantRule := map[string]string{
-		subs[0].ID: ruleVideo.ID,               // 阿尔法 -> 只存视频
-		subs[1].ID: ruleVideo.ID,               // 贝塔 -> 只存视频
-		subs[2].ID: subscription.DefaultRuleID, // 伽马 -> reverted to 默认
-		subs[3].ID: ruleVideo.ID,               // 德尔塔 -> 只存视频
-		subs[4].ID: ruleLive.ID,                // 艾普西隆 -> unchanged 自动录播
+	wantTags := map[string][]string{
+		subs[0].ID: {subscription.TagCacheVideo},                                                             // 阿尔法 -> gained cache_video
+		subs[1].ID: {subscription.TagScheduledCheck, subscription.TagCacheVideo},                             // 贝塔 -> kept both
+		subs[2].ID: {subscription.TagScheduledCheck},                                                         // 伽马 -> lost cache_video, kept scheduled_check
+		subs[3].ID: {subscription.TagScheduledCheck, subscription.TagCacheVideo, subscription.TagAutoRecord}, // 德尔塔 -> gained cache_video, kept sched+record
+		subs[4].ID: {subscription.TagScheduledCheck, subscription.TagAutoRecord},                             // 艾普西隆 -> untouched
 	}
-	for id, want := range wantRule {
-		if gotRule[id] != want {
-			t.Fatalf("subscription %s rule=%q, want %q", id, gotRule[id], want)
+	for id, want := range wantTags {
+		if !slices.Equal(gotTags[id], want) {
+			t.Fatalf("subscription %s tags=%v, want %v", id, gotTags[id], want)
 		}
 	}
 
-	// Jump to subscription detail page via UI navigation and verify "规则：<规则名>" button is synced.
+	// Verify Subscription Detail reflects synced capability tags as active chips.
 	app.Navigate(RouteSubscriptions)
 	tt.Frame()
 	if err := tt.Click("选择订阅 " + subs[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if _, ok := tt.Find("订阅缓存规则：只存视频"); !ok || !tt.HasText("规则：只存视频") {
-		t.Fatalf("subscription detail for 阿尔法 did not sync rule button, texts=%v", tt.Texts())
+	if _, ok := tt.Find("订阅缓存标签：自动缓存视频"); !ok {
+		t.Fatalf("subscription detail for 阿尔法 did not sync active tag chip, texts=%v", tt.Texts())
 	}
-
-	if err := tt.Click("订阅侧栏：" + subs[2].ID); err != nil {
+	if err := tt.Click("订阅侧栏：" + subs[3].ID); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if _, ok := tt.Find("订阅缓存规则：默认"); !ok || !tt.HasText("规则：默认") {
-		t.Fatalf("subscription detail for 伽马 did not sync fallback 默认 rule button, texts=%v", tt.Texts())
-	}
-
-	if err := tt.Click("订阅侧栏：" + subs[4].ID); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if _, ok := tt.Find("订阅缓存规则：自动录播"); !ok || !tt.HasText("规则：自动录播") {
-		t.Fatalf("subscription detail for 艾普西隆 did not keep 自动录播 rule button, texts=%v", tt.Texts())
-	}
-
-	// DefaultRuleID batch pull-back: open "默认" rule, pull 艾普西隆 back to 默认 while 伽马 stays 默认.
-	app.SettingsCategory = "rules"
-	app.Navigate(RouteSettings)
-	tt.Frame()
-	if err := tt.Click("缓存规则：默认"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if err := tt.Click("选择订阅…"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if err := tt.Click("勾选规则订阅：艾普西隆"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if err := tt.Click("应用到 2 个订阅"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if !tt.HasText("使用这条规则的订阅（2）") {
-		t.Fatalf("expected 默认 rule count to become 2, texts=%v", tt.Texts())
+	for _, label := range []string{"订阅缓存标签：定时检查", "订阅缓存标签：自动缓存视频", "订阅缓存标签：开播录制"} {
+		if _, ok := tt.Find(label); !ok {
+			t.Fatalf("subscription detail for 德尔塔 missing active tag chip %s, texts=%v", label, tt.Texts())
+		}
 	}
 }
 
-func TestCacheRuleBatchDialogErrorRetainsSelectionAndDismissShortcuts(t *testing.T) {
+// Cross-subscription multi-tag batch setup ("批量设置缓存标签") works from both
+// Settings › 缓存标签 and Subscriptions › ⋯ menu, supporting add, remove, and
+// replace (including clearing all tags) in 1 atomic write per operation.
+func TestCapabilityTagMultiBatchAddRemoveReplaceFromSettingsAndSubscriptionsMenu(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
 
-	spy := &ruleBatchSpyBackend{BackendAPI: app.backend}
+	spy := &tagBatchSpyBackend{BackendAPI: app.backend}
 	app.backend = spy
 
-	_, _, _ = seedFiveSubscriptionsForRuleBatch(t, app)
+	if err := app.backend.BatchUpdateSubscriptionsTags([]string{"x"}, subscription.TagBatchAdd, []string{subscription.TagCacheVideo}); err == nil {
+		t.Fatal("expected BatchUpdateSubscriptionsTags before login to require authentication")
+	}
+
+	subs := seedFiveSubscriptionsForTagBatch(t, app)
+
+	// 1. Open from Settings › 缓存标签 ("打开批量设置订阅标签") and batch-add [自动缓存图文, 全部缓存] to 阿尔法 & 贝塔.
+	app.SettingsCategory = "rules"
+	app.Navigate(RouteSettings)
+	tt := ui.NewTester(app.View, 1280, 860)
+	tt.Frame()
+
+	if err := tt.Click("打开批量设置订阅标签"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !app.MultiTagBatch.Open || !tt.HasText("批量设置缓存标签") {
+		t.Fatalf("expected multi-tag batch dialog to open, texts=%v", tt.Texts())
+	}
+
+	if err := tt.Click("批量选择标签：自动缓存图文"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("批量选择标签：全部缓存"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	for _, name := range []string{"阿尔法", "贝塔"} {
+		if err := tt.Click("勾选批量订阅：" + name); err != nil {
+			t.Fatal(err)
+		}
+		tt.Frame()
+	}
+	if !tt.HasText("为 2 个订阅添加标签") {
+		t.Fatalf("expected add button summary for 2 subs, texts=%v", tt.Texts())
+	}
+	spy.multiCalls = 0
+	if err := tt.Click("确认批量设置标签"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if app.MultiTagBatch.Open || spy.multiCalls != 1 || spy.lastMultiMode != subscription.TagBatchAdd {
+		t.Fatalf("unexpected multi-batch add result: open=%v calls=%d mode=%q", app.MultiTagBatch.Open, spy.multiCalls, spy.lastMultiMode)
+	}
+
+	// 2. Open from Subscriptions › ⋯ ("订阅更多菜单" -> "批量设置缓存标签…") and batch-remove [自动缓存图文], then batch-replace to clear 阿尔法.
+	app.Navigate(RouteSubscriptions)
+	tt.Frame()
+	if err := tt.Click("订阅更多菜单"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.ChooseMenuItem("批量设置缓存标签…"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !app.MultiTagBatch.Open {
+		t.Fatal("expected 订阅更多菜单 item to open multi-tag batch dialog")
+	}
+	if err := tt.Click("批量模式：remove"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("批量选择标签：自动缓存图文"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("勾选批量订阅：贝塔"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("确认批量设置标签"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+
+	// Reopen and use replace with 0 tags selected to clear all tags on 阿尔法 while leaving 贝塔 untouched.
+	app.openMultiTagBatchDialog()
+	tt.Frame()
+	if err := tt.Click("批量模式：replace"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("勾选批量订阅：阿尔法"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("清空 1 个订阅的标签") {
+		t.Fatalf("expected replace-empty button text 清空 1 个订阅的标签, texts=%v", tt.Texts())
+	}
+	if err := tt.Click("确认批量设置标签"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+
+	gotTags := make(map[string][]string, 5)
+	for _, s := range app.Subscriptions {
+		gotTags[s.ID] = s.Tags
+	}
+	if len(gotTags[subs[0].ID]) != 0 {
+		t.Fatalf("expected 阿尔法 cleared to empty tags, got %v", gotTags[subs[0].ID])
+	}
+	wantBeta := []string{subscription.TagScheduledCheck, subscription.TagCacheVideo, subscription.TagFullCache}
+	if !slices.Equal(gotTags[subs[1].ID], wantBeta) {
+		t.Fatalf("贝塔 tags = %v, want %v", gotTags[subs[1].ID], wantBeta)
+	}
+}
+
+func TestCapabilityTagBatchDialogsErrorRetentionAndDismissShortcuts(t *testing.T) {
+	app, _, cleanup := newTestUIApp(t)
+	defer cleanup()
+
+	spy := &tagBatchSpyBackend{BackendAPI: app.backend}
+	app.backend = spy
+
+	_ = seedFiveSubscriptionsForTagBatch(t, app)
 
 	app.SettingsCategory = "rules"
 	app.Navigate(RouteSettings)
 	tt := ui.NewTester(app.View, 1280, 860)
 	tt.Frame()
 
-	if err := tt.Click("缓存规则：只存视频"); err != nil {
+	if err := tt.Click("管理标签订阅：" + subscription.TagCacheVideo); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if err := tt.Click("选择订阅…"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-
 	if err := tt.Click("全选"); err != nil {
 		t.Fatal(err)
 	}
@@ -333,31 +407,31 @@ func TestCacheRuleBatchDialogErrorRetainsSelectionAndDismissShortcuts(t *testing
 	}
 	tt.Frame()
 	if !app.RuleBatch.Open || !tt.HasText("模拟写入失败：磁盘空间不足") || !tt.HasText("应用到 5 个订阅") {
-		t.Fatalf("expected dialog to stay open, show error in red, and keep 5 selected; open=%v texts=%v", app.RuleBatch.Open, tt.Texts())
+		t.Fatalf("expected dialog to stay open, show error, and keep 5 selected; open=%v texts=%v", app.RuleBatch.Open, tt.Texts())
 	}
 	spy.forceErr = nil
 
-	// Escape closes the modal without applying.
+	// Escape closes per-tag modal without applying.
 	tt.Key(0, ui.KeyEscape)
 	tt.Frame()
 	if app.RuleBatch.Open {
-		t.Fatal("expected Escape to close the batch dialog")
+		t.Fatal("expected Escape to close the per-tag batch dialog")
 	}
-	if !tt.HasText("使用这条规则的订阅（2）") {
-		t.Fatal("dismissing dialog should not alter rule membership")
+	if app.tagUseCount(subscription.TagCacheVideo) != 2 {
+		t.Fatal("dismissing dialog should not alter tag membership")
 	}
 
-	// Backdrop click outside the centered dialog closes the modal.
-	if err := tt.Click("选择订阅…"); err != nil {
+	// Backdrop click outside the centered multi-tag dialog closes it cleanly.
+	if err := tt.Click("打开批量设置订阅标签"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if !app.RuleBatch.Open {
-		t.Fatal("expected batch dialog to reopen")
+	if !app.MultiTagBatch.Open {
+		t.Fatal("expected multi-tag batch dialog to open")
 	}
 	tt.ClickAt(12, 12)
 	tt.Frame()
-	if app.RuleBatch.Open {
-		t.Fatal("expected clicking backdrop outside dialog to close it")
+	if app.MultiTagBatch.Open {
+		t.Fatal("expected clicking backdrop to dismiss multi-tag batch dialog")
 	}
 }

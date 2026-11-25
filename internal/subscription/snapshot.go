@@ -37,14 +37,13 @@ const (
 	SnapshotFileName = "trace-subscriptions.json"
 )
 
-// Snapshot is a set of subscriptions with their shared rules and part of
+// Snapshot is a set of subscriptions with their capability tags and part of
 // the settings.
 type Snapshot struct {
 	Format        string                 `json:"format"`
 	Version       int                    `json:"version"`
 	ExportedAt    string                 `json:"exportedAt,omitempty"`
 	Node          *SnapshotNode          `json:"node,omitempty"`
-	Rules         []CacheRule            `json:"rules"`
 	Subscriptions []SnapshotSubscription `json:"subscriptions"`
 	Settings      *SnapshotSettings      `json:"settings,omitempty"`
 }
@@ -62,7 +61,7 @@ type SnapshotSubscription struct {
 	Note           string            `json:"note,omitempty"`
 	Avatar         AvatarRef         `json:"avatar"`
 	CreatedAt      string            `json:"createdAt,omitempty"`
-	RuleID         string            `json:"ruleId"`
+	Tags           []string          `json:"tags"`
 	AutoCacheSince string            `json:"autoCacheSince,omitempty"`
 	Accounts       []SnapshotAccount `json:"accounts"`
 	Links          []CustomLink      `json:"links,omitempty"`
@@ -99,19 +98,49 @@ type SnapshotSettings struct {
 var ErrBadSnapshot = errors.New("不是 TRACE 导出的订阅文件，或版本不同")
 
 // ParseSnapshot reads a snapshot and refuses other formats and versions
-// (both sides are always the same version, DEC-062 ②).
+// (both sides are always the same version, DEC-062 ②). Pre-DEC-070 v1 snapshot
+// files carrying legacy "rules" + "ruleId" without "tags" are transparently
+// normalized into capability tags.
 func ParseSnapshot(raw []byte) (Snapshot, error) {
-	var snap Snapshot
-	if err := json.Unmarshal(raw, &snap); err != nil {
+	type rawSnapshotSub struct {
+		SnapshotSubscription
+		RawTags json.RawMessage `json:"tags"`
+		RuleID  string          `json:"ruleId"`
+	}
+	var wire struct {
+		Format        string            `json:"format"`
+		Version       int               `json:"version"`
+		ExportedAt    string            `json:"exportedAt,omitempty"`
+		Node          *SnapshotNode     `json:"node,omitempty"`
+		Rules         []legacyCacheRule `json:"rules,omitempty"`
+		Subscriptions []rawSnapshotSub  `json:"subscriptions"`
+		Settings      *SnapshotSettings `json:"settings,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
 		return Snapshot{}, ErrBadSnapshot
 	}
-	if snap.Format != SnapshotFormat || snap.Version != SnapshotVersion {
+	if wire.Format != SnapshotFormat || wire.Version != SnapshotVersion {
 		return Snapshot{}, ErrBadSnapshot
+	}
+	legacyRules := make(map[string]legacyCacheRule, len(wire.Rules))
+	for _, r := range wire.Rules {
+		if r.ID != "" {
+			legacyRules[r.ID] = r
+		}
+	}
+
+	snap := Snapshot{
+		Format:        wire.Format,
+		Version:       wire.Version,
+		ExportedAt:    wire.ExportedAt,
+		Node:          wire.Node,
+		Settings:      wire.Settings,
+		Subscriptions: make([]SnapshotSubscription, 0, len(wire.Subscriptions)),
 	}
 	seen := map[string]bool{}
 	seenSubIDs := map[string]bool{}
-	for i := range snap.Subscriptions {
-		sub := &snap.Subscriptions[i]
+	for _, rawSub := range wire.Subscriptions {
+		sub := rawSub.SnapshotSubscription
 		sub.ID = strings.TrimSpace(sub.ID)
 		if sub.ID == "" {
 			return Snapshot{}, fmt.Errorf("订阅文件里有缺少 ID 的订阅")
@@ -120,6 +149,24 @@ func ParseSnapshot(raw []byte) (Snapshot, error) {
 			return Snapshot{}, fmt.Errorf("订阅文件里有重复的订阅 ID：%s", sub.ID)
 		}
 		seenSubIDs[sub.ID] = true
+
+		rawTagsTrim := strings.TrimSpace(string(rawSub.RawTags))
+		if len(rawTagsTrim) > 0 && rawTagsTrim != "null" {
+			var parsedTags []string
+			if err := json.Unmarshal(rawSub.RawTags, &parsedTags); err != nil {
+				return Snapshot{}, ErrBadSnapshot
+			}
+			sub.Tags = NormalizeTags(parsedTags)
+		} else if rawSub.RuleID != "" {
+			if lr, ok := legacyRules[rawSub.RuleID]; ok {
+				sub.Tags = legacyCacheRuleToTags(lr)
+			} else {
+				sub.Tags = []string{}
+			}
+		} else {
+			sub.Tags = NormalizeTags(sub.Tags)
+		}
+
 		var accs []SnapshotAccount
 		for _, a := range sub.Accounts {
 			ref, ok := normalizeSubscriptionAccountForLoad(AccountRef{Site: a.Site, UID: a.UID, UniqueID: a.UniqueID, WebRID: a.WebRID, Name: a.Name, Face: a.Face})
@@ -136,36 +183,37 @@ func ParseSnapshot(raw []byte) (Snapshot, error) {
 		SortSnapshotAccountsBySiteOrder(accs)
 		sub.Accounts = accs
 		sub.Links = normalizeCustomLinksForLoad(sub.Links)
+		snap.Subscriptions = append(snap.Subscriptions, sub)
 	}
 	return snap, nil
 }
 
-// Hash is the snapshot's content hash: subscriptions (ID, name, accounts,
-// links, rule, auto-cache start), rules and settings. Display data that the
+// Hash is the snapshot's content hash: subscriptions (ID, name, note, accounts,
+// links, capability tags, auto-cache start) and settings. Display data that the
 // checks refresh (account names and avatars) and the export time are not part
 // of it, so "有改动未同步" only follows real changes.
 func (s Snapshot) Hash() string {
 	type acc struct{ Site, UID string }
 	type sub struct {
-		ID, Name, Note, RuleID, Since string
-		Accounts                      []acc
-		Links                         []CustomLink `json:",omitempty"`
+		ID, Name, Note, Since string
+		Tags                  []string
+		Accounts              []acc
+		Links                 []CustomLink `json:",omitempty"`
 	}
 	content := struct {
 		Format   string
 		Version  int
-		Rules    []CacheRule
 		Subs     []sub
 		Settings *SnapshotSettings
-	}{Format: s.Format, Version: s.Version, Rules: s.Rules, Settings: s.Settings}
+	}{Format: s.Format, Version: s.Version, Settings: s.Settings}
 	for _, x := range s.Subscriptions {
 		item := sub{
-			ID:     x.ID,
-			Name:   x.Name,
-			Note:   x.Note,
-			RuleID: x.RuleID,
-			Since:  x.AutoCacheSince,
-			Links:  normalizeCustomLinksForLoad(x.Links),
+			ID:    x.ID,
+			Name:  x.Name,
+			Note:  x.Note,
+			Tags:  NormalizeTags(x.Tags),
+			Since: x.AutoCacheSince,
+			Links: normalizeCustomLinksForLoad(x.Links),
 		}
 		ordered := append([]SnapshotAccount(nil), x.Accounts...)
 		SortSnapshotAccountsBySiteOrder(ordered)
@@ -187,26 +235,26 @@ func (s Snapshot) Counts() (subs, accounts int) {
 	return len(s.Subscriptions), accounts
 }
 
-// Snapshot returns the current subscriptions and rules; the caller adds the
-// settings part and the node.
+// Snapshot returns the current subscriptions and their capability tags; the
+// caller adds the settings part and the node.
 func (m *Manager) Snapshot() (Snapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.ensureDefaultRuleLocked()
 	subs, err := m.listLocked()
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snap := Snapshot{Format: SnapshotFormat, Version: SnapshotVersion, Rules: slices.Clone(m.rules)}
+	snap := Snapshot{Format: SnapshotFormat, Version: SnapshotVersion}
 	slices.SortStableFunc(subs, func(a, b Subscription) int { return strings.Compare(a.ID, b.ID) })
 	for _, s := range subs {
+		tags := SubRulesToTags(s.Rules)
 		out := SnapshotSubscription{
 			ID:        s.ID,
 			Name:      s.Name,
 			Note:      s.Note,
 			Avatar:    s.Avatar,
 			CreatedAt: s.CreatedAt,
-			RuleID:    s.RuleID,
+			Tags:      tags,
 			Links:     cloneCustomLinks(s.Links),
 		}
 		if s.Rules.AutoCache.Enabled {
@@ -221,23 +269,24 @@ func (m *Manager) Snapshot() (Snapshot, error) {
 	return snap, nil
 }
 
-// snapshotToSubscription builds the subscription a snapshot describes, on
-// rule r.
-func (m *Manager) snapshotToSubscriptionLocked(x SnapshotSubscription, r CacheRule) Subscription {
+// snapshotToSubscriptionLocked builds the subscription a snapshot describes
+// with its capability tags.
+func (m *Manager) snapshotToSubscriptionLocked(x SnapshotSubscription) Subscription {
 	now := m.nowFunc().UTC().Format(time.RFC3339)
+	tags := NormalizeTags(x.Tags)
 	sub := Subscription{
 		ID:        x.ID,
 		Name:      x.Name,
 		Note:      x.Note,
 		Avatar:    x.Avatar,
 		CreatedAt: x.CreatedAt,
-		RuleID:    r.ID,
+		Tags:      tags,
 		Links:     normalizeCustomLinksForLoad(x.Links),
 	}
 	for _, a := range x.Accounts {
 		sub.Accounts = append(sub.Accounts, AccountRef{Site: a.Site, UID: a.UID, UniqueID: a.UniqueID, WebRID: a.WebRID, Name: a.Name, Face: a.Face, AddedAt: now})
 	}
-	rules := ruleToSubRules(r)
+	rules := TagsToSubRules(tags)
 	if rules.AutoCache.Enabled {
 		rules.AutoCache.Since = x.AutoCacheSince
 		if rules.AutoCache.Since == "" {
@@ -248,27 +297,14 @@ func (m *Manager) snapshotToSubscriptionLocked(x SnapshotSubscription, r CacheRu
 	return sub
 }
 
-// ReplaceFromSnapshot makes the subscriptions and rules exactly the
-// snapshot's (the remote's 同步订阅, remote.md §4) in one write. Each
+// ReplaceFromSnapshot makes the subscriptions and their capability tags exactly
+// the snapshot's (the remote's 同步订阅, remote.md §4) in one write. Each
 // account's check state (start point, last check, discovered updates) is
 // kept by site and UID; accounts left out are no longer checked, and no file
 // is deleted. On any failure the previous subscriptions stay.
 func (m *Manager) ReplaceFromSnapshot(snap Snapshot) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	rules := []CacheRule{defaultRule()}
-	byID := map[string]CacheRule{DefaultRuleID: defaultRule()}
-	for _, r := range snap.Rules {
-		if r.ID == "" || r.ID == DefaultRuleID {
-			continue
-		}
-		r.Types = normalizeRuleTypes(r.Types)
-		if _, dup := byID[r.ID]; dup {
-			continue
-		}
-		byID[r.ID] = r
-		rules = append(rules, r)
-	}
 	prevSubs, _ := m.listSubsOnlyLocked()
 	prevAccs := map[string]AccountRef{}
 	for _, s := range prevSubs {
@@ -279,17 +315,13 @@ func (m *Manager) ReplaceFromSnapshot(snap Snapshot) error {
 	var subs []Subscription
 	nextAccs := map[string]AccountRef{}
 	for _, x := range snap.Subscriptions {
-		r, ok := byID[x.RuleID]
-		if !ok {
-			r = defaultRule()
-		}
-		sub := m.snapshotToSubscriptionLocked(x, r)
+		sub := m.snapshotToSubscriptionLocked(x)
 		for _, a := range sub.Accounts {
 			nextAccs[normalizeLegacyAccountSite(a.Site)+":"+a.UID] = a
 		}
 		subs = append(subs, sub)
 	}
-	if err := m.replaceAllLocked(subs, rules); err != nil {
+	if err := m.replaceAllLocked(subs); err != nil {
 		return err
 	}
 	if m.updatesDB != nil {
@@ -306,18 +338,20 @@ func (m *Manager) ReplaceFromSnapshot(snap Snapshot) error {
 	return nil
 }
 
-// replaceAllLocked writes subs and rules as subscriptions.json and reloads
-// them; the previous file is restored when anything fails.
-func (m *Manager) replaceAllLocked(subs []Subscription, rules []CacheRule) error {
+// replaceAllLocked writes subs as subscriptions.json and reloads them; the
+// previous file is restored when anything fails.
+func (m *Manager) replaceAllLocked(subs []Subscription) error {
 	if m.subsPath == "" {
 		return fmt.Errorf("subscription: no subscriptions.json path configured")
 	}
 	if subs == nil {
 		subs = []Subscription{}
 	}
+	for i := range subs {
+		subs[i].Tags = SubRulesToTags(subs[i].Rules)
+	}
 	prevRaw, prevErr := os.ReadFile(m.subsPath)
-	prevRules := slices.Clone(m.rules)
-	sf := subscriptionsFile{Version: SubscriptionsSchemaVersion, Subscriptions: subs, CacheRules: rules}
+	sf := subscriptionsFile{Version: SubscriptionsSchemaVersion, Subscriptions: subs}
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
 		return err
@@ -343,7 +377,6 @@ func (m *Manager) replaceAllLocked(subs []Subscription, rules []CacheRule) error
 		} else {
 			restoreErr = os.Remove(m.subsPath)
 		}
-		m.rules = prevRules
 		return errors.Join(err, restoreErr, m.loadSubscriptionsFromDiskLocked())
 	}
 	return nil

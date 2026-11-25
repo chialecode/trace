@@ -240,8 +240,8 @@ func TestMoveToNewAtomicAcrossAllThreeSitesAndRollback(t *testing.T) {
 	if diskWrites != 1 {
 		t.Fatalf("expected exactly 1 atomic subscriptions.json write, got %d", diskWrites)
 	}
-	if newBiliSub.Name != "独立B站订阅" || newBiliSub.Note != "拆分备注" || newBiliSub.RuleID != DefaultRuleID {
-		t.Fatalf("unexpected newBiliSub header/rule: %+v", newBiliSub)
+	if newBiliSub.Name != "独立B站订阅" || newBiliSub.Note != "拆分备注" || len(newBiliSub.Tags) != 0 {
+		t.Fatalf("unexpected newBiliSub header/tags: %+v", newBiliSub)
 	}
 	if len(newBiliSub.Accounts) != 1 || newBiliSub.Accounts[0].UID != "2001" || newBiliSub.Accounts[0].Face != biliFace || newBiliSub.Accounts[0].AddedAt != "2026-11-01T00:00:00Z" {
 		t.Fatalf("newBiliSub account metadata mismatch: %+v", newBiliSub.Accounts)
@@ -365,8 +365,7 @@ func TestMoveToNewAtomicAcrossAllThreeSitesAndRollback(t *testing.T) {
 	if _, err := mgr.MoveToNew("unknown", "12345", "未知站点", "", DefaultSubRules()); err == nil {
 		t.Fatal("expected unknown site rejected")
 	}
-	// (d) Disk write failure rolls back BOTH old owner mutation and new subscription creation AND any new rule!
-	rulesBefore := len(mgr.ListRules())
+	// (d) Disk write failure rolls back BOTH old owner mutation and new subscription creation!
 	mgr.diskWriteHook = func() error { return errors.New("synthetic disk write fail") }
 	if _, err := mgr.MoveToNew("weibo", wbUID, "磁盘失败回滚", "", SubRules{ScheduledCheck: true, AutoRecord: true}); err == nil {
 		t.Fatal("expected disk failure error")
@@ -379,9 +378,6 @@ func TestMoveToNewAtomicAcrossAllThreeSitesAndRollback(t *testing.T) {
 	allAfterErr, err := mgr.List()
 	if err != nil || len(allAfterErr) != 4 {
 		t.Fatalf("error cases changed subscription count: len=%d err=%v", len(allAfterErr), err)
-	}
-	if len(mgr.ListRules()) != rulesBefore {
-		t.Fatalf("rollback leaked newly created rule: before=%d after=%d", rulesBefore, len(mgr.ListRules()))
 	}
 	diskAfterErr, _ := os.ReadFile(mgr.subsPath)
 	if string(diskAfterErr) != string(diskSnapshot) {

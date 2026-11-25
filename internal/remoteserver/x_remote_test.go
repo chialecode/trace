@@ -600,27 +600,17 @@ func TestRemoteXSubscriptionSyncWatermarksScheduledCheckAutoCacheNoFullCacheAndE
 	snap := subscription.Snapshot{
 		Format:  subscription.SnapshotFormat,
 		Version: subscription.SnapshotVersion,
-		Rules: []subscription.CacheRule{
-			{
-				ID:             "r_x",
-				Name:           "X自动缓存规则",
-				ScheduledCheck: true,
-				AutoCache:      true,
-				Types:          []string{"draw", "video", "word"},
-				FullCache:      true,
-			},
-			{
-				ID:             "r_wb",
-				Name:           "微博定时检查规则",
-				ScheduledCheck: true,
-				AutoCache:      false,
-			},
-		},
 		Subscriptions: []subscription.SnapshotSubscription{
 			{
-				ID:             "sub_x",
-				Name:           "合成X订阅",
-				RuleID:         "r_x",
+				ID:   "sub_x",
+				Name: "合成X订阅",
+				Tags: []string{
+					subscription.TagScheduledCheck,
+					subscription.TagCacheVideo,
+					subscription.TagCacheDraw,
+					subscription.TagCacheWord,
+					subscription.TagFullCache,
+				},
 				AutoCacheSince: "2026-11-18T00:00:00Z",
 				Accounts: []subscription.SnapshotAccount{{
 					Site:     "x",
@@ -630,9 +620,9 @@ func TestRemoteXSubscriptionSyncWatermarksScheduledCheckAutoCacheNoFullCacheAndE
 				}},
 			},
 			{
-				ID:     "sub_wb",
-				Name:   "合成微博订阅",
-				RuleID: "r_wb",
+				ID:   "sub_wb",
+				Name: "合成微博订阅",
+				Tags: []string{subscription.TagScheduledCheck},
 				Accounts: []subscription.SnapshotAccount{{
 					Site: "weibo",
 					UID:  remoteWeiboCreatorUID,

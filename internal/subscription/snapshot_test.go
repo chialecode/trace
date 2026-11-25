@@ -91,9 +91,8 @@ func (e *snapshotEnv) askedFor(uid string) int {
 }
 
 func syncedSnapshot(accounts ...string) Snapshot {
-	snap := Snapshot{Format: SnapshotFormat, Version: SnapshotVersion,
-		Rules: []CacheRule{{ID: "r-check", Name: "检查", ScheduledCheck: true}}}
-	sub := SnapshotSubscription{ID: "s1", Name: "合成订阅", RuleID: "r-check"}
+	snap := Snapshot{Format: SnapshotFormat, Version: SnapshotVersion}
+	sub := SnapshotSubscription{ID: "s1", Name: "合成订阅", Tags: []string{TagScheduledCheck}}
 	for _, uid := range accounts {
 		sub.Accounts = append(sub.Accounts, SnapshotAccount{Site: "bilibili", UID: uid, Name: "UP" + uid})
 	}
@@ -173,39 +172,39 @@ func TestSnapshotReplaceFailureKeepsPrevious(t *testing.T) {
 	}
 }
 
-// The preview separates new subscriptions, accounts that
-// are already subscribed and rules that differ; applying writes once; the
-// snapshot never holds a Cookie; the hash ignores display names.
+// The preview separates new subscriptions and accounts that are already
+// subscribed; applying writes once; MergeTags controls whether imported tags
+// are unioned into merged subscriptions; legacy rule-based snapshots parse
+// losslessly into capability tags; the snapshot never holds a Cookie; the hash
+// ignores display names.
 func TestSnapshotImportPreviewAndApply(t *testing.T) {
 	e := newSnapshotEnv(t)
-	shared, err := e.mgr.SaveRule(CacheRule{Name: "本地规则", ScheduledCheck: true})
+	local, err := e.mgr.Create("本地订阅", "", []AccountRef{{Site: "bilibili", UID: "1", Name: "UP1"}}, SubRules{ScheduledCheck: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	local, err := e.mgr.Create("本地订阅", "", []AccountRef{{Site: "bilibili", UID: "1", Name: "UP1"}}, SubRules{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	imported := Snapshot{Format: SnapshotFormat, Version: SnapshotVersion,
-		Rules: []CacheRule{{ID: shared.ID, Name: "导入的规则", ScheduledCheck: true, AutoRecord: true}, {ID: "r-new", Name: "新规则", ScheduledCheck: true}},
+	imported := Snapshot{
+		Format:  SnapshotFormat,
+		Version: SnapshotVersion,
 		Subscriptions: []SnapshotSubscription{
-			{ID: "x1", Name: "混合", RuleID: shared.ID, Accounts: []SnapshotAccount{{Site: "bilibili", UID: "1"}, {Site: "bilibili", UID: "2"}}},
-			{ID: "x2", Name: "全新", RuleID: "r-new", Accounts: []SnapshotAccount{{Site: "douyin", UID: "MS4wLjABAAAA_synth_creator_acct_000002"}}},
-			{ID: local.ID, Name: "同 ID 的另一个订阅", RuleID: "r-new", Accounts: []SnapshotAccount{{Site: "bilibili", UID: "3"}}},
-		}}
+			{ID: "x1", Name: "混合", Tags: []string{TagScheduledCheck, TagAutoRecord}, Accounts: []SnapshotAccount{{Site: "bilibili", UID: "1"}, {Site: "bilibili", UID: "2"}}},
+			{ID: "x2", Name: "全新", Tags: []string{TagScheduledCheck}, Accounts: []SnapshotAccount{{Site: "douyin", UID: "MS4wLjABAAAA_synth_creator_acct_000002"}}},
+			{ID: local.ID, Name: "同 ID 的另一个订阅", Tags: []string{TagCacheVideo}, Accounts: []SnapshotAccount{{Site: "bilibili", UID: "3"}}},
+		},
+	}
 	pre, err := e.mgr.PreviewImport(imported)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pre.New) != 3 || len(pre.Existing) != 1 || pre.Existing[0].UID != "1" || pre.Existing[0].LocalSubID != local.ID || len(pre.Rules) != 1 || pre.Rules[0].ID != shared.ID || pre.NewRules != 1 {
+	if len(pre.New) != 3 || len(pre.Existing) != 1 || pre.Existing[0].UID != "1" || pre.Existing[0].LocalSubID != local.ID {
 		t.Fatalf("preview = %+v", pre)
 	}
 	if subs, _ := e.mgr.List(); len(subs) != 1 {
 		t.Fatal("the preview wrote subscriptions")
 	}
 
-	// Merge into the subscription that has account 1; keep the local rule.
-	if _, err := e.mgr.ApplyImport(imported, ImportChoices{MergeExisting: true}); err != nil {
+	// Merge into the subscription that has account 1 without MergeTags: keep local tags unchanged.
+	if _, err := e.mgr.ApplyImport(imported, ImportChoices{MergeExisting: true, MergeTags: false}); err != nil {
 		t.Fatal(err)
 	}
 	subs, _ := e.mgr.List()
@@ -223,13 +222,21 @@ func TestSnapshotImportPreviewAndApply(t *testing.T) {
 	if len(merged.Accounts) != 2 {
 		t.Fatalf("merged subscription accounts = %+v, want 1 and 2", merged.Accounts)
 	}
+	if HasTag(merged.Tags, TagAutoRecord) || !HasTag(merged.Tags, TagScheduledCheck) {
+		t.Fatalf("merged subscription tags changed when MergeTags=false: %+v", merged.Tags)
+	}
 	if len(ids) != 3 {
 		t.Fatal("an imported subscription reused a local ID")
 	}
-	for _, r := range e.mgr.ListRules() {
-		if r.ID == shared.ID && (r.Name != "本地规则" || r.AutoRecord) {
-			t.Fatalf("the local rule was replaced without being chosen: %+v", r)
-		}
+
+	// Legacy pre-DEC-070 v1 snapshot with rules + ruleId parses cleanly into capability tags.
+	legacySnapRaw := `{"format":"trace-subscriptions","version":1,"rules":[{"id":"r_legacy","name":"旧规则","scheduledCheck":true,"autoCache":true,"types":["video","draw"],"autoRecord":true}],"subscriptions":[{"id":"s_leg","name":"旧快照订阅","ruleId":"r_legacy","accounts":[{"site":"bilibili","uid":"99","name":"UP99"}]}]}`
+	legacyParsed, err := ParseSnapshot([]byte(legacySnapRaw))
+	if err != nil {
+		t.Fatalf("ParseSnapshot legacy v1: %v", err)
+	}
+	if len(legacyParsed.Subscriptions) != 1 || !HasTag(legacyParsed.Subscriptions[0].Tags, TagScheduledCheck) || !HasTag(legacyParsed.Subscriptions[0].Tags, TagCacheVideo) || !HasTag(legacyParsed.Subscriptions[0].Tags, TagCacheDraw) || !HasTag(legacyParsed.Subscriptions[0].Tags, TagAutoRecord) {
+		t.Fatalf("legacy snapshot tags mismatch: %+v", legacyParsed.Subscriptions)
 	}
 
 	snap, err := e.mgr.Snapshot()
