@@ -1088,12 +1088,22 @@ func (b *Backend) UserDynamicsPage(ctx context.Context, mid int64, offset string
 	return b.bili.UserDynamics(ctx, mid, offset)
 }
 
-func (b *Backend) UserVideosPage(ctx context.Context, mid int64, page int) (bilibili.UserVideosPage, error) {
+func (b *Backend) UserVideosPage(ctx context.Context, mid int64, page int, opts ...UserVideosPageOptions) (bilibili.UserVideosPage, error) {
 	if err := b.requireSiteLogin(site.Bilibili); err != nil {
 		return bilibili.UserVideosPage{}, err
 	}
-	res, err := b.bili.UserVideos(ctx, mid, page, 30, "pubdate", "")
-	if err == nil && page <= 1 {
+	order := "pubdate"
+	keyword := ""
+	tid := 0
+	if len(opts) > 0 {
+		order = bilibili.NormalizeUserVideosOrder(opts[0].Order)
+		keyword = strings.TrimSpace(opts[0].Keyword)
+		if opts[0].TID > 0 {
+			tid = opts[0].TID
+		}
+	}
+	res, err := b.bili.UserVideos(ctx, mid, page, 30, order, keyword, tid)
+	if err == nil && page <= 1 && keyword == "" && tid == 0 {
 		b.recordAccountWorks(site.Bilibili, strconv.FormatInt(mid, 10), res.Total)
 	}
 	return res, err

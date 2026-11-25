@@ -53,6 +53,21 @@ func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error
 		}
 		return err
 	}
+	if dyn.Blocked {
+		msg := strings.TrimSpace(dyn.BlockedHint)
+		if msg == "" {
+			msg = "充电专属动态：当前登录账号未开通该 UP 主充电权益，暂不支持缓存"
+		}
+		blockedErr := &bilibili.SiteError{
+			Kind:     bilibili.ErrKindForbidden,
+			Endpoint: "/x/polymer/web-dynamic/v1/detail",
+			Message:  msg,
+		}
+		if hasProtectedLocal {
+			return wrapRemoteDegraded(blockedErr)
+		}
+		return blockedErr
+	}
 
 	forward := dyn.Origin != nil || strings.EqualFold(dyn.Type, "DYNAMIC_TYPE_FORWARD")
 	for origin := dyn.Origin; origin != nil; origin = origin.Origin {
@@ -221,6 +236,10 @@ func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error
 		detail, err := m.client.VideoDetail(ctx, v.BVID)
 		if err != nil {
 			return err
+		}
+		if detail.IsUpowerLocked() {
+			partialErrors = append(partialErrors, fmt.Sprintf("video %s: %s", v.BVID, bilibili.UpowerLockedMessage))
+			continue
 		}
 		for _, page := range detail.Pages {
 			if multiPart == "first" && page.Page != 1 {
@@ -632,6 +651,10 @@ func (m *Manager) executeBilibiliDynamicStaged(
 		detail, err := m.client.VideoDetail(ctx, v.BVID)
 		if err != nil {
 			return err
+		}
+		if detail.IsUpowerLocked() {
+			partialErrors = append(partialErrors, fmt.Sprintf("video %s: %s", v.BVID, bilibili.UpowerLockedMessage))
+			continue
 		}
 		for _, page := range detail.Pages {
 			if multiPart == "first" && page.Page != 1 {

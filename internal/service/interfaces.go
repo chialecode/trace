@@ -156,7 +156,7 @@ type ParseService interface {
 	FetchHistoryThumbs(ctx context.Context, job HistoryThumbJob) error
 	FetchImage(ctx context.Context, rawURL string) ([]byte, error)
 	UserDynamicsPage(ctx context.Context, mid int64, offset string) (bilibili.UserDynamicsPage, error)
-	UserVideosPage(ctx context.Context, mid int64, page int) (bilibili.UserVideosPage, error)
+	UserVideosPage(ctx context.Context, mid int64, page int, opts ...UserVideosPageOptions) (bilibili.UserVideosPage, error)
 }
 
 // HistoryService defines recent parse history operations.

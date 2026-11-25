@@ -112,7 +112,8 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 						if !offline {
 							cacheKey := "cache-vid:" + vd.BVID
 							caching := a.isPending(cacheKey)
-							if AccentPillButton(c, "缓存视频", "缓存视频").Disabled(caching).Clicked() && !caching {
+							upowerLocked := vd.IsUpowerLocked()
+							if AccentPillButton(c, "缓存视频", "缓存视频").Disabled(caching || upowerLocked).Clicked() && !caching && !upowerLocked {
 								var pages []int
 								for _, p := range vd.Pages {
 									if a.SelectedPartPages[p.Page] {
@@ -193,8 +194,36 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 						})
 				}
 
-				// 3. Large Video Title (20px Bold)
-				ui.Text(c, vd.Title).FontSize(20).LineHeight(LineHeightHeading).FontWeight(600).TextColor(ColorTextMain).MaxLines(3)
+				// 3. Large Video Title (20px Bold) + Charging-Exclusive (充电专属) Badge / Notice
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Wrap().ClipX().Children(func() {
+					ui.Text(c, vd.Title).FontSize(20).LineHeight(LineHeightHeading).FontWeight(600).TextColor(ColorTextMain).MaxLines(3)
+					if vd.IsUpowerLocked() {
+						ui.Box(c).Label("充电专属标记").Padding(2, 8).Radius(999).Background(ColorWarnBg).Border(1, ColorDotYellow).Children(func() {
+							ui.Text(c, "充电专属").FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+						})
+					} else if vd.IsUpowerUnlocked() {
+						ui.Box(c).Label("充电专属已解锁标记").Padding(2, 8).Radius(999).Background(ColorAccentBg).Border(1, ColorAccent).Children(func() {
+							ui.Text(c, "充电专属（已解锁）").FontSize(12).FontWeight(600).TextColor(ColorAccent).SingleLine()
+						})
+					}
+				})
+				if vd.IsUpowerLocked() {
+					ui.Row(c).
+						Label("充电专属未解锁提示").
+						FillWidth().
+						Padding(10, 14).
+						Radius(12).
+						Background(ColorWarnBg).
+						Border(1, ColorDotYellow).
+						AlignItems(ui.Center).
+						Gap(8).
+						ClipX().
+						Children(func() {
+							DrawIcon(c, "alert-circle", 16, ColorTextMain, 1.8)
+							ui.Text(c, "充电专属：当前登录账号未开通该 UP 主充电权益，暂不支持缓存").
+								FontSize(13).LineHeight(LineHeightCompact).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
+						})
+				}
 
 				// 4. 16:9 Large Cover Card (click to play if cached, else view HD cover)
 				totalDur := vd.Duration
@@ -343,53 +372,81 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 					selected := a.SelectedPartPages[p.Page]
 					var partSpec string
 					var partFile string
+					var partChapters []library.VideoChapter
 					if cachedItem != nil {
 						for _, rec := range cachedItem.Parts {
 							if rec.Page == p.Page {
 								partFile = rec.File
 								partSpec = formatPartQualitySpec(rec, true)
+								partChapters = rec.Chapters
 								break
 							}
 						}
 					}
 
-					ui.Row(c).
+					ui.Column(c).
 						FillWidth().
 						Padding(10, 14).
 						Radius(12).
 						Background(ColorBgMain).
 						Border(1, ColorBorder).
-						AlignItems(ui.Center).
-						Justify(ui.SpaceBetween).
-						Gap(10).
+						Gap(8).
 						ClipX().
 						Children(func() {
-							ui.Row(c).AlignItems(ui.Center).Gap(10).Grow(1).ClipX().Children(func() {
-								ui.Box(c).Padding(2, 8).Radius(6).Background(ColorBgMain).Border(1, ColorBorder).Children(func() {
-									ui.Text(c, fmt.Sprintf("P%d", p.Page)).FontSize(12).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
-								})
-								ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
-									ui.Text(c, p.Title).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-									if partSpec != "" {
-										ui.Text(c, "已缓存规格："+partSpec).FontSize(12).FontWeight(600).TextColor(ColorDotGreen).SingleLine()
-									}
-								})
-							})
-							ui.Row(c).AlignItems(ui.Center).Gap(10).Children(func() {
-								ui.Text(c, partDuration).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-								if offline {
-									if cachedItem != nil && partFile != "" {
-										if OutlinePillButton(c, "播放", fmt.Sprintf("播放分P %d", p.Page)).Clicked() {
-											a.openPlayerFile(*cachedItem, partFile)
+							ui.Row(c).
+								FillWidth().
+								AlignItems(ui.Center).
+								Justify(ui.SpaceBetween).
+								Gap(10).
+								ClipX().
+								Children(func() {
+									ui.Row(c).AlignItems(ui.Center).Gap(10).Grow(1).ClipX().Children(func() {
+										ui.Box(c).Padding(2, 8).Radius(6).Background(ColorBgMain).Border(1, ColorBorder).Children(func() {
+											ui.Text(c, fmt.Sprintf("P%d", p.Page)).FontSize(12).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
+										})
+										ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
+											ui.Text(c, p.Title).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+											if partSpec != "" {
+												ui.Text(c, "已缓存规格："+partSpec).FontSize(12).FontWeight(600).TextColor(ColorDotGreen).SingleLine()
+											}
+										})
+									})
+									ui.Row(c).AlignItems(ui.Center).Gap(10).Children(func() {
+										ui.Text(c, partDuration).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+										if offline {
+											if cachedItem != nil && partFile != "" {
+												if OutlinePillButton(c, "播放", fmt.Sprintf("播放分P %d", p.Page)).Clicked() {
+													a.openPlayerFile(*cachedItem, partFile)
+												}
+											}
+										} else {
+											chk := selected
+											if ui.Switch(c, &chk).Label(fmt.Sprintf("选择分P %d", p.Page)).Changed() {
+												a.SelectedPartPages[p.Page] = chk
+											}
 										}
-									}
-								} else {
-									chk := selected
-									if ui.Switch(c, &chk).Label(fmt.Sprintf("选择分P %d", p.Page)).Changed() {
-										a.SelectedPartPages[p.Page] = chk
-									}
-								}
-							})
+									})
+								})
+
+							if len(partChapters) > 0 {
+								ui.Column(c).Label(fmt.Sprintf("分P %d 章节看点", p.Page)).FillWidth().Padding(6, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(ColorBorder).Gap(6).ClipX().Children(func() {
+									ui.Text(c, fmt.Sprintf("章节看点（%d）", len(partChapters))).FontSize(12).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
+									ui.Row(c).FillWidth().Gap(6).Wrap().ClipX().Children(func() {
+										for ci, ch := range partChapters {
+											chapter := ch
+											label := fmt.Sprintf("视频详情跳转章节：P%d-%d", p.Page, ci+1)
+											text := fmt.Sprintf("%s %s", FormatDuration(chapter.FromSec), chapter.Title)
+											btn := ui.ButtonBase(c).Label(label).Padding(4, 10).Radius(999).Background(ColorBgSecondary).Border(1, ColorBorder)
+											btn.Children(func() {
+												ui.Text(c, text).FontSize(12).TextColor(ColorTextMain).SingleLine()
+											})
+											if btn.Clicked() && cachedItem != nil && partFile != "" {
+												a.openPlayerFileAt(*cachedItem, partFile, float64(chapter.FromSec))
+											}
+										}
+									})
+								})
+							}
 						})
 				}
 				return

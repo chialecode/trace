@@ -320,6 +320,14 @@ type MediaFile struct {
 	Motion string `json:"motion,omitempty"`
 }
 
+// VideoChapter records one chapter marker (看点) for a video part inside item.json.
+// Optional; older item.json manifests omit it with full backward compatibility.
+type VideoChapter struct {
+	FromSec int    `json:"fromSec"`
+	ToSec   int    `json:"toSec"`
+	Title   string `json:"title"`
+}
+
 type VideoPartRecord struct {
 	CID            int64              `json:"cid"`
 	Page           int                `json:"page"`
@@ -331,6 +339,7 @@ type VideoPartRecord struct {
 	DanmakuState   string             `json:"danmakuState,omitempty"`
 	SubtitleState  string             `json:"subtitleState,omitempty"`
 	SubtitleTracks []PartSubtitleInfo `json:"subtitleTracks,omitempty"`
+	Chapters       []VideoChapter     `json:"chapters,omitempty"`
 	Video          PartVideoInfo      `json:"video"`
 	Audio          PartAudioInfo      `json:"audio"`
 	Available      PartAvailableInfo  `json:"available"`
@@ -766,6 +775,32 @@ func SanitizeItemMetadata(meta *ItemMetadata) {
 	}
 	if meta.Origin != nil {
 		sanitizeItemOrigin(meta.Origin, meta.Site)
+	}
+	for i := range meta.Parts {
+		if len(meta.Parts[i].Chapters) > 0 {
+			cleaned := make([]VideoChapter, 0, len(meta.Parts[i].Chapters))
+			for _, ch := range meta.Parts[i].Chapters {
+				ch.Title = strings.TrimSpace(ch.Title)
+				if ch.Title == "" || ch.FromSec < 0 || ch.ToSec <= ch.FromSec {
+					continue
+				}
+				cleaned = append(cleaned, ch)
+			}
+			if len(cleaned) == 0 {
+				meta.Parts[i].Chapters = nil
+			} else {
+				for j := 1; j < len(cleaned); j++ {
+					cur := cleaned[j]
+					k := j - 1
+					for k >= 0 && (cleaned[k].FromSec > cur.FromSec || (cleaned[k].FromSec == cur.FromSec && cleaned[k].ToSec > cur.ToSec)) {
+						cleaned[k+1] = cleaned[k]
+						k--
+					}
+					cleaned[k+1] = cur
+				}
+				meta.Parts[i].Chapters = cleaned
+			}
+		}
 	}
 	sanitizeManifestConflictFields(meta)
 }

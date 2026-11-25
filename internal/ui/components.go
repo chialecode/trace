@@ -60,6 +60,9 @@ type PostCardData struct {
 	URL               string
 	Pinned            bool
 	IsEdited          bool
+	IsOnlyFans        bool
+	Blocked           bool
+	BlockedHint       string
 	Degraded          bool
 	Cached            bool
 	DotStatus         string
@@ -777,6 +780,19 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 							ui.Text(c, "置顶").FontSize(11).FontWeight(600).TextColor(ColorAccent).SingleLine()
 						})
 					}
+					if post.IsOnlyFans || post.Blocked {
+						badgeText := "充电专属"
+						badgeBg := ColorWarnBg
+						badgeColor := ColorTextMain
+						if post.IsOnlyFans && !post.Blocked {
+							badgeText = "充电专属（已解锁）"
+							badgeBg = ColorAccentBg
+							badgeColor = ColorAccent
+						}
+						ui.Box(c).Padding(1, 6).Radius(4).Background(badgeBg).Children(func() {
+							ui.Text(c, badgeText).FontSize(11).FontWeight(600).TextColor(badgeColor).SingleLine()
+						})
+					}
 				})
 
 				ui.Row(c).AlignItems(ui.Center).Gap(6).Shrink(0).Children(func() {
@@ -835,6 +851,15 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 			}
 			if bodyText != "" && bodyText != titleText {
 				a.renderExpandableTextWithLinks(c, post.Key, bodyText, post.Links, 15, ColorTextMain, isDouyinSite)
+			}
+
+			if post.Blocked {
+				hint := firstNonEmptyStrUI(post.BlockedHint, "充电专属内容，当前登录账号未开通该 UP 主充电权益")
+				ui.Row(c).Label("充电专属锁定提示："+post.Key).FillWidth().Padding(8, 12).Radius(8).Background(ColorWarnBg).Border(1, ColorDotYellow).AlignItems(ui.Center).Gap(6).Children(func() {
+					DrawIcon(c, "alert-circle", 16, ColorTextMain, 1.75)
+					ui.Text(c, hint).
+						FontSize(13).LineHeight(LineHeightCompact).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
+				})
 			}
 
 			if post.Degraded {
@@ -1157,7 +1182,7 @@ func dotRank(status string) int {
 // postMenuItems fills a post's "⋯" menu: caching an uncached post, then the
 // browser and the link. Posts carry no text buttons of their own.
 func (a *App) postMenuItems(c *ui.Context, m *ui.Menu, post PostCardData) {
-	if !post.Cached && (post.DotStatus == "" || post.DotStatus == "none") && post.CacheBtnLabel != "" {
+	if !post.Blocked && !post.Cached && (post.DotStatus == "" || post.DotStatus == "none") && post.CacheBtnLabel != "" {
 		if m.Item("缓存").Chosen() {
 			a.cachePost(post)
 		}

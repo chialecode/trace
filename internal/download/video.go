@@ -92,6 +92,14 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 	}
 	hasProtectedLocal := exists && localHasProtectedContent(meta)
 
+	if detail.IsUpowerLocked() {
+		upowerErr := bilibili.NewUpowerLockedError("/x/web-interface/wbi/view")
+		if hasProtectedLocal {
+			return wrapRemoteDegraded(upowerErr)
+		}
+		return upowerErr
+	}
+
 	if hasProtectedLocal {
 		if mode == ConflictResolveKeepBoth || mode == ConflictResolveUseRemote {
 			return m.executeBilibiliVideoConflictReplace(ctx, t, detail, meta, mode, selectedPages)
@@ -331,6 +339,9 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 			if len(part.Subtitles) > 0 && old.SubtitleState == "saved" {
 				part.SubtitleState = "saved"
 			}
+		}
+		if len(old.Chapters) > 0 {
+			part.Chapters = append([]library.VideoChapter(nil), old.Chapters...)
 		}
 	}
 
@@ -595,7 +606,11 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 			savedLanguages = append(savedLanguages, track.Language)
 		}
 	}
-	tracks, err := m.client.MissingSubtitles(ctx, meta.RawID, part.CID, cfg.IncludeAI, savedLanguages)
+	extras, err := m.client.MissingSubtitlesAndChapters(ctx, meta.RawID, part.CID, cfg.IncludeAI, savedLanguages)
+	if len(extras.Chapters) > 0 {
+		part.Chapters = convertVideoChapters(extras.Chapters)
+	}
+	tracks := extras.Subtitles
 	clearSubtitleMissing(meta, prefix)
 	for _, track := range tracks {
 		lang := library.SanitizeFileName(track.Lan)
@@ -644,6 +659,25 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 		}
 	}
 	return nil
+}
+
+func convertVideoChapters(in []bilibili.VideoChapter) []library.VideoChapter {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]library.VideoChapter, 0, len(in))
+	for _, ch := range in {
+		title := strings.TrimSpace(ch.Title)
+		if title == "" || ch.FromSec < 0 || ch.ToSec <= ch.FromSec {
+			continue
+		}
+		out = append(out, library.VideoChapter{
+			FromSec: ch.FromSec,
+			ToSec:   ch.ToSec,
+			Title:   title,
+		})
+	}
+	return out
 }
 
 func (m *Manager) writeExtra(ctx context.Context, t *Task, meta *library.ItemMetadata, role, rel string, raw []byte) error {

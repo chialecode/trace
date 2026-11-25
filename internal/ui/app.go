@@ -88,6 +88,8 @@ type PlayerOverlayState struct {
 	LoadError        string
 	Segment          int
 	Segments         []string
+	Chapters         []library.VideoChapter
+	PendingSeekSec   float64
 	DecoderMissing   bool
 	MissingReason    string
 	SeekNormalized   float64
@@ -401,18 +403,25 @@ type App struct {
 	playerOpenSeq int
 
 	// User Space Page
-	CurrentUser         *bilibili.UserSpace
-	UserTab             string // "dynamics" | "videos"
-	UserDynamics        []bilibili.DynamicItem
-	UserDynamicsNext    string
-	UserDynamicsHasMore bool
-	UserDynamicsError   string
-	UserVideos          []bilibili.UserVideoItem
-	UserVideosPage      int
-	UserVideosHasMore   bool
-	UserVideosError     string
-	UserDynListState    *ui.ListState
-	UserVidListState    *ui.ListState
+	CurrentUser                *bilibili.UserSpace
+	UserTab                    string // "dynamics" | "videos"
+	UserDynamics               []bilibili.DynamicItem
+	UserDynamicsNext           string
+	UserDynamicsHasMore        bool
+	UserDynamicsError          string
+	UserVideos                 []bilibili.UserVideoItem
+	UserVideosPage             int
+	UserVideosHasMore          bool
+	UserVideosError            string
+	UserVideosOrder            string // "pubdate" | "click" | "stow"
+	UserVideosKeywordInput     string
+	UserVideosKeywordComposing bool
+	UserVideosAppliedKeyword   string
+	UserVideosTID              int
+	UserVideosZones            []bilibili.UserVideoZone
+	userVideosSeq              uint64
+	UserDynListState           *ui.ListState
+	UserVidListState           *ui.ListState
 	// UserListFilter is 全部 ("all") or 未缓存 ("uncached") on user pages (DEC-046 ⑧).
 	UserListFilter  string
 	userFilterCache uncachedFilterCache

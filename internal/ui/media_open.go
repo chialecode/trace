@@ -468,6 +468,11 @@ func (a *App) OpenPlayerOverlay(item library.ItemMetadata) {
 
 // openPlayerFile selects a registered file before opening the decoder once.
 func (a *App) openPlayerFile(item library.ItemMetadata, selected string) {
+	a.openPlayerFileAt(item, selected, 0)
+}
+
+// openPlayerFileAt opens a registered video file in PlayerOverlay and optionally seeks to seekSec once ready.
+func (a *App) openPlayerFileAt(item library.ItemMetadata, selected string, seekSec float64) {
 	a.pauseBGM()
 	a.setPlayerFullscreen(false)
 	var segments []string
@@ -506,7 +511,7 @@ func (a *App) openPlayerFile(item library.ItemMetadata, selected string) {
 			}
 		}
 	}
-	a.openPlayerSegment(item, index)
+	a.openPlayerSegmentAt(item, index, seekSec)
 }
 
 func isGIFLibrarySegment(item library.ItemMetadata, relPath string) bool {
@@ -527,6 +532,10 @@ func isGIFLibrarySegment(item library.ItemMetadata, relPath string) bool {
 }
 
 func (a *App) openPlayerSegment(item library.ItemMetadata, index int) {
+	a.openPlayerSegmentAt(item, index, 0)
+}
+
+func (a *App) openPlayerSegmentAt(item library.ItemMetadata, index int, seekSec float64) {
 	a.closeLivePreview()
 	_ = a.player.Close()
 	a.PlayerOverlay.Open = true
@@ -539,6 +548,8 @@ func (a *App) openPlayerSegment(item library.ItemMetadata, index int) {
 	a.PlayerOverlay.ItemKey = item.ItemKey
 	a.PlayerOverlay.Title = item.Title
 	a.PlayerOverlay.Segment = index
+	a.PlayerOverlay.Chapters = nil
+	a.PlayerOverlay.PendingSeekSec = max(0, seekSec)
 	a.PlayerOverlay.DecoderMissing = false
 	a.PlayerOverlay.LoadError = ""
 	a.PlayerOverlay.Loading = false
@@ -564,6 +575,9 @@ func (a *App) openPlayerSegment(item library.ItemMetadata, index int) {
 			part = candidate
 			break
 		}
+	}
+	if len(part.Chapters) > 0 {
+		a.PlayerOverlay.Chapters = append([]library.VideoChapter(nil), part.Chapters...)
 	}
 	// Opening a file (Media Foundation, D3D11) and parsing its danmaku take
 	// up to a few hundred milliseconds: they run off the UI thread, which
@@ -651,6 +665,11 @@ func (a *App) openPlayerSegment(item library.ItemMetadata, index int) {
 		if a.PlayerOverlay.LoopMuted {
 			a.player.SetMuted(true)
 		}
+		if a.PlayerOverlay.PendingSeekSec > 0 {
+			target := a.PlayerOverlay.PendingSeekSec
+			a.PlayerOverlay.PendingSeekSec = 0
+			_ = a.player.Seek(target)
+		}
 		a.player.Play() // videos start playing as soon as they open
 	}, func(err error) {
 		a.PlayerOverlay.Loading = false
@@ -691,6 +710,8 @@ func (a *App) openRemoteVideoPreviewOpts(siteID, title, rawURL string, loopMuted
 	a.PlayerOverlay.Title = firstNonEmptyStrUI(title, "在线视频预览")
 	a.PlayerOverlay.Segments = nil
 	a.PlayerOverlay.Segment = 0
+	a.PlayerOverlay.Chapters = nil
+	a.PlayerOverlay.PendingSeekSec = 0
 	a.PlayerOverlay.DecoderMissing = false
 	a.PlayerOverlay.MissingReason = ""
 	a.PlayerOverlay.LoadError = ""
