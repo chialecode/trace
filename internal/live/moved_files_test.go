@@ -70,12 +70,18 @@ func TestRecordingContinuesWhenFinishedSegmentsAreMovedAway(t *testing.T) {
 		case 2:
 			w.WriteHeader(http.StatusBadGateway) // the recorder finalizes part-001 and reconnects
 		default:
-			// part-001 and item.json are finished: move them away first.
+			// part-001 converts asynchronously after the 502 reconnect; wait briefly
+			// for part-001.mp4 to finish before moving it away.
 			if dir, ok := recordDir.Load().(string); ok && !moved.Load() {
-				if _, err := os.Stat(filepath.Join(dir, "part-001.mp4")); err == nil {
-					_ = os.Remove(filepath.Join(dir, "part-001.mp4"))
-					_ = os.Remove(filepath.Join(dir, "item.json"))
-					moved.Store(true)
+				waitUntil := time.Now().Add(2 * time.Second)
+				for time.Now().Before(waitUntil) {
+					if _, err := os.Stat(filepath.Join(dir, "part-001.mp4")); err == nil {
+						_ = os.Remove(filepath.Join(dir, "part-001.mp4"))
+						_ = os.Remove(filepath.Join(dir, "item.json"))
+						moved.Store(true)
+						break
+					}
+					time.Sleep(15 * time.Millisecond)
 				}
 			}
 			live.Store(false)

@@ -146,7 +146,7 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 		meta.Live.Source = "auto"
 		st.Source = "auto"
 	}
-	savedMeta, err := m.lib.SaveItem(itemDir, meta)
+	savedMeta, err := m.lib.SaveLiveItem(itemDir, meta)
 	if err != nil {
 		return st, err
 	}
@@ -197,7 +197,7 @@ func (m *Manager) StartRecording(ctx context.Context, roomOrShortID int64) (Room
 	m.initSessionIncidents(sess)
 	for _, media := range savedMeta.Media {
 		if media.Role == "live_segment" {
-			sess.segments = append(sess.segments, media.Path)
+			sess.segments = mergeLiveSegmentPath(sess.segments, media.Path)
 			sess.bytesTotal += media.Bytes
 		}
 	}
@@ -258,7 +258,7 @@ func (m *Manager) stopRecordingInternal(roomID int64, reason string, suppressAut
 	if ok && sess != nil && sess.stopReason == "" {
 		sess.stopReason = reason
 	}
-	timeout := m.finalizeTimeout
+	finCtx := m.finalizeCtxLocked()
 	m.mu.Unlock()
 	if !ok || sess == nil {
 		m.mu.Lock()
@@ -269,15 +269,10 @@ func (m *Manager) stopRecordingInternal(roomID int64, reason string, suppressAut
 		return st, nil
 	}
 
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
 	sess.cancel()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
 	select {
 	case <-sess.doneCh:
-	case <-timer.C:
+	case <-finCtx.Done():
 		m.mu.Lock()
 		state := m.states[roomID]
 		m.mu.Unlock()

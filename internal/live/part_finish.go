@@ -47,15 +47,18 @@ func (m *Manager) finishContext() (context.Context, context.CancelFunc) {
 	m.mu.Lock()
 	stopping := m.stopping
 	deadline := m.stopDeadline
-	timeout := m.finalizeTimeout
+	stallTimeout := m.finalizeStallTimeout
+	finCtx := m.finalizeCtxLocked()
 	m.mu.Unlock()
-	if timeout <= 0 {
-		timeout = 30 * time.Second
+	if stallTimeout <= 0 {
+		stallTimeout = defaultFinalizeStallTimeout
 	}
 	if stopping && !deadline.IsZero() {
-		return context.WithDeadline(context.Background(), deadline)
+		ctx, cancel := context.WithDeadline(finCtx, deadline)
+		return withFinalizeStallTimeout(ctx, stallTimeout), cancel
 	}
-	return context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(finCtx)
+	return withFinalizeStallTimeout(ctx, stallTimeout), cancel
 }
 
 // finishPartAsync converts a part while the session records the next one, so
@@ -92,11 +95,25 @@ func (sess *recordSession) waitPartsFinished() {
 // save succeeds, and the .part file is removed only after commit. A failed
 // conversion keeps the .part and records the incident.
 func (m *Manager) finishPart(sess *recordSession, job partJob) error {
+	startWall := time.Now()
 	finishCtx, cancel := m.finishContext()
 	summary, conversionErr := convertPart(finishCtx, job.path, filepath.Join(sess.itemDir, job.partRel))
+	ctxErr := finishCtx.Err()
 	cancel()
 	if conversionErr != nil {
+		m.mu.Lock()
+		stopping := m.stopping
+		m.mu.Unlock()
+		if stopping && ctxErr != nil {
+			// App shutdown deadline interrupted conversion: keep .part in PendingParts
+			// for automatic recovery on next startup without recording a false failure.
+			m.logEvent("WARN", "live convert interrupted: site=%s room=%s part=%s dur_ms=%d reason=app_closed",
+				liveLogSite(sess), liveLogRoom(sess), job.pending, time.Since(startWall).Milliseconds())
+			return m.writeSessionMeta(sess, false)
+		}
 		reason := "直播录像转换失败：" + sanitizeLiveError(conversionErr)
+		m.logEvent("ERROR", "live convert failed: site=%s room=%s part=%s dur_ms=%d err=%s",
+			liveLogSite(sess), liveLogRoom(sess), job.pending, time.Since(startWall).Milliseconds(), sanitizeLiveError(conversionErr))
 		m.mu.Lock()
 		addLiveMissing(&sess.itemMeta, job.pending, "转换失败，临时片段已保留")
 		sess.lastErr = reason
@@ -145,7 +162,7 @@ func (m *Manager) finishPart(sess *recordSession, job partJob) error {
 
 	var notify *RoomState
 	if err := m.commitSessionMeta(sess, false, applyPart, func() {
-		sess.segments = append(sess.segments, job.partRel)
+		sess.segments = mergeLiveSegmentPath(sess.segments, job.partRel)
 		if st, ok := m.syncSessionRoomStateLocked(sess); ok {
 			cp := st
 			notify = &cp
@@ -155,6 +172,8 @@ func (m *Manager) finishPart(sess *recordSession, job partJob) error {
 	}
 
 	_ = removeFileWithRetry(job.path)
+	m.logEvent("INFO", "live convert done: site=%s room=%s part=%s bytes=%d dur_ms=%d",
+		liveLogSite(sess), liveLogRoom(sess), job.partRel, summary.FileBytes, time.Since(startWall).Milliseconds())
 	if notify != nil && m.onState != nil {
 		leave := sess.enterExternal()
 		m.onState(*notify)
@@ -193,21 +212,30 @@ func (m *Manager) commitSessionMeta(
 		sess.itemMeta.Live.LastSequence, sess.itemMeta.Live.HasSequence = sess.lastSequence, sess.hasSequence
 	}
 	metaCopy := snapshotItemMeta(sess.itemMeta)
-	if mutate != nil {
-		mutate(&metaCopy)
-	}
 	if metaCopy.Live != nil {
 		metaCopy.Live.Incidents = cloneIncidents(sess.incidents)
 	}
+	if mutate != nil {
+		mutate(&metaCopy)
+	}
 	m.mu.Unlock()
 
-	saved, err := m.lib.SaveItem(sess.itemDir, metaCopy)
+	saveWall := time.Now()
+	saved, err := m.lib.SaveLiveItem(sess.itemDir, metaCopy)
+	saveDur := time.Since(saveWall)
 	if err != nil {
+		if saveDur >= slowLiveIOThreshold {
+			m.logEvent("WARN", "live slow_io: site=%s room=%s op=save_session dur_ms=%d err=%s",
+				liveLogSite(sess), liveLogRoom(sess), saveDur.Milliseconds(), sanitizeLiveError(err))
+		}
 		return err
 	}
 	m.mu.Lock()
 	if mutate != nil {
 		mutate(&sess.itemMeta)
+	}
+	if onSavedLocked != nil {
+		onSavedLocked()
 	}
 	if sess.itemMeta.Live != nil {
 		sess.itemMeta.Live.Incidents = cloneIncidents(sess.incidents)
@@ -215,18 +243,19 @@ func (m *Manager) commitSessionMeta(
 	sess.itemMeta.Version, sess.itemMeta.Site, sess.itemMeta.Kind = saved.Version, saved.Site, saved.Kind
 	sess.itemMeta.RawID, sess.itemMeta.ItemKey, sess.itemMeta.ItemDir = saved.RawID, saved.ItemKey, saved.ItemDir
 	sess.itemMeta.CachedAt, sess.itemMeta.TotalBytes, sess.itemMeta.Status = saved.CachedAt, saved.TotalBytes, saved.Status
-	if onSavedLocked != nil {
-		onSavedLocked()
-	}
 	m.mu.Unlock()
+	if saveDur >= slowLiveIOThreshold {
+		m.logEvent("WARN", "live slow_io: site=%s room=%s op=save_session dur_ms=%d",
+			liveLogSite(sess), liveLogRoom(sess), saveDur.Milliseconds())
+	}
 	return nil
 }
 
 // saveCheckpoint applies update to the manifest and writes it as the
 // recording checkpoint, serialized with the session's other writes.
 func (m *Manager) saveCheckpoint(sess *recordSession, update func(meta *library.ItemMetadata)) error {
+	cpWall := time.Now()
 	sess.saveMu.Lock()
-	defer sess.saveMu.Unlock()
 	m.mu.Lock()
 	update(&sess.itemMeta)
 	if sess.itemMeta.Live != nil {
@@ -235,6 +264,11 @@ func (m *Manager) saveCheckpoint(sess *recordSession, update func(meta *library.
 	metaCopy := snapshotItemMeta(sess.itemMeta)
 	m.mu.Unlock()
 	_, err := m.lib.SaveRecordingCheckpoint(sess.itemDir, metaCopy)
+	sess.saveMu.Unlock()
+	if cpDur := time.Since(cpWall); cpDur >= slowLiveIOThreshold {
+		m.logEvent("WARN", "live slow_io: site=%s room=%s op=checkpoint dur_ms=%d",
+			liveLogSite(sess), liveLogRoom(sess), cpDur.Milliseconds())
+	}
 	return err
 }
 

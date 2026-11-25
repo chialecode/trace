@@ -466,6 +466,16 @@ func NewBackend(opts Options) (*Backend, error) {
 			_ = subMgr.UpdateAccountWebRID(string(site.Douyin), uid, webRID)
 		}
 	})
+	liveMgr.SetLogFunc(func(level, msg string) {
+		switch level {
+		case "ERROR":
+			b.writeLogLine("ERROR", msg)
+		case "WARN":
+			b.writeLogLine("WARN", msg)
+		default:
+			b.writeLogLine("INFO", msg)
+		}
+	})
 	b.live = liveMgr
 
 	biliClient.SetAccountReplacingHandler(func() {
