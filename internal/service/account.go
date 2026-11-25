@@ -34,7 +34,7 @@ const (
 	AccountHistory      = "history"       // 哔哩哔哩历史记录
 	AccountLikes        = "likes"         // 抖音/微博/X 喜欢
 	AccountCollection   = "collection"    // 抖音收藏
-	AccountWatchHistory = "watch_history" // 抖音观看历史（条件）
+	AccountWatchHistory = "watch_history" // 抖音观看历史
 	AccountBookmarks    = "bookmarks"     // X 书签
 	AccountLists        = "lists"         // X 列表（条件，默认关闭）
 	AccountLogin        = "login"         // 未登录或失效时的唯一条目

@@ -94,6 +94,15 @@ func SiteOf(err error) ID {
 	return ""
 }
 
+// HTTPStatusOf extracts the HTTPStatus recorded on err, or 0 if unset or typed-nil.
+func HTTPStatusOf(err error) int {
+	var se *Error
+	if errors.As(err, &se) && se != nil {
+		return se.HTTPStatus
+	}
+	return 0
+}
+
 // IsUnsupported reports whether err represents an explicitly unsupported link or content form.
 func IsUnsupported(err error) bool {
 	var se *Error

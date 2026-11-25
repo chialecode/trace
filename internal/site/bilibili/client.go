@@ -62,21 +62,24 @@ type ClientOptions struct {
 	NowFunc          func() time.Time
 	// WrapTransport, when set, wraps both the API and media transports. Only
 	// authorized site checks use it to gate each request before it is sent.
-	WrapTransport func(http.RoundTripper) http.RoundTripper
+	WrapTransport             func(http.RoundTripper) http.RoundTripper
+	ImageCDNFallbackProviders []site.PublicImageCDNProvider
 }
 
 // Client implements the Bilibili site adapter with dual HTTP clients, global pacing, WBI signing, and QR/refresh flows.
 type Client struct {
-	credStore        *credential.Store
-	endpoints        Endpoints
-	apiClient        *http.Client
-	mediaClient      *http.Client
-	mediaIdleTimeout time.Duration
-	pacingInterval   time.Duration
-	authExpired      func()
-	wbiFetchedAt     time.Time
-	allowLocalhost   bool
-	nowFunc          func() time.Time
+	credStore            *credential.Store
+	endpoints            Endpoints
+	apiClient            *http.Client
+	mediaClient          *http.Client
+	mediaIdleTimeout     time.Duration
+	pacingInterval       time.Duration
+	authExpired          func()
+	wbiFetchedAt         time.Time
+	allowLocalhost       bool
+	cdnFallbackProviders []site.PublicImageCDNProvider
+	fallbackWrap         func(http.RoundTripper) http.RoundTripper
+	nowFunc              func() time.Time
 
 	paceMu           sync.Mutex
 	sequenceMu       sync.RWMutex
@@ -194,15 +197,17 @@ func NewClient(opts ClientOptions) *Client {
 	}
 
 	c := &Client{
-		credStore:        opts.CredStore,
-		endpoints:        ep,
-		mediaIdleTimeout: idleTimeout,
-		pacingInterval:   pacing,
-		allowLocalhost:   opts.AllowLocalhost,
-		nowFunc:          nowFn,
-		qrHistory:        make(map[string]string),
-		webIDCache:       make(map[int64]cachedWebID),
-		apiGate:          make(chan struct{}, 1),
+		credStore:            opts.CredStore,
+		endpoints:            ep,
+		mediaIdleTimeout:     idleTimeout,
+		pacingInterval:       pacing,
+		allowLocalhost:       opts.AllowLocalhost,
+		cdnFallbackProviders: append([]site.PublicImageCDNProvider(nil), opts.ImageCDNFallbackProviders...),
+		fallbackWrap:         opts.WrapTransport,
+		nowFunc:              nowFn,
+		qrHistory:            make(map[string]string),
+		webIDCache:           make(map[int64]cachedWebID),
+		apiGate:              make(chan struct{}, 1),
 	}
 
 	c.apiClient = &http.Client{
@@ -305,7 +310,13 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 	body := c.WrapMediaReader(resp.Body)
 	defer body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, classifyHTTPStatus(resp.StatusCode, "image")
+		statusErr := classifyHTTPStatus(resp.StatusCode, "image")
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+			if fbData, ok := c.tryPublicImageCDNFallback(ctx, u.String(), maxBytes); ok {
+				return fbData, nil
+			}
+		}
+		return nil, statusErr
 	}
 	if resp.ContentLength > maxBytes {
 		return nil, &SiteError{Kind: ErrKindBadRequest, Message: "图片超过允许的大小上限"}
@@ -317,7 +328,25 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 	if int64(len(raw)) > maxBytes {
 		return nil, &SiteError{Kind: ErrKindBadRequest, Message: "图片超过允许的大小上限"}
 	}
+	if site.LooksLikeExpiredPlaceholderImageBytes(raw, u.String(), 0, 0, false) {
+		if fbData, ok := c.tryPublicImageCDNFallback(ctx, u.String(), maxBytes); ok {
+			return fbData, nil
+		}
+		return nil, &SiteError{Kind: ErrKindUnavailable, Message: "图片已在源站失效"}
+	}
 	return raw, nil
+}
+
+func (c *Client) tryPublicImageCDNFallback(ctx context.Context, cleanURL string, maxBytes int64) ([]byte, bool) {
+	fbCfg := site.PublicImageCDNFallbackConfig{
+		Providers:       c.cdnFallbackProviders,
+		AllowLocalhost:  c.allowLocalhost,
+		WrapTransport:   c.fallbackWrap,
+		IdleReadTimeout: c.mediaIdleTimeout,
+		UserAgent:       DefaultUserAgent,
+	}
+	raw, _, _, ok := site.FetchPublicImageCDNFallback(ctx, fbCfg, cleanURL, maxBytes, 0, 0, false)
+	return raw, ok
 }
 
 // WrapMediaReader wraps an io.ReadCloser with a per-read idle timeout.

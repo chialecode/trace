@@ -3,7 +3,6 @@ package download
 import (
 	"context"
 	"os"
-	"path/filepath"
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/settings"
@@ -21,23 +20,17 @@ func (m *Manager) saveVideoCover(ctx context.Context, task *Task, meta *library.
 			continue
 		}
 		rel = file.Path
-		if m.mediaAlreadyCompleted(*meta, file) {
-			clearMissing(meta, "cover")
-			return nil
-		}
 		break
 	}
-	m.setFileProgress(task, "cover", rel, "downloading", 0, 0, 0)
-	n, hash, err := m.downloadFileWithRange(ctx, []string{coverURL}, filepath.Join(meta.ItemDir, rel), task)
+	saved, err := m.downloadBilibiliImageStaged(ctx, task, meta.ItemDir, *meta, true, "cover", rel, coverURL, 0, 0)
 	if err != nil {
-		m.setFileProgress(task, "cover", rel, "failed", 0, 0, 0)
 		addMissing(meta, "cover", "封面保存失败 ("+bilibili.KindOf(err)+")")
 		if isStopError(err) || isStorageError(err) || ctx.Err() != nil {
 			return err
 		}
 		return nil
 	}
-	meta.Media = mergeMediaFiles(meta.Media, []library.MediaFile{{Role: "cover", Path: rel, Bytes: n, SHA256: hash, Source: coverURL}})
+	meta.Media = mergeMediaFiles(meta.Media, []library.MediaFile{*saved})
 	clearMissing(meta, "cover")
 	return m.saveVideoManifest(task, meta)
 }

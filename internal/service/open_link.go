@@ -898,6 +898,12 @@ func (b *Backend) fetchHistoryThumbForSite(ctx context.Context, siteID site.ID, 
 	if err != nil || len(raw) == 0 || int64(len(raw)) > sourceLimit {
 		return storage.HistoryThumbnail{}
 	}
+	if site.LooksLikeDisguisedImageText(raw) || site.LooksLikeExpiredPlaceholderImageBytes(raw, rawURL, 0, 0, false) {
+		return storage.HistoryThumbnail{}
+	}
+	if _, ok := site.SniffImageMagicBytes(raw); !ok {
+		return storage.HistoryThumbnail{}
+	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
 	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > maxHistoryThumbSourcePix {
 		return storage.HistoryThumbnail{}
