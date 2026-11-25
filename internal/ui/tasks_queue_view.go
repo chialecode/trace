@@ -127,8 +127,10 @@ func (a *App) renderTasksQueueView(c *ui.Context) {
 						ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 							ui.Text(c, fmt.Sprintf("发现 %d 条历史微博可补全", a.BackfillSummary.TotalItems)).
 								FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-							ui.Text(c, formatBackfillSummaryDetail(a.BackfillSummary)).
-								FontSize(12).TextColor(ColorTextMuted).SingleLine()
+							if detail := formatBackfillSummaryBreakdown(a.BackfillSummary); detail != "" {
+								ui.Text(c, detail).
+									FontSize(12).TextColor(ColorTextMuted).SingleLine()
+							}
 						})
 						btnText := "一键补全"
 						if startingBackfill {

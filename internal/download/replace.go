@@ -1064,6 +1064,12 @@ func (m *Manager) executeBilibiliVideoConflictReplace(
 		}
 		v2Parts = append(v2Parts, partRec)
 		v2Media = append(v2Media, partFiles...)
+		if forceOverwrite && partRec.DanmakuState == "missing" {
+			v2Missing = append(v2Missing, library.MissingRecord{
+				Item:   fmt.Sprintf("P%02d.danmaku.xml", vp.Page),
+				Reason: "弹幕下载失败",
+			})
+		}
 	}
 
 	status := "complete"

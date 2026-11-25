@@ -597,7 +597,7 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 	var inspectFn func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision
 	if !nonOriginal {
 		inspectFn = func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
-			return b.inspectWeiboCachedPost(postCopy, meta, queueOrigin)
+			return b.inspectWeiboCachedPostDeferred(postCopy, meta, queueOrigin)
 		}
 	}
 	return queueCandidate{

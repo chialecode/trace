@@ -143,7 +143,7 @@ func (m *Manager) BackfillWeiboNoWMCompanions(
 		if needSave {
 			saved, sErr := m.lib.SaveItemMetadataOnly(meta.ItemDir, meta)
 			if sErr != nil {
-				return res, sErr
+				return res, wrapWeiboBackfillStorageErr(sErr)
 			}
 			res.Item = saved
 			return res, nil
@@ -157,7 +157,7 @@ func (m *Manager) BackfillWeiboNoWMCompanions(
 
 	stageDir := filepath.Join(meta.ItemDir, library.SwapStageDirPrefix+newSwapToken())
 	if err := os.MkdirAll(stageDir, 0o700); err != nil {
-		return res, err
+		return res, wrapWeiboBackfillStorageErr(err)
 	}
 	defer func() {
 		_ = library.RemoveTempSubdirSafe(meta.ItemDir, stageDir)
@@ -170,6 +170,14 @@ func (m *Manager) BackfillWeiboNoWMCompanions(
 		ItemKey: meta.ItemKey,
 		ItemDir: stageDir,
 	}
+
+	type stagedBackfillCompanion struct {
+		slot       library.WeiboStaticImageSlot
+		media      library.MediaFile
+		stagedFull string
+		finalFull  string
+	}
+	var stagedCompanions []stagedBackfillCompanion
 
 	allSlotsAttempted := true
 	for _, slot := range slots {
@@ -199,14 +207,15 @@ func (m *Manager) BackfillWeiboNoWMCompanions(
 			}
 		}
 
-		savedMedia, dlErr := m.downloadWeiboOSLargeBackfillSlot(ctx, &stageTask, stageDir, meta.ItemDir, spec, slot, primarySHA, cands)
+		savedMedia, stagedFull, finalFull, dlErr := m.stageWeiboOSLargeBackfillSlot(ctx, &stageTask, stageDir, meta.ItemDir, spec, slot, primarySHA, cands)
 		if dlErr != nil {
 			if ctx.Err() != nil {
 				return res, ctx.Err()
 			}
 			if isSiteStopError(dlErr) || isStorageError(dlErr) {
-				// Risk control / rate limit / auth / disk error: stop immediately WITHOUT stamping v3.
-				return res, dlErr
+				// Risk control / rate limit / auth / disk error: stop immediately WITHOUT
+				// moving staged companions into itemDir or stamping v3.
+				return res, wrapWeiboBackfillStorageErr(dlErr)
 			}
 			res.SkippedSlots++
 			continue
@@ -215,9 +224,47 @@ func (m *Manager) BackfillWeiboNoWMCompanions(
 			res.SkippedSlots++
 			continue
 		}
-		meta.Media = mergeMediaFiles(meta.Media, []library.MediaFile{*savedMedia})
-		if slot.PageIdx >= 0 && slot.PageIdx < len(meta.NotePages) {
-			meta.NotePages[slot.PageIdx].NoWatermark = savedMedia.Path
+		stagedCompanions = append(stagedCompanions, stagedBackfillCompanion{
+			slot:       slot,
+			media:      *savedMedia,
+			stagedFull: stagedFull,
+			finalFull:  finalFull,
+		})
+	}
+
+	// Commit staged companions into itemDir ONLY after every slot finishes without
+	// stop/cancel/storage errors, rolling back all newly moved files on any failure.
+	var movedPaths []string
+	rollbackMoved := func() {
+		for _, p := range movedPaths {
+			_ = os.Remove(p)
+		}
+	}
+	for _, st := range stagedCompanions {
+		if err := os.MkdirAll(filepath.Dir(st.finalFull), 0o700); err != nil {
+			rollbackMoved()
+			return res, wrapWeiboBackfillStorageErr(err)
+		}
+		if err := library.RejectDirectoryLinks(filepath.Dir(st.finalFull)); err != nil {
+			rollbackMoved()
+			return res, wrapWeiboBackfillStorageErr(err)
+		}
+		// Never overwrite an existing unregistered user file (INV-09).
+		if _, stErr := os.Lstat(st.finalFull); stErr == nil {
+			res.SkippedSlots++
+			continue
+		} else if !os.IsNotExist(stErr) {
+			rollbackMoved()
+			return res, wrapWeiboBackfillStorageErr(stErr)
+		}
+		if err := os.Rename(st.stagedFull, st.finalFull); err != nil {
+			rollbackMoved()
+			return res, wrapWeiboBackfillStorageErr(err)
+		}
+		movedPaths = append(movedPaths, st.finalFull)
+		meta.Media = mergeMediaFiles(meta.Media, []library.MediaFile{st.media})
+		if st.slot.PageIdx >= 0 && st.slot.PageIdx < len(meta.NotePages) {
+			meta.NotePages[st.slot.PageIdx].NoWatermark = st.media.Path
 		}
 		res.AddedCompanions++
 	}
@@ -230,7 +277,8 @@ func (m *Manager) BackfillWeiboNoWMCompanions(
 	if res.AddedCompanions > 0 || res.LinksCleaned || res.StampedStandard || assetIDsUpdated {
 		saved, sErr := m.lib.SaveItem(meta.ItemDir, meta)
 		if sErr != nil {
-			return res, sErr
+			rollbackMoved()
+			return res, wrapWeiboBackfillStorageErr(sErr)
 		}
 		res.Item = saved
 	} else {
@@ -239,7 +287,22 @@ func (m *Manager) BackfillWeiboNoWMCompanions(
 	return res, nil
 }
 
-func (m *Manager) downloadWeiboOSLargeBackfillSlot(
+func wrapWeiboBackfillStorageErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if !isStorageError(err) || site.IsKind(err, site.ErrKindStorage) {
+		return err
+	}
+	return &site.Error{
+		Site:    site.Weibo,
+		Kind:    site.ErrKindStorage,
+		Message: "存储空间不足或写入失败",
+		Err:     err,
+	}
+}
+
+func (m *Manager) stageWeiboOSLargeBackfillSlot(
 	ctx context.Context,
 	stageTask *Task,
 	stageDir, itemDir string,
@@ -247,14 +310,14 @@ func (m *Manager) downloadWeiboOSLargeBackfillSlot(
 	slot library.WeiboStaticImageSlot,
 	primarySHA string,
 	candidates []string,
-) (*library.MediaFile, error) {
+) (*library.MediaFile, string, string, error) {
 	tempRel := slot.NoWMStem + imgSuffix
 	tempFull, err := library.ResolveItemPath(stageDir, tempRel)
 	if err != nil {
-		return nil, err
+		return nil, "", "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(tempFull), 0o700); err != nil {
-		return nil, err
+		return nil, "", "", err
 	}
 	cleanupTemp := func() {
 		_ = os.Remove(tempFull)
@@ -265,16 +328,16 @@ func (m *Manager) downloadWeiboOSLargeBackfillSlot(
 
 	for _, cand := range candidates {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, "", "", err
 		}
 		cleanupTemp()
 		n, sha, ct, dlErr := m.downloadRange(ctx, spec, []string{cand}, tempFull, stageTask)
 		if dlErr != nil {
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return nil, "", "", ctx.Err()
 			}
 			if isSiteStopError(dlErr) || isStorageError(dlErr) {
-				return nil, dlErr
+				return nil, "", "", dlErr
 			}
 			continue
 		}
@@ -291,28 +354,30 @@ func (m *Manager) downloadWeiboOSLargeBackfillSlot(
 		}
 		// Deduplicate when /oslarge/ is byte-identical to the primary original image.
 		if primarySHA != "" && strings.EqualFold(sha, primarySHA) {
-			return nil, nil
+			return nil, "", "", nil
 		}
 
 		finalRel := slot.NoWMStem + ext
 		finalFull, rErr := library.ResolveItemPath(itemDir, finalRel)
 		if rErr != nil {
-			return nil, rErr
+			return nil, "", "", rErr
 		}
-		if err := os.MkdirAll(filepath.Dir(finalFull), 0o700); err != nil {
-			return nil, err
-		}
-		if err := library.RejectDirectoryLinks(filepath.Dir(finalFull)); err != nil {
-			return nil, err
-		}
-		// Never overwrite an existing unregistered user file (INV-09).
+		// Pre-check INV-09 conflict without mutating itemDir yet.
 		if _, stErr := os.Lstat(finalFull); stErr == nil {
-			return nil, nil
+			return nil, "", "", nil
 		} else if !os.IsNotExist(stErr) {
-			return nil, stErr
+			return nil, "", "", stErr
 		}
-		if err := os.Rename(tempFull, finalFull); err != nil {
-			return nil, err
+
+		stagedFull, srErr := library.ResolveItemPath(stageDir, finalRel)
+		if srErr != nil {
+			return nil, "", "", srErr
+		}
+		if err := os.MkdirAll(filepath.Dir(stagedFull), 0o700); err != nil {
+			return nil, "", "", err
+		}
+		if err := os.Rename(tempFull, stagedFull); err != nil {
+			return nil, "", "", err
 		}
 		return &library.MediaFile{
 			Role:       "image_nowm",
@@ -322,9 +387,9 @@ func (m *Manager) downloadWeiboOSLargeBackfillSlot(
 			SHA256:     sha,
 			Width:      w,
 			Height:     h,
-		}, nil
+		}, stagedFull, finalFull, nil
 	}
-	return nil, nil
+	return nil, "", "", nil
 }
 
 func buildWeiboOSLargeBackfillURLs(picID, primaryPath, overrideURL string) []string {

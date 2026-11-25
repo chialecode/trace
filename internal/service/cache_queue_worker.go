@@ -934,7 +934,15 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 
 	skippedAny := false
 	var conflictNotifications []cacheConflictRecord
+	var postInspectActions []func()
 	publishConflicts := func() {
+		if len(postInspectActions) > 0 {
+			actions := postInspectActions
+			postInspectActions = nil
+			for _, fn := range actions {
+				fn()
+			}
+		}
 		if m.b == nil || m.b.events == nil || len(conflictNotifications) == 0 {
 			return
 		}
@@ -986,6 +994,9 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 				}
 				if localMeta.Status != "failed" && localMeta.Status != "missing_files" && localMeta.Status != "corrupt" {
 					dec := cand.inspectCached(localMeta, entry.rec.Origin)
+					if dec.postInspect != nil {
+						postInspectActions = append(postInspectActions, dec.postInspect)
+					}
 					switch dec.action {
 					case inspectSkipNoOp:
 						entry.rt.seenKeys[cand.key] = true

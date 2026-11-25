@@ -762,3 +762,366 @@ func TestServiceForceRecacheItemOverwriteAndGuards(t *testing.T) {
 		t.Fatal("local files were damaged when ForceRecacheItem hit deleted remote post")
 	}
 }
+
+func TestBackfillTierC1MultiPageMissAndErrorUseSlowAPIPacing(t *testing.T) {
+	orig1 := makeServiceTestJPEG(t, 40, 30, color.RGBA{R: 200, G: 60, B: 40, A: 255})
+	nowm1 := makeServiceTestJPEG(t, 28, 20, color.RGBA{R: 30, G: 160, B: 220, A: 255})
+
+	const (
+		uidErr = "100001" // returns non-backoff unavailable error -> must slow-pace before next UID
+		uidOK  = "100002" // 2 miss pages, match on page 3
+		midHit = "5097000000000003"
+	)
+
+	var mymblogPageHits atomic.Int32
+	wbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/ajax/setting/getBasicInfo":
+			_, _ = w.Write([]byte(`{"ok":1,"data":{"screen_name":"慢速回归号"}}`))
+		case "/ajax/profile/info":
+			_, _ = w.Write([]byte(`{"ok":1,"data":{"user":{"idstr":"100009","screen_name":"慢速回归号"}}}`))
+		case "/ajax/statuses/mymblog":
+			uid := r.URL.Query().Get("uid")
+			page := r.URL.Query().Get("page")
+			mymblogPageHits.Add(1)
+			if uid == uidErr {
+				// Non-backoff unavailable error.
+				_, _ = w.Write([]byte(`{"ok":0,"msg":"用户不存在"}`))
+				return
+			}
+			switch page {
+			case "", "1":
+				m, _ := weibo.MidToMblogID("5097000000000091")
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":1,"data":{"since_id":"cur_p2","list":[{"idstr":"5097000000000091","mblogid":%q,"created_at":"Sat Nov 21 15:00:00 +0800 2026","text_raw":"未命中页1","user":{"idstr":"100002","screen_name":"博主2"}}]}}`, m)))
+			case "2":
+				m, _ := weibo.MidToMblogID("5097000000000092")
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":1,"data":{"since_id":"cur_p3","list":[{"idstr":"5097000000000092","mblogid":%q,"created_at":"Sat Nov 21 14:00:00 +0800 2026","text_raw":"未命中页2","user":{"idstr":"100002","screen_name":"博主2"}}]}}`, m)))
+			default:
+				m, _ := weibo.MidToMblogID(midHit)
+				_, _ = w.Write([]byte(fmt.Sprintf(`{
+					"ok":1,
+					"data":{
+						"since_id":"",
+						"bottom_tips_visible":true,
+						"list":[{
+							"idstr":%q,"mblogid":%q,"created_at":"Sat Nov 21 13:00:00 +0800 2026","text_raw":"命中页3",
+							"user":{"idstr":"100002","screen_name":"博主2"},
+							"pic_ids":["picSlowHit"],
+							"pic_infos":{"picSlowHit":{"pic_id":"picSlowHit","type":"pic","largest":{"url":"https://wx1.sinaimg.cn/large/picSlowHit.jpg","width":40,"height":30}}}
+						}]
+					}
+				}`, midHit, m)))
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer wbSrv.Close()
+
+	cdnRT := serviceRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: int64(len(nowm1)),
+			Header:        http.Header{"Content-Type": []string{"image/jpeg"}},
+			Body:          io.NopCloser(bytes.NewReader(nowm1)),
+		}, nil
+	})
+
+	clock := newFakeQueueClock(time.Now().UTC())
+	b, err := NewBackend(Options{
+		Locations:        testLocations(t),
+		Desktop:          NewMockDesktop(),
+		DisableBgWorkers: true,
+		CacheQueueClock:  clock,
+		CacheQueueRand:   func(n int) int { return n / 2 },
+		CacheQueuePacing: &CacheQueuePacing{
+			ItemMinDelay:        40 * time.Second,
+			ItemMaxDelay:        60 * time.Second,
+			FastCDNMinDelay:     2 * time.Second,
+			FastCDNMaxDelay:     5 * time.Second,
+			LongRestMinItems:    20,
+			LongRestMaxItems:    20,
+			LongRestMinDelay:    10 * time.Minute,
+			LongRestMaxDelay:    15 * time.Minute,
+			BackoffCoolMinDelay: 10 * time.Minute,
+			BackoffCoolMaxDelay: 10 * time.Minute,
+			StartupMinDelay:     0,
+			StartupMaxDelay:     0,
+		},
+		WeiboOpts: weibo.ClientOptions{
+			Endpoints: weibo.Endpoints{
+				PCBasicInfo:     wbSrv.URL + "/ajax/setting/getBasicInfo",
+				ProfileInfo:     wbSrv.URL + "/ajax/profile/info",
+				StatusesMyMblog: wbSrv.URL + "/ajax/statuses/mymblog",
+				StatusesShow:    wbSrv.URL + "/ajax/statuses/show",
+			},
+			MinInterval:    -1,
+			JitterMax:      -1,
+			AllowLocalhost: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+	b.dl.SetMediaTransportWrap(func(_ http.RoundTripper) http.RoundTripper { return cdnRT })
+
+	ctx := context.Background()
+	if _, err := b.LoginWithCookie(ctx, "weibo", "SUB=SYNTH_SUB_SLOW; SUBP=SYNTH_SUBP_SLOW", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.subs.Create("双博主订阅", "", []subscription.AccountRef{
+		{Site: "weibo", UID: uidErr, Name: "博主1"},
+		{Site: "weibo", UID: uidOK, Name: "博主2"},
+	}, subscription.SubRules{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed 1 item for uidErr (will fail mymblog & skip to uidOK, then fall back to C2 statuses/show 404)
+	// and 1 item for uidOK (matched on page 3 after 2 miss pages).
+	seedWeiboStaticItemForBackfill(t, b, uidErr, "5097000000000001", "", orig1, 2, nil, "", nil, nil)
+	seedWeiboStaticItemForBackfill(t, b, uidOK, midHit, "", orig1, 2, nil, "", nil, nil)
+
+	b.queue.Start(ctx)
+	if _, err := b.StartWeiboBackfill(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		list := b.ListCacheQueue()
+		if len(list) == 1 && list[0].Status == CacheQueueCompleted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for Tier C1 slow-pacing test; queues=%+v", list)
+		}
+		if _, ok := clock.AdvanceToNextTimer(); !ok {
+			time.Sleep(15 * time.Millisecond)
+		}
+	}
+
+	if mymblogPageHits.Load() != 4 {
+		t.Fatalf("expected 4 mymblog hits (1 error + 2 misses + 1 hit), got %d", mymblogPageHits.Load())
+	}
+	// Every scheduled timer in this Tier C1+C2 run (error skip, 2 miss pages, post-drain transition to C2)
+	// MUST be in slow API pacing [40s, 60s], NEVER 2–5s pure CDN pacing!
+	slowWaits := 0
+	for _, d := range clock.History() {
+		if d == 0 {
+			continue
+		}
+		if d >= 2*time.Second && d <= 5*time.Second {
+			t.Fatalf("Tier C1 API paging wrongly used fast 2-5s CDN delay %v (history=%v)", d, clock.History())
+		}
+		if d >= 40*time.Second && d <= 60*time.Second {
+			slowWaits++
+		}
+	}
+	if slowWaits < 4 {
+		t.Fatalf("expected >=4 slow API waits (error skip + 2 miss pages + post-drain), got %d (history=%v)", slowWaits, clock.History())
+	}
+}
+
+func TestBackfillStorageErrorPausesQueueAndPreservesPendingItem(t *testing.T) {
+	orig1 := makeServiceTestJPEG(t, 40, 30, color.RGBA{R: 180, G: 70, B: 40, A: 255})
+	nowm1 := makeServiceTestJPEG(t, 28, 20, color.RGBA{R: 40, G: 180, B: 220, A: 255})
+
+	biliSrv := newTestBiliServer(t)
+	defer biliSrv.Close()
+	clock := newFakeQueueClock(time.Now().UTC())
+	b, err := NewBackend(Options{
+		Locations:        testLocations(t),
+		Desktop:          NewMockDesktop(),
+		DisableBgWorkers: true,
+		CacheQueueClock:  clock,
+		CacheQueueRand:   func(int) int { return 0 },
+		BilibiliOpts: bilibili.ClientOptions{
+			Endpoints: bilibili.Endpoints{
+				APIBase:      biliSrv.URL,
+				PassportBase: biliSrv.URL,
+				WWWBase:      biliSrv.URL,
+				SpaceBase:    biliSrv.URL,
+				DynamicBase:  biliSrv.URL,
+				LiveAPIBase:  biliSrv.URL,
+				LiveWebBase:  biliSrv.URL,
+			},
+			PacingInterval: time.Millisecond,
+			AllowLocalhost: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+	var saved library.ItemMetadata
+	b.dl.SetMediaTransportWrap(func(_ http.RoundTripper) http.RoundTripper {
+		return serviceRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			// Simulate mid-backfill storage/filesystem corruption after GetItem succeeded:
+			// replacing itemDir/images with a regular file forces os.Lstat / os.MkdirAll
+			// during companion commit to return a real *os.PathError on both Windows & Linux!
+			imgDir := filepath.Join(saved.ItemDir, "images")
+			_ = os.RemoveAll(imgDir)
+			_ = os.WriteFile(imgDir, []byte("block-images-dir"), 0o600)
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				ContentLength: int64(len(nowm1)),
+				Header:        http.Header{"Content-Type": []string{"image/jpeg"}},
+				Body:          io.NopCloser(bytes.NewReader(nowm1)),
+			}, nil
+		})
+	})
+
+	ctx := context.Background()
+	if _, err := b.ImportCookie(ctx, "SESSDATA=s; bili_jct=j; DedeUserID=778899", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	saved = seedWeiboStaticItemForBackfill(t, b, "100001", "5098000000000001", "picDiskErr", orig1, 2, nil, "", nil, nil)
+
+	b.queue.Start(ctx)
+	if _, err := b.StartWeiboBackfill(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(6 * time.Second)
+	for {
+		list := b.ListCacheQueue()
+		if len(list) == 1 && list[0].Status == CacheQueuePaused {
+			if list[0].PauseReason != "storage" {
+				t.Fatalf("expected PauseReason=storage, got %+v", list[0])
+			}
+			if list[0].SkippedCount != 0 {
+				t.Fatalf("storage error must NOT skip pending item: %+v", list[0])
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for storage pause; queues=%+v", list)
+		}
+		if _, ok := clock.AdvanceToNextTimer(); !ok {
+			time.Sleep(15 * time.Millisecond)
+		}
+	}
+
+	// Verify item was NOT recorded in ProcessedKeys so resuming after storage fix still processes it!
+	b.queue.mu.Lock()
+	var processed []string
+	if len(b.queue.tasks) == 1 {
+		processed = append([]string(nil), b.queue.tasks[0].rec.ProcessedKeys...)
+	}
+	b.queue.mu.Unlock()
+	if len(processed) != 0 {
+		t.Fatalf("storage error must NOT mark item in ProcessedKeys: %v", processed)
+	}
+}
+
+func TestFullCacheLegacyLinkInspectionNoDeadlockWithSyncSubscriber(t *testing.T) {
+	const (
+		uid = "100001"
+		mid = "5099000000000010"
+	)
+	mblogID, _ := weibo.MidToMblogID(mid)
+
+	wbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/ajax/setting/getBasicInfo":
+			_, _ = w.Write([]byte(`{"ok":1,"data":{"screen_name":"防死锁测试号"}}`))
+		case "/ajax/profile/info":
+			_, _ = w.Write([]byte(`{"ok":1,"data":{"user":{"idstr":"100001","screen_name":"防死锁测试号","statuses_count":1}}}`))
+		case "/ajax/statuses/mymblog":
+			_, _ = w.Write([]byte(fmt.Sprintf(`{
+				"ok":1,
+				"data":{
+					"since_id":"",
+					"list":[{
+						"idstr":%q,"mblogid":%q,"created_at":"Sat Nov 21 15:00:00 +0800 2026",
+						"text":"请看 <a href=\"https://example.com/no-deadlock\">原文链接</a>",
+						"text_raw":"请看 原文链接",
+						"user":{"idstr":"100001","screen_name":"防死锁测试号"}
+					}]
+				}
+			}`, mid, mblogID)))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer wbSrv.Close()
+
+	clock := newFakeQueueClock(time.Now().UTC())
+	b, err := NewBackend(Options{
+		Locations:        testLocations(t),
+		Desktop:          NewMockDesktop(),
+		DisableBgWorkers: true,
+		CacheQueueClock:  clock,
+		CacheQueueRand:   func(int) int { return 0 },
+		WeiboOpts: weibo.ClientOptions{
+			Endpoints: weibo.Endpoints{
+				PCBasicInfo:     wbSrv.URL + "/ajax/setting/getBasicInfo",
+				ProfileInfo:     wbSrv.URL + "/ajax/profile/info",
+				StatusesMyMblog: wbSrv.URL + "/ajax/statuses/mymblog",
+				StatusesShow:    wbSrv.URL + "/ajax/statuses/show",
+			},
+			MinInterval:    -1,
+			JitterMax:      -1,
+			AllowLocalhost: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+
+	ctx := context.Background()
+	if _, err := b.LoginWithCookie(ctx, "weibo", "SUB=SYNTH_SUB_DL; SUBP=SYNTH_SUBP_DL", ""); err != nil {
+		t.Fatal(err)
+	}
+	saved := seedWeiboStaticItemForBackfill(t, b, uid, mid, "", nil, 2, nil, "请看 原文链接 (https://example.com/no-deadlock)", nil, nil)
+
+	// Attach a synchronous EventLibraryChanged subscriber that calls b.ListCacheQueue()
+	// (which acquires cacheQueueManager.mu). If EventLibraryChanged were published while
+	// holding cacheQueueManager.mu, this would immediately self-deadlock!
+	var syncCallbackCalled atomic.Int32
+	unsub := b.SubscribeEvents(func(ev Event) {
+		if ev.Type == EventLibraryChanged && ev.Message == saved.ItemKey {
+			_ = b.ListCacheQueue()
+			_, _ = b.FindCacheQueueTask("weibo", uid, "posts")
+			syncCallbackCalled.Add(1)
+		}
+	})
+	defer unsub()
+
+	b.queue.Start(ctx)
+	if _, err := b.EnqueueCacheQueue(ctx, CacheQueueRequest{
+		Site:     "weibo",
+		User:     uid,
+		UserName: "防死锁测试号",
+		List:     "posts",
+	}); err != nil {
+		t.Fatalf("EnqueueCacheQueue: %v", err)
+	}
+
+	deadline := time.Now().Add(6 * time.Second)
+	for {
+		list := b.ListCacheQueue()
+		if len(list) == 1 && list[0].Status == CacheQueueCompleted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out (potential deadlock!) waiting for Weibo full-cache legacy link sweep; queues=%+v", list)
+		}
+		if _, ok := clock.AdvanceToNextTimer(); !ok {
+			time.Sleep(15 * time.Millisecond)
+		}
+	}
+
+	if syncCallbackCalled.Load() == 0 {
+		t.Fatal("expected synchronous EventLibraryChanged callback to run cleanly after unlocking m.mu")
+	}
+	upgraded, ok, _ := b.lib.GetItem(saved.ItemKey)
+	if !ok || strings.Contains(upgraded.Text, "https://example.com") || len(upgraded.Links) != 1 {
+		t.Fatalf("legacy link item was not upgraded by full-cache sweep: text=%q links=%+v", upgraded.Text, upgraded.Links)
+	}
+}

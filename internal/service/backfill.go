@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/chialecode/trace/internal/download"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
+	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/site/weibo"
 )
 
@@ -338,7 +341,19 @@ func (m *cacheQueueManager) scheduleFastCDNWaitLocked(entry *cacheQueueEntry, ph
 	return entry.rec
 }
 
-func (m *cacheQueueManager) scheduleSlowAPIWaitLocked(entry *cacheQueueEntry, cached bool) cacheQueueRecord {
+func isBackfillStorageError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pathErr *os.PathError
+	var linkErr *os.LinkError
+	return site.KindOf(err) == site.ErrKindStorage ||
+		errors.As(err, &pathErr) ||
+		errors.As(err, &linkErr) ||
+		bilibili.IsKind(err, "storage")
+}
+
+func (m *cacheQueueManager) scheduleSlowAPIWaitLocked(entry *cacheQueueEntry, phase, defaultReason string, cached bool) cacheQueueRecord {
 	if entry.rec.RestThreshold <= 0 {
 		entry.rec.RestThreshold = m.pickRestThresholdLocked()
 	}
@@ -346,7 +361,10 @@ func (m *cacheQueueManager) scheduleSlowAPIWaitLocked(entry *cacheQueueEntry, ca
 		entry.rec.SinceRestCount++
 	}
 	var delay time.Duration
-	reason := "等待下一条"
+	reason := defaultReason
+	if reason == "" {
+		reason = "等待下一条"
+	}
 	if cached && entry.rec.SinceRestCount >= entry.rec.RestThreshold {
 		delay = m.randDurationLocked(m.pacing.LongRestMinDelay, m.pacing.LongRestMaxDelay)
 		entry.rec.SinceRestCount = 0
@@ -355,9 +373,12 @@ func (m *cacheQueueManager) scheduleSlowAPIWaitLocked(entry *cacheQueueEntry, ca
 	} else {
 		delay = m.randDurationLocked(m.pacing.ItemMinDelay, m.pacing.ItemMaxDelay)
 	}
+	if phase == "" || phase == backfillPhaseFastCDN || phase == backfillPhaseOfflineLinks {
+		phase = backfillPhaseFallbackDetail
+	}
 	now := m.clock.Now().UTC()
 	entry.rec.Status = CacheQueueWaiting
-	entry.rec.BackfillPhase = backfillPhaseFallbackDetail
+	entry.rec.BackfillPhase = phase
 	entry.rec.PauseReason = ""
 	entry.rec.StopReason = reason
 	entry.rec.ActiveItemKey = ""
@@ -445,7 +466,7 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 				m.notifyState(rec)
 				return
 			}
-			if kind == site.ErrKindStorage {
+			if isBackfillStorageError(bErr) {
 				entry.rt.backfillMatched = append([]backfillMatchedItem{match}, entry.rt.backfillMatched...)
 				entry.rec.Status = CacheQueuePaused
 				entry.rec.PauseReason = "storage"
@@ -469,8 +490,12 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 				entry.rec.SkippedCount++
 			}
 		}
-		// Once the buffered page matches drain completely, commit the pending mymblog cursor advance!
-		if len(entry.rt.backfillMatched) == 0 {
+		// Once the buffered page matches drain completely, commit the pending mymblog cursor advance
+		// and pace the next JSON API call under slow API pacing (40–150s), NOT 2–5s CDN pacing!
+		var rec cacheQueueRecord
+		if len(entry.rt.backfillMatched) > 0 {
+			rec = m.scheduleFastCDNWaitLocked(entry, backfillPhaseFastCDN, "纯 CDN 快速补全中")
+		} else {
 			if entry.rt.backfillPendingUIDDone {
 				entry.rec.BackfillSubIndex++
 				entry.rec.BackfillSubCursor = ""
@@ -479,8 +504,8 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 			}
 			entry.rt.backfillPendingCursor = ""
 			entry.rt.backfillPendingUIDDone = false
+			rec = m.scheduleSlowAPIWaitLocked(entry, backfillPhaseSubscribedTimeline, "等待下一次微博列表检查", false)
 		}
-		rec := m.scheduleFastCDNWaitLocked(entry, backfillPhaseFastCDN, "纯 CDN 快速补全中")
 		m.mu.Unlock()
 		if bErr == nil && m.b.events != nil {
 			m.b.events.PublishSite(EventLibraryChanged, string(site.Weibo), match.itemKey)
@@ -535,13 +560,22 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 		var updatedKeys []string
 		var processedKeys []string
 		var recentAdded []CacheQueueRecentItem
+		var storagePauseErr error
 		nowStr := m.nowRFC3339()
 		for _, item := range batch {
 			if ctx.Err() != nil {
 				break
 			}
 			fresh, ok, gErr := m.b.lib.GetItem(item.ItemKey)
-			if gErr != nil || !ok || strings.TrimSpace(fresh.ItemDir) == "" {
+			if gErr != nil {
+				if isBackfillStorageError(gErr) {
+					storagePauseErr = gErr
+					break
+				}
+				processedKeys = append(processedKeys, item.ItemKey)
+				continue
+			}
+			if !ok || strings.TrimSpace(fresh.ItemDir) == "" {
 				processedKeys = append(processedKeys, item.ItemKey)
 				continue
 			}
@@ -555,6 +589,10 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 			}
 			if _, sErr := m.b.lib.SaveItemMetadataOnly(fresh.ItemDir, cleaned); sErr != nil {
 				m.b.logError("backfill.offline_links", sErr)
+				if isBackfillStorageError(sErr) {
+					storagePauseErr = sErr
+					break
+				}
 				processedKeys = append(processedKeys, item.ItemKey)
 				continue
 			}
@@ -577,6 +615,22 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 			m.appendBackfillRecentLocked(entry, r.ItemKey, r.Title, r.CachedAt)
 		}
 		entry.rec.UpdatedAt = m.nowRFC3339()
+		if storagePauseErr != nil {
+			entry.rec.Status = CacheQueuePaused
+			entry.rec.PauseReason = "storage"
+			entry.rec.StopReason = "存储空间不足或写入失败，已暂停补全"
+			entry.rec.NextRunAt = ""
+			m.saveLoggedLocked("backfill_storage_pause")
+			rec := entry.rec
+			m.mu.Unlock()
+			if m.b.events != nil {
+				for _, k := range updatedKeys {
+					m.b.events.PublishSite(EventLibraryChanged, string(site.Weibo), k)
+				}
+			}
+			m.notifyState(rec)
+			return
+		}
 		// If nothing remains after Tier A, complete right away!
 		if len(buckets.fastCDN) == 0 && len(buckets.subscribedUIDs) == 0 && len(buckets.fallbackDetail) == 0 {
 			rec := m.completeBackfillLocked(entry)
@@ -649,7 +703,7 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 				m.notifyState(rec)
 				return
 			}
-			if kind == site.ErrKindStorage {
+			if isBackfillStorageError(bErr) {
 				entry.rec.Status = CacheQueuePaused
 				entry.rec.PauseReason = "storage"
 				entry.rec.StopReason = "存储空间不足或写入失败，已暂停补全"
@@ -672,12 +726,16 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 				entry.rec.SkippedCount++
 			}
 		}
-		hasMoreWork := len(buckets.fastCDN) > 1 || len(buckets.subscribedUIDs) > 0 || len(buckets.fallbackDetail) > 0
 		var rec cacheQueueRecord
-		if !hasMoreWork {
-			rec = m.completeBackfillLocked(entry)
-		} else {
+		switch {
+		case len(buckets.fastCDN) > 1:
 			rec = m.scheduleFastCDNWaitLocked(entry, backfillPhaseFastCDN, "纯 CDN 快速补全中")
+		case len(buckets.subscribedUIDs) > 0:
+			rec = m.scheduleSlowAPIWaitLocked(entry, backfillPhaseSubscribedTimeline, "准备按已订阅博主列表补全历史条目", false)
+		case len(buckets.fallbackDetail) > 0:
+			rec = m.scheduleSlowAPIWaitLocked(entry, backfillPhaseFallbackDetail, "准备按单条详情补全历史条目", false)
+		default:
+			rec = m.completeBackfillLocked(entry)
 		}
 		m.mu.Unlock()
 		if bErr == nil && m.b.events != nil {
@@ -783,12 +841,11 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 				return
 			}
 			// Account unavailable/schema/network on timeline: skip remaining pages for this UID
-			// so unmatched items automatically fall back to Tier C2 statuses/show.
+			// so unmatched items automatically fall back to Tier C2 statuses/show, while strictly
+			// pacing the next Weibo JSON API request under slow API intervals (40–150s).
 			entry.rec.BackfillSubIndex++
 			entry.rec.BackfillSubCursor = ""
-			entry.rec.UpdatedAt = m.nowRFC3339()
-			m.saveLoggedLocked("backfill_sub_skip")
-			rec := entry.rec
+			rec := m.scheduleSlowAPIWaitLocked(entry, backfillPhaseSubscribedTimeline, "跳过异常博主，等待下一次微博列表检查", false)
 			m.mu.Unlock()
 			m.notifyState(rec)
 			return
@@ -836,7 +893,8 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 		} else {
 			entry.rec.BackfillSubCursor = sanitizeQueueCursor(nextCur)
 		}
-		rec := m.scheduleFastCDNWaitLocked(entry, backfillPhaseSubscribedTimeline, "正在按已订阅博主列表匹配历史条目")
+		// Next step calls a Weibo JSON API (mymblog or statuses/show), so strictly pace at 40–150s.
+		rec := m.scheduleSlowAPIWaitLocked(entry, backfillPhaseSubscribedTimeline, "正在按已订阅博主列表匹配历史条目", false)
 		m.mu.Unlock()
 		m.notifyState(rec)
 		return
@@ -930,7 +988,7 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 			m.notifyState(rec)
 			return
 		}
-		if kind == site.ErrKindStorage {
+		if isBackfillStorageError(opErr) {
 			entry.rec.Status = CacheQueuePaused
 			entry.rec.PauseReason = "storage"
 			entry.rec.StopReason = "存储空间不足或写入失败，已暂停补全"
@@ -962,7 +1020,7 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 	if len(remaining) <= 1 {
 		rec = m.completeBackfillLocked(entry)
 	} else {
-		rec = m.scheduleSlowAPIWaitLocked(entry, didCache)
+		rec = m.scheduleSlowAPIWaitLocked(entry, backfillPhaseFallbackDetail, "等待下一条", didCache)
 	}
 	m.mu.Unlock()
 	if didCache && m.b.events != nil {

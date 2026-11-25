@@ -428,10 +428,34 @@ func (b *Backend) ForceRecacheItem(ctx context.Context, itemKey string) (downloa
 			if err != nil {
 				return download.Task{}, wrapDegradedIfRemoteInvalid(err)
 			}
-			if vr == nil || (vr.HostPost == nil && (vr.Video == nil || vr.Video.Selected == nil || strings.TrimSpace(vr.Video.Selected.URL) == "")) {
+			if vr == nil ||
+				(vr.HostPost != nil && vr.HostPost.Unavailable) ||
+				(vr.HostPost == nil && (vr.Video == nil || vr.Video.Selected == nil || strings.TrimSpace(vr.Video.Selected.URL) == "")) {
 				return download.Task{}, fmt.Errorf("%w：源站微博视频已失效", ErrRemoteDegradedRefused)
 			}
-			return b.CacheWeiboVideo(forceCtx, oid)
+			var plan download.WorkDownloadPlan
+			if vr.HostPost != nil {
+				plan, err = b.buildWeiboWorkPlanFromPost(vr.HostPost)
+			} else {
+				plan, err = b.buildWeiboWorkPlanFromStandaloneVideo(vr)
+			}
+			if err != nil {
+				return download.Task{}, wrapDegradedIfRemoteInvalid(err)
+			}
+			plan.ForceOverwrite = true
+			t, err := b.dl.EnqueueWeiboWork(forceCtx, download.WeiboWorkEnqueueRequest{
+				TargetID: oid,
+				Kind:     "video",
+				Source:   "manual",
+				Via:      via,
+				Plan:     &plan,
+			})
+			if err != nil {
+				b.logError("ForceRecacheItem.weibo_video", err)
+				return download.Task{}, err
+			}
+			b.events.PublishSite(EventTaskUpdated, string(site.Weibo), "enqueued:"+t.TargetID)
+			return t, nil
 		}
 		post, err := b.weibo.GetPost(forceCtx, meta.RawID, postOpt)
 		if err != nil {

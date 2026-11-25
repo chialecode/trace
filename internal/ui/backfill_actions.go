@@ -78,7 +78,7 @@ func (a *App) confirmForceRecache() {
 	})
 }
 
-func formatBackfillSummaryDetail(sum service.BackfillSummaryDTO) string {
+func formatBackfillSummaryBreakdown(sum service.BackfillSummaryDTO) string {
 	var parts []string
 	if sum.WeiboMissingNoWM > 0 {
 		parts = append(parts, fmt.Sprintf("缺无水印伴侣图 %d 条", sum.WeiboMissingNoWM))
@@ -89,8 +89,13 @@ func formatBackfillSummaryDetail(sum service.BackfillSummaryDTO) string {
 	if sum.WeiboFastCDNCandidates > 0 {
 		parts = append(parts, fmt.Sprintf("%d 条可快速直连补齐", sum.WeiboFastCDNCandidates))
 	}
-	if len(parts) == 0 {
+	return strings.Join(parts, "，")
+}
+
+func formatBackfillSummaryDetail(sum service.BackfillSummaryDTO) string {
+	detail := formatBackfillSummaryBreakdown(sum)
+	if detail == "" {
 		return fmt.Sprintf("发现 %d 条历史微博可补全", sum.TotalItems)
 	}
-	return fmt.Sprintf("发现 %d 条历史微博可补全（%s）", sum.TotalItems, strings.Join(parts, "，"))
+	return fmt.Sprintf("发现 %d 条历史微博可补全（%s）", sum.TotalItems, detail)
 }

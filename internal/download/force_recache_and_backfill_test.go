@@ -728,3 +728,128 @@ func TestForceOverwriteBilibiliVideoAndDegradedRefusal(t *testing.T) {
 		t.Fatal("Bilibili V2 local files were damaged after ForceOverwrite degraded refusal!")
 	}
 }
+
+func TestBackfillWeiboMultiSlotMidAbortNoOrphanAndRetrySucceeds(t *testing.T) {
+	orig1 := makeWatermarkTestJPEG(t, 44, 34, color.RGBA{R: 200, G: 60, B: 40, A: 255})
+	orig2 := makeWatermarkTestJPEG(t, 40, 30, color.RGBA{R: 60, G: 180, B: 80, A: 255})
+	nowm1 := makeWatermarkTestJPEG(t, 30, 22, color.RGBA{R: 30, G: 130, B: 210, A: 255})
+	nowm2 := makeWatermarkTestJPEG(t, 28, 20, color.RGBA{R: 180, G: 90, B: 220, A: 255})
+
+	var slot2RateLimit atomic.Bool
+	slot2RateLimit.Store(true)
+
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/oslarge/001multiA.jpg":
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				ContentLength: int64(len(nowm1)),
+				Header:        http.Header{"Content-Type": []string{"image/jpeg"}},
+				Body:          io.NopCloser(bytes.NewReader(nowm1)),
+			}, nil
+		case "/oslarge/002multiB.jpg":
+			if slot2RateLimit.Load() {
+				return &http.Response{
+					StatusCode: http.StatusTooManyRequests,
+					Header:     http.Header{"Content-Type": []string{"text/plain"}},
+					Body:       io.NopCloser(strings.NewReader("rate limited")),
+				}, nil
+			}
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				ContentLength: int64(len(nowm2)),
+				Header:        http.Header{"Content-Type": []string{"image/jpeg"}},
+				Body:          io.NopCloser(bytes.NewReader(nowm2)),
+			}, nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("404"))}, nil
+		}
+	})
+
+	mgr, libStore, _, dbPath, _ := setupDouyinDownloadTestEnv(t, http.NotFoundHandler(), 2)
+	cacheDir := filepath.Join(filepath.Dir(dbPath), "cache")
+	mgr.SetMediaTransportWrap(func(_ http.RoundTripper) http.RoundTripper { return rt })
+
+	itemDir := filepath.Join(cacheDir, "weibo", "100001", "posts", "5099000000000001")
+	imgDir := filepath.Join(itemDir, "images")
+	if err := os.MkdirAll(imgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(imgDir, "01.jpg"), orig1, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(imgDir, "02.jpg"), orig2, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := libStore.SaveItem(itemDir, library.ItemMetadata{
+		Site:                 "weibo",
+		Kind:                 "dynamic",
+		ID:                   "5099000000000001",
+		RawID:                "5099000000000001",
+		Title:                "多图补全防孤儿回归",
+		Text:                 "多图补全防孤儿回归",
+		Status:               "complete",
+		CacheStandardVersion: 2,
+		Author:               library.ItemAuthor{Site: "weibo", UID: "100001", Name: "合成博主"},
+		AssetIDs:             []string{"001multiA", "002multiB"},
+		Media: []library.MediaFile{
+			{Role: "image", Path: "images/01.jpg", Bytes: int64(len(orig1)), SHA256: sha256HexBytes(orig1), Width: 44, Height: 34},
+			{Role: "image", Path: "images/02.jpg", Bytes: int64(len(orig2)), SHA256: sha256HexBytes(orig2), Width: 40, Height: 30},
+		},
+		NotePages: []library.NotePageRecord{
+			{Index: 1, Kind: "image", Image: "images/01.jpg", MediaID: "001multiA"},
+			{Index: 2, Kind: "image", Image: "images/02.jpg", MediaID: "002multiB"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run 1: slot 1 downloads OK, slot 2 hits 429 -> must NOT leave orphan 01_nowm.jpg in itemDir and must NOT stamp v3.
+	_, err1 := mgr.BackfillWeiboNoWMCompanions(context.Background(), saved.ItemKey, site.WeiboMediaTransport("Mozilla/5.0 Test", false), nil, nil)
+	var sErr *site.Error
+	if !errors.As(err1, &sErr) || sErr.Kind != site.ErrKindRateLimited {
+		t.Fatalf("expected rate_limited on slot 2 HTTP 429, got %v", err1)
+	}
+	if _, stErr := os.Lstat(filepath.Join(imgDir, "01_nowm.jpg")); !os.IsNotExist(stErr) {
+		t.Fatalf("slot 1 companion leaked as orphan file into itemDir on mid-item 429! lstat err=%v", stErr)
+	}
+	if entries, _ := os.ReadDir(itemDir); len(entries) > 0 {
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), ".trace-") {
+				t.Fatalf("leftover stage dir %q after 429 abort", e.Name())
+			}
+		}
+	}
+	midItem, _, _ := libStore.GetItem(saved.ItemKey)
+	if midItem.CacheStandardVersion >= library.WeiboCacheStandardVersion {
+		t.Fatalf("must not stamp v3 after mid-item 429, got %d", midItem.CacheStandardVersion)
+	}
+
+	// Run 2: retry after 429 clears -> BOTH slot 1 & slot 2 commit cleanly and register in item.json!
+	slot2RateLimit.Store(false)
+	res2, err2 := mgr.BackfillWeiboNoWMCompanions(context.Background(), saved.ItemKey, site.WeiboMediaTransport("Mozilla/5.0 Test", false), nil, nil)
+	if err2 != nil {
+		t.Fatalf("retry BackfillWeiboNoWMCompanions failed: %v", err2)
+	}
+	if res2.AddedCompanions != 2 || !res2.StampedStandard {
+		t.Fatalf("retry expected 2 companions + v3 stamped, got %+v", res2)
+	}
+	after, ok, _ := libStore.GetItem(saved.ItemKey)
+	if !ok || after.CacheStandardVersion != library.WeiboCacheStandardVersion {
+		t.Fatalf("retry item standard version mismatch: %+v", after)
+	}
+	if after.NotePages[0].NoWatermark != "images/01_nowm.jpg" || after.NotePages[1].NoWatermark != "images/02_nowm.jpg" {
+		t.Fatalf("retry missing companion registration on slot 1 or 2: %+v", after.NotePages)
+	}
+
+	// Also verify OS storage error classification (*os.LinkError & *os.PathError -> site.ErrKindStorage).
+	linkErr := &os.LinkError{Op: "rename", Old: "a", New: "b", Err: os.ErrPermission}
+	if !isStorageError(linkErr) {
+		t.Fatal("isStorageError must recognize *os.LinkError")
+	}
+	wrapped := wrapWeiboBackfillStorageErr(linkErr)
+	if !site.IsKind(wrapped, site.ErrKindStorage) {
+		t.Fatalf("wrapWeiboBackfillStorageErr(*os.LinkError) = %v, want site.ErrKindStorage", wrapped)
+	}
+}
