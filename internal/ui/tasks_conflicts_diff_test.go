@@ -203,4 +203,107 @@ func TestTasksConflictsDiffModalHighlightsTextAndAlignsMediaSideBySide(t *testin
 	if strings.Join(chunks, "") != longText {
 		t.Fatalf("chunkDiffDisplayText lost characters: got %q", strings.Join(chunks, ""))
 	}
+	if !isBackgroundPendingKey("conflict-diff:conflict_diff_1") {
+		t.Fatal("expected conflict-diff: key to be treated as background pending key")
+	}
+}
+
+func TestTasksConflictsDiffModalEscapeClosesTopMediaOverlayFirst(t *testing.T) {
+	app, _, cleanup := newTestUIApp(t)
+	defer cleanup()
+
+	rawBackend := app.backend.(*service.Backend)
+	saved := seedSyntheticLocalConflictItem(t, rawBackend)
+
+	conflict := service.CacheConflictDTO{
+		ID:          "conflict_esc_1",
+		ItemKey:     saved.ItemKey,
+		Site:        "weibo",
+		Kind:        "dynamic",
+		TargetID:    "500001",
+		Title:       "图文冲突",
+		ReasonKind:  service.ConflictReasonMedia,
+		ReasonLabel: "媒体变更",
+		State:       service.ConflictStatePending,
+	}
+	app.OpenTasksConflicts()
+	app.OpenConflictDiffModalWithData(service.CacheConflictDiffDTO{
+		Conflict: conflict,
+		Local:    service.ConflictDiffSideDTO{Heading: "本地已缓存（旧版 V1）", Text: "旧正文"},
+		Remote:   service.ConflictDiffSideDTO{Heading: "源站当前（新版 V2）", Text: "新正文"},
+		MediaPairs: []service.ConflictMediaPairDTO{
+			{
+				Index:      1,
+				Kind:       "image",
+				Status:     service.ConflictDiffStatusChanged,
+				StatusText: "已变更",
+				Local: &service.ConflictMediaSideDTO{
+					Kind:         "image",
+					Label:        "图 1",
+					Sublabel:     "1080×1080",
+					LocalItemKey: saved.ItemKey,
+					LocalRelPath: "cover.png",
+				},
+				Remote: &service.ConflictMediaSideDTO{
+					Kind:     "image",
+					Label:    "图 1",
+					Sublabel: "2160×2160",
+				},
+			},
+		},
+	})
+
+	tt := ui.NewTester(app.View, 1280, 860)
+	tt.Frame()
+	if !app.ConflictDiff.Open {
+		t.Fatal("expected ConflictDiff modal to be open")
+	}
+
+	// Open ImageViewer from the left media card inside ConflictDiffModal.
+	tt.Click("媒体并列项 1（本地）查看大图")
+	tt.Frame()
+	if !app.ImageViewer.Open {
+		t.Fatal("expected ImageViewer to open when clicking local image in diff modal")
+	}
+	if !app.ConflictDiff.Open {
+		t.Fatal("expected ConflictDiff modal to stay open behind ImageViewer")
+	}
+
+	// Verify ImageViewer shortcuts work while stacked above ConflictDiffModal.
+	prevZoom := app.ImageViewer.Zoom
+	tt.Key(0, ui.KeyEqual)
+	tt.Frame()
+	if app.ImageViewer.Zoom <= prevZoom {
+		t.Fatalf("expected KeyEqual to zoom ImageViewer above diff modal: before=%v after=%v", prevZoom, app.ImageViewer.Zoom)
+	}
+
+	// Pressing Escape must close ImageViewer first while keeping ConflictDiffModal open.
+	tt.Key(0, ui.KeyEscape)
+	tt.Frame()
+	if app.ImageViewer.Open {
+		t.Fatal("expected Escape to close ImageViewer")
+	}
+	if !app.ConflictDiff.Open {
+		t.Fatal("expected ConflictDiff modal to remain open after closing ImageViewer with Escape")
+	}
+
+	// Opening PlayerOverlay above ConflictDiffModal: Escape closes PlayerOverlay first.
+	app.PlayerOverlay.Open = true
+	app.PlayerOverlay.Title = "测试视频"
+	tt.Frame()
+	tt.Key(0, ui.KeyEscape)
+	tt.Frame()
+	if app.PlayerOverlay.Open {
+		t.Fatal("expected Escape to close PlayerOverlay")
+	}
+	if !app.ConflictDiff.Open {
+		t.Fatal("expected ConflictDiff modal to remain open after closing PlayerOverlay with Escape")
+	}
+
+	// Pressing Escape again with no top media overlay closes ConflictDiffModal.
+	tt.Key(0, ui.KeyEscape)
+	tt.Frame()
+	if app.ConflictDiff.Open {
+		t.Fatal("expected second Escape to close ConflictDiff modal")
+	}
 }

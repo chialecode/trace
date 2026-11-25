@@ -59,11 +59,11 @@ func DiffTextSideBySide(localText, remoteText string) (changed bool, localSegs, 
 
 	lt := tokenizeDiffText(localText)
 	rt := tokenizeDiffText(remoteText)
-	if len(lt)*len(rt) > 160000 {
+	if int64(len(lt))*int64(len(rt)) > 160000 {
 		// Long text fallback: line-level LCS, keeping bounded time/memory.
 		lt = splitLinesPreserveNewline(localText)
 		rt = splitLinesPreserveNewline(remoteText)
-		if len(lt)*len(rt) > 160000 {
+		if int64(len(lt))*int64(len(rt)) > 160000 {
 			return true,
 				[]ConflictTextSegment{{Text: localText, Kind: "removed"}},
 				[]ConflictTextSegment{{Text: remoteText, Kind: "added"}}
@@ -358,24 +358,30 @@ func populateTextDiffs(out *CacheConflictDiffDTO, hasRemote bool) {
 }
 
 func extractLocalDiffText(meta library.ItemMetadata) (title, body string) {
+	siteID := strings.ToLower(strings.TrimSpace(meta.Site))
+	kind := strings.ToLower(strings.TrimSpace(meta.Kind))
 	title = strings.TrimSpace(meta.Title)
-	if meta.Kind == "video" && strings.EqualFold(meta.Site, "bilibili") {
+	// Weibo non-video posts and X posts do not carry a real upstream title;
+	// their cached meta.Title is a synthetic summary truncated from body text.
+	if siteID == "x" || (siteID == "weibo" && kind != "video") {
+		title = ""
+	}
+	if kind == "video" && siteID == "bilibili" {
 		body = strings.TrimSpace(meta.Desc)
 		return title, body
 	}
-	body = strings.TrimSpace(firstNonEmpty(meta.Text, meta.Desc))
 	if len(meta.Thread) > 0 {
 		var parts []string
-		if body != "" {
-			parts = append(parts, body)
-		}
 		for _, th := range meta.Thread {
 			if t := strings.TrimSpace(th.Text); t != "" {
 				parts = append(parts, t)
 			}
 		}
-		body = strings.Join(parts, "\n\n")
+		if len(parts) > 0 {
+			return title, strings.Join(parts, "\n\n")
+		}
 	}
+	body = strings.TrimSpace(firstNonEmpty(meta.Text, meta.Desc))
 	return title, body
 }
 
@@ -424,38 +430,9 @@ func extractLocalDiffMedia(meta library.ItemMetadata) []ConflictMediaSideDTO {
 		return out
 	}
 
-	// 2. Single-video item (Douyin / Weibo / X video)
-	if meta.DouyinVideo != nil && strings.TrimSpace(meta.DouyinVideo.File) != "" {
-		v := meta.DouyinVideo
-		var specs []string
-		if strings.TrimSpace(v.QualityName) != "" {
-			specs = append(specs, strings.TrimSpace(v.QualityName))
-		}
-		if strings.TrimSpace(v.Codec) != "" {
-			specs = append(specs, strings.TrimSpace(v.Codec))
-		}
-		if v.Width > 0 && v.Height > 0 {
-			specs = append(specs, fmt.Sprintf("%d×%d", v.Width, v.Height))
-		}
-		if meta.Duration > 0 {
-			specs = append(specs, formatDiffDuration(meta.Duration))
-		}
-		out = append(out, ConflictMediaSideDTO{
-			Kind:         "video",
-			Label:        "主视频",
-			Sublabel:     strings.Join(specs, " · "),
-			LocalItemKey: meta.ItemKey,
-			LocalRelPath: coverRel,
-			PlayRelPath:  v.File,
-			DurationSec:  meta.Duration,
-			Width:        v.Width,
-			Height:       v.Height,
-			MediaID:      v.MediaID,
-		})
-		return out
-	}
-
-	// 3. Multi-page notes / mixed posts (Douyin / Weibo / X)
+	// 2. Multi-page notes / mixed posts + single video (Douyin / Weibo / X).
+	// Some retweets/mixed posts hold both NotePages (outer images) and DouyinVideo (origin video),
+	// so extract both without returning early before checking the other.
 	if len(meta.NotePages) > 0 {
 		for idx, pg := range meta.NotePages {
 			n := pg.Index
@@ -508,6 +485,36 @@ func extractLocalDiffMedia(meta library.ItemMetadata) []ConflictMediaSideDTO {
 				GIF:          pg.GIF,
 			})
 		}
+	}
+	if meta.DouyinVideo != nil && strings.TrimSpace(meta.DouyinVideo.File) != "" {
+		v := meta.DouyinVideo
+		var specs []string
+		if strings.TrimSpace(v.QualityName) != "" {
+			specs = append(specs, strings.TrimSpace(v.QualityName))
+		}
+		if strings.TrimSpace(v.Codec) != "" {
+			specs = append(specs, strings.TrimSpace(v.Codec))
+		}
+		if v.Width > 0 && v.Height > 0 {
+			specs = append(specs, fmt.Sprintf("%d×%d", v.Width, v.Height))
+		}
+		if meta.Duration > 0 {
+			specs = append(specs, formatDiffDuration(meta.Duration))
+		}
+		out = append(out, ConflictMediaSideDTO{
+			Kind:         "video",
+			Label:        "主视频",
+			Sublabel:     strings.Join(specs, " · "),
+			LocalItemKey: meta.ItemKey,
+			LocalRelPath: coverRel,
+			PlayRelPath:  v.File,
+			DurationSec:  meta.Duration,
+			Width:        v.Width,
+			Height:       v.Height,
+			MediaID:      v.MediaID,
+		})
+	}
+	if len(out) > 0 {
 		return out
 	}
 
@@ -563,6 +570,22 @@ func extractLocalDiffMedia(meta library.ItemMetadata) []ConflictMediaSideDTO {
 				Height:       mf.Height,
 			})
 		}
+	}
+	// Bilibili dynamics store linked video references ("video:BV...") in meta.Videos.
+	for _, ref := range meta.Videos {
+		bvid := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ref), "video:"))
+		if bvid == "" {
+			continue
+		}
+		vidIdx++
+		out = append(out, ConflictMediaSideDTO{
+			Kind:         "video",
+			Label:        fmt.Sprintf("关联视频 %d", vidIdx),
+			Sublabel:     bvid,
+			LocalItemKey: meta.ItemKey,
+			LocalRelPath: coverRel,
+			MediaID:      bvid,
+		})
 	}
 	return out
 }
@@ -715,12 +738,19 @@ func (b *Backend) inspectDouyinDiff(ctx context.Context, rec cacheConflictRecord
 	out.Remote.Title = strings.TrimSpace(detail.Title)
 	out.Remote.Text = strings.TrimSpace(detail.Desc)
 
+	return extractDouyinRemoteDiffMedia(detail), nil
+}
+
+func extractDouyinRemoteDiffMedia(detail *douyin.WorkDetail) []ConflictMediaSideDTO {
+	if detail == nil {
+		return nil
+	}
 	coverURL := ""
 	if len(detail.CoverURLs) > 0 {
 		coverURL = detail.CoverURLs[0]
 	}
 
-	if detail.Kind == douyin.WorkKindNote {
+	if detail.Kind == douyin.WorkKindNote || len(detail.Pages) > 0 {
 		media := make([]ConflictMediaSideDTO, 0, len(detail.Pages))
 		for idx, pg := range detail.Pages {
 			n := pg.Index
@@ -757,11 +787,11 @@ func (b *Backend) inspectDouyinDiff(ctx context.Context, rec cacheConflictRecord
 				RemoteURL: previewURL,
 				Width:     pg.Width,
 				Height:    pg.Height,
-				MediaID:   library.SanitizeMediaToken(pg.URI),
+				MediaID:   douyinPageMediaID(pg),
 				LivePhoto: pg.Kind == douyin.NotePageLivePhoto,
 			})
 		}
-		return media, nil
+		return media
 	}
 
 	var specs []string
@@ -789,8 +819,8 @@ func (b *Backend) inspectDouyinDiff(ctx context.Context, rec cacheConflictRecord
 		DurationSec: detail.DurationSec,
 		Width:       width,
 		Height:      height,
-		MediaID:     library.SanitizeMediaToken(detail.MediaID),
-	}}, nil
+		MediaID:     douyinDetailMediaID(detail),
+	}}
 }
 
 func (b *Backend) inspectWeiboDiff(ctx context.Context, rec cacheConflictRecord, out *CacheConflictDiffDTO) ([]ConflictMediaSideDTO, error) {
@@ -823,8 +853,15 @@ func (b *Backend) inspectWeiboDiff(ctx context.Context, rec cacheConflictRecord,
 		if vr.Video != nil {
 			out.Remote.Title = strings.TrimSpace(vr.Video.Title)
 			var specs []string
-			if vr.Video.Selected != nil && strings.TrimSpace(vr.Video.Selected.QualityLabel) != "" {
-				specs = append(specs, vr.Video.Selected.QualityLabel)
+			var width, height int
+			if vr.Video.Selected != nil {
+				if strings.TrimSpace(vr.Video.Selected.QualityLabel) != "" {
+					specs = append(specs, vr.Video.Selected.QualityLabel)
+				}
+				width, height = vr.Video.Selected.Width, vr.Video.Selected.Height
+				if width > 0 && height > 0 {
+					specs = append(specs, fmt.Sprintf("%d×%d", width, height))
+				}
 			}
 			if vr.Video.DurationSec > 0 {
 				specs = append(specs, formatDiffDuration(vr.Video.DurationSec))
@@ -835,6 +872,8 @@ func (b *Backend) inspectWeiboDiff(ctx context.Context, rec cacheConflictRecord,
 				Sublabel:    strings.Join(specs, " · "),
 				RemoteURL:   vr.Video.CoverURL,
 				DurationSec: vr.Video.DurationSec,
+				Width:       width,
+				Height:      height,
 				MediaID:     library.SanitizeMediaToken(vr.Video.ObjectID),
 			}}, nil
 		}
@@ -855,6 +894,13 @@ func (b *Backend) inspectWeiboDiff(ctx context.Context, rec cacheConflictRecord,
 		return nil, nil
 	}
 	out.Remote.Text = strings.TrimSpace(post.Text)
+	return extractWeiboPostRemoteDiffMedia(post), nil
+}
+
+func extractWeiboPostRemoteDiffMedia(post *weibo.Post) []ConflictMediaSideDTO {
+	if post == nil {
+		return nil
+	}
 	imgs, vid := post.EffectiveMedia()
 	media := make([]ConflictMediaSideDTO, 0, len(imgs)+1)
 	for i, img := range imgs {
@@ -887,7 +933,7 @@ func (b *Backend) inspectWeiboDiff(ctx context.Context, rec cacheConflictRecord,
 			DurationSec: img.DurationSec,
 			Width:       img.Width,
 			Height:      img.Height,
-			MediaID:     library.SanitizeMediaToken(firstNonEmpty(img.PicID, img.ObjectID)),
+			MediaID:     weiboImageMediaID(img),
 			LivePhoto:   img.Kind == weibo.MediaKindLivePhoto,
 			GIF:         img.Kind == weibo.MediaKindGIF,
 		})
@@ -918,7 +964,7 @@ func (b *Backend) inspectWeiboDiff(ctx context.Context, rec cacheConflictRecord,
 			MediaID:     library.SanitizeMediaToken(vid.ObjectID),
 		})
 	}
-	return media, nil
+	return media
 }
 
 func (b *Backend) inspectXDiff(ctx context.Context, rec cacheConflictRecord, out *CacheConflictDiffDTO) ([]ConflictMediaSideDTO, error) {
@@ -938,52 +984,113 @@ func (b *Backend) inspectXDiff(ctx context.Context, rec cacheConflictRecord, out
 		}
 		return nil, nil
 	}
-	var textParts []string
-	if t := strings.TrimSpace(post.Text); t != "" {
-		textParts = append(textParts, t)
+	text, media := extractXRemoteDiffTextAndMedia(post)
+	out.Remote.Text = text
+	return media, nil
+}
+
+func extractXRemoteDiffTextAndMedia(post *x.Post) (string, []ConflictMediaSideDTO) {
+	if post == nil {
+		return "", nil
 	}
-	for _, th := range post.Thread {
-		if t := strings.TrimSpace(th.Text); t != "" {
+	var textParts []string
+	seenIDs := make(map[string]bool, len(post.ThreadAncestors)+1+len(post.Thread))
+	appendPostText := func(id, text string) {
+		trimmedID := strings.TrimSpace(id)
+		if trimmedID != "" {
+			if seenIDs[trimmedID] {
+				return
+			}
+			seenIDs[trimmedID] = true
+		}
+		if t := strings.TrimSpace(text); t != "" {
 			textParts = append(textParts, t)
 		}
 	}
-	out.Remote.Text = strings.Join(textParts, "\n\n")
-
-	media := make([]ConflictMediaSideDTO, 0, len(post.Media))
-	for i, m := range post.Media {
-		kind := "image"
-		label := fmt.Sprintf("图 %d", i+1)
-		var specs []string
-		if m.Kind == x.MediaKindVideo && !m.GIF {
-			kind = "video"
-			label = fmt.Sprintf("视频 %d", i+1)
-		} else if m.GIF || m.Kind == x.MediaKindGIF {
-			label = fmt.Sprintf("动图 %d", i+1)
-			specs = append(specs, "GIF")
-		}
-		if m.Width > 0 && m.Height > 0 {
-			specs = append(specs, fmt.Sprintf("%d×%d", m.Width, m.Height))
-		}
-		if m.DurationSec > 0 {
-			specs = append(specs, formatDiffDuration(m.DurationSec))
-		}
-		if m.HLSOnly {
-			specs = append(specs, "仅分段流")
-		}
-		previewURL := firstNonEmpty(m.PublicPreviewURL, m.ImageURL)
-		media = append(media, ConflictMediaSideDTO{
-			Kind:        kind,
-			Label:       label,
-			Sublabel:    strings.Join(specs, " · "),
-			RemoteURL:   previewURL,
-			DurationSec: m.DurationSec,
-			Width:       m.Width,
-			Height:      m.Height,
-			MediaID:     library.SanitizeMediaToken(m.MediaKey),
-			GIF:         m.GIF || m.Kind == x.MediaKindGIF,
-		})
+	for i := range post.ThreadAncestors {
+		appendPostText(post.ThreadAncestors[i].ID, post.ThreadAncestors[i].Text)
 	}
-	return media, nil
+	appendPostText(post.ID, post.Text)
+	for i := range post.Thread {
+		appendPostText(post.Thread[i].ID, post.Thread[i].Text)
+	}
+
+	mediaItems, singleVideo, _ := post.EffectiveMediaWithOrigin()
+	hasThreadExtraMedia := false
+	for i := range post.ThreadAncestors {
+		if len(post.ThreadAncestors[i].Media) > 0 {
+			hasThreadExtraMedia = true
+			break
+		}
+	}
+	if !hasThreadExtraMedia {
+		for i := range post.Thread {
+			if len(post.Thread[i].Media) > 0 {
+				hasThreadExtraMedia = true
+				break
+			}
+		}
+	}
+
+	if singleVideo != nil && !hasThreadExtraMedia {
+		return strings.Join(textParts, "\n\n"), []ConflictMediaSideDTO{xMediaItemToConflictSide(*singleVideo, 1, true)}
+	}
+
+	var combined []x.MediaItem
+	for i := range post.ThreadAncestors {
+		combined = append(combined, post.ThreadAncestors[i].Media...)
+	}
+	if singleVideo != nil {
+		combined = append(combined, *singleVideo)
+	} else {
+		combined = append(combined, mediaItems...)
+	}
+	for i := range post.Thread {
+		combined = append(combined, post.Thread[i].Media...)
+	}
+
+	media := make([]ConflictMediaSideDTO, 0, len(combined))
+	for i, m := range combined {
+		media = append(media, xMediaItemToConflictSide(m, i+1, false))
+	}
+	return strings.Join(textParts, "\n\n"), media
+}
+
+func xMediaItemToConflictSide(m x.MediaItem, index int, isSingleVideo bool) ConflictMediaSideDTO {
+	kind := "image"
+	label := fmt.Sprintf("图 %d", index)
+	var specs []string
+	if isSingleVideo {
+		kind = "video"
+		label = "主视频"
+	} else if m.Kind == x.MediaKindVideo && !m.GIF {
+		kind = "video"
+		label = fmt.Sprintf("视频 %d", index)
+	} else if m.GIF || m.Kind == x.MediaKindGIF {
+		label = fmt.Sprintf("动图 %d", index)
+		specs = append(specs, "GIF")
+	}
+	if m.Width > 0 && m.Height > 0 {
+		specs = append(specs, fmt.Sprintf("%d×%d", m.Width, m.Height))
+	}
+	if m.DurationSec > 0 {
+		specs = append(specs, formatDiffDuration(m.DurationSec))
+	}
+	if m.HLSOnly {
+		specs = append(specs, "仅分段流")
+	}
+	previewURL := firstNonEmpty(m.PublicPreviewURL, m.ImageURL)
+	return ConflictMediaSideDTO{
+		Kind:        kind,
+		Label:       label,
+		Sublabel:    strings.Join(specs, " · "),
+		RemoteURL:   previewURL,
+		DurationSec: m.DurationSec,
+		Width:       m.Width,
+		Height:      m.Height,
+		MediaID:     library.SanitizeMediaToken(m.MediaKey),
+		GIF:         m.GIF || m.Kind == x.MediaKindGIF,
+	}
 }
 
 func alignConflictMediaPairs(local, remote []ConflictMediaSideDTO) []ConflictMediaPairDTO {
@@ -1098,7 +1205,7 @@ func classifyMediaPairStatus(loc, rem ConflictMediaSideDTO) string {
 		}
 	}
 	if loc.Width > 0 && rem.Width > 0 && loc.Height > 0 && rem.Height > 0 {
-		if rem.Width > loc.Width && rem.Height >= loc.Height && (loc.CID == rem.CID) && (loc.MediaID == "" || loc.MediaID == rem.MediaID) {
+		if rem.Width >= loc.Width && rem.Height >= loc.Height && (rem.Width > loc.Width || rem.Height > loc.Height) && (loc.CID == rem.CID) && (loc.MediaID == "" || loc.MediaID == rem.MediaID) {
 			return ConflictDiffStatusUpgradeable
 		}
 		if loc.Width != rem.Width || loc.Height != rem.Height {

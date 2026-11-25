@@ -93,7 +93,7 @@ func (a *App) loadConflictDiff(id string) {
 		if !a.ConflictDiff.Open || a.ConflictDiff.ConflictID != id {
 			return
 		}
-		a.backend.LogUserError(err)
+		backend.LogUserError(err)
 		a.ConflictDiff.Loading = false
 		a.ConflictDiff.Error = "读取对比详情失败：" + userErrorText(err)
 	})
