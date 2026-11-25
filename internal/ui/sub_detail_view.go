@@ -256,11 +256,11 @@ func (a *App) renderSubscriptionDetailView(c *ui.Context, sub *subscription.Subs
 // renderSubscriptionDetailHeader draws the subscription card, its manage
 // forms and the tabs.
 func (a *App) renderSubscriptionDetailHeader(c *ui.Context, sub *subscription.Subscription) {
-	// Header: avatar, name (+ note), the rule button and the "⋯" menu.
+	// Header: avatar, name (+ note), capability tags, custom links and the "⋯" menu.
 	ui.Column(c).
 		FillWidth().
-		Padding(4, 0, 12, 0).
-		Gap(12).
+		Padding(2, 0, 8, 0).
+		Gap(8).
 		ClipX().
 		Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(12).ClipX().Children(func() {
@@ -278,7 +278,6 @@ func (a *App) renderSubscriptionDetailHeader(c *ui.Context, sub *subscription.Su
 				})
 
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					a.renderSubscriptionRuleButton(c, sub)
 					if a.isPending("check-updates") {
 						if OutlinePillButton(c, "取消检查", "取消检查").Clicked() {
 							a.backend.CancelSubscriptionCheck()
@@ -316,6 +315,7 @@ func (a *App) renderSubscriptionDetailHeader(c *ui.Context, sub *subscription.Su
 			if len(sub.Links) > 0 {
 				a.renderSubscriptionCustomLinksRow(c, sub)
 			}
+			a.renderSubscriptionTagChipsBar(c, sub)
 
 			switch a.SubManageModalMode {
 			case "rename":

@@ -84,6 +84,17 @@ func (a *App) renderRuleBatchOverlay(c *ui.Context, w, h float32) {
 	})
 }
 
+func (a *App) renderMultiTagBatchOverlay(c *ui.Context, w, h float32) {
+	if !a.MultiTagBatch.Open {
+		return
+	}
+	cardW := min(float32(580), max(float32(320), w-40))
+	cardH := min(float32(640), max(float32(360), h-60))
+	renderDialog(c, &a.MultiTagBatch.Open, "关闭批量设置缓存标签对话框（点击空白处）", "批量设置缓存标签对话框", cardW, cardH, a.closeMultiTagBatchDialog, func() {
+		a.renderMultiTagBatchDialogBody(c)
+	})
+}
+
 func (a *App) renderLogoutConfirmOverlay(c *ui.Context, w, h float32) {
 	targetSite := normalizeSiteIDUI(a.ConfirmLogoutSite)
 	titleText := "退出登录？"

@@ -522,21 +522,21 @@ func TestFullV1DirectoryMigrationIdempotencyAndRetention(t *testing.T) {
 		t.Fatalf("legacy scheduler_state was modified after v2 migration: failures=%d reason=%q", legacyFailures, legacyReason)
 	}
 
-	// Verify subscriptions.json upgraded to version 2 with accounts, rules, and update items intact.
+	// Verify subscriptions.json upgraded to v5 capability tags with accounts, rules, and update items intact.
 	subsList, err := svcs.subs.List()
 	if err != nil || len(subsList) != 2 {
 		t.Fatalf("migrated subscriptions List = %+v, err=%v", subsList, err)
 	}
-	// The fixture's editable "default" checked on a schedule. The built-in
-	// rule is now all off (DEC-054): it is reset, "rule-video-only" is kept,
-	// and beta (on the old default) moves to a new rule with its own settings.
-	rulesList := svcs.subs.ListRules()
-	if len(rulesList) != 3 || rulesList[0].ID != DefaultRuleID || rulesList[0].ScheduledCheck || rulesList[1].ID != "rule-video-only" || !rulesList[2].ScheduledCheck || rulesList[2].AutoCache {
-		t.Fatalf("expected reset default, preserved rule and a rule for the old default's settings, got %+v", rulesList)
-	}
 	for _, sub := range subsList {
-		if sub.ID == "sub0002beta00002beta00002beta002" && (sub.RuleID != rulesList[2].ID || !sub.Rules.ScheduledCheck || !sub.Enabled) {
-			t.Fatalf("subscription on the old default changed behaviour: %+v", sub)
+		switch sub.ID {
+		case "sub0001alpha0001alpha0001alpha01":
+			if !HasTag(sub.Tags, TagScheduledCheck) || !HasTag(sub.Tags, TagCacheVideo) || len(sub.Tags) != 2 || sub.Rules.AutoCache.Since != "2026-11-05T08:00:00Z" {
+				t.Fatalf("alpha subscription tags/rules changed during v1->v5 migration: %+v", sub)
+			}
+		case "sub0002beta00002beta00002beta002":
+			if !HasTag(sub.Tags, TagScheduledCheck) || len(sub.Tags) != 1 || !sub.Rules.ScheduledCheck || !sub.Enabled {
+				t.Fatalf("beta subscription on legacy default changed behaviour: %+v", sub)
+			}
 		}
 	}
 	updItems, err := svcs.subs.ListUpdates(subsList[0].ID)

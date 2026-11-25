@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"path/filepath"
-	"slices"
 	"time"
 
 	"github.com/chialecode/trace/internal/download"
@@ -63,7 +62,6 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 	primarySub := env.primarySub
 	auroraSub := env.auroraSub
 	xOnlySub := env.xOnlySub
-	batchRule := env.batchRule
 	savedItem := env.savedItem
 	savedLiveItem := env.savedLiveItem
 	savedPartialItem := env.savedPartialItem
@@ -254,6 +252,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			RequiredLabels: []string{
 				"订阅标签：内容",
 				"订阅标签：账号",
+				"订阅缓存标签菜单",
+				"订阅详情缓存标签栏",
 				"订阅管理菜单",
 				"订阅自定义链接栏",
 				"打开订阅链接：link3.cc/alpha_tech",
@@ -454,11 +454,18 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				seedRecentAndLive()
 				app.ImportSubModalOpen = false
 				app.RuleBatch.Open = false
-				app.RuleDraft = nil
+				app.MultiTagBatch.Open = false
 				app.SettingsCategory = "rules"
 				app.Navigate(ui.RouteSettings)
 			},
-			RequiredLabels: []string{"缓存规则：默认", "缓存规则：自动存视频与图文", "新建缓存规则"},
+			RequiredLabels: []string{
+				"打开批量设置订阅标签",
+				"缓存标签行：scheduled_check",
+				"缓存标签行：cache_video",
+				"缓存标签行：cache_draw",
+				"缓存标签行：auto_record",
+				"管理标签订阅：cache_draw",
+			},
 		},
 		{
 			Name: "settings-rules-batch",
@@ -466,12 +473,10 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				seedRecentAndLive()
 				app.SettingsCategory = "rules"
 				app.Navigate(ui.RouteSettings)
-				draft := batchRule
-				draft.Types = slices.Clone(batchRule.Types)
-				app.RuleDraft = &draft
 				app.RuleBatch.Open = false
+				app.MultiTagBatch.Open = false
 				openTester := mygoui.NewTester(app.View, 1280, 860)
-				_ = openTester.Click("选择订阅…")
+				_ = openTester.Click("管理标签订阅：cache_draw")
 			},
 			RequiredLabels: []string{
 				"选择订阅对话框",
@@ -486,10 +491,43 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 		},
 		{
+			Name: "settings-tags-multi-batch",
+			Setup: func() {
+				seedRecentAndLive()
+				app.SettingsCategory = "rules"
+				app.Navigate(ui.RouteSettings)
+				app.RuleBatch.Open = false
+				app.MultiTagBatch.Open = false
+				openTester := mygoui.NewTester(app.View, 1280, 860)
+				_ = openTester.Click("打开批量设置订阅标签")
+				app.MultiTagBatch.SelectedTags[subscription.TagCacheVideo] = true
+				app.MultiTagBatch.SelectedTags[subscription.TagCacheDraw] = true
+				if primarySub.ID != "" {
+					app.MultiTagBatch.SelectedSubs[primarySub.ID] = true
+				}
+				if auroraSub.ID != "" {
+					app.MultiTagBatch.SelectedSubs[auroraSub.ID] = true
+				}
+			},
+			RequiredLabels: []string{
+				"批量设置缓存标签对话框",
+				"批量模式：add",
+				"批量模式：remove",
+				"批量模式：replace",
+				"批量选择标签：自动缓存视频",
+				"批量订阅搜索框",
+				"批量订阅全选",
+				"批量订阅全不选",
+				"勾选批量订阅：技术频道_Alpha",
+				"确认批量设置标签",
+				"取消批量设置标签",
+			},
+		},
+		{
 			Name: "settings-account",
 			Setup: func() {
 				app.RuleBatch.Open = false
-				app.RuleDraft = nil
+				app.MultiTagBatch.Open = false
 				seedRecentAndLive()
 				app.SettingsCategory = "account"
 				app.Navigate(ui.RouteSettings)

@@ -250,7 +250,7 @@ func (a *App) renderRemoteSync(c *ui.Context, v service.RemoteView) {
 				a.syncRemoteSubscriptions()
 			}
 		})
-		ui.Text(c, "同步用本机的订阅、缓存规则与画质设置替换远程的；远程只缓存同步之后的新内容，规则里的“全部缓存”不在远程执行。").
+		ui.Text(c, "同步用本机的订阅、缓存标签与画质设置替换远程的；远程只缓存同步之后的新内容，“全部缓存”标签不在远程执行。").
 			FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
 		for _, n := range v.Status.Notes {
 			ui.Text(c, n).FontSize(12).TextColor(ColorTextMuted).MaxLines(2)

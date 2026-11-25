@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/chialecode/trace/internal/library"
@@ -154,9 +153,10 @@ func TestPlayerFloatsOverTheAppAndAutoplays(t *testing.T) {
 	}
 }
 
-// DEC-040: cache rules are made once in Settings and shared; a subscription
-// only picks one from its rule button.
-func TestCacheRulesAreSharedAndChosenPerSubscription(t *testing.T) {
+// DEC-070: new subscriptions start with no capability tags ("无缓存标签"); tags
+// can be toggled directly in subscription detail (chips or dropdown menu) and
+// Settings → 缓存标签 reflects per-tag subscription counts immediately.
+func TestCapabilityTagsToggleInSubscriptionDetailAndCountInSettings(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
 	seedUIFeed(t, app, 1)
@@ -173,62 +173,113 @@ func TestCacheRulesAreSharedAndChosenPerSubscription(t *testing.T) {
 	app.Navigate(RouteSettings)
 	tt := ui.NewTester(app.View, 1280, 860)
 	tt.Frame()
-	if _, ok := tt.Find("缓存规则：默认"); !ok {
-		t.Fatal("the built-in rule is not listed")
-	}
-	if err := tt.Click("新建缓存规则"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	app.RuleDraft.Name = "只存视频"
-	if err := tt.Click("规则：自动缓存新动态"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if err := tt.Click("规则类型：图文"); err != nil { // video stays on
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if err := tt.Click("保存缓存规则"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if app.RuleError != "" || app.RuleDraft != nil {
-		t.Fatalf("saving the rule failed: %q", app.RuleError)
-	}
-	var rule subscription.CacheRule
-	for _, r := range app.backend.ListCacheRules() {
-		if r.Name == "只存视频" {
-			rule = r
+
+	for _, tag := range subscription.AllCapabilityTags() {
+		if _, ok := tt.Find("缓存标签行：" + tag.ID); !ok {
+			t.Fatalf("missing capability tag row %s in Settings", tag.ID)
 		}
 	}
-	if rule.ID == "" || !rule.AutoCache || strings.Join(rule.Types, ",") != "video" {
-		t.Fatalf("saved rule = %+v", rule)
+	for _, legacy := range []string{"缓存规则：默认", "新建缓存规则", "规则名称", "保存缓存规则"} {
+		if _, ok := tt.Find(legacy); ok {
+			t.Fatalf("legacy named cache rule control %q still rendered", legacy)
+		}
 	}
 
-	for _, sub := range subs {
-		app.OpenSubscriptionDetail(sub)
-		tt.Frame()
-		if err := tt.Click("订阅缓存规则：默认"); err != nil {
-			t.Fatal(err)
-		}
-		tt.Frame()
-		if err := tt.ChooseMenuItem("只存视频"); err != nil {
-			t.Fatal(err)
-		}
-		tt.Frame()
+	// Toggle tags on both subscriptions from Subscription Detail: popover menu + active chip click.
+	app.OpenSubscriptionDetail(subs[0])
+	tt.Frame()
+	if !tt.HasText("无缓存标签") || !tt.HasText("设置标签") {
+		t.Fatalf("new subscription should display 无缓存标签 + 设置标签, texts=%v", tt.Texts())
 	}
+	if err := tt.Click("订阅缓存标签菜单"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.ChooseMenuItem("定时检查"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("订阅缓存标签菜单"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.ChooseMenuItem("自动缓存视频"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("订阅缓存标签菜单"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.ChooseMenuItem("自动缓存图文"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if _, ok := tt.Find("订阅缓存标签：自动缓存图文"); !ok {
+		t.Fatalf("expected active chip 订阅缓存标签：自动缓存图文, texts=%v", tt.Texts())
+	}
+	// Clicking an active chip removes that tag directly in 1 click.
+	if err := tt.Click("订阅缓存标签：自动缓存图文"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if _, ok := tt.Find("订阅缓存标签：自动缓存图文"); ok {
+		t.Fatal("expected clicking active chip to remove 自动缓存图文")
+	}
+
+	app.OpenSubscriptionDetail(subs[1])
+	tt.Frame()
+	if err := tt.Click("订阅缓存标签菜单"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.ChooseMenuItem("自动缓存视频"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if _, ok := tt.Find("订阅缓存标签：自动缓存视频"); !ok {
+		t.Fatalf("expected active chip 订阅缓存标签：自动缓存视频, texts=%v", tt.Texts())
+	}
+
 	listed, _ := app.backend.ListSubscriptions()
 	for _, s := range listed {
-		if s.RuleID != rule.ID || !s.Rules.AutoCache.Enabled {
-			t.Fatalf("%s uses %q (%+v), want the shared rule", s.Name, s.RuleID, s.Rules)
+		if !subscription.HasTag(s.Tags, subscription.TagCacheVideo) || !s.Rules.AutoCache.Enabled || s.Rules.AutoCache.Since == "" {
+			t.Fatalf("%s missing cache_video tag or AutoCache.Since: tags=%v rules=%+v", s.Name, s.Tags, s.Rules)
 		}
 	}
-	app.SettingsCategory = "rules"
-	app.Navigate(RouteSettings)
+
+	// Jump to Settings → 缓存标签 from the subscription tag menu item.
+	if err := tt.Click("订阅缓存标签菜单"); err != nil {
+		t.Fatal(err)
+	}
 	tt.Frame()
-	if !tt.HasText("定时检查 · 自动缓存视频 · 2 个订阅") {
-		t.Fatal("the rule list does not show that two subscriptions share the rule")
+	if err := tt.ChooseMenuItem("批量管理缓存标签"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if app.CurrentRoute != RouteSettings || app.SettingsCategory != "rules" {
+		t.Fatalf("expected navigation to Settings rules, got route=%s cat=%s", app.CurrentRoute, app.SettingsCategory)
+	}
+	if app.tagUseCount(subscription.TagCacheVideo) != 2 || app.tagUseCount(subscription.TagScheduledCheck) != 1 || app.tagUseCount(subscription.TagAutoRecord) != 0 {
+		t.Fatalf("unexpected tag counts: video=%d sched=%d rec=%d",
+			app.tagUseCount(subscription.TagCacheVideo),
+			app.tagUseCount(subscription.TagScheduledCheck),
+			app.tagUseCount(subscription.TagAutoRecord))
+	}
+
+	// "清空全部标签" in Subscription Detail resets tags to empty.
+	app.OpenSubscriptionDetail(subs[1])
+	tt.Frame()
+	if err := tt.Click("订阅缓存标签菜单"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.ChooseMenuItem("清空全部标签"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("无缓存标签") || app.tagUseCount(subscription.TagCacheVideo) != 1 {
+		t.Fatalf("expected 清空全部标签 to clear sub[1] tags; count=%d texts=%v", app.tagUseCount(subscription.TagCacheVideo), tt.Texts())
 	}
 }
 
@@ -274,58 +325,5 @@ func TestPostImagesKeepTheirShapeAndVideosSitBesideTheirText(t *testing.T) {
 	}
 	if !tt.HasText("合成视频标题") || !tt.HasText("合成视频简介") || tt.HasText("播放 0") {
 		t.Fatal("video card lacks its title or description, or shows counts")
-	}
-}
-
-// Clicking an open rule folds it again (it used to draw the editor of the
-// draft it had just cleared and crash).
-func TestCacheRuleFoldsAgainWithoutCrashing(t *testing.T) {
-	app, _, cleanup := newTestUIApp(t)
-	defer cleanup()
-	app.SettingsCategory = "rules"
-	app.Navigate(RouteSettings)
-	tt := ui.NewTester(app.View, 1280, 860)
-	tt.Frame()
-	for i := 0; i < 2; i++ {
-		if err := tt.Click("缓存规则：默认"); err != nil {
-			t.Fatal(err)
-		}
-		tt.Frame()
-		if app.RuleDraft == nil {
-			t.Fatal("clicking the rule did not open it")
-		}
-		if err := tt.Click("缓存规则：默认"); err != nil {
-			t.Fatal(err)
-		}
-		tt.Frame()
-		if app.RuleDraft != nil {
-			t.Fatal("clicking the open rule did not fold it")
-		}
-	}
-}
-
-// DEC-054: the built-in rule opens read-only: a description and the batch
-// selection, no switches and no save.
-func TestDefaultCacheRuleOpensReadOnly(t *testing.T) {
-	app, _, cleanup := newTestUIApp(t)
-	defer cleanup()
-	app.SettingsCategory = "rules"
-	app.Navigate(RouteSettings)
-	tt := ui.NewTester(app.View, 1280, 860)
-	tt.Frame()
-	if err := tt.Click("缓存规则：默认"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if _, ok := tt.Find("默认规则说明"); !ok {
-		t.Fatal("the default rule shows no description")
-	}
-	for _, editable := range []string{"规则名称", "规则：定时检查", "保存缓存规则", "删除缓存规则"} {
-		if _, ok := tt.Find(editable); ok {
-			t.Fatalf("the default rule shows %q", editable)
-		}
-	}
-	if _, ok := tt.Find("选择订阅…"); !ok {
-		t.Fatal("the default rule lost batch selection")
 	}
 }

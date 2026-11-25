@@ -263,7 +263,6 @@ type fixtureEnv struct {
 	primarySub        subscription.Subscription
 	auroraSub         subscription.Subscription
 	xOnlySub          subscription.Subscription
-	batchRule         subscription.CacheRule
 	savedItem         library.ItemMetadata
 	savedLiveItem     library.ItemMetadata
 	savedPartialItem  library.ItemMetadata
@@ -435,38 +434,31 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		},
 	}, subscription.DefaultSubRules())
 
-	videoOnlyRule, err := b.SaveCacheRule(subscription.CacheRule{
-		Name:           "只存视频",
-		ScheduledCheck: true,
-		AutoCache:      true,
-		Types:          []string{"video"},
-	})
-	if err != nil {
-		return nil, err
-	}
-	env.batchRule, err = b.SaveCacheRule(subscription.CacheRule{
-		Name:           "自动存视频与图文",
-		ScheduledCheck: true,
-		AutoCache:      true,
-		Types:          []string{"video", "draw"},
-	})
-	if err != nil {
-		return nil, err
-	}
 	if env.primarySub.ID != "" {
-		if updated, rErr := b.SetSubscriptionRule(env.primarySub.ID, env.batchRule.ID); rErr == nil {
+		if updated, rErr := b.SetSubscriptionTags(env.primarySub.ID, []string{
+			subscription.TagScheduledCheck,
+			subscription.TagCacheVideo,
+			subscription.TagCacheDraw,
+		}); rErr == nil {
 			env.primarySub = updated
 		}
 	}
 	if env.auroraSub.ID != "" {
-		if updated, rErr := b.SetSubscriptionRule(env.auroraSub.ID, env.batchRule.ID); rErr == nil {
+		if updated, rErr := b.SetSubscriptionTags(env.auroraSub.ID, []string{
+			subscription.TagScheduledCheck,
+			subscription.TagCacheVideo,
+			subscription.TagCacheDraw,
+		}); rErr == nil {
 			env.auroraSub = updated
 		}
 	}
 	if subsList, lErr := b.ListSubscriptions(); lErr == nil {
 		for _, s := range subsList {
 			if s.Mid == 20003 {
-				_, _ = b.SetSubscriptionRule(s.ID, videoOnlyRule.ID)
+				_, _ = b.SetSubscriptionTags(s.ID, []string{
+					subscription.TagScheduledCheck,
+					subscription.TagCacheVideo,
+				})
 			}
 		}
 	}

@@ -149,7 +149,7 @@ func TestSubscriptionAccountsCanonicalSiteOrderAndStableSameSiteOrder(t *testing
 				"name":      "旧顺序订阅",
 				"avatar":    map[string]any{"site": "weibo", "uid": "300000001"},
 				"createdAt": "2026-11-20T00:00:00Z",
-				"ruleId":    DefaultRuleID,
+				"tags":      []string{},
 				"accounts": []map[string]any{
 					{"site": "weibo", "uid": "300000001", "name": "微博旧一", "face": "https://wx1.sinaimg.cn/large/wb301.jpg"},
 					{"site": "x", "uid": "180000000000000301", "uniqueId": "disk_x", "name": "X旧号"},

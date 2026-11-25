@@ -83,8 +83,7 @@ func TestRemoteProfileHasNoRenewalNoFullCacheAndChecksOn(t *testing.T) {
 		t.Fatalf("AcceptPushedCredential: %v", err)
 	}
 	snap := subscription.Snapshot{Format: subscription.SnapshotFormat, Version: subscription.SnapshotVersion,
-		Rules:         []subscription.CacheRule{{ID: "full", Name: "全部", ScheduledCheck: true, AutoCache: true, FullCache: true}},
-		Subscriptions: []subscription.SnapshotSubscription{{ID: "s1", Name: "合成", RuleID: "full", Accounts: []subscription.SnapshotAccount{{Site: "bilibili", UID: "1001"}}}}}
+		Subscriptions: []subscription.SnapshotSubscription{{ID: "s1", Name: "合成", Tags: []string{subscription.TagScheduledCheck, subscription.TagCacheVideo, subscription.TagFullCache}, Accounts: []subscription.SnapshotAccount{{Site: "bilibili", UID: "1001"}}}}}
 	raw, _ := json.Marshal(snap)
 	if _, err := b.ApplyRemoteSnapshot(raw); err != nil {
 		t.Fatal(err)

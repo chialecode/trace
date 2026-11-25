@@ -10,14 +10,14 @@ import (
 
 // SubFileUIState is 订阅 › ⋯ › 导出订阅… / 导入订阅… (remote.md §6.4).
 type SubFileUIState struct {
-	ExportOpen  bool
-	ExportPath  string
-	ImportOpen  bool
-	ImportPath  string
-	Preview     *subscription.ImportPreview
-	Merge       bool
-	UseImported map[string]bool
-	Err         string
+	ExportOpen bool
+	ExportPath string
+	ImportOpen bool
+	ImportPath string
+	Preview    *subscription.ImportPreview
+	Merge      bool
+	MergeTags  bool
+	Err        string
 }
 
 func (a *App) openSubExport() {
@@ -41,7 +41,7 @@ func (a *App) renderSubExportOverlay(c *ui.Context, w, h float32) {
 	cardW := min(float32(500), max(float32(320), w-40))
 	renderDialog(c, &s.ExportOpen, "关闭导出订阅对话框（点击空白处）", "导出订阅对话框", cardW, 0, nil, func() {
 		ui.Text(c, "导出订阅").FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-		ui.Text(c, "写一个 trace-subscriptions.json：订阅、关联账号、缓存规则和部分设置，不含 Cookie。填文件夹时文件名自动补上。").
+		ui.Text(c, "写一个 trace-subscriptions.json：订阅、关联账号、缓存标签和部分设置，不含 Cookie。填文件夹时文件名自动补上。").
 			FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
 		ui.TextInput(c, &s.ExportPath).Label("订阅导出位置").Placeholder(`例如 D:\backup\trace-subscriptions.json`).FillWidth()
 		if s.Err != "" {
@@ -75,7 +75,7 @@ func (a *App) previewSubImport() {
 	requestGuarded(a, "sub-import-preview", current, func(context.Context) (subscription.ImportPreview, error) {
 		return backend.PreviewSubscriptionImport(path)
 	}, func(p subscription.ImportPreview) {
-		s.Preview, s.Err, s.Merge, s.UseImported = &p, "", false, map[string]bool{}
+		s.Preview, s.Err, s.Merge, s.MergeTags = &p, "", false, false
 	}, func(err error) {
 		s.Preview, s.Err = nil, userErrorText(err)
 	})
@@ -83,11 +83,9 @@ func (a *App) previewSubImport() {
 
 func (a *App) applySubImport() {
 	s := &a.SubFile
-	choices := subscription.ImportChoices{MergeExisting: s.Merge}
-	for id, on := range s.UseImported {
-		if on {
-			choices.UseImportedRules = append(choices.UseImportedRules, id)
-		}
+	choices := subscription.ImportChoices{
+		MergeExisting: s.Merge,
+		MergeTags:     s.Merge && s.MergeTags,
 	}
 	backend := a.backend
 	path := s.ImportPath
@@ -158,16 +156,14 @@ func (a *App) renderSubImportOverlay(c *ui.Context, w, h float32) {
 
 func (a *App) renderSubImportPreview(c *ui.Context, p *subscription.ImportPreview) {
 	s := &a.SubFile
-	ui.Text(c, fmt.Sprintf("新订阅 %d 个 · 已订阅的账号 %d 个 · 新规则 %d 个 · 规则不同 %d 个 · 已全部订阅 %d 个",
-		len(p.New), len(p.Existing), p.NewRules, len(p.Rules), p.Unchanged)).FontSize(13).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
+	ui.Text(c, fmt.Sprintf("新订阅 %d 个 · 已订阅的账号 %d 个 · 已全部订阅 %d 个",
+		len(p.New), len(p.Existing), p.Unchanged)).FontSize(13).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
 	if len(p.New) > 0 {
 		ui.Column(c).FillWidth().Gap(4).ClipX().Children(func() {
 			ui.Text(c, "新订阅").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 			for _, sub := range p.New {
-				line := fmt.Sprintf("%s · %d 个账号", sub.Name, len(sub.Accounts))
-				if sub.RuleName != "" {
-					line += " · " + sub.RuleName
-				}
+				summary := firstNonEmptyStrUI(sub.TagsSummary, subscription.TagsSummary(sub.Tags))
+				line := fmt.Sprintf("%s · %d 个账号 · %s", sub.Name, len(sub.Accounts), summary)
 				ui.Text(c, line).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 			}
 		})
@@ -180,21 +176,7 @@ func (a *App) renderSubImportPreview(c *ui.Context, p *subscription.ImportPrevie
 					FontSize(12).TextColor(ColorTextMuted).SingleLine()
 			}
 			settingSwitchRow(c, "把导入订阅里的新账号合并进这些已有订阅", "关闭时跳过这些订阅里已订阅的账号，其余账号建成新订阅。", "合并进已有订阅开关", &s.Merge)
-		})
-	}
-	if len(p.Rules) > 0 {
-		ui.Column(c).FillWidth().Gap(4).ClipX().Children(func() {
-			ui.Text(c, "同一规则内容不同（默认保留本地）").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-			for _, r := range p.Rules {
-				on := s.UseImported[r.ID]
-				desc := fmt.Sprintf("本地：%s · 导入：%s", r.LocalSummary, r.ImportedSummary)
-				if settingSwitchRow(c, "用导入的“"+firstNonEmptyStrUI(r.ImportedName, r.LocalName)+"”", desc, "用导入的规则："+r.ID, &on) {
-					if s.UseImported == nil {
-						s.UseImported = map[string]bool{}
-					}
-					s.UseImported[r.ID] = on
-				}
-			}
+			settingSwitchRowDisabled(c, "合并时一并加上导入订阅的缓存标签", "关闭时保留本地已有订阅原本的缓存标签。", "合并导入缓存标签开关", &s.MergeTags, !s.Merge)
 		})
 	}
 }

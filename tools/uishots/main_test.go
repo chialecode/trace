@@ -331,6 +331,7 @@ func TestUIShotsScenesAndStructuredAssertions(t *testing.T) {
 		"subscription-accounts-x",
 		"settings-rules",
 		"settings-rules-batch",
+		"settings-tags-multi-batch",
 		"settings-account",
 		"settings-subscription",
 		"parse",

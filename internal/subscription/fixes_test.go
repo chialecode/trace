@@ -571,12 +571,8 @@ func TestSnapshotDuplicateSubIDAndImportRuleNameAndCapOverflow(t *testing.T) {
 		t.Fatalf("expected unlinked_at cleared for re-added account 102, got %+v ok=%v", st102, ok)
 	}
 
-	// 3. ApplyImport disambiguates colliding rule names AND preserves >20 accounts on MergeExisting.
+	// 3. ApplyImport merges tags when requested AND preserves >20 accounts on MergeExisting.
 	mgr2, _ := openFixesTestManager(t, nil)
-	localRule, err := mgr2.SaveRule(CacheRule{Name: "视频规则", ScheduledCheck: true, AutoCache: true, Types: []string{"video"}})
-	if err != nil {
-		t.Fatalf("SaveRule: %v", err)
-	}
 	var localAccs []AccountRef
 	for i := 1; i <= 15; i++ {
 		localAccs = append(localAccs, AccountRef{Site: "bilibili", UID: strconv.Itoa(3000 + i), Name: fmt.Sprintf("L%d", i)})
@@ -584,6 +580,9 @@ func TestSnapshotDuplicateSubIDAndImportRuleNameAndCapOverflow(t *testing.T) {
 	localSub, err := mgr2.Create("大订阅", "", localAccs, SubRules{ScheduledCheck: true})
 	if err != nil {
 		t.Fatalf("Create localSub: %v", err)
+	}
+	if _, err := mgr2.SetSubscriptionTags(localSub.ID, []string{TagScheduledCheck, TagCacheVideo}); err != nil {
+		t.Fatalf("SetSubscriptionTags: %v", err)
 	}
 
 	var impAccs []SnapshotAccount
@@ -595,33 +594,16 @@ func TestSnapshotDuplicateSubIDAndImportRuleNameAndCapOverflow(t *testing.T) {
 	snap := Snapshot{
 		Format:  SnapshotFormat,
 		Version: SnapshotVersion,
-		Rules: []CacheRule{
-			{ID: "remote-rule", Name: "视频规则", ScheduledCheck: true, AutoCache: true, Types: []string{"draw"}},
-		},
 		Subscriptions: []SnapshotSubscription{
-			{ID: "imp-big", Name: "导入大订阅", RuleID: "remote-rule", Accounts: impAccs},
+			{ID: "imp-big", Name: "导入大订阅", Tags: []string{TagScheduledCheck, TagCacheDraw}, Accounts: impAccs},
 		},
 	}
-	if _, err := mgr2.ApplyImport(snap, ImportChoices{MergeExisting: true}); err != nil {
+	if _, err := mgr2.ApplyImport(snap, ImportChoices{MergeExisting: true, MergeTags: true}); err != nil {
 		t.Fatalf("ApplyImport: %v", err)
 	}
 
-	// Rule name collision must be resolved so remote-rule has a distinct name.
-	var localRuleName, remoteRuleName string
-	for _, r := range mgr2.ListRules() {
-		if r.ID == localRule.ID {
-			localRuleName = r.Name
-		}
-		if r.ID == "remote-rule" {
-			remoteRuleName = r.Name
-		}
-	}
-	if localRuleName != "视频规则" || remoteRuleName == "" || remoteRuleName == localRuleName {
-		t.Fatalf("rule name collision not disambiguated: local=%q remote=%q", localRuleName, remoteRuleName)
-	}
-
 	// All 25 accounts (15 local + 10 new) must be preserved without dropping any,
-	// with localSub capped at 20 and the remaining 5 placed in an overflow subscription.
+	// with localSub capped at 20 (with unioned tags) and the remaining 5 placed in an overflow subscription.
 	subs, err := mgr2.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -635,6 +617,9 @@ func TestSnapshotDuplicateSubIDAndImportRuleNameAndCapOverflow(t *testing.T) {
 		totalAccounts += len(s.Accounts)
 		if s.ID == localSub.ID {
 			localCount = len(s.Accounts)
+			if !HasTag(s.Tags, TagCacheVideo) || !HasTag(s.Tags, TagCacheDraw) {
+				t.Fatalf("merged subscription missing unioned tags: %+v", s.Tags)
+			}
 		}
 	}
 	if localCount != 20 || totalAccounts != 25 || len(subs) != 2 {

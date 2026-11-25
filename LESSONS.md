@@ -6,6 +6,7 @@
 
 - **从 Agent 命令里启动常驻程序要先脱离作业对象。** Agent 的命令沙箱结束时会结束作业里的全部进程，托盘常驻的开发版会被一起关掉；先经 `explorer.exe` 的 `Shell.Application.ShellExecute` 启动，不行再 `CREATE_BREAKAWAY_FROM_JOB`（已写进[开发版自动安装](docs/dev-rules/engineering.md#dev-install)）。证据：2026-11-22。出现 1 次。
 - **在 Windows 上用 Python 或脚本改文本文件要保留原换行符。** Python 的 `Path.write_text` 会把 `\n` 写成 `\r\n`，整个文件被改成 CRLF，文档检查与源码匹配型测试随之失败。读写用字节或 `newline=""`。证据：2026-11-24 另一个项目。出现 1 次。
+- **在 `git worktree` 里推送前先在壳层直接跑完 `go run ./tools/check`，再按钩子说明用 `--no-verify` 推送并在 PR 说明。** `git push` 在工作树中执行 `.githooks/pre-push` 时会导出 `GIT_DIR` 指向该工作树元数据目录，`go test` 子进程里在临时目录执行 `git init` / `git commit` / `git tag` 的测试（如 `tools/release`）会继承 `GIT_DIR` 而误写当前工作树的 `HEAD` 与标签。证据：#56（2026-11-25）。出现 1 次。
 
 ## 解析与站点
 

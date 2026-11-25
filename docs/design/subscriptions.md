@@ -10,7 +10,7 @@ TRACE 以订阅为逻辑入口（DEC-026）：一个订阅代表一个被追踪�
 
 ```json
 {
-  "version": 4,
+  "version": 5,
   "subscriptions": [{
     "id": "<128 位随机数的十六进制>",
     "name": "显示名称（≤ 64 字）",
@@ -26,27 +26,22 @@ TRACE 以订阅为逻辑入口（DEC-026）：一个订阅代表一个被追踪�
     "links": [
       {"label": "可选显示名（≤ 48 字）", "url": "https://link3.cc/…"}
     ],
-    "ruleId": "default",
-    "rules": {"scheduledCheck": true, "autoCache": {"enabled": false, "types": ["video", "draw"], "since": null}, "autoRecord": false}
-  }],
-  "cacheRules": [
-    {"id": "default", "name": "默认", "scheduledCheck": false, "autoCache": false, "autoRecord": false},
-    {"id": "rule-<十六进制>", "name": "只存视频", "scheduledCheck": true, "autoCache": true, "types": ["video"], "autoRecord": false}
-  ]
+    "tags": ["scheduled_check", "cache_video"],
+    "rules": {"scheduledCheck": true, "autoCache": {"enabled": true, "types": ["video"], "since": "2026-11-07T08:00:00Z"}, "fullCache": false, "autoRecord": false}
+  }]
 }
 ```
 
-- **缓存规则（DEC-040、DEC-051 ⑧，FR-SUBS-004）**：`cacheRules` 是所有订阅共用的规则，订阅用 `ruleId` 选一条。`rules` 是这条规则落到订阅上的结果（加上订阅自己的 `autoCache.since`），检查、自动缓存与开播录制照旧只读 `rules`，所以规则改动不改变下游契约。`SaveRule` 校验名称（必填、≤ 32 字、不重名）与类型（开启自动缓存时至少一种），把规则套到所有 `ruleId` 等于它的订阅上，文件或 SQL 失败时整体回滚；`SetSubscriptionRule` 让单个订阅改用某条规则；`SetSubscriptionsRule(ruleId, subIds)` 为某条规则一次批量指定使用它的订阅——先校验 `ruleId` 与全部 `subIds` 存在（任一不存在返回错误并整体回滚、不写盘），把 `subIds` 中的订阅设为 `ruleId`，当 `ruleId != "default"` 时把原本用 `ruleId` 但这次取消勾选的订阅改回 `"default"`（编辑 `"default"` 本身时勾上的设为 `"default"`，其他用别的规则且未勾选的订阅保持原规则不变），整个批量操作只写一次 `subscriptions.json`，文件或 SQL 失败时完整回滚；`DeleteRule` 不能删 `default`，删除时它的订阅改用 `default`。`default` 是内置规则，所有选项都关（DEC-054）：`SaveRule` 拒绝修改它（`ErrDefaultRuleLocked`）；新订阅都用它（界面新建与用户页订阅传 `DefaultSubRules()`，`ImportCreators` 新建的订阅不开定时检查）。套用规则（单个与批量）时，自动缓存一直开着就保留原来的 `since`，从关到开才从现在计时，从开到关清空。
-- **内置规则复位（DEC-054）**：读入时 `default` 与内置设置不同（以前可编辑，初始为定时检查）就复位为全关；原来用它的订阅按下一条的办法归到与自己设置相同的规则（没有就新建；旧默认规则被改过名的，新规则沿用那个名字，否则以摘要命名，如“定时检查”），行为不变，并立即写回 `subscriptions.json`。
-- **迁移**：旧文件没有 `cacheRules` 与 `ruleId`。读入时补上 `default`，每个订阅归到与自己 `rules` 完全相同的规则（`default` 或已有的同设置规则），没有就新建一条，以摘要命名（如“定时检查 · 自动缓存视频”，重名加序号）；订阅的行为和 `since` 不变，写回时带上两个字段。
+- **缓存能力标签（DEC-070、DEC-051 ⑧，FR-SUBS-004）**：取消单选的命名共用规则与内置“默认”规则，每个订阅直接持有原子能力标签数组 `tags`，一个标签对应一项缓存能力，按固定顺序与 `SubRules` 一一对应：`scheduled_check`（定时检查 ↔ `rules.scheduledCheck`）、`cache_video`（自动缓存视频 ↔ `rules.autoCache.types` 含 `"video"`）、`cache_draw`（自动缓存图文 ↔ `"draw"`）、`cache_word`（自动缓存文字 ↔ `"word"`）、`cache_forward`（自动缓存转发 ↔ `"forward"`）、`full_cache`（全部缓存 ↔ `rules.fullCache`，DEC-061 ①）、`auto_record`（开播录制 ↔ `rules.autoRecord`）。检查更新、自动缓存、定期全部缓存与开播录制照旧读取同步后的 `rules`，下游契约不变。新增订阅（新建、用户页订阅、拆分为新订阅、从关注列表导入）默认没有任何标签（`tags: []`，所有能力关闭）。`SetSubscriptionTags(subId, tags)` 更新单个订阅的标签集合；`SetTagSubscriptions(tagId, subIds)` 按单个标签一次批量指定拥有它的订阅（勾选的加上该标签、取消勾选的移除该标签，每个订阅原有的其他标签保留不变）；`BatchUpdateSubscriptionsTags(subIds, mode, tags)` 跨多个订阅一次批量执行 `add`（添加所选标签）、`remove`（移除所选标签）或 `replace`（统一替换为所选标签，传空即清空所选订阅的全部标签），先校验标签 ID 与订阅 ID 合法，整个批量操作只写一次 `subscriptions.json`，文件或 SQL 失败时完整回滚。`autoCache.since` 基线规则：订阅从没有任何 `cache_*` 标签变为至少有一个 `cache_*` 标签时，把 `rules.autoCache.since` 设为当前时间；只要仍保留至少一个 `cache_*` 标签（例如在视频与图文标签之间增减或开关非自动缓存标签）就保留原来的 `since`；移除全部 `cache_*` 标签时清空 `since`。
+- **迁移（v1～v4 → v5）**：读入低于版本 5 的 `subscriptions.json` 时，迁移前先经 `storage.BackupBeforeMigration` 生成 `subscriptions.json.premigrate-<旧版本>`，再将每个既有订阅的有效能力（优先读取旧版绑定的 `cacheRules[ruleId]`，含曾被编辑过的旧 `"default"` 规则；无绑定规则的早期 v1 文件读取订阅自身的 `rules`、`enabled`、`liveAutoRecord` 与旧 `autoCache` 范围）100% 无损转换为规范化 `tags` 并保留原有的 `autoCache.since`，去掉顶层 `cacheRules` 与订阅的 `ruleId` 后经 `WriteMigratedJSONAtomic` 原子写回 `version: 5`。
 
 - 账号键 `<site>:<uid>`（`uid` 一律字符串），在全部订阅里唯一；B 站 UID 先规范化为正整数的十进制字符串，前导零不能绕过归属约束；抖音 `uid` 是 `sec_uid`，原样保存（区分大小写，不折叠 `__`），拒绝空白与含路径分隔符的值；微博 `uid` 规范化为 5～19 位正十进制字符串并去前导零，头像地址清洗签名与百分号编码查询串（保留公开 `sinaimg.cn` 地址），无昵称时默认 `"微博用户 <uid>"`（绝不落回 `"UID 0"`）；X `uid` 规范化为 1～20 位正十进制字符串（去前导零、不超过 `uint64` 的 `rest_id`），`@handle`（`screen_name`）存入 `uniqueId` 只供显示，无昵称时默认 `"@<screen_name>"` 或 `"X 用户 <uid>"`。抖音账号的 `webRid` 是可失效的缓存：第一次得知时写入（贴直播间链接，或开播时经 `reflow/info` 换到），之后用它查开播，返回的主播对不上或房间不可用时清掉重新查（[直播 §5](live.md#douyin)）；它不参与账号键与归属判断；`uniqueId` 只显示。读文件时发现重复（例如手改过）保留第一个，提示一次。一个订阅最多 20 个账号；移到原订阅是幂等操作。
 - 昵称与头像是快照：打开用户页、检查更新、导入时顺便更新，不为此单独发请求。
 - 订阅不写进 `library.db`（它只是可以从清单重建的索引）；媒体库按订阅筛选时，服务层把订阅展开成账号列表再查索引的作者字段。
-- `site` 接受 `bilibili`、`douyin`、`weibo` 与 `x`（DEC-043、DEC-065、DEC-066）；一个订阅可以同时有四个站点的账号。单个订阅内的多个关联账号统一按固定站点顺序 `bilibili` → `douyin` → `weibo` → `x`（同 `site.All()`）稳定排列，同一站点的多个账号保持原有相对顺序（[DEC-071](../decisions.md#dec-071)）；读入、写入与快照导出/解析均维持这一顺序，已指定且仍关联的 `avatar` 保持不变，新建或失去原头像账号时回退到排序后的第一个关联账号。文件版本 1 → 2、2 → 3 与 3 → 4 的迁移见[数据 §1](data-and-cache.md#schema-v2)、[版本 3 说明](data-and-cache.md#schema-v3)与[版本 4 说明](data-and-cache.md#schema-v4)（`SubscriptionsSchemaVersion = 4`，`UpdatesDBSchemaVersion = 2` 拆开维护）。
+- `site` 接受 `bilibili`、`douyin`、`weibo` 与 `x`（DEC-043、DEC-065、DEC-066）；一个订阅可以同时有四个站点的账号。单个订阅内的多个关联账号统一按固定站点顺序 `bilibili` → `douyin` → `weibo` → `x`（同 `site.All()`）稳定排列，同一站点的多个账号保持原有相对顺序（[DEC-071](../decisions.md#dec-071)）；读入、写入与快照导出/解析均维持这一顺序，已指定且仍关联的 `avatar` 保持不变，新建或失去原头像账号时回退到排序后的第一个关联账号。文件版本 1 → 2、2 → 3、3 → 4 与 4 → 5 的迁移见[数据 §1](data-and-cache.md#schema-v2)、[版本 3 说明](data-and-cache.md#schema-v3)、[版本 4 说明](data-and-cache.md#schema-v4)与[版本 5 说明](data-and-cache.md#schema-v5)（`SubscriptionsSchemaVersion = 5`，`UpdatesDBSchemaVersion = 2` 拆开维护）。
 - 增删改、关联/移动先保护受影响记录，文件或 SQL 失败返回错误并恢复旧视图；回滚只恢复受影响行，重载使用 SQL 事务，不先清空全部订阅再逐条写入。
 - **更改关联订阅（`Move` / `MoveToNew`）**：支持跨哔哩哔哩、抖音、微博与 X 将已关联账号直接转移到另一个已有订阅（`Move`）或在同一把锁与单次原子写盘中新建订阅并移入（`MoveToNew`，经 `Backend.MoveSubscriptionAccountToNew` 暴露），无需先解除关联再重新添加；转移时保留账号快照字段（`uniqueId`、`webRid`、`name`、`face`、`addedAt`）与 `updates.db` 中的检查起点及记录（不置 `unlinked_at`），并同步更新原订阅的头像引用（失去最后一个账号时清空 `avatar` 与 `face`），零站点请求；任一步失败完整回滚内存、文件与 SQLite 视图。
-- **自定义外部链接（`CustomLink`，[DEC-074](../decisions.md#dec-074)，`internal/subscription/links.go`）**：`subscriptions[].links` 为向后兼容的可选字段（`omitempty`，不提升 `SubscriptionsSchemaVersion = 4`），用于保存该订阅对应的聚合页或个人主页（如 `link3.cc`、`linktr.ee` 等，每个订阅最多 20 条）；每条含可选 `label`（`≤ 48` 字；省略时自动提取去 `www.` 的域名与去尾部 `/` 的路径，超过 40 字截断）与必填 `url`（严格限制为带有效主机的 `http://` 或 `https://`，主机转小写并去掉默认端口 `:80`/`:443`，拒绝 `javascript:`、`file:`、控制字符、空白、UNC 路径、账号密码以及 Cookie/签名令牌查询参数；按规范化 `url` 去重）。读入文件或快照时自动剔除不合规旧项而不阻断整个文件加载；`SetLinks` 原子更新并支持失败回滚，`Upsert` 未传 `links` 时保留原有链接，`cloneSubscription`、`updates.db` 的 `raw_json`、订阅快照导出与摘要哈希（`Snapshot.Hash`）、远程同步以及勾选“合并进已有订阅”导入（`MergeExisting`）均完整保留或按规范化 `url` 合并。
+- **自定义外部链接（`CustomLink`，[DEC-074](../decisions.md#dec-074)，`internal/subscription/links.go`）**：`subscriptions[].links` 为向后兼容的可选字段（`omitempty`），用于保存该订阅对应的聚合页或个人主页（如 `link3.cc`、`linktr.ee` 等，每个订阅最多 20 条）；每条含可选 `label`（`≤ 48` 字；省略时自动提取去 `www.` 的域名与去尾部 `/` 的路径，超过 40 字截断）与必填 `url`（严格限制为带有效主机的 `http://` 或 `https://`，主机转小写并去掉默认端口 `:80`/`:443`，拒绝 `javascript:`、`file:`、控制字符、空白、UNC 路径、账号密码以及 Cookie/签名令牌查询参数；按规范化 `url` 去重）。读入文件或快照时自动剔除不合规旧项而不阻断整个文件加载；`SetLinks` 原子更新并支持失败回滚，`Upsert` 未传 `links` 时保留原有链接，`cloneSubscription`、`updates.db` 的 `raw_json`、订阅快照导出与摘要哈希（`Snapshot.Hash`）、远程同步以及勾选“合并进已有订阅”导入（`MergeExisting`）均完整保留或按规范化 `url` 合并。
 
 <a id="update-check"></a>
 ## 2. 检查更新（FR-SUB-001）
@@ -107,7 +102,7 @@ TRACE 以订阅为逻辑入口（DEC-026）：一个订阅代表一个被追踪�
 <a id="auto-cache"></a>
 ## 4. 自动缓存（FR-CACHE-007）
 
-- 自动缓存来自订阅所用的缓存规则（第 1 节）。规则让订阅从不自动缓存变成自动缓存时把 `rules.autoCache.since` 设为当前时间；关闭时清空，重新开启重新计时；规则的其他改动不动 `since`。
+- 自动缓存来自订阅的能力标签（`cache_video`、`cache_draw`、`cache_word`、`cache_forward`，第 1 节）。订阅从没有 `cache_*` 标签变成至少有一个 `cache_*` 标签时把 `rules.autoCache.since` 设为当前时间；移除全部 `cache_*` 标签时清空，重新添加时重新计时；其余标签变动不动 `since`。
 - 每轮检查（手动或定时）结束后，对开启规则的订阅：取这一轮新写入的、`pub_ts ≥ since`、类型在 `types` 里（`video` = 视频动态、抖音视频作品、微博视频微博与 X 单视频帖（不含 GIF），`draw` = 图文与带图文字、抖音图文作品、微博图文与混排、X 多图/GIF/混排，`word` = 纯文字与微博/X 降级卡片，`forward` = 转发、微博快转与 X 转帖/引用帖）、还没有 `auto_task_id` 的记录，调用与手动缓存相同的 `CacheDynamic`（抖音作品是 `CacheDouyinWork`，微博是 `CacheWeiboPost`，X 是 `CacheXPost`），任务带 `source: "auto"`。所有订阅合计一轮最多建 20 个任务，按发布时间从早到晚；剩下的留到下一轮，在订阅上显示“还有 N 条等待自动缓存”。
 - 这一轮因风控、限流或未登录停止时不建任务。已经缓存过的动态（索引里已有，微博核对 `weibo:dynamic:<mid>` 与 `weibo:video:<id>`，X 核对 `x:dynamic:<status_id>`）只记 `auto_task_id` 为已有条目，不重复建任务。
 

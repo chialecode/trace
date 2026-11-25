@@ -226,9 +226,8 @@ func runServerSmoke(bin string) (ServerSmokeReceipt, error) {
 	}
 
 	snap := subscription.Snapshot{Format: subscription.SnapshotFormat, Version: subscription.SnapshotVersion, Node: &subscription.SnapshotNode{ID: "node-smoke-desktop", Name: "smoke-desktop"},
-		Rules: []subscription.CacheRule{{ID: "r-smoke", Name: "冒烟规则"}},
 		Subscriptions: []subscription.SnapshotSubscription{{
-			ID: "s-smoke", Name: "冒烟订阅", RuleID: "r-smoke",
+			ID: "s-smoke", Name: "冒烟订阅", Tags: []string{},
 			Accounts: []subscription.SnapshotAccount{
 				{Site: "weibo", UID: "5000000001", Name: "冒烟微博博主"},
 				{Site: "x", UID: "1000000000000000099", UniqueID: "smoke_x_creator", Name: "冒烟X创作者"},
@@ -463,9 +462,8 @@ func runWeiboFakeRemoteSmoke(parentCtx context.Context) error {
 		Format:  subscription.SnapshotFormat,
 		Version: subscription.SnapshotVersion,
 		Node:    &subscription.SnapshotNode{ID: "node-weibo-smoke", Name: "weibo-smoke"},
-		Rules:   []subscription.CacheRule{{ID: "r-wb", Name: "微博规则"}},
 		Subscriptions: []subscription.SnapshotSubscription{{
-			ID: "s-wb", Name: "微博冒烟订阅", RuleID: "r-wb",
+			ID: "s-wb", Name: "微博冒烟订阅", Tags: []string{},
 			Accounts: []subscription.SnapshotAccount{{Site: "weibo", UID: creatorUID, Name: creatorNick}},
 		}},
 	}
@@ -858,18 +856,10 @@ func runXFakeRemoteSmoke(parentCtx context.Context) error {
 		Format:  subscription.SnapshotFormat,
 		Version: subscription.SnapshotVersion,
 		Node:    &subscription.SnapshotNode{ID: "node-x-smoke", Name: "x-smoke"},
-		Rules: []subscription.CacheRule{{
-			ID:             "r-x",
-			Name:           "X规则",
-			ScheduledCheck: true,
-			AutoCache:      true,
-			Types:          []string{"draw", "video", "word"},
-			FullCache:      true,
-		}},
 		Subscriptions: []subscription.SnapshotSubscription{{
 			ID:             "s-x",
 			Name:           "X冒烟订阅",
-			RuleID:         "r-x",
+			Tags:           []string{subscription.TagScheduledCheck, subscription.TagCacheVideo, subscription.TagCacheDraw, subscription.TagCacheWord, subscription.TagFullCache},
 			AutoCacheSince: "2026-11-18T00:00:00Z",
 			Accounts: []subscription.SnapshotAccount{{
 				Site:     "x",

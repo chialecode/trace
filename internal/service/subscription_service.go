@@ -153,54 +153,41 @@ func (b *Backend) SetSubscriptionRules(subID string, rules subscription.SubRules
 	return res, err
 }
 
-// ListCacheRules returns the shared cache rules, the built-in one first.
-func (b *Backend) ListCacheRules() []subscription.CacheRule {
-	return b.subs.ListRules()
+// ListCapabilityTags returns all atomic cache capability tags in canonical order.
+func (b *Backend) ListCapabilityTags() []subscription.CapabilityTag {
+	return subscription.AllCapabilityTags()
 }
 
-// SaveCacheRule creates or edits a shared rule and applies it to every subscription that uses it.
-func (b *Backend) SaveCacheRule(rule subscription.CacheRule) (subscription.CacheRule, error) {
+// SetSubscriptionTags updates the capability tags on a single subscription, preserving AutoCache.Since.
+func (b *Backend) SetSubscriptionTags(subID string, tags []string) (subscription.Subscription, error) {
 	if err := b.requireAnyLogin(); err != nil {
-		return subscription.CacheRule{}, err
+		return subscription.Subscription{}, err
 	}
-	res, err := b.subs.SaveRule(rule)
+	res, err := b.subs.SetSubscriptionTags(subID, tags)
 	if err == nil {
 		b.events.Publish(EventSubscriptionChecked, "rules_updated")
 	}
 	return res, err
 }
 
-// DeleteCacheRule removes a shared rule; its subscriptions use the default.
-func (b *Backend) DeleteCacheRule(id string) error {
+// SetTagSubscriptions batch-assigns or unassigns a single capability tag across subscriptions in one atomic write.
+func (b *Backend) SetTagSubscriptions(tagID string, subIDs []string) error {
 	if err := b.requireAnyLogin(); err != nil {
 		return err
 	}
-	err := b.subs.DeleteRule(id)
+	err := b.subs.SetTagSubscriptions(tagID, subIDs)
 	if err == nil {
 		b.events.Publish(EventSubscriptionChecked, "rules_updated")
 	}
 	return err
 }
 
-// SetSubscriptionRule makes a subscription use a shared rule.
-func (b *Backend) SetSubscriptionRule(subID, ruleID string) (subscription.Subscription, error) {
-	if err := b.requireAnyLogin(); err != nil {
-		return subscription.Subscription{}, err
-	}
-	res, err := b.subs.SetSubscriptionRule(subID, ruleID)
-	if err == nil {
-		b.events.Publish(EventSubscriptionChecked, "rules_updated")
-	}
-	return res, err
-}
-
-// SetSubscriptionsRule assigns a shared rule to the selected subscriptions in one batch;
-// unselected subscriptions that previously used a non-default rule fall back to DefaultRuleID.
-func (b *Backend) SetSubscriptionsRule(ruleID string, subIDs []string) error {
+// BatchUpdateSubscriptionsTags batch-adds, removes, or replaces capability tags across the selected subscriptions in one atomic write.
+func (b *Backend) BatchUpdateSubscriptionsTags(subIDs []string, mode string, tags []string) error {
 	if err := b.requireAnyLogin(); err != nil {
 		return err
 	}
-	err := b.subs.SetSubscriptionsRule(ruleID, subIDs)
+	err := b.subs.BatchUpdateSubscriptionsTags(subIDs, mode, tags)
 	if err == nil {
 		b.events.Publish(EventSubscriptionChecked, "rules_updated")
 	}
