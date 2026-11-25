@@ -259,7 +259,8 @@ func TestLoginWithCookieLocalPreCheckZeroRequestsNoEcho(t *testing.T) {
 		{"invalid ct0 chars", "auth_token=" + secretMarker + "; ct0=bad_ct0!chars"},
 		{"control char injection", "auth_token=" + secretMarker + "\x00; ct0=SynthCT0Token0001"},
 		{"header prefix multiline", "Cookie: auth_token=" + secretMarker + "\nX-Injected: 1; ct0=SynthCT0Token0001"},
-		{"oversized > 8 KiB", "auth_token=" + secretMarker + "; ct0=SynthCT0Token0001; pad=" + strings.Repeat("a", 9000)},
+		{"oversized > 64 KiB", "auth_token=" + secretMarker + "; ct0=SynthCT0Token0001; pad=" + strings.Repeat("a", credential.MaxCookieInputBytes+64)},
+		{"cleaned > 32 KiB", "auth_token=" + secretMarker + strings.Repeat("b", credential.MaxCleanedCookieHeaderBytes+64) + "; ct0=SynthCT0Token0001"},
 	}
 
 	for _, tc := range cases {

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/site"
 )
 
@@ -127,7 +128,8 @@ func TestLoginWithCookieFailureClassesPreserveExistingCredAndNeverEchoSecret(t *
 			secret string
 		}{
 			{name: "missing_sub", raw: "SUBP=SECRET_SUBP_NEVER_ECHO; XSRF-TOKEN=SECRET_XSRF_NEVER_ECHO", secret: "SECRET_SUBP_NEVER_ECHO"},
-			{name: "over_8kib", raw: "SUB=SECRET_OVER_8K_" + strings.Repeat("x", 9000), secret: "SECRET_OVER_8K_"},
+			{name: "over_64kib", raw: "SUB=SECRET_OVER_64K_" + strings.Repeat("x", credential.MaxCookieInputBytes+64), secret: "SECRET_OVER_64K_"},
+			{name: "cleaned_over_32kib", raw: "SUB=SECRET_CLEAN_32K_" + strings.Repeat("y", credential.MaxCleanedCookieHeaderBytes+64), secret: "SECRET_CLEAN_32K_"},
 			{name: "control_char_nul", raw: "SUB=SECRET_CTL_\x00_VALUE", secret: "SECRET_CTL_"},
 			{name: "cookie_header_crlf_injection", raw: "Cookie: SUB=SECRET_INJ_VAL\r\nX-Evil: 1", secret: "SECRET_INJ_VAL"},
 		}

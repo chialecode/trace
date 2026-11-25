@@ -38,7 +38,7 @@ type BasicInfo struct {
 // on the PC domain before saving it to the Weibo credential store (weibo.md §13.1 #2).
 //
 // Exact flow (PC domain ONLY, never calls m.weibo.cn, never silently falls back to another endpoint):
-//  1. Parse & clean via credential.ParseWeiboCookieInput (8 KiB cap, control-char check, SUB required -> invalid_input, 0 requests).
+//  1. Parse & clean via credential.ParseWeiboCookieInput (64 KiB raw cap, 32 KiB cleaned cap, control-char check, SUB required -> invalid_input, 0 requests).
 //  2. GET https://weibo.com/ajax/setting/getBasicInfo -> require HTTP 200, ok==1, non-empty data.screen_name.
 //  3. GET https://weibo.com/ajax/profile/info?screen_name=<screen_name> -> require valid numeric data.user.idstr,
 //     avatar, and exact data.user.screen_name == basicInfo.screen_name match; otherwise fail without saving.
@@ -52,7 +52,13 @@ func (c *Client) LoginWithCookie(ctx context.Context, rawCookie string) (credent
 			return credential.Status{}, &site.Error{
 				Site:    site.Weibo,
 				Kind:    site.ErrKindInvalidInput,
-				Message: "粘贴的 Cookie 长度超过 8 KiB 上限，请只复制 weibo.com 站点的 Cookie",
+				Message: "粘贴的 Cookie 长度超过 64 KiB 上限，请只复制 weibo.com 站点的 Cookie",
+			}
+		case errors.Is(err, credential.ErrCleanedCookieTooLarge):
+			return credential.Status{}, &site.Error{
+				Site:    site.Weibo,
+				Kind:    site.ErrKindInvalidInput,
+				Message: "清洗后的微博 Cookie 请求头长度超过 32 KiB 上限，请只复制 weibo.com 站点的 Cookie",
 			}
 		case errors.Is(err, credential.ErrInvalidCookieControlChar):
 			return credential.Status{}, &site.Error{

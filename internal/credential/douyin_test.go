@@ -99,11 +99,58 @@ func TestV011BilibiliFixtureCompatibilityAndEntropyIsolation(t *testing.T) {
 }
 
 func TestDouyinCookieCleanerRulesAndBounds(t *testing.T) {
-	// 1. Over 8 KiB input rejected without echoing secret.
+	// 1. Over 64 KiB raw input rejected without echoing secret.
 	oversized := "sessionid=" + strings.Repeat("f", MaxCookieInputBytes+64)
 	if _, err := ParseDouyinCookieInput(oversized); !errors.Is(err, ErrInputTooLarge) {
 		t.Fatalf("expected ErrInputTooLarge, got %v", err)
 	} else if strings.Contains(err.Error(), "ffff") {
+		t.Fatalf("error echoed secret value: %v", err)
+	}
+
+	// 1b. Over 8 KiB realistic browser Cookie carrying large bd_ticket_guard_* dynamic noise
+	// succeeds after stripping blacklisted keys and keeps all identity/context keys intact.
+	over8KBrowser := strings.Join([]string{
+		"sessionid=synth_sess_over8k_ok",
+		"sid_ucp_v1=1.0.0-synth_ucp_over8k",
+		"s_v_web_id=verify_synth_over8k",
+		"UIFID=synth_uifid_over8k",
+		"ttwid=synth_ttwid_over8k",
+		"bd_ticket_guard_client_data=" + strings.Repeat("G", 9500),
+		"__security_mc_1_s_sdk=" + strings.Repeat("S", 2500),
+		"sdk_source_info=" + strings.Repeat("K", 1200),
+	}, "; ")
+	if len(over8KBrowser) <= 8192 {
+		t.Fatalf("test fixture must exceed 8 KiB, got %d", len(over8KBrowser))
+	}
+	cleanedOver8K, err := ParseDouyinCookieInput(over8KBrowser)
+	if err != nil {
+		t.Fatalf("expected >8 KiB Douyin cookie with bd_ticket_guard_* noise to succeed, got %v", err)
+	}
+	if cleanedOver8K["sessionid"] != "synth_sess_over8k_ok" ||
+		cleanedOver8K["sid_ucp_v1"] != "1.0.0-synth_ucp_over8k" ||
+		cleanedOver8K["s_v_web_id"] != "verify_synth_over8k" ||
+		cleanedOver8K["UIFID"] != "synth_uifid_over8k" ||
+		cleanedOver8K["ttwid"] != "synth_ttwid_over8k" {
+		t.Fatalf("missing key Douyin cookies after cleaning >8 KiB input: %+v", cleanedOver8K)
+	}
+	for _, stripped := range []string{"bd_ticket_guard_client_data", "__security_mc_1_s_sdk", "sdk_source_info"} {
+		if _, exists := cleanedOver8K[stripped]; exists {
+			t.Fatalf("stripped key %q remained after cleaning >8 KiB input", stripped)
+		}
+	}
+	if hdrLen := len(FormatDouyinCookieHeader(cleanedOver8K)); hdrLen > MaxCleanedCookieHeaderBytes || hdrLen >= 1024 {
+		t.Fatalf("unexpected cleaned header length %d after stripping noise", hdrLen)
+	}
+
+	// 1c. Raw input <= 64 KiB whose cleaned outbound Cookie header still exceeds 32 KiB
+	// is rejected with ErrCleanedCookieTooLarge without echoing secrets.
+	oversizedCleaned := "sessionid=synth_sess_clean32k_secret; bulk_non_blacklisted=" + strings.Repeat("z", MaxCleanedCookieHeaderBytes+128)
+	if len(oversizedCleaned) > MaxCookieInputBytes {
+		t.Fatalf("fixture should stay within MaxCookieInputBytes (%d), got %d", MaxCookieInputBytes, len(oversizedCleaned))
+	}
+	if _, err := ParseDouyinCookieInput(oversizedCleaned); !errors.Is(err, ErrCleanedCookieTooLarge) {
+		t.Fatalf("expected ErrCleanedCookieTooLarge, got %v", err)
+	} else if strings.Contains(err.Error(), "synth_sess_clean32k_secret") || strings.Contains(err.Error(), "zzzz") {
 		t.Fatalf("error echoed secret value: %v", err)
 	}
 

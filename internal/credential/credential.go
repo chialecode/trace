@@ -31,13 +31,19 @@ const (
 	WeiboEntropy    = "trace:weibo:credential:v1"
 	XEntropy        = "trace:x:credential:v1"
 
-	// MaxCookieInputBytes is the maximum allowed byte length for manual cookie import.
-	MaxCookieInputBytes = 8192
+	// MaxCookieInputBytes is the maximum allowed raw byte length for manual cookie import (64 KiB).
+	// Real browser Cookie headers (e.g. Douyin with large dynamic bd_ticket_guard_* fields) can
+	// exceed 8 KiB before site-specific cleaning strips dynamic and irrelevant cookies.
+	MaxCookieInputBytes = 65536
+	// MaxCleanedCookieHeaderBytes is the maximum allowed byte length of the serialized outbound
+	// Cookie header after site-specific cleaning (32 KiB), preventing HTTP 431 header rejections.
+	MaxCleanedCookieHeaderBytes = 32768
 )
 
 // Errors returned by credential operations (never echoing raw secrets).
 var (
-	ErrInputTooLarge            = errors.New("credential: cookie input exceeds 8 KiB limit")
+	ErrInputTooLarge            = errors.New("credential: cookie input exceeds 64 KiB limit")
+	ErrCleanedCookieTooLarge    = errors.New("credential: cleaned cookie header exceeds 32 KiB limit")
 	ErrInvalidCookieControlChar = errors.New("credential: cookie input contains invalid control characters")
 	ErrMissingRequiredKeys      = errors.New("credential: missing required cookie key SESSDATA")
 	ErrMissingDouyinSession     = errors.New("credential: missing required cookie key sessionid")
@@ -142,8 +148,8 @@ type Status struct {
 }
 
 // ParseManualCookieInput parses a manual Bilibili Cookie string and optional refresh_token.
-// It enforces the 8 KiB limit, filters by the 5-key whitelist, requires SESSDATA,
-// and never echoes input values in error messages.
+// It enforces the 64 KiB raw input limit, filters by the 5-key whitelist, requires SESSDATA,
+// enforces the 32 KiB cleaned outbound header limit, and never echoes input values in error messages.
 func ParseManualCookieInput(rawCookie string, rawRefreshToken string) (map[string]string, string, error) {
 	if len(rawCookie) > MaxCookieInputBytes || len(rawRefreshToken) > MaxCookieInputBytes {
 		return nil, "", ErrInputTooLarge
@@ -154,6 +160,9 @@ func ParseManualCookieInput(rawCookie string, rawRefreshToken string) (map[strin
 	if cookies["SESSDATA"] == "" {
 		return nil, "", ErrMissingRequiredKeys
 	}
+	if len(formatOrderedCookieHeader(cookies, AllowedCookieKeys)) > MaxCleanedCookieHeaderBytes {
+		return nil, "", ErrCleanedCookieTooLarge
+	}
 
 	rt := strings.TrimSpace(rawRefreshToken)
 	if strings.ContainsAny(rt, " \t\r\n;=") {
@@ -162,6 +171,16 @@ func ParseManualCookieInput(rawCookie string, rawRefreshToken string) (map[strin
 	}
 
 	return cookies, rt, nil
+}
+
+func formatOrderedCookieHeader(cookies map[string]string, orderedKeys []string) string {
+	var pairs []string
+	for _, k := range orderedKeys {
+		if v := cookies[k]; v != "" {
+			pairs = append(pairs, k+"="+v)
+		}
+	}
+	return strings.Join(pairs, "; ")
 }
 
 func parseRawCookieHeader(rawCookie string) map[string]string {
@@ -503,13 +522,7 @@ func (s *Store) CookieHeader() string {
 	if s.site == SiteDouyin {
 		return FormatDouyinCookieHeader(s.rec.Cookies)
 	}
-	var pairs []string
-	for _, k := range s.orderedCookieKeys() {
-		if v := s.rec.Cookies[k]; v != "" {
-			pairs = append(pairs, k+"="+v)
-		}
-	}
-	return strings.Join(pairs, "; ")
+	return formatOrderedCookieHeader(s.rec.Cookies, s.orderedCookieKeys())
 }
 
 // CookieValue returns a single stored cookie value when active, or empty string if absent/inactive.

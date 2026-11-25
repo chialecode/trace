@@ -220,11 +220,27 @@ func TestXStoreEntropyIsolationAndBackwardCompatibility(t *testing.T) {
 }
 
 func TestXCookieParserWhitelistControlCharsAndEdgeCases(t *testing.T) {
-	// 1. Over 8 KiB input rejected without echoing secret.
+	// 1. Over 64 KiB raw input rejected without echoing secret.
 	oversized := "auth_token=" + strings.Repeat("Z", MaxCookieInputBytes+32) + "; ct0=synthCT0123"
 	if _, err := ParseXCookieInput(oversized); !errors.Is(err, ErrInputTooLarge) {
 		t.Fatalf("expected ErrInputTooLarge, got %v", err)
 	} else if strings.Contains(err.Error(), "ZZZZ") {
+		t.Fatalf("error echoed secret input: %v", err)
+	}
+
+	// 1b. Over 8 KiB raw input with non-whitelisted tracking noise succeeds after cleaning.
+	over8KNoise := "auth_token=synth_auth_over8k; ct0=synthCT0over8k; __cf_bm=" + strings.Repeat("C", 12000)
+	if cleaned, err := ParseXCookieInput(over8KNoise); err != nil {
+		t.Fatalf("expected >8 KiB X cookie with noise to succeed, got %v", err)
+	} else if cleaned["auth_token"] != "synth_auth_over8k" || cleaned["ct0"] != "synthCT0over8k" || len(cleaned) != 2 {
+		t.Fatalf("unexpected cleaned X cookies: %+v", cleaned)
+	}
+
+	// 1c. Cleaned outbound header > 32 KiB rejected without echoing secret.
+	oversizedCleaned := "auth_token=" + strings.Repeat("X", MaxCleanedCookieHeaderBytes+64) + "; ct0=synthCT0123"
+	if _, err := ParseXCookieInput(oversizedCleaned); !errors.Is(err, ErrCleanedCookieTooLarge) {
+		t.Fatalf("expected ErrCleanedCookieTooLarge, got %v", err)
+	} else if strings.Contains(err.Error(), "XXXX") {
 		t.Fatalf("error echoed secret input: %v", err)
 	}
 

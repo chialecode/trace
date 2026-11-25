@@ -110,9 +110,14 @@ func TestLoginWithCookieFailureModesAndSuccess(t *testing.T) {
 				secret: "SYNTH_EMPTY_SESS_SECRET",
 			},
 			{
-				name:   "oversized_cookie_above_8kib",
+				name:   "oversized_cookie_above_64kib",
 				input:  "sessionid=SYNTH_OVERSIZED_SECRET_TOKEN; pad=" + strings.Repeat("x", credential.MaxCookieInputBytes+64),
 				secret: "SYNTH_OVERSIZED_SECRET_TOKEN",
+			},
+			{
+				name:   "cleaned_cookie_above_32kib",
+				input:  "sessionid=SYNTH_CLEANED_32K_SECRET_TOKEN; pad=" + strings.Repeat("y", credential.MaxCleanedCookieHeaderBytes+64),
+				secret: "SYNTH_CLEANED_32K_SECRET_TOKEN",
 			},
 		}
 
@@ -121,6 +126,12 @@ func TestLoginWithCookieFailureModesAndSuccess(t *testing.T) {
 				_, err := client.LoginWithCookie(ctx, tc.input)
 				if !site.IsKind(err, site.ErrKindInvalidInput) {
 					t.Fatalf("LoginWithCookie(%s) kind = %q, want %q (err=%v)", tc.name, site.KindOf(err), site.ErrKindInvalidInput, err)
+				}
+				if tc.name == "oversized_cookie_above_64kib" && !strings.Contains(err.Error(), "64 KiB") {
+					t.Fatalf("expected 64 KiB message, got %v", err)
+				}
+				if tc.name == "cleaned_cookie_above_32kib" && !strings.Contains(err.Error(), "32 KiB") {
+					t.Fatalf("expected 32 KiB message, got %v", err)
 				}
 				if strings.Contains(err.Error(), tc.secret) {
 					t.Fatalf("error echoed raw Cookie secret %q: %v", tc.secret, err)
@@ -133,6 +144,49 @@ func TestLoginWithCookieFailureModesAndSuccess(t *testing.T) {
 					t.Fatalf("existing active credential was mutated: %+v", st)
 				}
 			})
+		}
+	})
+
+	t.Run("over_8kib_with_large_bd_ticket_guard_noise_succeeds_after_cleaning", func(t *testing.T) {
+		store := openTestDouyinCredStore(t, false)
+		var capturedCookie string
+		client := NewClient(ClientOptions{
+			CredStore:   store,
+			MinInterval: -1,
+			Entropy:     newDeterministicEntropy(0x15),
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				capturedCookie = req.Header.Get("Cookie")
+				body := `{"status_code":0,"user":{"uid":"10008899","sec_uid":"MS4wLjABAAAA_SYNTH_OVER8K_USER_01","unique_id":"synth_over8k","nickname":"大Cookie用户"}}`
+				return jsonHTTPResponse(http.StatusOK, body, nil), nil
+			}),
+		})
+
+		raw := strings.Join([]string{
+			"sessionid=SYNTH_OVER8K_SESSION_OK",
+			"sid_ucp_v1=1.0.0-SYNTH_OVER8K_UCP",
+			"s_v_web_id=verify_synth_over8k_fp",
+			"UIFID=SYNTH_OVER8K_UIFID",
+			"bd_ticket_guard_client_data=" + strings.Repeat("G", 10240),
+			"__security_mc_1_s_sdk=" + strings.Repeat("S", 2048),
+		}, "; ")
+		if len(raw) <= 8192 {
+			t.Fatalf("fixture must exceed 8 KiB, got %d", len(raw))
+		}
+		st, err := client.LoginWithCookie(ctx, raw)
+		if err != nil {
+			t.Fatalf("LoginWithCookie(>8 KiB with bd_ticket_guard noise) failed: %v", err)
+		}
+		if !st.LoggedIn || st.SecUID != "MS4wLjABAAAA_SYNTH_OVER8K_USER_01" {
+			t.Fatalf("unexpected status: %+v", st)
+		}
+		if strings.Contains(capturedCookie, "bd_ticket_guard") || strings.Contains(capturedCookie, "__security_") {
+			t.Fatalf("outbound Cookie header retained stripped dynamic keys")
+		}
+		if !strings.Contains(capturedCookie, "s_v_web_id=verify_synth_over8k_fp") || !strings.Contains(capturedCookie, "UIFID=SYNTH_OVER8K_UIFID") {
+			t.Fatalf("outbound Cookie header lost required context keys")
+		}
+		if store.CookieValue("s_v_web_id") != "verify_synth_over8k_fp" || store.UIFID() != "SYNTH_OVER8K_UIFID" || store.CookieValue("sid_ucp_v1") != "1.0.0-SYNTH_OVER8K_UCP" {
+			t.Fatalf("saved store lost context keys after >8 KiB import")
 		}
 	})
 
