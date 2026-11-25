@@ -47,6 +47,9 @@ type DynamicItem struct {
 	Videos       []DynamicVideoRef `json:"videos,omitempty"`
 	Origin       *DynamicItem      `json:"origin,omitempty"`
 	Pinned       bool              `json:"pinned,omitempty"`
+	IsOnlyFans   bool              `json:"isOnlyFans,omitempty"`
+	Blocked      bool              `json:"blocked,omitempty"`
+	BlockedHint  string            `json:"blockedHint,omitempty"`
 	Degraded     bool              `json:"degraded,omitempty"`
 	CanonicalURL string            `json:"canonicalUrl"`
 }
@@ -74,7 +77,7 @@ func (c *Client) UserDynamics(ctx context.Context, hostMid int64, offset string)
 	params.Set("host_mid", strconv.FormatInt(hostMid, 10))
 	params.Set("offset", offset)
 	params.Set("timezone_offset", "-480")
-	params.Set("features", "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote")
+	params.Set("features", "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,onlyfansAssetsV2")
 
 	var raw struct {
 		HasMore bool              `json:"has_more"`
@@ -115,7 +118,7 @@ func (c *Client) DynamicDetail(ctx context.Context, dynID string) (DynamicItem, 
 	q := url.Values{}
 	q.Set("id", dynID)
 	q.Set("timezone_offset", "-480")
-	q.Set("features", "itemOpusStyle,opusBigCover")
+	q.Set("features", "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,onlyfansAssetsV2")
 	fullURL := strings.TrimRight(c.endpoints.APIBase, "/") + "/x/polymer/web-dynamic/v1/detail?" + q.Encode()
 
 	var raw struct {
@@ -136,9 +139,12 @@ func (c *Client) DynamicDetail(ctx context.Context, dynID string) (DynamicItem, 
 }
 
 type rawDynamicEntry struct {
-	IDStr   string          `json:"id_str"`
-	Type    string          `json:"type"`
-	Origin  json.RawMessage `json:"orig"`
+	IDStr  string          `json:"id_str"`
+	Type   string          `json:"type"`
+	Origin json.RawMessage `json:"orig"`
+	Basic  *struct {
+		IsOnlyFans flexBool `json:"is_only_fans"`
+	} `json:"basic"`
 	Modules struct {
 		ModuleTag *struct {
 			Text string `json:"text"`
@@ -191,6 +197,9 @@ type rawDynamicEntry struct {
 					Desc   string   `json:"desc"`
 					Covers []string `json:"covers"`
 				} `json:"article"`
+				Blocked *struct {
+					HintMessage string `json:"hint_message"`
+				} `json:"blocked"`
 			} `json:"major"`
 		} `json:"module_dynamic"`
 	} `json:"modules"`
@@ -208,6 +217,7 @@ func parseDynamicEntry(raw rawDynamicEntry) DynamicItem {
 		},
 		PubTs:        pubTs,
 		Pinned:       raw.Modules.ModuleTag != nil && strings.Contains(raw.Modules.ModuleTag.Text, "置顶"),
+		IsOnlyFans:   raw.Basic != nil && bool(raw.Basic.IsOnlyFans),
 		CanonicalURL: fmt.Sprintf("https://t.bilibili.com/%s", raw.IDStr),
 	}
 
@@ -279,6 +289,15 @@ func parseDynamicEntry(raw rawDynamicEntry) DynamicItem {
 				}
 			}
 		}
+		if major.Blocked != nil || strings.EqualFold(strings.TrimSpace(major.Type), "MAJOR_TYPE_BLOCKED") {
+			item.Blocked = true
+			if major.Blocked != nil {
+				item.BlockedHint = strings.TrimSpace(major.Blocked.HintMessage)
+			}
+			if item.BlockedHint == "" {
+				item.BlockedHint = "充电专属内容，当前登录账号未开通该 UP 主充电权益"
+			}
+		}
 	}
 
 	switch raw.Type {
@@ -306,11 +325,15 @@ func parseDynamicEntry(raw rawDynamicEntry) DynamicItem {
 			}
 		}
 	default:
-		// Graceful degradation for unsupported/future dynamic types.
-		item.TypeLabel = "其他动态"
-		item.Degraded = true
-		if item.Text == "" && item.Title == "" {
-			item.Text = fmt.Sprintf("暂不支持完整展示的动态类型 (%s)", raw.Type)
+		if item.Blocked {
+			item.TypeLabel = "充电专属动态"
+		} else {
+			// Graceful degradation for unsupported/future dynamic types.
+			item.TypeLabel = "其他动态"
+			item.Degraded = true
+			if item.Text == "" && item.Title == "" {
+				item.Text = fmt.Sprintf("暂不支持完整展示的动态类型 (%s)", raw.Type)
+			}
 		}
 	}
 

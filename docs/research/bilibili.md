@@ -94,7 +94,7 @@ TRACE 只在登录状态下请求（DEC-018），所有内容接口都附带凭�
 
 `GET https://api.bilibili.com/x/web-interface/wbi/view`，WBI 签名，参数 `bvid=...` 或 `aid=...`。
 
-`data` 里用到的字段：`bvid`、`aid`、`title`、`pic`（封面）、`desc`、`pubdate`（Unix 秒）、`duration`（秒）、`owner.{mid,name,face}`、`stat.{view,danmaku,reply,favorite,coin,share,like}`、`pages[].{cid,page,part,duration}`（多 P）、`tname`（分区名，可能为空）、`rights`、`state`。不可得的情况见第 3 节的错误码。
+`data` 里用到的字段：`bvid`、`aid`、`title`、`pic`（封面）、`desc`、`pubdate`（Unix 秒）、`duration`（秒）、`owner.{mid,name,face}`、`stat.{view,danmaku,reply,favorite,coin,share,like}`、`pages[].{cid,page,part,duration}`（多 P）、`tname`（分区名，可能为空）、`rights`、`state` 以及充电专属标记 `is_upower_exclusive`、`is_upower_play`、`is_upower_preview`（兼容布尔与 `0`/`1`）。当 `is_upower_exclusive && !is_upower_play` 时在调用 `playurl` 前提前拦截为 `forbidden`（不发无效 `playurl` 请求）；`is_upower_exclusive && is_upower_play` 表示当前账号已开通该 UP 主充电完整播放权，照常走最高画质与音质缓存。不可得的情况见第 3 节的错误码。
 
 ## 8. 用户资料
 
@@ -116,7 +116,8 @@ dm_img_inter={"ds":[],"wh":[0,0,0],"of":[0,0,0]} [w_webid=<访问标识>]
 - `dm_img_str` 与 `dm_cover_img_str`：把文本 `no webgl` 做 base64 后去掉最后两个字符（`bm8gd2ViZ2`），表示没有 WebGL 的浏览器。
 - `w_webid`：读取 `https://space.bilibili.com/<mid>` 页面（响应上限 2 MiB），取 `<script id="__RENDER_DATA__">` 里百分号编码的 JSON 的 `access_id`。只接受长度不超过 600、由字母数字和 `.-_=` 组成的值。每位作者 30 分钟内最多读一次页面，最多缓存 16 位作者。页面里没有这个值时不带这个参数继续请求。
 - 固定向量：上述 IMG/SUB 密钥，`mid=94697, pn=2, ps=30, w_webid=eyJ.web-id_1`，`wts=1702204169` 时 `w_rid=d1973c4ae71235d7bc494f04744540c9`。
-- 结果：`data.list.vlist[].{bvid,aid,title,pic,created,length("mm:ss"),play,comment,description}`，`data.page.{pn,ps,count}`。`count` 只是站点给的观察值，不保证完整。置顶视频可能出现在第一页，与时间顺序不一致；不同页之间可能重复，前端按 `bvid` 去重。
+- 参数支持：`tid`（`0` 表示全部分区，非零按分区筛选，纳入 WBI 签名）、`order`（`pubdate` 最新发布 / `click` 最多播放 / `stow` 最多收藏）、`keyword`（关键词搜索，仅在用户显式提交时发请求）。
+- 结果：`data.list.vlist[].{bvid,aid,title,pic,created,length("mm:ss"),play,comment,description}`、`data.list.tlist`（各分区 `{tid,name,count}` 映射；为空时站点可能返回 `null` 或 `[]`，TRACE 安全夹取整数并按 `count` 降序再按 `tid` 升序稳定排序）、`data.page.{pn,ps,count}`。`count` 只是站点给的观察值，不保证完整。置顶视频可能出现在第一页，与时间顺序不一致；不同页之间可能重复，前端按 `bvid` 去重。
 - 风险：这是最容易触发 -352 的接口。翻页由用户滚动触发，不预取；遇到 -352 就停在当前页，显示原因和“重试”按钮。
 
 <a id="qr-login"></a>
@@ -157,14 +158,14 @@ Cookie 刷新（用 `refresh_token` 加 RSA 计算的 correspondPath）见第 17
 
 ```text
 offset=<上一页返回的 offset，首页为空> host_mid=<mid> platform=web
-features=itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote
+features=itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,onlyfansAssetsV2
 dm_img_list=[] dm_img_str=bm8gd2ViZ2 dm_cover_img_str=bm8gd2ViZ2 dm_img_inter={"ds":[],"wh":[0,0,0],"of":[0,0,0]}
 ```
 
 - **ACT-003 实测结论**：登录态下携带上述参数（不带 WBI 签名）直接通过第 1 页（13 条）和第 2 页（12 条，使用第 1 页返回的 `offset`）；返回 `code=-352` 时客户端支持自动退回 WBI 签名重试一次。
 - 访客 Cookie 请求会返回 -352（社区议题 2026-10 报告，未修复），这也是 DEC-018 只做登录模式的依据之一。
 - 结果：`data.items[]`、`data.offset`（字符串，下一页用）、`data.has_more`。每条：`id_str`（大整数，按字符串处理）、`type`（`DYNAMIC_TYPE_AV` 视频、`DYNAMIC_TYPE_DRAW` 图文、`DYNAMIC_TYPE_WORD` 文字、`DYNAMIC_TYPE_FORWARD` 转发、`DYNAMIC_TYPE_ARTICLE` 专栏，以及直播、番剧等）、`modules.module_author.{mid,name,face,pub_ts}`、`modules.module_dynamic.desc.text`、`modules.module_dynamic.major`；转发的原动态在 `orig`，结构相同。
-- `major.type`：`MAJOR_TYPE_ARCHIVE`（`archive.{bvid,aid,title,cover,duration_text}`）、`MAJOR_TYPE_OPUS`（`opus.{summary.text,pics[].{url,width,height}}`）、`MAJOR_TYPE_DRAW`（`draw.items[].{src,width,height}`）、`MAJOR_TYPE_ARTICLE`、`MAJOR_TYPE_UGC_SEASON`、`MAJOR_TYPE_PGC`、`MAJOR_TYPE_LIVE`、`MAJOR_TYPE_LIVE_RCMD`、`MAJOR_TYPE_COMMON`、`MAJOR_TYPE_COURSES`、`MAJOR_TYPE_MUSIC` 等。没见过的类型显示类型名，不当作错误，也不丢弃。
+- `major.type`：`MAJOR_TYPE_ARCHIVE`（`archive.{bvid,aid,title,cover,duration_text}`）、`MAJOR_TYPE_OPUS`（`opus.{summary.text,pics[].{url,width,height}}`）、`MAJOR_TYPE_DRAW`（`draw.items[].{src,width,height}`）、`MAJOR_TYPE_BLOCKED`（充电专属锁定内容，配合 `basic.is_only_fans` 与 `major.blocked.{hint_message,sub_title}` 保留外层时间/标题并清晰展示锁定原因，不标为 `Degraded` 也不入队缓存）、`MAJOR_TYPE_ARTICLE`、`MAJOR_TYPE_UGC_SEASON`、`MAJOR_TYPE_PGC`、`MAJOR_TYPE_LIVE`、`MAJOR_TYPE_LIVE_RCMD`、`MAJOR_TYPE_COMMON`、`MAJOR_TYPE_COURSES`、`MAJOR_TYPE_MUSIC` 等。没见过的类型显示类型名，不当作错误，也不丢弃。
 - 置顶动态可能出现在第一页顶部，与时间顺序不一致；页之间可能重复，按 `id_str` 去重。
 - 风险：和投稿列表一样容易触发 -352；翻页只由用户滚动触发，遇到风控停在当前页。
 - 单条动态详情（缓存时列表缓存已过期的回退）：`GET /x/polymer/web-dynamic/v1/detail?id=<id_str>`，结构同上的单条 `data.item`，已在合成夹具中验证（ACT-003 因列表缓存直接命中未发起真实请求）。
@@ -257,6 +258,7 @@ dm_img_list=[] dm_img_str=bm8gd2ViZ2 dm_cover_img_str=bm8gd2ViZ2 dm_img_inter={"
 
 - `GET https://api.bilibili.com/x/player/wbi/v2?bvid=<bvid>&cid=<cid>`，WBI 签名，带登录 Cookie，`Referer` 为视频页。参考实现不签名也能用（参）；TRACE 用签名版（ACT-005 实测探测 2 个视频均返回 `code=0` 且 `bvid`/`cid` 匹配，所探视频无 CC 字幕轨）。
 - `data.subtitle.subtitles[]`：`id`、`lan`、`lan_doc`、`subtitle_url`（以 `//` 开头，补 `https:`；带 `auth_key`，有时效，**不落盘、不进日志**）、`type`、`ai_type`、`ai_status`。`lan` 以 `ai-` 开头的是 AI 字幕（社）。
+- `data.view_points[]`（零额外请求顺手解析）：每项含 `type`、`from`（起点秒）、`to`（终点秒）、`content`（章节标题）；TRACE 过滤无效条目（标题为空、`from < 0` 或 `to <= from`）、去重并按 `from` 升序排列后随分 P 写入 `item.json` 的可选字段 `parts[].chapters`。
 - 未登录时 `subtitles` 为空（核）；社区报告过旧版 `x/player/v2` 返回别的视频的字幕、AI 字幕的 `subtitle_url` 为空（社）：TRACE 校验返回的 `bvid`/`cid` 与请求一致（不一致按 `schema_changed`），跳过空地址。
 - 字幕文件（`*.hdslb.com`）：`{font_size, font_color, background_alpha, background_color, Stroke, type, lang, version, body: [{from, to, sid, location, content, music}]}`，`from`/`to` 单位为秒（核）。TRACE 转成 WebVTT 与 SRT（时间格式分别为 `HH:MM:SS.mmm` 与 `HH:MM:SS,mmm`，内容做相应转义），原始 JSON 不另存。
 

@@ -325,6 +325,7 @@ func cloneArchiveMetadata(in ItemMetadata) ItemMetadata {
 		for i, p := range in.Parts {
 			p.Subtitles = append([]string(nil), p.Subtitles...)
 			p.SubtitleTracks = append([]PartSubtitleInfo(nil), p.SubtitleTracks...)
+			p.Chapters = append([]VideoChapter(nil), p.Chapters...)
 			p.Available.AcceptQuality = append([]int(nil), p.Available.AcceptQuality...)
 			p.Available.AvailableGears = append([]string(nil), p.Available.AvailableGears...)
 			p.Available.Formats = append([]string(nil), p.Available.Formats...)

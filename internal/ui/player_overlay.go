@@ -132,7 +132,11 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 									Top(dm.Y)
 							}
 							if snap.ActiveSubtitle != "" {
-								ui.Row(c).FillWidth().Justify(ui.Center).Absolute().Bottom(88).Left(0).Children(func() {
+								subBottom := float32(88)
+								if !a.PlayerOverlay.ControlsHidden && len(a.PlayerOverlay.Chapters) > 0 {
+									subBottom = 122
+								}
+								ui.Row(c).FillWidth().Justify(ui.Center).Absolute().Bottom(subBottom).Left(0).Children(func() {
 									ui.Text(c, snap.ActiveSubtitle).
 										FontSize(15).
 										Bold().
@@ -312,6 +316,56 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 									}
 								})
 							})
+						}
+
+						if len(a.PlayerOverlay.Chapters) > 0 {
+							ui.Row(c).
+								Label("播放器章节栏").
+								Absolute().
+								Bottom(78).
+								Left(24).
+								Right(24).
+								AlignItems(ui.Center).
+								Gap(6).
+								ClipX().
+								Children(func() {
+									for i, ch := range a.PlayerOverlay.Chapters {
+										chapter := ch
+										active := snap.PositionSec >= float64(chapter.FromSec) && snap.PositionSec < float64(chapter.ToSec)
+										bg := ui.RGBA(20, 24, 30, 0.76)
+										border := ui.RGBA(255, 255, 255, 0.18)
+										if active {
+											bg = ColorAccent
+											border = ColorAccent
+										}
+										btn := ui.ButtonBase(c).
+											Label(fmt.Sprintf("章节跳转：%d", i+1)).
+											Shrink(0).
+											Padding(5, 10).
+											Radius(999).
+											Background(bg).
+											Border(1, border).
+											Disabled(!ready)
+										btn.Children(func() {
+											ui.Text(c, fmt.Sprintf("%s %s", FormatDuration(chapter.FromSec), chapter.Title)).
+												FontSize(12).
+												FontWeight(600).
+												TextColor(ColorWhite).
+												SingleLine()
+										})
+										if btn.Clicked() && ready {
+											a.wakePlayerControls(now)
+											target := float64(chapter.FromSec)
+											if snap.DurationSec > 0 && target > snap.DurationSec {
+												target = snap.DurationSec
+											}
+											_ = a.player.Seek(target)
+											if snap.DurationSec > 0 {
+												a.PlayerOverlay.SeekNormalized = target / snap.DurationSec
+											}
+										}
+									}
+								})
 						}
 
 						// Bottom floating transport bar: Play/Pause, Seek bar, Volume, Fullscreen

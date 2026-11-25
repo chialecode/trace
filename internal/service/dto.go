@@ -24,6 +24,14 @@ type RenewalStatus struct {
 	LastError     string `json:"lastError,omitempty"`
 }
 
+// UserVideosPageOptions specifies sorting, keyword search, and partition filtering
+// for Bilibili creator uploads (/x/space/wbi/arc/search).
+type UserVideosPageOptions struct {
+	Order   string `json:"order,omitempty"`   // "pubdate" (latest), "click" (most played), "stow" (most favorited)
+	Keyword string `json:"keyword,omitempty"` // keyword filter submitted explicitly by user
+	TID     int    `json:"tid,omitempty"`     // partition id; 0 = all partitions
+}
+
 // DouyinAuthorDTO holds normalized Douyin creator summary fields for UI rendering
 // without requiring internal/ui to import internal/site/douyin.
 type DouyinAuthorDTO struct {

@@ -393,6 +393,9 @@ func (b *Backend) executeConflictResolution(ctx context.Context, rec cacheConfli
 			if err != nil {
 				return wrapDegradedIfRemoteInvalid(err)
 			}
+			if vd.IsUpowerLocked() {
+				return wrapDegradedIfRemoteInvalid(bilibili.NewUpowerLockedError("/x/web-interface/wbi/view"))
+			}
 			if len(vd.Pages) == 0 {
 				return fmt.Errorf("%w：源站视频已无可用分P", ErrRemoteDegradedRefused)
 			}
@@ -428,7 +431,7 @@ func (b *Backend) executeConflictResolution(ctx context.Context, rec cacheConfli
 		if err != nil {
 			return wrapDegradedIfRemoteInvalid(err)
 		}
-		if dyn.Degraded {
+		if dyn.Degraded || dyn.Blocked {
 			return fmt.Errorf("%w：源站动态已不可用或受限", ErrRemoteDegradedRefused)
 		}
 		if hasLocal && hasSnapshotMedia(localMeta, "orig.json") && dyn.Origin == nil {

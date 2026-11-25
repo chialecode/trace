@@ -134,7 +134,7 @@ X（DEC-066）的作者目录用稳定的纯数字 `rest_id`（不随 `@handle` 
 - `video`：清晰度代码与名称、编码（`codecid`、`codecs`）、宽高、帧率；
 - `audio`：音质代码（30251/30250/30280…）与名称，另存的高音质音轨（如有）；
 - `available`：缓存当时站点列出的档位快照（`accept_quality`、`support_formats` 的 `quality`/`need_vip`、返回流里的最高档、是否有杜比/无损音频）与探测时间；
-- `danmaku`：弹幕文件、条数、取得时间（没开设置时记 `skipped`）；`subtitles`：每种语言的 `lan`、`lan_doc`、是否 AI、VTT 与 SRT 文件。
+- `danmaku`：弹幕文件、条数、取得时间（没开设置时记 `skipped`）；`subtitles`：每种语言的 `lan`、`lan_doc`、是否 AI、VTT 与 SRT 文件；`chapters`（可选，`json:"chapters,omitempty"`，结构 `{fromSec, toSec, title}`，复用 `player/wbi/v2` 的 `view_points` 零额外请求写入，旧清单无此字段完全兼容，`item.json` 保持 `version: 1` 不升结构版本）。
 
 可选的 `via`（DEC-056，见 2.1）说明条目为谁缓存、存在谁的文件夹：`reason`（`forward` 或 `collab`）、`site`、`uid`、`name`，转发另记 `dynamicId`；`author` 仍是原作者或投稿人。另向后兼容地支持可选字段 `links`（`[]library.ItemLink{label, url}`，按正文出现顺序记录可读超链接标签与安全 `http(s)://` 跳转地址，DEC-073）、`origin`（`*library.ItemOrigin`：原博 `site`、`id`、`mblogId`、`canonicalUrl`、`author`、`pubTs`、`title`、`text`、`links`、`card`、`unavailable`、`unavailableReason`、`videoFromOrigin`）、`card`（`*library.ItemRichCard`：`kind`、`label`、`title`、`desc`、`url`）以及 `notePages[].fromOrigin` / `media[].fromOrigin`（区分外层与原博媒体；`item.json` 保持 v1、`library.db` 保持 v2 不升结构版本）；`SanitizeItemMetadata` 自动清洗 `links`、`origin`、`thread[].links` 与 `card` 中的非 `http(s)` 协议、用户凭证、签名参数、Cookie 令牌及媒体 CDN 地址（`weibocdn.com`、`sinaimg.cn`、`video.weibo.com`、`pbs.twimg.com`、`video.twimg.com` 等）同时保留公开跳转地址与正文，`MergeItemMetadata` 与导入导出 `PortableManifest` 完整保留并合并这些字段。旧清单没有这些字段时照常读取，结构版本不变。媒体库把 `via.reason = forward` 或动态类型为 `DYNAMIC_TYPE_FORWARD` 的条目算作“转发”（`FeedFilter.Kind = "forward"`），“图片”“视频”用 `ExcludeForward` 只列作者自己的内容；按作者筛选时也匹配 `via.uid`，`library.db` 为此建表达式索引 `idx_library_items_via (site, json_extract(json_data, '$.via.uid'))`。
 
@@ -156,6 +156,7 @@ X（DEC-066）的作者目录用稳定的纯数字 `rest_id`（不随 `@handle` 
 | 转发 | 转发正文 + 原动态快照，原动态的图片和视频按上两行保存，都存在转发者的 `forwards/`（DEC-056）；同一图片或视频在转发与原动态里重复出现时只存一份 |
 | 专栏 | 标题、摘要、封面与摘要里的图；全文待实现（FR-FEED-002），记为部分缓存 |
 | 直播、番剧、课程、音乐、商品等 | 正文与封面，记为部分缓存并写明类型不支持 |
+| 充电专属视频（`upower`）与专属动态（`onlyfans`） | 视频未解锁（`is_upower_exclusive && !is_upower_play`）在调用 `playurl` 前拦截为 `forbidden`（0 次 `playurl` 请求），自动缓存记 `"forbidden"`、慢速缓存队列清晰跳过不重试；已解锁（`is_upower_play`）正常按最高画质与无损音质缓存。未解锁专属动态（`MAJOR_TYPE_BLOCKED`）保留外层展示原因、不入队缓存 |
 
 抖音作品（FR-DY-005、FR-DY-006）：
 
@@ -267,7 +268,7 @@ X 内容（FR-X-005、FR-X-006，[X 协议 §5～§6、§15.1](../research/x.md#
 
 - 每个分 P 合并校验通过后执行；设置 `danmaku`、`subtitles`、`aiSubtitles` 分别控制，关闭时清单记 `skipped`，不算缺失。
 - **弹幕**：按分 P 时长请求 `ceil(时长 / 360 秒)` 个分段（[协议资料 §18](../research/bilibili.md#danmaku)），走 API 的 500 毫秒间隔；protobuf 用 `google.golang.org/protobuf/encoding/protowire` 手工解码，未知字段跳过；合并全部分段、按 `idStr` 去重、按出现时间排序，写成通用 XML（原子写，先 `.part` 再改名）。某一段失败：整份弹幕记为缺失（不写不完整的文件），原因按错误分类；风控、未登录按 2.4 的规则暂停任务。
-- **字幕**：`player/wbi/v2` 取字幕列表（校验 `bvid`/`cid`），跳过空地址；AI 字幕只在 `aiSubtitles` 开启时保存；逐个下载字幕 JSON（`*.hdslb.com`，上限 5 MiB，地址含 `auth_key` 只在内存）转成 `P<nn>.<lan>.vtt` 与 `.srt`。没有字幕不算缺失；某个语言下载或解析失败时这一项记为缺失。
+- **字幕与章节看点**：`player/wbi/v2` 取字幕列表（校验 `bvid`/`cid`），跳过空地址；AI 字幕只在 `aiSubtitles` 开启时保存；逐个下载字幕 JSON（`*.hdslb.com`，上限 5 MiB，地址含 `auth_key` 只在内存）转成 `P<nn>.<lan>.vtt` 与 `.srt`。同时从本次 `player/wbi/v2` 响应的 `data.view_points` 零额外请求解析视频章节看点（过滤无效项、去重并按 `from` 升序排列），写入该分 P 清单的 `chapters` 可选字段（同 `cid` 升级时单调保留）。没有字幕或章节不算缺失；某个语言下载或解析失败时这一项记为缺失。
 - 弹幕和字幕文件登记在清单的媒体列表（角色 `danmaku`、`subtitle`），通过 `Library.MediaPath` 白名单按登记提供；删除时与其他登记文件一起删。
 - 缺失项让条目变黄（“补全”只补缺的弹幕或字幕，不重下视频）。在本功能之前缓存的视频，清单里没有 `danmaku`/`subtitles` 字段，按“未保存”处理：圆点不变，详情页显示“补存弹幕和字幕”，点击后建一个只取弹幕与字幕的任务。
 - 弹幕是缓存那一刻的快照，之后不自动更新。

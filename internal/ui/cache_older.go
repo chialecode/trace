@@ -142,9 +142,17 @@ func (a *App) enqueueCacheAll(siteID string) {
 		req.AvatarURL = a.CurrentUser.Face
 		if a.UserTab == "videos" {
 			req.List = "videos"
-			req.Videos = append(req.Videos, a.UserVideos...)
-			req.Cursor = strconv.Itoa(max(a.UserVideosPage, 0) + 1)
-			req.HasMore = a.UserVideosHasMore || len(a.UserVideos) == 0
+			filteredVideos := strings.TrimSpace(a.UserVideosAppliedKeyword) != "" ||
+				a.UserVideosTID > 0 ||
+				(a.UserVideosOrder != "" && a.UserVideosOrder != "pubdate")
+			if filteredVideos {
+				req.Cursor = "1"
+				req.HasMore = true
+			} else {
+				req.Videos = append(req.Videos, a.UserVideos...)
+				req.Cursor = strconv.Itoa(max(a.UserVideosPage, 0) + 1)
+				req.HasMore = a.UserVideosHasMore || len(a.UserVideos) == 0
+			}
 		} else {
 			req.List = "dynamics"
 			req.Dynamics = append(req.Dynamics, a.UserDynamics...)
