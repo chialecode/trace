@@ -1022,6 +1022,13 @@ func sanitizeItemRichCard(card *ItemRichCard) {
 
 const maxItemLinksPerManifest = 64
 
+// SanitizeItemLinks filters and normalizes external hyperlinks to safe HTTP(S)
+// destinations, rejecting non-HTTP(S) schemes, userinfo, control characters,
+// signed query markers, and forbidden media CDN hosts.
+func SanitizeItemLinks(links []ItemLink) []ItemLink {
+	return sanitizeItemLinks(links)
+}
+
 func sanitizeItemLinks(links []ItemLink) []ItemLink {
 	if len(links) == 0 {
 		return nil

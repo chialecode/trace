@@ -140,8 +140,11 @@ type CacheConflictDiffDTO struct {
 	TextChanged  bool                   `json:"textChanged"`
 	LocalText    []ConflictTextSegment  `json:"localText,omitempty"`
 	RemoteText   []ConflictTextSegment  `json:"remoteText,omitempty"`
+	LocalLinks   []TextLinkDTO          `json:"localLinks,omitempty"`
+	RemoteLinks  []TextLinkDTO          `json:"remoteLinks,omitempty"`
 	MediaPairs   []ConflictMediaPairDTO `json:"mediaPairs,omitempty"`
 	RemoteError  string                 `json:"remoteError,omitempty"`
+	AutoResolved bool                   `json:"autoResolved,omitempty"`
 }
 
 // ConflictService manages V1-vs-V2 cache conflicts on desktop installations.

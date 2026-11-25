@@ -263,6 +263,7 @@ func (b *Backend) InspectCacheConflictDiff(ctx context.Context, id string) (Cach
 	localTitle, localText := extractLocalDiffText(localMeta)
 	out.Local.Title = localTitle
 	out.Local.Text = localText
+	out.LocalLinks = extractLocalDiffLinks(localMeta, localText)
 	localMedia := extractLocalDiffMedia(localMeta)
 
 	siteID, sErr := normalizeExplicitSiteID(rec.Site)
@@ -315,8 +316,73 @@ func (b *Backend) InspectCacheConflictDiff(ctx context.Context, id string) (Cach
 	}
 
 	out.MediaPairs = alignConflictMediaPairs(localMedia, remoteMedia)
+	out.RemoteLinks = sanitizeConflictDiffLinks(out.RemoteLinks)
 	populateTextDiffs(&out, true)
+
+	// Auto-resolve pre-DEC-073 legacy inline-URL false-positive text conflicts during live review.
+	if rec.State == ConflictStatePending &&
+		rec.ReasonKind == ConflictReasonText &&
+		!out.Remote.Unavailable &&
+		out.RemoteError == "" &&
+		!out.TitleChanged &&
+		!out.TextChanged &&
+		allConflictMediaPairsSame(out.MediaPairs) {
+		if savedMeta, resolved := b.reconcileLiveLegacyTextConflict(rec.ItemKey, out.RemoteLinks); resolved {
+			newTitle, newText := extractLocalDiffText(savedMeta)
+			out.Local.Title = newTitle
+			out.Local.Text = newText
+			out.LocalLinks = extractLocalDiffLinks(savedMeta, newText)
+			populateTextDiffs(&out, true)
+			out.AutoResolved = true
+		}
+	}
 	return out, nil
+}
+
+func allConflictMediaPairsSame(pairs []ConflictMediaPairDTO) bool {
+	for _, p := range pairs {
+		if p.Status != ConflictDiffStatusSame {
+			return false
+		}
+	}
+	return true
+}
+
+func extractLocalDiffLinks(meta library.ItemMetadata, bodyText string) []TextLinkDTO {
+	var combined []TextLinkDTO
+	combined = append(combined, MapItemLinksToDTO(meta.Links)...)
+	for _, th := range meta.Thread {
+		combined = append(combined, MapItemLinksToDTO(th.Links)...)
+	}
+	seenURL := make(map[string]bool, len(combined))
+	for _, l := range combined {
+		if u := strings.TrimSpace(l.URL); u != "" {
+			seenURL[u] = true
+		}
+	}
+	for _, fallback := range extractSafeLinksFromDiffText(bodyText, meta.Site) {
+		if !seenURL[fallback.URL] {
+			seenURL[fallback.URL] = true
+			combined = append(combined, fallback)
+		}
+	}
+	return sanitizeConflictDiffLinks(combined)
+}
+
+func mergeDiffLinksWithTextFallback(structured []TextLinkDTO, bodyText, siteID string) []TextLinkDTO {
+	out := make([]TextLinkDTO, 0, len(structured))
+	seenURL := make(map[string]bool, len(structured))
+	for _, l := range sanitizeConflictDiffLinks(structured) {
+		out = append(out, l)
+		seenURL[l.URL] = true
+	}
+	for _, fallback := range extractSafeLinksFromDiffText(bodyText, siteID) {
+		if !seenURL[fallback.URL] {
+			seenURL[fallback.URL] = true
+			out = append(out, fallback)
+		}
+	}
+	return sanitizeConflictDiffLinks(out)
 }
 
 func populateTextDiffs(out *CacheConflictDiffDTO, hasRemote bool) {
@@ -614,6 +680,7 @@ func (b *Backend) inspectBilibiliVideoDiff(ctx context.Context, rec cacheConflic
 	}
 	out.Remote.Title = strings.TrimSpace(vd.Title)
 	out.Remote.Text = strings.TrimSpace(vd.Desc)
+	out.RemoteLinks = extractSafeLinksFromDiffText(out.Remote.Text, "bilibili")
 	if len(vd.Pages) == 0 {
 		out.Remote.Unavailable = true
 		out.Remote.Note = "源站视频已无可用分P"
@@ -667,6 +734,7 @@ func (b *Backend) inspectBilibiliDynamicDiff(ctx context.Context, rec cacheConfl
 	}
 	out.Remote.Title = strings.TrimSpace(dyn.Title)
 	out.Remote.Text = strings.TrimSpace(dyn.Text)
+	out.RemoteLinks = extractSafeLinksFromDiffText(out.Remote.Text, "bilibili")
 	if dyn.Degraded {
 		out.Remote.Unavailable = true
 		out.Remote.Note = "源站动态当前不可用或已失效"
@@ -737,6 +805,7 @@ func (b *Backend) inspectDouyinDiff(ctx context.Context, rec cacheConflictRecord
 	}
 	out.Remote.Title = strings.TrimSpace(detail.Title)
 	out.Remote.Text = strings.TrimSpace(detail.Desc)
+	out.RemoteLinks = extractSafeLinksFromDiffText(out.Remote.Text, "douyin")
 
 	return extractDouyinRemoteDiffMedia(detail), nil
 }
@@ -849,6 +918,7 @@ func (b *Backend) inspectWeiboDiff(ctx context.Context, rec cacheConflictRecord,
 		}
 		if vr.HostPost != nil {
 			out.Remote.Text = strings.TrimSpace(vr.HostPost.Text)
+			out.RemoteLinks = mergeDiffLinksWithTextFallback(MapSiteTextLinks(vr.HostPost.Links), out.Remote.Text, "weibo")
 		}
 		if vr.Video != nil {
 			out.Remote.Title = strings.TrimSpace(vr.Video.Title)
@@ -894,6 +964,7 @@ func (b *Backend) inspectWeiboDiff(ctx context.Context, rec cacheConflictRecord,
 		return nil, nil
 	}
 	out.Remote.Text = strings.TrimSpace(post.Text)
+	out.RemoteLinks = mergeDiffLinksWithTextFallback(MapSiteTextLinks(post.Links), out.Remote.Text, "weibo")
 	return extractWeiboPostRemoteDiffMedia(post), nil
 }
 
@@ -986,7 +1057,36 @@ func (b *Backend) inspectXDiff(ctx context.Context, rec cacheConflictRecord, out
 	}
 	text, media := extractXRemoteDiffTextAndMedia(post)
 	out.Remote.Text = text
+	out.RemoteLinks = extractXRemoteDiffLinks(post, text)
 	return media, nil
+}
+
+func extractXRemoteDiffLinks(post *x.Post, fullText string) []TextLinkDTO {
+	if post == nil {
+		return nil
+	}
+	var structured []TextLinkDTO
+	seenIDs := make(map[string]bool, len(post.ThreadAncestors)+1+len(post.Thread))
+	collect := func(p *x.Post) {
+		if p == nil {
+			return
+		}
+		if id := strings.TrimSpace(p.ID); id != "" {
+			if seenIDs[id] {
+				return
+			}
+			seenIDs[id] = true
+		}
+		structured = append(structured, MapSiteTextLinks(x.BuildPostLinks(p))...)
+	}
+	for i := range post.ThreadAncestors {
+		collect(&post.ThreadAncestors[i])
+	}
+	collect(post)
+	for i := range post.Thread {
+		collect(&post.Thread[i])
+	}
+	return mergeDiffLinksWithTextFallback(structured, fullText, "x")
 }
 
 func extractXRemoteDiffTextAndMedia(post *x.Post) (string, []ConflictMediaSideDTO) {
