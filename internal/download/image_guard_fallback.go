@@ -237,14 +237,14 @@ func preserveValidPreviousImages(
 	coveredStems := make(map[string]bool, len(mediaFiles))
 	for _, mf := range mediaFiles {
 		coveredPaths[mf.Path] = true
-		if mf.Role == "image" || mf.Role == "cover" {
+		if mf.Role == "image" || mf.Role == "cover" || mf.Role == "image_nowm" {
 			coveredStems[mf.Role+":"+trimKnownImageExt(mf.Path)] = true
 		}
 	}
 
 	var keptImagePaths map[string]bool
 	for _, old := range previous.Media {
-		if old.Role != "image" && old.Role != "cover" {
+		if old.Role != "image" && old.Role != "cover" && old.Role != "image_nowm" {
 			continue
 		}
 		stemKey := old.Role + ":" + trimKnownImageExt(old.Path)
@@ -335,6 +335,9 @@ func preserveValidPreviousImagesForStage(
 			filteredPages := notePages[:0]
 			for _, pg := range notePages {
 				if pg.Image == "" || keptPaths[pg.Image] {
+					if pg.NoWatermark != "" && !keptPaths[pg.NoWatermark] {
+						pg.NoWatermark = ""
+					}
 					filteredPages = append(filteredPages, pg)
 				}
 			}

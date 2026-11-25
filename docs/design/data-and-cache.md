@@ -105,7 +105,7 @@
 
 ```text
 <保存位置>/weibo/<uid>/posts/<mid>/item.json、cover.<扩展名>、video.mp4（视频微博或独立视频页）
-<保存位置>/weibo/<uid>/posts/<mid>/item.json、images/01.<扩展名>…、images/01_live.mp4…、images/02.mp4…（图文、GIF、实况、混排）
+<保存位置>/weibo/<uid>/posts/<mid>/item.json、images/01.<扩展名>…、images/01_nowm.<扩展名>…、images/01_live.mp4…、images/02.mp4…（图文、GIF、实况、混排；`NN_nowm` 为可选无水印最大版伴侣图，DEC-078）
 <保存位置>/weibo/<uid>/forwards/<mid>/item.json…（这位博主转发或快转的微博，结构同 posts/，记 via）
 ```
 
@@ -136,7 +136,7 @@ X（DEC-066）的作者目录用稳定的纯数字 `rest_id`（不随 `@handle` 
 - `available`：缓存当时站点列出的档位快照（`accept_quality`、`support_formats` 的 `quality`/`need_vip`、返回流里的最高档、是否有杜比/无损音频）与探测时间；
 - `danmaku`：弹幕文件、条数、取得时间（没开设置时记 `skipped`）；`subtitles`：每种语言的 `lan`、`lan_doc`、是否 AI、VTT 与 SRT 文件；`chapters`（可选，`json:"chapters,omitempty"`，结构 `{fromSec, toSec, title}`，复用 `player/wbi/v2` 的 `view_points` 零额外请求写入，旧清单无此字段完全兼容，`item.json` 保持 `version: 1` 不升结构版本）。
 
-可选的 `via`（DEC-056，见 2.1）说明条目为谁缓存、存在谁的文件夹：`reason`（`forward` 或 `collab`）、`site`、`uid`、`name`，转发另记 `dynamicId`；`author` 仍是原作者或投稿人。另向后兼容地支持可选字段 `links`（`[]library.ItemLink{label, url}`，按正文出现顺序记录可读超链接标签与安全 `http(s)://` 跳转地址，DEC-073）、`origin`（`*library.ItemOrigin`：原博 `site`、`id`、`mblogId`、`canonicalUrl`、`author`、`pubTs`、`title`、`text`、`links`、`card`、`unavailable`、`unavailableReason`、`videoFromOrigin`）、`card`（`*library.ItemRichCard`：`kind`、`label`、`title`、`desc`、`url`）以及 `notePages[].fromOrigin` / `media[].fromOrigin`（区分外层与原博媒体；`item.json` 保持 v1、`library.db` 保持 v2 不升结构版本）；`SanitizeItemMetadata` 自动清洗 `links`、`origin`、`thread[].links` 与 `card` 中的非 `http(s)` 协议、用户凭证、签名参数、Cookie 令牌及媒体 CDN 地址（`weibocdn.com`、`sinaimg.cn`、`video.weibo.com`、`pbs.twimg.com`、`video.twimg.com` 等）同时保留公开跳转地址与正文，`MergeItemMetadata` 与导入导出 `PortableManifest` 完整保留并合并这些字段。旧清单没有这些字段时照常读取，结构版本不变。媒体库把 `via.reason = forward` 或动态类型为 `DYNAMIC_TYPE_FORWARD` 的条目算作“转发”（`FeedFilter.Kind = "forward"`），“图片”“视频”用 `ExcludeForward` 只列作者自己的内容；按作者筛选时也匹配 `via.uid`，`library.db` 为此建表达式索引 `idx_library_items_via (site, json_extract(json_data, '$.via.uid'))`。
+可选的 `via`（DEC-056，见 2.1）说明条目为谁缓存、存在谁的文件夹：`reason`（`forward` 或 `collab`）、`site`、`uid`、`name`，转发另记 `dynamicId`；`author` 仍是原作者或投稿人。另向后兼容地支持可选字段 `links`（`[]library.ItemLink{label, url}`，按正文出现顺序记录可读超链接标签与安全 `http(s)://` 跳转地址，DEC-073）、`origin`（`*library.ItemOrigin`：原博 `site`、`id`、`mblogId`、`canonicalUrl`、`author`、`pubTs`、`title`、`text`、`links`、`card`、`unavailable`、`unavailableReason`、`videoFromOrigin`）、`card`（`*library.ItemRichCard`：`kind`、`label`、`title`、`desc`、`url`）以及 `notePages[].fromOrigin` / `notePages[].noWatermark` / `media[].fromOrigin`（区分外层与原博媒体及微博无水印伴侣图 `role: "image_nowm"`，`item.json` 保持 v1、`library.db` 保持 v2 不升结构版本）；`SanitizeItemMetadata` 自动清洗 `links`、`origin`、`thread[].links` 与 `card` 中的非 `http(s)` 协议、用户凭证、签名参数、Cookie 令牌及媒体 CDN 地址（`weibocdn.com`、`sinaimg.cn`、`video.weibo.com`、`pbs.twimg.com`、`video.twimg.com` 等）同时保留公开跳转地址与正文，`MergeItemMetadata` 与导入导出 `PortableManifest` 完整保留并合并这些字段。旧清单没有这些字段时照常读取，结构版本不变。媒体库把 `via.reason = forward` 或动态类型为 `DYNAMIC_TYPE_FORWARD` 的条目算作“转发”（`FeedFilter.Kind = "forward"`），“图片”“视频”用 `ExcludeForward` 只列作者自己的内容；按作者筛选时也匹配 `via.uid`，`library.db` 为此建表达式索引 `idx_library_items_via (site, json_extract(json_data, '$.via.uid'))`。
 
 可选的 `cachedBy`（DEC-062）记缓存这一条的安装：`node`（`<数据目录>/node.json` 里随机生成的节点 ID）与 `name`；旧条目没有这个字段时照常读取，结构版本不变。导入与合并时保留本地的 `cachedBy`。导出、上传到网盘的副本去掉 `itemDir`、`itemKey`、`rawId`、`totalBytes`，导入后由 `SaveItem` 按内容重新算出（[远程 §6.1](remote.md#export-format)）。
 
@@ -171,7 +171,7 @@ X（DEC-066）的作者目录用稳定的纯数字 `rest_id`（不随 `@handle` 
 | 微博类型 | 保存 |
 | --- | --- |
 | 视频微博 / 独立视频页（`1034:`） | 正文与发布信息、封面 `cover.<扩展名>`、一个单文件 MP4 `video.mp4`（第 2.5 节选流，第 2.6 节校验并保证 `moov` 前置）；有宿主微博的独立视频页归一为 `weibo:dynamic:<mid>` |
-| 图文、长微博、超过 9 图、GIF、实况、混排 | 完整正文（长微博全文）与按 `pic_ids` / `mix_media_info` 原顺序的每一项：原图 `images/NN.<按文件头定的扩展名>`（GIF 原样存 `.gif`）、实况照片静帧与伴侣片段 `images/NN_live.mp4`（角色 `motion`，静帧 `motion` 指向它；QuickTime `.mov` 经 `mp4ff` 无损改封装为 ISO BMFF `.mp4`）、混排视频 `images/NN.mp4`（角色 `video`）与封面；单个附件缺失记黄点，不让整条失败 |
+| 图文、长微博、超过 9 图、GIF、实况、混排 | 完整正文（长微博全文）与按 `pic_ids` / `mix_media_info` 原顺序的每一项：主图 `images/NN.<按文件头定的扩展名>`（`role: "image"`，恒存官方最高清原图，GIF 原样存 `.gif`）；开启“微博同时保存无水印版”时对非 GIF 静态图与实况静帧额外保存 `/oslarge/` 伴侣图 `images/NN_nowm.<扩展名>`（`role: "image_nowm"`，`notePages[].noWatermark` 指向它，同 SHA-256 去重、`/oslarge/` 失效静默跳过不记缺失，旧条目重缓存复用主图并补齐伴侣图；媒体库与信息流不重复展示为第二张图，删除/归档/合并/刷新一并同步，[DEC-078](../decisions.md#dec-078)）；实况照片伴侣片段 `images/NN_live.mp4`（角色 `motion`，静帧 `motion` 指向它；QuickTime `.mov` 经 `mp4ff` 无损改封装为 ISO BMFF `.mp4`）、混排视频 `images/NN.mp4`（角色 `video`）与封面；单个主附件缺失记黄点，不让整条失败 |
 | 纯文字 | 完整正文（含长微博全文） |
 | 转发 / 快转 | 转发正文 + 原微博快照与媒体，统一存在转发者的 `weibo/<转发者 uid>/forwards/<mid>/` 并记 `via`（DEC-056）；原微博已删除或不可见时完整保留转发正文并说明原因 |
 | 头条文章、投票、音乐、外链、直播卡片 | 正文与卡片摘要（不把外链或直播卡片当成视频下载），可在浏览器中打开 |

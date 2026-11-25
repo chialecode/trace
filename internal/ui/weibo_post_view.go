@@ -354,7 +354,7 @@ func weiboMediaToNotePagesScoped(items []service.WeiboMediaItemDTO, cached *libr
 			recs = origRecs
 		}
 		if len(recs) > 0 {
-			scopedItem := library.ItemMetadata{NotePages: recs}
+			scopedItem := library.ItemMetadata{NotePages: recs, Media: cached.Media}
 			pages := buildDouyinNoteRenderPages(nil, &scopedItem)
 			for i := range pages {
 				if isWeiboGIFURL(pages[i].ImageRel) {
@@ -423,6 +423,9 @@ func weiboMediaToNotePagesScoped(items []service.WeiboMediaItemDTO, cached *libr
 		if len(chosen) > 0 {
 			pages := buildDouyinNoteRenderPages(nil, &library.ItemMetadata{Media: chosen})
 			for i := range pages {
+				if pages[i].NoWatermarkRel == "" {
+					pages[i].NoWatermarkRel = findCompanionNoWatermarkRel(cached, pages[i].ImageRel)
+				}
 				if isWeiboGIFURL(pages[i].ImageRel) {
 					pages[i].IsGIF = true
 				}

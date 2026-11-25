@@ -28,7 +28,7 @@ func rejectDisguisedMediaContentType(siteID site.ID, rawCT, role string, statusC
 			Message:    fmt.Sprintf("媒体请求返回了非媒体类型 (%s)", mediaType),
 		}
 	}
-	if (role == "image" || role == "cover") && mediaType != "" &&
+	if (role == "image" || role == "cover" || role == "image_nowm") && mediaType != "" &&
 		!strings.HasPrefix(mediaType, "image/") && mediaType != "application/octet-stream" {
 		return &site.Error{
 			Site:       siteID,

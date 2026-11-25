@@ -215,6 +215,9 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 		if dst.Image == "" {
 			dst.Image = src.Image
 		}
+		if dst.NoWatermark == "" {
+			dst.NoWatermark = src.NoWatermark
+		}
 		if dst.Cover == "" {
 			dst.Cover = src.Cover
 		}
@@ -620,6 +623,9 @@ func KeepListedFiles(meta ItemMetadata, keep func(rel string) bool) (ItemMetadat
 		np := &meta.NotePages[i]
 		if !ok(np.Image) {
 			np.Image = ""
+		}
+		if !ok(np.NoWatermark) {
+			np.NoWatermark = ""
 		}
 		if !ok(np.Cover) {
 			np.Cover = ""

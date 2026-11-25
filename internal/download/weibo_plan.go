@@ -1093,14 +1093,25 @@ func (m *Manager) executeWeiboPostTask(
 			}
 			imgMedia.FromOrigin = page.FromOrigin
 			mediaFiles = append(mediaFiles, *imgMedia)
+			var noWMPath string
+			nowmMedia, nowmErr := m.cacheWeiboWatermarkFreeCompanion(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, hasProtectedLocal, isConflict, canReuseLocal, reusableLP, pageIdx, page, imgMedia, plan.Transport)
+			if nowmErr != nil {
+				return nowmErr
+			}
+			if nowmMedia != nil {
+				nowmMedia.FromOrigin = page.FromOrigin
+				noWMPath = nowmMedia.Path
+				mediaFiles = append(mediaFiles, *nowmMedia)
+			}
 			notePages = append(notePages, library.NotePageRecord{
-				Index:      pageIdx,
-				Kind:       "image",
-				MediaID:    cleanPageMediaID,
-				FromOrigin: page.FromOrigin,
-				Image:      imgMedia.Path,
-				Width:      page.Width,
-				Height:     page.Height,
+				Index:       pageIdx,
+				Kind:        "image",
+				MediaID:     cleanPageMediaID,
+				FromOrigin:  page.FromOrigin,
+				Image:       imgMedia.Path,
+				NoWatermark: noWMPath,
+				Width:       page.Width,
+				Height:      page.Height,
 			})
 
 		case "live_photo", "motion":
@@ -1169,6 +1180,15 @@ func (m *Manager) executeWeiboPostTask(
 			}
 			if imgMedia != nil {
 				rec.Image = imgMedia.Path
+				nowmMedia, nowmErr := m.cacheWeiboWatermarkFreeCompanion(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, hasProtectedLocal, isConflict, canReuseLocal, reusableLP, pageIdx, page, imgMedia, plan.Transport)
+				if nowmErr != nil {
+					return nowmErr
+				}
+				if nowmMedia != nil {
+					nowmMedia.FromOrigin = page.FromOrigin
+					rec.NoWatermark = nowmMedia.Path
+					mediaFiles = append(mediaFiles, *nowmMedia)
+				}
 			}
 			if mErr != nil {
 				if isSiteStopError(mErr) || isStorageError(mErr) || ctx.Err() != nil {
@@ -1688,32 +1708,222 @@ func isWeiboOSLargeURL(rawURL string) bool {
 }
 
 // validateWeiboOSLargeImageFile enforces strict binary magic-byte and image-header validation
-// on /oslarge/ responses so corrupt or fake-image payloads immediately fall back to the original
-// largest/original URL instead of being saved as broken files.
+// on /oslarge/ responses so corrupt or fake-image payloads are rejected instead of being saved
+// as broken files.
 func validateWeiboOSLargeImageFile(filePath, ext string) error {
+	_, _, err := validateWeiboOSLargeImageFileWithSize(filePath, ext)
+	return err
+}
+
+func validateWeiboOSLargeImageFileWithSize(filePath, ext string) (int, int, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	defer f.Close()
 	var head [64]byte
 	n, _ := f.Read(head[:])
 	magicExt, ok := site.SniffImageMagicBytes(head[:n])
 	if !ok {
-		return site.ErrUnsupportedImageHeader
+		return 0, 0, site.ErrUnsupportedImageHeader
 	}
 	if magicExt == ".avif" || magicExt == ".heic" {
-		return nil
+		return 0, 0, nil
 	}
 	if _, err := f.Seek(0, 0); err != nil {
-		return err
+		return 0, 0, err
 	}
 	cfg, _, err := image.DecodeConfig(f)
 	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
-		return errors.New("去水印原图头部损坏或无法解码")
+		return 0, 0, errors.New("去水印伴侣图头部损坏或无法解码")
 	}
 	_ = ext
-	return nil
+	return cfg.Width, cfg.Height, nil
+}
+
+// cacheWeiboWatermarkFreeCompanion saves the optional /oslarge/ watermark-free companion image
+// (images/NN_nowm.<ext>, role "image_nowm") alongside the official original primary image (DEC-078).
+// Reuse of verified local companions, SHA-256 deduplication against the primary image, and silent
+// skip on non-fatal /oslarge/ errors ensure primary caching is never degraded or turned yellow.
+func (m *Manager) cacheWeiboWatermarkFreeCompanion(
+	ctx context.Context,
+	workTask *Task,
+	workDir string,
+	previous library.ItemMetadata,
+	inPlaceExists bool,
+	hasProtectedLocal bool,
+	isConflict bool,
+	canReuseLocal bool,
+	reusableLP library.NotePageRecord,
+	pageIdx int,
+	page PlannedNotePage,
+	primaryMedia *library.MediaFile,
+	transport site.MediaTransportSpec,
+) (*library.MediaFile, error) {
+	if primaryMedia == nil {
+		return nil, nil
+	}
+	nowmStem := fmt.Sprintf("images/%02d_nowm", pageIdx)
+	findPrevNoWMRel := func() string {
+		if strings.TrimSpace(reusableLP.NoWatermark) != "" && mediaIsValid(previous, reusableLP.NoWatermark) {
+			return reusableLP.NoWatermark
+		}
+		for _, mf := range previous.Media {
+			if mf.Role == "image_nowm" && strings.HasPrefix(mf.Path, nowmStem+".") && mediaIsValid(previous, mf.Path) {
+				return mf.Path
+			}
+		}
+		return ""
+	}
+	tryCopyPrevNoWM := func() *library.MediaFile {
+		srcRel := findPrevNoWMRel()
+		if srcRel == "" {
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(srcRel), ".gif") {
+			if full, rErr := library.ResolveItemPath(previous.ItemDir, srcRel); rErr == nil {
+				if looksLikeWeiboPlaceholderGIF(full, page.WatermarkFreeURL, 0, 0) {
+					return nil
+				}
+			}
+		}
+		copied, err := copyLocalMediaToStageAs(previous, srcRel, nowmStem, "image_nowm", workDir)
+		if err != nil || copied == nil {
+			return nil
+		}
+		if primaryMedia.SHA256 != "" && strings.EqualFold(copied.SHA256, primaryMedia.SHA256) {
+			if stFull, sErr := stagedFullPath(workDir, copied.Path); sErr == nil {
+				_ = os.Remove(stFull)
+			}
+			return nil
+		}
+		copied.FromOrigin = page.FromOrigin
+		return copied
+	}
+
+	inSwapStage := isSwapStageDir(workDir)
+	if hasProtectedLocal && !isConflict && canReuseLocal {
+		if reused := tryCopyPrevNoWM(); reused != nil {
+			return reused, nil
+		}
+	} else if !inSwapStage {
+		if kept, ok := m.findExistingValidImageSlot(workTask, workDir, previous, inPlaceExists, "image_nowm", nowmStem, page.WatermarkFreeURL, 0, 0, false); ok {
+			if primaryMedia.SHA256 == "" || !strings.EqualFold(kept.SHA256, primaryMedia.SHA256) {
+				m.setFileProgress(workTask, "image_nowm", kept.Path, "completed", kept.Bytes, kept.Bytes, 0)
+				kept.FromOrigin = page.FromOrigin
+				return kept, nil
+			}
+		}
+	}
+
+	cand := strings.TrimSpace(page.WatermarkFreeURL)
+	if cand == "" {
+		return nil, nil
+	}
+
+	tempRel := nowmStem + imgSuffix
+	tempFull, err := library.ResolveItemPath(workDir, tempRel)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.claimTaskFile(workTask, workDir, tempRel, tempFull); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(tempFull), 0o700); err != nil {
+		return nil, err
+	}
+	_ = os.Remove(tempFull)
+	_ = os.Remove(tempFull + ".part")
+	m.resetFileProgress(workTask, tempRel)
+
+	discardTemp := func() {
+		_ = os.Remove(tempFull)
+		_ = os.Remove(tempFull + ".part")
+		m.removeTempTaskProgress(workTask, tempRel)
+	}
+	fallbackPrevOrSkip := func() (*library.MediaFile, error) {
+		if hasProtectedLocal && canReuseLocal {
+			if reused := tryCopyPrevNoWM(); reused != nil {
+				return reused, nil
+			}
+		}
+		return nil, nil
+	}
+
+	spec := m.transportRangeSpec(transport, "image_nowm", false)
+	n, sha, ct, dlErr := m.downloadRange(ctx, spec, []string{cand}, tempFull, workTask)
+	if dlErr != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		discardTemp()
+		if isSiteStopError(dlErr) || isStorageError(dlErr) {
+			return nil, dlErr
+		}
+		return fallbackPrevOrSkip()
+	}
+
+	if site.LooksLikeExpiredPlaceholderImageFile(tempFull, cand, 0, 0, false) {
+		discardTemp()
+		return fallbackPrevOrSkip()
+	}
+	ext, sErr := sniffImageExtension(tempFull, ct)
+	if sErr != nil {
+		discardTemp()
+		return fallbackPrevOrSkip()
+	}
+	w, h, vErr := validateWeiboOSLargeImageFileWithSize(tempFull, ext)
+	if vErr != nil {
+		discardTemp()
+		return fallbackPrevOrSkip()
+	}
+	// Deduplicate when /oslarge/ bytes are identical to the official original primary image.
+	if primaryMedia.SHA256 != "" && strings.EqualFold(sha, primaryMedia.SHA256) {
+		discardTemp()
+		return nil, nil
+	}
+
+	finalRel := nowmStem + ext
+	writeFinalRel := finalRel
+	if inSwapStage {
+		writeFinalRel = stagedRelPath(finalRel)
+	}
+	finalFull, err := library.ResolveItemPath(workDir, writeFinalRel)
+	if err != nil {
+		if ctx.Err() == nil {
+			discardTemp()
+		}
+		return nil, err
+	}
+	if err := m.claimTaskFile(workTask, workDir, writeFinalRel, finalFull); err != nil {
+		if ctx.Err() == nil {
+			discardTemp()
+		}
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tempFull, finalFull); err != nil {
+		if ctx.Err() == nil {
+			discardTemp()
+		}
+		return nil, err
+	}
+	m.removeTempTaskProgress(workTask, tempRel)
+	m.setFileProgress(workTask, "image_nowm", finalRel, "completed", n, n, 0)
+	return &library.MediaFile{
+		Role:       "image_nowm",
+		Path:       finalRel,
+		FromOrigin: page.FromOrigin,
+		Bytes:      n,
+		SHA256:     sha,
+		Width:      w,
+		Height:     h,
+	}, nil
 }
 
 func (m *Manager) cacheWeiboLivePhotoClip(

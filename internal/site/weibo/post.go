@@ -111,6 +111,7 @@ type ImageAsset struct {
 	PublicPreviewURL   string       `json:"publicPreviewUrl,omitempty"` // only unsigned sinaimg.cn URL
 	URL                string       `json:"-"`
 	FallbackURLs       []string     `json:"-"`
+	WatermarkFreeURL   string       `json:"-"` // optional companion /oslarge/ URL (never replaces official original URL)
 	MotionURL          string       `json:"-"` // LivePhoto .mov/.mp4 or mixed video .mp4
 	MotionFallbackURLs []string     `json:"-"`
 	GIFVideoURL        string       `json:"-"` // optional transcoded MP4 for GIF (primary is original .gif in URL)
@@ -1625,13 +1626,14 @@ func (c *Client) buildImageAsset(index int, picID string, pi *rawPicInfo, rewrit
 		}
 	}
 
-	// Optional configurable lossless watermark-free rewrite hook (/oslarge/ with automatic fallback
-	// to the original largest/original URL). Animated GIFs never rewrite to avoid breaking frames.
-	primaryURL := primary.url
+	// Keep URL strictly at the official highest-resolution original (largest/original/mw2000/large).
+	// When watermark-free dual-save is enabled, populate WatermarkFreeURL with the /oslarge/
+	// companion address (690px-wide maximum watermark-free tier per ACT-023 V-07 & DEC-078).
+	// Animated GIFs never generate a companion URL.
+	var watermarkFreeURL string
 	if kind != MediaKindGIF && rewriter != nil {
-		if rewritten, ok := rewriter(picID, primaryURL); ok && rewritten != "" && rewritten != primaryURL {
-			fallbacks = append([]string{primaryURL}, fallbacks...)
-			primaryURL = rewritten
+		if rewritten, ok := rewriter(picID, primary.url); ok && rewritten != "" && rewritten != primary.url {
+			watermarkFreeURL = rewritten
 		}
 	}
 
@@ -1642,8 +1644,9 @@ func (c *Client) buildImageAsset(index int, picID string, pi *rawPicInfo, rewrit
 		Width:             primary.width,
 		Height:            primary.height,
 		PublicPreviewURL:  SafePublicImageURL(primary.url),
-		URL:               primaryURL,
+		URL:               primary.url,
 		FallbackURLs:      fallbacks,
+		WatermarkFreeURL:  watermarkFreeURL,
 		MotionURL:         motionURL,
 		GIFVideoURL:       gifVideoURL,
 		NeedsLivePhotoHop: needsLivePhotoHop,
@@ -1665,8 +1668,9 @@ func isGIFImageURL(rawURL string) bool {
 	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(u.Path)), ".gif")
 }
 
-// RewriteWatermarkFreeImageURL rewrites a static sinaimg.cn image URL to the lossless /oslarge/
-// path segment (never the resolution-capping /osj1080/ tier). Animated .gif URLs are left untouched.
+// RewriteWatermarkFreeImageURL rewrites a static sinaimg.cn image URL to the /oslarge/
+// companion path segment (690px-wide watermark-free maximum tier observed in ACT-023 V-07;
+// saved alongside the official original per DEC-078). Animated .gif URLs are left untouched.
 func RewriteWatermarkFreeImageURL(rawURL string) (string, bool) {
 	if isGIFImageURL(rawURL) {
 		return "", false

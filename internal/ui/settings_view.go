@@ -471,7 +471,7 @@ func (a *App) renderDownloadSettings(c *ui.Context) {
 		if settingSwitchRow(c, "自动保存视频封面", "", "开关保存封面", &a.DraftSettings.Download.SaveCover) {
 			a.saveSettings()
 		}
-		if settingSwitchRow(c, "微博图片去平台水印", "优先尝试无损无水印原图，不支持的老图自动回退原地址；GIF 动图保持原样。", "开关微博图片去水印", &a.DraftSettings.WeiboRemoveWatermark) {
+		if settingSwitchRow(c, "微博同时保存无水印版", "主图保存官方原图，同时额外保存无水印最大版（oslarge），GIF 跳过。", "开关微博图片去水印", &a.DraftSettings.WeiboRemoveWatermark) {
 			a.saveSettings()
 		}
 	})

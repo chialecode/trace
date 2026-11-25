@@ -22,6 +22,7 @@ type douyinNoteRenderPage struct {
 	ImageURL          string
 	FallbackImageURLs []string
 	ImageRel          string
+	NoWatermarkRel    string
 	MotionURL         string
 	MotionRel         string
 	VideoURL          string
@@ -411,12 +412,29 @@ func (a *App) openNotePagesViewer(itemKey, siteID string, pages []douyinNoteRend
 	urls := make([]string, len(pages))
 	fallbackURLs := make([][]string, len(pages))
 	localStills := make([]string, len(pages))
+	noWMPaths := make([]string, len(pages))
 	rels := make([]string, len(pages))
 	kinds := make([]string, len(pages))
 	inlinePaths := make([]string, len(pages))
 	inlineURLs := make([]string, len(pages))
 	inlineDurs := make([]int, len(pages))
 	inlineLoopMuted := make([]bool, len(pages))
+
+	var cachedItem *library.ItemMetadata
+	if itemKey != "" && a.backend != nil {
+		needLookup := false
+		for _, pg := range pages {
+			if pg.ImageRel != "" && pg.NoWatermarkRel == "" {
+				needLookup = true
+				break
+			}
+		}
+		if needLookup {
+			if it, ok, err := a.backend.GetLibraryItem(itemKey); err == nil && ok {
+				cachedItem = &it
+			}
+		}
+	}
 
 	offline := a.CurrentRoute == RouteLibrary || a.CurrentRoute == RouteLibraryItem
 	for i, pg := range pages {
@@ -431,6 +449,7 @@ func (a *App) openNotePagesViewer(itemKey, siteID string, pages []douyinNoteRend
 			if p, err := a.backend.MediaPath(itemKey, pg.ImageRel); err == nil {
 				localStills[i] = p
 			}
+			noWMPaths[i] = a.resolveCompanionNoWatermarkPath(itemKey, cachedItem, pg.ImageRel, pg.NoWatermarkRel)
 		}
 		normKind := pg.Kind
 		if normKind == "motion" {
@@ -461,7 +480,7 @@ func (a *App) openNotePagesViewer(itemKey, siteID string, pages []douyinNoteRend
 		}
 	}
 
-	a.OpenImageViewerWithFallbacks(urls, fallbackURLs, localStills, index)
+	a.openImageViewerWithCompanions(urls, fallbackURLs, localStills, noWMPaths, index)
 	a.ImageViewer.ItemKey = itemKey
 	a.ImageViewer.RelPaths = rels
 	a.ImageViewer.InlinePageKinds = kinds
@@ -509,16 +528,18 @@ func buildDouyinNoteRenderPages(work *service.DouyinWorkView, cached *library.It
 			if kind == "motion" || (kind == "image" && rec.Motion != "") {
 				kind = "live_photo"
 			}
+			imgRel := firstNonEmptyStrUI(rec.Image, rec.Cover)
 			pg := douyinNoteRenderPage{
-				Index:       rec.Index,
-				Kind:        kind,
-				IsGIF:       rec.GIF,
-				ImageRel:    firstNonEmptyStrUI(rec.Image, rec.Cover),
-				MotionRel:   rec.Motion,
-				VideoRel:    rec.Video,
-				Width:       rec.Width,
-				Height:      rec.Height,
-				DurationSec: rec.Duration,
+				Index:          rec.Index,
+				Kind:           kind,
+				IsGIF:          rec.GIF,
+				ImageRel:       imgRel,
+				NoWatermarkRel: firstNonEmptyStrUI(rec.NoWatermark, findCompanionNoWatermarkRel(cached, imgRel)),
+				MotionRel:      rec.Motion,
+				VideoRel:       rec.Video,
+				Width:          rec.Width,
+				Height:         rec.Height,
+				DurationSec:    rec.Duration,
 			}
 			if rec.UnknownKind != "" {
 				pg.UnknownReason = "暂不支持的页面类型：" + rec.UnknownKind
@@ -579,12 +600,13 @@ func buildDouyinNoteRenderPages(work *service.DouyinWorkView, cached *library.It
 				kind = "live_photo"
 			}
 			out = append(out, douyinNoteRenderPage{
-				Index:     idx,
-				Kind:      kind,
-				ImageRel:  m.Path,
-				MotionRel: m.Motion,
-				Width:     m.Width,
-				Height:    m.Height,
+				Index:          idx,
+				Kind:           kind,
+				ImageRel:       m.Path,
+				NoWatermarkRel: findCompanionNoWatermarkRel(cached, m.Path),
+				MotionRel:      m.Motion,
+				Width:          m.Width,
+				Height:         m.Height,
 			})
 		}
 	}

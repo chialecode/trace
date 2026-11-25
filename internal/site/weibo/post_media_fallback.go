@@ -244,12 +244,10 @@ func (c *Client) buildSingleMobilePicAsset(
 		}
 	}
 
-	primaryURL := baseURL
-	var fallbacks []string
+	var watermarkFreeURL string
 	if kind != MediaKindGIF && rewriter != nil {
-		if rewritten, ok := rewriter(picID, primaryURL); ok && rewritten != "" && rewritten != primaryURL {
-			fallbacks = []string{primaryURL}
-			primaryURL = rewritten
+		if rewritten, ok := rewriter(picID, baseURL); ok && rewritten != "" && rewritten != baseURL {
+			watermarkFreeURL = rewritten
 		}
 	}
 
@@ -260,8 +258,8 @@ func (c *Client) buildSingleMobilePicAsset(
 		Width:             w,
 		Height:            h,
 		PublicPreviewURL:  SafePublicImageURL(baseURL),
-		URL:               primaryURL,
-		FallbackURLs:      fallbacks,
+		URL:               baseURL,
+		WatermarkFreeURL:  watermarkFreeURL,
 		MotionURL:         motionURL,
 		GIFVideoURL:       gifVideoURL,
 		NeedsLivePhotoHop: needsLivePhotoHop,
@@ -365,12 +363,10 @@ func (c *Client) buildPicIDFallbackAssets(rp *rawPost, rewriter func(picID, rawU
 		if ext == ".gif" {
 			kind = MediaKindGIF
 		}
-		primaryURL := baseURL
-		var fallbacks []string
+		var watermarkFreeURL string
 		if kind != MediaKindGIF && rewriter != nil {
-			if rewritten, ok := rewriter(picID, primaryURL); ok && rewritten != "" && rewritten != primaryURL {
-				fallbacks = []string{primaryURL}
-				primaryURL = rewritten
+			if rewritten, ok := rewriter(picID, baseURL); ok && rewritten != "" && rewritten != baseURL {
+				watermarkFreeURL = rewritten
 			}
 		}
 		return ImageAsset{
@@ -378,8 +374,8 @@ func (c *Client) buildPicIDFallbackAssets(rp *rawPost, rewriter func(picID, rawU
 			PicID:            picID,
 			Kind:             kind,
 			PublicPreviewURL: SafePublicImageURL(baseURL),
-			URL:              primaryURL,
-			FallbackURLs:     fallbacks,
+			URL:              baseURL,
+			WatermarkFreeURL: watermarkFreeURL,
 		}, true
 	}
 

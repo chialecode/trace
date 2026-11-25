@@ -21,24 +21,25 @@ type WorkPlanOptions struct {
 
 // PlannedNotePage describes one 1-based page in a Douyin/Weibo/X image or mixed note.
 type PlannedNotePage struct {
-	Index         int
-	Kind          string // "image", "gif", "live_photo", "video", "unknown"
-	MediaID       string `json:"mediaId,omitempty"`
-	FromOrigin    bool
-	HLSOnly       bool
-	UnknownKind   string
-	UnknownReason string
-	Width         int
-	Height        int
-	DurationSec   int
-	ImageURLs     []string
-	VideoURLs     []string
-	NeedSetToken  bool
-	Gear          string
-	QualityName   string
-	Codec         string
-	FPS           int
-	Bitrate       int64
+	Index            int
+	Kind             string // "image", "gif", "live_photo", "video", "unknown"
+	MediaID          string `json:"mediaId,omitempty"`
+	FromOrigin       bool
+	HLSOnly          bool
+	UnknownKind      string
+	UnknownReason    string
+	Width            int
+	Height           int
+	DurationSec      int
+	ImageURLs        []string
+	WatermarkFreeURL string `json:"-"`
+	VideoURLs        []string
+	NeedSetToken     bool
+	Gear             string
+	QualityName      string
+	Codec            string
+	FPS              int
+	Bitrate          int64
 }
 
 // PlannedThreadPart describes one author self-reply segment saved into the same item (e.g. X threads).
@@ -289,19 +290,20 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 			}
 		}
 		pages = append(pages, PlannedNotePage{
-			Index:       idx,
-			Kind:        pageKind,
-			FromOrigin:  img.FromOrigin,
-			HLSOnly:     pageHLSOnly,
-			Width:       img.Width,
-			Height:      img.Height,
-			DurationSec: img.DurationSec,
-			ImageURLs:   append([]string(nil), img.ImageURLs...),
-			VideoURLs:   append([]string(nil), img.VideoURLs...),
-			QualityName: img.QualityLabel,
-			Codec:       img.VideoCodec,
-			FPS:         img.FPS,
-			Bitrate:     img.Bitrate,
+			Index:            idx,
+			Kind:             pageKind,
+			FromOrigin:       img.FromOrigin,
+			HLSOnly:          pageHLSOnly,
+			Width:            img.Width,
+			Height:           img.Height,
+			DurationSec:      img.DurationSec,
+			ImageURLs:        append([]string(nil), img.ImageURLs...),
+			WatermarkFreeURL: img.WatermarkFreeURL,
+			VideoURLs:        append([]string(nil), img.VideoURLs...),
+			QualityName:      img.QualityLabel,
+			Codec:            img.VideoCodec,
+			FPS:              img.FPS,
+			Bitrate:          img.Bitrate,
 		})
 	}
 	var music *PlannedMusic

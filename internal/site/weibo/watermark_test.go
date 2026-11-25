@@ -106,8 +106,9 @@ func TestBuildImageAssetAndFallbackBuildersSkipGIFAndPreserveOriginalFallback(t 
 		},
 	})
 
-	// 1. Standard pic_infos: static pic + LivePhoto still rewrite to /oslarge/ with largest in FallbackURLs[0];
-	// GIF (even if URL omits .gif suffix) NEVER calls rewriter and NEVER rewrites.
+	// 1. Standard pic_infos: primary URL ALWAYS stays the official original (largest/mw2000/large);
+	// static pic & LivePhoto still populate WatermarkFreeURL with /oslarge/;
+	// GIF (even if URL omits .gif suffix) NEVER populates WatermarkFreeURL.
 	rawJSON := `{
 		"ok": 1,
 		"idstr": "5000000000000801",
@@ -160,31 +161,57 @@ func TestBuildImageAssetAndFallbackBuildersSkipGIFAndPreserveOriginalFallback(t 
 	if len(post.Images) != 4 {
 		t.Fatalf("len(Images) = %d, want 4", len(post.Images))
 	}
-	if post.Images[0].URL != "https://wx1.sinaimg.cn/oslarge/p_static.jpg" ||
-		len(post.Images[0].FallbackURLs) == 0 ||
-		post.Images[0].FallbackURLs[0] != "https://wx1.sinaimg.cn/mw2000/p_static.jpg" {
-		t.Fatalf("static pic = (%q, fb=%v)", post.Images[0].URL, post.Images[0].FallbackURLs)
+	if post.Images[0].URL != "https://wx1.sinaimg.cn/mw2000/p_static.jpg" ||
+		post.Images[0].WatermarkFreeURL != "https://wx1.sinaimg.cn/oslarge/p_static.jpg" {
+		t.Fatalf("static pic = (url=%q, wmFree=%q)", post.Images[0].URL, post.Images[0].WatermarkFreeURL)
 	}
-	if post.Images[1].Kind != MediaKindGIF || strings.Contains(post.Images[1].URL, "/oslarge/") {
-		t.Fatalf("typed GIF must not rewrite: kind=%q url=%q", post.Images[1].Kind, post.Images[1].URL)
+	if post.Images[1].Kind != MediaKindGIF ||
+		post.Images[1].URL != "https://wx1.sinaimg.cn/large/p_gif_typed.jpg" ||
+		post.Images[1].WatermarkFreeURL != "" {
+		t.Fatalf("typed GIF must not set WatermarkFreeURL: kind=%q url=%q wmFree=%q", post.Images[1].Kind, post.Images[1].URL, post.Images[1].WatermarkFreeURL)
 	}
-	if post.Images[2].Kind != MediaKindGIF || strings.Contains(post.Images[2].URL, "/oslarge/") {
-		t.Fatalf("ext GIF must not rewrite: kind=%q url=%q", post.Images[2].Kind, post.Images[2].URL)
+	if post.Images[2].Kind != MediaKindGIF ||
+		post.Images[2].URL != "https://wx1.sinaimg.cn/large/p_gif_ext.gif" ||
+		post.Images[2].WatermarkFreeURL != "" {
+		t.Fatalf("ext GIF must not set WatermarkFreeURL: kind=%q url=%q wmFree=%q", post.Images[2].Kind, post.Images[2].URL, post.Images[2].WatermarkFreeURL)
 	}
 	if post.Images[3].Kind != MediaKindLivePhoto ||
-		post.Images[3].URL != "https://wx2.sinaimg.cn/oslarge/p_live.jpg" ||
-		len(post.Images[3].FallbackURLs) == 0 ||
-		post.Images[3].FallbackURLs[0] != "https://wx2.sinaimg.cn/large/p_live.jpg" {
-		t.Fatalf("livephoto still = (%q, fb=%v)", post.Images[3].URL, post.Images[3].FallbackURLs)
+		post.Images[3].URL != "https://wx2.sinaimg.cn/large/p_live.jpg" ||
+		post.Images[3].WatermarkFreeURL != "https://wx2.sinaimg.cn/oslarge/p_live.jpg" {
+		t.Fatalf("livephoto still = (url=%q, wmFree=%q)", post.Images[3].URL, post.Images[3].WatermarkFreeURL)
 	}
 	if post.Retweeted == nil || len(post.Retweeted.Images) != 1 ||
-		post.Retweeted.Images[0].URL != "https://wx3.sinaimg.cn/oslarge/p_orig.jpg" ||
-		len(post.Retweeted.Images[0].FallbackURLs) == 0 ||
-		post.Retweeted.Images[0].FallbackURLs[0] != "https://wx3.sinaimg.cn/mw2000/p_orig.jpg" {
+		post.Retweeted.Images[0].URL != "https://wx3.sinaimg.cn/mw2000/p_orig.jpg" ||
+		post.Retweeted.Images[0].WatermarkFreeURL != "https://wx3.sinaimg.cn/oslarge/p_orig.jpg" {
 		t.Fatalf("retweeted origin pic = %+v", post.Retweeted)
 	}
 
-	// 2. Mobile pics[] fallback builder also skips GIF and preserves fallback for static images.
+	// Verify Adapter.PlanDownloadFromPost propagates WatermarkFreeURL and buildPostSnapshot strips it.
+	adapter := NewAdapter(client)
+	dlPlan, err := adapter.PlanDownloadFromPost(post)
+	if err != nil {
+		t.Fatalf("PlanDownloadFromPost: %v", err)
+	}
+	if len(dlPlan.Images) != 5 {
+		t.Fatalf("len(dlPlan.Images) = %d, want 5", len(dlPlan.Images))
+	}
+	if dlPlan.Images[0].ImageURLs[0] != "https://wx1.sinaimg.cn/mw2000/p_static.jpg" ||
+		dlPlan.Images[0].WatermarkFreeURL != "https://wx1.sinaimg.cn/oslarge/p_static.jpg" {
+		t.Fatalf("dlPlan.Images[0] = %+v", dlPlan.Images[0])
+	}
+	if dlPlan.Images[1].WatermarkFreeURL != "" || dlPlan.Images[2].WatermarkFreeURL != "" {
+		t.Fatalf("dlPlan GIFs unexpectedly carry WatermarkFreeURL: %+v %+v", dlPlan.Images[1], dlPlan.Images[2])
+	}
+	if dlPlan.Images[3].WatermarkFreeURL != "https://wx2.sinaimg.cn/oslarge/p_live.jpg" ||
+		dlPlan.Images[4].WatermarkFreeURL != "https://wx3.sinaimg.cn/oslarge/p_orig.jpg" {
+		t.Fatalf("dlPlan live/origin = %+v %+v", dlPlan.Images[3], dlPlan.Images[4])
+	}
+	snap := buildPostSnapshot(post)
+	if snap == nil || len(snap.Images) != 4 || snap.Images[0].WatermarkFreeURL != "" || snap.Images[0].URL != "" {
+		t.Fatalf("buildPostSnapshot did not scrub runtime URLs: %+v", snap)
+	}
+
+	// 2. Mobile pics[] fallback builder also keeps primary at /large/ and populates WatermarkFreeURL only for non-GIF.
 	mobileJSON := `{
 		"ok": 1,
 		"idstr": "5000000000000802",
@@ -200,13 +227,32 @@ func TestBuildImageAssetAndFallbackBuildersSkipGIFAndPreserveOriginalFallback(t 
 	if err != nil || len(mPost.Images) != 2 {
 		t.Fatalf("mobile ParseRawPostJSON = (%+v, %v)", mPost, err)
 	}
-	if mPost.Images[0].URL != "https://wx1.sinaimg.cn/oslarge/mob_pic.jpg" ||
-		len(mPost.Images[0].FallbackURLs) != 1 ||
-		mPost.Images[0].FallbackURLs[0] != "https://wx1.sinaimg.cn/large/mob_pic.jpg" {
-		t.Fatalf("mobile static pic = (%q, fb=%v)", mPost.Images[0].URL, mPost.Images[0].FallbackURLs)
+	if mPost.Images[0].URL != "https://wx1.sinaimg.cn/large/mob_pic.jpg" ||
+		mPost.Images[0].WatermarkFreeURL != "https://wx1.sinaimg.cn/oslarge/mob_pic.jpg" {
+		t.Fatalf("mobile static pic = (url=%q, wmFree=%q)", mPost.Images[0].URL, mPost.Images[0].WatermarkFreeURL)
 	}
-	if mPost.Images[1].Kind != MediaKindGIF || mPost.Images[1].URL != "https://wx1.sinaimg.cn/large/mob_gif.jpg" {
-		t.Fatalf("mobile gif pic = (%q, %q)", mPost.Images[1].Kind, mPost.Images[1].URL)
+	if mPost.Images[1].Kind != MediaKindGIF ||
+		mPost.Images[1].URL != "https://wx1.sinaimg.cn/large/mob_gif.jpg" ||
+		mPost.Images[1].WatermarkFreeURL != "" {
+		t.Fatalf("mobile gif pic = (kind=%q, url=%q, wmFree=%q)", mPost.Images[1].Kind, mPost.Images[1].URL, mPost.Images[1].WatermarkFreeURL)
+	}
+
+	// 3. pic_ids fallback builder keeps primary at /large/ and populates WatermarkFreeURL.
+	picIDJSON := `{
+		"ok": 1,
+		"idstr": "5000000000000803",
+		"mblogid": "O000000cX",
+		"text_raw": "pic_ids 回退夹具",
+		"user": {"idstr": "1000000001", "screen_name": "合成博主"},
+		"pic_ids": ["pid_fallback_01"]
+	}`
+	pPost, err := client.ParseRawPostJSON([]byte(picIDJSON))
+	if err != nil || len(pPost.Images) != 1 {
+		t.Fatalf("pic_ids ParseRawPostJSON = (%+v, %v)", pPost, err)
+	}
+	if pPost.Images[0].URL != "https://wx1.sinaimg.cn/large/pid_fallback_01.jpg" ||
+		pPost.Images[0].WatermarkFreeURL != "https://wx1.sinaimg.cn/oslarge/pid_fallback_01.jpg" {
+		t.Fatalf("pic_ids fallback = (url=%q, wmFree=%q)", pPost.Images[0].URL, pPost.Images[0].WatermarkFreeURL)
 	}
 }
 
