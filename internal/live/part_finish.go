@@ -206,7 +206,6 @@ func (m *Manager) commitSessionMeta(
 	onSavedLocked func(),
 ) error {
 	sess.saveMu.Lock()
-	defer sess.saveMu.Unlock()
 	m.mu.Lock()
 	if fromLoop && sess.itemMeta.Live != nil {
 		sess.itemMeta.Live.LastSequence, sess.itemMeta.Live.HasSequence = sess.lastSequence, sess.hasSequence
@@ -224,6 +223,7 @@ func (m *Manager) commitSessionMeta(
 	saved, err := m.lib.SaveLiveItem(sess.itemDir, metaCopy)
 	saveDur := time.Since(saveWall)
 	if err != nil {
+		sess.saveMu.Unlock()
 		if saveDur >= slowLiveIOThreshold {
 			m.logEvent("WARN", "live slow_io: site=%s room=%s op=save_session dur_ms=%d err=%s",
 				liveLogSite(sess), liveLogRoom(sess), saveDur.Milliseconds(), sanitizeLiveError(err))
@@ -244,6 +244,8 @@ func (m *Manager) commitSessionMeta(
 	sess.itemMeta.RawID, sess.itemMeta.ItemKey, sess.itemMeta.ItemDir = saved.RawID, saved.ItemKey, saved.ItemDir
 	sess.itemMeta.CachedAt, sess.itemMeta.TotalBytes, sess.itemMeta.Status = saved.CachedAt, saved.TotalBytes, saved.Status
 	m.mu.Unlock()
+	sess.saveMu.Unlock()
+
 	if saveDur >= slowLiveIOThreshold {
 		m.logEvent("WARN", "live slow_io: site=%s room=%s op=save_session dur_ms=%d",
 			liveLogSite(sess), liveLogRoom(sess), saveDur.Milliseconds())

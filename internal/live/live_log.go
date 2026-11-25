@@ -10,7 +10,7 @@ import (
 	"github.com/chialecode/trace/internal/site"
 )
 
-const slowLiveIOThreshold = 500 * time.Millisecond
+var slowLiveIOThreshold = 500 * time.Millisecond
 
 // SetLogFunc installs an optional sanitized diagnostic logger for live recording events.
 // Callers wire this to the runtime log writer; the callback is always invoked outside

@@ -325,11 +325,73 @@ func (m *Manager) recoverSingleLiveItem(ctx context.Context, meta library.ItemMe
 	}
 }
 
+// lockItemDirCommit acquires a lightweight per-itemDir serialization slot used
+// only for short manifest read-modify-save + session registration sections
+// (never held across network I/O or MP4 conversion).
+func (m *Manager) lockItemDirCommit(itemDir string) func() {
+	key := cleanLiveDirKey(itemDir)
+	if key == "" {
+		return func() {}
+	}
+	for {
+		m.mu.Lock()
+		if m.dirCommitSlots == nil {
+			m.dirCommitSlots = make(map[string]chan struct{})
+		}
+		if waitCh, busy := m.dirCommitSlots[key]; busy {
+			m.mu.Unlock()
+			<-waitCh
+			continue
+		}
+		done := make(chan struct{})
+		m.dirCommitSlots[key] = done
+		m.mu.Unlock()
+		return func() {
+			m.mu.Lock()
+			if cur, ok := m.dirCommitSlots[key]; ok && cur == done {
+				delete(m.dirCommitSlots, key)
+			}
+			m.mu.Unlock()
+			close(done)
+		}
+	}
+}
+
+// lockItemDirForItem resolves the canonical itemDir for itemKey, acquires the
+// per-itemDir commit slot, and loads the authoritative manifest under that slot.
+func (m *Manager) lockItemDirForItem(itemKey, defaultDir string) (string, library.ItemMetadata, bool, func(), error) {
+	targetDir := defaultDir
+	if peek, ok, err := m.lib.GetItem(itemKey); err == nil && ok && peek.ItemDir != "" {
+		targetDir = peek.ItemDir
+	}
+	unlock := m.lockItemDirCommit(targetDir)
+	existing, exists, err := m.lib.GetItem(itemKey)
+	if err != nil {
+		unlock()
+		return "", library.ItemMetadata{}, false, nil, err
+	}
+	if exists && existing.ItemDir != "" && cleanLiveDirKey(existing.ItemDir) != cleanLiveDirKey(targetDir) {
+		unlock()
+		targetDir = existing.ItemDir
+		unlock = m.lockItemDirCommit(targetDir)
+		existing, exists, err = m.lib.GetItem(itemKey)
+		if err != nil {
+			unlock()
+			return "", library.ItemMetadata{}, false, nil, err
+		}
+	}
+	if exists && existing.ItemDir != "" {
+		targetDir = existing.ItemDir
+	}
+	return targetDir, existing, exists, unlock, nil
+}
+
 func (m *Manager) commitRecoveredPart(
 	fallbackMeta library.ItemMetadata,
 	mutate func(target *library.ItemMetadata),
 	onActiveSessionLocked func(sess *recordSession),
 ) bool {
+	unlockDir := m.lockItemDirCommit(fallbackMeta.ItemDir)
 	if activeSess := m.activeSessionForDir(fallbackMeta.ItemDir); activeSess != nil {
 		var notify *RoomState
 		err := m.commitSessionMeta(activeSess, false, mutate, func() {
@@ -341,6 +403,7 @@ func (m *Manager) commitRecoveredPart(
 				notify = &cp
 			}
 		})
+		unlockDir()
 		if err != nil {
 			return false
 		}
@@ -355,6 +418,9 @@ func (m *Manager) commitRecoveredPart(
 	curMeta := fallbackMeta
 	if loaded, ok, err := m.lib.GetItem(fallbackMeta.ItemKey); err == nil && ok {
 		curMeta = loaded
+	}
+	if hook := m.testInRecoveryCommit; hook != nil {
+		hook(curMeta.ItemDir)
 	}
 	mutate(&curMeta)
 	if curMeta.Status != "recording" || m.activeSessionForDir(curMeta.ItemDir) == nil {
@@ -371,6 +437,7 @@ func (m *Manager) commitRecoveredPart(
 		}
 	}
 	_, err := m.lib.SaveLiveItem(curMeta.ItemDir, curMeta)
+	unlockDir()
 	return err == nil
 }
 

@@ -155,12 +155,26 @@ func (m *Manager) StartDouyinRecording(ctx context.Context, uid, roomOrWebRID st
 		return RoomState{}, err
 	}
 	itemKey := library.CanonicalItemKey("douyin", "live", roomID)
-	existingMeta, exists, err := m.lib.GetItem(itemKey)
+	var existingMeta library.ItemMetadata
+	var exists bool
+	var unlockDir func()
+	itemDir, existingMeta, exists, unlockDir, err = m.lockItemDirForItem(itemKey, itemDir)
 	if err != nil {
 		return RoomState{}, err
 	}
+	dirUnlocked := false
+	releaseDir := func() {
+		if !dirUnlocked {
+			dirUnlocked = true
+			unlockDir()
+		}
+	}
+	defer releaseDir()
 	if exists && existingMeta.ItemDir != "" {
 		itemDir = existingMeta.ItemDir
+	}
+	if hook := m.testBeforeStartSave; hook != nil {
+		hook(itemDir)
 	}
 	if err := os.MkdirAll(itemDir, 0o700); err != nil {
 		return RoomState{}, err
@@ -337,6 +351,7 @@ func (m *Manager) StartDouyinRecording(ctx context.Context, uid, roomOrWebRID st
 	}
 	m.wg.Add(1)
 	m.mu.Unlock()
+	releaseDir()
 
 	go m.runDouyinRecordingSession(recCtx, sess, plan, codecOrder)
 

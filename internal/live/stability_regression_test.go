@@ -902,3 +902,223 @@ func TestFLVSlowDetectorExcludesLocalCheckpointWait(t *testing.T) {
 		}
 	}
 }
+
+// Async startup recovery's commitRecoveredPart and concurrent StartRecording for
+// the same itemDir must serialize their GetItem -> SaveLiveItem -> register
+// critical sections so neither overwrites the other with a stale manifest snapshot.
+func TestAsyncRecoveryCommitSerializesWithConcurrentStartRecording(t *testing.T) {
+	setupScenario := func(t *testing.T, roomID, uid, liveSince int64) (*Manager, *library.Store, string, *atomic.Bool) {
+		t.Helper()
+		initBytes, fragBytes := regressionLiveSamples(t)
+		var stillLive atomic.Bool
+		stillLive.Store(true)
+		var srvURL string
+
+		mux := http.NewServeMux()
+		registerStandardBilibiliLiveHandlers(mux, roomID, uid, liveSince, &stillLive)
+		mux.HandleFunc("/xlive/web-room/v2/index/getRoomPlayInfo", func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(buildBiliPlayInfoResp(roomID, uid, srvURL, "/hls/index.m3u8"))
+		})
+		mux.HandleFunc("/hls/index.m3u8", func(w http.ResponseWriter, r *http.Request) {
+			stillLive.Store(false)
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:20\n#EXT-X-MAP:URI=\"/hls/init.mp4\"\n#EXTINF:1.0,\n/hls/seg20.m4s\n#EXT-X-ENDLIST\n"))
+		})
+		mux.HandleFunc("/hls/init.mp4", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(initBytes) })
+		mux.HandleFunc("/hls/seg20.m4s", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(fragBytes) })
+
+		mgr, lib, _, srv, _ := setupLiveTestHarness(t, mux)
+		srvURL = srv.URL
+		mgr.mu.Lock()
+		mgr.hlsPollInterval = 15 * time.Millisecond
+		mgr.reconnectWait = 15 * time.Millisecond
+		mgr.mu.Unlock()
+
+		dir := filepath.Join(lib.CacheDir(), "bilibili", fmt.Sprint(uid), "lives", fmt.Sprintf("%d-%d", roomID, liveSince))
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		rawPart := append(append([]byte(nil), initBytes...), fragBytes...)
+		if err := os.WriteFile(filepath.Join(dir, "part-001.mp4.part"), rawPart, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := lib.SaveLiveItem(dir, library.ItemMetadata{
+			Site:         "bilibili",
+			Kind:         "live",
+			ID:           fmt.Sprintf("live:%d:%d", roomID, liveSince),
+			Title:        "Concurrent Recovery Race Test",
+			Status:       "recording",
+			PendingParts: []string{"part-001.mp4.part"},
+			Live: &library.LiveRecordingInfo{
+				RoomID:    roomID,
+				LiveSince: liveSince,
+			},
+		})
+		if err != nil {
+			t.Fatalf("seed orphan manifest: %v", err)
+		}
+		return mgr, lib, dir, &stillLive
+	}
+
+	t.Run("start enters commit slot before recovery commits", func(t *testing.T) {
+		const (
+			roomID    int64 = 71010
+			uid       int64 = 7110
+			liveSince int64 = 1796010000
+		)
+		mgr, lib, dir, _ := setupScenario(t, roomID, uid, liveSince)
+
+		convertFinished := make(chan struct{})
+		allowRecoveryCommit := make(chan struct{})
+		origConvert := convertPart
+		convertPart = func(ctx context.Context, partPath, finalPath string) (download.MuxTrackSummary, error) {
+			sum, err := origConvert(ctx, partPath, finalPath)
+			if strings.HasSuffix(partPath, "part-001.mp4.part") {
+				close(convertFinished)
+				<-allowRecoveryCommit
+			}
+			return sum, err
+		}
+		t.Cleanup(func() { convertPart = origConvert })
+
+		var startSaveHookOnce sync.Once
+		mgr.testBeforeStartSave = func(itemDir string) {
+			if cleanLiveDirKey(itemDir) != cleanLiveDirKey(dir) {
+				return
+			}
+			startSaveHookOnce.Do(func() {
+				// Release recovery right while StartRecording is between GetItem and SaveLiveItem.
+				// Without per-itemDir commit serialization, recovery would commit and remove
+				// part-001.mp4.part here, and StartRecording would overwrite item.json with its
+				// stale snapshot!
+				close(allowRecoveryCommit)
+				time.Sleep(80 * time.Millisecond)
+				if _, err := os.Stat(filepath.Join(dir, "part-001.mp4.part")); err != nil {
+					t.Errorf("part-001.mp4.part removed before StartRecording released commit slot: %v", err)
+				}
+			})
+		}
+
+		mgr.Start(context.Background())
+		select {
+		case <-convertFinished:
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for recovery convertPart")
+		}
+
+		if _, err := mgr.StartRecording(context.Background(), roomID); err != nil {
+			t.Fatalf("StartRecording: %v", err)
+		}
+		waitLiveRecordingDone(t, mgr, roomID)
+		mgr.Stop()
+
+		meta, ok, err := lib.GetItem(library.CanonicalItemKey("bilibili", "live", fmt.Sprintf("%d:%d", roomID, liveSince)))
+		if err != nil || !ok || meta.Live == nil {
+			t.Fatalf("GetItem: ok=%v err=%v", ok, err)
+		}
+		if meta.Status != "complete" {
+			t.Fatalf("Status = %q, want complete (pending=%v missing=%+v)", meta.Status, meta.PendingParts, meta.Missing)
+		}
+		if len(meta.PendingParts) != 0 {
+			t.Fatalf("PendingParts = %v, want empty", meta.PendingParts)
+		}
+		if len(meta.Live.Segments) != 2 || meta.Live.Segments[0].File != "part-001.mp4" || meta.Live.Segments[1].File != "part-002.mp4" {
+			t.Fatalf("Live.Segments = %+v, want [part-001.mp4 part-002.mp4]", meta.Live.Segments)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "part-001.mp4.part")); !os.IsNotExist(err) {
+			t.Fatalf("expected part-001.mp4.part deleted after commit, stat err=%v", err)
+		}
+	})
+
+	t.Run("recovery enters commit slot before start loads manifest", func(t *testing.T) {
+		const (
+			roomID    int64 = 71011
+			uid       int64 = 7111
+			liveSince int64 = 1796011000
+		)
+		mgr, lib, dir, _ := setupScenario(t, roomID, uid, liveSince)
+
+		recoveryInCommit := make(chan struct{})
+		var recoveryHookOnce sync.Once
+		mgr.testInRecoveryCommit = func(itemDir string) {
+			if cleanLiveDirKey(itemDir) != cleanLiveDirKey(dir) {
+				return
+			}
+			recoveryHookOnce.Do(func() {
+				close(recoveryInCommit)
+				time.Sleep(80 * time.Millisecond)
+			})
+		}
+
+		mgr.Start(context.Background())
+		select {
+		case <-recoveryInCommit:
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for recovery commit slot")
+		}
+
+		if _, err := mgr.StartRecording(context.Background(), roomID); err != nil {
+			t.Fatalf("StartRecording: %v", err)
+		}
+		waitLiveRecordingDone(t, mgr, roomID)
+		mgr.Stop()
+
+		meta, ok, err := lib.GetItem(library.CanonicalItemKey("bilibili", "live", fmt.Sprintf("%d:%d", roomID, liveSince)))
+		if err != nil || !ok || meta.Live == nil {
+			t.Fatalf("GetItem: ok=%v err=%v", ok, err)
+		}
+		if meta.Status != "complete" {
+			t.Fatalf("Status = %q, want complete (pending=%v missing=%+v)", meta.Status, meta.PendingParts, meta.Missing)
+		}
+		if len(meta.PendingParts) != 0 {
+			t.Fatalf("PendingParts = %v, want empty", meta.PendingParts)
+		}
+		if len(meta.Live.Segments) != 2 || meta.Live.Segments[0].File != "part-001.mp4" || meta.Live.Segments[1].File != "part-002.mp4" {
+			t.Fatalf("Live.Segments = %+v, want [part-001.mp4 part-002.mp4]", meta.Live.Segments)
+		}
+	})
+}
+
+// commitSessionMeta must release sess.saveMu before invoking m.logEvent on both
+// success and error slow-IO paths so logging callbacks never run under session locks.
+func TestCommitSessionMetaUnlocksSaveMuBeforeLogging(t *testing.T) {
+	origThreshold := slowLiveIOThreshold
+	slowLiveIOThreshold = 0
+	t.Cleanup(func() { slowLiveIOThreshold = origThreshold })
+
+	mgr, lib, _ := regressionRecorder(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	sess := regressionLiveSession(t, lib)
+
+	var logCalls atomic.Int32
+	mgr.SetLogFunc(func(level, msg string) {
+		if !strings.Contains(msg, "op=save_session") {
+			return
+		}
+		logCalls.Add(1)
+		if !sess.saveMu.TryLock() {
+			t.Errorf("sess.saveMu was still held during commitSessionMeta logEvent (%s: %s)", level, msg)
+			return
+		}
+		sess.saveMu.Unlock()
+	})
+
+	// 1. Success branch
+	if err := mgr.commitSessionMeta(sess, false, nil, nil); err != nil {
+		t.Fatalf("commitSessionMeta success branch failed: %v", err)
+	}
+	if logCalls.Load() != 1 {
+		t.Fatalf("expected 1 slow_io log on success branch, got %d", logCalls.Load())
+	}
+
+	// 2. Error branch (SaveLiveItem rejects non-live Kind)
+	err := mgr.commitSessionMeta(sess, false, func(meta *library.ItemMetadata) {
+		meta.Kind = "video"
+	}, nil)
+	if err == nil {
+		t.Fatal("expected SaveLiveItem error for non-live Kind")
+	}
+	if logCalls.Load() != 2 {
+		t.Fatalf("expected 2 slow_io logs after error branch, got %d", logCalls.Load())
+	}
+}

@@ -209,6 +209,11 @@ type Manager struct {
 	finalizeCtx          context.Context
 	finalizeCancel       context.CancelFunc
 	recoveringDirs       map[string]struct{}
+	dirCommitSlots       map[string]chan struct{}
+
+	// Optional test hooks for deterministic concurrency regression tests.
+	testBeforeStartSave  func(itemDir string)
+	testInRecoveryCommit func(itemDir string)
 
 	baseCtx    context.Context
 	baseCancel context.CancelFunc
@@ -272,6 +277,7 @@ func NewManager(
 		finalizeCtx:           finCtx,
 		finalizeCancel:        finCancel,
 		recoveringDirs:        make(map[string]struct{}),
+		dirCommitSlots:        make(map[string]chan struct{}),
 		baseCtx:               baseCtx,
 		baseCancel:            baseCancel,
 		pollWake:              make(chan struct{}, 1),
