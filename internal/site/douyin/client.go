@@ -824,6 +824,13 @@ func (c *Client) prepareGuardHeaders(spec apiRequestSpec, path, fallbackTicket s
 	if err != nil {
 		return nil, nil
 	}
+	// Do not attach unregistered bd-ticket-guard-* handshake headers on read-only
+	// endpoints before the server has issued a valid ts_sign + ticket (ACT-028:
+	// unregistered handshake headers trigger bd-ticket-guard-result: 1103 instead
+	// of 1101). Keep activeGuard non-nil so any server-data response is adopted.
+	if !res.Signed {
+		return nil, &st
+	}
 	return res.Headers, &st
 }
 
@@ -1009,11 +1016,13 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 		}
 		if gHeaders, gState := c.prepareGuardHeaders(spec, parsedURL.Path, fallbackTicket, usingStore); gState != nil {
 			activeGuard = gState
-			if extraHeaders == nil {
-				extraHeaders = make(map[string]string, len(gHeaders))
-			}
-			for k, v := range gHeaders {
-				extraHeaders[k] = v
+			if len(gHeaders) > 0 {
+				if extraHeaders == nil {
+					extraHeaders = make(map[string]string, len(gHeaders))
+				}
+				for k, v := range gHeaders {
+					extraHeaders[k] = v
+				}
 			}
 		}
 	}

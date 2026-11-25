@@ -338,8 +338,8 @@ func TestSignSpecDeterministicVectors(t *testing.T) {
 			t.Fatalf("unread entropy bytes: %d", entReader.Len())
 		}
 
-		const wantSig = "dJUnkqSiQoWbKd/tmcnD7tnUTLy/NB8y8TidWraTHxP4OhzcC8PoPENWaNErszEkLRBhiH17YxFMbExcTtUwZeHpwmpvSkTfdU5VVgmLZqwsGzkQErjzew6zLw0rURsql55tiIRI/UJ96VnAwHdE/BA9tKoC55WBM3OWk/ubP9B6ZMyAD3nHPBSpYhiO0HVR"
-		const wantPct = "dJUnkqSiQoWbKd%2FtmcnD7tnUTLy%2FNB8y8TidWraTHxP4OhzcC8PoPENWaNErszEkLRBhiH17YxFMbExcTtUwZeHpwmpvSkTfdU5VVgmLZqwsGzkQErjzew6zLw0rURsql55tiIRI%2FUJ96VnAwHdE%2FBA9tKoC55WBM3OWk%2FubP9B6ZMyAD3nHPBSpYhiO0HVR"
+		const wantSig = "dJUnkqSiQoWbKd/tmcnD7tnUTLy/NB8y8TidWJ-THNP4OhzcC8PoPxaWaxwrszEvLRBhiH17YxFMbExcTtUwZeHpwmpvSkTfdU5VVgmLZqwsGzkQErjzew6zLw0rURsql55tiIRI/UJ96VnAwHdE/BA9tKoC55WBM3OWk/ubP9B6ZMyAD3nHPBSpYhiO0nA6"
+		const wantPct = "dJUnkqSiQoWbKd%2FtmcnD7tnUTLy%2FNB8y8TidWJ-THNP4OhzcC8PoPxaWaxwrszEvLRBhiH17YxFMbExcTtUwZeHpwmpvSkTfdU5VVgmLZqwsGzkQErjzew6zLw0rURsql55tiIRI%2FUJ96VnAwHdE%2FBA9tKoC55WBM3OWk%2FubP9B6ZMyAD3nHPBSpYhiO0nA6"
 
 		if res.Signature != wantSig {
 			t.Fatalf("Signature mismatch:\ngot:  %s\nwant: %s", res.Signature, wantSig)
@@ -356,7 +356,7 @@ func TestSignSpecDeterministicVectors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decodeABogus failed: %v", err)
 		}
-		if dec.Checksum != 0xFD || dec.ZeroOmitted || dec.NowMs != 1763000000097 {
+		if dec.Checksum != 0xA2 || dec.ZeroOmitted || dec.NowMs != 1763000000097 {
 			t.Fatalf("unexpected decoded metadata: %+v", dec)
 		}
 	})
@@ -387,8 +387,8 @@ func TestSignSpecDeterministicVectors(t *testing.T) {
 			t.Fatalf("unread entropy bytes: %d", entReader.Len())
 		}
 
-		const wantSig = "mv0fhqywmZWnKdKGmCcY7talj9j/rTWy6TTOboNPtxOeOqUc5mNOPYxAGNxN4MDkgWpkieIHTxzlbddcTGXzZC9kompvuOXW24VcVgvo0qqsGMvQDrbsez6FKwMNUbTqeAVvil46hUr96nVAkHQY/pAySKLC5c8BP3x6k2ucT9Bg1zgAD1c-PdSkKh52"
-		const wantSecSig = "8a3f27d0959b92823749f4cf46d54644"
+		const wantSig = "mv0fhqywmZWnKdKGmCcY7talj9j/rTWy6TTObLPPtOKeOqUc5mNOPOcAGxqN4MDvgWpkieIHTxzlbddcTGXzZC9kompvuOXW24VcVgvo0qqsGMvQDrbsez6FKwMNUbTqeAVvil46hUr96nVAkHQY/pAySKLC5c8BP3x6k2ucT9Bg1zgAD1c-PdSkKh4d"
+		const wantSecSig = "0af3880f4c5d663dc11aae2013895c77"
 
 		if res.Signature != wantSig {
 			t.Fatalf("Signature mismatch:\ngot:  %s\nwant: %s", res.Signature, wantSig)
@@ -409,13 +409,13 @@ func TestSignSpecDeterministicVectors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decodeABogus failed: %v", err)
 		}
-		if dec.Checksum != 0xCD || dec.ZeroOmitted {
+		if dec.Checksum != 0x09 || dec.ZeroOmitted {
 			t.Fatalf("unexpected decoded checksum state: %+v", dec)
 		}
 	})
 
 	t.Run("Vector3_TrailingZeroChecksumOmission_Mod3Eq2_PreexistingUIFID", func(t *testing.T) {
-		entropy := mustHex(t, "da1623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddea")
+		entropy := mustHex(t, "9f1623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddea")
 		entReader := bytes.NewReader(entropy)
 
 		res, err := Sign(ctx, SignInput{
@@ -441,8 +441,8 @@ func TestSignSpecDeterministicVectors(t *testing.T) {
 			t.Fatalf("unread entropy bytes: %d", entReader.Len())
 		}
 
-		const wantSig = "QvUnDFUjmq85OdKt8CcY7SrUG2L/rPuy5TiKRFnPHPz1chMa5mN2PYxWjNxN40DkgRBwie1HxxzlbEVczGXhZHHpqmkvSwiyxU5AV0fo0qN4GzkQDHbheuXzFwMr0csqe55XilR62UJ9gVdAirQY/Bl9tKoCQcSBB1OfkMucN9B6Z06AD3c1PptpNhiq"
-		const wantSecSig = "668d0b177abc76c8f89e56a95b45e575"
+		const wantSig = "QvUnDFW7mq85OdKt8CcY7SrUG2L/rPuy5TiKRzcPHPz1chMa5mN2POcWjxqN40DvgRBwie1HxxzlbEVczGXhZHHpqmkvSwiyxU5AV0fo0qN4GzkQDHbheuXzFwMr0csqe55XilR62UJ9gVdAirQY/Bl9tKoCQcSBB1OfkMucN9B6Z06AD3c1PptpNhiq"
+		const wantSecSig = "c35b2a84e4d5b425009f839c079320c9"
 
 		if res.Signature != wantSig {
 			t.Fatalf("Signature mismatch:\ngot:  %s\nwant: %s", res.Signature, wantSig)
@@ -530,13 +530,13 @@ func TestDecodeABogusStructuralSelfCheck(t *testing.T) {
 		uaEnc := encodeCustomBase64(alphabetUA, transformModifiedRC4([]byte{0, 1, 14}, encodeUTF16Units(br.ua)))
 		dua := SumSM3([]byte(uaEnc))
 
-		if dec.QuerySlots != [3]byte{dq[9], dq[18], pickCanaryByte(dq, 11, 3, 12)} {
+		if dec.QuerySlots != [3]byte{dq[9], dq[18], pickCanaryByte(dq, 3, 11, 12)} {
 			t.Fatalf("query digest slots mismatch: got %v", dec.QuerySlots)
 		}
-		if dec.BodySlots != [3]byte{db[10], db[19], pickCanaryByte(db, 8, 4, 9)} {
+		if dec.BodySlots != [3]byte{db[10], db[19], pickCanaryByte(db, 4, 8, 9)} {
 			t.Fatalf("body digest slots mismatch: got %v", dec.BodySlots)
 		}
-		if dec.UASlots != [3]byte{dua[11], dua[21], pickCanaryByte(dua, 12, 5, 13)} {
+		if dec.UASlots != [3]byte{dua[11], dua[21], pickCanaryByte(dua, 5, 12, 13)} {
 			t.Fatalf("ua digest slots mismatch: got %v", dec.UASlots)
 		}
 	}
@@ -712,4 +712,94 @@ func TestSecSDKRulesAndValidation(t *testing.T) {
 	if _, err := Sign(canceledCtx, SignInput{UserAgent: testDesktopChromeUA, Now: nowFn}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
+}
+
+func TestPickCanaryByteAndPackScalarBlockSlots(t *testing.T) {
+	t.Run("StartIndexSentinelSkipAndFallback", func(t *testing.T) {
+		var d [32]byte
+		for i := range d {
+			d[i] = byte(100 + i)
+		}
+		// Start=3 must pick d[3] (103), not d[0] (100) and not d[11] (111).
+		if got := pickCanaryByte(d, 3, 11, 12); got != 103 {
+			t.Fatalf("pickCanaryByte(start=3, sentinel=11) = %d, want 103", got)
+		}
+
+		// Sentinel values at start..start+1 are skipped until first non-sentinel byte.
+		dSkip := d
+		dSkip[3] = 11
+		dSkip[4] = 11
+		dSkip[5] = 0x77
+		if got := pickCanaryByte(dSkip, 3, 11, 12); got != 0x77 {
+			t.Fatalf("pickCanaryByte skip sentinel = 0x%02x, want 0x77", got)
+		}
+
+		// Non-sentinel byte at the very last digest index (31) is returned.
+		var dLast [32]byte
+		for i := range dLast {
+			dLast[i] = 8
+		}
+		dLast[0] = 0xAA // before start, must be ignored
+		dLast[31] = 0x99
+		if got := pickCanaryByte(dLast, 4, 8, 9); got != 0x99 {
+			t.Fatalf("pickCanaryByte last index = 0x%02x, want 0x99", got)
+		}
+
+		// When all bytes in [start..31] equal sentinel (even if [0..start-1] differ), return fallback.
+		var dAllSentinel [32]byte
+		for i := range dAllSentinel {
+			dAllSentinel[i] = 12
+		}
+		for i := 0; i < 5; i++ {
+			dAllSentinel[i] = byte(0xE0 + i)
+		}
+		if got := pickCanaryByte(dAllSentinel, 5, 12, 13); got != 13 {
+			t.Fatalf("pickCanaryByte fallback = %d, want 13", got)
+		}
+	})
+
+	t.Run("PackScalarBlockExactCanaryParameters", func(t *testing.T) {
+		makeUnique := func(base byte) [32]byte {
+			var d [32]byte
+			for i := range d {
+				d[i] = base + byte(i)
+			}
+			return d
+		}
+		// 1. Direct hit at start indices: dq[3], db[4], dua[5] (distinct from dq[11], db[8], dua[12]).
+		dq := makeUnique(0x20)
+		db := makeUnique(0x60)
+		dua := makeUnique(0xA0)
+		sc := packScalarBlock(1763000000000, DefaultPageID, DefaultAID, 40, 3, dq, db, dua)
+		if sc[15] != dq[9] || sc[9] != dq[18] || sc[12] != dq[3] {
+			t.Fatalf("query slots = (%d,%d,%d), want dq[9]=%d, dq[18]=%d, dq[3]=%d", sc[15], sc[9], sc[12], dq[9], dq[18], dq[3])
+		}
+		if sc[33] != db[10] || sc[38] != db[19] || sc[21] != db[4] {
+			t.Fatalf("body slots = (%d,%d,%d), want db[10]=%d, db[19]=%d, db[4]=%d", sc[33], sc[38], sc[21], db[10], db[19], db[4])
+		}
+		if sc[2] != dua[11] || sc[32] != dua[21] || sc[24] != dua[5] {
+			t.Fatalf("ua slots = (%d,%d,%d), want dua[11]=%d, dua[21]=%d, dua[5]=%d", sc[2], sc[32], sc[24], dua[11], dua[21], dua[5])
+		}
+
+		// 2. Sentinel skip at start indices: dq[3]==11 -> dq[4], db[4]==8 -> db[5], dua[5]==12 -> dua[6].
+		dq[3], db[4], dua[5] = 11, 8, 12
+		scSkip := packScalarBlock(1763000000000, DefaultPageID, DefaultAID, 40, 3, dq, db, dua)
+		if scSkip[12] != dq[4] || scSkip[21] != db[5] || scSkip[24] != dua[6] {
+			t.Fatalf("sentinel skip slots = (%d,%d,%d), want (%d,%d,%d)",
+				scSkip[12], scSkip[21], scSkip[24], dq[4], db[5], dua[6])
+		}
+
+		// 3. Full sentinel range [start..31] falls back to 12, 9, 13.
+		var dqFB, dbFB, duaFB [32]byte
+		for i := 0; i < 32; i++ {
+			dqFB[i], dbFB[i], duaFB[i] = 11, 8, 12
+		}
+		dqFB[0], dqFB[1], dqFB[2] = 0xF1, 0xF2, 0xF3
+		dbFB[0], dbFB[1], dbFB[2], dbFB[3] = 0xE1, 0xE2, 0xE3, 0xE4
+		duaFB[0], duaFB[1], duaFB[2], duaFB[3], duaFB[4] = 0xD1, 0xD2, 0xD3, 0xD4, 0xD5
+		scFB := packScalarBlock(1763000000000, DefaultPageID, DefaultAID, 40, 3, dqFB, dbFB, duaFB)
+		if scFB[12] != 12 || scFB[21] != 9 || scFB[24] != 13 {
+			t.Fatalf("fallback canary slots = (%d,%d,%d), want (12,9,13)", scFB[12], scFB[21], scFB[24])
+		}
+	})
 }
