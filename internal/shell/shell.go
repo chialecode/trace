@@ -74,6 +74,36 @@ type RuntimeStateSnapshot struct {
 	Timestamp              string   `json:"timestamp"`
 }
 
+// shellWindow abstracts *mygo.Window so Shell's main-thread re-entrancy and
+// lifecycle transitions can be tested deterministically without OS windows.
+type shellWindow interface {
+	SetWindowButtonsTheme(mygo.ThemeSource)
+	SetFullScreen(bool)
+	Restore()
+	Show()
+	ShowInactive()
+	Hide()
+	Focus()
+	Update(func())
+	OnClose(func(*mygo.CloseEvent)) func()
+	Close()
+	Destroy()
+	IsMinimized() bool
+	IsFullScreen() bool
+	Size() (int, int)
+	rawWindow() *mygo.Window
+}
+
+type mygoShellWindow struct {
+	*mygo.Window
+}
+
+func (w mygoShellWindow) rawWindow() *mygo.Window { return w.Window }
+
+func newMyGoShellWindow(opts mygo.WindowOptions) shellWindow {
+	return mygoShellWindow{Window: mygo.NewWindow(opts)}
+}
+
 // Shell manages the native desktop lifecycle, single-instance lock, tray icon, and window creation/destruction.
 type Shell struct {
 	mu                 sync.Mutex
@@ -82,10 +112,11 @@ type Shell struct {
 	lockHandle         *appdirs.Lock
 	backend            *service.Backend
 	uiApp              *ui.App
-	win                *mygo.Window
+	win                shellWindow
 	winClosed          *atomic.Bool
 	tray               *mygo.Tray
 	unsubEvents        func()
+	openingWindow      bool
 	closingToTray      bool
 	quitting           bool
 	quitConfirmOpen    bool
@@ -95,7 +126,7 @@ type Shell struct {
 	stoleFocusDetail   string
 	updates            *update.Controller
 
-	// Serialized tray refresh worker state; trayRefresh, trayDispatchMain, and confirmQuitDialog are replaceable in tests.
+	// Serialized tray refresh worker state; hooks below are replaceable in tests.
 	trayMu            sync.Mutex
 	trayRunning       bool
 	trayDirty         bool
@@ -106,6 +137,8 @@ type Shell struct {
 	confirmQuitDialog func(mygo.MessageOptions) (mygo.MessageResult, error)
 	openFileDialog    func(mygo.OpenDialogOptions) ([]string, error)
 	saveFileDialog    func(mygo.SaveDialogOptions) (string, error)
+	newMainWindow     func(mygo.WindowOptions) shellWindow
+	checkActiveWork   func() bool
 	trayLastTooltip   string
 	trayHasState      bool
 	trayWantTooltip   string
@@ -281,14 +314,18 @@ func Run() error {
 	return mygo.App.Run()
 }
 
-func (s *Shell) audioSinkForMode() player.AudioSink {
-	if s.quiet != "" {
+func audioSinkForQuiet(quiet string) player.AudioSink {
+	if quiet != "" {
 		return player.NewNullAudioSink()
 	}
 	return player.NewMyGoAudioSink()
 }
 
-func captureWindowSize(win *mygo.Window) (int, int, bool) {
+func (s *Shell) audioSinkForMode() player.AudioSink {
+	return audioSinkForQuiet(s.quiet)
+}
+
+func captureWindowSize(win shellWindow) (int, int, bool) {
 	if win == nil || win.IsMinimized() || win.IsFullScreen() {
 		return 0, 0, false
 	}
@@ -309,36 +346,74 @@ func (s *Shell) recordRuntimeWindowState(open bool) {
 
 func (s *Shell) openOrRestoreMainWindow() {
 	s.mu.Lock()
-	if s.quitting {
+	if s.quitting || s.openingWindow {
 		s.mu.Unlock()
 		return
 	}
 	if s.win != nil {
 		w := s.win
 		quiet := s.quiet
+		s.openingWindow = true
 		s.mu.Unlock()
+		defer func() {
+			s.mu.Lock()
+			s.openingWindow = false
+			s.mu.Unlock()
+		}()
+		stillCurrent := func() bool {
+			s.mu.Lock()
+			ok := !s.quitting && s.win == w
+			s.mu.Unlock()
+			return ok
+		}
 		if quiet == "" {
 			w.Restore()
-			w.Show()
-			w.Focus()
+			if stillCurrent() {
+				w.Show()
+			}
+			if stillCurrent() {
+				w.Focus()
+			}
 		} else if quiet == "inactive" {
 			w.ShowInactive()
 		}
-		s.recordRuntimeWindowState(quiet != "hidden")
+		if stillCurrent() {
+			s.recordRuntimeWindowState(quiet != "hidden")
+		}
 		s.checkForegroundSafety("reuse_window")
 		return
 	}
 
-	uiApp := ui.NewApp(s.backend, s.audioSinkForMode())
-	if s.updates != nil {
-		uiApp.BindUpdater(s.updates)
+	s.openingWindow = true
+	backend := s.backend
+	updates := s.updates
+	lastRoute := s.lastRoute
+	quiet := s.quiet
+	displayName := s.loc.DisplayName
+	newWin := s.newMainWindow
+	if newWin == nil {
+		newWin = newMyGoShellWindow
 	}
-	if s.lastRoute != "" {
-		uiApp.Navigate(s.lastRoute)
-	}
-	s.uiApp = uiApp
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.openingWindow = false
+		s.mu.Unlock()
+	}()
 
-	uiSt := s.backend.GetUIState()
+	// Never hold s.mu across UI construction, backend reads, or MyGo/Win32
+	// window calls: Windows ShowWindow / UI Automation COM STA loops can
+	// re-entrantly dispatch tray clicks or RunOnMain callbacks on the main
+	// thread, which would self-deadlock on s.mu.
+	uiApp := ui.NewApp(backend, audioSinkForQuiet(quiet))
+	if updates != nil {
+		uiApp.BindUpdater(updates)
+	}
+	if lastRoute != "" {
+		uiApp.Navigate(lastRoute)
+	}
+
+	uiSt := backend.GetUIState()
 	width := uiSt.Window.Width
 	height := uiSt.Window.Height
 	if width < 720 {
@@ -348,13 +423,24 @@ func (s *Shell) openOrRestoreMainWindow() {
 		height = 860
 	}
 
+	s.mu.Lock()
+	if s.quitting {
+		s.mu.Unlock()
+		uiApp.Close()
+		return
+	}
+	s.mu.Unlock()
+
+	// Always create Hidden: true first so SetWindowButtonsTheme does not
+	// prematurely settleShow() before BindEventLoop, OnClose, and s.win are
+	// wired (and so the first View frame runs with a.dispatch already bound).
 	winOpts := mygo.WindowOptions{
-		Title:           s.loc.DisplayName,
+		Title:           displayName,
 		Width:           width,
 		Height:          height,
 		MinWidth:        720,
 		MinHeight:       520,
-		Hidden:          s.quiet != "",
+		Hidden:          true,
 		AutoHideMenuBar: true,
 		// Immersive title bar (DEC-046 ④): the page reaches the top and the
 		// system's minimize, maximize and close buttons stay over it.
@@ -362,21 +448,15 @@ func (s *Shell) openOrRestoreMainWindow() {
 		BackgroundColor: "#ffffff",
 		Content:         mygoui.View(uiApp.View),
 	}
-	win := mygo.NewWindow(winOpts)
+	win := newWin(winOpts)
 	win.SetWindowButtonsTheme(mainWindowButtonsTheme)
 	winClosed := &atomic.Bool{}
 	uiApp.BindFullscreenHandler(func(full bool) {
-		if s.quiet == "" && !winClosed.Load() {
+		if quiet == "" && !winClosed.Load() {
 			win.SetFullScreen(full)
 		}
 	})
-	uiApp.BindFileDialog(s.newFileDialogHandler(win, winClosed))
-	if s.quiet == "hidden" {
-		win.Hide()
-	} else if s.quiet == "inactive" {
-		win.ShowInactive()
-	}
-
+	uiApp.BindFileDialog(s.newFileDialogHandler(win.rawWindow(), winClosed))
 	uiApp.BindEventLoop(func(fn func()) {
 		if !winClosed.Load() {
 			win.Update(fn)
@@ -384,6 +464,9 @@ func (s *Shell) openOrRestoreMainWindow() {
 	})
 
 	win.OnClose(func(e *mygo.CloseEvent) {
+		if winClosed.Load() {
+			return
+		}
 		s.mu.Lock()
 		quitting := s.quitting
 		closingToTray := s.closingToTray
@@ -391,7 +474,7 @@ func (s *Shell) openOrRestoreMainWindow() {
 		if quitting || closingToTray {
 			return
 		}
-		closeAction := s.backend.GetSettings().Window.CloseAction
+		closeAction := backend.GetSettings().Window.CloseAction
 		if closeAction == "tray" {
 			e.PreventDefault()
 			go func() {
@@ -405,12 +488,34 @@ func (s *Shell) openOrRestoreMainWindow() {
 		}
 	})
 
+	s.mu.Lock()
+	if s.quitting {
+		s.mu.Unlock()
+		winClosed.Store(true)
+		uiApp.Close()
+		win.Destroy()
+		return
+	}
+	s.uiApp = uiApp
 	s.win = win
 	s.winClosed = winClosed
 	s.closingToTray = false
 	s.mu.Unlock()
 
-	s.recordRuntimeWindowState(s.quiet != "hidden")
+	if quiet == "" {
+		win.Show()
+	} else if quiet == "inactive" {
+		win.ShowInactive()
+	} else if quiet == "hidden" {
+		win.Hide()
+	}
+
+	s.mu.Lock()
+	stillOpen := !s.quitting && s.win == win
+	s.mu.Unlock()
+	if stillOpen {
+		s.recordRuntimeWindowState(quiet != "hidden")
+	}
 	s.checkForegroundSafety("open_window")
 }
 
@@ -495,7 +600,12 @@ func (s *Shell) CloseToTray() {
 	if win != nil {
 		win.Close()
 	}
-	s.recordRuntimeWindowState(false)
+	s.mu.Lock()
+	stillClosed := s.win == nil
+	s.mu.Unlock()
+	if stillClosed {
+		s.recordRuntimeWindowState(false)
+	}
 
 	runtime.GC()
 	debug.FreeOSMemory()
@@ -573,41 +683,61 @@ func (s *Shell) RequestQuit(force bool) {
 		s.mu.Unlock()
 		return
 	}
-	if !force && s.quiet == "" && s.hasActiveWork() {
-		if s.quitConfirmOpen {
+	quiet := s.quiet
+	confirmOpen := s.quitConfirmOpen
+	activeCheck := s.checkActiveWork
+	s.mu.Unlock()
+
+	if !force && quiet == "" {
+		if confirmOpen {
+			return
+		}
+		if activeCheck == nil {
+			activeCheck = s.hasActiveWork
+		}
+		// Query backend task/recording locks off s.mu to avoid AB-BA lock inversion.
+		if activeCheck() {
+			s.mu.Lock()
+			if s.quitting || s.quitConfirmOpen {
+				s.mu.Unlock()
+				return
+			}
+			s.quitConfirmOpen = true
+			displayName := s.loc.DisplayName
+			ask := s.confirmQuitDialog
+			if ask == nil {
+				ask = mygo.Dialog.Message
+			}
+			s.mu.Unlock()
+			go func() {
+				res, err := ask(mygo.MessageOptions{
+					Type:          mygo.MessageWarning,
+					Title:         "确认退出 " + displayName,
+					Message:       "当前仍有正在运行的缓存任务或直播录制，确定要退出吗？",
+					Detail:        "退出前会自动暂停任务并安全收尾正在录制的分段。",
+					Buttons:       []string{"取消", "确认退出"},
+					DefaultButton: 0,
+					CancelButton:  0,
+				})
+				s.mu.Lock()
+				s.quitConfirmOpen = false
+				quitting := s.quitting
+				s.mu.Unlock()
+				if !quitting && err == nil && res.Button == 1 {
+					mygo.RunOnMain(func() {
+						s.performQuit()
+					})
+				}
+			}()
+			return
+		}
+		s.mu.Lock()
+		if s.quitting || s.quitConfirmOpen {
 			s.mu.Unlock()
 			return
 		}
-		s.quitConfirmOpen = true
-		displayName := s.loc.DisplayName
-		ask := s.confirmQuitDialog
-		if ask == nil {
-			ask = mygo.Dialog.Message
-		}
 		s.mu.Unlock()
-		go func() {
-			res, err := ask(mygo.MessageOptions{
-				Type:          mygo.MessageWarning,
-				Title:         "确认退出 " + displayName,
-				Message:       "当前仍有正在运行的缓存任务或直播录制，确定要退出吗？",
-				Detail:        "退出前会自动暂停任务并安全收尾正在录制的分段。",
-				Buttons:       []string{"取消", "确认退出"},
-				DefaultButton: 0,
-				CancelButton:  0,
-			})
-			s.mu.Lock()
-			s.quitConfirmOpen = false
-			quitting := s.quitting
-			s.mu.Unlock()
-			if !quitting && err == nil && res.Button == 1 {
-				mygo.RunOnMain(func() {
-					s.performQuit()
-				})
-			}
-		}()
-		return
 	}
-	s.mu.Unlock()
 	s.performQuit()
 }
 
