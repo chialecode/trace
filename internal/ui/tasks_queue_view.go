@@ -109,6 +109,38 @@ func (a *App) renderTasksQueueView(c *ui.Context) {
 			if a.TaskActionError != "" {
 				renderErrorBanner(c, "", a.TaskActionError, nil)
 			}
+			_, hasActiveBackfill := a.activeWeiboBackfillQueue()
+			if !hasActiveBackfill && a.BackfillSummary.TotalItems > 0 {
+				startingBackfill := a.isPending("start-weibo-backfill")
+				ui.Row(c).
+					Label("历史缓存补全提示条").
+					FillWidth().
+					Padding(10, 14).
+					Radius(12).
+					Background(ColorBgSecondary).
+					Border(1, ColorBorder).
+					AlignItems(ui.Center).
+					Justify(ui.SpaceBetween).
+					Gap(10).
+					ClipX().
+					Children(func() {
+						ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
+							ui.Text(c, fmt.Sprintf("发现 %d 条历史微博可补全", a.BackfillSummary.TotalItems)).
+								FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+							if detail := formatBackfillSummaryBreakdown(a.BackfillSummary); detail != "" {
+								ui.Text(c, detail).
+									FontSize(12).TextColor(ColorTextMuted).SingleLine()
+							}
+						})
+						btnText := "一键补全"
+						if startingBackfill {
+							btnText = "正在启动…"
+						}
+						if AccentPillButton(c, btnText, "一键补全历史微博缓存").Disabled(startingBackfill).Clicked() && !startingBackfill {
+							a.startWeiboBackfill()
+						}
+					})
+			}
 			if len(a.CacheQueue) == 0 {
 				ui.Column(c).FillWidth().Padding(40, 16).AlignItems(ui.Center).Gap(8).Children(func() {
 					ui.Text(c, "当前没有缓存队列任务").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
@@ -151,6 +183,7 @@ func (a *App) finishCacheQueueAction(err error) {
 
 func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, expanded bool) {
 	qSite := normalizeSiteIDUI(cur.Site)
+	isBackfill := cur.Kind == service.CacheQueueKindWeiboBackfill || cur.List == service.CacheQueueListWeiboBackfill
 	unfinished := isUnfinishedCacheQueueStatus(cur.Status)
 	borderCol := ColorBorder
 	if expanded {
@@ -186,7 +219,9 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 					ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
 						ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
 							title := firstNonEmptyStrUI(cur.UserName, cur.User)
-							if cur.ListLabel != "" {
+							if isBackfill {
+								title = "历史缓存补全 · 微博"
+							} else if cur.ListLabel != "" {
 								title += " · " + cur.ListLabel
 							}
 							ui.Text(c, title).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
@@ -209,7 +244,15 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 						}
 						ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
 							ui.Text(c, statusLine).Label("队列详情状态：" + cur.ID).FontSize(12).FontWeight(600).TextColor(statusColor).SingleLine()
-							ui.Text(c, fmt.Sprintf("· 已缓存 %d 条 · 跳过 %d 条", cur.CachedCount, cur.SkippedCount)).
+							countLine := fmt.Sprintf("· 已缓存 %d 条 · 跳过 %d 条", cur.CachedCount, cur.SkippedCount)
+							if isBackfill {
+								if cur.BackfillTotal > 0 {
+									countLine = fmt.Sprintf("· 已补全 %d / %d 条 · 跳过 %d 条", cur.CachedCount, cur.BackfillTotal, cur.SkippedCount)
+								} else {
+									countLine = fmt.Sprintf("· 已补全 %d 条 · 跳过 %d 条", cur.CachedCount, cur.SkippedCount)
+								}
+							}
+							ui.Text(c, countLine).
 								Label("队列详情计数：" + cur.ID).
 								FontSize(12).TextColor(ColorTextMuted).SingleLine()
 						})
@@ -259,7 +302,11 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 				ui.Text(c, cur.Note).FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
 			}
 			if cur.Status == service.CacheQueueRunning && cur.ActiveTitle != "" {
-				ui.Text(c, "当前正在缓存："+cur.ActiveTitle).FontSize(12).FontWeight(600).TextColor(ColorAccent).SingleLine()
+				prefix := "当前正在缓存："
+				if isBackfill {
+					prefix = "当前正在补全："
+				}
+				ui.Text(c, prefix+cur.ActiveTitle).FontSize(12).FontWeight(600).TextColor(ColorAccent).SingleLine()
 			}
 			if expanded {
 				a.renderCacheQueueRecent(c, cur)

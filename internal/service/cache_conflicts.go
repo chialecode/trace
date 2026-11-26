@@ -729,9 +729,10 @@ const (
 )
 
 type cachedInspectDecision struct {
-	action   cachedInspectAction
-	conflict cacheConflictRecord
-	enqueue  func(ctx context.Context) (queueEnqueued, error)
+	action      cachedInspectAction
+	conflict    cacheConflictRecord
+	enqueue     func(ctx context.Context) (queueEnqueued, error)
+	postInspect func()
 }
 
 func hasValidLocalCache(meta library.ItemMetadata) bool {
@@ -1086,6 +1087,19 @@ func (b *Backend) inspectDouyinCachedWork(detail douyin.WorkDetail, meta library
 
 // 2. Weibo posts 0-call list inspection.
 func (b *Backend) inspectWeiboCachedPost(post weibo.Post, meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
+	dec := b.inspectWeiboCachedPostDeferred(post, meta, queueOrigin)
+	if dec.postInspect != nil {
+		dec.postInspect()
+		dec.postInspect = nil
+	}
+	return dec
+}
+
+// inspectWeiboCachedPostDeferred performs the pure read-only comparison of a
+// cached Weibo item while deferring any metadata write / synchronous event
+// publication into dec.postInspect so callers holding cacheQueueManager.mu
+// never perform disk/SQLite writes or publish events under the queue lock.
+func (b *Backend) inspectWeiboCachedPostDeferred(post weibo.Post, meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
 	if meta.IsArchivedSnapshot() {
 		return cachedInspectDecision{action: inspectSkipNoOp}
 	}
@@ -1154,6 +1168,12 @@ func (b *Backend) inspectWeiboCachedPost(post weibo.Post, meta library.ItemMetad
 		}
 	}
 
+	var postInspectFn func()
+	withPostInspect := func(dec cachedInspectDecision) cachedInspectDecision {
+		dec.postInspect = postInspectFn
+		return dec
+	}
+
 	localSingleVid := meta.DouyinVideo != nil && len(meta.NotePages) == 0
 	localPages := len(meta.NotePages)
 
@@ -1203,22 +1223,55 @@ func (b *Backend) inspectWeiboCachedPost(post weibo.Post, meta library.ItemMetad
 				return makeConflict(ConflictReasonText, "源站微博正文内容已修改")
 			}
 		}
-		if fullRemoteTextAvailable && !substantiveTextChanged(localBody, post.Text) &&
-			b.conflicts != nil && b.conflicts.hasPendingTextConflictForItem(meta.ItemKey) {
-			b.reconcileLiveLegacyTextConflict(meta.ItemKey, MapSiteTextLinks(post.Links))
+		if fullRemoteTextAvailable && !substantiveTextChanged(localBody, post.Text) {
+			remoteLinks := MapSiteTextLinks(post.Links)
+			hasPendingTextConflict := b.conflicts != nil && b.conflicts.hasPendingTextConflictForItem(meta.ItemKey)
+			if cleanedMeta, hadLegacy := cleanLegacyInlineLinksInItem(meta, remoteLinks); hadLegacy {
+				if b.weiboRemoveWatermarkEnabled() && !library.WeiboNeedsNoWMBackfill(cleanedMeta, true) &&
+					cleanedMeta.CacheStandardVersion < library.WeiboCacheStandardVersion {
+					cleanedMeta.CacheStandardVersion = library.WeiboCacheStandardVersion
+				}
+				itemKeyCopy := meta.ItemKey
+				linksCopy := append([]TextLinkDTO(nil), remoteLinks...)
+				meta = cleanedMeta
+				postInspectFn = func() {
+					if hasPendingTextConflict {
+						_, _ = b.reconcileLiveLegacyTextConflict(itemKeyCopy, linksCopy)
+						return
+					}
+					if b.lib == nil {
+						return
+					}
+					fresh, ok, gErr := b.lib.GetItem(itemKeyCopy)
+					if gErr != nil || !ok || strings.TrimSpace(fresh.ItemDir) == "" {
+						return
+					}
+					cleaned, stillLegacy := cleanLegacyInlineLinksInItem(fresh, linksCopy)
+					if !stillLegacy {
+						return
+					}
+					if b.weiboRemoveWatermarkEnabled() && !library.WeiboNeedsNoWMBackfill(cleaned, true) &&
+						cleaned.CacheStandardVersion < library.WeiboCacheStandardVersion {
+						cleaned.CacheStandardVersion = library.WeiboCacheStandardVersion
+					}
+					if _, sErr := b.lib.SaveItemMetadataOnly(fresh.ItemDir, cleaned); sErr == nil && b.events != nil {
+						b.events.PublishSite(EventLibraryChanged, string(site.Weibo), itemKeyCopy)
+					}
+				}
+			}
 		}
 	}
 
 	// (c) Degraded / downgraded checks.
 	if remoteSingleVid {
 		if singleVideo.Selected == nil || strings.TrimSpace(singleVideo.Selected.URL) == "" {
-			return cachedInspectDecision{action: inspectSkipNoOp}
+			return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
 		}
 		if meta.DouyinVideo != nil {
 			localShort := shortEdgePixels(meta.DouyinVideo.Width, meta.DouyinVideo.Height)
 			remoteShort := firstPositiveInt(singleVideo.Selected.ShortEdge, shortEdgePixels(singleVideo.Selected.Width, singleVideo.Selected.Height))
 			if localShort > 0 && remoteShort > 0 && remoteShort < localShort {
-				return cachedInspectDecision{action: inspectSkipNoOp}
+				return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
 			}
 		}
 	}
@@ -1227,30 +1280,62 @@ func (b *Backend) inspectWeiboCachedPost(post weibo.Post, meta library.ItemMetad
 	if library.NeedsCompletion(meta) {
 		// Avoid re-downloading when every missing item is a permanently unavailable Sina placeholder GIF and media IDs are unchanged.
 		if !allMissingAreWeiboUnavailable(meta.Missing) {
-			return cachedInspectDecision{action: inspectEnqueue}
+			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 		}
 	}
 	if remoteSingleVid && singleVideo.Selected != nil && meta.DouyinVideo != nil {
 		localShort := shortEdgePixels(meta.DouyinVideo.Width, meta.DouyinVideo.Height)
 		remoteShort := firstPositiveInt(singleVideo.Selected.ShortEdge, shortEdgePixels(singleVideo.Selected.Width, singleVideo.Selected.Height))
 		if localShort > 0 && remoteShort > localShort {
-			return cachedInspectDecision{action: inspectEnqueue}
+			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 		}
 	}
 	for i := 0; i < localPages && i < len(images); i++ {
 		if images[i].Kind == weibo.MediaKindLivePhoto && strings.TrimSpace(meta.NotePages[i].Motion) == "" {
-			return cachedInspectDecision{action: inspectEnqueue}
+			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 		}
 	}
 	if post.IsLongText {
 		localBody := strings.TrimSpace(firstNonEmpty(meta.Text, meta.Desc))
 		if strings.HasSuffix(localBody, "...展开") || strings.HasSuffix(localBody, "…展开") ||
 			(post.LongTextFetched && utf8.RuneCountInString(strings.TrimSpace(post.Text)) > utf8.RuneCountInString(localBody)+10) {
-			return cachedInspectDecision{action: inspectEnqueue}
+			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 		}
 	}
+	if b.weiboRemoveWatermarkEnabled() && library.WeiboNeedsNoWMBackfill(meta, true) && weiboImagesHaveWatermarkFreeCandidate(images, meta) {
+		return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+	}
 
-	return cachedInspectDecision{action: inspectSkipNoOp}
+	return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
+}
+
+func weiboImagesHaveWatermarkFreeCandidate(images []weibo.ImageAsset, meta library.ItemMetadata) bool {
+	if len(images) == 0 {
+		return false
+	}
+	for i, img := range images {
+		if img.Kind == weibo.MediaKindGIF || img.Kind == weibo.MediaKindVideo {
+			continue
+		}
+		if strings.TrimSpace(img.WatermarkFreeURL) == "" {
+			continue
+		}
+		if len(meta.NotePages) > 0 {
+			if i >= len(meta.NotePages) {
+				continue
+			}
+			pg := meta.NotePages[i]
+			if strings.TrimSpace(pg.Image) == "" || pg.GIF || strings.EqualFold(pg.Kind, "video") || strings.EqualFold(pg.Kind, "gif") {
+				continue
+			}
+			if strings.TrimSpace(pg.NoWatermark) == "" {
+				return true
+			}
+		} else {
+			return true
+		}
+	}
+	return false
 }
 
 func allMissingAreWeiboUnavailable(missing []library.MissingRecord) bool {
