@@ -256,7 +256,7 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 	} else if out.DouyinVideo != nil && imported.DouyinVideo != nil && out.DouyinVideo.MediaID == "" {
 		out.DouyinVideo.MediaID = imported.DouyinVideo.MediaID
 	}
-	if out.CacheStandardVersion == 0 && imported.CacheStandardVersion > 0 {
+	if imported.CacheStandardVersion > out.CacheStandardVersion {
 		out.CacheStandardVersion = imported.CacheStandardVersion
 	}
 	if out.RecheckedAt == "" && imported.RecheckedAt != "" {

@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/chialecode/trace/internal/library"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 )
 
@@ -47,6 +48,7 @@ var (
 )
 
 type conflictResolutionCtxKey struct{}
+type forceOverwriteCtxKey struct{}
 
 // WithConflictResolution tags ctx with an explicit conflict resolution mode
 // ("keep_both" or "use_remote") so download entrypoints permit staged V2 execution.
@@ -64,6 +66,43 @@ func ConflictResolutionFromContext(ctx context.Context) string {
 	}
 	v, _ := ctx.Value(conflictResolutionCtxKey{}).(string)
 	return strings.TrimSpace(v)
+}
+
+// WithForceOverwrite marks ctx as an explicit manual force-redownload request
+// (DEC-079). Automatic tasks, queues, and scheduled checks MUST NEVER set this
+// and are rejected by effectiveForceOverwrite even if a caller passes it.
+func WithForceOverwrite(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, forceOverwriteCtxKey{}, true)
+}
+
+// ForceOverwriteFromContext reports whether ctx requests manual force overwrite.
+func ForceOverwriteFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(forceOverwriteCtxKey{}).(bool)
+	return v
+}
+
+// effectiveForceOverwrite returns true only for explicit manual requests; any
+// automatic, queue, or background-sourced download always returns false.
+func effectiveForceOverwrite(ctx context.Context, source string, flags ...bool) bool {
+	src := strings.ToLower(strings.TrimSpace(source))
+	if src == "auto" || src == "queue" || site.AutomaticRequestSource(ctx) != "" {
+		return false
+	}
+	if ForceOverwriteFromContext(ctx) {
+		return true
+	}
+	for _, f := range flags {
+		if f {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeConflictResolution(raw string) string {
@@ -176,9 +215,41 @@ func (m *Manager) taskResolutionAndPages(taskID string) (string, []int) {
 	return normalizeConflictResolution(mode), pages
 }
 
+func (m *Manager) storeTaskForceOverwrite(taskID string, force bool) {
+	if m == nil || taskID == "" || !force {
+		return
+	}
+	m.mu.Lock()
+	if m.forceOverwrites == nil {
+		m.forceOverwrites = make(map[string]bool)
+	}
+	m.forceOverwrites[taskID] = true
+	if ip, ok := m.initialPlans[taskID]; ok {
+		ip.ForceOverwrite = true
+		m.initialPlans[taskID] = ip
+	}
+	m.mu.Unlock()
+}
+
+func (m *Manager) taskForceOverwrite(taskID string) bool {
+	if m == nil || taskID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.forceOverwrites[taskID] {
+		return true
+	}
+	if ip, ok := m.initialPlans[taskID]; ok && ip.ForceOverwrite {
+		return true
+	}
+	return false
+}
+
 func (m *Manager) clearTaskResolutionStateLocked(taskID string) {
 	delete(m.conflictResolutions, taskID)
 	delete(m.conflictPages, taskID)
+	delete(m.forceOverwrites, taskID)
 }
 
 func (m *Manager) recordTaskOutcome(taskID string, err error) {

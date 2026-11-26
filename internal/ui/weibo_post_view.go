@@ -856,6 +856,11 @@ func (a *App) renderWeiboOnlinePostDetail(c *ui.Context, post *service.WeiboPost
 							}
 						}
 						if cachedItem != nil && itemKey != "" {
+							if !cachedItem.IsArchivedSnapshot() {
+								if m.Item("强制重新下载").Chosen() {
+									a.openForceRecacheConfirm(itemKey, firstNonEmptyStrUI(cachedItem.Title, post.Text, post.Mid))
+								}
+							}
 							if m.Item("打开文件夹").Chosen() {
 								a.showError(a.backend.OpenItemFolder(itemKey))
 							}
@@ -1183,6 +1188,11 @@ func (a *App) renderWeiboStandaloneVideo(c *ui.Context, vv *service.WeiboVideoVi
 							}
 						}
 						if cachedItem != nil && itemKey != "" {
+							if !cachedItem.IsArchivedSnapshot() {
+								if m.Item("强制重新下载").Chosen() {
+									a.openForceRecacheConfirm(itemKey, firstNonEmptyStrUI(cachedItem.Title, vv.Title, vv.ObjectID))
+								}
+							}
 							if m.Item("打开文件夹").Chosen() {
 								a.showError(a.backend.OpenItemFolder(itemKey))
 							}

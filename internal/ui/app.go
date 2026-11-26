@@ -131,6 +131,13 @@ type DeleteConfirmState struct {
 	DeleteFiles bool
 }
 
+// ForceRecacheConfirmState holds state for the manual force-redownload confirmation modal.
+type ForceRecacheConfirmState struct {
+	Open    bool
+	ItemKey string
+	Title   string
+}
+
 // HomeUpdatedActor is a subscription as a row of the Home panel, with its
 // newest cached post under the site filter (DEC-053 ②).
 type HomeUpdatedActor struct {
@@ -552,14 +559,16 @@ type App struct {
 	// parse) and cached count, keyed "site:uid" (DEC-061).
 	accountWorks map[string]service.AccountWorks
 	// videoCacheFor is the creator page the open video came from (DEC-061).
-	videoCacheFor     videoCacheContext
-	douyinCacheFor    douyinCacheContext
-	weiboCacheFor     weiboCacheContext
-	xCacheFor         xCacheContext
-	libraryOffset     int
-	LibraryAuthorMenu bool
-	ExpandedItemKey   string
-	DeleteConfirm     DeleteConfirmState
+	videoCacheFor       videoCacheContext
+	douyinCacheFor      douyinCacheContext
+	weiboCacheFor       weiboCacheContext
+	xCacheFor           xCacheContext
+	libraryOffset       int
+	LibraryAuthorMenu   bool
+	ExpandedItemKey     string
+	DeleteConfirm       DeleteConfirmState
+	ForceRecacheConfirm ForceRecacheConfirmState
+	BackfillSummary     service.BackfillSummaryDTO
 
 	// Tasks Page
 	TasksSection              string // "downloads" | "queue" | "conflicts" | "live" | "incidents" | "checks" | "transfers"
@@ -866,6 +875,7 @@ func (a *App) handleBackendEvent(ev service.Event) {
 	case service.EventSettingsChanged:
 		a.cachedDiagAt = time.Time{}
 		a.cachedUpdateHistAt = time.Time{}
+		a.refreshBackfillSummary()
 	case service.EventAccountChanged:
 		a.cacheStateRev++ // dots read "登录后查看" while signed out
 		a.cachedDiagAt = time.Time{}
@@ -887,6 +897,7 @@ func (a *App) handleBackendEvent(ev service.Event) {
 	case service.EventCacheQueueUpdated:
 		a.cacheStateRev++
 		a.CacheQueue = a.backend.ListCacheQueue()
+		a.refreshBackfillSummary()
 	case service.EventCacheConflictsChanged:
 		a.cacheStateRev++
 		a.refreshCacheConflicts()
@@ -906,6 +917,7 @@ func (a *App) handleBackendEvent(ev service.Event) {
 				a.libraryItemsDirty = a.CurrentRoute != RouteLibrary && a.CurrentRoute != RouteLibraryItem
 			} else {
 				a.refreshLibraryStatistics()
+				a.refreshBackfillSummary()
 				a.refreshAccountWorks()
 				if len(a.FeedItems) == 0 && a.HomeActorFilter == nil {
 					a.loadInitialFeed()
@@ -957,6 +969,7 @@ func (a *App) RefreshData() {
 	a.cachedDiagAt = time.Time{}
 	a.HistoryItems = a.backend.ListHistory()
 	a.refreshLibraryStatistics()
+	a.refreshBackfillSummary()
 	if len(a.FeedItems) == 0 {
 		a.loadInitialFeed()
 	}
@@ -1181,6 +1194,9 @@ func (a *App) View(c *ui.Context) {
 	}
 	if a.DeleteConfirm.Open {
 		a.renderDeleteConfirmOverlay(c, w, h)
+	}
+	if a.ForceRecacheConfirm.Open {
+		a.renderForceRecacheConfirmOverlay(c, w, h)
 	}
 	if a.RestartConfirmOpen && a.updater != nil {
 		a.renderRestartConfirmOverlay(c, w, h)

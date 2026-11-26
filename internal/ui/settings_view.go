@@ -698,6 +698,38 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 					}
 				})
 			})
+			// Historical cache standard backfill row (DEC-079)
+			activeBackfill, hasActiveBackfill := a.activeWeiboBackfillQueue()
+			startingBackfill := a.isPending("start-weibo-backfill")
+			ui.Row(c).Label("存储历史缓存标准行").FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
+				ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
+					ui.Text(c, "历史缓存标准").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+					if hasActiveBackfill {
+						progressText := fmt.Sprintf("正在补全微博历史缓存 · 已补全 %d 条 · 跳过 %d 条", activeBackfill.CachedCount, activeBackfill.SkippedCount)
+						if activeBackfill.BackfillTotal > 0 {
+							progressText = fmt.Sprintf("正在补全微博历史缓存 · 已补全 %d / %d 条 · 跳过 %d 条", activeBackfill.CachedCount, activeBackfill.BackfillTotal, activeBackfill.SkippedCount)
+						}
+						ui.Text(c, progressText).FontSize(12).TextColor(ColorAccent).SingleLine()
+					} else if a.BackfillSummary.TotalItems > 0 {
+						ui.Text(c, formatBackfillSummaryDetail(a.BackfillSummary)).FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
+					} else {
+						ui.Text(c, "历史缓存已全部符合最新标准").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					}
+				})
+				if hasActiveBackfill {
+					if OutlinePillButton(c, "查看补全队列", "查看历史缓存补全队列").Clicked() {
+						a.OpenCacheQueueTask(activeBackfill.ID)
+					}
+				} else if a.BackfillSummary.TotalItems > 0 {
+					btnLabel := "补全历史缓存"
+					if startingBackfill {
+						btnLabel = "正在启动…"
+					}
+					if AccentPillButton(c, btnLabel, "补全历史缓存").Disabled(startingBackfill).Clicked() && !startingBackfill {
+						a.startWeiboBackfill()
+					}
+				}
+			})
 		})
 
 		// Change Cache Directory

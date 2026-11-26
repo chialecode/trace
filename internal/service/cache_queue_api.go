@@ -66,6 +66,9 @@ func (b *Backend) EnqueueCacheQueue(ctx context.Context, req CacheQueueRequest) 
 
 // queueListLabel names the list; a run a full-cache rule started says so.
 func queueListLabel(rec cacheQueueRecord) string {
+	if rec.List == CacheQueueListWeiboBackfill {
+		return "历史缓存补全"
+	}
 	label := cacheQueueListLabel(rec.Site, rec.List)
 	if rec.Origin == QueueOriginFullCache {
 		return "定期全部缓存 · " + label
@@ -74,7 +77,7 @@ func queueListLabel(rec cacheQueueRecord) string {
 }
 
 func queueOrigin(o string) string {
-	if o == QueueOriginFullCache {
+	if o == QueueOriginFullCache || o == CacheQueueOriginBackfill {
 		return o
 	}
 	return ""
@@ -259,10 +262,12 @@ func (b *Backend) ResumeCacheQueue(id string) (CacheQueueTask, error) {
 	m.mu.Lock()
 	var siteID site.ID
 	var found bool
+	var needLoginCheck bool
 	for _, e := range m.tasks {
 		if e.rec.ID == target {
 			siteID = site.ID(e.rec.Site)
 			found = true
+			needLoginCheck = !isWeiboBackfillRecord(e.rec) || e.rec.PauseReason == "auth_required"
 			break
 		}
 	}
@@ -271,8 +276,10 @@ func (b *Backend) ResumeCacheQueue(id string) (CacheQueueTask, error) {
 		return CacheQueueTask{}, &site.Error{Kind: site.ErrKindUnavailable, Message: "未找到该缓存队列任务"}
 	}
 
-	if err := b.requireSiteLogin(siteID); err != nil {
-		return CacheQueueTask{}, err
+	if needLoginCheck {
+		if err := b.requireSiteLogin(siteID); err != nil {
+			return CacheQueueTask{}, err
+		}
 	}
 
 	m.mu.Lock()
