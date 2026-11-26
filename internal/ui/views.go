@@ -223,6 +223,9 @@ func (a *App) routeTitle() string {
 			}
 			return "订阅详情"
 		}
+		if a.SubChecksOpen {
+			return "检查计划"
+		}
 		return "订阅"
 	case RouteMine:
 		return a.mineTitle()
@@ -381,7 +384,7 @@ func (a *App) renderRouteHeaderActions(c *ui.Context) {
 	case RouteMine:
 		a.renderMineHeaderActions(c)
 	case RouteSubscriptions:
-		if a.SubDetailOpen {
+		if a.SubDetailOpen || a.SubChecksOpen {
 			return
 		}
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
@@ -421,7 +424,7 @@ func (a *App) renderRouteHeaderActions(c *ui.Context) {
 			a.renderLibraryMoreMenu(c)
 		}
 	case RouteTasks:
-		if a.effectiveTasksSection() != "downloads" {
+		if a.effectiveTasksSection() != TasksSectionActive {
 			return
 		}
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {

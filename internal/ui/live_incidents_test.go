@@ -46,22 +46,22 @@ func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI(t *testing.T) {
 		t.Fatal("Settings '订阅与直播' must NOT render '同时录制数'")
 	}
 
-	// --- 2. N == 0 -> "录制异常" without "(0)" + clear empty state ---
+	// --- 2. N == 0 -> "待处理" without "(0)" + clear empty state ---
 	app.Navigate(RouteTasks)
 	tt.Frame()
 
-	if !tt.HasText("录制异常") {
-		t.Fatal("expected Tasks sidebar to render '录制异常'")
+	if !tt.HasText("待处理") {
+		t.Fatal("expected Tasks sidebar to render '待处理'")
 	}
-	if tt.HasText("录制异常（0）") || tt.HasText("录制异常(0)") {
-		t.Fatal("when N == 0, sidebar must show '录制异常' WITHOUT '(0)'")
+	if tt.HasText("待处理（0）") || tt.HasText("待处理(0)") {
+		t.Fatal("when N == 0, sidebar must show '待处理' WITHOUT '(0)'")
 	}
-	if err := tt.Click("任务侧栏：录制异常"); err != nil {
+	if err := tt.Click("任务侧栏：待处理"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if _, ok := tt.Find("录制异常空状态"); !ok || !tt.HasText("最近没有录制异常") {
-		t.Fatal("expected empty state 最近没有录制异常 when no sessions have incidents")
+	if _, ok := tt.Find("待处理空状态"); !ok || !tt.HasText("目前没有需要处理的事项") {
+		t.Fatal("expected empty state 目前没有需要处理的事项 when no attention items exist")
 	}
 
 	// --- 3. Seed active recording with live preview .part + recent finished (<7d) + old finished (>7d) ---
@@ -209,16 +209,16 @@ func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI(t *testing.T) {
 	app.selectTasksLive()
 	tt.Frame()
 
-	// Sidebar shows "录制异常（2）" (1 active + 1 <7d finished; excludes 10d-old session!)
-	if !tt.HasText("录制异常（2）") {
-		t.Fatal("expected Tasks sidebar to show '录制异常（2）' (active + <7d finished, excluding >7d)")
+	// Sidebar shows "待处理（2）" (1 active + 1 <7d finished; excludes 10d-old session!)
+	if !tt.HasText("待处理（2）") {
+		t.Fatal("expected Tasks sidebar to show '待处理（2）' (active + <7d finished, excluding >7d)")
 	}
 	// Icon rail "任务" badge only counts queued/running downloads (0 here!)
 	if got := app.activeWorkCount(); got != 0 {
 		t.Fatalf("expected icon rail activeWorkCount() == 0 when only live recordings/incidents exist, got %d", got)
 	}
 
-	// Both active row and recently finished row on "任务 › 直播录制" show "⚠ 2 处异常"!
+	// Both active row and recently finished row on "任务 › 直播" show "⚠ 2 处异常"!
 	if _, ok := tt.Find("录制行异常：bilibili:live:9101"); !ok {
 		t.Fatal("expected active recording row to show '录制行异常：bilibili:live:9101'")
 	}
@@ -229,7 +229,7 @@ func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI(t *testing.T) {
 		t.Fatal("expected '⚠ 2 处异常' pill text on recording rows")
 	}
 
-	// --- 4. Open live preview on active .part, then switch to "录制异常" -> immediate handle release! ---
+	// --- 4. Open live preview on active .part, toggle inline incidents without closing preview, then leave "直播" -> immediate handle release! ---
 	if err := tt.Click("预览直播录制：bilibili:live:9101"); err != nil {
 		t.Fatal(err)
 	}
@@ -246,60 +246,73 @@ func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if app.livePreviewPlayer.Bitmap() == nil {
-		t.Fatal("expected live preview bitmap before switching to incidents view")
+		t.Fatal("expected live preview bitmap before toggling inline incidents")
 	}
 
-	// Click "⚠ 2 处异常" on the active row -> switches to "录制异常" and immediately closes live preview!
+	// Click "⚠ 2 处异常" on the active row -> toggles inline expandable incident list directly under row while staying in "live" & keeping preview open!
 	if err := tt.Click("录制行异常：bilibili:live:9101"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if app.effectiveTasksSection() != "incidents" {
-		t.Fatalf("expected TasksSection == 'incidents', got %q", app.effectiveTasksSection())
+	if app.effectiveTasksSection() != TasksSectionLive {
+		t.Fatalf("expected TasksSection == 'live' after inline expand, got %q", app.effectiveTasksSection())
+	}
+	if app.LivePreviewKey == "" {
+		t.Fatal("toggling inline recording incidents on live row must not close active live preview")
+	}
+	if _, ok := tt.Find("行内录制异常列表：bilibili:live:9101"); !ok {
+		t.Fatal("expected inline incident list directly under active recording row")
+	}
+	if _, ok := tt.Find("行内删除录制异常记录：bilibili:live:9101"); ok {
+		t.Fatal("active recording row must NOT offer 删除异常记录")
+	}
+	if !tt.HasText("媒体序号跳号丢失 3 段，估算影响约 6 秒") {
+		t.Fatal("inline incident drawer missing Chinese detail text")
+	}
+	// Clicking pill again collapses inline incident drawer.
+	if err := tt.Click("录制行异常：bilibili:live:9101"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if _, ok := tt.Find("行内录制异常列表：bilibili:live:9101"); ok {
+		t.Fatal("expected second click on incident pill to collapse inline incident drawer")
+	}
+
+	// Expand inline incidents on recently finished recording row -> shows 删除异常记录 action.
+	if err := tt.Click("录制行异常：douyin:live:79001"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if _, ok := tt.Find("行内录制异常列表：douyin:live:79001"); !ok {
+		t.Fatal("expected inline incident list under recently finished recording row")
+	}
+	if _, ok := tt.Find("行内删除录制异常记录：douyin:live:79001"); !ok {
+		t.Fatal("expected ended recording inline incident drawer to offer 删除异常记录")
+	}
+
+	// Switching via context sidebar to "待处理" immediately closes live preview and releases the .part file handle on Windows!
+	if err := tt.Click("任务侧栏：待处理"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if app.effectiveTasksSection() != TasksSectionAttention {
+		t.Fatalf("expected TasksSection == 'attention', got %q", app.effectiveTasksSection())
 	}
 	if app.LivePreviewKey != "" {
-		t.Fatalf("expected LivePreviewKey cleared immediately when switching to 录制异常, got %q", app.LivePreviewKey)
+		t.Fatalf("expected LivePreviewKey cleared immediately when switching to 待处理, got %q", app.LivePreviewKey)
 	}
 	_ = writerFile.Close()
 	renamedCheck := filepath.Join(activeRecDir, "part-001.unlocked.mp4")
 	if err := os.Rename(partPath, renamedCheck); err != nil {
-		t.Fatalf("switching to '录制异常' leaked .part file handle on Windows: %v", err)
+		t.Fatalf("switching to '待处理' leaked .part file handle on Windows: %v", err)
 	}
 	if err := os.Rename(renamedCheck, partPath); err != nil {
 		t.Fatal(err)
 	}
 
-	// Also verify switching via the context sidebar item "任务侧栏：录制异常" releases the live preview .part handle!
-	app.selectTasksLive()
-	tt.Frame()
-	if err := tt.Click("预览直播录制：bilibili:live:9101"); err != nil {
-		t.Fatal(err)
-	}
-	deadline = time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		drainPosted(posted)
-		tt.Frame()
-		if !app.LivePreviewLoading && app.livePreviewPlayer.Bitmap() != nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err := tt.Click("任务侧栏：录制异常"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if app.LivePreviewKey != "" {
-		t.Fatalf("expected LivePreviewKey cleared when clicking 任务侧栏：录制异常, got %q", app.LivePreviewKey)
-	}
-	if err := os.Rename(partPath, renamedCheck); err != nil {
-		t.Fatalf("clicking '任务侧栏：录制异常' leaked .part file handle on Windows: %v", err)
-	}
-	if err := os.Rename(renamedCheck, partPath); err != nil {
-		t.Fatal(err)
-	}
-
-	// --- 5. Verify "录制异常" page content & zero-network offline录像详情 navigation ---
+	// --- 5. Verify "待处理" recent recording incidents content & zero-network offline 录像详情 navigation ---
 	for _, wantText := range []string{
+		"近期录制异常（2）",
 		"技术主播_Alpha · 高码率直播测试",
 		"抖音歌手B · 周末户外歌会",
 		"开始时间 ",
@@ -313,8 +326,11 @@ func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI(t *testing.T) {
 		"part-002.mp4.part：直播录像转换失败：缺少初始化分片",
 	} {
 		if !tt.HasText(wantText) {
-			t.Fatalf("expected '录制异常' view to render %q", wantText)
+			t.Fatalf("expected '待处理' view to render %q", wantText)
 		}
+	}
+	if tt.HasText("十天前旧直播") {
+		t.Fatal("10-day-old recording incident must not appear in 待处理 recent 7-day section")
 	}
 
 	spy.siteCalls.Store(0)
@@ -329,20 +345,20 @@ func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI(t *testing.T) {
 		t.Fatalf("expected 0 site network calls when opening offline incident recording detail, got %d", got)
 	}
 
-	// --- 6. Narrow window (< 1000) top segmented selector reaches "录制异常（2）" ---
+	// --- 6. Narrow window (< 1000) top segmented selector reaches "待处理（2）" ---
 	app.Navigate(RouteTasks)
 	app.selectTasksDownloads()
 	narrowTT := ui.NewTester(app.View, 820, 860)
 	narrowTT.Frame()
-	if _, ok := narrowTT.Find("任务分段：录制异常"); !ok || !narrowTT.HasText("录制异常（2）") {
-		t.Fatal("expected narrow <1000 top segmented selector to expose '录制异常（2）'")
+	if _, ok := narrowTT.Find("任务分段：待处理"); !ok || !narrowTT.HasText("待处理（2）") {
+		t.Fatal("expected narrow <1000 top segmented selector to expose '待处理（2）'")
 	}
-	if err := narrowTT.Click("任务分段：录制异常"); err != nil {
+	if err := narrowTT.Click("任务分段：待处理"); err != nil {
 		t.Fatal(err)
 	}
 	narrowTT.Frame()
-	if app.effectiveTasksSection() != "incidents" || !narrowTT.HasText("技术主播_Alpha · 高码率直播测试") {
-		t.Fatal("expected narrow segmented selector click to open 录制异常 view")
+	if app.effectiveTasksSection() != TasksSectionAttention || !narrowTT.HasText("技术主播_Alpha · 高码率直播测试") {
+		t.Fatal("expected narrow segmented selector click to open 待处理 view")
 	}
 
 	// --- 7. DEC-057: every entry can be removed. A finished recording leaves
@@ -365,7 +381,7 @@ func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI(t *testing.T) {
 		t.Fatal("removing it from the list deleted the recording")
 	}
 
-	app.selectTasksIncidents("")
+	app.selectTasksAttention()
 	tt.Frame()
 	if _, ok := tt.Find("删除录制异常记录：bilibili:live:9101"); ok {
 		t.Fatal("a session still recording offers to delete its incident records")

@@ -45,13 +45,10 @@ func (a *App) effectiveConflictBatchChoice() string {
 }
 
 func (a *App) selectTasksConflicts() {
-	a.TasksSection = "conflicts"
-	a.closeLivePreview()
-	a.refreshCacheConflicts()
-	a.conflictsLoadedOnTasks = true
+	a.selectTasksAttention()
 }
 
-// OpenTasksConflicts navigates to /tasks and opens the 内容冲突 section.
+// OpenTasksConflicts navigates to /tasks and opens the 待处理 section (containing 内容冲突).
 func (a *App) OpenTasksConflicts() {
 	a.Navigate(RouteTasks)
 	a.selectTasksConflicts()
@@ -98,13 +95,6 @@ func (a *App) effectiveConflictCount() int {
 		}
 	}
 	return n
-}
-
-func (a *App) conflictsNavText() string {
-	if n := a.effectiveConflictCount(); n > 0 {
-		return fmt.Sprintf("内容冲突（%d）", n)
-	}
-	return "内容冲突"
 }
 
 func (a *App) actionableConflictCount() int {
@@ -239,17 +229,16 @@ func (a *App) openConflictLocalItem(itemKey string) {
 	a.OpenLibraryItemDetail(item)
 }
 
-func (a *App) renderTasksConflictsView(c *ui.Context) {
-	conflicts := a.CacheConflicts
+// renderAttentionConflictsGroup renders the 内容冲突 section inside Tasks › 待处理.
+func (a *App) renderAttentionConflictsGroup(c *ui.Context, conflicts []service.CacheConflictDTO) {
 	batchChoice := a.effectiveConflictBatchChoice()
 	batchBusy := a.isPending("conflict-batch")
 	actionable := a.actionableConflictCount()
 
-	ui.Column(c).Grow(1).FillWidth().ClipX().Children(func() {
+	ui.Column(c).Label("待处理分节：内容冲突").FillWidth().Gap(10).ClipX().Children(func() {
 		ui.Column(c).
 			Label("内容冲突顶部栏").
 			FillWidth().
-			Padding(16, 16, 8, 16).
 			Gap(8).
 			Shrink(0).
 			ClipX().
@@ -262,47 +251,52 @@ func (a *App) renderTasksConflictsView(c *ui.Context) {
 					Wrap().
 					ClipX().
 					Children(func() {
-						ui.Box(c).Label("内容冲突保护说明").Shrink(1).ClipX().Children(func() {
-							ui.Text(c, conflictProtectionNotice).
-								FontSize(12).
-								LineHeight(LineHeightCompact).
-								TextColor(ColorTextMuted).
-								MaxLines(2)
+						ui.Column(c).Gap(3).Grow(1).Shrink(1).ClipX().Children(func() {
+							ui.Text(c, fmt.Sprintf("内容冲突（%d）", len(conflicts))).
+								FontSize(15).
+								FontWeight(600).
+								TextColor(ColorTextMain).
+								SingleLine()
+							ui.Box(c).Label("内容冲突保护说明").Shrink(1).ClipX().Children(func() {
+								ui.Text(c, conflictProtectionNotice).
+									FontSize(12).
+									LineHeight(LineHeightCompact).
+									TextColor(ColorTextMuted).
+									MaxLines(2)
+							})
 						})
 
-						if len(conflicts) > 0 {
-							ui.Row(c).AlignItems(ui.Center).Gap(8).Wrap().Shrink(0).ClipX().Children(func() {
-								ui.Text(c, "全部待处理：").FontSize(13).TextColor(ColorTextMain).SingleLine()
-								shown := batchConflictChoiceText(batchChoice)
-								if ui.Select(c, &shown, batchConflictChoiceNames).Label("全部待处理方式").Changed() {
-									for _, opt := range batchConflictChoices {
-										if opt.text == shown {
-											a.ConflictBatchChoice = opt.value
-											break
-										}
-									}
-									if a.effectiveConflictBatchChoice() != service.ConflictUseRemote {
-										a.ConflictBatchConfirmOpen = false
+						ui.Row(c).AlignItems(ui.Center).Gap(8).Wrap().Shrink(0).ClipX().Children(func() {
+							ui.Text(c, "全部待处理：").FontSize(13).TextColor(ColorTextMain).SingleLine()
+							shown := batchConflictChoiceText(batchChoice)
+							if ui.Select(c, &shown, batchConflictChoiceNames).Label("全部待处理方式").Changed() {
+								for _, opt := range batchConflictChoices {
+									if opt.text == shown {
+										a.ConflictBatchChoice = opt.value
+										break
 									}
 								}
-								batchBtnText := "批量应用"
-								if batchBusy {
-									batchBtnText = "处理中…"
+								if a.effectiveConflictBatchChoice() != service.ConflictUseRemote {
+									a.ConflictBatchConfirmOpen = false
 								}
-								disabled := batchBusy || actionable == 0
-								if AccentPillButton(c, batchBtnText, "批量应用冲突处理").Disabled(disabled).Clicked() && !disabled {
-									if a.effectiveConflictBatchChoice() == service.ConflictUseRemote {
-										a.ConflictReplaceConfirmID = ""
-										a.ConflictBatchConfirmOpen = true
-									} else {
-										a.startResolveAllConflicts(a.effectiveConflictBatchChoice())
-									}
+							}
+							batchBtnText := "批量应用"
+							if batchBusy {
+								batchBtnText = "处理中…"
+							}
+							disabled := batchBusy || actionable == 0
+							if AccentPillButton(c, batchBtnText, "批量应用冲突处理").Disabled(disabled).Clicked() && !disabled {
+								if a.effectiveConflictBatchChoice() == service.ConflictUseRemote {
+									a.ConflictReplaceConfirmID = ""
+									a.ConflictBatchConfirmOpen = true
+								} else {
+									a.startResolveAllConflicts(a.effectiveConflictBatchChoice())
 								}
-							})
-						}
+							}
+						})
 					})
 
-				if len(conflicts) > 0 && a.ConflictBatchConfirmOpen && a.effectiveConflictBatchChoice() == service.ConflictUseRemote && !batchBusy {
+				if a.ConflictBatchConfirmOpen && a.effectiveConflictBatchChoice() == service.ConflictUseRemote && !batchBusy {
 					ui.Row(c).
 						Label("确认批量替换冲突栏").
 						FillWidth().
@@ -334,34 +328,12 @@ func (a *App) renderTasksConflictsView(c *ui.Context) {
 							})
 						})
 				}
-
-				if a.ConflictActionError != "" {
-					renderErrorBanner(c, "冲突操作错误", a.ConflictActionError, func() {
-						if OutlinePillButton(c, "关闭", "关闭冲突错误提示").Clicked() {
-							a.ConflictActionError = ""
-						}
-					})
-				}
 			})
 
-		if len(conflicts) == 0 {
-			ui.Column(c).Label("内容冲突空状态").FillWidth().Padding(40, 16).AlignItems(ui.Center).Gap(8).Children(func() {
-				ui.Text(c, "当前没有待处理的内容冲突").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-				ui.Text(c, "当全部缓存或更新检查发现源站版本与本机已缓存内容不一致时，会在这里等你决定。").
-					FontSize(13).
-					LineHeight(LineHeightCompact).
-					TextColor(ColorTextMuted).
-					MaxLines(2)
-			})
-			return
-		}
-
-		ui.Scroll(c).Label("内容冲突列表").Grow(1).FillWidth().ClipX().Children(func() {
-			ui.Column(c).FillWidth().Padding(2, 16, 12, 16).Gap(8).ClipX().Children(func() {
-				for _, item := range conflicts {
-					a.renderCacheConflictCard(c, item)
-				}
-			})
+		ui.Column(c).Label("内容冲突列表").FillWidth().Gap(8).ClipX().Children(func() {
+			for _, item := range conflicts {
+				a.renderCacheConflictCard(c, item)
+			}
 		})
 	})
 }

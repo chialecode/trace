@@ -40,26 +40,59 @@ type liveIncidentSession struct {
 	LibraryItem *library.ItemMetadata
 }
 
-func (a *App) liveIncidentsNavText() string {
-	if n := a.recentLiveIncidentSessionCount(); n > 0 {
-		return fmt.Sprintf("录制异常（%d）", n)
-	}
-	return "录制异常"
-}
-
-func (a *App) recentLiveIncidentSessionCount() int {
+func (a *App) recentLiveIncidentSessions() []liveIncidentSession {
 	sessions := a.collectLiveSessions()
 	cutoff := time.Now().Add(-recentLiveIncidentWindow)
-	count := 0
+	var out []liveIncidentSession
 	for _, sess := range sessions {
 		if len(sess.Incidents) == 0 {
 			continue
 		}
 		if sess.Recording || (!sess.RefTime.IsZero() && !sess.RefTime.Before(cutoff)) {
-			count++
+			out = append(out, sess)
 		}
 	}
-	return count
+	return out
+}
+
+func (a *App) recentLiveIncidentSessionCount() int {
+	return len(a.recentLiveIncidentSessions())
+}
+
+func (a *App) isLiveRowIncidentsExpanded(key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" || a.ExpandedLiveIncidentKeys == nil {
+		return false
+	}
+	return a.ExpandedLiveIncidentKeys[key]
+}
+
+func (a *App) toggleLiveRowIncidents(key string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	if a.ExpandedLiveIncidentKeys == nil {
+		a.ExpandedLiveIncidentKeys = make(map[string]bool)
+	}
+	if a.ExpandedLiveIncidentKeys[key] {
+		delete(a.ExpandedLiveIncidentKeys, key)
+		return
+	}
+	a.ExpandedLiveIncidentKeys[key] = true
+}
+
+// ExpandLiveRowIncidents expands the inline recording incidents drawer for a
+// recording row in Tasks › 直播 without leaving the live view or closing preview.
+func (a *App) ExpandLiveRowIncidents(key string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	if a.ExpandedLiveIncidentKeys == nil {
+		a.ExpandedLiveIncidentKeys = make(map[string]bool)
+	}
+	a.ExpandedLiveIncidentKeys[key] = true
 }
 
 func (a *App) localLiveLibraryItems() []library.ItemMetadata {
@@ -487,16 +520,24 @@ func buildSessionFromLibraryItem(it library.ItemMetadata) liveIncidentSession {
 	}
 }
 
-func renderLiveRowIncidentPill(c *ui.Context, key string, count int, onClick func()) {
+func renderLiveRowIncidentPill(c *ui.Context, key string, count int, expanded bool, onClick func()) {
 	if count <= 0 {
 		return
+	}
+	borderCol := ColorDotYellow
+	bgCol := ColorWarnBg
+	if expanded {
+		borderCol = ColorLive
+		bgCol = ColorLiveBg
 	}
 	btn := ui.ButtonBase(c).
 		Label("录制行异常："+key).
 		Padding(4, 10).
 		Radius(999).
-		Background(ColorWarnBg).
-		Border(1, ColorDotYellow).
+		Background(bgCol).
+		Border(1, borderCol).
+		Gap(4).
+		AlignItems(ui.Center).
 		Shrink(0)
 	if btn.Hovered() {
 		btn.Background(ColorLiveBg).Border(1, ColorLive)
@@ -507,10 +548,79 @@ func renderLiveRowIncidentPill(c *ui.Context, key string, count int, onClick fun
 			FontWeight(600).
 			TextColor(ColorLive).
 			SingleLine()
+		chevron := "chevron-down"
+		if expanded {
+			chevron = "chevron-up"
+		}
+		DrawIcon(c, chevron, 12, ColorLive, 1.8)
 	})
 	if btn.Clicked() && onClick != nil {
 		onClick()
 	}
+}
+
+func renderLiveIncidentItemRow(c *ui.Context, label string, inc library.LiveIncident) {
+	ui.Row(c).
+		Label(label).
+		FillWidth().
+		Padding(6, 10).
+		Radius(10).
+		Background(ColorBgSecondary).
+		AlignItems(ui.Center).
+		Gap(10).
+		ClipX().
+		Children(func() {
+			clockText := firstNonEmptyStrUI(formatIncidentTimeText(inc.At), "--:--:--")
+			ui.Text(c, clockText).
+				FontSize(12).
+				FontWeight(500).
+				TextColor(ColorTextMuted).
+				Shrink(0).
+				SingleLine()
+			tagText, tagColor, tagBg := incidentKindBadgeStyle(inc)
+			ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(tagBg).Children(func() {
+				ui.Text(c, tagText).FontSize(11).FontWeight(600).TextColor(tagColor).SingleLine()
+			})
+			ui.Text(c, formatIncidentDetailText(inc)).
+				FontSize(13).
+				TextColor(ColorTextMain).
+				Grow(1).
+				Shrink(1).
+				MaxLines(2)
+		})
+}
+
+func (a *App) renderInlineRecordingIncidents(c *ui.Context, key string, incidents []library.LiveIncident, endedSess *liveIncidentSession) {
+	if len(incidents) == 0 {
+		return
+	}
+	ui.Column(c).
+		Label("行内录制异常列表："+key).
+		FillWidth().
+		BorderWidth(1, 0, 0, 0).
+		BorderColor(ColorBorder).
+		Padding(8, 0, 0, 0).
+		Gap(6).
+		ClipX().
+		Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
+				ui.Text(c, fmt.Sprintf("录制异常明细（%d）", len(incidents))).
+					FontSize(12).
+					FontWeight(600).
+					TextColor(ColorTextMuted).
+					SingleLine()
+				if endedSess != nil && !endedSess.Recording {
+					sess := *endedSess
+					if DangerOutlinePillButton(c, "删除异常记录", "行内删除录制异常记录："+key).Clicked() {
+						delete(a.ExpandedLiveIncidentKeys, key)
+						a.clearLiveSessionIncidents(sess)
+					}
+				}
+			})
+			for idx, rawInc := range incidents {
+				renderLiveIncidentItemRow(c, fmt.Sprintf("行内异常条目：%s#%d", key, idx), rawInc)
+			}
+		})
 }
 
 func (a *App) openLiveIncidentLibraryItem(item library.ItemMetadata) {
@@ -574,57 +684,70 @@ func (a *App) renderRecentFinishedLiveSection(c *ui.Context, activeRows []active
 		})
 		for _, item := range recent {
 			sess := item
-			ui.Row(c).
+			incExpanded := len(sess.Incidents) > 0 && a.isLiveRowIncidentsExpanded(sess.Key)
+			ui.Column(c).
 				Label("最近结束录制行："+sess.Key).
 				FillWidth().
 				Padding(11, 14).
 				Radius(14).
 				Background(ColorBgMain).
 				Border(1, ColorBorder).
-				AlignItems(ui.Center).
-				Justify(ui.SpaceBetween).
-				Gap(12).
+				Gap(8).
 				ClipX().
 				Children(func() {
-					ui.Row(c).Grow(1).Gap(10).AlignItems(ui.Center).ClipX().Children(func() {
-						a.renderAccountAvatar(c, sess.Site, sess.Uname, sess.UID, sess.Mid, 36, false, "", nil, sess.Face)
-						ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
-							ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-								ui.Text(c, sess.Uname+" · "+sess.Title).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
-								renderSiteSmallBadgeWithDot(c, sess.Site, "最近录制站点："+sess.Key)
-								if sess.QualSpec != "" {
-									ui.Text(c, "· "+sess.QualSpec).Shrink(0).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					ui.Row(c).
+						FillWidth().
+						AlignItems(ui.Center).
+						Justify(ui.SpaceBetween).
+						Gap(12).
+						Wrap().
+						ClipX().
+						Children(func() {
+							ui.Row(c).Grow(1).Shrink(1).Gap(10).AlignItems(ui.Center).ClipX().Children(func() {
+								a.renderAccountAvatar(c, sess.Site, sess.Uname, sess.UID, sess.Mid, 36, false, "", nil, sess.Face)
+								ui.Column(c).Grow(1).Shrink(1).Gap(3).ClipX().Children(func() {
+									ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
+										ui.Text(c, sess.Uname+" · "+sess.Title).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
+										renderSiteSmallBadgeWithDot(c, sess.Site, "最近录制站点："+sess.Key)
+										if sess.QualSpec != "" {
+											ui.Text(c, "· "+sess.QualSpec).Shrink(0).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+										}
+									})
+									metaParts := []string{"已结束"}
+									if st := formatIncidentSessionStart(sess.StartedAt, sess.RefTime); st != "" {
+										metaParts = append(metaParts, "开始 "+st)
+									}
+									if sess.DurationSec > 0 {
+										metaParts = append(metaParts, "时长 "+FormatDuration(sess.DurationSec))
+									}
+									if sess.TotalBytes > 0 {
+										metaParts = append(metaParts, FormatBytes(sess.TotalBytes))
+									}
+									ui.Text(c, strings.Join(metaParts, " · ")).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+								})
+							})
+
+							ui.Row(c).AlignItems(ui.Center).Gap(8).Shrink(0).Children(func() {
+								if len(sess.Incidents) > 0 {
+									renderLiveRowIncidentPill(c, sess.Key, len(sess.Incidents), incExpanded, func() {
+										a.toggleLiveRowIncidents(sess.Key)
+									})
+								}
+								if sess.LibraryItem != nil {
+									if OutlinePillButton(c, "查看录像", "直播录制查看录像："+sess.Key).Clicked() {
+										a.openLiveIncidentLibraryItem(*sess.LibraryItem)
+									}
+								}
+								if OutlinePillButton(c, "移除", "移除最近结束的录制："+sess.Key).Clicked() {
+									a.dismissLiveSessions(sess.Key)
 								}
 							})
-							metaParts := []string{"已结束"}
-							if st := formatIncidentSessionStart(sess.StartedAt, sess.RefTime); st != "" {
-								metaParts = append(metaParts, "开始 "+st)
-							}
-							if sess.DurationSec > 0 {
-								metaParts = append(metaParts, "时长 "+FormatDuration(sess.DurationSec))
-							}
-							if sess.TotalBytes > 0 {
-								metaParts = append(metaParts, FormatBytes(sess.TotalBytes))
-							}
-							ui.Text(c, strings.Join(metaParts, " · ")).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 						})
-					})
 
-					ui.Row(c).AlignItems(ui.Center).Gap(8).Shrink(0).Children(func() {
-						if len(sess.Incidents) > 0 {
-							renderLiveRowIncidentPill(c, sess.Key, len(sess.Incidents), func() {
-								a.selectTasksIncidents(sess.Key)
-							})
-						}
-						if sess.LibraryItem != nil {
-							if OutlinePillButton(c, "查看录像", "直播录制查看录像："+sess.Key).Clicked() {
-								a.openLiveIncidentLibraryItem(*sess.LibraryItem)
-							}
-						}
-						if OutlinePillButton(c, "移除", "移除最近结束的录制："+sess.Key).Clicked() {
-							a.dismissLiveSessions(sess.Key)
-						}
-					})
+					if incExpanded {
+						sCopy := sess
+						a.renderInlineRecordingIncidents(c, sess.Key, sess.Incidents, &sCopy)
+					}
 				})
 		}
 	})
@@ -703,49 +826,6 @@ func matchesIncidentSessionFocus(sess liveIncidentSession, focus string) bool {
 	return false
 }
 
-func (a *App) renderTasksIncidentsView(c *ui.Context) {
-	allSessions := a.collectLiveSessions()
-	cutoff := time.Now().Add(-recentLiveIncidentWindow)
-	var recentSessions, olderSessions []liveIncidentSession
-	for _, sess := range allSessions {
-		if len(sess.Incidents) == 0 {
-			continue
-		}
-		if sess.Recording || (!sess.RefTime.IsZero() && !sess.RefTime.Before(cutoff)) {
-			recentSessions = append(recentSessions, sess)
-		} else {
-			olderSessions = append(olderSessions, sess)
-		}
-	}
-
-	ui.Scroll(c).Grow(1).FillWidth().ClipX().Children(func() {
-		ui.Column(c).FillWidth().Padding(16).Gap(12).ClipX().Children(func() {
-			if len(recentSessions) == 0 && len(olderSessions) == 0 {
-				ui.Column(c).Label("录制异常空状态").FillWidth().Padding(48, 16).AlignItems(ui.Center).Gap(8).Children(func() {
-					ui.Text(c, "最近没有录制异常").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-					ui.Text(c, "录制过程中如果遇到断流重连、分片丢失、下载过慢、空间不足或收尾转换失败，会按场次记录在这里。").
-						FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
-				})
-				return
-			}
-
-			if len(recentSessions) == 0 && len(olderSessions) > 0 {
-				ui.Text(c, "最近 7 天没有录制异常").FontSize(13).TextColor(ColorTextMuted).SingleLine()
-			}
-			for _, item := range recentSessions {
-				a.renderLiveIncidentSessionCard(c, item)
-			}
-			if len(olderSessions) > 0 {
-				ui.Text(c, fmt.Sprintf("更早的记录（7 天前，共 %d 场）", len(olderSessions))).
-					FontSize(12).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
-				for _, item := range olderSessions {
-					a.renderLiveIncidentSessionCard(c, item)
-				}
-			}
-		})
-	})
-}
-
 func (a *App) renderLiveIncidentSessionCard(c *ui.Context, sess liveIncidentSession) {
 	focused := matchesIncidentSessionFocus(sess, a.SelectedLiveIncidentKey)
 	borderCol := ColorBorder
@@ -765,10 +845,10 @@ func (a *App) renderLiveIncidentSessionCard(c *ui.Context, sess liveIncidentSess
 		Gap(10).
 		ClipX().
 		Children(func() {
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(10).ClipX().Children(func() {
-				ui.Row(c).Grow(1).AlignItems(ui.Center).Gap(10).ClipX().Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(10).Wrap().ClipX().Children(func() {
+				renderSessionInfo := func() {
 					a.renderAccountAvatar(c, sess.Site, sess.Uname, sess.UID, sess.Mid, 38, sess.Recording, "", nil, sess.Face)
-					ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
+					ui.Column(c).Grow(1).Shrink(1).Gap(3).ClipX().Children(func() {
 						ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
 							if sess.Recording {
 								ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(ColorLive).Children(func() {
@@ -798,7 +878,29 @@ func (a *App) renderLiveIncidentSessionCard(c *ui.Context, sess liveIncidentSess
 						}
 						ui.Text(c, strings.Join(subParts, " · ")).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 					})
-				})
+				}
+
+				if !sess.Recording && sess.LibraryItem != nil {
+					itemBtn := ui.ButtonBase(c).
+						Label("点击打开异常录像："+sess.Key).
+						Grow(1).
+						Shrink(1).
+						AlignItems(ui.Center).
+						Justify(ui.Start).
+						Gap(10).
+						Padding(2, 4).
+						Radius(10).
+						ClipX()
+					if itemBtn.Hovered() {
+						itemBtn.Background(ColorHover)
+					}
+					itemBtn.Children(renderSessionInfo)
+					if itemBtn.Clicked() {
+						a.openLiveIncidentLibraryItem(*sess.LibraryItem)
+					}
+				} else {
+					ui.Row(c).Grow(1).Shrink(1).AlignItems(ui.Center).Gap(10).ClipX().Children(renderSessionInfo)
+				}
 
 				ui.Row(c).Shrink(0).AlignItems(ui.Center).Gap(8).Children(func() {
 					if sess.Recording {
@@ -827,34 +929,7 @@ func (a *App) renderLiveIncidentSessionCard(c *ui.Context, sess liveIncidentSess
 				ClipX().
 				Children(func() {
 					for idx, rawInc := range sess.Incidents {
-						inc := rawInc
-						ui.Row(c).
-							Label(fmt.Sprintf("异常条目：%s#%d", sess.Key, idx)).
-							FillWidth().
-							Padding(6, 10).
-							Radius(10).
-							Background(ColorBgSecondary).
-							AlignItems(ui.Center).
-							Gap(10).
-							ClipX().
-							Children(func() {
-								clockText := firstNonEmptyStrUI(formatIncidentTimeText(inc.At), "--:--:--")
-								ui.Text(c, clockText).
-									FontSize(12).
-									FontWeight(500).
-									TextColor(ColorTextMuted).
-									Shrink(0).
-									SingleLine()
-								tagText, tagColor, tagBg := incidentKindBadgeStyle(inc)
-								ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(tagBg).Children(func() {
-									ui.Text(c, tagText).FontSize(11).FontWeight(600).TextColor(tagColor).SingleLine()
-								})
-								ui.Text(c, formatIncidentDetailText(inc)).
-									FontSize(13).
-									TextColor(ColorTextMain).
-									Grow(1).
-									MaxLines(2)
-							})
+						renderLiveIncidentItemRow(c, fmt.Sprintf("异常条目：%s#%d", sess.Key, idx), rawInc)
 					}
 				})
 		})
