@@ -572,7 +572,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.SettingsCategory = "download"
 				app.Navigate(ui.RouteSettings)
 			},
-			RequiredTexts:  []string{"微博图片去平台水印"},
+			RequiredTexts:  []string{"微博同时保存无水印版"},
 			RequiredLabels: []string{"开关微博图片去水印"},
 		},
 		{

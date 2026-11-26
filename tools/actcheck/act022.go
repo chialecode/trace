@@ -842,8 +842,8 @@ func runWeiboAct(parentCtx context.Context, spec weiboActSpec, cfg act022Config)
 				if u, uErr := url.Parse(imgs[0].URL); uErr == nil {
 					v07["firstImageHostClass"] = hostClass(u.Hostname())
 				}
-				v07["defaultWatermarkRewriteApplied"] = len(imgs[0].FallbackURLs) > 0 &&
-					strings.Contains(strings.ToLower(imgs[0].URL), "/oslarge/")
+				v07["defaultWatermarkRewriteApplied"] = !strings.Contains(strings.ToLower(imgs[0].URL), "/oslarge/") &&
+					strings.Contains(strings.ToLower(imgs[0].WatermarkFreeURL), "/oslarge/")
 			}
 			v07["status"] = "verified"
 		} else {
@@ -1123,7 +1123,6 @@ func runWeiboAct(parentCtx context.Context, spec weiboActSpec, cfg act022Config)
 	// Step 7: V-07 (watermark probe), V-11 (image CDN), V-12 (video Range + LivePhoto + mp4ff).
 	// Budget: probeCDN <= 10 requests, <= 60 MiB, 0 API calls, strictly NO Cookie!
 	// -------------------------------------------------------------------------
-	oslargeUnavailableInStep7 := false
 	runner.run("v07_v11_v12_media_cdn_probes", func(f map[string]any) error {
 		var sampleImgURL, sampleGIFURL, sampleLivePhotoURL string
 		var sampleVideoURL string
@@ -1206,9 +1205,6 @@ func runWeiboAct(parentCtx context.Context, spec weiboActSpec, cfg act022Config)
 					}
 					wFact["available"] = false
 					wFact["errKind"] = site.KindOf(wErr)
-					if variant == "oslarge" {
-						oslargeUnavailableInStep7 = true
-					}
 				} else {
 					if wFact == nil {
 						wFact = map[string]any{}
@@ -1219,9 +1215,6 @@ func runWeiboAct(parentCtx context.Context, spec weiboActSpec, cfg act022Config)
 					if placeholderGIF {
 						wFact["placeholderGIFDetected"] = true
 						wFact["available"] = false
-						if variant == "oslarge" {
-							oslargeUnavailableInStep7 = true
-						}
 					} else {
 						wFact["available"] = true
 					}
@@ -1510,9 +1503,8 @@ func runWeiboAct(parentCtx context.Context, spec weiboActSpec, cfg act022Config)
 			reqs := 1 // cover / metadata headroom
 			for _, im := range imgs {
 				reqs++ // image/still
-				if oslargeUnavailableInStep7 && im.Kind != weibo.MediaKindGIF &&
-					len(im.FallbackURLs) > 0 && strings.Contains(strings.ToLower(im.URL), "/oslarge/") {
-					reqs++ // account for /oslarge/ -> FallbackURLs[0] retry
+				if im.Kind != weibo.MediaKindGIF && strings.TrimSpace(im.WatermarkFreeURL) != "" {
+					reqs++ // account for dual-save /oslarge/ companion request
 				}
 				if im.Kind == weibo.MediaKindLivePhoto && im.MotionURL != "" {
 					reqs += 2 // possible /media/play redirect + motion clip

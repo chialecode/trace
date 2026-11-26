@@ -227,13 +227,13 @@ func TestPostOver9ImagesOrderGIFLivePhotoMixedAndWatermarkHook(t *testing.T) {
 			t.Fatalf("image[%d] = (%q, idx=%d), want (%q, idx=%d)", i, post.Images[i].PicID, post.Images[i].Index, wantID, i+1)
 		}
 	}
-	// Image 0: watermark hook rewrote /mw2000/ -> /oslarge/, original kept as first fallback.
-	if !strings.Contains(post.Images[0].URL, "/oslarge/") || len(post.Images[0].FallbackURLs) == 0 || !strings.Contains(post.Images[0].FallbackURLs[0], "/mw2000/") {
-		t.Fatalf("watermark hook URL/fallback = (%q, %v)", post.Images[0].URL, post.Images[0].FallbackURLs)
+	// Image 0: primary URL stays official original /mw2000/, watermark hook populates companion WatermarkFreeURL (/oslarge/).
+	if !strings.Contains(post.Images[0].URL, "/mw2000/") || !strings.Contains(post.Images[0].WatermarkFreeURL, "/oslarge/") {
+		t.Fatalf("watermark hook URL/companion = (%q, %q)", post.Images[0].URL, post.Images[0].WatermarkFreeURL)
 	}
-	// Image 1: GIF takes original .gif largest.url.
-	if post.Images[1].Kind != MediaKindGIF || !strings.HasSuffix(post.Images[1].URL, ".gif") {
-		t.Fatalf("GIF image = (%q, %q)", post.Images[1].Kind, post.Images[1].URL)
+	// Image 1: GIF takes original .gif largest.url and never sets WatermarkFreeURL.
+	if post.Images[1].Kind != MediaKindGIF || !strings.HasSuffix(post.Images[1].URL, ".gif") || post.Images[1].WatermarkFreeURL != "" {
+		t.Fatalf("GIF image = (%q, %q, wmFree=%q)", post.Images[1].Kind, post.Images[1].URL, post.Images[1].WatermarkFreeURL)
 	}
 	// Image 2: LivePhoto has still URL + motion video + NeedsLivePhotoHop=true for video.weibo.com/media/play.
 	if post.Images[2].Kind != MediaKindLivePhoto || !post.Images[2].NeedsLivePhotoHop || !strings.Contains(post.Images[2].MotionURL, "video.weibo.com/media/play") {

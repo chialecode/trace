@@ -2103,7 +2103,7 @@ func findReusableLocalPage(localMeta library.ItemMetadata, page PlannedNotePage,
 	}
 	if !isConflictReplace {
 		for _, lp := range localMeta.NotePages {
-			if lp.Index == pageIdx && lp.MediaID == "" && pID == "" {
+			if lp.Index == pageIdx && lp.MediaID == "" {
 				return lp, true
 			}
 		}

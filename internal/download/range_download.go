@@ -561,7 +561,7 @@ func (m *Manager) fetchRangeSegment(
 			}
 		}
 	}
-	isImage := role == "image" || role == "cover"
+	isImage := role == "image" || role == "cover" || role == "image_nowm"
 	if spec.checkDisguised {
 		if err := rejectDisguisedMediaContentType(spec.site, rawCT, role, resp.StatusCode); err != nil {
 			return segmentResult{newOffset: offset}, rawCT, err

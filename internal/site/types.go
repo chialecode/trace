@@ -481,18 +481,19 @@ type RichCardSummary struct {
 
 // MediaImageAsset describes a single image page (and optional Live Photo or mixed video clip) in an image-note post.
 type MediaImageAsset struct {
-	Index        int      `json:"index"`               // 1-based page index
-	MediaRole    string   `json:"mediaRole,omitempty"` // "", "image", "gif", "live_photo", "video"
-	FromOrigin   bool     `json:"fromOrigin,omitempty"`
-	Width        int      `json:"width,omitempty"`
-	Height       int      `json:"height,omitempty"`
-	DurationSec  int      `json:"durationSec,omitempty"`
-	VideoCodec   string   `json:"videoCodec,omitempty"`
-	QualityLabel string   `json:"qualityLabel,omitempty"`
-	FPS          int      `json:"fps,omitempty"`
-	Bitrate      int64    `json:"bitrate,omitempty"`
-	ImageURLs    []string `json:"-"`
-	VideoURLs    []string `json:"-"`
+	Index            int      `json:"index"`               // 1-based page index
+	MediaRole        string   `json:"mediaRole,omitempty"` // "", "image", "gif", "live_photo", "video"
+	FromOrigin       bool     `json:"fromOrigin,omitempty"`
+	Width            int      `json:"width,omitempty"`
+	Height           int      `json:"height,omitempty"`
+	DurationSec      int      `json:"durationSec,omitempty"`
+	VideoCodec       string   `json:"videoCodec,omitempty"`
+	QualityLabel     string   `json:"qualityLabel,omitempty"`
+	FPS              int      `json:"fps,omitempty"`
+	Bitrate          int64    `json:"bitrate,omitempty"`
+	ImageURLs        []string `json:"-"`
+	WatermarkFreeURL string   `json:"-"`
+	VideoURLs        []string `json:"-"`
 }
 
 // TextLink pairs a human-readable link label with a safe HTTP(S) target URL

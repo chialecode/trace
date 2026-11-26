@@ -273,14 +273,15 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		}
 
 		asset := site.MediaImageAsset{
-			Index:       idx,
-			MediaRole:   img.Kind,
-			FromOrigin:  img.FromOrigin,
-			Width:       img.Width,
-			Height:      img.Height,
-			DurationSec: img.DurationSec,
-			ImageURLs:   imgURLs,
-			VideoURLs:   vidURLs,
+			Index:            idx,
+			MediaRole:        img.Kind,
+			FromOrigin:       img.FromOrigin,
+			Width:            img.Width,
+			Height:           img.Height,
+			DurationSec:      img.DurationSec,
+			ImageURLs:        imgURLs,
+			WatermarkFreeURL: img.WatermarkFreeURL,
+			VideoURLs:        vidURLs,
 		}
 		if img.VideoStream != nil {
 			asset.VideoCodec = img.VideoStream.Codec
@@ -545,6 +546,7 @@ func buildPostSnapshot(p *Post) *postSnapshot {
 			img.PublicPreviewURL = SafePublicImageURL(img.PublicPreviewURL)
 			img.URL = ""
 			img.FallbackURLs = nil
+			img.WatermarkFreeURL = ""
 			img.MotionURL = ""
 			img.MotionFallbackURLs = nil
 			img.GIFVideoURL = ""

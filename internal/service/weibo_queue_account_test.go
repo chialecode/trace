@@ -788,15 +788,13 @@ func TestWeiboFavoritesAccountPageMediaRetweetCacheStateAndPlanReuseGuard(t *tes
 		t.Fatalf("len(Items) = %d, want 2", len(page.Items))
 	}
 
-	// Item 1: wrapped status unwrapped, 2 synthesized /large/ images rewritten to /oslarge/ with /large/ fallback, CacheState=green.
+	// Item 1: wrapped status unwrapped, 2 synthesized /large/ images stay official original (DEC-078), CacheState=green.
 	it1 := page.Items[0]
 	if it1.ID != "5090000000000101" || it1.Post == nil || len(it1.Post.Images) != 2 || it1.Post.CacheState.Dot != "green" {
 		t.Fatalf("unexpected it1: %+v post=%+v", it1, it1.Post)
 	}
-	if it1.Post.Images[0].ImageURL != "https://wx2.sinaimg.cn/oslarge/synfavpic1.jpg" ||
-		len(it1.Post.Images[0].FallbackURLs) == 0 ||
-		it1.Post.Images[0].FallbackURLs[0] != "https://wx2.sinaimg.cn/large/synfavpic1.jpg" ||
-		it1.Cover != "https://wx2.sinaimg.cn/oslarge/synfavpic1.jpg" {
+	if it1.Post.Images[0].ImageURL != "https://wx2.sinaimg.cn/large/synfavpic1.jpg" ||
+		it1.Cover != "https://wx2.sinaimg.cn/large/synfavpic1.jpg" {
 		t.Fatalf("it1 image/cover = (%q, fb=%v, cover=%q)", it1.Post.Images[0].ImageURL, it1.Post.Images[0].FallbackURLs, it1.Cover)
 	}
 
@@ -806,8 +804,7 @@ func TestWeiboFavoritesAccountPageMediaRetweetCacheStateAndPlanReuseGuard(t *tes
 		t.Fatalf("unexpected it2 retweet: %+v", it2.Post)
 	}
 	rt := it2.Post.Retweeted
-	if len(rt.Images) != 1 || rt.Images[0].ImageURL != "https://wx1.sinaimg.cn/oslarge/synrtfav1.jpg" ||
-		len(rt.Images[0].FallbackURLs) == 0 || rt.Images[0].FallbackURLs[0] != "https://wx1.sinaimg.cn/large/synrtfav1.jpg" {
+	if len(rt.Images) != 1 || rt.Images[0].ImageURL != "https://wx1.sinaimg.cn/large/synrtfav1.jpg" {
 		t.Fatalf("unexpected rt.Images: %+v", rt.Images)
 	}
 	if rt.Video == nil || rt.Video.Title != "SYNTH_FAV_ORIGIN_VIDEO_TITLE" || rt.Video.CoverURL != "https://wx3.sinaimg.cn/large/synrtvidcover.jpg" || rt.Video.DurationSec != 52 {

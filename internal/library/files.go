@@ -64,6 +64,9 @@ func visitManifestFiles(meta ItemMetadata, fn func(ManifestFile)) {
 		if np.Image != "" {
 			fn(ManifestFile{Path: np.Image, Role: "image"})
 		}
+		if np.NoWatermark != "" {
+			fn(ManifestFile{Path: np.NoWatermark, Role: "image_nowm"})
+		}
 		if np.Cover != "" {
 			fn(ManifestFile{Path: np.Cover, Role: "cover"})
 		}

@@ -1220,7 +1220,9 @@ func TestAct023LimitsAndIndependentLedger(t *testing.T) {
 }
 
 func TestAct023DefaultWatermarkRewriteAndFallback(t *testing.T) {
-	pngData := buildSyntheticPNGBytes(t, 32, 24)
+	// /oslarge/ returns a distinct smaller PNG (modeling real-world 690px-wide watermark-free
+	// companion vs official /large/ original per ACT-023 V-07 & DEC-078).
+	oslargePNG := buildSyntheticPNGBytes(t, 20, 15)
 	mblogOver9, _ := weibo.MidToMblogID(synthWeiboMidOver9)
 	mblogMixed, _ := weibo.MidToMblogID(synthWeiboMidMixed)
 
@@ -1228,15 +1230,15 @@ func TestAct023DefaultWatermarkRewriteAndFallback(t *testing.T) {
 		name             string
 		oslargeAvailable bool
 	}{
-		{name: "oslarge_404_falls_back_cleanly", oslargeAvailable: false},
-		{name: "oslarge_200_lossless_succeeds", oslargeAvailable: true},
+		{name: "oslarge_404_primary_unaffected", oslargeAvailable: false},
+		{name: "oslarge_200_dual_save_succeeds", oslargeAvailable: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := setupAct022MockEnv(t, 0, false)
 			var oslargeHits, largeHits atomic.Int64
 
-			// Return real https://wx1.sinaimg.cn/large/... image URLs so PR #95's default
-			// weiboRemoveWatermark=true rewrites static images to /oslarge/ with /large/ fallback.
+			// Return real https://wx1.sinaimg.cn/large/... image URLs so default
+			// weiboRemoveWatermark=true keeps primary at /large/ and populates /oslarge/ companion.
 			env.hook = func(w http.ResponseWriter, r *http.Request) bool {
 				switch {
 				case strings.HasPrefix(r.URL.Path, "/cdn/oslarge/"):
@@ -1250,7 +1252,7 @@ func TestAct023DefaultWatermarkRewriteAndFallback(t *testing.T) {
 						return true
 					}
 					w.Header().Set("Content-Type", "image/png")
-					_, _ = w.Write(pngData)
+					_, _ = w.Write(oslargePNG)
 					return true
 				case strings.HasPrefix(r.URL.Path, "/cdn/large/"):
 					largeHits.Add(1)
@@ -1398,11 +1400,22 @@ func TestAct023DefaultWatermarkRewriteAndFallback(t *testing.T) {
 			if multi["taskStatus"] != "completed" || multi["missingCount"] != 0 {
 				t.Fatalf("Step9 multiImagePost = %+v, want completed with 0 missing", multi)
 			}
+			roles, _ := multi["mediaRoles"].(map[string]int)
+			if roles["image"] < 1 {
+				t.Fatalf("Step9 multiImagePost mediaRoles = %+v, want image >= 1", roles)
+			}
+			if tc.oslargeAvailable {
+				if roles["image_nowm"] < 1 {
+					t.Fatalf("Step9 dual-save expected image_nowm >= 1 when /oslarge/ available, got %+v", roles)
+				}
+			} else if roles["image_nowm"] != 0 {
+				t.Fatalf("Step9 expected image_nowm == 0 when /oslarge/ returns 404, got %+v", roles)
+			}
 			if oslargeHits.Load() < 2 {
 				t.Fatalf("expected /oslarge/ hits in both Step 7 and Step 9, got %d", oslargeHits.Load())
 			}
-			if !tc.oslargeAvailable && largeHits.Load() < 2 {
-				t.Fatalf("expected /large/ fallback hits when /oslarge/ returns 404, got %d", largeHits.Load())
+			if largeHits.Load() < 2 {
+				t.Fatalf("expected official original /large/ hits in both Step 7 and Step 9, got %d", largeHits.Load())
 			}
 		})
 	}

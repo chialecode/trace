@@ -191,6 +191,55 @@ func (a *App) lookupAccountAvatarBitmap(siteID, uid string) *ui.Bitmap {
 	return bmp
 }
 
+func findCompanionNoWatermarkRel(item *library.ItemMetadata, imageRel string) string {
+	imageRel = strings.TrimSpace(filepath.ToSlash(imageRel))
+	if item == nil || imageRel == "" {
+		return ""
+	}
+	for _, pg := range item.NotePages {
+		if strings.TrimSpace(filepath.ToSlash(pg.Image)) == imageRel && strings.TrimSpace(pg.NoWatermark) != "" {
+			return strings.TrimSpace(filepath.ToSlash(pg.NoWatermark))
+		}
+	}
+	ext := filepath.Ext(imageRel)
+	stem := strings.TrimSuffix(imageRel, ext)
+	if stem == "" {
+		return ""
+	}
+	wantPrefix := stem + "_nowm."
+	for _, mf := range item.Media {
+		if mf.Role == "image_nowm" {
+			p := strings.TrimSpace(filepath.ToSlash(mf.Path))
+			if strings.HasPrefix(p, wantPrefix) {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
+func (a *App) resolveCompanionNoWatermarkPath(itemKey string, item *library.ItemMetadata, imageRel, noWMRel string) string {
+	if a.backend == nil || strings.TrimSpace(itemKey) == "" {
+		return ""
+	}
+	candRel := strings.TrimSpace(filepath.ToSlash(noWMRel))
+	if candRel == "" && item != nil {
+		candRel = findCompanionNoWatermarkRel(item, imageRel)
+	}
+	if candRel == "" {
+		return ""
+	}
+	full, err := a.backend.MediaPath(itemKey, candRel)
+	if err != nil || full == "" {
+		return ""
+	}
+	info, err := os.Stat(full)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		return ""
+	}
+	return full
+}
+
 // OpenItemImageViewer resolves registered relative media paths via Backend.MediaPath (INV-08) and opens the image viewer.
 // A live photo's cached motion clip plays inside the viewer (DEC-046 ①).
 func (a *App) OpenItemImageViewer(itemKey string, urls []string, relPaths []string, index int) {
@@ -221,6 +270,7 @@ func (a *App) openPostImageViewer(itemKey, siteID string, urls, relPaths, liveUR
 	inlinePaths := make([]string, n)
 	inlineURLs := make([]string, n)
 	durations := make([]int, n)
+	noWMPaths := make([]string, n)
 	hasLive := false
 	if a.backend != nil && itemKey != "" {
 		if item, ok, err := a.backend.GetLibraryItem(itemKey); err == nil && ok {
@@ -232,6 +282,7 @@ func (a *App) openPostImageViewer(itemKey, siteID string, urls, relPaths, liveUR
 				if rel == "" {
 					continue
 				}
+				noWMPaths[i] = a.resolveCompanionNoWatermarkPath(itemKey, &item, rel, "")
 				for _, m := range item.Media {
 					if m.Path != rel || m.Motion == "" {
 						continue
@@ -255,7 +306,7 @@ func (a *App) openPostImageViewer(itemKey, siteID string, urls, relPaths, liveUR
 			hasLive = true
 		}
 	}
-	a.OpenImageViewer(urls, resolved, index)
+	a.openImageViewerWithCompanions(urls, nil, resolved, noWMPaths, index)
 	if !a.ImageViewer.Open {
 		return
 	}
@@ -284,9 +335,12 @@ func (a *App) OpenImageViewer(urls []string, localPaths []string, index int) {
 	a.OpenImageViewerWithFallbacks(urls, nil, localPaths, index)
 }
 
-// OpenImageViewerWithFallbacks opens the in-app image viewer overlay with optional per-image fallback URLs
-// (e.g. falling back from Weibo /oslarge/ to the original largest URL on 404, HTML, or corrupt image).
+// OpenImageViewerWithFallbacks opens the in-app image viewer overlay with optional per-image fallback URLs.
 func (a *App) OpenImageViewerWithFallbacks(urls []string, fallbackURLs [][]string, localPaths []string, index int) {
+	a.openImageViewerWithCompanions(urls, fallbackURLs, localPaths, nil, index)
+}
+
+func (a *App) openImageViewerWithCompanions(urls []string, fallbackURLs [][]string, localPaths []string, noWatermarkPaths []string, index int) {
 	if len(urls) == 0 && len(localPaths) == 0 {
 		return
 	}
@@ -328,7 +382,22 @@ func (a *App) OpenImageViewerWithFallbacks(urls []string, fallbackURLs [][]strin
 	}
 	total := maxInt(len(cleanURLs), len(localPaths))
 	index = min(index, total-1)
-	a.ImageViewer = ImageViewerState{Open: true, URLs: cleanURLs, FallbackURLs: cleanFallbacks, LocalPaths: localPaths, Index: index, Zoom: 1, Fit: true, InlinePageIndex: -1}
+	cleanNoWM := make([]string, total)
+	for i := 0; i < total && i < len(noWatermarkPaths); i++ {
+		cleanNoWM[i] = strings.TrimSpace(noWatermarkPaths[i])
+	}
+	a.ImageViewer = ImageViewerState{
+		Open:             true,
+		URLs:             cleanURLs,
+		FallbackURLs:     cleanFallbacks,
+		LocalPaths:       localPaths,
+		NoWatermarkPaths: cleanNoWM,
+		ShowNoWatermark:  false,
+		Index:            index,
+		Zoom:             1,
+		Fit:              true,
+		InlinePageIndex:  -1,
+	}
 	backend := a.backend
 	requestGuarded(a, fmt.Sprintf("image-%d", revision), func() bool {
 		return a.ImageViewer.Open && a.imageViewerRevision == revision && backend.HasAnyLogin()
@@ -336,6 +405,8 @@ func (a *App) OpenImageViewerWithFallbacks(urls []string, fallbackURLs [][]strin
 		defer cancel()
 		bitmaps := make([]*ui.Bitmap, total)
 		errors := make([]string, total)
+		noWMBitmaps := make([]*ui.Bitmap, total)
+		noWMErrors := make([]string, total)
 		for i := 0; i < total; i++ {
 			if ctx.Err() != nil {
 				break
@@ -387,21 +458,32 @@ func (a *App) OpenImageViewerWithFallbacks(urls []string, fallbackURLs [][]strin
 					errors[i] = lastErr
 				}
 			}
+			if i < len(cleanNoWM) && cleanNoWM[i] != "" && ctx.Err() == nil {
+				noWMBitmaps[i] = loadBitmapFromFile(cleanNoWM[i])
+				if noWMBitmaps[i] == nil {
+					noWMErrors[i] = "无水印伴侣图无法读取或格式不支持"
+				}
+			}
 		}
 		return ImageViewerState{
-			Open:         true,
-			URLs:         cleanURLs,
-			FallbackURLs: cleanFallbacks,
-			LocalPaths:   localPaths,
-			Index:        index,
-			Zoom:         1,
-			Fit:          true,
-			Bitmaps:      bitmaps,
-			Errors:       errors,
+			Open:               true,
+			URLs:               cleanURLs,
+			FallbackURLs:       cleanFallbacks,
+			LocalPaths:         localPaths,
+			NoWatermarkPaths:   cleanNoWM,
+			Index:              index,
+			Zoom:               1,
+			Fit:                true,
+			Bitmaps:            bitmaps,
+			Errors:             errors,
+			NoWatermarkBitmaps: noWMBitmaps,
+			NoWatermarkErrors:  noWMErrors,
 		}, nil
 	}, func(state ImageViewerState) {
 		a.ImageViewer.Bitmaps = state.Bitmaps
 		a.ImageViewer.Errors = state.Errors
+		a.ImageViewer.NoWatermarkBitmaps = state.NoWatermarkBitmaps
+		a.ImageViewer.NoWatermarkErrors = state.NoWatermarkErrors
 		a.imageViewerCancel = nil
 	}, nil)
 }

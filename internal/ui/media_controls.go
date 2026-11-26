@@ -37,6 +37,10 @@ func (a *App) closeImageViewer() {
 	}
 	a.ImageViewer.Open = false
 	a.ImageViewer.Bitmaps = nil
+	a.ImageViewer.NoWatermarkPaths = nil
+	a.ImageViewer.NoWatermarkBitmaps = nil
+	a.ImageViewer.NoWatermarkErrors = nil
+	a.ImageViewer.ShowNoWatermark = false
 	a.ImageViewer.InlineLoopMuted = nil
 	a.ImageViewer.InlineLoopPaused = false
 }

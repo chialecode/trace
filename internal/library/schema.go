@@ -284,6 +284,7 @@ type NotePageRecord struct {
 	FromOrigin  bool             `json:"fromOrigin,omitempty"`
 	UnknownKind string           `json:"unknownKind,omitempty"`
 	Image       string           `json:"image,omitempty"`
+	NoWatermark string           `json:"noWatermark,omitempty"`
 	Cover       string           `json:"cover,omitempty"`
 	Motion      string           `json:"motion,omitempty"`
 	Video       string           `json:"video,omitempty"`
@@ -305,7 +306,7 @@ type MusicInfo struct {
 }
 
 type MediaFile struct {
-	Role       string `json:"role"` // "cover", "video", "audio", "danmaku", "subtitle", "image", "motion", "live_segment"
+	Role       string `json:"role"` // "cover", "video", "audio", "danmaku", "subtitle", "image", "image_nowm", "motion", "live_segment"
 	Path       string `json:"path"` // relative to item directory
 	GIF        bool   `json:"gif,omitempty"`
 	FromOrigin bool   `json:"fromOrigin,omitempty"`

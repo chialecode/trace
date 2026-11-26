@@ -46,36 +46,40 @@ const (
 
 // ImageViewerState holds state for the in-app image and mixed-page viewer overlay.
 type ImageViewerState struct {
-	Open             bool
-	URLs             []string
-	FallbackURLs     [][]string
-	LocalPaths       []string
-	ItemKey          string
-	RelPaths         []string
-	InlineSite       string   // site whose CDN serves InlineMediaURLs ("bilibili" or "douyin")
-	InlinePageKinds  []string // per page: "image" | "live_photo" | "video" | "unknown"
-	InlineMediaPaths []string // per page: resolved local motion/video file path
-	InlineMediaURLs  []string // per page: online motion/video URL for uncached preview
-	InlineDurations  []int    // per page: duration in seconds when known
-	InlineLoopMuted  []bool   // per page: true for looping muted GIF MP4s (e.g. X animated_gif)
-	InlineActive     bool
-	InlinePageIndex  int
-	InlineLoading    bool
-	InlineError      string
-	InlineMediaPath  string
-	InlineLoopPaused bool
-	Index            int
-	Zoom             float32
-	PanX             float32
-	PanY             float32
-	Fit              bool
-	Dragging         bool
-	PointerX         float32
-	PointerY         float32
-	Bitmaps          []*ui.Bitmap
-	Errors           []string
-	LastActiveAt     time.Time
-	ControlsHidden   bool
+	Open               bool
+	URLs               []string
+	FallbackURLs       [][]string
+	LocalPaths         []string
+	ItemKey            string
+	RelPaths           []string
+	InlineSite         string   // site whose CDN serves InlineMediaURLs ("bilibili" or "douyin")
+	InlinePageKinds    []string // per page: "image" | "live_photo" | "video" | "unknown"
+	InlineMediaPaths   []string // per page: resolved local motion/video file path
+	InlineMediaURLs    []string // per page: online motion/video URL for uncached preview
+	InlineDurations    []int    // per page: duration in seconds when known
+	InlineLoopMuted    []bool   // per page: true for looping muted GIF MP4s (e.g. X animated_gif)
+	InlineActive       bool
+	InlinePageIndex    int
+	InlineLoading      bool
+	InlineError        string
+	InlineMediaPath    string
+	InlineLoopPaused   bool
+	Index              int
+	Zoom               float32
+	PanX               float32
+	PanY               float32
+	Fit                bool
+	Dragging           bool
+	PointerX           float32
+	PointerY           float32
+	Bitmaps            []*ui.Bitmap
+	Errors             []string
+	NoWatermarkPaths   []string     // per page: resolved local companion watermark-free image path
+	NoWatermarkBitmaps []*ui.Bitmap // decoded companion watermark-free bitmaps (parallel to Bitmaps)
+	NoWatermarkErrors  []string     // per page: companion load error (never blocks original)
+	ShowNoWatermark    bool         // false = original (default), true = watermark-free companion when available
+	LastActiveAt       time.Time
+	ControlsHidden     bool
 }
 
 // PlayerOverlayState holds state for the in-app media player overlay.

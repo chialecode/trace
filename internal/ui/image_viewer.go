@@ -58,6 +58,10 @@ func (a *App) renderImageViewerOverlay(c *ui.Context, w, h float32) {
 		a.ImageViewer.Index = total - 1
 	}
 
+	curIdx := a.ImageViewer.Index
+	hasNoWM := curIdx >= 0 && curIdx < len(a.ImageViewer.NoWatermarkPaths) && a.ImageViewer.NoWatermarkPaths[curIdx] != ""
+	showingNoWM := hasNoWM && a.ImageViewer.ShowNoWatermark
+
 	switchViewerPage := func(nextIdx int) {
 		if nextIdx == a.ImageViewer.Index || nextIdx < 0 || nextIdx >= total {
 			return
@@ -152,9 +156,13 @@ func (a *App) renderImageViewerOverlay(c *ui.Context, w, h float32) {
 									ui.Image(c, vBmp).Size(w, h).Fit(ui.Contain).Absolute().Left(0).Top(0)
 								}
 							} else {
-								bmpIdx := a.ImageViewer.Index
-								if bmpIdx >= 0 && bmpIdx < len(a.ImageViewer.Bitmaps) && a.ImageViewer.Bitmaps[bmpIdx] != nil {
-									bmp := a.ImageViewer.Bitmaps[bmpIdx]
+								var bmp *ui.Bitmap
+								if showingNoWM && curIdx < len(a.ImageViewer.NoWatermarkBitmaps) && a.ImageViewer.NoWatermarkBitmaps[curIdx] != nil {
+									bmp = a.ImageViewer.NoWatermarkBitmaps[curIdx]
+								} else if curIdx >= 0 && curIdx < len(a.ImageViewer.Bitmaps) {
+									bmp = a.ImageViewer.Bitmaps[curIdx]
+								}
+								if bmp != nil {
 									bw, bh := bmp.Size()
 									scale := a.ImageViewer.Zoom
 									if a.ImageViewer.Fit && bw > 0 && bh > 0 {
@@ -223,7 +231,7 @@ func (a *App) renderImageViewerOverlay(c *ui.Context, w, h float32) {
 
 					// Minimal floating circular controls (fade out after 2s of inactivity)
 					if !a.ImageViewer.ControlsHidden {
-						// Top floating bar: index/zoom badge on left + Close circular button on right
+						// Top floating bar: index/zoom badge + optional 原图/无水印 toggle on left, Close button on right
 						ui.Row(c).
 							Absolute().
 							Top(20).
@@ -232,9 +240,62 @@ func (a *App) renderImageViewerOverlay(c *ui.Context, w, h float32) {
 							AlignItems(ui.Center).
 							Justify(ui.SpaceBetween).
 							Children(func() {
-								ui.Box(c).Padding(6, 14).Radius(999).Background(ui.RGBA(255, 255, 255, 0.14)).Border(1, ui.RGBA(255, 255, 255, 0.2)).Children(func() {
-									ui.Text(c, fmt.Sprintf("%d / %d · %.0f%%", a.ImageViewer.Index+1, total, a.ImageViewer.Zoom*100)).
-										FontSize(13).FontWeight(600).TextColor(ColorWhite).SingleLine()
+								ui.Row(c).AlignItems(ui.Center).Gap(10).Children(func() {
+									ui.Box(c).Padding(6, 14).Radius(999).Background(ui.RGBA(255, 255, 255, 0.14)).Border(1, ui.RGBA(255, 255, 255, 0.2)).Children(func() {
+										ui.Text(c, fmt.Sprintf("%d / %d · %.0f%%", a.ImageViewer.Index+1, total, a.ImageViewer.Zoom*100)).
+											FontSize(13).FontWeight(600).TextColor(ColorWhite).SingleLine()
+									})
+									if hasNoWM {
+										ui.Row(c).
+											Label("看图切换原图无水印").
+											Padding(3).
+											Radius(999).
+											Background(ui.RGBA(255, 255, 255, 0.14)).
+											Border(1, ui.RGBA(255, 255, 255, 0.2)).
+											Gap(2).
+											AlignItems(ui.Center).
+											Children(func() {
+												origBtn := ui.ButtonBase(c).
+													Label("看图显示原图").
+													Padding(4, 12).
+													Radius(999)
+												origColor := ui.RGBA(255, 255, 255, 0.78)
+												if !a.ImageViewer.ShowNoWatermark {
+													origBtn.Background(ui.RGBA(255, 255, 255, 0.92))
+													origColor = ColorTextMain
+												} else if origBtn.Hovered() {
+													origBtn.Background(ui.RGBA(255, 255, 255, 0.14))
+												}
+												origBtn.Children(func() {
+													ui.Text(c, "原图").FontSize(12).FontWeight(600).TextColor(origColor).SingleLine()
+												})
+												if origBtn.Clicked() {
+													a.wakeImageViewerControls(now)
+													a.stopViewerInlinePlayback()
+													a.ImageViewer.ShowNoWatermark = false
+												}
+
+												nowmBtn := ui.ButtonBase(c).
+													Label("看图显示无水印").
+													Padding(4, 12).
+													Radius(999)
+												nowmColor := ui.RGBA(255, 255, 255, 0.78)
+												if a.ImageViewer.ShowNoWatermark {
+													nowmBtn.Background(ui.RGBA(255, 255, 255, 0.92))
+													nowmColor = ColorTextMain
+												} else if nowmBtn.Hovered() {
+													nowmBtn.Background(ui.RGBA(255, 255, 255, 0.14))
+												}
+												nowmBtn.Children(func() {
+													ui.Text(c, "无水印").FontSize(12).FontWeight(600).TextColor(nowmColor).SingleLine()
+												})
+												if nowmBtn.Clicked() {
+													a.wakeImageViewerControls(now)
+													a.stopViewerInlinePlayback()
+													a.ImageViewer.ShowNoWatermark = true
+												}
+											})
+									}
 								})
 								if FloatingCircleButton(c, "close", "关闭看图", 42).Clicked() {
 									a.closeImageViewer()

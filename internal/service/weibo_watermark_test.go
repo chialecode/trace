@@ -109,7 +109,8 @@ func TestWeiboRemoveWatermarkDynamicToggleCacheClearAndSnapshotSync(t *testing.T
 		t.Fatalf("LoginWithCookie: %v", err)
 	}
 
-	// 1. Default enabled -> static image & LivePhoto still rewrite to /oslarge/ with original in FallbackURLs[0]; GIF untouched.
+	// 1. Default enabled -> display URLs ALWAYS stay at official originals (/mw2000/, /large/),
+	// while download planning populates WatermarkFreeURL (/oslarge/) for static & LivePhoto still (GIF empty).
 	pvOn, err := b.WeiboPost(ctx, mid)
 	if err != nil {
 		t.Fatalf("WeiboPost(on): %v", err)
@@ -117,21 +118,35 @@ func TestWeiboRemoveWatermarkDynamicToggleCacheClearAndSnapshotSync(t *testing.T
 	if len(pvOn.Images) != 3 {
 		t.Fatalf("len(Images) = %d, want 3", len(pvOn.Images))
 	}
-	if pvOn.Images[0].ImageURL != "https://wx1.sinaimg.cn/oslarge/wm_static_1.jpg" ||
-		len(pvOn.Images[0].FallbackURLs) == 0 ||
-		pvOn.Images[0].FallbackURLs[0] != "https://wx1.sinaimg.cn/mw2000/wm_static_1.jpg" {
-		t.Fatalf("enabled static pic = (%q, fb=%v)", pvOn.Images[0].ImageURL, pvOn.Images[0].FallbackURLs)
+	if pvOn.Images[0].ImageURL != "https://wx1.sinaimg.cn/mw2000/wm_static_1.jpg" ||
+		strings.Contains(pvOn.Images[0].ImageURL, "/oslarge/") {
+		t.Fatalf("enabled static pic URL must stay official original: %q", pvOn.Images[0].ImageURL)
 	}
 	if pvOn.Images[1].ImageURL != "https://wx1.sinaimg.cn/large/wm_gif_2.gif" {
 		t.Fatalf("enabled gif pic = %q, want original .gif", pvOn.Images[1].ImageURL)
 	}
-	if pvOn.Images[2].ImageURL != "https://wx2.sinaimg.cn/oslarge/wm_live_3.jpg" ||
-		len(pvOn.Images[2].FallbackURLs) == 0 ||
-		pvOn.Images[2].FallbackURLs[0] != "https://wx2.sinaimg.cn/large/wm_live_3.jpg" {
-		t.Fatalf("enabled livephoto still = (%q, fb=%v)", pvOn.Images[2].ImageURL, pvOn.Images[2].FallbackURLs)
+	if pvOn.Images[2].ImageURL != "https://wx2.sinaimg.cn/large/wm_live_3.jpg" ||
+		strings.Contains(pvOn.Images[2].ImageURL, "/oslarge/") {
+		t.Fatalf("enabled livephoto still URL must stay official original: %q", pvOn.Images[2].ImageURL)
 	}
-	if _, ok := b.weiboPostCache.get(mid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), true); !ok {
+	cachedPostOn, ok := b.weiboPostCache.get(mid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), true)
+	if !ok {
 		t.Fatal("expected post to be cached in weiboPostCache after WeiboPost")
+	}
+	planOn, err := b.buildWeiboWorkPlanFromPost(cachedPostOn)
+	if err != nil || len(planOn.Pages) != 3 {
+		t.Fatalf("buildWeiboWorkPlanFromPost(on) = (%+v, %v)", planOn, err)
+	}
+	if planOn.Pages[0].ImageURLs[0] != "https://wx1.sinaimg.cn/mw2000/wm_static_1.jpg" ||
+		planOn.Pages[0].WatermarkFreeURL != "https://wx1.sinaimg.cn/oslarge/wm_static_1.jpg" {
+		t.Fatalf("planOn static page = %+v", planOn.Pages[0])
+	}
+	if planOn.Pages[1].WatermarkFreeURL != "" {
+		t.Fatalf("planOn GIF page must not set WatermarkFreeURL: %+v", planOn.Pages[1])
+	}
+	if planOn.Pages[2].ImageURLs[0] != "https://wx2.sinaimg.cn/large/wm_live_3.jpg" ||
+		planOn.Pages[2].WatermarkFreeURL != "https://wx2.sinaimg.cn/oslarge/wm_live_3.jpg" {
+		t.Fatalf("planOn livephoto page = %+v", planOn.Pages[2])
 	}
 
 	// 2. Disable via UpdateSettings -> clears weiboPostCache immediately and takes effect without restart!
@@ -161,6 +176,19 @@ func TestWeiboRemoveWatermarkDynamicToggleCacheClearAndSnapshotSync(t *testing.T
 	}
 	if showHits.Load() < 2 {
 		t.Fatalf("expected fresh fetch after toggle, showHits=%d", showHits.Load())
+	}
+	cachedPostOff, ok := b.weiboPostCache.get(mid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), false)
+	if !ok {
+		t.Fatal("expected post to be cached in weiboPostCache after WeiboPost(off)")
+	}
+	planOff, err := b.buildWeiboWorkPlanFromPost(cachedPostOff)
+	if err != nil || len(planOff.Pages) != 3 {
+		t.Fatalf("buildWeiboWorkPlanFromPost(off) = (%+v, %v)", planOff, err)
+	}
+	for i, pg := range planOff.Pages {
+		if pg.WatermarkFreeURL != "" {
+			t.Fatalf("disabled planOff.Pages[%d].WatermarkFreeURL = %q, want empty", i, pg.WatermarkFreeURL)
+		}
 	}
 
 	// 3. Remote subscription snapshot propagates WeiboRemoveWatermark=false and legacy nil preserves default true.
