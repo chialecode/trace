@@ -178,7 +178,7 @@ AC-01～04、AC-08～11、AC-15、AC-17、AC-19～22 的哔哩哔哩真实站点
 
 | 编号 | 内容 | 状态 |
 | --- | --- | --- |
-| OSS-001 | MyGo 持续高频迭代（当前 `v0.10.0`） | 按 DEC-032 不保留旧版兼容包袱，持续同步 MyGo 最新版；后端核心包不依赖 MyGo（INV-05），只有 `main.go`、`internal/shell`、`internal/ui`、`internal/player`、`internal/locales`、`tools/uishots` 引用 MyGo。MyGo 的更新签名只覆盖更新包内容、不含版本号，TRACE 在清单里加了版本证明；MyGo 的更新不改卸载项的版本，TRACE 在更新后第一次启动时改；MyGo 自己的“应用正在运行”安装提示仍是英文 |
+| OSS-001 | MyGo 持续高频迭代（当前 `v0.10.0`） | 按 DEC-032 不保留旧版兼容包袱，持续同步 MyGo 最新版；后端核心包不依赖 MyGo（INV-05），只有 `main.go`、`internal/shell`、`internal/ui`、`internal/player`、`internal/locales`、`tools/uishots` 引用 MyGo。MyGo 的更新签名只覆盖更新包内容、不含版本号，TRACE 在清单里加了版本证明；MyGo 的更新不改卸载项的版本，TRACE 在更新后第一次启动时改；MyGo 自己的“应用正在运行”安装提示仍是英文；`v0.10.0` 起单实例锁改为系统文件锁、一直持有到进程退出，`Relaunch` 与更新拉起的新实例会等旧进程退出后再运行（旧进程卡住时新实例一直等待，10 秒后只记一条日志、不出窗口），TRACE 在退出时先释放数据库与 `app.lock` 再 `Relaunch`，顺序兼容；下次正式版发布时把“`v0.9.1` 构建的版本更新到 `v0.10.0` 构建的版本”列入 trace-test 更新演练 |
 | OSS-002 | Windows Media Foundation（`IMFSourceReader`）纯 Go COM 调用与 `mygo/audio` 音画同步 | 合成 AVC/AAC 与纯音频（WAV/AAC）读取、Seek 与静音测试通过；真实音频设备体验留 H-001 |
 | OSS-003 | `mp4ff` v0.63.0 渐进式 MP4（1 秒交错 + `elst`）、单文件 MP4 流式 `moov` 前置重排、QuickTime `.mov` 实况片段无损改封装及最高音轨后备 | 小样本合并/轨道/时长、尾置 `moov` 磁盘流式前置重排（含 32 位偏移升级 `co64` 合成测试）、QuickTime `ftyp=qt  ` `.mov` 无损改封装为 ISO BMFF `.mp4`（`EnsureLivePhotoMP4Context`）与失败保留旧文件回归通过；最高 FLAC/杜比另存，主 MP4 用 AAC；真实 FLAC-in-MP4 解码未验证（[媒体选型](../research/2026-11-05-media.md#hires-audio)） |
 | OSS-004 | 纯 Go 弹幕排版器与 WebVTT 字幕在 `mygo/ui` 中的叠加性能 | 测试验证：10,000 条弹幕在时间窗二分查找 + 轨道防重叠下单帧耗时远低于 `1 ms` 目标，Seek 无残留 |
