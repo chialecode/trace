@@ -46,7 +46,9 @@ func (a *App) closePlayerOverlay() {
 	a.PlayerOverlay.PreviewCacheError = ""
 	a.PlayerOverlay.PreviewCacheToast = ""
 	a.PlayerOverlay.PreviewOnCache = nil
-	_ = a.player.Close()
+	if a.player != nil {
+		_ = a.player.Close()
+	}
 }
 
 func (a *App) closeImageViewer() {
@@ -138,8 +140,10 @@ func playerSubtitleLabel(lang string) string {
 // applyPlayerVolume updates volume and mute on all active player controllers
 // without touching disk (used while dragging the volume slider).
 func (a *App) applyPlayerVolume(volume float64, muted bool) {
-	a.player.SetVolume(volume)
-	a.player.SetMuted(muted)
+	if a.player != nil {
+		a.player.SetVolume(volume)
+		a.player.SetMuted(muted)
+	}
 	if a.bgmPlayer != nil {
 		a.bgmPlayer.SetVolume(volume)
 		a.bgmPlayer.SetMuted(muted)
@@ -155,7 +159,10 @@ func (a *App) applyPlayerVolume(volume float64, muted bool) {
 }
 
 func (a *App) persistPlayerVolume() {
-	muted := a.player.Snapshot(1, 1).Muted
+	muted := false
+	if a.player != nil {
+		muted = a.player.Snapshot(1, 1).Muted
+	}
 	a.applyPlayerVolume(a.PlayerOverlay.Volume, muted)
 	volume := a.PlayerOverlay.Volume
 	if _, err := a.backend.MutateUIState(func(st *uistate.State) {

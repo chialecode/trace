@@ -726,3 +726,63 @@ func TestPlayerOverlayPreviewCancelsInFlightStageOnCloseAndSwitch(t *testing.T) 
 	}
 	app.closePlayerOverlay()
 }
+
+func TestPlayerOverlayPreviewErrorRendersWithoutDecoder(t *testing.T) {
+	app, _, posted, cleanup := newVideoPreviewHarness(t)
+	defer cleanup()
+
+	// 1. Simulate a Linux/non-MF environment where a prior open left DecoderMissing=true
+	//    and then a new temporary preview fails at StagePreviewMedia (oversize > 128 MiB).
+	app.PlayerOverlay.Open = true
+	app.PlayerOverlay.DecoderMissing = true
+	app.PlayerOverlay.MissingReason = "media decoder missing"
+
+	cachedCount := 0
+	app.openRemoteVideoPreviewWithCache("douyin", "超限短视频", "https://v26-web.douyinvod.com/synth/oversize.mp4", false, previewCacheAction{
+		ItemKey:    "douyin:video:oversize",
+		PendingKey: "preview-cache-oversize",
+		Enqueue: func(context.Context) error {
+			cachedCount++
+			return nil
+		},
+	})
+	waitUIIdle(t, app, posted)
+
+	if app.PlayerOverlay.DecoderMissing {
+		t.Fatal("non-codec StagePreviewMedia error must clear DecoderMissing")
+	}
+	if app.PlayerOverlay.MissingReason != "" {
+		t.Fatalf("non-codec StagePreviewMedia error must clear MissingReason, got %q", app.PlayerOverlay.MissingReason)
+	}
+
+	// 2. Also verify LoadError renders cleanly across 720/1000/1280 when a.player == nil
+	//    (no platform decoder controller) and the error-card cache CTA remains clickable.
+	origPlayer := app.player
+	app.player = nil
+	t.Cleanup(func() { app.player = origPlayer })
+
+	for _, w := range []int{720, 1000, 1280} {
+		wf := float32(w)
+		tester := ui.NewTester(app.View, w, 760)
+		tester.Frame()
+		for _, lbl := range []string{"临时预览标记", "临时预览缓存到媒体库", "临时预览错误说明", "预览失败缓存到媒体库"} {
+			r, ok := tester.Find(lbl)
+			if !ok {
+				t.Fatalf("width %d (player=nil): missing %q", w, lbl)
+			}
+			if r.X < -0.5 || r.X+r.W > wf+0.5 {
+				t.Fatalf("width %d (player=nil): %q overflowed horizontally: rect=%+v", w, lbl, r)
+			}
+		}
+		if w == 1280 {
+			if err := tester.Click("预览失败缓存到媒体库"); err != nil {
+				t.Fatalf("click 预览失败缓存到媒体库 with player=nil: %v", err)
+			}
+			waitUIIdle(t, app, posted)
+		}
+	}
+	if cachedCount != 1 || !app.PlayerOverlay.PreviewCacheQueued {
+		t.Fatalf("expected error-card cache CTA to succeed with player=nil, count=%d queued=%v", cachedCount, app.PlayerOverlay.PreviewCacheQueued)
+	}
+	app.closePlayerOverlay()
+}

@@ -2523,6 +2523,12 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.Navigate(ui.RouteDouyinWork)
 				app.OpenPlayerOverlay(savedItem)
 				app.PlayerOverlay.ItemKey = ""
+				app.PlayerOverlay.Segments = nil
+				app.PlayerOverlay.Chapters = nil
+				app.PlayerOverlay.DecoderMissing = false
+				app.PlayerOverlay.MissingReason = ""
+				app.PlayerOverlay.LoadError = ""
+				app.PlayerOverlay.Loading = false
 				app.PlayerOverlay.Title = "川西日照金山短视频（未缓存可临时预览）"
 				app.PlayerOverlay.PreviewMode = true
 				app.PlayerOverlay.PreviewSite = "douyin"
@@ -2532,7 +2538,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.PlayerOverlay.VolumeMenuOpen = false
 			},
 			RequiredLabels:  []string{"临时预览标记", "临时预览缓存到媒体库", "播放器更多菜单", "关闭播放"},
-			ForbiddenLabels: []string{"播放层打开文件夹", "用系统播放器打开"},
+			ForbiddenLabels: []string{"播放层打开文件夹", "用系统播放器打开", "临时预览错误说明"},
 		},
 		{
 			Name: "player-temp-preview-error",
@@ -2542,6 +2548,11 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.OpenPlayerOverlay(savedItem)
 				app.PlayerOverlay.ItemKey = ""
 				app.PlayerOverlay.MediaPath = ""
+				app.PlayerOverlay.Segments = nil
+				app.PlayerOverlay.Chapters = nil
+				app.PlayerOverlay.DecoderMissing = false
+				app.PlayerOverlay.MissingReason = ""
+				app.PlayerOverlay.Loading = false
 				app.PlayerOverlay.Title = "超长 4K 原片临时预览超限示例"
 				app.PlayerOverlay.PreviewMode = true
 				app.PlayerOverlay.PreviewSite = "douyin"

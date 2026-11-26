@@ -1083,7 +1083,7 @@ func maxInt(a, b int) int {
 func (a *App) View(c *ui.Context) {
 	c.SetTheme(TraceTheme())
 
-	if a.PlayerOverlay.Open {
+	if a.PlayerOverlay.Open && a.player != nil {
 		a.player.Advance(0)
 		snap := a.player.Snapshot(1, 1)
 		if snap.Playing {

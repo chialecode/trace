@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/chialecode/trace/internal/player"
 	"github.com/chialecode/trace/internal/uistate"
 	"github.com/egoist/mygo/ui"
 )
@@ -83,12 +84,15 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 		a.wakePlayerControls(now)
 	}
 
-	snap := a.player.Snapshot(w, h)
-	if snap.DurationSec > 0 && !a.player.Scrubbing() {
-		a.PlayerOverlay.SeekNormalized = snap.PositionSec / snap.DurationSec
+	var snap player.StateSnapshot
+	if a.player != nil {
+		snap = a.player.Snapshot(w, h)
+		if snap.DurationSec > 0 && !a.player.Scrubbing() {
+			a.PlayerOverlay.SeekNormalized = snap.PositionSec / snap.DurationSec
+		}
 	}
 
-	ready := !a.PlayerOverlay.Loading && a.PlayerOverlay.LoadError == "" && !a.PlayerOverlay.DecoderMissing
+	ready := a.player != nil && !a.PlayerOverlay.Loading && a.PlayerOverlay.LoadError == "" && !a.PlayerOverlay.DecoderMissing
 	ui.Overlay(c, func() {
 		modal := ui.Box(c).Absolute().Top(0).Left(0).Size(fullW, fullH).Modal()
 		if ready && modal.OverlayShortcut(0, ui.KeySpace) {
@@ -196,8 +200,10 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 								ui.Column(c).Absolute().Top(0).Left(0).Size(w, h).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
 									ui.Spinner(c).Label("播放器加载中").Size(28, 28)
 								})
-							} else if bmp := a.player.Bitmap(); bmp != nil {
-								ui.Image(c, bmp).Size(w, h).Fit(ui.Contain)
+							} else if a.player != nil {
+								if bmp := a.player.Bitmap(); bmp != nil {
+									ui.Image(c, bmp).Size(w, h).Fit(ui.Contain)
+								}
 							}
 							dmAlpha := float32(max(0.2, min(1.0, a.PlayerOverlay.DanmakuOpacity)))
 							for _, dm := range snap.VisibleDanmaku {
@@ -531,7 +537,7 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 								if snap.Playing {
 									playIcon = "pause"
 								}
-								if FloatingCircleButton(c, playIcon, "播放器播放暂停", 38).Disabled(!ready).Clicked() {
+								if FloatingCircleButton(c, playIcon, "播放器播放暂停", 38).Disabled(!ready).Clicked() && a.player != nil {
 									a.wakePlayerControls(now)
 									a.PlayerOverlay.LoopPaused = snap.Playing
 									a.player.TogglePlay()
@@ -550,10 +556,10 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 								target := durSec * a.PlayerOverlay.SeekNormalized
 								_, held := seekBar.PressedButton() // held even off the bar
 								switch {
-								case seekBar.Changed() && held:
+								case seekBar.Changed() && held && a.player != nil:
 									a.wakePlayerControls(now)
 									a.player.Preview(target)
-								case seekBar.Changed() || a.player.Scrubbing() && !held:
+								case a.player != nil && (seekBar.Changed() || a.player.Scrubbing() && !held):
 									a.wakePlayerControls(now)
 									_ = a.player.Seek(target)
 								}
@@ -587,16 +593,18 @@ func (a *App) applyPlayerPrefs() (areaFrac float64, density, lang string) {
 	case "full":
 		areaFrac = 1.0
 	}
-	a.player.SetDanmakuVisible(a.PlayerOverlay.DanmakuEnabled)
-	a.player.SetDanmakuOpacity(a.PlayerOverlay.DanmakuOpacity)
-	a.player.SetDanmakuArea(areaFrac)
 	density = playerDensityValue(a.PlayerOverlay.DanmakuDensity)
-	a.player.SetDanmakuDensity(density)
-
 	lang = a.PlayerOverlay.SubtitleLang
 	if lang == "关闭" {
 		lang = ""
 	}
+	if a.player == nil {
+		return areaFrac, density, lang
+	}
+	a.player.SetDanmakuVisible(a.PlayerOverlay.DanmakuEnabled)
+	a.player.SetDanmakuOpacity(a.PlayerOverlay.DanmakuOpacity)
+	a.player.SetDanmakuArea(areaFrac)
+	a.player.SetDanmakuDensity(density)
 	a.player.SetSubtitleLang(lang)
 	return areaFrac, density, lang
 }
