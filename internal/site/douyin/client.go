@@ -354,6 +354,11 @@ func (c *Client) LiveTransport() site.MediaTransportSpec {
 	return site.DouyinLiveTransport(c.profile.UserAgent, c.allowLocalhost)
 }
 
+// MediaHTTPClient returns the configured cookieless media HTTP client and idle timeout.
+func (c *Client) MediaHTTPClient() (*http.Client, time.Duration) {
+	return c.mediaClient, c.mediaIdleTimeout
+}
+
 // ResolvePlayRedirect resolves an authenticated Douyin main-site play redirector
 // URL (https://www.douyin.com/aweme/v1/play/?...) into a cookieless CDN media URL.
 // Cookies are sent ONLY to the validated Douyin API host and never forwarded on

@@ -800,9 +800,31 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 				})
 			}
 
+			var xCache previewCacheAction
+			if !suppressCache && post.ID != "" {
+				postIDCopy := post.ID
+				var viaCopy *library.ItemVia
+				if v := a.xCacheViaFor(post); v != nil {
+					cp := *v
+					viaCopy = &cp
+				}
+				backend := a.backend
+				xCache = previewCacheAction{
+					ItemKey:    itemKey,
+					PendingKey: "cache-x-post:" + postIDCopy,
+					Enqueue: func(ctx context.Context) error {
+						if backend == nil {
+							return fmt.Errorf("后端服务未初始化")
+						}
+						_, err := backend.CacheXPost(ctx, postIDCopy, viaCopy)
+						return err
+					},
+				}
+			}
+
 			// 4. Up to 4 Mixed Media Items (original photos, GIF looping muted MP4, video cover & duration, HLS-only notice)
 			if len(post.Media) == 1 && (post.Media[0].Kind == "video" || post.Media[0].Kind == "gif" || post.Media[0].GIF) && !post.Media[0].HLSOnly {
-				a.renderXDetailVideoCard(c, post.Media[0], itemKey, cachedItem, false, false)
+				a.renderXDetailVideoCard(c, post.Media[0], itemKey, cachedItem, false, false, xCache)
 			} else if len(post.Media) > 0 {
 				pages := xMediaToNotePagesScoped(post.Media, cachedItem, false, false)
 				a.renderNotePagesGrid(c, itemKey, "x", pages, true)
@@ -821,10 +843,10 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 
 			// 6. Retweet & Quote Nested Cards (graceful degraded origin notice when deleted/protected/withheld)
 			if post.Retweeted != nil {
-				a.renderXOriginCard(c, post.Retweeted, false, itemKey, cachedItem, false)
+				a.renderXOriginCard(c, post.Retweeted, false, itemKey, cachedItem, false, xCache)
 			}
 			if post.Quoted != nil {
-				a.renderXOriginCard(c, post.Quoted, true, itemKey, cachedItem, false)
+				a.renderXOriginCard(c, post.Quoted, true, itemKey, cachedItem, false, xCache)
 			}
 			if post.Retweeted == nil && post.Quoted == nil && post.OriginUnavailable {
 				ui.Row(c).
@@ -927,7 +949,7 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 	})
 }
 
-func (a *App) renderXDetailVideoCard(c *ui.Context, m service.XMediaItemDTO, itemKey string, cachedItem *library.ItemMetadata, fromOrigin bool, offline bool) {
+func (a *App) renderXDetailVideoCard(c *ui.Context, m service.XMediaItemDTO, itemKey string, cachedItem *library.ItemMetadata, fromOrigin bool, offline bool, cacheAct previewCacheAction) {
 	isGIF := m.GIF || m.Kind == "gif"
 	hasLocalVideo, relCover, localDur, videoRel := cachedItemHasVideoForScope(cachedItem, fromOrigin, false)
 	coverURL := ""
@@ -993,7 +1015,7 @@ func (a *App) renderXDetailVideoCard(c *ui.Context, m service.XMediaItemDTO, ite
 				a.player.SetMuted(true)
 			}
 		} else if hasPreviewURL {
-			a.openRemoteVideoPreviewOpts("x", title, m.VideoURL, isGIF)
+			a.openRemoteVideoPreviewWithCache("x", title, m.VideoURL, isGIF, cacheAct)
 		} else if !offline {
 			c.Toast("点击上方「缓存」后可本机播放")
 			a.BannerInfo = "点击上方「缓存」后可本机播放"
@@ -1001,7 +1023,7 @@ func (a *App) renderXDetailVideoCard(c *ui.Context, m service.XMediaItemDTO, ite
 	}
 }
 
-func (a *App) renderXOriginCard(c *ui.Context, orig *service.XPostDTO, isQuote bool, outerItemKey string, outerCachedItem *library.ItemMetadata, offline bool) {
+func (a *App) renderXOriginCard(c *ui.Context, orig *service.XPostDTO, isQuote bool, outerItemKey string, outerCachedItem *library.ItemMetadata, offline bool, cacheAct previewCacheAction) {
 	if orig == nil {
 		return
 	}
@@ -1081,7 +1103,7 @@ func (a *App) renderXOriginCard(c *ui.Context, orig *service.XPostDTO, isQuote b
 				})
 			}
 			if len(orig.Media) == 1 && (orig.Media[0].Kind == "video" || orig.Media[0].Kind == "gif" || orig.Media[0].GIF) && !orig.Media[0].HLSOnly {
-				a.renderXDetailVideoCard(c, orig.Media[0], outerItemKey, outerCachedItem, true, offline)
+				a.renderXDetailVideoCard(c, orig.Media[0], outerItemKey, outerCachedItem, true, offline, cacheAct)
 			} else if len(orig.Media) > 0 {
 				pages := xMediaToNotePagesScoped(orig.Media, outerCachedItem, true, offline)
 				a.renderNotePagesGrid(c, outerItemKey, "x", pages, true)

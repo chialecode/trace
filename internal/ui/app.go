@@ -84,35 +84,43 @@ type ImageViewerState struct {
 
 // PlayerOverlayState holds state for the in-app media player overlay.
 type PlayerOverlayState struct {
-	Open             bool
-	ItemKey          string
-	Title            string
-	MediaPath        string
-	Loading          bool
-	LoadError        string
-	Segment          int
-	Segments         []string
-	Chapters         []library.VideoChapter
-	PendingSeekSec   float64
-	DecoderMissing   bool
-	MissingReason    string
-	SeekNormalized   float64
-	DanmakuEnabled   bool
-	DanmakuOpacity   float64
-	DanmakuArea      string
-	DanmakuDensity   string
-	Volume           float64
-	VolumeMenuOpen   bool
-	SubtitleLang     string
-	SubtitleOptions  []string
-	MoreMenuOpen     bool
-	Fullscreen       bool
-	LoopMuted        bool
-	LoopPaused       bool
-	LastActiveAt     time.Time
-	ControlsHidden   bool
-	volumeScrubbing  bool
-	opacityScrubbing bool
+	Open               bool
+	ItemKey            string
+	Title              string
+	MediaPath          string
+	Loading            bool
+	LoadError          string
+	Segment            int
+	Segments           []string
+	Chapters           []library.VideoChapter
+	PendingSeekSec     float64
+	DecoderMissing     bool
+	MissingReason      string
+	SeekNormalized     float64
+	DanmakuEnabled     bool
+	DanmakuOpacity     float64
+	DanmakuArea        string
+	DanmakuDensity     string
+	Volume             float64
+	VolumeMenuOpen     bool
+	SubtitleLang       string
+	SubtitleOptions    []string
+	MoreMenuOpen       bool
+	Fullscreen         bool
+	LoopMuted          bool
+	LoopPaused         bool
+	PreviewMode        bool
+	PreviewSite        string
+	PreviewItemKey     string
+	PreviewPendingKey  string
+	PreviewCacheQueued bool
+	PreviewCacheError  string
+	PreviewCacheToast  string
+	PreviewOnCache     func(context.Context) error
+	LastActiveAt       time.Time
+	ControlsHidden     bool
+	volumeScrubbing    bool
+	opacityScrubbing   bool
 }
 
 // DeleteConfirmState holds state for the library item deletion confirmation modal.
@@ -184,6 +192,7 @@ type App struct {
 	fileDialog           FileDialogHandler
 	imageViewerRevision  uint64
 	imageViewerCancel    context.CancelFunc
+	playerPreviewCancel  context.CancelFunc
 	runtimeDiagnostics   service.Diagnostics
 	runtimeLogLines      []string
 	runtimeLogError      string
@@ -1074,7 +1083,7 @@ func maxInt(a, b int) int {
 func (a *App) View(c *ui.Context) {
 	c.SetTheme(TraceTheme())
 
-	if a.PlayerOverlay.Open {
+	if a.PlayerOverlay.Open && a.player != nil {
 		a.player.Advance(0)
 		snap := a.player.Snapshot(1, 1)
 		if snap.Playing {

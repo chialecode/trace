@@ -478,6 +478,11 @@ func (c *Client) MediaTransport() site.MediaTransportSpec {
 	return site.XMediaTransport(c.profile.UserAgent, c.allowLocalhost)
 }
 
+// MediaHTTPClient returns the configured cookieless media HTTP client and idle timeout.
+func (c *Client) MediaHTTPClient() (*http.Client, time.Duration) {
+	return c.mediaClient, c.mediaIdleTimeout
+}
+
 // SetAutomaticRequestHandlers wires per-site automatic request quota and circuit-breaker hooks.
 func (c *Client) SetAutomaticRequestHandlers(
 	budget func(ctx context.Context, source string, endpoint string) error,
