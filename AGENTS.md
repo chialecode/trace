@@ -34,6 +34,7 @@
 | 订阅、检查更新、定时规则、自动缓存 | [订阅设计](docs/design/subscriptions.md) |
 | 直播状态与录制 | [直播设计](docs/design/live.md) |
 | 远程版、上传、订阅与资源库的导入导出 | [远程设计](docs/design/remote.md) |
+| 移动端（手机应用与电脑端的移动端服务） | [移动端设计](docs/design/mobile.md)、[移动端选型](docs/research/2026-11-26-mobile.md) |
 | UI、文案、交互 | [界面规范](docs/ui.md) |
 | 站点协议 | [哔哩哔哩](docs/research/bilibili.md)、[抖音](docs/research/douyin.md)、[微博](docs/research/weibo.md)、[X](docs/research/x.md)协议资料 |
 

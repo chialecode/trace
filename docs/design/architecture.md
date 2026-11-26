@@ -1,6 +1,6 @@
 # 技术设计：架构、接口与原生界面
 
-技术设计说明系统“应当怎样工作”，按专题分五份：本页（进程与分层、代码目录、服务接口、站点客户端、凭证、原生界面、不变量、窗口与托盘、远程版的分层）、[数据、缓存与信息流](data-and-cache.md)、[订阅、检查更新与自动缓存](subscriptions.md)、[直播](live.md)、[远程版、上传与导入导出](remote.md)。与代码不一致时按[冲突规则](../dev-rules/workflow.md#conflicts)处理。选型依据见[技术选型研究](../research/2026-11-05-stack.md)、[媒体与存储选型](../research/2026-11-05-media.md)与[X 开源客户端与协议依赖选型](../research/2026-11-22-x.md)，协议见[哔哩哔哩协议资料](../research/bilibili.md)、[抖音协议资料](../research/douyin.md)、[微博协议资料](../research/weibo.md)与[X 协议与官方 API 资料](../research/x.md)。
+技术设计说明系统“应当怎样工作”，按专题分六份：本页（进程与分层、代码目录、服务接口、站点客户端、凭证、原生界面、不变量、窗口与托盘、远程版的分层）、[数据、缓存与信息流](data-and-cache.md)、[订阅、检查更新与自动缓存](subscriptions.md)、[直播](live.md)、[远程版、上传与导入导出](remote.md)、[移动端](mobile.md)（计划：手机应用与电脑端的移动端服务）。与代码不一致时按[冲突规则](../dev-rules/workflow.md#conflicts)处理。选型依据见[技术选型研究](../research/2026-11-05-stack.md)、[媒体与存储选型](../research/2026-11-05-media.md)与[X 开源客户端与协议依赖选型](../research/2026-11-22-x.md)，协议见[哔哩哔哩协议资料](../research/bilibili.md)、[抖音协议资料](../research/douyin.md)、[微博协议资料](../research/weibo.md)与[X 协议与官方 API 资料](../research/x.md)。
 
 <a id="architecture"></a>
 ## 1. 进程与分层
