@@ -8,6 +8,7 @@ import (
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
+	"github.com/chialecode/trace/internal/subscription"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -537,24 +538,71 @@ func (a *App) renderQualitySettings(c *ui.Context) {
 }
 
 func (a *App) renderSubscriptionSettings(c *ui.Context) {
+	now := c.Now()
 	schedStatuses := a.backend.SchedulerStatuses()
-	ui.Column(c).FillWidth().Gap(12).ClipX().Children(func() {
-		if settingSwitchRow(c, "定时检查更新", "只在 TRACE 打开时检查；遇到风控会自动放慢", "开关定时订阅", &a.DraftSettings.Subscription.Enabled) {
-			a.DraftSettings.ScheduledCheck = a.DraftSettings.Subscription.Enabled
-			a.saveSettings()
+	planRows := a.checkPlanRowsAt(now)
+	scheduledSubs := 0
+	scheduledAccounts := 0
+	for _, sub := range a.Subscriptions {
+		if sub.Rules.ScheduledCheck {
+			scheduledSubs++
+			scheduledAccounts += len(subscriptionEffectiveAccounts(sub))
 		}
+	}
+	earliestNext := earliestScheduledNextAt(planRows)
+	hasPlanOff := false
+	hasPlanUnauth := false
+	for _, r := range planRows {
+		switch r.Plan {
+		case subscription.PlanOff:
+			hasPlanOff = true
+		case subscription.PlanUnauth:
+			hasPlanUnauth = true
+		}
+	}
 
+	ui.Column(c).FillWidth().Gap(12).ClipX().Children(func() {
 		chkMinStr := strconv.Itoa(a.DraftSettings.Subscription.IntervalMinutes)
 		if chkMinStr == "0" {
 			chkMinStr = "60"
 		}
-		if settingChoiceRowDisabled(c, "检查间隔", "", "选择订阅检查间隔", &chkMinStr, subscriptionIntervalChoices, !a.DraftSettings.Subscription.Enabled) {
+		if settingChoiceRow(c, "检查间隔", "只在 TRACE 打开时按此间隔检查已开启「定时检查」的订阅；遇到风控会自动放慢", "选择订阅检查间隔", &chkMinStr, subscriptionIntervalChoices) {
 			if v, err := strconv.Atoi(chkMinStr); err == nil {
 				a.DraftSettings.Subscription.IntervalMinutes = v
 				a.DraftSettings.CheckIntervalMin = v
 				a.saveSettings()
 			}
 		}
+
+		// Per-subscription scheduled check summary & next check time (DEC-080)
+		ui.Column(c).
+			Label("定时检查状态摘要").
+			FillWidth().
+			Padding(10, 0).
+			BorderWidth(0, 0, 1, 0).
+			BorderColor(ColorBorder).
+			Gap(4).
+			ClipX().
+			Children(func() {
+				if scheduledSubs == 0 {
+					ui.Text(c, "当前没有订阅开启定时检查").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+				} else {
+					ui.Text(c, fmt.Sprintf("已开启定时检查：%d 个订阅（%d 个账号）", scheduledSubs, scheduledAccounts)).
+						FontSize(13).FontWeight(500).TextColor(ColorTextMain).SingleLine()
+					switch {
+					case earliestNext != "":
+						ui.Text(c, "下一轮定时检查："+formatPlanTime(earliestNext, now)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					case scheduledAccounts == 0:
+						ui.Text(c, "这些订阅还没有关联站点账号").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					case hasPlanOff || strings.EqualFold(strings.TrimSpace(a.DraftSettings.Subscription.Mode), "manual"):
+						ui.Text(c, "定时检查当前处于手动模式，已暂停自动运行").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					case hasPlanUnauth:
+						ui.Text(c, "对应站点尚未登录，登录后将按间隔自动检查").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					default:
+						ui.Text(c, "定时检查暂未排程").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					}
+				}
+			})
 
 		// Per-site scheduler schedule & backoff lines (docs/ui.md §3.7)
 		if len(schedStatuses) > 0 {
@@ -608,7 +656,7 @@ func (a *App) renderSubscriptionSettings(c *ui.Context) {
 		if liveMinStr == "0" {
 			liveMinStr = "3"
 		}
-		if settingChoiceRow(c, "开播检查间隔", liveIntervalNote(a.checkPlanRows()), "选择直播轮询间隔", &liveMinStr, liveIntervalChoices) {
+		if settingChoiceRow(c, "开播检查间隔", liveIntervalNote(planRows), "选择直播轮询间隔", &liveMinStr, liveIntervalChoices) {
 			if v, err := strconv.Atoi(liveMinStr); err == nil {
 				a.DraftSettings.LiveCheckIntervalMin = v
 				a.DraftSettings.Live.PollIntervalSeconds = v * 60
@@ -631,6 +679,7 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 	rebuilding := a.isPending("storage-rebuild")
 	migrating := a.isPending("storage-migrate")
 	addingRoot := a.isPending("storage-add-root")
+	picking := a.fileDialogBusy()
 
 	ui.Column(c).FillWidth().Gap(12).ClipX().Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
@@ -738,11 +787,14 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 			ui.Text(c, "只影响之后的缓存。").FontSize(12).TextColor(ColorTextMuted).SingleLine()
 			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).ClipX().Children(func() {
 				ui.TextInput(c, &a.CacheDirInput).Placeholder("新缓存目录路径").Label("缓存目录输入框").Grow(1)
+				if OutlinePillButton(c, "选择文件夹…", "选择缓存保存位置").Shrink(0).Disabled(migrating || picking).Clicked() && !migrating && !picking {
+					a.pickCacheDir()
+				}
 				migrateText := "应用缓存目录"
 				if migrating {
 					migrateText = "正在迁移…"
 				}
-				if AccentPillButton(c, migrateText, "应用缓存目录").Disabled(migrating).Clicked() && !migrating {
+				if AccentPillButton(c, migrateText, "应用缓存目录").Shrink(0).Disabled(migrating).Clicked() && !migrating {
 					targetDir := a.CacheDirInput
 					moveFiles := a.MoveExistingFiles
 					backend := a.backend
@@ -771,11 +823,14 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 					Placeholder("输入已有缓存根目录或 trace-data 文件夹路径").
 					Label("添加已有文件夹输入框").
 					Grow(1)
+				if OutlinePillButton(c, "选择文件夹…", "选择已有缓存文件夹").Shrink(0).Disabled(addingRoot || picking).Clicked() && !addingRoot && !picking {
+					a.pickAddLibraryRoot()
+				}
 				addText := "从已有文件夹添加"
 				if addingRoot {
 					addText = "正在扫描…"
 				}
-				if AccentOutlinePillButton(c, addText, "从已有文件夹添加").Disabled(addingRoot).Clicked() && !addingRoot {
+				if AccentOutlinePillButton(c, addText, "从已有文件夹添加").Shrink(0).Disabled(addingRoot).Clicked() && !addingRoot {
 					rootPath := a.AddLibraryRootInput
 					backend := a.backend
 					requestGuarded(a, "storage-add-root", nil, func(context.Context) (library.AddRootReport, error) {

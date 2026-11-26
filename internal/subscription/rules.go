@@ -10,7 +10,8 @@ import (
 )
 
 // Atomic cache capability tags (DEC-070): one tag equals one cache capability,
-// mapping 1-to-1 with SubRules. New subscriptions start with empty tags ([]).
+// mapping 1-to-1 with SubRules. Intent-based tracking presets (DEC-080) compose
+// pure combinations of these 7 atomic tags without changing subscriptions.json v5.
 const (
 	TagScheduledCheck = "scheduled_check"
 	TagCacheVideo     = "cache_video"
@@ -20,6 +21,27 @@ const (
 	TagFullCache      = "full_cache"
 	TagAutoRecord     = "auto_record"
 )
+
+// Intent-based tracking preset IDs built on top of the 7 atomic tags (DEC-080).
+// Auto-recording (TagAutoRecord / "录直播") is an independent overlay toggle on any preset.
+const (
+	PresetFullArchive = "full_archive"
+	PresetFollowCache = "follow_cache"
+	PresetCheckOnly   = "check_only"
+	PresetManual      = "manual"
+	PresetCustom      = "custom"
+)
+
+// TrackingPreset describes a named intent-based combination of non-live capability tags.
+type TrackingPreset struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Tags        []string `json:"tags"`
+}
+
+// ErrPresetNotFound reports an unknown tracking preset ID.
+var ErrPresetNotFound = errors.New("未知的追踪模式预设")
 
 // Batch tag update modes for BatchUpdateSubscriptionsTags.
 const (
@@ -160,9 +182,170 @@ func TagsSummary(tags []string) string {
 	return strings.Join(names, " · ")
 }
 
-// DefaultSubRules returns empty automation rules (all capabilities off) for new subscriptions (DEC-070).
-func DefaultSubRules() SubRules {
+// EmptySubRules returns empty automation rules (all capabilities off, equivalent to "仅手动").
+// Existing saved subscriptions with empty tags remain empty on load.
+func EmptySubRules() SubRules {
 	return SubRules{}
+}
+
+// DefaultNewSubTags returns the default capability tags for newly created subscriptions:
+// "完整存档" (DEC-080): scheduled_check + all 4 auto-cache types + full_cache.
+func DefaultNewSubTags() []string {
+	return []string{
+		TagScheduledCheck,
+		TagCacheVideo,
+		TagCacheDraw,
+		TagCacheWord,
+		TagCacheForward,
+		TagFullCache,
+	}
+}
+
+// DefaultSubRules returns the default automation rules for newly created subscriptions:
+// "完整存档" (DEC-080). Existing saved subscriptions are never altered retroactively.
+func DefaultSubRules() SubRules {
+	return TagsToSubRules(DefaultNewSubTags())
+}
+
+var trackingPresetCatalog = []TrackingPreset{
+	{
+		ID:          PresetFullArchive,
+		Name:        "完整存档",
+		Description: "定时检查新内容，自动缓存全部类型，并定期补齐历史作品",
+		Tags: []string{
+			TagScheduledCheck,
+			TagCacheVideo,
+			TagCacheDraw,
+			TagCacheWord,
+			TagCacheForward,
+			TagFullCache,
+		},
+	},
+	{
+		ID:          PresetFollowCache,
+		Name:        "追更并保存",
+		Description: "定时检查新内容，自动缓存新发布的视频与图文",
+		Tags: []string{
+			TagScheduledCheck,
+			TagCacheVideo,
+			TagCacheDraw,
+		},
+	},
+	{
+		ID:          PresetCheckOnly,
+		Name:        "只看新动态",
+		Description: "仅定时检查新动态与开播状态，不自动缓存",
+		Tags: []string{
+			TagScheduledCheck,
+		},
+	},
+	{
+		ID:          PresetManual,
+		Name:        "仅手动",
+		Description: "关闭定时检查与自动缓存，需要时手动检查和缓存",
+		Tags:        []string{},
+	},
+}
+
+// AllTrackingPresets returns all concrete tracking presets in display order.
+func AllTrackingPresets() []TrackingPreset {
+	out := make([]TrackingPreset, len(trackingPresetCatalog))
+	for i, p := range trackingPresetCatalog {
+		p.Tags = slices.Clone(p.Tags)
+		out[i] = p
+	}
+	return out
+}
+
+// TrackingPresetByID looks up one of the 4 concrete tracking presets by ID.
+func TrackingPresetByID(id string) (TrackingPreset, bool) {
+	trimmed := strings.TrimSpace(id)
+	for _, p := range trackingPresetCatalog {
+		if p.ID == trimmed {
+			p.Tags = slices.Clone(p.Tags)
+			return p, true
+		}
+	}
+	return TrackingPreset{}, false
+}
+
+// TrackingPresetName returns the display name of presetID (including PresetCustom).
+func TrackingPresetName(presetID string) string {
+	if p, ok := TrackingPresetByID(presetID); ok {
+		return p.Name
+	}
+	if strings.TrimSpace(presetID) == PresetCustom {
+		return "自定义"
+	}
+	return "自定义"
+}
+
+// PresetTags returns the normalized atomic tags for presetID plus optional TagAutoRecord.
+func PresetTags(presetID string, autoRecord bool) ([]string, error) {
+	p, ok := TrackingPresetByID(presetID)
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrPresetNotFound, presetID)
+	}
+	tags := slices.Clone(p.Tags)
+	if autoRecord {
+		tags = append(tags, TagAutoRecord)
+	}
+	return NormalizeTags(tags), nil
+}
+
+// PresetSubRules returns SubRules for presetID plus optional AutoRecord.
+func PresetSubRules(presetID string, autoRecord bool) (SubRules, error) {
+	tags, err := PresetTags(presetID, autoRecord)
+	if err != nil {
+		return SubRules{}, err
+	}
+	return TagsToSubRules(tags), nil
+}
+
+// MatchTrackingPreset classifies a tag set into one of the 4 concrete presets
+// (or PresetCustom) plus whether the overlayable TagAutoRecord is enabled.
+func MatchTrackingPreset(tags []string) (presetID string, autoRecord bool) {
+	norm := NormalizeTags(tags)
+	base := make([]string, 0, len(norm))
+	for _, id := range norm {
+		if id == TagAutoRecord {
+			autoRecord = true
+			continue
+		}
+		base = append(base, id)
+	}
+	for _, p := range trackingPresetCatalog {
+		if slices.Equal(base, p.Tags) {
+			return p.ID, autoRecord
+		}
+	}
+	return PresetCustom, autoRecord
+}
+
+// TrackingModeLabel returns a concise human-readable label for a tag set,
+// such as "完整存档", "完整存档 + 录直播", "仅手动", or "自定义".
+func TrackingModeLabel(tags []string) string {
+	presetID, autoRecord := MatchTrackingPreset(tags)
+	label := TrackingPresetName(presetID)
+	if autoRecord {
+		return label + " + 录直播"
+	}
+	return label
+}
+
+// HasAnyAutoCacheTag reports whether tags contains at least one auto-cache dynamic tag.
+func HasAnyAutoCacheTag(tags []string) bool {
+	return HasTag(tags, TagCacheVideo) ||
+		HasTag(tags, TagCacheDraw) ||
+		HasTag(tags, TagCacheWord) ||
+		HasTag(tags, TagCacheForward)
+}
+
+// HasAutoCacheWithoutScheduledCheck reports whether at least one auto-cache tag
+// is enabled while scheduled_check is off, meaning automatic caching only runs
+// during manual update checks.
+func HasAutoCacheWithoutScheduledCheck(tags []string) bool {
+	return HasAnyAutoCacheTag(tags) && !HasTag(tags, TagScheduledCheck)
 }
 
 // ruleTypeOrder is the canonical storage order of auto-cache dynamic types.

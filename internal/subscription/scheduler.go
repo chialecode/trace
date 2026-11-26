@@ -8,12 +8,12 @@ import (
 	"github.com/chialecode/trace/internal/settings"
 )
 
-// NextRunTime computes the next scheduled subscription check timestamp from now.
-// Returns (zeroTime, false) when scheduling is disabled or in manual mode.
+// NextRunTime computes the next scheduled subscription check timestamp from now
+// according to the configured interval/mode. Per DEC-080, whether scheduled checks
+// are active is governed by individual subscriptions' scheduled_check tags rather
+// than the legacy global cfg.Enabled flag; only explicit "manual" or empty mode
+// returns (zeroTime, false).
 func NextRunTime(cfg settings.SubscriptionSettings, now time.Time) (time.Time, bool) {
-	if !cfg.Enabled {
-		return time.Time{}, false
-	}
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
 	switch mode {
 	case "manual", "":

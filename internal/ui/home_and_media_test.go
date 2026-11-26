@@ -153,16 +153,16 @@ func TestPlayerFloatsOverTheAppAndAutoplays(t *testing.T) {
 	}
 }
 
-// DEC-070: new subscriptions start with no capability tags ("无缓存标签"); tags
-// can be toggled directly in subscription detail (chips or dropdown menu) and
-// Settings → 缓存标签 reflects per-tag subscription counts immediately.
+// DEC-070 & DEC-080: new subscriptions default to "完整存档" ("追踪：完整存档");
+// presets, overlayable "录直播", and expandable 7 atomic tags can be toggled directly
+// in subscription detail, and Settings → 缓存标签 reflects per-tag counts immediately.
 func TestCapabilityTagsToggleInSubscriptionDetailAndCountInSettings(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
 	seedUIFeed(t, app, 1)
 	var subs []subscription.Subscription
 	for i, uid := range []string{"3001", "3002"} {
-		sub, err := app.backend.CreateSubscription(fmt.Sprintf("订阅%d", i), "", []subscription.AccountRef{{Site: "bilibili", UID: uid}}, subscription.DefaultSubRules())
+		sub, err := app.backend.CreateSubscription(fmt.Sprintf("订阅%d", i), "", []subscription.AccountRef{{Site: "bilibili", UID: uid}}, subscription.EmptySubRules())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -185,60 +185,62 @@ func TestCapabilityTagsToggleInSubscriptionDetailAndCountInSettings(t *testing.T
 		}
 	}
 
-	// Toggle tags on both subscriptions from Subscription Detail: popover menu + active chip click.
+	// Empty subscription shows "追踪：仅手动"; expand custom atomic tags from menu and toggle tags.
 	app.OpenSubscriptionDetail(subs[0])
 	tt.Frame()
-	if !tt.HasText("无缓存标签") || !tt.HasText("设置标签") {
-		t.Fatalf("new subscription should display 无缓存标签 + 设置标签, texts=%v", tt.Texts())
+	if !tt.HasText("追踪：仅手动") {
+		t.Fatalf("empty subscription should display 追踪：仅手动, texts=%v", tt.Texts())
 	}
 	if err := tt.Click("订阅缓存标签菜单"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if err := tt.ChooseMenuItem("定时检查"); err != nil {
+	if err := tt.ChooseMenuItem("自定义原子标签"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if err := tt.Click("订阅缓存标签菜单"); err != nil {
+	for _, label := range []string{"订阅原子标签：定时检查", "订阅原子标签：自动缓存视频", "订阅原子标签：自动缓存图文"} {
+		if err := tt.Click(label); err != nil {
+			t.Fatalf("click %s: %v", label, err)
+		}
+		tt.Frame()
+	}
+	// [scheduled_check, cache_video, cache_draw] matches preset "追更并保存"!
+	if !tt.HasText("追踪：追更并保存") {
+		t.Fatalf("expected matched preset 追踪：追更并保存, texts=%v", tt.Texts())
+	}
+	// Removing 自动缓存图文 makes it a custom combination ([scheduled_check, cache_video]).
+	if err := tt.Click("订阅原子标签：自动缓存图文"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if err := tt.ChooseMenuItem("自动缓存视频"); err != nil {
-		t.Fatal(err)
+	if !tt.HasText("追踪：自定义") {
+		t.Fatalf("expected custom tracking mode after removing 自动缓存图文, texts=%v", tt.Texts())
 	}
-	tt.Frame()
-	if err := tt.Click("订阅缓存标签菜单"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if err := tt.ChooseMenuItem("自动缓存图文"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if _, ok := tt.Find("订阅缓存标签：自动缓存图文"); !ok {
-		t.Fatalf("expected active chip 订阅缓存标签：自动缓存图文, texts=%v", tt.Texts())
-	}
-	// Clicking an active chip removes that tag directly in 1 click.
-	if err := tt.Click("订阅缓存标签：自动缓存图文"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if _, ok := tt.Find("订阅缓存标签：自动缓存图文"); ok {
-		t.Fatal("expected clicking active chip to remove 自动缓存图文")
+	if _, ok := tt.Find("订阅缓存标签：自动缓存视频"); !ok {
+		t.Fatalf("expected active chip 订阅缓存标签：自动缓存视频, texts=%v", tt.Texts())
 	}
 
+	// On subs[1], enable only cache_video (without scheduled_check) -> shows dependency warning!
 	app.OpenSubscriptionDetail(subs[1])
 	tt.Frame()
 	if err := tt.Click("订阅缓存标签菜单"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if err := tt.ChooseMenuItem("自动缓存视频"); err != nil {
+	if err := tt.ChooseMenuItem("自定义原子标签"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("订阅原子标签：自动缓存视频"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
 	if _, ok := tt.Find("订阅缓存标签：自动缓存视频"); !ok {
 		t.Fatalf("expected active chip 订阅缓存标签：自动缓存视频, texts=%v", tt.Texts())
+	}
+	if _, ok := tt.Find("自动缓存缺少定时检查提示"); !ok {
+		t.Fatalf("expected dependency warning when cache_video is on without scheduled_check, texts=%v", tt.Texts())
 	}
 
 	listed, _ := app.backend.ListSubscriptions()
@@ -267,7 +269,7 @@ func TestCapabilityTagsToggleInSubscriptionDetailAndCountInSettings(t *testing.T
 			app.tagUseCount(subscription.TagAutoRecord))
 	}
 
-	// "清空全部标签" in Subscription Detail resets tags to empty.
+	// "清空全部标签" in Subscription Detail resets tags to empty ("仅手动").
 	app.OpenSubscriptionDetail(subs[1])
 	tt.Frame()
 	if err := tt.Click("订阅缓存标签菜单"); err != nil {
@@ -278,7 +280,7 @@ func TestCapabilityTagsToggleInSubscriptionDetailAndCountInSettings(t *testing.T
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if !tt.HasText("无缓存标签") || app.tagUseCount(subscription.TagCacheVideo) != 1 {
+	if !tt.HasText("追踪：仅手动") || app.tagUseCount(subscription.TagCacheVideo) != 1 {
 		t.Fatalf("expected 清空全部标签 to clear sub[1] tags; count=%d texts=%v", app.tagUseCount(subscription.TagCacheVideo), tt.Texts())
 	}
 }
