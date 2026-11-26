@@ -629,6 +629,57 @@ func TestXDependencyDirectionRules(t *testing.T) {
 			record:    "github.com/chialecode/trace/cmd/trace-server|github.com/chialecode/trace/internal/remoteserver|github.com/chialecode/trace/internal/site/x,github.com/egoist/mygo/ui",
 			wantError: "INV-05 violation",
 		},
+
+		// cmd/trace-mobile and internal/companionclient boundary (design §7.1, INV-05)
+		{
+			name:   "trace-mobile using mygo and companionclient accepted",
+			record: "github.com/chialecode/trace/cmd/trace-mobile|github.com/egoist/mygo,github.com/chialecode/trace/internal/companionclient|github.com/egoist/mygo,github.com/chialecode/trace/internal/companionclient",
+		},
+		{
+			name:      "companionclient depending on mygo rejected",
+			record:    "github.com/chialecode/trace/internal/companionclient|github.com/egoist/mygo",
+			wantError: "INV-05 violation",
+		},
+		{
+			name:      "trace-mobile depending on site rejected",
+			record:    "github.com/chialecode/trace/cmd/trace-mobile|github.com/chialecode/trace/internal/site/bilibili",
+			wantError: "mobile boundary violation",
+		},
+		{
+			name:      "trace-mobile subpackage depending on service rejected",
+			record:    "github.com/chialecode/trace/cmd/trace-mobile/internal/app|github.com/chialecode/trace/internal/service",
+			wantError: "mobile boundary violation",
+		},
+		{
+			name:      "trace-mobile depending on credential rejected",
+			record:    "github.com/chialecode/trace/cmd/trace-mobile|github.com/chialecode/trace/internal/credential",
+			wantError: "mobile boundary violation",
+		},
+		{
+			name:      "trace-mobile depending on download rejected",
+			record:    "github.com/chialecode/trace/cmd/trace-mobile|github.com/chialecode/trace/internal/download",
+			wantError: "mobile boundary violation",
+		},
+		{
+			name:      "trace-mobile depending on live rejected",
+			record:    "github.com/chialecode/trace/cmd/trace-mobile|github.com/chialecode/trace/internal/live",
+			wantError: "mobile boundary violation",
+		},
+		{
+			name:      "trace-mobile depending on subscription rejected",
+			record:    "github.com/chialecode/trace/cmd/trace-mobile|github.com/chialecode/trace/internal/subscription",
+			wantError: "mobile boundary violation",
+		},
+		{
+			name:      "trace-mobile depending on library rejected",
+			record:    "github.com/chialecode/trace/cmd/trace-mobile|github.com/chialecode/trace/internal/library",
+			wantError: "mobile boundary violation",
+		},
+		{
+			name:      "trace-mobile depending on companion server rejected",
+			record:    "github.com/chialecode/trace/cmd/trace-mobile|github.com/chialecode/trace/internal/companion",
+			wantError: "mobile boundary violation",
+		},
 	}
 
 	for _, tc := range cases {

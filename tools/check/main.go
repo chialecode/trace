@@ -28,6 +28,7 @@ const (
 	credPkg         = internalPref + "credential"
 	uiPkg           = internalPref + "ui"
 	serverCmd       = modulePrefix + "cmd/trace-server"
+	mobileCmd       = modulePrefix + "cmd/trace-mobile"
 )
 
 // serverForbidden are the packages trace-server must not link: the window,
@@ -40,6 +41,27 @@ var serverForbidden = []string{
 	internalPref + "shell",
 	internalPref + "locales",
 	internalPref + "companion",
+}
+
+// mobileForbidden are desktop-only internal packages cmd/trace-mobile must never
+// link (docs/design/mobile.md §7.1: phone never contacts sites, holds no
+// credentials, and does no downloading/recording/library indexing).
+var mobileForbidden = []string{
+	sitePkg,
+	credPkg,
+	internalPref + "download",
+	internalPref + "live",
+	internalPref + "subscription",
+	internalPref + "library",
+	internalPref + "service",
+	internalPref + "companion",
+}
+
+func isAllowedMyGoPackage(pkg string) bool {
+	if allowedMyGoPackages[pkg] {
+		return true
+	}
+	return hasPkgOrSubpkg(pkg, mobileCmd)
 }
 
 var allowedMyGoPackages = map[string]bool{
@@ -269,9 +291,9 @@ func isStdlibImportPath(path string) bool {
 }
 
 func validatePackageDeps(pkg string, imports []string, deps []string) error {
-	// 1. MyGo UI boundary (INV-05): only shell, ui, player, locales, and tools/uishots may depend on MyGo.
+	// 1. MyGo UI boundary (INV-05): only shell, ui, player, locales, tools/uishots, and cmd/trace-mobile/... may depend on MyGo.
 	for _, dep := range deps {
-		if strings.HasPrefix(dep, "github.com/egoist/mygo") && !allowedMyGoPackages[pkg] {
+		if strings.HasPrefix(dep, "github.com/egoist/mygo") && !isAllowedMyGoPackage(pkg) {
 			return fmt.Errorf("INV-05 violation: package %s depends on %s", pkg, dep)
 		}
 	}
@@ -410,6 +432,21 @@ func validatePackageDeps(pkg string, imports []string, deps []string) error {
 			for _, forbidden := range serverForbidden {
 				if hasPkgOrSubpkg(dep, forbidden) {
 					return fmt.Errorf("server size violation: %s depends on %s", pkg, dep)
+				}
+			}
+		}
+	}
+
+	// 10. cmd/trace-mobile (and subpackages) must never link desktop site,
+	// credential, download, live, subscription, library, service, or companion server packages.
+	if hasPkgOrSubpkg(pkg, mobileCmd) {
+		for _, dep := range deps {
+			if dep == internalPref+"companionclient" || dep == internalPref+"companionapi" {
+				continue
+			}
+			for _, forbidden := range mobileForbidden {
+				if hasPkgOrSubpkg(dep, forbidden) {
+					return fmt.Errorf("mobile boundary violation: %s depends on %s", pkg, dep)
 				}
 			}
 		}
