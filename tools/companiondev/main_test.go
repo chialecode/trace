@@ -62,4 +62,13 @@ func TestSeedSyntheticData(t *testing.T) {
 	if mp4 := makeSyntheticMP4Bytes(); len(mp4) < 1024 {
 		t.Fatalf("synthetic MP4 too small: %d", len(mp4))
 	}
+	for _, tc := range [][2]string{
+		{"bilibili", "1001"},
+		{"douyin", "MS4wLjABAAAA_SynthDevDouyin001"},
+		{"weibo", "500000001"},
+	} {
+		if got := backend.AccountAvatarPath(tc[0], tc[1]); got == "" {
+			t.Fatalf("AccountAvatarPath(%q, %q) = empty, want seeded avatar PNG", tc[0], tc[1])
+		}
+	}
 }

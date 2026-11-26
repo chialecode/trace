@@ -183,12 +183,13 @@ func seedSyntheticData(backend *service.Backend, dataDir, cacheDir string) error
 		return fmt.Errorf("seed login: %w", err)
 	}
 
-	// Create local PNG avatars so /api/v1/avatars/{site}/{uid} works offline.
+	// Create local PNG avatars using the exact hash naming of service.AccountAvatarPath
+	// (<site>-<sha256(site+":"+uid)[:10]>.png) so /api/v1/avatars/{site}/{uid} serves offline PNGs.
 	avatarsDir := filepath.Join(dataDir, "avatars")
 	_ = os.MkdirAll(avatarsDir, 0o700)
-	writeColorPNG(filepath.Join(avatarsDir, "bilibili_1001.png"), color.RGBA{0x1a, 0x73, 0xe8, 0xff})
-	writeColorPNG(filepath.Join(avatarsDir, "douyin_MS4wLjABAAAA_SynthDevDouyin001.png"), color.RGBA{0xc2, 0x41, 0x0c, 0xff})
-	writeColorPNG(filepath.Join(avatarsDir, "weibo_500000001.png"), color.RGBA{0xe6, 0x39, 0x46, 0xff})
+	writeColorPNG(filepath.Join(avatarsDir, avatarFileName("bilibili", "1001")), color.RGBA{0x1a, 0x73, 0xe8, 0xff})
+	writeColorPNG(filepath.Join(avatarsDir, avatarFileName("douyin", "MS4wLjABAAAA_SynthDevDouyin001")), color.RGBA{0xc2, 0x41, 0x0c, 0xff})
+	writeColorPNG(filepath.Join(avatarsDir, avatarFileName("weibo", "500000001")), color.RGBA{0xe6, 0x39, 0x46, 0xff})
 
 	// Seed subscriptions.
 	if _, err := backend.CreateSubscription("技术频道 Alpha", "合成 B 站与抖音示例订阅", []subscription.AccountRef{
@@ -364,4 +365,11 @@ func makeSyntheticMP4Bytes() []byte {
 func sha256Hex(b []byte) string {
 	s := sha256.Sum256(b)
 	return hex.EncodeToString(s[:])
+}
+
+func avatarFileName(siteID, uid string) string {
+	siteID = strings.ToLower(strings.TrimSpace(siteID))
+	uid = strings.TrimSpace(uid)
+	sum := sha256.Sum256([]byte(siteID + ":" + uid))
+	return siteID + "-" + hex.EncodeToString(sum[:10]) + ".png"
 }

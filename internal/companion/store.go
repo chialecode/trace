@@ -42,6 +42,9 @@ var ErrDeviceNotFound = errors.New("companion: 未找到该设备")
 // ErrDeviceLimitReached reports that MaxDevices (5) are already paired.
 var ErrDeviceLimitReached = errors.New("companion: 已配对设备数量已达上限（5 台），请先移除一台")
 
+// ErrInvalidPositionSite reports an unsupported site filter in SaveHomePosition.
+var ErrInvalidPositionSite = errors.New("companion: 不支持的站点筛选")
+
 // DeviceRecord is one paired phone persisted in companion.json.
 // TokenHash stores SHA-256 hex of the 32-byte device token; plaintext is never persisted.
 type DeviceRecord struct {
@@ -351,7 +354,7 @@ func (s *Store) HomePositions(deviceID string) (map[string]companionapi.HomePosi
 func (s *Store) SaveHomePosition(deviceID, siteFilter string, pos companionapi.HomePosition) error {
 	siteKey := normalizePositionSite(siteFilter)
 	if siteKey == "" {
-		return fmt.Errorf("不支持的站点筛选：%q", siteFilter)
+		return ErrInvalidPositionSite
 	}
 	offset := pos.OffsetPx
 	if offset < 0 {

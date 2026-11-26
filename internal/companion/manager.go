@@ -470,6 +470,7 @@ func (m *Manager) reconcileInterfaces() {
 		}
 	}
 	// Open newly appeared interfaces.
+	var newlyOpened []*activeListener
 	for _, c := range candidates {
 		host := c.Addr.String()
 		if _, exists := current[host]; exists {
@@ -495,7 +496,9 @@ func (m *Manager) reconcileInterfaces() {
 		go func(srv *http.Server, l net.Listener) {
 			_ = srv.Serve(l)
 		}(hs, tlsLn)
-		kept = append(kept, &activeListener{addr: host, virtual: isVirtual, ln: tlsLn, srv: hs})
+		al := &activeListener{addr: host, virtual: isVirtual, ln: tlsLn, srv: hs}
+		kept = append(kept, al)
+		newlyOpened = append(newlyOpened, al)
 		changed = true
 	}
 
@@ -505,11 +508,21 @@ func (m *Manager) reconcileInterfaces() {
 			addrs = append(addrs, al.addr)
 		}
 		m.mu.Lock()
-		if m.running {
+		stillRunning := m.running
+		if stillRunning {
 			m.listeners = kept
 			m.listenAddrs = addrs
 		}
 		m.mu.Unlock()
+		if !stillRunning {
+			// Manager stopped concurrently while reconcileInterfaces opened new listeners:
+			// close them immediately so no sockets or goroutines leak (NFR-MOB-RES-001).
+			for _, al := range newlyOpened {
+				_ = al.ln.Close()
+				_ = al.srv.Close()
+			}
+			return
+		}
 		m.logf("companion interfaces updated: %s", strings.Join(addrs, ", "))
 		m.notifyChange()
 	}
@@ -545,9 +558,9 @@ func (m *Manager) StartPairing() (PairingSessionInfo, error) {
 	if !running {
 		return PairingSessionInfo{}, errors.New("请先打开“允许手机连接”")
 	}
-	if m.store.Count() >= companionapi.MaxDevices {
-		return PairingSessionInfo{}, ErrDeviceLimitReached
-	}
+	// Allow QR generation even when MaxDevices (5) are already paired so paired
+	// phones can rescan to update LAN addresses (FR-MOB-007, design §4.7) and a
+	// 6th new device receives 409 device_limit on POST /api/v1/pair (AC-91).
 	addrs := m.advertisedAddrs()
 	if len(addrs) == 0 {
 		return PairingSessionInfo{}, errors.New("当前没有可连接的局域网地址")
@@ -700,8 +713,9 @@ func (m *Manager) handleBackendEvent(ev service.Event) {
 			m.thumbs.ClearAll()
 		}
 	case service.EventSubscriptionChecked:
-		if strings.Contains(ev.Message, "check") {
+		if strings.HasPrefix(ev.Message, "progress:") || strings.Contains(ev.Message, "check") {
 			frame.Type = companionapi.EventSubsCheck
+			frame.Message = sanitizeEventMessage(ev.Message)
 		} else {
 			frame.Type = companionapi.EventSubsChanged
 		}
@@ -726,6 +740,23 @@ func (m *Manager) notifyChange() {
 	if m.onChange != nil {
 		m.onChange()
 	}
+}
+
+func sanitizeEventMessage(raw string) string {
+	msg := strings.TrimSpace(raw)
+	if msg == "" {
+		return ""
+	}
+	lower := strings.ToLower(msg)
+	// Strip anything resembling a URL, query string, or filesystem path (NFR-MOB-SEC-003).
+	if strings.Contains(lower, "http://") || strings.Contains(lower, "https://") ||
+		strings.Contains(msg, ":\\") || strings.Contains(msg, "?") {
+		return ""
+	}
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	return msg
 }
 
 func formatBindError(port int, err error) string {

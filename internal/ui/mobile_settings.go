@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -116,8 +117,8 @@ func (a *App) renderMobileSettings(c *ui.Context) {
 					ui.Text(c, "正在监听 "+strings.Join(formatted, " · ")).
 						FontSize(13).FontWeight(500).TextColor(ColorTextMain).MaxLines(3)
 				})
-				ui.Text(c, "第一次打开时 Windows 可能弹出防火墙提示，需要允许“专用网络”。").
-					FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
+				ui.Text(c, "第一次打开时 Windows 可能弹出防火墙提示，需要允许“专用网络”；若 Wi-Fi 当前为公用网络需改为专用网络，误点取消可在防火墙设置中手动放行。").
+					FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
 			})
 		}
 
@@ -159,11 +160,16 @@ func (a *App) renderMobileSettings(c *ui.Context) {
 					ui.Text(c, fmt.Sprintf("%d / %d", len(snap.Devices), companionapi.MaxDevices)).
 						FontSize(12).TextColor(ColorTextMuted).SingleLine()
 				})
-				canAdd := snap.Running && len(snap.Devices) < companionapi.MaxDevices
+				canAdd := snap.Running
 				if AccentPillButton(c, "添加手机", "添加手机").Disabled(!canAdd).Clicked() && canAdd {
 					a.openCompanionPairingDialog()
 				}
 			})
+
+			if len(snap.Devices) >= companionapi.MaxDevices {
+				ui.Text(c, fmt.Sprintf("已配对达 %d 台上限：已配对手机可点“添加手机”重扫二维码更新地址；添加新手机请先移除一台。", companionapi.MaxDevices)).
+					FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
+			}
 
 			if len(snap.Devices) == 0 {
 				emptyMsg := "还没有已配对的手机。打开“允许手机连接”后，点右上角“添加手机”扫码配对。"
@@ -396,7 +402,11 @@ func (a *App) renderCompanionPairingDialog(c *ui.Context, snap companion.StatusS
 
 			primaryAddr := ""
 			if len(session.Addrs) > 0 {
-				primaryAddr = fmt.Sprintf("%s:%d", session.Addrs[0], session.Port)
+				primaryAddr = net.JoinHostPort(session.Addrs[0], strconv.Itoa(session.Port))
+			}
+			if len(snap.Devices) >= companionapi.MaxDevices {
+				ui.Text(c, fmt.Sprintf("当前已达 %d 台上限：已配对手机扫码将更新地址，新手机请先移除一台后再配对。", companionapi.MaxDevices)).
+					FontSize(12).TextColor(ColorWarnText).MaxLines(2)
 			}
 			manualHint := fmt.Sprintf("用手机上的 TRACE 扫码；扫不了时输入 %s + 配对码 %s", primaryAddr, session.ShortCode)
 			if session.ShortCode == "" {

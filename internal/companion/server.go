@@ -890,7 +890,15 @@ func (s *Server) handlePutFeedPosition(w http.ResponseWriter, body []byte, dev D
 		siteKey = "all"
 	}
 	if err := s.store.SaveHomePosition(dev.ID, siteKey, pos); err != nil {
-		writeError(w, http.StatusBadRequest, companionapi.CodeBadRequest, err.Error(), nil)
+		switch {
+		case errors.Is(err, ErrInvalidPositionSite):
+			writeError(w, http.StatusBadRequest, companionapi.CodeBadRequest, "不支持的站点筛选", nil)
+		case errors.Is(err, ErrDeviceNotFound):
+			writeError(w, http.StatusUnauthorized, companionapi.CodeUnauthorized, "设备记录不存在", nil)
+		default:
+			s.logf("save home position failed: device=%s", dev.ID)
+			writeError(w, http.StatusInternalServerError, companionapi.CodeInternal, "保存阅读位置失败，请在电脑端查看日志", nil)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, companionapi.ActionResponse{OK: true})
@@ -1441,17 +1449,39 @@ func (s *Server) handleLiveRecordings(w http.ResponseWriter) {
 	}
 	rooms := s.backend.ListLiveAccounts()
 	items := make([]companionapi.LiveRecordingDTO, 0, len(rooms))
+	seenKeys := make(map[string]bool, len(rooms))
+	seenActive := make(map[string]bool, len(rooms))
 	for _, r := range rooms {
 		if !r.Recording && r.RecordBytes == 0 && len(r.Incidents) == 0 && r.StopReason == "" {
 			continue
 		}
-		items = append(items, s.mapLiveRecording(r))
+		dto := s.mapLiveRecording(r)
+		items = append(items, dto)
+		if dto.RecordingKey != "" {
+			seenKeys[dto.RecordingKey] = true
+		}
+		if dto.ItemKey != "" {
+			seenKeys[dto.ItemKey] = true
+		}
+		if dto.Site != "" && dto.UID != "" {
+			seenActive[strings.ToLower(dto.Site)+":"+dto.UID+":"+dto.RoomID] = true
+		}
 	}
-	// Also append recent finished live recordings from library (last 7 days).
+	// Also append recent finished live recordings from library (last 7 days), deduplicated against live state.
 	cutoff := s.now().Add(-7 * 24 * time.Hour).Unix()
 	if finished, err := s.backend.ListLibraryItems(library.FeedFilter{Kind: "live", Limit: 50}); err == nil {
 		for _, item := range finished {
 			if item.Status == "recording" || item.PubTs < cutoff {
+				continue
+			}
+			if seenKeys[item.ItemKey] {
+				continue
+			}
+			roomID := ""
+			if item.Live != nil {
+				roomID = firstNonEmpty(item.Live.RoomIDStr, strconv.FormatInt(item.Live.RoomID, 10))
+			}
+			if roomID != "" && seenActive[strings.ToLower(item.Site)+":"+item.Author.UID+":"+roomID] && item.PubTs >= s.now().Add(-15*time.Minute).Unix() {
 				continue
 			}
 			rec := companionapi.LiveRecordingDTO{
@@ -1467,7 +1497,7 @@ func (s *Server) handleLiveRecordings(w http.ResponseWriter) {
 				ItemKey:      item.ItemKey,
 			}
 			if item.Live != nil {
-				rec.RoomID = firstNonEmpty(item.Live.RoomIDStr, strconv.FormatInt(item.Live.RoomID, 10))
+				rec.RoomID = roomID
 				rec.QualityName = item.Live.QualityName
 				rec.Codec = item.Live.Codec
 				rec.Segments = len(item.Live.Segments)
@@ -1482,6 +1512,7 @@ func (s *Server) handleLiveRecordings(w http.ResponseWriter) {
 			if s.backend.AccountAvatarPath(item.Site, item.Author.UID) != "" {
 				rec.AvatarPath = companionapi.AvatarPath(item.Site, item.Author.UID)
 			}
+			seenKeys[item.ItemKey] = true
 			items = append(items, rec)
 		}
 	}
@@ -1493,6 +1524,8 @@ func (s *Server) handleLiveIncidents(w http.ResponseWriter) {
 		return
 	}
 	var sessions []companionapi.LiveIncidentSessionDTO
+	seenKeys := make(map[string]bool)
+	seenAcct := make(map[string]bool)
 	for _, r := range s.backend.ListLiveAccounts() {
 		if len(r.Incidents) == 0 {
 			continue
@@ -1506,6 +1539,12 @@ func (s *Server) handleLiveIncidents(w http.ResponseWriter) {
 			Recording:    r.Recording,
 			Incidents:    mapLiveIncidents(r.Incidents),
 		})
+		if r.RecordingKey != "" {
+			seenKeys[r.RecordingKey] = true
+		}
+		if r.Site != "" && r.UID != "" {
+			seenAcct[strings.ToLower(r.Site)+":"+r.UID] = true
+		}
 	}
 	cutoff := s.now().Add(-7 * 24 * time.Hour).Unix()
 	if finished, err := s.backend.ListLibraryItems(library.FeedFilter{Kind: "live", Limit: 100}); err == nil {
@@ -1513,6 +1552,13 @@ func (s *Server) handleLiveIncidents(w http.ResponseWriter) {
 			if item.Live == nil || len(item.Live.Incidents) == 0 || item.PubTs < cutoff {
 				continue
 			}
+			if seenKeys[item.ItemKey] {
+				continue
+			}
+			if seenAcct[strings.ToLower(item.Site)+":"+item.Author.UID] && item.PubTs >= s.now().Add(-15*time.Minute).Unix() {
+				continue
+			}
+			seenKeys[item.ItemKey] = true
 			sessions = append(sessions, companionapi.LiveIncidentSessionDTO{
 				ItemKey:   item.ItemKey,
 				Site:      item.Site,
@@ -1607,6 +1653,41 @@ func (s *Server) handleCheckPlan(w http.ResponseWriter) {
 	})
 }
 
+func (s *Server) publishCheckError(fallbackSite string, err error) {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	siteID := string(site.SiteOf(err))
+	if siteID == "" {
+		siteID = fallbackSite
+	}
+	kind := site.KindOf(err)
+	var msg string
+	switch kind {
+	case site.ErrKindAuthRequired:
+		if siteID != "" {
+			msg = fmt.Sprintf("请先在电脑上登录%s", site.ID(siteID).DisplayName())
+		} else {
+			msg = "请先在电脑上登录对应站点"
+		}
+	case site.ErrKindRiskControl:
+		msg = "触发站点风控，检查更新已暂停"
+	case site.ErrKindRateLimited:
+		msg = "站点限流中，检查更新已暂停"
+	default:
+		msg = "检查更新失败，请在电脑端查看日志"
+	}
+	if s.hub != nil {
+		s.hub.Publish(companionapi.EventFrame{
+			Type:      companionapi.EventSubsCheck,
+			Site:      siteID,
+			State:     kind,
+			Message:   msg,
+			Timestamp: s.now().UTC().Format(time.RFC3339),
+		})
+	}
+}
+
 func (s *Server) handleChecksStart(w http.ResponseWriter, body []byte) {
 	if !s.requireAnyLogin(w) {
 		return
@@ -1618,26 +1699,74 @@ func (s *Server) handleChecksStart(w http.ResponseWriter, body []byte) {
 			return
 		}
 	}
-	// Trigger manual check asynchronously so HTTP returns immediately; progress flows over WS subs:check.
+	// Trigger manual check asynchronously so HTTP returns immediately; progress and errors flow over WS subs:check.
 	if len(req.SubIDs) == 0 {
 		go func() {
-			_, _ = s.backend.CheckSubscriptionsNow(context.Background(), 0)
+			if _, err := s.backend.CheckSubscriptionsNow(context.Background(), 0); err != nil {
+				s.publishCheckError("", err)
+			}
 		}()
 		writeJSON(w, http.StatusOK, companionapi.ActionResponse{OK: true, Message: "已开始检查全部订阅"})
 		return
 	}
-	if len(req.SubIDs) == 1 {
-		subID := strings.TrimSpace(req.SubIDs[0])
+
+	// Validate requested subIds exist and reject synchronously when all accounts of the
+	// requested subscription(s) belong to unauthenticated sites (FR-MOB-022, AC-96).
+	allSubs, err := s.backend.ListSubscriptions()
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	byID := make(map[string]subscription.Subscription, len(allSubs))
+	for _, sub := range allSubs {
+		byID[sub.ID] = sub
+	}
+	ids := make([]string, 0, len(req.SubIDs))
+	anyLoggedInAccount := false
+	firstUnauthSite := ""
+	totalAccounts := 0
+	for _, rawID := range req.SubIDs {
+		id := strings.TrimSpace(rawID)
+		sub, ok := byID[id]
+		if !ok {
+			writeError(w, http.StatusNotFound, companionapi.CodeNotFound, "找不到对应的订阅", nil)
+			return
+		}
+		ids = append(ids, id)
+		for _, acc := range sub.Accounts {
+			totalAccounts++
+			sid := strings.ToLower(strings.TrimSpace(acc.Site))
+			if sid == "" {
+				sid = string(site.Bilibili)
+			}
+			if s.backend.StatusOf(sid).LoggedIn {
+				anyLoggedInAccount = true
+			} else if firstUnauthSite == "" {
+				firstUnauthSite = sid
+			}
+		}
+	}
+	if totalAccounts > 0 && !anyLoggedInAccount && firstUnauthSite != "" {
+		writeError(w, http.StatusPreconditionFailed, companionapi.CodeAuthRequired, fmt.Sprintf("请先在电脑上登录%s", site.ID(firstUnauthSite).DisplayName()), func(b *companionapi.ErrorBody) {
+			b.Error.Site = firstUnauthSite
+		})
+		return
+	}
+
+	if len(ids) == 1 {
+		subID := ids[0]
 		go func() {
-			_, _ = s.backend.CheckSubscription(context.Background(), subID)
+			if _, err := s.backend.CheckSubscription(context.Background(), subID); err != nil {
+				s.publishCheckError("", err)
+			}
 		}()
 		writeJSON(w, http.StatusOK, companionapi.ActionResponse{OK: true, Message: "已开始检查更新"})
 		return
 	}
-	ids := append([]string(nil), req.SubIDs...)
 	go func() {
 		for _, id := range ids {
-			if _, err := s.backend.CheckSubscription(context.Background(), strings.TrimSpace(id)); err != nil {
+			if _, err := s.backend.CheckSubscription(context.Background(), id); err != nil {
+				s.publishCheckError("", err)
 				break
 			}
 		}
@@ -1663,7 +1792,9 @@ func (s *Server) handleCheckAccount(w http.ResponseWriter, body []byte) {
 		return
 	}
 	go func() {
-		_, _ = s.backend.CheckAccount(context.Background(), strings.TrimSpace(req.SubID), sid, strings.TrimSpace(req.UID))
+		if _, err := s.backend.CheckAccount(context.Background(), strings.TrimSpace(req.SubID), sid, strings.TrimSpace(req.UID)); err != nil {
+			s.publishCheckError(sid, err)
+		}
 	}()
 	writeJSON(w, http.StatusOK, companionapi.ActionResponse{OK: true, Message: "已开始检查该账号"})
 }

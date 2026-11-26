@@ -275,6 +275,11 @@ func (p *pairingManager) PendingConfirmations() []PendingPairInfo {
 	return out
 }
 
+// pairStatusApproving is an internal transient status while Approve persists
+// the new device to companion.json so concurrent Approve/Reject/prune calls
+// cannot race or create orphan device records.
+const pairStatusApproving = "approving"
+
 // Approve confirms a pending pairing request, creating the device record & one-time token.
 func (p *pairingManager) Approve(pairID string, store *Store) (DeviceRecord, error) {
 	p.mu.Lock()
@@ -285,23 +290,42 @@ func (p *pairingManager) Approve(pairID string, store *Store) (DeviceRecord, err
 		p.mu.Unlock()
 		return DeviceRecord{}, errors.New("配对请求不存在或已过期")
 	}
+	rec.status = pairStatusApproving
 	devName, model, platform, ch, addr := rec.deviceName, rec.model, rec.platform, rec.channel, rec.remoteAddr
 	p.mu.Unlock()
 
 	dev, token, err := store.AddDevice(devName, model, platform, ch, addr, now)
 	if err != nil {
+		p.mu.Lock()
+		if cur, exists := p.pending[pairID]; exists && cur.status == pairStatusApproving {
+			if !p.now().Before(cur.expiresAt) {
+				cur.status = companionapi.PairStatusExpired
+				if !cur.closed {
+					cur.closed = true
+					close(cur.done)
+				}
+			} else {
+				cur.status = companionapi.PairStatusPending
+			}
+		}
+		p.mu.Unlock()
 		return DeviceRecord{}, err
 	}
 
 	p.mu.Lock()
-	if cur, exists := p.pending[pairID]; exists && cur.status == companionapi.PairStatusPending {
-		cur.status = companionapi.PairStatusApproved
-		cur.deviceID = dev.ID
-		cur.token = token
-		if !cur.closed {
-			cur.closed = true
-			close(cur.done)
-		}
+	cur, exists := p.pending[pairID]
+	if !exists || cur.status != pairStatusApproving {
+		p.mu.Unlock()
+		// Pairing was cleared while AddDevice ran: roll back so no orphan device remains.
+		_, _ = store.RevokeDevice(dev.ID)
+		return DeviceRecord{}, errors.New("配对请求已取消")
+	}
+	cur.status = companionapi.PairStatusApproved
+	cur.deviceID = dev.ID
+	cur.token = token
+	if !cur.closed {
+		cur.closed = true
+		close(cur.done)
 	}
 	onDiff := p.onStateDiff
 	p.mu.Unlock()
@@ -354,7 +378,11 @@ func (p *pairingManager) Poll(ctx context.Context, pairID, pairSecret string, ma
 		p.mu.Unlock()
 		return companionapi.PairPollResponse{}, false
 	}
-	if rec.status != companionapi.PairStatusPending {
+	if rec.status != companionapi.PairStatusPending && rec.status != pairStatusApproving {
+		if ctx.Err() != nil {
+			p.mu.Unlock()
+			return companionapi.PairPollResponse{}, false
+		}
 		resp := p.consumeResultLocked(rec)
 		p.mu.Unlock()
 		return resp, true
@@ -373,7 +401,13 @@ func (p *pairingManager) Poll(ctx context.Context, pairID, pairSecret string, ma
 		case <-doneCh:
 		case <-timer.C:
 		case <-ctx.Done():
+			// Client disconnected: do NOT consume an approved one-time token that
+			// cannot be delivered; retain it until the phone retries or TTL expires.
+			return companionapi.PairPollResponse{}, false
 		}
+	}
+	if ctx.Err() != nil {
+		return companionapi.PairPollResponse{}, false
 	}
 
 	p.mu.Lock()
@@ -384,8 +418,11 @@ func (p *pairingManager) Poll(ctx context.Context, pairID, pairSecret string, ma
 	if !ok || subtle.ConstantTimeCompare([]byte(rec.pairSecretHash), []byte(gotHash)) != 1 {
 		return companionapi.PairPollResponse{}, false
 	}
-	if rec.status == companionapi.PairStatusPending {
+	if rec.status == companionapi.PairStatusPending || rec.status == pairStatusApproving {
 		return companionapi.PairPollResponse{Status: companionapi.PairStatusPending}, true
+	}
+	if ctx.Err() != nil {
+		return companionapi.PairPollResponse{}, false
 	}
 	return p.consumeResultLocked(rec), true
 }

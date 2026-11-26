@@ -15,6 +15,9 @@ import (
 )
 
 func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request, rest string) {
+	if !s.requireAnyLogin(w) {
+		return
+	}
 	// rest is "<escapedKey>/<relPath...>"
 	slash := strings.IndexByte(rest, '/')
 	if slash <= 0 || slash >= len(rest)-1 {
@@ -98,6 +101,9 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request, rest string
 }
 
 func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request, rest string) {
+	if !s.requireAnyLogin(w) {
+		return
+	}
 	slash := strings.IndexByte(rest, '/')
 	if slash <= 0 || slash >= len(rest)-1 {
 		writeError(w, http.StatusNotFound, companionapi.CodeNotFound, "头像不存在", nil)
