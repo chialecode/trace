@@ -208,8 +208,11 @@ func remoteShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 			fb.remote.jobs = shotTransferJobs()
 			app.Navigate(ui.RouteTasks)
 			app.Transfer.Jobs = fb.remote.jobs
-			app.TasksSection = "transfers"
-		}, RequiredLabels: []string{"导入导出任务：import-run", "取消导入导出：import-run", "查看导入预览：import-ready", "导入导出任务：export-done"}},
+			app.TasksSection = ui.TasksSectionRecords
+		}, RequiredLabels: []string{"导入导出任务：import-run", "取消导入导出：import-run", "查看导入预览：import-ready", "导入导出任务：export-done"},
+			PanelRequiredLabels:  []string{"任务侧栏：进行中", "任务侧栏：直播", "任务侧栏：待处理", "任务侧栏：记录"},
+			NarrowRequiredLabels: []string{"任务分段：进行中", "任务分段：直播", "任务分段：待处理", "任务分段：记录"},
+		},
 		{Name: "subscriptions-export-dialog", Setup: func() {
 			reset()
 			app.Navigate(ui.RouteSubscriptions)

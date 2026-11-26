@@ -545,16 +545,7 @@ func (a *App) renderExportOverlay(c *ui.Context, w, h float32) {
 }
 
 func (a *App) selectTasksTransfers() {
-	a.TasksSection = "transfers"
-	a.closeLivePreview()
-	a.refreshTransferJobs()
-}
-
-func (a *App) transfersNavText() string {
-	if n := a.activeTransferCount(); n > 0 {
-		return fmt.Sprintf("导入导出（%d）", n)
-	}
-	return "导入导出"
+	a.selectTasksRecords()
 }
 
 func transferStatusText(j service.TransferJob) string {

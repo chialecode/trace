@@ -71,7 +71,12 @@ func (a *App) applySubscriptionRouteNavigate(rawRoute string) {
 	if strings.EqualFold(subID, "accounts") {
 		a.SubDetailOpen = false
 		a.SubAccountsOpen = true
+		a.SubChecksOpen = false
 		a.refreshAccountWorks()
+		return
+	}
+	if strings.EqualFold(subID, "checks") {
+		a.openSubscriptionChecks()
 		return
 	}
 	for i := range a.Subscriptions {
@@ -81,6 +86,7 @@ func (a *App) applySubscriptionRouteNavigate(rawRoute string) {
 			a.SelectedSubMid = sub.Mid
 			a.SubDetailOpen = true
 			a.SubAccountsOpen = false
+			a.SubChecksOpen = false
 			a.SubDetailTab = normalizeSubDetailTab(a.SubDetailTab)
 			a.refreshAccountWorks()
 			a.syncSelectedSubRules(sub)

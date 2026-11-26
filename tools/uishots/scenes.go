@@ -163,10 +163,21 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			Setup: func() {
 				app.SubDetailOpen = false
 				app.SubAccountsOpen = false
+				app.SubChecksOpen = false
 				app.Navigate(ui.RouteSubscriptions)
 				seedRecentAndLive()
 			},
 			RequiredLabels: []string{"选择订阅 " + primarySub.ID},
+			PanelRequiredLabels: []string{
+				"订阅侧栏：全部订阅",
+				"订阅侧栏：全部账号",
+				"订阅侧栏：检查计划",
+			},
+			NarrowRequiredLabels: []string{
+				"订阅页全部订阅",
+				"订阅页全部账号",
+				"订阅页检查计划",
+			},
 			ForbiddenLabels: []string{
 				"订阅详情账号站点：bilibili:20001",
 				"订阅详情账号站点：douyin:" + douyinSecUID,
@@ -184,7 +195,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			Setup: func() {
 				seedRecentAndLive()
 				app.Navigate(ui.RouteSubscriptions)
-				app.SubDetailOpen, app.SubAccountsOpen = false, false
+				app.SubDetailOpen, app.SubAccountsOpen, app.SubChecksOpen = false, false, false
 				app.OpenSubscribePicker(subscription.AccountRef{Site: "bilibili", UID: "30001", Name: "新发现的UP主"})
 			},
 			RequiredLabels: []string{
@@ -200,7 +211,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			Setup: func() {
 				seedRecentAndLive()
 				app.Navigate(ui.RouteSubscriptions)
-				app.SubDetailOpen, app.SubAccountsOpen = false, false
+				app.SubDetailOpen, app.SubAccountsOpen, app.SubChecksOpen = false, false, false
 				app.OpenMoveAccountPicker(primarySub, subscription.AccountRef{Site: "weibo", UID: weiboUID, Name: "技术频道_微博"})
 			},
 			RequiredLabels: []string{
@@ -223,6 +234,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.Navigate(ui.RouteSubscriptions)
 				app.SubDetailOpen = false
 				app.SubAccountsOpen = true
+				app.SubChecksOpen = false
 				app.SubAccountsSite = "all"
 			},
 			RequiredLabels: []string{
@@ -238,7 +250,33 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅账号：x:" + xUID,
 				"订阅账号站点：x:" + xUID,
 			},
-			PanelRequiredLabels: []string{"订阅侧栏：全部账号"},
+			PanelRequiredLabels:  []string{"订阅侧栏：全部账号", "订阅侧栏：检查计划"},
+			NarrowRequiredLabels: []string{"订阅页全部订阅", "订阅页全部账号", "订阅页检查计划"},
+		},
+		{
+			Name: "subscriptions-checks",
+			Setup: func() {
+				seedRecentAndLive()
+				app.SubscribePicker.Open = false
+				app.OpenSubscriptionChecks()
+			},
+			RequiredLabels: []string{
+				"检查计划列表",
+				"检查计划行 bilibili:20001",
+				"检查计划行 douyin:" + douyinSecUID,
+				"检查计划行 weibo:" + weiboUID,
+				"检查计划行 x:" + xUID,
+			},
+			PanelRequiredLabels: []string{
+				"订阅侧栏：全部订阅",
+				"订阅侧栏：全部账号",
+				"订阅侧栏：检查计划",
+			},
+			NarrowRequiredLabels: []string{
+				"订阅页全部订阅",
+				"订阅页全部账号",
+				"订阅页检查计划",
+			},
 		},
 		{
 			Name: "subscription-detail",
@@ -1852,7 +1890,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.DeleteConfirm.Open = false
 				seedRecentAndLive()
 				app.Navigate(ui.RouteTasks)
-				app.TasksSection = "downloads"
+				app.TasksSection = ui.TasksSectionActive
+				app.TasksActiveTab = "downloads"
 				app.Tasks = []download.Task{
 					{
 						TaskID:          "task_demo_x",
@@ -1921,19 +1960,28 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.ExpandedTaskID = ""
 			},
 			RequiredLabels: []string{
+				"进行中子标签：下载任务",
+				"进行中子标签：缓存队列",
 				"任务站点：task_demo_x",
 				"任务站点：task_demo_wb",
 				"任务站点：task_demo_dy",
 				"任务站点：task_demo_run",
 			},
 			PanelRequiredLabels: []string{
-				"任务侧栏：下载任务",
-				"任务侧栏：缓存队列",
-				"任务侧栏：直播录制",
-				"任务侧栏：录制异常",
+				"任务侧栏：进行中",
+				"任务侧栏：直播",
+				"任务侧栏：待处理",
+				"任务侧栏：记录",
+			},
+			NarrowRequiredLabels: []string{
+				"任务分段：进行中",
+				"任务分段：直播",
+				"任务分段：待处理",
+				"任务分段：记录",
 			},
 			ForbiddenLabels: []string{
 				"录制站点：bilibili:9002",
+				"任务侧栏：检查计划",
 			},
 		},
 		{
@@ -1943,6 +1991,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.OpenCacheQueueTask("cq_demo_bili")
 			},
 			RequiredLabels: []string{
+				"进行中子标签：下载任务",
+				"进行中子标签：缓存队列",
 				"缓存队列卡片：cq_demo_bili",
 				"缓存队列卡片：cq_demo_dy",
 				"缓存队列卡片：cq_demo_wb",
@@ -1957,10 +2007,10 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"队列最近缓存：" + savedItem.ItemKey,
 			},
 			PanelRequiredLabels: []string{
-				"任务侧栏：下载任务",
-				"任务侧栏：缓存队列",
-				"任务侧栏：直播录制",
-				"任务侧栏：录制异常",
+				"任务侧栏：进行中",
+				"任务侧栏：直播",
+				"任务侧栏：待处理",
+				"任务侧栏：记录",
 			},
 		},
 		{
@@ -1968,6 +2018,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			Setup: func() {
 				seedRecentAndLive()
 				app.Navigate(ui.RouteTasks)
+				app.ExpandedLiveIncidentKeys = map[string]bool{}
+				app.ExpandLiveRowIncidents("bilibili:live:9002")
 				_ = app.OpenLivePreviewWithDecoder(
 					"bilibili:live:9002",
 					"独立游戏工坊 · 渲染管线与着色器实时调试",
@@ -1980,6 +2032,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"录制站点：bilibili:9002",
 				"录制站点：douyin:" + douyinSecUID,
 				"录制行异常：bilibili:live:9002",
+				"行内录制异常列表：bilibili:live:9002",
+				"行内异常条目：bilibili:live:9002#0",
 				"录制行异常：douyin:live:73990011",
 				"直播实时预览面板",
 				"直播实时预览标记",
@@ -1987,74 +2041,92 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"关闭直播实时预览",
 			},
 			PanelRequiredLabels: []string{
-				"任务侧栏：下载任务",
-				"任务侧栏：直播录制",
-				"任务侧栏：录制异常",
+				"任务侧栏：进行中",
+				"任务侧栏：直播",
+				"任务侧栏：待处理",
+				"任务侧栏：记录",
 			},
 			NarrowRequiredLabels: []string{
-				"任务分段：录制异常",
+				"任务分段：进行中",
+				"任务分段：直播",
+				"任务分段：待处理",
+				"任务分段：记录",
 			},
 			ForbiddenLabels: []string{
 				"弹幕开关",
+				"行内删除录制异常记录：bilibili:live:9002",
 			},
 		},
 		{
-			Name: "tasks-incidents",
+			Name: "tasks-attention",
 			Setup: func() {
 				seedRecentAndLive()
-				app.Navigate(ui.RouteTasks)
-				app.TasksSection = "incidents"
+				app.ConflictBatchChoice = service.DefaultConflictChoice
+				app.ConflictBatchConfirmOpen = false
+				app.ConflictReplaceConfirmID = ""
+				app.ConflictActionError = ""
+				app.TaskActionError = ""
+				app.TaskRemoveConfirmID = ""
+				app.Tasks = []download.Task{
+					{
+						TaskID:          "task_demo_fail",
+						Site:            "bilibili",
+						Kind:            "video",
+						TargetID:        "BV1yy411c7mE",
+						Title:           "示例分段失败任务（待处理汇总展示）",
+						Status:          "failed",
+						ErrorKind:       "network",
+						ErrorMessage:    "远端分段读取超时，已保留 .part 断点文件可重试",
+						LastError:       "远端分段读取超时，已保留 .part 断点文件可重试",
+						BytesDownloaded: 2097152,
+						TotalBytes:      8388608,
+						Progress:        0.25,
+					},
+				}
+				app.OpenTasksConflicts()
+				if len(app.CacheConflicts) > 1 {
+					app.CacheConflicts = app.CacheConflicts[:1]
+					app.CacheConflictPendingCount = 1
+				}
+				app.LiveAccounts = nil
 				app.SelectedLiveIncidentKey = "bilibili:live:9002"
 			},
 			RequiredLabels: []string{
+				"待处理分节：内容冲突",
+				"内容冲突顶部栏",
+				"内容冲突卡片：conflict_shot_bili",
+				"待处理分节：失败下载",
+				"待处理：批量重试",
+				"待处理下载卡片：task_demo_fail",
+				"待处理分节：录制异常",
 				"录制异常场次：bilibili:live:9002",
 				"异常场次站点：bilibili:live:9002",
 				"查看异常正在录制：bilibili:live:9002",
-				"异常条目：bilibili:live:9002#0",
-				"异常条目：bilibili:live:9002#1",
-				"录制异常场次：douyin:live:73990011",
-				"异常场次站点：douyin:live:73990011",
-				"异常条目：douyin:live:73990011#0",
-				"录制异常场次：" + savedLiveItem.ItemKey,
-				"打开异常录像详情：" + savedLiveItem.ItemKey,
 			},
 			PanelRequiredLabels: []string{
-				"任务侧栏：下载任务",
-				"任务侧栏：直播录制",
-				"任务侧栏：录制异常",
+				"任务侧栏：进行中",
+				"任务侧栏：直播",
+				"任务侧栏：待处理",
+				"任务侧栏：记录",
 			},
 			NarrowRequiredLabels: []string{
-				"任务分段：录制异常",
+				"任务分段：进行中",
+				"任务分段：直播",
+				"任务分段：待处理",
+				"任务分段：记录",
 			},
 			ForbiddenLabels: []string{
-				"录制异常空状态",
+				"待处理空状态",
 				"直播实时预览面板",
-			},
-		},
-		{
-			Name: "tasks-checks",
-			Setup: func() {
-				app.Navigate(ui.RouteTasks)
-				app.TasksSection = "checks"
-			},
-			RequiredLabels: []string{
-				"检查计划行 bilibili:20001",
-				"检查计划行 douyin:" + douyinSecUID,
-				"检查计划行 weibo:" + weiboUID,
-				"检查计划行 x:" + xUID,
-			},
-			PanelRequiredLabels: []string{
-				"任务侧栏：录制异常",
-				"任务侧栏：检查计划",
-			},
-			NarrowRequiredLabels: []string{
-				"任务分段：检查计划",
 			},
 		},
 		{
 			Name: "tasks-conflicts",
 			Setup: func() {
 				seedRecentAndLive()
+				app.Tasks = nil
+				app.LiveRooms = nil
+				app.LiveAccounts = nil
 				app.ConflictBatchChoice = service.DefaultConflictChoice
 				app.ConflictBatchConfirmOpen = false
 				app.ConflictActionError = ""
@@ -2087,14 +2159,16 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"冲突失败提示：conflict_shot_x",
 			},
 			PanelRequiredLabels: []string{
-				"任务侧栏：下载任务",
-				"任务侧栏：缓存队列",
-				"任务侧栏：内容冲突",
+				"任务侧栏：进行中",
+				"任务侧栏：直播",
+				"任务侧栏：待处理",
+				"任务侧栏：记录",
 			},
 			NarrowRequiredLabels: []string{
-				"任务分段：下载任务",
-				"任务分段：缓存队列",
-				"任务分段：内容冲突",
+				"任务分段：进行中",
+				"任务分段：直播",
+				"任务分段：待处理",
+				"任务分段：记录",
 			},
 			RequiredTexts: []string{
 				"内容冲突（3）",
@@ -2107,7 +2181,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"（本地原文件未改动）",
 			},
 			ForbiddenLabels: []string{
-				"内容冲突空状态",
+				"待处理空状态",
 			},
 		},
 		{

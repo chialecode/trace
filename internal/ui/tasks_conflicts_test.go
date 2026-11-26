@@ -328,11 +328,11 @@ func TestTasksConflictsRailBadgeExclusionAndResponsiveNav(t *testing.T) {
 	if int(cb0>>8) > 180 && int(cr0>>8) < 80 {
 		t.Fatalf("left-rail 任务 button rendered an accent badge with 0 active downloads and 3 conflicts (RGB=%d,%d,%d)", cr0>>8, cg0>>8, cb0>>8)
 	}
-	if !ttWide.HasText("内容冲突（3）") {
-		t.Fatal("Tasks sidebar must display 内容冲突（3）")
+	if !ttWide.HasText("待处理（3）") || !ttWide.HasText("内容冲突（3）") {
+		t.Fatal("Tasks sidebar must display 待处理（3） and attention view must display 内容冲突（3）")
 	}
-	if _, ok := ttWide.Find("任务侧栏：内容冲突"); !ok {
-		t.Fatal("missing sidebar item 任务侧栏：内容冲突 at 1280px")
+	if _, ok := ttWide.Find("任务侧栏：待处理"); !ok {
+		t.Fatal("missing sidebar item 任务侧栏：待处理 at 1280px")
 	}
 
 	// With 1 running download task + 3 conflicts, rail 任务 badge renders for the 1 download task (never 1+3=4).
@@ -351,14 +351,14 @@ func TestTasksConflictsRailBadgeExclusionAndResponsiveNav(t *testing.T) {
 	if app.activeWorkCount() != 1 {
 		t.Fatalf("activeWorkCount = %d, want 1 (excluding 3 conflicts)", app.activeWorkCount())
 	}
-	if !ttWide.HasText("下载任务（1）") || !ttWide.HasText("内容冲突（3）") {
-		t.Fatal("expected 下载任务（1） and 内容冲突（3） in Tasks sidebar")
+	if !ttWide.HasText("进行中（1）") || !ttWide.HasText("待处理（3）") {
+		t.Fatal("expected 进行中（1） and 待处理（3） in Tasks sidebar")
 	}
 
 	// 2. Check 1000px medium layout and 720px narrow layout for zero horizontal overflow.
 	ttMed := ui.NewTester(app.View, 1000, 860)
 	ttMed.Frame()
-	if r, ok := ttMed.Find("任务侧栏：内容冲突"); !ok || r.X < -0.5 || r.X+r.W > 1000.5 {
+	if r, ok := ttMed.Find("任务侧栏：待处理"); !ok || r.X < -0.5 || r.X+r.W > 1000.5 {
 		t.Fatalf("1000px sidebar item missing or overflowed: ok=%v rect=%+v", ok, r)
 	}
 
@@ -367,17 +367,14 @@ func TestTasksConflictsRailBadgeExclusionAndResponsiveNav(t *testing.T) {
 	if _, ok := ttNarrow.Find("上下文侧栏"); ok {
 		t.Fatal("context panel must collapse below 1000px")
 	}
-	if !ttNarrow.HasText("内容冲突（3）") {
-		t.Fatal("720px narrow selector must display 内容冲突（3）")
+	if !ttNarrow.HasText("待处理（3）") {
+		t.Fatal("720px narrow selector must display 待处理（3）")
 	}
 	for _, segLabel := range []string{
-		"任务分段：下载任务",
-		"任务分段：缓存队列",
-		"任务分段：内容冲突",
-		"任务分段：直播录制",
-		"任务分段：录制异常",
-		"任务分段：检查计划",
-		"任务分段：导入导出",
+		"任务分段：进行中",
+		"任务分段：直播",
+		"任务分段：待处理",
+		"任务分段：记录",
 		"内容冲突顶部栏",
 		"全部待处理方式",
 		"批量应用冲突处理",
@@ -394,21 +391,21 @@ func TestTasksConflictsRailBadgeExclusionAndResponsiveNav(t *testing.T) {
 		}
 	}
 
-	// 3. EventCacheConflictsChanged updates conflicts dynamically; 0 conflicts renders "内容冲突" and empty state.
+	// 3. EventCacheConflictsChanged updates conflicts dynamically; 0 attention items renders "待处理" and empty state.
 	stub.mu.Lock()
 	stub.conflicts = nil
 	stub.mu.Unlock()
 	stub.emit(service.Event{Type: service.EventCacheConflictsChanged})
 
 	ttWide.Frame()
-	if ttWide.HasText("内容冲突（") {
-		t.Fatal("sidebar must display plain 内容冲突 without (0) when count is 0")
+	if ttWide.HasText("待处理（") {
+		t.Fatal("sidebar must display plain 待处理 without (0) when count is 0")
 	}
-	if !ttWide.HasText("内容冲突") {
-		t.Fatal("sidebar missing 内容冲突 label when count is 0")
+	if !ttWide.HasText("待处理") {
+		t.Fatal("sidebar missing 待处理 label when count is 0")
 	}
-	if _, ok := ttWide.Find("内容冲突空状态"); !ok {
-		t.Fatal("expected clean empty state when len(conflicts) == 0")
+	if _, ok := ttWide.Find("待处理空状态"); !ok || !ttWide.HasText("目前没有需要处理的事项") {
+		t.Fatal("expected clean empty state 目前没有需要处理的事项 when all attention categories are empty")
 	}
 }
 
@@ -692,8 +689,8 @@ func TestTasksConflictsPerCardActionsAsyncResolvingAndOfflineLocalDetail(t *test
 		t.Fatalf("click 返回 from /library/item: %v", err)
 	}
 	tt.Frame()
-	if app.CurrentRoute != RouteTasks || app.effectiveTasksSection() != "conflicts" {
-		t.Fatalf("expected 返回 to restore RouteTasks conflicts section, got route=%q section=%q", app.CurrentRoute, app.effectiveTasksSection())
+	if app.CurrentRoute != RouteTasks || app.effectiveTasksSection() != TasksSectionAttention {
+		t.Fatalf("expected 返回 to restore RouteTasks attention section, got route=%q section=%q", app.CurrentRoute, app.effectiveTasksSection())
 	}
 }
 

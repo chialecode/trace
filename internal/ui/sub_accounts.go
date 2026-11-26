@@ -123,6 +123,7 @@ func (a *App) openSubscriptionAccounts() {
 	a.refreshAccountWorks()
 	a.SubDetailOpen = false
 	a.SubAccountsOpen = true
+	a.SubChecksOpen = false
 	a.SubManageMenuOpen = false
 	a.SubAccountMenuKey = ""
 	a.SubManageModalMode = ""
@@ -141,11 +142,8 @@ func (a *App) renderSubscriptionAccountsView(c *ui.Context) {
 					a.SubAccountsListState.ScrollTo(0, ui.Start)
 				})
 			})
-			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Row(c).AlignItems(ui.Center).Gap(8).Shrink(0).Children(func() {
 				ui.Text(c, fmt.Sprintf("%d 个账号", len(rows))).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-				if !a.panelShown && OutlinePillButton(c, "全部订阅", "订阅账号返回全部订阅").Clicked() {
-					a.SubAccountsOpen = false
-				}
 			})
 		})
 		if len(rows) == 0 {
