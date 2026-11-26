@@ -245,6 +245,52 @@ func (s *Store) ListItems(filter FeedFilter) ([]ItemMetadata, error) {
 	return out, nil
 }
 
+// ListItemsMetaOnlyBySite returns all cached items for a single site directly
+// from SQLite with zero disk syscalls and no row cap (used for offline backfill
+// statistics and historical cache standard scans, DEC-079).
+func (s *Store) ListItemsMetaOnlyBySite(site string) ([]ItemMetadata, error) {
+	normSite := strings.ToLower(strings.TrimSpace(site))
+	if normSite == "" {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT json_data, item_dir, status, total_bytes, upgrade_available, upgrade_hint
+		 FROM library_items
+		 WHERE site = ?
+		 ORDER BY pub_ts DESC, item_key DESC`,
+		normSite,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ItemMetadata
+	for rows.Next() {
+		var jsonStr, itemDir, status, upHint string
+		var totalBytes int64
+		var upAvail int
+		if err := rows.Scan(&jsonStr, &itemDir, &status, &totalBytes, &upAvail, &upHint); err != nil {
+			return nil, err
+		}
+		meta, err := ParseItemMetadata([]byte(jsonStr))
+		if err != nil {
+			continue
+		}
+		meta.ItemDir = itemDir
+		meta.Status = status
+		meta.TotalBytes = totalBytes
+		meta.UpgradeAvailable = upAvail == 1
+		meta.UpgradeHint = upHint
+		out = append(out, meta)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // FeedPage implements bidirectional keyset pagination over (pub_ts, feed_key) for the home feed (FR-FEED-001).
 // It excludes videos that are referenced by a cached dynamic item so videos referenced by dynamics do not appear twice.
 func (s *Store) FeedPage(req FeedPageRequest) (FeedPageResult, error) {

@@ -30,6 +30,7 @@ func (m *Manager) executeDouyinVideoTask(ctx context.Context, t *Task, plan Work
 
 	hasProtectedLocal := exists && localHasProtectedContent(previous)
 	mode := effectiveConflictResolution(ctx, t.ConflictResolution, plan.ConflictResolution)
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite, plan.ForceOverwrite)
 	isConflict := false
 	if hasProtectedLocal {
 		notice, conflict, degErr := classifyWorkPlanVsLocal(previous, plan, t.ItemKey, t.TargetID, t)
@@ -37,15 +38,18 @@ func (m *Manager) executeDouyinVideoTask(ctx context.Context, t *Task, plan Work
 			return degErr
 		}
 		isConflict = conflict
-		if isConflict && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
+		if isConflict && !forceOverwrite && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
 			m.emitConflict(notice)
 			return ErrConflictDetected
+		}
+		if forceOverwrite && mode == "" {
+			mode = ConflictResolveUseRemote
 		}
 	}
 
 	title := firstNonEmptyStr(plan.Title, plan.Desc, t.Title, "抖音视频 "+t.TargetID)
 	desc := plan.Desc
-	if hasProtectedLocal && !isConflict {
+	if hasProtectedLocal && !isConflict && !forceOverwrite {
 		title = preserveMonotonicText(previous.Title, title, false)
 		desc = preserveMonotonicText(previous.Desc, desc, false)
 	}
@@ -464,13 +468,14 @@ func (m *Manager) executeDouyinVideoStaged(
 		t.Attempts = subTask.Attempts
 	}()
 
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite, plan.ForceOverwrite)
 	refreshOncePlan := m.makeSinglePlanRefresher(ctx, t.TargetID, planner)
 	var v2Media []library.MediaFile
 	var v2Missing []library.MissingRecord
 
-	// 1. Cover: stage fresh cover on conflict, or reuse verified local cover.
+	// 1. Cover: stage fresh cover on conflict or ForceOverwrite, otherwise reuse verified local cover.
 	reusedCover := false
-	if !isConflict {
+	if !isConflict && !forceOverwrite {
 		for _, mf := range previous.Media {
 			if mf.Role == "cover" && mediaIsValid(previous, mf.Path) {
 				if copied, cErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, "cover", stageDir); cErr == nil {
@@ -490,13 +495,15 @@ func (m *Manager) executeDouyinVideoStaged(
 		} else if cErr != nil && (isSiteStopError(cErr) || isStorageError(cErr) || ctx.Err() != nil) {
 			return cErr
 		} else {
-			for _, mf := range previous.Media {
-				if mf.Role == "cover" && mediaIsValid(previous, mf.Path) {
-					if copied, rErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, "cover", stageDir); rErr == nil {
-						v2Media = append(v2Media, *copied)
-						reusedCover = true
+			if !forceOverwrite {
+				for _, mf := range previous.Media {
+					if mf.Role == "cover" && mediaIsValid(previous, mf.Path) {
+						if copied, rErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, "cover", stageDir); rErr == nil {
+							v2Media = append(v2Media, *copied)
+							reusedCover = true
+						}
+						break
 					}
-					break
 				}
 			}
 			if !reusedCover {
@@ -516,7 +523,7 @@ func (m *Manager) executeDouyinVideoStaged(
 		sameMediaID = true
 	}
 
-	if !isConflict && !planUpgradesSingleVideo(previous, plan) && mediaIsValid(previous, videoRel) {
+	if !isConflict && !forceOverwrite && !planUpgradesSingleVideo(previous, plan) && mediaIsValid(previous, videoRel) {
 		copied, err := copyLocalMediaToStageAs(previous, videoRel, videoRel, "video", stageDir)
 		if err != nil {
 			return err
@@ -553,8 +560,8 @@ func (m *Manager) executeDouyinVideoStaged(
 		}
 		if !original {
 			// On safe upgrade where local already had the transcoded tier and only OriginalURLs was new,
-			// reuse verified local video if OriginalURLs failed instead of re-downloading the same tier.
-			if !isConflict && mediaIsValid(previous, videoRel) && previous.DouyinVideo != nil &&
+			// reuse verified local video if OriginalURLs failed instead of re-downloading the same tier (never on ForceOverwrite).
+			if !isConflict && !forceOverwrite && mediaIsValid(previous, videoRel) && previous.DouyinVideo != nil &&
 				plan.Width*plan.Height <= previous.DouyinVideo.Width*previous.DouyinVideo.Height {
 				copied, cErr := copyLocalMediaToStageAs(previous, videoRel, videoRel, "video", stageDir)
 				if cErr == nil {
@@ -576,7 +583,7 @@ func (m *Manager) executeDouyinVideoStaged(
 			})
 			vidMedia, vErr := m.cacheDouyinSingleMP4(ctx, &subTask, stageDir, previous, false, "video", videoRel, plan.VideoURLs, plan.NeedSetToken, plan.DurationSec, plan.Width, plan.Height, plan.Transport, planner, refreshVideoURLs)
 			if vErr != nil {
-				if (!isConflict || sameMediaID) && mediaIsValid(previous, videoRel) && ctx.Err() == nil && !isStorageError(vErr) {
+				if !forceOverwrite && (!isConflict || sameMediaID) && mediaIsValid(previous, videoRel) && ctx.Err() == nil && !isStorageError(vErr) {
 					if copied, cErr := copyLocalMediaToStageAs(previous, videoRel, videoRel, "video", stageDir); cErr == nil {
 						v2Media = append(v2Media, *copied)
 						if previous.DouyinVideo != nil {

@@ -151,6 +151,33 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 						}
 						if offline && cachedItem != nil {
 							a.renderLibraryItemMoreMenu(c, *cachedItem, 32)
+						} else if !offline && cachedItem != nil && itemKey != "" {
+							menuKey := "bili-video:" + itemKey
+							open := a.PostMenuKey == menuKey
+							MoreMenuButton(c, "视频详情更多", 32, &open, func(m *ui.Menu) {
+								if !cachedItem.IsArchivedSnapshot() {
+									if m.Item("强制重新下载").Chosen() {
+										a.openForceRecacheConfirm(itemKey, firstNonEmptyStrUI(vd.Title, vd.BVID))
+									}
+								}
+								if vd.BVID != "" {
+									targetURL := "https://www.bilibili.com/video/" + vd.BVID
+									if m.Item("复制链接").Chosen() {
+										c.WriteClipboard(targetURL)
+										c.Toast("已复制链接")
+										a.BannerInfo = "已复制链接"
+									}
+									if m.Item("在浏览器中打开").Chosen() {
+										if err := a.backend.Desktop().OpenExternalURL(targetURL); err != nil {
+											a.showError(err)
+										}
+									}
+								}
+								if m.Item("打开文件夹").Chosen() {
+									a.showError(a.backend.OpenItemFolder(itemKey))
+								}
+							})
+							keyedMenuOpen(&a.PostMenuKey, menuKey, open)
 						}
 					})
 				})
