@@ -5,14 +5,15 @@
 <a id="environment"></a>
 ## 1. 环境与版本
 
-本节只记**实际**安装和锁定的版本。按 DEC-032，全项目使用纯 Go + MyGo 原生界面（`github.com/egoist/mygo/ui`），不引入 Node.js、npm、Vite、React 或 TypeScript，也不依赖客户机 WebView2 运行时；后续开发持续与 MyGo 最新版本（当前 `v0.9.1`）同步改动。
+本节只记**实际**安装和锁定的版本。按 DEC-032，全项目使用纯 Go + MyGo 原生界面（`github.com/egoist/mygo/ui`），不引入 Node.js、npm、Vite、React 或 TypeScript，也不依赖客户机 WebView2 运行时；后续开发持续与 MyGo 最新版本（当前 `v0.10.0`）同步改动。
 
 | 组件 | 版本 | 锁定方式 | 状态（2026-11-22） |
 | --- | --- | --- | --- |
 | Go | `go1.27.4 windows/amd64` | `go.mod` 的 `go 1.27.4`（2026-11-14 从 1.27.3 升级，修 GO-2026-6859） | 本机已安装 1.27.3，`GOTOOLCHAIN=auto` 按 `go` 行自动下载 1.27.4 |
-| MyGo 库 / CLI | `v0.9.1` | `go.mod` 的 `tool github.com/egoist/mygo/cmd/mygo` 与 `require github.com/egoist/mygo v0.9.1` | 已锁定并实测（`go tool mygo`、`mygo/ui` 原生窗口/测试器、`mygo.Updater`） |
-| Go 依赖 | `github.com/egoist/mygo v0.9.1`、`modernc.org/sqlite v1.62.0`、`github.com/Eyevinn/mp4ff v0.63.0`、`google.golang.org/protobuf v1.36.12`（`protowire`）、`github.com/yeqown/go-qrcode/v2 v2.3.0`（二维码矩阵）及传递 `github.com/yeqown/reedsolomon v1.0.0`（均 MIT）、`golang.org/x/image v0.48.0`（WebP 与图标绘制，BSD-3-Clause）、`golang.org/x/sys v0.50.0`（Windows API 与注册表） | `go.mod` 与 `go.sum` 精确版本 | 已实际接入并通过门禁；许可随包收录，二维码传递模块的许可补充见下 |
+| MyGo 库 / CLI | `v0.10.0` | `go.mod` 的 `tool github.com/egoist/mygo/cmd/mygo` 与 `require github.com/egoist/mygo v0.10.0` | 已锁定并实测（`go tool mygo`、`mygo/ui` 原生窗口/测试器、`mygo.Updater`；2026-11-26 从 `v0.9.1` 升级，[#115](https://github.com/chialecode/trace/issues/115)） |
+| Go 依赖 | `github.com/egoist/mygo v0.10.0`、`modernc.org/sqlite v1.62.0`、`github.com/Eyevinn/mp4ff v0.63.0`、`google.golang.org/protobuf v1.36.12`（`protowire`）、`github.com/yeqown/go-qrcode/v2 v2.3.0`（二维码矩阵）及传递 `github.com/yeqown/reedsolomon v1.0.0`（均 MIT）、`golang.org/x/image v0.48.0`（WebP 与图标绘制，BSD-3-Clause）、`golang.org/x/sys v0.50.0`（Windows API 与注册表） | `go.mod` 与 `go.sum` 精确版本 | 已实际接入并通过门禁；许可随包收录，二维码传递模块的许可补充见下 |
 | NSIS（构建期工具） | `v3.13`（`makensis.exe`） | MyGo 缓存于 `%LOCALAPPDATA%\mygo\nsis-3.13`（zlib/libpng、bzip2、CPL 1.0 许可） | 本机已安装并生成开发版、正式版与 trace-test 安装包 |
+| Android 构建链（移动端，计划） | JDK 17 或以上、Android SDK（`compileSdk`/`targetSdk` 36）、NDK | Android Studio 或 `sdkmanager` 按用户安装；`mygo doctor` 检查 | **未安装**（2026-11-26 `mygo doctor`：`android  no SDK`，也没有 JDK），开发移动端前补齐（[#116](https://github.com/chialecode/trace/issues/116)，[移动端设计 §10](../design/mobile.md#build)） |
 | Windows Media Foundation | Windows 10/11 系统自带（`mfplat.dll`、`mfreadwrite.dll`、`ole32.dll`） | — | 本机已有，经合成样本解码、拖动与静音测试验证 |
 
 <a id="commands"></a>
