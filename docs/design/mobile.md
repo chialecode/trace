@@ -30,7 +30,8 @@
 
 - **包**：`internal/companion`（纯 Go，不依赖 MyGo，INV-05）；证书生成、令牌哈希与常数时间比较、失败限流复用 `internal/remote` / `internal/remoteserver` 已有的实现（必要时下沉为共用小包）。`trace-server` 不链接它。
 - **开关**：`settings.json` 新增可选字段 `companion: {enabled, port}`（结构版本不变，旧版忽略）；默认 `enabled=false`。打开后才监听，关掉立即停止监听并断开全部手机（先推送 `bye{reason: "disabled"}`）。
-- **端口**：默认正式版 `47381`、开发版 `47382`、演练身份 `trace-test` `47383`（远程版是 `47380`），设置里可改；端口被占用时说明并保持关闭，不自动换端口。监听全部本机地址，但只接受私有地址来源（第 5.1 节）。
+- **端口**：默认正式版 `47381`、开发版 `47382`（远程版是 `47380`），设置里可改；端口被占用时说明并保持关闭，不自动换端口。演练身份 `trace-test` 不提供移动端服务（第 10 节）。
+- **监听地址**：只在私有地址（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`）、IPv6 ULA 与链路本地地址，以及**虚拟网卡（隧道类型，如 Tailscale）上**的 `100.64.0.0/10` 地址上监听；物理网卡上的 `100.64.0.0/10` 是运营商级 NAT 地址，按公网对待、不监听；不监听公网地址。网卡变化时（插拔网线、切换 Wi-Fi、VPN 连上或断开）重新计算。“设置 › 移动端”提示 Windows 防火墙只放行“专用网络”。
 - **证书**：第一次打开时生成自签名 ECDSA P-256 证书，放 `<数据目录>/companion/tls/`（`0600`）；只有用户点“重置移动端身份”才重新生成，重新生成会让全部已配对手机失效。
 - **设备文件**：`<数据目录>/companion.json`（`version: 1`，`0600`，原子写，损坏按 NFR-DATA-001 处理）：节点 ID（复用 `node.json`）与设备列表 `{id, name, model, platform, channel, tokenHash, pairedAt, lastSeenAt, lastAddr, homePositions}`。`homePositions` 是这台手机的主页阅读位置（同 FR-FEED-001 的结构），存在电脑端，手机本机不存。实现时（[#118](https://github.com/chialecode/trace/issues/118)）同时写进[数据与缓存 §1](data-and-cache.md#storage)与 `GuardDataSchemas`；新数据文件按高风险清单处理。
 - **退出与更新**：托盘“退出”、`--quit-for-update` 与关闭开关时，先向在线的手机推送 `bye{reason: "exit" | "update" | "disabled"}`，再关闭监听；不为此延长退出时间（推送最多等 1 秒）。
@@ -39,12 +40,13 @@
 <a id="pairing"></a>
 ## 4. 配对与设备
 
-1. 用户在电脑端“设置 › 移动端”点“添加手机”：生成一次性配对码（128 位随机数，5 分钟有效，只能用一次，同时只有一个有效），显示二维码。二维码内容是 `trace-pair:` 加 base64url 的 JSON：`{v, node, name, channel, port, addrs[], fp, code}`（`addrs` 是本机全部私有 IPv4/IPv6 地址，`fp` 是证书叶子 DER 的 SHA-256）。另显示 8 位短配对码与地址，供不能扫码时手动输入（短码同样 5 分钟、一次性，输错 5 次作废）。
-2. 手机扫码后用 `fp` 固定证书、依次尝试 `addrs`，`POST /api/v1/pair` 提交 `{code, deviceName, model, platform, channel, appVersion}`。通道不一致直接拒绝（`409 channel_mismatch`）。
-3. 电脑端弹出“允许『<手机名>』连接这台电脑？”（允许 / 拒绝，2 分钟不处理视为拒绝）；手机长轮询 `GET /api/v1/pair/{id}`（每次最多 60 秒）等结果。允许后电脑端生成 32 字节设备令牌，只存 SHA-256，令牌只在这一次响应里返回。
-4. 设备上限 5 台；满了时配对请求返回 `409 device_limit`，电脑端提示先移除一台。
-5. **移除**：电脑端“移除”立即删除令牌哈希并关闭这台手机的全部连接（先推送 `bye{reason: "revoked"}`）；之后旧令牌一律 `401`。手机“解除配对”调用 `DELETE /api/v1/devices/self` 后清掉本机配对记录与令牌；电脑不在线时只清本机，电脑端那条记录由用户手动移除。
-6. **重新扫码更新地址**：已配对的手机扫到同一节点、同一指纹的新二维码时，只更新地址列表、不再走确认（配对码仍作废）。
+1. 用户在电脑端“设置 › 移动端”点“添加手机”：生成一次性配对码（128 位随机数，5 分钟有效，只能用一次，同时只有一个有效），显示二维码。二维码内容是 `trace-pair:` 加 base64url 的 JSON：`{v, node, name, channel, port, addrs[], fp, code}`（`addrs` 是监听中的全部地址，`fp` 是证书叶子 DER 的 SHA-256）。扫码时手机用 `fp` 固定证书，所以中间人无法冒充电脑。
+2. **手动配对**（不能扫码时）：对话框另外显示地址、8 位短配对码（同样 5 分钟、一次性，输错 5 次作废）和**电脑身份码**（`fp` 的前 64 位，十六进制分 4 组，如 `3F7A-91C2-0B5E-D844`）。手机输入地址与短码后先建立 TLS 连接、不发送短码，显示它实际看到的证书算出的身份码，请用户与电脑屏幕上的逐组核对；用户确认一致后才提交短码，并从此固定这个指纹；不一致或用户取消就断开、不发送任何东西。这样局域网里的中间人即使转发短码，手机看到的也是中间人自己的证书、身份码对不上。64 位前缀要求攻击者为一个固定指纹做约 2^64 次密钥生成才能撞上，不可行。
+3. 手机用固定的指纹依次尝试地址，`POST /api/v1/pair` 提交 `{code, deviceName, model, platform, channel, appVersion, pairSecret}`，其中 `pairSecret` 是手机生成的 128 位随机数。通道不一致直接拒绝（`409 channel_mismatch`）。电脑端返回 `pairId`（128 位随机数），只在内存里与这次请求的 `pairSecret` 的哈希绑定，2 分钟过期。
+4. 电脑端弹出“允许『<手机名>』连接这台电脑？”（允许 / 拒绝，2 分钟不处理视为拒绝）；手机长轮询 `GET /api/v1/pair/{pairId}`（请求头带 `pairSecret`，每次最多 60 秒）等结果，`pairSecret` 不符一律 `404`。允许后电脑端生成 32 字节设备令牌，只存 SHA-256，令牌只在第一次成功的轮询响应里返回一次，随后删除 `pairId`。
+5. 设备上限 5 台；满了时配对请求返回 `409 device_limit`，电脑端提示先移除一台。
+6. **移除**：电脑端“移除”立即删除令牌哈希并关闭这台手机的全部连接（先推送 `bye{reason: "revoked"}`）；之后旧令牌一律 `401`。手机“解除配对”调用 `DELETE /api/v1/devices/self` 后清掉本机配对记录与令牌；电脑不在线时只清本机，电脑端那条记录由用户手动移除。
+7. **重新扫码更新地址**：已配对的手机扫到同一节点、同一指纹的新二维码时，只更新地址列表、不再走确认（配对码仍作废）。
 
 <a id="api"></a>
 ## 5. 接口与事件
@@ -54,7 +56,7 @@
 
 - **传输**：HTTPS，TLS 1.3，手机只认配对时的证书指纹，不信任系统证书库；指纹不符拒绝连接并提示“电脑的身份变了”，不自动信任新证书。
 - **鉴权**：除 `pair` 两个端点外，每个请求带 `Authorization: Bearer <设备令牌>`；同一来源 1 分钟失败 5 次后 10 分钟内一律 `429`（与远程版相同）。
-- **来源过滤**：只接受 `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`169.254.0.0/16`、`100.64.0.0/10`、`fc00::/7`、`fe80::/10` 与回环来源，其余来源一律返回 `403 forbidden_source`（不进入鉴权，也不读请求体）。
+- **来源过滤**：只接受 `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`169.254.0.0/16`、`fc00::/7`、`fe80::/10`、回环，以及到达虚拟网卡的 `100.64.0.0/10` 来源（与监听地址的规则一致，第 3 节） 与回环来源，其余来源一律返回 `403 forbidden_source`（不进入鉴权，也不读请求体）。
 - **限制**：请求体上限 64 KiB；没有 CORS，不提供网页；响应只含界面需要的 DTO，不含 Cookie、站点签名地址、流地址与本机绝对路径（条目只用条目键与清单里的相对路径）。
 - **版本**：请求与响应带 `X-Trace-Companion-Protocol`（从 `1` 开始，与远程版协议各自编号）、程序版本与通道；协议不同返回 `409 protocol_mismatch` 并带两边版本（NFR-MOB-VER-001）。
 - **日志**：记连接、配对、移除与错误类别、设备 ID 与来源地址；不记令牌、配对码、请求体与媒体路径的查询串。哨兵测试覆盖。
@@ -112,7 +114,7 @@
 ### 7.1 工程与依赖
 
 - 独立的 MyGo 应用 `cmd/trace-mobile/`，自己的 `mygo.json`：名称“TRACE”，标识符 `io.github.chialecode.trace`；开发版由 MyGo 自动加后缀（“TRACE Dev”、`io.github.chialecode.trace.dev`），两者可在同一台手机并存（与电脑端通道隔离一致）。`android.minSdk` 26。
-- 依赖边界：只链接 MyGo、`ui`、`ui/mobile`、`plugins/videoplayer`、二维码扫描所需的插件或库，以及新的纯 Go 客户端包 `internal/companionclient`（协议类型与 DTO 与电脑端共用一个无依赖的类型包）；**不链接** `internal/site/...`、`internal/credential`、`internal/download`、`internal/live`、`internal/subscription`、`internal/library`、`internal/service`。`tools/check` 用 `go list -deps ./cmd/trace-mobile` 检查（同 `trace-server` 的做法）。
+- 依赖边界：只链接 MyGo、`ui`、`ui/mobile`、`plugins/videoplayer`、二维码扫描所需的插件或库，以及新的纯 Go 客户端包 `internal/companionclient`（协议类型与 DTO 与电脑端共用一个无依赖的类型包）；**不链接** `internal/site/...`、`internal/credential`、`internal/download`、`internal/live`、`internal/subscription`、`internal/library`、`internal/service`。`tools/check` 用 `go list -deps ./cmd/trace-mobile` 检查（同 `trace-server` 的做法）。实现时同步更新[架构 §1](architecture.md#architecture) 的 INV-05 包列表（`internal/companion`、`internal/companionclient` 不依赖 MyGo；`cmd/trace-mobile` 是新的 MyGo 引用方）与 `tools/check` 的依赖方向清单（[#118](https://github.com/chialecode/trace/issues/118)、[#119](https://github.com/chialecode/trace/issues/119)）。
 - 帖子卡片、时间与大小格式化等纯展示代码，能与电脑端共用的抽成不依赖服务层的小包；不为共用而把 `internal/ui` 整体搬进手机端。
 
 ### 7.2 界面结构
@@ -187,7 +189,7 @@
 <a id="verify"></a>
 ## 12. 验证
 
-- **单元**：配对码一次性与过期、通道校验、令牌哈希与撤销、私有来源过滤、失败限流、协议版本、`MediaPath` 越界、事件队列满时不阻塞、`companion.json` 损坏恢复；令牌、配对码不进日志与响应的哨兵测试。
+- **单元**：配对码一次性与过期、手动配对时身份码不符就中止且不发送短码、`pairId` 不带发起时的 `pairSecret` 拿不到令牌、令牌只能取一次、通道校验、令牌哈希与撤销、监听地址的选择（物理网卡上的 `100.64.0.0/10` 不监听）、私有来源过滤、失败限流、协议版本、`MediaPath` 越界、事件队列满时不阻塞、`companion.json` 损坏恢复；令牌、配对码不进日志与响应的哨兵测试。
 - **回环集成**：用 `internal/companionclient` 当作手机，对接真实 `Backend` 与合成媒体库：配对 → 读信息流与媒体库 → Range 读视频 → 控制下载任务 → 电脑端退出时收到 `bye`。
 - **界面**：手机端用 `ui.Tester` 在 360×800、412×915、800×1280 截图与断言（连接页的每种原因、主页、媒体库、看图、任务、订阅）；电脑端“设置 › 移动端”进 `tools/uishots` 三档宽度。
 - **模拟器冒烟**（有构建环境时）：`mygo dev -platform android` 安装后用自动化插件走一遍配对与浏览；CI 暂不跑。
