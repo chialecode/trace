@@ -2,6 +2,7 @@ package shell
 
 import (
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,7 +29,9 @@ type fakeShellWindow struct {
 	hideCalls       int
 	restoreCalls    int
 	focusCalls      int
-	updateCalls     int
+	updateCalls     atomic.Int32
+	updateMu        sync.Mutex
+	pendingUpdates  []func()
 	closeCalls      int
 	destroyCalls    int
 	onCloseHandlers []func(*mygo.CloseEvent)
@@ -78,9 +81,27 @@ func (w *fakeShellWindow) Focus() {
 	w.events = append(w.events, "focus")
 }
 func (w *fakeShellWindow) Update(fn func()) {
-	w.updateCalls++
+	w.updateCalls.Add(1)
 	if fn != nil {
-		fn()
+		w.updateMu.Lock()
+		w.pendingUpdates = append(w.pendingUpdates, fn)
+		w.updateMu.Unlock()
+	}
+}
+
+func (w *fakeShellWindow) drainUpdates() {
+	for {
+		w.updateMu.Lock()
+		if len(w.pendingUpdates) == 0 {
+			w.updateMu.Unlock()
+			return
+		}
+		batch := w.pendingUpdates
+		w.pendingUpdates = nil
+		w.updateMu.Unlock()
+		for _, fn := range batch {
+			fn()
+		}
 	}
 }
 func (w *fakeShellWindow) OnClose(fn func(*mygo.CloseEvent)) func() {
@@ -149,10 +170,10 @@ func TestOpenOrRestoreMainWindowReentrantTrayClickDoesNotDeadlock(t *testing.T) 
 			showSawEvents = append([]string(nil), fw.events...)
 			// Verify BindEventLoop is already wired before Show() completes:
 			// a backend settings event must dispatch through fw.Update.
-			beforeUpdates := fw.updateCalls
+			beforeUpdates := fw.updateCalls.Load()
 			cur := b.GetSettings()
 			_, _ = b.UpdateSettings(cur)
-			if fw.updateCalls <= beforeUpdates {
+			if fw.updateCalls.Load() <= beforeUpdates {
 				t.Errorf("expected BindEventLoop to dispatch backend event via win.Update before Show() returns")
 			}
 			s.handleTrayClick()
@@ -203,8 +224,9 @@ func TestOpenOrRestoreMainWindowReentrantTrayClickDoesNotDeadlock(t *testing.T) 
 		t.Fatalf("unexpected reuse calls: restore=%d show=%d focus=%d", fw.restoreCalls, fw.showCalls, fw.focusCalls)
 	}
 
-	// Cleanup UI app cleanly.
+	// Cleanup UI app cleanly and drain any queued updates on the test thread.
 	s.CloseToTray()
+	fw.drainUpdates()
 }
 
 // TestOpenOrRestoreMainWindowTeardownDuringCreateCleansUpWindow ensures that if
@@ -290,6 +312,9 @@ func TestOpenOrRestoreMainWindowCloseToTrayDuringShowDoesNotClobberRuntimeState(
 	s.mu.Unlock()
 	ev := &mygo.CloseEvent{}
 	fw.onCloseHandlers[0](ev)
+	if ev.DefaultPrevented() {
+		t.Fatal("stale OnClose must not call PreventDefault on an already-closed window")
+	}
 	if fw.closeCalls != 1 {
 		t.Fatalf("stale OnClose must not trigger extra close, got %d", fw.closeCalls)
 	}

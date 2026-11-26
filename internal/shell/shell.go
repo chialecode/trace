@@ -314,11 +314,15 @@ func Run() error {
 	return mygo.App.Run()
 }
 
-func (s *Shell) audioSinkForMode() player.AudioSink {
-	if s.quiet != "" {
+func audioSinkForQuiet(quiet string) player.AudioSink {
+	if quiet != "" {
 		return player.NewNullAudioSink()
 	}
 	return player.NewMyGoAudioSink()
+}
+
+func (s *Shell) audioSinkForMode() player.AudioSink {
+	return audioSinkForQuiet(s.quiet)
 }
 
 func captureWindowSize(win shellWindow) (int, int, bool) {
@@ -356,17 +360,24 @@ func (s *Shell) openOrRestoreMainWindow() {
 			s.openingWindow = false
 			s.mu.Unlock()
 		}()
+		stillCurrent := func() bool {
+			s.mu.Lock()
+			ok := !s.quitting && s.win == w
+			s.mu.Unlock()
+			return ok
+		}
 		if quiet == "" {
 			w.Restore()
-			w.Show()
-			w.Focus()
+			if stillCurrent() {
+				w.Show()
+			}
+			if stillCurrent() {
+				w.Focus()
+			}
 		} else if quiet == "inactive" {
 			w.ShowInactive()
 		}
-		s.mu.Lock()
-		stillOpen := !s.quitting && s.win == w
-		s.mu.Unlock()
-		if stillOpen {
+		if stillCurrent() {
 			s.recordRuntimeWindowState(quiet != "hidden")
 		}
 		s.checkForegroundSafety("reuse_window")
@@ -394,7 +405,7 @@ func (s *Shell) openOrRestoreMainWindow() {
 	// window calls: Windows ShowWindow / UI Automation COM STA loops can
 	// re-entrantly dispatch tray clicks or RunOnMain callbacks on the main
 	// thread, which would self-deadlock on s.mu.
-	uiApp := ui.NewApp(backend, s.audioSinkForMode())
+	uiApp := ui.NewApp(backend, audioSinkForQuiet(quiet))
 	if updates != nil {
 		uiApp.BindUpdater(updates)
 	}
