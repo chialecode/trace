@@ -2,12 +2,14 @@ package subscription
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -830,13 +832,17 @@ func TestPerSubscriptionSchedulerIgnoresLegacyGlobalEnabledAndWakes(t *testing.T
 		}
 	}
 
-	// 1. Only a manual subscription exists -> not scheduled.
+	// 1. Only a manual subscription exists -> not scheduled and does not emit spurious wakeup.
 	drainWake()
 	manualSub, err := mgr.Create("ManualOnly", "", []AccountRef{{Site: "bilibili", UID: "6001", Name: "UP6001"}}, EmptySubRules())
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectWoken("create manual sub")
+	select {
+	case <-mgr.schedWake:
+		t.Fatal("creating a manual-only subscription while idle should not emit a spurious wake")
+	default:
+	}
 	mgr.mu.Lock()
 	hasSched := mgr.hasScheduledSubscriptionLocked()
 	mgr.mu.Unlock()
@@ -848,13 +854,14 @@ func TestPerSubscriptionSchedulerIgnoresLegacyGlobalEnabledAndWakes(t *testing.T
 		t.Fatalf("manual sub plan=%+v want PlanManual", plan)
 	}
 
-	// 2. Create a new subscription with DefaultSubRules() -> full archive, wakes scheduler, scheduled even though legacy Enabled=false!
+	// 2. Create the first subscription with DefaultSubRules() (0 -> 1 transition):
+	// full archive, wakes scheduler, scheduled even though legacy Enabled=false!
 	drainWake()
 	fullSub, err := mgr.Create("DefaultFull", "", []AccountRef{{Site: "bilibili", UID: "6002", Name: "UP6002"}}, DefaultSubRules())
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectWoken("create full-archive sub")
+	expectWoken("0->1 create full-archive sub")
 	if !slices.Equal(fullSub.Tags, DefaultNewSubTags()) || fullSub.Rules.AutoCache.Since != t0.Format(time.RFC3339) {
 		t.Fatalf("new default sub tags=%v rules=%+v", fullSub.Tags, fullSub.Rules)
 	}
@@ -881,8 +888,54 @@ func TestPerSubscriptionSchedulerIgnoresLegacyGlobalEnabledAndWakes(t *testing.T
 		t.Fatalf("missing fullSub in CheckPlan: %+v", plan)
 	}
 
-	// 3. Upsert creating a brand new subscription with DefaultSubRules() also records AutoCache.Since.
-	drainWake()
+	// 3. Running scheduleLoop preserves an existing future nextRunAt across routine
+	// subscription writes (rename, note, new sub, unrelated settings save, explicit wake),
+	// preventing timer starvation; changing interval or transitioning 1->0 recomputes immediately.
+	var nowUnix atomic.Int64
+	nowUnix.Store(t0.Unix())
+	mgr.SetNowFunc(func() time.Time { return time.Unix(nowUnix.Load(), 0).UTC() })
+
+	loopCtx, cancelLoop := context.WithCancel(context.Background())
+	mgr.Start(loopCtx)
+	t.Cleanup(func() {
+		cancelLoop()
+		mgr.Stop()
+	})
+
+	waitNextRun := func(want time.Time, step string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			mgr.mu.Lock()
+			got := mgr.nextRunAt
+			mgr.mu.Unlock()
+			if got.Equal(want) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		mgr.mu.Lock()
+		got := mgr.nextRunAt
+		mgr.mu.Unlock()
+		t.Fatalf("%s: nextRunAt=%v, want %v", step, got, want)
+	}
+
+	wantT1 := t0.Add(60 * time.Minute)
+	waitNextRun(wantT1, "initial scheduleLoop arm")
+
+	// Advance clock by 5 minutes; routine edits & unrelated saves must NOT push nextRunAt to t0+65m!
+	tPlus5 := t0.Add(5 * time.Minute)
+	nowUnix.Store(tPlus5.Unix())
+
+	renamed := fullSub
+	renamed.Name = "DefaultFullRenamed"
+	renamed.Note = "updated note"
+	if _, err := mgr.Upsert(renamed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.SetLinks(fullSub.ID, []CustomLink{{Label: "主页", URL: "https://example.com/creator"}}); err != nil {
+		t.Fatal(err)
+	}
 	upserted, err := mgr.Upsert(Subscription{
 		Name:     "UpsertFull",
 		Accounts: []AccountRef{{Site: "bilibili", UID: "6003", Name: "UP6003"}},
@@ -891,24 +944,45 @@ func TestPerSubscriptionSchedulerIgnoresLegacyGlobalEnabledAndWakes(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectWoken("upsert new sub")
-	if upserted.Rules.AutoCache.Since != t0.Format(time.RFC3339) || !slices.Equal(upserted.Tags, DefaultNewSubTags()) {
+	if upserted.Rules.AutoCache.Since != tPlus5.Format(time.RFC3339) || !slices.Equal(upserted.Tags, DefaultNewSubTags()) {
 		t.Fatalf("upsert new default sub tags=%v rules=%+v", upserted.Tags, upserted.Rules)
 	}
-
-	// 4. Updating tags wakes scheduler.
-	drainWake()
 	if _, err := mgr.SetSubscriptionTags(manualSub.ID, []string{TagScheduledCheck}); err != nil {
 		t.Fatal(err)
 	}
-	expectWoken("set subscription tags")
+	// Saving settings with unchanged schedule config & explicit WakeScheduler must preserve wantT1.
+	mgr.UpdateSettings(legacyCfg)
+	mgr.WakeScheduler()
+	time.Sleep(40 * time.Millisecond)
+	waitNextRun(wantT1, "routine writes and explicit wake preserve existing nextRunAt")
 
-	// 5. Explicit Mode="manual" still pauses scheduling (PlanOff).
+	// Changing interval immediately recomputes nextRunAt from tPlus5 + 30m.
+	cfg30 := legacyCfg
+	cfg30.IntervalMinutes = 30
+	mgr.UpdateSettings(cfg30)
+	waitNextRun(tPlus5.Add(30*time.Minute), "interval change recomputes nextRunAt immediately")
+
+	// Transitioning >=1 -> 0 scheduled subscriptions clears nextRunAt immediately.
+	for _, id := range []string{manualSub.ID, fullSub.ID, upserted.ID} {
+		if _, err := mgr.SetSubscriptionTags(id, []string{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitNextRun(time.Time{}, "1->0 transition clears nextRunAt")
+
+	// Transitioning 0 -> 1 re-arms nextRunAt immediately.
+	if _, err := mgr.SetSubscriptionTags(fullSub.ID, []string{TagScheduledCheck}); err != nil {
+		t.Fatal(err)
+	}
+	waitNextRun(tPlus5.Add(30*time.Minute), "0->1 transition re-arms nextRunAt")
+
+	// Explicit Mode="manual" pauses scheduling (PlanOff and zero nextRunAt).
 	mgr.UpdateSettings(settings.SubscriptionSettings{
 		Enabled:         false,
-		IntervalMinutes: 60,
+		IntervalMinutes: 30,
 		Mode:            "manual",
 	})
+	waitNextRun(time.Time{}, "Mode=manual clears nextRunAt")
 	if _, ok := NextRunTime(settings.SubscriptionSettings{Mode: "manual", IntervalMinutes: 60}, t0); ok {
 		t.Fatal("NextRunTime should return false when Mode=manual")
 	}

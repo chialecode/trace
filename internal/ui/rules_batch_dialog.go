@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/chialecode/trace/internal/subscription"
 	"github.com/egoist/mygo/ui"
@@ -396,7 +397,12 @@ func (a *App) renderMultiTagBatchDialogBody(c *ui.Context) {
 	})
 
 	if a.MultiTagBatch.Mode != subscription.TagBatchRemove && subscription.HasAutoCacheWithoutScheduledCheck(selectedTagsSlice) {
-		renderAutoCacheDependencyWarning(c, "批量设置自动缓存缺少定时检查提示", "")
+		renderAutoCacheDependencyWarning(c, "批量设置自动缓存缺少定时检查提示", "", func() {
+			if OutlinePillButton(c, "开启定时检查", "批量一键开启定时检查").Clicked() {
+				a.MultiTagBatch.SelectedTags[subscription.TagScheduledCheck] = true
+				a.MultiTagBatch.Error = ""
+			}
+		})
 	} else if a.MultiTagBatch.Mode == subscription.TagBatchRemove && a.MultiTagBatch.SelectedTags[subscription.TagScheduledCheck] {
 		warnRemove := false
 		for _, sub := range a.Subscriptions {
@@ -416,7 +422,12 @@ func (a *App) renderMultiTagBatchDialogBody(c *ui.Context) {
 			}
 		}
 		if warnRemove {
-			renderAutoCacheDependencyWarning(c, "批量设置自动缓存缺少定时检查提示", "移除「定时检查」后，部分已开启自动缓存的订阅将仅在手动检查更新时生效。")
+			renderAutoCacheDependencyWarning(c, "批量设置自动缓存缺少定时检查提示", "移除「定时检查」后，部分已开启自动缓存的订阅将仅在手动检查更新时生效。", func() {
+				if OutlinePillButton(c, "保留定时检查", "批量保留定时检查").Clicked() {
+					a.MultiTagBatch.SelectedTags[subscription.TagScheduledCheck] = false
+					a.MultiTagBatch.Error = ""
+				}
+			})
 		}
 	}
 
@@ -594,6 +605,7 @@ func (a *App) syncSelectedSubAfterTagBatch() {
 	if subs, err := a.backend.ListSubscriptions(); err == nil {
 		a.Subscriptions = subs
 		a.subsRev++
+		a.checkPlanAt = time.Time{}
 	} else {
 		a.refreshSubscriptions()
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
+	"github.com/chialecode/trace/internal/subscription"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -549,6 +550,16 @@ func (a *App) renderSubscriptionSettings(c *ui.Context) {
 		}
 	}
 	earliestNext := earliestScheduledNextAt(planRows)
+	hasPlanOff := false
+	hasPlanUnauth := false
+	for _, r := range planRows {
+		switch r.Plan {
+		case subscription.PlanOff:
+			hasPlanOff = true
+		case subscription.PlanUnauth:
+			hasPlanUnauth = true
+		}
+	}
 
 	ui.Column(c).FillWidth().Gap(12).ClipX().Children(func() {
 		chkMinStr := strconv.Itoa(a.DraftSettings.Subscription.IntervalMinutes)
@@ -583,8 +594,12 @@ func (a *App) renderSubscriptionSettings(c *ui.Context) {
 						ui.Text(c, "下一轮定时检查："+formatPlanTime(earliestNext, now)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 					case scheduledAccounts == 0:
 						ui.Text(c, "这些订阅还没有关联站点账号").FontSize(12).TextColor(ColorTextMuted).SingleLine()
-					default:
+					case hasPlanOff || strings.EqualFold(strings.TrimSpace(a.DraftSettings.Subscription.Mode), "manual"):
+						ui.Text(c, "定时检查当前处于手动模式，已暂停自动运行").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					case hasPlanUnauth:
 						ui.Text(c, "对应站点尚未登录，登录后将按间隔自动检查").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					default:
+						ui.Text(c, "定时检查暂未排程").FontSize(12).TextColor(ColorTextMuted).SingleLine()
 					}
 				}
 			})

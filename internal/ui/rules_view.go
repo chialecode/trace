@@ -290,7 +290,11 @@ func (a *App) renderSubscriptionTagChipsBar(c *ui.Context, sub *subscription.Sub
 			}
 
 			if subscription.HasAutoCacheWithoutScheduledCheck(activeTags) {
-				renderAutoCacheDependencyWarning(c, "自动缓存缺少定时检查提示", "")
+				renderAutoCacheDependencyWarning(c, "自动缓存缺少定时检查提示", "", func() {
+					if OutlinePillButton(c, "开启定时检查", "一键开启定时检查").Clicked() {
+						a.toggleSubscriptionTag(sub, subscription.TagScheduledCheck)
+					}
+				})
 			}
 		})
 }

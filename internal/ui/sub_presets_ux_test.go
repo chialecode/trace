@@ -123,8 +123,15 @@ func TestNewSubscriptionEntryPointsDefaultFullArchiveAndPresetSelection(t *testi
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if !hasLabel(tt, "新订阅自动缓存缺少定时检查提示") || !tt.HasText(autoCacheWithoutScheduledCheckHint) {
-		t.Fatalf("expected dependency gap warning in add-sub modal; texts=%v", tt.Texts())
+	if !hasLabel(tt, "新订阅自动缓存缺少定时检查提示") || !hasLabel(tt, "新订阅一键开启定时检查") || !tt.HasText(autoCacheWithoutScheduledCheckHint) {
+		t.Fatalf("expected dependency gap warning + one-click action in add-sub modal; texts=%v", tt.Texts())
+	}
+	if err := tt.Click("新订阅一键开启定时检查"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if hasLabel(tt, "新订阅自动缓存缺少定时检查提示") || !slices.Contains(app.AddSubPreset.SelectedTags(), subscription.TagScheduledCheck) {
+		t.Fatalf("one-click enable in add-sub modal did not restore scheduled_check: tags=%v", app.AddSubPreset.SelectedTags())
 	}
 	app.closeAddSubOverlay()
 	tt.Frame()
@@ -354,11 +361,25 @@ func TestSubscriptionDetailPresetDropdownDependencyWarningAndEmptyStates(t *test
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if !tt.HasText("追踪：自定义") || !hasLabel(tt, "自动缓存缺少定时检查提示") || !tt.HasText(autoCacheWithoutScheduledCheckHint) {
-		t.Fatalf("expected custom mode + dependency warning after disabling scheduled_check; texts=%v", tt.Texts())
+	if !tt.HasText("追踪：自定义") || !hasLabel(tt, "自动缓存缺少定时检查提示") || !hasLabel(tt, "一键开启定时检查") || !tt.HasText(autoCacheWithoutScheduledCheckHint) {
+		t.Fatalf("expected custom mode + dependency warning + one-click action after disabling scheduled_check; texts=%v", tt.Texts())
 	}
 	if !tt.HasText("已开启自动缓存但未开启「定时检查」") {
 		t.Fatalf("expected empty-state copy to update for auto-cache without scheduled_check; texts=%v", tt.Texts())
+	}
+
+	// Collapse custom atomic tags and verify user can still fix the dependency gap in 1 click.
+	app.SubCustomTagsSubID = ""
+	tt.Frame()
+	if !hasLabel(tt, "一键开启定时检查") {
+		t.Fatal("one-click enable scheduled_check button should stay visible when custom tags are collapsed")
+	}
+	if err := tt.Click("一键开启定时检查"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if hasLabel(tt, "自动缓存缺少定时检查提示") || !tt.HasText("追踪：追更并保存") {
+		t.Fatalf("one-click enable in detail header should restore scheduled_check and clear warning; texts=%v", tt.Texts())
 	}
 }
 
@@ -447,7 +468,8 @@ func TestSettingsSubscriptionRemovedGlobalToggleQuickPresetsAndResponsiveWidths(
 		t.Fatalf("settings subscription missing interval or 0-sub summary; texts=%v", tt.Texts())
 	}
 
-	// Create 1 default (full_archive) subscription -> summary updates to 1 sub (1 account) + next check time.
+	// Create 1 default (full_archive) subscription -> summary updates immediately (no stale 20s cache!)
+	// to show 1 sub (1 account) + "下一轮定时检查：" and NEVER falsely claims "对应站点尚未登录".
 	sub, err := app.backend.CreateSubscription(
 		"定时摘要测试",
 		"",
@@ -462,8 +484,44 @@ func TestSettingsSubscriptionRemovedGlobalToggleQuickPresetsAndResponsiveWidths(
 	if !tt.HasText("已开启定时检查：1 个订阅（1 个账号）") {
 		t.Fatalf("expected 1 scheduled sub summary; texts=%v", tt.Texts())
 	}
+	if tt.HasText("对应站点尚未登录，登录后将按间隔自动检查") {
+		t.Fatalf("stale checkPlan cache falsely reported site unauthenticated; texts=%v", tt.Texts())
+	}
+	hasNextLine := func(texts []string) string {
+		for _, s := range texts {
+			if strings.HasPrefix(s, "下一轮定时检查：") {
+				return s
+			}
+		}
+		return ""
+	}
+	next60 := hasNextLine(tt.Texts())
+	if next60 == "" {
+		t.Fatalf("expected immediate 下一轮定时检查 line after creating scheduled sub; texts=%v", tt.Texts())
+	}
 
-	// Settings › 缓存标签 quick presets open MultiTagBatch pre-filled & dependency warning works.
+	// Changing interval via saveSettings immediately clears checkPlanAt and updates next check time.
+	app.DraftSettings.Subscription.IntervalMinutes = 30
+	app.DraftSettings.CheckIntervalMin = 30
+	app.saveSettings()
+	tt.Frame()
+	next30 := hasNextLine(tt.Texts())
+	if next30 == "" || next30 == next60 {
+		t.Fatalf("expected 下一轮定时检查 to update immediately on interval change: before=%q after=%q", next60, next30)
+	}
+
+	// Explicit manual schedule mode (PlanOff) reports manual pause, NOT unauthenticated.
+	app.DraftSettings.Subscription.Mode = "manual"
+	app.saveSettings()
+	tt.Frame()
+	if !tt.HasText("定时检查当前处于手动模式，已暂停自动运行") || tt.HasText("对应站点尚未登录，登录后将按间隔自动检查") {
+		t.Fatalf("PlanOff should distinguish manual mode from unauthenticated; texts=%v", tt.Texts())
+	}
+	app.DraftSettings.Subscription.Mode = "interval"
+	app.saveSettings()
+	tt.Frame()
+
+	// Settings › 缓存标签 quick presets open MultiTagBatch pre-filled & dependency warning + one-click fix work.
 	app.SettingsCategory = "rules"
 	tt.Frame()
 	if !hasLabel(tt, "缓存标签快速预设栏") || !hasLabel(tt, "快速应用预设："+subscription.PresetFollowCache) {
@@ -483,8 +541,31 @@ func TestSettingsSubscriptionRemovedGlobalToggleQuickPresetsAndResponsiveWidths(
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if !hasLabel(tt, "批量设置自动缓存缺少定时检查提示") || !tt.HasText(autoCacheWithoutScheduledCheckHint) {
-		t.Fatalf("batch dialog missing dependency gap warning; texts=%v", tt.Texts())
+	if !hasLabel(tt, "批量设置自动缓存缺少定时检查提示") || !hasLabel(tt, "批量一键开启定时检查") || !tt.HasText(autoCacheWithoutScheduledCheckHint) {
+		t.Fatalf("batch dialog missing dependency gap warning or one-click fix; texts=%v", tt.Texts())
+	}
+	if err := tt.Click("批量一键开启定时检查"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if hasLabel(tt, "批量设置自动缓存缺少定时检查提示") || !app.MultiTagBatch.SelectedTags[subscription.TagScheduledCheck] {
+		t.Fatalf("one-click fix in batch replace mode did not re-enable scheduled_check")
+	}
+
+	// Remove mode: removing scheduled_check from a subscription with auto-cache shows warning + 保留定时检查.
+	app.MultiTagBatch.Mode = subscription.TagBatchRemove
+	app.MultiTagBatch.SelectedTags = map[string]bool{subscription.TagScheduledCheck: true}
+	app.MultiTagBatch.SelectedSubs = map[string]bool{ruleBatchSubKey(sub): true}
+	tt.Frame()
+	if !hasLabel(tt, "批量设置自动缓存缺少定时检查提示") || !hasLabel(tt, "批量保留定时检查") {
+		t.Fatalf("batch remove mode missing dependency warning or 保留定时检查 action; texts=%v", tt.Texts())
+	}
+	if err := tt.Click("批量保留定时检查"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if hasLabel(tt, "批量设置自动缓存缺少定时检查提示") || app.MultiTagBatch.SelectedTags[subscription.TagScheduledCheck] {
+		t.Fatalf("clicking 批量保留定时检查 should uncheck scheduled_check and clear warning")
 	}
 	app.closeMultiTagBatchDialog()
 
@@ -503,22 +584,23 @@ func TestSettingsSubscriptionRemovedGlobalToggleQuickPresetsAndResponsiveWidths(
 		wt.Frame()
 		assertNoHorizontalOverflow(t, wt, w, []string{"打开批量设置订阅标签", "缓存标签快速预设栏", "快速应用预设：full_archive"})
 
-		// Add Sub modal with expanded custom tags
+		// Add Sub modal with expanded custom tags + dependency warning button
 		app.Navigate(RouteSubscriptions)
 		app.AddSubDialogOpen = true
 		app.AddSubPreset.ResetDefault()
 		app.AddSubPreset.CustomExpanded = true
+		app.AddSubPreset.ToggleCustomTag(subscription.TagScheduledCheck)
 		wt.Frame()
-		assertNoHorizontalOverflow(t, wt, w, []string{"添加订阅对话框", "新订阅追踪模式选择区", "新订阅自定义原子标签区", "确认添加订阅"})
+		assertNoHorizontalOverflow(t, wt, w, []string{"添加订阅对话框", "新订阅追踪模式选择区", "新订阅自定义原子标签区", "新订阅自动缓存缺少定时检查提示", "新订阅一键开启定时检查", "确认添加订阅"})
 		app.closeAddSubOverlay()
 
-		// Subscription detail with dependency warning
+		// Subscription detail with dependency warning + one-click button
 		_, _ = app.backend.SetSubscriptionTags(sub.ID, []string{subscription.TagCacheVideo})
 		app.RefreshData()
 		updated := findSubByName(t, app, sub.Name)
 		app.OpenSubscriptionDetail(updated)
 		app.SubCustomTagsSubID = updated.ID
 		wt.Frame()
-		assertNoHorizontalOverflow(t, wt, w, []string{"订阅详情缓存标签栏", "订阅缓存标签菜单", "订阅详情自定义原子标签栏", "自动缓存缺少定时检查提示"})
+		assertNoHorizontalOverflow(t, wt, w, []string{"订阅详情缓存标签栏", "订阅缓存标签菜单", "订阅详情自定义原子标签栏", "自动缓存缺少定时检查提示", "一键开启定时检查"})
 	}
 }

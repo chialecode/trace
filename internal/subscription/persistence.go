@@ -367,7 +367,7 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 
 func (m *Manager) writeSubscriptionsToDiskLocked() (writeErr error) {
 	if m.subsPath == "" {
-		m.WakeScheduler()
+		m.syncSchedulerActiveLocked()
 		return nil
 	}
 	subs, err := m.listSubsOnlyLocked()
@@ -405,7 +405,7 @@ func (m *Manager) writeSubscriptionsToDiskLocked() (writeErr error) {
 	if err := storage.WriteFileAtomic(m.subsPath, data, 0o600); err != nil {
 		return err
 	}
-	m.WakeScheduler()
+	m.syncSchedulerActiveLocked()
 	return nil
 }
 

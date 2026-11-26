@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/live"
@@ -474,6 +475,7 @@ func (a *App) refreshSubscriptions() {
 	}
 	a.Subscriptions = subs
 	a.subsRev++
+	a.checkPlanAt = time.Time{}
 	a.refreshAccountWorks()
 }
 

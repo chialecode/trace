@@ -172,8 +172,9 @@ func renderErrorBanner(c *ui.Context, label, text string, actions func()) {
 const autoCacheWithoutScheduledCheckHint = "已开启自动缓存但未开启「定时检查」：仅在手动检查更新时生效。"
 
 // renderAutoCacheDependencyWarning renders a calm inline amber notice explaining
-// that auto-cache tags without scheduled_check only trigger on manual checks (DEC-080).
-func renderAutoCacheDependencyWarning(c *ui.Context, label, text string) {
+// that auto-cache tags without scheduled_check only trigger on manual checks,
+// with optional secondary action buttons (e.g. one-click enable scheduled_check) (DEC-080).
+func renderAutoCacheDependencyWarning(c *ui.Context, label, text string, actions func()) {
 	if strings.TrimSpace(text) == "" {
 		text = autoCacheWithoutScheduledCheckHint
 	}
@@ -184,14 +185,21 @@ func renderAutoCacheDependencyWarning(c *ui.Context, label, text string) {
 		Background(ColorWarnBg).
 		Border(1, ColorWarnBorder).
 		AlignItems(ui.Center).
+		Justify(ui.SpaceBetween).
 		Gap(8).
+		Wrap().
 		ClipX()
 	if label != "" {
 		row.Label(label)
 	}
 	row.Children(func() {
-		DrawIcon(c, "alert-circle", 14, ColorWarnText, 1.8)
-		ui.Text(c, text).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorWarnText).MaxLines(3).Grow(1).Shrink(1)
+		ui.Row(c).Grow(1).Shrink(1).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
+			DrawIcon(c, "alert-circle", 14, ColorWarnText, 1.8)
+			ui.Text(c, text).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorWarnText).MaxLines(3).Grow(1).Shrink(1)
+		})
+		if actions != nil {
+			ui.Row(c).Shrink(0).AlignItems(ui.Center).Gap(6).Children(actions)
+		}
 	})
 }
 

@@ -690,7 +690,7 @@ func TestSettingsDependentControlsDisabledAndUpdateButtonBusy(t *testing.T) {
 		t.Fatal("AI subtitles switch toggled while SaveSubtitles was disabled")
 	}
 
-	// 2. Check interval select disabled when Subscription.Enabled is false.
+	// 2. Check interval select stays editable even when legacy Subscription.Enabled is false (DEC-080).
 	app.DraftSettings.Subscription.Enabled = false
 	app.DraftSettings.Subscription.IntervalMinutes = 60
 	app.SettingsCategory = "subscription"

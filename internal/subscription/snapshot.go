@@ -380,6 +380,6 @@ func (m *Manager) replaceAllLocked(subs []Subscription) error {
 		}
 		return errors.Join(err, restoreErr, m.loadSubscriptionsFromDiskLocked())
 	}
-	m.WakeScheduler()
+	m.syncSchedulerActiveLocked()
 	return nil
 }

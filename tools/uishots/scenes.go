@@ -377,6 +377,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅原子标签：定时检查",
 				"订阅原子标签：自动缓存视频",
 				"自动缓存缺少定时检查提示",
+				"一键开启定时检查",
 				"订阅内容空状态说明",
 			},
 			RequiredTexts: []string{

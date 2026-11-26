@@ -3,6 +3,7 @@ package subscription
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -67,15 +68,68 @@ func (m *Manager) CancelCheck() {
 	m.mu.Unlock()
 }
 
-// UpdateSettings updates the subscription schedule configuration and wakes the timer loop.
+func scheduleConfigEqual(a, b settings.SubscriptionSettings) bool {
+	if !strings.EqualFold(strings.TrimSpace(a.Mode), strings.TrimSpace(b.Mode)) {
+		return false
+	}
+	if a.IntervalMinutes != b.IntervalMinutes {
+		return false
+	}
+	if strings.TrimSpace(a.DailyTime) != strings.TrimSpace(b.DailyTime) {
+		return false
+	}
+	if strings.TrimSpace(a.WeeklyTime) != strings.TrimSpace(b.WeeklyTime) {
+		return false
+	}
+	da := append([]int(nil), a.WeeklyDays...)
+	db := append([]int(nil), b.WeeklyDays...)
+	slices.Sort(da)
+	slices.Sort(db)
+	return slices.Equal(da, db)
+}
+
+// syncSchedulerActiveLocked wakes the schedule loop only when the active
+// scheduled-check state transitions (0 <-> >=1 scheduled subscriptions), so
+// routine subscription writes never starve or postpone an armed timer (DEC-080).
+func (m *Manager) syncSchedulerActiveLocked() {
+	hasScheduled := m.hasScheduledSubscriptionLocked()
+	manualMode := strings.EqualFold(strings.TrimSpace(m.subSettings.Mode), "manual")
+	if !hasScheduled || manualMode {
+		if !m.nextRunAt.IsZero() {
+			m.nextRunAt = time.Time{}
+			m.WakeScheduler()
+		}
+		return
+	}
+	if m.nextRunAt.IsZero() {
+		m.WakeScheduler()
+	}
+}
+
+// UpdateSettings updates the subscription schedule configuration and wakes the
+// timer loop when the schedule parameters or active state change.
 func (m *Manager) UpdateSettings(s settings.SubscriptionSettings) {
 	m.mu.Lock()
+	changed := !scheduleConfigEqual(m.subSettings, s)
 	m.subSettings = s
-	if strings.EqualFold(strings.TrimSpace(s.Mode), "manual") || !m.hasScheduledSubscriptionLocked() {
+	hasScheduled := m.hasScheduledSubscriptionLocked()
+	manualMode := strings.EqualFold(strings.TrimSpace(s.Mode), "manual")
+	shouldWake := false
+	if manualMode || !hasScheduled {
+		if !m.nextRunAt.IsZero() {
+			m.nextRunAt = time.Time{}
+			shouldWake = true
+		}
+	} else if changed {
 		m.nextRunAt = time.Time{}
+		shouldWake = true
+	} else if m.nextRunAt.IsZero() {
+		shouldWake = true
 	}
 	m.mu.Unlock()
-	m.WakeScheduler()
+	if shouldWake {
+		m.WakeScheduler()
+	}
 }
 
 // WakeScheduler makes the schedule loop recompute its next round (after
@@ -98,14 +152,17 @@ func (m *Manager) scheduleLoop(ctx context.Context, checkOnStartup bool) {
 		cfg := m.subSettings
 		now := m.nowFunc()
 		hasScheduled := m.hasScheduledSubscriptionLocked()
-		m.mu.Unlock()
-
 		var nextTime time.Time
 		var ok bool
 		if hasScheduled {
-			nextTime, ok = NextRunTime(cfg, now)
+			if candidate, schedulable := NextRunTime(cfg, now); schedulable {
+				if !m.nextRunAt.IsZero() && m.nextRunAt.After(now) {
+					nextTime, ok = m.nextRunAt, true
+				} else {
+					nextTime, ok = candidate, true
+				}
+			}
 		}
-		m.mu.Lock()
 		m.nextRunAt = nextTime
 		m.mu.Unlock()
 		if !ok {
@@ -130,8 +187,16 @@ func (m *Manager) scheduleLoop(ctx context.Context, checkOnStartup bool) {
 			timer.Stop()
 			continue
 		case <-timer.C:
+			m.mu.Lock()
+			m.nextRunAt = time.Time{}
+			m.mu.Unlock()
 			if m.hasAnySiteAuth() {
 				_, _ = m.RunScheduledRound(ctx)
+			}
+			// Drain any wakeup queued during the round before computing the next run.
+			select {
+			case <-m.schedWake:
+			default:
 			}
 		}
 	}

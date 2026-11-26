@@ -207,7 +207,11 @@ func renderTrackingPresetPicker(c *ui.Context, st *TrackingPresetPickerState, pr
 			}
 
 			if subscription.HasAutoCacheWithoutScheduledCheck(selectedTags) {
-				renderAutoCacheDependencyWarning(c, prefix+"自动缓存缺少定时检查提示", "")
+				renderAutoCacheDependencyWarning(c, prefix+"自动缓存缺少定时检查提示", "", func() {
+					if OutlinePillButton(c, "开启定时检查", prefix+"一键开启定时检查").Clicked() {
+						st.ToggleCustomTag(subscription.TagScheduledCheck)
+					}
+				})
 			}
 		})
 }
