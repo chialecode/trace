@@ -26,3 +26,7 @@
 - **直播 HLS 轮询循环不能重复拉取不变的 `EXT-X-MAP`、无视轮询耗时固定整秒休眠，或让单个过期 `.m4s` 404 立刻触发 6 秒整路重连。** 上游滑动窗口通常仅 3～6 秒，叠加耗时休眠、每片 `fsync` 与全量重连会把偶发抖动放大成连片丢段。改为扣除本轮耗时计算休眠、节流落盘、同 URI 初始化段每段只拉一次、对单个过期 `.m4s` 404 先跳过并采用渐进重连退避（500ms 起步）。证据：#69。出现 1 次。
 - **往 `trace.log` 写直播诊断日志时不要输出带查询串的完整 URL 或命中脱敏键名的字段名。** `sanitizeLogLine` 命中 `https?://` 或 `sid`/`token`/`expires`/`sign`/`kid`/`sub` 等键名会把整行替换成 `[REDACTED_LOG_LINE]`，导致故障排查线索全部丢失；只记录安全键名与纯主机名（`host=`），并对错误信息剥离 URL。证据：#69。出现 1 次。
 - **跨平台文件锁与并发队列断路器测试不要依赖隐式时序或裸阻塞通道。** Linux 下 `os.Open` 不会像 Windows 那样阻止同目录 `os.Rename`，平台相关的共享锁断言应标 `runtime.GOOS == "windows"` 并另配确定性故障注入覆盖非 Windows 回滚路径；`httptest.Server` 里用通道阻塞并发工作槽的测试必须同时 `select` `<-r.Context().Done()` 并在 `t.Cleanup`（于 `srv.Close` 之前）关闭所有门控通道，且验证“运行中任务触发 412/429 连带暂停排队任务”时要先等运行中请求进入门控再入队后续任务，否则快机器上首个任务先跑完释放工作槽会导致断言失败并卡死 `srv.Close` 10 分钟超时。证据：#77。出现 1 次。
+
+## 桌面壳与界面
+
+- **不要在持有 `Shell.mu`（或任何主线程非重入互斥锁）期间调用 `ui.NewApp`、`mygo.NewWindow`、`Show`/`SetWindowButtonsTheme` 等 Win32/MyGo 窗口 API，也不要在首次显示窗口前漏绑 `BindEventLoop`。** Windows 下 `ShowWindow` 会同步发送 `WM_GETOBJECT` 并经 `UiaReturnRawElementProvider` 进入 `combase.dll` COM STA 嵌套消息循环，在当前主线程同一协程上重入派发托盘点击或 `RunOnMain` 回调；若 `openOrRestoreMainWindow` 持锁建窗/显示，二次点击托盘图标或后台回调会立刻自死锁 `Shell.mu` 导致整个界面永久未响应，且在 `BindEventLoop` 前调用 `SetWindowButtonsTheme` 还会触发 `settleShow` 让首帧在 `dispatch == nil` 下同步解码磁盘图片。始终以 `Hidden: true` 建窗、无锁完成绑定与状态发布后再显示，并以 `openingWindow` 防止重入重复建窗。证据：#130（2026-11-26）。出现 1 次。
