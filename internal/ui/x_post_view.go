@@ -803,11 +803,22 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 			var xCache previewCacheAction
 			if !suppressCache && post.ID != "" {
 				postIDCopy := post.ID
-				viaCopy := a.xCacheViaFor(post)
+				var viaCopy *library.ItemVia
+				if v := a.xCacheViaFor(post); v != nil {
+					cp := *v
+					viaCopy = &cp
+				}
+				backend := a.backend
 				xCache = previewCacheAction{
 					ItemKey:    itemKey,
 					PendingKey: "cache-x-post:" + postIDCopy,
-					OnCache:    func() { a.cacheXPostNow(postIDCopy, viaCopy) },
+					Enqueue: func(ctx context.Context) error {
+						if backend == nil {
+							return fmt.Errorf("后端服务未初始化")
+						}
+						_, err := backend.CacheXPost(ctx, postIDCopy, viaCopy)
+						return err
+					},
 				}
 			}
 

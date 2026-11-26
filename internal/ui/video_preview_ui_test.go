@@ -4,8 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/download"
@@ -23,7 +25,10 @@ type videoPreviewStub struct {
 	stageCalls       []struct{ site, url, ext string }
 	stagePath        string
 	stageErr         error
+	stageHook        func(ctx context.Context, siteID, rawURL, ext string) (string, error)
 	cachedDouyin     []string
+	cachedDouyinErr  error
+	cacheDouyinHook  func(ctx context.Context, awemeID string) (download.Task, error)
 	cachedDouyinFor  []struct{ id, uid, name string }
 	cachedWeiboPosts []string
 	cachedWeiboVid   []string
@@ -81,21 +86,31 @@ func (s *videoPreviewStub) FetchImage(_ context.Context, _ string) ([]byte, erro
 	return nil, context.Canceled
 }
 
-func (s *videoPreviewStub) StagePreviewMedia(_ context.Context, siteID, rawURL, ext string) (string, error) {
+func (s *videoPreviewStub) StagePreviewMedia(ctx context.Context, siteID, rawURL, ext string) (string, error) {
 	s.mu.Lock()
 	s.stageCalls = append(s.stageCalls, struct{ site, url, ext string }{site: siteID, url: rawURL, ext: ext})
-	p, err := s.stagePath, s.stageErr
+	hook, p, err := s.stageHook, s.stagePath, s.stageErr
 	s.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, siteID, rawURL, ext)
+	}
 	if p != "" && err == nil {
 		return p, nil
 	}
 	return "", err
 }
 
-func (s *videoPreviewStub) CacheDouyinWork(_ context.Context, awemeID string) (download.Task, error) {
+func (s *videoPreviewStub) CacheDouyinWork(ctx context.Context, awemeID string) (download.Task, error) {
 	s.mu.Lock()
 	s.cachedDouyin = append(s.cachedDouyin, awemeID)
+	hook, cErr := s.cacheDouyinHook, s.cachedDouyinErr
 	s.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, awemeID)
+	}
+	if cErr != nil {
+		return download.Task{}, cErr
+	}
 	return download.Task{TaskID: "dy-" + awemeID, Site: "douyin", Kind: "video", TargetID: awemeID, Status: "queued"}, nil
 }
 
@@ -452,7 +467,7 @@ func TestPlayerOverlayPreviewResetOfflineLibraryAndResponsiveWidths(t *testing.T
 	// 2. Switching from PreviewMode directly into a cached library item resets PreviewMode and restores menu actions.
 	app.PlayerOverlay.PreviewMode = true
 	app.PlayerOverlay.PreviewSite = "douyin"
-	app.PlayerOverlay.PreviewOnCache = func() {}
+	app.PlayerOverlay.PreviewOnCache = func(context.Context) error { return nil }
 	app.OpenPlayerOverlay(saved)
 	waitUIIdle(t, app, posted)
 	if app.PlayerOverlay.PreviewMode || app.PlayerOverlay.PreviewOnCache != nil {
@@ -475,7 +490,7 @@ func TestPlayerOverlayPreviewResetOfflineLibraryAndResponsiveWidths(t *testing.T
 	app.PlayerOverlay.DecoderMissing = true
 	app.PlayerOverlay.MissingReason = "系统缺少 AV1 解码器"
 	cachedCalled := false
-	app.PlayerOverlay.PreviewOnCache = func() { cachedCalled = true }
+	app.PlayerOverlay.PreviewOnCache = func(context.Context) error { cachedCalled = true; return nil }
 	tt.Frame()
 	if _, ok := tt.Find("缺失解码器时用系统播放器打开"); ok {
 		t.Fatal("PreviewMode DecoderMissing must not expose system player on temp preview file")
@@ -483,8 +498,9 @@ func TestPlayerOverlayPreviewResetOfflineLibraryAndResponsiveWidths(t *testing.T
 	if err := tt.Click("缺失解码器时缓存到媒体库"); err != nil {
 		t.Fatalf("click 缺失解码器时缓存到媒体库: %v", err)
 	}
-	if !cachedCalled {
-		t.Fatal("expected DecoderMissing preview cache button to invoke PreviewOnCache")
+	waitUIIdle(t, app, posted)
+	if !cachedCalled || !app.PlayerOverlay.PreviewCacheQueued {
+		t.Fatalf("expected DecoderMissing preview cache button to invoke PreviewOnCache and set queued, called=%v queued=%v", cachedCalled, app.PlayerOverlay.PreviewCacheQueued)
 	}
 	app.closePlayerOverlay()
 
@@ -522,7 +538,7 @@ func TestPlayerOverlayPreviewResetOfflineLibraryAndResponsiveWidths(t *testing.T
 		app.PlayerOverlay.PreviewMode = true
 		app.PlayerOverlay.Title = app.CurrentDouyinWork.Title
 		app.PlayerOverlay.LoadError = "无法预览此视频：视频体积超过临时预览上限（128 MiB），请点击「缓存到媒体库」完整下载后观看"
-		app.PlayerOverlay.PreviewOnCache = func() {}
+		app.PlayerOverlay.PreviewOnCache = func(context.Context) error { return nil }
 		app.PlayerOverlay.PreviewCacheQueued = false
 		app.PlayerOverlay.ControlsHidden = false
 		tester.Frame()
@@ -535,6 +551,178 @@ func TestPlayerOverlayPreviewResetOfflineLibraryAndResponsiveWidths(t *testing.T
 				t.Fatalf("width %d: overlay control %q overflowed horizontally: rect=%+v", w, lbl, r)
 			}
 		}
+	}
+	app.closePlayerOverlay()
+}
+
+func TestPlayerOverlayPreviewCacheFailureShowsErrorAndAllowsRetry(t *testing.T) {
+	app, stub, posted, cleanup := newVideoPreviewHarness(t)
+	defer cleanup()
+
+	const awemeID = "7399887799"
+	cacheStarted := make(chan struct{}, 2)
+	cacheRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseGate := func() { releaseOnce.Do(func() { close(cacheRelease) }) }
+	t.Cleanup(releaseGate)
+
+	var attempt int
+	stub.cacheDouyinHook = func(ctx context.Context, id string) (download.Task, error) {
+		attempt++
+		cur := attempt
+		if cur == 1 {
+			cacheStarted <- struct{}{}
+			select {
+			case <-cacheRelease:
+			case <-ctx.Done():
+				return download.Task{}, ctx.Err()
+			}
+			return download.Task{}, &site.Error{Site: site.Douyin, Kind: site.ErrKindAuthRequired, Message: "抖音登录已失效，请重新粘贴 Cookie"}
+		}
+		return download.Task{TaskID: "dy-retry-" + id, Site: "douyin", Kind: "video", TargetID: id, Status: "queued"}, nil
+	}
+
+	app.CurrentRoute = RouteDouyinWork
+	app.CurrentLibraryDetail = nil
+	app.CurrentDouyinWork = &service.DouyinWorkView{
+		ID:          awemeID,
+		Kind:        "video",
+		Title:       "缓存失败可重试的临时预览",
+		DurationSec: 25,
+		Author:      service.DouyinAuthorDTO{SecUID: "MS4wLjABAAAA_retry", Nickname: "测试作者"},
+		VideoURL:    "https://v26-web.douyinvod.com/synth/retry.mp4",
+		Width:       1080,
+		Height:      1920,
+		// Partial cached metadata without any local video file must still permit online temporary preview.
+		CachedItem: &library.ItemMetadata{
+			ItemKey: library.CanonicalItemKey("douyin", "video", awemeID),
+			Site:    "douyin",
+			Kind:    "video",
+			Status:  "partial",
+			Media:   []library.MediaFile{{Role: "cover", Path: "cover.jpg"}},
+		},
+	}
+
+	tt := ui.NewTester(app.View, 1280, 900)
+	tt.Frame()
+	if _, ok := tt.Find("抖音视频预览提示"); !ok {
+		t.Fatal("expected Douyin partial item without local video file to allow temporary preview")
+	}
+	if err := tt.Click("抖音视频封面播放"); err != nil {
+		t.Fatalf("click cover: %v", err)
+	}
+	waitUIIdle(t, app, posted)
+	tt.Frame()
+
+	// Click "缓存到媒体库": while in flight, PreviewCacheQueued MUST remain false (no optimistic lie).
+	if err := tt.Click("临时预览缓存到媒体库"); err != nil {
+		t.Fatalf("click 临时预览缓存到媒体库 (attempt 1): %v", err)
+	}
+	select {
+	case <-cacheStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for async CacheDouyinWork to start")
+	}
+	if app.PlayerOverlay.PreviewCacheQueued {
+		t.Fatal("PreviewCacheQueued must not be set optimistically before async enqueue succeeds")
+	}
+	if !app.previewCacheInFlight() {
+		t.Fatal("expected previewCacheInFlight() == true while async enqueue is running")
+	}
+
+	// Release first attempt -> fails with auth_required -> error surfaced inside overlay & button stays retryable!
+	releaseGate()
+	waitUIIdle(t, app, posted)
+	tt.Frame()
+	if app.PlayerOverlay.PreviewCacheQueued {
+		t.Fatal("PreviewCacheQueued must remain false when cache enqueue fails")
+	}
+	if !strings.Contains(app.PlayerOverlay.PreviewCacheError, "抖音登录已失效") {
+		t.Fatalf("expected sanitized overlay cache error, got %q", app.PlayerOverlay.PreviewCacheError)
+	}
+	if _, ok := tt.Find("临时预览缓存失败提示"); !ok {
+		t.Fatal("expected overlay-visible error element 临时预览缓存失败提示")
+	}
+
+	// Also verify overlay error banner renders when LoadError == "" (playing/loading preview).
+	app.PlayerOverlay.LoadError = ""
+	tt.Frame()
+	if _, ok := tt.Find("临时预览缓存失败提示"); !ok {
+		t.Fatal("expected floating overlay error banner 临时预览缓存失败提示 when LoadError is empty")
+	}
+
+	// Retry click -> second attempt succeeds -> PreviewCacheQueued becomes true and error clears!
+	if err := tt.Click("临时预览缓存到媒体库"); err != nil {
+		t.Fatalf("click 临时预览缓存到媒体库 (attempt 2 retry): %v", err)
+	}
+	waitUIIdle(t, app, posted)
+	tt.Frame()
+	if !app.PlayerOverlay.PreviewCacheQueued || app.PlayerOverlay.PreviewCacheError != "" {
+		t.Fatalf("expected queued=true and empty error after retry success, got queued=%v err=%q",
+			app.PlayerOverlay.PreviewCacheQueued, app.PlayerOverlay.PreviewCacheError)
+	}
+	if app.BannerInfo != "已加入缓存任务" {
+		t.Fatalf("expected BannerInfo 已加入缓存任务, got %q", app.BannerInfo)
+	}
+	app.closePlayerOverlay()
+}
+
+func TestPlayerOverlayPreviewCancelsInFlightStageOnCloseAndSwitch(t *testing.T) {
+	app, stub, posted, cleanup := newVideoPreviewHarness(t)
+	defer cleanup()
+
+	ctxCh := make(chan context.Context, 4)
+	stub.stageHook = func(ctx context.Context, _, _, _ string) (string, error) {
+		ctxCh <- ctx
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+
+	waitCtx := func(label string) context.Context {
+		t.Helper()
+		select {
+		case c := <-ctxCh:
+			return c
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s: timed out waiting for StagePreviewMedia to start", label)
+			return nil
+		}
+	}
+	assertCanceled := func(label string, ctx context.Context) {
+		t.Helper()
+		select {
+		case <-ctx.Done():
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s: expected StagePreviewMedia ctx to be canceled", label)
+		}
+	}
+
+	// 1. Closing PlayerOverlay mid-preview cancels StagePreviewMedia ctx immediately.
+	app.openRemoteVideoPreview("douyin", "预览 1", "https://v26-web.douyinvod.com/synth/slow1.mp4")
+	ctx1 := waitCtx("close-mid-preview")
+	app.closePlayerOverlay()
+	assertCanceled("close-mid-preview", ctx1)
+	waitUIIdle(t, app, posted)
+	if app.PlayerOverlay.Open || app.PlayerOverlay.PreviewMode {
+		t.Fatalf("expected closed overlay after mid-preview close, got open=%v preview=%v", app.PlayerOverlay.Open, app.PlayerOverlay.PreviewMode)
+	}
+
+	// 2. Opening a second preview cancels the first preview's ctx immediately.
+	app.openRemoteVideoPreview("douyin", "预览 2", "https://v26-web.douyinvod.com/synth/slow2.mp4")
+	ctx2 := waitCtx("switch-preview-first")
+	app.openRemoteVideoPreview("weibo", "预览 3", "https://f.video.weibocdn.com/synth/slow3.mp4")
+	assertCanceled("switch-preview-first", ctx2)
+	ctx3 := waitCtx("switch-preview-second")
+
+	// 3. Switching to a cached library item cancels the active preview ctx immediately and resets PreviewMode.
+	app.OpenPlayerOverlay(library.ItemMetadata{
+		ItemKey: "douyin:video:empty",
+		Title:   "本地视频切换",
+	})
+	assertCanceled("switch-to-library", ctx3)
+	waitUIIdle(t, app, posted)
+	if app.PlayerOverlay.PreviewMode {
+		t.Fatal("expected PreviewMode == false after switching to library playback")
 	}
 	app.closePlayerOverlay()
 }

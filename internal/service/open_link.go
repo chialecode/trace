@@ -2348,7 +2348,7 @@ func (b *Backend) streamPreviewToTempFile(
 	if err := spec.ValidateURL(targetURL); err != nil {
 		return nil, err
 	}
-	if baseClient == nil {
+	if baseClient == nil || baseClient.Transport == nil {
 		return nil, &site.Error{Site: spec.Site, Kind: site.ErrKindUnavailable, Message: sitePreviewLabel(spec.Site) + "客户端未初始化"}
 	}
 	if maxBytes <= 0 {

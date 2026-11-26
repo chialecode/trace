@@ -906,11 +906,22 @@ func (a *App) renderWeiboOnlinePostDetail(c *ui.Context, post *service.WeiboPost
 			var weiboCache previewCacheAction
 			if !hasDegradedNoVideoCard && post.Mid != "" {
 				midCopy := post.Mid
-				viaCopy := a.weiboCacheViaFor(post)
+				var viaCopy *library.ItemVia
+				if v := a.weiboCacheViaFor(post); v != nil {
+					cp := *v
+					viaCopy = &cp
+				}
+				backend := a.backend
 				weiboCache = previewCacheAction{
 					ItemKey:    itemKey,
 					PendingKey: "cache-weibo-post:" + midCopy,
-					OnCache:    func() { a.cacheWeiboPostNow(midCopy, viaCopy) },
+					Enqueue: func(ctx context.Context) error {
+						if backend == nil {
+							return fmt.Errorf("后端服务未初始化")
+						}
+						_, err := backend.CacheWeiboPost(ctx, midCopy, viaCopy)
+						return err
+					},
 				}
 			}
 
@@ -1209,10 +1220,17 @@ func (a *App) renderWeiboStandaloneVideo(c *ui.Context, vv *service.WeiboVideoVi
 				var videoCache previewCacheAction
 				if vv.ObjectID != "" {
 					oidCopy := vv.ObjectID
+					backend := a.backend
 					videoCache = previewCacheAction{
 						ItemKey:    itemKey,
 						PendingKey: "cache-weibo-video:" + oidCopy,
-						OnCache:    func() { a.cacheWeiboVideoNow(oidCopy) },
+						Enqueue: func(ctx context.Context) error {
+							if backend == nil {
+								return fmt.Errorf("后端服务未初始化")
+							}
+							_, err := backend.CacheWeiboVideo(ctx, oidCopy)
+							return err
+						},
 					}
 				}
 				a.renderWeiboDetailVideoCard(c, vv.Video, itemKey, cachedItem, false, false, false, videoCache)

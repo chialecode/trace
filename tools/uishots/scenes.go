@@ -2334,7 +2334,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.PlayerOverlay.PreviewMode = true
 				app.PlayerOverlay.PreviewSite = "douyin"
 				app.PlayerOverlay.PreviewCacheQueued = false
-				app.PlayerOverlay.PreviewOnCache = func() {}
+				app.PlayerOverlay.PreviewOnCache = func(context.Context) error { return nil }
 				app.PlayerOverlay.MoreMenuOpen = false
 				app.PlayerOverlay.VolumeMenuOpen = false
 			},
@@ -2353,7 +2353,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.PlayerOverlay.PreviewMode = true
 				app.PlayerOverlay.PreviewSite = "douyin"
 				app.PlayerOverlay.PreviewCacheQueued = false
-				app.PlayerOverlay.PreviewOnCache = func() {}
+				app.PlayerOverlay.PreviewOnCache = func(context.Context) error { return nil }
 				app.PlayerOverlay.LoadError = "无法预览此视频：视频体积超过临时预览上限（128 MiB），请点击「缓存到媒体库」完整下载后观看"
 				app.PlayerOverlay.MoreMenuOpen = false
 				app.PlayerOverlay.VolumeMenuOpen = false

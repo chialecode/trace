@@ -18,7 +18,16 @@ func (a *App) setPlayerFullscreen(fullscreen bool) {
 	}
 }
 
+func (a *App) cancelPlayerPreview() {
+	if a.playerPreviewCancel != nil {
+		a.playerPreviewCancel()
+		a.playerPreviewCancel = nil
+	}
+}
+
 func (a *App) closePlayerOverlay() {
+	a.cancelPlayerPreview()
+	a.playerOpenSeq++
 	a.setPlayerFullscreen(false)
 	a.PlayerOverlay.Open = false
 	a.PlayerOverlay.MoreMenuOpen = false
@@ -34,6 +43,8 @@ func (a *App) closePlayerOverlay() {
 	a.PlayerOverlay.PreviewItemKey = ""
 	a.PlayerOverlay.PreviewPendingKey = ""
 	a.PlayerOverlay.PreviewCacheQueued = false
+	a.PlayerOverlay.PreviewCacheError = ""
+	a.PlayerOverlay.PreviewCacheToast = ""
 	a.PlayerOverlay.PreviewOnCache = nil
 	_ = a.player.Close()
 }

@@ -114,7 +114,9 @@ type PlayerOverlayState struct {
 	PreviewItemKey     string
 	PreviewPendingKey  string
 	PreviewCacheQueued bool
-	PreviewOnCache     func()
+	PreviewCacheError  string
+	PreviewCacheToast  string
+	PreviewOnCache     func(context.Context) error
 	LastActiveAt       time.Time
 	ControlsHidden     bool
 	volumeScrubbing    bool
@@ -189,6 +191,7 @@ type App struct {
 	fullscreen           func(bool)
 	imageViewerRevision  uint64
 	imageViewerCancel    context.CancelFunc
+	playerPreviewCancel  context.CancelFunc
 	runtimeDiagnostics   service.Diagnostics
 	runtimeLogLines      []string
 	runtimeLogError      string

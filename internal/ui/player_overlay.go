@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -13,26 +14,53 @@ func (a *App) wakePlayerControls(now time.Time) {
 	a.PlayerOverlay.ControlsHidden = false
 }
 
-func (a *App) previewCacheBusyOrQueued() bool {
-	if a.PlayerOverlay.PreviewCacheQueued {
-		return true
-	}
-	if a.PlayerOverlay.PreviewPendingKey != "" && a.isPending(a.PlayerOverlay.PreviewPendingKey) {
-		return true
-	}
-	return false
+func (a *App) previewCacheInFlight() bool {
+	return a.PlayerOverlay.PreviewPendingKey != "" && a.isPending(a.PlayerOverlay.PreviewPendingKey)
 }
 
-func (a *App) triggerPreviewCache(c *ui.Context) {
-	if !a.PlayerOverlay.PreviewMode || a.PlayerOverlay.PreviewOnCache == nil || a.previewCacheBusyOrQueued() {
+func (a *App) previewCacheButtonState() (text string, disabled bool) {
+	if a.previewCacheInFlight() {
+		return "正在加入缓存…", true
+	}
+	if a.PlayerOverlay.PreviewCacheQueued {
+		return "已加入缓存", true
+	}
+	return "缓存到媒体库", false
+}
+
+func (a *App) triggerPreviewCache() {
+	if !a.PlayerOverlay.PreviewMode || a.PlayerOverlay.PreviewOnCache == nil || a.previewCacheInFlight() || a.PlayerOverlay.PreviewCacheQueued {
 		return
 	}
-	a.PlayerOverlay.PreviewCacheQueued = true
-	a.PlayerOverlay.PreviewOnCache()
-	a.BannerInfo = "已加入缓存任务"
-	if c != nil {
-		c.Toast("已加入缓存任务")
+	seq := a.playerOpenSeq
+	reqKey := a.PlayerOverlay.PreviewPendingKey
+	if reqKey == "" {
+		reqKey = fmt.Sprintf("preview-cache-%d", seq)
+		a.PlayerOverlay.PreviewPendingKey = reqKey
 	}
+	a.PlayerOverlay.PreviewCacheError = ""
+	enqueue := a.PlayerOverlay.PreviewOnCache
+	requestGuarded(a, reqKey, nil, func(ctx context.Context) (struct{}, error) {
+		return struct{}{}, enqueue(ctx)
+	}, func(struct{}) {
+		a.BannerInfo = "已加入缓存任务"
+		if a.PlayerOverlay.Open && a.PlayerOverlay.PreviewMode && a.playerOpenSeq == seq {
+			a.PlayerOverlay.PreviewCacheQueued = true
+			a.PlayerOverlay.PreviewCacheError = ""
+			a.PlayerOverlay.PreviewCacheToast = "已加入缓存任务"
+		}
+		a.RefreshData()
+	}, func(err error) {
+		a.showError(err)
+		if a.PlayerOverlay.Open && a.PlayerOverlay.PreviewMode && a.playerOpenSeq == seq {
+			a.PlayerOverlay.PreviewCacheQueued = false
+			a.PlayerOverlay.PreviewCacheError = "加入缓存失败：" + userErrorText(err)
+			a.PlayerOverlay.PreviewCacheToast = a.PlayerOverlay.PreviewCacheError
+			a.PlayerOverlay.ControlsHidden = false
+			a.PlayerOverlay.LastActiveAt = time.Time{}
+		}
+		a.RefreshData()
+	})
 }
 
 func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
@@ -44,6 +72,10 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 		radius = 16
 	}
 	now := c.Now()
+	if a.PlayerOverlay.PreviewCacheToast != "" {
+		c.Toast(a.PlayerOverlay.PreviewCacheToast)
+		a.PlayerOverlay.PreviewCacheToast = ""
+	}
 	if a.PlayerOverlay.LastActiveAt.IsZero() {
 		a.PlayerOverlay.LastActiveAt = now
 	}
@@ -129,13 +161,12 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 										}
 									}
 								} else if a.PlayerOverlay.PreviewMode && a.PlayerOverlay.PreviewOnCache != nil {
-									queued := a.previewCacheBusyOrQueued()
-									btnText := "缓存到媒体库"
-									if queued {
-										btnText = "已加入缓存"
+									btnText, disabled := a.previewCacheButtonState()
+									if AccentPillButton(c, btnText, "缺失解码器时缓存到媒体库").Disabled(disabled).Clicked() && !disabled {
+										a.triggerPreviewCache()
 									}
-									if AccentPillButton(c, btnText, "缺失解码器时缓存到媒体库").Disabled(queued).Clicked() && !queued {
-										a.triggerPreviewCache(c)
+									if a.PlayerOverlay.PreviewCacheError != "" {
+										ui.Text(c, a.PlayerOverlay.PreviewCacheError).Label("临时预览缓存失败提示").FontSize(12).LineHeight(LineHeightCompact).MaxLines(2).TextColor(ui.RGBA(252, 165, 165, 1))
 									}
 								}
 							})
@@ -146,14 +177,13 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 								ui.Column(c).Width(min(float32(520), w-48)).Padding(24).Radius(16).Background(ui.RGBA(30, 34, 42, 0.94)).Border(1, ui.RGBA(255, 255, 255, 0.16)).AlignItems(ui.Center).Gap(14).Children(func() {
 									ui.Text(c, a.PlayerOverlay.LoadError).Label("临时预览错误说明").FontSize(14).LineHeight(LineHeightCompact).FontWeight(600).MaxLines(4).TextColor(ColorWhite)
 									if a.PlayerOverlay.PreviewOnCache != nil {
-										queued := a.previewCacheBusyOrQueued()
-										btnText := "缓存到媒体库"
-										if queued {
-											btnText = "已加入缓存"
+										btnText, disabled := a.previewCacheButtonState()
+										if AccentPillButton(c, btnText, "预览失败缓存到媒体库").Disabled(disabled).Clicked() && !disabled {
+											a.triggerPreviewCache()
 										}
-										if AccentPillButton(c, btnText, "预览失败缓存到媒体库").Disabled(queued).Clicked() && !queued {
-											a.triggerPreviewCache(c)
-										}
+									}
+									if a.PlayerOverlay.PreviewCacheError != "" {
+										ui.Text(c, a.PlayerOverlay.PreviewCacheError).Label("临时预览缓存失败提示").FontSize(12).LineHeight(LineHeightCompact).MaxLines(2).TextColor(ui.RGBA(252, 165, 165, 1))
 									}
 								})
 							} else {
@@ -231,12 +261,10 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 								})
 								ui.Row(c).Shrink(0).Gap(10).AlignItems(ui.Center).Children(func() {
 									if a.PlayerOverlay.PreviewMode && a.PlayerOverlay.PreviewOnCache != nil {
-										queued := a.previewCacheBusyOrQueued()
-										btnText := "缓存到媒体库"
+										btnText, disabled := a.previewCacheButtonState()
 										bg := ColorAccent
 										border := ui.RGBA(255, 255, 255, 0.26)
-										if queued {
-											btnText = "已加入缓存"
+										if disabled {
 											bg = ui.RGBA(255, 255, 255, 0.16)
 										}
 										cacheBtn := ui.Button(c, "").
@@ -248,8 +276,8 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 											Border(1, border).
 											Justify(ui.Center).
 											AlignItems(ui.Center).
-											Disabled(queued)
-										if !queued && cacheBtn.Hovered() {
+											Disabled(disabled)
+										if !disabled && cacheBtn.Hovered() {
 											cacheBtn.Border(1, ColorWhite)
 										}
 										cacheBtn.Children(func() {
@@ -258,9 +286,9 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 												ui.Text(c, btnText).FontSize(12).FontWeight(600).TextColor(ColorWhite).SingleLine()
 											})
 										})
-										if cacheBtn.Clicked() && !queued {
+										if cacheBtn.Clicked() && !disabled {
 											a.wakePlayerControls(now)
-											a.triggerPreviewCache(c)
+											a.triggerPreviewCache()
 										}
 									}
 									if FloatingCircleButton(c, "more", "播放器更多菜单", 40).Clicked() {
@@ -273,6 +301,21 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 									}
 								})
 							})
+
+						if a.PlayerOverlay.PreviewMode && a.PlayerOverlay.PreviewCacheError != "" && a.PlayerOverlay.LoadError == "" && !a.PlayerOverlay.DecoderMissing {
+							ui.Row(c).Absolute().Top(70).Left(24).Right(24).Justify(ui.Center).Children(func() {
+								ui.Box(c).
+									Label("临时预览缓存失败提示").
+									MaxWidth(min(float32(520), w-48)).
+									Padding(8, 14).
+									Radius(10).
+									Background(ui.RGBA(127, 29, 29, 0.92)).
+									Border(1, ui.RGBA(252, 165, 165, 0.55)).
+									Children(func() {
+										ui.Text(c, a.PlayerOverlay.PreviewCacheError).FontSize(12).LineHeight(LineHeightCompact).FontWeight(600).TextColor(ColorWhite).MaxLines(2)
+									})
+							})
+						}
 
 						// Popover "⋯" Menu: Danmaku, Subtitles, Segments, Reveal in folder, Open in external player
 						if a.PlayerOverlay.MoreMenuOpen {

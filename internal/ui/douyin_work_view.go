@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -345,7 +346,8 @@ func (a *App) renderDouyinWorkRoute(c *ui.Context, viewportHeight float32) {
 				if durationSec > 0 {
 					durText = FormatDuration(durationSec)
 				}
-				canPreviewVideo := !offline && cachedItem == nil && work != nil &&
+				hasLocalVideo := cachedItem != nil && (itemHasVideoRole(*cachedItem) || (cachedItem.DouyinVideo != nil && strings.TrimSpace(cachedItem.DouyinVideo.File) != ""))
+				canPreviewVideo := !offline && !hasLocalVideo && work != nil &&
 					kind != "note" && kind != "unsupported" && !uncacheable &&
 					strings.TrimSpace(work.VideoURL) != ""
 				ui.Column(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
@@ -355,29 +357,36 @@ func (a *App) renderDouyinWorkRoute(c *ui.Context, viewportHeight float32) {
 						Radius(12).
 						Clip().
 						Children(func() {
-							a.renderMediaThumb(c, itemKey, relCover, headline, durText, "", cachedItem != nil || canPreviewVideo, dispW, dispH, coverURL)
+							a.renderMediaThumb(c, itemKey, relCover, headline, durText, "", hasLocalVideo || cachedItem != nil || canPreviewVideo, dispW, dispH, coverURL)
 						})
 					if coverBtn.Clicked() {
-						if cachedItem != nil {
+						if hasLocalVideo {
 							a.OpenPlayerOverlay(*cachedItem)
 						} else if canPreviewVideo {
 							var cacheAct previewCacheAction
 							if awemeID != "" {
 								idCopy := awemeID
 								forUID, forName := a.douyinWorkCacheFor(idCopy)
+								backend := a.backend
 								cacheAct = previewCacheAction{
 									ItemKey:    itemKey,
 									PendingKey: "cache-douyin:" + idCopy,
-									OnCache: func() {
-										if forUID != "" {
-											a.cacheDouyinWorkFor(idCopy, forUID, forName)
-										} else {
-											a.cacheDouyinWorkNow(idCopy)
+									Enqueue: func(ctx context.Context) error {
+										if backend == nil {
+											return fmt.Errorf("后端服务未初始化")
 										}
+										if forUID != "" {
+											_, err := backend.CacheDouyinWorkFor(ctx, idCopy, forUID, forName)
+											return err
+										}
+										_, err := backend.CacheDouyinWork(ctx, idCopy)
+										return err
 									},
 								}
 							}
 							a.openRemoteVideoPreviewWithCache("douyin", headline, work.VideoURL, false, cacheAct)
+						} else if cachedItem != nil {
+							a.OpenPlayerOverlay(*cachedItem)
 						} else if coverURL != "" {
 							a.OpenImageViewer([]string{coverURL}, nil, 0)
 						}
