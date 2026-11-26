@@ -20,6 +20,12 @@ const CurrentSchemaVersion = 2
 // item.json manifests (item.json schema version remains 1).
 const CurrentCacheStandardVersion = 2
 
+// WeiboCacheStandardVersion identifies the Weibo-specific cache standard
+// baseline including dual-save watermark-free (/oslarge/) companion images
+// and DEC-073 clean structured links (DEC-078, DEC-079). CurrentCacheStandardVersion
+// stays at 2 so Bilibili Gate B does not trigger unnecessary PlayURL re-probes.
+const WeiboCacheStandardVersion = 3
+
 // ItemMetadata is the canonical on-disk schema for item.json (INV-02).
 // It is backward-compatible with earlier TRACE item.json files in trace-data/library/.
 type ItemMetadata struct {
@@ -1576,6 +1582,165 @@ func NeedsCompletion(meta ItemMetadata) bool {
 		return len(meta.Missing) > 0 || expectedPagesIncomplete(meta)
 	}
 	return false
+}
+
+// WeiboStaticImageSlot describes a cached Weibo static (non-GIF) primary image
+// slot that does not yet have a watermark-free companion (images/NN_nowm.*).
+type WeiboStaticImageSlot struct {
+	PageIdx       int    // index into ItemMetadata.NotePages, or -1 if NotePages is empty
+	DisplayIndex  int    // 1-based display ordinal
+	PrimaryPath   string // e.g. "images/01.jpg"
+	PrimarySHA256 string
+	NoWMStem      string // e.g. "images/01_nowm"
+	PicID         string // sanitized Weibo pic_id when known offline
+	FromOrigin    bool
+}
+
+// WeiboStaticImageSlotsMissingNoWM returns all static (non-GIF, non-video)
+// primary image slots on a cached Weibo post that currently lack a companion
+// image_nowm file (pure offline inspection, 0 network requests, DEC-079).
+func WeiboStaticImageSlotsMissingNoWM(meta ItemMetadata) []WeiboStaticImageSlot {
+	if !strings.EqualFold(strings.TrimSpace(meta.Site), "weibo") || meta.Kind != "dynamic" || meta.IsArchivedSnapshot() {
+		return nil
+	}
+	if meta.Status != "complete" && meta.Status != "partial" {
+		return nil
+	}
+	mediaByPath := make(map[string]MediaFile, len(meta.Media))
+	existingNoWMStems := make(map[string]bool)
+	for _, mf := range meta.Media {
+		rel := strings.TrimSpace(mf.Path)
+		if rel == "" {
+			continue
+		}
+		lower := strings.ToLower(rel)
+		mediaByPath[lower] = mf
+		if mf.Role == "image_nowm" {
+			existingNoWMStems[strings.ToLower(stripFileExt(rel))] = true
+		}
+	}
+
+	var slots []WeiboStaticImageSlot
+	if len(meta.NotePages) > 0 {
+		for i, pg := range meta.NotePages {
+			imgPath := strings.TrimSpace(pg.Image)
+			if imgPath == "" || pg.GIF {
+				continue
+			}
+			kind := strings.ToLower(strings.TrimSpace(pg.Kind))
+			if kind == "video" || kind == "gif" || strings.HasSuffix(strings.ToLower(imgPath), ".gif") {
+				continue
+			}
+			mf := mediaByPath[strings.ToLower(imgPath)]
+			if mf.GIF {
+				continue
+			}
+			if strings.TrimSpace(pg.NoWatermark) != "" {
+				continue
+			}
+			nowmStem := stripFileExt(imgPath) + "_nowm"
+			if existingNoWMStems[strings.ToLower(nowmStem)] {
+				continue
+			}
+			picID := SanitizeMediaToken(pg.MediaID)
+			if picID == "" && len(meta.AssetIDs) == len(meta.NotePages) {
+				picID = SanitizeMediaToken(meta.AssetIDs[i])
+			}
+			idx := pg.Index
+			if idx <= 0 {
+				idx = i + 1
+			}
+			slots = append(slots, WeiboStaticImageSlot{
+				PageIdx:       i,
+				DisplayIndex:  idx,
+				PrimaryPath:   imgPath,
+				PrimarySHA256: mf.SHA256,
+				NoWMStem:      nowmStem,
+				PicID:         picID,
+				FromOrigin:    pg.FromOrigin || mf.FromOrigin,
+			})
+		}
+		return slots
+	}
+
+	var imageMedias []MediaFile
+	for _, mf := range meta.Media {
+		if mf.Role == "image" && strings.TrimSpace(mf.Path) != "" {
+			imageMedias = append(imageMedias, mf)
+		}
+	}
+	for i, mf := range imageMedias {
+		if mf.GIF || strings.HasSuffix(strings.ToLower(mf.Path), ".gif") {
+			continue
+		}
+		nowmStem := stripFileExt(mf.Path) + "_nowm"
+		if existingNoWMStems[strings.ToLower(nowmStem)] {
+			continue
+		}
+		picID := ""
+		if len(meta.AssetIDs) == len(imageMedias) {
+			picID = SanitizeMediaToken(meta.AssetIDs[i])
+		}
+		slots = append(slots, WeiboStaticImageSlot{
+			PageIdx:       -1,
+			DisplayIndex:  i + 1,
+			PrimaryPath:   mf.Path,
+			PrimarySHA256: mf.SHA256,
+			NoWMStem:      nowmStem,
+			PicID:         picID,
+			FromOrigin:    mf.FromOrigin,
+		})
+	}
+	return slots
+}
+
+func stripFileExt(rel string) string {
+	slash := strings.LastIndexByte(rel, '/')
+	dot := strings.LastIndexByte(rel, '.')
+	if dot > slash && dot > 0 {
+		return rel[:dot]
+	}
+	return rel
+}
+
+// WeiboNeedsNoWMBackfill reports whether a cached Weibo image post should be
+// backfilled for watermark-free (/oslarge/) companion images under DEC-078/DEC-079.
+// Items already stamped with CacheStandardVersion >= WeiboCacheStandardVersion are
+// skipped even if some images had no /oslarge/ variant or matched primary SHA-256.
+func WeiboNeedsNoWMBackfill(meta ItemMetadata, removeWatermark bool) bool {
+	if !removeWatermark || meta.CacheStandardVersion >= WeiboCacheStandardVersion {
+		return false
+	}
+	return len(WeiboStaticImageSlotsMissingNoWM(meta)) > 0
+}
+
+// WeiboHasAllFastCDNPicIDs reports whether every missing static image slot on a
+// Weibo item already carries a persisted pic_id (in NotePages[].MediaID or AssetIDs),
+// allowing direct /oslarge/ CDN backfill with zero Weibo API calls.
+func WeiboHasAllFastCDNPicIDs(meta ItemMetadata) bool {
+	slots := WeiboStaticImageSlotsMissingNoWM(meta)
+	if len(slots) == 0 {
+		return false
+	}
+	for _, s := range slots {
+		if s.PicID == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// WeiboIsForwardItem reports whether a cached Weibo item is a forwarded/retweeted
+// post (stored under forwards/ or carrying via.reason == "forward" or an Origin).
+func WeiboIsForwardItem(meta ItemMetadata) bool {
+	if meta.Via != nil && meta.Via.Reason == ViaForward {
+		return true
+	}
+	if meta.Origin != nil || strings.EqualFold(strings.TrimSpace(meta.DynamicType), "DYNAMIC_TYPE_FORWARD") {
+		return true
+	}
+	normDir := strings.ReplaceAll(strings.ToLower(meta.ItemDir), `\`, "/")
+	return strings.Contains(normDir, "/forwards/")
 }
 
 func parseFlexibleUnix(v any) int64 {

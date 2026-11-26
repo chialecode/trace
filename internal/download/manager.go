@@ -82,6 +82,7 @@ type Task struct {
 	// writes it.
 	Via                *library.ItemVia   `json:"via,omitempty"`
 	ConflictResolution string             `json:"-"` // explicit "keep_both" or "use_remote" during conflict resolution
+	ForceOverwrite     bool               `json:"-"` // explicit manual-only force redownload & atomic overwrite (DEC-079)
 	ProgressOwner      *Task              `json:"-"`
 	ProgressPrefix     string             `json:"-"`
 	Status             string             `json:"status"` // "queued", "running", "paused", "completed", "failed", "canceled", "partial"
@@ -152,6 +153,7 @@ type Manager struct {
 	initialPlans        map[string]WorkDownloadPlan
 	conflictResolutions map[string]string
 	conflictPages       map[string][]int
+	forceOverwrites     map[string]bool
 	taskWaitMu          sync.Mutex
 	taskWaitCh          chan struct{}
 	taskOutcomes        map[string]error
@@ -190,6 +192,7 @@ func NewManager(
 		initialPlans:        make(map[string]WorkDownloadPlan),
 		conflictResolutions: make(map[string]string),
 		conflictPages:       make(map[string][]int),
+		forceOverwrites:     make(map[string]bool),
 		taskWaitCh:          make(chan struct{}),
 		taskOutcomes:        make(map[string]error),
 		wakeCh:              make(chan struct{}, 1),
@@ -502,6 +505,7 @@ func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]
 		ctx = site.WithAutomaticRequests(ctx, "download")
 	}
 	mode := normalizeConflictResolution(ConflictResolutionFromContext(ctx))
+	forceOverwrite := effectiveForceOverwrite(ctx, source)
 	candKey := library.CanonicalItemKey("bilibili", "video", req.BVID)
 
 	detail := req.Detail
@@ -537,14 +541,14 @@ func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]
 	}
 
 	var planHint *WorkDownloadPlan
-	if mode != "" {
-		planHint = &WorkDownloadPlan{ConflictResolution: mode}
+	if mode != "" || forceOverwrite {
+		planHint = &WorkDownloadPlan{ConflictResolution: mode, ForceOverwrite: forceOverwrite}
 	}
 
-	// When resolving a V1-vs-V2 conflict ("keep_both" or "use_remote"), enqueue a
-	// single whole-video task so all target pages are staged, verified, archived
-	// once, and swapped atomically together.
-	if mode == ConflictResolveKeepBoth || mode == ConflictResolveUseRemote {
+	// When resolving a V1-vs-V2 conflict ("keep_both" or "use_remote") or manually
+	// forcing a full redownload (DEC-079), enqueue a single whole-video task so all
+	// target pages are staged, verified, and swapped atomically together.
+	if mode == ConflictResolveKeepBoth || mode == ConflictResolveUseRemote || forceOverwrite {
 		var selectedPages []int
 		var firstVP bilibili.VideoPage
 		for _, vp := range detail.Pages {
@@ -579,11 +583,15 @@ func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]
 			ItemKey:            itemKey,
 			ItemDir:            itemDir,
 			ConflictResolution: mode,
+			ForceOverwrite:     forceOverwrite,
 		}, planHint)
 		if err != nil {
 			return nil, err
 		}
 		m.storeTaskResolutionAndPages(t.TaskID, mode, selectedPages)
+		if forceOverwrite {
+			m.storeTaskForceOverwrite(t.TaskID, true)
+		}
 		m.notifyWake()
 		return []Task{t}, nil
 	}
@@ -638,6 +646,7 @@ func (m *Manager) EnqueueDynamic(ctx context.Context, req DynamicEnqueueRequest)
 		ctx = site.WithAutomaticRequests(ctx, "download")
 	}
 	mode := normalizeConflictResolution(ConflictResolutionFromContext(ctx))
+	forceOverwrite := effectiveForceOverwrite(ctx, source)
 	candKey := library.CanonicalItemKey("bilibili", "dynamic", req.DynamicID)
 
 	dyn := req.Item
@@ -663,8 +672,8 @@ func (m *Manager) EnqueueDynamic(ctx context.Context, req DynamicEnqueueRequest)
 	}
 
 	var planHint *WorkDownloadPlan
-	if mode != "" {
-		planHint = &WorkDownloadPlan{ConflictResolution: mode}
+	if mode != "" || forceOverwrite {
+		planHint = &WorkDownloadPlan{ConflictResolution: mode, ForceOverwrite: forceOverwrite}
 	}
 
 	t, err := m.enqueueSingleTaskWithPlan(Task{
@@ -680,12 +689,16 @@ func (m *Manager) EnqueueDynamic(ctx context.Context, req DynamicEnqueueRequest)
 		CacheLinkedVideos:  true,
 		ItemKey:            library.CanonicalItemKey("bilibili", "dynamic", dyn.ID),
 		ConflictResolution: mode,
+		ForceOverwrite:     forceOverwrite,
 	}, planHint)
 	if err != nil {
 		return Task{}, err
 	}
 	if mode != "" {
 		m.storeTaskResolutionAndPages(t.TaskID, mode, nil)
+	}
+	if forceOverwrite {
+		m.storeTaskForceOverwrite(t.TaskID, true)
 	}
 	m.notifyWake()
 	return t, nil
@@ -1291,6 +1304,12 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 	if mode := effectiveConflictResolution(ctx, t.ConflictResolution, storedMode); mode != "" {
 		t.ConflictResolution = mode
 		ctx = WithConflictResolution(ctx, mode)
+	}
+	if effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite, m.taskForceOverwrite(t.TaskID)) {
+		t.ForceOverwrite = true
+		ctx = WithForceOverwrite(ctx)
+	} else {
+		t.ForceOverwrite = false
 	}
 	var err error
 	switch site.ID(strings.ToLower(strings.TrimSpace(t.Site))) {

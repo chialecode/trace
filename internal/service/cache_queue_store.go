@@ -28,15 +28,26 @@ const (
 	CacheQueueCompleted      = "completed"
 	CacheQueueStopped        = "stopped"
 
-	cacheQueueFileName       = "cache-queue.json"
-	cacheQueueSchemaVersion  = 3
-	maxCacheQueueRecentItems = 30
+	cacheQueueFileName          = "cache-queue.json"
+	cacheQueueSchemaVersion     = 3
+	maxCacheQueueRecentItems    = 30
+	CacheQueueListWeiboBackfill = "weibo_backfill"
+	CacheQueueKindWeiboBackfill = "weibo_backfill"
+	CacheQueueOriginBackfill    = "backfill"
+	CacheQueueBackfillUser      = "all"
+
+	backfillPhaseOfflineLinks       = "offline_links"
+	backfillPhaseFastCDN            = "fast_cdn"
+	backfillPhaseSubscribedTimeline = "subscribed_timeline"
+	backfillPhaseFallbackDetail     = "fallback_detail"
 )
 
 // CacheQueuePacing centralizes all conservative anti-risk-control delays and thresholds (Q-017).
 type CacheQueuePacing struct {
 	ItemMinDelay        time.Duration
 	ItemMaxDelay        time.Duration
+	FastCDNMinDelay     time.Duration
+	FastCDNMaxDelay     time.Duration
 	LongRestMinItems    int
 	LongRestMaxItems    int
 	LongRestMinDelay    time.Duration
@@ -47,10 +58,13 @@ type CacheQueuePacing struct {
 	StartupMaxDelay     time.Duration
 }
 
-// DefaultCacheQueuePacing defines the default Q-017 pacing intervals for background list caching.
+// DefaultCacheQueuePacing defines the default Q-017 pacing intervals for background list caching,
+// plus the DEC-079 user-authorized 2–5s fast pacing for pure-CDN /oslarge/ backfill.
 var DefaultCacheQueuePacing = CacheQueuePacing{
 	ItemMinDelay:        40 * time.Second,
 	ItemMaxDelay:        150 * time.Second,
+	FastCDNMinDelay:     2 * time.Second,
+	FastCDNMaxDelay:     5 * time.Second,
 	LongRestMinItems:    15,
 	LongRestMaxItems:    25,
 	LongRestMinDelay:    10 * time.Minute,
@@ -138,6 +152,9 @@ type CacheQueueTask struct {
 	AvatarPath       string                 `json:"avatarPath,omitempty"`
 	List             string                 `json:"list"`
 	ListLabel        string                 `json:"listLabel"`
+	Kind             string                 `json:"kind,omitempty"`
+	BackfillPhase    string                 `json:"backfillPhase,omitempty"`
+	BackfillTotal    int                    `json:"backfillTotal,omitempty"`
 	Origin           string                 `json:"origin,omitempty"`
 	Status           string                 `json:"status"`
 	StatusText       string                 `json:"statusText"`
@@ -169,7 +186,13 @@ type cacheQueueRecord struct {
 	UserName           string                 `json:"userName,omitempty"`
 	AvatarKey          string                 `json:"avatarKey,omitempty"`
 	List               string                 `json:"list"`
+	Kind               string                 `json:"kind,omitempty"`
 	Origin             string                 `json:"origin,omitempty"`
+	BackfillPhase      string                 `json:"backfillPhase,omitempty"`
+	BackfillTotal      int                    `json:"backfillTotal,omitempty"`
+	BackfillSubUIDs    []string               `json:"backfillSubUids,omitempty"`
+	BackfillSubIndex   int                    `json:"backfillSubIndex,omitempty"`
+	BackfillSubCursor  string                 `json:"backfillSubCursor,omitempty"`
 	Cursor             string                 `json:"cursor,omitempty"`
 	HasMore            bool                   `json:"hasMore"`
 	ProcessedKeys      []string               `json:"processedKeys,omitempty"`
@@ -203,6 +226,9 @@ type cacheQueueRuntime struct {
 	nextPartEnqueuers      []queuePartEnqueuer
 	resumePendingDownloads bool
 	stepCancel             context.CancelFunc
+	backfillMatched        []backfillMatchedItem
+	backfillPendingCursor  string
+	backfillPendingUIDDone bool
 }
 
 type cacheQueueEntry struct {
@@ -403,8 +429,37 @@ func sanitizeQueueRecord(r cacheQueueRecord) cacheQueueRecord {
 	r.User = normUser
 	r.ID = sanitizeCursor(r.ID)
 	r.UserName = sanitizeQueueText(r.UserName)
-	if r.Origin != QueueOriginFullCache {
+	if r.Origin != QueueOriginFullCache && r.Origin != CacheQueueOriginBackfill {
 		r.Origin = ""
+	}
+	if r.List == CacheQueueListWeiboBackfill {
+		r.Kind = CacheQueueKindWeiboBackfill
+		switch r.BackfillPhase {
+		case backfillPhaseOfflineLinks, backfillPhaseFastCDN, backfillPhaseSubscribedTimeline, backfillPhaseFallbackDetail:
+		default:
+			r.BackfillPhase = ""
+		}
+		if r.BackfillTotal < 0 {
+			r.BackfillTotal = 0
+		}
+		if r.BackfillSubIndex < 0 {
+			r.BackfillSubIndex = 0
+		}
+		var cleanUIDs []string
+		for _, u := range r.BackfillSubUIDs {
+			if norm, uErr := site.NormalizeUID(site.Weibo, u); uErr == nil && !slices.Contains(cleanUIDs, norm) {
+				cleanUIDs = append(cleanUIDs, norm)
+			}
+		}
+		r.BackfillSubUIDs = cleanUIDs
+		r.BackfillSubCursor = sanitizeQueueCursor(r.BackfillSubCursor)
+	} else {
+		r.Kind = ""
+		r.BackfillPhase = ""
+		r.BackfillTotal = 0
+		r.BackfillSubUIDs = nil
+		r.BackfillSubIndex = 0
+		r.BackfillSubCursor = ""
 	}
 	if !avatarFileRe.MatchString(r.AvatarKey) {
 		r.AvatarKey = ""
@@ -573,6 +628,21 @@ func (m *cacheQueueManager) pickRestThresholdLocked() int {
 	return m.randIntInclusiveLocked(m.pacing.LongRestMinItems, m.pacing.LongRestMaxItems)
 }
 
+func (m *cacheQueueManager) fastCDNDelayLocked() time.Duration {
+	minD, maxD := m.pacing.FastCDNMinDelay, m.pacing.FastCDNMaxDelay
+	if minD <= 0 && maxD <= 0 {
+		if m.pacing.ItemMinDelay > 0 && m.pacing.ItemMinDelay < 2*time.Second {
+			minD, maxD = m.pacing.ItemMinDelay, m.pacing.ItemMaxDelay
+		} else {
+			minD, maxD = DefaultCacheQueuePacing.FastCDNMinDelay, DefaultCacheQueuePacing.FastCDNMaxDelay
+		}
+	}
+	if maxD < minD {
+		maxD = minD
+	}
+	return m.randDurationLocked(minD, maxD)
+}
+
 func (m *cacheQueueManager) nowRFC3339() string {
 	return m.clock.Now().UTC().Format(time.RFC3339)
 }
@@ -651,6 +721,9 @@ func (m *cacheQueueManager) toDTOLocked(e *cacheQueueEntry) CacheQueueTask {
 		AvatarPath:       avatarPath,
 		List:             rec.List,
 		ListLabel:        queueListLabel(rec),
+		Kind:             rec.Kind,
+		BackfillPhase:    rec.BackfillPhase,
+		BackfillTotal:    rec.BackfillTotal,
 		Origin:           rec.Origin,
 		Status:           rec.Status,
 		StatusText:       m.statusTextLocked(rec),

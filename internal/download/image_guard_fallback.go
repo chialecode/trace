@@ -119,6 +119,9 @@ func (m *Manager) findExistingValidImageSlot(
 	width, height int,
 	isGIFSlot bool,
 ) (*library.MediaFile, bool) {
+	if t != nil && t.ForceOverwrite {
+		return nil, false
+	}
 	stem := trimKnownImageExt(relStem)
 	matchesStem := func(p string) bool {
 		if p == relStem || p == stem {

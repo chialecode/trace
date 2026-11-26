@@ -760,6 +760,11 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 							}
 						}
 						if cachedItem != nil && itemKey != "" {
+							if !cachedItem.IsArchivedSnapshot() {
+								if m.Item("强制重新下载").Chosen() {
+									a.openForceRecacheConfirm(itemKey, firstNonEmptyStrUI(cachedItem.Title, post.Text, post.ID))
+								}
+							}
 							if m.Item("打开文件夹").Chosen() {
 								a.showError(a.backend.OpenItemFolder(itemKey))
 							}

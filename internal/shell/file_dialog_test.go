@@ -172,4 +172,19 @@ func TestShellFileDialogInteractiveOptionsAndDefaultPaths(t *testing.T) {
 	if gotSave.DefaultPath != "trace-subscriptions.json" {
 		t.Fatalf("SaveFile empty DefaultPath resolved to %q, want %q", gotSave.DefaultPath, "trace-subscriptions.json")
 	}
+
+	// SaveFile with nonexistent parent directory + explicit file name preserves the cleaned path.
+	nonexistentFile := filepath.Join(tmpDir, "missing-dir", "custom-subs.json")
+	saveReturn, saveErr = nonexistentFile, nil
+	got, err = handler(ui.FileDialogOptions{
+		Kind:        ui.FileDialogSaveFile,
+		DefaultPath: nonexistentFile,
+		DefaultName: "trace-subscriptions.json",
+	})
+	if err != nil || got != nonexistentFile {
+		t.Fatalf("SaveFile nonexistent parent got (%q, %v)", got, err)
+	}
+	if gotSave.DefaultPath != nonexistentFile {
+		t.Fatalf("SaveFile nonexistent parent DefaultPath = %q, want %q", gotSave.DefaultPath, nonexistentFile)
+	}
 }
