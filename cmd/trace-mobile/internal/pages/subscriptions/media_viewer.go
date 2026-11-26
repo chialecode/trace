@@ -122,9 +122,33 @@ func (p *Page) openImageViewer(h pagekit.Host, item companionapi.FeedItem, imgs 
 	showOriginal := false
 	useNoWatermark := false
 
-	var win *mygo.Window
+	var (
+		mu      sync.Mutex
+		win     *mygo.Window
+		childID uint64
+		closed  bool
+	)
+	cleanup := func(fromOnClose bool) {
+		mu.Lock()
+		if closed {
+			mu.Unlock()
+			return
+		}
+		closed = true
+		id := childID
+		childID = 0
+		w := win
+		mu.Unlock()
+
+		p.unregisterChildWindow(id)
+		if !fromOnClose && w != nil {
+			w.Close()
+		}
+	}
+	childID = p.registerChildWindow(func() { cleanup(false) })
+
 	title := firstNonEmpty(item.Title, "查看图片")
-	win = h.PushWindow(title, func(c *ui.Context) {
+	w := h.PushWindow(title, func(c *ui.Context) {
 		c.SetTheme(theme.TraceTheme())
 		curIdx := pageSt.Page
 		if curIdx < 0 || curIdx >= len(imgs) {
@@ -148,8 +172,8 @@ func (p *Page) openImageViewer(h pagekit.Host, item companionapi.FeedItem, imgs 
 					closeBtn.Children(func() {
 						ui.Text(c, "关闭").FontSize(13).FontWeight(600).TextColor(theme.ColorWhite).SingleLine()
 					})
-					if closeBtn.Clicked() && win != nil {
-						win.Close()
+					if closeBtn.Clicked() {
+						cleanup(false)
 					}
 
 					ui.Text(c, fmt.Sprintf("%d / %d", curIdx+1, len(imgs))).
@@ -214,6 +238,17 @@ func (p *Page) openImageViewer(h pagekit.Host, item companionapi.FeedItem, imgs 
 			}).Grow(1).Basis(0).FillWidth()
 		})
 	})
+	mu.Lock()
+	win = w
+	wasClosed := closed
+	mu.Unlock()
+	if w != nil {
+		if wasClosed {
+			w.Close()
+		} else {
+			w.OnClose(func(*mygo.CloseEvent) { cleanup(true) })
+		}
+	}
 }
 
 // openVideoPlayer pushes a full-screen video player window using plugins/videoplayer + Host.MediaProxy() (FR-MOB-014 / FR-MOB-015).
@@ -226,6 +261,7 @@ func (p *Page) openVideoPlayer(h pagekit.Host, item companionapi.FeedItem, segs 
 	var (
 		mu             sync.Mutex
 		win            *mygo.Window
+		childID        uint64
 		player         *videoplayer.Player
 		currentTicket  string
 		currentIdx     int
@@ -235,13 +271,30 @@ func (p *Page) openVideoPlayer(h pagekit.Host, item companionapi.FeedItem, segs 
 		closed         bool
 	)
 
-	cleanup := func() {
+	stopCurrentPlayback := func() {
+		mu.Lock()
+		pl := player
+		player = nil
+		tk := currentTicket
+		currentTicket = ""
+		mu.Unlock()
+		if pl != nil {
+			pl.Destroy()
+		}
+		if proxy != nil && tk != "" {
+			proxy.RevokeTicket(tk)
+		}
+	}
+
+	cleanup := func(fromOnClose bool) {
 		mu.Lock()
 		if closed {
 			mu.Unlock()
 			return
 		}
 		closed = true
+		id := childID
+		childID = 0
 		pl := player
 		player = nil
 		tk := currentTicket
@@ -249,40 +302,35 @@ func (p *Page) openVideoPlayer(h pagekit.Host, item companionapi.FeedItem, segs 
 		w := win
 		mu.Unlock()
 
+		p.unregisterChildWindow(id)
 		if pl != nil {
 			pl.Destroy()
 		}
 		if proxy != nil && tk != "" {
 			proxy.RevokeTicket(tk)
 		}
-		if w != nil {
+		if !fromOnClose && w != nil {
 			w.Close()
 		}
 	}
-	p.registerMediaPlayerStop(cleanup)
+	childID = p.registerChildWindow(func() { cleanup(false) })
 
 	var startSegment func(idx int)
 	startSegment = func(idx int) {
 		if idx < 0 || idx >= len(segs) {
 			return
 		}
+		stopCurrentPlayback()
 		mu.Lock()
-		oldPlayer := player
-		oldTicket := currentTicket
-		player = nil
-		currentTicket = ""
 		currentIdx = idx
 		playerState = videoplayer.State{}
 		playerErr = ""
 		codecUnsupText = ""
 		w := win
+		isClosed := closed
 		mu.Unlock()
-
-		if oldPlayer != nil {
-			oldPlayer.Destroy()
-		}
-		if proxy != nil && oldTicket != "" {
-			proxy.RevokeTicket(oldTicket)
+		if isClosed {
+			return
 		}
 
 		seg := segs[idx]
@@ -331,14 +379,21 @@ func (p *Page) openVideoPlayer(h pagekit.Host, item companionapi.FeedItem, segs 
 		mu.Unlock()
 
 		pl.OnState(func(st videoplayer.State) {
+			unsupMsg, playErrMsg := classifyVideoPlaybackError(seg.Codec, st)
+			if unsupMsg != "" || playErrMsg != "" {
+				// Immediately stop audio/playback and revoke proxy ticket on unsupported codec or fatal error.
+				mu.Lock()
+				playerState = st
+				codecUnsupText = unsupMsg
+				playerErr = playErrMsg
+				mu.Unlock()
+				stopCurrentPlayback()
+				h.Update(func() {})
+				return
+			}
+
 			mu.Lock()
 			playerState = st
-			if st.Error != "" {
-				codecUnsupText = formatUnsupportedCodecMessage(seg.Codec, st.Error)
-			} else if st.Ready && st.Width == 0 && st.Height == 0 {
-				// Android MediaPlayer drops unsupported video tracks silently (design §6 / §9.3).
-				codecUnsupText = formatUnsupportedCodecMessage(seg.Codec, "")
-			}
 			ended := st.Ended && currentIdx+1 < len(segs)
 			nextIdx := currentIdx + 1
 			mu.Unlock()
@@ -354,7 +409,7 @@ func (p *Page) openVideoPlayer(h pagekit.Host, item companionapi.FeedItem, segs 
 	}
 
 	title := firstNonEmpty(item.Title, "视频播放")
-	win = h.PushWindow(title, func(c *ui.Context) {
+	w := h.PushWindow(title, func(c *ui.Context) {
 		c.SetTheme(theme.TraceTheme())
 		mu.Lock()
 		pl := player
@@ -381,7 +436,7 @@ func (p *Page) openVideoPlayer(h pagekit.Host, item companionapi.FeedItem, segs 
 						ui.Text(c, "关闭").FontSize(13).FontWeight(600).TextColor(theme.ColorWhite).SingleLine()
 					})
 					if closeBtn.Clicked() {
-						cleanup()
+						cleanup(false)
 					}
 					ui.Text(c, title).FontSize(14).FontWeight(600).TextColor(theme.ColorWhite).SingleLine().Grow(1).Shrink(1)
 				})
@@ -395,7 +450,16 @@ func (p *Page) openVideoPlayer(h pagekit.Host, item companionapi.FeedItem, segs 
 						ui.Text(c, "电脑端不转码，可在电脑上使用 TRACE 观看。").FontSize(13).TextColor(theme.ColorTextFaint).TextAlign(ui.Center)
 					})
 				case pErr != "":
-					ui.Text(c, pErr).FontSize(14).TextColor(theme.ColorWhite).TextAlign(ui.Center).Padding(24)
+					ui.Column(c).Padding(24).Gap(12).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, pErr).FontSize(14).TextColor(theme.ColorWhite).TextAlign(ui.Center)
+						retryBtn := ui.ButtonBase(c).Label("重试播放视频").Padding(8, 18).MinHeight(40).Radius(999).Background(theme.ColorAccent)
+						retryBtn.Children(func() {
+							ui.Text(c, "重试").FontSize(13).FontWeight(600).TextColor(theme.ColorWhite).SingleLine()
+						})
+						if retryBtn.Clicked() {
+							startSegment(idx)
+						}
+					})
 				case pl != nil:
 					ui.WebView(c, pl).Fill()
 				default:
@@ -448,8 +512,50 @@ func (p *Page) openVideoPlayer(h pagekit.Host, item companionapi.FeedItem, segs 
 			})
 		})
 	})
+	mu.Lock()
+	win = w
+	wasClosed := closed
+	mu.Unlock()
+	if w != nil {
+		if wasClosed {
+			w.Close()
+			return
+		}
+		w.OnClose(func(*mygo.CloseEvent) { cleanup(true) })
+	}
 
 	startSegment(0)
+}
+
+// classifyVideoPlaybackError distinguishes codec incompatibility from network/stream playback errors.
+// Returns (unsupportedCodecMsg, playbackErrMsg).
+func classifyVideoPlaybackError(codec string, st videoplayer.State) (string, string) {
+	if st.Error != "" {
+		if isLikelyCodecError(st.Error) {
+			return formatUnsupportedCodecMessage(codec, st.Error), ""
+		}
+		return "", "视频播放出错：" + strings.TrimSpace(st.Error)
+	}
+	if st.Ready && st.Width == 0 && st.Height == 0 {
+		// Android MediaPlayer silently drops unsupported video tracks while playing audio (design §6 / §9.3).
+		return formatUnsupportedCodecMessage(codec, ""), ""
+	}
+	return "", ""
+}
+
+func isLikelyCodecError(rawErr string) bool {
+	lower := strings.ToLower(strings.TrimSpace(rawErr))
+	for _, kw := range []string{"network", "timeout", "timed out", "connection", "refused", "reset", "eof", "http ", "502", "503", "403", "unreachable", "io_error"} {
+		if strings.Contains(lower, kw) {
+			return false
+		}
+	}
+	for _, kw := range []string{"unsupported", "codec", "decode", "decoder", "format", "mediacodec", "-1010", "-2147483648", "av1", "hevc", "flac"} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 func formatUnsupportedCodecMessage(codec, rawErr string) string {

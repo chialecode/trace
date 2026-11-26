@@ -33,6 +33,8 @@ const (
 const (
 	defaultRefreshThrottle = time.Second
 	maxInMemoryBitmaps     = 160
+	bitmapFailCooldown     = 15 * time.Second
+	bitmapMaxConcurrency   = 6
 )
 
 // Page implements pagekit.TabPage for 订阅.
@@ -103,22 +105,28 @@ type Page struct {
 	throttleTimer *time.Timer
 
 	// In-memory decoded bitmap cache (never written to disk, cleared on disconnect).
-	imgMu       sync.Mutex
-	bitmaps     map[string]*ui.Bitmap
-	imgInFlight map[string]bool
-	imgOrder    []string
+	imgMu        sync.Mutex
+	bitmaps      map[string]*ui.Bitmap
+	imgInFlight  map[string]bool
+	imgFailUntil map[string]time.Time
+	imgOrder     []string
+	imgSem       chan struct{}
 
-	// Active media player cleanup callback so disconnect stops playback immediately (FR-MOB-006).
-	playerMu      sync.Mutex
-	stopMediaPlay func()
+	// Active child windows (image viewers & video players) closed immediately on disconnect (FR-MOB-006).
+	childMu            sync.Mutex
+	nextChildID        uint64
+	activeChildClosers map[uint64]func()
 }
 
 // New returns the 订阅 tab page.
 func New() *Page {
 	return &Page{
-		siteFilter:  "all",
-		bitmaps:     make(map[string]*ui.Bitmap),
-		imgInFlight: make(map[string]bool),
+		siteFilter:         "all",
+		bitmaps:            make(map[string]*ui.Bitmap),
+		imgInFlight:        make(map[string]bool),
+		imgFailUntil:       make(map[string]time.Time),
+		imgSem:             make(chan struct{}, bitmapMaxConcurrency),
+		activeChildClosers: make(map[uint64]func()),
 	}
 }
 
@@ -142,17 +150,17 @@ func (p *Page) OnConnected(h pagekit.Host) {
 	p.accountsErr = ""
 	p.planErr = ""
 	p.loadAllMain(h)
-	if p.detailSubID != "" {
+	if p.isDetailActive(h) {
 		p.loadDetail(h, p.detailSubID, true)
 	}
 }
 
-// OnDisconnected immediately clears all in-memory data, images, timers, and active playback (FR-MOB-006 / NFR-MOB-DATA-001).
+// OnDisconnected immediately clears all in-memory data, images, timers, and active child windows (FR-MOB-006 / NFR-MOB-DATA-001).
 func (p *Page) OnDisconnected() {
 	p.sessionGen++
 	p.initTriggered = false
 	p.cancelThrottleTimer()
-	p.stopActiveMediaPlayer()
+	p.closeAllChildWindows()
 
 	p.subs = nil
 	p.subsLoaded = false
@@ -206,11 +214,11 @@ func (p *Page) OnEvent(h pagekit.Host, ev companionclient.EventFrame) {
 	case companionapi.EventSubsChanged, companionapi.EventLiveChanged:
 		p.scheduleThrottledReload(h, true, true, false)
 	case companionapi.EventFeedChanged:
-		if p.detailSubID != "" {
+		if p.isDetailActive(h) {
 			p.scheduleThrottledReload(h, false, false, true)
 		}
 	case companionapi.EventResync:
-		p.scheduleThrottledReload(h, true, true, p.detailSubID != "")
+		p.scheduleThrottledReload(h, true, true, p.isDetailActive(h))
 	}
 }
 
@@ -254,7 +262,7 @@ func (p *Page) handleSubsCheckEvent(h pagekit.Host, ev companionclient.EventFram
 		if msg != "" {
 			p.actionInfo = msg
 		}
-		p.scheduleThrottledReload(h, true, true, p.detailSubID != "")
+		p.scheduleThrottledReload(h, true, true, p.isDetailActive(h))
 		return
 	case "error", "failed":
 		p.checking = false
@@ -286,7 +294,7 @@ func (p *Page) handleSubsCheckEvent(h pagekit.Host, ev companionclient.EventFram
 		p.checkingAccountKey = ""
 		p.checkMessage = ""
 		p.actionInfo = cleaned
-		p.scheduleThrottledReload(h, true, true, p.detailSubID != "")
+		p.scheduleThrottledReload(h, true, true, p.isDetailActive(h))
 		return
 	}
 	if cleaned != "" {
@@ -337,20 +345,28 @@ func (p *Page) scheduleThrottledReload(h pagekit.Host, wantSubs, wantPlan, wantF
 	p.evMu.Unlock()
 }
 
+func (p *Page) isDetailActive(h pagekit.Host) bool {
+	if p.detailSubID == "" || h == nil || h.Router() == nil {
+		return false
+	}
+	return strings.HasPrefix(h.Router().Path(), "/sub/")
+}
+
 func (p *Page) flushEventReload(h pagekit.Host, wantSubs, wantPlan, wantFeed bool) {
+	detailActive := p.isDetailActive(h)
 	if wantSubs {
 		p.loadSubscriptions(h)
 		if p.activeSeg == segAllAccounts || p.accountsLoaded {
 			p.loadAccounts(h)
 		}
-		if p.detailSubID != "" {
+		if detailActive {
 			p.loadDetailSub(h, p.detailSubID)
 		}
 	}
 	if wantPlan {
 		p.loadCheckPlan(h)
 	}
-	if wantFeed && p.detailSubID != "" {
+	if wantFeed && detailActive {
 		p.loadDetailFeed(h, p.detailSubID, nil, false)
 	}
 }
@@ -376,10 +392,12 @@ func (p *Page) View(c *ui.Context, h pagekit.Host) {
 
 	r := h.Router()
 	r.SystemStack = true
+	detailRendered := false
 	ui.Column(c).Fill().Background(theme.ColorBgMain).Children(func() {
 		r.View(c, func(route *ui.Route) {
 			switch {
 			case route.Match("/sub/{id}"):
+				detailRendered = true
 				rawID := route.Param("id")
 				subID, err := url.PathUnescape(rawID)
 				if err != nil || subID == "" {
@@ -400,6 +418,26 @@ func (p *Page) View(c *ui.Context, h pagekit.Host) {
 			}
 		}).Grow(1).Basis(0).FillWidth()
 	})
+	// Once back on the root route and any outgoing detail transition has settled,
+	// release detail state so subsequent WS events never poll stale details.
+	if !detailRendered && !strings.HasPrefix(r.Path(), "/sub/") && p.detailSubID != "" {
+		p.clearDetailState()
+	}
+}
+
+func (p *Page) clearDetailState() {
+	p.detailSubID = ""
+	p.detailSub = nil
+	p.detailLoading = false
+	p.detailErr = ""
+	p.detailMenuOpen = false
+	p.detailFeed = nil
+	p.detailFeedNext = nil
+	p.detailFeedHasMore = false
+	p.detailFeedLoading = false
+	p.detailFeedMoreing = false
+	p.detailFeedErr = ""
+	p.detailFeedRefresh.Refreshing = false
 }
 
 func (p *Page) loadAllMain(h pagekit.Host) {
@@ -568,7 +606,7 @@ func (p *Page) loadDetailSub(h pagekit.Host, subID string) {
 				return
 			}
 			sub := resp.Subscription
-			sub.Accounts = sortAccountsBySiteOrder(sub.Accounts)
+			sub.Accounts = sortAccountsBySitePreserveOrder(sub.Accounts)
 			p.detailSub = &sub
 			p.detailErr = ""
 		})
@@ -875,7 +913,7 @@ func (p *Page) applyLiveRecordingUpdate(acctKey string, recording bool, recordin
 	}
 }
 
-// In-memory bitmap decoding helper (zero disk writes, cleared on disconnect).
+// In-memory bitmap decoding helper (zero disk writes, bounded concurrency, failure cooldown, cleared on disconnect).
 
 func (p *Page) lookupBitmap(h pagekit.Host, path string, maxSide int) *ui.Bitmap {
 	path = strings.TrimSpace(path)
@@ -883,6 +921,7 @@ func (p *Page) lookupBitmap(h pagekit.Host, path string, maxSide int) *ui.Bitmap
 		return nil
 	}
 	cacheKey := fmt.Sprintf("%s#%d", path, maxSide)
+	now := time.Now()
 	p.imgMu.Lock()
 	if bmp, ok := p.bitmaps[cacheKey]; ok {
 		p.imgMu.Unlock()
@@ -892,11 +931,22 @@ func (p *Page) lookupBitmap(h pagekit.Host, path string, maxSide int) *ui.Bitmap
 		p.imgMu.Unlock()
 		return nil
 	}
+	if until, ok := p.imgFailUntil[cacheKey]; ok && now.Before(until) {
+		p.imgMu.Unlock()
+		return nil
+	}
+	if p.imgSem == nil {
+		p.imgSem = make(chan struct{}, bitmapMaxConcurrency)
+	}
+	sem := p.imgSem
 	p.imgInFlight[cacheKey] = true
 	p.imgMu.Unlock()
 
 	gen := p.sessionGen
 	go func() {
+		sem <- struct{}{}
+		defer func() { <-sem }()
+
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		raw, err := h.FetchImage(ctx, path)
@@ -908,10 +958,23 @@ func (p *Page) lookupBitmap(h pagekit.Host, path string, maxSide int) *ui.Bitmap
 				bmp, _ = ui.DecodeBitmap(raw)
 			}
 		}
+
+		if bmp == nil {
+			p.imgMu.Lock()
+			delete(p.imgInFlight, cacheKey)
+			if p.imgFailUntil == nil {
+				p.imgFailUntil = make(map[string]time.Time)
+			}
+			p.imgFailUntil[cacheKey] = time.Now().Add(bitmapFailCooldown)
+			p.imgMu.Unlock()
+			return
+		}
+
 		h.Update(func() {
 			p.imgMu.Lock()
 			delete(p.imgInFlight, cacheKey)
-			if p.sessionGen == gen && bmp != nil {
+			delete(p.imgFailUntil, cacheKey)
+			if p.sessionGen == gen {
 				if p.bitmaps == nil {
 					p.bitmaps = make(map[string]*ui.Bitmap)
 				}
@@ -935,22 +998,44 @@ func (p *Page) clearBitmaps() {
 	p.imgMu.Lock()
 	clear(p.bitmaps)
 	clear(p.imgInFlight)
+	clear(p.imgFailUntil)
 	p.imgOrder = nil
 	p.imgMu.Unlock()
 }
 
-func (p *Page) registerMediaPlayerStop(fn func()) {
-	p.playerMu.Lock()
-	p.stopMediaPlay = fn
-	p.playerMu.Unlock()
+func (p *Page) registerChildWindow(cleanup func()) uint64 {
+	if cleanup == nil {
+		return 0
+	}
+	p.childMu.Lock()
+	p.nextChildID++
+	id := p.nextChildID
+	if p.activeChildClosers == nil {
+		p.activeChildClosers = make(map[uint64]func())
+	}
+	p.activeChildClosers[id] = cleanup
+	p.childMu.Unlock()
+	return id
 }
 
-func (p *Page) stopActiveMediaPlayer() {
-	p.playerMu.Lock()
-	fn := p.stopMediaPlay
-	p.stopMediaPlay = nil
-	p.playerMu.Unlock()
-	if fn != nil {
+func (p *Page) unregisterChildWindow(id uint64) {
+	if id == 0 {
+		return
+	}
+	p.childMu.Lock()
+	delete(p.activeChildClosers, id)
+	p.childMu.Unlock()
+}
+
+func (p *Page) closeAllChildWindows() {
+	p.childMu.Lock()
+	closers := make([]func(), 0, len(p.activeChildClosers))
+	for _, fn := range p.activeChildClosers {
+		closers = append(closers, fn)
+	}
+	clear(p.activeChildClosers)
+	p.childMu.Unlock()
+	for _, fn := range closers {
 		fn()
 	}
 }
@@ -1009,6 +1094,17 @@ func siteFullLabel(site string) string {
 func isLiveRecordableSite(site string) bool {
 	s := normalizeSite(site)
 	return s == "bilibili" || s == "douyin"
+}
+
+// sortAccountsBySitePreserveOrder groups accounts by fixed site order (B站→抖音→微博→X)
+// while preserving each site's original relative order (DEC-071, subscription detail 账号 tab).
+func sortAccountsBySitePreserveOrder(in []companionapi.SubscriptionAccountDTO) []companionapi.SubscriptionAccountDTO {
+	out := make([]companionapi.SubscriptionAccountDTO, len(in))
+	copy(out, in)
+	sort.SliceStable(out, func(i, j int) bool {
+		return siteOrderRank(out[i].Site) < siteOrderRank(out[j].Site)
+	})
+	return out
 }
 
 func sortAccountsBySiteOrder(in []companionapi.SubscriptionAccountDTO) []companionapi.SubscriptionAccountDTO {

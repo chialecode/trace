@@ -26,10 +26,7 @@ const (
 	segHistory
 )
 
-const (
-	defaultRefreshThrottle = time.Second
-	maxInMemoryBitmaps     = 120
-)
+const defaultRefreshThrottle = time.Second
 
 // Page implements pagekit.TabPage for 任务.
 type Page struct {
@@ -106,12 +103,6 @@ type Page struct {
 	wantTransfers   bool
 	throttleTimer   *time.Timer
 	lastBadgePosted int
-
-	// In-memory decoded bitmap cache (never written to disk, cleared on disconnect).
-	imgMu       sync.Mutex
-	bitmaps     map[string]*ui.Bitmap
-	imgInFlight map[string]bool
-	imgOrder    []string
 }
 
 // New returns the 任务 tab page.
@@ -120,8 +111,6 @@ func New() *Page {
 		expandedQueues:   make(map[string]bool),
 		expandedLiveIncs: make(map[string]bool),
 		swipeStates:      make(map[string]*mobile.SwipeState),
-		bitmaps:          make(map[string]*ui.Bitmap),
-		imgInFlight:      make(map[string]bool),
 		lastBadgePosted:  -1,
 	}
 }
@@ -147,7 +136,7 @@ func (p *Page) OnConnected(h pagekit.Host) {
 	p.queueSheetOpen = false
 	p.lastBadgePosted = -1
 	p.loadAll(h)
-	if p.detailTaskID != "" {
+	if p.isDetailActive(h) {
 		p.loadDownloadDetail(h, p.detailTaskID)
 	}
 }
@@ -205,12 +194,11 @@ func (p *Page) OnDisconnected() {
 	p.queueSheetOpen = false
 	p.queueSheetItem = nil
 
+	p.detailTaskID = ""
 	p.detailResp = nil
 	p.detailLoading = false
 	p.detailErr = ""
 	p.lastBadgePosted = -1
-
-	p.clearBitmaps()
 }
 
 // OnEvent handles live WebSocket events throttled to <= 1 refresh/sec (FR-MOB-016).
@@ -280,10 +268,17 @@ func (p *Page) scheduleThrottledReload(h pagekit.Host, dl, q, live, conf, tr boo
 	p.evMu.Unlock()
 }
 
+func (p *Page) isDetailActive(h pagekit.Host) bool {
+	if p.detailTaskID == "" || h == nil || h.Router() == nil {
+		return false
+	}
+	return strings.HasPrefix(h.Router().Path(), "/download/")
+}
+
 func (p *Page) flushEventReload(h pagekit.Host, dl, q, live, conf, tr bool) {
 	if dl {
 		p.loadDownloads(h)
-		if p.detailTaskID != "" {
+		if p.isDetailActive(h) {
 			p.loadDownloadDetail(h, p.detailTaskID)
 		}
 	}
@@ -325,10 +320,12 @@ func (p *Page) View(c *ui.Context, h pagekit.Host) {
 
 	r := h.Router()
 	r.SystemStack = true
+	detailRendered := false
 	ui.Column(c).Fill().Background(theme.ColorBgMain).Children(func() {
 		r.View(c, func(route *ui.Route) {
 			switch {
 			case route.Match("/download/{id}"):
+				detailRendered = true
 				rawID := route.Param("id")
 				taskID, err := url.PathUnescape(rawID)
 				if err != nil || taskID == "" {
@@ -349,6 +346,16 @@ func (p *Page) View(c *ui.Context, h pagekit.Host) {
 			}
 		}).Grow(1).Basis(0).FillWidth()
 	})
+	if !detailRendered && !strings.HasPrefix(r.Path(), "/download/") && p.detailTaskID != "" {
+		p.clearDetailState()
+	}
+}
+
+func (p *Page) clearDetailState() {
+	p.detailTaskID = ""
+	p.detailResp = nil
+	p.detailLoading = false
+	p.detailErr = ""
 }
 
 func (p *Page) renderMainView(c *ui.Context, h pagekit.Host, r *ui.Router) {
@@ -862,70 +869,6 @@ func (p *Page) stopLiveRecording(h pagekit.Host, rec companionapi.LiveRecordingD
 			p.loadLiveRecordings(h)
 		})
 	}()
-}
-
-// In-memory bitmap cache (never written to disk, cleared on disconnect).
-
-func (p *Page) lookupBitmap(h pagekit.Host, path string, maxSide int) *ui.Bitmap {
-	path = strings.TrimSpace(path)
-	if path == "" || h == nil {
-		return nil
-	}
-	cacheKey := fmt.Sprintf("%s#%d", path, maxSide)
-	p.imgMu.Lock()
-	if bmp, ok := p.bitmaps[cacheKey]; ok {
-		p.imgMu.Unlock()
-		return bmp
-	}
-	if p.imgInFlight[cacheKey] {
-		p.imgMu.Unlock()
-		return nil
-	}
-	p.imgInFlight[cacheKey] = true
-	p.imgMu.Unlock()
-
-	gen := p.sessionGen
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		raw, err := h.FetchImage(ctx, path)
-		var bmp *ui.Bitmap
-		if err == nil && len(raw) > 0 {
-			if maxSide > 0 {
-				bmp, _ = ui.DecodeBitmapScaled(raw, maxSide)
-			} else {
-				bmp, _ = ui.DecodeBitmap(raw)
-			}
-		}
-		h.Update(func() {
-			p.imgMu.Lock()
-			delete(p.imgInFlight, cacheKey)
-			if p.sessionGen == gen && bmp != nil {
-				if p.bitmaps == nil {
-					p.bitmaps = make(map[string]*ui.Bitmap)
-				}
-				if _, exists := p.bitmaps[cacheKey]; !exists {
-					p.imgOrder = append(p.imgOrder, cacheKey)
-					if len(p.imgOrder) > maxInMemoryBitmaps {
-						evict := p.imgOrder[0]
-						p.imgOrder = p.imgOrder[1:]
-						delete(p.bitmaps, evict)
-					}
-				}
-				p.bitmaps[cacheKey] = bmp
-			}
-			p.imgMu.Unlock()
-		})
-	}()
-	return nil
-}
-
-func (p *Page) clearBitmaps() {
-	p.imgMu.Lock()
-	clear(p.bitmaps)
-	clear(p.imgInFlight)
-	p.imgOrder = nil
-	p.imgMu.Unlock()
 }
 
 func (p *Page) swipeStateFor(key string) *mobile.SwipeState {

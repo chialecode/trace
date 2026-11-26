@@ -702,6 +702,32 @@ func TestTasksAllSegmentsActionsReadOnlyAndErrors(t *testing.T) {
 	assertNoForbiddenEntries(t, tt)
 	saveShotIfRequested(t, tt, "tasks-pending-412x915")
 
+	// Verify removing a failed download in 待处理 requires inline confirmation first (P2 parity).
+	mu.Lock()
+	removeBeforePending := countStr(dlActions, "dl-fail/remove")
+	mu.Unlock()
+	if err := tt.Click("待处理移除任务：dl-fail"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("确认移除该任务") {
+		t.Fatal("expected inline remove confirmation in 待处理 before deleting failed download")
+	}
+	mu.Lock()
+	removeMidPending := countStr(dlActions, "dl-fail/remove")
+	mu.Unlock()
+	if removeMidPending != removeBeforePending {
+		t.Fatal("failed download in 待处理 must NOT be removed before inline confirmation")
+	}
+	if err := tt.Click("待处理确认移除任务：dl-fail"); err != nil {
+		t.Fatal(err)
+	}
+	pumpUntil(func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return countStr(dlActions, "dl-fail/remove") == removeBeforePending+1 && pg.busyActionKey == ""
+	})
+
 	// 5. 记录 segment: read-only import/export transfers (zero actions).
 	pg.activeSeg = segHistory
 	tt.Frame()
@@ -777,6 +803,131 @@ func TestTasksEventThrottlingAtMostOncePerInterval(t *testing.T) {
 		t.Fatalf("expected 1..2 coalesced fetches total, got %d", final)
 	}
 	pg.OnDisconnected()
+}
+
+func TestDownloadDetailRemoveConfirmAndBackClearsStalePolling(t *testing.T) {
+	var detailHits, removeHits atomic.Int32
+	failedTask := companionapi.DownloadTaskDTO{
+		TaskID: "dl-fail-detail", Site: "bilibili", Kind: "video", TargetID: "BV1FAIL",
+		Title: "失败任务详情测试", Status: "failed", ErrorMessage: "分段校验失败",
+		BytesDownloaded: 10 << 20, TotalBytes: 20 << 20, Progress: 0.5,
+	}
+	cli, cleanup := startFakeCompanionServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == companionapi.PathTasksDownloads:
+			_ = json.NewEncoder(w).Encode(companionapi.DownloadTasksResponse{Items: []companionapi.DownloadTaskDTO{failedTask}})
+		case r.Method == http.MethodGet && r.URL.Path == companionapi.DownloadTaskPath("dl-fail-detail"):
+			detailHits.Add(1)
+			_ = json.NewEncoder(w).Encode(companionapi.DownloadTaskDetailResponse{Task: failedTask})
+		case r.Method == http.MethodPost && r.URL.Path == companionapi.DownloadTaskActionPath("dl-fail-detail", "remove"):
+			removeHits.Add(1)
+			_ = json.NewEncoder(w).Encode(companionapi.ActionResponse{OK: true})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+		}
+	})
+	defer cleanup()
+
+	host := newFakeHost(cli)
+	pg := New()
+	pg.RefreshThrottle = 10 * time.Millisecond
+	viewFn := func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		pg.View(c, host)
+	}
+	tt := ui.NewTester(viewFn, 412, 915)
+	pg.OnConnected(host)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if pg.downloadsLoaded {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := tt.Click("查看下载详情：失败任务详情测试"); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if pg.detailResp != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	settleAnim(tt)
+
+	// Clicking 移除 in /download/{id} must show inline confirmation first without immediately removing.
+	if err := tt.Click("详情移除任务"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("确认移除该任务") || removeHits.Load() != 0 {
+		t.Fatalf("expected inline confirmation with 0 remove hits, hits=%d", removeHits.Load())
+	}
+
+	// Cancel confirmation, then navigate back to root -> detailTaskID cleared & WS task:changed stops polling old detail.
+	if err := tt.Click("详情取消移除任务"); err != nil {
+		t.Fatal(err)
+	}
+	host.Back()
+	settleAnim(tt)
+	tt.Frame()
+	if pg.detailTaskID != "" || pg.detailResp != nil {
+		t.Fatalf("expected detailTaskID cleared after Back, got id=%q resp=%v", pg.detailTaskID, pg.detailResp)
+	}
+	before := detailHits.Load()
+	pg.OnEvent(host, companionclient.EventFrame{Type: companionapi.EventTaskChanged})
+	time.Sleep(60 * time.Millisecond)
+	if detailHits.Load() != before {
+		t.Fatalf("stale download detail polling after Back: %d -> %d", before, detailHits.Load())
+	}
+
+	// Re-open detail and confirm inline removal executes POST .../remove.
+	if err := tt.Click("查看下载详情：失败任务详情测试"); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if pg.detailResp != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	settleAnim(tt)
+	if err := tt.Click("详情移除任务"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("详情确认移除任务：dl-fail-detail"); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if removeHits.Load() == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if removeHits.Load() != 1 {
+		t.Fatalf("expected 1 remove call after confirmation, got %d", removeHits.Load())
+	}
+	pg.OnDisconnected()
+}
+
+func countStr(list []string, target string) int {
+	n := 0
+	for _, s := range list {
+		if s == target {
+			n++
+		}
+	}
+	return n
 }
 
 func containsStr(list []string, target string) bool {

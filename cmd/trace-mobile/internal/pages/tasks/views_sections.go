@@ -319,20 +319,27 @@ func (p *Page) renderPendingDownloadCard(c *ui.Context, h pagekit.Host, task com
 			ui.Row(c).FillWidth().Gap(8).Wrap().ClipX().Children(func() {
 				if isPaused {
 					if theme.PrimaryPillButton(c, "继续", "待处理继续任务："+task.TaskID).Clicked() {
+						p.removeConfirmID = ""
 						p.runDownloadAction(h, task, "resume")
 					}
 					if theme.DangerOutlinePillButton(c, "取消", "待处理取消任务："+task.TaskID).Clicked() {
+						p.removeConfirmID = ""
 						p.runDownloadAction(h, task, "cancel")
 					}
 				} else {
 					if theme.PrimaryPillButton(c, "重试", "待处理重试任务："+task.TaskID).Clicked() {
+						p.removeConfirmID = ""
 						p.runDownloadAction(h, task, "retry")
 					}
 					if theme.DangerOutlinePillButton(c, "移除", "待处理移除任务："+task.TaskID).Clicked() {
-						p.runDownloadAction(h, task, "remove")
+						p.removeConfirmID = task.TaskID
 					}
 				}
 			})
+
+			if p.removeConfirmID == task.TaskID {
+				p.renderRemoveConfirmBanner(c, h, task, "待处理")
+			}
 		})
 }
 

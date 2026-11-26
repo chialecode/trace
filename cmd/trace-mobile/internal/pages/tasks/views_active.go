@@ -264,29 +264,33 @@ func (p *Page) renderDownloadTaskCard(c *ui.Context, h pagekit.Host, task compan
 
 				// Inline remove confirmation for failed / partial download tasks (same rule as desktop).
 				if p.removeConfirmID == task.TaskID {
-					ui.Column(c).FillWidth().Padding(10, 12).Radius(10).Background(theme.ColorWarnBg).Border(1, theme.ColorDotYellow).Gap(8).ClipX().Children(func() {
-						ui.Text(c, "确认移除该任务？会删除未完成的临时文件，已缓存完成的文件会保留。").
-							FontSize(12).FontWeight(600).LineHeight(theme.LineHeightCompact).TextColor(theme.ColorTextMain)
-						ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-							cancelBtn := ui.Button(c, "").Label("取消移除任务").Radius(999).Padding(6, 14).MinHeight(36).Background(theme.ColorBgMain).Border(1, theme.ColorBorderStrong).Center()
-							cancelBtn.Children(func() {
-								ui.Text(c, "取消").FontSize(12).FontWeight(600).TextColor(theme.ColorTextMain).SingleLine()
-							})
-							if cancelBtn.Clicked() {
-								p.removeConfirmID = ""
-							}
-							confirmBtn := ui.Button(c, "").Label("确认移除任务："+task.TaskID).Radius(999).Padding(6, 14).MinHeight(36).Background(theme.ColorBgMain).Border(1, ui.RGBA(196, 24, 46, 0.35)).Center()
-							confirmBtn.Children(func() {
-								ui.Text(c, "确认移除").FontSize(12).FontWeight(600).TextColor(theme.ColorError).SingleLine()
-							})
-							if confirmBtn.Clicked() {
-								p.removeConfirmID = ""
-								p.runDownloadAction(h, task, "remove")
-							}
-						})
-					})
+					p.renderRemoveConfirmBanner(c, h, task, "")
 				}
 			})
+	})
+}
+
+func (p *Page) renderRemoveConfirmBanner(c *ui.Context, h pagekit.Host, task companionapi.DownloadTaskDTO, prefix string) {
+	ui.Column(c).FillWidth().Padding(10, 12).Radius(10).Background(theme.ColorWarnBg).Border(1, theme.ColorDotYellow).Gap(8).ClipX().Children(func() {
+		ui.Text(c, "确认移除该任务？会删除未完成的临时文件，已缓存完成的文件会保留。").
+			FontSize(12).FontWeight(600).LineHeight(theme.LineHeightCompact).TextColor(theme.ColorTextMain)
+		ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
+			cancelBtn := ui.Button(c, "").Label(prefix+"取消移除任务").Radius(999).Padding(6, 14).MinHeight(36).Background(theme.ColorBgMain).Border(1, theme.ColorBorderStrong).Center()
+			cancelBtn.Children(func() {
+				ui.Text(c, "取消").FontSize(12).FontWeight(600).TextColor(theme.ColorTextMain).SingleLine()
+			})
+			if cancelBtn.Clicked() {
+				p.removeConfirmID = ""
+			}
+			confirmBtn := ui.Button(c, "").Label(prefix+"确认移除任务："+task.TaskID).Radius(999).Padding(6, 14).MinHeight(36).Background(theme.ColorBgMain).Border(1, ui.RGBA(196, 24, 46, 0.35)).Center()
+			confirmBtn.Children(func() {
+				ui.Text(c, "确认移除").FontSize(12).FontWeight(600).TextColor(theme.ColorError).SingleLine()
+			})
+			if confirmBtn.Clicked() {
+				p.removeConfirmID = ""
+				p.runDownloadAction(h, task, "remove")
+			}
+		})
 	})
 }
 
@@ -645,17 +649,23 @@ func (p *Page) renderDownloadDetailView(c *ui.Context, h pagekit.Host, r *ui.Rou
 							}
 						case task.Status == "failed" || task.Status == "partial":
 							if theme.PrimaryPillButton(c, "重试", "详情重试任务").Clicked() {
+								p.removeConfirmID = ""
 								p.runDownloadAction(h, task, "retry")
 							}
 							if theme.DangerOutlinePillButton(c, "移除", "详情移除任务").Clicked() {
-								p.runDownloadAction(h, task, "remove")
+								p.removeConfirmID = task.TaskID
 							}
 						case task.Status == "completed" || task.Status == "canceled":
 							if theme.DangerOutlinePillButton(c, "移除", "详情移除任务").Clicked() {
+								p.removeConfirmID = ""
 								p.runDownloadAction(h, task, "remove")
 							}
 						}
 					})
+
+					if p.removeConfirmID == task.TaskID {
+						p.renderRemoveConfirmBanner(c, h, task, "详情")
+					}
 				})
 
 				// Per-file progress list.

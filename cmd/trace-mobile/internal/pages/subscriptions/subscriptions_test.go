@@ -29,6 +29,7 @@ import (
 	"github.com/chialecode/trace/internal/companionapi"
 	"github.com/chialecode/trace/internal/companionclient"
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/videoplayer"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -758,6 +759,192 @@ func TestSubscriptionsAllSegmentsDetailControlsAndErrors(t *testing.T) {
 	if bmLen != 0 {
 		t.Fatalf("expected OnDisconnected to clear all bitmaps, got %d", bmLen)
 	}
+}
+
+func TestLookupBitmapFailureCooldownNoRequestStorm(t *testing.T) {
+	var hits atomic.Int32
+	cli, proxy, cleanup := startFakeCompanionServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case companionapi.PathSubscriptions:
+			_ = json.NewEncoder(w).Encode(companionapi.SubscriptionsResponse{
+				Items: []companionapi.SubscriptionDTO{
+					{ID: "sub-404", Name: "缺失头像订阅", AvatarPath: "/api/v1/avatars/bilibili/missing"},
+				},
+			})
+		case companionapi.PathSubscriptionsAccounts:
+			_ = json.NewEncoder(w).Encode(companionapi.AllAccountsResponse{})
+		case companionapi.PathChecksPlan:
+			_ = json.NewEncoder(w).Encode(companionapi.CheckPlanResponse{})
+		case "/api/v1/avatars/bilibili/missing":
+			hits.Add(1)
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	defer cleanup()
+
+	host := newFakeHost(cli, proxy)
+	pg := New()
+	viewFn := func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		pg.View(c, host)
+	}
+	tt := ui.NewTester(viewFn, 412, 915)
+	pg.OnConnected(host)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if pg.subsLoaded && hits.Load() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Render 10 consecutive frames after the 404 failure: cooldown must prevent any storm.
+	time.Sleep(40 * time.Millisecond)
+	for i := 0; i < 10; i++ {
+		tt.Frame()
+	}
+	time.Sleep(40 * time.Millisecond)
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 HTTP request for 404 avatar under failure cooldown, got %d", got)
+	}
+	pg.OnDisconnected()
+	pg.imgMu.Lock()
+	failLen := len(pg.imgFailUntil)
+	pg.imgMu.Unlock()
+	if failLen != 0 {
+		t.Fatalf("expected OnDisconnected to clear imgFailUntil, got %d", failLen)
+	}
+}
+
+func TestVideoPlaybackErrorClassificationAndChildWindowCleanup(t *testing.T) {
+	// Network/stream error must NOT be mislabeled as unsupported codec.
+	unsup, playErr := classifyVideoPlaybackError("AVC", videoplayer.State{Error: "network timeout reading stream"})
+	if unsup != "" || !strings.Contains(playErr, "network timeout") {
+		t.Fatalf("expected honest playback error for network timeout, got unsup=%q playErr=%q", unsup, playErr)
+	}
+
+	// Codec/decoder error reports unsupported codec honestly.
+	unsup, playErr = classifyVideoPlaybackError("AV1", videoplayer.State{Error: "MediaCodec decoder unsupported"})
+	if unsup != "这台手机不能播放 AV1 视频" || playErr != "" {
+		t.Fatalf("expected AV1 unsupported codec message, got unsup=%q playErr=%q", unsup, playErr)
+	}
+
+	// Ready with Width==0 && Height==0 (Android MediaPlayer silent video drop) reports unsupported codec.
+	unsup, playErr = classifyVideoPlaybackError("HEVC", videoplayer.State{Ready: true, Width: 0, Height: 0})
+	if unsup != "这台手机不能播放 HEVC 视频" || playErr != "" {
+		t.Fatalf("expected HEVC unsupported codec message on 0x0 ready, got unsup=%q playErr=%q", unsup, playErr)
+	}
+
+	// Multiple open child windows (image viewer + video player) are all tracked and cleaned up on OnDisconnected.
+	pg := New()
+	var cleaned atomic.Int32
+	id1 := pg.registerChildWindow(func() { cleaned.Add(1) })
+	id2 := pg.registerChildWindow(func() { cleaned.Add(1) })
+	if id1 == 0 || id2 == 0 || id1 == id2 {
+		t.Fatalf("expected distinct child window IDs, got %d and %d", id1, id2)
+	}
+	pg.OnDisconnected()
+	if cleaned.Load() != 2 {
+		t.Fatalf("expected OnDisconnected to close all 2 child windows, got %d", cleaned.Load())
+	}
+	pg.childMu.Lock()
+	remaining := len(pg.activeChildClosers)
+	pg.childMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("expected empty activeChildClosers after disconnect, got %d", remaining)
+	}
+}
+
+func TestLeavingDetailClearsStateAndStopsStalePollingAndPreservesSameSiteOrder(t *testing.T) {
+	var detailSubHits, feedHits atomic.Int32
+	sub := companionapi.SubscriptionDTO{
+		ID:   "sub-order",
+		Name: "双B站号测试",
+		Accounts: []companionapi.SubscriptionAccountDTO{
+			{SubID: "sub-order", Site: "weibo", UID: "w1", Name: "微博号"},
+			{SubID: "sub-order", Site: "bilibili", UID: "b2", Name: "Zebra主号", LiveSupported: true},
+			{SubID: "sub-order", Site: "bilibili", UID: "b1", Name: "Alpha小号", LiveSupported: true},
+		},
+	}
+
+	cli, proxy, cleanup := startFakeCompanionServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == companionapi.PathSubscriptions:
+			_ = json.NewEncoder(w).Encode(companionapi.SubscriptionsResponse{Items: []companionapi.SubscriptionDTO{sub}})
+		case r.URL.Path == companionapi.PathSubscriptionsAccounts:
+			_ = json.NewEncoder(w).Encode(companionapi.AllAccountsResponse{Items: sub.Accounts})
+		case r.URL.Path == companionapi.PathChecksPlan:
+			_ = json.NewEncoder(w).Encode(companionapi.CheckPlanResponse{})
+		case r.URL.Path == companionapi.SubscriptionPath("sub-order"):
+			detailSubHits.Add(1)
+			_ = json.NewEncoder(w).Encode(companionapi.SubscriptionDetailResponse{Subscription: sub})
+		case r.URL.Path == companionapi.PathFeed:
+			feedHits.Add(1)
+			_ = json.NewEncoder(w).Encode(companionapi.FeedPageResponse{})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	defer cleanup()
+
+	host := newFakeHost(cli, proxy)
+	pg := New()
+	pg.RefreshThrottle = 10 * time.Millisecond
+	viewFn := func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		pg.View(c, host)
+	}
+	tt := ui.NewTester(viewFn, 412, 915)
+	pg.OnConnected(host)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if pg.subsLoaded {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Open detail and verify same-site accounts preserve original order [Zebra主号, Alpha小号] (DEC-071).
+	if err := tt.Click("打开订阅：双B站号测试"); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if detailSubHits.Load() >= 1 && pg.detailSub != nil && len(pg.detailSub.Accounts) == 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	settleAnim(tt)
+	if pg.detailSub.Accounts[0].Name != "Zebra主号" || pg.detailSub.Accounts[1].Name != "Alpha小号" || pg.detailSub.Accounts[2].Site != "weibo" {
+		t.Fatalf("expected B站 original order preserved before Weibo, got %+v", pg.detailSub.Accounts)
+	}
+
+	// Navigate back and settle transition -> detailSubID must be cleared.
+	host.Back()
+	settleAnim(tt)
+	tt.Frame()
+	if pg.detailSubID != "" || pg.detailSub != nil {
+		t.Fatalf("expected detail state cleared after returning to root, got id=%q sub=%v", pg.detailSubID, pg.detailSub)
+	}
+
+	beforeSub := detailSubHits.Load()
+	beforeFeed := feedHits.Load()
+	// Fire WS events after returning to root: ZERO stale detail/feed fetches must occur.
+	pg.OnEvent(host, companionclient.EventFrame{Type: companionapi.EventSubsChanged})
+	pg.OnEvent(host, companionclient.EventFrame{Type: companionapi.EventFeedChanged})
+	time.Sleep(60 * time.Millisecond)
+	if detailSubHits.Load() != beforeSub || feedHits.Load() != beforeFeed {
+		t.Fatalf("stale detail polling occurred after leaving detail: subHits %d->%d feedHits %d->%d",
+			beforeSub, detailSubHits.Load(), beforeFeed, feedHits.Load())
+	}
+	pg.OnDisconnected()
 }
 
 func settleAnim(tt *ui.Tester) {

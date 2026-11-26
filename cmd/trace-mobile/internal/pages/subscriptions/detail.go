@@ -443,7 +443,7 @@ func (p *Page) renderImageGrid(c *ui.Context, h pagekit.Host, item companionapi.
 }
 
 func (p *Page) renderDetailAccountsTab(c *ui.Context, h pagekit.Host, sub companionapi.SubscriptionDTO) {
-	accounts := sortAccountsBySiteOrder(sub.Accounts)
+	accounts := sortAccountsBySitePreserveOrder(sub.Accounts)
 	if len(accounts) == 0 {
 		ui.Column(c).Grow(1).Basis(0).FillWidth().Padding(48, 24).AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Text(c, "这个订阅还没有关联账号").FontSize(15).FontWeight(600).TextColor(theme.ColorTextMain)
