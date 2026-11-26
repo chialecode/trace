@@ -75,26 +75,50 @@ type devInstaller struct {
 	Logf       func(format string, args ...any)
 }
 
+// nullableString marshals an empty or whitespace-only string as JSON null
+// instead of "", keeping every unified receipt field present without omitempty.
+type nullableString string
+
+func (s nullableString) MarshalJSON() ([]byte, error) {
+	if strings.TrimSpace(string(s)) == "" {
+		return []byte("null"), nil
+	}
+	return json.Marshal(string(s))
+}
+
+func (s *nullableString) UnmarshalJSON(data []byte) error {
+	if strings.TrimSpace(string(data)) == "null" {
+		*s = ""
+		return nil
+	}
+	var v string
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*s = nullableString(v)
+	return nil
+}
+
 // installResult is artifacts/package/install-dev.json, in the camelCase
 // fields every desktop app of this author writes for its development install.
 type installResult struct {
-	Identity     string `json:"identity"`
-	Installed    bool   `json:"installed"`
-	Skipped      bool   `json:"skipped"`
-	Reason       string `json:"reason"`
-	Error        string `json:"error"`
-	Guidance     string `json:"guidance"`
-	FirstInstall bool   `json:"firstInstall"`
-	OldVersion   string `json:"oldVersion"`
-	NewVersion   string `json:"newVersion"`
-	Location     string `json:"installLocation"`
-	WasRunning   bool   `json:"wasRunning"`
-	WindowOpen   bool   `json:"windowOpen"`
-	Deferred     bool   `json:"deferred"`
-	DeferMs      int64  `json:"deferMs"`
-	QuitMs       int64  `json:"quitMs"`
-	Relaunched   bool   `json:"relaunched"`
-	Background   bool   `json:"background"`
+	Identity     string         `json:"identity"`
+	Installed    bool           `json:"installed"`
+	Skipped      bool           `json:"skipped"`
+	Reason       nullableString `json:"reason"`
+	Error        nullableString `json:"error"`
+	Guidance     nullableString `json:"guidance"`
+	FirstInstall bool           `json:"firstInstall"`
+	OldVersion   nullableString `json:"oldVersion"`
+	NewVersion   nullableString `json:"newVersion"`
+	Location     nullableString `json:"installLocation"`
+	WasRunning   bool           `json:"wasRunning"`
+	WindowOpen   bool           `json:"windowOpen"`
+	Deferred     bool           `json:"deferred"`
+	DeferMs      int64          `json:"deferMs"`
+	QuitMs       int64          `json:"quitMs"`
+	Relaunched   bool           `json:"relaunched"`
+	Background   bool           `json:"background"`
 	// InJob: the started TRACE Dev could not leave the job object of the
 	// command that ran this tool and may end with it.
 	InJob     bool   `json:"inJob"`
@@ -137,14 +161,14 @@ func (d *devInstaller) logf(format string, args ...any) {
 // install returns the error with the result.
 func (d *devInstaller) Run() (installResult, error) {
 	start := d.Now()
-	res := installResult{Identity: devIdentity, NewVersion: d.Version, At: start.UTC().Format(time.RFC3339)}
+	res := installResult{Identity: devIdentity, NewVersion: nullableString(d.Version), At: start.UTC().Format(time.RFC3339)}
 	finish := func(err error) (installResult, error) {
 		res.ElapsedMs = d.Now().Sub(start).Milliseconds()
 		if err != nil {
-			res.Error = err.Error()
+			res.Error = nullableString(err.Error())
 			var f *installFailure
 			if errors.As(err, &f) {
-				res.Reason = f.Reason
+				res.Reason = nullableString(f.Reason)
 			}
 		}
 		return res, err
@@ -156,7 +180,7 @@ func (d *devInstaller) Run() (installResult, error) {
 	}
 	res.FirstInstall = !ok || strings.TrimSpace(entry.Location) == ""
 	if !res.FirstInstall {
-		res.OldVersion, res.Location = entry.Version, entry.Location
+		res.OldVersion, res.Location = nullableString(entry.Version), nullableString(entry.Location)
 		if err := d.closeInstalled(&res, filepath.Join(entry.Location, devExeName)); err != nil || res.Skipped {
 			return finish(err)
 		}
@@ -177,7 +201,7 @@ func (d *devInstaller) Run() (installResult, error) {
 	if after.Version != d.Version {
 		return finish(failure("version_mismatch", "安装后的版本是 %q，不是 %s", after.Version, d.Version))
 	}
-	res.Installed, res.Location = true, after.Location
+	res.Installed, res.Location = true, nullableString(after.Location)
 
 	inJob, err := d.Procs.Launch(filepath.Join(after.Location, devExeName), []string{flagBackground})
 	if err != nil {
@@ -219,7 +243,7 @@ func (d *devInstaller) closeInstalled(res *installResult, exe string) error {
 			if d.Now().Sub(deferStart) >= wait {
 				res.DeferMs = d.Now().Sub(deferStart).Milliseconds()
 				res.Skipped, res.Reason = true, "window_open"
-				res.Guidance = fmt.Sprintf("%s 的窗口开着（你可能正在用），等了 %d 分钟仍没关闭，这次没有安装；关掉窗口或隐藏到托盘后运行 %s", devDisplayName, int(wait/time.Minute), installOnlyCommand)
+				res.Guidance = nullableString(fmt.Sprintf("%s 的窗口开着（你可能正在用），等了 %d 分钟仍没关闭，这次没有安装；关掉窗口或隐藏到托盘后运行 %s", devDisplayName, int(wait/time.Minute), installOnlyCommand))
 				return nil
 			}
 			d.Sleep(poll)
