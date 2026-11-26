@@ -898,9 +898,20 @@ func (a *App) renderWeiboOnlinePostDetail(c *ui.Context, post *service.WeiboPost
 				a.renderNotePagesGrid(c, itemKey, "weibo", pages, true)
 			}
 
+			var weiboCache previewCacheAction
+			if !hasDegradedNoVideoCard && post.Mid != "" {
+				midCopy := post.Mid
+				viaCopy := a.weiboCacheViaFor(post)
+				weiboCache = previewCacheAction{
+					ItemKey:    itemKey,
+					PendingKey: "cache-weibo-post:" + midCopy,
+					OnCache:    func() { a.cacheWeiboPostNow(midCopy, viaCopy) },
+				}
+			}
+
 			// 5. Single Video Card (cover, duration, resolution/codec)
 			if post.Video != nil {
-				a.renderWeiboDetailVideoCard(c, post.Video, itemKey, cachedItem, false, post.Retweeted != nil && post.Retweeted.Video != nil, false)
+				a.renderWeiboDetailVideoCard(c, post.Video, itemKey, cachedItem, false, post.Retweeted != nil && post.Retweeted.Video != nil, false, weiboCache)
 			}
 
 			// 6. Degraded Rich Card (article, vote, music, webpage, live)
@@ -910,7 +921,7 @@ func (a *App) renderWeiboOnlinePostDetail(c *ui.Context, post *service.WeiboPost
 
 			// 7. Retweet Origin Card (or degraded prompt when deleted/unavailable)
 			if post.Retweeted != nil {
-				a.renderWeiboRetweetCard(c, post.Retweeted, itemKey, cachedItem, len(post.Images), post.Video != nil, false)
+				a.renderWeiboRetweetCard(c, post.Retweeted, itemKey, cachedItem, len(post.Images), post.Video != nil, false, weiboCache)
 			}
 
 			// 8. Online-Only Stats Row (never shown in offline /library/item mode)
@@ -931,7 +942,7 @@ func (a *App) renderWeiboOnlinePostDetail(c *ui.Context, post *service.WeiboPost
 	})
 }
 
-func (a *App) renderWeiboDetailVideoCard(c *ui.Context, v *service.WeiboVideoDTO, itemKey string, cachedItem *library.ItemMetadata, fromOrigin bool, hasOtherSideVideo bool, offline bool) {
+func (a *App) renderWeiboDetailVideoCard(c *ui.Context, v *service.WeiboVideoDTO, itemKey string, cachedItem *library.ItemMetadata, fromOrigin bool, hasOtherSideVideo bool, offline bool, cacheAct previewCacheAction) {
 	if v == nil {
 		return
 	}
@@ -978,7 +989,7 @@ func (a *App) renderWeiboDetailVideoCard(c *ui.Context, v *service.WeiboVideoDTO
 		if hasLocalVideo && cachedItem != nil {
 			a.openPlayerFile(*cachedItem, videoRel)
 		} else if hasPreviewURL {
-			a.openRemoteVideoPreview("weibo", firstNonEmptyStrUI(v.Title, "微博视频"), v.VideoURL)
+			a.openRemoteVideoPreviewWithCache("weibo", firstNonEmptyStrUI(v.Title, "微博视频"), v.VideoURL, false, cacheAct)
 		} else if !offline {
 			c.Toast("点击上方「缓存」后可本机播放")
 			a.BannerInfo = "点击上方「缓存」后可本机播放"
@@ -986,7 +997,7 @@ func (a *App) renderWeiboDetailVideoCard(c *ui.Context, v *service.WeiboVideoDTO
 	}
 }
 
-func (a *App) renderWeiboRetweetCard(c *ui.Context, rt *service.WeiboPostView, outerItemKey string, outerCachedItem *library.ItemMetadata, outerImageCount int, hasOuterVideo bool, offline bool) {
+func (a *App) renderWeiboRetweetCard(c *ui.Context, rt *service.WeiboPostView, outerItemKey string, outerCachedItem *library.ItemMetadata, outerImageCount int, hasOuterVideo bool, offline bool, cacheAct previewCacheAction) {
 	if rt == nil {
 		return
 	}
@@ -1089,7 +1100,7 @@ func (a *App) renderWeiboRetweetCard(c *ui.Context, rt *service.WeiboPostView, o
 				}
 			}
 			if rt.Video != nil {
-				a.renderWeiboDetailVideoCard(c, rt.Video, bindKey, bindCached, true, hasOuterVideo, offline)
+				a.renderWeiboDetailVideoCard(c, rt.Video, bindKey, bindCached, true, hasOuterVideo, offline, cacheAct)
 			}
 			if rt.Card != nil {
 				a.renderWeiboRichCard(c, rt.Card, offline)
@@ -1185,7 +1196,16 @@ func (a *App) renderWeiboStandaloneVideo(c *ui.Context, vv *service.WeiboVideoVi
 				ui.Text(c, vv.Title).FontSize(16).LineHeight(LineHeightCompact).FontWeight(600).TextColor(ColorTextMain)
 			}
 			if vv.Video != nil {
-				a.renderWeiboDetailVideoCard(c, vv.Video, itemKey, cachedItem, false, false, false)
+				var videoCache previewCacheAction
+				if vv.ObjectID != "" {
+					oidCopy := vv.ObjectID
+					videoCache = previewCacheAction{
+						ItemKey:    itemKey,
+						PendingKey: "cache-weibo-video:" + oidCopy,
+						OnCache:    func() { a.cacheWeiboVideoNow(oidCopy) },
+					}
+				}
+				a.renderWeiboDetailVideoCard(c, vv.Video, itemKey, cachedItem, false, false, false, videoCache)
 			}
 		})
 	})
@@ -1253,7 +1273,7 @@ func (a *App) renderWeiboOfflineDetail(c *ui.Context, item library.ItemMetadata)
 				a.renderWeiboDetailVideoCard(c, &service.WeiboVideoDTO{
 					Title:       firstNonEmptyStrUI(item.Title, "微博视频"),
 					DurationSec: dur,
-				}, item.ItemKey, &item, false, false, true)
+				}, item.ItemKey, &item, false, false, true, previewCacheAction{})
 			}
 			if outerCard := libraryRichCardToWeiboDTO(item.Card); outerCard != nil {
 				a.renderWeiboRichCard(c, outerCard, true)
@@ -1279,7 +1299,7 @@ func (a *App) renderWeiboOfflineDetail(c *ui.Context, item library.ItemMetadata)
 						DurationSec: dur,
 					}
 				}
-				a.renderWeiboRetweetCard(c, rtView, item.ItemKey, &item, 0, false, true)
+				a.renderWeiboRetweetCard(c, rtView, item.ItemKey, &item, 0, false, true, previewCacheAction{})
 			}
 		})
 	})

@@ -13,6 +13,28 @@ func (a *App) wakePlayerControls(now time.Time) {
 	a.PlayerOverlay.ControlsHidden = false
 }
 
+func (a *App) previewCacheBusyOrQueued() bool {
+	if a.PlayerOverlay.PreviewCacheQueued {
+		return true
+	}
+	if a.PlayerOverlay.PreviewPendingKey != "" && a.isPending(a.PlayerOverlay.PreviewPendingKey) {
+		return true
+	}
+	return false
+}
+
+func (a *App) triggerPreviewCache(c *ui.Context) {
+	if !a.PlayerOverlay.PreviewMode || a.PlayerOverlay.PreviewOnCache == nil || a.previewCacheBusyOrQueued() {
+		return
+	}
+	a.PlayerOverlay.PreviewCacheQueued = true
+	a.PlayerOverlay.PreviewOnCache()
+	a.BannerInfo = "已加入缓存任务"
+	if c != nil {
+		c.Toast("已加入缓存任务")
+	}
+}
+
 func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 	// A floating panel over the app; full screen fills the window.
 	fullW, fullH := w, h
@@ -100,16 +122,43 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 									reason = "当前系统缺少 AV1 / HEVC 硬件或系统解码扩展，无法在内置播放器解码该视频流。"
 								}
 								ui.Text(c, "解码器缺失提示："+reason).FontSize(14).FontWeight(600).TextColor(ColorWhite).MaxLines(3)
-								if AccentPillButton(c, "立即用系统播放器打开", "缺失解码器时用系统播放器打开").Clicked() {
-									if err := a.backend.Desktop().OpenPath(a.PlayerOverlay.MediaPath); err != nil {
-										a.showError(err)
+								if !a.PlayerOverlay.PreviewMode && a.PlayerOverlay.MediaPath != "" {
+									if AccentPillButton(c, "立即用系统播放器打开", "缺失解码器时用系统播放器打开").Clicked() {
+										if err := a.backend.Desktop().OpenPath(a.PlayerOverlay.MediaPath); err != nil {
+											a.showError(err)
+										}
+									}
+								} else if a.PlayerOverlay.PreviewMode && a.PlayerOverlay.PreviewOnCache != nil {
+									queued := a.previewCacheBusyOrQueued()
+									btnText := "缓存到媒体库"
+									if queued {
+										btnText = "已加入缓存"
+									}
+									if AccentPillButton(c, btnText, "缺失解码器时缓存到媒体库").Disabled(queued).Clicked() && !queued {
+										a.triggerPreviewCache(c)
 									}
 								}
 							})
 						})
 					} else if a.PlayerOverlay.LoadError != "" {
 						ui.Column(c).Absolute().Top(0).Left(0).Size(w, h).Justify(ui.Center).AlignItems(ui.Center).Padding(32).Children(func() {
-							ui.Text(c, a.PlayerOverlay.LoadError).FontSize(14).FontWeight(600).MaxLines(3).TextColor(ColorError)
+							if a.PlayerOverlay.PreviewMode {
+								ui.Column(c).Width(min(float32(520), w-48)).Padding(24).Radius(16).Background(ui.RGBA(30, 34, 42, 0.94)).Border(1, ui.RGBA(255, 255, 255, 0.16)).AlignItems(ui.Center).Gap(14).Children(func() {
+									ui.Text(c, a.PlayerOverlay.LoadError).Label("临时预览错误说明").FontSize(14).LineHeight(LineHeightCompact).FontWeight(600).MaxLines(4).TextColor(ColorWhite)
+									if a.PlayerOverlay.PreviewOnCache != nil {
+										queued := a.previewCacheBusyOrQueued()
+										btnText := "缓存到媒体库"
+										if queued {
+											btnText = "已加入缓存"
+										}
+										if AccentPillButton(c, btnText, "预览失败缓存到媒体库").Disabled(queued).Clicked() && !queued {
+											a.triggerPreviewCache(c)
+										}
+									}
+								})
+							} else {
+								ui.Text(c, a.PlayerOverlay.LoadError).FontSize(14).FontWeight(600).MaxLines(3).TextColor(ColorError)
+							}
 						})
 					} else {
 						ui.Box(c).Absolute().Top(0).Left(0).Size(w, h).Background(ColorBlack).Clip().Children(func() {
@@ -152,7 +201,8 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 
 					// Floating controls (fade out after 2s of mouse/key inactivity)
 					if !a.PlayerOverlay.ControlsHidden {
-						// Top floating bar: Title on left + "⋯" menu & Close circular floating buttons on right
+						// Top floating bar: Title (+ "临时预览" badge in PreviewMode) on left,
+						// optional "缓存到媒体库" CTA + "⋯" menu & Close circular floating buttons on right.
 						ui.Row(c).
 							Absolute().
 							Top(20).
@@ -162,10 +212,57 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 							Justify(ui.SpaceBetween).
 							Gap(12).
 							Children(func() {
-								ui.Box(c).Shrink(1).ClipX().Padding(6, 14).Radius(999).Background(ui.RGBA(0, 0, 0, 0.48)).Children(func() {
-									ui.Text(c, a.PlayerOverlay.Title).FontSize(14).FontWeight(600).TextColor(ColorWhite).SingleLine()
+								ui.Row(c).Shrink(1).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
+									ui.Box(c).Shrink(1).ClipX().Padding(6, 14).Radius(999).Background(ui.RGBA(0, 0, 0, 0.48)).Children(func() {
+										ui.Text(c, a.PlayerOverlay.Title).FontSize(14).FontWeight(600).TextColor(ColorWhite).SingleLine()
+									})
+									if a.PlayerOverlay.PreviewMode {
+										ui.Box(c).
+											Label("临时预览标记").
+											Shrink(0).
+											Padding(5, 10).
+											Radius(999).
+											Background(ui.RGBA(14, 34, 68, 0.76)).
+											Border(1, ui.RGBA(138, 180, 248, 0.65)).
+											Children(func() {
+												ui.Text(c, "临时预览").FontSize(12).FontWeight(600).TextColor(ColorWhite).SingleLine()
+											})
+									}
 								})
 								ui.Row(c).Shrink(0).Gap(10).AlignItems(ui.Center).Children(func() {
+									if a.PlayerOverlay.PreviewMode && a.PlayerOverlay.PreviewOnCache != nil {
+										queued := a.previewCacheBusyOrQueued()
+										btnText := "缓存到媒体库"
+										bg := ColorAccent
+										border := ui.RGBA(255, 255, 255, 0.26)
+										if queued {
+											btnText = "已加入缓存"
+											bg = ui.RGBA(255, 255, 255, 0.16)
+										}
+										cacheBtn := ui.Button(c, "").
+											Label("临时预览缓存到媒体库").
+											Shrink(0).
+											Radius(999).
+											Padding(7, 14).
+											Background(bg).
+											Border(1, border).
+											Justify(ui.Center).
+											AlignItems(ui.Center).
+											Disabled(queued)
+										if !queued && cacheBtn.Hovered() {
+											cacheBtn.Border(1, ColorWhite)
+										}
+										cacheBtn.Children(func() {
+											ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+												DrawIcon(c, "download", 14, ColorWhite, 1.9)
+												ui.Text(c, btnText).FontSize(12).FontWeight(600).TextColor(ColorWhite).SingleLine()
+											})
+										})
+										if cacheBtn.Clicked() && !queued {
+											a.wakePlayerControls(now)
+											a.triggerPreviewCache(c)
+										}
+									}
 									if FloatingCircleButton(c, "more", "播放器更多菜单", 40).Clicked() {
 										a.wakePlayerControls(now)
 										a.PlayerOverlay.MoreMenuOpen = !a.PlayerOverlay.MoreMenuOpen
@@ -271,22 +368,28 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 										})
 									}
 
-									ui.Row(c).FillWidth().Padding(4, 0, 0, 0).Gap(8).Wrap().Children(func() {
-										if a.PlayerOverlay.ItemKey != "" {
-											if FloatingPillButton(c, "folder", "在文件夹中显示", "播放层打开文件夹").Clicked() {
-												a.wakePlayerControls(now)
-												if err := a.backend.OpenItemFolder(a.PlayerOverlay.ItemKey); err != nil {
-													a.showError(err)
+									canOpenLibraryFile := !a.PlayerOverlay.PreviewMode && a.PlayerOverlay.MediaPath != ""
+									canRevealLibrary := !a.PlayerOverlay.PreviewMode && a.PlayerOverlay.ItemKey != ""
+									if canRevealLibrary || canOpenLibraryFile {
+										ui.Row(c).FillWidth().Padding(4, 0, 0, 0).Gap(8).Wrap().Children(func() {
+											if canRevealLibrary {
+												if FloatingPillButton(c, "folder", "在文件夹中显示", "播放层打开文件夹").Clicked() {
+													a.wakePlayerControls(now)
+													if err := a.backend.OpenItemFolder(a.PlayerOverlay.ItemKey); err != nil {
+														a.showError(err)
+													}
 												}
 											}
-										}
-										if FloatingPillButton(c, "external-link", "用系统播放器打开", "用系统播放器打开").Clicked() {
-											a.wakePlayerControls(now)
-											if err := a.backend.Desktop().OpenPath(a.PlayerOverlay.MediaPath); err != nil {
-												a.showError(err)
+											if canOpenLibraryFile {
+												if FloatingPillButton(c, "external-link", "用系统播放器打开", "用系统播放器打开").Clicked() {
+													a.wakePlayerControls(now)
+													if err := a.backend.Desktop().OpenPath(a.PlayerOverlay.MediaPath); err != nil {
+														a.showError(err)
+													}
+												}
 											}
-										}
-									})
+										})
+									}
 								})
 						}
 						if a.PlayerOverlay.VolumeMenuOpen {

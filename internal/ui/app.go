@@ -84,35 +84,41 @@ type ImageViewerState struct {
 
 // PlayerOverlayState holds state for the in-app media player overlay.
 type PlayerOverlayState struct {
-	Open             bool
-	ItemKey          string
-	Title            string
-	MediaPath        string
-	Loading          bool
-	LoadError        string
-	Segment          int
-	Segments         []string
-	Chapters         []library.VideoChapter
-	PendingSeekSec   float64
-	DecoderMissing   bool
-	MissingReason    string
-	SeekNormalized   float64
-	DanmakuEnabled   bool
-	DanmakuOpacity   float64
-	DanmakuArea      string
-	DanmakuDensity   string
-	Volume           float64
-	VolumeMenuOpen   bool
-	SubtitleLang     string
-	SubtitleOptions  []string
-	MoreMenuOpen     bool
-	Fullscreen       bool
-	LoopMuted        bool
-	LoopPaused       bool
-	LastActiveAt     time.Time
-	ControlsHidden   bool
-	volumeScrubbing  bool
-	opacityScrubbing bool
+	Open               bool
+	ItemKey            string
+	Title              string
+	MediaPath          string
+	Loading            bool
+	LoadError          string
+	Segment            int
+	Segments           []string
+	Chapters           []library.VideoChapter
+	PendingSeekSec     float64
+	DecoderMissing     bool
+	MissingReason      string
+	SeekNormalized     float64
+	DanmakuEnabled     bool
+	DanmakuOpacity     float64
+	DanmakuArea        string
+	DanmakuDensity     string
+	Volume             float64
+	VolumeMenuOpen     bool
+	SubtitleLang       string
+	SubtitleOptions    []string
+	MoreMenuOpen       bool
+	Fullscreen         bool
+	LoopMuted          bool
+	LoopPaused         bool
+	PreviewMode        bool
+	PreviewSite        string
+	PreviewItemKey     string
+	PreviewPendingKey  string
+	PreviewCacheQueued bool
+	PreviewOnCache     func()
+	LastActiveAt       time.Time
+	ControlsHidden     bool
+	volumeScrubbing    bool
+	opacityScrubbing   bool
 }
 
 // DeleteConfirmState holds state for the library item deletion confirmation modal.

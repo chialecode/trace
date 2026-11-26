@@ -340,21 +340,45 @@ func (a *App) renderDouyinWorkRoute(c *ui.Context, viewportHeight float32) {
 				if durationSec > 0 {
 					durText = FormatDuration(durationSec)
 				}
-				ui.Row(c).FillWidth().Justify(ui.Center).Children(func() {
+				canPreviewVideo := !offline && cachedItem == nil && work != nil &&
+					kind != "note" && kind != "unsupported" && !uncacheable &&
+					strings.TrimSpace(work.VideoURL) != ""
+				ui.Column(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
 					coverBtn := ui.ButtonBase(c).
 						Label("抖音视频封面播放").
 						Padding(0).
 						Radius(12).
 						Clip().
 						Children(func() {
-							a.renderMediaThumb(c, itemKey, relCover, headline, durText, "", cachedItem != nil, dispW, dispH, coverURL)
+							a.renderMediaThumb(c, itemKey, relCover, headline, durText, "", cachedItem != nil || canPreviewVideo, dispW, dispH, coverURL)
 						})
 					if coverBtn.Clicked() {
 						if cachedItem != nil {
 							a.OpenPlayerOverlay(*cachedItem)
+						} else if canPreviewVideo {
+							var cacheAct previewCacheAction
+							if awemeID != "" {
+								idCopy := awemeID
+								forUID, forName := a.douyinWorkCacheFor(idCopy)
+								cacheAct = previewCacheAction{
+									ItemKey:    itemKey,
+									PendingKey: "cache-douyin:" + idCopy,
+									OnCache: func() {
+										if forUID != "" {
+											a.cacheDouyinWorkFor(idCopy, forUID, forName)
+										} else {
+											a.cacheDouyinWorkNow(idCopy)
+										}
+									},
+								}
+							}
+							a.openRemoteVideoPreviewWithCache("douyin", headline, work.VideoURL, false, cacheAct)
 						} else if coverURL != "" {
 							a.OpenImageViewer([]string{coverURL}, nil, 0)
 						}
+					}
+					if canPreviewVideo {
+						ui.Text(c, "点击封面临时预览，缓存后可离线观看").Label("抖音视频预览提示").FontSize(12).TextColor(ColorInfoBlue).SingleLine()
 					}
 				})
 			}

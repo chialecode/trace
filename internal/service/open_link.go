@@ -1991,9 +1991,10 @@ func (b *Backend) DouyinLive(ctx context.Context, webRID string) (*DouyinLiveVie
 	}, nil
 }
 
-// StagePreviewMedia downloads a whitelisted CDN audio/video clip (e.g. uncached Douyin note BGM,
-// note video page, or Weibo LivePhoto clip) without sending Cookie into <DataDir>/cache/preview/
-// and returns its local file path for playback via internal/player.
+// StagePreviewMedia downloads a whitelisted CDN audio/video clip (e.g. uncached Douyin/Weibo/X
+// short video, Douyin note BGM/video page, or Weibo/Bilibili LivePhoto clip) without sending
+// Cookie to media CDNs, streaming directly to <DataDir>/cache/preview/ with strict byte bounds,
+// cache-hit reuse, and hashed filenames (zero URL/token leak). Never writes into library.db.
 func (b *Backend) StagePreviewMedia(ctx context.Context, siteID, rawURL, ext string) (string, error) {
 	id, err := normalizeSiteID(siteID)
 	if err != nil {
@@ -2006,107 +2007,244 @@ func (b *Backend) StagePreviewMedia(ctx context.Context, siteID, rawURL, ext str
 	if rawURL == "" {
 		return "", &site.Error{Site: id, Kind: site.ErrKindBadRequest, Message: "媒体预览地址为空"}
 	}
-	var data []byte
+
+	safeExt := normalizePreviewExt(ext)
 	isWeiboLivePhoto := false
-	switch id {
-	case site.Douyin:
-		var fetchErr error
-		data, _, fetchErr = b.douyin.FetchImageLimited(ctx, rawURL, maxPreviewMediaBytes)
-		if fetchErr != nil {
-			return "", fetchErr
-		}
-	case site.Weibo:
+	weiboNormalizedURL := ""
+	if id == site.Weibo {
 		if b.weibo == nil {
 			return "", &site.Error{Site: site.Weibo, Kind: site.ErrKindUnavailable, Message: "微博客户端未初始化"}
 		}
 		liveSpec := b.weibo.LivePhotoMediaTransport()
-		normalizedURL := normalizeWeiboPreviewURL(rawURL, liveSpec.AllowLocalhost)
-		isWeiboLivePhoto = site.IsWeiboLivePhotoInitialURL(normalizedURL)
+		weiboNormalizedURL = normalizeWeiboPreviewURL(rawURL, liveSpec.AllowLocalhost)
+		isWeiboLivePhoto = site.IsWeiboLivePhotoInitialURL(weiboNormalizedURL)
+	}
+	cacheExt := safeExt
+	if id == site.Weibo && (isWeiboLivePhoto || safeExt == ".mov") {
+		cacheExt = ".mp4"
+	}
+
+	sum := sha256.Sum256([]byte(string(id) + "\x00" + rawURL))
+	fileName := fmt.Sprintf("preview_%s_%x%s", string(id), sum[:16], cacheExt)
+	fullPath := filepath.Join(b.previewDir, fileName)
+
+	// Cache-hit reuse: if this preview was already staged in previewDir, refresh mtime and return immediately.
+	if info, stErr := os.Lstat(fullPath); stErr == nil && info.Mode().IsRegular() && info.Size() > 0 {
+		now := time.Now()
+		_ = os.Chtimes(fullPath, now, now)
+		return fullPath, nil
+	}
+
+	limit := b.maxPreviewBytes
+	if limit <= 0 {
+		limit = maxPreviewMediaBytes
+	}
+
+	if err := os.MkdirAll(b.previewDir, 0o700); err != nil {
+		return "", &site.Error{Site: id, Kind: site.ErrKindStorage, Message: "创建临时预览目录失败", Err: err}
+	}
+	stagePath := storage.TempSiblingPath(fullPath)
+	cleanupStage := true
+	defer func() {
+		if cleanupStage {
+			_ = os.Remove(stagePath)
+		}
+	}()
+
+	var headBuf []byte
+	switch id {
+	case site.Douyin:
+		if b.douyin == nil {
+			return "", &site.Error{Site: site.Douyin, Kind: site.ErrKindUnavailable, Message: "抖音客户端未初始化"}
+		}
+		vodSpec := b.douyin.VODTransport()
+		fetchURL := upgradeDouyinPreviewURL(rawURL, vodSpec.AllowLocalhost)
+		if isDouyinPlayRedirectURL(fetchURL, vodSpec.AllowLocalhost) {
+			resolved, rErr := b.douyin.ResolvePlayRedirect(ctx, fetchURL)
+			if rErr != nil {
+				return "", rErr
+			}
+			fetchURL = resolved
+		}
+		mediaClient, idleTimeout := b.douyin.MediaHTTPClient()
+		headBuf, err = b.streamPreviewToTempFile(ctx, mediaClient, idleTimeout, vodSpec, fetchURL, limit, 5, stagePath)
+		if err != nil {
+			return "", err
+		}
+	case site.Weibo:
 		spec := b.weibo.MediaTransport()
 		if isWeiboLivePhoto {
-			spec = liveSpec
+			spec = b.weibo.LivePhotoMediaTransport()
 		}
-		var fetchErr error
-		data, fetchErr = b.fetchWeiboPreviewMedia(ctx, spec, normalizedURL, maxPreviewMediaBytes)
-		if fetchErr != nil {
-			return "", fetchErr
+		client, cleanupRT := b.weiboPreviewHTTPClient(spec)
+		if cleanupRT != nil {
+			defer cleanupRT()
+		}
+		headBuf, err = b.streamPreviewToTempFile(ctx, client, 30*time.Second, spec, weiboNormalizedURL, limit, 5, stagePath)
+		if err != nil {
+			return "", err
 		}
 	case site.Bilibili:
-		var fetchErr error
-		data, fetchErr = b.bili.FetchImageLimited(ctx, rawURL, maxPreviewMediaBytes)
-		if fetchErr != nil {
-			return "", fetchErr
+		if b.bili == nil {
+			return "", &site.Error{Site: site.Bilibili, Kind: site.ErrKindUnavailable, Message: "哔哩哔哩客户端未初始化"}
+		}
+		if vErr := b.bili.ValidateMediaURL(rawURL); vErr != nil {
+			return "", &site.Error{Site: site.Bilibili, Kind: site.ErrKindBlocked, Message: "哔哩哔哩预览媒体地址不受支持"}
+		}
+		fetchURL := rawURL
+		if parsed, pErr := url.Parse(rawURL); pErr == nil {
+			parsed.Path = strings.SplitN(parsed.Path, "@", 2)[0]
+			fetchURL = parsed.String()
+		}
+		spec := site.MediaTransportSpec{
+			Site:           site.Bilibili,
+			AllowedDomains: site.DefaultBilibiliCDNHosts(),
+			UserAgent:      bilibili.DefaultUserAgent,
+			AllowLocalhost: b.bili.AllowLocalhost(),
+		}
+		mediaClient, idleTimeout := b.bili.MediaHTTPClient()
+		headBuf, err = b.streamPreviewToTempFile(ctx, mediaClient, idleTimeout, spec, fetchURL, limit, 5, stagePath)
+		if err != nil {
+			return "", err
 		}
 	case site.X:
 		if b.x == nil {
 			return "", &site.Error{Site: site.X, Kind: site.ErrKindUnavailable, Message: "X 客户端未初始化"}
 		}
-		var fetchErr error
-		data, _, fetchErr = b.x.FetchImageLimited(ctx, rawURL, maxPreviewMediaBytes)
-		if fetchErr != nil {
-			return "", fetchErr
+		spec := b.x.MediaTransport()
+		fetchURL := normalizeXPreviewURL(rawURL, spec.AllowLocalhost)
+		mediaClient, idleTimeout := b.x.MediaHTTPClient()
+		headBuf, err = b.streamPreviewToTempFile(ctx, mediaClient, idleTimeout, spec, fetchURL, limit, 5, stagePath)
+		if err != nil {
+			return "", err
 		}
 	default:
 		return "", &site.Error{Site: id, Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
 	}
-	safeExt := ".mp4"
-	switch strings.ToLower(strings.TrimSpace(ext)) {
-	case ".mov", "mov":
-		safeExt = ".mov"
-	case ".mp3", "mp3":
-		safeExt = ".mp3"
-	case ".m4a", "m4a":
-		safeExt = ".m4a"
-	case ".aac", "aac":
-		safeExt = ".aac"
-	case ".ogg", "ogg":
-		safeExt = ".ogg"
-	case ".wav", "wav":
-		safeExt = ".wav"
-	case ".jpg", "jpg", ".jpeg", "jpeg":
-		safeExt = ".jpg"
-	case ".png", "png":
-		safeExt = ".png"
-	case ".gif", "gif":
-		safeExt = ".gif"
-	case ".webp", "webp":
-		safeExt = ".webp"
-	}
-	needsLivePhotoMP4 := id == site.Weibo && (isWeiboLivePhoto || safeExt == ".mov" || isQuickTimeContainerBytes(data))
+
+	needsLivePhotoMP4 := id == site.Weibo && (isWeiboLivePhoto || safeExt == ".mov" || isQuickTimeContainerBytes(headBuf))
 	if needsLivePhotoMP4 {
-		safeExt = ".mp4"
-	}
-	sum := sha256.Sum256([]byte(string(id) + "\x00" + rawURL))
-	fileName := fmt.Sprintf("preview_%s_%x%s", string(id), sum[:16], safeExt)
-	fullPath := filepath.Join(b.previewDir, fileName)
-	if needsLivePhotoMP4 {
-		if err := os.MkdirAll(b.previewDir, 0o700); err != nil {
-			return "", err
-		}
-		stagePath := storage.TempSiblingPath(fullPath)
-		cleanupStage := true
-		defer func() {
-			if cleanupStage {
-				_ = os.Remove(stagePath)
-			}
-		}()
-		if err := os.WriteFile(stagePath, data, 0o600); err != nil {
-			return "", err
+		if cacheExt != ".mp4" {
+			fileName = fmt.Sprintf("preview_%s_%x.mp4", string(id), sum[:16])
+			fullPath = filepath.Join(b.previewDir, fileName)
 		}
 		if _, _, err := download.EnsureLivePhotoMP4Context(ctx, stagePath, 0); err != nil {
 			return "", err
 		}
-		if err := os.Rename(stagePath, fullPath); err != nil {
-			return "", err
-		}
-		cleanupStage = false
-	} else {
-		if err := storage.WriteFileAtomic(fullPath, data, 0o600); err != nil {
-			return "", err
-		}
 	}
+
+	if err := os.Rename(stagePath, fullPath); err != nil {
+		if info, stErr := os.Lstat(fullPath); stErr == nil && info.Mode().IsRegular() && info.Size() > 0 {
+			now := time.Now()
+			_ = os.Chtimes(fullPath, now, now)
+			return fullPath, nil
+		}
+		return "", &site.Error{Site: id, Kind: site.ErrKindStorage, Message: "写入临时预览文件失败", Err: err}
+	}
+	cleanupStage = false
 	prunePreviewDir(b.previewDir, fullPath, maxPreviewDirBytes, maxPreviewDirFiles)
 	return fullPath, nil
+}
+
+func normalizePreviewExt(ext string) string {
+	switch strings.ToLower(strings.TrimSpace(ext)) {
+	case ".mov", "mov":
+		return ".mov"
+	case ".mp3", "mp3":
+		return ".mp3"
+	case ".m4a", "m4a":
+		return ".m4a"
+	case ".aac", "aac":
+		return ".aac"
+	case ".ogg", "ogg":
+		return ".ogg"
+	case ".wav", "wav":
+		return ".wav"
+	case ".jpg", "jpg", ".jpeg", "jpeg":
+		return ".jpg"
+	case ".png", "png":
+		return ".png"
+	case ".gif", "gif":
+		return ".gif"
+	case ".webp", "webp":
+		return ".webp"
+	default:
+		return ".mp4"
+	}
+}
+
+func upgradeDouyinPreviewURL(raw string, allowLocalhost bool) string {
+	s := strings.TrimSpace(raw)
+	if strings.HasPrefix(strings.ToLower(s), "http://") {
+		if allowLocalhost {
+			if u, err := url.Parse(s); err == nil && site.IsLoopbackHost(u.Hostname()) {
+				return s
+			}
+		}
+		return "https://" + s[len("http://"):]
+	}
+	return s
+}
+
+func normalizeXPreviewURL(raw string, allowLocalhost bool) string {
+	s := strings.TrimSpace(raw)
+	if strings.HasPrefix(s, "//") {
+		return "https:" + s
+	}
+	if strings.HasPrefix(strings.ToLower(s), "http://") {
+		if allowLocalhost {
+			if u, err := url.Parse(s); err == nil && site.IsLoopbackHost(u.Hostname()) {
+				return s
+			}
+		}
+		return "https://" + s[len("http://"):]
+	}
+	return s
+}
+
+func isDouyinPlayRedirectURL(rawURL string, allowLocalhost bool) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	cleanPath := strings.TrimSuffix(strings.ToLower(u.Path), "/")
+	if cleanPath != "/aweme/v1/play" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return site.MatchDomainSuffix(host, []string{"douyin.com", "iesdouyin.com", "amemv.com"}) ||
+		(allowLocalhost && site.IsLoopbackHost(host))
+}
+
+func sitePreviewLabel(siteID site.ID) string {
+	switch siteID {
+	case site.Douyin:
+		return "抖音预览媒体"
+	case site.Weibo:
+		return "微博预览媒体"
+	case site.X:
+		return "X 预览媒体"
+	case site.Bilibili:
+		return "哔哩哔哩预览媒体"
+	default:
+		return "预览媒体"
+	}
+}
+
+func previewMediaTooLargeError(siteID site.ID, maxBytes int64) *site.Error {
+	limitMiB := maxBytes / (1024 * 1024)
+	if limitMiB <= 0 {
+		return &site.Error{
+			Site:    siteID,
+			Kind:    site.ErrKindBlocked,
+			Message: "视频体积超过临时预览上限，请点击「缓存到媒体库」完整下载后观看",
+		}
+	}
+	return &site.Error{
+		Site:    siteID,
+		Kind:    site.ErrKindBlocked,
+		Message: fmt.Sprintf("视频体积超过临时预览上限（%d MiB），请点击「缓存到媒体库」完整下载后观看", limitMiB),
+	}
 }
 
 func normalizeWeiboPreviewURL(raw string, allowLocalhost bool) string {
@@ -2165,29 +2303,23 @@ func (b *Backend) resolveWeiboForwarderHintName(hintUID, postAuthorUID, postAuth
 	return ""
 }
 
-func (b *Backend) fetchWeiboPreviewMedia(ctx context.Context, spec site.MediaTransportSpec, rawURL string, maxBytes int64) ([]byte, error) {
-	if err := spec.ValidateURL(rawURL); err != nil {
-		return nil, err
-	}
-	if maxBytes <= 0 {
-		maxBytes = maxPreviewMediaBytes
-	}
-
+func (b *Backend) weiboPreviewHTTPClient(spec site.MediaTransportSpec) (*http.Client, func()) {
 	var rt http.RoundTripper
 	var ownedTransport *http.Transport
 	if b.weiboPreviewRT != nil {
 		rt = b.weiboPreviewRT
 	} else {
+		mediaGuard := site.NewGuardedMediaDialer(
+			site.Weibo,
+			spec.AllowLocalhost,
+			&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second},
+			"媒体地址解析到受限的本地或内网地址",
+		)
 		ownedTransport = &http.Transport{
-			Proxy: site.Proxy,
-			DialContext: site.NewGuardedMediaDialer(
-				site.Weibo,
-				spec.AllowLocalhost,
-				&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second},
-				"媒体地址解析到受限的本地或内网地址",
-			).DialContext,
+			Proxy:                 mediaGuard.Proxy,
+			DialContext:           mediaGuard.DialContext,
+			ResponseHeaderTimeout: 15 * time.Second,
 		}
-		defer ownedTransport.CloseIdleConnections()
 		rt = ownedTransport
 		if spec.AllowLocalhost {
 			rt = site.LoopbackTransport(ownedTransport)
@@ -2196,14 +2328,43 @@ func (b *Backend) fetchWeiboPreviewMedia(ctx context.Context, spec site.MediaTra
 	if b.weiboPreviewWrap != nil {
 		rt = b.weiboPreviewWrap(rt)
 	}
+	var cleanup func()
+	if ownedTransport != nil {
+		cleanup = ownedTransport.CloseIdleConnections
+	}
+	return &http.Client{Transport: rt, Timeout: 0}, cleanup
+}
 
-	const maxHops = 5
+func (b *Backend) streamPreviewToTempFile(
+	ctx context.Context,
+	baseClient *http.Client,
+	idleTimeout time.Duration,
+	spec site.MediaTransportSpec,
+	targetURL string,
+	maxBytes int64,
+	maxRedirects int,
+	tempPath string,
+) ([]byte, error) {
+	if err := spec.ValidateURL(targetURL); err != nil {
+		return nil, err
+	}
+	if baseClient == nil {
+		return nil, &site.Error{Site: spec.Site, Kind: site.ErrKindUnavailable, Message: sitePreviewLabel(spec.Site) + "客户端未初始化"}
+	}
+	if maxBytes <= 0 {
+		maxBytes = maxPreviewMediaBytes
+	}
+	if idleTimeout <= 0 {
+		idleTimeout = 30 * time.Second
+	}
+	label := sitePreviewLabel(spec.Site)
+
 	client := &http.Client{
-		Transport: rt,
-		Timeout:   30 * time.Second,
+		Transport: baseClient.Transport,
+		Timeout:   0,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= maxHops {
-				return &site.Error{Site: site.Weibo, Kind: site.ErrKindBlocked, Message: "微博预览媒体重定向次数过多"}
+			if maxRedirects <= 0 || len(via) >= maxRedirects {
+				return &site.Error{Site: spec.Site, Kind: site.ErrKindBlocked, Message: label + "重定向次数过多"}
 			}
 			if err := spec.ValidateRedirectURL(req.URL.String()); err != nil {
 				return err
@@ -2214,9 +2375,9 @@ func (b *Backend) fetchWeiboPreviewMedia(ctx context.Context, spec site.MediaTra
 		},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
-		return nil, &site.Error{Site: site.Weibo, Kind: site.ErrKindBadRequest, Message: "无效的微博预览媒体地址", Err: site.UnwrapURLError(err)}
+		return nil, &site.Error{Site: spec.Site, Kind: site.ErrKindBadRequest, Message: "无效的" + label + "地址", Err: site.UnwrapURLError(err)}
 	}
 	req.Header.Del("Cookie")
 	spec.ApplyHeaders(req)
@@ -2227,42 +2388,128 @@ func (b *Backend) fetchWeiboPreviewMedia(ctx context.Context, spec site.MediaTra
 		if errors.As(err, &se) {
 			return nil, se
 		}
-		return nil, &site.Error{Site: site.Weibo, Kind: site.ErrKindNetwork, Message: "拉取微博预览媒体失败", Err: site.UnwrapURLError(err)}
+		return nil, &site.Error{Site: spec.Site, Kind: site.ErrKindNetwork, Message: "拉取" + label + "失败", Err: site.UnwrapURLError(err)}
 	}
-	defer resp.Body.Close()
+	body := site.WrapIdleReadCloser(resp.Body, idleTimeout, func() error {
+		return &site.Error{Site: spec.Site, Kind: site.ErrKindNetwork, Message: "读取" + label + "超时"}
+	})
+	defer body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		kind := site.ErrKindUnavailable
 		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			kind = site.ErrKindAuthRequired
 		case 414, 418, 432:
-			kind = site.ErrKindRiskControl
+			if spec.Site == site.Weibo {
+				kind = site.ErrKindRiskControl
+			}
 		case http.StatusTooManyRequests:
 			kind = site.ErrKindRateLimited
 		}
 		return nil, &site.Error{
-			Site:       site.Weibo,
+			Site:       spec.Site,
 			Kind:       kind,
 			HTTPStatus: resp.StatusCode,
-			Message:    fmt.Sprintf("微博预览媒体返回 HTTP %d", resp.StatusCode),
+			Message:    fmt.Sprintf("%s返回 HTTP %d", label, resp.StatusCode),
 		}
 	}
 
 	ct := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
 	if strings.HasPrefix(ct, "text/html") || strings.HasPrefix(ct, "application/json") || strings.HasPrefix(ct, "text/plain") {
-		return nil, &site.Error{Site: site.Weibo, Kind: site.ErrKindBlocked, Message: "微博预览媒体响应类型异常: " + ct}
+		ctType, _, _ := strings.Cut(ct, ";")
+		ctType = strings.TrimSpace(ctType)
+		if len(ctType) > 48 {
+			ctType = ctType[:48]
+		}
+		return nil, &site.Error{Site: spec.Site, Kind: site.ErrKindBlocked, Message: label + "响应类型异常: " + ctType}
 	}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if resp.ContentLength > maxBytes {
+		return nil, previewMediaTooLargeError(spec.Site, maxBytes)
+	}
+
+	f, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return nil, &site.Error{Site: site.Weibo, Kind: site.ErrKindNetwork, Message: "读取微博预览媒体失败", Err: err}
+		return nil, &site.Error{Site: spec.Site, Kind: site.ErrKindStorage, Message: "创建临时预览文件失败", Err: err}
 	}
-	if int64(len(data)) > maxBytes {
-		return nil, &site.Error{Site: site.Weibo, Kind: site.ErrKindBlocked, Message: "微博预览媒体体积超出安全上限"}
+
+	buf := make([]byte, 32*1024)
+	head := make([]byte, 0, 512)
+	var written int64
+	for {
+		if cErr := ctx.Err(); cErr != nil {
+			_ = f.Close()
+			_ = os.Remove(tempPath)
+			return nil, &site.Error{Site: spec.Site, Kind: site.ErrKindNetwork, Message: "临时预览已取消", Err: cErr}
+		}
+		n, rErr := body.Read(buf)
+		if n > 0 {
+			if written+int64(n) > maxBytes {
+				_ = f.Close()
+				_ = os.Remove(tempPath)
+				return nil, previewMediaTooLargeError(spec.Site, maxBytes)
+			}
+			if _, wErr := f.Write(buf[:n]); wErr != nil {
+				_ = f.Close()
+				_ = os.Remove(tempPath)
+				return nil, &site.Error{Site: spec.Site, Kind: site.ErrKindStorage, Message: "写入临时预览文件失败", Err: wErr}
+			}
+			written += int64(n)
+			if len(head) < cap(head) {
+				need := cap(head) - len(head)
+				if need > n {
+					need = n
+				}
+				head = append(head, buf[:need]...)
+			}
+		}
+		if rErr == io.EOF {
+			break
+		}
+		if rErr != nil {
+			_ = f.Close()
+			_ = os.Remove(tempPath)
+			var se *site.Error
+			if errors.As(rErr, &se) {
+				return nil, se
+			}
+			return nil, &site.Error{Site: spec.Site, Kind: site.ErrKindNetwork, Message: "读取" + label + "失败", Err: site.UnwrapURLError(rErr)}
+		}
 	}
-	if looksLikePreviewHTMLOrJSON(data) {
-		return nil, &site.Error{Site: site.Weibo, Kind: site.ErrKindBlocked, Message: "微博预览媒体响应内容疑似伪装页面"}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return nil, &site.Error{Site: spec.Site, Kind: site.ErrKindStorage, Message: "保存临时预览文件失败", Err: err}
 	}
-	return data, nil
+	if written == 0 || looksLikePreviewHTMLOrJSON(head) {
+		_ = os.Remove(tempPath)
+		return nil, &site.Error{Site: spec.Site, Kind: site.ErrKindBlocked, Message: label + "响应内容疑似伪装页面"}
+	}
+	return head, nil
+}
+
+// sweepPreviewDir clears stale staged preview files and leftover temp files from a previous crash
+// on startup without following symlinks outside dir.
+func sweepPreviewDir(dir string) {
+	if strings.TrimSpace(dir) == "" {
+		return
+	}
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		p := filepath.Join(dir, e.Name())
+		if e.Type()&os.ModeSymlink != 0 {
+			_ = os.Remove(p)
+			continue
+		}
+		_ = os.RemoveAll(p)
+	}
 }
 
 func prunePreviewDir(dir, keepPath string, maxBytes int64, maxFiles int) {
@@ -2278,7 +2525,7 @@ func prunePreviewDir(dir, keepPath string, maxBytes int64, maxFiles int) {
 	var files []stagedFile
 	var totalBytes int64
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() || storage.IsTempName(e.Name()) {
 			continue
 		}
 		info, err := e.Info()

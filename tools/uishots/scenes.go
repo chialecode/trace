@@ -865,6 +865,38 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			ForbiddenLabels: []string{"升级缓存", "补存弹幕和字幕"},
 		},
 		{
+			Name: "douyin-video-uncached",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.PlayerOverlay.Open = false
+				app.PlayerOverlay.PreviewMode = false
+				app.PlayerOverlay.PreviewOnCache = nil
+				app.CurrentDouyinWork = &service.DouyinWorkView{
+					ID:           "7388001099",
+					Kind:         "video",
+					Title:        "川西日照金山短视频（未缓存可临时预览）",
+					Desc:         "川西日照金山短视频（未缓存可临时预览）\n点击封面直接零缓存预览，喜欢再一键缓存到媒体库 #川西 #延时摄影",
+					Hashtags:     []string{"川西", "延时摄影"},
+					CreateTime:   1710003600,
+					DurationSec:  42,
+					Author:       service.DouyinAuthorDTO{SecUID: douyinSecUID, UniqueID: "alpha_douyin", Nickname: "技术频道_抖音号"},
+					VideoURL:     "https://v26-web.douyinvod.com/synth/preview_7388001099.mp4",
+					QualityLabel: "1080P",
+					VideoCodec:   "avc",
+					Width:        1080,
+					Height:       1440,
+					Music:        &service.DouyinMusicDTO{Title: "雪山晨风", Author: "技术频道_抖音号", IsOriginalSound: true},
+					Stats:        service.DouyinStatsDTO{DiggCount: 6420, CommentCount: 198, CollectCount: 1120, ShareCount: 84},
+					CanonicalURL: "https://www.douyin.com/video/7388001099",
+					CacheKey:     library.CanonicalItemKey("douyin", "video", "7388001099"),
+				}
+				app.CurrentRoute = ui.RouteDouyinWork
+			},
+			RequiredLabels:  []string{"抖音作品作者站点标记", "缓存视频", "抖音视频封面播放", "抖音视频预览提示"},
+			ForbiddenLabels: []string{"升级缓存", "补存弹幕和字幕", "抖音本机缓存规格"},
+		},
+		{
 			Name: "cached-douyin-video",
 			Setup: func() {
 				app.OpenLibraryItemDetail(savedDouyinVideo)
@@ -2292,10 +2324,50 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			RequiredLabels: []string{"播放器音量调节", "播放器静音"},
 		},
 		{
+			Name: "player-temp-preview",
+			Setup: func() {
+				app.ImageViewer.Open = false
+				app.Navigate(ui.RouteDouyinWork)
+				app.OpenPlayerOverlay(savedItem)
+				app.PlayerOverlay.ItemKey = ""
+				app.PlayerOverlay.Title = "川西日照金山短视频（未缓存可临时预览）"
+				app.PlayerOverlay.PreviewMode = true
+				app.PlayerOverlay.PreviewSite = "douyin"
+				app.PlayerOverlay.PreviewCacheQueued = false
+				app.PlayerOverlay.PreviewOnCache = func() {}
+				app.PlayerOverlay.MoreMenuOpen = false
+				app.PlayerOverlay.VolumeMenuOpen = false
+			},
+			RequiredLabels:  []string{"临时预览标记", "临时预览缓存到媒体库", "播放器更多菜单", "关闭播放"},
+			ForbiddenLabels: []string{"播放层打开文件夹", "用系统播放器打开"},
+		},
+		{
+			Name: "player-temp-preview-error",
+			Setup: func() {
+				app.ImageViewer.Open = false
+				app.Navigate(ui.RouteDouyinWork)
+				app.OpenPlayerOverlay(savedItem)
+				app.PlayerOverlay.ItemKey = ""
+				app.PlayerOverlay.MediaPath = ""
+				app.PlayerOverlay.Title = "超长 4K 原片临时预览超限示例"
+				app.PlayerOverlay.PreviewMode = true
+				app.PlayerOverlay.PreviewSite = "douyin"
+				app.PlayerOverlay.PreviewCacheQueued = false
+				app.PlayerOverlay.PreviewOnCache = func() {}
+				app.PlayerOverlay.LoadError = "无法预览此视频：视频体积超过临时预览上限（128 MiB），请点击「缓存到媒体库」完整下载后观看"
+				app.PlayerOverlay.MoreMenuOpen = false
+				app.PlayerOverlay.VolumeMenuOpen = false
+			},
+			RequiredLabels:  []string{"临时预览标记", "临时预览缓存到媒体库", "临时预览错误说明", "预览失败缓存到媒体库"},
+			ForbiddenLabels: []string{"播放层打开文件夹", "用系统播放器打开"},
+		},
+		{
 			// "设置 › 更新" of a release build that updates itself.
 			Name: "settings-update",
 			Setup: func() {
 				app.PlayerOverlay.Open = false
+				app.PlayerOverlay.PreviewMode = false
+				app.PlayerOverlay.PreviewOnCache = nil
 				app.PlayerOverlay.VolumeMenuOpen = false
 				fixtureBackend.installedDevVer = ""
 				fixtureBackend.updateHist = &update.History{

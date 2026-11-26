@@ -23,8 +23,18 @@ func (a *App) closePlayerOverlay() {
 	a.PlayerOverlay.Open = false
 	a.PlayerOverlay.MoreMenuOpen = false
 	a.PlayerOverlay.VolumeMenuOpen = false
+	a.PlayerOverlay.Loading = false
+	a.PlayerOverlay.LoadError = ""
+	a.PlayerOverlay.DecoderMissing = false
+	a.PlayerOverlay.MissingReason = ""
 	a.PlayerOverlay.LoopMuted = false
 	a.PlayerOverlay.LoopPaused = false
+	a.PlayerOverlay.PreviewMode = false
+	a.PlayerOverlay.PreviewSite = ""
+	a.PlayerOverlay.PreviewItemKey = ""
+	a.PlayerOverlay.PreviewPendingKey = ""
+	a.PlayerOverlay.PreviewCacheQueued = false
+	a.PlayerOverlay.PreviewOnCache = nil
 	_ = a.player.Close()
 }
 

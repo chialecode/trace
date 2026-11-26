@@ -1,0 +1,540 @@
+package ui
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+
+	"github.com/chialecode/trace/internal/credential"
+	"github.com/chialecode/trace/internal/download"
+	"github.com/chialecode/trace/internal/library"
+	"github.com/chialecode/trace/internal/service"
+	"github.com/chialecode/trace/internal/site"
+	"github.com/egoist/mygo/ui"
+)
+
+type videoPreviewStub struct {
+	service.BackendAPI
+	raw *service.Backend
+
+	mu               sync.Mutex
+	stageCalls       []struct{ site, url, ext string }
+	stagePath        string
+	stageErr         error
+	cachedDouyin     []string
+	cachedDouyinFor  []struct{ id, uid, name string }
+	cachedWeiboPosts []string
+	cachedWeiboVid   []string
+	cachedXPosts     []string
+}
+
+func newVideoPreviewHarness(t *testing.T) (*App, *videoPreviewStub, chan func(), func()) {
+	t.Helper()
+	app, _, cleanup := newTestUIApp(t)
+	raw := app.backend.(*service.Backend)
+	if _, err := raw.ImportCookie(context.Background(), "SESSDATA=synth_bili; bili_jct=csrf; DedeUserID=12345", ""); err != nil {
+		cleanup()
+		t.Fatalf("seed bilibili login: %v", err)
+	}
+	stub := &videoPreviewStub{
+		BackendAPI: raw,
+		raw:        raw,
+		stageErr: &site.Error{
+			Site:    site.Douyin,
+			Kind:    site.ErrKindBlocked,
+			Message: "视频体积超过临时预览上限（128 MiB），请点击「缓存到媒体库」完整下载后观看",
+		},
+	}
+	app.backend = stub
+	app.CompleteLogin()
+	posted := make(chan func(), 64)
+	app.dispatch = func(fn func()) { posted <- fn }
+	return app, stub, posted, cleanup
+}
+
+func (s *videoPreviewStub) HasAnyLogin() bool { return true }
+
+func (s *videoPreviewStub) StatusOf(siteID string) credential.Status {
+	id := normalizeSiteIDUI(siteID)
+	return credential.Status{
+		Site:     id,
+		LoggedIn: true,
+		State:    "logged_in",
+		Source:   "manual",
+		UID:      "u_" + id,
+		Uname:    "测试号_" + id,
+	}
+}
+
+func (s *videoPreviewStub) Statuses() map[string]credential.Status {
+	return map[string]credential.Status{
+		string(site.Bilibili): s.StatusOf("bilibili"),
+		string(site.Douyin):   s.StatusOf("douyin"),
+		string(site.Weibo):    s.StatusOf("weibo"),
+		string(site.X):        s.StatusOf("x"),
+	}
+}
+
+func (s *videoPreviewStub) FetchImage(_ context.Context, _ string) ([]byte, error) {
+	return nil, context.Canceled
+}
+
+func (s *videoPreviewStub) StagePreviewMedia(_ context.Context, siteID, rawURL, ext string) (string, error) {
+	s.mu.Lock()
+	s.stageCalls = append(s.stageCalls, struct{ site, url, ext string }{site: siteID, url: rawURL, ext: ext})
+	p, err := s.stagePath, s.stageErr
+	s.mu.Unlock()
+	if p != "" && err == nil {
+		return p, nil
+	}
+	return "", err
+}
+
+func (s *videoPreviewStub) CacheDouyinWork(_ context.Context, awemeID string) (download.Task, error) {
+	s.mu.Lock()
+	s.cachedDouyin = append(s.cachedDouyin, awemeID)
+	s.mu.Unlock()
+	return download.Task{TaskID: "dy-" + awemeID, Site: "douyin", Kind: "video", TargetID: awemeID, Status: "queued"}, nil
+}
+
+func (s *videoPreviewStub) CacheDouyinWorkFor(_ context.Context, awemeID, forUID, forName string) (download.Task, error) {
+	s.mu.Lock()
+	s.cachedDouyinFor = append(s.cachedDouyinFor, struct{ id, uid, name string }{id: awemeID, uid: forUID, name: forName})
+	s.mu.Unlock()
+	return download.Task{TaskID: "dy-for-" + awemeID, Site: "douyin", Kind: "video", TargetID: awemeID, Status: "queued"}, nil
+}
+
+func (s *videoPreviewStub) CacheWeiboPost(_ context.Context, mid string, _ *library.ItemVia) (download.Task, error) {
+	s.mu.Lock()
+	s.cachedWeiboPosts = append(s.cachedWeiboPosts, mid)
+	s.mu.Unlock()
+	return download.Task{TaskID: "wb-" + mid, Site: "weibo", Kind: "dynamic", TargetID: mid, Status: "queued"}, nil
+}
+
+func (s *videoPreviewStub) CacheWeiboVideo(_ context.Context, oid string) (download.Task, error) {
+	s.mu.Lock()
+	s.cachedWeiboVid = append(s.cachedWeiboVid, oid)
+	s.mu.Unlock()
+	return download.Task{TaskID: "wbv-" + oid, Site: "weibo", Kind: "video", TargetID: oid, Status: "queued"}, nil
+}
+
+func (s *videoPreviewStub) CacheXPost(_ context.Context, statusID string, _ *library.ItemVia) (download.Task, error) {
+	s.mu.Lock()
+	s.cachedXPosts = append(s.cachedXPosts, statusID)
+	s.mu.Unlock()
+	return download.Task{TaskID: "x-" + statusID, Site: "x", Kind: "dynamic", TargetID: statusID, Status: "queued"}, nil
+}
+
+func TestDouyinUncachedVideoCoverClickOpensPreviewAndCachesToLibrary(t *testing.T) {
+	app, stub, posted, cleanup := newVideoPreviewHarness(t)
+	defer cleanup()
+
+	const (
+		awemeID  = "7399887766"
+		videoURL = "https://v26-web.douyinvod.com/synth/short_preview.mp4"
+	)
+	app.CurrentRoute = RouteDouyinWork
+	app.CurrentLibraryDetail = nil
+	app.CurrentDouyinWork = &service.DouyinWorkView{
+		ID:           awemeID,
+		Kind:         "video",
+		Title:        "高原星空短视频",
+		Desc:         "高原星空短视频\n无水印高码率原片",
+		CreateTime:   1710005000,
+		DurationSec:  36,
+		Author:       service.DouyinAuthorDTO{SecUID: "MS4wLjABAAAA_dy_preview", Nickname: "星空摄影师"},
+		CoverURL:     "https://p3-sign.douyinpic.com/cover.jpg",
+		VideoURL:     videoURL,
+		Width:        1080,
+		Height:       1920,
+		CanonicalURL: "https://www.douyin.com/video/" + awemeID,
+		CacheKey:     library.CanonicalItemKey("douyin", "video", awemeID),
+	}
+
+	tt := ui.NewTester(app.View, 1280, 900)
+	tt.Frame()
+
+	for _, lbl := range []string{"抖音视频封面播放", "抖音视频预览提示"} {
+		if _, ok := tt.Find(lbl); !ok {
+			t.Fatalf("expected uncached Douyin video control %q", lbl)
+		}
+	}
+
+	// Clicking the cover stages preview media and enters PreviewMode in PlayerOverlay.
+	if err := tt.Click("抖音视频封面播放"); err != nil {
+		t.Fatalf("click Douyin cover: %v", err)
+	}
+	waitUIIdle(t, app, posted)
+	tt.Frame()
+
+	stub.mu.Lock()
+	calls := append([]struct{ site, url, ext string }(nil), stub.stageCalls...)
+	stub.mu.Unlock()
+	if len(calls) != 1 || calls[0].site != "douyin" || calls[0].url != videoURL || calls[0].ext != ".mp4" {
+		t.Fatalf("unexpected StagePreviewMedia calls: %+v", calls)
+	}
+	if !app.PlayerOverlay.Open || !app.PlayerOverlay.PreviewMode || app.PlayerOverlay.PreviewSite != "douyin" {
+		t.Fatalf("expected PlayerOverlay Open=true PreviewMode=true site=douyin, got open=%v preview=%v site=%q",
+			app.PlayerOverlay.Open, app.PlayerOverlay.PreviewMode, app.PlayerOverlay.PreviewSite)
+	}
+	for _, lbl := range []string{"临时预览标记", "临时预览缓存到媒体库", "临时预览错误说明", "预览失败缓存到媒体库"} {
+		if _, ok := tt.Find(lbl); !ok {
+			t.Fatalf("expected preview overlay control %q", lbl)
+		}
+	}
+
+	// Open "..." menu in PreviewMode: MUST NOT expose library folder or external player buttons.
+	app.PlayerOverlay.MoreMenuOpen = true
+	tt.Frame()
+	for _, forbidden := range []string{"播放层打开文件夹", "用系统播放器打开"} {
+		if _, ok := tt.Find(forbidden); ok {
+			t.Fatalf("PreviewMode more menu must hide %q to avoid leaking temp preview path", forbidden)
+		}
+	}
+	app.PlayerOverlay.MoreMenuOpen = false
+	tt.Frame()
+
+	// Clicking top-bar "缓存到媒体库" triggers CacheDouyinWork and marks queued.
+	if err := tt.Click("临时预览缓存到媒体库"); err != nil {
+		t.Fatalf("click top-bar 临时预览缓存到媒体库: %v", err)
+	}
+	waitUIIdle(t, app, posted)
+	stub.mu.Lock()
+	dyCached := append([]string(nil), stub.cachedDouyin...)
+	stub.mu.Unlock()
+	if len(dyCached) != 1 || dyCached[0] != awemeID {
+		t.Fatalf("expected CacheDouyinWork(%q), got %v", awemeID, dyCached)
+	}
+	if !app.PlayerOverlay.PreviewCacheQueued {
+		t.Fatal("expected PreviewCacheQueued=true after clicking 缓存到媒体库")
+	}
+
+	// Closing overlay resets PreviewMode and cache callback completely.
+	app.closePlayerOverlay()
+	if app.PlayerOverlay.Open || app.PlayerOverlay.PreviewMode || app.PlayerOverlay.PreviewOnCache != nil || app.PlayerOverlay.PreviewCacheQueued {
+		t.Fatalf("closePlayerOverlay did not reset preview state: %+v", app.PlayerOverlay)
+	}
+
+	// Paid/encrypted/uncacheable Douyin works MUST NOT preview or call StagePreviewMedia.
+	app.CurrentDouyinWork.Uncacheable = true
+	app.CurrentDouyinWork.UncacheableReason = "该作品为付费或加密内容，不支持缓存"
+	tt.Frame()
+	if _, ok := tt.Find("抖音视频预览提示"); ok {
+		t.Fatal("uncacheable Douyin work must not show 抖音视频预览提示")
+	}
+	if err := tt.Click("抖音视频封面播放"); err != nil {
+		t.Fatalf("click uncacheable cover: %v", err)
+	}
+	waitUIIdle(t, app, posted)
+	stub.mu.Lock()
+	afterUncacheable := len(stub.stageCalls)
+	stub.mu.Unlock()
+	if afterUncacheable != 1 || app.PlayerOverlay.PreviewMode {
+		t.Fatalf("uncacheable work triggered StagePreviewMedia or PreviewMode: calls=%d preview=%v", afterUncacheable, app.PlayerOverlay.PreviewMode)
+	}
+	app.closeImageViewer()
+}
+
+func TestWeiboAndXUncachedVideoPreviewCacheCTAAndHLSExclusion(t *testing.T) {
+	app, stub, posted, cleanup := newVideoPreviewHarness(t)
+	defer cleanup()
+
+	tt := ui.NewTester(app.View, 1280, 900)
+
+	// 1. Weibo uncached single-file MP4 post preview -> PreviewMode + cache CTA triggers CacheWeiboPost.
+	const wbMid = "5000000000009001"
+	app.CurrentRoute = RouteWeiboPost
+	app.CurrentWeiboVideo = nil
+	app.CurrentWeiboPost = &service.WeiboPostView{
+		Mid:       wbMid,
+		Author:    service.WeiboAuthorDTO{UID: "5001", ScreenName: "微博短视频博主"},
+		CreatedAt: 1710005100,
+		Text:      "测试微博短视频零缓存预览",
+		Video: &service.WeiboVideoDTO{
+			ObjectID:     "1034:9001",
+			Title:        "微博测试短视频",
+			DurationSec:  28,
+			VideoURL:     "https://f.video.weibocdn.com/synth_9001.mp4",
+			QualityLabel: "1080P",
+			Codec:        "avc",
+		},
+		CanonicalURL: "https://weibo.com/5001/" + wbMid,
+		CacheKey:     library.CanonicalItemKey("weibo", "dynamic", wbMid),
+	}
+	tt.Frame()
+	if err := tt.Click("微博视频卡片"); err != nil {
+		t.Fatalf("click Weibo video card: %v", err)
+	}
+	waitUIIdle(t, app, posted)
+	tt.Frame()
+	if !app.PlayerOverlay.Open || !app.PlayerOverlay.PreviewMode || app.PlayerOverlay.PreviewSite != "weibo" {
+		t.Fatalf("Weibo preview state unexpected: open=%v preview=%v site=%q",
+			app.PlayerOverlay.Open, app.PlayerOverlay.PreviewMode, app.PlayerOverlay.PreviewSite)
+	}
+	if err := tt.Click("预览失败缓存到媒体库"); err != nil {
+		t.Fatalf("click error-card 缓存到媒体库 for Weibo: %v", err)
+	}
+	waitUIIdle(t, app, posted)
+	stub.mu.Lock()
+	wbCached := append([]string(nil), stub.cachedWeiboPosts...)
+	stub.mu.Unlock()
+	if len(wbCached) != 1 || wbCached[0] != wbMid {
+		t.Fatalf("expected CacheWeiboPost(%q), got %v", wbMid, wbCached)
+	}
+	app.closePlayerOverlay()
+
+	// 2. Weibo standalone 1034: video preview -> cache CTA triggers CacheWeiboVideo.
+	const wbOID = "1034:9002"
+	app.CurrentWeiboPost = nil
+	app.CurrentWeiboVideo = &service.WeiboVideoView{
+		ObjectID:     wbOID,
+		Title:        "微博独立短视频",
+		AuthorUID:    "5002",
+		AuthorName:   "独立视频博主",
+		CanonicalURL: "https://weibo.com/tv/show/" + wbOID,
+		CacheKey:     library.CanonicalItemKey("weibo", "video", "1034_9002"),
+		Video: &service.WeiboVideoDTO{
+			ObjectID:    wbOID,
+			Title:       "微博独立短视频",
+			DurationSec: 40,
+			VideoURL:    "https://f.video.weibocdn.com/synth_9002.mp4",
+		},
+	}
+	tt.Frame()
+	if err := tt.Click("微博视频卡片"); err != nil {
+		t.Fatalf("click standalone Weibo video card: %v", err)
+	}
+	waitUIIdle(t, app, posted)
+	tt.Frame()
+	if err := tt.Click("临时预览缓存到媒体库"); err != nil {
+		t.Fatalf("click top-bar 缓存到媒体库 for standalone Weibo video: %v", err)
+	}
+	waitUIIdle(t, app, posted)
+	stub.mu.Lock()
+	wbVidCached := append([]string(nil), stub.cachedWeiboVid...)
+	stub.mu.Unlock()
+	if len(wbVidCached) != 1 || wbVidCached[0] != wbOID {
+		t.Fatalf("expected CacheWeiboVideo(%q), got %v", wbOID, wbVidCached)
+	}
+	app.closePlayerOverlay()
+
+	// 3. X uncached non-HLS MP4 preview -> PreviewMode + cache CTA triggers CacheXPost.
+	const xPostID = "1800000000000009003"
+	app.CurrentRoute = RouteXPost
+	app.CurrentXPost = &service.XPostDTO{
+		ID:        xPostID,
+		Author:    service.XAuthorDTO{RestID: "9003", ScreenName: "x_short_vid", Name: "X短视频作者"},
+		CreatedAt: 1710005200,
+		Text:      "测试 X 单文件 MP4 零缓存预览",
+		Media: []service.XMediaItemDTO{
+			{
+				Index:       1,
+				Kind:        "video",
+				DurationSec: 22,
+				VideoURL:    "https://video.twimg.com/ext_tw_video/9003/pu/vid/1280x720/clip.mp4",
+				Width:       1280,
+				Height:      720,
+			},
+		},
+		CanonicalURL: "https://x.com/x_short_vid/status/" + xPostID,
+		CacheKey:     library.CanonicalItemKey("x", "dynamic", xPostID),
+	}
+	tt.Frame()
+	if err := tt.Click("X视频卡片"); err != nil {
+		t.Fatalf("click X video card: %v", err)
+	}
+	waitUIIdle(t, app, posted)
+	tt.Frame()
+	if !app.PlayerOverlay.Open || !app.PlayerOverlay.PreviewMode || app.PlayerOverlay.PreviewSite != "x" {
+		t.Fatalf("X preview state unexpected: open=%v preview=%v site=%q",
+			app.PlayerOverlay.Open, app.PlayerOverlay.PreviewMode, app.PlayerOverlay.PreviewSite)
+	}
+	if err := tt.Click("临时预览缓存到媒体库"); err != nil {
+		t.Fatalf("click top-bar 缓存到媒体库 for X: %v", err)
+	}
+	waitUIIdle(t, app, posted)
+	stub.mu.Lock()
+	xCached := append([]string(nil), stub.cachedXPosts...)
+	stageBeforeHLS := len(stub.stageCalls)
+	stub.mu.Unlock()
+	if len(xCached) != 1 || xCached[0] != xPostID {
+		t.Fatalf("expected CacheXPost(%q), got %v", xPostID, xCached)
+	}
+	app.closePlayerOverlay()
+
+	// 4. X HLS-only video MUST remain excluded from preview (0 StagePreviewMedia calls, HLS notice shown).
+	app.CurrentXPost = &service.XPostDTO{
+		ID:        "1800000000000009004",
+		Author:    service.XAuthorDTO{RestID: "9004", ScreenName: "x_hls_only", Name: "X分段流作者"},
+		CreatedAt: 1710005300,
+		Text:      "仅有 HLS 分段流的帖子",
+		Media: []service.XMediaItemDTO{
+			{
+				Index:         1,
+				Kind:          "video",
+				HLSOnly:       true,
+				HLSOnlyNotice: "这条视频只有分段流，暂不支持缓存",
+				DurationSec:   50,
+			},
+		},
+		CanonicalURL: "https://x.com/x_hls_only/status/1800000000000009004",
+	}
+	tt.Frame()
+	if _, ok := tt.Find("X视频卡片"); ok {
+		t.Fatal("X HLS-only video must not render clickable preview card X视频卡片")
+	}
+	if _, ok := tt.Find("X分段流提示"); !ok {
+		t.Fatal("expected HLS-only notice X分段流提示")
+	}
+	stub.mu.Lock()
+	stageAfterHLS := len(stub.stageCalls)
+	stub.mu.Unlock()
+	if stageAfterHLS != stageBeforeHLS {
+		t.Fatalf("X HLS-only post triggered %d StagePreviewMedia calls, want 0", stageAfterHLS-stageBeforeHLS)
+	}
+}
+
+func TestPlayerOverlayPreviewResetOfflineLibraryAndResponsiveWidths(t *testing.T) {
+	app, stub, posted, cleanup := newVideoPreviewHarness(t)
+	defer cleanup()
+
+	// Seed a real local library item for offline /library/item and switch-from-preview checks.
+	lib := stub.raw.LibraryStore()
+	itemDir := filepath.Join(lib.CacheDir(), "douyin", "dy_local_1", "videos", "7399000001")
+	if err := os.MkdirAll(itemDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(itemDir, "video.mp4"), []byte("synthetic-local-mp4"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := lib.SaveItem(itemDir, library.ItemMetadata{
+		Version:  1,
+		ID:       "video:7399000001",
+		RawID:    "7399000001",
+		Site:     "douyin",
+		Kind:     "video",
+		Status:   "complete",
+		Title:    "已缓存的本机抖音视频",
+		URL:      "https://www.douyin.com/video/7399000001",
+		PubTs:    1710006000,
+		Duration: 30,
+		Author:   library.ItemAuthor{Site: "douyin", UID: "dy_local_1", Name: "离线作者"},
+		Media:    []library.MediaFile{{Role: "video", Path: "video.mp4", Duration: 30}},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem: %v", err)
+	}
+
+	// 1. Offline /library/item click opens local player with PreviewMode=false and 0 StagePreviewMedia calls.
+	app.OpenLibraryItemDetail(saved)
+	tt := ui.NewTester(app.View, 1280, 900)
+	tt.Frame()
+	if _, ok := tt.Find("抖音视频预览提示"); ok {
+		t.Fatal("offline /library/item must never show online preview hint")
+	}
+	if err := tt.Click("抖音视频封面播放"); err != nil {
+		t.Fatalf("click offline library cover: %v", err)
+	}
+	waitUIIdle(t, app, posted)
+	if !app.PlayerOverlay.Open || app.PlayerOverlay.PreviewMode {
+		t.Fatalf("offline library playback expected Open=true PreviewMode=false, got open=%v preview=%v",
+			app.PlayerOverlay.Open, app.PlayerOverlay.PreviewMode)
+	}
+	stub.mu.Lock()
+	offlineStages := len(stub.stageCalls)
+	stub.mu.Unlock()
+	if offlineStages != 0 {
+		t.Fatalf("offline /library/item issued %d StagePreviewMedia calls, want 0", offlineStages)
+	}
+
+	// 2. Switching from PreviewMode directly into a cached library item resets PreviewMode and restores menu actions.
+	app.PlayerOverlay.PreviewMode = true
+	app.PlayerOverlay.PreviewSite = "douyin"
+	app.PlayerOverlay.PreviewOnCache = func() {}
+	app.OpenPlayerOverlay(saved)
+	waitUIIdle(t, app, posted)
+	if app.PlayerOverlay.PreviewMode || app.PlayerOverlay.PreviewOnCache != nil {
+		t.Fatal("OpenPlayerOverlay(saved) did not reset PreviewMode state")
+	}
+	app.PlayerOverlay.MoreMenuOpen = true
+	tt.Frame()
+	for _, want := range []string{"播放层打开文件夹", "用系统播放器打开"} {
+		if _, ok := tt.Find(want); !ok {
+			t.Fatalf("cached library playback menu should restore %q", want)
+		}
+	}
+	app.closePlayerOverlay()
+
+	// 3. DecoderMissing in PreviewMode offers 缓存到媒体库 instead of external player.
+	app.PlayerOverlay.Open = true
+	app.PlayerOverlay.PreviewMode = true
+	app.PlayerOverlay.Title = "缺失解码器的临时预览"
+	app.PlayerOverlay.MediaPath = filepath.Join(t.TempDir(), "preview_douyin_temp.mp4")
+	app.PlayerOverlay.DecoderMissing = true
+	app.PlayerOverlay.MissingReason = "系统缺少 AV1 解码器"
+	cachedCalled := false
+	app.PlayerOverlay.PreviewOnCache = func() { cachedCalled = true }
+	tt.Frame()
+	if _, ok := tt.Find("缺失解码器时用系统播放器打开"); ok {
+		t.Fatal("PreviewMode DecoderMissing must not expose system player on temp preview file")
+	}
+	if err := tt.Click("缺失解码器时缓存到媒体库"); err != nil {
+		t.Fatalf("click 缺失解码器时缓存到媒体库: %v", err)
+	}
+	if !cachedCalled {
+		t.Fatal("expected DecoderMissing preview cache button to invoke PreviewOnCache")
+	}
+	app.closePlayerOverlay()
+
+	// 4. Responsive widths 720, 1000, 1280: zero horizontal overflow in Douyin uncached detail & PreviewMode overlay.
+	app.CurrentRoute = RouteDouyinWork
+	app.CurrentLibraryDetail = nil
+	app.CurrentDouyinWork = &service.DouyinWorkView{
+		ID:          "7399000099",
+		Kind:        "video",
+		Title:       "一段非常长的抖音短视频标题用于检验窄窗与宽窗下临时预览标记和缓存按钮零横向溢出",
+		DurationSec: 45,
+		Author:      service.DouyinAuthorDTO{SecUID: "MS4wLjABAAAA_resp", Nickname: "响应式测试作者"},
+		VideoURL:    "https://v26-web.douyinvod.com/synth/responsive.mp4",
+		Width:       1080,
+		Height:      1440,
+	}
+	for _, w := range []int{720, 1000, 1280} {
+		wf := float32(w)
+		// Uncached Douyin detail page
+		app.PlayerOverlay.Open = false
+		tester := ui.NewTester(app.View, w, 760)
+		tester.Frame()
+		for _, lbl := range []string{"抖音视频封面播放", "抖音视频预览提示"} {
+			r, ok := tester.Find(lbl)
+			if !ok {
+				t.Fatalf("width %d: missing %q", w, lbl)
+			}
+			if r.X < -0.5 || r.X+r.W > wf+0.5 {
+				t.Fatalf("width %d: %q overflowed horizontally: rect=%+v", w, lbl, r)
+			}
+		}
+
+		// PlayerOverlay in PreviewMode with long title + error card
+		app.PlayerOverlay.Open = true
+		app.PlayerOverlay.PreviewMode = true
+		app.PlayerOverlay.Title = app.CurrentDouyinWork.Title
+		app.PlayerOverlay.LoadError = "无法预览此视频：视频体积超过临时预览上限（128 MiB），请点击「缓存到媒体库」完整下载后观看"
+		app.PlayerOverlay.PreviewOnCache = func() {}
+		app.PlayerOverlay.PreviewCacheQueued = false
+		app.PlayerOverlay.ControlsHidden = false
+		tester.Frame()
+		for _, lbl := range []string{"临时预览标记", "临时预览缓存到媒体库", "播放器更多菜单", "关闭播放", "临时预览错误说明", "预览失败缓存到媒体库"} {
+			r, ok := tester.Find(lbl)
+			if !ok {
+				t.Fatalf("width %d: missing overlay control %q", w, lbl)
+			}
+			if r.X < -0.5 || r.X+r.W > wf+0.5 {
+				t.Fatalf("width %d: overlay control %q overflowed horizontally: rect=%+v", w, lbl, r)
+			}
+		}
+	}
+	app.closePlayerOverlay()
+}

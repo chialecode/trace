@@ -640,6 +640,12 @@ func (a *App) openPlayerSegmentAt(item library.ItemMetadata, index int, seekSec 
 	a.PlayerOverlay.SubtitleOptions = []string{"关闭"}
 	a.PlayerOverlay.LoopMuted = false
 	a.PlayerOverlay.LoopPaused = false
+	a.PlayerOverlay.PreviewMode = false
+	a.PlayerOverlay.PreviewSite = ""
+	a.PlayerOverlay.PreviewItemKey = ""
+	a.PlayerOverlay.PreviewPendingKey = ""
+	a.PlayerOverlay.PreviewCacheQueued = false
+	a.PlayerOverlay.PreviewOnCache = nil
 	if index < 0 || index >= len(a.PlayerOverlay.Segments) {
 		a.PlayerOverlay.LoadError = "没有已登记的可播放视频，请补全缓存或检查文件。"
 		return
@@ -765,13 +771,25 @@ func (a *App) openPlayerSegmentAt(item library.ItemMetadata, index int, seekSec 
 	})
 }
 
+// previewCacheAction binds the active temporary video preview to the owning
+// work/post's cache-to-library action in PlayerOverlay.
+type previewCacheAction struct {
+	ItemKey    string
+	PendingKey string
+	OnCache    func()
+}
+
 // openRemoteVideoPreview stages an uncached online video via Backend.StagePreviewMedia
 // (allowlisted CDN, zero Cookie) and plays it in PlayerOverlay.
 func (a *App) openRemoteVideoPreview(siteID, title, rawURL string) {
-	a.openRemoteVideoPreviewOpts(siteID, title, rawURL, false)
+	a.openRemoteVideoPreviewWithCache(siteID, title, rawURL, false, previewCacheAction{})
 }
 
 func (a *App) openRemoteVideoPreviewOpts(siteID, title, rawURL string, loopMuted bool) {
+	a.openRemoteVideoPreviewWithCache(siteID, title, rawURL, loopMuted, previewCacheAction{})
+}
+
+func (a *App) openRemoteVideoPreviewWithCache(siteID, title, rawURL string, loopMuted bool, cache previewCacheAction) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" || a.backend == nil {
 		return
@@ -803,6 +821,12 @@ func (a *App) openRemoteVideoPreviewOpts(siteID, title, rawURL string, loopMuted
 	a.PlayerOverlay.SubtitleOptions = []string{"关闭"}
 	a.PlayerOverlay.LoopMuted = loopMuted
 	a.PlayerOverlay.LoopPaused = false
+	a.PlayerOverlay.PreviewMode = true
+	a.PlayerOverlay.PreviewSite = strings.TrimSpace(siteID)
+	a.PlayerOverlay.PreviewItemKey = strings.TrimSpace(cache.ItemKey)
+	a.PlayerOverlay.PreviewPendingKey = strings.TrimSpace(cache.PendingKey)
+	a.PlayerOverlay.PreviewCacheQueued = false
+	a.PlayerOverlay.PreviewOnCache = cache.OnCache
 
 	a.playerOpenSeq++
 	seq := a.playerOpenSeq
