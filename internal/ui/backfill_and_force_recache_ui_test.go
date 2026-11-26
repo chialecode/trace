@@ -157,8 +157,8 @@ func TestSettingsStorageAndTasksQueueBackfillUI(t *testing.T) {
 	stub.mu.Lock()
 	started := stub.startedCalls
 	stub.mu.Unlock()
-	if started != 1 || app.CurrentRoute != RouteTasks || app.TasksSection != "queue" {
-		t.Fatalf("expected StartWeiboBackfill + navigation to /tasks queue; started=%d route=%s sec=%s", started, app.CurrentRoute, app.TasksSection)
+	if started != 1 || app.CurrentRoute != RouteTasks || app.effectiveTasksSection() != TasksSectionActive || app.effectiveTasksActiveTab() != "queue" {
+		t.Fatalf("expected StartWeiboBackfill + navigation to /tasks active/queue; started=%d route=%s sec=%s tab=%s", started, app.CurrentRoute, app.effectiveTasksSection(), app.effectiveTasksActiveTab())
 	}
 
 	// 3. Tasks › 缓存队列 renders card titled "历史缓存补全 · 微博" and hides the top prompt bar while active.

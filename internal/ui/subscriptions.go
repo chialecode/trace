@@ -67,6 +67,72 @@ func (a *App) filteredSubscriptions(query string) []subscription.Subscription {
 	return filtered
 }
 
+func (a *App) renderSubscriptionsNarrowSelector(c *ui.Context) {
+	activeKey := "all"
+	if a.SubAccountsOpen {
+		activeKey = "accounts"
+	} else if a.SubChecksOpen {
+		activeKey = "checks"
+	}
+	opts := []struct {
+		key   string
+		text  string
+		label string
+	}{
+		{"all", "全部订阅", "订阅页全部订阅"},
+		{"accounts", "全部账号", "订阅页全部账号"},
+		{"checks", "检查计划", "订阅页检查计划"},
+	}
+	ui.Row(c).
+		Label("订阅窄窗切换栏").
+		FillWidth().
+		Padding(8, 12).
+		BorderWidth(0, 0, 1, 0).
+		BorderColor(ColorBorder).
+		Background(ColorBgMain).
+		Gap(6).
+		Wrap().
+		Shrink(0).
+		ClipX().
+		Children(func() {
+			for _, opt := range opts {
+				o := opt
+				active := activeKey == o.key
+				btn := ui.ButtonBase(c).Label(o.label).Padding(5, 10).Radius(999).Center().Shrink(0)
+				if active {
+					btn.Background(ColorAccentBg).Border(1, ColorAccent)
+				} else {
+					btn.Background(ColorBgSecondary).Border(1, ColorBorder)
+					if btn.Hovered() {
+						btn.Background(ColorHover)
+					}
+				}
+				btn.Children(func() {
+					t := ui.Text(c, o.text).FontSize(12).SingleLine()
+					if active {
+						t.FontWeight(600).TextColor(ColorAccent)
+					} else {
+						t.FontWeight(500).TextColor(ColorTextMuted)
+					}
+				})
+				if btn.Clicked() {
+					switch o.key {
+					case "all":
+						a.SubDetailOpen = false
+						a.SubAccountsOpen = false
+						a.SubChecksOpen = false
+						a.SubManageMenuOpen = false
+						a.SubManageModalMode = ""
+					case "accounts":
+						a.openSubscriptionAccounts()
+					case "checks":
+						a.openSubscriptionChecks()
+					}
+				}
+			}
+		})
+}
+
 func (a *App) renderSubscriptionsRoute(c *ui.Context) {
 	if a.SubDetailOpen && a.SelectedSubID != "" {
 		for i := range a.Subscriptions {
@@ -78,8 +144,15 @@ func (a *App) renderSubscriptionsRoute(c *ui.Context) {
 		}
 		a.SubDetailOpen = false
 	}
+	if !a.panelShown {
+		a.renderSubscriptionsNarrowSelector(c)
+	}
 	if a.SubAccountsOpen {
 		a.renderSubscriptionAccountsView(c)
+		return
+	}
+	if a.SubChecksOpen {
+		a.renderSubscriptionsChecksView(c)
 		return
 	}
 
@@ -109,12 +182,6 @@ func (a *App) renderSubscriptionsRoute(c *ui.Context) {
 					if OutlinePillButton(c, "清除", "清除订阅搜索").Clicked() {
 						a.SubSearchQuery = ""
 						st.subSearchApplied = ""
-					}
-				}
-				// Without the panel, 全部账号 is reached from here.
-				if !a.panelShown && len(a.Subscriptions) > 0 {
-					if OutlinePillButton(c, "全部账号", "订阅页全部账号").Clicked() {
-						a.openSubscriptionAccounts()
 					}
 				}
 			})

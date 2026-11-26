@@ -459,7 +459,9 @@ type App struct {
 	SelectedSubMid int64
 	SubDetailOpen  bool
 	// SubAccountsOpen shows 订阅 › 全部账号 (accounts by site, DEC-057).
-	SubAccountsOpen      bool
+	SubAccountsOpen bool
+	// SubChecksOpen shows 订阅 › 检查计划 (DEC-081, moved from Tasks).
+	SubChecksOpen        bool
 	SubAccountsSite      string
 	SubAccountsListState ui.ListState
 	SubMoreMenuOpen      bool
@@ -472,7 +474,7 @@ type App struct {
 	SubFeedRefsKey       string
 	SubFeedItems         []library.FeedEntry
 	SubFeedListState     *ui.ListState
-	// checkPlan is Tasks › 检查计划 as last read, at checkPlanAt.
+	// checkPlan is 订阅 › 检查计划 as last read, at checkPlanAt.
 	checkPlan   []service.AccountCheckRow
 	checkPlanAt time.Time
 	// checkingAccount is the "<site>:<uid>" a 检查计划 row is checking.
@@ -564,10 +566,12 @@ type App struct {
 	ForceRecacheConfirm ForceRecacheConfirmState
 	BackfillSummary     service.BackfillSummaryDTO
 
-	// Tasks Page
-	TasksSection              string // "downloads" | "queue" | "conflicts" | "live" | "incidents" | "checks" | "transfers"
+	// Tasks Page (4 sections: "active" | "live" | "attention" | "records", DEC-081)
+	TasksSection              string // "active" | "live" | "attention" | "records" (legacy keys normalized in effectiveTasksSection)
+	TasksActiveTab            string // "downloads" | "queue" sub-tab inside "active"
 	SelectedCacheQueueID      string
 	SelectedLiveIncidentKey   string
+	ExpandedLiveIncidentKeys  map[string]bool
 	liveLibItemsCache         []library.ItemMetadata
 	liveLibItemsCacheRev      int
 	CacheQueue                []service.CacheQueueTask
@@ -680,36 +684,38 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{
-		ctx:                 ctx,
-		cancel:              cancel,
-		pending:             make(map[string]bool),
-		imageQueue:          make(chan struct{}, 2),
-		ExpandedPosts:       make(map[string]bool),
-		expiredNoticeShown:  make(map[string]bool),
-		backend:             backend,
-		player:              ctrl,
-		bgmPlayer:           bgmCtrl,
-		viewerPlayer:        viewerCtrl,
-		livePreviewPlayer:   livePreviewCtrl,
-		CurrentRoute:        initialRoute,
-		LoginSite:           loginSite,
-		LoginTab:            "qr",
-		FeedSortOrder:       "newest",
-		FeedSiteFilter:      normalizeSiteFilter(uiSt.FeedFilter.Site),
-		SelectedPartPages:   make(map[int]bool),
-		UserTab:             "dynamics",
-		SubDetailTab:        normalizeSubDetailTab(uiSt.SubDetailTab),
-		ImportSite:          string(site.Bilibili),
-		ImportSelectedMids:  make(map[int64]bool),
-		ImportSelectedKeys:  make(map[string]bool),
-		LibrarySiteFilter:   "all",
-		LibrarySort:         "pub_ts",
-		TasksSection:        "downloads",
-		ConflictBatchChoice: service.DefaultConflictChoice,
-		SettingsCategory:    "account",
-		DraftSettings:       s,
-		CacheDirInput:       s.CacheDir,
-		MoveExistingFiles:   true,
+		ctx:                      ctx,
+		cancel:                   cancel,
+		pending:                  make(map[string]bool),
+		imageQueue:               make(chan struct{}, 2),
+		ExpandedPosts:            make(map[string]bool),
+		expiredNoticeShown:       make(map[string]bool),
+		backend:                  backend,
+		player:                   ctrl,
+		bgmPlayer:                bgmCtrl,
+		viewerPlayer:             viewerCtrl,
+		livePreviewPlayer:        livePreviewCtrl,
+		CurrentRoute:             initialRoute,
+		LoginSite:                loginSite,
+		LoginTab:                 "qr",
+		FeedSortOrder:            "newest",
+		FeedSiteFilter:           normalizeSiteFilter(uiSt.FeedFilter.Site),
+		SelectedPartPages:        make(map[int]bool),
+		UserTab:                  "dynamics",
+		SubDetailTab:             normalizeSubDetailTab(uiSt.SubDetailTab),
+		ImportSite:               string(site.Bilibili),
+		ImportSelectedMids:       make(map[int64]bool),
+		ImportSelectedKeys:       make(map[string]bool),
+		LibrarySiteFilter:        "all",
+		LibrarySort:              "pub_ts",
+		TasksSection:             TasksSectionActive,
+		TasksActiveTab:           "downloads",
+		ExpandedLiveIncidentKeys: make(map[string]bool),
+		ConflictBatchChoice:      service.DefaultConflictChoice,
+		SettingsCategory:         "account",
+		DraftSettings:            s,
+		CacheDirInput:            s.CacheDir,
+		MoveExistingFiles:        true,
 		PlayerOverlay: PlayerOverlayState{
 			DanmakuEnabled:  uiSt.Player.DanmakuVisible,
 			DanmakuOpacity:  uiSt.Player.DanmakuOpacity,

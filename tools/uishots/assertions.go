@@ -363,7 +363,7 @@ func runScenesAndWriteReport(outDir string, env *fixtureEnv, app *ui.App, scenes
 				}
 			}
 			switch sc.Name {
-			case "home", "subscription-detail", "subscription-accounts", "subscription-accounts-x", "parse", "user", "douyin-user", "weibo-user", "x-user", "library", "tasks", "tasks-queue", "tasks-live", "tasks-incidents":
+			case "home", "subscription-detail", "subscription-accounts", "subscription-accounts-x", "parse", "user", "douyin-user", "weibo-user", "x-user", "library", "tasks", "tasks-queue", "tasks-live", "tasks-attention":
 				if !assertion.RequiredControlsVisible {
 					siteBadgesOK = false
 				}
