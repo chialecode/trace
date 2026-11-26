@@ -638,9 +638,10 @@ func TestOwnerOfCacheConsistencyCheckPlanDisabledAndUpsertToggle(t *testing.T) {
 	mgr.SetNowFunc(func() time.Time { return now })
 	mgr.SetSiteAuthCheck(func(s site.ID) bool { return true })
 
-	// 1. CheckPlan clears stale nextRunAt immediately when Enabled == false.
+	// 1. Legacy Enabled == false keeps scheduled subscriptions active (DEC-080);
+	// switching Mode to "manual" clears stale nextRunAt immediately.
 	cfg := settings.Default(filepath.Join(tmp, "cache")).Subscription
-	cfg.Enabled = true
+	cfg.Enabled = false
 	cfg.Mode = "interval"
 	cfg.IntervalMinutes = 30
 	mgr.UpdateSettings(cfg)
@@ -653,17 +654,17 @@ func TestOwnerOfCacheConsistencyCheckPlanDisabledAndUpsertToggle(t *testing.T) {
 	}
 	planEnabled := mgr.CheckPlan()
 	if len(planEnabled) != 1 || planEnabled[0].Plan != PlanScheduled || planEnabled[0].NextAt == "" {
-		t.Fatalf("expected PlanScheduled with NextAt when enabled: %+v", planEnabled)
+		t.Fatalf("expected PlanScheduled with NextAt even when legacy cfg.Enabled=false: %+v", planEnabled)
 	}
-	// Seed a stale nextRunAt, then disable scheduling.
+	// Seed a stale nextRunAt, then switch schedule mode to manual.
 	mgr.mu.Lock()
 	mgr.nextRunAt = now.Add(30 * time.Minute)
 	mgr.mu.Unlock()
-	cfg.Enabled = false
+	cfg.Mode = "manual"
 	mgr.UpdateSettings(cfg)
 	planDisabled := mgr.CheckPlan()
 	if len(planDisabled) != 1 || planDisabled[0].Plan != PlanOff || planDisabled[0].NextAt != "" {
-		t.Fatalf("expected PlanOff and empty NextAt when disabled, got %+v", planDisabled)
+		t.Fatalf("expected PlanOff and empty NextAt when mode=manual, got %+v", planDisabled)
 	}
 
 	// 2. OwnerOf O(1) cache consistency across Link, Move, Unlink, Delete.

@@ -396,6 +396,7 @@ func (a *App) renderRouteHeaderActions(c *ui.Context) {
 				}
 			}
 			if AccentPillButton(c, "添加订阅", "添加订阅").Clicked() {
+				a.AddSubPreset.ResetDefault()
 				a.AddSubDialogOpen = true
 			}
 			open := a.SubMoreMenuOpen

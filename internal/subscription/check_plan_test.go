@@ -99,13 +99,20 @@ func TestCheckPlanPerAccount(t *testing.T) {
 	if p := byUID()[uid(0)]; p.Plan != PlanUnauth || p.NextAt != "" {
 		t.Fatalf("unsigned site: %+v", p)
 	}
+	// Legacy settings.json enabled=false no longer blocks per-subscription scheduled_check (DEC-080).
 	cfg.Enabled = false
 	mgr.UpdateSettings(cfg)
 	if p := byUID()["4242"]; p.Plan != PlanManual {
 		t.Fatalf("manual stays manual: %+v", p)
 	}
 	douyinAuth = true
+	if p := byUID()[uid(0)]; p.Plan != PlanScheduled || p.NextAt == "" {
+		t.Fatalf("legacy global enabled=false should not block scheduled subscription: %+v", p)
+	}
+	// Explicit manual schedule mode disables scheduled rounds.
+	cfg.Mode = "manual"
+	mgr.UpdateSettings(cfg)
 	if p := byUID()[uid(0)]; p.Plan != PlanOff || p.NextAt != "" {
-		t.Fatalf("scheduled checking off: %+v", p)
+		t.Fatalf("manual schedule mode should yield PlanOff: %+v", p)
 	}
 }

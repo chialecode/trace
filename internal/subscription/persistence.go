@@ -367,6 +367,7 @@ func (m *Manager) loadSubscriptionsFromDiskLocked() error {
 
 func (m *Manager) writeSubscriptionsToDiskLocked() (writeErr error) {
 	if m.subsPath == "" {
+		m.syncSchedulerActiveLocked()
 		return nil
 	}
 	subs, err := m.listSubsOnlyLocked()
@@ -401,7 +402,11 @@ func (m *Manager) writeSubscriptionsToDiskLocked() (writeErr error) {
 			}
 		}
 	}
-	return storage.WriteFileAtomic(m.subsPath, data, 0o600)
+	if err := storage.WriteFileAtomic(m.subsPath, data, 0o600); err != nil {
+		return err
+	}
+	m.syncSchedulerActiveLocked()
+	return nil
 }
 
 // RestoreFromBackup restores subscriptions.json from subscriptions.json.bak (data-and-cache.md §1).

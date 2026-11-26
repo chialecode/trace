@@ -618,14 +618,14 @@ func TestSubscriptionDetailContentTabCrossSiteZeroRequestsAndEmptyState(t *testi
 		t.Fatalf("expected 0 site HTTP requests after deleting from content tab, got %d", got)
 	}
 
-	// Empty state for subscription with 0 cached items: exact copy, hint for "⋯" -> "检查更新", no extra primary button.
+	// Empty state for subscription with 0 cached items (scheduled_check only): accurate copy tailored to rules, no extra primary button.
 	app.OpenSubscriptionDetail(subEmpty)
 	tt.Frame()
 	if !tt.HasText("还没有缓存这个订阅的内容") {
 		t.Fatal("missing empty state title 还没有缓存这个订阅的内容")
 	}
-	if !tt.HasText("检查更新") {
-		t.Fatal("missing empty state hint referencing 检查更新 in ⋯ menu")
+	if !tt.HasText("当前仅检查新动态、未开启自动缓存") {
+		t.Fatalf("missing accurate empty state hint for check-only sub, texts=%v", tt.Texts())
 	}
 	for _, forbiddenBtn := range []string{"去解析链接", "检查该订阅更新"} {
 		if _, ok := tt.Find(forbiddenBtn); ok {

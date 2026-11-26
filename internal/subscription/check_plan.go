@@ -10,8 +10,8 @@ import (
 // Check plans of an account (AccountCheckPlan.Plan).
 const (
 	PlanScheduled = "scheduled" // a scheduled round checks it at NextAt
-	PlanManual    = "manual"    // its rule checks only by hand
-	PlanOff       = "off"       // scheduled checking is off in Settings
+	PlanManual    = "manual"    // its subscription has scheduled_check off
+	PlanOff       = "off"       // schedule mode is manual / unschedulable
 	PlanUnauth    = "unauth"    // its site is not signed in
 )
 
@@ -53,9 +53,6 @@ func (m *Manager) CheckPlan() []AccountCheckPlan {
 	cfg := m.subSettings
 	now := m.nowFunc()
 	next := m.nextRunAt
-	if !cfg.Enabled {
-		next = time.Time{}
-	}
 	subs, err := m.listSubsOnlyLocked()
 	accStates, _ := m.listAccountStatesLocked()
 	type entry struct {
@@ -63,9 +60,13 @@ func (m *Manager) CheckPlan() []AccountCheckPlan {
 		last string
 	}
 	var entries []entry
+	hasScheduled := false
 	if err == nil {
 		for _, sub := range subs {
 			ruleAutoRecord := sub.Rules.AutoRecord || sub.LiveAutoRecord
+			if sub.Rules.ScheduledCheck {
+				hasScheduled = true
+			}
 			for _, acc := range sub.Accounts {
 				siteName := normalizeLegacyAccountSite(acc.Site)
 				st := accStates[siteName+":"+acc.UID]
@@ -99,13 +100,15 @@ func (m *Manager) CheckPlan() []AccountCheckPlan {
 	}
 	m.mu.Unlock()
 
-	if !cfg.Enabled {
+	if !hasScheduled {
 		next = time.Time{}
 	} else if !next.After(now) {
 		var ok bool
 		if next, ok = NextRunTime(cfg, now); !ok {
 			next = time.Time{}
 		}
+	} else if _, ok := NextRunTime(cfg, now); !ok {
+		next = time.Time{}
 	}
 	// runAt is the start of the k-th scheduled round from now.
 	runs := []time.Time{next}

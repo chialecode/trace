@@ -2,18 +2,21 @@ package subscription
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/settings"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/storage"
 )
@@ -72,12 +75,15 @@ func TestCapabilityTagsBijectionWithSubRules(t *testing.T) {
 		}
 	}
 
-	// Empty tags <-> DefaultSubRules().
+	// Empty tags <-> EmptySubRules(); DefaultSubRules() -> "完整存档" (DEC-080).
 	if r := TagsToSubRules(nil); r.ScheduledCheck || r.AutoCache.Enabled || r.FullCache || r.AutoRecord {
 		t.Fatalf("empty tags produced non-empty SubRules: %+v", r)
 	}
-	if got := SubRulesToTags(DefaultSubRules()); len(got) != 0 {
-		t.Fatalf("DefaultSubRules produced tags %v, want empty", got)
+	if got := SubRulesToTags(EmptySubRules()); len(got) != 0 {
+		t.Fatalf("EmptySubRules produced tags %v, want empty", got)
+	}
+	if got := SubRulesToTags(DefaultSubRules()); !slices.Equal(got, DefaultNewSubTags()) {
+		t.Fatalf("DefaultSubRules produced tags %v, want %v", got, DefaultNewSubTags())
 	}
 	if got := TagsSummary(nil); got != "无缓存标签" {
 		t.Fatalf("TagsSummary(nil) = %q, want 无缓存标签", got)
@@ -115,9 +121,11 @@ func TestCapabilityTagsBijectionWithSubRules(t *testing.T) {
 	}
 }
 
-// DEC-070: newly created, user-page subscribed, split (MoveToNew), and imported
-// subscriptions default to empty tags ([] on disk, every capability off).
-func TestNewSubscriptionsDefaultToEmptyTags(t *testing.T) {
+// DEC-080: newly created, user-page subscribed, split (MoveToNew), and imported
+// subscriptions default to "完整存档" (scheduled_check + all 4 cache_* + full_cache),
+// while EmptySubRules() stays empty and existing saved subscriptions with empty
+// tags on disk are never altered retroactively on reload.
+func TestNewSubscriptionsDefaultToFullArchiveAndExistingEmptyPreserved(t *testing.T) {
 	tmp := t.TempDir()
 	m := openRuleTestManager(t, tmp)
 
@@ -134,10 +142,11 @@ func TestNewSubscriptionsDefaultToEmptyTags(t *testing.T) {
 	if _, err := m.Upsert(Subscription{Site: "bilibili", Mid: 3002, Name: "用户页订阅", Scope: "both", AutoCache: "inherit", Rules: DefaultSubRules()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.ImportCreators([]bilibili.FollowingUser{{Mid: 3003, Uname: "关注导入"}}, "both", "inherit", false, false); err != nil {
+	if _, err := m.ImportAccountRefs([]AccountRef{{Site: "weibo", UID: "500000009", Name: "微博导入"}}, DefaultSubRules()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.ImportAccountRefs([]AccountRef{{Site: "weibo", UID: "500000009", Name: "微博导入"}}, DefaultSubRules()); err != nil {
+	emptySub, err := m.Create("仅手动订阅", "", []AccountRef{{Site: "bilibili", UID: "3005"}}, EmptySubRules())
+	if err != nil {
 		t.Fatal(err)
 	}
 	_ = cSub
@@ -146,9 +155,16 @@ func TestNewSubscriptionsDefaultToEmptyTags(t *testing.T) {
 	if err != nil || len(subs) != 5 {
 		t.Fatalf("want 5 subscriptions, got %d (err=%v)", len(subs), err)
 	}
+	wantDefault := DefaultNewSubTags()
 	for _, s := range subs {
-		if len(s.Tags) != 0 || s.Enabled || s.Rules.ScheduledCheck || s.Rules.AutoCache.Enabled || s.Rules.FullCache || s.Rules.AutoRecord || s.LiveAutoRecord {
-			t.Fatalf("new subscription %s has non-empty tags/capabilities: tags=%v rules=%+v enabled=%v rec=%v",
+		if s.ID == emptySub.ID {
+			if len(s.Tags) != 0 || s.Enabled || s.Rules.ScheduledCheck || s.Rules.AutoCache.Enabled || s.Rules.FullCache || s.Rules.AutoRecord || s.LiveAutoRecord {
+				t.Fatalf("empty subscription %s has non-empty capabilities: tags=%v rules=%+v", s.Name, s.Tags, s.Rules)
+			}
+			continue
+		}
+		if !slices.Equal(s.Tags, wantDefault) || !s.Enabled || !s.Rules.ScheduledCheck || !s.Rules.AutoCache.Enabled || s.Rules.AutoCache.Since == "" || !s.Rules.FullCache || s.Rules.AutoRecord || s.LiveAutoRecord {
+			t.Fatalf("new subscription %s did not default to 完整存档: tags=%v rules=%+v enabled=%v rec=%v",
 				s.Name, s.Tags, s.Rules, s.Enabled, s.LiveAutoRecord)
 		}
 	}
@@ -159,6 +175,13 @@ func TestNewSubscriptionsDefaultToEmptyTags(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"tags": []`) || strings.Contains(string(raw), `"cacheRules"`) || strings.Contains(string(raw), `"ruleId"`) {
 		t.Fatalf("unexpected v5 subscriptions.json payload:\n%s", raw)
+	}
+
+	// Reloading from disk MUST preserve existing empty-tag subscriptions untouched.
+	reloaded := openRuleTestManager(t, tmp)
+	gotEmpty := subByID(t, reloaded, emptySub.ID)
+	if len(gotEmpty.Tags) != 0 || gotEmpty.Rules.ScheduledCheck || gotEmpty.Rules.AutoCache.Enabled || gotEmpty.Rules.FullCache {
+		t.Fatalf("existing empty subscription was altered retroactively on reload: tags=%v rules=%+v", gotEmpty.Tags, gotEmpty.Rules)
 	}
 }
 
@@ -375,9 +398,9 @@ func TestBatchUpdateSubscriptionsTagsAddRemoveReplaceAndRollback(t *testing.T) {
 	t1 := time.Date(2026, 11, 10, 11, 0, 0, 0, time.UTC)
 	m.SetNowFunc(func() time.Time { return t0 })
 
-	s1, _ := m.Create("Alpha", "", []AccountRef{{Site: "bilibili", UID: "4101"}}, DefaultSubRules())
-	s2, _ := m.Create("Beta", "", []AccountRef{{Site: "bilibili", UID: "4102"}}, DefaultSubRules())
-	s3, _ := m.Create("Gamma", "", []AccountRef{{Site: "bilibili", UID: "4103"}}, DefaultSubRules())
+	s1, _ := m.Create("Alpha", "", []AccountRef{{Site: "bilibili", UID: "4101"}}, EmptySubRules())
+	s2, _ := m.Create("Beta", "", []AccountRef{{Site: "bilibili", UID: "4102"}}, EmptySubRules())
+	s3, _ := m.Create("Gamma", "", []AccountRef{{Site: "bilibili", UID: "4103"}}, EmptySubRules())
 
 	_, _ = m.SetSubscriptionTags(s2.ID, []string{TagCacheVideo, TagAutoRecord})
 	_, _ = m.SetSubscriptionTags(s3.ID, []string{TagFullCache})
@@ -679,5 +702,293 @@ func TestV1ToV4MigrationsPreserveAllCapabilitiesAndBackupV4(t *testing.T) {
 	afterDownBytes, _ := os.ReadFile(v4SubsPath)
 	if !bytes.Equal(v5DiskBytes, afterDownBytes) {
 		t.Fatalf("v4 downgrade check mutated v5 subscriptions.json")
+	}
+}
+
+func TestTrackingPresetsRoundTripAndMatching(t *testing.T) {
+	presets := AllTrackingPresets()
+	wantOrder := []string{PresetFullArchive, PresetFollowCache, PresetCheckOnly, PresetManual}
+	if len(presets) != len(wantOrder) {
+		t.Fatalf("preset count=%d want %d", len(presets), len(wantOrder))
+	}
+	for i, wantID := range wantOrder {
+		if presets[i].ID != wantID {
+			t.Fatalf("preset[%d].ID=%q want %q", i, presets[i].ID, wantID)
+		}
+		if _, ok := TrackingPresetByID(wantID); !ok {
+			t.Fatalf("TrackingPresetByID(%q) returned false", wantID)
+		}
+	}
+
+	if !slices.Equal(DefaultNewSubTags(), presets[0].Tags) {
+		t.Fatalf("DefaultNewSubTags()=%v want full_archive %v", DefaultNewSubTags(), presets[0].Tags)
+	}
+	if !slices.Equal(SubRulesToTags(DefaultSubRules()), DefaultNewSubTags()) {
+		t.Fatalf("DefaultSubRules() tags=%v want %v", SubRulesToTags(DefaultSubRules()), DefaultNewSubTags())
+	}
+	if got := SubRulesToTags(EmptySubRules()); len(got) != 0 {
+		t.Fatalf("EmptySubRules() tags=%v want empty", got)
+	}
+
+	for _, p := range presets {
+		for _, autoRec := range []bool{false, true} {
+			tags, err := PresetTags(p.ID, autoRec)
+			if err != nil {
+				t.Fatalf("PresetTags(%q, %v): %v", p.ID, autoRec, err)
+			}
+			gotID, gotRec := MatchTrackingPreset(tags)
+			if gotID != p.ID || gotRec != autoRec {
+				t.Fatalf("MatchTrackingPreset(%v) = (%q, %v), want (%q, %v)", tags, gotID, gotRec, p.ID, autoRec)
+			}
+			rules, err := PresetSubRules(p.ID, autoRec)
+			if err != nil {
+				t.Fatalf("PresetSubRules(%q, %v): %v", p.ID, autoRec, err)
+			}
+			if !slices.Equal(SubRulesToTags(rules), tags) {
+				t.Fatalf("PresetSubRules round-trip mismatch: got %v want %v", SubRulesToTags(rules), tags)
+			}
+			label := TrackingModeLabel(tags)
+			if autoRec && !strings.HasSuffix(label, " + 录直播") {
+				t.Fatalf("TrackingModeLabel(%v) = %q, want suffix + 录直播", tags, label)
+			}
+			if !autoRec && label != p.Name {
+				t.Fatalf("TrackingModeLabel(%v) = %q, want %q", tags, label, p.Name)
+			}
+		}
+	}
+
+	// Custom combinations match PresetCustom while preserving autoRecord flag.
+	customCases := []struct {
+		tags      []string
+		wantRec   bool
+		wantLabel string
+		wantGap   bool
+	}{
+		{[]string{TagScheduledCheck, TagCacheVideo}, false, "自定义", false},
+		{[]string{TagScheduledCheck, TagCacheVideo, TagAutoRecord}, true, "自定义 + 录直播", false},
+		{[]string{TagCacheVideo}, false, "自定义", true},
+		{[]string{TagCacheDraw, TagFullCache, TagAutoRecord}, true, "自定义 + 录直播", true},
+		{[]string{TagFullCache}, false, "自定义", false},
+	}
+	for _, tc := range customCases {
+		gotID, gotRec := MatchTrackingPreset(tc.tags)
+		if gotID != PresetCustom || gotRec != tc.wantRec {
+			t.Fatalf("MatchTrackingPreset(%v) = (%q, %v), want (%q, %v)", tc.tags, gotID, gotRec, PresetCustom, tc.wantRec)
+		}
+		if gotLabel := TrackingModeLabel(tc.tags); gotLabel != tc.wantLabel {
+			t.Fatalf("TrackingModeLabel(%v) = %q, want %q", tc.tags, gotLabel, tc.wantLabel)
+		}
+		if gotGap := HasAutoCacheWithoutScheduledCheck(tc.tags); gotGap != tc.wantGap {
+			t.Fatalf("HasAutoCacheWithoutScheduledCheck(%v) = %v, want %v", tc.tags, gotGap, tc.wantGap)
+		}
+	}
+
+	if _, err := PresetTags("unknown_preset", false); !errors.Is(err, ErrPresetNotFound) {
+		t.Fatalf("PresetTags(unknown) err=%v want ErrPresetNotFound", err)
+	}
+}
+
+func TestPerSubscriptionSchedulerIgnoresLegacyGlobalEnabledAndWakes(t *testing.T) {
+	tmp := t.TempDir()
+	db, _, _, err := storage.OpenSQLite(filepath.Join(tmp, "library.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	lib, _ := library.Open(db, filepath.Join(tmp, "cache"))
+	cred, _, _ := credential.Open(filepath.Join(tmp, "cred.dpapi"))
+	client := bilibili.NewClient(bilibili.ClientOptions{CredStore: cred, PacingInterval: -1})
+
+	// Legacy v1 settings.json often has Enabled=false from before DEC-080.
+	legacyCfg := settings.SubscriptionSettings{
+		Enabled:         false,
+		IntervalMinutes: 60,
+		Mode:            "interval",
+	}
+	mgr, err := NewManager(db, lib, nil, client, legacyCfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.SetSiteAuthCheck(func(s site.ID) bool { return s == site.Bilibili })
+
+	t0 := time.Date(2026, 11, 26, 8, 0, 0, 0, time.UTC)
+	mgr.SetNowFunc(func() time.Time { return t0 })
+
+	drainWake := func() {
+		for {
+			select {
+			case <-mgr.schedWake:
+			default:
+				return
+			}
+		}
+	}
+	expectWoken := func(step string) {
+		t.Helper()
+		select {
+		case <-mgr.schedWake:
+		default:
+			t.Fatalf("%s: expected WakeScheduler signal on schedWake", step)
+		}
+	}
+
+	// 1. Only a manual subscription exists -> not scheduled and does not emit spurious wakeup.
+	drainWake()
+	manualSub, err := mgr.Create("ManualOnly", "", []AccountRef{{Site: "bilibili", UID: "6001", Name: "UP6001"}}, EmptySubRules())
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mgr.schedWake:
+		t.Fatal("creating a manual-only subscription while idle should not emit a spurious wake")
+	default:
+	}
+	mgr.mu.Lock()
+	hasSched := mgr.hasScheduledSubscriptionLocked()
+	mgr.mu.Unlock()
+	if hasSched {
+		t.Fatal("expected hasScheduledSubscriptionLocked()=false when only manual sub exists")
+	}
+	plan := mgr.CheckPlan()
+	if len(plan) != 1 || plan[0].Plan != PlanManual {
+		t.Fatalf("manual sub plan=%+v want PlanManual", plan)
+	}
+
+	// 2. Create the first subscription with DefaultSubRules() (0 -> 1 transition):
+	// full archive, wakes scheduler, scheduled even though legacy Enabled=false!
+	drainWake()
+	fullSub, err := mgr.Create("DefaultFull", "", []AccountRef{{Site: "bilibili", UID: "6002", Name: "UP6002"}}, DefaultSubRules())
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectWoken("0->1 create full-archive sub")
+	if !slices.Equal(fullSub.Tags, DefaultNewSubTags()) || fullSub.Rules.AutoCache.Since != t0.Format(time.RFC3339) {
+		t.Fatalf("new default sub tags=%v rules=%+v", fullSub.Tags, fullSub.Rules)
+	}
+	if _, ok := NextRunTime(legacyCfg, t0); !ok {
+		t.Fatal("NextRunTime should return ok=true when Mode!=manual even if legacy Enabled=false")
+	}
+	mgr.mu.Lock()
+	hasSched = mgr.hasScheduledSubscriptionLocked()
+	mgr.mu.Unlock()
+	if !hasSched {
+		t.Fatal("expected hasScheduledSubscriptionLocked()=true after creating default sub")
+	}
+	plan = mgr.CheckPlan()
+	foundFull := false
+	for _, row := range plan {
+		if row.SubID == fullSub.ID {
+			foundFull = true
+			if row.Plan != PlanScheduled || row.NextAt == "" {
+				t.Fatalf("expected PlanScheduled with legacy Enabled=false, got %+v", row)
+			}
+		}
+	}
+	if !foundFull {
+		t.Fatalf("missing fullSub in CheckPlan: %+v", plan)
+	}
+
+	// 3. Running scheduleLoop preserves an existing future nextRunAt across routine
+	// subscription writes (rename, note, new sub, unrelated settings save, explicit wake),
+	// preventing timer starvation; changing interval or transitioning 1->0 recomputes immediately.
+	var nowUnix atomic.Int64
+	nowUnix.Store(t0.Unix())
+	mgr.SetNowFunc(func() time.Time { return time.Unix(nowUnix.Load(), 0).UTC() })
+
+	loopCtx, cancelLoop := context.WithCancel(context.Background())
+	mgr.Start(loopCtx)
+	t.Cleanup(func() {
+		cancelLoop()
+		mgr.Stop()
+	})
+
+	waitNextRun := func(want time.Time, step string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			mgr.mu.Lock()
+			got := mgr.nextRunAt
+			mgr.mu.Unlock()
+			if got.Equal(want) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		mgr.mu.Lock()
+		got := mgr.nextRunAt
+		mgr.mu.Unlock()
+		t.Fatalf("%s: nextRunAt=%v, want %v", step, got, want)
+	}
+
+	wantT1 := t0.Add(60 * time.Minute)
+	waitNextRun(wantT1, "initial scheduleLoop arm")
+
+	// Advance clock by 5 minutes; routine edits & unrelated saves must NOT push nextRunAt to t0+65m!
+	tPlus5 := t0.Add(5 * time.Minute)
+	nowUnix.Store(tPlus5.Unix())
+
+	renamed := fullSub
+	renamed.Name = "DefaultFullRenamed"
+	renamed.Note = "updated note"
+	if _, err := mgr.Upsert(renamed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.SetLinks(fullSub.ID, []CustomLink{{Label: "主页", URL: "https://example.com/creator"}}); err != nil {
+		t.Fatal(err)
+	}
+	upserted, err := mgr.Upsert(Subscription{
+		Name:     "UpsertFull",
+		Accounts: []AccountRef{{Site: "bilibili", UID: "6003", Name: "UP6003"}},
+		Rules:    DefaultSubRules(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upserted.Rules.AutoCache.Since != tPlus5.Format(time.RFC3339) || !slices.Equal(upserted.Tags, DefaultNewSubTags()) {
+		t.Fatalf("upsert new default sub tags=%v rules=%+v", upserted.Tags, upserted.Rules)
+	}
+	if _, err := mgr.SetSubscriptionTags(manualSub.ID, []string{TagScheduledCheck}); err != nil {
+		t.Fatal(err)
+	}
+	// Saving settings with unchanged schedule config & explicit WakeScheduler must preserve wantT1.
+	mgr.UpdateSettings(legacyCfg)
+	mgr.WakeScheduler()
+	time.Sleep(40 * time.Millisecond)
+	waitNextRun(wantT1, "routine writes and explicit wake preserve existing nextRunAt")
+
+	// Changing interval immediately recomputes nextRunAt from tPlus5 + 30m.
+	cfg30 := legacyCfg
+	cfg30.IntervalMinutes = 30
+	mgr.UpdateSettings(cfg30)
+	waitNextRun(tPlus5.Add(30*time.Minute), "interval change recomputes nextRunAt immediately")
+
+	// Transitioning >=1 -> 0 scheduled subscriptions clears nextRunAt immediately.
+	for _, id := range []string{manualSub.ID, fullSub.ID, upserted.ID} {
+		if _, err := mgr.SetSubscriptionTags(id, []string{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitNextRun(time.Time{}, "1->0 transition clears nextRunAt")
+
+	// Transitioning 0 -> 1 re-arms nextRunAt immediately.
+	if _, err := mgr.SetSubscriptionTags(fullSub.ID, []string{TagScheduledCheck}); err != nil {
+		t.Fatal(err)
+	}
+	waitNextRun(tPlus5.Add(30*time.Minute), "0->1 transition re-arms nextRunAt")
+
+	// Explicit Mode="manual" pauses scheduling (PlanOff and zero nextRunAt).
+	mgr.UpdateSettings(settings.SubscriptionSettings{
+		Enabled:         false,
+		IntervalMinutes: 30,
+		Mode:            "manual",
+	})
+	waitNextRun(time.Time{}, "Mode=manual clears nextRunAt")
+	if _, ok := NextRunTime(settings.SubscriptionSettings{Mode: "manual", IntervalMinutes: 60}, t0); ok {
+		t.Fatal("NextRunTime should return false when Mode=manual")
+	}
+	for _, row := range mgr.CheckPlan() {
+		if row.SubID == fullSub.ID && row.Plan != PlanOff {
+			t.Fatalf("expected PlanOff when Mode=manual, got %+v", row)
+		}
 	}
 }

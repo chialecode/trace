@@ -39,8 +39,11 @@ func TestSettingsNoRecordingLimitAndTasksLiveIncidentsUI(t *testing.T) {
 	tt := ui.NewTester(app.View, 1280, 860)
 	tt.Frame()
 
-	if !tt.HasText("定时检查更新") {
-		t.Fatal("expected Settings subscription category to render 定时检查更新")
+	if !tt.HasText("检查间隔") {
+		t.Fatal("expected Settings subscription category to render 检查间隔")
+	}
+	if _, ok := tt.Find("开关定时订阅"); ok {
+		t.Fatal("Settings '订阅与直播' must NOT render legacy global 定时检查更新 switch")
 	}
 	if tt.HasText("同时录制数") {
 		t.Fatal("Settings '订阅与直播' must NOT render '同时录制数'")

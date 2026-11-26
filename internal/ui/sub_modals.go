@@ -15,11 +15,12 @@ import (
 func (a *App) closeAddSubOverlay() {
 	a.AddSubPreview = nil
 	a.AddSubPreviewOwner = nil
+	a.AddSubPreset = TrackingPresetPickerState{}
 	a.AddSubDialogOpen = false
 }
 
 func (a *App) renderAddSubOverlay(c *ui.Context, w, h float32) {
-	cardW := min(float32(460), max(float32(320), w-40))
+	cardW := min(float32(520), max(float32(320), w-40))
 	renderDialog(c, &a.AddSubDialogOpen,
 		"关闭添加订阅对话框（点击空白处）", "添加订阅对话框",
 		cardW, 0, a.closeAddSubOverlay,
@@ -66,7 +67,7 @@ func (a *App) renderAddSubOverlay(c *ui.Context, w, h float32) {
 							FontSize(12).TextColor(ColorDotYellow).MaxLines(2)
 						if AccentOutlinePillButton(c, "创建并移到新订阅", "创建并移到新订阅").Clicked() {
 							name := clampRunes(firstNonEmptyStrUI(a.AddSubName, acc.Name, acc.UID), 64)
-							created, err := a.backend.CreateSubscription(name, "", nil, subscription.DefaultSubRules())
+							created, err := a.backend.CreateSubscription(name, "", nil, a.AddSubPreset.SelectedRules())
 							if err != nil {
 								a.showError(err)
 							} else {
@@ -86,6 +87,8 @@ func (a *App) renderAddSubOverlay(c *ui.Context, w, h float32) {
 					}
 				})
 			}
+
+			renderTrackingPresetPicker(c, &a.AddSubPreset, "新订阅", "追踪模式", false)
 
 			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
 				if OutlinePillButton(c, "取消", "取消添加订阅").Clicked() {
@@ -288,6 +291,9 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 					selectedCount++
 				}
 			}
+
+			renderTrackingPresetPicker(c, &a.ImportPreset, "关注导入", "导入后追踪模式", true)
+
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
 				ui.Text(c, fmt.Sprintf("已选 %d 个", selectedCount)).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 				ui.Row(c).Gap(8).Children(func() {
@@ -320,7 +326,7 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 								chosen = append(chosen, u)
 							}
 						}
-						res, err := a.backend.ImportFollowingCreators(curSite, chosen, subscription.DefaultSubRules())
+						res, err := a.backend.ImportFollowingCreators(curSite, chosen, a.ImportPreset.SelectedRules())
 						a.showError(err)
 						if err == nil {
 							a.BannerInfo = fmt.Sprintf("已建立 %d 个订阅", res.Created)
