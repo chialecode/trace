@@ -29,7 +29,11 @@ func classifyHTTPStatus(status int, hdr http.Header, raw []byte, clientVersion s
 
 	switch status {
 	case http.StatusUnauthorized:
-		e.Kind = KindUnauthorized
+		if code == companionapi.CodeInvalidCode {
+			e.Kind = KindBadPairingCode
+		} else {
+			e.Kind = KindUnauthorized
+		}
 	case http.StatusForbidden:
 		if code == companionapi.CodeInvalidCode {
 			e.Kind = KindBadPairingCode

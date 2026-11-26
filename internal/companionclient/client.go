@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -245,9 +247,15 @@ func RescanUpdateAddrs(
 		var resp companionapi.PairStartResponse
 		err := tmp.doOneAddr(ctx, httpCli, addr, http.MethodPost, companionapi.PathPair, nil, body, &resp, true)
 		if err == nil {
-			out := resp.Addrs
+			port := DefaultPortForChannel(req.Channel)
+			if _, portStr, splitErr := net.SplitHostPort(addr); splitErr == nil {
+				if p, parseErr := strconv.Atoi(portStr); parseErr == nil && p > 0 && p <= 65535 {
+					port = p
+				}
+			}
+			out := normalizeEndpointList(resp.Addrs, port)
 			if len(out) == 0 {
-				out = addrs
+				out = normalizeEndpointList(addrs, port)
 			}
 			return out, addr, nil
 		}

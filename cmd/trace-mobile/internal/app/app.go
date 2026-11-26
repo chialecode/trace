@@ -77,6 +77,7 @@ type App struct {
 	tabWindows [5]*mygo.Window
 	tabs       *mygo.Tabs
 	gateWindow *mygo.Window
+	gateShown  bool
 	qrScanner  qrscanner.Scanner
 	invalidate func() // optional test hook for ui.Tester
 
@@ -173,6 +174,7 @@ func (a *App) Run() error {
 		if raw := mygo.App.RestoredState(); len(raw) > 0 {
 			var saved SavedUIState
 			if json.Unmarshal(raw, &saved) == nil {
+				a.mu.Lock()
 				if saved.Tab >= 0 && saved.Tab < len(a.routers) {
 					a.activeTab = saved.Tab
 				}
@@ -182,6 +184,7 @@ func (a *App) Run() error {
 						a.routers[i].SystemStack = true
 					}
 				}
+				a.mu.Unlock()
 			}
 		}
 		a.setupWindows()
@@ -214,12 +217,17 @@ func (a *App) setupWindows() {
 	}
 	tabs, err := mygo.NewTabs(tabItems...)
 	if err == nil {
+		a.mu.Lock()
 		a.tabs = tabs
-		if a.activeTab > 0 && a.activeTab < 5 {
-			tabs.Select(a.activeTab)
+		active := a.activeTab
+		a.mu.Unlock()
+		if active > 0 && active < 5 {
+			tabs.Select(active)
 		}
 		tabs.OnSelect(func(i int) {
+			a.mu.Lock()
 			a.activeTab = i
+			a.mu.Unlock()
 		})
 	}
 
@@ -230,8 +238,16 @@ func (a *App) setupWindows() {
 			a.renderGate(c)
 		}),
 	})
-	if a.connState != pagekit.ConnConnected {
-		a.gateWindow.Show()
+	if a.gateWindow != nil {
+		a.mu.Lock()
+		wantGate := a.connState != pagekit.ConnConnected || a.pair.rescanning
+		if wantGate {
+			a.gateShown = true
+		}
+		a.mu.Unlock()
+		if wantGate {
+			a.gateWindow.Show()
+		}
 	}
 }
 
@@ -239,12 +255,17 @@ func (a *App) setupWindows() {
 // pairing/connection gate, or the connected tab view + Mobile BottomBar.
 func (a *App) View(c *ui.Context) {
 	c.SetTheme(theme.TraceTheme())
-	if a.connState != pagekit.ConnConnected || a.pair.rescanning {
+	a.mu.Lock()
+	showTabs := a.connState == pagekit.ConnConnected && !a.pair.rescanning
+	idx := a.activeTab
+	badgeCount := a.tasksBadge
+	a.mu.Unlock()
+
+	if !showTabs {
 		a.renderGate(c)
 		return
 	}
 	ui.Column(c).Fill().Background(theme.ColorBgMain).Children(func() {
-		idx := a.activeTab
 		if idx < 0 || idx >= len(a.pages) {
 			idx = 0
 		}
@@ -252,8 +273,8 @@ func (a *App) View(c *ui.Context) {
 			a.pages[idx].View(c, a.tabHost(idx))
 		})
 		badgeStr := ""
-		if a.tasksBadge > 0 {
-			badgeStr = fmt.Sprint(a.tasksBadge)
+		if badgeCount > 0 {
+			badgeStr = fmt.Sprint(badgeCount)
 		}
 		buttons := make([]mobile.BarButton, 5)
 		iconNames := [5]string{"home", "library", "subscriptions", "tasks", "computer"}
@@ -270,17 +291,32 @@ func (a *App) View(c *ui.Context) {
 			}
 			buttons[i] = b
 		}
-		mobile.BottomBar(c, &a.activeTab, buttons...)
+		sel := idx
+		mobile.BottomBar(c, &sel, buttons...)
+		if sel != idx {
+			a.mu.Lock()
+			a.activeTab = sel
+			a.mu.Unlock()
+		}
 	})
 }
 
 func (a *App) renderGate(c *ui.Context) {
 	c.SetTheme(theme.TraceTheme())
-	if a.connState == pagekit.ConnUnpaired || a.pair.rescanning {
+	a.mu.Lock()
+	showPair := a.connState == pagekit.ConnUnpaired || a.pair.rescanning
+	a.mu.Unlock()
+	if showPair {
 		a.renderPairingGate(c)
 		return
 	}
 	a.renderConnectionGate(c)
+}
+
+func (a *App) snapshotGateError() (pagekit.ConnState, string, *companionclient.Error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.connState, a.tryingAddr, a.lastErr
 }
 
 // SetForeground handles foreground/background transitions (design §7.4).
@@ -301,7 +337,10 @@ func (a *App) SetForeground(fg bool) {
 		return
 	}
 	a.Update(func() {
-		if a.pair.step == pairStepQRScan && (a.connState == pagekit.ConnUnpaired || a.pair.rescanning) {
+		a.mu.Lock()
+		inQR := a.pair.step == pairStepQRScan && (a.connState == pagekit.ConnUnpaired || a.pair.rescanning)
+		a.mu.Unlock()
+		if inQR {
 			a.ensureQRScanner()
 		}
 	})
@@ -330,7 +369,9 @@ func (a *App) StartForegroundConnect() {
 	rec, ok := a.store.LoadPairing()
 	if !ok {
 		a.Update(func() {
+			a.mu.Lock()
 			a.connState = pagekit.ConnUnpaired
+			a.mu.Unlock()
 			a.syncGateVisibility()
 		})
 		return
@@ -338,8 +379,10 @@ func (a *App) StartForegroundConnect() {
 	tok, err := a.store.LoadToken()
 	if err != nil || tok == "" {
 		a.Update(func() {
+			a.mu.Lock()
 			a.connState = pagekit.ConnError
 			a.lastErr = &companionclient.Error{Kind: companionclient.KindUnauthorized}
+			a.mu.Unlock()
 			a.syncGateVisibility()
 		})
 		return
@@ -366,12 +409,14 @@ func (a *App) StartForegroundConnect() {
 	a.mu.Unlock()
 
 	a.Update(func() {
+		a.mu.Lock()
 		a.connState = pagekit.ConnConnecting
 		a.tryingAddr = ""
 		if len(rec.OrderedAddrs()) > 0 {
 			a.tryingAddr = rec.OrderedAddrs()[0]
 		}
 		a.lastErr = nil
+		a.mu.Unlock()
 		a.syncGateVisibility()
 	})
 
@@ -387,7 +432,9 @@ func (a *App) RetryNow() {
 // StartRescan opens the pairing QR screen to re-pair or update computer addresses.
 func (a *App) StartRescan() {
 	a.Update(func() {
+		a.mu.Lock()
 		a.pair.rescanning = true
+		a.mu.Unlock()
 		a.pair.errMsg = ""
 		a.enterQRScan()
 		a.syncGateVisibility()
@@ -406,8 +453,10 @@ func (a *App) cancelConnect() {
 	}
 	a.mu.Unlock()
 	a.Update(func() {
+		a.mu.Lock()
 		a.connState = pagekit.ConnError
 		a.lastErr = &companionclient.Error{Kind: companionclient.KindCanceled}
+		a.mu.Unlock()
 		a.syncGateVisibility()
 	})
 }
@@ -467,8 +516,10 @@ func (a *App) runConnectionSession(ctx context.Context, rec companionclient.Pair
 	a.mu.Unlock()
 
 	a.Update(func() {
+		a.mu.Lock()
 		a.connState = pagekit.ConnConnected
 		a.lastErr = nil
+		a.mu.Unlock()
 		if a.tabs != nil {
 			badge := ""
 			if st.DownloadBadge > 0 {
@@ -565,6 +616,7 @@ func (a *App) stopConnectionLocked(ce *companionclient.Error) {
 		for _, pg := range a.pages {
 			pg.OnDisconnected()
 		}
+		a.mu.Lock()
 		if !hasPairing {
 			a.connState = pagekit.ConnUnpaired
 			a.lastErr = nil
@@ -572,6 +624,7 @@ func (a *App) stopConnectionLocked(ce *companionclient.Error) {
 			a.connState = pagekit.ConnError
 			a.lastErr = ce
 		}
+		a.mu.Unlock()
 		a.syncGateVisibility()
 	})
 }
@@ -580,10 +633,25 @@ func (a *App) syncGateVisibility() {
 	if a.gateWindow == nil {
 		return
 	}
-	if a.connState == pagekit.ConnConnected && !a.pair.rescanning {
-		a.gateWindow.Hide()
-	} else {
+	a.mu.Lock()
+	wantGate := a.connState != pagekit.ConnConnected || a.pair.rescanning
+	changed := wantGate != a.gateShown
+	if changed {
+		a.gateShown = wantGate
+	}
+	idx := a.activeTab
+	a.mu.Unlock()
+
+	if wantGate {
 		a.gateWindow.Show()
+		if changed {
+			a.gateWindow.Update(func() {})
+		}
+		return
+	}
+	a.gateWindow.Hide()
+	if changed && idx >= 0 && idx < len(a.tabWindows) && a.tabWindows[idx] != nil {
+		a.tabWindows[idx].Update(func() {})
 	}
 }
 
@@ -685,9 +753,13 @@ func (a *App) Update(fn func()) {
 		a.invalidate()
 		return
 	}
+	a.mu.Lock()
+	showTabs := a.connState == pagekit.ConnConnected && !a.pair.rescanning
+	idx := a.activeTab
+	a.mu.Unlock()
+
 	win := a.gateWindow
-	if a.connState == pagekit.ConnConnected && !a.pair.rescanning {
-		idx := a.activeTab
+	if showTabs {
 		if idx >= 0 && idx < len(a.tabWindows) && a.tabWindows[idx] != nil {
 			win = a.tabWindows[idx]
 		}
@@ -731,8 +803,10 @@ func (a *App) RefreshStatus() {
 			return
 		}
 		a.Update(func() {
+			a.mu.Lock()
 			a.desktop = snapshotFromStatus(rec, addr, st)
 			a.tasksBadge = st.DownloadBadge
+			a.mu.Unlock()
 			if a.tabs != nil {
 				badge := ""
 				if st.DownloadBadge > 0 {
@@ -756,7 +830,12 @@ func (a *App) Unpair() {
 		cancel()
 	}
 	_ = a.store.ClearAll()
-	a.pair = pairingState{step: pairStepGuide}
+	a.Update(func() {
+		a.stopQRScanner()
+		a.mu.Lock()
+		a.pair = pairingState{step: pairStepGuide}
+		a.mu.Unlock()
+	})
 	a.stopConnectionLocked(nil)
 }
 
@@ -848,7 +927,9 @@ func (h *tabHost) Update(fn func()) {
 
 func (h *tabHost) SetTasksBadge(count int) {
 	h.app.Update(func() {
+		h.app.mu.Lock()
 		h.app.tasksBadge = count
+		h.app.mu.Unlock()
 		if h.app.tabs != nil {
 			badge := ""
 			if count > 0 {
@@ -865,7 +946,9 @@ func (h *tabHost) SelectTab(tab pagekit.TabID) {
 		return
 	}
 	h.app.Update(func() {
+		h.app.mu.Lock()
 		h.app.activeTab = idx
+		h.app.mu.Unlock()
 		if h.app.tabs != nil {
 			h.app.tabs.Select(idx)
 		}

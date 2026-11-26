@@ -28,10 +28,19 @@ func ParseQRCode(raw string) (companionapi.PairPayload, error) {
 	if err != nil {
 		return companionapi.PairPayload{}, err
 	}
-	addrs := make([]string, 0, len(p.Addrs))
-	seen := make(map[string]bool, len(p.Addrs))
-	for _, rawAddr := range p.Addrs {
-		norm, err := NormalizeEndpoint(rawAddr, p.Port)
+	addrs := normalizeEndpointList(p.Addrs, p.Port)
+	if len(addrs) == 0 {
+		return companionapi.PairPayload{}, companionapi.ErrInvalidPairPayload
+	}
+	p.Addrs = addrs
+	return p, nil
+}
+
+func normalizeEndpointList(rawAddrs []string, defaultPort int) []string {
+	addrs := make([]string, 0, len(rawAddrs))
+	seen := make(map[string]bool, len(rawAddrs))
+	for _, rawAddr := range rawAddrs {
+		norm, err := NormalizeEndpoint(rawAddr, defaultPort)
 		if err != nil {
 			continue
 		}
@@ -40,11 +49,7 @@ func ParseQRCode(raw string) (companionapi.PairPayload, error) {
 			addrs = append(addrs, norm)
 		}
 	}
-	if len(addrs) == 0 {
-		return companionapi.PairPayload{}, companionapi.ErrInvalidPairPayload
-	}
-	p.Addrs = addrs
-	return p, nil
+	return addrs
 }
 
 // EncodeQRCode encodes a PairPayload as "trace-pair:<base64url JSON>".

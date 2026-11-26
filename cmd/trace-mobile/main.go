@@ -4,8 +4,6 @@ import (
 	"log"
 
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/app"
-	_ "github.com/egoist/mygo/plugins/camera"
-	_ "github.com/egoist/mygo/plugins/permissionflow"
 	_ "github.com/egoist/mygo/plugins/preferences"
 	_ "github.com/egoist/mygo/plugins/videoplayer"
 )

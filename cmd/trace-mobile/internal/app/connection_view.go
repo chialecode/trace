@@ -19,6 +19,7 @@ func (a *App) renderConnectionGate(c *ui.Context) {
 	if computerName == "" {
 		computerName = "我的电脑"
 	}
+	connState, tryingAddr, lastErr := a.snapshotGateError()
 
 	ui.Column(c).
 		Fill().
@@ -28,7 +29,7 @@ func (a *App) renderConnectionGate(c *ui.Context) {
 		AlignItems(ui.Center).
 		Children(func() {
 			ui.Column(c).
-				Width(340).
+				FillWidth().
 				MaxWidth(420).
 				Gap(18).
 				AlignItems(ui.Center).
@@ -42,7 +43,7 @@ func (a *App) renderConnectionGate(c *ui.Context) {
 						Center().
 						Children(func() {
 							col := theme.ColorAccent
-							if a.connState == pagekit.ConnError && a.lastErr != nil && a.lastErr.Kind != companionclient.KindDesktopLoggedOut {
+							if connState == pagekit.ConnError && lastErr != nil && lastErr.Kind != companionclient.KindDesktopLoggedOut {
 								col = theme.ColorError
 							}
 							theme.DrawIcon(c, "computer", 32, col, 1.8)
@@ -52,8 +53,8 @@ func (a *App) renderConnectionGate(c *ui.Context) {
 						ui.Text(c, computerName).FontSize(20).FontWeight(600).TextColor(theme.ColorTextMain).TextAlign(ui.Center)
 					}
 
-					if a.connState == pagekit.ConnConnecting {
-						addr := a.tryingAddr
+					if connState == pagekit.ConnConnecting {
+						addr := tryingAddr
 						if addr == "" && len(rec.Addrs) > 0 {
 							addr = rec.Addrs[0]
 						}
@@ -75,9 +76,9 @@ func (a *App) renderConnectionGate(c *ui.Context) {
 					// Error state (every reason in design §8)
 					errMsg := "无法连接到电脑"
 					var actions []companionclient.ErrorAction
-					if a.lastErr != nil {
-						errMsg = a.lastErr.UserMessage()
-						actions = a.lastErr.Actions()
+					if lastErr != nil {
+						errMsg = lastErr.UserMessage()
+						actions = lastErr.Actions()
 					} else {
 						actions = []companionclient.ErrorAction{companionclient.ActionRetry, companionclient.ActionRescan}
 					}

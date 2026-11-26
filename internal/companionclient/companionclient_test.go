@@ -470,3 +470,65 @@ func TestConnectStatusFailoverLoggedOutAndNoLeakSentinel(t *testing.T) {
 		}
 	}
 }
+
+func TestPinnedHTTPClientLongPollAnd401InvalidCodeAndRescanPortNormalization(t *testing.T) {
+	cert, fp := generateTestCert(t)
+
+	// 1. Long-poll client (>30s timeout) must not keep 30s ResponseHeaderTimeout.
+	pollCli, err := PinnedHTTPClient(fp, 70*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, ok := pollCli.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", pollCli.Transport)
+	}
+	if tr.ResponseHeaderTimeout < 65*time.Second && tr.ResponseHeaderTimeout != 0 {
+		t.Fatalf("ResponseHeaderTimeout = %v, want >= 65s or 0", tr.ResponseHeaderTimeout)
+	}
+
+	// 2. HTTP 401 with invalid_code vs unauthorized distinction.
+	ceCode := classifyHTTPStatus(http.StatusUnauthorized, http.Header{}, []byte(`{"error":{"code":"invalid_code"}}`), "0.1.0")
+	if ceCode.Kind != KindBadPairingCode {
+		t.Fatalf("401 invalid_code Kind = %q, want %q", ceCode.Kind, KindBadPairingCode)
+	}
+	ceAuth := classifyHTTPStatus(http.StatusUnauthorized, http.Header{}, []byte(`{"error":{"code":"unauthorized"}}`), "0.1.0")
+	if ceAuth.Kind != KindUnauthorized {
+		t.Fatalf("401 unauthorized Kind = %q, want %q", ceAuth.Kind, KindUnauthorized)
+	}
+
+	// 3. RescanUpdateAddrs normalizes bare IPv4/IPv6 with winning port and deduplicates.
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == companionapi.PathPair && r.Method == http.MethodPost {
+			_ = json.NewEncoder(w).Encode(companionapi.PairStartResponse{
+				Status: "updated",
+				Addrs:  []string{"192.168.1.99", "fd00::1", "192.168.1.99"},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	srv.TLS = &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{cert},
+	}
+	srv.StartTLS()
+	defer srv.Close()
+	addr := srv.Listener.Addr().String()
+
+	_, wantPort, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotAddrs, winAddr, err := RescanUpdateAddrs(context.Background(), []string{addr}, fp, "tok-123", companionapi.PairRequest{
+		Code:    "ABCD-EFGH",
+		Channel: "dev",
+	})
+	if err != nil || winAddr != addr {
+		t.Fatalf("RescanUpdateAddrs = (%v, %q, %v)", gotAddrs, winAddr, err)
+	}
+	wantAddrs := []string{"192.168.1.99:" + wantPort, "[fd00::1]:" + wantPort}
+	if len(gotAddrs) != len(wantAddrs) || gotAddrs[0] != wantAddrs[0] || gotAddrs[1] != wantAddrs[1] {
+		t.Fatalf("normalized rescan addrs = %v, want %v", gotAddrs, wantAddrs)
+	}
+}

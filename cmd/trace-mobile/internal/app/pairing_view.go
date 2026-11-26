@@ -433,17 +433,27 @@ func (a *App) handlePairingBack() {
 	case pairStepIdentityConfirm:
 		a.abortManualIdentity()
 	case pairStepWaitingApproval, pairStepQRScan, pairStepManualForm:
-		if a.pair.rescanning {
+		a.mu.Lock()
+		rescan := a.pair.rescanning
+		a.mu.Unlock()
+		if rescan {
 			if _, ok := a.store.LoadPairing(); ok {
+				a.mu.Lock()
 				a.pair.rescanning = false
+				a.mu.Unlock()
 				a.pair.step = pairStepGuide
+				a.syncGateVisibility()
 				return
 			}
 		}
 		a.pair.step = pairStepGuide
 	default:
-		if a.pair.rescanning {
-			a.pair.rescanning = false
+		a.mu.Lock()
+		wasRescan := a.pair.rescanning
+		a.pair.rescanning = false
+		a.mu.Unlock()
+		if wasRescan {
+			a.syncGateVisibility()
 		}
 	}
 }
@@ -575,9 +585,12 @@ func (a *App) beginRescanUpdateFlow(existing companionclient.PairingRecord, tok 
 			existing.Name = qr.Name
 			existing.LastAddr = winAddr
 			_ = a.store.SavePairing(existing)
+			a.mu.Lock()
 			a.pair.rescanning = false
+			a.mu.Unlock()
 			a.pair.step = pairStepGuide
 			a.pair.errMsg = ""
+			a.syncGateVisibility()
 			a.RetryNow()
 		})
 	}()
@@ -647,7 +660,10 @@ func (a *App) beginPairFlow(addrs []string, fp, code, expectedNode, expectedName
 				a.pair.step = pairStepGuide
 				return
 			}
+			a.mu.Lock()
 			a.pair = pairingState{}
+			a.mu.Unlock()
+			a.syncGateVisibility()
 			a.RetryNow()
 		})
 	}()

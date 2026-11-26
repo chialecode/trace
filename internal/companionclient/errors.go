@@ -276,6 +276,11 @@ func PinnedHTTPClient(fp string, timeout time.Duration) (*http.Client, error) {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
+	if timeout > tr.ResponseHeaderTimeout {
+		// Long-poll requests (e.g. GET /api/v1/pair/{id} up to 60s) must not
+		// be aborted prematurely by the default 30s ResponseHeaderTimeout.
+		tr.ResponseHeaderTimeout = timeout
+	}
 	return &http.Client{
 		Transport: tr,
 		Timeout:   timeout,
