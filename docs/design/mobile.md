@@ -103,18 +103,18 @@
 <a id="media"></a>
 ## 6. 媒体
 
-- 一律经 `LibraryService.MediaPath(key, relPath)` 白名单读取登记文件（INV-08），支持 `Range` 与 `If-Range`，响应带 `Cache-Control: no-store`。
+- 一律经 `LibraryService.MediaPath(key, relPath)` 白名单读取登记文件（INV-08），支持 `Range` 与 `If-Range`，按实际文件扩展名返回准确的 `Content-Type`（如 `video/mp4`、`audio/flac`、`image/jpeg` 等），响应带 `Cache-Control: no-store`。
 - **缩略图**：`?w=480` 返回电脑端缩放后的 JPEG（视频与录像用登记的封面）；**看图**：`?w=2560` 按最长边缩放，“查看原图”不带参数返回原文件；GIF、实况片段与视频按原文件返回，不转码。
-- **视频**：系统播放器（`plugins/videoplayer`）不认自签名证书，手机端在 Go 里开一个只监听 `127.0.0.1` 随机端口的转发：播放器请求 `http://127.0.0.1:<端口>/media/...?t=<一次性票据>`，转发校验票据后用固定指纹的 TLS 与设备令牌向电脑端请求并原样回传（含 Range）。票据 128 位随机、只在内存、绑定一个条目文件、播放器关闭即作废。是否可行由原型确认（第 9 节第 1 项）。
-- 电脑端不转码。手机不能解码的编码（AV1、HEVC、FLAC 音轨等）由播放器错误或解码能力查询判定后明确说明（FR-MOB-014）。
+- **视频**：系统播放器（`plugins/videoplayer`）不认自签名证书，手机端在 Go 里开一个只监听 `127.0.0.1` 随机端口的转发：播放器请求 `http://127.0.0.1:<端口>/media/...?t=<一次性票据>`，转发校验票据后用固定指纹的 TLS 1.3 与设备令牌向电脑端请求并原样回传（含 `Range` / `If-Range` 与 `206 Partial Content`）。票据 128 位随机、只在内存、绑定一个条目文件、播放器关闭即作废。Android 9+（`targetSdk=36`）默认拦截对 `127.0.0.1` 的明文请求，须由手机端的 Kotlin 原生模块提供 `network_security_config.xml`（仅放行 `127.0.0.1` 与 `localhost`，其余主机一律禁用明文；经原型 [#117](https://github.com/chialecode/trace/issues/117) 实测通过）。
+- 电脑端不转码。手机不能解码的编码（AV1、HEVC、FLAC 等，或超出设备解码器上限的分辨率）采用**两层判定**：优先由 Kotlin 原生模块调用 `MediaCodecList(ALL_CODECS)` 预检目标编码与分辨率上限，再以运行期播放器错误回调（`State.Error != ""`）以及“预期有画面但 `State.Ready && Width == 0 && Height == 0`”（Android `MediaPlayer` 丢弃视频轨只播音轨时不报错误）兜底，命中后明确说明原因（FR-MOB-014）。
 
 <a id="app"></a>
 ## 7. 手机端应用
 
 ### 7.1 工程与依赖
 
-- 独立的 MyGo 应用 `cmd/trace-mobile/`，自己的 `mygo.json`：名称“TRACE”，标识符 `io.github.chialecode.trace`；开发版由 MyGo 自动加后缀（“TRACE Dev”、`io.github.chialecode.trace.dev`），两者可在同一台手机并存（与电脑端通道隔离一致）。`android.minSdk` 26。
-- 依赖边界：只链接 MyGo、`ui`、`ui/mobile`、`plugins/videoplayer`、二维码扫描所需的插件或库，以及新的纯 Go 客户端包 `internal/companionclient`（协议类型与 DTO 与电脑端共用一个无依赖的类型包）；**不链接** `internal/site/...`、`internal/credential`、`internal/download`、`internal/live`、`internal/subscription`、`internal/library`、`internal/service`。`tools/check` 用 `go list -deps ./cmd/trace-mobile` 检查（同 `trace-server` 的做法）。实现时同步更新[架构 §1](architecture.md#architecture) 的 INV-05 包列表（`internal/companion`、`internal/companionclient` 不依赖 MyGo；`cmd/trace-mobile` 是新的 MyGo 引用方）与 `tools/check` 的依赖方向清单（[#118](https://github.com/chialecode/trace/issues/118)、[#119](https://github.com/chialecode/trace/issues/119)）。
+- 独立的 MyGo 应用 `cmd/trace-mobile/`，自己的 `mygo.json`：名称“TRACE”，标识符 `io.github.chialecode.trace`（正式版图标与旁边的 `-dev` 图标由 MyGo 自动按通道选用），`android.minSdk` `26`，`android.permissions` 声明 `["CAMERA"]`（`INTERNET`、`ACCESS_NETWORK_STATE`、`POST_NOTIFICATIONS` 由 MyGo 自动加入清单）；可选 `android.adaptiveIcon` 与 `android.splash`。开发版由 MyGo 自动加后缀（“TRACE Dev”、`io.github.chialecode.trace.dev`），两者可在同一台手机并存（与电脑端通道隔离一致）。
+- 依赖边界：只链接 MyGo、`ui`、`ui/mobile`、`plugins/videoplayer`、手机端自有的小型 Android Kotlin 原生模块（一并承载 `network_security_config.xml`、`MediaCodecList` 解码能力查询，以及基于 AndroidX CameraX `Preview`+`ImageAnalysis` 与 `com.google.zxing:core` 的离线二维码扫码 `native.View`），以及新的纯 Go 客户端包 `internal/companionclient`（协议类型与 DTO 与电脑端共用无依赖的 `internal/companionapi`）；**不链接** `internal/site/...`、`internal/credential`、`internal/download`、`internal/live`、`internal/subscription`、`internal/library`、`internal/service`。`tools/check` 用 `go list -deps ./cmd/trace-mobile` 检查（同 `trace-server` 的做法）。实现时同步更新[架构 §1](architecture.md#architecture) 的 INV-05 包列表（`internal/companion`、`internal/companionapi`、`internal/companionclient` 不依赖 MyGo；`cmd/trace-mobile` 是新的 MyGo 引用方）与 `tools/check` 的依赖方向清单（[#118](https://github.com/chialecode/trace/issues/118)、[#119](https://github.com/chialecode/trace/issues/119)）。
 - 帖子卡片、时间与大小格式化等纯展示代码，能与电脑端共用的抽成不依赖服务层的小包；不为共用而把 `internal/ui` 整体搬进手机端。
 
 ### 7.2 界面结构
@@ -157,20 +157,34 @@
 - 地址失效时依次尝试配对记录里的全部地址；都失败才进入上表的错误页。
 
 <a id="risks"></a>
-## 9. 原型要验证的风险（[#117](https://github.com/chialecode/trace/issues/117)）
+## 9. 原型验证结论（[#117](https://github.com/chialecode/trace/issues/117)）
 
-1. **系统播放器与自签名证书**：回环转发方案（第 6 节）能否在 Android 的 MediaPlayer 上播放、拖动；回环明文所需的网络安全配置能否经 `mygo.json` 或插件清单写入。不行时的备选：在 Go 里解码后交给 `ui.Video` 的自定义解码器（工作量大），或电脑端为每次播放签发短期票据走明文（要重新评估安全）。
-2. **Windows 防火墙**：按用户安装、不需要管理员的 TRACE 第一次监听局域网端口会触发防火墙提示，允许可能要管理员确认；“设置 › 移动端”要写明，并在实机检查中确认。
-3. **手机解码能力**：TRACE 默认缓存最高档（可能是 AV1 / HEVC，哔哩哔哩 Hi-Res 另存 FLAC），确定判定“不能播放”的方式与文案。
-4. **构建链**：本机 Windows 上 `mygo dev/build -platform android` 的可用性、耗时与产物大小（构建环境见 [#116](https://github.com/chialecode/trace/issues/116)）；二维码扫描用相机插件加纯 Go 解码，还是调用系统扫码能力。
+以下四项风险均已在隔离原型与 Android 16（API 36，x86_64 模拟器）及本机 Windows 11 环境中实测验证，脱敏回执见 `artifacts/mobile-proto/proto-report.json`：
+
+1. **系统播放器与自签名证书（通过，须配 `networkSecurityConfig`）**：
+   - **未配置 `networkSecurityConfig` 时被拦截**：Android 16（`targetSdk=36`）的 `MediaHTTPConnection` 在发起 socket 连接前即拒绝 `http://127.0.0.1:<端口>`（代理命中 0 次，`NuCachedSource2` 返回 `-1` 重试）。
+   - **写入方式**：MyGo `v0.10.0` 的 `mygo.json` 无 `networkSecurityConfig` 字段，`mygo-plugin.json` 的 `android.application` 也只能向 `<application>` 内追加子标签而不能改 `<application>` 属性。经实测，在 MyGo **Kotlin 原生模块**中放置 `kotlin/src/main/AndroidManifest.xml`（设 `android:networkSecurityConfig="@xml/trace_network_security_config"`）与 `kotlin/src/main/res/xml/trace_network_security_config.xml`（`<base-config cleartextTrafficPermitted="false" />`，仅对 `127.0.0.1` 与 `localhost` 放行明文），Gradle 清单合并后即生效（`aapt2` 与 `NetworkSecurityPolicy` 均核对 `127.0.0.1=true`、`10.0.2.2=false`）。
+   - **播放、Range 拖动与票据隔离通过**：手机端 Go 侧固定叶证书 DER SHA-256 指纹 + TLS 1.3 连接电脑模拟服务，回环代理校验一次性 `?t=<票据>`（错票据与销毁后旧票据均返回 `403`）。在 10.22 MiB（150 秒、`moov` 前置）合成 AVC+AAC MP4 上，`plugins/videoplayer` 正常起播（`640×360`），`Seek` 跳转 `331 ms → 112,743 ms` 时电脑端实收 `Range: bytes=7778518-` 并返回 `206 Partial Content`（2,941,246 字节）。无需启用备选自研解码或明文票据方案。
+2. **Windows 防火墙（已观测本机行为；真机局域网入站留实机检查）**：
+   - 标准用户（中等完整性级别、无管理员提权）下，按用户路径运行的 Go 进程调用 `net.Listen` 监听本机局域网 IPv4（`:47382`）本身不会报错；本机与模拟器 NAT（`10.0.2.2`）因源自本机进程可直达，不能代替真实局域网入站验证。
+   - 本机 Windows Defender 防火墙三类配置文件均为 `ON` + `BlockInbound,AllowOutbound` + `InboundUserNotification=Enable`，且当前 Wi-Fi 归类为 `Public`。未通过管理员 UAC 批准放行时，Windows **自动为该可执行文件创建了两条持久的 `Inbound Block` 规则（`Public` 配置、TCP 与 UDP）**；一旦存在阻止规则，后续重启不会再弹提示。
+   - **设计落点**：“设置 › 移动端”须写明三点：① 首次开启触发 Windows 防火墙提示时需管理员确认，建议仅勾选“专用网络”；② 若当前 Wi-Fi 在 Windows 中为“公用网络”，需先在系统网络设置中改为“专用网络”；③ 若曾误点取消生成阻止规则，需在“允许应用通过 Windows Defender 防火墙”里手动为 TRACE 勾选“专用”放行。真机跨设备局域网连接留待实现阶段的 `needs-user` 实机检查确认。
+3. **手机解码能力与“不能播放”判定（通过，确定两层判定方案）**：
+   - Android 16 模拟器通过 Kotlin 原生模块查询 `MediaCodecList(ALL_CODECS)`，检出 `video/avc`（硬解至 4096×4096）、`video/hevc`（硬解至 4096×4096）、`video/av01`（`c2.android.av1-dav1d.decoder` 软解，上限 2048×2048，不含 4K）、`audio/flac`（`c2.android.flac.decoder`）与 `audio/mp4a-latm`。
+   - 经回环代理 + `plugins/videoplayer` 实测：合成 AVC、HEVC、AV1（320×240，3 秒）与遵循 RFC 9639 的 FLAC-in-MP4（`fLaC`/`dfLa`，48 kHz 立体声，3.072 秒）均正常起播与拖动。注：裸 `.flac` 若被服务端错标为 `Content-Type: video/mp4` 会触发 `MediaPlayer error 1/-2147483648`，因此电脑端媒体端点须按扩展名返回准确 `Content-Type`。
+   - **关键陷阱**：对“视频轨为不支持编码 + 音轨为有效 AAC”的合成 MP4，Android `MediaPlayer` **不触发错误回调**，而是报告 `ready=true, playing=true, err="", width=0, height=0`（黑屏只播声音）；对仅含不支持视频轨的 MP4 则报 `MediaPlayer error -38/0` 而非稳定的 `UNSUPPORTED` 码。因此**不能只靠播放器错误码**，定案为两层判定（第 6 节）：① 播放前用 `MediaCodecList` 核对条目编码与分辨率上限；② 运行期同时拦截 `State.Error != ""` 与 `State.Ready && 预期视频 && Width == 0 && Height == 0`。
+4. **构建链与二维码扫描（通过，发现三项 Windows 上游限制并定案扫码方案）**：
+   - **MyGo `v0.10.0` Windows 构建限制与绕过**：① `internal/mobile/android/embed.go` 未嵌入 `gradlew.bat`，而 `cmd/mygo/android.go` 在 Windows 上调用 `.mygo/android/gradlew.bat` 会直接报找不到文件，须在 `.mygo/android/` 补放调用 `gradle-wrapper.jar` 的 `gradlew.bat`（`mygo` 更新宿主文件时不会删除该文件）；② MyGo 固定 Gradle `8.14.3`（内置 Kotlin DSL `2.0.21`）且配置 `jvmToolchain(17)` 但未启用 foojay 解析器，使用 Android Studio 自带 JBR `25.0.4` 会以 `IllegalArgumentException: 25.0.4` 崩溃，须将 `JAVA_HOME` 指向 **JDK 17**（实测 Eclipse Temurin `17.0.21.1+2` 通过）；③ 本机存在代理时，Java/Gradle 不读取 `HTTP(S)_PROXY` 环境变量，须经 `GRADLE_OPTS` 与参数转发 `-Dhttp.proxyHost`/`-Dhttps.proxyHost`。
+   - **耗时、体积与标识实测**：首次冷构建 `mygo build -platform android`（三 ABI 含首次下载 Gradle/AndroidX 依赖）`4m 16s`，APK `39.5 MB` / AAB `16.9 MB`；热构建单 ABI `mygo build -platform android/arm64` `4.8s`，APK `14.2 MB` / AAB `6.9 MB`；加入 Kotlin 原生模块（含 CameraX `1.6.2` + `com.google.zxing:core:3.5.4` + `network_security_config`）后单 ABI APK `14.6 MB`（R8 压缩后仅增 `+0.38 MiB`）。`mygo dev -platform android` 首次冷构建+安装 `37.5s`，仅改 Go 代码增量热推送 `libmygoapp.so` 耗时 `2.6s`。未配置 `android.keystore` 时默认以调试密钥（`CN=Android Debug`）签名；开发版自动加 ` Dev` 与 `.dev` 后缀并与正式版包名共存。
+   - **二维码扫描定案**：采用同一 Kotlin 原生模块提供 `native.View`（`ui.NativeView` 嵌入），以 **AndroidX CameraX `1.6.2`（`Preview` + `ImageAnalysis`，Apache-2.0）+ `com.google.zxing:core:3.5.4`（Apache-2.0）** 本地离线实时解码，并在解码器里加 `LuminanceSource.invert()` 回退以兼容深色反相二维码（已实测识别 TRACE `yeqown/go-qrcode/v2` 生成的常规与反相 `trace-pair:` 二维码）。不采用 `plugins/camera`（只支持落盘拍照 `TakePhoto`、无实时帧流）、纯 Go 解码库（许可或维护度不符，见[选型 §4](../research/2026-11-26-mobile.md)）或 Google Play Services Code Scanner（强依赖 GMS，国内无 GMS 手机不可用）。
 
 <a id="build"></a>
 ## 10. 版本、通道、构建与分发
 
 - **版本**：手机端版本号跟随电脑端的版本线（`0.1.x`，开发版带 `-dev.<时间>`）；能否连接只看协议版本，手机端不必每周跟着更新（NFR-MOB-VER-001）。
 - **通道**：正式版手机只配对正式版电脑端，开发版只配对开发版（二维码与 `pair` 都校验 `channel`）；`trace-test` 演练身份不参与移动端。
-- **构建环境**：JDK 17 或以上、Android SDK（`compileSdk`/`targetSdk` 36）、NDK，`mygo doctor` 检查；Gradle 与依赖在第一次构建时下载。iOS 只能在装 Xcode 的 Mac 上构建。
-- **打包**（计划）：`go run ./tools/package -mobile` 调用 `mygo build -platform android`，输出 `dist/trace-mobile/<通道>/`（只留最新一份）；开发版用调试签名。正式版签名密钥放仓库外与 GitHub `release` 环境（同更新签名私钥的做法），生成与保管要用户授权；APK 由发布流程附在 GitHub Release（DEC-085 ⑦），不上架应用商店。打包与发布改动属于高风险清单。
+- **构建环境**：**JDK 17**（MyGo `v0.10.0` 固定 Gradle `8.14.3` + `jvmToolchain(17)`，与 Android Studio 附带的 JBR 25 不兼容，需通过 `JAVA_HOME` 指定 JDK 17）、Android SDK（`compileSdk`/`targetSdk` 36，`build-tools` 36.0.0）、NDK，`mygo doctor` 检查；Windows 上使用 MyGo `v0.10.0` 需在 `.mygo/android/` 补放 `gradlew.bat`（并在使用代理时向 Gradle 转发 `-Dhttp(s).proxyHost/Port`），待上游修复后移除该绕过（`OSS-010`）。Gradle 与依赖在第一次构建时下载。iOS 只能在装 Xcode 的 Mac 上构建。
+- **打包**（计划）：`go run ./tools/package -mobile` 调用 `mygo build -platform android`（或按需单 ABI `android/arm64`，约 `14.6 MB`；全三 ABI APK 约 `39.5 MB`），输出 `dist/trace-mobile/<通道>/`（只留最新一份）；开发版用调试签名。正式版签名密钥放仓库外与 GitHub `release` 环境（同更新签名私钥的做法），生成与保管要用户授权；APK 由发布流程附在 GitHub Release（DEC-085 ⑦），不上架应用商店。打包与发布改动属于高风险清单。
 - **手机端更新**：没有应用内自更新；遇到 `protocol_mismatch` 且需要更新手机时，打开 GitHub Release 页面。
 
 <a id="phases"></a>

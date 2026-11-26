@@ -8,6 +8,7 @@
 - **在 Windows 上用 Python 或脚本改文本文件要保留原换行符。** Python 的 `Path.write_text` 会把 `\n` 写成 `\r\n`，整个文件被改成 CRLF，文档检查与源码匹配型测试随之失败。读写用字节或 `newline=""`。证据：2026-11-24 另一个项目。出现 1 次。
 - **在 `git worktree` 工作树里先单独跑完 `go run ./tools/check`，推送时用 `git push --no-verify` 并在 PR 写明原因。** `git push` 执行 `pre-push` 钩子时会注入当前工作树的 `GIT_DIR` 环境变量，`tools/release` 测试里的 `git init`、`git commit` 与 `git tag` 继承该变量后会直接改写工作树自身的分支引用与标签，导致 `HEAD` 被测试提交覆盖并报 `tag 'v0.1.1' already exists`。证据：2026-11-25（含 #56）。出现 2 次。
 - **Windows 隔离沙箱桌面下不要把 `golang.org/x/sys/windows.EnumWindows` 的 `(r1=0, GetLastError=0)` 当成错误，也不要仅靠 `EnumWindows` 跨桌面判断窗口是否打开。** Agent 沙箱命令运行在零顶层窗口的隔离桌面上，`EnumWindows` 返回 `FALSE` 且 `GetLastError()==0`，`x/sys/windows` 会将其包装成 `syscall.EINVAL`（`invalid argument`），且隔离桌面看不到用户交互桌面上的窗口；应用自身在数据目录写入 `runtime-window.json`（按运行中 PID 核对），再以直接检查 `e1` 的 `EnumWindows` 兜底。证据：#84（2026-11-25）。出现 1 次。
+- **在 Windows 上用 MyGo `v0.10.0` 构建 Android 时须将 `JAVA_HOME` 设为 JDK 17、在 `.mygo/android/` 补放 `gradlew.bat`，并在有代理时经 `GRADLE_OPTS` 与参数转发 `-Dhttp(s).proxyHost/Port`。** MyGo `v0.10.0` 的 `internal/mobile/android/embed.go` 遗漏了 `gradlew.bat` 导致 Windows 报找不到文件；固定 Gradle `8.14.3`（内置 Kotlin DSL `2.0.21`）与 `jvmToolchain(17)` 遇 Android Studio JBR `25.0.4` 会抛 `IllegalArgumentException: 25.0.4`；Java/Gradle 不读取 `HTTP(S)_PROXY` 环境变量会在 10 秒后超时。证据：#117（2026-11-26）。出现 2 次。
 
 ## 解析与站点
 
