@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -359,8 +360,32 @@ func (a *App) renderSubscriptionsPanel(c *ui.Context) {
 	})
 }
 
+func librarySourceUsageText(itemCount int, totalBytes int64) string {
+	if itemCount == 0 && totalBytes == 0 {
+		return "0 项"
+	}
+	return fmt.Sprintf("%d 项 · %s", itemCount, FormatBytes(totalBytes))
+}
+
+func (a *App) renderOfflineAccountAvatar(c *ui.Context, siteID, name, uid string, mid int64, size float32, label string, onClick func()) ui.Element {
+	normSite := normalizeSiteIDUI(siteID)
+	seed := mid
+	if seed <= 0 {
+		seed = accountSeedHash(normSite, firstNonEmptyStrUI(uid, name))
+	}
+	lookupUID := strings.TrimSpace(uid)
+	if lookupUID == "" && normSite == "bilibili" && mid > 0 {
+		lookupUID = strconv.FormatInt(mid, 10)
+	}
+	bmp := a.lookupAccountAvatarBitmap(normSite, lookupUID)
+	// Pure-offline Library views never fall back to remote URLs.
+	a.pendingLocalAvatar = true
+	return a.renderAvatarWithBitmap(c, name, seed, size, false, label, onClick, bmp)
+}
+
 func (a *App) libraryPanelRows() []libraryPanelRow {
 	stats := a.libraryStatistics
+	siteFilter := normalizeSiteFilter(a.LibrarySiteFilter)
 	var subsFirst *subscription.Subscription
 	if len(a.Subscriptions) > 0 {
 		subsFirst = &a.Subscriptions[0]
@@ -376,20 +401,62 @@ func (a *App) libraryPanelRows() []libraryPanelRow {
 		statsRev:     a.statsRev,
 		authorsN:     len(stats.Authors),
 		authorsFirst: authorsFirst,
+		siteFilter:   siteFilter,
+		subFilter:    a.LibrarySubFilter,
+		sortBySize:   a.LibrarySourceSortBySize,
 	}
 	if a.libraryPanelValid && a.libraryPanelSig == sig {
 		return a.libraryPanelRowsCache
 	}
+
+	type authorUsage struct {
+		count int
+		bytes int64
+	}
+	usageByKey := make(map[string]authorUsage, len(stats.Authors))
+	for _, author := range stats.Authors {
+		aSite := normalizeSiteIDUI(author.Site)
+		if siteFilter != "all" && aSite != siteFilter {
+			continue
+		}
+		aUID := strings.TrimSpace(author.UID)
+		if aUID == "" && author.Mid > 0 {
+			aUID = strconv.FormatInt(author.Mid, 10)
+		}
+		if aUID == "" {
+			continue
+		}
+		k := aSite + ":" + aUID
+		u := usageByKey[k]
+		u.count += author.ItemCount
+		u.bytes += author.TotalBytes
+		usageByKey[k] = u
+	}
+
 	ownedKeys := make(map[string]bool, len(a.Subscriptions)*2)
 	ownedMids := make(map[int64]bool, len(a.Subscriptions))
 	rows := make([]libraryPanelRow, 0, len(a.Subscriptions)+len(stats.Authors))
 	for _, sub := range a.Subscriptions {
-		rows = append(rows, libraryPanelRow{isSub: true, sub: sub})
+		seenSubKeys := make(map[string]bool, len(sub.Accounts))
+		var subCount int
+		var subBytes int64
+		hasSiteAccount := siteFilter == "all"
 		for _, account := range sub.Accounts {
 			normSite := normalizeSiteIDUI(account.Site)
 			uid := strings.TrimSpace(account.UID)
 			if uid != "" {
-				ownedKeys[normSite+":"+uid] = true
+				k := normSite + ":" + uid
+				ownedKeys[k] = true
+				if siteFilter == "all" || normSite == siteFilter {
+					hasSiteAccount = true
+					if !seenSubKeys[k] {
+						seenSubKeys[k] = true
+						if u, ok := usageByKey[k]; ok {
+							subCount += u.count
+							subBytes += u.bytes
+						}
+					}
+				}
 			}
 			if normSite == "bilibili" {
 				if id, err := strconv.ParseInt(uid, 10, 64); err == nil && id > 0 {
@@ -397,22 +464,77 @@ func (a *App) libraryPanelRows() []libraryPanelRow {
 				}
 			}
 		}
+		if len(sub.Accounts) == 0 && sub.Mid > 0 {
+			ownedMids[sub.Mid] = true
+			k := "bilibili:" + strconv.FormatInt(sub.Mid, 10)
+			ownedKeys[k] = true
+			if siteFilter == "all" || siteFilter == "bilibili" {
+				hasSiteAccount = true
+				if u, ok := usageByKey[k]; ok {
+					subCount += u.count
+					subBytes += u.bytes
+				}
+			}
+		}
+		if hasSiteAccount || subCount > 0 || a.LibrarySubFilter == sub.ID {
+			rows = append(rows, libraryPanelRow{
+				isSub:      true,
+				sub:        sub,
+				itemCount:  subCount,
+				totalBytes: subBytes,
+			})
+		}
 	}
 	for _, author := range stats.Authors {
 		aSite := normalizeSiteIDUI(author.Site)
+		if siteFilter != "all" && aSite != siteFilter {
+			continue
+		}
 		aUID := strings.TrimSpace(author.UID)
 		if aUID == "" && author.Mid > 0 {
 			aUID = strconv.FormatInt(author.Mid, 10)
 		}
 		aKey := aSite + ":" + aUID
-		if ownedKeys[aKey] || (aSite == "bilibili" && ownedMids[author.Mid]) {
+		if ownedKeys[aKey] || (aSite == "bilibili" && author.Mid > 0 && ownedMids[author.Mid]) {
 			continue
 		}
 		rows = append(rows, libraryPanelRow{
-			author:    author,
-			site:      aSite,
-			uid:       aUID,
-			authorKey: aKey,
+			author:     author,
+			site:       aSite,
+			uid:        aUID,
+			authorKey:  aKey,
+			itemCount:  author.ItemCount,
+			totalBytes: author.TotalBytes,
+		})
+	}
+	if a.LibrarySourceSortBySize {
+		rowName := func(r libraryPanelRow) string {
+			if r.isSub {
+				return r.sub.Name
+			}
+			return r.author.Name
+		}
+		rowID := func(r libraryPanelRow) string {
+			if r.isSub {
+				return "sub:" + r.sub.ID
+			}
+			return "author:" + r.authorKey
+		}
+		sort.SliceStable(rows, func(i, j int) bool {
+			if rows[i].totalBytes != rows[j].totalBytes {
+				return rows[i].totalBytes > rows[j].totalBytes
+			}
+			if rows[i].itemCount != rows[j].itemCount {
+				return rows[i].itemCount > rows[j].itemCount
+			}
+			if rows[i].isSub != rows[j].isSub {
+				return rows[i].isSub
+			}
+			ni, nj := rowName(rows[i]), rowName(rows[j])
+			if ni != nj {
+				return ni < nj
+			}
+			return rowID(rows[i]) < rowID(rows[j])
 		})
 	}
 	a.libraryPanelRowsCache = rows
@@ -429,8 +551,36 @@ var libraryPanelKinds = [5]struct{ key, icon, text, label string }{
 	{"forward", "share", "转发", "筛选类型：转发"},
 }
 
+func (a *App) renderLibrarySourceSortToggle(c *ui.Context) {
+	sortBtn := ui.ButtonBase(c).
+		Label("媒体库来源按占用空间排序").
+		Tooltip("按占用空间从高到低排序").
+		Padding(2, 8).
+		Radius(999).
+		Shrink(0)
+	if a.LibrarySourceSortBySize {
+		sortBtn.Background(ColorAccentBg).Border(1, ColorAccent)
+	} else {
+		sortBtn.Background(ColorBgMain).Border(1, ColorBorder)
+		if sortBtn.Hovered() {
+			sortBtn.Background(ColorHover)
+		}
+	}
+	sortBtn.Children(func() {
+		col := ColorTextMuted
+		if a.LibrarySourceSortBySize {
+			col = ColorAccent
+		}
+		ui.Text(c, "按占用空间").FontSize(11).FontWeight(600).TextColor(col).SingleLine()
+	})
+	if sortBtn.Clicked() {
+		a.LibrarySourceSortBySize = !a.LibrarySourceSortBySize
+	}
+}
+
 // renderLibraryPanel holds the library's filters: the kind, then the 来源
-// section (site 3-segment switcher + virtualized subscriptions and creators).
+// section (site 5-segment switcher + virtualized subscriptions and creators
+// with per-source item counts and storage usage).
 func (a *App) renderLibraryPanel(c *ui.Context) {
 	stats := a.libraryStatistics
 	rows := a.libraryPanelRows()
@@ -447,7 +597,10 @@ func (a *App) renderLibraryPanel(c *ui.Context) {
 				}
 			}
 
-			panelSection(c, "来源")
+			ui.Row(c).FillWidth().Padding(14, 10, 4, 10).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(6).ClipX().Children(func() {
+				ui.Text(c, "来源").FontSize(12).FontWeight(500).TextColor(ColorTextMuted).SingleLine()
+				a.renderLibrarySourceSortToggle(c)
+			})
 			ui.Row(c).FillWidth().Padding(2, 2, 4, 2).Children(func() {
 				renderThreeSegmentSiteFilter(c, "媒体库站点筛选：", a.LibrarySiteFilter, func(next string) {
 					a.LibrarySiteFilter = normalizeSiteFilter(next)
@@ -478,14 +631,22 @@ func (a *App) renderLibraryPanel(c *ui.Context) {
 					return
 				}
 				row := rows[i]
+				usageText := librarySourceUsageText(row.itemCount, row.totalBytes)
 				ui.Column(c).FillWidth().Padding(1, 8).Children(func() {
 					if row.isSub {
 						sub := row.sub
 						active := a.LibrarySubFilter == sub.ID
 						if panelItem(c, "媒体库订阅筛选："+sub.ID, active, func() {
 							pSite, pUID := subscriptionPrimarySiteAndUID(sub)
-							a.renderAccountAvatar(c, pSite, sub.Name, pUID, sub.Mid, 24, false, "", nil, sub.Face)
-							panelItemText(c, sub.Name, active)
+							a.renderOfflineAccountAvatar(c, pSite, sub.Name, pUID, sub.Mid, 24, "", nil)
+							ui.Column(c).Grow(1).Gap(1).ClipX().Children(func() {
+								nameCol := ColorTextMain
+								if active {
+									nameCol = ColorAccent
+								}
+								ui.Text(c, sub.Name).FontSize(13).FontWeight(500).TextColor(nameCol).SingleLine()
+								ui.Text(c, usageText).FontSize(11).TextColor(ColorTextMuted).SingleLine()
+							})
 						}) {
 							a.LibrarySubFilter, a.LibraryCreatorMid, a.LibraryAuthorKey = sub.ID, 0, ""
 							a.selectLibraryFilter()
@@ -504,8 +665,15 @@ func (a *App) renderLibraryPanel(c *ui.Context) {
 						active = true
 					}
 					if panelItem(c, label, active, func() {
-						a.renderAccountAvatar(c, aSite, author.Name, row.uid, author.Mid, 24, false, "", nil, author.Face)
-						panelItemText(c, author.Name, active)
+						a.renderOfflineAccountAvatar(c, aSite, author.Name, row.uid, author.Mid, 24, "", nil)
+						ui.Column(c).Grow(1).Gap(1).ClipX().Children(func() {
+							nameCol := ColorTextMain
+							if active {
+								nameCol = ColorAccent
+							}
+							ui.Text(c, author.Name).FontSize(13).FontWeight(500).TextColor(nameCol).SingleLine()
+							ui.Text(c, usageText).FontSize(11).TextColor(ColorTextMuted).SingleLine()
+						})
 					}) {
 						if aSite == "bilibili" && author.Mid > 0 {
 							a.LibraryCreatorMid, a.LibraryAuthorKey, a.LibrarySubFilter = author.Mid, "", ""

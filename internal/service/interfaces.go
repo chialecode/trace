@@ -235,8 +235,10 @@ type LibraryService interface {
 	GetLibraryItemMetaOnly(keyOrID string) (library.ItemMetadata, bool, error)
 	MediaPath(key, relPath string) (string, error)
 	PlanDelete(key string) (library.DeletePlan, error)
+	PlanDeleteBatch(keys []string) (library.DeletePlan, error)
 	Delete(key string) error
 	DeleteLibraryItem(itemKey string, deleteFiles bool) error
+	DeleteLibraryItems(itemKeys []string, deleteFiles bool) (library.DeletePlan, error)
 	RebuildLibraryIndex() (library.RebuildReport, error)
 	// RefreshLibrary rescans the library folders for files deleted or changed
 	// outside TRACE (presence and size, no hashing) and reports what changed.

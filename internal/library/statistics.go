@@ -21,9 +21,9 @@ func (s *Store) Statistics() (Statistics, error) {
 	// A collaboration or forwarded video cached under another creator's folder is
 	// listed under that creator in the media library, not under the uploader (DEC-056, DEC-061).
 	rows, err := s.db.Query(`
-		SELECT site, owner_uid, MAX(owner_mid), MAX(owner_name), MAX(owner_face), COALESCE(MAX(pub_ts), 0)
+		SELECT site, owner_uid, MAX(owner_mid), MAX(owner_name), MAX(owner_face), COALESCE(MAX(pub_ts), 0), COUNT(*), COALESCE(SUM(total_bytes), 0)
 		FROM (
-			SELECT site, pub_ts,
+			SELECT site, pub_ts, total_bytes,
 				CASE WHEN ` + viaOwnerSQL + ` THEN ` + viaUIDSQL + ` ELSE author_uid END AS owner_uid,
 				CASE WHEN ` + viaOwnerSQL + ` THEN 0 ELSE mid END AS owner_mid,
 				CASE WHEN ` + viaOwnerSQL + ` THEN COALESCE(json_extract(json_data, '$.via.name'), '') ELSE author_name END AS owner_name,
@@ -40,7 +40,7 @@ func (s *Store) Statistics() (Statistics, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var author ItemAuthor
-		if err := rows.Scan(&author.Site, &author.UID, &author.Mid, &author.Name, &author.Face, &author.LatestPubTs); err != nil {
+		if err := rows.Scan(&author.Site, &author.UID, &author.Mid, &author.Name, &author.Face, &author.LatestPubTs, &author.ItemCount, &author.TotalBytes); err != nil {
 			return stats, err
 		}
 		if author.Site == "bilibili" && author.Mid <= 0 {

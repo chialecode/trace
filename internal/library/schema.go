@@ -181,6 +181,8 @@ type ItemAuthor struct {
 	Name        string `json:"name"`
 	Face        string `json:"face"`
 	LatestPubTs int64  `json:"latestPubTs,omitempty"`
+	ItemCount   int    `json:"itemCount,omitempty"`
+	TotalBytes  int64  `json:"totalBytes,omitempty"`
 }
 
 // Reasons recorded in ItemVia.
@@ -402,9 +404,10 @@ type DotState struct {
 	Upgrade  string          `json:"upgrade,omitempty"`
 }
 
-// DeletePlan describes the exact files and items that PlanDelete / Delete will remove or preserve (FR-LIB-003, INV-09).
+// DeletePlan describes the exact files and items that PlanDelete / PlanDeleteBatch / Delete / DeleteBatch will remove or preserve (FR-LIB-003, INV-09).
 type DeletePlan struct {
 	TargetKey             string   `json:"targetKey"`
+	TargetKeys            []string `json:"targetKeys,omitempty"`
 	ItemKeys              []string `json:"itemKeys"`
 	RegisteredFiles       []string `json:"registeredFiles"`
 	PreservedSharedVideos []string `json:"preservedSharedVideos,omitempty"`
@@ -481,6 +484,7 @@ type FeedFilter struct {
 	AuthorUID      string      `json:"authorUid,omitempty"`
 	Authors        []int64     `json:"authors,omitempty"`
 	AuthorRefs     []AuthorRef `json:"authorRefs,omitempty"`
+	ItemKeys       []string    `json:"itemKeys,omitempty"`
 	CachedOnly     bool        `json:"cachedOnly"` // true = local library view
 	Keyword        string      `json:"keyword"`
 	Sort           string      `json:"sort,omitempty"` // "newest", "oldest"

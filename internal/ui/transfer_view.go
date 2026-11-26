@@ -31,7 +31,7 @@ type TransferUIState struct {
 	// Export dialog.
 	ExportOpen  bool
 	ExportPath  string
-	ExportScope string // "all" or "filter"
+	ExportScope string // "all", "filter", or "selected"
 	ExportErr   string
 
 	Jobs []service.TransferJob
@@ -79,6 +79,7 @@ func transferCategoryText(cat transfer.Category) string {
 }
 
 func (a *App) openImportPage() {
+	a.exitLibrarySelectMode()
 	a.Navigate(RouteLibrary)
 	a.transferImportGen++
 	a.Transfer.ImportPage = true
@@ -92,7 +93,18 @@ func (a *App) openExportDialog() {
 	a.transferExportGen++
 	a.Transfer.ExportOpen = true
 	a.Transfer.ExportErr = ""
-	if a.Transfer.ExportScope == "" {
+	if a.Transfer.ExportScope == "" || (a.Transfer.ExportScope == "selected" && a.librarySelectedCount() == 0) {
+		a.Transfer.ExportScope = "all"
+	}
+}
+
+func (a *App) openBatchExportDialog() {
+	a.transferExportGen++
+	a.Transfer.ExportOpen = true
+	a.Transfer.ExportErr = ""
+	if a.librarySelectedCount() > 0 {
+		a.Transfer.ExportScope = "selected"
+	} else if a.Transfer.ExportScope == "" {
 		a.Transfer.ExportScope = "all"
 	}
 }
@@ -487,26 +499,43 @@ func (a *App) renderExportOverlay(c *ui.Context, w, h float32) {
 	t := &a.Transfer
 	cardW := min(float32(520), max(float32(320), w-40))
 	filtered := a.libraryFilterActive()
+	selectedKeys := a.selectedLibraryItemKeys()
+	selectedLabel := fmt.Sprintf("已选 %d 项", len(selectedKeys))
 	renderDialog(c, &t.ExportOpen, "关闭导出对话框（点击空白处）", "导出媒体库对话框", cardW, 0, a.closeExportDialog, func() {
 		ui.Text(c, "导出媒体库").FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 		ui.Text(c, "复制已完成的文件和 item.json，另一台 TRACE 可以直接导入。正在缓存或录制的条目只导出已完成的部分。").
 			FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
-		scope := "全部"
-		if t.ExportScope == "filter" {
-			scope = "当前筛选"
-		}
 		opts := []string{"全部"}
 		if filtered {
 			opts = append(opts, "当前筛选")
-		} else if scope == "当前筛选" {
-			scope = "全部"
+		}
+		if len(selectedKeys) > 0 {
+			opts = append(opts, selectedLabel)
+		}
+		scope := "全部"
+		switch t.ExportScope {
+		case "selected":
+			if len(selectedKeys) > 0 {
+				scope = selectedLabel
+			} else {
+				t.ExportScope = "all"
+			}
+		case "filter":
+			if filtered {
+				scope = "当前筛选"
+			} else {
+				t.ExportScope = "all"
+			}
 		}
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "范围").FontSize(13).TextColor(ColorTextMain).SingleLine()
 			if ui.Select(c, &scope, opts).Label("导出范围").Changed() {
-				if scope == "当前筛选" {
+				switch scope {
+				case selectedLabel:
+					t.ExportScope = "selected"
+				case "当前筛选":
 					t.ExportScope = "filter"
-				} else {
+				default:
 					t.ExportScope = "all"
 				}
 			}
@@ -527,7 +556,9 @@ func (a *App) renderExportOverlay(c *ui.Context, w, h float32) {
 			}
 			if AccentPillButton(c, "开始导出", "开始导出").Clicked() {
 				filter := library.FeedFilter{}
-				if scope == "当前筛选" {
+				if scope == selectedLabel && len(selectedKeys) > 0 {
+					filter = library.FeedFilter{ItemKeys: selectedKeys}
+				} else if scope == "当前筛选" {
 					filter = a.libraryExportFilter()
 				}
 				path := strings.Trim(strings.TrimSpace(t.ExportPath), `"`)
@@ -535,6 +566,7 @@ func (a *App) renderExportOverlay(c *ui.Context, w, h float32) {
 					t.ExportErr = userErrorText(err)
 				} else {
 					a.closeExportDialog()
+					a.exitLibrarySelectMode()
 					a.refreshTransferJobs()
 					a.Navigate(RouteTasks)
 					a.selectTasksTransfers()

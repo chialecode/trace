@@ -150,21 +150,41 @@ func (a *App) renderRemotePushXConfirmOverlay(c *ui.Context, w, h float32) {
 func (a *App) renderDeleteConfirmOverlay(c *ui.Context, w, h float32) {
 	cardW := min(float32(480), max(float32(300), w-40))
 	renderDialog(c, &a.DeleteConfirm.Open, "关闭删除确认对话框（点击空白处）", "删除确认对话框", cardW, 0, nil, func() {
-		ui.Text(c, "删除缓存确认").FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-		ui.Text(c, fmt.Sprintf("%s：%s", itemKindLabel(a.DeleteConfirm.Item.Kind), deleteConfirmTitle(a.DeleteConfirm.Item))).
+		isBatch := a.DeleteConfirm.Batch
+		targetCount := len(a.DeleteConfirm.TargetKeys)
+		if targetCount == 0 {
+			targetCount = len(a.DeleteConfirm.Plan.TargetKeys)
+		}
+		if targetCount == 0 {
+			targetCount = 1
+		}
+		title := "删除缓存确认"
+		subtitle := fmt.Sprintf("%s：%s", itemKindLabel(a.DeleteConfirm.Item.Kind), deleteConfirmTitle(a.DeleteConfirm.Item))
+		if isBatch {
+			title = "批量删除缓存确认"
+			subtitle = fmt.Sprintf("已选择 %d 个媒体库条目", targetCount)
+		}
+		ui.Text(c, title).FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+		ui.Text(c, subtitle).
 			FontSize(14).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
 		ui.Text(c, fmt.Sprintf("预计清理已登记缓存文件：%d 个（共 %s）",
 			a.DeleteConfirm.FileCount,
 			FormatBytes(a.DeleteConfirm.TotalBytes))).
 			FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
-		if n := len(a.DeleteConfirm.Plan.ItemKeys) - 1; n > 0 {
-			ui.Text(c, fmt.Sprintf("同时删除这条动态引用的 %d 个视频（没有单独缓存，也没有别的动态引用）", n)).
-				FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
+		if extraVideos := len(a.DeleteConfirm.Plan.ItemKeys) - targetCount; extraVideos > 0 {
+			extraMsg := fmt.Sprintf("同时删除这条动态引用的 %d 个视频（没有单独缓存，也没有别的动态引用）", extraVideos)
+			if isBatch {
+				extraMsg = fmt.Sprintf("同时删除所选动态独占引用的 %d 个视频（没有单独缓存，也没有其他未选动态引用）", extraVideos)
+			}
+			ui.Text(c, extraMsg).FontSize(13).TextColor(ColorTextMuted).MaxLines(2)
 		}
 		if len(a.DeleteConfirm.Plan.PreservedSharedVideos) > 0 {
+			sharedMsg := fmt.Sprintf("这条动态引用的 %d 个视频单独缓存过或还被别的动态引用，将保留", len(a.DeleteConfirm.Plan.PreservedSharedVideos))
+			if isBatch {
+				sharedMsg = fmt.Sprintf("所选动态引用的 %d 个视频单独缓存过或还被未选动态引用，将保留", len(a.DeleteConfirm.Plan.PreservedSharedVideos))
+			}
 			ui.Box(c).FillWidth().Padding(8, 12).Radius(8).Background(ColorInfoBlueBg).Children(func() {
-				ui.Text(c, fmt.Sprintf("这条动态引用的 %d 个视频单独缓存过或还被别的动态引用，将保留", len(a.DeleteConfirm.Plan.PreservedSharedVideos))).
-					FontSize(12).FontWeight(600).TextColor(ColorInfoBlue).MaxLines(2)
+				ui.Text(c, sharedMsg).FontSize(12).FontWeight(600).TextColor(ColorInfoBlue).MaxLines(2)
 			})
 		}
 		if len(a.DeleteConfirm.Plan.PreservedUserFiles) > 0 {
@@ -192,11 +212,31 @@ func (a *App) renderDeleteConfirmOverlay(c *ui.Context, w, h float32) {
 				a.DeleteConfirm.Open = false
 			}
 			if AccentPillButton(c, "确认删除", "确认删除").Clicked() {
+				if isBatch {
+					keys := append([]string(nil), a.DeleteConfirm.TargetKeys...)
+					plan, err := a.backend.DeleteLibraryItems(keys, a.DeleteConfirm.DeleteFiles)
+					if err != nil {
+						a.showError(err)
+					} else {
+						if len(plan.PreservedUserFiles) > 0 {
+							a.BannerInfo = fmt.Sprintf("已删除 %d 个条目，并保留了 %d 个不是 TRACE 创建的文件", targetCount, len(plan.PreservedUserFiles))
+						} else {
+							a.BannerInfo = fmt.Sprintf("已批量删除 %d 个条目", targetCount)
+						}
+						a.exitLibrarySelectMode()
+					}
+					a.DeleteConfirm.Open = false
+					a.RefreshData()
+					return
+				}
 				deletedKey := a.DeleteConfirm.Item.ItemKey
 				err := a.backend.DeleteLibraryItem(deletedKey, a.DeleteConfirm.DeleteFiles)
 				if err != nil {
 					a.showError(err)
 				} else {
+					if a.LibrarySelectedKeys != nil {
+						delete(a.LibrarySelectedKeys, deletedKey)
+					}
 					if len(a.DeleteConfirm.Plan.PreservedUserFiles) > 0 {
 						a.BannerInfo = fmt.Sprintf("已删除缓存记录，并保留了 %d 个不是 TRACE 创建的文件", len(a.DeleteConfirm.Plan.PreservedUserFiles))
 					} else {

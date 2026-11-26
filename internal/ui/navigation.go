@@ -161,6 +161,7 @@ func (a *App) closeAllModalsAndOverlays() {
 	a.SubFile.ExportOpen = false
 	a.SubFile.ImportOpen = false
 	a.subImportGen++
+	a.exitLibrarySelectMode()
 }
 
 func (a *App) handleSiteAccountLoss(evSite, kind string) {
@@ -329,6 +330,9 @@ func (a *App) navigate(rawRoute string, fromBack bool) {
 	}
 	if route != RouteLibraryItem {
 		a.CurrentLibraryDetail = nil
+	}
+	if prevRoute == RouteLibrary && route != RouteLibrary {
+		a.exitLibrarySelectMode()
 	}
 	if route == RouteHome && a.CurrentRoute == RouteHome && a.HomeActorFilter != nil {
 		a.closeHomeActorFeed()
@@ -614,6 +618,7 @@ func (a *App) selectLibraryFilter() {
 		a.CurrentRoute = RouteLibrary
 		a.CurrentLibraryDetail = nil
 	}
+	a.clearLibrarySelection()
 	a.reloadLibraryItems()
 }
 

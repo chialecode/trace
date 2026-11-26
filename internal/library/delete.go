@@ -108,46 +108,96 @@ func (s *Store) cleanupPendingDeletesLocked() error {
 func (s *Store) PlanDelete(itemKey string) (DeletePlan, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.planDeleteLocked(itemKey)
+	plan, _, err := s.planDeleteBatchLocked([]string{itemKey})
+	return plan, err
 }
 
-func (s *Store) planDeleteLocked(itemKey string) (DeletePlan, error) {
-	meta, ok, err := s.getItemLocked(itemKey)
-	if err != nil {
-		return DeletePlan{}, err
+// PlanDeleteBatch computes the exact DeletePlan for multiple items as a single
+// batch without modifying disk or DB (FR-LIB-003, INV-09, DEC-083).
+// Shared referenced videos are evaluated excluding the entire selected batch:
+// if every referencing dynamic is in the batch (and the video was not directly
+// cached), the video is included in the deletion plan; if any unselected
+// dynamic still references it or it was directly cached, it is preserved.
+func (s *Store) PlanDeleteBatch(itemKeys []string) (DeletePlan, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	plan, _, err := s.planDeleteBatchLocked(itemKeys)
+	return plan, err
+}
+
+func (s *Store) planDeleteBatchLocked(itemKeys []string) (DeletePlan, []ItemMetadata, error) {
+	var targets []ItemMetadata
+	selectedSet := make(map[string]bool, len(itemKeys))
+	for _, rawKey := range itemKeys {
+		k := strings.TrimSpace(rawKey)
+		if k == "" {
+			continue
+		}
+		meta, ok, err := s.getItemLocked(k)
+		if err != nil {
+			return DeletePlan{}, nil, err
+		}
+		if !ok {
+			return DeletePlan{}, nil, fmt.Errorf("library: item %q not found", k)
+		}
+		if meta.Status == "recording" {
+			return DeletePlan{}, nil, fmt.Errorf("library: 正在录制的直播条目不能删除，请先停止录制")
+		}
+		if selectedSet[meta.ItemKey] {
+			continue
+		}
+		selectedSet[meta.ItemKey] = true
+		targets = append(targets, meta)
 	}
-	if !ok {
-		return DeletePlan{}, fmt.Errorf("library: item %q not found", itemKey)
-	}
-	if meta.Status == "recording" {
-		return DeletePlan{}, fmt.Errorf("library: 正在录制的直播条目不能删除，请先停止录制")
+	if len(targets) == 0 {
+		return DeletePlan{}, nil, fmt.Errorf("library: 请先选择要删除的条目")
 	}
 
 	plan := DeletePlan{
-		TargetKey: meta.ItemKey,
-		ItemKeys:  []string{meta.ItemKey},
+		TargetKey:  targets[0].ItemKey,
+		TargetKeys: make([]string, 0, len(targets)),
+		ItemKeys:   make([]string, 0, len(targets)),
+	}
+	itemsToDelete := make([]ItemMetadata, 0, len(targets))
+	seenDeleteItems := make(map[string]bool, len(targets))
+	for _, meta := range targets {
+		plan.TargetKeys = append(plan.TargetKeys, meta.ItemKey)
+		plan.ItemKeys = append(plan.ItemKeys, meta.ItemKey)
+		itemsToDelete = append(itemsToDelete, meta)
+		seenDeleteItems[meta.ItemKey] = true
 	}
 
-	itemsToDelete := []ItemMetadata{meta}
-
-	// If deleting a dynamic item that references videos, check if each referenced video is shared or directly cached.
-	if meta.Kind == "dynamic" && len(meta.Videos) > 0 {
+	// If deleting dynamic items that reference videos, check whether each referenced
+	// video has any reference OUTSIDE the entire selected batch or was directly cached.
+	seenPreservedShared := make(map[string]bool)
+	for _, meta := range targets {
+		if meta.Kind != "dynamic" || len(meta.Videos) == 0 {
+			continue
+		}
 		for _, vid := range meta.Videos {
 			vidKey := CanonicalItemKey(meta.Site, "video", vid)
+			if seenDeleteItems[vidKey] || seenPreservedShared[vidKey] {
+				continue
+			}
 			vMeta, vOk, err := s.getItemLocked(vidKey)
 			if err != nil {
-				return DeletePlan{}, fmt.Errorf("library: check referenced video %s: %w", vidKey, err)
+				return DeletePlan{}, nil, fmt.Errorf("library: check referenced video %s: %w", vidKey, err)
 			}
 			if !vOk {
 				continue
 			}
-			var otherRefs int
-			if err := s.db.QueryRow(`SELECT COUNT(1) FROM item_refs WHERE to_key = ? AND from_key != ?`, vidKey, meta.ItemKey).Scan(&otherRefs); err != nil {
-				return DeletePlan{}, fmt.Errorf("library: check shared refs for %s: %w", vidKey, err)
+			hasExternalRef, err := s.hasRefOutsideBatchLocked(vidKey, selectedSet)
+			if err != nil {
+				return DeletePlan{}, nil, fmt.Errorf("library: check shared refs for %s: %w", vidKey, err)
 			}
-			if otherRefs > 0 || vMeta.DirectCached {
+			if hasExternalRef || vMeta.DirectCached {
+				seenPreservedShared[vidKey] = true
 				plan.PreservedSharedVideos = append(plan.PreservedSharedVideos, vidKey)
 			} else {
+				if vMeta.Status == "recording" {
+					return DeletePlan{}, nil, fmt.Errorf("library: 正在录制的直播条目不能删除，请先停止录制")
+				}
+				seenDeleteItems[vidKey] = true
 				plan.ItemKeys = append(plan.ItemKeys, vidKey)
 				itemsToDelete = append(itemsToDelete, vMeta)
 			}
@@ -165,13 +215,32 @@ func (s *Store) planDeleteLocked(itemKey string) (DeletePlan, error) {
 			}
 		}
 		for _, uf := range userFiles {
-			if !seenUserFiles[uf] {
-				seenUserFiles[uf] = true
+			uKey := it.ItemDir + "\x00" + uf
+			if !seenUserFiles[uKey] {
+				seenUserFiles[uKey] = true
 				plan.PreservedUserFiles = append(plan.PreservedUserFiles, uf)
 			}
 		}
 	}
-	return plan, nil
+	return plan, itemsToDelete, nil
+}
+
+func (s *Store) hasRefOutsideBatchLocked(toKey string, selectedSet map[string]bool) (bool, error) {
+	rows, err := s.db.Query(`SELECT from_key FROM item_refs WHERE to_key = ?`, toKey)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var fromKey string
+		if err := rows.Scan(&fromKey); err != nil {
+			return false, err
+		}
+		if !selectedSet[fromKey] {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func collectRegisteredAndUserFiles(meta ItemMetadata) (registeredAbs []string, userRel []string) {
@@ -252,7 +321,7 @@ func collectRegisteredAndUserFiles(meta ItemMetadata) (registeredAbs []string, u
 func (s *Store) Delete(itemKey string) (DeletePlan, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.deleteWithPlanLocked(itemKey, true)
+	return s.deleteBatchWithPlanLocked([]string{itemKey}, true)
 }
 
 // DeleteItem removes an item from the index and optionally deletes its registered files from disk (INV-09).
@@ -260,20 +329,34 @@ func (s *Store) Delete(itemKey string) (DeletePlan, error) {
 func (s *Store) DeleteItem(itemKey string, deleteFiles bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.deleteWithPlanLocked(itemKey, deleteFiles)
+	_, err := s.deleteBatchWithPlanLocked([]string{itemKey}, deleteFiles)
 	return err
 }
 
-func (s *Store) deleteWithPlanLocked(itemKey string, deleteFiles bool) (DeletePlan, error) {
-	plan, err := s.planDeleteLocked(itemKey)
+// DeleteBatch removes multiple items as a single atomic index transaction and
+// optionally deletes their registered files from disk (FR-LIB-003, INV-09, DEC-083).
+// It NEVER calls os.RemoveAll on any directory; non-TRACE user files are strictly preserved.
+func (s *Store) DeleteBatch(itemKeys []string, deleteFiles bool) (DeletePlan, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deleteBatchWithPlanLocked(itemKeys, deleteFiles)
+}
+
+func (s *Store) deleteBatchWithPlanLocked(itemKeys []string, deleteFiles bool) (DeletePlan, error) {
+	plan, itemsToDelete, err := s.planDeleteBatchLocked(itemKeys)
 	if err != nil {
 		return DeletePlan{}, err
 	}
 
 	var itemDirs []string
-	for _, k := range plan.ItemKeys {
-		if m, ok, _ := s.getItemLocked(k); ok && m.ItemDir != "" {
-			itemDirs = append(itemDirs, m.ItemDir)
+	seenDirs := make(map[string]bool, len(itemsToDelete))
+	for _, m := range itemsToDelete {
+		if m.ItemDir != "" {
+			clean := filepath.Clean(m.ItemDir)
+			if !seenDirs[clean] {
+				seenDirs[clean] = true
+				itemDirs = append(itemDirs, clean)
+			}
 		}
 	}
 
@@ -281,43 +364,40 @@ func (s *Store) deleteWithPlanLocked(itemKey string, deleteFiles bool) (DeletePl
 	if deleteFiles && len(plan.RegisteredFiles) > 0 {
 		pending, err := s.readPendingDeletesLocked()
 		if err != nil {
-			return plan, err
+			return DeletePlan{}, err
 		}
-		for _, k := range plan.ItemKeys {
-			m, ok, _ := s.getItemLocked(k)
-			if ok {
-				regFiles, _ := collectRegisteredAndUserFiles(m)
-				pending = append(pending, pendingDeleteRecord{
-					ItemKey:         k,
-					ItemDir:         m.ItemDir,
-					RegisteredFiles: regFiles,
-				})
-			}
+		for _, m := range itemsToDelete {
+			regFiles, _ := collectRegisteredAndUserFiles(m)
+			pending = append(pending, pendingDeleteRecord{
+				ItemKey:         m.ItemKey,
+				ItemDir:         m.ItemDir,
+				RegisteredFiles: regFiles,
+			})
 		}
 		if err := s.writePendingDeletesLocked(pending); err != nil {
-			return plan, err
+			return DeletePlan{}, err
 		}
 	}
 
 	// 2. Remove from index and references.
 	tx, err := s.db.Begin()
 	if err != nil {
-		return plan, err
+		return DeletePlan{}, err
 	}
 	defer tx.Rollback()
 	for _, k := range plan.ItemKeys {
 		if _, err := tx.Exec(`DELETE FROM library_items WHERE item_key = ?`, k); err != nil {
-			return plan, err
+			return DeletePlan{}, err
 		}
 		if _, err := tx.Exec(`DELETE FROM item_refs WHERE from_key = ? OR to_key = ?`, k, k); err != nil {
-			return plan, err
+			return DeletePlan{}, err
 		}
 		if _, err := tx.Exec(`UPDATE feed_items SET cached = 0, cache_status = '', item_key = '' WHERE item_key = ?`, k); err != nil {
-			return plan, err
+			return DeletePlan{}, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return plan, err
+		return DeletePlan{}, err
 	}
 	s.mutationSeq++
 
