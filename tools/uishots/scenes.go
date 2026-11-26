@@ -585,6 +585,22 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			RequiredLabels: []string{"退避状态：douyin"},
 		},
 		{
+			Name: "settings-storage",
+			Setup: func() {
+				seedRecentAndLive()
+				app.SettingsCategory = "storage"
+				app.Navigate(ui.RouteSettings)
+			},
+			RequiredLabels: []string{
+				"缓存目录输入框",
+				"选择缓存保存位置",
+				"应用缓存目录",
+				"添加已有文件夹输入框",
+				"选择已有缓存文件夹",
+				"从已有文件夹添加",
+			},
+		},
+		{
 			Name: "parse",
 			Setup: func() {
 				app.Navigate(ui.RouteParse)

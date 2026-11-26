@@ -149,6 +149,7 @@ func remoteShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 	reset := func() {
 		fb.remote = remoteFixture{}
 		app.PlayerOverlay.Open, app.ImageViewer.Open = false, false
+		app.ConflictDiff.Open = false
 		app.Remote = ui.RemoteUIState{}
 		app.Transfer = ui.TransferUIState{}
 		app.SubFile = ui.SubFileUIState{}
@@ -196,7 +197,12 @@ func remoteShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 			app.Transfer.ImportPage = true
 			p, _ := fb.ImportPlan("import-shot")
 			app.Transfer.Plan = &p
-		}, RequiredLabels: []string{"返回媒体库", "导入文件夹路径", "全部冲突的处理", "冲突处理：bilibili:video:BV1conf", "导入后删除来源开关", "开始导入"}},
+		}, RequiredLabels: []string{"返回媒体库", "导入文件夹路径", "选择导入文件夹", "全部冲突的处理", "冲突处理：bilibili:video:BV1conf", "导入后删除来源开关", "开始导入"}},
+		{Name: "library-export-dialog", Setup: func() {
+			reset()
+			app.Navigate(ui.RouteLibrary)
+			app.Transfer = ui.TransferUIState{ExportOpen: true, ExportPath: `E:\trace-export`, ExportScope: "all"}
+		}, RequiredLabels: []string{"导出媒体库对话框", "导出到的文件夹", "选择导出文件夹", "开始导出"}},
 		{Name: "tasks-transfers", Setup: func() {
 			reset()
 			fb.remote.jobs = shotTransferJobs()
@@ -204,11 +210,17 @@ func remoteShotScenes(app *ui.App, fb *screenshotBackend) []sceneSpec {
 			app.Transfer.Jobs = fb.remote.jobs
 			app.TasksSection = "transfers"
 		}, RequiredLabels: []string{"导入导出任务：import-run", "取消导入导出：import-run", "查看导入预览：import-ready", "导入导出任务：export-done"}},
+		{Name: "subscriptions-export-dialog", Setup: func() {
+			reset()
+			app.Navigate(ui.RouteSubscriptions)
+			app.SubDetailOpen = false
+			app.SubFile = ui.SubFileUIState{ExportOpen: true, ExportPath: `D:\backup\trace-subscriptions.json`}
+		}, RequiredLabels: []string{"导出订阅对话框", "订阅导出位置", "选择订阅导出位置", "确认导出订阅"}},
 		{Name: "subscriptions-import-preview", Setup: func() {
 			reset()
 			app.Navigate(ui.RouteSubscriptions)
 			app.SubDetailOpen = false
 			app.SubFile = ui.SubFileUIState{ImportOpen: true, ImportPath: `D:\backup\trace-subscriptions.json`, Preview: shotSubPreview()}
-		}, RequiredLabels: []string{"导入订阅对话框", "合并进已有订阅开关", "合并导入缓存标签开关", "确认导入订阅"}},
+		}, RequiredLabels: []string{"导入订阅对话框", "订阅文件路径", "选择订阅文件", "合并进已有订阅开关", "合并导入缓存标签开关", "确认导入订阅"}},
 	}
 }
