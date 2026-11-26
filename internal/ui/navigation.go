@@ -277,6 +277,9 @@ func (a *App) currentReturnRoute() string {
 		if a.SubAccountsOpen {
 			return RouteSubscriptions + "/accounts"
 		}
+		if a.SubChecksOpen {
+			return RouteSubscriptions + "/checks"
+		}
 	}
 	return a.CurrentRoute
 }
@@ -333,6 +336,7 @@ func (a *App) navigate(rawRoute string, fromBack bool) {
 	if route == RouteSubscriptions {
 		a.SubDetailOpen = false
 		a.SubAccountsOpen = false
+		a.SubChecksOpen = false
 		a.SubMoreMenuOpen = false
 		a.SubManageMenuOpen = false
 		a.SubManageModalMode = ""
@@ -385,6 +389,7 @@ func (a *App) OpenSubscriptionDetail(sub subscription.Subscription) {
 	a.SelectedSubMid = sub.Mid
 	a.SubDetailOpen = true
 	a.SubAccountsOpen = false
+	a.SubChecksOpen = false
 	a.SubMoreMenuOpen = false
 	a.SubManageMenuOpen = false
 	a.SubAccountMenuKey = ""

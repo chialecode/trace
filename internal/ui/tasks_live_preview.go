@@ -114,77 +114,91 @@ func (a *App) renderTasksLiveView(c *ui.Context) {
 			for _, item := range rows {
 				row := item
 				previewing := a.LivePreviewKey != "" && a.matchesLivePreviewKey(row.RecKey, row.RoomID, row.UID)
+				incExpanded := len(row.Incidents) > 0 && a.isLiveRowIncidentsExpanded(row.RecKey)
 				borderCol := ColorLive
 				if previewing {
 					borderCol = ColorAccent
 				}
-				ui.Row(c).
+				ui.Column(c).
+					Label("正在录制行："+row.RecKey).
 					FillWidth().
 					Padding(12, 14).
 					Radius(16).
 					Background(ColorLiveBg).
 					Border(1, borderCol).
-					AlignItems(ui.Center).
-					Justify(ui.SpaceBetween).
-					Gap(12).
+					Gap(10).
 					ClipX().
 					Children(func() {
-						clickArea := ui.ButtonBase(c).
-							Label("预览直播录制："+row.RecKey).
-							Grow(1).
-							Gap(12).
+						ui.Row(c).
+							FillWidth().
 							AlignItems(ui.Center).
-							Justify(ui.Start).
-							Radius(10).
-							Padding(2, 4).
-							ClipX()
-						if clickArea.Hovered() {
-							clickArea.Background(ColorHover)
-						}
-						clickArea.Children(func() {
-							a.renderAccountAvatar(c, row.Site, row.Uname, row.UID, row.Mid, 42, true, "", nil, row.Face)
-							ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
-								ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-									ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(ColorLive).Children(func() {
-										ui.Text(c, "录制中").FontSize(11).FontWeight(600).TextColor(ColorWhite).SingleLine()
+							Justify(ui.SpaceBetween).
+							Gap(12).
+							Wrap().
+							ClipX().
+							Children(func() {
+								clickArea := ui.ButtonBase(c).
+									Label("预览直播录制："+row.RecKey).
+									Grow(1).
+									Shrink(1).
+									Gap(12).
+									AlignItems(ui.Center).
+									Justify(ui.Start).
+									Radius(10).
+									Padding(2, 4).
+									ClipX()
+								if clickArea.Hovered() {
+									clickArea.Background(ColorHover)
+								}
+								clickArea.Children(func() {
+									a.renderAccountAvatar(c, row.Site, row.Uname, row.UID, row.Mid, 42, true, "", nil, row.Face)
+									ui.Column(c).Grow(1).Shrink(1).Gap(4).ClipX().Children(func() {
+										ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
+											ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(ColorLive).Children(func() {
+												ui.Text(c, "录制中").FontSize(11).FontWeight(600).TextColor(ColorWhite).SingleLine()
+											})
+											if previewing {
+												ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(ColorAccentBg).Children(func() {
+													ui.Text(c, "正在预览").FontSize(11).FontWeight(600).TextColor(ColorAccent).SingleLine()
+												})
+											}
+											ui.Text(c, row.Uname+" · "+row.Title).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
+											renderSiteSmallBadgeWithDot(c, row.Site, row.BadgeLabel)
+											if row.QualSpec != "" {
+												ui.Text(c, "· "+row.QualSpec).Shrink(0).FontSize(12).FontWeight(600).TextColor(ColorLive).SingleLine()
+											}
+										})
+										recMeta := fmt.Sprintf("已录时长 %s · 大小 %s · 速度 %s/s · 第 %d 段 · 点击实时预览",
+											FormatDuration(row.DurationSec),
+											FormatBytes(row.Bytes),
+											FormatBytes(row.SpeedBps),
+											row.Segments)
+										ui.Text(c, recMeta).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 									})
-									if previewing {
-										ui.Box(c).Shrink(0).Padding(2, 8).Radius(999).Background(ColorAccentBg).Children(func() {
-											ui.Text(c, "正在预览").FontSize(11).FontWeight(600).TextColor(ColorAccent).SingleLine()
+								})
+								if clickArea.Clicked() {
+									a.StartLivePreview(row.RecKey)
+								}
+
+								ui.Row(c).AlignItems(ui.Center).Gap(8).Shrink(0).Children(func() {
+									if len(row.Incidents) > 0 {
+										renderLiveRowIncidentPill(c, row.RecKey, len(row.Incidents), incExpanded, func() {
+											a.toggleLiveRowIncidents(row.RecKey)
 										})
 									}
-									ui.Text(c, row.Uname+" · "+row.Title).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
-									renderSiteSmallBadgeWithDot(c, row.Site, row.BadgeLabel)
-									if row.QualSpec != "" {
-										ui.Text(c, "· "+row.QualSpec).Shrink(0).FontSize(12).FontWeight(600).TextColor(ColorLive).SingleLine()
+									if DangerOutlinePillButton(c, "停止录制", row.StopBtnLabel).Clicked() {
+										if row.Site == "bilibili" && row.RoomID > 0 {
+											a.stopLiveRecording(row.RoomID)
+										} else {
+											a.stopAccountLiveRecording(row.RecKey)
+										}
 									}
 								})
-								recMeta := fmt.Sprintf("已录时长 %s · 大小 %s · 速度 %s/s · 第 %d 段 · 点击实时预览",
-									FormatDuration(row.DurationSec),
-									FormatBytes(row.Bytes),
-									FormatBytes(row.SpeedBps),
-									row.Segments)
-								ui.Text(c, recMeta).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 							})
-						})
-						if clickArea.Clicked() {
-							a.StartLivePreview(row.RecKey)
-						}
 
-						ui.Row(c).AlignItems(ui.Center).Gap(8).Shrink(0).Children(func() {
-							if len(row.Incidents) > 0 {
-								renderLiveRowIncidentPill(c, row.RecKey, len(row.Incidents), func() {
-									a.selectTasksIncidents(row.RecKey)
-								})
-							}
-							if DangerOutlinePillButton(c, "停止录制", row.StopBtnLabel).Clicked() {
-								if row.Site == "bilibili" && row.RoomID > 0 {
-									a.stopLiveRecording(row.RoomID)
-								} else {
-									a.stopAccountLiveRecording(row.RecKey)
-								}
-							}
-						})
+						if incExpanded {
+							a.renderInlineRecordingIncidents(c, row.RecKey, row.Incidents, nil)
+						}
 					})
 			}
 

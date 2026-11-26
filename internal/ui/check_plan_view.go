@@ -12,14 +12,24 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// checkPlanRefresh is how long Tasks › 检查计划 shows a plan before reading
+// checkPlanRefresh is how long 订阅 › 检查计划 shows a plan before reading
 // it again (a local read, no request).
 const checkPlanRefresh = 20 * time.Second
 
-func (a *App) selectTasksChecks() {
-	a.TasksSection = "checks"
+func (a *App) openSubscriptionChecks() {
+	a.SubDetailOpen = false
+	a.SubAccountsOpen = false
+	a.SubChecksOpen = true
+	a.SubMoreMenuOpen = false
+	a.SubManageMenuOpen = false
+	a.SubAccountMenuKey = ""
+	a.SubManageModalMode = ""
 	a.checkPlanAt = time.Time{}
-	a.closeLivePreview()
+}
+
+// OpenSubscriptionChecks navigates to /subscriptions/checks and opens 检查计划.
+func (a *App) OpenSubscriptionChecks() {
+	a.Navigate(RouteSubscriptions + "/checks")
 }
 
 func (a *App) checkPlanRowsAt(now time.Time) []service.AccountCheckRow {
@@ -174,11 +184,11 @@ func checkPlanNextText(row service.AccountCheckRow, now time.Time) (string, bool
 	return "", false
 }
 
-// renderTasksChecksView is Tasks › 检查计划: for every subscribed account,
+// renderSubscriptionsChecksView is 订阅 › 检查计划: for every subscribed account,
 // when its updates were last checked and with what result, when a scheduled
 // round should check it next, and, for subscriptions that record
 // broadcasts, its live checks.
-func (a *App) renderTasksChecksView(c *ui.Context) {
+func (a *App) renderSubscriptionsChecksView(c *ui.Context) {
 	now := c.Now()
 	rows := a.checkPlanRowsAt(now)
 	checking := a.isPending("check-updates")
