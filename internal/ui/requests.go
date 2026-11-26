@@ -24,6 +24,7 @@ func isBackgroundPendingKey(key string) bool {
 	return key == "runtime-logs" ||
 		key == "visible-live" ||
 		key == "remote-status" ||
+		key == "file-dialog" ||
 		strings.HasPrefix(key, "thumb:") ||
 		strings.HasPrefix(key, "avatar:") ||
 		strings.HasPrefix(key, "hist-thumb:") ||

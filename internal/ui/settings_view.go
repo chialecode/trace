@@ -631,6 +631,7 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 	rebuilding := a.isPending("storage-rebuild")
 	migrating := a.isPending("storage-migrate")
 	addingRoot := a.isPending("storage-add-root")
+	picking := a.fileDialogBusy()
 
 	ui.Column(c).FillWidth().Gap(12).ClipX().Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
@@ -738,11 +739,14 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 			ui.Text(c, "只影响之后的缓存。").FontSize(12).TextColor(ColorTextMuted).SingleLine()
 			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).ClipX().Children(func() {
 				ui.TextInput(c, &a.CacheDirInput).Placeholder("新缓存目录路径").Label("缓存目录输入框").Grow(1)
+				if OutlinePillButton(c, "选择文件夹…", "选择缓存保存位置").Shrink(0).Disabled(migrating || picking).Clicked() && !migrating && !picking {
+					a.pickCacheDir()
+				}
 				migrateText := "应用缓存目录"
 				if migrating {
 					migrateText = "正在迁移…"
 				}
-				if AccentPillButton(c, migrateText, "应用缓存目录").Disabled(migrating).Clicked() && !migrating {
+				if AccentPillButton(c, migrateText, "应用缓存目录").Shrink(0).Disabled(migrating).Clicked() && !migrating {
 					targetDir := a.CacheDirInput
 					moveFiles := a.MoveExistingFiles
 					backend := a.backend
@@ -771,11 +775,14 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 					Placeholder("输入已有缓存根目录或 trace-data 文件夹路径").
 					Label("添加已有文件夹输入框").
 					Grow(1)
+				if OutlinePillButton(c, "选择文件夹…", "选择已有缓存文件夹").Shrink(0).Disabled(addingRoot || picking).Clicked() && !addingRoot && !picking {
+					a.pickAddLibraryRoot()
+				}
 				addText := "从已有文件夹添加"
 				if addingRoot {
 					addText = "正在扫描…"
 				}
-				if AccentOutlinePillButton(c, addText, "从已有文件夹添加").Disabled(addingRoot).Clicked() && !addingRoot {
+				if AccentOutlinePillButton(c, addText, "从已有文件夹添加").Shrink(0).Disabled(addingRoot).Clicked() && !addingRoot {
 					rootPath := a.AddLibraryRootInput
 					backend := a.backend
 					requestGuarded(a, "storage-add-root", nil, func(context.Context) (library.AddRootReport, error) {

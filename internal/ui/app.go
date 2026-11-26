@@ -181,6 +181,7 @@ type App struct {
 	pending              map[string]bool
 	closed               bool
 	fullscreen           func(bool)
+	fileDialog           FileDialogHandler
 	imageViewerRevision  uint64
 	imageViewerCancel    context.CancelFunc
 	runtimeDiagnostics   service.Diagnostics
@@ -491,13 +492,16 @@ type App struct {
 	LibraryRefresh LibraryRefreshState
 	// Remote is Settings › 远程; Transfer is 媒体库 › 导入…/导出…; SubFile is
 	// 订阅 › 导出订阅…/导入订阅… (docs/design/remote.md §6.3, §6.4, §7).
-	Remote           RemoteUIState
-	remoteGen        uint64
-	Transfer         TransferUIState
-	SubFile          SubFileUIState
-	subImportGen     uint64
-	SubLinks         SubLinksModalState
-	AddSubDialogOpen bool
+	Remote            RemoteUIState
+	remoteGen         uint64
+	Transfer          TransferUIState
+	transferImportGen uint64
+	transferExportGen uint64
+	SubFile           SubFileUIState
+	subExportGen      uint64
+	subImportGen      uint64
+	SubLinks          SubLinksModalState
+	AddSubDialogOpen  bool
 	// SubscribePicker subscribes to an account: into an existing
 	// subscription or a new one (DEC-058).
 	SubscribePicker     SubscribePickerState
