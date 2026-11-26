@@ -320,7 +320,7 @@ func (v *ImageViewer) View(c *ui.Context) {
 					} else {
 						origBtn := ui.Button(c, "").
 							Label("查看原图").
-							MinHeight(36).
+							MinHeight(38).
 							Padding(6, 12).
 							Radius(999).
 							Background(ui.RGBA(255, 255, 255, 0.22)).
@@ -437,7 +437,7 @@ func (v *ImageViewer) renderWatermarkToggle(c *ui.Context, idx int) {
 			}
 			origBtn := ui.Button(c, "").
 				Label("切换原图").
-				MinHeight(32).
+				MinHeight(36).
 				Padding(4, 10).
 				Radius(999).
 				Background(origBg).
@@ -456,7 +456,7 @@ func (v *ImageViewer) renderWatermarkToggle(c *ui.Context, idx int) {
 			}
 			nowmBtn := ui.Button(c, "").
 				Label("切换无水印").
-				MinHeight(32).
+				MinHeight(36).
 				Padding(4, 10).
 				Radius(999).
 				Background(nowmBg).

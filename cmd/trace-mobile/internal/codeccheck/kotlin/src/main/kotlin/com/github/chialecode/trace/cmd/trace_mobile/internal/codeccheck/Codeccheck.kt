@@ -34,7 +34,7 @@ private class AndroidCodecChecker : Checker {
                     return true
                 }
                 // Some decoders declare portrait/landscape transposed bounds.
-                if (vcaps.supportedWidths.contains(w) && vcaps.supportedHeights.contains(h)) {
+                if (vcaps.isSizeSupported(h, w)) {
                     return true
                 }
             }

@@ -81,7 +81,7 @@ func (p *Page) renderDetailRoute(c *ui.Context, h pagekit.Host, r *ui.Router, ro
 
 func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.LibraryItemDetail) {
 	images := collectDetailImages(det)
-	vidReq, hasVideo := buildDetailVideoRequest(det)
+	vidReq, indexMap, hasVideo := buildDetailVideoRequest(det)
 
 	ui.Scroll(c).Grow(1).Basis(0).FillWidth().Children(func() {
 		ui.Column(c).FillWidth().Padding(16, 16).Gap(14).Children(func() {
@@ -166,12 +166,15 @@ func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.
 				p.renderDetailVideoCard(c, h, det, vidReq)
 			}
 
-			// Multi-P list (tap any P to play in-place).
-			if len(det.Parts) > 1 && hasVideo {
+			// Multi-P list (tap any cached P to play in-place; uncached parts are disabled).
+			if len(det.Parts) > 1 {
 				ui.Column(c).FillWidth().Gap(8).Children(func() {
 					ui.Text(c, fmt.Sprintf("分 P 列表（%d）", len(det.Parts))).FontSize(14).FontWeight(600).TextColor(theme.ColorTextMain)
 					for i, part := range det.Parts {
-						idx := i
+						trackIdx, playable := indexMap[i]
+						if !hasVideo || part.File == "" {
+							playable = false
+						}
 						lbl := fmt.Sprintf("P%d", part.Page)
 						if part.Title != "" {
 							lbl += " · " + part.Title
@@ -186,31 +189,39 @@ func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.
 						if part.Codecs != "" {
 							meta = append(meta, part.Codecs)
 						}
+						if !playable {
+							meta = append(meta, "未缓存")
+						}
+						titleCol := theme.ColorTextMain
+						if !playable {
+							titleCol = theme.ColorTextMuted
+						}
 						rowBtn := ui.Button(c.Key("part-"+fmt.Sprint(i)), "").
 							Label("播放 "+lbl).
 							FillWidth().MinHeight(46).Padding(10, 12).Radius(10).
 							Background(theme.ColorBgPanel).Border(1, theme.ColorBorder).
-							Justify(ui.Start).AlignItems(ui.Center)
+							Justify(ui.Start).AlignItems(ui.Center).
+							Disabled(!playable)
 						rowBtn.Children(func() {
 							ui.Column(c).FillWidth().Gap(2).Children(func() {
-								ui.Text(c, lbl).FontSize(13).FontWeight(500).TextColor(theme.ColorTextMain).SingleLine()
+								ui.Text(c, lbl).FontSize(13).FontWeight(500).TextColor(titleCol).SingleLine()
 								if len(meta) > 0 {
 									ui.Text(c, strings.Join(meta, " · ")).FontSize(11).TextColor(theme.ColorTextMuted).SingleLine()
 								}
 							})
 						})
-						if rowBtn.Clicked() {
+						if playable && rowBtn.Clicked() {
 							req := vidReq
-							req.StartIndex = idx
+							req.StartIndex = trackIdx
 							p.triggerOpenVideo(h, req)
 						}
 					}
 				})
 			}
 
-			// Live recording info & segments list (tap any segment to play sequentially from there).
+			// Live recording info & segments list (tap any cached segment to play sequentially from there).
 			if det.Live != nil {
-				p.renderDetailLiveSection(c, h, det, vidReq, hasVideo)
+				p.renderDetailLiveSection(c, h, det, vidReq, indexMap, hasVideo)
 			}
 
 			// Images gallery (tap any image to open ImageViewer).
@@ -403,7 +414,7 @@ func (p *Page) renderDetailVideoCard(c *ui.Context, h pagekit.Host, det companio
 	}
 }
 
-func (p *Page) renderDetailLiveSection(c *ui.Context, h pagekit.Host, det companionapi.LibraryItemDetail, req mediaview.VideoRequest, hasVideo bool) {
+func (p *Page) renderDetailLiveSection(c *ui.Context, h pagekit.Host, det companionapi.LibraryItemDetail, req mediaview.VideoRequest, indexMap map[int]int, hasVideo bool) {
 	lv := det.Live
 	ui.Column(c).FillWidth().Gap(8).Children(func() {
 		meta := make([]string, 0, 3)
@@ -419,10 +430,13 @@ func (p *Page) renderDetailLiveSection(c *ui.Context, h pagekit.Host, det compan
 		if len(meta) > 0 {
 			ui.Text(c, strings.Join(meta, " · ")).FontSize(13).TextColor(theme.ColorTextMuted)
 		}
-		if len(lv.Segments) > 0 && hasVideo {
+		if len(lv.Segments) > 0 {
 			ui.Text(c, fmt.Sprintf("录像分段（%d）", len(lv.Segments))).FontSize(14).FontWeight(600).TextColor(theme.ColorTextMain)
 			for i, seg := range lv.Segments {
-				idx := i
+				trackIdx, playable := indexMap[i]
+				if !hasVideo || seg.File == "" {
+					playable = false
+				}
 				lbl := fmt.Sprintf("分段 %d", i+1)
 				segMeta := make([]string, 0, 3)
 				if d := mediaview.FormatDuration(int(seg.DurationSec)); d != "" {
@@ -434,21 +448,31 @@ func (p *Page) renderDetailLiveSection(c *ui.Context, h pagekit.Host, det compan
 				if seg.QualityName != "" || seg.Codec != "" {
 					segMeta = append(segMeta, strings.TrimSpace(seg.QualityName+" "+seg.Codec))
 				}
+				if !playable {
+					segMeta = append(segMeta, "未缓存")
+				}
+				titleCol := theme.ColorTextMain
+				iconCol := theme.ColorAccent
+				if !playable {
+					titleCol = theme.ColorTextMuted
+					iconCol = theme.ColorTextFaint
+				}
 				rowBtn := ui.Button(c.Key("seg-"+fmt.Sprint(i)), "").
 					Label("播放 "+lbl).
 					FillWidth().MinHeight(46).Padding(10, 12).Radius(10).
 					Background(theme.ColorBgPanel).Border(1, theme.ColorBorder).
-					Justify(ui.Start).AlignItems(ui.Center)
+					Justify(ui.Start).AlignItems(ui.Center).
+					Disabled(!playable)
 				rowBtn.Children(func() {
 					ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-						mediaview.DrawIcon(c, "play", 14, theme.ColorAccent, 1.8)
-						ui.Text(c, lbl).FontSize(13).FontWeight(600).TextColor(theme.ColorTextMain)
+						mediaview.DrawIcon(c, "play", 14, iconCol, 1.8)
+						ui.Text(c, lbl).FontSize(13).FontWeight(600).TextColor(titleCol)
 						ui.Text(c, strings.Join(segMeta, " · ")).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine().Grow(1).Basis(0)
 					})
 				})
-				if rowBtn.Clicked() {
+				if playable && rowBtn.Clicked() {
 					segReq := req
-					segReq.StartIndex = idx
+					segReq.StartIndex = trackIdx
 					p.triggerOpenVideo(h, segReq)
 				}
 			}
@@ -458,7 +482,7 @@ func (p *Page) renderDetailLiveSection(c *ui.Context, h pagekit.Host, det compan
 
 func (p *Page) openDetailPrimaryMedia(h pagekit.Host, det companionapi.LibraryItemDetail) {
 	if det.Kind == "video" || det.Kind == "live" {
-		if req, ok := buildDetailVideoRequest(det); ok {
+		if req, _, ok := buildDetailVideoRequest(det); ok {
 			p.triggerOpenVideo(h, req)
 			return
 		}
@@ -467,7 +491,7 @@ func (p *Page) openDetailPrimaryMedia(h pagekit.Host, det companionapi.LibraryIt
 		p.triggerOpenImages(h, imgs, 0)
 		return
 	}
-	if req, ok := buildDetailVideoRequest(det); ok {
+	if req, _, ok := buildDetailVideoRequest(det); ok {
 		p.triggerOpenVideo(h, req)
 	}
 }
@@ -519,13 +543,14 @@ func collectDetailImages(det companionapi.LibraryItemDetail) []mediaview.ImageIt
 	return out
 }
 
-func buildDetailVideoRequest(det companionapi.LibraryItemDetail) (mediaview.VideoRequest, bool) {
+func buildDetailVideoRequest(det companionapi.LibraryItemDetail) (mediaview.VideoRequest, map[int]int, bool) {
 	title := strings.TrimSpace(det.Title)
 	if title == "" {
 		title = "视频"
 	}
 	if det.Live != nil && len(det.Live.Segments) > 0 {
 		tracks := make([]mediaview.VideoTrack, 0, len(det.Live.Segments))
+		idxMap := make(map[int]int, len(det.Live.Segments))
 		for i, seg := range det.Live.Segments {
 			if seg.File == "" {
 				continue
@@ -535,6 +560,7 @@ func buildDetailVideoRequest(det companionapi.LibraryItemDetail) (mediaview.Vide
 				codec = det.Live.Codec
 			}
 			spec := strings.TrimSpace(strings.Trim(seg.QualityName+" · "+codec, " ·"))
+			idxMap[i] = len(tracks)
 			tracks = append(tracks, mediaview.VideoTrack{
 				Label:          fmt.Sprintf("第 %d 段", i+1),
 				RelPath:        seg.File,
@@ -551,13 +577,14 @@ func buildDetailVideoRequest(det companionapi.LibraryItemDetail) (mediaview.Vide
 				Title:           title,
 				IsLiveRecording: true,
 				Tracks:          tracks,
-			}, true
+			}, idxMap, true
 		}
 	}
 
 	if len(det.Parts) > 0 {
 		tracks := make([]mediaview.VideoTrack, 0, len(det.Parts))
-		for _, part := range det.Parts {
+		idxMap := make(map[int]int, len(det.Parts))
+		for i, part := range det.Parts {
 			if part.File == "" {
 				continue
 			}
@@ -566,6 +593,7 @@ func buildDetailVideoRequest(det companionapi.LibraryItemDetail) (mediaview.Vide
 				lbl = fmt.Sprintf("P%d", part.Page)
 			}
 			spec := strings.TrimSpace(strings.Trim(part.QualityName+" · "+part.Codecs, " ·"))
+			idxMap[i] = len(tracks)
 			tracks = append(tracks, mediaview.VideoTrack{
 				Label:          lbl,
 				RelPath:        part.File,
@@ -582,7 +610,7 @@ func buildDetailVideoRequest(det companionapi.LibraryItemDetail) (mediaview.Vide
 				ItemKey: det.ItemKey,
 				Title:   title,
 				Tracks:  tracks,
-			}, true
+			}, idxMap, true
 		}
 	}
 
@@ -600,7 +628,7 @@ func buildDetailVideoRequest(det companionapi.LibraryItemDetail) (mediaview.Vide
 				Height:         det.VideoInfo.Height,
 				QualitySummary: spec,
 			}},
-		}, true
+		}, nil, true
 	}
 
 	for _, m := range det.Media {
@@ -615,7 +643,7 @@ func buildDetailVideoRequest(det companionapi.LibraryItemDetail) (mediaview.Vide
 					Width:       m.Width,
 					Height:      m.Height,
 				}},
-			}, true
+			}, nil, true
 		}
 	}
 
@@ -645,9 +673,9 @@ func buildDetailVideoRequest(det companionapi.LibraryItemDetail) (mediaview.Vide
 			ItemKey: det.ItemKey,
 			Title:   title,
 			Tracks:  tracks,
-		}, true
+		}, nil, true
 	}
-	return mediaview.VideoRequest{}, false
+	return mediaview.VideoRequest{}, nil, false
 }
 
 func findDetailCover(det companionapi.LibraryItemDetail) string {

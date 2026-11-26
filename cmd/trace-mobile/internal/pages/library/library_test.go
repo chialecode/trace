@@ -92,11 +92,12 @@ func (h *libTestHost) FetchImage(_ context.Context, _ string) ([]byte, error) {
 }
 
 type syntheticLibServer struct {
-	mu      sync.Mutex
-	items   []companionapi.LibraryItemSummary
-	details map[string]companionapi.LibraryItemDetail
-	authors []companionapi.LibraryAuthorSummary
-	queries []url.Values
+	mu            sync.Mutex
+	items         []companionapi.LibraryItemSummary
+	details       map[string]companionapi.LibraryItemDetail
+	authors       []companionapi.LibraryAuthorSummary
+	authorsBySite map[string][]companionapi.LibraryAuthorSummary
+	queries       []url.Values
 }
 
 func newSyntheticLibServer(t *testing.T, count int) (*syntheticLibServer, *libTestHost, func()) {
@@ -303,12 +304,31 @@ func (s *syntheticLibServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		if end > len(matched) {
 			end = len(matched)
 		}
+		var respAuthors []companionapi.LibraryAuthorSummary
+		incAuthors := strings.ToLower(strings.TrimSpace(q.Get("includeAuthors")))
+		if incAuthors == "1" || incAuthors == "true" {
+			s.mu.Lock()
+			if s.authorsBySite != nil {
+				siteKey := site
+				if siteKey == "" {
+					siteKey = "all"
+				}
+				if list, ok := s.authorsBySite[siteKey]; ok {
+					respAuthors = append([]companionapi.LibraryAuthorSummary(nil), list...)
+				} else {
+					respAuthors = []companionapi.LibraryAuthorSummary{}
+				}
+			} else {
+				respAuthors = append([]companionapi.LibraryAuthorSummary(nil), s.authors...)
+			}
+			s.mu.Unlock()
+		}
 		_ = json.NewEncoder(w).Encode(companionapi.LibraryListResponse{
 			Items:      matched[offset:end],
 			Total:      len(matched),
 			HasMore:    hasMore,
 			NextOffset: end,
-			Authors:    s.authors,
+			Authors:    respAuthors,
 		})
 
 	case strings.HasPrefix(r.URL.Path, companionapi.PathLibraryItemsPrefix) && r.Method == http.MethodGet:
@@ -535,4 +555,166 @@ func TestLibrary5000ItemsGridFilterSheetViewerAndReadOnlyDetail(t *testing.T) {
 	if remItems != 0 || remDetail != nil || p.loader.Len() != 0 {
 		t.Fatalf("expected all in-memory library data cleared on disconnect, got items=%d detail=%v imgs=%d", remItems, remDetail, p.loader.Len())
 	}
+}
+
+func TestLibraryIncludeAuthorsClearOnEmptySiteScrollableSheetAndPartialMultiP(t *testing.T) {
+	srv, host, cleanup := newSyntheticLibServer(t, 20)
+	defer cleanup()
+
+	// Seed 35 authors on "all" and empty authors on "x" to verify scrollable sheet
+	// and stale-author clearing when switching to a site with zero authors.
+	manyAuthors := make([]companionapi.LibraryAuthorSummary, 35)
+	for i := range manyAuthors {
+		manyAuthors[i] = companionapi.LibraryAuthorSummary{
+			Kind:       "subscription",
+			SubID:      fmt.Sprintf("sub-%02d", i),
+			Name:       fmt.Sprintf("大量来源 #%02d", i),
+			ItemCount:  i + 1,
+			TotalBytes: int64(i+1) * (10 << 20),
+		}
+	}
+	srv.mu.Lock()
+	srv.authorsBySite = map[string][]companionapi.LibraryAuthorSummary{
+		"all": manyAuthors,
+		"x":   {},
+	}
+	// Seed a partial multi-P video where P1 is uncached (File == "") and P2 is cached ("p2.mp4"),
+	// and a partial live recording where segment 1 is uncached (File == "") and segment 2 is cached.
+	srv.details["partial_multip"] = companionapi.LibraryItemDetail{
+		ItemKey:    "partial_multip",
+		ID:         "partial_multip",
+		Site:       "bilibili",
+		Kind:       "video",
+		Status:     "partial",
+		Title:      "部分缓存多P视频",
+		AuthorUID:  "u1",
+		AuthorName: "测试UP",
+		Parts: []companionapi.VideoPartDTO{
+			{Page: 1, Title: "缺失第一P", Duration: 100, File: ""},
+			{Page: 2, Title: "已缓存第二P", Duration: 200, File: "p2.mp4", QualityName: "1080P", Codecs: "AVC"},
+		},
+	}
+	srv.details["partial_live"] = companionapi.LibraryItemDetail{
+		ItemKey:    "partial_live",
+		ID:         "partial_live",
+		Site:       "bilibili",
+		Kind:       "live",
+		Status:     "partial",
+		Title:      "部分缓存直播录像",
+		AuthorUID:  "u1",
+		AuthorName: "测试主播",
+		Live: &companionapi.LiveInfoDTO{
+			RoomID:      "7777",
+			QualityName: "原画",
+			Codec:       "AVC",
+			Segments: []companionapi.LiveSegmentDTO{
+				{File: "", DurationSec: 600},
+				{File: "seg_02.mp4", DurationSec: 900, Bytes: 120 << 20, Codec: "AVC", QualityName: "原画"},
+			},
+		},
+	}
+	srv.mu.Unlock()
+
+	p := New()
+	var openedVideo mediaview.VideoRequest
+	p.openVideoFn = func(_ pagekit.Host, req mediaview.VideoRequest) { openedVideo = req }
+
+	notify := make(chan struct{}, 64)
+	host.onUpdate = func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
+
+	p.OnConnected(host)
+	tt := ui.NewTester(func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		p.View(c, host)
+	}, 412, 915)
+	pumpUntil := func(cond func() bool) {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			tt.Frame()
+			if cond() {
+				return
+			}
+			select {
+			case <-notify:
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+
+	// 1. Verify includeAuthors=1 was sent and 35 authors loaded.
+	pumpUntil(func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return len(p.authors) == 35
+	})
+	srv.mu.Lock()
+	firstQ := srv.queries[0]
+	srv.mu.Unlock()
+	if firstQ.Get("includeAuthors") != "1" {
+		t.Fatalf("expected includeAuthors=1 on initial load, got %v", firstQ)
+	}
+
+	// 2. Open filter sheet with 35 authors -> scrollable, zero overflow, header 完成 button stays clickable!
+	if err := tt.Click("打开筛选"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Advance(400 * time.Millisecond)
+	tt.Frame()
+	assertNoHorizontalOverflow(t, tt, 412)
+	if !tt.HasText("大量来源 #00") {
+		t.Fatalf("expected authors in filter sheet; texts=%v", tt.Texts())
+	}
+
+	// 3. Switch to site "x" (which returns empty authors) -> stale authors MUST clear!
+	if err := tt.Click("站点 X"); err != nil {
+		t.Fatal(err)
+	}
+	pumpUntil(func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.filter.Site == "x" && !p.loading && len(p.authors) == 0
+	})
+	p.mu.Lock()
+	remAuthors := len(p.authors)
+	p.mu.Unlock()
+	if remAuthors != 0 {
+		t.Fatalf("expected stale authors cleared on site with zero authors, got %d", remAuthors)
+	}
+	if err := tt.Click("完成筛选"); err != nil {
+		t.Fatalf("header 完成 button must stay reachable inside scrollable sheet: %v", err)
+	}
+	tt.Advance(400 * time.Millisecond)
+	tt.Frame()
+
+	// 4. Verify partial multi-P detail maps P2 to StartIndex=0 (p2.mp4) and marks P1 未缓存.
+	p.openItemDetail(host, "partial_multip")
+	tt.Advance(400 * time.Millisecond)
+	pumpUntil(func() bool { return tt.HasText("已缓存第二P") })
+	if !tt.HasText("未缓存") {
+		t.Fatalf("expected uncached P1 marked 未缓存; texts=%v", tt.Texts())
+	}
+	if err := tt.Click("播放 P2 · 已缓存第二P"); err != nil {
+		t.Fatalf("click cached P2: %v", err)
+	}
+	if openedVideo.StartIndex != 0 || len(openedVideo.Tracks) != 1 || openedVideo.Tracks[0].RelPath != "p2.mp4" {
+		t.Fatalf("expected P2 mapped to StartIndex=0 (p2.mp4), got %+v", openedVideo)
+	}
+
+	// 5. Verify partial live recording detail maps segment 2 to StartIndex=0 (seg_02.mp4).
+	openedVideo = mediaview.VideoRequest{}
+	p.openItemDetail(host, "partial_live")
+	tt.Advance(400 * time.Millisecond)
+	pumpUntil(func() bool { return tt.HasText("录像分段（2）") })
+	if err := tt.Click("播放 分段 2"); err != nil {
+		t.Fatalf("click cached live segment 2: %v", err)
+	}
+	if openedVideo.StartIndex != 0 || len(openedVideo.Tracks) != 1 || openedVideo.Tracks[0].RelPath != "seg_02.mp4" {
+		t.Fatalf("expected live segment 2 mapped to StartIndex=0 (seg_02.mp4), got %+v", openedVideo)
+	}
+	p.OnDisconnected()
 }

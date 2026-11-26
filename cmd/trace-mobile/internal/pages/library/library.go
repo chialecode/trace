@@ -230,6 +230,10 @@ func (p *Page) loadPage(h pagekit.Host, gen uint64, reset bool) {
 		if f.Site != "" && f.Site != "all" {
 			q.Set("site", f.Site)
 		}
+		wantAuthors := reset && f.SubID == "" && f.AuthorUID == ""
+		if wantAuthors {
+			q.Set("includeAuthors", "1")
+		}
 		if f.SubID != "" {
 			q.Set("subId", f.SubID)
 		} else if f.AuthorUID != "" {
@@ -261,10 +265,8 @@ func (p *Page) loadPage(h pagekit.Host, gen uint64, reset bool) {
 			} else {
 				p.items = appendUniqueLibraryItems(p.items, resp.Items)
 			}
-			if len(resp.Authors) > 0 || (reset && f.SubID == "" && f.AuthorUID == "") {
-				if len(resp.Authors) > 0 {
-					p.authors = resp.Authors
-				}
+			if wantAuthors {
+				p.authors = resp.Authors
 			}
 			p.total = resp.Total
 			p.hasMore = resp.HasMore
@@ -820,13 +822,13 @@ func (p *Page) renderFilterSheet(
 		Background: &bg,
 		Label:      "筛选媒体库",
 	}, func() {
-		ui.Column(c).FillWidth().Padding(8, 16).Gap(14).Children(func() {
-			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).Fill().Padding(8, 16).Gap(12).Children(func() {
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
 				ui.Text(c, "筛选媒体库").FontSize(16).FontWeight(600).TextColor(theme.ColorTextMain).Grow(1).Basis(0)
 				if cur.activeCount() > 0 {
 					resetBtn := ui.Button(c, "").
 						Label("重置筛选").
-						MinHeight(36).Padding(4, 12).Radius(999).
+						MinHeight(38).Padding(4, 12).Radius(999).
 						Background(theme.ColorBgSecondary)
 					resetBtn.Children(func() {
 						ui.Text(c, "重置").FontSize(13).FontWeight(500).TextColor(theme.ColorTextMain)
@@ -837,7 +839,7 @@ func (p *Page) renderFilterSheet(
 				}
 				doneBtn := ui.PrimaryButton(c, "").
 					Label("完成筛选").
-					MinHeight(36).Padding(4, 14).Radius(999).
+					MinHeight(38).Padding(4, 14).Radius(999).
 					Background(theme.ColorAccent).TextColor(theme.ColorWhite).
 					Justify(ui.Center).AlignItems(ui.Center)
 				doneBtn.Children(func() {
@@ -848,74 +850,76 @@ func (p *Page) renderFilterSheet(
 				}
 			})
 
-			ui.Column(c).FillWidth().Gap(16).Padding(0, 0).Children(func() {
-				// Type filter chips.
-				ui.Column(c).FillWidth().Gap(8).Children(func() {
-					ui.Text(c, "类型").FontSize(13).FontWeight(600).TextColor(theme.ColorTextMuted)
-					ui.Row(c).FillWidth().Wrap().Gap(8).Children(func() {
-						for _, opt := range typeOptions {
-							selected := cur.Type == opt.Key
-							if filterChip(c, "type-"+opt.Key, opt.Label, "类型 "+opt.Label, selected).Clicked() {
-								next := cur
-								next.Type = opt.Key
-								p.applyFilter(h, next)
+			ui.Scroll(c).Grow(1).Basis(0).FillWidth().Children(func() {
+				ui.Column(c).FillWidth().Gap(16).Padding(0, 0).Children(func() {
+					// Type filter chips.
+					ui.Column(c).FillWidth().Gap(8).Children(func() {
+						ui.Text(c, "类型").FontSize(13).FontWeight(600).TextColor(theme.ColorTextMuted)
+						ui.Row(c).FillWidth().Wrap().Gap(8).Children(func() {
+							for _, opt := range typeOptions {
+								selected := cur.Type == opt.Key
+								if filterChip(c, "type-"+opt.Key, opt.Label, "类型 "+opt.Label, selected).Clicked() {
+									next := cur
+									next.Type = opt.Key
+									p.applyFilter(h, next)
+								}
 							}
-						}
+						})
 					})
-				})
 
-				// Site filter chips.
-				ui.Column(c).FillWidth().Gap(8).Children(func() {
-					ui.Text(c, "站点").FontSize(13).FontWeight(600).TextColor(theme.ColorTextMuted)
-					ui.Row(c).FillWidth().Wrap().Gap(8).Children(func() {
-						for _, opt := range siteOptions {
-							selected := cur.Site == opt.Key
-							if filterChip(c, "site-"+opt.Key, opt.Label, "站点 "+opt.Label, selected).Clicked() {
-								next := cur
-								next.Site = opt.Key
-								p.applyFilter(h, next)
+					// Site filter chips.
+					ui.Column(c).FillWidth().Gap(8).Children(func() {
+						ui.Text(c, "站点").FontSize(13).FontWeight(600).TextColor(theme.ColorTextMuted)
+						ui.Row(c).FillWidth().Wrap().Gap(8).Children(func() {
+							for _, opt := range siteOptions {
+								selected := cur.Site == opt.Key
+								if filterChip(c, "site-"+opt.Key, opt.Label, "站点 "+opt.Label, selected).Clicked() {
+									next := cur
+									next.Site = opt.Key
+									p.applyFilter(h, next)
+								}
 							}
-						}
+						})
 					})
-				})
 
-				// Subscription / Author source list.
-				ui.Column(c).FillWidth().Gap(8).Children(func() {
-					ui.Text(c, "订阅 / 作者").FontSize(13).FontWeight(600).TextColor(theme.ColorTextMuted)
-					allSel := cur.SubID == "" && cur.AuthorUID == ""
-					if sourceRow(c, "src-all", "全部来源", "", allSel).Clicked() {
-						next := cur
-						next.SubID = ""
-						next.AuthorSite = ""
-						next.AuthorUID = ""
-						next.SourceName = ""
-						p.applyFilter(h, next)
-					}
-					for i, au := range authors {
-						selected := (au.SubID != "" && cur.SubID == au.SubID) ||
-							(au.SubID == "" && au.UID != "" && cur.AuthorUID == au.UID && cur.AuthorSite == au.Site)
-						meta := fmt.Sprintf("%d 项", au.ItemCount)
-						if sz := mediaview.FormatBytes(au.TotalBytes); sz != "" {
-							meta += " · " + sz
-						}
-						if au.Site != "" && au.SubID == "" {
-							meta = mediaview.SiteLabel(au.Site) + " · " + meta
-						}
-						if sourceRow(c, fmt.Sprintf("src-%d", i), au.Name, meta, selected).Clicked() {
+					// Subscription / Author source list (scrollable inside Sheet for 30+ sources).
+					ui.Column(c).FillWidth().Gap(8).Children(func() {
+						ui.Text(c, "订阅 / 作者").FontSize(13).FontWeight(600).TextColor(theme.ColorTextMuted)
+						allSel := cur.SubID == "" && cur.AuthorUID == ""
+						if sourceRow(c, "src-all", "全部来源", "", allSel).Clicked() {
 							next := cur
-							if au.SubID != "" {
-								next.SubID = au.SubID
-								next.AuthorSite = ""
-								next.AuthorUID = ""
-							} else {
-								next.SubID = ""
-								next.AuthorSite = au.Site
-								next.AuthorUID = au.UID
-							}
-							next.SourceName = au.Name
+							next.SubID = ""
+							next.AuthorSite = ""
+							next.AuthorUID = ""
+							next.SourceName = ""
 							p.applyFilter(h, next)
 						}
-					}
+						for i, au := range authors {
+							selected := (au.SubID != "" && cur.SubID == au.SubID) ||
+								(au.SubID == "" && au.UID != "" && cur.AuthorUID == au.UID && cur.AuthorSite == au.Site)
+							meta := fmt.Sprintf("%d 项", au.ItemCount)
+							if sz := mediaview.FormatBytes(au.TotalBytes); sz != "" {
+								meta += " · " + sz
+							}
+							if au.Site != "" && au.SubID == "" {
+								meta = mediaview.SiteLabel(au.Site) + " · " + meta
+							}
+							if sourceRow(c, fmt.Sprintf("src-%d", i), au.Name, meta, selected).Clicked() {
+								next := cur
+								if au.SubID != "" {
+									next.SubID = au.SubID
+									next.AuthorSite = ""
+									next.AuthorUID = ""
+								} else {
+									next.SubID = ""
+									next.AuthorSite = au.Site
+									next.AuthorUID = au.UID
+								}
+								next.SourceName = au.Name
+								p.applyFilter(h, next)
+							}
+						}
+					})
 				})
 			})
 		})

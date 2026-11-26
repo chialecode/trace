@@ -101,6 +101,7 @@ type syntheticFeedServer struct {
 	mu          sync.Mutex
 	items       []companionapi.FeedItem
 	subs        []companionapi.FeedSubscriptionRow
+	subsBySite  map[string][]companionapi.FeedSubscriptionRow
 	positions   map[string]companionapi.HomePosition
 	seenReqs    []companionapi.FeedSeenRequest
 	putPosReqs  []companionapi.HomePosition
@@ -264,8 +265,10 @@ func (s *syntheticFeedServer) serveHTTP(w http.ResponseWriter, r *http.Request) 
 			if subID != "" && it.SubID != subID {
 				continue
 			}
-			if cursorPubTs > 0 {
-				if it.PubTs > cursorPubTs || (cursorKey != "" && it.PubTs == cursorPubTs && it.FeedKey <= cursorKey) {
+			// Match real desktop handleFeed: cursor filtering ONLY activates when cursorKey != "",
+			// and skips rows >= (cursorPubTs, cursorKey) in DESC order.
+			if cursorKey != "" {
+				if it.PubTs > cursorPubTs || (it.PubTs == cursorPubTs && it.FeedKey >= cursorKey) {
 					continue
 				}
 			}
@@ -292,8 +295,20 @@ func (s *syntheticFeedServer) serveHTTP(w http.ResponseWriter, r *http.Request) 
 		})
 
 	case r.URL.Path == companionapi.PathFeedSubscriptions && r.Method == http.MethodGet:
+		site := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("site")))
+		if site == "" {
+			site = "all"
+		}
 		s.mu.Lock()
-		rows := append([]companionapi.FeedSubscriptionRow(nil), s.subs...)
+		var rows []companionapi.FeedSubscriptionRow
+		if s.subsBySite != nil {
+			if list, ok := s.subsBySite[site]; ok {
+				rows = append([]companionapi.FeedSubscriptionRow(nil), list...)
+			}
+		}
+		if rows == nil {
+			rows = append([]companionapi.FeedSubscriptionRow(nil), s.subs...)
+		}
 		s.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(companionapi.FeedSubscriptionsResponse{Items: rows})
 
@@ -578,6 +593,86 @@ func TestHomeRestoresPerDevicePositionDeepIn5000Feed(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("restoring position in 5000-item feed took %s (>2s)", elapsed)
+	}
+	p.OnDisconnected()
+}
+
+func TestHomeCrossSiteSwitchRestoresLiveUnreadOrder(t *testing.T) {
+	srv, host, cleanup := newSyntheticFeedServer(t, 40)
+	defer cleanup()
+
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC).Unix()
+	srv.mu.Lock()
+	srv.subsBySite = map[string][]companionapi.FeedSubscriptionRow{
+		"all": {
+			{SubID: "sub-wb-live", Name: "直播微博博主", Live: true, Unread: true, LatestPubTs: now},
+			{SubID: "sub-bili-read", Name: "已读B站UP", Live: false, Unread: false, LatestPubTs: now - 300},
+		},
+		"bilibili": {
+			{SubID: "sub-bili-read", Name: "已读B站UP", Live: false, Unread: false, LatestPubTs: now - 300},
+		},
+	}
+	srv.mu.Unlock()
+
+	p := New()
+	p.nowFn = func() time.Time { return time.Date(2026, 11, 26, 12, 5, 0, 0, time.UTC) }
+	notify := make(chan struct{}, 32)
+	host.onUpdate = func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
+
+	p.OnConnected(host)
+	tt := ui.NewTester(func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		p.View(c, host)
+	}, 412, 915)
+	pumpUntil := func(cond func() bool) {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			tt.Frame()
+			if cond() {
+				return
+			}
+			select {
+			case <-notify:
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+
+	pumpUntil(func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return len(p.subs) == 2 && p.subs[0].SubID == "sub-wb-live"
+	})
+
+	// Switch to B站 (only sub-bili-read).
+	if err := tt.Click("筛选 B 站"); err != nil {
+		t.Fatal(err)
+	}
+	pumpUntil(func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.subsSiteLoaded == "bilibili" && len(p.subs) == 1 && p.subs[0].SubID == "sub-bili-read"
+	})
+
+	// Switch back to 全部 -> live Weibo sub MUST be back at index 0 ahead of read B站 sub!
+	if err := tt.Click("筛选 全部"); err != nil {
+		t.Fatal(err)
+	}
+	pumpUntil(func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.subsSiteLoaded == "all" && len(p.subs) == 2
+	})
+	p.mu.Lock()
+	gotSubs := append([]companionapi.FeedSubscriptionRow(nil), p.subs...)
+	p.mu.Unlock()
+	if len(gotSubs) != 2 || gotSubs[0].SubID != "sub-wb-live" || gotSubs[1].SubID != "sub-bili-read" {
+		t.Fatalf("expected live sub first after switching back to 全部, got %+v", gotSubs)
 	}
 	p.OnDisconnected()
 }

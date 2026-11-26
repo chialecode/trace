@@ -280,12 +280,14 @@ func (p *Page) loadFeedPage(h pagekit.Host, site string, gen uint64, reset bool,
 
 		// If restoring a saved reading position that is older than page 1, jump directly
 		// to the saved timestamp cursor so restoration finishes well within 1-2s even on 5000 items.
+		// Pass a non-empty cursorKey because the desktop handler requires cursorKey != ""
+		// to activate keyset cursor filtering (pub_ts < savedPos.PubTs + 1 includes savedPos).
 		restoreIdx := -1
 		hasNewer := false
 		if reset && wantRestore {
 			restoreIdx = findFeedIndex(resp.Items, savedPos.Key, savedPos.PubTs)
-			if restoreIdx < 0 && savedPos.PubTs > 0 && len(resp.Items) > 0 && resp.Items[len(resp.Items)-1].PubTs > savedPos.PubTs {
-				jumpCursor := &companionapi.FeedCursor{PubTs: savedPos.PubTs + 1, Key: ""}
+			if restoreIdx < 0 && savedPos.PubTs > 0 && savedPos.Key != "" && len(resp.Items) > 0 && resp.Items[len(resp.Items)-1].PubTs > savedPos.PubTs {
+				jumpCursor := &companionapi.FeedCursor{PubTs: savedPos.PubTs + 1, Key: savedPos.Key}
 				if jumped, jErr := fetchFeed(ctx, cli, site, "", jumpCursor, "older", 30); jErr == nil && len(jumped.Items) > 0 {
 					resp = jumped
 					restoreIdx = findFeedIndex(resp.Items, savedPos.Key, savedPos.PubTs)
@@ -366,10 +368,12 @@ func (p *Page) fetchSubscriptions(h pagekit.Host, site string, gen uint64, prese
 			p.subsErr = formatClientError(err, "读取订阅列表失败")
 		} else {
 			p.subsErr = ""
+			sameSite := p.subsSiteLoaded == site
 			p.subsSiteLoaded = site
-			if preserveOrder && len(p.subs) > 0 {
-				// Per docs/ui.md §3.1: keep existing row order during stay on home;
-				// only update live/unread badges and append newly appearing subs at the end.
+			if preserveOrder && sameSite && len(p.subs) > 0 {
+				// Per docs/ui.md §3.1: keep existing row order during stay on home
+				// within the same site filter; only update live/unread badges and
+				// append newly appearing subs at the end.
 				freshByID := make(map[string]companionapi.FeedSubscriptionRow, len(resp.Items))
 				for _, r := range resp.Items {
 					freshByID[r.SubID] = r
@@ -534,7 +538,7 @@ func (p *Page) selectSite(h pagekit.Host, site string) {
 	needLoad := !st.loadedOnce && !st.loading
 	p.mu.Unlock()
 
-	p.fetchSubscriptions(h, site, gen, true)
+	p.fetchSubscriptions(h, site, gen, false)
 	if needLoad {
 		p.loadFeedPage(h, site, gen, true, false)
 	}
