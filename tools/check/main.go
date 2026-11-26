@@ -39,6 +39,7 @@ var serverForbidden = []string{
 	internalPref + "player",
 	internalPref + "shell",
 	internalPref + "locales",
+	internalPref + "companion",
 }
 
 var allowedMyGoPackages = map[string]bool{

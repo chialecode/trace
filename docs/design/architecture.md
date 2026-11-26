@@ -19,7 +19,7 @@ internal/ui（mygo/ui 声明式视图、路由、看图层、播放层） ──
                                                                                              └── internal/storage、settings、uistate、appdirs
 ```
 
-- **依赖方向只能向下（INV-05）**：`internal/site`（含 `bilibili`、`douyin` 及 `douyin/sign`、`weibo`、`x`）、`internal/download`、`internal/library`、`internal/credential`、`internal/storage`、`internal/subscription`、`internal/live`、`internal/settings`、`internal/uistate`、`internal/appdirs`、`internal/update`、`internal/service` **完全不依赖 MyGo（不引用 `github.com/egoist/mygo` 及其子包）**；只有 `main.go`、`internal/shell`、`internal/ui`、`internal/player`（仅用 `mygo/audio` 与 `*ui.Bitmap`）、`internal/locales`（MyGo 自带字符串与安装界面的中文目录）与 `tools/uishots` 引用 MyGo。`internal/site` 只用标准库；各站点包不依赖存储、缓存、订阅和录制代码，且站点包之间互不引用（完整规则由 `tools/check` 强制，见[工程规则 §3](../dev-rules/engineering.md#quality-gates)）。
+- **依赖方向只能向下（INV-05）**：`internal/site`（含 `bilibili`、`douyin` 及 `douyin/sign`、`weibo`、`x`）、`internal/companionapi`、`internal/companion`、`internal/download`、`internal/library`、`internal/credential`、`internal/storage`、`internal/subscription`、`internal/live`、`internal/settings`、`internal/uistate`、`internal/appdirs`、`internal/update`、`internal/service` **完全不依赖 MyGo（不引用 `github.com/egoist/mygo` 及其子包）**；只有 `main.go`、`internal/shell`、`internal/ui`、`internal/player`（仅用 `mygo/audio` 与 `*ui.Bitmap`）、`internal/locales`（MyGo 自带字符串与安装界面的中文目录）与 `tools/uishots` 引用 MyGo。`internal/site` 与 `internal/companionapi` 只用标准库；各站点包不依赖存储、缓存、订阅和录制代码，且站点包之间互不引用（完整规则由 `tools/check` 强制，见[工程规则 §3](../dev-rules/engineering.md#quality-gates)）。
 - 后端服务需要的外壳能力（推送事件、选目录、打开文件夹、打开外部链接）由 `internal/service` 通过纯 Go 小接口注入，测试和未来的无头模式均可注入对应实现。
 - 窗口：标题 “TRACE”（开发通道为 “TRACE Dev”），默认 1280×860，最小 720×560。外部链接一律用系统浏览器打开（`Shell.OpenExternal`）。
 
@@ -39,7 +39,7 @@ internal/
   update/                     更新逻辑（纯 Go，不依赖 MyGo）：检查与下载的状态机（controller.go）、TRACE 的更新源与校验（source.go）、检查与更新记录（update-history.json）
   locales/                    中文目录 zh-Hans.json 与 MyGo 生成的访问代码（安装界面与 MyGo 自带字符串）
   ui/                         mygo/ui 原生界面：图标栏 + 上下文侧栏 + 页面的自适应布局、路由、登录页、主页信息流、订阅（列表/详情/导入）、
-                              我的、解析页、视频详情、用户页、媒体库（含 /library/item 离线详情与导入页）、任务页（六组侧栏、直播录制实时预览与录制异常、导入导出）、设置页（含“远程”“更新”分类与规则批量选订阅）、看图层、播放层及界面内存测试（ui.NewTester）
+                              我的、解析页、视频详情、用户页、媒体库（含 /library/item 离线详情与导入页）、任务页（六组侧栏、直播录制实时预览与录制异常、导入导出）、设置页（含“远程”“移动端”“更新”分类与规则批量选订阅）、看图层、播放层及界面内存测试（ui.NewTester）
   player/                     原生媒体播放与叠加：Windows Media Foundation（IMFSourceReader 纯 Go COM 调用，含增长中 fMP4 .part 的只读实时预览）解码 MP4 音视频、
                               mygo/audio 音频时钟与输出、纯 Go 弹幕排版器（danmaku.go）与 WebVTT 字幕解析匹配（subtitle.go）
   appdirs/                    构建信息（版本、通道、提交、构建时间，由 -ldflags 注入）；通道（release / dev / test / source）与安装、数据、缓存位置的推算，“文档”文件夹的系统登记位置，数据目录独占锁
@@ -72,10 +72,13 @@ internal/
   storage/                    数据目录、原子写、最近解析（history.json）、SQLite 打开与迁移、数据文件的结构版本（schema.go）、临时文件名约定（*.part、.trace-*）
   remote/                     远程协议：连接码、状态与快照等 JSON 类型、按证书指纹固定的 HTTPS 客户端与错误分类（无法连接、证书变了、令牌错、版本不同、被拒）
   remoteserver/               trace-server 的服务端：init 与配置（server.json、证书、令牌哈希）、HTTPS 接口与鉴权限流、磁盘空间、Run 的启动与收尾
+  companionapi/               移动端共用协议契约（仅依赖标准库）：协议版本、端点路径、错误码、配对二维码编解码、身份码格式化、JSON DTO 与 WebSocket 事件帧
+  companion/                  电脑端移动端服务（纯 Go，不依赖 MyGo）：局域网/VPN 网卡监听与来源过滤、TLS 1.3 自签名证书与指纹、一次性扫码/手动配对与确认、设备令牌哈希与 companion.json、只读与有限控制 HTTP API、有界队列 WebSocket 推送与 bye、MediaPath 白名单流式媒体与 480/2560 px 缩略图缓存
   upload/                     远程的内置上传：逐条目调用 rclone、确认后删登记文件、退避与错误分类；fakerclone/ 是测试与冒烟用的假 rclone
   transfer/                   资源库导入（扫描分六类、校验后复制、合并清单）与导出（可携带的 item.json）
 tools/check/                  质量门禁（一条命令）
 tools/checkdocs/              文档、公开内容与依赖方向检查
+tools/companiondev/           移动端本地联调辅助工具（在临时数据目录启动带合成媒体库的移动端服务并打印配对码与身份码）
 tools/uishots/                用 ui.NewTester 渲染全部页面的必测状态与三档宽度，输出 PNG 截图与结构化断言回执 assertions.json
 tools/smoke/                  真实进程端到端冒烟（启动 trace.exe、单实例与数据目录锁、托盘关闭与重建、零杂散目录校验）；-server 是远程冒烟（server.go）
 tools/package/                开发版打包（解包文件 + NSIS 按用户安装包）与本机自动安装（install.go）；-server 打远程版的 Linux 包（server.go）

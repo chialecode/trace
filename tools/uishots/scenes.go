@@ -42,11 +42,13 @@ func buildAllScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 	lastSetup := last.Setup
 	last.Setup = func() {
 		env.backend.remote = remoteFixture{}
-		app.Transfer, app.SubFile, app.Remote = ui.TransferUIState{}, ui.SubFileUIState{}, ui.RemoteUIState{}
+		app.Transfer, app.SubFile, app.Remote, app.Mobile = ui.TransferUIState{}, ui.SubFileUIState{}, ui.RemoteUIState{}, ui.MobileUIState{}
+		app.BindCompanion(nil)
 		lastSetup()
 	}
 	scenes = append(scenes, mineShotScenes(app, env.backend)...)
 	scenes = append(scenes, remoteShotScenes(app, env.backend)...)
+	scenes = append(scenes, mobileShotScenes(app)...)
 	scenes = append(scenes, last)
 	return scenes
 }

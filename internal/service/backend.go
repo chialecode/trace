@@ -138,6 +138,11 @@ func NewBackend(opts Options) (*Backend, error) {
 			Kind:    storage.SchemaJSON,
 			Current: cacheConflictsSchemaVersion,
 		},
+		storage.SchemaFile{
+			Name:    "companion.json",
+			Kind:    storage.SchemaJSON,
+			Current: 1,
+		},
 	)
 	if _, err := storage.GuardDataSchemas(loc.DataDir, allSchemas); err != nil {
 		return nil, err
@@ -1143,6 +1148,14 @@ func (b *Backend) PauseAllActiveWork() {
 		if b.credMgr == nil || !b.credMgr.HasActiveCredential(string(sid)) {
 			b.pauseSiteActiveWork(sid, "auth_required", "登录状态已变更，任务已暂停")
 		}
+	}
+}
+
+// PublishFeedSeen notifies desktop UI subscribers that a subscription's shared
+// read timestamp was updated (e.g. from the mobile companion app, DEC-085 ⑥).
+func (b *Backend) PublishFeedSeen(subID string) {
+	if b.events != nil {
+		b.events.Publish(EventLibraryChanged, "feed_seen:sub:"+strings.TrimSpace(subID))
 	}
 }
 

@@ -632,8 +632,11 @@ type App struct {
 	livePreviewOpener         func(ctx context.Context, path string, opts player.LivePreviewOptions) (player.MediaDecoder, error)
 
 	// Settings Page
-	SettingsCategory string // "account" | "download" | "quality" | "rules" | "subscription" | "storage" | "general" | "network" | "remote" | "logs" | "update" | "about"
+	SettingsCategory string // "account" | "download" | "quality" | "rules" | "subscription" | "storage" | "general" | "network" | "remote" | "mobile" | "logs" | "update" | "about"
 	DraftSettings    settings.Settings
+	// Mobile companion (Settings › 移动端, FR-MOB-001..003).
+	companion CompanionAPI
+	Mobile    MobileUIState
 	// Settings → 网络: the custom proxy address being typed and why it was refused.
 	ProxyDraftURL       string
 	ProxyError          string
@@ -937,6 +940,12 @@ func (a *App) handleBackendEvent(ev service.Event) {
 		}
 		a.refreshTasks()
 		if ev.Type == service.EventLibraryChanged {
+			if strings.HasPrefix(ev.Message, "feed_seen:") {
+				// Shared read state updated from mobile companion (DEC-085 ⑥).
+				a.homeSeenLocal = a.backend.GetUIState().HomeSeen
+				a.homeSeenRev++
+				a.homeSubRowsValid = false
+			}
 			a.libraryRev++
 			a.purgeMissingImages()
 			a.subFeedDirty = true
@@ -1219,6 +1228,14 @@ func (a *App) View(c *ui.Context) {
 	if a.Remote.ConfirmPushXOpen {
 		a.renderRemotePushXConfirmOverlay(c, w, h)
 	}
+	if a.companion != nil {
+		if snap := a.companion.Status(); a.Mobile.PairDialogOpen || len(snap.PendingPairs) > 0 {
+			if len(snap.PendingPairs) > 0 {
+				a.Mobile.PairDialogOpen = true
+			}
+			a.renderCompanionPairingDialog(c, snap)
+		}
+	}
 	if a.DeleteConfirm.Open {
 		a.renderDeleteConfirmOverlay(c, w, h)
 	}
@@ -1274,6 +1291,7 @@ func (a *App) View(c *ui.Context) {
 func (a *App) hasOpenModalOverlay() bool {
 	return a.ConfirmLogoutOpen ||
 		a.Remote.ConfirmPushXOpen ||
+		a.Mobile.PairDialogOpen ||
 		a.DeleteConfirm.Open ||
 		a.ForceRecacheConfirm.Open ||
 		(a.RestartConfirmOpen && a.updater != nil) ||
