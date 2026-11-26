@@ -180,15 +180,57 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 		},
 		{
+			Name: "add-sub-preset-modal",
+			Setup: func() {
+				seedRecentAndLive()
+				app.SubscribePicker.Open = false
+				app.ImportSubModalOpen = false
+				app.Navigate(ui.RouteSubscriptions)
+				app.SubDetailOpen, app.SubAccountsOpen = false, false
+				app.AddSubName = "合成新创作者"
+				app.AddSubInput = ""
+				app.AddSubPreview = nil
+				app.AddSubPreviewOwner = nil
+				app.AddSubPreset.ResetDefault()
+				app.AddSubPreset.CustomExpanded = true
+				app.AddSubDialogOpen = true
+			},
+			RequiredLabels: []string{
+				"添加订阅对话框",
+				"新订阅名称",
+				"新订阅追踪模式选择区",
+				"新订阅预设：full_archive",
+				"新订阅预设：follow_cache",
+				"新订阅预设：check_only",
+				"新订阅预设：manual",
+				"新订阅录直播",
+				"新订阅自定义",
+				"新订阅自定义原子标签区",
+				"新订阅原子标签：scheduled_check",
+				"新订阅原子标签：full_cache",
+				"确认添加订阅",
+			},
+			RequiredTexts: []string{
+				"完整存档（默认）",
+				"追更并保存",
+				"只看新动态",
+				"仅手动",
+				"录直播",
+			},
+		},
+		{
 			Name: "subscribe-picker",
 			Setup: func() {
 				seedRecentAndLive()
+				app.AddSubDialogOpen = false
 				app.Navigate(ui.RouteSubscriptions)
 				app.SubDetailOpen, app.SubAccountsOpen = false, false
 				app.OpenSubscribePicker(subscription.AccountRef{Site: "bilibili", UID: "30001", Name: "新发现的UP主"})
 			},
 			RequiredLabels: []string{
 				"加入订阅对话框",
+				"加入订阅追踪模式选择区",
+				"加入订阅预设：full_archive",
 				"新建订阅",
 				"加入订阅搜索框",
 				"加入订阅列表",
@@ -296,6 +338,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			Setup: func() {
 				seedRecentAndLive()
 				if auroraSub.ID != "" {
+					app.SubCustomTagsSubID = ""
 					app.SubDetailTab = "content"
 					app.OpenSubscriptionDetail(auroraSub)
 					app.SubDetailTab = "content"
@@ -305,6 +348,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅标签：内容",
 				"订阅标签：账号",
 				"订阅管理菜单",
+				"订阅内容空状态说明",
 			},
 			ForbiddenLabels: []string{
 				"订阅自定义链接栏",
@@ -313,9 +357,46 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 		},
 		{
+			Name: "subscription-detail-dep-warning",
+			Setup: func() {
+				if auroraSub.ID != "" {
+					if updated, err := b.SetSubscriptionTags(auroraSub.ID, []string{subscription.TagCacheVideo}); err == nil {
+						app.RefreshData()
+						seedRecentAndLive()
+						app.SubDetailTab = "content"
+						app.OpenSubscriptionDetail(updated)
+						app.SubDetailTab = "content"
+						app.SubCustomTagsSubID = updated.ID
+					}
+				}
+			},
+			RequiredLabels: []string{
+				"订阅缓存标签菜单",
+				"订阅详情缓存标签栏",
+				"订阅详情自定义原子标签栏",
+				"订阅原子标签：定时检查",
+				"订阅原子标签：自动缓存视频",
+				"自动缓存缺少定时检查提示",
+				"订阅内容空状态说明",
+			},
+			RequiredTexts: []string{
+				"追踪：自定义",
+				"已开启自动缓存但未开启「定时检查」：仅在手动检查更新时生效。",
+			},
+		},
+		{
 			Name: "subscription-accounts",
 			Setup: func() {
+				if auroraSub.ID != "" {
+					_, _ = b.SetSubscriptionTags(auroraSub.ID, []string{
+						subscription.TagScheduledCheck,
+						subscription.TagCacheVideo,
+						subscription.TagCacheDraw,
+					})
+					app.RefreshData()
+				}
 				seedRecentAndLive()
+				app.SubCustomTagsSubID = ""
 				if primarySub.ID != "" {
 					app.OpenSubscriptionDetail(primarySub)
 					app.SubDetailTab = "accounts"
@@ -452,6 +533,14 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 		{
 			Name: "settings-rules",
 			Setup: func() {
+				if auroraSub.ID != "" {
+					_, _ = b.SetSubscriptionTags(auroraSub.ID, []string{
+						subscription.TagScheduledCheck,
+						subscription.TagCacheVideo,
+						subscription.TagCacheDraw,
+					})
+					app.RefreshData()
+				}
 				seedRecentAndLive()
 				app.ImportSubModalOpen = false
 				app.RuleBatch.Open = false
@@ -461,6 +550,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 			RequiredLabels: []string{
 				"打开批量设置订阅标签",
+				"缓存标签快速预设栏",
+				"快速应用预设：full_archive",
 				"缓存标签行：scheduled_check",
 				"缓存标签行：cache_video",
 				"缓存标签行：cache_draw",
@@ -582,7 +673,18 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.SettingsCategory = "subscription"
 				app.Navigate(ui.RouteSettings)
 			},
-			RequiredLabels: []string{"退避状态：douyin"},
+			RequiredLabels: []string{
+				"选择订阅检查间隔",
+				"定时检查状态摘要",
+				"退避状态：douyin",
+			},
+			RequiredTexts: []string{
+				"检查间隔",
+				"已开启定时检查：",
+			},
+			ForbiddenLabels: []string{
+				"开关定时订阅",
+			},
 		},
 		{
 			Name: "parse",

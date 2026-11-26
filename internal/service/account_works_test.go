@@ -26,11 +26,11 @@ func TestFullCacheRuleSweepsAccountsOnePerSite(t *testing.T) {
 		{Site: "bilibili", UID: "4001", Name: "成员一"},
 		{Site: "bilibili", UID: "4002", Name: "成员二"},
 	}
-	sub, err := b.CreateSubscription("合作", "", accounts, subscription.DefaultSubRules())
+	sub, err := b.CreateSubscription("合作", "", accounts, subscription.EmptySubRules())
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := b.CreateSubscription("不缓存", "", []subscription.AccountRef{{Site: "bilibili", UID: "4003", Name: "旁人"}}, subscription.DefaultSubRules())
+	other, err := b.CreateSubscription("不缓存", "", []subscription.AccountRef{{Site: "bilibili", UID: "4003", Name: "旁人"}}, subscription.EmptySubRules())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,11 +3,27 @@ package subscription
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/chialecode/trace/internal/settings"
 	"github.com/chialecode/trace/internal/site"
 )
+
+// hasScheduledSubscriptionLocked reports whether at least one subscription has
+// scheduled_check enabled (DEC-080).
+func (m *Manager) hasScheduledSubscriptionLocked() bool {
+	subs, err := m.listSubsOnlyLocked()
+	if err != nil {
+		return false
+	}
+	for _, sub := range subs {
+		if sub.Rules.ScheduledCheck {
+			return true
+		}
+	}
+	return false
+}
 
 // Start launches the background schedule loop (and optional checkOnStartup).
 func (m *Manager) Start(parentCtx context.Context) {
@@ -18,7 +34,9 @@ func (m *Manager) Start(parentCtx context.Context) {
 	}
 	ctx, cancel := context.WithCancel(parentCtx)
 	m.schedCancel = cancel
-	checkStartup := m.subSettings.Enabled && m.subSettings.CheckOnStartup
+	checkStartup := m.subSettings.CheckOnStartup &&
+		!strings.EqualFold(strings.TrimSpace(m.subSettings.Mode), "manual") &&
+		m.hasScheduledSubscriptionLocked()
 	m.mu.Unlock()
 
 	m.wg.Add(1)
@@ -53,18 +71,15 @@ func (m *Manager) CancelCheck() {
 func (m *Manager) UpdateSettings(s settings.SubscriptionSettings) {
 	m.mu.Lock()
 	m.subSettings = s
-	if !s.Enabled {
+	if strings.EqualFold(strings.TrimSpace(s.Mode), "manual") || !m.hasScheduledSubscriptionLocked() {
 		m.nextRunAt = time.Time{}
 	}
 	m.mu.Unlock()
-	select {
-	case m.schedWake <- struct{}{}:
-	default:
-	}
+	m.WakeScheduler()
 }
 
-// WakeScheduler makes the schedule loop recompute its next round (after the
-// remote's subscriptions or Cookies changed).
+// WakeScheduler makes the schedule loop recompute its next round (after
+// subscriptions, tags, settings, or Cookies changed).
 func (m *Manager) WakeScheduler() {
 	select {
 	case m.schedWake <- struct{}{}:
@@ -82,9 +97,14 @@ func (m *Manager) scheduleLoop(ctx context.Context, checkOnStartup bool) {
 		m.mu.Lock()
 		cfg := m.subSettings
 		now := m.nowFunc()
+		hasScheduled := m.hasScheduledSubscriptionLocked()
 		m.mu.Unlock()
 
-		nextTime, ok := NextRunTime(cfg, now)
+		var nextTime time.Time
+		var ok bool
+		if hasScheduled {
+			nextTime, ok = NextRunTime(cfg, now)
+		}
 		m.mu.Lock()
 		m.nextRunAt = nextTime
 		m.mu.Unlock()
@@ -117,14 +137,16 @@ func (m *Manager) scheduleLoop(ctx context.Context, checkOnStartup bool) {
 	}
 }
 
-// RunScheduledRound executes a scheduled check round across enabled sites, respecting per-site backoff,
+// RunScheduledRound executes a scheduled check round across enabled sites whenever at least one
+// subscription has scheduled_check enabled (DEC-080), respecting per-site backoff,
 // per-site account caps (Bilibili <=30, Douyin <=20, Weibo <=20, X <=15), per-site hourly token buckets
-// (Bilibili 200/hr, Douyin 120/hr, Weibo 100/hr, X 60/hr), per-site backoff, and rule-based auto-cache.
+// (Bilibili 200/hr, Douyin 120/hr, Weibo 100/hr, X 60/hr), and rule-based auto-cache.
 func (m *Manager) RunScheduledRound(ctx context.Context) (CheckSummary, error) {
 	m.mu.Lock()
-	enabled := m.subSettings.Enabled
+	mode := strings.ToLower(strings.TrimSpace(m.subSettings.Mode))
+	hasScheduled := m.hasScheduledSubscriptionLocked()
 	m.mu.Unlock()
-	if !enabled {
+	if mode == "manual" || !hasScheduled {
 		return CheckSummary{}, nil
 	}
 	return m.runRoundInternal(site.WithAutomaticRequests(ctx, "subscription"), 0, true)

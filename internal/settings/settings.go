@@ -315,7 +315,10 @@ func Normalize(s Settings, defaultCacheDir string) (Settings, error) {
 		s.Subtitles = false
 	}
 
-	// ScheduledCheck & CheckIntervalMin sync with Subscription
+	// ScheduledCheck & CheckIntervalMin sync with Subscription.
+	// Legacy scheduledCheck / subscription.enabled remain compatible in settings.json v1
+	// (DEC-080, same precedent as maxRecordings in DEC-051 ③) while per-subscription
+	// scheduled_check tags govern whether scheduled checks run.
 	if s.ScheduledCheck != s.Subscription.Enabled {
 		if s.ScheduledCheck {
 			s.Subscription.Enabled = true

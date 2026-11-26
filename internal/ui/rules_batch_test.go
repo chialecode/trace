@@ -73,7 +73,7 @@ func seedFiveSubscriptionsForTagBatch(t *testing.T, app *App) [5]subscription.Su
 			sp.name,
 			sp.note,
 			[]subscription.AccountRef{{Site: "bilibili", UID: sp.uid, Name: sp.acctName}},
-			subscription.DefaultSubRules(),
+			subscription.EmptySubRules(),
 		)
 		if err != nil {
 			t.Fatal(err)

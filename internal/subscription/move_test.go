@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -240,7 +241,7 @@ func TestMoveToNewAtomicAcrossAllThreeSitesAndRollback(t *testing.T) {
 	if diskWrites != 1 {
 		t.Fatalf("expected exactly 1 atomic subscriptions.json write, got %d", diskWrites)
 	}
-	if newBiliSub.Name != "独立B站订阅" || newBiliSub.Note != "拆分备注" || len(newBiliSub.Tags) != 0 {
+	if newBiliSub.Name != "独立B站订阅" || newBiliSub.Note != "拆分备注" || !slices.Equal(newBiliSub.Tags, DefaultNewSubTags()) {
 		t.Fatalf("unexpected newBiliSub header/tags: %+v", newBiliSub)
 	}
 	if len(newBiliSub.Accounts) != 1 || newBiliSub.Accounts[0].UID != "2001" || newBiliSub.Accounts[0].Face != biliFace || newBiliSub.Accounts[0].AddedAt != "2026-11-01T00:00:00Z" {

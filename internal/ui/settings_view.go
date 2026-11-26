@@ -537,24 +537,57 @@ func (a *App) renderQualitySettings(c *ui.Context) {
 }
 
 func (a *App) renderSubscriptionSettings(c *ui.Context) {
+	now := c.Now()
 	schedStatuses := a.backend.SchedulerStatuses()
-	ui.Column(c).FillWidth().Gap(12).ClipX().Children(func() {
-		if settingSwitchRow(c, "定时检查更新", "只在 TRACE 打开时检查；遇到风控会自动放慢", "开关定时订阅", &a.DraftSettings.Subscription.Enabled) {
-			a.DraftSettings.ScheduledCheck = a.DraftSettings.Subscription.Enabled
-			a.saveSettings()
+	planRows := a.checkPlanRowsAt(now)
+	scheduledSubs := 0
+	scheduledAccounts := 0
+	for _, sub := range a.Subscriptions {
+		if sub.Rules.ScheduledCheck {
+			scheduledSubs++
+			scheduledAccounts += len(subscriptionEffectiveAccounts(sub))
 		}
+	}
+	earliestNext := earliestScheduledNextAt(planRows)
 
+	ui.Column(c).FillWidth().Gap(12).ClipX().Children(func() {
 		chkMinStr := strconv.Itoa(a.DraftSettings.Subscription.IntervalMinutes)
 		if chkMinStr == "0" {
 			chkMinStr = "60"
 		}
-		if settingChoiceRowDisabled(c, "检查间隔", "", "选择订阅检查间隔", &chkMinStr, subscriptionIntervalChoices, !a.DraftSettings.Subscription.Enabled) {
+		if settingChoiceRow(c, "检查间隔", "只在 TRACE 打开时按此间隔检查已开启「定时检查」的订阅；遇到风控会自动放慢", "选择订阅检查间隔", &chkMinStr, subscriptionIntervalChoices) {
 			if v, err := strconv.Atoi(chkMinStr); err == nil {
 				a.DraftSettings.Subscription.IntervalMinutes = v
 				a.DraftSettings.CheckIntervalMin = v
 				a.saveSettings()
 			}
 		}
+
+		// Per-subscription scheduled check summary & next check time (DEC-080)
+		ui.Column(c).
+			Label("定时检查状态摘要").
+			FillWidth().
+			Padding(10, 0).
+			BorderWidth(0, 0, 1, 0).
+			BorderColor(ColorBorder).
+			Gap(4).
+			ClipX().
+			Children(func() {
+				if scheduledSubs == 0 {
+					ui.Text(c, "当前没有订阅开启定时检查").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+				} else {
+					ui.Text(c, fmt.Sprintf("已开启定时检查：%d 个订阅（%d 个账号）", scheduledSubs, scheduledAccounts)).
+						FontSize(13).FontWeight(500).TextColor(ColorTextMain).SingleLine()
+					switch {
+					case earliestNext != "":
+						ui.Text(c, "下一轮定时检查："+formatPlanTime(earliestNext, now)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					case scheduledAccounts == 0:
+						ui.Text(c, "这些订阅还没有关联站点账号").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					default:
+						ui.Text(c, "对应站点尚未登录，登录后将按间隔自动检查").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					}
+				}
+			})
 
 		// Per-site scheduler schedule & backoff lines (docs/ui.md §3.7)
 		if len(schedStatuses) > 0 {
@@ -608,7 +641,7 @@ func (a *App) renderSubscriptionSettings(c *ui.Context) {
 		if liveMinStr == "0" {
 			liveMinStr = "3"
 		}
-		if settingChoiceRow(c, "开播检查间隔", liveIntervalNote(a.checkPlanRows()), "选择直播轮询间隔", &liveMinStr, liveIntervalChoices) {
+		if settingChoiceRow(c, "开播检查间隔", liveIntervalNote(planRows), "选择直播轮询间隔", &liveMinStr, liveIntervalChoices) {
 			if v, err := strconv.Atoi(liveMinStr); err == nil {
 				a.DraftSettings.LiveCheckIntervalMin = v
 				a.DraftSettings.Live.PollIntervalSeconds = v * 60

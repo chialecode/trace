@@ -90,6 +90,16 @@ func (a *App) openMultiTagBatchDialog() {
 	}
 }
 
+func (a *App) openMultiTagBatchDialogWithPreset(presetID string) {
+	a.openMultiTagBatchDialog()
+	a.MultiTagBatch.Mode = subscription.TagBatchReplace
+	if tags, err := subscription.PresetTags(presetID, false); err == nil {
+		for _, id := range tags {
+			a.MultiTagBatch.SelectedTags[id] = true
+		}
+	}
+}
+
 func (a *App) closeMultiTagBatchDialog() {
 	a.MultiTagBatch.Open = false
 	a.MultiTagBatch.Error = ""
@@ -341,11 +351,37 @@ func (a *App) renderMultiTagBatchDialogBody(c *ui.Context) {
 		})
 
 	selectedTagCount := 0
+	selectedTagsSlice := make([]string, 0, len(allTags))
 	for _, t := range allTags {
 		if a.MultiTagBatch.SelectedTags[t.ID] {
 			selectedTagCount++
+			selectedTagsSlice = append(selectedTagsSlice, t.ID)
 		}
 	}
+	matchedPreset, _ := subscription.MatchTrackingPreset(selectedTagsSlice)
+
+	ui.Row(c).Label("批量快速预设栏").FillWidth().Gap(6).AlignItems(ui.Center).Wrap().ClipX().Children(func() {
+		ui.Text(c, "快速预设：").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+		for _, item := range subscription.AllTrackingPresets() {
+			p := item
+			on := matchedPreset == p.ID && (p.ID != subscription.PresetManual || a.MultiTagBatch.Mode == subscription.TagBatchReplace)
+			chip := toggleChipSized(c, p.Name, "批量选择预设："+p.ID, on, 3, 9, 12).Tooltip(p.Description)
+			if chip.Clicked() {
+				keepAutoRec := a.MultiTagBatch.SelectedTags[subscription.TagAutoRecord]
+				a.MultiTagBatch.SelectedTags = make(map[string]bool, len(p.Tags)+1)
+				for _, tid := range p.Tags {
+					a.MultiTagBatch.SelectedTags[tid] = true
+				}
+				if keepAutoRec {
+					a.MultiTagBatch.SelectedTags[subscription.TagAutoRecord] = true
+				}
+				if p.ID == subscription.PresetManual && a.MultiTagBatch.Mode != subscription.TagBatchReplace {
+					a.MultiTagBatch.Mode = subscription.TagBatchReplace
+				}
+				a.MultiTagBatch.Error = ""
+			}
+		}
+	})
 
 	ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Wrap().Children(func() {
 		for _, item := range allTags {
@@ -358,6 +394,31 @@ func (a *App) renderMultiTagBatchDialogBody(c *ui.Context) {
 			}
 		}
 	})
+
+	if a.MultiTagBatch.Mode != subscription.TagBatchRemove && subscription.HasAutoCacheWithoutScheduledCheck(selectedTagsSlice) {
+		renderAutoCacheDependencyWarning(c, "批量设置自动缓存缺少定时检查提示", "")
+	} else if a.MultiTagBatch.Mode == subscription.TagBatchRemove && a.MultiTagBatch.SelectedTags[subscription.TagScheduledCheck] {
+		warnRemove := false
+		for _, sub := range a.Subscriptions {
+			key := ruleBatchSubKey(sub)
+			if !a.MultiTagBatch.SelectedSubs[key] {
+				continue
+			}
+			var remaining []string
+			for _, tid := range effectiveSubTags(sub) {
+				if !a.MultiTagBatch.SelectedTags[tid] {
+					remaining = append(remaining, tid)
+				}
+			}
+			if subscription.HasAutoCacheWithoutScheduledCheck(remaining) {
+				warnRemove = true
+				break
+			}
+		}
+		if warnRemove {
+			renderAutoCacheDependencyWarning(c, "批量设置自动缓存缺少定时检查提示", "移除「定时检查」后，部分已开启自动缓存的订阅将仅在手动检查更新时生效。")
+		}
+	}
 
 	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 		inp := ui.TextInput(c, &a.MultiTagBatch.SearchInput).

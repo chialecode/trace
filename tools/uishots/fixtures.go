@@ -516,7 +516,7 @@ func seedFixtures() (env *fixtureEnv, err error) {
 			UniqueID: env.xOnlyHandle,
 			Name:     "X 合成专栏",
 		},
-	}, subscription.DefaultSubRules())
+	}, subscription.EmptySubRules())
 
 	if env.primarySub.ID != "" {
 		if updated, rErr := b.SetSubscriptionTags(env.primarySub.ID, []string{

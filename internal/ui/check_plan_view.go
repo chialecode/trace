@@ -167,7 +167,7 @@ func checkPlanNextText(row service.AccountCheckRow, now time.Time) (string, bool
 	case subscription.PlanManual:
 		return "只手动检查", false
 	case subscription.PlanOff:
-		return "定时检查已关闭", false
+		return "定时检查未启用", false
 	case subscription.PlanUnauth:
 		return "未登录，不检查", false
 	}
@@ -281,9 +281,16 @@ func earliestScheduledNextAt(rows []service.AccountCheckRow) string {
 func (a *App) renderCheckPlanHead(c *ui.Context, rows []service.AccountCheckRow, now time.Time) {
 	ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
 		next := earliestScheduledNextAt(rows)
-		head := "定时检查已关闭或没有定时检查的订阅"
+		head := "当前没有开启定时检查的订阅"
 		if next != "" {
 			head = "下一轮定时检查：" + formatPlanTime(next, now)
+		} else {
+			for _, r := range rows {
+				if r.Plan == subscription.PlanUnauth {
+					head = "已开启定时检查的站点当前未登录"
+					break
+				}
+			}
 		}
 		ui.Text(c, head).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 		ui.Text(c, fmt.Sprintf("更新检查：每轮每个站点最多检查 B 站 %d 个、抖音 %d 个、微博 %d 个、X %d 个账号，上次检查得早的先查；额度不足或退避时顺延。",

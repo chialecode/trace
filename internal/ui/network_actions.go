@@ -63,7 +63,7 @@ func (a *App) createPreviewedSubscription() {
 	if input != "" && a.AddSubPreviewOwner == nil {
 		accounts = append(accounts, *a.AddSubPreview)
 	}
-	sub, err := a.backend.CreateSubscription(strings.TrimSpace(a.AddSubName), "", accounts, subscription.DefaultSubRules())
+	sub, err := a.backend.CreateSubscription(strings.TrimSpace(a.AddSubName), "", accounts, a.AddSubPreset.SelectedRules())
 	if err != nil {
 		a.showError(err)
 		return
@@ -80,6 +80,7 @@ func (a *App) createPreviewedSubscription() {
 	a.syncSelectedSubRules(sub)
 	a.AddSubInput, a.AddSubName, a.AddSubPreviewInput = "", "", ""
 	a.AddSubPreview, a.AddSubPreviewOwner, a.AddSubDialogOpen = nil, nil, false
+	a.AddSubPreset = TrackingPresetPickerState{}
 	a.RefreshData()
 }
 
@@ -193,6 +194,31 @@ func checkSummaryMessage(sum subscription.CheckSummary) string {
 		}
 		return fmt.Sprintf("已检查 %d 个账号，失败 %d 个：%s", sum.CheckedCreators, sum.FailedCreators, sum.Errors[0])
 	}
+	if sum.BaselineInitialized > 0 {
+		otherChecked := sum.CheckedCreators - sum.BaselineInitialized - sum.FailedCreators
+		if otherChecked < 0 {
+			otherChecked = 0
+		}
+		if otherChecked == 0 && sum.NewDynamics == 0 && sum.NewVideos == 0 && sum.FailedCreators == 0 {
+			return fmt.Sprintf("已为 %d 个账号记录检查起点，之后发布的新内容会被追踪", sum.BaselineInitialized)
+		}
+		msg := fmt.Sprintf("已为 %d 个账号记录检查起点", sum.BaselineInitialized)
+		if otherChecked > 0 {
+			msg += fmt.Sprintf("，另检查 %d 个账号，新增 %d 条动态", otherChecked, sum.NewDynamics)
+		} else if sum.NewDynamics > 0 {
+			msg += fmt.Sprintf("，新增 %d 条动态", sum.NewDynamics)
+		}
+		if sum.AutoCacheTasks > 0 {
+			msg += fmt.Sprintf("，已自动入队 %d 条", sum.AutoCacheTasks)
+		}
+		if sum.FailedCreators > 0 {
+			msg += fmt.Sprintf("，失败 %d 个", sum.FailedCreators)
+		}
+		return msg
+	}
+	if sum.AutoCacheTasks > 0 && sum.FailedCreators == 0 {
+		return fmt.Sprintf("检查 %d 个账号，新增 %d 条动态，已自动入队 %d 条", sum.CheckedCreators, sum.NewDynamics, sum.AutoCacheTasks)
+	}
 	return fmt.Sprintf("检查 %d 个账号，新增 %d 条动态，失败 %d 个", sum.CheckedCreators, sum.NewDynamics, sum.FailedCreators)
 }
 
@@ -277,6 +303,7 @@ func (a *App) openImportFollowingsModal() {
 			targetSite = string(site.X)
 		}
 	}
+	a.ImportPreset.ResetDefault()
 	a.ImportSubModalOpen = true
 	a.selectImportSite(targetSite)
 }

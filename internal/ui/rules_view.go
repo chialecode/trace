@@ -29,6 +29,38 @@ func (a *App) tagUseCount(tagID string) int {
 	return n
 }
 
+func (a *App) presetUseCount(presetID string) int {
+	n := 0
+	for _, sub := range a.Subscriptions {
+		matched, _ := subscription.MatchTrackingPreset(effectiveSubTags(sub))
+		if matched == presetID {
+			n++
+		}
+	}
+	return n
+}
+
+func (a *App) applySubscriptionPreset(sub *subscription.Subscription, presetID string) {
+	if sub == nil || a.backend == nil {
+		return
+	}
+	_, autoRec := subscription.MatchTrackingPreset(effectiveSubTags(*sub))
+	next, err := subscription.PresetTags(presetID, autoRec)
+	if err != nil {
+		a.showError(err)
+		return
+	}
+	updated, err := a.backend.SetSubscriptionTags(sub.ID, next)
+	a.showError(err)
+	if err == nil {
+		*sub = updated
+		a.SubRules = updated.Rules
+		subDisplay := firstNonEmptyStrUI(sub.Name, sub.Uname, sub.ID)
+		a.BannerInfo = fmt.Sprintf("已将「%s」切换为「%s」", subDisplay, subscription.TrackingModeLabel(updated.Tags))
+	}
+	a.refreshSubscriptions()
+}
+
 func (a *App) toggleSubscriptionTag(sub *subscription.Subscription, tagID string) {
 	if sub == nil || a.backend == nil {
 		return
@@ -64,23 +96,45 @@ func (a *App) toggleSubscriptionTag(sub *subscription.Subscription, tagID string
 	a.refreshSubscriptions()
 }
 
-// renderCacheRulesSettings renders Settings → 缓存标签: a right-aligned batch-set
-// button at the top, followed by each capability tag's name, subscription count,
-// and per-tag "管理订阅…" dialog trigger (DEC-038 ⑤, DEC-070).
+// renderCacheRulesSettings renders Settings → 缓存标签: a top row with quick
+// tracking preset triggers and the right-aligned batch-set button, followed by
+// each capability tag's name, subscription count, and per-tag "管理订阅…" dialog
+// trigger without verbose explanatory subtitles (DEC-038 ⑤, DEC-070, DEC-080).
 func (a *App) renderCacheRulesSettings(c *ui.Context) {
 	tags := a.backend.ListCapabilityTags()
+	presets := subscription.AllTrackingPresets()
 	ui.Column(c).FillWidth().Gap(0).ClipX().Children(func() {
 		ui.Row(c).
+			FillWidth().
+			Padding(0, 0, 10, 0).
+			AlignItems(ui.Center).
+			Justify(ui.SpaceBetween).
+			Gap(12).
+			ClipX().
+			Children(func() {
+				ui.Text(c, "快速预设").FontSize(13).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
+				if AccentPillButton(c, "批量设置标签…", "打开批量设置订阅标签").Clicked() {
+					a.openMultiTagBatchDialog()
+				}
+			})
+
+		ui.Row(c).
+			Label("缓存标签快速预设栏").
 			FillWidth().
 			Padding(0, 0, 12, 0).
 			BorderWidth(0, 0, 1, 0).
 			BorderColor(ColorBorder).
+			Gap(8).
 			AlignItems(ui.Center).
-			Justify(ui.End).
+			Wrap().
 			ClipX().
 			Children(func() {
-				if AccentPillButton(c, "批量设置标签…", "打开批量设置订阅标签").Clicked() {
-					a.openMultiTagBatchDialog()
+				for _, item := range presets {
+					p := item
+					btnText := fmt.Sprintf("%s · %d", p.Name, a.presetUseCount(p.ID))
+					if OutlinePillButton(c, btnText, "快速应用预设："+p.ID).Tooltip(p.Description).Clicked() {
+						a.openMultiTagBatchDialogWithPreset(p.ID)
+					}
 				}
 			})
 
@@ -141,50 +195,113 @@ func toggleChipSized(c *ui.Context, text, label string, on bool, padV, padH, fon
 	return btn
 }
 
-// renderSubscriptionTagChipsBar renders the subscription's active capability
-// tags as removable accent chips (or "无缓存标签" when empty) alongside the
-// "+ 标签" / "设置标签" popover selector so tags can be toggled directly in
-// Subscription Detail without showing inactive capabilities (DEC-070).
+// renderSubscriptionTagChipsBar renders the subscription's current tracking mode
+// (preset name or "自定义") plus "录直播" when enabled, a dropdown to switch
+// presets / toggle 录直播 / expand the 7 atomic tags / clear / batch-manage,
+// optional expanded atomic tag toggles, and a calm dependency gap warning when
+// auto-cache is enabled without scheduled_check (DEC-070, DEC-080).
 func (a *App) renderSubscriptionTagChipsBar(c *ui.Context, sub *subscription.Subscription) {
 	if sub == nil {
 		return
 	}
 	activeTags := effectiveSubTags(*sub)
-	ui.Row(c).
+	presetID, autoRec := subscription.MatchTrackingPreset(activeTags)
+	expanded := a.SubCustomTagsSubID == sub.ID
+
+	ui.Column(c).
 		Label("订阅详情缓存标签栏").
 		FillWidth().
 		Gap(6).
-		AlignItems(ui.Center).
-		Wrap().
+		ClipX().
 		Children(func() {
-			if len(activeTags) == 0 {
-				ui.Text(c, "无缓存标签").FontSize(12).TextColor(ColorTextMuted).SingleLine()
-			} else {
-				for _, tagID := range activeTags {
-					id := tagID
-					tagDef, _ := subscription.CapabilityTagByID(id)
-					tagName := firstNonEmptyStrUI(tagDef.Name, id)
-					chip := toggleChipSized(c, tagName, "订阅缓存标签："+tagName, true, 4, 10, 12).
-						Tooltip(firstNonEmptyStrUI(tagDef.Description, tagName))
-					if chip.Clicked() {
-						a.toggleSubscriptionTag(sub, id)
+			ui.Row(c).
+				FillWidth().
+				Gap(6).
+				AlignItems(ui.Center).
+				Wrap().
+				ClipX().
+				Children(func() {
+					a.renderSubscriptionRuleButton(c, sub, activeTags, presetID, autoRec, expanded)
+					if autoRec {
+						liveChip := toggleChipSized(c, "录直播", "订阅缓存标签：开播录制", true, 4, 10, 12).
+							Tooltip("已开启开播录制，点击关闭")
+						if liveChip.Clicked() {
+							a.toggleSubscriptionTag(sub, subscription.TagAutoRecord)
+						}
 					}
-				}
+					if presetID == subscription.PresetCustom {
+						for _, tagID := range activeTags {
+							if tagID == subscription.TagAutoRecord {
+								continue
+							}
+							id := tagID
+							tagDef, _ := subscription.CapabilityTagByID(id)
+							tagName := firstNonEmptyStrUI(tagDef.Name, id)
+							chip := toggleChipSized(c, tagName, "订阅缓存标签："+tagName, true, 4, 10, 12).
+								Tooltip(firstNonEmptyStrUI(tagDef.Description, tagName))
+							if chip.Clicked() {
+								a.toggleSubscriptionTag(sub, id)
+							}
+						}
+					}
+				})
+
+			if expanded {
+				allTags := a.backend.ListCapabilityTags()
+				ui.Column(c).
+					Label("订阅详情自定义原子标签栏").
+					FillWidth().
+					Padding(8, 10).
+					Radius(10).
+					Background(ColorBgMain).
+					Border(1, ColorBorder).
+					Gap(6).
+					ClipX().
+					Children(func() {
+						ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
+							ui.Text(c, "自定义原子标签").FontSize(12).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
+							collapseBtn := ui.ButtonBase(c).
+								Label("收起原子标签").
+								Padding(2, 8).
+								Radius(999).
+								Border(1, ColorBorder)
+							if collapseBtn.Hovered() {
+								collapseBtn.Background(ColorHover)
+							}
+							collapseBtn.Children(func() {
+								ui.Text(c, "收起").FontSize(11).TextColor(ColorTextMuted).SingleLine()
+							})
+							if collapseBtn.Clicked() {
+								a.SubCustomTagsSubID = ""
+							}
+						})
+						ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Wrap().ClipX().Children(func() {
+							for _, item := range allTags {
+								tag := item
+								on := subscription.HasTag(activeTags, tag.ID)
+								chip := toggleChipSized(c, tag.Name, "订阅原子标签："+tag.Name, on, 4, 10, 12).
+									Tooltip(tag.Description)
+								if chip.Clicked() {
+									a.toggleSubscriptionTag(sub, tag.ID)
+								}
+							}
+						})
+					})
 			}
-			a.renderSubscriptionRuleButton(c, sub, activeTags)
+
+			if subscription.HasAutoCacheWithoutScheduledCheck(activeTags) {
+				renderAutoCacheDependencyWarning(c, "自动缓存缺少定时检查提示", "")
+			}
 		})
 }
 
-// renderSubscriptionRuleButton renders the inline tag-selector popover button
-// ("设置标签 ▾" when empty, or "+ 标签 ▾" when active tags are shown) to toggle
-// any capability tag, clear all tags, or jump to Settings → 缓存标签.
-func (a *App) renderSubscriptionRuleButton(c *ui.Context, sub *subscription.Subscription, activeTags []string) {
-	allTags := a.backend.ListCapabilityTags()
+// renderSubscriptionRuleButton renders the tracking mode dropdown button in
+// Subscription Detail: one-click preset switch, overlayable 录直播 toggle,
+// expandable 7 atomic tags, clear all tags, and jump to Settings → 缓存标签.
+func (a *App) renderSubscriptionRuleButton(c *ui.Context, sub *subscription.Subscription, activeTags []string, presetID string, autoRec, expanded bool) {
+	presets := subscription.AllTrackingPresets()
 	hasAny := len(activeTags) > 0
-	buttonText := "设置标签"
-	if hasAny {
-		buttonText = "+ 标签"
-	}
+	buttonText := "追踪：" + subscription.TrackingPresetName(presetID)
 	open := a.SubRuleMenuOpen
 	btn := ui.ButtonBase(c).
 		Label("订阅缓存标签菜单").
@@ -193,22 +310,46 @@ func (a *App) renderSubscriptionRuleButton(c *ui.Context, sub *subscription.Subs
 		Gap(4).
 		AlignItems(ui.Center).
 		Radius(999).
-		Border(1, ColorBorderStrong).
 		Shrink(0)
-	if btn.Hovered() || open {
-		btn.Background(ColorHover)
+	if presetID != subscription.PresetManual {
+		btn.Background(ColorAccentBg).Border(1, ColorAccent)
+	} else {
+		btn.Border(1, ColorBorderStrong)
+		if btn.Hovered() || open {
+			btn.Background(ColorHover)
+		}
+	}
+	textCol := ColorTextMain
+	iconCol := ColorTextMuted
+	if presetID != subscription.PresetManual {
+		textCol = ColorAccent
+		iconCol = ColorAccent
 	}
 	btn.Children(func() {
-		ui.Text(c, buttonText).FontSize(12).FontWeight(500).TextColor(ColorTextMain).SingleLine()
-		DrawIcon(c, "chevron-down", 13, ColorTextMuted, 1.6)
+		ui.Text(c, buttonText).FontSize(12).FontWeight(600).TextColor(textCol).SingleLine()
+		DrawIcon(c, "chevron-down", 13, iconCol, 1.6)
 	})
 	btn.PopoverMenuButton(func(m *ui.Menu) {
-		for _, item := range allTags {
-			tag := item
-			checked := subscription.HasTag(activeTags, tag.ID)
-			mi := m.Item(tag.Name).Subtitle(tag.Description).Checked(checked)
+		for _, item := range presets {
+			p := item
+			mi := m.Item(p.Name).Subtitle(p.Description).Checked(presetID == p.ID)
 			if mi.Chosen() {
-				a.toggleSubscriptionTag(sub, tag.ID)
+				a.applySubscriptionPreset(sub, p.ID)
+			}
+		}
+		m.Separator()
+		if m.Item("录直播").Subtitle("发现哔哩哔哩或抖音账号正在直播时自动开始录制").Checked(autoRec).Chosen() {
+			a.toggleSubscriptionTag(sub, subscription.TagAutoRecord)
+		}
+		expandTitle := "自定义原子标签"
+		if expanded {
+			expandTitle = "收起原子标签"
+		}
+		if m.Item(expandTitle).Subtitle("展开全部 7 个原子能力标签细粒度开关").Checked(expanded).Chosen() {
+			if expanded {
+				a.SubCustomTagsSubID = ""
+			} else {
+				a.SubCustomTagsSubID = sub.ID
 			}
 		}
 		if hasAny {

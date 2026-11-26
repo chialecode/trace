@@ -469,11 +469,12 @@ type App struct {
 	checkPlan   []service.AccountCheckRow
 	checkPlanAt time.Time
 	// checkingAccount is the "<site>:<uid>" a 检查计划 row is checking.
-	checkingAccount  string
-	SubFeedMoreAfter bool
-	SubFeedError     string
-	subFeedDirty     bool
-	SubRuleMenuOpen  bool
+	checkingAccount    string
+	SubFeedMoreAfter   bool
+	SubFeedError       string
+	subFeedDirty       bool
+	SubRuleMenuOpen    bool
+	SubCustomTagsSubID string
 	// RuleBatch manages subscriptions of one capability tag; MultiTagBatch
 	// batch-adds, removes, or replaces multiple capability tags across subscriptions.
 	RuleBatch     RuleBatchDialogState
@@ -489,6 +490,7 @@ type App struct {
 	subImportGen     uint64
 	SubLinks         SubLinksModalState
 	AddSubDialogOpen bool
+	AddSubPreset     TrackingPresetPickerState
 	// SubscribePicker subscribes to an account: into an existing
 	// subscription or a new one (DEC-058).
 	SubscribePicker     SubscribePickerState
@@ -506,6 +508,7 @@ type App struct {
 	AccountPreviewSubID string
 	AccountPreviewOwner string
 	ImportSubModalOpen  bool
+	ImportPreset        TrackingPresetPickerState
 	importFollowingsSeq uint64
 	ImportSite          string // "bilibili" | "weibo" | "x"
 	ImportFollowings    []bilibili.FollowingUser
