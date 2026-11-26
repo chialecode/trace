@@ -92,6 +92,9 @@ func normalizeCacheQueueTarget(rawSite, rawList, rawUser string) (site.ID, strin
 		if list == "" {
 			list = "posts"
 		}
+		if list == CacheQueueListWeiboBackfill {
+			return site.Weibo, CacheQueueListWeiboBackfill, CacheQueueBackfillUser, nil
+		}
 		if list != "posts" {
 			return "", "", "", &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "不支持的微博列表类型"}
 		}
@@ -124,6 +127,9 @@ func cacheQueueListLabel(siteID, list string) string {
 	case string(site.Douyin):
 		return "作品"
 	case string(site.Weibo):
+		if strings.EqualFold(strings.TrimSpace(list), CacheQueueListWeiboBackfill) {
+			return "历史缓存补全"
+		}
 		return "微博"
 	case string(site.X):
 		return "帖子"
@@ -591,7 +597,7 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 	var inspectFn func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision
 	if !nonOriginal {
 		inspectFn = func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
-			return b.inspectWeiboCachedPost(postCopy, meta, queueOrigin)
+			return b.inspectWeiboCachedPostDeferred(postCopy, meta, queueOrigin)
 		}
 	}
 	return queueCandidate{

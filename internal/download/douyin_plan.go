@@ -120,6 +120,7 @@ type WorkDownloadPlan struct {
 	EditCount               int      // sanitized remote edit counter
 	AssetIDs                []string // sanitized ordered platform asset IDs
 	ConflictResolution      string   // explicit "keep_both" or "use_remote" when resolving a conflict
+	ForceOverwrite          bool     `json:"-"` // explicit manual-only force redownload & atomic overwrite (DEC-079)
 	Transport               site.MediaTransportSpec
 }
 
@@ -411,10 +412,13 @@ func (m *Manager) EnqueueDouyinWork(ctx context.Context, req DouyinWorkEnqueueRe
 		ctx = site.WithAutomaticRequests(ctx, "download")
 	}
 	var reqPlanMode string
+	var reqPlanForce bool
 	if req.Plan != nil {
 		reqPlanMode = req.Plan.ConflictResolution
+		reqPlanForce = req.Plan.ForceOverwrite
 	}
 	mode := effectiveConflictResolution(ctx, reqPlanMode)
+	forceOverwrite := effectiveForceOverwrite(ctx, source, reqPlanForce)
 
 	var plan WorkDownloadPlan
 	if req.Plan != nil {
@@ -447,6 +451,7 @@ func (m *Manager) EnqueueDouyinWork(ctx context.Context, req DouyinWorkEnqueueRe
 	if mode != "" {
 		plan.ConflictResolution = mode
 	}
+	plan.ForceOverwrite = forceOverwrite
 	kind := normalizeDouyinTaskKind(firstNonEmptyStr(plan.Kind, req.Kind), len(plan.Pages) > 0)
 	plan.Kind = kind
 
@@ -512,12 +517,16 @@ func (m *Manager) EnqueueDouyinWork(ctx context.Context, req DouyinWorkEnqueueRe
 		ItemDir:            itemDir,
 		Via:                via,
 		ConflictResolution: mode,
+		ForceOverwrite:     forceOverwrite,
 	}, &plan)
 	if err != nil {
 		return Task{}, err
 	}
 	if mode != "" {
 		m.storeTaskResolutionAndPages(t.TaskID, mode, nil)
+	}
+	if forceOverwrite {
+		m.storeTaskForceOverwrite(t.TaskID, true)
 	}
 
 	m.notifyWake()
@@ -650,6 +659,9 @@ func (m *Manager) consumeInitialOrFetchDouyinPlan(ctx context.Context, taskID, t
 	if hasInitial && initial.ConflictResolution != "" && plan.ConflictResolution == "" {
 		plan.ConflictResolution = initial.ConflictResolution
 	}
+	if hasInitial && initial.ForceOverwrite {
+		plan.ForceOverwrite = true
+	}
 	if len(plan.Transport.AllowedDomains) == 0 {
 		plan.Transport = site.DouyinVODTransport("", false)
 	}
@@ -676,6 +688,12 @@ func (m *Manager) executeDouyinTask(ctx context.Context, t *Task) error {
 	mode = effectiveConflictResolution(ctx, t.ConflictResolution, storedMode, plan.ConflictResolution)
 	plan.ConflictResolution = mode
 	t.ConflictResolution = mode
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite, m.taskForceOverwrite(t.TaskID), plan.ForceOverwrite)
+	plan.ForceOverwrite = forceOverwrite
+	t.ForceOverwrite = forceOverwrite
+	if forceOverwrite {
+		ctx = WithForceOverwrite(ctx)
+	}
 
 	normUID, err := site.NormalizeUID(site.Douyin, firstNonEmptyStr(plan.AuthorUID, t.AuthorUID))
 	if err != nil {

@@ -150,6 +150,7 @@ func (a *App) closeAllModalsAndOverlays() {
 	a.ConfirmLogoutOpen = false
 	a.Remote.ConfirmPushXOpen = false
 	a.DeleteConfirm.Open = false
+	a.ForceRecacheConfirm.Open = false
 	a.RestartConfirmOpen = false
 	a.AddSubDialogOpen = false
 	a.RuleBatch.Open = false

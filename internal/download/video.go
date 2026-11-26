@@ -64,6 +64,7 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 
 	storedMode, selectedPages := m.taskResolutionAndPages(t.TaskID)
 	mode := effectiveConflictResolution(ctx, t.ConflictResolution, storedMode)
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite, m.taskForceOverwrite(t.TaskID))
 
 	preMeta, preExists, _ := m.lib.GetItem(t.TargetID)
 	if preExists && preMeta.ItemDir != "" {
@@ -101,8 +102,12 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 	}
 
 	if hasProtectedLocal {
-		if mode == ConflictResolveKeepBoth || mode == ConflictResolveUseRemote {
-			return m.executeBilibiliVideoConflictReplace(ctx, t, detail, meta, mode, selectedPages)
+		if mode == ConflictResolveKeepBoth || mode == ConflictResolveUseRemote || forceOverwrite {
+			effectiveMode := mode
+			if effectiveMode == "" {
+				effectiveMode = ConflictResolveUseRemote
+			}
+			return m.executeBilibiliVideoConflictReplace(ctx, t, detail, meta, effectiveMode, selectedPages)
 		}
 		notice, isConflict, degErr := classifyBilibiliVideoVsLocal(meta, detail, t)
 		if degErr != nil {

@@ -806,8 +806,15 @@ func isStopError(err error) bool {
 }
 
 func isStorageError(err error) bool {
+	if err == nil {
+		return false
+	}
 	var pathErr *os.PathError
-	return errors.As(err, &pathErr) || bilibili.IsKind(err, "storage")
+	var linkErr *os.LinkError
+	return errors.As(err, &pathErr) ||
+		errors.As(err, &linkErr) ||
+		site.IsKind(err, site.ErrKindStorage) ||
+		bilibili.IsKind(err, "storage")
 }
 
 func targetQuality(quality string) int {

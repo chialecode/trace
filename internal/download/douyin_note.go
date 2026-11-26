@@ -23,6 +23,7 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 
 	hasProtectedLocal := exists && localHasProtectedContent(previous)
 	mode := effectiveConflictResolution(ctx, t.ConflictResolution, plan.ConflictResolution)
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite, plan.ForceOverwrite)
 	isConflict := false
 	if hasProtectedLocal {
 		notice, conflict, degErr := classifyWorkPlanVsLocal(previous, plan, t.ItemKey, t.TargetID, t)
@@ -30,15 +31,18 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 			return degErr
 		}
 		isConflict = conflict
-		if isConflict && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
+		if isConflict && !forceOverwrite && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
 			m.emitConflict(notice)
 			return ErrConflictDetected
+		}
+		if forceOverwrite && mode == "" {
+			mode = ConflictResolveUseRemote
 		}
 	}
 
 	title := firstNonEmptyStr(plan.Title, plan.Desc, t.Title, "抖音图文 "+t.TargetID)
 	desc := plan.Desc
-	if hasProtectedLocal && !isConflict {
+	if hasProtectedLocal && !isConflict && !forceOverwrite {
 		title = preserveMonotonicText(previous.Title, title, false)
 		desc = preserveMonotonicText(previous.Desc, desc, false)
 	}
@@ -127,7 +131,7 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 	// Optional cover.<ext> when explicitly provided.
 	if cfg.SaveCover && len(plan.CoverURLs) > 0 {
 		reusedCover := false
-		if hasProtectedLocal && !isConflict {
+		if hasProtectedLocal && !isConflict && !forceOverwrite {
 			for _, mf := range previous.Media {
 				if mf.Role == "cover" && mediaIsValid(previous, mf.Path) {
 					if copied, rErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, "cover", workDir); rErr == nil {
@@ -165,6 +169,9 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 		prefix := fmt.Sprintf("images/%02d", pageIdx)
 		cleanPageMediaID := library.SanitizeMediaToken(page.MediaID)
 		reusableLP, canReuseLocal := findReusableLocalPage(previous, page, pageIdx, isConflict)
+		if forceOverwrite {
+			canReuseLocal = false
+		}
 		pageKind := strings.ToLower(strings.TrimSpace(page.Kind))
 		if pageKind == "" {
 			if len(page.VideoURLs) > 0 {
@@ -199,7 +206,7 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 				if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
 					return imgErr
 				}
-				if hasProtectedLocal && isConflict && isDegradedSiteError(imgErr) {
+				if hasProtectedLocal && (isConflict || forceOverwrite) && isDegradedSiteError(imgErr) {
 					return wrapRemoteDegraded(imgErr)
 				}
 				reason := fmt.Sprintf("第 %02d 页图片下载失败 (%s)", pageIdx, classifyDownloadError(imgErr))
@@ -242,7 +249,7 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 				if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
 					return imgErr
 				}
-				if hasProtectedLocal && isConflict && isDegradedSiteError(imgErr) {
+				if hasProtectedLocal && (isConflict || forceOverwrite) && isDegradedSiteError(imgErr) {
 					return wrapRemoteDegraded(imgErr)
 				}
 				reason := fmt.Sprintf("第 %02d 页实况静帧下载失败 (%s)", pageIdx, classifyDownloadError(imgErr))
@@ -285,7 +292,7 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 				if isSiteStopError(mErr) || isStorageError(mErr) || ctx.Err() != nil {
 					return mErr
 				}
-				if hasProtectedLocal && isConflict && isDegradedSiteError(mErr) {
+				if hasProtectedLocal && (isConflict || forceOverwrite) && isDegradedSiteError(mErr) {
 					return wrapRemoteDegraded(mErr)
 				}
 				reason := fmt.Sprintf("第 %02d 页实况视频下载失败 (%s)", pageIdx, classifyDownloadError(mErr))
@@ -371,7 +378,7 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 				if isSiteStopError(vErr) || isStorageError(vErr) || ctx.Err() != nil {
 					return vErr
 				}
-				if hasProtectedLocal && isConflict && isDegradedSiteError(vErr) {
+				if hasProtectedLocal && (isConflict || forceOverwrite) && isDegradedSiteError(vErr) {
 					return wrapRemoteDegraded(vErr)
 				}
 				reason := fmt.Sprintf("第 %02d 页视频下载失败 (%s)", pageIdx, classifyDownloadError(vErr))
@@ -455,7 +462,7 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 			Cover:    musicCover,
 			Original: plan.Music.Original,
 		}
-		sameMusic := previous.Music != nil && previous.Music.File != "" && mediaIsValid(previous, previous.Music.File) &&
+		sameMusic := !forceOverwrite && previous.Music != nil && previous.Music.File != "" && mediaIsValid(previous, previous.Music.File) &&
 			(!isConflict || (previous.Music.ID != "" && plan.Music.ID == previous.Music.ID))
 		if len(plan.Music.PlayURLs) == 0 {
 			if hasProtectedLocal && sameMusic {
@@ -505,7 +512,7 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 				mediaFiles = append(mediaFiles, *musicMedia)
 			}
 		}
-	} else if hasProtectedLocal && !isConflict && previous.Music != nil && previous.Music.File != "" && mediaIsValid(previous, previous.Music.File) {
+	} else if hasProtectedLocal && !isConflict && !forceOverwrite && previous.Music != nil && previous.Music.File != "" && mediaIsValid(previous, previous.Music.File) {
 		cp := *previous.Music
 		if copied, rErr := copyLocalMediaToStageAs(previous, previous.Music.File, previous.Music.File, "audio", workDir); rErr == nil {
 			cp.File = copied.Path
@@ -514,7 +521,7 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 		}
 	}
 
-	if hasProtectedLocal && isConflict && len(partialErrors) > 0 {
+	if hasProtectedLocal && (isConflict || forceOverwrite) && len(partialErrors) > 0 {
 		return wrapRemoteDegradedMsg(fmt.Sprintf("新版部分媒体下载失败，已保留本地原文件 (%s)", strings.Join(partialErrors, "; ")))
 	}
 
@@ -525,7 +532,7 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 		t.ErrorMessage = summarizeMissingReasons(missing)
 	}
 
-	mediaFiles, notePages = preserveValidPreviousImagesForStage(itemDir, workDir, previous, exists && !isConflict, mediaFiles, notePages)
+	mediaFiles, notePages = preserveValidPreviousImagesForStage(itemDir, workDir, previous, exists && !isConflict && !forceOverwrite, mediaFiles, notePages)
 
 	meta := library.ItemMetadata{
 		Version:     1,

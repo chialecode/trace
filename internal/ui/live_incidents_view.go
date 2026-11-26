@@ -792,6 +792,7 @@ func (a *App) dismissLiveSessions(keys ...string) {
 	dismissed := a.dismissedLiveSessionKeys()
 	for _, k := range add {
 		dismissed[k] = true
+		delete(a.ExpandedLiveIncidentKeys, k)
 	}
 }
 
