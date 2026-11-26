@@ -307,11 +307,63 @@ func (b *Backend) StartExport(target string, filter library.FeedFilter) (Transfe
 // exportPageSize is how many items exportItems reads at a time.
 var exportPageSize = 500
 
+// exportKeyChunkSize is how many explicit ItemKeys exportItems passes to
+// ListItems per SQL query so SQLite bind parameters always stay bounded.
+var exportKeyChunkSize = 400
+
 // exportItems lists every item of filter, page by page (ListItems returns
-// at most one page).
+// at most one page). When filter.ItemKeys is set, keys are deduplicated and
+// queried in safe chunks.
 func exportItems(lib interface {
 	ListItems(library.FeedFilter) ([]library.ItemMetadata, error)
 }, filter library.FeedFilter) ([]library.ItemMetadata, error) {
+	if len(filter.ItemKeys) > 0 {
+		cleanKeys := make([]string, 0, len(filter.ItemKeys))
+		seenKey := make(map[string]bool, len(filter.ItemKeys))
+		for _, raw := range filter.ItemKeys {
+			k := strings.TrimSpace(raw)
+			if k == "" || seenKey[k] {
+				continue
+			}
+			seenKey[k] = true
+			cleanKeys = append(cleanKeys, k)
+		}
+		if len(cleanKeys) == 0 {
+			return nil, nil
+		}
+		chunkSize := exportKeyChunkSize
+		if chunkSize <= 0 {
+			chunkSize = 400
+		}
+		out := make([]library.ItemMetadata, 0, len(cleanKeys))
+		seenItem := make(map[string]bool, len(cleanKeys))
+		for start := 0; start < len(cleanKeys); start += chunkSize {
+			end := min(start+chunkSize, len(cleanKeys))
+			chunkFilter := filter
+			chunkFilter.ItemKeys = cleanKeys[start:end]
+			chunkFilter.Limit = end - start
+			chunkFilter.Offset = 0
+			chunkFilter.Sort = "oldest"
+			items, err := lib.ListItems(chunkFilter)
+			if err != nil {
+				return nil, err
+			}
+			for _, it := range items {
+				if seenItem[it.ItemKey] {
+					continue
+				}
+				seenItem[it.ItemKey] = true
+				out = append(out, it)
+			}
+		}
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].PubTs != out[j].PubTs {
+				return out[i].PubTs < out[j].PubTs
+			}
+			return out[i].ItemKey < out[j].ItemKey
+		})
+		return out, nil
+	}
 	page := exportPageSize
 	filter.Limit, filter.Sort = page, "oldest"
 	var out []library.ItemMetadata

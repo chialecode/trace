@@ -579,6 +579,14 @@ func (b *Backend) PlanDelete(key string) (library.DeletePlan, error) {
 	return b.lib.PlanDelete(key)
 }
 
+// PlanDeleteBatch computes the safe file deletion plan for a batch of item keys.
+func (b *Backend) PlanDeleteBatch(keys []string) (library.DeletePlan, error) {
+	if err := b.requireAnyLogin(); err != nil {
+		return library.DeletePlan{}, err
+	}
+	return b.lib.PlanDeleteBatch(keys)
+}
+
 // Delete executes a safe manifest-only file deletion for an item key.
 func (b *Backend) Delete(key string) error {
 	return b.DeleteLibraryItem(key, true)
@@ -644,6 +652,20 @@ func (b *Backend) DeleteLibraryItem(itemKey string, deleteFiles bool) error {
 	b.pruneAccountAvatars()
 	b.events.Publish(EventLibraryChanged, "deleted:"+itemKey)
 	return nil
+}
+
+// DeleteLibraryItems removes multiple items as a single batch and optionally
+// deletes their registered files from disk (FR-LIB-003, DEC-083).
+func (b *Backend) DeleteLibraryItems(itemKeys []string, deleteFiles bool) (library.DeletePlan, error) {
+	if err := b.requireAnyLogin(); err != nil {
+		return library.DeletePlan{}, err
+	}
+	plan, err := b.lib.DeleteBatch(itemKeys, deleteFiles)
+	if len(plan.ItemKeys) > 0 {
+		b.pruneAccountAvatars()
+		b.events.Publish(EventLibraryChanged, fmt.Sprintf("deleted_batch:%d", len(plan.ItemKeys)))
+	}
+	return plan, err
 }
 
 // MigrateCacheDir changes the active cache directory, optionally moves existing files, and updates settings.json.

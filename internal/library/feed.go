@@ -2,6 +2,7 @@ package library
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -154,10 +155,43 @@ func appendSiteAndAuthorClausesVia(clauses []string, args []any, colPrefix, site
 	return clauses, args
 }
 
+// maxItemKeySQLParams caps direct IN (?,?,...) placeholders before switching to
+// json_each(?) so ListItems never overflows SQLite bind-parameter limits.
+const maxItemKeySQLParams = 400
+
 // ListItems returns cached library items matching filter.
 func (s *Store) ListItems(filter FeedFilter) ([]ItemMetadata, error) {
 	var clauses []string
 	var args []any
+	if len(filter.ItemKeys) > 0 {
+		cleanKeys := make([]string, 0, len(filter.ItemKeys))
+		seen := make(map[string]bool, len(filter.ItemKeys))
+		for _, raw := range filter.ItemKeys {
+			k := strings.TrimSpace(raw)
+			if k == "" || seen[k] {
+				continue
+			}
+			seen[k] = true
+			cleanKeys = append(cleanKeys, k)
+		}
+		if len(cleanKeys) == 0 {
+			return nil, nil
+		}
+		if len(cleanKeys) <= maxItemKeySQLParams {
+			ph := strings.TrimSuffix(strings.Repeat("?,", len(cleanKeys)), ",")
+			clauses = append(clauses, "item_key IN ("+ph+")")
+			for _, k := range cleanKeys {
+				args = append(args, k)
+			}
+		} else {
+			rawJSON, err := json.Marshal(cleanKeys)
+			if err != nil {
+				return nil, err
+			}
+			clauses = append(clauses, "item_key IN (SELECT value FROM json_each(?))")
+			args = append(args, string(rawJSON))
+		}
+	}
 	switch filter.Kind {
 	case "image":
 		clauses = append(clauses, "(EXISTS (SELECT 1 FROM json_each(json_data, '$.media') WHERE json_extract(value, '$.role') = 'image' OR COALESCE(json_extract(value, '$.gif'), 0) = 1) OR EXISTS (SELECT 1 FROM json_each(json_data, '$.notePages') WHERE json_extract(value, '$.kind') IN ('image', 'motion') OR COALESCE(json_extract(value, '$.gif'), 0) = 1))")

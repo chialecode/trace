@@ -124,3 +124,120 @@ func TestTransferJobsExportEverythingAndImportElsewhere(t *testing.T) {
 		t.Fatal("dropped plan imported")
 	}
 }
+
+type stubChunkListLib struct {
+	maxChunkSeen int
+	calls        int
+	itemsByKey   map[string]library.ItemMetadata
+}
+
+func (s *stubChunkListLib) ListItems(filter library.FeedFilter) ([]library.ItemMetadata, error) {
+	s.calls++
+	if len(filter.ItemKeys) > s.maxChunkSeen {
+		s.maxChunkSeen = len(filter.ItemKeys)
+	}
+	var out []library.ItemMetadata
+	for _, k := range filter.ItemKeys {
+		if it, ok := s.itemsByKey[k]; ok {
+			out = append(out, it)
+		}
+	}
+	return out, nil
+}
+
+func TestTransferJobsBatchExportSelectedItemsAndChunking(t *testing.T) {
+	oldChunk := exportKeyChunkSize
+	exportKeyChunkSize = 2
+	t.Cleanup(func() { exportKeyChunkSize = oldChunk })
+
+	src := transferTestBackend(t)
+	var keys []string
+	for i := 1; i <= 5; i++ {
+		id := fmt.Sprintf("BV1bx%05d", i)
+		dir := filepath.Join(src.lib.CacheDir(), "bilibili", "1001", "video", id)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		data := []byte("批量导出样本 " + id)
+		if err := os.WriteFile(filepath.Join(dir, "P01.mp4"), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(data)
+		meta := library.ItemMetadata{
+			Version: 1, ID: "video:" + id, Site: "bilibili", Kind: "video", Title: "样本 " + id, Status: "complete",
+			PubTs:  int64(1700000000 + i*10),
+			Author: library.ItemAuthor{Mid: 1001, Name: "合成作者"},
+			Media:  []library.MediaFile{{Role: "video", Path: "P01.mp4", Bytes: int64(len(data)), SHA256: hex.EncodeToString(sum[:])}},
+		}
+		saved, err := src.lib.SaveItem(dir, meta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, saved.ItemKey)
+	}
+
+	selected := []string{keys[0], keys[2], keys[4], keys[2]} // 3 unique items across 2 chunks (chunkSize=2)
+	out := filepath.Join(t.TempDir(), "batch-export")
+	job, err := src.StartExport(out, library.FeedFilter{ItemKeys: selected})
+	if err != nil {
+		t.Fatalf("StartExport selected: %v", err)
+	}
+	done := waitTransfer(t, src, job.ID, TransferDone)
+	if done.Export == nil || done.Export.Items != 3 || done.Export.Files != 3 {
+		t.Fatalf("selected export summary = %+v, want 3 items / 3 files", done.Export)
+	}
+
+	// Verify only the 3 selected items are imported into a fresh destination library.
+	dst := transferTestBackend(t)
+	scan, err := dst.StartImportScan(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := waitTransfer(t, dst, scan.ID, TransferReady)
+	if ready.Counts[transfer.CategoryNew] != 3 {
+		t.Fatalf("imported scan counts = %v, want 3 new items", ready.Counts)
+	}
+	if _, err := dst.StartImport(scan.ID, transfer.Choices{}); err != nil {
+		t.Fatal(err)
+	}
+	waitTransfer(t, dst, scan.ID, TransferDone)
+	importedItems, err := dst.lib.ListItems(library.FeedFilter{Limit: 20})
+	if err != nil || len(importedItems) != 3 {
+		t.Fatalf("importedItems = %d, err=%v (want 3)", len(importedItems), err)
+	}
+	gotKeys := map[string]bool{}
+	for _, it := range importedItems {
+		gotKeys[it.ItemKey] = true
+	}
+	for _, want := range []string{keys[0], keys[2], keys[4]} {
+		if !gotKeys[want] {
+			t.Fatalf("missing selected exported item %s in %v", want, gotKeys)
+		}
+	}
+	for _, unwanted := range []string{keys[1], keys[3]} {
+		if gotKeys[unwanted] {
+			t.Fatalf("unselected item %s should not have been exported", unwanted)
+		}
+	}
+
+	// Verify default 400-key chunking boundary on >400 selected item keys.
+	exportKeyChunkSize = 400
+	stub := &stubChunkListLib{itemsByKey: make(map[string]library.ItemMetadata, 850)}
+	largeKeys := make([]string, 0, 850)
+	for i := 0; i < 850; i++ {
+		k := fmt.Sprintf("bilibili:video:BV1c%07d", i)
+		largeKeys = append(largeKeys, k)
+		stub.itemsByKey[k] = library.ItemMetadata{ItemKey: k, PubTs: int64(1700000000 + (850 - i))}
+	}
+	gotAll, err := exportItems(stub, library.FeedFilter{ItemKeys: largeKeys})
+	if err != nil {
+		t.Fatalf("exportItems 850 keys: %v", err)
+	}
+	if len(gotAll) != 850 || stub.calls != 3 || stub.maxChunkSeen != 400 {
+		t.Fatalf("exportItems 850 keys = len:%d calls:%d maxChunk:%d (want 850 / 3 / 400)",
+			len(gotAll), stub.calls, stub.maxChunkSeen)
+	}
+	if gotAll[0].PubTs > gotAll[len(gotAll)-1].PubTs {
+		t.Fatalf("expected exportItems oldest-first order, got %d .. %d", gotAll[0].PubTs, gotAll[len(gotAll)-1].PubTs)
+	}
+}

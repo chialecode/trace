@@ -418,7 +418,18 @@ func (a *App) renderRouteHeaderActions(c *ui.Context) {
 		})
 	case RouteLibrary:
 		if !a.Transfer.ImportPage {
-			a.renderLibraryMoreMenu(c)
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				if a.LibrarySelectMode {
+					if AccentOutlinePillButton(c, "多选", "媒体库多选").Clicked() {
+						a.exitLibrarySelectMode()
+					}
+				} else {
+					if OutlinePillButton(c, "多选", "媒体库多选").Clicked() {
+						a.enterLibrarySelectMode()
+					}
+				}
+				a.renderLibraryMoreMenu(c)
+			})
 		}
 	case RouteTasks:
 		if a.effectiveTasksSection() != "downloads" {

@@ -118,7 +118,9 @@ type PlayerOverlayState struct {
 // DeleteConfirmState holds state for the library item deletion confirmation modal.
 type DeleteConfirmState struct {
 	Open        bool
+	Batch       bool
 	Item        library.ItemMetadata
+	TargetKeys  []string
 	Plan        library.DeletePlan
 	FileCount   int
 	TotalBytes  int64
@@ -148,12 +150,14 @@ type compactLibEntry struct {
 }
 
 type libraryPanelRow struct {
-	isSub     bool
-	sub       subscription.Subscription
-	author    library.ItemAuthor
-	site      string
-	uid       string
-	authorKey string
+	isSub      bool
+	sub        subscription.Subscription
+	author     library.ItemAuthor
+	site       string
+	uid        string
+	authorKey  string
+	itemCount  int
+	totalBytes int64
 }
 
 type libraryPanelSig struct {
@@ -163,6 +167,9 @@ type libraryPanelSig struct {
 	statsRev     int
 	authorsN     int
 	authorsFirst *library.ItemAuthor
+	siteFilter   string
+	subFilter    string
+	sortBySize   bool
 }
 
 // App manages the MyGo immediate-mode UI tree and state for TRACE.
@@ -546,14 +553,17 @@ type App struct {
 	// parse) and cached count, keyed "site:uid" (DEC-061).
 	accountWorks map[string]service.AccountWorks
 	// videoCacheFor is the creator page the open video came from (DEC-061).
-	videoCacheFor     videoCacheContext
-	douyinCacheFor    douyinCacheContext
-	weiboCacheFor     weiboCacheContext
-	xCacheFor         xCacheContext
-	libraryOffset     int
-	LibraryAuthorMenu bool
-	ExpandedItemKey   string
-	DeleteConfirm     DeleteConfirmState
+	videoCacheFor           videoCacheContext
+	douyinCacheFor          douyinCacheContext
+	weiboCacheFor           weiboCacheContext
+	xCacheFor               xCacheContext
+	libraryOffset           int
+	LibraryAuthorMenu       bool
+	LibrarySourceSortBySize bool
+	LibrarySelectMode       bool
+	LibrarySelectedKeys     map[string]bool
+	ExpandedItemKey         string
+	DeleteConfirm           DeleteConfirmState
 
 	// Tasks Page
 	TasksSection              string // "downloads" | "queue" | "conflicts" | "live" | "incidents" | "checks" | "transfers"
@@ -695,6 +705,7 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 		ImportSelectedKeys:  make(map[string]bool),
 		LibrarySiteFilter:   "all",
 		LibrarySort:         "pub_ts",
+		LibrarySelectedKeys: make(map[string]bool),
 		TasksSection:        "downloads",
 		ConflictBatchChoice: service.DefaultConflictChoice,
 		SettingsCategory:    "account",
@@ -1218,4 +1229,26 @@ func (a *App) View(c *ui.Context) {
 	if a.PlayerOverlay.Open {
 		a.renderPlayerOverlay(c, w, h)
 	}
+}
+
+// hasOpenModalOverlay reports whether any modal dialog or fullscreen media
+// overlay is currently open on top of the active route.
+func (a *App) hasOpenModalOverlay() bool {
+	return a.ConfirmLogoutOpen ||
+		a.Remote.ConfirmPushXOpen ||
+		a.DeleteConfirm.Open ||
+		(a.RestartConfirmOpen && a.updater != nil) ||
+		a.AddSubDialogOpen ||
+		a.SubLinks.Open ||
+		a.ImportSubModalOpen ||
+		a.RuleBatch.Open ||
+		a.MultiTagBatch.Open ||
+		a.SubscribePicker.Open ||
+		a.LibraryRefresh.Open ||
+		a.Transfer.ExportOpen ||
+		a.SubFile.ExportOpen ||
+		a.SubFile.ImportOpen ||
+		a.ConflictDiff.Open ||
+		a.ImageViewer.Open ||
+		a.PlayerOverlay.Open
 }

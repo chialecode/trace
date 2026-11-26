@@ -66,10 +66,176 @@ func (a *App) libraryTiles() []libraryTile {
 	return tiles
 }
 
+func (a *App) enterLibrarySelectMode() {
+	a.LibrarySelectMode = true
+	if a.LibrarySelectedKeys == nil {
+		a.LibrarySelectedKeys = make(map[string]bool)
+	}
+	a.ExpandedItemKey = ""
+	a.Transfer.MenuOpen = false
+}
+
+func (a *App) exitLibrarySelectMode() {
+	a.LibrarySelectMode = false
+	a.clearLibrarySelection()
+}
+
+func (a *App) clearLibrarySelection() {
+	if a.LibrarySelectedKeys != nil {
+		clear(a.LibrarySelectedKeys)
+	}
+}
+
+func (a *App) toggleLibraryItemSelection(itemKey string) {
+	itemKey = strings.TrimSpace(itemKey)
+	if itemKey == "" {
+		return
+	}
+	if a.LibrarySelectedKeys == nil {
+		a.LibrarySelectedKeys = make(map[string]bool)
+	}
+	if a.LibrarySelectedKeys[itemKey] {
+		delete(a.LibrarySelectedKeys, itemKey)
+	} else {
+		a.LibrarySelectedKeys[itemKey] = true
+	}
+}
+
+func (a *App) libraryVisibleItemKeys(tiles []libraryTile) []string {
+	keys := make([]string, 0, len(tiles))
+	seen := make(map[string]bool, len(tiles))
+	for _, t := range tiles {
+		if t.item.ItemKey == "" || seen[t.item.ItemKey] {
+			continue
+		}
+		seen[t.item.ItemKey] = true
+		keys = append(keys, t.item.ItemKey)
+	}
+	return keys
+}
+
+func (a *App) selectedLibraryItemKeys() []string {
+	if len(a.LibrarySelectedKeys) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(a.LibrarySelectedKeys))
+	seen := make(map[string]bool, len(a.LibrarySelectedKeys))
+	for _, it := range a.LibraryItems {
+		if a.LibrarySelectedKeys[it.ItemKey] && !seen[it.ItemKey] {
+			seen[it.ItemKey] = true
+			out = append(out, it.ItemKey)
+		}
+	}
+	var extra []string
+	for k, ok := range a.LibrarySelectedKeys {
+		if ok && k != "" && !seen[k] {
+			extra = append(extra, k)
+		}
+	}
+	if len(extra) > 1 {
+		sort.Strings(extra)
+	}
+	out = append(out, extra...)
+	return out
+}
+
+func (a *App) librarySelectedCount() int {
+	n := 0
+	for k, ok := range a.LibrarySelectedKeys {
+		if ok && k != "" {
+			n++
+		}
+	}
+	return n
+}
+
+func (a *App) librarySelectedStats() (count int, totalBytes int64) {
+	if len(a.LibrarySelectedKeys) == 0 {
+		return 0, 0
+	}
+	seen := make(map[string]bool, len(a.LibrarySelectedKeys))
+	for _, it := range a.LibraryItems {
+		if a.LibrarySelectedKeys[it.ItemKey] && !seen[it.ItemKey] {
+			seen[it.ItemKey] = true
+			count++
+			totalBytes += it.TotalBytes
+		}
+	}
+	for k, ok := range a.LibrarySelectedKeys {
+		if ok && k != "" && !seen[k] {
+			seen[k] = true
+			count++
+		}
+	}
+	return count, totalBytes
+}
+
+func (a *App) renderLibraryBatchBar(c *ui.Context, tiles []libraryTile) {
+	selectedCount, selectedBytes := a.librarySelectedStats()
+	visibleKeys := a.libraryVisibleItemKeys(tiles)
+	allLoadedSelected := len(visibleKeys) > 0
+	for _, k := range visibleKeys {
+		if !a.LibrarySelectedKeys[k] {
+			allLoadedSelected = false
+			break
+		}
+	}
+	summaryText := "已选 0 项"
+	if selectedCount > 0 {
+		summaryText = fmt.Sprintf("已选 %d 项 · %s", selectedCount, FormatBytes(selectedBytes))
+	}
+	ui.Row(c).
+		Label("媒体库批量操作栏").
+		FillWidth().
+		Padding(8, 16).
+		Gap(8).
+		Wrap().
+		Shrink(0).
+		AlignItems(ui.Center).
+		Justify(ui.SpaceBetween).
+		Background(ColorBgPanel).
+		BorderWidth(0, 0, 1, 0).
+		BorderColor(ColorBorder).
+		ClipX().
+		Children(func() {
+			ui.Text(c, summaryText).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+			ui.Row(c).Gap(6).Wrap().AlignItems(ui.Center).ClipX().Children(func() {
+				if allLoadedSelected {
+					if OutlinePillButton(c, "取消全选", "媒体库取消全选").Clicked() {
+						a.clearLibrarySelection()
+					}
+				} else {
+					if OutlinePillButton(c, "全选已加载", "媒体库全选已加载").Disabled(len(visibleKeys) == 0).Clicked() && len(visibleKeys) > 0 {
+						if a.LibrarySelectedKeys == nil {
+							a.LibrarySelectedKeys = make(map[string]bool, len(visibleKeys))
+						}
+						for _, k := range visibleKeys {
+							a.LibrarySelectedKeys[k] = true
+						}
+					}
+				}
+				if AccentPillButton(c, "批量导出", "媒体库批量导出").Disabled(selectedCount == 0).Clicked() && selectedCount > 0 {
+					a.openBatchExportDialog()
+				}
+				if DangerOutlinePillButton(c, "批量删除", "媒体库批量删除").Disabled(selectedCount == 0).Clicked() && selectedCount > 0 {
+					a.requestLibraryBatchDelete()
+				}
+				if OutlinePillButton(c, "退出多选", "退出多选").Clicked() {
+					a.exitLibrarySelectMode()
+				}
+			})
+		})
+}
+
 func (a *App) renderLibraryRoute(c *ui.Context) {
 	if a.Transfer.ImportPage {
 		a.renderImportPage(c)
 		return
+	}
+	if a.LibrarySelectMode && !a.hasOpenModalOverlay() && !a.Transfer.MenuOpen && a.ExpandedItemKey == "" {
+		if c.Shortcut(0, ui.KeyEscape) {
+			a.exitLibrarySelectMode()
+		}
 	}
 	// The kinds and sources are in the context panel; a narrow window
 	// without it has them here (DEC-039).
@@ -80,11 +246,11 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 			{Key: "video", Text: "视频", AccessLabel: "筛选类型：视频"},
 			{Key: "live", Text: "直播录像", AccessLabel: "筛选类型：直播录制"},
 			{Key: "forward", Text: "转发", AccessLabel: "筛选类型：转发"},
-		}, func(key string) { a.LibraryKindFilter = key; a.reloadLibraryItems() })
+		}, func(key string) { a.LibraryKindFilter = key; a.selectLibraryFilter() })
 		ui.Row(c).FillWidth().Padding(6, 16, 0, 16).Children(func() {
 			renderThreeSegmentSiteFilter(c, "媒体库站点筛选：", a.LibrarySiteFilter, func(next string) {
 				a.LibrarySiteFilter = normalizeSiteFilter(next)
-				a.reloadLibraryItems()
+				a.selectLibraryFilter()
 			})
 		})
 	}
@@ -98,10 +264,12 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 					st.librarySearchDirty = true
 				} else {
 					st.librarySearchDirty = false
+					a.clearLibrarySelection()
 					a.reloadLibraryItems()
 				}
 			} else if st.librarySearchDirty && !input.Composing() {
 				st.librarySearchDirty = false
+				a.clearLibrarySelection()
 				a.reloadLibraryItems()
 			}
 			a.renderLibraryRefreshButton(c)
@@ -110,55 +278,66 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 			}
 		})
 		if a.LibraryAuthorMenu && !a.panelShown {
-			ui.Scroll(c).FillWidth().Height(220).Gap(4).Children(func() {
-				if OutlinePillButton(c, "全部作者", "清除UP主筛选").Clicked() {
-					a.LibraryCreatorMid = 0
-					a.LibraryAuthorKey = ""
-					a.LibrarySubFilter = ""
-					a.LibraryAuthorMenu = false
-					a.reloadLibraryItems()
-				}
-				ownedKeys := make(map[string]bool)
-				ownedMids := make(map[int64]bool)
-				for _, sub := range a.Subscriptions {
-					for _, account := range sub.Accounts {
-						normSite := normalizeSiteIDUI(account.Site)
-						uid := strings.TrimSpace(account.UID)
-						if uid != "" {
-							ownedKeys[normSite+":"+uid] = true
-						}
-						if normSite == "bilibili" {
-							if id, err := strconv.ParseInt(uid, 10, 64); err == nil && id > 0 {
-								ownedMids[id] = true
-							}
-						}
-					}
-					if AccentOutlinePillButton(c, "订阅："+sub.Name, "媒体库订阅筛选："+sub.ID).Clicked() {
-						a.LibrarySubFilter = sub.ID
+			panelRows := a.libraryPanelRows()
+			ui.Column(c).FillWidth().Gap(6).ClipX().Children(func() {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
+					if OutlinePillButton(c, "全部作者", "清除UP主筛选").Clicked() {
 						a.LibraryCreatorMid = 0
 						a.LibraryAuthorKey = ""
+						a.LibrarySubFilter = ""
 						a.LibraryAuthorMenu = false
-						a.reloadLibraryItems()
+						a.selectLibraryFilter()
 					}
-				}
-				for _, author := range stats.Authors {
-					aSite := normalizeSiteIDUI(author.Site)
-					aUID := strings.TrimSpace(author.UID)
-					if aUID == "" && author.Mid > 0 {
-						aUID = strconv.FormatInt(author.Mid, 10)
-					}
-					aKey := aSite + ":" + aUID
-					if ownedKeys[aKey] || (aSite == "bilibili" && ownedMids[author.Mid]) {
-						continue
-					}
-					btnLabel := fmt.Sprintf("按UP主筛选 %d", author.Mid)
-					if aSite != "bilibili" || author.Mid <= 0 {
-						btnLabel = "按作者筛选 " + aKey
-					}
-					ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-						// Offline library view: use local avatar or initial fallback only (0 remote requests).
-						a.renderAccountAvatar(c, aSite, author.Name, aUID, author.Mid, 28, false, "", nil)
-						if OutlinePillButton(c, author.Name, btnLabel).Clicked() {
+					a.renderLibrarySourceSortToggle(c)
+				})
+				ui.Scroll(c).FillWidth().Height(220).Gap(4).Children(func() {
+					for _, row := range panelRows {
+						usageText := librarySourceUsageText(row.itemCount, row.totalBytes)
+						if row.isSub {
+							sub := row.sub
+							active := a.LibrarySubFilter == sub.ID
+							pSite, pUID := subscriptionPrimarySiteAndUID(sub)
+							if panelItem(c, "媒体库订阅筛选："+sub.ID, active, func() {
+								a.renderOfflineAccountAvatar(c, pSite, sub.Name, pUID, sub.Mid, 24, "", nil)
+								ui.Column(c).Grow(1).Gap(1).ClipX().Children(func() {
+									nameCol := ColorTextMain
+									if active {
+										nameCol = ColorAccent
+									}
+									ui.Text(c, "订阅："+sub.Name).FontSize(13).FontWeight(500).TextColor(nameCol).SingleLine()
+									ui.Text(c, usageText).FontSize(11).TextColor(ColorTextMuted).SingleLine()
+								})
+							}) {
+								a.LibrarySubFilter = sub.ID
+								a.LibraryCreatorMid = 0
+								a.LibraryAuthorKey = ""
+								a.LibraryAuthorMenu = false
+								a.selectLibraryFilter()
+							}
+							continue
+						}
+						author := row.author
+						aSite := row.site
+						aKey := row.authorKey
+						btnLabel := fmt.Sprintf("按UP主筛选 %d", author.Mid)
+						active := aSite == "bilibili" && author.Mid > 0 && a.LibraryCreatorMid == author.Mid && a.LibraryAuthorKey == ""
+						if aSite != "bilibili" || author.Mid <= 0 {
+							btnLabel = "按作者筛选 " + aKey
+							active = a.LibraryAuthorKey == aKey
+						} else if a.LibraryAuthorKey == aKey {
+							active = true
+						}
+						if panelItem(c, btnLabel, active, func() {
+							a.renderOfflineAccountAvatar(c, aSite, author.Name, row.uid, author.Mid, 24, "", nil)
+							ui.Column(c).Grow(1).Gap(1).ClipX().Children(func() {
+								nameCol := ColorTextMain
+								if active {
+									nameCol = ColorAccent
+								}
+								ui.Text(c, author.Name).FontSize(13).FontWeight(500).TextColor(nameCol).SingleLine()
+								ui.Text(c, usageText).FontSize(11).TextColor(ColorTextMuted).SingleLine()
+							})
+						}) {
 							if aSite == "bilibili" && author.Mid > 0 {
 								a.LibraryCreatorMid = author.Mid
 								a.LibraryAuthorKey = ""
@@ -168,16 +347,20 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 							}
 							a.LibrarySubFilter = ""
 							a.LibraryAuthorMenu = false
-							a.reloadLibraryItems()
+							a.selectLibraryFilter()
 						}
-					})
-				}
+					}
+				})
 			})
 		}
 		if !a.panelShown {
 			ui.Text(c, fmt.Sprintf("共 %d 项缓存 · 占用 %s", stats.Items, FormatBytes(stats.Bytes))).FontSize(12).TextColor(ColorTextMuted)
 		}
 	})
+	tiles := a.libraryTiles()
+	if a.LibrarySelectMode {
+		a.renderLibraryBatchBar(c, tiles)
+	}
 	if a.LibraryError != "" {
 		ui.Box(c).FillWidth().Padding(8, 16, 0, 16).Children(func() {
 			renderErrorBanner(c, "", a.LibraryError, func() {
@@ -187,7 +370,6 @@ func (a *App) renderLibraryRoute(c *ui.Context) {
 			})
 		})
 	}
-	tiles := a.libraryTiles()
 	if len(tiles) == 0 {
 		ui.Column(c).FillWidth().Grow(1).Padding(40, 16).Gap(10).Center().Children(func() {
 			ui.Text(c, "还没有符合筛选的媒体").FontSize(16).FontWeight(600).TextColor(ColorTextMain)
@@ -256,6 +438,7 @@ func (a *App) renderLibraryTile(c *ui.Context, tile libraryTile, thumbSize float
 		tileKey += ":" + tile.file.Path
 	}
 	menuOpen := a.ExpandedItemKey == tileKey || (tile.index == 0 && a.ExpandedItemKey == item.ItemKey)
+	selected := a.LibrarySelectMode && a.LibrarySelectedKeys[item.ItemKey]
 
 	ui.Column(c).Grow(1).Basis(0).Gap(8).ClipX().Children(func() {
 		label := "媒体缩略图 " + tileKey
@@ -264,9 +447,34 @@ func (a *App) renderLibraryTile(c *ui.Context, tile libraryTile, thumbSize float
 		button.Children(func() {
 			// Everything in the library is cached: no status dot (DEC-039).
 			a.renderMediaThumb(c, item.ItemKey, rel, item.Title, FormatDuration(tile.file.Duration), "", tile.video, 0, thumbSize)
+			if a.LibrarySelectMode {
+				if selected {
+					ui.Box(c).Absolute().Left(0).Top(0).Right(0).Bottom(0).Radius(12).
+						Background(ColorAccent.Alpha(0.10)).
+						Border(2.5, ColorAccent)
+				}
+				badge := ui.Box(c).Absolute().Top(8).Left(8).Size(22, 22).Radius(6)
+				if selected {
+					badge.Label("已选媒体："+tileKey).Background(ColorAccent).Border(1.5, ColorWhite)
+					badge.Draw(func(p *ui.Painter, r ui.Rect) {
+						s := func(v float32) float32 { return v * r.W / 18.0 }
+						mark := (&ui.Path{}).
+							MoveTo(r.X+s(4.2), r.Y+s(9.2)).
+							LineTo(r.X+s(7.6), r.Y+s(12.6)).
+							LineTo(r.X+s(13.8), r.Y+s(5.6))
+						p.StrokePath(mark, 2.2, ColorWhite)
+					})
+				} else {
+					badge.Label("未选媒体："+tileKey).Background(ui.RGBA(0, 0, 0, 0.36)).Border(1.5, ColorWhite)
+				}
+			}
 		})
 		if button.Clicked() {
-			a.openLibraryTile(tile)
+			if a.LibrarySelectMode {
+				a.toggleLibraryItemSelection(item.ItemKey)
+			} else {
+				a.openLibraryTile(tile)
+			}
 		}
 
 		authorLine := item.Author.Name
@@ -283,30 +491,40 @@ func (a *App) renderLibraryTile(c *ui.Context, tile libraryTile, thumbSize float
 			ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 				title := ui.ButtonBase(c).Label("打开媒体：" + tileKey).FillWidth().Justify(ui.Start).AlignItems(ui.Start)
 				title.Children(func() {
-					ui.Text(c, item.Title).FontSize(14).LineHeight(LineHeightHeading).FontWeight(600).MaxLines(2).TextColor(ColorTextMain)
+					titleCol := ColorTextMain
+					if selected {
+						titleCol = ColorAccent
+					}
+					ui.Text(c, item.Title).FontSize(14).LineHeight(LineHeightHeading).FontWeight(600).MaxLines(2).TextColor(titleCol)
 				})
 				if title.Clicked() {
-					a.openLibraryTile(tile)
+					if a.LibrarySelectMode {
+						a.toggleLibraryItemSelection(item.ItemKey)
+					} else {
+						a.openLibraryTile(tile)
+					}
 				}
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(4).ClipX().Children(func() {
 					ui.Text(c, authorLine).FontSize(12).SingleLine().TextColor(ColorTextMuted).Shrink(1)
 					renderSiteSmallBadgeWithDot(c, item.Site, "媒体库站点："+tileKey)
 				})
 			})
-			open := menuOpen
-			MoreMenuButton(c, "媒体更多："+tileKey, 28, &open, func(m *ui.Menu) {
-				if m.Item("详情").Chosen() {
-					a.OpenLibraryItemDetail(item)
-				}
-				if m.Item("在资源管理器中显示").Chosen() {
-					a.showError(a.backend.OpenItemFolder(item.ItemKey))
-				}
-				m.Separator()
-				if m.Item("删除").Danger().Chosen() {
-					a.requestLibraryDelete(item)
-				}
-			})
-			keyedMenuOpen(&a.ExpandedItemKey, tileKey, open)
+			if !a.LibrarySelectMode {
+				open := menuOpen
+				MoreMenuButton(c, "媒体更多："+tileKey, 28, &open, func(m *ui.Menu) {
+					if m.Item("详情").Chosen() {
+						a.OpenLibraryItemDetail(item)
+					}
+					if m.Item("在资源管理器中显示").Chosen() {
+						a.showError(a.backend.OpenItemFolder(item.ItemKey))
+					}
+					m.Separator()
+					if m.Item("删除").Danger().Chosen() {
+						a.requestLibraryDelete(item)
+					}
+				})
+				keyedMenuOpen(&a.ExpandedItemKey, tileKey, open)
+			}
 		})
 	})
 }
@@ -331,6 +549,45 @@ func (a *App) requestLibraryDelete(item library.ItemMetadata) {
 	a.DeleteConfirm = DeleteConfirmState{
 		Open:        true,
 		Item:        item,
+		TargetKeys:  append([]string(nil), plan.TargetKeys...),
+		Plan:        plan,
+		FileCount:   len(plan.RegisteredFiles),
+		TotalBytes:  total,
+		DeleteFiles: true,
+	}
+}
+
+// requestLibraryBatchDelete builds a unified DeletePlan for all selected
+// library items (handling shared referenced videos across the entire batch)
+// and opens the consolidated confirmation modal.
+func (a *App) requestLibraryBatchDelete() {
+	keys := a.selectedLibraryItemKeys()
+	if len(keys) == 0 {
+		return
+	}
+	plan, err := a.backend.PlanDeleteBatch(keys)
+	if err != nil {
+		a.showError(err)
+		return
+	}
+	loadedBytes := make(map[string]int64, len(a.LibraryItems))
+	for _, it := range a.LibraryItems {
+		loadedBytes[it.ItemKey] = it.TotalBytes
+	}
+	var total int64
+	for _, key := range plan.ItemKeys {
+		if b, ok := loadedBytes[key]; ok {
+			total += b
+			continue
+		}
+		if ref, ok, err := a.backend.GetLibraryItemMetaOnly(key); err == nil && ok {
+			total += ref.TotalBytes
+		}
+	}
+	a.DeleteConfirm = DeleteConfirmState{
+		Open:        true,
+		Batch:       true,
+		TargetKeys:  append([]string(nil), plan.TargetKeys...),
 		Plan:        plan,
 		FileCount:   len(plan.RegisteredFiles),
 		TotalBytes:  total,

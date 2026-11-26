@@ -1797,11 +1797,17 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 		{
 			Name: "library",
 			Setup: func() {
+				app.DeleteConfirm.Open = false
+				app.Transfer.ExportOpen = false
+				app.LibrarySelectMode = false
+				app.LibrarySelectedKeys = map[string]bool{}
+				app.LibrarySourceSortBySize = false
 				app.LibrarySiteFilter = "all"
 				app.Navigate(ui.RouteLibrary)
 				app.ExpandedItemKey = savedDynamicItem.ItemKey
 			},
 			RequiredLabels: []string{
+				"媒体库多选",
 				"媒体库站点筛选：全部",
 				"媒体库站点筛选：B 站",
 				"媒体库站点筛选：抖音",
@@ -1813,16 +1819,49 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"媒体库站点：" + savedWeiboPost.ItemKey,
 				"媒体库站点：" + savedXPost.ItemKey,
 			},
+			PanelRequiredLabels: []string{"媒体库来源按占用空间排序"},
+		},
+		{
+			Name: "library-multiselect",
+			Setup: func() {
+				app.DeleteConfirm.Open = false
+				app.Transfer.ExportOpen = false
+				app.LibrarySiteFilter = "all"
+				app.LibrarySourceSortBySize = true
+				app.Navigate(ui.RouteLibrary)
+				app.ExpandedItemKey = ""
+				app.LibrarySelectMode = true
+				app.LibrarySelectedKeys = map[string]bool{
+					savedDynamicItem.ItemKey: true,
+					savedDouyinVideo.ItemKey: true,
+				}
+			},
+			RequiredLabels: []string{
+				"媒体库多选",
+				"媒体库批量操作栏",
+				"媒体库批量导出",
+				"媒体库批量删除",
+				"退出多选",
+				"已选媒体：" + savedDynamicItem.ItemKey,
+				"已选媒体：" + savedDouyinVideo.ItemKey,
+			},
+			PanelRequiredLabels: []string{"媒体库来源按占用空间排序"},
+			ForbiddenLabels:     []string{"媒体更多：" + savedDynamicItem.ItemKey},
 		},
 		{
 			Name: "library-delete",
 			Setup: func() {
+				app.Transfer.ExportOpen = false
+				app.LibrarySelectMode = false
+				app.LibrarySelectedKeys = map[string]bool{}
+				app.LibrarySourceSortBySize = false
 				app.Navigate(ui.RouteLibrary)
 				app.ExpandedItemKey = ""
 				plan, _ := b.PlanDelete(savedItem.ItemKey)
 				app.DeleteConfirm = ui.DeleteConfirmState{
 					Open:        true,
 					Item:        savedItem,
+					TargetKeys:  plan.TargetKeys,
 					Plan:        plan,
 					FileCount:   len(plan.RegisteredFiles),
 					TotalBytes:  savedItem.TotalBytes,
@@ -1831,9 +1870,67 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 		},
 		{
+			Name: "library-batch-delete",
+			Setup: func() {
+				app.Transfer.ExportOpen = false
+				app.LibrarySiteFilter = "all"
+				app.LibrarySourceSortBySize = true
+				app.Navigate(ui.RouteLibrary)
+				app.ExpandedItemKey = ""
+				app.LibrarySelectMode = true
+				app.LibrarySelectedKeys = map[string]bool{
+					savedDynamicItem.ItemKey: true,
+					savedDouyinVideo.ItemKey: true,
+				}
+				plan, _ := b.PlanDeleteBatch([]string{savedDynamicItem.ItemKey, savedDouyinVideo.ItemKey})
+				var totalBytes int64
+				for _, k := range plan.ItemKeys {
+					if it, ok, err := b.GetLibraryItemMetaOnly(k); err == nil && ok {
+						totalBytes += it.TotalBytes
+					}
+				}
+				app.DeleteConfirm = ui.DeleteConfirmState{
+					Open:        true,
+					Batch:       true,
+					TargetKeys:  plan.TargetKeys,
+					Plan:        plan,
+					FileCount:   len(plan.RegisteredFiles),
+					TotalBytes:  totalBytes,
+					DeleteFiles: true,
+				}
+			},
+			RequiredLabels: []string{"删除确认对话框", "确认删除", "取消删除"},
+			RequiredTexts:  []string{"批量删除缓存确认", "已选择 2 个媒体库条目"},
+		},
+		{
+			Name: "library-batch-export",
+			Setup: func() {
+				app.DeleteConfirm.Open = false
+				app.LibrarySiteFilter = "all"
+				app.LibrarySourceSortBySize = true
+				app.Navigate(ui.RouteLibrary)
+				app.ExpandedItemKey = ""
+				app.LibrarySelectMode = true
+				app.LibrarySelectedKeys = map[string]bool{
+					savedDynamicItem.ItemKey: true,
+					savedDouyinVideo.ItemKey: true,
+				}
+				app.Transfer.ExportOpen = true
+				app.Transfer.ExportScope = "selected"
+				app.Transfer.ExportPath = `E:\trace-export-selected`
+				app.Transfer.ExportErr = ""
+			},
+			RequiredLabels: []string{"导出媒体库对话框", "导出范围", "开始导出"},
+			RequiredTexts:  []string{"导出媒体库", "已选 2 项"},
+		},
+		{
 			Name: "tasks",
 			Setup: func() {
 				app.DeleteConfirm.Open = false
+				app.Transfer.ExportOpen = false
+				app.LibrarySelectMode = false
+				app.LibrarySelectedKeys = map[string]bool{}
+				app.LibrarySourceSortBySize = false
 				seedRecentAndLive()
 				app.Navigate(ui.RouteTasks)
 				app.TasksSection = "downloads"
