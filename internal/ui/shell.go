@@ -317,14 +317,18 @@ func (a *App) renderSubscriptionsPanel(c *ui.Context) {
 	ui.Column(c).Fill().ClipX().Children(func() {
 		panelTitle(c, "订阅")
 		ui.Column(c).FillWidth().Padding(0, 8, 4, 8).Shrink(0).Children(func() {
-			if panelIconItem(c, "grid", "全部订阅", "订阅侧栏：全部订阅", !a.SubDetailOpen && !a.SubAccountsOpen) {
+			if panelIconItem(c, "grid", "全部订阅", "订阅侧栏：全部订阅", !a.SubDetailOpen && !a.SubAccountsOpen && !a.SubChecksOpen) {
 				a.SubDetailOpen = false
 				a.SubAccountsOpen = false
+				a.SubChecksOpen = false
 				a.SubManageMenuOpen = false
 				a.SubManageModalMode = ""
 			}
 			if panelIconItem(c, "user", "全部账号", "订阅侧栏：全部账号", !a.SubDetailOpen && a.SubAccountsOpen) {
 				a.openSubscriptionAccounts()
+			}
+			if panelIconItem(c, "clock", "检查计划", "订阅侧栏：检查计划", !a.SubDetailOpen && a.SubChecksOpen) {
+				a.openSubscriptionChecks()
 			}
 			if len(a.Subscriptions) > 0 {
 				panelSection(c, fmt.Sprintf("订阅 · %d", len(a.Subscriptions)))

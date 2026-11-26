@@ -1088,8 +1088,7 @@ func TestXMineSubscriptionsNoLiveCheckPlanAndFollowImport(t *testing.T) {
 		t.Fatal("X subscription account row missing @handle or '帖子' noun")
 	}
 
-	app.Navigate(RouteTasks)
-	app.TasksSection = "checks"
+	app.OpenSubscriptionChecks()
 	tt.Frame()
 	wantCap := fmt.Sprintf("X %d 个", subscription.DefaultXRoundAccountCap)
 	if !tt.HasText(wantCap) {

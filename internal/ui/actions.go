@@ -100,6 +100,7 @@ func (a *App) saveSettings() {
 		return
 	}
 	a.DraftSettings = updated
+	a.checkPlanAt = time.Time{}
 }
 
 func normalizeImportSite(siteID string) string {

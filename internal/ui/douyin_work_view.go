@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -243,6 +244,11 @@ func (a *App) renderDouyinWorkRoute(c *ui.Context, viewportHeight float32) {
 							a.showError(a.backend.Desktop().OpenExternalURL(canonicalURL))
 						}
 						if cachedItem != nil && itemKey != "" {
+							if !cachedItem.IsArchivedSnapshot() {
+								if m.Item("强制重新下载").Chosen() {
+									a.openForceRecacheConfirm(itemKey, firstNonEmptyStrUI(title, desc, awemeID))
+								}
+							}
 							if m.Item("打开文件夹").Chosen() {
 								a.showError(a.backend.OpenItemFolder(itemKey))
 							}
@@ -340,21 +346,53 @@ func (a *App) renderDouyinWorkRoute(c *ui.Context, viewportHeight float32) {
 				if durationSec > 0 {
 					durText = FormatDuration(durationSec)
 				}
-				ui.Row(c).FillWidth().Justify(ui.Center).Children(func() {
+				hasLocalVideo := cachedItem != nil && (itemHasVideoRole(*cachedItem) || (cachedItem.DouyinVideo != nil && strings.TrimSpace(cachedItem.DouyinVideo.File) != ""))
+				canPreviewVideo := !offline && !hasLocalVideo && work != nil &&
+					kind != "note" && kind != "unsupported" && !uncacheable &&
+					strings.TrimSpace(work.VideoURL) != ""
+				ui.Column(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
 					coverBtn := ui.ButtonBase(c).
 						Label("抖音视频封面播放").
 						Padding(0).
 						Radius(12).
 						Clip().
 						Children(func() {
-							a.renderMediaThumb(c, itemKey, relCover, headline, durText, "", cachedItem != nil, dispW, dispH, coverURL)
+							a.renderMediaThumb(c, itemKey, relCover, headline, durText, "", hasLocalVideo || cachedItem != nil || canPreviewVideo, dispW, dispH, coverURL)
 						})
 					if coverBtn.Clicked() {
-						if cachedItem != nil {
+						if hasLocalVideo {
+							a.OpenPlayerOverlay(*cachedItem)
+						} else if canPreviewVideo {
+							var cacheAct previewCacheAction
+							if awemeID != "" {
+								idCopy := awemeID
+								forUID, forName := a.douyinWorkCacheFor(idCopy)
+								backend := a.backend
+								cacheAct = previewCacheAction{
+									ItemKey:    itemKey,
+									PendingKey: "cache-douyin:" + idCopy,
+									Enqueue: func(ctx context.Context) error {
+										if backend == nil {
+											return fmt.Errorf("后端服务未初始化")
+										}
+										if forUID != "" {
+											_, err := backend.CacheDouyinWorkFor(ctx, idCopy, forUID, forName)
+											return err
+										}
+										_, err := backend.CacheDouyinWork(ctx, idCopy)
+										return err
+									},
+								}
+							}
+							a.openRemoteVideoPreviewWithCache("douyin", headline, work.VideoURL, false, cacheAct)
+						} else if cachedItem != nil {
 							a.OpenPlayerOverlay(*cachedItem)
 						} else if coverURL != "" {
 							a.OpenImageViewer([]string{coverURL}, nil, 0)
 						}
+					}
+					if canPreviewVideo {
+						ui.Text(c, "点击封面临时预览，缓存后可离线观看").Label("抖音视频预览提示").FontSize(12).TextColor(ColorInfoBlue).SingleLine()
 					}
 				})
 			}

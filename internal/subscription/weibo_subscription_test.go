@@ -1193,7 +1193,7 @@ func TestWeiboFollowingImportPreservesExistingAndExcludesAutoRecord(t *testing.T
 	}
 
 	sub1, acc1, ok := mgr.GetAccount("weibo", "1000000001")
-	if !ok || sub1.Name != "合成博主甲" || acc1.Face != "https://wx1.sinaimg.cn/large/face1.jpg" || sub1.Rules.ScheduledCheck {
+	if !ok || sub1.Name != "合成博主甲" || acc1.Face != "https://wx1.sinaimg.cn/large/face1.jpg" || !slices.Equal(sub1.Tags, DefaultNewSubTags()) || sub1.Rules.AutoRecord {
 		t.Fatalf("unexpected imported Weibo sub1: sub=%+v acc=%+v ok=%v", sub1, acc1, ok)
 	}
 	sub2, acc2, ok := mgr.GetAccount("weibo", "1000000002")

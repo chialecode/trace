@@ -253,3 +253,22 @@ func (a *App) renderDeleteConfirmOverlay(c *ui.Context, w, h float32) {
 		})
 	})
 }
+
+func (a *App) renderForceRecacheConfirmOverlay(c *ui.Context, w, h float32) {
+	renderConfirmDialog(
+		c,
+		&a.ForceRecacheConfirm.Open,
+		"关闭强制重新下载确认对话框（点击空白处）",
+		"强制重新下载确认对话框",
+		"强制重新下载",
+		"将从源站重新完整下载并覆盖本机已有文件；若源站已删除或失效，仍会保留本机原文件不覆盖。",
+		"取消",
+		"取消强制重新下载",
+		"确认重新下载",
+		"确认强制重新下载",
+		true,
+		func() {
+			a.confirmForceRecache()
+		},
+	)
+}

@@ -86,10 +86,13 @@ func (m *Manager) EnqueueWeiboWork(ctx context.Context, req WeiboWorkEnqueueRequ
 		ctx = site.WithAutomaticRequests(ctx, "download")
 	}
 	var reqPlanMode string
+	var reqPlanForce bool
 	if req.Plan != nil {
 		reqPlanMode = req.Plan.ConflictResolution
+		reqPlanForce = req.Plan.ForceOverwrite
 	}
 	mode := effectiveConflictResolution(ctx, reqPlanMode)
+	forceOverwrite := effectiveForceOverwrite(ctx, source, reqPlanForce)
 
 	var plan WorkDownloadPlan
 	switch {
@@ -129,6 +132,7 @@ func (m *Manager) EnqueueWeiboWork(ctx context.Context, req WeiboWorkEnqueueRequ
 	if mode != "" {
 		plan.ConflictResolution = mode
 	}
+	plan.ForceOverwrite = forceOverwrite
 
 	itemKind, rawID, itemKey, plannerTarget, err := resolveWeiboIdentity(req.Kind, plan.ItemKey, plan.TargetID)
 	if err != nil {
@@ -191,12 +195,16 @@ func (m *Manager) EnqueueWeiboWork(ctx context.Context, req WeiboWorkEnqueueRequ
 		ItemDir:            itemDir,
 		Via:                via,
 		ConflictResolution: mode,
+		ForceOverwrite:     forceOverwrite,
 	}, &plan)
 	if err != nil {
 		return Task{}, err
 	}
 	if mode != "" {
 		m.storeTaskResolutionAndPages(t.TaskID, mode, nil)
+	}
+	if forceOverwrite {
+		m.storeTaskForceOverwrite(t.TaskID, true)
 	}
 
 	m.notifyWake()
@@ -240,6 +248,9 @@ func (m *Manager) consumeInitialOrFetchWeiboPlan(ctx context.Context, taskID, ta
 	if hasInitial && initial.ConflictResolution != "" && plan.ConflictResolution == "" {
 		plan.ConflictResolution = initial.ConflictResolution
 	}
+	if hasInitial && initial.ForceOverwrite {
+		plan.ForceOverwrite = true
+	}
 	plan.Site = site.Weibo
 	plan.Transport = normalizeWeiboMediaTransport(plan.Transport)
 	return plan, planner, nil
@@ -266,6 +277,12 @@ func (m *Manager) executeWeiboTask(ctx context.Context, t *Task) error {
 	mode = effectiveConflictResolution(ctx, t.ConflictResolution, storedMode, plan.ConflictResolution)
 	plan.ConflictResolution = mode
 	t.ConflictResolution = mode
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite, m.taskForceOverwrite(t.TaskID), plan.ForceOverwrite)
+	plan.ForceOverwrite = forceOverwrite
+	t.ForceOverwrite = forceOverwrite
+	if forceOverwrite {
+		ctx = WithForceOverwrite(ctx)
+	}
 	normUID, err := site.NormalizeUID(site.Weibo, firstNonEmptyStr(plan.AuthorUID, t.AuthorUID))
 	if err != nil {
 		return &site.Error{
@@ -372,12 +389,13 @@ func (m *Manager) executeWeiboSingleVideoTask(
 
 	hasProtectedLocal := exists && localHasProtectedContent(previous)
 	mode := effectiveConflictResolution(ctx, t.ConflictResolution, plan.ConflictResolution)
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite, plan.ForceOverwrite)
 	resolvedKey := firstNonEmptyStr(plan.ItemKey, t.ItemKey, library.CanonicalItemKey(string(site.Weibo), itemKind, rawID))
 	isConflict := false
 	if hasProtectedLocal {
 		// Monotonic Origin protection before degraded check: if local had valid fromOrigin video
-		// and remote origin vanished on a safe re-check (mode == ""), preserve local without error.
-		if mode == "" && previous.Origin != nil && !previous.Origin.Unavailable && plan.OriginUnavailable && mediaIsValid(previous, "video.mp4") {
+		// and remote origin vanished on a safe re-check (mode == "" && !forceOverwrite), preserve local without error.
+		if mode == "" && !forceOverwrite && previous.Origin != nil && !previous.Origin.Unavailable && plan.OriginUnavailable && mediaIsValid(previous, "video.mp4") {
 			// Safe monotonic preservation below.
 		} else {
 			notice, conflict, degErr := classifyWorkPlanVsLocal(previous, plan, resolvedKey, rawID, t)
@@ -385,9 +403,12 @@ func (m *Manager) executeWeiboSingleVideoTask(
 				return degErr
 			}
 			isConflict = conflict
-			if isConflict && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
+			if isConflict && !forceOverwrite && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
 				m.emitConflict(notice)
 				return ErrConflictDetected
+			}
+			if forceOverwrite && mode == "" {
+				mode = ConflictResolveUseRemote
 			}
 		}
 	}
@@ -395,7 +416,7 @@ func (m *Manager) executeWeiboSingleVideoTask(
 	editAdvanced := (plan.EditCount > 0 && plan.EditCount > previous.EditCount) ||
 		(plan.EditTs > 0 && previous.EditTs > 0 && plan.EditTs > previous.EditTs)
 	desc := plan.Desc
-	if hasProtectedLocal && !isConflict {
+	if hasProtectedLocal && !isConflict && !forceOverwrite {
 		desc = preserveMonotonicText(firstNonEmptyStr(previous.Text, previous.Desc), desc, editAdvanced)
 	}
 	title := firstNonEmptyStr(plan.Title, desc, t.Title, "微博视频 "+rawID)
@@ -439,7 +460,7 @@ func (m *Manager) executeWeiboSingleVideoTask(
 		var v2Media []library.MediaFile
 		var v2Missing []library.MissingRecord
 		reusedCover := false
-		if !isConflict {
+		if !isConflict && !forceOverwrite {
 			for _, mf := range previous.Media {
 				if mf.Role == "cover" && mediaIsValid(previous, mf.Path) {
 					if copied, rErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, "cover", stageDir); rErr == nil {
@@ -468,7 +489,7 @@ func (m *Manager) executeWeiboSingleVideoTask(
 		sameMediaID := previous.DouyinVideo != nil && previous.DouyinVideo.MediaID != "" && plan.MediaID != "" &&
 			library.SanitizeMediaToken(previous.DouyinVideo.MediaID) == library.SanitizeMediaToken(plan.MediaID)
 
-		if !isConflict && (!planUpgradesSingleVideo(previous, plan) || len(plan.VideoURLs) == 0) && mediaIsValid(previous, videoRel) {
+		if !isConflict && !forceOverwrite && (!planUpgradesSingleVideo(previous, plan) || len(plan.VideoURLs) == 0) && mediaIsValid(previous, videoRel) {
 			copied, cErr := copyLocalMediaToStageAs(previous, videoRel, videoRel, "video", stageDir)
 			if cErr != nil {
 				return cErr
@@ -490,7 +511,7 @@ func (m *Manager) executeWeiboSingleVideoTask(
 			})
 			vidMedia, vErr := m.cacheWeiboSingleMP4(ctx, &stageSub, stageDir, previous, false, "video", videoRel, plan.VideoURLs, plan.DurationSec, plan.Width, plan.Height, plan.Transport, refreshVideoURLs, false)
 			if vErr != nil {
-				if (!isConflict || sameMediaID) && mediaIsValid(previous, videoRel) && ctx.Err() == nil && !isStorageError(vErr) {
+				if !forceOverwrite && (!isConflict || sameMediaID) && mediaIsValid(previous, videoRel) && ctx.Err() == nil && !isStorageError(vErr) {
 					if copied, cErr := copyLocalMediaToStageAs(previous, videoRel, videoRel, "video", stageDir); cErr == nil {
 						v2Media = append(v2Media, *copied)
 						if previous.DouyinVideo != nil {
@@ -760,6 +781,9 @@ func (m *Manager) executeWeiboSingleVideoTask(
 		t.ErrorMessage = summarizeMissingReasons(meta.Missing)
 	}
 	stampCacheStandardAndAssets(&meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
+	if meta.Status == "complete" && len(meta.Missing) == 0 && weiboPlanRanNoWMStandard(plan) {
+		meta.CacheStandardVersion = library.WeiboCacheStandardVersion
+	}
 	saved, err := m.lib.SaveItem(itemDir, meta)
 	if err != nil {
 		return err
@@ -787,13 +811,14 @@ func (m *Manager) executeWeiboPostTask(
 
 	hasProtectedLocal := exists && localHasProtectedContent(previous)
 	mode := effectiveConflictResolution(ctx, t.ConflictResolution, plan.ConflictResolution)
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite, plan.ForceOverwrite)
 	resolvedKey := firstNonEmptyStr(plan.ItemKey, t.ItemKey, library.CanonicalItemKey(string(site.Weibo), itemKind, rawID))
 	isConflict := false
 	preserveOriginFiles := false
 	if hasProtectedLocal {
 		// Monotonic Origin protection (Invariant #4): if a forwarded post's Origin later
-		// became Unavailable while local V1 has valid Origin + media, keep local Origin on mode==""!
-		if mode == "" && previous.Origin != nil && !previous.Origin.Unavailable && plan.OriginUnavailable {
+		// became Unavailable while local V1 has valid Origin + media, keep local Origin on mode=="" && !forceOverwrite!
+		if mode == "" && !forceOverwrite && previous.Origin != nil && !previous.Origin.Unavailable && plan.OriginUnavailable {
 			preserveOriginFiles = true
 		} else {
 			notice, conflict, degErr := classifyWorkPlanVsLocal(previous, plan, resolvedKey, rawID, t)
@@ -801,9 +826,12 @@ func (m *Manager) executeWeiboPostTask(
 				return degErr
 			}
 			isConflict = conflict
-			if isConflict && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
+			if isConflict && !forceOverwrite && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
 				m.emitConflict(notice)
 				return ErrConflictDetected
+			}
+			if forceOverwrite && mode == "" {
+				mode = ConflictResolveUseRemote
 			}
 		}
 	}
@@ -811,7 +839,7 @@ func (m *Manager) executeWeiboPostTask(
 	editAdvanced := (plan.EditCount > 0 && plan.EditCount > previous.EditCount) ||
 		(plan.EditTs > 0 && previous.EditTs > 0 && plan.EditTs > previous.EditTs)
 	desc := plan.Desc
-	if hasProtectedLocal && !isConflict {
+	if hasProtectedLocal && !isConflict && !forceOverwrite {
 		desc = preserveMonotonicText(firstNonEmptyStr(previous.Text, previous.Desc), desc, editAdvanced)
 	}
 	title := firstNonEmptyStr(plan.Title, desc, t.Title, "微博 "+rawID)
@@ -918,7 +946,7 @@ func (m *Manager) executeWeiboPostTask(
 
 	if cfg.SaveCover && len(plan.CoverURLs) > 0 && len(plan.Pages) == 0 {
 		reusedCover := false
-		if hasProtectedLocal && !isConflict {
+		if hasProtectedLocal && !isConflict && !forceOverwrite {
 			for _, mf := range previous.Media {
 				if mf.Role == "cover" && mediaIsValid(previous, mf.Path) {
 					if copied, rErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, "cover", workDir); rErr == nil {
@@ -956,7 +984,7 @@ func (m *Manager) executeWeiboPostTask(
 
 	// Monotonic fromOrigin media preservation when remote Origin became unavailable!
 	var preservedVideo *library.DouyinVideoInfo
-	if hasProtectedLocal && !isConflict && preserveOriginFiles && len(plan.Pages) == 0 {
+	if hasProtectedLocal && !isConflict && !forceOverwrite && preserveOriginFiles && len(plan.Pages) == 0 {
 		for _, mf := range previous.Media {
 			if mf.FromOrigin && mediaIsValid(previous, mf.Path) {
 				if copied, rErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, mf.Role, workDir); rErr == nil {
@@ -984,6 +1012,9 @@ func (m *Manager) executeWeiboPostTask(
 		prefix := fmt.Sprintf("images/%02d", pageIdx)
 		cleanPageMediaID := library.SanitizeMediaToken(page.MediaID)
 		reusableLP, canReuseLocal := findReusableLocalPage(previous, page, pageIdx, isConflict)
+		if forceOverwrite {
+			canReuseLocal = false
+		}
 		pageKind := strings.ToLower(strings.TrimSpace(page.Kind))
 		if pageKind == "" {
 			if len(page.VideoURLs) > 0 {
@@ -1018,7 +1049,7 @@ func (m *Manager) executeWeiboPostTask(
 				if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
 					return imgErr
 				}
-				if hasProtectedLocal && isConflict && isDegradedSiteError(imgErr) {
+				if hasProtectedLocal && (isConflict || forceOverwrite) && isDegradedSiteError(imgErr) {
 					return wrapRemoteDegraded(imgErr)
 				}
 				reason := fmt.Sprintf("第 %02d 张动图下载失败 (%s)", pageIdx, classifyDownloadError(imgErr))
@@ -1079,7 +1110,7 @@ func (m *Manager) executeWeiboPostTask(
 				if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
 					return imgErr
 				}
-				if hasProtectedLocal && (isConflict || isWeiboPlaceholderError(imgErr)) && isDegradedSiteError(imgErr) {
+				if hasProtectedLocal && (isConflict || forceOverwrite || isWeiboPlaceholderError(imgErr)) && isDegradedSiteError(imgErr) {
 					return wrapRemoteDegraded(imgErr)
 				}
 				reason := fmt.Sprintf("第 %02d 张图片下载失败 (%s)", pageIdx, classifyDownloadError(imgErr))
@@ -1138,7 +1169,7 @@ func (m *Manager) executeWeiboPostTask(
 				if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
 					return imgErr
 				}
-				if hasProtectedLocal && (isConflict || isWeiboPlaceholderError(imgErr)) && isDegradedSiteError(imgErr) {
+				if hasProtectedLocal && (isConflict || forceOverwrite || isWeiboPlaceholderError(imgErr)) && isDegradedSiteError(imgErr) {
 					return wrapRemoteDegraded(imgErr)
 				}
 				reason := fmt.Sprintf("第 %02d 张实况静帧下载失败 (%s)", pageIdx, classifyDownloadError(imgErr))
@@ -1288,7 +1319,7 @@ func (m *Manager) executeWeiboPostTask(
 				if isSiteStopError(vErr) || isStorageError(vErr) || ctx.Err() != nil {
 					return vErr
 				}
-				if hasProtectedLocal && isConflict && isDegradedSiteError(vErr) {
+				if hasProtectedLocal && (isConflict || forceOverwrite) && isDegradedSiteError(vErr) {
 					return wrapRemoteDegraded(vErr)
 				}
 				reason := fmt.Sprintf("第 %02d 项视频下载失败 (%s)", pageIdx, classifyDownloadError(vErr))
@@ -1356,7 +1387,7 @@ func (m *Manager) executeWeiboPostTask(
 		}
 	}
 
-	if hasProtectedLocal && isConflict && len(partialErrors) > 0 {
+	if hasProtectedLocal && (isConflict || forceOverwrite) && len(partialErrors) > 0 {
 		return wrapRemoteDegradedMsg(fmt.Sprintf("新版部分媒体已失效，已保留本地原文件 (%s)", strings.Join(partialErrors, "; ")))
 	}
 
@@ -1367,7 +1398,7 @@ func (m *Manager) executeWeiboPostTask(
 		t.ErrorMessage = summarizeMissingReasons(missing)
 	}
 
-	mediaFiles, notePages = preserveValidPreviousImagesForStage(itemDir, workDir, previous, exists && !isConflict, mediaFiles, notePages)
+	mediaFiles, notePages = preserveValidPreviousImagesForStage(itemDir, workDir, previous, exists && !isConflict && !forceOverwrite, mediaFiles, notePages)
 
 	meta := library.ItemMetadata{
 		Version:     1,
@@ -1400,6 +1431,9 @@ func (m *Manager) executeWeiboPostTask(
 		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
 	}
 	stampCacheStandardAndAssets(&meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
+	if meta.Status == "complete" && len(meta.Missing) == 0 && weiboPlanRanNoWMStandard(plan) {
+		meta.CacheStandardVersion = library.WeiboCacheStandardVersion
+	}
 
 	if hasProtectedLocal {
 		saved, sErr := m.commitStagedItemSwap(itemDir, previous, true, meta, workDir, mode)
@@ -1813,11 +1847,12 @@ func (m *Manager) cacheWeiboWatermarkFreeCompanion(
 	}
 
 	inSwapStage := isSwapStageDir(workDir)
-	if hasProtectedLocal && !isConflict && canReuseLocal {
+	forceOverwrite := effectiveForceOverwrite(ctx, workTask.Source, workTask.ForceOverwrite)
+	if !forceOverwrite && hasProtectedLocal && !isConflict && canReuseLocal {
 		if reused := tryCopyPrevNoWM(); reused != nil {
 			return reused, nil
 		}
-	} else if !inSwapStage {
+	} else if !forceOverwrite && !inSwapStage {
 		if kept, ok := m.findExistingValidImageSlot(workTask, workDir, previous, inPlaceExists, "image_nowm", nowmStem, page.WatermarkFreeURL, 0, 0, false); ok {
 			if primaryMedia.SHA256 == "" || !strings.EqualFold(kept.SHA256, primaryMedia.SHA256) {
 				m.setFileProgress(workTask, "image_nowm", kept.Path, "completed", kept.Bytes, kept.Bytes, 0)
@@ -1856,7 +1891,7 @@ func (m *Manager) cacheWeiboWatermarkFreeCompanion(
 		m.removeTempTaskProgress(workTask, tempRel)
 	}
 	fallbackPrevOrSkip := func() (*library.MediaFile, error) {
-		if hasProtectedLocal && canReuseLocal {
+		if !forceOverwrite && hasProtectedLocal && canReuseLocal {
 			if reused := tryCopyPrevNoWM(); reused != nil {
 				return reused, nil
 			}
@@ -1935,6 +1970,22 @@ func (m *Manager) cacheWeiboWatermarkFreeCompanion(
 		Width:      w,
 		Height:     h,
 	}, nil
+}
+
+// weiboPlanRanNoWMStandard reports whether this Weibo post plan includes at least
+// one static (non-GIF, non-video) page whose /oslarge/ watermark-free companion
+// URL was evaluated during this cache run (DEC-079).
+func weiboPlanRanNoWMStandard(plan WorkDownloadPlan) bool {
+	for _, p := range plan.Pages {
+		k := strings.ToLower(strings.TrimSpace(p.Kind))
+		if k == "gif" || k == "video" {
+			continue
+		}
+		if strings.TrimSpace(p.WatermarkFreeURL) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) cacheWeiboLivePhotoClip(

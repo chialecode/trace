@@ -22,6 +22,7 @@ type SubscribePickerState struct {
 	Account         subscription.AccountRef
 	FromSubID       string
 	FromSubName     string
+	Preset          TrackingPresetPickerState
 	SearchInput     string
 	CommittedQuery  string
 	SearchComposing bool
@@ -42,7 +43,9 @@ func (a *App) OpenSubscribePicker(acct subscription.AccountRef) {
 	}
 	acct.Site = normalizeSiteIDUI(acct.Site)
 	acct.Name = firstNonEmptyStrUI(acct.Name, acct.UniqueID, acct.UID)
-	a.SubscribePicker = SubscribePickerState{Open: true, Account: acct}
+	st := SubscribePickerState{Open: true, Account: acct}
+	st.Preset.ResetDefault()
+	a.SubscribePicker = st
 }
 
 // OpenMoveAccountPicker opens the dialog in move mode to reassign an
@@ -56,12 +59,14 @@ func (a *App) OpenMoveAccountPicker(fromSub subscription.Subscription, acct subs
 	acct.Site = normalizeSiteIDUI(acct.Site)
 	acct.Name = firstNonEmptyStrUI(acct.Name, acct.UniqueID, acct.UID)
 	fromName := firstNonEmptyStrUI(fromSub.Name, fromSub.Uname, fromSub.ID)
-	a.SubscribePicker = SubscribePickerState{
+	st := SubscribePickerState{
 		Open:        true,
 		Account:     acct,
 		FromSubID:   fromSub.ID,
 		FromSubName: fromName,
 	}
+	st.Preset.ResetDefault()
+	a.SubscribePicker = st
 }
 
 // closeSubscribePicker hides the dialog. Its list state stays as it is: the
@@ -95,8 +100,9 @@ func (a *App) subscribeAsNew() {
 	st := &a.SubscribePicker
 	acct := st.Account
 	subName := clampRunes(firstNonEmptyStrUI(acct.Name, acct.UniqueID, acct.UID), 64)
+	rules := st.Preset.SelectedRules()
 	if st.isMoveMode() {
-		if _, err := a.backend.MoveSubscriptionAccountToNew(acct.Site, acct.UID, subName, "", subscription.DefaultSubRules()); err != nil {
+		if _, err := a.backend.MoveSubscriptionAccountToNew(acct.Site, acct.UID, subName, "", rules); err != nil {
 			a.SubscribePicker.Error = userErrorText(err)
 			return
 		}
@@ -106,7 +112,7 @@ func (a *App) subscribeAsNew() {
 		a.refreshSelectedSubscriptionFeed()
 		return
 	}
-	if _, err := a.backend.CreateSubscription(subName, "", []subscription.AccountRef{acct}, subscription.DefaultSubRules()); err != nil {
+	if _, err := a.backend.CreateSubscription(subName, "", []subscription.AccountRef{acct}, rules); err != nil {
 		a.SubscribePicker.Error = userErrorText(err)
 		return
 	}
@@ -172,7 +178,7 @@ func (a *App) renderSubscribePickerOverlay(c *ui.Context, w, h float32) {
 		return
 	}
 	cardW := min(float32(520), max(float32(320), w-40))
-	cardH := min(float32(560), max(float32(320), h-80))
+	cardH := min(float32(720), max(float32(420), h-48))
 	backdropLabel := "关闭加入订阅对话框（点击空白处）"
 	panelLabel := "加入订阅对话框"
 	if a.SubscribePicker.isMoveMode() {
@@ -238,6 +244,8 @@ func (a *App) renderSubscribePickerBody(c *ui.Context) {
 			ui.Text(c, subtitle).FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
 		})
 	})
+
+	renderTrackingPresetPicker(c, &st.Preset, "加入订阅", "新建订阅追踪模式", true)
 
 	if AccentPillButton(c, newLabel, newBtnLabel).Clicked() {
 		a.subscribeAsNew()

@@ -534,6 +534,8 @@ func (m *Manager) Upsert(in Subscription) (result Subscription, resultErr error)
 		if in.Rules.AutoCache.Enabled && in.Rules.AutoCache.Since == "" {
 			in.Rules.AutoCache.Since = now.UTC().Format(time.RFC3339)
 		}
+	} else if in.Rules.AutoCache.Enabled && in.Rules.AutoCache.Since == "" {
+		in.Rules.AutoCache.Since = now.UTC().Format(time.RFC3339)
 	}
 	syncSubFields(&in, now)
 	for _, account := range in.Accounts {

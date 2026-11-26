@@ -74,6 +74,17 @@ func (a *App) startUpgradeCandidate(it library.ItemMetadata) {
 	})
 }
 
+func (a *App) retryAllTasksAction() {
+	a.TaskRemoveConfirmID = ""
+	res, err := a.backend.RetryAllTasks()
+	a.finishTaskAction(err)
+	if err != nil {
+		a.BannerInfo = ""
+	} else {
+		a.BannerInfo = formatBatchRetryInfo(res)
+	}
+}
+
 func (a *App) renderTasksDownloadsView(c *ui.Context) {
 	ui.Column(c).Grow(1).FillWidth().ClipX().Children(func() {
 		retryable := 0
@@ -120,14 +131,7 @@ func (a *App) renderTasksDownloadsView(c *ui.Context) {
 					ui.Row(c).FillWidth().Justify(ui.End).AlignItems(ui.Center).Gap(8).Wrap().Children(func() {
 						if retryable > 0 {
 							if AccentPillButton(c, fmt.Sprintf("批量重试（%d）", retryable), "批量重试失败或已暂停的任务").Clicked() {
-								a.TaskRemoveConfirmID = ""
-								res, err := a.backend.RetryAllTasks()
-								a.finishTaskAction(err)
-								if err != nil {
-									a.BannerInfo = ""
-								} else {
-									a.BannerInfo = formatBatchRetryInfo(res)
-								}
+								a.retryAllTasksAction()
 							}
 						}
 						if finished > 0 {
@@ -146,6 +150,11 @@ func (a *App) renderTasksDownloadsView(c *ui.Context) {
 			ui.Column(c).FillWidth().Padding(40, 16).AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Text(c, "当前没有缓存任务").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 				ui.Text(c, "在动态、帖子或视频详情上点「缓存」后，下载进度与子文件详情会显示在这里。").FontSize(13).TextColor(ColorTextMuted)
+				if len(a.CacheQueue) > 0 {
+					if OutlinePillButton(c, fmt.Sprintf("查看缓存队列（%d）", len(a.CacheQueue)), "下载空态跳转缓存队列").Clicked() {
+						a.selectTasksQueue("")
+					}
+				}
 			})
 			return
 		}
@@ -273,11 +282,14 @@ func (a *App) renderDownloadTaskCard(c *ui.Context, task download.Task) {
 						ui.Text(c, "画质与音轨："+task.QualityHint).FontSize(12).FontWeight(600).TextColor(ColorInfoBlue).SingleLine()
 					}
 					lastErr := firstNonEmptyStrUI(task.LastError, task.ErrorMessage)
+					if lastErr == "" && isPaused && strings.TrimSpace(task.PauseReason) != "" && strings.TrimSpace(task.PauseReason) != "user" {
+						lastErr = taskPauseReasonText(task.PauseReason)
+					}
 					if lastErr != "" {
 						bannerBg := ColorErrorBg
 						bannerIconCol := ColorError
 						bannerTextCol := ColorError
-						if task.Status == "partial" {
+						if task.Status == "partial" || isPaused {
 							bannerBg = ColorWarnBg
 							bannerIconCol = ColorDotYellow
 							bannerTextCol = ColorTextMain

@@ -104,6 +104,8 @@ type Shell struct {
 	trayRefresh       func()
 	trayDispatchMain  func(func())
 	confirmQuitDialog func(mygo.MessageOptions) (mygo.MessageResult, error)
+	openFileDialog    func(mygo.OpenDialogOptions) ([]string, error)
+	saveFileDialog    func(mygo.SaveDialogOptions) (string, error)
 	trayLastTooltip   string
 	trayHasState      bool
 	trayWantTooltip   string
@@ -368,6 +370,7 @@ func (s *Shell) openOrRestoreMainWindow() {
 			win.SetFullScreen(full)
 		}
 	})
+	uiApp.BindFileDialog(s.newFileDialogHandler(win, winClosed))
 	if s.quiet == "hidden" {
 		win.Hide()
 	} else if s.quiet == "inactive" {

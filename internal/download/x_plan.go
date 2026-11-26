@@ -62,10 +62,13 @@ func (m *Manager) EnqueueXWork(ctx context.Context, req XWorkEnqueueRequest) (Ta
 		ctx = site.WithAutomaticRequests(ctx, "download")
 	}
 	var reqPlanMode string
+	var reqPlanForce bool
 	if req.Plan != nil {
 		reqPlanMode = req.Plan.ConflictResolution
+		reqPlanForce = req.Plan.ForceOverwrite
 	}
 	mode := effectiveConflictResolution(ctx, reqPlanMode)
+	forceOverwrite := effectiveForceOverwrite(ctx, source, reqPlanForce)
 
 	var plan WorkDownloadPlan
 	switch {
@@ -105,6 +108,7 @@ func (m *Manager) EnqueueXWork(ctx context.Context, req XWorkEnqueueRequest) (Ta
 	if mode != "" {
 		plan.ConflictResolution = mode
 	}
+	plan.ForceOverwrite = forceOverwrite
 
 	itemKind, rawID, itemKey, plannerTarget, err := resolveXIdentity(plan.ItemKey, plan.TargetID)
 	if err != nil {
@@ -167,12 +171,16 @@ func (m *Manager) EnqueueXWork(ctx context.Context, req XWorkEnqueueRequest) (Ta
 		ItemDir:            itemDir,
 		Via:                via,
 		ConflictResolution: mode,
+		ForceOverwrite:     forceOverwrite,
 	}, &plan)
 	if err != nil {
 		return Task{}, err
 	}
 	if mode != "" {
 		m.storeTaskResolutionAndPages(t.TaskID, mode, nil)
+	}
+	if forceOverwrite {
+		m.storeTaskForceOverwrite(t.TaskID, true)
 	}
 
 	m.notifyWake()
@@ -216,6 +224,9 @@ func (m *Manager) consumeInitialOrFetchXPlan(ctx context.Context, taskID, target
 	if hasInitial && initial.ConflictResolution != "" && plan.ConflictResolution == "" {
 		plan.ConflictResolution = initial.ConflictResolution
 	}
+	if hasInitial && initial.ForceOverwrite {
+		plan.ForceOverwrite = true
+	}
 	plan.Site = site.X
 	plan.Transport = normalizeXMediaTransport(plan.Transport)
 	return plan, planner, nil
@@ -241,6 +252,12 @@ func (m *Manager) executeXTask(ctx context.Context, t *Task) error {
 	mode = effectiveConflictResolution(ctx, t.ConflictResolution, storedMode, plan.ConflictResolution)
 	plan.ConflictResolution = mode
 	t.ConflictResolution = mode
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite, m.taskForceOverwrite(t.TaskID), plan.ForceOverwrite)
+	plan.ForceOverwrite = forceOverwrite
+	t.ForceOverwrite = forceOverwrite
+	if forceOverwrite {
+		ctx = WithForceOverwrite(ctx)
+	}
 
 	normUID, err := site.NormalizeUID(site.X, firstNonEmptyStr(plan.AuthorUID, t.AuthorUID))
 	if err != nil {
@@ -347,12 +364,13 @@ func (m *Manager) executeXSingleVideoTask(
 
 	hasProtectedLocal := exists && localHasProtectedContent(previous)
 	mode := effectiveConflictResolution(ctx, t.ConflictResolution, plan.ConflictResolution)
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite, plan.ForceOverwrite)
 	resolvedKey := firstNonEmptyStr(plan.ItemKey, t.ItemKey, library.CanonicalItemKey(string(site.X), "dynamic", rawID))
 	isConflict := false
 	if hasProtectedLocal {
 		// Monotonic Origin protection before degraded check: if local had valid fromOrigin video
-		// and remote origin vanished on a safe re-check (mode == ""), preserve local without error.
-		if mode == "" && previous.Origin != nil && !previous.Origin.Unavailable && plan.OriginUnavailable && mediaIsValid(previous, "video.mp4") {
+		// and remote origin vanished on a safe re-check (mode == "" && !forceOverwrite), preserve local without error.
+		if mode == "" && !forceOverwrite && previous.Origin != nil && !previous.Origin.Unavailable && plan.OriginUnavailable && mediaIsValid(previous, "video.mp4") {
 			// Safe monotonic preservation below.
 		} else {
 			notice, conflict, degErr := classifyWorkPlanVsLocal(previous, plan, resolvedKey, rawID, t)
@@ -360,9 +378,12 @@ func (m *Manager) executeXSingleVideoTask(
 				return degErr
 			}
 			isConflict = conflict
-			if isConflict && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
+			if isConflict && !forceOverwrite && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
 				m.emitConflict(notice)
 				return ErrConflictDetected
+			}
+			if forceOverwrite && mode == "" {
+				mode = ConflictResolveUseRemote
 			}
 		}
 	}
@@ -370,7 +391,7 @@ func (m *Manager) executeXSingleVideoTask(
 	editAdvanced := (plan.EditCount > 0 && plan.EditCount > previous.EditCount) ||
 		(plan.EditTs > 0 && previous.EditTs > 0 && plan.EditTs > previous.EditTs)
 	fullText, threadParts := buildXTextAndThread(rawID, plan, previous)
-	if hasProtectedLocal && !isConflict {
+	if hasProtectedLocal && !isConflict && !forceOverwrite {
 		fullText = preserveMonotonicText(previous.Text, fullText, editAdvanced)
 	}
 	title := firstNonEmptyStr(plan.Title, plan.Desc, fullText, t.Title, "X 视频 "+rawID)
@@ -419,7 +440,7 @@ func (m *Manager) executeXSingleVideoTask(
 		var v2Media []library.MediaFile
 		var v2Missing []library.MissingRecord
 		reusedCover := false
-		if !isConflict {
+		if !isConflict && !forceOverwrite {
 			for _, mf := range previous.Media {
 				if mf.Role == "cover" && mediaIsValid(previous, mf.Path) {
 					if copied, rErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, "cover", stageDir); rErr == nil {
@@ -449,7 +470,7 @@ func (m *Manager) executeXSingleVideoTask(
 		sameMediaID := previous.DouyinVideo != nil && previous.DouyinVideo.MediaID != "" && plan.MediaID != "" &&
 			library.SanitizeMediaToken(previous.DouyinVideo.MediaID) == library.SanitizeMediaToken(plan.MediaID)
 
-		if !isConflict && (!planUpgradesSingleVideo(previous, plan) || len(progressiveURLs) == 0) && mediaIsValid(previous, videoRel) {
+		if !isConflict && !forceOverwrite && (!planUpgradesSingleVideo(previous, plan) || len(progressiveURLs) == 0) && mediaIsValid(previous, videoRel) {
 			copied, cErr := copyLocalMediaToStageAs(previous, videoRel, videoRel, "video", stageDir)
 			if cErr != nil {
 				return cErr
@@ -480,7 +501,7 @@ func (m *Manager) executeXSingleVideoTask(
 			})
 			vidMedia, vErr := m.cacheXSingleMP4(ctx, &stageSub, stageDir, previous, false, videoRel, progressiveURLs, plan.DurationSec, plan.Width, plan.Height, false, plan.Transport, refreshVideoURLs)
 			if vErr != nil {
-				if (!isConflict || sameMediaID) && mediaIsValid(previous, videoRel) && ctx.Err() == nil && !isStorageError(vErr) {
+				if !forceOverwrite && (!isConflict || sameMediaID) && mediaIsValid(previous, videoRel) && ctx.Err() == nil && !isStorageError(vErr) {
 					if copied, cErr := copyLocalMediaToStageAs(previous, videoRel, videoRel, "video", stageDir); cErr == nil {
 						v2Media = append(v2Media, *copied)
 						if previous.DouyinVideo != nil {
@@ -795,13 +816,14 @@ func (m *Manager) executeXPostTask(
 
 	hasProtectedLocal := exists && localHasProtectedContent(previous)
 	mode := effectiveConflictResolution(ctx, t.ConflictResolution, plan.ConflictResolution)
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite, plan.ForceOverwrite)
 	resolvedKey := firstNonEmptyStr(plan.ItemKey, t.ItemKey, library.CanonicalItemKey(string(site.X), "dynamic", rawID))
 	isConflict := false
 	preserveOriginFiles := false
 	if hasProtectedLocal {
 		// Monotonic Origin protection (Invariant #4): if a forwarded/quoted post's Origin later
-		// became Unavailable while local V1 has valid Origin + media, keep local Origin on mode==""!
-		if mode == "" && previous.Origin != nil && !previous.Origin.Unavailable && plan.OriginUnavailable {
+		// became Unavailable while local V1 has valid Origin + media, keep local Origin on mode=="" && !forceOverwrite!
+		if mode == "" && !forceOverwrite && previous.Origin != nil && !previous.Origin.Unavailable && plan.OriginUnavailable {
 			preserveOriginFiles = true
 		} else {
 			notice, conflict, degErr := classifyWorkPlanVsLocal(previous, plan, resolvedKey, rawID, t)
@@ -809,9 +831,12 @@ func (m *Manager) executeXPostTask(
 				return degErr
 			}
 			isConflict = conflict
-			if isConflict && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
+			if isConflict && !forceOverwrite && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
 				m.emitConflict(notice)
 				return ErrConflictDetected
+			}
+			if forceOverwrite && mode == "" {
+				mode = ConflictResolveUseRemote
 			}
 		}
 	}
@@ -819,7 +844,7 @@ func (m *Manager) executeXPostTask(
 	editAdvanced := (plan.EditCount > 0 && plan.EditCount > previous.EditCount) ||
 		(plan.EditTs > 0 && previous.EditTs > 0 && plan.EditTs > previous.EditTs)
 	fullText, threadParts := buildXTextAndThread(rawID, plan, previous)
-	if hasProtectedLocal && !isConflict {
+	if hasProtectedLocal && !isConflict && !forceOverwrite {
 		fullText = preserveMonotonicText(previous.Text, fullText, editAdvanced)
 	}
 	title := firstNonEmptyStr(plan.Title, plan.Desc, fullText, t.Title, "X 帖子 "+rawID)
@@ -926,7 +951,7 @@ func (m *Manager) executeXPostTask(
 
 	if cfg.SaveCover && len(plan.CoverURLs) > 0 && len(plan.Pages) == 0 {
 		reusedCover := false
-		if hasProtectedLocal && !isConflict {
+		if hasProtectedLocal && !isConflict && !forceOverwrite {
 			for _, mf := range previous.Media {
 				if mf.Role == "cover" && mediaIsValid(previous, mf.Path) {
 					if copied, rErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, "cover", workDir); rErr == nil {
@@ -961,7 +986,7 @@ func (m *Manager) executeXPostTask(
 
 	// Monotonic fromOrigin media preservation when remote Origin became unavailable!
 	var preservedVideo *library.DouyinVideoInfo
-	if hasProtectedLocal && !isConflict && preserveOriginFiles && len(plan.Pages) == 0 {
+	if hasProtectedLocal && !isConflict && !forceOverwrite && preserveOriginFiles && len(plan.Pages) == 0 {
 		for _, mf := range previous.Media {
 			if mf.FromOrigin && mediaIsValid(previous, mf.Path) {
 				if copied, rErr := copyLocalMediaToStageAs(previous, mf.Path, mf.Path, mf.Role, workDir); rErr == nil {
@@ -989,6 +1014,9 @@ func (m *Manager) executeXPostTask(
 		prefix := fmt.Sprintf("images/%02d", pageIdx)
 		cleanPageMediaID := library.SanitizeMediaToken(page.MediaID)
 		reusableLP, canReuseLocal := findReusableLocalPage(previous, page, pageIdx, isConflict)
+		if forceOverwrite {
+			canReuseLocal = false
+		}
 		pageKind := strings.ToLower(strings.TrimSpace(page.Kind))
 		if pageKind == "animated_gif" {
 			pageKind = "gif"
@@ -1027,7 +1055,7 @@ func (m *Manager) executeXPostTask(
 				if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
 					return imgErr
 				}
-				if hasProtectedLocal && isConflict && isDegradedSiteError(imgErr) {
+				if hasProtectedLocal && (isConflict || forceOverwrite) && isDegradedSiteError(imgErr) {
 					return wrapRemoteDegraded(imgErr)
 				}
 				reason := fmt.Sprintf("第 %02d 张图片下载失败 (%s)", pageIdx, classifyDownloadError(imgErr))
@@ -1127,7 +1155,7 @@ func (m *Manager) executeXPostTask(
 				if isSiteStopError(vErr) || isStorageError(vErr) || ctx.Err() != nil {
 					return vErr
 				}
-				if hasProtectedLocal && isConflict && isDegradedSiteError(vErr) {
+				if hasProtectedLocal && (isConflict || forceOverwrite) && isDegradedSiteError(vErr) {
 					return wrapRemoteDegraded(vErr)
 				}
 				reason := fmt.Sprintf("第 %02d 项动图视频下载失败 (%s)", pageIdx, classifyDownloadError(vErr))
@@ -1247,7 +1275,7 @@ func (m *Manager) executeXPostTask(
 				if isSiteStopError(vErr) || isStorageError(vErr) || ctx.Err() != nil {
 					return vErr
 				}
-				if hasProtectedLocal && isConflict && isDegradedSiteError(vErr) {
+				if hasProtectedLocal && (isConflict || forceOverwrite) && isDegradedSiteError(vErr) {
 					return wrapRemoteDegraded(vErr)
 				}
 				reason := fmt.Sprintf("第 %02d 项视频下载失败 (%s)", pageIdx, classifyDownloadError(vErr))
@@ -1316,6 +1344,10 @@ func (m *Manager) executeXPostTask(
 		}
 	}
 
+	if hasProtectedLocal && (isConflict || forceOverwrite) && len(partialErrors) > 0 {
+		return wrapRemoteDegradedMsg(fmt.Sprintf("新版部分媒体已失效，已保留本地原文件 (%s)", strings.Join(partialErrors, "; ")))
+	}
+
 	status := "complete"
 	if len(missing) > 0 || len(partialErrors) > 0 {
 		status = "partial"
@@ -1323,7 +1355,7 @@ func (m *Manager) executeXPostTask(
 		t.ErrorMessage = summarizeMissingReasons(missing)
 	}
 
-	mediaFiles, notePages = preserveValidPreviousImagesForStage(itemDir, workDir, previous, exists && !isConflict, mediaFiles, notePages)
+	mediaFiles, notePages = preserveValidPreviousImagesForStage(itemDir, workDir, previous, exists && !isConflict && !forceOverwrite, mediaFiles, notePages)
 
 	meta := library.ItemMetadata{
 		Version:     1,

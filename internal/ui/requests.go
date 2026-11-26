@@ -24,6 +24,7 @@ func isBackgroundPendingKey(key string) bool {
 	return key == "runtime-logs" ||
 		key == "visible-live" ||
 		key == "remote-status" ||
+		key == "file-dialog" ||
 		strings.HasPrefix(key, "thumb:") ||
 		strings.HasPrefix(key, "avatar:") ||
 		strings.HasPrefix(key, "hist-thumb:") ||
@@ -148,7 +149,7 @@ func (a *App) checkAllSubscriptions() {
 }
 
 // checkAccountNow checks one account of a subscription for updates at once
-// (Tasks › 检查计划).
+// (订阅 › 检查计划).
 func (a *App) checkAccountNow(subID, siteName, uid string) {
 	if a.isPending("check-updates") {
 		return

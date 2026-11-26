@@ -339,6 +339,17 @@ func TestLibraryMultiSelectTileSyncBatchDeleteAndBatchExport(t *testing.T) {
 	if !app.LibrarySelectMode || app.librarySelectedCount() != 2 {
 		t.Fatalf("Esc while modal was open must keep multi-select active: mode=%v count=%d", app.LibrarySelectMode, app.librarySelectedCount())
 	}
+	// Esc closes ForceRecacheConfirm WITHOUT exiting multi-select either (DEC-079/DEC-083 merge guard).
+	app.ForceRecacheConfirm = ForceRecacheConfirmState{Open: true, ItemKey: d1.ItemKey, Title: d1.Title}
+	tt.Frame()
+	tt.Key(0, ui.KeyEscape)
+	tt.Frame()
+	if app.ForceRecacheConfirm.Open {
+		t.Fatal("Esc did not close ForceRecacheConfirm dialog")
+	}
+	if !app.LibrarySelectMode || app.librarySelectedCount() != 2 {
+		t.Fatalf("Esc while ForceRecacheConfirm was open must keep multi-select active: mode=%v count=%d", app.LibrarySelectMode, app.librarySelectedCount())
+	}
 
 	// Re-open batch export and run real export.
 	if err := tt.Click("媒体库批量导出"); err != nil {
@@ -351,8 +362,8 @@ func TestLibraryMultiSelectTileSyncBatchDeleteAndBatchExport(t *testing.T) {
 		t.Fatalf("click start export: %v", err)
 	}
 	tt.Frame()
-	if app.CurrentRoute != RouteTasks || app.TasksSection != "transfers" {
-		t.Fatalf("expected navigation to Tasks transfers, got route=%s section=%s", app.CurrentRoute, app.TasksSection)
+	if app.CurrentRoute != RouteTasks || app.effectiveTasksSection() != TasksSectionRecords {
+		t.Fatalf("expected navigation to Tasks records, got route=%s section=%s", app.CurrentRoute, app.TasksSection)
 	}
 	if app.LibrarySelectMode || app.librarySelectedCount() != 0 {
 		t.Fatal("starting batch export must exit and clear multi-select")

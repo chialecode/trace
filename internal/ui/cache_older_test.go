@@ -121,8 +121,11 @@ func TestUserPageCacheAllQueueEntry(t *testing.T) {
 		t.Fatalf("expected 在缓存队列中查看 menu item: %v", err)
 	}
 	tt.Frame()
-	if app.CurrentRoute != RouteTasks || app.effectiveTasksSection() != "queue" || app.SelectedCacheQueueID != "cq_bilibili_dynamics_8888" {
-		t.Fatalf("expected jump to RouteTasks queue detail, got route=%s sec=%s id=%s", app.CurrentRoute, app.TasksSection, app.SelectedCacheQueueID)
+	if app.CurrentRoute != RouteTasks || app.effectiveTasksSection() != TasksSectionActive || app.effectiveTasksActiveTab() != "queue" || app.SelectedCacheQueueID != "cq_bilibili_dynamics_8888" {
+		t.Fatalf("expected jump to RouteTasks active/queue detail, got route=%s sec=%s sub=%s id=%s", app.CurrentRoute, app.TasksSection, app.TasksActiveTab, app.SelectedCacheQueueID)
+	}
+	if _, ok := tt.Find("缓存队列卡片：cq_bilibili_dynamics_8888"); !ok {
+		t.Fatal("expected jumped cache queue card to be visible under Tasks › 进行中")
 	}
 
 	// Private Douyin account must not offer "全部缓存" or "在缓存队列中查看".

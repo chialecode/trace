@@ -163,10 +163,21 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			Setup: func() {
 				app.SubDetailOpen = false
 				app.SubAccountsOpen = false
+				app.SubChecksOpen = false
 				app.Navigate(ui.RouteSubscriptions)
 				seedRecentAndLive()
 			},
 			RequiredLabels: []string{"选择订阅 " + primarySub.ID},
+			PanelRequiredLabels: []string{
+				"订阅侧栏：全部订阅",
+				"订阅侧栏：全部账号",
+				"订阅侧栏：检查计划",
+			},
+			NarrowRequiredLabels: []string{
+				"订阅页全部订阅",
+				"订阅页全部账号",
+				"订阅页检查计划",
+			},
 			ForbiddenLabels: []string{
 				"订阅详情账号站点：bilibili:20001",
 				"订阅详情账号站点：douyin:" + douyinSecUID,
@@ -180,15 +191,57 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 		},
 		{
+			Name: "add-sub-preset-modal",
+			Setup: func() {
+				seedRecentAndLive()
+				app.SubscribePicker.Open = false
+				app.ImportSubModalOpen = false
+				app.Navigate(ui.RouteSubscriptions)
+				app.SubDetailOpen, app.SubAccountsOpen, app.SubChecksOpen = false, false, false
+				app.AddSubName = "合成新创作者"
+				app.AddSubInput = ""
+				app.AddSubPreview = nil
+				app.AddSubPreviewOwner = nil
+				app.AddSubPreset.ResetDefault()
+				app.AddSubPreset.CustomExpanded = true
+				app.AddSubDialogOpen = true
+			},
+			RequiredLabels: []string{
+				"添加订阅对话框",
+				"新订阅名称",
+				"新订阅追踪模式选择区",
+				"新订阅预设：full_archive",
+				"新订阅预设：follow_cache",
+				"新订阅预设：check_only",
+				"新订阅预设：manual",
+				"新订阅录直播",
+				"新订阅自定义",
+				"新订阅自定义原子标签区",
+				"新订阅原子标签：scheduled_check",
+				"新订阅原子标签：full_cache",
+				"确认添加订阅",
+			},
+			RequiredTexts: []string{
+				"完整存档（默认）",
+				"追更并保存",
+				"只看新动态",
+				"仅手动",
+				"录直播",
+			},
+		},
+		{
 			Name: "subscribe-picker",
 			Setup: func() {
 				seedRecentAndLive()
+				app.AddSubDialogOpen = false
 				app.Navigate(ui.RouteSubscriptions)
-				app.SubDetailOpen, app.SubAccountsOpen = false, false
+				app.SubDetailOpen, app.SubAccountsOpen, app.SubChecksOpen = false, false, false
 				app.OpenSubscribePicker(subscription.AccountRef{Site: "bilibili", UID: "30001", Name: "新发现的UP主"})
 			},
 			RequiredLabels: []string{
 				"加入订阅对话框",
+				"加入订阅追踪模式选择区",
+				"加入订阅预设：full_archive",
 				"新建订阅",
 				"加入订阅搜索框",
 				"加入订阅列表",
@@ -200,7 +253,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			Setup: func() {
 				seedRecentAndLive()
 				app.Navigate(ui.RouteSubscriptions)
-				app.SubDetailOpen, app.SubAccountsOpen = false, false
+				app.SubDetailOpen, app.SubAccountsOpen, app.SubChecksOpen = false, false, false
 				app.OpenMoveAccountPicker(primarySub, subscription.AccountRef{Site: "weibo", UID: weiboUID, Name: "技术频道_微博"})
 			},
 			RequiredLabels: []string{
@@ -223,6 +276,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.Navigate(ui.RouteSubscriptions)
 				app.SubDetailOpen = false
 				app.SubAccountsOpen = true
+				app.SubChecksOpen = false
 				app.SubAccountsSite = "all"
 			},
 			RequiredLabels: []string{
@@ -238,7 +292,33 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅账号：x:" + xUID,
 				"订阅账号站点：x:" + xUID,
 			},
-			PanelRequiredLabels: []string{"订阅侧栏：全部账号"},
+			PanelRequiredLabels:  []string{"订阅侧栏：全部账号", "订阅侧栏：检查计划"},
+			NarrowRequiredLabels: []string{"订阅页全部订阅", "订阅页全部账号", "订阅页检查计划"},
+		},
+		{
+			Name: "subscriptions-checks",
+			Setup: func() {
+				seedRecentAndLive()
+				app.SubscribePicker.Open = false
+				app.OpenSubscriptionChecks()
+			},
+			RequiredLabels: []string{
+				"检查计划列表",
+				"检查计划行 bilibili:20001",
+				"检查计划行 douyin:" + douyinSecUID,
+				"检查计划行 weibo:" + weiboUID,
+				"检查计划行 x:" + xUID,
+			},
+			PanelRequiredLabels: []string{
+				"订阅侧栏：全部订阅",
+				"订阅侧栏：全部账号",
+				"订阅侧栏：检查计划",
+			},
+			NarrowRequiredLabels: []string{
+				"订阅页全部订阅",
+				"订阅页全部账号",
+				"订阅页检查计划",
+			},
 		},
 		{
 			Name: "subscription-detail",
@@ -296,6 +376,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			Setup: func() {
 				seedRecentAndLive()
 				if auroraSub.ID != "" {
+					app.SubCustomTagsSubID = ""
 					app.SubDetailTab = "content"
 					app.OpenSubscriptionDetail(auroraSub)
 					app.SubDetailTab = "content"
@@ -305,6 +386,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅标签：内容",
 				"订阅标签：账号",
 				"订阅管理菜单",
+				"订阅内容空状态说明",
 			},
 			ForbiddenLabels: []string{
 				"订阅自定义链接栏",
@@ -313,9 +395,47 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 		},
 		{
+			Name: "subscription-detail-dep-warning",
+			Setup: func() {
+				if auroraSub.ID != "" {
+					if updated, err := b.SetSubscriptionTags(auroraSub.ID, []string{subscription.TagCacheVideo}); err == nil {
+						app.RefreshData()
+						seedRecentAndLive()
+						app.SubDetailTab = "content"
+						app.OpenSubscriptionDetail(updated)
+						app.SubDetailTab = "content"
+						app.SubCustomTagsSubID = updated.ID
+					}
+				}
+			},
+			RequiredLabels: []string{
+				"订阅缓存标签菜单",
+				"订阅详情缓存标签栏",
+				"订阅详情自定义原子标签栏",
+				"订阅原子标签：定时检查",
+				"订阅原子标签：自动缓存视频",
+				"自动缓存缺少定时检查提示",
+				"一键开启定时检查",
+				"订阅内容空状态说明",
+			},
+			RequiredTexts: []string{
+				"追踪：自定义",
+				"已开启自动缓存但未开启「定时检查」：仅在手动检查更新时生效。",
+			},
+		},
+		{
 			Name: "subscription-accounts",
 			Setup: func() {
+				if auroraSub.ID != "" {
+					_, _ = b.SetSubscriptionTags(auroraSub.ID, []string{
+						subscription.TagScheduledCheck,
+						subscription.TagCacheVideo,
+						subscription.TagCacheDraw,
+					})
+					app.RefreshData()
+				}
 				seedRecentAndLive()
+				app.SubCustomTagsSubID = ""
 				if primarySub.ID != "" {
 					app.OpenSubscriptionDetail(primarySub)
 					app.SubDetailTab = "accounts"
@@ -452,6 +572,14 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 		{
 			Name: "settings-rules",
 			Setup: func() {
+				if auroraSub.ID != "" {
+					_, _ = b.SetSubscriptionTags(auroraSub.ID, []string{
+						subscription.TagScheduledCheck,
+						subscription.TagCacheVideo,
+						subscription.TagCacheDraw,
+					})
+					app.RefreshData()
+				}
 				seedRecentAndLive()
 				app.ImportSubModalOpen = false
 				app.RuleBatch.Open = false
@@ -461,6 +589,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 			RequiredLabels: []string{
 				"打开批量设置订阅标签",
+				"缓存标签快速预设栏",
+				"快速应用预设：full_archive",
 				"缓存标签行：scheduled_check",
 				"缓存标签行：cache_video",
 				"缓存标签行：cache_draw",
@@ -582,7 +712,34 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.SettingsCategory = "subscription"
 				app.Navigate(ui.RouteSettings)
 			},
-			RequiredLabels: []string{"退避状态：douyin"},
+			RequiredLabels: []string{
+				"选择订阅检查间隔",
+				"定时检查状态摘要",
+				"退避状态：douyin",
+			},
+			RequiredTexts: []string{
+				"检查间隔",
+				"已开启定时检查：",
+			},
+			ForbiddenLabels: []string{
+				"开关定时订阅",
+			},
+		},
+		{
+			Name: "settings-storage",
+			Setup: func() {
+				seedRecentAndLive()
+				app.SettingsCategory = "storage"
+				app.Navigate(ui.RouteSettings)
+			},
+			RequiredLabels: []string{
+				"缓存目录输入框",
+				"选择缓存保存位置",
+				"应用缓存目录",
+				"添加已有文件夹输入框",
+				"选择已有缓存文件夹",
+				"从已有文件夹添加",
+			},
 		},
 		{
 			Name: "parse",
@@ -863,6 +1020,38 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 			RequiredLabels:  []string{"抖音作品作者站点标记", "缓存视频", "抖音视频封面播放"},
 			ForbiddenLabels: []string{"升级缓存", "补存弹幕和字幕"},
+		},
+		{
+			Name: "douyin-video-uncached",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.PlayerOverlay.Open = false
+				app.PlayerOverlay.PreviewMode = false
+				app.PlayerOverlay.PreviewOnCache = nil
+				app.CurrentDouyinWork = &service.DouyinWorkView{
+					ID:           "7388001099",
+					Kind:         "video",
+					Title:        "川西日照金山短视频（未缓存可临时预览）",
+					Desc:         "川西日照金山短视频（未缓存可临时预览）\n点击封面直接零缓存预览，喜欢再一键缓存到媒体库 #川西 #延时摄影",
+					Hashtags:     []string{"川西", "延时摄影"},
+					CreateTime:   1710003600,
+					DurationSec:  42,
+					Author:       service.DouyinAuthorDTO{SecUID: douyinSecUID, UniqueID: "alpha_douyin", Nickname: "技术频道_抖音号"},
+					VideoURL:     "https://v26-web.douyinvod.com/synth/preview_7388001099.mp4",
+					QualityLabel: "1080P",
+					VideoCodec:   "avc",
+					Width:        1080,
+					Height:       1440,
+					Music:        &service.DouyinMusicDTO{Title: "雪山晨风", Author: "技术频道_抖音号", IsOriginalSound: true},
+					Stats:        service.DouyinStatsDTO{DiggCount: 6420, CommentCount: 198, CollectCount: 1120, ShareCount: 84},
+					CanonicalURL: "https://www.douyin.com/video/7388001099",
+					CacheKey:     library.CanonicalItemKey("douyin", "video", "7388001099"),
+				}
+				app.CurrentRoute = ui.RouteDouyinWork
+			},
+			RequiredLabels:  []string{"抖音作品作者站点标记", "缓存视频", "抖音视频封面播放", "抖音视频预览提示"},
+			ForbiddenLabels: []string{"升级缓存", "补存弹幕和字幕", "抖音本机缓存规格"},
 		},
 		{
 			Name: "cached-douyin-video",
@@ -1920,7 +2109,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.Transfer.ExportPath = `E:\trace-export-selected`
 				app.Transfer.ExportErr = ""
 			},
-			RequiredLabels: []string{"导出媒体库对话框", "导出范围", "开始导出"},
+			RequiredLabels: []string{"导出媒体库对话框", "导出范围", "选择导出文件夹", "开始导出"},
 			RequiredTexts:  []string{"导出媒体库", "已选 2 项"},
 		},
 		{
@@ -1933,7 +2122,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.LibrarySourceSortBySize = false
 				seedRecentAndLive()
 				app.Navigate(ui.RouteTasks)
-				app.TasksSection = "downloads"
+				app.TasksSection = ui.TasksSectionActive
+				app.TasksActiveTab = "downloads"
 				app.Tasks = []download.Task{
 					{
 						TaskID:          "task_demo_x",
@@ -2002,19 +2192,28 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.ExpandedTaskID = ""
 			},
 			RequiredLabels: []string{
+				"进行中子标签：下载任务",
+				"进行中子标签：缓存队列",
 				"任务站点：task_demo_x",
 				"任务站点：task_demo_wb",
 				"任务站点：task_demo_dy",
 				"任务站点：task_demo_run",
 			},
 			PanelRequiredLabels: []string{
-				"任务侧栏：下载任务",
-				"任务侧栏：缓存队列",
-				"任务侧栏：直播录制",
-				"任务侧栏：录制异常",
+				"任务侧栏：进行中",
+				"任务侧栏：直播",
+				"任务侧栏：待处理",
+				"任务侧栏：记录",
+			},
+			NarrowRequiredLabels: []string{
+				"任务分段：进行中",
+				"任务分段：直播",
+				"任务分段：待处理",
+				"任务分段：记录",
 			},
 			ForbiddenLabels: []string{
 				"录制站点：bilibili:9002",
+				"任务侧栏：检查计划",
 			},
 		},
 		{
@@ -2024,6 +2223,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.OpenCacheQueueTask("cq_demo_bili")
 			},
 			RequiredLabels: []string{
+				"进行中子标签：下载任务",
+				"进行中子标签：缓存队列",
 				"缓存队列卡片：cq_demo_bili",
 				"缓存队列卡片：cq_demo_dy",
 				"缓存队列卡片：cq_demo_wb",
@@ -2038,10 +2239,10 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"队列最近缓存：" + savedItem.ItemKey,
 			},
 			PanelRequiredLabels: []string{
-				"任务侧栏：下载任务",
-				"任务侧栏：缓存队列",
-				"任务侧栏：直播录制",
-				"任务侧栏：录制异常",
+				"任务侧栏：进行中",
+				"任务侧栏：直播",
+				"任务侧栏：待处理",
+				"任务侧栏：记录",
 			},
 		},
 		{
@@ -2049,6 +2250,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			Setup: func() {
 				seedRecentAndLive()
 				app.Navigate(ui.RouteTasks)
+				app.ExpandedLiveIncidentKeys = map[string]bool{}
+				app.ExpandLiveRowIncidents("bilibili:live:9002")
 				_ = app.OpenLivePreviewWithDecoder(
 					"bilibili:live:9002",
 					"独立游戏工坊 · 渲染管线与着色器实时调试",
@@ -2061,6 +2264,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"录制站点：bilibili:9002",
 				"录制站点：douyin:" + douyinSecUID,
 				"录制行异常：bilibili:live:9002",
+				"行内录制异常列表：bilibili:live:9002",
+				"行内异常条目：bilibili:live:9002#0",
 				"录制行异常：douyin:live:73990011",
 				"直播实时预览面板",
 				"直播实时预览标记",
@@ -2068,74 +2273,92 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"关闭直播实时预览",
 			},
 			PanelRequiredLabels: []string{
-				"任务侧栏：下载任务",
-				"任务侧栏：直播录制",
-				"任务侧栏：录制异常",
+				"任务侧栏：进行中",
+				"任务侧栏：直播",
+				"任务侧栏：待处理",
+				"任务侧栏：记录",
 			},
 			NarrowRequiredLabels: []string{
-				"任务分段：录制异常",
+				"任务分段：进行中",
+				"任务分段：直播",
+				"任务分段：待处理",
+				"任务分段：记录",
 			},
 			ForbiddenLabels: []string{
 				"弹幕开关",
+				"行内删除录制异常记录：bilibili:live:9002",
 			},
 		},
 		{
-			Name: "tasks-incidents",
+			Name: "tasks-attention",
 			Setup: func() {
 				seedRecentAndLive()
-				app.Navigate(ui.RouteTasks)
-				app.TasksSection = "incidents"
+				app.ConflictBatchChoice = service.DefaultConflictChoice
+				app.ConflictBatchConfirmOpen = false
+				app.ConflictReplaceConfirmID = ""
+				app.ConflictActionError = ""
+				app.TaskActionError = ""
+				app.TaskRemoveConfirmID = ""
+				app.Tasks = []download.Task{
+					{
+						TaskID:          "task_demo_fail",
+						Site:            "bilibili",
+						Kind:            "video",
+						TargetID:        "BV1yy411c7mE",
+						Title:           "示例分段失败任务（待处理汇总展示）",
+						Status:          "failed",
+						ErrorKind:       "network",
+						ErrorMessage:    "远端分段读取超时，已保留 .part 断点文件可重试",
+						LastError:       "远端分段读取超时，已保留 .part 断点文件可重试",
+						BytesDownloaded: 2097152,
+						TotalBytes:      8388608,
+						Progress:        0.25,
+					},
+				}
+				app.OpenTasksConflicts()
+				if len(app.CacheConflicts) > 1 {
+					app.CacheConflicts = app.CacheConflicts[:1]
+					app.CacheConflictPendingCount = 1
+				}
+				app.LiveAccounts = nil
 				app.SelectedLiveIncidentKey = "bilibili:live:9002"
 			},
 			RequiredLabels: []string{
+				"待处理分节：内容冲突",
+				"内容冲突顶部栏",
+				"内容冲突卡片：conflict_shot_bili",
+				"待处理分节：失败下载",
+				"待处理：批量重试",
+				"待处理下载卡片：task_demo_fail",
+				"待处理分节：录制异常",
 				"录制异常场次：bilibili:live:9002",
 				"异常场次站点：bilibili:live:9002",
 				"查看异常正在录制：bilibili:live:9002",
-				"异常条目：bilibili:live:9002#0",
-				"异常条目：bilibili:live:9002#1",
-				"录制异常场次：douyin:live:73990011",
-				"异常场次站点：douyin:live:73990011",
-				"异常条目：douyin:live:73990011#0",
-				"录制异常场次：" + savedLiveItem.ItemKey,
-				"打开异常录像详情：" + savedLiveItem.ItemKey,
 			},
 			PanelRequiredLabels: []string{
-				"任务侧栏：下载任务",
-				"任务侧栏：直播录制",
-				"任务侧栏：录制异常",
+				"任务侧栏：进行中",
+				"任务侧栏：直播",
+				"任务侧栏：待处理",
+				"任务侧栏：记录",
 			},
 			NarrowRequiredLabels: []string{
-				"任务分段：录制异常",
+				"任务分段：进行中",
+				"任务分段：直播",
+				"任务分段：待处理",
+				"任务分段：记录",
 			},
 			ForbiddenLabels: []string{
-				"录制异常空状态",
+				"待处理空状态",
 				"直播实时预览面板",
-			},
-		},
-		{
-			Name: "tasks-checks",
-			Setup: func() {
-				app.Navigate(ui.RouteTasks)
-				app.TasksSection = "checks"
-			},
-			RequiredLabels: []string{
-				"检查计划行 bilibili:20001",
-				"检查计划行 douyin:" + douyinSecUID,
-				"检查计划行 weibo:" + weiboUID,
-				"检查计划行 x:" + xUID,
-			},
-			PanelRequiredLabels: []string{
-				"任务侧栏：录制异常",
-				"任务侧栏：检查计划",
-			},
-			NarrowRequiredLabels: []string{
-				"任务分段：检查计划",
 			},
 		},
 		{
 			Name: "tasks-conflicts",
 			Setup: func() {
 				seedRecentAndLive()
+				app.Tasks = nil
+				app.LiveRooms = nil
+				app.LiveAccounts = nil
 				app.ConflictBatchChoice = service.DefaultConflictChoice
 				app.ConflictBatchConfirmOpen = false
 				app.ConflictActionError = ""
@@ -2168,14 +2391,16 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"冲突失败提示：conflict_shot_x",
 			},
 			PanelRequiredLabels: []string{
-				"任务侧栏：下载任务",
-				"任务侧栏：缓存队列",
-				"任务侧栏：内容冲突",
+				"任务侧栏：进行中",
+				"任务侧栏：直播",
+				"任务侧栏：待处理",
+				"任务侧栏：记录",
 			},
 			NarrowRequiredLabels: []string{
-				"任务分段：下载任务",
-				"任务分段：缓存队列",
-				"任务分段：内容冲突",
+				"任务分段：进行中",
+				"任务分段：直播",
+				"任务分段：待处理",
+				"任务分段：记录",
 			},
 			RequiredTexts: []string{
 				"内容冲突（3）",
@@ -2188,7 +2413,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"（本地原文件未改动）",
 			},
 			ForbiddenLabels: []string{
-				"内容冲突空状态",
+				"待处理空状态",
 			},
 		},
 		{
@@ -2389,10 +2614,61 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			RequiredLabels: []string{"播放器音量调节", "播放器静音"},
 		},
 		{
+			Name: "player-temp-preview",
+			Setup: func() {
+				app.ImageViewer.Open = false
+				app.Navigate(ui.RouteDouyinWork)
+				app.OpenPlayerOverlay(savedItem)
+				app.PlayerOverlay.ItemKey = ""
+				app.PlayerOverlay.Segments = nil
+				app.PlayerOverlay.Chapters = nil
+				app.PlayerOverlay.DecoderMissing = false
+				app.PlayerOverlay.MissingReason = ""
+				app.PlayerOverlay.LoadError = ""
+				app.PlayerOverlay.Loading = false
+				app.PlayerOverlay.Title = "川西日照金山短视频（未缓存可临时预览）"
+				app.PlayerOverlay.PreviewMode = true
+				app.PlayerOverlay.PreviewSite = "douyin"
+				app.PlayerOverlay.PreviewCacheQueued = false
+				app.PlayerOverlay.PreviewOnCache = func(context.Context) error { return nil }
+				app.PlayerOverlay.MoreMenuOpen = false
+				app.PlayerOverlay.VolumeMenuOpen = false
+			},
+			RequiredLabels:  []string{"临时预览标记", "临时预览缓存到媒体库", "播放器更多菜单", "关闭播放"},
+			ForbiddenLabels: []string{"播放层打开文件夹", "用系统播放器打开", "临时预览错误说明"},
+		},
+		{
+			Name: "player-temp-preview-error",
+			Setup: func() {
+				app.ImageViewer.Open = false
+				app.Navigate(ui.RouteDouyinWork)
+				app.OpenPlayerOverlay(savedItem)
+				app.PlayerOverlay.ItemKey = ""
+				app.PlayerOverlay.MediaPath = ""
+				app.PlayerOverlay.Segments = nil
+				app.PlayerOverlay.Chapters = nil
+				app.PlayerOverlay.DecoderMissing = false
+				app.PlayerOverlay.MissingReason = ""
+				app.PlayerOverlay.Loading = false
+				app.PlayerOverlay.Title = "超长 4K 原片临时预览超限示例"
+				app.PlayerOverlay.PreviewMode = true
+				app.PlayerOverlay.PreviewSite = "douyin"
+				app.PlayerOverlay.PreviewCacheQueued = false
+				app.PlayerOverlay.PreviewOnCache = func(context.Context) error { return nil }
+				app.PlayerOverlay.LoadError = "无法预览此视频：视频体积超过临时预览上限（128 MiB），请点击「缓存到媒体库」完整下载后观看"
+				app.PlayerOverlay.MoreMenuOpen = false
+				app.PlayerOverlay.VolumeMenuOpen = false
+			},
+			RequiredLabels:  []string{"临时预览标记", "临时预览缓存到媒体库", "临时预览错误说明", "预览失败缓存到媒体库"},
+			ForbiddenLabels: []string{"播放层打开文件夹", "用系统播放器打开"},
+		},
+		{
 			// "设置 › 更新" of a release build that updates itself.
 			Name: "settings-update",
 			Setup: func() {
 				app.PlayerOverlay.Open = false
+				app.PlayerOverlay.PreviewMode = false
+				app.PlayerOverlay.PreviewOnCache = nil
 				app.PlayerOverlay.VolumeMenuOpen = false
 				fixtureBackend.installedDevVer = ""
 				fixtureBackend.updateHist = &update.History{

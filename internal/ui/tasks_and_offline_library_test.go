@@ -766,25 +766,25 @@ func TestTasksSidebarSectionsAndCacheQueueDetail(t *testing.T) {
 	tt := ui.NewTester(app.View, 1280, 860)
 	tt.Frame()
 
-	// Downloads section is selected by default; recording rows must NOT appear on Downloads.
-	for _, must := range []string{"上下文侧栏", "任务侧栏：下载任务", "任务侧栏：缓存队列", "任务侧栏：直播录制", "任务侧栏：录制异常", "任务站点：dl_1"} {
+	// 进行中 section is selected by default; recording rows must NOT appear on 进行中.
+	for _, must := range []string{"上下文侧栏", "任务侧栏：进行中", "任务侧栏：直播", "任务侧栏：待处理", "任务侧栏：记录", "进行中子标签：下载任务", "进行中子标签：缓存队列", "任务站点：dl_1"} {
 		if _, ok := tt.Find(must); !ok {
 			t.Fatalf("missing control %q on RouteTasks", must)
 		}
 	}
 	if _, ok := tt.Find("录制站点：bilibili:9002"); ok {
-		t.Fatal("live recording row leaked into Downloads section")
+		t.Fatal("live recording row leaked into 进行中 section")
 	}
 
 	if _, ok := tt.Find("任务侧栏：队列：cq_run"); ok {
-		t.Fatal("queues are listed in the sidebar instead of the 缓存队列 page")
+		t.Fatal("queues are listed in the sidebar instead of the 缓存队列 sub-view")
 	}
-	if !tt.HasText("缓存队列（2）") {
-		t.Fatal("the sidebar does not count the two unfinished queues")
+	if !tt.HasText("进行中（4）") || !tt.HasText("缓存队列（2）") {
+		t.Fatal("expected 进行中（4） (2 downloads + 2 queues) and 缓存队列（2） sub-tab")
 	}
 
-	// The Cache Queue page lists every queue as a card, closed.
-	if err := tt.Click("任务侧栏：缓存队列"); err != nil {
+	// Switch to 缓存队列 sub-tab inside 进行中: lists every queue as a card, closed.
+	if err := tt.Click("进行中子标签：缓存队列"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
@@ -853,13 +853,13 @@ func TestTasksSidebarSectionsAndCacheQueueDetail(t *testing.T) {
 		t.Fatalf("removing a cache queue must not delete cached library items: ok=%v err=%v", stillCached, err)
 	}
 
-	// Switch to Live Recordings section via sidebar.
-	if err := tt.Click("任务侧栏：直播录制"); err != nil {
+	// Switch to Live section via sidebar.
+	if err := tt.Click("任务侧栏：直播"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
 	if _, ok := tt.Find("录制站点：bilibili:9002"); !ok {
-		t.Fatal("expected active live recording row in Live Recordings section")
+		t.Fatal("expected active live recording row in Live section")
 	}
 
 	// Narrow window (<1000px) uses top segmented selector without horizontal overflow.
@@ -872,11 +872,11 @@ func TestTasksSidebarSectionsAndCacheQueueDetail(t *testing.T) {
 	if !ok || centerRect.X+centerRect.W > 720.5 {
 		t.Fatalf("narrow /tasks overflowed horizontally: %+v", centerRect)
 	}
-	if err := ttNarrow.Click("任务分段：下载任务"); err != nil {
+	if err := ttNarrow.Click("任务分段：进行中"); err != nil {
 		t.Fatal(err)
 	}
 	ttNarrow.Frame()
-	if app.effectiveTasksSection() != "downloads" {
+	if app.effectiveTasksSection() != TasksSectionActive {
 		t.Fatalf("narrow segment switch failed: %s", app.effectiveTasksSection())
 	}
 }
@@ -1059,8 +1059,8 @@ func TestTasksLiveRecordingRealTimePreviewAndHandleRelease(t *testing.T) {
 		t.Fatalf("expected 0 site requests during live preview, got %d", got)
 	}
 
-	// 3. Leaving the Live Recordings tab immediately closes preview and releases file handles.
-	if err := tt.Click("任务侧栏：下载任务"); err != nil {
+	// 3. Leaving the Live section immediately closes preview and releases file handles.
+	if err := tt.Click("任务侧栏：进行中"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
@@ -1078,7 +1078,7 @@ func TestTasksLiveRecordingRealTimePreviewAndHandleRelease(t *testing.T) {
 
 	// 4. Re-open preview, then click "停止录制" (with only Bilibili recording left) -> handle released before StopLiveRecording renames .part!
 	app.LiveAccounts = nil
-	if err := tt.Click("任务侧栏：直播录制"); err != nil {
+	if err := tt.Click("任务侧栏：直播"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()

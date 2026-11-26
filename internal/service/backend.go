@@ -91,6 +91,7 @@ type Backend struct {
 	avatarInflight              sync.Map
 	logPath                     string
 	previewDir                  string
+	maxPreviewBytes             int64
 	corruptFiles                []string
 	updateHistory               *update.HistoryStore
 	installedDevVersion         func() string
@@ -282,6 +283,7 @@ func NewBackend(opts Options) (*Backend, error) {
 	}
 
 	previewDir := filepath.Join(loc.DataDir, "cache", "preview")
+	sweepPreviewDir(previewDir)
 	_ = os.MkdirAll(previewDir, 0o700)
 
 	evBus := newEventBus()
@@ -321,6 +323,7 @@ func NewBackend(opts Options) (*Backend, error) {
 		remote:                      &remoteLink{},
 		logPath:                     filepath.Join(loc.LogsDir, "trace.log"),
 		previewDir:                  previewDir,
+		maxPreviewBytes:             maxPreviewMediaBytes,
 		corruptFiles:                corruptBackups,
 	}
 	if err := b.initUpdateHistory(opts); err != nil {

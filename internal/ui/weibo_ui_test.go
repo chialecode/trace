@@ -600,16 +600,15 @@ func TestSettingsAccountThreeGroupsRemoteAndCheckPlanWeibo(t *testing.T) {
 		t.Fatal("expected Settings › Remote to display 微博 login status row")
 	}
 
-	// Tasks › Check Plan lists Weibo account & displays LiveNote when rule enables auto-record.
-	app.Navigate(RouteTasks)
-	app.TasksSection = "checks"
+	// 订阅 › 检查计划 lists Weibo account & displays LiveNote when rule enables auto-record.
+	app.OpenSubscriptionChecks()
 	app.checkPlanAt = time.Time{}
 	tt.Frame()
 	if _, ok := tt.Find("检查计划行 weibo:500000001"); !ok {
-		t.Fatal("expected Weibo account row in Tasks › 检查计划")
+		t.Fatal("expected Weibo account row in 订阅 › 检查计划")
 	}
 	if _, ok := tt.Find("检查计划直播说明：weibo:500000001"); !ok || !tt.HasText("微博直播暂不支持录制") {
-		t.Fatal("expected Weibo LiveNote (微博直播暂不支持录制) in Tasks › 检查计划")
+		t.Fatal("expected Weibo LiveNote (微博直播暂不支持录制) in 订阅 › 检查计划")
 	}
 }
 

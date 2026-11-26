@@ -10,11 +10,11 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// Tasks › 检查计划 lists each subscribed account with its last update check
+// 订阅 › 检查计划 lists each subscribed account with its last update check
 // and when it is checked next; an account whose rule checks only by hand
 // says so, and a subscription that records broadcasts shows its live
-// checks too (dev feedback 2026-11-18).
-func TestTasksCheckPlanSection(t *testing.T) {
+// checks too (DEC-059, moved from Tasks to Subscriptions in DEC-081).
+func TestSubscriptionsCheckPlanSection(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
 	defer cleanup()
 	if _, err := app.backend.ImportCookie(context.Background(), "SESSDATA=fixture; DedeUserID=12345", ""); err != nil {
@@ -27,15 +27,16 @@ func TestTasksCheckPlanSection(t *testing.T) {
 	if _, err := app.backend.CreateSubscription("手动", "", []subscription.AccountRef{{Site: "bilibili", UID: "5002", Name: "manual author"}}, subscription.SubRules{}); err != nil {
 		t.Fatal(err)
 	}
-	app.Navigate(RouteTasks)
+	// Open via /subscriptions/checks directly first (before grid live refresh runs)
+	// so the live check line deterministically shows "本次运行还没有查过".
+	app.Navigate(RouteSubscriptions + "/checks")
 	tt := ui.NewTester(app.View, 1280, 860)
-	tt.Frame()
-	if err := tt.Click("任务侧栏：检查计划"); err != nil {
-		t.Fatal(err)
-	}
 	settle(tt, 2)
-	if app.effectiveTasksSection() != "checks" {
-		t.Fatalf("section %q", app.effectiveTasksSection())
+	if !app.SubChecksOpen || app.SubDetailOpen || app.SubAccountsOpen {
+		t.Fatalf("expected SubChecksOpen only, got checks=%v detail=%v accounts=%v", app.SubChecksOpen, app.SubDetailOpen, app.SubAccountsOpen)
+	}
+	if got := app.currentReturnRoute(); got != RouteSubscriptions+"/checks" {
+		t.Fatalf("currentReturnRoute() = %q, want %q", got, RouteSubscriptions+"/checks")
 	}
 	for _, want := range []string{"scheduled author", "manual author", "只手动检查", "更新检查：还没有检查过"} {
 		if !tt.HasText(want) {
@@ -43,7 +44,23 @@ func TestTasksCheckPlanSection(t *testing.T) {
 		}
 	}
 	if !tt.HasText("开播检查：本次运行还没有查过 · 约每 3 分钟") {
-		t.Error("the recording subscription's live checks are not shown")
+		t.Errorf("the recording subscription's live checks are not shown in %v", tt.Texts())
+	}
+
+	// Verify switching away and back via the Subscriptions context sidebar item.
+	if err := tt.Click("订阅侧栏：全部账号"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !app.SubAccountsOpen || app.SubChecksOpen {
+		t.Fatalf("expected SubAccountsOpen after clicking 全部账号, got accounts=%v checks=%v", app.SubAccountsOpen, app.SubChecksOpen)
+	}
+	if err := tt.Click("订阅侧栏：检查计划"); err != nil {
+		t.Fatal(err)
+	}
+	settle(tt, 2)
+	if !app.SubChecksOpen || app.SubDetailOpen || app.SubAccountsOpen {
+		t.Fatalf("expected SubChecksOpen after sidebar click, got checks=%v detail=%v accounts=%v", app.SubChecksOpen, app.SubDetailOpen, app.SubAccountsOpen)
 	}
 	rows := app.checkPlanRows()
 	for _, r := range rows {
@@ -87,8 +104,22 @@ func TestTasksCheckPlanSection(t *testing.T) {
 
 	narrow := ui.NewTester(app.View, 720, 860)
 	narrow.Frame()
-	if _, ok := narrow.Find("任务分段：检查计划"); !ok {
-		t.Fatal("narrow window has no 检查计划 segment")
+	for _, lbl := range []string{"订阅页全部订阅", "订阅页全部账号", "订阅页检查计划"} {
+		r, ok := narrow.Find(lbl)
+		if !ok {
+			t.Fatalf("narrow window missing %q", lbl)
+		}
+		if r.X < -0.5 || r.X+r.W > 720.5 || r.W <= 0 || r.H <= 0 {
+			t.Fatalf("narrow window %q overflowed 720px: %+v", lbl, r)
+		}
+	}
+
+	// Route /subscriptions/checks opens Check Plan directly.
+	app.Navigate(RouteHome)
+	app.Navigate(RouteSubscriptions + "/checks")
+	tt.Frame()
+	if app.CurrentRoute != RouteSubscriptions || !app.SubChecksOpen || app.SubDetailOpen || app.SubAccountsOpen {
+		t.Fatalf("route /subscriptions/checks failed: route=%s checks=%v detail=%v accounts=%v", app.CurrentRoute, app.SubChecksOpen, app.SubDetailOpen, app.SubAccountsOpen)
 	}
 }
 

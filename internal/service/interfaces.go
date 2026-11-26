@@ -168,6 +168,17 @@ type HistoryService interface {
 	HistoryThumbPath(name string) (string, error)
 }
 
+// BackfillSummaryDTO summarizes offline-detectable historical cache items that can
+// be upgraded to the latest cache standard with zero network requests (DEC-079).
+type BackfillSummaryDTO struct {
+	WeiboMissingNoWM         int `json:"weiboMissingNoWm"`
+	WeiboLegacyLinks         int `json:"weiboLegacyLinks"`
+	WeiboFastCDNCandidates   int `json:"weiboFastCdnCandidates"`
+	WeiboSubscribedCount     int `json:"weiboSubscribedCount"`
+	WeiboFallbackDetailCount int `json:"weiboFallbackDetailCount"`
+	TotalItems               int `json:"totalItems"`
+}
+
 // CacheService defines download queue, background list cache queue, supplement, and quality upgrade operations.
 type CacheService interface {
 	EnqueueVideoCache(ctx context.Context, req download.VideoEnqueueRequest) ([]download.Task, error)
@@ -177,6 +188,9 @@ type CacheService interface {
 	CacheWeiboPost(ctx context.Context, mid string, via *library.ItemVia) (download.Task, error)
 	CacheWeiboVideo(ctx context.Context, oid string) (download.Task, error)
 	CacheXPost(ctx context.Context, statusID string, via *library.ItemVia) (download.Task, error)
+	ForceRecacheItem(ctx context.Context, itemKey string) (download.Task, error)
+	BackfillSummary() (BackfillSummaryDTO, error)
+	StartWeiboBackfill(ctx context.Context) (CacheQueueTask, error)
 	ListCacheQueue() []CacheQueueTask
 	FindCacheQueueTask(siteID, user, list string) (CacheQueueTask, bool)
 	EnqueueCacheQueue(ctx context.Context, req CacheQueueRequest) (CacheQueueTask, error)

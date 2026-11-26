@@ -71,7 +71,12 @@ func (a *App) applySubscriptionRouteNavigate(rawRoute string) {
 	if strings.EqualFold(subID, "accounts") {
 		a.SubDetailOpen = false
 		a.SubAccountsOpen = true
+		a.SubChecksOpen = false
 		a.refreshAccountWorks()
+		return
+	}
+	if strings.EqualFold(subID, "checks") {
+		a.openSubscriptionChecks()
 		return
 	}
 	for i := range a.Subscriptions {
@@ -81,6 +86,7 @@ func (a *App) applySubscriptionRouteNavigate(rawRoute string) {
 			a.SelectedSubMid = sub.Mid
 			a.SubDetailOpen = true
 			a.SubAccountsOpen = false
+			a.SubChecksOpen = false
 			a.SubDetailTab = normalizeSubDetailTab(a.SubDetailTab)
 			a.refreshAccountWorks()
 			a.syncSelectedSubRules(sub)
@@ -504,10 +510,10 @@ func (a *App) renderSubscriptionContentTab(c *ui.Context, sub *subscription.Subs
 	}
 
 	if len(a.SubFeedItems) == 0 {
-		ui.Column(c).Grow(1).FillWidth().Padding(48, 24).AlignItems(ui.Center).Gap(10).ClipX().Children(func() {
+		ui.Column(c).Label("订阅内容空状态说明").Grow(1).FillWidth().Padding(48, 24).AlignItems(ui.Center).Gap(10).ClipX().Children(func() {
 			ui.Text(c, "还没有缓存这个订阅的内容").FontSize(17).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-			ui.Text(c, "可在右上角「⋯」菜单点「检查更新」，新缓存的动态、视频、作品和直播录像都会出现在这里。").
-				FontSize(14).TextColor(ColorTextMuted).MaxLines(2)
+			ui.Text(c, subscriptionEmptyStateHint(*sub)).
+				FontSize(14).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(3)
 		})
 		return
 	}
@@ -536,6 +542,30 @@ func (a *App) renderSubscriptionContentTab(c *ui.Context, sub *subscription.Subs
 			})
 		}
 	}).Label("订阅内容信息流列表").Grow(1).FillWidth()
+}
+
+// subscriptionEmptyStateHint tailors the empty content-tab explanation to the
+// subscription's actual capability tags without issuing any site requests (DEC-080).
+func subscriptionEmptyStateHint(sub subscription.Subscription) string {
+	if len(subscriptionEffectiveAccounts(sub)) == 0 {
+		return "还没有关联站点账号。切换到「账号」标签关联账号后，即可开始追踪和缓存内容。"
+	}
+	tags := effectiveSubTags(sub)
+	hasFull := subscription.HasTag(tags, subscription.TagFullCache)
+	hasAutoCache := subscription.HasAnyAutoCacheTag(tags)
+	hasSched := subscription.HasTag(tags, subscription.TagScheduledCheck)
+	switch {
+	case hasFull:
+		return "已开启「全部缓存」，后台慢速缓存队列会陆续补齐该订阅的历史作品；也可以切到「账号」打开主页，立即浏览并手动缓存。"
+	case hasAutoCache && hasSched:
+		return "已开启自动缓存，之后新发布的内容会自动追踪并缓存到这里；以前的作品可以切到「账号」打开主页浏览或手动缓存。"
+	case hasAutoCache && !hasSched:
+		return "已开启自动缓存但未开启「定时检查」，仅在手动检查更新时才会追踪新内容；可在上方切换追踪模式，或切到「账号」打开主页手动缓存。"
+	case hasSched:
+		return "当前仅检查新动态、未开启自动缓存。可在上方切换追踪模式以自动缓存，或切到「账号」打开主页浏览并手动缓存。"
+	default:
+		return "当前未开启自动缓存。可在上方选择追踪模式（如「完整存档」或「追更并保存」），或切到「账号」打开主页浏览并手动缓存。"
+	}
 }
 
 func formatSubscriptionAccountIdent(acc subscription.AccountRef) string {

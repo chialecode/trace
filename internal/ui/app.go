@@ -84,35 +84,43 @@ type ImageViewerState struct {
 
 // PlayerOverlayState holds state for the in-app media player overlay.
 type PlayerOverlayState struct {
-	Open             bool
-	ItemKey          string
-	Title            string
-	MediaPath        string
-	Loading          bool
-	LoadError        string
-	Segment          int
-	Segments         []string
-	Chapters         []library.VideoChapter
-	PendingSeekSec   float64
-	DecoderMissing   bool
-	MissingReason    string
-	SeekNormalized   float64
-	DanmakuEnabled   bool
-	DanmakuOpacity   float64
-	DanmakuArea      string
-	DanmakuDensity   string
-	Volume           float64
-	VolumeMenuOpen   bool
-	SubtitleLang     string
-	SubtitleOptions  []string
-	MoreMenuOpen     bool
-	Fullscreen       bool
-	LoopMuted        bool
-	LoopPaused       bool
-	LastActiveAt     time.Time
-	ControlsHidden   bool
-	volumeScrubbing  bool
-	opacityScrubbing bool
+	Open               bool
+	ItemKey            string
+	Title              string
+	MediaPath          string
+	Loading            bool
+	LoadError          string
+	Segment            int
+	Segments           []string
+	Chapters           []library.VideoChapter
+	PendingSeekSec     float64
+	DecoderMissing     bool
+	MissingReason      string
+	SeekNormalized     float64
+	DanmakuEnabled     bool
+	DanmakuOpacity     float64
+	DanmakuArea        string
+	DanmakuDensity     string
+	Volume             float64
+	VolumeMenuOpen     bool
+	SubtitleLang       string
+	SubtitleOptions    []string
+	MoreMenuOpen       bool
+	Fullscreen         bool
+	LoopMuted          bool
+	LoopPaused         bool
+	PreviewMode        bool
+	PreviewSite        string
+	PreviewItemKey     string
+	PreviewPendingKey  string
+	PreviewCacheQueued bool
+	PreviewCacheError  string
+	PreviewCacheToast  string
+	PreviewOnCache     func(context.Context) error
+	LastActiveAt       time.Time
+	ControlsHidden     bool
+	volumeScrubbing    bool
+	opacityScrubbing   bool
 }
 
 // DeleteConfirmState holds state for the library item deletion confirmation modal.
@@ -125,6 +133,13 @@ type DeleteConfirmState struct {
 	FileCount   int
 	TotalBytes  int64
 	DeleteFiles bool
+}
+
+// ForceRecacheConfirmState holds state for the manual force-redownload confirmation modal.
+type ForceRecacheConfirmState struct {
+	Open    bool
+	ItemKey string
+	Title   string
 }
 
 // HomeUpdatedActor is a subscription as a row of the Home panel, with its
@@ -181,8 +196,10 @@ type App struct {
 	pending              map[string]bool
 	closed               bool
 	fullscreen           func(bool)
+	fileDialog           FileDialogHandler
 	imageViewerRevision  uint64
 	imageViewerCancel    context.CancelFunc
+	playerPreviewCancel  context.CancelFunc
 	runtimeDiagnostics   service.Diagnostics
 	runtimeLogLines      []string
 	runtimeLogError      string
@@ -459,7 +476,9 @@ type App struct {
 	SelectedSubMid int64
 	SubDetailOpen  bool
 	// SubAccountsOpen shows 订阅 › 全部账号 (accounts by site, DEC-057).
-	SubAccountsOpen      bool
+	SubAccountsOpen bool
+	// SubChecksOpen shows 订阅 › 检查计划 (DEC-081, moved from Tasks).
+	SubChecksOpen        bool
 	SubAccountsSite      string
 	SubAccountsListState ui.ListState
 	SubMoreMenuOpen      bool
@@ -472,15 +491,16 @@ type App struct {
 	SubFeedRefsKey       string
 	SubFeedItems         []library.FeedEntry
 	SubFeedListState     *ui.ListState
-	// checkPlan is Tasks › 检查计划 as last read, at checkPlanAt.
+	// checkPlan is 订阅 › 检查计划 as last read, at checkPlanAt.
 	checkPlan   []service.AccountCheckRow
 	checkPlanAt time.Time
 	// checkingAccount is the "<site>:<uid>" a 检查计划 row is checking.
-	checkingAccount  string
-	SubFeedMoreAfter bool
-	SubFeedError     string
-	subFeedDirty     bool
-	SubRuleMenuOpen  bool
+	checkingAccount    string
+	SubFeedMoreAfter   bool
+	SubFeedError       string
+	subFeedDirty       bool
+	SubRuleMenuOpen    bool
+	SubCustomTagsSubID string
 	// RuleBatch manages subscriptions of one capability tag; MultiTagBatch
 	// batch-adds, removes, or replaces multiple capability tags across subscriptions.
 	RuleBatch     RuleBatchDialogState
@@ -489,13 +509,17 @@ type App struct {
 	LibraryRefresh LibraryRefreshState
 	// Remote is Settings › 远程; Transfer is 媒体库 › 导入…/导出…; SubFile is
 	// 订阅 › 导出订阅…/导入订阅… (docs/design/remote.md §6.3, §6.4, §7).
-	Remote           RemoteUIState
-	remoteGen        uint64
-	Transfer         TransferUIState
-	SubFile          SubFileUIState
-	subImportGen     uint64
-	SubLinks         SubLinksModalState
-	AddSubDialogOpen bool
+	Remote            RemoteUIState
+	remoteGen         uint64
+	Transfer          TransferUIState
+	transferImportGen uint64
+	transferExportGen uint64
+	SubFile           SubFileUIState
+	subExportGen      uint64
+	subImportGen      uint64
+	SubLinks          SubLinksModalState
+	AddSubDialogOpen  bool
+	AddSubPreset      TrackingPresetPickerState
 	// SubscribePicker subscribes to an account: into an existing
 	// subscription or a new one (DEC-058).
 	SubscribePicker     SubscribePickerState
@@ -513,6 +537,7 @@ type App struct {
 	AccountPreviewSubID string
 	AccountPreviewOwner string
 	ImportSubModalOpen  bool
+	ImportPreset        TrackingPresetPickerState
 	importFollowingsSeq uint64
 	ImportSite          string // "bilibili" | "weibo" | "x"
 	ImportFollowings    []bilibili.FollowingUser
@@ -564,11 +589,15 @@ type App struct {
 	LibrarySelectedKeys     map[string]bool
 	ExpandedItemKey         string
 	DeleteConfirm           DeleteConfirmState
+	ForceRecacheConfirm     ForceRecacheConfirmState
+	BackfillSummary         service.BackfillSummaryDTO
 
-	// Tasks Page
-	TasksSection              string // "downloads" | "queue" | "conflicts" | "live" | "incidents" | "checks" | "transfers"
+	// Tasks Page (4 sections: "active" | "live" | "attention" | "records", DEC-081)
+	TasksSection              string // "active" | "live" | "attention" | "records" (legacy keys normalized in effectiveTasksSection)
+	TasksActiveTab            string // "downloads" | "queue" sub-tab inside "active"
 	SelectedCacheQueueID      string
 	SelectedLiveIncidentKey   string
+	ExpandedLiveIncidentKeys  map[string]bool
 	liveLibItemsCache         []library.ItemMetadata
 	liveLibItemsCacheRev      int
 	CacheQueue                []service.CacheQueueTask
@@ -681,37 +710,39 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{
-		ctx:                 ctx,
-		cancel:              cancel,
-		pending:             make(map[string]bool),
-		imageQueue:          make(chan struct{}, 2),
-		ExpandedPosts:       make(map[string]bool),
-		expiredNoticeShown:  make(map[string]bool),
-		backend:             backend,
-		player:              ctrl,
-		bgmPlayer:           bgmCtrl,
-		viewerPlayer:        viewerCtrl,
-		livePreviewPlayer:   livePreviewCtrl,
-		CurrentRoute:        initialRoute,
-		LoginSite:           loginSite,
-		LoginTab:            "qr",
-		FeedSortOrder:       "newest",
-		FeedSiteFilter:      normalizeSiteFilter(uiSt.FeedFilter.Site),
-		SelectedPartPages:   make(map[int]bool),
-		UserTab:             "dynamics",
-		SubDetailTab:        normalizeSubDetailTab(uiSt.SubDetailTab),
-		ImportSite:          string(site.Bilibili),
-		ImportSelectedMids:  make(map[int64]bool),
-		ImportSelectedKeys:  make(map[string]bool),
-		LibrarySiteFilter:   "all",
-		LibrarySort:         "pub_ts",
-		LibrarySelectedKeys: make(map[string]bool),
-		TasksSection:        "downloads",
-		ConflictBatchChoice: service.DefaultConflictChoice,
-		SettingsCategory:    "account",
-		DraftSettings:       s,
-		CacheDirInput:       s.CacheDir,
-		MoveExistingFiles:   true,
+		ctx:                      ctx,
+		cancel:                   cancel,
+		pending:                  make(map[string]bool),
+		imageQueue:               make(chan struct{}, 2),
+		ExpandedPosts:            make(map[string]bool),
+		expiredNoticeShown:       make(map[string]bool),
+		backend:                  backend,
+		player:                   ctrl,
+		bgmPlayer:                bgmCtrl,
+		viewerPlayer:             viewerCtrl,
+		livePreviewPlayer:        livePreviewCtrl,
+		CurrentRoute:             initialRoute,
+		LoginSite:                loginSite,
+		LoginTab:                 "qr",
+		FeedSortOrder:            "newest",
+		FeedSiteFilter:           normalizeSiteFilter(uiSt.FeedFilter.Site),
+		SelectedPartPages:        make(map[int]bool),
+		UserTab:                  "dynamics",
+		SubDetailTab:             normalizeSubDetailTab(uiSt.SubDetailTab),
+		ImportSite:               string(site.Bilibili),
+		ImportSelectedMids:       make(map[int64]bool),
+		ImportSelectedKeys:       make(map[string]bool),
+		LibrarySiteFilter:        "all",
+		LibrarySort:              "pub_ts",
+		LibrarySelectedKeys:      make(map[string]bool),
+		TasksSection:             TasksSectionActive,
+		TasksActiveTab:           "downloads",
+		ExpandedLiveIncidentKeys: make(map[string]bool),
+		ConflictBatchChoice:      service.DefaultConflictChoice,
+		SettingsCategory:         "account",
+		DraftSettings:            s,
+		CacheDirInput:            s.CacheDir,
+		MoveExistingFiles:        true,
 		PlayerOverlay: PlayerOverlayState{
 			DanmakuEnabled:  uiSt.Player.DanmakuVisible,
 			DanmakuOpacity:  uiSt.Player.DanmakuOpacity,
@@ -871,6 +902,7 @@ func (a *App) handleBackendEvent(ev service.Event) {
 	case service.EventSettingsChanged:
 		a.cachedDiagAt = time.Time{}
 		a.cachedUpdateHistAt = time.Time{}
+		a.refreshBackfillSummary()
 	case service.EventAccountChanged:
 		a.cacheStateRev++ // dots read "登录后查看" while signed out
 		a.cachedDiagAt = time.Time{}
@@ -892,6 +924,7 @@ func (a *App) handleBackendEvent(ev service.Event) {
 	case service.EventCacheQueueUpdated:
 		a.cacheStateRev++
 		a.CacheQueue = a.backend.ListCacheQueue()
+		a.refreshBackfillSummary()
 	case service.EventCacheConflictsChanged:
 		a.cacheStateRev++
 		a.refreshCacheConflicts()
@@ -911,6 +944,7 @@ func (a *App) handleBackendEvent(ev service.Event) {
 				a.libraryItemsDirty = a.CurrentRoute != RouteLibrary && a.CurrentRoute != RouteLibraryItem
 			} else {
 				a.refreshLibraryStatistics()
+				a.refreshBackfillSummary()
 				a.refreshAccountWorks()
 				if len(a.FeedItems) == 0 && a.HomeActorFilter == nil {
 					a.loadInitialFeed()
@@ -962,6 +996,7 @@ func (a *App) RefreshData() {
 	a.cachedDiagAt = time.Time{}
 	a.HistoryItems = a.backend.ListHistory()
 	a.refreshLibraryStatistics()
+	a.refreshBackfillSummary()
 	if len(a.FeedItems) == 0 {
 		a.loadInitialFeed()
 	}
@@ -1059,7 +1094,7 @@ func maxInt(a, b int) int {
 func (a *App) View(c *ui.Context) {
 	c.SetTheme(TraceTheme())
 
-	if a.PlayerOverlay.Open {
+	if a.PlayerOverlay.Open && a.player != nil {
 		a.player.Advance(0)
 		snap := a.player.Snapshot(1, 1)
 		if snap.Playing {
@@ -1187,6 +1222,9 @@ func (a *App) View(c *ui.Context) {
 	if a.DeleteConfirm.Open {
 		a.renderDeleteConfirmOverlay(c, w, h)
 	}
+	if a.ForceRecacheConfirm.Open {
+		a.renderForceRecacheConfirmOverlay(c, w, h)
+	}
 	if a.RestartConfirmOpen && a.updater != nil {
 		a.renderRestartConfirmOverlay(c, w, h)
 	}
@@ -1237,6 +1275,7 @@ func (a *App) hasOpenModalOverlay() bool {
 	return a.ConfirmLogoutOpen ||
 		a.Remote.ConfirmPushXOpen ||
 		a.DeleteConfirm.Open ||
+		a.ForceRecacheConfirm.Open ||
 		(a.RestartConfirmOpen && a.updater != nil) ||
 		a.AddSubDialogOpen ||
 		a.SubLinks.Open ||

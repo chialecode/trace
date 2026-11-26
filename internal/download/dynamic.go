@@ -32,6 +32,7 @@ func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error
 
 	storedMode, _ := m.taskResolutionAndPages(t.TaskID)
 	mode := effectiveConflictResolution(ctx, t.ConflictResolution, storedMode)
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite, m.taskForceOverwrite(t.TaskID))
 
 	previous, exists, err := m.lib.GetItem("dynamic:" + t.TargetID)
 	if err != nil {
@@ -135,11 +136,15 @@ func (m *Manager) executeDynamicTask(ctx context.Context, t *Task) (result error
 		if degErr != nil {
 			return degErr
 		}
-		if isConflict && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
+		if isConflict && !forceOverwrite && mode != ConflictResolveKeepBoth && mode != ConflictResolveUseRemote {
 			m.emitConflict(notice)
 			return ErrConflictDetected
 		}
-		return m.executeBilibiliDynamicStaged(ctx, t, dyn, previous, itemDir, authorDir, cacheRoot, forward, multiPart, videoRefs, dynAssets, mode, isConflict)
+		effectiveMode := mode
+		if forceOverwrite && effectiveMode == "" {
+			effectiveMode = ConflictResolveUseRemote
+		}
+		return m.executeBilibiliDynamicStaged(ctx, t, dyn, previous, itemDir, authorDir, cacheRoot, forward, multiPart, videoRefs, dynAssets, effectiveMode, isConflict)
 	}
 
 	for idx, img := range dyn.Images {
@@ -504,6 +509,7 @@ func (m *Manager) executeBilibiliDynamicStaged(
 		_ = library.RemoveTempSubdirSafe(itemDir, stageDir)
 	}()
 
+	forceOverwrite := effectiveForceOverwrite(ctx, t.Source, t.ForceOverwrite)
 	var mediaFiles []library.MediaFile
 	var partialErrors []string
 
@@ -518,16 +524,18 @@ func (m *Manager) executeBilibiliDynamicStaged(
 			return err
 		}
 		mediaFiles = append(mediaFiles, library.MediaFile{Role: "snapshot", Path: "orig.json", Bytes: n, SHA256: sha})
-	} else if !isConflict && mediaIsValid(previous, "orig.json") {
+	} else if !isConflict && !forceOverwrite && mediaIsValid(previous, "orig.json") {
 		if mf, err := copyLocalMediaToStageAs(previous, "orig.json", "orig.json", "snapshot", stageDir); err == nil {
 			mediaFiles = append(mediaFiles, *mf)
 		}
 	}
 
 	localBySource := make(map[string]library.MediaFile, len(previous.Media))
-	for _, mf := range previous.Media {
-		if mf.Role == "image" && mf.Source != "" && mediaIsValid(previous, mf.Path) {
-			localBySource[bilibiliSourceKey(mf.Source)] = mf
+	if !forceOverwrite {
+		for _, mf := range previous.Media {
+			if mf.Role == "image" && mf.Source != "" && mediaIsValid(previous, mf.Path) {
+				localBySource[bilibiliSourceKey(mf.Source)] = mf
+			}
 		}
 	}
 
@@ -568,7 +576,7 @@ func (m *Manager) executeBilibiliDynamicStaged(
 					if isStopError(dlErr) || isStorageError(dlErr) || ctx.Err() != nil {
 						return dlErr
 					}
-					if isDegradedSiteError(dlErr) && isConflict {
+					if isDegradedSiteError(dlErr) && (isConflict || forceOverwrite) {
 						return wrapRemoteDegraded(dlErr)
 					}
 					partialErrors = append(partialErrors, fmt.Sprintf("img_%02d: %v", idx+1, dlErr))
@@ -668,6 +676,7 @@ func (m *Manager) executeBilibiliDynamicStaged(
 				Page:               page.Page,
 				Source:             t.Source,
 				ConflictResolution: mode,
+				ForceOverwrite:     forceOverwrite,
 				LinkedVideo:        true,
 				ProgressOwner:      t,
 				ProgressPrefix:     "videos/" + v.BVID + "/",
@@ -696,7 +705,7 @@ func (m *Manager) executeBilibiliDynamicStaged(
 		}
 	}
 
-	if len(partialErrors) > 0 && isConflict {
+	if len(partialErrors) > 0 && (isConflict || forceOverwrite) {
 		return wrapRemoteDegradedMsg(fmt.Sprintf("新版部分媒体已失效，已保留本地原文件 (%s)", strings.Join(partialErrors, "; ")))
 	}
 
@@ -709,9 +718,9 @@ func (m *Manager) executeBilibiliDynamicStaged(
 			missing = append(missing, library.MissingRecord{Item: "media", Reason: pe})
 		}
 	}
-	mediaFiles, _ = preserveValidPreviousImagesForStage(itemDir, stageDir, previous, !isConflict, mediaFiles, nil)
+	mediaFiles, _ = preserveValidPreviousImagesForStage(itemDir, stageDir, previous, !isConflict && !forceOverwrite, mediaFiles, nil)
 	v2Text := dyn.Text
-	if !isConflict {
+	if !isConflict && !forceOverwrite {
 		v2Text = preserveMonotonicText(previous.Text, dyn.Text, false)
 	}
 	v2Meta := library.ItemMetadata{

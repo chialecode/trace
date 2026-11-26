@@ -81,6 +81,7 @@ func transferCategoryText(cat transfer.Category) string {
 func (a *App) openImportPage() {
 	a.exitLibrarySelectMode()
 	a.Navigate(RouteLibrary)
+	a.transferImportGen++
 	a.Transfer.ImportPage = true
 	a.Transfer.ImportErr = ""
 	if a.Transfer.JobID != "" && a.Transfer.Plan == nil {
@@ -89,6 +90,7 @@ func (a *App) openImportPage() {
 }
 
 func (a *App) openExportDialog() {
+	a.transferExportGen++
 	a.Transfer.ExportOpen = true
 	a.Transfer.ExportErr = ""
 	if a.Transfer.ExportScope == "" || (a.Transfer.ExportScope == "selected" && a.librarySelectedCount() == 0) {
@@ -97,6 +99,7 @@ func (a *App) openExportDialog() {
 }
 
 func (a *App) openBatchExportDialog() {
+	a.transferExportGen++
 	a.Transfer.ExportOpen = true
 	a.Transfer.ExportErr = ""
 	if a.librarySelectedCount() > 0 {
@@ -104,6 +107,12 @@ func (a *App) openBatchExportDialog() {
 	} else if a.Transfer.ExportScope == "" {
 		a.Transfer.ExportScope = "all"
 	}
+}
+
+func (a *App) closeExportDialog() {
+	a.transferExportGen++
+	a.Transfer.ExportOpen = false
+	a.Transfer.ExportErr = ""
 }
 
 // libraryExportFilter is the media library's current filter without paging.
@@ -264,11 +273,15 @@ func (a *App) renderImportPage(c *ui.Context) {
 				ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).ClipX().Children(func() {
 					ui.TextInput(c, &t.ImportPath).Label("导入文件夹路径").Placeholder(`例如 D:\Downloads\trace`).Grow(1)
 					scanning := hasJob && job.Status == service.TransferScanning
+					picking := a.fileDialogBusy()
+					if OutlinePillButton(c, "选择文件夹…", "选择导入文件夹").Shrink(0).Disabled(scanning || picking).Clicked() && !scanning && !picking {
+						a.pickTransferImportDir()
+					}
 					text := "扫描"
 					if scanning {
 						text = "正在扫描…"
 					}
-					if AccentPillButton(c, text, "扫描导入文件夹").Disabled(scanning).Clicked() && !scanning {
+					if AccentPillButton(c, text, "扫描导入文件夹").Shrink(0).Disabled(scanning).Clicked() && !scanning {
 						a.startImportScan()
 					}
 				})
@@ -488,7 +501,7 @@ func (a *App) renderExportOverlay(c *ui.Context, w, h float32) {
 	filtered := a.libraryFilterActive()
 	selectedKeys := a.selectedLibraryItemKeys()
 	selectedLabel := fmt.Sprintf("已选 %d 项", len(selectedKeys))
-	renderDialog(c, &t.ExportOpen, "关闭导出对话框（点击空白处）", "导出媒体库对话框", cardW, 0, nil, func() {
+	renderDialog(c, &t.ExportOpen, "关闭导出对话框（点击空白处）", "导出媒体库对话框", cardW, 0, a.closeExportDialog, func() {
 		ui.Text(c, "导出媒体库").FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 		ui.Text(c, "复制已完成的文件和 item.json，另一台 TRACE 可以直接导入。正在缓存或录制的条目只导出已完成的部分。").
 			FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
@@ -527,13 +540,19 @@ func (a *App) renderExportOverlay(c *ui.Context, w, h float32) {
 				}
 			}
 		})
-		ui.TextInput(c, &t.ExportPath).Label("导出到的文件夹").Placeholder(`例如 E:\trace-export`).FillWidth()
+		picking := a.fileDialogBusy()
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).ClipX().Children(func() {
+			ui.TextInput(c, &t.ExportPath).Label("导出到的文件夹").Placeholder(`例如 E:\trace-export`).Grow(1)
+			if OutlinePillButton(c, "选择文件夹…", "选择导出文件夹").Shrink(0).Disabled(picking).Clicked() && !picking {
+				a.pickTransferExportDir()
+			}
+		})
 		if t.ExportErr != "" {
 			ui.Text(c, t.ExportErr).FontSize(12).TextColor(ColorError).MaxLines(3)
 		}
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Children(func() {
 			if OutlinePillButton(c, "取消", "取消导出").Clicked() {
-				t.ExportOpen = false
+				a.closeExportDialog()
 			}
 			if AccentPillButton(c, "开始导出", "开始导出").Clicked() {
 				filter := library.FeedFilter{}
@@ -546,7 +565,7 @@ func (a *App) renderExportOverlay(c *ui.Context, w, h float32) {
 				if _, err := a.backend.StartExport(path, filter); err != nil {
 					t.ExportErr = userErrorText(err)
 				} else {
-					t.ExportOpen, t.ExportErr = false, ""
+					a.closeExportDialog()
 					a.exitLibrarySelectMode()
 					a.refreshTransferJobs()
 					a.Navigate(RouteTasks)
@@ -558,16 +577,7 @@ func (a *App) renderExportOverlay(c *ui.Context, w, h float32) {
 }
 
 func (a *App) selectTasksTransfers() {
-	a.TasksSection = "transfers"
-	a.closeLivePreview()
-	a.refreshTransferJobs()
-}
-
-func (a *App) transfersNavText() string {
-	if n := a.activeTransferCount(); n > 0 {
-		return fmt.Sprintf("导入导出（%d）", n)
-	}
-	return "导入导出"
+	a.selectTasksRecords()
 }
 
 func transferStatusText(j service.TransferJob) string {

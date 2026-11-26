@@ -18,14 +18,37 @@ func (a *App) setPlayerFullscreen(fullscreen bool) {
 	}
 }
 
+func (a *App) cancelPlayerPreview() {
+	if a.playerPreviewCancel != nil {
+		a.playerPreviewCancel()
+		a.playerPreviewCancel = nil
+	}
+}
+
 func (a *App) closePlayerOverlay() {
+	a.cancelPlayerPreview()
+	a.playerOpenSeq++
 	a.setPlayerFullscreen(false)
 	a.PlayerOverlay.Open = false
 	a.PlayerOverlay.MoreMenuOpen = false
 	a.PlayerOverlay.VolumeMenuOpen = false
+	a.PlayerOverlay.Loading = false
+	a.PlayerOverlay.LoadError = ""
+	a.PlayerOverlay.DecoderMissing = false
+	a.PlayerOverlay.MissingReason = ""
 	a.PlayerOverlay.LoopMuted = false
 	a.PlayerOverlay.LoopPaused = false
-	_ = a.player.Close()
+	a.PlayerOverlay.PreviewMode = false
+	a.PlayerOverlay.PreviewSite = ""
+	a.PlayerOverlay.PreviewItemKey = ""
+	a.PlayerOverlay.PreviewPendingKey = ""
+	a.PlayerOverlay.PreviewCacheQueued = false
+	a.PlayerOverlay.PreviewCacheError = ""
+	a.PlayerOverlay.PreviewCacheToast = ""
+	a.PlayerOverlay.PreviewOnCache = nil
+	if a.player != nil {
+		_ = a.player.Close()
+	}
 }
 
 func (a *App) closeImageViewer() {
@@ -117,8 +140,10 @@ func playerSubtitleLabel(lang string) string {
 // applyPlayerVolume updates volume and mute on all active player controllers
 // without touching disk (used while dragging the volume slider).
 func (a *App) applyPlayerVolume(volume float64, muted bool) {
-	a.player.SetVolume(volume)
-	a.player.SetMuted(muted)
+	if a.player != nil {
+		a.player.SetVolume(volume)
+		a.player.SetMuted(muted)
+	}
 	if a.bgmPlayer != nil {
 		a.bgmPlayer.SetVolume(volume)
 		a.bgmPlayer.SetMuted(muted)
@@ -134,7 +159,10 @@ func (a *App) applyPlayerVolume(volume float64, muted bool) {
 }
 
 func (a *App) persistPlayerVolume() {
-	muted := a.player.Snapshot(1, 1).Muted
+	muted := false
+	if a.player != nil {
+		muted = a.player.Snapshot(1, 1).Muted
+	}
 	a.applyPlayerVolume(a.PlayerOverlay.Volume, muted)
 	volume := a.PlayerOverlay.Volume
 	if _, err := a.backend.MutateUIState(func(st *uistate.State) {
