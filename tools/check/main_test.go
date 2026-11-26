@@ -37,6 +37,20 @@ func TestDependencyDirectionRulesSynthetic(t *testing.T) {
 			record:    "github.com/chialecode/trace/internal/site|context,golang.org/x/net/html",
 			wantError: "site stdlib-only violation",
 		},
+		{
+			name:   "internal/companionapi stdlib only accepted",
+			record: "github.com/chialecode/trace/internal/companionapi|crypto/sha256,encoding/base64,encoding/hex,encoding/json,errors,fmt,net,net/url,strings,time",
+		},
+		{
+			name:      "internal/companionapi importing internal package rejected",
+			record:    "github.com/chialecode/trace/internal/companionapi|encoding/json,github.com/chialecode/trace/internal/service",
+			wantError: "companionapi stdlib-only violation",
+		},
+		{
+			name:      "internal/companionapi importing external module rejected",
+			record:    "github.com/chialecode/trace/internal/companionapi|encoding/json,github.com/egoist/mygo",
+			wantError: "INV-05 violation",
+		},
 
 		// Rule 3: internal/site/bilibili forbidden upper layers & cross-site douyin
 		{
