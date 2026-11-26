@@ -173,10 +173,17 @@ func installDev(dir string) error {
 	at := time.Now().UTC().Format(time.RFC3339)
 	skip := func(reason, guidance, version string) error {
 		fmt.Println("==> [install-dev] " + guidance)
-		return writeInstallResult(resultPath, installResult{Identity: devIdentity, Skipped: true, Reason: reason, Guidance: guidance, NewVersion: version, At: at})
+		return writeInstallResult(resultPath, installResult{
+			Identity:   devIdentity,
+			Skipped:    true,
+			Reason:     nullableString(reason),
+			Guidance:   nullableString(guidance),
+			NewVersion: nullableString(version),
+			At:         at,
+		})
 	}
 	invalid := func(err error) error {
-		res := installResult{Identity: devIdentity, Reason: "package_invalid", Error: err.Error(), At: at}
+		res := installResult{Identity: devIdentity, Reason: "package_invalid", Error: nullableString(err.Error()), At: at}
 		if werr := writeInstallResult(resultPath, res); werr != nil {
 			return errors.Join(err, werr)
 		}
@@ -218,13 +225,13 @@ func installDev(dir string) error {
 	case runErr != nil:
 		return runErr
 	case res.Skipped:
-		fmt.Println("==> [install-dev] " + res.Guidance)
+		fmt.Println("==> [install-dev] " + string(res.Guidance))
 	default:
 		how := "已在托盘打开"
 		if res.InJob {
 			how += "；它仍在运行这个命令的作业对象里，命令结束后可能被一起结束，请从开始菜单打开一次"
 		}
-		from := strings.TrimSpace(res.OldVersion)
+		from := strings.TrimSpace(string(res.OldVersion))
 		if res.FirstInstall {
 			from = "首次安装"
 		}

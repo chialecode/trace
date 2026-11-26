@@ -210,7 +210,7 @@ func TestInstallDevSkipsWhenTheWindowStaysOpen(t *testing.T) {
 	if !res.Skipped || res.Installed || res.Reason != "window_open" || !res.WindowOpen || !res.Deferred {
 		t.Fatalf("%+v", res)
 	}
-	if !strings.Contains(res.Guidance, installOnlyCommand) {
+	if !strings.Contains(string(res.Guidance), installOnlyCommand) {
 		t.Fatalf("guidance %q", res.Guidance)
 	}
 	if waited := m.now.Sub(start); waited != windowWait {
@@ -300,7 +300,7 @@ func TestInstallDevGivesUpWhenTraceDevDoesNotQuit(t *testing.T) {
 func TestInstallDevFailures(t *testing.T) {
 	m := newMachine().withDev("0.1.1-dev.202611080700", false)
 	m.setupErr = errors.New("exit status 2")
-	if res, err := m.installer().Run(); err == nil || res.Installed || !strings.Contains(res.Error, "静默安装失败") || res.Reason != "installer_failed" {
+	if res, err := m.installer().Run(); err == nil || res.Installed || !strings.Contains(string(res.Error), "静默安装失败") || res.Reason != "installer_failed" {
 		t.Fatalf("failed installer: %+v %v", res, err)
 	}
 
@@ -330,30 +330,153 @@ func TestInstallDevSkipsOnRequestAndOnCI(t *testing.T) {
 	}
 }
 
-// install-dev.json uses the camelCase fields shared by the author's desktop apps.
+// install-dev.json uses the camelCase fields shared by the author's desktop apps,
+// serializing absent optional text fields as JSON null rather than "".
 func TestInstallResultFields(t *testing.T) {
-	m := newMachine().withDev("0.1.1-dev.202611080700", true)
-	m.windowUntil = m.now.Add(time.Second)
-	res, err := m.installer().Run()
-	if err != nil {
-		t.Fatal(err)
+	allKeys := []string{
+		"identity", "installed", "skipped", "reason", "error", "guidance",
+		"firstInstall", "oldVersion", "newVersion", "installLocation",
+		"wasRunning", "windowOpen", "deferred", "deferMs", "quitMs",
+		"relaunched", "background", "inJob", "elapsedMs", "at",
 	}
-	path := filepath.Join(t.TempDir(), "install-dev.json")
-	if err := writeInstallResult(path, res); err != nil {
-		t.Fatal(err)
+	readReceiptMap := func(t *testing.T, res installResult) (map[string]any, []byte) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "install-dev.json")
+		if err := writeInstallResult(path, res); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range allKeys {
+			if _, ok := got[key]; !ok {
+				t.Errorf("install-dev.json has no %q: %s", key, raw)
+			}
+		}
+		return got, raw
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got map[string]any
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatal(err)
-	}
-	for _, key := range []string{"identity", "installed", "skipped", "firstInstall", "oldVersion", "newVersion", "installLocation",
-		"wasRunning", "windowOpen", "deferred", "deferMs", "quitMs", "relaunched", "background", "inJob", "elapsedMs", "at"} {
-		if _, ok := got[key]; !ok {
-			t.Errorf("install-dev.json has no %q: %s", key, raw)
+	assertNull := func(t *testing.T, got map[string]any, raw []byte, keys ...string) {
+		t.Helper()
+		for _, key := range keys {
+			if got[key] != nil {
+				t.Errorf("%q = %#v, want null: %s", key, got[key], raw)
+			}
 		}
 	}
+	assertNonEmptyString := func(t *testing.T, got map[string]any, raw []byte, keys ...string) {
+		t.Helper()
+		for _, key := range keys {
+			s, ok := got[key].(string)
+			if !ok || strings.TrimSpace(s) == "" {
+				t.Errorf("%q = %#v, want non-empty string: %s", key, got[key], raw)
+			}
+		}
+	}
+
+	t.Run("upgrade_success", func(t *testing.T) {
+		m := newMachine().withDev("0.1.1-dev.202611080700", true)
+		m.windowUntil = m.now.Add(time.Second)
+		res, err := m.installer().Run()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, raw := readReceiptMap(t, res)
+		assertNull(t, got, raw, "reason", "error", "guidance")
+		assertNonEmptyString(t, got, raw, "identity", "oldVersion", "newVersion", "installLocation", "at")
+
+		var decoded installResult
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("round-trip unmarshal failed: %v", err)
+		}
+		if decoded != res {
+			t.Fatalf("round-trip mismatch:\n got: %+v\nwant: %+v", decoded, res)
+		}
+	})
+
+	t.Run("first_install_oldVersion_null", func(t *testing.T) {
+		m := newMachine()
+		res, err := m.installer().Run()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, raw := readReceiptMap(t, res)
+		assertNull(t, got, raw, "reason", "error", "guidance", "oldVersion")
+		assertNonEmptyString(t, got, raw, "newVersion", "installLocation")
+	})
+
+	t.Run("window_open_skip", func(t *testing.T) {
+		m := newMachine().withDev("0.1.1-dev.202611080700", true)
+		m.windowNever = true
+		res, err := m.installer().Run()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, raw := readReceiptMap(t, res)
+		assertNull(t, got, raw, "error")
+		assertNonEmptyString(t, got, raw, "reason", "guidance", "oldVersion", "newVersion", "installLocation")
+		if got["reason"] != "window_open" {
+			t.Fatalf("reason = %#v, want window_open", got["reason"])
+		}
+	})
+
+	t.Run("early_skip_and_invalid_package", func(t *testing.T) {
+		at := "2026-11-09T08:00:00Z"
+		disabled := installResult{
+			Identity: devIdentity,
+			Skipped:  true,
+			Reason:   "disabled",
+			Guidance: installDevEnv + "=0：跳过本机开发版自动安装",
+			At:       at,
+		}
+		got, raw := readReceiptMap(t, disabled)
+		assertNull(t, got, raw, "error", "oldVersion", "newVersion", "installLocation")
+		assertNonEmptyString(t, got, raw, "reason", "guidance")
+
+		invalid := installResult{
+			Identity: devIdentity,
+			Reason:   "package_invalid",
+			Error:    "missing VERSION.txt",
+			At:       at,
+		}
+		got, raw = readReceiptMap(t, invalid)
+		assertNull(t, got, raw, "guidance", "oldVersion", "newVersion", "installLocation")
+		assertNonEmptyString(t, got, raw, "reason", "error")
+	})
+
+	t.Run("installer_failure_guidance_null", func(t *testing.T) {
+		m := newMachine().withDev("0.1.1-dev.202611080700", false)
+		m.setupErr = errors.New("exit status 2")
+		res, err := m.installer().Run()
+		if err == nil {
+			t.Fatal("expected failure")
+		}
+		got, raw := readReceiptMap(t, res)
+		assertNull(t, got, raw, "guidance")
+		assertNonEmptyString(t, got, raw, "reason", "error", "oldVersion", "newVersion", "installLocation")
+	})
+
+	t.Run("nullableString_edge_cases", func(t *testing.T) {
+		b, err := json.Marshal(nullableString("   "))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != "null" {
+			t.Fatalf("whitespace nullableString marshaled as %s, want null", b)
+		}
+		var s nullableString = "stale"
+		if err := json.Unmarshal([]byte("null"), &s); err != nil {
+			t.Fatal(err)
+		}
+		if s != "" {
+			t.Fatalf("unmarshal null produced %q, want empty", s)
+		}
+		if err := json.Unmarshal([]byte("123"), &s); err == nil {
+			t.Fatal("expected error unmarshaling number into nullableString")
+		}
+	})
 }
