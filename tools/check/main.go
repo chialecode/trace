@@ -15,18 +15,19 @@ import (
 )
 
 const (
-	modulePrefix   = "github.com/chialecode/trace/"
-	internalPref   = modulePrefix + "internal/"
-	sitePkg        = internalPref + "site"
-	bilibiliPkg    = internalPref + "site/bilibili"
-	douyinPkg      = internalPref + "site/douyin"
-	douyinSignPkg  = internalPref + "site/douyin/sign"
-	douyinGuardPkg = internalPref + "site/douyin/guard"
-	weiboPkg       = internalPref + "site/weibo"
-	xPkg           = internalPref + "site/x"
-	credPkg        = internalPref + "credential"
-	uiPkg          = internalPref + "ui"
-	serverCmd      = modulePrefix + "cmd/trace-server"
+	modulePrefix    = "github.com/chialecode/trace/"
+	internalPref    = modulePrefix + "internal/"
+	sitePkg         = internalPref + "site"
+	companionAPIPkg = internalPref + "companionapi"
+	bilibiliPkg     = internalPref + "site/bilibili"
+	douyinPkg       = internalPref + "site/douyin"
+	douyinSignPkg   = internalPref + "site/douyin/sign"
+	douyinGuardPkg  = internalPref + "site/douyin/guard"
+	weiboPkg        = internalPref + "site/weibo"
+	xPkg            = internalPref + "site/x"
+	credPkg         = internalPref + "credential"
+	uiPkg           = internalPref + "ui"
+	serverCmd       = modulePrefix + "cmd/trace-server"
 )
 
 // serverForbidden are the packages trace-server must not link: the window,
@@ -274,14 +275,19 @@ func validatePackageDeps(pkg string, imports []string, deps []string) error {
 		}
 	}
 
-	// 2. internal/site must use the Go standard library only (zero internal/... or external module deps).
-	if pkg == sitePkg {
+	// 2. internal/site and internal/companionapi must use the Go standard library only
+	// (zero internal/... or external module deps).
+	if pkg == sitePkg || pkg == companionAPIPkg {
+		label := "site"
+		if pkg == companionAPIPkg {
+			label = "companionapi"
+		}
 		for _, dep := range deps {
 			if dep == pkg {
 				continue
 			}
 			if !isStdlibImportPath(dep) {
-				return fmt.Errorf("site stdlib-only violation: %s depends on %s", pkg, dep)
+				return fmt.Errorf("%s stdlib-only violation: %s depends on %s", label, pkg, dep)
 			}
 		}
 	}
