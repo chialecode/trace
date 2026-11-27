@@ -471,4 +471,12 @@ func TestXListRouteTabsMemberSubscribeBatchImportAndResponsiveLayout(t *testing.
 	if !app.XList.Members[1].Subscribed {
 		t.Fatal("expected member_two UI state to be marked Subscribed after batch import")
 	}
+	// Deleting a subscription immediately updates xListMemberOwner even if stale DTO still had Subscribed=true.
+	if err := stub.raw.DeleteSubscription(sub.ID); err != nil {
+		t.Fatalf("DeleteSubscription: %v", err)
+	}
+	app.RefreshData()
+	if _, owned := app.xListMemberOwner(app.XList.Members[0]); owned {
+		t.Fatal("expected deleted subscription member to no longer report owned despite stale DTO Subscribed=true")
+	}
 }

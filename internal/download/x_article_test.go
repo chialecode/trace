@@ -231,4 +231,38 @@ func TestXArticleDownloadCoverInlineImagesDEC075AndZeroRemoteURLsInManifest(t *t
 	if coverHits.Load() != hitsBefore {
 		t.Fatalf("re-cache should reuse valid local cover.jpg without refetching: before=%d after=%d", hitsBefore, coverHits.Load())
 	}
+
+	// Verify host tweet with short intro caption merges intro + article plain text into meta.Text (P2 review fix),
+	// while a host tweet containing only a bare article URL replaces meta.Text with article plain text.
+	degradeOnRetry.Store(false)
+	const introStatusID = "1000000000000000602"
+	planner.setWorkPlan(introStatusID, func(_ int) (WorkDownloadPlan, error) {
+		p := buildArticlePlan()
+		p.ItemKey = "x:dynamic:" + introStatusID
+		p.TargetID = introStatusID
+		p.CanonicalURL = "https://x.com/synth_writer/status/" + introStatusID
+		p.Desc = "导读：欢迎阅读本期长文实录"
+		return p, nil
+	})
+	tIntro, err := mgr.EnqueueXWork(context.Background(), XWorkEnqueueRequest{TargetID: introStatusID})
+	if err != nil {
+		t.Fatalf("EnqueueXWork intro article failed: %v", err)
+	}
+	doneIntro := waitForTaskTerminal(t, mgr, tIntro.TaskID, 10*time.Second)
+	if doneIntro.Status != "completed" {
+		t.Fatalf("intro article status=%s err=%s", doneIntro.Status, doneIntro.ErrorMessage)
+	}
+	metaIntro, ok, err := libStore.GetItem("x:dynamic:" + introStatusID)
+	if err != nil || !ok {
+		t.Fatalf("GetItem intro article failed: ok=%v err=%v", ok, err)
+	}
+	wantMerged := "导读：欢迎阅读本期长文实录\n\n文章纯文本回退正文：覆盖封面图、内嵌图与推文引用。"
+	if metaIntro.Text != wantMerged {
+		t.Fatalf("metaIntro.Text = %q, want %q", metaIntro.Text, wantMerged)
+	}
+
+	// Bare URL host text is replaced directly with article plain text (no bare URL clutter).
+	if got := mergeXArticleFallbackText("https://x.com/i/article/2000000000000000099", &PlannedArticle{PlainText: "完整文章正文"}); got != "完整文章正文" {
+		t.Fatalf("mergeXArticleFallbackText(bare URL) = %q, want 完整文章正文", got)
+	}
 }

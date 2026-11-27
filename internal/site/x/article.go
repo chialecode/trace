@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"html"
+	"math"
 	"strings"
 	"unicode/utf16"
 )
@@ -242,7 +243,6 @@ func parseArticle(wrap *rawArticleWrap, canonicalPostURL string, allowLocalhost 
 
 	var blocks []ArticleBlock
 	var inlineImages []ArticleImage
-	usedInlineMediaID := make(map[string]bool)
 
 	if ar.ContentState != nil && len(ar.ContentState.Blocks) > 0 {
 		entityByKey := parseDraftEntityMap(ar.ContentState.EntityMap)
@@ -254,7 +254,7 @@ func parseArticle(wrap *rawArticleWrap, canonicalPostURL string, allowLocalhost 
 			}
 
 			if bType == ArticleBlockAtomic {
-				emitted := parseAtomicDraftBlock(rb, entityByKey, mediaByID, mediaByKey, &inlineImages, usedInlineMediaID)
+				emitted := parseAtomicDraftBlock(rb, entityByKey, mediaByID, mediaByKey, &inlineImages)
 				blocks = append(blocks, emitted...)
 				continue
 			}
@@ -321,6 +321,16 @@ func parseArticle(wrap *rawArticleWrap, canonicalPostURL string, allowLocalhost 
 	return art
 }
 
+func clampNonNegativeInt(v int64) int {
+	if v <= 0 {
+		return 0
+	}
+	if v > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int(v)
+}
+
 func buildArticleImage(me *rawArticleMediaEntity, allowLocalhost bool) *ArticleImage {
 	if me == nil || me.MediaInfo == nil {
 		return nil
@@ -333,8 +343,8 @@ func buildArticleImage(me *rawArticleMediaEntity, allowLocalhost bool) *ArticleI
 	if mediaID == "" {
 		mediaID = strings.TrimSpace(me.ID)
 	}
-	w := int(parseJSONInt64(me.MediaInfo.OriginalImgWidth))
-	h := int(parseJSONInt64(me.MediaInfo.OriginalImgHeight))
+	w := clampNonNegativeInt(parseJSONInt64(me.MediaInfo.OriginalImgWidth))
+	h := clampNonNegativeInt(parseJSONInt64(me.MediaInfo.OriginalImgHeight))
 	return buildArticleImageFromURL(rawURL, mediaID, strings.TrimSpace(me.MediaKey), w, h, allowLocalhost)
 }
 
@@ -442,7 +452,6 @@ func parseAtomicDraftBlock(
 	mediaByID map[string]ArticleImage,
 	mediaByKey map[string]ArticleImage,
 	inlineImages *[]ArticleImage,
-	usedInlineMediaID map[string]bool,
 ) []ArticleBlock {
 	var out []ArticleBlock
 	seenEntityKey := make(map[string]bool, len(rb.EntityRanges))
@@ -498,9 +507,6 @@ func parseAtomicDraftBlock(
 						cp.AltText = caption
 					}
 					*inlineImages = append(*inlineImages, cp)
-					if cp.MediaID != "" {
-						usedInlineMediaID[cp.MediaID] = true
-					}
 					out = append(out, ArticleBlock{
 						Key:   strings.TrimSpace(rb.Key),
 						Type:  ArticleBlockAtomic,
@@ -518,9 +524,6 @@ func parseAtomicDraftBlock(
 						cp.AltText = caption
 					}
 					*inlineImages = append(*inlineImages, cp)
-					if cp.MediaID != "" {
-						usedInlineMediaID[cp.MediaID] = true
-					}
 					out = append(out, ArticleBlock{
 						Key:   strings.TrimSpace(rb.Key),
 						Type:  ArticleBlockAtomic,

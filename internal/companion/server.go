@@ -663,6 +663,7 @@ func (s *Server) buildFeedItem(fe library.FeedEntry, subByAccount map[string]sub
 			fi.Origin = mapOrigin(meta.Origin)
 			fi.InReplyTo = mapReplyTarget(meta.InReplyTo)
 			fi.Card = mapRichCard(meta.Card)
+			fi.Article = mapArticle(meta.Article)
 			fi.Thread = mapThread(meta.Thread)
 			fi.Parts = mapVideoParts(meta.Parts)
 			fi.NotePages = mapNotePages(meta.NotePages)

@@ -851,7 +851,7 @@ func (m *Manager) executeXPostTask(
 		(plan.EditTs > 0 && previous.EditTs > 0 && plan.EditTs > previous.EditTs)
 	fullText, threadParts := buildXTextAndThread(rawID, plan, previous, isConflict, forceOverwrite)
 	if plan.Article != nil {
-		fullText = firstNonEmptyStr(fullText, strings.TrimSpace(plan.Article.PlainText), strings.TrimSpace(plan.Article.Title))
+		fullText = mergeXArticleFallbackText(fullText, plan.Article)
 	}
 	if hasProtectedLocal && !isConflict && !forceOverwrite {
 		fullText = preserveMonotonicText(previous.Text, fullText, editAdvanced)
@@ -1468,6 +1468,41 @@ func (m *Manager) executeXPostTask(
 	t.ItemKey = saved.ItemKey
 	finalSaved = true
 	return nil
+}
+
+func isOnlyHTTPURLs(s string) bool {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return false
+	}
+	for _, f := range fields {
+		lf := strings.ToLower(f)
+		if !strings.HasPrefix(lf, "http://") && !strings.HasPrefix(lf, "https://") {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeXArticleFallbackText(hostText string, art *PlannedArticle) string {
+	host := strings.TrimSpace(hostText)
+	if art == nil {
+		return host
+	}
+	artPlain := firstNonEmptyStr(strings.TrimSpace(art.PlainText), strings.TrimSpace(art.Title))
+	if artPlain == "" {
+		return host
+	}
+	if host == "" || isOnlyHTTPURLs(host) {
+		return artPlain
+	}
+	if strings.Contains(host, artPlain) {
+		return host
+	}
+	if strings.Contains(artPlain, host) {
+		return artPlain
+	}
+	return host + "\n\n" + artPlain
 }
 
 func (m *Manager) downloadXArticleAssets(

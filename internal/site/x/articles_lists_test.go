@@ -3,6 +3,7 @@ package x
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -612,5 +613,25 @@ func TestResolveLinksArticlesAndPublicLists(t *testing.T) {
 	}
 	if reqCount.Load() != 0 {
 		t.Fatalf("expected 0 network requests for local link resolution & rejections, got %d", reqCount.Load())
+	}
+}
+
+func TestClampNonNegativeIntBounds(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want int
+	}{
+		{math.MinInt64, 0},
+		{-42, 0},
+		{0, 0},
+		{1920, 1920},
+		{math.MaxInt32, math.MaxInt32},
+		{int64(math.MaxInt32) + 1, math.MaxInt32},
+		{math.MaxInt64, math.MaxInt32},
+	}
+	for _, tc := range cases {
+		if got := clampNonNegativeInt(tc.in); got != tc.want {
+			t.Fatalf("clampNonNegativeInt(%d) = %d, want %d", tc.in, got, tc.want)
+		}
 	}
 }

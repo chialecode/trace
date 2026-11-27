@@ -41,17 +41,18 @@ func TestLibraryItemDetailIncludesSanitizedXArticleAndFallbackCover(t *testing.T
 	_ = os.WriteFile(filepath.Join(postDir, "images", "01.jpg"), imgBytes, 0o600)
 
 	saved, err := backend.LibraryStore().SaveItem(postDir, library.ItemMetadata{
-		Version:     1,
-		ID:          "1000000000000000701",
-		Site:        "x",
-		Kind:        "dynamic",
-		DynamicType: "article",
-		TypeLabel:   "文章",
-		Status:      "complete",
-		Title:       "移动端离线文章 DTO 测试",
-		Text:        "纯文本回退内容",
-		PubTs:       1732700000,
-		Author:      library.ItemAuthor{Site: "x", UID: "1000000000000000001", UniqueID: "synth_x_writer", Name: "合成作者"},
+		Version:      1,
+		ID:           "1000000000000000701",
+		Site:         "x",
+		Kind:         "dynamic",
+		DynamicType:  "article",
+		TypeLabel:    "文章",
+		Status:       "complete",
+		DirectCached: true,
+		Title:        "移动端离线文章 DTO 测试",
+		Text:         "纯文本回退内容",
+		PubTs:        1732700000,
+		Author:       library.ItemAuthor{Site: "x", UID: "1000000000000000001", UniqueID: "synth_x_writer", Name: "合成作者"},
 		Media: []library.MediaFile{
 			{Role: "cover", Path: "cover.jpg", Bytes: int64(len(imgBytes)), Width: 320, Height: 200},
 			{Role: "image", Path: "images/01.jpg", Bytes: int64(len(imgBytes)), Width: 320, Height: 200},
@@ -108,5 +109,38 @@ func TestLibraryItemDetailIncludesSanitizedXArticleAndFallbackCover(t *testing.T
 	}
 	if gotCover := findCoverRelPath(library.ItemMetadata{Article: &library.ItemArticle{CoverRel: "cover.jpg"}}); gotCover != "cover.jpg" {
 		t.Fatalf("findCoverRelPath fallback to Article.CoverRel = %q, want cover.jpg", gotCover)
+	}
+
+	// Verify GET /api/v1/feed also populates FeedItem.Article with sanitized local paths and zero remote URLs.
+	feedReq := httptest.NewRequest(http.MethodGet, companionapi.PathFeed+"?site=x", nil)
+	feedReq.RemoteAddr = "192.168.1.50:45124"
+	feedReq.Header.Set("Authorization", "Bearer "+token)
+	feedReq.Header.Set(companionapi.HeaderProtocol, companionapi.ProtocolVersion)
+	feedReq.Header.Set(companionapi.HeaderChannel, companionapi.ChannelDev)
+	feedRec := httptest.NewRecorder()
+	srv.ServeHTTP(feedRec, feedReq)
+	if feedRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/feed status = %d, body = %s", feedRec.Code, feedRec.Body.String())
+	}
+	feedRaw := feedRec.Body.String()
+	if strings.Contains(feedRaw, "pbs.twimg.com") || strings.Contains(feedRaw, postDir) {
+		t.Fatalf("companion feed response leaked remote CDN URL or local path: %s", feedRaw)
+	}
+	var feedResp companionapi.FeedPageResponse
+	if err := json.Unmarshal(feedRec.Body.Bytes(), &feedResp); err != nil {
+		t.Fatalf("decode feed response: %v", err)
+	}
+	var feedArt *companionapi.FeedItem
+	for i := range feedResp.Items {
+		if feedResp.Items[i].ItemKey == saved.ItemKey {
+			feedArt = &feedResp.Items[i]
+			break
+		}
+	}
+	if feedArt == nil {
+		t.Fatalf("feed response missing saved article item %s: %+v", saved.ItemKey, feedResp.Items)
+	}
+	if feedArt.Article == nil || feedArt.Article.Title != "移动端离线文章 DTO 测试" || feedArt.Article.CoverRel != "cover.jpg" || len(feedArt.Article.Blocks) != 4 {
+		t.Fatalf("unexpected FeedItem.Article: %+v", feedArt.Article)
 	}
 }

@@ -238,6 +238,21 @@ func (a *App) CacheXListCurrentPageUncached() {
 	})
 }
 
+func (a *App) xListMemberOwner(m service.XListMemberDTO) (subscription.Subscription, bool) {
+	if sub, owned := a.ownerOfAccountInMemory("x", m.RestID, 0); owned {
+		return sub, true
+	}
+	// When in-memory subscriptions have been synchronized from backend, prefer
+	// live subscription state so deleting a subscription immediately updates the row.
+	if a.backend != nil && (a.subsRev > 0 || len(a.Subscriptions) > 0) {
+		return subscription.Subscription{}, false
+	}
+	if m.Subscribed {
+		return subscription.Subscription{ID: m.OwnerSubID, Name: m.OwnerSubName}, true
+	}
+	return subscription.Subscription{}, false
+}
+
 func (a *App) unsubscribedXListMembers() []service.FollowingCreatorDTO {
 	var out []service.FollowingCreatorDTO
 	seen := make(map[string]bool, len(a.XList.Members))
@@ -247,10 +262,7 @@ func (a *App) unsubscribedXListMembers() []service.FollowingCreatorDTO {
 			continue
 		}
 		seen[uid] = true
-		if _, owned := a.ownerOfAccountInMemory("x", uid, 0); owned {
-			continue
-		}
-		if m.Subscribed {
+		if _, owned := a.xListMemberOwner(m); owned {
 			continue
 		}
 		handle := strings.TrimPrefix(strings.TrimSpace(m.ScreenName), "@")
@@ -613,11 +625,7 @@ func (a *App) renderXListMemberRow(c *ui.Context, m service.XListMemberDTO) {
 			a.OpenXUser(target, displayName)
 		}
 	}
-	ownerSub, owned := a.ownerOfAccountInMemory("x", m.RestID, 0)
-	if !owned && m.Subscribed {
-		owned = true
-		ownerSub = subscription.Subscription{ID: m.OwnerSubID, Name: m.OwnerSubName}
-	}
+	ownerSub, owned := a.xListMemberOwner(m)
 
 	ui.Row(c).
 		Label("X列表成员："+m.RestID).
