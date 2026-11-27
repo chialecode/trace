@@ -50,15 +50,18 @@ const (
 	maxRetainedManifestChunks  = 4096
 )
 
-// Read-only GraphQL operation names used by TRACE for X (x.md §15.1 #8).
+// Read-only GraphQL operation names used by TRACE for X (x.md §15.1 #8, DEC-092).
 const (
-	OpUserByScreenName = "UserByScreenName"
-	OpUserByRestId     = "UserByRestId"
-	OpUserTweets       = "UserTweets"
-	OpTweetDetail      = "TweetDetail"
-	OpFollowing        = "Following"
-	OpBookmarks        = "Bookmarks"
-	OpLikes            = "Likes"
+	OpUserByScreenName     = "UserByScreenName"
+	OpUserByRestId         = "UserByRestId"
+	OpUserTweets           = "UserTweets"
+	OpUserTweetsAndReplies = "UserTweetsAndReplies"
+	OpUserMedia            = "UserMedia"
+	OpUserHighlightsTweets = "UserHighlightsTweets"
+	OpTweetDetail          = "TweetDetail"
+	OpFollowing            = "Following"
+	OpBookmarks            = "Bookmarks"
+	OpLikes                = "Likes"
 )
 
 // CoreOperations returns a fresh copy of the 5 core GraphQL operation names that
@@ -75,21 +78,40 @@ func CoreOperations() []string {
 	}
 }
 
-// OptionalOperations returns a fresh copy of the read-only "Mine" GraphQL operation
-// names that X may code-split into lazy webpack/Vite chunks outside main.*.js.
-// Their absence from main.*.js MUST NOT fail core frontend discovery or login; they
-// are resolved lazily on demand via FrontendDiscovery.EnsureOperation.
+// ProfileTabOperations returns a fresh copy of the 3 optional X user profile tab
+// GraphQL operations discovered from main.*.js (DEC-092). Their absence MUST NOT
+// block login or core UserTweets.
+func ProfileTabOperations() []string {
+	return []string{
+		OpUserTweetsAndReplies,
+		OpUserMedia,
+		OpUserHighlightsTweets,
+	}
+}
+
+// OptionalOperations returns a fresh copy of the read-only optional GraphQL operation
+// names ("Mine" operations that X may code-split into lazy chunks, plus profile tab
+// operations discovered from main.*.js). Their absence from main.*.js MUST NOT fail
+// core frontend discovery or login; they are resolved on demand via EnsureOperation.
 func OptionalOperations() []string {
 	return []string{
 		OpBookmarks,
 		OpLikes,
+		OpUserTweetsAndReplies,
+		OpUserMedia,
+		OpUserHighlightsTweets,
 	}
 }
 
-// IsOptionalOperation reports whether opName is an optional/lazy Mine GraphQL operation
-// (Bookmarks or Likes) that may be code-split outside main.*.js.
+// IsOptionalOperation reports whether opName is an optional GraphQL operation whose
+// absence must not block core login/UserTweets or trip the site-wide circuit breaker.
 func IsOptionalOperation(opName string) bool {
-	return opName == OpBookmarks || opName == OpLikes
+	switch opName {
+	case OpBookmarks, OpLikes, OpUserTweetsAndReplies, OpUserMedia, OpUserHighlightsTweets:
+		return true
+	default:
+		return false
+	}
 }
 
 // RequiredOperations returns a fresh copy of all 7 read-only GraphQL operation names
@@ -2627,7 +2649,7 @@ func parseHTMLAttrs(tag string) map[string]string {
 
 // ---------- main.*.js & Lazy Chunk Operation Parsing (Webpack + Vite) ----------
 
-const graphqlOperationMatchNames = `UserByScreenName|UserByRestId|UserTweets|TweetDetail|Following|Bookmarks|BookmarkTimeline|BookmarksTimeline|Likes`
+const graphqlOperationMatchNames = `UserByScreenName|UserByRestId|UserTweets|UserTweetsAndReplies|UserMedia|UserHighlightsTweets|TweetDetail|Following|Bookmarks|BookmarkTimeline|BookmarksTimeline|Likes`
 
 var (
 	reExplicitBearerLit = regexp.MustCompile(`["'` + "`" + `]Bearer\s+([A-Za-z0-9%+/=._-]{16,256})["'` + "`" + `]`)
@@ -2668,7 +2690,7 @@ type rawOpCandidate struct {
 
 func canonicalGraphQLOpName(rawName string) (canonical string, isAlias bool, ok bool) {
 	switch rawName {
-	case OpUserByScreenName, OpUserByRestId, OpUserTweets, OpTweetDetail, OpFollowing, OpBookmarks, OpLikes:
+	case OpUserByScreenName, OpUserByRestId, OpUserTweets, OpUserTweetsAndReplies, OpUserMedia, OpUserHighlightsTweets, OpTweetDetail, OpFollowing, OpBookmarks, OpLikes:
 		return rawName, false, true
 	case "BookmarkTimeline", "BookmarksTimeline":
 		return OpBookmarks, true, true

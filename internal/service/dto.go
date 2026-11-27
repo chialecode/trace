@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chialecode/trace/internal/download"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/live"
 	"github.com/chialecode/trace/internal/site"
@@ -505,6 +506,7 @@ type XUserDTO struct {
 
 // XUserPostsPageDTO holds one paginated page of an X creator's timeline.
 type XUserPostsPageDTO struct {
+	Tab                 string      `json:"tab,omitempty"`
 	Posts               []XPostDTO  `json:"posts"`
 	NextCursor          string      `json:"nextCursor,omitempty"`
 	HasMore             bool        `json:"hasMore"`
@@ -515,6 +517,32 @@ type XUserPostsPageDTO struct {
 	UncertainReason     string      `json:"uncertainReason,omitempty"`
 	Author              *XAuthorDTO `json:"author,omitempty"`
 	TotalWorks          int         `json:"totalWorks,omitempty"`
+}
+
+// MaxXCurrentPageBatchCache caps how many uncached X posts from the currently loaded
+// tab page can be enqueued into download_tasks in a single manual click (DEC-092).
+const MaxXCurrentPageBatchCache = 20
+
+// XBatchCachePageRequest enqueues uncached, cacheable posts from an already loaded X
+// profile tab page (replies/media/highlights) directly into download_tasks without
+// altering cache-queue.json v3 schema (DEC-092).
+type XBatchCachePageRequest struct {
+	UserUID  string     `json:"userUid,omitempty"`
+	UserName string     `json:"userName,omitempty"`
+	Tab      string     `json:"tab,omitempty"`
+	Posts    []XPostDTO `json:"posts"`
+	Limit    int        `json:"limit,omitempty"`
+}
+
+// XBatchCachePageResult summarizes the outcome of CacheXPostsPage.
+type XBatchCachePageResult struct {
+	Enqueued           int             `json:"enqueued"`
+	Tasks              []download.Task `json:"tasks,omitempty"`
+	SkippedCached      int             `json:"skippedCached,omitempty"`
+	SkippedUnsupported int             `json:"skippedUnsupported,omitempty"`
+	SkippedCapped      int             `json:"skippedCapped,omitempty"`
+	Failed             int             `json:"failed,omitempty"`
+	FirstError         string          `json:"firstError,omitempty"`
 }
 
 // FollowingGroupDTO represents a selectable following group for a site in the import dialog.

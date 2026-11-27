@@ -136,9 +136,23 @@ type localRouteMatch struct {
 	statusID     string
 	restID       string
 	screenName   string
+	tab          string
 	liveID       string
 	canonicalURL string
 	reason       string
+}
+
+func mapProfileSubTabPath(seg string) string {
+	switch strings.ToLower(strings.TrimSpace(seg)) {
+	case "with_replies":
+		return ProfileTabReplies
+	case "media":
+		return ProfileTabMedia
+	case "highlights":
+		return ProfileTabHighlights
+	default:
+		return ""
+	}
 }
 
 // ExtractShareURL extracts an X, mirror, or t.co URL from mixed share text, preferring
@@ -568,10 +582,17 @@ func (c *Client) classifyLocalURL(u *url.URL) localRouteMatch {
 	// 8. User handle profile (lowest priority, strictly non-reserved handle):
 	// /<handle> or /<handle>/(with_replies|media|highlights|likes|articles)
 	if reValidXScreenName.MatchString(segs[0]) && !reservedXRootPaths[s0] {
-		if len(segs) == 1 || (len(segs) == 2 && allowedUserProfileSubTabs[strings.ToLower(segs[1])]) {
+		if len(segs) == 1 {
 			return localRouteMatch{
 				kind:       routeUserHandle,
 				screenName: segs[0],
+			}
+		}
+		if len(segs) == 2 && allowedUserProfileSubTabs[strings.ToLower(segs[1])] {
+			return localRouteMatch{
+				kind:       routeUserHandle,
+				screenName: segs[0],
+				tab:        mapProfileSubTabPath(segs[1]),
 			}
 		}
 	}
@@ -601,9 +622,14 @@ func matchIRoute(segs []string, rawURL string) localRouteMatch {
 	case "user":
 		if len(segs) >= 3 {
 			if normUID, err := site.NormalizeUID(SiteID, segs[2]); err == nil {
+				tab := ""
+				if len(segs) >= 4 && allowedUserProfileSubTabs[strings.ToLower(segs[3])] {
+					tab = mapProfileSubTabPath(segs[3])
+				}
 				return localRouteMatch{
 					kind:         routeUser,
 					restID:       normUID,
+					tab:          tab,
 					canonicalURL: "https://x.com/i/user/" + normUID,
 				}
 			}
@@ -1018,6 +1044,7 @@ func (c *Client) materializeRouteMatch(ctx context.Context, match localRouteMatc
 			Kind:         "user",
 			ID:           match.restID,
 			AuthorUID:    match.restID,
+			Tab:          match.tab,
 			CanonicalURL: match.canonicalURL,
 		}, nil
 
@@ -1031,6 +1058,7 @@ func (c *Client) materializeRouteMatch(ctx context.Context, match localRouteMatc
 			Kind:         "user",
 			ID:           prof.RestID,
 			AuthorUID:    prof.RestID,
+			Tab:          match.tab,
 			CanonicalURL: "https://x.com/i/user/" + prof.RestID,
 		}, nil
 

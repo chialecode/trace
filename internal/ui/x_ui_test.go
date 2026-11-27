@@ -51,18 +51,23 @@ type xStubBackend struct {
 	cachedID   string
 	queuedReqs []service.CacheQueueRequest
 
-	xUsers       map[string]*service.XUserDTO
-	xUserPages   map[string]map[string]xPageFixture
-	xPosts       map[string]*service.XPostDTO
-	accountWorks map[string]service.AccountWorks
-	checkPlan    []service.AccountCheckRow
-	followCursor map[string]service.FollowingCreatorsPageDTO
-	followGroups int
-	mineSections map[string][]service.AccountSection
-	minePages    map[string]service.AccountPage
-	mineErrors   map[string]error
-	importedSite string
-	importedCnt  int
+	xUsers         map[string]*service.XUserDTO
+	xUserPages     map[string]map[string]xPageFixture
+	xUserTabPages  map[string]map[string]map[string]xPageFixture
+	xTabCalls      map[string]int
+	xBatchPageReqs []service.XBatchCachePageRequest
+	xBatchPageRes  *service.XBatchCachePageResult
+	xBatchPageErr  error
+	xPosts         map[string]*service.XPostDTO
+	accountWorks   map[string]service.AccountWorks
+	checkPlan      []service.AccountCheckRow
+	followCursor   map[string]service.FollowingCreatorsPageDTO
+	followGroups   int
+	mineSections   map[string][]service.AccountSection
+	minePages      map[string]service.AccountPage
+	mineErrors     map[string]error
+	importedSite   string
+	importedCnt    int
 
 	remoteView *service.RemoteView
 	remoteInfo *service.RemoteConnectionInfo
@@ -76,20 +81,22 @@ func newXUITestHarness(t *testing.T) (*App, *xStubBackend, func()) {
 		t.Fatalf("seed bilibili login: %v", err)
 	}
 	stub := &xStubBackend{
-		BackendAPI:   raw,
-		raw:          raw,
-		dyStatus:     credential.Status{Site: string(site.Douyin), State: "logged_out"},
-		wbStatus:     credential.Status{Site: string(site.Weibo), State: "logged_out"},
-		xStatus:      credential.Status{Site: string(site.X), State: "logged_out"},
-		loginMode:    "ok",
-		pushCalls:    map[string]int{},
-		xUsers:       map[string]*service.XUserDTO{},
-		xUserPages:   map[string]map[string]xPageFixture{},
-		xPosts:       map[string]*service.XPostDTO{},
-		followCursor: map[string]service.FollowingCreatorsPageDTO{},
-		mineSections: map[string][]service.AccountSection{},
-		minePages:    map[string]service.AccountPage{},
-		mineErrors:   map[string]error{},
+		BackendAPI:    raw,
+		raw:           raw,
+		dyStatus:      credential.Status{Site: string(site.Douyin), State: "logged_out"},
+		wbStatus:      credential.Status{Site: string(site.Weibo), State: "logged_out"},
+		xStatus:       credential.Status{Site: string(site.X), State: "logged_out"},
+		loginMode:     "ok",
+		pushCalls:     map[string]int{},
+		xUsers:        map[string]*service.XUserDTO{},
+		xUserPages:    map[string]map[string]xPageFixture{},
+		xUserTabPages: map[string]map[string]map[string]xPageFixture{},
+		xTabCalls:     map[string]int{},
+		xPosts:        map[string]*service.XPostDTO{},
+		followCursor:  map[string]service.FollowingCreatorsPageDTO{},
+		mineSections:  map[string][]service.AccountSection{},
+		minePages:     map[string]service.AccountPage{},
+		mineErrors:    map[string]error{},
 	}
 	app.backend = stub
 	return app, stub, cleanup
@@ -201,18 +208,33 @@ func (s *xStubBackend) OpenLink(ctx context.Context, raw string) (*service.OpenL
 	defer s.mu.Unlock()
 	if strings.Contains(raw, "x.com/i/user/") || strings.Contains(raw, "x.com/synth_creator") {
 		s.xCalls.Add(1)
+		tab := "posts"
+		lowerRaw := strings.ToLower(raw)
+		switch {
+		case strings.Contains(lowerRaw, "/with_replies"):
+			tab = "replies"
+		case strings.Contains(lowerRaw, "/media"):
+			tab = "media"
+		case strings.Contains(lowerRaw, "/highlights"):
+			tab = "highlights"
+		}
 		for uid, u := range s.xUsers {
 			if strings.Contains(raw, uid) || (u.ScreenName != "" && strings.Contains(raw, u.ScreenName)) {
 				res := &service.OpenLinkResult{
 					Site:       string(site.X),
-					SiteTarget: &site.ResolveTarget{Site: site.X, Kind: "user", ID: uid, CanonicalURL: raw},
+					SiteTarget: &site.ResolveTarget{Site: site.X, Kind: "user", ID: uid, Tab: tab, CanonicalURL: raw},
 					XUser:      u,
+					XUserTab:   tab,
 				}
-				if fix, ok := s.xUserPages[uid][""]; ok {
+				s.xTabCalls[uid+"|"+tab+"|"]++
+				if fix, ok := s.lookupXTabFixtureLocked(uid, tab, ""); ok {
 					if fix.err != nil {
 						res.XUserPostsError = fix.err.Error()
 					} else {
 						cp := fix.page
+						if cp.Tab == "" {
+							cp.Tab = tab
+						}
 						res.XUserPosts = &cp
 					}
 				}
@@ -236,20 +258,86 @@ func (s *xStubBackend) OpenLink(ctx context.Context, raw string) (*service.OpenL
 	return s.BackendAPI.OpenLink(ctx, raw)
 }
 
-func (s *xStubBackend) XUserPosts(_ context.Context, restID, cursor string) (*service.XUserPostsPageDTO, error) {
+func (s *xStubBackend) lookupXTabFixtureLocked(restID, tab, cursor string) (xPageFixture, bool) {
+	if tab == "" {
+		tab = "posts"
+	}
+	if tabs, ok := s.xUserTabPages[restID]; ok {
+		if pages, ok := tabs[tab]; ok {
+			if fix, ok := pages[cursor]; ok {
+				return fix, true
+			}
+		}
+	}
+	if tab == "posts" {
+		if pages, ok := s.xUserPages[restID]; ok {
+			if fix, ok := pages[cursor]; ok {
+				return fix, true
+			}
+		}
+	}
+	return xPageFixture{}, false
+}
+
+func (s *xStubBackend) XUserPosts(ctx context.Context, restID, cursor string) (*service.XUserPostsPageDTO, error) {
+	return s.XUserTabPosts(ctx, restID, "posts", cursor)
+}
+
+func (s *xStubBackend) XUserTabPosts(_ context.Context, restID, tab, cursor string) (*service.XUserPostsPageDTO, error) {
+	if tab == "" {
+		tab = "posts"
+	}
 	s.xCalls.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if pages, ok := s.xUserPages[restID]; ok {
-		if fix, ok := pages[cursor]; ok {
-			if fix.err != nil {
-				return nil, fix.err
-			}
-			cp := fix.page
-			return &cp, nil
+	s.xTabCalls[restID+"|"+tab+"|"+cursor]++
+	if fix, ok := s.lookupXTabFixtureLocked(restID, tab, cursor); ok {
+		if fix.err != nil {
+			return nil, fix.err
 		}
+		cp := fix.page
+		if cp.Tab == "" {
+			cp.Tab = tab
+		}
+		return &cp, nil
 	}
-	return &service.XUserPostsPageDTO{}, nil
+	return &service.XUserPostsPageDTO{Tab: tab}, nil
+}
+
+func (s *xStubBackend) CacheXPostsPage(_ context.Context, req service.XBatchCachePageRequest) (service.XBatchCachePageResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.xBatchPageReqs = append(s.xBatchPageReqs, req)
+	if s.xBatchPageErr != nil {
+		var partial service.XBatchCachePageResult
+		if s.xBatchPageRes != nil {
+			partial = *s.xBatchPageRes
+		}
+		return partial, s.xBatchPageErr
+	}
+	if s.xBatchPageRes != nil {
+		return *s.xBatchPageRes, nil
+	}
+	res := service.XBatchCachePageResult{}
+	for i := range req.Posts {
+		p := &req.Posts[i]
+		if service.IsXPostDTOUncacheable(p) {
+			res.SkippedUnsupported++
+			continue
+		}
+		if res.Enqueued >= service.MaxXCurrentPageBatchCache {
+			res.SkippedCapped++
+			continue
+		}
+		res.Enqueued++
+		res.Tasks = append(res.Tasks, download.Task{
+			TaskID:   "task-x-" + p.ID,
+			Site:     string(site.X),
+			TargetID: p.ID,
+			Status:   "queued",
+		})
+	}
+	return res, nil
 }
 
 func (s *xStubBackend) CacheXPost(_ context.Context, statusID string, _ *library.ItemVia) (download.Task, error) {

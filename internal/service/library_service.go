@@ -12,6 +12,7 @@ import (
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/site/douyin"
 	"github.com/chialecode/trace/internal/site/weibo"
+	"github.com/chialecode/trace/internal/site/x"
 	"github.com/chialecode/trace/internal/uistate"
 )
 
@@ -304,6 +305,191 @@ func (b *Backend) CacheXPost(ctx context.Context, statusID string, via *library.
 		return download.Task{}, err
 	}
 	return b.enqueueXPostWithSource(ctx, statusID, "manual", via, nil)
+}
+
+// CacheXPostsPage enqueues uncached, cacheable posts from the currently loaded X
+// profile tab page (replies/media/highlights) into download_tasks without touching
+// cache-queue.json v3 (DEC-092). Already cached/active items and pure HLS-only or
+// unsupported card posts are skipped, and each batch is bounded by MaxXCurrentPageBatchCache.
+func (b *Backend) CacheXPostsPage(ctx context.Context, req XBatchCachePageRequest) (XBatchCachePageResult, error) {
+	if err := b.requireDesktop(); err != nil {
+		return XBatchCachePageResult{}, err
+	}
+	if err := b.requireSiteLogin(site.X); err != nil {
+		return XBatchCachePageResult{}, err
+	}
+	if strings.TrimSpace(req.Tab) != "" {
+		if _, ok := x.NormalizeProfileTab(req.Tab); !ok {
+			return XBatchCachePageResult{}, &site.Error{
+				Site:    site.X,
+				Kind:    site.ErrKindBadRequest,
+				Message: fmt.Sprintf("不支持的 X 用户页标签: %s", strings.TrimSpace(req.Tab)),
+			}
+		}
+	}
+	limit := req.Limit
+	if limit <= 0 || limit > MaxXCurrentPageBatchCache {
+		limit = MaxXCurrentPageBatchCache
+	}
+	if len(req.Posts) == 0 {
+		return XBatchCachePageResult{}, nil
+	}
+
+	keys := make([]string, 0, len(req.Posts))
+	seenKeys := make(map[string]bool, len(req.Posts))
+	for _, p := range req.Posts {
+		id := strings.TrimSpace(p.ID)
+		if id == "" {
+			continue
+		}
+		key := strings.TrimSpace(p.CacheKey)
+		if key == "" {
+			key = x.PostItemKey(id)
+		}
+		if !seenKeys[key] {
+			seenKeys[key] = true
+			keys = append(keys, key)
+		}
+	}
+	states := b.States(keys)
+
+	var res XBatchCachePageResult
+	seenIDs := make(map[string]bool, len(req.Posts))
+	for i := range req.Posts {
+		p := &req.Posts[i]
+		id := strings.TrimSpace(p.ID)
+		if id == "" || seenIDs[id] {
+			continue
+		}
+		seenIDs[id] = true
+
+		key := strings.TrimSpace(p.CacheKey)
+		if key == "" {
+			key = x.PostItemKey(id)
+		}
+		if st, ok := states[key]; ok && (st.Dot == "green" || st.Dot == "ring") {
+			res.SkippedCached++
+			continue
+		}
+		if IsXPostDTOUncacheable(p) {
+			res.SkippedUnsupported++
+			continue
+		}
+		if res.Enqueued >= limit {
+			res.SkippedCapped++
+			continue
+		}
+
+		via := xBatchCacheViaForPost(p, req.UserUID, req.UserName)
+		task, err := b.CacheXPost(ctx, id, via)
+		if err != nil {
+			res.Failed++
+			if res.FirstError == "" {
+				res.FirstError = err.Error()
+			}
+			switch site.KindOf(err) {
+			case site.ErrKindAuthRequired,
+				site.ErrKindRateLimited,
+				site.ErrKindRiskControl,
+				site.ErrKindSchemaChanged,
+				site.ErrKindQuota:
+				return res, err
+			}
+			continue
+		}
+		res.Enqueued++
+		res.Tasks = append(res.Tasks, task)
+	}
+	return res, nil
+}
+
+// IsXPostDTOUncacheable reports whether an X post DTO cannot be meaningfully cached
+// locally (unavailable, pure HLS-only video without downloadable media, or degraded
+// live/article/vote/empty-poll card without downloadable media).
+func IsXPostDTOUncacheable(post *XPostDTO) bool {
+	if post == nil || post.Unavailable || strings.TrimSpace(post.ID) == "" {
+		return true
+	}
+	if xPostMediaHasDownloadable(post.Media) {
+		return false
+	}
+	if post.Retweeted != nil && !post.Retweeted.Unavailable && xPostMediaHasDownloadable(post.Retweeted.Media) {
+		return false
+	}
+	if post.Quoted != nil && !post.Quoted.Unavailable && xPostMediaHasDownloadable(post.Quoted.Media) {
+		return false
+	}
+	if xPostDTOHasHLSOnly(post) {
+		return true
+	}
+	if post.Retweeted != nil && !post.Retweeted.Unavailable && xPostDTOHasHLSOnly(post.Retweeted) && strings.TrimSpace(post.Text) == "" {
+		return true
+	}
+	if post.Card != nil && (post.Card.Kind == "live" || post.Card.Kind == "article" || post.Card.Kind == "vote") {
+		return true
+	}
+	if post.Poll != nil && strings.TrimSpace(post.Text) == "" {
+		return true
+	}
+	return false
+}
+
+func xPostMediaHasDownloadable(items []XMediaItemDTO) bool {
+	for _, m := range items {
+		switch m.Kind {
+		case "photo":
+			return true
+		case "gif", "video":
+			if !m.HLSOnly {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func xPostDTOHasHLSOnly(post *XPostDTO) bool {
+	if post == nil {
+		return false
+	}
+	if post.HasHLSOnlyVideo {
+		return true
+	}
+	for _, m := range post.Media {
+		if m.HLSOnly {
+			return true
+		}
+	}
+	return false
+}
+
+func xBatchCacheViaForPost(post *XPostDTO, pageUID, pageName string) *library.ItemVia {
+	if post == nil {
+		return nil
+	}
+	forUID := strings.TrimSpace(pageUID)
+	forName := strings.TrimSpace(pageName)
+	authorUID := strings.TrimSpace(post.Author.RestID)
+	if forUID != "" && (post.IsRetweet || post.Retweeted != nil || (authorUID != "" && authorUID != forUID)) {
+		return &library.ItemVia{
+			Reason:    library.ViaForward,
+			Site:      string(site.X),
+			UID:       forUID,
+			Name:      firstNonEmpty(forName, forUID),
+			DynamicID: strings.TrimSpace(post.ID),
+		}
+	}
+	hintUID := strings.TrimSpace(post.ForwarderHintUID)
+	if hintUID != "" && (post.IsRetweet || (authorUID != "" && authorUID != hintUID)) {
+		return &library.ItemVia{
+			Reason:    library.ViaForward,
+			Site:      string(site.X),
+			UID:       hintUID,
+			Name:      firstNonEmpty(strings.TrimSpace(post.ForwarderHintName), hintUID),
+			DynamicID: strings.TrimSpace(post.ID),
+		}
+	}
+	return nil
 }
 
 func (b *Backend) enqueueXPostWithSource(

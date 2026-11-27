@@ -776,19 +776,26 @@ func (b *Backend) openXLink(ctx context.Context, normalizedInput string) (*OpenL
 		if err != nil {
 			return nil, err
 		}
+		initialTab, ok := x.NormalizeProfileTab(target.Tab)
+		if !ok {
+			initialTab = x.ProfileTabPosts
+		}
 		out.XUser = uv
+		out.XUserTab = initialTab
 		out.Target.ID = uv.RestID
 		out.SiteTarget.ID = uv.RestID
 		out.SiteTarget.AuthorUID = uv.RestID
+		out.SiteTarget.Tab = target.Tab
 		out.SiteTarget.CanonicalURL = uv.CanonicalURL
 		known := &x.UserProfile{
 			RestID:        uv.RestID,
 			ScreenName:    uv.ScreenName,
 			Name:          uv.Name,
 			StatusesCount: uv.StatusesCount,
+			MediaCount:    uv.MediaCount,
 			Protected:     uv.Protected,
 		}
-		if postsPage, _, pErr := b.xUserPosts(ctx, uv.RestID, "", known); pErr == nil {
+		if postsPage, _, pErr := b.xUserTabPosts(ctx, uv.RestID, initialTab, "", known); pErr == nil {
 			out.XUserPosts = postsPage
 		} else {
 			b.logError("OpenLink.XUserPosts", pErr)
@@ -1720,7 +1727,16 @@ func (b *Backend) finalizeXUserProfile(prof *x.UserProfile) *XUserDTO {
 
 // XUserPosts fetches one paginated timeline page for an X creator via GraphQL UserTweets.
 func (b *Backend) XUserPosts(ctx context.Context, restID, cursor string) (*XUserPostsPageDTO, error) {
-	page, _, err := b.xUserPosts(ctx, restID, cursor, nil)
+	page, _, err := b.xUserTabPosts(ctx, restID, x.ProfileTabPosts, cursor, nil)
+	return page, err
+}
+
+// XUserTabPosts fetches one paginated timeline page for an X creator's profile tab
+// ("posts" | "replies" | "media" | "highlights") by numeric rest_id or @screen_name,
+// honoring DEC-089 manual probe recovery when X is in backoff and per-operation rate-limit
+// braking otherwise (DEC-092).
+func (b *Backend) XUserTabPosts(ctx context.Context, uidOrHandle, tab, cursor string) (*XUserPostsPageDTO, error) {
+	page, _, err := b.xUserTabPosts(ctx, uidOrHandle, tab, cursor, nil)
 	return page, err
 }
 
@@ -1729,19 +1745,66 @@ func (b *Backend) xUserPosts(
 	restID, cursor string,
 	known *x.UserProfile,
 ) (*XUserPostsPageDTO, []x.Post, error) {
+	return b.xUserTabPosts(ctx, restID, x.ProfileTabPosts, cursor, known)
+}
+
+func (b *Backend) xUserTabPosts(
+	ctx context.Context,
+	uidOrHandle, tab, cursor string,
+	known *x.UserProfile,
+) (*XUserPostsPageDTO, []x.Post, error) {
+	normTab, ok := x.NormalizeProfileTab(tab)
+	if !ok {
+		return nil, nil, &site.Error{
+			Site:    site.X,
+			Kind:    site.ErrKindBadRequest,
+			Message: fmt.Sprintf("不支持的 X 用户页标签: %s", strings.TrimSpace(tab)),
+		}
+	}
 	if err := b.requireSiteLogin(site.X); err != nil {
 		return nil, nil, err
 	}
+
+	// Honor DEC-089 single manual probe recovery when X is in site-wide backoff,
+	// while preserving per-operation x-rate-limit-remaining <= 1 proactive braking
+	// (especially for the tight 50/15min UserTweets / UserHighlightsTweets buckets)
+	// during normal operation.
+	callCtx := ctx
+	if site.AutomaticRequestSource(ctx) == "" && b.subs != nil {
+		if inBackoff, _ := b.subs.IsSiteInBackoff(string(site.X)); inBackoff {
+			callCtx = b.manualProbeContext(ctx)
+		}
+	}
+
+	rawTarget := strings.TrimSpace(uidOrHandle)
+	restID := rawTarget
+	if normUID, uErr := site.NormalizeUID(site.X, rawTarget); uErr == nil {
+		restID = normUID
+	} else if rawTarget != "" {
+		prof, sErr := b.x.GetUserByScreenName(callCtx, rawTarget)
+		if sErr != nil {
+			sErr = b.finishManualSiteRequest(ctx, site.X, sErr)
+			b.logError("XUserTabPosts.ResolveHandle", sErr)
+			return nil, nil, sErr
+		}
+		if known == nil {
+			known = prof
+		}
+		restID = prof.RestID
+	}
+
 	cleanCursor := strings.TrimSpace(cursor)
-	page, err := b.x.GetUserTweets(b.manualProbeContext(ctx), x.UserTweetsRequest{
-		RestID:            strings.TrimSpace(restID),
+	crossCheck := known == nil && cleanCursor == "" && (normTab == x.ProfileTabPosts || normTab == x.ProfileTabReplies)
+	page, err := b.x.GetUserTabTweets(callCtx, x.UserTweetsRequest{
+		RestID:            restID,
+		Tab:               normTab,
 		Cursor:            cleanCursor,
 		KnownProfile:      known,
-		CrossCheckProfile: known == nil && cleanCursor == "",
+		CrossCheckProfile: crossCheck,
 	})
 	if err != nil {
 		err = b.finishManualSiteRequest(ctx, site.X, err)
-		b.logError("XUserPosts", err)
+		b.logError("XUserTabPosts", err)
 		return nil, nil, err
 	}
 	_ = b.finishManualSiteRequest(ctx, site.X, nil)
@@ -1808,6 +1871,7 @@ func (b *Backend) xUserPosts(
 		nextCursor = page.NextCursor
 	}
 	return &XUserPostsPageDTO{
+		Tab:                 normTab,
 		Posts:               views,
 		NextCursor:          nextCursor,
 		HasMore:             page.HasMore,

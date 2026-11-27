@@ -19,7 +19,48 @@ const (
 
 	// VisibleTimelineLimitText is the user-facing completion notice when X's visible limit is reached (x.md §15.1 #12).
 	VisibleTimelineLimitText = "已到达 X 时间线可见上限"
+
+	// Profile tab identifiers for X user profile browsing (DEC-092).
+	ProfileTabPosts      = "posts"
+	ProfileTabReplies    = "replies"
+	ProfileTabMedia      = "media"
+	ProfileTabHighlights = "highlights"
 )
+
+// NormalizeProfileTab canonicalizes an X profile tab identifier, defaulting empty
+// input to ProfileTabPosts. Returns ("", false) for unrecognized tab values.
+func NormalizeProfileTab(tab string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(tab)) {
+	case "", ProfileTabPosts, "tweets":
+		return ProfileTabPosts, true
+	case ProfileTabReplies, "with_replies":
+		return ProfileTabReplies, true
+	case ProfileTabMedia:
+		return ProfileTabMedia, true
+	case ProfileTabHighlights:
+		return ProfileTabHighlights, true
+	default:
+		return "", false
+	}
+}
+
+// ProfileTabOperation maps a normalized X profile tab to its read-only GraphQL operation name.
+func ProfileTabOperation(tab string) string {
+	norm, ok := NormalizeProfileTab(tab)
+	if !ok {
+		return ""
+	}
+	switch norm {
+	case ProfileTabReplies:
+		return OpUserTweetsAndReplies
+	case ProfileTabMedia:
+		return OpUserMedia
+	case ProfileTabHighlights:
+		return OpUserHighlightsTweets
+	default:
+		return OpUserTweets
+	}
+}
 
 // UserProfile holds an X user's normalized profile from UserByRestId or UserByScreenName.
 type UserProfile struct {
@@ -40,9 +81,11 @@ type UserProfile struct {
 	CanonicalURL   string   `json:"canonicalUrl"`
 }
 
-// UserTweetsRequest configures one paginated call to GraphQL UserTweets.
+// UserTweetsRequest configures one paginated call to an X user profile timeline
+// (UserTweets, UserTweetsAndReplies, UserMedia, or UserHighlightsTweets).
 type UserTweetsRequest struct {
 	RestID            string
+	Tab               string // "", "posts", "replies", "media", "highlights" (defaults to "posts")
 	Cursor            string
 	Count             int
 	SeenIDs           map[string]bool
@@ -51,8 +94,9 @@ type UserTweetsRequest struct {
 	TotalFetched      int  // optional cumulative count across prior pages (for visible-limit detection)
 }
 
-// UserTweetsPage holds one validated page of posts from GraphQL UserTweets.
+// UserTweetsPage holds one validated page of posts from an X user profile timeline.
 type UserTweetsPage struct {
+	Tab                 string         `json:"tab,omitempty"`
 	Posts               []Post         `json:"posts"`
 	NextCursor          string         `json:"nextCursor,omitempty"`
 	TopCursor           string         `json:"topCursor,omitempty"`
@@ -232,13 +276,30 @@ func (c *Client) parseUserProfileData(ctx context.Context, rawData json.RawMessa
 	return prof, nil
 }
 
-// GetUserTweets fetches one page of a creator's timeline via GraphQL UserTweets, implementing:
+// GetUserTweets fetches one page of a creator's "posts" timeline via GraphQL UserTweets, implementing:
 //   - all 3 timeline response paths (timeline_v2, timeline, result.timeline_v2)
 //   - TimelinePinEntry pinned post placed first with Pinned: true
 //   - Bottom cursor pagination, cross-page dedup, cursor stagnation stop, visible-limit stop
 //   - stripping promoted entries, recommendation modules, non-target-author entries, and replies
 //   - EVERY row of docs/research/x.md §7.3 truth table
 func (c *Client) GetUserTweets(ctx context.Context, req UserTweetsRequest) (*UserTweetsPage, error) {
+	req.Tab = ProfileTabPosts
+	return c.GetUserTabTweets(ctx, req)
+}
+
+// GetUserTabTweets fetches one page of a creator's profile tab timeline
+// (posts -> UserTweets, replies -> UserTweetsAndReplies, media -> UserMedia,
+// highlights -> UserHighlightsTweets) under X's strict serial pacing and per-operation
+// x-rate-limit-remaining <= 1 proactive brake (DEC-092).
+func (c *Client) GetUserTabTweets(ctx context.Context, req UserTweetsRequest) (*UserTweetsPage, error) {
+	normTab, ok := NormalizeProfileTab(req.Tab)
+	if !ok {
+		return nil, &site.Error{
+			Site:    SiteID,
+			Kind:    site.ErrKindBadRequest,
+			Message: fmt.Sprintf("不支持的 X 用户页标签: %s", strings.TrimSpace(req.Tab)),
+		}
+	}
 	normID, err := site.NormalizeUID(SiteID, req.RestID)
 	if err != nil {
 		return nil, &site.Error{
@@ -252,21 +313,54 @@ func (c *Client) GetUserTweets(ctx context.Context, req UserTweetsRequest) (*Use
 		count = DefaultTimelinePageCount
 	}
 	reqCursor := strings.TrimSpace(req.Cursor)
+	opName := ProfileTabOperation(normTab)
 
-	vars := map[string]any{
-		"userId":                                 normID,
-		"count":                                  count,
-		"includePromotedContent":                 false,
-		"withQuickPromoteEligibilityTweetFields": false,
-		"withVoice":                              true,
-		"withV2Timeline":                         true,
+	var vars map[string]any
+	switch normTab {
+	case ProfileTabReplies:
+		vars = map[string]any{
+			"userId":                 normID,
+			"count":                  count,
+			"includePromotedContent": false,
+			"withCommunity":          true,
+			"withVoice":              true,
+			"withV2Timeline":         true,
+		}
+	case ProfileTabMedia:
+		vars = map[string]any{
+			"userId":                 normID,
+			"count":                  count,
+			"includePromotedContent": false,
+			"withClientEventToken":   false,
+			"withBirdwatchNotes":     false,
+			"withVoice":              true,
+			"withV2Timeline":         true,
+		}
+	case ProfileTabHighlights:
+		vars = map[string]any{
+			"userId":                 normID,
+			"count":                  count,
+			"includePromotedContent": false,
+			"withBirdwatchNotes":     true,
+			"withVoice":              true,
+			"withV2Timeline":         true,
+		}
+	default:
+		vars = map[string]any{
+			"userId":                                 normID,
+			"count":                                  count,
+			"includePromotedContent":                 false,
+			"withQuickPromoteEligibilityTweetFields": false,
+			"withVoice":                              true,
+			"withV2Timeline":                         true,
+		}
 	}
 	if reqCursor != "" {
 		vars["cursor"] = reqCursor
 	}
 
 	gqlResp, err := c.doGraphQL(ctx, graphqlRequest{
-		operation: OpUserTweets,
+		operation: opName,
 		variables: vars,
 		referer:   "https://x.com/i/user/" + normID,
 	})
@@ -274,11 +368,17 @@ func (c *Client) GetUserTweets(ctx context.Context, req UserTweetsRequest) (*Use
 		return nil, err
 	}
 
-	return c.parseUserTweetsData(ctx, gqlResp.data, normID, req)
+	return c.parseUserTimelineData(ctx, gqlResp.data, normID, normTab, opName, req)
 }
 
-func (c *Client) parseUserTweetsData(ctx context.Context, rawData json.RawMessage, normID string, req UserTweetsRequest) (*UserTweetsPage, error) {
-	endpoint := site.SanitizeEndpoint(c.endpoints.GraphQLBase + "/" + OpUserTweets)
+func (c *Client) parseUserTimelineData(ctx context.Context, rawData json.RawMessage, normID, tab, opName string, req UserTweetsRequest) (*UserTweetsPage, error) {
+	if opName == "" {
+		opName = OpUserTweets
+	}
+	if tab == "" {
+		tab = ProfileTabPosts
+	}
+	endpoint := site.SanitizeEndpoint(c.endpoints.GraphQLBase + "/" + opName)
 
 	var dataMap map[string]json.RawMessage
 	if err := decodeJSONUseNumber(rawData, &dataMap); err != nil {
@@ -286,7 +386,7 @@ func (c *Client) parseUserTweetsData(ctx context.Context, rawData json.RawMessag
 			Site:     SiteID,
 			Kind:     site.ErrKindSchemaChanged,
 			Endpoint: endpoint,
-			Message:  "解析 X UserTweets 响应失败",
+			Message:  fmt.Sprintf("解析 X %s 响应失败", opName),
 			Err:      err,
 		}
 	}
@@ -446,12 +546,20 @@ func (c *Client) parseUserTweetsData(ctx context.Context, rawData json.RawMessag
 		}
 		rawTweetCount++
 		// Must belong to target creator (outer retweet has target creator as Author.RestID).
-		if p.Author.RestID != "" && p.Author.RestID != normID {
-			return
-		}
-		// x.md §15.1 #11: filter out replies (non-empty in_reply_to_status_id_str on outer entry).
-		if !p.IsRetweet && p.InReplyToStatusID != "" {
-			return
+		// On UserTweetsAndReplies, profile-conversation-* VerticalConversation modules contain
+		// context parent tweets from other users; strictly require legacy.user_id_str/Author.RestID == normID.
+		if tab == ProfileTabPosts {
+			if p.Author.RestID != "" && p.Author.RestID != normID {
+				return
+			}
+			// x.md §15.1 #11: UserTweets ("posts" tab & subscriptions) filters out replies.
+			if !p.IsRetweet && p.InReplyToStatusID != "" {
+				return
+			}
+		} else {
+			if p.Author.RestID != normID {
+				return
+			}
 		}
 		if seen[p.ID] {
 			return
@@ -565,6 +673,26 @@ func (c *Client) parseUserTweetsData(ctx context.Context, rawData json.RawMessag
 
 	// Page 1 completely empty (valid instructions, 0 tweets): check Truth table row 1 vs uncertain empty.
 	if reqCursor == "" && len(posts) == 0 && rawTweetCount == 0 {
+		if tab == ProfileTabMedia || tab == ProfileTabHighlights {
+			if req.KnownProfile != nil && req.KnownProfile.Protected {
+				return nil, &site.Error{
+					Site:     SiteID,
+					Kind:     site.ErrKindForbidden,
+					Endpoint: endpoint,
+					Message:  "该 X 账号受保护，未获准关注前无法查看其帖子",
+				}
+			}
+			if pageAuthor == nil && req.KnownProfile != nil {
+				pageAuthor = profileToAuthorSummary(req.KnownProfile)
+			}
+			return &UserTweetsPage{
+				Tab:       tab,
+				Posts:     []Post{},
+				TopCursor: topCursor,
+				HasMore:   false,
+				Author:    pageAuthor,
+			}, nil
+		}
 		prof := req.KnownProfile
 		if prof == nil && req.CrossCheckProfile {
 			fetched, pErr := c.GetUserByRestId(ctx, normID)
@@ -587,6 +715,7 @@ func (c *Client) parseUserTweetsData(ctx context.Context, rawData json.RawMessag
 			}
 			if prof.StatusesCount == 0 {
 				return &UserTweetsPage{
+					Tab:       tab,
 					Posts:     []Post{},
 					TopCursor: topCursor,
 					HasMore:   false,
@@ -594,6 +723,7 @@ func (c *Client) parseUserTweetsData(ctx context.Context, rawData json.RawMessag
 				}, nil
 			}
 			return &UserTweetsPage{
+				Tab:             tab,
 				Posts:           []Post{},
 				TopCursor:       topCursor,
 				HasMore:         false,
@@ -605,6 +735,7 @@ func (c *Client) parseUserTweetsData(ctx context.Context, rawData json.RawMessag
 		// Known statuses_count on inlineAuthor == 0 -> genuine 0 posts; > 0 -> uncertain.
 		if pageAuthor != nil && pageAuthor.StatusesCount > 0 {
 			return &UserTweetsPage{
+				Tab:             tab,
 				Posts:           []Post{},
 				TopCursor:       topCursor,
 				HasMore:         false,
@@ -614,6 +745,7 @@ func (c *Client) parseUserTweetsData(ctx context.Context, rawData json.RawMessag
 			}, nil
 		}
 		return &UserTweetsPage{
+			Tab:       tab,
 			Posts:     []Post{},
 			TopCursor: topCursor,
 			HasMore:   false,
@@ -625,6 +757,29 @@ func (c *Client) parseUserTweetsData(ctx context.Context, rawData json.RawMessag
 	hasMore := nextCursor != "" && !cursorStagnated
 	reachedVisibleLimit := false
 
+	knownTabTotal := func() int {
+		switch tab {
+		case ProfileTabMedia:
+			if req.KnownProfile != nil {
+				return req.KnownProfile.MediaCount
+			}
+			if pageAuthor != nil {
+				return pageAuthor.MediaCount
+			}
+			return 0
+		case ProfileTabHighlights:
+			return 0
+		default:
+			if req.KnownProfile != nil {
+				return req.KnownProfile.StatusesCount
+			}
+			if pageAuthor != nil {
+				return pageAuthor.StatusesCount
+			}
+			return 0
+		}
+	}()
+
 	// Subsequent page with 0 raw tweet entries or 0 new posts -> end of visible timeline!
 	if reqCursor != "" && (rawTweetCount == 0 || len(posts) == 0) {
 		hasMore = false
@@ -633,15 +788,9 @@ func (c *Client) parseUserTweetsData(ctx context.Context, rawData json.RawMessag
 		if len(seen) > totalSeen {
 			totalSeen = len(seen)
 		}
-		knownStatuses := 0
-		if req.KnownProfile != nil {
-			knownStatuses = req.KnownProfile.StatusesCount
-		} else if pageAuthor != nil {
-			knownStatuses = pageAuthor.StatusesCount
-		}
 		if cursorStagnated ||
 			totalSeen >= VisibleTimelineLimitHint ||
-			(knownStatuses > 0 && (totalSeen == 0 || knownStatuses > totalSeen)) {
+			(knownTabTotal > 0 && (totalSeen == 0 || knownTabTotal > totalSeen)) {
 			reachedVisibleLimit = true
 		}
 	} else if cursorStagnated {
@@ -652,7 +801,7 @@ func (c *Client) parseUserTweetsData(ctx context.Context, rawData json.RawMessag
 		if len(seen) > totalSeen {
 			totalSeen = len(seen)
 		}
-		if totalSeen >= VisibleTimelineLimitHint || (req.KnownProfile != nil && req.KnownProfile.StatusesCount > totalSeen) {
+		if totalSeen >= VisibleTimelineLimitHint || (knownTabTotal > 0 && knownTabTotal > totalSeen) {
 			reachedVisibleLimit = true
 		}
 	} else if !hasMore && req.TotalFetched+len(posts) >= VisibleTimelineLimitHint {
@@ -660,6 +809,7 @@ func (c *Client) parseUserTweetsData(ctx context.Context, rawData json.RawMessag
 	}
 
 	page := &UserTweetsPage{
+		Tab:                 tab,
 		Posts:               posts,
 		NextCursor:          nextCursor,
 		TopCursor:           topCursor,
@@ -988,7 +1138,7 @@ func extractCursorsFromEntry(entry *rawTimelineEntry, topCursor, bottomCursor *s
 
 func isRecommendationModule(entryID, displayType string) bool {
 	lowerID := strings.ToLower(strings.TrimSpace(entryID))
-	if containsAny(lowerID, "who-to-follow", "who-to-subscribe", "topics-module", "follow-recommendations", "similar-to") {
+	if containsAny(lowerID, "who-to-", "who-to-follow", "who-to-subscribe", "topics-module", "follow-recommendations", "similar-to") {
 		return true
 	}
 	lowerDisp := strings.ToLower(strings.TrimSpace(displayType))
