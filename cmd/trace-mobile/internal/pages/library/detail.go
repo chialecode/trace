@@ -80,6 +80,11 @@ func (p *Page) renderDetailRoute(c *ui.Context, h pagekit.Host, r *ui.Router, ro
 }
 
 func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.LibraryItemDetail) {
+	if parts, focalIdx, origImages, ok := resolveMobileDetailThread(det); ok {
+		p.renderDetailThreadBody(c, h, det, parts, focalIdx, origImages)
+		return
+	}
+
 	images := collectDetailImages(det)
 	vidReq, indexMap, hasVideo := buildDetailVideoRequest(det)
 
@@ -141,24 +146,7 @@ func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.
 
 			// Clickable http(s) links.
 			if links := mediaview.ExtractLinks(body+"\n"+det.Desc, det.Links); len(links) > 0 {
-				ui.Row(c).FillWidth().Wrap().Gap(6).Children(func() {
-					for i, lnk := range links {
-						u := lnk.URL
-						btn := ui.Button(c.Key(i), "").
-							Label("打开链接 "+lnk.Label).
-							MinHeight(34).Padding(4, 10).Radius(999).
-							Background(theme.ColorAccentBg)
-						btn.Children(func() {
-							ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-								mediaview.DrawIcon(c, "external-link", 12, theme.ColorAccent, 1.8)
-								ui.Text(c, lnk.Label).FontSize(12).FontWeight(500).TextColor(theme.ColorAccent).SingleLine()
-							})
-						})
-						if btn.Clicked() {
-							_ = h.OpenExternal(u)
-						}
-					}
-				})
+				p.renderDetailLinks(c, h, links)
 			}
 
 			// Video cover / play CTA when playable.
@@ -228,51 +216,7 @@ func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.
 			if len(images) > 0 {
 				ui.Column(c).FillWidth().Gap(8).Children(func() {
 					ui.Text(c, fmt.Sprintf("图片（%d）", len(images))).FontSize(14).FontWeight(600).TextColor(theme.ColorTextMain)
-					cols := 3
-					if len(images) == 1 {
-						cols = 1
-					} else if len(images) == 2 || len(images) == 4 {
-						cols = 2
-					}
-					ui.Grid(c).FillWidth().Columns(cols).Gap(6).Children(func() {
-						for i, img := range images {
-							idx := i
-							im := img
-							src, _, _ := p.loader.GetOrLoad(h, mediaview.MediaThumbPath(im.ItemKey, im.RelPath))
-							aspect := float32(1)
-							if cols == 1 {
-								aspect = 16.0 / 9.0
-								if im.Width > 0 && im.Height > 0 {
-									aspect = float32(im.Width) / float32(im.Height)
-									if aspect < 0.5 {
-										aspect = 0.5
-									}
-									if aspect > 2.4 {
-										aspect = 2.4
-									}
-								}
-							}
-							tile := ui.Box(c.Key(idx)).
-								AspectRatio(aspect).
-								Radius(10).
-								Clip().
-								Background(theme.ColorBgSecondary).
-								Label(fmt.Sprintf("查看图片 %d / %d", idx+1, len(images)))
-							tile.Children(func() {
-								if src != nil {
-									ui.Image(c, src).Fit(ui.Cover).Fill()
-								}
-								if im.MotionRelPath != "" {
-									ui.Box(c).Absolute().Top(6).Left(6).Padding(2, 6).Radius(4).Background(ui.RGBA(0, 0, 0, 0.62)).Children(func() {
-										ui.Text(c, "实况").FontSize(10).FontWeight(600).TextColor(theme.ColorWhite).SingleLine()
-									})
-								}
-							})
-							if tile.Clicked() {
-								p.triggerOpenImages(h, images, idx)
-							}
-						}
-					})
+					p.renderDetailImageGrid(c, h, images)
 				})
 			}
 
@@ -291,64 +235,19 @@ func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.
 				})
 			}
 
-			// Thread parts.
-			if len(det.Thread) > 0 {
-				ui.Column(c).FillWidth().Gap(6).Children(func() {
-					ui.Text(c, "连续帖").FontSize(14).FontWeight(600).TextColor(theme.ColorTextMain)
-					for i, tp := range det.Thread {
-						if strings.TrimSpace(tp.Text) == "" {
-							continue
-						}
-						ui.Column(c.Key(i)).FillWidth().Padding(10, 12).Radius(10).Background(theme.ColorBgPanel).Border(1, theme.ColorBorder).Children(func() {
-							ui.Text(c, tp.Text).FontSize(13).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
-						})
-					}
-				})
-			}
-
 			// Origin quoted post.
 			if det.Origin != nil {
-				ui.Column(c).FillWidth().Padding(12, 12).Radius(10).Background(theme.ColorBgPanel).Border(1, theme.ColorBorder).Gap(6).Children(func() {
-					if det.Origin.Unavailable {
-						msg := det.Origin.UnavailableReason
-						if msg == "" {
-							msg = "原内容已删除或不可见"
-						}
-						ui.Text(c, msg).FontSize(13).TextColor(theme.ColorTextMuted)
-					} else {
-						if det.Origin.AuthorName != "" {
-							ui.Text(c, det.Origin.AuthorName).FontSize(13).FontWeight(600).TextColor(theme.ColorTextMuted)
-						}
-						if det.Origin.Text != "" {
-							ui.Text(c, det.Origin.Text).FontSize(13).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
-						}
-					}
-				})
+				p.renderDetailOriginBox(c, h, det.Origin, nil)
 			}
 
 			// Rich card summary (read-only).
 			if det.Card != nil {
-				ui.Column(c).FillWidth().Padding(10, 12).Radius(10).Background(theme.ColorBgPanel).Border(1, theme.ColorBorder).Gap(4).Children(func() {
-					if det.Card.Label != "" {
-						ui.Text(c, det.Card.Label).FontSize(11).FontWeight(600).TextColor(theme.ColorTextMuted)
-					}
-					if det.Card.Title != "" {
-						ui.Text(c, det.Card.Title).FontSize(13).FontWeight(600).TextColor(theme.ColorTextMain)
-					}
-					if det.Card.Desc != "" {
-						ui.Text(c, det.Card.Desc).FontSize(12).TextColor(theme.ColorTextMuted)
-					}
-				})
+				p.renderDetailRichCard(c, det.Card)
 			}
 
 			// Missing parts note (honest partial status).
 			if len(det.Missing) > 0 {
-				ui.Column(c).FillWidth().Padding(10, 12).Radius(10).Background(theme.ColorWarnBg).Gap(4).Children(func() {
-					ui.Text(c, "部分内容未缓存").FontSize(13).FontWeight(600).TextColor(theme.ColorWarnText)
-					for i, m := range det.Missing {
-						ui.Text(c.Key(i), fmt.Sprintf("• %s：%s", m.Item, m.Reason)).FontSize(12).TextColor(theme.ColorWarnText)
-					}
-				})
+				p.renderDetailMissingBox(c, det.Missing)
 			}
 
 			// Bottom read-only footer note (FR-MOB-025).
@@ -358,22 +257,711 @@ func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.
 	})
 }
 
+type detailThreadVideo struct {
+	Title        string
+	CoverRelPath string
+	DurationSec  int
+	QualitySpec  string
+	Req          mediaview.VideoRequest
+}
+
+type detailThreadPart struct {
+	ID      string
+	PubTs   int64
+	Text    string
+	Links   []companionapi.TextLink
+	Images  []mediaview.ImageItem
+	Videos  []detailThreadVideo
+	IsFocal bool
+}
+
+func (p *Page) renderDetailThreadBody(
+	c *ui.Context,
+	h pagekit.Host,
+	det companionapi.LibraryItemDetail,
+	parts []detailThreadPart,
+	focalIdx int,
+	origImages []mediaview.ImageItem,
+) {
+	now := p.nowFn()
+	authorName := strings.TrimSpace(det.AuthorName)
+	if authorName == "" {
+		authorName = strings.TrimSpace(det.AuthorUID)
+	}
+	if authorName == "" {
+		authorName = "未知用户"
+	}
+	authorHandle := strings.TrimPrefix(strings.TrimSpace(det.AuthorUniqueID), "@")
+
+	ui.Scroll(c).Grow(1).Basis(0).FillWidth().Children(func() {
+		ui.Column(c).FillWidth().Padding(14, 14).Gap(12).ClipX().Children(func() {
+			if det.IsForward && det.Via != nil && det.Via.Name != "" && det.Via.UID != det.AuthorUID {
+				ui.Row(c).FillWidth().Padding(6, 10).Radius(8).Background(theme.ColorBgPanel).Children(func() {
+					ui.Text(c, "转发内容 · 由 "+det.Via.Name+" 转发").FontSize(12).TextColor(theme.ColorTextMuted).SingleLine()
+				})
+			}
+
+			ui.Column(c).Label("X离线自回复串").FillWidth().Gap(0).ClipX().Children(func() {
+				for idx, part := range parts {
+					tp := part
+					isFirst := idx == 0
+					isLast := idx == len(parts)-1
+					bottomPad := float32(0)
+					if !isLast {
+						bottomPad = 14
+					}
+
+					ui.Row(c.Key(idx)).
+						Label(fmt.Sprintf("X离线串条目 %d", idx+1)).
+						FillWidth().
+						Gap(10).
+						AlignItems(ui.Stretch).
+						ClipX().
+						Children(func() {
+							ui.Column(c).Width(36).Shrink(0).AlignItems(ui.Center).Children(func() {
+								p.renderDetailAvatarSized(c, h, det.AuthorAvatarPath, authorName, det.AuthorUID+authorName, 36)
+								if !isLast {
+									ui.Box(c).
+										Label(fmt.Sprintf("X离线串连线 %d", idx+1)).
+										Width(36).
+										Grow(1).
+										MinHeight(14).
+										Shrink(0).
+										Draw(func(painter *ui.Painter, r ui.Rect) {
+											lineTop := r.Y + 4
+											lineH := r.H - 8
+											if lineH > 2 {
+												painter.Fill(ui.Rect{
+													X: r.X + (r.W-2)/2,
+													Y: lineTop,
+													W: 2,
+													H: lineH,
+												}, theme.ColorBorderStrong, 1)
+											}
+										})
+								}
+							})
+
+							ui.Column(c).Grow(1).Basis(0).Gap(8).Padding(0, 0, bottomPad, 0).ClipX().Children(func() {
+								if isFirst {
+									ui.Column(c).FillWidth().Gap(2).ClipX().Children(func() {
+										ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).ClipX().Children(func() {
+											ui.Text(c, authorName).FontSize(15).FontWeight(600).TextColor(theme.ColorTextMain).SingleLine()
+											if authorHandle != "" {
+												ui.Text(c, "@"+authorHandle).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine().Shrink(1)
+											}
+											if det.SubName != "" && det.SubName != authorName {
+												ui.Text(c, det.SubName).FontSize(12).FontWeight(500).TextColor(theme.ColorAccent).SingleLine().Shrink(1)
+											}
+										})
+										pubTs := tp.PubTs
+										if pubTs <= 0 {
+											pubTs = det.PubTs
+										}
+										meta := make([]string, 0, 3)
+										if s := mediaview.SiteLabel(det.Site); s != "" {
+											meta = append(meta, s)
+										}
+										if t := mediaview.FormatPubTime(pubTs, now); t != "" {
+											meta = append(meta, t)
+										}
+										if sz := mediaview.FormatBytes(det.TotalBytes); sz != "" {
+											meta = append(meta, sz)
+										}
+										if len(meta) > 0 {
+											ui.Text(c, strings.Join(meta, " · ")).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine()
+										}
+									})
+								} else {
+									ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).ClipX().Children(func() {
+										ui.Text(c, authorName).FontSize(14).FontWeight(600).TextColor(theme.ColorTextMain).SingleLine()
+										if authorHandle != "" {
+											ui.Text(c, "@"+authorHandle).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine().Shrink(1)
+										}
+										if t := mediaview.FormatPubTime(tp.PubTs, now); t != "" {
+											ui.Text(c, "· "+t).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine().Shrink(0)
+										}
+									})
+								}
+
+								if body := strings.TrimSpace(tp.Text); body != "" {
+									ui.Text(c, body).FontSize(14).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
+									if links := mediaview.ExtractLinks(body, tp.Links); len(links) > 0 {
+										p.renderDetailLinks(c, h, links)
+									}
+								}
+								if len(tp.Images) > 0 {
+									p.renderDetailImageGrid(c, h, tp.Images)
+								}
+								for vi, vid := range tp.Videos {
+									p.renderDetailThreadVideoCard(c, h, det.ItemKey, vid, vi)
+								}
+
+								if idx == focalIdx {
+									if det.Origin != nil {
+										p.renderDetailOriginBox(c, h, det.Origin, origImages)
+									}
+									if det.Card != nil {
+										p.renderDetailRichCard(c, det.Card)
+									}
+									if len(det.Missing) > 0 {
+										p.renderDetailMissingBox(c, det.Missing)
+									}
+								}
+							})
+						})
+				}
+			})
+
+			// Bottom read-only footer note (FR-MOB-025).
+			ui.Text(c, "本机只读详情 · 删除或管理文件请在电脑端 TRACE 中操作").
+				FontSize(12).TextColor(theme.ColorTextFaint).TextAlign(ui.Center).FillWidth()
+		})
+	})
+}
+
+func (p *Page) renderDetailLinks(c *ui.Context, h pagekit.Host, links []companionapi.TextLink) {
+	ui.Row(c).FillWidth().Wrap().Gap(6).Children(func() {
+		for i, lnk := range links {
+			u := lnk.URL
+			btn := ui.Button(c.Key(i), "").
+				Label("打开链接 "+lnk.Label).
+				MinHeight(34).Padding(4, 10).Radius(999).
+				Background(theme.ColorAccentBg)
+			btn.Children(func() {
+				ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+					mediaview.DrawIcon(c, "external-link", 12, theme.ColorAccent, 1.8)
+					ui.Text(c, lnk.Label).FontSize(12).FontWeight(500).TextColor(theme.ColorAccent).SingleLine()
+				})
+			})
+			if btn.Clicked() {
+				_ = h.OpenExternal(u)
+			}
+		}
+	})
+}
+
+func (p *Page) renderDetailImageGrid(c *ui.Context, h pagekit.Host, images []mediaview.ImageItem) {
+	cols := 3
+	if len(images) == 1 {
+		cols = 1
+	} else if len(images) == 2 || len(images) == 4 {
+		cols = 2
+	}
+	ui.Grid(c).FillWidth().Columns(cols).Gap(6).Children(func() {
+		for i, img := range images {
+			idx := i
+			im := img
+			src, _, _ := p.loader.GetOrLoad(h, mediaview.MediaThumbPath(im.ItemKey, im.RelPath))
+			aspect := float32(1)
+			if cols == 1 {
+				aspect = 16.0 / 9.0
+				if im.Width > 0 && im.Height > 0 {
+					aspect = float32(im.Width) / float32(im.Height)
+					if aspect < 0.5 {
+						aspect = 0.5
+					}
+					if aspect > 2.4 {
+						aspect = 2.4
+					}
+				}
+			}
+			tile := ui.Box(c.Key(idx)).
+				AspectRatio(aspect).
+				Radius(10).
+				Clip().
+				Background(theme.ColorBgSecondary).
+				Label(fmt.Sprintf("查看图片 %d / %d", idx+1, len(images)))
+			tile.Children(func() {
+				if src != nil {
+					ui.Image(c, src).Fit(ui.Cover).Fill()
+				}
+				if im.MotionRelPath != "" && !im.GIF {
+					ui.Box(c).Absolute().Top(6).Left(6).Padding(2, 6).Radius(4).Background(ui.RGBA(0, 0, 0, 0.62)).Children(func() {
+						ui.Text(c, "实况").FontSize(10).FontWeight(600).TextColor(theme.ColorWhite).SingleLine()
+					})
+				} else if im.GIF {
+					ui.Box(c).Absolute().Top(6).Left(6).Padding(2, 6).Radius(4).Background(ui.RGBA(0, 0, 0, 0.62)).Children(func() {
+						ui.Text(c, "GIF").FontSize(10).FontWeight(600).TextColor(theme.ColorWhite).SingleLine()
+					})
+				}
+			})
+			if tile.Clicked() {
+				p.triggerOpenImages(h, images, idx)
+			}
+		}
+	})
+}
+
+func (p *Page) renderDetailThreadVideoCard(c *ui.Context, h pagekit.Host, itemKey string, vid detailThreadVideo, idx int) {
+	var coverSrc ui.ImageSource
+	if vid.CoverRelPath != "" {
+		coverSrc, _, _ = p.loader.GetOrLoad(h, mediaview.MediaThumbPath(itemKey, vid.CoverRelPath))
+	}
+	durTxt := mediaview.FormatDuration(vid.DurationSec)
+	cardTitle := strings.TrimSpace(vid.Title)
+	if cardTitle == "" {
+		cardTitle = "X 视频"
+	}
+	card := ui.Row(c.Key("dtv-"+fmt.Sprint(idx))).
+		FillWidth().
+		Padding(8, 8).
+		Gap(10).
+		Radius(10).
+		Background(theme.ColorBgMain).
+		Border(1, theme.ColorBorder).
+		AlignItems(ui.Center).
+		ClipX().
+		Label("播放 " + cardTitle)
+	card.Children(func() {
+		ui.Box(c).
+			Size(112, 63).
+			Radius(8).
+			Clip().
+			Shrink(0).
+			Background(theme.ColorBgSecondary).
+			Justify(ui.Center).
+			AlignItems(ui.Center).
+			Children(func() {
+				if coverSrc != nil {
+					ui.Image(c, coverSrc).Fit(ui.Cover).Absolute().Top(0).Left(0).Right(0).Bottom(0)
+				}
+				ui.Box(c).Size(26, 26).Radius(13).ZIndex(2).Background(ui.RGBA(0, 0, 0, 0.55)).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
+					mediaview.DrawIcon(c, "play", 12, theme.ColorWhite, 1.8)
+				})
+				if durTxt != "" {
+					ui.Box(c).Absolute().Right(4).Bottom(4).ZIndex(2).Padding(1, 4).Radius(4).Background(ui.RGBA(0, 0, 0, 0.7)).Children(func() {
+						ui.Text(c, durTxt).FontSize(10).FontWeight(500).TextColor(theme.ColorWhite).SingleLine()
+					})
+				}
+			})
+		ui.Column(c).Grow(1).Basis(0).Gap(3).ClipX().Children(func() {
+			ui.Text(c, cardTitle).FontSize(13).FontWeight(600).LineHeight(theme.LineHeightHeading).TextColor(theme.ColorTextMain).MaxLines(2)
+			if vid.QualitySpec != "" {
+				ui.Text(c, vid.QualitySpec).FontSize(11).TextColor(theme.ColorTextMuted).SingleLine()
+			}
+		})
+	})
+	if card.Clicked() {
+		p.triggerOpenVideo(h, vid.Req)
+	}
+}
+
+func (p *Page) renderDetailOriginBox(c *ui.Context, h pagekit.Host, orig *companionapi.ItemOriginDTO, origImages []mediaview.ImageItem) {
+	ui.Column(c).FillWidth().Padding(12, 12).Radius(10).Background(theme.ColorBgPanel).Border(1, theme.ColorBorder).Gap(6).ClipX().Children(func() {
+		if orig.Unavailable {
+			msg := orig.UnavailableReason
+			if msg == "" {
+				msg = "原内容已删除或不可见"
+			}
+			ui.Text(c, msg).FontSize(13).TextColor(theme.ColorTextMuted)
+		} else {
+			if orig.AuthorName != "" {
+				ui.Text(c, orig.AuthorName).FontSize(13).FontWeight(600).TextColor(theme.ColorTextMuted)
+			}
+			if orig.Text != "" {
+				ui.Text(c, orig.Text).FontSize(13).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
+			}
+			if len(origImages) > 0 {
+				p.renderDetailImageGrid(c, h, origImages)
+			}
+		}
+	})
+}
+
+func (p *Page) renderDetailRichCard(c *ui.Context, card *companionapi.ItemRichCardDTO) {
+	ui.Column(c).FillWidth().Padding(10, 12).Radius(10).Background(theme.ColorBgPanel).Border(1, theme.ColorBorder).Gap(4).ClipX().Children(func() {
+		if card.Label != "" {
+			ui.Text(c, card.Label).FontSize(11).FontWeight(600).TextColor(theme.ColorTextMuted)
+		}
+		if card.Title != "" {
+			ui.Text(c, card.Title).FontSize(13).FontWeight(600).TextColor(theme.ColorTextMain)
+		}
+		if card.Desc != "" {
+			ui.Text(c, card.Desc).FontSize(12).TextColor(theme.ColorTextMuted)
+		}
+	})
+}
+
+func (p *Page) renderDetailMissingBox(c *ui.Context, missing []companionapi.MissingItemDTO) {
+	ui.Column(c).FillWidth().Padding(10, 12).Radius(10).Background(theme.ColorWarnBg).Gap(4).ClipX().Children(func() {
+		ui.Text(c, "部分内容未缓存").FontSize(13).FontWeight(600).TextColor(theme.ColorWarnText)
+		for i, m := range missing {
+			ui.Text(c.Key(i), fmt.Sprintf("• %s：%s", m.Item, m.Reason)).FontSize(12).TextColor(theme.ColorWarnText)
+		}
+	})
+}
+
 func (p *Page) renderDetailAvatar(c *ui.Context, h pagekit.Host, avatarPath, name, seed string) {
+	p.renderDetailAvatarSized(c, h, avatarPath, name, seed, 40)
+}
+
+func (p *Page) renderDetailAvatarSized(c *ui.Context, h pagekit.Host, avatarPath, name, seed string, size float32) {
 	var src ui.ImageSource
 	if avatarPath != "" {
 		src, _, _ = p.loader.GetOrLoad(h, avatarPath)
 	}
 	ui.Box(c).
-		Size(40, 40).Radius(20).Clip().Shrink(0).
+		Size(size, size).Radius(size / 2).Clip().Shrink(0).
 		Background(mediaview.AvatarPlaceholderColor(seed)).
 		Justify(ui.Center).AlignItems(ui.Center).
 		Children(func() {
 			if src != nil {
 				ui.Image(c, src).Fit(ui.Cover).Fill()
 			} else {
-				ui.Text(c, mediaview.AvatarInitial(name)).FontSize(16).FontWeight(600).TextColor(theme.ColorWhite).SingleLine()
+				ui.Text(c, mediaview.AvatarInitial(name)).FontSize(size * 0.42).FontWeight(600).TextColor(theme.ColorWhite).SingleLine()
 			}
 		})
+}
+
+func extractDetailRawID(id, itemKey string) string {
+	if key := strings.TrimSpace(itemKey); key != "" {
+		if first := strings.IndexByte(key, ':'); first >= 0 {
+			rest := key[first+1:]
+			if second := strings.IndexByte(rest, ':'); second >= 0 {
+				if tail := strings.TrimSpace(rest[second+1:]); tail != "" {
+					return tail
+				}
+			}
+		}
+	}
+	s := strings.TrimSpace(id)
+	s = strings.TrimPrefix(s, "dynamic:")
+	s = strings.TrimPrefix(s, "video:")
+	return strings.TrimSpace(s)
+}
+
+func stripDetailThreadSuffix(base string, conts []companionapi.ThreadPartDTO) string {
+	cur := strings.TrimSpace(base)
+	if cur == "" || len(conts) == 0 {
+		return cur
+	}
+	for i := len(conts) - 1; i >= 0; i-- {
+		seg := strings.TrimSpace(conts[i].Text)
+		if seg == "" {
+			continue
+		}
+		if strings.HasSuffix(cur, "\n\n"+seg) {
+			cur = strings.TrimSpace(strings.TrimSuffix(cur, "\n\n"+seg))
+		}
+	}
+	return cur
+}
+
+func joinDetailThreadTexts(parts []companionapi.ThreadPartDTO) string {
+	var segs []string
+	for _, tp := range parts {
+		if t := strings.TrimSpace(tp.Text); t != "" {
+			segs = append(segs, t)
+		}
+	}
+	return strings.Join(segs, "\n\n")
+}
+
+func resolveMobileDetailThread(det companionapi.LibraryItemDetail) ([]detailThreadPart, int, []mediaview.ImageItem, bool) {
+	if !strings.EqualFold(strings.TrimSpace(det.Site), "x") || len(det.Thread) == 0 {
+		return nil, -1, nil, false
+	}
+
+	rawID := extractDetailRawID(det.ID, det.ItemKey)
+	rawSegs := make([]companionapi.ThreadPartDTO, 0, len(det.Thread))
+	for _, seg := range det.Thread {
+		if strings.TrimSpace(seg.ID) == "" && strings.TrimSpace(seg.Text) == "" && len(seg.Links) == 0 && len(seg.MediaIndexes) == 0 {
+			continue
+		}
+		rawSegs = append(rawSegs, seg)
+	}
+	if len(rawSegs) == 0 {
+		return nil, -1, nil, false
+	}
+
+	focalIdx := -1
+	if rawID != "" {
+		for i, seg := range rawSegs {
+			if strings.TrimSpace(seg.ID) == rawID {
+				focalIdx = i
+				break
+			}
+		}
+	}
+
+	var segments []companionapi.ThreadPartDTO
+	if focalIdx >= 0 {
+		if len(rawSegs) < 2 {
+			return nil, -1, nil, false
+		}
+		segments = rawSegs
+	} else if len(rawSegs) >= 2 && strings.TrimSpace(det.Text) != "" && strings.TrimSpace(det.Text) == joinDetailThreadTexts(rawSegs) {
+		segments = rawSegs
+		focalIdx = 0
+	} else {
+		baseText := strings.TrimSpace(det.Text)
+		if baseText == "" {
+			baseText = strings.TrimSpace(det.Desc)
+		}
+		if baseText == "" {
+			baseText = strings.TrimSpace(det.Title)
+		}
+		focalSeg := companionapi.ThreadPartDTO{
+			ID:    rawID,
+			PubTs: det.PubTs,
+			Text:  stripDetailThreadSuffix(baseText, rawSegs),
+			Links: det.Links,
+		}
+		segments = make([]companionapi.ThreadPartDTO, 0, 1+len(rawSegs))
+		segments = append(segments, focalSeg)
+		segments = append(segments, rawSegs...)
+		focalIdx = 0
+	}
+	if len(segments) < 2 {
+		return nil, -1, nil, false
+	}
+
+	hasFromOrigin := det.Origin != nil && det.Origin.VideoFromOrigin
+	if !hasFromOrigin {
+		for _, np := range det.NotePages {
+			if np.FromOrigin {
+				hasFromOrigin = true
+				break
+			}
+		}
+	}
+	if !hasFromOrigin {
+		for _, m := range det.Media {
+			if m.FromOrigin {
+				hasFromOrigin = true
+				break
+			}
+		}
+	}
+
+	outerPageByIdx := make(map[int]companionapi.NotePageDTO)
+	var outerPageKeys []int
+	var origImages []mediaview.ImageItem
+
+	for i, np := range det.NotePages {
+		if hasFromOrigin && np.FromOrigin {
+			if rel := firstNonEmptyDetail(np.Image, np.Cover); rel != "" {
+				motion := np.Motion
+				if motion == "" && np.GIF && np.Video != "" {
+					motion = np.Video
+				}
+				origImages = append(origImages, mediaview.ImageItem{
+					ItemKey:            det.ItemKey,
+					RelPath:            rel,
+					NoWatermarkRelPath: np.NoWatermark,
+					MotionRelPath:      motion,
+					GIF:                np.GIF || strings.EqualFold(np.Kind, "gif"),
+					Width:              np.Width,
+					Height:             np.Height,
+				})
+			}
+			continue
+		}
+		idx := np.Index
+		if idx <= 0 {
+			idx = i + 1
+		}
+		if _, exists := outerPageByIdx[idx]; !exists {
+			outerPageByIdx[idx] = np
+			outerPageKeys = append(outerPageKeys, idx)
+		}
+	}
+
+	var outerImages []mediaview.ImageItem
+	if len(outerPageKeys) == 0 {
+		for _, m := range det.Media {
+			if m.Role != "image" || m.Path == "" {
+				continue
+			}
+			img := mediaview.ImageItem{
+				ItemKey:       det.ItemKey,
+				RelPath:       m.Path,
+				MotionRelPath: m.Motion,
+				GIF:           m.GIF,
+				Width:         m.Width,
+				Height:        m.Height,
+			}
+			if hasFromOrigin && m.FromOrigin {
+				origImages = append(origImages, img)
+			} else {
+				outerImages = append(outerImages, img)
+			}
+		}
+	}
+
+	zeroBasedImages := false
+	if len(outerPageKeys) == 0 && len(outerImages) > 0 {
+		for _, seg := range segments {
+			for _, mi := range seg.MediaIndexes {
+				if mi == 0 {
+					zeroBasedImages = true
+					break
+				}
+			}
+			if zeroBasedImages {
+				break
+			}
+		}
+	}
+
+	attachPage := func(dst *detailThreadPart, np companionapi.NotePageDTO) {
+		isGIF := np.GIF || strings.EqualFold(np.Kind, "gif")
+		if np.Video != "" && !isGIF {
+			codec := ""
+			spec := ""
+			w, h := np.Width, np.Height
+			if np.VideoInfo != nil {
+				codec = np.VideoInfo.Codec
+				spec = strings.TrimSpace(strings.Trim(np.VideoInfo.QualityName+" · "+np.VideoInfo.Codec, " ·"))
+				if w == 0 {
+					w = np.VideoInfo.Width
+				}
+				if h == 0 {
+					h = np.VideoInfo.Height
+				}
+			}
+			dst.Videos = append(dst.Videos, detailThreadVideo{
+				Title:        "X 视频",
+				CoverRelPath: firstNonEmptyDetail(np.Cover, np.Image),
+				DurationSec:  np.Duration,
+				QualitySpec:  spec,
+				Req: mediaview.VideoRequest{
+					ItemKey: det.ItemKey,
+					Title:   firstNonEmptyDetail(dst.Text, det.Title, "X 视频"),
+					Tracks: []mediaview.VideoTrack{{
+						Label:          "X 视频",
+						RelPath:        np.Video,
+						DurationSec:    np.Duration,
+						CodecHint:      codec,
+						Width:          w,
+						Height:         h,
+						QualitySummary: spec,
+					}},
+				},
+			})
+			return
+		}
+		if rel := firstNonEmptyDetail(np.Image, np.Cover); rel != "" {
+			motion := np.Motion
+			if motion == "" && isGIF && np.Video != "" {
+				motion = np.Video
+			}
+			dst.Images = append(dst.Images, mediaview.ImageItem{
+				ItemKey:            det.ItemKey,
+				RelPath:            rel,
+				NoWatermarkRelPath: np.NoWatermark,
+				MotionRelPath:      motion,
+				GIF:                isGIF,
+				Width:              np.Width,
+				Height:             np.Height,
+			})
+		}
+	}
+
+	claimedPages := make(map[int]bool)
+	claimedImages := make(map[int]bool)
+	parts := make([]detailThreadPart, len(segments))
+
+	for i, seg := range segments {
+		isFocal := i == focalIdx
+		pubTs := seg.PubTs
+		if pubTs <= 0 && isFocal {
+			pubTs = det.PubTs
+		}
+		links := seg.Links
+		if len(links) == 0 && isFocal && len(det.Links) > 0 {
+			links = det.Links
+		}
+		parts[i] = detailThreadPart{
+			ID:      strings.TrimSpace(seg.ID),
+			PubTs:   pubTs,
+			Text:    strings.TrimSpace(seg.Text),
+			Links:   links,
+			IsFocal: isFocal,
+		}
+		if len(outerPageKeys) > 0 {
+			for _, mi := range seg.MediaIndexes {
+				if np, ok := outerPageByIdx[mi]; ok && !claimedPages[mi] {
+					attachPage(&parts[i], np)
+					claimedPages[mi] = true
+				}
+			}
+		} else if len(outerImages) > 0 {
+			for _, mi := range seg.MediaIndexes {
+				imgIdx := mi - 1
+				if zeroBasedImages {
+					imgIdx = mi
+				}
+				if imgIdx >= 0 && imgIdx < len(outerImages) && !claimedImages[imgIdx] {
+					parts[i].Images = append(parts[i].Images, outerImages[imgIdx])
+					claimedImages[imgIdx] = true
+				}
+			}
+		}
+	}
+
+	if len(outerPageKeys) > 0 {
+		for _, idx := range outerPageKeys {
+			if !claimedPages[idx] {
+				attachPage(&parts[focalIdx], outerPageByIdx[idx])
+			}
+		}
+	} else if len(outerImages) > 0 {
+		for i, img := range outerImages {
+			if !claimedImages[i] {
+				parts[focalIdx].Images = append(parts[focalIdx].Images, img)
+			}
+		}
+	}
+
+	// Single non-NotePage outer video belongs to focal.
+	originOwnsVideo := det.Origin != nil && det.Origin.VideoFromOrigin
+	if len(outerPageKeys) == 0 && !originOwnsVideo {
+		var coverRel string
+		for _, m := range det.Media {
+			if m.Role == "cover" && m.Path != "" && (!hasFromOrigin || !m.FromOrigin) {
+				coverRel = m.Path
+				break
+			}
+		}
+		for _, m := range det.Media {
+			if m.Role == "video" && m.Path != "" && (!hasFromOrigin || !m.FromOrigin) {
+				dur := m.Duration
+				if dur <= 0 {
+					dur = det.Duration
+				}
+				parts[focalIdx].Videos = append(parts[focalIdx].Videos, detailThreadVideo{
+					Title:        "X 视频",
+					CoverRelPath: coverRel,
+					DurationSec:  dur,
+					Req: mediaview.VideoRequest{
+						ItemKey: det.ItemKey,
+						Title:   firstNonEmptyDetail(parts[focalIdx].Text, det.Title, "X 视频"),
+						Tracks: []mediaview.VideoTrack{{
+							Label:       "X 视频",
+							RelPath:     m.Path,
+							DurationSec: dur,
+							Width:       m.Width,
+							Height:      m.Height,
+						}},
+					},
+				})
+				break
+			}
+		}
+	}
+
+	return parts, focalIdx, origImages, true
+}
+
+func firstNonEmptyDetail(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func (p *Page) renderDetailVideoCard(c *ui.Context, h pagekit.Host, det companionapi.LibraryItemDetail, req mediaview.VideoRequest) {

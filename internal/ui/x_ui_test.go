@@ -843,11 +843,20 @@ func TestXPostViewOnlineAndOfflineMediaGIFLoopHLSDegradedCardsAndThread(t *testi
 		"超长合成 note_tweet 完整正文内容，不截断。",
 		"GIF", "选项甲", "合成 X Articles 长文标题",
 		"原帖已删除或受保护，无法查看",
-		"作者自回复串（1 条）", "作者自回复第二条正文",
+		"作者自回复第二条正文",
 	} {
 		if !tt.HasText(want) {
 			t.Fatalf("online X post detail missing %q", want)
 		}
+	}
+	if _, ok := tt.Find("X作者自回复串"); !ok {
+		t.Fatal("online X post detail missing X作者自回复串 container")
+	}
+	if _, ok := tt.Find("X串连线：1900000000000000201"); !ok {
+		t.Fatal("online X post detail missing connector line under focal tweet")
+	}
+	if _, ok := tt.Find("X串连线：1900000000000000202"); ok {
+		t.Fatal("online X post detail must NOT draw connector line under final thread tweet")
 	}
 	if _, ok := tt.Find("X在线统计"); !ok {
 		t.Fatal("online X post detail missing online stats row")

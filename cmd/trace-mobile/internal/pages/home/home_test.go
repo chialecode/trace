@@ -676,3 +676,196 @@ func TestHomeCrossSiteSwitchRestoresLiveUnreadOrder(t *testing.T) {
 	}
 	p.OnDisconnected()
 }
+
+func TestHomeXThreadDisplayDedupCollapseExpandAnd360dpNoOverflow(t *testing.T) {
+	srv, host, cleanup := newSyntheticFeedServer(t, 0)
+	defer cleanup()
+
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC).Unix()
+
+	// Build a real-form 3-part X thread (concatenated Text + 1-based MediaIndexes + FromOrigin quote).
+	thread3 := companionapi.FeedItem{
+		FeedKey:        "x:dynamic:1900000000000050001",
+		ItemKey:        "x:dynamic:1900000000000050001",
+		Site:           "x",
+		Kind:           "dynamic",
+		TypeLabel:      "引用帖子",
+		AuthorUID:      "u-x-1",
+		AuthorName:     "移动串作者",
+		AuthorUniqueID: "mobile_x_author",
+		SubID:          "sub-x",
+		SubName:        "移动X订阅",
+		Title:          "移动三段首帖文案",
+		Text:           "移动三段首帖文案\n\n移动三段第二条文案\n\n移动三段第三条收尾",
+		PubTs:          now - 120,
+		NotePages: []companionapi.NotePageDTO{
+			{Index: 1, Kind: "image", Image: "images/01.jpg", Width: 800, Height: 600},
+			{Index: 2, Kind: "image", FromOrigin: true, Image: "images/02_orig.jpg", Width: 800, Height: 600},
+			{Index: 3, Kind: "video", Video: "images/03.mp4", Cover: "images/03.jpg", Duration: 24, Width: 1280, Height: 720},
+		},
+		Origin: &companionapi.ItemOriginDTO{
+			Site:       "x",
+			ID:         "1900000000000050099",
+			AuthorName: "原帖作者",
+			Text:       "引用框原帖内容",
+		},
+		Thread: []companionapi.ThreadPartDTO{
+			{ID: "1900000000000050001", PubTs: now - 120, Text: "移动三段首帖文案", MediaIndexes: []int{1, 2}},
+			{ID: "1900000000000050002", PubTs: now - 90, Text: "移动三段第二条文案", MediaIndexes: []int{3}},
+			{ID: "1900000000000050003", PubTs: now - 60, Text: "移动三段第三条收尾"},
+		},
+	}
+
+	// Build a 6-part long X thread to verify default collapse to 3 and inline expand/collapse.
+	var t6Parts []companionapi.ThreadPartDTO
+	var t6Texts []string
+	for i := 1; i <= 6; i++ {
+		txt := fmt.Sprintf("移动长串第%d段", i)
+		t6Texts = append(t6Texts, txt)
+		t6Parts = append(t6Parts, companionapi.ThreadPartDTO{
+			ID:    fmt.Sprintf("190000000000005010%d", i),
+			PubTs: now - int64(300-i*10),
+			Text:  txt,
+		})
+	}
+	thread6 := companionapi.FeedItem{
+		FeedKey:        "x:dynamic:1900000000000050101",
+		ItemKey:        "x:dynamic:1900000000000050101",
+		Site:           "x",
+		Kind:           "dynamic",
+		TypeLabel:      "帖子",
+		AuthorUID:      "u-x-1",
+		AuthorName:     "移动串作者",
+		AuthorUniqueID: "mobile_x_author",
+		Title:          "移动长串第1段",
+		Text:           strings.Join(t6Texts, "\n\n"),
+		PubTs:          now - 240,
+		Thread:         t6Parts,
+	}
+
+	// Verify resolver deduplication and single-video focal assignment directly.
+	parts3, focal3, origImgs3, ok3 := resolveMobileFeedThread(thread3)
+	if !ok3 || len(parts3) != 3 || focal3 != 0 {
+		t.Fatalf("resolveMobileFeedThread(3-part) = (len=%d, focal=%d, ok=%v), want (3, 0, true)", len(parts3), focal3, ok3)
+	}
+	if len(parts3[0].Images) != 1 || parts3[0].Images[0].RelPath != "images/01.jpg" {
+		t.Fatalf("focal images = %+v, want [images/01.jpg] (FromOrigin excluded)", parts3[0].Images)
+	}
+	if len(origImgs3) != 1 || origImgs3[0].RelPath != "images/02_orig.jpg" {
+		t.Fatalf("origin images = %+v, want [images/02_orig.jpg]", origImgs3)
+	}
+	if len(parts3[1].Videos) != 1 || parts3[1].Videos[0].Req.Tracks[0].RelPath != "images/03.mp4" {
+		t.Fatalf("reply 2 videos = %+v, want [images/03.mp4]", parts3[1].Videos)
+	}
+
+	srv.mu.Lock()
+	srv.items = []companionapi.FeedItem{thread3}
+	srv.subs = nil
+	srv.mu.Unlock()
+
+	p := New()
+	p.nowFn = func() time.Time { return time.Unix(now, 0).UTC() }
+	var openedImages []mediaview.ImageItem
+	var openedVideo mediaview.VideoRequest
+	p.openImageFn = func(_ pagekit.Host, items []mediaview.ImageItem, _ int) { openedImages = items }
+	p.openVideoFn = func(_ pagekit.Host, req mediaview.VideoRequest) { openedVideo = req }
+
+	notify := make(chan struct{}, 32)
+	host.onUpdate = func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
+
+	p.OnConnected(host)
+	tt := ui.NewTester(func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		p.View(c, host)
+	}, 360, 1000)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if tt.HasText("移动三段第三条收尾") {
+			break
+		}
+		select {
+		case <-notify:
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Verify ZERO duplicate text rendering across all 3 segments.
+	texts := tt.Texts()
+	for _, seg := range []string{"移动三段首帖文案", "移动三段第二条文案", "移动三段第三条收尾", "引用框原帖内容"} {
+		count := 0
+		for _, s := range texts {
+			if strings.Contains(s, seg) {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("mobile home rendered %q %d times (want 1); texts=%v", seg, count, texts)
+		}
+	}
+	if _, ok := tt.Find("X串连线 1"); !ok {
+		t.Fatal("mobile home missing vertical connector line 1")
+	}
+	if _, ok := tt.Find("X串连线 2"); !ok {
+		t.Fatal("mobile home missing vertical connector line 2")
+	}
+	if _, ok := tt.Find("X串连线 3"); ok {
+		t.Fatal("mobile home must NOT draw vertical connector line under final tweet")
+	}
+
+	// Tapping focal image opens only focal image; tapping reply 2 video opens reply 2 video.
+	if err := tt.Click("查看图片 1 / 1"); err != nil {
+		t.Fatalf("click focal thread image: %v", err)
+	}
+	if len(openedImages) != 1 || openedImages[0].RelPath != "images/01.jpg" {
+		t.Fatalf("expected focal image opened, got %+v", openedImages)
+	}
+	if err := tt.Click("播放 X 视频"); err != nil {
+		t.Fatalf("click reply 2 thread video: %v", err)
+	}
+	if len(openedVideo.Tracks) != 1 || openedVideo.Tracks[0].RelPath != "images/03.mp4" {
+		t.Fatalf("expected reply 2 video opened, got %+v", openedVideo)
+	}
+
+	// Zero horizontal overflow at 360, 412, 800.
+	for _, w := range []int{360, 412, 800} {
+		tt.SetSize(w, 1000)
+		tt.Frame()
+		assertNoHorizontalOverflow(t, tt, w)
+	}
+
+	// Switch feed to 6-part long thread and verify collapse/expand + zero overflow at 360dp.
+	p.mu.Lock()
+	p.feedForLocked("all").items = []companionapi.FeedItem{thread6}
+	p.mu.Unlock()
+	tt.SetSize(360, 1200)
+	tt.Frame()
+	if !tt.HasText("移动长串第1段") || !tt.HasText("移动长串第3段") || !tt.HasText("展开其余 3 条自回复") {
+		t.Fatalf("collapsed mobile 6-part thread missing preview or expand toggle; texts=%v", tt.Texts())
+	}
+	if tt.HasText("移动长串第4段") {
+		t.Fatal("collapsed mobile 6-part thread should hide segment 4 initially")
+	}
+	if err := tt.Click("展开自回复串 " + thread6.FeedKey); err != nil {
+		t.Fatalf("click mobile thread expand: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("移动长串第6段") || !tt.HasText("收起自回复串") {
+		t.Fatalf("expanded mobile 6-part thread missing segment 6 or collapse toggle; texts=%v", tt.Texts())
+	}
+	assertNoHorizontalOverflow(t, tt, 360)
+	if err := tt.Click("收起自回复串 " + thread6.FeedKey); err != nil {
+		t.Fatalf("click mobile thread collapse: %v", err)
+	}
+	tt.Frame()
+	if tt.HasText("移动长串第4段") {
+		t.Fatal("collapsed mobile 6-part thread still shows segment 4")
+	}
+	p.OnDisconnected()
+}

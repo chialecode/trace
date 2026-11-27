@@ -39,6 +39,37 @@ type PostVideo struct {
 	QualityTag string
 }
 
+// PostThreadPart represents one tweet segment in a vertically connected
+// author self-reply thread rendered inside a PostCard.
+type PostThreadPart struct {
+	ID            string
+	AuthorUID     string
+	AuthorName    string
+	AuthorHandle  string
+	AuthorFace    string
+	PubTs         int64
+	Text          string
+	Links         []service.TextLinkDTO
+	URL           string
+	Images        []PostImage
+	NotePages     []douyinNoteRenderPage
+	Video         *PostVideo
+	XCard         *service.XRichCardDTO
+	XPoll         *service.XPollSummaryDTO
+	HLSOnlyNotice string
+	IsFocal       bool
+	OnOpen        func()
+}
+
+const (
+	// xThreadMaxInline is the maximum number of tweets in an X thread shown
+	// fully expanded inline inside a PostCard before collapsing the tail.
+	xThreadMaxInline = 4
+	// xThreadCollapsedPreview is the number of leading tweets shown when an
+	// X thread longer than xThreadMaxInline is collapsed in a PostCard.
+	xThreadCollapsedPreview = 3
+)
+
 // PostCardData is the unified view-model for rendering social feed posts across
 // /home, /user dynamics, /subscriptions updates, and /subscriptions cached.
 type PostCardData struct {
@@ -85,6 +116,7 @@ type PostCardData struct {
 	XCacheVia         *library.ItemVia
 	HLSOnlyNotice     string
 	ThreadCount       int
+	ThreadParts       []PostThreadPart
 	OnOpenPost        func()
 	DynItem           *bilibili.DynamicItem
 	LibItem           *library.ItemMetadata
@@ -632,6 +664,11 @@ func (a *App) renderPostImageCell(c *ui.Context, bmp *ui.Bitmap, img PostImage) 
 
 // renderPostCard renders a unified social-network PostCard (docs/ui.md §3, §3.1, §3.3).
 func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
+	if len(post.ThreadParts) >= 2 {
+		a.renderPostCardThread(c, post)
+		return
+	}
+
 	cardRow := ui.Row(c).
 		FillWidth().
 		Padding(14, 16).
@@ -643,50 +680,9 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 		ClipX()
 
 	cardRow.Children(func() {
-		var openCreator func()
-		// On Home the avatar opens the author's subscription (or the cached
-		// via account's subscription for collab/cross-account posts); the user
-		// page (a parse) only opens for an author without one.
 		homeSub, homeSubOK := a.homePostSubscription(post)
-		avatar := a.resolvePostCardAvatar(post, homeSub, homeSubOK)
-		if homeSubOK {
-			sub := homeSub
-			openCreator = func() { a.OpenSubscriptionDetail(sub) }
-		} else if !post.Offline {
-			openCreator = func() {
-				switch normalizeSiteIDUI(post.Site) {
-				case "douyin":
-					if post.AuthorUID != "" {
-						a.OpenDouyinUser(post.AuthorUID, post.AuthorName)
-					}
-					return
-				case "weibo":
-					if post.AuthorUID != "" {
-						a.OpenWeiboUser(post.AuthorUID, post.AuthorName)
-					}
-					return
-				case "x":
-					target := firstNonEmptyStrUI(post.AuthorUID, post.AuthorHandle)
-					if target != "" {
-						a.OpenXUser(target, post.AuthorName)
-					}
-					return
-				}
-				a.OpenUser(post.Mid, post.AuthorName)
-			}
-		}
-		openAvatar := openCreator
-		if avatar.isCollab {
-			if homeSubOK {
-				sub := homeSub
-				openAvatar = func() { a.OpenSubscriptionDetail(sub) }
-			} else if !post.Offline && a.CurrentRoute != RouteSubscriptions {
-				viaSite, viaUID, viaName := avatar.viaSite, avatar.viaUID, avatar.viaName
-				openAvatar = func() { a.openAccountUserPage(viaSite, viaUID, viaName) }
-			} else {
-				openAvatar = nil
-			}
-		}
+		avatar, openCreator, openAvatar := a.resolvePostCardNavigation(post, homeSub, homeSubOK)
+
 		// Left: 40px circular creator avatar (shows the cached via account's
 		// avatar for collab posts on Home / Subscription Detail › 内容).
 		ui.Box(c).Label("作者头像：" + post.Key).Shrink(0).Children(func() {
@@ -694,134 +690,9 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 		})
 
 		// Right: Main post column
-		ui.Column(c).Grow(1).Gap(6).ClipX().Children(func() {
+		ui.Column(c).Grow(1).Basis(0).Gap(6).ClipX().Children(func() {
 			// 1. Header line: Author · Site (on Home) · Relative Time · Type · Pinned · StatusDot
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(6).ClipX().Children(func() {
-				ui.Row(c).AlignItems(ui.Center).Gap(6).Grow(1).ClipX().Children(func() {
-					authorName := post.AuthorName
-					if authorName == "" {
-						switch normalizeSiteIDUI(post.Site) {
-						case "douyin":
-							authorName = "未知作者"
-						case "weibo":
-							authorName = "未知博主"
-						case "x":
-							authorName = "未知用户"
-						default:
-							authorName = "未知 UP 主"
-						}
-					}
-					if openCreator != nil {
-						authorBtn := ui.ButtonBase(c).Padding(0).Children(func() {
-							ui.Text(c, authorName).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-						})
-						if authorBtn.Clicked() {
-							openCreator()
-						}
-					} else {
-						ui.Text(c, authorName).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-					}
-					if normalizeSiteIDUI(post.Site) == "x" {
-						if h := strings.TrimPrefix(strings.TrimSpace(post.AuthorHandle), "@"); h != "" {
-							ui.Text(c, "@"+h).FontSize(13).TextColor(ColorTextMuted).SingleLine().Shrink(1)
-						}
-					}
-					// On Home the subscription's name follows the account in
-					// smaller accent text, unless it only repeats the account.
-					if homeSubOK && strings.TrimSpace(homeSub.Name) != "" && strings.TrimSpace(homeSub.Name) != strings.TrimSpace(authorName) {
-						subName := strings.TrimSpace(homeSub.Name)
-						subBtn := ui.ButtonBase(c).Label("主页订阅名：" + post.Key).Padding(0).Shrink(1).Children(func() {
-							ui.Text(c, subName).FontSize(13).FontWeight(500).TextColor(ColorAccent).SingleLine()
-						})
-						if subBtn.Clicked() {
-							openCreator()
-						}
-					}
-					if post.InHomeFeed {
-						renderSiteSmallBadgeWithDot(c, post.Site, "主页作者站点："+post.Key)
-					}
-
-					if post.PubTs > 0 {
-						rel := FormatRelativeTime(post.PubTs)
-						exact := FormatTimestamp(post.PubTs)
-						if post.OnOpenPost != nil {
-							openBtn := ui.ButtonBase(c).Label(firstNonEmptyStrUI(post.OpenBtnLabel, "打开帖子："+post.Key)).Padding(0).Tooltip(exact).Children(func() {
-								ui.Text(c, "· "+rel).FontSize(13).TextColor(ColorTextMuted).SingleLine()
-							})
-							if openBtn.Clicked() {
-								post.OnOpenPost()
-							}
-						} else {
-							ui.Text(c, "· "+rel).FontSize(13).TextColor(ColorTextMuted).Tooltip(exact).SingleLine()
-						}
-					} else if post.OnOpenPost != nil {
-						openBtn := ui.ButtonBase(c).Label(firstNonEmptyStrUI(post.OpenBtnLabel, "打开帖子："+post.Key)).Padding(0).Children(func() {
-							ui.Text(c, "· 详情").FontSize(13).TextColor(ColorInfoBlue).SingleLine()
-						})
-						if openBtn.Clicked() {
-							post.OnOpenPost()
-						}
-					}
-					if post.TypeLabel != "" {
-						ui.Text(c, "· "+post.TypeLabel).FontSize(13).TextColor(ColorTextMuted).SingleLine()
-					}
-					if post.VisibleLabel != "" {
-						ui.Box(c).Padding(1, 6).Radius(4).Background(ColorBgSecondary).Children(func() {
-							ui.Text(c, post.VisibleLabel).FontSize(11).TextColor(ColorTextMuted).SingleLine()
-						})
-					}
-					if post.IsEdited {
-						ui.Box(c).Padding(1, 6).Radius(4).Background(ColorBgSecondary).Children(func() {
-							ui.Text(c, "已编辑").FontSize(11).TextColor(ColorTextMuted).SingleLine()
-						})
-					}
-					if post.Pinned {
-						ui.Box(c).Padding(1, 6).Radius(4).Background(ColorAccentBg).Children(func() {
-							ui.Text(c, "置顶").FontSize(11).FontWeight(600).TextColor(ColorAccent).SingleLine()
-						})
-					}
-					if post.IsOnlyFans || post.Blocked {
-						badgeText := "充电专属"
-						badgeBg := ColorWarnBg
-						badgeColor := ColorTextMain
-						if post.IsOnlyFans && !post.Blocked {
-							badgeText = "充电专属（已解锁）"
-							badgeBg = ColorAccentBg
-							badgeColor = ColorAccent
-						}
-						ui.Box(c).Padding(1, 6).Radius(4).Background(badgeBg).Children(func() {
-							ui.Text(c, badgeText).FontSize(11).FontWeight(600).TextColor(badgeColor).SingleLine()
-						})
-					}
-				})
-
-				ui.Row(c).AlignItems(ui.Center).Gap(6).Shrink(0).Children(func() {
-					// One dot for the whole post: its own state and its
-					// video's, the worse of the two (images and the video
-					// card carry none). Home lists cached posts only and
-					// draws no dot.
-					if dot := postDotStatus(post); !post.InHomeFeed && dot != "" && dot != "none" {
-						label := post.DotLabel
-						if dot != post.DotStatus {
-							label = ""
-						}
-						DrawStatusDot(c, dot, label)
-					}
-					if post.LocalManage && post.LibItem != nil {
-						a.renderCachedPostMenu(c, post.Key, *post.LibItem)
-					} else if post.Offline {
-						if post.LibItem != nil {
-							a.renderLibraryItemMoreMenu(c, *post.LibItem, 28)
-						}
-					} else if !post.InHomeFeed && post.Key != "" {
-						open := a.PostMenuKey == post.Key
-						MoreMenuButton(c, "帖子更多："+post.Key, 28, &open, func(m *ui.Menu) {
-							a.postMenuItems(c, m, post)
-						})
-						keyedMenuOpen(&a.PostMenuKey, post.Key, open)
-					}
-				})
-			})
+			a.renderPostCardHeaderRow(c, post, homeSub, homeSubOK, openCreator, post.PubTs)
 
 			// 2. Title & Body Text
 			isDouyinSite := normalizeSiteIDUI(post.Site) == "douyin"
@@ -889,7 +760,7 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 			if post.WeiboCard != nil {
 				a.renderWeiboRichCard(c, post.WeiboCard, post.Offline || post.LocalManage)
 			}
-			// 3c. X Poll / Rich Card / HLS-only Notice / Thread Hint
+			// 3c. X Poll / Rich Card / HLS-only Notice / Fallback Thread Hint
 			if post.XPoll != nil {
 				a.renderXPollCard(c, post.XPoll, post.URL, post.Offline || post.LocalManage)
 			}
@@ -919,153 +790,546 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 			}
 
 			// 5. Forwarded Origin Quote Box
-			if post.Origin != nil && !post.Origin.Unavailable {
-				orig := post.Origin
-				origSite := normalizeSiteIDUI(firstNonEmptyStrUI(orig.Site, post.Site))
-				origOffline := post.Offline || orig.Offline || post.LocalManage
-				origFace := orig.AuthorFace
-				if origOffline {
-					origFace = ""
+			a.renderPostOriginBox(c, post)
+		})
+	})
+}
+
+func (a *App) resolvePostCardNavigation(post PostCardData, homeSub subscription.Subscription, homeSubOK bool) (postCardAvatarSpec, func(), func()) {
+	var openCreator func()
+	// On Home the avatar opens the author's subscription (or the cached
+	// via account's subscription for collab/cross-account posts); the user
+	// page (a parse) only opens for an author without one.
+	avatar := a.resolvePostCardAvatar(post, homeSub, homeSubOK)
+	if homeSubOK {
+		sub := homeSub
+		openCreator = func() { a.OpenSubscriptionDetail(sub) }
+	} else if !post.Offline {
+		openCreator = func() {
+			switch normalizeSiteIDUI(post.Site) {
+			case "douyin":
+				if post.AuthorUID != "" {
+					a.OpenDouyinUser(post.AuthorUID, post.AuthorName)
 				}
-				origAuthorName := firstNonEmptyStrUI(orig.AuthorName, "原博主")
-				if origSite == "x" {
-					origAuthorName = firstNonEmptyStrUI(orig.AuthorName, orig.AuthorHandle, "原帖作者")
+				return
+			case "weibo":
+				if post.AuthorUID != "" {
+					a.OpenWeiboUser(post.AuthorUID, post.AuthorName)
 				}
-				origItemKey := firstNonEmptyStrUI(orig.ItemKey, post.ItemKey)
-				var openOrigAuthor func()
-				if !origOffline && origSite == "weibo" && strings.TrimSpace(orig.AuthorUID) != "" {
-					origUID := strings.TrimSpace(orig.AuthorUID)
-					openOrigAuthor = func() { a.OpenWeiboUser(origUID, origAuthorName) }
-				} else if !origOffline && origSite == "x" && (strings.TrimSpace(orig.AuthorUID) != "" || strings.TrimSpace(orig.AuthorHandle) != "") {
-					origTarget := firstNonEmptyStrUI(orig.AuthorUID, orig.AuthorHandle)
-					openOrigAuthor = func() { a.OpenXUser(origTarget, origAuthorName) }
+				return
+			case "x":
+				target := firstNonEmptyStrUI(post.AuthorUID, post.AuthorHandle)
+				if target != "" {
+					a.OpenXUser(target, post.AuthorName)
+				}
+				return
+			}
+			a.OpenUser(post.Mid, post.AuthorName)
+		}
+	}
+	openAvatar := openCreator
+	if avatar.isCollab {
+		if homeSubOK {
+			sub := homeSub
+			openAvatar = func() { a.OpenSubscriptionDetail(sub) }
+		} else if !post.Offline && a.CurrentRoute != RouteSubscriptions {
+			viaSite, viaUID, viaName := avatar.viaSite, avatar.viaUID, avatar.viaName
+			openAvatar = func() { a.openAccountUserPage(viaSite, viaUID, viaName) }
+		} else {
+			openAvatar = nil
+		}
+	}
+	return avatar, openCreator, openAvatar
+}
+
+func (a *App) renderPostCardHeaderRow(c *ui.Context, post PostCardData, homeSub subscription.Subscription, homeSubOK bool, openCreator func(), pubTs int64) {
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(6).ClipX().Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(6).Grow(1).Basis(0).ClipX().Children(func() {
+			authorName := post.AuthorName
+			if authorName == "" {
+				switch normalizeSiteIDUI(post.Site) {
+				case "douyin":
+					authorName = "未知作者"
+				case "weibo":
+					authorName = "未知博主"
+				case "x":
+					authorName = "未知用户"
+				default:
+					authorName = "未知 UP 主"
+				}
+			}
+			if openCreator != nil {
+				authorBtn := ui.ButtonBase(c).Padding(0).Children(func() {
+					ui.Text(c, authorName).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				})
+				if authorBtn.Clicked() {
+					openCreator()
+				}
+			} else {
+				ui.Text(c, authorName).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+			}
+			if normalizeSiteIDUI(post.Site) == "x" {
+				if h := strings.TrimPrefix(strings.TrimSpace(post.AuthorHandle), "@"); h != "" {
+					ui.Text(c, "@"+h).FontSize(13).TextColor(ColorTextMuted).SingleLine().Shrink(1)
+				}
+			}
+			// On Home the subscription's name follows the account in
+			// smaller accent text, unless it only repeats the account.
+			if homeSubOK && strings.TrimSpace(homeSub.Name) != "" && strings.TrimSpace(homeSub.Name) != strings.TrimSpace(authorName) {
+				subName := strings.TrimSpace(homeSub.Name)
+				subBtn := ui.ButtonBase(c).Label("主页订阅名：" + post.Key).Padding(0).Shrink(1).Children(func() {
+					ui.Text(c, subName).FontSize(13).FontWeight(500).TextColor(ColorAccent).SingleLine()
+				})
+				if subBtn.Clicked() {
+					openCreator()
+				}
+			}
+			if post.InHomeFeed {
+				renderSiteSmallBadgeWithDot(c, post.Site, "主页作者站点："+post.Key)
+			}
+
+			if pubTs > 0 {
+				rel := FormatRelativeTime(pubTs)
+				exact := FormatTimestamp(pubTs)
+				if post.OnOpenPost != nil {
+					openBtn := ui.ButtonBase(c).Label(firstNonEmptyStrUI(post.OpenBtnLabel, "打开帖子："+post.Key)).Padding(0).Tooltip(exact).Children(func() {
+						ui.Text(c, "· "+rel).FontSize(13).TextColor(ColorTextMuted).SingleLine()
+					})
+					if openBtn.Clicked() {
+						post.OnOpenPost()
+					}
+				} else {
+					ui.Text(c, "· "+rel).FontSize(13).TextColor(ColorTextMuted).Tooltip(exact).SingleLine()
+				}
+			} else if post.OnOpenPost != nil {
+				openBtn := ui.ButtonBase(c).Label(firstNonEmptyStrUI(post.OpenBtnLabel, "打开帖子："+post.Key)).Padding(0).Children(func() {
+					ui.Text(c, "· 详情").FontSize(13).TextColor(ColorInfoBlue).SingleLine()
+				})
+				if openBtn.Clicked() {
+					post.OnOpenPost()
+				}
+			}
+			if post.TypeLabel != "" {
+				ui.Text(c, "· "+post.TypeLabel).FontSize(13).TextColor(ColorTextMuted).SingleLine()
+			}
+			if post.VisibleLabel != "" {
+				ui.Box(c).Padding(1, 6).Radius(4).Background(ColorBgSecondary).Children(func() {
+					ui.Text(c, post.VisibleLabel).FontSize(11).TextColor(ColorTextMuted).SingleLine()
+				})
+			}
+			if post.IsEdited {
+				ui.Box(c).Padding(1, 6).Radius(4).Background(ColorBgSecondary).Children(func() {
+					ui.Text(c, "已编辑").FontSize(11).TextColor(ColorTextMuted).SingleLine()
+				})
+			}
+			if post.Pinned {
+				ui.Box(c).Padding(1, 6).Radius(4).Background(ColorAccentBg).Children(func() {
+					ui.Text(c, "置顶").FontSize(11).FontWeight(600).TextColor(ColorAccent).SingleLine()
+				})
+			}
+			if post.IsOnlyFans || post.Blocked {
+				badgeText := "充电专属"
+				badgeBg := ColorWarnBg
+				badgeColor := ColorTextMain
+				if post.IsOnlyFans && !post.Blocked {
+					badgeText = "充电专属（已解锁）"
+					badgeBg = ColorAccentBg
+					badgeColor = ColorAccent
+				}
+				ui.Box(c).Padding(1, 6).Radius(4).Background(badgeBg).Children(func() {
+					ui.Text(c, badgeText).FontSize(11).FontWeight(600).TextColor(badgeColor).SingleLine()
+				})
+			}
+		})
+
+		ui.Row(c).AlignItems(ui.Center).Gap(6).Shrink(0).Children(func() {
+			// One dot for the whole post: its own state and its
+			// video's, the worse of the two (images and the video
+			// card carry none). Home lists cached posts only and
+			// draws no dot.
+			if dot := postDotStatus(post); !post.InHomeFeed && dot != "" && dot != "none" {
+				label := post.DotLabel
+				if dot != post.DotStatus {
+					label = ""
+				}
+				DrawStatusDot(c, dot, label)
+			}
+			if post.LocalManage && post.LibItem != nil {
+				a.renderCachedPostMenu(c, post.Key, *post.LibItem)
+			} else if post.Offline {
+				if post.LibItem != nil {
+					a.renderLibraryItemMoreMenu(c, *post.LibItem, 28)
+				}
+			} else if !post.InHomeFeed && post.Key != "" {
+				open := a.PostMenuKey == post.Key
+				MoreMenuButton(c, "帖子更多："+post.Key, 28, &open, func(m *ui.Menu) {
+					a.postMenuItems(c, m, post)
+				})
+				keyedMenuOpen(&a.PostMenuKey, post.Key, open)
+			}
+		})
+	})
+}
+
+// renderPostCardThread renders an X author self-reply thread inside a PostCard
+// using X-style vertically stacked tweets linked by a 2px vertical line beneath
+// each circular avatar (no line beneath the final tweet; DEC-090).
+func (a *App) renderPostCardThread(c *ui.Context, post PostCardData) {
+	homeSub, homeSubOK := a.homePostSubscription(post)
+	avatar, openCreator, openAvatar := a.resolvePostCardNavigation(post, homeSub, homeSubOK)
+
+	total := len(post.ThreadParts)
+	expandKey := "thread:" + post.Key
+	expanded := a.ExpandedPosts != nil && a.ExpandedPosts[expandKey]
+	visibleParts := post.ThreadParts
+	hiddenCount := 0
+	if total > xThreadMaxInline && !expanded {
+		visibleParts = post.ThreadParts[:xThreadCollapsedPreview]
+		hiddenCount = total - xThreadCollapsedPreview
+	}
+
+	focalIdx := -1
+	for i := range post.ThreadParts {
+		if post.ThreadParts[i].IsFocal {
+			focalIdx = i
+			break
+		}
+	}
+	if focalIdx < 0 {
+		focalIdx = 0
+	}
+
+	ui.Column(c).
+		Label("X自回复串卡片："+post.Key).
+		FillWidth().
+		Padding(14, 16).
+		Gap(0).
+		BorderWidth(0, 0, 1, 0).
+		BorderColor(ColorBorder).
+		Background(ColorBgMain).
+		ClipX().
+		Children(func() {
+			for idx, part := range visibleParts {
+				tp := part
+				isFirst := idx == 0
+				isLastVisible := idx == len(visibleParts)-1
+				hasConnectorBelow := !isLastVisible || hiddenCount > 0
+				bottomPad := float32(0)
+				if !isLastVisible {
+					bottomPad = 12
+				} else if hiddenCount > 0 {
+					bottomPad = 8
 				}
 
-				box := ui.Column(c).
-					FillWidth().
-					Padding(10, 12).
-					Radius(12).
-					Background(ColorBgMain).
-					Border(1, ColorBorder).
-					Gap(6).
-					ClipX()
-				if post.Key != "" {
-					box.Label("转发原内容：" + post.Key)
+				partAuthorName := firstNonEmptyStrUI(tp.AuthorName, post.AuthorName, "未知用户")
+				partHandle := strings.TrimPrefix(strings.TrimSpace(firstNonEmptyStrUI(tp.AuthorHandle, post.AuthorHandle)), "@")
+				partAuthorUID := firstNonEmptyStrUI(tp.AuthorUID, post.AuthorUID)
+				partFace := tp.AuthorFace
+				if post.Offline || post.InHomeFeed {
+					partFace = ""
+				} else if partFace == "" {
+					partFace = avatar.face
 				}
-				box.Children(func() {
-					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-						a.renderAccountAvatar(c, origSite, origAuthorName, orig.AuthorUID, orig.Mid, 20, false, "", openOrigAuthor, origFace)
-						if openOrigAuthor != nil {
-							btn := ui.ButtonBase(c).Padding(0).Children(func() {
-								display := "@" + origAuthorName
-								if origSite == "x" {
-									display = origAuthorName
-								}
-								ui.Text(c, display).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-							})
-							if btn.Clicked() {
-								openOrigAuthor()
-							}
-						} else {
-							display := "@" + origAuthorName
-							if origSite == "x" {
-								display = origAuthorName
-							}
-							ui.Text(c, display).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				partAvatarSite := post.Site
+				partAvatarUID := partAuthorUID
+				partAvatarMid := post.Mid
+				partAvatarName := partAuthorName
+				partOpenAvatar := openCreator
+				if isFirst || (partAuthorUID == post.AuthorUID && avatar.isCollab) {
+					partAvatarSite = avatar.site
+					partAvatarUID = avatar.uid
+					partAvatarMid = avatar.mid
+					partAvatarName = avatar.name
+					if isFirst {
+						partFace = avatar.face
+						partOpenAvatar = openAvatar
+					}
+				}
+				partOpenCreator := openCreator
+				if !isFirst && !post.Offline && !homeSubOK && (partAuthorUID != "" || partHandle != "") {
+					target := firstNonEmptyStrUI(partAuthorUID, partHandle)
+					nameCopy := partAuthorName
+					partOpenCreator = func() { a.OpenXUser(target, nameCopy) }
+					partOpenAvatar = partOpenCreator
+				}
+
+				rowLabel := fmt.Sprintf("X串节点：%s:%d", post.Key, idx+1)
+				ui.Row(c).Label(rowLabel).FillWidth().Gap(12).AlignItems(ui.Stretch).ClipX().Children(func() {
+					// Left avatar column (40px circular avatar + 2px vertical connector when not last).
+					ui.Column(c).Width(40).Shrink(0).AlignItems(ui.Center).Children(func() {
+						avatarLabel := "作者头像：" + post.Key
+						if !isFirst {
+							avatarLabel = fmt.Sprintf("作者头像：%s:%d", post.Key, idx+1)
 						}
-						if origSite == "x" {
-							if h := strings.TrimPrefix(strings.TrimSpace(orig.AuthorHandle), "@"); h != "" {
-								ui.Text(c, "@"+h).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
-							}
-						}
-						if orig.TypeLabel != "" {
-							ui.Text(c, "· "+orig.TypeLabel).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-						}
-						if orig.PubTs > 0 {
-							ui.Text(c, "· "+FormatRelativeTime(orig.PubTs)).
-								FontSize(12).
-								TextColor(ColorTextMuted).
-								Tooltip(FormatTimestamp(orig.PubTs)).
-								SingleLine()
+						ui.Box(c).Label(avatarLabel).Shrink(0).Children(func() {
+							a.renderAccountAvatar(c, partAvatarSite, partAvatarName, partAvatarUID, partAvatarMid, 40, false, "", partOpenAvatar, partFace)
+						})
+						if hasConnectorBelow {
+							renderXThreadConnectorLine(c, 40, fmt.Sprintf("X串连线：%s:%d", post.Key, idx+1))
 						}
 					})
-					if orig.Title != "" && (orig.Video == nil || orig.Title != orig.Video.Title) {
-						ui.Text(c, orig.Title).FontSize(13).LineHeight(LineHeightCompact).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
-					}
-					if orig.Text != "" && orig.Text != orig.Title {
-						a.renderExpandableTextWithLinks(c, post.Key+":orig", orig.Text, orig.Links, 14, ColorTextMain, origSite == "douyin")
-					}
-					if len(orig.NotePages) > 0 {
-						a.renderNotePagesGrid(c, origItemKey, origSite, orig.NotePages, false)
-					} else if len(orig.Images) > 0 {
-						a.renderPostImageGrid(c, PostCardData{
-							ItemKey: origItemKey,
-							Site:    origSite,
-							Offline: origOffline,
-							Images:  orig.Images,
-						})
-					}
-					if orig.Video != nil {
-						a.renderPostVideoCard(c, post, orig.Video, true)
-					}
-					if orig.WeiboCard != nil {
-						a.renderWeiboRichCard(c, orig.WeiboCard, origOffline)
-					}
-					if orig.XPoll != nil {
-						a.renderXPollCard(c, orig.XPoll, orig.URL, origOffline)
-					}
-					if orig.XCard != nil {
-						a.renderXRichCard(c, orig.XCard, orig.URL, origOffline)
-					}
-					if orig.HLSOnlyNotice != "" {
-						a.renderXHLSOnlyNotice(c, orig.HLSOnlyNotice, orig.URL, origOffline)
-					}
-					if orig.Incomplete && !post.Offline {
-						hintText := "原微博含更多文字或媒体，点开查看完整内容"
-						if post.OnOpenPost != nil {
-							hintBtn := ui.ButtonBase(c).Label("原微博未完整提示："+post.Key).Padding(2, 0).Justify(ui.Start).AlignItems(ui.Start).Children(func() {
-								ui.Text(c, hintText).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorInfoBlue).MaxLines(2)
-							})
-							if hintBtn.Clicked() {
-								post.OnOpenPost()
+
+					// Right content column.
+					ui.Column(c).Grow(1).Basis(0).Gap(6).Padding(0, 0, bottomPad, 0).ClipX().Children(func() {
+						if isFirst {
+							pubTs := tp.PubTs
+							if pubTs <= 0 {
+								pubTs = post.PubTs
 							}
+							a.renderPostCardHeaderRow(c, post, homeSub, homeSubOK, openCreator, pubTs)
 						} else {
-							ui.Box(c).Label("原微博未完整提示：" + post.Key).FillWidth().Children(func() {
-								ui.Text(c, hintText).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
+								if partOpenCreator != nil {
+									authorBtn := ui.ButtonBase(c).Padding(0).Children(func() {
+										ui.Text(c, partAuthorName).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+									})
+									if authorBtn.Clicked() {
+										partOpenCreator()
+									}
+								} else {
+									ui.Text(c, partAuthorName).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								}
+								if partHandle != "" {
+									ui.Text(c, "@"+partHandle).FontSize(13).TextColor(ColorTextMuted).SingleLine().Shrink(1)
+								}
+								if tp.PubTs > 0 {
+									rel := FormatRelativeTime(tp.PubTs)
+									exact := FormatTimestamp(tp.PubTs)
+									if tp.OnOpen != nil && !post.Offline {
+										openBtn := ui.ButtonBase(c).Label(fmt.Sprintf("打开X串节点：%s:%d", post.Key, idx+1)).Padding(0).Tooltip(exact).Children(func() {
+											ui.Text(c, "· "+rel).FontSize(13).TextColor(ColorTextMuted).SingleLine()
+										})
+										if openBtn.Clicked() {
+											tp.OnOpen()
+										}
+									} else {
+										ui.Text(c, "· "+rel).FontSize(13).TextColor(ColorTextMuted).Tooltip(exact).SingleLine()
+									}
+								}
 							})
 						}
-					}
-				})
-			} else if unavailableText := func() string {
-				if post.Origin != nil && post.Origin.Unavailable {
-					fallback := "原微博已删除或不可查看"
-					if normalizeSiteIDUI(post.Site) == "x" {
-						fallback = "原帖已删除或不可查看"
-					}
-					return firstNonEmptyStrUI(post.Origin.UnavailableReason, post.OriginUnavailable, fallback)
-				}
-				return strings.TrimSpace(post.OriginUnavailable)
-			}(); unavailableText != "" {
-				notice := ui.Row(c).
-					FillWidth().
-					Padding(10, 12).
-					Radius(12).
-					Background(ColorBgSecondary).
-					Border(1, ColorBorder).
-					AlignItems(ui.Center).
-					Gap(6).
-					ClipX()
-				if post.Key != "" {
-					notice.Label("转发原内容不可用：" + post.Key)
-				}
-				notice.Children(func() {
-					DrawIcon(c, "alert-circle", 15, ColorTextMuted, 1.75)
-					ui.Text(c, unavailableText).FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+
+						if strings.TrimSpace(tp.Text) != "" {
+							a.renderExpandableTextWithLinks(c, fmt.Sprintf("%s:part:%d", post.Key, idx), tp.Text, tp.Links, 15, ColorTextMain, false)
+						}
+
+						if len(tp.NotePages) > 0 {
+							a.renderNotePagesGrid(c, post.ItemKey, normalizeSiteIDUI(post.Site), tp.NotePages, false)
+						} else if len(tp.Images) > 0 {
+							a.renderPostImageGrid(c, PostCardData{
+								ItemKey: post.ItemKey,
+								Site:    post.Site,
+								Offline: post.Offline || post.InHomeFeed,
+								Images:  tp.Images,
+							})
+						}
+						if tp.Video != nil {
+							a.renderPostVideoCard(c, post, tp.Video, false)
+						}
+
+						partURL := firstNonEmptyStrUI(tp.URL, post.URL)
+						if tp.XPoll != nil {
+							a.renderXPollCard(c, tp.XPoll, partURL, post.Offline || post.LocalManage)
+						}
+						if tp.XCard != nil {
+							a.renderXRichCard(c, tp.XCard, partURL, post.Offline || post.LocalManage)
+						}
+						if tp.HLSOnlyNotice != "" {
+							a.renderXHLSOnlyNotice(c, tp.HLSOnlyNotice, partURL, post.Offline || post.LocalManage)
+						}
+
+						if idx == focalIdx {
+							a.renderPostOriginBox(c, post)
+						}
+					})
 				})
 			}
 
+			// Long thread inline expand / collapse toggle (no bulky buttons, matching rich_text 展开/收起).
+			if hiddenCount > 0 {
+				ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).ClipX().Children(func() {
+					renderXThreadEllipsisDots(c, 40)
+					btn := ui.ButtonBase(c).
+						Label("展开自回复串："+post.Key).
+						Padding(4, 0).
+						Justify(ui.Start).
+						Children(func() {
+							ui.Text(c, fmt.Sprintf("展开其余 %d 条自回复", hiddenCount)).
+								FontSize(13).FontWeight(600).TextColor(ColorAccent).SingleLine()
+						})
+					if btn.Clicked() {
+						if a.ExpandedPosts == nil {
+							a.ExpandedPosts = make(map[string]bool)
+						}
+						a.ExpandedPosts[expandKey] = true
+					}
+				})
+			} else if total > xThreadMaxInline && expanded {
+				ui.Row(c).FillWidth().Padding(6, 0, 0, 52).AlignItems(ui.Center).ClipX().Children(func() {
+					btn := ui.ButtonBase(c).
+						Label("收起自回复串："+post.Key).
+						Padding(2, 0).
+						Justify(ui.Start).
+						Children(func() {
+							ui.Text(c, "收起自回复串").
+								FontSize(13).FontWeight(600).TextColor(ColorAccent).SingleLine()
+						})
+					if btn.Clicked() {
+						if a.ExpandedPosts == nil {
+							a.ExpandedPosts = make(map[string]bool)
+						}
+						a.ExpandedPosts[expandKey] = false
+					}
+				})
+			}
 		})
-	})
+}
+
+func (a *App) renderPostOriginBox(c *ui.Context, post PostCardData) {
+	if post.Origin != nil && !post.Origin.Unavailable {
+		orig := post.Origin
+		origSite := normalizeSiteIDUI(firstNonEmptyStrUI(orig.Site, post.Site))
+		origOffline := post.Offline || orig.Offline || post.LocalManage
+		origFace := orig.AuthorFace
+		if origOffline {
+			origFace = ""
+		}
+		origAuthorName := firstNonEmptyStrUI(orig.AuthorName, "原博主")
+		if origSite == "x" {
+			origAuthorName = firstNonEmptyStrUI(orig.AuthorName, orig.AuthorHandle, "原帖作者")
+		}
+		origItemKey := firstNonEmptyStrUI(orig.ItemKey, post.ItemKey)
+		var openOrigAuthor func()
+		if !origOffline && origSite == "weibo" && strings.TrimSpace(orig.AuthorUID) != "" {
+			origUID := strings.TrimSpace(orig.AuthorUID)
+			openOrigAuthor = func() { a.OpenWeiboUser(origUID, origAuthorName) }
+		} else if !origOffline && origSite == "x" && (strings.TrimSpace(orig.AuthorUID) != "" || strings.TrimSpace(orig.AuthorHandle) != "") {
+			origTarget := firstNonEmptyStrUI(orig.AuthorUID, orig.AuthorHandle)
+			openOrigAuthor = func() { a.OpenXUser(origTarget, origAuthorName) }
+		}
+
+		box := ui.Column(c).
+			FillWidth().
+			Padding(10, 12).
+			Radius(12).
+			Background(ColorBgMain).
+			Border(1, ColorBorder).
+			Gap(6).
+			ClipX()
+		if post.Key != "" {
+			box.Label("转发原内容：" + post.Key)
+		}
+		box.Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
+				a.renderAccountAvatar(c, origSite, origAuthorName, orig.AuthorUID, orig.Mid, 20, false, "", openOrigAuthor, origFace)
+				if openOrigAuthor != nil {
+					btn := ui.ButtonBase(c).Padding(0).Children(func() {
+						display := "@" + origAuthorName
+						if origSite == "x" {
+							display = origAuthorName
+						}
+						ui.Text(c, display).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+					})
+					if btn.Clicked() {
+						openOrigAuthor()
+					}
+				} else {
+					display := "@" + origAuthorName
+					if origSite == "x" {
+						display = origAuthorName
+					}
+					ui.Text(c, display).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				}
+				if origSite == "x" {
+					if h := strings.TrimPrefix(strings.TrimSpace(orig.AuthorHandle), "@"); h != "" {
+						ui.Text(c, "@"+h).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
+					}
+				}
+				if orig.TypeLabel != "" {
+					ui.Text(c, "· "+orig.TypeLabel).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+				}
+				if orig.PubTs > 0 {
+					ui.Text(c, "· "+FormatRelativeTime(orig.PubTs)).
+						FontSize(12).
+						TextColor(ColorTextMuted).
+						Tooltip(FormatTimestamp(orig.PubTs)).
+						SingleLine()
+				}
+			})
+			if orig.Title != "" && (orig.Video == nil || orig.Title != orig.Video.Title) {
+				ui.Text(c, orig.Title).FontSize(13).LineHeight(LineHeightCompact).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
+			}
+			if orig.Text != "" && orig.Text != orig.Title {
+				a.renderExpandableTextWithLinks(c, post.Key+":orig", orig.Text, orig.Links, 14, ColorTextMain, origSite == "douyin")
+			}
+			if len(orig.NotePages) > 0 {
+				a.renderNotePagesGrid(c, origItemKey, origSite, orig.NotePages, false)
+			} else if len(orig.Images) > 0 {
+				a.renderPostImageGrid(c, PostCardData{
+					ItemKey: origItemKey,
+					Site:    origSite,
+					Offline: origOffline,
+					Images:  orig.Images,
+				})
+			}
+			if orig.Video != nil {
+				a.renderPostVideoCard(c, post, orig.Video, true)
+			}
+			if orig.WeiboCard != nil {
+				a.renderWeiboRichCard(c, orig.WeiboCard, origOffline)
+			}
+			if orig.XPoll != nil {
+				a.renderXPollCard(c, orig.XPoll, orig.URL, origOffline)
+			}
+			if orig.XCard != nil {
+				a.renderXRichCard(c, orig.XCard, orig.URL, origOffline)
+			}
+			if orig.HLSOnlyNotice != "" {
+				a.renderXHLSOnlyNotice(c, orig.HLSOnlyNotice, orig.URL, origOffline)
+			}
+			if orig.Incomplete && !post.Offline {
+				hintText := "原微博含更多文字或媒体，点开查看完整内容"
+				if post.OnOpenPost != nil {
+					hintBtn := ui.ButtonBase(c).Label("原微博未完整提示："+post.Key).Padding(2, 0).Justify(ui.Start).AlignItems(ui.Start).Children(func() {
+						ui.Text(c, hintText).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorInfoBlue).MaxLines(2)
+					})
+					if hintBtn.Clicked() {
+						post.OnOpenPost()
+					}
+				} else {
+					ui.Box(c).Label("原微博未完整提示：" + post.Key).FillWidth().Children(func() {
+						ui.Text(c, hintText).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+					})
+				}
+			}
+		})
+	} else if unavailableText := func() string {
+		if post.Origin != nil && post.Origin.Unavailable {
+			fallback := "原微博已删除或不可查看"
+			if normalizeSiteIDUI(post.Site) == "x" {
+				fallback = "原帖已删除或不可查看"
+			}
+			return firstNonEmptyStrUI(post.Origin.UnavailableReason, post.OriginUnavailable, fallback)
+		}
+		return strings.TrimSpace(post.OriginUnavailable)
+	}(); unavailableText != "" {
+		notice := ui.Row(c).
+			FillWidth().
+			Padding(10, 12).
+			Radius(12).
+			Background(ColorBgSecondary).
+			Border(1, ColorBorder).
+			AlignItems(ui.Center).
+			Gap(6).
+			ClipX()
+		if post.Key != "" {
+			notice.Label("转发原内容不可用：" + post.Key)
+		}
+		notice.Children(func() {
+			DrawIcon(c, "alert-circle", 15, ColorTextMuted, 1.75)
+			ui.Text(c, unavailableText).FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+		})
+	}
 }
 
 func (a *App) renderPostVideoCard(c *ui.Context, post PostCardData, v *PostVideo, isOrigin bool) {
