@@ -36,10 +36,7 @@ func run(args []string) int {
 	patchedCount := 0
 	dumpPath := strings.TrimSpace(os.Getenv(build.EnvNSISWrapDump))
 	for _, arg := range args {
-		if arg == "" || strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "/") {
-			continue
-		}
-		if !strings.EqualFold(filepath.Ext(arg), ".nsi") {
+		if !isNSIScriptArg(arg, runtime.GOOS) {
 			continue
 		}
 		raw, err := os.ReadFile(arg)
@@ -99,6 +96,21 @@ func run(args []string) int {
 		}
 	}
 	return 0
+}
+
+func isNSIScriptArg(arg, goos string) bool {
+	if arg == "" || !strings.EqualFold(filepath.Ext(arg), ".nsi") {
+		return false
+	}
+	if strings.HasPrefix(arg, "-") {
+		return false
+	}
+	// On Windows, NSIS accepts "/" flags (e.g. /DFOO=bar.nsi); on Unix, "/"
+	// begins absolute paths such as /tmp/.../installer.nsi.
+	if goos == "windows" && strings.HasPrefix(arg, "/") {
+		return false
+	}
+	return true
 }
 
 func sameExecutable(a, b string) bool {

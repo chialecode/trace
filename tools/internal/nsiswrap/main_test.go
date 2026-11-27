@@ -157,6 +157,29 @@ func TestRunPatchesNSIAndWritesReceipt(t *testing.T) {
 	}
 }
 
+func TestIsNSIScriptArg(t *testing.T) {
+	cases := []struct {
+		arg  string
+		goos string
+		want bool
+	}{
+		{"/tmp/work/installer.nsi", "linux", true},
+		{"installer.nsi", "linux", true},
+		{"-V2", "linux", false},
+		{"-DFOO=bar.nsi", "linux", false},
+		{`C:\work\installer.nsi`, "windows", true},
+		{"installer.NSI", "windows", true},
+		{"/DFOO=bar.nsi", "windows", false},
+		{"-DFOO=bar.nsi", "windows", false},
+		{"/V2", "windows", false},
+	}
+	for _, tc := range cases {
+		if got := isNSIScriptArg(tc.arg, tc.goos); got != tc.want {
+			t.Errorf("isNSIScriptArg(%q, %q) = %v, want %v", tc.arg, tc.goos, got, tc.want)
+		}
+	}
+}
+
 func TestRunRejectsMissingOrSelfRealMakensis(t *testing.T) {
 	t.Setenv(build.EnvRealMakensis, "")
 	if code := run([]string{"-VERSION"}); code == 0 {
