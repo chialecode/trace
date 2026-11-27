@@ -357,6 +357,7 @@ type fixtureEnv struct {
 	savedWeiboRetweet library.ItemMetadata
 	savedXPost        library.ItemMetadata
 	savedXRetweet     library.ItemMetadata
+	savedXThread      library.ItemMetadata
 }
 
 func (e *fixtureEnv) close() {
@@ -1034,6 +1035,66 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		},
 		Missing: []library.MissingRecord{
 			{Item: "hls_video_1", Reason: "这条视频只有分段流，暂不支持缓存"},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	xThreadDir := filepath.Join(loc.DefaultCacheDir, "x", env.xUID+"_"+env.xHandle, "posts", "1000000000000000018")
+	if err := os.MkdirAll(filepath.Join(xThreadDir, "images"), 0o700); err != nil {
+		return nil, err
+	}
+	_ = os.WriteFile(filepath.Join(xThreadDir, "images", "01.png"), coverBuf.Bytes(), 0o600)
+	threadPart1 := "1/3 本地信息流现在按 X 原生自回复串展示，每条推文各自保留头像、时间与链接 https://example.com/x-thread"
+	threadPart2 := "2/3 左侧圆形头像之间用细竖线相连，各自图片与视频归属到对应推文，不再混成一团。"
+	threadPart3 := "3/3 最后一条推文下方不画连接线，超长自回复串支持原地展开与收起。"
+	env.savedXThread, err = b.LibraryStore().SaveItem(xThreadDir, library.ItemMetadata{
+		Version:     1,
+		ID:          "1000000000000000018",
+		RawID:       "1000000000000000018",
+		Site:        "x",
+		Kind:        "dynamic",
+		DynamicType: "post",
+		TypeLabel:   "图文",
+		Status:      "complete",
+		Title:       "1/3 本地信息流现在按 X 原生自回复串展示",
+		Text:        threadPart1 + "\n\n" + threadPart2 + "\n\n" + threadPart3,
+		URL:         "https://x.com/" + env.xHandle + "/status/1000000000000000018",
+		PubTs:       1709978500,
+		CachedAt:    "2026-03-02T12:25:00Z",
+		Author: library.ItemAuthor{
+			Site:     "x",
+			UID:      env.xUID,
+			UniqueID: env.xHandle,
+			Name:     "技术频道_X",
+		},
+		NotePages: []library.NotePageRecord{
+			{Index: 1, Kind: "image", Image: "images/01.png", Width: 320, Height: 200},
+		},
+		Media: []library.MediaFile{
+			{Role: "image", Path: "images/01.png", Width: 320, Height: 200},
+		},
+		Thread: []library.ItemThreadPart{
+			{
+				ID:    "1000000000000000018",
+				PubTs: 1709978500,
+				Text:  threadPart1,
+				Links: []library.ItemLink{
+					{Label: "example.com/x-thread", URL: "https://example.com/x-thread"},
+				},
+			},
+			{
+				ID:           "1000000000000000019",
+				PubTs:        1709978680,
+				Text:         threadPart2,
+				MediaIndexes: []int{1},
+			},
+			{
+				ID:    "1000000000000000020",
+				PubTs: 1709978860,
+				Text:  threadPart3,
+			},
 		},
 	})
 	if err != nil {

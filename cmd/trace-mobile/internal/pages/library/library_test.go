@@ -718,3 +718,242 @@ func TestLibraryIncludeAuthorsClearOnEmptySiteScrollableSheetAndPartialMultiP(t 
 	}
 	p.OnDisconnected()
 }
+
+func TestLibraryDetailXThreadDedupMediaAnd360dpNoOverflow(t *testing.T) {
+	srv, host, cleanup := newSyntheticLibServer(t, 2)
+	defer cleanup()
+
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC).Unix()
+
+	// 1. Real cached form (concatenated Text + 1-based MediaIndexes + FromOrigin quote).
+	realKey := "x:dynamic:1900000000000060001"
+	realDet := companionapi.LibraryItemDetail{
+		ItemKey:        realKey,
+		ID:             "1900000000000060001",
+		Site:           "x",
+		Kind:           "dynamic",
+		Status:         "complete",
+		Title:          "详情串第一段",
+		Text:           "详情串第一段正文\n\n详情串第二段正文\n\n详情串第三段收尾",
+		PubTs:          now - 180,
+		AuthorUID:      "u-x-det",
+		AuthorName:     "离线详情作者",
+		AuthorUniqueID: "offline_x_detail",
+		SubName:        "离线X订阅",
+		TotalBytes:     4 << 20,
+		NotePages: []companionapi.NotePageDTO{
+			{Index: 1, Kind: "image", Image: "images/01.jpg", Width: 900, Height: 600},
+			{Index: 2, Kind: "image", FromOrigin: true, Image: "images/02_orig.jpg", Width: 900, Height: 600},
+			{Index: 3, Kind: "video", Video: "images/03.mp4", Cover: "images/03.jpg", Duration: 19, Width: 1280, Height: 720},
+		},
+		Origin: &companionapi.ItemOriginDTO{
+			Site:       "x",
+			ID:         "1900000000000060099",
+			AuthorName: "详情原帖作者",
+			Text:       "详情引用原帖文案",
+		},
+		Thread: []companionapi.ThreadPartDTO{
+			{ID: "1900000000000060001", PubTs: now - 180, Text: "详情串第一段正文", MediaIndexes: []int{1, 2}},
+			{ID: "1900000000000060002", PubTs: now - 120, Text: "详情串第二段正文", MediaIndexes: []int{3}},
+			{ID: "1900000000000060003", PubTs: now - 60, Text: "详情串第三段收尾"},
+		},
+	}
+
+	// 2. Synthetic form (omits focal ID) with single-video focal.
+	synthKey := "x:dynamic:1900000000000060010"
+	synthDet := companionapi.LibraryItemDetail{
+		ItemKey:        synthKey,
+		ID:             "1900000000000060010",
+		Site:           "x",
+		Kind:           "dynamic",
+		Status:         "complete",
+		Title:          "合成单视频首帖",
+		Text:           "合成单视频首帖正文",
+		PubTs:          now - 300,
+		Duration:       33,
+		AuthorUID:      "u-x-det",
+		AuthorName:     "离线详情作者",
+		AuthorUniqueID: "offline_x_detail",
+		Media: []companionapi.MediaFileDTO{
+			{Role: "cover", Path: "cover.jpg"},
+			{Role: "video", Path: "video.mp4", Duration: 33},
+		},
+		Thread: []companionapi.ThreadPartDTO{
+			{ID: "1900000000000060011", PubTs: now - 250, Text: "合成单视频续帖正文"},
+		},
+	}
+
+	// Verify synthetic resolver maps single video to focal without losing media.
+	sParts, sFocal, _, sOK := resolveMobileDetailThread(synthDet)
+	if !sOK || len(sParts) != 2 || sFocal != 0 || len(sParts[0].Videos) != 1 || sParts[0].Videos[0].Req.Tracks[0].RelPath != "video.mp4" {
+		t.Fatalf("synthetic single-video detail thread resolution mismatch: parts=%+v focal=%d ok=%v", sParts, sFocal, sOK)
+	}
+
+	srv.mu.Lock()
+	srv.details[realKey] = realDet
+	srv.details[synthKey] = synthDet
+	srv.mu.Unlock()
+
+	p := New()
+	p.nowFn = func() time.Time { return time.Unix(now, 0).UTC() }
+	var openedImages []mediaview.ImageItem
+	var openedVideo mediaview.VideoRequest
+	p.openImageFn = func(_ pagekit.Host, items []mediaview.ImageItem, _ int) { openedImages = items }
+	p.openVideoFn = func(_ pagekit.Host, req mediaview.VideoRequest) { openedVideo = req }
+
+	notify := make(chan struct{}, 32)
+	host.onUpdate = func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
+
+	p.OnConnected(host)
+	tt := ui.NewTester(func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		p.View(c, host)
+	}, 360, 1200)
+
+	p.openItemDetail(host, realKey)
+	tt.Advance(400 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if tt.HasText("详情串第三段收尾") {
+			break
+		}
+		select {
+		case <-notify:
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Verify zero duplicate text rendering (det.Text NOT rendered above det.Thread).
+	texts := tt.Texts()
+	for _, seg := range []string{"详情串第一段正文", "详情串第二段正文", "详情串第三段收尾", "详情引用原帖文案"} {
+		count := 0
+		for _, s := range texts {
+			if strings.Contains(s, seg) {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("mobile detail rendered %q %d times (want 1); texts=%v", seg, count, texts)
+		}
+	}
+	if _, ok := tt.Find("X离线串连线 1"); !ok {
+		t.Fatal("mobile detail missing connector line 1")
+	}
+	if _, ok := tt.Find("X离线串连线 2"); !ok {
+		t.Fatal("mobile detail missing connector line 2")
+	}
+	if _, ok := tt.Find("X离线串连线 3"); ok {
+		t.Fatal("mobile detail must NOT draw connector line under final tweet")
+	}
+	if !tt.HasText("本机只读详情") {
+		t.Fatal("mobile detail missing read-only footer")
+	}
+	for _, forbidden := range []string{"删除", "导出", "导入", "在解析页打开"} {
+		if _, found := tt.Find(forbidden); found {
+			t.Fatalf("FR-MOB-025 violation: forbidden action %q found on mobile thread detail", forbidden)
+		}
+	}
+
+	if err := tt.Click("查看图片 1 / 1"); err != nil {
+		t.Fatalf("click focal image on mobile detail: %v", err)
+	}
+	if len(openedImages) != 1 || openedImages[0].RelPath != "images/01.jpg" {
+		t.Fatalf("expected focal image opened on mobile detail, got %+v", openedImages)
+	}
+	if err := tt.Click("播放 X 视频"); err != nil {
+		t.Fatalf("click reply 2 video on mobile detail: %v", err)
+	}
+	if len(openedVideo.Tracks) != 1 || openedVideo.Tracks[0].RelPath != "images/03.mp4" {
+		t.Fatalf("expected reply 2 video opened on mobile detail, got %+v", openedVideo)
+	}
+
+	for _, w := range []int{360, 412, 800} {
+		tt.SetSize(w, 1200)
+		tt.Frame()
+		assertNoHorizontalOverflow(t, tt, w)
+	}
+
+	// Regression: quote-only origin media (all NotePages have FromOrigin=true + mirrored Media)
+	// must NOT duplicate origin images in library detail.
+	quoteOnlyKey := "x:dynamic:1900000000000060020"
+	quoteOnlyDet := companionapi.LibraryItemDetail{
+		ItemKey:        quoteOnlyKey,
+		ID:             "1900000000000060020",
+		Site:           "x",
+		Kind:           "dynamic",
+		Status:         "complete",
+		Title:          "仅引用媒体详情首帖",
+		Text:           "仅引用媒体详情首帖",
+		PubTs:          now - 40,
+		AuthorUID:      "u-x-det",
+		AuthorName:     "离线详情作者",
+		AuthorUniqueID: "offline_x_detail",
+		NotePages: []companionapi.NotePageDTO{
+			{Index: 1, Kind: "image", FromOrigin: true, Image: "images/01.png", Width: 320, Height: 200},
+			{Index: 2, Kind: "video", GIF: true, FromOrigin: true, Image: "images/02.png", Video: "images/02.mp4", Width: 270, Height: 360, Duration: 3},
+		},
+		Media: []companionapi.MediaFileDTO{
+			{Role: "image", Path: "images/01.png", FromOrigin: true, Width: 320, Height: 200},
+			{Role: "cover", Path: "images/02.png", FromOrigin: true, Width: 270, Height: 360},
+			{Role: "video", Path: "images/02.mp4", GIF: true, FromOrigin: true, Duration: 3},
+		},
+		Origin: &companionapi.ItemOriginDTO{
+			Site:       "x",
+			ID:         "1900000000000060098",
+			AuthorName: "详情原帖作者",
+			Text:       "仅引用媒体原帖正文",
+		},
+		Thread: []companionapi.ThreadPartDTO{
+			{ID: "1900000000000060021", PubTs: now - 20, Text: "仅引用媒体详情自回复"},
+		},
+	}
+	qParts, qFocal, qOrigImgs, qOK := resolveMobileDetailThread(quoteOnlyDet)
+	if !qOK || len(qParts) != 2 || qFocal != 0 {
+		t.Fatalf("resolveMobileDetailThread(quote-only origin) = (len=%d, focal=%d, ok=%v), want (2, 0, true)", len(qParts), qFocal, qOK)
+	}
+	if len(qParts[0].Images) != 0 || len(qParts[0].Videos) != 0 || len(qParts[1].Images) != 0 {
+		t.Fatalf("quote-only origin detail outer parts must stay media-free, got parts=%+v", qParts)
+	}
+	if len(qOrigImgs) != 2 || qOrigImgs[0].RelPath != "images/01.png" || qOrigImgs[1].RelPath != "images/02.png" || !qOrigImgs[1].GIF || qOrigImgs[1].MotionRelPath != "images/02.mp4" {
+		t.Fatalf("quote-only origin detail images must not duplicate and must keep GIF+MotionRelPath, got %+v", qOrigImgs)
+	}
+
+	srv.mu.Lock()
+	srv.details[quoteOnlyKey] = quoteOnlyDet
+	srv.mu.Unlock()
+	p.openItemDetail(host, quoteOnlyKey)
+	tt.Advance(400 * time.Millisecond)
+	deadline2 := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline2) {
+		tt.Frame()
+		if tt.HasText("仅引用媒体详情自回复") {
+			break
+		}
+		select {
+		case <-notify:
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if _, ok := tt.Find("查看图片 1 / 2"); !ok {
+		t.Fatalf("expected 2 origin image tiles (1 / 2) in detail; texts=%v", tt.Texts())
+	}
+	if _, ok := tt.Find("查看图片 2 / 2"); !ok {
+		t.Fatalf("expected 2 origin image tiles (2 / 2) in detail; texts=%v", tt.Texts())
+	}
+	if _, ok := tt.Find("查看图片 3 / 4"); ok {
+		t.Fatal("detail origin images were duplicated (found 3 / 4)")
+	}
+	if !tt.HasText("GIF") || tt.HasText("实况") {
+		t.Fatalf("expected detail GIF badge without '实况'; texts=%v", tt.Texts())
+	}
+	tt.SetSize(360, 1200)
+	tt.Frame()
+	assertNoHorizontalOverflow(t, tt, 360)
+	p.OnDisconnected()
+}

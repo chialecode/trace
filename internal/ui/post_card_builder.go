@@ -397,6 +397,29 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		}
 	}
 
+	var threadParts []PostThreadPart
+	if libPtr != nil && normSite == "x" && len(libPtr.Thread) > 0 {
+		var focalVideo *PostVideo
+		if !videoBelongsToOrigin {
+			focalVideo = videoCard
+		}
+		if resolved, focalIdx, ok := resolveCachedXThreadParts(*libPtr, focalVideo, xCard, hlsOnlyNotice, entry.AuthorFace); ok {
+			threadParts = resolved
+			threadCount = len(resolved)
+			if focalIdx >= 0 && focalIdx < len(threadParts) {
+				// Media, video, rich card, and HLS notice are attached to their
+				// respective thread nodes so renderPostCardThread never duplicates them.
+				images = nil
+				notePages = nil
+				videoCard = nil
+				xCard = nil
+				hlsOnlyNotice = ""
+			}
+		} else {
+			threadCount = 0
+		}
+	}
+
 	return PostCardData{
 		Key:               entry.FeedKey,
 		ItemKey:           entry.ItemKey,
@@ -426,6 +449,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		XStatusID:         entry.RawID,
 		HLSOnlyNotice:     hlsOnlyNotice,
 		ThreadCount:       threadCount,
+		ThreadParts:       threadParts,
 		Origin:            origin,
 		OriginUnavailable: originUnavailable,
 		LibItem:           libPtr,

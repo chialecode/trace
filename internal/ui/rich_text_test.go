@@ -182,6 +182,44 @@ func TestClickableHyperlinksAcrossViewsAndCachedItems(t *testing.T) {
 		t.Fatalf("expected X post & thread clicks recorded, got %+v", actions)
 	}
 
+	// 3b. Cached offline X thread detail: clickable links in both focal and continuation parts.
+	app.OpenLibraryItemDetail(library.ItemMetadata{
+		ItemKey: "x:dynamic:1900000000000000905",
+		Site:    "x",
+		Kind:    "dynamic",
+		ID:      "1900000000000000905",
+		RawID:   "1900000000000000905",
+		Text:    "离线串首条 架构设计\n\n离线串续条 性能报告",
+		PubTs:   1710007100,
+		Author:  library.ItemAuthor{Site: "x", UID: "900004004", UniqueID: "synth_x", Name: "合成X作者"},
+		Thread: []library.ItemThreadPart{
+			{
+				ID:    "1900000000000000905",
+				PubTs: 1710007100,
+				Text:  "离线串首条 架构设计",
+				Links: []library.ItemLink{{Label: "架构设计", URL: "https://docs.example.dev/arch"}},
+			},
+			{
+				ID:    "1900000000000000906",
+				PubTs: 1710007160,
+				Text:  "离线串续条 性能报告",
+				Links: []library.ItemLink{{Label: "性能报告", URL: "https://docs.example.dev/perf"}},
+			},
+		},
+	})
+	tt.Frame()
+	if err := tt.Click("打开链接：架构设计"); err != nil {
+		t.Fatalf("Click offline X thread focal link failed: %v", err)
+	}
+	if err := tt.Click("打开链接：性能报告"); err != nil {
+		t.Fatalf("Click offline X thread continuation link failed: %v", err)
+	}
+	actions = desk.Actions()
+	if !slices.Contains(actions, service.RecordedAction{Kind: "url", Target: "https://docs.example.dev/arch"}) ||
+		!slices.Contains(actions, service.RecordedAction{Kind: "url", Target: "https://docs.example.dev/perf"}) {
+		t.Fatalf("expected offline X thread link clicks recorded, got %+v", actions)
+	}
+
 	// 4. Security check: non-HTTP(S) schemes (javascript:, file:, data:, userinfo) are strictly rejected
 	// both in rich-text parsing (never clickable) and in openExternalURL!
 	beforeCount := len(desk.Actions())
