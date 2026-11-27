@@ -606,6 +606,9 @@ func safePublicPostCoverURL(p *Post) string {
 			return m.PublicPreviewURL
 		}
 	}
+	if p.Article != nil && p.Article.Cover != nil && p.Article.Cover.PublicPreviewURL != "" {
+		return SafePublicImageURL(p.Article.Cover.PublicPreviewURL)
+	}
 	if p.Card != nil && p.Card.CoverURL != "" {
 		return SafePublicImageURL(p.Card.CoverURL)
 	}
@@ -626,7 +629,16 @@ func buildPostSummaryTitle(p *Post, maxRunes int) string {
 	if p == nil {
 		return ""
 	}
-	text := strings.TrimSpace(p.Text)
+	var text string
+	if p.Article != nil && strings.TrimSpace(p.Article.Title) != "" {
+		text = strings.TrimSpace(p.Article.Title)
+	}
+	if text == "" {
+		text = strings.TrimSpace(p.Text)
+	}
+	if text == "" && p.Article != nil {
+		text = strings.TrimSpace(p.Article.FullPlainText())
+	}
 	if text == "" && p.Card != nil {
 		text = strings.TrimSpace(p.Card.Title)
 	}

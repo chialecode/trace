@@ -318,12 +318,12 @@ func (b *Backend) CacheXPostsPage(ctx context.Context, req XBatchCachePageReques
 	if err := b.requireSiteLogin(site.X); err != nil {
 		return XBatchCachePageResult{}, err
 	}
-	if strings.TrimSpace(req.Tab) != "" {
-		if _, ok := x.NormalizeProfileTab(req.Tab); !ok {
+	if rawTab := strings.TrimSpace(req.Tab); rawTab != "" && !strings.EqualFold(rawTab, "list") {
+		if _, ok := x.NormalizeProfileTab(rawTab); !ok {
 			return XBatchCachePageResult{}, &site.Error{
 				Site:    site.X,
 				Kind:    site.ErrKindBadRequest,
-				Message: fmt.Sprintf("不支持的 X 用户页标签: %s", strings.TrimSpace(req.Tab)),
+				Message: fmt.Sprintf("不支持的 X 用户页标签: %s", rawTab),
 			}
 		}
 	}
@@ -409,6 +409,9 @@ func (b *Backend) CacheXPostsPage(ctx context.Context, req XBatchCachePageReques
 func IsXPostDTOUncacheable(post *XPostDTO) bool {
 	if post == nil || post.Unavailable || strings.TrimSpace(post.ID) == "" {
 		return true
+	}
+	if post.Article != nil && post.Article.HasFullContent() {
+		return false
 	}
 	if xPostMediaHasDownloadable(post.Media) {
 		return false

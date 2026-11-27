@@ -470,6 +470,7 @@ type XPostDTO struct {
 	HasHLSOnlyVideo         bool                  `json:"hasHlsOnlyVideo,omitempty"`
 	Poll                    *XPollSummaryDTO      `json:"poll,omitempty"`
 	Card                    *XRichCardDTO         `json:"card,omitempty"`
+	Article                 *XArticleDTO          `json:"article,omitempty"`
 	Stats                   XStatsDTO             `json:"stats"`
 	Links                   []TextLinkDTO         `json:"links,omitempty"`
 	URLs                    []XURLEntityDTO       `json:"urls,omitempty"`
@@ -480,6 +481,103 @@ type XPostDTO struct {
 	CacheKey                string                `json:"cacheKey"`
 	CacheState              library.DotState      `json:"cacheState"`
 	CachedItem              *library.ItemMetadata `json:"cachedItem,omitempty"`
+}
+
+// XArticleImageDTO describes the cover or an inline image inside an X Article (DEC-093).
+type XArticleImageDTO struct {
+	MediaID          string `json:"mediaId,omitempty"`
+	MediaKey         string `json:"mediaKey,omitempty"`
+	Width            int    `json:"width,omitempty"`
+	Height           int    `json:"height,omitempty"`
+	AltText          string `json:"altText,omitempty"`
+	ImageURL         string `json:"imageUrl,omitempty"`
+	PublicPreviewURL string `json:"publicPreviewUrl,omitempty"`
+}
+
+// XArticleBlockDTO describes one ordered rich-text, inline-image, or embedded-tweet
+// block parsed from an X Article's Draft.js content_state (DEC-093).
+type XArticleBlockDTO struct {
+	Type    string            `json:"type"`
+	Text    string            `json:"text,omitempty"`
+	Links   []TextLinkDTO     `json:"links,omitempty"`
+	Image   *XArticleImageDTO `json:"image,omitempty"`
+	TweetID string            `json:"tweetId,omitempty"`
+}
+
+// XArticleDTO carries full parsed rich-text content for an X Article attached to a post.
+type XArticleDTO struct {
+	ID           string             `json:"id,omitempty"`
+	RestID       string             `json:"restId,omitempty"`
+	Title        string             `json:"title,omitempty"`
+	PreviewText  string             `json:"previewText,omitempty"`
+	PlainText    string             `json:"plainText,omitempty"`
+	Cover        *XArticleImageDTO  `json:"cover,omitempty"`
+	Blocks       []XArticleBlockDTO `json:"blocks,omitempty"`
+	CanonicalURL string             `json:"canonicalUrl,omitempty"`
+}
+
+// HasFullContent reports whether the article DTO carries full rich blocks or plain text
+// beyond a degraded preview card stub.
+func (a *XArticleDTO) HasFullContent() bool {
+	if a == nil {
+		return false
+	}
+	return len(a.Blocks) > 0 || strings.TrimSpace(a.PlainText) != ""
+}
+
+// XListDTO holds read-only metadata of a public X List (DEC-093).
+type XListDTO struct {
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Description     string     `json:"description,omitempty"`
+	Mode            string     `json:"mode,omitempty"`
+	MemberCount     int        `json:"memberCount"`
+	SubscriberCount int        `json:"subscriberCount,omitempty"`
+	CreatedAt       int64      `json:"createdAt,omitempty"`
+	BannerURL       string     `json:"bannerUrl,omitempty"`
+	Creator         XAuthorDTO `json:"creator"`
+	CanonicalURL    string     `json:"canonicalUrl"`
+}
+
+// XListTweetsPageDTO holds one paginated page of tweets in a public X List.
+type XListTweetsPageDTO struct {
+	ListID     string     `json:"listId"`
+	Posts      []XPostDTO `json:"posts"`
+	NextCursor string     `json:"nextCursor,omitempty"`
+	HasMore    bool       `json:"hasMore"`
+}
+
+// XListMemberDTO describes one member of a public X List with local subscription ownership.
+type XListMemberDTO struct {
+	RestID         string `json:"restId"`
+	ScreenName     string `json:"screenName"`
+	Name           string `json:"name"`
+	Description    string `json:"description,omitempty"`
+	AvatarURL      string `json:"avatarUrl,omitempty"`
+	Verified       bool   `json:"verified,omitempty"`
+	IsBlueVerified bool   `json:"isBlueVerified,omitempty"`
+	Protected      bool   `json:"protected,omitempty"`
+	FollowersCount int64  `json:"followersCount,omitempty"`
+	CanonicalURL   string `json:"canonicalUrl,omitempty"`
+	Subscribed     bool   `json:"subscribed,omitempty"`
+	OwnerSubID     string `json:"ownerSubId,omitempty"`
+	OwnerSubName   string `json:"ownerSubName,omitempty"`
+}
+
+// XListMembersPageDTO holds one paginated page of members in a public X List.
+type XListMembersPageDTO struct {
+	ListID     string           `json:"listId"`
+	Members    []XListMemberDTO `json:"members"`
+	NextCursor string           `json:"nextCursor,omitempty"`
+	HasMore    bool             `json:"hasMore"`
+}
+
+// XUserListsPageDTO holds public X Lists associated with an X creator.
+type XUserListsPageDTO struct {
+	UserRestID string     `json:"userRestId"`
+	Lists      []XListDTO `json:"lists"`
+	NextCursor string     `json:"nextCursor,omitempty"`
+	HasMore    bool       `json:"hasMore"`
 }
 
 // XUserDTO holds an X creator's profile header fields and local subscription status.
@@ -1087,6 +1185,99 @@ func mapXRichCardDTO(c *x.RichCard) *XRichCardDTO {
 	}
 }
 
+func mapXArticleImageDTO(img *x.ArticleImage) *XArticleImageDTO {
+	if img == nil {
+		return nil
+	}
+	return &XArticleImageDTO{
+		MediaID:          img.MediaID,
+		MediaKey:         img.MediaKey,
+		Width:            img.Width,
+		Height:           img.Height,
+		AltText:          img.AltText,
+		ImageURL:         firstNonEmpty(img.ImageURL, img.PublicPreviewURL),
+		PublicPreviewURL: img.PublicPreviewURL,
+	}
+}
+
+func mapXArticleDTO(art *x.Article) *XArticleDTO {
+	if art == nil {
+		return nil
+	}
+	out := &XArticleDTO{
+		ID:           art.ID,
+		RestID:       art.RestID,
+		Title:        art.Title,
+		PreviewText:  art.PreviewText,
+		PlainText:    art.PlainText,
+		Cover:        mapXArticleImageDTO(art.Cover),
+		CanonicalURL: art.CanonicalURL,
+	}
+	if len(art.Blocks) > 0 {
+		out.Blocks = make([]XArticleBlockDTO, 0, len(art.Blocks))
+		for _, blk := range art.Blocks {
+			var links []TextLinkDTO
+			if len(blk.Links) > 0 {
+				links = make([]TextLinkDTO, 0, len(blk.Links))
+				for _, l := range blk.Links {
+					if u := strings.TrimSpace(l.URL); u != "" {
+						links = append(links, TextLinkDTO{
+							Label: firstNonEmpty(strings.TrimSpace(l.Label), u),
+							URL:   u,
+						})
+					}
+				}
+			}
+			out.Blocks = append(out.Blocks, XArticleBlockDTO{
+				Type:    blk.Type,
+				Text:    blk.Text,
+				Links:   links,
+				Image:   mapXArticleImageDTO(blk.Image),
+				TweetID: blk.TweetID,
+			})
+		}
+	}
+	return out
+}
+
+func mapXListDTO(ls *x.ListSummary) *XListDTO {
+	if ls == nil {
+		return nil
+	}
+	return &XListDTO{
+		ID:              ls.ID,
+		Name:            ls.Name,
+		Description:     ls.Description,
+		Mode:            ls.Mode,
+		MemberCount:     ls.MemberCount,
+		SubscriberCount: ls.SubscriberCount,
+		BannerURL:       ls.BannerURL,
+		Creator:         mapXAuthorDTO(ls.Creator),
+		CanonicalURL:    ls.CanonicalURL,
+	}
+}
+
+func mapXListMemberDTO(u x.FollowingUser, ownerSubID, ownerSubName string) XListMemberDTO {
+	handle := strings.TrimPrefix(strings.TrimSpace(u.ScreenName), "@")
+	canonURL := ""
+	if handle != "" {
+		canonURL = "https://x.com/" + handle
+	} else if strings.TrimSpace(u.RestID) != "" {
+		canonURL = "https://x.com/i/user/" + strings.TrimSpace(u.RestID)
+	}
+	return XListMemberDTO{
+		RestID:       u.RestID,
+		ScreenName:   handle,
+		Name:         u.Name,
+		Description:  u.Description,
+		AvatarURL:    u.AvatarURL,
+		CanonicalURL: canonURL,
+		Subscribed:   strings.TrimSpace(ownerSubID) != "",
+		OwnerSubID:   ownerSubID,
+		OwnerSubName: ownerSubName,
+	}
+}
+
 func mapXPollSummaryDTO(p *x.PollSummary) *XPollSummaryDTO {
 	if p == nil {
 		return nil
@@ -1222,6 +1413,7 @@ func mapXPostDTO(p *x.Post, cached *library.ItemMetadata, cacheState library.Dot
 		HasHLSOnlyVideo:         p.HasHLSOnlyVideo,
 		Poll:                    mapXPollSummaryDTO(p.Poll),
 		Card:                    mapXRichCardDTO(p.Card),
+		Article:                 mapXArticleDTO(p.Article),
 		Stats: XStatsDTO{
 			ReplyCount:    p.Stats.ReplyCount,
 			RetweetCount:  p.Stats.RetweetCount,

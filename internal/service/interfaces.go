@@ -74,6 +74,12 @@ type OpenLinkResult struct {
 	XUserTab             string                     `json:"xUserTab,omitempty"`
 	XUserPosts           *XUserPostsPageDTO         `json:"xUserPosts,omitempty"`
 	XUserPostsError      string                     `json:"xUserPostsError,omitempty"`
+	XUserLists           *XUserListsPageDTO         `json:"xUserLists,omitempty"`
+	XUserListsError      string                     `json:"xUserListsError,omitempty"`
+	XList                *XListDTO                  `json:"xList,omitempty"`
+	XListTab             string                     `json:"xListTab,omitempty"`
+	XListTweets          *XListTweetsPageDTO        `json:"xListTweets,omitempty"`
+	XListTweetsError     string                     `json:"xListTweetsError,omitempty"`
 	CachedItem           *library.ItemMetadata      `json:"cachedItem,omitempty"`
 	// HistoryThumbs names the images of the recent-parse entry. OpenLink
 	// records the entry without waiting for them; FetchHistoryThumbs adds
@@ -154,6 +160,10 @@ type ParseService interface {
 	XUserByScreenName(ctx context.Context, screenName string) (*XUserDTO, error)
 	XUserPosts(ctx context.Context, restID, cursor string) (*XUserPostsPageDTO, error)
 	XUserTabPosts(ctx context.Context, uidOrHandle, tab, cursor string) (*XUserPostsPageDTO, error)
+	OpenXList(ctx context.Context, listID string) (*XListDTO, error)
+	XListTweets(ctx context.Context, listID, cursor string) (*XListTweetsPageDTO, error)
+	XListMembers(ctx context.Context, listID, cursor string) (*XListMembersPageDTO, error)
+	XUserLists(ctx context.Context, uidOrHandle string) (*XUserListsPageDTO, error)
 	StagePreviewMedia(ctx context.Context, siteID, rawURL, ext string) (string, error)
 	FetchHistoryThumbs(ctx context.Context, job HistoryThumbJob) error
 	FetchImage(ctx context.Context, rawURL string) ([]byte, error)

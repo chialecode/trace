@@ -95,6 +95,16 @@ func visitManifestFiles(meta ItemMetadata, fn func(ManifestFile)) {
 			}
 		}
 	}
+	if meta.Article != nil {
+		if meta.Article.CoverRel != "" {
+			fn(ManifestFile{Path: meta.Article.CoverRel, Role: "cover"})
+		}
+		for _, blk := range meta.Article.Blocks {
+			if blk.MediaRel != "" {
+				fn(ManifestFile{Path: blk.MediaRel, Role: "image"})
+			}
+		}
+	}
 }
 
 // RegisteredFiles lists every finished file meta registers (media, parts,

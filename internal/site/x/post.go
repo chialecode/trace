@@ -185,6 +185,7 @@ type Post struct {
 	HasHLSOnlyVideo         bool          `json:"hasHlsOnlyVideo,omitempty"`
 	Poll                    *PollSummary  `json:"poll,omitempty"`
 	Card                    *RichCard     `json:"card,omitempty"`
+	Article                 *Article      `json:"article,omitempty"`
 	Stats                   PostStats     `json:"stats"`
 	URLs                    []URLEntity   `json:"urls,omitempty"`
 	CanonicalURL            string        `json:"canonicalUrl"`
@@ -285,9 +286,10 @@ func (c *Client) GetPost(ctx context.Context, statusID string) (*Post, error) {
 	}
 
 	gqlResp, err := c.doGraphQL(ctx, graphqlRequest{
-		operation: OpTweetDetail,
-		variables: vars,
-		referer:   canonicalStatusURL("", normID),
+		operation:    OpTweetDetail,
+		variables:    vars,
+		fieldToggles: articleFieldToggles(),
+		referer:      canonicalStatusURL("", normID),
 	})
 	if err != nil {
 		return nil, err
@@ -639,6 +641,7 @@ type rawTimelineItemContent struct {
 	UserResults *struct {
 		Result json.RawMessage `json:"result"`
 	} `json:"user_results"`
+	List json.RawMessage `json:"list"`
 }
 
 type rawTweetResultNode struct {
@@ -782,22 +785,6 @@ type rawCardWrapper struct {
 			} `json:"value"`
 		} `json:"binding_values"`
 	} `json:"legacy"`
-}
-
-type rawArticleWrap struct {
-	ArticleResults *struct {
-		Result *struct {
-			RestID      string `json:"rest_id"`
-			Title       string `json:"title"`
-			PreviewText string `json:"preview_text"`
-			CoverMedia  *struct {
-				MediaInfo *struct {
-					OriginalImgURL string `json:"original_img_url"`
-				} `json:"media_info"`
-			} `json:"cover_media"`
-			CoverMediaImgURL string `json:"cover_media_img_url"`
-		} `json:"result"`
-	} `json:"article_results"`
 }
 
 // parseTweetResult unwraps X GraphQL tweet nodes strictly following x.md §5.2 #2 order:
@@ -1092,8 +1079,14 @@ func (c *Client) parseInnerTweetNode(node *rawTweetResultNode, visibilityLabel s
 		}
 	}
 
-	// Safe degradation for X Articles, Polls, Broadcasts/Spaces, and URL Cards (NEVER creates video cache entry).
-	post.Poll, post.Card = parseDegradedCardAndPoll(node.Article, node.Card, post.CanonicalURL, urlEntities, c.allowLocalhost)
+	// Parse full X Articles rich content when available (DEC-093); otherwise fall back
+	// to degraded summary card for article stubs, polls, broadcasts/Spaces, and URL cards.
+	post.Article = parseArticle(node.Article, post.CanonicalURL, c.allowLocalhost)
+	var cardArticle *rawArticleWrap
+	if post.Article == nil || !post.Article.HasFullContent() {
+		cardArticle = node.Article
+	}
+	post.Poll, post.Card = parseDegradedCardAndPoll(cardArticle, node.Card, post.CanonicalURL, urlEntities, c.allowLocalhost)
 
 	post.RuleType = computeRuleType(post)
 	return post
@@ -1150,6 +1143,9 @@ func computeRuleType(p *Post) string {
 		return RuleTypeVideo
 	}
 	if len(p.Media) > 0 {
+		return RuleTypeDraw
+	}
+	if p.Article != nil && (p.Article.Cover != nil || len(p.Article.Images) > 0) {
 		return RuleTypeDraw
 	}
 	return RuleTypeWord

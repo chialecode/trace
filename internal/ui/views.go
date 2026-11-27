@@ -58,7 +58,7 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 					if a.CurrentRoute == RouteVideo || a.CurrentRoute == RouteUser ||
 						a.CurrentRoute == RouteDouyinWork || a.CurrentRoute == RouteDouyinUser ||
 						a.CurrentRoute == RouteWeiboPost || a.CurrentRoute == RouteWeiboUser ||
-						a.CurrentRoute == RouteXPost || a.CurrentRoute == RouteXUser ||
+						a.CurrentRoute == RouteXPost || a.CurrentRoute == RouteXUser || a.CurrentRoute == RouteXList ||
 						a.CurrentRoute == RouteLibraryItem ||
 						(a.CurrentRoute == RouteLibrary && a.Transfer.ImportPage) ||
 						(a.CurrentRoute == RouteSubscriptions && a.SubDetailOpen) ||
@@ -164,6 +164,8 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 		a.renderXPostRoute(c, winH)
 	case RouteXUser:
 		a.renderXUserRoute(c)
+	case RouteXList:
+		a.renderXListRoute(c)
 	case RouteLibrary:
 		a.renderLibraryRoute(c)
 	case RouteLibraryItem:
@@ -267,6 +269,9 @@ func (a *App) routeTitle() string {
 		}
 		return "微博用户"
 	case RouteXPost:
+		if a.CurrentXPost != nil && a.CurrentXPost.Article != nil && a.CurrentXPost.Article.HasFullContent() {
+			return "文章"
+		}
 		return "帖子"
 	case RouteXUser:
 		if a.Opening != nil {
@@ -276,6 +281,14 @@ func (a *App) routeTitle() string {
 			return firstNonEmptyStrUI(a.CurrentXUser.Name, a.CurrentXUser.ScreenName, "X 用户")
 		}
 		return "X 用户"
+	case RouteXList:
+		if a.Opening != nil {
+			return firstNonEmptyStrUI(a.Opening.Title, "X 列表")
+		}
+		if a.XList.List != nil {
+			return firstNonEmptyStrUI(a.XList.List.Name, "X 列表")
+		}
+		return "X 列表"
 	case RouteLibrary:
 		if a.Transfer.ImportPage {
 			return "导入"
@@ -290,6 +303,9 @@ func (a *App) routeTitle() string {
 				return "图文"
 			case "dynamic":
 				if normalizeSiteIDUI(a.CurrentLibraryDetail.Site) == "x" {
+					if a.CurrentLibraryDetail.Article != nil {
+						return "文章"
+					}
 					return "帖子"
 				}
 				if normalizeSiteIDUI(a.CurrentLibraryDetail.Site) == "weibo" {

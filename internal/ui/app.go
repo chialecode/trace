@@ -37,6 +37,7 @@ const (
 	RouteWeiboUser     = "/weibo/user"
 	RouteXPost         = "/x/post"
 	RouteXUser         = "/x/user"
+	RouteXList         = "/x/list"
 	RouteLibrary       = "/library"
 	RouteLibraryItem   = "/library/item"
 	RouteTasks         = "/tasks"
@@ -443,6 +444,8 @@ type App struct {
 	XUserListState       *ui.ListState
 	XUserSubMenuOpen     bool
 	xFilteredEmpty       bool
+	XList                XListViewState
+	XUserLists           XUserListsModalState
 
 	// Mine is the in-memory state of 我的 (never written to ui-state.json).
 	Mine             MineState
@@ -1306,6 +1309,9 @@ func (a *App) View(c *ui.Context) {
 	if a.ConflictDiff.Open {
 		a.renderConflictDiffOverlay(c, w, h)
 	}
+	if a.XUserLists.Open {
+		a.renderXUserListsOverlay(c, w, h)
+	}
 	if a.ImageViewer.Open {
 		a.renderImageViewerOverlay(c, w, h)
 	}
@@ -1342,6 +1348,7 @@ func (a *App) hasOpenModalOverlay() bool {
 		a.SubFile.ExportOpen ||
 		a.SubFile.ImportOpen ||
 		a.ConflictDiff.Open ||
+		a.XUserLists.Open ||
 		a.ImageViewer.Open ||
 		a.PlayerOverlay.Open
 }

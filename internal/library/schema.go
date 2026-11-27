@@ -72,6 +72,9 @@ type ItemMetadata struct {
 	// Card records a degraded non-media rich card attached to the post
 	// (e.g. Weibo article, vote, music, webpage, or live card; no signed URLs).
 	Card *ItemRichCard `json:"card,omitempty"`
+	// Article records structured long-form article content and local relative
+	// media paths (e.g. X Articles, DEC-093). Optional; item.json stays version 1.
+	Article *ItemArticle `json:"article,omitempty"`
 	// Thread records author self-reply thread segments cached together into the
 	// same item (e.g. X author self-reply threads). Optional; older manifests have none.
 	Thread []ItemThreadPart `json:"thread,omitempty"`
@@ -218,6 +221,27 @@ type ItemRichCard struct {
 	Title string `json:"title,omitempty"`
 	Desc  string `json:"desc,omitempty"`
 	URL   string `json:"url,omitempty"`
+}
+
+// ItemArticleBlock records one ordered rich-text, inline-image, or embedded-tweet
+// block of a cached long-form article (e.g. X Articles, DEC-093).
+// It never stores remote CDN URLs, query parameters, or absolute local paths.
+type ItemArticleBlock struct {
+	Type     string     `json:"type"`
+	Text     string     `json:"text,omitempty"`
+	Links    []ItemLink `json:"links,omitempty"`
+	MediaRel string     `json:"mediaRel,omitempty"`
+	TweetID  string     `json:"tweetId,omitempty"`
+}
+
+// ItemArticle stores structured long-form article content persisted inside
+// item.json (schema version remains 1, DEC-093). CoverRel and Block.MediaRel
+// hold only local item-relative paths registered in ItemMetadata.Media.
+type ItemArticle struct {
+	Title     string             `json:"title,omitempty"`
+	CoverRel  string             `json:"coverRel,omitempty"`
+	PlainText string             `json:"plainText,omitempty"`
+	Blocks    []ItemArticleBlock `json:"blocks,omitempty"`
 }
 
 // ItemLink records one human-readable hyperlink label paired with its safe
@@ -806,6 +830,7 @@ func SanitizeItemMetadata(meta *ItemMetadata) {
 			meta.Card = nil
 		}
 	}
+	meta.Article = sanitizeItemArticle(meta.Article, meta.Site)
 	if meta.Origin != nil {
 		sanitizeItemOriginDepth(meta.Origin, meta.Site, 0)
 	}
@@ -1056,6 +1081,9 @@ func (m ItemMetadata) NormalizeDisplayTypeLabel() string {
 			return "引用帖子"
 		}
 		if lbl == "" {
+			if m.Article != nil {
+				return "文章"
+			}
 			if isQuote {
 				return "引用帖子"
 			}
@@ -1210,6 +1238,93 @@ func sanitizeItemRichCard(card *ItemRichCard) {
 	card.Title = scrubManifestFreeText(card.Title)
 	card.Desc = scrubManifestFreeText(card.Desc)
 	card.URL = sanitizeRichCardURL(card.URL)
+}
+
+const maxArticleBlocksPerManifest = 1000
+
+// SanitizeItemArticle scrubs an article structure so item.json never stores
+// remote CDN URLs, query parameters, path traversals, or credential markers (DEC-093).
+func SanitizeItemArticle(art *ItemArticle, site string) *ItemArticle {
+	return sanitizeItemArticle(art, site)
+}
+
+func sanitizeItemArticle(art *ItemArticle, site string) *ItemArticle {
+	if art == nil {
+		return nil
+	}
+	normSite := strings.ToLower(strings.TrimSpace(site))
+	out := &ItemArticle{
+		Title:     scrubManifestFreeText(art.Title),
+		CoverRel:  sanitizeArticleRelPath(art.CoverRel),
+		PlainText: scrubManifestFreeText(art.PlainText),
+	}
+	if len(art.Blocks) > 0 {
+		blocks := make([]ItemArticleBlock, 0, min(len(art.Blocks), maxArticleBlocksPerManifest))
+		for _, blk := range art.Blocks {
+			cleanBlk := ItemArticleBlock{
+				Type:     normalizeItemArticleBlockType(blk.Type),
+				Text:     scrubManifestFreeText(blk.Text),
+				Links:    sanitizeItemLinks(blk.Links),
+				MediaRel: sanitizeArticleRelPath(blk.MediaRel),
+				TweetID:  sanitizeReplyIDToken(blk.TweetID, normSite),
+			}
+			if cleanBlk.Text == "" && len(cleanBlk.Links) == 0 && cleanBlk.MediaRel == "" && cleanBlk.TweetID == "" {
+				continue
+			}
+			blocks = append(blocks, cleanBlk)
+			if len(blocks) >= maxArticleBlocksPerManifest {
+				break
+			}
+		}
+		if len(blocks) > 0 {
+			out.Blocks = blocks
+		}
+	}
+	if out.Title == "" && out.CoverRel == "" && out.PlainText == "" && len(out.Blocks) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeItemArticleBlockType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "header-one", "header-two", "blockquote", "ordered-list-item", "unordered-list-item", "atomic":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return "unstyled"
+	}
+}
+
+func sanitizeArticleRelPath(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || len(trimmed) > 260 {
+		return ""
+	}
+	if isRemoteOrSignedURL(trimmed) || hasSignedOrQueryMarkers(trimmed) || containsXForbiddenTextMarkers(trimmed) {
+		return ""
+	}
+	if strings.Contains(trimmed, "://") || strings.ContainsAny(trimmed, "\\:\x00?#") {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "/") {
+		return ""
+	}
+	for _, r := range trimmed {
+		if unicode.IsControl(r) {
+			return ""
+		}
+	}
+	parts := strings.Split(trimmed, "/")
+	for _, seg := range parts {
+		if seg == "" || seg == "." || seg == ".." {
+			return ""
+		}
+	}
+	clean := cleanManifestRel(trimmed)
+	if clean == "" || strings.EqualFold(clean, "item.json") || strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "../") || clean == ".." {
+		return ""
+	}
+	return clean
 }
 
 const maxItemLinksPerManifest = 64

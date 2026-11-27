@@ -1072,3 +1072,117 @@ func TestLibraryDetailXReplyHintThreadPartOriginAndNestedQuoteDepthCap(t *testin
 	}
 	p.OnDisconnected()
 }
+
+func TestLibraryDetailXArticleRichBlocksAndOfflineViewer(t *testing.T) {
+	srv, host, cleanup := newSyntheticLibServer(t, 1)
+	defer cleanup()
+
+	now := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC).Unix()
+	key := "x:dynamic:1900000000000093001"
+	det := companionapi.LibraryItemDetail{
+		ItemKey:        key,
+		ID:             "1900000000000093001",
+		Site:           "x",
+		Kind:           "dynamic",
+		TypeLabel:      "文章",
+		Status:         "complete",
+		Title:          "移动端 X 文章离线富文本测试",
+		Text:           "纯文本回退正文",
+		PubTs:          now - 300,
+		AuthorUID:      "u-x-art-93",
+		AuthorName:     "移动文章作者",
+		AuthorUniqueID: "mobile_x_writer",
+		Media: []companionapi.MediaFileDTO{
+			{Role: "cover", Path: "cover.png", Width: 640, Height: 360},
+			{Role: "image", Path: "images/01.png", Width: 640, Height: 400},
+		},
+		Article: &companionapi.ItemArticleDTO{
+			Title:     "移动端 X 文章离线富文本测试",
+			CoverRel:  "cover.png",
+			PlainText: "纯文本回退正文",
+			Blocks: []companionapi.ItemArticleBlockDTO{
+				{Type: "header-one", Text: "一、移动离线架构"},
+				{Type: "header-two", Text: "1.1 零站点请求"},
+				{Type: "unstyled", Text: "阅读规格说明。", Links: []companionapi.TextLink{{Label: "规格说明", URL: "https://example.com/mobile-spec"}}},
+				{Type: "blockquote", Text: "全部封面与内嵌图均经局域网电脑端代理读取。"},
+				{Type: "ordered-list-item", Text: "有序项一"},
+				{Type: "unordered-list-item", Text: "无序项一"},
+				{Type: "atomic", MediaRel: "images/01.png"},
+				{Type: "atomic", TweetID: "1791257321273778888"},
+			},
+		},
+	}
+
+	srv.mu.Lock()
+	srv.details[key] = det
+	srv.mu.Unlock()
+
+	p := New()
+	p.nowFn = func() time.Time { return time.Unix(now, 0).UTC() }
+	notify := make(chan struct{}, 32)
+	host.onUpdate = func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
+
+	p.OnConnected(host)
+	tt := ui.NewTester(func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		p.View(c, host)
+	}, 412, 1600)
+
+	p.openItemDetail(host, key)
+	tt.Advance(400 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if tt.HasText("一、移动离线架构") {
+			break
+		}
+		select {
+		case <-notify:
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	for _, want := range []string{
+		"X 文章",
+		"移动端 X 文章离线富文本测试",
+		"一、移动离线架构",
+		"1.1 零站点请求",
+		"全部封面与内嵌图均经局域网电脑端代理读取。",
+		"有序项一",
+		"无序项一",
+		"引用帖子 · ID 1791257321273778888",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("mobile article detail missing %q; texts=%v", want, tt.Texts())
+		}
+	}
+	var openedItems []mediaview.ImageItem
+	openedIdx := -1
+	p.openImageFn = func(_ pagekit.Host, items []mediaview.ImageItem, startIdx int) {
+		openedItems = append([]mediaview.ImageItem(nil), items...)
+		openedIdx = startIdx
+	}
+	if _, ok := tt.Find("查看文章封面"); !ok {
+		t.Fatalf("expected clickable article cover button")
+	}
+	if _, ok := tt.Find("查看文章图片 1"); !ok {
+		t.Fatalf("expected clickable article inline image button")
+	}
+	tt.Click("查看文章图片 1")
+	tt.Frame()
+	if len(openedItems) != 2 || openedIdx != 1 || openedItems[0].RelPath != "cover.png" || openedItems[1].RelPath != "images/01.png" {
+		t.Fatalf("tapping mobile article inline image opened (%+v, idx=%d), want 2 items at idx 1", openedItems, openedIdx)
+	}
+
+	for _, w := range []int{360, 412, 800} {
+		tt.SetSize(w, 1600)
+		tt.Frame()
+		assertNoHorizontalOverflow(t, tt, w)
+	}
+	p.OnDisconnected()
+}

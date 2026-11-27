@@ -157,11 +157,11 @@ func TestResolveLinkAllShapesMirrorsReservedAndUnsupportedZeroRequests(t *testin
 		})
 	}
 
-	// 5. Unsupported Articles / Lists / Communities / bare digits / bare @handle -> 0 API requests!
+	// 5. Unsupported Articles / custom list slugs / Communities / bare digits / bare @handle -> 0 API requests!
 	otherUnsupported := []string{
 		"https://x.com/i/article/1000000000000000099",
 		"https://x.com/example_user/article/1000000000000000099",
-		"https://x.com/i/lists/1000000000000000055",
+		"https://x.com/i/lists",
 		"https://x.com/example_user/lists/tech-list",
 		"https://x.com/i/communities/1000000000000000066",
 		"@example_user",

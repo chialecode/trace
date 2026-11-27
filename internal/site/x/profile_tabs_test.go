@@ -35,6 +35,7 @@ func TestProfileTabOperationsDiscoveredFromWebpackAndViteMainJS(t *testing.T) {
 				OpUserTweetsAndReplies: "SynthQidUserTweetsAndReplies08",
 				OpUserMedia:            "SynthQidUserMedia09",
 				OpUserHighlightsTweets: "SynthQidUserHighlightsTweets10",
+				OpUserArticlesTweets:   "SynthQidUserArticlesTweets11",
 			},
 		},
 		{
@@ -48,6 +49,7 @@ func TestProfileTabOperationsDiscoveredFromWebpackAndViteMainJS(t *testing.T) {
 				OpUserTweetsAndReplies: "SynthViteQidUserTweetsAndReplies08",
 				OpUserMedia:            "SynthViteQidUserMedia09",
 				OpUserHighlightsTweets: "SynthViteQidUserHighlightsTweets10",
+				OpUserArticlesTweets:   "SynthViteQidUserArticlesTweets11",
 			},
 		},
 	}

@@ -801,6 +801,14 @@ func (b *Backend) openXLink(ctx context.Context, normalizedInput string) (*OpenL
 			b.logError("OpenLink.XUserPosts", pErr)
 			out.XUserPostsError = pErr.Error()
 		}
+		if strings.EqualFold(strings.TrimSpace(target.Tab), "lists") {
+			if listsPage, lErr := b.XUserLists(ctx, uv.RestID); lErr == nil {
+				out.XUserLists = listsPage
+			} else {
+				b.logError("OpenLink.XUserLists", lErr)
+				out.XUserListsError = lErr.Error()
+			}
+		}
 		out.HistoryThumbs = &HistoryThumbJob{
 			Site:      string(site.X),
 			Kind:      "user",
@@ -814,6 +822,44 @@ func (b *Backend) openXLink(ctx context.Context, normalizedInput string) (*OpenL
 			Title:        formatXDisplayName(uv.Name, uv.ScreenName),
 			Subtitle:     uv.Description,
 			CanonicalURL: uv.CanonicalURL,
+		}); err != nil {
+			return nil, &site.Error{Site: site.X, Kind: "storage", Message: "历史记录写入失败", Err: err}
+		}
+
+	case "x_list":
+		lv, err := b.OpenXList(ctx, target.ID)
+		if err != nil {
+			return nil, err
+		}
+		listTab := strings.ToLower(strings.TrimSpace(target.Tab))
+		if listTab != "members" {
+			listTab = "posts"
+		}
+		out.XList = lv
+		out.XListTab = listTab
+		out.Target.ID = lv.ID
+		out.SiteTarget.ID = lv.ID
+		out.SiteTarget.CanonicalURL = lv.CanonicalURL
+		if tweetsPage, tErr := b.XListTweets(ctx, lv.ID, ""); tErr == nil {
+			out.XListTweets = tweetsPage
+		} else {
+			b.logError("OpenLink.XListTweets", tErr)
+			out.XListTweetsError = tErr.Error()
+		}
+		out.HistoryThumbs = &HistoryThumbJob{
+			Site:      string(site.X),
+			Kind:      "x_list",
+			ID:        lv.ID,
+			AvatarURL: lv.Creator.AvatarURL,
+			CoverURL:  lv.BannerURL,
+		}
+		if err := b.history.Record(storage.HistoryEntry{
+			Site:         string(site.X),
+			Kind:         "x_list",
+			ID:           lv.ID,
+			Title:        firstNonEmpty(lv.Name, "X 列表 "+lv.ID),
+			Subtitle:     formatXListHistorySubtitle(lv),
+			CanonicalURL: lv.CanonicalURL,
 		}); err != nil {
 			return nil, &site.Error{Site: site.X, Kind: "storage", Message: "历史记录写入失败", Err: err}
 		}
@@ -1885,6 +1931,170 @@ func (b *Backend) xUserTabPosts(
 	}, page.Posts, nil
 }
 
+func (b *Backend) xManualCallContext(ctx context.Context) context.Context {
+	if site.AutomaticRequestSource(ctx) == "" && b.subs != nil {
+		if inBackoff, _ := b.subs.IsSiteInBackoff(string(site.X)); inBackoff {
+			return b.manualProbeContext(ctx)
+		}
+	}
+	return ctx
+}
+
+// OpenXList fetches read-only metadata for a public X List by numeric list ID (DEC-093).
+func (b *Backend) OpenXList(ctx context.Context, listID string) (*XListDTO, error) {
+	if err := b.requireSiteLogin(site.X); err != nil {
+		return nil, err
+	}
+	ls, err := b.x.GetListByRestId(b.xManualCallContext(ctx), strings.TrimSpace(listID))
+	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.X, err)
+		b.logError("OpenXList", err)
+		return nil, err
+	}
+	_ = b.finishManualSiteRequest(ctx, site.X, nil)
+	if ls.Creator.RestID != "" && ls.Creator.AvatarURL != "" {
+		b.rememberAccountAvatar(string(site.X), ls.Creator.RestID, ls.Creator.AvatarURL)
+	}
+	return mapXListDTO(ls), nil
+}
+
+// XListTweets fetches one paginated page of latest tweets in a public X List (DEC-093).
+// Read-only; populates in-memory xPostCache for manual single/batch caching.
+func (b *Backend) XListTweets(ctx context.Context, listID, cursor string) (*XListTweetsPageDTO, error) {
+	if err := b.requireSiteLogin(site.X); err != nil {
+		return nil, err
+	}
+	page, err := b.x.GetListTweets(b.xManualCallContext(ctx), strings.TrimSpace(listID), strings.TrimSpace(cursor), nil)
+	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.X, err)
+		b.logError("XListTweets", err)
+		return nil, err
+	}
+	_ = b.finishManualSiteRequest(ctx, site.X, nil)
+	keys := make([]string, 0, len(page.Posts))
+	for i := range page.Posts {
+		if page.Posts[i].ID != "" {
+			keys = append(keys, x.PostItemKey(page.Posts[i].ID))
+		}
+	}
+	var states map[string]library.DotState
+	if len(keys) > 0 {
+		states = b.States(keys)
+	}
+	views := make([]XPostDTO, 0, len(page.Posts))
+	for i := range page.Posts {
+		p := &page.Posts[i]
+		b.rememberXPostAvatars(p)
+		b.xPostCache.put(p, false)
+		k := x.PostItemKey(p.ID)
+		views = append(views, *mapXPostDTO(p, nil, states[k]))
+	}
+	nextCursor := ""
+	if page.HasMore {
+		nextCursor = page.NextCursor
+	}
+	return &XListTweetsPageDTO{
+		ListID:     page.ListID,
+		Posts:      views,
+		NextCursor: nextCursor,
+		HasMore:    page.HasMore,
+	}, nil
+}
+
+// XListMembers fetches one paginated page of members in a public X List,
+// annotated with local TRACE subscription ownership (DEC-093).
+func (b *Backend) XListMembers(ctx context.Context, listID, cursor string) (*XListMembersPageDTO, error) {
+	if err := b.requireSiteLogin(site.X); err != nil {
+		return nil, err
+	}
+	page, err := b.x.GetListMembers(b.xManualCallContext(ctx), strings.TrimSpace(listID), strings.TrimSpace(cursor), nil)
+	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.X, err)
+		b.logError("XListMembers", err)
+		return nil, err
+	}
+	_ = b.finishManualSiteRequest(ctx, site.X, nil)
+	members := make([]XListMemberDTO, 0, len(page.Members))
+	for _, u := range page.Members {
+		if u.RestID != "" && u.AvatarURL != "" {
+			b.rememberAccountAvatar(string(site.X), u.RestID, u.AvatarURL)
+		}
+		var ownerSubID, ownerSubName string
+		if sub, ok := b.OwnerOfAccount(string(site.X), u.RestID); ok {
+			ownerSubID = sub.ID
+			ownerSubName = sub.Name
+		}
+		members = append(members, mapXListMemberDTO(u, ownerSubID, ownerSubName))
+	}
+	nextCursor := ""
+	if page.HasMore {
+		nextCursor = page.NextCursor
+	}
+	return &XListMembersPageDTO{
+		ListID:     page.ListID,
+		Members:    members,
+		NextCursor: nextCursor,
+		HasMore:    page.HasMore,
+	}, nil
+}
+
+// XUserLists fetches the public X Lists owned/followed by an X creator (by rest_id or @handle, DEC-093).
+func (b *Backend) XUserLists(ctx context.Context, uidOrHandle string) (*XUserListsPageDTO, error) {
+	if err := b.requireSiteLogin(site.X); err != nil {
+		return nil, err
+	}
+	callCtx := b.xManualCallContext(ctx)
+	rawTarget := strings.TrimSpace(uidOrHandle)
+	restID := rawTarget
+	if normUID, uErr := site.NormalizeUID(site.X, rawTarget); uErr == nil {
+		restID = normUID
+	} else if rawTarget != "" {
+		prof, sErr := b.x.GetUserByScreenName(callCtx, rawTarget)
+		if sErr != nil {
+			sErr = b.finishManualSiteRequest(ctx, site.X, sErr)
+			b.logError("XUserLists.ResolveHandle", sErr)
+			return nil, sErr
+		}
+		restID = prof.RestID
+	}
+	page, err := b.x.GetUserLists(callCtx, restID, "", nil)
+	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.X, err)
+		b.logError("XUserLists", err)
+		return nil, err
+	}
+	_ = b.finishManualSiteRequest(ctx, site.X, nil)
+	lists := make([]XListDTO, 0, len(page.Lists))
+	for i := range page.Lists {
+		if mapped := mapXListDTO(&page.Lists[i]); mapped != nil {
+			lists = append(lists, *mapped)
+		}
+	}
+	return &XUserListsPageDTO{
+		UserRestID: restID,
+		Lists:      lists,
+		NextCursor: page.NextCursor,
+		HasMore:    page.HasMore,
+	}, nil
+}
+
+func formatXListHistorySubtitle(lv *XListDTO) string {
+	if lv == nil {
+		return ""
+	}
+	var parts []string
+	if creator := formatXDisplayName(lv.Creator.Name, lv.Creator.ScreenName); creator != "" {
+		parts = append(parts, creator)
+	}
+	if lv.MemberCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d 位成员", lv.MemberCount))
+	}
+	if len(parts) == 0 && strings.TrimSpace(lv.Description) != "" {
+		return strings.TrimSpace(lv.Description)
+	}
+	return strings.Join(parts, " · ")
+}
+
 func formatXDisplayName(name, screenName string) string {
 	name = strings.TrimSpace(name)
 	handle := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(screenName), "@"))
@@ -1911,6 +2121,9 @@ func xPostSummaryTitle(pv *XPostDTO) string {
 	if pv == nil {
 		return ""
 	}
+	if pv.Article != nil && strings.TrimSpace(pv.Article.Title) != "" {
+		return trimQueueSummaryTitle(strings.TrimSpace(pv.Article.Title))
+	}
 	raw := strings.TrimSpace(pv.Text)
 	if raw == "" && pv.Card != nil {
 		raw = strings.TrimSpace(pv.Card.Title)
@@ -1927,6 +2140,20 @@ func xPostSummaryTitle(pv *XPostDTO) string {
 func xPostPublicCoverURL(pv *XPostDTO) string {
 	if pv == nil {
 		return ""
+	}
+	if pv.Article != nil {
+		if pv.Article.Cover != nil {
+			if u := x.SafePublicImageURL(firstNonEmpty(pv.Article.Cover.PublicPreviewURL, pv.Article.Cover.ImageURL)); u != "" {
+				return u
+			}
+		}
+		for _, blk := range pv.Article.Blocks {
+			if blk.Image != nil {
+				if u := x.SafePublicImageURL(firstNonEmpty(blk.Image.PublicPreviewURL, blk.Image.ImageURL)); u != "" {
+					return u
+				}
+			}
+		}
 	}
 	for _, m := range pv.Media {
 		if u := x.SafePublicImageURL(firstNonEmpty(m.PublicPreviewURL, m.ImageURL)); u != "" {
@@ -1954,6 +2181,20 @@ func xPostPublicCoverURL(pv *XPostDTO) string {
 func xPostThumbCoverURL(pv *XPostDTO) string {
 	if pv == nil {
 		return ""
+	}
+	if pv.Article != nil {
+		if pv.Article.Cover != nil {
+			if u := firstNonEmpty(pv.Article.Cover.PublicPreviewURL, pv.Article.Cover.ImageURL); u != "" {
+				return u
+			}
+		}
+		for _, blk := range pv.Article.Blocks {
+			if blk.Image != nil {
+				if u := firstNonEmpty(blk.Image.PublicPreviewURL, blk.Image.ImageURL); u != "" {
+					return u
+				}
+			}
+		}
 	}
 	for _, m := range pv.Media {
 		if u := firstNonEmpty(m.PublicPreviewURL, m.ImageURL); u != "" {

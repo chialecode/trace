@@ -358,6 +358,7 @@ type fixtureEnv struct {
 	savedXPost        library.ItemMetadata
 	savedXRetweet     library.ItemMetadata
 	savedXThread      library.ItemMetadata
+	savedXArticle     library.ItemMetadata
 }
 
 func (e *fixtureEnv) close() {
@@ -1150,6 +1151,56 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		return nil, err
 	}
 
+	xArticleDir := filepath.Join(loc.DefaultCacheDir, "x", env.xUID+"_"+env.xHandle, "posts", "1000000000000000029")
+	if err := os.MkdirAll(filepath.Join(xArticleDir, "images"), 0o700); err != nil {
+		return nil, err
+	}
+	_ = os.WriteFile(filepath.Join(xArticleDir, "cover.png"), coverBuf.Bytes(), 0o600)
+	_ = os.WriteFile(filepath.Join(xArticleDir, "images", "01.png"), coverBuf.Bytes(), 0o600)
+	env.savedXArticle, err = b.LibraryStore().SaveItem(xArticleDir, library.ItemMetadata{
+		Version:     1,
+		ID:          "1000000000000000029",
+		RawID:       "1000000000000000029",
+		Site:        "x",
+		Kind:        "dynamic",
+		DynamicType: "article",
+		TypeLabel:   "文章",
+		Status:      "complete",
+		Title:       "X Articles 长文章完整离线归档架构说明",
+		Text:        "X Articles 长文章完整离线归档架构说明：支持 Draft.js 富文本排版、封面与内嵌原图离线保存、安全外链与推文引用。",
+		URL:         "https://x.com/" + env.xHandle + "/status/1000000000000000029",
+		PubTs:       1709978200,
+		CachedAt:    "2026-03-02T12:30:00Z",
+		Author: library.ItemAuthor{
+			Site:     "x",
+			UID:      env.xUID,
+			UniqueID: env.xHandle,
+			Name:     "技术频道_X",
+		},
+		Media: []library.MediaFile{
+			{Role: "cover", Path: "cover.png", Width: 320, Height: 200},
+			{Role: "image", Path: "images/01.png", Width: 320, Height: 200},
+		},
+		Article: &library.ItemArticle{
+			Title:     "X Articles 长文章完整离线归档架构说明",
+			CoverRel:  "cover.png",
+			PlainText: "X Articles 长文章完整离线归档架构说明：支持 Draft.js 富文本排版、封面与内嵌原图离线保存、安全外链与推文引用。",
+			Blocks: []library.ItemArticleBlock{
+				{Type: "header-one", Text: "一、零迁移离线存储设计"},
+				{Type: "unstyled", Text: "所有封面图与内嵌图均按原图离线下载并通过二进制魔数校验，登记进本地媒体清单，阅读规格文档。", Links: []library.ItemLink{{Label: "规格文档", URL: "https://example.com/trace-article-spec"}}},
+				{Type: "blockquote", Text: "清单中严禁写入远程 CDN 地址或签名查询参数，离线详情严格保持零网络请求。"},
+				{Type: "header-two", Text: "1.1 支持的富文本块类型"},
+				{Type: "ordered-list-item", Text: "兼容 X 实盘的数组形态与对象形态 entityMap 解析"},
+				{Type: "unordered-list-item", Text: "内嵌图片支持点击进入本地看图层缩放浏览"},
+				{Type: "atomic", MediaRel: "images/01.png"},
+				{Type: "atomic", TweetID: "1000000000000000018"},
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	// Seed recent parse history with local avatar & cover thumbnails in <DataDir>/thumbs/ across all 4 sites.
 	avatarImg := image.NewRGBA(image.Rect(0, 0, 80, 80))
 	for y := 0; y < 80; y++ {
@@ -1236,6 +1287,14 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		Subtitle:     "@" + env.xHandle,
 		CanonicalURL: "https://x.com/" + env.xHandle,
 		AvatarThumb:  histAvXUser,
+	})
+	_ = b.HistoryStore().Record(storage.HistoryEntry{
+		Site:         "x",
+		Kind:         "x_list",
+		ID:           "18000000001",
+		Title:        "Go 开源架构观察",
+		Subtitle:     "12 位成员",
+		CanonicalURL: "https://x.com/i/lists/18000000001",
 	})
 	_ = b.HistoryStore().Record(storage.HistoryEntry{
 		Site:         "x",

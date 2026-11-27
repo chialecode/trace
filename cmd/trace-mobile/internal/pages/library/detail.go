@@ -135,23 +135,29 @@ func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.
 				ui.Text(c, hint).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine()
 			}
 
-			// Title.
-			if title := strings.TrimSpace(det.Title); title != "" {
-				ui.Text(c, title).FontSize(18).FontWeight(600).LineHeight(theme.LineHeightHeading).TextColor(theme.ColorTextMain)
-			}
+			// Full offline X Article rendering (DEC-093): strictly zero network requests.
+			hasArticle := det.Article != nil && (strings.TrimSpace(det.Article.Title) != "" || len(det.Article.Blocks) > 0 || strings.TrimSpace(det.Article.PlainText) != "")
+			if hasArticle {
+				p.renderDetailArticleSection(c, h, det)
+			} else {
+				// Title.
+				if title := strings.TrimSpace(det.Title); title != "" {
+					ui.Text(c, title).FontSize(18).FontWeight(600).LineHeight(theme.LineHeightHeading).TextColor(theme.ColorTextMain)
+				}
 
-			// Body text & description.
-			body := strings.TrimSpace(det.Text)
-			if body != "" && body != strings.TrimSpace(det.Title) {
-				ui.Text(c, body).FontSize(14).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
-			}
-			if desc := strings.TrimSpace(det.Desc); desc != "" && desc != body && desc != strings.TrimSpace(det.Title) {
-				ui.Text(c, desc).FontSize(13).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMuted)
-			}
+				// Body text & description.
+				body := strings.TrimSpace(det.Text)
+				if body != "" && body != strings.TrimSpace(det.Title) {
+					ui.Text(c, body).FontSize(14).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
+				}
+				if desc := strings.TrimSpace(det.Desc); desc != "" && desc != body && desc != strings.TrimSpace(det.Title) {
+					ui.Text(c, desc).FontSize(13).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMuted)
+				}
 
-			// Clickable http(s) links.
-			if links := mediaview.ExtractLinks(body+"\n"+det.Desc, det.Links); len(links) > 0 {
-				p.renderDetailLinks(c, h, links)
+				// Clickable http(s) links.
+				if links := mediaview.ExtractLinks(body+"\n"+det.Desc, det.Links); len(links) > 0 {
+					p.renderDetailLinks(c, h, links)
+				}
 			}
 
 			// Video cover / play CTA when playable.
@@ -217,8 +223,8 @@ func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.
 				p.renderDetailLiveSection(c, h, det, vidReq, indexMap, hasVideo)
 			}
 
-			// Images gallery (tap any image to open ImageViewer).
-			if len(images) > 0 {
+			// Images gallery (tap any image to open ImageViewer; skipped for articles whose inline images render in place).
+			if !hasArticle && len(images) > 0 {
 				ui.Column(c).FillWidth().Gap(8).Children(func() {
 					ui.Text(c, fmt.Sprintf("图片（%d）", len(images))).FontSize(14).FontWeight(600).TextColor(theme.ColorTextMain)
 					p.renderDetailImageGrid(c, h, images)
@@ -245,8 +251,8 @@ func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.
 				p.renderDetailOriginBox(c, h, det.Origin, nil)
 			}
 
-			// Rich card summary (read-only).
-			if det.Card != nil {
+			// Rich card summary (read-only; skip redundant degraded article card when full Article is cached).
+			if det.Card != nil && !(hasArticle && det.Card.Kind == "article") {
 				p.renderDetailRichCard(c, det.Card)
 			}
 
@@ -436,6 +442,163 @@ func (p *Page) renderDetailThreadBody(
 			ui.Text(c, "本机只读详情 · 删除或管理文件请在电脑端 TRACE 中操作").
 				FontSize(12).TextColor(theme.ColorTextFaint).TextAlign(ui.Center).FillWidth()
 		})
+	})
+}
+
+func (p *Page) renderDetailArticleSection(c *ui.Context, h pagekit.Host, det companionapi.LibraryItemDetail) {
+	art := det.Article
+	if art == nil {
+		return
+	}
+	mediaDims := make(map[string][2]int, len(det.Media))
+	for _, m := range det.Media {
+		if m.Path != "" && m.Width > 0 && m.Height > 0 {
+			mediaDims[m.Path] = [2]int{m.Width, m.Height}
+		}
+	}
+	var gallery []mediaview.ImageItem
+	coverIdx := -1
+	if rel := strings.TrimSpace(art.CoverRel); rel != "" {
+		coverIdx = len(gallery)
+		d := mediaDims[rel]
+		gallery = append(gallery, mediaview.ImageItem{
+			ItemKey: det.ItemKey,
+			RelPath: rel,
+			Width:   d[0],
+			Height:  d[1],
+		})
+	}
+	blockImgIdx := make(map[int]int, len(art.Blocks))
+	for bi, blk := range art.Blocks {
+		if rel := strings.TrimSpace(blk.MediaRel); rel != "" {
+			blockImgIdx[bi] = len(gallery)
+			d := mediaDims[rel]
+			gallery = append(gallery, mediaview.ImageItem{
+				ItemKey: det.ItemKey,
+				RelPath: rel,
+				Width:   d[0],
+				Height:  d[1],
+			})
+		}
+	}
+
+	renderArtImage := func(keySuffix, label, rel string, galleryIdx int) {
+		src, _, _ := p.loader.GetOrLoad(h, mediaview.MediaThumbPath(det.ItemKey, rel))
+		aspect := float32(16.0 / 9.0)
+		if d := mediaDims[rel]; d[0] > 0 && d[1] > 0 {
+			aspect = float32(d[0]) / float32(d[1])
+			if aspect < 0.65 {
+				aspect = 0.65
+			}
+			if aspect > 2.4 {
+				aspect = 2.4
+			}
+		}
+		tile := ui.Box(c.Key(keySuffix)).
+			FillWidth().
+			AspectRatio(aspect).
+			Radius(10).
+			Clip().
+			Background(theme.ColorBgSecondary).
+			Label(label)
+		tile.Children(func() {
+			if src != nil {
+				ui.Image(c, src).Fit(ui.Cover).Fill()
+			}
+		})
+		if tile.Clicked() && galleryIdx >= 0 && galleryIdx < len(gallery) {
+			p.triggerOpenImages(h, gallery, galleryIdx)
+		}
+	}
+
+	ui.Column(c).Label("X离线文章正文").FillWidth().Gap(12).ClipX().Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+			ui.Box(c).Padding(2, 8).Radius(4).Background(theme.ColorAccentBg).Children(func() {
+				ui.Text(c, "X 文章").FontSize(11).FontWeight(600).TextColor(theme.ColorAccent).SingleLine()
+			})
+		})
+		if title := firstNonEmptyDetail(art.Title, det.Title); title != "" {
+			ui.Text(c, title).FontSize(19).FontWeight(700).LineHeight(theme.LineHeightHeading).TextColor(theme.ColorTextMain)
+		}
+		if coverIdx >= 0 {
+			renderArtImage("art-cover", "查看文章封面", strings.TrimSpace(art.CoverRel), coverIdx)
+		}
+		if len(art.Blocks) == 0 {
+			if plain := firstNonEmptyDetail(art.PlainText, det.Text); plain != "" {
+				ui.Text(c, plain).FontSize(14).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
+			}
+			return
+		}
+		ord := 0
+		imgSeq := 0
+		for bi, blk := range art.Blocks {
+			if blk.Type != "ordered-list-item" {
+				ord = 0
+			}
+			switch blk.Type {
+			case "header-one":
+				if txt := strings.TrimSpace(blk.Text); txt != "" {
+					ui.Text(c, txt).FontSize(17).FontWeight(700).LineHeight(theme.LineHeightHeading).TextColor(theme.ColorTextMain)
+				}
+			case "header-two":
+				if txt := strings.TrimSpace(blk.Text); txt != "" {
+					ui.Text(c, txt).FontSize(15).FontWeight(600).LineHeight(theme.LineHeightHeading).TextColor(theme.ColorTextMain)
+				}
+			case "blockquote":
+				if txt := strings.TrimSpace(blk.Text); txt != "" {
+					ui.Column(c).FillWidth().Padding(8, 12).Radius(6).Background(theme.ColorBgSecondary).BorderWidth(0, 0, 0, 3).BorderColor(theme.ColorAccent).Gap(6).Children(func() {
+						ui.Text(c, txt).FontSize(14).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMuted)
+						if links := mediaview.ExtractLinks(txt, blk.Links); len(links) > 0 {
+							p.renderDetailLinks(c, h, links)
+						}
+					})
+				}
+			case "ordered-list-item":
+				ord++
+				if txt := strings.TrimSpace(blk.Text); txt != "" {
+					ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Start).Children(func() {
+						ui.Text(c, fmt.Sprintf("%d.", ord)).FontSize(14).FontWeight(600).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMuted).SingleLine().Shrink(0)
+						ui.Column(c).Grow(1).Basis(0).Gap(4).Children(func() {
+							ui.Text(c, txt).FontSize(14).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
+							if links := mediaview.ExtractLinks(txt, blk.Links); len(links) > 0 {
+								p.renderDetailLinks(c, h, links)
+							}
+						})
+					})
+				}
+			case "unordered-list-item":
+				if txt := strings.TrimSpace(blk.Text); txt != "" {
+					ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Start).Children(func() {
+						ui.Text(c, "•").FontSize(14).FontWeight(700).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMuted).SingleLine().Shrink(0)
+						ui.Column(c).Grow(1).Basis(0).Gap(4).Children(func() {
+							ui.Text(c, txt).FontSize(14).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
+							if links := mediaview.ExtractLinks(txt, blk.Links); len(links) > 0 {
+								p.renderDetailLinks(c, h, links)
+							}
+						})
+					})
+				}
+			case "atomic":
+				if gIdx, ok := blockImgIdx[bi]; ok {
+					imgSeq++
+					renderArtImage(fmt.Sprintf("art-img-%d", bi), fmt.Sprintf("查看文章图片 %d", imgSeq), strings.TrimSpace(blk.MediaRel), gIdx)
+				}
+				if tid := strings.TrimSpace(blk.TweetID); tid != "" {
+					ui.Row(c).FillWidth().Padding(8, 10).Radius(8).Background(theme.ColorBgPanel).Border(1, theme.ColorBorder).Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "引用帖子 · ID "+tid).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine()
+					})
+				}
+			default:
+				if txt := strings.TrimSpace(blk.Text); txt != "" {
+					ui.Column(c).FillWidth().Gap(6).Children(func() {
+						ui.Text(c, txt).FontSize(14).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
+						if links := mediaview.ExtractLinks(txt, blk.Links); len(links) > 0 {
+							p.renderDetailLinks(c, h, links)
+						}
+					})
+				}
+			}
+		}
 	})
 }
 
@@ -1367,6 +1530,9 @@ func findDetailCover(det companionapi.LibraryItemDetail) string {
 		if m.Role == "cover" && m.Path != "" {
 			return m.Path
 		}
+	}
+	if det.Article != nil && det.Article.CoverRel != "" {
+		return det.Article.CoverRel
 	}
 	for _, np := range det.NotePages {
 		if np.Cover != "" {

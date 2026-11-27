@@ -134,6 +134,14 @@ func canReuseXPostPlan(post *x.Post, fromDetail bool) bool {
 	if post.IsPreviewDisplay {
 		return false
 	}
+	// Degraded article stubs from timeline endpoints need TweetDetail with
+	// withArticleRichContentState/withArticlePlainText to fetch full blocks.
+	if post.Card != nil && post.Card.Kind == x.CardKindArticle && (post.Article == nil || !post.Article.HasFullContent()) {
+		return false
+	}
+	if post.Article != nil && post.Article.HasFullContent() && !xArticleImagesComplete(post.Article) {
+		return false
+	}
 	// Self-reply threads seen on UserTweets need TweetDetail to stitch full parts.
 	if !fromDetail && strings.TrimSpace(post.SelfThreadID) != "" && len(post.Thread) == 0 && len(post.ThreadAncestors) == 0 {
 		return false
@@ -158,6 +166,21 @@ func canReuseXPostPlan(post *x.Post, fromDetail bool) bool {
 	}
 	if post.Quoted != nil && !post.Quoted.Unavailable && !xMediaListComplete(post.Quoted.Media) {
 		return false
+	}
+	return true
+}
+
+func xArticleImagesComplete(art *x.Article) bool {
+	if art == nil {
+		return true
+	}
+	if art.Cover != nil && strings.TrimSpace(art.Cover.ImageURL) == "" && strings.TrimSpace(art.Cover.PublicPreviewURL) == "" {
+		return false
+	}
+	for _, blk := range art.Blocks {
+		if blk.Image != nil && strings.TrimSpace(blk.Image.ImageURL) == "" && strings.TrimSpace(blk.Image.PublicPreviewURL) == "" {
+			return false
+		}
 	}
 	return true
 }
@@ -388,6 +411,19 @@ func (b *Backend) buildXWorkPlanFromPost(post *x.Post) (download.WorkDownloadPla
 		}
 	}
 
+	if post.Article != nil && post.Article.HasFullContent() {
+		plan.Article = buildXPlannedArticle(post.Article)
+		if t := strings.TrimSpace(post.Article.Title); t != "" {
+			plan.Title = t
+		}
+		if plain := strings.TrimSpace(post.Article.FullPlainText()); plain != "" {
+			plan.Desc = plain
+		}
+		if len(plan.CoverURLs) == 0 && plan.Article != nil && len(plan.Article.CoverURLs) > 0 {
+			plan.CoverURLs = append([]string(nil), plan.Article.CoverURLs...)
+		}
+	}
+
 	if len(plan.Pages) > 0 {
 		var assetIDs []string
 		for _, pg := range plan.Pages {
@@ -399,8 +435,79 @@ func (b *Backend) buildXWorkPlanFromPost(post *x.Post) (download.WorkDownloadPla
 			plan.AssetIDs = assetIDs
 		}
 	}
+	if len(plan.AssetIDs) == 0 && plan.Article != nil {
+		var assetIDs []string
+		for _, blk := range plan.Article.Blocks {
+			if tok := library.SanitizeMediaToken(blk.MediaID); tok != "" {
+				assetIDs = append(assetIDs, tok)
+			}
+		}
+		if len(assetIDs) > 0 {
+			plan.AssetIDs = assetIDs
+		}
+	}
 
 	return plan, nil
+}
+
+func collectXArticleImageURLs(img *x.ArticleImage) []string {
+	if img == nil {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]bool, 3)
+	for _, raw := range []string{img.ImageURL, img.FallbackURL, img.PublicPreviewURL} {
+		s := strings.TrimSpace(raw)
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func buildXPlannedArticle(art *x.Article) *download.PlannedArticle {
+	if art == nil || !art.HasFullContent() {
+		return nil
+	}
+	planned := &download.PlannedArticle{
+		Title:     strings.TrimSpace(art.Title),
+		PlainText: strings.TrimSpace(art.FullPlainText()),
+	}
+	if art.Cover != nil {
+		planned.CoverURLs = collectXArticleImageURLs(art.Cover)
+		planned.CoverWidth = art.Cover.Width
+		planned.CoverHeight = art.Cover.Height
+	}
+	if len(art.Blocks) > 0 {
+		planned.Blocks = make([]download.PlannedArticleBlock, 0, len(art.Blocks))
+		for _, blk := range art.Blocks {
+			pb := download.PlannedArticleBlock{
+				Type:    blk.Type,
+				Text:    strings.TrimSpace(blk.Text),
+				TweetID: strings.TrimSpace(blk.TweetID),
+			}
+			if len(blk.Links) > 0 {
+				pb.Links = make([]site.TextLink, 0, len(blk.Links))
+				for _, l := range blk.Links {
+					if u := x.SafePublicWebURL(l.URL); u != "" {
+						pb.Links = append(pb.Links, site.TextLink{
+							Label: strings.TrimSpace(l.Label),
+							URL:   u,
+						})
+					}
+				}
+			}
+			if blk.Image != nil {
+				pb.ImageURLs = collectXArticleImageURLs(blk.Image)
+				pb.Width = blk.Image.Width
+				pb.Height = blk.Image.Height
+				pb.MediaID = library.SanitizeMediaToken(firstNonEmpty(blk.Image.MediaID, blk.Image.MediaKey))
+			}
+			planned.Blocks = append(planned.Blocks, pb)
+		}
+	}
+	return planned
 }
 
 func isXQuoteUpdateSnapshot(raw string) bool {

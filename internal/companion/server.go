@@ -663,6 +663,7 @@ func (s *Server) buildFeedItem(fe library.FeedEntry, subByAccount map[string]sub
 			fi.Origin = mapOrigin(meta.Origin)
 			fi.InReplyTo = mapReplyTarget(meta.InReplyTo)
 			fi.Card = mapRichCard(meta.Card)
+			fi.Article = mapArticle(meta.Article)
 			fi.Thread = mapThread(meta.Thread)
 			fi.Parts = mapVideoParts(meta.Parts)
 			fi.NotePages = mapNotePages(meta.NotePages)
@@ -1108,6 +1109,7 @@ func (s *Server) handleLibraryItem(w http.ResponseWriter, key string) {
 		Origin:         mapOrigin(meta.Origin),
 		InReplyTo:      mapReplyTarget(meta.InReplyTo),
 		Card:           mapRichCard(meta.Card),
+		Article:        mapArticle(meta.Article),
 		Thread:         mapThread(meta.Thread),
 		Links:          mapLinks(meta.Links),
 		IsForward:      meta.IsForwardContent(),
@@ -2046,6 +2048,9 @@ func findCoverRelPath(meta library.ItemMetadata) string {
 			return m.Path
 		}
 	}
+	if meta.Article != nil && meta.Article.CoverRel != "" {
+		return meta.Article.CoverRel
+	}
 	for _, p := range meta.NotePages {
 		if p.Image != "" {
 			return p.Image
@@ -2325,6 +2330,30 @@ func mapRichCard(in *library.ItemRichCard) *companionapi.ItemRichCardDTO {
 		Desc:  in.Desc,
 		URL:   in.URL,
 	}
+}
+
+func mapArticle(in *library.ItemArticle) *companionapi.ItemArticleDTO {
+	if in == nil {
+		return nil
+	}
+	out := &companionapi.ItemArticleDTO{
+		Title:     in.Title,
+		CoverRel:  in.CoverRel,
+		PlainText: in.PlainText,
+	}
+	if len(in.Blocks) > 0 {
+		out.Blocks = make([]companionapi.ItemArticleBlockDTO, 0, len(in.Blocks))
+		for _, blk := range in.Blocks {
+			out.Blocks = append(out.Blocks, companionapi.ItemArticleBlockDTO{
+				Type:     blk.Type,
+				Text:     blk.Text,
+				Links:    mapLinks(blk.Links),
+				MediaRel: blk.MediaRel,
+				TweetID:  blk.TweetID,
+			})
+		}
+	}
+	return out
 }
 
 func mapLinks(in []library.ItemLink) []companionapi.TextLink {

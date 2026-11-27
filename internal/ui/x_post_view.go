@@ -102,6 +102,9 @@ func xPostSuppressCacheButton(post *service.XPostDTO) bool {
 	if post == nil {
 		return true
 	}
+	if post.Article != nil && post.Article.HasFullContent() {
+		return false
+	}
 	if xMediaHasDownloadable(post.Media) {
 		return false
 	}
@@ -454,6 +457,8 @@ func (a *App) xPostToPostCard(p service.XPostDTO, pageUser *service.XUserDTO) Po
 		typeLabel = "转发帖子"
 	} else if p.IsQuote || p.Quoted != nil {
 		typeLabel = "引用帖子"
+	} else if p.Article != nil && p.Article.HasFullContent() {
+		typeLabel = "文章"
 	}
 
 	var notePages []douyinNoteRenderPage
@@ -513,6 +518,13 @@ func (a *App) xPostToPostCard(p service.XPostDTO, pageUser *service.XUserDTO) Po
 	}
 
 	cardXCard := p.Card
+	var cardXArticle *service.XArticleDTO
+	if p.Article != nil && p.Article.HasFullContent() {
+		cardXArticle = p.Article
+		if cardXCard != nil && cardXCard.Kind == "article" {
+			cardXCard = nil
+		}
+	}
 	cardXPoll := p.Poll
 	cardHLSNotice := xPostHLSOnlyNotice(&p)
 	threadCount := len(p.Thread)
@@ -560,6 +572,7 @@ func (a *App) xPostToPostCard(p service.XPostDTO, pageUser *service.XUserDTO) Po
 		NotePages:         notePages,
 		Video:             videoCard,
 		XCard:             cardXCard,
+		XArticle:          cardXArticle,
 		XPoll:             cardXPoll,
 		XStatusID:         p.ID,
 		XCacheVia:         via,
@@ -1298,7 +1311,9 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 			}
 			if !suppressCache && post.ID != "" {
 				cacheLabel := "缓存帖子"
-				if len(post.Media) == 1 && (post.Media[0].Kind == "video" || post.Media[0].Kind == "gif") && !post.Media[0].HLSOnly {
+				if post.Article != nil && post.Article.HasFullContent() {
+					cacheLabel = "缓存文章"
+				} else if len(post.Media) == 1 && (post.Media[0].Kind == "video" || post.Media[0].Kind == "gif") && !post.Media[0].HLSOnly {
 					cacheLabel = "缓存视频"
 					if post.Media[0].GIF || post.Media[0].Kind == "gif" {
 						cacheLabel = "缓存动图"
@@ -1423,14 +1438,20 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 			}
 		}
 
-		// Full Body Text (note_tweet rendered completely)
-		if strings.TrimSpace(post.Text) != "" {
-			a.renderRichText(c, post.Text, xPostLinksUI(post, cachedItem, false), richTextOptions{
-				Label:      "X帖子正文",
-				FontSize:   15,
-				LineHeight: LineHeightBody,
-				TextColor:  ColorTextMain,
-			})
+		// Full Body Text (note_tweet rendered completely) or Full X Article (DEC-093)
+		hasFullArticle := post.Article != nil && post.Article.HasFullContent()
+		if trimmedText := strings.TrimSpace(post.Text); trimmedText != "" {
+			if !hasFullArticle || (trimmedText != strings.TrimSpace(post.Article.Title) && trimmedText != strings.TrimSpace(post.Article.PreviewText) && trimmedText != strings.TrimSpace(post.Article.PlainText)) {
+				a.renderRichText(c, post.Text, xPostLinksUI(post, cachedItem, false), richTextOptions{
+					Label:      "X帖子正文",
+					FontSize:   15,
+					LineHeight: LineHeightBody,
+					TextColor:  ColorTextMain,
+				})
+			}
+		}
+		if hasFullArticle {
+			a.renderXOnlineArticle(c, post, itemKey, cachedItem)
 		}
 
 		// Up to 4 Mixed Media Items (original photos, GIF looping muted MP4, video cover & duration, HLS-only notice)
@@ -1449,11 +1470,11 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 			a.renderXHLSOnlyNotice(c, hlsNotice, targetURL, false)
 		}
 
-		// Poll / Rich Cards (link card, X Articles, live & Spaces — degraded summary + open in browser, NO video cache)
+		// Poll / Rich Cards (link card, legacy X Articles stub, live & Spaces)
 		if post.Poll != nil {
 			a.renderXPollCard(c, post.Poll, targetURL, false)
 		}
-		if post.Card != nil {
+		if post.Card != nil && !(hasFullArticle && post.Card.Kind == "article") {
 			a.renderXRichCard(c, post.Card, targetURL, false)
 		}
 
@@ -1961,8 +1982,8 @@ func (a *App) renderXOfflineDetail(c *ui.Context, item library.ItemMetadata) {
 			}
 		}
 
-		// Offline Degraded Rich Card
-		if cardDTO := libraryRichCardToXDTO(item.Card); cardDTO != nil {
+		// Offline Degraded Rich Card (skip redundant legacy article card when full Article is cached)
+		if cardDTO := libraryRichCardToXDTO(item.Card); cardDTO != nil && !(item.Article != nil && cardDTO.Kind == "article") {
 			a.renderXRichCard(c, cardDTO, "", true)
 		}
 
@@ -2113,32 +2134,42 @@ func (a *App) renderXOfflineDetail(c *ui.Context, item library.ItemMetadata) {
 				a.renderLibraryItemMoreMenu(c, item, 32)
 			})
 
-			// 2. Concise reply context hint & Full Body Text
+			// 2. Concise reply context hint & Full Body Text (or rich X Article, DEC-093)
 			if hint := formatReplyContextHint(item.InReplyTo, nil); hint != "" {
 				renderReplyContextHintLine(c, hint, "X离线回复提示", 12)
 			}
-			if body := strings.TrimSpace(firstNonEmptyStrUI(item.Text, item.Desc, item.Title)); body != "" {
-				a.renderRichText(c, body, service.MapItemLinksToDTO(item.Links), richTextOptions{
-					Label:      "X离线正文",
-					FontSize:   15,
-					LineHeight: LineHeightBody,
-					TextColor:  ColorTextMain,
-				})
-			}
+			if item.Article != nil {
+				a.renderXOfflineArticle(c, itemCopy)
+				if len(outerPages) > 0 {
+					a.renderNotePagesGrid(c, item.ItemKey, "x", outerPages, true)
+				} else if hasOuterVid && !videoBelongsToOrigin {
+					isGIF := isGIFLibrarySegment(itemCopy, outerVidRel)
+					a.renderXOfflineVideoCard(c, itemCopy, outerRelCover, outerDur, outerVidRel, isGIF)
+				}
+			} else {
+				if body := strings.TrimSpace(firstNonEmptyStrUI(item.Text, item.Desc, item.Title)); body != "" {
+					a.renderRichText(c, body, service.MapItemLinksToDTO(item.Links), richTextOptions{
+						Label:      "X离线正文",
+						FontSize:   15,
+						LineHeight: LineHeightBody,
+						TextColor:  ColorTextMain,
+					})
+				}
 
-			// 3. Cached Outer Media
-			if len(outerPages) > 0 {
-				a.renderNotePagesGrid(c, item.ItemKey, "x", outerPages, true)
-			} else if len(outerImages) > 0 {
-				a.renderPostImageGrid(c, PostCardData{
-					ItemKey: item.ItemKey,
-					Site:    "x",
-					Offline: true,
-					Images:  outerImages,
-				})
-			} else if hasOuterVid && !videoBelongsToOrigin {
-				isGIF := isGIFLibrarySegment(itemCopy, outerVidRel)
-				a.renderXOfflineVideoCard(c, itemCopy, outerRelCover, outerDur, outerVidRel, isGIF)
+				// 3. Cached Outer Media
+				if len(outerPages) > 0 {
+					a.renderNotePagesGrid(c, item.ItemKey, "x", outerPages, true)
+				} else if len(outerImages) > 0 {
+					a.renderPostImageGrid(c, PostCardData{
+						ItemKey: item.ItemKey,
+						Site:    "x",
+						Offline: true,
+						Images:  outerImages,
+					})
+				} else if hasOuterVid && !videoBelongsToOrigin {
+					isGIF := isGIFLibrarySegment(itemCopy, outerVidRel)
+					a.renderXOfflineVideoCard(c, itemCopy, outerRelCover, outerDur, outerVidRel, isGIF)
+				}
 			}
 
 			// 4-6. Missing notices, degraded rich card, origin box

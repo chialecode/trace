@@ -14,16 +14,22 @@ import (
 )
 
 var allowedGraphQLOperations = map[string]bool{
-	OpUserByScreenName:     true,
-	OpUserByRestId:         true,
-	OpUserTweets:           true,
-	OpUserTweetsAndReplies: true,
-	OpUserMedia:            true,
-	OpUserHighlightsTweets: true,
-	OpTweetDetail:          true,
-	OpFollowing:            true,
-	OpBookmarks:            true,
-	OpLikes:                true,
+	OpUserByScreenName:         true,
+	OpUserByRestId:             true,
+	OpUserTweets:               true,
+	OpUserTweetsAndReplies:     true,
+	OpUserMedia:                true,
+	OpUserHighlightsTweets:     true,
+	OpUserArticlesTweets:       true,
+	OpTweetDetail:              true,
+	OpFollowing:                true,
+	OpBookmarks:                true,
+	OpLikes:                    true,
+	OpCombinedLists:            true,
+	OpListOwnerships:           true,
+	OpListByRestId:             true,
+	OpListLatestTweetsTimeline: true,
+	OpListMembers:              true,
 }
 
 // IsAllowedOperation reports whether opName is one of the read-only GraphQL operations

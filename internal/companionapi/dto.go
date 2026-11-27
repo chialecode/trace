@@ -82,6 +82,7 @@ type FeedItem struct {
 	Origin           *ItemOriginDTO      `json:"origin,omitempty"`
 	InReplyTo        *ItemReplyTargetDTO `json:"inReplyTo,omitempty"`
 	Card             *ItemRichCardDTO    `json:"card,omitempty"`
+	Article          *ItemArticleDTO     `json:"article,omitempty"`
 	Thread           []ThreadPartDTO     `json:"thread,omitempty"`
 	IsForward        bool                `json:"isForward,omitempty"`
 	TotalBytes       int64               `json:"totalBytes,omitempty"`
@@ -216,6 +217,7 @@ type LibraryItemDetail struct {
 	Origin           *ItemOriginDTO      `json:"origin,omitempty"`
 	InReplyTo        *ItemReplyTargetDTO `json:"inReplyTo,omitempty"`
 	Card             *ItemRichCardDTO    `json:"card,omitempty"`
+	Article          *ItemArticleDTO     `json:"article,omitempty"`
 	Thread           []ThreadPartDTO     `json:"thread,omitempty"`
 	Links            []TextLink          `json:"links,omitempty"`
 	IsForward        bool                `json:"isForward,omitempty"`
@@ -333,6 +335,23 @@ type ItemRichCardDTO struct {
 	Title string `json:"title,omitempty"`
 	Desc  string `json:"desc,omitempty"`
 	URL   string `json:"url,omitempty"`
+}
+
+// ItemArticleBlockDTO describes one ordered block of a cached long-form article (DEC-093).
+type ItemArticleBlockDTO struct {
+	Type     string     `json:"type"`
+	Text     string     `json:"text,omitempty"`
+	Links    []TextLink `json:"links,omitempty"`
+	MediaRel string     `json:"mediaRel,omitempty"`
+	TweetID  string     `json:"tweetId,omitempty"`
+}
+
+// ItemArticleDTO describes a cached long-form article with local relative media paths.
+type ItemArticleDTO struct {
+	Title     string                `json:"title,omitempty"`
+	CoverRel  string                `json:"coverRel,omitempty"`
+	PlainText string                `json:"plainText,omitempty"`
+	Blocks    []ItemArticleBlockDTO `json:"blocks,omitempty"`
 }
 
 // ItemReplyTargetDTO describes sanitized reply target identifiers (DEC-091).

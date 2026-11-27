@@ -713,7 +713,7 @@ func TestXResolveOpenLinkAndMediaPreview(t *testing.T) {
 		"https://x.com/i/broadcasts/1RDGlSynth01",
 		"https://x.com/i/spaces/1nAKEsynth02",
 		"https://x.com/i/articles/19000000001",
-		"https://x.com/i/lists/18000000001",
+		"https://x.com/synth_creator/lists/legacy-slug",
 		"https://x.com/i/communities/17000000001",
 		"https://x.com/search?q=golang",
 		"https://x.com/home",
