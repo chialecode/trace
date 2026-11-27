@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
 )
 
@@ -85,6 +86,9 @@ func TestWeiboOptionalNoWMCompanion418DoesNotTripBackoffOrFailPrimary(t *testing
 	}
 	if len(item.NotePages) != 1 || item.NotePages[0].Image == "" || item.NotePages[0].NoWatermark != "" {
 		t.Fatalf("expected primary saved and companion skipped, got NotePages=%+v", item.NotePages)
+	}
+	if item.CacheStandardVersion >= library.WeiboCacheStandardVersion {
+		t.Fatalf("item hitting optional /oslarge/ 418 must NOT be stamped v3 (CacheStandardVersion=%d)", item.CacheStandardVersion)
 	}
 }
 
@@ -218,4 +222,174 @@ func TestDownloadManualProbeBypassAndBatchCap(t *testing.T) {
 	if doneOther.Status != "completed" {
 		t.Fatalf("expected other task %s completed after backoff cleared, got %+v", otherTarget, doneOther)
 	}
+}
+
+func TestManualTasksDuringBackoffRespectSingleProbeCapAndNotifyFailure(t *testing.T) {
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
+	var cdnMode atomic.Value
+	cdnMode.Store("hold")
+	startedCh := make(chan struct{}, 8)
+	releaseCh := make(chan struct{})
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := inFlight.Add(1)
+		for {
+			prev := maxInFlight.Load()
+			if cur <= prev || maxInFlight.CompareAndSwap(prev, cur) {
+				break
+			}
+		}
+		defer inFlight.Add(-1)
+		startedCh <- struct{}{}
+		if cdnMode.Load() == "hold" {
+			<-releaseCh
+		}
+		if cdnMode.Load() == "418" {
+			w.WriteHeader(http.StatusTeapot)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(minimalDec089PNGBytes())
+	})
+
+	mgr, _, srv, _, _ := setupDouyinDownloadTestEnv(t, handler, 2)
+	var wbBackoff atomic.Bool
+	wbBackoff.Store(true)
+	var failPlan atomic.Bool
+
+	wbPlanner := newFakeWeiboSitePlanner()
+	makePlan := func(id string) WorkDownloadPlan {
+		return WorkDownloadPlan{
+			Site:       site.Weibo,
+			ItemKey:    "weibo:dynamic:" + id,
+			TargetID:   id,
+			Kind:       "dynamic",
+			AuthorUID:  "1000000009",
+			AuthorName: "手动探测作者",
+			Title:      "手动探测 " + id,
+			PubTs:      1763700500,
+			Transport:  site.WeiboMediaTransport("TRACE-Test-UA", true),
+			Pages:      []PlannedNotePage{{Index: 1, Kind: "image", ImageURLs: []string{srv.URL + "/large/" + id + ".png"}}},
+		}
+	}
+	for _, id := range []string{"5000000000000951", "5000000000000952", "5000000000000953"} {
+		targetID := id
+		wbPlanner.setPlan(targetID, func(_ int) (site.DownloadPlan, error) {
+			if failPlan.Load() {
+				return site.DownloadPlan{}, &site.Error{Site: site.Weibo, Kind: site.ErrKindRiskControl, Message: "still 418"}
+			}
+			return site.DownloadPlan{
+				Site:       site.Weibo,
+				ItemKey:    "weibo:dynamic:" + targetID,
+				TargetID:   targetID,
+				Kind:       "image_note",
+				AuthorUID:  "1000000009",
+				AuthorName: "手动探测作者",
+				Title:      "手动探测 " + targetID,
+				PubTs:      1763700500,
+				Media:      site.WeiboMediaTransport("TRACE-Test-UA", true),
+				Images:     []site.MediaImageAsset{{Index: 1, MediaRole: "image", ImageURLs: []string{srv.URL + "/large/" + targetID + ".png"}}},
+			}, nil
+		})
+	}
+	mgr.RegisterSitePlanner(wbPlanner)
+	mgr.SetSiteBackoffChecker(func(sid site.ID) (bool, time.Time) {
+		if sid == site.Weibo && wbBackoff.Load() {
+			return true, time.Now().UTC().Add(15 * time.Minute)
+		}
+		return false, time.Time{}
+	})
+
+	var probeMu sync.Mutex
+	var probeResults []error
+	mgr.SetManualProbeResultHandler(func(sid site.ID, probeErr error) {
+		if sid != site.Weibo {
+			return
+		}
+		probeMu.Lock()
+		probeResults = append(probeResults, probeErr)
+		probeMu.Unlock()
+	})
+
+	// 1. Enqueue TWO manual tasks with prebuilt plans while Weibo is in backoff (MaxConcurrentTasks=2):
+	// ONLY 1 manual probe may execute concurrently!
+	p1 := makePlan("5000000000000951")
+	p2 := makePlan("5000000000000952")
+	m1, err := mgr.EnqueueWeiboWork(context.Background(), WeiboWorkEnqueueRequest{TargetID: "5000000000000951", Source: "manual", Plan: &p1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := mgr.EnqueueWeiboWork(context.Background(), WeiboWorkEnqueueRequest{TargetID: "5000000000000952", Source: "manual", Plan: &p2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-startedCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for first manual probe to start")
+	}
+	time.Sleep(150 * time.Millisecond)
+	if maxInFlight.Load() != 1 {
+		t.Fatalf("expected at most 1 concurrent manual probe during backoff, maxInFlight=%d", maxInFlight.Load())
+	}
+
+	// Release first probe with 418 -> probe fails with probe-specific message and pauses peer m2.
+	cdnMode.Store("418")
+	close(releaseCh)
+	t1Done := waitForTaskTerminal(t, mgr, m1.TaskID, 5*time.Second)
+	t2Done := waitForTaskTerminal(t, mgr, m2.TaskID, 5*time.Second)
+	if t1Done.Status != "paused" || !strings.Contains(t1Done.ErrorMessage, "探测仍处于风控或限流中") {
+		t.Fatalf("expected m1 paused with probe message, got %+v", t1Done)
+	}
+	if t2Done.Status != "paused" {
+		t.Fatalf("expected peer m2 paused, got %+v", t2Done)
+	}
+
+	// 2. Batch RetryActionable on TWO paused manual tasks during backoff:
+	// must cap to strictly 1 probe (even though both have Source=="manual" and MaxConcurrentTasks==2)!
+	failPlan.Store(true)
+	callsBefore := wbPlanner.callCount("5000000000000951") + wbPlanner.callCount("5000000000000952")
+	probeMu.Lock()
+	probeResults = nil
+	probeMu.Unlock()
+	if _, err := mgr.RetryActionable(map[string]bool{"weibo": true}); err != nil {
+		t.Fatalf("RetryActionable(manual): %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		probeMu.Lock()
+		n := len(probeResults)
+		probeMu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if got := wbPlanner.callCount("5000000000000951") + wbPlanner.callCount("5000000000000952") - callsBefore; got != 1 {
+		t.Fatalf("RetryActionable on 2 manual tasks during backoff ran %d probes, want strictly 1", got)
+	}
+
+	// 3. Fresh non-backed-off manual task hitting 418: keeps regular risk-control message AND
+	// symmetrically invokes onManualProbeResult(Weibo, err).
+	wbBackoff.Store(false)
+	probeMu.Lock()
+	probeResults = nil
+	probeMu.Unlock()
+	p3 := makePlan("5000000000000953")
+	m3, err := mgr.EnqueueWeiboWork(context.Background(), WeiboWorkEnqueueRequest{TargetID: "5000000000000953", Source: "manual", Plan: &p3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t3Done := waitForTaskTerminal(t, mgr, m3.TaskID, 5*time.Second)
+	if t3Done.Status != "paused" || !strings.HasPrefix(t3Done.ErrorMessage, "已暂停（风控）：") {
+		t.Fatalf("fresh non-backed-off manual task should keep regular risk message, got %+v", t3Done)
+	}
+	probeMu.Lock()
+	if len(probeResults) != 1 || !site.IsKind(probeResults[0], site.ErrKindRiskControl) {
+		probeMu.Unlock()
+		t.Fatalf("fresh manual risk failure must notify onManualProbeResult symmetrically, got %v", probeResults)
+	}
+	probeMu.Unlock()
 }

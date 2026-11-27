@@ -643,7 +643,9 @@ func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]
 	if source == "" {
 		source = "manual"
 	}
-	if (source == "auto" || source == "queue") && site.AutomaticRequestSource(ctx) == "" {
+	if source == "manual" {
+		ctx = site.WithManualProbe(ctx)
+	} else if (source == "auto" || source == "queue") && !site.IsManualProbe(ctx) && site.AutomaticRequestSource(ctx) == "" {
 		ctx = site.WithAutomaticRequests(ctx, "download")
 	}
 	mode := normalizeConflictResolution(ConflictResolutionFromContext(ctx))
@@ -734,6 +736,7 @@ func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]
 		if forceOverwrite {
 			m.storeTaskForceOverwrite(t.TaskID, true)
 		}
+		m.markManualProbeIfBackedOff(ctx, t.TaskID, t.Site)
 		m.notifyWake()
 		return []Task{t}, nil
 	}
@@ -771,6 +774,9 @@ func (m *Manager) EnqueueVideo(ctx context.Context, req VideoEnqueueRequest) ([]
 		}
 		tasks = append(tasks, t)
 	}
+	if len(tasks) > 0 {
+		m.markManualProbeIfBackedOff(ctx, tasks[0].TaskID, tasks[0].Site)
+	}
 	m.notifyWake()
 	return tasks, nil
 }
@@ -784,7 +790,9 @@ func (m *Manager) EnqueueDynamic(ctx context.Context, req DynamicEnqueueRequest)
 	if source == "" {
 		source = "manual"
 	}
-	if (source == "auto" || source == "queue") && site.AutomaticRequestSource(ctx) == "" {
+	if source == "manual" {
+		ctx = site.WithManualProbe(ctx)
+	} else if (source == "auto" || source == "queue") && !site.IsManualProbe(ctx) && site.AutomaticRequestSource(ctx) == "" {
 		ctx = site.WithAutomaticRequests(ctx, "download")
 	}
 	mode := normalizeConflictResolution(ConflictResolutionFromContext(ctx))
@@ -842,6 +850,7 @@ func (m *Manager) EnqueueDynamic(ctx context.Context, req DynamicEnqueueRequest)
 	if forceOverwrite {
 		m.storeTaskForceOverwrite(t.TaskID, true)
 	}
+	m.markManualProbeIfBackedOff(ctx, t.TaskID, t.Site)
 	m.notifyWake()
 	return t, nil
 }
@@ -1279,9 +1288,13 @@ func (m *Manager) RetryActionable(allowedSites map[string]bool) (BatchRetryResul
 			delete(m.initialPlans, cand.taskID)
 			m.taskFaults.Delete(cand.taskID)
 			// Batch retry limits backed-off sites to at most 1 single-shot manual probe task
-			// so retrying many paused tasks never bursts concurrent probes (DEC-089).
+			// (accounting for any already active or queued probe on that site) so retrying
+			// many paused/failed tasks never bursts concurrent probes (DEC-089).
 			if m.siteBackoffFn != nil {
 				sid := normalizeDownloadSite(cand.site)
+				if _, checked := probedBackedOffSite[sid]; !checked {
+					probedBackedOffSite[sid] = m.siteHasActiveOrQueuedProbeLocked(sid)
+				}
 				if !probedBackedOffSite[sid] {
 					if inBackoff, until := m.siteBackoffFn(sid); inBackoff && until.After(nowCheck) {
 						if m.manualProbeTasks == nil {
@@ -1537,7 +1550,7 @@ func (m *Manager) notifyManualProbeResult(siteID site.ID, err error) {
 }
 
 func (m *Manager) runTask(ctx context.Context, t Task, isManualProbe bool) {
-	if isManualProbe {
+	if isManualProbe || t.Source == "manual" {
 		ctx = site.WithManualProbe(ctx)
 	} else if t.Source == "auto" || t.Source == "queue" {
 		ctx = site.WithAutomaticRequests(ctx, "download")
@@ -1644,6 +1657,9 @@ func (m *Manager) runTask(ctx context.Context, t Task, isManualProbe bool) {
 				m.notifyManualProbeResult(normalizeDownloadSite(t.Site), err)
 			} else {
 				t.ErrorMessage = "已暂停（风控）：" + err.Error()
+				if t.Source == "manual" {
+					m.notifyManualProbeResult(normalizeDownloadSite(t.Site), err)
+				}
 			}
 			m.persistTaskProgress(t)
 			msg := fmt.Sprintf("检测到站点风控或频率限制 (%s)，已自动暂停同站点排队任务: %s", errKind, err.Error())
@@ -1705,6 +1721,9 @@ func (m *Manager) pauseSitePeers(siteID, triggeringTaskID, pauseReason, errKind,
 		`site = ? AND (status = 'queued' OR (status = 'running' AND task_id != ?))`,
 		siteID, triggeringTaskID,
 	)
+	for _, id := range ids {
+		delete(m.manualProbeTasks, id)
+	}
 	m.mu.Unlock()
 	if err == nil {
 		m.emitBatchTasks("pause_site", ids)

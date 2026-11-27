@@ -82,7 +82,9 @@ func (m *Manager) EnqueueWeiboWork(ctx context.Context, req WeiboWorkEnqueueRequ
 	if source == "" {
 		source = "manual"
 	}
-	if (source == "auto" || source == "queue") && site.AutomaticRequestSource(ctx) == "" {
+	if source == "manual" {
+		ctx = site.WithManualProbe(ctx)
+	} else if (source == "auto" || source == "queue") && !site.IsManualProbe(ctx) && site.AutomaticRequestSource(ctx) == "" {
 		ctx = site.WithAutomaticRequests(ctx, "download")
 	}
 	var reqPlanMode string
@@ -206,6 +208,7 @@ func (m *Manager) EnqueueWeiboWork(ctx context.Context, req WeiboWorkEnqueueRequ
 	if forceOverwrite {
 		m.storeTaskForceOverwrite(t.TaskID, true)
 	}
+	m.markManualProbeIfBackedOff(ctx, t.TaskID, t.Site)
 
 	m.notifyWake()
 	return t, nil
@@ -1004,6 +1007,7 @@ func (m *Manager) executeWeiboPostTask(
 		}
 	}
 
+	anyNoWMDeferred := false
 	for i, page := range plan.Pages {
 		pageIdx := page.Index
 		if pageIdx <= 0 {
@@ -1125,9 +1129,12 @@ func (m *Manager) executeWeiboPostTask(
 			imgMedia.FromOrigin = page.FromOrigin
 			mediaFiles = append(mediaFiles, *imgMedia)
 			var noWMPath string
-			nowmMedia, nowmErr := m.cacheWeiboWatermarkFreeCompanion(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, hasProtectedLocal, isConflict, canReuseLocal, reusableLP, pageIdx, page, imgMedia, plan.Transport)
+			nowmMedia, nowmDeferred, nowmErr := m.cacheWeiboWatermarkFreeCompanion(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, hasProtectedLocal, isConflict, canReuseLocal, reusableLP, pageIdx, page, imgMedia, plan.Transport)
 			if nowmErr != nil {
 				return nowmErr
+			}
+			if nowmDeferred {
+				anyNoWMDeferred = true
 			}
 			if nowmMedia != nil {
 				nowmMedia.FromOrigin = page.FromOrigin
@@ -1211,9 +1218,12 @@ func (m *Manager) executeWeiboPostTask(
 			}
 			if imgMedia != nil {
 				rec.Image = imgMedia.Path
-				nowmMedia, nowmErr := m.cacheWeiboWatermarkFreeCompanion(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, hasProtectedLocal, isConflict, canReuseLocal, reusableLP, pageIdx, page, imgMedia, plan.Transport)
+				nowmMedia, nowmDeferred, nowmErr := m.cacheWeiboWatermarkFreeCompanion(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, hasProtectedLocal, isConflict, canReuseLocal, reusableLP, pageIdx, page, imgMedia, plan.Transport)
 				if nowmErr != nil {
 					return nowmErr
+				}
+				if nowmDeferred {
+					anyNoWMDeferred = true
 				}
 				if nowmMedia != nil {
 					nowmMedia.FromOrigin = page.FromOrigin
@@ -1431,7 +1441,7 @@ func (m *Manager) executeWeiboPostTask(
 		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
 	}
 	stampCacheStandardAndAssets(&meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
-	if meta.Status == "complete" && len(meta.Missing) == 0 && weiboPlanRanNoWMStandard(plan) {
+	if meta.Status == "complete" && len(meta.Missing) == 0 && weiboPlanRanNoWMStandard(plan) && !anyNoWMDeferred {
 		meta.CacheStandardVersion = library.WeiboCacheStandardVersion
 	}
 
@@ -1793,9 +1803,9 @@ func (m *Manager) cacheWeiboWatermarkFreeCompanion(
 	page PlannedNotePage,
 	primaryMedia *library.MediaFile,
 	transport site.MediaTransportSpec,
-) (*library.MediaFile, error) {
+) (*library.MediaFile, bool, error) {
 	if primaryMedia == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	nowmStem := fmt.Sprintf("images/%02d_nowm", pageIdx)
 	findPrevNoWMRel := func() string {
@@ -1850,36 +1860,36 @@ func (m *Manager) cacheWeiboWatermarkFreeCompanion(
 	forceOverwrite := effectiveForceOverwrite(ctx, workTask.Source, workTask.ForceOverwrite)
 	if !forceOverwrite && hasProtectedLocal && !isConflict && canReuseLocal {
 		if reused := tryCopyPrevNoWM(); reused != nil {
-			return reused, nil
+			return reused, false, nil
 		}
 	} else if !forceOverwrite && !inSwapStage {
 		if kept, ok := m.findExistingValidImageSlot(workTask, workDir, previous, inPlaceExists, "image_nowm", nowmStem, page.WatermarkFreeURL, 0, 0, false); ok {
 			if primaryMedia.SHA256 == "" || !strings.EqualFold(kept.SHA256, primaryMedia.SHA256) {
 				m.setFileProgress(workTask, "image_nowm", kept.Path, "completed", kept.Bytes, kept.Bytes, 0)
 				kept.FromOrigin = page.FromOrigin
-				return kept, nil
+				return kept, false, nil
 			}
 		}
 	}
 
 	cand := strings.TrimSpace(page.WatermarkFreeURL)
 	if cand == "" {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	tempRel := nowmStem + imgSuffix
 	tempFull, err := library.ResolveItemPath(workDir, tempRel)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := m.claimTaskFile(workTask, workDir, tempRel, tempFull); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := os.MkdirAll(filepath.Dir(tempFull), 0o700); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	_ = os.Remove(tempFull)
 	_ = os.Remove(tempFull + ".part")
@@ -1890,48 +1900,51 @@ func (m *Manager) cacheWeiboWatermarkFreeCompanion(
 		_ = os.Remove(tempFull + ".part")
 		m.removeTempTaskProgress(workTask, tempRel)
 	}
-	fallbackPrevOrSkip := func() (*library.MediaFile, error) {
+	fallbackPrevOrSkip := func(deferred bool) (*library.MediaFile, bool, error) {
 		if !forceOverwrite && hasProtectedLocal && canReuseLocal {
 			if reused := tryCopyPrevNoWM(); reused != nil {
-				return reused, nil
+				return reused, false, nil
 			}
 		}
-		return nil, nil
+		return nil, deferred, nil
 	}
 
 	spec := m.transportRangeSpec(transport, "image_nowm", false)
 	n, sha, ct, dlErr := m.downloadRange(ctx, spec, []string{cand}, tempFull, workTask)
 	if dlErr != nil {
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, false, ctx.Err()
 		}
 		discardTemp()
 		if isStorageError(dlErr) || site.KindOf(dlErr) == site.ErrKindAuthRequired {
-			return nil, dlErr
+			return nil, false, dlErr
 		}
 		// Optional /oslarge/ companion CDN errors (including 418/429) skip only the
-		// companion without failing the official primary image or tripping site backoff (DEC-089).
-		return fallbackPrevOrSkip()
+		// companion without failing the official primary image or tripping site backoff,
+		// while marking deferred=true on retryable 418/429/network errors so the item
+		// stays eligible for future historical backfill rather than being stamped v3 (DEC-089).
+		deferred := isSiteStopError(dlErr) || site.KindOf(dlErr) == site.ErrKindNetwork
+		return fallbackPrevOrSkip(deferred)
 	}
 
 	if site.LooksLikeExpiredPlaceholderImageFile(tempFull, cand, 0, 0, false) {
 		discardTemp()
-		return fallbackPrevOrSkip()
+		return fallbackPrevOrSkip(false)
 	}
 	ext, sErr := sniffImageExtension(tempFull, ct)
 	if sErr != nil {
 		discardTemp()
-		return fallbackPrevOrSkip()
+		return fallbackPrevOrSkip(false)
 	}
 	w, h, vErr := validateWeiboOSLargeImageFileWithSize(tempFull, ext)
 	if vErr != nil {
 		discardTemp()
-		return fallbackPrevOrSkip()
+		return fallbackPrevOrSkip(false)
 	}
 	// Deduplicate when /oslarge/ bytes are identical to the official original primary image.
 	if primaryMedia.SHA256 != "" && strings.EqualFold(sha, primaryMedia.SHA256) {
 		discardTemp()
-		return nil, nil
+		return nil, false, nil
 	}
 
 	finalRel := nowmStem + ext
@@ -1944,22 +1957,22 @@ func (m *Manager) cacheWeiboWatermarkFreeCompanion(
 		if ctx.Err() == nil {
 			discardTemp()
 		}
-		return nil, err
+		return nil, false, err
 	}
 	if err := m.claimTaskFile(workTask, workDir, writeFinalRel, finalFull); err != nil {
 		if ctx.Err() == nil {
 			discardTemp()
 		}
-		return nil, err
+		return nil, false, err
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := os.Rename(tempFull, finalFull); err != nil {
 		if ctx.Err() == nil {
 			discardTemp()
 		}
-		return nil, err
+		return nil, false, err
 	}
 	m.removeTempTaskProgress(workTask, tempRel)
 	m.setFileProgress(workTask, "image_nowm", finalRel, "completed", n, n, 0)
@@ -1971,7 +1984,7 @@ func (m *Manager) cacheWeiboWatermarkFreeCompanion(
 		SHA256:     sha,
 		Width:      w,
 		Height:     h,
-	}, nil
+	}, false, nil
 }
 
 // weiboPlanRanNoWMStandard reports whether this Weibo post plan includes at least

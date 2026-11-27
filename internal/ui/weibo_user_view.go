@@ -216,7 +216,7 @@ func (a *App) renderWeiboUserFooter(c *ui.Context, u *service.WeiboUserView, vis
 				Justify(ui.Center).
 				AlignItems(ui.Center).
 				Children(func() {
-					ui.Text(c, "该微博用户目前处于禁言状态，暂无法查看微博").FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+					ui.Text(c, "账号解除禁言前暂无法加载微博列表").FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
 				})
 			return
 		}

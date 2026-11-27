@@ -510,6 +510,9 @@ func NewBackend(opts Options) (*Backend, error) {
 	})
 	subMgr.SetOnBackoffCleared(func(siteID site.ID) {
 		b.logInfo(fmt.Sprintf("backoff.cleared site=%s", siteID))
+		if siteID == site.X && b.x != nil {
+			b.x.ClearRateLimits()
+		}
 		if b.dl != nil {
 			b.dl.Wake()
 		}

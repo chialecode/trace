@@ -58,7 +58,9 @@ func (m *Manager) EnqueueXWork(ctx context.Context, req XWorkEnqueueRequest) (Ta
 	if source == "" {
 		source = "manual"
 	}
-	if (source == "auto" || source == "queue") && site.AutomaticRequestSource(ctx) == "" {
+	if source == "manual" {
+		ctx = site.WithManualProbe(ctx)
+	} else if (source == "auto" || source == "queue") && !site.IsManualProbe(ctx) && site.AutomaticRequestSource(ctx) == "" {
 		ctx = site.WithAutomaticRequests(ctx, "download")
 	}
 	var reqPlanMode string
@@ -182,6 +184,7 @@ func (m *Manager) EnqueueXWork(ctx context.Context, req XWorkEnqueueRequest) (Ta
 	if forceOverwrite {
 		m.storeTaskForceOverwrite(t.TaskID, true)
 	}
+	m.markManualProbeIfBackedOff(ctx, t.TaskID, t.Site)
 
 	m.notifyWake()
 	return t, nil

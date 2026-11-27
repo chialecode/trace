@@ -540,8 +540,9 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 					}
 				}
 
+				splitOrderRow := unfinished && orderIdx >= 0 && siteUnfinishedCount >= 2 && cur.Status == service.CacheQueueWaitingBackoff
 				ui.Row(c).Shrink(0).Gap(4).AlignItems(ui.Center).Children(func() {
-					if unfinished && orderIdx >= 0 && siteUnfinishedCount >= 2 {
+					if unfinished && orderIdx >= 0 && siteUnfinishedCount >= 2 && !splitOrderRow {
 						if compactOrderButton(c, "置顶", "置顶缓存队列："+cur.ID, orderIdx == 0) {
 							_, err := a.backend.MoveCacheQueue(cur.ID, service.QueueMoveTop)
 							a.finishCacheQueueAction(err)
@@ -585,6 +586,22 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 					}
 				})
 			})
+			if unfinished && orderIdx >= 0 && siteUnfinishedCount >= 2 && cur.Status == service.CacheQueueWaitingBackoff {
+				ui.Row(c).FillWidth().Justify(ui.End).AlignItems(ui.Center).Gap(4).Wrap().ClipX().Children(func() {
+					if compactOrderButton(c, "置顶", "置顶缓存队列："+cur.ID, orderIdx == 0) {
+						_, err := a.backend.MoveCacheQueue(cur.ID, service.QueueMoveTop)
+						a.finishCacheQueueAction(err)
+					}
+					if compactOrderButton(c, "上移", "上移缓存队列："+cur.ID, orderIdx == 0) {
+						_, err := a.backend.MoveCacheQueue(cur.ID, service.QueueMoveUp)
+						a.finishCacheQueueAction(err)
+					}
+					if compactOrderButton(c, "下移", "下移缓存队列："+cur.ID, orderIdx >= siteUnfinishedCount-1) {
+						_, err := a.backend.MoveCacheQueue(cur.ID, service.QueueMoveDown)
+						a.finishCacheQueueAction(err)
+					}
+				})
+			}
 
 			if cur.StopReason != "" && !strings.Contains(formatQueueSidebarStatus(cur), cur.StopReason) {
 				ui.Text(c, "原因："+cur.StopReason).FontSize(12).TextColor(ColorTextMuted).MaxLines(2)

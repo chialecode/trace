@@ -623,3 +623,88 @@ func TestClientFrontendDriftRefreshCooldownQuotaAndBearerSentinel(t *testing.T) 
 		t.Fatalf("disallowed operation err = %v, want bad_request", err)
 	}
 }
+
+func TestXClearRateLimitsAndHeaderlessManualProbe200(t *testing.T) {
+	store := newTestXStore(t, "auth_token=SYNTH_AUTH_RL_CLEAR; ct0=SynthCT0RLClear01")
+	now := time.Unix(1795327200, 0).UTC()
+	futureReset := now.Add(15 * time.Minute).Unix()
+
+	var mode atomic.Value
+	mode.Store("429")
+	var hits atomic.Int32
+
+	_, client := newSynthFrontendHarnessWithOpts(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/"+OpUserTweets) {
+			http.NotFound(w, r)
+			return
+		}
+		hits.Add(1)
+		if mode.Load() == "429" {
+			w.Header().Set("x-rate-limit-limit", "50")
+			w.Header().Set("x-rate-limit-remaining", "0")
+			w.Header().Set("x-rate-limit-reset", strconv.FormatInt(futureReset, 10))
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"errors":[{"code":88,"message":"Rate limit exceeded"}]}`))
+			return
+		}
+		// HTTP 200 OK WITHOUT x-rate-limit-remaining header!
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"user":{"result":{"__typename":"User","timeline_v2":{"timeline":{"instructions":[{"type":"TimelineAddEntries","entries":[]}]}}}}}}`))
+	}, store, func(opts *ClientOptions) {
+		opts.MinInterval = -1
+		opts.RateLimitJitterMax = -1
+		opts.Now = func() time.Time { return now }
+		opts.Sleep = func(context.Context, time.Duration) error { return nil }
+	})
+
+	autoCtx := site.WithAutomaticRequests(context.Background(), "subscription")
+	req := UserTweetsRequest{RestID: "1000000000000000099"}
+	if _, err := client.GetUserTweets(autoCtx, req); !site.IsKind(err, site.ErrKindRateLimited) {
+		t.Fatalf("first GetUserTweets err = %v, want rate_limited", err)
+	}
+	if st, ok := client.RateLimitStateOf(OpUserTweets); !ok || !st.BlockedUntil.After(now) {
+		t.Fatalf("expected future BlockedUntil in rateLimits, got ok=%v st=%+v", ok, st)
+	}
+	// Automatic request is locally short-circuited (0 HTTP hits).
+	beforeShort := hits.Load()
+	if _, err := client.GetUserTweets(autoCtx, req); !site.IsKind(err, site.ErrKindRateLimited) {
+		t.Fatalf("short-circuited GetUserTweets err = %v, want rate_limited", err)
+	}
+	if hits.Load() != beforeShort {
+		t.Fatalf("expected 0 HTTP hits while BlockedUntil active, got %d", hits.Load()-beforeShort)
+	}
+
+	// 1. Headerless HTTP 200 manual probe on UserTweets clears stale BlockedUntil!
+	mode.Store("ok")
+	if _, err := client.GetUserTweets(site.WithManualProbe(context.Background()), req); err != nil {
+		t.Fatalf("manual probe GetUserTweets failed: %v", err)
+	}
+	if st, ok := client.RateLimitStateOf(OpUserTweets); ok && st.BlockedUntil.After(now) {
+		t.Fatalf("headerless 200 manual probe must clear stale BlockedUntil, got %+v", st)
+	}
+	beforeAutoAfterProbe := hits.Load()
+	if _, err := client.GetUserTweets(autoCtx, req); err != nil {
+		t.Fatalf("automatic GetUserTweets after headerless 200 probe failed: %v", err)
+	}
+	if hits.Load() != beforeAutoAfterProbe+1 {
+		t.Fatalf("automatic GetUserTweets should hit server after probe cleared BlockedUntil, hits delta=%d", hits.Load()-beforeAutoAfterProbe)
+	}
+
+	// 2. Re-enter 429 and verify ClearRateLimits() unblocks automatic requests immediately!
+	mode.Store("429")
+	if _, err := client.GetUserTweets(autoCtx, req); !site.IsKind(err, site.ErrKindRateLimited) {
+		t.Fatalf("re-trigger 429 err = %v, want rate_limited", err)
+	}
+	mode.Store("ok")
+	client.ClearRateLimits()
+	if _, ok := client.RateLimitStateOf(OpUserTweets); ok {
+		t.Fatal("ClearRateLimits must remove cached rateLimits entries")
+	}
+	beforeAfterClear := hits.Load()
+	if _, err := client.GetUserTweets(autoCtx, req); err != nil {
+		t.Fatalf("automatic GetUserTweets after ClearRateLimits failed: %v", err)
+	}
+	if hits.Load() != beforeAfterClear+1 {
+		t.Fatalf("expected 1 real HTTP hit after ClearRateLimits, got %d", hits.Load()-beforeAfterClear)
+	}
+}

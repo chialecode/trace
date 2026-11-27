@@ -26,10 +26,22 @@ func (b *Backend) EnqueueVideoCache(ctx context.Context, req download.VideoEnque
 	if req.Detail != nil && req.Detail.Author.Mid > 0 && req.Detail.Author.Face != "" {
 		b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(req.Detail.Author.Mid, 10), req.Detail.Author.Face)
 	}
+	isManual := strings.TrimSpace(req.Source) == "" || strings.EqualFold(strings.TrimSpace(req.Source), "manual")
+	if isManual {
+		ctx = site.WithManualProbe(ctx)
+	}
 	tasks, err := b.dl.EnqueueVideo(ctx, req)
 	if err != nil {
+		if isManual {
+			if k := site.KindOf(err); k == site.ErrKindRiskControl || k == site.ErrKindRateLimited {
+				b.recordManualSiteProbeFailure(site.Bilibili, err)
+			}
+		}
 		b.logError("EnqueueVideoCache", err)
 		return nil, err
+	}
+	if isManual && req.Detail == nil {
+		b.onManualSiteRequestSuccess(site.Bilibili)
 	}
 	b.events.PublishSite(EventTaskUpdated, string(site.Bilibili), "enqueued:video:"+req.BVID)
 	return tasks, nil
@@ -51,10 +63,22 @@ func (b *Backend) EnqueueDynamicCache(ctx context.Context, req download.DynamicE
 			b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(req.Item.Origin.Author.Mid, 10), req.Item.Origin.Author.Face)
 		}
 	}
+	isManual := strings.TrimSpace(req.Source) == "" || strings.EqualFold(strings.TrimSpace(req.Source), "manual")
+	if isManual {
+		ctx = site.WithManualProbe(ctx)
+	}
 	task, err := b.dl.EnqueueDynamic(ctx, req)
 	if err != nil {
+		if isManual {
+			if k := site.KindOf(err); k == site.ErrKindRiskControl || k == site.ErrKindRateLimited {
+				b.recordManualSiteProbeFailure(site.Bilibili, err)
+			}
+		}
 		b.logError("EnqueueDynamicCache", err)
 		return download.Task{}, err
+	}
+	if isManual && req.Item == nil {
+		b.onManualSiteRequestSuccess(site.Bilibili)
 	}
 	b.events.PublishSite(EventTaskUpdated, string(site.Bilibili), "enqueued:dynamic:"+req.DynamicID)
 	return task, nil
@@ -95,8 +119,21 @@ func (b *Backend) enqueueDouyinWorkWithPlan(
 	awemeID, source, forUID, forName string,
 	explicitPlan *download.WorkDownloadPlan,
 ) (download.Task, error) {
+	t, _, err := b.enqueueDouyinWorkWithPlanInfo(ctx, awemeID, source, forUID, forName, explicitPlan)
+	return t, err
+}
+
+func (b *Backend) enqueueDouyinWorkWithPlanInfo(
+	ctx context.Context,
+	awemeID, source, forUID, forName string,
+	explicitPlan *download.WorkDownloadPlan,
+) (download.Task, bool, error) {
 	if err := b.requireSiteLogin(site.Douyin); err != nil {
-		return download.Task{}, err
+		return download.Task{}, false, err
+	}
+	isManual := strings.TrimSpace(source) == "" || strings.EqualFold(strings.TrimSpace(source), "manual")
+	if isManual {
+		ctx = site.WithManualProbe(ctx)
 	}
 	cleanID := strings.TrimSpace(awemeID)
 	mode := download.ConflictResolutionFromContext(ctx)
@@ -109,6 +146,7 @@ func (b *Backend) enqueueDouyinWorkWithPlan(
 			}
 		}
 	}
+	reusedPlan := plan != nil
 	if plan != nil && (mode != "" || force) {
 		cp := *plan
 		if mode != "" {
@@ -127,11 +165,19 @@ func (b *Backend) enqueueDouyinWorkWithPlan(
 		ForName: strings.TrimSpace(forName),
 	})
 	if err != nil {
+		if isManual {
+			if k := site.KindOf(err); k == site.ErrKindRiskControl || k == site.ErrKindRateLimited {
+				b.recordManualSiteProbeFailure(site.Douyin, err)
+			}
+		}
 		b.logError("CacheDouyinWork", err)
-		return download.Task{}, err
+		return download.Task{}, reusedPlan, err
+	}
+	if isManual && !reusedPlan {
+		b.onManualSiteRequestSuccess(site.Douyin)
 	}
 	b.events.PublishSite(EventTaskUpdated, string(site.Douyin), "enqueued:"+t.TargetID)
-	return t, nil
+	return t, reusedPlan, nil
 }
 
 // CacheWeiboPost enqueues a Weibo post (mid or mblogid) for local caching,
@@ -161,15 +207,20 @@ func (b *Backend) CacheWeiboVideo(ctx context.Context, oid string) (download.Tas
 	if strings.HasPrefix(cleanOID, "1034_") {
 		cleanOID = "1034:" + strings.TrimPrefix(cleanOID, "1034_")
 	}
-	t, err := b.dl.EnqueueWeiboWork(ctx, download.WeiboWorkEnqueueRequest{
+	probeCtx := site.WithManualProbe(ctx)
+	t, err := b.dl.EnqueueWeiboWork(probeCtx, download.WeiboWorkEnqueueRequest{
 		TargetID: cleanOID,
 		Kind:     "video",
 		Source:   "manual",
 	})
 	if err != nil {
+		if k := site.KindOf(err); k == site.ErrKindRiskControl || k == site.ErrKindRateLimited {
+			b.recordManualSiteProbeFailure(site.Weibo, err)
+		}
 		b.logError("CacheWeiboVideo", err)
 		return download.Task{}, err
 	}
+	b.onManualSiteRequestSuccess(site.Weibo)
 	b.events.PublishSite(EventTaskUpdated, string(site.Weibo), "enqueued:"+t.TargetID)
 	return t, nil
 }
@@ -180,8 +231,22 @@ func (b *Backend) enqueueWeiboPostWithSource(
 	via *library.ItemVia,
 	explicitPlan *download.WorkDownloadPlan,
 ) (download.Task, error) {
+	t, _, err := b.enqueueWeiboPostWithSourceInfo(ctx, mid, source, via, explicitPlan)
+	return t, err
+}
+
+func (b *Backend) enqueueWeiboPostWithSourceInfo(
+	ctx context.Context,
+	mid, source string,
+	via *library.ItemVia,
+	explicitPlan *download.WorkDownloadPlan,
+) (download.Task, bool, error) {
 	if err := b.requireSiteLogin(site.Weibo); err != nil {
-		return download.Task{}, err
+		return download.Task{}, false, err
+	}
+	isManual := strings.TrimSpace(source) == "" || strings.EqualFold(strings.TrimSpace(source), "manual")
+	if isManual {
+		ctx = site.WithManualProbe(ctx)
 	}
 	cleanMid := strings.TrimSpace(mid)
 	mode := download.ConflictResolutionFromContext(ctx)
@@ -194,6 +259,7 @@ func (b *Backend) enqueueWeiboPostWithSource(
 			}
 		}
 	}
+	reusedPlan := plan != nil
 	if plan != nil && (mode != "" || force) {
 		cp := *plan
 		if mode != "" {
@@ -212,11 +278,19 @@ func (b *Backend) enqueueWeiboPostWithSource(
 		Via:      via,
 	})
 	if err != nil {
+		if isManual {
+			if k := site.KindOf(err); k == site.ErrKindRiskControl || k == site.ErrKindRateLimited {
+				b.recordManualSiteProbeFailure(site.Weibo, err)
+			}
+		}
 		b.logError("CacheWeiboPost", err)
-		return download.Task{}, err
+		return download.Task{}, reusedPlan, err
+	}
+	if isManual && !reusedPlan {
+		b.onManualSiteRequestSuccess(site.Weibo)
 	}
 	b.events.PublishSite(EventTaskUpdated, string(site.Weibo), "enqueued:"+t.TargetID)
-	return t, nil
+	return t, reusedPlan, nil
 }
 
 // CacheXPost enqueues an X post (Snowflake status_id) for local caching,
@@ -238,8 +312,22 @@ func (b *Backend) enqueueXPostWithSource(
 	via *library.ItemVia,
 	explicitPlan *download.WorkDownloadPlan,
 ) (download.Task, error) {
+	t, _, err := b.enqueueXPostWithSourceInfo(ctx, statusID, source, via, explicitPlan)
+	return t, err
+}
+
+func (b *Backend) enqueueXPostWithSourceInfo(
+	ctx context.Context,
+	statusID, source string,
+	via *library.ItemVia,
+	explicitPlan *download.WorkDownloadPlan,
+) (download.Task, bool, error) {
 	if err := b.requireSiteLogin(site.X); err != nil {
-		return download.Task{}, err
+		return download.Task{}, false, err
+	}
+	isManual := strings.TrimSpace(source) == "" || strings.EqualFold(strings.TrimSpace(source), "manual")
+	if isManual {
+		ctx = site.WithManualProbe(ctx)
 	}
 	cleanID := strings.TrimSpace(statusID)
 	mode := download.ConflictResolutionFromContext(ctx)
@@ -252,6 +340,7 @@ func (b *Backend) enqueueXPostWithSource(
 			}
 		}
 	}
+	reusedPlan := plan != nil
 	if plan != nil && (mode != "" || force) {
 		cp := *plan
 		if mode != "" {
@@ -269,11 +358,19 @@ func (b *Backend) enqueueXPostWithSource(
 		Via:      via,
 	})
 	if err != nil {
+		if isManual {
+			if k := site.KindOf(err); k == site.ErrKindRiskControl || k == site.ErrKindRateLimited {
+				b.recordManualSiteProbeFailure(site.X, err)
+			}
+		}
 		b.logError("CacheXPost", err)
-		return download.Task{}, err
+		return download.Task{}, reusedPlan, err
+	}
+	if isManual && !reusedPlan {
+		b.onManualSiteRequestSuccess(site.X)
 	}
 	b.events.PublishSite(EventTaskUpdated, string(site.X), "enqueued:"+t.TargetID)
-	return t, nil
+	return t, reusedPlan, nil
 }
 
 // ForceRecacheItem triggers an explicit manual full redownload of an already
@@ -316,8 +413,17 @@ func (b *Backend) ForceRecacheItem(ctx context.Context, itemKey string) (downloa
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	forceCtx := download.WithForceOverwrite(ctx)
+	forceCtx := download.WithForceOverwrite(site.WithManualProbe(ctx))
 	localHadMedia := hasValidLocalMedia(meta)
+	recordForceFetch := func(fetchErr error) {
+		if fetchErr == nil {
+			b.onManualSiteRequestSuccess(siteID)
+			return
+		}
+		if k := site.KindOf(fetchErr); k == site.ErrKindRiskControl || k == site.ErrKindRateLimited {
+			b.recordManualSiteProbeFailure(siteID, fetchErr)
+		}
+	}
 	var via *library.ItemVia
 	if meta.Via != nil {
 		cp := *meta.Via
@@ -328,6 +434,7 @@ func (b *Backend) ForceRecacheItem(ctx context.Context, itemKey string) (downloa
 	case site.Bilibili:
 		if meta.Kind == "video" {
 			vd, err := b.bili.VideoDetail(forceCtx, meta.RawID)
+			recordForceFetch(err)
 			if err != nil {
 				return download.Task{}, wrapDegradedIfRemoteInvalid(err)
 			}
@@ -338,6 +445,7 @@ func (b *Backend) ForceRecacheItem(ctx context.Context, itemKey string) (downloa
 				return download.Task{}, fmt.Errorf("%w：源站视频已无可用分P", ErrRemoteDegradedRefused)
 			}
 			if _, pErr := b.bili.PlayURL(forceCtx, vd.BVID, vd.Pages[0].CID, b.bilibiliPlaySelectionOpts()); pErr != nil {
+				recordForceFetch(pErr)
 				return download.Task{}, wrapDegradedIfRemoteInvalid(pErr)
 			}
 			var forMid int64
@@ -360,6 +468,7 @@ func (b *Backend) ForceRecacheItem(ctx context.Context, itemKey string) (downloa
 		}
 
 		dyn, err := b.bili.DynamicDetail(forceCtx, meta.RawID)
+		recordForceFetch(err)
 		if err != nil {
 			return download.Task{}, wrapDegradedIfRemoteInvalid(err)
 		}
@@ -383,6 +492,7 @@ func (b *Backend) ForceRecacheItem(ctx context.Context, itemKey string) (downloa
 		detail, err := b.douyin.GetWorkDetail(forceCtx, meta.RawID, douyin.StreamSelectOptions{
 			PreferredCodec: b.preferredDouyinCodec(),
 		})
+		recordForceFetch(err)
 		if err != nil {
 			return download.Task{}, wrapDegradedIfRemoteInvalid(err)
 		}
@@ -425,6 +535,7 @@ func (b *Backend) ForceRecacheItem(ctx context.Context, itemKey string) (downloa
 				oid = "1034:" + strings.TrimPrefix(oid, "1034_")
 			}
 			vr, err := b.weibo.GetVideo(forceCtx, oid, postOpt)
+			recordForceFetch(err)
 			if err != nil {
 				return download.Task{}, wrapDegradedIfRemoteInvalid(err)
 			}
@@ -458,6 +569,7 @@ func (b *Backend) ForceRecacheItem(ctx context.Context, itemKey string) (downloa
 			return t, nil
 		}
 		post, err := b.weibo.GetPost(forceCtx, meta.RawID, postOpt)
+		recordForceFetch(err)
 		if err != nil {
 			return download.Task{}, wrapDegradedIfRemoteInvalid(err)
 		}
@@ -484,6 +596,7 @@ func (b *Backend) ForceRecacheItem(ctx context.Context, itemKey string) (downloa
 
 	case site.X:
 		post, err := b.x.GetPost(forceCtx, meta.RawID)
+		recordForceFetch(err)
 		if err != nil {
 			return download.Task{}, wrapDegradedIfRemoteInvalid(err)
 		}

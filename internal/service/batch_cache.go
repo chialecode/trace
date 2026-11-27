@@ -503,9 +503,10 @@ func (b *Backend) dynamicQueueCandidate(d bilibili.DynamicItem) queueCandidate {
 				return queueEnqueued{}, err
 			}
 			return queueEnqueued{
-				taskIDs: []string{t.TaskID},
-				itemKey: firstNonEmpty(t.ItemKey, itemKey),
-				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, title, cleanID)),
+				taskIDs:        []string{t.TaskID},
+				itemKey:        firstNonEmpty(t.ItemKey, itemKey),
+				title:          trimQueueSummaryTitle(firstNonEmpty(t.Title, title, cleanID)),
+				reusedListPlan: true,
 			}, nil
 		},
 	}
@@ -533,14 +534,15 @@ func (b *Backend) douyinDetailQueueCandidate(d douyin.WorkDetail, forUID, forNam
 					planPtr = &built
 				}
 			}
-			t, err := b.enqueueDouyinWorkWithPlan(ctx, id, "queue", forUID, forName, planPtr)
+			t, reusedPlan, err := b.enqueueDouyinWorkWithPlanInfo(ctx, id, "queue", forUID, forName, planPtr)
 			if err != nil {
 				return queueEnqueued{}, err
 			}
 			return queueEnqueued{
-				taskIDs: []string{t.TaskID},
-				itemKey: firstNonEmpty(t.ItemKey, key),
-				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, title, id)),
+				taskIDs:        []string{t.TaskID},
+				itemKey:        firstNonEmpty(t.ItemKey, key),
+				title:          trimQueueSummaryTitle(firstNonEmpty(t.Title, title, id)),
+				reusedListPlan: reusedPlan,
 			}, nil
 		},
 	}
@@ -565,14 +567,15 @@ func (b *Backend) workQueueCandidate(w DouyinWorkCardDTO, forUID, forName string
 		title:       title,
 		uncacheable: w.Uncacheable || w.Kind == "unsupported",
 		enqueue: func(ctx context.Context) (queueEnqueued, error) {
-			t, err := b.enqueueDouyinWorkWithSource(ctx, id, "queue", forUID, forName)
+			t, reusedPlan, err := b.enqueueDouyinWorkWithPlanInfo(ctx, id, "queue", forUID, forName, nil)
 			if err != nil {
 				return queueEnqueued{}, err
 			}
 			return queueEnqueued{
-				taskIDs: []string{t.TaskID},
-				itemKey: firstNonEmpty(t.ItemKey, key),
-				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, title, id)),
+				taskIDs:        []string{t.TaskID},
+				itemKey:        firstNonEmpty(t.ItemKey, key),
+				title:          trimQueueSummaryTitle(firstNonEmpty(t.Title, title, id)),
+				reusedListPlan: reusedPlan,
 			}, nil
 		},
 	}
@@ -615,7 +618,7 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 					planPtr = &built
 				}
 			}
-			t, err := b.enqueueWeiboPostWithSource(ctx, mid, "queue", nil, planPtr)
+			t, reusedPlan, err := b.enqueueWeiboPostWithSourceInfo(ctx, mid, "queue", nil, planPtr)
 			if err != nil {
 				return queueEnqueued{}, err
 			}
@@ -623,7 +626,7 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 				taskIDs:        []string{t.TaskID},
 				itemKey:        firstNonEmpty(t.ItemKey, key),
 				title:          trimQueueSummaryTitle(firstNonEmpty(t.Title, title, mid)),
-				reusedListPlan: planPtr != nil,
+				reusedListPlan: reusedPlan,
 			}, nil
 		},
 	}
@@ -647,14 +650,15 @@ func (b *Backend) weiboPostViewQueueCandidate(p WeiboPostView) queueCandidate {
 		title:       title,
 		uncacheable: nonOriginal || p.Unavailable,
 		enqueue: func(ctx context.Context) (queueEnqueued, error) {
-			t, err := b.enqueueWeiboPostWithSource(ctx, mid, "queue", nil, nil)
+			t, reusedPlan, err := b.enqueueWeiboPostWithSourceInfo(ctx, mid, "queue", nil, nil)
 			if err != nil {
 				return queueEnqueued{}, err
 			}
 			return queueEnqueued{
-				taskIDs: []string{t.TaskID},
-				itemKey: firstNonEmpty(t.ItemKey, key),
-				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, title, mid)),
+				taskIDs:        []string{t.TaskID},
+				itemKey:        firstNonEmpty(t.ItemKey, key),
+				title:          trimQueueSummaryTitle(firstNonEmpty(t.Title, title, mid)),
+				reusedListPlan: reusedPlan,
 			}, nil
 		},
 	}
@@ -697,14 +701,15 @@ func (b *Backend) xPostQueueCandidate(p x.Post) queueCandidate {
 					planPtr = &built
 				}
 			}
-			t, err := b.enqueueXPostWithSource(ctx, id, "queue", nil, planPtr)
+			t, reusedPlan, err := b.enqueueXPostWithSourceInfo(ctx, id, "queue", nil, planPtr)
 			if err != nil {
 				return queueEnqueued{}, err
 			}
 			return queueEnqueued{
-				taskIDs: []string{t.TaskID},
-				itemKey: firstNonEmpty(t.ItemKey, key),
-				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, title, id)),
+				taskIDs:        []string{t.TaskID},
+				itemKey:        firstNonEmpty(t.ItemKey, key),
+				title:          trimQueueSummaryTitle(firstNonEmpty(t.Title, title, id)),
+				reusedListPlan: reusedPlan,
 			}, nil
 		},
 	}
@@ -728,14 +733,15 @@ func (b *Backend) xPostDTOQueueCandidate(p XPostDTO) queueCandidate {
 		title:       title,
 		uncacheable: nonOriginal || p.Unavailable,
 		enqueue: func(ctx context.Context) (queueEnqueued, error) {
-			t, err := b.enqueueXPostWithSource(ctx, id, "queue", nil, nil)
+			t, reusedPlan, err := b.enqueueXPostWithSourceInfo(ctx, id, "queue", nil, nil)
 			if err != nil {
 				return queueEnqueued{}, err
 			}
 			return queueEnqueued{
-				taskIDs: []string{t.TaskID},
-				itemKey: firstNonEmpty(t.ItemKey, key),
-				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, title, id)),
+				taskIDs:        []string{t.TaskID},
+				itemKey:        firstNonEmpty(t.ItemKey, key),
+				title:          trimQueueSummaryTitle(firstNonEmpty(t.Title, title, id)),
+				reusedListPlan: reusedPlan,
 			}, nil
 		},
 	}

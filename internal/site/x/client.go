@@ -551,6 +551,16 @@ func (c *Client) RateLimitStateOf(operation string) (RateLimitState, bool) {
 	return st, ok
 }
 
+// ClearRateLimits clears all cached per-operation rate-limit windows and headerless-88
+// counters so background automatic requests resumed after a manual probe recovery (DEC-089)
+// are not locally short-circuited by stale in-memory BlockedUntil entries.
+func (c *Client) ClearRateLimits() {
+	c.rlMu.Lock()
+	clear(c.rateLimits)
+	c.consecutiveHeaderless88 = 0
+	c.rlMu.Unlock()
+}
+
 func (c *Client) checkOperationRateLimit(ctx context.Context, operation, endpoint string) error {
 	if operation == "" || site.IsManualProbe(ctx) {
 		return nil
@@ -1212,6 +1222,11 @@ func (c *Client) executeRawAPIRequest(ctx context.Context, spec apiRequestSpec) 
 
 		rlHeaders := c.recordOperationRateLimit(spec.operation, resp.Header)
 		consec88 := c.updateHeaderless88Counter(resp.StatusCode, rlHeaders, body)
+		if site.IsManualProbe(ctx) && spec.operation != "" && resp.StatusCode == http.StatusOK && !rlHeaders.HasRemaining && len(ExtractXErrors(body)) == 0 {
+			c.rlMu.Lock()
+			delete(c.rateLimits, spec.operation)
+			c.rlMu.Unlock()
+		}
 
 		// Passive Set-Cookie: ct0 sync on every authenticated response (x.md §15.1 #7).
 		// Rejects invalid characters and never fabricates ct0.

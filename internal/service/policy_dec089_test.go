@@ -3,9 +3,11 @@ package service
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/site/weibo"
+	"github.com/chialecode/trace/internal/site/x"
 	"github.com/chialecode/trace/internal/subscription"
 )
 
@@ -406,4 +409,320 @@ func TestManualProbeRecoveryAcrossOpenLinkQueueAndSettings(t *testing.T) {
 		t.Fatal("successful OpenLink manual probe must clear Weibo backoff immediately")
 	}
 	_ = subscription.DefaultWeiboHourlyQuota
+}
+
+func TestXBackoffClearedBySettingsProbeUnblocksAutoUserTweets(t *testing.T) {
+	fixedNow := time.Unix(1795327200, 0).UTC()
+	futureReset := fixedNow.Add(15 * time.Minute).Unix()
+
+	h := newXServiceTestHarness(t, nil)
+	h.loginX(t)
+
+	var utMode atomic.Value
+	utMode.Store("429")
+	var utHits atomic.Int32
+
+	h.mu.Lock()
+	h.xHandler = func(w http.ResponseWriter, r *http.Request) bool {
+		if !strings.HasSuffix(r.URL.Path, "/"+x.OpUserTweets) {
+			return false
+		}
+		utHits.Add(1)
+		if utMode.Load() == "429" {
+			w.Header().Set("x-rate-limit-limit", "50")
+			w.Header().Set("x-rate-limit-remaining", "0")
+			w.Header().Set("x-rate-limit-reset", strconv.FormatInt(futureReset, 10))
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"errors":[{"code":88,"message":"Rate limit exceeded"}]}`))
+			return true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(synthXUserTimelineEnvelope("")))
+		return true
+	}
+	h.mu.Unlock()
+
+	ctx := context.Background()
+	autoCtx := site.WithAutomaticRequests(ctx, "subscription")
+	utReq := x.UserTweetsRequest{RestID: synthXCreatorRestID}
+	if _, err := h.backend.x.GetUserTweets(autoCtx, utReq); !site.IsKind(err, site.ErrKindRateLimited) {
+		t.Fatalf("first auto GetUserTweets err = %v, want rate_limited", err)
+	}
+	if active, _ := h.backend.subs.IsSiteInBackoff("x"); !active {
+		t.Fatal("expected X scheduler backoff active after 429")
+	}
+	if st, ok := h.backend.x.RateLimitStateOf(x.OpUserTweets); !ok || !st.BlockedUntil.After(fixedNow) {
+		t.Fatalf("expected X in-memory rateLimits blocked for UserTweets, got ok=%v st=%+v", ok, st)
+	}
+
+	// While backed off, automatic GetUserTweets is locally short-circuited (0 HTTP hits).
+	beforeShort := utHits.Load()
+	if _, err := h.backend.x.GetUserTweets(autoCtx, utReq); !site.IsKind(err, site.ErrKindRateLimited) && !site.IsKind(err, site.ErrKindBackoff) {
+		t.Fatalf("second auto GetUserTweets err = %v, want rate_limited or backoff", err)
+	}
+	if utHits.Load() != beforeShort {
+		t.Fatalf("expected 0 HTTP hits while X rateLimits blocked, got %d", utHits.Load()-beforeShort)
+	}
+
+	// User clicks Settings "重试恢复" (ProbeSiteBackoff("x") calls GetSelfProfile, NOT UserTweets!).
+	// Clearing backoff MUST also clear x.Client.rateLimits so background UserTweets immediately works!
+	utMode.Store("ok")
+	stOK, err := h.backend.ProbeSiteBackoff(ctx, "x")
+	if err != nil || stOK.BackingOff {
+		t.Fatalf("ProbeSiteBackoff(x) = (%+v, %v), want BackingOff=false nil err", stOK, err)
+	}
+	if _, ok := h.backend.x.RateLimitStateOf(x.OpUserTweets); ok {
+		t.Fatal("SetOnBackoffCleared must clear x.Client.rateLimits for site.X")
+	}
+
+	beforeAutoAfter := utHits.Load()
+	if _, err := h.backend.x.GetUserTweets(autoCtx, utReq); err != nil {
+		t.Fatalf("automatic GetUserTweets after ProbeSiteBackoff failed: %v", err)
+	}
+	if utHits.Load() != beforeAutoAfter+1 {
+		t.Fatalf("expected automatic GetUserTweets to send 1 real HTTP request after recovery, got %d", utHits.Load()-beforeAutoAfter)
+	}
+}
+
+func TestXBufferedListPlanQueueRetryProbesRealDownloadBeforeClearingBackoff(t *testing.T) {
+	clk := newFakeQueueClock(time.Now().UTC().Truncate(time.Second))
+	h := newXServiceTestHarness(t, func(o *Options) {
+		o.CacheQueueClock = clk
+		o.CacheQueueRand = func(int) int { return 0 }
+		o.CacheQueuePacing = &CacheQueuePacing{
+			ItemMinDelay:        5 * time.Second,
+			ItemMaxDelay:        5 * time.Second,
+			LongRestMinItems:    50,
+			LongRestMaxItems:    50,
+			LongRestMinDelay:    time.Minute,
+			LongRestMaxDelay:    time.Minute,
+			BackoffCoolMinDelay: time.Minute,
+			BackoffCoolMaxDelay: time.Minute,
+			QuotaCoolMinDelay:   15 * time.Second,
+			QuotaCoolMaxDelay:   15 * time.Second,
+			StartupMinDelay:     0,
+			StartupMaxDelay:     0,
+		}
+	})
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	if err := h.backend.dl.Start(runCtx); err != nil {
+		cancelRun()
+		t.Fatalf("dl.Start: %v", err)
+	}
+	h.backend.queue.Start(runCtx)
+	t.Cleanup(cancelRun)
+	h.loginX(t)
+
+	const (
+		id1 = "2000000000000089001"
+		id2 = "2000000000000089002"
+	)
+	var p2Mode atomic.Value
+	p2Mode.Store("429")
+	var p2Hits atomic.Int32
+	var detailHits atomic.Int32
+
+	makePhotoTweet := func(id, imgPath string) string {
+		return fmt.Sprintf(`{
+			"__typename":"Tweet",
+			"rest_id":%q,
+			"core":{"user_results":{"result":%s}},
+			"legacy":{
+				"id_str":%q,
+				"user_id_str":%q,
+				"created_at":"Fri May 17 00:00:00 +0000 2024",
+				"full_text":"Buffered photo post %s",
+				"extended_entities":{"media":[{
+					"media_key":"3_%s",
+					"type":"photo",
+					"media_url_https":%q,
+					"original_info":{"width":800,"height":600}
+				}]}
+			}
+		}`, id,
+			synthXUserCoreJSON(synthXCreatorRestID, synthXCreatorHandle, synthXCreatorName, h.xSrv.URL+"/xcdn/creator_avatar.png", "Bio", 10),
+			id, synthXCreatorRestID, id, id, h.xSrv.URL+imgPath)
+	}
+
+	h.mu.Lock()
+	h.xHandler = func(w http.ResponseWriter, r *http.Request) bool {
+		if strings.Contains(r.URL.Path, "/xcdn/p2") {
+			p2Hits.Add(1)
+			if p2Mode.Load() == "429" {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return true
+			}
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(h.pngBytes)
+			return true
+		}
+		if strings.HasSuffix(r.URL.Path, "/"+x.OpTweetDetail) {
+			detailHits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(synthXTweetDetailEnvelope(synthXTweetEntry("tweet-"+id2, makePhotoTweet(id2, "/xcdn/p2.png")))))
+			return true
+		}
+		if strings.HasSuffix(r.URL.Path, "/"+x.OpUserTweets) {
+			entries := synthXTweetEntry("tweet-"+id1, makePhotoTweet(id1, "/xcdn/p1.png")) + "," +
+				synthXTweetEntry("tweet-"+id2, makePhotoTweet(id2, "/xcdn/p2.png"))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(synthXUserTimelineEnvelope(entries)))
+			return true
+		}
+		return false
+	}
+	h.mu.Unlock()
+
+	ctx := context.Background()
+	qTask, err := h.backend.EnqueueCacheQueue(ctx, CacheQueueRequest{
+		Site:     "x",
+		List:     "posts",
+		User:     synthXCreatorRestID,
+		UserName: synthXCreatorName,
+	})
+	if err != nil {
+		t.Fatalf("EnqueueCacheQueue(x): %v", err)
+	}
+
+	// Wait for item 1 to cache complete and enter the 5s inter-item wait; item 2 is now buffered with a reusable in-memory plan!
+	waitQueuePredicate(t, h.backend, qTask.ID, "item 1 cached and waiting", func(qt CacheQueueTask) bool {
+		return qt.CachedCount == 1 && qt.Status == CacheQueueWaiting
+	})
+	d1, _ := clk.WaitForPendingTimer(t, 3*time.Second)
+
+	// Put X into active backoff BEFORE item 2 runs, then advance past the inter-item timer -> enters waiting_backoff.
+	h.backend.subs.RecordSiteAutomaticStop("x", site.ErrKindRateLimited)
+	origLevel := h.backend.subs.GetSiteSchedulerState("x").BackoffLevel
+	clk.Advance(d1)
+	waitQueuePredicate(t, h.backend, qTask.ID, "x queue enters waiting_backoff before buffered item 2", func(qt CacheQueueTask) bool {
+		return qt.Status == CacheQueueWaitingBackoff
+	})
+
+	// Click "立即重试" on waiting_backoff while /xcdn/p2.png STILL returns 429:
+	// Enqueue reuses buffered list plan (0 TweetDetail calls) and MUST NOT clear backoff early!
+	// Instead Phase B runs the real media download as the single manual probe -> hits /xcdn/p2.png -> fails 429 -> keeps backoff without doubling!
+	if _, err := h.backend.ResumeCacheQueue(qTask.ID); err != nil {
+		t.Fatalf("ResumeCacheQueue(x while CDN 429): %v", err)
+	}
+	waitQueuePredicate(t, h.backend, qTask.ID, "x queue returns to waiting_backoff after failed Phase B probe", func(qt CacheQueueTask) bool {
+		return qt.Status == CacheQueueWaitingBackoff && p2Hits.Load() >= 1
+	})
+	if detailHits.Load() != 0 {
+		t.Fatalf("expected 0 TweetDetail calls (reused buffered plan), got %d", detailHits.Load())
+	}
+	if active, _ := h.backend.subs.IsSiteInBackoff("x"); !active {
+		t.Fatal("zero-network buffered enqueue MUST NOT clear X backoff when Phase B download hits 429")
+	}
+	if got := h.backend.subs.GetSiteSchedulerState("x").BackoffLevel; got != origLevel {
+		t.Fatalf("failed buffered-plan Phase B probe escalated BackoffLevel: got %d, want %d", got, origLevel)
+	}
+
+	// Now CDN recovers (200 OK): clicking "立即重试" runs Phase B download -> succeeds -> clears X backoff & completes!
+	p2Mode.Store("ok")
+	if _, err := h.backend.ResumeCacheQueue(qTask.ID); err != nil {
+		t.Fatalf("ResumeCacheQueue(x after recovery): %v", err)
+	}
+	done := waitQueuePredicate(t, h.backend, qTask.ID, "x queue completes after Phase B probe succeeds", func(qt CacheQueueTask) bool {
+		return qt.Status == CacheQueueCompleted
+	})
+	if done.CachedCount != 2 {
+		t.Fatalf("expected CachedCount=2, got %+v", done)
+	}
+	if active, _ := h.backend.subs.IsSiteInBackoff("x"); active {
+		t.Fatal("successful Phase B manual probe must clear X backoff")
+	}
+}
+
+func TestManualCacheXPostDuringRateLimitBackoffUsesManualProbe(t *testing.T) {
+	fixedNow := time.Unix(1795327200, 0).UTC()
+	futureReset := fixedNow.Add(15 * time.Minute).Unix()
+
+	h := newXServiceTestHarness(t, nil)
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	if err := h.backend.dl.Start(runCtx); err != nil {
+		cancelRun()
+		t.Fatalf("dl.Start: %v", err)
+	}
+	t.Cleanup(cancelRun)
+	h.loginX(t)
+
+	const targetID = "2000000000000089099"
+	var mode atomic.Value
+	mode.Store("429")
+	var detailHits atomic.Int32
+
+	h.mu.Lock()
+	h.xHandler = func(w http.ResponseWriter, r *http.Request) bool {
+		if !strings.HasSuffix(r.URL.Path, "/"+x.OpTweetDetail) {
+			return false
+		}
+		detailHits.Add(1)
+		if mode.Load() == "429" {
+			w.Header().Set("x-rate-limit-limit", "50")
+			w.Header().Set("x-rate-limit-remaining", "0")
+			w.Header().Set("x-rate-limit-reset", strconv.FormatInt(futureReset, 10))
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"errors":[{"code":88,"message":"Rate limit exceeded"}]}`))
+			return true
+		}
+		tweetJSON := fmt.Sprintf(`{
+			"__typename":"Tweet",
+			"rest_id":%q,
+			"core":{"user_results":{"result":%s}},
+			"legacy":{
+				"id_str":%q,
+				"user_id_str":%q,
+				"created_at":"Fri May 17 00:00:00 +0000 2024",
+				"full_text":"Manual probe X post",
+				"extended_entities":{"media":[{
+					"media_key":"3_9099",
+					"type":"photo",
+					"media_url_https":%q,
+					"original_info":{"width":800,"height":600}
+				}]}
+			}
+		}`, targetID,
+			synthXUserCoreJSON(synthXCreatorRestID, synthXCreatorHandle, synthXCreatorName, h.xSrv.URL+"/xcdn/creator_avatar.png", "Bio", 10),
+			targetID, synthXCreatorRestID, h.xSrv.URL+"/xcdn/manual_probe.png")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(synthXTweetDetailEnvelope(synthXTweetEntry("tweet-"+targetID, tweetJSON))))
+		return true
+	}
+	h.mu.Unlock()
+
+	ctx := context.Background()
+	// Populate X rateLimits[OpTweetDetail] + backoff via an automatic request hitting 429.
+	if _, err := h.backend.x.GetPost(site.WithAutomaticRequests(ctx, "subscription"), targetID); !site.IsKind(err, site.ErrKindRateLimited) {
+		t.Fatalf("seed 429 err = %v, want rate_limited", err)
+	}
+	origLevel := h.backend.subs.GetSiteSchedulerState("x").BackoffLevel
+
+	// Manual CacheXPost while still 429: MUST bypass local BlockedUntil (send real HTTP request) and NOT double BackoffLevel!
+	beforeFailProbe := detailHits.Load()
+	if _, err := h.backend.CacheXPost(ctx, targetID, nil); !site.IsKind(err, site.ErrKindRateLimited) {
+		t.Fatalf("manual CacheXPost while 429 err = %v, want rate_limited", err)
+	}
+	if detailHits.Load() != beforeFailProbe+1 {
+		t.Fatalf("manual CacheXPost must bypass local BlockedUntil and send 1 real request, got %d", detailHits.Load()-beforeFailProbe)
+	}
+	if got := h.backend.subs.GetSiteSchedulerState("x").BackoffLevel; got != origLevel {
+		t.Fatalf("failed manual CacheXPost escalated BackoffLevel: got %d, want %d", got, origLevel)
+	}
+
+	// Now X recovers: manual CacheXPost succeeds, clears backoff + rateLimits, and completes the download!
+	mode.Store("ok")
+	task, err := h.backend.CacheXPost(ctx, targetID, nil)
+	if err != nil {
+		t.Fatalf("manual CacheXPost after recovery failed: %v", err)
+	}
+	done := waitDownloadTaskTerminal(t, h.backend, task.TaskID)
+	if done.Status != "completed" {
+		t.Fatalf("expected manual X download completed, got %+v", done)
+	}
+	if active, _ := h.backend.subs.IsSiteInBackoff("x"); active {
+		t.Fatal("successful manual CacheXPost must clear X backoff")
+	}
+	if _, ok := h.backend.x.RateLimitStateOf(x.OpTweetDetail); ok {
+		t.Fatal("successful manual CacheXPost must clear X in-memory rateLimits")
+	}
 }

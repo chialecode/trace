@@ -110,6 +110,17 @@ func TestDEC089SettingsProbeQueueRetryAndWeiboMutedBanner(t *testing.T) {
 				NextRunAt:   time.Now().Add(15 * time.Minute).UTC().Format(time.RFC3339),
 				CachedCount: 3,
 			},
+			{
+				ID:          "cq_wb_queued",
+				Site:        "weibo",
+				User:        "500000002",
+				UserName:    "排队队列测试博主",
+				List:        "posts",
+				ListLabel:   "微博",
+				Status:      service.CacheQueueQueued,
+				StatusText:  "排队中",
+				CachedCount: 0,
+			},
 		},
 	}
 
@@ -146,8 +157,19 @@ func TestDEC089SettingsProbeQueueRetryAndWeiboMutedBanner(t *testing.T) {
 		t.Fatalf("probe button should disappear after backoff cleared")
 	}
 
-	// 2. Tasks › 缓存队列 shows "立即重试" on waiting_backoff card and calls ResumeCacheQueue.
+	// 2. Tasks › 缓存队列 shows "立即重试" on waiting_backoff card (including 720px narrow window with 2 same-site queues) and calls ResumeCacheQueue.
 	app.OpenCacheQueueTask("cq_wb_backoff")
+	narrowTT := ui.NewTester(app.View, 720, 860)
+	narrowTT.Frame()
+	for _, lbl := range []string{"立即重试缓存队列：cq_wb_backoff", "置顶缓存队列：cq_wb_backoff", "下移缓存队列：cq_wb_backoff"} {
+		r, ok := narrowTT.Find(lbl)
+		if !ok {
+			t.Fatalf("720px narrow tasks queue view missing %q", lbl)
+		}
+		if r.X < -0.5 || r.X+r.W > 720.5 || r.W <= 0 || r.H <= 0 {
+			t.Fatalf("720px narrow tasks queue control %q overflowed: %+v", lbl, r)
+		}
+	}
 	tt.Frame()
 	if _, ok := tt.Find("立即重试缓存队列：cq_wb_backoff"); !ok {
 		t.Fatalf("tasks queue waiting_backoff card missing 立即重试 button")
