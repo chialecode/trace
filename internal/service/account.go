@@ -184,10 +184,11 @@ func (b *Backend) AccountFolders(ctx context.Context, siteID, kind string) ([]Ac
 	if err != nil {
 		return nil, err
 	}
+	probeCtx := site.WithManualProbe(ctx)
 	var out []AccountFolder
 	switch {
 	case sid == site.Bilibili && kind == AccountFollowing:
-		tags, err := b.bili.RelationTags(ctx)
+		tags, err := b.bili.RelationTags(probeCtx)
 		if err != nil {
 			return nil, b.accountFail(sid, kind, err)
 		}
@@ -196,7 +197,7 @@ func (b *Backend) AccountFolders(ctx context.Context, siteID, kind string) ([]Ac
 			out = append(out, AccountFolder{ID: strconv.FormatInt(t.TagID, 10), Title: t.Name, Count: t.Count})
 		}
 	case sid == site.Bilibili && kind == AccountFavorites:
-		folders, err := b.bili.FavFolders(ctx, b.cred.Status().Mid)
+		folders, err := b.bili.FavFolders(probeCtx, b.cred.Status().Mid)
 		if err != nil {
 			return nil, b.accountFail(sid, kind, err)
 		}
@@ -210,7 +211,7 @@ func (b *Backend) AccountFolders(ctx context.Context, siteID, kind string) ([]Ac
 		cursor := ""
 		// The folder list pages 10 at a time; read at most 5 pages for the dropdown.
 		for i := 0; i < 5; i++ {
-			page, err := b.douyin.CollectFolders(ctx, cursor)
+			page, err := b.douyin.CollectFolders(probeCtx, cursor)
 			if err != nil {
 				return nil, b.accountFail(sid, kind, err)
 			}
@@ -226,7 +227,7 @@ func (b *Backend) AccountFolders(ctx context.Context, siteID, kind string) ([]Ac
 		if !accountWeiboFollowGroupsEnabled {
 			return nil, nil
 		}
-		groups, err := b.weibo.ListFollowGroups(ctx)
+		groups, err := b.weibo.ListFollowGroups(probeCtx)
 		if err != nil {
 			return nil, b.accountFail(sid, kind, err)
 		}
@@ -242,6 +243,7 @@ func (b *Backend) AccountFolders(ctx context.Context, siteID, kind string) ([]Ac
 	default:
 		return nil, nil
 	}
+	b.onManualSiteRequestSuccess(sid)
 	b.Logf("account.%s.%s folders=%d", sid, kind, len(out))
 	return out, nil
 }
@@ -253,23 +255,25 @@ func (b *Backend) AccountPage(ctx context.Context, siteID, kind, folderID, curso
 	if err != nil {
 		return AccountPage{}, err
 	}
+	probeCtx := site.WithManualProbe(ctx)
 	pageNo, raw := splitAccountCursor(cursor)
 	var page AccountPage
 	switch sid {
 	case site.Bilibili:
-		page, err = b.biliAccountPage(ctx, kind, folderID, pageNo, raw)
+		page, err = b.biliAccountPage(probeCtx, kind, folderID, pageNo, raw)
 	case site.Douyin:
-		page, err = b.douyinAccountPage(ctx, kind, folderID, raw)
+		page, err = b.douyinAccountPage(probeCtx, kind, folderID, raw)
 	case site.Weibo:
-		page, err = b.weiboAccountPage(ctx, kind, folderID, pageNo)
+		page, err = b.weiboAccountPage(probeCtx, kind, folderID, pageNo)
 	case site.X:
-		page, err = b.xAccountPage(ctx, kind, folderID, pageNo, raw)
+		page, err = b.xAccountPage(probeCtx, kind, folderID, pageNo, raw)
 	default:
 		err = &site.Error{Site: sid, Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
 	}
 	if err != nil {
 		return AccountPage{}, b.accountFail(sid, kind, err)
 	}
+	b.onManualSiteRequestSuccess(sid)
 	if page.HasMore {
 		page.Cursor = joinAccountCursor(pageNo+1, page.Cursor)
 	} else {
@@ -706,7 +710,9 @@ func biliVideoItem(it *AccountItem, bvid string) {
 	it.CacheKey = library.CanonicalItemKey("bilibili", "video", bvid)
 }
 
-// accountGate checks the site, login and breaker before any request is sent.
+// accountGate checks the site, login and availability before a manual 我的 request is sent.
+// Per DEC-089, manual 我的 browsing/retries are NOT short-circuited by background site
+// backoff; instead a single probe request runs and clears backoff on success.
 func (b *Backend) accountGate(siteID, kind string) (site.ID, error) {
 	sid := site.ID(strings.ToLower(strings.TrimSpace(siteID)))
 	known := false
@@ -724,24 +730,20 @@ func (b *Backend) accountGate(siteID, kind string) (site.ID, error) {
 	if !known {
 		return "", &site.Error{Site: sid, Kind: site.ErrKindBadRequest, Message: "不支持的功能"}
 	}
-	if b.subs != nil {
-		if active, until := b.subs.IsSiteInBackoff(string(sid)); active {
-			return "", &site.Error{Site: sid, Kind: site.ErrKindBackoff, Message: "站点暂停访问中（风控或限流后的退避），" + until.Local().Format("15:04") + " 后再试"}
-		}
-	}
 	return sid, nil
 }
 
-// accountFail logs only the class of err and, on risk control or rate
-// limiting, opens this site's breaker so every request of the site stops.
+// accountFail logs only the class of err and, on risk control or rate limiting,
+// preserves an active backoff without escalating it (or initiates Level-1 backoff
+// when the site was not previously backing off, DEC-089).
 func (b *Backend) accountFail(sid site.ID, kind string, err error) error {
 	k := site.KindOf(err)
 	b.Logf("account.%s.%s error=%s", sid, kind, k)
 	if (k == site.ErrKindRiskControl || k == site.ErrKindRateLimited) && b.subs != nil {
-		if sid == site.X {
-			b.recordXAutomaticStop(err)
-		} else {
-			b.subs.RecordSiteAutomaticStop(string(sid), k)
+		wasActive, _ := b.subs.IsSiteInBackoff(string(sid))
+		b.recordManualSiteProbeFailure(sid, err)
+		if wasActive {
+			return wrapStillInBackoffProbeError(sid, k, err)
 		}
 	}
 	return err

@@ -603,11 +603,13 @@ func (b *Backend) requireTaskSiteLogin(taskID string) error {
 }
 
 // ResumeTask resumes a paused download task after verifying its owning site is logged in.
+// Explicit user resume is marked as a single-shot manual probe so backed-off sites
+// can be tested and recovered without automatic-request short-circuiting (DEC-089).
 func (b *Backend) ResumeTask(taskID string) (download.Task, error) {
 	if err := b.requireTaskSiteLogin(taskID); err != nil {
 		return download.Task{}, err
 	}
-	return b.dl.Resume(taskID)
+	return b.dl.ResumeManualProbe(taskID)
 }
 
 // RetryTask retries a failed or partial download task after verifying its owning site is logged in.
@@ -615,7 +617,7 @@ func (b *Backend) RetryTask(taskID string) (download.Task, error) {
 	if err := b.requireTaskSiteLogin(taskID); err != nil {
 		return download.Task{}, err
 	}
-	return b.dl.Retry(taskID)
+	return b.dl.ResumeManualProbe(taskID)
 }
 
 // RetryAllTasks re-queues all actionable failed, partial, and non-user-paused

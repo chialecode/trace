@@ -34,11 +34,43 @@ const (
 	DefaultBilibiliHourlyQuota = 200
 	// DefaultDouyinHourlyQuota is the shared automatic request limit per hour for Douyin.
 	DefaultDouyinHourlyQuota = 120
-	// DefaultWeiboHourlyQuota is the shared automatic request limit per hour for Weibo.
-	DefaultWeiboHourlyQuota = 100
+	// DefaultWeiboHourlyQuota is the shared automatic request limit per hour for Weibo (DEC-089).
+	DefaultWeiboHourlyQuota = 180
 	// DefaultXHourlyQuota is the shared automatic request limit per hour for X (NFR-NET-005).
 	DefaultXHourlyQuota = 60
+
+	// WeiboBackoffDecayWindow is the quiet window after the last Weibo stop during which
+	// a previously escalated backoff level decays back to 0 (DEC-089).
+	WeiboBackoffDecayWindow = 6 * time.Hour
 )
+
+// SiteBackoffDuration returns the backoff duration for siteName at 1-based backoff level.
+// Weibo uses a dedicated ladder (15m -> 30m -> 1h -> 2h -> 6h, capped at 6h) decoupled from
+// IntervalMinutes (DEC-089); other sites double IntervalMinutes up to 24h.
+func SiteBackoffDuration(siteName string, level int, intervalMinutes int) time.Duration {
+	if level < 1 {
+		level = 1
+	}
+	if normalizeSchedulerSite(siteName) == string(site.Weibo) {
+		switch level {
+		case 1:
+			return 15 * time.Minute
+		case 2:
+			return 30 * time.Minute
+		case 3:
+			return 1 * time.Hour
+		case 4:
+			return 2 * time.Hour
+		default:
+			return 6 * time.Hour
+		}
+	}
+	interval := time.Duration(intervalMinutes) * time.Minute
+	if interval < time.Minute {
+		interval = time.Hour
+	}
+	return min(interval*time.Duration(1<<min(level, 10)), 24*time.Hour)
+}
 
 var (
 	migrateUpdatesV2HookMu sync.Mutex
@@ -330,6 +362,9 @@ func (m *Manager) getSiteSchedulerStateLocked(siteName string) SchedulerState {
 	if tokensRaw != "" {
 		_ = json.Unmarshal([]byte(tokensRaw), &st.TokenTimestamps)
 	}
+	if m.maybeDecayWeiboBackoffLocked(normSite, &st, m.nowFunc().UTC()) {
+		_ = m.saveSiteSchedulerStateLocked(normSite, st)
+	}
 	return st
 }
 
@@ -516,6 +551,130 @@ func (m *Manager) nextRateLimitJitterLocked() time.Duration {
 	return d
 }
 
+// SetOnBackoffCleared registers a callback invoked whenever active backoff for a site
+// is explicitly cleared (for example after a manual probe succeeds, DEC-089) so
+// background cache queues and download dispatchers can wake immediately.
+func (m *Manager) SetOnBackoffCleared(fn func(siteID site.ID)) {
+	m.mu.Lock()
+	m.onBackoffCleared = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) maybeDecayWeiboBackoffLocked(normSite string, state *SchedulerState, now time.Time) bool {
+	if normSite != string(site.Weibo) || state == nil {
+		return false
+	}
+	if state.ConsecutiveFailures == 0 && state.BackoffLevel == 0 && state.BackoffUntil == "" {
+		return false
+	}
+	if state.BackoffUntil != "" {
+		if until, err := time.Parse(time.RFC3339, state.BackoffUntil); err == nil && now.Before(until) {
+			return false
+		}
+	}
+	if state.LastStopAt == "" {
+		return false
+	}
+	lastStop, err := time.Parse(time.RFC3339, state.LastStopAt)
+	if err != nil || now.Sub(lastStop) < WeiboBackoffDecayWindow {
+		return false
+	}
+	state.ConsecutiveFailures = 0
+	state.BackoffLevel = 0
+	state.BackoffUntil = ""
+	return true
+}
+
+// ClearSiteBackoff clears active and escalated backoff state for siteName and wakes
+// registered background consumers when an active backoff window was cleared (DEC-089).
+func (m *Manager) ClearSiteBackoff(siteName string) bool {
+	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return false
+	}
+	m.mu.Lock()
+	wasActive, _ := m.isSiteInBackoffLocked(normSite)
+	st := m.getSiteSchedulerStateLocked(normSite)
+	changed := wasActive || st.BackoffUntil != "" || st.BackoffLevel > 0 || st.ConsecutiveFailures > 0
+	if changed {
+		st.BackoffUntil = ""
+		st.BackoffLevel = 0
+		st.ConsecutiveFailures = 0
+		_ = m.saveSiteSchedulerStateLocked(normSite, st)
+	}
+	cb := m.onBackoffCleared
+	m.mu.Unlock()
+	if wasActive && cb != nil {
+		cb(site.ID(normSite))
+	}
+	return wasActive
+}
+
+// RecordSiteAutomaticSuccess resets an elapsed site backoff ladder once an automatic
+// request succeeds cleanly after the backoff window has expired (DEC-089).
+func (m *Manager) RecordSiteAutomaticSuccess(siteName string) {
+	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.getSiteSchedulerStateLocked(normSite)
+	if st.ConsecutiveFailures == 0 && st.BackoffLevel == 0 && st.BackoffUntil == "" {
+		return
+	}
+	if active, _ := m.isSiteInBackoffLocked(normSite); active {
+		return
+	}
+	st.ConsecutiveFailures = 0
+	st.BackoffLevel = 0
+	st.BackoffUntil = ""
+	_ = m.saveSiteSchedulerStateLocked(normSite, st)
+}
+
+// RecordSiteManualProbeFailure records a risk-control or rate-limit failure from an
+// explicit user-initiated single-shot probe (DEC-089). If the site is already in active
+// backoff, the existing backoff window is preserved without escalating BackoffLevel
+// (extending only when a rate-limit resetAt is later); otherwise normal Level-1 backoff starts.
+func (m *Manager) RecordSiteManualProbeFailure(siteName, kind string, resetAt time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recordSiteManualProbeFailureLocked(siteName, kind, resetAt)
+}
+
+func (m *Manager) recordSiteManualProbeFailureLocked(siteName, kind string, resetAt time.Time) {
+	normSite := normalizeSchedulerSite(siteName)
+	if normSite == "" {
+		return
+	}
+	state := m.getSiteSchedulerStateLocked(normSite)
+	now := m.nowFunc().UTC()
+	if kind != site.ErrKindRiskControl && kind != site.ErrKindRateLimited {
+		state.LastStopReason, state.LastStopAt = kind, now.Format(time.RFC3339)
+		_ = m.saveSiteSchedulerStateLocked(normSite, state)
+		return
+	}
+	if active, existingUntil := m.isSiteInBackoffLocked(normSite); active {
+		state.LastStopReason, state.LastStopAt = kind, now.Format(time.RFC3339)
+		if kind == site.ErrKindRateLimited && !resetAt.IsZero() {
+			jitter := m.nextRateLimitJitterLocked()
+			until := resetAt.UTC().Add(jitter)
+			if !until.After(now) {
+				until = now.Add(max(jitter, time.Second))
+			}
+			if maxUntil := now.Add(24 * time.Hour); until.After(maxUntil) {
+				until = maxUntil
+			}
+			if until.After(existingUntil) {
+				state.BackoffUntil = until.Format(time.RFC3339)
+			}
+		}
+		_ = m.saveSiteSchedulerStateLocked(normSite, state)
+		return
+	}
+	m.recordSiteAutomaticStopLocked(normSite, kind, resetAt)
+}
+
 // RecordSiteAutomaticStop records a risk-control or rate-limit stop for siteName and advances its exponential backoff.
 func (m *Manager) RecordSiteAutomaticStop(siteName, kind string) {
 	m.RecordSiteAutomaticStopUntil(siteName, kind, time.Time{})
@@ -524,7 +683,7 @@ func (m *Manager) RecordSiteAutomaticStop(siteName, kind string) {
 // RecordSiteAutomaticStopUntil records a stop for siteName. When kind is
 // ErrKindRateLimited and resetAt is non-zero, backoff pauses until resetAt plus
 // 0..60s jitter (capped at 24h) instead of doubling exponentially; risk_control
-// and unanchored rate limits use exponential backoff up to 24h.
+// and unanchored rate limits use the per-site backoff ladder.
 func (m *Manager) RecordSiteAutomaticStopUntil(siteName, kind string, resetAt time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -538,6 +697,7 @@ func (m *Manager) recordSiteAutomaticStopLocked(siteName, kind string, resetAt t
 	}
 	state := m.getSiteSchedulerStateLocked(normSite)
 	now := m.nowFunc().UTC()
+	m.maybeDecayWeiboBackoffLocked(normSite, &state, now)
 	if previous, err := time.Parse(time.RFC3339, state.LastStopAt); err == nil && now.Sub(previous) < time.Second && state.LastStopReason == kind {
 		if resetAt.IsZero() {
 			return
@@ -576,12 +736,8 @@ func (m *Manager) recordSiteAutomaticStopLocked(siteName, kind string, resetAt t
 	}
 	state.ConsecutiveFailures++
 	state.BackoffLevel = state.ConsecutiveFailures
-	interval := time.Duration(m.subSettings.IntervalMinutes) * time.Minute
-	if interval < time.Minute {
-		interval = time.Hour
-	}
-	duration := interval * time.Duration(1<<min(state.BackoffLevel, 10))
-	state.BackoffUntil = now.Add(min(duration, 24*time.Hour)).Format(time.RFC3339)
+	duration := SiteBackoffDuration(normSite, state.BackoffLevel, m.subSettings.IntervalMinutes)
+	state.BackoffUntil = now.Add(duration).Format(time.RFC3339)
 	_ = m.saveSiteSchedulerStateLocked(normSite, state)
 }
 

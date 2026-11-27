@@ -37,6 +37,7 @@ type UserProfile struct {
 	Domain          string `json:"domain,omitempty"`
 	CoverImagePhone string `json:"coverImagePhone,omitempty"`
 	BlockText       string `json:"blockText,omitempty"`
+	IsMuteUser      bool   `json:"isMuteUser,omitempty"`
 	CanonicalURL    string `json:"canonicalUrl"`
 }
 
@@ -218,6 +219,7 @@ func (c *Client) parseUserProfileBody(body []byte, expectedUID string) (*UserPro
 		Domain:          summary.Domain,
 		CoverImagePhone: normalizeWeiboMediaURL(dataObj.User.CoverImagePhone, c.allowLocalhost),
 		BlockText:       blockText,
+		IsMuteUser:      summary.IsMuteUser,
 		CanonicalURL:    "https://weibo.com/u/" + normUID,
 	}, nil
 }
@@ -393,8 +395,9 @@ func (c *Client) GetUserPosts(ctx context.Context, req UserPostsRequest) (*UserP
 
 	// Empty data.list == [] branches (weibo.md §6.5 rows 4, 5, 6).
 	if len(rawItems) == 0 {
-		// Row 4: bottom_tips_visible == true -> reached visibility window limit (e.g. half-year visible).
-		if bottomTipsVisible {
+		// Row 4: bottom_tips_visible == true (or explicit non-empty bottom_tips_text) ->
+		// reached visibility window limit (e.g. half-year visible).
+		if bottomTipsVisible || bottomTipsText != "" {
 			return &UserPostsPage{
 				Posts:             []Post{},
 				Page:              pageNum,
@@ -431,6 +434,14 @@ func (c *Client) GetUserPosts(ctx context.Context, req UserPostsRequest) (*UserP
 				if prof.BlockText != "" {
 					return nil, blockTextError(endpointLabel, prof.BlockText)
 				}
+				if prof.IsMuteUser {
+					return nil, &site.Error{
+						Site:     site.Weibo,
+						Kind:     site.ErrKindUnavailable,
+						Endpoint: endpointLabel,
+						Message:  "该微博用户目前处于禁言状态，暂无法查看微博",
+					}
+				}
 				if prof.StatusesCount == 0 {
 					return &UserPostsPage{
 						Posts:         []Post{},
@@ -443,6 +454,7 @@ func (c *Client) GetUserPosts(ctx context.Context, req UserPostsRequest) (*UserP
 							ScreenName:    prof.ScreenName,
 							AvatarURL:     prof.AvatarURL,
 							StatusesCount: prof.StatusesCount,
+							IsMuteUser:    prof.IsMuteUser,
 						},
 					}, nil
 				}
@@ -453,12 +465,13 @@ func (c *Client) GetUserPosts(ctx context.Context, req UserPostsRequest) (*UserP
 					StatusVisible:   statusVisible,
 					HasMore:         false,
 					UncertainEmpty:  true,
-					UncertainReason: "账号微博总数大于 0 但第 1 页返回空列表，疑似风控限流或全私密，本轮结果记为不完整",
+					UncertainReason: "第 1 页暂无可见微博（可能为全私密、超出可见时间窗或账号受限），暂未更新进度，不影响其他账号",
 					Author: &AuthorSummary{
 						UID:           prof.UID,
 						ScreenName:    prof.ScreenName,
 						AvatarURL:     prof.AvatarURL,
 						StatusesCount: prof.StatusesCount,
+						IsMuteUser:    prof.IsMuteUser,
 					},
 				}, nil
 			}
@@ -469,7 +482,7 @@ func (c *Client) GetUserPosts(ctx context.Context, req UserPostsRequest) (*UserP
 				StatusVisible:   statusVisible,
 				HasMore:         false,
 				UncertainEmpty:  true,
-				UncertainReason: "第 1 页返回空微博列表且未核对作者资料，本轮结果记为不完整",
+				UncertainReason: "第 1 页暂无可见微博且未核对作者资料，暂未更新进度，不影响其他账号",
 			}, nil
 		}
 

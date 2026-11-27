@@ -158,14 +158,17 @@ type Manager struct {
 	taskWaitCh          chan struct{}
 	taskOutcomes        map[string]error
 
-	ctx           context.Context
-	cancel        context.CancelFunc
-	wakeCh        chan struct{}
-	activeRun     map[string]context.CancelFunc
-	activeSite    map[string]string
-	siteBackoffFn func(siteID site.ID) (bool, time.Time)
-	queueOrder    []string
-	wg            sync.WaitGroup
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	wakeCh              chan struct{}
+	activeRun           map[string]context.CancelFunc
+	activeSite          map[string]string
+	siteBackoffFn       func(siteID site.ID) (bool, time.Time)
+	onManualProbeResult func(siteID site.ID, err error)
+	manualProbeTasks    map[string]bool
+	activeProbeSite     map[site.ID]string
+	queueOrder          []string
+	wg                  sync.WaitGroup
 }
 
 // NewManager creates and initializes a download Manager backed by db.
@@ -200,6 +203,8 @@ func NewManager(
 		wakeCh:              make(chan struct{}, 1),
 		activeRun:           make(map[string]context.CancelFunc),
 		activeSite:          make(map[string]string),
+		manualProbeTasks:    make(map[string]bool),
+		activeProbeSite:     make(map[site.ID]string),
 	}
 	if err := m.initSchema(); err != nil {
 		return nil, err
@@ -279,6 +284,21 @@ func (m *Manager) SetSiteBackoffChecker(fn func(siteID site.ID) (bool, time.Time
 	m.mu.Lock()
 	m.siteBackoffFn = fn
 	m.mu.Unlock()
+	m.notifyWake()
+}
+
+// SetManualProbeResultHandler registers a callback invoked when a user-initiated
+// manual download or single-shot manual probe succeeds (err == nil) or hits a
+// risk-control/rate-limit error (DEC-089).
+func (m *Manager) SetManualProbeResultHandler(fn func(siteID site.ID, err error)) {
+	m.mu.Lock()
+	m.onManualProbeResult = fn
+	m.mu.Unlock()
+}
+
+// Wake nudges the download dispatcher (for example right after a site's backoff
+// is cleared by a manual probe, DEC-089).
+func (m *Manager) Wake() {
 	m.notifyWake()
 }
 
@@ -1001,6 +1021,7 @@ func (m *Manager) WithIdleTasks(work func() error) error {
 func (m *Manager) Pause(taskID string) (Task, error) {
 	m.mu.Lock()
 	delete(m.initialPlans, taskID)
+	delete(m.manualProbeTasks, taskID)
 	if cancel, ok := m.activeRun[taskID]; ok {
 		cancel()
 	}
@@ -1024,8 +1045,24 @@ func (m *Manager) Pause(taskID string) (Task, error) {
 
 // Resume transitions a paused, failed, or partial task back to "queued".
 func (m *Manager) Resume(taskID string) (Task, error) {
+	return m.resumeInternal(taskID, false)
+}
+
+// ResumeManualProbe transitions a paused, failed, or partial task back to "queued"
+// with a one-shot in-memory manual probe mark (DEC-089) so an explicit user
+// retry/continue bypasses site backoff short-circuiting and automatic-request
+// guards for a single attempt.
+func (m *Manager) ResumeManualProbe(taskID string) (Task, error) {
+	return m.resumeInternal(taskID, true)
+}
+
+func (m *Manager) resumeInternal(taskID string, manualProbe bool) (Task, error) {
 	m.mu.Lock()
-	delete(m.initialPlans, taskID)
+	var currentStatus string
+	_ = m.db.QueryRow(`SELECT status FROM download_tasks WHERE task_id = ?`, taskID).Scan(&currentStatus)
+	if currentStatus != "queued" {
+		delete(m.initialPlans, taskID)
+	}
 	_, storageFault := m.taskFaults.Load(taskID)
 	if storageFault {
 		if cancel := m.activeRun[taskID]; cancel != nil {
@@ -1033,11 +1070,22 @@ func (m *Manager) Resume(taskID string) (Task, error) {
 		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := m.db.Exec(`
+	res, err := m.db.Exec(`
 		UPDATE download_tasks
 		SET status = 'queued', pause_reason = '', error_kind = '', error_message = '', updated_at = ?
 		WHERE task_id = ? AND (status IN ('paused', 'failed', 'partial') OR (? AND status = 'running'))
 	`, now, taskID, storageFault)
+	if err == nil {
+		n, _ := res.RowsAffected()
+		if manualProbe && (n > 0 || currentStatus == "queued") {
+			if m.manualProbeTasks == nil {
+				m.manualProbeTasks = make(map[string]bool)
+			}
+			m.manualProbeTasks[taskID] = true
+		} else if !manualProbe {
+			delete(m.manualProbeTasks, taskID)
+		}
+	}
 	m.mu.Unlock()
 	if err != nil {
 		return Task{}, err
@@ -1101,6 +1149,7 @@ type taskDedupKey struct {
 func (m *Manager) RetryActionable(allowedSites map[string]bool) (BatchRetryResult, error) {
 	type retryCandidate struct {
 		taskID       string
+		site         string
 		storageFault bool
 	}
 
@@ -1173,6 +1222,7 @@ func (m *Manager) RetryActionable(allowedSites map[string]bool) (BatchRetryResul
 		_, storageFault := m.taskFaults.Load(eff.TaskID)
 		candidates = append(candidates, retryCandidate{
 			taskID:       eff.TaskID,
+			site:         normSite,
 			storageFault: storageFault,
 		})
 	}
@@ -1218,6 +1268,8 @@ func (m *Manager) RetryActionable(allowedSites map[string]bool) (BatchRetryResul
 			m.mu.Unlock()
 			return BatchRetryResult{}, commitErr
 		}
+		probedBackedOffSite := make(map[site.ID]bool)
+		nowCheck := time.Now().UTC()
 		for _, cand := range updated {
 			if cand.storageFault {
 				if cancel := m.activeRun[cand.taskID]; cancel != nil {
@@ -1226,6 +1278,20 @@ func (m *Manager) RetryActionable(allowedSites map[string]bool) (BatchRetryResul
 			}
 			delete(m.initialPlans, cand.taskID)
 			m.taskFaults.Delete(cand.taskID)
+			// Batch retry limits backed-off sites to at most 1 single-shot manual probe task
+			// so retrying many paused tasks never bursts concurrent probes (DEC-089).
+			if m.siteBackoffFn != nil {
+				sid := normalizeDownloadSite(cand.site)
+				if !probedBackedOffSite[sid] {
+					if inBackoff, until := m.siteBackoffFn(sid); inBackoff && until.After(nowCheck) {
+						if m.manualProbeTasks == nil {
+							m.manualProbeTasks = make(map[string]bool)
+						}
+						m.manualProbeTasks[cand.taskID] = true
+						probedBackedOffSite[sid] = true
+					}
+				}
+			}
 		}
 		res.Retried = len(retriedIDs)
 	}
@@ -1242,6 +1308,7 @@ func (m *Manager) RetryActionable(allowedSites map[string]bool) (BatchRetryResul
 func (m *Manager) Cancel(taskID string) (Task, error) {
 	m.mu.Lock()
 	delete(m.initialPlans, taskID)
+	delete(m.manualProbeTasks, taskID)
 	if cancel, ok := m.activeRun[taskID]; ok {
 		cancel()
 	}
@@ -1310,6 +1377,7 @@ func (m *Manager) Remove(taskID string) error {
 		return err
 	}
 	delete(m.initialPlans, taskID)
+	delete(m.manualProbeTasks, taskID)
 	m.clearTaskResolutionStateLocked(taskID)
 	m.taskFaults.Delete(taskID)
 	m.clearTaskOutcome(taskID)
@@ -1420,7 +1488,7 @@ func (m *Manager) launchAvailableWorkers() time.Time {
 			return earliestBackoffWake
 		}
 
-		nextTask, ok, skippedWake := m.claimNextQueuedLocked()
+		nextTask, isManualProbe, ok, skippedWake := m.claimNextQueuedLocked()
 		if !skippedWake.IsZero() && (earliestBackoffWake.IsZero() || skippedWake.Before(earliestBackoffWake)) {
 			earliestBackoffWake = skippedWake
 		}
@@ -1436,27 +1504,42 @@ func (m *Manager) launchAvailableWorkers() time.Time {
 		m.mu.Unlock()
 
 		m.emitUpdate(nextTask)
-		go func(t Task, ctx context.Context, cancel context.CancelFunc) {
+		go func(t Task, probe bool, ctx context.Context, cancel context.CancelFunc) {
 			defer m.wg.Done()
 			defer cancel()
-			m.runTask(ctx, t)
+			m.runTask(ctx, t, probe)
 			if latest, ok, err := m.GetTask(t.TaskID); err == nil && ok && latest.Status == "canceled" {
 				cleanTaskPartFiles(latest)
 			}
+			sid := normalizeDownloadSite(t.Site)
 			m.mu.Lock()
 			delete(m.activeRun, t.TaskID)
 			delete(m.activeSite, t.TaskID)
 			delete(m.initialPlans, t.TaskID)
+			if m.activeProbeSite[sid] == t.TaskID {
+				delete(m.activeProbeSite, sid)
+			}
 			m.clearTaskResolutionStateLocked(t.TaskID)
 			m.mu.Unlock()
 			m.notifyTaskWaiters()
 			m.notifyWake()
-		}(nextTask, taskCtx, taskCancel)
+		}(nextTask, isManualProbe, taskCtx, taskCancel)
 	}
 }
 
-func (m *Manager) runTask(ctx context.Context, t Task) {
-	if t.Source == "auto" || t.Source == "queue" {
+func (m *Manager) notifyManualProbeResult(siteID site.ID, err error) {
+	m.mu.Lock()
+	cb := m.onManualProbeResult
+	m.mu.Unlock()
+	if cb != nil {
+		cb(siteID, err)
+	}
+}
+
+func (m *Manager) runTask(ctx context.Context, t Task, isManualProbe bool) {
+	if isManualProbe {
+		ctx = site.WithManualProbe(ctx)
+	} else if t.Source == "auto" || t.Source == "queue" {
 		ctx = site.WithAutomaticRequests(ctx, "download")
 	}
 	storedMode, _ := m.taskResolutionAndPages(t.TaskID)
@@ -1556,7 +1639,12 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 			t.Status = "paused"
 			t.PauseReason = "risk_control"
 			t.ErrorKind = errKind
-			t.ErrorMessage = "已暂停（风控）：" + err.Error()
+			if isManualProbe {
+				t.ErrorMessage = "探测仍处于风控或限流中，已保持退避：" + err.Error()
+				m.notifyManualProbeResult(normalizeDownloadSite(t.Site), err)
+			} else {
+				t.ErrorMessage = "已暂停（风控）：" + err.Error()
+			}
 			m.persistTaskProgress(t)
 			msg := fmt.Sprintf("检测到站点风控或频率限制 (%s)，已自动暂停同站点排队任务: %s", errKind, err.Error())
 			m.pauseSitePeers(t.Site, t.TaskID, "risk_control", errKind, msg)
@@ -1593,6 +1681,9 @@ func (m *Manager) runTask(ctx context.Context, t Task) {
 	t.Progress = 1.0
 	m.persistTaskProgress(t)
 	m.recordTaskOutcome(t.TaskID, nil)
+	if isManualProbe || t.Source == "manual" {
+		m.notifyManualProbeResult(normalizeDownloadSite(t.Site), nil)
+	}
 }
 
 func (m *Manager) pauseSitePeers(siteID, triggeringTaskID, pauseReason, errKind, msg string) {

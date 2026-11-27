@@ -561,9 +561,17 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 								_, err := a.backend.ResumeCacheQueue(cur.ID)
 								a.finishCacheQueueAction(err)
 							}
-						} else if OutlinePillButton(c, "暂停", "暂停缓存队列："+cur.ID).Clicked() {
-							_, err := a.backend.PauseCacheQueue(cur.ID)
-							a.finishCacheQueueAction(err)
+						} else {
+							if cur.Status == service.CacheQueueWaitingBackoff {
+								if AccentPillButton(c, "立即重试", "立即重试缓存队列："+cur.ID).Clicked() {
+									_, err := a.backend.ResumeCacheQueue(cur.ID)
+									a.finishCacheQueueAction(err)
+								}
+							}
+							if OutlinePillButton(c, "暂停", "暂停缓存队列："+cur.ID).Clicked() {
+								_, err := a.backend.PauseCacheQueue(cur.ID)
+								a.finishCacheQueueAction(err)
+							}
 						}
 						if DangerOutlinePillButton(c, "取消", "取消缓存队列："+cur.ID).Clicked() {
 							_, err := a.backend.CancelCacheQueue(cur.ID)

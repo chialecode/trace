@@ -453,7 +453,7 @@ func (m *Manager) applyQueuedOrder(tasks []Task) {
 	}
 }
 
-func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
+func (m *Manager) claimNextQueuedLocked() (Task, bool, bool, time.Time) {
 	query := `SELECT` + taskSelectColumns + `
 		FROM download_tasks
 		WHERE status = 'queued'`
@@ -467,14 +467,14 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 	query += " ORDER BY rowid ASC"
 	rows, err := m.db.Query(query, args...)
 	if err != nil {
-		return Task{}, false, time.Time{}
+		return Task{}, false, false, time.Time{}
 	}
 	var candidates []Task
 	for rows.Next() {
 		t, sErr := scanTask(rows)
 		if sErr != nil {
 			_ = rows.Close()
-			return Task{}, false, time.Time{}
+			return Task{}, false, false, time.Time{}
 		}
 		candidates = append(candidates, t)
 	}
@@ -483,7 +483,7 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 		if len(candidates) == 0 {
 			m.queueOrder = nil
 		}
-		return Task{}, false, time.Time{}
+		return Task{}, false, false, time.Time{}
 	}
 
 	// Reorder candidates by manual queue priority (pruning stale IDs).
@@ -503,7 +503,8 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 	}
 
 	// Skip sites currently in backoff for automatic/queue tasks so one site's
-	// risk-control backoff never blocks other healthy sites (DEC-088).
+	// risk-control backoff never blocks other healthy sites (DEC-088). Explicit
+	// user manual-probe tasks bypass siteBackoffFn (at most 1 in flight per site, DEC-089).
 	var (
 		now             = time.Now().UTC()
 		earliestSkipped time.Time
@@ -520,8 +521,15 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 		}, 4)
 	}
 	for _, c := range candidates {
+		sid := normalizeDownloadSite(c.Site)
+		if m.manualProbeTasks[c.TaskID] {
+			if m.activeProbeSite[sid] != "" {
+				continue
+			}
+			eligible = append(eligible, c)
+			continue
+		}
 		if m.siteBackoffFn != nil && (c.Source == "auto" || c.Source == "queue") {
-			sid := normalizeDownloadSite(c.Site)
 			res, cached := backoffCache[sid]
 			if !cached {
 				inBackoff, until := m.siteBackoffFn(sid)
@@ -539,7 +547,7 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 		eligible = append(eligible, c)
 	}
 	if len(eligible) == 0 {
-		return Task{}, false, earliestSkipped
+		return Task{}, false, false, earliestSkipped
 	}
 
 	// Cross-site anti-starvation: prefer a site with the fewest currently active
@@ -570,10 +578,18 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 		WHERE task_id = ? AND status = 'queued'
 	`, nowStr, t.TaskID)
 	if err != nil {
-		return Task{}, false, earliestSkipped
+		return Task{}, false, false, earliestSkipped
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return Task{}, false, earliestSkipped
+		return Task{}, false, false, earliestSkipped
+	}
+	isManualProbe := m.manualProbeTasks[t.TaskID]
+	if isManualProbe {
+		delete(m.manualProbeTasks, t.TaskID)
+		if m.activeProbeSite == nil {
+			m.activeProbeSite = make(map[site.ID]string)
+		}
+		m.activeProbeSite[normalizeDownloadSite(t.Site)] = t.TaskID
 	}
 	m.removeQueueOrderLocked(t.TaskID)
 	t.Status = "running"
@@ -581,7 +597,7 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 	t.ErrorKind = ""
 	t.ErrorMessage = ""
 	t.UpdatedAt = nowStr
-	return t, true, earliestSkipped
+	return t, isManualProbe, true, earliestSkipped
 }
 
 func (m *Manager) resetFileProgress(t *Task, relPath string) {

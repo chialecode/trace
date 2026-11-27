@@ -150,11 +150,11 @@ func TestClientSerialPacingHeadersAndXSRFSync(t *testing.T) {
 	if maxInFlight.Load() != 1 {
 		t.Fatalf("max concurrent requests = %d, want 1", maxInFlight.Load())
 	}
-	if len(sleeps) != 1 || sleeps[0] != 1200*time.Millisecond {
-		t.Fatalf("recorded pacing sleeps = %v, want [1.2s]", sleeps)
+	if len(sleeps) != 1 || sleeps[0] != 800*time.Millisecond {
+		t.Fatalf("recorded pacing sleeps = %v, want [800ms]", sleeps)
 	}
 
-	// Verify jitter stays in [1200ms, 1600ms] with non-zero entropy.
+	// Verify jitter stays in [800ms, 1100ms] with non-zero entropy (DEC-089).
 	maxEntropy := bytes.NewReader(bytes.Repeat([]byte{0xff}, 64))
 	var jitterSleeps []time.Duration
 	clientJitter := NewClient(ClientOptions{
@@ -181,8 +181,8 @@ func TestClientSerialPacingHeadersAndXSRFSync(t *testing.T) {
 	if _, err := clientJitter.GetUserProfile(ctx, "1000000001"); err != nil {
 		t.Fatalf("jitter req 2 failed: %v", err)
 	}
-	if len(jitterSleeps) != 1 || jitterSleeps[0] < 1200*time.Millisecond || jitterSleeps[0] > 1600*time.Millisecond {
-		t.Fatalf("jitter sleep = %v, want in [1200ms, 1600ms]", jitterSleeps)
+	if len(jitterSleeps) != 1 || jitterSleeps[0] < 800*time.Millisecond || jitterSleeps[0] > 1100*time.Millisecond {
+		t.Fatalf("jitter sleep = %v, want in [800ms, 1100ms]", jitterSleeps)
 	}
 
 	// Verify PC Ajax headers and XSRF-TOKEN mirroring + Set-Cookie sync.

@@ -207,11 +207,12 @@ func (b *Backend) PreviewAccount(ctx context.Context, input string) (subscriptio
 		return subscription.AccountRef{}, nil, err
 	}
 
+	probeCtx := b.manualProbeContext(ctx)
 	switch siteID {
 	case site.Douyin:
-		target, rErr := b.douyin.ResolveLink(ctx, normalized)
+		target, rErr := b.douyin.ResolveLink(probeCtx, normalized)
 		if rErr != nil {
-			return subscription.AccountRef{}, nil, rErr
+			return subscription.AccountRef{}, nil, b.finishManualSiteRequest(ctx, site.Douyin, rErr)
 		}
 		var secUID string
 		switch target.Kind {
@@ -246,9 +247,9 @@ func (b *Backend) PreviewAccount(ctx context.Context, input string) (subscriptio
 		return b.subs.PreviewResolvedAccount(acc)
 
 	case site.Weibo:
-		target, rErr := b.weibo.ResolveLink(ctx, normalized)
+		target, rErr := b.weibo.ResolveLink(probeCtx, normalized)
 		if rErr != nil {
-			return subscription.AccountRef{}, nil, rErr
+			return subscription.AccountRef{}, nil, b.finishManualSiteRequest(ctx, site.Weibo, rErr)
 		}
 		if target.Kind != "user" {
 			return subscription.AccountRef{}, nil, &site.Error{
@@ -271,9 +272,9 @@ func (b *Backend) PreviewAccount(ctx context.Context, input string) (subscriptio
 		return b.subs.PreviewResolvedAccount(acc)
 
 	case site.X:
-		target, rErr := b.x.ResolveLink(ctx, normalized)
+		target, rErr := b.x.ResolveLink(probeCtx, normalized)
 		if rErr != nil {
-			return subscription.AccountRef{}, nil, rErr
+			return subscription.AccountRef{}, nil, b.finishManualSiteRequest(ctx, site.X, rErr)
 		}
 		if target.Kind != "user" {
 			return subscription.AccountRef{}, nil, &site.Error{
@@ -297,17 +298,18 @@ func (b *Backend) PreviewAccount(ctx context.Context, input string) (subscriptio
 		return b.subs.PreviewResolvedAccount(acc)
 
 	case site.Bilibili:
-		target, err := b.bili.ResolveLink(ctx, normalized)
+		target, err := b.bili.ResolveLink(probeCtx, normalized)
 		if err != nil {
-			return subscription.AccountRef{}, nil, err
+			return subscription.AccountRef{}, nil, b.finishManualSiteRequest(ctx, site.Bilibili, err)
 		}
 		if target.Kind != "user" {
 			return subscription.AccountRef{}, nil, fmt.Errorf("请粘贴用户主页链接或 UID")
 		}
-		card, err := b.bili.UserCard(ctx, target.Mid)
+		card, err := b.bili.UserCard(probeCtx, target.Mid)
 		if err != nil {
-			return subscription.AccountRef{}, nil, err
+			return subscription.AccountRef{}, nil, b.finishManualSiteRequest(ctx, site.Bilibili, err)
 		}
+		_ = b.finishManualSiteRequest(ctx, site.Bilibili, nil)
 		uidStr := fmt.Sprintf("%d", card.Mid)
 		acc := subscription.AccountRef{
 			Site:    "bilibili",
@@ -403,19 +405,17 @@ func (b *Backend) CheckAccount(ctx context.Context, subID, siteName, uid string)
 // CancelSubscriptionCheck cancels an in-progress subscription update check.
 func (b *Backend) CancelSubscriptionCheck() { b.subs.CancelCheck() }
 
-func formatBackoffLevelText(level int) string {
-	switch {
-	case level <= 1:
-		return "15 分钟"
-	case level == 2:
-		return "30 分钟"
-	case level == 3:
-		return "1 小时"
-	case level == 4:
-		return "2 小时"
-	default:
-		return "6 小时"
+func formatBackoffDurationText(siteID string, level int, intervalMinutes int) string {
+	d := subscription.SiteBackoffDuration(siteID, level, intervalMinutes)
+	if d < time.Hour {
+		mins := int(d / time.Minute)
+		if mins < 1 {
+			mins = 1
+		}
+		return fmt.Sprintf("%d 分钟", mins)
 	}
+	hours := int(d / time.Hour)
+	return fmt.Sprintf("%d 小时", hours)
 }
 
 // SchedulerStatuses returns per-site scheduled check timing and backoff state for Settings -> 订阅与直播.
@@ -426,6 +426,7 @@ func (b *Backend) SchedulerStatuses() map[string]SiteSchedulerStatus {
 	if b.subs != nil {
 		states = b.subs.ListSiteSchedulerStates()
 	}
+	intervalMinutes := b.GetSettings().Subscription.IntervalMinutes
 	for _, id := range allSites {
 		key := string(id)
 		var label string
@@ -449,7 +450,7 @@ func (b *Backend) SchedulerStatuses() map[string]SiteSchedulerStatus {
 			raw := states[key]
 			st.LastError = raw.LastStopReason
 			if inBackoff, until := b.subs.IsSiteInBackoff(key); inBackoff {
-				lvlText := formatBackoffLevelText(raw.BackoffLevel)
+				lvlText := formatBackoffDurationText(key, raw.BackoffLevel, intervalMinutes)
 				st.BackingOff = true
 				st.CurrentInterval = lvlText
 				st.BackoffUntil = until.UTC().Format("2006-01-02T15:04:05Z07:00")
@@ -511,7 +512,9 @@ func (b *Backend) RelationTags(ctx context.Context) ([]bilibili.RelationTag, err
 	if err := b.requireSiteLogin(site.Bilibili); err != nil {
 		return nil, err
 	}
-	return b.bili.RelationTags(ctx)
+	res, err := b.bili.RelationTags(b.manualProbeContext(ctx))
+	err = b.finishManualSiteRequest(ctx, site.Bilibili, err)
+	return res, err
 }
 
 // RelationFollowings returns a page of Bilibili followings (either for a specific tagID > 0 or all followings when tagID == 0).
@@ -519,14 +522,18 @@ func (b *Backend) RelationFollowings(ctx context.Context, tagID int64, pn, ps in
 	if err := b.requireSiteLogin(site.Bilibili); err != nil {
 		return nil, err
 	}
+	probeCtx := b.manualProbeContext(ctx)
 	if tagID != 0 {
 		mid := b.cred.Status().Mid
-		return b.bili.RelationTagUsers(ctx, mid, tagID, pn, ps)
+		res, err := b.bili.RelationTagUsers(probeCtx, mid, tagID, pn, ps)
+		err = b.finishManualSiteRequest(ctx, site.Bilibili, err)
+		return res, err
 	}
-	page, err := b.bili.RelationFollowings(ctx, 0, pn, ps)
+	page, err := b.bili.RelationFollowings(probeCtx, 0, pn, ps)
 	if err != nil {
-		return nil, err
+		return nil, b.finishManualSiteRequest(ctx, site.Bilibili, err)
 	}
+	_ = b.finishManualSiteRequest(ctx, site.Bilibili, nil)
 	return page.Items, nil
 }
 
@@ -549,15 +556,17 @@ func (b *Backend) FollowingGroups(ctx context.Context, siteID string) ([]Followi
 	if err != nil {
 		return nil, err
 	}
+	probeCtx := b.manualProbeContext(ctx)
 	switch id {
 	case site.Bilibili:
 		if err := b.requireSiteLogin(site.Bilibili); err != nil {
 			return nil, err
 		}
-		tags, err := b.bili.RelationTags(ctx)
+		tags, err := b.bili.RelationTags(probeCtx)
 		if err != nil {
-			return nil, err
+			return nil, b.finishManualSiteRequest(ctx, site.Bilibili, err)
 		}
+		_ = b.finishManualSiteRequest(ctx, site.Bilibili, nil)
 		out := make([]FollowingGroupDTO, 0, len(tags))
 		for _, t := range tags {
 			out = append(out, FollowingGroupDTO{
@@ -575,10 +584,11 @@ func (b *Backend) FollowingGroups(ctx context.Context, siteID string) ([]Followi
 		if !accountWeiboFollowGroupsEnabled {
 			return nil, nil
 		}
-		groups, err := b.weibo.ListFollowGroups(ctx)
+		groups, err := b.weibo.ListFollowGroups(probeCtx)
 		if err != nil {
-			return nil, err
+			return nil, b.finishManualSiteRequest(ctx, site.Weibo, err)
 		}
+		_ = b.finishManualSiteRequest(ctx, site.Weibo, nil)
 		out := make([]FollowingGroupDTO, 0, len(groups))
 		for _, g := range groups {
 			out = append(out, FollowingGroupDTO{
@@ -631,6 +641,7 @@ func (b *Backend) FollowingCreatorsPage(ctx context.Context, siteID, groupID str
 		groupID = ""
 	}
 
+	probeCtx := b.manualProbeContext(ctx)
 	switch id {
 	case site.Bilibili:
 		if err := b.requireSiteLogin(site.Bilibili); err != nil {
@@ -644,17 +655,18 @@ func (b *Backend) FollowingCreatorsPage(ctx context.Context, siteID, groupID str
 			if pErr != nil {
 				return FollowingCreatorsPageDTO{}, &site.Error{Site: site.Bilibili, Kind: site.ErrKindBadRequest, Message: "无效的关注分组"}
 			}
-			users, err = b.bili.RelationTagUsers(ctx, b.cred.Status().Mid, tagID, page, ps)
+			users, err = b.bili.RelationTagUsers(probeCtx, b.cred.Status().Mid, tagID, page, ps)
 			if err != nil {
-				return FollowingCreatorsPageDTO{}, err
+				return FollowingCreatorsPageDTO{}, b.finishManualSiteRequest(ctx, site.Bilibili, err)
 			}
 		} else {
-			res, rErr := b.bili.RelationFollowings(ctx, 0, page, ps)
+			res, rErr := b.bili.RelationFollowings(probeCtx, 0, page, ps)
 			if rErr != nil {
-				return FollowingCreatorsPageDTO{}, rErr
+				return FollowingCreatorsPageDTO{}, b.finishManualSiteRequest(ctx, site.Bilibili, rErr)
 			}
 			users, total = res.Items, res.Total
 		}
+		_ = b.finishManualSiteRequest(ctx, site.Bilibili, nil)
 		items := make([]FollowingCreatorDTO, 0, len(users))
 		for _, u := range users {
 			uid := strconv.FormatInt(u.Mid, 10)
@@ -709,13 +721,14 @@ func (b *Backend) FollowingCreatorsPage(ctx context.Context, siteID, groupID str
 			if !accountWeiboFollowGroupsEnabled {
 				return FollowingCreatorsPageDTO{}, &site.Error{Site: site.Weibo, Kind: site.ErrKindBadRequest, Message: "微博关注分组筛选暂未开放"}
 			}
-			res, err = b.weibo.ListFollowGroupMembers(ctx, selfUID, groupID, page, seen)
+			res, err = b.weibo.ListFollowGroupMembers(probeCtx, selfUID, groupID, page, seen)
 		} else {
-			res, err = b.weibo.ListFollowing(ctx, selfUID, page, seen)
+			res, err = b.weibo.ListFollowing(probeCtx, selfUID, page, seen)
 		}
 		if err != nil {
-			return FollowingCreatorsPageDTO{}, err
+			return FollowingCreatorsPageDTO{}, b.finishManualSiteRequest(ctx, site.Weibo, err)
 		}
+		_ = b.finishManualSiteRequest(ctx, site.Weibo, nil)
 		b.mergeWeiboFollowingSeen(groupID, gen, seen)
 		items := make([]FollowingCreatorDTO, 0, len(res.Users))
 		for _, u := range res.Users {
@@ -817,10 +830,11 @@ func (b *Backend) xFollowingCreatorsPage(ctx context.Context, cursor string, pag
 		}
 	}
 	seen, gen := b.snapshotXSeenMap(&b.xFollowingSeen, "all", reset)
-	res, err := b.x.ListFollowing(ctx, selfUID, cursor, seen)
+	res, err := b.x.ListFollowing(b.manualProbeContext(ctx), selfUID, cursor, seen)
 	if err != nil {
-		return FollowingCreatorsPageDTO{}, err
+		return FollowingCreatorsPageDTO{}, b.finishManualSiteRequest(ctx, site.X, err)
 	}
+	_ = b.finishManualSiteRequest(ctx, site.X, nil)
 	b.mergeXSeenMap(&b.xFollowingSeen, "all", gen, seen)
 	items := make([]FollowingCreatorDTO, 0, len(res.Users))
 	for _, u := range res.Users {

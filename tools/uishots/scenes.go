@@ -719,6 +719,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"选择订阅检查间隔",
 				"定时检查状态摘要",
 				"退避状态：douyin",
+				"探测恢复退避：douyin",
 			},
 			RequiredTexts: []string{
 				"检查间隔",
@@ -1185,6 +1186,46 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 			ForbiddenLabels: []string{
 				"微博零内容提示",
+			},
+		},
+		{
+			Name: "weibo-user-muted",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.UserListFilter = "all"
+				app.CurrentWeiboUser = &service.WeiboUserView{
+					UID:            "500000010",
+					ScreenName:     "禁言测试博主",
+					Description:    "用于验证微博禁言账号温和横幅与单账号隔离",
+					StatusesCount:  360,
+					FollowersCount: 8200,
+					FriendsCount:   45,
+					IsMuteUser:     true,
+					CanonicalURL:   "https://weibo.com/u/500000010",
+				}
+				app.CurrentWeiboPosts = nil
+				app.WeiboPostsHasMore = false
+				app.WeiboPostsAuthExpired = false
+				app.WeiboPostsUncertainEmpty = false
+				app.WeiboPostsError = ""
+				app.WeiboBottomTipsVisible = false
+				app.WeiboBottomTipsText = ""
+				app.WeiboUserListState = &mygoui.ListState{}
+				app.CurrentRoute = ui.RouteWeiboUser
+			},
+			RequiredLabels: []string{
+				"用户页站点标记",
+				"微博禁言提示",
+				"微博禁言空态提示",
+			},
+			RequiredTexts: []string{
+				"该微博用户目前处于禁言状态，暂无法查看微博",
+			},
+			ForbiddenLabels: []string{
+				"微博空壳提示",
+				"微博零内容提示",
+				"重试加载微博",
 			},
 		},
 		{
@@ -2296,6 +2337,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"队列详情站点：cq_demo_x",
 				"队列详情计数：cq_demo_bili",
 				"暂停缓存队列：cq_demo_bili",
+				"立即重试缓存队列：cq_demo_dy",
 				"取消缓存队列：cq_demo_bili",
 				"置顶缓存队列：cq_demo_bili_2",
 				"上移缓存队列：cq_demo_bili_2",

@@ -1906,9 +1906,11 @@ func (m *Manager) cacheWeiboWatermarkFreeCompanion(
 			return nil, ctx.Err()
 		}
 		discardTemp()
-		if isSiteStopError(dlErr) || isStorageError(dlErr) {
+		if isStorageError(dlErr) || site.KindOf(dlErr) == site.ErrKindAuthRequired {
 			return nil, dlErr
 		}
+		// Optional /oslarge/ companion CDN errors (including 418/429) skip only the
+		// companion without failing the official primary image or tripping site backoff (DEC-089).
 		return fallbackPrevOrSkip()
 	}
 

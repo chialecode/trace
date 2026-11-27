@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/chialecode/trace/internal/library"
+	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/subscription"
 	"github.com/egoist/mygo/ui"
@@ -640,12 +641,24 @@ func (a *App) renderSubscriptionSettings(c *ui.Context) {
 					}
 					for _, bl := range backoffLines {
 						item := bl
-						ui.Text(c, item.Text).
-							Label("退避状态：" + item.SiteID).
-							FontSize(12).
-							FontWeight(600).
-							TextColor(ColorDotYellow).
-							MaxLines(2)
+						probing := a.isPending("probe-backoff-" + item.SiteID)
+						btnText := "重试恢复"
+						if probing {
+							btnText = "探测中…"
+						}
+						ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
+							ui.Text(c, item.Text).
+								Label("退避状态：" + item.SiteID).
+								FontSize(12).
+								FontWeight(600).
+								TextColor(ColorDotYellow).
+								MaxLines(2).
+								Grow(1).
+								Shrink(1)
+							if OutlinePillButton(c, btnText, "探测恢复退避："+item.SiteID).Shrink(0).Disabled(probing).Clicked() && !probing {
+								a.probeSiteBackoff(item.SiteID)
+							}
+						})
 					}
 				})
 			}
@@ -667,6 +680,24 @@ func (a *App) renderSubscriptionSettings(c *ui.Context) {
 			}
 		}
 		renderLiveCheckRules(c, a.DraftSettings.Live.PollIntervalSeconds)
+	})
+}
+
+func (a *App) probeSiteBackoff(siteID string) {
+	if a.backend == nil {
+		return
+	}
+	sid := normalizeSiteIDUI(siteID)
+	backend := a.backend
+	requestGuarded(a, "probe-backoff-"+sid, nil, func(ctx context.Context) (service.SiteSchedulerStatus, error) {
+		return backend.ProbeSiteBackoff(ctx, sid)
+	}, func(st service.SiteSchedulerStatus) {
+		a.RefreshData()
+		label := firstNonEmptyStrUI(st.DisplayName, site.DisplayName(sid))
+		a.notifyInfo(label + " 已恢复正常请求，后台任务已重新唤醒")
+	}, func(err error) {
+		a.RefreshData()
+		a.showError(err)
 	})
 }
 

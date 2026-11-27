@@ -318,7 +318,7 @@ func NewBackend(opts Options) (*Backend, error) {
 		accountXSeen:                make(map[string]map[string]bool),
 		xFollowingSeen:              make(map[string]map[string]bool),
 		xFollowingCursors:           make(map[int]string),
-		fullCacheUseFeatureOriginal: opts.FullCacheUseFeatureOriginal,
+		fullCacheUseFeatureOriginal: true,
 		lib:                         libStore,
 		desktop:                     desk,
 		events:                      evBus,
@@ -497,6 +497,28 @@ func NewBackend(opts Options) (*Backend, error) {
 	})
 	dlMgr.SetSiteBackoffChecker(func(siteID site.ID) (bool, time.Time) {
 		return subMgr.IsSiteInBackoff(string(siteID))
+	})
+	dlMgr.SetManualProbeResultHandler(func(siteID site.ID, err error) {
+		if err == nil {
+			b.onManualSiteRequestSuccess(siteID)
+			return
+		}
+		k := site.KindOf(err)
+		if k == site.ErrKindRiskControl || k == site.ErrKindRateLimited {
+			b.recordManualSiteProbeFailure(siteID, err)
+		}
+	})
+	subMgr.SetOnBackoffCleared(func(siteID site.ID) {
+		b.logInfo(fmt.Sprintf("backoff.cleared site=%s", siteID))
+		if b.dl != nil {
+			b.dl.Wake()
+		}
+		if b.queue != nil {
+			b.queue.onSiteBackoffCleared(siteID)
+		}
+		if b.events != nil {
+			b.events.PublishSite(EventSubscriptionChecked, string(siteID), "backoff_cleared")
+		}
 	})
 	liveMgr.SetWebRIDSyncFunc(func(siteID site.ID, uid, webRID string, _ bool) {
 		if siteID == site.Douyin && uid != "" {
@@ -810,19 +832,138 @@ func (b *Backend) recordXAutomaticStop(err error) {
 		return
 	}
 	kind := site.KindOf(err)
-	if kind == site.ErrKindRateLimited {
+	if until := extractManualProbeResetAt(site.X, kind, err); !until.IsZero() {
+		b.subs.RecordSiteAutomaticStopUntil(string(site.X), kind, until)
+		return
+	}
+	b.subs.RecordSiteAutomaticStop(string(site.X), kind)
+}
+
+func extractManualProbeResetAt(sid site.ID, kind string, err error) time.Time {
+	if kind != site.ErrKindRateLimited || err == nil {
+		return time.Time{}
+	}
+	if sid == site.X {
 		if rl, ok := x.RateLimitDetails(err); ok {
-			until := rl.BlockedUntil
-			if until.IsZero() {
-				until = rl.ResetAt
+			if !rl.BlockedUntil.IsZero() {
+				return rl.BlockedUntil
 			}
-			if !until.IsZero() {
-				b.subs.RecordSiteAutomaticStopUntil(string(site.X), kind, until)
-				return
+			if !rl.ResetAt.IsZero() {
+				return rl.ResetAt
 			}
 		}
 	}
-	b.subs.RecordSiteAutomaticStop(string(site.X), kind)
+	return time.Time{}
+}
+
+func wrapStillInBackoffProbeError(sid site.ID, kind string, err error) error {
+	if err == nil {
+		return nil
+	}
+	prefix := "探测仍处于风控中，已保持退避："
+	if kind == site.ErrKindRateLimited {
+		prefix = "探测仍处于限流中，已保持退避："
+	}
+	msg := strings.TrimSpace(err.Error())
+	if strings.HasPrefix(msg, "探测仍处于") {
+		return err
+	}
+	return &site.Error{
+		Site:    sid,
+		Kind:    kind,
+		Message: prefix + msg,
+		Err:     err,
+	}
+}
+
+func (b *Backend) manualProbeContext(ctx context.Context) context.Context {
+	if site.AutomaticRequestSource(ctx) != "" {
+		return ctx
+	}
+	return site.WithManualProbe(ctx)
+}
+
+func (b *Backend) onManualSiteRequestSuccess(sid site.ID) {
+	if b == nil || b.subs == nil || !sid.Valid() {
+		return
+	}
+	if active, _ := b.subs.IsSiteInBackoff(string(sid)); active {
+		b.subs.ClearSiteBackoff(string(sid))
+	}
+}
+
+func (b *Backend) recordManualSiteProbeFailure(sid site.ID, err error) {
+	if b == nil || b.subs == nil || !sid.Valid() || err == nil {
+		return
+	}
+	kind := site.KindOf(err)
+	if kind != site.ErrKindRiskControl && kind != site.ErrKindRateLimited {
+		return
+	}
+	resetAt := extractManualProbeResetAt(sid, kind, err)
+	b.subs.RecordSiteManualProbeFailure(string(sid), kind, resetAt)
+}
+
+func (b *Backend) finishManualSiteRequest(ctx context.Context, sid site.ID, err error) error {
+	if site.AutomaticRequestSource(ctx) != "" {
+		return err
+	}
+	if err == nil {
+		b.onManualSiteRequestSuccess(sid)
+		return nil
+	}
+	kind := site.KindOf(err)
+	if kind == site.ErrKindRiskControl || kind == site.ErrKindRateLimited {
+		wasActive := false
+		if b != nil && b.subs != nil {
+			wasActive, _ = b.subs.IsSiteInBackoff(string(sid))
+		}
+		b.recordManualSiteProbeFailure(sid, err)
+		if wasActive {
+			return wrapStillInBackoffProbeError(sid, kind, err)
+		}
+	}
+	return err
+}
+
+// ProbeSiteBackoff executes a single explicit user-initiated read-only probe for siteID
+// to test whether backoff can be cleared immediately (DEC-089).
+func (b *Backend) ProbeSiteBackoff(ctx context.Context, siteID string) (SiteSchedulerStatus, error) {
+	sid, err := normalizeSiteID(siteID)
+	if err != nil {
+		return SiteSchedulerStatus{}, err
+	}
+	if err := b.requireSiteLogin(sid); err != nil {
+		return b.SchedulerStatuses()[string(sid)], err
+	}
+	probeCtx := site.WithManualProbe(ctx)
+	var probeErr error
+	switch sid {
+	case site.Bilibili:
+		_, probeErr = b.bili.VerifyCredential(probeCtx)
+	case site.Douyin:
+		_, probeErr = b.douyin.GetSelfProfile(probeCtx)
+	case site.Weibo:
+		_, probeErr = b.weibo.GetSelfProfile(probeCtx)
+	case site.X:
+		_, probeErr = b.x.GetSelfProfile(probeCtx)
+	default:
+		probeErr = &site.Error{Site: sid, Kind: site.ErrKindBadRequest, Message: "不支持的站点"}
+	}
+	if probeErr != nil {
+		kind := site.KindOf(probeErr)
+		b.Logf("manual_probe.%s error=%s", sid, kind)
+		if kind == site.ErrKindRiskControl || kind == site.ErrKindRateLimited {
+			b.recordManualSiteProbeFailure(sid, probeErr)
+			return b.SchedulerStatuses()[string(sid)], wrapStillInBackoffProbeError(sid, kind, probeErr)
+		}
+		return b.SchedulerStatuses()[string(sid)], probeErr
+	}
+	if b.subs != nil {
+		b.subs.ClearSiteBackoff(string(sid))
+	}
+	b.Logf("manual_probe.%s recovered=true", sid)
+	return b.SchedulerStatuses()[string(sid)], nil
 }
 
 // SetWeiboFullCacheUseFeatureOriginal toggles whether Weibo full-cache queues

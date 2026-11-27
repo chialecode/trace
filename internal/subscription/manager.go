@@ -188,6 +188,7 @@ type Manager struct {
 	autoCacheGate          func() error
 	onLiveHint             func(acc AccountRef, roomID, webRID string)
 	onAuthorAvatar         func(siteID, uid, rawFace string)
+	onBackoffCleared       func(siteID site.ID)
 	siteLiveCheck          func(ctx context.Context, accounts []AccountRef) error
 	sleepFunc              func(ctx context.Context, d time.Duration) error
 	rateLimitJitterFunc    func() time.Duration

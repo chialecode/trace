@@ -175,6 +175,11 @@ func (a *App) renderWeiboUserHeader(c *ui.Context, u *service.WeiboUserView) {
 					DrawIcon(c, "alert-circle", 15, ColorDotYellow, 1.8)
 					ui.Text(c, u.BlockText).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMain).MaxLines(2)
 				})
+			} else if u.IsMuteUser {
+				ui.Row(c).Label("微博禁言提示").FillWidth().Padding(8, 12).Radius(8).Background(ColorWarnBg).Border(1, ColorDotYellow).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
+					DrawIcon(c, "alert-circle", 15, ColorDotYellow, 1.8)
+					ui.Text(c, "该微博用户目前处于禁言状态，暂无法查看微博").FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMain).MaxLines(2)
+				})
 			}
 
 			// Single "微博" list heading + "全部 / 未缓存" filter (no tabs, no live banner)
@@ -201,8 +206,23 @@ func (a *App) renderWeiboUserFooter(c *ui.Context, u *service.WeiboUserView, vis
 			return
 		}
 
+		if u.IsMuteUser && len(a.CurrentWeiboPosts) == 0 && !a.WeiboPostsHasMore {
+			ui.Row(c).
+				Label("微博禁言空态提示").
+				FillWidth().
+				Padding(10, 14).
+				Radius(10).
+				Background(ColorBgSecondary).
+				Justify(ui.Center).
+				AlignItems(ui.Center).
+				Children(func() {
+					ui.Text(c, "该微博用户目前处于禁言状态，暂无法查看微博").FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+				})
+			return
+		}
+
 		if a.WeiboPostsUncertainEmpty {
-			msg := firstNonEmptyStrUI(a.WeiboPostsError, "微博返回了异常空列表，可能是风控或受限，可稍后重试")
+			msg := firstNonEmptyStrUI(a.WeiboPostsError, "第 1 页暂无可见微博（可能为全私密、超出可见时间窗或账号受限），可稍后重试")
 			renderErrorBanner(c, "微博空壳提示", msg, func() {
 				if OutlinePillButton(c, "重试", "重试加载微博").Clicked() {
 					a.LoadMoreWeiboPosts()

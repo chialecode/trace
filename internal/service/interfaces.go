@@ -301,6 +301,8 @@ type UpdateService interface {
 	CheckAccount(ctx context.Context, subID, siteName, uid string) (subscription.CheckSummary, error)
 	CancelSubscriptionCheck()
 	SchedulerStatuses() map[string]SiteSchedulerStatus
+	// ProbeSiteBackoff sends a single manual read-only probe for siteID during backoff (DEC-089).
+	ProbeSiteBackoff(ctx context.Context, siteID string) (SiteSchedulerStatus, error)
 	// CheckPlan is Tasks › 检查计划: each account's last and next checks.
 	CheckPlan() []AccountCheckRow
 }

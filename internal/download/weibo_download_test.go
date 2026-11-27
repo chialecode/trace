@@ -1221,7 +1221,7 @@ func TestMultiSiteDispatchUnknownRejectionAndWeiboCircuitBreakerIsolation(t *tes
 		badTask.TaskID, badTask.Site, badTask.Kind, badTask.TargetID, now, now); err != nil {
 		t.Fatalf("insert unknown task row: %v", err)
 	}
-	mgr.runTask(context.Background(), badTask)
+	mgr.runTask(context.Background(), badTask, false)
 	detailBad, ok, err := mgr.TaskDetail(badTask.TaskID)
 	if err != nil || !ok {
 		t.Fatalf("TaskDetail(bad): ok=%v err=%v", ok, err)

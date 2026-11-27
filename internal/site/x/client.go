@@ -552,7 +552,7 @@ func (c *Client) RateLimitStateOf(operation string) (RateLimitState, bool) {
 }
 
 func (c *Client) checkOperationRateLimit(ctx context.Context, operation, endpoint string) error {
-	if operation == "" {
+	if operation == "" || site.IsManualProbe(ctx) {
 		return nil
 	}
 	now := c.nowFn().UTC()

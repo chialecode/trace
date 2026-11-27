@@ -64,7 +64,8 @@ func ClassifyHTTPAndEnvelopeError(in EnvelopeErrorContext) *site.Error {
 		}
 
 	case in.StatusCode == http.StatusForbidden:
-		// Check for explicit business permission JSON (20112) before treating HTTP 403 as WAF risk control.
+		// Inspect explicit business error codes or visibility/unavailable messages in JSON
+		// before falling back to WAF risk control (DEC-089).
 		if len(trimmed) > 0 && trimmed[0] == '{' {
 			if bizErr := tryClassifyExplicitForbiddenJSON(endpoint, in.StatusCode, trimmed); bizErr != nil {
 				return bizErr
@@ -310,8 +311,35 @@ func tryClassifyExplicitForbiddenJSON(endpoint string, statusCode int, body []by
 	if err := dec.Decode(&top); err != nil {
 		return nil
 	}
+	if hasWeiboChallengeField(top) {
+		return nil
+	}
+	msg := extractEnvelopeMessage(top)
+	redirURL := strings.ToLower(extractEnvelopeURL(top))
+	if isRiskRedirectLocation(redirURL) || isVisitorRedirectLocation(redirURL) || isRiskMessage(msg) {
+		return nil
+	}
 	code := extractBizErrorCode(top)
-	if code == 20112 {
+	switch code {
+	case 20003:
+		return &site.Error{
+			Site:       site.Weibo,
+			Kind:       site.ErrKindUnavailable,
+			Code:       code,
+			HTTPStatus: statusCode,
+			Endpoint:   endpoint,
+			Message:    "该微博用户不存在或已注销",
+		}
+	case 20101:
+		return &site.Error{
+			Site:       site.Weibo,
+			Kind:       site.ErrKindUnavailable,
+			Code:       code,
+			HTTPStatus: statusCode,
+			Endpoint:   endpoint,
+			Message:    "该微博不存在或已被作者删除",
+		}
+	case 20112:
 		return &site.Error{
 			Site:       site.Weibo,
 			Kind:       site.ErrKindForbidden,
@@ -319,6 +347,26 @@ func tryClassifyExplicitForbiddenJSON(endpoint string, statusCode int, body []by
 			HTTPStatus: statusCode,
 			Endpoint:   endpoint,
 			Message:    "没有这条微博的查看权限",
+		}
+	}
+	if isForbiddenMessage(msg) {
+		return &site.Error{
+			Site:       site.Weibo,
+			Kind:       site.ErrKindForbidden,
+			Code:       code,
+			HTTPStatus: statusCode,
+			Endpoint:   endpoint,
+			Message:    msg,
+		}
+	}
+	if isUnavailableMessage(msg) {
+		return &site.Error{
+			Site:       site.Weibo,
+			Kind:       site.ErrKindUnavailable,
+			Code:       code,
+			HTTPStatus: statusCode,
+			Endpoint:   endpoint,
+			Message:    msg,
 		}
 	}
 	return nil
@@ -361,7 +409,29 @@ func classifyWeiboOKError(endpoint string, statusCode int, okVal int, top map[st
 		}
 	}
 
-	if isRateLimitCode(bizCode) || isRateLimitMessage(msg) {
+	if isRateLimitCode(bizCode) {
+		return &site.Error{
+			Site:       site.Weibo,
+			Kind:       site.ErrKindRateLimited,
+			Code:       firstNonZero(bizCode, okVal),
+			HTTPStatus: statusCode,
+			Endpoint:   endpoint,
+			Message:    "微博请求过于频繁，已停止请求并进入退避",
+		}
+	}
+
+	if isTransientServerBusyMessage(msg) {
+		return &site.Error{
+			Site:       site.Weibo,
+			Kind:       site.ErrKindNetwork,
+			Code:       firstNonZero(bizCode, okVal),
+			HTTPStatus: statusCode,
+			Endpoint:   endpoint,
+			Message:    "微博服务端暂时繁忙，请稍后重试",
+		}
+	}
+
+	if isRateLimitMessage(msg) {
 		return &site.Error{
 			Site:       site.Weibo,
 			Kind:       site.ErrKindRateLimited,
@@ -470,6 +540,16 @@ func classifyComponentCodeError(endpoint string, statusCode int, codeStr string,
 			HTTPStatus: statusCode,
 			Endpoint:   endpoint,
 			Message:    "微博视频组件触发风控或验证拦截，已立即停止请求",
+		}
+	}
+	if isTransientServerBusyMessage(msg) {
+		return &site.Error{
+			Site:       site.Weibo,
+			Kind:       site.ErrKindNetwork,
+			Code:       numCode,
+			HTTPStatus: statusCode,
+			Endpoint:   endpoint,
+			Message:    "微博视频组件服务端暂时繁忙，请稍后重试",
 		}
 	}
 	if isRateLimitMessage(msg) {
@@ -589,7 +669,13 @@ func isRateLimitCode(code int) bool {
 func isRateLimitMessage(msg string) bool {
 	lower := strings.ToLower(msg)
 	return containsAny(lower, "too many", "rate limit", "frequently") ||
-		containsAny(msg, "频繁", "稍后再试", "请求过多", "访问太快", "操作过快", "系统繁忙", "次数超限")
+		containsAny(msg, "频繁", "稍后再试", "请求过多", "访问太快", "操作过快", "次数超限")
+}
+
+func isTransientServerBusyMessage(msg string) bool {
+	lower := strings.ToLower(msg)
+	return containsAny(lower, "server busy", "system busy") ||
+		containsAny(msg, "系统繁忙", "服务繁忙")
 }
 
 func isLoginMessage(msg string) bool {

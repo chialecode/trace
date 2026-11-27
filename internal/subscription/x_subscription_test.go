@@ -1193,28 +1193,47 @@ func TestXSchedulerQuotaRoundCapPacingResetBackoffAndManualCheckRules(t *testing
 		t.Fatalf("rate_limited backoff = (%v, %v), want (true, %v)", inB, until, wantUntil)
 	}
 
-	// Manual check while rate-limit brake is active must make 0 calls and report DeferredByBackoff.
+	// DEC-089: While rate-limit brake is active, scheduled rounds still skip X with 0 calls,
+	// whereas an explicit manual check sends 1 live probe: if still rate-limited it preserves
+	// backoff without doubling; once healthy it succeeds and immediately clears X backoff!
+	xFetcher.resetCalls()
+	sumSchedBlocked, err := mgr.RunScheduledRound(ctx)
+	if err != nil {
+		t.Fatalf("scheduled check under X backoff returned unexpected err: %v", err)
+	}
+	if !sumSchedBlocked.DeferredByBackoff || !slices.Contains(sumSchedBlocked.SiteDeferredByBackoff, "x") || len(xFetcher.callSnapshot()) != 0 {
+		t.Fatalf("scheduled X round must honor rate-limit brake with 0 calls, got sum=%+v calls=%v", sumSchedBlocked, xFetcher.callSnapshot())
+	}
+
+	// Manual probe while still rate-limited sends 1 request and preserves existing backoff without doubling.
+	prevState := mgr.GetSiteSchedulerState("x")
+	xFetcher.resetCalls()
+	sumManualStillRL, err := mgr.CheckAccount(ctx, owner0.ID, "x", xUID(0))
+	if err != nil {
+		t.Fatalf("manual probe under X rate limit returned unexpected err: %v", err)
+	}
+	if sumManualStillRL.SiteStopped["x"] != site.ErrKindRateLimited || len(xFetcher.callSnapshot()) != 1 {
+		t.Fatalf("manual X probe under active rate limit should send 1 call and stop, got sum=%+v calls=%v", sumManualStillRL, xFetcher.callSnapshot())
+	}
+	if afterState := mgr.GetSiteSchedulerState("x"); afterState.BackoffLevel != prevState.BackoffLevel {
+		t.Fatalf("failed manual X probe must not escalate BackoffLevel: got %d, want %d", afterState.BackoffLevel, prevState.BackoffLevel)
+	}
+
+	// Manual probe when X has recovered sends 1 request and clears X backoff immediately (before reset+jitter expires!).
 	failMu.Lock()
 	nextErr = nil
 	failMu.Unlock()
 	xFetcher.resetCalls()
-	sumManualBlocked, err := mgr.CheckAccount(ctx, owner0.ID, "x", xUID(0))
-	if err != nil {
-		t.Fatalf("manual check under X backoff returned unexpected err: %v", err)
-	}
-	if !sumManualBlocked.DeferredByBackoff || !slices.Contains(sumManualBlocked.SiteDeferredByBackoff, "x") || len(xFetcher.callSnapshot()) != 0 {
-		t.Fatalf("manual X check must honor rate-limit brake with 0 calls, got sum=%+v calls=%v", sumManualBlocked, xFetcher.callSnapshot())
-	}
-
-	// Once clock passes reset + jitter, manual check resumes cleanly.
-	now = wantUntil.Add(time.Second)
-	xFetcher.resetCalls()
 	sumManualResumed, err := mgr.CheckAccount(ctx, owner0.ID, "x", xUID(0))
 	if err != nil || sumManualResumed.CheckedCreators != 1 || len(xFetcher.callSnapshot()) != 1 {
-		t.Fatalf("manual X check should resume after reset+jitter, got sum=%+v calls=%v err=%v", sumManualResumed, xFetcher.callSnapshot(), err)
+		t.Fatalf("manual X probe should succeed and recover immediately, got sum=%+v calls=%v err=%v", sumManualResumed, xFetcher.callSnapshot(), err)
+	}
+	if inB, _ := mgr.IsSiteInBackoff("x"); inB {
+		t.Fatalf("successful manual X probe must clear X backoff immediately")
 	}
 
-	// 4. Risk-control exponential backoff doubles up to 24h cap and also blocks manual check.
+	// 4. Risk-control exponential backoff doubles up to 24h cap for scheduled rounds,
+	// while explicit manual check still sends 1 probe and clears backoff on success (or keeps level on failure).
 	wantHours := []time.Duration{2 * time.Hour, 4 * time.Hour, 8 * time.Hour, 16 * time.Hour, 24 * time.Hour, 24 * time.Hour}
 	for i, wantDur := range wantHours {
 		now = now.Add(2 * time.Second)
@@ -1225,9 +1244,21 @@ func TestXSchedulerQuotaRoundCapPacingResetBackoffAndManualCheckRules(t *testing
 		}
 	}
 	xFetcher.resetCalls()
-	sumRiskBlocked, err := mgr.CheckAccount(ctx, owner0.ID, "x", xUID(0))
-	if err != nil || !sumRiskBlocked.DeferredByBackoff || len(xFetcher.callSnapshot()) != 0 {
-		t.Fatalf("manual X check must honor risk_control circuit breaker with 0 calls, got sum=%+v calls=%v err=%v", sumRiskBlocked, xFetcher.callSnapshot(), err)
+	sumSchedRiskBlocked, err := mgr.RunScheduledRound(ctx)
+	if err != nil || !sumSchedRiskBlocked.DeferredByBackoff || len(xFetcher.callSnapshot()) != 0 {
+		t.Fatalf("scheduled X check must honor risk_control circuit breaker with 0 calls, got sum=%+v calls=%v err=%v", sumSchedRiskBlocked, xFetcher.callSnapshot(), err)
+	}
+	failMu.Lock()
+	nextErr = &site.Error{Site: site.X, Kind: site.ErrKindRiskControl, Message: "still locked"}
+	failMu.Unlock()
+	levelBeforeProbe := mgr.GetSiteSchedulerState("x").BackoffLevel
+	xFetcher.resetCalls()
+	sumRiskProbeFail, err := mgr.CheckAccount(ctx, owner0.ID, "x", xUID(0))
+	if err != nil || sumRiskProbeFail.SiteStopped["x"] != site.ErrKindRiskControl || len(xFetcher.callSnapshot()) != 1 {
+		t.Fatalf("manual X risk_control probe should send 1 call and keep backoff, got sum=%+v calls=%v err=%v", sumRiskProbeFail, xFetcher.callSnapshot(), err)
+	}
+	if after := mgr.GetSiteSchedulerState("x").BackoffLevel; after != levelBeforeProbe {
+		t.Fatalf("failed manual X risk_control probe escalated BackoffLevel: got %d, want %d", after, levelBeforeProbe)
 	}
 }
 

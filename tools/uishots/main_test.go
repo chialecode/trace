@@ -345,6 +345,7 @@ func TestUIShotsScenesAndStructuredAssertions(t *testing.T) {
 		"douyin-note",
 		"weibo-user",
 		"weibo-user-empty-shell",
+		"weibo-user-muted",
 		"weibo-post",
 		"weibo-post-video",
 		"weibo-post-cards",

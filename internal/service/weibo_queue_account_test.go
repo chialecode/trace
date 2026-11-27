@@ -267,7 +267,7 @@ func TestWeiboFullCacheQueueOriginalOnlyReuseBottomTipsAndSweep(t *testing.T) {
 		t.Fatalf("SaveItem partial: %v", err)
 	}
 
-	// Start Weibo full-cache queue (default FullCacheUseFeatureOriginal=false -> feature=0 + local original-only filter).
+	// Start Weibo full-cache queue (DEC-089: default FullCacheUseFeatureOriginal=true -> feature=1).
 	enqTask, err := h.backend.EnqueueCacheQueue(ctx, CacheQueueRequest{
 		Site:     "weibo",
 		User:     synthWeiboUID,
@@ -286,9 +286,9 @@ func TestWeiboFullCacheQueueOriginalOnlyReuseBottomTipsAndSweep(t *testing.T) {
 	if !strings.Contains(done.Note, "半年") || !strings.Contains(done.StatusText, "半年") {
 		t.Fatalf("expected BottomTipsText in Note/StatusText, got note=%q statusText=%q", done.Note, done.StatusText)
 	}
-	// Default flag uses feature=0.
-	if feat, _ := h.wbLastFeature.Load().(string); feat != "0" {
-		t.Fatalf("default feature param = %q, want 0", feat)
+	// Default flag uses feature=1 (DEC-089).
+	if feat, _ := h.wbLastFeature.Load().(string); feat != "1" {
+		t.Fatalf("default feature param = %q, want 1", feat)
 	}
 	// Original posts (plain, long, host) must be cached; retweets & fast-retweets must be skipped!
 	for _, mid := range []string{synthWeiboMidPlain, synthWeiboMidLong, synthWeiboMidHost} {
@@ -318,8 +318,8 @@ func TestWeiboFullCacheQueueOriginalOnlyReuseBottomTipsAndSweep(t *testing.T) {
 		}
 	}
 
-	// Verify SetWeiboFullCacheUseFeatureOriginal(true) passes feature=1 on a new sweep.
-	h.backend.SetWeiboFullCacheUseFeatureOriginal(true)
+	// Verify SetWeiboFullCacheUseFeatureOriginal(false) switches back to feature=0 on a new sweep.
+	h.backend.SetWeiboFullCacheUseFeatureOriginal(false)
 	if err := h.backend.RemoveCacheQueue(enqTask.ID); err != nil {
 		t.Fatalf("RemoveCacheQueue: %v", err)
 	}
@@ -345,8 +345,8 @@ func TestWeiboFullCacheQueueOriginalOnlyReuseBottomTipsAndSweep(t *testing.T) {
 	if sweepDone.Site != "weibo" || sweepDone.List != "posts" || sweepDone.Origin != QueueOriginFullCache {
 		t.Fatalf("periodic sweep task = %+v", sweepDone)
 	}
-	if feat, _ := h.wbLastFeature.Load().(string); feat != "1" {
-		t.Fatalf("expected feature=1 after SetWeiboFullCacheUseFeatureOriginal(true), got %q", feat)
+	if feat, _ := h.wbLastFeature.Load().(string); feat != "0" {
+		t.Fatalf("expected feature=0 after SetWeiboFullCacheUseFeatureOriginal(false), got %q", feat)
 	}
 	if aw := h.backend.SubscriptionAccountWorks()["weibo:"+synthWeiboUID]; aw.Total != 42 {
 		t.Fatalf("periodic sweep did not record statuses_count: %+v", aw)
@@ -559,22 +559,33 @@ func TestMyWeiboAccountListsMemoryOnlyIsolationAndFeatureFlags(t *testing.T) {
 	assertNoSentinelsInTree(t, h.loc.LogsDir, mySentinels)
 	assertNoSentinelsInTree(t, h.loc.CredentialsDir, mySentinels)
 
-	// Weibo circuit-break/risk418 stops Weibo "我的" cleanly, puts Weibo into backoff (0 extra HTTP reqs),
-	// while Bilibili "我的" keeps working!
+	// DEC-089: Weibo risk418 puts Weibo into backoff (Bilibili unaffected). Follow-up manual Weibo AccountPage
+	// performs 1 live probe: while still 418 it preserves backoff without doubling BackoffLevel; once ok it clears backoff!
 	h.wbMode.Store("risk418")
 	if _, err := h.backend.AccountPage(ctx, "weibo", AccountFollowing, "", ""); err == nil || site.KindOf(err) != site.ErrKindRiskControl {
 		t.Fatalf("expected risk_control error when Weibo returns 418, got %v", err)
 	}
+	wbLevelBefore := h.backend.subs.GetSiteSchedulerState("weibo").BackoffLevel
 	wbBeforeBackoff := h.wbReqs.Load()
-	if _, err := h.backend.AccountPage(ctx, "weibo", AccountFollowing, "", ""); err == nil || site.KindOf(err) != site.ErrKindBackoff {
-		t.Fatalf("follow-up Weibo AccountPage after 418 = %v, want ErrKindBackoff", err)
+	if _, err := h.backend.AccountPage(ctx, "weibo", AccountFollowing, "", ""); err == nil || site.KindOf(err) != site.ErrKindRiskControl || !strings.Contains(err.Error(), "探测仍处于风控中，已保持退避") {
+		t.Fatalf("follow-up Weibo AccountPage probe during 418 = %v, want wrapped risk_control", err)
 	}
-	if h.wbReqs.Load() != wbBeforeBackoff {
-		t.Fatalf("backoff-gated Weibo AccountPage sent %d extra HTTP requests, want 0", h.wbReqs.Load()-wbBeforeBackoff)
+	if h.wbReqs.Load() != wbBeforeBackoff+1 {
+		t.Fatalf("Weibo manual probe sent %d HTTP requests, want 1", h.wbReqs.Load()-wbBeforeBackoff)
+	}
+	if afterLevel := h.backend.subs.GetSiteSchedulerState("weibo").BackoffLevel; afterLevel != wbLevelBefore {
+		t.Fatalf("failed Weibo manual probe escalated BackoffLevel: got %d, want %d", afterLevel, wbLevelBefore)
 	}
 	biliPage, err := h.backend.AccountPage(ctx, "bilibili", AccountFollowing, "", "")
 	if err != nil || len(biliPage.Items) != 1 {
 		t.Fatalf("Bilibili AccountPage affected by Weibo risk418: %+v err=%v", biliPage, err)
+	}
+	h.wbMode.Store("ok")
+	if _, err := h.backend.AccountPage(ctx, "weibo", AccountFollowing, "", ""); err != nil {
+		t.Fatalf("recovered Weibo AccountPage manual probe failed: %v", err)
+	}
+	if inBackoff, _ := h.backend.subs.IsSiteInBackoff("weibo"); inBackoff {
+		t.Fatal("successful manual Weibo probe must clear Weibo backoff immediately")
 	}
 
 	// Logout clears Weibo memory caches and reverts AccountSections("weibo") to unavailable login.

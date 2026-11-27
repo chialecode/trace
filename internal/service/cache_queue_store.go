@@ -42,10 +42,12 @@ const (
 	backfillPhaseFallbackDetail     = "fallback_detail"
 )
 
-// CacheQueuePacing centralizes all conservative anti-risk-control delays and thresholds (Q-017).
+// CacheQueuePacing centralizes all conservative anti-risk-control delays and thresholds (Q-017 / DEC-089).
 type CacheQueuePacing struct {
 	ItemMinDelay        time.Duration
 	ItemMaxDelay        time.Duration
+	ZeroAPIItemMinDelay time.Duration
+	ZeroAPIItemMaxDelay time.Duration
 	FastCDNMinDelay     time.Duration
 	FastCDNMaxDelay     time.Duration
 	LongRestMinItems    int
@@ -54,6 +56,8 @@ type CacheQueuePacing struct {
 	LongRestMaxDelay    time.Duration
 	BackoffCoolMinDelay time.Duration
 	BackoffCoolMaxDelay time.Duration
+	QuotaCoolMinDelay   time.Duration
+	QuotaCoolMaxDelay   time.Duration
 	StartupMinDelay     time.Duration
 	StartupMaxDelay     time.Duration
 }
@@ -71,8 +75,32 @@ var DefaultCacheQueuePacing = CacheQueuePacing{
 	LongRestMaxDelay:    25 * time.Minute,
 	BackoffCoolMinDelay: 10 * time.Minute,
 	BackoffCoolMaxDelay: 30 * time.Minute,
+	QuotaCoolMinDelay:   15 * time.Second,
+	QuotaCoolMaxDelay:   60 * time.Second,
 	StartupMinDelay:     1 * time.Minute,
 	StartupMaxDelay:     5 * time.Minute,
+}
+
+// DefaultWeiboCacheQueuePacing defines Weibo-specific background cache queue pacing (DEC-089):
+// 0-API list-reused items wait 8–20s, JSON-API items wait 20–45s, long rest every 30–50 items
+// for 3–8m, post-backoff cooldown 2–5m, post-quota cooldown 15–60s, startup wait 15–60s.
+var DefaultWeiboCacheQueuePacing = CacheQueuePacing{
+	ItemMinDelay:        20 * time.Second,
+	ItemMaxDelay:        45 * time.Second,
+	ZeroAPIItemMinDelay: 8 * time.Second,
+	ZeroAPIItemMaxDelay: 20 * time.Second,
+	FastCDNMinDelay:     2 * time.Second,
+	FastCDNMaxDelay:     5 * time.Second,
+	LongRestMinItems:    30,
+	LongRestMaxItems:    50,
+	LongRestMinDelay:    3 * time.Minute,
+	LongRestMaxDelay:    8 * time.Minute,
+	BackoffCoolMinDelay: 2 * time.Minute,
+	BackoffCoolMaxDelay: 5 * time.Minute,
+	QuotaCoolMinDelay:   15 * time.Second,
+	QuotaCoolMaxDelay:   60 * time.Second,
+	StartupMinDelay:     15 * time.Second,
+	StartupMaxDelay:     60 * time.Second,
 }
 
 // CacheQueueClock abstracts wall clock and timers so tests run deterministically with zero real sleeps.
@@ -225,6 +253,8 @@ type cacheQueueRuntime struct {
 	seenKeys               map[string]bool
 	nextPartEnqueuers      []queuePartEnqueuer
 	resumePendingDownloads bool
+	lastItemZeroAPI        bool
+	manualProbeOnce        bool
 	stepCancel             context.CancelFunc
 	backfillMatched        []backfillMatchedItem
 	backfillPendingCursor  string
@@ -237,11 +267,12 @@ type cacheQueueEntry struct {
 }
 
 type cacheQueueManager struct {
-	b      *Backend
-	path   string
-	clock  CacheQueueClock
-	rng    CacheQueueRand
-	pacing CacheQueuePacing
+	b            *Backend
+	path         string
+	clock        CacheQueueClock
+	rng          CacheQueueRand
+	pacing       CacheQueuePacing
+	customPacing bool
 
 	mu                sync.Mutex
 	tasks             []*cacheQueueEntry
@@ -268,8 +299,10 @@ func newCacheQueueManager(b *Backend, path string, clock CacheQueueClock, rng Ca
 		rng = rand.IntN
 	}
 	cfg := DefaultCacheQueuePacing
+	customPacing := false
 	if pacing != nil {
 		cfg = *pacing
+		customPacing = true
 	}
 	siteWake := make(map[site.ID]chan struct{}, len(site.All()))
 	for _, sid := range site.All() {
@@ -281,6 +314,7 @@ func newCacheQueueManager(b *Backend, path string, clock CacheQueueClock, rng Ca
 		clock:             clock,
 		rng:               rng,
 		pacing:            cfg,
+		customPacing:      customPacing,
 		siteWake:          siteWake,
 		siteCooldownUntil: make(map[site.ID]time.Time, len(site.All())),
 	}
@@ -626,8 +660,20 @@ func (m *cacheQueueManager) randDurationLocked(minD, maxD time.Duration) time.Du
 	return minD + time.Duration(m.randIntInclusiveLocked(0, spanMs))*time.Millisecond
 }
 
+func (m *cacheQueueManager) pacingForSite(siteID site.ID) CacheQueuePacing {
+	if !m.customPacing && siteID == site.Weibo {
+		return DefaultWeiboCacheQueuePacing
+	}
+	return m.pacing
+}
+
 func (m *cacheQueueManager) pickRestThresholdLocked() int {
-	return m.randIntInclusiveLocked(m.pacing.LongRestMinItems, m.pacing.LongRestMaxItems)
+	return m.pickRestThresholdForSiteLocked("")
+}
+
+func (m *cacheQueueManager) pickRestThresholdForSiteLocked(siteID site.ID) int {
+	p := m.pacingForSite(siteID)
+	return m.randIntInclusiveLocked(p.LongRestMinItems, p.LongRestMaxItems)
 }
 
 func (m *cacheQueueManager) fastCDNDelayLocked() time.Duration {

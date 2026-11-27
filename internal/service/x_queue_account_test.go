@@ -549,7 +549,8 @@ func TestXMineReadOnlyMemoryOnlyPaginationFlagsAndBreaker(t *testing.T) {
 		t.Fatalf("expected metadata-only account.x.bookmarks log line, got: %v", logs)
 	}
 
-	// 5. Rate-limit 429 trips ONLY X breaker with reset timestamp; subsequent X Mine call fails locally with 0 requests; Bilibili unaffected!
+	// 5. Rate-limit 429 trips ONLY X breaker with reset timestamp; DEC-089: subsequent manual X Mine call sends 1 probe
+	// (preserves backoff without doubling if still 429; clears X backoff immediately once 200 OK); Bilibili unaffected!
 	trigger429.Store(true)
 	_, rlErr := h.backend.AccountPage(ctx, "x", AccountBookmarks, "", "")
 	if !site.IsKind(rlErr, site.ErrKindRateLimited) {
@@ -564,12 +565,23 @@ func TestXMineReadOnlyMemoryOnlyPaginationFlagsAndBreaker(t *testing.T) {
 	if inBiliBackoff, _ := h.backend.subs.IsSiteInBackoff("bilibili"); inBiliBackoff {
 		t.Fatal("X rate-limit breaker leaked into Bilibili")
 	}
-	reqsBeforeBlocked := h.xReqs.Load()
-	if _, err := h.backend.AccountPage(ctx, "x", AccountLikes, "", ""); !site.IsKind(err, site.ErrKindBackoff) {
-		t.Fatalf("expected local backoff error for X Mine while breaker active, got %v", err)
+	xLevelBefore := h.backend.subs.GetSiteSchedulerState("x").BackoffLevel
+	reqsBeforeProbe := h.xReqs.Load()
+	if _, err := h.backend.AccountPage(ctx, "x", AccountLikes, "", ""); !site.IsKind(err, site.ErrKindRateLimited) || !strings.Contains(err.Error(), "探测仍处于限流中，已保持退避") {
+		t.Fatalf("expected wrapped rate_limited probe error for X Mine during 429, got %v", err)
 	}
-	if h.xReqs.Load() != reqsBeforeBlocked {
-		t.Fatalf("blocked X Mine sent %d requests, want 0", h.xReqs.Load()-reqsBeforeBlocked)
+	if h.xReqs.Load() != reqsBeforeProbe+1 {
+		t.Fatalf("X Mine manual probe sent %d requests, want 1", h.xReqs.Load()-reqsBeforeProbe)
+	}
+	if afterLevel := h.backend.subs.GetSiteSchedulerState("x").BackoffLevel; afterLevel != xLevelBefore {
+		t.Fatalf("failed X Mine manual probe escalated BackoffLevel: got %d, want %d", afterLevel, xLevelBefore)
+	}
+	trigger429.Store(false)
+	if _, err := h.backend.AccountPage(ctx, "x", AccountLikes, "", ""); err != nil {
+		t.Fatalf("recovered X Mine manual probe failed: %v", err)
+	}
+	if inBackoff, _ := h.backend.subs.IsSiteInBackoff("x"); inBackoff {
+		t.Fatal("successful X Mine manual probe must clear X backoff immediately")
 	}
 
 	// 6. Logout clears in-memory X Mine seen maps.
