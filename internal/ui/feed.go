@@ -450,12 +450,16 @@ func (a *App) refreshHomeFromDisk() {
 			a.Subscriptions = snap.subs
 			a.subsRev++
 			a.accountWorks = snap.works
+			a.accountWorksDirty = false
+			a.accountWorksRequestedGen = a.accountWorksDirtyGen
 		}
 		if snap.statsErr != nil {
 			a.showError(fmt.Errorf("读取媒体库统计失败：%w", snap.statsErr))
 		} else {
 			a.libraryStatistics = snap.stats
 			a.statsRev++
+			a.libraryStatsDirty = false
+			a.libraryStatsRequestedGen = a.libraryStatsDirtyGen
 		}
 		a.homeSeenLocal = snap.homeSeen
 		a.homeSeenRev++

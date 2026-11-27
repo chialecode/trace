@@ -133,6 +133,7 @@ func (a *App) openSubscriptionAccounts() {
 // filter, each with the subscription it belongs to; clicking opens that
 // subscription.
 func (a *App) renderSubscriptionAccountsView(c *ui.Context) {
+	a.ensureAccountWorksFresh()
 	rows := a.subscriptionAccountRows(a.SubAccountsSite)
 	ui.Column(c).Grow(1).FillWidth().Padding(16, 16, 0, 16).Gap(10).ClipX().Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {

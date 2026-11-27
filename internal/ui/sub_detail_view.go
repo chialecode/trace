@@ -235,6 +235,7 @@ func subscriptionEffectiveAccounts(sub subscription.Subscription) []subscription
 func (a *App) renderSubscriptionDetailView(c *ui.Context, sub *subscription.Subscription) {
 	a.SubDetailTab = normalizeSubDetailTab(a.SubDetailTab)
 	if a.SubDetailTab == "accounts" {
+		a.ensureAccountWorksFresh()
 		a.refreshLiveAccounts(c, subscriptionAuthors(*sub))
 		ui.Column(c).Grow(1).FillWidth().ClipX().Children(func() {
 			ui.Column(c).FillWidth().Padding(16, 16, 0, 16).ClipX().Children(func() {

@@ -188,7 +188,24 @@ func (a *App) handleSiteAccountLoss(evSite, kind string) {
 		return
 	}
 	// At least one other site remains logged in: refresh local lists without forcing full-app logout.
-	a.RefreshData()
+	if a.hasDispatcher() {
+		a.postCards = nil
+		a.cacheStateRev++
+		a.libraryRev++
+		a.subFeedDirty = true
+		a.cachedDiagAt = time.Time{}
+		a.HistoryItems = a.backend.ListHistory()
+		a.refreshSubscriptionsListOnly()
+		a.LiveRooms = bilibiliLiveRooms(a.backend.ListLiveRooms())
+		a.syncLiveAccountsFromBackend()
+		a.liveLibItemsCacheRev = 0
+		a.refreshTasks()
+		a.refreshCacheConflicts()
+		a.refreshTransferJobs()
+		a.scheduleLibraryChangedRefresh()
+	} else {
+		a.RefreshData()
+	}
 	if kind != "expired" {
 		return
 	}
@@ -385,6 +402,7 @@ func (a *App) navigate(rawRoute string, fromBack bool) {
 		a.libraryItemsDirty = false
 		a.reloadLibraryItems()
 	}
+	a.ensureVisibleDerivedDataFresh()
 	if route == RouteHome && a.backend.HasAnyLogin() {
 		if len(a.FeedItems) == 0 {
 			a.loadInitialFeed()
@@ -485,7 +503,7 @@ func (a *App) mergeLiveAccountStates(states []service.LiveAccountState) {
 	}
 }
 
-func (a *App) refreshSubscriptions() {
+func (a *App) refreshSubscriptionsListOnly() {
 	if !a.backend.HasAnyLogin() {
 		return
 	}
@@ -497,6 +515,13 @@ func (a *App) refreshSubscriptions() {
 	a.Subscriptions = subs
 	a.subsRev++
 	a.checkPlanAt = time.Time{}
+}
+
+func (a *App) refreshSubscriptions() {
+	if !a.backend.HasAnyLogin() {
+		return
+	}
+	a.refreshSubscriptionsListOnly()
 	a.refreshAccountWorks()
 }
 
@@ -553,6 +578,8 @@ func (a *App) refreshAccountWorks() {
 		return
 	}
 	a.accountWorks = a.backend.SubscriptionAccountWorks()
+	a.accountWorksDirty = false
+	a.accountWorksRequestedGen = a.accountWorksDirtyGen
 }
 
 func (a *App) refreshLibraryStatistics() {
@@ -563,6 +590,8 @@ func (a *App) refreshLibraryStatistics() {
 	}
 	a.libraryStatistics = stats
 	a.statsRev++
+	a.libraryStatsDirty = false
+	a.libraryStatsRequestedGen = a.libraryStatsDirtyGen
 }
 
 func (a *App) refreshTasks() {
@@ -640,6 +669,21 @@ func (a *App) reloadLibraryItems() {
 	a.loadLibraryPage(true)
 }
 
+// reloadLibraryItemsInPlace refreshes visible library items on background library
+// changes without violently resetting the user's scroll position to the top.
+func (a *App) reloadLibraryItemsInPlace() {
+	limit := a.libraryInPlaceLimit()
+	items, err := a.backend.ListLibraryItems(a.currentLibraryFeedFilter(limit, 0))
+	if err != nil {
+		a.LibraryError = userErrorText(err)
+		return
+	}
+	a.LibraryError = ""
+	a.LibraryItems = items
+	a.libraryOffset = len(items)
+	a.LibraryHasMore = len(items) == limit
+}
+
 // libraryAuthorFilter is the authors of the media library's subscription
 // or author filter.
 func (a *App) libraryAuthorFilter() (authors []int64, authorRefs []library.AuthorRef) {
@@ -672,25 +716,7 @@ func (a *App) libraryAuthorFilter() (authors []int64, authorRefs []library.Autho
 }
 
 func (a *App) loadLibraryPage(reset bool) {
-	authors, authorRefs := a.libraryAuthorFilter()
-	sortOrder := "newest"
-	if a.LibrarySort == "oldest" {
-		sortOrder = "oldest"
-	}
-	items, err := a.backend.ListLibraryItems(library.FeedFilter{
-		Site: normalizeSiteFilter(a.LibrarySiteFilter),
-		Kind: a.LibraryKindFilter,
-		// 图片/视频 list a creator's own posts; forwarded content has its
-		// own "转发" tab (DEC-056).
-		ExcludeForward: a.LibraryKindFilter == "image" || a.LibraryKindFilter == "video",
-		Mid:            a.LibraryCreatorMid,
-		Authors:        authors,
-		AuthorRefs:     authorRefs,
-		Keyword:        a.LibrarySearch,
-		Sort:           sortOrder,
-		Limit:          60,
-		Offset:         a.libraryOffset,
-	})
+	items, err := a.backend.ListLibraryItems(a.currentLibraryFeedFilter(60, a.libraryOffset))
 	if err != nil {
 		a.LibraryError = userErrorText(err)
 		return

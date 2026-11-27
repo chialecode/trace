@@ -11,10 +11,14 @@ import (
 func (a *App) refreshBackfillSummary() {
 	if a.backend == nil {
 		a.BackfillSummary = service.BackfillSummaryDTO{}
+		a.backfillSummaryDirty = false
+		a.backfillSummaryRequestedGen = a.backfillSummaryDirtyGen
 		return
 	}
 	if sum, err := a.backend.BackfillSummary(); err == nil {
 		a.BackfillSummary = sum
+		a.backfillSummaryDirty = false
+		a.backfillSummaryRequestedGen = a.backfillSummaryDirtyGen
 	}
 }
 
@@ -36,7 +40,8 @@ func (a *App) startWeiboBackfill() {
 		return backend.StartWeiboBackfill(ctx)
 	}, func(task service.CacheQueueTask) {
 		a.CacheQueue = a.backend.ListCacheQueue()
-		a.refreshBackfillSummary()
+		a.markBackfillSummaryDirty()
+		a.ensureBackfillSummaryFresh()
 		a.notifyInfo("已启动历史缓存补全队列")
 		if task.ID != "" {
 			a.OpenCacheQueueTask(task.ID)
