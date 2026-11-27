@@ -568,6 +568,14 @@ func (b *Backend) TaskDetail(taskID string) (download.TaskDetail, bool, error) {
 	return b.dl.TaskDetail(taskID)
 }
 
+// MoveDownloadTask reorders a queued download task ("top", "up", or "down").
+func (b *Backend) MoveDownloadTask(taskID, direction string) (download.Task, error) {
+	if err := b.requireAnyLogin(); err != nil {
+		return download.Task{}, err
+	}
+	return b.dl.MoveQueuedTask(taskID, direction)
+}
+
 // PauseTask pauses a download task.
 func (b *Backend) PauseTask(taskID string) (download.Task, error) {
 	if err := b.requireAnyLogin(); err != nil {

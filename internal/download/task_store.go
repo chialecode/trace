@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -225,6 +226,7 @@ func (m *Manager) ListTasks() ([]Task, error) {
 	for i := range out {
 		m.fillPartialReason(&out[i])
 	}
+	m.applyQueuedOrder(out)
 	return out, nil
 }
 
@@ -266,6 +268,7 @@ func (m *Manager) queryTaskSummaries(query string, args ...any) ([]Task, error) 
 	for i := range out {
 		m.fillPartialReason(&out[i])
 	}
+	m.applyQueuedOrder(out)
 	return out, nil
 }
 
@@ -333,7 +336,124 @@ func (m *Manager) TaskDetail(taskID string) (TaskDetail, bool, error) {
 	}, true, nil
 }
 
-func (m *Manager) claimNextQueuedLocked() (Task, bool) {
+func normalizeDownloadSite(raw string) site.ID {
+	if sid, ok := site.ParseID(strings.TrimSpace(raw)); ok {
+		return sid
+	}
+	return site.Bilibili
+}
+
+func (m *Manager) listQueuedIDsLocked() ([]string, error) {
+	rows, err := m.db.Query(`SELECT task_id FROM download_tasks WHERE status = 'queued' ORDER BY rowid ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (m *Manager) effectiveQueuedOrderLocked(dbQueuedIDs []string) []string {
+	if len(dbQueuedIDs) == 0 {
+		m.queueOrder = nil
+		return nil
+	}
+	queuedSet := make(map[string]bool, len(dbQueuedIDs))
+	for _, id := range dbQueuedIDs {
+		queuedSet[id] = true
+	}
+	out := make([]string, 0, len(dbQueuedIDs))
+	seen := make(map[string]bool, len(dbQueuedIDs))
+	for _, id := range m.queueOrder {
+		if queuedSet[id] && !seen[id] {
+			out = append(out, id)
+			seen[id] = true
+		}
+	}
+	for _, id := range dbQueuedIDs {
+		if !seen[id] {
+			out = append(out, id)
+			seen[id] = true
+		}
+	}
+	if len(m.queueOrder) > 0 {
+		m.queueOrder = append([]string(nil), out...)
+	}
+	return out
+}
+
+func (m *Manager) removeQueueOrderLocked(taskID string) {
+	if len(m.queueOrder) == 0 {
+		return
+	}
+	dst := m.queueOrder[:0]
+	for _, id := range m.queueOrder {
+		if id != taskID {
+			dst = append(dst, id)
+		}
+	}
+	if len(dst) == 0 {
+		m.queueOrder = nil
+	} else {
+		m.queueOrder = dst
+	}
+}
+
+func (m *Manager) applyQueuedOrder(tasks []Task) {
+	var queuedPos []int
+	for i := range tasks {
+		if tasks[i].Status == "queued" {
+			queuedPos = append(queuedPos, i)
+		}
+	}
+	if len(queuedPos) < 2 {
+		return
+	}
+	m.mu.Lock()
+	dbIDs, err := m.listQueuedIDsLocked()
+	var order []string
+	if err == nil && len(dbIDs) > 0 {
+		order = m.effectiveQueuedOrderLocked(dbIDs)
+	}
+	m.mu.Unlock()
+	if len(order) == 0 {
+		return
+	}
+	rank := make(map[string]int, len(order))
+	for i, id := range order {
+		rank[id] = i
+	}
+	queued := make([]Task, len(queuedPos))
+	for i, idx := range queuedPos {
+		queued[i] = tasks[idx]
+	}
+	sort.SliceStable(queued, func(i, j int) bool {
+		ri, oki := rank[queued[i].TaskID]
+		rj, okj := rank[queued[j].TaskID]
+		switch {
+		case oki && okj:
+			return ri < rj
+		case oki:
+			return true
+		case okj:
+			return false
+		default:
+			return false
+		}
+	})
+	for i, idx := range queuedPos {
+		tasks[idx] = queued[i]
+	}
+}
+
+func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 	query := `SELECT` + taskSelectColumns + `
 		FROM download_tasks
 		WHERE status = 'queued'`
@@ -344,30 +464,124 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool) {
 			args = append(args, id)
 		}
 	}
-	query += " ORDER BY rowid ASC LIMIT 1"
-	row := m.db.QueryRow(query, args...)
-	t, err := scanTask(row)
+	query += " ORDER BY rowid ASC"
+	rows, err := m.db.Query(query, args...)
 	if err != nil {
-		return Task{}, false
+		return Task{}, false, time.Time{}
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	var candidates []Task
+	for rows.Next() {
+		t, sErr := scanTask(rows)
+		if sErr != nil {
+			_ = rows.Close()
+			return Task{}, false, time.Time{}
+		}
+		candidates = append(candidates, t)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil || len(candidates) == 0 {
+		if len(candidates) == 0 {
+			m.queueOrder = nil
+		}
+		return Task{}, false, time.Time{}
+	}
+
+	// Reorder candidates by manual queue priority (pruning stale IDs).
+	if len(m.queueOrder) > 0 {
+		queuedIDs := make([]string, len(candidates))
+		for i := range candidates {
+			queuedIDs[i] = candidates[i].TaskID
+		}
+		order := m.effectiveQueuedOrderLocked(queuedIDs)
+		rank := make(map[string]int, len(order))
+		for i, id := range order {
+			rank[id] = i
+		}
+		sort.SliceStable(candidates, func(i, j int) bool {
+			return rank[candidates[i].TaskID] < rank[candidates[j].TaskID]
+		})
+	}
+
+	// Skip sites currently in backoff for automatic/queue tasks so one site's
+	// risk-control backoff never blocks other healthy sites (DEC-088).
+	var (
+		now             = time.Now().UTC()
+		earliestSkipped time.Time
+		eligible        = make([]Task, 0, len(candidates))
+		backoffCache    map[site.ID]struct {
+			blocked bool
+			until   time.Time
+		}
+	)
+	if m.siteBackoffFn != nil {
+		backoffCache = make(map[site.ID]struct {
+			blocked bool
+			until   time.Time
+		}, 4)
+	}
+	for _, c := range candidates {
+		if m.siteBackoffFn != nil && (c.Source == "auto" || c.Source == "queue") {
+			sid := normalizeDownloadSite(c.Site)
+			res, cached := backoffCache[sid]
+			if !cached {
+				inBackoff, until := m.siteBackoffFn(sid)
+				res.blocked = inBackoff && until.After(now)
+				res.until = until.UTC()
+				backoffCache[sid] = res
+			}
+			if res.blocked {
+				if earliestSkipped.IsZero() || res.until.Before(earliestSkipped) {
+					earliestSkipped = res.until
+				}
+				continue
+			}
+		}
+		eligible = append(eligible, c)
+	}
+	if len(eligible) == 0 {
+		return Task{}, false, earliestSkipped
+	}
+
+	// Cross-site anti-starvation: prefer a site with the fewest currently active
+	// download slots so one site's backlog never fills all concurrency slots and
+	// starves other sites; tie-break by effective queue order (manual priority, then FIFO).
+	activeBySite := make(map[site.ID]int, len(m.activeSite))
+	for _, s := range m.activeSite {
+		activeBySite[normalizeDownloadSite(s)]++
+	}
+	bestIdx := 0
+	bestActive := activeBySite[normalizeDownloadSite(eligible[0].Site)]
+	for i := 1; i < len(eligible); i++ {
+		cnt := activeBySite[normalizeDownloadSite(eligible[i].Site)]
+		if cnt < bestActive {
+			bestActive = cnt
+			bestIdx = i
+			if bestActive == 0 {
+				break
+			}
+		}
+	}
+
+	t := eligible[bestIdx]
+	nowStr := now.Format(time.RFC3339)
 	res, err := m.db.Exec(`
 		UPDATE download_tasks
 		SET status = 'running', pause_reason = '', error_kind = '', error_message = '', updated_at = ?
 		WHERE task_id = ? AND status = 'queued'
-	`, now, t.TaskID)
+	`, nowStr, t.TaskID)
 	if err != nil {
-		return Task{}, false
+		return Task{}, false, earliestSkipped
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return Task{}, false
+		return Task{}, false, earliestSkipped
 	}
+	m.removeQueueOrderLocked(t.TaskID)
 	t.Status = "running"
 	t.PauseReason = ""
 	t.ErrorKind = ""
 	t.ErrorMessage = ""
-	t.UpdatedAt = now
-	return t, true
+	t.UpdatedAt = nowStr
+	return t, true, earliestSkipped
 }
 
 func (m *Manager) resetFileProgress(t *Task, relPath string) {

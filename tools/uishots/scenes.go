@@ -2280,7 +2280,13 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			RequiredLabels: []string{
 				"进行中子标签：下载任务",
 				"进行中子标签：缓存队列",
+				"缓存队列站点筛选：all",
+				"缓存队列站点筛选：bilibili",
+				"缓存队列站点筛选：douyin",
+				"缓存队列站点分组：bilibili",
+				"缓存队列站点分组：douyin",
 				"缓存队列卡片：cq_demo_bili",
+				"缓存队列卡片：cq_demo_bili_2",
 				"缓存队列卡片：cq_demo_dy",
 				"缓存队列卡片：cq_demo_wb",
 				"缓存队列卡片：cq_demo_x",
@@ -2291,6 +2297,9 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"队列详情计数：cq_demo_bili",
 				"暂停缓存队列：cq_demo_bili",
 				"取消缓存队列：cq_demo_bili",
+				"置顶缓存队列：cq_demo_bili_2",
+				"上移缓存队列：cq_demo_bili_2",
+				"下移缓存队列：cq_demo_bili",
 				"队列最近缓存：" + savedItem.ItemKey,
 			},
 			PanelRequiredLabels: []string{

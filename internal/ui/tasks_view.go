@@ -78,6 +78,14 @@ func (a *App) selectTasksQueue(queueID string) {
 	a.TasksActiveTab = "queue"
 	if queueID != "" {
 		a.SelectedCacheQueueID = queueID
+		if filter := strings.TrimSpace(a.TasksQueueSiteFilter); filter != "" && filter != "all" {
+			for _, q := range a.CacheQueue {
+				if q.ID == queueID && normalizeSiteIDUI(q.Site) != filter {
+					a.TasksQueueSiteFilter = "all"
+					break
+				}
+			}
+		}
 	}
 	a.closeLivePreview()
 }

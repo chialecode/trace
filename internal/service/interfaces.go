@@ -196,6 +196,7 @@ type CacheService interface {
 	EnqueueCacheQueue(ctx context.Context, req CacheQueueRequest) (CacheQueueTask, error)
 	PauseCacheQueue(id string) (CacheQueueTask, error)
 	ResumeCacheQueue(id string) (CacheQueueTask, error)
+	MoveCacheQueue(id, direction string) (CacheQueueTask, error)
 	CancelCacheQueue(id string) (CacheQueueTask, error)
 	// RemoveCacheQueue deletes a finished cache queue task from the list;
 	// RemoveFinishedCacheQueues deletes all of them. Cached items stay.
@@ -205,6 +206,7 @@ type CacheService interface {
 	Upgrade(ctx context.Context, key string) (download.Task, error)
 	ListDownloadTasks() ([]download.Task, error)
 	TaskDetail(taskID string) (download.TaskDetail, bool, error)
+	MoveDownloadTask(taskID, direction string) (download.Task, error)
 	PauseTask(taskID string) (download.Task, error)
 	ResumeTask(taskID string) (download.Task, error)
 	RetryTask(taskID string) (download.Task, error)

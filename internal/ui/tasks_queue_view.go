@@ -8,6 +8,7 @@ import (
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/service"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -101,11 +102,141 @@ func formatQueueSidebarStatus(q service.CacheQueueTask) string {
 	}
 }
 
-// renderTasksQueueView lists every cache queue as a card like the download
-// tasks; a card opens to show what that queue cached most recently (DEC-057).
+// compactOrderButton renders a subtle compact reorder button ("置顶"/"上移"/"下移")
+// that fits cleanly at 720/1000/1280 widths without competing with primary actions.
+func compactOrderButton(c *ui.Context, text, label string, disabled bool) bool {
+	bg := ColorBgSecondary
+	txtColor := ColorTextMain
+	if disabled {
+		bg = ColorBgMain
+		txtColor = ColorTextMuted
+	}
+	btn := ui.ButtonBase(c).
+		Label(label).
+		Padding(3, 8).
+		Radius(999).
+		Border(1, ColorBorder).
+		Background(bg).
+		Center().
+		Shrink(0).
+		Disabled(disabled)
+	if !disabled && btn.Hovered() {
+		btn.Background(ColorHover)
+	}
+	btn.Children(func() {
+		ui.Text(c, text).FontSize(11).FontWeight(500).TextColor(txtColor).SingleLine()
+	})
+	return !disabled && btn.Clicked()
+}
+
+func (a *App) effectiveTasksQueueSiteFilter() string {
+	switch strings.ToLower(strings.TrimSpace(a.TasksQueueSiteFilter)) {
+	case "bilibili", "douyin", "weibo", "x":
+		return strings.ToLower(strings.TrimSpace(a.TasksQueueSiteFilter))
+	default:
+		return "all"
+	}
+}
+
+type siteQueueSummaryInfo struct {
+	statusText      string
+	statusColor     ui.Color
+	dotColor        ui.Color
+	unfinishedCount int
+	finishedCount   int
+	hasRunning      bool
+}
+
+func summarizeSiteCacheQueue(tasks []service.CacheQueueTask) siteQueueSummaryInfo {
+	info := siteQueueSummaryInfo{
+		statusText:  "空闲",
+		statusColor: ColorTextMuted,
+		dotColor:    ColorBorder,
+	}
+	var (
+		hasRunning bool
+		hasWaiting bool
+		waitNext   string
+		hasBackoff bool
+		hasPaused  bool
+		hasQueued  bool
+	)
+	for _, q := range tasks {
+		if isUnfinishedCacheQueueStatus(q.Status) {
+			info.unfinishedCount++
+		} else {
+			info.finishedCount++
+		}
+		switch q.Status {
+		case service.CacheQueueRunning:
+			hasRunning = true
+		case service.CacheQueueWaiting:
+			hasWaiting = true
+			if waitNext == "" && q.NextRunAt != "" {
+				waitNext = formatRFC3339Clock(q.NextRunAt, false)
+			}
+		case service.CacheQueueWaitingBackoff:
+			hasBackoff = true
+		case service.CacheQueuePaused:
+			hasPaused = true
+		case service.CacheQueueQueued:
+			hasQueued = true
+		}
+	}
+	info.hasRunning = hasRunning
+	switch {
+	case hasRunning:
+		info.statusText = "进行中 · 独立并行"
+		info.statusColor = ColorAccent
+		info.dotColor = ColorAccent
+	case hasWaiting:
+		if waitNext != "" {
+			info.statusText = "等待下一条（" + waitNext + "）· 独立并行"
+		} else {
+			info.statusText = "等待下一条 · 独立并行"
+		}
+		info.statusColor = ColorInfoBlue
+		info.dotColor = ColorInfoBlue
+	case hasBackoff:
+		info.statusText = "退避中 · 不影响其他站点"
+		info.statusColor = ColorDotYellow
+		info.dotColor = ColorDotYellow
+	case hasPaused:
+		info.statusText = "已暂停"
+		info.statusColor = ColorDotYellow
+		info.dotColor = ColorDotYellow
+	case hasQueued:
+		info.statusText = "排队中"
+		info.statusColor = ColorTextMuted
+		info.dotColor = ColorInfoBlue
+	case len(tasks) > 0:
+		info.statusText = "已全部结束"
+		info.statusColor = ColorDotGreen
+		info.dotColor = ColorDotGreen
+	}
+	return info
+}
+
+func queueFilterPillLabel(siteID string) string {
+	switch normalizeSiteIDUI(siteID) {
+	case "bilibili":
+		return "B站"
+	case "douyin":
+		return "抖音"
+	case "weibo":
+		return "微博"
+	case "x":
+		return "X"
+	default:
+		return "全部"
+	}
+}
+
+// renderTasksQueueView lists background cache queues grouped by site so each
+// site's independent running/backoff status and manual reorder controls are clear (DEC-088).
 func (a *App) renderTasksQueueView(c *ui.Context) {
 	ui.Scroll(c).Grow(1).FillWidth().ClipX().Children(func() {
-		ui.Column(c).FillWidth().Padding(16).Gap(12).ClipX().Children(func() {
+		ui.Column(c).FillWidth().Padding(10, 16).Gap(6).ClipX().Children(func() {
 			if a.TaskActionError != "" {
 				renderErrorBanner(c, "", a.TaskActionError, nil)
 			}
@@ -150,14 +281,22 @@ func (a *App) renderTasksQueueView(c *ui.Context) {
 				return
 			}
 
+			bySite := make(map[string][]service.CacheQueueTask, len(site.All()))
 			finished := 0
+			totalUnfinished := 0
 			for _, q := range a.CacheQueue {
-				if !isUnfinishedCacheQueueStatus(q.Status) {
+				sid := normalizeSiteIDUI(q.Site)
+				bySite[sid] = append(bySite[sid], q)
+				if isUnfinishedCacheQueueStatus(q.Status) {
+					totalUnfinished++
+				} else {
 					finished++
 				}
 			}
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
-				ui.Text(c, "取消或移除队列不会删除已缓存到媒体库的内容").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Wrap().ClipX().Children(func() {
+				ui.Text(c, "各站点独立并行推进，单站退避不影响其他站点；取消或移除队列不会删除已缓存到媒体库的内容").
+					FontSize(12).TextColor(ColorTextMuted).MaxLines(2).Grow(1).Shrink(1)
 				if finished > 0 {
 					if OutlinePillButton(c, fmt.Sprintf("清除已结束（%d）", finished), "清除已结束的缓存队列").Clicked() {
 						_, err := a.backend.RemoveFinishedCacheQueues()
@@ -166,9 +305,130 @@ func (a *App) renderTasksQueueView(c *ui.Context) {
 				}
 			})
 
+			// Per-site filter bar showing independent per-site status dots and unfinished counts.
+			activeFilter := a.effectiveTasksQueueSiteFilter()
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Wrap().ClipX().Children(func() {
+				renderFilterPill := func(key, text string, dotColor *ui.Color) {
+					active := activeFilter == key
+					btn := ui.ButtonBase(c).
+						Label("缓存队列站点筛选："+key).
+						Padding(4, 10).
+						Radius(999).
+						Gap(5).
+						AlignItems(ui.Center).
+						Center().
+						Shrink(0)
+					if active {
+						btn.Background(ColorAccentBg).Border(1, ColorAccent)
+					} else {
+						btn.Background(ColorBgSecondary).Border(1, ColorBorder)
+						if btn.Hovered() {
+							btn.Background(ColorHover)
+						}
+					}
+					btn.Children(func() {
+						if dotColor != nil {
+							ui.Box(c).Size(6, 6).Radius(3).Background(*dotColor).Shrink(0)
+						}
+						t := ui.Text(c, text).FontSize(12).SingleLine()
+						if active {
+							t.FontWeight(600).TextColor(ColorAccent)
+						} else {
+							t.FontWeight(500).TextColor(ColorTextMuted)
+						}
+					})
+					if btn.Clicked() {
+						a.TasksQueueSiteFilter = key
+					}
+				}
+
+				allText := "全部"
+				if totalUnfinished > 0 {
+					allText = fmt.Sprintf("全部（%d）", totalUnfinished)
+				}
+				renderFilterPill("all", allText, nil)
+				for _, sid := range site.All() {
+					key := string(sid)
+					sum := summarizeSiteCacheQueue(bySite[key])
+					txt := queueFilterPillLabel(key)
+					if sum.unfinishedCount > 0 {
+						txt = fmt.Sprintf("%s · %d", txt, sum.unfinishedCount)
+					}
+					var dot *ui.Color
+					if len(bySite[key]) > 0 {
+						dc := sum.dotColor
+						dot = &dc
+					}
+					renderFilterPill(key, txt, dot)
+				}
+			})
+
 			selID := a.effectiveSelectedQueueID()
-			for _, item := range a.CacheQueue {
-				a.renderCacheQueueCard(c, item, item.ID == selID)
+			renderedAny := false
+			for _, sid := range site.All() {
+				key := string(sid)
+				if activeFilter != "all" && activeFilter != key {
+					continue
+				}
+				siteTasks := bySite[key]
+				if len(siteTasks) == 0 {
+					continue
+				}
+				renderedAny = true
+				sum := summarizeSiteCacheQueue(siteTasks)
+
+				// Keep unfinished tasks in their exact dispatch order, followed by finished tasks.
+				unfinishedList := make([]service.CacheQueueTask, 0, sum.unfinishedCount)
+				finishedList := make([]service.CacheQueueTask, 0, sum.finishedCount)
+				for _, q := range siteTasks {
+					if isUnfinishedCacheQueueStatus(q.Status) {
+						unfinishedList = append(unfinishedList, q)
+					} else {
+						finishedList = append(finishedList, q)
+					}
+				}
+
+				ui.Column(c).FillWidth().Gap(5).ClipX().Children(func() {
+					ui.Row(c).
+						Label("缓存队列站点分组："+key).
+						FillWidth().
+						Padding(2, 2).
+						AlignItems(ui.Center).
+						Justify(ui.SpaceBetween).
+						Gap(8).
+						Wrap().
+						ClipX().
+						Children(func() {
+							ui.Row(c).AlignItems(ui.Center).Gap(8).Grow(1).Shrink(1).ClipX().Children(func() {
+								renderSiteSmallBadgeWithDot(c, key, "")
+								ui.Text(c, sum.statusText).FontSize(12).FontWeight(600).TextColor(sum.statusColor).SingleLine().Shrink(1)
+							})
+							countSummary := fmt.Sprintf("共 %d 个", len(siteTasks))
+							if sum.unfinishedCount > 0 && sum.finishedCount > 0 {
+								countSummary = fmt.Sprintf("未结束 %d · 已结束 %d", sum.unfinishedCount, sum.finishedCount)
+							} else if sum.unfinishedCount > 0 {
+								countSummary = fmt.Sprintf("未结束 %d 个", sum.unfinishedCount)
+							}
+							ui.Text(c, countSummary).FontSize(11).TextColor(ColorTextMuted).SingleLine().Shrink(0)
+						})
+
+					for idx, item := range unfinishedList {
+						a.renderCacheQueueCard(c, item, item.ID == selID, idx, len(unfinishedList), sum.hasRunning)
+					}
+					for _, item := range finishedList {
+						a.renderCacheQueueCard(c, item, item.ID == selID, -1, len(unfinishedList), sum.hasRunning)
+					}
+				})
+			}
+
+			if !renderedAny && activeFilter != "all" {
+				ui.Column(c).FillWidth().Padding(32, 16).AlignItems(ui.Center).Gap(6).Children(func() {
+					ui.Text(c, siteFullLabel(activeFilter)+"当前没有缓存队列任务").
+						FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+					if OutlinePillButton(c, "查看全部站点", "重置缓存队列站点筛选").Clicked() {
+						a.TasksQueueSiteFilter = "all"
+					}
+				})
 			}
 		})
 	})
@@ -181,7 +441,7 @@ func (a *App) finishCacheQueueAction(err error) {
 	}
 }
 
-func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, expanded bool) {
+func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, expanded bool, orderIdx, siteUnfinishedCount int, siteHasRunning bool) {
 	qSite := normalizeSiteIDUI(cur.Site)
 	isBackfill := cur.Kind == service.CacheQueueKindWeiboBackfill || cur.List == service.CacheQueueListWeiboBackfill
 	unfinished := isUnfinishedCacheQueueStatus(cur.Status)
@@ -194,18 +454,19 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 	ui.Column(c).
 		Label("缓存队列卡片："+cur.ID).
 		FillWidth().
-		Padding(14).
-		Radius(16).
+		Padding(8, 12).
+		Radius(14).
 		Background(ColorBgMain).
 		Border(1, borderCol).
-		Gap(10).
+		Gap(5).
 		ClipX().
 		Children(func() {
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).ClipX().Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
 				head := ui.ButtonBase(c).
 					Label("展开缓存队列："+cur.ID).
 					Grow(1).
-					Gap(12).
+					Shrink(1).
+					Gap(10).
 					Padding(2, 4).
 					Radius(10).
 					AlignItems(ui.Center).
@@ -215,8 +476,8 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 					head.Background(ColorHover)
 				}
 				head.Children(func() {
-					a.renderQueueLocalAvatar(c, cur, 40)
-					ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
+					a.renderQueueLocalAvatar(c, cur, 34)
+					ui.Column(c).Grow(1).Shrink(1).Gap(2).ClipX().Children(func() {
 						ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
 							title := firstNonEmptyStrUI(cur.UserName, cur.User)
 							if isBackfill {
@@ -231,6 +492,14 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 						if unfinished && cur.NextRunAt != "" && cur.Status != service.CacheQueueWaiting && cur.Status != service.CacheQueueWaitingBackoff {
 							if clock := formatRFC3339Clock(cur.NextRunAt, false); clock != "" {
 								statusLine += " · 下次执行 " + clock
+							}
+						}
+						if unfinished && orderIdx >= 0 && siteUnfinishedCount >= 2 {
+							statusLine = fmt.Sprintf("#%d · %s", orderIdx+1, statusLine)
+							if cur.Status == service.CacheQueueQueued && orderIdx == 0 && siteHasRunning {
+								statusLine += "（下条优先）"
+							} else if cur.Status == service.CacheQueueRunning && orderIdx > 0 {
+								statusLine += "（本条后让位）"
 							}
 						}
 						statusColor := ColorTextMuted
@@ -254,7 +523,7 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 							}
 							ui.Text(c, countLine).
 								Label("队列详情计数：" + cur.ID).
-								FontSize(12).TextColor(ColorTextMuted).SingleLine()
+								FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
 						})
 					})
 					icon := "chevron-down"
@@ -271,7 +540,21 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 					}
 				}
 
-				ui.Row(c).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Row(c).Shrink(0).Gap(4).AlignItems(ui.Center).Children(func() {
+					if unfinished && orderIdx >= 0 && siteUnfinishedCount >= 2 {
+						if compactOrderButton(c, "置顶", "置顶缓存队列："+cur.ID, orderIdx == 0) {
+							_, err := a.backend.MoveCacheQueue(cur.ID, service.QueueMoveTop)
+							a.finishCacheQueueAction(err)
+						}
+						if compactOrderButton(c, "上移", "上移缓存队列："+cur.ID, orderIdx == 0) {
+							_, err := a.backend.MoveCacheQueue(cur.ID, service.QueueMoveUp)
+							a.finishCacheQueueAction(err)
+						}
+						if compactOrderButton(c, "下移", "下移缓存队列："+cur.ID, orderIdx >= siteUnfinishedCount-1) {
+							_, err := a.backend.MoveCacheQueue(cur.ID, service.QueueMoveDown)
+							a.finishCacheQueueAction(err)
+						}
+					}
 					if unfinished {
 						if cur.Status == service.CacheQueuePaused {
 							if AccentPillButton(c, "继续", "继续缓存队列："+cur.ID).Clicked() {
@@ -319,11 +602,11 @@ func (a *App) renderCacheQueueRecent(c *ui.Context, cur service.CacheQueueTask) 
 		FillWidth().
 		BorderWidth(1, 0, 0, 0).
 		BorderColor(ColorBorder).
-		Padding(10, 0, 0, 0).
+		Padding(6, 0, 0, 0).
 		Gap(4).
 		ClipX().
 		Children(func() {
-			ui.Text(c, "最近缓存的内容").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+			ui.Text(c, "最近缓存的内容").FontSize(12).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 			if len(cur.RecentItems) == 0 {
 				ui.Text(c, "还没有通过这个队列缓存完成的条目。已缓存或不支持的类型会自动跳过。").FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
 				return
@@ -333,9 +616,9 @@ func (a *App) renderCacheQueueRecent(c *ui.Context, cur service.CacheQueueTask) 
 				row := ui.ButtonBase(c).
 					Label("队列最近缓存："+ri.ItemKey).
 					FillWidth().
-					Padding(6, 8).
-					Radius(10).
-					Gap(10).
+					Padding(4, 6).
+					Radius(8).
+					Gap(8).
 					AlignItems(ui.Center).
 					Justify(ui.Start).
 					ClipX()
@@ -344,7 +627,7 @@ func (a *App) renderCacheQueueRecent(c *ui.Context, cur service.CacheQueueTask) 
 				}
 				row.Children(func() {
 					coverKey, coverRel := a.queueRecentCover(ri.ItemKey)
-					a.renderMediaThumbEdge(c, coverKey, coverRel, avatarThumbEdge, ri.Title, "", "", false, 72, 44)
+					a.renderMediaThumbEdge(c, coverKey, coverRel, avatarThumbEdge, ri.Title, "", "", false, 60, 36)
 					ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 						ui.Text(c, firstNonEmptyStrUI(ri.Title, ri.ItemKey)).FontSize(13).FontWeight(500).TextColor(ColorTextMain).SingleLine()
 						if ts := formatRFC3339Clock(ri.CachedAt, false); ts != "" {

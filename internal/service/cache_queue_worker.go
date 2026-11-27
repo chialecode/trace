@@ -372,6 +372,19 @@ func (m *cacheQueueManager) selectActiveSiteEntryLocked(siteID site.ID) (*cacheQ
 		if e.rec.RestThreshold <= 0 {
 			e.rec.RestThreshold = m.pickRestThresholdLocked()
 		}
+		now := m.clock.Now().UTC()
+		if cooldown := m.siteCooldownUntil[siteID]; cooldown.After(now) {
+			delete(m.siteCooldownUntil, siteID)
+			e.rec.Status = CacheQueueWaiting
+			e.rec.PauseReason = ""
+			e.rec.StopReason = "等待本站点间隔结束"
+			e.rec.NextRunAt = cooldown.Format(time.RFC3339)
+			e.rec.UpdatedAt = now.Format(time.RFC3339)
+			m.saveLoggedLocked("select_waiting_cooldown")
+			notify = append(notify, e.rec)
+			return e, notify
+		}
+		delete(m.siteCooldownUntil, siteID)
 		e.rec.Status = CacheQueueRunning
 		e.rec.PauseReason = ""
 		e.rec.StopReason = ""
@@ -499,6 +512,8 @@ func (m *cacheQueueManager) runSiteLoop(ctx context.Context, siteID site.ID) {
 			}
 
 			stillRunning := false
+			hasActiveExecution := false
+			var queuedDLIDs []string
 			var authStopped bool
 			var backoffKind string
 			var appClosed bool
@@ -513,8 +528,12 @@ func (m *cacheQueueManager) runSiteLoop(ctx context.Context, siteID site.ID) {
 						continue
 					}
 					switch t.Status {
-					case "queued", "running", "downloading", "muxing":
+					case "queued":
 						stillRunning = true
+						queuedDLIDs = append(queuedDLIDs, dlID)
+					case "running", "downloading", "muxing":
+						stillRunning = true
+						hasActiveExecution = true
 					case "completed":
 						// Part succeeded.
 					case "partial":
@@ -544,6 +563,30 @@ func (m *cacheQueueManager) runSiteLoop(ctx context.Context, siteID site.ID) {
 							backoffKind = t.ErrorKind
 						}
 					}
+				}
+			}
+
+			// If derived download(s) are still queued (not yet running) while this site is
+			// already in backoff, pause those queued tasks for backoff and transition this
+			// queue entry to waiting_backoff so the UI stays accurate and other sites run freely.
+			if stillRunning && !hasActiveExecution && len(queuedDLIDs) > 0 {
+				if inBackoff, _ := m.siteRiskBackoffOnly(siteID, m.clock.Now()); inBackoff {
+					if m.b != nil && m.b.dl != nil {
+						for _, dlID := range queuedDLIDs {
+							m.b.dl.PauseQueuedForBackoff(dlID, "站点处于退避期，等待退避结束")
+						}
+					}
+					m.mu.Lock()
+					var notify *cacheQueueRecord
+					if entry.rec.Status == CacheQueueRunning && slices.Equal(entry.rec.ActiveDownloadIDs, activeIDs) {
+						rec := m.enterWaitingBackoffLocked(entry, siteID, site.ErrKindBackoff)
+						notify = &rec
+					}
+					m.mu.Unlock()
+					if notify != nil {
+						m.notifyState(*notify)
+					}
+					continue
 				}
 			}
 
@@ -764,6 +807,17 @@ func (m *cacheQueueManager) finishItemOutcomeLocked(entry *cacheQueueEntry, cach
 		delay = m.randDurationLocked(m.pacing.ItemMinDelay, m.pacing.ItemMaxDelay)
 	}
 	nextAt := m.clock.Now().UTC().Add(delay)
+	siteID := site.ID(entry.rec.Site)
+	if m.hasEarlierRunnableOnSiteLocked(siteID, entry) {
+		m.recordSiteCooldownLocked(siteID, nextAt)
+		entry.rec.Status = CacheQueueQueued
+		entry.rec.PauseReason = ""
+		entry.rec.StopReason = ""
+		entry.rec.NextRunAt = ""
+		entry.rec.UpdatedAt = nowStr
+		m.saveLoggedLocked("yield_reordered")
+		return entry.rec
+	}
 	entry.rec.Status = CacheQueueWaiting
 	entry.rec.PauseReason = ""
 	entry.rec.StopReason = reason

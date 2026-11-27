@@ -329,14 +329,22 @@ func (m *cacheQueueManager) completeBackfillLocked(entry *cacheQueueEntry) cache
 func (m *cacheQueueManager) scheduleFastCDNWaitLocked(entry *cacheQueueEntry, phase, reason string) cacheQueueRecord {
 	delay := m.fastCDNDelayLocked()
 	now := m.clock.Now().UTC()
-	entry.rec.Status = CacheQueueWaiting
+	nextAt := now.Add(delay)
 	entry.rec.BackfillPhase = phase
 	entry.rec.PauseReason = ""
-	entry.rec.StopReason = reason
 	entry.rec.ActiveItemKey = ""
 	entry.rec.ActiveTitle = ""
-	entry.rec.NextRunAt = now.Add(delay).Format(time.RFC3339)
 	entry.rec.UpdatedAt = now.Format(time.RFC3339)
+	if m.hasEarlierRunnableOnSiteLocked(site.Weibo, entry) {
+		entry.rec.Status = CacheQueueQueued
+		entry.rec.StopReason = ""
+		entry.rec.NextRunAt = ""
+		m.saveLoggedLocked("backfill_yield_reordered")
+		return entry.rec
+	}
+	entry.rec.Status = CacheQueueWaiting
+	entry.rec.StopReason = reason
+	entry.rec.NextRunAt = nextAt.Format(time.RFC3339)
 	m.saveLoggedLocked("backfill_fast_wait")
 	return entry.rec
 }
@@ -377,14 +385,23 @@ func (m *cacheQueueManager) scheduleSlowAPIWaitLocked(entry *cacheQueueEntry, ph
 		phase = backfillPhaseFallbackDetail
 	}
 	now := m.clock.Now().UTC()
-	entry.rec.Status = CacheQueueWaiting
+	nextAt := now.Add(delay)
 	entry.rec.BackfillPhase = phase
 	entry.rec.PauseReason = ""
-	entry.rec.StopReason = reason
 	entry.rec.ActiveItemKey = ""
 	entry.rec.ActiveTitle = ""
-	entry.rec.NextRunAt = now.Add(delay).Format(time.RFC3339)
 	entry.rec.UpdatedAt = now.Format(time.RFC3339)
+	if m.hasEarlierRunnableOnSiteLocked(site.Weibo, entry) {
+		m.recordSiteCooldownLocked(site.Weibo, nextAt)
+		entry.rec.Status = CacheQueueQueued
+		entry.rec.StopReason = ""
+		entry.rec.NextRunAt = ""
+		m.saveLoggedLocked("backfill_api_yield_reordered")
+		return entry.rec
+	}
+	entry.rec.Status = CacheQueueWaiting
+	entry.rec.StopReason = reason
+	entry.rec.NextRunAt = nextAt.Format(time.RFC3339)
 	m.saveLoggedLocked("backfill_api_wait")
 	return entry.rec
 }
