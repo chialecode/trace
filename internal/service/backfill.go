@@ -634,11 +634,7 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 			m.saveLoggedLocked("backfill_storage_pause")
 			rec := entry.rec
 			m.mu.Unlock()
-			if m.b.events != nil {
-				for _, k := range updatedKeys {
-					m.b.events.PublishSite(EventLibraryChanged, string(site.Weibo), k)
-				}
-			}
+			m.publishBackfillBatchLibraryChanged(updatedKeys)
 			m.notifyState(rec)
 			return
 		}
@@ -646,22 +642,14 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 		if len(buckets.fastCDN) == 0 && len(buckets.subscribedUIDs) == 0 && len(buckets.fallbackDetail) == 0 {
 			rec := m.completeBackfillLocked(entry)
 			m.mu.Unlock()
-			if m.b.events != nil {
-				for _, k := range updatedKeys {
-					m.b.events.PublishSite(EventLibraryChanged, string(site.Weibo), k)
-				}
-			}
+			m.publishBackfillBatchLibraryChanged(updatedKeys)
 			m.notifyState(rec)
 			return
 		}
 		m.saveLoggedLocked("backfill_tier_a")
 		rec := entry.rec
 		m.mu.Unlock()
-		if m.b.events != nil {
-			for _, k := range updatedKeys {
-				m.b.events.PublishSite(EventLibraryChanged, string(site.Weibo), k)
-			}
-		}
+		m.publishBackfillBatchLibraryChanged(updatedKeys)
 		m.notifyState(rec)
 		return
 	}
@@ -1092,4 +1080,18 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 		m.b.events.PublishSite(EventLibraryChanged, string(site.Weibo), item.ItemKey)
 	}
 	m.notifyState(rec)
+}
+
+// publishBackfillBatchLibraryChanged emits at most one EventLibraryChanged for a
+// Tier A offline backfill batch so large bursts never flood the UI event loop.
+// Single-item updates preserve the exact ItemKey message for callers/tests.
+func (m *cacheQueueManager) publishBackfillBatchLibraryChanged(updatedKeys []string) {
+	if m == nil || m.b == nil || m.b.events == nil || len(updatedKeys) == 0 {
+		return
+	}
+	if len(updatedKeys) == 1 {
+		m.b.events.PublishSite(EventLibraryChanged, string(site.Weibo), updatedKeys[0])
+		return
+	}
+	m.b.events.PublishSite(EventLibraryChanged, string(site.Weibo), fmt.Sprintf("backfill:offline_links:%d", len(updatedKeys)))
 }

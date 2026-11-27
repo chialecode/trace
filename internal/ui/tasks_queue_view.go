@@ -235,6 +235,7 @@ func queueFilterPillLabel(siteID string) string {
 // renderTasksQueueView lists background cache queues grouped by site so each
 // site's independent running/backoff status and manual reorder controls are clear (DEC-088).
 func (a *App) renderTasksQueueView(c *ui.Context) {
+	a.ensureBackfillSummaryFresh()
 	ui.Scroll(c).Grow(1).FillWidth().ClipX().Children(func() {
 		ui.Column(c).FillWidth().Padding(10, 16).Gap(6).ClipX().Children(func() {
 			if a.TaskActionError != "" {

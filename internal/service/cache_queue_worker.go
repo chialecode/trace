@@ -1129,8 +1129,18 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 		if m.b == nil || m.b.events == nil || len(conflictNotifications) == 0 {
 			return
 		}
-		for _, c := range conflictNotifications {
+		if len(conflictNotifications) == 1 {
+			c := conflictNotifications[0]
 			m.b.events.PublishSite(EventCacheConflictsChanged, c.Site, c.ItemKey)
+		} else {
+			batchSite := conflictNotifications[0].Site
+			for _, c := range conflictNotifications[1:] {
+				if c.Site != batchSite {
+					batchSite = ""
+					break
+				}
+			}
+			m.b.events.PublishSite(EventCacheConflictsChanged, batchSite, fmt.Sprintf("batch:%d", len(conflictNotifications)))
 		}
 		conflictNotifications = nil
 	}

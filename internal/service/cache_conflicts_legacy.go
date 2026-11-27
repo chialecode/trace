@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -64,9 +65,20 @@ func (b *Backend) reconcileLegacyInlineURLConflicts() {
 	}
 
 	if len(resolvedKeys) > 0 && b.events != nil {
-		for i, key := range resolvedKeys {
-			b.events.PublishSite(EventCacheConflictsChanged, resolvedSites[i], key)
-			b.events.PublishSite(EventLibraryChanged, resolvedSites[i], key)
+		if len(resolvedKeys) == 1 {
+			b.events.PublishSite(EventCacheConflictsChanged, resolvedSites[0], resolvedKeys[0])
+			b.events.PublishSite(EventLibraryChanged, resolvedSites[0], resolvedKeys[0])
+		} else {
+			batchSite := resolvedSites[0]
+			for _, s := range resolvedSites[1:] {
+				if s != batchSite {
+					batchSite = ""
+					break
+				}
+			}
+			msg := fmt.Sprintf("reconciled_legacy:%d", len(resolvedKeys))
+			b.events.PublishSite(EventCacheConflictsChanged, batchSite, msg)
+			b.events.PublishSite(EventLibraryChanged, batchSite, msg)
 		}
 	}
 }

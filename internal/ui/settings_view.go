@@ -702,6 +702,8 @@ func (a *App) probeSiteBackoff(siteID string) {
 }
 
 func (a *App) renderStorageSettings(c *ui.Context) {
+	a.ensureLibraryStatisticsFresh()
+	a.ensureBackfillSummaryFresh()
 	diag := a.diagnosticsSnapshotCached()
 	loc := a.backend.Locations()
 	stats := a.libraryStatistics

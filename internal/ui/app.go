@@ -228,6 +228,29 @@ type App struct {
 	livePreviewPlayer    *player.Controller
 	unsub                func()
 
+	// Coalesced backend event loop & single-flight async derived-data refresh.
+	eventMu                     sync.Mutex
+	pendingEvents               []service.Event
+	eventFlushQueued            bool
+	bgRefreshMu                 sync.Mutex
+	bgRefreshRunning            bool
+	bgRefreshPending            bool
+	bgRefreshNext               bgRefreshSpec
+	bgRefreshPendingRes         *bgRefreshResult
+	bgRefreshApplyQueued        bool
+	bgRefreshDefer              bool
+	bgRefreshDeferred           bgRefreshSpec
+	libraryStatsDirty           bool
+	libraryStatsDirtyGen        uint64
+	libraryStatsRequestedGen    uint64
+	backfillSummaryDirty        bool
+	backfillSummaryDirtyGen     uint64
+	backfillSummaryRequestedGen uint64
+	accountWorksDirty           bool
+	accountWorksDirtyGen        uint64
+	accountWorksRequestedGen    uint64
+	libraryItemsGen             uint64
+
 	// Cached diagnostics/update metadata to avoid per-frame SQLite & Registry reads.
 	cachedDiag           service.Diagnostics
 	cachedDiagAt         time.Time
@@ -845,6 +868,7 @@ func (a *App) Close() {
 	a.ReleaseBitmapsLocked()
 	a.imageRetry = nil
 	a.mu.Unlock()
+	a.clearPendingEventLoopState()
 
 	if qrFlowID != "" {
 		a.backend.CancelQRLogin(qrFlowID)
@@ -896,20 +920,9 @@ func (a *App) BindEventLoop(updateFn func(func())) {
 	if a.unsub != nil {
 		a.unsub()
 	}
+	a.clearPendingEventLoopState()
 	a.unsub = a.backend.SubscribeEvents(func(ev service.Event) {
-		if updateFn == nil {
-			a.handleBackendEvent(ev)
-			return
-		}
-		if a.isClosed() {
-			return
-		}
-		updateFn(func() {
-			if a.isClosed() {
-				return
-			}
-			a.handleBackendEvent(ev)
-		})
+		a.enqueueBackendEvent(ev, updateFn)
 	})
 }
 
@@ -926,11 +939,20 @@ func (a *App) handleBackendEvent(ev service.Event) {
 		}
 		return
 	}
+	if ev.Type == service.EventLibraryChanged && strings.HasPrefix(ev.Message, "feed_seen:") {
+		// Shared read state updated from mobile companion (DEC-085 ⑥).
+		// Only ui-state HomeSeen changed; skip heavy library/task SQLite scans.
+		a.homeSeenLocal = a.backend.GetUIState().HomeSeen
+		a.homeSeenRev++
+		a.homeSubRowsValid = false
+		return
+	}
 	switch ev.Type {
 	case service.EventSettingsChanged:
 		a.cachedDiagAt = time.Time{}
 		a.cachedUpdateHistAt = time.Time{}
-		a.refreshBackfillSummary()
+		a.markBackfillSummaryDirty()
+		a.ensureBackfillSummaryFresh()
 	case service.EventAccountChanged:
 		a.cacheStateRev++ // dots read "登录后查看" while signed out
 		a.cachedDiagAt = time.Time{}
@@ -950,9 +972,14 @@ func (a *App) handleBackendEvent(ev service.Event) {
 	case service.EventTransferUpdated:
 		a.onTransferUpdated(ev.Message)
 	case service.EventCacheQueueUpdated:
+		_, prevBackfillActive := a.activeWeiboBackfillQueue()
 		a.cacheStateRev++
 		a.CacheQueue = a.backend.ListCacheQueue()
-		a.refreshBackfillSummary()
+		_, curBackfillActive := a.activeWeiboBackfillQueue()
+		if prevBackfillActive && !curBackfillActive {
+			a.markBackfillSummaryDirty()
+			a.ensureBackfillSummaryFresh()
+		}
 	case service.EventCacheConflictsChanged:
 		a.cacheStateRev++
 		a.refreshCacheConflicts()
@@ -965,49 +992,27 @@ func (a *App) handleBackendEvent(ev service.Event) {
 		}
 		a.refreshTasks()
 		if ev.Type == service.EventLibraryChanged {
-			if strings.HasPrefix(ev.Message, "feed_seen:") {
-				// Shared read state updated from mobile companion (DEC-085 ⑥).
-				a.homeSeenLocal = a.backend.GetUIState().HomeSeen
-				a.homeSeenRev++
-				a.homeSubRowsValid = false
-			}
 			a.libraryRev++
 			a.purgeMissingImages()
 			a.subFeedDirty = true
 			if ev.Message == "refreshed" && (a.HomeRefreshRunning || a.LibraryRefresh.Running) {
 				a.libraryItemsDirty = a.CurrentRoute != RouteLibrary && a.CurrentRoute != RouteLibraryItem
 			} else {
-				a.refreshLibraryStatistics()
-				a.refreshBackfillSummary()
-				a.refreshAccountWorks()
 				if len(a.FeedItems) == 0 && a.HomeActorFilter == nil {
 					a.loadInitialFeed()
 				}
 				if a.HomeActorFilter == nil && len(a.FeedItems) > 0 {
 					a.feedMoreBefore = true
 				}
-				switch a.CurrentRoute {
-				case RouteLibraryItem:
-					a.libraryItemsDirty = false
-					a.libraryOffset = 0
-					a.loadLibraryPage(true)
-					if a.CurrentLibraryDetail != nil {
-						if it, ok, err := a.backend.GetLibraryItem(a.CurrentLibraryDetail.ItemKey); err == nil && ok {
-							a.CurrentLibraryDetail = &it
-						}
-					}
-				case RouteLibrary:
-					a.libraryItemsDirty = false
-					a.reloadLibraryItems()
-				default:
-					a.libraryItemsDirty = true
-				}
+				a.scheduleLibraryChangedRefresh()
 			}
 		}
 		if ev.Type == service.EventSubscriptionChecked {
 			a.purgeMissingImages()
 			a.subFeedDirty = true
-			a.refreshSubscriptions()
+			a.refreshSubscriptionsListOnly()
+			a.markAccountWorksDirty()
+			a.ensureAccountWorksFresh()
 		}
 		if ev.Type == service.EventLiveUpdated {
 			a.LiveRooms = bilibiliLiveRooms(a.backend.ListLiveRooms())
@@ -1026,6 +1031,7 @@ func (a *App) RefreshData() {
 	a.cacheStateRev++
 	a.libraryRev++
 	a.libraryItemsDirty = false
+	a.libraryItemsGen++
 	a.subFeedDirty = true
 	a.cachedDiagAt = time.Time{}
 	a.HistoryItems = a.backend.ListHistory()
