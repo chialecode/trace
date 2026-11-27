@@ -75,6 +75,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 	savedWeiboRetweet := env.savedWeiboRetweet
 	savedXPost := env.savedXPost
 	savedXRetweet := env.savedXRetweet
+	savedXThread := env.savedXThread
 	seedRecentAndLive := func() { env.seedRecentAndLive(app) }
 	injectMixedHomeFeed := func() { env.injectMixedHomeFeed(app) }
 
@@ -1654,19 +1655,29 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 					CreatedAt:  1710004900,
 					Text:       "长帖线程主帖（note_tweet）：第 1 条详细阐述四站点独立凭证隔离、前端元数据运行时发现与 64 位雪花 ID 校验方案，后续自回复紧随其后一并展示并缓存。",
 					IsLongText: true,
+					ThreadAncestors: []service.XPostDTO{
+						{
+							ID:           "1000000000000000011",
+							Author:       service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+							CreatedAt:    1710004840,
+							Text:         "线程上文：本轮分享 TRACE 在多站点离线归档中的协议隔离设计。",
+							CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000011",
+						},
+					},
 					Thread: []service.XPostDTO{
 						{
 							ID:           "1000000000000000013",
 							Author:       service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
 							CreatedAt:    1710004960,
-							Text:         "自回复 #2：前端元数据仅驻留内存、单飞刷新且 10 分钟冷却，abs.twimg.com 请求恒不带 Cookie。",
+							Text:         "自回复 #2：前端元数据仅驻留内存、单飞刷新且 10 分钟冷却，abs.twimg.com 请求恒不带 Cookie，详见 example.dev/x-arch。",
+							Links:        []service.TextLinkDTO{{Label: "example.dev/x-arch", URL: "https://example.dev/x-arch"}},
 							CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000013",
 						},
 						{
 							ID:           "1000000000000000014",
 							Author:       service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
 							CreatedAt:    1710005020,
-							Text:         "自回复 #3：缓存主帖时将此刻的作者自回复串一并写入同一条离线清单，避免碎片化条目。",
+							Text:         "自回复 #3：缓存主帖时将此刻的作者自回复串一并写入同一条离线清单，每条独立展示正文与媒体并用头像细竖线串联。",
 							CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000014",
 						},
 					},
@@ -1681,13 +1692,21 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"缓存当前X帖子",
 				"X帖子正文",
 				"X作者自回复串",
+				"X串上文：1000000000000000011",
+				"X串连线：1000000000000000011",
+				"X串主帖",
+				"X串连线：1000000000000000012",
 				"X串条目：1000000000000000013",
+				"X串连线：1000000000000000013",
 				"查看X串帖子：1000000000000000013",
 				"X串条目：1000000000000000014",
 				"X在线统计",
 			},
+			ForbiddenLabels: []string{
+				"X串连线：1000000000000000014",
+			},
 			RequiredTexts: []string{
-				"作者自回复串（2 条）",
+				"线程上文",
 				"自回复 #2",
 				"自回复 #3",
 			},
@@ -1922,6 +1941,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"X离线原帖卡片",
 				"X作者自回复串",
 				"X离线串条目：1",
+				"X离线串连线：1",
+				"X离线串条目：2",
 			},
 			RequiredTexts: []string{
 				"@" + xHandle,
@@ -1930,6 +1951,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"自回复补充",
 			},
 			ForbiddenLabels: []string{
+				"X离线串连线：2",
 				"缓存当前X帖子",
 				"X在线统计",
 			},
@@ -1944,6 +1966,21 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				seedRecentAndLive()
 				app.FeedSiteFilter = "x"
 				app.FeedItems = []library.FeedEntry{
+					{
+						FeedKey:      savedXThread.ItemKey,
+						ItemKey:      savedXThread.ItemKey,
+						Site:         "x",
+						Kind:         "dynamic",
+						RawID:        savedXThread.RawID,
+						AuthorUID:    xUID,
+						AuthorName:   "技术频道_X",
+						Title:        savedXThread.Title,
+						Summary:      savedXThread.Text,
+						CanonicalURL: savedXThread.URL,
+						PubTs:        savedXThread.PubTs,
+						Cached:       true,
+						CacheStatus:  "green",
+					},
 					{
 						FeedKey:      savedXRetweet.ItemKey,
 						ItemKey:      savedXRetweet.ItemKey,
@@ -1979,10 +2016,26 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			},
 			RequiredLabels: []string{
 				"主页站点筛选：X",
-				"主页作者站点：" + savedXRetweet.ItemKey,
-				"转发原内容：" + savedXRetweet.ItemKey,
+				"主页作者站点：" + savedXThread.ItemKey,
+				"X串节点：" + savedXThread.ItemKey + ":1",
+				"X串连线：" + savedXThread.ItemKey + ":1",
+				"X串节点：" + savedXThread.ItemKey + ":2",
+				"X串连线：" + savedXThread.ItemKey + ":2",
+				"X串节点：" + savedXThread.ItemKey + ":3",
 				"查看图文页 1",
-				"动图标记 2",
+			},
+			RequiredTexts: []string{
+				"1/3",
+				"2/3",
+				"3/3",
+				"example.com/x-thread",
+			},
+			ForbiddenLabels: []string{
+				"X串连线：" + savedXThread.ItemKey + ":3",
+			},
+			ForbiddenTexts: []string{
+				"含 2 条作者自回复串",
+				"含 3 条作者自回复串",
 			},
 		},
 		{

@@ -12,7 +12,35 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+const (
+	xThreadMaxInline        = 4
+	xThreadCollapsedPreview = 3
+)
+
+type mobileThreadPart struct {
+	ID      string
+	PubTs   int64
+	Text    string
+	Links   []companionapi.TextLink
+	Images  []mediaview.ImageItem
+	Videos  []mobileThreadVideo
+	IsFocal bool
+}
+
+type mobileThreadVideo struct {
+	Title        string
+	CoverRelPath string
+	DurationSec  int
+	QualitySpec  string
+	Req          mediaview.VideoRequest
+}
+
 func (p *Page) renderPostCard(c *ui.Context, h pagekit.Host, item companionapi.FeedItem, inSubView bool) {
+	if parts, focalIdx, origImages, ok := resolveMobileFeedThread(item); ok {
+		p.renderThreadPostCard(c, h, item, inSubView, parts, focalIdx, origImages)
+		return
+	}
+
 	ui.Column(c).
 		FillWidth().
 		Background(theme.ColorBgMain).
@@ -43,21 +71,667 @@ func (p *Page) renderPostCard(c *ui.Context, h pagekit.Host, item companionapi.F
 				p.renderMusicBar(c, item.Music)
 			}
 
-			// 6. Author self-reply thread summary (X).
-			if len(item.Thread) > 0 {
-				p.renderThreadParts(c, h, item.Thread)
-			}
-
-			// 7. Forward / Quoted Origin box.
+			// 6. Forward / Quoted Origin box.
 			if item.Origin != nil {
-				p.renderOriginBox(c, h, item.Origin)
+				p.renderOriginBox(c, h, item.Origin, nil)
 			}
 
-			// 8. Non-media rich card summary (read-only, no cache button).
+			// 7. Non-media rich card summary (read-only, no cache button).
 			if item.Card != nil {
 				p.renderRichCard(c, h, item.Card)
 			}
 		})
+}
+
+func (p *Page) renderThreadPostCard(
+	c *ui.Context,
+	h pagekit.Host,
+	item companionapi.FeedItem,
+	inSubView bool,
+	parts []mobileThreadPart,
+	focalIdx int,
+	origImages []mediaview.ImageItem,
+) {
+	now := p.nowFn()
+	siteTxt := mediaview.SiteLabel(item.Site)
+	typeTxt := postTypeLabel(item)
+	canOpenSub := !inSubView && item.SubID != ""
+	authorName := firstNonEmpty(item.AuthorName, item.AuthorUID, "未知用户")
+	authorHandle := strings.TrimPrefix(strings.TrimSpace(item.AuthorUniqueID), "@")
+
+	key := firstNonEmpty(item.FeedKey, item.ItemKey)
+	expandKey := "thread:" + key
+	p.mu.Lock()
+	expanded := p.expandedPosts[expandKey]
+	p.mu.Unlock()
+
+	visibleParts := parts
+	hiddenCount := 0
+	if len(parts) > xThreadMaxInline && !expanded {
+		visibleParts = parts[:xThreadCollapsedPreview]
+		hiddenCount = len(parts) - xThreadCollapsedPreview
+	}
+
+	ui.Column(c).
+		Label("X自回复串卡片 "+key).
+		FillWidth().
+		Background(theme.ColorBgMain).
+		Padding(14, 14).
+		Gap(0).
+		BorderWidth(0, 0, 1, 0).
+		Border(1, theme.ColorBorder).
+		ClipX().
+		Children(func() {
+			for idx, part := range visibleParts {
+				tp := part
+				isFirst := idx == 0
+				isLastVisible := idx == len(visibleParts)-1
+				hasLineBelow := !isLastVisible || hiddenCount > 0
+				bottomPad := float32(0)
+				if !isLastVisible {
+					bottomPad = 12
+				} else if hiddenCount > 0 {
+					bottomPad = 8
+				}
+
+				ui.Row(c.Key(idx)).
+					Label(fmt.Sprintf("X串节点 %d", idx+1)).
+					FillWidth().
+					Gap(10).
+					AlignItems(ui.Stretch).
+					ClipX().
+					Children(func() {
+						// Left avatar column (36dp circular avatar + 2px vertical connector when not last).
+						ui.Column(c).Width(36).Shrink(0).AlignItems(ui.Center).Children(func() {
+							av := ui.Box(c).Shrink(0)
+							av.Children(func() {
+								p.renderCircleAvatar(c, h, item.AuthorAvatarPath, authorName, item.AuthorUID+authorName, 36)
+							})
+							if canOpenSub {
+								if isFirst {
+									av.Label("打开订阅 " + firstNonEmpty(item.SubName, authorName))
+								}
+								if av.Clicked() {
+									p.openSubscription(h, item.SubID, firstNonEmpty(item.SubName, authorName), item.AuthorAvatarPath, item.PubTs)
+								}
+							}
+							if hasLineBelow {
+								renderMobileThreadConnector(c, 36, fmt.Sprintf("X串连线 %d", idx+1))
+							}
+						})
+
+						// Right content column (fits 360dp cleanly via Grow(1).Basis(0).ClipX()).
+						ui.Column(c).Grow(1).Basis(0).Gap(6).Padding(0, 0, bottomPad, 0).ClipX().Children(func() {
+							if isFirst {
+								pubTs := tp.PubTs
+								if pubTs <= 0 {
+									pubTs = item.PubTs
+								}
+								header := ui.Column(c).FillWidth().Gap(2).ClipX()
+								header.Children(func() {
+									ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).ClipX().Children(func() {
+										ui.Text(c, authorName).FontSize(14).FontWeight(600).TextColor(theme.ColorTextMain).SingleLine()
+										if authorHandle != "" {
+											ui.Text(c, "@"+authorHandle).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine().Shrink(1)
+										}
+										if item.SubName != "" && item.SubName != authorName {
+											ui.Text(c, item.SubName).FontSize(12).FontWeight(500).TextColor(theme.ColorAccent).SingleLine().Shrink(1)
+										}
+									})
+									metaParts := make([]string, 0, 3)
+									if t := mediaview.FormatPubTime(pubTs, now); t != "" {
+										metaParts = append(metaParts, t)
+									}
+									if siteTxt != "" {
+										metaParts = append(metaParts, siteTxt)
+									}
+									if typeTxt != "" {
+										metaParts = append(metaParts, typeTxt)
+									}
+									if len(metaParts) > 0 {
+										ui.Text(c, strings.Join(metaParts, " · ")).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine()
+									}
+								})
+								if canOpenSub && header.Clicked() {
+									p.openSubscription(h, item.SubID, firstNonEmpty(item.SubName, authorName), item.AuthorAvatarPath, item.PubTs)
+								}
+							} else {
+								ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).ClipX().Children(func() {
+									ui.Text(c, authorName).FontSize(13).FontWeight(600).TextColor(theme.ColorTextMain).SingleLine()
+									if authorHandle != "" {
+										ui.Text(c, "@"+authorHandle).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine().Shrink(1)
+									}
+									if t := mediaview.FormatPubTime(tp.PubTs, now); t != "" {
+										ui.Text(c, "· "+t).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine().Shrink(0)
+									}
+								})
+							}
+
+							if body := strings.TrimSpace(tp.Text); body != "" {
+								p.renderSegmentText(c, h, fmt.Sprintf("%s:part:%d", key, idx), body, tp.Links)
+							}
+							if len(tp.Images) > 0 {
+								p.renderPostImages(c, h, tp.Images)
+							}
+							for vi, vid := range tp.Videos {
+								p.renderCompactThreadVideoCard(c, h, item.ItemKey, vid, vi)
+							}
+
+							if idx == focalIdx {
+								if item.Origin != nil {
+									p.renderOriginBox(c, h, item.Origin, origImages)
+								}
+								if item.Card != nil {
+									p.renderRichCard(c, h, item.Card)
+								}
+							}
+						})
+					})
+			}
+
+			if hiddenCount > 0 {
+				ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).ClipX().Children(func() {
+					renderMobileThreadDots(c, 36)
+					btn := ui.Button(c, "").
+						Label("展开自回复串 "+key).
+						Background(ui.Color{}).
+						Padding(4, 0).
+						AlignSelf(ui.Start)
+					btn.Children(func() {
+						ui.Text(c, fmt.Sprintf("展开其余 %d 条自回复", hiddenCount)).
+							FontSize(13).FontWeight(600).TextColor(theme.ColorAccent).SingleLine()
+					})
+					if btn.Clicked() {
+						p.mu.Lock()
+						p.expandedPosts[expandKey] = true
+						p.mu.Unlock()
+					}
+				})
+			} else if len(parts) > xThreadMaxInline && expanded {
+				ui.Row(c).FillWidth().Padding(6, 0, 0, 46).AlignItems(ui.Center).ClipX().Children(func() {
+					btn := ui.Button(c, "").
+						Label("收起自回复串 "+key).
+						Background(ui.Color{}).
+						Padding(2, 0).
+						AlignSelf(ui.Start)
+					btn.Children(func() {
+						ui.Text(c, "收起自回复串").
+							FontSize(13).FontWeight(600).TextColor(theme.ColorAccent).SingleLine()
+					})
+					if btn.Clicked() {
+						p.mu.Lock()
+						p.expandedPosts[expandKey] = false
+						p.mu.Unlock()
+					}
+				})
+			}
+		})
+}
+
+func renderMobileThreadConnector(c *ui.Context, colWidth float32, label string) {
+	box := ui.Box(c).
+		Width(colWidth).
+		Grow(1).
+		MinHeight(14).
+		Shrink(0).
+		Draw(func(p *ui.Painter, r ui.Rect) {
+			lineTop := r.Y + 4
+			lineH := r.H - 8
+			if lineH > 2 {
+				p.Fill(ui.Rect{
+					X: r.X + (r.W-2)/2,
+					Y: lineTop,
+					W: 2,
+					H: lineH,
+				}, theme.ColorBorderStrong, 1)
+			}
+		})
+	if label != "" {
+		box.Label(label)
+	}
+}
+
+func renderMobileThreadDots(c *ui.Context, colWidth float32) {
+	ui.Box(c).
+		Width(colWidth).
+		Height(20).
+		Shrink(0).
+		Draw(func(p *ui.Painter, r ui.Rect) {
+			cx := r.X + r.W/2
+			for i := 0; i < 3; i++ {
+				cy := r.Y + 3 + float32(i)*5.5
+				p.Fill(ui.Rect{X: cx - 1.5, Y: cy, W: 3, H: 3}, theme.ColorBorderStrong, 1.5)
+			}
+		})
+}
+
+func (p *Page) renderSegmentText(c *ui.Context, h pagekit.Host, expandKey, body string, rawLinks []companionapi.TextLink) {
+	p.mu.Lock()
+	expanded := p.expandedPosts[expandKey]
+	p.mu.Unlock()
+
+	isLong := utf8.RuneCountInString(body) > 180 || strings.Count(body, "\n") >= 6
+	el := ui.Text(c, body).FontSize(14).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
+	if isLong && !expanded {
+		el.MaxLines(6)
+	}
+	if isLong {
+		lbl := "展开"
+		if expanded {
+			lbl = "收起"
+		}
+		toggleBtn := ui.Button(c, "").
+			Label(lbl+"正文").
+			Background(ui.Color{}).
+			Padding(2, 0).
+			AlignSelf(ui.Start)
+		toggleBtn.Children(func() {
+			ui.Text(c, lbl).FontSize(13).FontWeight(500).TextColor(theme.ColorAccent)
+		})
+		if toggleBtn.Clicked() {
+			p.mu.Lock()
+			p.expandedPosts[expandKey] = !expanded
+			p.mu.Unlock()
+		}
+	}
+	if links := mediaview.ExtractLinks(body, rawLinks); len(links) > 0 {
+		p.renderExternalLinks(c, h, links)
+	}
+}
+
+func (p *Page) renderCompactThreadVideoCard(c *ui.Context, h pagekit.Host, itemKey string, vid mobileThreadVideo, idx int) {
+	var coverSrc ui.ImageSource
+	if vid.CoverRelPath != "" {
+		coverSrc, _, _ = p.loader.GetOrLoad(h, mediaview.MediaThumbPath(itemKey, vid.CoverRelPath))
+	}
+	durTxt := mediaview.FormatDuration(vid.DurationSec)
+	cardTitle := firstNonEmpty(vid.Title, "X 视频")
+
+	card := ui.Row(c.Key("tv-"+fmt.Sprint(idx))).
+		FillWidth().
+		Padding(8, 8).
+		Gap(10).
+		Radius(10).
+		Background(theme.ColorBgMain).
+		Border(1, theme.ColorBorder).
+		AlignItems(ui.Center).
+		ClipX().
+		Label("播放 " + cardTitle)
+	card.Children(func() {
+		ui.Box(c).
+			Size(112, 63).
+			Radius(8).
+			Clip().
+			Shrink(0).
+			Background(theme.ColorBgSecondary).
+			Justify(ui.Center).
+			AlignItems(ui.Center).
+			Children(func() {
+				if coverSrc != nil {
+					ui.Image(c, coverSrc).Fit(ui.Cover).Absolute().Top(0).Left(0).Right(0).Bottom(0)
+				}
+				ui.Box(c).
+					Size(26, 26).Radius(13).ZIndex(2).
+					Background(ui.RGBA(0, 0, 0, 0.55)).
+					Justify(ui.Center).AlignItems(ui.Center).
+					Children(func() {
+						mediaview.DrawIcon(c, "play", 12, theme.ColorWhite, 1.8)
+					})
+				if durTxt != "" {
+					ui.Box(c).
+						Absolute().Right(4).Bottom(4).ZIndex(2).
+						Padding(1, 4).Radius(4).
+						Background(ui.RGBA(0, 0, 0, 0.7)).
+						Children(func() {
+							ui.Text(c, durTxt).FontSize(10).FontWeight(500).TextColor(theme.ColorWhite).SingleLine()
+						})
+				}
+			})
+
+		ui.Column(c).Grow(1).Basis(0).Gap(3).ClipX().Children(func() {
+			ui.Text(c, cardTitle).FontSize(13).FontWeight(600).LineHeight(theme.LineHeightHeading).TextColor(theme.ColorTextMain).MaxLines(2)
+			if vid.QualitySpec != "" {
+				ui.Text(c, vid.QualitySpec).FontSize(11).TextColor(theme.ColorTextMuted).SingleLine()
+			}
+		})
+	})
+	if card.Clicked() {
+		p.triggerOpenVideo(h, vid.Req)
+	}
+}
+
+func extractMobileRawID(id, itemKey string) string {
+	if key := strings.TrimSpace(itemKey); key != "" {
+		if first := strings.IndexByte(key, ':'); first >= 0 {
+			rest := key[first+1:]
+			if second := strings.IndexByte(rest, ':'); second >= 0 {
+				if tail := strings.TrimSpace(rest[second+1:]); tail != "" {
+					return tail
+				}
+			}
+		}
+	}
+	s := strings.TrimSpace(id)
+	s = strings.TrimPrefix(s, "dynamic:")
+	s = strings.TrimPrefix(s, "video:")
+	return strings.TrimSpace(s)
+}
+
+func stripMobileThreadSuffix(base string, conts []companionapi.ThreadPartDTO) string {
+	cur := strings.TrimSpace(base)
+	if cur == "" || len(conts) == 0 {
+		return cur
+	}
+	for i := len(conts) - 1; i >= 0; i-- {
+		seg := strings.TrimSpace(conts[i].Text)
+		if seg == "" {
+			continue
+		}
+		if strings.HasSuffix(cur, "\n\n"+seg) {
+			cur = strings.TrimSpace(strings.TrimSuffix(cur, "\n\n"+seg))
+		}
+	}
+	return cur
+}
+
+func joinMobileThreadTexts(parts []companionapi.ThreadPartDTO) string {
+	var segs []string
+	for _, tp := range parts {
+		if t := strings.TrimSpace(tp.Text); t != "" {
+			segs = append(segs, t)
+		}
+	}
+	return strings.Join(segs, "\n\n")
+}
+
+func resolveMobileFeedThread(item companionapi.FeedItem) ([]mobileThreadPart, int, []mediaview.ImageItem, bool) {
+	if !strings.EqualFold(strings.TrimSpace(item.Site), "x") || len(item.Thread) == 0 {
+		return nil, -1, nil, false
+	}
+
+	rawID := extractMobileRawID("", item.ItemKey)
+	rawSegs := make([]companionapi.ThreadPartDTO, 0, len(item.Thread))
+	for _, seg := range item.Thread {
+		if strings.TrimSpace(seg.ID) == "" && strings.TrimSpace(seg.Text) == "" && len(seg.Links) == 0 && len(seg.MediaIndexes) == 0 {
+			continue
+		}
+		rawSegs = append(rawSegs, seg)
+	}
+	if len(rawSegs) == 0 {
+		return nil, -1, nil, false
+	}
+
+	focalIdx := -1
+	if rawID != "" {
+		for i, seg := range rawSegs {
+			if strings.TrimSpace(seg.ID) == rawID {
+				focalIdx = i
+				break
+			}
+		}
+	}
+
+	var segments []companionapi.ThreadPartDTO
+	if focalIdx >= 0 {
+		if len(rawSegs) < 2 {
+			return nil, -1, nil, false
+		}
+		segments = rawSegs
+	} else if len(rawSegs) >= 2 && strings.TrimSpace(item.Text) != "" && strings.TrimSpace(item.Text) == joinMobileThreadTexts(rawSegs) {
+		segments = rawSegs
+		focalIdx = 0
+	} else {
+		focalText := stripMobileThreadSuffix(firstNonEmpty(item.Text, item.Desc, item.Title), rawSegs)
+		focalSeg := companionapi.ThreadPartDTO{
+			ID:    rawID,
+			PubTs: item.PubTs,
+			Text:  focalText,
+			Links: item.Links,
+		}
+		segments = make([]companionapi.ThreadPartDTO, 0, 1+len(rawSegs))
+		segments = append(segments, focalSeg)
+		segments = append(segments, rawSegs...)
+		focalIdx = 0
+	}
+	if len(segments) < 2 {
+		return nil, -1, nil, false
+	}
+
+	hasFromOrigin := false
+	for _, np := range item.NotePages {
+		if np.FromOrigin {
+			hasFromOrigin = true
+			break
+		}
+	}
+	if !hasFromOrigin {
+		for _, im := range item.Images {
+			if im.FromOrigin {
+				hasFromOrigin = true
+				break
+			}
+		}
+	}
+
+	outerPageByIdx := make(map[int]companionapi.NotePageDTO)
+	var outerPageKeys []int
+	var origImages []mediaview.ImageItem
+	seenOrigImg := make(map[string]bool)
+	appendOrigImage := func(img mediaview.ImageItem) {
+		if img.RelPath == "" || seenOrigImg[img.RelPath] {
+			return
+		}
+		seenOrigImg[img.RelPath] = true
+		origImages = append(origImages, img)
+	}
+	notePageVideos := make(map[string]bool)
+
+	for i, np := range item.NotePages {
+		if np.Video != "" {
+			notePageVideos[np.Video] = true
+		}
+		if hasFromOrigin && np.FromOrigin {
+			if rel := firstNonEmpty(np.Image, np.Cover); rel != "" {
+				isGIF := np.GIF || strings.EqualFold(np.Kind, "gif")
+				motion := np.Motion
+				if motion == "" && isGIF && np.Video != "" {
+					motion = np.Video
+				}
+				appendOrigImage(mediaview.ImageItem{
+					ItemKey:            item.ItemKey,
+					RelPath:            rel,
+					NoWatermarkRelPath: np.NoWatermark,
+					MotionRelPath:      motion,
+					GIF:                isGIF,
+					Width:              np.Width,
+					Height:             np.Height,
+				})
+			}
+			continue
+		}
+		idx := np.Index
+		if idx <= 0 {
+			idx = i + 1
+		}
+		if _, exists := outerPageByIdx[idx]; !exists {
+			outerPageByIdx[idx] = np
+			outerPageKeys = append(outerPageKeys, idx)
+		}
+	}
+
+	var outerImages []mediaview.ImageItem
+	if len(item.NotePages) == 0 {
+		for _, im := range item.Images {
+			if im.Path == "" {
+				continue
+			}
+			img := mediaview.ImageItem{
+				ItemKey:            item.ItemKey,
+				RelPath:            im.Path,
+				NoWatermarkRelPath: im.NoWatermark,
+				MotionRelPath:      im.Motion,
+				GIF:                im.GIF,
+				Width:              im.Width,
+				Height:             im.Height,
+			}
+			if hasFromOrigin && im.FromOrigin {
+				appendOrigImage(img)
+			} else {
+				outerImages = append(outerImages, img)
+			}
+		}
+	}
+
+	zeroBasedImages := false
+	if len(outerPageKeys) == 0 && len(outerImages) > 0 {
+		for _, seg := range segments {
+			for _, mi := range seg.MediaIndexes {
+				if mi == 0 {
+					zeroBasedImages = true
+					break
+				}
+			}
+			if zeroBasedImages {
+				break
+			}
+		}
+	}
+
+	attachNotePage := func(dst *mobileThreadPart, np companionapi.NotePageDTO) {
+		isGIF := np.GIF || strings.EqualFold(np.Kind, "gif")
+		if np.Video != "" && !isGIF {
+			spec := ""
+			codec := ""
+			w, h := np.Width, np.Height
+			if np.VideoInfo != nil {
+				codec = np.VideoInfo.Codec
+				spec = strings.TrimSpace(strings.Join(nonEmptyStrings(np.VideoInfo.QualityName, np.VideoInfo.Codec), " · "))
+				if w == 0 {
+					w = np.VideoInfo.Width
+				}
+				if h == 0 {
+					h = np.VideoInfo.Height
+				}
+			}
+			title := firstNonEmpty(dst.Text, "X 视频")
+			dst.Videos = append(dst.Videos, mobileThreadVideo{
+				Title:        "X 视频",
+				CoverRelPath: firstNonEmpty(np.Cover, np.Image),
+				DurationSec:  np.Duration,
+				QualitySpec:  firstNonEmpty(spec, item.QualitySummary),
+				Req: mediaview.VideoRequest{
+					ItemKey: item.ItemKey,
+					Title:   title,
+					Tracks: []mediaview.VideoTrack{{
+						Label:          "X 视频",
+						RelPath:        np.Video,
+						DurationSec:    np.Duration,
+						CodecHint:      firstNonEmpty(codec, item.QualitySummary),
+						Width:          w,
+						Height:         h,
+						QualitySummary: firstNonEmpty(spec, item.QualitySummary),
+					}},
+				},
+			})
+			return
+		}
+		if rel := firstNonEmpty(np.Image, np.Cover); rel != "" {
+			motion := np.Motion
+			if motion == "" && isGIF && np.Video != "" {
+				motion = np.Video
+			}
+			dst.Images = append(dst.Images, mediaview.ImageItem{
+				ItemKey:            item.ItemKey,
+				RelPath:            rel,
+				NoWatermarkRelPath: np.NoWatermark,
+				MotionRelPath:      motion,
+				GIF:                isGIF,
+				Width:              np.Width,
+				Height:             np.Height,
+			})
+		}
+	}
+
+	claimedPages := make(map[int]bool)
+	claimedImages := make(map[int]bool)
+	parts := make([]mobileThreadPart, len(segments))
+
+	for i, seg := range segments {
+		isFocal := i == focalIdx
+		pubTs := seg.PubTs
+		if pubTs <= 0 && isFocal {
+			pubTs = item.PubTs
+		}
+		links := seg.Links
+		if len(links) == 0 && isFocal && len(item.Links) > 0 {
+			links = item.Links
+		}
+		parts[i] = mobileThreadPart{
+			ID:      strings.TrimSpace(seg.ID),
+			PubTs:   pubTs,
+			Text:    strings.TrimSpace(seg.Text),
+			Links:   links,
+			IsFocal: isFocal,
+		}
+		if len(outerPageKeys) > 0 {
+			for _, mi := range seg.MediaIndexes {
+				if np, ok := outerPageByIdx[mi]; ok && !claimedPages[mi] {
+					attachNotePage(&parts[i], np)
+					claimedPages[mi] = true
+				}
+			}
+		} else if len(outerImages) > 0 {
+			for _, mi := range seg.MediaIndexes {
+				imgIdx := mi - 1
+				if zeroBasedImages {
+					imgIdx = mi
+				}
+				if imgIdx >= 0 && imgIdx < len(outerImages) && !claimedImages[imgIdx] {
+					parts[i].Images = append(parts[i].Images, outerImages[imgIdx])
+					claimedImages[imgIdx] = true
+				}
+			}
+		}
+	}
+
+	// Attach unclaimed outer media to focal.
+	if len(outerPageKeys) > 0 {
+		for _, idx := range outerPageKeys {
+			if !claimedPages[idx] {
+				attachNotePage(&parts[focalIdx], outerPageByIdx[idx])
+			}
+		}
+	} else if len(outerImages) > 0 {
+		for i, img := range outerImages {
+			if !claimedImages[i] {
+				parts[focalIdx].Images = append(parts[focalIdx].Images, img)
+			}
+		}
+	}
+
+	// Single non-NotePage focal video (e.g. single-video X post + text-only replies).
+	originOwnsVideo := item.Origin != nil && item.Origin.VideoFromOrigin
+	if len(outerPageKeys) == 0 && !originOwnsVideo && item.VideoRelPath != "" && !notePageVideos[item.VideoRelPath] {
+		parts[focalIdx].Videos = append(parts[focalIdx].Videos, mobileThreadVideo{
+			Title:        "X 视频",
+			CoverRelPath: item.CoverRelPath,
+			DurationSec:  item.Duration,
+			QualitySpec:  item.QualitySummary,
+			Req: mediaview.VideoRequest{
+				ItemKey: item.ItemKey,
+				Title:   firstNonEmpty(parts[focalIdx].Text, item.Title, "X 视频"),
+				Tracks: []mediaview.VideoTrack{{
+					Label:          "X 视频",
+					RelPath:        item.VideoRelPath,
+					DurationSec:    item.Duration,
+					CodecHint:      item.QualitySummary,
+					QualitySummary: item.QualitySummary,
+				}},
+			},
+		})
+	}
+
+	return parts, focalIdx, origImages, true
 }
 
 func (p *Page) renderPostAuthorRow(c *ui.Context, h pagekit.Host, item companionapi.FeedItem, inSubView bool) {
@@ -274,7 +948,7 @@ func (p *Page) renderImageTileContent(c *ui.Context, h pagekit.Host, img mediavi
 	if src != nil {
 		ui.Image(c, src).Fit(ui.Cover).Fill()
 	}
-	if img.MotionRelPath != "" {
+	if img.MotionRelPath != "" && !img.GIF {
 		ui.Box(c).
 			Absolute().Top(6).Left(6).ZIndex(2).
 			Padding(2, 6).Radius(4).
@@ -406,30 +1080,7 @@ func (p *Page) renderMusicBar(c *ui.Context, m *companionapi.MusicDTO) {
 	})
 }
 
-func (p *Page) renderThreadParts(c *ui.Context, h pagekit.Host, thread []companionapi.ThreadPartDTO) {
-	ui.Column(c).FillWidth().Gap(6).Padding(0, 0).Children(func() {
-		for i, part := range thread {
-			if strings.TrimSpace(part.Text) == "" {
-				continue
-			}
-			ui.Column(c.Key(i)).
-				FillWidth().
-				Padding(8, 10).
-				Radius(8).
-				Background(theme.ColorBgPanel).
-				Border(1, theme.ColorBorder).
-				Gap(4).
-				Children(func() {
-					ui.Text(c, part.Text).FontSize(13).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain).MaxLines(6)
-					if links := mediaview.ExtractLinks(part.Text, part.Links); len(links) > 0 {
-						p.renderExternalLinks(c, h, links)
-					}
-				})
-		}
-	})
-}
-
-func (p *Page) renderOriginBox(c *ui.Context, h pagekit.Host, orig *companionapi.ItemOriginDTO) {
+func (p *Page) renderOriginBox(c *ui.Context, h pagekit.Host, orig *companionapi.ItemOriginDTO, origImages []mediaview.ImageItem) {
 	ui.Column(c).
 		FillWidth().
 		Padding(10, 12).
@@ -437,6 +1088,7 @@ func (p *Page) renderOriginBox(c *ui.Context, h pagekit.Host, orig *companionapi
 		Background(theme.ColorBgMain).
 		Border(1, theme.ColorBorder).
 		Gap(6).
+		ClipX().
 		Children(func() {
 			if orig.Unavailable {
 				reason := firstNonEmpty(orig.UnavailableReason, "原内容已删除或不可见")
@@ -458,6 +1110,9 @@ func (p *Page) renderOriginBox(c *ui.Context, h pagekit.Host, orig *companionapi
 			}
 			if links := mediaview.ExtractLinks(orig.Text, orig.Links); len(links) > 0 {
 				p.renderExternalLinks(c, h, links)
+			}
+			if len(origImages) > 0 {
+				p.renderPostImages(c, h, origImages)
 			}
 			if orig.Card != nil {
 				p.renderRichCard(c, h, orig.Card)
