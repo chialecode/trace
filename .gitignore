@@ -1,6 +1,6 @@
 # 构建与依赖
 /build/
-/.mygo/
+.mygo/
 dist/
 *.syso
 # 本机 go build 出来的工具程序

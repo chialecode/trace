@@ -19,7 +19,7 @@ internal/ui（mygo/ui 声明式视图、路由、看图层、播放层） ──
                                                                                              └── internal/storage、settings、uistate、appdirs
 ```
 
-- **依赖方向只能向下（INV-05）**：`internal/site`（含 `bilibili`、`douyin` 及 `douyin/sign`、`weibo`、`x`）、`internal/companionapi`、`internal/companion`、`internal/download`、`internal/library`、`internal/credential`、`internal/storage`、`internal/subscription`、`internal/live`、`internal/settings`、`internal/uistate`、`internal/appdirs`、`internal/update`、`internal/service` **完全不依赖 MyGo（不引用 `github.com/egoist/mygo` 及其子包）**；只有 `main.go`、`internal/shell`、`internal/ui`、`internal/player`（仅用 `mygo/audio` 与 `*ui.Bitmap`）、`internal/locales`（MyGo 自带字符串与安装界面的中文目录）与 `tools/uishots` 引用 MyGo。`internal/site` 与 `internal/companionapi` 只用标准库；各站点包不依赖存储、缓存、订阅和录制代码，且站点包之间互不引用（完整规则由 `tools/check` 强制，见[工程规则 §3](../dev-rules/engineering.md#quality-gates)）。
+- **依赖方向只能向下（INV-05）**：`internal/site`（含 `bilibili`、`douyin` 及 `douyin/sign`、`weibo`、`x`）、`internal/companionapi`、`internal/companion`、`internal/companionclient`、`internal/download`、`internal/library`、`internal/credential`、`internal/storage`、`internal/subscription`、`internal/live`、`internal/settings`、`internal/uistate`、`internal/appdirs`、`internal/update`、`internal/service` **完全不依赖 MyGo（不引用 `github.com/egoist/mygo` 及其子包）**；只有 `main.go`、`cmd/trace-mobile`（含子包）、`internal/shell`、`internal/ui`、`internal/player`（仅用 `mygo/audio` 与 `*ui.Bitmap`）、`internal/locales`（MyGo 自带字符串与安装界面的中文目录）与 `tools/uishots` 引用 MyGo。`cmd/trace-mobile` 不链接 `internal/site/...`、`internal/credential`、`internal/download`、`internal/live`、`internal/subscription`、`internal/library`、`internal/service` 与 `internal/companion`；`internal/site` 与 `internal/companionapi` 只用标准库；各站点包不依赖存储、缓存、订阅和录制代码，且站点包之间互不引用（完整规则由 `tools/check` 强制，见[工程规则 §3](../dev-rules/engineering.md#quality-gates)）。
 - 后端服务需要的外壳能力（推送事件、选目录、打开文件夹、打开外部链接）由 `internal/service` 通过纯 Go 小接口注入，测试和未来的无头模式均可注入对应实现。
 - 窗口：标题 “TRACE”（开发通道为 “TRACE Dev”），默认 1280×860，最小 720×560。外部链接一律用系统浏览器打开（`Shell.OpenExternal`）。
 
@@ -29,6 +29,7 @@ internal/ui（mygo/ui 声明式视图、路由、看图层、播放层） ──
 ```text
 main.go                       组装依赖、获取单实例与数据目录锁、启动服务与原生窗口
 cmd/trace-server/             无界面的远程程序（Linux）：init、run、token、upload-test 等命令；deploy/ 放 systemd 示例与中文部署说明
+cmd/trace-mobile/             Android 手机端应用（MyGo 原生界面 + mygo.json）：配对、连接页、五标签导航骨架与“我的电脑”页
 mygo.json                     MyGo 打包配置：正式版身份、版本线 0.1.0、图标、发布者与版权、中文目录（i18n）、更新公钥与 GitHub 仓库；
                               打包工具按通道临时改写（开发版 trace-dev、演练用的 trace-test）
 CHANGELOG.md                  正式版每个版本的更新内容（Release 说明与“更新内容”）
@@ -74,6 +75,7 @@ internal/
   remoteserver/               trace-server 的服务端：init 与配置（server.json、证书、令牌哈希）、HTTPS 接口与鉴权限流、磁盘空间、Run 的启动与收尾
   companionapi/               移动端共用协议契约（仅依赖标准库）：协议版本、端点路径、错误码、配对二维码编解码、身份码格式化、JSON DTO 与 WebSocket 事件帧
   companion/                  电脑端移动端服务（纯 Go，不依赖 MyGo）：局域网/VPN 网卡监听与来源过滤、TLS 1.3 自签名证书与指纹、一次性扫码/手动配对与确认、设备令牌哈希与 companion.json、只读与有限控制 HTTP API、有界队列 WebSocket 推送与 bye、MediaPath 白名单流式媒体与 480/2560 px 缩略图缓存
+  companionclient/            移动端客户端（纯 Go，不依赖 MyGo）：证书指纹固定 TLS 1.3 客户端、WebSocket 15 秒心跳、重连退避、128 位一次性票据回环媒体转发、128 MiB 内存 LRU 图片缓存
   upload/                     远程的内置上传：逐条目调用 rclone、确认后删登记文件、退避与错误分类；fakerclone/ 是测试与冒烟用的假 rclone
   transfer/                   资源库导入（扫描分六类、校验后复制、合并清单）与导出（可携带的 item.json）
 tools/check/                  质量门禁（一条命令）
@@ -240,7 +242,7 @@ tools/internal/build/         打包共用：版本号、通道配置、-ldflags
 | INV-02 | 风控、限流、未登录、网络、不可得、格式变化、存储失败是不同的错误类别，任何一类都不能显示成空结果或“已缓存” |
 | INV-03 | 已取消、已过期或被新流程替代的扫码流程不能写入凭证；无效的手动凭证不能写入 |
 | INV-04 | 数据文件只通过“临时文件 + 改名”写入；损坏的文件被保留而不是覆盖；索引数据库可以从清单完整重建 |
-| INV-05 | `internal/site`（含各站点子包）、`internal/download`、`internal/library`、`internal/credential`、`internal/storage`、`internal/subscription`、`internal/live`、`internal/settings`、`internal/uistate`、`internal/appdirs`、`internal/update`、`internal/service` 不依赖 MyGo；`internal/site` 及各站点子包也不依赖存储、缓存、订阅和录制代码，站点子包之间互不引用 |
+| INV-05 | `internal/site`（含各站点子包）、`internal/download`、`internal/library`、`internal/credential`、`internal/storage`、`internal/subscription`、`internal/live`、`internal/settings`、`internal/uistate`、`internal/appdirs`、`internal/update`、`internal/service`、`internal/companionapi`、`internal/companionclient` 不依赖 MyGo；`cmd/trace-mobile` 不链接站点、凭证、下载、录制、订阅、媒体库、服务层与电脑端移动端服务；`internal/site`、`internal/companionapi` 只用标准库，各站点子包也不依赖存储、缓存、订阅和录制代码，站点子包之间互不引用 |
 | INV-06 | 只有全部文件校验通过、改为正式名并写好清单的条目才标为已缓存（绿点）；其余状态都带原因 |
 | INV-07 | 某个站点没有有效登录凭证时，不向这个站点的内容接口、用户主页和媒体 CDN 发任何请求（只有哔哩哔哩扫码接口、候选凭证的 nav、`profile/self`、微博 PC 两步 `getBasicInfo`/`profile/info`、X 两步 `settings.json`/`UserByScreenName` 校验及无 Cookie 的 `abs.twimg.com/responsive-web/` 前端静态脚本例外）；媒体、短链、前端静态脚本与直播 CDN 请求从不带 Cookie |
 | INV-08 | 本地媒体读取（`LibraryService.MediaPath`）只返回索引登记、位于条目文件夹内的真实文件（拒绝 `..`、符号链接/目录联接与跨条目路径）；签名播放地址、直播流地址与字幕 `auth_key` 地址不落盘、不进日志 |
