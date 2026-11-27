@@ -30,6 +30,124 @@ var livePartName = regexp.MustCompile(`^part-(\d+)(\.[A-Za-z0-9]+)$`)
 // installations recorded the same broadcast, each numbering from 001).
 type SegmentRename struct{ From, To string }
 
+func cloneItemReplyTarget(src *ItemReplyTarget) *ItemReplyTarget {
+	if src == nil {
+		return nil
+	}
+	cp := *src
+	return &cp
+}
+
+func cloneItemOrigin(src *ItemOrigin) *ItemOrigin {
+	return cloneItemOriginDepth(src, 0)
+}
+
+func cloneItemOriginDepth(src *ItemOrigin, depth int) *ItemOrigin {
+	if src == nil {
+		return nil
+	}
+	o := *src
+	o.Links = append([]ItemLink(nil), o.Links...)
+	if o.Card != nil {
+		oc := *o.Card
+		o.Card = &oc
+	}
+	o.InReplyTo = cloneItemReplyTarget(o.InReplyTo)
+	if depth >= maxItemOriginNestingDepth {
+		o.Origin = nil
+	} else {
+		o.Origin = cloneItemOriginDepth(o.Origin, depth+1)
+	}
+	return &o
+}
+
+func mergeItemReplyTarget(dst, src *ItemReplyTarget) *ItemReplyTarget {
+	if src == nil {
+		return dst
+	}
+	if dst == nil {
+		return cloneItemReplyTarget(src)
+	}
+	if dst.StatusID == "" {
+		dst.StatusID = src.StatusID
+	}
+	if dst.UserID == "" {
+		dst.UserID = src.UserID
+	}
+	if dst.ScreenName == "" {
+		dst.ScreenName = src.ScreenName
+	}
+	return dst
+}
+
+func mergeItemOriginDepth(dst, src *ItemOrigin, depth int) *ItemOrigin {
+	if src == nil {
+		if dst != nil && depth >= maxItemOriginNestingDepth {
+			dst.Origin = nil
+		}
+		return dst
+	}
+	if dst == nil {
+		return cloneItemOriginDepth(src, depth)
+	}
+	if dst.Site == "" {
+		dst.Site = src.Site
+	}
+	if dst.ID == "" {
+		dst.ID = src.ID
+	}
+	if dst.MblogID == "" {
+		dst.MblogID = src.MblogID
+	}
+	if dst.CanonicalURL == "" {
+		dst.CanonicalURL = src.CanonicalURL
+	}
+	if dst.Author.UID == "" {
+		dst.Author.UID = src.Author.UID
+	}
+	if dst.Author.Site == "" {
+		dst.Author.Site = src.Author.Site
+	}
+	if dst.Author.UniqueID == "" {
+		dst.Author.UniqueID = src.Author.UniqueID
+	}
+	if dst.Author.Name == "" {
+		dst.Author.Name = src.Author.Name
+	}
+	if dst.Author.Face == "" {
+		dst.Author.Face = src.Author.Face
+	}
+	if dst.PubTs == 0 {
+		dst.PubTs = src.PubTs
+	}
+	if dst.Title == "" {
+		dst.Title = src.Title
+	}
+	if dst.Text == "" {
+		dst.Text = src.Text
+	}
+	if len(dst.Links) == 0 && len(src.Links) > 0 {
+		dst.Links = append([]ItemLink(nil), src.Links...)
+	}
+	if dst.UnavailableReason == "" {
+		dst.UnavailableReason = src.UnavailableReason
+	}
+	if !dst.VideoFromOrigin && src.VideoFromOrigin {
+		dst.VideoFromOrigin = true
+	}
+	if dst.Card == nil && src.Card != nil {
+		oc := *src.Card
+		dst.Card = &oc
+	}
+	dst.InReplyTo = mergeItemReplyTarget(dst.InReplyTo, src.InReplyTo)
+	if depth >= maxItemOriginNestingDepth {
+		dst.Origin = nil
+	} else {
+		dst.Origin = mergeItemOriginDepth(dst.Origin, src.Origin, depth+1)
+	}
+	return dst
+}
+
 func cloneItemMetadataSlices(meta ItemMetadata) ItemMetadata {
 	meta.Media = append([]MediaFile(nil), meta.Media...)
 	meta.Parts = append([]VideoPartRecord(nil), meta.Parts...)
@@ -67,20 +185,14 @@ func cloneItemMetadataSlices(meta ItemMetadata) ItemMetadata {
 		meta.Card = &c
 	}
 	meta.Links = append([]ItemLink(nil), meta.Links...)
-	if meta.Origin != nil {
-		o := *meta.Origin
-		o.Links = append([]ItemLink(nil), o.Links...)
-		if o.Card != nil {
-			oc := *o.Card
-			o.Card = &oc
-		}
-		meta.Origin = &o
-	}
+	meta.InReplyTo = cloneItemReplyTarget(meta.InReplyTo)
+	meta.Origin = cloneItemOrigin(meta.Origin)
 	if len(meta.Thread) > 0 {
 		meta.Thread = append([]ItemThreadPart(nil), meta.Thread...)
 		for i := range meta.Thread {
 			meta.Thread[i].Links = append([]ItemLink(nil), meta.Thread[i].Links...)
 			meta.Thread[i].MediaIndexes = append([]int(nil), meta.Thread[i].MediaIndexes...)
+			meta.Thread[i].Origin = cloneItemOrigin(meta.Thread[i].Origin)
 		}
 	}
 	if meta.Live != nil {
@@ -306,74 +418,36 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 	if len(out.Links) == 0 && len(imported.Links) > 0 {
 		out.Links = append([]ItemLink(nil), imported.Links...)
 	}
+	out.InReplyTo = mergeItemReplyTarget(out.InReplyTo, imported.InReplyTo)
 	if len(out.Thread) == 0 && len(imported.Thread) > 0 {
 		out.Thread = append([]ItemThreadPart(nil), imported.Thread...)
 		for i := range out.Thread {
 			out.Thread[i].Links = append([]ItemLink(nil), out.Thread[i].Links...)
 			out.Thread[i].MediaIndexes = append([]int(nil), out.Thread[i].MediaIndexes...)
+			out.Thread[i].Origin = cloneItemOrigin(out.Thread[i].Origin)
 		}
-	}
-	if imported.Origin != nil {
-		if out.Origin == nil {
-			o := *imported.Origin
-			o.Links = append([]ItemLink(nil), o.Links...)
-			if o.Card != nil {
-				oc := *o.Card
-				o.Card = &oc
-			}
-			out.Origin = &o
-		} else {
-			if out.Origin.Site == "" {
-				out.Origin.Site = imported.Origin.Site
-			}
-			if out.Origin.ID == "" {
-				out.Origin.ID = imported.Origin.ID
-			}
-			if out.Origin.MblogID == "" {
-				out.Origin.MblogID = imported.Origin.MblogID
-			}
-			if out.Origin.CanonicalURL == "" {
-				out.Origin.CanonicalURL = imported.Origin.CanonicalURL
-			}
-			if out.Origin.Author.UID == "" {
-				out.Origin.Author.UID = imported.Origin.Author.UID
-			}
-			if out.Origin.Author.Site == "" {
-				out.Origin.Author.Site = imported.Origin.Author.Site
-			}
-			if out.Origin.Author.UniqueID == "" {
-				out.Origin.Author.UniqueID = imported.Origin.Author.UniqueID
-			}
-			if out.Origin.Author.Name == "" {
-				out.Origin.Author.Name = imported.Origin.Author.Name
-			}
-			if out.Origin.Author.Face == "" {
-				out.Origin.Author.Face = imported.Origin.Author.Face
-			}
-			if out.Origin.PubTs == 0 {
-				out.Origin.PubTs = imported.Origin.PubTs
-			}
-			if out.Origin.Title == "" {
-				out.Origin.Title = imported.Origin.Title
-			}
-			if out.Origin.Text == "" {
-				out.Origin.Text = imported.Origin.Text
-			}
-			if len(out.Origin.Links) == 0 && len(imported.Origin.Links) > 0 {
-				out.Origin.Links = append([]ItemLink(nil), imported.Origin.Links...)
-			}
-			if out.Origin.UnavailableReason == "" {
-				out.Origin.UnavailableReason = imported.Origin.UnavailableReason
-			}
-			if !out.Origin.VideoFromOrigin && imported.Origin.VideoFromOrigin {
-				out.Origin.VideoFromOrigin = true
-			}
-			if out.Origin.Card == nil && imported.Origin.Card != nil {
-				oc := *imported.Origin.Card
-				out.Origin.Card = &oc
+	} else if len(out.Thread) > 0 && len(imported.Thread) > 0 {
+		byID := make(map[string]ItemThreadPart, len(imported.Thread))
+		for _, impPart := range imported.Thread {
+			if id := strings.TrimSpace(impPart.ID); id != "" {
+				byID[id] = impPart
 			}
 		}
+		for i := range out.Thread {
+			impPart, ok := byID[strings.TrimSpace(out.Thread[i].ID)]
+			if !ok {
+				continue
+			}
+			if len(out.Thread[i].Links) == 0 && len(impPart.Links) > 0 {
+				out.Thread[i].Links = append([]ItemLink(nil), impPart.Links...)
+			}
+			if len(out.Thread[i].MediaIndexes) == 0 && len(impPart.MediaIndexes) > 0 {
+				out.Thread[i].MediaIndexes = append([]int(nil), impPart.MediaIndexes...)
+			}
+			out.Thread[i].Origin = mergeItemOriginDepth(out.Thread[i].Origin, impPart.Origin, 0)
+		}
 	}
+	out.Origin = mergeItemOriginDepth(out.Origin, imported.Origin, 0)
 
 	var renames []SegmentRename
 	if imported.Live != nil {
@@ -536,6 +610,18 @@ func firstNonEmptyString(vals ...string) string {
 // absolute path, the index key, the computed size) are left out.
 func PortableManifest(meta ItemMetadata) ([]byte, error) {
 	meta = cloneItemMetadataSlices(meta)
+	meta.InReplyTo = sanitizeItemReplyTarget(meta.InReplyTo, meta.Site)
+	if meta.Origin != nil {
+		sanitizeItemOriginDepth(meta.Origin, meta.Site, 0)
+	}
+	for i := range meta.Thread {
+		if meta.Thread[i].Origin != nil {
+			sanitizeItemOriginDepth(meta.Thread[i].Origin, meta.Site, 0)
+			if isEmptyItemOrigin(meta.Thread[i].Origin) {
+				meta.Thread[i].Origin = nil
+			}
+		}
+	}
 	sanitizeManifestConflictFields(&meta)
 	meta.ItemDir, meta.ItemKey, meta.RawID, meta.TotalBytes = "", "", "", 0
 	raw, err := json.MarshalIndent(meta, "", "  ")

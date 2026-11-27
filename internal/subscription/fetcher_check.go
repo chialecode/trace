@@ -816,13 +816,13 @@ func normalizeDynamicType(rawType string) string {
 func normalizeSitePostType(siteID site.ID, raw string) string {
 	if siteID == site.X {
 		switch strings.ToLower(strings.TrimSpace(raw)) {
-		case "forward", "retweet", "quote", "repost":
+		case "forward", "retweet", "repost":
 			return "forward"
 		case "video":
 			return "video"
 		case "draw", "note", "image", "image_note", "photo", "gif", "animated_gif", "mixed":
 			return "draw"
-		case "word", "text", "poll", "card", "article", "other", "":
+		case "quote", "word", "text", "poll", "card", "article", "other", "":
 			return "word"
 		default:
 			return "word"

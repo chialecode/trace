@@ -865,7 +865,7 @@ func TestMixedFourSiteSubscriptionRoundXBaselineDeltaPinnedPromotedTypesAndFault
 	}
 	wantTypes := map[string]string{
 		"1800000000000000106": "forward",
-		"1800000000000000105": "forward",
+		"1800000000000000105": "word",
 		"1800000000000000104": "video",
 		"1800000000000000103": "draw",
 		"1800000000000000102": "draw",
@@ -1427,5 +1427,53 @@ func TestXCheckPlanLiveUnsupportedNoteAndFollowingImport(t *testing.T) {
 	}
 	if st, _, _ := mgr.GetAccountState("x", "1800000000000002000"); st.NewestID != "1800000000000009999" {
 		t.Fatalf("existing X watermark overwritten on import: %+v", st)
+	}
+}
+
+func TestXQuoteAutoCacheRulesPresetsAndLegacySnapshot(t *testing.T) {
+	// 1. FollowCache ("追更并保存": video + draw): matches photo/video quotes (including legacy type="forward" quote rows), skips pure RT & text-only quote.
+	followAllowed := map[string]bool{"video": true, "draw": true}
+	if !matchesAutoCacheRule("x", "draw", `{"isQuote":true,"media":[{"kind":"photo"}]}`, followAllowed) {
+		t.Fatal("FollowCache must match photo quote (self-quote or regular quote)")
+	}
+	if !matchesAutoCacheRule("x", "video", `{"isQuote":true,"media":[{"kind":"video"}]}`, followAllowed) {
+		t.Fatal("FollowCache must match video quote")
+	}
+	if !matchesAutoCacheRule("x", "forward", `{"isQuote":true,"media":[{"kind":"photo"}]}`, followAllowed) {
+		t.Fatal("FollowCache must match legacy updates.db quote row with photo media")
+	}
+	if matchesAutoCacheRule("x", "word", `{"isQuote":true}`, followAllowed) {
+		t.Fatal("FollowCache must not match text-only quote when cache_word is off")
+	}
+	if matchesAutoCacheRule("x", "forward", `{"isRetweet":true,"isQuote":true,"media":[{"kind":"photo"}]}`, followAllowed) {
+		t.Fatal("FollowCache must skip pure retweet even if retweeted item is a quote")
+	}
+
+	// 2. Custom cache_forward-only: matches quote posts (via snapshot isQuote) and pure retweets, skips plain original word.
+	fwdOnly := map[string]bool{"forward": true}
+	if !matchesAutoCacheRule("x", "word", `{"isQuote":true}`, fwdOnly) {
+		t.Fatal("cache_forward-only must match X quote post")
+	}
+	if !matchesAutoCacheRule("x", "forward", `{"isRetweet":true}`, fwdOnly) {
+		t.Fatal("cache_forward-only must match pure retweet")
+	}
+	if matchesAutoCacheRule("x", "word", `{}`, fwdOnly) {
+		t.Fatal("cache_forward-only must not match plain original word post")
+	}
+
+	// 3. FullArchive ("完整存档": video + draw + word + forward): matches all quote types and retweets.
+	fullAllowed := map[string]bool{"video": true, "draw": true, "word": true, "forward": true}
+	for _, tc := range []struct {
+		typ  string
+		snap string
+	}{
+		{"word", `{"isQuote":true}`},
+		{"draw", `{"isQuote":true,"media":[{"kind":"photo"}]}`},
+		{"video", `{"isQuote":true,"media":[{"kind":"video"}]}`},
+		{"forward", `{"isRetweet":true}`},
+	} {
+		if !matchesAutoCacheRule("x", tc.typ, tc.snap, fullAllowed) {
+			t.Fatalf("FullArchive must match (%s, %s)", tc.typ, tc.snap)
+		}
 	}
 }

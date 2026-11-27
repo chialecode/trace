@@ -42,6 +42,26 @@ type PlannedNotePage struct {
 	Bitrate          int64
 }
 
+// PlannedOrigin records an embedded quoted/origin post snapshot (e.g. on a
+// self-reply thread part) with at most 1 nested inner origin (DEC-091).
+type PlannedOrigin struct {
+	Site              site.ID
+	ID                string
+	CanonicalURL      string
+	AuthorUID         string
+	AuthorUniqueID    string
+	AuthorName        string
+	AuthorFace        string
+	PubTs             int64
+	Text              string
+	Links             []site.TextLink
+	Card              *site.RichCardSummary
+	InReplyTo         *site.ReplyTarget
+	Origin            *site.NestedOriginSummary
+	Unavailable       bool
+	UnavailableReason string
+}
+
 // PlannedThreadPart describes one author self-reply segment saved into the same item (e.g. X threads).
 type PlannedThreadPart struct {
 	ID           string
@@ -49,6 +69,7 @@ type PlannedThreadPart struct {
 	Text         string
 	Links        []site.TextLink
 	MediaIndexes []int
+	Origin       *PlannedOrigin
 }
 
 // PlannedMusic describes background music metadata and candidate URLs on a Douyin note.
@@ -93,7 +114,9 @@ type WorkDownloadPlan struct {
 	AvailableGears          []string
 	DowngradeHint           string
 	IsForward               bool
+	IsQuote                 bool
 	IsFastRetweet           bool
+	InReplyTo               *site.ReplyTarget
 	OriginID                string
 	OriginMblogID           string
 	OriginCanonicalURL      string
@@ -108,6 +131,8 @@ type WorkDownloadPlan struct {
 	OriginUnavailable       bool
 	OriginUnavailableReason string
 	OriginCard              *site.RichCardSummary
+	OriginInReplyTo         *site.ReplyTarget
+	OriginOrigin            *site.NestedOriginSummary
 	Card                    *site.RichCardSummary
 	VideoFromOrigin         bool
 	VisibleType             int
@@ -334,6 +359,30 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 		cp := *p.Card
 		outerCard = &cp
 	}
+	var inReplyTo *site.ReplyTarget
+	if p.InReplyTo != nil {
+		cp := *p.InReplyTo
+		inReplyTo = &cp
+	}
+	var originInReplyTo *site.ReplyTarget
+	if p.OriginInReplyTo != nil {
+		cp := *p.OriginInReplyTo
+		originInReplyTo = &cp
+	}
+	var originOrigin *site.NestedOriginSummary
+	if p.OriginOrigin != nil {
+		cp := *p.OriginOrigin
+		cp.Links = append([]site.TextLink(nil), cp.Links...)
+		if cp.Card != nil {
+			cc := *cp.Card
+			cp.Card = &cc
+		}
+		if cp.InReplyTo != nil {
+			ir := *cp.InReplyTo
+			cp.InReplyTo = &ir
+		}
+		originOrigin = &cp
+	}
 	return WorkDownloadPlan{
 		Site:                    p.Site,
 		ItemKey:                 strings.TrimSpace(p.ItemKey),
@@ -359,7 +408,9 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 		FPS:                     p.FPS,
 		Bitrate:                 p.Bitrate,
 		IsForward:               p.IsForward,
+		IsQuote:                 p.IsQuote,
 		IsFastRetweet:           p.IsFastRetweet,
+		InReplyTo:               inReplyTo,
 		OriginID:                p.OriginID,
 		OriginMblogID:           p.OriginMblogID,
 		OriginCanonicalURL:      p.OriginCanonicalURL,
@@ -373,6 +424,8 @@ func convertSiteDownloadPlan(p site.DownloadPlan) WorkDownloadPlan {
 		OriginUnavailable:       p.OriginUnavailable,
 		OriginUnavailableReason: p.OriginUnavailableReason,
 		OriginCard:              originCard,
+		OriginInReplyTo:         originInReplyTo,
+		OriginOrigin:            originOrigin,
 		Card:                    outerCard,
 		VideoFromOrigin:         p.VideoFromOrigin,
 		VisibleType:             p.VisibleType,

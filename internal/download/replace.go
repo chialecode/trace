@@ -2162,6 +2162,28 @@ func copyLocalMediaToStageAs(localMeta library.ItemMetadata, srcRel, dstStem, ro
 	return &out, nil
 }
 
+func cloneLibraryOriginDepth(src *library.ItemOrigin, depth int) *library.ItemOrigin {
+	if src == nil {
+		return nil
+	}
+	cp := *src
+	cp.Links = append([]library.ItemLink(nil), cp.Links...)
+	if cp.Card != nil {
+		cc := *cp.Card
+		cp.Card = &cc
+	}
+	if cp.InReplyTo != nil {
+		ir := *cp.InReplyTo
+		cp.InReplyTo = &ir
+	}
+	if depth >= 1 {
+		cp.Origin = nil
+	} else {
+		cp.Origin = cloneLibraryOriginDepth(cp.Origin, depth+1)
+	}
+	return &cp
+}
+
 // preserveValidLocalOrigin ensures a valid local Origin (and its fromOrigin media)
 // is never overwritten by Origin.Unavailable == true or nil during safe upgrades.
 func preserveValidLocalOrigin(candidate *library.ItemOrigin, previous library.ItemMetadata, isConflictReplace bool) (*library.ItemOrigin, bool) {
@@ -2174,12 +2196,7 @@ func preserveValidLocalOrigin(candidate *library.ItemOrigin, previous library.It
 	}
 	if candidate == nil || candidate.Unavailable {
 		if !isConflictReplace || (candidate != nil && candidate.Unavailable && (candidate.ID == "" || candidate.ID == previous.Origin.ID)) {
-			cp := *previous.Origin
-			if cp.Card != nil {
-				cc := *cp.Card
-				cp.Card = &cc
-			}
-			return &cp, true
+			return cloneLibraryOriginDepth(previous.Origin, 0), true
 		}
 	}
 	return candidate, false

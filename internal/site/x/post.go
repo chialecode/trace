@@ -1128,8 +1128,10 @@ func classifyTombstoneKind(text string) string {
 	return site.ErrKindUnavailable
 }
 
-// computeRuleType implements x.md §15.1 #10 strictly:
-//   - retweet or quote -> "forward"
+// computeRuleType classifies X posts for subscription auto-cache tags (DEC-091):
+//   - pure retweet -> "forward" (cached only when cache_forward is enabled; skipped by full_cache)
+//   - quote post (self-quote or quoting others) -> classified by the author's own media
+//     ("video" / "draw" / "word") because the author wrote original commentary/media
 //   - single non-GIF video -> "video"
 //   - any photo, GIF, or mixed multi-item media -> "draw"
 //   - otherwise (text, poll, URL card, article card, live/Spaces card) -> "word"
@@ -1137,7 +1139,7 @@ func computeRuleType(p *Post) string {
 	if p == nil {
 		return RuleTypeWord
 	}
-	if p.IsRetweet || p.IsQuote {
+	if p.IsRetweet {
 		return RuleTypeForward
 	}
 	if len(p.Media) == 1 && p.Media[0].Kind == MediaKindVideo && !p.Media[0].GIF {

@@ -138,7 +138,16 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		originUnavailable                 bool
 		originUnavailableReason           string
 		originCard                        *site.RichCardSummary
+		originInReplyTo                   *site.ReplyTarget
+		originOrigin                      *site.NestedOriginSummary
 	)
+
+	isQuote := !post.IsRetweet && post.IsQuote
+	replySource := post
+	if len(post.ThreadAncestors) > 0 {
+		replySource = &post.ThreadAncestors[0]
+	}
+	inReplyTo := buildPostReplyTarget(replySource)
 
 	var originPost *Post
 	if post.IsRetweet && post.Retweeted != nil {
@@ -158,6 +167,8 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		originUnavailable = originPost.Unavailable || post.OriginUnavailable
 		originUnavailableReason = firstNonEmpty(post.OriginUnavailableReason, originPost.UnavailableReason)
 		originCard = toRichCardSummary(originPost.Card)
+		originInReplyTo = buildPostReplyTarget(originPost)
+		originOrigin = BuildNestedOriginSummary(originPost)
 	} else if post.OriginUnavailable {
 		originUnavailable = true
 		originUnavailableReason = post.OriginUnavailableReason
@@ -194,6 +205,8 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 			Height:                  singleVideo.Height,
 			Bitrate:                 singleVideo.VideoBitrate,
 			IsForward:               post.IsForward(),
+			IsQuote:                 isQuote,
+			InReplyTo:               inReplyTo,
 			OriginID:                originID,
 			OriginCanonicalURL:      originCanonicalURL,
 			OriginAuthorUID:         originUID,
@@ -205,6 +218,8 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 			OriginUnavailable:       originUnavailable,
 			OriginUnavailableReason: originUnavailableReason,
 			OriginCard:              originCard,
+			OriginInReplyTo:         originInReplyTo,
+			OriginOrigin:            originOrigin,
 			Card:                    outerCard,
 			VideoFromOrigin:         videoFromOrigin,
 			VisibleLabel:            post.VisibilityLabel,
@@ -288,6 +303,8 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		Links:                   outerLinks,
 		PubTs:                   post.CreatedAt,
 		IsForward:               post.IsForward(),
+		IsQuote:                 isQuote,
+		InReplyTo:               inReplyTo,
 		OriginID:                originID,
 		OriginCanonicalURL:      originCanonicalURL,
 		OriginAuthorUID:         originUID,
@@ -299,6 +316,8 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		OriginUnavailable:       originUnavailable,
 		OriginUnavailableReason: originUnavailableReason,
 		OriginCard:              originCard,
+		OriginInReplyTo:         originInReplyTo,
+		OriginOrigin:            originOrigin,
 		Card:                    outerCard,
 		VideoFromOrigin:         videoFromOrigin,
 		VisibleLabel:            post.VisibilityLabel,
@@ -384,6 +403,9 @@ type postSnapshot struct {
 	EditTweetIDs            []string      `json:"editTweetIds,omitempty"`
 	IsRetweet               bool          `json:"isRetweet,omitempty"`
 	IsQuote                 bool          `json:"isQuote,omitempty"`
+	InReplyToStatusID       string        `json:"inReplyToStatusId,omitempty"`
+	InReplyToUserID         string        `json:"inReplyToUserId,omitempty"`
+	InReplyToScreenName     string        `json:"inReplyToScreenName,omitempty"`
 	Retweeted               *postSnapshot `json:"retweeted,omitempty"`
 	Quoted                  *postSnapshot `json:"quoted,omitempty"`
 	OriginUnavailable       bool          `json:"originUnavailable,omitempty"`
@@ -450,6 +472,9 @@ func buildPostSnapshot(p *Post) *postSnapshot {
 		EditTweetIDs:            append([]string(nil), p.EditTweetIDs...),
 		IsRetweet:               p.IsRetweet,
 		IsQuote:                 p.IsQuote,
+		InReplyToStatusID:       strings.TrimSpace(p.InReplyToStatusID),
+		InReplyToUserID:         strings.TrimSpace(p.InReplyToUserID),
+		InReplyToScreenName:     strings.TrimPrefix(strings.TrimSpace(p.InReplyToScreenName), "@"),
 		Retweeted:               buildPostSnapshot(p.Retweeted),
 		Quoted:                  buildPostSnapshot(p.Quoted),
 		OriginUnavailable:       p.OriginUnavailable,
@@ -462,6 +487,69 @@ func buildPostSnapshot(p *Post) *postSnapshot {
 		Unavailable:             p.Unavailable,
 		UnavailableReason:       p.UnavailableReason,
 	}
+}
+
+// BuildPostReplyTarget converts an X post's in_reply_to_* fields into a clean
+// site.ReplyTarget, returning nil when the post is not a reply.
+func BuildPostReplyTarget(p *Post) *site.ReplyTarget {
+	return buildPostReplyTarget(p)
+}
+
+func buildPostReplyTarget(p *Post) *site.ReplyTarget {
+	if p == nil {
+		return nil
+	}
+	sid := strings.TrimSpace(p.InReplyToStatusID)
+	uid := strings.TrimSpace(p.InReplyToUserID)
+	handle := strings.TrimPrefix(strings.TrimSpace(p.InReplyToScreenName), "@")
+	if sid == "" && uid == "" && handle == "" {
+		return nil
+	}
+	return &site.ReplyTarget{
+		StatusID:   sid,
+		UserID:     uid,
+		ScreenName: handle,
+	}
+}
+
+// BuildNestedOriginSummary extracts at most 1 nested quoted/retweeted post summary
+// from an outer origin post (DEC-091), preventing unbounded nesting.
+func BuildNestedOriginSummary(parent *Post) *site.NestedOriginSummary {
+	if parent == nil {
+		return nil
+	}
+	var inner *Post
+	if parent.Quoted != nil {
+		inner = parent.Quoted
+	} else if parent.Retweeted != nil {
+		inner = parent.Retweeted
+	}
+	if inner != nil {
+		return &site.NestedOriginSummary{
+			Site:              SiteID,
+			ID:                strings.TrimSpace(inner.ID),
+			CanonicalURL:      SafePublicWebURL(inner.CanonicalURL),
+			AuthorUID:         strings.TrimSpace(inner.Author.RestID),
+			AuthorUniqueID:    strings.TrimSpace(inner.Author.ScreenName),
+			AuthorName:        formatAuthorDisplayName(inner.Author),
+			AuthorFace:        SafePublicImageURL(inner.Author.AvatarURL),
+			PubTs:             inner.CreatedAt,
+			Text:              scrubSignedURLTokensInText(inner.FullThreadText()),
+			Links:             BuildPostLinks(inner),
+			Card:              toRichCardSummary(inner.Card),
+			InReplyTo:         buildPostReplyTarget(inner),
+			Unavailable:       inner.Unavailable || parent.OriginUnavailable,
+			UnavailableReason: firstNonEmpty(parent.OriginUnavailableReason, inner.UnavailableReason),
+		}
+	}
+	if parent.OriginUnavailable {
+		return &site.NestedOriginSummary{
+			Site:              SiteID,
+			Unavailable:       true,
+			UnavailableReason: strings.TrimSpace(parent.OriginUnavailableReason),
+		}
+	}
+	return nil
 }
 
 func toRichCardSummary(c *RichCard) *site.RichCardSummary {

@@ -24,6 +24,7 @@ type mobileThreadPart struct {
 	Links   []companionapi.TextLink
 	Images  []mediaview.ImageItem
 	Videos  []mobileThreadVideo
+	Origin  *companionapi.ItemOriginDTO
 	IsFocal bool
 }
 
@@ -51,6 +52,11 @@ func (p *Page) renderPostCard(c *ui.Context, h pagekit.Host, item companionapi.F
 		Children(func() {
 			// 1. Author row (avatar, name + accent subName, time · site · type).
 			p.renderPostAuthorRow(c, h, item, inSubView)
+
+			// 1b. Concise reply context hint above body when replying to another post (DEC-091).
+			if hint := formatMobileReplyHint(item.InReplyTo, nil); hint != "" {
+				ui.Text(c, hint).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine()
+			}
 
 			// 2. Title (when distinct from body text) and body text with expand/collapse + clickable links.
 			p.renderPostText(c, h, item)
@@ -111,6 +117,14 @@ func (p *Page) renderThreadPostCard(
 		visibleParts = parts[:xThreadCollapsedPreview]
 		hiddenCount = len(parts) - xThreadCollapsedPreview
 	}
+
+	threadIDs := make([]string, 0, len(parts))
+	for _, pt := range parts {
+		if id := strings.TrimSpace(pt.ID); id != "" {
+			threadIDs = append(threadIDs, id)
+		}
+	}
+	rootReplyHint := formatMobileReplyHint(item.InReplyTo, threadIDs)
 
 	ui.Column(c).
 		Label("X自回复串卡片 "+key).
@@ -207,6 +221,9 @@ func (p *Page) renderThreadPostCard(
 								})
 							}
 
+							if isFirst && rootReplyHint != "" {
+								ui.Text(c, rootReplyHint).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine()
+							}
 							if body := strings.TrimSpace(tp.Text); body != "" {
 								p.renderSegmentText(c, h, fmt.Sprintf("%s:part:%d", key, idx), body, tp.Links)
 							}
@@ -224,6 +241,8 @@ func (p *Page) renderThreadPostCard(
 								if item.Card != nil {
 									p.renderRichCard(c, h, item.Card)
 								}
+							} else if tp.Origin != nil && !sameOriginDTO(tp.Origin, item.Origin) {
+								p.renderOriginBox(c, h, tp.Origin, nil)
 							}
 						})
 					})
@@ -452,7 +471,7 @@ func resolveMobileFeedThread(item companionapi.FeedItem) ([]mobileThreadPart, in
 	rawID := extractMobileRawID("", item.ItemKey)
 	rawSegs := make([]companionapi.ThreadPartDTO, 0, len(item.Thread))
 	for _, seg := range item.Thread {
-		if strings.TrimSpace(seg.ID) == "" && strings.TrimSpace(seg.Text) == "" && len(seg.Links) == 0 && len(seg.MediaIndexes) == 0 {
+		if strings.TrimSpace(seg.ID) == "" && strings.TrimSpace(seg.Text) == "" && len(seg.Links) == 0 && len(seg.MediaIndexes) == 0 && seg.Origin == nil {
 			continue
 		}
 		rawSegs = append(rawSegs, seg)
@@ -671,6 +690,7 @@ func resolveMobileFeedThread(item companionapi.FeedItem) ([]mobileThreadPart, in
 			PubTs:   pubTs,
 			Text:    strings.TrimSpace(seg.Text),
 			Links:   links,
+			Origin:  seg.Origin,
 			IsFocal: isFocal,
 		}
 		if len(outerPageKeys) > 0 {
@@ -1080,12 +1100,56 @@ func (p *Page) renderMusicBar(c *ui.Context, m *companionapi.MusicDTO) {
 	})
 }
 
+func formatMobileReplyHint(target *companionapi.ItemReplyTargetDTO, threadIDs []string) string {
+	if target == nil {
+		return ""
+	}
+	sid := strings.TrimSpace(target.StatusID)
+	if sid != "" {
+		for _, id := range threadIDs {
+			if id == sid {
+				return ""
+			}
+		}
+	}
+	handle := strings.TrimPrefix(strings.TrimSpace(target.ScreenName), "@")
+	if handle != "" {
+		return "回复 @" + handle
+	}
+	if sid != "" || strings.TrimSpace(target.UserID) != "" {
+		return "回复一条帖子"
+	}
+	return ""
+}
+
+func sameOriginDTO(a, b *companionapi.ItemOriginDTO) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.TrimSpace(a.ID) != "" && strings.TrimSpace(a.ID) == strings.TrimSpace(b.ID)
+}
+
 func (p *Page) renderOriginBox(c *ui.Context, h pagekit.Host, orig *companionapi.ItemOriginDTO, origImages []mediaview.ImageItem) {
+	p.renderOriginBoxDepth(c, h, orig, origImages, 0)
+}
+
+func (p *Page) renderOriginBoxDepth(c *ui.Context, h pagekit.Host, orig *companionapi.ItemOriginDTO, origImages []mediaview.ImageItem, depth int) {
+	if orig == nil {
+		return
+	}
+	bg := theme.ColorBgMain
+	padV, padH := float32(10), float32(12)
+	radius := float32(10)
+	if depth > 0 {
+		bg = theme.ColorBgPanel
+		padV, padH = 8, 10
+		radius = 8
+	}
 	ui.Column(c).
 		FillWidth().
-		Padding(10, 12).
-		Radius(10).
-		Background(theme.ColorBgMain).
+		Padding(padV, padH).
+		Radius(radius).
+		Background(bg).
 		Border(1, theme.ColorBorder).
 		Gap(6).
 		ClipX().
@@ -1095,27 +1159,46 @@ func (p *Page) renderOriginBox(c *ui.Context, h pagekit.Host, orig *companionapi
 				ui.Text(c, reason).FontSize(13).TextColor(theme.ColorTextMuted)
 				return
 			}
-			if orig.AuthorName != "" {
-				meta := orig.AuthorName
-				if orig.Site != "" {
-					meta += " · " + mediaview.SiteLabel(orig.Site)
+			authorMeta := strings.TrimSpace(orig.AuthorName)
+			if handle := strings.TrimPrefix(strings.TrimSpace(orig.AuthorUniqueID), "@"); handle != "" {
+				if authorMeta != "" {
+					authorMeta += " @" + handle
+				} else {
+					authorMeta = "@" + handle
 				}
-				ui.Text(c, meta).FontSize(12).FontWeight(600).TextColor(theme.ColorTextMuted).SingleLine()
+			}
+			if authorMeta != "" {
+				if orig.Site != "" && depth == 0 {
+					authorMeta += " · " + mediaview.SiteLabel(orig.Site)
+				}
+				ui.Text(c, authorMeta).FontSize(12).FontWeight(600).TextColor(theme.ColorTextMuted).SingleLine()
+			}
+			if replyHint := formatMobileReplyHint(orig.InReplyTo, nil); replyHint != "" {
+				ui.Text(c, replyHint).FontSize(11).TextColor(theme.ColorTextMuted).SingleLine()
 			}
 			if orig.Title != "" && orig.Title != orig.Text {
 				ui.Text(c, orig.Title).FontSize(13).FontWeight(600).TextColor(theme.ColorTextMain).MaxLines(2)
 			}
 			if orig.Text != "" {
-				ui.Text(c, orig.Text).FontSize(13).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain).MaxLines(6)
+				maxLines := 6
+				if depth > 0 {
+					maxLines = 4
+				}
+				ui.Text(c, orig.Text).FontSize(13).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain).MaxLines(maxLines)
 			}
-			if links := mediaview.ExtractLinks(orig.Text, orig.Links); len(links) > 0 {
-				p.renderExternalLinks(c, h, links)
-			}
-			if len(origImages) > 0 {
-				p.renderPostImages(c, h, origImages)
-			}
-			if orig.Card != nil {
-				p.renderRichCard(c, h, orig.Card)
+			if depth == 0 {
+				if links := mediaview.ExtractLinks(orig.Text, orig.Links); len(links) > 0 {
+					p.renderExternalLinks(c, h, links)
+				}
+				if len(origImages) > 0 {
+					p.renderPostImages(c, h, origImages)
+				}
+				if orig.Card != nil {
+					p.renderRichCard(c, h, orig.Card)
+				}
+				if orig.Origin != nil {
+					p.renderOriginBoxDepth(c, h, orig.Origin, nil, depth+1)
+				}
 			}
 		})
 }

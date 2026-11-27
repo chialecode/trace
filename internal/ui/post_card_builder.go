@@ -123,6 +123,9 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 			threadCount = len(item.Thread)
 			if item.TypeLabel != "" {
 				typeLabel = item.TypeLabel
+				if normSite == "x" && typeLabel == "转发" && item.Origin != nil && strings.TrimSpace(item.Text) != "" && !strings.HasPrefix(strings.TrimSpace(item.Text), "RT @") {
+					typeLabel = "引用帖子"
+				}
 			} else if normSite == "douyin" && entry.Kind == "dynamic" {
 				typeLabel = "图文"
 			} else if normSite == "weibo" && entry.Kind == "dynamic" {
@@ -333,65 +336,14 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 				title = ""
 			}
 		}
-		if orig.Unavailable {
-			fallback := "原微博已删除或不可查看"
-			if normSite == "x" {
-				fallback = "原帖已删除或不可查看"
-			}
-			originUnavailable = firstNonEmptyStrUI(orig.UnavailableReason, fallback)
-		} else {
-			origSite := firstNonEmptyStrUI(orig.Site, entry.Site)
-			origNorm := normalizeSiteIDUI(origSite)
-			origType := ""
-			switch {
-			case origVideo != nil:
-				origType = "视频"
-			case len(origNotePages) > 0 || len(origImages) > 0:
-				origType = "图文"
-			case origNorm == "weibo":
-				origType = "微博"
-			case origNorm == "x":
-				origType = "帖子"
-			}
-			var origWeiboCard *service.WeiboRichCardDTO
-			var origXCard *service.XRichCardDTO
-			if origNorm == "x" {
-				origXCard = libraryRichCardToXDTO(orig.Card)
-			} else {
-				origWeiboCard = libraryRichCardToWeiboDTO(orig.Card)
-			}
-			defaultOrigAuthor := "原博主"
-			if origNorm == "x" {
-				defaultOrigAuthor = "原帖作者"
-			}
-			origin = &PostCardData{
-				ItemKey:      entry.ItemKey,
-				Site:         origSite,
-				AuthorUID:    orig.Author.UID,
-				AuthorName:   firstNonEmptyStrUI(orig.Author.Name, orig.Author.UniqueID, defaultOrigAuthor),
-				AuthorHandle: orig.Author.UniqueID,
-				AuthorFace:   "",
-				PubTs:        orig.PubTs,
-				TypeLabel:    origType,
-				Title:        orig.Title,
-				Text:         orig.Text,
-				Links:        service.MapItemLinksToDTO(orig.Links),
-				URL:          orig.CanonicalURL,
-				WeiboMid:     orig.ID,
-				XStatusID:    orig.ID,
-				NotePages:    origNotePages,
-				Images:       origImages,
-				Video:        origVideo,
-				WeiboCard:    origWeiboCard,
-				XCard:        origXCard,
-				Offline:      true,
-			}
-		}
+		origin, originUnavailable = buildCachedOriginCard(entry.ItemKey, entry.Site, orig, origNotePages, origImages, origVideo, 0)
 	}
 
 	var outerLinks []service.TextLinkDTO
+	var inReplyTo *library.ItemReplyTarget
 	if libPtr != nil {
 		outerLinks = service.MapItemLinksToDTO(libPtr.Links)
+		inReplyTo = libPtr.InReplyTo
 		if text == "" && entry.Kind == "dynamic" {
 			text = libPtr.Text
 		}
@@ -452,9 +404,85 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		ThreadParts:       threadParts,
 		Origin:            origin,
 		OriginUnavailable: originUnavailable,
+		InReplyTo:         inReplyTo,
 		LibItem:           libPtr,
 		InHomeFeed:        true,
 	}
+}
+
+func buildCachedOriginCard(
+	entryItemKey string,
+	defaultSite string,
+	orig *library.ItemOrigin,
+	origNotePages []douyinNoteRenderPage,
+	origImages []PostImage,
+	origVideo *PostVideo,
+	depth int,
+) (*PostCardData, string) {
+	if orig == nil {
+		return nil, ""
+	}
+	origSite := firstNonEmptyStrUI(orig.Site, defaultSite)
+	origNorm := normalizeSiteIDUI(origSite)
+	if orig.Unavailable {
+		fallback := "原微博已删除或不可查看"
+		if origNorm == "x" {
+			fallback = "原帖已删除或不可查看"
+		}
+		return nil, firstNonEmptyStrUI(orig.UnavailableReason, fallback)
+	}
+	origType := ""
+	switch {
+	case origVideo != nil:
+		origType = "视频"
+	case len(origNotePages) > 0 || len(origImages) > 0:
+		origType = "图文"
+	case origNorm == "weibo":
+		origType = "微博"
+	case origNorm == "x":
+		origType = "帖子"
+	}
+	var origWeiboCard *service.WeiboRichCardDTO
+	var origXCard *service.XRichCardDTO
+	if origNorm == "x" {
+		origXCard = libraryRichCardToXDTO(orig.Card)
+	} else {
+		origWeiboCard = libraryRichCardToWeiboDTO(orig.Card)
+	}
+	defaultOrigAuthor := "原博主"
+	if origNorm == "x" {
+		defaultOrigAuthor = "原帖作者"
+	}
+	var nestedOrigin *PostCardData
+	var nestedUnavailable string
+	if depth < 1 && orig.Origin != nil {
+		nestedOrigin, nestedUnavailable = buildCachedOriginCard(entryItemKey, origSite, orig.Origin, nil, nil, nil, depth+1)
+	}
+	return &PostCardData{
+		ItemKey:           entryItemKey,
+		Site:              origSite,
+		AuthorUID:         orig.Author.UID,
+		AuthorName:        firstNonEmptyStrUI(orig.Author.Name, orig.Author.UniqueID, defaultOrigAuthor),
+		AuthorHandle:      orig.Author.UniqueID,
+		AuthorFace:        "",
+		PubTs:             orig.PubTs,
+		TypeLabel:         origType,
+		Title:             orig.Title,
+		Text:              orig.Text,
+		Links:             service.MapItemLinksToDTO(orig.Links),
+		URL:               orig.CanonicalURL,
+		WeiboMid:          orig.ID,
+		XStatusID:         orig.ID,
+		NotePages:         origNotePages,
+		Images:            origImages,
+		Video:             origVideo,
+		WeiboCard:         origWeiboCard,
+		XCard:             origXCard,
+		InReplyTo:         orig.InReplyTo,
+		Origin:            nestedOrigin,
+		OriginUnavailable: nestedUnavailable,
+		Offline:           true,
+	}, ""
 }
 
 // dynamicItemToPostCard converts a bilibili.DynamicItem into a PostCardData for /user and /subscriptions.

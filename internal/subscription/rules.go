@@ -87,12 +87,12 @@ var capabilityTagCatalog = []CapabilityTag{
 	{
 		ID:          TagCacheForward,
 		Name:        "自动缓存转发",
-		Description: "检查更新发现新发布的转发、快转、转帖或引用帖时自动缓存（只缓存开启标签后发布的内容）",
+		Description: "检查更新发现新发布的转发、快转、转帖或引用帖时自动缓存（X 引用帖也按自身媒体类型匹配视频/图文/文字标签；只缓存开启标签后发布的内容）",
 	},
 	{
 		ID:          TagFullCache,
 		Name:        "全部缓存",
-		Description: "每 7 天检查一次每个账号的全部作品（哔哩哔哩为投稿视频，微博与 X 为原创内容），没缓存的放进缓存队列慢慢缓存",
+		Description: "每 7 天检查一次每个账号的全部作品（哔哩哔哩为投稿视频，微博为原创微博，X 为原创帖与引用帖），没缓存的放进缓存队列慢慢缓存",
 	},
 	{
 		ID:          TagAutoRecord,

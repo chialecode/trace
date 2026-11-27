@@ -1361,6 +1361,9 @@ func (b *Backend) inspectXCachedPost(post x.Post, meta library.ItemMetadata, que
 	if post.OriginUnavailable && meta.Origin != nil && !meta.Origin.Unavailable {
 		return cachedInspectDecision{action: inspectSkipNoOp}
 	}
+	if post.IsQuote && post.Quoted == nil && !post.OriginUnavailable && meta.Origin != nil {
+		return cachedInspectDecision{action: inspectSkipNoOp}
+	}
 
 	mediaItems, singleVideo, _ := post.EffectiveMediaWithOrigin()
 	var remoteMediaKeys []string

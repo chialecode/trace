@@ -397,15 +397,19 @@ func TestXFullCacheQueueOriginalsOnlyVisibleLimitAndSubscriptionFlow(t *testing.
 	if finalTask.Note != x.VisibleTimelineLimitText {
 		t.Fatalf("X queue Note = %q, want %q", finalTask.Note, x.VisibleTimelineLimitText)
 	}
-	// Cached origID + completed partialID = 2 cached; skipped rtID + quoteID + doneID = 3 skipped!
-	if finalTask.CachedCount != 2 || finalTask.SkippedCount != 3 {
-		t.Fatalf("X queue counts = cached:%d skipped:%d, want cached:2 skipped:3", finalTask.CachedCount, finalTask.SkippedCount)
+	// DEC-091: Cached origID + quoteID + completed partialID = 3 cached; skipped pure retweet rtID + doneID = 2 skipped!
+	if finalTask.CachedCount != 3 || finalTask.SkippedCount != 2 {
+		t.Fatalf("X queue counts = cached:%d skipped:%d, want cached:3 skipped:2", finalTask.CachedCount, finalTask.SkippedCount)
 	}
 	if _, exists, _ := h.backend.GetLibraryItem("x:dynamic:" + rtID); exists {
-		t.Fatal("full-cache queue must skip retweets")
+		t.Fatal("full-cache queue must skip pure retweets")
 	}
-	if _, exists, _ := h.backend.GetLibraryItem("x:dynamic:" + quoteID); exists {
-		t.Fatal("full-cache queue must skip quote posts")
+	qItem, qExists, _ := h.backend.GetLibraryItem("x:dynamic:" + quoteID)
+	if !qExists || qItem.Status != "complete" || qItem.TypeLabel != "引用帖子" || qItem.Origin == nil || qItem.Origin.ID != "1791257321273700002" {
+		t.Fatalf("full-cache queue must cache X quote posts with TypeLabel=引用帖子 and Origin: exists=%v item=%+v", qExists, qItem)
+	}
+	if qItem.Via == nil || qItem.Via.Reason != library.ViaForward || !strings.Contains(filepath.ToSlash(qItem.ItemDir), "/forwards/") {
+		t.Fatalf("quote post must keep forwards/ placement and ViaForward compatibility: dir=%q via=%+v", qItem.ItemDir, qItem.Via)
 	}
 	if item, exists, _ := h.backend.GetLibraryItem("x:dynamic:" + partialID); !exists || item.Status != "complete" {
 		t.Fatalf("partial X item not completed by full-cache queue: %+v exists=%v", item, exists)
@@ -413,8 +417,8 @@ func TestXFullCacheQueueOriginalsOnlyVisibleLimitAndSubscriptionFlow(t *testing.
 
 	// Verify statuses_count recorded in SubscriptionAccountWorks.
 	works := h.backend.SubscriptionAccountWorks()
-	if aw := works["x:"+synthXCreatorRestID]; aw.Total != 3500 || aw.Cached < 3 {
-		t.Fatalf("SubscriptionAccountWorks[x:%s] = %+v, want Total=3500 Cached>=3", synthXCreatorRestID, aw)
+	if aw := works["x:"+synthXCreatorRestID]; aw.Total != 3500 || aw.Cached < 4 {
+		t.Fatalf("SubscriptionAccountWorks[x:%s] = %+v, want Total=3500 Cached>=4", synthXCreatorRestID, aw)
 	}
 
 	// 6. Live exclusion: 0 requests for X live statuses & recording refusals.
@@ -593,5 +597,122 @@ func TestXMineReadOnlyMemoryOnlyPaginationFlagsAndBreaker(t *testing.T) {
 	h.backend.xMemMu.Unlock()
 	if seenLen != 0 {
 		t.Fatalf("LogoutSite(x) left %d entries in accountXSeen", seenLen)
+	}
+}
+
+func TestXPlannerThreadPartOriginNestedQuoteAndReplyContext(t *testing.T) {
+	b, err := NewBackend(Options{
+		Locations:        testLocations(t),
+		Desktop:          NewMockDesktop(),
+		DisableBgWorkers: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBackend: %v", err)
+	}
+	defer b.Close()
+
+	// 1. canReuseXPostPlan must reject an unhydrated nested quote (retweet of quote missing inner Quoted).
+	unhydratedRTQuote := &x.Post{
+		ID:        "1900000000000088001",
+		Author:    x.AuthorSummary{RestID: "900088001", ScreenName: "rt_user", Name: "RTUser"},
+		IsRetweet: true,
+		Retweeted: &x.Post{
+			ID:      "1900000000000088002",
+			Author:  x.AuthorSummary{RestID: "900088002", ScreenName: "mid_user", Name: "MidUser"},
+			Text:    "outer quote text",
+			IsQuote: true,
+			Quoted:  nil, // unhydrated on timeline list
+		},
+	}
+	if canReuseXPostPlan(unhydratedRTQuote, false) {
+		t.Fatal("canReuseXPostPlan(fromDetail=false) must return false when Retweeted.IsQuote has nil Quoted")
+	}
+	// Once hydrated (or fromDetail=true), it can be reused.
+	unhydratedRTQuote.Retweeted.Quoted = &x.Post{
+		ID:     "1900000000000088003",
+		Author: x.AuthorSummary{RestID: "900088003", ScreenName: "leaf_user", Name: "LeafUser"},
+		Text:   "leaf quoted text",
+	}
+	if !canReuseXPostPlan(unhydratedRTQuote, false) {
+		t.Fatal("canReuseXPostPlan should return true once Retweeted.Quoted is populated")
+	}
+
+	// 2. buildXWorkPlanFromPost preserves reply context from ThreadAncestors[0], focal 2-level nested quote (depth capped at 1),
+	// and non-focal thread part embedded quote without duplicating focal Origin onto focal part.
+	threadPost := &x.Post{
+		ID:                  "1900000000000088102",
+		Author:              x.AuthorSummary{RestID: "900088001", ScreenName: "thread_op", Name: "ThreadOP"},
+		CreatedAt:           1764000200,
+		Text:                "Focal quote tweet text",
+		InReplyToStatusID:   "1900000000000088101", // internal self-reply to ancestor
+		InReplyToScreenName: "thread_op",
+		IsQuote:             true,
+		Quoted: &x.Post{
+			ID:                  "1900000000000088200",
+			Author:              x.AuthorSummary{RestID: "900088200", ScreenName: "outer_q", Name: "OuterQ"},
+			Text:                "Outer quoted text",
+			InReplyToStatusID:   "1900000000000088199",
+			InReplyToScreenName: "outer_parent",
+			IsQuote:             true,
+			Quoted: &x.Post{
+				ID:      "1900000000000088201",
+				Author:  x.AuthorSummary{RestID: "900088201", ScreenName: "inner_q", Name: "InnerQ"},
+				Text:    "Inner nested quote text",
+				IsQuote: true,
+				Quoted: &x.Post{
+					ID:     "1900000000000088202",
+					Author: x.AuthorSummary{RestID: "900088202", ScreenName: "too_deep", Name: "TooDeep"},
+					Text:   "Depth 2 should never appear",
+				},
+			},
+		},
+		ThreadAncestors: []x.Post{{
+			ID:                  "1900000000000088101",
+			Author:              x.AuthorSummary{RestID: "900088001", ScreenName: "thread_op", Name: "ThreadOP"},
+			CreatedAt:           1764000100,
+			Text:                "Ancestor root replying externally",
+			InReplyToStatusID:   "1900000000000088000",
+			InReplyToUserID:     "900088000",
+			InReplyToScreenName: "external_op",
+		}},
+		Thread: []x.Post{{
+			ID:        "1900000000000088103",
+			Author:    x.AuthorSummary{RestID: "900088001", ScreenName: "thread_op", Name: "ThreadOP"},
+			CreatedAt: 1764000300,
+			Text:      "Continuation referencing another post",
+			IsQuote:   true,
+			Quoted: &x.Post{
+				ID:     "1900000000000088300",
+				Author: x.AuthorSummary{RestID: "900088300", ScreenName: "part_q", Name: "PartQ"},
+				Text:   "Quoted inside continuation node",
+			},
+		}},
+	}
+
+	plan, err := b.buildXWorkPlanFromPost(threadPost)
+	if err != nil {
+		t.Fatalf("buildXWorkPlanFromPost: %v", err)
+	}
+	if !plan.IsQuote || plan.IsForward != true {
+		t.Fatalf("plan quote/forward flags = (IsQuote=%v, IsForward=%v), want (true, true)", plan.IsQuote, plan.IsForward)
+	}
+	// Thread root reply context comes from ThreadAncestors[0] (external_op), NOT focal's internal self-reply!
+	if plan.InReplyTo == nil || plan.InReplyTo.ScreenName != "external_op" || plan.InReplyTo.StatusID != "1900000000000088000" {
+		t.Fatalf("plan.InReplyTo = %+v, want external_op (from ThreadAncestors[0])", plan.InReplyTo)
+	}
+	if plan.OriginInReplyTo == nil || plan.OriginInReplyTo.ScreenName != "outer_parent" {
+		t.Fatalf("plan.OriginInReplyTo = %+v, want outer_parent", plan.OriginInReplyTo)
+	}
+	if plan.OriginOrigin == nil || plan.OriginOrigin.AuthorUniqueID != "inner_q" || plan.OriginOrigin.Text != "Inner nested quote text" {
+		t.Fatalf("plan.OriginOrigin = %+v, want inner_q", plan.OriginOrigin)
+	}
+	if len(plan.Thread) != 3 {
+		t.Fatalf("plan.Thread len = %d, want 3", len(plan.Thread))
+	}
+	if plan.Thread[1].Origin != nil {
+		t.Fatalf("focal thread part must keep Origin=nil (stored at item level), got %+v", plan.Thread[1].Origin)
+	}
+	if plan.Thread[2].Origin == nil || plan.Thread[2].Origin.AuthorUniqueID != "part_q" || plan.Thread[2].Origin.Text != "Quoted inside continuation node" {
+		t.Fatalf("continuation thread part Origin = %+v, want part_q", plan.Thread[2].Origin)
 	}
 }

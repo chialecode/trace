@@ -664,13 +664,23 @@ func (b *Backend) weiboPostViewQueueCandidate(p WeiboPostView) queueCandidate {
 	}
 }
 
+// isXNonOriginalPost reports whether an X post is a pure retweet that should be
+// skipped by manual and periodic full-cache sweeps (DEC-091). Quote posts
+// (self-quotes and quoting others) carry the author's own commentary/media and
+// are included in full cache and DEC-076 completeness inspection.
 func isXNonOriginalPost(isRetweet, isQuote, hasRetweeted, hasQuoted bool, ruleType string) bool {
-	return isRetweet || isQuote || hasRetweeted || hasQuoted || strings.EqualFold(strings.TrimSpace(ruleType), x.RuleTypeForward)
+	if isRetweet || hasRetweeted {
+		return true
+	}
+	if isQuote || hasQuoted {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(ruleType), x.RuleTypeForward)
 }
 
 // xPostQueueCandidate converts a list-fetched X post into a cache queue candidate.
-// Full cache only caches original posts (skipping retweets and quotes) and reuses
-// the in-memory list payload to build a download plan when complete.
+// Full cache includes original posts and quote posts (skipping only pure retweets,
+// DEC-091) and reuses the in-memory list payload to build a download plan when complete.
 func (b *Backend) xPostQueueCandidate(p x.Post) queueCandidate {
 	postCopy := p
 	id := strings.TrimSpace(postCopy.ID)
