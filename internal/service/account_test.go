@@ -390,25 +390,45 @@ func TestAccountBreakerPerSite(t *testing.T) {
 	if _, err := h.b.AccountPage(ctx, "bilibili", AccountFavorites, "2001", ""); !site.IsKind(err, site.ErrKindRiskControl) {
 		t.Fatalf("risk err = %v", err)
 	}
-	h.biliMode.Store("")
+	if inBackoff, _ := h.b.subs.IsSiteInBackoff("bilibili"); !inBackoff {
+		t.Fatal("expected bilibili breaker active after risk_control")
+	}
+	// DEC-089: While still in risk_control, manual probe sends 1 real request and preserves backoff without doubling BackoffLevel.
+	levelBefore := h.b.subs.GetSiteSchedulerState("bilibili").BackoffLevel
 	before := h.biliReqs.Load()
 	_, err := h.b.AccountPage(ctx, "bilibili", AccountFavorites, "2001", "")
-	if !site.IsKind(err, site.ErrKindBackoff) {
-		t.Fatalf("open breaker must refuse before sending: %v", err)
+	if !site.IsKind(err, site.ErrKindRiskControl) || !strings.Contains(err.Error(), "探测仍处于风控中，已保持退避") {
+		t.Fatalf("manual probe during risk_control = %v", err)
 	}
-	if h.biliReqs.Load() != before {
-		t.Fatal("request sent while the breaker is open")
+	if h.biliReqs.Load() != before+1 {
+		t.Fatalf("expected exactly 1 manual probe request, sent %d", h.biliReqs.Load()-before)
+	}
+	if afterLevel := h.b.subs.GetSiteSchedulerState("bilibili").BackoffLevel; afterLevel != levelBefore {
+		t.Fatalf("failed manual probe escalated BackoffLevel: got %d, want %d", afterLevel, levelBefore)
 	}
 	if _, err := h.b.AccountPage(ctx, "douyin", AccountLikes, "", ""); err != nil {
 		t.Fatalf("douyin must be unaffected by the bilibili breaker: %v", err)
 	}
+	// Once Bilibili recovers, manual AccountPage probe succeeds and clears Bilibili backoff immediately.
+	h.biliMode.Store("")
+	if _, err := h.b.AccountPage(ctx, "bilibili", AccountFavorites, "2001", ""); err != nil {
+		t.Fatalf("recovered bilibili manual probe failed: %v", err)
+	}
+	if inBackoff, _ := h.b.subs.IsSiteInBackoff("bilibili"); inBackoff {
+		t.Fatal("successful manual bilibili probe must clear bilibili backoff immediately")
+	}
+
 	h.dyMode.Store("captcha")
 	if _, err := h.b.AccountPage(ctx, "douyin", AccountLikes, "", ""); !site.IsKind(err, site.ErrKindRiskControl) {
 		t.Fatalf("captcha = %v", err)
 	}
+	dyLevelBefore := h.b.subs.GetSiteSchedulerState("douyin").BackoffLevel
 	dyBefore := h.dyReqs.Load()
-	if _, err := h.b.AccountPage(ctx, "douyin", AccountLikes, "", ""); !site.IsKind(err, site.ErrKindBackoff) || h.dyReqs.Load() != dyBefore {
-		t.Fatalf("douyin breaker: err=%v sent=%d", err, h.dyReqs.Load()-dyBefore)
+	if _, err := h.b.AccountPage(ctx, "douyin", AccountLikes, "", ""); !site.IsKind(err, site.ErrKindRiskControl) || h.dyReqs.Load() != dyBefore+1 {
+		t.Fatalf("douyin manual probe during captcha: err=%v sent=%d", err, h.dyReqs.Load()-dyBefore)
+	}
+	if afterLevel := h.b.subs.GetSiteSchedulerState("douyin").BackoffLevel; afterLevel != dyLevelBefore {
+		t.Fatalf("failed douyin manual probe escalated BackoffLevel: got %d, want %d", afterLevel, dyLevelBefore)
 	}
 }
 

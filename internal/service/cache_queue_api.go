@@ -155,7 +155,7 @@ func (b *Backend) enqueueCacheQueueWithPager(
 		Origin:        queueOrigin(req.Origin),
 		Cursor:        "",
 		HasMore:       true,
-		RestThreshold: m.pickRestThresholdLocked(),
+		RestThreshold: m.pickRestThresholdForSiteLocked(normSite),
 		Status:        CacheQueueQueued,
 		CreatedAt:     createdAt,
 		UpdatedAt:     now,
@@ -467,7 +467,7 @@ func (m *cacheQueueManager) reconcileSiteOrderLocked(siteID site.ID) []cacheQueu
 		if cooldown := m.siteCooldownUntil[siteID]; cooldown.After(now) {
 			delete(m.siteCooldownUntil, siteID)
 			if firstRunnable.rec.RestThreshold <= 0 {
-				firstRunnable.rec.RestThreshold = m.pickRestThresholdLocked()
+				firstRunnable.rec.RestThreshold = m.pickRestThresholdForSiteLocked(siteID)
 			}
 			firstRunnable.rec.PauseReason = ""
 			firstRunnable.rec.NextRunAt = cooldown.Format(time.RFC3339)
@@ -485,7 +485,8 @@ func (m *cacheQueueManager) reconcileSiteOrderLocked(siteID site.ID) []cacheQueu
 	return notify
 }
 
-// ResumeCacheQueue resumes a paused background cache queue task on its site.
+// ResumeCacheQueue resumes a paused background cache queue task on its site,
+// or triggers a one-shot manual probe on a waiting_backoff task (DEC-089).
 func (b *Backend) ResumeCacheQueue(id string) (CacheQueueTask, error) {
 	if err := b.requireDesktop(); err != nil {
 		return CacheQueueTask{}, err
@@ -537,37 +538,53 @@ func (b *Backend) ResumeCacheQueue(id string) (CacheQueueTask, error) {
 		m.mu.Unlock()
 		return CacheQueueTask{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "该缓存队列任务已结束，请重新加入队列"}
 	}
-	if entry.rec.Status != CacheQueuePaused {
+	if entry.rec.Status != CacheQueuePaused && entry.rec.Status != CacheQueueWaitingBackoff {
 		dto := m.toDTOLocked(entry)
 		m.mu.Unlock()
 		return dto, nil
 	}
 
 	type entrySnapshot struct {
-		entry  *cacheQueueEntry
-		rec    cacheQueueRecord
-		resume bool
+		entry       *cacheQueueEntry
+		rec         cacheQueueRecord
+		resume      bool
+		manualProbe bool
 	}
 	prevCooldown := m.siteCooldownUntil[siteID]
 	var snaps []entrySnapshot
 	for _, e := range m.tasks {
 		if e.rec.Site == string(siteID) && isUnfinishedQueueStatus(e.rec.Status) {
 			snaps = append(snaps, entrySnapshot{
-				entry:  e,
-				rec:    e.rec,
-				resume: e.rt.resumePendingDownloads,
+				entry:       e,
+				rec:         e.rec,
+				resume:      e.rt.resumePendingDownloads,
+				manualProbe: e.rt.manualProbeOnce,
 			})
 		}
 	}
 
-	entry.rec.Status = CacheQueueQueued
-	entry.rec.PauseReason = ""
-	entry.rec.StopReason = ""
-	entry.rec.NextRunAt = ""
-	entry.rec.UpdatedAt = m.nowRFC3339()
-	entry.rt.resumePendingDownloads = len(entry.rec.ActiveDownloadIDs) > 0
-
-	reconciled := m.reconcileSiteOrderLocked(siteID)
+	wasWaitingBackoff := entry.rec.Status == CacheQueueWaitingBackoff
+	var reconciled []cacheQueueRecord
+	if wasWaitingBackoff {
+		// One-shot manual probe: immediately wake this waiting_backoff task to send
+		// a single live probe request while keeping background automation backed off.
+		delete(m.siteCooldownUntil, siteID)
+		entry.rec.Status = CacheQueueRunning
+		entry.rec.PauseReason = ""
+		entry.rec.StopReason = ""
+		entry.rec.NextRunAt = ""
+		entry.rec.UpdatedAt = m.nowRFC3339()
+		entry.rt.resumePendingDownloads = len(entry.rec.ActiveDownloadIDs) > 0
+		entry.rt.manualProbeOnce = true
+	} else {
+		entry.rec.Status = CacheQueueQueued
+		entry.rec.PauseReason = ""
+		entry.rec.StopReason = ""
+		entry.rec.NextRunAt = ""
+		entry.rec.UpdatedAt = m.nowRFC3339()
+		entry.rt.resumePendingDownloads = len(entry.rec.ActiveDownloadIDs) > 0
+		reconciled = m.reconcileSiteOrderLocked(siteID)
+	}
 	if err := m.saveLocked(); err != nil {
 		if prevCooldown.IsZero() {
 			delete(m.siteCooldownUntil, siteID)
@@ -577,6 +594,7 @@ func (b *Backend) ResumeCacheQueue(id string) (CacheQueueTask, error) {
 		for _, s := range snaps {
 			s.entry.rec = s.rec
 			s.entry.rt.resumePendingDownloads = s.resume
+			s.entry.rt.manualProbeOnce = s.manualProbe
 		}
 		m.mu.Unlock()
 		return CacheQueueTask{}, err

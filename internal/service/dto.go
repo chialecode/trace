@@ -337,6 +337,7 @@ type WeiboUserView struct {
 	Domain          string `json:"domain,omitempty"`
 	CoverImagePhone string `json:"coverImagePhone,omitempty"`
 	BlockText       string `json:"blockText,omitempty"`
+	IsMuteUser      bool   `json:"isMuteUser,omitempty"`
 	CanonicalURL    string `json:"canonicalUrl"`
 }
 
@@ -1021,6 +1022,7 @@ func mapWeiboUserView(u *weibo.UserProfile) *WeiboUserView {
 		Domain:          u.Domain,
 		CoverImagePhone: u.CoverImagePhone,
 		BlockText:       u.BlockText,
+		IsMuteUser:      u.IsMuteUser,
 		CanonicalURL:    u.CanonicalURL,
 	}
 }

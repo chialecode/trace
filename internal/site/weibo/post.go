@@ -72,6 +72,7 @@ type AuthorSummary struct {
 	StatusesCount  int    `json:"statusesCount,omitempty"`
 	FollowersCount int64  `json:"followersCount,omitempty"`
 	FriendsCount   int64  `json:"friendsCount,omitempty"`
+	IsMuteUser     bool   `json:"isMuteUser,omitempty"`
 }
 
 // PostStats holds online-only engagement counters (never cached to disk per DEC-040).
@@ -232,6 +233,7 @@ type rawWeiboUser struct {
 	CoverImagePhone string          `json:"cover_image_phone"`
 	Remark          string          `json:"remark"`
 	SpecialFollow   json.RawMessage `json:"special_follow"`
+	IsMuteUser      json.RawMessage `json:"is_muteuser"`
 }
 
 func (u *rawWeiboUser) uidString() string {
@@ -269,6 +271,7 @@ func (u *rawWeiboUser) toAuthorSummary(allowLocalhost bool) AuthorSummary {
 		StatusesCount:  parseJSONInt(u.StatusesCount),
 		FollowersCount: parseJSONInt64(u.FollowersCount),
 		FriendsCount:   parseJSONInt64(u.FriendsCount),
+		IsMuteUser:     parseJSONBoolOrInt(u.IsMuteUser),
 	}
 }
 

@@ -279,8 +279,8 @@ func TestPerSiteBranchValuesUnknownSiteRejectionAndThreeWayIsolation(t *testing.
 	}{
 		{"bilibili", "bilibili", DefaultBilibiliHourlyQuota, DefaultBilibiliRoundAccountCap, 2 * time.Second},
 		{"douyin", "douyin", DefaultDouyinHourlyQuota, DefaultDouyinRoundAccountCap, 2500 * time.Millisecond},
-		{"weibo", "weibo", DefaultWeiboHourlyQuota, DefaultWeiboRoundAccountCap, 3 * time.Second},
-		{"WEIBO", "weibo", 100, 20, 3 * time.Second},
+		{"weibo", "weibo", DefaultWeiboHourlyQuota, DefaultWeiboRoundAccountCap, 1500 * time.Millisecond},
+		{"WEIBO", "weibo", 180, 25, 1500 * time.Millisecond},
 		{"", "", 0, 0, 0},
 		{"unknown", "", 0, 0, 0},
 		{"twitter", "", 0, 0, 0},
@@ -421,12 +421,12 @@ func TestPerSiteBranchValuesUnknownSiteRejectionAndThreeWayIsolation(t *testing.
 		t.Fatalf("Weibo should remain allowed while Bilibili & Douyin are in backoff: %v", err)
 	}
 
-	// Exhaust Weibo's 100/hr quota (1 already consumed above + 99 more = 100); 101st must fail with ErrKindQuota.
-	if !mgr.ConsumeSiteQuotaTokens("weibo", 99) {
-		t.Fatalf("expected remaining 99 Weibo tokens to fit in 100/hr bucket")
+	// Exhaust Weibo's 180/hr quota (1 already consumed above + 179 more = 180); 181st must fail with ErrKindQuota.
+	if !mgr.ConsumeSiteQuotaTokens("weibo", 179) {
+		t.Fatalf("expected remaining 179 Weibo tokens to fit in 180/hr bucket")
 	}
 	if err := mgr.SiteAutomaticRequestAllowed("weibo"); !site.IsKind(err, site.ErrKindQuota) {
-		t.Fatalf("expected 101st Weibo request rejected with quota error, got %v", err)
+		t.Fatalf("expected 181st Weibo request rejected with quota error, got %v", err)
 	}
 	// Advance past Bilibili/Douyin backoff without expiring Weibo tokens: Bilibili (200/hr) and Douyin (120/hr) still have quota!
 	now = now.Add(30 * time.Minute)
@@ -973,9 +973,9 @@ func TestWeiboHourlyQuotaRoundCapPacingMaxPagesManualBypassAndCheckPlan(t *testi
 	}
 	mgr.RegisterFetcher(wbFetcher)
 
-	// Create 25 Weibo accounts with ScheduledCheck + AutoRecord enabled, plus 1 Weibo account without AutoRecord.
+	// Create 30 Weibo accounts with ScheduledCheck + AutoRecord enabled, plus 1 Weibo account without AutoRecord.
 	wbUID := func(i int) string { return fmt.Sprintf("%d", 1000000100+i) }
-	for i := 0; i < 25; i++ {
+	for i := 0; i < 30; i++ {
 		if _, err := mgr.Create(fmt.Sprintf("Weibo-%02d", i), "", []AccountRef{
 			{Site: "weibo", UID: wbUID(i), Name: fmt.Sprintf("WB%02d", i)},
 		}, SubRules{ScheduledCheck: true, AutoRecord: true}); err != nil {
@@ -989,7 +989,7 @@ func TestWeiboHourlyQuotaRoundCapPacingMaxPagesManualBypassAndCheckPlan(t *testi
 		t.Fatalf("create noLiveSub: %v", err)
 	}
 
-	// 1. CheckPlan lists Weibo accounts with round-cap 20 estimates, NO live-check cadence (AutoRecord=false),
+	// 1. CheckPlan lists Weibo accounts with round-cap 25 estimates (DEC-089), NO live-check cadence (AutoRecord=false),
 	// and LiveNote="微博直播暂不支持录制" ONLY when rule has AutoRecord enabled!
 	plans := mgr.CheckPlan()
 	planByUID := make(map[string]AccountCheckPlan, len(plans))
@@ -998,10 +998,10 @@ func TestWeiboHourlyQuotaRoundCapPacingMaxPagesManualBypassAndCheckPlan(t *testi
 	}
 	next1 := now.Add(time.Hour).Format(time.RFC3339)
 	next2 := now.Add(2 * time.Hour).Format(time.RFC3339)
-	for i := 0; i < 25; i++ {
+	for i := 0; i < 30; i++ {
 		p := planByUID[wbUID(i)]
 		wantNext := next1
-		if i >= 20 {
+		if i >= 25 {
 			wantNext = next2
 		}
 		if p.Plan != PlanScheduled || p.NextAt != wantNext {
@@ -1019,20 +1019,20 @@ func TestWeiboHourlyQuotaRoundCapPacingMaxPagesManualBypassAndCheckPlan(t *testi
 	}
 	_ = noLiveSub
 
-	// 2. Scheduled round checks <= 20 Weibo accounts with 19 inter-account sleeps of 3s!
+	// 2. Scheduled round checks <= 25 Weibo accounts with 24 inter-account sleeps of 1.5s (DEC-089)!
 	ctx := context.Background()
 	sum1, err := mgr.RunScheduledRound(ctx)
 	if err != nil {
 		t.Fatalf("RunScheduledRound 1: %v", err)
 	}
-	if sum1.CheckedCreators != 20 || len(wbFetcher.callSnapshot()) != 20 {
-		t.Fatalf("expected 20 Weibo accounts checked (cap 20), got sum=%+v calls=%d", sum1, len(wbFetcher.callSnapshot()))
+	if sum1.CheckedCreators != 25 || len(wbFetcher.callSnapshot()) != 25 {
+		t.Fatalf("expected 25 Weibo accounts checked (cap 25), got sum=%+v calls=%d", sum1, len(wbFetcher.callSnapshot()))
 	}
-	if len(recordedSleeps) != 19 {
-		t.Fatalf("expected 19 Weibo inter-account sleeps, got %d", len(recordedSleeps))
+	if len(recordedSleeps) != 24 {
+		t.Fatalf("expected 24 Weibo inter-account sleeps, got %d", len(recordedSleeps))
 	}
-	if DefaultWeiboAccountInterval != 3*time.Second {
-		t.Fatalf("DefaultWeiboAccountInterval = %v, want 3s", DefaultWeiboAccountInterval)
+	if DefaultWeiboAccountInterval != 1500*time.Millisecond {
+		t.Fatalf("DefaultWeiboAccountInterval = %v, want 1.5s", DefaultWeiboAccountInterval)
 	}
 	for _, d := range recordedSleeps {
 		if d != DefaultWeiboAccountInterval {
@@ -1065,13 +1065,13 @@ func TestWeiboHourlyQuotaRoundCapPacingMaxPagesManualBypassAndCheckPlan(t *testi
 		t.Fatalf("expected gap recorded when 2 pages do not reach baseline, got %+v", sum2Pages)
 	}
 
-	// 4. Hourly 100 quota exhaustion defers scheduled Weibo round, while manual check bypasses quota!
-	// 20 tokens already used in round 1; consume 65 more -> 85 used (15 left < 2*20=40 required).
-	if !mgr.ConsumeSiteQuotaTokens("weibo", 65) {
-		t.Fatalf("expected 65 Weibo tokens to fit within remaining 80")
+	// 4. Hourly 180 quota exhaustion defers scheduled Weibo round, while manual check bypasses quota (DEC-089)!
+	// 25 tokens already used in round 1; consume 140 more -> 165 used (15 left < 2*25=50 required).
+	if !mgr.ConsumeSiteQuotaTokens("weibo", 140) {
+		t.Fatalf("expected 140 Weibo tokens to fit within remaining 155")
 	}
 	if mgr.ConsumeSiteQuotaTokens("weibo", 16) {
-		t.Fatalf("85 + 16 = 101 must exceed Weibo 100/hr bucket")
+		t.Fatalf("165 + 16 = 181 must exceed Weibo 180/hr bucket")
 	}
 	wbFetcher.resetCalls()
 	sumQuota, err := mgr.RunScheduledRound(ctx)
@@ -1079,22 +1079,22 @@ func TestWeiboHourlyQuotaRoundCapPacingMaxPagesManualBypassAndCheckPlan(t *testi
 		t.Fatalf("RunScheduledRound quota deferred: %v", err)
 	}
 	if !sumQuota.DeferredByQuota || !slices.Contains(sumQuota.SiteDeferredByQuota, "weibo") || len(wbFetcher.callSnapshot()) != 0 {
-		t.Fatalf("expected Weibo deferred by 100/hr quota with 0 calls, got sum=%+v calls=%v", sumQuota, wbFetcher.callSnapshot())
+		t.Fatalf("expected Weibo deferred by 180/hr quota with 0 calls, got sum=%+v calls=%v", sumQuota, wbFetcher.callSnapshot())
 	}
 
-	// Exhaust remaining 15 tokens completely (100/100 used), then verify manual check STILL succeeds without consuming quota!
+	// Exhaust remaining 15 tokens completely (180/180 used), then verify manual check STILL succeeds without consuming quota!
 	if !mgr.ConsumeSiteQuotaTokens("weibo", 15) {
 		t.Fatalf("expected final 15 tokens to succeed")
 	}
 	if mgr.CanUseSiteQuotaTokens("weibo", 1) {
-		t.Fatalf("expected Weibo bucket completely full at 100/100")
+		t.Fatalf("expected Weibo bucket completely full at 180/180")
 	}
 	wbFetcher.resetCalls()
 	sumManual, err := mgr.CheckAccount(ctx, owner0.ID, "weibo", wbUID(0))
 	if err != nil || sumManual.CheckedCreators != 1 || sumManual.FailedCreators != 0 {
-		t.Fatalf("manual Weibo check must bypass 100/hr quota, got sum=%+v err=%v", sumManual, err)
+		t.Fatalf("manual Weibo check must bypass 180/hr quota, got sum=%+v err=%v", sumManual, err)
 	}
-	if st := mgr.GetSiteSchedulerState("weibo"); len(st.TokenTimestamps) != 100 {
+	if st := mgr.GetSiteSchedulerState("weibo"); len(st.TokenTimestamps) != 180 {
 		t.Fatalf("manual Weibo check must not add quota tokens, got %d tokens", len(st.TokenTimestamps))
 	}
 

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -17,6 +18,40 @@ func (m *cacheQueueManager) wakeSite(siteID site.ID) {
 		default:
 		}
 	}
+}
+
+func (m *cacheQueueManager) onSiteBackoffCleared(siteID site.ID) {
+	if m == nil || !siteID.Valid() {
+		return
+	}
+	m.mu.Lock()
+	delete(m.siteCooldownUntil, siteID)
+	now := m.nowRFC3339()
+	quotaStillBlocked := m.b != nil && m.b.subs != nil && !m.b.subs.CanUseSiteQuotaTokens(string(siteID), 1)
+	var notify []cacheQueueRecord
+	changed := false
+	for _, e := range m.tasks {
+		if e.rec.Site != string(siteID) || e.rec.Status != CacheQueueWaitingBackoff {
+			continue
+		}
+		if quotaStillBlocked && e.rec.StopReason == backoffReasonText(site.ErrKindQuota) {
+			continue
+		}
+		e.rec.Status = CacheQueueQueued
+		e.rec.PauseReason = ""
+		e.rec.StopReason = ""
+		e.rec.NextRunAt = ""
+		e.rec.UpdatedAt = now
+		e.rt.resumePendingDownloads = len(e.rec.ActiveDownloadIDs) > 0
+		changed = true
+		notify = append(notify, e.rec)
+	}
+	if changed {
+		m.saveLoggedLocked("backoff_cleared")
+	}
+	m.mu.Unlock()
+	m.notifyStates(notify)
+	m.wakeSite(siteID)
 }
 
 func (m *cacheQueueManager) onDownloadUpdated(siteName string) {
@@ -70,7 +105,8 @@ func (m *cacheQueueManager) Start(ctx context.Context) {
 			e.rt.resumePendingDownloads = len(e.rec.ActiveDownloadIDs) > 0
 			if !assignedActive {
 				assignedActive = true
-				startupUntil := now.Add(m.randDurationLocked(m.pacing.StartupMinDelay, m.pacing.StartupMaxDelay))
+				p := m.pacingForSite(sid)
+				startupUntil := now.Add(m.randDurationLocked(p.StartupMinDelay, p.StartupMaxDelay))
 				if e.rec.Status == CacheQueueWaitingBackoff {
 					if existing, err := time.Parse(time.RFC3339, e.rec.NextRunAt); err != nil || existing.Before(startupUntil) {
 						e.rec.NextRunAt = startupUntil.Format(time.RFC3339)
@@ -262,20 +298,17 @@ func (m *cacheQueueManager) hasSiteLogin(siteID site.ID) bool {
 	return m.b.credMgr.HasActiveCredential(string(siteID))
 }
 
-func (m *cacheQueueManager) siteBackoffOrQuotaEnd(siteID site.ID, now time.Time) (bool, time.Time) {
+func (m *cacheQueueManager) siteBackoffAndQuotaEnds(siteID site.ID, now time.Time) (inBackoff bool, backoffEnd time.Time, quotaExhausted bool, quotaEnd time.Time) {
 	if m.b == nil || m.b.subs == nil {
-		return false, time.Time{}
+		return false, time.Time{}, false, time.Time{}
 	}
 	nowUTC := now.UTC()
-	var blocked bool
-	var end time.Time
-
-	if inBackoff, until := m.b.subs.IsSiteInBackoff(string(siteID)); inBackoff && until.After(nowUTC) {
-		blocked = true
-		end = until.UTC()
+	if active, until := m.b.subs.IsSiteInBackoff(string(siteID)); active && until.After(nowUTC) {
+		inBackoff = true
+		backoffEnd = until.UTC()
 	}
 	if !m.b.subs.CanUseSiteQuotaTokens(string(siteID), 1) {
-		blocked = true
+		quotaExhausted = true
 		st := m.b.subs.GetSiteSchedulerState(string(siteID))
 		cutoff := nowUTC.Add(-time.Hour).Unix()
 		var oldest int64
@@ -284,24 +317,49 @@ func (m *cacheQueueManager) siteBackoffOrQuotaEnd(siteID site.ID, now time.Time)
 				oldest = ts
 			}
 		}
-		quotaEnd := nowUTC.Add(time.Hour)
+		quotaEnd = nowUTC.Add(time.Hour)
 		if oldest > 0 {
 			quotaEnd = time.Unix(oldest+3600, 0).UTC()
 		}
-		if quotaEnd.After(end) {
-			end = quotaEnd
-		}
 	}
-	return blocked, end
+	return inBackoff, backoffEnd, quotaExhausted, quotaEnd
 }
 
-func (m *cacheQueueManager) backoffResumeTimeLocked(siteID site.ID, now time.Time) time.Time {
+func (m *cacheQueueManager) siteBackoffOrQuotaEnd(siteID site.ID, now time.Time) (bool, time.Time) {
+	inBackoff, backoffEnd, quotaExhausted, quotaEnd := m.siteBackoffAndQuotaEnds(siteID, now)
+	if !inBackoff && !quotaExhausted {
+		return false, time.Time{}
+	}
+	end := backoffEnd
+	if quotaExhausted && quotaEnd.After(end) {
+		end = quotaEnd
+	}
+	return true, end
+}
+
+func (m *cacheQueueManager) backoffResumeTimeLocked(siteID site.ID, kind string, now time.Time) time.Time {
 	nowUTC := now.UTC()
-	_, baseEnd := m.siteBackoffOrQuotaEnd(siteID, nowUTC)
+	inBackoff, backoffEnd, quotaExhausted, quotaEnd := m.siteBackoffAndQuotaEnds(siteID, nowUTC)
+	p := m.pacingForSite(siteID)
+	if kind == site.ErrKindQuota && !inBackoff {
+		baseEnd := quotaEnd
+		if baseEnd.Before(nowUTC) {
+			baseEnd = nowUTC
+		}
+		coolMin, coolMax := p.QuotaCoolMinDelay, p.QuotaCoolMaxDelay
+		if coolMin <= 0 && coolMax <= 0 && m.customPacing {
+			coolMin, coolMax = p.BackoffCoolMinDelay, p.BackoffCoolMaxDelay
+		}
+		return baseEnd.Add(m.randDurationLocked(coolMin, coolMax))
+	}
+	baseEnd := backoffEnd
+	if quotaExhausted && quotaEnd.After(baseEnd) {
+		baseEnd = quotaEnd
+	}
 	if baseEnd.Before(nowUTC) {
 		baseEnd = nowUTC
 	}
-	cool := m.randDurationLocked(m.pacing.BackoffCoolMinDelay, m.pacing.BackoffCoolMaxDelay)
+	cool := m.randDurationLocked(p.BackoffCoolMinDelay, p.BackoffCoolMaxDelay)
 	return baseEnd.Add(cool)
 }
 
@@ -333,14 +391,50 @@ func (m *cacheQueueManager) enterWaitingBackoffLocked(e *cacheQueueEntry, siteID
 		}
 	}
 	now := m.clock.Now().UTC()
-	resumeAt := m.backoffResumeTimeLocked(siteID, now)
+	resumeAt := m.backoffResumeTimeLocked(siteID, kind, now)
 	e.rec.Status = CacheQueueWaitingBackoff
 	e.rec.PauseReason = ""
 	e.rec.StopReason = backoffReasonText(kind)
 	e.rec.NextRunAt = resumeAt.Format(time.RFC3339)
 	e.rec.UpdatedAt = now.Format(time.RFC3339)
 	e.rt.resumePendingDownloads = len(e.rec.ActiveDownloadIDs) > 0
+	if m.b != nil {
+		level := 0
+		if m.b.subs != nil {
+			level = m.b.subs.GetSiteSchedulerState(string(siteID)).BackoffLevel
+		}
+		m.b.logInfo(fmt.Sprintf("cache_queue.backoff site=%s id=%s kind=%s level=%d next=%s",
+			siteID, e.rec.ID, kind, level, resumeAt.Format(time.RFC3339)))
+	}
 	m.saveLoggedLocked("enter_backoff")
+	return e.rec
+}
+
+func (m *cacheQueueManager) enterWaitingBackoffFromProbeLocked(e *cacheQueueEntry, siteID site.ID, kind string, probeErr error) cacheQueueRecord {
+	if (kind == site.ErrKindRiskControl || kind == site.ErrKindRateLimited) && m.b != nil && probeErr != nil {
+		m.b.recordManualSiteProbeFailure(siteID, probeErr)
+	}
+	now := m.clock.Now().UTC()
+	resumeAt := m.backoffResumeTimeLocked(siteID, kind, now)
+	e.rec.Status = CacheQueueWaitingBackoff
+	e.rec.PauseReason = ""
+	if kind == site.ErrKindQuota {
+		e.rec.StopReason = backoffReasonText(kind)
+	} else {
+		e.rec.StopReason = "探测仍处于风控或限流中，等待退避结束"
+	}
+	e.rec.NextRunAt = resumeAt.Format(time.RFC3339)
+	e.rec.UpdatedAt = now.Format(time.RFC3339)
+	e.rt.resumePendingDownloads = len(e.rec.ActiveDownloadIDs) > 0
+	if m.b != nil {
+		level := 0
+		if m.b.subs != nil {
+			level = m.b.subs.GetSiteSchedulerState(string(siteID)).BackoffLevel
+		}
+		m.b.logInfo(fmt.Sprintf("cache_queue.backoff_probe site=%s id=%s kind=%s level=%d next=%s",
+			siteID, e.rec.ID, kind, level, resumeAt.Format(time.RFC3339)))
+	}
+	m.saveLoggedLocked("enter_backoff_probe")
 	return e.rec
 }
 
@@ -370,7 +464,7 @@ func (m *cacheQueueManager) selectActiveSiteEntryLocked(siteID site.ID) (*cacheQ
 			continue
 		}
 		if e.rec.RestThreshold <= 0 {
-			e.rec.RestThreshold = m.pickRestThresholdLocked()
+			e.rec.RestThreshold = m.pickRestThresholdForSiteLocked(siteID)
 		}
 		now := m.clock.Now().UTC()
 		if cooldown := m.siteCooldownUntil[siteID]; cooldown.After(now) {
@@ -455,22 +549,17 @@ func (m *cacheQueueManager) runSiteLoop(ctx context.Context, siteID site.ID) {
 			}
 			pureCDNWaiting := isBackfill && entry.rec.Status == CacheQueueWaiting &&
 				(entry.rec.BackfillPhase == backfillPhaseFastCDN || entry.rec.BackfillPhase == backfillPhaseOfflineLinks)
-			if pureCDNWaiting {
-				if inBackoff, _ := m.siteRiskBackoffOnly(siteID, m.clock.Now()); inBackoff {
-					rec := m.enterWaitingBackoffLocked(entry, siteID, site.ErrKindBackoff)
+			if !pureCDNWaiting {
+				if blocked, _ := m.siteBackoffOrQuotaEnd(siteID, m.clock.Now()); blocked {
+					kind := site.ErrKindBackoff
+					if !m.b.subs.CanUseSiteQuotaTokens(string(siteID), 1) {
+						kind = site.ErrKindQuota
+					}
+					rec := m.enterWaitingBackoffLocked(entry, siteID, kind)
 					m.mu.Unlock()
 					m.notifyState(rec)
 					continue
 				}
-			} else if blocked, _ := m.siteBackoffOrQuotaEnd(siteID, m.clock.Now()); blocked {
-				kind := site.ErrKindBackoff
-				if !m.b.subs.CanUseSiteQuotaTokens(string(siteID), 1) {
-					kind = site.ErrKindQuota
-				}
-				rec := m.enterWaitingBackoffLocked(entry, siteID, kind)
-				m.mu.Unlock()
-				m.notifyState(rec)
-				continue
 			}
 			entry.rec.Status = CacheQueueRunning
 			entry.rec.PauseReason = ""
@@ -500,13 +589,18 @@ func (m *cacheQueueManager) runSiteLoop(ctx context.Context, siteID site.ID) {
 			activeIDs := append([]string(nil), entry.rec.ActiveDownloadIDs...)
 			activeItemKey := entry.rec.ActiveItemKey
 			needResume := entry.rt.resumePendingDownloads
+			isProbe := entry.rt.manualProbeOnce
 			entry.rt.resumePendingDownloads = false
 			m.mu.Unlock()
 
 			if needResume && m.b != nil && m.b.dl != nil {
 				for _, dlID := range activeIDs {
-					if t, ok, err := m.b.dl.GetTask(dlID); err == nil && ok && t.Status == "paused" {
-						_, _ = m.b.dl.Resume(dlID)
+					if t, ok, err := m.b.dl.GetTask(dlID); err == nil && ok {
+						if isProbe && (t.Status == "paused" || t.Status == "queued" || t.Status == "failed") {
+							_, _ = m.b.dl.ResumeManualProbe(dlID)
+						} else if t.Status == "paused" {
+							_, _ = m.b.dl.Resume(dlID)
+						}
 					}
 				}
 			}
@@ -569,7 +663,8 @@ func (m *cacheQueueManager) runSiteLoop(ctx context.Context, siteID site.ID) {
 			// If derived download(s) are still queued (not yet running) while this site is
 			// already in backoff, pause those queued tasks for backoff and transition this
 			// queue entry to waiting_backoff so the UI stays accurate and other sites run freely.
-			if stillRunning && !hasActiveExecution && len(queuedDLIDs) > 0 {
+			// Skip this short-circuit while a one-shot manual probe is in flight for this entry.
+			if stillRunning && !hasActiveExecution && len(queuedDLIDs) > 0 && !isProbe {
 				if inBackoff, _ := m.siteRiskBackoffOnly(siteID, m.clock.Now()); inBackoff {
 					if m.b != nil && m.b.dl != nil {
 						for _, dlID := range queuedDLIDs {
@@ -626,13 +721,20 @@ func (m *cacheQueueManager) runSiteLoop(ctx context.Context, siteID site.ID) {
 				m.mu.Unlock()
 				continue
 			}
+			wasProbe := entry.rt.manualProbeOnce
+			entry.rt.manualProbeOnce = false
 			if authStopped {
 				m.mu.Unlock()
 				m.pauseForSite(siteID, "auth_required", "登录已失效，重新登录后自动继续")
 				continue
 			}
 			if backoffKind != "" {
-				rec := m.enterWaitingBackoffLocked(entry, siteID, backoffKind)
+				var rec cacheQueueRecord
+				if wasProbe {
+					rec = m.enterWaitingBackoffFromProbeLocked(entry, siteID, backoffKind, nil)
+				} else {
+					rec = m.enterWaitingBackoffLocked(entry, siteID, backoffKind)
+				}
 				m.mu.Unlock()
 				m.notifyState(rec)
 				continue
@@ -668,6 +770,9 @@ func (m *cacheQueueManager) runSiteLoop(ctx context.Context, siteID site.ID) {
 
 			rec := m.finishItemOutcomeLocked(entry, allSucceeded)
 			m.mu.Unlock()
+			if allSucceeded && wasProbe && m.b != nil {
+				m.b.onManualSiteRequestSuccess(siteID)
+			}
 			m.notifyState(rec)
 			continue
 		}
@@ -793,21 +898,26 @@ func (m *cacheQueueManager) finishItemOutcomeLocked(entry *cacheQueueEntry, cach
 		return entry.rec
 	}
 
+	siteID := site.ID(entry.rec.Site)
+	p := m.pacingForSite(siteID)
+	zeroAPI := entry.rt.lastItemZeroAPI
+	entry.rt.lastItemZeroAPI = false
 	if entry.rec.RestThreshold <= 0 {
-		entry.rec.RestThreshold = m.pickRestThresholdLocked()
+		entry.rec.RestThreshold = m.pickRestThresholdForSiteLocked(siteID)
 	}
 	var delay time.Duration
 	reason := "等待下一条"
 	if cached && entry.rec.SinceRestCount >= entry.rec.RestThreshold {
-		delay = m.randDurationLocked(m.pacing.LongRestMinDelay, m.pacing.LongRestMaxDelay)
+		delay = m.randDurationLocked(p.LongRestMinDelay, p.LongRestMaxDelay)
 		entry.rec.SinceRestCount = 0
-		entry.rec.RestThreshold = m.pickRestThresholdLocked()
+		entry.rec.RestThreshold = m.pickRestThresholdForSiteLocked(siteID)
 		reason = "已完成一批缓存，长歇等待中"
+	} else if zeroAPI && (p.ZeroAPIItemMinDelay > 0 || p.ZeroAPIItemMaxDelay > 0) {
+		delay = m.randDurationLocked(p.ZeroAPIItemMinDelay, p.ZeroAPIItemMaxDelay)
 	} else {
-		delay = m.randDurationLocked(m.pacing.ItemMinDelay, m.pacing.ItemMaxDelay)
+		delay = m.randDurationLocked(p.ItemMinDelay, p.ItemMaxDelay)
 	}
 	nextAt := m.clock.Now().UTC().Add(delay)
-	siteID := site.ID(entry.rec.Site)
 	if m.hasEarlierRunnableOnSiteLocked(siteID, entry) {
 		m.recordSiteCooldownLocked(siteID, nextAt)
 		entry.rec.Status = CacheQueueQueued
@@ -886,7 +996,10 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 			m.notifyState(rec)
 			return
 		}
-		if blocked, _ := m.siteBackoffOrQuotaEnd(siteID, m.clock.Now()); blocked {
+		isProbe := entry.rt.manualProbeOnce
+		if isProbe {
+			entry.rt.manualProbeOnce = false
+		} else if blocked, _ := m.siteBackoffOrQuotaEnd(siteID, m.clock.Now()); blocked {
 			kind := site.ErrKindBackoff
 			if !m.b.subs.CanUseSiteQuotaTokens(string(siteID), 1) {
 				kind = site.ErrKindQuota
@@ -899,12 +1012,23 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 
 		cursor := entry.rec.Cursor
 		pager := entry.rt.pager
-		stepCtx, stepCancel := context.WithCancel(site.WithAutomaticRequests(ctx, "cache_queue"))
+		baseStepCtx := site.WithAutomaticRequests(ctx, "cache_queue")
+		if isProbe {
+			baseStepCtx = site.WithManualProbe(ctx)
+		}
+		stepCtx, stepCancel := context.WithCancel(baseStepCtx)
 		stepCtx, stepMeta := withQueueStepMeta(stepCtx)
 		entry.rt.stepCancel = stepCancel
 		m.mu.Unlock()
 
 		items, nextCursor, nextMore, err := pager(stepCtx, cursor)
+		if err == nil && m.b != nil {
+			if isProbe {
+				m.b.onManualSiteRequestSuccess(siteID)
+			} else if siteID == site.Weibo && m.b.subs != nil {
+				m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
+			}
+		}
 
 		m.mu.Lock()
 		stepCancel()
@@ -923,7 +1047,12 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 				return
 			}
 			if isBackoffOrQuotaKind(kind) {
-				rec := m.enterWaitingBackoffLocked(entry, siteID, kind)
+				var rec cacheQueueRecord
+				if isProbe {
+					rec = m.enterWaitingBackoffFromProbeLocked(entry, siteID, kind, err)
+				} else {
+					rec = m.enterWaitingBackoffLocked(entry, siteID, kind)
+				}
 				m.mu.Unlock()
 				m.notifyState(rec)
 				return
@@ -1097,7 +1226,10 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 		}
 
 		// Found an actionable candidate! Check backoff/quota before calling runEnqueue.
-		if blocked, _ := m.siteBackoffOrQuotaEnd(siteID, m.clock.Now()); blocked {
+		isProbe := entry.rt.manualProbeOnce
+		if isProbe {
+			entry.rt.manualProbeOnce = false
+		} else if blocked, _ := m.siteBackoffOrQuotaEnd(siteID, m.clock.Now()); blocked {
 			if skippedAny {
 				entry.rec.UpdatedAt = m.nowRFC3339()
 			}
@@ -1112,7 +1244,11 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 			return
 		}
 
-		stepCtx, stepCancel := context.WithCancel(site.WithAutomaticRequests(ctx, "cache_queue"))
+		baseStepCtx := site.WithAutomaticRequests(ctx, "cache_queue")
+		if isProbe {
+			baseStepCtx = site.WithManualProbe(ctx)
+		}
+		stepCtx, stepCancel := context.WithCancel(baseStepCtx)
 		entry.rt.stepCancel = stepCancel
 		if skippedAny {
 			entry.rec.UpdatedAt = m.nowRFC3339()
@@ -1123,6 +1259,13 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 		publishConflicts()
 
 		enq, err := runEnqueue(stepCtx)
+		if err == nil && m.b != nil {
+			if isProbe && (!enq.reusedListPlan || len(enq.taskIDs) == 0) {
+				m.b.onManualSiteRequestSuccess(siteID)
+			} else if !isProbe && siteID == site.Weibo && !enq.reusedListPlan && m.b.subs != nil {
+				m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
+			}
+		}
 
 		m.mu.Lock()
 		stepCancel()
@@ -1141,7 +1284,12 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 				return
 			}
 			if isBackoffOrQuotaKind(kind) {
-				rec := m.enterWaitingBackoffLocked(entry, siteID, kind)
+				var rec cacheQueueRecord
+				if isProbe {
+					rec = m.enterWaitingBackoffFromProbeLocked(entry, siteID, kind, err)
+				} else {
+					rec = m.enterWaitingBackoffLocked(entry, siteID, kind)
+				}
 				m.mu.Unlock()
 				m.notifyState(rec)
 				return
@@ -1151,6 +1299,7 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 			// next candidate: a run of failing items must not turn into back-to-back requests.
 			entry.rt.seenKeys[cand.key] = true
 			entry.rt.pageIdx++
+			entry.rt.lastItemZeroAPI = false
 			entry.rec.ActiveItemKey = cand.key
 			entry.rec.ActiveTitle = ""
 			rec := m.finishItemOutcomeLocked(entry, false)
@@ -1162,6 +1311,7 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 		// Enqueue / probe succeeded!
 		entry.rt.seenKeys[cand.key] = true
 		entry.rt.pageIdx++
+		entry.rt.lastItemZeroAPI = enq.reusedListPlan
 		entry.rec.ActiveItemKey = sanitizeItemKey(firstNonEmpty(enq.itemKey, cand.key))
 		if enq.probedNoTask {
 			entry.rec.ActiveTitle = ""
@@ -1181,7 +1331,13 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 		entry.rec.ActiveDownloadIDs = append([]string(nil), enq.taskIDs...)
 		entry.rec.ActivePendingPages = append([]int(nil), enq.pendingPages...)
 		entry.rt.nextPartEnqueuers = enq.nextParts
-		entry.rt.resumePendingDownloads = false
+		if isProbe && enq.reusedListPlan {
+			// List-reused enqueue made 0 network requests; let Phase B run the derived download as the single manual probe.
+			entry.rt.manualProbeOnce = true
+			entry.rt.resumePendingDownloads = true
+		} else {
+			entry.rt.resumePendingDownloads = false
+		}
 		entry.rec.UpdatedAt = m.nowRFC3339()
 		m.saveLoggedLocked("enqueued_item")
 		rec := entry.rec

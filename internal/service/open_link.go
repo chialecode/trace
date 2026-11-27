@@ -104,8 +104,10 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 		}
 	}
 
-	target, err := b.bili.ResolveLink(ctx, normalizedInput)
+	probeCtx := b.manualProbeContext(ctx)
+	target, err := b.bili.ResolveLink(probeCtx, normalizedInput)
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.Bilibili, err)
 		b.logError("OpenLink.Resolve", err)
 		return nil, err
 	}
@@ -135,11 +137,13 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 
 	switch target.Kind {
 	case "video":
-		vd, err := b.bili.VideoDetail(ctx, target.ID)
+		vd, err := b.bili.VideoDetail(probeCtx, target.ID)
 		if err != nil {
+			err = b.finishManualSiteRequest(ctx, site.Bilibili, err)
 			b.logError("OpenLink.VideoDetail", err)
 			return nil, err
 		}
+		_ = b.finishManualSiteRequest(ctx, site.Bilibili, nil)
 		out.Video = &vd
 		if vd.Author.Mid > 0 && vd.Author.Face != "" {
 			b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(vd.Author.Mid, 10), vd.Author.Face)
@@ -176,19 +180,22 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 		}
 
 	case "user":
-		space, err := b.bili.UserCard(ctx, target.Mid)
+		space, err := b.bili.UserCard(probeCtx, target.Mid)
 		if err != nil {
+			err = b.finishManualSiteRequest(ctx, site.Bilibili, err)
 			b.logError("OpenLink.UserCard", err)
 			return nil, err
 		}
+		_ = b.finishManualSiteRequest(ctx, site.Bilibili, nil)
 		out.User = &space
 		if space.Mid > 0 && space.Face != "" {
 			b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(space.Mid, 10), space.Face)
 		}
 		b.recordAccountWorks(site.Bilibili, strconv.FormatInt(space.Mid, 10), space.ArchiveCount)
-		if dyns, dErr := b.bili.UserDynamics(ctx, target.Mid, ""); dErr == nil {
+		if dyns, dErr := b.bili.UserDynamics(probeCtx, target.Mid, ""); dErr == nil {
 			out.UserDynamics = &dyns
 		} else {
+			dErr = b.finishManualSiteRequest(ctx, site.Bilibili, dErr)
 			b.logError("OpenLink.UserDynamics", dErr)
 			out.UserDynamicsError = dErr.Error()
 		}
@@ -206,11 +213,13 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 		}
 
 	case "dynamic":
-		dyn, err := b.bili.DynamicDetail(ctx, target.ID)
+		dyn, err := b.bili.DynamicDetail(probeCtx, target.ID)
 		if err != nil {
+			err = b.finishManualSiteRequest(ctx, site.Bilibili, err)
 			b.logError("OpenLink.DynamicDetail", err)
 			return nil, err
 		}
+		_ = b.finishManualSiteRequest(ctx, site.Bilibili, nil)
 		out.Dynamic = &dyn
 		if dyn.Author.Mid > 0 && dyn.Author.Face != "" {
 			b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(dyn.Author.Mid, 10), dyn.Author.Face)
@@ -255,25 +264,29 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 		}
 
 	case "live":
-		room, err := b.live.OpenRoom(ctx, target.RoomID)
+		room, err := b.live.OpenRoom(probeCtx, target.RoomID)
 		if err != nil {
+			err = b.finishManualSiteRequest(ctx, site.Bilibili, err)
 			b.logError("OpenLink.LiveRoom", err)
 			return nil, err
 		}
 		out.LiveRoom = &room
-		space, err := b.bili.UserCard(ctx, room.UID)
+		space, err := b.bili.UserCard(probeCtx, room.UID)
 		if err != nil {
+			err = b.finishManualSiteRequest(ctx, site.Bilibili, err)
 			b.logError("OpenLink.LiveUserCard", err)
 			return nil, err
 		}
+		_ = b.finishManualSiteRequest(ctx, site.Bilibili, nil)
 		out.User = &space
 		if space.Mid > 0 && space.Face != "" {
 			b.rememberAccountAvatar(string(site.Bilibili), strconv.FormatInt(space.Mid, 10), space.Face)
 		}
 		b.recordAccountWorks(site.Bilibili, strconv.FormatInt(space.Mid, 10), space.ArchiveCount)
-		if dyns, dErr := b.bili.UserDynamics(ctx, room.UID, ""); dErr == nil {
+		if dyns, dErr := b.bili.UserDynamics(probeCtx, room.UID, ""); dErr == nil {
 			out.UserDynamics = &dyns
 		} else {
+			dErr = b.finishManualSiteRequest(ctx, site.Bilibili, dErr)
 			b.logError("OpenLink.LiveUserDynamics", dErr)
 			out.UserDynamicsError = dErr.Error()
 		}
@@ -295,8 +308,10 @@ func (b *Backend) OpenLink(ctx context.Context, rawInput string) (*OpenLinkResul
 }
 
 func (b *Backend) openDouyinLink(ctx context.Context, normalizedInput string) (*OpenLinkResult, error) {
-	target, err := b.douyin.ResolveLink(ctx, normalizedInput)
+	probeCtx := b.manualProbeContext(ctx)
+	target, err := b.douyin.ResolveLink(probeCtx, normalizedInput)
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.Douyin, err)
 		b.logError("OpenLink.DouyinResolve", err)
 		return nil, err
 	}
@@ -465,8 +480,10 @@ func (b *Backend) firstDouyinUserWorks(ctx context.Context, uv *DouyinUserView) 
 }
 
 func (b *Backend) openWeiboLink(ctx context.Context, normalizedInput string) (*OpenLinkResult, error) {
-	target, err := b.weibo.ResolveLink(ctx, normalizedInput)
+	probeCtx := b.manualProbeContext(ctx)
+	target, err := b.weibo.ResolveLink(probeCtx, normalizedInput)
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.Weibo, err)
 		b.logError("OpenLink.WeiboResolve", err)
 		return nil, err
 	}
@@ -638,12 +655,15 @@ func (b *Backend) openWeiboLink(ctx context.Context, normalizedInput string) (*O
 			ScreenName:    uv.ScreenName,
 			StatusesCount: uv.StatusesCount,
 			BlockText:     uv.BlockText,
+			IsMuteUser:    uv.IsMuteUser,
 		}
 		if postsPage, _, pErr := b.weiboUserPosts(ctx, uv.UID, "", weibo.FeatureAll, known); pErr == nil {
 			out.WeiboUserPosts = postsPage
 		} else {
 			b.logError("OpenLink.WeiboUserPosts", pErr)
-			out.WeiboUserPostsError = pErr.Error()
+			if !(uv.IsMuteUser && site.IsKind(pErr, site.ErrKindUnavailable)) {
+				out.WeiboUserPostsError = pErr.Error()
+			}
 		}
 		out.HistoryThumbs = &HistoryThumbJob{
 			Site:      string(site.Weibo),
@@ -683,8 +703,10 @@ func (b *Backend) openWeiboLink(ctx context.Context, normalizedInput string) (*O
 }
 
 func (b *Backend) openXLink(ctx context.Context, normalizedInput string) (*OpenLinkResult, error) {
-	target, err := b.x.ResolveLink(ctx, normalizedInput)
+	probeCtx := b.manualProbeContext(ctx)
+	target, err := b.x.ResolveLink(probeCtx, normalizedInput)
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.X, err)
 		b.logError("OpenLink.XResolve", err)
 		return nil, err
 	}
@@ -1085,7 +1107,9 @@ func (b *Backend) UserDynamicsPage(ctx context.Context, mid int64, offset string
 	if err := b.requireSiteLogin(site.Bilibili); err != nil {
 		return bilibili.UserDynamicsPage{}, err
 	}
-	return b.bili.UserDynamics(ctx, mid, offset)
+	res, err := b.bili.UserDynamics(b.manualProbeContext(ctx), mid, offset)
+	err = b.finishManualSiteRequest(ctx, site.Bilibili, err)
+	return res, err
 }
 
 func (b *Backend) UserVideosPage(ctx context.Context, mid int64, page int, opts ...UserVideosPageOptions) (bilibili.UserVideosPage, error) {
@@ -1102,7 +1126,8 @@ func (b *Backend) UserVideosPage(ctx context.Context, mid int64, page int, opts 
 			tid = opts[0].TID
 		}
 	}
-	res, err := b.bili.UserVideos(ctx, mid, page, 30, order, keyword, tid)
+	res, err := b.bili.UserVideos(b.manualProbeContext(ctx), mid, page, 30, order, keyword, tid)
+	err = b.finishManualSiteRequest(ctx, site.Bilibili, err)
 	if err == nil && page <= 1 && keyword == "" && tid == 0 {
 		b.recordAccountWorks(site.Bilibili, strconv.FormatInt(mid, 10), res.Total)
 	}
@@ -1131,13 +1156,15 @@ func (b *Backend) DouyinWork(ctx context.Context, awemeID string) (*DouyinWorkVi
 		return nil, err
 	}
 	codec := b.preferredDouyinCodec()
-	detail, err := b.douyin.GetWorkDetail(ctx, awemeID, douyin.StreamSelectOptions{
+	detail, err := b.douyin.GetWorkDetail(b.manualProbeContext(ctx), awemeID, douyin.StreamSelectOptions{
 		PreferredCodec: codec,
 	})
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.Douyin, err)
 		b.logError("DouyinWork", err)
 		return nil, err
 	}
+	_ = b.finishManualSiteRequest(ctx, site.Douyin, nil)
 	b.douyinWorkCache.put(detail, codec)
 	var cached *library.ItemMetadata
 	cacheKey := douyinCacheKeyForKind(detail.Kind, detail.ID)
@@ -1160,22 +1187,25 @@ func (b *Backend) DouyinUser(ctx context.Context, secUID string) (*DouyinUserVie
 	if err := b.requireSiteLogin(site.Douyin); err != nil {
 		return nil, err
 	}
+	probeCtx := b.manualProbeContext(ctx)
 	targetSecUID := strings.TrimSpace(secUID)
 	if targetSecUID == "" || strings.EqualFold(targetSecUID, "self") || targetSecUID == "/user/self" {
 		targetSecUID = b.douyinCred.Status().SecUID
 		if targetSecUID == "" {
-			selfProf, sErr := b.douyin.GetSelfProfile(ctx)
+			selfProf, sErr := b.douyin.GetSelfProfile(probeCtx)
 			if sErr != nil {
-				return nil, sErr
+				return nil, b.finishManualSiteRequest(ctx, site.Douyin, sErr)
 			}
 			targetSecUID = selfProf.SecUID
 		}
 	}
-	prof, err := b.douyin.GetUserProfile(ctx, targetSecUID)
+	prof, err := b.douyin.GetUserProfile(probeCtx, targetSecUID)
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.Douyin, err)
 		b.logError("DouyinUser", err)
 		return nil, err
 	}
+	_ = b.finishManualSiteRequest(ctx, site.Douyin, nil)
 	if b.subs != nil {
 		_ = b.subs.UpdateAccountSnapshot(string(site.Douyin), prof.SecUID, prof.Nickname, prof.AvatarURL, prof.UniqueID)
 	}
@@ -1235,7 +1265,7 @@ func (b *Backend) douyinUserWorks(ctx context.Context, secUID, cursor string, kn
 	}
 	cleanCursor := strings.TrimSpace(cursor)
 	codec := b.preferredDouyinCodec()
-	page, err := b.douyin.ListUserPosts(ctx, douyin.UserPostsRequest{
+	page, err := b.douyin.ListUserPosts(b.manualProbeContext(ctx), douyin.UserPostsRequest{
 		SecUID:            strings.TrimSpace(secUID),
 		MaxCursor:         cleanCursor,
 		KnownProfile:      known,
@@ -1243,9 +1273,11 @@ func (b *Backend) douyinUserWorks(ctx context.Context, secUID, cursor string, kn
 		StreamOptions:     douyin.StreamSelectOptions{PreferredCodec: codec},
 	})
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.Douyin, err)
 		b.logError("DouyinUserWorks", err)
 		return nil, nil, err
 	}
+	_ = b.finishManualSiteRequest(ctx, site.Douyin, nil)
 	cards := make([]DouyinWorkCardDTO, 0, len(page.Works))
 	for i := range page.Works {
 		b.douyinWorkCache.put(&page.Works[i], codec)
@@ -1268,16 +1300,18 @@ func (b *Backend) WeiboPost(ctx context.Context, mid string) (*WeiboPostView, er
 	codec := b.preferredWeiboCodec()
 	maxRes := b.currentWeiboMaxResolution()
 	removeWM := b.weiboRemoveWatermarkEnabled()
-	post, err := b.weibo.GetPost(ctx, strings.TrimSpace(mid), weibo.PostOptions{
+	post, err := b.weibo.GetPost(b.manualProbeContext(ctx), strings.TrimSpace(mid), weibo.PostOptions{
 		StreamOptions: weibo.StreamSelectOptions{
 			PreferredCodec: codec,
 			MaxResolution:  maxRes,
 		},
 	})
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.Weibo, err)
 		b.logError("WeiboPost", err)
 		return nil, err
 	}
+	_ = b.finishManualSiteRequest(ctx, site.Weibo, nil)
 	b.rememberWeiboPostAvatars(post)
 	b.weiboPostCache.put(post, codec, maxRes, removeWM)
 	cacheKey := weibo.PostItemKey(post.Mid)
@@ -1299,16 +1333,18 @@ func (b *Backend) WeiboVideo(ctx context.Context, oid string) (*WeiboVideoView, 
 	codec := b.preferredWeiboCodec()
 	maxRes := b.currentWeiboMaxResolution()
 	removeWM := b.weiboRemoveWatermarkEnabled()
-	vr, err := b.weibo.GetVideo(ctx, strings.TrimSpace(oid), weibo.PostOptions{
+	vr, err := b.weibo.GetVideo(b.manualProbeContext(ctx), strings.TrimSpace(oid), weibo.PostOptions{
 		StreamOptions: weibo.StreamSelectOptions{
 			PreferredCodec: codec,
 			MaxResolution:  maxRes,
 		},
 	})
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.Weibo, err)
 		b.logError("WeiboVideo", err)
 		return nil, err
 	}
+	_ = b.finishManualSiteRequest(ctx, site.Weibo, nil)
 	if vr.HostPost != nil {
 		b.rememberWeiboPostAvatars(vr.HostPost)
 		b.weiboPostCache.put(vr.HostPost, codec, maxRes, removeWM)
@@ -1359,22 +1395,25 @@ func (b *Backend) WeiboUser(ctx context.Context, uid string) (*WeiboUserView, er
 	if err := b.requireSiteLogin(site.Weibo); err != nil {
 		return nil, err
 	}
+	probeCtx := b.manualProbeContext(ctx)
 	targetUID := strings.TrimSpace(uid)
 	if targetUID == "" || strings.EqualFold(targetUID, "self") {
 		targetUID = b.weiboCred.Status().UID
 		if targetUID == "" {
-			selfProf, sErr := b.weibo.GetSelfProfile(ctx)
+			selfProf, sErr := b.weibo.GetSelfProfile(probeCtx)
 			if sErr != nil {
-				return nil, sErr
+				return nil, b.finishManualSiteRequest(ctx, site.Weibo, sErr)
 			}
 			targetUID = selfProf.UID
 		}
 	}
-	prof, err := b.weibo.GetUserProfile(ctx, targetUID)
+	prof, err := b.weibo.GetUserProfile(probeCtx, targetUID)
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.Weibo, err)
 		b.logError("WeiboUser", err)
 		return nil, err
 	}
+	_ = b.finishManualSiteRequest(ctx, site.Weibo, nil)
 	if b.subs != nil {
 		_ = b.subs.UpdateAccountSnapshot(string(site.Weibo), prof.UID, prof.ScreenName, prof.AvatarURL, "")
 	}
@@ -1404,7 +1443,7 @@ func (b *Backend) weiboUserPosts(
 	pageNum, sinceID := weibo.ParseCursor(cursor)
 	codec := b.preferredWeiboCodec()
 	maxRes := b.currentWeiboMaxResolution()
-	page, err := b.weibo.GetUserPosts(ctx, weibo.UserPostsRequest{
+	page, err := b.weibo.GetUserPosts(b.manualProbeContext(ctx), weibo.UserPostsRequest{
 		UID:               strings.TrimSpace(uid),
 		Page:              pageNum,
 		SinceID:           sinceID,
@@ -1417,9 +1456,11 @@ func (b *Backend) weiboUserPosts(
 		},
 	})
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.Weibo, err)
 		b.logError("WeiboUserPosts", err)
 		return nil, nil, err
 	}
+	_ = b.finishManualSiteRequest(ctx, site.Weibo, nil)
 	keys := make([]string, 0, len(page.Posts))
 	for i := range page.Posts {
 		if page.Posts[i].Mid != "" {
@@ -1596,11 +1637,13 @@ func (b *Backend) XPost(ctx context.Context, statusID string) (*XPostDTO, error)
 	if err := b.requireSiteLogin(site.X); err != nil {
 		return nil, err
 	}
-	post, err := b.x.GetPost(ctx, strings.TrimSpace(statusID))
+	post, err := b.x.GetPost(b.manualProbeContext(ctx), strings.TrimSpace(statusID))
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.X, err)
 		b.logError("XPost", err)
 		return nil, err
 	}
+	_ = b.finishManualSiteRequest(ctx, site.X, nil)
 	b.rememberXPostAvatars(post)
 	b.xPostCache.put(post, true)
 	cacheKey := x.PostItemKey(post.ID)
@@ -1618,22 +1661,25 @@ func (b *Backend) XUser(ctx context.Context, restID string) (*XUserDTO, error) {
 	if err := b.requireSiteLogin(site.X); err != nil {
 		return nil, err
 	}
+	probeCtx := b.manualProbeContext(ctx)
 	targetUID := strings.TrimSpace(restID)
 	if targetUID == "" || strings.EqualFold(targetUID, "self") {
 		targetUID = b.xCred.Status().UID
 		if targetUID == "" {
-			selfProf, sErr := b.x.GetSelfProfile(ctx)
+			selfProf, sErr := b.x.GetSelfProfile(probeCtx)
 			if sErr != nil {
-				return nil, sErr
+				return nil, b.finishManualSiteRequest(ctx, site.X, sErr)
 			}
 			targetUID = selfProf.RestID
 		}
 	}
-	prof, err := b.x.GetUserByRestId(ctx, targetUID)
+	prof, err := b.x.GetUserByRestId(probeCtx, targetUID)
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.X, err)
 		b.logError("XUser", err)
 		return nil, err
 	}
+	_ = b.finishManualSiteRequest(ctx, site.X, nil)
 	return b.finalizeXUserProfile(prof), nil
 }
 
@@ -1642,11 +1688,13 @@ func (b *Backend) XUserByScreenName(ctx context.Context, screenName string) (*XU
 	if err := b.requireSiteLogin(site.X); err != nil {
 		return nil, err
 	}
-	prof, err := b.x.GetUserByScreenName(ctx, strings.TrimSpace(screenName))
+	prof, err := b.x.GetUserByScreenName(b.manualProbeContext(ctx), strings.TrimSpace(screenName))
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.X, err)
 		b.logError("XUserByScreenName", err)
 		return nil, err
 	}
+	_ = b.finishManualSiteRequest(ctx, site.X, nil)
 	return b.finalizeXUserProfile(prof), nil
 }
 
@@ -1685,16 +1733,18 @@ func (b *Backend) xUserPosts(
 		return nil, nil, err
 	}
 	cleanCursor := strings.TrimSpace(cursor)
-	page, err := b.x.GetUserTweets(ctx, x.UserTweetsRequest{
+	page, err := b.x.GetUserTweets(b.manualProbeContext(ctx), x.UserTweetsRequest{
 		RestID:            strings.TrimSpace(restID),
 		Cursor:            cleanCursor,
 		KnownProfile:      known,
 		CrossCheckProfile: known == nil && cleanCursor == "",
 	})
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.X, err)
 		b.logError("XUserPosts", err)
 		return nil, nil, err
 	}
+	_ = b.finishManualSiteRequest(ctx, site.X, nil)
 	keys := make([]string, 0, len(page.Posts))
 	for i := range page.Posts {
 		if page.Posts[i].ID != "" {
@@ -1905,11 +1955,13 @@ func (b *Backend) DouyinLive(ctx context.Context, webRID string) (*DouyinLiveVie
 	if err := b.requireSiteLogin(site.Douyin); err != nil {
 		return nil, err
 	}
-	detail, err := b.douyin.EnterLiveRoom(ctx, strings.TrimSpace(webRID), "")
+	detail, err := b.douyin.EnterLiveRoom(b.manualProbeContext(ctx), strings.TrimSpace(webRID), "")
 	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.Douyin, err)
 		b.logError("DouyinLive", err)
 		return nil, err
 	}
+	_ = b.finishManualSiteRequest(ctx, site.Douyin, nil)
 	prefWebRID := detail.PreferredWebRID()
 	if detail.OwnerSecUID != "" && prefWebRID != "" {
 		b.syncDouyinAccountWebRID(detail.OwnerSecUID, prefWebRID)

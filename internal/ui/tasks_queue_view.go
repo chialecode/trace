@@ -540,8 +540,9 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 					}
 				}
 
+				splitOrderRow := unfinished && orderIdx >= 0 && siteUnfinishedCount >= 2 && cur.Status == service.CacheQueueWaitingBackoff
 				ui.Row(c).Shrink(0).Gap(4).AlignItems(ui.Center).Children(func() {
-					if unfinished && orderIdx >= 0 && siteUnfinishedCount >= 2 {
+					if unfinished && orderIdx >= 0 && siteUnfinishedCount >= 2 && !splitOrderRow {
 						if compactOrderButton(c, "置顶", "置顶缓存队列："+cur.ID, orderIdx == 0) {
 							_, err := a.backend.MoveCacheQueue(cur.ID, service.QueueMoveTop)
 							a.finishCacheQueueAction(err)
@@ -561,9 +562,17 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 								_, err := a.backend.ResumeCacheQueue(cur.ID)
 								a.finishCacheQueueAction(err)
 							}
-						} else if OutlinePillButton(c, "暂停", "暂停缓存队列："+cur.ID).Clicked() {
-							_, err := a.backend.PauseCacheQueue(cur.ID)
-							a.finishCacheQueueAction(err)
+						} else {
+							if cur.Status == service.CacheQueueWaitingBackoff {
+								if AccentPillButton(c, "立即重试", "立即重试缓存队列："+cur.ID).Clicked() {
+									_, err := a.backend.ResumeCacheQueue(cur.ID)
+									a.finishCacheQueueAction(err)
+								}
+							}
+							if OutlinePillButton(c, "暂停", "暂停缓存队列："+cur.ID).Clicked() {
+								_, err := a.backend.PauseCacheQueue(cur.ID)
+								a.finishCacheQueueAction(err)
+							}
 						}
 						if DangerOutlinePillButton(c, "取消", "取消缓存队列："+cur.ID).Clicked() {
 							_, err := a.backend.CancelCacheQueue(cur.ID)
@@ -577,6 +586,22 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 					}
 				})
 			})
+			if unfinished && orderIdx >= 0 && siteUnfinishedCount >= 2 && cur.Status == service.CacheQueueWaitingBackoff {
+				ui.Row(c).FillWidth().Justify(ui.End).AlignItems(ui.Center).Gap(4).Wrap().ClipX().Children(func() {
+					if compactOrderButton(c, "置顶", "置顶缓存队列："+cur.ID, orderIdx == 0) {
+						_, err := a.backend.MoveCacheQueue(cur.ID, service.QueueMoveTop)
+						a.finishCacheQueueAction(err)
+					}
+					if compactOrderButton(c, "上移", "上移缓存队列："+cur.ID, orderIdx == 0) {
+						_, err := a.backend.MoveCacheQueue(cur.ID, service.QueueMoveUp)
+						a.finishCacheQueueAction(err)
+					}
+					if compactOrderButton(c, "下移", "下移缓存队列："+cur.ID, orderIdx >= siteUnfinishedCount-1) {
+						_, err := a.backend.MoveCacheQueue(cur.ID, service.QueueMoveDown)
+						a.finishCacheQueueAction(err)
+					}
+				})
+			}
 
 			if cur.StopReason != "" && !strings.Contains(formatQueueSidebarStatus(cur), cur.StopReason) {
 				ui.Text(c, "原因："+cur.StopReason).FontSize(12).TextColor(ColorTextMuted).MaxLines(2)

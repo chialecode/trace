@@ -32,8 +32,8 @@ const (
 	// DefaultOrigin is the Origin header used on Weibo POST requests such as /tv/api/component.
 	DefaultOrigin = "https://weibo.com"
 
-	defaultMinInterval      = 1200 * time.Millisecond
-	defaultJitterMax        = 400 * time.Millisecond
+	defaultMinInterval      = 800 * time.Millisecond
+	defaultJitterMax        = 300 * time.Millisecond
 	defaultAPITimeout       = 15 * time.Second
 	defaultRedirectTimeout  = 10 * time.Second
 	defaultMediaIdleTimeout = 30 * time.Second

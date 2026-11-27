@@ -1481,7 +1481,7 @@ func (a *App) applyWeiboParseResult(res *service.OpenLinkResult) {
 			if res.WeiboUserPosts.UncertainEmpty {
 				a.WeiboPostsUncertainEmpty = true
 				a.WeiboPostsHasMore = false
-				a.WeiboPostsError = firstNonEmptyStrUI(res.WeiboUserPosts.UncertainReason, "微博返回了异常空列表，可能是风控或受限，可稍后重试")
+				a.WeiboPostsError = firstNonEmptyStrUI(res.WeiboUserPosts.UncertainReason, "第 1 页暂无可见微博（可能为全私密、超出可见时间窗或账号受限），可稍后重试")
 			}
 		}
 		if a.CurrentRoute != RouteWeiboUser {
@@ -1517,7 +1517,7 @@ func (a *App) LoadMoreWeiboPosts() {
 		if page.UncertainEmpty {
 			a.WeiboPostsUncertainEmpty = true
 			a.WeiboPostsHasMore = false
-			a.WeiboPostsError = firstNonEmptyStrUI(page.UncertainReason, "微博返回了异常空列表，可能是风控或受限，可稍后重试")
+			a.WeiboPostsError = firstNonEmptyStrUI(page.UncertainReason, "第 1 页暂无可见微博（可能为全私密、超出可见时间窗或账号受限），可稍后重试")
 			return
 		}
 		seen := make(map[string]bool, len(a.CurrentWeiboPosts))

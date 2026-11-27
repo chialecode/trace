@@ -603,9 +603,12 @@ func TestCacheQueuePagingQuotaBackoffAndCrossSiteIsolation(t *testing.T) {
 	nowBeforePage2 := h.clock.Now().UTC()
 	oldestTokenTS := nowBeforePage2.Add(-20 * time.Minute).Unix()
 	tokens := make([]int64, biliQuotaLimit)
-	tokens[0] = oldestTokenTS
-	for i := 1; i < len(tokens); i++ {
-		tokens[i] = nowBeforePage2.Add(-10 * time.Minute).Unix()
+	for i := 0; i < len(tokens); i++ {
+		if i < 5 {
+			tokens[i] = oldestTokenTS
+		} else {
+			tokens[i] = nowBeforePage2.Add(-10 * time.Minute).Unix()
+		}
 	}
 	if err := b.subs.SaveSiteSchedulerState("bilibili", subscription.SchedulerState{
 		Site:            "bilibili",
@@ -622,8 +625,8 @@ func TestCacheQueuePagingQuotaBackoffAndCrossSiteIsolation(t *testing.T) {
 	backoffDur, backoffDeadline := h.clock.WaitForPendingTimer(t, 3*time.Second)
 	quotaExpiry := time.Unix(oldestTokenTS+3600, 0).UTC()
 	coolAdded := backoffDeadline.Sub(quotaExpiry)
-	if coolAdded < 10*time.Minute || coolAdded > 30*time.Minute {
-		t.Fatalf("quota backoff cooldown = %v (deadline=%v, quotaExpiry=%v), want in [10m, 30m]; task=%+v",
+	if coolAdded < 15*time.Second || coolAdded > 60*time.Second {
+		t.Fatalf("quota backoff cooldown = %v (deadline=%v, quotaExpiry=%v), want in [15s, 60s]; task=%+v",
 			coolAdded, backoffDeadline, quotaExpiry, backoffState)
 	}
 

@@ -1,6 +1,7 @@
 package download
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -182,7 +183,77 @@ func (m *Manager) enqueueSingleTaskWithPlan(in Task, initialPlan *WorkDownloadPl
 	if initialPlan != nil {
 		m.initialPlans[in.TaskID] = *initialPlan
 	}
+	if in.Source == "manual" && m.siteBackoffFn != nil {
+		sid := normalizeDownloadSite(in.Site)
+		if inBackoff, until := m.siteBackoffFn(sid); inBackoff && until.After(time.Now().UTC()) {
+			if !m.siteHasActiveOrQueuedProbeLocked(sid) {
+				if m.manualProbeTasks == nil {
+					m.manualProbeTasks = make(map[string]bool)
+				}
+				m.manualProbeTasks[in.TaskID] = true
+			}
+		}
+	}
 	return in, nil
+}
+
+// markManualProbeIfBackedOff atomically marks taskID as the site's single-shot
+// manual probe before notifyWake when ctx carries site.WithManualProbe(ctx) and
+// the site is currently in backoff with no other active/queued probe (DEC-089).
+func (m *Manager) markManualProbeIfBackedOff(ctx context.Context, taskID, siteStr string) {
+	if !site.IsManualProbe(ctx) || taskID == "" {
+		return
+	}
+	sid := normalizeDownloadSite(siteStr)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.siteBackoffFn == nil {
+		return
+	}
+	if inBackoff, until := m.siteBackoffFn(sid); inBackoff && until.After(time.Now().UTC()) {
+		if !m.siteHasActiveOrQueuedProbeLocked(sid) {
+			if m.manualProbeTasks == nil {
+				m.manualProbeTasks = make(map[string]bool)
+			}
+			m.manualProbeTasks[taskID] = true
+		}
+	}
+}
+
+// siteHasActiveOrQueuedProbeLocked reports whether sid currently has an in-flight
+// manual probe or a queued task already earmarked in manualProbeTasks.
+// Caller must hold m.mu.
+func (m *Manager) siteHasActiveOrQueuedProbeLocked(sid site.ID) bool {
+	if m.activeProbeSite[sid] != "" {
+		return true
+	}
+	if len(m.manualProbeTasks) == 0 || m.db == nil {
+		return false
+	}
+	rows, err := m.db.Query(`SELECT task_id, site FROM download_tasks WHERE status = 'queued'`)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	queuedSites := make(map[string]site.ID)
+	for rows.Next() {
+		var id, s string
+		if scanErr := rows.Scan(&id, &s); scanErr == nil {
+			queuedSites[id] = normalizeDownloadSite(s)
+		}
+	}
+	found := false
+	for id := range m.manualProbeTasks {
+		qSite, ok := queuedSites[id]
+		if !ok {
+			delete(m.manualProbeTasks, id)
+			continue
+		}
+		if qSite == sid {
+			found = true
+		}
+	}
+	return found
 }
 
 func (m *Manager) findActiveOrQueuedLocked(siteID, kind, targetID string, cid int64) (Task, bool, error) {
@@ -453,7 +524,7 @@ func (m *Manager) applyQueuedOrder(tasks []Task) {
 	}
 }
 
-func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
+func (m *Manager) claimNextQueuedLocked() (Task, bool, bool, time.Time) {
 	query := `SELECT` + taskSelectColumns + `
 		FROM download_tasks
 		WHERE status = 'queued'`
@@ -467,14 +538,14 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 	query += " ORDER BY rowid ASC"
 	rows, err := m.db.Query(query, args...)
 	if err != nil {
-		return Task{}, false, time.Time{}
+		return Task{}, false, false, time.Time{}
 	}
 	var candidates []Task
 	for rows.Next() {
 		t, sErr := scanTask(rows)
 		if sErr != nil {
 			_ = rows.Close()
-			return Task{}, false, time.Time{}
+			return Task{}, false, false, time.Time{}
 		}
 		candidates = append(candidates, t)
 	}
@@ -483,7 +554,7 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 		if len(candidates) == 0 {
 			m.queueOrder = nil
 		}
-		return Task{}, false, time.Time{}
+		return Task{}, false, false, time.Time{}
 	}
 
 	// Reorder candidates by manual queue priority (pruning stale IDs).
@@ -502,8 +573,10 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 		})
 	}
 
-	// Skip sites currently in backoff for automatic/queue tasks so one site's
-	// risk-control backoff never blocks other healthy sites (DEC-088).
+	// Skip sites currently in backoff for all non-probe tasks (including extra manual
+	// tasks) so one site's risk-control backoff never blocks other healthy sites (DEC-088)
+	// and never bursts concurrent probes (DEC-089). Explicit single-shot manual-probe
+	// tasks bypass siteBackoffFn with at most 1 probe in flight per site.
 	var (
 		now             = time.Now().UTC()
 		earliestSkipped time.Time
@@ -520,8 +593,15 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 		}, 4)
 	}
 	for _, c := range candidates {
-		if m.siteBackoffFn != nil && (c.Source == "auto" || c.Source == "queue") {
-			sid := normalizeDownloadSite(c.Site)
+		sid := normalizeDownloadSite(c.Site)
+		if m.manualProbeTasks[c.TaskID] {
+			if m.activeProbeSite[sid] != "" {
+				continue
+			}
+			eligible = append(eligible, c)
+			continue
+		}
+		if m.siteBackoffFn != nil {
 			res, cached := backoffCache[sid]
 			if !cached {
 				inBackoff, until := m.siteBackoffFn(sid)
@@ -539,7 +619,7 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 		eligible = append(eligible, c)
 	}
 	if len(eligible) == 0 {
-		return Task{}, false, earliestSkipped
+		return Task{}, false, false, earliestSkipped
 	}
 
 	// Cross-site anti-starvation: prefer a site with the fewest currently active
@@ -570,10 +650,18 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 		WHERE task_id = ? AND status = 'queued'
 	`, nowStr, t.TaskID)
 	if err != nil {
-		return Task{}, false, earliestSkipped
+		return Task{}, false, false, earliestSkipped
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return Task{}, false, earliestSkipped
+		return Task{}, false, false, earliestSkipped
+	}
+	isManualProbe := m.manualProbeTasks[t.TaskID]
+	if isManualProbe {
+		delete(m.manualProbeTasks, t.TaskID)
+		if m.activeProbeSite == nil {
+			m.activeProbeSite = make(map[site.ID]string)
+		}
+		m.activeProbeSite[normalizeDownloadSite(t.Site)] = t.TaskID
 	}
 	m.removeQueueOrderLocked(t.TaskID)
 	t.Status = "running"
@@ -581,7 +669,7 @@ func (m *Manager) claimNextQueuedLocked() (Task, bool, time.Time) {
 	t.ErrorKind = ""
 	t.ErrorMessage = ""
 	t.UpdatedAt = nowStr
-	return t, true, earliestSkipped
+	return t, isManualProbe, true, earliestSkipped
 }
 
 func (m *Manager) resetFileProgress(t *Task, relPath string) {

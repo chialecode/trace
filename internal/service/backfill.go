@@ -362,8 +362,9 @@ func isBackfillStorageError(err error) bool {
 }
 
 func (m *cacheQueueManager) scheduleSlowAPIWaitLocked(entry *cacheQueueEntry, phase, defaultReason string, cached bool) cacheQueueRecord {
+	p := m.pacingForSite(site.Weibo)
 	if entry.rec.RestThreshold <= 0 {
-		entry.rec.RestThreshold = m.pickRestThresholdLocked()
+		entry.rec.RestThreshold = m.pickRestThresholdForSiteLocked(site.Weibo)
 	}
 	if cached {
 		entry.rec.SinceRestCount++
@@ -374,12 +375,12 @@ func (m *cacheQueueManager) scheduleSlowAPIWaitLocked(entry *cacheQueueEntry, ph
 		reason = "等待下一条"
 	}
 	if cached && entry.rec.SinceRestCount >= entry.rec.RestThreshold {
-		delay = m.randDurationLocked(m.pacing.LongRestMinDelay, m.pacing.LongRestMaxDelay)
+		delay = m.randDurationLocked(p.LongRestMinDelay, p.LongRestMaxDelay)
 		entry.rec.SinceRestCount = 0
-		entry.rec.RestThreshold = m.pickRestThresholdLocked()
+		entry.rec.RestThreshold = m.pickRestThresholdForSiteLocked(site.Weibo)
 		reason = "已完成一批补全，长歇等待中"
 	} else {
-		delay = m.randDurationLocked(m.pacing.ItemMinDelay, m.pacing.ItemMaxDelay)
+		delay = m.randDurationLocked(p.ItemMinDelay, p.ItemMaxDelay)
 	}
 	if phase == "" || phase == backfillPhaseFastCDN || phase == backfillPhaseOfflineLinks {
 		phase = backfillPhaseFallbackDetail
@@ -430,13 +431,8 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 
 	// If we have buffered matched posts from the last mymblog page, drain one
 	// at 2–5s fast CDN pacing before fetching the next page!
+	// DEC-089: pure-CDN /oslarge/ downloads are isolated from Weibo JSON API backoff.
 	if len(entry.rt.backfillMatched) > 0 {
-		if inBackoff, _ := m.siteRiskBackoffOnly(site.Weibo, m.clock.Now()); inBackoff {
-			rec := m.enterWaitingBackoffLocked(entry, site.Weibo, site.ErrKindBackoff)
-			m.mu.Unlock()
-			m.notifyState(rec)
-			return
-		}
 		match := entry.rt.backfillMatched[0]
 		entry.rt.backfillMatched = entry.rt.backfillMatched[1:]
 		entry.rec.BackfillPhase = backfillPhaseFastCDN
@@ -476,13 +472,6 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 				m.pauseForSite(site.Weibo, "auth_required", "微博登录已失效，重新登录后自动继续")
 				return
 			}
-			if isBackoffOrQuotaKind(kind) {
-				entry.rt.backfillMatched = append([]backfillMatchedItem{match}, entry.rt.backfillMatched...)
-				rec := m.enterWaitingBackoffLocked(entry, site.Weibo, kind)
-				m.mu.Unlock()
-				m.notifyState(rec)
-				return
-			}
 			if isBackfillStorageError(bErr) {
 				entry.rt.backfillMatched = append([]backfillMatchedItem{match}, entry.rt.backfillMatched...)
 				entry.rec.Status = CacheQueuePaused
@@ -495,6 +484,11 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 				m.mu.Unlock()
 				m.notifyState(rec)
 				return
+			}
+			if isBackoffOrQuotaKind(kind) && m.b != nil {
+				// Optional /oslarge/ CDN 418/429 skips this item for this run without stamping v3
+				// and without tripping Weibo JSON API site-wide backoff (DEC-089).
+				m.b.logInfo(fmt.Sprintf("backfill.fast_cdn_skip site=weibo item=%s kind=%s", match.itemKey, kind))
 			}
 			m.markBackfillProcessedLocked(entry, match.itemKey)
 			entry.rec.SkippedCount++
@@ -672,14 +666,8 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 		return
 	}
 
-	// --- Tier B: Pure CDN /oslarge/ fast backfill (0 Weibo JSON API calls, 2–5s pacing, no 100/h quota, no 10–25m rest) ---
+	// --- Tier B: Pure CDN /oslarge/ fast backfill (0 Weibo JSON API calls, 2–5s pacing, isolated from JSON API backoff) ---
 	if len(buckets.fastCDN) > 0 {
-		if inBackoff, _ := m.siteRiskBackoffOnly(site.Weibo, m.clock.Now()); inBackoff {
-			rec := m.enterWaitingBackoffLocked(entry, site.Weibo, site.ErrKindBackoff)
-			m.mu.Unlock()
-			m.notifyState(rec)
-			return
-		}
 		item := buckets.fastCDN[0]
 		title := trimQueueSummaryTitle(firstNonEmpty(item.Title, item.Text, item.RawID))
 		entry.rec.BackfillPhase = backfillPhaseFastCDN
@@ -714,12 +702,6 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 				m.pauseForSite(site.Weibo, "auth_required", "微博登录已失效，重新登录后自动继续")
 				return
 			}
-			if isBackoffOrQuotaKind(kind) {
-				rec := m.enterWaitingBackoffLocked(entry, site.Weibo, kind)
-				m.mu.Unlock()
-				m.notifyState(rec)
-				return
-			}
 			if isBackfillStorageError(bErr) {
 				entry.rec.Status = CacheQueuePaused
 				entry.rec.PauseReason = "storage"
@@ -731,6 +713,11 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 				m.mu.Unlock()
 				m.notifyState(rec)
 				return
+			}
+			if isBackoffOrQuotaKind(kind) && m.b != nil {
+				// Optional /oslarge/ CDN 418/429 skips this item for this run without stamping v3
+				// and without tripping Weibo JSON API site-wide backoff (DEC-089).
+				m.b.logInfo(fmt.Sprintf("backfill.fast_cdn_skip site=weibo item=%s kind=%s", item.ItemKey, kind))
 			}
 			m.markBackfillProcessedLocked(entry, item.ItemKey)
 			entry.rec.SkippedCount++
@@ -793,7 +780,10 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 		entry.rec.BackfillSubCursor = ""
 	}
 	if entry.rec.BackfillSubIndex < len(entry.rec.BackfillSubUIDs) {
-		if blocked, _ := m.siteBackoffOrQuotaEnd(site.Weibo, m.clock.Now()); blocked {
+		isProbe := entry.rt.manualProbeOnce
+		if isProbe {
+			entry.rt.manualProbeOnce = false
+		} else if blocked, _ := m.siteBackoffOrQuotaEnd(site.Weibo, m.clock.Now()); blocked {
 			kind := site.ErrKindBackoff
 			if m.b.subs != nil && !m.b.subs.CanUseSiteQuotaTokens(string(site.Weibo), 1) {
 				kind = site.ErrKindQuota
@@ -814,7 +804,11 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 		entry.rec.ActiveItemKey = ""
 		entry.rec.ActiveTitle = sanitizeQueueText("查询已订阅微博列表 · " + uid)
 		entry.rec.UpdatedAt = m.nowRFC3339()
-		stepCtx, stepCancel := context.WithCancel(site.WithAutomaticRequests(ctx, "cache_queue"))
+		baseStepCtx := site.WithAutomaticRequests(ctx, "cache_queue")
+		if isProbe {
+			baseStepCtx = site.WithManualProbe(ctx)
+		}
+		stepCtx, stepCancel := context.WithCancel(baseStepCtx)
 		entry.rt.stepCancel = stepCancel
 		m.mu.Unlock()
 
@@ -829,11 +823,11 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 				MaxResolution:  m.b.currentWeiboMaxResolution(),
 			},
 		})
-		if fetchErr == nil && pg.UncertainEmpty {
-			fetchErr = &site.Error{
-				Site:    site.Weibo,
-				Kind:    site.ErrKindRiskControl,
-				Message: firstNonEmpty(pg.UncertainReason, "微博返回空列表，可能被拦截或登录已失效"),
+		if fetchErr == nil && m.b != nil {
+			if isProbe {
+				m.b.onManualSiteRequestSuccess(site.Weibo)
+			} else if m.b.subs != nil {
+				m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
 			}
 		}
 
@@ -852,17 +846,31 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 				return
 			}
 			if isBackoffOrQuotaKind(kind) {
-				rec := m.enterWaitingBackoffLocked(entry, site.Weibo, kind)
+				var rec cacheQueueRecord
+				if isProbe {
+					rec = m.enterWaitingBackoffFromProbeLocked(entry, site.Weibo, kind, fetchErr)
+				} else {
+					rec = m.enterWaitingBackoffLocked(entry, site.Weibo, kind)
+				}
 				m.mu.Unlock()
 				m.notifyState(rec)
 				return
 			}
 			// Account unavailable/schema/network on timeline: skip remaining pages for this UID
-			// so unmatched items automatically fall back to Tier C2 statuses/show, while strictly
-			// pacing the next Weibo JSON API request under slow API intervals (40–150s).
+			// so unmatched items automatically fall back to Tier C2 statuses/show.
 			entry.rec.BackfillSubIndex++
 			entry.rec.BackfillSubCursor = ""
 			rec := m.scheduleSlowAPIWaitLocked(entry, backfillPhaseSubscribedTimeline, "跳过异常博主，等待下一次微博列表检查", false)
+			m.mu.Unlock()
+			m.notifyState(rec)
+			return
+		}
+		if pg.UncertainEmpty {
+			// DEC-089: never upgrade single-account UncertainEmpty to site-wide risk_control;
+			// skip this UID's timeline so unmatched items fall back to Tier C2 cleanly.
+			entry.rec.BackfillSubIndex++
+			entry.rec.BackfillSubCursor = ""
+			rec := m.scheduleSlowAPIWaitLocked(entry, backfillPhaseSubscribedTimeline, "该博主列表暂无可见微博，等待下一次列表检查", false)
 			m.mu.Unlock()
 			m.notifyState(rec)
 			return
@@ -933,7 +941,10 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 		return
 	}
 
-	if blocked, _ := m.siteBackoffOrQuotaEnd(site.Weibo, m.clock.Now()); blocked {
+	isProbe := entry.rt.manualProbeOnce
+	if isProbe {
+		entry.rt.manualProbeOnce = false
+	} else if blocked, _ := m.siteBackoffOrQuotaEnd(site.Weibo, m.clock.Now()); blocked {
 		kind := site.ErrKindBackoff
 		if m.b.subs != nil && !m.b.subs.CanUseSiteQuotaTokens(string(site.Weibo), 1) {
 			kind = site.ErrKindQuota
@@ -950,7 +961,11 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 	entry.rec.ActiveItemKey = item.ItemKey
 	entry.rec.ActiveTitle = sanitizeQueueText(title)
 	entry.rec.UpdatedAt = m.nowRFC3339()
-	stepCtx, stepCancel := context.WithCancel(site.WithAutomaticRequests(ctx, "cache_queue"))
+	baseStepCtx := site.WithAutomaticRequests(ctx, "cache_queue")
+	if isProbe {
+		baseStepCtx = site.WithManualProbe(ctx)
+	}
+	stepCtx, stepCancel := context.WithCancel(baseStepCtx)
 	entry.rt.stepCancel = stepCancel
 	m.mu.Unlock()
 
@@ -961,6 +976,13 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 		},
 	}
 	post, getErr := m.b.weibo.GetPost(stepCtx, item.RawID, postOpt)
+	if getErr == nil && m.b != nil {
+		if isProbe {
+			m.b.onManualSiteRequestSuccess(site.Weibo)
+		} else if m.b.subs != nil {
+			m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
+		}
+	}
 
 	var backfillRes download.WeiboBackfillResult
 	var backfillErr error
@@ -988,24 +1010,25 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 		m.mu.Unlock()
 		return
 	}
-	opErr := getErr
-	if opErr == nil {
-		opErr = backfillErr
-	}
-	if opErr != nil {
-		kind := site.KindOf(opErr)
+	if getErr != nil {
+		kind := site.KindOf(getErr)
 		if kind == site.ErrKindAuthRequired {
 			m.mu.Unlock()
 			m.pauseForSite(site.Weibo, "auth_required", "微博登录已失效，重新登录后自动继续")
 			return
 		}
 		if isBackoffOrQuotaKind(kind) {
-			rec := m.enterWaitingBackoffLocked(entry, site.Weibo, kind)
+			var rec cacheQueueRecord
+			if isProbe {
+				rec = m.enterWaitingBackoffFromProbeLocked(entry, site.Weibo, kind, getErr)
+			} else {
+				rec = m.enterWaitingBackoffLocked(entry, site.Weibo, kind)
+			}
 			m.mu.Unlock()
 			m.notifyState(rec)
 			return
 		}
-		if isBackfillStorageError(opErr) {
+		if isBackfillStorageError(getErr) {
 			entry.rec.Status = CacheQueuePaused
 			entry.rec.PauseReason = "storage"
 			entry.rec.StopReason = "存储空间不足或写入失败，已暂停补全"
@@ -1018,6 +1041,31 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 			return
 		}
 		// Post deleted / unavailable / forbidden: skip without modifying local files!
+		m.markBackfillProcessedLocked(entry, item.ItemKey)
+		entry.rec.SkippedCount++
+	} else if backfillErr != nil {
+		kind := site.KindOf(backfillErr)
+		if kind == site.ErrKindAuthRequired {
+			m.mu.Unlock()
+			m.pauseForSite(site.Weibo, "auth_required", "微博登录已失效，重新登录后自动继续")
+			return
+		}
+		if isBackfillStorageError(backfillErr) {
+			entry.rec.Status = CacheQueuePaused
+			entry.rec.PauseReason = "storage"
+			entry.rec.StopReason = "存储空间不足或写入失败，已暂停补全"
+			entry.rec.NextRunAt = ""
+			entry.rec.UpdatedAt = m.nowRFC3339()
+			m.saveLoggedLocked("backfill_storage_pause")
+			rec := entry.rec
+			m.mu.Unlock()
+			m.notifyState(rec)
+			return
+		}
+		if isBackoffOrQuotaKind(kind) && m.b != nil {
+			// Optional /oslarge/ CDN 418/429 skips this item without stamping v3 or tripping JSON API backoff.
+			m.b.logInfo(fmt.Sprintf("backfill.fallback_cdn_skip site=weibo item=%s kind=%s", item.ItemKey, kind))
+		}
 		m.markBackfillProcessedLocked(entry, item.ItemKey)
 		entry.rec.SkippedCount++
 	} else if post == nil || post.Unavailable {

@@ -16,8 +16,8 @@ const (
 	DefaultBilibiliRoundAccountCap = 30
 	// DefaultDouyinRoundAccountCap is the maximum Douyin accounts checked in one scheduled round.
 	DefaultDouyinRoundAccountCap = 20
-	// DefaultWeiboRoundAccountCap is the maximum Weibo accounts checked in one scheduled round.
-	DefaultWeiboRoundAccountCap = 20
+	// DefaultWeiboRoundAccountCap is the maximum Weibo accounts checked in one scheduled round (DEC-089).
+	DefaultWeiboRoundAccountCap = 25
 	// DefaultXRoundAccountCap is the maximum X accounts checked in one scheduled round.
 	DefaultXRoundAccountCap = 15
 
@@ -25,8 +25,8 @@ const (
 	DefaultBilibiliAccountInterval = 2 * time.Second
 	// DefaultDouyinAccountInterval is the minimum spacing between two Douyin accounts in a check round.
 	DefaultDouyinAccountInterval = 2500 * time.Millisecond
-	// DefaultWeiboAccountInterval is the minimum spacing between two Weibo accounts in a check round.
-	DefaultWeiboAccountInterval = 3 * time.Second
+	// DefaultWeiboAccountInterval is the minimum spacing between two Weibo accounts in a check round (DEC-089).
+	DefaultWeiboAccountInterval = 1500 * time.Millisecond
 	// DefaultXAccountInterval is the minimum spacing between two X accounts in a check round.
 	DefaultXAccountInterval = 5 * time.Second
 )
@@ -612,7 +612,7 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 			continue
 		}
 
-		if isScheduled || site.ID(siteName) == site.X {
+		if isScheduled {
 			if inBackoff, _ := m.IsSiteInBackoff(siteName); inBackoff {
 				summary.DeferredByBackoff = true
 				summary.SiteDeferredByBackoff = append(summary.SiteDeferredByBackoff, siteName)
@@ -670,6 +670,21 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 		return err
 	}
 
+	siteCheckCtx := roundCtx
+	if !isScheduled {
+		siteCheckCtx = site.WithManualProbe(roundCtx)
+	}
+	manualWasBackedOff := make(map[string]bool)
+	if !isScheduled {
+		for _, siteName := range siteOrder {
+			if len(activeBySite[siteName]) > 0 {
+				if inBackoff, _ := m.IsSiteInBackoff(siteName); inBackoff {
+					manualWasBackedOff[siteName] = true
+				}
+			}
+		}
+	}
+
 	for _, siteName := range siteOrder {
 		if wholeRoundAborted {
 			break
@@ -715,7 +730,7 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 			checkedCountBySite[siteName]++
 			isBaseline := accState.BaselineAt == ""
 
-			outcome, checkErr := m.checkAccountBySite(roundCtx, sub, tgt.acc, &accState, isBaseline, globalAutoCache)
+			outcome, checkErr := m.checkAccountBySite(siteCheckCtx, sub, tgt.acc, &accState, isBaseline, globalAutoCache)
 			if roundCtx.Err() != nil {
 				wholeRoundAborted = true
 				summary.Canceled = true
@@ -793,6 +808,12 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 
 			consecutiveNetFailures = 0
 			checkedAccounts = append(checkedAccounts, tgt.acc)
+			if !isScheduled && manualWasBackedOff[siteName] && !outcome.incomplete {
+				m.ClearSiteBackoff(siteName)
+				delete(manualWasBackedOff, siteName)
+			} else if isScheduled && siteName == string(site.Weibo) && !outcome.incomplete {
+				m.RecordSiteAutomaticSuccess(siteName)
+			}
 
 			if outcome.incomplete {
 				accState.LastKind = "incomplete"
@@ -860,7 +881,7 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 	}
 
 	if !wholeRoundAborted && roundCtx.Err() == nil {
-		m.runPostRoundLiveCheck(roundCtx, checkedAccounts, abortedSites, &summary)
+		m.runPostRoundLiveCheck(siteCheckCtx, checkedAccounts, abortedSites, &summary)
 	}
 
 	for _, siteName := range siteOrder {
@@ -868,7 +889,7 @@ func (m *Manager) executeMultiSiteRound(ctx context.Context, targetMid int64, is
 			continue
 		}
 		stopKind := abortedSites[siteName]
-		if err := m.finalizeSiteRoundSchedulerState(siteName, roundStart, stopKind, siteStopResetAt[siteName], checkedCountBySite[siteName], wholeRoundAborted); err != nil {
+		if err := m.finalizeSiteRoundSchedulerState(siteName, roundStart, stopKind, siteStopResetAt[siteName], checkedCountBySite[siteName], wholeRoundAborted, isScheduled); err != nil {
 			return summary, err
 		}
 	}
@@ -1054,78 +1075,94 @@ func (m *Manager) finalizeSiteRoundSchedulerState(
 	resetAt time.Time,
 	checkedCount int,
 	wholeRoundAborted bool,
+	isScheduled bool,
 ) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	var (
+		wakeSite bool
+		wakeCB   func(site.ID)
+	)
+	err := func() error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
 
-	schedSt := m.getSiteSchedulerStateLocked(siteName)
-	now := m.nowFunc().UTC()
+		schedSt := m.getSiteSchedulerStateLocked(siteName)
+		now := m.nowFunc().UTC()
 
-	// Backoff applies only to risk_control and rate_limited (subscriptions.md §3).
-	// Rate limits carrying an explicit reset timestamp pause until reset + 0..60s jitter;
-	// risk_control and unanchored rate limits use exponential backoff up to 24h.
-	// Auth expiry and schema drift record the stop reason without locking the site into
-	// exponential backoff after recovery.
-	if stopKind == site.ErrKindRiskControl || stopKind == site.ErrKindRateLimited {
-		if stopKind == site.ErrKindRateLimited && !resetAt.IsZero() {
-			if prevAt, err := time.Parse(time.RFC3339, schedSt.LastStopAt); err == nil && !prevAt.Before(roundStart.Truncate(time.Second)) && schedSt.LastStopReason == stopKind {
-				if curUntil, uErr := time.Parse(time.RFC3339, schedSt.BackoffUntil); uErr == nil && !curUntil.Before(resetAt.UTC()) {
-					return nil
+		// Backoff applies only to risk_control and rate_limited (subscriptions.md §3).
+		// Manual probe failures preserve an active backoff window without escalating
+		// BackoffLevel (DEC-089); scheduled stops advance the per-site backoff ladder.
+		if stopKind == site.ErrKindRiskControl || stopKind == site.ErrKindRateLimited {
+			if !isScheduled {
+				m.recordSiteManualProbeFailureLocked(siteName, stopKind, resetAt)
+				return nil
+			}
+			m.maybeDecayWeiboBackoffLocked(siteName, &schedSt, now)
+			if stopKind == site.ErrKindRateLimited && !resetAt.IsZero() {
+				if prevAt, err := time.Parse(time.RFC3339, schedSt.LastStopAt); err == nil && !prevAt.Before(roundStart.Truncate(time.Second)) && schedSt.LastStopReason == stopKind {
+					if curUntil, uErr := time.Parse(time.RFC3339, schedSt.BackoffUntil); uErr == nil && !curUntil.Before(resetAt.UTC()) {
+						return nil
+					}
 				}
+				jitter := m.nextRateLimitJitterLocked()
+				until := resetAt.UTC().Add(jitter)
+				if !until.After(now) {
+					until = now.Add(max(jitter, time.Second))
+				}
+				if maxUntil := now.Add(24 * time.Hour); until.After(maxUntil) {
+					until = maxUntil
+				}
+				if curUntil, uErr := time.Parse(time.RFC3339, schedSt.BackoffUntil); uErr == nil && curUntil.After(until) {
+					until = curUntil
+				}
+				if schedSt.ConsecutiveFailures < 1 {
+					schedSt.ConsecutiveFailures = 1
+				}
+				if schedSt.BackoffLevel < 1 {
+					schedSt.BackoffLevel = 1
+				}
+				schedSt.LastStopReason = stopKind
+				schedSt.LastStopAt = now.Format(time.RFC3339)
+				schedSt.BackoffUntil = until.Format(time.RFC3339)
+				return m.saveSiteSchedulerStateLocked(siteName, schedSt)
 			}
-			jitter := m.nextRateLimitJitterLocked()
-			until := resetAt.UTC().Add(jitter)
-			if !until.After(now) {
-				until = now.Add(max(jitter, time.Second))
+			// Avoid double-incrementing if the site client's automatic breaker already recorded this stop during the round.
+			if prevAt, err := time.Parse(time.RFC3339, schedSt.LastStopAt); err == nil && !prevAt.Before(roundStart.Truncate(time.Second)) && schedSt.LastStopReason == stopKind && schedSt.BackoffUntil != "" {
+				return nil
 			}
-			if maxUntil := now.Add(24 * time.Hour); until.After(maxUntil) {
-				until = maxUntil
-			}
-			if curUntil, uErr := time.Parse(time.RFC3339, schedSt.BackoffUntil); uErr == nil && curUntil.After(until) {
-				until = curUntil
-			}
-			if schedSt.ConsecutiveFailures < 1 {
-				schedSt.ConsecutiveFailures = 1
-			}
-			if schedSt.BackoffLevel < 1 {
-				schedSt.BackoffLevel = 1
-			}
+			schedSt.ConsecutiveFailures++
+			schedSt.BackoffLevel = schedSt.ConsecutiveFailures
 			schedSt.LastStopReason = stopKind
 			schedSt.LastStopAt = now.Format(time.RFC3339)
-			schedSt.BackoffUntil = until.Format(time.RFC3339)
+			backoffDur := SiteBackoffDuration(siteName, schedSt.BackoffLevel, m.subSettings.IntervalMinutes)
+			schedSt.BackoffUntil = now.Add(backoffDur).Format(time.RFC3339)
 			return m.saveSiteSchedulerStateLocked(siteName, schedSt)
 		}
-		// Avoid double-incrementing if the site client's automatic breaker already recorded this stop during the round.
-		if prevAt, err := time.Parse(time.RFC3339, schedSt.LastStopAt); err == nil && !prevAt.Before(roundStart.Truncate(time.Second)) && schedSt.LastStopReason == stopKind && schedSt.BackoffUntil != "" {
-			return nil
-		}
-		schedSt.ConsecutiveFailures++
-		schedSt.BackoffLevel = schedSt.ConsecutiveFailures
-		schedSt.LastStopReason = stopKind
-		schedSt.LastStopAt = now.Format(time.RFC3339)
-		baseInterval := time.Duration(m.subSettings.IntervalMinutes) * time.Minute
-		if baseInterval < time.Minute {
-			baseInterval = 60 * time.Minute
-		}
-		shift := min(schedSt.ConsecutiveFailures, 10)
-		backoffDur := min(baseInterval*time.Duration(1<<shift), 24*time.Hour)
-		schedSt.BackoffUntil = now.Add(backoffDur).Format(time.RFC3339)
-		return m.saveSiteSchedulerStateLocked(siteName, schedSt)
-	}
 
-	if stopKind == site.ErrKindAuthRequired || stopKind == site.ErrKindSchemaChanged {
-		schedSt.LastStopReason = stopKind
-		schedSt.LastStopAt = now.Format(time.RFC3339)
-		return m.saveSiteSchedulerStateLocked(siteName, schedSt)
-	}
+		if stopKind == site.ErrKindAuthRequired || stopKind == site.ErrKindSchemaChanged {
+			schedSt.LastStopReason = stopKind
+			schedSt.LastStopAt = now.Format(time.RFC3339)
+			return m.saveSiteSchedulerStateLocked(siteName, schedSt)
+		}
 
-	if stopKind == "" && !wholeRoundAborted && checkedCount > 0 {
-		schedSt.ConsecutiveFailures = 0
-		schedSt.BackoffLevel = 0
-		schedSt.BackoffUntil = ""
-		return m.saveSiteSchedulerStateLocked(siteName, schedSt)
+		if stopKind == "" && !wholeRoundAborted && checkedCount > 0 {
+			wasActive, _ := m.isSiteInBackoffLocked(siteName)
+			schedSt.ConsecutiveFailures = 0
+			schedSt.BackoffLevel = 0
+			schedSt.BackoffUntil = ""
+			if err := m.saveSiteSchedulerStateLocked(siteName, schedSt); err != nil {
+				return err
+			}
+			if wasActive && m.onBackoffCleared != nil {
+				wakeSite = true
+				wakeCB = m.onBackoffCleared
+			}
+		}
+		return nil
+	}()
+	if err == nil && wakeSite && wakeCB != nil {
+		wakeCB(site.ID(normalizeSchedulerSite(siteName)))
 	}
-	return nil
+	return err
 }
 
 func appendUniqueString(slice []string, val string) []string {

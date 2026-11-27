@@ -402,7 +402,7 @@
 
 - **主选（PC Ajax）**：`GET https://weibo.com/ajax/profile/info?uid=<uid>`（亦支持 `?custom=<个性域名>` 或 `?screen_name=<昵称>` 反查稳定 `uid`，见 **V-03**）（`社区资料（2026-11-21）`）。
   - 响应：`{"ok": 1, "data": {"user": {...}, "tabList": [...], "blockText": ""}}`。
-  - 核心字段：`user.id` / `user.idstr`（**稳定主键**）、`screen_name`（昵称）、`avatar_hd` / `avatar_large` / `profile_image_url`（头像，优先前两者）、`description`（简介）、`statuses_count`（历史总微博数，仅参考）、`followers_count`、`friends_count`、`verified`、`verified_type`、`verified_reason`、`domain`（个性域名）、`cover_image_phone`、`data.blockText`（账号封禁/异常/拉黑提示）。
+  - 核心字段：`user.id` / `user.idstr`（**稳定主键**）、`screen_name`（昵称）、`avatar_hd` / `avatar_large` / `profile_image_url`（头像，优先前两者）、`description`（简介）、`statuses_count`（历史总微博数，仅参考）、`followers_count`、`friends_count`、`verified`、`verified_type`、`verified_reason`、`domain`（个性域名）、`cover_image_phone`、`user.is_muteuser`（bool/int，`true`/`1` 表示该账号当前处于禁言状态，[DEC-089](../decisions.md#dec-089)）、`data.blockText`（账号封禁/异常/拉黑提示）。
 - **扩展资料（可选，默认不额外请求）**：`GET https://weibo.com/ajax/profile/detail?uid=<uid>`（注册时间、公司/实名标签、阳光信用等；主页浏览 1 次 `profile/info` 已足够）（`社区资料（2026-11-21）`）。
 - **移动 H5 对照**：`GET https://m.weibo.cn/api/container/getIndex?type=uid&value=<uid>` 返回 `data.userInfo` 与 `tabsInfo.tabs`（微博容器 `107603<uid>`），不作主栈（`源码阅读（多站点订阅参考，2026-11-21）`）。
 
@@ -448,9 +448,9 @@
 | HTTP 302 跳 `login.sina.com.cn` / `passport.weibo.com` / `weibo.com/newlogin`，或 HTTP 200 返回 HTML/非 JSON，或 `ok == -100` / HTTP `401` | 任意 | 未登录、Cookie 失效或被踢回访客页 | **`auth_required`**（停本站点，不移动基线） |
 | HTTP `403` / `414` / `418` / `429` / `432`、0 字节空响应、或 `ok == 0` 附验证码/挑战特征 | 任意 | 限流、WAF 或验证码风控 | **`risk_control` / `rate_limited`**（触发微博站点熔断与退避，绝不当空列表） |
 | HTTP 200、`ok == 1`，缺少 `data` 或 `data.list` 缺键 / `null` | 任意 | 风控静默抽空壳响应 | **`risk_control`**（或 `UncertainEmpty = true`，绝不当 0 条或到底） |
-| HTTP 200、`ok == 1`、`data.list == []` 且 **`bottom_tips_visible == true`**（含 `bottom_tips_text`） | 任意 | **到达博主可见时间窗下限**（如半年可见） | **正常结束**（`HasMore = false`，透传提示文案展示给用户） |
+| HTTP 200、`ok == 1`、`data.list == []` 且 **`bottom_tips_visible == true` 或 `bottom_tips_text != ""`** | 任意 | **到达博主可见时间窗下限**（如半年可见） | **正常结束**（`HasMore = false`，透传提示文案展示给用户） |
 | HTTP 200、`ok == 1`、`data.list == []`、`since_id == ""`、无 `bottom_tips_visible` | `page > 1` | **真正翻到最后一页** | **正常结束**（`HasMore = false`） |
-| HTTP 200、`ok == 1`、`data.list == []`、`since_id == ""`、无 `bottom_tips_visible` | `page == 1` | 交叉核对 `profile/info`：<br>• `blockText != ""` → 账号封禁/拉黑（`unavailable` / `forbidden`）；<br>• `statuses_count == 0` → **真实 0 条微博**；<br>• `statuses_count > 0` → 疑似风控静默限流或全锁私密 | 前两分支按实处理；第三分支置 **`UncertainEmpty = true`**，订阅检查记“本轮结果不完整”，**不移动基线** |
+| HTTP 200、`ok == 1`、`data.list == []`、`since_id == ""`、无 `bottom_tips_visible` | `page == 1` | 交叉核对 `profile/info`：<br>• `blockText != ""` → 账号封禁/拉黑（`unavailable` / `forbidden`）；<br>• **`user.is_muteuser == true`** → 账号处于禁言状态（单账号 `unavailable`，“该微博用户目前处于禁言状态，暂无法查看微博”，[DEC-089](../decisions.md#dec-089)）；<br>• `statuses_count == 0` → **真实 0 条微博**；<br>• `statuses_count > 0` → 全私密、超出可见时间窗或账号受限 | 前三分支按实处理；第四分支置 **`UncertainEmpty = true`**（中性文案），订阅检查记“本轮结果不完整”且不移动基线；**缓存队列与历史补全仅停该单账号、绝不升级为整站 `risk_control` 退避** |
 | HTTP 200、`ok == 1`、`data.list` 非空但 `next_since_id == req_since_id` | 任意 | 游标停滞防死循环 | 立即中止翻页并报 `schema_changed`，保留已加载页 |
 
 <a id="sub-baseline"></a>
@@ -579,8 +579,8 @@
 | --- | --- | --- | --- | --- |
 | HTTP 200，`ok == 1`（或视频/直播 `code == "100000"`/`100000`），核心载荷完整 | 正常成功 | — | 正常解析 | `源码阅读（多站点订阅参考、单链接解析参考，2026-11-21）` |
 | HTTP `401`；`ok == -100`（尤其 `url` 含 `login`/`passport` 且非滑块）；API 响应 `302` 跳 `weibo.com/newlogin` 或 `login.sina.com.cn`；`m.weibo.cn/api/config` 返回 `data.login == false` | 未登录或 `SUB` 失效 | **`auth_required`** | **停止本轮**（`IsRoundStop=true`），**不推进退避**（`IsCircuitBreak=false`），提示重新登录；不清除因其他错误失败的凭证 | `源码阅读（多站点订阅参考，2026-11-21）`、`社区资料（2026-11-21）` |
-| HTTP `432`；HTTP `418`；HTTP `403`（WAF/非业务权限）；已带登录 Cookie 仍被 `302` 踢回 `passport.weibo.com/visitor/visitor` 或 `visitor.passport.weibo.cn`；HTTP `200` 返回 HTML 验证码/极验/滑块/`Sina Visitor System` 页或 `0` 字节空体；JSON 含 `geetest`/`captcha`/验证跳转 URL | 风控、指纹拦截或验证码挑战 | **`risk_control`** | **立即停止本轮并触发微博站点熔断与指数退避**（`IsRoundStop=true, IsCircuitBreak=true`），**零自动重试，严禁触碰或解算任何验证码**；不清空用户已存凭证 | `源码阅读（多站点订阅参考，2026-11-21）`、`社区资料（2026-11-21）` |
-| HTTP `414`（非 URI 过长导致的网关限流）；HTTP `429`；`ok == 0` 且 `msg` 含“频繁/稍后再试/请求过多” | 账号或 IP 频控 | **`rate_limited`** | **立即停止本轮并触发微博站点熔断与退避**（`IsRoundStop=true, IsCircuitBreak=true`），零自动重试 | `社区资料（2026-11-21）` |
+| HTTP `432`；HTTP `418`；HTTP `403`（先检查 JSON 业务码 `20003`/`20101`/`20112` 与权限/不可用文案，排除验证/风控特征后按业务归类，仅 WAF/非业务 `403` 落此项，[DEC-089](../decisions.md#dec-089)）；已带登录 Cookie 仍被 `302` 踢回 `passport.weibo.com/visitor/visitor` 或 `visitor.passport.weibo.cn`；HTTP `200` 返回 HTML 验证码/极验/滑块/`Sina Visitor System` 页或 `0` 字节空体；JSON 含 `geetest`/`captcha`/验证跳转 URL | 风控、指纹拦截或验证码挑战 | **`risk_control`** | **立即停止本轮并触发微博站点熔断与退避**（`IsRoundStop=true, IsCircuitBreak=true`），**零自动重试，严禁触碰或解算任何验证码**；不清空用户已存凭证 | `源码阅读（多站点订阅参考，2026-11-21）`、`社区资料（2026-11-21）` |
+| HTTP `414`（非 URI 过长导致的网关限流）；HTTP `429`；`ok == 0` 且 `msg` 含“频繁/稍后再试/请求过多”（排除单纯服务端瞬态“系统繁忙”，后者归入 `network` 不触发站点退避，[DEC-089](../decisions.md#dec-089)） | 账号或 IP 频控 | **`rate_limited`** | **立即停止本轮并触发微博站点熔断与退避**（`IsRoundStop=true, IsCircuitBreak=true`），零自动重试 | `社区资料（2026-11-21）` |
 | `ok == 0` 且 `error_code`/`errno` 为 `20003`（用户不存在）、`20101`（微博不存在/已删除），或 `msg` 含“已被作者删除 / 不存在 / 已注销 / 暂不可查看” | 目标不存在、已删除或不可得 | **`unavailable`** | 展示具体中文原因，**不触发站点熔断或退避**（PC Ajax 精确码列 **V-10**） | `社区资料（2026-11-21）` / 部分 `unknown` |
 | `ok == 0` 且 `error_code` 为 `20112`，或 `msg` 含“仅粉丝可见 / 好友圈 / 仅博主自己可见 / 无权查看 / 关注后可见” | 权限范围受限 | **`forbidden`** | 展示具体可见范围原因，**不触发站点熔断或退避**（PC Ajax 精确码列 **V-10**） | `社区资料（2026-11-21）` / 部分 `unknown` |
 | HTTP `400`（参数无效）；本地或跳转命中不支持链接/类型 | 参数错误或暂不支持 | **`bad_request`** / **`unsupported_link`**（`Unsupported=true`） | 本地提示，不重试 | `社区资料（2026-11-21）` |
@@ -596,12 +596,12 @@
 | 参数维度 | 哔哩哔哩（现行） | 抖音（现行） | **微博（建议默认值）** | 依据与说明 |
 | --- | --- | --- | --- | --- |
 | **API 并发度** | 全局串行（`1`） | 站点串行（`1`） | **站点串行（`1`）** | 避免突发并发触发微博 `414` / `418` / `432` |
-| **API 最小请求间隔** | `500 ms` | `1000 ms + 0～300 ms` 抖动 | **`1200 ms + 0～400 ms` 随机抖动** | 微博列表/详情对亚秒级固定间隔敏感（`社区资料（2026-11-21）`）；1.2～1.6 秒桌面体感流畅且明显降低频控概率（绝不低于 `1000 ms`） |
-| **单次 API 超时 / 响应体上限** | `15 s` / `4 MiB` | `15 s` / `4 MiB` | **`15 s` / `4 MiB`**（短链 `10 s`/跳，最多 `5` 跳） | 与现有双站点安全边界一致 |
-| **每小时自动请求硬上限**（`SiteHourlyQuotaLimit`） | `200` 次/小时 | `120` 次/小时 | **`100` 次/小时**（`DefaultWeiboHourlyQuota = 100`） | 长微博可能额外触发 `longtext` 请求，且账号级 `414`/`432` 阈值偏紧，取更保守上限（媒体 CDN 下载不计入 API 额度，仍由下载并发上限 2 独立控制） |
-| **定时检查单轮账号上限**（`SiteScheduledRoundCap`） | `30` 个/轮 | `20` 个/轮 | **`20` 个/轮**（`DefaultWeiboRoundAccountCap = 20`） | 与抖音一致；每账号常规仅拉第 1 页（最多 `2` 页），翻页仅由用户手动滚动触发，禁止后台预取 |
-| **账号间检查间隔**（`SiteAccountInterval`） | `2000 ms` | `2500 ms` | **`3000 ms`**（`DefaultWeiboAccountInterval = 3s`） | 降低连续多账号拉取 `mymblog` 撞上 `414` 的概率 |
-| **退避与熔断隔离**（`site_scheduler_state`） | `site="bilibili"` 独立行 | `site="douyin"` 独立行 | **`site="weibo"` 独立行** | 复用 `RecordSiteAutomaticStop` 与 `download.Manager.pauseSitePeers("weibo")`：`risk_control`/`rate_limited` 仅熔断微博后台任务（定时检查、自动缓存、全部缓存队列、微博排队下载），按 `min(IntervalMinutes * 2^min(level, 10), 24h)` 指数退避，**与 B 站、抖音完全隔离互不连坐**；`auth_required` 终止本轮并标失效、不推进退避等级 |
+| **API 最小请求间隔** | `500 ms` | `1000 ms + 0～300 ms` 抖动 | **`800 ms + 0～300 ms` 随机抖动**（[DEC-089](../decisions.md#dec-089)，原 `1200+0～400 ms`） | 保持串行并发 1 与亚秒级保护底线（800～1100 ms），改善交互与列表翻页流畅度 |
+| **单次 API 超时 / 响应体上限** | `15 s` / `4 MiB` | `15 s` / `4 MiB` | **`15 s` / `4 MiB`**（短链 `10 s`/跳，最多 `5` 跳） | 与现有站点安全边界一致 |
+| **每小时自动请求硬上限**（`SiteHourlyQuotaLimit`） | `200` 次/小时 | `120` 次/小时 | **`180` 次/小时**（`DefaultWeiboHourlyQuota = 180`，[DEC-089](../decisions.md#dec-089)，原 `100`） | 适配多订阅账号与全部缓存/长博场景，同时低于 B 站 `200/h`；纯 CDN 媒体与历史补全 B 级 `/oslarge/` 不占 API 额度 |
+| **定时检查单轮账号上限**（`SiteScheduledRoundCap`） | `30` 个/轮 | `20` 个/轮 | **`25` 个/轮**（`DefaultWeiboRoundAccountCap = 25`，[DEC-089](../decisions.md#dec-089)，原 `20`） | 每账号常规仅拉第 1 页（最多 `2` 页），翻页仅由用户手动滚动触发，禁止后台预取 |
+| **账号间检查间隔**（`SiteAccountInterval`） | `2000 ms` | `2500 ms` | **`1500 ms`**（`DefaultWeiboAccountInterval = 1.5s`，[DEC-089](../decisions.md#dec-089)，原 `3s`） | 叠加客户端 `800–1100 ms` 串行间隔，实际相邻账号间隔约 `2.3–2.6 s` |
+| **退避与熔断隔离**（`site_scheduler_state`） | `site="bilibili"` 独立行 | `site="douyin"` 独立行 | **`site="weibo"` 独立行**（固定阶梯 `15m → 30m → 1h → 2h → 6h`，上限 `6h`，[DEC-089](../decisions.md#dec-089)） | `risk_control`/`rate_limited` 仅熔断微博后台自动任务（定时检查、自动缓存、全部缓存队列、微博排队自动下载），与另三站完全隔离；任一次微博自动成功即归零，距 `LastStopAt` 满 `6h` 自动衰减归零；用户手动操作可发 1 次探测并在成功后立即解除退避；`auth_required` 终止本轮并标失效、不推进退避等级 |
 
 <a id="oss"></a>
 ## 10. 开源选型与自研规模评估（R-I）
