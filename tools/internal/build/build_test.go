@@ -186,17 +186,25 @@ func TestInstallerIncludes(t *testing.T) {
 	common := read("assets/installer/shortcuts.nsh")
 	for _, rule := range []string{
 		"!macro customInit",
+		"!macro customStartMenuShortcut",
 		"!macro customInstall",
 		`${If} ${FileExists} "$INSTDIR\Uninstall.exe"`,
-		`Delete "$SMPROGRAMS\${TRACE_SHORTCUT}.lnk"`,
+		`CreateShortCut "$SMPROGRAMS\${TRACE_SHORTCUT}.lnk" "$INSTDIR\trace.exe"`,
 		"!ifdef TRACE_DESKTOP_ON_UPDATE",
 		"Call CreateDesktopShortcut",
+		`${GetOptions} $R0 "/NODESKTOP" $R1`,
 		// Silent installs restart TRACE on /RELAUNCH, like the author's other desktop apps.
 		`${GetOptions} $R0 "/RELAUNCH" $R1`,
 		`Exec '"$INSTDIR\trace.exe"'`,
 	} {
 		if !strings.Contains(common, rule) {
 			t.Fatalf("shortcuts.nsh lacks %q", rule)
+		}
+	}
+	// Silent over-install must never delete the Start Menu shortcut (it must never create it in the first place).
+	if idx := strings.Index(common, "!macro customInstall"); idx >= 0 {
+		if strings.Contains(common[idx:], `Delete "$SMPROGRAMS\${TRACE_SHORTCUT}.lnk"`) {
+			t.Fatal("customInstall must not delete Start Menu shortcut under silent over-install")
 		}
 	}
 	for _, channel := range []string{ChannelStable, ChannelDev, ChannelTest} {

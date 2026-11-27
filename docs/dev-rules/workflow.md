@@ -46,8 +46,8 @@
 4. **提交**：Conventional Commits（`feat: …`、`fix(live): …`），每个提交 `git commit -s`。一个 PR 只做一件事；PR 合并时 squash 成一个提交，分支里提交几次都可以。
 5. **PR**：push 后建 PR，按模板写关联 issue、做了什么、验证（命令 / 结果 / 未运行项）、风险。碰了高风险清单就加 `risk:high` 标签。
 6. **审查**：CI `repository-quality` 通过后，由干净上下文的审查者（新开的子代理，或交给另一个 Agent）按 [REVIEW](../../REVIEW.md) 审查完整改动；作者不能自己审自己。阻塞项修完再审。
-7. **合并**：低风险 PR 由 Agent `gh pr merge <号> --squash --match-head-commit <头提交>` 合并；`risk:high` 的 PR 留给用户合并。不轮询长挂命令（如 `gh pr checks --watch`）。
-8. **合并后**：本地 `git switch main && git pull --ff-only`，运行[开发版自动安装](engineering.md#dev-install)；在 issue 或对话里报告结果与一个首选下一步。
+7. **审核前更新本机开发版与合并**：凡是需要用户审核或实测的 PR（尤其是 `risk:high` 或界面/行为改动），在请用户审核 PR **之前**先在干净的 PR 分支运行 `go run ./tools/package -install` 更新本机 `TRACE Dev` 供用户先测试，并将 `artifacts/package/install-dev.json` 回执摘要写进 PR 正文或 `Agent：` 评论。低风险且无需用户审核的 PR 由 Agent 在 CI 与独立审查通过后直接 `gh pr merge <号> --squash --match-head-commit <头提交>` 合并；`risk:high` 的 PR 保持打开，等用户测试并批准后再合并。不轮询长挂命令（如 `gh pr checks --watch`）。
+8. **合并后**：本地 `git switch main && git pull --ff-only`，运行[开发版自动安装](engineering.md#dev-install)使本机开发版与 `main` 保持同步；在 issue 或对话里报告结果与一个首选下一步。
 
 <a id="high-risk"></a>
 ### 2.1 高风险清单

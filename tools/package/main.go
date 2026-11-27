@@ -6,12 +6,14 @@
 //	go run ./tools/package -install-only # install the package in dist/trace-dev
 //	go run ./tools/package -server       # build trace-server for Linux into dist/trace-server
 //
-// The agent installs after every merge into main and before the person's
-// manual checks, so the person never installs by hand; packaging only for
-// automated checks does not install (engineering.md 2.2). A machine without
-// TRACE Dev gets its first install the same way. The install is skipped with
-// TRACE_DEV_AUTO_INSTALL=0, on CI (CI=true) and while a TRACE Dev window
-// stays open for 10 minutes. Release packages are built by tools/release.
+// The agent installs from a clean PR branch before asking the user to review
+// or test a PR, and after every merge into main, so the person never installs
+// by hand and can test the updated local dev build before approving a PR
+// (engineering.md 2.2). Packaging only for automated checks does not install.
+// A machine without TRACE Dev gets its first install the same way. The install
+// is skipped with TRACE_DEV_AUTO_INSTALL=0, on CI (CI=true) and while a TRACE
+// Dev window stays open for 10 minutes. Release packages are built by
+// tools/release.
 package main
 
 import (

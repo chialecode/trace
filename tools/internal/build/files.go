@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -33,12 +34,101 @@ type goModuleInfo struct {
 
 // MygoBuild runs `go tool mygo build` for windows/amd64 into out with the
 // mygo.json in place and the given -ldflags. env adds variables, such as
-// the update signing key, to the build alone.
+// the update signing key, to the build alone. It wraps makensis via
+// tools/internal/nsiswrap so MyGo's generated installer.nsi delegates Start
+// Menu shortcut creation to customStartMenuShortcut and never strips another
+// channel's shortcuts.
 func MygoBuild(root, out, ldflags string, env []string) (string, error) {
+	realMakensis := FindRealMakensis()
+	if realMakensis == "" && runtime.GOOS == "windows" {
+		// On a fresh Windows host without NSIS yet, run mygo build once so MyGo
+		// downloads its pinned NSIS into %LOCALAPPDATA%\mygo\nsis-*, then
+		// rebuild with the wrapper so the produced installer is always patched.
+		if bootstrapOut, err := runMygoBuild(root, out, ldflags, env, nil, ""); err != nil {
+			return bootstrapOut, err
+		}
+		realMakensis = FindRealMakensis()
+	}
+	if realMakensis == "" {
+		return "", errors.New("makensis not found: cannot build patched Windows installer without NSIS")
+	}
+
+	wrapDir, err := os.MkdirTemp("", "trace-nsiswrap-")
+	if err != nil {
+		return "", fmt.Errorf("create nsiswrap temp dir: %w", err)
+	}
+	defer os.RemoveAll(wrapDir)
+
+	wrapName := "makensis"
+	if runtime.GOOS == "windows" {
+		wrapName = "makensis.exe"
+	}
+	wrapPath := filepath.Join(wrapDir, wrapName)
+	if err := buildNSISWrapper(root, wrapPath); err != nil {
+		return "", err
+	}
+
+	receiptPath := filepath.Join(wrapDir, "patched.ok")
+	wrapperEnv := []string{
+		EnvRealMakensis + "=" + realMakensis,
+		EnvNSISWrapReceipt + "=" + receiptPath,
+	}
+	outText, err := runMygoBuild(root, out, ldflags, env, wrapperEnv, wrapDir)
+	if err != nil {
+		return outText, err
+	}
+	if _, err := os.Stat(receiptPath); err != nil {
+		return outText, fmt.Errorf("mygo build finished without invoking the NSIS installer wrapper (%s missing): refusing unpatched installer", receiptPath)
+	}
+	return outText, nil
+}
+
+func buildNSISWrapper(root, wrapPath string) error {
+	cmd := exec.Command("go", "build", "-o", wrapPath, "./tools/internal/nsiswrap")
+	cmd.Dir = root
+	env := os.Environ()
+	env = UnsetEnvVar(env, "MYGO_UPDATER_PRIVATE_KEY")
+	env = UnsetEnvVar(env, "GOOS")
+	env = UnsetEnvVar(env, "GOARCH")
+	env = SetEnvVar(env, "CGO_ENABLED", "0")
+	env = SetEnvVar(env, "GOFLAGS", "-buildvcs=false")
+	cmd.Env = env
+	appdirs.SetSubprocessQuiet(cmd)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("build nsiswrap failed: %w\n%s", err, buf.String())
+	}
+	return nil
+}
+
+func runMygoBuild(root, out, ldflags string, extraEnv, wrapperEnv []string, wrapDir string) (string, error) {
 	cmd := exec.Command("go", "tool", "mygo", "build", "-platform", "windows/amd64", "-o", out)
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOFLAGS=-buildvcs=false", "MYGO_LDFLAGS="+ldflags)
-	cmd.Env = append(cmd.Env, env...)
+	cmdEnv := os.Environ()
+	cmdEnv = SetEnvVar(cmdEnv, "CGO_ENABLED", "0")
+	cmdEnv = SetEnvVar(cmdEnv, "GOFLAGS", "-buildvcs=false")
+	cmdEnv = SetEnvVar(cmdEnv, "MYGO_LDFLAGS", ldflags)
+	for _, kv := range extraEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			cmdEnv = SetEnvVar(cmdEnv, k, v)
+		}
+	}
+	if wrapDir != "" {
+		curPath := GetEnvVar(cmdEnv, "PATH")
+		newPath := wrapDir
+		if curPath != "" {
+			newPath = wrapDir + string(os.PathListSeparator) + curPath
+		}
+		cmdEnv = SetEnvVar(cmdEnv, "PATH", newPath)
+	}
+	for _, kv := range wrapperEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			cmdEnv = SetEnvVar(cmdEnv, k, v)
+		}
+	}
+	cmd.Env = cmdEnv
 	appdirs.SetSubprocessQuiet(cmd)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
