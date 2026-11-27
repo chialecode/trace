@@ -90,7 +90,7 @@ func (m *Manager) evaluateAutoCacheRulesForSites(ctx context.Context, abortedSit
 					var dynID, typ, snap string
 					var pubTs int64
 					if err := rows.Scan(&dynID, &pubTs, &typ, &snap); err == nil {
-						if typeAllowed[typ] {
+						if matchesAutoCacheRule(accSite, typ, snap, typeAllowed) {
 							allCandidates = append(allCandidates, candidate{
 								subID:    s.SubID,
 								site:     accSite,
@@ -323,6 +323,44 @@ func (m *Manager) findCachedLibraryKey(siteName, dynID string) string {
 		}
 	}
 	return ""
+}
+
+// matchesAutoCacheRule checks whether an update_item row matches the
+// subscription's enabled auto-cache capability types. For X quote posts
+// (IsQuote && !IsRetweet, DEC-091), both the post's own content type
+// ("video"/"draw"/"word") and "forward" (when explicitly enabled) match so
+// self-quotes and regular quotes work consistently across presets and legacy rows.
+func matchesAutoCacheRule(siteName, typ, snapshot string, typeAllowed map[string]bool) bool {
+	if typeAllowed[typ] {
+		return true
+	}
+	if siteName != string(site.X) || strings.TrimSpace(snapshot) == "" {
+		return false
+	}
+	var xSnap struct {
+		IsRetweet bool `json:"isRetweet"`
+		IsQuote   bool `json:"isQuote"`
+		Media     []struct {
+			Kind string `json:"kind"`
+			GIF  bool   `json:"gif"`
+		} `json:"media"`
+	}
+	if err := json.Unmarshal([]byte(snapshot), &xSnap); err != nil {
+		return false
+	}
+	if !xSnap.IsQuote || xSnap.IsRetweet {
+		return false
+	}
+	if typeAllowed["forward"] {
+		return true
+	}
+	contentType := "word"
+	if len(xSnap.Media) == 1 && strings.EqualFold(strings.TrimSpace(xSnap.Media[0].Kind), "video") && !xSnap.Media[0].GIF {
+		contentType = "video"
+	} else if len(xSnap.Media) > 0 {
+		contentType = "draw"
+	}
+	return typeAllowed[contentType]
 }
 
 // parseBiliMid is the subscription account a video is cached for (DEC-056).

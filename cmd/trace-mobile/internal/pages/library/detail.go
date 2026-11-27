@@ -130,6 +130,11 @@ func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.
 				})
 			})
 
+			// Concise reply context hint above body when replying to another post (DEC-091).
+			if hint := formatDetailReplyHint(det.InReplyTo, nil); hint != "" {
+				ui.Text(c, hint).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine()
+			}
+
 			// Title.
 			if title := strings.TrimSpace(det.Title); title != "" {
 				ui.Text(c, title).FontSize(18).FontWeight(600).LineHeight(theme.LineHeightHeading).TextColor(theme.ColorTextMain)
@@ -272,6 +277,7 @@ type detailThreadPart struct {
 	Links   []companionapi.TextLink
 	Images  []mediaview.ImageItem
 	Videos  []detailThreadVideo
+	Origin  *companionapi.ItemOriginDTO
 	IsFocal bool
 }
 
@@ -292,6 +298,14 @@ func (p *Page) renderDetailThreadBody(
 		authorName = "未知用户"
 	}
 	authorHandle := strings.TrimPrefix(strings.TrimSpace(det.AuthorUniqueID), "@")
+
+	threadIDs := make([]string, 0, len(parts))
+	for _, pt := range parts {
+		if id := strings.TrimSpace(pt.ID); id != "" {
+			threadIDs = append(threadIDs, id)
+		}
+	}
+	rootReplyHint := formatDetailReplyHint(det.InReplyTo, threadIDs)
 
 	ui.Scroll(c).Grow(1).Basis(0).FillWidth().Children(func() {
 		ui.Column(c).FillWidth().Padding(14, 14).Gap(12).ClipX().Children(func() {
@@ -384,6 +398,9 @@ func (p *Page) renderDetailThreadBody(
 									})
 								}
 
+								if isFirst && rootReplyHint != "" {
+									ui.Text(c, rootReplyHint).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine()
+								}
 								if body := strings.TrimSpace(tp.Text); body != "" {
 									ui.Text(c, body).FontSize(14).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
 									if links := mediaview.ExtractLinks(body, tp.Links); len(links) > 0 {
@@ -407,6 +424,8 @@ func (p *Page) renderDetailThreadBody(
 									if len(det.Missing) > 0 {
 										p.renderDetailMissingBox(c, det.Missing)
 									}
+								} else if tp.Origin != nil && !sameDetailOriginDTO(tp.Origin, det.Origin) {
+									p.renderDetailOriginBox(c, h, tp.Origin, nil)
 								}
 							})
 						})
@@ -547,8 +566,52 @@ func (p *Page) renderDetailThreadVideoCard(c *ui.Context, h pagekit.Host, itemKe
 	}
 }
 
+func formatDetailReplyHint(target *companionapi.ItemReplyTargetDTO, threadIDs []string) string {
+	if target == nil {
+		return ""
+	}
+	sid := strings.TrimSpace(target.StatusID)
+	if sid != "" {
+		for _, id := range threadIDs {
+			if id == sid {
+				return ""
+			}
+		}
+	}
+	handle := strings.TrimPrefix(strings.TrimSpace(target.ScreenName), "@")
+	if handle != "" {
+		return "回复 @" + handle
+	}
+	if sid != "" || strings.TrimSpace(target.UserID) != "" {
+		return "回复一条帖子"
+	}
+	return ""
+}
+
+func sameDetailOriginDTO(a, b *companionapi.ItemOriginDTO) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.TrimSpace(a.ID) != "" && strings.TrimSpace(a.ID) == strings.TrimSpace(b.ID)
+}
+
 func (p *Page) renderDetailOriginBox(c *ui.Context, h pagekit.Host, orig *companionapi.ItemOriginDTO, origImages []mediaview.ImageItem) {
-	ui.Column(c).FillWidth().Padding(12, 12).Radius(10).Background(theme.ColorBgPanel).Border(1, theme.ColorBorder).Gap(6).ClipX().Children(func() {
+	p.renderDetailOriginBoxDepth(c, h, orig, origImages, 0)
+}
+
+func (p *Page) renderDetailOriginBoxDepth(c *ui.Context, h pagekit.Host, orig *companionapi.ItemOriginDTO, origImages []mediaview.ImageItem, depth int) {
+	if orig == nil {
+		return
+	}
+	bg := theme.ColorBgPanel
+	pad := float32(12)
+	radius := float32(10)
+	if depth > 0 {
+		bg = theme.ColorBgMain
+		pad = 9
+		radius = 8
+	}
+	ui.Column(c).FillWidth().Padding(pad, pad).Radius(radius).Background(bg).Border(1, theme.ColorBorder).Gap(6).ClipX().Children(func() {
 		if orig.Unavailable {
 			msg := orig.UnavailableReason
 			if msg == "" {
@@ -556,14 +619,33 @@ func (p *Page) renderDetailOriginBox(c *ui.Context, h pagekit.Host, orig *compan
 			}
 			ui.Text(c, msg).FontSize(13).TextColor(theme.ColorTextMuted)
 		} else {
-			if orig.AuthorName != "" {
-				ui.Text(c, orig.AuthorName).FontSize(13).FontWeight(600).TextColor(theme.ColorTextMuted)
+			authorMeta := strings.TrimSpace(orig.AuthorName)
+			if handle := strings.TrimPrefix(strings.TrimSpace(orig.AuthorUniqueID), "@"); handle != "" {
+				if authorMeta != "" {
+					authorMeta += " @" + handle
+				} else {
+					authorMeta = "@" + handle
+				}
+			}
+			if authorMeta != "" {
+				ui.Text(c, authorMeta).FontSize(13).FontWeight(600).TextColor(theme.ColorTextMuted).SingleLine()
+			}
+			if replyHint := formatDetailReplyHint(orig.InReplyTo, nil); replyHint != "" {
+				ui.Text(c, replyHint).FontSize(11).TextColor(theme.ColorTextMuted).SingleLine()
 			}
 			if orig.Text != "" {
-				ui.Text(c, orig.Text).FontSize(13).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
+				el := ui.Text(c, orig.Text).FontSize(13).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
+				if depth > 0 {
+					el.MaxLines(4)
+				}
 			}
-			if len(origImages) > 0 {
-				p.renderDetailImageGrid(c, h, origImages)
+			if depth == 0 {
+				if len(origImages) > 0 {
+					p.renderDetailImageGrid(c, h, origImages)
+				}
+				if orig.Origin != nil {
+					p.renderDetailOriginBoxDepth(c, h, orig.Origin, nil, depth+1)
+				}
 			}
 		}
 	})
@@ -666,7 +748,7 @@ func resolveMobileDetailThread(det companionapi.LibraryItemDetail) ([]detailThre
 	rawID := extractDetailRawID(det.ID, det.ItemKey)
 	rawSegs := make([]companionapi.ThreadPartDTO, 0, len(det.Thread))
 	for _, seg := range det.Thread {
-		if strings.TrimSpace(seg.ID) == "" && strings.TrimSpace(seg.Text) == "" && len(seg.Links) == 0 && len(seg.MediaIndexes) == 0 {
+		if strings.TrimSpace(seg.ID) == "" && strings.TrimSpace(seg.Text) == "" && len(seg.Links) == 0 && len(seg.MediaIndexes) == 0 && seg.Origin == nil {
 			continue
 		}
 		rawSegs = append(rawSegs, seg)
@@ -891,6 +973,7 @@ func resolveMobileDetailThread(det companionapi.LibraryItemDetail) ([]detailThre
 			PubTs:   pubTs,
 			Text:    strings.TrimSpace(seg.Text),
 			Links:   links,
+			Origin:  seg.Origin,
 			IsFocal: isFocal,
 		}
 		if len(outerPageKeys) > 0 {

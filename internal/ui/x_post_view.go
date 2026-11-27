@@ -484,63 +484,11 @@ func (a *App) xPostToPostCard(p service.XPostDTO, pageUser *service.XUserDTO) Po
 		notePages = xMediaToNotePagesScoped(p.Media, cachedItem, false, false)
 	}
 
-	var originCard *PostCardData
-	originUnavailable := ""
 	origDTO := p.Retweeted
 	if origDTO == nil {
 		origDTO = p.Quoted
 	}
-	if origDTO != nil {
-		if origDTO.Unavailable {
-			originUnavailable = firstNonEmptyStrUI(origDTO.UnavailableReason, "原帖已删除或不可查看")
-		} else {
-			origPages := xMediaToNotePagesScoped(origDTO.Media, cachedItem, true, false)
-			var origVid *PostVideo
-			if len(origDTO.Media) == 1 && (origDTO.Media[0].Kind == "video" || origDTO.Media[0].Kind == "gif" || origDTO.Media[0].GIF) && !origDTO.Media[0].HLSOnly {
-				m0 := origDTO.Media[0]
-				_, relCover, localDur, _ := cachedItemHasVideoForScope(cachedItem, true, false)
-				durSec := m0.DurationSec
-				if durSec <= 0 {
-					durSec = localDur
-				}
-				vidTitle := "X 视频"
-				if m0.GIF || m0.Kind == "gif" {
-					vidTitle = "GIF 动图"
-				}
-				origVid = &PostVideo{
-					BVID:       origDTO.ID,
-					Title:      vidTitle,
-					CoverURL:   firstNonEmptyStrUI(m0.PublicPreviewURL, m0.ImageURL),
-					RelCover:   relCover,
-					Duration:   FormatDuration(durSec),
-					ItemKey:    itemKey,
-					Cached:     cachedItem != nil && itemHasVideoRole(*cachedItem),
-					QualityTag: formatXVideoSpec(m0),
-				}
-				origPages = nil
-			}
-			originCard = &PostCardData{
-				ItemKey:       itemKey,
-				Site:          "x",
-				AuthorUID:     origDTO.Author.RestID,
-				AuthorName:    firstNonEmptyStrUI(origDTO.Author.Name, origDTO.Author.ScreenName, "原帖作者"),
-				AuthorHandle:  origDTO.Author.ScreenName,
-				AuthorFace:    origDTO.Author.AvatarURL,
-				PubTs:         origDTO.CreatedAt,
-				Text:          origDTO.Text,
-				Links:         xPostLinksUI(origDTO, cachedItem, true),
-				URL:           origDTO.CanonicalURL,
-				XStatusID:     origDTO.ID,
-				NotePages:     origPages,
-				Video:         origVid,
-				XCard:         origDTO.Card,
-				XPoll:         origDTO.Poll,
-				HLSOnlyNotice: xPostHLSOnlyNotice(origDTO),
-			}
-		}
-	} else if p.OriginUnavailable {
-		originUnavailable = firstNonEmptyStrUI(p.OriginUnavailableReason, "原帖已删除或不可查看")
-	}
+	originCard, originUnavailable := xPostDTOToOriginCard(origDTO, p.OriginUnavailable, p.OriginUnavailableReason, itemKey, cachedItem, 0)
 
 	var via *library.ItemVia
 	if pageUser != nil {
@@ -583,6 +531,11 @@ func (a *App) xPostToPostCard(p service.XPostDTO, pageUser *service.XUserDTO) Po
 		}
 	}
 
+	replyTarget := xPostDTOToReplyTarget(&p)
+	if len(p.ThreadAncestors) > 0 {
+		replyTarget = xPostDTOToReplyTarget(&p.ThreadAncestors[0])
+	}
+
 	return PostCardData{
 		Key:               "x:" + p.ID,
 		ItemKey:           itemKey,
@@ -615,11 +568,111 @@ func (a *App) xPostToPostCard(p service.XPostDTO, pageUser *service.XUserDTO) Po
 		ThreadParts:       threadParts,
 		Origin:            originCard,
 		OriginUnavailable: originUnavailable,
+		InReplyTo:         replyTarget,
 		LibItem:           cachedItem,
 		OnOpenPost:        openPost,
 		OpenBtnLabel:      "打开X帖子：" + p.ID,
 		CacheBtnLabel:     cacheBtnLabel,
 	}
+}
+
+func xPostDTOToReplyTarget(p *service.XPostDTO) *library.ItemReplyTarget {
+	if p == nil {
+		return nil
+	}
+	return library.SanitizeItemReplyTarget(&library.ItemReplyTarget{
+		StatusID:   p.InReplyToStatusID,
+		UserID:     p.InReplyToUserID,
+		ScreenName: p.InReplyToScreenName,
+	}, "x")
+}
+
+func sameLibraryOrigin(a, b *library.ItemOrigin) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	idA := strings.TrimSpace(a.ID)
+	idB := strings.TrimSpace(b.ID)
+	return idA != "" && idA == idB
+}
+
+func xPostDTOToOriginCard(
+	origDTO *service.XPostDTO,
+	outerUnavailable bool,
+	outerUnavailableReason string,
+	itemKey string,
+	cachedItem *library.ItemMetadata,
+	depth int,
+) (*PostCardData, string) {
+	if origDTO == nil {
+		if outerUnavailable {
+			return nil, firstNonEmptyStrUI(outerUnavailableReason, "原帖已删除或不可查看")
+		}
+		return nil, ""
+	}
+	if origDTO.Unavailable {
+		return nil, firstNonEmptyStrUI(origDTO.UnavailableReason, outerUnavailableReason, "原帖已删除或不可查看")
+	}
+	var origPages []douyinNoteRenderPage
+	var origVid *PostVideo
+	if depth == 0 {
+		origPages = xMediaToNotePagesScoped(origDTO.Media, cachedItem, true, false)
+		if len(origDTO.Media) == 1 && (origDTO.Media[0].Kind == "video" || origDTO.Media[0].Kind == "gif" || origDTO.Media[0].GIF) && !origDTO.Media[0].HLSOnly {
+			m0 := origDTO.Media[0]
+			_, relCover, localDur, _ := cachedItemHasVideoForScope(cachedItem, true, false)
+			durSec := m0.DurationSec
+			if durSec <= 0 {
+				durSec = localDur
+			}
+			vidTitle := "X 视频"
+			if m0.GIF || m0.Kind == "gif" {
+				vidTitle = "GIF 动图"
+			}
+			origVid = &PostVideo{
+				BVID:       origDTO.ID,
+				Title:      vidTitle,
+				CoverURL:   firstNonEmptyStrUI(m0.PublicPreviewURL, m0.ImageURL),
+				RelCover:   relCover,
+				Duration:   FormatDuration(durSec),
+				ItemKey:    itemKey,
+				Cached:     cachedItem != nil && itemHasVideoRole(*cachedItem),
+				QualityTag: formatXVideoSpec(m0),
+			}
+			origPages = nil
+		}
+	}
+	var nestedOrigin *PostCardData
+	var nestedUnavailable string
+	if depth < 1 {
+		innerDTO := origDTO.Quoted
+		if innerDTO == nil {
+			innerDTO = origDTO.Retweeted
+		}
+		if innerDTO != nil || origDTO.OriginUnavailable {
+			nestedOrigin, nestedUnavailable = xPostDTOToOriginCard(innerDTO, origDTO.OriginUnavailable, origDTO.OriginUnavailableReason, itemKey, nil, depth+1)
+		}
+	}
+	return &PostCardData{
+		ItemKey:           itemKey,
+		Site:              "x",
+		AuthorUID:         origDTO.Author.RestID,
+		AuthorName:        firstNonEmptyStrUI(origDTO.Author.Name, origDTO.Author.ScreenName, "原帖作者"),
+		AuthorHandle:      origDTO.Author.ScreenName,
+		AuthorFace:        origDTO.Author.AvatarURL,
+		PubTs:             origDTO.CreatedAt,
+		Text:              origDTO.Text,
+		Links:             xPostLinksUI(origDTO, cachedItem, depth == 0),
+		URL:               origDTO.CanonicalURL,
+		XStatusID:         origDTO.ID,
+		NotePages:         origPages,
+		Video:             origVid,
+		XCard:             origDTO.Card,
+		XPoll:             origDTO.Poll,
+		HLSOnlyNotice:     xPostHLSOnlyNotice(origDTO),
+		InReplyTo:         xPostDTOToReplyTarget(origDTO),
+		Origin:            nestedOrigin,
+		OriginUnavailable: nestedUnavailable,
+	}, ""
 }
 
 // renderXThreadConnectorLine draws the centered 2px vertical thread line
@@ -737,7 +790,7 @@ func resolveCachedXThreadParts(
 	rawID := normalizeXItemRawID(item.RawID, item.ID, item.ItemKey)
 	rawSegs := make([]library.ItemThreadPart, 0, len(item.Thread))
 	for _, seg := range item.Thread {
-		if strings.TrimSpace(seg.ID) == "" && strings.TrimSpace(seg.Text) == "" && len(seg.Links) == 0 && len(seg.MediaIndexes) == 0 {
+		if strings.TrimSpace(seg.ID) == "" && strings.TrimSpace(seg.Text) == "" && len(seg.Links) == 0 && len(seg.MediaIndexes) == 0 && seg.Origin == nil {
 			continue
 		}
 		rawSegs = append(rawSegs, seg)
@@ -885,19 +938,30 @@ func resolveCachedXThreadParts(
 			}
 		}
 
+		var partOriginCard *PostCardData
+		var partOriginUnavail string
+		var partLibOrigin *library.ItemOrigin
+		if !isFocal && seg.Origin != nil {
+			partLibOrigin = seg.Origin
+			partOriginCard, partOriginUnavail = buildCachedOriginCard(item.ItemKey, "x", seg.Origin, nil, nil, nil, 0)
+		}
+
 		parts[i] = PostThreadPart{
-			ID:           strings.TrimSpace(seg.ID),
-			AuthorUID:    authorUID,
-			AuthorName:   authorName,
-			AuthorHandle: authorHandle,
-			AuthorFace:   fallbackFace,
-			PubTs:        pubTs,
-			Text:         strings.TrimSpace(seg.Text),
-			Links:        links,
-			URL:          partURL,
-			Images:       partImgs,
-			NotePages:    partPages,
-			IsFocal:      isFocal,
+			ID:                strings.TrimSpace(seg.ID),
+			AuthorUID:         authorUID,
+			AuthorName:        authorName,
+			AuthorHandle:      authorHandle,
+			AuthorFace:        fallbackFace,
+			PubTs:             pubTs,
+			Text:              strings.TrimSpace(seg.Text),
+			Links:             links,
+			URL:               partURL,
+			Images:            partImgs,
+			NotePages:         partPages,
+			Origin:            partOriginCard,
+			OriginUnavailable: partOriginUnavail,
+			LibOrigin:         partLibOrigin,
+			IsFocal:           isFocal,
 		}
 	}
 
@@ -1113,23 +1177,32 @@ func (a *App) buildOnlineXThreadParts(
 			links = xPostLinksUI(&segCopy, nil, false)
 		}
 
+		var segOriginCard *PostCardData
+		var segOriginUnavail string
+		if !isFocal && (segCopy.Quoted != nil || segCopy.OriginUnavailable) {
+			segOriginCard, segOriginUnavail = xPostDTOToOriginCard(segCopy.Quoted, segCopy.OriginUnavailable, segCopy.OriginUnavailableReason, itemKey, nil, 0)
+		}
+
 		return PostThreadPart{
-			ID:            segCopy.ID,
-			AuthorUID:     uID,
-			AuthorName:    name,
-			AuthorHandle:  handle,
-			AuthorFace:    face,
-			PubTs:         segCopy.CreatedAt,
-			Text:          segCopy.Text,
-			Links:         links,
-			URL:           segURL,
-			NotePages:     segPages,
-			Video:         segVideo,
-			XCard:         segCopy.Card,
-			XPoll:         segCopy.Poll,
-			HLSOnlyNotice: xPostHLSOnlyNotice(&segCopy),
-			IsFocal:       isFocal,
-			OnOpen:        onOpen,
+			ID:                segCopy.ID,
+			AuthorUID:         uID,
+			AuthorName:        name,
+			AuthorHandle:      handle,
+			AuthorFace:        face,
+			PubTs:             segCopy.CreatedAt,
+			InReplyTo:         xPostDTOToReplyTarget(&segCopy),
+			Text:              segCopy.Text,
+			Links:             links,
+			URL:               segURL,
+			NotePages:         segPages,
+			Video:             segVideo,
+			XCard:             segCopy.Card,
+			XPoll:             segCopy.Poll,
+			HLSOnlyNotice:     xPostHLSOnlyNotice(&segCopy),
+			Origin:            segOriginCard,
+			OriginUnavailable: segOriginUnavail,
+			IsFocal:           isFocal,
+			OnOpen:            onOpen,
 		}
 	}
 
@@ -1311,6 +1384,21 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 		})
 	}
 
+	threadIDs := make([]string, 0, len(post.ThreadAncestors)+1+len(post.Thread))
+	for _, anc := range post.ThreadAncestors {
+		if id := strings.TrimSpace(anc.ID); id != "" {
+			threadIDs = append(threadIDs, id)
+		}
+	}
+	if id := strings.TrimSpace(post.ID); id != "" {
+		threadIDs = append(threadIDs, id)
+	}
+	for _, cont := range post.Thread {
+		if id := strings.TrimSpace(cont.ID); id != "" {
+			threadIDs = append(threadIDs, id)
+		}
+	}
+
 	renderFocalBodyAndMedia := func(inThread bool) {
 		// Visibility / Sensitive / Withheld Note
 		if vis := formatXVisibilityNote(post); vis != "" {
@@ -1326,6 +1414,13 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 					DrawIcon(c, "eye", 15, ColorTextMuted, 1.7)
 					ui.Text(c, vis).FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
 				})
+		}
+
+		// Concise reply context hint above body (suppressed for internal self-reply thread continuations).
+		if !inThread || len(post.ThreadAncestors) == 0 {
+			if hint := formatReplyContextHint(xPostDTOToReplyTarget(post), threadIDs); hint != "" {
+				renderReplyContextHintLine(c, hint, "X回复提示", 12)
+			}
 		}
 
 		// Full Body Text (note_tweet rendered completely)
@@ -1387,7 +1482,7 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 		}
 	}
 
-	renderOnlineThreadNode := func(seg service.XPostDTO, rowLabel, lineLabel string, hasLineBelow bool) {
+	renderOnlineThreadNode := func(seg service.XPostDTO, rowLabel, lineLabel string, hasLineBelow bool, showRootReplyHint bool) {
 		tp := seg
 		segUID := firstNonEmptyStrUI(tp.Author.RestID, authorUID)
 		segHandle := strings.TrimPrefix(strings.TrimSpace(firstNonEmptyStrUI(tp.Author.ScreenName, authorHandle)), "@")
@@ -1440,6 +1535,11 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 					}
 				})
 
+				if showRootReplyHint {
+					if hint := formatReplyContextHint(xPostDTOToReplyTarget(&tp), threadIDs); hint != "" {
+						renderReplyContextHintLine(c, hint, "X回复提示", 12)
+					}
+				}
 				if strings.TrimSpace(tp.Text) != "" {
 					a.renderRichText(c, tp.Text, xPostLinksUI(&tp, nil, false), richTextOptions{
 						FontSize:   15,
@@ -1462,6 +1562,24 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 				if tp.Card != nil {
 					a.renderXRichCard(c, tp.Card, segURL, false)
 				}
+				if tp.Quoted != nil {
+					a.renderXOriginCard(c, tp.Quoted, true, itemKey, nil, false, xCache)
+				} else if tp.OriginUnavailable {
+					ui.Row(c).
+						Label("X原帖不可用提示").
+						FillWidth().
+						Padding(10, 12).
+						Radius(12).
+						Background(ColorBgSecondary).
+						Border(1, ColorBorder).
+						AlignItems(ui.Center).
+						Gap(6).
+						Children(func() {
+							DrawIcon(c, "alert-circle", 15, ColorTextMuted, 1.75)
+							ui.Text(c, firstNonEmptyStrUI(tp.OriginUnavailableReason, "原帖已删除或不可查看")).
+								FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+						})
+				}
 			})
 		})
 	}
@@ -1475,7 +1593,7 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 					// 0. Ancestor tweets above focal, vertically connected down into focal.
 					for idx, anc := range post.ThreadAncestors {
 						ancID := firstNonEmptyStrUI(anc.ID, fmt.Sprintf("anc-%d", idx+1))
-						renderOnlineThreadNode(anc, "X串上文："+ancID, "X串连线："+ancID, true)
+						renderOnlineThreadNode(anc, "X串上文："+ancID, "X串连线："+ancID, true, idx == 0)
 					}
 
 					// 1. Focal tweet with primary header, actions, full body, media, and origin card.
@@ -1504,7 +1622,7 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 					for idx, part := range post.Thread {
 						partID := firstNonEmptyStrUI(part.ID, fmt.Sprintf("%d", idx+1))
 						isLast := idx == len(post.Thread)-1
-						renderOnlineThreadNode(part, "X串条目："+partID, "X串连线："+partID, !isLast)
+						renderOnlineThreadNode(part, "X串条目："+partID, "X串连线："+partID, !isLast, false)
 					}
 				})
 			} else {
@@ -1639,6 +1757,10 @@ func (a *App) renderXDetailVideoCardForPart(c *ui.Context, m service.XMediaItemD
 }
 
 func (a *App) renderXOriginCard(c *ui.Context, orig *service.XPostDTO, isQuote bool, outerItemKey string, outerCachedItem *library.ItemMetadata, offline bool, cacheAct previewCacheAction) {
+	a.renderXOriginCardDepth(c, orig, isQuote, outerItemKey, outerCachedItem, offline, cacheAct, 0)
+}
+
+func (a *App) renderXOriginCardDepth(c *ui.Context, orig *service.XPostDTO, isQuote bool, outerItemKey string, outerCachedItem *library.ItemMetadata, offline bool, cacheAct previewCacheAction, depth int) {
 	if orig == nil {
 		return
 	}
@@ -1676,19 +1798,34 @@ func (a *App) renderXOriginCard(c *ui.Context, orig *service.XPostDTO, isQuote b
 		kindTag = "引用帖子"
 	}
 
+	cardLabel := "X原帖卡片"
+	bg := ColorBgSecondary
+	padV, padH := float32(12), float32(14)
+	radius := float32(12)
+	if depth > 0 {
+		cardLabel = "X内层引用卡片"
+		bg = ColorBgMain
+		padV, padH = 9, 11
+		radius = 8
+	}
+
 	ui.Column(c).
-		Label("X原帖卡片").
+		Label(cardLabel).
 		FillWidth().
-		Padding(12, 14).
-		Radius(12).
-		Background(ColorBgSecondary).
+		Padding(padV, padH).
+		Radius(radius).
+		Background(bg).
 		Border(1, ColorBorder).
 		Gap(8).
 		ClipX().
 		Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Gap(6).Grow(1).ClipX().Children(func() {
-					a.renderAccountAvatar(c, "x", origName, origUID, 0, 22, false, "", openOrigAuthor, orig.Author.AvatarURL)
+					avatarSize := float32(22)
+					if depth > 0 {
+						avatarSize = 18
+					}
+					a.renderAccountAvatar(c, "x", origName, origUID, 0, avatarSize, false, "", openOrigAuthor, orig.Author.AvatarURL)
 					nameBtn := ui.ButtonBase(c).Padding(0).Children(func() {
 						ui.Text(c, origName).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 					})
@@ -1698,39 +1835,73 @@ func (a *App) renderXOriginCard(c *ui.Context, orig *service.XPostDTO, isQuote b
 					if origHandle != "" {
 						ui.Text(c, "@"+origHandle).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
 					}
-					ui.Text(c, "· "+kindTag).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(0)
+					if depth == 0 {
+						ui.Text(c, "· "+kindTag).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(0)
+					}
 					if orig.CreatedAt > 0 {
 						ui.Text(c, "· "+FormatRelativeTime(orig.CreatedAt)).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(0)
 					}
 				})
-				if !offline && orig.ID != "" {
+				if depth == 0 && !offline && orig.ID != "" {
 					if OutlinePillButton(c, "打开原帖", "打开X原帖："+orig.ID).Clicked() {
 						a.OpenXPost(orig.ID, clampRunes(orig.Text, 40), origName, origUID, "", origURL)
 					}
 				}
 			})
 
+			if replyHint := formatReplyContextHint(xPostDTOToReplyTarget(orig), nil); replyHint != "" {
+				ui.Text(c, replyHint).FontSize(11).TextColor(ColorTextMuted).SingleLine()
+			}
 			if strings.TrimSpace(orig.Text) != "" {
-				a.renderRichText(c, orig.Text, xPostLinksUI(orig, outerCachedItem, true), richTextOptions{
-					FontSize:   14,
-					LineHeight: LineHeightBody,
-					TextColor:  ColorTextMain,
-				})
+				if depth > 0 {
+					ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMain).MaxLines(4)
+				} else {
+					a.renderRichText(c, orig.Text, xPostLinksUI(orig, outerCachedItem, true), richTextOptions{
+						FontSize:   14,
+						LineHeight: LineHeightBody,
+						TextColor:  ColorTextMain,
+					})
+				}
 			}
-			if len(orig.Media) == 1 && (orig.Media[0].Kind == "video" || orig.Media[0].Kind == "gif" || orig.Media[0].GIF) && !orig.Media[0].HLSOnly {
-				a.renderXDetailVideoCard(c, orig.Media[0], outerItemKey, outerCachedItem, true, offline, cacheAct)
-			} else if len(orig.Media) > 0 {
-				pages := xMediaToNotePagesScoped(orig.Media, outerCachedItem, true, offline)
-				a.renderNotePagesGrid(c, outerItemKey, "x", pages, true)
-			}
-			if hlsNotice := xPostHLSOnlyNotice(orig); hlsNotice != "" {
-				a.renderXHLSOnlyNotice(c, hlsNotice, origURL, offline)
-			}
-			if orig.Poll != nil {
-				a.renderXPollCard(c, orig.Poll, origURL, offline)
-			}
-			if orig.Card != nil {
-				a.renderXRichCard(c, orig.Card, origURL, offline)
+			if depth == 0 {
+				if len(orig.Media) == 1 && (orig.Media[0].Kind == "video" || orig.Media[0].Kind == "gif" || orig.Media[0].GIF) && !orig.Media[0].HLSOnly {
+					a.renderXDetailVideoCard(c, orig.Media[0], outerItemKey, outerCachedItem, true, offline, cacheAct)
+				} else if len(orig.Media) > 0 {
+					pages := xMediaToNotePagesScoped(orig.Media, outerCachedItem, true, offline)
+					a.renderNotePagesGrid(c, outerItemKey, "x", pages, true)
+				}
+				if hlsNotice := xPostHLSOnlyNotice(orig); hlsNotice != "" {
+					a.renderXHLSOnlyNotice(c, hlsNotice, origURL, offline)
+				}
+				if orig.Poll != nil {
+					a.renderXPollCard(c, orig.Poll, origURL, offline)
+				}
+				if orig.Card != nil {
+					a.renderXRichCard(c, orig.Card, origURL, offline)
+				}
+				// Strictly cap nested origin display at 1 level (DEC-091).
+				inner := orig.Quoted
+				if inner == nil {
+					inner = orig.Retweeted
+				}
+				if inner != nil {
+					a.renderXOriginCardDepth(c, inner, orig.Quoted != nil, outerItemKey, nil, offline, previewCacheAction{}, depth+1)
+				} else if orig.OriginUnavailable {
+					ui.Row(c).
+						Label("X内层引用不可用提示").
+						FillWidth().
+						Padding(8, 10).
+						Radius(8).
+						Background(ColorBgMain).
+						Border(1, ColorBorder).
+						AlignItems(ui.Center).
+						Gap(6).
+						Children(func() {
+							DrawIcon(c, "alert-circle", 14, ColorTextMuted, 1.75)
+							ui.Text(c, firstNonEmptyStrUI(orig.OriginUnavailableReason, "原帖已删除或不可查看")).
+								FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+						})
+				}
 			}
 		})
 }
@@ -1797,71 +1968,27 @@ func (a *App) renderXOfflineDetail(c *ui.Context, item library.ItemMetadata) {
 
 		// Cached Retweet / Quote Origin Box
 		if item.Origin != nil {
-			orig := item.Origin
-			if orig.Unavailable {
-				ui.Row(c).
-					Label("X原帖不可用提示").
-					FillWidth().
-					Padding(10, 12).
-					Radius(12).
-					Background(ColorBgSecondary).
-					Border(1, ColorBorder).
-					AlignItems(ui.Center).
-					Gap(6).
-					Children(func() {
-						DrawIcon(c, "alert-circle", 15, ColorTextMuted, 1.75)
-						ui.Text(c, firstNonEmptyStrUI(orig.UnavailableReason, "原帖已删除或不可查看")).
-							FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
-					})
-			} else {
-				origHandle := strings.TrimPrefix(strings.TrimSpace(orig.Author.UniqueID), "@")
-				origName := firstNonEmptyStrUI(orig.Author.Name, origHandle, "原帖作者")
-				ui.Column(c).
-					Label("X离线原帖卡片").
-					FillWidth().
-					Padding(12, 14).
-					Radius(12).
-					Background(ColorBgSecondary).
-					Border(1, ColorBorder).
-					Gap(8).
-					ClipX().
-					Children(func() {
-						ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-							a.renderAccountAvatar(c, "x", origName, orig.Author.UID, 0, 22, false, "", nil)
-							ui.Text(c, origName).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-							if origHandle != "" {
-								ui.Text(c, "@"+origHandle).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
-							}
-							if orig.PubTs > 0 {
-								ui.Text(c, "· "+FormatTimestamp(orig.PubTs)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-							}
-						})
-						if strings.TrimSpace(orig.Text) != "" {
-							a.renderRichText(c, orig.Text, service.MapItemLinksToDTO(orig.Links), richTextOptions{
-								FontSize:   14,
-								LineHeight: LineHeightBody,
-								TextColor:  ColorTextMain,
-							})
-						}
-						if len(origPages) > 0 {
-							a.renderNotePagesGrid(c, item.ItemKey, "x", origPages, true)
-						} else if len(origImages) > 0 {
-							a.renderPostImageGrid(c, PostCardData{
-								ItemKey: item.ItemKey,
-								Site:    "x",
-								Offline: true,
-								Images:  origImages,
-							})
-						} else if hasOrigVid {
-							isGIF := isGIFLibrarySegment(itemCopy, origVidRel)
-							a.renderXOfflineVideoCard(c, itemCopy, origRelCover, origDur, origVidRel, isGIF)
-						}
-						if origCard := libraryRichCardToXDTO(orig.Card); origCard != nil {
-							a.renderXRichCard(c, origCard, "", true)
-						}
-					})
-			}
+			a.renderXOfflineOriginBoxDepth(c, itemCopy, item.Origin, origPages, origImages, hasOrigVid, origRelCover, origDur, origVidRel, "X离线原帖卡片", 0)
 		}
+	}
+
+	threadIDs := make([]string, 0, len(threadParts))
+	for _, pt := range threadParts {
+		if id := strings.TrimSpace(pt.ID); id != "" {
+			threadIDs = append(threadIDs, id)
+		}
+	}
+	offlineRootReplyHint := formatReplyContextHint(item.InReplyTo, threadIDs)
+	offlineTypeLabel := item.NormalizeDisplayTypeLabel()
+	formatOfflineMetaLine := func(pubTs int64) string {
+		var parts []string
+		if pubTs > 0 {
+			parts = append(parts, FormatTimestamp(pubTs))
+		}
+		if offlineTypeLabel != "" {
+			parts = append(parts, offlineTypeLabel)
+		}
+		return strings.Join(parts, " · ")
 	}
 
 	ui.Scroll(c).Grow(1).FillWidth().ClipX().Children(func() {
@@ -1905,8 +2032,8 @@ func (a *App) renderXOfflineDetail(c *ui.Context, item library.ItemMetadata) {
 											if pubTs <= 0 {
 												pubTs = item.PubTs
 											}
-											if pubTs > 0 {
-												ui.Text(c, FormatTimestamp(pubTs)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+											if metaLine := formatOfflineMetaLine(pubTs); metaLine != "" {
+												ui.Text(c, metaLine).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 											}
 										})
 										a.renderLibraryItemMoreMenu(c, item, 32)
@@ -1923,6 +2050,9 @@ func (a *App) renderXOfflineDetail(c *ui.Context, item library.ItemMetadata) {
 									})
 								}
 
+								if isFirst && offlineRootReplyHint != "" {
+									renderReplyContextHintLine(c, offlineRootReplyHint, "X离线回复提示", 12)
+								}
 								if strings.TrimSpace(tp.Text) != "" {
 									bodyLabel := ""
 									if isFocal {
@@ -1952,6 +2082,8 @@ func (a *App) renderXOfflineDetail(c *ui.Context, item library.ItemMetadata) {
 
 								if isFocal {
 									renderOfflineMissingAndExtras()
+								} else if tp.LibOrigin != nil && !sameLibraryOrigin(tp.LibOrigin, item.Origin) {
+									a.renderXOfflineOriginBoxDepth(c, itemCopy, tp.LibOrigin, nil, nil, false, "", 0, "", fmt.Sprintf("X离线串引用：%d", idx+1), 0)
 								}
 							})
 						})
@@ -1973,15 +2105,18 @@ func (a *App) renderXOfflineDetail(c *ui.Context, item library.ItemMetadata) {
 							}
 							renderSiteSmallBadgeWithDot(c, "x", "本机详情站点标记")
 						})
-						if item.PubTs > 0 {
-							ui.Text(c, FormatTimestamp(item.PubTs)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+						if metaLine := formatOfflineMetaLine(item.PubTs); metaLine != "" {
+							ui.Text(c, metaLine).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 						}
 					})
 				})
 				a.renderLibraryItemMoreMenu(c, item, 32)
 			})
 
-			// 2. Full Body Text
+			// 2. Concise reply context hint & Full Body Text
+			if hint := formatReplyContextHint(item.InReplyTo, nil); hint != "" {
+				renderReplyContextHintLine(c, hint, "X离线回复提示", 12)
+			}
 			if body := strings.TrimSpace(firstNonEmptyStrUI(item.Text, item.Desc, item.Title)); body != "" {
 				a.renderRichText(c, body, service.MapItemLinksToDTO(item.Links), richTextOptions{
 					Label:      "X离线正文",
@@ -2010,6 +2145,118 @@ func (a *App) renderXOfflineDetail(c *ui.Context, item library.ItemMetadata) {
 			renderOfflineMissingAndExtras()
 		})
 	})
+}
+
+func (a *App) renderXOfflineOriginBoxDepth(
+	c *ui.Context,
+	item library.ItemMetadata,
+	orig *library.ItemOrigin,
+	origPages []douyinNoteRenderPage,
+	origImages []PostImage,
+	hasOrigVid bool,
+	origRelCover string,
+	origDur int,
+	origVidRel string,
+	label string,
+	depth int,
+) {
+	if orig == nil {
+		return
+	}
+	if orig.Unavailable {
+		unavailLabel := "X原帖不可用提示"
+		if depth > 0 {
+			unavailLabel = "X离线内层引用不可用提示"
+		}
+		bg := ColorBgSecondary
+		if depth > 0 {
+			bg = ColorBgMain
+		}
+		ui.Row(c).
+			Label(unavailLabel).
+			FillWidth().
+			Padding(10, 12).
+			Radius(10).
+			Background(bg).
+			Border(1, ColorBorder).
+			AlignItems(ui.Center).
+			Gap(6).
+			Children(func() {
+				DrawIcon(c, "alert-circle", 15, ColorTextMuted, 1.75)
+				ui.Text(c, firstNonEmptyStrUI(orig.UnavailableReason, "原帖已删除或不可查看")).
+					FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+			})
+		return
+	}
+	origHandle := strings.TrimPrefix(strings.TrimSpace(orig.Author.UniqueID), "@")
+	origName := firstNonEmptyStrUI(orig.Author.Name, origHandle, "原帖作者")
+	bg := ColorBgSecondary
+	padV, padH := float32(12), float32(14)
+	radius := float32(12)
+	avatarSize := float32(22)
+	if depth > 0 {
+		bg = ColorBgMain
+		padV, padH = 9, 11
+		radius = 8
+		avatarSize = 18
+	}
+	ui.Column(c).
+		Label(label).
+		FillWidth().
+		Padding(padV, padH).
+		Radius(radius).
+		Background(bg).
+		Border(1, ColorBorder).
+		Gap(8).
+		ClipX().
+		Children(func() {
+			ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
+				a.renderAccountAvatar(c, "x", origName, orig.Author.UID, 0, avatarSize, false, "", nil)
+				ui.Text(c, origName).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				if origHandle != "" {
+					ui.Text(c, "@"+origHandle).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
+				}
+				if orig.PubTs > 0 {
+					ui.Text(c, "· "+FormatTimestamp(orig.PubTs)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+				}
+			})
+			if replyHint := formatReplyContextHint(orig.InReplyTo, nil); replyHint != "" {
+				ui.Text(c, replyHint).FontSize(11).TextColor(ColorTextMuted).SingleLine()
+			}
+			if strings.TrimSpace(orig.Text) != "" {
+				if depth > 0 {
+					ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMain).MaxLines(4)
+				} else {
+					a.renderRichText(c, orig.Text, service.MapItemLinksToDTO(orig.Links), richTextOptions{
+						FontSize:   14,
+						LineHeight: LineHeightBody,
+						TextColor:  ColorTextMain,
+					})
+				}
+			}
+			if depth == 0 {
+				if len(origPages) > 0 {
+					a.renderNotePagesGrid(c, item.ItemKey, "x", origPages, true)
+				} else if len(origImages) > 0 {
+					a.renderPostImageGrid(c, PostCardData{
+						ItemKey: item.ItemKey,
+						Site:    "x",
+						Offline: true,
+						Images:  origImages,
+					})
+				} else if hasOrigVid {
+					isGIF := isGIFLibrarySegment(item, origVidRel)
+					a.renderXOfflineVideoCard(c, item, origRelCover, origDur, origVidRel, isGIF)
+				}
+				if origCard := libraryRichCardToXDTO(orig.Card); origCard != nil {
+					a.renderXRichCard(c, origCard, "", true)
+				}
+				// Strictly cap nested origin rendering at 1 level (DEC-091).
+				if orig.Origin != nil {
+					a.renderXOfflineOriginBoxDepth(c, item, orig.Origin, nil, nil, false, "", 0, "", "X离线内层引用卡片", depth+1)
+				}
+			}
+		})
 }
 
 func (a *App) renderXOfflineVideoCard(c *ui.Context, item library.ItemMetadata, relCover string, durSec int, videoRel string, isGIF bool) {

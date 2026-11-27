@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"sync"
@@ -141,6 +142,12 @@ func canReuseXPostPlan(post *x.Post, fromDetail bool) bool {
 		return false
 	}
 	if post.IsQuote && post.Quoted == nil && !post.OriginUnavailable {
+		return false
+	}
+	if post.Retweeted != nil && post.Retweeted.IsQuote && post.Retweeted.Quoted == nil && !post.Retweeted.OriginUnavailable {
+		return false
+	}
+	if post.Quoted != nil && post.Quoted.IsQuote && post.Quoted.Quoted == nil && !post.Quoted.OriginUnavailable {
 		return false
 	}
 	if !xMediaListComplete(post.Media) {
@@ -328,7 +335,7 @@ func (b *Backend) buildXWorkPlanFromPost(post *x.Post) (download.WorkDownloadPla
 		var combinedPages []download.PlannedNotePage
 		threadParts := make([]download.PlannedThreadPart, 0, len(post.ThreadAncestors)+1+len(post.Thread))
 
-		appendThreadPost := func(tp *x.Post, pages []download.PlannedNotePage) {
+		appendThreadPost := func(tp *x.Post, pages []download.PlannedNotePage, isFocal bool) {
 			if tp == nil {
 				return
 			}
@@ -341,12 +348,17 @@ func (b *Backend) buildXWorkPlanFromPost(post *x.Post) (download.WorkDownloadPla
 					plan.CoverURLs = []string{pg.ImageURLs[0]}
 				}
 			}
+			var partOrigin *download.PlannedOrigin
+			if !isFocal {
+				partOrigin = buildXPlannedThreadOrigin(tp)
+			}
 			threadParts = append(threadParts, download.PlannedThreadPart{
 				ID:           strings.TrimSpace(tp.ID),
 				PubTs:        tp.CreatedAt,
 				Text:         strings.TrimSpace(tp.Text),
 				Links:        x.BuildPostLinks(tp),
 				MediaIndexes: idxs,
+				Origin:       partOrigin,
 			})
 		}
 
@@ -356,10 +368,10 @@ func (b *Backend) buildXWorkPlanFromPost(post *x.Post) (download.WorkDownloadPla
 			for j, m := range a.Media {
 				aPages = append(aPages, buildXPlannedPageFromMedia(m, j+1))
 			}
-			appendThreadPost(a, aPages)
+			appendThreadPost(a, aPages, false)
 		}
 
-		appendThreadPost(post, focalPages)
+		appendThreadPost(post, focalPages, true)
 
 		for i := range post.Thread {
 			r := &post.Thread[i]
@@ -367,7 +379,7 @@ func (b *Backend) buildXWorkPlanFromPost(post *x.Post) (download.WorkDownloadPla
 			for j, m := range r.Media {
 				rPages = append(rPages, buildXPlannedPageFromMedia(m, j+1))
 			}
-			appendThreadPost(r, rPages)
+			appendThreadPost(r, rPages, false)
 		}
 
 		plan.Thread = threadParts
@@ -389,6 +401,65 @@ func (b *Backend) buildXWorkPlanFromPost(post *x.Post) (download.WorkDownloadPla
 	}
 
 	return plan, nil
+}
+
+func isXQuoteUpdateSnapshot(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+	var snap struct {
+		IsRetweet bool `json:"isRetweet"`
+		IsQuote   bool `json:"isQuote"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &snap); err != nil {
+		return false
+	}
+	return snap.IsQuote && !snap.IsRetweet
+}
+
+func buildXPlannedThreadOrigin(tp *x.Post) *download.PlannedOrigin {
+	if tp == nil {
+		return nil
+	}
+	if tp.Quoted != nil {
+		q := tp.Quoted
+		var card *site.RichCardSummary
+		if q.Card != nil {
+			card = &site.RichCardSummary{
+				Kind:  strings.TrimSpace(q.Card.Kind),
+				Label: strings.TrimSpace(q.Card.Label),
+				Title: strings.TrimSpace(q.Card.Title),
+				Desc:  strings.TrimSpace(q.Card.Desc),
+				URL:   x.SafePublicWebURL(q.Card.URL),
+			}
+		}
+		return &download.PlannedOrigin{
+			Site:              site.X,
+			ID:                strings.TrimSpace(q.ID),
+			CanonicalURL:      x.SafePublicWebURL(q.CanonicalURL),
+			AuthorUID:         strings.TrimSpace(q.Author.RestID),
+			AuthorUniqueID:    strings.TrimSpace(q.Author.ScreenName),
+			AuthorName:        firstNonEmpty(strings.TrimSpace(q.Author.Name), strings.TrimSpace(q.Author.ScreenName), strings.TrimSpace(q.Author.RestID)),
+			AuthorFace:        x.SafePublicImageURL(q.Author.AvatarURL),
+			PubTs:             q.CreatedAt,
+			Text:              strings.TrimSpace(q.FullThreadText()),
+			Links:             x.BuildPostLinks(q),
+			Card:              card,
+			InReplyTo:         x.BuildPostReplyTarget(q),
+			Origin:            x.BuildNestedOriginSummary(q),
+			Unavailable:       q.Unavailable || tp.OriginUnavailable,
+			UnavailableReason: firstNonEmpty(tp.OriginUnavailableReason, q.UnavailableReason),
+		}
+	}
+	if tp.IsQuote && tp.OriginUnavailable {
+		return &download.PlannedOrigin{
+			Site:              site.X,
+			Unavailable:       true,
+			UnavailableReason: strings.TrimSpace(tp.OriginUnavailableReason),
+		}
+	}
+	return nil
 }
 
 func buildXPlannedPageFromMedia(m x.MediaItem, index int) download.PlannedNotePage {

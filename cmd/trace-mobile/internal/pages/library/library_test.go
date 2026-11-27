@@ -957,3 +957,118 @@ func TestLibraryDetailXThreadDedupMediaAnd360dpNoOverflow(t *testing.T) {
 	assertNoHorizontalOverflow(t, tt, 360)
 	p.OnDisconnected()
 }
+
+func TestLibraryDetailXReplyHintThreadPartOriginAndNestedQuoteDepthCap(t *testing.T) {
+	srv, host, cleanup := newSyntheticLibServer(t, 1)
+	defer cleanup()
+
+	now := time.Date(2026, 11, 27, 15, 30, 0, 0, time.UTC).Unix()
+	key := "x:dynamic:1900000000000092001"
+	det := companionapi.LibraryItemDetail{
+		ItemKey:        key,
+		ID:             "1900000000000092001",
+		Site:           "x",
+		Kind:           "dynamic",
+		TypeLabel:      "引用帖子",
+		Status:         "complete",
+		Title:          "详情回复串首帖",
+		Text:           "详情回复串首帖\n\n详情回复串续帖",
+		PubTs:          now - 180,
+		AuthorUID:      "u-x-det-92",
+		AuthorName:     "离线详情串作者",
+		AuthorUniqueID: "detail_threader",
+		InReplyTo:      &companionapi.ItemReplyTargetDTO{StatusID: "1900000000000091999", ScreenName: "external_root"},
+		Origin: &companionapi.ItemOriginDTO{
+			Site:           "x",
+			ID:             "1900000000000092050",
+			AuthorName:     "详情外层被引作者",
+			AuthorUniqueID: "det_outer",
+			Text:           "详情外层引用正文",
+			InReplyTo:      &companionapi.ItemReplyTargetDTO{StatusID: "1900000000000092040"},
+			Origin: &companionapi.ItemOriginDTO{
+				Site:           "x",
+				ID:             "1900000000000092051",
+				AuthorName:     "详情内层被引作者",
+				AuthorUniqueID: "det_inner",
+				Text:           "详情内层嵌套正文",
+				Origin: &companionapi.ItemOriginDTO{
+					Site:       "x",
+					ID:         "1900000000000092052",
+					AuthorName: "详情超深层作者",
+					Text:       "详情第三层不应展示",
+				},
+			},
+		},
+		Thread: []companionapi.ThreadPartDTO{
+			{ID: "1900000000000092001", PubTs: now - 180, Text: "详情回复串首帖"},
+			{
+				ID:    "1900000000000092002",
+				PubTs: now - 120,
+				Text:  "详情回复串续帖",
+				Origin: &companionapi.ItemOriginDTO{
+					Site:           "x",
+					ID:             "1900000000000092060",
+					AuthorName:     "详情续帖引用作者",
+					AuthorUniqueID: "det_part_q",
+					Text:           "详情续帖内嵌引用正文",
+				},
+			},
+		},
+	}
+
+	srv.mu.Lock()
+	srv.details[key] = det
+	srv.mu.Unlock()
+
+	p := New()
+	p.nowFn = func() time.Time { return time.Unix(now, 0).UTC() }
+	notify := make(chan struct{}, 32)
+	host.onUpdate = func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
+
+	p.OnConnected(host)
+	tt := ui.NewTester(func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		p.View(c, host)
+	}, 412, 1600)
+
+	p.openItemDetail(host, key)
+	tt.Advance(400 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if tt.HasText("详情续帖内嵌引用正文") {
+			break
+		}
+		select {
+		case <-notify:
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	for _, want := range []string{
+		"回复 @external_root",
+		"回复一条帖子",
+		"详情外层引用正文",
+		"详情内层嵌套正文",
+		"详情续帖内嵌引用正文",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("mobile library detail missing %q; texts=%v", want, tt.Texts())
+		}
+	}
+	if tt.HasText("详情第三层不应展示") {
+		t.Fatalf("mobile library detail rendered depth-3 nested origin; texts=%v", tt.Texts())
+	}
+
+	for _, w := range []int{360, 412, 800} {
+		tt.SetSize(w, 1600)
+		tt.Frame()
+		assertNoHorizontalOverflow(t, tt, w)
+	}
+	p.OnDisconnected()
+}

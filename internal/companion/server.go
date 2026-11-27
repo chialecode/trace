@@ -650,7 +650,7 @@ func (s *Server) buildFeedItem(fe library.FeedEntry, subByAccount map[string]sub
 		if meta, ok, err := s.backend.GetLibraryItemMetaOnly(fe.ItemKey); err == nil && ok {
 			fi.Status = meta.Status
 			fi.DynamicType = meta.DynamicType
-			fi.TypeLabel = meta.TypeLabel
+			fi.TypeLabel = meta.NormalizeDisplayTypeLabel()
 			fi.Title = firstNonEmpty(meta.Title, fi.Title)
 			fi.Text = firstNonEmpty(meta.Text, fi.Text)
 			fi.Desc = meta.Desc
@@ -661,6 +661,7 @@ func (s *Server) buildFeedItem(fe library.FeedEntry, subByAccount map[string]sub
 			fi.Links = mapLinks(meta.Links)
 			fi.Via = mapVia(meta.Via)
 			fi.Origin = mapOrigin(meta.Origin)
+			fi.InReplyTo = mapReplyTarget(meta.InReplyTo)
 			fi.Card = mapRichCard(meta.Card)
 			fi.Thread = mapThread(meta.Thread)
 			fi.Parts = mapVideoParts(meta.Parts)
@@ -1088,7 +1089,7 @@ func (s *Server) handleLibraryItem(w http.ResponseWriter, key string) {
 		Desc:           meta.Desc,
 		Text:           meta.Text,
 		DynamicType:    meta.DynamicType,
-		TypeLabel:      meta.TypeLabel,
+		TypeLabel:      meta.NormalizeDisplayTypeLabel(),
 		CanonicalURL:   meta.URL,
 		PubTs:          meta.PubTs,
 		CachedAt:       meta.CachedAt,
@@ -1105,6 +1106,7 @@ func (s *Server) handleLibraryItem(w http.ResponseWriter, key string) {
 		Missing:        mapMissing(meta.Missing),
 		Via:            mapVia(meta.Via),
 		Origin:         mapOrigin(meta.Origin),
+		InReplyTo:      mapReplyTarget(meta.InReplyTo),
 		Card:           mapRichCard(meta.Card),
 		Thread:         mapThread(meta.Thread),
 		Links:          mapLinks(meta.Links),
@@ -2336,6 +2338,20 @@ func mapLinks(in []library.ItemLink) []companionapi.TextLink {
 	return out
 }
 
+func mapReplyTarget(in *library.ItemReplyTarget) *companionapi.ItemReplyTargetDTO {
+	if in == nil {
+		return nil
+	}
+	if in.StatusID == "" && in.UserID == "" && in.ScreenName == "" {
+		return nil
+	}
+	return &companionapi.ItemReplyTargetDTO{
+		StatusID:   in.StatusID,
+		UserID:     in.UserID,
+		ScreenName: in.ScreenName,
+	}
+}
+
 func mapThread(in []library.ItemThreadPart) []companionapi.ThreadPartDTO {
 	if len(in) == 0 {
 		return nil
@@ -2348,27 +2364,39 @@ func mapThread(in []library.ItemThreadPart) []companionapi.ThreadPartDTO {
 			Text:         p.Text,
 			Links:        mapLinks(p.Links),
 			MediaIndexes: append([]int(nil), p.MediaIndexes...),
+			Origin:       mapOrigin(p.Origin),
 		})
 	}
 	return out
 }
 
 func mapOrigin(in *library.ItemOrigin) *companionapi.ItemOriginDTO {
+	return mapOriginDepth(in, 0)
+}
+
+func mapOriginDepth(in *library.ItemOrigin, depth int) *companionapi.ItemOriginDTO {
 	if in == nil {
 		return nil
 	}
 	_, uid := library.NormalizeAuthorUID(in.Site, in.Author.UID, in.Author.Mid)
+	var nested *companionapi.ItemOriginDTO
+	if depth < 1 && in.Origin != nil {
+		nested = mapOriginDepth(in.Origin, depth+1)
+	}
 	return &companionapi.ItemOriginDTO{
 		Site:              in.Site,
 		ID:                in.ID,
 		CanonicalURL:      in.CanonicalURL,
 		AuthorUID:         uid,
+		AuthorUniqueID:    in.Author.UniqueID,
 		AuthorName:        in.Author.Name,
 		PubTs:             in.PubTs,
 		Title:             in.Title,
 		Text:              in.Text,
 		Links:             mapLinks(in.Links),
 		Card:              mapRichCard(in.Card),
+		InReplyTo:         mapReplyTarget(in.InReplyTo),
+		Origin:            nested,
 		Unavailable:       in.Unavailable,
 		UnavailableReason: in.UnavailableReason,
 		VideoFromOrigin:   in.VideoFromOrigin,

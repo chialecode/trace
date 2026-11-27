@@ -2162,25 +2162,66 @@ func copyLocalMediaToStageAs(localMeta library.ItemMetadata, srcRel, dstStem, ro
 	return &out, nil
 }
 
-// preserveValidLocalOrigin ensures a valid local Origin (and its fromOrigin media)
-// is never overwritten by Origin.Unavailable == true or nil during safe upgrades.
-func preserveValidLocalOrigin(candidate *library.ItemOrigin, previous library.ItemMetadata, isConflictReplace bool) (*library.ItemOrigin, bool) {
-	localValid := previous.Origin != nil && !previous.Origin.Unavailable &&
-		(strings.TrimSpace(previous.Origin.Text) != "" ||
-			strings.TrimSpace(previous.Origin.Author.Name) != "" ||
-			strings.TrimSpace(previous.Origin.ID) != "")
-	if !localValid {
+func cloneLibraryOriginDepth(src *library.ItemOrigin, depth int) *library.ItemOrigin {
+	if src == nil {
+		return nil
+	}
+	cp := *src
+	cp.Links = append([]library.ItemLink(nil), cp.Links...)
+	if cp.Card != nil {
+		cc := *cp.Card
+		cp.Card = &cc
+	}
+	if cp.InReplyTo != nil {
+		ir := *cp.InReplyTo
+		cp.InReplyTo = &ir
+	}
+	if depth >= 1 {
+		cp.Origin = nil
+	} else {
+		cp.Origin = cloneLibraryOriginDepth(cp.Origin, depth+1)
+	}
+	return &cp
+}
+
+func isValidLocalOriginSnapshot(orig *library.ItemOrigin) bool {
+	return orig != nil && !orig.Unavailable &&
+		(strings.TrimSpace(orig.Text) != "" ||
+			strings.TrimSpace(orig.Author.Name) != "" ||
+			strings.TrimSpace(orig.ID) != "")
+}
+
+// preserveValidOriginSnapshot enforces DEC-076 monotonic protection on an Origin
+// and its depth-1 nested Origin so remote unavailable placeholders or empty
+// payloads never overwrite a valid locally archived snapshot during safe upgrades
+// or non-forced re-caching. The returned bool is true only when the top-level
+// origin itself was restored from prev.
+func preserveValidOriginSnapshot(candidate, prev *library.ItemOrigin, isConflictReplace, forceOverwrite bool, depth int) (*library.ItemOrigin, bool) {
+	if forceOverwrite {
 		return candidate, false
 	}
-	if candidate == nil || candidate.Unavailable {
-		if !isConflictReplace || (candidate != nil && candidate.Unavailable && (candidate.ID == "" || candidate.ID == previous.Origin.ID)) {
-			cp := *previous.Origin
-			if cp.Card != nil {
-				cc := *cp.Card
-				cp.Card = &cc
+	if isValidLocalOriginSnapshot(prev) && (candidate == nil || candidate.Unavailable) {
+		sameOrigin := candidate == nil || candidate.ID == "" || prev.ID == "" || candidate.ID == prev.ID
+		if !isConflictReplace || (candidate != nil && candidate.Unavailable && sameOrigin) {
+			return cloneLibraryOriginDepth(prev, depth), true
+		}
+	}
+	if depth == 0 && candidate != nil && !candidate.Unavailable && prev != nil && prev.Origin != nil {
+		sameOuter := candidate.ID == "" || prev.ID == "" || candidate.ID == prev.ID
+		if sameOuter {
+			nested, nestedPreserved := preserveValidOriginSnapshot(candidate.Origin, prev.Origin, isConflictReplace, forceOverwrite, depth+1)
+			if nestedPreserved {
+				cp := cloneLibraryOriginDepth(candidate, 0)
+				cp.Origin = nested
+				return cp, false
 			}
-			return &cp, true
 		}
 	}
 	return candidate, false
+}
+
+// preserveValidLocalOrigin ensures a valid local Origin (and its fromOrigin media)
+// is never overwritten by Origin.Unavailable == true or nil during safe upgrades.
+func preserveValidLocalOrigin(candidate *library.ItemOrigin, previous library.ItemMetadata, isConflictReplace bool) (*library.ItemOrigin, bool) {
+	return preserveValidOriginSnapshot(candidate, previous.Origin, isConflictReplace, false, 0)
 }
