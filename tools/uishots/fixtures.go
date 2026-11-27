@@ -1340,8 +1340,19 @@ func (e *fixtureEnv) seedRecentAndLive(app *ui.App) {
 			ActiveTitle:  "纯 Go + MyGo 原生桌面架构全链路解析",
 			RecentItems: []service.CacheQueueRecentItem{
 				{ItemKey: e.savedItem.ItemKey, Title: e.savedItem.Title, CachedAt: "2026-11-15T06:00:00Z"},
-				{ItemKey: e.savedDynamicItem.ItemKey, Title: e.savedDynamicItem.Title, CachedAt: "2026-11-15T05:45:00Z"},
 			},
+		},
+		{
+			ID:           "cq_demo_bili_2",
+			Site:         "bilibili",
+			User:         "20002",
+			UserName:     "合成测评频道_Beta",
+			List:         "dynamics",
+			ListLabel:    "动态",
+			Status:       service.CacheQueueQueued,
+			StatusText:   "排队中",
+			CachedCount:  0,
+			SkippedCount: 0,
 		},
 		{
 			ID:           "cq_demo_dy",

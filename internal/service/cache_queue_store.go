@@ -243,13 +243,14 @@ type cacheQueueManager struct {
 	rng    CacheQueueRand
 	pacing CacheQueuePacing
 
-	mu         sync.Mutex
-	tasks      []*cacheQueueEntry
-	fileExists bool
-	started    bool
-	stopCancel context.CancelFunc
-	siteWake   map[site.ID]chan struct{}
-	wg         sync.WaitGroup
+	mu                sync.Mutex
+	tasks             []*cacheQueueEntry
+	fileExists        bool
+	started           bool
+	stopCancel        context.CancelFunc
+	siteWake          map[site.ID]chan struct{}
+	siteCooldownUntil map[site.ID]time.Time
+	wg                sync.WaitGroup
 }
 
 var (
@@ -275,12 +276,13 @@ func newCacheQueueManager(b *Backend, path string, clock CacheQueueClock, rng Ca
 		siteWake[sid] = make(chan struct{}, 1)
 	}
 	m := &cacheQueueManager{
-		b:        b,
-		path:     path,
-		clock:    clock,
-		rng:      rng,
-		pacing:   cfg,
-		siteWake: siteWake,
+		b:                 b,
+		path:              path,
+		clock:             clock,
+		rng:               rng,
+		pacing:            cfg,
+		siteWake:          siteWake,
+		siteCooldownUntil: make(map[site.ID]time.Time, len(site.All())),
 	}
 	backup, err := m.loadFromDiskLocked()
 	if err != nil {

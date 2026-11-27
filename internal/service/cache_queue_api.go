@@ -4,8 +4,16 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/chialecode/trace/internal/site"
+)
+
+// Manual queue reordering directions supported by MoveCacheQueue and MoveDownloadTask.
+const (
+	QueueMoveTop  = "top"
+	QueueMoveUp   = "up"
+	QueueMoveDown = "down"
 )
 
 // ListCacheQueue returns all background cache queue tasks in queue order.
@@ -244,6 +252,230 @@ func (b *Backend) PauseCacheQueue(id string) (CacheQueueTask, error) {
 	}
 	m.wakeSite(siteID)
 	return dto, nil
+}
+
+// MoveCacheQueue manually reorders an unfinished background cache queue task
+// within its owning site ("top", "up", or "down"), persisting cache-queue.json
+// (v3) atomically without bypassing per-site pacing, cooldown, or backoff (DEC-088).
+func (b *Backend) MoveCacheQueue(id, direction string) (CacheQueueTask, error) {
+	if err := b.requireAnyLogin(); err != nil {
+		return CacheQueueTask{}, err
+	}
+	if b.queue == nil {
+		return CacheQueueTask{}, &site.Error{Kind: site.ErrKindUnavailable, Message: "未找到该缓存队列任务"}
+	}
+	target := strings.TrimSpace(id)
+	dir := strings.ToLower(strings.TrimSpace(direction))
+	switch dir {
+	case QueueMoveTop, QueueMoveUp, QueueMoveDown:
+	default:
+		return CacheQueueTask{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的排序方向"}
+	}
+
+	m := b.queue
+	m.mu.Lock()
+	var found *cacheQueueEntry
+	for _, e := range m.tasks {
+		if e.rec.ID == target {
+			found = e
+			break
+		}
+	}
+	if found == nil {
+		m.mu.Unlock()
+		return CacheQueueTask{}, &site.Error{Kind: site.ErrKindUnavailable, Message: "未找到该缓存队列任务"}
+	}
+	if !isUnfinishedQueueStatus(found.rec.Status) {
+		m.mu.Unlock()
+		return CacheQueueTask{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "已结束的缓存队列任务不能调整顺序"}
+	}
+
+	targetSite := site.ID(found.rec.Site)
+	var siteIndices []int
+	pos := -1
+	for i, e := range m.tasks {
+		if e.rec.Site == found.rec.Site && isUnfinishedQueueStatus(e.rec.Status) {
+			if e == found {
+				pos = len(siteIndices)
+			}
+			siteIndices = append(siteIndices, i)
+		}
+	}
+	if pos < 0 || len(siteIndices) < 2 {
+		dto := m.toDTOLocked(found)
+		m.mu.Unlock()
+		return dto, nil
+	}
+
+	type entrySnapshot struct {
+		entry  *cacheQueueEntry
+		rec    cacheQueueRecord
+		resume bool
+	}
+	prevTasks := append([]*cacheQueueEntry(nil), m.tasks...)
+	prevCooldown := m.siteCooldownUntil[targetSite]
+	snaps := make([]entrySnapshot, len(siteIndices))
+	for i, idx := range siteIndices {
+		e := m.tasks[idx]
+		snaps[i] = entrySnapshot{
+			entry:  e,
+			rec:    e.rec,
+			resume: e.rt.resumePendingDownloads,
+		}
+	}
+
+	moved := false
+	switch dir {
+	case QueueMoveTop:
+		if pos > 0 {
+			picked := m.tasks[siteIndices[pos]]
+			for k := pos; k > 0; k-- {
+				m.tasks[siteIndices[k]] = m.tasks[siteIndices[k-1]]
+			}
+			m.tasks[siteIndices[0]] = picked
+			moved = true
+		}
+	case QueueMoveUp:
+		if pos > 0 {
+			iPrev, iCur := siteIndices[pos-1], siteIndices[pos]
+			m.tasks[iPrev], m.tasks[iCur] = m.tasks[iCur], m.tasks[iPrev]
+			moved = true
+		}
+	case QueueMoveDown:
+		if pos < len(siteIndices)-1 {
+			iCur, iNext := siteIndices[pos], siteIndices[pos+1]
+			m.tasks[iCur], m.tasks[iNext] = m.tasks[iNext], m.tasks[iCur]
+			moved = true
+		}
+	}
+	if !moved {
+		dto := m.toDTOLocked(found)
+		m.mu.Unlock()
+		return dto, nil
+	}
+
+	nowStr := m.nowRFC3339()
+	found.rec.UpdatedAt = nowStr
+	notify := m.reconcileSiteOrderLocked(targetSite)
+	if len(notify) == 0 {
+		notify = []cacheQueueRecord{found.rec}
+	}
+	if err := m.saveLocked(); err != nil {
+		m.tasks = prevTasks
+		if prevCooldown.IsZero() {
+			delete(m.siteCooldownUntil, targetSite)
+		} else {
+			m.siteCooldownUntil[targetSite] = prevCooldown
+		}
+		for _, s := range snaps {
+			s.entry.rec = s.rec
+			s.entry.rt.resumePendingDownloads = s.resume
+		}
+		m.mu.Unlock()
+		return CacheQueueTask{}, err
+	}
+	dto := m.toDTOLocked(found)
+	m.mu.Unlock()
+
+	m.notifyStates(notify)
+	m.wakeSite(targetSite)
+	return dto, nil
+}
+
+func isRunnableQueueStatus(status string) bool {
+	switch status {
+	case CacheQueueQueued, CacheQueueRunning, CacheQueueWaiting, CacheQueueWaitingBackoff:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *cacheQueueManager) recordSiteCooldownLocked(siteID site.ID, nextAt time.Time) {
+	if nextAt.IsZero() {
+		return
+	}
+	utc := nextAt.UTC()
+	if cur, ok := m.siteCooldownUntil[siteID]; !ok || utc.After(cur) {
+		m.siteCooldownUntil[siteID] = utc
+	}
+}
+
+func (m *cacheQueueManager) hasEarlierRunnableOnSiteLocked(siteID site.ID, target *cacheQueueEntry) bool {
+	for _, e := range m.tasks {
+		if e == target {
+			return false
+		}
+		if e.rec.Site == string(siteID) && isRunnableQueueStatus(e.rec.Status) {
+			return true
+		}
+	}
+	return false
+}
+
+// reconcileSiteOrderLocked aligns a site's active slot after manual reordering:
+//   - Never interrupts an in-flight CacheQueueRunning entry (it yields cleanly in
+//     finishItemOutcomeLocked once its current item finishes).
+//   - When a waiting / waiting_backoff entry now sits behind an earlier runnable
+//     entry on the same site, demotes the waiting entry back to queued (preserving
+//     all progress and cursor) and carries forward any remaining pacing cooldown so
+//     reordering never bypasses site rate limits.
+func (m *cacheQueueManager) reconcileSiteOrderLocked(siteID site.ID) []cacheQueueRecord {
+	var (
+		firstRunnable *cacheQueueEntry
+		activeEntry   *cacheQueueEntry
+	)
+	for _, e := range m.tasks {
+		if e.rec.Site != string(siteID) {
+			continue
+		}
+		if firstRunnable == nil && isRunnableQueueStatus(e.rec.Status) {
+			firstRunnable = e
+		}
+		if activeEntry == nil {
+			switch e.rec.Status {
+			case CacheQueueRunning, CacheQueueWaiting, CacheQueueWaitingBackoff:
+				activeEntry = e
+			}
+		}
+	}
+	if activeEntry == nil || firstRunnable == nil || activeEntry == firstRunnable {
+		return nil
+	}
+	if activeEntry.rec.Status != CacheQueueWaiting && activeEntry.rec.Status != CacheQueueWaitingBackoff {
+		return nil
+	}
+
+	now := m.clock.Now().UTC()
+	nowStr := now.Format(time.RFC3339)
+	if activeEntry.rec.Status == CacheQueueWaiting && activeEntry.rec.NextRunAt != "" {
+		if nextAt, err := time.Parse(time.RFC3339, activeEntry.rec.NextRunAt); err == nil && nextAt.After(now) {
+			m.recordSiteCooldownLocked(siteID, nextAt)
+		}
+	}
+	activeEntry.rec.Status = CacheQueueQueued
+	activeEntry.rec.PauseReason = ""
+	activeEntry.rec.StopReason = ""
+	activeEntry.rec.NextRunAt = ""
+	activeEntry.rec.UpdatedAt = nowStr
+	activeEntry.rt.resumePendingDownloads = len(activeEntry.rec.ActiveDownloadIDs) > 0
+
+	notify := []cacheQueueRecord{activeEntry.rec}
+	if firstRunnable.rec.Status == CacheQueueQueued {
+		if cooldown := m.siteCooldownUntil[siteID]; cooldown.After(now) {
+			delete(m.siteCooldownUntil, siteID)
+			if firstRunnable.rec.RestThreshold <= 0 {
+				firstRunnable.rec.RestThreshold = m.pickRestThresholdLocked()
+			}
+			firstRunnable.rec.Status = CacheQueueWaiting
+			firstRunnable.rec.PauseReason = ""
+			firstRunnable.rec.StopReason = "已优先排至下一位，等待本站点间隔结束"
+			firstRunnable.rec.NextRunAt = cooldown.Format(time.RFC3339)
+			firstRunnable.rec.UpdatedAt = nowStr
+			notify = append(notify, firstRunnable.rec)
+		}
+	}
+	return notify
 }
 
 // ResumeCacheQueue resumes a paused background cache queue task on its site.

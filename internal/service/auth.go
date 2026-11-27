@@ -597,10 +597,10 @@ func (b *Backend) tryScheduledRenewal(ctx context.Context) {
 		return
 	}
 	if b.subs != nil {
-		if inBackoff, _ := b.subs.IsInBackoff(); inBackoff {
+		if inBackoff, _ := b.subs.IsSiteInBackoff(string(site.Bilibili)); inBackoff {
 			return
 		}
-		if !b.subs.CanUseQuotaTokens(8) {
+		if !b.subs.CanUseSiteQuotaTokens(string(site.Bilibili), 8) {
 			return
 		}
 	}

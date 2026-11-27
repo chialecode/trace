@@ -158,12 +158,14 @@ type Manager struct {
 	taskWaitCh          chan struct{}
 	taskOutcomes        map[string]error
 
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wakeCh     chan struct{}
-	activeRun  map[string]context.CancelFunc
-	activeSite map[string]string
-	wg         sync.WaitGroup
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wakeCh        chan struct{}
+	activeRun     map[string]context.CancelFunc
+	activeSite    map[string]string
+	siteBackoffFn func(siteID site.ID) (bool, time.Time)
+	queueOrder    []string
+	wg            sync.WaitGroup
 }
 
 // NewManager creates and initializes a download Manager backed by db.
@@ -270,6 +272,125 @@ func (m *Manager) SetChunkSize(bytes int64) {
 	m.mu.Unlock()
 }
 
+// SetSiteBackoffChecker registers a per-site backoff probe so claimNextQueuedLocked
+// skips backed-off sites for automatic/queue tasks and dispatches healthy sites
+// without cross-site blocking (DEC-088).
+func (m *Manager) SetSiteBackoffChecker(fn func(siteID site.ID) (bool, time.Time)) {
+	m.mu.Lock()
+	m.siteBackoffFn = fn
+	m.mu.Unlock()
+	m.notifyWake()
+}
+
+// PauseQueuedForBackoff pauses a single queued task with reason "backoff" without
+// affecting other tasks on the same or other sites. Returns true when transitioned.
+func (m *Manager) PauseQueuedForBackoff(taskID, message string) bool {
+	if strings.TrimSpace(taskID) == "" {
+		return false
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "站点处于退避期，等待退避结束"
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := m.db.Exec(`
+		UPDATE download_tasks
+		SET status = 'paused', pause_reason = 'backoff', error_kind = 'backoff', error_message = ?, updated_at = ?
+		WHERE task_id = ? AND status = 'queued'
+	`, message, now, taskID)
+	if err != nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return false
+	}
+	m.mu.Lock()
+	m.removeQueueOrderLocked(taskID)
+	m.mu.Unlock()
+	if updated, ok, gErr := m.GetTask(taskID); gErr == nil && ok {
+		m.emitUpdate(updated)
+	}
+	m.notifyWake()
+	return true
+}
+
+// MoveQueuedTask reorders a queued download task ("top", "up", or "down") in
+// the dispatch queue without changing library.db schema (DEC-088).
+func (m *Manager) MoveQueuedTask(taskID, direction string) (Task, error) {
+	target := strings.TrimSpace(taskID)
+	dir := strings.ToLower(strings.TrimSpace(direction))
+	switch dir {
+	case "top", "up", "down":
+	default:
+		return Task{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "不支持的排序方向"}
+	}
+	if target == "" {
+		return Task{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "缺少下载任务标识"}
+	}
+
+	m.mu.Lock()
+	queuedIDs, err := m.listQueuedIDsLocked()
+	if err != nil {
+		m.mu.Unlock()
+		return Task{}, err
+	}
+	order := m.effectiveQueuedOrderLocked(queuedIDs)
+	pos := -1
+	for i, id := range order {
+		if id == target {
+			pos = i
+			break
+		}
+	}
+	if pos < 0 {
+		m.mu.Unlock()
+		if _, ok, gErr := m.GetTask(target); gErr != nil {
+			return Task{}, gErr
+		} else if !ok {
+			return Task{}, &site.Error{Kind: site.ErrKindUnavailable, Message: "未找到该下载任务"}
+		}
+		return Task{}, &site.Error{Kind: site.ErrKindBadRequest, Message: "仅排队中的下载任务可以调整顺序"}
+	}
+
+	changed := false
+	switch dir {
+	case "top":
+		if pos > 0 {
+			picked := order[pos]
+			copy(order[1:pos+1], order[0:pos])
+			order[0] = picked
+			changed = true
+		}
+	case "up":
+		if pos > 0 {
+			order[pos-1], order[pos] = order[pos], order[pos-1]
+			changed = true
+		}
+	case "down":
+		if pos < len(order)-1 {
+			order[pos], order[pos+1] = order[pos+1], order[pos]
+			changed = true
+		}
+	}
+	if changed {
+		m.queueOrder = order
+	}
+	m.mu.Unlock()
+
+	updated, ok, err := m.GetTask(target)
+	if err != nil {
+		return Task{}, err
+	}
+	if !ok {
+		return Task{}, &site.Error{Kind: site.ErrKindUnavailable, Message: "未找到该下载任务"}
+	}
+	if changed {
+		m.emitBatchTasks("reorder", []string{target})
+		m.notifyWake()
+	}
+	return updated, nil
+}
+
 // Start marks any leftover "queued" or "running" tasks from a previous session as
 // "paused" ("已暂停（应用关闭）") per data-and-cache.md §2.4, and launches the worker loop.
 func (m *Manager) Start(parentCtx context.Context) error {
@@ -289,6 +410,7 @@ func (m *Manager) Start(parentCtx context.Context) error {
 		return err
 	}
 
+	m.queueOrder = nil
 	m.ctx, m.cancel = context.WithCancel(parentCtx)
 	m.mu.Unlock()
 
@@ -1238,22 +1360,56 @@ func (m *Manager) notifyWake() {
 
 func (m *Manager) dispatchLoop() {
 	defer m.wg.Done()
+	var (
+		timer  *time.Timer
+		timerC <-chan time.Time
+	)
+	stopTimer := func() {
+		if timer != nil {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer = nil
+			timerC = nil
+		}
+	}
+	armTimer := func(wakeAt time.Time) {
+		stopTimer()
+		if wakeAt.IsZero() {
+			return
+		}
+		wait := time.Until(wakeAt)
+		if wait < 25*time.Millisecond {
+			wait = 25 * time.Millisecond
+		}
+		timer = time.NewTimer(wait)
+		timerC = timer.C
+	}
+	defer stopTimer()
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-m.wakeCh:
-			m.launchAvailableWorkers()
+			armTimer(m.launchAvailableWorkers())
+		case <-timerC:
+			timer = nil
+			timerC = nil
+			armTimer(m.launchAvailableWorkers())
 		}
 	}
 }
 
-func (m *Manager) launchAvailableWorkers() {
+func (m *Manager) launchAvailableWorkers() time.Time {
+	var earliestBackoffWake time.Time
 	for {
 		m.mu.Lock()
 		if m.ctx == nil || m.ctx.Err() != nil {
 			m.mu.Unlock()
-			return
+			return time.Time{}
 		}
 		maxConc := m.dlSettings.MaxConcurrentTasks
 		if maxConc < 1 {
@@ -1261,13 +1417,16 @@ func (m *Manager) launchAvailableWorkers() {
 		}
 		if len(m.activeRun) >= maxConc {
 			m.mu.Unlock()
-			return
+			return earliestBackoffWake
 		}
 
-		nextTask, ok := m.claimNextQueuedLocked()
+		nextTask, ok, skippedWake := m.claimNextQueuedLocked()
+		if !skippedWake.IsZero() && (earliestBackoffWake.IsZero() || skippedWake.Before(earliestBackoffWake)) {
+			earliestBackoffWake = skippedWake
+		}
 		if !ok {
 			m.mu.Unlock()
-			return
+			return earliestBackoffWake
 		}
 
 		taskCtx, taskCancel := context.WithCancel(m.ctx)

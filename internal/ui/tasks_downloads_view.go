@@ -7,6 +7,7 @@ import (
 
 	"github.com/chialecode/trace/internal/download"
 	"github.com/chialecode/trace/internal/library"
+	"github.com/chialecode/trace/internal/service"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -160,6 +161,14 @@ func (a *App) renderTasksDownloadsView(c *ui.Context) {
 		}
 
 		tasks := a.Tasks
+		queuedOrderPos := make(map[string]int)
+		queuedTotal := 0
+		for _, tk := range tasks {
+			if tk.Status == "queued" {
+				queuedOrderPos[tk.TaskID] = queuedTotal
+				queuedTotal++
+			}
+		}
 		a.TasksListState.Key = func(i int) any {
 			if i >= 0 && i < len(tasks) {
 				return tasks[i].TaskID
@@ -183,8 +192,12 @@ func (a *App) renderTasksDownloadsView(c *ui.Context) {
 			if i == len(tasks)-1 {
 				padBottom = 16
 			}
+			qPos := -1
+			if p, ok := queuedOrderPos[task.TaskID]; ok {
+				qPos = p
+			}
 			ui.Column(c).FillWidth().Padding(padTop, 16, padBottom, 16).ClipX().Children(func() {
-				a.renderDownloadTaskCard(c, task)
+				a.renderDownloadTaskCardOrdered(c, task, qPos, queuedTotal)
 			})
 		}).Label("下载任务列表").Grow(1).FillWidth()
 	})
@@ -223,6 +236,10 @@ func formatBatchRetryInfo(res download.BatchRetryResult) string {
 }
 
 func (a *App) renderDownloadTaskCard(c *ui.Context, task download.Task) {
+	a.renderDownloadTaskCardOrdered(c, task, -1, 0)
+}
+
+func (a *App) renderDownloadTaskCardOrdered(c *ui.Context, task download.Task, queuedPos, queuedTotal int) {
 	taskSite := normalizeSiteIDUI(task.Site)
 	statusLabel := taskStatusText(task.Status)
 	isPaused := task.Status == "paused" || strings.HasPrefix(task.Status, "paused_")
@@ -260,6 +277,11 @@ func (a *App) renderDownloadTaskCard(c *ui.Context, task download.Task) {
 							if task.Source == "auto" {
 								ui.Box(c).Shrink(0).Padding(1, 6).Radius(4).Background(ColorBgMain).Border(1, ColorBorder).Children(func() {
 									ui.Text(c, "自动").FontSize(11).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
+								})
+							}
+							if task.Status == "queued" && queuedPos >= 0 && queuedTotal >= 2 {
+								ui.Box(c).Shrink(0).Padding(1, 6).Radius(4).Background(ColorBgSecondary).Border(1, ColorBorder).Children(func() {
+									ui.Text(c, fmt.Sprintf("排队第 %d 位", queuedPos+1)).FontSize(11).FontWeight(500).TextColor(ColorTextMuted).SingleLine()
 								})
 							}
 						})
@@ -388,6 +410,20 @@ func (a *App) renderDownloadTaskCard(c *ui.Context, task download.Task) {
 								a.ExpandedTaskID = ""
 							} else {
 								a.ExpandedTaskID = task.TaskID
+							}
+						}
+						if task.Status == "queued" && queuedPos >= 0 && queuedTotal >= 2 {
+							if compactOrderButton(c, "置顶", "置顶下载任务："+task.TaskID, queuedPos == 0) {
+								_, err := a.backend.MoveDownloadTask(task.TaskID, service.QueueMoveTop)
+								a.finishTaskAction(err)
+							}
+							if compactOrderButton(c, "上移", "上移下载任务："+task.TaskID, queuedPos == 0) {
+								_, err := a.backend.MoveDownloadTask(task.TaskID, service.QueueMoveUp)
+								a.finishTaskAction(err)
+							}
+							if compactOrderButton(c, "下移", "下移下载任务："+task.TaskID, queuedPos >= queuedTotal-1) {
+								_, err := a.backend.MoveDownloadTask(task.TaskID, service.QueueMoveDown)
+								a.finishTaskAction(err)
 							}
 						}
 					})

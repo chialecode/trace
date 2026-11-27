@@ -495,6 +495,9 @@ func NewBackend(opts Options) (*Backend, error) {
 	liveMgr.SetSiteBackoffChecker(func(siteID site.ID) (bool, time.Time) {
 		return subMgr.IsSiteInBackoff(string(siteID))
 	})
+	dlMgr.SetSiteBackoffChecker(func(siteID site.ID) (bool, time.Time) {
+		return subMgr.IsSiteInBackoff(string(siteID))
+	})
 	liveMgr.SetWebRIDSyncFunc(func(siteID site.ID, uid, webRID string, _ bool) {
 		if siteID == site.Douyin && uid != "" {
 			_ = subMgr.UpdateAccountWebRID(string(site.Douyin), uid, webRID)

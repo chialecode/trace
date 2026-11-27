@@ -601,6 +601,7 @@ type App struct {
 	// Tasks Page (4 sections: "active" | "live" | "attention" | "records", DEC-081)
 	TasksSection              string // "active" | "live" | "attention" | "records" (legacy keys normalized in effectiveTasksSection)
 	TasksActiveTab            string // "downloads" | "queue" sub-tab inside "active"
+	TasksQueueSiteFilter      string // "" | "all" | "bilibili" | "douyin" | "weibo" | "x"
 	SelectedCacheQueueID      string
 	SelectedLiveIncidentKey   string
 	ExpandedLiveIncidentKeys  map[string]bool
