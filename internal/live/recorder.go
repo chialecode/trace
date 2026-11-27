@@ -155,6 +155,9 @@ func (m *Manager) runRecordingSession(ctx context.Context, sess *recordSession, 
 				return reconnectEnded, nil
 			}
 			selection = fresh
+			m.mu.Lock()
+			sess.selectionWroteMedia = false
+			m.mu.Unlock()
 			return reconnectOK, nil
 		},
 		finalizeState: func(reason string, now time.Time) RoomState {
@@ -300,7 +303,7 @@ func (m *Manager) runSessionLoop(ctx context.Context, sess *recordSession, drive
 			}
 		}
 
-		if n > 0 {
+		if n > 0 && wroteMedia {
 			job := partJob{
 				path:        path,
 				partRel:     partRel,
@@ -321,11 +324,9 @@ func (m *Manager) runSessionLoop(ctx context.Context, sess *recordSession, drive
 				}
 			}
 			sess.nextPart++
-			if wroteMedia {
-				hasRecordedMedia = true
-				lostAt = time.Time{}
-				consecutiveTransientSchema = 0
-			}
+			hasRecordedMedia = true
+			lostAt = time.Time{}
+			consecutiveTransientSchema = 0
 		} else {
 			_ = removeFileWithRetry(path)
 			m.mu.Lock()
@@ -442,8 +443,17 @@ func (m *Manager) runSessionLoop(ctx context.Context, sess *recordSession, drive
 	if state.StopReason != "ended" && state.StopReason != "user_stop" && state.StopReason != "app_closed" {
 		stopLevel = "WARN"
 	}
-	m.logEvent(stopLevel, "live record stop: site=%s room=%s reason=%s parts=%d bytes=%d",
-		liveLogSite(sess), liveLogRoom(sess), state.StopReason, state.RecordSegments, state.RecordBytes)
+	stopErr := ""
+	if stopLevel == "WARN" && state.LastError != "" {
+		stopErr = strings.Join(strings.Fields(library.SanitizeLiveIncidentText(state.LastError)), " ")
+	}
+	if stopErr != "" {
+		m.logEvent(stopLevel, "live record stop: site=%s room=%s reason=%s parts=%d bytes=%d err=%s",
+			liveLogSite(sess), liveLogRoom(sess), state.StopReason, state.RecordSegments, state.RecordBytes, stopErr)
+	} else {
+		m.logEvent(stopLevel, "live record stop: site=%s room=%s reason=%s parts=%d bytes=%d",
+			liveLogSite(sess), liveLogRoom(sess), state.StopReason, state.RecordSegments, state.RecordBytes)
+	}
 	if m.onState != nil {
 		leave := sess.enterExternal()
 		m.onState(state)

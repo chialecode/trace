@@ -67,9 +67,7 @@ func (m *Manager) recordBilibiliFLVPart(
 	partPath string,
 ) (int64, error) {
 	allowLocal := m.client != nil && m.client.AllowLocalhost()
-	spec := site.BilibiliMediaTransport(allowLocal)
-	spec.Referer = "https://live.bilibili.com/"
-	spec.Origin = "https://live.bilibili.com"
+	spec := site.BilibiliLiveTransport(allowLocal)
 	return m.recordFLVPartWithTransport(ctx, sess, spec, urls, connPtr, partPath)
 }
 
@@ -181,6 +179,7 @@ func (m *Manager) recordFLVPartWithTransport(
 		lastCPDur = cp.DurationSec
 		m.mu.Lock()
 		sess.wroteMedia = true
+		sess.selectionWroteMedia = true
 		// Keep HTTP-FLV GOP chunk numbering isolated from HLS MEDIA-SEQUENCE tracking.
 		sess.lastSequence = 0
 		sess.hasSequence = false
@@ -280,7 +279,7 @@ func openHTTPFLVStreamWithCallback(ctx context.Context, transport site.MediaTran
 			var se *site.Error
 			if errors.As(err, &se) {
 				lastErr = se
-				if site.IsRoundStop(se) || se.Kind == site.ErrKindBlocked {
+				if site.IsRoundStop(se) {
 					tr.CloseIdleConnections()
 					return nil, "", se
 				}

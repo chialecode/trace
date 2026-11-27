@@ -398,7 +398,22 @@ func TestLiveStatusBatchCacheAndHLSRecorder(t *testing.T) {
 	mux.HandleFunc("/hls/seg100.m4s", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(fragBytes) })
 	mux.HandleFunc("/hls/seg105.m4s", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(fragBytes) })
 	mux.HandleFunc("/hls/corrupt.mp4", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(initBytes) })
-	mux.HandleFunc("/hls/corrupt.m4s", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("not-an-mp4-frag")) })
+	// Serve a syntactically valid fMP4 fragment for an unknown track ID (99) so
+	// fragment framing validation passes and real finalizeLivePart fails conversion.
+	corruptFrag, err := mp4.CreateFragment(1, 99)
+	if err != nil {
+		t.Fatalf("CreateFragment corrupt: %v", err)
+	}
+	corruptFrag.AddFullSample(mp4.FullSample{
+		Sample:     mp4.Sample{Flags: mp4.SyncSampleFlags, Dur: 1000, Size: 4},
+		DecodeTime: 0,
+		Data:       []byte{0x00, 0x00, 0x00, 0x01},
+	})
+	var corruptFragBuf bytes.Buffer
+	if err := corruptFrag.Encode(&corruptFragBuf); err != nil {
+		t.Fatalf("Encode corrupt fragment: %v", err)
+	}
+	mux.HandleFunc("/hls/corrupt.m4s", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(corruptFragBuf.Bytes()) })
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

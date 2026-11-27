@@ -119,6 +119,7 @@ type recordSession struct {
 	lastSequenceAt           time.Time // wall-clock anchor for HLS lastSequence (seeded on resume; cleared on transport switch)
 	segmentDuration          float64
 	wroteMedia               bool
+	selectionWroteMedia      bool
 	quality                  int
 	qualityName              string
 	codec                    string

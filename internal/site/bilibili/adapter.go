@@ -177,9 +177,8 @@ func (a *Adapter) SelectLiveStream(ctx context.Context, uid string, roomOrWebRID
 	if sel.Format == "flv" || sel.Protocol == "http_stream" {
 		transport = site.LiveTransportHTTPFLV
 	}
-	media := a.MediaTransport()
-	media.Referer = "https://live.bilibili.com/"
-	media.Origin = "https://live.bilibili.com"
+	allowLocal := a != nil && a.client != nil && a.client.allowLocalhost
+	media := site.BilibiliLiveTransport(allowLocal)
 	return site.LiveStreamPlan{
 		Site:        site.Bilibili,
 		AccountUID:  accountUID,
