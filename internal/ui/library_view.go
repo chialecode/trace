@@ -665,7 +665,6 @@ func (a *App) OpenLibraryItemDetail(item library.ItemMetadata) {
 		a.pushPreviousRoute(a.currentReturnRoute())
 	}
 	a.CurrentRoute = RouteLibraryItem
-	a.BannerError = ""
 	a.Opening = nil
 	a.PostMenuKey = ""
 	a.CurrentLibraryDetail = &item

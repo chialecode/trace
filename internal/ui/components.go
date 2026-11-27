@@ -1232,8 +1232,7 @@ func (a *App) postMenuItems(c *ui.Context, m *ui.Menu, post PostCardData) {
 	}
 	if m.Item("复制链接").Chosen() {
 		c.WriteClipboard(targetURL)
-		c.Toast("已复制链接")
-		a.BannerInfo = "已复制链接"
+		a.notifyInfo("已复制链接")
 	}
 }
 
@@ -1272,7 +1271,7 @@ func (a *App) cachePost(post PostCardData) {
 			})
 			return struct{}{}, err
 		}, func(struct{}) {
-			a.BannerInfo = "已加入缓存队列：" + dynCopy.ID
+			a.notifyInfo("已加入缓存队列：" + dynCopy.ID)
 			a.RefreshData()
 		}, func(err error) {
 			a.showError(err)
@@ -1284,7 +1283,7 @@ func (a *App) cachePost(post PostCardData) {
 			_, err := backend.EnqueueVideoCache(ctx, download.VideoEnqueueRequest{BVID: bvid})
 			return struct{}{}, err
 		}, func(struct{}) {
-			a.BannerInfo = "已加入缓存队列：" + bvid
+			a.notifyInfo("已加入缓存队列：" + bvid)
 			a.RefreshData()
 		}, func(err error) {
 			a.showError(err)

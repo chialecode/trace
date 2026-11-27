@@ -219,9 +219,9 @@ func (a *App) renderDeleteConfirmOverlay(c *ui.Context, w, h float32) {
 						a.showError(err)
 					} else {
 						if len(plan.PreservedUserFiles) > 0 {
-							a.BannerInfo = fmt.Sprintf("已删除 %d 个条目，并保留了 %d 个不是 TRACE 创建的文件", targetCount, len(plan.PreservedUserFiles))
+							a.notifyInfo(fmt.Sprintf("已删除 %d 个条目，并保留了 %d 个不是 TRACE 创建的文件", targetCount, len(plan.PreservedUserFiles)))
 						} else {
-							a.BannerInfo = fmt.Sprintf("已批量删除 %d 个条目", targetCount)
+							a.notifyInfo(fmt.Sprintf("已批量删除 %d 个条目", targetCount))
 						}
 						a.exitLibrarySelectMode()
 					}
@@ -238,9 +238,9 @@ func (a *App) renderDeleteConfirmOverlay(c *ui.Context, w, h float32) {
 						delete(a.LibrarySelectedKeys, deletedKey)
 					}
 					if len(a.DeleteConfirm.Plan.PreservedUserFiles) > 0 {
-						a.BannerInfo = fmt.Sprintf("已删除缓存记录，并保留了 %d 个不是 TRACE 创建的文件", len(a.DeleteConfirm.Plan.PreservedUserFiles))
+						a.notifyInfo(fmt.Sprintf("已删除缓存记录，并保留了 %d 个不是 TRACE 创建的文件", len(a.DeleteConfirm.Plan.PreservedUserFiles)))
 					} else {
-						a.BannerInfo = "已删除：" + deleteConfirmTitle(a.DeleteConfirm.Item)
+						a.notifyInfo("已删除：" + deleteConfirmTitle(a.DeleteConfirm.Item))
 					}
 					if a.CurrentRoute == RouteLibraryItem && a.CurrentLibraryDetail != nil && a.CurrentLibraryDetail.ItemKey == deletedKey {
 						a.CurrentLibraryDetail = nil

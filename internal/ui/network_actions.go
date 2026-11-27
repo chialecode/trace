@@ -56,7 +56,7 @@ func (a *App) createPreviewedSubscription() {
 	input := strings.TrimSpace(a.AddSubInput)
 	if input != "" && (a.AddSubPreview == nil || a.AddSubPreviewInput != a.AddSubInput) {
 		a.previewNewAccount()
-		a.BannerInfo = "请确认预览中的账号，再创建订阅"
+		a.notifyInfo("请确认预览中的账号，再创建订阅")
 		return
 	}
 	var accounts []subscription.AccountRef
@@ -136,7 +136,7 @@ func (a *App) stopAccountLiveRecording(recKey string) {
 }
 
 func (a *App) refreshAccount() {
-	request(a, "renew-account", a.backend.RefreshCookie, func(credential.Status) { a.BannerInfo = "已完成登录续期检查" })
+	request(a, "renew-account", a.backend.RefreshCookie, func(credential.Status) { a.notifyInfo("已完成登录续期检查") })
 }
 
 func siteFullLabel(siteID string) string {
@@ -168,7 +168,7 @@ func (a *App) logoutSiteAccount(siteID string) {
 			return
 		}
 		a.RefreshData()
-		a.BannerInfo = "已退出" + siteFullLabel(targetSite) + "登录"
+		a.notifyInfo("已退出" + siteFullLabel(targetSite) + "登录")
 	})
 }
 
@@ -275,11 +275,11 @@ func (a *App) checkQualityUpgrades() {
 				upgrades++
 			}
 		}
-		a.BannerInfo = fmt.Sprintf("已完成画质检查：发现 %d 个可升级视频", upgrades)
+		a.notifyInfo(fmt.Sprintf("已完成画质检查：发现 %d 个可升级视频", upgrades))
 	}, func(err error) {
 		a.upgradeCancel = nil
 		if errors.Is(err, context.Canceled) {
-			a.BannerInfo = fmt.Sprintf("已取消画质检查（%d/%d）", a.UpgradeDone, a.UpgradeTotal)
+			a.notifyInfo(fmt.Sprintf("已取消画质检查（%d/%d）", a.UpgradeDone, a.UpgradeTotal))
 		} else {
 			a.showError(err)
 		}
@@ -292,7 +292,7 @@ func (a *App) openImportFollowingsModal() {
 	xIn := a.backend.StatusOf(string(site.X)).LoggedIn
 	if !biliIn && !wbIn && !xIn {
 		a.OpenLoginForSite(string(site.Bilibili))
-		a.LoginError = "请先登录哔哩哔哩、微博或 X 账号后再从关注列表导入"
+		a.setLoginError("请先登录哔哩哔哩、微博或 X 账号后再从关注列表导入")
 		return
 	}
 	targetSite := string(site.Bilibili)

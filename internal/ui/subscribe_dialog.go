@@ -107,7 +107,7 @@ func (a *App) subscribeAsNew() {
 			return
 		}
 		a.closeSubscribePicker()
-		a.BannerInfo = "已移到新建订阅：" + subName
+		a.notifyInfo("已移到新建订阅：" + subName)
 		a.RefreshData()
 		a.refreshSelectedSubscriptionFeed()
 		return
@@ -117,7 +117,7 @@ func (a *App) subscribeAsNew() {
 		return
 	}
 	a.closeSubscribePicker()
-	a.BannerInfo = "已新建订阅：" + subName
+	a.notifyInfo("已新建订阅：" + subName)
 	a.RefreshData()
 }
 
@@ -133,7 +133,7 @@ func (a *App) subscribeInto(sub subscription.Subscription) {
 			return
 		}
 		a.closeSubscribePicker()
-		a.BannerInfo = fmt.Sprintf("已把 %s 移到订阅“%s”", acct.Name, targetName)
+		a.notifyInfo(fmt.Sprintf("已把 %s 移到订阅“%s”", acct.Name, targetName))
 		a.RefreshData()
 		a.refreshSelectedSubscriptionFeed()
 		return
@@ -143,7 +143,7 @@ func (a *App) subscribeInto(sub subscription.Subscription) {
 		return
 	}
 	a.closeSubscribePicker()
-	a.BannerInfo = fmt.Sprintf("已把 %s 加入订阅“%s”", acct.Name, targetName)
+	a.notifyInfo(fmt.Sprintf("已把 %s 加入订阅“%s”", acct.Name, targetName))
 	a.RefreshData()
 }
 

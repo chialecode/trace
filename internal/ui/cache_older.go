@@ -165,7 +165,7 @@ func (a *App) enqueueCacheAll(siteID string) {
 	request(a, "cache-queue-"+siteID+"-"+req.List+"-"+req.User, func(ctx context.Context) (service.CacheQueueTask, error) {
 		return a.backend.EnqueueCacheQueue(ctx, req)
 	}, func(service.CacheQueueTask) {
-		a.BannerInfo = "已加入缓存队列，会在后台慢慢缓存"
+		a.notifyInfo("已加入缓存队列，会在后台慢慢缓存")
 		a.RefreshData()
 	})
 }

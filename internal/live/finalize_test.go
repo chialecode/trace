@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Eyevinn/mp4ff/aac"
+	"github.com/Eyevinn/mp4ff/mp4"
 	"github.com/chialecode/trace/internal/download"
 )
 
@@ -193,4 +195,95 @@ func TestProgressContextReadSeekerSkipsRedundantSeek(t *testing.T) {
 	if n, err := rs.Read(buf); err != nil || n != 4 || string(buf) != "abcd" {
 		t.Fatalf("Read after seek = (%d, %q, %v)", n, string(buf), err)
 	}
+}
+
+// buildSyntheticTwoTrackInitBytes constructs an fMP4 init segment with video track 1
+// and AAC audio track 2 (matching Bilibili HLS fMP4 headers).
+func buildSyntheticTwoTrackInitBytes(t *testing.T) []byte {
+	t.Helper()
+	init := mp4.CreateEmptyInit()
+	init.Moov.Mvhd.Timescale = 1000
+	sps := mustHex(t, testAVCSPSHex)
+	pps := mustHex(t, testAVCPPSHex)
+	v := init.AddEmptyTrack(30000, "video", "und")
+	if err := v.SetAVCDescriptor("avc1", [][]byte{sps}, [][]byte{pps}, true); err != nil {
+		t.Fatal(err)
+	}
+	v.Tkhd.Width, v.Tkhd.Height = mp4.Fixed32(640<<16), mp4.Fixed32(360<<16)
+	a := init.AddEmptyTrack(48000, "audio", "und")
+	if err := a.SetAACDescriptor(aac.AAClc, 48000); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := init.Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestFinalizeLivePartDropsEmptyAuxiliaryTrackWithDefragmentTracks(t *testing.T) {
+	initBytes := buildSyntheticTwoTrackInitBytes(t)
+	sps := mustHex(t, testAVCSPSHex)
+	videoSample := append([]byte{0, 0, 0, byte(len(sps))}, sps...)
+	vf, err := mp4.CreateFragment(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 30; i++ {
+		vf.AddFullSample(mp4.FullSample{
+			Sample:     mp4.Sample{Flags: mp4.SyncSampleFlags, Dur: 1000, Size: uint32(len(videoSample))},
+			DecodeTime: uint64(i) * 1000,
+			Data:       videoSample,
+		})
+	}
+	var raw bytes.Buffer
+	raw.Write(initBytes)
+	if err := vf.Encode(&raw); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify mp4.Defragment alone fails on the 0-sample audio track 2.
+	parsed, err := mp4.DecodeFile(bytes.NewReader(raw.Bytes()), mp4.WithDecodeFlags(mp4.DecStartOnMoof))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mp4.Defragment(parsed, bytes.NewReader(raw.Bytes()), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "track 2 has no samples") {
+		t.Fatalf("expected raw mp4.Defragment to reject empty track 2, got: %v", err)
+	}
+
+	dir := t.TempDir()
+	partPath := filepath.Join(dir, "part-001.mp4.part")
+	finalPath := filepath.Join(dir, "part-001.mp4")
+	if err := os.WriteFile(partPath, raw.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := finalizeLivePart(context.Background(), partPath, finalPath)
+	if err != nil {
+		t.Fatalf("finalizeLivePart failed when audio track 2 had 0 samples: %v", err)
+	}
+	if !summary.MoovBeforeMdat || summary.TrackCount != 1 || summary.DurationSec < 0.9 || summary.DurationSec > 1.1 {
+		t.Fatalf("unexpected converted summary: %+v", summary)
+	}
+	full, err := download.InspectMP4FileContext(context.Background(), finalPath)
+	if err != nil || full.SHA256 != summary.SHA256 {
+		t.Fatalf("InspectMP4FileContext = (%+v, %v), want SHA256 %q", full, err, summary.SHA256)
+	}
+	assertNoTempParts(t, dir)
+}
+
+func TestFinalizeLivePartRejectsInitOnlyZeroSamplePart(t *testing.T) {
+	dir := t.TempDir()
+	partPath := filepath.Join(dir, "part-001.mp4.part")
+	finalPath := filepath.Join(dir, "part-001.mp4")
+	if err := os.WriteFile(partPath, buildSyntheticTwoTrackInitBytes(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := finalizeLivePart(context.Background(), partPath, finalPath)
+	if !errors.Is(err, errFinalizeNoMediaSamples) {
+		t.Fatalf("err = %v, want errFinalizeNoMediaSamples", err)
+	}
+	if _, statErr := os.Stat(finalPath); !os.IsNotExist(statErr) {
+		t.Fatalf("finalPath must not exist after init-only rejection: %v", statErr)
+	}
+	assertNoTempParts(t, dir)
 }

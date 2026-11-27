@@ -634,7 +634,7 @@ func (a *App) applyRuleBatchSelection() {
 	tagName := a.RuleBatch.TagName
 	a.closeRuleBatchDialog()
 	a.syncSelectedSubAfterTagBatch()
-	a.BannerInfo = fmt.Sprintf("已更新标签「%s」的关联订阅（共 %d 个）", tagName, len(selectedIDs))
+	a.notifyInfo(fmt.Sprintf("已更新标签「%s」的关联订阅（共 %d 个）", tagName, len(selectedIDs)))
 }
 
 func (a *App) applyMultiTagBatchSelection() {
@@ -660,14 +660,14 @@ func (a *App) applyMultiTagBatchSelection() {
 	a.syncSelectedSubAfterTagBatch()
 	switch mode {
 	case subscription.TagBatchRemove:
-		a.BannerInfo = fmt.Sprintf("已从 %d 个订阅移除所选缓存标签", len(selectedSubIDs))
+		a.notifyInfo(fmt.Sprintf("已从 %d 个订阅移除所选缓存标签", len(selectedSubIDs)))
 	case subscription.TagBatchReplace:
 		if len(chosenTags) == 0 {
-			a.BannerInfo = fmt.Sprintf("已清空 %d 个订阅的全部缓存标签", len(selectedSubIDs))
+			a.notifyInfo(fmt.Sprintf("已清空 %d 个订阅的全部缓存标签", len(selectedSubIDs)))
 		} else {
-			a.BannerInfo = fmt.Sprintf("已更新 %d 个订阅的缓存标签", len(selectedSubIDs))
+			a.notifyInfo(fmt.Sprintf("已更新 %d 个订阅的缓存标签", len(selectedSubIDs)))
 		}
 	default:
-		a.BannerInfo = fmt.Sprintf("已为 %d 个订阅添加所选缓存标签", len(selectedSubIDs))
+		a.notifyInfo(fmt.Sprintf("已为 %d 个订阅添加所选缓存标签", len(selectedSubIDs)))
 	}
 }

@@ -70,7 +70,7 @@ func (a *App) renderSubExportOverlay(c *ui.Context, w, h float32) {
 					s.Err = userErrorText(err)
 				} else {
 					a.closeSubExport()
-					a.BannerInfo = "订阅已导出到 " + written
+					a.notifyInfo("订阅已导出到 " + written)
 				}
 			}
 		})
@@ -112,7 +112,7 @@ func (a *App) applySubImport() {
 		a.subImportGen++
 		s.ImportOpen, s.Preview, s.Err = false, nil, ""
 		a.refreshSubscriptions()
-		a.BannerInfo = fmt.Sprintf("已导入订阅：新增 %d 个", len(p.New))
+		a.notifyInfo(fmt.Sprintf("已导入订阅：新增 %d 个", len(p.New)))
 	}, func(err error) {
 		s.Err = userErrorText(err)
 	})

@@ -743,7 +743,7 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 							return backend.RebuildLibraryIndex()
 						}, func(rep library.RebuildReport) {
 							a.RefreshData()
-							a.BannerInfo = fmt.Sprintf("索引重建完成：共 %d 条内容", rep.Indexed)
+							a.notifyInfo(fmt.Sprintf("索引重建完成：共 %d 条内容", rep.Indexed))
 						}, func(err error) {
 							a.showError(err)
 						})
@@ -805,7 +805,7 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 						return backend.MigrateCacheDir(targetDir, moveFiles)
 					}, func(rep library.RebuildReport) {
 						a.RefreshData()
-						a.BannerInfo = fmt.Sprintf("已切换缓存目录，索引 %d 项", rep.Indexed)
+						a.notifyInfo(fmt.Sprintf("已切换缓存目录，索引 %d 项", rep.Indexed))
 					}, func(err error) {
 						a.showError(err)
 					})
@@ -841,7 +841,7 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 					}, func(rep library.AddRootReport) {
 						a.AddLibraryRootInput = ""
 						a.RefreshData()
-						a.BannerInfo = fmt.Sprintf("接入了 %d 条，跳过 %d 条（已存在）", rep.Added, rep.Skipped)
+						a.notifyInfo(fmt.Sprintf("接入了 %d 条，跳过 %d 条（已存在）", rep.Added, rep.Skipped))
 					}, func(err error) {
 						a.showError(err)
 					})
@@ -899,8 +899,7 @@ func (a *App) renderLogsSettings(c *ui.Context) {
 					}
 					if OutlinePillButton(c, "复制", "复制运行日志").Clicked() {
 						c.WriteClipboard(strings.Join(logLines, "\n"))
-						c.Toast("已复制运行日志")
-						a.BannerInfo = "已复制运行日志"
+						a.notifyInfo("已复制运行日志")
 					}
 				})
 			})

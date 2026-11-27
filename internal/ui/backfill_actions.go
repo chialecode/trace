@@ -37,7 +37,7 @@ func (a *App) startWeiboBackfill() {
 	}, func(task service.CacheQueueTask) {
 		a.CacheQueue = a.backend.ListCacheQueue()
 		a.refreshBackfillSummary()
-		a.BannerInfo = "已启动历史缓存补全队列"
+		a.notifyInfo("已启动历史缓存补全队列")
 		if task.ID != "" {
 			a.OpenCacheQueueTask(task.ID)
 		}
@@ -71,7 +71,7 @@ func (a *App) confirmForceRecache() {
 		_, err := backend.ForceRecacheItem(ctx, itemKey)
 		return struct{}{}, err
 	}, func(struct{}) {
-		a.BannerInfo = "已加入强制重新下载任务"
+		a.notifyInfo("已加入强制重新下载任务")
 		a.RefreshData()
 	}, func(err error) {
 		a.showError(err)

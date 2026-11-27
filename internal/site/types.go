@@ -135,6 +135,23 @@ func BilibiliMediaTransport(allowLocalhost bool) MediaTransportSpec {
 	}
 }
 
+// BilibiliLiveTransport returns the Bilibili live stream CDN transport policy.
+// Initial playurl candidates must match official Bilibili CDN domains; scheduled
+// multivariant playlists, redirect hops, and segment edges may use public
+// HTTPS:443 vendor CDN hostnames while stripping credentials and enforcing
+// dial-time private/loopback IP guards.
+func BilibiliLiveTransport(allowLocalhost bool) MediaTransportSpec {
+	return MediaTransportSpec{
+		Site:            Bilibili,
+		AllowedDomains:  DefaultBilibiliCDNHosts(),
+		UserAgent:       DefaultUserAgent,
+		Referer:         "https://live.bilibili.com/",
+		Origin:          "https://live.bilibili.com",
+		AllowLocalhost:  allowLocalhost,
+		PublicRedirects: true,
+	}
+}
+
 // DouyinVODTransport returns the standard Douyin VOD and image-note CDN transport policy.
 func DouyinVODTransport(userAgent string, allowLocalhost bool) MediaTransportSpec {
 	if strings.TrimSpace(userAgent) == "" {

@@ -79,9 +79,9 @@ func (a *App) retryAllTasksAction() {
 	res, err := a.backend.RetryAllTasks()
 	a.finishTaskAction(err)
 	if err != nil {
-		a.BannerInfo = ""
+		a.clearInfoNotifications()
 	} else {
-		a.BannerInfo = formatBatchRetryInfo(res)
+		a.notifyInfo(formatBatchRetryInfo(res))
 	}
 }
 

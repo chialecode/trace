@@ -37,6 +37,72 @@ const (
 // within the stall watchdog interval.
 var errFinalizeStalled = errors.New("直播录像转换读写停滞超时")
 
+// errFinalizeNoMediaSamples indicates an fMP4 .part contains an init header
+// (or empty tracks) with no decodable video samples.
+var errFinalizeNoMediaSamples = errors.New("直播录像片段缺少媒体样本")
+
+// liveTracksWithSamples inspects moov tracks and fragment truns to report which
+// tracks carry at least one progressive or fragment sample.
+func liveTracksWithSamples(f *mp4.File) (keptIDs []uint32, hasVideo bool, emptyCount int, totalSamples uint64) {
+	if f == nil {
+		return nil, false, 0, 0
+	}
+	moov := f.Moov
+	if moov == nil && f.Init != nil {
+		moov = f.Init.Moov
+	}
+	if moov == nil {
+		return nil, false, 0, 0
+	}
+	fragSamples := make(map[uint32]uint64, len(moov.Traks))
+	for _, seg := range f.Segments {
+		if seg == nil {
+			continue
+		}
+		for _, frag := range seg.Fragments {
+			if frag == nil || frag.Moof == nil {
+				continue
+			}
+			for _, traf := range frag.Moof.Trafs {
+				if traf == nil || traf.Tfhd == nil {
+					continue
+				}
+				id := traf.Tfhd.TrackID
+				for _, trun := range traf.Truns {
+					if trun == nil {
+						continue
+					}
+					n := uint64(len(trun.Samples))
+					if n == 0 && trun.SampleCount() > 0 {
+						n = uint64(trun.SampleCount())
+					}
+					fragSamples[id] += n
+				}
+			}
+		}
+	}
+	for _, trak := range moov.Traks {
+		if trak == nil || trak.Tkhd == nil {
+			continue
+		}
+		id := trak.Tkhd.TrackID
+		count := fragSamples[id]
+		if trak.Mdia != nil && trak.Mdia.Minf != nil && trak.Mdia.Minf.Stbl != nil && trak.Mdia.Minf.Stbl.Stsz != nil {
+			count += uint64(trak.Mdia.Minf.Stbl.Stsz.GetNrSamples())
+		}
+		totalSamples += count
+		if count == 0 {
+			emptyCount++
+			continue
+		}
+		keptIDs = append(keptIDs, id)
+		if trak.Mdia != nil && trak.Mdia.Hdlr != nil && trak.Mdia.Hdlr.HandlerType == "vide" {
+			hasVideo = true
+		}
+	}
+	return keptIDs, hasVideo, emptyCount, totalSamples
+}
+
 type finalizeStallTimeoutKey struct{}
 
 // withFinalizeStallTimeout returns a child context overriding the no-progress
@@ -247,6 +313,11 @@ func finalizeLivePartFromReadSeeker(ctx context.Context, src io.ReadSeeker, fina
 		return download.MuxTrackSummary{}, wrapFinalizeErr(err, stalled.Load(), stallTimeout)
 	}
 	trimFragmentOverlaps(parsed)
+	keptIDs, hasVideo, emptyCount, _ := liveTracksWithSamples(parsed)
+	if !hasVideo || len(keptIDs) == 0 {
+		stopWatchdog()
+		return download.MuxTrackSummary{}, errFinalizeNoMediaSamples
+	}
 	sourceSec := fragmentTimelineSec(parsed)
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0o700); err != nil {
 		stopWatchdog()
@@ -273,10 +344,16 @@ func finalizeLivePartFromReadSeeker(ctx context.Context, src io.ReadSeeker, fina
 		lastProgress: &lastProgress,
 	}
 
-	if err := mp4.Defragment(parsed, source, sink); err != nil {
+	var defragErr error
+	if emptyCount > 0 {
+		defragErr = mp4.DefragmentTracks(parsed, source, sink, keptIDs...)
+	} else {
+		defragErr = mp4.Defragment(parsed, source, sink)
+	}
+	if defragErr != nil {
 		stopWatchdog()
 		_ = out.Close()
-		return download.MuxTrackSummary{}, wrapFinalizeErr(err, stalled.Load(), stallTimeout)
+		return download.MuxTrackSummary{}, wrapFinalizeErr(defragErr, stalled.Load(), stallTimeout)
 	}
 	if err := bufOut.Flush(); err != nil {
 		stopWatchdog()

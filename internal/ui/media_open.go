@@ -652,7 +652,6 @@ func (a *App) openPlayerSegmentAt(item library.ItemMetadata, index int, seekSec 
 	a.PlayerOverlay.PreviewPendingKey = ""
 	a.PlayerOverlay.PreviewCacheQueued = false
 	a.PlayerOverlay.PreviewCacheError = ""
-	a.PlayerOverlay.PreviewCacheToast = ""
 	a.PlayerOverlay.PreviewOnCache = nil
 	if index < 0 || index >= len(a.PlayerOverlay.Segments) {
 		a.PlayerOverlay.LoadError = "没有已登记的可播放视频，请补全缓存或检查文件。"
@@ -844,7 +843,6 @@ func (a *App) openRemoteVideoPreviewWithCache(siteID, title, rawURL string, loop
 	a.PlayerOverlay.PreviewPendingKey = strings.TrimSpace(cache.PendingKey)
 	a.PlayerOverlay.PreviewCacheQueued = false
 	a.PlayerOverlay.PreviewCacheError = ""
-	a.PlayerOverlay.PreviewCacheToast = ""
 	a.PlayerOverlay.PreviewOnCache = cache.Enqueue
 
 	a.playerOpenSeq++

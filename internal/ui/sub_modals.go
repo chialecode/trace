@@ -329,7 +329,7 @@ func (a *App) renderImportSubOverlay(c *ui.Context, w, h float32) {
 						res, err := a.backend.ImportFollowingCreators(curSite, chosen, a.ImportPreset.SelectedRules())
 						a.showError(err)
 						if err == nil {
-							a.BannerInfo = fmt.Sprintf("已建立 %d 个订阅", res.Created)
+							a.notifyInfo(fmt.Sprintf("已建立 %d 个订阅", res.Created))
 							a.ImportSubModalOpen = false
 							a.RefreshData()
 						}
@@ -397,7 +397,7 @@ func (a *App) persistSubLinksModal(next []subscription.CustomLink, successBanner
 	a.SubLinks.Links = slices.Clone(updated.Links)
 	a.SubLinks.Error = ""
 	if successBanner != "" {
-		a.BannerInfo = successBanner
+		a.notifyInfo(successBanner)
 	}
 	a.RefreshData()
 	return true

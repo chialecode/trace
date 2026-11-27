@@ -415,7 +415,7 @@ func (a *App) renderDouyinWorkGridCard(c *ui.Context, authorName, authorSecUID s
 					canonURL := firstNonEmptyStrUI(card.CanonicalURL, douyinWorkFallbackURL(card.Kind, card.ID))
 					if m.Item("复制链接").Chosen() {
 						c.WriteClipboard(canonURL)
-						c.Toast("已复制链接")
+						a.notifyInfo("已复制链接")
 					}
 					if m.Item("在浏览器中打开").Chosen() {
 						a.showError(a.backend.Desktop().OpenExternalURL(canonURL))

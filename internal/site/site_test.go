@@ -231,6 +231,36 @@ func TestDouyinLiveRedirectHopPolicy(t *testing.T) {
 	if err := BilibiliMediaTransport(false).ValidateRedirectURL("https://edge-7.cdnvendor.example.net/v.m4s"); !IsKind(err, ErrKindBlocked) {
 		t.Fatalf("Bilibili redirect off the allow-list must be blocked, got %v", err)
 	}
+
+	biliLive := BilibiliLiveTransport(false)
+	if err := biliLive.ValidateURL("https://cn-jssz-cm-02-08.bilivideo.com/live-bvc/index.m3u8"); err != nil {
+		t.Fatalf("Bilibili live official host rejected: %v", err)
+	}
+	if err := biliLive.ValidateURL("https://edge-1.h2.smtcdns.net/live-bvc/index.m3u8"); !IsKind(err, ErrKindBlocked) {
+		t.Fatalf("Bilibili live initial URL off allow-list must be blocked, got %v", err)
+	}
+	if err := biliLive.ValidateRedirectURL("https://edge-1.h2.smtcdns.net/live-bvc/index.m3u8?e=1"); err != nil {
+		t.Fatalf("Bilibili live scheduled vendor CDN host blocked: %v", err)
+	}
+	for _, u := range blocked {
+		if err := biliLive.ValidateRedirectURL(u); err == nil {
+			t.Errorf("Bilibili live scheduled/redirect URL %q must be blocked", u)
+		}
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://edge-1.h2.smtcdns.net/live-bvc/index.m3u8", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Cookie", "SESSDATA=must_never_reach_cdn")
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("X-Csrf-Token", "csrf_secret")
+	biliLive.ApplyHeaders(req)
+	if req.Header.Get("Cookie") != "" || req.Header.Get("Authorization") != "" || req.Header.Get("X-Csrf-Token") != "" {
+		t.Fatalf("BilibiliLiveTransport.ApplyHeaders leaked credentials: %+v", req.Header)
+	}
+	if req.Header.Get("Referer") != "https://live.bilibili.com/" || req.Header.Get("Origin") != "https://live.bilibili.com" {
+		t.Fatalf("BilibiliLiveTransport headers = Referer:%q Origin:%q", req.Header.Get("Referer"), req.Header.Get("Origin"))
+	}
 }
 
 func TestExtractShareURLAndRegistryDispatch(t *testing.T) {

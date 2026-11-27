@@ -1148,8 +1148,7 @@ func (a *App) renderMineWeiboPostRow(c *ui.Context, it service.AccountItem) {
 							if post.CanonicalURL != "" {
 								if m.Item("复制链接").Chosen() {
 									c.WriteClipboard(post.CanonicalURL)
-									c.Toast("已复制链接")
-									a.BannerInfo = "已复制链接"
+									a.notifyInfo("已复制链接")
 								}
 								if m.Item("在浏览器中打开").Chosen() {
 									a.showError(a.backend.Desktop().OpenExternalURL(post.CanonicalURL))
@@ -1396,8 +1395,7 @@ func (a *App) renderMineXPostRow(c *ui.Context, it service.AccountItem) {
 							if post.CanonicalURL != "" {
 								if m.Item("复制链接").Chosen() {
 									c.WriteClipboard(post.CanonicalURL)
-									c.Toast("已复制链接")
-									a.BannerInfo = "已复制链接"
+									a.notifyInfo("已复制链接")
 								}
 								if m.Item("在浏览器中打开").Chosen() {
 									a.showError(a.backend.Desktop().OpenExternalURL(post.CanonicalURL))

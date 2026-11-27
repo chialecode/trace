@@ -44,7 +44,6 @@ func (a *App) closePlayerOverlay() {
 	a.PlayerOverlay.PreviewPendingKey = ""
 	a.PlayerOverlay.PreviewCacheQueued = false
 	a.PlayerOverlay.PreviewCacheError = ""
-	a.PlayerOverlay.PreviewCacheToast = ""
 	a.PlayerOverlay.PreviewOnCache = nil
 	if a.player != nil {
 		_ = a.player.Close()

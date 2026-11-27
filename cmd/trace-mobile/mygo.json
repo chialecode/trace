@@ -1,0 +1,16 @@
+{
+  "name": "TRACE",
+  "slug": "trace",
+  "identifier": "io.github.chialecode.trace",
+  "version": "0.1.0",
+  "icon": "../../assets/icon.png",
+  "publisher": "chialecode",
+  "copyright": "© 2026 chialecode",
+  "android": {
+    "minSdk": 26,
+    "permissions": [
+      "CAMERA"
+    ],
+    "splash": "#ffffff"
+  }
+}

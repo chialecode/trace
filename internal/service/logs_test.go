@@ -27,6 +27,9 @@ func TestRuntimeLogsRedactSignedURLsAndCredentialFields(t *testing.T) {
 		b.logInfo(line)
 	}
 	b.logInfo("backend initialized: mode=dev channel=source")
+	b.logInfo("live hls host_fallback: site=bilibili room=1001 part=part-001.mp4.part reason=blocked_variant from_host=d1--cn-gotcha204b.bilivideo.com to_host=cn-jssz-cm-02-08.bilivideo.com")
+	b.logInfo("live recover discarded_empty: site=bilibili room=1001 part=part-002.mp4.part bytes=1147")
+	b.logInfo("live record stop: site=bilibili room=1001 reason=schema_changed parts=1 bytes=1024 err=直播播放列表结构不完整")
 	raw, err := os.ReadFile(b.logPath)
 	if err != nil {
 		t.Fatal(err)
@@ -34,8 +37,15 @@ func TestRuntimeLogsRedactSignedURLsAndCredentialFields(t *testing.T) {
 	if strings.Contains(string(raw), "synthetic-secret") {
 		t.Fatal("runtime log writer saved a signed URL or credential field")
 	}
-	if !strings.Contains(string(raw), "mode=dev channel=source") {
-		t.Fatal("ordinary runtime status was incorrectly redacted")
+	for _, want := range []string{
+		"mode=dev channel=source",
+		"live hls host_fallback:",
+		"live recover discarded_empty:",
+		"live record stop:",
+	} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("ordinary runtime status %q was incorrectly redacted", want)
+		}
 	}
 	// Old runtime logs also pass through the same boundary when displayed/copied.
 	if err := os.WriteFile(b.logPath, []byte("old auth_key=synthetic-secret\nnormal line\n"), 0o600); err != nil {
