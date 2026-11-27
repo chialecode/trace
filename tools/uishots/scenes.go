@@ -2796,27 +2796,54 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			ForbiddenLabels: []string{"立即检查按钮", "自动检查更新开关"},
 		},
 		{
-			// The line below the top bar once an update is ready, its
-			// notes open.
+			// Floating update bubble in the bottom-right corner once an update
+			// is ready, with its release notes expanded (DEC-086).
 			Name: "update-ready",
 			Setup: func() {
+				app.ConflictDiff.Open = false
+				app.PlayerOverlay.Open = false
+				app.PlayerOverlay.VolumeMenuOpen = false
+				app.Navigate(ui.RouteHome)
+				app.BannerError = ""
+				app.BannerLoginSite = ""
+				app.BannerInfo = ""
 				app.BindUpdater(&shotUpdater{st: update.State{
 					Enabled: true, Channel: "stable", CurrentVersion: "0.1.1", Phase: update.PhaseReady,
 					Release: &update.Release{Version: "0.1.2", Notes: "- 订阅支持合集\n- 修复直播录制在断线后的分段"},
 					Prefs:   update.Prefs{AutoCheck: true, AutoDownload: true},
 				}})
 				app.UpdateNotesOpen = true
-				app.Navigate(ui.RouteHome)
 			},
-			RequiredLabels: []string{"更新提示", "更新内容", "关闭更新提示"},
+			RequiredLabels: []string{"悬浮通知区", "更新提示", "更新内容", "关闭更新提示"},
+		},
+		{
+			// Stacked error (with login action) and info floating notification
+			// bubbles anchored in the bottom-right corner without shifting page layout (DEC-086).
+			Name: "floating-notifications",
+			Setup: func() {
+				app.ConflictDiff.Open = false
+				app.PlayerOverlay.Open = false
+				app.PlayerOverlay.VolumeMenuOpen = false
+				app.BindUpdater(nil)
+				app.UpdateNotesOpen = false
+				app.Navigate(ui.RouteHome)
+				app.BannerError = "抖音登录已失效，请重新粘贴 Cookie"
+				app.BannerLoginSite = "douyin"
+				app.BannerInfo = "已加入缓存队列：BV1xx411c7mD"
+			},
+			RequiredLabels: []string{"悬浮通知区", "全局错误提示", "提示去登录", "关闭错误提示", "全局消息提示", "关闭消息提示"},
 		},
 		{
 			// Preview of the green accent (Q-011); the last scene, so the
 			// others keep the default blue.
 			Name: "home-green-accent",
 			Setup: func() {
+				app.ConflictDiff.Open = false
 				app.BindUpdater(nil)
 				app.UpdateNotesOpen = false
+				app.BannerError = ""
+				app.BannerLoginSite = ""
+				app.BannerInfo = ""
 				app.PlayerOverlay.Open = false
 				app.PlayerOverlay.VolumeMenuOpen = false
 				ui.UseAccent("green")

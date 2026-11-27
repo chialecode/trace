@@ -1232,8 +1232,7 @@ func (a *App) postMenuItems(c *ui.Context, m *ui.Menu, post PostCardData) {
 	}
 	if m.Item("复制链接").Chosen() {
 		c.WriteClipboard(targetURL)
-		c.Toast("已复制链接")
-		a.BannerInfo = "已复制链接"
+		a.notifyInfo("已复制链接")
 	}
 }
 

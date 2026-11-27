@@ -95,76 +95,43 @@ func renderBuildVersionBlock(c *ui.Context, name string, build appdirs.Build, ch
 	})
 }
 
-// renderUpdateBanner is the one line below the top bar that tells about an
-// update without interrupting: a new version that is ready (or available,
-// when automatic download is off), or, once after an update, the version
-// that now runs.
-func (a *App) renderUpdateBanner(c *ui.Context) {
+type updateNotice struct {
+	state        update.State
+	text         string
+	notes        string
+	primary      string
+	primaryLabel string
+	dismiss      func()
+}
+
+// activeUpdateNotice returns the update notification to render in the
+// bottom-right floating notification stack, or false when nothing should show.
+func (a *App) activeUpdateNotice() (updateNotice, bool) {
 	st, ok := a.updateState()
 	if !ok {
-		return
+		return updateNotice{}, false
 	}
-	var text, notes string
-	var primary, primaryLabel string
-	dismiss := func() {}
+	n := updateNotice{state: st, dismiss: func() {}}
 	switch {
 	case st.Phase == update.PhaseReady && st.Release != nil && !st.BannerDismissed:
-		text = fmt.Sprintf("新版本 %s 已就绪", st.Release.Version)
-		notes = st.Release.Notes
-		primary, primaryLabel = "重启以更新", "重启以更新到新版本"
-		dismiss = a.updater.DismissBanner
+		n.text = fmt.Sprintf("新版本 %s 已就绪", st.Release.Version)
+		n.notes = st.Release.Notes
+		n.primary, n.primaryLabel = "重启以更新", "重启以更新到新版本"
+		n.dismiss = a.updater.DismissBanner
 	case st.Phase == update.PhaseAvailable && st.Release != nil && !st.BannerDismissed && !st.Prefs.AutoDownload:
-		text = fmt.Sprintf("有新版本 %s", st.Release.Version)
-		notes = st.Release.Notes
-		primary, primaryLabel = "下载并安装", "下载并安装新版本"
-		dismiss = a.updater.DismissBanner
+		n.text = fmt.Sprintf("有新版本 %s", st.Release.Version)
+		n.notes = st.Release.Notes
+		n.primary, n.primaryLabel = "下载并安装", "下载并安装新版本"
+		n.dismiss = a.updater.DismissBanner
 	case st.UpdatedTo != "":
-		text = fmt.Sprintf("已更新到 %s", st.UpdatedTo)
-		notes = st.UpdatedNotes
-		dismiss = a.updater.DismissUpdatedNotice
+		n.text = fmt.Sprintf("已更新到 %s", st.UpdatedTo)
+		n.notes = st.UpdatedNotes
+		n.dismiss = a.updater.DismissUpdatedNotice
 	default:
 		a.UpdateNotesOpen = false
-		return
+		return updateNotice{}, false
 	}
-	ui.Column(c).Label("更新提示").FillWidth().Padding(8, 12).Radius(10).Background(ColorInfoBlueBg).Gap(6).ClipX().Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).ClipX().Children(func() {
-			DrawIcon(c, "check-circle", 16, ColorInfoBlue, 1.8)
-			ui.Text(c, text).FontSize(13).FontWeight(600).TextColor(ColorInfoBlue).SingleLine()
-			if strings.TrimSpace(notes) != "" {
-				label := "更新内容"
-				if a.UpdateNotesOpen {
-					label = "收起更新内容"
-				}
-				link := ui.ButtonBase(c).Label(label).Padding(2, 4)
-				link.Children(func() {
-					ui.Text(c, label).FontSize(13).TextColor(ColorAccent).SingleLine()
-				})
-				if link.Clicked() {
-					a.UpdateNotesOpen = !a.UpdateNotesOpen
-				}
-			}
-			ui.Box(c).Grow(1)
-			if primary != "" && AccentOutlinePillButton(c, primary, primaryLabel).Clicked() {
-				a.onUpdatePrimary(st)
-			}
-			closeBtn := ui.ButtonBase(c).Label("关闭更新提示").Tooltip("关闭").Size(26, 26).Radius(999).Center()
-			if closeBtn.Hovered() {
-				closeBtn.Background(ColorHover)
-			}
-			closeBtn.Children(func() { DrawIcon(c, "close", 14, ColorTextMuted, 1.8) })
-			if closeBtn.Clicked() {
-				a.UpdateNotesOpen = false
-				dismiss()
-			}
-		})
-		if a.UpdateNotesOpen && strings.TrimSpace(notes) != "" {
-			ui.Column(c).Label("更新内容").FillWidth().Padding(4, 26).Gap(2).ClipX().Children(func() {
-				for _, line := range releaseNoteLines(notes) {
-					ui.Text(c, line).FontSize(13).TextColor(ColorTextMain).MaxLines(3)
-				}
-			})
-		}
-	})
+	return n, true
 }
 
 // releaseNoteLines turns the Markdown of a CHANGELOG section into plain lines.

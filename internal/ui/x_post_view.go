@@ -750,8 +750,7 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 						if targetURL != "" {
 							if m.Item("复制链接").Chosen() {
 								c.WriteClipboard(targetURL)
-								c.Toast("已复制链接")
-								a.BannerInfo = "已复制链接"
+								a.notifyInfo("已复制链接")
 							}
 							if m.Item("在浏览器中打开").Chosen() {
 								if err := a.backend.Desktop().OpenExternalURL(targetURL); err != nil {
@@ -1017,8 +1016,7 @@ func (a *App) renderXDetailVideoCard(c *ui.Context, m service.XMediaItemDTO, ite
 		} else if hasPreviewURL {
 			a.openRemoteVideoPreviewWithCache("x", title, m.VideoURL, isGIF, cacheAct)
 		} else if !offline {
-			c.Toast("点击上方「缓存」后可本机播放")
-			a.BannerInfo = "点击上方「缓存」后可本机播放"
+			a.notifyInfo("点击上方「缓存」后可本机播放")
 		}
 	}
 }

@@ -238,7 +238,7 @@ func (a *App) renderDouyinWorkRoute(c *ui.Context, viewportHeight float32) {
 					MoreMenuButton(c, "抖音作品更多", 32, &menuOpen, func(m *ui.Menu) {
 						if m.Item("复制链接").Chosen() {
 							c.WriteClipboard(canonicalURL)
-							c.Toast("已复制链接")
+							a.notifyInfo("已复制链接")
 						}
 						if m.Item("在浏览器中打开").Chosen() {
 							a.showError(a.backend.Desktop().OpenExternalURL(canonicalURL))

@@ -896,8 +896,7 @@ func (a *App) renderLogsSettings(c *ui.Context) {
 					}
 					if OutlinePillButton(c, "复制", "复制运行日志").Clicked() {
 						c.WriteClipboard(strings.Join(logLines, "\n"))
-						c.Toast("已复制运行日志")
-						a.BannerInfo = "已复制运行日志"
+						a.notifyInfo("已复制运行日志")
 					}
 				})
 			})

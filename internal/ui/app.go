@@ -115,7 +115,6 @@ type PlayerOverlayState struct {
 	PreviewPendingKey  string
 	PreviewCacheQueued bool
 	PreviewCacheError  string
-	PreviewCacheToast  string
 	PreviewOnCache     func(context.Context) error
 	LastActiveAt       time.Time
 	ControlsHidden     bool
@@ -289,14 +288,21 @@ type App struct {
 	imageQueue chan struct{}
 
 	// Navigation & per-site auth guard
-	CurrentRoute       string
-	SavedRoute         string
-	PreviousRoute      string
-	navBackStack       []string
-	BannerError        string
-	BannerLoginSite    string
-	BannerInfo         string
-	expiredNoticeShown map[string]bool
+	CurrentRoute           string
+	SavedRoute             string
+	PreviousRoute          string
+	navBackStack           []string
+	BannerError            string
+	BannerLoginSite        string
+	BannerInfo             string
+	bannerInfoSeq          uint64
+	bannerInfoTrackedText  string
+	bannerInfoTrackedSeq   uint64
+	bannerInfoShownAt      time.Time
+	bannerInfoSpent        time.Duration
+	bannerInfoPaused       bool
+	bannerErrorTrackedText string
+	expiredNoticeShown     map[string]bool
 
 	// Expandable post/description states & PostCard "⋯" menu
 	ExpandedPosts map[string]bool
@@ -1267,6 +1273,9 @@ func (a *App) View(c *ui.Context) {
 	if a.PlayerOverlay.Open {
 		a.renderPlayerOverlay(c, w, h)
 	}
+
+	// Unified bottom-right floating notification bubbles (DEC-086).
+	a.renderFloatingNotifications(c, w, h)
 }
 
 // hasOpenModalOverlay reports whether any modal dialog or fullscreen media

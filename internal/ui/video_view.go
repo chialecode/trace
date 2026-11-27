@@ -164,8 +164,7 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 									targetURL := "https://www.bilibili.com/video/" + vd.BVID
 									if m.Item("复制链接").Chosen() {
 										c.WriteClipboard(targetURL)
-										c.Toast("已复制链接")
-										a.BannerInfo = "已复制链接"
+										a.notifyInfo("已复制链接")
 									}
 									if m.Item("在浏览器中打开").Chosen() {
 										if err := a.backend.Desktop().OpenExternalURL(targetURL); err != nil {
@@ -602,7 +601,7 @@ func (a *App) renderCompactVideoRow(c *ui.Context, r compactVideoRow) {
 				}
 				if r.CopyURL != "" && m.Item("复制链接").Chosen() {
 					c.WriteClipboard(r.CopyURL)
-					c.Toast("已复制链接")
+					a.notifyInfo("已复制链接")
 				}
 				if browser != "" && m.Item("在浏览器中打开").Chosen() {
 					if err := a.backend.Desktop().OpenExternalURL(browser); err != nil {

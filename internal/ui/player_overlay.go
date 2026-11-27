@@ -44,11 +44,10 @@ func (a *App) triggerPreviewCache() {
 	requestGuarded(a, reqKey, nil, func(ctx context.Context) (struct{}, error) {
 		return struct{}{}, enqueue(ctx)
 	}, func(struct{}) {
-		a.BannerInfo = "已加入缓存任务"
+		a.notifyInfo("已加入缓存任务")
 		if a.PlayerOverlay.Open && a.PlayerOverlay.PreviewMode && a.playerOpenSeq == seq {
 			a.PlayerOverlay.PreviewCacheQueued = true
 			a.PlayerOverlay.PreviewCacheError = ""
-			a.PlayerOverlay.PreviewCacheToast = "已加入缓存任务"
 		}
 		a.RefreshData()
 	}, func(err error) {
@@ -56,7 +55,6 @@ func (a *App) triggerPreviewCache() {
 		if a.PlayerOverlay.Open && a.PlayerOverlay.PreviewMode && a.playerOpenSeq == seq {
 			a.PlayerOverlay.PreviewCacheQueued = false
 			a.PlayerOverlay.PreviewCacheError = "加入缓存失败：" + userErrorText(err)
-			a.PlayerOverlay.PreviewCacheToast = a.PlayerOverlay.PreviewCacheError
 			a.PlayerOverlay.ControlsHidden = false
 			a.PlayerOverlay.LastActiveAt = time.Time{}
 		}
@@ -73,10 +71,6 @@ func (a *App) renderPlayerOverlay(c *ui.Context, w, h float32) {
 		radius = 16
 	}
 	now := c.Now()
-	if a.PlayerOverlay.PreviewCacheToast != "" {
-		c.Toast(a.PlayerOverlay.PreviewCacheToast)
-		a.PlayerOverlay.PreviewCacheToast = ""
-	}
 	if a.PlayerOverlay.LastActiveAt.IsZero() {
 		a.PlayerOverlay.LastActiveAt = now
 	}
