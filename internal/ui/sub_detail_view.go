@@ -335,7 +335,7 @@ func (a *App) renderSubscriptionDetailHeader(c *ui.Context, sub *subscription.Su
 						_, err := a.backend.UpsertSubscription(*sub)
 						a.showError(err)
 						if err == nil {
-							a.BannerInfo = "已更新订阅名称"
+							a.notifyInfo("已更新订阅名称")
 							a.SubManageModalMode = ""
 							a.RefreshData()
 						}
@@ -352,7 +352,7 @@ func (a *App) renderSubscriptionDetailHeader(c *ui.Context, sub *subscription.Su
 						_, err := a.backend.UpsertSubscription(*sub)
 						a.showError(err)
 						if err == nil {
-							a.BannerInfo = "已更新订阅备注"
+							a.notifyInfo("已更新订阅备注")
 							a.SubManageModalMode = ""
 							a.RefreshData()
 						}

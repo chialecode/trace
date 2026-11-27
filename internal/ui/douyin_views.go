@@ -377,7 +377,7 @@ func (a *App) cacheDouyinWorkFor(awemeID, forUID, forName string) {
 	requestGuarded(a, reqKey, nil, func(ctx context.Context) (download.Task, error) {
 		return backend.CacheDouyinWorkFor(ctx, awemeID, forUID, forName)
 	}, func(download.Task) {
-		a.BannerInfo = "已加入缓存队列：" + awemeID
+		a.notifyInfo("已加入缓存队列：" + awemeID)
 		a.RefreshData()
 	}, func(err error) {
 		a.showError(err)
@@ -397,7 +397,7 @@ func (a *App) cacheDouyinWorkNow(awemeID string) {
 	requestGuarded(a, reqKey, nil, func(ctx context.Context) (download.Task, error) {
 		return backend.CacheDouyinWork(ctx, awemeID)
 	}, func(download.Task) {
-		a.BannerInfo = "已加入缓存队列：" + awemeID
+		a.notifyInfo("已加入缓存队列：" + awemeID)
 		a.RefreshData()
 	}, func(err error) {
 		a.showError(err)

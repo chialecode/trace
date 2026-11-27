@@ -157,12 +157,15 @@ func (a *App) closeAllModalsAndOverlays() {
 	a.ForceRecacheConfirm.Open = false
 	a.RestartConfirmOpen = false
 	a.AddSubDialogOpen = false
+	a.SubLinks.Open = false
 	a.RuleBatch.Open = false
+	a.MultiTagBatch.Open = false
 	a.SubscribePicker.Open = false
 	a.LibraryRefresh.Open = false
 	a.Transfer.ExportOpen = false
 	a.SubFile.ExportOpen = false
 	a.SubFile.ImportOpen = false
+	a.ConflictDiff.Open = false
 	a.subImportGen++
 	a.exitLibrarySelectMode()
 }
@@ -198,8 +201,8 @@ func (a *App) handleSiteAccountLoss(evSite, kind string) {
 			a.LoginSite = evSite
 		}
 		a.CurrentRoute = RouteLogin
-		a.LoginError = siteExpiredLoginPrompt(evSite)
-		a.BannerError = a.LoginError
+		a.setLoginError(siteExpiredLoginPrompt(evSite))
+		a.notifyError(a.LoginError, "")
 		return
 	}
 	if a.expiredNoticeShown == nil {
@@ -211,8 +214,7 @@ func (a *App) handleSiteAccountLoss(evSite, kind string) {
 	}
 	if !a.expiredNoticeShown[noticeKey] {
 		a.expiredNoticeShown[noticeKey] = true
-		a.BannerError = siteExpiredTopNotice(evSite)
-		a.BannerLoginSite = evSite
+		a.notifyError(siteExpiredTopNotice(evSite), evSite)
 	}
 }
 
@@ -229,17 +231,15 @@ func (a *App) TriggerAuthExpired(reason string) {
 		a.LoginSite = excl
 	}
 	a.CurrentRoute = RouteLogin
-	a.LoginError = reason
-	a.BannerError = reason
-	a.BannerLoginSite = ""
+	a.setLoginError(reason)
+	a.notifyError(reason, "")
 	a.backend.PauseAllActiveWork()
 }
 
 // CompleteLogin transitions back to SavedRoute (or RouteHome) after successful login while keeping loaded data intact.
 func (a *App) CompleteLogin() {
-	a.LoginError = ""
-	a.BannerError = ""
-	a.BannerLoginSite = ""
+	a.setLoginError("")
+	a.clearErrorNotifications()
 	a.clearUnsentLoginInputs()
 	if a.expiredNoticeShown != nil {
 		for _, id := range site.All() {
@@ -261,13 +261,14 @@ func (a *App) CompleteLogin() {
 
 // OpenLoginForSite navigates to /login pre-selecting siteID ("bilibili" or "douyin").
 func (a *App) OpenLoginForSite(siteID string) {
+	a.closeAllModalsAndOverlays()
 	if id, ok := site.ParseID(siteID); ok {
 		a.LoginSite = string(id)
 	}
 	if a.CurrentRoute != RouteLogin {
 		a.SavedRoute = a.CurrentRoute
 	}
-	a.LoginError = ""
+	a.setLoginError("")
 	a.Navigate(RouteLogin)
 }
 
@@ -310,7 +311,12 @@ func (a *App) navigate(rawRoute string, fromBack bool) {
 	from := a.currentReturnRoute()
 	prevRoute := a.CurrentRoute
 	route := normalizeAppRoute(rawRoute)
-	a.BannerError = ""
+	if prevRoute == RouteLogin && route != RouteLogin {
+		a.setLoginError("")
+	}
+	if prevRoute == RouteParse && route != RouteParse {
+		a.setLastParseError("")
+	}
 	a.openSeq++
 	a.Opening = nil
 	a.PostMenuKey = ""
@@ -872,7 +878,7 @@ type OpeningPreview struct {
 func (a *App) SubmitParse(raw string) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		a.LastParseError = "粘贴链接、分享文本或 UID"
+		a.setLastParseError("粘贴链接、分享文本或 UID")
 		return
 	}
 	a.openLink(trimmed, nil)
@@ -1125,9 +1131,7 @@ func (a *App) openLink(raw string, preview *OpeningPreview) {
 }
 
 func (a *App) openLinkCore(raw string, preview *OpeningPreview) {
-	a.LastParseError = ""
-	a.BannerError = ""
-	a.BannerLoginSite = ""
+	a.setLastParseError("")
 	a.openSeq++
 	seq := a.openSeq
 	if preview != nil {
@@ -1198,7 +1202,7 @@ func (a *App) openLinkCore(raw string, preview *OpeningPreview) {
 			a.Opening.Err = msg
 			return
 		}
-		a.LastParseError = msg
+		a.setLastParseError(msg)
 		a.showError(err)
 	})
 }

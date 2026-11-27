@@ -107,41 +107,14 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 						actor := *a.HomeActorFilter
 						a.renderAccountAvatar(c, actor.Site, actor.Name, actor.UID, actor.Mid, 28, a.isActorLive(actor), "", nil, actor.Face)
 					}
-					ui.Text(c, a.routeTitle()).FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+					ui.Text(c, a.routeTitle()).FontSize(18).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
+					// Never show unrelated background loading state on RouteParse; keep it inline so the top bar height stays fixed.
+					if a.hasForegroundPending() && a.CurrentRoute != RouteParse {
+						ui.Text(c, "正在加载…").Label("请求进行中").FontSize(12).TextColor(ColorInfoBlue).SingleLine().Shrink(0)
+					}
 				})
 				a.renderRouteHeaderActions(c)
 			})
-
-			// Never show unrelated background loading state on RouteParse.
-			if a.hasForegroundPending() && a.CurrentRoute != RouteParse {
-				ui.Text(c, "正在加载…").Label("请求进行中").FontSize(12).TextColor(ColorInfoBlue)
-			}
-
-			if a.BannerError != "" && !(a.CurrentRoute == RouteParse && a.BannerError == a.LastParseError) {
-				renderErrorBanner(c, "", a.BannerError, func() {
-					if a.BannerLoginSite != "" && a.CurrentRoute != RouteLogin {
-						targetSite := a.BannerLoginSite
-						if AccentPillButton(c, "去登录", "提示去登录").Clicked() {
-							a.BannerError = ""
-							a.BannerLoginSite = ""
-							a.OpenLoginForSite(targetSite)
-						}
-					}
-					if OutlinePillButton(c, "关闭", "关闭错误提示").Clicked() {
-						a.BannerError = ""
-						a.BannerLoginSite = ""
-					}
-				})
-			}
-			a.renderUpdateBanner(c)
-			if a.BannerInfo != "" {
-				ui.Row(c).FillWidth().Padding(8, 12).Radius(10).Background(ColorInfoBlueBg).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
-					ui.Text(c, a.BannerInfo).FontSize(13).TextColor(ColorInfoBlue).MaxLines(2).Grow(1)
-					if OutlinePillButton(c, "知道了", "关闭消息提示").Clicked() {
-						a.BannerInfo = ""
-					}
-				})
-			}
 		})
 
 	// Without the context panel (a narrow window), the site filter and people

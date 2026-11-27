@@ -25,7 +25,7 @@ func (a *App) cacheWeiboPostNow(mid string, via *library.ItemVia) {
 		_, err := backend.CacheWeiboPost(ctx, mid, viaCopy)
 		return struct{}{}, err
 	}, func(struct{}) {
-		a.BannerInfo = "已加入缓存队列：" + mid
+		a.notifyInfo("已加入缓存队列：" + mid)
 		a.RefreshData()
 	}, func(err error) {
 		a.showError(err)
@@ -43,7 +43,7 @@ func (a *App) cacheWeiboVideoNow(oid string) {
 		_, err := backend.CacheWeiboVideo(ctx, oid)
 		return struct{}{}, err
 	}, func(struct{}) {
-		a.BannerInfo = "已加入缓存队列：" + oid
+		a.notifyInfo("已加入缓存队列：" + oid)
 		a.RefreshData()
 	}, func(err error) {
 		a.showError(err)
@@ -846,8 +846,7 @@ func (a *App) renderWeiboOnlinePostDetail(c *ui.Context, post *service.WeiboPost
 						if targetURL != "" {
 							if m.Item("复制链接").Chosen() {
 								c.WriteClipboard(targetURL)
-								c.Toast("已复制链接")
-								a.BannerInfo = "已复制链接"
+								a.notifyInfo("已复制链接")
 							}
 							if m.Item("在浏览器中打开").Chosen() {
 								if err := a.backend.Desktop().OpenExternalURL(targetURL); err != nil {
@@ -1007,8 +1006,7 @@ func (a *App) renderWeiboDetailVideoCard(c *ui.Context, v *service.WeiboVideoDTO
 		} else if hasPreviewURL {
 			a.openRemoteVideoPreviewWithCache("weibo", firstNonEmptyStrUI(v.Title, "微博视频"), v.VideoURL, false, cacheAct)
 		} else if !offline {
-			c.Toast("点击上方「缓存」后可本机播放")
-			a.BannerInfo = "点击上方「缓存」后可本机播放"
+			a.notifyInfo("点击上方「缓存」后可本机播放")
 		}
 	}
 }
@@ -1189,8 +1187,7 @@ func (a *App) renderWeiboStandaloneVideo(c *ui.Context, vv *service.WeiboVideoVi
 						if targetURL != "" {
 							if m.Item("复制链接").Chosen() {
 								c.WriteClipboard(targetURL)
-								c.Toast("已复制链接")
-								a.BannerInfo = "已复制链接"
+								a.notifyInfo("已复制链接")
 							}
 							if m.Item("在浏览器中打开").Chosen() {
 								if err := a.backend.Desktop().OpenExternalURL(targetURL); err != nil {

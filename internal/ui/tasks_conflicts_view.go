@@ -152,7 +152,7 @@ func (a *App) startResolveConflict(id, choice string) {
 		return struct{}{}, backend.ResolveCacheConflict(ctx, id, choice)
 	}, func(struct{}) {
 		a.ConflictActionError = ""
-		a.BannerInfo = conflictResolvedNotice(choice)
+		a.notifyInfo(conflictResolvedNotice(choice))
 		a.cacheStateRev++
 		a.refreshTasks()
 		a.refreshCacheConflicts()
@@ -191,13 +191,13 @@ func (a *App) startResolveAllConflicts(choice string) {
 		return backend.ResolveAllCacheConflicts(ctx, choice)
 	}, func(res service.ConflictBatchResult) {
 		a.ConflictActionError = ""
-		a.BannerInfo = formatConflictBatchInfo(res)
+		a.notifyInfo(formatConflictBatchInfo(res))
 		a.cacheStateRev++
 		a.refreshTasks()
 		a.refreshCacheConflicts()
 	}, func(err error) {
 		a.backend.LogUserError(err)
-		a.BannerInfo = ""
+		a.clearInfoNotifications()
 		a.ConflictActionError = "批量处理未完成：" + userErrorText(err)
 		a.cacheStateRev++
 		a.refreshCacheConflicts()

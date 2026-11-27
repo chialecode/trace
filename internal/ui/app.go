@@ -115,7 +115,6 @@ type PlayerOverlayState struct {
 	PreviewPendingKey  string
 	PreviewCacheQueued bool
 	PreviewCacheError  string
-	PreviewCacheToast  string
 	PreviewOnCache     func(context.Context) error
 	LastActiveAt       time.Time
 	ControlsHidden     bool
@@ -289,14 +288,21 @@ type App struct {
 	imageQueue chan struct{}
 
 	// Navigation & per-site auth guard
-	CurrentRoute       string
-	SavedRoute         string
-	PreviousRoute      string
-	navBackStack       []string
-	BannerError        string
-	BannerLoginSite    string
-	BannerInfo         string
-	expiredNoticeShown map[string]bool
+	CurrentRoute           string
+	SavedRoute             string
+	PreviousRoute          string
+	navBackStack           []string
+	BannerError            string
+	BannerLoginSite        string
+	BannerInfo             string
+	notificationStack      []floatingNotice
+	notificationNextID     uint64
+	bannerInfoTrackedText  string
+	bannerErrorTrackedText string
+	bannerErrorTrackedSite string
+	updateNoticeTrackedKey string
+	lastAnnouncedNoticeID  uint64
+	expiredNoticeShown     map[string]bool
 
 	// Expandable post/description states & PostCard "⋯" menu
 	ExpandedPosts map[string]bool
@@ -936,7 +942,7 @@ func (a *App) handleBackendEvent(ev service.Event) {
 		a.cacheStateRev++
 		a.cachedDiagAt = time.Time{}
 		if strings.HasSuffix(ev.Message, ":storage") {
-			a.BannerError = "任务状态写入失败，请检查存储后重试"
+			a.notifyError("任务状态写入失败，请检查存储后重试", "")
 		}
 		a.refreshTasks()
 		if ev.Type == service.EventLibraryChanged {
@@ -1242,9 +1248,6 @@ func (a *App) View(c *ui.Context) {
 	if a.ForceRecacheConfirm.Open {
 		a.renderForceRecacheConfirmOverlay(c, w, h)
 	}
-	if a.RestartConfirmOpen && a.updater != nil {
-		a.renderRestartConfirmOverlay(c, w, h)
-	}
 	if a.AddSubDialogOpen {
 		a.renderAddSubOverlay(c, w, h)
 	}
@@ -1284,6 +1287,14 @@ func (a *App) View(c *ui.Context) {
 	if a.PlayerOverlay.Open {
 		a.renderPlayerOverlay(c, w, h)
 	}
+	// Render restart confirmation above all modals and media layers so clicking
+	// "重启以更新" on the floating update bubble is never hidden behind them.
+	if a.RestartConfirmOpen && a.updater != nil {
+		a.renderRestartConfirmOverlay(c, w, h)
+	}
+
+	// Unified bottom-right floating notification bubbles (DEC-086).
+	a.renderFloatingNotifications(c, w, h)
 }
 
 // hasOpenModalOverlay reports whether any modal dialog or fullscreen media
