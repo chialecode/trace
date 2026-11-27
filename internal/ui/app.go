@@ -249,6 +249,7 @@ type App struct {
 	accountWorksDirty           bool
 	accountWorksDirtyGen        uint64
 	accountWorksRequestedGen    uint64
+	libraryItemsGen             uint64
 
 	// Cached diagnostics/update metadata to avoid per-frame SQLite & Registry reads.
 	cachedDiag           service.Diagnostics
@@ -1030,6 +1031,7 @@ func (a *App) RefreshData() {
 	a.cacheStateRev++
 	a.libraryRev++
 	a.libraryItemsDirty = false
+	a.libraryItemsGen++
 	a.subFeedDirty = true
 	a.cachedDiagAt = time.Time{}
 	a.HistoryItems = a.backend.ListHistory()

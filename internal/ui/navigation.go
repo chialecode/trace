@@ -664,6 +664,7 @@ func (a *App) selectLibraryFilter() {
 }
 
 func (a *App) reloadLibraryItems() {
+	a.libraryItemsGen++
 	a.libraryOffset = 0
 	a.LibraryListState.ScrollTo(0, ui.Start)
 	a.loadLibraryPage(true)
@@ -672,6 +673,7 @@ func (a *App) reloadLibraryItems() {
 // reloadLibraryItemsInPlace refreshes visible library items on background library
 // changes without violently resetting the user's scroll position to the top.
 func (a *App) reloadLibraryItemsInPlace() {
+	a.libraryItemsGen++
 	limit := a.libraryInPlaceLimit()
 	items, err := a.backend.ListLibraryItems(a.currentLibraryFeedFilter(limit, 0))
 	if err != nil {
@@ -716,6 +718,7 @@ func (a *App) libraryAuthorFilter() (authors []int64, authorRefs []library.Autho
 }
 
 func (a *App) loadLibraryPage(reset bool) {
+	a.libraryItemsGen++
 	items, err := a.backend.ListLibraryItems(a.currentLibraryFeedFilter(60, a.libraryOffset))
 	if err != nil {
 		a.LibraryError = userErrorText(err)

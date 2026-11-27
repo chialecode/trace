@@ -19,6 +19,7 @@ type bgRefreshSpec struct {
 	wantAccountWorks     bool
 	accountWorksDirtyGen uint64
 	wantLibraryItems     bool
+	libraryItemsGen      uint64
 	libraryFilter        library.FeedFilter
 	libraryDetailKey     string
 }
@@ -37,6 +38,7 @@ type bgRefreshResult struct {
 	accountWorksDirtyGen uint64
 	accountWorks         map[string]service.AccountWorks
 	hasLibraryItems      bool
+	libraryItemsGen      uint64
 	libraryFilter        library.FeedFilter
 	libraryItems         []library.ItemMetadata
 	libraryItemsErr      error
@@ -99,10 +101,16 @@ func (a *App) clearPendingEventLoopState() {
 	a.bgRefreshPendingRes = nil
 	a.bgRefreshApplyQueued = false
 	a.bgRefreshMu.Unlock()
+
+	a.libraryStatsRequestedGen = 0
+	a.backfillSummaryRequestedGen = 0
+	a.accountWorksRequestedGen = 0
 }
 
 // enqueueBackendEvent coalesces incoming backend events and ensures at most one
-// flush closure is queued into MyGo's mainLoop at a time.
+// flush closure is queued into MyGo's mainLoop at a time. When an incoming event
+// matches an existing coalescing key, the older slot is removed and the latest
+// event is appended to the tail so arrival order across interleaved keys is preserved.
 func (a *App) enqueueBackendEvent(ev service.Event, updateFn func(func())) {
 	if updateFn == nil {
 		a.handleBackendEvent(ev)
@@ -113,19 +121,15 @@ func (a *App) enqueueBackendEvent(ev service.Event, updateFn func(func())) {
 	}
 	key := backendEventCoalesceKey(ev)
 	a.eventMu.Lock()
-	replaced := false
 	if key != "" {
 		for i := range a.pendingEvents {
 			if backendEventCoalesceKey(a.pendingEvents[i]) == key {
-				a.pendingEvents[i] = ev
-				replaced = true
+				a.pendingEvents = append(a.pendingEvents[:i], a.pendingEvents[i+1:]...)
 				break
 			}
 		}
 	}
-	if !replaced {
-		a.pendingEvents = append(a.pendingEvents, ev)
-	}
+	a.pendingEvents = append(a.pendingEvents, ev)
 	shouldSchedule := !a.eventFlushQueued
 	if shouldSchedule {
 		a.eventFlushQueued = true
@@ -306,11 +310,8 @@ func (a *App) scheduleLibraryChangedRefresh() {
 		if needLibItems {
 			a.libraryItemsDirty = false
 			spec.wantLibraryItems = true
-			limit := 60
-			if a.CurrentRoute == RouteLibrary {
-				limit = a.libraryInPlaceLimit()
-			}
-			spec.libraryFilter = a.currentLibraryFeedFilter(limit, 0)
+			spec.libraryItemsGen = a.libraryItemsGen
+			spec.libraryFilter = a.currentLibraryFeedFilter(a.libraryInPlaceLimit(), 0)
 			if a.CurrentRoute == RouteLibraryItem && a.CurrentLibraryDetail != nil {
 				spec.libraryDetailKey = a.CurrentLibraryDetail.ItemKey
 			}
@@ -370,14 +371,13 @@ func (a *App) currentLibraryFeedFilter(limit, offset int) library.FeedFilter {
 	}
 }
 
-func libraryFeedFilterEqual(x, y library.FeedFilter) bool {
+func libraryFeedFilterCriteriaEqual(x, y library.FeedFilter) bool {
 	return x.Site == y.Site &&
 		x.Kind == y.Kind &&
 		x.ExcludeForward == y.ExcludeForward &&
 		x.Mid == y.Mid &&
 		x.Keyword == y.Keyword &&
 		x.Sort == y.Sort &&
-		x.Limit == y.Limit &&
 		x.Offset == y.Offset &&
 		slices.Equal(x.Authors, y.Authors) &&
 		slices.Equal(x.AuthorRefs, y.AuthorRefs)
@@ -456,6 +456,7 @@ func mergeBgRefreshSpec(dst *bgRefreshSpec, src bgRefreshSpec) {
 	}
 	if src.wantLibraryItems {
 		dst.wantLibraryItems = true
+		dst.libraryItemsGen = src.libraryItemsGen
 		dst.libraryFilter = src.libraryFilter
 	}
 	if src.libraryDetailKey != "" {
@@ -487,6 +488,7 @@ func mergeBgRefreshResult(dst *bgRefreshResult, src bgRefreshResult) {
 	}
 	if src.hasLibraryItems {
 		dst.hasLibraryItems = true
+		dst.libraryItemsGen = src.libraryItemsGen
 		dst.libraryFilter = src.libraryFilter
 		dst.libraryItems = src.libraryItems
 		dst.libraryItemsErr = src.libraryItemsErr
@@ -568,6 +570,7 @@ func executeBgRefresh(ctx context.Context, spec bgRefreshSpec) bgRefreshResult {
 	if spec.wantLibraryItems && ctx.Err() == nil {
 		items, err := spec.backend.ListLibraryItems(spec.libraryFilter)
 		res.hasLibraryItems = true
+		res.libraryItemsGen = spec.libraryItemsGen
 		res.libraryFilter = spec.libraryFilter
 		res.libraryItems = items
 		res.libraryItemsErr = err
@@ -641,9 +644,12 @@ func (a *App) applyPendingBgRefreshResult() {
 			a.accountWorksDirty = false
 		}
 	}
-	if res.hasLibraryItems && (a.CurrentRoute == RouteLibrary || a.CurrentRoute == RouteLibraryItem) {
-		curFilter := a.currentLibraryFeedFilter(res.libraryFilter.Limit, 0)
-		if libraryFeedFilterEqual(curFilter, res.libraryFilter) {
+	if res.hasLibraryItems &&
+		(a.CurrentRoute == RouteLibrary || a.CurrentRoute == RouteLibraryItem) &&
+		res.libraryItemsGen == a.libraryItemsGen {
+		curLimit := a.libraryInPlaceLimit()
+		curFilter := a.currentLibraryFeedFilter(curLimit, 0)
+		if libraryFeedFilterCriteriaEqual(curFilter, res.libraryFilter) && res.libraryFilter.Limit >= curLimit {
 			if res.libraryItemsErr != nil {
 				a.LibraryError = userErrorText(res.libraryItemsErr)
 			} else {

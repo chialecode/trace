@@ -37,6 +37,7 @@ type slowEventCountingBackend struct {
 	backfillSummary service.BackfillSummaryDTO
 	listAllItems    []library.ItemMetadata
 	listWeiboItems  []library.ItemMetadata
+	listPageHook    func(f library.FeedFilter) ([]library.ItemMetadata, bool, error)
 }
 
 func (b *slowEventCountingBackend) SubscribeEvents(fn func(service.Event)) func() {
@@ -88,6 +89,11 @@ func (b *slowEventCountingBackend) SubscriptionAccountWorks() map[string]service
 
 func (b *slowEventCountingBackend) ListLibraryItems(f library.FeedFilter) ([]library.ItemMetadata, error) {
 	b.listLibCalls.Add(1)
+	if b.listPageHook != nil {
+		if items, handled, err := b.listPageHook(f); handled {
+			return items, err
+		}
+	}
 	if f.Site == "all" && b.listAllEntered != nil {
 		b.listAllOnce.Do(func() { close(b.listAllEntered) })
 		if b.listAllRelease != nil {
@@ -502,4 +508,241 @@ func TestBindEventLoopSynchronousUpdateFnDoesNotSelfDeadlock(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("deadlock in synchronous BindEventLoop dispatch")
 	}
+}
+
+// TestAsyncLibraryRefreshRejectsStalePaginationAndSyncReload verifies that an
+// in-flight async ListLibraryItems result cannot truncate a user's paginated
+// /library list (e.g. 60 -> 80 items) or resurrect items removed by a newer
+// synchronous reload under the exact same filter.
+func TestAsyncLibraryRefreshRejectsStalePaginationAndSyncReload(t *testing.T) {
+	t.Run("pagination_not_truncated", func(t *testing.T) {
+		app, _, cleanup := newTestUIApp(t)
+		defer cleanup()
+		seedUIFeed(t, app, 1)
+		app.Navigate(RouteLibrary)
+		app.LibrarySiteFilter = "all"
+
+		page1 := make([]library.ItemMetadata, 60)
+		for i := range page1 {
+			page1[i] = library.ItemMetadata{ItemKey: fmt.Sprintf("weibo:dynamic:p1_%03d", i), Site: "weibo", Title: fmt.Sprintf("P1-%d", i)}
+		}
+		page2 := make([]library.ItemMetadata, 20)
+		for i := range page2 {
+			page2[i] = library.ItemMetadata{ItemKey: fmt.Sprintf("weibo:dynamic:p2_%03d", i), Site: "weibo", Title: fmt.Sprintf("P2-%d", i)}
+		}
+
+		staleEntered := make(chan struct{})
+		staleRelease := make(chan struct{})
+		var staleOnce sync.Once
+		defer func() {
+			select {
+			case <-staleRelease:
+			default:
+				close(staleRelease)
+			}
+		}()
+
+		stub := &slowEventCountingBackend{
+			BackendAPI: app.backend,
+			listPageHook: func(f library.FeedFilter) ([]library.ItemMetadata, bool, error) {
+				if f.Offset == 0 && f.Limit == 60 {
+					staleOnce.Do(func() { close(staleEntered) })
+					<-staleRelease
+					return append([]library.ItemMetadata(nil), page1...), true, nil
+				}
+				if f.Offset == 60 && f.Limit == 60 {
+					return append([]library.ItemMetadata(nil), page2...), true, nil
+				}
+				return nil, false, nil
+			},
+		}
+		app.backend = stub
+		app.LibraryItems = append([]library.ItemMetadata(nil), page1...)
+		app.libraryOffset = len(page1)
+		app.LibraryHasMore = true
+
+		mainQueue := make(chan func(), 64)
+		app.BindEventLoop(func(fn func()) { mainQueue <- fn })
+
+		// Background EventLibraryChanged starts an async limit=60 reload.
+		stub.emit(service.Event{Type: service.EventLibraryChanged, Site: "weibo", Message: "weibo:dynamic:bg"})
+		fn := <-mainQueue
+		fn()
+
+		select {
+		case <-staleEntered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for async ListLibraryItems(limit=60) to enter")
+		}
+
+		// User scrolls down and loads page 2 (60 -> 80 items) while async query is in-flight.
+		app.loadLibraryPage(false)
+		if len(app.LibraryItems) != 80 || app.libraryOffset != 80 {
+			t.Fatalf("expected 80 paginated items before async reply, got len=%d offset=%d", len(app.LibraryItems), app.libraryOffset)
+		}
+
+		// Release older limit=60 async result and drain UI apply callback.
+		close(staleRelease)
+		select {
+		case applyFn := <-mainQueue:
+			applyFn()
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for stale apply callback")
+		}
+
+		if len(app.LibraryItems) != 80 || app.libraryOffset != 80 {
+			t.Fatalf("stale async limit=60 result truncated paginated /library list: len=%d offset=%d, want 80", len(app.LibraryItems), app.libraryOffset)
+		}
+	})
+
+	t.Run("sync_reload_after_delete_not_overwritten", func(t *testing.T) {
+		app, _, cleanup := newTestUIApp(t)
+		defer cleanup()
+		seedUIFeed(t, app, 1)
+		app.Navigate(RouteLibrary)
+		app.LibrarySiteFilter = "all"
+
+		itemA := library.ItemMetadata{ItemKey: "weibo:dynamic:keep_a", Site: "weibo", Title: "保留条目A"}
+		itemB := library.ItemMetadata{ItemKey: "weibo:dynamic:del_b", Site: "weibo", Title: "已删条目B"}
+
+		staleEntered := make(chan struct{})
+		staleRelease := make(chan struct{})
+		var staleOnce sync.Once
+		var blockFirst atomic.Bool
+		blockFirst.Store(true)
+		var mu sync.Mutex
+		currentDB := []library.ItemMetadata{itemA, itemB}
+		defer func() {
+			select {
+			case <-staleRelease:
+			default:
+				close(staleRelease)
+			}
+		}()
+
+		stub := &slowEventCountingBackend{
+			BackendAPI: app.backend,
+			listPageHook: func(f library.FeedFilter) ([]library.ItemMetadata, bool, error) {
+				if f.Offset == 0 && blockFirst.CompareAndSwap(true, false) {
+					staleOnce.Do(func() { close(staleEntered) })
+					<-staleRelease
+					return []library.ItemMetadata{itemA, itemB}, true, nil
+				}
+				mu.Lock()
+				snap := append([]library.ItemMetadata(nil), currentDB...)
+				mu.Unlock()
+				return snap, true, nil
+			},
+		}
+		app.backend = stub
+		app.LibraryItems = []library.ItemMetadata{itemA, itemB}
+		app.libraryOffset = 2
+
+		mainQueue := make(chan func(), 64)
+		app.BindEventLoop(func(fn func()) { mainQueue <- fn })
+
+		// Start async reload that captures pre-delete snapshot [A, B].
+		stub.emit(service.Event{Type: service.EventLibraryChanged, Site: "weibo", Message: "weibo:dynamic:pre"})
+		fn := <-mainQueue
+		fn()
+
+		select {
+		case <-staleEntered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for pre-delete async ListLibraryItems to enter")
+		}
+
+		// User deletes itemB and synchronously reloads /library under the SAME filter.
+		mu.Lock()
+		currentDB = []library.ItemMetadata{itemA}
+		mu.Unlock()
+		app.reloadLibraryItems()
+		if len(app.LibraryItems) != 1 || app.LibraryItems[0].ItemKey != itemA.ItemKey {
+			t.Fatalf("expected post-delete list [keep_a], got %+v", app.LibraryItems)
+		}
+
+		// Release stale pre-delete snapshot [A, B] and drain apply callback.
+		close(staleRelease)
+		select {
+		case applyFn := <-mainQueue:
+			applyFn()
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for stale pre-delete apply callback")
+		}
+
+		if len(app.LibraryItems) != 1 || app.LibraryItems[0].ItemKey != itemA.ItemKey {
+			t.Fatalf("stale pre-delete async snapshot resurrected deleted item: %+v", app.LibraryItems)
+		}
+	})
+}
+
+// TestBindEventLoopCoalescingPreservesArrivalOrderAcrossInterleavedKeys ensures
+// coalescing moves a duplicate key to the tail instead of mutating its older slot
+// in place, so interleaved related events (expired -> logged_in -> expired and
+// progress -> checked -> progress) always leave the UI in the latest arrival state.
+func TestBindEventLoopCoalescingPreservesArrivalOrderAcrossInterleavedKeys(t *testing.T) {
+	t.Run("account_expired_logged_in_expired_keeps_final_expired", func(t *testing.T) {
+		app, _, cleanup := newTestUIApp(t)
+		defer cleanup()
+		seedUIFeed(t, app, 1)
+		app.Navigate(RouteHome)
+
+		stub := &slowEventCountingBackend{BackendAPI: app.backend}
+		app.backend = stub
+
+		mainQueue := make(chan func(), 16)
+		app.BindEventLoop(func(fn func()) { mainQueue <- fn })
+
+		// Interleave expired -> logged_in -> expired before UI drains.
+		stub.emit(service.Event{Type: service.EventAccountChanged, Site: "weibo", Message: "expired"})
+		stub.emit(service.Event{Type: service.EventAccountChanged, Site: "weibo", Message: "logged_in"})
+		stub.emit(service.Event{Type: service.EventAccountChanged, Site: "weibo", Message: "expired"})
+
+		if len(mainQueue) != 1 {
+			t.Fatalf("expected 1 coalesced flush callback, got %d", len(mainQueue))
+		}
+		fn := <-mainQueue
+		fn()
+
+		if !app.expiredNoticeShown["weibo"] || app.BannerError == "" {
+			t.Fatalf("interleaved expired -> logged_in -> expired reversed order: expiredNoticeShown=%v BannerError=%q",
+				app.expiredNoticeShown, app.BannerError)
+		}
+	})
+
+	t.Run("subscription_progress_checked_progress_preserves_tail_order", func(t *testing.T) {
+		app, _, cleanup := newTestUIApp(t)
+		defer cleanup()
+		seedUIFeed(t, app, 1)
+
+		stub := &slowEventCountingBackend{BackendAPI: app.backend}
+		app.backend = stub
+		app.mu.Lock()
+		app.pending["check-updates"] = true
+		app.mu.Unlock()
+
+		mainQueue := make(chan func(), 16)
+		app.BindEventLoop(func(fn func()) { mainQueue <- fn })
+
+		stub.emit(service.Event{Type: service.EventSubscriptionChecked, Message: "progress:1/5"})
+		stub.emit(service.Event{Type: service.EventSubscriptionChecked, Message: "checked=5"})
+		stub.emit(service.Event{Type: service.EventSubscriptionChecked, Message: "progress:2/7"})
+
+		// Inspect queued order directly before drain: checked=5 must precede progress:2/7.
+		app.eventMu.Lock()
+		gotOrder := make([]string, len(app.pendingEvents))
+		for i, ev := range app.pendingEvents {
+			gotOrder[i] = ev.Message
+		}
+		app.eventMu.Unlock()
+		if len(gotOrder) != 2 || gotOrder[0] != "checked=5" || gotOrder[1] != "progress:2/7" {
+			t.Fatalf("coalesced queue order = %v, want [checked=5 progress:2/7]", gotOrder)
+		}
+
+		fn := <-mainQueue
+		fn()
+		if app.CheckDone != 2 || app.CheckTotal != 7 {
+			t.Fatalf("CheckDone/CheckTotal = %d/%d, want 2/7", app.CheckDone, app.CheckTotal)
+		}
+	})
 }
