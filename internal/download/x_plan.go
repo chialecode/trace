@@ -203,7 +203,7 @@ func (m *Manager) consumeInitialOrFetchXPlan(ctx context.Context, taskID, target
 	}
 	m.mu.Unlock()
 
-	if hasInitial && (initial.TargetID != "" || initial.AuthorUID != "" || len(initial.VideoURLs) > 0 || len(initial.Pages) > 0) {
+	if hasInitial && (initial.TargetID != "" || initial.AuthorUID != "" || len(initial.VideoURLs) > 0 || len(initial.Pages) > 0 || initial.Article != nil) {
 		initial.Site = site.X
 		initial.Transport = normalizeXMediaTransport(initial.Transport)
 		return initial, planner, nil
@@ -850,16 +850,25 @@ func (m *Manager) executeXPostTask(
 	editAdvanced := (plan.EditCount > 0 && plan.EditCount > previous.EditCount) ||
 		(plan.EditTs > 0 && previous.EditTs > 0 && plan.EditTs > previous.EditTs)
 	fullText, threadParts := buildXTextAndThread(rawID, plan, previous, isConflict, forceOverwrite)
+	if plan.Article != nil {
+		fullText = firstNonEmptyStr(fullText, strings.TrimSpace(plan.Article.PlainText), strings.TrimSpace(plan.Article.Title))
+	}
 	if hasProtectedLocal && !isConflict && !forceOverwrite {
 		fullText = preserveMonotonicText(previous.Text, fullText, editAdvanced)
 	}
-	title := firstNonEmptyStr(plan.Title, plan.Desc, fullText, t.Title, "X 帖子 "+rawID)
+	articleTitle := ""
+	if plan.Article != nil {
+		articleTitle = strings.TrimSpace(plan.Article.Title)
+	}
+	title := firstNonEmptyStr(articleTitle, plan.Title, plan.Desc, fullText, t.Title, "X 帖子 "+rawID)
 	canonicalURL := firstNonEmptyStr(sanitizeXCanonicalPageURL(plan.CanonicalURL), xFallbackCanonicalURL(rawID))
 	t.Title = title
 	t.AuthorName = firstNonEmptyStr(plan.AuthorName, t.AuthorName)
 	t.AuthorFace = sanitizeXTaskURL(firstNonEmptyStr(plan.AuthorFace, t.AuthorFace))
 	if len(plan.CoverURLs) > 0 {
 		t.CoverURL = sanitizeXTaskURL(plan.CoverURLs[0])
+	} else if plan.Article != nil && len(plan.Article.CoverURLs) > 0 {
+		t.CoverURL = sanitizeXTaskURL(plan.Article.CoverURLs[0])
 	}
 
 	dynType := "word"
@@ -867,6 +876,10 @@ func (m *Manager) executeXPostTask(
 	if len(plan.Pages) > 0 || (preserveOriginFiles && len(previous.NotePages) > 0) {
 		dynType = "draw"
 		typeLabel = "图文"
+	}
+	if plan.Article != nil {
+		dynType = "article"
+		typeLabel = "文章"
 	}
 	if forward {
 		dynType = "forward"
@@ -902,6 +915,7 @@ func (m *Manager) executeXPostTask(
 	var notePages []library.NotePageRecord
 	var missing []library.MissingRecord
 	var partialErrors []string
+	var articleMeta *library.ItemArticle
 	finalSaved := false
 
 	defer func() {
@@ -943,6 +957,7 @@ func (m *Manager) executeXPostTask(
 			Origin:       originMeta,
 			InReplyTo:    inReplyToMeta,
 			Card:         cardMeta,
+			Article:      articleMeta,
 			Thread:       threadParts,
 		}
 		saved, sErr := m.lib.SaveItem(itemDir, partialMeta)
@@ -957,7 +972,7 @@ func (m *Manager) executeXPostTask(
 
 	refreshOncePlan := m.makeSinglePlanRefresherForSite(ctx, site.X, t.TargetID, planner)
 
-	if cfg.SaveCover && len(plan.CoverURLs) > 0 && len(plan.Pages) == 0 {
+	if plan.Article == nil && cfg.SaveCover && len(plan.CoverURLs) > 0 && len(plan.Pages) == 0 {
 		reusedCover := false
 		if hasProtectedLocal && !isConflict && !forceOverwrite {
 			for _, mf := range previous.Media {
@@ -1352,6 +1367,41 @@ func (m *Manager) executeXPostTask(
 		}
 	}
 
+	if plan.Article != nil {
+		artMeta, artMedia, artMissing, artPartialErrs, artErr := m.downloadXArticleAssets(
+			ctx, workTask, workDir, previous, exists, hasProtectedLocal, isConflict, forceOverwrite,
+			plan, title, fullText, len(plan.Pages), refreshOncePlan,
+		)
+		if artErr != nil {
+			return artErr
+		}
+		articleMeta = artMeta
+		mediaFiles = append(mediaFiles, artMedia...)
+		missing = append(missing, artMissing...)
+		partialErrors = append(partialErrors, artPartialErrs...)
+	} else if previous.Article != nil && !isConflict && !forceOverwrite {
+		articleMeta = library.SanitizeItemArticle(previous.Article, string(site.X))
+		if hasProtectedLocal && articleMeta != nil {
+			havePath := make(map[string]bool, len(mediaFiles))
+			for _, mf := range mediaFiles {
+				havePath[mf.Path] = true
+			}
+			copyPrevArtFile := func(rel, role string) {
+				if rel == "" || havePath[rel] || !mediaIsValid(previous, rel) {
+					return
+				}
+				if copied, rErr := copyLocalMediaToStageAs(previous, rel, rel, role, workDir); rErr == nil {
+					mediaFiles = append(mediaFiles, *copied)
+					havePath[rel] = true
+				}
+			}
+			copyPrevArtFile(articleMeta.CoverRel, "cover")
+			for _, blk := range articleMeta.Blocks {
+				copyPrevArtFile(blk.MediaRel, "image")
+			}
+		}
+	}
+
 	if hasProtectedLocal && (isConflict || forceOverwrite) && len(partialErrors) > 0 {
 		return wrapRemoteDegradedMsg(fmt.Sprintf("新版部分媒体已失效，已保留本地原文件 (%s)", strings.Join(partialErrors, "; ")))
 	}
@@ -1395,6 +1445,7 @@ func (m *Manager) executeXPostTask(
 		Origin:       originMeta,
 		InReplyTo:    inReplyToMeta,
 		Card:         cardMeta,
+		Article:      articleMeta,
 		Thread:       threadParts,
 		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
 	}
@@ -1417,6 +1468,154 @@ func (m *Manager) executeXPostTask(
 	t.ItemKey = saved.ItemKey
 	finalSaved = true
 	return nil
+}
+
+func (m *Manager) downloadXArticleAssets(
+	ctx context.Context,
+	workTask *Task,
+	workDir string,
+	previous library.ItemMetadata,
+	exists bool,
+	hasProtectedLocal bool,
+	isConflict bool,
+	forceOverwrite bool,
+	plan WorkDownloadPlan,
+	fallbackTitle string,
+	fallbackPlainText string,
+	imageIndexOffset int,
+	refreshOncePlan func() (WorkDownloadPlan, error),
+) (*library.ItemArticle, []library.MediaFile, []library.MissingRecord, []string, error) {
+	if plan.Article == nil {
+		return nil, nil, nil, nil, nil
+	}
+	art := &library.ItemArticle{
+		Title:     firstNonEmptyStr(strings.TrimSpace(plan.Article.Title), fallbackTitle),
+		PlainText: firstNonEmptyStr(strings.TrimSpace(plan.Article.PlainText), fallbackPlainText),
+	}
+	var mediaFiles []library.MediaFile
+	var missing []library.MissingRecord
+	var partialErrors []string
+
+	findPrevCoverRel := func() string {
+		if previous.Article != nil && previous.Article.CoverRel != "" && mediaIsValid(previous, previous.Article.CoverRel) {
+			return previous.Article.CoverRel
+		}
+		for _, mf := range previous.Media {
+			if mf.Role == "cover" && mediaIsValid(previous, mf.Path) {
+				return mf.Path
+			}
+		}
+		return ""
+	}
+	findPrevBlockImgRel := func(blockIdx int) string {
+		if previous.Article == nil || blockIdx < 0 || blockIdx >= len(previous.Article.Blocks) {
+			return ""
+		}
+		rel := strings.TrimSpace(previous.Article.Blocks[blockIdx].MediaRel)
+		if rel != "" && mediaIsValid(previous, rel) {
+			return rel
+		}
+		return ""
+	}
+
+	coverURLs := plan.Article.CoverURLs
+	if len(coverURLs) == 0 {
+		coverURLs = plan.CoverURLs
+	}
+	if len(coverURLs) > 0 {
+		var coverMedia *library.MediaFile
+		var cErr error
+		prevCover := findPrevCoverRel()
+		if hasProtectedLocal && !isConflict && !forceOverwrite && prevCover != "" {
+			coverMedia, _ = copyLocalMediaToStageAs(previous, prevCover, "cover", "cover", workDir)
+		}
+		if coverMedia == nil {
+			coverCandidates := buildXImageCandidateURLs(coverURLs)
+			refreshCover := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
+				if fresh.Article != nil && len(fresh.Article.CoverURLs) > 0 {
+					return buildXImageCandidateURLs(fresh.Article.CoverURLs), nil
+				}
+				return buildXImageCandidateURLs(fresh.CoverURLs), nil
+			})
+			coverMedia, cErr = m.cacheDouyinSniffedImage(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, "cover", "cover", coverCandidates, plan.Article.CoverWidth, plan.Article.CoverHeight, plan.Transport, refreshCover)
+			if cErr != nil && hasProtectedLocal && !forceOverwrite && prevCover != "" && ctx.Err() == nil && !isStorageError(cErr) {
+				if copied, rErr := copyLocalMediaToStageAs(previous, prevCover, "cover", "cover", workDir); rErr == nil {
+					coverMedia, cErr = copied, nil
+				}
+			}
+		}
+		if cErr != nil {
+			if isSiteStopError(cErr) || isStorageError(cErr) || ctx.Err() != nil {
+				return nil, nil, nil, nil, cErr
+			}
+			if hasProtectedLocal && (isConflict || forceOverwrite) && isDegradedSiteError(cErr) {
+				return nil, nil, nil, nil, wrapRemoteDegraded(cErr)
+			}
+			reason := "文章封面下载失败 (" + classifyDownloadError(cErr) + ")"
+			missing = append(missing, library.MissingRecord{Item: "cover", Reason: reason})
+			partialErrors = append(partialErrors, reason)
+		} else if coverMedia != nil {
+			art.CoverRel = coverMedia.Path
+			mediaFiles = append(mediaFiles, *coverMedia)
+		}
+	}
+
+	nextImgIdx := imageIndexOffset
+	if len(plan.Article.Blocks) > 0 {
+		art.Blocks = make([]library.ItemArticleBlock, 0, len(plan.Article.Blocks))
+		for bi, blk := range plan.Article.Blocks {
+			itemBlk := library.ItemArticleBlock{
+				Type:    blk.Type,
+				Text:    strings.TrimSpace(blk.Text),
+				Links:   buildWeiboItemLinks(blk.Links, nil),
+				TweetID: strings.TrimSpace(blk.TweetID),
+			}
+			if len(blk.ImageURLs) > 0 {
+				nextImgIdx++
+				imgIdx := nextImgIdx
+				blockIdx := bi
+				prefix := fmt.Sprintf("images/%02d", imgIdx)
+				var imgMedia *library.MediaFile
+				var imgErr error
+				prevRel := findPrevBlockImgRel(blockIdx)
+				if hasProtectedLocal && !isConflict && !forceOverwrite && prevRel != "" {
+					imgMedia, _ = copyLocalMediaToStageAs(previous, prevRel, prefix, "image", workDir)
+				}
+				if imgMedia == nil {
+					imgCandidates := buildXImageCandidateURLs(blk.ImageURLs)
+					refreshImg := makeOnceURLRefresher(refreshOncePlan, func(fresh WorkDownloadPlan) ([]string, error) {
+						if fresh.Article != nil && blockIdx < len(fresh.Article.Blocks) {
+							return buildXImageCandidateURLs(fresh.Article.Blocks[blockIdx].ImageURLs), nil
+						}
+						return nil, nil
+					})
+					imgMedia, imgErr = m.cacheDouyinSniffedImage(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, "image", prefix, imgCandidates, blk.Width, blk.Height, plan.Transport, refreshImg)
+					if imgErr != nil && hasProtectedLocal && !forceOverwrite && prevRel != "" && ctx.Err() == nil && !isStorageError(imgErr) {
+						if copied, rErr := copyLocalMediaToStageAs(previous, prevRel, prefix, "image", workDir); rErr == nil {
+							imgMedia, imgErr = copied, nil
+						}
+					}
+				}
+				if imgErr != nil {
+					if isSiteStopError(imgErr) || isStorageError(imgErr) || ctx.Err() != nil {
+						return nil, nil, nil, nil, imgErr
+					}
+					if hasProtectedLocal && (isConflict || forceOverwrite) && isDegradedSiteError(imgErr) {
+						return nil, nil, nil, nil, wrapRemoteDegraded(imgErr)
+					}
+					reason := fmt.Sprintf("文章第 %02d 张内嵌图下载失败 (%s)", imgIdx, classifyDownloadError(imgErr))
+					missing = append(missing, library.MissingRecord{Item: fmt.Sprintf("article_image_%02d", imgIdx), Reason: reason})
+					partialErrors = append(partialErrors, reason)
+				} else if imgMedia != nil {
+					itemBlk.MediaRel = imgMedia.Path
+					mediaFiles = append(mediaFiles, *imgMedia)
+				}
+			}
+			art.Blocks = append(art.Blocks, itemBlk)
+		}
+	}
+
+	return library.SanitizeItemArticle(art, string(site.X)), mediaFiles, missing, partialErrors, nil
 }
 
 func (m *Manager) cacheXSingleMP4(

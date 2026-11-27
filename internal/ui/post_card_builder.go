@@ -107,6 +107,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 	var origNotePages []douyinNoteRenderPage
 	var weiboCard *service.WeiboRichCardDTO
 	var xCard *service.XRichCardDTO
+	var libArticle *library.ItemArticle
 	var hlsOnlyNotice string
 	var threadCount int
 	authorUID := strings.TrimSpace(entry.AuthorUID)
@@ -135,7 +136,11 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 				}
 			}
 			if normSite == "x" {
+				libArticle = item.Article
 				xCard = libraryRichCardToXDTO(item.Card)
+				if libArticle != nil && xCard != nil && xCard.Kind == "article" {
+					xCard = nil
+				}
 				hlsOnlyNotice = xMissingHLSNotice(item.Missing)
 			} else {
 				weiboCard = libraryRichCardToWeiboDTO(item.Card)
@@ -363,6 +368,16 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		}
 	}
 
+	if libArticle != nil {
+		// Cached X Article renders its cover & preview inside XArticlePreviewCard
+		// rather than dumping inline images into a flat grid on Home.
+		images = nil
+		title = ""
+		if strings.TrimSpace(text) == strings.TrimSpace(libArticle.PlainText) || strings.TrimSpace(text) == strings.TrimSpace(libArticle.Title) {
+			text = ""
+		}
+	}
+
 	return PostCardData{
 		Key:               entry.FeedKey,
 		ItemKey:           entry.ItemKey,
@@ -389,6 +404,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		WeiboCard:         weiboCard,
 		WeiboMid:          entry.RawID,
 		XCard:             xCard,
+		LibArticle:        libArticle,
 		XStatusID:         entry.RawID,
 		HLSOnlyNotice:     hlsOnlyNotice,
 		ThreadCount:       threadCount,

@@ -56,6 +56,8 @@ type PostThreadPart struct {
 	NotePages         []douyinNoteRenderPage
 	Video             *PostVideo
 	XCard             *service.XRichCardDTO
+	XArticle          *service.XArticleDTO
+	LibArticle        *library.ItemArticle
 	XPoll             *service.XPollSummaryDTO
 	HLSOnlyNotice     string
 	Origin            *PostCardData
@@ -116,6 +118,8 @@ type PostCardData struct {
 	WeiboMid          string
 	WeiboCacheVia     *library.ItemVia
 	XCard             *service.XRichCardDTO
+	XArticle          *service.XArticleDTO
+	LibArticle        *library.ItemArticle
 	XPoll             *service.XPollSummaryDTO
 	XStatusID         string
 	XCacheVia         *library.ItemVia
@@ -781,7 +785,10 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 			if post.WeiboCard != nil {
 				a.renderWeiboRichCard(c, post.WeiboCard, post.Offline || post.LocalManage)
 			}
-			// 3c. X Poll / Rich Card / HLS-only Notice / Fallback Thread Hint
+			// 3c. X Article Preview / Poll / Rich Card / HLS-only Notice / Fallback Thread Hint
+			if post.XArticle != nil || post.LibArticle != nil {
+				a.renderXArticlePreviewCard(c, post)
+			}
 			if post.XPoll != nil {
 				a.renderXPollCard(c, post.XPoll, post.URL, post.Offline || post.LocalManage)
 			}

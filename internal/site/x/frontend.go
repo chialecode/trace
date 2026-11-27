@@ -50,18 +50,24 @@ const (
 	maxRetainedManifestChunks  = 4096
 )
 
-// Read-only GraphQL operation names used by TRACE for X (x.md §15.1 #8, DEC-092).
+// Read-only GraphQL operation names used by TRACE for X (x.md §15.1 #8, DEC-092, DEC-093).
 const (
-	OpUserByScreenName     = "UserByScreenName"
-	OpUserByRestId         = "UserByRestId"
-	OpUserTweets           = "UserTweets"
-	OpUserTweetsAndReplies = "UserTweetsAndReplies"
-	OpUserMedia            = "UserMedia"
-	OpUserHighlightsTweets = "UserHighlightsTweets"
-	OpTweetDetail          = "TweetDetail"
-	OpFollowing            = "Following"
-	OpBookmarks            = "Bookmarks"
-	OpLikes                = "Likes"
+	OpUserByScreenName         = "UserByScreenName"
+	OpUserByRestId             = "UserByRestId"
+	OpUserTweets               = "UserTweets"
+	OpUserTweetsAndReplies     = "UserTweetsAndReplies"
+	OpUserMedia                = "UserMedia"
+	OpUserHighlightsTweets     = "UserHighlightsTweets"
+	OpUserArticlesTweets       = "UserArticlesTweets"
+	OpTweetDetail              = "TweetDetail"
+	OpFollowing                = "Following"
+	OpBookmarks                = "Bookmarks"
+	OpLikes                    = "Likes"
+	OpCombinedLists            = "CombinedLists"
+	OpListOwnerships           = "ListOwnerships"
+	OpListByRestId             = "ListByRestId"
+	OpListLatestTweetsTimeline = "ListLatestTweetsTimeline"
+	OpListMembers              = "ListMembers"
 )
 
 // CoreOperations returns a fresh copy of the 5 core GraphQL operation names that
@@ -78,21 +84,45 @@ func CoreOperations() []string {
 	}
 }
 
-// ProfileTabOperations returns a fresh copy of the 3 optional X user profile tab
-// GraphQL operations discovered from main.*.js (DEC-092). Their absence MUST NOT
-// block login or core UserTweets.
+// ProfileTabOperations returns a fresh copy of the 4 optional X user profile tab
+// GraphQL operations discovered from main.*.js (DEC-092, DEC-093). Their absence
+// MUST NOT block login or core UserTweets.
 func ProfileTabOperations() []string {
 	return []string{
 		OpUserTweetsAndReplies,
 		OpUserMedia,
 		OpUserHighlightsTweets,
+		OpUserArticlesTweets,
+	}
+}
+
+// ListsOperations returns a fresh copy of the 5 read-only X Lists GraphQL operation
+// names discovered via 2-hop lazy chunks (DEC-093). Their absence MUST NOT block
+// core login or timeline features.
+func ListsOperations() []string {
+	return []string{
+		OpCombinedLists,
+		OpListOwnerships,
+		OpListByRestId,
+		OpListLatestTweetsTimeline,
+		OpListMembers,
+	}
+}
+
+// IsListsOperation reports whether opName is one of the read-only X Lists GraphQL operations.
+func IsListsOperation(opName string) bool {
+	switch opName {
+	case OpCombinedLists, OpListOwnerships, OpListByRestId, OpListLatestTweetsTimeline, OpListMembers:
+		return true
+	default:
+		return false
 	}
 }
 
 // OptionalOperations returns a fresh copy of the read-only optional GraphQL operation
-// names ("Mine" operations that X may code-split into lazy chunks, plus profile tab
-// operations discovered from main.*.js). Their absence from main.*.js MUST NOT fail
-// core frontend discovery or login; they are resolved on demand via EnsureOperation.
+// names ("Mine" operations, profile tab operations, and public X Lists operations).
+// Their absence from main.*.js MUST NOT fail core frontend discovery or login; they
+// are resolved on demand via EnsureOperation.
 func OptionalOperations() []string {
 	return []string{
 		OpBookmarks,
@@ -100,6 +130,12 @@ func OptionalOperations() []string {
 		OpUserTweetsAndReplies,
 		OpUserMedia,
 		OpUserHighlightsTweets,
+		OpUserArticlesTweets,
+		OpCombinedLists,
+		OpListOwnerships,
+		OpListByRestId,
+		OpListLatestTweetsTimeline,
+		OpListMembers,
 	}
 }
 
@@ -107,7 +143,17 @@ func OptionalOperations() []string {
 // absence must not block core login/UserTweets or trip the site-wide circuit breaker.
 func IsOptionalOperation(opName string) bool {
 	switch opName {
-	case OpBookmarks, OpLikes, OpUserTweetsAndReplies, OpUserMedia, OpUserHighlightsTweets:
+	case OpBookmarks,
+		OpLikes,
+		OpUserTweetsAndReplies,
+		OpUserMedia,
+		OpUserHighlightsTweets,
+		OpUserArticlesTweets,
+		OpCombinedLists,
+		OpListOwnerships,
+		OpListByRestId,
+		OpListLatestTweetsTimeline,
+		OpListMembers:
 		return true
 	default:
 		return false
@@ -867,8 +913,10 @@ func (d *FrontendDiscovery) resolveLazyOperation(
 
 		// Follow direct child chunk references (e.g. route wrapper calling n.e(chunkId) or
 		// dynamic import("./...")) within the bounded high-confidence budget.
+		// For 2-hop Lists discovery (bundle.UserLists / loader.ListHandler -> shared~* child
+		// chunk, DEC-093), prioritize direct children ahead of sibling Hop-1 wrappers so all
+		// Lists operations are discovered in at most 2 static JS fetches.
 		if fetchedCount < maxSpecificLazyChunksPerOp && item.score >= highConfidenceLazyScore {
-			const childScore = 92
 			childURLs := extractChildChunkURLsFromLazyJS(bodyStr, cleanURL, baseMeta.chunkURLByID)
 			var newChildren []lazyQueueItem
 			for _, rawChild := range childURLs {
@@ -881,12 +929,25 @@ func (d *FrontendDiscovery) resolveLazyOperation(
 					continue
 				}
 				queuedSet[cleanChild] = true
-				newChildren = append(newChildren, lazyQueueItem{url: cleanChild, score: childScore})
+				cScore := 92
+				if IsListsOperation(opName) && item.score >= 100 {
+					childBase := strings.ToLower(urlBaseName(cleanChild))
+					if strings.HasPrefix(childBase, "shared~") {
+						cScore = item.score + 6
+					} else {
+						cScore = item.score + 2
+					}
+				}
+				newChildren = append(newChildren, lazyQueueItem{url: cleanChild, score: cScore})
 			}
 			if len(newChildren) > 0 {
+				sort.SliceStable(newChildren, func(i, j int) bool {
+					return newChildren[i].score > newChildren[j].score
+				})
+				topScore := newChildren[0].score
 				insertAt := len(queue)
 				for j := idx + 1; j < len(queue); j++ {
-					if queue[j].score < childScore {
+					if queue[j].score < topScore {
 						insertAt = j
 						break
 					}
@@ -1289,6 +1350,7 @@ var (
 	reWebpackPromiseAll       = regexp.MustCompile(`Promise\.all\(\s*\[([^\]]+)\]\s*\)`)
 	reBookmarksRoutePath      = regexp.MustCompile(`["'](?:/i/bookmarks|/bookmarks)["']`)
 	reLikesRoutePath          = regexp.MustCompile(`["'](?:/i/user/[^"']{1,64}/likes|/:[A-Za-z0-9_]+/likes)["']`)
+	reListsRoutePath          = regexp.MustCompile(`["'](?:/i/lists(?:/[^"']{0,64})?|/:[A-Za-z0-9_]+/lists|/lists)["']`)
 	reInitialStateMarker      = regexp.MustCompile(`__INITIAL_STATE__\s*=\s*\{`)
 	reInlineScriptBlock       = regexp.MustCompile(`(?is)<script\b([^>]*)>(.*?)</script>`)
 	reScriptCloseTag          = regexp.MustCompile(`(?i)</script\b`)
@@ -2175,6 +2237,9 @@ func extractLazyChunksFromMainJS(
 	// so even 100% numeric unnamed chunk builds locate the exact route bundles.
 	extractRouteLinkedChunks(mainJS, mainJSURL, reBookmarksRoutePath, OpBookmarks, combinedChunkURLs, addExplicit)
 	extractRouteLinkedChunks(mainJS, mainJSURL, reLikesRoutePath, OpLikes, combinedChunkURLs, addExplicit)
+	for _, listOp := range ListsOperations() {
+		extractRouteLinkedChunks(mainJS, mainJSURL, reListsRoutePath, listOp, combinedChunkURLs, addExplicit)
+	}
 
 	res.urls, res.scores = rankLazyChunkMapWithScores(perOp)
 	return res
@@ -2393,6 +2458,43 @@ func scoreLazyChunkName(opName, chunkName string) int {
 			strings.Contains(name, "bundle.profile") ||
 			(strings.Contains(name, "loader.") && hasAnyChunkToken(name, "profile")):
 			return 75
+		case name == "endpoints" || strings.Contains(name, "endpoints") || strings.Contains(name, "graphql"):
+			return 50
+		case name == "api" || strings.HasPrefix(name, "api.") || strings.HasPrefix(name, "api-"):
+			return 45
+		}
+	case OpUserArticlesTweets:
+		switch {
+		case name == "bundle.articles" || strings.HasPrefix(name, "bundle.articles.") || strings.HasPrefix(name, "bundle.articles-") ||
+			name == "bundle.article" || strings.HasPrefix(name, "bundle.article.") || strings.HasPrefix(name, "bundle.article-"):
+			return 115
+		case hasAnyChunkToken(name, "articles", "article"):
+			return 98
+		case name == "endpoints" || strings.Contains(name, "endpoints") || strings.Contains(name, "graphql"):
+			return 50
+		case name == "api" || strings.HasPrefix(name, "api.") || strings.HasPrefix(name, "api-"):
+			return 45
+		}
+	case OpCombinedLists, OpListOwnerships, OpListByRestId, OpListLatestTweetsTimeline, OpListMembers:
+		// DEC-093 verified 2-hop topology: bundle.UserLists / loader.ListHandler ->
+		// shared~* child chunk containing all Lists GraphQL operations.
+		switch {
+		case name == "bundle.userlists" || strings.HasPrefix(name, "bundle.userlists.") || strings.HasPrefix(name, "bundle.userlists-"):
+			return 120
+		case name == "loader.listhandler" || strings.HasPrefix(name, "loader.listhandler.") || strings.HasPrefix(name, "loader.listhandler-"):
+			return 118
+		case name == "bundle.lists" || strings.HasPrefix(name, "bundle.lists.") || strings.HasPrefix(name, "bundle.lists-") ||
+			name == "bundle.list" || strings.HasPrefix(name, "bundle.list.") || strings.HasPrefix(name, "bundle.list-"):
+			return 115
+		case strings.Contains(name, "loader.") && hasAnyChunkToken(name, "listhandler", "list", "lists", "userlists"):
+			return 112
+		case strings.Contains(name, "bundle.userlists") || strings.Contains(name, "loader.listhandler") ||
+			strings.Contains(name, "bundle.lists") || strings.Contains(name, "bundle.list.") || strings.Contains(name, "bundle.list~"):
+			return 108
+		case hasAnyChunkToken(name, "userlists", "listhandler", "listdetail", "listmembers", "lists"):
+			return 100
+		case name == "bundle.routes" || strings.HasPrefix(name, "bundle.routes.") || strings.HasPrefix(name, "bundle.routes-"):
+			return 85
 		case name == "endpoints" || strings.Contains(name, "endpoints") || strings.Contains(name, "graphql"):
 			return 50
 		case name == "api" || strings.HasPrefix(name, "api.") || strings.HasPrefix(name, "api-"):
@@ -2649,7 +2751,7 @@ func parseHTMLAttrs(tag string) map[string]string {
 
 // ---------- main.*.js & Lazy Chunk Operation Parsing (Webpack + Vite) ----------
 
-const graphqlOperationMatchNames = `UserByScreenName|UserByRestId|UserTweets|UserTweetsAndReplies|UserMedia|UserHighlightsTweets|TweetDetail|Following|Bookmarks|BookmarkTimeline|BookmarksTimeline|Likes`
+const graphqlOperationMatchNames = `UserByScreenName|UserByRestId|UserTweets|UserTweetsAndReplies|UserMedia|UserHighlightsTweets|UserArticlesTweets|TweetDetail|Following|Bookmarks|BookmarkTimeline|BookmarksTimeline|Likes|CombinedLists|ListOwnerships|ListByRestId|ListLatestTweetsTimeline|ListMembers`
 
 var (
 	reExplicitBearerLit = regexp.MustCompile(`["'` + "`" + `]Bearer\s+([A-Za-z0-9%+/=._-]{16,256})["'` + "`" + `]`)
@@ -2690,7 +2792,22 @@ type rawOpCandidate struct {
 
 func canonicalGraphQLOpName(rawName string) (canonical string, isAlias bool, ok bool) {
 	switch rawName {
-	case OpUserByScreenName, OpUserByRestId, OpUserTweets, OpUserTweetsAndReplies, OpUserMedia, OpUserHighlightsTweets, OpTweetDetail, OpFollowing, OpBookmarks, OpLikes:
+	case OpUserByScreenName,
+		OpUserByRestId,
+		OpUserTweets,
+		OpUserTweetsAndReplies,
+		OpUserMedia,
+		OpUserHighlightsTweets,
+		OpUserArticlesTweets,
+		OpTweetDetail,
+		OpFollowing,
+		OpBookmarks,
+		OpLikes,
+		OpCombinedLists,
+		OpListOwnerships,
+		OpListByRestId,
+		OpListLatestTweetsTimeline,
+		OpListMembers:
 		return rawName, false, true
 	case "BookmarkTimeline", "BookmarksTimeline":
 		return OpBookmarks, true, true

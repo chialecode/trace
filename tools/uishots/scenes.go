@@ -76,6 +76,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 	savedXPost := env.savedXPost
 	savedXRetweet := env.savedXRetweet
 	savedXThread := env.savedXThread
+	savedXArticle := env.savedXArticle
 	seedRecentAndLive := func() { env.seedRecentAndLive(app) }
 	injectMixedHomeFeed := func() { env.injectMixedHomeFeed(app) }
 
@@ -1564,6 +1565,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"X用户标签：回复",
 				"X用户标签：媒体",
 				"X用户标签：精选",
+				"X用户标签：文章",
 				"用户页筛选：全部",
 				"用户页筛选：未缓存",
 				"X用户列表",
@@ -1631,6 +1633,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"X用户标签：回复",
 				"X用户标签：媒体",
 				"X用户标签：精选",
+				"X用户标签：文章",
 				"用户页筛选：全部",
 				"用户页筛选：未缓存",
 				"X用户列表",
@@ -1688,6 +1691,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"X用户标签：回复",
 				"X用户标签：媒体",
 				"X用户标签：精选",
+				"X用户标签：文章",
 				"用户页筛选：全部",
 				"用户页筛选：未缓存",
 				"X用户列表",
@@ -2157,6 +2161,187 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"X离线串连线：2",
 				"缓存当前X帖子",
 				"X在线统计",
+			},
+		},
+		{
+			Name: "x-article-detail",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.CurrentXPost = &service.XPostDTO{
+					ID:           "1000000000000000029",
+					Author:       service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+					CreatedAt:    1710005400,
+					CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000029",
+					CacheKey:     "x:dynamic:1000000000000000029",
+					Article: &service.XArticleDTO{
+						Title:     "X Articles 长文章完整离线归档架构说明",
+						PlainText: "支持 Draft.js 富文本排版、封面与内嵌原图离线保存、安全外链与推文引用。",
+						Cover:     &service.XArticleImageDTO{PublicPreviewURL: "", Width: 1200, Height: 675},
+						Blocks: []service.XArticleBlockDTO{
+							{Type: "header-one", Text: "一、零迁移离线存储设计"},
+							{Type: "unstyled", Text: "所有封面图与内嵌图均按原图离线下载并登记进媒体清单，阅读规格文档。", Links: []service.TextLinkDTO{{Label: "规格文档", URL: "https://example.com/trace-article-spec"}}},
+							{Type: "blockquote", Text: "清单中严禁写入远程 CDN 地址或签名查询参数，离线详情严格零网络请求。"},
+							{Type: "header-two", Text: "1.1 支持的富文本块类型"},
+							{Type: "ordered-list-item", Text: "兼容 X 实盘数组形态与对象形态 entityMap"},
+							{Type: "unordered-list-item", Text: "内嵌图片支持点击打开看图层缩放浏览"},
+							{Type: "atomic", Image: &service.XArticleImageDTO{PublicPreviewURL: "", Width: 800, Height: 500}},
+							{Type: "atomic", TweetID: "1000000000000000018"},
+						},
+					},
+					Stats: service.XStatsDTO{ReplyCount: 14, RetweetCount: 52, LikeCount: 840, BookmarkCount: 210, ViewCount: 28500},
+				}
+				app.CurrentRoute = ui.RouteXPost
+			},
+			RequiredLabels: []string{
+				"X详情站点标记",
+				"缓存当前X帖子",
+				"X文章全文",
+				"X文章标题",
+				"查看文章封面",
+				"查看文章图片 1",
+				"X文章引用帖子：1000000000000000018",
+				"X在线统计",
+			},
+			RequiredTexts: []string{
+				"X 文章",
+				"X Articles 长文章完整离线归档架构说明",
+				"一、零迁移离线存储设计",
+				"兼容 X 实盘数组形态与对象形态 entityMap",
+			},
+		},
+		{
+			Name: "x-article-offline",
+			Setup: func() {
+				app.Opening = nil
+				app.OpenLibraryItemDetail(savedXArticle)
+			},
+			RequiredLabels: []string{
+				"本机详情站点标记",
+				"X离线文章全文",
+				"X文章标题",
+				"查看文章封面",
+				"查看文章图片 1",
+				"X文章引用帖子：1000000000000000018",
+			},
+			RequiredTexts: []string{
+				"X 文章",
+				"X Articles 长文章完整离线归档架构说明",
+				"一、零迁移离线存储设计",
+				"清单中严禁写入远程 CDN 地址或签名查询参数",
+			},
+			ForbiddenLabels: []string{
+				"缓存当前X帖子",
+				"X在线统计",
+				"打开文章引用帖子：1000000000000000018",
+			},
+		},
+		{
+			Name: "x-list-posts",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.XUserLists.Open = false
+				app.XList = ui.XListViewState{
+					List: &service.XListDTO{
+						ID:              "18000000001",
+						Name:            "Go 开源架构观察",
+						Description:     "公开只读列表：聚焦纯 Go 桌面应用、离线媒体库与协议隔离实践。",
+						MemberCount:     12,
+						SubscriberCount: 64,
+						Creator:         service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+						CanonicalURL:    "https://x.com/i/lists/18000000001",
+					},
+					Tab:         "posts",
+					PostsLoaded: true,
+					Posts: []service.XPostDTO{
+						{
+							ID:           "1000000000000000041",
+							Author:       service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+							CreatedAt:    1710005500,
+							Text:         "公开列表帖子示例：支持复用 PostCard 浏览、单条缓存与右上角菜单一键缓存当前页未缓存条目。",
+							CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000041",
+							CacheKey:     "x:dynamic:1000000000000000041",
+						},
+						{
+							ID:           "1000000000000000042",
+							Author:       service.XAuthorDTO{RestID: "1000000000000000004", ScreenName: "synth_x_dev", Name: "合成X开发者"},
+							CreatedAt:    1710005100,
+							Text:         "第二条列表推文：2 跳懒加载发现最多拉取 2 次静态分包即可覆盖全部只读 Lists 接口。",
+							CanonicalURL: "https://x.com/synth_x_dev/status/1000000000000000042",
+							CacheKey:     "x:dynamic:1000000000000000042",
+						},
+					},
+					PostsListState:   &mygoui.ListState{},
+					MembersListState: &mygoui.ListState{},
+				}
+				app.CurrentRoute = ui.RouteXList
+			},
+			RequiredLabels: []string{
+				"X列表头部",
+				"X列表站点标记",
+				"X列表名称",
+				"X列表浏览器打开",
+				"X列表更多",
+				"X列表成员数",
+				"X列表标签：帖子",
+				"X列表标签：成员",
+				"X列表帖子流",
+			},
+			RequiredTexts: []string{
+				"Go 开源架构观察",
+				"公开列表帖子示例",
+				"成员 12",
+			},
+		},
+		{
+			Name: "x-list-members",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.XUserLists.Open = false
+				app.XList = ui.XListViewState{
+					List: &service.XListDTO{
+						ID:              "18000000001",
+						Name:            "Go 开源架构观察",
+						Description:     "公开只读列表：聚焦纯 Go 桌面应用、离线媒体库与协议隔离实践。",
+						MemberCount:     12,
+						SubscriberCount: 64,
+						Creator:         service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+						CanonicalURL:    "https://x.com/i/lists/18000000001",
+					},
+					Tab:           "members",
+					MembersLoaded: true,
+					Members: []service.XListMemberDTO{
+						{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X", Description: "系统工程、纯 Go 桌面架构与四站点离线归档笔记", Subscribed: true, OwnerSubID: primarySub.ID, OwnerSubName: primarySub.Name},
+						{RestID: "1000000000000000004", ScreenName: "synth_x_dev", Name: "合成X开发者", Description: "每周分享 Go 与跨平台桌面界面实践"},
+						{RestID: "1000000000000000005", ScreenName: "synth_x_photo", Name: "合成X摄影师", Description: "胶片与风光摄影离线归档"},
+					},
+					PostsListState:   &mygoui.ListState{},
+					MembersListState: &mygoui.ListState{},
+				}
+				app.CurrentRoute = ui.RouteXList
+			},
+			RequiredLabels: []string{
+				"X列表头部",
+				"X列表标签：帖子",
+				"X列表标签：成员",
+				"X列表成员操作栏",
+				"批量导入X列表未订阅成员",
+				"X列表成员列表",
+				"X列表成员：" + xUID,
+				"X列表成员已订阅：" + xUID,
+				"X列表成员：1000000000000000004",
+				"订阅X列表成员：1000000000000000004",
+				"X列表成员：1000000000000000005",
+				"订阅X列表成员：1000000000000000005",
+			},
+			RequiredTexts: []string{
+				"Go 开源架构观察",
+				"已加载 3 位成员 · 2 位未订阅",
+				"批量导入未订阅成员",
+				"已订阅",
+				"@synth_x_dev",
 			},
 		},
 		{

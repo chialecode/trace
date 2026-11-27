@@ -26,7 +26,7 @@ func (a *App) contextPanelWidth(w float32) float32 {
 			return 232
 		}
 		return 72
-	case RouteHome, RouteSubscriptions, RouteMine, RouteLibrary, RouteLibraryItem, RouteTasks, RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser, RouteWeiboPost, RouteWeiboUser, RouteXPost, RouteXUser:
+	case RouteHome, RouteSubscriptions, RouteMine, RouteLibrary, RouteLibraryItem, RouteTasks, RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser, RouteWeiboPost, RouteWeiboUser, RouteXPost, RouteXUser, RouteXList:
 		if w >= 1280 {
 			return 272
 		}
@@ -41,7 +41,7 @@ func (a *App) contextPanelWidth(w float32) float32 {
 // grids and lists of rows use the whole width.
 func (a *App) pageWidth(contentW float32) float32 {
 	switch a.CurrentRoute {
-	case RouteHome, RouteVideo, RouteUser, RouteDouyinWork, RouteWeiboPost, RouteWeiboUser, RouteXPost, RouteXUser, RouteLibraryItem, RouteLogin:
+	case RouteHome, RouteVideo, RouteUser, RouteDouyinWork, RouteWeiboPost, RouteWeiboUser, RouteXPost, RouteXUser, RouteXList, RouteLibraryItem, RouteLogin:
 		return min(contentW, 680)
 	case RouteSubscriptions:
 		if a.SubDetailOpen {
@@ -141,7 +141,7 @@ func (a *App) renderRail(c *ui.Context) {
 				nav := item
 				active := a.CurrentRoute == nav.Route ||
 					(nav.Route == RouteLibrary && a.CurrentRoute == RouteLibraryItem) ||
-					(nav.Route == RouteParse && (a.CurrentRoute == RouteVideo || a.CurrentRoute == RouteUser || a.CurrentRoute == RouteDouyinWork || a.CurrentRoute == RouteDouyinUser || a.CurrentRoute == RouteWeiboPost || a.CurrentRoute == RouteWeiboUser || a.CurrentRoute == RouteXPost || a.CurrentRoute == RouteXUser))
+					(nav.Route == RouteParse && (a.CurrentRoute == RouteVideo || a.CurrentRoute == RouteUser || a.CurrentRoute == RouteDouyinWork || a.CurrentRoute == RouteDouyinUser || a.CurrentRoute == RouteWeiboPost || a.CurrentRoute == RouteWeiboUser || a.CurrentRoute == RouteXPost || a.CurrentRoute == RouteXUser || a.CurrentRoute == RouteXList))
 				badge := 0
 				tip := nav.Label
 				if nav.Route == RouteTasks {
@@ -216,7 +216,7 @@ func (a *App) renderContextPanel(c *ui.Context, width float32) {
 		a.renderTasksPanel(c)
 	case RouteMine:
 		a.renderMinePanel(c)
-	case RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser, RouteWeiboPost, RouteWeiboUser, RouteXPost, RouteXUser:
+	case RouteParse, RouteVideo, RouteUser, RouteDouyinWork, RouteDouyinUser, RouteWeiboPost, RouteWeiboUser, RouteXPost, RouteXUser, RouteXList:
 		a.renderHistoryPanel(c)
 	}
 }
@@ -762,7 +762,7 @@ func (a *App) renderHistoryPanel(c *ui.Context) {
 						mid = accountSeedHash(entrySite, entry.ID)
 					}
 					author := entry.Subtitle
-					if entry.Kind == "user" || author == "" {
+					if entry.Kind == "user" || entry.Kind == "x_list" || author == "" {
 						author = entry.Title
 					}
 					title := firstNonEmptyStrUI(entry.Title, entry.Subtitle, entry.ID)
@@ -790,6 +790,8 @@ func (a *App) renderHistoryPanel(c *ui.Context) {
 						}
 					case "live":
 						kindLabel = "直播"
+					case "x_list", "list":
+						kindLabel = "列表"
 					}
 
 					active := a.isCurrentHistoryEntry(entrySite, entry.Kind, entry.ID)
@@ -937,6 +939,8 @@ func (a *App) isCurrentHistoryEntry(siteID, kind, id string) bool {
 			return a.CurrentRoute == RouteXPost && a.CurrentXPost != nil && a.CurrentXPost.ID == id
 		case "user":
 			return a.CurrentRoute == RouteXUser && a.CurrentXUser != nil && (a.CurrentXUser.RestID == id || strings.EqualFold(a.CurrentXUser.ScreenName, id))
+		case "x_list", "list":
+			return a.CurrentRoute == RouteXList && a.XList.List != nil && a.XList.List.ID == id
 		}
 		return false
 	}

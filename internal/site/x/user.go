@@ -20,11 +20,12 @@ const (
 	// VisibleTimelineLimitText is the user-facing completion notice when X's visible limit is reached (x.md §15.1 #12).
 	VisibleTimelineLimitText = "已到达 X 时间线可见上限"
 
-	// Profile tab identifiers for X user profile browsing (DEC-092).
+	// Profile tab identifiers for X user profile browsing (DEC-092, DEC-093).
 	ProfileTabPosts      = "posts"
 	ProfileTabReplies    = "replies"
 	ProfileTabMedia      = "media"
 	ProfileTabHighlights = "highlights"
+	ProfileTabArticles   = "articles"
 )
 
 // NormalizeProfileTab canonicalizes an X profile tab identifier, defaulting empty
@@ -39,6 +40,8 @@ func NormalizeProfileTab(tab string) (string, bool) {
 		return ProfileTabMedia, true
 	case ProfileTabHighlights:
 		return ProfileTabHighlights, true
+	case ProfileTabArticles, "article":
+		return ProfileTabArticles, true
 	default:
 		return "", false
 	}
@@ -57,6 +60,8 @@ func ProfileTabOperation(tab string) string {
 		return OpUserMedia
 	case ProfileTabHighlights:
 		return OpUserHighlightsTweets
+	case ProfileTabArticles:
+		return OpUserArticlesTweets
 	default:
 		return OpUserTweets
 	}
@@ -316,6 +321,7 @@ func (c *Client) GetUserTabTweets(ctx context.Context, req UserTweetsRequest) (*
 	opName := ProfileTabOperation(normTab)
 
 	var vars map[string]any
+	var toggles map[string]bool
 	switch normTab {
 	case ProfileTabReplies:
 		vars = map[string]any{
@@ -345,6 +351,15 @@ func (c *Client) GetUserTabTweets(ctx context.Context, req UserTweetsRequest) (*
 			"withVoice":              true,
 			"withV2Timeline":         true,
 		}
+	case ProfileTabArticles:
+		vars = map[string]any{
+			"userId":                 normID,
+			"count":                  count,
+			"includePromotedContent": false,
+			"withVoice":              true,
+			"withV2Timeline":         true,
+		}
+		toggles = articleFieldToggles()
 	default:
 		vars = map[string]any{
 			"userId":                                 normID,
@@ -360,9 +375,10 @@ func (c *Client) GetUserTabTweets(ctx context.Context, req UserTweetsRequest) (*
 	}
 
 	gqlResp, err := c.doGraphQL(ctx, graphqlRequest{
-		operation: opName,
-		variables: vars,
-		referer:   "https://x.com/i/user/" + normID,
+		operation:    opName,
+		variables:    vars,
+		fieldToggles: toggles,
+		referer:      "https://x.com/i/user/" + normID,
 	})
 	if err != nil {
 		return nil, err
@@ -673,7 +689,7 @@ func (c *Client) parseUserTimelineData(ctx context.Context, rawData json.RawMess
 
 	// Page 1 completely empty (valid instructions, 0 tweets): check Truth table row 1 vs uncertain empty.
 	if reqCursor == "" && len(posts) == 0 && rawTweetCount == 0 {
-		if tab == ProfileTabMedia || tab == ProfileTabHighlights {
+		if tab == ProfileTabMedia || tab == ProfileTabHighlights || tab == ProfileTabArticles {
 			if req.KnownProfile != nil && req.KnownProfile.Protected {
 				return nil, &site.Error{
 					Site:     SiteID,
@@ -767,7 +783,7 @@ func (c *Client) parseUserTimelineData(ctx context.Context, rawData json.RawMess
 				return pageAuthor.MediaCount
 			}
 			return 0
-		case ProfileTabHighlights:
+		case ProfileTabHighlights, ProfileTabArticles:
 			return 0
 		default:
 			if req.KnownProfile != nil {

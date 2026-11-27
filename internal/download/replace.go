@@ -1701,6 +1701,13 @@ func buildPlanAssetIDs(plan WorkDownloadPlan) []string {
 			derived = append(derived, tok)
 		}
 	}
+	if plan.Article != nil {
+		for _, blk := range plan.Article.Blocks {
+			if tok := library.SanitizeMediaToken(blk.MediaID); tok != "" {
+				derived = append(derived, tok)
+			}
+		}
+	}
 	return derived
 }
 
@@ -1711,6 +1718,16 @@ func planHasAnyMediaURLs(plan WorkDownloadPlan) bool {
 	for _, p := range plan.Pages {
 		if len(p.ImageURLs) > 0 || len(p.VideoURLs) > 0 {
 			return true
+		}
+	}
+	if plan.Article != nil {
+		if len(plan.Article.CoverURLs) > 0 {
+			return true
+		}
+		for _, blk := range plan.Article.Blocks {
+			if len(blk.ImageURLs) > 0 {
+				return true
+			}
 		}
 	}
 	return false

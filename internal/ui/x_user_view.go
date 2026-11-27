@@ -15,6 +15,7 @@ var xUserTabs = []TabOption{
 	{Key: "replies", Text: "回复", AccessLabel: "X用户标签：回复"},
 	{Key: "media", Text: "媒体", AccessLabel: "X用户标签：媒体"},
 	{Key: "highlights", Text: "精选", AccessLabel: "X用户标签：精选"},
+	{Key: "articles", Text: "文章", AccessLabel: "X用户标签：文章"},
 }
 
 func xUserTabDisplayLabel(tab string) string {
@@ -25,6 +26,8 @@ func xUserTabDisplayLabel(tab string) string {
 		return "媒体"
 	case "highlights":
 		return "精选"
+	case "articles":
+		return "文章"
 	default:
 		return "帖子"
 	}
@@ -41,6 +44,8 @@ func xUserTabEmptyText(tab string, protected bool) string {
 		return "暂无媒体帖子"
 	case "highlights":
 		return "暂无精选帖子"
+	case "articles":
+		return "暂无文章"
 	default:
 		return "暂无帖子"
 	}
@@ -60,6 +65,8 @@ func xUserTabBrowserURL(u *service.XUserDTO, tab string) string {
 			return "https://x.com/" + handle + "/media"
 		case "highlights":
 			return "https://x.com/" + handle + "/highlights"
+		case "articles":
+			return "https://x.com/" + handle + "/articles"
 		default:
 			return "https://x.com/" + handle
 		}
@@ -277,6 +284,9 @@ func (a *App) renderXUserHeader(c *ui.Context, u *service.XUserDTO, activeTab st
 							if item.Chosen() {
 								a.CacheXCurrentTabUncached()
 							}
+						}
+						if u.RestID != "" && m.Item("查看公开列表").Chosen() {
+							a.OpenXUserListsModal(u.RestID, name)
 						}
 						if m.Item("在浏览器中打开").Chosen() {
 							if err := a.backend.Desktop().OpenExternalURL(targetURL); err != nil {

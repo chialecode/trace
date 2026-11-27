@@ -146,4 +146,19 @@ export const UserHighlightsTweetsQuery = {
   },
 };
 
+export const UserArticlesTweetsQuery = {
+  queryId: "SynthViteQidUserArticlesTweets11",
+  operationName: "UserArticlesTweets",
+  operationType: "query",
+  features: {
+    responsive_web_graphql_exclude_directive_enabled: true,
+    longform_notetweets_consumption_enabled: !0,
+    verified_phone_label_enabled: !1,
+  },
+  fieldToggles: {
+    withArticleRichContentState: !0,
+    withArticlePlainText: !0,
+  },
+};
+
 export { loadTx };

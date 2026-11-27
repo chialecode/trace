@@ -38,6 +38,58 @@ func cloneItemReplyTarget(src *ItemReplyTarget) *ItemReplyTarget {
 	return &cp
 }
 
+func cloneItemArticle(src *ItemArticle) *ItemArticle {
+	if src == nil {
+		return nil
+	}
+	cp := *src
+	if len(src.Blocks) > 0 {
+		cp.Blocks = make([]ItemArticleBlock, len(src.Blocks))
+		for i, blk := range src.Blocks {
+			blk.Links = append([]ItemLink(nil), blk.Links...)
+			cp.Blocks[i] = blk
+		}
+	}
+	return &cp
+}
+
+func mergeItemArticle(dst, src *ItemArticle) *ItemArticle {
+	if src == nil {
+		return dst
+	}
+	if dst == nil {
+		return cloneItemArticle(src)
+	}
+	if dst.Title == "" {
+		dst.Title = src.Title
+	}
+	if dst.CoverRel == "" {
+		dst.CoverRel = src.CoverRel
+	}
+	if dst.PlainText == "" {
+		dst.PlainText = src.PlainText
+	}
+	if len(dst.Blocks) == 0 && len(src.Blocks) > 0 {
+		dst.Blocks = cloneItemArticle(src).Blocks
+	} else {
+		for i := 0; i < len(dst.Blocks) && i < len(src.Blocks); i++ {
+			if dst.Blocks[i].Type != src.Blocks[i].Type {
+				continue
+			}
+			if dst.Blocks[i].MediaRel == "" {
+				dst.Blocks[i].MediaRel = src.Blocks[i].MediaRel
+			}
+			if dst.Blocks[i].TweetID == "" {
+				dst.Blocks[i].TweetID = src.Blocks[i].TweetID
+			}
+			if len(dst.Blocks[i].Links) == 0 && len(src.Blocks[i].Links) > 0 {
+				dst.Blocks[i].Links = append([]ItemLink(nil), src.Blocks[i].Links...)
+			}
+		}
+	}
+	return dst
+}
+
 func cloneItemOrigin(src *ItemOrigin) *ItemOrigin {
 	return cloneItemOriginDepth(src, 0)
 }
@@ -184,6 +236,7 @@ func cloneItemMetadataSlices(meta ItemMetadata) ItemMetadata {
 		c := *meta.Card
 		meta.Card = &c
 	}
+	meta.Article = cloneItemArticle(meta.Article)
 	meta.Links = append([]ItemLink(nil), meta.Links...)
 	meta.InReplyTo = cloneItemReplyTarget(meta.InReplyTo)
 	meta.Origin = cloneItemOrigin(meta.Origin)
@@ -415,6 +468,7 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 		c := *imported.Card
 		out.Card = &c
 	}
+	out.Article = mergeItemArticle(out.Article, imported.Article)
 	if len(out.Links) == 0 && len(imported.Links) > 0 {
 		out.Links = append([]ItemLink(nil), imported.Links...)
 	}
@@ -611,6 +665,7 @@ func firstNonEmptyString(vals ...string) string {
 func PortableManifest(meta ItemMetadata) ([]byte, error) {
 	meta = cloneItemMetadataSlices(meta)
 	meta.InReplyTo = sanitizeItemReplyTarget(meta.InReplyTo, meta.Site)
+	meta.Article = sanitizeItemArticle(meta.Article, meta.Site)
 	if meta.Origin != nil {
 		sanitizeItemOriginDepth(meta.Origin, meta.Site, 0)
 	}
@@ -744,6 +799,16 @@ func KeepListedFiles(meta ItemMetadata, keep func(rel string) bool) (ItemMetadat
 		}
 		lv.Segments = segs
 		meta.Live = &lv
+	}
+	if meta.Article != nil {
+		if !ok(meta.Article.CoverRel) {
+			meta.Article.CoverRel = ""
+		}
+		for i := range meta.Article.Blocks {
+			if !ok(meta.Article.Blocks[i].MediaRel) {
+				meta.Article.Blocks[i].MediaRel = ""
+			}
+		}
 	}
 	seen := map[string]bool{}
 	for _, d := range dropped {

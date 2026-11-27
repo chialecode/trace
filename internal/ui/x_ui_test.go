@@ -51,23 +51,31 @@ type xStubBackend struct {
 	cachedID   string
 	queuedReqs []service.CacheQueueRequest
 
-	xUsers         map[string]*service.XUserDTO
-	xUserPages     map[string]map[string]xPageFixture
-	xUserTabPages  map[string]map[string]map[string]xPageFixture
-	xTabCalls      map[string]int
-	xBatchPageReqs []service.XBatchCachePageRequest
-	xBatchPageRes  *service.XBatchCachePageResult
-	xBatchPageErr  error
-	xPosts         map[string]*service.XPostDTO
-	accountWorks   map[string]service.AccountWorks
-	checkPlan      []service.AccountCheckRow
-	followCursor   map[string]service.FollowingCreatorsPageDTO
-	followGroups   int
-	mineSections   map[string][]service.AccountSection
-	minePages      map[string]service.AccountPage
-	mineErrors     map[string]error
-	importedSite   string
-	importedCnt    int
+	xUsers            map[string]*service.XUserDTO
+	xUserPages        map[string]map[string]xPageFixture
+	xUserTabPages     map[string]map[string]map[string]xPageFixture
+	xTabCalls         map[string]int
+	xLists            map[string]*service.XListDTO
+	xListTweets       map[string]service.XListTweetsPageDTO
+	xListMembers      map[string]service.XListMembersPageDTO
+	xUserLists        map[string]service.XUserListsPageDTO
+	xListCalls        map[string]int
+	xBatchPageReqs    []service.XBatchCachePageRequest
+	xBatchPageRes     *service.XBatchCachePageResult
+	xBatchPageErr     error
+	xPosts            map[string]*service.XPostDTO
+	accountWorks      map[string]service.AccountWorks
+	checkPlan         []service.AccountCheckRow
+	followCursor      map[string]service.FollowingCreatorsPageDTO
+	followGroups      int
+	mineSections      map[string][]service.AccountSection
+	minePages         map[string]service.AccountPage
+	mineErrors        map[string]error
+	importedSite      string
+	importedCnt       int
+	importedCreators  []service.FollowingCreatorDTO
+	importedRules     subscription.SubRules
+	importDelegateRaw bool
 
 	remoteView *service.RemoteView
 	remoteInfo *service.RemoteConnectionInfo
@@ -92,6 +100,11 @@ func newXUITestHarness(t *testing.T) (*App, *xStubBackend, func()) {
 		xUserPages:    map[string]map[string]xPageFixture{},
 		xUserTabPages: map[string]map[string]map[string]xPageFixture{},
 		xTabCalls:     map[string]int{},
+		xLists:        map[string]*service.XListDTO{},
+		xListTweets:   map[string]service.XListTweetsPageDTO{},
+		xListMembers:  map[string]service.XListMembersPageDTO{},
+		xUserLists:    map[string]service.XUserListsPageDTO{},
+		xListCalls:    map[string]int{},
 		xPosts:        map[string]*service.XPostDTO{},
 		followCursor:  map[string]service.FollowingCreatorsPageDTO{},
 		mineSections:  map[string][]service.AccountSection{},
@@ -206,6 +219,23 @@ func (s *xStubBackend) LogoutSite(siteID string) (credential.Status, error) {
 func (s *xStubBackend) OpenLink(ctx context.Context, raw string) (*service.OpenLinkResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if strings.Contains(raw, "x.com/i/lists/") {
+		s.xCalls.Add(1)
+		for id, ls := range s.xLists {
+			if strings.Contains(raw, id) {
+				cp := *ls
+				tw := s.xListTweets[id]
+				s.xListCalls["open|"+id]++
+				return &service.OpenLinkResult{
+					Site:        string(site.X),
+					SiteTarget:  &site.ResolveTarget{Site: site.X, Kind: "x_list", ID: id, CanonicalURL: "https://x.com/i/lists/" + id},
+					XList:       &cp,
+					XListTab:    "posts",
+					XListTweets: &tw,
+				}, nil
+			}
+		}
+	}
 	if strings.Contains(raw, "x.com/i/user/") || strings.Contains(raw, "x.com/synth_creator") {
 		s.xCalls.Add(1)
 		tab := "posts"
@@ -217,6 +247,10 @@ func (s *xStubBackend) OpenLink(ctx context.Context, raw string) (*service.OpenL
 			tab = "media"
 		case strings.Contains(lowerRaw, "/highlights"):
 			tab = "highlights"
+		case strings.Contains(lowerRaw, "/articles"):
+			tab = "articles"
+		case strings.Contains(lowerRaw, "/lists"):
+			tab = "lists"
 		}
 		for uid, u := range s.xUsers {
 			if strings.Contains(raw, uid) || (u.ScreenName != "" && strings.Contains(raw, u.ScreenName)) {
@@ -302,6 +336,54 @@ func (s *xStubBackend) XUserTabPosts(_ context.Context, restID, tab, cursor stri
 		return &cp, nil
 	}
 	return &service.XUserPostsPageDTO{Tab: tab}, nil
+}
+
+func (s *xStubBackend) OpenXList(_ context.Context, listID string) (*service.XListDTO, error) {
+	s.xCalls.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.xListCalls["meta|"+listID]++
+	if ls, ok := s.xLists[listID]; ok {
+		cp := *ls
+		return &cp, nil
+	}
+	return nil, &site.Error{Site: site.X, Kind: site.ErrKindUnavailable, Message: "列表不存在"}
+}
+
+func (s *xStubBackend) XListTweets(_ context.Context, listID, cursor string) (*service.XListTweetsPageDTO, error) {
+	s.xCalls.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.xListCalls["tweets|"+listID+"|"+cursor]++
+	if pg, ok := s.xListTweets[listID]; ok {
+		cp := pg
+		return &cp, nil
+	}
+	return &service.XListTweetsPageDTO{ListID: listID}, nil
+}
+
+func (s *xStubBackend) XListMembers(_ context.Context, listID, cursor string) (*service.XListMembersPageDTO, error) {
+	s.xCalls.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.xListCalls["members|"+listID+"|"+cursor]++
+	if pg, ok := s.xListMembers[listID]; ok {
+		cp := pg
+		return &cp, nil
+	}
+	return &service.XListMembersPageDTO{ListID: listID}, nil
+}
+
+func (s *xStubBackend) XUserLists(_ context.Context, restID string) (*service.XUserListsPageDTO, error) {
+	s.xCalls.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.xListCalls["user_lists|"+restID]++
+	if pg, ok := s.xUserLists[restID]; ok {
+		cp := pg
+		return &cp, nil
+	}
+	return &service.XUserListsPageDTO{}, nil
 }
 
 func (s *xStubBackend) CacheXPostsPage(_ context.Context, req service.XBatchCachePageRequest) (service.XBatchCachePageResult, error) {
@@ -396,11 +478,30 @@ func (s *xStubBackend) FollowingCreatorsPageWithCursor(_ context.Context, siteID
 	return service.FollowingCreatorsPageDTO{Site: siteID}, nil
 }
 
-func (s *xStubBackend) ImportFollowingCreators(siteID string, creators []service.FollowingCreatorDTO, _ subscription.SubRules) (subscription.ImportAccountRefsResult, error) {
+func (s *xStubBackend) ImportFollowingCreators(siteID string, creators []service.FollowingCreatorDTO, rules subscription.SubRules) (subscription.ImportAccountRefsResult, error) {
 	s.mu.Lock()
 	s.importedSite = siteID
 	s.importedCnt = len(creators)
+	s.importedCreators = append([]service.FollowingCreatorDTO(nil), creators...)
+	s.importedRules = rules
+	delegate := s.importDelegateRaw
 	s.mu.Unlock()
+	if delegate && s.raw != nil {
+		created := 0
+		for _, cr := range creators {
+			_, err := s.raw.CreateSubscription(cr.Name, "", []subscription.AccountRef{{
+				Site:     siteID,
+				UID:      cr.UID,
+				UniqueID: cr.UniqueID,
+				Name:     cr.Name,
+				Face:     cr.Face,
+			}}, rules)
+			if err == nil {
+				created++
+			}
+		}
+		return subscription.ImportAccountRefsResult{Created: created}, nil
+	}
 	return subscription.ImportAccountRefsResult{Created: len(creators)}, nil
 }
 

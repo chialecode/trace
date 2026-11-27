@@ -497,6 +497,8 @@ func sanitizeCanonicalURL(rawURL, site, kind, id string) string {
 			return "https://x.com/i/web/status/" + id
 		case "user":
 			return "https://x.com/i/user/" + id
+		case "x_list", "list":
+			return "https://x.com/i/lists/" + id
 		default:
 			return ""
 		}

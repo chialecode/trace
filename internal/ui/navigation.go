@@ -37,6 +37,8 @@ func normalizeAppRoute(route string) string {
 		return RouteXPost
 	case strings.HasPrefix(trimmed, RouteXUser+"/"):
 		return RouteXUser
+	case strings.HasPrefix(trimmed, RouteXList+"/"):
+		return RouteXList
 	case strings.HasPrefix(trimmed, RouteSettings+"/"):
 		return RouteSettings
 	case strings.HasPrefix(trimmed, RouteSubscriptions+"/"):
@@ -67,7 +69,7 @@ func routeExclusiveSite(route string) string {
 		return string(site.Douyin)
 	case RouteWeiboPost, RouteWeiboUser:
 		return string(site.Weibo)
-	case RouteXPost, RouteXUser:
+	case RouteXPost, RouteXUser, RouteXList:
 		return string(site.X)
 	case RouteVideo, RouteUser:
 		return string(site.Bilibili)
@@ -122,7 +124,7 @@ func (a *App) currentRouteRequiresSite(siteID string) bool {
 			return true
 		}
 	case string(site.X):
-		if a.CurrentRoute == RouteXUser {
+		if a.CurrentRoute == RouteXUser || a.CurrentRoute == RouteXList {
 			return true
 		}
 		if a.CurrentRoute == RouteXPost && a.CurrentLibraryDetail == nil {
@@ -166,6 +168,7 @@ func (a *App) closeAllModalsAndOverlays() {
 	a.SubFile.ExportOpen = false
 	a.SubFile.ImportOpen = false
 	a.ConflictDiff.Open = false
+	a.XUserLists.Open = false
 	a.subImportGen++
 	a.exitLibrarySelectMode()
 }
@@ -1153,6 +1156,8 @@ func (a *App) openLinkCore(raw string, preview *OpeningPreview) {
 			route = RouteXPost
 			if p.Kind == "user" {
 				route = RouteXUser
+			} else if p.Kind == "x_list" || p.Kind == "list" {
+				route = RouteXList
 			}
 		default:
 			if p.Kind == "user" || p.Kind == "live" {
@@ -1260,7 +1265,7 @@ func (a *App) applyParseResult(res *service.OpenLinkResult) {
 		a.applyWeiboParseResult(res)
 		return
 	}
-	if res.Site == string(site.X) || res.XPost != nil || res.XUser != nil || res.XUserPosts != nil {
+	if res.Site == string(site.X) || res.XPost != nil || res.XUser != nil || res.XUserPosts != nil || res.XList != nil {
 		a.applyXParseResult(res)
 		return
 	}
@@ -1560,6 +1565,8 @@ func normalizeXUserTabUI(tab string) string {
 		return "media"
 	case "highlights":
 		return "highlights"
+	case "articles":
+		return "articles"
 	default:
 		return "posts"
 	}
@@ -1666,6 +1673,10 @@ func (a *App) applyXParseResult(res *service.OpenLinkResult) {
 	if res.SiteTarget != nil && res.SiteTarget.Kind != "" {
 		kind = res.SiteTarget.Kind
 	}
+	if kind == "x_list" || res.XList != nil {
+		a.applyXListParseResult(res)
+		return
+	}
 	if kind == "user" || (res.XUser != nil && res.XPost == nil) {
 		initialTab := res.XUserTab
 		if initialTab == "" && res.SiteTarget != nil {
@@ -1713,6 +1724,25 @@ func (a *App) applyXParseResult(res *service.OpenLinkResult) {
 			a.pushPreviousRoute(a.currentReturnRoute())
 		}
 		a.CurrentRoute = RouteXUser
+		if res.XUserLists != nil || res.XUserListsError != "" || (res.SiteTarget != nil && strings.EqualFold(strings.TrimSpace(res.SiteTarget.Tab), "lists")) {
+			uid := ""
+			name := ""
+			if res.XUser != nil {
+				uid = res.XUser.RestID
+				name = firstNonEmptyStrUI(res.XUser.Name, res.XUser.ScreenName, res.XUser.RestID)
+			}
+			var lists []service.XListDTO
+			if res.XUserLists != nil {
+				lists = res.XUserLists.Lists
+			}
+			a.XUserLists = XUserListsModalState{
+				Open:       true,
+				UserRestID: uid,
+				UserName:   name,
+				Lists:      lists,
+				Error:      res.XUserListsError,
+			}
+		}
 		return
 	}
 	a.CurrentLibraryDetail = nil

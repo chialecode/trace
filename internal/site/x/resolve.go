@@ -106,6 +106,7 @@ var allowedUserProfileSubTabs = map[string]bool{
 	"highlights":   true,
 	"likes":        true,
 	"articles":     true,
+	"lists":        true,
 }
 
 var allowedPostTailSegments = map[string]bool{
@@ -125,6 +126,7 @@ const (
 	routePost         localRouteKind = "post"
 	routeUser         localRouteKind = "user"
 	routeUserHandle   localRouteKind = "user_handle"
+	routeList         localRouteKind = "list"
 	routeLive         localRouteKind = "live"
 	routeUnsupported  localRouteKind = "unsupported"
 	routeBlocked      localRouteKind = "blocked"
@@ -135,6 +137,7 @@ type localRouteMatch struct {
 	kind         localRouteKind
 	statusID     string
 	restID       string
+	listID       string
 	screenName   string
 	tab          string
 	liveID       string
@@ -150,6 +153,10 @@ func mapProfileSubTabPath(seg string) string {
 		return ProfileTabMedia
 	case "highlights":
 		return ProfileTabHighlights
+	case "articles":
+		return ProfileTabArticles
+	case "lists":
+		return "lists"
 	default:
 		return ""
 	}
@@ -562,19 +569,19 @@ func (c *Client) classifyLocalURL(u *url.URL) localRouteMatch {
 		return matchStatusSegments(handle, segs[2:])
 	}
 
-	// 7. Unsupported per-user sub-routes: /<handle>/article/<id>, /<handle>/articles/<id>, /<handle>/lists[/*]
+	// 7. Unsupported per-user sub-routes: /<handle>/article/<id>, /<handle>/articles/<id>, /<handle>/lists/<slug>
 	if len(segs) >= 2 && reValidXScreenName.MatchString(segs[0]) {
 		sub := strings.ToLower(segs[1])
 		if sub == "article" || (sub == "articles" && len(segs) >= 3) {
 			return localRouteMatch{
 				kind:   routeUnsupported,
-				reason: "X Articles 独立文章页暂不支持解析，可以在浏览器中打开",
+				reason: "X Articles 独立文章页暂不支持解析，请粘贴对应推文链接或打开作者「文章」标签",
 			}
 		}
-		if sub == "lists" {
+		if sub == "lists" && len(segs) >= 3 {
 			return localRouteMatch{
 				kind:   routeUnsupported,
-				reason: "X 列表页暂不支持解析，可以在浏览器中打开",
+				reason: "X 自定义别名列表链接暂不支持解析，请使用 /i/lists/<数字ID> 链接",
 			}
 		}
 	}
@@ -675,9 +682,31 @@ func matchIRoute(segs []string, rawURL string) localRouteMatch {
 		}
 
 	case "lists":
+		if len(segs) >= 3 {
+			if normListID, ok := NormalizeListID(segs[2]); ok {
+				listTab := ""
+				if len(segs) >= 4 {
+					tail := strings.ToLower(segs[3])
+					if tail == "members" {
+						listTab = "members"
+					} else if tail != "info" && tail != "followers" {
+						return localRouteMatch{
+							kind:   routeUnsupported,
+							reason: "暂不支持该 X 列表子页面链接",
+						}
+					}
+				}
+				return localRouteMatch{
+					kind:         routeList,
+					listID:       normListID,
+					tab:          listTab,
+					canonicalURL: CanonicalListURL(normListID),
+				}
+			}
+		}
 		return localRouteMatch{
 			kind:   routeUnsupported,
-			reason: "X 列表页暂不支持解析，可以在浏览器中打开",
+			reason: "X 列表链接缺少有效的数字列表 ID（格式：x.com/i/lists/<数字ID>）",
 		}
 
 	case "communities":
@@ -1060,6 +1089,15 @@ func (c *Client) materializeRouteMatch(ctx context.Context, match localRouteMatc
 			AuthorUID:    prof.RestID,
 			Tab:          match.tab,
 			CanonicalURL: "https://x.com/i/user/" + prof.RestID,
+		}, nil
+
+	case routeList:
+		return site.ResolveTarget{
+			Site:         SiteID,
+			Kind:         "x_list",
+			ID:           match.listID,
+			Tab:          match.tab,
+			CanonicalURL: match.canonicalURL,
 		}, nil
 
 	default:

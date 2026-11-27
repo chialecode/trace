@@ -83,6 +83,29 @@ type PlannedMusic struct {
 	PlayURLs    []string
 }
 
+// PlannedArticleBlock describes one ordered rich-text, inline-image, or
+// embedded-tweet block of an X Article scheduled for download (DEC-093).
+type PlannedArticleBlock struct {
+	Type      string
+	Text      string
+	Links     []site.TextLink
+	ImageURLs []string
+	Width     int
+	Height    int
+	MediaID   string
+	TweetID   string
+}
+
+// PlannedArticle holds structured blocks and ephemeral CDN URLs for caching an X Article.
+type PlannedArticle struct {
+	Title       string
+	PlainText   string
+	CoverURLs   []string
+	CoverWidth  int
+	CoverHeight int
+	Blocks      []PlannedArticleBlock
+}
+
 // WorkDownloadPlan holds rich metadata and ephemeral CDN URLs for caching a Douyin, Weibo, or X work.
 type WorkDownloadPlan struct {
 	Site                    site.ID
@@ -139,6 +162,7 @@ type WorkDownloadPlan struct {
 	VisibleLabel            string
 	Pages                   []PlannedNotePage
 	Thread                  []PlannedThreadPart
+	Article                 *PlannedArticle
 	Music                   *PlannedMusic
 	MediaID                 string   // clean platform media ID for single-video works
 	EditTs                  int64    // sanitized remote edit timestamp
