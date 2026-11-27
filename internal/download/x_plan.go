@@ -393,7 +393,7 @@ func (m *Manager) executeXSingleVideoTask(
 
 	editAdvanced := (plan.EditCount > 0 && plan.EditCount > previous.EditCount) ||
 		(plan.EditTs > 0 && previous.EditTs > 0 && plan.EditTs > previous.EditTs)
-	fullText, threadParts := buildXTextAndThread(rawID, plan, previous)
+	fullText, threadParts := buildXTextAndThread(rawID, plan, previous, isConflict, forceOverwrite)
 	if hasProtectedLocal && !isConflict && !forceOverwrite {
 		fullText = preserveMonotonicText(previous.Text, fullText, editAdvanced)
 	}
@@ -416,7 +416,7 @@ func (m *Manager) executeXSingleVideoTask(
 		typeLabel = resolveXForwardTypeLabel(plan, previous)
 	}
 
-	originMeta, _ := preserveValidLocalOrigin(buildXItemOrigin(plan, previous), previous, isConflict)
+	originMeta, _ := preserveValidOriginSnapshot(buildXItemOrigin(plan, previous), previous.Origin, isConflict, forceOverwrite, 0)
 	inReplyToMeta := buildXItemReplyTarget(plan.InReplyTo, previous.InReplyTo)
 	cardMeta := buildWeiboItemRichCard(plan.Card, previous.Card)
 
@@ -849,7 +849,7 @@ func (m *Manager) executeXPostTask(
 
 	editAdvanced := (plan.EditCount > 0 && plan.EditCount > previous.EditCount) ||
 		(plan.EditTs > 0 && previous.EditTs > 0 && plan.EditTs > previous.EditTs)
-	fullText, threadParts := buildXTextAndThread(rawID, plan, previous)
+	fullText, threadParts := buildXTextAndThread(rawID, plan, previous, isConflict, forceOverwrite)
 	if hasProtectedLocal && !isConflict && !forceOverwrite {
 		fullText = preserveMonotonicText(previous.Text, fullText, editAdvanced)
 	}
@@ -873,7 +873,7 @@ func (m *Manager) executeXPostTask(
 		typeLabel = resolveXForwardTypeLabel(plan, previous)
 	}
 
-	originMeta, preservedOrigin := preserveValidLocalOrigin(buildXItemOrigin(plan, previous), previous, isConflict)
+	originMeta, preservedOrigin := preserveValidOriginSnapshot(buildXItemOrigin(plan, previous), previous.Origin, isConflict, forceOverwrite, 0)
 	if preservedOrigin {
 		preserveOriginFiles = true
 	}
@@ -1691,7 +1691,7 @@ func buildXThreadPartOrigin(in *PlannedOrigin) *library.ItemOrigin {
 	}
 }
 
-func buildXTextAndThread(rawID string, plan WorkDownloadPlan, previous library.ItemMetadata) (string, []library.ItemThreadPart) {
+func buildXTextAndThread(rawID string, plan WorkDownloadPlan, previous library.ItemMetadata, isConflict, forceOverwrite bool) (string, []library.ItemThreadPart) {
 	var thread []library.ItemThreadPart
 	if len(plan.Thread) > 0 {
 		prevOriginByID := make(map[string]*library.ItemOrigin, len(previous.Thread))
@@ -1706,8 +1706,10 @@ func buildXTextAndThread(rawID string, plan WorkDownloadPlan, previous library.I
 			txt := strings.TrimSpace(seg.Text)
 			links := buildWeiboItemLinks(seg.Links, nil)
 			partOrigin := buildXThreadPartOrigin(seg.Origin)
-			if partOrigin == nil && id != "" {
-				partOrigin = cloneLibraryOriginDepth(prevOriginByID[id], 0)
+			if id != "" {
+				if prevOrigin := prevOriginByID[id]; prevOrigin != nil {
+					partOrigin, _ = preserveValidOriginSnapshot(partOrigin, prevOrigin, isConflict, forceOverwrite, 0)
+				}
 			}
 			if id == "" && txt == "" && len(links) == 0 && len(seg.MediaIndexes) == 0 && partOrigin == nil {
 				continue

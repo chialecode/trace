@@ -164,8 +164,13 @@ func (a *Adapter) PlanDownloadFromPost(post *Post) (site.DownloadPlan, error) {
 		originPubTs = originPost.CreatedAt
 		originText = scrubSignedURLTokensInText(originPost.FullThreadText())
 		originLinks = BuildPostLinks(originPost)
-		originUnavailable = originPost.Unavailable || post.OriginUnavailable
-		originUnavailableReason = firstNonEmpty(post.OriginUnavailableReason, originPost.UnavailableReason)
+		if post.IsRetweet && post.Retweeted != nil {
+			originUnavailable = originPost.Unavailable
+			originUnavailableReason = originPost.UnavailableReason
+		} else {
+			originUnavailable = originPost.Unavailable || post.OriginUnavailable
+			originUnavailableReason = firstNonEmpty(post.OriginUnavailableReason, originPost.UnavailableReason)
+		}
 		originCard = toRichCardSummary(originPost.Card)
 		originInReplyTo = buildPostReplyTarget(originPost)
 		originOrigin = BuildNestedOriginSummary(originPost)

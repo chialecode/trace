@@ -584,4 +584,48 @@ func TestCompanionFeedAndLibraryDetailMapXReplyContextThreadOriginAndDepthCap(t 
 	if len(det.Thread) != 2 || det.Thread[1].Origin == nil || det.Thread[1].Origin.AuthorUniqueID != "part_x" {
 		t.Fatalf("detail thread part origin mismatch: %+v", det.Thread)
 	}
+
+	// 3. Legacy X quote ("转发" with non-"RT @" text) upgrades to "引用帖子" on companion feed & detail,
+	// while legacy pure retweet ("转发" with "RT @...") stays "转发".
+	legacyQDir := filepath.Join(backend.LibraryStore().CacheDir(), "x", "900090001_x_comp", "forwards", "1900000000000099010")
+	savedLegacyQ, err := backend.LibraryStore().SaveItem(legacyQDir, library.ItemMetadata{
+		Version: 1, ID: "1900000000000099010", RawID: "1900000000000099010",
+		Site: "x", Kind: "dynamic", DynamicType: "forward", TypeLabel: "转发", Status: "complete",
+		Title: "旧版引用评论", Text: "旧版引用评论", PubTs: now - 10, CachedAt: time.Now().UTC().Format(time.RFC3339),
+		Author: library.ItemAuthor{Site: "x", UID: "900090001", UniqueID: "x_comp", Name: "X 伴侣作者"},
+		Origin: &library.ItemOrigin{Site: "x", ID: "1900000000000099400", Text: "原帖"},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem(legacyQ): %v", err)
+	}
+	legacyRTDir := filepath.Join(backend.LibraryStore().CacheDir(), "x", "900090001_x_comp", "forwards", "1900000000000099011")
+	savedLegacyRT, err := backend.LibraryStore().SaveItem(legacyRTDir, library.ItemMetadata{
+		Version: 1, ID: "1900000000000099011", RawID: "1900000000000099011",
+		Site: "x", Kind: "dynamic", DynamicType: "forward", TypeLabel: "转发", Status: "complete",
+		Title: "RT @someone: 原帖", Text: "RT @someone: 原帖", PubTs: now - 5, CachedAt: time.Now().UTC().Format(time.RFC3339),
+		Author: library.ItemAuthor{Site: "x", UID: "900090001", UniqueID: "x_comp", Name: "X 伴侣作者"},
+		Origin: &library.ItemOrigin{Site: "x", ID: "1900000000000099401", Text: "原帖"},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem(legacyRT): %v", err)
+	}
+	for _, tc := range []struct {
+		key       string
+		wantLabel string
+	}{
+		{savedLegacyQ.ItemKey, "引用帖子"},
+		{savedLegacyRT.ItemKey, "转发"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, companionapi.PathLibraryItemsPrefix+tc.key, nil)
+		req.RemoteAddr = "192.168.1.50:45042"
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set(companionapi.HeaderProtocol, companionapi.ProtocolVersion)
+		req.Header.Set(companionapi.HeaderChannel, companionapi.ChannelDev)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		var got companionapi.LibraryItemDetail
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &got) != nil || got.TypeLabel != tc.wantLabel {
+			t.Fatalf("GET %s = code:%d label:%q, want %q", tc.key, rec.Code, got.TypeLabel, tc.wantLabel)
+		}
+	}
 }

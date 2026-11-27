@@ -822,4 +822,52 @@ func TestXReplyContextQuoteLabelThreadPartOriginAndNestedOriginDesktop(t *testin
 		tt.Frame()
 		assertDesktopNoHorizontalOverflow(t, tt, w, "x-post-offline-dec091")
 	}
+
+	// 5. Offline X Detail regression: legacy pure retweet ("转发" + "RT @...") MUST NOT be mislabeled as "引用帖子",
+	// and duplicate Thread[1].Origin.ID == item.Origin.ID must render only once.
+	legacyPureRTDir := filepath.Join(cacheDir, "x", "900040001_legacy_q", "forwards", "1900000000000040020")
+	savedLegacyRT, err := stub.raw.LibraryStore().SaveItem(legacyPureRTDir, library.ItemMetadata{
+		Version:     1,
+		ID:          "1900000000000040020",
+		RawID:       "1900000000000040020",
+		Site:        "x",
+		Kind:        "dynamic",
+		DynamicType: "forward",
+		TypeLabel:   "转发",
+		Status:      "complete",
+		Title:       "RT @orig_author: 旧版纯转帖正文",
+		Text:        "RT @orig_author: 旧版纯转帖正文",
+		URL:         "https://x.com/legacy_q/status/1900000000000040020",
+		PubTs:       now - 20,
+		CachedAt:    time.Now().UTC().Format(time.RFC3339),
+		Author:      library.ItemAuthor{Site: "x", UID: "900040001", UniqueID: "legacy_q", Name: "旧版引用作者"},
+		Origin: &library.ItemOrigin{
+			Site:   "x",
+			ID:     "1900000000000040299",
+			Author: library.ItemAuthor{Site: "x", UID: "900040299", UniqueID: "orig_author", Name: "原帖作者"},
+			Text:   "旧版纯转帖原帖内容",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem(legacy pure RT): %v", err)
+	}
+	app.OpenLibraryItemDetail(savedLegacyRT)
+	tt.SetSize(1280, 1000)
+	tt.Frame()
+	if tt.HasText("引用帖子") {
+		t.Fatalf("offline X detail mislabeled legacy pure RT as 引用帖子; texts=%v", tt.Texts())
+	}
+	if !tt.HasText("转发") || !tt.HasText("旧版纯转帖原帖内容") {
+		t.Fatalf("offline X detail missing legacy pure RT label/origin; texts=%v", tt.Texts())
+	}
+
+	dupOriginItem := savedRich
+	dupOriginItem.Thread = append([]library.ItemThreadPart(nil), savedRich.Thread...)
+	dupOriginItem.Thread[1].Origin = savedRich.Origin
+	app.OpenLibraryItemDetail(dupOriginItem)
+	tt.SetSize(1280, 1400)
+	tt.Frame()
+	if count := countTextOccurrences(tt.Texts(), "桌面外层引用正文"); count != 1 {
+		t.Fatalf("offline X detail rendered duplicated thread-part Origin %d times (want 1)", count)
+	}
 }

@@ -716,3 +716,121 @@ func TestXPlannerThreadPartOriginNestedQuoteAndReplyContext(t *testing.T) {
 		t.Fatalf("continuation thread part Origin = %+v, want part_q", plan.Thread[2].Origin)
 	}
 }
+
+func TestRealGraphQLRetweetOfQuoteEndToEndSaveItem(t *testing.T) {
+	const (
+		rtID    = "1791257321273795001"
+		midID   = "1791257321273795002"
+		innerID = "1791257321273795003"
+	)
+
+	h := newXServiceTestHarness(t, func(opts *Options) {
+		opts.DisableBgWorkers = false
+	})
+	h.loginX(t)
+	ctx := context.Background()
+
+	authorA := synthXUserCoreJSON(synthXCreatorRestID, synthXCreatorHandle, synthXCreatorName, "", "", 100)
+	authorB := synthXUserCoreJSON("3000000000000000051", "mid_quote_b", "引用作者B", "", "", 200)
+	authorC := synthXUserCoreJSON("3000000000000000052", "inner_orig_c", "内层原帖C", "", "", 300)
+
+	// Real X GraphQL shape: outer RT wrapper carries legacy.is_quote_status=true without outer quoted_status_result,
+	// while inner retweeted_status_result holds the healthy quote post + its quoted_status_result.
+	rtOfQuoteJSON := fmt.Sprintf(`{
+		"__typename": "Tweet",
+		"rest_id": %q,
+		"core": {"user_results": {"result": %s}},
+		"legacy": {
+			"id_str": %q,
+			"user_id_str": %q,
+			"created_at": "Fri May 17 06:00:00 +0000 2024",
+			"full_text": "RT @mid_quote_b: 中层引用评论正文",
+			"is_quote_status": true,
+			"retweeted_status_result": {
+				"result": {
+					"__typename": "Tweet",
+					"rest_id": %q,
+					"core": {"user_results": {"result": %s}},
+					"legacy": {
+						"id_str": %q,
+						"user_id_str": "3000000000000000051",
+						"created_at": "Fri May 17 05:30:00 +0000 2024",
+						"full_text": "中层引用评论正文",
+						"is_quote_status": true
+					},
+					"quoted_status_result": {
+						"result": {
+							"__typename": "Tweet",
+							"rest_id": %q,
+							"core": {"user_results": {"result": %s}},
+							"legacy": {
+								"id_str": %q,
+								"user_id_str": "3000000000000000052",
+								"created_at": "Fri May 17 05:00:00 +0000 2024",
+								"full_text": "最内层被引用原帖正文"
+							}
+						}
+					}
+				}
+			}
+		}
+	}`, rtID, authorA, rtID, synthXCreatorRestID, midID, authorB, midID, innerID, authorC, innerID)
+
+	detailResp := fmt.Sprintf(`{"data":{"threaded_conversation_with_injections_v2":{"instructions":[{"type":"TimelineAddEntries","entries":[%s]}]}}}`,
+		synthXTweetEntry("tweet-"+rtID, rtOfQuoteJSON))
+
+	h.mu.Lock()
+	h.xHandler = func(w http.ResponseWriter, r *http.Request) bool {
+		if strings.HasSuffix(r.URL.Path, "/"+x.OpTweetDetail) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(detailResp))
+			return true
+		}
+		return false
+	}
+	h.mu.Unlock()
+
+	task, err := h.backend.CacheXPost(ctx, rtID, &library.ItemVia{
+		Reason:    library.ViaForward,
+		Site:      "x",
+		UID:       synthXCreatorRestID,
+		Name:      synthXCreatorName,
+		DynamicID: rtID,
+	})
+	if err != nil {
+		t.Fatalf("CacheXPost(rtOfQuote): %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var curStatus, curErr string
+		tasks, _ := h.backend.ListDownloadTasks()
+		for _, dt := range tasks {
+			if dt.TaskID == task.TaskID {
+				curStatus = dt.Status
+				curErr = dt.ErrorMessage
+				break
+			}
+		}
+		if curStatus == "completed" {
+			break
+		}
+		if curStatus == "failed" || curStatus == "paused" || curStatus == "cancelled" {
+			t.Fatalf("CacheXPost task %s ended with status=%s err=%s", task.TaskID, curStatus, curErr)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	saved, ok, err := h.backend.LibraryStore().GetItem("x:dynamic:" + rtID)
+	if err != nil || !ok {
+		t.Fatalf("GetItem(rtOfQuote): ok=%v err=%v", ok, err)
+	}
+	if saved.DynamicType != "forward" || saved.TypeLabel != "转发帖子" {
+		t.Fatalf("saved pure RT of quote labels = (%q, %q), want (forward, 转发帖子)", saved.DynamicType, saved.TypeLabel)
+	}
+	if saved.Origin == nil || saved.Origin.Unavailable || saved.Origin.ID != midID || saved.Origin.Text != "中层引用评论正文" {
+		t.Fatalf("saved pure RT of quote damaged outer Origin: %+v", saved.Origin)
+	}
+	if saved.Origin.Origin == nil || saved.Origin.Origin.Unavailable || saved.Origin.Origin.ID != innerID || saved.Origin.Origin.Text != "最内层被引用原帖正文" {
+		t.Fatalf("saved pure RT of quote lost inner Origin.Origin: %+v", saved.Origin.Origin)
+	}
+}

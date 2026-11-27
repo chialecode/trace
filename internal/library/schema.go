@@ -1043,6 +1043,31 @@ func sanitizeReplyUserID(raw, normSite string) string {
 	return tok
 }
 
+// NormalizeDisplayTypeLabel returns the user-facing type label for a cached
+// item, upgrading legacy X quote manifests (persisted before DEC-091 with
+// TypeLabel "转发" or empty) to "引用帖子" while keeping pure retweets
+// ("RT @..." or empty outer text) distinct from quote posts.
+func (m ItemMetadata) NormalizeDisplayTypeLabel() string {
+	lbl := strings.TrimSpace(m.TypeLabel)
+	if strings.EqualFold(strings.TrimSpace(m.Site), "x") && m.Kind == "dynamic" {
+		trimmedText := strings.TrimSpace(m.Text)
+		isQuote := m.Origin != nil && trimmedText != "" && !strings.HasPrefix(trimmedText, "RT @")
+		if lbl == "转发" && isQuote {
+			return "引用帖子"
+		}
+		if lbl == "" {
+			if isQuote {
+				return "引用帖子"
+			}
+			if (m.Via != nil && m.Via.Reason == ViaForward) || m.Origin != nil {
+				return "转发帖子"
+			}
+			return "帖子"
+		}
+	}
+	return lbl
+}
+
 func sanitizeReplyScreenName(raw string) string {
 	s := strings.TrimSpace(raw)
 	s = strings.TrimPrefix(s, "@")
@@ -1068,7 +1093,7 @@ func sanitizeReplyScreenName(raw string) string {
 	lower := strings.ToLower(s)
 	for _, forbidden := range []string{
 		".com", ".cn", ".tv", ".net", ".org", ".io",
-		"twimg", "weibocdn", "sinaimg", "douyinvod", "cookie", "bearer", "auth_token", "ct0",
+		"twimg", "weibocdn", "sinaimg", "douyinvod",
 	} {
 		if strings.Contains(lower, forbidden) {
 			return ""

@@ -587,6 +587,15 @@ func xPostDTOToReplyTarget(p *service.XPostDTO) *library.ItemReplyTarget {
 	}, "x")
 }
 
+func sameLibraryOrigin(a, b *library.ItemOrigin) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	idA := strings.TrimSpace(a.ID)
+	idB := strings.TrimSpace(b.ID)
+	return idA != "" && idA == idB
+}
+
 func xPostDTOToOriginCard(
 	origDTO *service.XPostDTO,
 	outerUnavailable bool,
@@ -1970,10 +1979,7 @@ func (a *App) renderXOfflineDetail(c *ui.Context, item library.ItemMetadata) {
 		}
 	}
 	offlineRootReplyHint := formatReplyContextHint(item.InReplyTo, threadIDs)
-	offlineTypeLabel := strings.TrimSpace(item.TypeLabel)
-	if (offlineTypeLabel == "" || offlineTypeLabel == "转发") && item.Origin != nil && strings.TrimSpace(item.Text) != "" {
-		offlineTypeLabel = "引用帖子"
-	}
+	offlineTypeLabel := item.NormalizeDisplayTypeLabel()
 	formatOfflineMetaLine := func(pubTs int64) string {
 		var parts []string
 		if pubTs > 0 {
@@ -2076,7 +2082,7 @@ func (a *App) renderXOfflineDetail(c *ui.Context, item library.ItemMetadata) {
 
 								if isFocal {
 									renderOfflineMissingAndExtras()
-								} else if tp.LibOrigin != nil {
+								} else if tp.LibOrigin != nil && !sameLibraryOrigin(tp.LibOrigin, item.Origin) {
 									a.renderXOfflineOriginBoxDepth(c, itemCopy, tp.LibOrigin, nil, nil, false, "", 0, "", fmt.Sprintf("X离线串引用：%d", idx+1), 0)
 								}
 							})

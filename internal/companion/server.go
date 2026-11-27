@@ -650,7 +650,7 @@ func (s *Server) buildFeedItem(fe library.FeedEntry, subByAccount map[string]sub
 		if meta, ok, err := s.backend.GetLibraryItemMetaOnly(fe.ItemKey); err == nil && ok {
 			fi.Status = meta.Status
 			fi.DynamicType = meta.DynamicType
-			fi.TypeLabel = meta.TypeLabel
+			fi.TypeLabel = meta.NormalizeDisplayTypeLabel()
 			fi.Title = firstNonEmpty(meta.Title, fi.Title)
 			fi.Text = firstNonEmpty(meta.Text, fi.Text)
 			fi.Desc = meta.Desc
@@ -1089,7 +1089,7 @@ func (s *Server) handleLibraryItem(w http.ResponseWriter, key string) {
 		Desc:           meta.Desc,
 		Text:           meta.Text,
 		DynamicType:    meta.DynamicType,
-		TypeLabel:      meta.TypeLabel,
+		TypeLabel:      meta.NormalizeDisplayTypeLabel(),
 		CanonicalURL:   meta.URL,
 		PubTs:          meta.PubTs,
 		CachedAt:       meta.CachedAt,

@@ -780,7 +780,7 @@ func TestXReplyContextThreadPartOriginAndNestedOriginDepthCap(t *testing.T) {
 		t.Fatalf("PortableManifest round-trip failed: err=%v meta=%+v", err, reparsed)
 	}
 
-	// 6. All-invalid InReplyTo sanitizes to nil.
+	// 6. All-invalid InReplyTo sanitizes to nil, while benign handles containing "ct0"/"cookie"/"bearer" survive.
 	badReply := SanitizeItemReplyTarget(&ItemReplyTarget{
 		StatusID:   "https://x.com/status/1?auth_token=abc",
 		UserID:     "not_a_number",
@@ -788,5 +788,29 @@ func TestXReplyContextThreadPartOriginAndNestedOriginDepthCap(t *testing.T) {
 	}, "x")
 	if badReply != nil {
 		t.Fatalf("expected all-invalid X ItemReplyTarget to sanitize to nil, got %+v", badReply)
+	}
+	for _, benign := range []string{"@project0", "@cookie_chef", "@ringbearer"} {
+		got := SanitizeItemReplyTarget(&ItemReplyTarget{StatusID: "1000000000000000505", ScreenName: benign}, "x")
+		want := strings.TrimPrefix(benign, "@")
+		if got == nil || got.ScreenName != want {
+			t.Fatalf("SanitizeItemReplyTarget(%q) = %+v, want ScreenName=%q", benign, got, want)
+		}
+	}
+
+	// 7. NormalizeDisplayTypeLabel upgrades legacy X quote ("转发" + non-"RT @" text) to "引用帖子",
+	// while preserving legacy pure retweet ("RT @...") as "转发".
+	legacyQuoteItem := ItemMetadata{
+		Site: "x", Kind: "dynamic", TypeLabel: "转发", Text: "我的引用评论",
+		Origin: &ItemOrigin{Site: "x", ID: "1000000000000000701", Text: "原帖"},
+	}
+	if got := legacyQuoteItem.NormalizeDisplayTypeLabel(); got != "引用帖子" {
+		t.Fatalf("legacy quote NormalizeDisplayTypeLabel = %q, want 引用帖子", got)
+	}
+	legacyPureRT := ItemMetadata{
+		Site: "x", Kind: "dynamic", TypeLabel: "转发", Text: "RT @orig_user: 原帖正文",
+		Origin: &ItemOrigin{Site: "x", ID: "1000000000000000701", Text: "原帖正文"},
+	}
+	if got := legacyPureRT.NormalizeDisplayTypeLabel(); got != "转发" {
+		t.Fatalf("legacy pure RT NormalizeDisplayTypeLabel = %q, want 转发", got)
 	}
 }

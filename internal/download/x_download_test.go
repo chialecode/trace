@@ -1211,3 +1211,204 @@ func TestXQuoteTypeLabelReplyContextThreadPartOriginAndNestedOrigin(t *testing.T
 		t.Fatalf("video quote meta mismatch: ok=%v err=%v label=%q inReplyTo=%+v", ok, err, metaVQ.TypeLabel, metaVQ.InReplyTo)
 	}
 }
+
+func TestXMonotonicOriginProtectionNestedAndThreadPartOrigins(t *testing.T) {
+	mgr, libStore, _, _, _ := setupDouyinDownloadTestEnv(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}), 2)
+	planner := newFakeXSitePlanner()
+	mgr.RegisterWorkPlanner(planner)
+	localTransport := site.XMediaTransport("TRACE-X-Test-UA", true)
+
+	const (
+		authorUID = "1000000000000000081"
+		targetID  = "1000000000000000801"
+	)
+
+	// 1. Initial cache with healthy outer Origin + nested Origin.Origin + two Thread parts with Origins.
+	phase := 1
+	planner.setWorkPlan(targetID, func(_ int) (WorkDownloadPlan, error) {
+		switch phase {
+		case 1:
+			return WorkDownloadPlan{
+				Site:                 site.X,
+				ItemKey:              "x:dynamic:" + targetID,
+				Kind:                 "dynamic",
+				TargetID:             targetID,
+				AuthorUID:            authorUID,
+				AuthorUniqueID:       "mono_author",
+				AuthorName:           "单调保护作者",
+				Title:                "主帖正文",
+				Desc:                 "主帖正文",
+				PubTs:                1763830000,
+				IsForward:            true,
+				IsQuote:              true,
+				OriginID:             "1000000000000000810",
+				OriginAuthorUID:      "1000000000000000082",
+				OriginAuthorUniqueID: "outer_orig",
+				OriginAuthorName:     "外层原帖作者",
+				OriginText:           "外层原帖有效正文",
+				OriginOrigin: &site.NestedOriginSummary{
+					ID:             "1000000000000000811",
+					AuthorUID:      "1000000000000000083",
+					AuthorUniqueID: "inner_orig",
+					AuthorName:     "内层原帖作者",
+					Text:           "内层原帖有效归档",
+				},
+				Thread: []PlannedThreadPart{
+					{ID: targetID, PubTs: 1763830000, Text: "主帖正文"},
+					{
+						ID:    "1000000000000000802",
+						PubTs: 1763830010,
+						Text:  "续帖一",
+						Origin: &PlannedOrigin{
+							ID:             "1000000000000000820",
+							AuthorUID:      "1000000000000000084",
+							AuthorUniqueID: "t1_orig",
+							AuthorName:     "线程一被引作者",
+							Text:           "线程一有效引用正文",
+							Origin: &site.NestedOriginSummary{
+								ID:         "1000000000000000821",
+								AuthorName: "线程一内层作者",
+								Text:       "线程一内层有效归档",
+							},
+						},
+					},
+					{
+						ID:    "1000000000000000803",
+						PubTs: 1763830020,
+						Text:  "续帖二",
+						Origin: &PlannedOrigin{
+							ID:             "1000000000000000830",
+							AuthorUID:      "1000000000000000085",
+							AuthorUniqueID: "t2_orig",
+							AuthorName:     "线程二被引作者",
+							Text:           "线程二有效引用正文",
+							Origin: &site.NestedOriginSummary{
+								ID:         "1000000000000000831",
+								AuthorName: "线程二内层作者",
+								Text:       "线程二内层有效归档",
+							},
+						},
+					},
+				},
+				Transport: localTransport,
+			}, nil
+		default:
+			// Phase 2 (safe re-cache) & Phase 3 (forceOverwrite): remote inner/thread origins became Unavailable!
+			return WorkDownloadPlan{
+				Site:                 site.X,
+				ItemKey:              "x:dynamic:" + targetID,
+				Kind:                 "dynamic",
+				TargetID:             targetID,
+				AuthorUID:            authorUID,
+				AuthorUniqueID:       "mono_author",
+				AuthorName:           "单调保护作者",
+				Title:                "主帖正文",
+				Desc:                 "主帖正文",
+				PubTs:                1763830000,
+				IsForward:            true,
+				IsQuote:              true,
+				OriginID:             "1000000000000000810",
+				OriginAuthorUID:      "1000000000000000082",
+				OriginAuthorUniqueID: "outer_orig",
+				OriginAuthorName:     "外层原帖作者",
+				OriginText:           "外层原帖有效正文",
+				OriginOrigin: &site.NestedOriginSummary{
+					ID:                "1000000000000000811",
+					Unavailable:       true,
+					UnavailableReason: "原帖已被删除",
+				},
+				Thread: []PlannedThreadPart{
+					{ID: targetID, PubTs: 1763830000, Text: "主帖正文"},
+					{
+						ID:    "1000000000000000802",
+						PubTs: 1763830010,
+						Text:  "续帖一",
+						Origin: &PlannedOrigin{
+							ID:                "1000000000000000820",
+							Unavailable:       true,
+							UnavailableReason: "原帖受保护",
+						},
+					},
+					{
+						ID:    "1000000000000000803",
+						PubTs: 1763830020,
+						Text:  "续帖二",
+						Origin: &PlannedOrigin{
+							ID:             "1000000000000000830",
+							AuthorUID:      "1000000000000000085",
+							AuthorUniqueID: "t2_orig",
+							AuthorName:     "线程二被引作者",
+							Text:           "线程二有效引用正文",
+							Origin: &site.NestedOriginSummary{
+								ID:                "1000000000000000831",
+								Unavailable:       true,
+								UnavailableReason: "内层原帖已删除",
+							},
+						},
+					},
+				},
+				ForceOverwrite: phase == 3,
+				Transport:      localTransport,
+			}, nil
+		}
+	})
+
+	t1, err := mgr.EnqueueXWork(context.Background(), XWorkEnqueueRequest{TargetID: targetID})
+	if err != nil {
+		t.Fatalf("EnqueueXWork phase 1: %v", err)
+	}
+	if done := waitForTaskTerminal(t, mgr, t1.TaskID, 10*time.Second); done.Status != "completed" {
+		t.Fatalf("phase 1 status=%s err=%s", done.Status, done.ErrorMessage)
+	}
+
+	// 2. Safe re-cache (non-conflict, non-force): MUST monotonically preserve local Origin.Origin,
+	// Thread[1].Origin (+ its nested Origin), and Thread[2].Origin.Origin!
+	phase = 2
+	t2, err := mgr.EnqueueXWork(context.Background(), XWorkEnqueueRequest{TargetID: targetID})
+	if err != nil {
+		t.Fatalf("EnqueueXWork phase 2: %v", err)
+	}
+	if done := waitForTaskTerminal(t, mgr, t2.TaskID, 10*time.Second); done.Status != "completed" {
+		t.Fatalf("phase 2 status=%s err=%s", done.Status, done.ErrorMessage)
+	}
+	meta2, ok, err := libStore.GetItem("x:dynamic:" + targetID)
+	if err != nil || !ok {
+		t.Fatalf("GetItem after phase 2: ok=%v err=%v", ok, err)
+	}
+	if meta2.Origin == nil || meta2.Origin.Unavailable || meta2.Origin.Origin == nil || meta2.Origin.Origin.Unavailable || meta2.Origin.Origin.Text != "内层原帖有效归档" {
+		t.Fatalf("DEC-076 violation: safe re-cache overwrote valid local Origin.Origin: %+v", meta2.Origin)
+	}
+	if len(meta2.Thread) != 3 {
+		t.Fatalf("phase 2 thread len = %d, want 3", len(meta2.Thread))
+	}
+	if meta2.Thread[1].Origin == nil || meta2.Thread[1].Origin.Unavailable || meta2.Thread[1].Origin.Text != "线程一有效引用正文" ||
+		meta2.Thread[1].Origin.Origin == nil || meta2.Thread[1].Origin.Origin.Text != "线程一内层有效归档" {
+		t.Fatalf("DEC-076 violation: safe re-cache overwrote valid local Thread[1].Origin: %+v", meta2.Thread[1].Origin)
+	}
+	if meta2.Thread[2].Origin == nil || meta2.Thread[2].Origin.Unavailable ||
+		meta2.Thread[2].Origin.Origin == nil || meta2.Thread[2].Origin.Origin.Unavailable || meta2.Thread[2].Origin.Origin.Text != "线程二内层有效归档" {
+		t.Fatalf("DEC-076 violation: safe re-cache overwrote valid local Thread[2].Origin.Origin: %+v", meta2.Thread[2].Origin)
+	}
+
+	// 3. Explicit ForceOverwrite respects remote state.
+	phase = 3
+	t3, err := mgr.EnqueueXWork(WithForceOverwrite(context.Background()), XWorkEnqueueRequest{TargetID: targetID})
+	if err != nil {
+		t.Fatalf("EnqueueXWork phase 3: %v", err)
+	}
+	if done := waitForTaskTerminal(t, mgr, t3.TaskID, 10*time.Second); done.Status != "completed" {
+		t.Fatalf("phase 3 status=%s err=%s", done.Status, done.ErrorMessage)
+	}
+	meta3, ok, err := libStore.GetItem("x:dynamic:" + targetID)
+	if err != nil || !ok {
+		t.Fatalf("GetItem after phase 3: ok=%v err=%v", ok, err)
+	}
+	if meta3.Origin == nil || meta3.Origin.Origin == nil || !meta3.Origin.Origin.Unavailable {
+		t.Fatalf("ForceOverwrite should allow remote Unavailable Origin.Origin: %+v", meta3.Origin)
+	}
+	if len(meta3.Thread) != 3 || meta3.Thread[1].Origin == nil || !meta3.Thread[1].Origin.Unavailable {
+		t.Fatalf("ForceOverwrite should allow remote Unavailable Thread[1].Origin: %+v", meta3.Thread)
+	}
+}

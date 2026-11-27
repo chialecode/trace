@@ -121,11 +121,10 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 			}
 			authorHandle = strings.TrimSpace(item.Author.UniqueID)
 			threadCount = len(item.Thread)
-			if item.TypeLabel != "" {
+			if normSite == "x" && entry.Kind == "dynamic" {
+				typeLabel = item.NormalizeDisplayTypeLabel()
+			} else if item.TypeLabel != "" {
 				typeLabel = item.TypeLabel
-				if normSite == "x" && typeLabel == "转发" && item.Origin != nil && strings.TrimSpace(item.Text) != "" && !strings.HasPrefix(strings.TrimSpace(item.Text), "RT @") {
-					typeLabel = "引用帖子"
-				}
 			} else if normSite == "douyin" && entry.Kind == "dynamic" {
 				typeLabel = "图文"
 			} else if normSite == "weibo" && entry.Kind == "dynamic" {
@@ -133,14 +132,6 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 					typeLabel = "转发微博"
 				} else {
 					typeLabel = "微博"
-				}
-			} else if normSite == "x" && entry.Kind == "dynamic" {
-				if item.Origin != nil && strings.TrimSpace(item.Text) != "" {
-					typeLabel = "引用帖子"
-				} else if item.Via != nil && item.Via.Reason == library.ViaForward || item.Origin != nil {
-					typeLabel = "转发帖子"
-				} else {
-					typeLabel = "帖子"
 				}
 			}
 			if normSite == "x" {

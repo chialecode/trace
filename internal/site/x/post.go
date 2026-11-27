@@ -1064,8 +1064,12 @@ func (c *Client) parseInnerTweetNode(node *rawTweetResultNode, visibilityLabel s
 	}
 
 	// Parse Quoted status recursively (graceful degradation when origin unavailable/tombstone/empty!).
+	// On a pure retweet of a quote tweet, X GraphQL mirrors legacy.is_quote_status=true on
+	// the outer RT wrapper while placing quoted_status_result only on the inner
+	// retweeted_status_result. Ignore that mirrored flag on the outer RT wrapper so it never
+	// marks the healthy Retweeted post as IsQuote / OriginUnavailable.
 	hasQuotedWrap := node.QuotedRes != nil
-	if (leg != nil && leg.IsQuoteStatus) || hasQuotedWrap {
+	if hasQuotedWrap || (leg != nil && leg.IsQuoteStatus && !(post.IsRetweet && post.Retweeted != nil)) {
 		post.IsQuote = true
 		if hasQuotedWrap {
 			qt := c.parseTweetResult(node.QuotedRes.Result, depth+1)

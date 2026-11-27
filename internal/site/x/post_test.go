@@ -659,4 +659,98 @@ func TestQuoteRuleTypeDecouplingReplyContextAndNestedOriginPlan(t *testing.T) {
 	if rtPlan.OriginOrigin == nil || rtPlan.OriginOrigin.ID != innerQuote.ID {
 		t.Fatalf("RT of quote missing depth-1 OriginOrigin: %+v", rtPlan.OriginOrigin)
 	}
+
+	// Real X GraphQL JSON: outer pure RT wrapper carries legacy.is_quote_status=true without outer
+	// quoted_status_result while inner retweeted_status_result holds the healthy quote tweet & its quoted_status_result.
+	// Must parse WITHOUT marking the outer RT as IsQuote or OriginUnavailable!
+	rtQuoteGraphQLRaw := []byte(`{
+		"__typename": "Tweet",
+		"rest_id": "1791257321273790050",
+		"core": {
+			"user_results": {
+				"result": {
+					"__typename": "User",
+					"rest_id": "1000000000000000050",
+					"legacy": {"name": "转帖人A", "screen_name": "rt_user_a"}
+				}
+			}
+		},
+		"legacy": {
+			"id_str": "1791257321273790050",
+			"full_text": "RT @quote_user_b: 引用评论正文",
+			"is_quote_status": true,
+			"retweeted_status_result": {
+				"result": {
+					"__typename": "Tweet",
+					"rest_id": "1791257321273790051",
+					"core": {
+						"user_results": {
+							"result": {
+								"__typename": "User",
+								"rest_id": "1000000000000000051",
+								"legacy": {"name": "引用作者B", "screen_name": "quote_user_b"}
+							}
+						}
+					},
+					"legacy": {
+						"id_str": "1791257321273790051",
+						"full_text": "引用评论正文",
+						"is_quote_status": true
+					},
+					"quoted_status_result": {
+						"result": {
+							"__typename": "Tweet",
+							"rest_id": "1791257321273790052",
+							"core": {
+								"user_results": {
+									"result": {
+										"__typename": "User",
+										"rest_id": "1000000000000000052",
+										"legacy": {"name": "原帖作者C", "screen_name": "inner_user_c"}
+									}
+								}
+							},
+							"legacy": {
+								"id_str": "1791257321273790052",
+								"full_text": "最内层被引用原帖正文"
+							}
+						}
+					}
+				}
+			}
+		}
+	}`)
+	c := NewClient(ClientOptions{})
+	parsedRTQuote := c.parseTweetResult(rtQuoteGraphQLRaw, 0)
+	if parsedRTQuote == nil {
+		t.Fatal("parseTweetResult returned nil for real GraphQL RT-of-quote")
+	}
+	if !parsedRTQuote.IsRetweet || parsedRTQuote.IsQuote || parsedRTQuote.OriginUnavailable {
+		t.Fatalf("outer RT-of-quote misclassified: IsRetweet=%v IsQuote=%v OriginUnavailable=%v reason=%q",
+			parsedRTQuote.IsRetweet, parsedRTQuote.IsQuote, parsedRTQuote.OriginUnavailable, parsedRTQuote.OriginUnavailableReason)
+	}
+	if parsedRTQuote.Retweeted == nil || parsedRTQuote.Retweeted.Unavailable || !parsedRTQuote.Retweeted.IsQuote || parsedRTQuote.Retweeted.Quoted == nil || parsedRTQuote.Retweeted.Quoted.ID != "1791257321273790052" {
+		t.Fatalf("inner Retweeted/Quoted damaged: %+v", parsedRTQuote.Retweeted)
+	}
+	parsedRTPlan, err := adapter.PlanDownloadFromPost(parsedRTQuote)
+	if err != nil {
+		t.Fatalf("PlanDownloadFromPost(parsedRTQuote): %v", err)
+	}
+	if !parsedRTPlan.IsForward || parsedRTPlan.IsQuote || parsedRTPlan.OriginUnavailable {
+		t.Fatalf("parsedRTPlan must be healthy pure RT: IsForward=%v IsQuote=%v OriginUnavailable=%v reason=%q",
+			parsedRTPlan.IsForward, parsedRTPlan.IsQuote, parsedRTPlan.OriginUnavailable, parsedRTPlan.OriginUnavailableReason)
+	}
+	if parsedRTPlan.OriginID != "1791257321273790051" || parsedRTPlan.OriginOrigin == nil || parsedRTPlan.OriginOrigin.ID != "1791257321273790052" || parsedRTPlan.OriginOrigin.Unavailable {
+		t.Fatalf("parsedRTPlan lost healthy Origin or inner OriginOrigin: %+v", parsedRTPlan)
+	}
+
+	// Defense-in-depth: even if a synthetic Post has OriginUnavailable=true alongside a healthy Retweeted,
+	// PlanDownloadFromPost uses Retweeted.Unavailable as source of truth.
+	syntheticBadFlag := *parsedRTQuote
+	syntheticBadFlag.OriginUnavailable = true
+	syntheticBadFlag.OriginUnavailableReason = "stale outer flag"
+	defPlan, err := adapter.PlanDownloadFromPost(&syntheticBadFlag)
+	if err != nil || defPlan.OriginUnavailable {
+		t.Fatalf("adapter defense-in-depth failed: err=%v OriginUnavailable=%v", err, defPlan.OriginUnavailable)
+	}
 }
