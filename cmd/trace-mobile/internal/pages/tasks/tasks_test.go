@@ -37,6 +37,7 @@ type fakeHost struct {
 	imgCache    *companionclient.MemoryImageCache
 	router      *ui.Router
 	invalidate  func()
+	pending     []func()
 	badgeCounts []int
 }
 
@@ -82,10 +83,28 @@ func (h *fakeHost) FetchImage(ctx context.Context, path string) ([]byte, error) 
 
 func (h *fakeHost) Update(fn func()) {
 	if fn != nil {
-		fn()
+		h.mu.Lock()
+		h.pending = append(h.pending, fn)
+		h.mu.Unlock()
 	}
 	if h.invalidate != nil {
 		h.invalidate()
+	}
+}
+
+func (h *fakeHost) drainUpdates() {
+	for {
+		h.mu.Lock()
+		if len(h.pending) == 0 {
+			h.mu.Unlock()
+			return
+		}
+		batch := h.pending
+		h.pending = nil
+		h.mu.Unlock()
+		for _, fn := range batch {
+			fn()
+		}
 	}
 }
 
@@ -467,8 +486,11 @@ func TestTasksAllSegmentsActionsReadOnlyAndErrors(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
+			host.drainUpdates()
 			tt.Frame()
 			if cond() {
+				host.drainUpdates()
+				tt.Frame()
 				return
 			}
 			select {
@@ -792,12 +814,20 @@ func TestTasksEventThrottlingAtMostOncePerInterval(t *testing.T) {
 		pg.OnEvent(host, companionclient.EventFrame{Type: companionapi.EventCacheChanged})
 		pg.OnEvent(host, companionclient.EventFrame{Type: companionapi.EventSubsCheck})
 	}
-	time.Sleep(80 * time.Millisecond)
+	drainFor := func(d time.Duration) {
+		end := time.Now().Add(d)
+		for time.Now().Before(end) {
+			host.drainUpdates()
+			time.Sleep(10 * time.Millisecond)
+		}
+		host.drainUpdates()
+	}
+	drainFor(80 * time.Millisecond)
 	mid := dlHits.Load()
 	if mid > 1 {
 		t.Fatalf("expected at most 1 immediate fetch during throttle window, got %d", mid)
 	}
-	time.Sleep(260 * time.Millisecond)
+	drainFor(260 * time.Millisecond)
 	final := dlHits.Load()
 	if final < 1 || final > 2 {
 		t.Fatalf("expected 1..2 coalesced fetches total, got %d", final)
@@ -840,8 +870,11 @@ func TestDownloadDetailRemoveConfirmAndBackClearsStalePolling(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
+		host.drainUpdates()
 		tt.Frame()
 		if pg.downloadsLoaded {
+			host.drainUpdates()
+			tt.Frame()
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -852,8 +885,11 @@ func TestDownloadDetailRemoveConfirmAndBackClearsStalePolling(t *testing.T) {
 	}
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
+		host.drainUpdates()
 		tt.Frame()
 		if pg.detailResp != nil {
+			host.drainUpdates()
+			tt.Frame()
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -875,6 +911,7 @@ func TestDownloadDetailRemoveConfirmAndBackClearsStalePolling(t *testing.T) {
 	}
 	host.Back()
 	settleAnim(tt)
+	host.drainUpdates()
 	tt.Frame()
 	if pg.detailTaskID != "" || pg.detailResp != nil {
 		t.Fatalf("expected detailTaskID cleared after Back, got id=%q resp=%v", pg.detailTaskID, pg.detailResp)
@@ -882,6 +919,7 @@ func TestDownloadDetailRemoveConfirmAndBackClearsStalePolling(t *testing.T) {
 	before := detailHits.Load()
 	pg.OnEvent(host, companionclient.EventFrame{Type: companionapi.EventTaskChanged})
 	time.Sleep(60 * time.Millisecond)
+	host.drainUpdates()
 	if detailHits.Load() != before {
 		t.Fatalf("stale download detail polling after Back: %d -> %d", before, detailHits.Load())
 	}
@@ -892,8 +930,11 @@ func TestDownloadDetailRemoveConfirmAndBackClearsStalePolling(t *testing.T) {
 	}
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
+		host.drainUpdates()
 		tt.Frame()
 		if pg.detailResp != nil {
+			host.drainUpdates()
+			tt.Frame()
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -908,6 +949,7 @@ func TestDownloadDetailRemoveConfirmAndBackClearsStalePolling(t *testing.T) {
 	}
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
+		host.drainUpdates()
 		tt.Frame()
 		if removeHits.Load() == 1 {
 			break

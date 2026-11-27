@@ -42,6 +42,7 @@ type fakeHost struct {
 	imgCache   *companionclient.MemoryImageCache
 	router     *ui.Router
 	invalidate func()
+	pending    []func()
 	openedURLs []string
 	pushedWins []pushedWinRecord
 	tasksBadge int
@@ -108,10 +109,28 @@ func (h *fakeHost) PushWindow(title string, view func(c *ui.Context)) *mygo.Wind
 
 func (h *fakeHost) Update(fn func()) {
 	if fn != nil {
-		fn()
+		h.mu.Lock()
+		h.pending = append(h.pending, fn)
+		h.mu.Unlock()
 	}
 	if h.invalidate != nil {
 		h.invalidate()
+	}
+}
+
+func (h *fakeHost) drainUpdates() {
+	for {
+		h.mu.Lock()
+		if len(h.pending) == 0 {
+			h.mu.Unlock()
+			return
+		}
+		batch := h.pending
+		h.pending = nil
+		h.mu.Unlock()
+		for _, fn := range batch {
+			fn()
+		}
 	}
 }
 
@@ -482,8 +501,11 @@ func TestSubscriptionsAllSegmentsDetailControlsAndErrors(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
+			host.drainUpdates()
 			tt.Frame()
 			if cond() {
+				host.drainUpdates()
+				tt.Frame()
 				return
 			}
 			select {
@@ -795,6 +817,7 @@ func TestLookupBitmapFailureCooldownNoRequestStorm(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
+		host.drainUpdates()
 		tt.Frame()
 		if pg.subsLoaded && hits.Load() >= 1 {
 			break
@@ -803,6 +826,7 @@ func TestLookupBitmapFailureCooldownNoRequestStorm(t *testing.T) {
 	}
 	// Render 10 consecutive frames after the 404 failure: cooldown must prevent any storm.
 	time.Sleep(40 * time.Millisecond)
+	host.drainUpdates()
 	for i := 0; i < 10; i++ {
 		tt.Frame()
 	}
@@ -902,8 +926,11 @@ func TestLeavingDetailClearsStateAndStopsStalePollingAndPreservesSameSiteOrder(t
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
+		host.drainUpdates()
 		tt.Frame()
 		if pg.subsLoaded {
+			host.drainUpdates()
+			tt.Frame()
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -915,8 +942,11 @@ func TestLeavingDetailClearsStateAndStopsStalePollingAndPreservesSameSiteOrder(t
 	}
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
+		host.drainUpdates()
 		tt.Frame()
 		if detailSubHits.Load() >= 1 && pg.detailSub != nil && len(pg.detailSub.Accounts) == 3 {
+			host.drainUpdates()
+			tt.Frame()
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -929,6 +959,7 @@ func TestLeavingDetailClearsStateAndStopsStalePollingAndPreservesSameSiteOrder(t
 	// Navigate back and settle transition -> detailSubID must be cleared.
 	host.Back()
 	settleAnim(tt)
+	host.drainUpdates()
 	tt.Frame()
 	if pg.detailSubID != "" || pg.detailSub != nil {
 		t.Fatalf("expected detail state cleared after returning to root, got id=%q sub=%v", pg.detailSubID, pg.detailSub)
@@ -940,6 +971,7 @@ func TestLeavingDetailClearsStateAndStopsStalePollingAndPreservesSameSiteOrder(t
 	pg.OnEvent(host, companionclient.EventFrame{Type: companionapi.EventSubsChanged})
 	pg.OnEvent(host, companionclient.EventFrame{Type: companionapi.EventFeedChanged})
 	time.Sleep(60 * time.Millisecond)
+	host.drainUpdates()
 	if detailSubHits.Load() != beforeSub || feedHits.Load() != beforeFeed {
 		t.Fatalf("stale detail polling occurred after leaving detail: subHits %d->%d feedHits %d->%d",
 			beforeSub, detailSubHits.Load(), beforeFeed, feedHits.Load())
