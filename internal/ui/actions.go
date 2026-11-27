@@ -76,21 +76,19 @@ func (a *App) showError(err error) {
 			}
 			return
 		}
+		var loginSite string
 		if errSite != "" {
 			st := a.backend.StatusOf(errSite)
 			if st.State == "expired" {
 				a.handleSiteAccountLoss(errSite, "expired")
 				return
 			}
-			a.BannerLoginSite = errSite
-		} else {
-			a.BannerLoginSite = ""
+			loginSite = errSite
 		}
-		a.BannerError = userErrorText(err)
+		a.notifyError(userErrorText(err), loginSite)
 		return
 	}
-	a.BannerLoginSite = ""
-	a.BannerError = userErrorText(err)
+	a.notifyError(userErrorText(err), "")
 }
 
 func (a *App) saveSettings() {
@@ -246,7 +244,7 @@ func (a *App) checkSelectedSubscription() {
 		return checkSummaryMessage(sum), nil
 	}, func(message string) {
 		a.checkingAccount = ""
-		a.BannerInfo = message
+		a.notifyInfo(message)
 		a.checkPlanAt = time.Time{}
 		a.RefreshData()
 	}, func(err error) {

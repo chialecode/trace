@@ -1271,7 +1271,7 @@ func (a *App) cachePost(post PostCardData) {
 			})
 			return struct{}{}, err
 		}, func(struct{}) {
-			a.BannerInfo = "已加入缓存队列：" + dynCopy.ID
+			a.notifyInfo("已加入缓存队列：" + dynCopy.ID)
 			a.RefreshData()
 		}, func(err error) {
 			a.showError(err)
@@ -1283,7 +1283,7 @@ func (a *App) cachePost(post PostCardData) {
 			_, err := backend.EnqueueVideoCache(ctx, download.VideoEnqueueRequest{BVID: bvid})
 			return struct{}{}, err
 		}, func(struct{}) {
-			a.BannerInfo = "已加入缓存队列：" + bvid
+			a.notifyInfo("已加入缓存队列：" + bvid)
 			a.RefreshData()
 		}, func(err error) {
 			a.showError(err)

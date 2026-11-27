@@ -52,7 +52,7 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 						if siteID != loginSite {
 							a.cancelQRLogin()
 							a.LoginSite = siteID
-							a.LoginError = ""
+							a.setLoginError("")
 						}
 					})
 

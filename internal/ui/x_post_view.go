@@ -25,7 +25,7 @@ func (a *App) cacheXPostNow(statusID string, via *library.ItemVia) {
 		_, err := backend.CacheXPost(ctx, statusID, viaCopy)
 		return struct{}{}, err
 	}, func(struct{}) {
-		a.BannerInfo = "已加入缓存队列：" + statusID
+		a.notifyInfo("已加入缓存队列：" + statusID)
 		a.RefreshData()
 	}, func(err error) {
 		a.showError(err)

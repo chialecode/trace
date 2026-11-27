@@ -140,7 +140,7 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 									return struct{}{}, err
 								}, func(struct{}) {
 									a.RefreshData()
-									a.BannerInfo = "已加入缓存队列：" + bvid
+									a.notifyInfo("已加入缓存队列：" + bvid)
 								}, func(err error) {
 									a.showError(err)
 								})
@@ -211,7 +211,7 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 									_, err := backend.Upgrade(ctx, targetKey)
 									return struct{}{}, err
 								}, func(struct{}) {
-									a.BannerInfo = "已加入画质升级任务：" + bvid
+									a.notifyInfo("已加入画质升级任务：" + bvid)
 									a.RefreshData()
 								}, func(err error) {
 									a.showError(err)
@@ -321,7 +321,7 @@ func (a *App) renderVideoRoute(c *ui.Context) {
 										_, err := backend.CacheSupplement(ctx, bvid)
 										return struct{}{}, err
 									}, func(struct{}) {
-										a.BannerInfo = "已加入弹幕字幕补存任务：" + bvid
+										a.notifyInfo("已加入弹幕字幕补存任务：" + bvid)
 										a.RefreshData()
 									}, func(err error) {
 										a.showError(err)
@@ -592,7 +592,7 @@ func (a *App) renderCompactVideoRow(c *ui.Context, r compactVideoRow) {
 						_, err := backend.EnqueueVideoCache(ctx, download.VideoEnqueueRequest{BVID: bvid, ForMid: forMid})
 						return struct{}{}, err
 					}, func(struct{}) {
-						a.BannerInfo = "已加入缓存队列：" + bvid
+						a.notifyInfo("已加入缓存队列：" + bvid)
 						a.RefreshData()
 					}, func(err error) {
 						a.showError(err)

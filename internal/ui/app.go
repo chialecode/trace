@@ -295,13 +295,13 @@ type App struct {
 	BannerError            string
 	BannerLoginSite        string
 	BannerInfo             string
-	bannerInfoSeq          uint64
+	notificationStack      []floatingNotice
+	notificationNextID     uint64
 	bannerInfoTrackedText  string
-	bannerInfoTrackedSeq   uint64
-	bannerInfoShownAt      time.Time
-	bannerInfoSpent        time.Duration
-	bannerInfoPaused       bool
 	bannerErrorTrackedText string
+	bannerErrorTrackedSite string
+	updateNoticeTrackedKey string
+	lastAnnouncedNoticeID  uint64
 	expiredNoticeShown     map[string]bool
 
 	// Expandable post/description states & PostCard "⋯" menu
@@ -939,7 +939,7 @@ func (a *App) handleBackendEvent(ev service.Event) {
 		a.cacheStateRev++
 		a.cachedDiagAt = time.Time{}
 		if strings.HasSuffix(ev.Message, ":storage") {
-			a.BannerError = "任务状态写入失败，请检查存储后重试"
+			a.notifyError("任务状态写入失败，请检查存储后重试", "")
 		}
 		a.refreshTasks()
 		if ev.Type == service.EventLibraryChanged {
@@ -1231,9 +1231,6 @@ func (a *App) View(c *ui.Context) {
 	if a.ForceRecacheConfirm.Open {
 		a.renderForceRecacheConfirmOverlay(c, w, h)
 	}
-	if a.RestartConfirmOpen && a.updater != nil {
-		a.renderRestartConfirmOverlay(c, w, h)
-	}
 	if a.AddSubDialogOpen {
 		a.renderAddSubOverlay(c, w, h)
 	}
@@ -1272,6 +1269,11 @@ func (a *App) View(c *ui.Context) {
 	}
 	if a.PlayerOverlay.Open {
 		a.renderPlayerOverlay(c, w, h)
+	}
+	// Render restart confirmation above all modals and media layers so clicking
+	// "重启以更新" on the floating update bubble is never hidden behind them.
+	if a.RestartConfirmOpen && a.updater != nil {
+		a.renderRestartConfirmOverlay(c, w, h)
 	}
 
 	// Unified bottom-right floating notification bubbles (DEC-086).

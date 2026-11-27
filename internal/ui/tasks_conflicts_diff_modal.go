@@ -87,7 +87,7 @@ func (a *App) loadConflictDiff(id string) {
 		}
 		if dto.AutoResolved {
 			a.closeConflictDiffModal()
-			a.BannerInfo = "已自动整理旧缓存超链接并消解该项误报冲突"
+			a.notifyInfo("已自动整理旧缓存超链接并消解该项误报冲突")
 			a.cacheStateRev++
 			a.refreshCacheConflicts()
 			return

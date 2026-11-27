@@ -27,7 +27,8 @@ func (a *App) cancelQRLogin() {
 func (a *App) startQRLogin() {
 	a.cancelQRLogin()
 	revision := a.qrRevision
-	a.LoginError, a.QRStatusText = "", "正在获取二维码…"
+	a.setLoginError("")
+	a.QRStatusText = "正在获取二维码…"
 	requestGuarded(a, fmt.Sprintf("qr-start-%d", revision), func() bool {
 		return a.qrRevision == revision && a.CurrentRoute == RouteLogin
 	}, a.backend.StartQRLogin, func(session bilibili.QRSession) {
@@ -62,7 +63,7 @@ func (a *App) startQRLogin() {
 				}
 			}
 		}()
-	}, func(err error) { a.LoginError = userErrorText(err); a.QRStatusText = "获取失败，请重试" })
+	}, func(err error) { a.setLoginError(userErrorText(err)); a.QRStatusText = "获取失败，请重试" })
 }
 
 func (a *App) pollQRLogin() {
@@ -84,7 +85,7 @@ func (a *App) pollQRLogin() {
 			a.cancelQRLogin()
 			a.QRStatusText = "二维码已失效，请重新获取"
 		}
-	}, func(err error) { a.LoginError = userErrorText(err) })
+	}, func(err error) { a.setLoginError(userErrorText(err)) })
 }
 
 func (a *App) clearUnsentLoginInputs() {
@@ -97,7 +98,8 @@ func (a *App) clearUnsentLoginInputs() {
 
 func (a *App) importManualCookie() {
 	rawCookie, rawRefresh := a.ManualCookieInput, a.ManualRefreshInput
-	a.ManualCookieInput, a.ManualRefreshInput, a.LoginError = "", "", ""
+	a.ManualCookieInput, a.ManualRefreshInput = "", ""
+	a.setLoginError("")
 	if a.isPending("manual-login") {
 		rawCookie, rawRefresh = "", ""
 		return
@@ -110,16 +112,16 @@ func (a *App) importManualCookie() {
 			a.cancelQRLogin()
 			a.CompleteLogin()
 		}
-	}, func(err error) { a.LoginError = userErrorText(err) })
+	}, func(err error) { a.setLoginError(userErrorText(err)) })
 }
 
 func (a *App) importDouyinCookie() {
 	rawCookie := a.DouyinCookieInput
 	// Clear input immediately upon submit before async network validation finishes.
 	a.DouyinCookieInput = ""
-	a.LoginError = ""
+	a.setLoginError("")
 	if strings.TrimSpace(rawCookie) == "" {
-		a.LoginError = "缺少 sessionid"
+		a.setLoginError("缺少 sessionid")
 		return
 	}
 	if a.isPending("douyin-cookie-login") {
@@ -137,14 +139,14 @@ func (a *App) importDouyinCookie() {
 				handle = strings.TrimSpace(status.UID)
 			}
 			if handle != "" {
-				a.BannerInfo = fmt.Sprintf("已登录抖音：%s · 抖音号：%s", status.Uname, handle)
+				a.notifyInfo(fmt.Sprintf("已登录抖音：%s · 抖音号：%s", status.Uname, handle))
 			} else if status.Uname != "" {
-				a.BannerInfo = fmt.Sprintf("已登录抖音：%s", status.Uname)
+				a.notifyInfo(fmt.Sprintf("已登录抖音：%s", status.Uname))
 			}
 			a.CompleteLogin()
 		}
 	}, func(err error) {
-		a.LoginError = douyinLoginErrorMessage(err)
+		a.setLoginError(douyinLoginErrorMessage(err))
 	})
 }
 
@@ -172,9 +174,9 @@ func (a *App) importWeiboCookie() {
 	rawCookie := a.WeiboCookieInput
 	// Clear input immediately upon submit before async network validation finishes.
 	a.WeiboCookieInput = ""
-	a.LoginError = ""
+	a.setLoginError("")
 	if strings.TrimSpace(rawCookie) == "" {
-		a.LoginError = "缺少 SUB"
+		a.setLoginError("缺少 SUB")
 		return
 	}
 	if a.isPending("weibo-cookie-login") {
@@ -189,16 +191,16 @@ func (a *App) importWeiboCookie() {
 			a.cancelQRLogin()
 			uid := strings.TrimSpace(status.UID)
 			if status.Uname != "" && uid != "" {
-				a.BannerInfo = fmt.Sprintf("已登录微博：%s · UID %s", status.Uname, uid)
+				a.notifyInfo(fmt.Sprintf("已登录微博：%s · UID %s", status.Uname, uid))
 			} else if status.Uname != "" {
-				a.BannerInfo = fmt.Sprintf("已登录微博：%s", status.Uname)
+				a.notifyInfo(fmt.Sprintf("已登录微博：%s", status.Uname))
 			} else if uid != "" {
-				a.BannerInfo = fmt.Sprintf("已登录微博：UID %s", uid)
+				a.notifyInfo(fmt.Sprintf("已登录微博：UID %s", uid))
 			}
 			a.CompleteLogin()
 		}
 	}, func(err error) {
-		a.LoginError = weiboLoginErrorMessage(err)
+		a.setLoginError(weiboLoginErrorMessage(err))
 	})
 }
 
@@ -226,9 +228,9 @@ func (a *App) importXCookie() {
 	rawCookie := a.XCookieInput
 	// Clear input immediately upon submit before async network validation finishes.
 	a.XCookieInput = ""
-	a.LoginError = ""
+	a.setLoginError("")
 	if strings.TrimSpace(rawCookie) == "" {
-		a.LoginError = "缺少 auth_token 或 ct0（请复制包含 auth_token 与 ct0 的完整 X Cookie）"
+		a.setLoginError("缺少 auth_token 或 ct0（请复制包含 auth_token 与 ct0 的完整 X Cookie）")
 		return
 	}
 	if a.isPending("x-cookie-login") {
@@ -244,18 +246,18 @@ func (a *App) importXCookie() {
 			handle := strings.TrimPrefix(strings.TrimSpace(status.UniqueID), "@")
 			uid := strings.TrimSpace(status.UID)
 			if status.Uname != "" && handle != "" {
-				a.BannerInfo = fmt.Sprintf("已登录 X：%s (@%s)", status.Uname, handle)
+				a.notifyInfo(fmt.Sprintf("已登录 X：%s (@%s)", status.Uname, handle))
 			} else if handle != "" {
-				a.BannerInfo = fmt.Sprintf("已登录 X：@%s", handle)
+				a.notifyInfo(fmt.Sprintf("已登录 X：@%s", handle))
 			} else if status.Uname != "" {
-				a.BannerInfo = fmt.Sprintf("已登录 X：%s", status.Uname)
+				a.notifyInfo(fmt.Sprintf("已登录 X：%s", status.Uname))
 			} else if uid != "" {
-				a.BannerInfo = fmt.Sprintf("已登录 X：ID %s", uid)
+				a.notifyInfo(fmt.Sprintf("已登录 X：ID %s", uid))
 			}
 			a.CompleteLogin()
 		}
 	}, func(err error) {
-		a.LoginError = xLoginErrorMessage(err)
+		a.setLoginError(xLoginErrorMessage(err))
 	})
 }
 

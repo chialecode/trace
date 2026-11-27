@@ -25,7 +25,7 @@ func (a *App) cacheWeiboPostNow(mid string, via *library.ItemVia) {
 		_, err := backend.CacheWeiboPost(ctx, mid, viaCopy)
 		return struct{}{}, err
 	}, func(struct{}) {
-		a.BannerInfo = "已加入缓存队列：" + mid
+		a.notifyInfo("已加入缓存队列：" + mid)
 		a.RefreshData()
 	}, func(err error) {
 		a.showError(err)
@@ -43,7 +43,7 @@ func (a *App) cacheWeiboVideoNow(oid string) {
 		_, err := backend.CacheWeiboVideo(ctx, oid)
 		return struct{}{}, err
 	}, func(struct{}) {
-		a.BannerInfo = "已加入缓存队列：" + oid
+		a.notifyInfo("已加入缓存队列：" + oid)
 		a.RefreshData()
 	}, func(err error) {
 		a.showError(err)

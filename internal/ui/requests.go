@@ -138,7 +138,7 @@ func (a *App) checkAllSubscriptions() {
 		return checkSummaryMessage(sum), nil
 	}, func(message string) {
 		a.checkingAccount = ""
-		a.BannerInfo = message
+		a.notifyInfo(message)
 		a.checkPlanAt = time.Time{}
 		a.RefreshData()
 	}, func(err error) {
@@ -165,7 +165,7 @@ func (a *App) checkAccountNow(subID, siteName, uid string) {
 		return checkSummaryMessage(sum), nil
 	}, func(message string) {
 		a.checkingAccount = ""
-		a.BannerInfo = message
+		a.notifyInfo(message)
 		a.checkPlanAt = time.Time{}
 		a.RefreshData()
 	}, func(err error) {

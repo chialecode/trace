@@ -56,7 +56,7 @@ func (a *App) applySubscriptionPreset(sub *subscription.Subscription, presetID s
 		*sub = updated
 		a.SubRules = updated.Rules
 		subDisplay := firstNonEmptyStrUI(sub.Name, sub.Uname, sub.ID)
-		a.BannerInfo = fmt.Sprintf("已将「%s」切换为「%s」", subDisplay, subscription.TrackingModeLabel(updated.Tags))
+		a.notifyInfo(fmt.Sprintf("已将「%s」切换为「%s」", subDisplay, subscription.TrackingModeLabel(updated.Tags)))
 	}
 	a.refreshSubscriptions()
 }
@@ -88,9 +88,9 @@ func (a *App) toggleSubscriptionTag(sub *subscription.Subscription, tagID string
 		tagLabel := firstNonEmptyStrUI(tagDef.Name, tagID)
 		subDisplay := firstNonEmptyStrUI(sub.Name, sub.Uname, sub.ID)
 		if removed {
-			a.BannerInfo = fmt.Sprintf("已为「%s」移除标签「%s」", subDisplay, tagLabel)
+			a.notifyInfo(fmt.Sprintf("已为「%s」移除标签「%s」", subDisplay, tagLabel))
 		} else {
-			a.BannerInfo = fmt.Sprintf("已为「%s」开启标签「%s」", subDisplay, tagLabel)
+			a.notifyInfo(fmt.Sprintf("已为「%s」开启标签「%s」", subDisplay, tagLabel))
 		}
 	}
 	a.refreshSubscriptions()
@@ -365,7 +365,7 @@ func (a *App) renderSubscriptionRuleButton(c *ui.Context, sub *subscription.Subs
 					*sub = updated
 					a.SubRules = updated.Rules
 					subDisplay := firstNonEmptyStrUI(sub.Name, sub.Uname, sub.ID)
-					a.BannerInfo = fmt.Sprintf("已清空「%s」的全部缓存标签", subDisplay)
+					a.notifyInfo(fmt.Sprintf("已清空「%s」的全部缓存标签", subDisplay))
 				}
 				a.refreshSubscriptions()
 			}
