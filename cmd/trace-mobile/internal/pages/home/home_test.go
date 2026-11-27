@@ -867,5 +867,70 @@ func TestHomeXThreadDisplayDedupCollapseExpandAnd360dpNoOverflow(t *testing.T) {
 	if tt.HasText("移动长串第4段") {
 		t.Fatal("collapsed mobile 6-part thread still shows segment 4")
 	}
+
+	// Regression: quote-only origin media (all NotePages have FromOrigin=true + mirrored Images)
+	// must NOT duplicate origin images, and X GIF with MotionRelPath must show "GIF" instead of "实况".
+	quoteOnlyOrigin := companionapi.FeedItem{
+		FeedKey:        "x:dynamic:1900000000000050201",
+		ItemKey:        "x:dynamic:1900000000000050201",
+		Site:           "x",
+		Kind:           "dynamic",
+		TypeLabel:      "引用帖子",
+		AuthorUID:      "u-x-1",
+		AuthorName:     "移动串作者",
+		AuthorUniqueID: "mobile_x_author",
+		Title:          "仅引用媒体串首帖",
+		Text:           "仅引用媒体串首帖",
+		PubTs:          now - 50,
+		NotePages: []companionapi.NotePageDTO{
+			{Index: 1, Kind: "image", FromOrigin: true, Image: "images/01.png", Width: 320, Height: 200},
+			{Index: 2, Kind: "video", GIF: true, FromOrigin: true, Image: "images/02.png", Video: "images/02.mp4", Width: 270, Height: 360, Duration: 3},
+		},
+		Images: []companionapi.FeedImage{
+			{Path: "images/01.png", FromOrigin: true, Width: 320, Height: 200},
+			{Path: "images/02.png", Motion: "images/02.mp4", GIF: true, FromOrigin: true, Width: 270, Height: 360},
+		},
+		Origin: &companionapi.ItemOriginDTO{
+			Site:       "x",
+			ID:         "1900000000000050299",
+			AuthorName: "原帖开发者",
+			Text:       "原帖含静图和动图",
+		},
+		Thread: []companionapi.ThreadPartDTO{
+			{ID: "1900000000000050202", PubTs: now - 30, Text: "外层无图仅文字自回复"},
+		},
+	}
+	qParts, qFocal, qOrigImgs, qOK := resolveMobileFeedThread(quoteOnlyOrigin)
+	if !qOK || len(qParts) != 2 || qFocal != 0 {
+		t.Fatalf("resolveMobileFeedThread(quote-only origin) = (len=%d, focal=%d, ok=%v), want (2, 0, true)", len(qParts), qFocal, qOK)
+	}
+	if len(qParts[0].Images) != 0 || len(qParts[0].Videos) != 0 || len(qParts[1].Images) != 0 {
+		t.Fatalf("quote-only origin outer parts must stay media-free, got parts=%+v", qParts)
+	}
+	if len(qOrigImgs) != 2 || qOrigImgs[0].RelPath != "images/01.png" || qOrigImgs[1].RelPath != "images/02.png" || !qOrigImgs[1].GIF || qOrigImgs[1].MotionRelPath != "images/02.mp4" {
+		t.Fatalf("quote-only origin images must not duplicate and must keep GIF+MotionRelPath, got %+v", qOrigImgs)
+	}
+
+	p.mu.Lock()
+	p.feedForLocked("all").items = []companionapi.FeedItem{quoteOnlyOrigin}
+	p.mu.Unlock()
+	tt.SetSize(360, 1000)
+	tt.Frame()
+	if _, ok := tt.Find("查看图片 1 / 2"); !ok {
+		t.Fatalf("expected 2 origin image tiles (1 / 2); access=%v", tt.Texts())
+	}
+	if _, ok := tt.Find("查看图片 2 / 2"); !ok {
+		t.Fatalf("expected 2 origin image tiles (2 / 2); access=%v", tt.Texts())
+	}
+	if _, ok := tt.Find("查看图片 3 / 4"); ok {
+		t.Fatal("origin images were duplicated (found 3 / 4)")
+	}
+	if !tt.HasText("GIF") {
+		t.Fatalf("expected X GIF tile to render 'GIF' badge; texts=%v", tt.Texts())
+	}
+	if tt.HasText("实况") {
+		t.Fatalf("X GIF tile with MotionRelPath must NOT render '实况' badge; texts=%v", tt.Texts())
+	}
+	assertNoHorizontalOverflow(t, tt, 360)
 	p.OnDisconnected()
 }

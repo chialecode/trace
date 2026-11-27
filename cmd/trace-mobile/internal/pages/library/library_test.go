@@ -878,5 +878,82 @@ func TestLibraryDetailXThreadDedupMediaAnd360dpNoOverflow(t *testing.T) {
 		tt.Frame()
 		assertNoHorizontalOverflow(t, tt, w)
 	}
+
+	// Regression: quote-only origin media (all NotePages have FromOrigin=true + mirrored Media)
+	// must NOT duplicate origin images in library detail.
+	quoteOnlyKey := "x:dynamic:1900000000000060020"
+	quoteOnlyDet := companionapi.LibraryItemDetail{
+		ItemKey:        quoteOnlyKey,
+		ID:             "1900000000000060020",
+		Site:           "x",
+		Kind:           "dynamic",
+		Status:         "complete",
+		Title:          "仅引用媒体详情首帖",
+		Text:           "仅引用媒体详情首帖",
+		PubTs:          now - 40,
+		AuthorUID:      "u-x-det",
+		AuthorName:     "离线详情作者",
+		AuthorUniqueID: "offline_x_detail",
+		NotePages: []companionapi.NotePageDTO{
+			{Index: 1, Kind: "image", FromOrigin: true, Image: "images/01.png", Width: 320, Height: 200},
+			{Index: 2, Kind: "video", GIF: true, FromOrigin: true, Image: "images/02.png", Video: "images/02.mp4", Width: 270, Height: 360, Duration: 3},
+		},
+		Media: []companionapi.MediaFileDTO{
+			{Role: "image", Path: "images/01.png", FromOrigin: true, Width: 320, Height: 200},
+			{Role: "cover", Path: "images/02.png", FromOrigin: true, Width: 270, Height: 360},
+			{Role: "video", Path: "images/02.mp4", GIF: true, FromOrigin: true, Duration: 3},
+		},
+		Origin: &companionapi.ItemOriginDTO{
+			Site:       "x",
+			ID:         "1900000000000060098",
+			AuthorName: "详情原帖作者",
+			Text:       "仅引用媒体原帖正文",
+		},
+		Thread: []companionapi.ThreadPartDTO{
+			{ID: "1900000000000060021", PubTs: now - 20, Text: "仅引用媒体详情自回复"},
+		},
+	}
+	qParts, qFocal, qOrigImgs, qOK := resolveMobileDetailThread(quoteOnlyDet)
+	if !qOK || len(qParts) != 2 || qFocal != 0 {
+		t.Fatalf("resolveMobileDetailThread(quote-only origin) = (len=%d, focal=%d, ok=%v), want (2, 0, true)", len(qParts), qFocal, qOK)
+	}
+	if len(qParts[0].Images) != 0 || len(qParts[0].Videos) != 0 || len(qParts[1].Images) != 0 {
+		t.Fatalf("quote-only origin detail outer parts must stay media-free, got parts=%+v", qParts)
+	}
+	if len(qOrigImgs) != 2 || qOrigImgs[0].RelPath != "images/01.png" || qOrigImgs[1].RelPath != "images/02.png" || !qOrigImgs[1].GIF || qOrigImgs[1].MotionRelPath != "images/02.mp4" {
+		t.Fatalf("quote-only origin detail images must not duplicate and must keep GIF+MotionRelPath, got %+v", qOrigImgs)
+	}
+
+	srv.mu.Lock()
+	srv.details[quoteOnlyKey] = quoteOnlyDet
+	srv.mu.Unlock()
+	p.openItemDetail(host, quoteOnlyKey)
+	tt.Advance(400 * time.Millisecond)
+	deadline2 := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline2) {
+		tt.Frame()
+		if tt.HasText("仅引用媒体详情自回复") {
+			break
+		}
+		select {
+		case <-notify:
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if _, ok := tt.Find("查看图片 1 / 2"); !ok {
+		t.Fatalf("expected 2 origin image tiles (1 / 2) in detail; texts=%v", tt.Texts())
+	}
+	if _, ok := tt.Find("查看图片 2 / 2"); !ok {
+		t.Fatalf("expected 2 origin image tiles (2 / 2) in detail; texts=%v", tt.Texts())
+	}
+	if _, ok := tt.Find("查看图片 3 / 4"); ok {
+		t.Fatal("detail origin images were duplicated (found 3 / 4)")
+	}
+	if !tt.HasText("GIF") || tt.HasText("实况") {
+		t.Fatalf("expected detail GIF badge without '实况'; texts=%v", tt.Texts())
+	}
+	tt.SetSize(360, 1200)
+	tt.Frame()
+	assertNoHorizontalOverflow(t, tt, 360)
 	p.OnDisconnected()
 }

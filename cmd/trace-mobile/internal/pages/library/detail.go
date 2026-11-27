@@ -738,20 +738,33 @@ func resolveMobileDetailThread(det companionapi.LibraryItemDetail) ([]detailThre
 	outerPageByIdx := make(map[int]companionapi.NotePageDTO)
 	var outerPageKeys []int
 	var origImages []mediaview.ImageItem
+	seenOrigImg := make(map[string]bool)
+	appendOrigImage := func(img mediaview.ImageItem) {
+		if img.RelPath == "" || seenOrigImg[img.RelPath] {
+			return
+		}
+		seenOrigImg[img.RelPath] = true
+		origImages = append(origImages, img)
+	}
+	notePageVideos := make(map[string]bool)
 
 	for i, np := range det.NotePages {
+		if np.Video != "" {
+			notePageVideos[np.Video] = true
+		}
 		if hasFromOrigin && np.FromOrigin {
 			if rel := firstNonEmptyDetail(np.Image, np.Cover); rel != "" {
+				isGIF := np.GIF || strings.EqualFold(np.Kind, "gif")
 				motion := np.Motion
-				if motion == "" && np.GIF && np.Video != "" {
+				if motion == "" && isGIF && np.Video != "" {
 					motion = np.Video
 				}
-				origImages = append(origImages, mediaview.ImageItem{
+				appendOrigImage(mediaview.ImageItem{
 					ItemKey:            det.ItemKey,
 					RelPath:            rel,
 					NoWatermarkRelPath: np.NoWatermark,
 					MotionRelPath:      motion,
-					GIF:                np.GIF || strings.EqualFold(np.Kind, "gif"),
+					GIF:                isGIF,
 					Width:              np.Width,
 					Height:             np.Height,
 				})
@@ -769,7 +782,7 @@ func resolveMobileDetailThread(det companionapi.LibraryItemDetail) ([]detailThre
 	}
 
 	var outerImages []mediaview.ImageItem
-	if len(outerPageKeys) == 0 {
+	if len(det.NotePages) == 0 {
 		for _, m := range det.Media {
 			if m.Role != "image" || m.Path == "" {
 				continue
@@ -783,7 +796,7 @@ func resolveMobileDetailThread(det companionapi.LibraryItemDetail) ([]detailThre
 				Height:        m.Height,
 			}
 			if hasFromOrigin && m.FromOrigin {
-				origImages = append(origImages, img)
+				appendOrigImage(img)
 			} else {
 				outerImages = append(outerImages, img)
 			}
@@ -926,7 +939,7 @@ func resolveMobileDetailThread(det companionapi.LibraryItemDetail) ([]detailThre
 			}
 		}
 		for _, m := range det.Media {
-			if m.Role == "video" && m.Path != "" && (!hasFromOrigin || !m.FromOrigin) {
+			if m.Role == "video" && m.Path != "" && !notePageVideos[m.Path] && (!hasFromOrigin || !m.FromOrigin) {
 				dur := m.Duration
 				if dur <= 0 {
 					dur = det.Duration

@@ -516,6 +516,14 @@ func resolveMobileFeedThread(item companionapi.FeedItem) ([]mobileThreadPart, in
 	outerPageByIdx := make(map[int]companionapi.NotePageDTO)
 	var outerPageKeys []int
 	var origImages []mediaview.ImageItem
+	seenOrigImg := make(map[string]bool)
+	appendOrigImage := func(img mediaview.ImageItem) {
+		if img.RelPath == "" || seenOrigImg[img.RelPath] {
+			return
+		}
+		seenOrigImg[img.RelPath] = true
+		origImages = append(origImages, img)
+	}
 	notePageVideos := make(map[string]bool)
 
 	for i, np := range item.NotePages {
@@ -524,16 +532,17 @@ func resolveMobileFeedThread(item companionapi.FeedItem) ([]mobileThreadPart, in
 		}
 		if hasFromOrigin && np.FromOrigin {
 			if rel := firstNonEmpty(np.Image, np.Cover); rel != "" {
+				isGIF := np.GIF || strings.EqualFold(np.Kind, "gif")
 				motion := np.Motion
-				if motion == "" && np.GIF && np.Video != "" {
+				if motion == "" && isGIF && np.Video != "" {
 					motion = np.Video
 				}
-				origImages = append(origImages, mediaview.ImageItem{
+				appendOrigImage(mediaview.ImageItem{
 					ItemKey:            item.ItemKey,
 					RelPath:            rel,
 					NoWatermarkRelPath: np.NoWatermark,
 					MotionRelPath:      motion,
-					GIF:                np.GIF || strings.EqualFold(np.Kind, "gif"),
+					GIF:                isGIF,
 					Width:              np.Width,
 					Height:             np.Height,
 				})
@@ -551,7 +560,7 @@ func resolveMobileFeedThread(item companionapi.FeedItem) ([]mobileThreadPart, in
 	}
 
 	var outerImages []mediaview.ImageItem
-	if len(outerPageKeys) == 0 {
+	if len(item.NotePages) == 0 {
 		for _, im := range item.Images {
 			if im.Path == "" {
 				continue
@@ -566,7 +575,7 @@ func resolveMobileFeedThread(item companionapi.FeedItem) ([]mobileThreadPart, in
 				Height:             im.Height,
 			}
 			if hasFromOrigin && im.FromOrigin {
-				origImages = append(origImages, img)
+				appendOrigImage(img)
 			} else {
 				outerImages = append(outerImages, img)
 			}
@@ -939,7 +948,7 @@ func (p *Page) renderImageTileContent(c *ui.Context, h pagekit.Host, img mediavi
 	if src != nil {
 		ui.Image(c, src).Fit(ui.Cover).Fill()
 	}
-	if img.MotionRelPath != "" {
+	if img.MotionRelPath != "" && !img.GIF {
 		ui.Box(c).
 			Absolute().Top(6).Left(6).ZIndex(2).
 			Padding(2, 6).Radius(4).
