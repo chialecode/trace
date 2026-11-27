@@ -19,6 +19,7 @@ import (
 	"github.com/chialecode/trace/internal/site/douyin"
 	"github.com/chialecode/trace/internal/site/weibo"
 	"github.com/chialecode/trace/internal/site/x"
+	"github.com/chialecode/trace/internal/subscription"
 )
 
 // DEC-088: All 4 sites (bilibili, douyin, weibo, x) run independent cache queue
@@ -504,5 +505,143 @@ func TestCacheQueueManualReorderPersistsAcrossRestartAndRespectsPacing(t *testin
 	}
 	if _, err := b2.MoveCacheQueue(q2.ID, QueueMoveTop); err == nil {
 		t.Fatal("expected error reordering canceled cache queue task")
+	}
+}
+
+// Regression for PR #163 review:
+//  1. Promoting task B ahead of a waiting_backoff task A must inherit A's future
+//     NextRunAt (including the 10-30m BackoffCool window after base backoff ends),
+//     status (waiting_backoff), and stop reason without flickering to running or
+//     bypassing cooldown.
+//  2. Moving a paused task B to #1 ahead of a waiting task A, then calling
+//     ResumeCacheQueue(B), must immediately reconcile the site's active slot so A
+//     demotes to queued and B inherits the remaining cooldown and runs next.
+func TestCacheQueueReorderBackoffInheritanceAndResumePreemptsWaiting(t *testing.T) {
+	h := newQueueDualHarness(t, 2, 2, 1, 1)
+	h.clock = newFakeQueueClock(time.Now().UTC().Truncate(time.Second))
+	rng := func(int) int { return 0 } // deterministic min delays (40s item delay, 10m BackoffCool)
+	b, cleanup := h.openBackend(t, rng)
+	defer cleanup()
+
+	ctx := context.Background()
+	if _, err := b.ImportCookie(ctx, "SESSDATA=synth_bili_bk_inh; bili_jct=csrf_bi; DedeUserID=778899", ""); err != nil {
+		t.Fatalf("ImportCookie: %v", err)
+	}
+
+	// Part 1: waiting_backoff BackoffCool inheritance.
+	// Trigger Bilibili risk control so qA enters waiting_backoff with NextRunAt in the future.
+	h.biliMode.Store("risk")
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+	b.queue.Start(runCtx)
+
+	qA, err := b.EnqueueCacheQueue(ctx, CacheQueueRequest{Site: "bilibili", List: "dynamics", User: "6001", UserName: "退避UP甲"})
+	if err != nil {
+		t.Fatalf("enqueue qA: %v", err)
+	}
+	qB, err := b.EnqueueCacheQueue(ctx, CacheQueueRequest{Site: "bilibili", List: "dynamics", User: "6002", UserName: "优先UP乙"})
+	if err != nil {
+		t.Fatalf("enqueue qB: %v", err)
+	}
+
+	_, _ = h.clock.WaitForPendingTimer(t, 3*time.Second)
+	aBackoff := waitQueuePredicate(t, b, qA.ID, "qA entered waiting_backoff", func(qt CacheQueueTask) bool {
+		return qt.Status == CacheQueueWaitingBackoff && qt.NextRunAt != ""
+	})
+	aNextAt, err := time.Parse(time.RFC3339, aBackoff.NextRunAt)
+	if err != nil {
+		t.Fatalf("parse qA NextRunAt %q: %v", aBackoff.NextRunAt, err)
+	}
+
+	// Simulate base backoff just expired while still inside the 10-30m BackoffCool window:
+	// clear site backoff in subs, restore server to "ok", and check that moving qB to top
+	// STILL preserves qA's future NextRunAt (BackoffCool) without flickering or running early!
+	if err := b.subs.SaveSiteSchedulerState("bilibili", subscription.SchedulerState{
+		Site: "bilibili",
+	}); err != nil {
+		t.Fatalf("SaveSiteSchedulerState clear backoff: %v", err)
+	}
+	h.biliMode.Store("ok")
+	reqsBeforeMove := h.biliAPIReqs.Load()
+
+	movedB, err := b.MoveCacheQueue(qB.ID, QueueMoveTop)
+	if err != nil {
+		t.Fatalf("MoveCacheQueue top(qB) ahead of waiting_backoff qA: %v", err)
+	}
+	if movedB.Status != CacheQueueWaitingBackoff {
+		t.Fatalf("expected promoted qB to inherit waiting_backoff immediately, got %+v", movedB)
+	}
+	if movedB.NextRunAt != aBackoff.NextRunAt {
+		t.Fatalf("qB NextRunAt = %q, want inherited %q", movedB.NextRunAt, aBackoff.NextRunAt)
+	}
+	if movedB.StopReason == "" {
+		t.Fatalf("expected promoted qB to inherit StopReason, got %+v", movedB)
+	}
+	gotA, ok := b.FindCacheQueueTask("bilibili", "6001", "dynamics")
+	if !ok || gotA.Status != CacheQueueQueued || gotA.NextRunAt != "" {
+		t.Fatalf("expected qA demoted to queued cleanly, got %+v", gotA)
+	}
+
+	// Advance halfway into the inherited BackoffCool window: qB must NOT run early (0 API calls).
+	remaining := aNextAt.Sub(h.clock.Now().UTC())
+	if remaining < 2*time.Minute {
+		t.Fatalf("expected inherited BackoffCool >= 2m, got %v", remaining)
+	}
+	h.clock.Advance(remaining / 2)
+	time.Sleep(40 * time.Millisecond)
+	if gotReqs := h.biliAPIReqs.Load(); gotReqs != reqsBeforeMove {
+		t.Fatalf("qB bypassed BackoffCool and made %d API requests early", gotReqs-reqsBeforeMove)
+	}
+	if midB, _ := b.FindCacheQueueTask("bilibili", "6002", "dynamics"); midB.Status != CacheQueueWaitingBackoff || midB.CachedCount != 0 {
+		t.Fatalf("expected qB still in waiting_backoff during BackoffCool, got %+v", midB)
+	}
+
+	// Advance past inherited NextRunAt -> qB wakes and caches item #1 FIRST (not qA)!
+	h.clock.Advance(remaining/2 + 5*time.Second)
+	_, _ = h.clock.WaitForPendingTimer(t, 3*time.Second)
+	bWait := waitQueuePredicate(t, b, qB.ID, "qB cached 1st item after BackoffCool", func(qt CacheQueueTask) bool {
+		return qt.CachedCount == 1 && qt.Status == CacheQueueWaiting && qt.NextRunAt != ""
+	})
+	if stillA, _ := b.FindCacheQueueTask("bilibili", "6001", "dynamics"); stillA.CachedCount != 0 || stillA.Status != CacheQueueQueued {
+		t.Fatalf("expected qA still queued behind qB, got %+v", stillA)
+	}
+
+	// Part 2: Move a paused task qC to #1 ahead of waiting qB, then ResumeCacheQueue(qC)
+	// must immediately reconcile the site slot so qB demotes to queued and qC inherits qB's
+	// remaining pacing cooldown and executes next!
+	qC, err := b.EnqueueCacheQueue(ctx, CacheQueueRequest{Site: "bilibili", List: "dynamics", User: "6003", UserName: "恢复优先UP丙"})
+	if err != nil {
+		t.Fatalf("enqueue qC: %v", err)
+	}
+	if _, err := b.PauseCacheQueue(qC.ID); err != nil {
+		t.Fatalf("PauseCacheQueue qC: %v", err)
+	}
+	if _, err := b.MoveCacheQueue(qC.ID, QueueMoveTop); err != nil {
+		t.Fatalf("MoveCacheQueue top(paused qC): %v", err)
+	}
+	// While qC is still paused, qB remains the active waiting task.
+	if bBeforeResume, _ := b.FindCacheQueueTask("bilibili", "6002", "dynamics"); bBeforeResume.Status != CacheQueueWaiting {
+		t.Fatalf("expected qB to stay waiting while #1 qC is paused, got %+v", bBeforeResume)
+	}
+
+	resumedC, err := b.ResumeCacheQueue(qC.ID)
+	if err != nil {
+		t.Fatalf("ResumeCacheQueue qC: %v", err)
+	}
+	if resumedC.Status != CacheQueueWaiting || resumedC.NextRunAt != bWait.NextRunAt {
+		t.Fatalf("expected resumed #1 qC to take active slot inheriting NextRunAt=%q, got %+v", bWait.NextRunAt, resumedC)
+	}
+	bDemoted, ok := b.FindCacheQueueTask("bilibili", "6002", "dynamics")
+	if !ok || bDemoted.Status != CacheQueueQueued || bDemoted.CachedCount != 1 {
+		t.Fatalf("expected qB demoted to queued preserving CachedCount=1 after qC resumed, got %+v", bDemoted)
+	}
+
+	// Advance past inherited pacing wait -> qC caches item #1 while qB stays at CachedCount=1!
+	h.clock.Advance(45 * time.Second)
+	waitQueuePredicate(t, b, qC.ID, "qC cached 1st item ahead of qB", func(qt CacheQueueTask) bool {
+		return qt.CachedCount == 1
+	})
+	if bAfter, _ := b.FindCacheQueueTask("bilibili", "6002", "dynamics"); bAfter.CachedCount != 1 {
+		t.Fatalf("qB should not have cached a 2nd item after #1 qC resumed; got %+v", bAfter)
 	}
 }

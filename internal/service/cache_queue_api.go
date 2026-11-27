@@ -448,7 +448,9 @@ func (m *cacheQueueManager) reconcileSiteOrderLocked(siteID site.ID) []cacheQueu
 
 	now := m.clock.Now().UTC()
 	nowStr := now.Format(time.RFC3339)
-	if activeEntry.rec.Status == CacheQueueWaiting && activeEntry.rec.NextRunAt != "" {
+	prevStatus := activeEntry.rec.Status
+	prevStopReason := activeEntry.rec.StopReason
+	if activeEntry.rec.NextRunAt != "" {
 		if nextAt, err := time.Parse(time.RFC3339, activeEntry.rec.NextRunAt); err == nil && nextAt.After(now) {
 			m.recordSiteCooldownLocked(siteID, nextAt)
 		}
@@ -467,11 +469,16 @@ func (m *cacheQueueManager) reconcileSiteOrderLocked(siteID site.ID) []cacheQueu
 			if firstRunnable.rec.RestThreshold <= 0 {
 				firstRunnable.rec.RestThreshold = m.pickRestThresholdLocked()
 			}
-			firstRunnable.rec.Status = CacheQueueWaiting
 			firstRunnable.rec.PauseReason = ""
-			firstRunnable.rec.StopReason = "已优先排至下一位，等待本站点间隔结束"
 			firstRunnable.rec.NextRunAt = cooldown.Format(time.RFC3339)
 			firstRunnable.rec.UpdatedAt = nowStr
+			if prevStatus == CacheQueueWaitingBackoff {
+				firstRunnable.rec.Status = CacheQueueWaitingBackoff
+				firstRunnable.rec.StopReason = firstNonEmpty(prevStopReason, "站点处于退避期，等待退避结束")
+			} else {
+				firstRunnable.rec.Status = CacheQueueWaiting
+				firstRunnable.rec.StopReason = "已优先排至下一位，等待本站点间隔结束"
+			}
 			notify = append(notify, firstRunnable.rec)
 		}
 	}
@@ -535,25 +542,61 @@ func (b *Backend) ResumeCacheQueue(id string) (CacheQueueTask, error) {
 		m.mu.Unlock()
 		return dto, nil
 	}
-	prevRec := entry.rec
-	prevResume := entry.rt.resumePendingDownloads
+
+	type entrySnapshot struct {
+		entry  *cacheQueueEntry
+		rec    cacheQueueRecord
+		resume bool
+	}
+	prevCooldown := m.siteCooldownUntil[siteID]
+	var snaps []entrySnapshot
+	for _, e := range m.tasks {
+		if e.rec.Site == string(siteID) && isUnfinishedQueueStatus(e.rec.Status) {
+			snaps = append(snaps, entrySnapshot{
+				entry:  e,
+				rec:    e.rec,
+				resume: e.rt.resumePendingDownloads,
+			})
+		}
+	}
+
 	entry.rec.Status = CacheQueueQueued
 	entry.rec.PauseReason = ""
 	entry.rec.StopReason = ""
 	entry.rec.NextRunAt = ""
 	entry.rec.UpdatedAt = m.nowRFC3339()
 	entry.rt.resumePendingDownloads = len(entry.rec.ActiveDownloadIDs) > 0
+
+	reconciled := m.reconcileSiteOrderLocked(siteID)
 	if err := m.saveLocked(); err != nil {
-		entry.rec = prevRec
-		entry.rt.resumePendingDownloads = prevResume
+		if prevCooldown.IsZero() {
+			delete(m.siteCooldownUntil, siteID)
+		} else {
+			m.siteCooldownUntil[siteID] = prevCooldown
+		}
+		for _, s := range snaps {
+			s.entry.rec = s.rec
+			s.entry.rt.resumePendingDownloads = s.resume
+		}
 		m.mu.Unlock()
 		return CacheQueueTask{}, err
 	}
-	notifyRec := entry.rec
+
+	notify := make([]cacheQueueRecord, 0, len(reconciled)+1)
+	seenSelf := false
+	for _, rec := range reconciled {
+		if rec.ID == entry.rec.ID {
+			seenSelf = true
+		}
+		notify = append(notify, rec)
+	}
+	if !seenSelf {
+		notify = append(notify, entry.rec)
+	}
 	dto := m.toDTOLocked(entry)
 	m.mu.Unlock()
 
-	m.notifyState(notifyRec)
+	m.notifyStates(notify)
 	m.wakeSite(siteID)
 	return dto, nil
 }
