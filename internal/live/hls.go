@@ -78,14 +78,29 @@ func isTransientHLSSegmentNetErr(err error) bool {
 	return se.Kind == site.ErrKindNetwork && se.HTTPStatus == 0
 }
 
-func (m *Manager) fetchLiveBytes(ctx context.Context, targetURL string) ([]byte, error) {
+func isGlobalLiveStopErr(err error) bool {
+	switch liveStopReason(err) {
+	case bilibili.ErrKindRiskControl, bilibili.ErrKindRateLimited, bilibili.ErrKindAuthRequired, bilibili.ErrKindQuota, bilibili.ErrKindBackoff, "storage":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Manager) fetchLiveBytes(ctx context.Context, targetURL string, allowScheduled bool) ([]byte, error) {
 	_, segTimeout, idleTimeout, _ := m.hlsTimeouts()
-	return m.fetchLiveLimitedBytesWithTimeout(ctx, targetURL, 32*1024*1024, segTimeout, idleTimeout)
+	data, _, err := m.fetchLiveLimitedBytesWithTimeout(ctx, targetURL, 32*1024*1024, segTimeout, idleTimeout, allowScheduled)
+	return data, err
 }
 
 func (m *Manager) fetchLiveLimitedBytes(ctx context.Context, targetURL string, maxBytes int64) ([]byte, error) {
+	data, _, err := m.fetchLivePlaylistBytes(ctx, targetURL, maxBytes, false)
+	return data, err
+}
+
+func (m *Manager) fetchLivePlaylistBytes(ctx context.Context, targetURL string, maxBytes int64, allowScheduled bool) ([]byte, string, error) {
 	playlistTimeout, _, idleTimeout, _ := m.hlsTimeouts()
-	return m.fetchLiveLimitedBytesWithTimeout(ctx, targetURL, maxBytes, playlistTimeout, idleTimeout)
+	return m.fetchLiveLimitedBytesWithTimeout(ctx, targetURL, maxBytes, playlistTimeout, idleTimeout, allowScheduled)
 }
 
 func (m *Manager) fetchLiveLimitedBytesWithTimeout(
@@ -94,9 +109,10 @@ func (m *Manager) fetchLiveLimitedBytesWithTimeout(
 	maxBytes int64,
 	totalTimeout time.Duration,
 	idleTimeout time.Duration,
-) ([]byte, error) {
-	if err := m.client.ValidateMediaURL(targetURL); err != nil {
-		return nil, err
+	allowScheduled bool,
+) ([]byte, string, error) {
+	if err := m.client.ValidateLiveMediaURL(targetURL, allowScheduled); err != nil {
+		return nil, targetURL, err
 	}
 	reqCtx := ctx
 	var cancel context.CancelFunc
@@ -104,27 +120,25 @@ func (m *Manager) fetchLiveLimitedBytesWithTimeout(
 		reqCtx, cancel = context.WithTimeout(ctx, totalTimeout)
 		defer cancel()
 	}
-	mediaClient, _ := m.client.MediaHTTPClient()
+	mediaClient, _ := m.client.LiveMediaHTTPClient()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
 	if err != nil {
-		return nil, &site.Error{
+		return nil, targetURL, &site.Error{
 			Site:    site.Bilibili,
 			Kind:    site.ErrKindNetwork,
 			Message: "创建直播流请求失败",
 			Err:     site.UnwrapURLError(err),
 		}
 	}
-	req.Header.Set("User-Agent", bilibili.DefaultUserAgent)
-	req.Header.Set("Referer", "https://live.bilibili.com/")
-	req.Header.Set("Origin", "https://live.bilibili.com")
+	site.BilibiliLiveTransport(m.client.AllowLocalhost()).ApplyHeaders(req)
 
 	resp, err := mediaClient.Do(req)
 	if err != nil {
 		var se *site.Error
 		if errors.As(err, &se) {
-			return nil, se
+			return nil, targetURL, se
 		}
-		return nil, &site.Error{
+		return nil, targetURL, &site.Error{
 			Site:    site.Bilibili,
 			Kind:    site.ErrKindNetwork,
 			Message: "请求直播流节点失败",
@@ -132,12 +146,16 @@ func (m *Manager) fetchLiveLimitedBytesWithTimeout(
 		}
 	}
 	defer resp.Body.Close()
+	finalURL := targetURL
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalURL = resp.Request.URL.String()
+	}
 	if resp.StatusCode != http.StatusOK {
 		// Drain short error bodies so HTTP/1.1 keep-alive connections remain reusable.
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	}
 	if resp.StatusCode == http.StatusPreconditionFailed {
-		return nil, &bilibili.SiteError{
+		return nil, finalURL, &bilibili.SiteError{
 			Site:       site.Bilibili,
 			Kind:       bilibili.ErrKindRiskControl,
 			HTTPStatus: resp.StatusCode,
@@ -152,7 +170,7 @@ func (m *Manager) fetchLiveLimitedBytesWithTimeout(
 		if resp.StatusCode == http.StatusUnauthorized {
 			kind = bilibili.ErrKindAuthRequired
 		}
-		return nil, &bilibili.SiteError{
+		return nil, finalURL, &bilibili.SiteError{
 			Site:       site.Bilibili,
 			Kind:       kind,
 			HTTPStatus: resp.StatusCode,
@@ -175,9 +193,9 @@ func (m *Manager) fetchLiveLimitedBytesWithTimeout(
 	if err != nil {
 		var se *site.Error
 		if errors.As(err, &se) {
-			return nil, se
+			return nil, finalURL, se
 		}
-		return nil, &site.Error{
+		return nil, finalURL, &site.Error{
 			Site:    site.Bilibili,
 			Kind:    site.ErrKindNetwork,
 			Message: "读取直播流数据失败",
@@ -185,13 +203,13 @@ func (m *Manager) fetchLiveLimitedBytesWithTimeout(
 		}
 	}
 	if int64(len(data)) > maxBytes {
-		return nil, &bilibili.SiteError{
+		return nil, finalURL, &bilibili.SiteError{
 			Site:    site.Bilibili,
 			Kind:    bilibili.ErrKindSchemaChanged,
 			Message: "直播响应超过大小上限",
 		}
 	}
-	return data, nil
+	return data, finalURL, nil
 }
 
 func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, urls []string, partPath string, isFMP4 bool) (written int64, result error) {
@@ -244,7 +262,7 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 			if cpErr := flushCheckpoint(); cpErr != nil && result == nil {
 				result = cpErr
 			}
-		} else {
+		} else if written > 0 {
 			if sErr := f.Sync(); sErr != nil && result == nil {
 				result = sErr
 			}
@@ -258,10 +276,51 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 	playlistURL, initURI := urls[0], ""
 	followedVariant := false
 	var initBytes []byte
+	initWritten := false
 	lastNew := m.now()
 	staleLowerSeqPolls := 0
 	consecutiveSeg404 := 0
 	skipped404Seq := int64(-1)
+
+	noteCandidateFailed := func(failedURL string) {
+		if ctx.Err() != nil {
+			return
+		}
+		m.noteSessionFailedHost(sess, failedURL)
+		if failedURL != urls[urlIdx] {
+			m.noteSessionFailedHost(sess, urls[urlIdx])
+		}
+	}
+
+	tryNextCandidate := func(failedURL, reason string) bool {
+		if written > 0 || urlIdx+1 >= len(urls) {
+			return false
+		}
+		noteCandidateFailed(failedURL)
+		prevHost := liveLogHost(urls[urlIdx])
+		urlIdx++
+		playlistURL = urls[urlIdx]
+		followedVariant = false
+		initURI = ""
+		initBytes = nil
+		initWritten = false
+		consecutiveSeg404 = 0
+		skipped404Seq = -1
+		staleLowerSeqPolls = 0
+		m.logEvent("WARN", "live hls host_fallback: site=%s room=%s part=%s reason=%s from_host=%s to_host=%s",
+			liveLogSite(sess), liveLogRoom(sess), partBase, reason, prevHost, liveLogHost(playlistURL))
+		return true
+	}
+
+	isExpiredHealthyHost := func(err error) bool {
+		if httpStatusCodeOf(err) != http.StatusForbidden {
+			return false
+		}
+		m.mu.Lock()
+		served := sess.wroteMedia || sess.selectionWroteMedia
+		m.mu.Unlock()
+		return served
+	}
 
 	for ctx.Err() == nil {
 		pollWallStart := time.Now()
@@ -270,27 +329,32 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 		if err := m.checkDiskSpace(sess.itemDir, site.Bilibili); err != nil {
 			return written, err
 		}
-		raw, err := m.fetchLiveLimitedBytes(ctx, playlistURL, maxM3U8PlaylistBytes)
+		raw, effectivePlaylistURL, err := m.fetchLivePlaylistBytes(ctx, playlistURL, maxM3U8PlaylistBytes, followedVariant)
 		if err != nil {
-			if ctx.Err() == nil && liveStopReason(err) == "" {
-				m.noteSessionFailedHost(sess, playlistURL)
-			}
-			if written == 0 && !followedVariant && urlIdx+1 < len(urls) && liveStopReason(err) == "" {
-				urlIdx++
-				playlistURL = urls[urlIdx]
+			expiredHealthy := isExpiredHealthyHost(err)
+			if !expiredHealthy && !isGlobalLiveStopErr(err) && tryNextCandidate(playlistURL, "playlist_fetch") {
 				continue
+			}
+			if !expiredHealthy && !isGlobalLiveStopErr(err) {
+				noteCandidateFailed(playlistURL)
 			}
 			return written, err
 		}
-		playlist := parseM3U8PlaylistDetails(string(raw), playlistURL)
+		playlist := parseM3U8PlaylistDetails(string(raw), effectivePlaylistURL)
 		if len(playlist.variants) > 0 && len(playlist.segments) == 0 && playlist.valid {
 			// Some nodes answer with a multivariant playlist. Follow it once; a
 			// second level of indirection is treated as a schema change.
 			variant, ok := playlist.bestVariantInfo()
 			if followedVariant || !ok {
+				if tryNextCandidate(playlistURL, "nested_multivariant") {
+					continue
+				}
 				return written, &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindSchemaChanged, Message: "直播播放列表结构不完整（多级索引）"}
 			}
-			if err := m.client.ValidateMediaURL(variant.uri); err != nil {
+			if err := m.client.ValidateLiveMediaURL(variant.uri, true); err != nil {
+				if tryNextCandidate(playlistURL, "blocked_variant") {
+					continue
+				}
 				return written, &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindSchemaChanged, Message: "直播播放列表指向不受支持的节点"}
 			}
 			if variant.bandwidth > 0 {
@@ -303,7 +367,10 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 			return written, &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindBlocked, Message: "不支持加密的直播分片"}
 		}
 		if !playlist.valid {
-			m.noteSessionFailedHost(sess, playlistURL)
+			if tryNextCandidate(playlistURL, "invalid_playlist") {
+				continue
+			}
+			noteCandidateFailed(playlistURL)
 			return written, &transientHLSSchemaError{
 				err: &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindSchemaChanged, Message: "直播播放列表结构不完整：" + playlist.invalidReason},
 			}
@@ -342,6 +409,7 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 
 		_, _, _, cpInterval := m.hlsTimeouts()
 		newCount := 0
+		switchedCandidate := false
 		for idx, segment := range playlist.segments {
 			if hasSeq && segment.seq <= lastSeq {
 				continue
@@ -360,28 +428,38 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 					liveLogSite(sess), liveLogRoom(sess), partBase, reason, lastSeq, segment.seq)
 				return written, errSegmentRollover
 			}
+			if !initWritten && initURI != "" && segment.mapURI != initURI {
+				initURI = ""
+				initBytes = nil
+			}
 			if initURI == "" {
-				initBytes, err = m.fetchLiveBytes(ctx, segment.mapURI)
-				if err != nil {
-					if ctx.Err() == nil && liveStopReason(err) == "" {
-						m.noteSessionFailedHost(sess, segment.mapURI)
+				fetchedInit, initErr := m.fetchLiveBytes(ctx, segment.mapURI, true)
+				if initErr != nil {
+					expiredHealthy := isExpiredHealthyHost(initErr)
+					if !expiredHealthy && !isGlobalLiveStopErr(initErr) && tryNextCandidate(segment.mapURI, "init_fetch") {
+						switchedCandidate = true
+						break
 					}
-					return written, err
+					if !expiredHealthy && !isGlobalLiveStopErr(initErr) {
+						noteCandidateFailed(segment.mapURI)
+					}
+					return written, initErr
 				}
-				if !validLiveInit(initBytes) {
-					return written, &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindSchemaChanged, Message: "直播初始化分片缺少有效视频轨"}
+				if !validLiveInit(fetchedInit) {
+					if tryNextCandidate(segment.mapURI, "invalid_init") {
+						switchedCandidate = true
+						break
+					}
+					noteCandidateFailed(segment.mapURI)
+					return written, &transientHLSSchemaError{
+						err: &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindSchemaChanged, Message: "直播初始化分片缺少有效视频轨"},
+					}
 				}
 				initURI = segment.mapURI
-				n, err := f.Write(initBytes)
-				written += int64(n)
-				m.addSessionBytes(sess, int64(n))
-				if err != nil {
-					writeFailed = true
-					return written, err
-				}
+				initBytes = fetchedInit
 			}
 			fetchStart := m.now()
-			fragment, err := m.fetchLiveBytes(ctx, segment.uri)
+			fragment, err := m.fetchLiveBytes(ctx, segment.uri, true)
 			if err != nil && ctx.Err() == nil && isTransientHLSSegmentNetErr(err) {
 				retryTimer := time.NewTimer(200 * time.Millisecond)
 				select {
@@ -391,12 +469,12 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 				case <-retryTimer.C:
 				}
 				fetchStart = m.now()
-				fragment, err = m.fetchLiveBytes(ctx, segment.uri)
+				fragment, err = m.fetchLiveBytes(ctx, segment.uri, true)
 			}
 			fetchEnd := m.now()
 			if err != nil {
 				status := httpStatusCodeOf(err)
-				if (status == http.StatusNotFound || status == http.StatusGone) && wroteMedia {
+				if (status == http.StatusNotFound || status == http.StatusGone) && (wroteMedia || idx+1 < len(playlist.segments)) {
 					consecutiveSeg404++
 					if consecutiveSeg404 < 3 {
 						skipped404Seq = segment.seq
@@ -409,18 +487,38 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 						break
 					}
 				}
-				if ctx.Err() == nil && liveStopReason(err) == "" {
-					m.noteSessionFailedHost(sess, segment.uri)
+				expiredHealthy := isExpiredHealthyHost(err)
+				if !expiredHealthy && !isGlobalLiveStopErr(err) && tryNextCandidate(segment.uri, "segment_fetch") {
+					switchedCandidate = true
+					break
+				}
+				if !expiredHealthy && !isGlobalLiveStopErr(err) {
+					noteCandidateFailed(segment.uri)
 				}
 				return written, err
 			}
 			consecutiveSeg404 = 0
 			skipped404Seq = -1
 			if !validLiveFragment(fragment) {
-				m.noteSessionFailedHost(sess, segment.uri)
+				if tryNextCandidate(segment.uri, "invalid_fragment") {
+					switchedCandidate = true
+					break
+				}
+				noteCandidateFailed(segment.uri)
 				return written, &transientHLSSchemaError{
 					err: &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindSchemaChanged, Message: "直播媒体分片不完整"},
 				}
+			}
+			if !initWritten {
+				nInit, wErr := f.Write(initBytes)
+				written += int64(nInit)
+				m.addSessionBytes(sess, int64(nInit))
+				if wErr != nil {
+					writeFailed = true
+					return written, wErr
+				}
+				initWritten = true
+				initBytes = nil
 			}
 			n, err := f.Write(fragment)
 			written += int64(n)
@@ -502,7 +600,7 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 			sess.segmentDuration += segment.duration
 			dur := sess.segmentDuration
 			m.mu.Lock()
-			sess.lastSequence, sess.hasSequence, sess.wroteMedia, sess.lastSequenceAt = lastSeq, hasSeq, wroteMedia, lastSeqAt
+			sess.lastSequence, sess.hasSequence, sess.wroteMedia, sess.selectionWroteMedia, sess.lastSequenceAt = lastSeq, hasSeq, wroteMedia, true, lastSeqAt
 			if segment.duration > 0 {
 				if sess.extinfSamples == 0 || sess.avgExtinfSec <= 0 {
 					sess.avgExtinfSec = segment.duration
@@ -533,6 +631,9 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 				}
 			}
 			newCount++
+		}
+		if switchedCandidate {
+			continue
 		}
 		now := m.now()
 		m.mu.Lock()

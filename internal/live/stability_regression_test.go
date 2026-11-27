@@ -1122,3 +1122,486 @@ func TestCommitSessionMetaUnlocksSaveMuBeforeLogging(t *testing.T) {
 		t.Fatalf("expected 2 slow_io logs after error branch, got %d", logCalls.Load())
 	}
 }
+
+// Candidate URL failover inside recordHLSSegment and OpenHTTPFLVStream must recover
+// seamlessly when an initial node returns a blocked variant URI, bad init segment,
+// or blocked FLV redirect, and HLS 302 redirects must resolve relative URIs against
+// the final redirected playlist URL.
+func TestLiveCandidateHostFallbackAndPlaylistRedirectRelativeURI(t *testing.T) {
+	t.Run("HLS falls back from blocked variant host to backup candidate", func(t *testing.T) {
+		initBytes, fragBytes := regressionLiveSamples(t)
+		var fallbackLogged atomic.Bool
+		mgr, lib, base := regressionRecorder(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/bad-variant/index.m3u8":
+				// Non-loopback http:// variant is rejected even when AllowLocalhost is true.
+				_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-STREAM-INF:BANDWIDTH=6000000\nhttp://blocked-edge.example.net/live/index.m3u8\n"))
+			case "/good/index.m3u8":
+				_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXT-X-MAP:URI=\"/good/init.mp4\"\n#EXTINF:1.0,\n/good/seg1.m4s\n#EXT-X-ENDLIST\n"))
+			case "/good/init.mp4":
+				_, _ = w.Write(initBytes)
+			case "/good/seg1.m4s":
+				_, _ = w.Write(fragBytes)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		mgr.SetLogFunc(func(level, msg string) {
+			if strings.Contains(msg, "live hls host_fallback:") && strings.Contains(msg, "reason=blocked_variant") {
+				fallbackLogged.Store(true)
+			}
+		})
+		sess := regressionLiveSession(t, lib)
+		partPath := filepath.Join(sess.itemDir, "part-001.mp4.part")
+		n, err := mgr.recordHLSSegment(context.Background(), sess, []string{base + "/bad-variant/index.m3u8", base + "/good/index.m3u8"}, partPath, true)
+		if err != nil {
+			t.Fatalf("expected fallback to good candidate, got err=%v", err)
+		}
+		if n != int64(len(initBytes)+len(fragBytes)) || !sess.wroteMedia {
+			t.Fatalf("written=%d wroteMedia=%v, want %d/true", n, sess.wroteMedia, len(initBytes)+len(fragBytes))
+		}
+		if !fallbackLogged.Load() {
+			t.Fatal("expected live hls host_fallback log for blocked_variant")
+		}
+	})
+
+	t.Run("HLS falls back from bad init host to backup candidate", func(t *testing.T) {
+		initBytes, fragBytes := regressionLiveSamples(t)
+		mgr, lib, base := regressionRecorder(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/bad-init/index.m3u8":
+				_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXT-X-MAP:URI=\"/bad-init/init.mp4\"\n#EXTINF:1.0,\n/bad-init/seg1.m4s\n"))
+			case "/bad-init/init.mp4":
+				_, _ = w.Write([]byte("not-a-valid-moov"))
+			case "/good/index.m3u8":
+				_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXT-X-MAP:URI=\"/good/init.mp4\"\n#EXTINF:1.0,\n/good/seg1.m4s\n#EXT-X-ENDLIST\n"))
+			case "/good/init.mp4":
+				_, _ = w.Write(initBytes)
+			case "/good/seg1.m4s":
+				_, _ = w.Write(fragBytes)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		sess := regressionLiveSession(t, lib)
+		partPath := filepath.Join(sess.itemDir, "part-001.mp4.part")
+		n, err := mgr.recordHLSSegment(context.Background(), sess, []string{base + "/bad-init/index.m3u8", base + "/good/index.m3u8"}, partPath, true)
+		if err != nil || n != int64(len(initBytes)+len(fragBytes)) {
+			t.Fatalf("bad-init fallback failed: n=%d err=%v", n, err)
+		}
+	})
+
+	t.Run("HLS 302 redirect resolves relative URIs against final redirected URL", func(t *testing.T) {
+		initBytes, fragBytes := regressionLiveSamples(t)
+		mgr, lib, base := regressionRecorder(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/dispatch/index.m3u8":
+				http.Redirect(w, r, "/edge/live/index.m3u8", http.StatusFound)
+			case "/edge/live/index.m3u8":
+				_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:5\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1.0,\nseg5.m4s\n#EXT-X-ENDLIST\n"))
+			case "/edge/live/init.mp4":
+				_, _ = w.Write(initBytes)
+			case "/edge/live/seg5.m4s":
+				_, _ = w.Write(fragBytes)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		sess := regressionLiveSession(t, lib)
+		partPath := filepath.Join(sess.itemDir, "part-001.mp4.part")
+		n, err := mgr.recordHLSSegment(context.Background(), sess, []string{base + "/dispatch/index.m3u8"}, partPath, true)
+		if err != nil || n != int64(len(initBytes)+len(fragBytes)) {
+			t.Fatalf("302 relative URI resolution failed: n=%d err=%v", n, err)
+		}
+	})
+
+	t.Run("HTTP-FLV falls back past single-host blocked redirect to backup URL", func(t *testing.T) {
+		flvBytes := buildSyntheticFLVBytes(t, "avc", 35)
+		_, _, base := regressionRecorder(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/blocked.flv":
+				http.Redirect(w, r, "http://blocked-edge.example.net/stream.flv", http.StatusFound)
+			case "/good.flv":
+				w.Header().Set("Content-Type", "video/x-flv")
+				_, _ = w.Write(flvBytes)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		var failedURLs []string
+		rc, openedURL, err := openHTTPFLVStreamWithCallback(
+			context.Background(),
+			site.BilibiliLiveTransport(true),
+			[]string{base + "/blocked.flv", base + "/good.flv"},
+			time.Second,
+			func(u string) { failedURLs = append(failedURLs, u) },
+		)
+		if err != nil {
+			t.Fatalf("expected FLV fallback to good URL, got err=%v", err)
+		}
+		_ = rc.Close()
+		if openedURL != base+"/good.flv" || len(failedURLs) != 1 || failedURLs[0] != base+"/blocked.flv" {
+			t.Fatalf("openedURL=%q failedURLs=%v", openedURL, failedURLs)
+		}
+	})
+}
+
+// Normal 1-hour CDN token expiry (HTTP 403 after media was served) must NOT demote
+// the healthy primary host into failedHosts, whereas an immediate 403 on a fresh
+// selection still demotes the broken host.
+func TestHLS403AfterMediaDoesNotDemoteHealthyHost(t *testing.T) {
+	initBytes, fragBytes := regressionLiveSamples(t)
+
+	t.Run("403 after media served keeps host healthy", func(t *testing.T) {
+		var polls atomic.Int32
+		mgr, lib, base := regressionRecorder(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/hls/index.m3u8":
+				if polls.Add(1) == 1 {
+					_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:10\n#EXT-X-MAP:URI=\"/hls/init.mp4\"\n#EXTINF:1.0,\n/hls/seg10.m4s\n"))
+					return
+				}
+				w.WriteHeader(http.StatusForbidden)
+			case "/hls/init.mp4":
+				_, _ = w.Write(initBytes)
+			case "/hls/seg10.m4s":
+				_, _ = w.Write(fragBytes)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		sess := regressionLiveSession(t, lib)
+		partPath := filepath.Join(sess.itemDir, "part-001.mp4.part")
+		n, err := mgr.recordHLSSegment(context.Background(), sess, []string{base + "/hls/index.m3u8"}, partPath, true)
+		if httpStatusCodeOf(err) != http.StatusForbidden || n <= 0 {
+			t.Fatalf("got n=%d err=%v, want >0 bytes and HTTP 403", n, err)
+		}
+		mgr.mu.Lock()
+		failedCount := len(sess.failedHosts)
+		mgr.mu.Unlock()
+		if failedCount != 0 {
+			t.Fatalf("healthy host was demoted after post-media 403 expiry: failedHosts=%+v", sess.failedHosts)
+		}
+	})
+
+	t.Run("immediate 403 on fresh selection demotes host", func(t *testing.T) {
+		mgr, lib, base := regressionRecorder(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		sess := regressionLiveSession(t, lib)
+		partPath := filepath.Join(sess.itemDir, "part-001.mp4.part")
+		n, err := mgr.recordHLSSegment(context.Background(), sess, []string{base + "/hls/index.m3u8"}, partPath, true)
+		if httpStatusCodeOf(err) != http.StatusForbidden || n != 0 {
+			t.Fatalf("got n=%d err=%v, want 0 bytes and HTTP 403", n, err)
+		}
+		mgr.mu.Lock()
+		failedCount := len(sess.failedHosts)
+		mgr.mu.Unlock()
+		if failedCount != 1 {
+			t.Fatalf("expected fresh 403 host to be demoted, failedHosts=%+v", sess.failedHosts)
+		}
+	})
+}
+
+// Deferred init-header writing prevents empty init-only .part files and bogus
+// convert_failed incidents when the first media segment of a new part fails,
+// and an aged-out front segment (404) on a new part skips to the next segment
+// in the same playlist without reconnecting.
+func TestHLSDeferredInitWritePreventsEmptyPartAndSkipsPostDiscontinuity404(t *testing.T) {
+	t.Run("first segment truncated after discontinuity never creates init-only convert_failed part", func(t *testing.T) {
+		const (
+			roomID    int64 = 71020
+			uid       int64 = 7120
+			liveSince int64 = 1796020000
+		)
+		initBytes, fragBytes := regressionLiveSamples(t)
+		var stillLive atomic.Bool
+		stillLive.Store(true)
+		var playCalls atomic.Int32
+		var aHits atomic.Int32
+		var srvURL string
+
+		mux := http.NewServeMux()
+		registerStandardBilibiliLiveHandlers(mux, roomID, uid, liveSince, &stillLive)
+		mux.HandleFunc("/xlive/web-room/v2/index/getRoomPlayInfo", func(w http.ResponseWriter, r *http.Request) {
+			path := "/hls/a.m3u8"
+			if playCalls.Add(1) >= 2 {
+				path = "/hls/b.m3u8"
+			}
+			_ = json.NewEncoder(w).Encode(buildBiliPlayInfoResp(roomID, uid, srvURL, path))
+		})
+		mux.HandleFunc("/hls/a.m3u8", func(w http.ResponseWriter, r *http.Request) {
+			if aHits.Add(1) == 1 {
+				_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:10\n#EXT-X-MAP:URI=\"/hls/init.mp4\"\n#EXTINF:1.0,\n/hls/good.m4s\n"))
+				return
+			}
+			// Discontinuity triggers rollover to part-002; first segment of part-002 is truncated.
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:11\n#EXT-X-MAP:URI=\"/hls/init.mp4\"\n#EXT-X-DISCONTINUITY\n#EXTINF:1.0,\n/hls/bad.m4s\n"))
+		})
+		mux.HandleFunc("/hls/b.m3u8", func(w http.ResponseWriter, r *http.Request) {
+			stillLive.Store(false)
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:12\n#EXT-X-MAP:URI=\"/hls/init.mp4\"\n#EXTINF:1.0,\n/hls/good.m4s\n#EXT-X-ENDLIST\n"))
+		})
+		mux.HandleFunc("/hls/init.mp4", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(initBytes) })
+		mux.HandleFunc("/hls/good.m4s", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(fragBytes) })
+		mux.HandleFunc("/hls/bad.m4s", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("truncated")) })
+
+		mgr, lib, _, srv, _ := setupLiveTestHarness(t, mux)
+		srvURL = srv.URL
+		mgr.mu.Lock()
+		mgr.hlsPollInterval = 10 * time.Millisecond
+		mgr.reconnectWait = 10 * time.Millisecond
+		mgr.mu.Unlock()
+
+		if _, err := mgr.StartRecording(context.Background(), roomID); err != nil {
+			t.Fatalf("StartRecording: %v", err)
+		}
+		waitLiveRecordingDone(t, mgr, roomID)
+
+		meta, ok, err := lib.GetItem(library.CanonicalItemKey("bilibili", "live", fmt.Sprintf("%d:%d", roomID, liveSince)))
+		if err != nil || !ok || meta.Live == nil {
+			t.Fatalf("GetItem: ok=%v err=%v", ok, err)
+		}
+		if meta.Status != "complete" || len(meta.PendingParts) != 0 || len(meta.Missing) != 0 {
+			t.Fatalf("expected complete item with no pending/missing parts, got status=%q pending=%v missing=%+v", meta.Status, meta.PendingParts, meta.Missing)
+		}
+		// Failed empty part-002 attempt must NOT burn part number 2; reconnected part must be part-002.mp4.
+		if len(meta.Live.Segments) != 2 || meta.Live.Segments[0].File != "part-001.mp4" || meta.Live.Segments[1].File != "part-002.mp4" {
+			t.Fatalf("segments = %+v, want [part-001.mp4 part-002.mp4]", meta.Live.Segments)
+		}
+		for _, inc := range meta.Live.Incidents {
+			if inc.Kind == library.LiveIncidentConvertFailed {
+				t.Fatalf("unexpected convert_failed incident: %+v", inc)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(meta.ItemDir, "part-002.mp4.part")); !os.IsNotExist(err) {
+			t.Fatalf("orphan init-only part-002.mp4.part should not exist: %v", err)
+		}
+	})
+
+	t.Run("post-discontinuity front segment 404 skips cleanly without reconnect", func(t *testing.T) {
+		const (
+			roomID    int64 = 71021
+			uid       int64 = 7121
+			liveSince int64 = 1796021000
+		)
+		initBytes, fragBytes := regressionLiveSamples(t)
+		var stillLive atomic.Bool
+		stillLive.Store(true)
+		var playCalls atomic.Int32
+		var m3u8Hits atomic.Int32
+		var srvURL string
+
+		mux := http.NewServeMux()
+		registerStandardBilibiliLiveHandlers(mux, roomID, uid, liveSince, &stillLive)
+		mux.HandleFunc("/xlive/web-room/v2/index/getRoomPlayInfo", func(w http.ResponseWriter, r *http.Request) {
+			playCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(buildBiliPlayInfoResp(roomID, uid, srvURL, "/hls/index.m3u8"))
+		})
+		mux.HandleFunc("/hls/index.m3u8", func(w http.ResponseWriter, r *http.Request) {
+			switch m3u8Hits.Add(1) {
+			case 1:
+				_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:20\n#EXT-X-MAP:URI=\"/hls/init.mp4\"\n#EXTINF:1.0,\n/hls/good.m4s\n"))
+			default:
+				stillLive.Store(false)
+				// Discontinuity rolls over to part-002; seq 21 returns 404, seq 22 is valid.
+				_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:21\n#EXT-X-MAP:URI=\"/hls/init.mp4\"\n#EXT-X-DISCONTINUITY\n#EXTINF:1.0,\n/hls/expired.m4s\n#EXTINF:1.0,\n/hls/good.m4s\n#EXT-X-ENDLIST\n"))
+			}
+		})
+		mux.HandleFunc("/hls/init.mp4", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(initBytes) })
+		mux.HandleFunc("/hls/expired.m4s", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) })
+		mux.HandleFunc("/hls/good.m4s", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(fragBytes) })
+
+		mgr, lib, _, srv, _ := setupLiveTestHarness(t, mux)
+		srvURL = srv.URL
+		mgr.mu.Lock()
+		mgr.hlsPollInterval = 10 * time.Millisecond
+		mgr.reconnectWait = 10 * time.Millisecond
+		mgr.mu.Unlock()
+
+		if _, err := mgr.StartRecording(context.Background(), roomID); err != nil {
+			t.Fatalf("StartRecording: %v", err)
+		}
+		waitLiveRecordingDone(t, mgr, roomID)
+
+		if playCalls.Load() != 1 {
+			t.Fatalf("playCalls = %d, want 1 (post-discontinuity front 404 must skip without reconnect)", playCalls.Load())
+		}
+		meta, ok, err := lib.GetItem(library.CanonicalItemKey("bilibili", "live", fmt.Sprintf("%d:%d", roomID, liveSince)))
+		if err != nil || !ok || meta.Live == nil {
+			t.Fatalf("GetItem: ok=%v err=%v", ok, err)
+		}
+		if meta.Status != "complete" || len(meta.Live.Segments) != 2 {
+			t.Fatalf("expected 2 complete parts, got status=%q segments=%+v", meta.Status, meta.Live.Segments)
+		}
+		for _, inc := range meta.Live.Incidents {
+			if inc.Kind == library.LiveIncidentConvertFailed {
+				t.Fatalf("unexpected convert_failed incident: %+v", inc)
+			}
+		}
+	})
+}
+
+// Startup recovery must automatically clean up stranded init-only 0-sample .part
+// files (clearing PendingParts, Missing, and convert_failed incidents) while
+// preserving genuinely corrupt non-MP4 .part files for inspection.
+func TestRecoveryDiscardsStrandedInitOnlyPartAndPreservesCorruptPart(t *testing.T) {
+	initBytes, fragBytes := regressionLiveSamples(t)
+	mgr, lib, _ := regressionRecorder(t, http.NotFoundHandler())
+	var discardedLogged atomic.Bool
+	mgr.SetLogFunc(func(level, msg string) {
+		if strings.Contains(msg, "live recover discarded_empty:") && strings.Contains(msg, "part=part-002.mp4.part") {
+			discardedLogged.Store(true)
+		}
+	})
+
+	dir := filepath.Join(lib.CacheDir(), "bilibili", "7122", "lives", "71022-1796022000")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rawPart := append(append([]byte(nil), initBytes...), fragBytes...)
+	part1Tmp := filepath.Join(dir, "part-001.mp4.part")
+	part1Path := filepath.Join(dir, "part-001.mp4")
+	if err := os.WriteFile(part1Tmp, rawPart, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum1, err := finalizeLivePart(context.Background(), part1Tmp, part1Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(part1Tmp)
+
+	// Seed stranded init-only 2-track part-002.mp4.part (0 samples).
+	emptyPartPath := filepath.Join(dir, "part-002.mp4.part")
+	if err := os.WriteFile(emptyPartPath, buildSyntheticTwoTrackInitBytes(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = lib.SaveLiveItem(dir, library.ItemMetadata{
+		Site:         "bilibili",
+		Kind:         "live",
+		ID:           "live:71022:1796022000",
+		Title:        "Stranded Init Only Recovery",
+		Status:       "partial",
+		PendingParts: []string{"part-002.mp4.part"},
+		Missing:      []library.MissingRecord{{Item: "part-002.mp4.part", Reason: "转换失败，临时片段已保留"}},
+		Media: []library.MediaFile{{
+			Role:     "live_segment",
+			Path:     "part-001.mp4",
+			Bytes:    sum1.FileBytes,
+			SHA256:   sum1.SHA256,
+			Duration: 1,
+		}},
+		Live: &library.LiveRecordingInfo{
+			RoomID:     71022,
+			LiveSince:  1796022000,
+			StopReason: "ended",
+			Segments: []library.LiveSegmentInfo{{
+				File:        "part-001.mp4",
+				Bytes:       sum1.FileBytes,
+				SHA256:      sum1.SHA256,
+				DurationSec: sum1.DurationSec,
+			}},
+			Incidents: []library.LiveIncident{
+				{Kind: library.LiveIncidentConvertFailed, At: "2026-11-27T00:00:00Z", Part: "part-002.mp4.part", Count: 1, Reason: "直播录像转换失败：track 2 has no samples"},
+				{Kind: library.LiveIncidentReconnect, At: "2026-11-27T01:00:00Z", Part: "part-001.mp4.part", Count: 1, DurationSec: 1.2},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Also seed a second item with a genuinely corrupt non-MP4 .part that must NOT be discarded.
+	corruptDir := filepath.Join(lib.CacheDir(), "bilibili", "7123", "lives", "71023-1796023000")
+	if err := os.MkdirAll(corruptDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	corruptPartPath := filepath.Join(corruptDir, "part-001.mp4.part")
+	if err := os.WriteFile(corruptPartPath, []byte("not-mp4-corrupt-payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = lib.SaveLiveItem(corruptDir, library.ItemMetadata{
+		Site:         "bilibili",
+		Kind:         "live",
+		ID:           "live:71023:1796023000",
+		Title:        "Corrupt Non-MP4 Preserved",
+		Status:       "partial",
+		PendingParts: []string{"part-001.mp4.part"},
+		Live: &library.LiveRecordingInfo{
+			RoomID:     71023,
+			LiveSince:  1796023000,
+			StopReason: "ended",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mgr.RecoverOrphanParts()
+
+	meta, ok, err := lib.GetItem(library.CanonicalItemKey("bilibili", "live", "71022:1796022000"))
+	if err != nil || !ok || meta.Live == nil {
+		t.Fatalf("GetItem init-only item: ok=%v err=%v", ok, err)
+	}
+	if meta.Status != "complete" || len(meta.PendingParts) != 0 || len(meta.Missing) != 0 {
+		t.Fatalf("stranded init-only part not cleaned up: status=%q pending=%v missing=%+v", meta.Status, meta.PendingParts, meta.Missing)
+	}
+	if len(meta.Live.Incidents) != 1 || meta.Live.Incidents[0].Kind != library.LiveIncidentReconnect {
+		t.Fatalf("expected convert_failed cleared and reconnect preserved, got %+v", meta.Live.Incidents)
+	}
+	if _, statErr := os.Stat(emptyPartPath); !os.IsNotExist(statErr) {
+		t.Fatalf("stranded init-only .part file still present on disk: %v", statErr)
+	}
+	if !discardedLogged.Load() {
+		t.Fatal("expected live recover discarded_empty diagnostic log")
+	}
+
+	corruptMeta, ok, err := lib.GetItem(library.CanonicalItemKey("bilibili", "live", "71023:1796023000"))
+	if err != nil || !ok || corruptMeta.Status != "partial" || len(corruptMeta.PendingParts) != 1 {
+		t.Fatalf("corrupt non-MP4 .part must stay pending/partial: ok=%v err=%v meta=%+v", ok, err, corruptMeta)
+	}
+	if _, statErr := os.Stat(corruptPartPath); statErr != nil {
+		t.Fatalf("corrupt non-MP4 .part must be preserved on disk: %v", statErr)
+	}
+}
+
+// Abnormal live record stop must log a sanitized err= field without leaking signed URLs.
+func TestAbnormalLiveRecordStopLogsSanitizedError(t *testing.T) {
+	const (
+		roomID    int64 = 71024
+		uid       int64 = 7124
+		liveSince int64 = 1796024000
+	)
+	var stillLive atomic.Bool
+	stillLive.Store(true)
+	var srvURL string
+	mux := http.NewServeMux()
+	registerStandardBilibiliLiveHandlers(mux, roomID, uid, liveSince, &stillLive)
+	mux.HandleFunc("/xlive/web-room/v2/index/getRoomPlayInfo", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(buildBiliPlayInfoResp(roomID, uid, srvURL, "/hls/broken.m3u8"))
+	})
+	mux.HandleFunc("/hls/broken.m3u8", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("<html>broken upstream</html>"))
+	})
+
+	mgr, _, _, srv, _ := setupLiveTestHarness(t, mux)
+	srvURL = srv.URL
+	var stopLine atomic.Value
+	mgr.SetLogFunc(func(level, msg string) {
+		if strings.HasPrefix(msg, "live record stop:") {
+			stopLine.Store(msg)
+		}
+	})
+	if _, err := mgr.StartRecording(context.Background(), roomID); err != nil {
+		t.Fatalf("StartRecording: %v", err)
+	}
+	waitLiveRecordingDone(t, mgr, roomID)
+
+	got, _ := stopLine.Load().(string)
+	if !strings.Contains(got, "reason=schema_changed") || !strings.Contains(got, "err=") {
+		t.Fatalf("stop log missing reason or err: %q", got)
+	}
+	if strings.Contains(got, "http://") || strings.Contains(got, "https://") {
+		t.Fatalf("stop log leaked URL: %q", got)
+	}
+}

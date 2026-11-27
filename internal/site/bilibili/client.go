@@ -72,6 +72,7 @@ type Client struct {
 	endpoints            Endpoints
 	apiClient            *http.Client
 	mediaClient          *http.Client
+	liveMediaClient      *http.Client
 	mediaIdleTimeout     time.Duration
 	pacingInterval       time.Duration
 	authExpired          func()
@@ -237,14 +238,35 @@ func NewClient(opts ClientOptions) *Client {
 		},
 	}
 
+	c.liveMediaClient = &http.Client{
+		Timeout:   0, // No total timeout on live streams; enforced via ResponseHeaderTimeout + idle reader
+		Transport: mediaTransport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return &SiteError{
+					Site:    site.Bilibili,
+					Kind:    ErrKindBlocked,
+					Message: "直播流重定向超过 5 跳上限",
+				}
+			}
+			if err := c.ValidateLiveMediaURL(req.URL.String(), true); err != nil {
+				return err
+			}
+			site.BilibiliLiveTransport(c.allowLocalhost).ApplyHeaders(req)
+			return nil
+		},
+	}
+
 	if opts.AllowLocalhost {
 		// Fixture clients must never escape to the real site, including redirects.
 		c.apiClient.Transport = site.LoopbackTransport(apiTransport)
 		c.mediaClient.Transport = site.LoopbackTransport(mediaTransport)
+		c.liveMediaClient.Transport = site.LoopbackTransport(mediaTransport)
 	}
 	if opts.WrapTransport != nil {
 		c.apiClient.Transport = opts.WrapTransport(c.apiClient.Transport)
 		c.mediaClient.Transport = opts.WrapTransport(c.mediaClient.Transport)
+		c.liveMediaClient.Transport = opts.WrapTransport(c.liveMediaClient.Transport)
 	}
 	return c
 }
@@ -274,6 +296,13 @@ func (c *Client) RequireAuth(endpoint string) error {
 // MediaHTTPClient returns the configured media HTTP client and idle timeout for the download/live engines.
 func (c *Client) MediaHTTPClient() (*http.Client, time.Duration) {
 	return c.mediaClient, c.mediaIdleTimeout
+}
+
+// LiveMediaHTTPClient returns the configured HTTP client and idle timeout for Bilibili
+// live streams (permits scheduled public HTTPS:443 vendor CDN redirects with credentials
+// stripped and private/loopback IP dialer guards enforced).
+func (c *Client) LiveMediaHTTPClient() (*http.Client, time.Duration) {
+	return c.liveMediaClient, c.mediaIdleTimeout
 }
 
 // MaxImageBytes is the maximum image/preview payload accepted by FetchImageLimited.
@@ -851,6 +880,19 @@ func (c *Client) VerifyCredential(ctx context.Context) (credential.Status, error
 // ValidateMediaURL checks that rawURL matches Bilibili's allowed HTTPS media CDN whitelist.
 func (c *Client) ValidateMediaURL(rawURL string) error {
 	return site.BilibiliMediaTransport(c.allowLocalhost).ValidateURL(rawURL)
+}
+
+// ValidateLiveMediaURL checks a Bilibili live stream URL. Initial playurl hosts
+// (allowScheduled=false) must match official Bilibili CDN domains; scheduled
+// multivariant playlists, redirects, and segment targets (allowScheduled=true)
+// may target public HTTPS:443 vendor CDN hostnames while still blocking non-HTTPS,
+// non-443 ports, IP literals, local names, and userinfo.
+func (c *Client) ValidateLiveMediaURL(rawURL string, allowScheduled bool) error {
+	spec := site.BilibiliLiveTransport(c.allowLocalhost)
+	if allowScheduled {
+		return spec.ValidateRedirectURL(rawURL)
+	}
+	return spec.ValidateURL(rawURL)
 }
 
 func bytesContainsVoucher(b []byte) bool {

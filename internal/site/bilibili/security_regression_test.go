@@ -33,6 +33,55 @@ func TestBilibiliSecurityAndProtocolRegressions(t *testing.T) {
 		if err := local.ValidateMediaURL("http://127.0.0.1:1/test.flv"); err != nil {
 			t.Fatalf("local loopback probe rejected: %v", err)
 		}
+
+		// Live media validation keeps official allowlist on initial playurl hop while
+		// permitting scheduled public HTTPS:443 vendor CDN targets (e.g. gotcha multivariant/302).
+		vendorURL := "https://edge-1.h2.smtcdns.net/live-bvc/index.m3u8"
+		if err := prod.ValidateLiveMediaURL(vendorURL, false); !IsKind(err, ErrKindBlocked) {
+			t.Fatalf("ValidateLiveMediaURL(initial vendor) = %v, want blocked", err)
+		}
+		if err := prod.ValidateLiveMediaURL(vendorURL, true); err != nil {
+			t.Fatalf("ValidateLiveMediaURL(scheduled vendor) rejected: %v", err)
+		}
+		for _, bad := range []string{
+			"http://edge-1.h2.smtcdns.net/live/index.m3u8",
+			"https://edge-1.h2.smtcdns.net:8443/live/index.m3u8",
+			"https://203.0.113.7/live/index.m3u8",
+			"https://localhost/live/index.m3u8",
+			"https://user:pass@edge-1.h2.smtcdns.net/live/index.m3u8",
+		} {
+			if err := prod.ValidateLiveMediaURL(bad, true); err == nil {
+				t.Fatalf("ValidateLiveMediaURL(%q, true) must be blocked", bad)
+			}
+		}
+
+		liveClient, _ := prod.LiveMediaHTTPClient()
+		if liveClient == nil || liveClient.CheckRedirect == nil {
+			t.Fatal("LiveMediaHTTPClient missing CheckRedirect policy")
+		}
+		redirReq, err := http.NewRequest(http.MethodGet, vendorURL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		redirReq.Header.Set("Cookie", "SESSDATA=secret")
+		redirReq.Header.Set("Authorization", "Bearer secret")
+		if err := liveClient.CheckRedirect(redirReq, []*http.Request{redirReq}); err != nil {
+			t.Fatalf("LiveMediaHTTPClient.CheckRedirect rejected valid scheduled vendor CDN: %v", err)
+		}
+		if redirReq.Header.Get("Cookie") != "" || redirReq.Header.Get("Authorization") != "" {
+			t.Fatalf("LiveMediaHTTPClient.CheckRedirect leaked credentials: %+v", redirReq.Header)
+		}
+		if redirReq.Header.Get("Referer") != "https://live.bilibili.com/" || redirReq.Header.Get("Origin") != "https://live.bilibili.com" {
+			t.Fatalf("LiveMediaHTTPClient.CheckRedirect headers = %+v", redirReq.Header)
+		}
+		badRedirReq, _ := http.NewRequest(http.MethodGet, "http://edge-1.h2.smtcdns.net/live/index.m3u8", nil)
+		if err := liveClient.CheckRedirect(badRedirReq, []*http.Request{redirReq}); !IsKind(err, ErrKindBlocked) {
+			t.Fatalf("LiveMediaHTTPClient.CheckRedirect(http) = %v, want blocked", err)
+		}
+		fiveHops := []*http.Request{redirReq, redirReq, redirReq, redirReq, redirReq}
+		if err := liveClient.CheckRedirect(redirReq, fiveHops); !IsKind(err, ErrKindBlocked) {
+			t.Fatalf("LiveMediaHTTPClient.CheckRedirect(5 hops) = %v, want blocked", err)
+		}
 	})
 
 	t.Run("SiteError strips csrf, qrcode_key, w_rid from Endpoint and Err", func(t *testing.T) {

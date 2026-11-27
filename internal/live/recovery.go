@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Eyevinn/mp4ff/mp4"
 	"github.com/chialecode/trace/internal/download"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
@@ -187,18 +188,35 @@ func (m *Manager) recoverSingleLiveItem(ctx context.Context, meta library.ItemMe
 
 		partInfo, partStatErr := os.Stat(partPath)
 		_, finalStatErr := os.Stat(finalPath)
+		noPositiveCheckpoint := meta.Live == nil || meta.Live.PendingFile != rel || meta.Live.PendingBytes == 0
 		pendingEmpty := (os.IsNotExist(partStatErr) || (partStatErr == nil && partInfo.Size() == 0)) &&
 			os.IsNotExist(finalStatErr) &&
-			(meta.Live == nil || meta.Live.PendingFile != rel || meta.Live.PendingBytes == 0)
+			noPositiveCheckpoint
+		discardedInitOnly := false
+		if !pendingEmpty && partStatErr == nil && os.IsNotExist(finalStatErr) && noPositiveCheckpoint && isEmptyInitOnlyLivePart(partPath) {
+			pendingEmpty = true
+			discardedInitOnly = true
+		}
 		if pendingEmpty {
-			if partStatErr == nil {
-				_ = removeFileWithRetry(partPath)
-			}
-			m.commitRecoveredPart(meta, func(target *library.ItemMetadata) {
+			savedOK := m.commitRecoveredPart(meta, func(target *library.ItemMetadata) {
 				target.PendingParts = removePending(target.PendingParts, rel)
 				clearLiveMissing(target, rel)
 				clearLiveCheckpoint(target, rel)
-			}, nil)
+				if target.Live != nil {
+					target.Live.Incidents = dropResolvedConvertFailed(target.Live.Incidents, rel)
+				}
+			}, func(sess *recordSession) {
+				sess.incidents = dropResolvedConvertFailed(sess.incidents, rel)
+			})
+			if savedOK {
+				if partStatErr == nil {
+					_ = removeFileWithRetry(partPath)
+				}
+				if discardedInitOnly {
+					m.logEvent("INFO", "live recover discarded_empty: site=%s room=%s part=%s bytes=%d",
+						siteLabel, roomLabel, rel, partInfo.Size())
+				}
+			}
 			continue
 		}
 
@@ -463,4 +481,30 @@ func hasAnyLiveSegment(meta library.ItemMetadata) bool {
 		}
 	}
 	return false
+}
+
+// isEmptyInitOnlyLivePart reports whether partPath is a valid fMP4 init header
+// (ftyp+moov) with strictly zero media fragments and zero samples across every
+// track (for example an orphan init-only .part written before a first media
+// fragment arrived). Arbitrary or corrupted files return false so recovery
+// never discards inspectable media.
+func isEmptyInitOnlyLivePart(partPath string) bool {
+	f, err := os.Open(partPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	parsed, err := mp4.DecodeFile(f, mp4.WithDecodeMode(mp4.DecModeLazyMdat), mp4.WithDecodeFlags(mp4.DecStartOnMoof))
+	if err != nil || parsed == nil {
+		return false
+	}
+	moov := parsed.Moov
+	if moov == nil && parsed.Init != nil {
+		moov = parsed.Init.Moov
+	}
+	if moov == nil || len(moov.Traks) == 0 || len(parsed.Segments) > 0 {
+		return false
+	}
+	_, _, _, totalSamples := liveTracksWithSamples(parsed)
+	return totalSamples == 0
 }
