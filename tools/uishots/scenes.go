@@ -1549,6 +1549,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.XPostsUncertainEmpty = false
 				app.XBottomTipsVisible = true
 				app.XBottomTipsText = "已到达 X 时间线可见上限"
+				app.XUserTab = "posts"
+				app.XUserTabs = nil
 				app.XUserSubMenuOpen = false
 				app.XUserListState = &mygoui.ListState{}
 				app.CurrentRoute = ui.RouteXUser
@@ -1558,6 +1560,10 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"X认证标记",
 				"X帖子总数",
 				"X主页更多",
+				"X用户标签：帖子",
+				"X用户标签：回复",
+				"X用户标签：媒体",
+				"X用户标签：精选",
 				"用户页筛选：全部",
 				"用户页筛选：未缓存",
 				"X用户列表",
@@ -1569,6 +1575,126 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"引用帖子",
 				"回复 @synth_arch_review",
 				"已到达 X 时间线可见上限",
+			},
+		},
+		{
+			Name: "x-user-replies",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.UserListFilter = "all"
+				app.CurrentXUser = &service.XUserDTO{
+					RestID:         xUID,
+					ScreenName:     xHandle,
+					Name:           "技术频道_X",
+					Description:    "系统工程、纯 Go 桌面架构与四站点离线归档笔记",
+					IsBlueVerified: true,
+					FollowersCount: 128400,
+					FriendsCount:   95,
+					StatusesCount:  3240,
+					CanonicalURL:   "https://x.com/" + xHandle,
+				}
+				app.CurrentXPosts = []service.XPostDTO{
+					{
+						ID:                "1000000000000000021",
+						Author:            service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+						CreatedAt:         1710004500,
+						InReplyToStatusID: "1000000000000000001",
+						Text:              "补充说明：回复标签仅保留目标作者的回复与回复内引用，对话上下文中的他人父帖会自动过滤。",
+						IsQuote:           true,
+						Quoted: &service.XPostDTO{
+							ID:        "1000000000000000005",
+							Author:    service.XAuthorDTO{RestID: "1000000000000000099", ScreenName: "synth_peer", Name: "合成同行"},
+							CreatedAt: 1710003900,
+							Text:      "被引用的原帖摘要：探讨 X 时间线分页契约与限流桶隔离。",
+						},
+						CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000021",
+						CacheKey:     "x:dynamic:1000000000000000021",
+					},
+				}
+				app.XPostsHasMore = false
+				app.XPostsError = ""
+				app.XPostsAuthExpired = false
+				app.XPostsUncertainEmpty = false
+				app.XBottomTipsVisible = false
+				app.XBottomTipsText = ""
+				app.XUserTab = "replies"
+				app.XUserTabs = nil
+				app.XUserSubMenuOpen = false
+				app.XUserListState = &mygoui.ListState{}
+				app.CurrentRoute = ui.RouteXUser
+			},
+			RequiredLabels: []string{
+				"用户页站点标记",
+				"X主页更多",
+				"X用户标签：帖子",
+				"X用户标签：回复",
+				"X用户标签：媒体",
+				"X用户标签：精选",
+				"用户页筛选：全部",
+				"用户页筛选：未缓存",
+				"X用户列表",
+			},
+			RequiredTexts: []string{
+				"@" + xHandle,
+				"补充说明：回复标签仅保留目标作者的回复与回复内引用",
+				"被引用的原帖摘要",
+			},
+		},
+		{
+			Name: "x-user-media",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.UserListFilter = "all"
+				app.CurrentXUser = &service.XUserDTO{
+					RestID:         xUID,
+					ScreenName:     xHandle,
+					Name:           "技术频道_X",
+					Description:    "系统工程、纯 Go 桌面架构与四站点离线归档笔记",
+					IsBlueVerified: true,
+					FollowersCount: 128400,
+					FriendsCount:   95,
+					StatusesCount:  3240,
+					CanonicalURL:   "https://x.com/" + xHandle,
+				}
+				app.CurrentXPosts = []service.XPostDTO{
+					{
+						ID:           "1000000000000000031",
+						Author:       service.XAuthorDTO{RestID: xUID, ScreenName: xHandle, Name: "技术频道_X"},
+						CreatedAt:    1710004400,
+						Text:         "媒体标签合成示例：完整保留图文/GIF/视频卡片，并通过右上角更多菜单一键缓存当前页未缓存条目。",
+						Media:        []service.XMediaItemDTO{{Index: 1, Kind: "photo", ImageURL: "", Width: 1200, Height: 900}},
+						CanonicalURL: "https://x.com/" + xHandle + "/status/1000000000000000031",
+						CacheKey:     "x:dynamic:1000000000000000031",
+					},
+				}
+				app.XPostsHasMore = false
+				app.XPostsError = ""
+				app.XPostsAuthExpired = false
+				app.XPostsUncertainEmpty = false
+				app.XBottomTipsVisible = false
+				app.XBottomTipsText = ""
+				app.XUserTab = "media"
+				app.XUserTabs = nil
+				app.XUserSubMenuOpen = false
+				app.XUserListState = &mygoui.ListState{}
+				app.CurrentRoute = ui.RouteXUser
+			},
+			RequiredLabels: []string{
+				"用户页站点标记",
+				"X主页更多",
+				"X用户标签：帖子",
+				"X用户标签：回复",
+				"X用户标签：媒体",
+				"X用户标签：精选",
+				"用户页筛选：全部",
+				"用户页筛选：未缓存",
+				"X用户列表",
+			},
+			RequiredTexts: []string{
+				"@" + xHandle,
+				"媒体标签合成示例",
 			},
 		},
 		{
@@ -1595,6 +1721,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.XPostsUncertainEmpty = false
 				app.XBottomTipsVisible = false
 				app.XBottomTipsText = ""
+				app.XUserTab = "posts"
+				app.XUserTabs = nil
 				app.XUserSubMenuOpen = false
 				app.XUserListState = &mygoui.ListState{}
 				app.CurrentRoute = ui.RouteXUser
@@ -1637,6 +1765,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.XPostsError = "X 返回了异常空列表（账号标注有 256 条帖子），可能是风控或限流，可稍后重试"
 				app.XBottomTipsVisible = false
 				app.XBottomTipsText = ""
+				app.XUserTab = "posts"
+				app.XUserTabs = nil
 				app.XUserSubMenuOpen = false
 				app.XUserListState = &mygoui.ListState{}
 				app.CurrentRoute = ui.RouteXUser

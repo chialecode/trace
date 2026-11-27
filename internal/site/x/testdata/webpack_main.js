@@ -8,6 +8,9 @@
   2005:function(e){e.exports={queryId:"SynthQidFollowing05",operationName:"Following",operationType:"query",metadata:{featureSwitches:["responsive_web_graphql_exclude_directive_enabled","verified_phone_label_enabled"]}}},
   2006:function(e){e.exports={queryId:"SynthQidBookmarks06",operationName:"Bookmarks",operationType:"query",metadata:{featureSwitches:["responsive_web_graphql_exclude_directive_enabled","longform_notetweets_consumption_enabled"]}}},
   2007:function(e){e.exports={queryId:"SynthQidLikes07",operationName:"Likes",operationType:"query",metadata:{featureSwitches:["responsive_web_graphql_exclude_directive_enabled","verified_phone_label_enabled"]}}},
+  2008:function(e){e.exports={queryId:"SynthQidUserTweetsAndReplies08",operationName:"UserTweetsAndReplies",operationType:"query",metadata:{featureSwitches:["creator_subscriptions_tweet_preview_api_enabled","responsive_web_graphql_exclude_directive_enabled","longform_notetweets_consumption_enabled"],fieldToggles:["withArticlePlainText"]}}},
+  2009:function(e){e.exports={queryId:"SynthQidUserMedia09",operationName:"UserMedia",operationType:"query",metadata:{featureSwitches:["creator_subscriptions_tweet_preview_api_enabled","responsive_web_graphql_exclude_directive_enabled","longform_notetweets_consumption_enabled"],fieldToggles:["withArticlePlainText"]}}},
+  2010:function(e){e.exports={queryId:"SynthQidUserHighlightsTweets10",operationName:"UserHighlightsTweets",operationType:"query",metadata:{featureSwitches:["creator_subscriptions_tweet_preview_api_enabled","responsive_web_graphql_exclude_directive_enabled","longform_notetweets_consumption_enabled"],fieldToggles:["withArticlePlainText"]}}},
   9001:function(e){e.exports={defaultConfig:{
     hidden_profile_subscriptions_enabled:{value:!0},
     responsive_web_graphql_exclude_directive_enabled:{value:!0},

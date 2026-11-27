@@ -47,6 +47,9 @@ func (a *App) currentUserQueueTarget(siteID string) (normSite, user, list string
 		}
 		return "weibo", user, "posts", true
 	case normSite == "x" && a.CurrentXUser != nil:
+		if a.activeXUserTab() != "posts" {
+			return "", "", "", false
+		}
 		if a.CurrentXUser.Protected && len(a.CurrentXPosts) == 0 {
 			return "", "", "", false
 		}
@@ -123,6 +126,9 @@ func (a *App) enqueueCacheAll(siteID string) {
 			req.CompletionNote = a.WeiboBottomTipsText
 		}
 	case siteID == "x" && a.CurrentXUser != nil:
+		if a.activeXUserTab() != "posts" {
+			return
+		}
 		if a.CurrentXUser.Protected && len(a.CurrentXPosts) == 0 {
 			return
 		}

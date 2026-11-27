@@ -14,17 +14,20 @@ import (
 )
 
 var allowedGraphQLOperations = map[string]bool{
-	OpUserByScreenName: true,
-	OpUserByRestId:     true,
-	OpUserTweets:       true,
-	OpTweetDetail:      true,
-	OpFollowing:        true,
-	OpBookmarks:        true,
-	OpLikes:            true,
+	OpUserByScreenName:     true,
+	OpUserByRestId:         true,
+	OpUserTweets:           true,
+	OpUserTweetsAndReplies: true,
+	OpUserMedia:            true,
+	OpUserHighlightsTweets: true,
+	OpTweetDetail:          true,
+	OpFollowing:            true,
+	OpBookmarks:            true,
+	OpLikes:                true,
 }
 
-// IsAllowedOperation reports whether opName is one of the 7 read-only GraphQL operations
-// permitted by x.md §15.1 #8.
+// IsAllowedOperation reports whether opName is one of the read-only GraphQL operations
+// permitted by x.md §15.1 #8 and DEC-092.
 func IsAllowedOperation(opName string) bool {
 	return allowedGraphQLOperations[opName]
 }

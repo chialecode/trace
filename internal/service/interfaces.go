@@ -71,6 +71,7 @@ type OpenLinkResult struct {
 	WeiboUserPostsError  string                     `json:"weiboUserPostsError,omitempty"`
 	XPost                *XPostDTO                  `json:"xPost,omitempty"`
 	XUser                *XUserDTO                  `json:"xUser,omitempty"`
+	XUserTab             string                     `json:"xUserTab,omitempty"`
 	XUserPosts           *XUserPostsPageDTO         `json:"xUserPosts,omitempty"`
 	XUserPostsError      string                     `json:"xUserPostsError,omitempty"`
 	CachedItem           *library.ItemMetadata      `json:"cachedItem,omitempty"`
@@ -152,6 +153,7 @@ type ParseService interface {
 	XUser(ctx context.Context, restID string) (*XUserDTO, error)
 	XUserByScreenName(ctx context.Context, screenName string) (*XUserDTO, error)
 	XUserPosts(ctx context.Context, restID, cursor string) (*XUserPostsPageDTO, error)
+	XUserTabPosts(ctx context.Context, uidOrHandle, tab, cursor string) (*XUserPostsPageDTO, error)
 	StagePreviewMedia(ctx context.Context, siteID, rawURL, ext string) (string, error)
 	FetchHistoryThumbs(ctx context.Context, job HistoryThumbJob) error
 	FetchImage(ctx context.Context, rawURL string) ([]byte, error)
@@ -188,6 +190,7 @@ type CacheService interface {
 	CacheWeiboPost(ctx context.Context, mid string, via *library.ItemVia) (download.Task, error)
 	CacheWeiboVideo(ctx context.Context, oid string) (download.Task, error)
 	CacheXPost(ctx context.Context, statusID string, via *library.ItemVia) (download.Task, error)
+	CacheXPostsPage(ctx context.Context, req XBatchCachePageRequest) (XBatchCachePageResult, error)
 	ForceRecacheItem(ctx context.Context, itemKey string) (download.Task, error)
 	BackfillSummary() (BackfillSummaryDTO, error)
 	StartWeiboBackfill(ctx context.Context) (CacheQueueTask, error)

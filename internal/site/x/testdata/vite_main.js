@@ -104,4 +104,46 @@ export const LikesQuery = {
   },
 };
 
+export const UserTweetsAndRepliesQuery = {
+  queryId: "SynthViteQidUserTweetsAndReplies08",
+  operationName: "UserTweetsAndReplies",
+  operationType: "query",
+  features: {
+    responsive_web_graphql_exclude_directive_enabled: true,
+    longform_notetweets_consumption_enabled: !0,
+    verified_phone_label_enabled: !1,
+  },
+  fieldToggles: {
+    withArticlePlainText: false,
+  },
+};
+
+export const UserMediaQuery = {
+  queryId: "SynthViteQidUserMedia09",
+  operationName: "UserMedia",
+  operationType: "query",
+  features: {
+    responsive_web_graphql_exclude_directive_enabled: true,
+    longform_notetweets_consumption_enabled: !0,
+    verified_phone_label_enabled: !1,
+  },
+  fieldToggles: {
+    withArticlePlainText: false,
+  },
+};
+
+export const UserHighlightsTweetsQuery = {
+  queryId: "SynthViteQidUserHighlightsTweets10",
+  operationName: "UserHighlightsTweets",
+  operationType: "query",
+  features: {
+    responsive_web_graphql_exclude_directive_enabled: true,
+    longform_notetweets_consumption_enabled: !0,
+    verified_phone_label_enabled: !1,
+  },
+  fieldToggles: {
+    withArticlePlainText: false,
+  },
+};
+
 export { loadTx };

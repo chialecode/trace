@@ -186,6 +186,21 @@ type libraryPanelSig struct {
 	sortBySize   bool
 }
 
+// XUserTabState holds independent pagination, error, and scroll state for one
+// X user profile tab ("posts" | "replies" | "media" | "highlights") (DEC-092).
+type XUserTabState struct {
+	Posts          []service.XPostDTO
+	NextCursor     string
+	HasMore        bool
+	Loaded         bool
+	Error          string
+	AuthExpired    bool
+	UncertainEmpty bool
+	BottomTips     bool
+	BottomTipsText string
+	ListState      *ui.ListState
+}
+
 // App manages the MyGo immediate-mode UI tree and state for TRACE.
 type App struct {
 	mu                   sync.Mutex
@@ -391,6 +406,9 @@ type App struct {
 	// X Post & Creator Browsing
 	CurrentXPost         *service.XPostDTO
 	CurrentXUser         *service.XUserDTO
+	XUserTab             string // "posts" | "replies" | "media" | "highlights"
+	XUserTabs            map[string]*XUserTabState
+	xUserTabsOwner       string
 	CurrentXPosts        []service.XPostDTO
 	XPostsNextCursor     string
 	XPostsHasMore        bool

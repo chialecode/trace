@@ -1853,6 +1853,7 @@ func isPromotedOrNoiseEntryID(entryID string) bool {
 	for _, pref := range []string{
 		"promoted-",
 		"promotedtweet-",
+		"who-to-",
 		"who-to-follow-",
 		"who-to-subscribe-",
 		"topics-module-",

@@ -10,6 +10,64 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+var xUserTabs = []TabOption{
+	{Key: "posts", Text: "帖子", AccessLabel: "X用户标签：帖子"},
+	{Key: "replies", Text: "回复", AccessLabel: "X用户标签：回复"},
+	{Key: "media", Text: "媒体", AccessLabel: "X用户标签：媒体"},
+	{Key: "highlights", Text: "精选", AccessLabel: "X用户标签：精选"},
+}
+
+func xUserTabDisplayLabel(tab string) string {
+	switch normalizeXUserTabUI(tab) {
+	case "replies":
+		return "回复"
+	case "media":
+		return "媒体"
+	case "highlights":
+		return "精选"
+	default:
+		return "帖子"
+	}
+}
+
+func xUserTabEmptyText(tab string, protected bool) string {
+	if protected {
+		return "该账号帖子受保护，当前不可查看"
+	}
+	switch normalizeXUserTabUI(tab) {
+	case "replies":
+		return "暂无回复"
+	case "media":
+		return "暂无媒体帖子"
+	case "highlights":
+		return "暂无精选帖子"
+	default:
+		return "暂无帖子"
+	}
+}
+
+func xUserTabBrowserURL(u *service.XUserDTO, tab string) string {
+	if u == nil {
+		return "https://x.com/"
+	}
+	handle := strings.TrimPrefix(strings.TrimSpace(u.ScreenName), "@")
+	normTab := normalizeXUserTabUI(tab)
+	if handle != "" {
+		switch normTab {
+		case "replies":
+			return "https://x.com/" + handle + "/with_replies"
+		case "media":
+			return "https://x.com/" + handle + "/media"
+		case "highlights":
+			return "https://x.com/" + handle + "/highlights"
+		default:
+			return "https://x.com/" + handle
+		}
+	}
+	base := firstNonEmptyStrUI(u.CanonicalURL, "https://x.com/i/user/"+u.RestID)
+	return base
+}
+
 func (a *App) xPostKeys(posts []service.XPostDTO) []string {
 	keys := make([]string, len(posts))
 	for i, p := range posts {
@@ -22,7 +80,7 @@ func (a *App) xPostKeys(posts []service.XPostDTO) []string {
 	return keys
 }
 
-func (a *App) filteredXPostIndices(uid string) []int {
+func (a *App) filteredXPostIndices(uid, tab string) []int {
 	n := len(a.CurrentXPosts)
 	if a.UserListFilter != userFilterUncached {
 		idx := make([]int, n)
@@ -31,12 +89,44 @@ func (a *App) filteredXPostIndices(uid string) []int {
 		}
 		return idx
 	}
-	return a.uncachedIndices("x:posts:"+uid, a.xPostKeys(a.CurrentXPosts))
+	return a.uncachedIndices("x:"+normalizeXUserTabUI(tab)+":"+uid, a.xPostKeys(a.CurrentXPosts))
 }
 
-// renderXUserRoute draws /x/user/:uid (docs/ui.md, docs/research/x.md §12.3):
-// header matching Bilibili/Weibo user page structure, single "帖子" list with
-// "全部 / 未缓存" filter, pinned badge, visible-limit hint, protected notice,
+func (a *App) countXCurrentTabCacheableUncached() int {
+	if len(a.CurrentXPosts) == 0 {
+		return 0
+	}
+	keys := a.xPostKeys(a.CurrentXPosts)
+	var states map[string]library.DotState
+	if a.backend != nil {
+		var ask []string
+		for _, k := range keys {
+			if k != "" {
+				ask = append(ask, k)
+			}
+		}
+		if len(ask) > 0 {
+			states = a.backend.States(ask)
+		}
+	}
+	count := 0
+	for i := range a.CurrentXPosts {
+		p := &a.CurrentXPosts[i]
+		if service.IsXPostDTOUncacheable(p) {
+			continue
+		}
+		k := keys[i]
+		if st, ok := states[k]; ok && (st.Dot == "green" || st.Dot == "ring") {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+// renderXUserRoute draws /x/user/:uid (docs/ui.md §3.4, DEC-092):
+// header matching Bilibili/Weibo user page structure, 4 tabs ("帖子" / "回复" / "媒体" / "精选")
+// with right-side "全部 / 未缓存" filter, pinned badge, visible-limit hint, protected notice,
 // and fake-shell/risk errors staying in place with a retry button.
 func (a *App) renderXUserRoute(c *ui.Context) {
 	if a.Opening != nil {
@@ -55,45 +145,53 @@ func (a *App) renderXUserRoute(c *ui.Context) {
 		a.XUserListState = &ui.ListState{}
 	}
 
-	idx := a.filteredXPostIndices(u.RestID)
-	a.xFilteredEmpty = a.UserListFilter == userFilterUncached && len(a.CurrentXPosts) > 0 && len(idx) == 0
+	activeTab := a.activeXUserTab()
+	pendingKey := a.xPostsPendingKey(u.RestID, activeTab)
+	posts := a.CurrentXPosts
+	idx := a.filteredXPostIndices(u.RestID, activeTab)
+	a.xFilteredEmpty = a.UserListFilter == userFilterUncached && len(posts) > 0 && len(idx) == 0
 
 	// Auto-load next page when scrolled near the bottom and no error/fake-shell blocks it.
 	_, last := a.XUserListState.Visible()
-	if last >= 0 && last >= len(idx)-1 && a.XPostsHasMore && a.XPostsError == "" && !a.XPostsAuthExpired && !a.XPostsUncertainEmpty && !a.isPending("x-posts-"+u.RestID) {
+	if last >= 0 && last >= len(idx)-1 && a.XPostsHasMore && a.XPostsError == "" && !a.XPostsAuthExpired && !a.XPostsUncertainEmpty && !a.isPending(pendingKey) {
 		a.LoadMoreXPosts()
 	}
 
 	// Row 0: header; rows 1..len(idx): posts; final row: footer/empty/end state.
+	// Use the frame-local posts snapshot so a mid-frame tab switch in row 0
+	// cannot invalidate indices for rows 1..len(idx) before the next frame.
 	totalRows := len(idx) + 2
 	a.XUserListState.Key = func(i int) any {
 		if i == 0 {
-			return "x-user-header:" + u.RestID
+			return "x-user-header:" + u.RestID + ":" + activeTab
 		}
 		if i > 0 && i <= len(idx) {
-			return "x-post:" + a.CurrentXPosts[idx[i-1]].ID
+			if pIdx := idx[i-1]; pIdx >= 0 && pIdx < len(posts) {
+				return "x-post:" + activeTab + ":" + posts[pIdx].ID
+			}
 		}
-		return "x-user-footer:" + u.RestID
+		return "x-user-footer:" + u.RestID + ":" + activeTab
 	}
 
 	ui.List(c, a.XUserListState, totalRows, func(i int) {
 		if i == 0 {
-			a.renderXUserHeader(c, u)
+			a.renderXUserHeader(c, u, activeTab)
 			return
 		}
 		if i > 0 && i <= len(idx) {
-			p := a.CurrentXPosts[idx[i-1]]
-			a.renderPostCard(c, a.xPostToPostCard(p, u))
+			if pIdx := idx[i-1]; pIdx >= 0 && pIdx < len(posts) {
+				a.renderPostCard(c, a.xPostToPostCard(posts[pIdx], u))
+			}
 			return
 		}
-		a.renderXUserFooter(c, u, len(idx))
+		a.renderXUserFooter(c, u, activeTab, len(idx))
 	}).Label("X用户列表").Grow(1).FillWidth()
 }
 
 // renderXUserHeader mirrors Bilibili/Weibo user page header structure:
 // gradient banner with avatar/name/@handle/verified, stats bar with "X" site badge +
-// "帖子 N" + subscribe button + "⋯" menu, bio, protected notice, and single "帖子" + "全部 / 未缓存".
-func (a *App) renderXUserHeader(c *ui.Context, u *service.XUserDTO) {
+// "帖子 N" + subscribe button + "⋯" menu, bio, protected notice, and 4 profile tabs + "全部 / 未缓存".
+func (a *App) renderXUserHeader(c *ui.Context, u *service.XUserDTO, activeTab string) {
 	handle := strings.TrimPrefix(strings.TrimSpace(u.ScreenName), "@")
 	name := firstNonEmptyStrUI(u.Name, handle, "X 用户")
 	seed := accountSeedHash("x", firstNonEmptyStrUI(u.RestID, handle, name))
@@ -138,7 +236,7 @@ func (a *App) renderXUserHeader(c *ui.Context, u *service.XUserDTO) {
 				})
 			})
 
-		ui.Column(c).FillWidth().Padding(10, 16).Gap(8).ClipX().Children(func() {
+		ui.Column(c).FillWidth().Padding(10, 16, 6, 16).Gap(8).ClipX().Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Gap(10).Grow(1).ClipX().Children(func() {
 					renderSiteSmallBadge(c, "x", "用户页站点标记")
@@ -164,15 +262,22 @@ func (a *App) renderXUserHeader(c *ui.Context, u *service.XUserDTO) {
 							Face:     u.AvatarURL,
 						})
 					}
-					targetURL := firstNonEmptyStrUI(u.CanonicalURL, func() string {
-						if handle != "" {
-							return "https://x.com/" + handle
-						}
-						return "https://x.com/i/user/" + u.RestID
-					}())
+					targetURL := xUserTabBrowserURL(u, activeTab)
 					open := a.XUserSubMenuOpen
 					MoreMenuButton(c, "X主页更多", 32, &open, func(m *ui.Menu) {
-						a.cacheOlderMenu(m, "x")
+						if activeTab == "posts" {
+							a.cacheOlderMenu(m, "x")
+						} else if !(u.Protected && len(a.CurrentXPosts) == 0) {
+							uncachedCnt := a.countXCurrentTabCacheableUncached()
+							busy := a.isPending("x-batch-cache-" + u.RestID + "-" + activeTab)
+							item := m.Item("缓存当前页未缓存").Disabled(uncachedCnt == 0 || busy)
+							if uncachedCnt == 0 {
+								item.Tooltip("当前页没有可缓存的未缓存条目")
+							}
+							if item.Chosen() {
+								a.CacheXCurrentTabUncached()
+							}
+						}
 						if m.Item("在浏览器中打开").Chosen() {
 							if err := a.backend.Desktop().OpenExternalURL(targetURL); err != nil {
 								a.showError(err)
@@ -192,17 +297,24 @@ func (a *App) renderXUserHeader(c *ui.Context, u *service.XUserDTO) {
 					ui.Text(c, "这是一个受保护的账号，只有已获批准的关注者才能查看其帖子。").FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMain).MaxLines(2)
 				})
 			}
+		})
 
-			// Single "帖子" list heading + "全部 / 未缓存" filter (no tabs, no live banner)
-			ui.Row(c).FillWidth().Padding(4, 0, 0, 0).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
-				ui.Text(c, "帖子").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-				a.renderUserListFilter(c)
+		// 4 profile tabs ("帖子" / "回复" / "媒体" / "精选") + right-side "全部 / 未缓存" filter (DEC-092).
+		ui.Row(c).FillWidth().AlignItems(ui.End).Gap(8).ClipX().Children(func() {
+			ui.Box(c).Grow(1).ClipX().Children(func() {
+				UnderlineTabs(c, activeTab, xUserTabs, func(key string) {
+					a.SelectXUserTab(key)
+				})
 			})
+			ui.Box(c).Padding(0, 16, 6, 0).Shrink(0).Children(func() { a.renderUserListFilter(c) })
 		})
 	})
 }
 
-func (a *App) renderXUserFooter(c *ui.Context, u *service.XUserDTO, visibleCount int) {
+func (a *App) renderXUserFooter(c *ui.Context, u *service.XUserDTO, activeTab string, visibleCount int) {
+	tabLabel := xUserTabDisplayLabel(activeTab)
+	busy := a.isPending(a.xPostsPendingKey(u.RestID, activeTab))
+
 	ui.Column(c).FillWidth().Padding(14, 16).Gap(10).AlignItems(ui.Center).ClipX().Children(func() {
 		if a.xFilteredEmpty {
 			ui.Text(c, "已加载的内容都缓存了").Label("未缓存筛选为空").FontSize(13).TextColor(ColorTextMuted).SingleLine()
@@ -252,25 +364,28 @@ func (a *App) renderXUserFooter(c *ui.Context, u *service.XUserDTO, visibleCount
 			return
 		}
 
+		if busy && len(a.CurrentXPosts) == 0 {
+			ui.Row(c).Label("X标签加载中").AlignItems(ui.Center).Gap(6).Children(func() {
+				ui.Spinner(c).Size(14, 14)
+				ui.Text(c, "正在加载"+tabLabel+"…").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+			})
+			return
+		}
+
 		if a.XPostsHasMore {
-			busy := a.isPending("x-posts-" + u.RestID)
 			if busy {
 				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 					ui.Spinner(c).Size(14, 14)
-					ui.Text(c, "正在加载更多帖子…").FontSize(13).TextColor(ColorTextMuted).SingleLine()
+					ui.Text(c, "正在加载更多"+tabLabel+"…").FontSize(13).TextColor(ColorTextMuted).SingleLine()
 				})
-			} else if OutlinePillButton(c, "加载更多帖子", "加载更多X帖子").Clicked() {
+			} else if OutlinePillButton(c, "加载更多"+tabLabel, "加载更多X帖子").Clicked() {
 				a.LoadMoreXPosts()
 			}
 			return
 		}
 
 		if len(a.CurrentXPosts) == 0 {
-			emptyMsg := "暂无帖子"
-			if u.Protected {
-				emptyMsg = "该账号帖子受保护，当前不可查看"
-			}
-			ui.Text(c, emptyMsg).FontSize(13).TextColor(ColorTextMuted).SingleLine()
+			ui.Text(c, xUserTabEmptyText(activeTab, u.Protected)).FontSize(13).TextColor(ColorTextMuted).SingleLine()
 			return
 		}
 

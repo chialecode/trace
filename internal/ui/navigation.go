@@ -1552,13 +1552,135 @@ func (a *App) LoadMoreWeiboPosts() {
 	})
 }
 
+func normalizeXUserTabUI(tab string) string {
+	switch strings.ToLower(strings.TrimSpace(tab)) {
+	case "replies", "with_replies":
+		return "replies"
+	case "media":
+		return "media"
+	case "highlights":
+		return "highlights"
+	default:
+		return "posts"
+	}
+}
+
+func (a *App) activeXUserTab() string {
+	return normalizeXUserTabUI(a.XUserTab)
+}
+
+func (a *App) xPostsPendingKey(uid, tab string) string {
+	return "x-posts-" + strings.TrimSpace(uid) + "-" + normalizeXUserTabUI(tab)
+}
+
+func (a *App) ensureXUserTabsFor(uid string) {
+	uid = strings.TrimSpace(uid)
+	if a.XUserTabs == nil || a.xUserTabsOwner != uid {
+		a.XUserTabs = make(map[string]*XUserTabState, 4)
+		a.xUserTabsOwner = uid
+	}
+}
+
+func (a *App) getOrCreateXUserTabState(uid, tab string) *XUserTabState {
+	a.ensureXUserTabsFor(uid)
+	tab = normalizeXUserTabUI(tab)
+	st := a.XUserTabs[tab]
+	if st == nil {
+		st = &XUserTabState{ListState: &ui.ListState{}}
+		a.XUserTabs[tab] = st
+	}
+	if st.ListState == nil {
+		st.ListState = &ui.ListState{}
+	}
+	return st
+}
+
+func (a *App) syncActiveFieldsToXUserTab(uid, tab string) *XUserTabState {
+	st := a.getOrCreateXUserTabState(uid, tab)
+	st.Posts = a.CurrentXPosts
+	st.NextCursor = a.XPostsNextCursor
+	st.HasMore = a.XPostsHasMore
+	st.Error = a.XPostsError
+	st.AuthExpired = a.XPostsAuthExpired
+	st.UncertainEmpty = a.XPostsUncertainEmpty
+	st.BottomTips = a.XBottomTipsVisible
+	st.BottomTipsText = a.XBottomTipsText
+	if a.XUserListState != nil {
+		st.ListState = a.XUserListState
+	}
+	if len(st.Posts) > 0 || st.Error != "" || st.AuthExpired || st.UncertainEmpty || st.BottomTips {
+		st.Loaded = true
+	}
+	return st
+}
+
+func (a *App) applyXUserTabToActiveFields(st *XUserTabState) {
+	if st == nil {
+		a.CurrentXPosts = nil
+		a.XPostsNextCursor = ""
+		a.XPostsHasMore = false
+		a.XPostsError = ""
+		a.XPostsAuthExpired = false
+		a.XPostsUncertainEmpty = false
+		a.XBottomTipsVisible = false
+		a.XBottomTipsText = ""
+		a.XUserListState = &ui.ListState{}
+		return
+	}
+	if st.ListState == nil {
+		st.ListState = &ui.ListState{}
+	}
+	a.CurrentXPosts = st.Posts
+	a.XPostsNextCursor = st.NextCursor
+	a.XPostsHasMore = st.HasMore
+	a.XPostsError = st.Error
+	a.XPostsAuthExpired = st.AuthExpired
+	a.XPostsUncertainEmpty = st.UncertainEmpty
+	a.XBottomTipsVisible = st.BottomTips
+	a.XBottomTipsText = st.BottomTipsText
+	a.XUserListState = st.ListState
+}
+
+// SelectXUserTab switches the active X user profile tab ("posts" | "replies" | "media" | "highlights"),
+// preserving already-loaded pages per tab and lazily loading the newly selected tab on demand (DEC-092).
+func (a *App) SelectXUserTab(tab string) {
+	nextTab := normalizeXUserTabUI(tab)
+	if a.CurrentXUser == nil || a.CurrentXUser.RestID == "" {
+		a.XUserTab = nextTab
+		return
+	}
+	uid := a.CurrentXUser.RestID
+	curTab := a.activeXUserTab()
+	a.syncActiveFieldsToXUserTab(uid, curTab)
+	a.XUserTab = nextTab
+	a.XUserSubMenuOpen = false
+	nextState := a.getOrCreateXUserTabState(uid, nextTab)
+	a.applyXUserTabToActiveFields(nextState)
+	if !nextState.Loaded && len(nextState.Posts) == 0 && nextState.Error == "" && !nextState.AuthExpired && !nextState.UncertainEmpty {
+		a.LoadMoreXPosts()
+	}
+}
+
 func (a *App) applyXParseResult(res *service.OpenLinkResult) {
 	kind := res.Target.Kind
 	if res.SiteTarget != nil && res.SiteTarget.Kind != "" {
 		kind = res.SiteTarget.Kind
 	}
 	if kind == "user" || (res.XUser != nil && res.XPost == nil) {
+		initialTab := res.XUserTab
+		if initialTab == "" && res.SiteTarget != nil {
+			initialTab = res.SiteTarget.Tab
+		}
+		initialTab = normalizeXUserTabUI(initialTab)
+
 		a.CurrentXUser = res.XUser
+		a.XUserTab = initialTab
+		a.XUserTabs = make(map[string]*XUserTabState, 4)
+		if res.XUser != nil {
+			a.xUserTabsOwner = strings.TrimSpace(res.XUser.RestID)
+		} else {
+			a.xUserTabsOwner = ""
+		}
 		a.XUserListState = &ui.ListState{}
 		a.XUserSubMenuOpen = false
 		a.CurrentXPosts = nil
@@ -1583,6 +1705,10 @@ func (a *App) applyXParseResult(res *service.OpenLinkResult) {
 				a.XPostsError = firstNonEmptyStrUI(res.XUserPosts.UncertainReason, "X 返回了异常空列表，可能是限流、风控或受限，可稍后重试")
 			}
 		}
+		if a.xUserTabsOwner != "" {
+			st := a.syncActiveFieldsToXUserTab(a.xUserTabsOwner, initialTab)
+			st.Loaded = res.XUserPosts != nil || res.XUserPostsError != ""
+		}
 		if a.CurrentRoute != RouteXUser {
 			a.pushPreviousRoute(a.currentReturnRoute())
 		}
@@ -1597,55 +1723,142 @@ func (a *App) applyXParseResult(res *service.OpenLinkResult) {
 	a.CurrentRoute = RouteXPost
 }
 
-// LoadMoreXPosts fetches the next page of an X creator's timeline while
+// LoadMoreXPosts fetches the next page of the active X creator profile tab while
 // preserving already loaded posts on rate-limit, risk-control, fake-shell, or auth errors.
 func (a *App) LoadMoreXPosts() {
 	if a.CurrentXUser == nil || a.CurrentXUser.RestID == "" {
 		return
 	}
-	uid, cursor := a.CurrentXUser.RestID, a.XPostsNextCursor
-	requestGuarded(a, "x-posts-"+uid, func() bool {
+	uid := a.CurrentXUser.RestID
+	tab := a.activeXUserTab()
+	st := a.syncActiveFieldsToXUserTab(uid, tab)
+	cursor := st.NextCursor
+	pendingKey := a.xPostsPendingKey(uid, tab)
+
+	requestGuarded(a, pendingKey, func() bool {
 		return a.CurrentXUser != nil && a.CurrentXUser.RestID == uid
 	}, func(ctx context.Context) (*service.XUserPostsPageDTO, error) {
-		return a.backend.XUserPosts(ctx, uid, cursor)
+		return a.backend.XUserTabPosts(ctx, uid, tab, cursor)
 	}, func(page *service.XUserPostsPageDTO) {
 		if a.CurrentXUser == nil || a.CurrentXUser.RestID != uid || page == nil {
 			return
 		}
+		target := a.getOrCreateXUserTabState(uid, tab)
+		if a.activeXUserTab() == tab {
+			target = a.syncActiveFieldsToXUserTab(uid, tab)
+		}
+		target.Loaded = true
 		if page.UncertainEmpty {
-			a.XPostsUncertainEmpty = true
-			a.XPostsHasMore = false
-			a.XPostsError = firstNonEmptyStrUI(page.UncertainReason, "X 返回了异常空列表，可能是限流、风控或受限，可稍后重试")
+			target.UncertainEmpty = true
+			target.HasMore = false
+			target.Error = firstNonEmptyStrUI(page.UncertainReason, "X 返回了异常空列表，可能是限流、风控或受限，可稍后重试")
+			if a.activeXUserTab() == tab {
+				a.applyXUserTabToActiveFields(target)
+			}
 			return
 		}
-		seen := make(map[string]bool, len(a.CurrentXPosts))
-		for _, p := range a.CurrentXPosts {
+		seen := make(map[string]bool, len(target.Posts))
+		for _, p := range target.Posts {
 			seen[p.ID] = true
 		}
 		for _, p := range page.Posts {
 			if p.ID != "" && !seen[p.ID] {
-				a.CurrentXPosts = append(a.CurrentXPosts, p)
+				target.Posts = append(target.Posts, p)
 				seen[p.ID] = true
 			}
 		}
-		a.XPostsAuthExpired = false
-		a.XPostsUncertainEmpty = false
-		a.XPostsError = ""
-		a.XPostsNextCursor = page.NextCursor
-		a.XPostsHasMore = page.HasMore
+		target.AuthExpired = false
+		target.UncertainEmpty = false
+		target.Error = ""
+		target.NextCursor = page.NextCursor
+		target.HasMore = page.HasMore
 		if page.ReachedVisibleLimit || page.BottomTipsVisible {
-			a.XBottomTipsVisible = true
-			a.XBottomTipsText = firstNonEmptyStrUI(page.BottomTipsText, "已到达 X 时间线可见上限")
+			target.BottomTips = true
+			target.BottomTipsText = firstNonEmptyStrUI(page.BottomTipsText, "已到达 X 时间线可见上限")
+		}
+		if a.activeXUserTab() == tab {
+			a.applyXUserTabToActiveFields(target)
 		}
 	}, func(err error) {
-		if site.IsKind(err, site.ErrKindAuthRequired) {
-			a.XPostsAuthExpired = true
-			a.XPostsHasMore = false
-			a.XPostsError = ""
+		if a.CurrentXUser == nil || a.CurrentXUser.RestID != uid {
 			return
 		}
-		a.XPostsError = userErrorText(err)
+		target := a.getOrCreateXUserTabState(uid, tab)
+		if a.activeXUserTab() == tab {
+			target = a.syncActiveFieldsToXUserTab(uid, tab)
+		}
+		target.Loaded = true
+		if site.IsKind(err, site.ErrKindAuthRequired) {
+			target.AuthExpired = true
+			target.HasMore = false
+			target.Error = ""
+		} else {
+			target.Error = userErrorText(err)
+		}
+		if a.activeXUserTab() == tab {
+			a.applyXUserTabToActiveFields(target)
+		}
 	})
+}
+
+// CacheXCurrentTabUncached enqueues uncached, cacheable posts from the currently
+// loaded X replies/media/highlights tab directly into download_tasks (DEC-092).
+func (a *App) CacheXCurrentTabUncached() {
+	if a.CurrentXUser == nil || a.CurrentXUser.RestID == "" {
+		return
+	}
+	u := a.CurrentXUser
+	tab := a.activeXUserTab()
+	if tab == "posts" {
+		a.enqueueCacheAll("x")
+		return
+	}
+	if len(a.CurrentXPosts) == 0 {
+		a.notifyInfo("当前页没有可缓存的未缓存条目")
+		return
+	}
+	uid := u.RestID
+	userName := firstNonEmptyStrUI(u.Name, u.ScreenName, u.RestID)
+	postsCopy := append([]service.XPostDTO(nil), a.CurrentXPosts...)
+	req := service.XBatchCachePageRequest{
+		UserUID:  uid,
+		UserName: userName,
+		Tab:      tab,
+		Posts:    postsCopy,
+		Limit:    service.MaxXCurrentPageBatchCache,
+	}
+	requestGuarded(a, "x-batch-cache-"+uid+"-"+tab, nil, func(ctx context.Context) (service.XBatchCachePageResult, error) {
+		return a.backend.CacheXPostsPage(ctx, req)
+	}, func(res service.XBatchCachePageResult) {
+		a.notifyInfo(formatXBatchCacheSummary(res))
+		a.RefreshData()
+	}, func(err error) {
+		a.showError(err)
+		a.RefreshData()
+	})
+}
+
+func formatXBatchCacheSummary(res service.XBatchCachePageResult) string {
+	if res.Enqueued == 0 {
+		if res.SkippedUnsupported > 0 && res.SkippedCached == 0 {
+			return fmt.Sprintf("当前页无可缓存条目（已跳过 %d 条纯分段流或不支持卡片）", res.SkippedUnsupported)
+		}
+		if res.SkippedUnsupported > 0 {
+			return fmt.Sprintf("当前页已全部缓存（另有 %d 条纯分段流或不支持卡片已跳过）", res.SkippedUnsupported)
+		}
+		return "当前页没有可缓存的未缓存条目"
+	}
+	var notes []string
+	if res.SkippedUnsupported > 0 {
+		notes = append(notes, fmt.Sprintf("跳过 %d 条纯分段流/不支持内容", res.SkippedUnsupported))
+	}
+	if res.SkippedCapped > 0 {
+		notes = append(notes, fmt.Sprintf("单次上限 %d 条，剩余 %d 条可稍后继续", service.MaxXCurrentPageBatchCache, res.SkippedCapped))
+	}
+	if len(notes) == 0 {
+		return fmt.Sprintf("已将 %d 条未缓存帖子加入下载任务", res.Enqueued)
+	}
+	return fmt.Sprintf("已将 %d 条未缓存帖子加入下载任务（%s）", res.Enqueued, strings.Join(notes, "；"))
 }
 
 // LoadMoreUserDynamics loads the next page of creator dynamics while preserving page 1 on error.

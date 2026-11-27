@@ -25,6 +25,7 @@ type ResolveTarget struct {
 	ID            string `json:"id"`
 	AuthorUID     string `json:"authorUid,omitempty"`
 	HintAuthorUID string `json:"hintAuthorUid,omitempty"`
+	Tab           string `json:"tab,omitempty"` // optional profile tab hint (e.g. X "replies", "media", "highlights")
 	MblogID       string `json:"mblogId,omitempty"`
 	SecUID        string `json:"secUid,omitempty"`
 	WebRID        string `json:"webRid,omitempty"`
