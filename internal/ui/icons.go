@@ -499,6 +499,16 @@ func DrawIcon(c *ui.Context, name string, size float32, col ui.Color, strokeWidt
 			p.Fill(ui.Rect{X: x(10.6), Y: y(10.6), W: s(2.8), H: s(2.8)}, col, s(1.4))
 			p.Fill(ui.Rect{X: x(16.2), Y: y(10.6), W: s(2.8), H: s(2.8)}, col, s(1.4))
 
+		case "smartphone":
+			body := (&ui.Path{}).
+				MoveTo(x(7), y(3.5)).
+				LineTo(x(17), y(3.5)).
+				LineTo(x(17), y(20.5)).
+				LineTo(x(7), y(20.5)).
+				Close()
+			p.StrokePath(body, strokeWidth, col)
+			p.Fill(ui.Rect{X: x(10.8), Y: y(16.8), W: s(2.4), H: s(2.4)}, col, s(1.2))
+
 		default:
 			circ := (&ui.Path{}).Circle(x(12), y(12), s(6))
 			p.StrokePath(circ, strokeWidth, col)

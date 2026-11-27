@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/chialecode/trace/internal/appdirs"
+	"github.com/chialecode/trace/internal/companion"
+	"github.com/chialecode/trace/internal/companionapi"
 	"github.com/chialecode/trace/internal/player"
 	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/site"
@@ -125,6 +127,7 @@ type Shell struct {
 	stoleFocus         bool
 	stoleFocusDetail   string
 	updates            *update.Controller
+	companion          *companion.Manager
 
 	// Serialized tray refresh worker state; hooks below are replaceable in tests.
 	trayMu            sync.Mutex
@@ -216,6 +219,9 @@ func Run() error {
 				stopUpdates()
 			}
 			if sh != nil {
+				if sh.companion != nil {
+					sh.companion.Shutdown(companionapi.ByeReasonExit)
+				}
 				sh.stopTrayRefresh()
 			}
 			if backend != nil {
@@ -275,6 +281,24 @@ func Run() error {
 	if decision.UpdatedTo != "" {
 		sh.updates.SetUpdatedNotice(decision.UpdatedTo, decision.UpdatedNotes)
 	}
+	if compMgr, cErr := companion.NewManager(companion.ManagerOptions{
+		DataDir:  loc.DataDir,
+		Channel:  loc.Channel,
+		Version:  build.Version,
+		Backend:  backend,
+		Logf:     backend.Logf,
+		OnChange: sh.redraw,
+	}); cErr != nil {
+		backend.Logf("companion init failed: %v", cErr)
+	} else {
+		sh.companion = compMgr
+		curSet := backend.GetSettings()
+		if curSet.Companion.Enabled {
+			if err := compMgr.ApplySettings(true, curSet.Companion.Port); err != nil {
+				backend.Logf("companion auto-start failed: %v", err)
+			}
+		}
+	}
 
 	// Keep the event loop running when closing window to tray (DEC-030).
 	mygo.App.OnWindowAllClosed(func() {
@@ -284,6 +308,9 @@ func Run() error {
 	mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
 		_, alreadyQuitting := sh.teardown()
 		if !alreadyQuitting {
+			if sh.companion != nil {
+				sh.companion.Shutdown(companionapi.ByeReasonExit)
+			}
 			// OS session shutdown or external quit bypassed RequestQuit: pause tasks and finalize recordings synchronously.
 			backend.ExitGracefully(10 * time.Second)
 		}
@@ -387,6 +414,7 @@ func (s *Shell) openOrRestoreMainWindow() {
 	s.openingWindow = true
 	backend := s.backend
 	updates := s.updates
+	comp := s.companion
 	lastRoute := s.lastRoute
 	quiet := s.quiet
 	displayName := s.loc.DisplayName
@@ -408,6 +436,9 @@ func (s *Shell) openOrRestoreMainWindow() {
 	uiApp := ui.NewApp(backend, audioSinkForQuiet(quiet))
 	if updates != nil {
 		uiApp.BindUpdater(updates)
+	}
+	if comp != nil {
+		uiApp.BindCompanion(comp)
 	}
 	if lastRoute != "" {
 		uiApp.Navigate(lastRoute)
@@ -752,6 +783,9 @@ func (s *Shell) performQuit() {
 	// thread, so that the event loop keeps running meanwhile, bounded so a
 	// stuck stream can never hang exit forever.
 	go func() {
+		if s.companion != nil {
+			s.companion.Shutdown(companionapi.ByeReasonExit)
+		}
 		if s.backend != nil && !s.backend.ExitGracefully(quitPauseTimeout) {
 			s.backend.Logf("pause for exit timed out after %s; proceeding with quit", quitPauseTimeout)
 		}
@@ -839,6 +873,9 @@ func (s *Shell) QuitForUpdate(reason string, relaunch bool) {
 	}
 	from := appdirs.BuildInfo().Version
 	go func() {
+		if s.companion != nil {
+			s.companion.Shutdown(companionapi.ByeReasonUpdate)
+		}
 		if s.backend != nil {
 			if !s.backend.ExitGracefully(quitPauseTimeout) {
 				s.backend.Logf("pause for update quit timed out after %s; continuing", quitPauseTimeout)

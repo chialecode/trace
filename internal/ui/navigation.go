@@ -150,6 +150,9 @@ func (a *App) closeAllModalsAndOverlays() {
 	a.ImportSubModalOpen = false
 	a.ConfirmLogoutOpen = false
 	a.Remote.ConfirmPushXOpen = false
+	a.Mobile.PairDialogOpen = false
+	a.Mobile.ConfirmResetOpen = false
+	a.Mobile.ConfirmRevokeID = ""
 	a.DeleteConfirm.Open = false
 	a.ForceRecacheConfirm.Open = false
 	a.RestartConfirmOpen = false
@@ -327,6 +330,9 @@ func (a *App) navigate(rawRoute string, fromBack bool) {
 		a.Remote.CodeInput = ""
 		a.Remote.TokenInput = ""
 		a.Remote.ConfirmPushXOpen = false
+		a.Mobile.PairDialogOpen = false
+		a.Mobile.ConfirmResetOpen = false
+		a.Mobile.ConfirmRevokeID = ""
 	}
 	if route != RouteLibraryItem {
 		a.CurrentLibraryDetail = nil

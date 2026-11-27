@@ -53,6 +53,16 @@ type Settings struct {
 	// §7). Optional; the access token is kept in the credential store,
 	// never here.
 	Remote RemoteSettings `json:"remote"`
+	// Companion controls the desktop LAN mobile companion listener
+	// (docs/design/mobile.md §3). Optional; disabled by default.
+	Companion CompanionSettings `json:"companion"`
+}
+
+// CompanionSettings configures the desktop mobile companion service (FR-MOB-001).
+// Port == 0 uses the channel default (47381 stable, 47382 dev).
+type CompanionSettings struct {
+	Enabled bool `json:"enabled"`
+	Port    int  `json:"port,omitempty"`
 }
 
 // RemoteSettings holds the remote connections (one for now; a list so a
@@ -486,6 +496,10 @@ func Normalize(s Settings, defaultCacheDir string) (Settings, error) {
 		s.Network.ProxyMode = pm
 	default:
 		return s, fmt.Errorf("settings: invalid proxyMode %q", s.Network.ProxyMode)
+	}
+
+	if s.Companion.Port < 0 || s.Companion.Port > 65535 {
+		return s, fmt.Errorf("settings: companion.port must be between 0 and 65535, got %d", s.Companion.Port)
 	}
 
 	s.Download.VideoQuality = s.VideoQuality

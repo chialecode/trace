@@ -21,6 +21,11 @@ func TestDependencyDirectionRulesSynthetic(t *testing.T) {
 			record:    "github.com/chialecode/trace/internal/service|github.com/egoist/mygo",
 			wantError: "INV-05 violation",
 		},
+		{
+			name:      "mygo rejected in internal/companion",
+			record:    "github.com/chialecode/trace/internal/companion|github.com/egoist/mygo/ui",
+			wantError: "INV-05 violation",
+		},
 
 		// Rule 2: internal/site stdlib-only
 		{
@@ -195,6 +200,11 @@ func TestDependencyDirectionRulesSynthetic(t *testing.T) {
 		{
 			name:      "trace-server depending on the player rejected",
 			record:    "github.com/chialecode/trace/cmd/trace-server|github.com/chialecode/trace/internal/remoteserver|github.com/chialecode/trace/internal/player",
+			wantError: "server size violation",
+		},
+		{
+			name:      "trace-server depending on companion rejected",
+			record:    "github.com/chialecode/trace/cmd/trace-server|github.com/chialecode/trace/internal/remoteserver|github.com/chialecode/trace/internal/companion",
 			wantError: "server size violation",
 		},
 	}

@@ -345,6 +345,7 @@ type AppService interface {
 	// visible error also appears in the run log.
 	LogUserError(err error)
 	PauseAllActiveWork()
+	PublishFeedSeen(subID string)
 }
 
 // BackendAPI composes all TRACE domain service interfaces for the UI layer.

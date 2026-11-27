@@ -27,6 +27,7 @@ var settingsCategories = []struct {
 	{"general", "sliders", "常规"},
 	{"network", "link", "网络"},
 	{"remote", "upload", "远程"},
+	{"mobile", "smartphone", "移动端"},
 	{"logs", "logs", "日志"},
 	{"update", "refresh", "更新"},
 	{"about", "check-circle", "关于"},
@@ -200,6 +201,8 @@ func (a *App) renderSettingsCategoryContent(c *ui.Context) {
 		a.renderNetworkSettings(c)
 	case "remote":
 		a.renderRemoteSettings(c)
+	case "mobile":
+		a.renderMobileSettings(c)
 	case "logs":
 		a.renderLogsSettings(c)
 	case "update":
