@@ -13,6 +13,10 @@ import (
 	"github.com/chialecode/trace/internal/site"
 )
 
+type testRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f testRoundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func TestBilibiliSecurityAndProtocolRegressions(t *testing.T) {
 	t.Run("ValidateMediaURL enforces port 443 and AllowLocalhost probe stays compatible", func(t *testing.T) {
 		prod := NewClient(ClientOptions{AllowLocalhost: false})
@@ -81,6 +85,26 @@ func TestBilibiliSecurityAndProtocolRegressions(t *testing.T) {
 		fiveHops := []*http.Request{redirReq, redirReq, redirReq, redirReq, redirReq}
 		if err := liveClient.CheckRedirect(redirReq, fiveHops); !IsKind(err, ErrKindBlocked) {
 			t.Fatalf("LiveMediaHTTPClient.CheckRedirect(5 hops) = %v, want blocked", err)
+		}
+
+		// AllowLocalhost must keep LoopbackTransport on LiveMediaHTTPClient and honor WrapTransport.
+		var wrappedCalls atomic.Int32
+		wrappedLocal := NewClient(ClientOptions{
+			AllowLocalhost: true,
+			WrapTransport: func(base http.RoundTripper) http.RoundTripper {
+				return testRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					wrappedCalls.Add(1)
+					return base.RoundTrip(r)
+				})
+			},
+		})
+		wrappedLiveClient, _ := wrappedLocal.LiveMediaHTTPClient()
+		nonLoopReq, _ := http.NewRequest(http.MethodGet, "https://edge-1.h2.smtcdns.net/live/index.m3u8", nil)
+		if _, err := wrappedLiveClient.Do(nonLoopReq); err == nil {
+			t.Fatal("AllowLocalhost LiveMediaHTTPClient must block non-loopback requests via LoopbackTransport")
+		}
+		if wrappedCalls.Load() != 1 {
+			t.Fatalf("WrapTransport on LiveMediaHTTPClient called %d times, want 1", wrappedCalls.Load())
 		}
 	})
 

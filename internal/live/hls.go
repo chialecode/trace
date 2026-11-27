@@ -304,6 +304,7 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 		initURI = ""
 		initBytes = nil
 		initWritten = false
+		lastNew = m.now()
 		consecutiveSeg404 = 0
 		skipped404Seq = -1
 		staleLowerSeqPolls = 0
@@ -349,12 +350,14 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 				if tryNextCandidate(playlistURL, "nested_multivariant") {
 					continue
 				}
+				noteCandidateFailed(playlistURL)
 				return written, &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindSchemaChanged, Message: "直播播放列表结构不完整（多级索引）"}
 			}
 			if err := m.client.ValidateLiveMediaURL(variant.uri, true); err != nil {
 				if tryNextCandidate(playlistURL, "blocked_variant") {
 					continue
 				}
+				noteCandidateFailed(playlistURL)
 				return written, &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindSchemaChanged, Message: "直播播放列表指向不受支持的节点"}
 			}
 			if variant.bandwidth > 0 {
@@ -644,7 +647,7 @@ func (m *Manager) recordHLSSegment(ctx context.Context, sess *recordSession, url
 		if newCount > 0 {
 			lastNew = now
 		} else if noSegTimeout > 0 && now.Sub(lastNew) >= noSegTimeout {
-			m.noteSessionFailedHost(sess, playlistURL)
+			noteCandidateFailed(playlistURL)
 			return written, &bilibili.SiteError{Site: site.Bilibili, Kind: bilibili.ErrKindNetwork, Message: "超过 10 秒未收到新直播分片"}
 		}
 		if playlist.endList {

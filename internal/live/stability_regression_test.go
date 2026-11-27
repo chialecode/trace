@@ -1244,6 +1244,65 @@ func TestLiveCandidateHostFallbackAndPlaylistRedirectRelativeURI(t *testing.T) {
 			t.Fatalf("openedURL=%q failedURLs=%v", openedURL, failedURLs)
 		}
 	})
+
+	t.Run("HLS candidate fallback resets noSegmentTimeout window so lagging backup succeeds", func(t *testing.T) {
+		initBytes, fragBytes := regressionLiveSamples(t)
+		clock := newFakeAdvanceClock(time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC))
+		var backupPolls atomic.Int32
+		mgr, lib, base := regressionRecorder(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/slow-bad/index.m3u8":
+				// Simulate a slow primary candidate exceeding noSegmentTimeout (10s) before failing.
+				clock.Advance(12 * time.Second)
+				w.WriteHeader(http.StatusBadGateway)
+			case "/backup/index.m3u8":
+				if backupPolls.Add(1) == 1 {
+					// First poll on backup edge lags behind lastSequence=50 (newCount==0).
+					_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:50\n#EXT-X-MAP:URI=\"/backup/init.mp4\"\n#EXTINF:1.0,\n/backup/seg50.m4s\n"))
+					return
+				}
+				_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:51\n#EXT-X-MAP:URI=\"/backup/init.mp4\"\n#EXTINF:1.0,\n/backup/seg51.m4s\n#EXT-X-ENDLIST\n"))
+			case "/backup/init.mp4":
+				_, _ = w.Write(initBytes)
+			case "/backup/seg51.m4s":
+				_, _ = w.Write(fragBytes)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		mgr.SetNowFunc(clock.Now)
+		mgr.mu.Lock()
+		mgr.noSegmentTimeout = 10 * time.Second
+		mgr.hlsPollInterval = 5 * time.Millisecond
+		mgr.mu.Unlock()
+
+		// Use distinct hostnames ("127.0.0.1" vs "localhost") so failedHosts distinguishes primary vs backup.
+		primaryURL := strings.Replace(base, "127.0.0.1", "localhost", 1) + "/slow-bad/index.m3u8"
+		backupURL := base + "/backup/index.m3u8"
+
+		sess := regressionLiveSession(t, lib)
+		sess.lastSequence = 50
+		sess.hasSequence = true
+		sess.lastSequenceAt = clock.Now()
+		partPath := filepath.Join(sess.itemDir, "part-001.mp4.part")
+		n, err := mgr.recordHLSSegment(context.Background(), sess, []string{primaryURL, backupURL}, partPath, true)
+		if err != nil {
+			t.Fatalf("lagging backup after slow primary fallback failed: n=%d err=%v", n, err)
+		}
+		if n != int64(len(initBytes)+len(fragBytes)) || sess.lastSequence != 51 {
+			t.Fatalf("got n=%d lastSeq=%d, want %d/51", n, sess.lastSequence, len(initBytes)+len(fragBytes))
+		}
+		mgr.mu.Lock()
+		_, backupFailed := sess.failedHosts[liveLogHost(backupURL)]
+		_, primaryFailed := sess.failedHosts[liveLogHost(primaryURL)]
+		mgr.mu.Unlock()
+		if backupFailed {
+			t.Fatalf("healthy backup host was falsely marked failed: %+v", sess.failedHosts)
+		}
+		if !primaryFailed {
+			t.Fatalf("slow failed primary host was not marked failed: %+v", sess.failedHosts)
+		}
+	})
 }
 
 // Normal 1-hour CDN token expiry (HTTP 403 after media was served) must NOT demote

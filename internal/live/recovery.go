@@ -495,7 +495,7 @@ func isEmptyInitOnlyLivePart(partPath string) bool {
 	}
 	defer f.Close()
 	parsed, err := mp4.DecodeFile(f, mp4.WithDecodeMode(mp4.DecModeLazyMdat), mp4.WithDecodeFlags(mp4.DecStartOnMoof))
-	if err != nil || parsed == nil {
+	if err != nil || parsed == nil || parsed.Ftyp == nil || parsed.Mdat != nil || !parsed.IsFragmented() {
 		return false
 	}
 	moov := parsed.Moov
