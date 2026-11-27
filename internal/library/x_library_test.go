@@ -617,3 +617,200 @@ func TestXOriginThreadGIFSanitizationMergePortableAndLiveLastSequenceAt(t *testi
 		t.Fatalf("unsafe Live.LastSequenceAt was not scrubbed: %q", badLive.Live.LastSequenceAt)
 	}
 }
+
+func TestXReplyContextThreadPartOriginAndNestedOriginDepthCap(t *testing.T) {
+	dataDir := t.TempDir()
+	cacheDir := filepath.Join(dataDir, "cache")
+	db, _, _, err := storage.OpenSQLite(filepath.Join(dataDir, "library.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	store, err := OpenWithDataDir(db, cacheDir, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		uidAuthor = "1000000000000000061"
+		uidOrig   = "1000000000000000062"
+		uidInner  = "1000000000000000063"
+		uidThread = "1000000000000000064"
+	)
+
+	// 1. Legacy v1 manifest without InReplyTo / Thread[].Origin / Origin.Origin still parses cleanly.
+	legacyRaw := []byte(`{"version":1,"id":"1000000000000000601","site":"x","kind":"dynamic","title":"旧清单","pubTs":1763803000,"author":{"site":"x","uid":"1000000000000000061","name":"作者"}}`)
+	legacyMeta, err := ParseItemMetadata(legacyRaw)
+	if err != nil || legacyMeta.InReplyTo != nil || legacyMeta.Origin != nil {
+		t.Fatalf("legacy v1 manifest parse failed: meta=%+v err=%v", legacyMeta, err)
+	}
+
+	// 2. Save item with InReplyTo, Thread[].Origin, and 3-level nested Origin -> depth > 1 MUST be stripped.
+	postDir, err := XPostDir(cacheDir, uidAuthor, "1000000000000000602", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(postDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.SaveItem(postDir, ItemMetadata{
+		Version:     1,
+		ID:          "1000000000000000602",
+		Site:        "x",
+		Kind:        "dynamic",
+		DynamicType: "forward",
+		TypeLabel:   "引用帖子",
+		Title:       "两层嵌套引用与线程内引用",
+		Text:        "外层回复并引用",
+		PubTs:       1763803100,
+		Author:      ItemAuthor{Site: "x", UID: uidAuthor, UniqueID: "outer_x", Name: "外层作者"},
+		Via:         &ItemVia{Reason: ViaForward, Site: "x", UID: uidAuthor, Name: "外层作者", DynamicID: "1000000000000000602"},
+		InReplyTo: &ItemReplyTarget{
+			StatusID:   "001000000000000000501",
+			UserID:     "001000000000000000502",
+			ScreenName: "@reply_target_user",
+		},
+		Origin: &ItemOrigin{
+			Site:   "x",
+			ID:     "1000000000000000610",
+			Author: ItemAuthor{Site: "x", UID: uidOrig, UniqueID: "mid_orig", Name: "中层作者"},
+			Text:   "中层引用正文",
+			InReplyTo: &ItemReplyTarget{
+				StatusID:   "https://evil.example/?auth_token=SECRET_REPLY",
+				UserID:     "1000000000000000509",
+				ScreenName: "mid_reply_handle",
+			},
+			Origin: &ItemOrigin{
+				Site:   "x",
+				ID:     "1000000000000000611",
+				Author: ItemAuthor{Site: "x", UID: uidInner, UniqueID: "inner_orig", Name: "内层作者"},
+				Text:   "内层引用正文 ct0=SECRET_INNER_CT0",
+				Origin: &ItemOrigin{
+					Site:   "x",
+					ID:     "1000000000000000612",
+					Author: ItemAuthor{Site: "x", UID: "1000000000000000069", Name: "第三层必须被截断"},
+					Text:   "SHOULD_BE_STRIPPED_DEPTH2",
+				},
+			},
+		},
+		Thread: []ItemThreadPart{
+			{ID: "1000000000000000602", PubTs: 1763803100, Text: "外层回复并引用"},
+			{
+				ID:    "1000000000000000603",
+				PubTs: 1763803150,
+				Text:  "",
+				Origin: &ItemOrigin{
+					Site:   "x",
+					ID:     "1000000000000000620",
+					Author: ItemAuthor{Site: "x", UID: uidThread, UniqueID: "thread_quoted", Name: "线程被引作者"},
+					Text:   "线程子节点内嵌引用正文 auth_token=SECRET_THREAD_TOK",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem DEC-091 manifest: %v", err)
+	}
+	if saved.InReplyTo == nil || saved.InReplyTo.StatusID != "1000000000000000501" || saved.InReplyTo.UserID != "1000000000000000502" || saved.InReplyTo.ScreenName != "reply_target_user" {
+		t.Fatalf("unexpected sanitized InReplyTo: %+v", saved.InReplyTo)
+	}
+	if saved.Origin == nil || saved.Origin.InReplyTo == nil || saved.Origin.InReplyTo.StatusID != "" || saved.Origin.InReplyTo.ScreenName != "mid_reply_handle" {
+		t.Fatalf("unsafe Origin.InReplyTo.StatusID should be scrubbed while keeping clean handle: %+v", saved.Origin)
+	}
+	if saved.Origin.Origin == nil || saved.Origin.Origin.ID != "1000000000000000611" {
+		t.Fatalf("depth-1 Origin.Origin lost: %+v", saved.Origin)
+	}
+	if saved.Origin.Origin.Origin != nil {
+		t.Fatalf("depth-2 Origin.Origin.Origin must be stripped to nil, got %+v", saved.Origin.Origin.Origin)
+	}
+	if len(saved.Thread) != 2 || saved.Thread[1].Origin == nil || saved.Thread[1].Origin.ID != "1000000000000000620" {
+		t.Fatalf("thread part with empty text + Origin must be retained: %+v", saved.Thread)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(postDir, "item.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"SECRET_REPLY", "SECRET_INNER_CT0", "SECRET_THREAD_TOK", "SHOULD_BE_STRIPPED_DEPTH2", "auth_token=", "ct0="} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("item.json leaked forbidden token %q:\n%s", forbidden, raw)
+		}
+	}
+
+	// 3. RebuildIndex + GetItem preserves all DEC-091 fields.
+	if _, err := store.RebuildIndex(); err != nil {
+		t.Fatalf("RebuildIndex: %v", err)
+	}
+	reloaded, ok, err := store.GetItem("x:dynamic:1000000000000000602")
+	if err != nil || !ok || reloaded.InReplyTo == nil || reloaded.Origin == nil || reloaded.Origin.Origin == nil || len(reloaded.Thread) != 2 || reloaded.Thread[1].Origin == nil {
+		t.Fatalf("Reload after RebuildIndex lost DEC-091 fields: ok=%v err=%v meta=%+v", ok, err, reloaded)
+	}
+
+	// 4. MergeItemMetadata supplements InReplyTo, Origin.Origin, and matching Thread[].Origin.
+	localBare := reloaded
+	localBare.InReplyTo = nil
+	localBare.Origin = &ItemOrigin{Site: "x", ID: "1000000000000000610", Author: ItemAuthor{Site: "x", UID: uidOrig, Name: "中层作者"}}
+	localBare.Thread = []ItemThreadPart{
+		{ID: "1000000000000000602", PubTs: 1763803100, Text: "外层回复并引用"},
+		{ID: "1000000000000000603", PubTs: 1763803150, Text: ""},
+	}
+	merged, _ := MergeItemMetadata(localBare, reloaded, MergeKeepLocal, nil)
+	if merged.InReplyTo == nil || merged.InReplyTo.ScreenName != "reply_target_user" {
+		t.Fatalf("MergeItemMetadata lost InReplyTo: %+v", merged.InReplyTo)
+	}
+	if merged.Origin == nil || merged.Origin.Origin == nil || merged.Origin.Origin.ID != "1000000000000000611" || merged.Origin.Origin.Origin != nil {
+		t.Fatalf("MergeItemMetadata failed to supplement depth-1 Origin.Origin: %+v", merged.Origin)
+	}
+	if len(merged.Thread) != 2 || merged.Thread[1].Origin == nil || merged.Thread[1].Origin.ID != "1000000000000000620" {
+		t.Fatalf("MergeItemMetadata failed to supplement matching Thread[1].Origin: %+v", merged.Thread)
+	}
+
+	// 5. PortableManifest round-trip preserves fields and enforces depth cap <= 1.
+	merged.Origin.Origin.Origin = &ItemOrigin{Site: "x", ID: "999", Text: "DEEP_FORBIDDEN"}
+	portableBytes, err := PortableManifest(merged)
+	if err != nil {
+		t.Fatalf("PortableManifest: %v", err)
+	}
+	if strings.Contains(string(portableBytes), "DEEP_FORBIDDEN") {
+		t.Fatalf("PortableManifest failed to strip depth > 1 nested origin:\n%s", portableBytes)
+	}
+	reparsed, err := ParseItemMetadata(portableBytes)
+	if err != nil || reparsed.InReplyTo == nil || reparsed.Origin == nil || reparsed.Origin.Origin == nil || reparsed.Origin.Origin.Origin != nil || len(reparsed.Thread) != 2 || reparsed.Thread[1].Origin == nil {
+		t.Fatalf("PortableManifest round-trip failed: err=%v meta=%+v", err, reparsed)
+	}
+
+	// 6. All-invalid InReplyTo sanitizes to nil, while benign handles containing "ct0"/"cookie"/"bearer" survive.
+	badReply := SanitizeItemReplyTarget(&ItemReplyTarget{
+		StatusID:   "https://x.com/status/1?auth_token=abc",
+		UserID:     "not_a_number",
+		ScreenName: "evil.com/path?ct0=123",
+	}, "x")
+	if badReply != nil {
+		t.Fatalf("expected all-invalid X ItemReplyTarget to sanitize to nil, got %+v", badReply)
+	}
+	for _, benign := range []string{"@project0", "@cookie_chef", "@ringbearer"} {
+		got := SanitizeItemReplyTarget(&ItemReplyTarget{StatusID: "1000000000000000505", ScreenName: benign}, "x")
+		want := strings.TrimPrefix(benign, "@")
+		if got == nil || got.ScreenName != want {
+			t.Fatalf("SanitizeItemReplyTarget(%q) = %+v, want ScreenName=%q", benign, got, want)
+		}
+	}
+
+	// 7. NormalizeDisplayTypeLabel upgrades legacy X quote ("转发" + non-"RT @" text) to "引用帖子",
+	// while preserving legacy pure retweet ("RT @...") as "转发".
+	legacyQuoteItem := ItemMetadata{
+		Site: "x", Kind: "dynamic", TypeLabel: "转发", Text: "我的引用评论",
+		Origin: &ItemOrigin{Site: "x", ID: "1000000000000000701", Text: "原帖"},
+	}
+	if got := legacyQuoteItem.NormalizeDisplayTypeLabel(); got != "引用帖子" {
+		t.Fatalf("legacy quote NormalizeDisplayTypeLabel = %q, want 引用帖子", got)
+	}
+	legacyPureRT := ItemMetadata{
+		Site: "x", Kind: "dynamic", TypeLabel: "转发", Text: "RT @orig_user: 原帖正文",
+		Origin: &ItemOrigin{Site: "x", ID: "1000000000000000701", Text: "原帖正文"},
+	}
+	if got := legacyPureRT.NormalizeDisplayTypeLabel(); got != "转发" {
+		t.Fatalf("legacy pure RT NormalizeDisplayTypeLabel = %q, want 转发", got)
+	}
+}

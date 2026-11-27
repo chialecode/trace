@@ -521,48 +521,78 @@ type TextLink struct {
 	URL   string `json:"url"`
 }
 
+// ReplyTarget identifies the parent post a post replies to (DEC-091).
+type ReplyTarget struct {
+	StatusID   string `json:"statusId,omitempty"`
+	UserID     string `json:"userId,omitempty"`
+	ScreenName string `json:"screenName,omitempty"`
+}
+
+// NestedOriginSummary records a 1-level nested quoted/origin post inside an
+// outer origin post (e.g. RT of a quote post, or quote of a quote post; DEC-091).
+type NestedOriginSummary struct {
+	Site              ID               `json:"site,omitempty"`
+	ID                string           `json:"id,omitempty"`
+	CanonicalURL      string           `json:"canonicalUrl,omitempty"`
+	AuthorUID         string           `json:"authorUid,omitempty"`
+	AuthorUniqueID    string           `json:"authorUniqueId,omitempty"`
+	AuthorName        string           `json:"authorName,omitempty"`
+	AuthorFace        string           `json:"authorFace,omitempty"`
+	PubTs             int64            `json:"pubTs,omitempty"`
+	Text              string           `json:"text,omitempty"`
+	Links             []TextLink       `json:"links,omitempty"`
+	Card              *RichCardSummary `json:"card,omitempty"`
+	InReplyTo         *ReplyTarget     `json:"inReplyTo,omitempty"`
+	Unavailable       bool             `json:"unavailable,omitempty"`
+	UnavailableReason string           `json:"unavailableReason,omitempty"`
+}
+
 // DownloadPlan describes resolved media streams and metadata for caching an item locally.
 type DownloadPlan struct {
-	Site                    ID               `json:"site"`
-	ItemKey                 string           `json:"itemKey"`
-	TargetID                string           `json:"targetId"`
-	Kind                    string           `json:"kind"` // "dash", "single_mp4", "image_note"
-	CanonicalURL            string           `json:"canonicalUrl,omitempty"`
-	AuthorUID               string           `json:"authorUid"`
-	AuthorName              string           `json:"authorName,omitempty"`
-	AuthorFace              string           `json:"authorFace,omitempty"`
-	Title                   string           `json:"title,omitempty"`
-	Desc                    string           `json:"desc,omitempty"`
-	Links                   []TextLink       `json:"links,omitempty"`
-	PubTs                   int64            `json:"pubTs,omitempty"`
-	DurationSec             int              `json:"durationSec,omitempty"`
-	VideoCodec              string           `json:"videoCodec,omitempty"`
-	QualityLabel            string           `json:"qualityLabel,omitempty"`
-	Width                   int              `json:"width,omitempty"`
-	Height                  int              `json:"height,omitempty"`
-	FPS                     int              `json:"fps,omitempty"`
-	Bitrate                 int64            `json:"bitrate,omitempty"`
-	ExpectedSize            int64            `json:"expectedSize,omitempty"`
-	IsForward               bool             `json:"isForward,omitempty"`
-	IsFastRetweet           bool             `json:"isFastRetweet,omitempty"`
-	OriginID                string           `json:"originId,omitempty"`
-	OriginMblogID           string           `json:"originMblogId,omitempty"`
-	OriginCanonicalURL      string           `json:"originCanonicalUrl,omitempty"`
-	OriginAuthorUID         string           `json:"originAuthorUid,omitempty"`
-	OriginAuthorName        string           `json:"originAuthorName,omitempty"`
-	OriginAuthorFace        string           `json:"originAuthorFace,omitempty"`
-	OriginPubTs             int64            `json:"originPubTs,omitempty"`
-	OriginText              string           `json:"originText,omitempty"`
-	OriginLinks             []TextLink       `json:"originLinks,omitempty"`
-	OriginVideoTitle        string           `json:"originVideoTitle,omitempty"`
-	OriginUnavailable       bool             `json:"originUnavailable,omitempty"`
-	OriginUnavailableReason string           `json:"originUnavailableReason,omitempty"`
-	OriginCard              *RichCardSummary `json:"originCard,omitempty"`
-	Card                    *RichCardSummary `json:"card,omitempty"`
-	VideoFromOrigin         bool             `json:"videoFromOrigin,omitempty"`
-	VisibleType             int              `json:"visibleType,omitempty"`
-	VisibleLabel            string           `json:"visibleLabel,omitempty"`
-	VideoURLs               []string         `json:"-"`
+	Site                    ID                   `json:"site"`
+	ItemKey                 string               `json:"itemKey"`
+	TargetID                string               `json:"targetId"`
+	Kind                    string               `json:"kind"` // "dash", "single_mp4", "image_note"
+	CanonicalURL            string               `json:"canonicalUrl,omitempty"`
+	AuthorUID               string               `json:"authorUid"`
+	AuthorName              string               `json:"authorName,omitempty"`
+	AuthorFace              string               `json:"authorFace,omitempty"`
+	Title                   string               `json:"title,omitempty"`
+	Desc                    string               `json:"desc,omitempty"`
+	Links                   []TextLink           `json:"links,omitempty"`
+	PubTs                   int64                `json:"pubTs,omitempty"`
+	DurationSec             int                  `json:"durationSec,omitempty"`
+	VideoCodec              string               `json:"videoCodec,omitempty"`
+	QualityLabel            string               `json:"qualityLabel,omitempty"`
+	Width                   int                  `json:"width,omitempty"`
+	Height                  int                  `json:"height,omitempty"`
+	FPS                     int                  `json:"fps,omitempty"`
+	Bitrate                 int64                `json:"bitrate,omitempty"`
+	ExpectedSize            int64                `json:"expectedSize,omitempty"`
+	IsForward               bool                 `json:"isForward,omitempty"`
+	IsQuote                 bool                 `json:"isQuote,omitempty"`
+	IsFastRetweet           bool                 `json:"isFastRetweet,omitempty"`
+	InReplyTo               *ReplyTarget         `json:"inReplyTo,omitempty"`
+	OriginID                string               `json:"originId,omitempty"`
+	OriginMblogID           string               `json:"originMblogId,omitempty"`
+	OriginCanonicalURL      string               `json:"originCanonicalUrl,omitempty"`
+	OriginAuthorUID         string               `json:"originAuthorUid,omitempty"`
+	OriginAuthorName        string               `json:"originAuthorName,omitempty"`
+	OriginAuthorFace        string               `json:"originAuthorFace,omitempty"`
+	OriginPubTs             int64                `json:"originPubTs,omitempty"`
+	OriginText              string               `json:"originText,omitempty"`
+	OriginLinks             []TextLink           `json:"originLinks,omitempty"`
+	OriginVideoTitle        string               `json:"originVideoTitle,omitempty"`
+	OriginUnavailable       bool                 `json:"originUnavailable,omitempty"`
+	OriginUnavailableReason string               `json:"originUnavailableReason,omitempty"`
+	OriginCard              *RichCardSummary     `json:"originCard,omitempty"`
+	OriginInReplyTo         *ReplyTarget         `json:"originInReplyTo,omitempty"`
+	OriginOrigin            *NestedOriginSummary `json:"originOrigin,omitempty"`
+	Card                    *RichCardSummary     `json:"card,omitempty"`
+	VideoFromOrigin         bool                 `json:"videoFromOrigin,omitempty"`
+	VisibleType             int                  `json:"visibleType,omitempty"`
+	VisibleLabel            string               `json:"visibleLabel,omitempty"`
+	VideoURLs               []string             `json:"-"`
 	// OriginalURLs, when set, point at the untranscoded source (原画) and are tried
 	// before VideoURLs; VideoURLs and the quality fields describe the fallback.
 	OriginalURLs []string           `json:"-"`

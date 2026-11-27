@@ -603,7 +603,7 @@ func NewBackend(opts Options) (*Backend, error) {
 	})
 	subMgr.RegisterAutoCacheEnqueuer(site.X, func(ctx context.Context, item subscription.UpdateItem) (string, error) {
 		var via *library.ItemVia
-		if strings.EqualFold(strings.TrimSpace(item.Type), x.RuleTypeForward) {
+		if strings.EqualFold(strings.TrimSpace(item.Type), x.RuleTypeForward) || isXQuoteUpdateSnapshot(item.Snapshot) {
 			via = &library.ItemVia{
 				Reason:    library.ViaForward,
 				Site:      string(site.X),

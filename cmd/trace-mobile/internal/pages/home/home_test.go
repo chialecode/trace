@@ -934,3 +934,153 @@ func TestHomeXThreadDisplayDedupCollapseExpandAnd360dpNoOverflow(t *testing.T) {
 	assertNoHorizontalOverflow(t, tt, 360)
 	p.OnDisconnected()
 }
+
+func TestHomeXReplyHintThreadPartOriginAndNestedQuoteDepthCap(t *testing.T) {
+	srv, host, cleanup := newSyntheticFeedServer(t, 0)
+	defer cleanup()
+
+	now := time.Date(2026, 11, 27, 15, 0, 0, 0, time.UTC).Unix()
+
+	// 1. Standalone X reply with @handle + 2-level nested quote (depth 3 must be suppressed).
+	replyWithHandle := companionapi.FeedItem{
+		FeedKey:        "x:dynamic:1900000000000091001",
+		ItemKey:        "x:dynamic:1900000000000091001",
+		Site:           "x",
+		Kind:           "dynamic",
+		TypeLabel:      "引用帖子",
+		AuthorUID:      "u-x-91",
+		AuthorName:     "移动回复作者",
+		AuthorUniqueID: "mobile_replier",
+		Title:          "移动回复正文主句",
+		Text:           "移动回复正文主句",
+		PubTs:          now - 60,
+		InReplyTo:      &companionapi.ItemReplyTargetDTO{StatusID: "1900000000000090001", UserID: "u-target", ScreenName: "target_dev"},
+		Origin: &companionapi.ItemOriginDTO{
+			Site:           "x",
+			ID:             "1900000000000091002",
+			AuthorName:     "外层引用作者",
+			AuthorUniqueID: "outer_q",
+			Text:           "外层被引用正文",
+			InReplyTo:      &companionapi.ItemReplyTargetDTO{StatusID: "1900000000000090002", ScreenName: "origin_parent"},
+			Origin: &companionapi.ItemOriginDTO{
+				Site:           "x",
+				ID:             "1900000000000091003",
+				AuthorName:     "内层原帖作者",
+				AuthorUniqueID: "inner_q",
+				Text:           "内层嵌套被引用正文",
+				Origin: &companionapi.ItemOriginDTO{
+					Site:       "x",
+					ID:         "1900000000000091004",
+					AuthorName: "超深层作者",
+					Text:       "第三层嵌套不应展示",
+				},
+			},
+		},
+	}
+
+	// 2. Reply without screenName -> fallback "回复一条帖子".
+	replyNoHandle := companionapi.FeedItem{
+		FeedKey:        "x:dynamic:1900000000000091010",
+		ItemKey:        "x:dynamic:1900000000000091010",
+		Site:           "x",
+		Kind:           "dynamic",
+		TypeLabel:      "帖子",
+		AuthorUID:      "u-x-91",
+		AuthorName:     "移动回复作者",
+		AuthorUniqueID: "mobile_replier",
+		Title:          "无句柄回复正文",
+		Text:           "无句柄回复正文",
+		PubTs:          now - 120,
+		InReplyTo:      &companionapi.ItemReplyTargetDTO{StatusID: "1900000000000090010"},
+	}
+
+	// 3. Self-reply thread: internal self-reply InReplyTo suppressed, continuation embeds its own Origin.
+	threadWithPartOrigin := companionapi.FeedItem{
+		FeedKey:        "x:dynamic:1900000000000091020",
+		ItemKey:        "x:dynamic:1900000000000091020",
+		Site:           "x",
+		Kind:           "dynamic",
+		TypeLabel:      "帖子",
+		AuthorUID:      "u-x-91",
+		AuthorName:     "移动回复作者",
+		AuthorUniqueID: "mobile_replier",
+		Title:          "移动线程节点一",
+		Text:           "移动线程节点一\n\n移动线程节点二",
+		PubTs:          now - 180,
+		InReplyTo:      &companionapi.ItemReplyTargetDTO{StatusID: "1900000000000091020", ScreenName: "mobile_replier"},
+		Thread: []companionapi.ThreadPartDTO{
+			{ID: "1900000000000091020", PubTs: now - 180, Text: "移动线程节点一"},
+			{
+				ID:    "1900000000000091021",
+				PubTs: now - 170,
+				Text:  "移动线程节点二",
+				Origin: &companionapi.ItemOriginDTO{
+					Site:           "x",
+					ID:             "1900000000000091099",
+					AuthorName:     "节点内被引作者",
+					AuthorUniqueID: "part_quoted",
+					Text:           "线程续帖内嵌引用正文",
+				},
+			},
+		},
+	}
+
+	srv.mu.Lock()
+	srv.items = []companionapi.FeedItem{replyWithHandle, replyNoHandle, threadWithPartOrigin}
+	srv.subs = nil
+	srv.mu.Unlock()
+
+	p := New()
+	p.nowFn = func() time.Time { return time.Unix(now, 0).UTC() }
+	notify := make(chan struct{}, 32)
+	host.onUpdate = func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
+
+	p.OnConnected(host)
+	tt := ui.NewTester(func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		p.View(c, host)
+	}, 412, 1600)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if tt.HasText("线程续帖内嵌引用正文") {
+			break
+		}
+		select {
+		case <-notify:
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	for _, want := range []string{
+		"回复 @target_dev",
+		"回复 @origin_parent",
+		"外层被引用正文",
+		"内层嵌套被引用正文",
+		"回复一条帖子",
+		"线程续帖内嵌引用正文",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("mobile home missing %q; texts=%v", want, tt.Texts())
+		}
+	}
+	if tt.HasText("第三层嵌套不应展示") {
+		t.Fatalf("mobile home rendered depth-3 nested origin; texts=%v", tt.Texts())
+	}
+	if tt.HasText("回复 @mobile_replier") {
+		t.Fatalf("mobile home must suppress internal self-reply InReplyTo hint; texts=%v", tt.Texts())
+	}
+
+	for _, w := range []int{360, 412, 800} {
+		tt.SetSize(w, 1600)
+		tt.Frame()
+		assertNoHorizontalOverflow(t, tt, w)
+	}
+	p.OnDisconnected()
+}

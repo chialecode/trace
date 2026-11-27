@@ -1064,8 +1064,12 @@ func (c *Client) parseInnerTweetNode(node *rawTweetResultNode, visibilityLabel s
 	}
 
 	// Parse Quoted status recursively (graceful degradation when origin unavailable/tombstone/empty!).
+	// On a pure retweet of a quote tweet, X GraphQL mirrors legacy.is_quote_status=true on
+	// the outer RT wrapper while placing quoted_status_result only on the inner
+	// retweeted_status_result. Ignore that mirrored flag on the outer RT wrapper so it never
+	// marks the healthy Retweeted post as IsQuote / OriginUnavailable.
 	hasQuotedWrap := node.QuotedRes != nil
-	if (leg != nil && leg.IsQuoteStatus) || hasQuotedWrap {
+	if hasQuotedWrap || (leg != nil && leg.IsQuoteStatus && !(post.IsRetweet && post.Retweeted != nil)) {
 		post.IsQuote = true
 		if hasQuotedWrap {
 			qt := c.parseTweetResult(node.QuotedRes.Result, depth+1)
@@ -1128,8 +1132,10 @@ func classifyTombstoneKind(text string) string {
 	return site.ErrKindUnavailable
 }
 
-// computeRuleType implements x.md §15.1 #10 strictly:
-//   - retweet or quote -> "forward"
+// computeRuleType classifies X posts for subscription auto-cache tags (DEC-091):
+//   - pure retweet -> "forward" (cached only when cache_forward is enabled; skipped by full_cache)
+//   - quote post (self-quote or quoting others) -> classified by the author's own media
+//     ("video" / "draw" / "word") because the author wrote original commentary/media
 //   - single non-GIF video -> "video"
 //   - any photo, GIF, or mixed multi-item media -> "draw"
 //   - otherwise (text, poll, URL card, article card, live/Spaces card) -> "word"
@@ -1137,7 +1143,7 @@ func computeRuleType(p *Post) string {
 	if p == nil {
 		return RuleTypeWord
 	}
-	if p.IsRetweet || p.IsQuote {
+	if p.IsRetweet {
 		return RuleTypeForward
 	}
 	if len(p.Media) == 1 && p.Media[0].Kind == MediaKindVideo && !p.Media[0].GIF {

@@ -66,6 +66,9 @@ type ItemMetadata struct {
 	// Origin records the retweeted/forwarded original post metadata directly
 	// inside item.json (optional; older manifests have none, schema version unchanged).
 	Origin *ItemOrigin `json:"origin,omitempty"`
+	// InReplyTo records the parent post this item replies to (DEC-091).
+	// Optional; older manifests have none and item.json stays version 1.
+	InReplyTo *ItemReplyTarget `json:"inReplyTo,omitempty"`
 	// Card records a degraded non-media rich card attached to the post
 	// (e.g. Weibo article, vote, music, webpage, or live card; no signed URLs).
 	Card *ItemRichCard `json:"card,omitempty"`
@@ -224,33 +227,45 @@ type ItemLink struct {
 	URL   string `json:"url"`
 }
 
+// ItemReplyTarget records sanitized identifiers of the parent post being replied to (DEC-091).
+// It never stores URLs, query parameters, signatures, or credentials.
+type ItemReplyTarget struct {
+	StatusID   string `json:"statusId,omitempty"`
+	UserID     string `json:"userId,omitempty"`
+	ScreenName string `json:"screenName,omitempty"`
+}
+
 // ItemThreadPart records one author self-reply segment persisted inside the same
 // cached item (e.g. X author self-reply threads). Optional; library.db stays v2.
 type ItemThreadPart struct {
-	ID           string     `json:"id,omitempty"`
-	PubTs        int64      `json:"pubTs,omitempty"`
-	Text         string     `json:"text,omitempty"`
-	Links        []ItemLink `json:"links,omitempty"`
-	MediaIndexes []int      `json:"mediaIndexes,omitempty"`
+	ID           string      `json:"id,omitempty"`
+	PubTs        int64       `json:"pubTs,omitempty"`
+	Text         string      `json:"text,omitempty"`
+	Links        []ItemLink  `json:"links,omitempty"`
+	MediaIndexes []int       `json:"mediaIndexes,omitempty"`
+	Origin       *ItemOrigin `json:"origin,omitempty"`
 }
 
 // ItemOrigin records the retweeted/forwarded original post snapshot inside item.json.
 // All origin media files live inside the forwarder's forwards/ item folder and are tagged
 // via NotePageRecord.FromOrigin / MediaFile.FromOrigin / ItemOrigin.VideoFromOrigin.
+// Origin allows at most 1 nested level (strictly capped by SanitizeItemMetadata / MergeItemMetadata).
 type ItemOrigin struct {
-	Site              string        `json:"site,omitempty"`
-	ID                string        `json:"id,omitempty"`
-	MblogID           string        `json:"mblogid,omitempty"`
-	CanonicalURL      string        `json:"canonicalUrl,omitempty"`
-	Author            ItemAuthor    `json:"author,omitempty"`
-	PubTs             int64         `json:"pubTs,omitempty"`
-	Title             string        `json:"title,omitempty"`
-	Text              string        `json:"text,omitempty"`
-	Links             []ItemLink    `json:"links,omitempty"`
-	Card              *ItemRichCard `json:"card,omitempty"`
-	Unavailable       bool          `json:"unavailable,omitempty"`
-	UnavailableReason string        `json:"unavailableReason,omitempty"`
-	VideoFromOrigin   bool          `json:"videoFromOrigin,omitempty"`
+	Site              string           `json:"site,omitempty"`
+	ID                string           `json:"id,omitempty"`
+	MblogID           string           `json:"mblogid,omitempty"`
+	CanonicalURL      string           `json:"canonicalUrl,omitempty"`
+	Author            ItemAuthor       `json:"author,omitempty"`
+	PubTs             int64            `json:"pubTs,omitempty"`
+	Title             string           `json:"title,omitempty"`
+	Text              string           `json:"text,omitempty"`
+	Links             []ItemLink       `json:"links,omitempty"`
+	Card              *ItemRichCard    `json:"card,omitempty"`
+	InReplyTo         *ItemReplyTarget `json:"inReplyTo,omitempty"`
+	Origin            *ItemOrigin      `json:"origin,omitempty"`
+	Unavailable       bool             `json:"unavailable,omitempty"`
+	UnavailableReason string           `json:"unavailableReason,omitempty"`
+	VideoFromOrigin   bool             `json:"videoFromOrigin,omitempty"`
 }
 
 // IsForwardContent reports whether the item is a forwarded post or content
@@ -765,13 +780,20 @@ func SanitizeItemMetadata(meta *ItemMetadata) {
 		}
 	}
 	meta.Links = sanitizeItemLinks(meta.Links)
+	meta.InReplyTo = sanitizeItemReplyTarget(meta.InReplyTo, meta.Site)
 	if len(meta.Thread) > 0 {
 		cleaned := make([]ItemThreadPart, 0, len(meta.Thread))
 		for _, part := range meta.Thread {
 			part.ID = strings.TrimSpace(part.ID)
 			part.Text = scrubManifestFreeText(part.Text)
 			part.Links = sanitizeItemLinks(part.Links)
-			if part.ID == "" && part.Text == "" && len(part.Links) == 0 && len(part.MediaIndexes) == 0 {
+			if part.Origin != nil {
+				sanitizeItemOriginDepth(part.Origin, meta.Site, 0)
+				if isEmptyItemOrigin(part.Origin) {
+					part.Origin = nil
+				}
+			}
+			if part.ID == "" && part.Text == "" && len(part.Links) == 0 && len(part.MediaIndexes) == 0 && part.Origin == nil {
 				continue
 			}
 			cleaned = append(cleaned, part)
@@ -785,7 +807,7 @@ func SanitizeItemMetadata(meta *ItemMetadata) {
 		}
 	}
 	if meta.Origin != nil {
-		sanitizeItemOrigin(meta.Origin, meta.Site)
+		sanitizeItemOriginDepth(meta.Origin, meta.Site, 0)
 	}
 	for i := range meta.Parts {
 		if len(meta.Parts[i].Chapters) > 0 {
@@ -957,7 +979,156 @@ func ValidateCanonicalItemKey(raw string) (string, bool) {
 	return site + ":" + kind + ":" + rawID, true
 }
 
+const maxItemOriginNestingDepth = 1
+
+// SanitizeItemReplyTarget scrubs reply context identifiers so item.json never
+// persists URLs, query markers, signed tokens, or credentials (DEC-091).
+func SanitizeItemReplyTarget(target *ItemReplyTarget, site string) *ItemReplyTarget {
+	return sanitizeItemReplyTarget(target, site)
+}
+
+func sanitizeItemReplyTarget(target *ItemReplyTarget, site string) *ItemReplyTarget {
+	if target == nil {
+		return nil
+	}
+	normSite := strings.ToLower(strings.TrimSpace(site))
+	statusID := sanitizeReplyIDToken(target.StatusID, normSite)
+	userID := sanitizeReplyUserID(target.UserID, normSite)
+	screenName := sanitizeReplyScreenName(target.ScreenName)
+	if statusID == "" && userID == "" && screenName == "" {
+		return nil
+	}
+	return &ItemReplyTarget{
+		StatusID:   statusID,
+		UserID:     userID,
+		ScreenName: screenName,
+	}
+}
+
+func sanitizeReplyIDToken(raw, normSite string) string {
+	tok := SanitizeMediaToken(raw)
+	if tok == "" {
+		return ""
+	}
+	if normSite == "x" {
+		for i := 0; i < len(tok); i++ {
+			if tok[i] < '0' || tok[i] > '9' {
+				return ""
+			}
+		}
+		trimmed := strings.TrimLeft(tok, "0")
+		if trimmed == "" {
+			return ""
+		}
+		if _, err := strconv.ParseUint(trimmed, 10, 64); err != nil {
+			return ""
+		}
+		return trimmed
+	}
+	return tok
+}
+
+func sanitizeReplyUserID(raw, normSite string) string {
+	tok := SanitizeMediaToken(raw)
+	if tok == "" {
+		return ""
+	}
+	if normSite == "x" {
+		return sanitizeReplyIDToken(tok, "x")
+	}
+	if normSite != "" {
+		_, normUID := NormalizeAuthorUID(normSite, tok, 0)
+		return SanitizeMediaToken(normUID)
+	}
+	return tok
+}
+
+// NormalizeDisplayTypeLabel returns the user-facing type label for a cached
+// item, upgrading legacy X quote manifests (persisted before DEC-091 with
+// TypeLabel "转发" or empty) to "引用帖子" while keeping pure retweets
+// ("RT @..." or empty outer text) distinct from quote posts.
+func (m ItemMetadata) NormalizeDisplayTypeLabel() string {
+	lbl := strings.TrimSpace(m.TypeLabel)
+	if strings.EqualFold(strings.TrimSpace(m.Site), "x") && m.Kind == "dynamic" {
+		trimmedText := strings.TrimSpace(m.Text)
+		isQuote := m.Origin != nil && trimmedText != "" && !strings.HasPrefix(trimmedText, "RT @")
+		if lbl == "转发" && isQuote {
+			return "引用帖子"
+		}
+		if lbl == "" {
+			if isQuote {
+				return "引用帖子"
+			}
+			if (m.Via != nil && m.Via.Reason == ViaForward) || m.Origin != nil {
+				return "转发帖子"
+			}
+			return "帖子"
+		}
+	}
+	return lbl
+}
+
+func sanitizeReplyScreenName(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimPrefix(s, "@")
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) > 64 {
+		return ""
+	}
+	if isRemoteOrSignedURL(s) || hasSignedOrQueryMarkers(s) || containsXForbiddenTextMarkers(s) {
+		return ""
+	}
+	if strings.Contains(s, "://") || strings.Contains(s, "..") {
+		return ""
+	}
+	for _, r := range s {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return ""
+		}
+		switch r {
+		case '/', '\\', '?', '#', '&', '=', ':', ';', '\'', '"', '<', '>':
+			return ""
+		}
+	}
+	lower := strings.ToLower(s)
+	for _, forbidden := range []string{
+		".com", ".cn", ".tv", ".net", ".org", ".io",
+		"twimg", "weibocdn", "sinaimg", "douyinvod",
+	} {
+		if strings.Contains(lower, forbidden) {
+			return ""
+		}
+	}
+	return s
+}
+
+func isEmptyItemOrigin(orig *ItemOrigin) bool {
+	if orig == nil {
+		return true
+	}
+	return orig.ID == "" &&
+		orig.MblogID == "" &&
+		orig.CanonicalURL == "" &&
+		orig.Author.UID == "" &&
+		orig.Author.UniqueID == "" &&
+		orig.Author.Name == "" &&
+		orig.PubTs == 0 &&
+		orig.Title == "" &&
+		orig.Text == "" &&
+		len(orig.Links) == 0 &&
+		orig.Card == nil &&
+		orig.InReplyTo == nil &&
+		orig.Origin == nil &&
+		!orig.Unavailable &&
+		orig.UnavailableReason == "" &&
+		!orig.VideoFromOrigin
+}
+
 func sanitizeItemOrigin(orig *ItemOrigin, defaultSite string) {
+	sanitizeItemOriginDepth(orig, defaultSite, 0)
+}
+
+func sanitizeItemOriginDepth(orig *ItemOrigin, defaultSite string, depth int) {
 	if orig == nil {
 		return
 	}
@@ -971,6 +1142,7 @@ func sanitizeItemOrigin(orig *ItemOrigin, defaultSite string) {
 	orig.Text = scrubManifestFreeText(orig.Text)
 	orig.Links = sanitizeItemLinks(orig.Links)
 	orig.UnavailableReason = scrubManifestFreeText(orig.UnavailableReason)
+	orig.InReplyTo = sanitizeItemReplyTarget(orig.InReplyTo, orig.Site)
 
 	authorSite := orig.Author.Site
 	if authorSite == "" {
@@ -1016,6 +1188,15 @@ func sanitizeItemOrigin(orig *ItemOrigin, defaultSite string) {
 		sanitizeItemRichCard(orig.Card)
 		if orig.Card.Kind == "" && orig.Card.Label == "" && orig.Card.Title == "" && orig.Card.Desc == "" && orig.Card.URL == "" {
 			orig.Card = nil
+		}
+	}
+	// Strictly cap nested Origin to 1 level (DEC-091) to prevent recursion/infinite nesting.
+	if depth >= maxItemOriginNestingDepth {
+		orig.Origin = nil
+	} else if orig.Origin != nil {
+		sanitizeItemOriginDepth(orig.Origin, orig.Site, depth+1)
+		if isEmptyItemOrigin(orig.Origin) {
+			orig.Origin = nil
 		}
 	}
 }

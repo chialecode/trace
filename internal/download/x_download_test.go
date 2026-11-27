@@ -1033,3 +1033,382 @@ func TestXCircuitBreakerIsolatesXOnly(t *testing.T) {
 		t.Fatalf("Douyin task affected by X circuit breaker: status=%q pauseReason=%q err=%q", doneDY.Status, doneDY.PauseReason, doneDY.ErrorMessage)
 	}
 }
+
+func TestXQuoteTypeLabelReplyContextThreadPartOriginAndNestedOrigin(t *testing.T) {
+	mp4Bytes := buildProgressiveWithoutElst(t, true, false, 0)
+	pngBytes := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+		0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41,
+		0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
+		0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D,
+		0xB0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+		0x44, 0xAE, 0x42, 0x60, 0x82,
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/x/quote_vid.mp4":
+			serveRangeBytes(w, r, mp4Bytes, "video/mp4", 0, nil)
+		case "/x/quote_cover.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(pngBytes)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	mgr, libStore, srv, _, _ := setupDouyinDownloadTestEnv(t, handler, 2)
+	planner := newFakeXSitePlanner()
+	mgr.RegisterWorkPlanner(planner)
+	localTransport := site.XMediaTransport("TRACE-X-Test-UA", true)
+
+	const (
+		authorUID = "1000000000000000071"
+		quoteID   = "1000000000000000701"
+		rtID      = "1000000000000000702"
+		vidQtID   = "1000000000000000703"
+	)
+
+	// 1. Quote post with reply context, nested depth-1 origin, and thread-part embedded origin.
+	planner.setWorkPlan(quoteID, func(_ int) (WorkDownloadPlan, error) {
+		return WorkDownloadPlan{
+			Site:                 site.X,
+			ItemKey:              "x:dynamic:" + quoteID,
+			Kind:                 "dynamic",
+			TargetID:             quoteID,
+			AuthorUID:            authorUID,
+			AuthorUniqueID:       "quote_author",
+			AuthorName:           "引用作者",
+			Title:                "引用帖标题",
+			Desc:                 "引用帖外层正文",
+			PubTs:                1763820100,
+			IsForward:            true,
+			IsQuote:              true,
+			InReplyTo:            &site.ReplyTarget{StatusID: "1000000000000000600", UserID: "1000000000000000060", ScreenName: "parent_handle"},
+			OriginID:             "1000000000000000610",
+			OriginAuthorUID:      "1000000000000000061",
+			OriginAuthorUniqueID: "mid_quoted",
+			OriginAuthorName:     "中层被引作者",
+			OriginText:           "中层被引正文",
+			OriginOrigin: &site.NestedOriginSummary{
+				Site:           site.X,
+				ID:             "1000000000000000611",
+				AuthorUID:      "1000000000000000062",
+				AuthorUniqueID: "inner_quoted",
+				AuthorName:     "内层被引作者",
+				Text:           "内层被引正文",
+			},
+			Thread: []PlannedThreadPart{
+				{ID: quoteID, PubTs: 1763820100, Text: "引用帖外层正文"},
+				{
+					ID:    "1000000000000000704",
+					PubTs: 1763820120,
+					Text:  "线程第二条附带引用",
+					Origin: &PlannedOrigin{
+						Site:           site.X,
+						ID:             "1000000000000000620",
+						AuthorUID:      "1000000000000000063",
+						AuthorUniqueID: "thread_ref",
+						AuthorName:     "线程引用作者",
+						Text:           "线程节点引用内容",
+					},
+				},
+			},
+			Transport: localTransport,
+		}, nil
+	})
+	tq, err := mgr.EnqueueXWork(context.Background(), XWorkEnqueueRequest{TargetID: quoteID})
+	if err != nil {
+		t.Fatalf("EnqueueXWork quote: %v", err)
+	}
+	if done := waitForTaskTerminal(t, mgr, tq.TaskID, 10*time.Second); done.Status != "completed" {
+		t.Fatalf("quote task status=%s err=%s", done.Status, done.ErrorMessage)
+	}
+	metaQ, ok, err := libStore.GetItem("x:dynamic:" + quoteID)
+	if err != nil || !ok {
+		t.Fatalf("GetItem(quote): ok=%v err=%v", ok, err)
+	}
+	if metaQ.DynamicType != "forward" || metaQ.TypeLabel != "引用帖子" {
+		t.Fatalf("quote DynamicType=%q TypeLabel=%q, want forward / 引用帖子", metaQ.DynamicType, metaQ.TypeLabel)
+	}
+	if metaQ.InReplyTo == nil || metaQ.InReplyTo.ScreenName != "parent_handle" || metaQ.InReplyTo.StatusID != "1000000000000000600" {
+		t.Fatalf("quote InReplyTo = %+v", metaQ.InReplyTo)
+	}
+	if metaQ.Origin == nil || metaQ.Origin.Origin == nil || metaQ.Origin.Origin.ID != "1000000000000000611" || metaQ.Origin.Origin.Author.UniqueID != "inner_quoted" {
+		t.Fatalf("quote nested Origin.Origin = %+v", metaQ.Origin)
+	}
+	if len(metaQ.Thread) != 2 || metaQ.Thread[1].Origin == nil || metaQ.Thread[1].Origin.ID != "1000000000000000620" {
+		t.Fatalf("quote Thread[1].Origin = %+v", metaQ.Thread)
+	}
+
+	// 2. Pure retweet gets TypeLabel = "转发帖子" (not "引用帖子").
+	planner.setWorkPlan(rtID, func(_ int) (WorkDownloadPlan, error) {
+		return WorkDownloadPlan{
+			Site:             site.X,
+			ItemKey:          "x:dynamic:" + rtID,
+			Kind:             "dynamic",
+			TargetID:         rtID,
+			AuthorUID:        authorUID,
+			AuthorName:       "引用作者",
+			Desc:             "RT @mid_quoted: 中层被引正文",
+			PubTs:            1763820200,
+			IsForward:        true,
+			IsQuote:          false,
+			OriginID:         "1000000000000000610",
+			OriginAuthorUID:  "1000000000000000061",
+			OriginAuthorName: "中层被引作者",
+			OriginText:       "中层被引正文",
+			Transport:        localTransport,
+		}, nil
+	})
+	trt, err := mgr.EnqueueXWork(context.Background(), XWorkEnqueueRequest{TargetID: rtID})
+	if err != nil {
+		t.Fatalf("EnqueueXWork retweet: %v", err)
+	}
+	if done := waitForTaskTerminal(t, mgr, trt.TaskID, 10*time.Second); done.Status != "completed" {
+		t.Fatalf("rt task status=%s err=%s", done.Status, done.ErrorMessage)
+	}
+	metaRT, ok, err := libStore.GetItem("x:dynamic:" + rtID)
+	if err != nil || !ok || metaRT.DynamicType != "forward" || metaRT.TypeLabel != "转发帖子" {
+		t.Fatalf("pure retweet meta = ok:%v err:%v dt:%q label:%q, want forward / 转发帖子", ok, err, metaRT.DynamicType, metaRT.TypeLabel)
+	}
+
+	// 3. Single-video quote post also gets TypeLabel = "引用帖子" and persists InReplyTo.
+	planner.setWorkPlan(vidQtID, func(_ int) (WorkDownloadPlan, error) {
+		return WorkDownloadPlan{
+			Site:             site.X,
+			ItemKey:          "x:dynamic:" + vidQtID,
+			Kind:             "dynamic",
+			TargetID:         vidQtID,
+			AuthorUID:        authorUID,
+			AuthorName:       "引用作者",
+			Title:            "单视频引用帖",
+			Desc:             "单视频引用帖",
+			PubTs:            1763820300,
+			DurationSec:      2,
+			IsForward:        true,
+			IsQuote:          true,
+			InReplyTo:        &site.ReplyTarget{StatusID: "1000000000000000605", ScreenName: "vid_parent"},
+			OriginID:         "1000000000000000615",
+			OriginAuthorUID:  "1000000000000000061",
+			OriginAuthorName: "中层被引作者",
+			OriginText:       "原帖文案",
+			VideoURLs:        []string{srv.URL + "/x/quote_vid.mp4"},
+			CoverURLs:        []string{srv.URL + "/x/quote_cover.png"},
+			Transport:        localTransport,
+		}, nil
+	})
+	tvq, err := mgr.EnqueueXWork(context.Background(), XWorkEnqueueRequest{TargetID: vidQtID})
+	if err != nil {
+		t.Fatalf("EnqueueXWork video quote: %v", err)
+	}
+	if done := waitForTaskTerminal(t, mgr, tvq.TaskID, 10*time.Second); done.Status != "completed" {
+		t.Fatalf("video quote status=%s err=%s", done.Status, done.ErrorMessage)
+	}
+	metaVQ, ok, err := libStore.GetItem("x:dynamic:" + vidQtID)
+	if err != nil || !ok || metaVQ.TypeLabel != "引用帖子" || metaVQ.InReplyTo == nil || metaVQ.InReplyTo.ScreenName != "vid_parent" {
+		t.Fatalf("video quote meta mismatch: ok=%v err=%v label=%q inReplyTo=%+v", ok, err, metaVQ.TypeLabel, metaVQ.InReplyTo)
+	}
+}
+
+func TestXMonotonicOriginProtectionNestedAndThreadPartOrigins(t *testing.T) {
+	mgr, libStore, _, _, _ := setupDouyinDownloadTestEnv(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}), 2)
+	planner := newFakeXSitePlanner()
+	mgr.RegisterWorkPlanner(planner)
+	localTransport := site.XMediaTransport("TRACE-X-Test-UA", true)
+
+	const (
+		authorUID = "1000000000000000081"
+		targetID  = "1000000000000000801"
+	)
+
+	// 1. Initial cache with healthy outer Origin + nested Origin.Origin + two Thread parts with Origins.
+	phase := 1
+	planner.setWorkPlan(targetID, func(_ int) (WorkDownloadPlan, error) {
+		switch phase {
+		case 1:
+			return WorkDownloadPlan{
+				Site:                 site.X,
+				ItemKey:              "x:dynamic:" + targetID,
+				Kind:                 "dynamic",
+				TargetID:             targetID,
+				AuthorUID:            authorUID,
+				AuthorUniqueID:       "mono_author",
+				AuthorName:           "单调保护作者",
+				Title:                "主帖正文",
+				Desc:                 "主帖正文",
+				PubTs:                1763830000,
+				IsForward:            true,
+				IsQuote:              true,
+				OriginID:             "1000000000000000810",
+				OriginAuthorUID:      "1000000000000000082",
+				OriginAuthorUniqueID: "outer_orig",
+				OriginAuthorName:     "外层原帖作者",
+				OriginText:           "外层原帖有效正文",
+				OriginOrigin: &site.NestedOriginSummary{
+					ID:             "1000000000000000811",
+					AuthorUID:      "1000000000000000083",
+					AuthorUniqueID: "inner_orig",
+					AuthorName:     "内层原帖作者",
+					Text:           "内层原帖有效归档",
+				},
+				Thread: []PlannedThreadPart{
+					{ID: targetID, PubTs: 1763830000, Text: "主帖正文"},
+					{
+						ID:    "1000000000000000802",
+						PubTs: 1763830010,
+						Text:  "续帖一",
+						Origin: &PlannedOrigin{
+							ID:             "1000000000000000820",
+							AuthorUID:      "1000000000000000084",
+							AuthorUniqueID: "t1_orig",
+							AuthorName:     "线程一被引作者",
+							Text:           "线程一有效引用正文",
+							Origin: &site.NestedOriginSummary{
+								ID:         "1000000000000000821",
+								AuthorName: "线程一内层作者",
+								Text:       "线程一内层有效归档",
+							},
+						},
+					},
+					{
+						ID:    "1000000000000000803",
+						PubTs: 1763830020,
+						Text:  "续帖二",
+						Origin: &PlannedOrigin{
+							ID:             "1000000000000000830",
+							AuthorUID:      "1000000000000000085",
+							AuthorUniqueID: "t2_orig",
+							AuthorName:     "线程二被引作者",
+							Text:           "线程二有效引用正文",
+							Origin: &site.NestedOriginSummary{
+								ID:         "1000000000000000831",
+								AuthorName: "线程二内层作者",
+								Text:       "线程二内层有效归档",
+							},
+						},
+					},
+				},
+				Transport: localTransport,
+			}, nil
+		default:
+			// Phase 2 (safe re-cache) & Phase 3 (forceOverwrite): remote inner/thread origins became Unavailable!
+			return WorkDownloadPlan{
+				Site:                 site.X,
+				ItemKey:              "x:dynamic:" + targetID,
+				Kind:                 "dynamic",
+				TargetID:             targetID,
+				AuthorUID:            authorUID,
+				AuthorUniqueID:       "mono_author",
+				AuthorName:           "单调保护作者",
+				Title:                "主帖正文",
+				Desc:                 "主帖正文",
+				PubTs:                1763830000,
+				IsForward:            true,
+				IsQuote:              true,
+				OriginID:             "1000000000000000810",
+				OriginAuthorUID:      "1000000000000000082",
+				OriginAuthorUniqueID: "outer_orig",
+				OriginAuthorName:     "外层原帖作者",
+				OriginText:           "外层原帖有效正文",
+				OriginOrigin: &site.NestedOriginSummary{
+					ID:                "1000000000000000811",
+					Unavailable:       true,
+					UnavailableReason: "原帖已被删除",
+				},
+				Thread: []PlannedThreadPart{
+					{ID: targetID, PubTs: 1763830000, Text: "主帖正文"},
+					{
+						ID:    "1000000000000000802",
+						PubTs: 1763830010,
+						Text:  "续帖一",
+						Origin: &PlannedOrigin{
+							ID:                "1000000000000000820",
+							Unavailable:       true,
+							UnavailableReason: "原帖受保护",
+						},
+					},
+					{
+						ID:    "1000000000000000803",
+						PubTs: 1763830020,
+						Text:  "续帖二",
+						Origin: &PlannedOrigin{
+							ID:             "1000000000000000830",
+							AuthorUID:      "1000000000000000085",
+							AuthorUniqueID: "t2_orig",
+							AuthorName:     "线程二被引作者",
+							Text:           "线程二有效引用正文",
+							Origin: &site.NestedOriginSummary{
+								ID:                "1000000000000000831",
+								Unavailable:       true,
+								UnavailableReason: "内层原帖已删除",
+							},
+						},
+					},
+				},
+				ForceOverwrite: phase == 3,
+				Transport:      localTransport,
+			}, nil
+		}
+	})
+
+	t1, err := mgr.EnqueueXWork(context.Background(), XWorkEnqueueRequest{TargetID: targetID})
+	if err != nil {
+		t.Fatalf("EnqueueXWork phase 1: %v", err)
+	}
+	if done := waitForTaskTerminal(t, mgr, t1.TaskID, 10*time.Second); done.Status != "completed" {
+		t.Fatalf("phase 1 status=%s err=%s", done.Status, done.ErrorMessage)
+	}
+
+	// 2. Safe re-cache (non-conflict, non-force): MUST monotonically preserve local Origin.Origin,
+	// Thread[1].Origin (+ its nested Origin), and Thread[2].Origin.Origin!
+	phase = 2
+	t2, err := mgr.EnqueueXWork(context.Background(), XWorkEnqueueRequest{TargetID: targetID})
+	if err != nil {
+		t.Fatalf("EnqueueXWork phase 2: %v", err)
+	}
+	if done := waitForTaskTerminal(t, mgr, t2.TaskID, 10*time.Second); done.Status != "completed" {
+		t.Fatalf("phase 2 status=%s err=%s", done.Status, done.ErrorMessage)
+	}
+	meta2, ok, err := libStore.GetItem("x:dynamic:" + targetID)
+	if err != nil || !ok {
+		t.Fatalf("GetItem after phase 2: ok=%v err=%v", ok, err)
+	}
+	if meta2.Origin == nil || meta2.Origin.Unavailable || meta2.Origin.Origin == nil || meta2.Origin.Origin.Unavailable || meta2.Origin.Origin.Text != "内层原帖有效归档" {
+		t.Fatalf("DEC-076 violation: safe re-cache overwrote valid local Origin.Origin: %+v", meta2.Origin)
+	}
+	if len(meta2.Thread) != 3 {
+		t.Fatalf("phase 2 thread len = %d, want 3", len(meta2.Thread))
+	}
+	if meta2.Thread[1].Origin == nil || meta2.Thread[1].Origin.Unavailable || meta2.Thread[1].Origin.Text != "线程一有效引用正文" ||
+		meta2.Thread[1].Origin.Origin == nil || meta2.Thread[1].Origin.Origin.Text != "线程一内层有效归档" {
+		t.Fatalf("DEC-076 violation: safe re-cache overwrote valid local Thread[1].Origin: %+v", meta2.Thread[1].Origin)
+	}
+	if meta2.Thread[2].Origin == nil || meta2.Thread[2].Origin.Unavailable ||
+		meta2.Thread[2].Origin.Origin == nil || meta2.Thread[2].Origin.Origin.Unavailable || meta2.Thread[2].Origin.Origin.Text != "线程二内层有效归档" {
+		t.Fatalf("DEC-076 violation: safe re-cache overwrote valid local Thread[2].Origin.Origin: %+v", meta2.Thread[2].Origin)
+	}
+
+	// 3. Explicit ForceOverwrite respects remote state.
+	phase = 3
+	t3, err := mgr.EnqueueXWork(WithForceOverwrite(context.Background()), XWorkEnqueueRequest{TargetID: targetID})
+	if err != nil {
+		t.Fatalf("EnqueueXWork phase 3: %v", err)
+	}
+	if done := waitForTaskTerminal(t, mgr, t3.TaskID, 10*time.Second); done.Status != "completed" {
+		t.Fatalf("phase 3 status=%s err=%s", done.Status, done.ErrorMessage)
+	}
+	meta3, ok, err := libStore.GetItem("x:dynamic:" + targetID)
+	if err != nil || !ok {
+		t.Fatalf("GetItem after phase 3: ok=%v err=%v", ok, err)
+	}
+	if meta3.Origin == nil || meta3.Origin.Origin == nil || !meta3.Origin.Origin.Unavailable {
+		t.Fatalf("ForceOverwrite should allow remote Unavailable Origin.Origin: %+v", meta3.Origin)
+	}
+	if len(meta3.Thread) != 3 || meta3.Thread[1].Origin == nil || !meta3.Thread[1].Origin.Unavailable {
+		t.Fatalf("ForceOverwrite should allow remote Unavailable Thread[1].Origin: %+v", meta3.Thread)
+	}
+}

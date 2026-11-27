@@ -593,3 +593,281 @@ func TestXThreadDisplayOnlineAndOfflineDetailsAndZeroNetwork(t *testing.T) {
 		assertDesktopNoHorizontalOverflow(t, tt, w, "x-post-offline-thread")
 	}
 }
+
+func TestXReplyContextQuoteLabelThreadPartOriginAndNestedOriginDesktop(t *testing.T) {
+	app, stub, cleanup := newXUITestHarness(t)
+	defer cleanup()
+
+	now := time.Now().Unix()
+	cacheDir := stub.raw.LibraryStore().CacheDir()
+
+	// 1. Seed a legacy cached X quote post (old TypeLabel == "转发") + reply context without handle
+	// to verify display upgrade to "引用帖子" and "回复一条帖子" fallback on Home PostCard.
+	legacyDir := filepath.Join(cacheDir, "x", "900040001_legacy_q", "forwards", "1900000000000040001")
+	savedLegacy, err := stub.raw.LibraryStore().SaveItem(legacyDir, library.ItemMetadata{
+		Version:     1,
+		ID:          "1900000000000040001",
+		RawID:       "1900000000000040001",
+		Site:        "x",
+		Kind:        "dynamic",
+		DynamicType: "forward",
+		TypeLabel:   "转发",
+		Status:      "complete",
+		Title:       "历史引用帖正文",
+		Text:        "历史引用帖正文",
+		URL:         "https://x.com/legacy_q/status/1900000000000040001",
+		PubTs:       now - 100,
+		CachedAt:    time.Now().UTC().Format(time.RFC3339),
+		Author:      library.ItemAuthor{Site: "x", UID: "900040001", UniqueID: "legacy_q", Name: "旧版引用作者"},
+		InReplyTo:   &library.ItemReplyTarget{StatusID: "1900000000000039999"},
+		Origin: &library.ItemOrigin{
+			Site:   "x",
+			ID:     "1900000000000040099",
+			Author: library.ItemAuthor{Site: "x", UID: "900040099", UniqueID: "orig_author", Name: "原帖作者"},
+			Text:   "历史被引原帖正文",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem(legacy quote): %v", err)
+	}
+
+	// 2. Seed a rich DEC-091 X quote thread with @handle reply context, 2-level nested Origin.Origin,
+	// and non-focal thread part embedded Origin.
+	richDir := filepath.Join(cacheDir, "x", "900040001_legacy_q", "forwards", "1900000000000040010")
+	savedRich, err := stub.raw.LibraryStore().SaveItem(richDir, library.ItemMetadata{
+		Version:     1,
+		ID:          "1900000000000040010",
+		RawID:       "1900000000000040010",
+		Site:        "x",
+		Kind:        "dynamic",
+		DynamicType: "forward",
+		TypeLabel:   "引用帖子",
+		Status:      "complete",
+		Title:       "桌面富引用串首帖",
+		Text:        "桌面富引用串首帖\n\n桌面富引用串续帖",
+		URL:         "https://x.com/legacy_q/status/1900000000000040010",
+		PubTs:       now - 50,
+		CachedAt:    time.Now().UTC().Format(time.RFC3339),
+		Author:      library.ItemAuthor{Site: "x", UID: "900040001", UniqueID: "legacy_q", Name: "旧版引用作者"},
+		InReplyTo:   &library.ItemReplyTarget{StatusID: "1900000000000040000", ScreenName: "external_target"},
+		Origin: &library.ItemOrigin{
+			Site:      "x",
+			ID:        "1900000000000040100",
+			Author:    library.ItemAuthor{Site: "x", UID: "900040100", UniqueID: "outer_desk", Name: "桌面外层作者"},
+			Text:      "桌面外层引用正文",
+			InReplyTo: &library.ItemReplyTarget{StatusID: "1900000000000040090", ScreenName: "outer_replied"},
+			Origin: &library.ItemOrigin{
+				Site:   "x",
+				ID:     "1900000000000040101",
+				Author: library.ItemAuthor{Site: "x", UID: "900040101", UniqueID: "inner_desk", Name: "桌面内层作者"},
+				Text:   "桌面内层嵌套正文",
+			},
+		},
+		Thread: []library.ItemThreadPart{
+			{ID: "1900000000000040010", PubTs: now - 50, Text: "桌面富引用串首帖"},
+			{
+				ID:    "1900000000000040011",
+				PubTs: now - 30,
+				Text:  "桌面富引用串续帖",
+				Origin: &library.ItemOrigin{
+					Site:   "x",
+					ID:     "1900000000000040102",
+					Author: library.ItemAuthor{Site: "x", UID: "900040102", UniqueID: "part_desk", Name: "桌面续帖引用作者"},
+					Text:   "桌面续帖内嵌引用正文",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem(rich quote thread): %v", err)
+	}
+
+	app.CurrentRoute = RouteHome
+	app.FeedItems = []library.FeedEntry{
+		{
+			FeedKey: savedRich.ItemKey, ItemKey: savedRich.ItemKey, Site: "x", Kind: "dynamic",
+			RawID: savedRich.RawID, AuthorUID: savedRich.Author.UID, AuthorName: savedRich.Author.Name,
+			Title: savedRich.Title, Summary: savedRich.Text, CanonicalURL: savedRich.URL, PubTs: savedRich.PubTs,
+			Cached: true, CacheStatus: "green",
+		},
+		{
+			FeedKey: savedLegacy.ItemKey, ItemKey: savedLegacy.ItemKey, Site: "x", Kind: "dynamic",
+			RawID: savedLegacy.RawID, AuthorUID: savedLegacy.Author.UID, AuthorName: savedLegacy.Author.Name,
+			Title: savedLegacy.Title, Summary: savedLegacy.Text, CanonicalURL: savedLegacy.URL, PubTs: savedLegacy.PubTs,
+			Cached: true, CacheStatus: "green",
+		},
+	}
+	app.postCards = nil
+
+	tt := ui.NewTester(app.View, 1280, 1400)
+	tt.Frame()
+
+	for _, want := range []string{
+		"引用帖子",
+		"回复 @external_target",
+		"回复 @outer_replied",
+		"桌面外层引用正文",
+		"桌面内层嵌套正文",
+		"桌面续帖内嵌引用正文",
+		"回复一条帖子",
+		"历史引用帖正文",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("Home PostCard missing %q; texts=%v", want, tt.Texts())
+		}
+	}
+	for _, w := range []int{720, 1000, 1280} {
+		tt.SetSize(w, 1400)
+		tt.Frame()
+		assertDesktopNoHorizontalOverflow(t, tt, w, "home-x-dec091")
+	}
+
+	// 3. Online X Post Detail: internal self-reply InReplyTo suppressed, depth-3 nested quote truncated,
+	// and non-focal thread part embedded quote rendered.
+	app.CurrentLibraryDetail = nil
+	app.CurrentXPost = &service.XPostDTO{
+		ID:                  "1900000000000040202",
+		Author:              service.XAuthorDTO{RestID: "900040200", ScreenName: "online_op", Name: "在线引用作者"},
+		CreatedAt:           now - 200,
+		Text:                "在线串主帖正文",
+		CanonicalURL:        "https://x.com/online_op/status/1900000000000040202",
+		InReplyToStatusID:   "1900000000000040201", // internal self-reply to ancestor -> suppressed
+		InReplyToScreenName: "online_op",
+		IsQuote:             true,
+		Quoted: &service.XPostDTO{
+			ID:     "1900000000000040250",
+			Author: service.XAuthorDTO{RestID: "900040250", ScreenName: "on_outer", Name: "在线外层作者"},
+			Text:   "在线外层被引正文",
+			Quoted: &service.XPostDTO{
+				ID:     "1900000000000040251",
+				Author: service.XAuthorDTO{RestID: "900040251", ScreenName: "on_inner", Name: "在线内层作者"},
+				Text:   "在线内层嵌套正文",
+				Quoted: &service.XPostDTO{
+					ID:     "1900000000000040252",
+					Author: service.XAuthorDTO{RestID: "900040252", ScreenName: "on_deep", Name: "在线超深层"},
+					Text:   "在线第三层不应渲染",
+				},
+			},
+		},
+		ThreadAncestors: []service.XPostDTO{{
+			ID:                  "1900000000000040201",
+			Author:              service.XAuthorDTO{RestID: "900040200", ScreenName: "online_op", Name: "在线引用作者"},
+			CreatedAt:           now - 300,
+			Text:                "在线串首帖回复外部",
+			InReplyToStatusID:   "1900000000000040199",
+			InReplyToScreenName: "on_ext_parent",
+		}},
+		Thread: []service.XPostDTO{{
+			ID:        "1900000000000040203",
+			Author:    service.XAuthorDTO{RestID: "900040200", ScreenName: "online_op", Name: "在线引用作者"},
+			CreatedAt: now - 100,
+			Text:      "在线串续帖内嵌引用",
+			IsQuote:   true,
+			Quoted: &service.XPostDTO{
+				ID:     "1900000000000040260",
+				Author: service.XAuthorDTO{RestID: "900040260", ScreenName: "on_part_q", Name: "在线续帖引用作者"},
+				Text:   "在线续帖被引用正文",
+			},
+		}},
+	}
+	app.CurrentRoute = RouteXPost
+	tt.SetSize(1280, 1400)
+	tt.Frame()
+
+	for _, want := range []string{
+		"回复 @on_ext_parent",
+		"在线外层被引正文",
+		"在线内层嵌套正文",
+		"在线续帖被引用正文",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("online X detail missing %q; texts=%v", want, tt.Texts())
+		}
+	}
+	if tt.HasText("回复 @online_op") {
+		t.Fatalf("online X detail must suppress internal self-reply InReplyTo; texts=%v", tt.Texts())
+	}
+	if tt.HasText("在线第三层不应渲染") {
+		t.Fatalf("online X detail must cap nested quotes at depth 1; texts=%v", tt.Texts())
+	}
+	for _, w := range []int{720, 1000, 1280} {
+		tt.SetSize(w, 1400)
+		tt.Frame()
+		assertDesktopNoHorizontalOverflow(t, tt, w, "x-post-online-dec091")
+	}
+
+	// 4. Offline X Detail: renders all DEC-091 fields with ZERO network calls and zero overflow across 720/1000/1280.
+	callsBefore := stub.xCalls.Load()
+	app.OpenLibraryItemDetail(savedRich)
+	tt.SetSize(1280, 1400)
+	tt.Frame()
+
+	for _, want := range []string{
+		"引用帖子",
+		"回复 @external_target",
+		"回复 @outer_replied",
+		"桌面外层引用正文",
+		"桌面内层嵌套正文",
+		"桌面续帖内嵌引用正文",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("offline X detail missing %q; texts=%v", want, tt.Texts())
+		}
+	}
+	if stub.xCalls.Load() != callsBefore {
+		t.Fatalf("offline X DEC-091 detail triggered %d network calls (want 0)", stub.xCalls.Load()-callsBefore)
+	}
+	for _, w := range []int{720, 1000, 1280} {
+		tt.SetSize(w, 1400)
+		tt.Frame()
+		assertDesktopNoHorizontalOverflow(t, tt, w, "x-post-offline-dec091")
+	}
+
+	// 5. Offline X Detail regression: legacy pure retweet ("转发" + "RT @...") MUST NOT be mislabeled as "引用帖子",
+	// and duplicate Thread[1].Origin.ID == item.Origin.ID must render only once.
+	legacyPureRTDir := filepath.Join(cacheDir, "x", "900040001_legacy_q", "forwards", "1900000000000040020")
+	savedLegacyRT, err := stub.raw.LibraryStore().SaveItem(legacyPureRTDir, library.ItemMetadata{
+		Version:     1,
+		ID:          "1900000000000040020",
+		RawID:       "1900000000000040020",
+		Site:        "x",
+		Kind:        "dynamic",
+		DynamicType: "forward",
+		TypeLabel:   "转发",
+		Status:      "complete",
+		Title:       "RT @orig_author: 旧版纯转帖正文",
+		Text:        "RT @orig_author: 旧版纯转帖正文",
+		URL:         "https://x.com/legacy_q/status/1900000000000040020",
+		PubTs:       now - 20,
+		CachedAt:    time.Now().UTC().Format(time.RFC3339),
+		Author:      library.ItemAuthor{Site: "x", UID: "900040001", UniqueID: "legacy_q", Name: "旧版引用作者"},
+		Origin: &library.ItemOrigin{
+			Site:   "x",
+			ID:     "1900000000000040299",
+			Author: library.ItemAuthor{Site: "x", UID: "900040299", UniqueID: "orig_author", Name: "原帖作者"},
+			Text:   "旧版纯转帖原帖内容",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem(legacy pure RT): %v", err)
+	}
+	app.OpenLibraryItemDetail(savedLegacyRT)
+	tt.SetSize(1280, 1000)
+	tt.Frame()
+	if tt.HasText("引用帖子") {
+		t.Fatalf("offline X detail mislabeled legacy pure RT as 引用帖子; texts=%v", tt.Texts())
+	}
+	if !tt.HasText("转发") || !tt.HasText("旧版纯转帖原帖内容") {
+		t.Fatalf("offline X detail missing legacy pure RT label/origin; texts=%v", tt.Texts())
+	}
+
+	dupOriginItem := savedRich
+	dupOriginItem.Thread = append([]library.ItemThreadPart(nil), savedRich.Thread...)
+	dupOriginItem.Thread[1].Origin = savedRich.Origin
+	app.OpenLibraryItemDetail(dupOriginItem)
+	tt.SetSize(1280, 1400)
+	tt.Frame()
+	if count := countTextOccurrences(tt.Texts(), "桌面外层引用正文"); count != 1 {
+		t.Fatalf("offline X detail rendered duplicated thread-part Origin %d times (want 1)", count)
+	}
+}

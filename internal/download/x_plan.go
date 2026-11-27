@@ -393,7 +393,7 @@ func (m *Manager) executeXSingleVideoTask(
 
 	editAdvanced := (plan.EditCount > 0 && plan.EditCount > previous.EditCount) ||
 		(plan.EditTs > 0 && previous.EditTs > 0 && plan.EditTs > previous.EditTs)
-	fullText, threadParts := buildXTextAndThread(rawID, plan, previous)
+	fullText, threadParts := buildXTextAndThread(rawID, plan, previous, isConflict, forceOverwrite)
 	if hasProtectedLocal && !isConflict && !forceOverwrite {
 		fullText = preserveMonotonicText(previous.Text, fullText, editAdvanced)
 	}
@@ -413,10 +413,11 @@ func (m *Manager) executeXSingleVideoTask(
 	typeLabel := "视频"
 	if forward {
 		dynType = "forward"
-		typeLabel = "转发"
+		typeLabel = resolveXForwardTypeLabel(plan, previous)
 	}
 
-	originMeta, _ := preserveValidLocalOrigin(buildXItemOrigin(plan, previous), previous, isConflict)
+	originMeta, _ := preserveValidOriginSnapshot(buildXItemOrigin(plan, previous), previous.Origin, isConflict, forceOverwrite, 0)
+	inReplyToMeta := buildXItemReplyTarget(plan.InReplyTo, previous.InReplyTo)
 	cardMeta := buildWeiboItemRichCard(plan.Card, previous.Card)
 
 	if hasProtectedLocal {
@@ -576,6 +577,7 @@ func (m *Manager) executeXSingleVideoTask(
 			DirectCached: true,
 			Via:          via,
 			Origin:       originMeta,
+			InReplyTo:    inReplyToMeta,
 			Card:         cardMeta,
 			Thread:       threadParts,
 			Links:        buildWeiboItemLinks(plan.Links, previous.Links),
@@ -616,6 +618,7 @@ func (m *Manager) executeXSingleVideoTask(
 		DirectCached: true,
 		Via:          via,
 		Origin:       originMeta,
+		InReplyTo:    inReplyToMeta,
 		Card:         cardMeta,
 		Thread:       threadParts,
 		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
@@ -846,7 +849,7 @@ func (m *Manager) executeXPostTask(
 
 	editAdvanced := (plan.EditCount > 0 && plan.EditCount > previous.EditCount) ||
 		(plan.EditTs > 0 && previous.EditTs > 0 && plan.EditTs > previous.EditTs)
-	fullText, threadParts := buildXTextAndThread(rawID, plan, previous)
+	fullText, threadParts := buildXTextAndThread(rawID, plan, previous, isConflict, forceOverwrite)
 	if hasProtectedLocal && !isConflict && !forceOverwrite {
 		fullText = preserveMonotonicText(previous.Text, fullText, editAdvanced)
 	}
@@ -867,13 +870,14 @@ func (m *Manager) executeXPostTask(
 	}
 	if forward {
 		dynType = "forward"
-		typeLabel = "转发"
+		typeLabel = resolveXForwardTypeLabel(plan, previous)
 	}
 
-	originMeta, preservedOrigin := preserveValidLocalOrigin(buildXItemOrigin(plan, previous), previous, isConflict)
+	originMeta, preservedOrigin := preserveValidOriginSnapshot(buildXItemOrigin(plan, previous), previous.Origin, isConflict, forceOverwrite, 0)
 	if preservedOrigin {
 		preserveOriginFiles = true
 	}
+	inReplyToMeta := buildXItemReplyTarget(plan.InReplyTo, previous.InReplyTo)
 	cardMeta := buildWeiboItemRichCard(plan.Card, previous.Card)
 
 	workDir := itemDir
@@ -937,6 +941,7 @@ func (m *Manager) executeXPostTask(
 			DirectCached: true,
 			Via:          via,
 			Origin:       originMeta,
+			InReplyTo:    inReplyToMeta,
 			Card:         cardMeta,
 			Thread:       threadParts,
 		}
@@ -1388,6 +1393,7 @@ func (m *Manager) executeXPostTask(
 		DirectCached: true,
 		Via:          via,
 		Origin:       originMeta,
+		InReplyTo:    inReplyToMeta,
 		Card:         cardMeta,
 		Thread:       threadParts,
 		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
@@ -1576,15 +1582,136 @@ func resolveXPlacement(plan WorkDownloadPlan, reqVia *library.ItemVia, rawID str
 	}, fwdUID, nil
 }
 
-func buildXTextAndThread(rawID string, plan WorkDownloadPlan, previous library.ItemMetadata) (string, []library.ItemThreadPart) {
+func resolveXForwardTypeLabel(plan WorkDownloadPlan, previous library.ItemMetadata) string {
+	if plan.IsQuote {
+		return "引用帖子"
+	}
+	if !plan.IsForward && !plan.IsFastRetweet && previous.TypeLabel == "引用帖子" {
+		return "引用帖子"
+	}
+	return "转发帖子"
+}
+
+func buildXItemReplyTarget(in *site.ReplyTarget, fallback *library.ItemReplyTarget) *library.ItemReplyTarget {
+	if in != nil {
+		san := library.SanitizeItemReplyTarget(&library.ItemReplyTarget{
+			StatusID:   in.StatusID,
+			UserID:     in.UserID,
+			ScreenName: in.ScreenName,
+		}, string(site.X))
+		if san != nil {
+			return san
+		}
+	}
+	if fallback != nil {
+		return library.SanitizeItemReplyTarget(&library.ItemReplyTarget{
+			StatusID:   fallback.StatusID,
+			UserID:     fallback.UserID,
+			ScreenName: fallback.ScreenName,
+		}, string(site.X))
+	}
+	return nil
+}
+
+func buildXNestedItemOrigin(in *site.NestedOriginSummary, fallback *library.ItemOrigin) *library.ItemOrigin {
+	if in == nil {
+		if fallback != nil {
+			return cloneLibraryOriginDepth(fallback, 1)
+		}
+		return nil
+	}
+	originUID := strings.TrimSpace(in.AuthorUID)
+	if norm, err := site.NormalizeUID(site.X, originUID); err == nil {
+		originUID = norm
+	}
+	originID := strings.TrimSpace(in.ID)
+	originCanonical := sanitizeXCanonicalPageURL(in.CanonicalURL)
+	if originCanonical == "" && originID != "" {
+		originCanonical = xFallbackCanonicalURL(originID)
+	}
+	var prevLinks []library.ItemLink
+	var prevReply *library.ItemReplyTarget
+	if fallback != nil {
+		prevLinks = fallback.Links
+		prevReply = fallback.InReplyTo
+	}
+	return &library.ItemOrigin{
+		Site:         string(site.X),
+		ID:           originID,
+		CanonicalURL: originCanonical,
+		Author: library.ItemAuthor{
+			Site:     string(site.X),
+			UID:      originUID,
+			UniqueID: strings.TrimSpace(in.AuthorUniqueID),
+			Name:     strings.TrimSpace(in.AuthorName),
+			Face:     sanitizeXTaskURL(in.AuthorFace),
+		},
+		PubTs:             in.PubTs,
+		Text:              strings.TrimSpace(in.Text),
+		Links:             buildWeiboItemLinks(in.Links, prevLinks),
+		Card:              buildWeiboItemRichCard(in.Card, nil),
+		InReplyTo:         buildXItemReplyTarget(in.InReplyTo, prevReply),
+		Unavailable:       in.Unavailable,
+		UnavailableReason: strings.TrimSpace(in.UnavailableReason),
+	}
+}
+
+func buildXThreadPartOrigin(in *PlannedOrigin) *library.ItemOrigin {
+	if in == nil {
+		return nil
+	}
+	originUID := strings.TrimSpace(in.AuthorUID)
+	if norm, err := site.NormalizeUID(site.X, originUID); err == nil {
+		originUID = norm
+	}
+	originID := strings.TrimSpace(in.ID)
+	originCanonical := sanitizeXCanonicalPageURL(in.CanonicalURL)
+	if originCanonical == "" && originID != "" {
+		originCanonical = xFallbackCanonicalURL(originID)
+	}
+	return &library.ItemOrigin{
+		Site:         string(site.X),
+		ID:           originID,
+		CanonicalURL: originCanonical,
+		Author: library.ItemAuthor{
+			Site:     string(site.X),
+			UID:      originUID,
+			UniqueID: strings.TrimSpace(in.AuthorUniqueID),
+			Name:     strings.TrimSpace(in.AuthorName),
+			Face:     sanitizeXTaskURL(in.AuthorFace),
+		},
+		PubTs:             in.PubTs,
+		Text:              strings.TrimSpace(in.Text),
+		Links:             buildWeiboItemLinks(in.Links, nil),
+		Card:              buildWeiboItemRichCard(in.Card, nil),
+		InReplyTo:         buildXItemReplyTarget(in.InReplyTo, nil),
+		Origin:            buildXNestedItemOrigin(in.Origin, nil),
+		Unavailable:       in.Unavailable,
+		UnavailableReason: strings.TrimSpace(in.UnavailableReason),
+	}
+}
+
+func buildXTextAndThread(rawID string, plan WorkDownloadPlan, previous library.ItemMetadata, isConflict, forceOverwrite bool) (string, []library.ItemThreadPart) {
 	var thread []library.ItemThreadPart
 	if len(plan.Thread) > 0 {
+		prevOriginByID := make(map[string]*library.ItemOrigin, len(previous.Thread))
+		for _, prevSeg := range previous.Thread {
+			if id := strings.TrimSpace(prevSeg.ID); id != "" && prevSeg.Origin != nil {
+				prevOriginByID[id] = prevSeg.Origin
+			}
+		}
 		thread = make([]library.ItemThreadPart, 0, len(plan.Thread))
 		for _, seg := range plan.Thread {
 			id := strings.TrimSpace(seg.ID)
 			txt := strings.TrimSpace(seg.Text)
 			links := buildWeiboItemLinks(seg.Links, nil)
-			if id == "" && txt == "" && len(links) == 0 && len(seg.MediaIndexes) == 0 {
+			partOrigin := buildXThreadPartOrigin(seg.Origin)
+			if id != "" {
+				if prevOrigin := prevOriginByID[id]; prevOrigin != nil {
+					partOrigin, _ = preserveValidOriginSnapshot(partOrigin, prevOrigin, isConflict, forceOverwrite, 0)
+				}
+			}
+			if id == "" && txt == "" && len(links) == 0 && len(seg.MediaIndexes) == 0 && partOrigin == nil {
 				continue
 			}
 			thread = append(thread, library.ItemThreadPart{
@@ -1593,6 +1720,7 @@ func buildXTextAndThread(rawID string, plan WorkDownloadPlan, previous library.I
 				Text:         txt,
 				Links:        links,
 				MediaIndexes: append([]int(nil), seg.MediaIndexes...),
+				Origin:       partOrigin,
 			})
 		}
 	} else if len(previous.Thread) > 0 {
@@ -1600,6 +1728,7 @@ func buildXTextAndThread(rawID string, plan WorkDownloadPlan, previous library.I
 		for i, seg := range previous.Thread {
 			seg.Links = append([]library.ItemLink(nil), seg.Links...)
 			seg.MediaIndexes = append([]int(nil), seg.MediaIndexes...)
+			seg.Origin = cloneLibraryOriginDepth(seg.Origin, 0)
 			thread[i] = seg
 		}
 	}
@@ -1624,13 +1753,7 @@ func buildXTextAndThread(rawID string, plan WorkDownloadPlan, previous library.I
 func buildXItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) *library.ItemOrigin {
 	if !hasXOriginSignal(plan) {
 		if previous.Origin != nil {
-			cp := *previous.Origin
-			cp.Links = append([]library.ItemLink(nil), cp.Links...)
-			if cp.Card != nil {
-				cc := *cp.Card
-				cp.Card = &cc
-			}
-			return &cp
+			return cloneLibraryOriginDepth(previous.Origin, 0)
 		}
 		return nil
 	}
@@ -1644,8 +1767,12 @@ func buildXItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) *lib
 		originCanonical = xFallbackCanonicalURL(originID)
 	}
 	var prevOriginLinks []library.ItemLink
+	var prevOriginReply *library.ItemReplyTarget
+	var prevOriginNested *library.ItemOrigin
 	if previous.Origin != nil {
 		prevOriginLinks = previous.Origin.Links
+		prevOriginReply = previous.Origin.InReplyTo
+		prevOriginNested = previous.Origin.Origin
 	}
 	return &library.ItemOrigin{
 		Site:         string(site.X),
@@ -1663,6 +1790,8 @@ func buildXItemOrigin(plan WorkDownloadPlan, previous library.ItemMetadata) *lib
 		Text:              strings.TrimSpace(plan.OriginText),
 		Links:             buildWeiboItemLinks(plan.OriginLinks, prevOriginLinks),
 		Card:              buildWeiboItemRichCard(plan.OriginCard, nil),
+		InReplyTo:         buildXItemReplyTarget(plan.OriginInReplyTo, prevOriginReply),
+		Origin:            buildXNestedItemOrigin(plan.OriginOrigin, prevOriginNested),
 		Unavailable:       plan.OriginUnavailable,
 		UnavailableReason: strings.TrimSpace(plan.OriginUnavailableReason),
 		VideoFromOrigin:   plan.VideoFromOrigin,

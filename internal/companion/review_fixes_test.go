@@ -16,6 +16,7 @@ import (
 
 	"github.com/chialecode/trace/internal/appdirs"
 	"github.com/chialecode/trace/internal/companionapi"
+	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
@@ -426,4 +427,205 @@ func newTestCompanionBackend(t *testing.T, loginBili bool) *service.Backend {
 		}
 	}
 	return b
+}
+
+func TestCompanionFeedAndLibraryDetailMapXReplyContextThreadOriginAndDepthCap(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir, "node-x-dec091")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, err := store.AddDevice("Phone", "Model", "android", companionapi.ChannelDev, "192.168.1.50", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backend := newTestCompanionBackend(t, true)
+	defer backend.Close()
+
+	now := time.Date(2026, 11, 27, 16, 0, 0, 0, time.UTC).Unix()
+	itemDir := filepath.Join(backend.LibraryStore().CacheDir(), "x", "900090001_x_comp", "forwards", "1900000000000099001")
+	saved, err := backend.LibraryStore().SaveItem(itemDir, library.ItemMetadata{
+		Version:     1,
+		ID:          "1900000000000099001",
+		RawID:       "1900000000000099001",
+		Site:        "x",
+		Kind:        "dynamic",
+		DynamicType: "forward",
+		TypeLabel:   "引用帖子",
+		Status:      "complete",
+		Title:       "Companion X 引用串首帖",
+		Text:        "Companion X 引用串首帖\n\nCompanion X 引用串续帖",
+		URL:         "https://x.com/x_comp/status/1900000000000099001",
+		PubTs:       now - 60,
+		CachedAt:    time.Now().UTC().Format(time.RFC3339),
+		Author:      library.ItemAuthor{Site: "x", UID: "900090001", UniqueID: "x_comp", Name: "X 伴侣作者"},
+		InReplyTo: &library.ItemReplyTarget{
+			StatusID:   "1900000000000098001",
+			UserID:     "900098001",
+			ScreenName: "replied_root",
+		},
+		Origin: &library.ItemOrigin{
+			Site:   "x",
+			ID:     "1900000000000099100",
+			Author: library.ItemAuthor{Site: "x", UID: "900099100", UniqueID: "outer_x", Name: "外层作者"},
+			Text:   "外层被引用正文",
+			InReplyTo: &library.ItemReplyTarget{
+				StatusID:   "1900000000000098100",
+				ScreenName: "outer_parent",
+			},
+			Origin: &library.ItemOrigin{
+				Site:   "x",
+				ID:     "1900000000000099200",
+				Author: library.ItemAuthor{Site: "x", UID: "900099200", UniqueID: "inner_x", Name: "内层作者"},
+				Text:   "内层嵌套正文",
+			},
+		},
+		Thread: []library.ItemThreadPart{
+			{ID: "1900000000000099001", PubTs: now - 60, Text: "Companion X 引用串首帖"},
+			{
+				ID:    "1900000000000099002",
+				PubTs: now - 30,
+				Text:  "Companion X 引用串续帖",
+				Origin: &library.ItemOrigin{
+					Site:   "x",
+					ID:     "1900000000000099300",
+					Author: library.ItemAuthor{Site: "x", UID: "900099300", UniqueID: "part_x", Name: "续帖引用作者"},
+					Text:   "续帖内嵌引用正文",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem: %v", err)
+	}
+
+	// Verify mapOrigin strictly enforces nesting depth cap = 1 even on synthetic 3-level input.
+	mappedDeep := mapOrigin(&library.ItemOrigin{
+		Site: "x",
+		ID:   "d0",
+		Text: "L0",
+		Origin: &library.ItemOrigin{
+			Site: "x",
+			ID:   "d1",
+			Text: "L1",
+			Origin: &library.ItemOrigin{
+				Site: "x",
+				ID:   "d2",
+				Text: "L2-should-drop",
+			},
+		},
+	})
+	if mappedDeep == nil || mappedDeep.Origin == nil || mappedDeep.Origin.ID != "d1" || mappedDeep.Origin.Origin != nil {
+		t.Fatalf("mapOrigin depth cap violated: %+v", mappedDeep)
+	}
+
+	srv := NewServer(ServerOptions{
+		Backend: backend, Store: store, Pairing: newPairingManager(nil, nil),
+		Hub: newEventHub(nil, nil), Channel: companionapi.ChannelDev, Version: "0.1.0-dev",
+	})
+
+	// 1. GET /api/v1/feed
+	feedReq := httptest.NewRequest(http.MethodGet, companionapi.PathFeed+"?site=x", nil)
+	feedReq.RemoteAddr = "192.168.1.50:45040"
+	feedReq.Header.Set("Authorization", "Bearer "+token)
+	feedReq.Header.Set(companionapi.HeaderProtocol, companionapi.ProtocolVersion)
+	feedReq.Header.Set(companionapi.HeaderChannel, companionapi.ChannelDev)
+	feedRec := httptest.NewRecorder()
+	srv.ServeHTTP(feedRec, feedReq)
+	if feedRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/feed = %d body=%s", feedRec.Code, feedRec.Body.String())
+	}
+	var feedResp companionapi.FeedPageResponse
+	if err := json.Unmarshal(feedRec.Body.Bytes(), &feedResp); err != nil {
+		t.Fatalf("unmarshal feed: %v", err)
+	}
+	if len(feedResp.Items) != 1 {
+		t.Fatalf("feed items = %d, want 1", len(feedResp.Items))
+	}
+	fi := feedResp.Items[0]
+	if fi.TypeLabel != "引用帖子" {
+		t.Fatalf("feed TypeLabel = %q, want 引用帖子", fi.TypeLabel)
+	}
+	if fi.InReplyTo == nil || fi.InReplyTo.ScreenName != "replied_root" {
+		t.Fatalf("feed InReplyTo = %+v", fi.InReplyTo)
+	}
+	if fi.Origin == nil || fi.Origin.AuthorUniqueID != "outer_x" || fi.Origin.InReplyTo == nil || fi.Origin.InReplyTo.ScreenName != "outer_parent" {
+		t.Fatalf("feed Origin = %+v", fi.Origin)
+	}
+	if fi.Origin.Origin == nil || fi.Origin.Origin.AuthorUniqueID != "inner_x" || fi.Origin.Origin.Text != "内层嵌套正文" {
+		t.Fatalf("feed Origin.Origin = %+v", fi.Origin.Origin)
+	}
+	if len(fi.Thread) != 2 || fi.Thread[1].Origin == nil || fi.Thread[1].Origin.Text != "续帖内嵌引用正文" {
+		t.Fatalf("feed Thread[1].Origin = %+v", fi.Thread)
+	}
+
+	// 2. GET /api/v1/library/items/{key}
+	detReq := httptest.NewRequest(http.MethodGet, companionapi.PathLibraryItemsPrefix+saved.ItemKey, nil)
+	detReq.RemoteAddr = "192.168.1.50:45041"
+	detReq.Header.Set("Authorization", "Bearer "+token)
+	detReq.Header.Set(companionapi.HeaderProtocol, companionapi.ProtocolVersion)
+	detReq.Header.Set(companionapi.HeaderChannel, companionapi.ChannelDev)
+	detRec := httptest.NewRecorder()
+	srv.ServeHTTP(detRec, detReq)
+	if detRec.Code != http.StatusOK {
+		t.Fatalf("GET library item = %d body=%s", detRec.Code, detRec.Body.String())
+	}
+	var det companionapi.LibraryItemDetail
+	if err := json.Unmarshal(detRec.Body.Bytes(), &det); err != nil {
+		t.Fatalf("unmarshal detail: %v", err)
+	}
+	if det.TypeLabel != "引用帖子" || det.InReplyTo == nil || det.InReplyTo.ScreenName != "replied_root" {
+		t.Fatalf("detail header/reply mismatch: %+v", det)
+	}
+	if det.Origin == nil || det.Origin.Origin == nil || det.Origin.Origin.Text != "内层嵌套正文" {
+		t.Fatalf("detail nested origin mismatch: %+v", det.Origin)
+	}
+	if len(det.Thread) != 2 || det.Thread[1].Origin == nil || det.Thread[1].Origin.AuthorUniqueID != "part_x" {
+		t.Fatalf("detail thread part origin mismatch: %+v", det.Thread)
+	}
+
+	// 3. Legacy X quote ("转发" with non-"RT @" text) upgrades to "引用帖子" on companion feed & detail,
+	// while legacy pure retweet ("转发" with "RT @...") stays "转发".
+	legacyQDir := filepath.Join(backend.LibraryStore().CacheDir(), "x", "900090001_x_comp", "forwards", "1900000000000099010")
+	savedLegacyQ, err := backend.LibraryStore().SaveItem(legacyQDir, library.ItemMetadata{
+		Version: 1, ID: "1900000000000099010", RawID: "1900000000000099010",
+		Site: "x", Kind: "dynamic", DynamicType: "forward", TypeLabel: "转发", Status: "complete",
+		Title: "旧版引用评论", Text: "旧版引用评论", PubTs: now - 10, CachedAt: time.Now().UTC().Format(time.RFC3339),
+		Author: library.ItemAuthor{Site: "x", UID: "900090001", UniqueID: "x_comp", Name: "X 伴侣作者"},
+		Origin: &library.ItemOrigin{Site: "x", ID: "1900000000000099400", Text: "原帖"},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem(legacyQ): %v", err)
+	}
+	legacyRTDir := filepath.Join(backend.LibraryStore().CacheDir(), "x", "900090001_x_comp", "forwards", "1900000000000099011")
+	savedLegacyRT, err := backend.LibraryStore().SaveItem(legacyRTDir, library.ItemMetadata{
+		Version: 1, ID: "1900000000000099011", RawID: "1900000000000099011",
+		Site: "x", Kind: "dynamic", DynamicType: "forward", TypeLabel: "转发", Status: "complete",
+		Title: "RT @someone: 原帖", Text: "RT @someone: 原帖", PubTs: now - 5, CachedAt: time.Now().UTC().Format(time.RFC3339),
+		Author: library.ItemAuthor{Site: "x", UID: "900090001", UniqueID: "x_comp", Name: "X 伴侣作者"},
+		Origin: &library.ItemOrigin{Site: "x", ID: "1900000000000099401", Text: "原帖"},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem(legacyRT): %v", err)
+	}
+	for _, tc := range []struct {
+		key       string
+		wantLabel string
+	}{
+		{savedLegacyQ.ItemKey, "引用帖子"},
+		{savedLegacyRT.ItemKey, "转发"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, companionapi.PathLibraryItemsPrefix+tc.key, nil)
+		req.RemoteAddr = "192.168.1.50:45042"
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set(companionapi.HeaderProtocol, companionapi.ProtocolVersion)
+		req.Header.Set(companionapi.HeaderChannel, companionapi.ChannelDev)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		var got companionapi.LibraryItemDetail
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &got) != nil || got.TypeLabel != tc.wantLabel {
+			t.Fatalf("GET %s = code:%d label:%q, want %q", tc.key, rec.Code, got.TypeLabel, tc.wantLabel)
+		}
+	}
 }

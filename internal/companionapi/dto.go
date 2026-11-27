@@ -50,40 +50,41 @@ type FeedPageResponse struct {
 // FeedItem is one cached post/video/live-recording entry in the mobile home feed.
 // All media references are relative paths for GET /api/v1/media/{itemKey}/{relPath}.
 type FeedItem struct {
-	FeedKey          string           `json:"feedKey"`
-	ItemKey          string           `json:"itemKey"`
-	Site             string           `json:"site"`
-	Kind             string           `json:"kind"` // "video", "dynamic", "live"
-	Status           string           `json:"status,omitempty"`
-	DynamicType      string           `json:"dynamicType,omitempty"`
-	TypeLabel        string           `json:"typeLabel,omitempty"`
-	AuthorUID        string           `json:"authorUid"`
-	AuthorName       string           `json:"authorName"`
-	AuthorUniqueID   string           `json:"authorUniqueId,omitempty"`
-	AuthorAvatarPath string           `json:"authorAvatarPath,omitempty"`
-	SubID            string           `json:"subId,omitempty"`
-	SubName          string           `json:"subName,omitempty"`
-	Title            string           `json:"title"`
-	Text             string           `json:"text,omitempty"`
-	Desc             string           `json:"desc,omitempty"`
-	CanonicalURL     string           `json:"canonicalUrl,omitempty"`
-	Links            []TextLink       `json:"links,omitempty"`
-	PubTs            int64            `json:"pubTs"`
-	Duration         int              `json:"duration,omitempty"`
-	CoverRelPath     string           `json:"coverRelPath,omitempty"`
-	VideoRelPath     string           `json:"videoRelPath,omitempty"`
-	QualitySummary   string           `json:"qualitySummary,omitempty"`
-	Images           []FeedImage      `json:"images,omitempty"`
-	NotePages        []NotePageDTO    `json:"notePages,omitempty"`
-	Parts            []VideoPartDTO   `json:"parts,omitempty"`
-	Music            *MusicDTO        `json:"music,omitempty"`
-	Live             *LiveInfoDTO     `json:"live,omitempty"`
-	Via              *ItemViaDTO      `json:"via,omitempty"`
-	Origin           *ItemOriginDTO   `json:"origin,omitempty"`
-	Card             *ItemRichCardDTO `json:"card,omitempty"`
-	Thread           []ThreadPartDTO  `json:"thread,omitempty"`
-	IsForward        bool             `json:"isForward,omitempty"`
-	TotalBytes       int64            `json:"totalBytes,omitempty"`
+	FeedKey          string              `json:"feedKey"`
+	ItemKey          string              `json:"itemKey"`
+	Site             string              `json:"site"`
+	Kind             string              `json:"kind"` // "video", "dynamic", "live"
+	Status           string              `json:"status,omitempty"`
+	DynamicType      string              `json:"dynamicType,omitempty"`
+	TypeLabel        string              `json:"typeLabel,omitempty"`
+	AuthorUID        string              `json:"authorUid"`
+	AuthorName       string              `json:"authorName"`
+	AuthorUniqueID   string              `json:"authorUniqueId,omitempty"`
+	AuthorAvatarPath string              `json:"authorAvatarPath,omitempty"`
+	SubID            string              `json:"subId,omitempty"`
+	SubName          string              `json:"subName,omitempty"`
+	Title            string              `json:"title"`
+	Text             string              `json:"text,omitempty"`
+	Desc             string              `json:"desc,omitempty"`
+	CanonicalURL     string              `json:"canonicalUrl,omitempty"`
+	Links            []TextLink          `json:"links,omitempty"`
+	PubTs            int64               `json:"pubTs"`
+	Duration         int                 `json:"duration,omitempty"`
+	CoverRelPath     string              `json:"coverRelPath,omitempty"`
+	VideoRelPath     string              `json:"videoRelPath,omitempty"`
+	QualitySummary   string              `json:"qualitySummary,omitempty"`
+	Images           []FeedImage         `json:"images,omitempty"`
+	NotePages        []NotePageDTO       `json:"notePages,omitempty"`
+	Parts            []VideoPartDTO      `json:"parts,omitempty"`
+	Music            *MusicDTO           `json:"music,omitempty"`
+	Live             *LiveInfoDTO        `json:"live,omitempty"`
+	Via              *ItemViaDTO         `json:"via,omitempty"`
+	Origin           *ItemOriginDTO      `json:"origin,omitempty"`
+	InReplyTo        *ItemReplyTargetDTO `json:"inReplyTo,omitempty"`
+	Card             *ItemRichCardDTO    `json:"card,omitempty"`
+	Thread           []ThreadPartDTO     `json:"thread,omitempty"`
+	IsForward        bool                `json:"isForward,omitempty"`
+	TotalBytes       int64               `json:"totalBytes,omitempty"`
 }
 
 // FeedImage is a sanitized image reference on a feed post.
@@ -184,41 +185,42 @@ type LibraryItemSummary struct {
 
 // LibraryItemDetail is GET /api/v1/library/items/{key} (read-only, no local absolute paths).
 type LibraryItemDetail struct {
-	ItemKey          string           `json:"itemKey"`
-	ID               string           `json:"id"`
-	Site             string           `json:"site"`
-	Kind             string           `json:"kind"`
-	Status           string           `json:"status"`
-	Title            string           `json:"title"`
-	Desc             string           `json:"desc,omitempty"`
-	Text             string           `json:"text,omitempty"`
-	DynamicType      string           `json:"dynamicType,omitempty"`
-	TypeLabel        string           `json:"typeLabel,omitempty"`
-	CanonicalURL     string           `json:"canonicalUrl,omitempty"`
-	PubTs            int64            `json:"pubTs"`
-	CachedAt         string           `json:"cachedAt,omitempty"`
-	Duration         int              `json:"duration,omitempty"`
-	AuthorUID        string           `json:"authorUid"`
-	AuthorName       string           `json:"authorName"`
-	AuthorUniqueID   string           `json:"authorUniqueId,omitempty"`
-	AuthorAvatarPath string           `json:"authorAvatarPath,omitempty"`
-	SubID            string           `json:"subId,omitempty"`
-	SubName          string           `json:"subName,omitempty"`
-	Media            []MediaFileDTO   `json:"media,omitempty"`
-	Parts            []VideoPartDTO   `json:"parts,omitempty"`
-	VideoInfo        *VideoInfoDTO    `json:"videoInfo,omitempty"`
-	NotePages        []NotePageDTO    `json:"notePages,omitempty"`
-	Music            *MusicDTO        `json:"music,omitempty"`
-	Live             *LiveInfoDTO     `json:"live,omitempty"`
-	Missing          []MissingItemDTO `json:"missing,omitempty"`
-	Via              *ItemViaDTO      `json:"via,omitempty"`
-	Origin           *ItemOriginDTO   `json:"origin,omitempty"`
-	Card             *ItemRichCardDTO `json:"card,omitempty"`
-	Thread           []ThreadPartDTO  `json:"thread,omitempty"`
-	Links            []TextLink       `json:"links,omitempty"`
-	IsForward        bool             `json:"isForward,omitempty"`
-	ArchivedOf       string           `json:"archivedOf,omitempty"`
-	TotalBytes       int64            `json:"totalBytes,omitempty"`
+	ItemKey          string              `json:"itemKey"`
+	ID               string              `json:"id"`
+	Site             string              `json:"site"`
+	Kind             string              `json:"kind"`
+	Status           string              `json:"status"`
+	Title            string              `json:"title"`
+	Desc             string              `json:"desc,omitempty"`
+	Text             string              `json:"text,omitempty"`
+	DynamicType      string              `json:"dynamicType,omitempty"`
+	TypeLabel        string              `json:"typeLabel,omitempty"`
+	CanonicalURL     string              `json:"canonicalUrl,omitempty"`
+	PubTs            int64               `json:"pubTs"`
+	CachedAt         string              `json:"cachedAt,omitempty"`
+	Duration         int                 `json:"duration,omitempty"`
+	AuthorUID        string              `json:"authorUid"`
+	AuthorName       string              `json:"authorName"`
+	AuthorUniqueID   string              `json:"authorUniqueId,omitempty"`
+	AuthorAvatarPath string              `json:"authorAvatarPath,omitempty"`
+	SubID            string              `json:"subId,omitempty"`
+	SubName          string              `json:"subName,omitempty"`
+	Media            []MediaFileDTO      `json:"media,omitempty"`
+	Parts            []VideoPartDTO      `json:"parts,omitempty"`
+	VideoInfo        *VideoInfoDTO       `json:"videoInfo,omitempty"`
+	NotePages        []NotePageDTO       `json:"notePages,omitempty"`
+	Music            *MusicDTO           `json:"music,omitempty"`
+	Live             *LiveInfoDTO        `json:"live,omitempty"`
+	Missing          []MissingItemDTO    `json:"missing,omitempty"`
+	Via              *ItemViaDTO         `json:"via,omitempty"`
+	Origin           *ItemOriginDTO      `json:"origin,omitempty"`
+	InReplyTo        *ItemReplyTargetDTO `json:"inReplyTo,omitempty"`
+	Card             *ItemRichCardDTO    `json:"card,omitempty"`
+	Thread           []ThreadPartDTO     `json:"thread,omitempty"`
+	Links            []TextLink          `json:"links,omitempty"`
+	IsForward        bool                `json:"isForward,omitempty"`
+	ArchivedOf       string              `json:"archivedOf,omitempty"`
+	TotalBytes       int64               `json:"totalBytes,omitempty"`
 }
 
 // MediaFileDTO describes one registered relative media file in an item.
@@ -333,30 +335,41 @@ type ItemRichCardDTO struct {
 	URL   string `json:"url,omitempty"`
 }
 
-// ThreadPartDTO describes one segment of an author self-reply thread.
-type ThreadPartDTO struct {
-	ID           string     `json:"id,omitempty"`
-	PubTs        int64      `json:"pubTs,omitempty"`
-	Text         string     `json:"text,omitempty"`
-	Links        []TextLink `json:"links,omitempty"`
-	MediaIndexes []int      `json:"mediaIndexes,omitempty"`
+// ItemReplyTargetDTO describes sanitized reply target identifiers (DEC-091).
+type ItemReplyTargetDTO struct {
+	StatusID   string `json:"statusId,omitempty"`
+	UserID     string `json:"userId,omitempty"`
+	ScreenName string `json:"screenName,omitempty"`
 }
 
-// ItemOriginDTO describes a forwarded/quoted original post snapshot.
+// ThreadPartDTO describes one segment of an author self-reply thread.
+type ThreadPartDTO struct {
+	ID           string         `json:"id,omitempty"`
+	PubTs        int64          `json:"pubTs,omitempty"`
+	Text         string         `json:"text,omitempty"`
+	Links        []TextLink     `json:"links,omitempty"`
+	MediaIndexes []int          `json:"mediaIndexes,omitempty"`
+	Origin       *ItemOriginDTO `json:"origin,omitempty"`
+}
+
+// ItemOriginDTO describes a forwarded/quoted original post snapshot (at most 1 nested level).
 type ItemOriginDTO struct {
-	Site              string           `json:"site,omitempty"`
-	ID                string           `json:"id,omitempty"`
-	CanonicalURL      string           `json:"canonicalUrl,omitempty"`
-	AuthorUID         string           `json:"authorUid,omitempty"`
-	AuthorName        string           `json:"authorName,omitempty"`
-	PubTs             int64            `json:"pubTs,omitempty"`
-	Title             string           `json:"title,omitempty"`
-	Text              string           `json:"text,omitempty"`
-	Links             []TextLink       `json:"links,omitempty"`
-	Card              *ItemRichCardDTO `json:"card,omitempty"`
-	Unavailable       bool             `json:"unavailable,omitempty"`
-	UnavailableReason string           `json:"unavailableReason,omitempty"`
-	VideoFromOrigin   bool             `json:"videoFromOrigin,omitempty"`
+	Site              string              `json:"site,omitempty"`
+	ID                string              `json:"id,omitempty"`
+	CanonicalURL      string              `json:"canonicalUrl,omitempty"`
+	AuthorUID         string              `json:"authorUid,omitempty"`
+	AuthorUniqueID    string              `json:"authorUniqueId,omitempty"`
+	AuthorName        string              `json:"authorName,omitempty"`
+	PubTs             int64               `json:"pubTs,omitempty"`
+	Title             string              `json:"title,omitempty"`
+	Text              string              `json:"text,omitempty"`
+	Links             []TextLink          `json:"links,omitempty"`
+	Card              *ItemRichCardDTO    `json:"card,omitempty"`
+	InReplyTo         *ItemReplyTargetDTO `json:"inReplyTo,omitempty"`
+	Origin            *ItemOriginDTO      `json:"origin,omitempty"`
+	Unavailable       bool                `json:"unavailable,omitempty"`
+	UnavailableReason string              `json:"unavailableReason,omitempty"`
+	VideoFromOrigin   bool                `json:"videoFromOrigin,omitempty"`
 }
 
 // SubscriptionsResponse is GET /api/v1/subscriptions (FR-MOB-015).

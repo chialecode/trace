@@ -42,23 +42,27 @@ type PostVideo struct {
 // PostThreadPart represents one tweet segment in a vertically connected
 // author self-reply thread rendered inside a PostCard.
 type PostThreadPart struct {
-	ID            string
-	AuthorUID     string
-	AuthorName    string
-	AuthorHandle  string
-	AuthorFace    string
-	PubTs         int64
-	Text          string
-	Links         []service.TextLinkDTO
-	URL           string
-	Images        []PostImage
-	NotePages     []douyinNoteRenderPage
-	Video         *PostVideo
-	XCard         *service.XRichCardDTO
-	XPoll         *service.XPollSummaryDTO
-	HLSOnlyNotice string
-	IsFocal       bool
-	OnOpen        func()
+	ID                string
+	AuthorUID         string
+	AuthorName        string
+	AuthorHandle      string
+	AuthorFace        string
+	PubTs             int64
+	InReplyTo         *library.ItemReplyTarget
+	Text              string
+	Links             []service.TextLinkDTO
+	URL               string
+	Images            []PostImage
+	NotePages         []douyinNoteRenderPage
+	Video             *PostVideo
+	XCard             *service.XRichCardDTO
+	XPoll             *service.XPollSummaryDTO
+	HLSOnlyNotice     string
+	Origin            *PostCardData
+	OriginUnavailable string
+	LibOrigin         *library.ItemOrigin
+	IsFocal           bool
+	OnOpen            func()
 }
 
 const (
@@ -103,6 +107,7 @@ type PostCardData struct {
 	Video             *PostVideo
 	Origin            *PostCardData
 	OriginUnavailable string
+	InReplyTo         *library.ItemReplyTarget
 	Unavailable       bool
 	UnavailableReason string
 	Incomplete        bool
@@ -526,6 +531,19 @@ func (a *App) renderExpandableTextStyled(c *ui.Context, key string, text string,
 	a.renderExpandableTextWithLinks(c, key, text, nil, fontSize, textColor, false)
 }
 
+func renderReplyContextHintLine(c *ui.Context, hint, label string, fontSize float32) {
+	if strings.TrimSpace(hint) == "" {
+		return
+	}
+	row := ui.Row(c).FillWidth().ClipX()
+	if label != "" {
+		row.Label(label)
+	}
+	row.Children(func() {
+		ui.Text(c, hint).FontSize(fontSize).TextColor(ColorTextMuted).SingleLine()
+	})
+}
+
 func (a *App) renderExpandableTextWithLinks(
 	c *ui.Context,
 	key string,
@@ -697,6 +715,9 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 			// 2. Title & Body Text
 			isDouyinSite := normalizeSiteIDUI(post.Site) == "douyin"
 			titleText := post.Title
+			if hint := formatReplyContextHint(post.InReplyTo, nil); hint != "" {
+				renderReplyContextHintLine(c, hint, "回复提示："+post.Key, 12)
+			}
 			bodyText := post.Text
 			if titleText != "" && titleText == bodyText && post.Kind == "dynamic" {
 				if _, titleHasRich := parseRichTextParagraphs(titleText, post.Links, isDouyinSite); titleHasRich {
@@ -999,6 +1020,13 @@ func (a *App) renderPostCardThread(c *ui.Context, post PostCardData) {
 		focalIdx = 0
 	}
 
+	threadIDs := make([]string, 0, len(post.ThreadParts))
+	for _, pt := range post.ThreadParts {
+		if id := strings.TrimSpace(pt.ID); id != "" {
+			threadIDs = append(threadIDs, id)
+		}
+	}
+
 	ui.Column(c).
 		Label("X自回复串卡片："+post.Key).
 		FillWidth().
@@ -1109,6 +1137,15 @@ func (a *App) renderPostCardThread(c *ui.Context, post PostCardData) {
 							})
 						}
 
+						if isFirst {
+							replyTarget := tp.InReplyTo
+							if replyTarget == nil {
+								replyTarget = post.InReplyTo
+							}
+							if hint := formatReplyContextHint(replyTarget, threadIDs); hint != "" {
+								renderReplyContextHintLine(c, hint, "回复提示："+post.Key, 12)
+							}
+						}
 						if strings.TrimSpace(tp.Text) != "" {
 							a.renderExpandableTextWithLinks(c, fmt.Sprintf("%s:part:%d", post.Key, idx), tp.Text, tp.Links, 15, ColorTextMain, false)
 						}
@@ -1140,6 +1177,16 @@ func (a *App) renderPostCardThread(c *ui.Context, post PostCardData) {
 
 						if idx == focalIdx {
 							a.renderPostOriginBox(c, post)
+						} else if (tp.Origin != nil || tp.OriginUnavailable != "") && !samePostOriginCard(tp.Origin, post.Origin) {
+							a.renderPostOriginBox(c, PostCardData{
+								Key:               fmt.Sprintf("%s:part:%d", post.Key, idx+1),
+								ItemKey:           post.ItemKey,
+								Site:              post.Site,
+								Offline:           post.Offline,
+								LocalManage:       post.LocalManage,
+								Origin:            tp.Origin,
+								OriginUnavailable: tp.OriginUnavailable,
+							})
 						}
 					})
 				})
@@ -1185,7 +1232,42 @@ func (a *App) renderPostCardThread(c *ui.Context, post PostCardData) {
 		})
 }
 
+func formatReplyContextHint(target *library.ItemReplyTarget, excludeIDs []string) string {
+	if target == nil {
+		return ""
+	}
+	sid := strings.TrimSpace(target.StatusID)
+	if sid != "" {
+		for _, id := range excludeIDs {
+			if strings.TrimSpace(id) == sid {
+				return ""
+			}
+		}
+	}
+	handle := strings.TrimPrefix(strings.TrimSpace(target.ScreenName), "@")
+	if handle != "" {
+		return "回复 @" + handle
+	}
+	if sid != "" || strings.TrimSpace(target.UserID) != "" {
+		return "回复一条帖子"
+	}
+	return ""
+}
+
+func samePostOriginCard(a, b *PostCardData) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	aid := firstNonEmptyStrUI(a.XStatusID, a.WeiboMid, a.RawID)
+	bid := firstNonEmptyStrUI(b.XStatusID, b.WeiboMid, b.RawID)
+	return aid != "" && aid == bid
+}
+
 func (a *App) renderPostOriginBox(c *ui.Context, post PostCardData) {
+	a.renderPostOriginBoxDepth(c, post, 0)
+}
+
+func (a *App) renderPostOriginBoxDepth(c *ui.Context, post PostCardData, depth int) {
 	if post.Origin != nil && !post.Origin.Unavailable {
 		orig := post.Origin
 		origSite := normalizeSiteIDUI(firstNonEmptyStrUI(orig.Site, post.Site))
@@ -1208,20 +1290,36 @@ func (a *App) renderPostOriginBox(c *ui.Context, post PostCardData) {
 			openOrigAuthor = func() { a.OpenXUser(origTarget, origAuthorName) }
 		}
 
+		bg := ColorBgMain
+		padV, padH := float32(10), float32(12)
+		radius := float32(12)
+		if depth > 0 {
+			bg = ColorBgSecondary
+			padV, padH = 8, 10
+			radius = 8
+		}
 		box := ui.Column(c).
 			FillWidth().
-			Padding(10, 12).
-			Radius(12).
-			Background(ColorBgMain).
+			Padding(padV, padH).
+			Radius(radius).
+			Background(bg).
 			Border(1, ColorBorder).
 			Gap(6).
 			ClipX()
 		if post.Key != "" {
-			box.Label("转发原内容：" + post.Key)
+			if depth == 0 {
+				box.Label("转发原内容：" + post.Key)
+			} else {
+				box.Label("内层引用：" + post.Key)
+			}
 		}
 		box.Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-				a.renderAccountAvatar(c, origSite, origAuthorName, orig.AuthorUID, orig.Mid, 20, false, "", openOrigAuthor, origFace)
+				avatarSize := float32(20)
+				if depth > 0 {
+					avatarSize = 18
+				}
+				a.renderAccountAvatar(c, origSite, origAuthorName, orig.AuthorUID, orig.Mid, avatarSize, false, "", openOrigAuthor, origFace)
 				if openOrigAuthor != nil {
 					btn := ui.ButtonBase(c).Padding(0).Children(func() {
 						display := "@" + origAuthorName
@@ -1245,7 +1343,7 @@ func (a *App) renderPostOriginBox(c *ui.Context, post PostCardData) {
 						ui.Text(c, "@"+h).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
 					}
 				}
-				if orig.TypeLabel != "" {
+				if depth == 0 && orig.TypeLabel != "" {
 					ui.Text(c, "· "+orig.TypeLabel).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 				}
 				if orig.PubTs > 0 {
@@ -1256,50 +1354,71 @@ func (a *App) renderPostOriginBox(c *ui.Context, post PostCardData) {
 						SingleLine()
 				}
 			})
+			if replyHint := formatReplyContextHint(orig.InReplyTo, nil); replyHint != "" {
+				ui.Text(c, replyHint).FontSize(11).TextColor(ColorTextMuted).SingleLine()
+			}
 			if orig.Title != "" && (orig.Video == nil || orig.Title != orig.Video.Title) {
 				ui.Text(c, orig.Title).FontSize(13).LineHeight(LineHeightCompact).FontWeight(600).TextColor(ColorTextMain).MaxLines(2)
 			}
 			if orig.Text != "" && orig.Text != orig.Title {
-				a.renderExpandableTextWithLinks(c, post.Key+":orig", orig.Text, orig.Links, 14, ColorTextMain, origSite == "douyin")
-			}
-			if len(orig.NotePages) > 0 {
-				a.renderNotePagesGrid(c, origItemKey, origSite, orig.NotePages, false)
-			} else if len(orig.Images) > 0 {
-				a.renderPostImageGrid(c, PostCardData{
-					ItemKey: origItemKey,
-					Site:    origSite,
-					Offline: origOffline,
-					Images:  orig.Images,
-				})
-			}
-			if orig.Video != nil {
-				a.renderPostVideoCard(c, post, orig.Video, true)
-			}
-			if orig.WeiboCard != nil {
-				a.renderWeiboRichCard(c, orig.WeiboCard, origOffline)
-			}
-			if orig.XPoll != nil {
-				a.renderXPollCard(c, orig.XPoll, orig.URL, origOffline)
-			}
-			if orig.XCard != nil {
-				a.renderXRichCard(c, orig.XCard, orig.URL, origOffline)
-			}
-			if orig.HLSOnlyNotice != "" {
-				a.renderXHLSOnlyNotice(c, orig.HLSOnlyNotice, orig.URL, origOffline)
-			}
-			if orig.Incomplete && !post.Offline {
-				hintText := "原微博含更多文字或媒体，点开查看完整内容"
-				if post.OnOpenPost != nil {
-					hintBtn := ui.ButtonBase(c).Label("原微博未完整提示："+post.Key).Padding(2, 0).Justify(ui.Start).AlignItems(ui.Start).Children(func() {
-						ui.Text(c, hintText).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorInfoBlue).MaxLines(2)
-					})
-					if hintBtn.Clicked() {
-						post.OnOpenPost()
-					}
+				if depth > 0 {
+					ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMain).MaxLines(4)
 				} else {
-					ui.Box(c).Label("原微博未完整提示：" + post.Key).FillWidth().Children(func() {
-						ui.Text(c, hintText).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+					a.renderExpandableTextWithLinks(c, post.Key+":orig", orig.Text, orig.Links, 14, ColorTextMain, origSite == "douyin")
+				}
+			}
+			if depth == 0 {
+				if len(orig.NotePages) > 0 {
+					a.renderNotePagesGrid(c, origItemKey, origSite, orig.NotePages, false)
+				} else if len(orig.Images) > 0 {
+					a.renderPostImageGrid(c, PostCardData{
+						ItemKey: origItemKey,
+						Site:    origSite,
+						Offline: origOffline,
+						Images:  orig.Images,
 					})
+				}
+				if orig.Video != nil {
+					a.renderPostVideoCard(c, post, orig.Video, true)
+				}
+				if orig.WeiboCard != nil {
+					a.renderWeiboRichCard(c, orig.WeiboCard, origOffline)
+				}
+				if orig.XPoll != nil {
+					a.renderXPollCard(c, orig.XPoll, orig.URL, origOffline)
+				}
+				if orig.XCard != nil {
+					a.renderXRichCard(c, orig.XCard, orig.URL, origOffline)
+				}
+				if orig.HLSOnlyNotice != "" {
+					a.renderXHLSOnlyNotice(c, orig.HLSOnlyNotice, orig.URL, origOffline)
+				}
+				// Strictly cap nested origin display at 1 level (DEC-091).
+				if orig.Origin != nil || orig.OriginUnavailable != "" {
+					a.renderPostOriginBoxDepth(c, PostCardData{
+						Key:               post.Key,
+						ItemKey:           origItemKey,
+						Site:              origSite,
+						Offline:           origOffline,
+						LocalManage:       post.LocalManage,
+						Origin:            orig.Origin,
+						OriginUnavailable: orig.OriginUnavailable,
+					}, depth+1)
+				}
+				if orig.Incomplete && !post.Offline {
+					hintText := "原微博含更多文字或媒体，点开查看完整内容"
+					if post.OnOpenPost != nil {
+						hintBtn := ui.ButtonBase(c).Label("原微博未完整提示："+post.Key).Padding(2, 0).Justify(ui.Start).AlignItems(ui.Start).Children(func() {
+							ui.Text(c, hintText).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorInfoBlue).MaxLines(2)
+						})
+						if hintBtn.Clicked() {
+							post.OnOpenPost()
+						}
+					} else {
+						ui.Box(c).Label("原微博未完整提示：" + post.Key).FillWidth().Children(func() {
+							ui.Text(c, hintText).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+						})
+					}
 				}
 			}
 		})

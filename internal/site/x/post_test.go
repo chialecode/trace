@@ -265,8 +265,8 @@ func TestPostRecursiveNoteTweetTCoRestoreRetweetQuoteAndDegradedOrigins(t *testi
 				if err != nil {
 					t.Fatalf("degraded quote failed: %v", err)
 				}
-				if !post.IsQuote || post.RuleType != RuleTypeForward || !post.OriginUnavailable {
-					t.Fatalf("expected OriginUnavailable=true forward post, got %+v", post)
+				if !post.IsQuote || post.RuleType != RuleTypeWord || !post.OriginUnavailable {
+					t.Fatalf("expected OriginUnavailable=true text quote (RuleTypeWord), got %+v", post)
 				}
 				if !strings.Contains(post.OriginUnavailableReason, tc.wantReason) {
 					t.Fatalf("OriginUnavailableReason = %q, want substring %q", post.OriginUnavailableReason, tc.wantReason)
@@ -566,4 +566,191 @@ func TestPostMediaMixed4ItemsGIFVideoBitrateHLSOnlyAndDegradedCards(t *testing.T
 			})
 		}
 	})
+}
+
+func TestQuoteRuleTypeDecouplingReplyContextAndNestedOriginPlan(t *testing.T) {
+	store := newTestXStore(t, "auth_token=SYNTH_POST_05; ct0=SynthCT0Post0005")
+	_, client := newSynthFrontendHarnessWithOpts(t, func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}, store, nil)
+	adapter := NewAdapter(client)
+
+	// 1. computeRuleType decouples quote posts from pure retweets (DEC-091).
+	rtPost := &Post{IsRetweet: true}
+	if got := computeRuleType(rtPost); got != RuleTypeForward {
+		t.Fatalf("pure retweet RuleType = %q, want forward", got)
+	}
+	textQuote := &Post{IsQuote: true, Text: "文字引用"}
+	if got := computeRuleType(textQuote); got != RuleTypeWord {
+		t.Fatalf("text quote RuleType = %q, want word", got)
+	}
+	photoQuote := &Post{IsQuote: true, Media: []MediaItem{{Kind: MediaKindPhoto}}}
+	if got := computeRuleType(photoQuote); got != RuleTypeDraw {
+		t.Fatalf("photo quote RuleType = %q, want draw", got)
+	}
+	vidQuote := &Post{IsQuote: true, Media: []MediaItem{{Kind: MediaKindVideo}}}
+	if got := computeRuleType(vidQuote); got != RuleTypeVideo {
+		t.Fatalf("video quote RuleType = %q, want video", got)
+	}
+
+	// 2. PlanDownloadFromPost maps IsQuote, InReplyTo, OriginInReplyTo, and depth-1 OriginOrigin.
+	innerQuote := &Post{
+		ID:           "1791257321273790001",
+		Author:       AuthorSummary{RestID: "1000000000000000011", ScreenName: "inner_author", Name: "内层作者"},
+		Text:         "最内层被引用正文",
+		CanonicalURL: "https://x.com/inner_author/status/1791257321273790001",
+		IsQuote:      true,
+		Quoted:       &Post{ID: "1791257321273790000", Text: "第三层不应进入两层嵌套"},
+	}
+	midQuote := &Post{
+		ID:                  "1791257321273790002",
+		Author:              AuthorSummary{RestID: "1000000000000000012", ScreenName: "mid_author", Name: "中层作者"},
+		Text:                "中层引用帖正文",
+		CanonicalURL:        "https://x.com/mid_author/status/1791257321273790002",
+		InReplyToStatusID:   "1791257321273789999",
+		InReplyToScreenName: "mid_parent",
+		IsQuote:             true,
+		Quoted:              innerQuote,
+	}
+	outerQuote := &Post{
+		ID:                  "1791257321273790003",
+		Author:              AuthorSummary{RestID: "1000000000000000013", ScreenName: "outer_author", Name: "外层作者"},
+		Text:                "外层回复并引用",
+		CanonicalURL:        "https://x.com/outer_author/status/1791257321273790003",
+		InReplyToStatusID:   "1791257321273789998",
+		InReplyToUserID:     "1000000000000000099",
+		InReplyToScreenName: "target_handle",
+		IsQuote:             true,
+		Quoted:              midQuote,
+	}
+	plan, err := adapter.PlanDownloadFromPost(outerQuote)
+	if err != nil {
+		t.Fatalf("PlanDownloadFromPost(outerQuote): %v", err)
+	}
+	if !plan.IsForward || !plan.IsQuote {
+		t.Fatalf("expected IsForward=true IsQuote=true, got %+v", plan)
+	}
+	if plan.InReplyTo == nil || plan.InReplyTo.ScreenName != "target_handle" || plan.InReplyTo.StatusID != "1791257321273789998" {
+		t.Fatalf("unexpected plan.InReplyTo: %+v", plan.InReplyTo)
+	}
+	if plan.OriginInReplyTo == nil || plan.OriginInReplyTo.ScreenName != "mid_parent" {
+		t.Fatalf("unexpected plan.OriginInReplyTo: %+v", plan.OriginInReplyTo)
+	}
+	if plan.OriginOrigin == nil || plan.OriginOrigin.ID != innerQuote.ID || plan.OriginOrigin.AuthorUniqueID != "inner_author" {
+		t.Fatalf("unexpected plan.OriginOrigin: %+v", plan.OriginOrigin)
+	}
+
+	// Pure RT of a quote post -> IsForward=true, IsQuote=false, OriginOrigin populated!
+	rtOfQuote := &Post{
+		ID:        "1791257321273790004",
+		Author:    AuthorSummary{RestID: "1000000000000000014", ScreenName: "rt_user", Name: "转帖人"},
+		Text:      "RT @mid_author: 中层引用帖正文",
+		IsRetweet: true,
+		IsQuote:   true, // even if X legacy flag sets is_quote_status on an RT wrapper
+		Retweeted: midQuote,
+	}
+	rtPlan, err := adapter.PlanDownloadFromPost(rtOfQuote)
+	if err != nil {
+		t.Fatalf("PlanDownloadFromPost(rtOfQuote): %v", err)
+	}
+	if !rtPlan.IsForward || rtPlan.IsQuote {
+		t.Fatalf("RT of quote must have IsForward=true IsQuote=false, got %+v", rtPlan)
+	}
+	if rtPlan.OriginOrigin == nil || rtPlan.OriginOrigin.ID != innerQuote.ID {
+		t.Fatalf("RT of quote missing depth-1 OriginOrigin: %+v", rtPlan.OriginOrigin)
+	}
+
+	// Real X GraphQL JSON: outer pure RT wrapper carries legacy.is_quote_status=true without outer
+	// quoted_status_result while inner retweeted_status_result holds the healthy quote tweet & its quoted_status_result.
+	// Must parse WITHOUT marking the outer RT as IsQuote or OriginUnavailable!
+	rtQuoteGraphQLRaw := []byte(`{
+		"__typename": "Tweet",
+		"rest_id": "1791257321273790050",
+		"core": {
+			"user_results": {
+				"result": {
+					"__typename": "User",
+					"rest_id": "1000000000000000050",
+					"legacy": {"name": "转帖人A", "screen_name": "rt_user_a"}
+				}
+			}
+		},
+		"legacy": {
+			"id_str": "1791257321273790050",
+			"full_text": "RT @quote_user_b: 引用评论正文",
+			"is_quote_status": true,
+			"retweeted_status_result": {
+				"result": {
+					"__typename": "Tweet",
+					"rest_id": "1791257321273790051",
+					"core": {
+						"user_results": {
+							"result": {
+								"__typename": "User",
+								"rest_id": "1000000000000000051",
+								"legacy": {"name": "引用作者B", "screen_name": "quote_user_b"}
+							}
+						}
+					},
+					"legacy": {
+						"id_str": "1791257321273790051",
+						"full_text": "引用评论正文",
+						"is_quote_status": true
+					},
+					"quoted_status_result": {
+						"result": {
+							"__typename": "Tweet",
+							"rest_id": "1791257321273790052",
+							"core": {
+								"user_results": {
+									"result": {
+										"__typename": "User",
+										"rest_id": "1000000000000000052",
+										"legacy": {"name": "原帖作者C", "screen_name": "inner_user_c"}
+									}
+								}
+							},
+							"legacy": {
+								"id_str": "1791257321273790052",
+								"full_text": "最内层被引用原帖正文"
+							}
+						}
+					}
+				}
+			}
+		}
+	}`)
+	c := NewClient(ClientOptions{})
+	parsedRTQuote := c.parseTweetResult(rtQuoteGraphQLRaw, 0)
+	if parsedRTQuote == nil {
+		t.Fatal("parseTweetResult returned nil for real GraphQL RT-of-quote")
+	}
+	if !parsedRTQuote.IsRetweet || parsedRTQuote.IsQuote || parsedRTQuote.OriginUnavailable {
+		t.Fatalf("outer RT-of-quote misclassified: IsRetweet=%v IsQuote=%v OriginUnavailable=%v reason=%q",
+			parsedRTQuote.IsRetweet, parsedRTQuote.IsQuote, parsedRTQuote.OriginUnavailable, parsedRTQuote.OriginUnavailableReason)
+	}
+	if parsedRTQuote.Retweeted == nil || parsedRTQuote.Retweeted.Unavailable || !parsedRTQuote.Retweeted.IsQuote || parsedRTQuote.Retweeted.Quoted == nil || parsedRTQuote.Retweeted.Quoted.ID != "1791257321273790052" {
+		t.Fatalf("inner Retweeted/Quoted damaged: %+v", parsedRTQuote.Retweeted)
+	}
+	parsedRTPlan, err := adapter.PlanDownloadFromPost(parsedRTQuote)
+	if err != nil {
+		t.Fatalf("PlanDownloadFromPost(parsedRTQuote): %v", err)
+	}
+	if !parsedRTPlan.IsForward || parsedRTPlan.IsQuote || parsedRTPlan.OriginUnavailable {
+		t.Fatalf("parsedRTPlan must be healthy pure RT: IsForward=%v IsQuote=%v OriginUnavailable=%v reason=%q",
+			parsedRTPlan.IsForward, parsedRTPlan.IsQuote, parsedRTPlan.OriginUnavailable, parsedRTPlan.OriginUnavailableReason)
+	}
+	if parsedRTPlan.OriginID != "1791257321273790051" || parsedRTPlan.OriginOrigin == nil || parsedRTPlan.OriginOrigin.ID != "1791257321273790052" || parsedRTPlan.OriginOrigin.Unavailable {
+		t.Fatalf("parsedRTPlan lost healthy Origin or inner OriginOrigin: %+v", parsedRTPlan)
+	}
+
+	// Defense-in-depth: even if a synthetic Post has OriginUnavailable=true alongside a healthy Retweeted,
+	// PlanDownloadFromPost uses Retweeted.Unavailable as source of truth.
+	syntheticBadFlag := *parsedRTQuote
+	syntheticBadFlag.OriginUnavailable = true
+	syntheticBadFlag.OriginUnavailableReason = "stale outer flag"
+	defPlan, err := adapter.PlanDownloadFromPost(&syntheticBadFlag)
+	if err != nil || defPlan.OriginUnavailable {
+		t.Fatalf("adapter defense-in-depth failed: err=%v OriginUnavailable=%v", err, defPlan.OriginUnavailable)
+	}
 }

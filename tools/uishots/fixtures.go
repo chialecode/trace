@@ -1016,6 +1016,24 @@ func seedFixtures() (env *fixtureEnv, err error) {
 			},
 			PubTs: 1709974000,
 			Text:  "原帖说明：采用纯标准库实现雪花 ID 校验、前端元数据运行时发现与四站点限流退避隔离。",
+			Origin: &library.ItemOrigin{
+				Site:         "x",
+				ID:           "1000000000000000077",
+				CanonicalURL: "https://x.com/synth_x_core/status/1000000000000000077",
+				Author: library.ItemAuthor{
+					Site:     "x",
+					UID:      "1000000000000000006",
+					UniqueID: "synth_x_core",
+					Name:     "内核架构笔记",
+				},
+				PubTs: 1709970000,
+				Text:  "内层引用摘要：两层引用归档限深 1 层，防止无限嵌套并保留原帖作者与正文。",
+			},
+		},
+		InReplyTo: &library.ItemReplyTarget{
+			StatusID:   "1000000000000000002",
+			UserID:     "1000000000000000007",
+			ScreenName: "synth_x_reviewer",
 		},
 		NotePages: []library.NotePageRecord{
 			{Index: 1, Kind: "image", FromOrigin: true, Image: "images/01.png", Width: 320, Height: 200},
@@ -1031,6 +1049,19 @@ func seedFixtures() (env *fixtureEnv, err error) {
 				ID:    "1000000000000000016",
 				PubTs: 1709979300,
 				Text:  "自回复补充：媒体 CDN 与 t.co 跳转全程不带 Cookie，签名参数不落盘。",
+				Origin: &library.ItemOrigin{
+					Site:         "x",
+					ID:           "1000000000000000078",
+					CanonicalURL: "https://x.com/synth_x_net/status/1000000000000000078",
+					Author: library.ItemAuthor{
+						Site:     "x",
+						UID:      "1000000000000000008",
+						UniqueID: "synth_x_net",
+						Name:     "网络隔离规范",
+					},
+					PubTs: 1709972000,
+					Text:  "线程节点引用原帖：单文件 MP4 离线回放与签名剥离不依赖在线连接。",
+				},
 			},
 		},
 		Missing: []library.MissingRecord{
@@ -1063,6 +1094,11 @@ func seedFixtures() (env *fixtureEnv, err error) {
 		URL:         "https://x.com/" + env.xHandle + "/status/1000000000000000018",
 		PubTs:       1709978500,
 		CachedAt:    "2026-03-02T12:25:00Z",
+		InReplyTo: &library.ItemReplyTarget{
+			StatusID:   "1000000000000000001",
+			UserID:     "1000000000000000005",
+			ScreenName: "synth_arch_review",
+		},
 		Author: library.ItemAuthor{
 			Site:     "x",
 			UID:      env.xUID,
@@ -1089,6 +1125,19 @@ func seedFixtures() (env *fixtureEnv, err error) {
 				PubTs:        1709978680,
 				Text:         threadPart2,
 				MediaIndexes: []int{1},
+				Origin: &library.ItemOrigin{
+					Site:         "x",
+					ID:           "1000000000000000079",
+					CanonicalURL: "https://x.com/synth_x_thread_ref/status/1000000000000000079",
+					Author: library.ItemAuthor{
+						Site:     "x",
+						UID:      "1000000000000000009",
+						UniqueID: "synth_x_thread_ref",
+						Name:     "线程引用来源",
+					},
+					PubTs: 1709975000,
+					Text:  "线程节点内嵌引用：每个自回复节点可独立引用其他帖子并离线保留。",
+				},
 			},
 			{
 				ID:    "1000000000000000020",
