@@ -209,13 +209,14 @@ func (s *Store) planDeleteBatchLocked(itemKeys []string) (DeletePlan, []ItemMeta
 	for _, it := range itemsToDelete {
 		regFiles, userFiles := collectRegisteredAndUserFiles(it)
 		for _, f := range regFiles {
-			if !seenFiles[f] {
-				seenFiles[f] = true
+			fk := pathKey(f)
+			if !seenFiles[fk] {
+				seenFiles[fk] = true
 				plan.RegisteredFiles = append(plan.RegisteredFiles, f)
 			}
 		}
 		for _, uf := range userFiles {
-			uKey := it.ItemDir + "\x00" + uf
+			uKey := pathKey(it.ItemDir) + "\x00" + uf
 			if !seenUserFiles[uKey] {
 				seenUserFiles[uKey] = true
 				plan.PreservedUserFiles = append(plan.PreservedUserFiles, uf)
@@ -248,34 +249,49 @@ func collectRegisteredAndUserFiles(meta ItemMetadata) (registeredAbs []string, u
 		return nil, nil
 	}
 	itemDir := filepath.Clean(meta.ItemDir)
-	regRel := make(map[string]bool)
-	addRel := func(rel string) {
+	// knownRel tracks all safe TRACE-owned relative paths (even if absent on disk)
+	// so WalkDir never misclassifies them or their companion *.part files as user files.
+	// addedRel tracks existing regular files already included in registeredAbs.
+	knownRel := make(map[string]bool)
+	addedRel := make(map[string]bool)
+	addExistingRel := func(rel string, deferItemJSON bool) {
 		rel = strings.TrimSpace(rel)
 		if rel == "" {
 			return
 		}
-		norm := strings.ToLower(filepath.ToSlash(filepath.Clean(filepath.FromSlash(rel))))
 		if !safeRegisteredPathStrict(itemDir, rel) {
 			return
 		}
-		if !regRel[norm] {
-			regRel[norm] = true
-			registeredAbs = append(registeredAbs, filepath.Join(itemDir, filepath.FromSlash(rel)))
+		cleanRel := filepath.ToSlash(filepath.Clean(filepath.FromSlash(rel)))
+		norm := strings.ToLower(cleanRel)
+		if deferItemJSON && norm == "item.json" {
+			return
 		}
+		knownRel[norm] = true
+		if addedRel[norm] {
+			return
+		}
+		abs := filepath.Join(itemDir, filepath.FromSlash(cleanRel))
+		info, err := os.Lstat(abs)
+		if err != nil || isLinkLike(info.Mode()) || !info.Mode().IsRegular() {
+			return
+		}
+		addedRel[norm] = true
+		registeredAbs = append(registeredAbs, abs)
 	}
 
 	visitManifestFiles(meta, func(f ManifestFile) {
-		addRel(f.Path)
+		addExistingRel(f.Path, true)
 	})
 	for _, part := range meta.PendingParts {
-		addRel(part)
+		addExistingRel(part, true)
 		if meta.Kind == "live" && strings.HasPrefix(part, "part-") && strings.HasSuffix(part, ".mp4.part") {
 			// Both names are reserved before recording starts. A crash after the
 			// final rename can leave the MP4 present before its media row is saved.
-			addRel(strings.TrimSuffix(part, ".part"))
+			addExistingRel(strings.TrimSuffix(part, ".part"), true)
 		}
 	}
-	addRel("orig.json")
+	addExistingRel("orig.json", true)
 
 	// Scan itemDir for *.part files (which belong to TRACE) and user-owned files (which MUST be preserved).
 	// Never traverse symlinks or Windows directory junctions (INV-08/09).
@@ -297,23 +313,24 @@ func collectRegisteredAndUserFiles(meta ItemMetadata) (registeredAbs []string, u
 			if rErr != nil {
 				return nil
 			}
-			norm := strings.ToLower(filepath.ToSlash(rel))
+			relSlash := filepath.ToSlash(rel)
+			norm := strings.ToLower(relSlash)
 			if norm == "item.json" {
 				return nil
 			}
-			if strings.HasSuffix(norm, ".part") && regRel[strings.TrimSuffix(norm, ".part")] {
-				addRel(rel)
+			if strings.HasSuffix(norm, ".part") && knownRel[strings.TrimSuffix(norm, ".part")] {
+				addExistingRel(relSlash, true)
 				return nil
 			}
-			if !regRel[norm] {
-				userRel = append(userRel, filepath.ToSlash(rel))
+			if !knownRel[norm] {
+				userRel = append(userRel, relSlash)
 			}
 			return nil
 		})
 	}
 
 	// item.json is always deleted last among registered files.
-	addRel("item.json")
+	addExistingRel("item.json", false)
 	return registeredAbs, userRel
 }
 
