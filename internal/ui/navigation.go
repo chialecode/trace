@@ -308,7 +308,12 @@ func (a *App) navigate(rawRoute string, fromBack bool) {
 	from := a.currentReturnRoute()
 	prevRoute := a.CurrentRoute
 	route := normalizeAppRoute(rawRoute)
-	a.clearErrorNotifications()
+	if prevRoute == RouteLogin && route != RouteLogin {
+		a.setLoginError("")
+	}
+	if prevRoute == RouteParse && route != RouteParse {
+		a.setLastParseError("")
+	}
 	a.openSeq++
 	a.Opening = nil
 	a.PostMenuKey = ""
@@ -1121,7 +1126,6 @@ func (a *App) openLink(raw string, preview *OpeningPreview) {
 
 func (a *App) openLinkCore(raw string, preview *OpeningPreview) {
 	a.setLastParseError("")
-	a.clearErrorNotifications()
 	a.openSeq++
 	seq := a.openSeq
 	if preview != nil {
@@ -1192,7 +1196,7 @@ func (a *App) openLinkCore(raw string, preview *OpeningPreview) {
 			a.Opening.Err = msg
 			return
 		}
-		a.LastParseError = msg
+		a.setLastParseError(msg)
 		a.showError(err)
 	})
 }

@@ -72,7 +72,7 @@ func (a *App) showError(err error) {
 			if a.CurrentRoute != RouteLogin {
 				a.TriggerAuthExpired(reason)
 			} else {
-				a.LoginError = reason
+				a.setLoginError(reason)
 			}
 			return
 		}

@@ -292,7 +292,7 @@ func (a *App) openImportFollowingsModal() {
 	xIn := a.backend.StatusOf(string(site.X)).LoggedIn
 	if !biliIn && !wbIn && !xIn {
 		a.OpenLoginForSite(string(site.Bilibili))
-		a.LoginError = "请先登录哔哩哔哩、微博或 X 账号后再从关注列表导入"
+		a.setLoginError("请先登录哔哩哔哩、微博或 X 账号后再从关注列表导入")
 		return
 	}
 	targetSite := string(site.Bilibili)

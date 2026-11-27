@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chialecode/trace/internal/library"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/update"
 	"github.com/egoist/mygo/ui"
 )
@@ -275,8 +277,9 @@ func TestFloatingNotificationsOverlayStackDismissOneByOneAndPassThrough(t *testi
 	}
 
 	// 7. Error bubble "去登录" closes active modals/overlays, navigates to /login with
-	// preselected site, and keeps non-error info notifications underneath.
+	// preselected site, and preserves both older errors and info notifications underneath.
 	app.notifyInfo("后台任务完成")
+	app.notifyError("任务状态写入失败", "")
 	app.notifyError("抖音登录已失效，请重新粘贴 Cookie", "douyin")
 	app.PlayerOverlay.Open = true
 	app.ConflictDiff.Open = true
@@ -293,8 +296,60 @@ func TestFloatingNotificationsOverlayStackDismissOneByOneAndPassThrough(t *testi
 		t.Fatalf("expected 提示去登录 to close all open modals/overlays: player=%v diff=%v batch=%v",
 			app.PlayerOverlay.Open, app.ConflictDiff.Open, app.MultiTagBatch.Open)
 	}
+	if app.BannerError != "任务状态写入失败" || !tt.HasText("任务状态写入失败") || !tt.HasText("还有 1 条") {
+		t.Fatalf("expected older error preserved on top of info notice after 提示去登录, got BannerError=%q BannerInfo=%q",
+			app.BannerError, app.BannerInfo)
+	}
+	if err := tt.Click("关闭错误提示"); err != nil {
+		t.Fatalf("click 关闭错误提示 for older preserved error: %v", err)
+	}
+	tt.Frame()
 	if app.BannerInfo != "后台任务完成" || !tt.HasText("后台任务完成") {
-		t.Fatalf("expected underlying info notice preserved after 提示去登录, got BannerInfo=%q", app.BannerInfo)
+		t.Fatalf("expected underlying info notice revealed after closing older error, got BannerInfo=%q", app.BannerInfo)
+	}
+}
+
+func TestFloatingNotificationsSurviveNavigationAndDetailOpen(t *testing.T) {
+	app, _, cleanup := newTestUIApp(t)
+	defer cleanup()
+	if _, err := app.backend.ImportCookie(context.Background(), "SESSDATA=fixture; DedeUserID=12345", ""); err != nil {
+		t.Fatal(err)
+	}
+	app.CompleteLogin()
+	app.Navigate(RouteHome)
+
+	// Queue an unread error covered underneath a newer info notice.
+	app.notifyError("抖音登录已失效，请重新粘贴 Cookie", "douyin")
+	app.notifyInfo("已加入缓存队列：BV1xx411c7mD")
+
+	tt := ui.NewTester(app.View, 1280, 860)
+	tt.Frame()
+
+	// Switching routes and opening offline library detail must not discard unread errors.
+	app.Navigate(RouteSubscriptions)
+	tt.Frame()
+	app.Navigate(RouteLibrary)
+	tt.Frame()
+	app.OpenLibraryItemDetail(library.ItemMetadata{
+		ItemKey: "bilibili:video:BV1xx411c7mD",
+		Site:    "bilibili",
+		Kind:    "video",
+		RawID:   "BV1xx411c7mD",
+		Title:   "示例本地视频",
+	})
+	tt.Frame()
+	app.Navigate(RouteHome)
+	tt.Frame()
+
+	if !tt.HasText("已加入缓存队列：BV1xx411c7mD") || !tt.HasText("还有 1 条") {
+		t.Fatal("expected info bubble covering unread error to survive route changes and detail open")
+	}
+	if err := tt.Click("关闭消息提示"); err != nil {
+		t.Fatalf("click 关闭消息提示: %v", err)
+	}
+	tt.Frame()
+	if app.BannerError != "抖音登录已失效，请重新粘贴 Cookie" || !tt.HasText("抖音登录已失效，请重新粘贴 Cookie") {
+		t.Fatalf("expected covered error notice preserved after navigation, got BannerError=%q", app.BannerError)
 	}
 }
 
@@ -388,11 +443,48 @@ func TestFloatingNotificationsInlineErrorNoReboundAndDistinctErrorVisible(t *tes
 	if _, ok := tt.Find("全局错误提示"); ok {
 		t.Fatal("empty SubmitParse must not rebound prior LastParseError as floating bubble")
 	}
-	// A distinct background BannerError on /parse still displays visibly.
+	// A distinct background BannerError on /parse still displays visibly,
+	// and leaving /parse clears only LastParseError without rebounding it.
 	app.notifyError("磁盘空间不足", "")
+	app.setLastParseError("另一条解析错误")
+	app.notifyError("另一条解析错误", "")
 	tt.Frame()
 	if _, ok := tt.Find("全局错误提示"); !ok || !tt.HasText("磁盘空间不足") {
 		t.Fatal("distinct BannerError on RouteParse must still show as floating bubble")
+	}
+	app.Navigate(RouteHome)
+	tt.Frame()
+	if tt.HasText("另一条解析错误") {
+		t.Fatal("leaving RouteParse must not rebound prior LastParseError as floating bubble")
+	}
+	if !tt.HasText("磁盘空间不足") {
+		t.Fatal("leaving RouteParse must preserve distinct background error 磁盘空间不足")
+	}
+
+	// 3. Concurrent auth failure while already on /login (no site logged in) updates
+	// LoginError without rebounding the previously deduplicated LoginError.
+	app.ClearNotifications()
+	if _, err := app.backend.LogoutSite("bilibili"); err != nil {
+		t.Fatal(err)
+	}
+	app.TriggerAuthExpired("首次登录已失效")
+	tt.Frame()
+	if _, ok := tt.Find("全局错误提示"); ok {
+		t.Fatal("expected initial TriggerAuthExpired error deduplicated on RouteLogin")
+	}
+	app.showError(&site.Error{Site: site.Bilibili, Kind: site.ErrKindAuthRequired, Message: "二次登录已失效"})
+	tt.Frame()
+	if app.LoginError != "二次登录已失效" {
+		t.Fatalf("expected LoginError updated to 二次登录已失效, got %q", app.LoginError)
+	}
+	if _, ok := tt.Find("全局错误提示"); ok {
+		t.Fatalf("concurrent auth failure on RouteLogin must not rebound 首次登录已失效 as floating bubble (BannerError=%q)", app.BannerError)
+	}
+	// Leaving /login to /settings clears deduplicated LoginError cleanly without rebound.
+	app.Navigate(RouteSettings)
+	tt.Frame()
+	if _, ok := tt.Find("全局错误提示"); ok {
+		t.Fatalf("leaving RouteLogin must not rebound deduplicated LoginError (BannerError=%q)", app.BannerError)
 	}
 }
 

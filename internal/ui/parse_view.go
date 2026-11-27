@@ -81,7 +81,6 @@ func (a *App) renderParseRoute(c *ui.Context, width float32) {
 									targetSite := a.BannerLoginSite
 									if AccentPillButton(c, "去登录", "解析提示去登录").Clicked() {
 										a.setLastParseError("")
-										a.clearErrorNotifications()
 										a.OpenLoginForSite(targetSite)
 									}
 								}
