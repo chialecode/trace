@@ -208,7 +208,18 @@ func (a *App) Run() error {
 		}
 		a.StartForegroundConnect()
 	})
+	defer a.closeShareReceiver()
 	return mygo.App.Run()
+}
+
+func (a *App) closeShareReceiver() {
+	a.mu.Lock()
+	recv := a.shareRecv
+	a.shareRecv = nil
+	a.mu.Unlock()
+	if recv != nil {
+		_ = recv.Close()
+	}
 }
 
 func (a *App) setupWindows() {
@@ -970,12 +981,17 @@ func (a *App) tryMDNSReconnect(
 	if err != nil || len(found) == 0 {
 		return nil, companionapi.StatusResponse{}, "", nil, err
 	}
-	// Strictly keep the exact pinned TLS 1.3 fingerprint rec.FP via cli.UpdateAddrs!
-	cli, err := companionclient.NewClient(rec, tok, a.appVersion, a.channel)
+	// Build a temporary PairingRecord with ONLY the newly discovered addresses
+	// (clearing stale LastAddr so OrderedAddrs dials discovered addresses directly
+	// without re-dialing the dead old IP), while strictly keeping the original
+	// pinned TLS 1.3 fingerprint rec.FP and node/channel identity unchanged!
+	discRec := rec
+	discRec.LastAddr = ""
+	discRec.Addrs = append([]string(nil), found...)
+	cli, err := companionclient.NewClient(discRec, tok, a.appVersion, a.channel)
 	if err != nil {
 		return nil, companionapi.StatusResponse{}, "", nil, err
 	}
-	cli.UpdateAddrs(found)
 	st, activeAddr, err := cli.ConnectStatus(ctx)
 	if err != nil {
 		cli.Close()

@@ -147,7 +147,10 @@ private class AndroidMdnsBrowser(private val context: Context) : Browser {
 
     private fun pumpLegacyResolve(mgr: NsdManager, gen: Long) {
         val next = synchronized(lock) {
-            if (!isCurrent(gen) || resolveQueue.isEmpty()) {
+            if (!isCurrent(gen)) {
+                return
+            }
+            if (resolveQueue.isEmpty()) {
                 resolvingLegacy = false
                 return
             }

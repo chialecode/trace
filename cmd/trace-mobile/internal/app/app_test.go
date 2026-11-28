@@ -561,14 +561,34 @@ func TestMDNSAutoDiscoveryPinnedCertSuccessAndRogueRejection(t *testing.T) {
 	})
 	defer goodSrv.Close()
 
+	// Spin up a decoy TCP listener representing the stale pre-IP-change LastAddr
+	// so we can assert tryMDNSReconnect NEVER re-dials the stale LastAddr first.
+	oldLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer oldLn.Close()
+	var oldDialHits atomic.Int32
+	go func() {
+		for {
+			c, acceptErr := oldLn.Accept()
+			if acceptErr != nil {
+				return
+			}
+			oldDialHits.Add(1)
+			_ = c.Close()
+		}
+	}()
+	oldAddr := oldLn.Addr().String()
+
 	store := NewMemoryStore()
 	_ = store.SavePairing(companionclient.PairingRecord{
 		Node:     "node-mdns-1",
 		Name:     "Moved-PC",
 		Channel:  "dev",
 		FP:       goodFP,
-		Addrs:    []string{"127.0.0.1:1"}, // unreachable old IP/port
-		LastAddr: "127.0.0.1:1",
+		Addrs:    []string{oldAddr}, // stale old IP/port
+		LastAddr: oldAddr,
 	})
 	_ = store.SaveToken("tok-mdns-secret-1234567890123456")
 
@@ -589,11 +609,14 @@ func TestMDNSAutoDiscoveryPinnedCertSuccessAndRogueRejection(t *testing.T) {
 		t.Fatalf("expected mDNS reconnect with matching pinned cert to succeed, got %v", err)
 	}
 	cli.Close()
+	if hits := oldDialHits.Load(); hits != 0 {
+		t.Fatalf("tryMDNSReconnect must not re-dial stale LastAddr %q, got %d dial(s)", oldAddr, hits)
+	}
 	if activeAddr != goodAddr || st.Name != "Moved-PC" || len(found) != 1 {
 		t.Fatalf("unexpected mDNS reconnect result: addr=%q name=%q found=%v", activeAddr, st.Name, found)
 	}
 	merged := mergeUniqueAddrs(found, rec.Addrs)
-	if len(merged) != 2 || merged[0] != goodAddr || merged[1] != "127.0.0.1:1" {
+	if len(merged) != 2 || merged[0] != goodAddr || merged[1] != oldAddr {
 		t.Fatalf("unexpected merged addrs: %v", merged)
 	}
 

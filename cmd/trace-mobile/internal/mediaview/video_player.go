@@ -265,6 +265,19 @@ func (vp *VideoPlayer) cleanup() {
 	}
 }
 
+func (vp *VideoPlayer) notifyUI() {
+	vp.mu.Lock()
+	closed := vp.closed
+	win := vp.win
+	vp.mu.Unlock()
+	if !closed && win != nil {
+		win.Update(func() {})
+	}
+	if vp.host != nil {
+		vp.host.Update(nil)
+	}
+}
+
 func (vp *VideoPlayer) stopCurrentLocked() {
 	vp.mu.Lock()
 	vp.trackGen++
@@ -448,9 +461,7 @@ func (vp *VideoPlayer) StartTrack(idx int) {
 		vp.mu.Lock()
 		vp.unsupportedMsg = capRes.Message
 		vp.mu.Unlock()
-		if vp.host != nil {
-			vp.host.Update(nil)
-		}
+		vp.notifyUI()
 		return
 	}
 
@@ -470,9 +481,7 @@ func (vp *VideoPlayer) StartTrack(idx int) {
 			vp.loadErrMsg = "无法准备本机视频播放地址"
 		}
 		vp.mu.Unlock()
-		if vp.host != nil {
-			vp.host.Update(nil)
-		}
+		vp.notifyUI()
 		return
 	}
 
@@ -493,9 +502,7 @@ func (vp *VideoPlayer) StartTrack(idx int) {
 			vp.loadErrMsg = "无法启动系统播放器：" + err.Error()
 		}
 		vp.mu.Unlock()
-		if vp.host != nil {
-			vp.host.Update(nil)
-		}
+		vp.notifyUI()
 		return
 	}
 
@@ -538,9 +545,7 @@ func (vp *VideoPlayer) StartTrack(idx int) {
 		}
 	}
 
-	if vp.host != nil {
-		vp.host.Update(nil)
-	}
+	vp.notifyUI()
 }
 
 func (vp *VideoPlayer) issueTrackTicket(track VideoTrack) (string, string, error) {
@@ -591,9 +596,7 @@ func (vp *VideoPlayer) fetchDanmakuAsync(gen uint64, relPath string) {
 			vp.danmakuErr = ""
 		}
 		vp.mu.Unlock()
-		if vp.host != nil {
-			vp.host.Update(nil)
-		}
+		vp.notifyUI()
 	}()
 }
 
@@ -631,9 +634,7 @@ func (vp *VideoPlayer) fetchSubtitleAsync(gen uint64, src SubtitleSource) {
 			vp.subtitleErr = ""
 		}
 		vp.mu.Unlock()
-		if vp.host != nil {
-			vp.host.Update(nil)
-		}
+		vp.notifyUI()
 	}()
 }
 
@@ -663,9 +664,7 @@ func (vp *VideoPlayer) handlePlayerState(p PlaybackHandle, idx int, track VideoT
 		vp.unsupportedMsg = codeccheck.UnsupportedMessage(vLabel, false)
 		vp.mu.Unlock()
 		vp.stopCurrentLocked()
-		if vp.host != nil {
-			vp.host.Update(nil)
-		}
+		vp.notifyUI()
 		return
 	}
 
@@ -680,9 +679,7 @@ func (vp *VideoPlayer) handlePlayerState(p PlaybackHandle, idx int, track VideoT
 		}
 		vp.mu.Unlock()
 		vp.stopCurrentLocked()
-		if vp.host != nil {
-			vp.host.Update(nil)
-		}
+		vp.notifyUI()
 		return
 	}
 
@@ -694,9 +691,7 @@ func (vp *VideoPlayer) handlePlayerState(p PlaybackHandle, idx int, track VideoT
 		vp.StartTrack(idx + 1)
 		return
 	}
-	if vp.host != nil {
-		vp.host.Update(nil)
-	}
+	vp.notifyUI()
 }
 
 func classifyRuntimeCodecError(errText string, track VideoTrack) (string, bool) {

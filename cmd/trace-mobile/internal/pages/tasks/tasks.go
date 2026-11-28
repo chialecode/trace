@@ -918,7 +918,9 @@ func (p *Page) resolveConflict(h pagekit.Host, cf companionapi.ConflictDTO, choi
 	p.actionErr = ""
 	p.actionInfo = ""
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		// Match companionclient.Client.longClient (180s) because desktop ResolveCacheConflict
+		// waits synchronously for re-download tasks to finish.
+		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 		defer cancel()
 		resp, err := cli.ResolveConflict(ctx, cf.ID, choice)
 		h.Update(func() {

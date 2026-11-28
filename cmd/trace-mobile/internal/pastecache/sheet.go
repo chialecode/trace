@@ -89,6 +89,9 @@ func (s *Sheet) SubmitShared(h pagekit.Host, rawText string) {
 		return
 	}
 	s.mu.Lock()
+	// Supersede any in-flight share submission so a second consecutive share always runs.
+	s.gen++
+	s.submitting = false
 	s.open = true
 	s.fromShare = true
 	s.input = trimmed

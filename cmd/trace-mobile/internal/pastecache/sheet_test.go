@@ -229,3 +229,62 @@ func TestPasteCacheSheetSubmitSuccessAlreadyCachedAndErrors(t *testing.T) {
 		t.Fatalf("unexpected JSON serialization: %s err=%v", string(raw), err)
 	}
 }
+
+func TestSubmitSharedSupersedesInFlightSubmission(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	notify := make(chan struct{}, 16)
+
+	var sheet Sheet
+	sheet.SubmitFn = func(_ context.Context, _ *companionclient.Client, input string) (Result, error) {
+		if strings.Contains(input, "BV1FIRST") {
+			close(firstStarted)
+			<-releaseFirst
+			return Result{OK: true, Site: "bilibili", Title: "旧分享结果"}, nil
+		}
+		return Result{OK: true, Site: "bilibili", Title: "新分享结果"}, nil
+	}
+
+	h := &fakeHost{
+		connected: true,
+		cli:       &companionclient.Client{},
+		onUpdate: func() {
+			select {
+			case notify <- struct{}{}:
+			default:
+			}
+		},
+	}
+	sheet.SubmitShared(h, "https://www.bilibili.com/video/BV1FIRST")
+	<-firstStarted
+
+	// Share a second link while the first submission is still in flight.
+	sheet.SubmitShared(h, "https://www.bilibili.com/video/BV1SECOND")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sheet.mu.Lock()
+		done := !sheet.submitting && sheet.result != nil
+		sheet.mu.Unlock()
+		if done {
+			break
+		}
+		select {
+		case <-notify:
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	// Release the superseded first request and verify it does NOT overwrite the newer result.
+	close(releaseFirst)
+	time.Sleep(30 * time.Millisecond)
+
+	sheet.mu.Lock()
+	got := sheet.result
+	submitting := sheet.submitting
+	sheet.mu.Unlock()
+	if submitting {
+		t.Fatal("expected submitting=false after second share completed")
+	}
+	if got == nil || got.Title != "新分享结果" {
+		t.Fatalf("expected newer share result to win, got %+v", got)
+	}
+}
