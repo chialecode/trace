@@ -10,7 +10,36 @@ import (
 	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
+	"github.com/chialecode/trace/internal/uistate"
 )
+
+func (b *Backend) recordSiteVerifiedAt(siteID site.ID, ts string) {
+	if b == nil || b.uiState == nil || !siteID.Valid() {
+		return
+	}
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(ts))
+	if err != nil {
+		t = time.Now().UTC()
+	}
+	formatted := t.UTC().Format(time.RFC3339)
+	_, _ = b.uiState.Mutate(func(st *uistate.State) {
+		if st.AuthVerifiedAt == nil {
+			st.AuthVerifiedAt = make(map[string]string)
+		}
+		st.AuthVerifiedAt[string(siteID)] = formatted
+	})
+}
+
+func (b *Backend) clearSiteVerifiedAt(siteID site.ID) {
+	if b == nil || b.uiState == nil || !siteID.Valid() {
+		return
+	}
+	_, _ = b.uiState.Mutate(func(st *uistate.State) {
+		if st.AuthVerifiedAt != nil {
+			delete(st.AuthVerifiedAt, string(siteID))
+		}
+	})
+}
 
 // HasAnyLogin reports whether at least one supported site has an active credential.
 func (b *Backend) HasAnyLogin() bool {
@@ -271,6 +300,8 @@ func (b *Backend) verifyBootstrapSite(
 			b.clearXMemoryCaches()
 		}
 		b.pauseSiteActiveWork(siteID, "auth_required", expiredMsg)
+	} else {
+		b.recordSiteVerifiedAt(siteID, verified.LastCheckedAt)
 	}
 	b.events.PublishSite(EventAccountChanged, string(siteID), verified.State)
 	return verified, err
@@ -281,6 +312,8 @@ func (b *Backend) VerifyAccount(ctx context.Context) (credential.Status, error) 
 	st, err := b.bili.VerifyCredential(ctx)
 	if err != nil && bilibili.IsKind(err, bilibili.ErrKindAuthRequired) {
 		b.pauseSiteActiveWork(site.Bilibili, "auth_required", "哔哩哔哩登录已失效，任务已暂停")
+	} else if err == nil && st.LoggedIn {
+		b.recordSiteVerifiedAt(site.Bilibili, st.LastCheckedAt)
 	}
 	b.events.PublishSite(EventAccountChanged, string(site.Bilibili), st.State)
 	return st, err
@@ -300,6 +333,8 @@ func (b *Backend) VerifySiteAccount(ctx context.Context, siteID string) (credent
 		if vErr != nil && site.IsKind(vErr, site.ErrKindAuthRequired) {
 			b.clearDouyinMemoryCaches()
 			b.pauseSiteActiveWork(site.Douyin, "auth_required", "抖音登录已失效，任务已暂停")
+		} else if vErr == nil && st.LoggedIn {
+			b.recordSiteVerifiedAt(site.Douyin, st.LastCheckedAt)
 		}
 		b.events.PublishSite(EventAccountChanged, string(site.Douyin), st.State)
 		return st, vErr
@@ -308,6 +343,8 @@ func (b *Backend) VerifySiteAccount(ctx context.Context, siteID string) (credent
 		if vErr != nil && site.IsKind(vErr, site.ErrKindAuthRequired) {
 			b.clearWeiboMemoryCaches()
 			b.pauseSiteActiveWork(site.Weibo, "auth_required", "微博登录已失效，任务已暂停")
+		} else if vErr == nil && st.LoggedIn {
+			b.recordSiteVerifiedAt(site.Weibo, st.LastCheckedAt)
 		}
 		b.events.PublishSite(EventAccountChanged, string(site.Weibo), st.State)
 		return st, vErr
@@ -316,6 +353,8 @@ func (b *Backend) VerifySiteAccount(ctx context.Context, siteID string) (credent
 		if vErr != nil && site.IsKind(vErr, site.ErrKindAuthRequired) {
 			b.clearXMemoryCaches()
 			b.pauseSiteActiveWork(site.X, "auth_required", "X 登录已失效，任务已暂停")
+		} else if vErr == nil && st.LoggedIn {
+			b.recordSiteVerifiedAt(site.X, st.LastCheckedAt)
 		}
 		b.events.PublishSite(EventAccountChanged, string(site.X), st.State)
 		return st, vErr
@@ -445,6 +484,7 @@ func (b *Backend) LoginWithCookie(ctx context.Context, siteID, rawCookie, rawRef
 
 func (b *Backend) finishSiteLogin(siteID site.ID, loggedIn bool, state string, switched bool, prevAuthPaused []string) {
 	if loggedIn {
+		b.recordSiteVerifiedAt(siteID, b.StatusOf(string(siteID)).LastCheckedAt)
 		if switched {
 			b.resumeAuthPausedQueueIDs(siteID, prevAuthPaused)
 		} else if b.queue != nil {
@@ -466,8 +506,11 @@ func (b *Backend) RefreshCookie(ctx context.Context) (credential.Status, error) 
 	st, err := b.bili.CheckAndRefreshCookie(ctx)
 	if err != nil {
 		b.logError("RefreshCookie", err)
-	} else if st.LoggedIn && b.queue != nil {
-		b.queue.resumeAuthPausedForSite(site.Bilibili)
+	} else if st.LoggedIn {
+		b.recordSiteVerifiedAt(site.Bilibili, st.LastCheckedAt)
+		if b.queue != nil {
+			b.queue.resumeAuthPausedForSite(site.Bilibili)
+		}
 	}
 	if err == nil && st.LoggedIn && b.cred.CookieHeader() != before {
 		// Renewal replaced the Cookie; the old one stops working, so the
@@ -486,6 +529,7 @@ func (b *Backend) Logout() (credential.Status, error) {
 	if err != nil {
 		b.logError("Logout", err)
 	} else {
+		b.clearSiteVerifiedAt(site.Bilibili)
 		b.logInfo("bilibili account logged out and credentials cleared")
 	}
 	b.events.PublishSite(EventAccountChanged, string(site.Bilibili), st.State)
@@ -509,6 +553,7 @@ func (b *Backend) LogoutSite(siteID string) (credential.Status, error) {
 		if lErr != nil {
 			b.logError("LogoutSite.Douyin", lErr)
 		} else {
+			b.clearSiteVerifiedAt(site.Douyin)
 			b.logInfo("douyin account logged out and credentials cleared")
 		}
 		b.events.PublishSite(EventAccountChanged, string(site.Douyin), st.State)
@@ -521,6 +566,7 @@ func (b *Backend) LogoutSite(siteID string) (credential.Status, error) {
 		if lErr != nil {
 			b.logError("LogoutSite.Weibo", lErr)
 		} else {
+			b.clearSiteVerifiedAt(site.Weibo)
 			b.logInfo("weibo account logged out and credentials cleared")
 		}
 		b.events.PublishSite(EventAccountChanged, string(site.Weibo), st.State)
@@ -533,6 +579,7 @@ func (b *Backend) LogoutSite(siteID string) (credential.Status, error) {
 		if lErr != nil {
 			b.logError("LogoutSite.X", lErr)
 		} else {
+			b.clearSiteVerifiedAt(site.X)
 			b.logInfo("x account logged out and credentials cleared")
 		}
 		b.events.PublishSite(EventAccountChanged, string(site.X), st.State)

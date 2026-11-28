@@ -157,15 +157,44 @@ func (a *App) renderRail(c *ui.Context) {
 		})
 
 		acct, acctSite, acctUID, name, tip := a.primaryAccountSummary()
+		expiredSites := a.expiredAccountSites()
+		avatarLabel := "账号：" + tip
+		avatarTooltip := avatarLabel
+		if len(expiredSites) > 0 {
+			avatarTooltip = accountExpiryTooltip(expiredSites)
+		}
+		openAccountTarget := func() {
+			if a.backend.HasAnyLogin() || len(expiredSites) > 0 {
+				a.SettingsCategory = "account"
+				a.Navigate(RouteSettings)
+			} else {
+				a.Navigate(RouteLogin)
+			}
+		}
 		ui.Column(c).AlignItems(ui.Center).Gap(10).Children(func() {
-			a.renderAccountAvatar(c, acctSite, name, acctUID, acct.Mid, 32, false, "账号："+tip, func() {
-				if a.backend.HasAnyLogin() {
-					a.SettingsCategory = "account"
-					a.Navigate(RouteSettings)
-				} else {
-					a.Navigate(RouteLogin)
+			ui.Box(c).Size(36, 36).Center().Children(func() {
+				el := a.renderAccountAvatar(c, acctSite, name, acctUID, acct.Mid, 32, false, avatarLabel, openAccountTarget, acct.Face)
+				if len(expiredSites) > 0 {
+					el.Tooltip(avatarTooltip)
+					badgeBtn := ui.ButtonBase(c).
+						Label("账号失效提示").
+						Tooltip(avatarTooltip).
+						Absolute().
+						Top(0).
+						Right(0).
+						Size(14, 14).
+						Radius(7).
+						Background(ColorDotRed).
+						Border(1.5, ColorBgRail).
+						Center()
+					badgeBtn.Children(func() {
+						ui.Text(c, "!").FontSize(9).FontWeight(700).TextColor(ColorWhite).SingleLine()
+					})
+					if badgeBtn.Clicked() {
+						openAccountTarget()
+					}
 				}
-			}, acct.Face)
+			})
 			if railButton(c, "settings", "设置", a.CurrentRoute == RouteSettings, 0) {
 				a.Navigate(RouteSettings)
 			}
