@@ -954,17 +954,22 @@ func TestDownloadDetailRemoveConfirmAndBackClearsStalePolling(t *testing.T) {
 	if err := tt.Click("详情确认移除任务：dl-fail-detail"); err != nil {
 		t.Fatal(err)
 	}
-	deadline = time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		host.drainUpdates()
 		tt.Frame()
-		if removeHits.Load() == 1 {
+		if removeHits.Load() == 1 && pg.busyActionKey == "" && host.router.Path() == "/" {
+			host.drainUpdates()
+			tt.Frame()
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if removeHits.Load() != 1 {
 		t.Fatalf("expected 1 remove call after confirmation, got %d", removeHits.Load())
+	}
+	if pg.busyActionKey != "" || host.router.Path() != "/" {
+		t.Fatalf("expected detail remove callback to complete and navigate back, busy=%q path=%q", pg.busyActionKey, host.router.Path())
 	}
 	pg.OnDisconnected()
 }
@@ -1102,7 +1107,7 @@ func TestTasksV2ConflictsResolutionPasteLinkAndLivePreview(t *testing.T) {
 	tt := ui.NewTester(viewFn, 412, 915)
 	pumpUntil := func(cond func() bool) {
 		t.Helper()
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
 			host.drainUpdates()
 			tt.Frame()
@@ -1221,10 +1226,17 @@ func TestTasksV2ConflictsResolutionPasteLinkAndLivePreview(t *testing.T) {
 	}
 	pumpUntil(func() bool {
 		mu.Lock()
-		got := len(parseInputs) == 1
+		sent := len(parseInputs) == 1
 		mu.Unlock()
-		return got && tt.HasText("已加入电脑缓存队列")
+		return sent && !tt.HasText("正在由电脑端解析并加入缓存…") &&
+			tt.HasText("已加入电脑缓存队列") && tt.HasText("手机粘贴缓存测试视频")
 	})
+	mu.Lock()
+	gotParseInputs := append([]string(nil), parseInputs...)
+	mu.Unlock()
+	if len(gotParseInputs) != 1 || gotParseInputs[0] != "https://www.bilibili.com/video/BV1PASTE" {
+		t.Fatalf("expected 1 parse-and-cache request for BV1PASTE, got %v", gotParseInputs)
+	}
 	if !tt.HasText("已加入电脑缓存队列") || !tt.HasText("手机粘贴缓存测试视频") {
 		t.Fatalf("expected parse-and-cache queued feedback, texts=%v", tt.Texts())
 	}
