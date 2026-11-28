@@ -117,7 +117,36 @@ func TestCIWorkflowHardening(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	if !strings.Contains(text, "  repository-quality:\n") {
+		t.Fatal("ci.yml must keep required job name repository-quality")
+	}
 	if !strings.Contains(text, "persist-credentials: false") {
 		t.Fatal("ci.yml checkout must set persist-credentials: false")
+	}
+	uses := regexp.MustCompile(`uses:\s*(\S+)`).FindAllStringSubmatch(text, -1)
+	if len(uses) == 0 {
+		t.Fatal("ci.yml has no actions")
+	}
+	pinned := regexp.MustCompile(`^actions/(checkout|upload-artifact|download-artifact)@[0-9a-f]{40}$`)
+	for _, u := range uses {
+		if !pinned.MatchString(u[1]) {
+			t.Errorf("ci.yml action not pinned to a full commit or not allowed: %s", u[1])
+		}
+	}
+	if strings.Contains(text, "setup-go") {
+		t.Error("ci.yml must not use setup-go")
+	}
+	if !strings.Contains(text, "      CGO_ENABLED: \"0\"\n") {
+		t.Fatal("ci.yml must keep job-level CGO_ENABLED: \"0\" for pure-Go checks and remote smoke")
+	}
+	if !strings.Contains(text, "run: go run ./tools/check\n") {
+		t.Fatal("ci.yml must run go run ./tools/check")
+	}
+	if !strings.Contains(text, "run: go run ./tools/smoke -server\n") {
+		t.Fatal("ci.yml must run go run ./tools/smoke -server")
+	}
+	raceStep := regexp.MustCompile(`(?m)^      - name: Run race detector tests\n        env:\n          CGO_ENABLED: "1"\n        run: go test -race -count=1(?: -timeout [0-9]+[ms])? \./\.\.\.\s*$`)
+	if !raceStep.MatchString(text) {
+		t.Fatal("ci.yml must run go test -race -count=1 ./... in a dedicated step with CGO_ENABLED: \"1\"")
 	}
 }

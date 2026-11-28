@@ -89,7 +89,8 @@ type App struct {
 	gateWindow *mygo.Window
 	gateShown  bool
 	qrScanner  qrscanner.Scanner
-	invalidate func() // optional test hook for ui.Tester
+	invalidate func()       // optional test hook for ui.Tester
+	postUpdate func(func()) // optional test hook to marshal Update callbacks onto the test goroutine
 
 	pair pairingState
 }
@@ -811,6 +812,10 @@ func formatUptime(uptimeSec int64, startedAt string) string {
 
 // Update schedules fn on the UI main thread and triggers re-render.
 func (a *App) Update(fn func()) {
+	if a.postUpdate != nil {
+		a.postUpdate(fn)
+		return
+	}
 	if a.invalidate != nil {
 		if fn != nil {
 			fn()

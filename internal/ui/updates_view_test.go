@@ -238,10 +238,13 @@ func TestSettingsUpdateReleasePageCheckFlowAndHistoryM4K32(t *testing.T) {
 		},
 	})
 	app.BindUpdater(ctrl)
+	posted := make(chan func(), 32)
+	app.BindEventLoop(func(fn func()) { posted <- fn })
 	app.SettingsCategory = "update"
 	app.Navigate(RouteSettings)
 
 	tt := ui.NewTester(app.View, 1280, 860)
+	drainPosted(posted)
 	tt.Frame()
 
 	for _, expectedText := range []string{
@@ -290,11 +293,13 @@ func TestSettingsUpdateReleasePageCheckFlowAndHistoryM4K32(t *testing.T) {
 	// Wait briefly for RecordCheck after Engine.Check returns.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
+		drainPosted(posted)
 		if len(app.backend.GetUpdateHistory().Checks) >= 2 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	drainPosted(posted)
 	tt.Frame()
 
 	hist := app.backend.GetUpdateHistory()

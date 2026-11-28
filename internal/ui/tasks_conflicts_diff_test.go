@@ -104,10 +104,12 @@ func TestTasksConflictsDiffModalHighlightsTextAndAlignsMediaSideBySide(t *testin
 	}
 
 	app.backend = stub
-	app.BindEventLoop(func(fn func()) { fn() })
+	posted := make(chan func(), 64)
+	app.BindEventLoop(func(fn func()) { posted <- fn })
 	app.OpenTasksConflicts()
 
 	tt := ui.NewTester(app.View, 1280, 860)
+	drainPosted(posted)
 	tt.Frame()
 
 	if _, ok := tt.Find("对比差异：conflict_diff_1"); !ok {
@@ -116,12 +118,14 @@ func TestTasksConflictsDiffModalHighlightsTextAndAlignsMediaSideBySide(t *testin
 	tt.Click("对比差异：conflict_diff_1")
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
+		drainPosted(posted)
 		tt.Frame()
 		if app.ConflictDiff.Open && !app.ConflictDiff.Loading && app.ConflictDiff.Diff != nil && len(app.ConflictDiff.Diff.MediaPairs) == 2 {
 			break
 		}
 		time.Sleep(15 * time.Millisecond)
 	}
+	drainPosted(posted)
 	tt.Frame()
 
 	if !app.ConflictDiff.Open {
@@ -180,15 +184,18 @@ func TestTasksConflictsDiffModalHighlightsTextAndAlignsMediaSideBySide(t *testin
 	tt.Click("对比弹窗保留两版")
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
+		drainPosted(posted)
 		tt.Frame()
 		base.mu.Lock()
 		n := len(base.resolveCalls)
 		base.mu.Unlock()
-		if n > 0 {
+		if n > 0 && !app.isPending("conflict-resolve:conflict_diff_1") {
 			break
 		}
 		time.Sleep(15 * time.Millisecond)
 	}
+	drainPosted(posted)
+	tt.Frame()
 	if app.ConflictDiff.Open {
 		t.Fatal("expected diff modal to close after clicking 保留两版")
 	}

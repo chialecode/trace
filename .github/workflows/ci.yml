@@ -28,3 +28,8 @@ jobs:
 
       - name: Remote smoke (trace-server, fake rclone, no network)
         run: go run ./tools/smoke -server
+
+      - name: Run race detector tests
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 -timeout 15m ./...

@@ -23,6 +23,7 @@ type fakeHost struct {
 	cli         *companionclient.Client
 	selectedTab pagekit.TabID
 	onUpdate    func()
+	postUpdate  func(func())
 }
 
 func (f *fakeHost) ConnState() pagekit.ConnState {
@@ -47,12 +48,17 @@ func (f *fakeHost) RefreshStatus()                                     {}
 func (f *fakeHost) Unpair()                                            {}
 func (f *fakeHost) SelectTab(tab pagekit.TabID)                        { f.selectedTab = tab }
 func (f *fakeHost) Update(fn func()) {
+	f.mu.Lock()
+	post := f.postUpdate
+	cb := f.onUpdate
+	f.mu.Unlock()
+	if post != nil {
+		post(fn)
+		return
+	}
 	if fn != nil {
 		fn()
 	}
-	f.mu.Lock()
-	cb := f.onUpdate
-	f.mu.Unlock()
 	if cb != nil {
 		cb()
 	}
@@ -79,29 +85,58 @@ func settleSheet(tt *ui.Tester) {
 }
 
 func TestPasteCacheSheetSubmitSuccessAlreadyCachedAndErrors(t *testing.T) {
-	notify := make(chan struct{}, 16)
+	var qMu sync.Mutex
+	var qFns []func()
+	notify := make(chan struct{}, 1)
 	h := &fakeHost{
 		connected:   true,
 		cli:         &companionclient.Client{},
 		selectedTab: pagekit.TabHome,
-		onUpdate: func() {
+		postUpdate: func(fn func()) {
+			qMu.Lock()
+			if fn != nil {
+				qFns = append(qFns, fn)
+			}
+			qMu.Unlock()
 			select {
 			case notify <- struct{}{}:
 			default:
 			}
 		},
 	}
+	drainPosted := func() {
+		for {
+			qMu.Lock()
+			batch := qFns
+			qFns = nil
+			qMu.Unlock()
+			if len(batch) == 0 {
+				return
+			}
+			for _, fn := range batch {
+				fn()
+			}
+		}
+	}
 
+	var mu sync.Mutex
 	var gotInputs []string
 	var nextRes Result
 	var nextErr error
 	queuedCallbacks := 0
 
 	var sheet Sheet
-	sheet.SetOnQueued(func() { queuedCallbacks++ })
+	sheet.SetOnQueued(func() {
+		mu.Lock()
+		queuedCallbacks++
+		mu.Unlock()
+	})
 	sheet.SubmitFn = func(_ context.Context, _ *companionclient.Client, input string) (Result, error) {
+		mu.Lock()
 		gotInputs = append(gotInputs, input)
-		return nextRes, nextErr
+		res, err := nextRes, nextErr
+		mu.Unlock()
+		return res, err
 	}
 
 	tt := ui.NewTester(func(c *ui.Context) {
@@ -111,7 +146,30 @@ func TestPasteCacheSheetSubmitSuccessAlreadyCachedAndErrors(t *testing.T) {
 		})
 	}, 360, 800)
 
+	waitSubmitDone := func(wantCount int) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			drainPosted()
+			tt.Frame()
+			mu.Lock()
+			n := len(gotInputs)
+			mu.Unlock()
+			sheet.mu.Lock()
+			busy := sheet.submitting
+			sheet.mu.Unlock()
+			if n >= wantCount && !busy {
+				return
+			}
+			select {
+			case <-notify:
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+
 	// 1. Open and submit a Bilibili share text -> queued task -> jump to Tasks tab.
+	mu.Lock()
 	nextRes = Result{
 		OK:         true,
 		TaskID:     "dl_42",
@@ -119,6 +177,7 @@ func TestPasteCacheSheetSubmitSuccessAlreadyCachedAndErrors(t *testing.T) {
 		Title:      "【演示】手机分享让电脑缓存",
 		AuthorName: "测试UP主",
 	}
+	mu.Unlock()
 	sheet.Open("【演示】https://www.bilibili.com/video/BV1xx411c7mD")
 	settleSheet(tt)
 
@@ -137,20 +196,17 @@ func TestPasteCacheSheetSubmitSuccessAlreadyCachedAndErrors(t *testing.T) {
 	if err := tt.Click("发送到电脑缓存"); err != nil {
 		t.Fatalf("click submit: %v", err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for len(gotInputs) == 0 && time.Now().Before(deadline) {
-		select {
-		case <-notify:
-		case <-time.After(10 * time.Millisecond):
-		}
-		tt.Frame()
-	}
+	waitSubmitDone(1)
 	tt.Frame()
-	if len(gotInputs) != 1 || !strings.Contains(gotInputs[0], "BV1xx411c7mD") {
-		t.Fatalf("unexpected submitted input: %+v", gotInputs)
+	mu.Lock()
+	inputsSnap := append([]string(nil), gotInputs...)
+	queuedSnap := queuedCallbacks
+	mu.Unlock()
+	if len(inputsSnap) != 1 || !strings.Contains(inputsSnap[0], "BV1xx411c7mD") {
+		t.Fatalf("unexpected submitted input: %+v", inputsSnap)
 	}
-	if queuedCallbacks != 1 {
-		t.Fatalf("expected onQueued callback once, got %d", queuedCallbacks)
+	if queuedSnap != 1 {
+		t.Fatalf("expected onQueued callback once, got %d", queuedSnap)
 	}
 	if !tt.HasText("已加入电脑缓存队列") || !tt.HasText("【演示】手机分享让电脑缓存") {
 		t.Fatalf("expected queued result feedback, texts=%v", tt.Texts())
@@ -169,21 +225,16 @@ func TestPasteCacheSheetSubmitSuccessAlreadyCachedAndErrors(t *testing.T) {
 	}
 
 	// 2. Android Share Intent auto-submit -> already cached -> jump to Library tab.
+	mu.Lock()
 	nextRes = Result{
 		OK:            true,
 		Site:          "douyin",
 		Title:         "已缓存抖音作品",
 		AlreadyCached: true,
 	}
+	mu.Unlock()
 	sheet.SubmitShared(h, "https://v.douyin.com/example/")
-	deadline = time.Now().Add(2 * time.Second)
-	for len(gotInputs) < 2 && time.Now().Before(deadline) {
-		select {
-		case <-notify:
-		case <-time.After(10 * time.Millisecond):
-		}
-		tt.Frame()
-	}
+	waitSubmitDone(2)
 	settleSheet(tt)
 	if !tt.HasText("电脑媒体库中已缓存该内容") {
 		t.Fatalf("expected already-cached feedback, texts=%v", tt.Texts())
@@ -197,21 +248,16 @@ func TestPasteCacheSheetSubmitSuccessAlreadyCachedAndErrors(t *testing.T) {
 	}
 
 	// 3. Error feedback (auth_required / risk_control / unsupported).
+	mu.Lock()
 	nextRes = Result{}
 	nextErr = &companionclient.Error{
 		Status:  http.StatusUnauthorized,
 		Code:    companionapi.CodeAuthRequired,
 		Message: "请先在电脑上登录哔哩哔哩",
 	}
+	mu.Unlock()
 	sheet.SubmitShared(h, "https://www.bilibili.com/video/BV1needlogin")
-	deadline = time.Now().Add(2 * time.Second)
-	for len(gotInputs) < 3 && time.Now().Before(deadline) {
-		select {
-		case <-notify:
-		case <-time.After(10 * time.Millisecond):
-		}
-		tt.Frame()
-	}
+	waitSubmitDone(3)
 	settleSheet(tt)
 	if !tt.HasText("请先在电脑上登录哔哩哔哩") {
 		t.Fatalf("expected auth_required message, texts=%v", tt.Texts())
