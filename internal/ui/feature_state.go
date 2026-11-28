@@ -60,10 +60,14 @@ type featureState struct {
 	subAccRowsSig subAccountRowsSig
 	subAccRows    []subAccountRow
 
-	// Cached filtered & sorted subscriptions list and per-subscription local latest timestamps.
-	filteredSubsSig  filteredSubsSig
-	filteredSubs     []subscription.Subscription
-	filteredSubItems []subGridItem
+	// Cached filtered subscriptions list (default order, used by picker modals).
+	filteredSubsSig filteredSubsSig
+	filteredSubs    []subscription.Subscription
+
+	// Cached filtered & sorted subscriptions grid items with local latest timestamps.
+	subGridSig   subGridItemsSig
+	subGridItems []subGridItem
+	subGridSubs  []subscription.Subscription
 }
 
 type subGridItem struct {
@@ -86,6 +90,13 @@ type subAccountRowsSig struct {
 }
 
 type filteredSubsSig struct {
+	subsRev int
+	subsN   int
+	search  string
+	hash    uint64
+}
+
+type subGridItemsSig struct {
 	subsRev      int
 	subsN        int
 	statsRev     int

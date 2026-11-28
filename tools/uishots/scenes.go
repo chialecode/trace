@@ -214,9 +214,9 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.SubAccountsOpen = false
 				app.SubChecksOpen = false
 				app.SubSearchQuery = ""
-				app.SubSort = uistate.SubSortRecent
 				app.Navigate(ui.RouteSubscriptions)
 				seedRecentAndLive()
+				app.SubSort = uistate.SubSortRecent
 				now := time.Now()
 				for i := range app.Subscriptions {
 					switch {

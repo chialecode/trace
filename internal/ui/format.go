@@ -100,9 +100,13 @@ func formatSubGridUpdatedAt(ts int64, now time.Time) string {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	t := time.Unix(ts, 0).Local()
-	nowLocal := now.Local()
-	diff := nowLocal.Sub(t)
+	loc := now.Location()
+	if loc == nil {
+		loc = time.Local
+	}
+	t := time.Unix(ts, 0).In(loc)
+	nowInLoc := now.In(loc)
+	diff := nowInLoc.Sub(t)
 	if diff < 0 && diff > -time.Minute {
 		return "刚刚更新"
 	}
@@ -120,7 +124,7 @@ func formatSubGridUpdatedAt(ts int64, now time.Time) string {
 			return fmt.Sprintf("%d 天前更新", int(diff/(24*time.Hour)))
 		}
 	}
-	if t.Year() == nowLocal.Year() {
+	if t.Year() == nowInLoc.Year() {
 		return fmt.Sprintf("%d月%d日更新", int(t.Month()), t.Day())
 	}
 	return fmt.Sprintf("%d年%d月%d日更新", t.Year(), int(t.Month()), t.Day())

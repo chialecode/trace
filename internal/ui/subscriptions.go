@@ -96,7 +96,7 @@ func (a *App) filteredSubscriptionItems(query, sortMode string) ([]subGridItem, 
 	if len(authors) > 0 {
 		authorsFirst = &authors[0]
 	}
-	sig := filteredSubsSig{
+	sig := subGridItemsSig{
 		subsRev:      a.subsRev,
 		subsN:        len(a.Subscriptions),
 		statsRev:     a.statsRev,
@@ -108,8 +108,8 @@ func (a *App) filteredSubscriptionItems(query, sortMode string) ([]subGridItem, 
 		hash:         a.subscriptionsAccountsFingerprint(),
 	}
 	st := a.fs()
-	if st.filteredSubItems != nil && st.filteredSubs != nil && st.filteredSubsSig == sig {
-		return st.filteredSubItems, st.filteredSubs
+	if st.subGridItems != nil && st.subGridSubs != nil && st.subGridSig == sig {
+		return st.subGridItems, st.subGridSubs
 	}
 
 	latestByAcc := make(map[string]int64, len(authors))
@@ -124,7 +124,55 @@ func (a *App) filteredSubscriptionItems(query, sortMode string) ([]subGridItem, 
 		}
 	}
 
-	items := make([]subGridItem, 0, len(a.Subscriptions))
+	base := a.filteredSubscriptions(query)
+	items := make([]subGridItem, len(base))
+	for i, s := range base {
+		latestTs := s.LatestUpdateTs
+		if latestTs < 0 {
+			latestTs = 0
+		}
+		for _, ref := range subscriptionAuthorRefs(s) {
+			if ts := latestByAcc[ref.Site+":"+ref.UID]; ts > latestTs {
+				latestTs = ts
+			}
+		}
+		items[i] = subGridItem{
+			sub:      s,
+			latestTs: latestTs,
+		}
+	}
+
+	if sortMode == uistate.SubSortRecent && len(items) > 1 {
+		sort.SliceStable(items, func(i, j int) bool {
+			if items[i].latestTs != items[j].latestTs {
+				return items[i].latestTs > items[j].latestTs
+			}
+			return false
+		})
+	}
+
+	subs := make([]subscription.Subscription, len(items))
+	for i := range items {
+		subs[i] = items[i].sub
+	}
+	st.subGridSig = sig
+	st.subGridItems = items
+	st.subGridSubs = subs
+	return items, subs
+}
+
+func (a *App) filteredSubscriptions(query string) []subscription.Subscription {
+	sig := filteredSubsSig{
+		subsRev: a.subsRev,
+		subsN:   len(a.Subscriptions),
+		search:  query,
+		hash:    a.subscriptionsAccountsFingerprint(),
+	}
+	st := a.fs()
+	if st.filteredSubs != nil && st.filteredSubsSig == sig {
+		return st.filteredSubs
+	}
+	filtered := make([]subscription.Subscription, 0, len(a.Subscriptions))
 	for _, s := range a.Subscriptions {
 		if query != "" {
 			matched := strings.Contains(strings.ToLower(s.Name), query) ||
@@ -151,43 +199,11 @@ func (a *App) filteredSubscriptionItems(query, sortMode string) ([]subGridItem, 
 				continue
 			}
 		}
-		latestTs := s.LatestUpdateTs
-		if latestTs < 0 {
-			latestTs = 0
-		}
-		for _, ref := range subscriptionAuthorRefs(s) {
-			if ts := latestByAcc[ref.Site+":"+ref.UID]; ts > latestTs {
-				latestTs = ts
-			}
-		}
-		items = append(items, subGridItem{
-			sub:      s,
-			latestTs: latestTs,
-		})
-	}
-
-	if sortMode == uistate.SubSortRecent && len(items) > 1 {
-		sort.SliceStable(items, func(i, j int) bool {
-			if items[i].latestTs != items[j].latestTs {
-				return items[i].latestTs > items[j].latestTs
-			}
-			return false
-		})
-	}
-
-	subs := make([]subscription.Subscription, len(items))
-	for i := range items {
-		subs[i] = items[i].sub
+		filtered = append(filtered, s)
 	}
 	st.filteredSubsSig = sig
-	st.filteredSubItems = items
-	st.filteredSubs = subs
-	return items, subs
-}
-
-func (a *App) filteredSubscriptions(query string) []subscription.Subscription {
-	_, subs := a.filteredSubscriptionItems(query, a.effectiveSubSort())
-	return subs
+	st.filteredSubs = filtered
+	return filtered
 }
 
 func (a *App) renderSubscriptionsNarrowSelector(c *ui.Context) {

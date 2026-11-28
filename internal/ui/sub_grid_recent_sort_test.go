@@ -46,6 +46,20 @@ func TestFormatSubGridUpdatedAt(t *testing.T) {
 			}
 		})
 	}
+
+	// Explicit non-UTC+8 (UTC-8) cross-day boundary: must honor now.Location() rather than host time.Local.
+	pst := time.FixedZone("PST", -8*3600)
+	nowPST := time.Date(2026, 11, 28, 12, 0, 0, 0, pst)
+	// 2025-12-19 01:00 UTC is 2025-12-19 09:00 CST, but 2025-12-18 17:00 PST.
+	crossDayTs := time.Date(2025, 12, 19, 1, 0, 0, 0, time.UTC).Unix()
+	if got := formatSubGridUpdatedAt(crossDayTs, nowPST); got != "2025年12月18日更新" {
+		t.Fatalf("formatSubGridUpdatedAt(UTC-8 cross-day) = %q, want %q", got, "2025年12月18日更新")
+	}
+	// Same-year cross-day: 2026-08-05 02:00 UTC is 2026-08-04 18:00 PST.
+	sameYearCrossDayTs := time.Date(2026, 8, 5, 2, 0, 0, 0, time.UTC).Unix()
+	if got := formatSubGridUpdatedAt(sameYearCrossDayTs, nowPST); got != "8月4日更新" {
+		t.Fatalf("formatSubGridUpdatedAt(UTC-8 same-year cross-day) = %q, want %q", got, "8月4日更新")
+	}
 }
 
 func assertSubGridCellOrder(t *testing.T, tt *ui.Tester, orderedIDs []string) {
