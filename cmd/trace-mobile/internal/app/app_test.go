@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -510,4 +512,219 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b[i:])
+}
+
+func makeSelfSignedTLSServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, string, string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := companionclient.Fingerprint(der)
+	srv := httptest.NewUnstartedServer(handler)
+	srv.TLS = &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
+	}
+	srv.StartTLS()
+	return srv, strings.TrimPrefix(srv.URL, "https://"), fp
+}
+
+func TestMDNSAutoDiscoveryPinnedCertSuccessAndRogueRejection(t *testing.T) {
+	// 1. Legitimate desktop moved to a new address with SAME pinned TLS cert fingerprint.
+	goodSrv, goodAddr, goodFP := makeSelfSignedTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case companionapi.PathStatus:
+			_ = json.NewEncoder(w).Encode(companionapi.StatusResponse{
+				Node:     "node-mdns-1",
+				Name:     "Moved-PC",
+				Version:  "0.1.0-dev",
+				Channel:  "dev",
+				Protocol: companionapi.ProtocolVersion,
+				LoggedIn: true,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	defer goodSrv.Close()
+
+	store := NewMemoryStore()
+	_ = store.SavePairing(companionclient.PairingRecord{
+		Node:     "node-mdns-1",
+		Name:     "Moved-PC",
+		Channel:  "dev",
+		FP:       goodFP,
+		Addrs:    []string{"127.0.0.1:1"}, // unreachable old IP/port
+		LastAddr: "127.0.0.1:1",
+	})
+	_ = store.SaveToken("tok-mdns-secret-1234567890123456")
+
+	a := newTestApp(store)
+	a.mdnsDiscoverFn = func(_ context.Context, nodeID, channel string) ([]string, error) {
+		if nodeID != "node-mdns-1" || channel != "dev" {
+			t.Fatalf("unexpected mDNS query: node=%q channel=%q", nodeID, channel)
+		}
+		return []string{goodAddr}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rec, _ := store.LoadPairing()
+	tok, _ := store.LoadToken()
+	cli, st, activeAddr, found, err := a.tryMDNSReconnect(ctx, rec, tok)
+	if err != nil {
+		t.Fatalf("expected mDNS reconnect with matching pinned cert to succeed, got %v", err)
+	}
+	cli.Close()
+	if activeAddr != goodAddr || st.Name != "Moved-PC" || len(found) != 1 {
+		t.Fatalf("unexpected mDNS reconnect result: addr=%q name=%q found=%v", activeAddr, st.Name, found)
+	}
+	merged := mergeUniqueAddrs(found, rec.Addrs)
+	if len(merged) != 2 || merged[0] != goodAddr || merged[1] != "127.0.0.1:1" {
+		t.Fatalf("unexpected merged addrs: %v", merged)
+	}
+
+	// 2. Rogue mDNS advertiser presenting a DIFFERENT certificate MUST be rejected with KindCertChanged!
+	rogueSrv, rogueAddr, rogueFP := makeSelfSignedTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(companionapi.StatusResponse{
+			Node:     "node-mdns-1",
+			Name:     "Evil-PC",
+			Channel:  "dev",
+			Protocol: companionapi.ProtocolVersion,
+			LoggedIn: true,
+		})
+	})
+	defer rogueSrv.Close()
+	if rogueFP == goodFP {
+		t.Fatal("expected distinct cert fingerprint for rogue server")
+	}
+
+	aRogue := newTestApp(store)
+	aRogue.mdnsDiscoverFn = func(context.Context, string, string) ([]string, error) {
+		return []string{rogueAddr}, nil
+	}
+	_, _, _, _, err = aRogue.tryMDNSReconnect(ctx, rec, tok)
+	if err == nil {
+		t.Fatal("SECURITY FAILURE: rogue mDNS server with unpinned cert was trusted!")
+	}
+	if companionclient.KindOf(err) != companionclient.KindCertChanged {
+		t.Fatalf("expected KindCertChanged for rogue cert, got %v (%v)", companionclient.KindOf(err), err)
+	}
+	// Stored fingerprint must remain completely unchanged.
+	afterRec, _ := store.LoadPairing()
+	if afterRec.FP != goodFP {
+		t.Fatalf("stored fingerprint mutated from %q to %q", goodFP, afterRec.FP)
+	}
+}
+
+func TestShareIntentDisconnectedBannerAndConnectedAutoSubmit(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		parsedTexts []string
+	)
+	srv, addr, fp := makeSelfSignedTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/parse-and-cache":
+			var req struct {
+				Input string `json:"input"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			mu.Lock()
+			parsedTexts = append(parsedTexts, req.Input)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true, "taskId": "dl-share-1", "site": "bilibili", "title": "分享测试视频",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	defer srv.Close()
+
+	store := NewMemoryStore()
+	rec := companionclient.PairingRecord{
+		Node: "node-share", Name: "Desk-PC", Channel: "dev", FP: fp, Addrs: []string{addr}, LastAddr: addr,
+	}
+	_ = store.SavePairing(rec)
+	_ = store.SaveToken("tok-share-secret-123456789012345")
+
+	a := newTestApp(store)
+	a.connState = pagekit.ConnError
+	a.lastErr = &companionclient.Error{Kind: companionclient.KindConnRefused}
+
+	// 1. Receive Android ACTION_SEND share while disconnected -> shows pending share banner on connection gate.
+	a.HandleSharedText("【分享】https://www.bilibili.com/video/BV1SHARE")
+	tt := ui.NewTester(a.View, 360, 800)
+	if !tt.HasText("已收到分享链接，连接电脑后将自动发送缓存") {
+		t.Fatalf("expected pending share banner on connection gate, texts=%v", tt.Texts())
+	}
+	assertNoHorizontalOverflow(t, tt, 360)
+
+	// Dismiss pending share banner.
+	if err := tt.Click("取消待发送的分享链接"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if a.pendingShareSnapshot() != "" {
+		t.Fatal("expected pending share text cleared after dismiss")
+	}
+
+	// 2. Connected state -> HandleSharedText immediately submits to POST /api/v1/parse-and-cache!
+	cli, err := companionclient.NewClient(rec, "tok-share-secret-123456789012345", "0.1.0-dev", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	a.client = cli
+	a.connState = pagekit.ConnConnected
+
+	notify := make(chan struct{}, 16)
+	a.invalidate = func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
+	a.HandleSharedText("https://www.bilibili.com/video/BV1LIVE")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		mu.Lock()
+		n := len(parsedTexts)
+		mu.Unlock()
+		if n == 1 {
+			break
+		}
+		select {
+		case <-notify:
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	for range 12 {
+		tt.Advance(100 * time.Millisecond)
+	}
+	tt.Frame()
+	mu.Lock()
+	got := append([]string(nil), parsedTexts...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "https://www.bilibili.com/video/BV1LIVE" {
+		t.Fatalf("expected share text auto-submitted to desktop, got %v", got)
+	}
+	if !tt.HasText("已加入电脑缓存队列") || !tt.HasText("分享测试视频") {
+		t.Fatalf("expected share sheet result card, texts=%v", tt.Texts())
+	}
+	assertNoHorizontalOverflow(t, tt, 360)
 }

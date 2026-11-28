@@ -575,3 +575,227 @@ func TestVideoPlayerTwoLayerCodecCheckMultiPAndSequentialLive(t *testing.T) {
 		t.Fatalf("expected orientation restored to OrientationAny on close, got %v", orientations)
 	}
 }
+
+func TestVideoPlayerDanmakuSubtitlesChaptersAndLivePreview(t *testing.T) {
+	danmakuXML := `<?xml version="1.0" encoding="UTF-8"?><i>` +
+		`<d p="10.0,1,25,16777215,1700000001,0,abc,1001">前方高能弹幕</d>` +
+		`<d p="10.5,5,25,16711680,1700000002,0,abc,1002">顶部置顶弹幕</d>` +
+		`<d p="65.0,4,25,65280,1700000003,0,abc,1003">第二章节底部弹幕</d>` +
+		`</i>`
+	subZH := "WEBVTT\n\n00:00:08.000 --> 00:00:15.000\n欢迎收看第一章节\n\n00:01:00.000 --> 00:01:10.000\n这里是正片内容\n"
+	subEN := "1\n00:00:08,000 --> 00:00:15,000\nWelcome to chapter one\n\n2\n00:01:00,000 --> 00:01:10,000\nMain feature begins\n"
+
+	fh, cleanup := newFakeHost(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/danmaku.xml"):
+			_, _ = w.Write([]byte(danmakuXML))
+		case strings.HasSuffix(r.URL.Path, "/zh-CN.vtt"):
+			_, _ = w.Write([]byte(subZH))
+		case strings.HasSuffix(r.URL.Path, "/en-US.srt"):
+			_, _ = w.Write([]byte(subEN))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+	defer cleanup()
+
+	codeccheck.SetProbeForTest(func(string, int, int) (bool, bool) { return true, true })
+	defer codeccheck.SetProbeForTest(nil)
+
+	var handle *mockPlaybackHandle
+	SetPlayerFactoryForTest(func(_ *mygo.Window, source string, opts videoplayer.Options) (PlaybackHandle, error) {
+		handle = &mockPlaybackHandle{source: source, opts: opts}
+		return handle, nil
+	})
+	defer SetPlayerFactoryForTest(nil)
+
+	vp := NewVideoPlayer(fh, VideoRequest{
+		ItemKey: "bili_v2_demo",
+		Title:   "弹幕字幕与章节演示视频",
+		Tracks: []VideoTrack{{
+			Label:          "P1 正片",
+			RelPath:        "video.mp4",
+			DurationSec:    180,
+			CodecHint:      "avc1",
+			QualitySummary: "1080P · AVC",
+			DanmakuRelPath: "danmaku.xml",
+			Subtitles: []SubtitleSource{
+				{Lang: "zh-CN", Label: "中文（简体）", RelPath: "zh-CN.vtt"},
+				{Lang: "en-US", Label: "English", AI: true, RelPath: "en-US.srt"},
+			},
+			Chapters: []VideoChapter{
+				{FromSec: 0, ToSec: 60, Title: "开场"},
+				{FromSec: 60, ToSec: 180, Title: "正片"},
+			},
+		}},
+	}, nil)
+	defer vp.Close()
+
+	notify := make(chan struct{}, 32)
+	fh.onUpdate = func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
+
+	tt := ui.NewTester(func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		vp.View(c)
+	}, 412, 915)
+
+	// Wait for async in-memory danmaku XML fetch.
+	deadline := time.Now().Add(2 * time.Second)
+	for vp.DanmakuCount() == 0 && time.Now().Before(deadline) {
+		select {
+		case <-notify:
+		case <-time.After(15 * time.Millisecond):
+		}
+		tt.Frame()
+	}
+	if vp.DanmakuCount() != 3 {
+		t.Fatalf("expected 3 parsed in-memory danmaku items, got %d", vp.DanmakuCount())
+	}
+
+	// Emit playback at t=11s: rolling + top danmaku visible.
+	handle.emit(videoplayer.State{
+		Ready:    true,
+		Playing:  true,
+		Width:    1920,
+		Height:   1080,
+		Duration: 180 * time.Second,
+		Position: 11 * time.Second,
+	})
+	tt.Frame()
+	vis := vp.VisibleDanmaku(412, 600)
+	if len(vis) != 2 {
+		t.Fatalf("expected 2 visible danmaku at t=11s, got %d (%+v)", len(vis), vis)
+	}
+
+	// Open "弹幕与字幕设置" sheet and select 中文（简体） subtitle + change opacity & density.
+	if err := tt.Click("弹幕与字幕设置"); err != nil {
+		t.Fatalf("click options sheet: %v", err)
+	}
+	tt.Advance(350 * time.Millisecond)
+	tt.Frame()
+	if !tt.HasText("已加载 3 条弹幕（仅内存，不落盘）") {
+		t.Fatalf("expected danmaku count status in options sheet, texts=%v", tt.Texts())
+	}
+	if err := tt.Click("选择字幕：中文（简体）"); err != nil {
+		t.Fatalf("select zh-CN subtitle: %v", err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for vp.ActiveSubtitle() == "" && time.Now().Before(deadline) {
+		select {
+		case <-notify:
+		case <-time.After(15 * time.Millisecond):
+		}
+		tt.Frame()
+	}
+	if got := vp.ActiveSubtitle(); got != "欢迎收看第一章节" {
+		t.Fatalf("expected active zh-CN subtitle at t=11s, got %q", got)
+	}
+	if err := tt.Click("弹幕透明度：60%"); err != nil {
+		t.Fatalf("click opacity 60%%: %v", err)
+	}
+	if err := tt.Click("弹幕密度：低"); err != nil {
+		t.Fatalf("click density low: %v", err)
+	}
+	// Close sheet cleanly and verify subtitle caption + chapters + zero overflow across 360/412/800.
+	vp.optionsOpen = false
+	tt.Frame()
+	tt.Advance(400 * time.Millisecond)
+	tt.Frame()
+	if !tt.HasText("欢迎收看第一章节") {
+		t.Fatalf("expected rendered subtitle caption in player view, texts=%v", tt.Texts())
+	}
+	saveOptionalShot(t, tt, "mediaview-video-danmaku-sub-chapters-412x915")
+
+	for _, sz := range [][2]int{{360, 800}, {412, 915}, {800, 1280}} {
+		tt.SetSize(sz[0], sz[1])
+		tt.Frame()
+		assertNoHorizontalOverflow(t, tt, sz[0])
+	}
+
+	// Tap chapter 2 ("01:00 正片") -> seeks player to 60s and updates subtitle immediately!
+	if err := tt.Click("章节跳转：01:00 正片"); err != nil {
+		t.Fatalf("click chapter 2: %v", err)
+	}
+	tt.Frame()
+	if handle.lastSeek != 60*time.Second {
+		t.Fatalf("expected seek to 60s on chapter tap, got %v", handle.lastSeek)
+	}
+	if got := vp.ActiveSubtitle(); got != "这里是正片内容" {
+		t.Fatalf("expected chapter 2 subtitle after chapter seek, got %q", got)
+	}
+
+	// Switch to AI English SRT subtitle track.
+	vp.SelectSubtitle("en-US")
+	deadline = time.Now().Add(2 * time.Second)
+	for vp.ActiveSubtitle() != "Main feature begins" && time.Now().Before(deadline) {
+		select {
+		case <-notify:
+		case <-time.After(15 * time.Millisecond):
+		}
+		tt.Frame()
+	}
+	if got := vp.ActiveSubtitle(); got != "Main feature begins" {
+		t.Fatalf("expected English SRT cue at 60s, got %q", got)
+	}
+
+	// Toggle danmaku off -> zero visible danmaku.
+	vp.SetDanmakuEnabled(false)
+	if visOff := vp.VisibleDanmaku(412, 600); len(visOff) != 0 {
+		t.Fatalf("expected zero visible danmaku when disabled, got %d", len(visOff))
+	}
+
+	// Closing wipes in-memory danmaku & subtitle buffers.
+	vp.Close()
+	if vp.DanmakuCount() != 0 || vp.ActiveSubtitle() != "" {
+		t.Fatalf("expected danmaku & subtitle memory buffers wiped on close")
+	}
+
+	// 2. Live recording real-time preview mode + clean teardown.
+	revoked := false
+	SetLivePreviewTicketIssuerForTest(func(proxy *companionclient.MediaProxy, recKey string) (string, string, error) {
+		if recKey != "bilibili:1001" {
+			t.Fatalf("unexpected live recording key: %q", recKey)
+		}
+		return "http://127.0.0.1:45678/live/preview.m3u8?ticket=t-live-1", "t-live-1", nil
+	})
+	defer SetLivePreviewTicketIssuerForTest(nil)
+
+	var previewHandle *mockPlaybackHandle
+	SetPlayerFactoryForTest(func(_ *mygo.Window, source string, opts videoplayer.Options) (PlaybackHandle, error) {
+		previewHandle = &mockPlaybackHandle{source: source, opts: opts}
+		return previewHandle, nil
+	})
+	vpPreview := NewVideoPlayer(fh, VideoRequest{
+		Title:            "主播正在直播",
+		IsLivePreview:    true,
+		LiveRecordingKey: "bilibili:1001",
+		Tracks:           []VideoTrack{{Label: "主播正在直播", CodecHint: "AVC"}},
+	}, func() { revoked = true })
+	ttPrev := ui.NewTester(func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		vpPreview.View(c)
+	}, 360, 800)
+	if previewHandle == nil || !strings.Contains(previewHandle.source, "preview.m3u8") {
+		t.Fatalf("expected live preview player started with HLS URL, got %+v", previewHandle)
+	}
+	previewHandle.emit(videoplayer.State{Ready: true, Playing: true, Width: 1280, Height: 720, Position: 18 * time.Second})
+	ttPrev.Frame()
+	if !ttPrev.HasText("实时预览") {
+		t.Fatalf("expected 实时预览 badge in live preview player, texts=%v", ttPrev.Texts())
+	}
+	if _, hasSeek := ttPrev.Find("播放进度"); hasSeek {
+		t.Fatal("live preview must hide progress seek slider")
+	}
+	assertNoHorizontalOverflow(t, ttPrev, 360)
+
+	CloseAllActive()
+	if !revoked || !previewHandle.destroyed {
+		t.Fatalf("expected CloseAllActive to destroy live preview handle and close window")
+	}
+}

@@ -94,6 +94,7 @@ func (a *App) renderPairingGate(c *ui.Context) {
 				AlignItems(ui.Center).
 				Children(func() {
 					ui.Column(c).FillWidth().MaxWidth(440).Gap(18).Children(func() {
+						a.renderPendingShareBanner(c, true)
 						switch a.pair.step {
 						case pairStepGuide:
 							a.renderPairingGuide(c)

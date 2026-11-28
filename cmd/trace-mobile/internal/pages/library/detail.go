@@ -1450,6 +1450,9 @@ func buildDetailVideoRequest(det companionapi.LibraryItemDetail) (mediaview.Vide
 				Width:          part.Width,
 				Height:         part.Height,
 				QualitySummary: spec,
+				DanmakuRelPath: part.DanmakuRelPath,
+				Subtitles:      mediaview.SubtitlesFromDTO(part.Subtitles),
+				Chapters:       mediaview.ChaptersFromDTO(part.Chapters),
 			})
 		}
 		if len(tracks) > 0 {

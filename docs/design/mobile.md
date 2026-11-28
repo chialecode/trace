@@ -1,6 +1,6 @@
 # 技术设计：移动端
 
-本页说明 TRACE 移动端（手机应用）与电脑端“移动端服务”应当怎样工作（[DEC-085](../decisions.md#dec-085)，需求 [§2.13](../requirements.md#mobile-scope)，界面 [§3.12](../ui.md#mobile)）。**全部是计划，尚未实现**：下文的目录、文件、端口、接口与命令都不代表已经存在，实现时按 issue 拆分（第 11 节）并以代码为准回写。进程分层见[架构](architecture.md)，信息流与媒体路径白名单见[数据与缓存](data-and-cache.md)，证书与令牌的做法沿用[远程设计](remote.md)，选型见[移动端选型](../research/2026-11-26-mobile.md)。
+本页说明 TRACE 移动端（手机应用）与电脑端“移动端服务”应当怎样工作（[DEC-085](../decisions.md#dec-085)，需求 [§2.13](../requirements.md#mobile-scope)，界面 [§3.12](../ui.md#mobile)）。**MVP（[#118](https://github.com/chialecode/trace/issues/118)～[#121](https://github.com/chialecode/trace/issues/121)）与第二版（[#122](https://github.com/chialecode/trace/issues/122)，FR-MOB-030）均已按本设计实现**（iOS、外网访问、通知及正式版 APK 发布打包仍为后续计划，Android 真机检查待实机验收）。进程分层见[架构](architecture.md)，信息流与媒体路径白名单见[数据与缓存](data-and-cache.md)，证书与令牌的做法沿用[远程设计](remote.md)，选型见[移动端选型](../research/2026-11-26-mobile.md)。
 
 <a id="scope"></a>
 ## 1. 定位与边界
@@ -29,7 +29,8 @@
 ## 3. 电脑端移动端服务
 
 - **包**：`internal/companion`（纯 Go，不依赖 MyGo，INV-05）；证书生成、令牌哈希与常数时间比较、失败限流复用 `internal/remote` / `internal/remoteserver` 已有的实现（必要时下沉为共用小包）。`trace-server` 不链接它。
-- **开关**：`settings.json` 新增可选字段 `companion: {enabled, port}`（结构版本不变，旧版忽略）；默认 `enabled=false`。打开后才监听，关掉立即停止监听并断开全部手机（先推送 `bye{reason: "disabled"}`）。
+- **开关**：`settings.json` 可选字段 `companion: {enabled, port, preventSleep}`（结构版本保持 v1 不变，旧版忽略）；默认 `enabled=false`、`preventSleep=false`。打开后才监听，关掉立即停止监听并断开全部手机（先推送 `bye{reason: "disabled"}`）。开启 `preventSleep` 后，仅当至少有 1 台已认证手机保持在线 WebSocket 连接时，电脑端在 Windows 上调用 `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` 保持系统不自动睡眠（不阻止显示器熄屏）；全部手机断开、开关关闭或应用退出时立即释放。
+- **局域网 mDNS / DNS-SD 广播（FR-MOB-030）**：移动端服务监听期间在私有局域网网卡上以纯 Go mDNS 响应器广播 `_trace-companion._tcp.local.`（仅发布局域网私有 IP 与端口，TXT 记录只含非敏感 ASCII 字段 `node`、`channel`、`proto`、`v`，绝不含令牌、配对码、Cookie、证书或本机路径）；服务关闭、网卡变更或退出时立即停止广播并发送 Goodbye（TTL=0）。
 - **端口**：默认正式版 `47381`、开发版 `47382`（远程版是 `47380`），设置里可改；端口被占用时说明并保持关闭，不自动换端口。演练身份 `trace-test` 不提供移动端服务（第 10 节）。
 - **监听地址**：只在私有地址（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`）、IPv6 ULA 与链路本地地址，以及**虚拟网卡（隧道类型，如 Tailscale）上**的 `100.64.0.0/10` 地址上监听；物理网卡上的 `100.64.0.0/10` 是运营商级 NAT 地址，按公网对待、不监听；不监听公网地址。网卡变化时（插拔网线、切换 Wi-Fi、VPN 连上或断开）重新计算。“设置 › 移动端”提示 Windows 防火墙只放行“专用网络”。
 - **证书**：第一次打开时生成自签名 ECDSA P-256 证书，放 `<数据目录>/companion/tls/`（`0600`）；只有用户点“重置移动端身份”才重新生成，重新生成会让全部已配对手机失效。
@@ -87,10 +88,13 @@
 | `POST tasks/queues/{id}/pause`、`resume`、`cancel` | `CacheService.PauseCacheQueue` 等 |
 | `POST live/start`（`accountKey`）、`POST live/recordings/{id}/stop` | `LiveService.Start`、`Stop`；微博与 X 账号按现有规则拒绝 |
 | `POST checks`（`subIds`，空为全部）、`POST checks/account`、`POST checks/cancel` | `UpdateService.Check`、`CheckAccount`、`Cancel` |
+| `POST parse-and-cache`（`input`，FR-MOB-030） | 由电脑端解析链接/分享文案并直接加入缓存队列（支持已缓存检测；绝不返回在线预览流、站点签名 URL 或 Cookie） |
+| `PUT subscriptions/{id}/tags`（`tags` / `preset`+`autoRecord`，FR-MOB-030） | 经 `SubscriptionService` 更新订阅能力标签并触发 `subs:changed` |
+| `POST conflicts/{id}/resolve`（`choice: keep_both \| keep_local \| use_remote`，FR-MOB-030） | 经 `CacheService` 按归档优先规则处理内容冲突并触发 `conflicts:changed` |
+| `GET/HEAD live/recordings/{id}/preview` 与 `preview.m3u8`（FR-MOB-030） | 录制中 `.part` 文件 Range 代理与 RFC 8216 v7 fMP4 HLS 字节范围播放列表（`Cache-Control: no-store`，用于手机端系统播放器连续实时预览） |
 | `DELETE devices/self` | 手机解除配对 |
 
-- 命令返回服务层的结果或错误类别（`auth_required` 带站点、`risk_control`、`rate_limited`、`conflict` 等），手机按 FR-ERR-001 的口径显示。
-- 第二版增加 `POST parse-and-cache`、`PUT subscriptions/{id}/tags`、`POST conflicts/{id}/resolve`（[#122](https://github.com/chialecode/trace/issues/122)）。
+- 命令返回服务层的结果或错误类别（`auth_required` 带站点、`risk_control`、`rate_limited`、`conflict`、`unsupported` 等），手机按 FR-ERR-001 的口径显示。`GET status` 同时增量返回 `capabilities`、`mdnsActive` 与 `preventSleep` 字段（保持协议版本 `1` 向前兼容）。
 - 不提供：登录与凭证、设置修改、删除媒体、导入导出、远程版管理、退出电脑端（FR-MOB-025）。
 
 <a id="events"></a>
@@ -107,6 +111,8 @@
 - **缩略图**：`?w=480` 返回电脑端缩放后的 JPEG（视频与录像用登记的封面）；**看图**：`?w=2560` 按最长边缩放，“查看原图”不带参数返回原文件；GIF、实况片段与视频按原文件返回，不转码。
 - **视频**：系统播放器（`plugins/videoplayer`）不认自签名证书，手机端在 Go 里开一个只监听 `127.0.0.1` 随机端口的转发：播放器请求 `http://127.0.0.1:<端口>/media/...?t=<一次性票据>`，转发校验票据后用固定指纹的 TLS 1.3 与设备令牌向电脑端请求并原样回传（含 `Range` / `If-Range` 与 `206 Partial Content`）。票据 128 位随机、只在内存、绑定一个条目文件、播放器关闭即作废。Android 9+（`targetSdk=36`）默认拦截对 `127.0.0.1` 的明文请求，须由手机端的 Kotlin 原生模块提供 `network_security_config.xml`（仅放行 `127.0.0.1` 与 `localhost`，其余主机一律禁用明文；经原型 [#117](https://github.com/chialecode/trace/issues/117) 实测通过）。
 - 电脑端不转码。手机不能解码的编码（AV1、HEVC、FLAC 等，或超出设备解码器上限的分辨率）采用**两层判定**：优先由 Kotlin 原生模块调用 `MediaCodecList(ALL_CODECS)` 预检目标编码与分辨率上限，再以运行期播放器错误回调（`State.Error != ""`）以及“预期有画面但 `State.Ready && Width == 0 && Height == 0`”（Android `MediaPlayer` 丢弃视频轨只播音轨时不报错误）兜底，命中后明确说明原因（FR-MOB-014）。
+- **弹幕、字幕与章节（FR-MOB-030）**：`VideoPartDTO` 附带 `danmakuRelPath`、`subtitles[]` 与 `chapters[]`；手机播放器按需经已鉴权接口将弹幕 XML 与 WebVTT/SRT 字幕读入内存（`Cache-Control: no-store`，绝不写手机磁盘，切换分 P、退出或断连立即清零），在纯 Go 中完成时间窗二分排版（滚动/顶部/底部防重叠，支持开关、透明度、密度、显示区域，随播放进度/暂停/拖动同步）与字幕轨切换、章节跳转条。
+- **录制实时预览（FR-MOB-030）**：`LiveRecordingDTO` 附带 `previewAvailable` 与 `previewReason`；正在录制的条目点击“实时预览”后，手机回环 `MediaProxy` 签发一次性票据代理电脑端 `preview.m3u8` / `preview`（固定指纹 TLS 1.3 + Bearer 令牌），关闭、停止录制或退后台立即销毁播放器并作废票据。
 
 <a id="app"></a>
 ## 7. 手机端应用
@@ -114,7 +120,8 @@
 ### 7.1 工程与依赖
 
 - 独立的 MyGo 应用 `cmd/trace-mobile/`，自己的 `mygo.json`：名称“TRACE”，标识符 `io.github.chialecode.trace`（正式版图标与旁边的 `-dev` 图标由 MyGo 自动按通道选用），`android.minSdk` `26`，`android.permissions` 声明 `["CAMERA"]`（`INTERNET`、`ACCESS_NETWORK_STATE`、`POST_NOTIFICATIONS` 由 MyGo 自动加入清单）；可选 `android.adaptiveIcon` 与 `android.splash`。开发版由 MyGo 自动加后缀（“TRACE Dev”、`io.github.chialecode.trace.dev`），两者可在同一台手机并存（与电脑端通道隔离一致）。
-- 依赖边界：只链接 MyGo、`ui`、`ui/mobile`、`plugins/videoplayer`、手机端自有的小型 Android Kotlin 原生模块（一并承载 `network_security_config.xml`、`MediaCodecList` 解码能力查询，以及基于 AndroidX CameraX `Preview`+`ImageAnalysis` 与 `com.google.zxing:core` 的离线二维码扫码 `native.View`），以及新的纯 Go 客户端包 `internal/companionclient`（协议类型与 DTO 与电脑端共用无依赖的 `internal/companionapi`）；**不链接** `internal/site/...`、`internal/credential`、`internal/download`、`internal/live`、`internal/subscription`、`internal/library`、`internal/service`。`tools/check` 用 `go list -deps ./cmd/trace-mobile` 检查（同 `trace-server` 的做法）。实现时同步更新[架构 §1](architecture.md#architecture) 的 INV-05 包列表（`internal/companion`、`internal/companionapi`、`internal/companionclient` 不依赖 MyGo；`cmd/trace-mobile` 是新的 MyGo 引用方）与 `tools/check` 的依赖方向清单（[#118](https://github.com/chialecode/trace/issues/118)、[#119](https://github.com/chialecode/trace/issues/119)）。
+- 依赖边界：只链接 MyGo、`ui`、`ui/mobile`、`plugins/videoplayer`、手机端自有的小型 Android Kotlin 原生模块（`codeccheck` 承载 `network_security_config.xml` 与 `MediaCodecList` 解码能力查询、`qrscanner` 承载 CameraX `Preview`+`ImageAnalysis` 与 `com.google.zxing:core` 离线扫码、`shareintent` 承载 `ACTION_SEND` `text/plain` 分享接收、`mdns` 承载 `NsdManager` + `CHANGE_WIFI_MULTICAST_STATE` 局域网自动发现），以及纯 Go 客户端包 `internal/companionclient`（与电脑端共用无依赖的 `internal/companionapi`）；**不链接** `internal/site/...`、`internal/credential`、`internal/download`、`internal/live`、`internal/subscription`、`internal/library`、`internal/service`、`internal/companion`。`tools/check` 用 `go list -deps ./cmd/trace-mobile` 严格拦截依赖越界。
+- **局域网自动发现安全边界（FR-MOB-030）**：配对地址均不可达时，手机通过 `NsdManager` 浏览 `_trace-companion._tcp.` 并仅筛选与配对记录 `node`、`channel` 一致的局域网私有地址，再继续以配对时固定的 TLS 1.3 证书指纹（`rec.FP`）发起校验连接；绝不信任未固定证书，也不改写 `rec.FP`，仅在固定指纹握手与状态校验通过后更新本地保存的地址列表。
 - 帖子卡片、时间与大小格式化等纯展示代码，能与电脑端共用的抽成不依赖服务层的小包；不为共用而把 `internal/ui` 整体搬进手机端。
 
 ### 7.2 界面结构
