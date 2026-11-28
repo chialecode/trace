@@ -193,6 +193,7 @@ type BackfillSummaryDTO struct {
 
 // CacheService defines download queue, background list cache queue, supplement, and quality upgrade operations.
 type CacheService interface {
+	ParseAndCache(ctx context.Context, rawInput string) (ParseAndCacheResult, error)
 	EnqueueVideoCache(ctx context.Context, req download.VideoEnqueueRequest) ([]download.Task, error)
 	EnqueueDynamicCache(ctx context.Context, req download.DynamicEnqueueRequest) (download.Task, error)
 	CacheDouyinWork(ctx context.Context, awemeID string) (download.Task, error)
