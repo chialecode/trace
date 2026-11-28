@@ -48,9 +48,29 @@ func BuildPostLinks(post *Post) []site.TextLink {
 	return out
 }
 
+var xDisplayURLUnescaper = strings.NewReplacer(
+	"&amp;", "&",
+	"&lt;", "<",
+	"&gt;", ">",
+	"&quot;", "\"",
+	"&#39;", "'",
+	"&#x27;", "'",
+)
+
+// unescapeXDisplayURL decodes only explicit XML/HTML entities in display_url without
+// invoking html.UnescapeString (which corrupts query params like "&copy=" into "©=").
+func unescapeXDisplayURL(raw string) string {
+	return xDisplayURLUnescaper.Replace(strings.TrimSpace(raw))
+}
+
 func cleanXDisplayLabel(displayURL, expandedURL string) string {
-	disp := strings.TrimSpace(displayURL)
-	if disp != "" && !strings.HasPrefix(strings.ToLower(disp), "http://") && !strings.HasPrefix(strings.ToLower(disp), "https://") {
+	disp := strings.TrimSpace(unescapeXDisplayURL(displayURL))
+	lowerDisp := strings.ToLower(disp)
+	if disp != "" &&
+		!strings.HasPrefix(lowerDisp, "http://") &&
+		!strings.HasPrefix(lowerDisp, "https://") &&
+		!strings.HasPrefix(lowerDisp, "t.co/") &&
+		lowerDisp != "t.co" {
 		if utf8.RuneCountInString(disp) > 48 {
 			runes := []rune(disp)
 			disp = string(runes[:47]) + "…"
@@ -62,7 +82,13 @@ func cleanXDisplayLabel(displayURL, expandedURL string) string {
 		return "网页链接"
 	}
 	host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
+	if host == "t.co" {
+		return "网页链接"
+	}
 	p := strings.TrimRight(u.Path, "/")
+	if decoded, dErr := url.PathUnescape(p); dErr == nil && utf8.ValidString(decoded) && !strings.ContainsAny(decoded, "\r\n\t ") {
+		p = decoded
+	}
 	if p == "" {
 		return host
 	}

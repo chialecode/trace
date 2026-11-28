@@ -101,7 +101,7 @@ func (p *Page) renderLiveRecordingCard(c *ui.Context, h pagekit.Host, rec compan
 					}
 				})
 
-				// "停止录制" action ONLY on active recordings (FR-MOB-021, ui.md §3.12).
+				// Active recording actions: "实时预览" + "停止录制" (FR-MOB-021, FR-MOB-030).
 				if rec.Recording {
 					lbl := "停止录制"
 					if busy {
@@ -114,6 +114,27 @@ func (p *Page) renderLiveRecordingCard(c *ui.Context, h pagekit.Host, rec compan
 					}
 				}
 			})
+
+			// Live recording real-time preview trigger or unsupported reason (FR-MOB-030).
+			if rec.Recording {
+				avail, reason := liveRecordingPreviewState(rec)
+				if avail {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Wrap().ClipX().Children(func() {
+						prevBtn := theme.SecondaryPillButton(c, "实时预览", "实时预览直播录制："+firstNonEmpty(rec.Uname, recKey)).
+							Disabled(busy)
+						if prevBtn.Clicked() && !busy {
+							p.openLivePreview(h, rec)
+						}
+					})
+				} else if r := strings.TrimSpace(reason); r != "" {
+					msg := r
+					if !strings.Contains(r, "暂不支持实时预览") {
+						msg = "暂不支持实时预览：" + r
+					}
+					ui.Text(c, msg).
+						FontSize(12).LineHeight(theme.LineHeightCompact).TextColor(theme.ColorTextMuted).MaxLines(2)
+				}
+			}
 
 			// Metrics: duration, size, speed, segments, quality & codec.
 			var metrics []string
@@ -202,12 +223,12 @@ func (p *Page) renderPendingSegment(c *ui.Context, h pagekit.Host) {
 				return
 			}
 
-			// 1. Read-only content conflicts with top notice "在电脑上处理" (ZERO resolve actions — FR-MOB-016).
+			// 1. Actionable content conflicts: keep_both (recommended), keep_local, inline-confirmed use_remote (FR-MOB-030).
 			if len(p.conflicts) > 0 {
 				ui.Column(c).FillWidth().Gap(8).ClipX().Children(func() {
 					ui.Text(c, fmt.Sprintf("内容冲突（%d）", len(p.conflicts))).FontSize(14).FontWeight(600).TextColor(theme.ColorTextMain)
 					ui.Row(c).
-						Label("内容冲突只读提示").
+						Label("内容冲突归档保护说明").
 						FillWidth().
 						Padding(10, 12).
 						Radius(10).
@@ -218,12 +239,12 @@ func (p *Page) renderPendingSegment(c *ui.Context, h pagekit.Host) {
 						ClipX().
 						Children(func() {
 							theme.DrawIcon(c, "alert-circle", 16, theme.ColorWarnText, 1.8)
-							ui.Text(c, "在电脑上处理：移动端仅只读查看内容冲突，请前往电脑端 TRACE 任务页处理。").
+							ui.Text(c, "源站内容与本地已缓存版本不一致时不会自动覆盖，默认可同时保留本地旧版与源站新版。").
 								FontSize(12).LineHeight(theme.LineHeightCompact).TextColor(theme.ColorWarnText).MaxLines(3).Grow(1).Shrink(1)
 						})
 
 					for _, cf := range p.conflicts {
-						renderReadOnlyConflictCard(c, cf)
+						p.renderConflictCard(c, h, cf)
 					}
 				})
 			}
@@ -251,15 +272,30 @@ func (p *Page) renderPendingSegment(c *ui.Context, h pagekit.Host) {
 	})
 }
 
-func renderReadOnlyConflictCard(c *ui.Context, cf companionapi.ConflictDTO) {
+func liveRecordingPreviewState(rec companionapi.LiveRecordingDTO) (bool, string) {
+	if !rec.Recording {
+		return false, ""
+	}
+	if rec.PreviewAvailable {
+		return true, ""
+	}
+	if r := strings.TrimSpace(rec.PreviewReason); r != "" {
+		return false, r
+	}
+	return false, "当前录制暂不支持实时预览"
+}
+
+func (p *Page) renderConflictCard(c *ui.Context, h pagekit.Host, cf companionapi.ConflictDTO) {
+	busy := p.busyActionKey == "conflict:"+cf.ID
+	anyBusy := p.busyActionKey != ""
 	ui.Column(c.Key("conflict-"+cf.ID)).
-		Label("只读内容冲突卡片："+cf.ID).
+		Label("内容冲突卡片："+cf.ID).
 		FillWidth().
 		Padding(12, 14).
 		Radius(12).
 		Background(theme.ColorBgMain).
 		Border(1, theme.ColorBorder).
-		Gap(6).
+		Gap(8).
 		ClipX().
 		Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Wrap().ClipX().Children(func() {
@@ -286,6 +322,48 @@ func renderReadOnlyConflictCard(c *ui.Context, cf companionapi.ConflictDTO) {
 			}
 			if ts := formatTimeShort(cf.DetectedAt); ts != "" {
 				ui.Text(c, "发现于 "+ts).FontSize(11).TextColor(theme.ColorTextFaint).SingleLine()
+			}
+
+			keepBothLbl := "保留两版（推荐）"
+			if busy {
+				keepBothLbl = "处理中…"
+			}
+			ui.Row(c).FillWidth().Gap(8).Wrap().ClipX().Children(func() {
+				if theme.PrimaryPillButton(c, keepBothLbl, "解决冲突保留两版："+cf.ID).Disabled(anyBusy).Clicked() && !anyBusy {
+					p.conflictConfirmID = ""
+					p.resolveConflict(h, cf, companionapi.ConflictKeepBoth)
+				}
+				if theme.SecondaryPillButton(c, "保留本地", "解决冲突保留本地："+cf.ID).Disabled(anyBusy).Clicked() && !anyBusy {
+					p.conflictConfirmID = ""
+					p.resolveConflict(h, cf, companionapi.ConflictKeepLocal)
+				}
+				if theme.DangerOutlinePillButton(c, "用新版替换", "解决冲突用新版替换："+cf.ID).Disabled(anyBusy).Clicked() && !anyBusy {
+					p.conflictConfirmID = cf.ID
+				}
+			})
+
+			if p.conflictConfirmID == cf.ID {
+				ui.Column(c).
+					Label("确认替换内容冲突："+cf.ID).
+					FillWidth().
+					Padding(10, 12).
+					Radius(10).
+					Background(theme.ColorErrorBg).
+					Border(1, ui.RGBA(196, 24, 46, 0.28)).
+					Gap(8).
+					ClipX().
+					Children(func() {
+						ui.Text(c, "确认用源站新版替换本地已缓存内容？原本地文件将被覆盖，无法恢复。").
+							FontSize(12).LineHeight(theme.LineHeightCompact).TextColor(theme.ColorError).MaxLines(3)
+						ui.Row(c).FillWidth().Gap(8).Wrap().Children(func() {
+							if theme.SecondaryPillButton(c, "取消", "取消替换内容冲突："+cf.ID).Disabled(anyBusy).Clicked() && !anyBusy {
+								p.conflictConfirmID = ""
+							}
+							if theme.DangerOutlinePillButton(c, "确认替换", "确认用新版替换："+cf.ID).Disabled(anyBusy).Clicked() && !anyBusy {
+								p.resolveConflict(h, cf, companionapi.ConflictUseRemote)
+							}
+						})
+					})
 			}
 		})
 }

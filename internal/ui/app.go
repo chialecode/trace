@@ -695,16 +695,20 @@ type App struct {
 	companion CompanionAPI
 	Mobile    MobileUIState
 	// Settings → 网络: the custom proxy address being typed and why it was refused.
-	ProxyDraftURL       string
-	ProxyError          string
-	proxyEditing        bool
-	proxyDraftLoaded    bool
-	proxyComposing      bool
-	CacheDirInput       string
-	AddLibraryRootInput string
-	MoveExistingFiles   bool
-	ConfirmLogoutOpen   bool
-	ConfirmLogoutSite   string
+	ProxyDraftURL          string
+	ProxyError             string
+	proxyEditing           bool
+	proxyDraftLoaded       bool
+	proxyComposing         bool
+	CacheDirInput          string
+	AddLibraryRootInput    string
+	MoveExistingFiles      bool
+	ConfirmLogoutOpen      bool
+	ConfirmLogoutSite      string
+	SettingsPasteSite      string // "" | "douyin" | "weibo" | "x"
+	SettingsPasteInput     string
+	SettingsPasteComposing bool
+	SettingsPasteError     string
 
 	// Updates of TRACE (FR-UPD-002).
 	updater            UpdaterAPI

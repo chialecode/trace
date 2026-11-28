@@ -49,7 +49,11 @@ type State struct {
 	// 直播录制 "最近结束的录制" (session key → RFC3339 time removed); optional,
 	// entries past that list's 7-day window are dropped.
 	DismissedLiveSessions map[string]string `json:"dismissedLiveSessions,omitempty"`
-	TrayNotified          bool              `json:"trayNotified"`
+	// AuthVerifiedAt records each site's last verified-valid timestamp
+	// (site ID → UTC RFC3339); optional, kept separate from credential
+	// files so expired/unknown checks never erase the last valid time.
+	AuthVerifiedAt map[string]string `json:"authVerifiedAt,omitempty"`
+	TrayNotified   bool              `json:"trayNotified"`
 	// LastActiveAt is the UTC RFC3339 timestamp of the last local heartbeat or
 	// clean exit, used on startup to detect offline gaps for auto-record
 	// subscriptions with zero extra site requests (FR-RUN-002). Optional; schema version stays 4.
@@ -252,6 +256,7 @@ func Normalize(st State) State {
 	}
 	st.HomePositions = normalizeHomePositions(st.HomePositions)
 	st.DismissedLiveSessions = normalizeDismissedLiveSessions(st.DismissedLiveSessions, time.Now())
+	st.AuthVerifiedAt = normalizeAuthVerifiedAt(st.AuthVerifiedAt)
 	if raw := strings.TrimSpace(st.LastActiveAt); raw != "" {
 		if t, err := time.Parse(time.RFC3339, raw); err == nil {
 			st.LastActiveAt = t.UTC().Format(time.RFC3339)
@@ -296,6 +301,30 @@ func normalizeDismissedLiveSessions(in map[string]string, now time.Time) map[str
 			continue
 		}
 		out[k] = t.UTC().Format(time.RFC3339)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeAuthVerifiedAt(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		siteID := strings.ToLower(strings.TrimSpace(k))
+		switch siteID {
+		case "bilibili", "douyin", "weibo", "x":
+		default:
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, strings.TrimSpace(v))
+		if err != nil {
+			continue
+		}
+		out[siteID] = t.UTC().Format(time.RFC3339)
 	}
 	if len(out) == 0 {
 		return nil
@@ -444,6 +473,12 @@ func cloneState(st State) State {
 		out.DismissedLiveSessions = make(map[string]string, len(st.DismissedLiveSessions))
 		for k, v := range st.DismissedLiveSessions {
 			out.DismissedLiveSessions[k] = v
+		}
+	}
+	if len(st.AuthVerifiedAt) > 0 {
+		out.AuthVerifiedAt = make(map[string]string, len(st.AuthVerifiedAt))
+		for k, v := range st.AuthVerifiedAt {
+			out.AuthVerifiedAt[k] = v
 		}
 	}
 	if st.Update.Restart != nil {

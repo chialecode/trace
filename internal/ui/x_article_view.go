@@ -342,14 +342,30 @@ func (a *App) renderXArticleDocument(c *ui.Context, doc articleRenderDoc) {
 			case "header-one":
 				if txt := strings.TrimSpace(blk.Text); txt != "" {
 					ui.Box(c).FillWidth().Padding(6, 0, 0, 0).ClipX().Children(func() {
-						ui.Text(c, txt).FontSize(18).FontWeight(700).LineHeight(LineHeightHeading).TextColor(ColorTextMain)
+						if _, hasRich := parseRichTextParagraphs(txt, blk.Links, false); hasRich {
+							a.renderRichText(c, txt, blk.Links, richTextOptions{
+								FontSize:   18,
+								LineHeight: LineHeightHeading,
+								TextColor:  ColorTextMain,
+							})
+						} else {
+							ui.Text(c, txt).FontSize(18).FontWeight(700).LineHeight(LineHeightHeading).TextColor(ColorTextMain)
+						}
 					})
 				}
 
 			case "header-two":
 				if txt := strings.TrimSpace(blk.Text); txt != "" {
 					ui.Box(c).FillWidth().Padding(4, 0, 0, 0).ClipX().Children(func() {
-						ui.Text(c, txt).FontSize(16).FontWeight(600).LineHeight(LineHeightHeading).TextColor(ColorTextMain)
+						if _, hasRich := parseRichTextParagraphs(txt, blk.Links, false); hasRich {
+							a.renderRichText(c, txt, blk.Links, richTextOptions{
+								FontSize:   16,
+								LineHeight: LineHeightHeading,
+								TextColor:  ColorTextMain,
+							})
+						} else {
+							ui.Text(c, txt).FontSize(16).FontWeight(600).LineHeight(LineHeightHeading).TextColor(ColorTextMain)
+						}
 					})
 				}
 

@@ -360,6 +360,7 @@ func (a *App) navigate(rawRoute string, fromBack bool) {
 	}
 	if a.CurrentRoute == RouteSettings && route != RouteSettings {
 		a.GeneralAutostartError = ""
+		a.clearSettingsPasteState()
 		a.Remote.CodeInput = ""
 		a.Remote.TokenInput = ""
 		a.Remote.ConfirmPushXOpen = false

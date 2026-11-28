@@ -57,6 +57,16 @@ func (p *Page) View(c *ui.Context, h pagekit.Host) {
 						renderKVRow(c, "当前连接地址", firstNonEmpty(snap.CurrentAddr, "—"))
 						renderDivider(c)
 						renderKVRow(c, "缓存位置剩余空间", formatDiskSpace(snap.DiskFree, snap.DiskTotal))
+						if snap.MDNSActive || snap.PreventSleep {
+							if snap.MDNSActive {
+								renderDivider(c)
+								renderKVRow(c, "局域网自动发现", "已启用")
+							}
+							if snap.PreventSleep {
+								renderDivider(c)
+								renderKVRow(c, "连接时防电脑睡眠", "已开启（电脑端设置）")
+							}
+						}
 					})
 
 					// Read-only site login statuses (FR-MOB-017 / FR-MOB-025)
