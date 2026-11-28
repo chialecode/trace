@@ -361,6 +361,26 @@
 - **已删除 / 无权限**：移动端已知 `errno == "20101"`（不存在/已删除 → `unavailable`）、`errno == "20112"`（无查看权限 → `forbidden`）；PC Ajax `/ajax/statuses/show` 精确码列 **V-10**（`社区资料（2026-11-21）`）。
 - **博主可见时间窗（半年 / 一年 / 一月 / 三天可见）**：由主页列表响应 `bottom_tips_visible: true` + `bottom_tips_text` 标明（见 [§6.4](#visibility-window)）。
 
+<a id="edit-history"></a>
+### 4.8 编辑历史（`/ajax/statuses/editHistory`，DEC-094）
+
+基于 2026-11-28 在 [DEC-077](../decisions.md#dec-077) 常设只读授权下完成的有界核验（累计 3 次只读请求、0 重试、脱敏回执写入 `artifacts/site-check/dec077-weibo-edithistory-20261128.json`）：
+
+1. **端点与必填参数**：
+   - `GET https://weibo.com/ajax/statuses/editHistory?mid=<numeric_mid>&page=<p>`（携带 PC Ajax 公共请求头与登录后 `Cookie` + `X-XSRF-TOKEN`）。
+   - **参数坑点（实测锁死）**：必须使用 **`mid=<纯数字 mid>`**；若误传 `id=<mid>` 服务端直接返回 `HTTP 400`。调用方传入 `mblogid` 时须先本地换算为纯数字 `mid`。
+   - **零冗余请求约束**：仅当 `edit_count > 0`（或用户明确点击查看编辑历史）时调用；`edit_count == 0` 绝不发请求。
+2. **响应信封与分页边界**：
+   - 顶层无 `data` 包装：`{"ok": 1, "total": <N>, "statuses": [ ... ]}`（兼容解析 `list` / `data.statuses` / `data.list` 及 `total_number` / `count`）。
+   - 实测 `edit_count == 2` 时第 1 页返回全部 3 个版本（`total == 3`）；越界页（如第 2 页）返回 `HTTP 200` 与 `{"ok": 1, "statuses": [], "total": ...}`。
+   - **分页停止条件**：空 `statuses`、已采集数 `>= total`、重复页无新增、或达到安全上限 **5 页**即停止。
+3. **版本对象字段与顺序**：
+   - 列表按**由新到旧（newest-first）**返回：`statuses[0]` 为最新修订版，`statuses[len-1]` 为原始首发版；每项结构与标准 `rawPost` 同构（但 `mblogid` 可为空串，解析时不可因 `mblogid == ""` 报错）。
+   - **时间**：实测由该版本的 `created_at`（RubyDate）携带当版发布/编辑时间（不含 `edit_at`，解析器优先兼容 `edit_at` 并回退 `created_at`）。
+   - **正文与链接**：复用 `text_raw` / `text` / `longText` / `url_struct` 与 [DEC-073](../decisions.md#dec-073) `extractWeiboTextAndLinks` 清理逻辑，绝不对历史版本额外触发 `/ajax/statuses/longtext`。
+   - **历史图片**：保留每版 `pic_ids[]` 与 `pic_infos{}` 中的无签名公开 `https://*.sinaimg.cn/...` 原图（实测历史版本可能含已被当前版本删除/替换的独有 `pic_id`），**严格剥离任何带签名的视频/实况动态地址与 Cookie**。
+4. **降级与风控口径**：遵循微博单并发串行、节流间隔、自动请求额度/退避与 [DEC-089](../decisions.md#dec-089) 手动探测恢复；在缓存规划阶段遇到 401/403/414/418/429、访客跳转或不可用时仅记日志并安全降级跳过，绝不阻塞主微博解析或缓存。
+
 <a id="media-cdn"></a>
 ## 5. 媒体下载、白名单与跳转规则（R-D）
 

@@ -1162,6 +1162,8 @@ func (s *Server) handleLibraryItem(w http.ResponseWriter, key string) {
 		Article:        mapArticle(meta.Article),
 		Thread:         mapThread(meta.Thread),
 		Links:          mapLinks(meta.Links),
+		EditCount:      meta.EditCount,
+		EditHistory:    mapEditHistory(meta.EditHistory),
 		IsForward:      meta.IsForwardContent(),
 		ArchivedOf:     meta.ArchivedOf,
 		TotalBytes:     meta.TotalBytes,
@@ -2680,6 +2682,23 @@ func mapLinks(in []library.ItemLink) []companionapi.TextLink {
 	out := make([]companionapi.TextLink, 0, len(in))
 	for _, l := range in {
 		out = append(out, companionapi.TextLink{Label: l.Label, URL: l.URL})
+	}
+	return out
+}
+
+func mapEditHistory(in []library.ItemEditRevision) []companionapi.ItemEditRevisionDTO {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]companionapi.ItemEditRevisionDTO, 0, len(in))
+	for _, rev := range in {
+		out = append(out, companionapi.ItemEditRevisionDTO{
+			Version:    rev.Version,
+			EditTs:     rev.EditTs,
+			Text:       rev.Text,
+			Links:      mapLinks(rev.Links),
+			MediaPaths: append([]string(nil), rev.MediaPaths...),
+		})
 	}
 	return out
 }

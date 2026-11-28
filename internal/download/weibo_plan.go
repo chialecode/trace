@@ -114,6 +114,7 @@ func (m *Manager) EnqueueWeiboWork(ctx context.Context, req WeiboWorkEnqueueRequ
 		opts := WorkPlanOptions{
 			VideoQuality: m.dlSettings.VideoQuality,
 			CodecOrder:   append([]string(nil), m.dlSettings.CodecOrder...),
+			Source:       source,
 		}
 		m.mu.Unlock()
 		fetched, err := planner.PlanWorkDownload(ctx, rawTarget, opts)
@@ -214,7 +215,7 @@ func (m *Manager) EnqueueWeiboWork(ctx context.Context, req WeiboWorkEnqueueRequ
 	return t, nil
 }
 
-func (m *Manager) consumeInitialOrFetchWeiboPlan(ctx context.Context, taskID, targetID string) (WorkDownloadPlan, WorkPlanner, error) {
+func (m *Manager) consumeInitialOrFetchWeiboPlan(ctx context.Context, taskID, targetID, source string) (WorkDownloadPlan, WorkPlanner, error) {
 	m.mu.Lock()
 	initial, hasInitial := m.initialPlans[taskID]
 	if hasInitial {
@@ -224,6 +225,7 @@ func (m *Manager) consumeInitialOrFetchWeiboPlan(ctx context.Context, taskID, ta
 	opts := WorkPlanOptions{
 		VideoQuality: m.dlSettings.VideoQuality,
 		CodecOrder:   append([]string(nil), m.dlSettings.CodecOrder...),
+		Source:       source,
 	}
 	m.mu.Unlock()
 
@@ -273,7 +275,7 @@ func (m *Manager) executeWeiboTask(ctx context.Context, t *Task) error {
 	storedMode, _ := m.taskResolutionAndPages(t.TaskID)
 	mode := effectiveConflictResolution(ctx, t.ConflictResolution, storedMode)
 
-	plan, planner, err := m.consumeInitialOrFetchWeiboPlan(ctx, t.TaskID, t.TargetID)
+	plan, planner, err := m.consumeInitialOrFetchWeiboPlan(ctx, t.TaskID, t.TargetID, t.Source)
 	if err != nil {
 		return m.wrapDegradedIfLocalProtected(firstNonEmptyStr(t.ItemKey, "weibo:dynamic:"+lockTarget), mode, err)
 	}
@@ -552,6 +554,11 @@ func (m *Manager) executeWeiboSingleVideoTask(
 			}
 		}
 
+		editHistory, ehErr := m.materializeWeiboEditHistory(ctx, &stageSub, stageDir, previous, false, true, forceOverwrite, plan, nil, &v2Media)
+		if ehErr != nil {
+			return ehErr
+		}
+
 		status := "complete"
 		if len(v2Missing) > 0 {
 			status = "partial"
@@ -587,6 +594,7 @@ func (m *Manager) executeWeiboSingleVideoTask(
 			Origin:       originMeta,
 			Card:         cardMeta,
 			Links:        buildWeiboItemLinks(plan.Links, previous.Links),
+			EditHistory:  editHistory,
 		}
 		stampCacheStandardAndAssets(&v2Meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
 		saved, err := m.commitStagedItemSwap(itemDir, previous, true, v2Meta, stageDir, mode)
@@ -625,6 +633,7 @@ func (m *Manager) executeWeiboSingleVideoTask(
 		Origin:       originMeta,
 		Card:         cardMeta,
 		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
+		EditHistory:  library.SanitizeItemEditHistory(previous.EditHistory),
 	}
 
 	finalSaved := false
@@ -776,6 +785,12 @@ func (m *Manager) executeWeiboSingleVideoTask(
 		}
 		meta.DouyinVideo = &cp
 	}
+
+	editHistory, ehErr := m.materializeWeiboEditHistory(ctx, t, itemDir, previous, exists, false, forceOverwrite, plan, nil, &meta.Media)
+	if ehErr != nil {
+		return ehErr
+	}
+	meta.EditHistory = editHistory
 
 	meta.Status = "complete"
 	if len(meta.Missing) > 0 {
@@ -933,6 +948,7 @@ func (m *Manager) executeWeiboPostTask(
 			Origin:       originMeta,
 			Card:         cardMeta,
 			Links:        buildWeiboItemLinks(plan.Links, previous.Links),
+			EditHistory:  library.SanitizeItemEditHistory(previous.EditHistory),
 		}
 		saved, sErr := m.lib.SaveItem(itemDir, partialMeta)
 		if sErr != nil {
@@ -1410,6 +1426,11 @@ func (m *Manager) executeWeiboPostTask(
 
 	mediaFiles, notePages = preserveValidPreviousImagesForStage(itemDir, workDir, previous, exists && !isConflict && !forceOverwrite, mediaFiles, notePages)
 
+	editHistory, ehErr := m.materializeWeiboEditHistory(ctx, workTask, workDir, previous, exists && !hasProtectedLocal, hasProtectedLocal, forceOverwrite, plan, notePages, &mediaFiles)
+	if ehErr != nil {
+		return ehErr
+	}
+
 	meta := library.ItemMetadata{
 		Version:     1,
 		ID:          itemKind + ":" + rawID,
@@ -1439,6 +1460,7 @@ func (m *Manager) executeWeiboPostTask(
 		Origin:       originMeta,
 		Card:         cardMeta,
 		Links:        buildWeiboItemLinks(plan.Links, previous.Links),
+		EditHistory:  editHistory,
 	}
 	stampCacheStandardAndAssets(&meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
 	if meta.Status == "complete" && len(meta.Missing) == 0 && weiboPlanRanNoWMStandard(plan) && !anyNoWMDeferred {
@@ -1985,6 +2007,205 @@ func (m *Manager) cacheWeiboWatermarkFreeCompanion(
 		Width:      w,
 		Height:     h,
 	}, false, nil
+}
+
+// materializeWeiboEditHistory persists planned historical revisions into
+// library.ItemEditRevision entries and best-effort caches unique historical
+// public images under images/edit_vNN_MM.<ext> (role: "edit_image", DEC-094).
+// Any image download error other than context cancellation or storage failure
+// is gracefully skipped so historical media never blocks or degrades the main post.
+func (m *Manager) materializeWeiboEditHistory(
+	ctx context.Context,
+	workTask *Task,
+	workDir string,
+	previous library.ItemMetadata,
+	inPlaceExists bool,
+	hasProtectedLocal bool,
+	forceOverwrite bool,
+	plan WorkDownloadPlan,
+	currentNotePages []library.NotePageRecord,
+	mediaFiles *[]library.MediaFile,
+) ([]library.ItemEditRevision, error) {
+	hasMediaPath := func(rel string) bool {
+		key := strings.ToLower(strings.TrimSpace(filepath.ToSlash(rel)))
+		if key == "" || mediaFiles == nil {
+			return false
+		}
+		for _, mf := range *mediaFiles {
+			if strings.ToLower(strings.TrimSpace(filepath.ToSlash(mf.Path))) == key {
+				return true
+			}
+		}
+		return false
+	}
+	appendUniqueMedia := func(mf library.MediaFile) {
+		if mediaFiles == nil || strings.TrimSpace(mf.Path) == "" {
+			return
+		}
+		if hasMediaPath(mf.Path) {
+			return
+		}
+		*mediaFiles = append(*mediaFiles, mf)
+	}
+
+	// If remote edit history was not provided (e.g. degraded/offline/unavailable),
+	// preserve previously cached EditHistory and any valid local edit_image files
+	// when not forcing overwrite.
+	if len(plan.EditHistory) == 0 {
+		if forceOverwrite || len(previous.EditHistory) == 0 {
+			return nil, nil
+		}
+		for _, mf := range previous.Media {
+			if mf.Role != "edit_image" || !mediaIsValid(previous, mf.Path) {
+				continue
+			}
+			if hasProtectedLocal {
+				stem := trimKnownImageExt(filepath.ToSlash(mf.Path))
+				if stem == "" {
+					stem = strings.TrimSuffix(filepath.ToSlash(mf.Path), filepath.Ext(mf.Path))
+				}
+				if copied, err := copyLocalMediaToStageAs(previous, mf.Path, stem, "edit_image", workDir); err == nil && copied != nil {
+					appendUniqueMedia(*copied)
+				}
+			} else {
+				appendUniqueMedia(mf)
+			}
+		}
+		out := make([]library.ItemEditRevision, 0, len(previous.EditHistory))
+		for _, rev := range previous.EditHistory {
+			cp := rev
+			cp.Links = append([]library.ItemLink(nil), rev.Links...)
+			var keptPaths []string
+			for _, p := range rev.MediaPaths {
+				if hasMediaPath(p) {
+					keptPaths = append(keptPaths, p)
+				}
+			}
+			cp.MediaPaths = keptPaths
+			out = append(out, cp)
+		}
+		return library.SanitizeItemEditHistory(out), nil
+	}
+
+	// Map already-cached current post images by pic_id so historical revisions
+	// referencing the same photo reuse the existing local file with zero extra traffic.
+	currentByPicID := make(map[string]string, len(currentNotePages))
+	for _, np := range currentNotePages {
+		pid := library.SanitizeMediaToken(np.MediaID)
+		if pid != "" && strings.TrimSpace(np.Image) != "" {
+			currentByPicID[pid] = np.Image
+		}
+	}
+
+	prevEditByStem := make(map[string]library.MediaFile)
+	if !forceOverwrite {
+		for _, mf := range previous.Media {
+			if mf.Role != "edit_image" || !mediaIsValid(previous, mf.Path) {
+				continue
+			}
+			norm := filepath.ToSlash(strings.TrimSpace(mf.Path))
+			stem := trimKnownImageExt(norm)
+			if stem == "" {
+				stem = strings.TrimSuffix(norm, filepath.Ext(norm))
+			}
+			if stem != "" {
+				prevEditByStem[strings.ToLower(stem)] = mf
+			}
+		}
+	}
+
+	downloadedByPicID := make(map[string]string)
+	out := make([]library.ItemEditRevision, 0, len(plan.EditHistory))
+
+	for revIdx, rev := range plan.EditHistory {
+		ver := rev.Version
+		if ver <= 0 {
+			ver = len(plan.EditHistory) - revIdx
+			if ver < 1 {
+				ver = 1
+			}
+		}
+
+		var mediaPaths []string
+		seenRel := make(map[string]bool)
+		addRel := func(rel string) {
+			norm := filepath.ToSlash(strings.TrimSpace(rel))
+			if norm == "" {
+				return
+			}
+			key := strings.ToLower(norm)
+			if seenRel[key] {
+				return
+			}
+			seenRel[key] = true
+			mediaPaths = append(mediaPaths, norm)
+		}
+
+		for imgIdx, img := range rev.Images {
+			cleanPicID := library.SanitizeMediaToken(img.PicID)
+			if cleanPicID != "" {
+				if curRel, ok := currentByPicID[cleanPicID]; ok {
+					addRel(curRel)
+					continue
+				}
+				if cachedRel, ok := downloadedByPicID[cleanPicID]; ok {
+					addRel(cachedRel)
+					continue
+				}
+			}
+
+			relStem := fmt.Sprintf("images/edit_v%02d_%02d", ver, imgIdx+1)
+			var savedMedia *library.MediaFile
+			if !forceOverwrite {
+				if prevMF, ok := prevEditByStem[strings.ToLower(relStem)]; ok {
+					if hasProtectedLocal {
+						if copied, cErr := copyLocalMediaToStageAs(previous, prevMF.Path, relStem, "edit_image", workDir); cErr == nil && copied != nil {
+							savedMedia = copied
+						}
+					} else {
+						cp := prevMF
+						savedMedia = &cp
+					}
+				}
+			}
+
+			if savedMedia == nil && len(img.ImageURLs) > 0 {
+				isGIF := strings.EqualFold(strings.TrimSpace(img.Kind), "gif")
+				dlMedia, dlErr := m.cacheWeiboStillImageOpts(ctx, workTask, workDir, previous, inPlaceExists, "edit_image", relStem, img.ImageURLs, img.Width, img.Height, isGIF, plan.Transport, nil)
+				if dlErr != nil {
+					if ctx.Err() != nil {
+						return nil, ctx.Err()
+					}
+					if isStorageError(dlErr) {
+						return nil, dlErr
+					}
+					// Gracefully skip expired/unavailable/rate-limited historical images
+					// without degrading the main post to partial.
+					continue
+				}
+				savedMedia = dlMedia
+			}
+
+			if savedMedia != nil && strings.TrimSpace(savedMedia.Path) != "" {
+				savedMedia.Role = "edit_image"
+				appendUniqueMedia(*savedMedia)
+				addRel(savedMedia.Path)
+				if cleanPicID != "" {
+					downloadedByPicID[cleanPicID] = savedMedia.Path
+				}
+			}
+		}
+
+		out = append(out, library.ItemEditRevision{
+			Version:    ver,
+			EditTs:     rev.EditTs,
+			Text:       strings.TrimSpace(rev.Text),
+			Links:      buildWeiboItemLinks(rev.Links, nil),
+			MediaPaths: mediaPaths,
+		})
+	}
+
+	return library.SanitizeItemEditHistory(out), nil
 }
 
 // weiboPlanRanNoWMStandard reports whether this Weibo post plan includes at least

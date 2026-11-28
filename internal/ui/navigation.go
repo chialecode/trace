@@ -1536,6 +1536,16 @@ func (a *App) applyWeiboParseResult(res *service.OpenLinkResult) {
 	a.CurrentLibraryDetail = nil
 	a.CurrentWeiboPost = res.WeiboPost
 	a.CurrentWeiboVideo = res.WeiboVideo
+	newMid := ""
+	if res.WeiboPost != nil {
+		newMid = strings.TrimSpace(res.WeiboPost.Mid)
+	}
+	if newMid == "" || newMid != a.WeiboEditHistoryMid {
+		a.WeiboEditHistoryExpanded = false
+		a.WeiboEditHistoryMid = ""
+		a.WeiboEditHistoryError = ""
+		a.WeiboEditHistoryItems = nil
+	}
 	if a.CurrentRoute != RouteWeiboPost {
 		a.pushPreviousRoute(a.currentReturnRoute())
 	}

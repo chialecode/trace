@@ -94,6 +94,9 @@ type ItemMetadata struct {
 	// substantive post/work revisions across full-cache sweeps.
 	EditTs    int64 `json:"editTs,omitempty"`
 	EditCount int   `json:"editCount,omitempty"`
+	// EditHistory stores sanitized historical revisions of an edited post
+	// (e.g. Weibo /ajax/statuses/editHistory, DEC-094). Optional; item.json stays version 1.
+	EditHistory []ItemEditRevision `json:"editHistory,omitempty"`
 	// AssetIDs stores sanitized platform media identifiers (never URLs, query
 	// strings, paths, or credentials) in order for V1-vs-V2 diffing.
 	AssetIDs []string `json:"assetIds,omitempty"`
@@ -249,6 +252,18 @@ type ItemArticle struct {
 type ItemLink struct {
 	Label string `json:"label"`
 	URL   string `json:"url"`
+}
+
+// ItemEditRevision records one cached historical revision of an edited post
+// persisted inside item.json (schema version remains 1, DEC-094). MediaPaths
+// stores only local item-relative paths registered in ItemMetadata.Media (never
+// remote CDN URLs, query parameters, signatures, or credentials).
+type ItemEditRevision struct {
+	Version    int        `json:"version"`
+	EditTs     int64      `json:"editTs,omitempty"`
+	Text       string     `json:"text,omitempty"`
+	Links      []ItemLink `json:"links,omitempty"`
+	MediaPaths []string   `json:"mediaPaths,omitempty"`
 }
 
 // ItemReplyTarget records sanitized identifiers of the parent post being replied to (DEC-091).
@@ -831,6 +846,7 @@ func SanitizeItemMetadata(meta *ItemMetadata) {
 		}
 	}
 	meta.Article = sanitizeItemArticle(meta.Article, meta.Site)
+	meta.EditHistory = sanitizeItemEditHistory(meta.EditHistory)
 	if meta.Origin != nil {
 		sanitizeItemOriginDepth(meta.Origin, meta.Site, 0)
 	}
@@ -1325,6 +1341,82 @@ func sanitizeArticleRelPath(raw string) string {
 		return ""
 	}
 	return clean
+}
+
+const (
+	maxEditHistoryRevisionsPerManifest = 100
+	maxEditRevisionMediaPaths          = 36
+)
+
+// SanitizeItemEditHistory scrubs historical post revisions so item.json never
+// persists remote URLs, signed query parameters, path traversals, or credential
+// markers (DEC-094).
+func SanitizeItemEditHistory(revs []ItemEditRevision) []ItemEditRevision {
+	return sanitizeItemEditHistory(revs)
+}
+
+func sanitizeItemEditHistory(revs []ItemEditRevision) []ItemEditRevision {
+	if len(revs) == 0 {
+		return nil
+	}
+	out := make([]ItemEditRevision, 0, min(len(revs), maxEditHistoryRevisionsPerManifest))
+	for _, rev := range revs {
+		editTs := rev.EditTs
+		if editTs < 0 {
+			editTs = 0
+		}
+		text := scrubManifestFreeText(rev.Text)
+		links := sanitizeItemLinks(rev.Links)
+		var mediaPaths []string
+		if len(rev.MediaPaths) > 0 {
+			seenPath := make(map[string]bool, len(rev.MediaPaths))
+			for _, rawPath := range rev.MediaPaths {
+				clean := sanitizeArticleRelPath(rawPath)
+				if clean == "" {
+					continue
+				}
+				key := strings.ToLower(clean)
+				if seenPath[key] {
+					continue
+				}
+				seenPath[key] = true
+				mediaPaths = append(mediaPaths, clean)
+				if len(mediaPaths) >= maxEditRevisionMediaPaths {
+					break
+				}
+			}
+		}
+		if text == "" && len(links) == 0 && len(mediaPaths) == 0 && editTs == 0 {
+			continue
+		}
+		ver := rev.Version
+		if ver < 0 {
+			ver = 0
+		}
+		out = append(out, ItemEditRevision{
+			Version:    ver,
+			EditTs:     editTs,
+			Text:       text,
+			Links:      links,
+			MediaPaths: mediaPaths,
+		})
+		if len(out) >= maxEditHistoryRevisionsPerManifest {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	for i := range out {
+		if out[i].Version <= 0 {
+			v := len(out) - i
+			if v < 1 {
+				v = 1
+			}
+			out[i].Version = v
+		}
+	}
+	return out
 }
 
 const maxItemLinksPerManifest = 64

@@ -412,20 +412,26 @@ type App struct {
 	DouyinUserSubMenuOpen  bool
 
 	// Weibo Post, Video & Creator Browsing
-	CurrentWeiboPost         *service.WeiboPostView
-	CurrentWeiboVideo        *service.WeiboVideoView
-	CurrentWeiboUser         *service.WeiboUserView
-	CurrentWeiboPosts        []service.WeiboPostView
-	WeiboPostsNextCursor     string
-	WeiboPostsHasMore        bool
-	WeiboPostsError          string
-	WeiboPostsAuthExpired    bool
-	WeiboPostsUncertainEmpty bool
-	WeiboBottomTipsVisible   bool
-	WeiboBottomTipsText      string
-	WeiboUserListState       *ui.ListState
-	WeiboUserSubMenuOpen     bool
-	weiboFilteredEmpty       bool
+	CurrentWeiboPost                *service.WeiboPostView
+	CurrentWeiboVideo               *service.WeiboVideoView
+	CurrentWeiboUser                *service.WeiboUserView
+	CurrentWeiboPosts               []service.WeiboPostView
+	WeiboPostsNextCursor            string
+	WeiboPostsHasMore               bool
+	WeiboPostsError                 string
+	WeiboPostsAuthExpired           bool
+	WeiboPostsUncertainEmpty        bool
+	WeiboBottomTipsVisible          bool
+	WeiboBottomTipsText             string
+	WeiboUserListState              *ui.ListState
+	WeiboUserSubMenuOpen            bool
+	weiboFilteredEmpty              bool
+	WeiboEditHistoryExpanded        bool
+	WeiboEditHistoryMid             string
+	WeiboEditHistoryError           string
+	WeiboEditHistoryItems           []service.WeiboEditRevisionDTO
+	WeiboOfflineEditHistoryExpanded bool
+	WeiboOfflineEditHistoryKey      string
 
 	// X Post & Creator Browsing
 	CurrentXPost         *service.XPostDTO

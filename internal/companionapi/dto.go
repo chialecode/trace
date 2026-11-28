@@ -189,43 +189,45 @@ type LibraryItemSummary struct {
 
 // LibraryItemDetail is GET /api/v1/library/items/{key} (read-only, no local absolute paths).
 type LibraryItemDetail struct {
-	ItemKey          string              `json:"itemKey"`
-	ID               string              `json:"id"`
-	Site             string              `json:"site"`
-	Kind             string              `json:"kind"`
-	Status           string              `json:"status"`
-	Title            string              `json:"title"`
-	Desc             string              `json:"desc,omitempty"`
-	Text             string              `json:"text,omitempty"`
-	DynamicType      string              `json:"dynamicType,omitempty"`
-	TypeLabel        string              `json:"typeLabel,omitempty"`
-	CanonicalURL     string              `json:"canonicalUrl,omitempty"`
-	PubTs            int64               `json:"pubTs"`
-	CachedAt         string              `json:"cachedAt,omitempty"`
-	Duration         int                 `json:"duration,omitempty"`
-	AuthorUID        string              `json:"authorUid"`
-	AuthorName       string              `json:"authorName"`
-	AuthorUniqueID   string              `json:"authorUniqueId,omitempty"`
-	AuthorAvatarPath string              `json:"authorAvatarPath,omitempty"`
-	SubID            string              `json:"subId,omitempty"`
-	SubName          string              `json:"subName,omitempty"`
-	Media            []MediaFileDTO      `json:"media,omitempty"`
-	Parts            []VideoPartDTO      `json:"parts,omitempty"`
-	VideoInfo        *VideoInfoDTO       `json:"videoInfo,omitempty"`
-	NotePages        []NotePageDTO       `json:"notePages,omitempty"`
-	Music            *MusicDTO           `json:"music,omitempty"`
-	Live             *LiveInfoDTO        `json:"live,omitempty"`
-	Missing          []MissingItemDTO    `json:"missing,omitempty"`
-	Via              *ItemViaDTO         `json:"via,omitempty"`
-	Origin           *ItemOriginDTO      `json:"origin,omitempty"`
-	InReplyTo        *ItemReplyTargetDTO `json:"inReplyTo,omitempty"`
-	Card             *ItemRichCardDTO    `json:"card,omitempty"`
-	Article          *ItemArticleDTO     `json:"article,omitempty"`
-	Thread           []ThreadPartDTO     `json:"thread,omitempty"`
-	Links            []TextLink          `json:"links,omitempty"`
-	IsForward        bool                `json:"isForward,omitempty"`
-	ArchivedOf       string              `json:"archivedOf,omitempty"`
-	TotalBytes       int64               `json:"totalBytes,omitempty"`
+	ItemKey          string                `json:"itemKey"`
+	ID               string                `json:"id"`
+	Site             string                `json:"site"`
+	Kind             string                `json:"kind"`
+	Status           string                `json:"status"`
+	Title            string                `json:"title"`
+	Desc             string                `json:"desc,omitempty"`
+	Text             string                `json:"text,omitempty"`
+	DynamicType      string                `json:"dynamicType,omitempty"`
+	TypeLabel        string                `json:"typeLabel,omitempty"`
+	CanonicalURL     string                `json:"canonicalUrl,omitempty"`
+	PubTs            int64                 `json:"pubTs"`
+	CachedAt         string                `json:"cachedAt,omitempty"`
+	Duration         int                   `json:"duration,omitempty"`
+	AuthorUID        string                `json:"authorUid"`
+	AuthorName       string                `json:"authorName"`
+	AuthorUniqueID   string                `json:"authorUniqueId,omitempty"`
+	AuthorAvatarPath string                `json:"authorAvatarPath,omitempty"`
+	SubID            string                `json:"subId,omitempty"`
+	SubName          string                `json:"subName,omitempty"`
+	Media            []MediaFileDTO        `json:"media,omitempty"`
+	Parts            []VideoPartDTO        `json:"parts,omitempty"`
+	VideoInfo        *VideoInfoDTO         `json:"videoInfo,omitempty"`
+	NotePages        []NotePageDTO         `json:"notePages,omitempty"`
+	Music            *MusicDTO             `json:"music,omitempty"`
+	Live             *LiveInfoDTO          `json:"live,omitempty"`
+	Missing          []MissingItemDTO      `json:"missing,omitempty"`
+	Via              *ItemViaDTO           `json:"via,omitempty"`
+	Origin           *ItemOriginDTO        `json:"origin,omitempty"`
+	InReplyTo        *ItemReplyTargetDTO   `json:"inReplyTo,omitempty"`
+	Card             *ItemRichCardDTO      `json:"card,omitempty"`
+	Article          *ItemArticleDTO       `json:"article,omitempty"`
+	Thread           []ThreadPartDTO       `json:"thread,omitempty"`
+	Links            []TextLink            `json:"links,omitempty"`
+	EditCount        int                   `json:"editCount,omitempty"`
+	EditHistory      []ItemEditRevisionDTO `json:"editHistory,omitempty"`
+	IsForward        bool                  `json:"isForward,omitempty"`
+	ArchivedOf       string                `json:"archivedOf,omitempty"`
+	TotalBytes       int64                 `json:"totalBytes,omitempty"`
 }
 
 // MediaFileDTO describes one registered relative media file in an item.
@@ -377,6 +379,15 @@ type ItemArticleDTO struct {
 	CoverRel  string                `json:"coverRel,omitempty"`
 	PlainText string                `json:"plainText,omitempty"`
 	Blocks    []ItemArticleBlockDTO `json:"blocks,omitempty"`
+}
+
+// ItemEditRevisionDTO describes one cached historical edit revision (DEC-094).
+type ItemEditRevisionDTO struct {
+	Version    int        `json:"version"`
+	EditTs     int64      `json:"editTs,omitempty"`
+	Text       string     `json:"text,omitempty"`
+	Links      []TextLink `json:"links,omitempty"`
+	MediaPaths []string   `json:"mediaPaths,omitempty"`
 }
 
 // ItemReplyTargetDTO describes sanitized reply target identifiers (DEC-091).
