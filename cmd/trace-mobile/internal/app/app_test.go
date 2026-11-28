@@ -74,6 +74,43 @@ func writeTestShot(t *testing.T, tt *ui.Tester, name string) {
 	}
 }
 
+type testUpdateQueue struct {
+	mu     sync.Mutex
+	fns    []func()
+	notify chan struct{}
+}
+
+func newTestUpdateQueue() *testUpdateQueue {
+	return &testUpdateQueue{notify: make(chan struct{}, 1)}
+}
+
+func (q *testUpdateQueue) post(fn func()) {
+	q.mu.Lock()
+	if fn != nil {
+		q.fns = append(q.fns, fn)
+	}
+	q.mu.Unlock()
+	select {
+	case q.notify <- struct{}{}:
+	default:
+	}
+}
+
+func (q *testUpdateQueue) drain() {
+	for {
+		q.mu.Lock()
+		batch := q.fns
+		q.fns = nil
+		q.mu.Unlock()
+		if len(batch) == 0 {
+			return
+		}
+		for _, fn := range batch {
+			fn()
+		}
+	}
+}
+
 func TestPairingGuideManualIdentityConfirmAndIMEGuard(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -121,35 +158,18 @@ func TestPairingGuideManualIdentityConfirmAndIMEGuard(t *testing.T) {
 	store := NewMemoryStore()
 	a := newTestApp(store)
 	tt := ui.NewTester(a.View, 412, 915)
-	posted := make(chan func(), 32)
-	a.postUpdate = func(fn func()) {
-		posted <- fn
-	}
-	drainPosted := func() {
-		for {
-			select {
-			case fn := <-posted:
-				if fn != nil {
-					fn()
-				}
-			default:
-				return
-			}
-		}
-	}
+	q := newTestUpdateQueue()
+	a.postUpdate = q.post
 	pumpUntil := func(cond func() bool) {
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
-			drainPosted()
+			q.drain()
 			tt.Frame()
 			if cond() {
 				return
 			}
 			select {
-			case fn := <-posted:
-				if fn != nil {
-					fn()
-				}
+			case <-q.notify:
 			case <-time.After(10 * time.Millisecond):
 			}
 		}
@@ -727,26 +747,12 @@ func TestShareIntentDisconnectedBannerAndConnectedAutoSubmit(t *testing.T) {
 	a.client = cli
 	a.connState = pagekit.ConnConnected
 
-	posted := make(chan func(), 32)
-	a.postUpdate = func(fn func()) {
-		posted <- fn
-	}
-	drainPosted := func() {
-		for {
-			select {
-			case fn := <-posted:
-				if fn != nil {
-					fn()
-				}
-			default:
-				return
-			}
-		}
-	}
+	q := newTestUpdateQueue()
+	a.postUpdate = q.post
 	a.HandleSharedText("https://www.bilibili.com/video/BV1LIVE")
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		drainPosted()
+		q.drain()
 		tt.Frame()
 		mu.Lock()
 		n := len(parsedTexts)
@@ -755,16 +761,14 @@ func TestShareIntentDisconnectedBannerAndConnectedAutoSubmit(t *testing.T) {
 			break
 		}
 		select {
-		case fn := <-posted:
-			if fn != nil {
-				fn()
-			}
+		case <-q.notify:
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	drainPosted()
+	q.drain()
 	for range 12 {
 		tt.Advance(100 * time.Millisecond)
+		q.drain()
 	}
 	tt.Frame()
 	mu.Lock()

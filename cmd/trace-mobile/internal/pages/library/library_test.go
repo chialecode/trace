@@ -415,19 +415,31 @@ func TestLibrary5000ItemsGridFilterSheetViewerAndReadOnlyDetail(t *testing.T) {
 	p.openImageFn = func(_ pagekit.Host, items []mediaview.ImageItem, _ int) { openedImages = items }
 	p.openVideoFn = func(_ pagekit.Host, req mediaview.VideoRequest) { openedVideo = req }
 
-	posted := make(chan func(), 64)
+	var qMu sync.Mutex
+	var qFns []func()
+	notify := make(chan struct{}, 1)
 	host.postUpdate = func(fn func()) {
-		posted <- fn
+		qMu.Lock()
+		if fn != nil {
+			qFns = append(qFns, fn)
+		}
+		qMu.Unlock()
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
 	}
 	drainPosted := func() {
 		for {
-			select {
-			case fn := <-posted:
-				if fn != nil {
-					fn()
-				}
-			default:
+			qMu.Lock()
+			batch := qFns
+			qFns = nil
+			qMu.Unlock()
+			if len(batch) == 0 {
 				return
+			}
+			for _, fn := range batch {
+				fn()
 			}
 		}
 	}
@@ -453,10 +465,7 @@ func TestLibrary5000ItemsGridFilterSheetViewerAndReadOnlyDetail(t *testing.T) {
 				return
 			}
 			select {
-			case fn := <-posted:
-				if fn != nil {
-					fn()
-				}
+			case <-notify:
 			case <-time.After(10 * time.Millisecond):
 			}
 		}

@@ -85,24 +85,36 @@ func settleSheet(tt *ui.Tester) {
 }
 
 func TestPasteCacheSheetSubmitSuccessAlreadyCachedAndErrors(t *testing.T) {
-	posted := make(chan func(), 32)
+	var qMu sync.Mutex
+	var qFns []func()
+	notify := make(chan struct{}, 1)
 	h := &fakeHost{
 		connected:   true,
 		cli:         &companionclient.Client{},
 		selectedTab: pagekit.TabHome,
 		postUpdate: func(fn func()) {
-			posted <- fn
+			qMu.Lock()
+			if fn != nil {
+				qFns = append(qFns, fn)
+			}
+			qMu.Unlock()
+			select {
+			case notify <- struct{}{}:
+			default:
+			}
 		},
 	}
 	drainPosted := func() {
 		for {
-			select {
-			case fn := <-posted:
-				if fn != nil {
-					fn()
-				}
-			default:
+			qMu.Lock()
+			batch := qFns
+			qFns = nil
+			qMu.Unlock()
+			if len(batch) == 0 {
 				return
+			}
+			for _, fn := range batch {
+				fn()
 			}
 		}
 	}
@@ -150,10 +162,7 @@ func TestPasteCacheSheetSubmitSuccessAlreadyCachedAndErrors(t *testing.T) {
 				return
 			}
 			select {
-			case fn := <-posted:
-				if fn != nil {
-					fn()
-				}
+			case <-notify:
 			case <-time.After(10 * time.Millisecond):
 			}
 		}
