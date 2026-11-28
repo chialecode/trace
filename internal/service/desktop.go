@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 // Desktop abstracts OS shell actions (opening URLs, folders, or revealing files).
@@ -27,8 +28,8 @@ func validateExternalURL(rawURL string) (string, error) {
 		return "", fmt.Errorf("empty url")
 	}
 	for _, r := range trimmed {
-		if r < 0x20 || r == 0x7f || r == ' ' || r == '\t' {
-			return "", fmt.Errorf("invalid url: contains whitespace or control character")
+		if r <= 0x1f || r == 0x7f || unicode.IsSpace(r) || r == '\\' {
+			return "", fmt.Errorf("invalid url: contains whitespace, backslash, or control character")
 		}
 	}
 	if strings.HasPrefix(trimmed, `\\`) {
@@ -38,15 +39,19 @@ func validateExternalURL(rawURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid url: %w", err)
 	}
+	if !u.IsAbs() {
+		return "", fmt.Errorf("invalid url: must be absolute")
+	}
 	if !strings.EqualFold(u.Scheme, "https") && !strings.EqualFold(u.Scheme, "http") {
 		return "", fmt.Errorf("unsupported url scheme: %q", u.Scheme)
 	}
-	if u.Host == "" || u.Hostname() == "" {
+	if u.Host == "" || strings.TrimSpace(u.Hostname()) == "" {
 		return "", fmt.Errorf("invalid url: missing host")
 	}
 	if u.User != nil {
 		return "", fmt.Errorf("invalid url: userinfo not allowed")
 	}
+	u.Scheme = strings.ToLower(u.Scheme)
 	return u.String(), nil
 }
 
@@ -137,7 +142,7 @@ func (d *OSDesktop) OpenExternalURL(rawURL string) error {
 		return d.fallback.OpenExternalURL(clean)
 	}
 	if runtime.GOOS == "windows" {
-		return startAndRelease("rundll32.exe", "url.dll,FileProtocolHandler", clean)
+		return openExternalURLWindows(clean)
 	}
 	return d.fallback.OpenExternalURL(clean)
 }

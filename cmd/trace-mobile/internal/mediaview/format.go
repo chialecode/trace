@@ -6,10 +6,11 @@ package mediaview
 import (
 	"fmt"
 	"hash/fnv"
+	"net/url"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/theme"
@@ -121,39 +122,270 @@ func AvatarInitial(name string) string {
 	return strings.ToUpper(string(r))
 }
 
-var inlineURLRe = regexp.MustCompile(`https?://[^\s<>'"()\[\]{}，。！？、；：（）【】]+`)
-
 // ExtractLinks collects safe http(s):// links from explicit DTO links and inline
-// text URLs, deduplicating by URL and rejecting non-http(s) schemes (DEC-073).
+// text URLs, deduplicating by normalized URL (handling fragment-stripped item.Links
+// and balanced parentheses / IRI paths) while rejecting unsafe schemes, credentials,
+// and signed media CDN URLs (DEC-073).
 func ExtractLinks(text string, explicit []companionapi.TextLink) []companionapi.TextLink {
 	seen := make(map[string]bool)
+	seenBase := make(map[string]bool)
 	out := make([]companionapi.TextLink, 0, len(explicit))
-	add := func(label, rawURL string) {
-		u := strings.TrimSpace(rawURL)
-		if !IsSafeExternalURL(u) || seen[u] {
+	add := func(label, rawURL string, isInline bool) {
+		cleanU, ok := normalizeSafeExternalURL(rawURL)
+		if !ok {
 			return
 		}
-		seen[u] = true
-		lbl := strings.TrimSpace(label)
-		if lbl == "" || lbl == u {
-			lbl = compactURLDisplay(u)
+		normFull := canonicalMobileURLKey(cleanU, false)
+		normBase := canonicalMobileURLKey(cleanU, true)
+		if seen[normFull] || (isInline && seenBase[normBase]) {
+			return
 		}
-		out = append(out, companionapi.TextLink{Label: lbl, URL: u})
+		seen[normFull] = true
+		seenBase[normBase] = true
+		lbl := strings.TrimSpace(label)
+		if lbl == "" || lbl == cleanU || strings.HasPrefix(strings.ToLower(lbl), "http://") || strings.HasPrefix(strings.ToLower(lbl), "https://") {
+			lbl = compactURLDisplay(cleanU)
+		}
+		out = append(out, companionapi.TextLink{Label: lbl, URL: cleanU})
 	}
 	for _, l := range explicit {
-		add(l.Label, l.URL)
+		add(l.Label, l.URL, false)
 	}
-	for _, m := range inlineURLRe.FindAllString(text, -1) {
-		trimmed := strings.TrimRight(m, ".,;:!?)]}\"'")
-		add("", trimmed)
+	for _, cand := range scanMobileInlineURLs(text) {
+		add("", cand, true)
 	}
 	return out
 }
 
-// IsSafeExternalURL reports whether rawURL uses http:// or https://.
+// IsSafeExternalURL reports whether rawURL is a clean http:// or https:// web URL
+// without userinfo, control/whitespace/backslash chars, forbidden media CDN hosts,
+// or signed/credential query markers.
 func IsSafeExternalURL(rawURL string) bool {
-	u := strings.TrimSpace(rawURL)
-	return strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://")
+	_, ok := normalizeSafeExternalURL(rawURL)
+	return ok
+}
+
+func normalizeSafeExternalURL(rawURL string) (string, bool) {
+	s := strings.TrimSpace(rawURL)
+	if s == "" {
+		return "", false
+	}
+	for _, r := range s {
+		if r <= 0x1f || r == 0x7f || unicode.IsSpace(r) || r == '\\' {
+			return "", false
+		}
+	}
+	if hasUnsafeMobileSecretMarker(s) {
+		return "", false
+	}
+	u, err := url.Parse(s)
+	if err != nil || !u.IsAbs() || u.Host == "" || strings.TrimSpace(u.Hostname()) == "" || u.User != nil {
+		return "", false
+	}
+	if !strings.EqualFold(u.Scheme, "https") && !strings.EqualFold(u.Scheme, "http") {
+		return "", false
+	}
+	host := strings.ToLower(u.Hostname())
+	if isForbiddenMobileMediaHost(host) {
+		return "", false
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	return u.String(), true
+}
+
+func isForbiddenMobileMediaHost(host string) bool {
+	return host == "video.twimg.com" || strings.HasSuffix(host, ".video.twimg.com") ||
+		host == "video-s.twimg.com" ||
+		host == "pbs.twimg.com" ||
+		host == "ton.x.com" ||
+		host == "ton.twitter.com" ||
+		host == "pscp.tv" || strings.HasSuffix(host, ".pscp.tv") ||
+		host == "periscope.tv" || strings.HasSuffix(host, ".periscope.tv") ||
+		host == "weibocdn.com" || strings.HasSuffix(host, ".weibocdn.com") ||
+		host == "video.weibo.com" ||
+		host == "sinaimg.cn" || strings.HasSuffix(host, ".sinaimg.cn")
+}
+
+func hasUnsafeMobileSecretMarker(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "authorization: bearer") || strings.Contains(lower, "authorization:bearer") {
+		return true
+	}
+	for _, marker := range []string{
+		"x-amz-signature=", "x-amz-signature%3d",
+		"x-amz-credential=", "x-amz-credential%3d",
+		"x-amz-security-token=", "x-amz-security-token%3d",
+		"key-pair-id=", "signature=", "sig=", "ssig=", "expires=",
+		"x-expires=", "x-signature=", "policy=", "token=", "access_token=",
+		"auth_token=", "ct0=", "kdt=", "twid=", "guest_id=",
+		"x-csrf-token=", "x-client-transaction-id=",
+		"sessdata=", "bili_jct=", "ac_time_value=", "sessionid=",
+		"a_bogus=", "x-bogus=", "w_rid=", "upsig=",
+		"sub=", "subp=", "wbpsess=", "xsrf-token=", "x-xsrf-token=",
+		"scf=", "alf=", "alc=", "ssologinstate=", "suhb=", "pc_token=", "_t_wm=",
+	} {
+		idx := strings.Index(lower, marker)
+		for idx >= 0 {
+			if idx == 0 {
+				return true
+			}
+			prev := lower[idx-1]
+			if prev == '?' || prev == '&' || prev == ';' || prev == '#' || prev == '/' || prev == '%' || prev == ':' || prev == '=' {
+				return true
+			}
+			next := strings.Index(lower[idx+len(marker):], marker)
+			if next < 0 {
+				break
+			}
+			idx += len(marker) + next
+		}
+	}
+	return false
+}
+
+func canonicalMobileURLKey(rawURL string, stripFragment bool) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return rawURL
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		port = ""
+	}
+	hostPart := host
+	if port != "" {
+		hostPart += ":" + port
+	}
+	p := strings.TrimRight(u.EscapedPath(), "/")
+	key := scheme + "://" + hostPart + p
+	if u.RawQuery != "" {
+		key += "?" + u.RawQuery
+	}
+	if !stripFragment && u.Fragment != "" {
+		key += "#" + u.Fragment
+	}
+	return key
+}
+
+func scanMobileInlineURLs(text string) []string {
+	var out []string
+	lower := strings.ToLower(text)
+	pos := 0
+	for pos < len(text) {
+		pHTTPS := strings.Index(lower[pos:], "https://")
+		pHTTP := strings.Index(lower[pos:], "http://")
+		rel := -1
+		if pHTTPS >= 0 {
+			rel = pHTTPS
+		}
+		if pHTTP >= 0 && (rel < 0 || pHTTP < rel) {
+			rel = pHTTP
+		}
+		if rel < 0 {
+			break
+		}
+		start := pos + rel
+		end := scanMobileURLEnd(text, start)
+		cand, cleanEnd := trimMobileTrailingURLPunct(text, start, end)
+		if cand != "" {
+			out = append(out, cand)
+		}
+		if cleanEnd <= start {
+			pos = start + 4
+		} else {
+			pos = cleanEnd
+		}
+	}
+	return out
+}
+
+func scanMobileURLEnd(s string, start int) int {
+	i := start
+	sep := strings.Index(s[start:], "://")
+	afterAuthority := start
+	if sep >= 0 {
+		afterAuthority = start + sep + 3
+	}
+	inPathOrQuery := false
+	inNonASCIISeg := false
+	var prevRune rune
+	for i < len(s) {
+		r, w := utf8.DecodeRuneInString(s[i:])
+		if r <= 0x20 || r == 0x7f || unicode.IsSpace(r) || r == '"' || r == '\'' || r == '<' || r == '>' || r == '`' || r == '\\' {
+			break
+		}
+		if i >= afterAuthority && (r == '/' || r == '?' || r == '#') {
+			inPathOrQuery = true
+		}
+		if r > 0x7e {
+			if (r >= 0xFF00 && r <= 0xFFEF) || unicode.IsPunct(r) || unicode.IsSymbol(r) || unicode.IsSpace(r) {
+				break
+			}
+			isCJK := unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r) || unicode.Is(unicode.Hangul, r)
+			if isCJK {
+				isDelim := prevRune == '/' || prevRune == '?' || prevRune == '&' || prevRune == '=' || prevRune == '#' || prevRune == '_' || prevRune == '-' || prevRune == '%' || prevRune == '+'
+				if !inPathOrQuery || (!inNonASCIISeg && !isDelim) {
+					break
+				}
+				inNonASCIISeg = true
+			} else if inPathOrQuery {
+				inNonASCIISeg = true
+			} else {
+				break
+			}
+		} else if r == '/' || r == '?' || r == '&' || r == '=' || r == '#' || r == '_' || r == '-' || r == '%' || r == '+' {
+			inNonASCIISeg = false
+		}
+		prevRune = r
+		i += w
+	}
+	return i
+}
+
+func trimMobileTrailingURLPunct(s string, start, end int) (string, int) {
+	openParens := 0
+	openBrackets := 0
+	for i := start; i < end; i++ {
+		switch s[i] {
+		case '(':
+			openParens++
+		case ')':
+			openParens--
+		case '[':
+			openBrackets++
+		case ']':
+			openBrackets--
+		}
+	}
+	cur := end
+	for cur > start {
+		switch s[cur-1] {
+		case '.', ',', ';', ':', '!', '?', '}':
+			cur--
+		case ')':
+			if openParens < 0 {
+				openParens++
+				cur--
+			} else {
+				return s[start:cur], cur
+			}
+		case ']':
+			if openBrackets < 0 {
+				openBrackets++
+				cur--
+			} else {
+				return s[start:cur], cur
+			}
+		default:
+			return s[start:cur], cur
+		}
+	}
+	return s[start:cur], cur
 }
 
 func compactURLDisplay(rawURL string) string {

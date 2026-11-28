@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/chialecode/trace/internal/site"
 )
@@ -660,8 +661,9 @@ type rawTweetResultNode struct {
 	EditCtrl   *rawEditControl `json:"edit_control"`
 	LimActions json.RawMessage `json:"limitedActionResults"`
 	// Preview display fields when TweetPreviewDisplay places data directly under tweet.
-	Text      string `json:"text"`
-	CreatedAt string `json:"created_at"`
+	Text      string          `json:"text"`
+	CreatedAt string          `json:"created_at"`
+	Entities  *rawEntitiesSet `json:"entities"`
 }
 
 type rawTombstone struct {
@@ -711,7 +713,17 @@ type rawEntitiesSet struct {
 type rawURLEntity struct {
 	URL         string `json:"url"`
 	ExpandedURL string `json:"expanded_url"`
+	UnwoundURL  string `json:"unwound_url"`
 	DisplayURL  string `json:"display_url"`
+	Unwound     *struct {
+		URL string `json:"url"`
+	} `json:"unwound"`
+}
+
+type rawQuotedPermalink struct {
+	URL      string `json:"url"`
+	Expanded string `json:"expanded"`
+	Display  string `json:"display"`
 }
 
 type rawMediaEntity struct {
@@ -754,18 +766,19 @@ type rawTweetLegacy struct {
 	SelfThread          *struct {
 		IDStr string `json:"id_str"`
 	} `json:"self_thread"`
-	IsQuoteStatus       bool            `json:"is_quote_status"`
-	QuotedStatusIDStr   string          `json:"quoted_status_id_str"`
-	PossiblySensitive   bool            `json:"possibly_sensitive"`
-	WithheldInCountries []string        `json:"withheld_in_countries"`
-	ReplyCount          json.RawMessage `json:"reply_count"`
-	RetweetCount        json.RawMessage `json:"retweet_count"`
-	FavoriteCount       json.RawMessage `json:"favorite_count"`
-	QuoteCount          json.RawMessage `json:"quote_count"`
-	BookmarkCount       json.RawMessage `json:"bookmark_count"`
-	Entities            *rawEntitiesSet `json:"entities"`
-	ExtendedEntities    *rawEntitiesSet `json:"extended_entities"`
-	RetweetedStatusRes  *rawTweetWrap   `json:"retweeted_status_result"`
+	IsQuoteStatus         bool                `json:"is_quote_status"`
+	QuotedStatusIDStr     string              `json:"quoted_status_id_str"`
+	QuotedStatusPermalink *rawQuotedPermalink `json:"quoted_status_permalink"`
+	PossiblySensitive     bool                `json:"possibly_sensitive"`
+	WithheldInCountries   []string            `json:"withheld_in_countries"`
+	ReplyCount            json.RawMessage     `json:"reply_count"`
+	RetweetCount          json.RawMessage     `json:"retweet_count"`
+	FavoriteCount         json.RawMessage     `json:"favorite_count"`
+	QuoteCount            json.RawMessage     `json:"quote_count"`
+	BookmarkCount         json.RawMessage     `json:"bookmark_count"`
+	Entities              *rawEntitiesSet     `json:"entities"`
+	ExtendedEntities      *rawEntitiesSet     `json:"extended_entities"`
+	RetweetedStatusRes    *rawTweetWrap       `json:"retweeted_status_result"`
 }
 
 type rawCardWrapper struct {
@@ -896,16 +909,29 @@ func (c *Client) parseTweetPreviewDisplay(outer *rawTweetResultNode) *Post {
 		createdAtRaw = strings.TrimSpace(preview.Legacy.CreatedAt)
 	}
 	createdAt := parseXCreatedAt(createdAtRaw, id)
+	urlEntities := collectURLEntities(preview.Entities, preview.Legacy)
+	var mediaShortURLs []string
+	if preview.Legacy != nil {
+		var rawMedia []rawMediaEntity
+		if preview.Legacy.ExtendedEntities != nil && len(preview.Legacy.ExtendedEntities.Media) > 0 {
+			rawMedia = preview.Legacy.ExtendedEntities.Media
+		} else if preview.Legacy.Entities != nil && len(preview.Legacy.Entities.Media) > 0 {
+			rawMedia = preview.Legacy.Entities.Media
+		}
+		_, mediaShortURLs, _ = parseMediaEntities(rawMedia, c.allowLocalhost)
+	}
+	cleanText := hydrateTweetText(textRaw, id, urlEntities, mediaShortURLs)
 
 	p := &Post{
 		ID:               id,
 		Author:           author,
 		CreatedAt:        createdAt,
 		CreatedAtRaw:     createdAtRaw,
-		Text:             html.UnescapeString(strings.TrimSpace(textRaw)),
+		Text:             cleanText,
 		TextRaw:          textRaw,
 		IsPreviewDisplay: true,
 		VisibilityLabel:  "订阅者专属预览",
+		URLs:             urlEntities,
 		CanonicalURL:     canonicalStatusURL(author.ScreenName, id),
 	}
 	p.RuleType = computeRuleType(p)
@@ -1403,25 +1429,62 @@ func upgradeAvatarURL(raw string, allowLocalhost bool) string {
 
 func collectURLEntities(noteSet *rawEntitiesSet, leg *rawTweetLegacy) []URLEntity {
 	seen := make(map[string]bool)
+	indexByShort := make(map[string]int)
 	var out []URLEntity
+
+	addOne := func(shortU, expU, unwoundU, dispU string) {
+		shortU = strings.TrimSpace(shortU)
+		expU = normalizeEntityExpandedURL(expU)
+		unwoundU = normalizeEntityExpandedURL(unwoundU)
+		dispU = strings.TrimSpace(unescapeXDisplayURL(dispU))
+		if unwoundU != "" && (expU == "" || isTCoURL(expU)) {
+			expU = unwoundU
+		}
+		if expU == "" && dispU != "" {
+			expU = recoverURLFromCompleteDisplay(dispU)
+		}
+		if shortU == "" && expU == "" {
+			return
+		}
+		shortKey := canonicalTCoLookupKey(shortU)
+		if shortKey != "" {
+			if idx, exists := indexByShort[shortKey]; exists {
+				if out[idx].ExpandedURL == "" && expU != "" {
+					out[idx].ExpandedURL = expU
+				} else if isTCoURL(out[idx].ExpandedURL) && expU != "" && !isTCoURL(expU) {
+					out[idx].ExpandedURL = expU
+				}
+				if out[idx].DisplayURL == "" && dispU != "" {
+					out[idx].DisplayURL = dispU
+				}
+				if out[idx].ExpandedURL == expU || expU == "" {
+					return
+				}
+			}
+		}
+		key := strings.ToLower(shortU) + "|" + expU
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		if shortKey != "" {
+			if _, exists := indexByShort[shortKey]; !exists {
+				indexByShort[shortKey] = len(out)
+			}
+		}
+		out = append(out, URLEntity{
+			ShortURL:    shortU,
+			ExpandedURL: expU,
+			DisplayURL:  dispU,
+		})
+	}
 	add := func(list []rawURLEntity) {
 		for _, item := range list {
-			shortU := strings.TrimSpace(item.URL)
-			expU := strings.TrimSpace(item.ExpandedURL)
-			dispU := strings.TrimSpace(item.DisplayURL)
-			if shortU == "" && expU == "" {
-				continue
+			unwound := item.UnwoundURL
+			if unwound == "" && item.Unwound != nil {
+				unwound = item.Unwound.URL
 			}
-			key := shortU + "|" + expU
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			out = append(out, URLEntity{
-				ShortURL:    shortU,
-				ExpandedURL: expU,
-				DisplayURL:  dispU,
-			})
+			addOne(item.URL, item.ExpandedURL, unwound, item.DisplayURL)
 		}
 	}
 	if noteSet != nil {
@@ -1430,37 +1493,227 @@ func collectURLEntities(noteSet *rawEntitiesSet, leg *rawTweetLegacy) []URLEntit
 	if leg != nil && leg.Entities != nil {
 		add(leg.Entities.URLs)
 	}
+	if leg != nil && leg.QuotedStatusPermalink != nil {
+		addOne(leg.QuotedStatusPermalink.URL, leg.QuotedStatusPermalink.Expanded, "", leg.QuotedStatusPermalink.Display)
+	}
 	return out
 }
 
+func normalizeEntityExpandedURL(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if strings.HasPrefix(s, "//") {
+		s = "https:" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" || strings.TrimSpace(u.Hostname()) == "" {
+		return s
+	}
+	if strings.EqualFold(u.Scheme, "http") || strings.EqualFold(u.Scheme, "https") {
+		u.Scheme = strings.ToLower(u.Scheme)
+		return u.String()
+	}
+	return s
+}
+
+func isTCoURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Hostname(), "t.co")
+}
+
+func canonicalTCoLookupKey(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	u, err := url.Parse(s)
+	if err != nil || !strings.EqualFold(u.Hostname(), "t.co") {
+		return ""
+	}
+	p := strings.TrimRight(u.Path, "/")
+	if p == "" {
+		return ""
+	}
+	return "t.co" + p
+}
+
+func sameShortURL(a, b string) bool {
+	sa := strings.TrimSpace(a)
+	sb := strings.TrimSpace(b)
+	if sa == "" || sb == "" {
+		return false
+	}
+	if sa == sb {
+		return true
+	}
+	ka := canonicalTCoLookupKey(sa)
+	if ka != "" && ka == canonicalTCoLookupKey(sb) {
+		return true
+	}
+	return strings.EqualFold(sa, sb)
+}
+
+func recoverURLFromCompleteDisplay(disp string) string {
+	d := strings.TrimSpace(disp)
+	if d == "" || strings.Contains(d, "…") || strings.HasSuffix(d, "...") {
+		return ""
+	}
+	for _, r := range d {
+		if r <= 0x20 || r == 0x7f || unicode.IsSpace(r) || r == '\\' {
+			return ""
+		}
+	}
+	cand := d
+	lower := strings.ToLower(d)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		if !strings.Contains(d, ".") || strings.HasPrefix(d, ".") || strings.HasPrefix(d, "/") {
+			return ""
+		}
+		cand = "https://" + d
+	}
+	u, err := url.Parse(cand)
+	if err != nil || u.Host == "" || strings.TrimSpace(u.Hostname()) == "" || u.User != nil {
+		return ""
+	}
+	if strings.EqualFold(u.Hostname(), "pic.x.com") || strings.EqualFold(u.Hostname(), "pic.twitter.com") {
+		return ""
+	}
+	return SafePublicWebURL(cand)
+}
+
+type shortURLReplacement struct {
+	needle      string
+	replacement string
+	tcoKey      string
+}
+
+func isShortURLBoundaryByte(b byte) bool {
+	return !((b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' || b == '-')
+}
+
+func findNextShortURLMatch(s string, from int, reps []shortURLReplacement) (start, end int, replacement string, ok bool) {
+	bestStart := -1
+	bestEnd := -1
+	bestRep := ""
+	lower := strings.ToLower(s)
+	for _, rep := range reps {
+		var variants []string
+		if rep.tcoKey != "" {
+			variants = []string{"https://" + rep.tcoKey, "http://" + rep.tcoKey}
+		} else if rep.needle != "" {
+			variants = []string{rep.needle}
+		}
+		for _, v := range variants {
+			if v == "" {
+				continue
+			}
+			lv := strings.ToLower(v)
+			search := from
+			for search <= len(s)-len(v) {
+				rel := strings.Index(lower[search:], lv)
+				if rel < 0 {
+					break
+				}
+				idx := search + rel
+				candEnd := idx + len(v)
+				// For t.co paths, preserve exact path case so /AbCd does not collide with /abcd,
+				// while allowing http/https scheme and host case insensitivity.
+				if rep.tcoKey != "" {
+					schemeLen := len("https://")
+					if strings.HasPrefix(lv, "http://") {
+						schemeLen = len("http://")
+					}
+					pathPart := rep.tcoKey[len("t.co"):]
+					if s[idx+schemeLen+len("t.co"):candEnd] != pathPart {
+						search = idx + 1
+						continue
+					}
+				}
+				if candEnd < len(s) && !isShortURLBoundaryByte(s[candEnd]) {
+					search = idx + 1
+					continue
+				}
+				if bestStart < 0 || idx < bestStart || (idx == bestStart && candEnd > bestEnd) {
+					bestStart = idx
+					bestEnd = candEnd
+					bestRep = rep.replacement
+				}
+				break
+			}
+		}
+	}
+	if bestStart < 0 {
+		return 0, 0, "", false
+	}
+	return bestStart, bestEnd, bestRep, true
+}
+
 func hydrateTweetText(rawText, selfID string, urls []URLEntity, mediaShortURLs []string) string {
-	text := rawText
+	var reps []shortURLReplacement
+	addRep := func(shortU, replacement string) {
+		shortU = strings.TrimSpace(shortU)
+		if shortU == "" {
+			return
+		}
+		reps = append(reps, shortURLReplacement{
+			needle:      shortU,
+			replacement: replacement,
+			tcoKey:      canonicalTCoLookupKey(shortU),
+		})
+	}
 
 	// 1. Strip trailing / embedded media t.co short links corresponding to extended_entities.media[].url.
 	for _, mu := range mediaShortURLs {
-		if mu != "" {
-			text = strings.ReplaceAll(text, mu, "")
+		if strings.TrimSpace(mu) != "" {
+			addRep(mu, "")
 		}
 	}
 
-	// 2. Replace entities.urls[] t.co links with expanded_url; strip self-truncation link pointing at selfID.
+	// 2. Replace entities.urls[] t.co links with untouched expanded_url; strip self-truncation link pointing at selfID.
 	for _, ue := range urls {
-		if ue.ShortURL == "" {
+		if strings.TrimSpace(ue.ShortURL) == "" {
 			continue
 		}
-		if ue.ExpandedURL == "" {
+		exp := strings.TrimSpace(ue.ExpandedURL)
+		if exp == "" {
 			continue
 		}
-		if isSelfStatusURL(ue.ExpandedURL, selfID) {
-			text = strings.ReplaceAll(text, ue.ShortURL, "")
+		if isSelfStatusURL(exp, selfID) {
+			addRep(ue.ShortURL, "")
 			continue
 		}
-		text = strings.ReplaceAll(text, ue.ShortURL, ue.ExpandedURL)
+		addRep(ue.ShortURL, exp)
 	}
 
-	// 3. Clean up whitespace left by stripped short URLs while preserving newlines.
-	text = html.UnescapeString(text)
-	lines := strings.Split(text, "\n")
+	// 3. Unescape HTML entities ONLY on surrounding non-URL text so query parameters like
+	// "&copy=", "&reg=", "&para=", or "&amp;" inside expanded_url are never corrupted.
+	var sb strings.Builder
+	if len(reps) == 0 {
+		sb.WriteString(html.UnescapeString(rawText))
+	} else {
+		sb.Grow(len(rawText) + 32)
+		pos := 0
+		for pos < len(rawText) {
+			start, end, rep, ok := findNextShortURLMatch(rawText, pos, reps)
+			if !ok {
+				sb.WriteString(html.UnescapeString(rawText[pos:]))
+				break
+			}
+			if start > pos {
+				sb.WriteString(html.UnescapeString(rawText[pos:start]))
+			}
+			sb.WriteString(rep)
+			pos = end
+		}
+	}
+
+	// 4. Clean up whitespace left by stripped short URLs while preserving newlines.
+	lines := strings.Split(sb.String(), "\n")
 	for i, line := range lines {
 		for strings.Contains(line, "  ") {
 			line = strings.ReplaceAll(line, "  ", " ")
@@ -1569,7 +1822,7 @@ func parseDegradedCardAndPoll(
 	resolveCardURL := func(raw string) string {
 		s := strings.TrimSpace(raw)
 		for _, ue := range urlEntities {
-			if ue.ShortURL == s && ue.ExpandedURL != "" {
+			if sameShortURL(ue.ShortURL, s) && ue.ExpandedURL != "" {
 				s = ue.ExpandedURL
 				break
 			}
@@ -1641,7 +1894,7 @@ func parseDegradedCardAndPoll(
 	// 4. Unified card (may wrap broadcast/spaces, article, or web link).
 	if strings.Contains(lowerName, "unified_card") {
 		if ucRaw := strVals["unified_card"]; ucRaw != "" {
-			if rc := parseUnifiedCardJSON(ucRaw, canonicalPostURL, allowLocalhost); rc != nil {
+			if rc := parseUnifiedCardJSON(ucRaw, canonicalPostURL, resolveCardURL, allowLocalhost); rc != nil {
 				return nil, rc
 			}
 		}
@@ -1688,7 +1941,7 @@ func parseDegradedCardAndPoll(
 	}
 }
 
-func parseUnifiedCardJSON(raw string, canonicalPostURL string, allowLocalhost bool) *RichCard {
+func parseUnifiedCardJSON(raw string, canonicalPostURL string, resolveCardURL func(string) string, allowLocalhost bool) *RichCard {
 	var uc struct {
 		Type               string `json:"type"`
 		DestinationObjects map[string]struct {
@@ -1729,8 +1982,13 @@ func parseUnifiedCardJSON(raw string, canonicalPostURL string, allowLocalhost bo
 			link = strings.TrimSpace(dest.Data.URLData.URL)
 		}
 	}
-	if link == "" {
-		link = canonicalPostURL
+	if resolveCardURL != nil {
+		link = resolveCardURL(link)
+	} else {
+		if link == "" {
+			link = canonicalPostURL
+		}
+		link = SafePublicWebURL(link)
 	}
 	lowerType := strings.ToLower(uc.Type)
 	if containsAny(lowerType, "broadcast", "audiospace", "live") {
@@ -1739,7 +1997,7 @@ func parseUnifiedCardJSON(raw string, canonicalPostURL string, allowLocalhost bo
 			Label:       "直播 / Spaces",
 			Title:       firstNonEmpty(title, "X 直播 / Spaces"),
 			Desc:        LiveUnsupportedText,
-			URL:         SafePublicWebURL(link),
+			URL:         link,
 			Unsupported: true,
 		}
 	}
@@ -1751,7 +2009,7 @@ func parseUnifiedCardJSON(raw string, canonicalPostURL string, allowLocalhost bo
 		Label:       "网页链接",
 		Title:       title,
 		Desc:        desc,
-		URL:         SafePublicWebURL(link),
+		URL:         link,
 		Unsupported: true,
 	}
 }
@@ -1827,18 +2085,37 @@ func SafePublicWebURL(raw string) string {
 	if s == "" || HasSignedQueryMarker(s) {
 		return ""
 	}
+	for _, r := range s {
+		if r <= 0x1f || r == 0x7f || unicode.IsSpace(r) || r == '\\' {
+			return ""
+		}
+	}
 	u, err := url.Parse(s)
-	if err != nil || u.Host == "" || u.User != nil {
+	if err != nil || !u.IsAbs() || u.Host == "" || strings.TrimSpace(u.Hostname()) == "" || u.User != nil {
 		return ""
 	}
 	if !strings.EqualFold(u.Scheme, "https") && !strings.EqualFold(u.Scheme, "http") {
 		return ""
 	}
 	host := strings.ToLower(u.Hostname())
-	if host == "video.twimg.com" || strings.HasSuffix(host, ".video.twimg.com") {
+	if isForbiddenWebMediaHost(host) {
 		return ""
 	}
+	u.Scheme = strings.ToLower(u.Scheme)
 	return u.String()
+}
+
+func isForbiddenWebMediaHost(host string) bool {
+	return host == "video.twimg.com" || strings.HasSuffix(host, ".video.twimg.com") ||
+		host == "video-s.twimg.com" ||
+		host == "pbs.twimg.com" ||
+		host == "ton.x.com" ||
+		host == "ton.twitter.com" ||
+		host == "pscp.tv" || strings.HasSuffix(host, ".pscp.tv") ||
+		host == "periscope.tv" || strings.HasSuffix(host, ".periscope.tv") ||
+		host == "weibocdn.com" || strings.HasSuffix(host, ".weibocdn.com") ||
+		host == "video.weibo.com" ||
+		host == "sinaimg.cn" || strings.HasSuffix(host, ".sinaimg.cn")
 }
 
 func isPromotedOrNoiseEntryID(entryID string) bool {

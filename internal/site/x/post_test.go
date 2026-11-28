@@ -754,3 +754,232 @@ func TestQuoteRuleTypeDecouplingReplyContextAndNestedOriginPlan(t *testing.T) {
 		t.Fatalf("adapter defense-in-depth failed: err=%v OriginUnavailable=%v", err, defPlan.OriginUnavailable)
 	}
 }
+
+func TestXHyperlinkHydrationEntitiesBioAndArticleLinks(t *testing.T) {
+	c := NewClient(ClientOptions{})
+
+	// 1. hydrateTweetText must unescape surrounding HTML entities WITHOUT corrupting
+	// query params like &copy=, &reg=, &para=, &amp; inside expanded_url, must handle
+	// prefix-overlapping t.co tokens, http/https scheme mismatch, unwound_url,
+	// quoted_status_permalink, other-tweet photo link preservation, and self/media stripping.
+	const statusID = "1791257321273799101"
+	const otherStatusID = "1791257321273799202"
+	const quotedStatusID = "1791257321273799303"
+	tweetJSON := []byte(`{
+		"__typename": "Tweet",
+		"rest_id": "` + statusID + `",
+		"core": {
+			"user_results": {
+				"result": {
+					"__typename": "User",
+					"rest_id": "1000000000000000088",
+					"core": {"name": "链接作者", "screen_name": "link_author"},
+					"profile_bio": {
+						"description": "个人站 &amp; 文档 https://t.co/BioLink01",
+						"entities": {
+							"description": {
+								"urls": [{
+									"url": "https://t.co/BioLink01",
+									"expanded_url": "https://docs.example.dev/home?ref=bio&copy=1",
+									"display_url": "docs.example.dev/home"
+								}]
+							}
+						}
+					},
+					"legacy": {"statuses_count": 5}
+				}
+			}
+		},
+		"note_tweet": {
+			"is_expandable": true,
+			"note_tweet_results": {
+				"result": {
+					"text": "AT&amp;T &lt;测试&gt;：短链一 http://t.co/ab 与短链二 https://t.co/abcdef 以及展开链接 https://t.co/Unw01 与他帖图片 https://t.co/OtherPic 引用 https://t.co/QtPerm01 自截断 https://t.co/Self01 附图 https://t.co/Med01",
+					"entity_set": {
+						"urls": [
+							{
+								"url": "https://t.co/ab",
+								"expanded_url": "HTTPS://example.com/page?a=1&copy=2&reg=us&para=3#sec-1",
+								"display_url": "example.com/page?a=1&amp;copy=2…"
+							},
+							{
+								"url": "https://t.co/abcdef",
+								"expanded_url": "https://github.com/org/repo/releases/tag/v2.0.0",
+								"display_url": "github.com/org/repo/rel…"
+							},
+							{
+								"url": "https://t.co/Unw01",
+								"expanded_url": "",
+								"unwound_url": "https://unwound.example.org/guide",
+								"display_url": "unwound.example.org/guide"
+							},
+							{
+								"url": "https://t.co/OtherPic",
+								"expanded_url": "https://x.com/other_user/status/` + otherStatusID + `/photo/1",
+								"display_url": "x.com/other_user/sta…"
+							},
+							{
+								"url": "https://t.co/Self01",
+								"expanded_url": "https://x.com/link_author/status/` + statusID + `",
+								"display_url": "x.com/link_author/…"
+							}
+						]
+					}
+				}
+			}
+		},
+		"legacy": {
+			"id_str": "` + statusID + `",
+			"full_text": "truncated...",
+			"is_quote_status": true,
+			"quoted_status_id_str": "` + quotedStatusID + `",
+			"quoted_status_permalink": {
+				"url": "https://t.co/QtPerm01",
+				"expanded": "https://x.com/quoted_author/status/` + quotedStatusID + `",
+				"display": "x.com/quoted_author/…"
+			},
+			"extended_entities": {
+				"media": [{
+					"id_str": "991",
+					"type": "photo",
+					"url": "https://t.co/Med01",
+					"media_url_https": "https://pbs.twimg.com/media/SynthLinkPic.jpg"
+				}]
+			}
+		},
+		"card": {
+			"legacy": {
+				"name": "unified_card",
+				"binding_values": [{
+					"key": "unified_card",
+					"value": {
+						"type": "STRING",
+						"string_value": "{\"type\":\"image_website\",\"component_objects\":{\"c1\":{\"type\":\"details\",\"data\":{\"title\":{\"content\":\"卡片标题\"},\"subtitle\":{\"content\":\"卡片描述\"}}}},\"destination_objects\":{\"d1\":{\"type\":\"browser\",\"data\":{\"url_data\":{\"url\":\"https://t.co/abcdef\"}}}}}"
+					}
+				}]
+			}
+		}
+	}`)
+
+	post := c.parseTweetResult(tweetJSON, 0)
+	if post == nil {
+		t.Fatal("parseTweetResult returned nil")
+	}
+	if !strings.Contains(post.Text, "AT&T <测试>") {
+		t.Fatalf("surrounding HTML entities not unescaped: %q", post.Text)
+	}
+	for _, want := range []string{
+		"https://example.com/page?a=1&copy=2&reg=us&para=3#sec-1",
+		"https://github.com/org/repo/releases/tag/v2.0.0",
+		"https://unwound.example.org/guide",
+		"https://x.com/other_user/status/" + otherStatusID + "/photo/1",
+		"https://x.com/quoted_author/status/" + quotedStatusID,
+	} {
+		if !strings.Contains(post.Text, want) {
+			t.Fatalf("hydrated post.Text missing %q:\n%s", want, post.Text)
+		}
+	}
+	for _, bad := range []string{"t.co/", "©", "®", "¶", statusID} {
+		if strings.Contains(post.Text, bad) {
+			t.Fatalf("hydrated post.Text leaked/corrupted %q:\n%s", bad, post.Text)
+		}
+	}
+	if post.Author.Description != "个人站 & 文档 https://docs.example.dev/home?ref=bio&copy=1" {
+		t.Fatalf("user bio t.co not cleanly hydrated: %q", post.Author.Description)
+	}
+	if post.Card == nil || post.Card.URL != "https://github.com/org/repo/releases/tag/v2.0.0" {
+		t.Fatalf("unified_card t.co not expanded: %+v", post.Card)
+	}
+
+	links := BuildPostLinks(post)
+	if len(links) != 5 {
+		t.Fatalf("BuildPostLinks count = %d, want 5: %+v", len(links), links)
+	}
+	if links[0].Label != "example.com/page?a=1&copy=2…" || links[0].URL != "https://example.com/page?a=1&copy=2&reg=us&para=3#sec-1" {
+		t.Fatalf("links[0] = %+v", links[0])
+	}
+
+	// 2. TweetPreviewDisplay hydrates entities.urls cleanly.
+	previewJSON := []byte(`{
+		"__typename": "TweetPreviewDisplay",
+		"tweet": {
+			"rest_id": "1791257321273799199",
+			"text": "Preview &amp; link https://t.co/Prev01",
+			"entities": {
+				"urls": [{
+					"url": "https://t.co/Prev01",
+					"expanded_url": "https://preview.example.com/doc?x=1&copy=2",
+					"display_url": "preview.example.com/doc"
+				}]
+			}
+		}
+	}`)
+	previewPost := c.parseTweetResult(previewJSON, 0)
+	if previewPost == nil || previewPost.Text != "Preview & link https://preview.example.com/doc?x=1&copy=2" {
+		t.Fatalf("TweetPreviewDisplay hydration failed: %+v", previewPost)
+	}
+
+	// 3. SafePublicWebURL rejects forbidden hosts, empty hostname, userinfo, backslashes, and signed markers.
+	for _, bad := range []string{
+		"javascript:alert(1)",
+		"file:///C:/Windows/win.ini",
+		"http://:8080/path",
+		"https://user:pass@example.com/private",
+		`https://example.com/a\b`,
+		"https://video.twimg.com/ext_tw_video/1/a.mp4",
+		"https://ton.x.com/i/ton/data/1",
+		"https://pbs.twimg.com/media/foo.jpg",
+		"https://f.video.weibocdn.com/a.mp4",
+		"https://example.com/file?auth_token=secret&ct0=csrf",
+		"https://example.com/file?X-Amz-Signature=deadbeef",
+	} {
+		if got := SafePublicWebURL(bad); got != "" {
+			t.Fatalf("SafePublicWebURL(%q) = %q, want empty", bad, got)
+		}
+	}
+	if got := SafePublicWebURL("HTTPS://Example.COM/docs?a=1#top"); got != "https://Example.COM/docs?a=1#top" {
+		t.Fatalf("SafePublicWebURL uppercase scheme = %q", got)
+	}
+
+	// 4. X Article extractDraftTextEntities preserves multiple anchors pointing to the same URL
+	// and sorts out-of-order UTF-16 entityRanges by offset ascending.
+	artTweetJSON := []byte(`{
+		"__typename": "Tweet",
+		"rest_id": "1791257321273799404",
+		"core": {"user_results": {"result": ` + makeUserCoreJSON("1000000000000000088", "link_author", "链接作者", "") + `}},
+		"article": {
+			"article_results": {
+				"result": {
+					"rest_id": "2000000000000000404",
+					"title": "重复链接测试文章",
+					"content_state": {
+						"blocks": [
+							{
+								"key": "p1",
+								"type": "unstyled",
+								"text": "请先看 第一处文档 再对照 第二处文档 确认细节。",
+								"entityRanges": [
+									{"offset": 14, "length": 5, "key": 0},
+									{"offset": 4, "length": 5, "key": 0}
+								]
+							}
+						],
+						"entityMap": [
+							{"key": "0", "value": {"type": "LINK", "mutability": "MUTABLE", "data": {"url": "https://example.com/shared-spec"}}}
+						]
+					}
+				}
+			}
+		},
+		"legacy": {"id_str": "1791257321273799404", "full_text": "https://t.co/Art404"}
+	}`)
+	artPost := c.parseTweetResult(artTweetJSON, 0)
+	if artPost == nil || artPost.Article == nil || len(artPost.Article.Blocks) != 1 {
+		t.Fatalf("article parse failed: %+v", artPost)
+	}
+	artLinks := artPost.Article.Blocks[0].Links
+	if len(artLinks) != 2 || artLinks[0].Label != "第一处文档" || artLinks[1].Label != "第二处文档" ||
+		artLinks[0].URL != "https://example.com/shared-spec" || artLinks[1].URL != "https://example.com/shared-spec" {
+		t.Fatalf("article multi-anchor same-URL links = %+v", artLinks)
+	}
+}

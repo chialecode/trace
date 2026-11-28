@@ -279,15 +279,32 @@ func TestFormatHelpersAndSafeLinks(t *testing.T) {
 	if got := FormatDuration(3665); got != "1:01:05" {
 		t.Fatalf("FormatDuration(3665) = %q", got)
 	}
-	links := ExtractLinks("看这里 https://example.com/post?a=1 和 javascript:alert(1)", []companionapi.TextLink{
+	links := ExtractLinks("看这里 https://example.com/post?a=1 和 https://en.wikipedia.org/wiki/Go_(programming_language) 及 https://zh.wikipedia.org/wiki/人工智能，跳过 https://video.twimg.com/a.mp4 和 javascript:alert(1)", []companionapi.TextLink{
 		{Label: "恶意", URL: "sinaweibo://userinfo?uid=1"},
+		{Label: "签名流", URL: "https://example.com/dl?auth_token=SECRET&ct0=CSRF"},
 		{Label: "官网", URL: "https://trace.example.org/docs"},
 	})
-	if len(links) != 2 {
-		t.Fatalf("expected 2 safe links, got %+v", links)
+	if len(links) != 4 {
+		t.Fatalf("expected 4 safe links, got %+v", links)
 	}
-	if links[0].URL != "https://trace.example.org/docs" || links[1].URL != "https://example.com/post?a=1" {
+	if links[0].URL != "https://trace.example.org/docs" ||
+		links[1].URL != "https://example.com/post?a=1" ||
+		links[2].URL != "https://en.wikipedia.org/wiki/Go_(programming_language)" ||
+		links[3].URL != "https://zh.wikipedia.org/wiki/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD" {
 		t.Fatalf("unexpected extracted links: %+v", links)
+	}
+	for _, bad := range []string{
+		"http://:8080/path",
+		"https://user:pass@example.com/secret",
+		`https://example.com/a\b`,
+		"https://video.twimg.com/ext_tw_video/1/a.mp4",
+		"https://ton.x.com/i/ton/1",
+		"https://f.video.weibocdn.com/a.mp4?Expires=1&ssig=abc",
+		"https://example.com/file?X-Amz-Signature=deadbeef",
+	} {
+		if IsSafeExternalURL(bad) {
+			t.Fatalf("IsSafeExternalURL(%q) = true, want false", bad)
+		}
 	}
 }
 

@@ -307,9 +307,7 @@ func (a *App) renderXHLSOnlyNotice(c *ui.Context, noticeText, postURL string, of
 			})
 			if !offline && strings.TrimSpace(postURL) != "" {
 				if OutlinePillButton(c, "在浏览器中打开", "X分段流浏览器打开").Clicked() {
-					if err := a.backend.Desktop().OpenExternalURL(postURL); err != nil {
-						a.showError(err)
-					}
+					a.openExternalURL(postURL)
 				}
 			}
 		})
@@ -343,9 +341,7 @@ func (a *App) renderXPollCard(c *ui.Context, poll *service.XPollSummaryDTO, fall
 				})
 				if !offline && strings.TrimSpace(fallbackURL) != "" {
 					if OutlinePillButton(c, "在浏览器中打开", "X投票浏览器打开").Clicked() {
-						if err := a.backend.Desktop().OpenExternalURL(fallbackURL); err != nil {
-							a.showError(err)
-						}
+						a.openExternalURL(fallbackURL)
 					}
 				}
 			})
@@ -387,11 +383,9 @@ func (a *App) renderXRichCard(c *ui.Context, card *service.XRichCardDTO, fallbac
 				ui.Box(c).Padding(1, 6).Radius(4).Background(ColorBgMain).Border(1, ColorBorder).Children(func() {
 					ui.Text(c, badge).FontSize(11).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
 				})
-				if !offline && strings.TrimSpace(targetURL) != "" {
+				if cleanTarget, ok := ValidateSafeJumpURL(targetURL); ok && (!offline || strings.TrimSpace(card.URL) != "") {
 					if OutlinePillButton(c, "在浏览器中打开", "X卡片浏览器打开："+card.Kind).Clicked() {
-						if err := a.backend.Desktop().OpenExternalURL(targetURL); err != nil {
-							a.showError(err)
-						}
+						a.openExternalURL(cleanTarget)
 					}
 				}
 			})
@@ -548,6 +542,7 @@ func (a *App) xPostToPostCard(p service.XPostDTO, pageUser *service.XUserDTO) Po
 		replyTarget = xPostDTOToReplyTarget(&p.ThreadAncestors[0])
 	}
 
+	postText, postLinks := xPostTextAndLinksUI(&p, cachedItem, false)
 	return PostCardData{
 		Key:               "x:" + p.ID,
 		ItemKey:           itemKey,
@@ -560,8 +555,8 @@ func (a *App) xPostToPostCard(p service.XPostDTO, pageUser *service.XUserDTO) Po
 		AuthorFace:        authorFace,
 		PubTs:             p.CreatedAt,
 		TypeLabel:         typeLabel,
-		Text:              p.Text,
-		Links:             xPostLinksUI(&p, cachedItem, false),
+		Text:              postText,
+		Links:             postLinks,
 		URL:               firstNonEmptyStrUI(p.CanonicalURL, "https://x.com/i/web/status/"+p.ID),
 		Pinned:            p.Pinned,
 		IsEdited:          p.IsEdited,
@@ -665,6 +660,7 @@ func xPostDTOToOriginCard(
 			nestedOrigin, nestedUnavailable = xPostDTOToOriginCard(innerDTO, origDTO.OriginUnavailable, origDTO.OriginUnavailableReason, itemKey, nil, depth+1)
 		}
 	}
+	origText, origLinks := xPostTextAndLinksUI(origDTO, cachedItem, depth == 0)
 	return &PostCardData{
 		ItemKey:           itemKey,
 		Site:              "x",
@@ -673,8 +669,8 @@ func xPostDTOToOriginCard(
 		AuthorHandle:      origDTO.Author.ScreenName,
 		AuthorFace:        origDTO.Author.AvatarURL,
 		PubTs:             origDTO.CreatedAt,
-		Text:              origDTO.Text,
-		Links:             xPostLinksUI(origDTO, cachedItem, depth == 0),
+		Text:              origText,
+		Links:             origLinks,
 		URL:               origDTO.CanonicalURL,
 		XStatusID:         origDTO.ID,
 		NotePages:         origPages,
@@ -1183,11 +1179,12 @@ func (a *App) buildOnlineXThreadParts(
 			}
 		}
 
+		var segText string
 		var links []service.TextLinkDTO
 		if isFocal {
-			links = xPostLinksUI(&segCopy, cachedItem, false)
+			segText, links = xPostTextAndLinksUI(&segCopy, cachedItem, false)
 		} else {
-			links = xPostLinksUI(&segCopy, nil, false)
+			segText, links = xPostTextAndLinksUI(&segCopy, nil, false)
 		}
 
 		var segOriginCard *PostCardData
@@ -1204,7 +1201,7 @@ func (a *App) buildOnlineXThreadParts(
 			AuthorFace:        face,
 			PubTs:             segCopy.CreatedAt,
 			InReplyTo:         xPostDTOToReplyTarget(&segCopy),
-			Text:              segCopy.Text,
+			Text:              segText,
 			Links:             links,
 			URL:               segURL,
 			NotePages:         segPages,
@@ -1344,9 +1341,7 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 						a.notifyInfo("已复制链接")
 					}
 					if m.Item("在浏览器中打开").Chosen() {
-						if err := a.backend.Desktop().OpenExternalURL(targetURL); err != nil {
-							a.showError(err)
-						}
+						a.openExternalURL(targetURL)
 					}
 				}
 				if cachedItem != nil && itemKey != "" {
@@ -1440,9 +1435,10 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 
 		// Full Body Text (note_tweet rendered completely) or Full X Article (DEC-093)
 		hasFullArticle := post.Article != nil && post.Article.HasFullContent()
-		if trimmedText := strings.TrimSpace(post.Text); trimmedText != "" {
+		bodyText, bodyLinks := xPostTextAndLinksUI(post, cachedItem, false)
+		if trimmedText := strings.TrimSpace(bodyText); trimmedText != "" {
 			if !hasFullArticle || (trimmedText != strings.TrimSpace(post.Article.Title) && trimmedText != strings.TrimSpace(post.Article.PreviewText) && trimmedText != strings.TrimSpace(post.Article.PlainText)) {
-				a.renderRichText(c, post.Text, xPostLinksUI(post, cachedItem, false), richTextOptions{
+				a.renderRichText(c, bodyText, bodyLinks, richTextOptions{
 					Label:      "X帖子正文",
 					FontSize:   15,
 					LineHeight: LineHeightBody,
@@ -1561,8 +1557,8 @@ func (a *App) renderXPostDetail(c *ui.Context, post *service.XPostDTO) {
 						renderReplyContextHintLine(c, hint, "X回复提示", 12)
 					}
 				}
-				if strings.TrimSpace(tp.Text) != "" {
-					a.renderRichText(c, tp.Text, xPostLinksUI(&tp, nil, false), richTextOptions{
+				if segText, segLinks := xPostTextAndLinksUI(&tp, nil, false); strings.TrimSpace(segText) != "" {
+					a.renderRichText(c, segText, segLinks, richTextOptions{
 						FontSize:   15,
 						LineHeight: LineHeightBody,
 						TextColor:  ColorTextMain,
@@ -1873,11 +1869,16 @@ func (a *App) renderXOriginCardDepth(c *ui.Context, orig *service.XPostDTO, isQu
 			if replyHint := formatReplyContextHint(xPostDTOToReplyTarget(orig), nil); replyHint != "" {
 				ui.Text(c, replyHint).FontSize(11).TextColor(ColorTextMuted).SingleLine()
 			}
-			if strings.TrimSpace(orig.Text) != "" {
+			if origText, origLinks := xPostTextAndLinksUI(orig, outerCachedItem, depth == 0); strings.TrimSpace(origText) != "" {
 				if depth > 0 {
-					ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMain).MaxLines(4)
+					a.renderRichText(c, origText, origLinks, richTextOptions{
+						MaxLines:   4,
+						FontSize:   13,
+						LineHeight: LineHeightCompact,
+						TextColor:  ColorTextMain,
+					})
 				} else {
-					a.renderRichText(c, orig.Text, xPostLinksUI(orig, outerCachedItem, true), richTextOptions{
+					a.renderRichText(c, origText, origLinks, richTextOptions{
 						FontSize:   14,
 						LineHeight: LineHeightBody,
 						TextColor:  ColorTextMain,
@@ -2256,7 +2257,12 @@ func (a *App) renderXOfflineOriginBoxDepth(
 			}
 			if strings.TrimSpace(orig.Text) != "" {
 				if depth > 0 {
-					ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMain).MaxLines(4)
+					a.renderRichText(c, orig.Text, service.MapItemLinksToDTO(orig.Links), richTextOptions{
+						MaxLines:   4,
+						FontSize:   13,
+						LineHeight: LineHeightCompact,
+						TextColor:  ColorTextMain,
+					})
 				} else {
 					a.renderRichText(c, orig.Text, service.MapItemLinksToDTO(orig.Links), richTextOptions{
 						FontSize:   14,
@@ -2327,38 +2333,131 @@ func (a *App) renderXOfflineVideoCard(c *ui.Context, item library.ItemMetadata, 
 	}
 }
 
-func xPostLinksUI(p *service.XPostDTO, cached *library.ItemMetadata, fromOrigin bool) []service.TextLinkDTO {
-	if p != nil {
-		if len(p.Links) > 0 {
-			return p.Links
+func xPostTextAndLinksUI(p *service.XPostDTO, cached *library.ItemMetadata, fromOrigin bool) (string, []service.TextLinkDTO) {
+	if p == nil {
+		return "", xPostLinksUI(nil, cached, fromOrigin)
+	}
+	text := p.Text
+	links := xPostLinksUI(p, cached, fromOrigin)
+	if len(p.URLs) == 0 || !strings.Contains(strings.ToLower(text), "t.co/") {
+		return text, links
+	}
+	// If an online/legacy XPostDTO still holds unexpanded t.co short URLs in Text
+	// alongside URLs entities, expand them safely so rich_text clicks jump directly
+	// to the expanded URL with its DisplayURL label.
+	for _, u := range p.URLs {
+		shortU := strings.TrimSpace(u.ShortURL)
+		if shortU == "" || !isTCoJumpURL(shortU) {
+			continue
 		}
-		if len(p.URLs) > 0 {
-			var out []service.TextLinkDTO
-			for _, u := range p.URLs {
-				exp := firstNonEmptyStrUI(u.ExpandedURL, u.ShortURL)
-				cleanU, ok := ValidateSafeJumpURL(exp)
-				if !ok {
+		exp, ok := ValidateSafeJumpURL(u.ExpandedURL)
+		if !ok || exp == "" || isTCoJumpURL(exp) {
+			continue
+		}
+		text = replaceShortURLVariantsUI(text, shortU, exp)
+	}
+	return text, links
+}
+
+func replaceShortURLVariantsUI(text, shortU, expanded string) string {
+	lowerShort := strings.ToLower(shortU)
+	var suffix string
+	switch {
+	case strings.HasPrefix(lowerShort, "https://t.co/"):
+		suffix = shortU[len("https://t.co/"):]
+	case strings.HasPrefix(lowerShort, "http://t.co/"):
+		suffix = shortU[len("http://t.co/"):]
+	default:
+		return strings.ReplaceAll(text, shortU, expanded)
+	}
+	suffix = strings.TrimRight(suffix, "/")
+	if suffix == "" {
+		return text
+	}
+	for _, pfx := range []string{"https://t.co/", "http://t.co/"} {
+		needle := pfx + suffix
+		lowerNeedle := strings.ToLower(needle)
+		var sb strings.Builder
+		pos := 0
+		changed := false
+		for pos < len(text) {
+			rel := strings.Index(strings.ToLower(text[pos:]), lowerNeedle)
+			if rel < 0 {
+				break
+			}
+			idx := pos + rel
+			end := idx + len(needle)
+			// Preserve exact t.co token case and check boundary so short token prefixes never collide.
+			if text[idx+len(pfx):end] != suffix {
+				sb.WriteString(text[pos : idx+1])
+				pos = idx + 1
+				continue
+			}
+			if end < len(text) {
+				b := text[end]
+				if (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' || b == '-' {
+					sb.WriteString(text[pos : idx+1])
+					pos = idx + 1
 					continue
 				}
-				lbl := strings.TrimSpace(u.DisplayURL)
-				if lbl == "" || strings.HasPrefix(strings.ToLower(lbl), "http://") || strings.HasPrefix(strings.ToLower(lbl), "https://") {
-					lbl = FormatConciseLinkLabel(cleanU)
-				}
-				out = append(out, service.TextLinkDTO{Label: lbl, URL: cleanU})
 			}
-			if len(out) > 0 {
-				return out
-			}
+			sb.WriteString(text[pos:idx])
+			sb.WriteString(expanded)
+			pos = end
+			changed = true
+		}
+		if changed {
+			sb.WriteString(text[pos:])
+			text = sb.String()
+		}
+	}
+	return text
+}
+
+func xPostLinksUI(p *service.XPostDTO, cached *library.ItemMetadata, fromOrigin bool) []service.TextLinkDTO {
+	var out []service.TextLinkDTO
+	seen := make(map[string]bool)
+	addLink := func(label, rawURL string) {
+		cleanU, ok := ValidateSafeJumpURL(rawURL)
+		if !ok {
+			return
+		}
+		lbl := strings.TrimSpace(label)
+		lowerLbl := strings.ToLower(lbl)
+		if lbl == "" || strings.HasPrefix(lowerLbl, "http://") || strings.HasPrefix(lowerLbl, "https://") || strings.HasPrefix(lowerLbl, "t.co/") || lowerLbl == "t.co" {
+			lbl = FormatConciseLinkLabel(cleanU)
+		}
+		key := lbl + "\x00" + cleanU
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, service.TextLinkDTO{Label: lbl, URL: cleanU})
+	}
+	if p != nil {
+		for _, l := range p.Links {
+			addLink(l.Label, l.URL)
+		}
+		for _, u := range p.URLs {
+			exp := firstNonEmptyStrUI(u.ExpandedURL, u.ShortURL)
+			addLink(u.DisplayURL, exp)
+		}
+		if len(out) > 0 {
+			return out
 		}
 	}
 	if cached != nil {
+		var src []library.ItemLink
 		if fromOrigin {
-			if cached.Origin != nil && len(cached.Origin.Links) > 0 {
-				return service.MapItemLinksToDTO(cached.Origin.Links)
+			if cached.Origin != nil {
+				src = cached.Origin.Links
 			}
-		} else if len(cached.Links) > 0 {
-			return service.MapItemLinksToDTO(cached.Links)
+		} else {
+			src = cached.Links
+		}
+		for _, l := range src {
+			addLink(l.Label, l.URL)
 		}
 	}
-	return nil
+	return out
 }
