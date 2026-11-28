@@ -1221,8 +1221,9 @@ func TestTasksV2ConflictsResolutionPasteLinkAndLivePreview(t *testing.T) {
 	}
 	pumpUntil(func() bool {
 		mu.Lock()
-		defer mu.Unlock()
-		return len(parseInputs) == 1
+		got := len(parseInputs) == 1
+		mu.Unlock()
+		return got && tt.HasText("已加入电脑缓存队列")
 	})
 	if !tt.HasText("已加入电脑缓存队列") || !tt.HasText("手机粘贴缓存测试视频") {
 		t.Fatalf("expected parse-and-cache queued feedback, texts=%v", tt.Texts())
