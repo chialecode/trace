@@ -31,6 +31,7 @@ func (a *App) subscriptionsAccountsFingerprint() uint64 {
 		fnvWriteStr(h, sub.Avatar.Site)
 		fnvWriteStr(h, sub.Avatar.UID)
 		fnvWriteInt64(h, sub.Mid)
+		fnvWriteInt64(h, sub.LatestUpdateTs)
 		fnvWriteInt64(h, int64(len(sub.Accounts)))
 		for j := range sub.Accounts {
 			acc := &sub.Accounts[j]

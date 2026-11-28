@@ -337,6 +337,38 @@ func runScenesAndWriteReport(outDir string, env *fixtureEnv, app *ui.App, scenes
 					if _, ok := tt.Find("媒体库站点：" + env.savedXPost.ItemKey); ok && a.RequiredControlsVisible {
 						xBadgePlaces["library_card"]++
 					}
+				case "subscriptions":
+					bar, okB := tt.Find("订阅搜索与排序栏")
+					sel, okS := tt.Find("订阅排序方式")
+					inp, okI := tt.Find("订阅搜索过滤框")
+					if !okB || !okS || !okI ||
+						bar.X < -0.5 || bar.X+bar.W > float32(w)+0.5 ||
+						sel.X < -0.5 || sel.X+sel.W > float32(w)+0.5 ||
+						inp.X+inp.W > sel.X+1.0 {
+						a.NoHorizontalOver = false
+						a.Passed = false
+					}
+				case "subscriptions-sort-recent":
+					bar, okB := tt.Find("订阅搜索与排序栏")
+					sel, okS := tt.Find("订阅排序方式")
+					inp, okI := tt.Find("订阅搜索过滤框")
+					if !okB || !okS || !okI ||
+						bar.X < -0.5 || bar.X+bar.W > float32(w)+0.5 ||
+						sel.X < -0.5 || sel.X+sel.W > float32(w)+0.5 ||
+						inp.X+inp.W > sel.X+1.0 {
+						a.NoHorizontalOver = false
+						a.Passed = false
+					}
+					firstCell, ok1 := tt.Find("选择订阅 " + env.xOnlySub.ID)
+					secondCell, ok2 := tt.Find("选择订阅 " + env.primarySub.ID)
+					lastCell, ok3 := tt.Find("选择订阅 " + env.auroraSub.ID)
+					inOrder := func(p, q mygoui.Rect) bool {
+						sameRow := q.Y >= p.Y-4 && q.Y <= p.Y+4
+						return q.Y > p.Y+4 || (sameRow && q.X > p.X)
+					}
+					if !ok1 || !ok2 || !ok3 || !inOrder(firstCell, secondCell) || !inOrder(secondCell, lastCell) {
+						a.Passed = false
+					}
 				case "subscriptions-all-accounts":
 					if !verifyFiveSegmentSiteFilter(tt, "订阅账号站点筛选：", w) {
 						fiveSegFilterOK = false
@@ -401,7 +433,7 @@ func runScenesAndWriteReport(outDir string, env *fixtureEnv, app *ui.App, scenes
 				if !assertion.RequiredControlsVisible {
 					siteBadgesOK = false
 				}
-			case "subscriptions":
+			case "subscriptions", "subscriptions-sort-recent":
 				if !assertion.ForbiddenControlsAbsent {
 					subGridNoBadgeOK = false
 				}

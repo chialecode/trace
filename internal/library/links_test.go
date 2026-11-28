@@ -112,3 +112,80 @@ func TestItemMetadataLinksBackwardCompatAndSanitization(t *testing.T) {
 		t.Fatalf("MergeItemMetadata failed to supplement links: outer=%+v origin=%+v", merged.Links, merged.Origin)
 	}
 }
+
+func TestXItemMetadataLinksAndForbiddenHostsSanitization(t *testing.T) {
+	tmp := t.TempDir()
+	db, _, _, err := storage.OpenSQLite(filepath.Join(tmp, "library.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer db.Close()
+
+	store, err := OpenWithDataDir(db, filepath.Join(tmp, "cache"), tmp)
+	if err != nil {
+		t.Fatalf("OpenWithDataDir: %v", err)
+	}
+
+	itemDir := filepath.Join(tmp, "cache", "x", "1000000000000000001", "posts", "1900000000000099101")
+	saved, err := store.SaveItem(itemDir, ItemMetadata{
+		Version: 1,
+		ID:      "dynamic:1900000000000099101",
+		Site:    "x",
+		Kind:    "dynamic",
+		Status:  "complete",
+		Title:   "X 多层级链接清洗测试",
+		Text:    "主帖链接 https://github.com/org/repo/releases/tag/v2.0.0#notes",
+		PubTs:   1710010000,
+		Author:  ItemAuthor{Site: "x", UID: "1000000000000000001", UniqueID: "synth_x", Name: "合成X号"},
+		Links: []ItemLink{
+			{Label: "github.com/org/repo/rel…", URL: "https://github.com/org/repo/releases/tag/v2.0.0#notes"},
+			{Label: "私密媒体", URL: "https://ton.x.com/i/ton/data/1"},
+			{Label: "图片直链", URL: "https://pbs.twimg.com/media/synth.jpg"},
+			{Label: "直播流", URL: "https://prod-fastly.pscp.tv/stream.m3u8"},
+			{Label: "含凭证", URL: "https://example.com/p?auth_token=SECRET&ct0=CSRF"},
+		},
+		Origin: &ItemOrigin{
+			Site:   "x",
+			ID:     "1900000000000099100",
+			Author: ItemAuthor{Site: "x", UID: "1000000000000000002", UniqueID: "orig_x", Name: "原帖作者"},
+			Text:   "外层引用 https://example.org/outer",
+			Links:  []ItemLink{{Label: "example.org/outer", URL: "https://example.org/outer"}},
+			Origin: &ItemOrigin{
+				Site:   "x",
+				ID:     "1900000000000099099",
+				Author: ItemAuthor{Site: "x", UID: "1000000000000000003", UniqueID: "inner_x", Name: "内层作者"},
+				Text:   "内层引用 https://example.net/inner",
+				Links: []ItemLink{
+					{Label: "example.net/inner", URL: "https://example.net/inner"},
+					{Label: "脚本", URL: "javascript:alert(1)"},
+				},
+			},
+		},
+		Article: &ItemArticle{
+			Title: "文章标题",
+			Blocks: []ItemArticleBlock{{
+				Type: "header-one",
+				Text: "第一章 规格说明",
+				Links: []ItemLink{
+					{Label: "规格说明", URL: "https://docs.example.dev/spec"},
+					{Label: "非法视频", URL: "https://video.twimg.com/ext_tw_video/1/a.mp4"},
+				},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem: %v", err)
+	}
+	if saved.Version != 1 {
+		t.Fatalf("saved.Version = %d, want 1", saved.Version)
+	}
+	if len(saved.Links) != 1 || saved.Links[0].URL != "https://github.com/org/repo/releases/tag/v2.0.0" {
+		t.Fatalf("unexpected saved.Links: %+v", saved.Links)
+	}
+	if saved.Origin == nil || saved.Origin.Origin == nil || len(saved.Origin.Origin.Links) != 1 || saved.Origin.Origin.Links[0].URL != "https://example.net/inner" {
+		t.Fatalf("unexpected nested Origin.Origin.Links: %+v", saved.Origin)
+	}
+	if saved.Article == nil || len(saved.Article.Blocks) != 1 || len(saved.Article.Blocks[0].Links) != 1 || saved.Article.Blocks[0].Links[0].URL != "https://docs.example.dev/spec" {
+		t.Fatalf("unexpected Article.Blocks[0].Links: %+v", saved.Article)
+	}
+}

@@ -91,6 +91,45 @@ func FormatRelativeTime(ts int64) string {
 	return fmt.Sprintf("%d年%d月%d日", t.Year(), int(t.Month()), t.Day())
 }
 
+// formatSubGridUpdatedAt formats a subscription's local latest update/cache
+// timestamp into a compact secondary caption for the subscriptions avatar grid.
+func formatSubGridUpdatedAt(ts int64, now time.Time) string {
+	if ts <= 0 {
+		return "暂无缓存"
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	loc := now.Location()
+	if loc == nil {
+		loc = time.Local
+	}
+	t := time.Unix(ts, 0).In(loc)
+	nowInLoc := now.In(loc)
+	diff := nowInLoc.Sub(t)
+	if diff < 0 && diff > -time.Minute {
+		return "刚刚更新"
+	}
+	if diff >= 0 {
+		if diff < time.Minute {
+			return "刚刚更新"
+		}
+		if diff < time.Hour {
+			return fmt.Sprintf("%d 分钟前更新", int(diff/time.Minute))
+		}
+		if diff < 24*time.Hour {
+			return fmt.Sprintf("%d 小时前更新", int(diff/time.Hour))
+		}
+		if diff < 30*24*time.Hour {
+			return fmt.Sprintf("%d 天前更新", int(diff/(24*time.Hour)))
+		}
+	}
+	if t.Year() == nowInLoc.Year() {
+		return fmt.Sprintf("%d月%d日更新", int(t.Month()), t.Day())
+	}
+	return fmt.Sprintf("%d年%d月%d日更新", t.Year(), int(t.Month()), t.Day())
+}
+
 // FirstGlyph returns the first visible rune of a name for avatar fallback badges.
 func FirstGlyph(name string) string {
 	name = strings.TrimSpace(name)

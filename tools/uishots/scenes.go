@@ -169,10 +169,81 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.SubDetailOpen = false
 				app.SubAccountsOpen = false
 				app.SubChecksOpen = false
+				app.SubSearchQuery = ""
+				app.SubSort = uistate.SubSortDefault
 				app.Navigate(ui.RouteSubscriptions)
 				seedRecentAndLive()
 			},
-			RequiredLabels: []string{"选择订阅 " + primarySub.ID},
+			RequiredLabels: []string{
+				"订阅搜索与排序栏",
+				"订阅搜索过滤框",
+				"订阅排序方式",
+				"选择订阅 " + primarySub.ID,
+				"订阅最近更新：" + primarySub.ID,
+				"订阅最近更新：" + auroraSub.ID,
+			},
+			RequiredTexts: []string{
+				"默认顺序",
+				"暂无缓存",
+			},
+			PanelRequiredLabels: []string{
+				"订阅侧栏：全部订阅",
+				"订阅侧栏：全部账号",
+				"订阅侧栏：检查计划",
+			},
+			NarrowRequiredLabels: []string{
+				"订阅页全部订阅",
+				"订阅页全部账号",
+				"订阅页检查计划",
+			},
+			ForbiddenLabels: []string{
+				"订阅详情账号站点：bilibili:20001",
+				"订阅详情账号站点：douyin:" + douyinSecUID,
+				"订阅详情账号站点：weibo:" + weiboUID,
+				"订阅详情账号站点：x:" + xUID,
+				"订阅详情账号站点：x:" + xOnlyUID,
+				"订阅账号站点：x:" + xUID,
+				"订阅账号站点：x:" + xOnlyUID,
+				"订阅网格站点",
+				"用户页站点标记",
+			},
+		},
+		{
+			Name: "subscriptions-sort-recent",
+			Setup: func() {
+				app.SubDetailOpen = false
+				app.SubAccountsOpen = false
+				app.SubChecksOpen = false
+				app.SubSearchQuery = ""
+				app.Navigate(ui.RouteSubscriptions)
+				seedRecentAndLive()
+				app.SubSort = uistate.SubSortRecent
+				now := time.Now()
+				for i := range app.Subscriptions {
+					switch {
+					case app.Subscriptions[i].ID == xOnlySub.ID:
+						app.Subscriptions[i].LatestUpdateTs = now.Add(-20 * time.Second).Unix()
+					case app.Subscriptions[i].Mid == 20003:
+						app.Subscriptions[i].LatestUpdateTs = now.Add(-3 * 24 * time.Hour).Unix()
+					}
+				}
+			},
+			RequiredLabels: []string{
+				"订阅搜索与排序栏",
+				"订阅搜索过滤框",
+				"订阅排序方式",
+				"选择订阅 " + xOnlySub.ID,
+				"订阅最近更新：" + xOnlySub.ID,
+				"选择订阅 " + primarySub.ID,
+				"订阅最近更新：" + primarySub.ID,
+				"订阅最近更新：" + auroraSub.ID,
+			},
+			RequiredTexts: []string{
+				"按最近更新",
+				"刚刚更新",
+				"3 天前更新",
+				"暂无缓存",
+			},
 			PanelRequiredLabels: []string{
 				"订阅侧栏：全部订阅",
 				"订阅侧栏：全部账号",
