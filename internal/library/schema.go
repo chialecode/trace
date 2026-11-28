@@ -474,6 +474,7 @@ type VideoPartRecord struct {
 	SubtitleState      string             `json:"subtitleState,omitempty"`
 	SubtitleIncludesAI bool               `json:"subtitleIncludesAi,omitempty"`
 	SubtitleTracks     []PartSubtitleInfo `json:"subtitleTracks,omitempty"`
+	ChaptersChecked    bool               `json:"chaptersChecked,omitempty"`
 	Chapters           []VideoChapter     `json:"chapters,omitempty"`
 	Video              PartVideoInfo      `json:"video"`
 	Audio              PartAudioInfo      `json:"audio"`
@@ -960,6 +961,11 @@ func sanitizeManifestConflictFields(meta *ItemMetadata) {
 	}
 	if meta.RemotePartCount < 0 {
 		meta.RemotePartCount = 0
+	}
+	for i := range meta.Parts {
+		if len(meta.Parts[i].Chapters) > 0 {
+			meta.Parts[i].ChaptersChecked = true
+		}
 	}
 	meta.RecheckedAt = strings.TrimSpace(meta.RecheckedAt)
 	if hasSignedOrQueryMarkers(meta.RecheckedAt) || isRemoteOrSignedURL(meta.RecheckedAt) || containsXForbiddenTextMarkers(meta.RecheckedAt) {

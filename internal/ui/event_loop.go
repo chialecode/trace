@@ -185,7 +185,7 @@ func (a *App) isLibraryStatisticsVisible() bool {
 }
 
 func (a *App) isBackfillSummaryVisible() bool {
-	if _, hasActive := a.activeWeiboBackfillQueue(); hasActive {
+	if _, hasActive := a.activeBackfillQueue(); hasActive {
 		return false
 	}
 	if a.CurrentRoute == RouteSettings && a.SettingsCategory == "storage" {

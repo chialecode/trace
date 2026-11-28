@@ -419,6 +419,9 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 			if len(cur.Chapters) == 0 && len(p.Chapters) > 0 {
 				cur.Chapters = append([]VideoChapter(nil), p.Chapters...)
 			}
+			if !cur.ChaptersChecked && (p.ChaptersChecked || len(cur.Chapters) > 0) {
+				cur.ChaptersChecked = true
+			}
 			if !cur.SubtitleIncludesAI && p.SubtitleIncludesAI {
 				cur.SubtitleIncludesAI = true
 			}

@@ -409,8 +409,8 @@ func TestDEC096BilibiliPeriodicFullCacheAutoIncludesDynamicsAndInspect(t *testin
 	afterWithVid.Videos = []string{"video:BV1link000001"}
 	remoteWithLinked := remoteDyn
 	remoteWithLinked.Videos = []bilibili.DynamicVideoRef{{BVID: "BV1link000001"}}
-	if dLink := b.inspectBilibiliCachedDynamicDeferred(remoteWithLinked, afterWithVid, QueueOriginFullCache); dLink.action != inspectEnqueue || dLink.enqueue == nil {
-		t.Fatalf("linked video < v3 must trigger inspectEnqueue with custom enqueue, got %+v", dLink)
+	if dLink := b.inspectBilibiliCachedDynamicDeferred(remoteWithLinked, afterWithVid, QueueOriginFullCache); dLink.action != inspectProbePaced || dLink.enqueue == nil {
+		t.Fatalf("linked video < v3 must trigger inspectProbePaced with probe enqueue, got %+v", dLink)
 	}
 }
 
@@ -972,5 +972,467 @@ func TestDEC096CrossSiteFirstPageCacheMissCachedForwardsAndStartBackfill(t *test
 	}
 	if err := json.Unmarshal(rawQueue, &env); err != nil || env.Version != 3 {
 		t.Fatalf("cache-queue.json must remain version 3, got %d (err=%v)", env.Version, err)
+	}
+}
+
+func TestDEC096BilibiliManualProbeDuringBackoffRecoversAndForbiddenDoesNotClearBackoff(t *testing.T) {
+	nowStart := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	clock := newFakeQueueClock(nowStart)
+
+	var (
+		viewCalls   atomic.Int32
+		return403   atomic.Bool
+		playerV2Cnt atomic.Int32
+	)
+	biliSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/x/web-interface/nav":
+			_, _ = fmt.Fprint(w, `{"code":0,"data":{"isLogin":true,"mid":778899,"uname":"测试用户","wbi_img":{"img_url":"https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png","sub_url":"https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png"}}}`)
+		case "/x/web-interface/wbi/view", "/x/web-interface/view":
+			viewCalls.Add(1)
+			if return403.Load() {
+				_, _ = fmt.Fprint(w, `{"code":-403,"message":"访问权限不足"}`)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"bvid": r.URL.Query().Get("bvid"), "aid": 555, "title": "退避探针恢复视频", "desc": "简介",
+					"pubdate": nowStart.Add(-30 * 24 * time.Hour).Unix(), "duration": 60,
+					"owner": map[string]any{"mid": 4001, "name": "UP"},
+					"pages": []map[string]any{{"cid": 40101, "page": 1, "part": "P1", "duration": 60}},
+				},
+			})
+		case "/x/player/wbi/v2":
+			playerV2Cnt.Add(1)
+			cidVal, _ := strconv.ParseInt(r.URL.Query().Get("cid"), 10, 64)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"bvid":        r.URL.Query().Get("bvid"),
+					"cid":         cidVal,
+					"subtitle":    map[string]any{"subtitles": []any{}},
+					"view_points": []map[string]any{{"type": 2, "from": 0, "to": 60, "content": "探针恢复章节"}},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer biliSrv.Close()
+
+	loc := testLocations(t)
+	b, err := NewBackend(Options{
+		Locations:        loc,
+		Desktop:          NewMockDesktop(),
+		DisableBgWorkers: true,
+		CacheQueueClock:  clock,
+		CacheQueueRand:   func(int) int { return 0 },
+		BilibiliOpts: bilibili.ClientOptions{
+			Endpoints: bilibili.Endpoints{
+				APIBase: biliSrv.URL, PassportBase: biliSrv.URL, WWWBase: biliSrv.URL,
+				SpaceBase: biliSrv.URL, DynamicBase: biliSrv.URL, LiveAPIBase: biliSrv.URL, LiveWebBase: biliSrv.URL,
+			},
+			PacingInterval: -1, AllowLocalhost: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		_ = b.Close()
+	}()
+	if err := b.dl.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.ImportCookie(ctx, "SESSDATA=synth_probe; bili_jct=csrf_probe; DedeUserID=778899", ""); err != nil {
+		t.Fatal(err)
+	}
+	curSet := b.GetSettings()
+	curSet.Download.SaveCover = false
+	curSet.Download.SaveDanmaku = false
+	curSet.Download.SaveSubtitles = false
+	if _, err := b.UpdateSettings(curSet); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed two v2 Bilibili videos at stream ceiling.
+	seedVid := func(bvid string) library.ItemMetadata {
+		dir := filepath.Join(b.lib.CacheDir(), "bilibili", "4001", "videos", bvid)
+		mf := writeVerifiedLocalFile(t, dir, "P01.mp4", []byte("PROBE_V2_"+bvid), "video", 1920, 1080, 60)
+		saved, sErr := b.lib.SaveItem(dir, library.ItemMetadata{
+			Version: 1, ID: "video:" + bvid, Site: "bilibili", Kind: "video", Status: "complete",
+			Title: "退避探针恢复视频", Desc: "简介", PubTs: nowStart.Add(-30 * 24 * time.Hour).Unix(), Duration: 60,
+			CacheStandardVersion: 2,
+			Author:               library.ItemAuthor{Site: "bilibili", Mid: 4001, UID: "4001", Name: "UP"},
+			Media:                []library.MediaFile{mf},
+			Parts: []library.VideoPartRecord{{
+				CID: 40101, Page: 1, Title: "P1", Duration: 60, File: "P01.mp4",
+				DanmakuState: "skipped", SubtitleState: "skipped",
+				Video:     library.PartVideoInfo{Quality: 80},
+				Audio:     library.PartAudioInfo{Quality: 30280},
+				Available: library.PartAvailableInfo{BestVideo: 80, BestAudio: 30280, ProbedAt: nowStart.Add(-20 * 24 * time.Hour).Format(time.RFC3339)},
+			}},
+		})
+		if sErr != nil {
+			t.Fatal(sErr)
+		}
+		return saved
+	}
+
+	// 1. Subcase A: Put Bilibili into backoff and return -403 (ErrKindForbidden) on VideoDetail.
+	// Manual probe MUST pass through WithManualProbe (viewCalls==1) and set probeRejected=true so backoff stays active!
+	vForbidden := seedVid("BV1forb000001")
+	return403.Store(true)
+	b.subs.RecordSiteAutomaticStop(string(site.Bilibili), site.ErrKindRiskControl)
+	enqForb, _, _, errForb := b.executeOneSiteBackfillItem(site.WithManualProbe(ctx), site.Bilibili, vForbidden)
+	if errForb != nil || viewCalls.Load() != 1 || !enqForb.probeRejected {
+		t.Fatalf("expected manual probe to reach VideoDetail and set probeRejected=true on -403, got enq=%+v calls=%d err=%v",
+			enqForb, viewCalls.Load(), errForb)
+	}
+	if inBackoff, _ := b.subs.IsSiteInBackoff(string(site.Bilibili)); !inBackoff {
+		t.Fatal("ErrKindForbidden during manual probe must NOT clear Bilibili backoff")
+	}
+
+	// 2. Subcase B: Switch remote back to 200 OK and trigger ResumeCacheQueue on a waiting_backoff site_backfill task!
+	// WithManualProbe(ctx) must NOT be clobbered by probeBilibiliCachedVideo, so VideoDetail succeeds and clears backoff!
+	vRecover := seedVid("BV1recov00002")
+	_ = vRecover
+	return403.Store(false)
+	b.queue.Start(ctx)
+	started, err := b.StartBackfill(ctx)
+	if err != nil || len(started) != 1 {
+		t.Fatalf("StartBackfill during backoff: started=%+v err=%v", started, err)
+	}
+	waitQueuePredicate(t, b, started[0].ID, "enters waiting_backoff", func(qt CacheQueueTask) bool {
+		return qt.Status == CacheQueueWaitingBackoff
+	})
+	if _, err := b.ResumeCacheQueue(started[0].ID); err != nil {
+		t.Fatalf("ResumeCacheQueue manual probe: %v", err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		cur := b.ListCacheQueue()
+		done := false
+		for _, qt := range cur {
+			if qt.ID == started[0].ID && qt.Status == CacheQueueCompleted {
+				done = true
+			}
+		}
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for manual probe recovery; queue=%+v", cur)
+		}
+		if _, ok := clock.AdvanceToNextTimer(); !ok {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if inBackoff, _ := b.subs.IsSiteInBackoff(string(site.Bilibili)); inBackoff {
+		t.Fatal("successful Bilibili manual probe via ResumeCacheQueue must clear Bilibili backoff")
+	}
+	if playerV2Cnt.Load() != 1 {
+		t.Fatalf("expected 1 player/wbi/v2 chapter backfill call after probe recovery, got %d", playerV2Cnt.Load())
+	}
+}
+
+func TestDEC096WeiboBackfillTierC2BackoffClearOrderAndRemoveWatermarkFalseNoLoop(t *testing.T) {
+	nowStart := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
+	clock := newFakeQueueClock(nowStart)
+
+	var (
+		editHist429   atomic.Bool
+		editHistCalls atomic.Int32
+		oslargeHits   atomic.Int32
+	)
+	wbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/ajax/setting/getBasicInfo":
+			_, _ = fmt.Fprint(w, `{"ok":1,"data":{"screen_name":"合成登录用户"}}`)
+		case "/ajax/profile/info":
+			_, _ = fmt.Fprint(w, `{"ok":1,"data":{"user":{"idstr":"888001","screen_name":"合成登录用户","statuses_count":5}}}`)
+		case "/ajax/statuses/show":
+			mblogID, _ := weibo.MidToMblogID("5096300000000001")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": 1, "idstr": "5096300000000001", "mblogid": mblogID,
+				"text_raw": "带静态图已编辑转发微博", "created_at": "Mon Jan 01 12:00:00 +0800 2024",
+				"edit_count": 1,
+				"user":       map[string]any{"idstr": "888001", "screen_name": "未订阅博主"},
+				"pic_ids":    []string{"picStaticC2"},
+				"pic_infos": map[string]any{
+					"picStaticC2": map[string]any{
+						"pic_id": "picStaticC2", "type": "pic",
+						"largest": map[string]any{"url": "https://wx1.sinaimg.cn/large/picStaticC2.jpg", "width": 48, "height": 36},
+					},
+				},
+			})
+		case "/ajax/statuses/editHistory":
+			editHistCalls.Add(1)
+			if editHist429.Load() {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = fmt.Fprint(w, `{"ok":0,"msg":"rate limited"}`)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": 1, "total": 1,
+				"statuses": []map[string]any{
+					{"idstr": "5096300000000001", "text_raw": "历史第1版正文", "created_at": "Mon Jan 01 11:00:00 +0800 2024"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer wbSrv.Close()
+
+	cdnRT := serviceRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/oslarge/") {
+			oslargeHits.Add(1)
+		}
+		return &http.Response{
+			StatusCode: http.StatusNotFound,
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Body:       http.NoBody,
+		}, nil
+	})
+
+	loc := testLocations(t)
+	b, err := NewBackend(Options{
+		Locations:        loc,
+		Desktop:          NewMockDesktop(),
+		DisableBgWorkers: true,
+		CacheQueueClock:  clock,
+		CacheQueueRand:   func(int) int { return 0 },
+		WeiboOpts: weibo.ClientOptions{
+			Endpoints: weibo.Endpoints{
+				PCBasicInfo:         wbSrv.URL + "/ajax/setting/getBasicInfo",
+				ProfileInfo:         wbSrv.URL + "/ajax/profile/info",
+				StatusesShow:        wbSrv.URL + "/ajax/statuses/show",
+				StatusesEditHistory: wbSrv.URL + "/ajax/statuses/editHistory",
+			},
+			MinInterval: -1, JitterMax: -1, AllowLocalhost: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.dl.SetMediaTransportWrap(func(_ http.RoundTripper) http.RoundTripper { return cdnRT })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		_ = b.Close()
+	}()
+	if err := b.dl.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.LoginWithCookie(ctx, "weibo", "SUB=synth_c2; SUBP=synth_c2p; XSRF-TOKEN=synth_c2x", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Disable WeiboRemoveWatermark to verify zero /oslarge/ downloads AND zero infinite loop!
+	curSet := b.GetSettings()
+	curSet.WeiboRemoveWatermark = false
+	if _, err := b.UpdateSettings(curSet); err != nil {
+		t.Fatal(err)
+	}
+
+	origJPG := makeServiceTestJPEG(t, 48, 36, color.RGBA{R: 150, G: 80, B: 40, A: 255})
+	fwdVia := &library.ItemVia{Reason: library.ViaForward, Site: "weibo", UID: "888001", Name: "转发者"}
+	// Item 1: Edited static-image forward post (needs EditHistory only when removeWM=false).
+	item1 := seedWeiboStaticItemForBackfill(t, b, "888001", "5096300000000001", "picStaticC2", origJPG, 2, fwdVia, "带静态图已编辑转发微博", nil, nil)
+	item1.EditCount = 1
+	item1.Origin = &library.ItemOrigin{ID: "5096300000000099", Text: "原博正文"}
+	if _, err := b.lib.SaveItem(item1.ItemDir, item1); err != nil {
+		t.Fatal(err)
+	}
+	// Item 2: Non-edited static-image forward post (must NOT enter backfill when removeWM=false!).
+	item2 := seedWeiboStaticItemForBackfill(t, b, "888001", "5096300000000002", "picStaticC2", origJPG, 2, fwdVia, "普通静态图转发微博", nil, nil)
+	item2.Origin = &library.ItemOrigin{ID: "5096300000000098", Text: "原博正文2"}
+	if _, err := b.lib.SaveItem(item2.ItemDir, item2); err != nil {
+		t.Fatal(err)
+	}
+
+	sumBefore, err := b.BackfillSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sumBefore.TotalItems != 1 || sumBefore.WeiboMissingEditHistory != 1 {
+		t.Fatalf("with removeWM=false, only edited post (not non-edited static-image forward) should need backfill, got %+v", sumBefore)
+	}
+
+	// Subcase A: Put Weibo into backoff (level 1), fail GetEditHistory with 429 during manual probe.
+	// BackoffLevel MUST NOT be prematurely cleared after GetPost!
+	b.subs.RecordSiteAutomaticStop(string(site.Weibo), site.ErrKindRiskControl)
+	levelBefore := b.subs.GetSiteSchedulerState(string(site.Weibo)).BackoffLevel
+	editHist429.Store(true)
+
+	b.queue.Start(ctx)
+	started, err := b.StartBackfill(ctx)
+	if err != nil || len(started) != 1 {
+		t.Fatalf("StartBackfill: started=%+v err=%v", started, err)
+	}
+	waitQueuePredicate(t, b, started[0].ID, "waiting_backoff initially", func(qt CacheQueueTask) bool {
+		return qt.Status == CacheQueueWaitingBackoff
+	})
+	if _, err := b.ResumeCacheQueue(started[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	waitQueuePredicate(t, b, started[0].ID, "returns to waiting_backoff on GetEditHistory 429", func(qt CacheQueueTask) bool {
+		return qt.Status == CacheQueueWaitingBackoff && editHistCalls.Load() >= 1
+	})
+	stAfter429 := b.subs.GetSiteSchedulerState(string(site.Weibo))
+	if stAfter429.BackoffLevel < levelBefore {
+		t.Fatalf("BackoffLevel was prematurely cleared before GetEditHistory 429: before=%d after=%d", levelBefore, stAfter429.BackoffLevel)
+	}
+
+	// Subcase B: Let GetEditHistory succeed on next manual probe -> clears backoff, backfills EditHistory,
+	// makes ZERO /oslarge/ requests, and subsequent BackfillSummary().TotalItems == 0 (no infinite loop!).
+	editHist429.Store(false)
+	if _, err := b.ResumeCacheQueue(started[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	waitQueuePredicate(t, b, started[0].ID, "weibo backfill completed", func(qt CacheQueueTask) bool {
+		return qt.Status == CacheQueueCompleted
+	})
+	if oslargeHits.Load() != 0 {
+		t.Fatalf("removeWM=false must make 0 /oslarge/ downloads, got %d", oslargeHits.Load())
+	}
+	got1, _, _ := b.lib.GetItem(item1.ItemKey)
+	if len(got1.EditHistory) != 1 {
+		t.Fatalf("expected EditHistory backfilled, got %+v", got1.EditHistory)
+	}
+	if inBackoff, _ := b.subs.IsSiteInBackoff(string(site.Weibo)); inBackoff {
+		t.Fatal("Weibo backoff should be cleared after GetPost + GetEditHistory both succeeded")
+	}
+	sumAfter, err := b.BackfillSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sumAfter.TotalItems != 0 {
+		t.Fatalf("subsequent BackfillSummary must be 0 (no infinite loop when removeWM=false), got %+v", sumAfter)
+	}
+}
+
+func TestDEC096BilibiliDynamicLinkedVideoReusesProbeAndArmsGateCCooldown(t *testing.T) {
+	nowStart := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	clock := newFakeQueueClock(nowStart)
+
+	var (
+		viewCalls    atomic.Int32
+		playURLCalls atomic.Int32
+	)
+	biliSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/x/web-interface/nav":
+			_, _ = fmt.Fprint(w, `{"code":0,"data":{"isLogin":true,"mid":778899,"uname":"测试用户","wbi_img":{"img_url":"https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png","sub_url":"https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png"}}}`)
+		case "/x/web-interface/wbi/view", "/x/web-interface/view":
+			viewCalls.Add(1)
+			bvid := r.URL.Query().Get("bvid")
+			if bvid == "BV1dynDead001" {
+				_, _ = fmt.Fprint(w, `{"code":-404,"message":"啥都木有"}`)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"bvid": bvid, "aid": 666, "title": "充电锁定视频",
+					"is_upower_exclusive": true, "is_upower_play": false, "is_upower_preview": true,
+					"owner": map[string]any{"mid": 6001, "name": "UP"},
+					"pages": []map[string]any{{"cid": 60101, "page": 1, "part": "P1", "duration": 60}},
+				},
+			})
+		case "/x/player/wbi/playurl":
+			playURLCalls.Add(1)
+			_, _ = fmt.Fprint(w, `{"code":-404}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer biliSrv.Close()
+
+	loc := testLocations(t)
+	b, err := NewBackend(Options{
+		Locations:        loc,
+		Desktop:          NewMockDesktop(),
+		DisableBgWorkers: true,
+		CacheQueueClock:  clock,
+		BilibiliOpts: bilibili.ClientOptions{
+			Endpoints: bilibili.Endpoints{
+				APIBase: biliSrv.URL, PassportBase: biliSrv.URL, WWWBase: biliSrv.URL,
+				SpaceBase: biliSrv.URL, DynamicBase: biliSrv.URL, LiveAPIBase: biliSrv.URL, LiveWebBase: biliSrv.URL,
+			},
+			PacingInterval: -1, AllowLocalhost: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		_ = b.Close()
+	}()
+	if _, err := b.ImportCookie(ctx, "SESSDATA=synth_dlv; bili_jct=csrf_dlv; DedeUserID=778899", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed complete dynamic + local v2 linked video that is deleted on remote (-404).
+	dynDir := filepath.Join(b.lib.CacheDir(), "bilibili", "6001", "dynamics", "9600101")
+	if err := os.MkdirAll(dynDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	savedDyn, err := b.lib.SaveItem(dynDir, library.ItemMetadata{
+		Version: 1, ID: "dynamic:9600101", Site: "bilibili", Kind: "dynamic", Status: "complete",
+		Title: "完整动态", Text: "关联已删视频的完整动态", CacheStandardVersion: library.BilibiliDynamicStandardVersion,
+		Author: library.ItemAuthor{Site: "bilibili", Mid: 6001, UID: "6001", Name: "UP"},
+		Videos: []string{"video:BV1dynDead001"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vidDir := filepath.Join(b.lib.CacheDir(), "bilibili", "6001", "videos", "BV1dynDead001")
+	vmf := writeVerifiedLocalFile(t, vidDir, "P01.mp4", []byte("LOCAL_DEAD_LINKED"), "video", 1920, 1080, 60)
+	if _, err := b.lib.SaveItem(vidDir, library.ItemMetadata{
+		Version: 1, ID: "video:BV1dynDead001", Site: "bilibili", Kind: "video", Status: "complete",
+		CacheStandardVersion: 2,
+		Author:               library.ItemAuthor{Site: "bilibili", Mid: 6001, UID: "6001", Name: "UP"},
+		Media:                []library.MediaFile{vmf},
+		Parts:                []library.VideoPartRecord{{CID: 60101, Page: 1, File: "P01.mp4"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	remoteDyn := bilibili.DynamicItem{
+		ID: "9600101", Title: "完整动态", Text: "关联已删视频的完整动态",
+		Author: bilibili.AuthorInfo{Mid: 6001, Name: "UP"},
+		Videos: []bilibili.DynamicVideoRef{{BVID: "BV1dynDead001"}},
+	}
+	dec := b.inspectBilibiliCachedDynamicDeferred(remoteDyn, savedDyn, QueueOriginFullCache)
+	if dec.action != inspectProbePaced || dec.enqueue == nil {
+		t.Fatalf("existing linked video < v3 must reuse inspectProbePaced (probeBilibiliCachedVideo), got %+v", dec)
+	}
+	enq, err := dec.enqueue(ctx)
+	if err != nil || !enq.probedNoTask || playURLCalls.Load() != 0 || viewCalls.Load() != 1 {
+		t.Fatalf("probe on deleted linked video must stamp RecheckedAt with 0 PlayURL calls, got enq=%+v view=%d playurl=%d err=%v",
+			enq, viewCalls.Load(), playURLCalls.Load(), err)
+	}
+	// Dynamic remains complete (never downgraded to partial!), and linked video now has RecheckedAt set.
+	dynAfter, _, _ := b.lib.GetItem(savedDyn.ItemKey)
+	if dynAfter.Status != "complete" || len(dynAfter.Missing) != 0 {
+		t.Fatalf("complete dynamic was modified/degraded: status=%q missing=%+v", dynAfter.Status, dynAfter.Missing)
+	}
+	vidAfter, _, _ := b.lib.GetItem("bilibili:video:BV1dynDead001")
+	if vidAfter.RecheckedAt == "" {
+		t.Fatal("deleted linked video must have RecheckedAt stamped to arm Gate C 7-day cooldown")
+	}
+	// Second inspection immediately skips due to Gate C cooldown!
+	dec2 := b.inspectBilibiliCachedDynamicDeferred(remoteDyn, dynAfter, QueueOriginFullCache)
+	if dec2.action != inspectSkipNoOp {
+		t.Fatalf("second inspection within 7d Gate C cooldown must skip (no loop), got %+v", dec2)
 	}
 }

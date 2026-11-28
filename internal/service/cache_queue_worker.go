@@ -1274,7 +1274,7 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 
 		enq, err := runEnqueue(stepCtx)
 		if err == nil && m.b != nil {
-			if isProbe && (!enq.reusedListPlan || len(enq.taskIDs) == 0) {
+			if isProbe && !enq.probeRejected && (!enq.reusedListPlan || len(enq.taskIDs) == 0) {
 				m.b.onManualSiteRequestSuccess(siteID)
 			} else if !isProbe && siteID == site.Weibo && !enq.reusedListPlan && m.b.subs != nil {
 				m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))

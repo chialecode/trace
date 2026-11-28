@@ -2393,12 +2393,18 @@ func (b *Backend) inspectBilibiliCachedDynamicDeferred(d bilibili.DynamicItem, m
 	}
 
 	// (b) Linked video completeness / BilibiliVideoStandardVersion check (DEC-096).
+	// Existing cached linked videos reuse probeBilibiliCachedVideo (0-PlayURL when at
+	// ceiling, stamps vidMeta.RecheckedAt on deleted/upower-locked videos for Gate C
+	// cooldown, and never downgrades an already-complete dynamic). Only uncached linked
+	// videos fall back to EnqueueDynamicCache (with reusedListPlan: false).
 	if len(effVids) > 0 && b != nil && b.lib != nil {
 		now := time.Now().UTC()
 		if b.queue != nil && b.queue.clock != nil {
 			now = b.queue.clock.Now().UTC()
 		}
-		needLinkedVideos := false
+		var probeVidMeta *library.ItemMetadata
+		var probeVidRef bilibili.DynamicVideoRef
+		needUncachedLinked := false
 		for _, v := range effVids {
 			bvid := strings.TrimSpace(v.BVID)
 			if bvid == "" {
@@ -2411,24 +2417,45 @@ func (b *Backend) inspectBilibiliCachedDynamicDeferred(d bilibili.DynamicItem, m
 			}
 			if !exists {
 				if meta.CacheStandardVersion < library.BilibiliDynamicStandardVersion {
-					needLinkedVideos = true
-					break
+					needUncachedLinked = true
 				}
 				continue
 			}
 			if library.NeedsCompletion(vidMeta) {
-				needLinkedVideos = true
+				vmCopy := vidMeta
+				probeVidMeta = &vmCopy
+				probeVidRef = v
 				break
 			}
 			if vidMeta.CacheStandardVersion < library.BilibiliVideoStandardVersion {
 				lastChecked := latestCheckedTime(vidMeta.RecheckedAt, vidMeta.UpgradeCheckedAt)
 				if lastChecked.IsZero() || now.Sub(lastChecked) >= bilibiliRecheckCooldown {
-					needLinkedVideos = true
+					vmCopy := vidMeta
+					probeVidMeta = &vmCopy
+					probeVidRef = v
 					break
 				}
 			}
 		}
-		if needLinkedVideos {
+		if probeVidMeta != nil {
+			vidMetaCopy := *probeVidMeta
+			vidBVID := strings.TrimSpace(probeVidRef.BVID)
+			vidTitle := firstNonEmpty(probeVidRef.Title, vidMetaCopy.Title, vidBVID)
+			forMid := vidMetaCopy.Author.Mid
+			if forMid <= 0 {
+				forMid = d.Author.Mid
+			}
+			return withPostInspect(cachedInspectDecision{
+				action: inspectProbePaced,
+				enqueue: func(ctx context.Context) (queueEnqueued, error) {
+					return b.probeBilibiliCachedVideo(ctx, bilibili.UserVideoItem{
+						BVID:  vidBVID,
+						Title: vidTitle,
+					}, vidMetaCopy, queueOrigin, forMid)
+				},
+			})
+		}
+		if needUncachedLinked {
 			dynCopy := d
 			cleanID := strings.TrimSpace(dynCopy.ID)
 			itemKey := library.CanonicalItemKey("bilibili", "dynamic", cleanID)
@@ -2449,7 +2476,7 @@ func (b *Backend) inspectBilibiliCachedDynamicDeferred(d bilibili.DynamicItem, m
 						taskIDs:        []string{t.TaskID},
 						itemKey:        firstNonEmpty(t.ItemKey, itemKey),
 						title:          trimQueueSummaryTitle(firstNonEmpty(t.Title, title, cleanID)),
-						reusedListPlan: true,
+						reusedListPlan: false,
 					}, nil
 				},
 			})
@@ -2778,7 +2805,10 @@ func (b *Backend) probeBilibiliCachedVideo(
 ) (queueEnqueued, error) {
 	bvid := strings.TrimSpace(firstNonEmpty(v.BVID, meta.RawID))
 	itemKey := firstNonEmpty(meta.ItemKey, library.CanonicalItemKey("bilibili", "video", bvid))
-	probeCtx := site.WithAutomaticRequests(ctx, "cache_queue")
+	probeCtx := ctx
+	if !site.IsManualProbe(ctx) && site.AutomaticRequestSource(ctx) == "" {
+		probeCtx = site.WithAutomaticRequests(ctx, "cache_queue")
+	}
 
 	now := time.Now().UTC()
 	if b.queue != nil && b.queue.clock != nil {
@@ -2804,14 +2834,15 @@ func (b *Backend) probeBilibiliCachedVideo(
 
 	vd, err := b.bili.VideoDetail(probeCtx, bvid)
 	if err != nil {
-		if bilibili.IsKind(err, bilibili.ErrKindUnavailable) ||
-			bilibili.IsKind(err, bilibili.ErrKindForbidden) ||
-			site.IsKind(err, site.ErrKindUnavailable) ||
+		isBlockedOrForbidden := bilibili.IsKind(err, bilibili.ErrKindForbidden) ||
 			site.IsKind(err, site.ErrKindForbidden) ||
-			site.IsKind(err, site.ErrKindBlocked) {
+			site.IsKind(err, site.ErrKindBlocked)
+		if bilibili.IsKind(err, bilibili.ErrKindUnavailable) ||
+			site.IsKind(err, site.ErrKindUnavailable) ||
+			isBlockedOrForbidden {
 			// (c) Remote deleted / unavailable -> preserve local V1 untouched & arm Gate C cooldown!
 			stampRecheckedOnly()
-			return queueEnqueued{itemKey: itemKey, probedNoTask: true}, nil
+			return queueEnqueued{itemKey: itemKey, probedNoTask: true, probeRejected: isBlockedOrForbidden}, nil
 		}
 		return queueEnqueued{}, err
 	}
@@ -3045,14 +3076,15 @@ func (b *Backend) probeBilibiliCachedVideo(
 		probedAny = true
 		playPlan, pErr := b.bili.PlayURL(probeCtx, bvid, lp.CID, playOpts)
 		if pErr != nil {
-			if bilibili.IsKind(pErr, bilibili.ErrKindUnavailable) ||
-				bilibili.IsKind(pErr, bilibili.ErrKindForbidden) ||
-				site.IsKind(pErr, site.ErrKindUnavailable) ||
+			isBlockedOrForbidden := bilibili.IsKind(pErr, bilibili.ErrKindForbidden) ||
 				site.IsKind(pErr, site.ErrKindForbidden) ||
-				site.IsKind(pErr, site.ErrKindBlocked) {
+				site.IsKind(pErr, site.ErrKindBlocked)
+			if bilibili.IsKind(pErr, bilibili.ErrKindUnavailable) ||
+				site.IsKind(pErr, site.ErrKindUnavailable) ||
+				isBlockedOrForbidden {
 				// (c) Preview-only / restricted -> preserve V1 untouched & arm Gate C cooldown!
 				stampRecheckedOnly()
-				return queueEnqueued{itemKey: itemKey, probedNoTask: true}, nil
+				return queueEnqueued{itemKey: itemKey, probedNoTask: true, probeRejected: isBlockedOrForbidden}, nil
 			}
 			return queueEnqueued{}, pErr
 		}

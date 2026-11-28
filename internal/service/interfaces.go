@@ -209,6 +209,7 @@ type CacheService interface {
 	CacheXPostsPage(ctx context.Context, req XBatchCachePageRequest) (XBatchCachePageResult, error)
 	ForceRecacheItem(ctx context.Context, itemKey string) (download.Task, error)
 	BackfillSummary() (BackfillSummaryDTO, error)
+	StartBackfill(ctx context.Context) ([]CacheQueueTask, error)
 	StartWeiboBackfill(ctx context.Context) (CacheQueueTask, error)
 	ListCacheQueue() []CacheQueueTask
 	FindCacheQueueTask(siteID, user, list string) (CacheQueueTask, bool)

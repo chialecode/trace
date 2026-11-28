@@ -355,6 +355,12 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 		if len(old.Chapters) > 0 {
 			part.Chapters = append([]library.VideoChapter(nil), old.Chapters...)
 		}
+		if old.ChaptersChecked || len(old.Chapters) > 0 {
+			part.ChaptersChecked = true
+		}
+		if old.SubtitleIncludesAI {
+			part.SubtitleIncludesAI = true
+		}
 	}
 
 	var summary MuxTrackSummary
@@ -535,8 +541,14 @@ func allPartsExtrasReady(meta library.ItemMetadata, cfg settings.DownloadSetting
 	if len(meta.Parts) == 0 {
 		return false
 	}
+	if cfg.MultiPart != "first" && meta.RemotePartCount > 0 && len(meta.Parts) < meta.RemotePartCount {
+		return false
+	}
 	for _, part := range meta.Parts {
 		if part.File == "" {
+			return false
+		}
+		if !part.ChaptersChecked && len(part.Chapters) == 0 {
 			return false
 		}
 		if cfg.SaveDanmaku && part.DanmakuState != "saved" {
@@ -623,8 +635,9 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 
 	// Chapters (view_points) are always fetched on fresh parts or manifests below
 	// BilibiliVideoStandardVersion even when cfg.SaveSubtitles is false (DEC-096).
+	// Parts that already succeeded player/wbi/v2 (ChaptersChecked) skip redundant requests.
 	freshPart := part.SubtitleState == "" || part.SubtitleState == "pending"
-	needChapters := len(part.Chapters) == 0 && (freshPart || meta.CacheStandardVersion < library.BilibiliVideoStandardVersion)
+	needChapters := !part.ChaptersChecked && len(part.Chapters) == 0 && (freshPart || meta.CacheStandardVersion < library.BilibiliVideoStandardVersion)
 
 	needsSubtitles := false
 	if !cfg.SaveSubtitles {
@@ -672,6 +685,7 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 			}
 			return false, nil
 		}
+		part.ChaptersChecked = true
 		return true, nil
 	}
 
@@ -712,6 +726,9 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 	}
 	part.SubtitleState = "saved"
 	chaptersOK := err == nil
+	if err == nil {
+		part.ChaptersChecked = true
+	}
 	if err != nil {
 		addMissing(meta, prefix+".subtitles", "字幕列表或下载失败 ("+bilibili.KindOf(err)+")")
 		part.SubtitleState = "missing"

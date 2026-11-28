@@ -91,7 +91,7 @@ func (b *Backend) scanWeiboBackfillBuckets(excludeKeys map[string]bool) (weiboBa
 		missingEditHistory := library.WeiboNeedsEditHistoryBackfill(meta)
 		authorUID, uErr := site.NormalizeUID(site.Weibo, itemAuthorUIDString(meta))
 		isSubscribed := uErr == nil && subUIDs[authorUID]
-		historicalOther := weiboNeedsHistoricalOtherBackfill(meta, isSubscribed)
+		historicalOther := weiboNeedsHistoricalOtherBackfill(meta, isSubscribed, removeWM)
 		if !missingNoWM && !legacyLinks && !missingEditHistory && !historicalOther {
 			continue
 		}
@@ -136,8 +136,10 @@ func (b *Backend) scanWeiboBackfillBuckets(excludeKeys map[string]bool) (weiboBa
 // weiboNeedsHistoricalOtherBackfill catches historical cached Weibo forwards and
 // unsubscribed creators' posts below WeiboCacheStandardVersion (v4) that need
 // standard backfill beyond NoWM/legacy-links/editHistory (e.g. truncated long
-// text, forward Origin metadata, or non-placeholder partial completion; DEC-096).
-func weiboNeedsHistoricalOtherBackfill(meta library.ItemMetadata, isSubscribed bool) bool {
+// text, missing Origin metadata/AssetIDs, or non-placeholder partial completion;
+// DEC-096). Static-image forwards are excluded when removeWM == false so they
+// never loop infinitely while remaining < v4 until watermark removal is enabled.
+func weiboNeedsHistoricalOtherBackfill(meta library.ItemMetadata, isSubscribed bool, removeWM bool) bool {
 	if meta.CacheStandardVersion >= library.WeiboCacheStandardVersion {
 		return false
 	}
@@ -152,7 +154,16 @@ func weiboNeedsHistoricalOtherBackfill(meta library.ItemMetadata, isSubscribed b
 		return true
 	}
 	if isForward && meta.Origin != nil {
-		return true
+		if !removeWM && len(library.WeiboStaticImageSlotsMissingNoWM(meta)) > 0 {
+			return false
+		}
+		if len(meta.Origin.Links) == 0 && strings.Contains(meta.Origin.Text, "http") {
+			return true
+		}
+		if len(meta.AssetIDs) == 0 && (len(meta.NotePages) > 0 || meta.DouyinVideo != nil) {
+			return true
+		}
+		return removeWM || len(library.WeiboStaticImageSlotsMissingNoWM(meta)) == 0
 	}
 	return false
 }
@@ -1178,17 +1189,11 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 		},
 	}
 	post, getErr := m.b.weibo.GetPost(stepCtx, item.RawID, postOpt)
-	if getErr == nil && m.b != nil {
-		if isProbe {
-			m.b.onManualSiteRequestSuccess(site.Weibo)
-		} else if m.b.subs != nil {
-			m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
-		}
-	}
 
 	var backfillRes download.WeiboBackfillResult
 	var backfillErr error
 	var didCache bool
+	removeWM := m.b.weiboRemoveWatermarkEnabled()
 	if getErr == nil && post != nil && !post.Unavailable {
 		needEditHist := post.EditCount > 0 && len(item.EditHistory) == 0 && item.CacheStandardVersion < library.WeiboCacheStandardVersion
 		needFullReenqueue := needEditHist ||
@@ -1201,6 +1206,13 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 				if stopErr != nil {
 					getErr = stopErr
 				} else {
+					if m.b != nil {
+						if isProbe {
+							m.b.onManualSiteRequestSuccess(site.Weibo)
+						} else if m.b.subs != nil {
+							m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
+						}
+					}
 					var viaCopy *library.ItemVia
 					if item.Via != nil {
 						cp := *item.Via
@@ -1220,17 +1232,56 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 					}
 				}
 			} else {
+				if m.b != nil {
+					if isProbe {
+						m.b.onManualSiteRequestSuccess(site.Weibo)
+					} else if m.b.subs != nil {
+						m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
+					}
+				}
 				backfillErr = bErr
 			}
 		} else {
+			if m.b != nil {
+				if isProbe {
+					m.b.onManualSiteRequestSuccess(site.Weibo)
+				} else if m.b.subs != nil {
+					m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
+				}
+			}
 			overrides, remoteLinks := buildWeiboOverridesFromPost(*post)
-			backfillRes, backfillErr = m.b.dl.BackfillWeiboNoWMCompanions(
-				stepCtx,
-				item.ItemKey,
-				m.b.weibo.MediaTransport(),
-				overrides,
-				func(meta library.ItemMetadata) (library.ItemMetadata, bool) {
-					cleaned, hadLegacy := cleanLegacyInlineLinksInItem(meta, remoteLinks)
+			if removeWM && library.WeiboNeedsNoWMBackfill(item, true) {
+				backfillRes, backfillErr = m.b.dl.BackfillWeiboNoWMCompanions(
+					stepCtx,
+					item.ItemKey,
+					m.b.weibo.MediaTransport(),
+					overrides,
+					func(meta library.ItemMetadata) (library.ItemMetadata, bool) {
+						cleaned, hadLegacy := cleanLegacyInlineLinksInItem(meta, remoteLinks)
+						changed := hadLegacy
+						if len(cleaned.Links) == 0 && len(post.Links) > 0 {
+							cleaned.Links = siteLinksToLibraryLinks(post.Links)
+							changed = true
+						}
+						if cleaned.Origin != nil && post.Retweeted != nil && len(cleaned.Origin.Links) == 0 && len(post.Retweeted.Links) > 0 {
+							cleaned.Origin.Links = siteLinksToLibraryLinks(post.Retweeted.Links)
+							changed = true
+						}
+						if post.EditCount > 0 && cleaned.EditCount == 0 {
+							cleaned.EditCount = post.EditCount
+							changed = true
+						}
+						return cleaned, changed
+					},
+				)
+				if backfillErr == nil && (backfillRes.AddedCompanions > 0 || backfillRes.LinksCleaned || backfillRes.StampedStandard) {
+					didCache = true
+				}
+			} else if m.b != nil && m.b.lib != nil {
+				// Watermark removal is disabled (or item needs no /oslarge/ companions):
+				// update metadata only via SaveItemMetadataOnly without downloading /oslarge/.
+				if fresh, ok, gErr := m.b.lib.GetItem(item.ItemKey); gErr == nil && ok && strings.TrimSpace(fresh.ItemDir) != "" {
+					cleaned, hadLegacy := cleanLegacyInlineLinksInItem(fresh, remoteLinks)
 					changed := hadLegacy
 					if len(cleaned.Links) == 0 && len(post.Links) > 0 {
 						cleaned.Links = siteLinksToLibraryLinks(post.Links)
@@ -1244,12 +1295,25 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 						cleaned.EditCount = post.EditCount
 						changed = true
 					}
-					return cleaned, changed
-				},
-			)
-			if backfillErr == nil && (backfillRes.AddedCompanions > 0 || backfillRes.LinksCleaned || backfillRes.StampedStandard) {
-				didCache = true
+					if weiboCanStampV4Tier0(cleaned, removeWM, post.EditCount) {
+						cleaned.CacheStandardVersion = library.WeiboCacheStandardVersion
+						changed = true
+					}
+					if changed {
+						if _, sErr := m.b.lib.SaveItemMetadataOnly(fresh.ItemDir, cleaned); sErr != nil {
+							backfillErr = sErr
+						} else {
+							didCache = true
+						}
+					}
+				}
 			}
+		}
+	} else if getErr == nil && m.b != nil {
+		if isProbe {
+			m.b.onManualSiteRequestSuccess(site.Weibo)
+		} else if m.b.subs != nil {
+			m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
 		}
 	}
 
@@ -1442,7 +1506,7 @@ func (m *cacheQueueManager) advanceSiteBackfillStep(ctx context.Context, entry *
 	m.mu.Unlock()
 
 	enq, postInspect, conflictRec, stepErr := m.b.executeOneSiteBackfillItem(stepCtx, siteID, item)
-	if stepErr == nil && isProbe && m.b != nil {
+	if stepErr == nil && isProbe && !enq.probeRejected && m.b != nil {
 		m.b.onManualSiteRequestSuccess(siteID)
 	}
 	if postInspect != nil {
@@ -1563,12 +1627,13 @@ func (b *Backend) executeOneSiteBackfillItem(
 		}
 		dyn, dErr := b.bili.DynamicDetail(ctx, meta.RawID)
 		if dErr != nil {
-			if bilibili.IsKind(dErr, bilibili.ErrKindUnavailable) ||
-				bilibili.IsKind(dErr, bilibili.ErrKindForbidden) ||
-				site.IsKind(dErr, site.ErrKindUnavailable) ||
+			isBlockedOrForbidden := bilibili.IsKind(dErr, bilibili.ErrKindForbidden) ||
 				site.IsKind(dErr, site.ErrKindForbidden) ||
-				site.IsKind(dErr, site.ErrKindBlocked) {
-				return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: true}, nil, nil, nil
+				site.IsKind(dErr, site.ErrKindBlocked)
+			if bilibili.IsKind(dErr, bilibili.ErrKindUnavailable) ||
+				site.IsKind(dErr, site.ErrKindUnavailable) ||
+				isBlockedOrForbidden {
+				return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: true, probeRejected: isBlockedOrForbidden}, nil, nil, nil
 			}
 			return queueEnqueued{}, nil, nil, dErr
 		}
@@ -1605,10 +1670,10 @@ func (b *Backend) executeOneSiteBackfillItem(
 			PreferredCodec: b.preferredDouyinCodec(),
 		})
 		if dErr != nil {
-			if site.IsKind(dErr, site.ErrKindUnavailable) ||
-				site.IsKind(dErr, site.ErrKindForbidden) ||
-				site.IsKind(dErr, site.ErrKindBlocked) {
-				return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: true}, nil, nil, nil
+			isBlockedOrForbidden := site.IsKind(dErr, site.ErrKindForbidden) ||
+				site.IsKind(dErr, site.ErrKindBlocked)
+			if site.IsKind(dErr, site.ErrKindUnavailable) || isBlockedOrForbidden {
+				return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: true, probeRejected: isBlockedOrForbidden}, nil, nil, nil
 			}
 			return queueEnqueued{}, nil, nil, dErr
 		}
@@ -1644,10 +1709,10 @@ func (b *Backend) executeOneSiteBackfillItem(
 	case site.X:
 		post, gErr := b.x.GetPost(ctx, meta.RawID)
 		if gErr != nil {
-			if site.IsKind(gErr, site.ErrKindUnavailable) ||
-				site.IsKind(gErr, site.ErrKindForbidden) ||
-				site.IsKind(gErr, site.ErrKindBlocked) {
-				return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: true}, nil, nil, nil
+			isBlockedOrForbidden := site.IsKind(gErr, site.ErrKindForbidden) ||
+				site.IsKind(gErr, site.ErrKindBlocked)
+			if site.IsKind(gErr, site.ErrKindUnavailable) || isBlockedOrForbidden {
+				return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: true, probeRejected: isBlockedOrForbidden}, nil, nil, nil
 			}
 			return queueEnqueued{}, nil, nil, gErr
 		}

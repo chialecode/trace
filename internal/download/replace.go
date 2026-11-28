@@ -1500,12 +1500,18 @@ func (m *Manager) stageSingleBilibiliPart(
 	if reuseMonotonic && len(localPart.Chapters) > 0 {
 		part.Chapters = append([]library.VideoChapter(nil), localPart.Chapters...)
 	}
+	if reuseMonotonic && (localPart.ChaptersChecked || len(localPart.Chapters) > 0) {
+		part.ChaptersChecked = true
+	}
 	if !cfg.SaveSubtitles {
 		part.SubtitleState = "skipped"
-		if len(part.Chapters) == 0 {
+		if !part.ChaptersChecked && len(part.Chapters) == 0 {
 			extras, cErr := m.client.MissingSubtitlesAndChapters(ctx, bvid, page.CID, false, nil, false)
 			if cErr != nil && (isStopError(cErr) || ctx.Err() != nil) {
 				return library.VideoPartRecord{}, nil, cErr
+			}
+			if cErr == nil {
+				part.ChaptersChecked = true
 			}
 			if len(extras.Chapters) > 0 {
 				part.Chapters = convertVideoChapters(extras.Chapters)
@@ -1576,6 +1582,7 @@ func (m *Manager) stageSingleBilibiliPart(
 		}
 		if sErr == nil {
 			part.SubtitleState = "saved"
+			part.ChaptersChecked = true
 			part.SubtitleIncludesAI = (reuseMonotonic && localPart.SubtitleIncludesAI) || cfg.IncludeAI
 		} else {
 			part.SubtitleState = "missing"

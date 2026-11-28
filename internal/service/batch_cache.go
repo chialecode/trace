@@ -24,6 +24,7 @@ type queueEnqueued struct {
 	nextParts      []queuePartEnqueuer
 	pendingPages   []int
 	probedNoTask   bool
+	probeRejected  bool
 	reusedListPlan bool
 }
 

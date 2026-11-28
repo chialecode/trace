@@ -16,12 +16,13 @@ import (
 
 type backfillAndForceStub struct {
 	service.BackendAPI
-	mu           sync.Mutex
-	summary      service.BackfillSummaryDTO
-	queue        []service.CacheQueueTask
-	startedCalls int
-	forcedKeys   []string
-	cachedByKey  map[string]library.ItemMetadata
+	mu                sync.Mutex
+	summary           service.BackfillSummaryDTO
+	queue             []service.CacheQueueTask
+	startedCalls      int
+	startedWeiboCalls int
+	forcedKeys        []string
+	cachedByKey       map[string]library.ItemMetadata
 }
 
 func (s *backfillAndForceStub) BackfillSummary() (service.BackfillSummaryDTO, error) {
@@ -38,10 +39,51 @@ func (s *backfillAndForceStub) ListCacheQueue() []service.CacheQueueTask {
 	return out
 }
 
-func (s *backfillAndForceStub) StartWeiboBackfill(_ context.Context) (service.CacheQueueTask, error) {
+func (s *backfillAndForceStub) StartBackfill(_ context.Context) ([]service.CacheQueueTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.startedCalls++
+	var tasks []service.CacheQueueTask
+	if s.summary.WeiboMissingNoWM > 0 || s.summary.WeiboLegacyLinks > 0 || s.summary.WeiboMissingEditHistory > 0 {
+		tasks = append(tasks, service.CacheQueueTask{
+			ID:            "cq_bf_1",
+			Kind:          service.CacheQueueKindWeiboBackfill,
+			Site:          "weibo",
+			User:          service.CacheQueueBackfillUser,
+			UserName:      "历史缓存补全",
+			List:          service.CacheQueueListWeiboBackfill,
+			ListLabel:     "历史缓存补全",
+			Status:        service.CacheQueueRunning,
+			StatusText:    "正在补全微博无水印伴侣图",
+			BackfillPhase: "fast_cdn",
+			BackfillTotal: s.summary.WeiboMissingNoWM + s.summary.WeiboLegacyLinks + s.summary.WeiboMissingEditHistory,
+			CachedCount:   1,
+		})
+	}
+	if s.summary.BilibiliItems > 0 {
+		tasks = append(tasks, service.CacheQueueTask{
+			ID:            "cq_bf_bili",
+			Kind:          service.CacheQueueKindSiteBackfill,
+			Site:          "bilibili",
+			User:          service.CacheQueueBackfillUser,
+			UserName:      "历史缓存补全",
+			List:          service.CacheQueueListSiteBackfill,
+			ListLabel:     "历史缓存补全",
+			Status:        service.CacheQueueRunning,
+			StatusText:    "正在按最新标准补全历史缓存",
+			BackfillPhase: "site_standard",
+			BackfillTotal: s.summary.BilibiliItems,
+			CachedCount:   1,
+		})
+	}
+	s.queue = tasks
+	return tasks, nil
+}
+
+func (s *backfillAndForceStub) StartWeiboBackfill(_ context.Context) (service.CacheQueueTask, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.startedWeiboCalls++
 	task := service.CacheQueueTask{
 		ID:            "cq_bf_1",
 		Kind:          service.CacheQueueKindWeiboBackfill,
@@ -140,7 +182,7 @@ func TestSettingsStorageAndTasksQueueBackfillUI(t *testing.T) {
 	stub.mu.Unlock()
 	app.BackfillSummary = stub.summary
 	tt.Frame()
-	if !tt.HasText("发现 3 条历史微博可补全") {
+	if !tt.HasText("发现 3 条历史缓存可补全") {
 		t.Fatal("Settings › 存储 should show pending backfill count")
 	}
 	if err := tt.Click("补全历史缓存"); err != nil {
@@ -156,9 +198,10 @@ func TestSettingsStorageAndTasksQueueBackfillUI(t *testing.T) {
 	}
 	stub.mu.Lock()
 	started := stub.startedCalls
+	weiboOnlyStarted := stub.startedWeiboCalls
 	stub.mu.Unlock()
-	if started != 1 || app.CurrentRoute != RouteTasks || app.effectiveTasksSection() != TasksSectionActive || app.effectiveTasksActiveTab() != "queue" {
-		t.Fatalf("expected StartWeiboBackfill + navigation to /tasks active/queue; started=%d route=%s sec=%s tab=%s", started, app.CurrentRoute, app.effectiveTasksSection(), app.effectiveTasksActiveTab())
+	if started != 1 || weiboOnlyStarted != 0 || app.CurrentRoute != RouteTasks || app.effectiveTasksSection() != TasksSectionActive || app.effectiveTasksActiveTab() != "queue" {
+		t.Fatalf("expected StartBackfill (not StartWeiboBackfill) + navigation to /tasks active/queue; started=%d weiboOnly=%d route=%s sec=%s tab=%s", started, weiboOnlyStarted, app.CurrentRoute, app.effectiveTasksSection(), app.effectiveTasksActiveTab())
 	}
 
 	// 3. Tasks › 缓存队列 renders card titled "历史缓存补全 · 微博" and hides the top prompt bar while active.
@@ -181,7 +224,7 @@ func TestSettingsStorageAndTasksQueueBackfillUI(t *testing.T) {
 		t.Fatal("Settings › 存储 should show 查看补全队列 button when backfill is active")
 	}
 
-	// 5. Tasks › 缓存队列 with empty CacheQueue & TotalItems == 3 renders top bar "发现 3 条历史微博可补全" + "一键补全".
+	// 5. Tasks › 缓存队列 with empty CacheQueue & TotalItems == 3 renders top bar "发现 3 条历史缓存可补全" + "一键补全".
 	stub.mu.Lock()
 	stub.queue = nil
 	stub.mu.Unlock()
@@ -189,11 +232,61 @@ func TestSettingsStorageAndTasksQueueBackfillUI(t *testing.T) {
 	app.Navigate(RouteTasks)
 	app.TasksSection = "queue"
 	tt.Frame()
-	if !tt.HasText("发现 3 条历史微博可补全") {
-		t.Fatal("Tasks › 缓存队列 should show 发现 3 条历史微博可补全 top bar even when queue list is empty")
+	if !tt.HasText("发现 3 条历史缓存可补全") {
+		t.Fatal("Tasks › 缓存队列 should show 发现 3 条历史缓存可补全 top bar even when queue list is empty")
 	}
-	if _, ok := tt.Find("一键补全历史微博缓存"); !ok {
+	if _, ok := tt.Find("一键补全历史缓存"); !ok {
 		t.Fatal("Tasks › 缓存队列 missing 一键补全 button")
+	}
+
+	// 6. Cross-site (Bilibili-only) backfill: shows accurate non-Weibo copy, starts site_backfill via StartBackfill,
+	// renders "历史缓存补全 · B站" (no duplicated "历史缓存补全 · 历史缓存补全"), and hides prompt bar while active.
+	stub.mu.Lock()
+	stub.summary = service.BackfillSummaryDTO{
+		BilibiliItems: 4,
+		TotalItems:    4,
+	}
+	stub.queue = nil
+	stub.mu.Unlock()
+	app.BackfillSummary = stub.summary
+	app.CacheQueue = nil
+	app.Navigate(RouteTasks)
+	app.TasksSection = "queue"
+	tt.Frame()
+	if !tt.HasText("发现 4 条历史缓存可补全") || !tt.HasText("B站 4 条") {
+		t.Fatal("Tasks › 缓存队列 must show B站 4 条 breakdown when only Bilibili has pending backfill")
+	}
+	if tt.HasText("历史微博") {
+		t.Fatal("Tasks › 缓存队列 must NOT say 历史微博 when only Bilibili items need backfill")
+	}
+	if err := tt.Click("一键补全历史缓存"); err != nil {
+		t.Fatalf("failed to click 一键补全历史缓存: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		drain()
+		if len(app.CacheQueue) == 1 && app.CacheQueue[0].ID == "cq_bf_bili" {
+			break
+		}
+		tt.Frame()
+	}
+	tt.Frame()
+	if !tt.HasText("历史缓存补全 · B站") {
+		t.Fatal("site_backfill card must display 历史缓存补全 · B站")
+	}
+	if tt.HasText("历史缓存补全 · 历史缓存补全") {
+		t.Fatal("site_backfill card must NOT duplicate 历史缓存补全 · 历史缓存补全")
+	}
+	if _, ok := tt.Find("历史缓存补全提示条"); ok {
+		t.Fatal("top backfill prompt bar must hide while site_backfill queue is active")
+	}
+	app.Navigate(RouteSettings)
+	app.SettingsCategory = "storage"
+	tt.Frame()
+	if !tt.HasText("正在补全B站历史缓存") {
+		t.Fatal("Settings › 存储 must display 正在补全B站历史缓存 for active Bilibili site_backfill")
+	}
+	if _, ok := tt.Find("查看历史缓存补全队列"); !ok {
+		t.Fatal("Settings › 存储 must show 查看补全队列 when site_backfill is active")
 	}
 }
 

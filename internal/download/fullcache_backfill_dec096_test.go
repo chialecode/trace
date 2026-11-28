@@ -241,7 +241,9 @@ func TestDEC096BilibiliChaptersWhenSubtitlesDisabledAndIncludeAIToggle(t *testin
 	meta.CacheStandardVersion = 2
 	meta.RemotePartCount = 0
 	meta.Parts[0].Chapters = nil
+	meta.Parts[0].ChaptersChecked = false
 	meta.Parts[1].Chapters = nil
+	meta.Parts[1].ChaptersChecked = false
 	if _, err := libStore.SaveItem(meta.ItemDir, meta); err != nil {
 		t.Fatal(err)
 	}
@@ -745,4 +747,280 @@ func TestDEC096XArticleUpgradeAndThreadAppendClassification(t *testing.T) {
 	if degErr != nil || !conflict || notice.ReasonKind != ConflictReasonText {
 		t.Fatalf("expected ConflictReasonText for edited thread node, got conflict=%v reason=%q err=%v", conflict, notice.ReasonKind, degErr)
 	}
+}
+
+func TestDEC096BilibiliMultiPartV2SinglePartDoesNotStampV3BeforeOldPartChaptersChecked(t *testing.T) {
+	vBytes, err := BuildSyntheticVideoM4S(60, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aBytes, err := BuildSyntheticAudioM4S(94)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		srvURL   string
+		v2ByCID  = map[int64]int{}
+		v2Mu     atomic.Int32
+		v2Counts = func(cid int64) {}
+	)
+	_ = v2Counts
+	var p1V2Calls, p2V2Calls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/x/web-interface/wbi/view", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"bvid": "BV1multiV2001", "aid": 88001, "title": "旧多P视频", "desc": "简介",
+				"pubdate": 1700000000, "duration": 4,
+				"owner": map[string]any{"mid": 5002, "name": "UP"},
+				"pages": []map[string]any{
+					{"cid": 88101, "page": 1, "part": "P1", "duration": 2},
+					{"cid": 88102, "page": 2, "part": "P2", "duration": 2},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/x/player/wbi/playurl", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"quality": 80, "accept_format": "hdflv2,flv,mp4", "accept_quality": []int{80},
+				"dash": map[string]any{
+					"duration": 2,
+					"video": []map[string]any{
+						{"id": 80, "baseUrl": srvURL + "/m4s/v.m4s", "bandwidth": 900000, "mimeType": "video/mp4", "codecs": "avc1.64001F", "width": 1920, "height": 1080, "frameRate": "30", "codecid": 7},
+					},
+					"audio": []map[string]any{
+						{"id": 30280, "baseUrl": srvURL + "/m4s/a.m4s", "bandwidth": 192000, "mimeType": "audio/mp4", "codecs": "mp4a.40.2"},
+					},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/x/player/wbi/v2", func(w http.ResponseWriter, r *http.Request) {
+		v2Mu.Add(1)
+		cidVal, _ := strconv.ParseInt(r.URL.Query().Get("cid"), 10, 64)
+		title := "P1 历史看点"
+		if cidVal == 88101 {
+			p1V2Calls.Add(1)
+		} else if cidVal == 88102 {
+			p2V2Calls.Add(1)
+			title = "P2 新分P看点"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"bvid":        r.URL.Query().Get("bvid"),
+				"cid":         cidVal,
+				"subtitle":    map[string]any{"subtitles": []any{}},
+				"view_points": []map[string]any{{"type": 2, "from": 0, "to": 30, "content": title}},
+			},
+		})
+	})
+	mux.HandleFunc("/m4s/v.m4s", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(vBytes)))
+		_, _ = w.Write(vBytes)
+	})
+	mux.HandleFunc("/m4s/a.m4s", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(aBytes)))
+		_, _ = w.Write(aBytes)
+	})
+	_ = v2ByCID
+
+	mgr, libStore, srv := setupDownloadEnv(t, mux, 2)
+	srvURL = srv.URL
+	cfg := settings.Default("").Download
+	cfg.SaveCover = false
+	cfg.SaveDanmaku = false
+	cfg.SaveSubtitles = false
+	cfg.MultiPart = "all"
+	mgr.UpdateSettings(cfg)
+
+	ctx := context.Background()
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Stop()
+
+	// Seed legacy v2 item with only P1 cached (ChaptersChecked=false, Chapters=nil).
+	itemDir := filepath.Join(libStore.CacheDir(), "bilibili", "5002", "videos", "BV1multiV2001")
+	if err := os.MkdirAll(itemDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p1Raw := buildTestMuxedMP4Bytes(t)
+	if err := os.WriteFile(filepath.Join(itemDir, "P01.mp4"), p1Raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p1Sum := sha256.Sum256(p1Raw)
+	if _, err := libStore.SaveItem(itemDir, library.ItemMetadata{
+		Version: 1, ID: "video:BV1multiV2001", Site: "bilibili", Kind: "video", Status: "complete",
+		Title: "旧多P视频", Desc: "简介", PubTs: 1700000000, Duration: 4,
+		CacheStandardVersion: 2,
+		ExpectedPages:        []int{1},
+		Author:               library.ItemAuthor{Site: "bilibili", Mid: 5002, UID: "5002", Name: "UP"},
+		Media: []library.MediaFile{
+			{Role: "video", Path: "P01.mp4", Bytes: int64(len(p1Raw)), SHA256: hex.EncodeToString(p1Sum[:]), Width: 320, Height: 240, Duration: 2},
+		},
+		Parts: []library.VideoPartRecord{{
+			CID: 88101, Page: 1, Title: "P1", Duration: 2, File: "P01.mp4",
+			DanmakuState: "skipped", SubtitleState: "skipped",
+			ChaptersChecked: false,
+			Video:           library.PartVideoInfo{Quality: 80},
+			Audio:           library.PartAudioInfo{Quality: 30280},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 1: MultiPart switched first->all, enqueue ONLY missing P2!
+	tasksP2, err := mgr.EnqueueVideo(ctx, VideoEnqueueRequest{BVID: "BV1multiV2001", Pages: []int{2}, Source: "queue"})
+	if err != nil {
+		t.Fatalf("EnqueueVideo P2: %v", err)
+	}
+	if err := mgr.WaitTasks(ctx, tasksP2[0].TaskID); err != nil {
+		t.Fatalf("WaitTasks P2: %v", err)
+	}
+
+	afterP2, _, err := libStore.GetItem("bilibili:video:BV1multiV2001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// CRITICAL (Review Finding #4): P1 has NOT had chapters checked yet -> MUST NOT stamp v3!
+	if afterP2.CacheStandardVersion >= library.BilibiliVideoStandardVersion {
+		t.Fatalf("caching only P2 must NOT prematurely stamp v3 while P1 lacks ChaptersChecked, got std=%d parts=%+v",
+			afterP2.CacheStandardVersion, afterP2.Parts)
+	}
+	if p1V2Calls.Load() != 0 || p2V2Calls.Load() != 1 {
+		t.Fatalf("expected P1 v2=0 P2 v2=1 after caching P2, got P1=%d P2=%d", p1V2Calls.Load(), p2V2Calls.Load())
+	}
+
+	// Step 2: Run supplement -> skips already ChaptersChecked P2 (0 redundant call!), fetches P1 chapters, and NOW stamps v3!
+	preDetail := &bilibili.VideoDetail{
+		BVID: "BV1multiV2001",
+		Pages: []bilibili.VideoPage{
+			{CID: 88101, Page: 1, Title: "P1", Duration: 2},
+			{CID: 88102, Page: 2, Title: "P2", Duration: 2},
+		},
+	}
+	supTask, err := mgr.CacheSupplementWithDetail(ctx, "BV1multiV2001", "queue", preDetail)
+	if err != nil {
+		t.Fatalf("CacheSupplementWithDetail: %v", err)
+	}
+	if err := mgr.WaitTasks(ctx, supTask.TaskID); err != nil {
+		t.Fatalf("WaitTasks supplement: %v", err)
+	}
+	if p1V2Calls.Load() != 1 || p2V2Calls.Load() != 1 {
+		t.Fatalf("supplement must fetch P1 chapters once and skip already-checked P2, got P1=%d P2=%d",
+			p1V2Calls.Load(), p2V2Calls.Load())
+	}
+	afterSup, _, err := libStore.GetItem("bilibili:video:BV1multiV2001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterSup.CacheStandardVersion != library.BilibiliVideoStandardVersion {
+		t.Fatalf("expected v3 after all parts ChaptersChecked, got std=%d", afterSup.CacheStandardVersion)
+	}
+	for _, p := range afterSup.Parts {
+		if !p.ChaptersChecked || len(p.Chapters) != 1 {
+			t.Fatalf("expected ChaptersChecked=true and 1 chapter on P%d, got %+v", p.Page, p)
+		}
+	}
+}
+
+func TestDEC096BilibiliCompleteDynamicPreservedWhenLinkedVideoUpowerLockedOrDeleted(t *testing.T) {
+	jpgBytes := buildTestJPEGBytes(t, 60, 120, 180)
+	var srvURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/img/dyn1.jpg", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(jpgBytes)
+	})
+	mux.HandleFunc("/x/polymer/web-dynamic/v1/detail", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"item": map[string]any{
+					"id_str": "9500301",
+					"type":   "DYNAMIC_TYPE_AV",
+					"modules": map[string]any{
+						"module_author": map[string]any{"mid": 5003, "name": "UP", "pub_ts": 1700000000},
+						"module_dynamic": map[string]any{
+							"desc": map[string]any{"text": "完整动态正文"},
+							"major": map[string]any{
+								"type": "MAJOR_TYPE_ARCHIVE",
+								"archive": map[string]any{
+									"bvid":  "BV1upowerLk02",
+									"title": "完整动态",
+									"cover": srvURL + "/img/dyn1.jpg",
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/x/web-interface/wbi/view", func(w http.ResponseWriter, r *http.Request) {
+		bvid := r.URL.Query().Get("bvid")
+		if bvid == "BV1deadLink01" {
+			_, _ = w.Write([]byte(`{"code":-404,"message":"啥都木有"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"bvid": bvid, "aid": 91001, "title": "充电专属关联视频",
+				"is_upower_exclusive": true, "is_upower_play": false, "is_upower_preview": true,
+				"owner": map[string]any{"mid": 5003, "name": "UP"},
+				"pages": []map[string]any{{"cid": 91101, "page": 1, "part": "P1", "duration": 60}},
+			},
+		})
+	})
+
+	mgr, libStore, srv := setupDownloadEnv(t, mux, 2)
+	srvURL = srv.URL
+	ctx := context.Background()
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Stop()
+
+	// Seed an already-complete Bilibili video dynamic referencing a upower-locked video.
+	dynDir := filepath.Join(libStore.CacheDir(), "bilibili", "5003", "dynamics", "9500301")
+	if err := os.MkdirAll(dynDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.SaveItem(dynDir, library.ItemMetadata{
+		Version: 1, ID: "dynamic:9500301", Site: "bilibili", Kind: "dynamic", Status: "complete",
+		Title: "完整动态", Text: "完整动态正文", PubTs: 1700000000, CacheStandardVersion: 2,
+		Author: library.ItemAuthor{Site: "bilibili", Mid: 5003, UID: "5003", Name: "UP"},
+		Videos: []string{"video:BV1upowerLk02"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	dynItem := bilibili.DynamicItem{
+		ID: "9500301", Title: "完整动态", Text: "完整动态正文", PubTs: 1700000000,
+		Author: bilibili.AuthorInfo{Mid: 5003, Name: "UP"},
+		Videos: []bilibili.DynamicVideoRef{{BVID: "BV1upowerLk02"}},
+	}
+	tk, err := mgr.EnqueueDynamic(ctx, DynamicEnqueueRequest{
+		DynamicID: "9500301", Item: &dynItem, CacheLinkedVideos: true, Source: "queue",
+	})
+	if err != nil {
+		t.Fatalf("EnqueueDynamic: %v", err)
+	}
+	if err := mgr.WaitTasks(ctx, tk.TaskID); err != nil {
+		t.Fatalf("complete dynamic must not fail when linked video is upower-locked: %v", err)
+	}
+	after, _, err := libStore.GetItem("bilibili:dynamic:9500301")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != "complete" || len(after.Missing) != 0 {
+		t.Fatalf("complete dynamic was degraded to status=%q missing=%+v", after.Status, after.Missing)
+	}
+	_ = jpgBytes
 }

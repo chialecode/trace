@@ -25,7 +25,7 @@ func TestManifestConflictFieldsSanitizeMergeAndPortable(t *testing.T) {
 		EditCount:            2,
 		RemotePartCount:      3,
 		Parts: []VideoPartRecord{
-			{Page: 1, CID: 1001, File: "P01.mp4", SubtitleState: "saved", SubtitleIncludesAI: true},
+			{Page: 1, CID: 1001, File: "P01.mp4", SubtitleState: "saved", SubtitleIncludesAI: true, ChaptersChecked: true},
 		},
 		AssetIDs: []string{
 			"v0200fg10000abcdefghij",
@@ -87,8 +87,17 @@ func TestManifestConflictFieldsSanitizeMergeAndPortable(t *testing.T) {
 	if meta.NotePages[0].VideoInfo.MediaID != "" || meta.NotePages[0].VideoInfo.OriginalState != "" {
 		t.Fatalf("NotePages[0].VideoInfo = %+v, want MediaID and invalid OriginalState scrubbed empty", meta.NotePages[0].VideoInfo)
 	}
-	if meta.RemotePartCount != 3 || !meta.Parts[0].SubtitleIncludesAI {
-		t.Fatalf("expected RemotePartCount=3 and SubtitleIncludesAI=true, got %d / %v", meta.RemotePartCount, meta.Parts[0].SubtitleIncludesAI)
+	if meta.RemotePartCount != 3 || !meta.Parts[0].SubtitleIncludesAI || !meta.Parts[0].ChaptersChecked {
+		t.Fatalf("expected RemotePartCount=3, SubtitleIncludesAI=true, ChaptersChecked=true, got %d / %v / %v",
+			meta.RemotePartCount, meta.Parts[0].SubtitleIncludesAI, meta.Parts[0].ChaptersChecked)
+	}
+	chapNorm := ItemMetadata{
+		Version: 1, ID: "video:BV1chapNorm01", Site: "bilibili", Kind: "video", Status: "complete",
+		Parts: []VideoPartRecord{{Page: 1, CID: 1, File: "P01.mp4", Chapters: []VideoChapter{{FromSec: 0, ToSec: 10, Title: "Ch1"}}}},
+	}
+	SanitizeItemMetadata(&chapNorm)
+	if !chapNorm.Parts[0].ChaptersChecked {
+		t.Fatal("SanitizeItemMetadata should normalize ChaptersChecked=true when Chapters is non-empty")
 	}
 	negCheck := meta
 	negCheck.RemotePartCount = -5
@@ -151,7 +160,7 @@ func TestManifestConflictFieldsSanitizeMergeAndPortable(t *testing.T) {
 		merged.EditTs != 1763850000 ||
 		merged.EditCount != 2 ||
 		merged.RemotePartCount != 3 ||
-		len(merged.Parts) != 1 || !merged.Parts[0].SubtitleIncludesAI ||
+		len(merged.Parts) != 1 || !merged.Parts[0].SubtitleIncludesAI || !merged.Parts[0].ChaptersChecked ||
 		merged.ArchivedOf != "douyin:dynamic:7300000000000000001" ||
 		!reflect.DeepEqual(merged.AssetIDs, wantAssets) ||
 		merged.DouyinVideo.MediaID != "v0200fg10000abcdefghij" ||
@@ -175,7 +184,7 @@ func TestManifestConflictFieldsSanitizeMergeAndPortable(t *testing.T) {
 		reparsed.EditTs != 1763850000 ||
 		reparsed.EditCount != 2 ||
 		reparsed.RemotePartCount != 3 ||
-		len(reparsed.Parts) != 1 || !reparsed.Parts[0].SubtitleIncludesAI ||
+		len(reparsed.Parts) != 1 || !reparsed.Parts[0].SubtitleIncludesAI || !reparsed.Parts[0].ChaptersChecked ||
 		reparsed.ArchivedOf != "douyin:dynamic:7300000000000000001" ||
 		!reflect.DeepEqual(reparsed.AssetIDs, wantAssets) ||
 		reparsed.DouyinVideo.MediaID != "v0200fg10000abcdefghij" ||

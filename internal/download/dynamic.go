@@ -649,6 +649,7 @@ func (m *Manager) executeBilibiliDynamicStaged(
 		mediaFiles = append(mediaFiles, still)
 	}
 
+	preserveCompleteDynamic := !isConflict && !forceOverwrite && previous.Status == "complete"
 	for _, v := range dyn.Videos {
 		if v.BVID == "" || !t.CacheLinkedVideos {
 			continue
@@ -658,9 +659,17 @@ func (m *Manager) executeBilibiliDynamicStaged(
 		}
 		detail, err := m.client.VideoDetail(ctx, v.BVID)
 		if err != nil {
+			if preserveCompleteDynamic && isDegradedSiteError(err) {
+				// Never abort or degrade an already-complete dynamic because a linked
+				// video was later deleted, locked, or blocked on the remote site (DEC-096).
+				continue
+			}
 			return err
 		}
 		if detail.IsUpowerLocked() {
+			if preserveCompleteDynamic {
+				continue
+			}
 			partialErrors = append(partialErrors, fmt.Sprintf("video %s: %s", v.BVID, bilibili.UpowerLockedMessage))
 			continue
 		}
@@ -697,6 +706,9 @@ func (m *Manager) executeBilibiliDynamicStaged(
 				t.Attempts = vidTask.Attempts
 				if errors.Is(err, ErrConflictDetected) || errors.Is(err, ErrRemoteDegradedRefused) || isStopError(err) || isStorageError(err) || ctx.Err() != nil {
 					return err
+				}
+				if preserveCompleteDynamic && isDegradedSiteError(err) {
+					continue
 				}
 				partialErrors = append(partialErrors, fmt.Sprintf("video %s P%d: %v", v.BVID, page.Page, err))
 			} else {
