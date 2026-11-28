@@ -72,9 +72,9 @@
 4. 用正式版配置（`trace` 身份、正式版图标、`updates` 指向 GitHub Releases）与私钥构建并签名，在更新清单里加上 TRACE 的版本证明 `traceAttestation`（见[架构 §8](../design/architecture.md#updates)）；产物：安装包 `trace-setup-<版本>-amd64.exe`、更新包 `trace-<版本>-windows-amd64.tar.gz`、清单 `update-windows-amd64.json`、差分包（有上一版时，`-offline` 不做）、`install.ps1`、`VERSION.txt`、`THIRD-PARTY-NOTICES.txt`、`SHA256SUMS`。
 5. 在 trace-test 身份下演练（`TRACE_RUN_INSTALLER_TEST=1` 的测试跑同一段）：发现 trace-test 已装时先退出并卸载、旧数据移到 `%LOCALAPPDATA%\trace-test.previous`；用同一份源码构建 `<版本>-rehearsal.1` 与 `.2`（只在这次演练里生成的临时密钥签名，不带差分包），静默安装 `.1`，以 `--background` 与安静模式启动并让它从本机回环地址上的假发布源（`TRACE_TEST_UPDATE_URL`，只有 trace-test 身份读它）检查、下载、校验并替换；`--quit-for-update` 让它退出后重开，核对运行的版本、卸载项版本与数据；再让它遇到一个改过内容的 `.3` 更新包并核对被拒绝、程序文件不变；最后卸载，核对卸载项与安装目录删除、数据目录保留。全程只读正式版与开发版的卸载项、前后比较不变。结果写 `artifacts/release/rehearsal.json`；演练失败就停下，`dist/trace/` 不变。
 6. 校验通过后替换 `dist/trace/` 里登记在 `SHA256SUMS` 中的文件；结果写 `artifacts/release/release.json`。
-7. 只有带 `-publish` 且用户已授权（每周自动发布已按原 [ACT-009](https://github.com/chialecode/trace/blob/f8af16863dbe885cfd63de048730c07a2b91e7be/USER-ACTIONS.md#act-009) 授权打开，或对话里对这一次的明确授权，以 `TRACE_RELEASE_PUBLISH=1` 表示）时，才用 `gh` 创建草稿 Release `v<版本>` 并上传（清单最后上传），核对文件齐全后改为正式的最新 Release。默认只生成文件与演练。
+7. 只有在本机手动带 `-publish` 且用户在当前对话里对这一次发布明确授权（以环境变量 `TRACE_RELEASE_PUBLISH=1` 表示）时，才用 `gh` 创建草稿 Release `v<版本>` 并上传（清单最后上传），核对文件齐全后改为正式的最新 Release。默认只生成文件与演练（GitHub Actions 不执行自动发布，见 [DEC-098](../decisions.md#dec-098)）。
 
-`-plan` 给每周的 workflow 用：输出 `release=true|false` 与 `version=`（上次发布的标签以来 `main` 没有新提交就是 `false`，还没有标签时是 `true`）。
+`-plan` 给每周构建检查 workflow 用：输出信息性的 `release=true|false` 与下一个正式版号 `version=`（`release.yml` 仅使用 `version` 命名检查产物，不再按 `release=false` 跳过构建检查）。
 
 <a id="update-key"></a>
 **更新签名密钥**：Ed25519，公钥在 `mygo.json` 的 `updates.publicKey`（正式版构建内置）。私钥不入库、不打印：本机放在 `%APPDATA%\trace-release\update-signing.key`（公钥 `update-signing.pub` 在同一目录；用 `mygo keygen` 生成后改名移到这里，私钥备份见 [#20](https://github.com/chialecode/trace/issues/20)），`tools/release` 读入后先从自己的环境里删掉这个变量（`tools/check` 及其测试、`git`、`gh`、演练里的 TRACE 都不继承），只交给 MyGo 构建子进程的 `MYGO_UPDATER_PRIVATE_KEY` 并在进程内签版本证明；CI 上来自 `release` 环境的 secret `MYGO_UPDATER_PRIVATE_KEY`。缺私钥或私钥与公钥不配对时失败，从不生成新密钥、不打不签名的正式版。目前只用这一把密钥。**换密钥**（私钥泄露或计划轮换时）：① 用 `mygo keygen -o <新目录>` 生成新密钥对（它写出的是 `mygo-update.key` / `mygo-update.pub`，切换时改名为 `update-signing.key` / `update-signing.pub`），保存与备份新私钥；② 发布一个过渡版本：用**旧**私钥签名（已安装的 TRACE 只认旧公钥），程序里内置**新**公钥（MyGo 的校验公钥与 TRACE 的 `internal/update.publicKey` 都换成新的）——MyGo 的构建要求签名私钥与 `updates.publicKey` 配对，所以这一步要先改 `tools/release` 并用 trace-test 演练，单独写计划；③ 过渡版本发布后，把 `mygo.json` 的 `updates.publicKey`、本机密钥文件与 CI secret 换成新密钥，之后的版本用新私钥签名；④ 没更新到过渡版本的旧版本无法再联网更新，在发布说明里请这些用户手动下载安装。私钥丢失时无法做第 ② 步，只能走第 ④ 步。
@@ -139,17 +139,16 @@ CI 文件 `.github/workflows/ci.yml` 的 job 名必须是 `repository-quality`�
 **Dependabot**（[.github/dependabot.yml](../../.github/dependabot.yml)，DEC-048）：Go 模块每周、Actions 每月，冷却期 7 天，同主版本更新合为一组（`golang.org/x/*` 单独一组），关闭自动 rebase，不自动合并。版本更新 PR 在[每周维护](workflow.md#dependency-inventory)时处理：Go 模块的 CI 通过后按低风险合并；Actions 的会改到 `.github/workflows/`，属于[高风险](workflow.md#high-risk)，加 `risk:high` 等用户合并。Dependabot 告警与自动安全修复 PR 已打开（2026-11-14 用户授权，Agent 经 API 打开并核对）；安全修复 PR 不受冷却期限制，有就尽快评审合并。
 
 <a id="release-workflow"></a>
-### 4.2 每周发布（`release.yml`）
+### 4.2 每周发布构建检查（`release.yml`）
 
-`.github/workflows/release.yml` 与 `ci.yml` 分开：每周一 00:00 UTC（北京时间 08:00）定时，另可手动运行（手动时默认只构建，勾选 `publish` 才发布）。顶层 `permissions: {}`，三个 job：
+`.github/workflows/release.yml`（工作流名 `Release Build Check`）与 `ci.yml` 分开：仅在每周一 00:00 UTC（北京时间 08:00）定时或无输入参数的裸 `workflow_dispatch` 手动触发，并发组 `release-build-check`（`cancel-in-progress: false`），顶层 `permissions: {}`。按 [DEC-098](../decisions.md#dec-098)，本工作流只做构建检查与 7 天产物保留，不创建 GitHub Release 或标签（零 `contents: write`、无 `publish` job）。两个 job 均限定 `if: github.ref == 'refs/heads/main'`：
 
 | job | 运行器 | 权限 | 做什么 |
 | --- | --- | --- | --- |
-| `check` | Ubuntu | `contents: read`，没有 secret | `go run ./tools/release -plan`：上次发布以来 `main` 没有新提交就输出 `release=false`，后面的 job 都跳过；否则运行 `go run ./tools/check` |
-| `build` | `windows-2025`，`release` 环境 | `contents: read` | `go run ./tools/release`：检查、构建、签名与 trace-test 演练；私钥 secret 只出现在这一步；产物（`dist/trace/` 与 `artifacts/release/`）用 `upload-artifact` 传出 |
-| `publish` | Ubuntu | `contents: write` | 只在仓库变量 `TRACE_RELEASE_PUBLISH=1`（用户授权每周自动发布后设置）时运行；不检出、不运行仓库代码：`download-artifact` 取产物，`sha256sum -c SHA256SUMS` 与 `VERSION.txt` 核对后用 `gh` 建草稿 Release、上传（清单最后）、核对文件齐全再改为正式的最新 Release |
+| `check` | `ubuntu-24.04` | `contents: read`，没有 secret | `go run ./tools/release -plan`（输出版本信息 `version`），随后无条件运行 `go run ./tools/check` |
+| `build` | `windows-2025`，`release` 环境 | `contents: read` | 依赖 `check`，运行 `go run ./tools/release` 完成检查、构建、签名与 `trace-test` 演练；私钥 secret `MYGO_UPDATER_PRIVATE_KEY` 仅出现在这一步；产物（`dist/trace/` 与 `artifacts/release/`）经 `actions/upload-artifact` 保留 7 天（`if-no-files-found: error`） |
 
-Action 一律固定完整 SHA（`actions/checkout` v7.0.1、`actions/upload-artifact` v7.0.2、`actions/download-artifact` v8.0.2），不加 `setup-go`（Go 用 `GOTOOLCHAIN=auto`），不引入第三方 Action。这些固定写法由 `tools/release/workflow_test.go` 静态检查（固定 SHA、各 job 权限、secret 只在签名步骤、发布受变量控制、发布 job 不运行仓库代码）。仓库侧的设置（`release` 环境只允许 `main` 部署、secret `MYGO_UPDATER_PRIVATE_KEY`、Action 允许列表）已在 2026-11-09 完成；私钥备份见 [#20](https://github.com/chialecode/trace/issues/20)。
+Action 一律固定完整 SHA（`actions/checkout` v7.0.1 且 `persist-credentials: false`、`actions/upload-artifact` v7.0.2），不使用 `download-artifact`、不加 `setup-go`（Go 用 `GOTOOLCHAIN=auto`），不引入第三方 Action。上述契约由 `tools/release/workflow_test.go` 静态检查（工作流名与并发组、触发器、双 job 与运行器、仅 `contents: read`、`refs/heads/main` 守卫、无跳过门控、7 天产物保留、无 `publish` / `download-artifact` / `gh release` / `TRACE_RELEASE_PUBLISH`、secret 仅在签名步骤）。仓库侧的设置（`release` 环境只允许 `main` 部署、secret `MYGO_UPDATER_PRIVATE_KEY`、Action 允许列表）已在 2026-11-09 完成；私钥备份见 [#20](https://github.com/chialecode/trace/issues/20)。正式版发布仅在本机经用户当次授权后手动执行 `tools/release -publish`。
 
 <a id="generated-outputs"></a>
 ## 5. 生成物

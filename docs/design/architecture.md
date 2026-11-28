@@ -84,7 +84,7 @@ tools/companiondev/           移动端本地联调辅助工具（在临时数�
 tools/uishots/                用 ui.NewTester 渲染全部页面的必测状态与三档宽度，输出 PNG 截图与结构化断言回执 assertions.json
 tools/smoke/                  真实进程端到端冒烟（启动 trace.exe、单实例与数据目录锁、托盘关闭与重建、零杂散目录校验）；-server 是远程冒烟（server.go）
 tools/package/                开发版打包（解包文件 + NSIS 按用户安装包）与本机自动安装（install.go）；-server 打远程版的 Linux 包（server.go）
-tools/release/                正式版发布：检查、构建签名、trace-test 升级演练、可选发布；release.yml 的静态检查
+tools/release/                本机正式版发布（检查、构建签名、trace-test 升级演练、需当次授权的手动发布）与 release.yml 每周构建检查静态校验
 tools/actcheck/               真实站点有界检查程序（act006 / act007 / act010～020 / act022 / act024 / act025，账本门禁与脱敏回执）
 tools/icons/                  绘制两个通道的应用图标
 tools/internal/build/         打包共用：版本号、通道配置、-ldflags、VERSION.txt、THIRD-PARTY-NOTICES.txt、登记替换、Windows 卸载项与进程读取
