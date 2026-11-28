@@ -143,11 +143,15 @@ func subscriptionAuthorRefsKey(refs []library.AuthorRef) string {
 }
 
 func subscriptionAccountKey(acc subscription.AccountRef) string {
+	accSite := normalizeSiteIDUI(acc.Site)
 	uid := strings.TrimSpace(acc.UID)
+	if uid == "" && accSite == "x" {
+		uid = strings.TrimSpace(acc.UniqueID)
+	}
 	if uid == "" {
 		return ""
 	}
-	return normalizeSiteIDUI(acc.Site) + ":" + uid
+	return accSite + ":" + uid
 }
 
 func resolveSubFeedSelectedAccount(sub subscription.Subscription, key string) (subscription.AccountRef, bool) {
@@ -165,7 +169,12 @@ func resolveSubFeedSelectedAccount(sub subscription.Subscription, key string) (s
 
 func subscriptionActiveFeedRefs(sub subscription.Subscription, accountKey string) []library.AuthorRef {
 	if acc, ok := resolveSubFeedSelectedAccount(sub, accountKey); ok {
-		normSite, normUID := library.NormalizeAuthorUID(acc.Site, acc.UID, parseBilibiliMidUI(acc.Site, acc.UID))
+		accSite := normalizeSiteIDUI(acc.Site)
+		uid := strings.TrimSpace(acc.UID)
+		if uid == "" && accSite == "x" {
+			uid = strings.TrimSpace(acc.UniqueID)
+		}
+		normSite, normUID := library.NormalizeAuthorUID(accSite, uid, parseBilibiliMidUI(accSite, uid))
 		if normUID != "" {
 			return []library.AuthorRef{{Site: normSite, UID: normUID}}
 		}

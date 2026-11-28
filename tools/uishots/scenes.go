@@ -354,9 +354,6 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"主页作者站点：" + savedWeiboPost.ItemKey,
 				"主页作者站点：" + savedDouyinVideo.ItemKey,
 			},
-			PanelRequiredLabels: []string{
-				"主页作者站点：" + savedDynamicItem.ItemKey,
-			},
 			ForbiddenLabels: []string{
 				"打开账号主页",
 				"关联账号输入",
@@ -382,11 +379,14 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅内容账号筛选：x:" + xUID,
 				"打开账号主页",
 				"订阅内容信息流列表",
+				"主页作者站点：" + savedXRetweet.ItemKey,
 			},
 			RequiredTexts: []string{
 				"打开账号主页",
 			},
 			ForbiddenLabels: []string{
+				"主页作者站点：" + savedWeiboPost.ItemKey,
+				"主页作者站点：" + savedDouyinVideo.ItemKey,
 				"关联账号输入",
 				"开始录制 9001",
 			},
