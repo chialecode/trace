@@ -819,6 +819,20 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			Setup: func() {
 				app.RuleBatch.Open = false
 				app.MultiTagBatch.Open = false
+				app.SettingsPasteSite = ""
+				app.SettingsPasteInput = ""
+				app.SettingsPasteError = ""
+				fixtureBackend.dyStatus.LoggedIn = true
+				fixtureBackend.dyStatus.State = "logged_in"
+				nowUTC := time.Now().UTC()
+				_, _ = b.MutateUIState(func(st *uistate.State) {
+					st.AuthVerifiedAt = map[string]string{
+						"bilibili": nowUTC.Add(-15 * time.Minute).Format(time.RFC3339),
+						"douyin":   nowUTC.Add(-25 * time.Minute).Format(time.RFC3339),
+						"weibo":    nowUTC.Add(-40 * time.Minute).Format(time.RFC3339),
+						"x":        nowUTC.Add(-55 * time.Minute).Format(time.RFC3339),
+					}
+				})
 				seedRecentAndLive()
 				app.SettingsCategory = "account"
 				app.Navigate(ui.RouteSettings)
@@ -828,6 +842,10 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"账号分组：抖音",
 				"账号分组：微博",
 				"账号分组：X",
+				"账号状态标签：bilibili",
+				"账号状态标签：douyin",
+				"账号验证时间：bilibili",
+				"账号验证时间：douyin",
 				"重新粘贴抖音Cookie",
 				"退出抖音登录",
 				"重新粘贴微博Cookie",
@@ -838,13 +856,89 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			RequiredTexts: []string{
 				"X（原 Twitter）",
 				"@trace_x_demo",
+				"上次验证有效：",
 				"粘贴的 Cookie 不续期",
 				"风险说明",
+			},
+			ForbiddenLabels: []string{
+				"账号失效提示",
+				"设置账号失效红点",
+			},
+		},
+		{
+			Name: "settings-account-expired",
+			Setup: func() {
+				app.RuleBatch.Open = false
+				app.MultiTagBatch.Open = false
+				app.SettingsPasteSite = ""
+				app.SettingsPasteInput = ""
+				app.SettingsPasteError = ""
+				fixtureBackend.dyStatus.LoggedIn = false
+				fixtureBackend.dyStatus.State = "expired"
+				nowUTC := time.Now().UTC()
+				_, _ = b.MutateUIState(func(st *uistate.State) {
+					st.AuthVerifiedAt = map[string]string{
+						"bilibili": nowUTC.Add(-15 * time.Minute).Format(time.RFC3339),
+						"douyin":   nowUTC.Add(-3 * time.Hour).Format(time.RFC3339),
+						"weibo":    nowUTC.Add(-40 * time.Minute).Format(time.RFC3339),
+						"x":        nowUTC.Add(-55 * time.Minute).Format(time.RFC3339),
+					}
+				})
+				seedRecentAndLive()
+				app.SettingsCategory = "account"
+				app.Navigate(ui.RouteSettings)
+			},
+			RequiredLabels: []string{
+				"账号失效提示",
+				"设置账号失效红点",
+				"账号分组：抖音",
+				"账号状态标签：douyin",
+				"账号验证时间：douyin",
+				"账号失效说明：douyin",
+				"重新粘贴抖音Cookie",
+			},
+			RequiredTexts: []string{
+				"登录已失效",
+				"上次验证有效：",
+			},
+		},
+		{
+			Name: "settings-account-paste",
+			Setup: func() {
+				app.RuleBatch.Open = false
+				app.MultiTagBatch.Open = false
+				fixtureBackend.dyStatus.LoggedIn = true
+				fixtureBackend.dyStatus.State = "logged_in"
+				seedRecentAndLive()
+				app.SettingsCategory = "account"
+				app.Navigate(ui.RouteSettings)
+				app.SettingsPasteSite = "douyin"
+				app.SettingsPasteError = ""
+				app.SettingsPasteInput = "sessionid=synth_demo_sid; ttwid=synth_demo_ttwid; UIFID=synth_demo_uifid"
+			},
+			RequiredLabels: []string{
+				"账号分组：抖音",
+				"设置内联粘贴区：douyin",
+				"Cookie获取步骤：douyin",
+				"设置Cookie输入框：douyin",
+				"Cookie预检提示：douyin",
+				"取消设置粘贴：douyin",
+				"验证并更新Cookie：douyin",
+			},
+			RequiredTexts: []string{
+				"如何复制完整 Cookie",
+				"s_v_web_id",
+				"验证并更新",
 			},
 		},
 		{
 			Name: "settings-download",
 			Setup: func() {
+				app.SettingsPasteSite = ""
+				app.SettingsPasteInput = ""
+				app.SettingsPasteError = ""
+				fixtureBackend.dyStatus.LoggedIn = true
+				fixtureBackend.dyStatus.State = "logged_in"
 				seedRecentAndLive()
 				app.SettingsCategory = "download"
 				app.Navigate(ui.RouteSettings)
@@ -3048,6 +3142,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 		{
 			Name: "settings",
 			Setup: func() {
+				app.ConflictDiff.Open = false
 				app.Navigate(ui.RouteSettings)
 				app.SettingsCategory = "storage"
 			},
@@ -3055,6 +3150,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 		{
 			Name: "settings-network",
 			Setup: func() {
+				app.ConflictDiff.Open = false
 				app.Navigate(ui.RouteSettings)
 				app.SettingsCategory = "network"
 			},
@@ -3063,6 +3159,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 		{
 			Name: "settings-logs",
 			Setup: func() {
+				app.ConflictDiff.Open = false
 				app.Navigate(ui.RouteSettings)
 				app.SettingsCategory = "logs"
 			},
@@ -3070,6 +3167,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 		{
 			Name: "login",
 			Setup: func() {
+				app.ConflictDiff.Open = false
 				app.LoginSite = "bilibili"
 				app.Navigate(ui.RouteLogin)
 				app.SavedRoute = ui.RouteVideo
@@ -3081,6 +3179,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 		{
 			Name: "login-douyin",
 			Setup: func() {
+				app.ConflictDiff.Open = false
 				app.LoginSite = "douyin"
 				app.DouyinCookieInput = ""
 				app.Navigate(ui.RouteLogin)
@@ -3091,8 +3190,32 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"登录站点：微博",
 				"登录站点：X",
 				"抖音已登录摘要",
+				"Cookie获取步骤：douyin",
 				"抖音Cookie输入框",
 				"验证并登录抖音",
+			},
+			ForbiddenLabels: []string{"刷新登录二维码"},
+		},
+		{
+			Name: "login-douyin-precheck",
+			Setup: func() {
+				app.ConflictDiff.Open = false
+				app.LoginSite = "douyin"
+				app.LoginError = ""
+				app.SavedRoute = ""
+				app.Navigate(ui.RouteLogin)
+				app.DouyinCookieInput = "sessionid=synth_demo_sid; ttwid=synth_demo_ttwid; UIFID=synth_demo_uifid"
+			},
+			RequiredLabels: []string{
+				"登录站点：抖音",
+				"Cookie获取步骤：douyin",
+				"抖音Cookie输入框",
+				"Cookie预检提示：douyin",
+				"验证并登录抖音",
+			},
+			RequiredTexts: []string{
+				"如何复制完整 Cookie",
+				"s_v_web_id",
 			},
 			ForbiddenLabels: []string{"刷新登录二维码"},
 		},
@@ -3100,6 +3223,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			Name: "login-weibo",
 			Setup: func() {
 				app.LoginSite = "weibo"
+				app.DouyinCookieInput = ""
 				app.WeiboCookieInput = ""
 				app.Navigate(ui.RouteLogin)
 			},

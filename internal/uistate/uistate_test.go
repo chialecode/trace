@@ -555,3 +555,70 @@ func TestUIStateSubSortOptionalAndPersistence(t *testing.T) {
 		t.Fatalf("unknown subSort normalized to %q, want %q", got, SubSortDefault)
 	}
 }
+
+func TestAuthVerifiedAtOptionalNormalizeCloneAndPersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ui-state.json")
+
+	// Existing v4 ui-state.json without authVerifiedAt loads cleanly without bumping schema version.
+	if err := os.WriteFile(path, []byte(`{"version":4,"lastRoute":"/home"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, recovered, _, err := Open(path)
+	if err != nil || recovered {
+		t.Fatalf("Open v4 without authVerifiedAt: recovered=%v err=%v", recovered, err)
+	}
+	if got := store.Get(); got.Version != 4 || got.AuthVerifiedAt != nil {
+		t.Fatalf("unexpected state without authVerifiedAt: %+v", got)
+	}
+
+	// Normalize keeps only supported sites with valid RFC3339 timestamps and drops unknown keys / arbitrary strings.
+	norm := Normalize(State{
+		Version: 4,
+		AuthVerifiedAt: map[string]string{
+			" Bilibili ": "2026-11-28T15:04:05+08:00",
+			"douyin":     "2026-11-28T06:00:00Z",
+			"weibo":      "not-a-timestamp-SENTINEL_SECRET_VALUE",
+			"x":          "2026-11-27T12:30:00Z",
+			"unknown":    "2026-11-28T06:00:00Z",
+		},
+	})
+	if len(norm.AuthVerifiedAt) != 3 {
+		t.Fatalf("expected 3 normalized authVerifiedAt entries, got %v", norm.AuthVerifiedAt)
+	}
+	if norm.AuthVerifiedAt["bilibili"] != "2026-11-28T07:04:05Z" {
+		t.Fatalf("expected UTC RFC3339 for bilibili, got %q", norm.AuthVerifiedAt["bilibili"])
+	}
+	if norm.AuthVerifiedAt["douyin"] != "2026-11-28T06:00:00Z" || norm.AuthVerifiedAt["x"] != "2026-11-27T12:30:00Z" {
+		t.Fatalf("unexpected normalized entries: %v", norm.AuthVerifiedAt)
+	}
+	if _, ok := norm.AuthVerifiedAt["weibo"]; ok {
+		t.Fatalf("invalid timestamp value should have been dropped: %v", norm.AuthVerifiedAt)
+	}
+	if _, ok := norm.AuthVerifiedAt["unknown"]; ok {
+		t.Fatalf("unsupported site key should have been dropped: %v", norm.AuthVerifiedAt)
+	}
+
+	// Mutate persists at schema v4 and Get/Update never alias committed map.
+	updated, err := store.Mutate(func(s *State) {
+		s.AuthVerifiedAt = map[string]string{
+			"douyin": "2026-11-28T06:15:00Z",
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated.AuthVerifiedAt["douyin"] = "mutated"
+	if got := store.Get().AuthVerifiedAt["douyin"]; got != "2026-11-28T06:15:00Z" {
+		t.Fatalf("caller mutation leaked into committed AuthVerifiedAt: %q", got)
+	}
+
+	reopened, _, _, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reopened.Get()
+	if got.Version != 4 || got.AuthVerifiedAt["douyin"] != "2026-11-28T06:15:00Z" {
+		t.Fatalf("AuthVerifiedAt did not survive reopen at v4: %+v", got)
+	}
+}
