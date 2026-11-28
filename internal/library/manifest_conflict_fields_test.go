@@ -23,6 +23,10 @@ func TestManifestConflictFieldsSanitizeMergeAndPortable(t *testing.T) {
 		RecheckedAt:          "2026-11-24T12:00:00Z",
 		EditTs:               1763850000,
 		EditCount:            2,
+		RemotePartCount:      3,
+		Parts: []VideoPartRecord{
+			{Page: 1, CID: 1001, File: "P01.mp4", SubtitleState: "saved", SubtitleIncludesAI: true},
+		},
 		AssetIDs: []string{
 			"v0200fg10000abcdefghij",
 			"1034:5000000000000020",
@@ -35,8 +39,9 @@ func TestManifestConflictFieldsSanitizeMergeAndPortable(t *testing.T) {
 		},
 		ArchivedOf: "douyin:note:7300000000000000001",
 		DouyinVideo: &DouyinVideoInfo{
-			MediaID: "v0200fg10000abcdefghij",
-			File:    "video.mp4",
+			MediaID:       "v0200fg10000abcdefghij",
+			OriginalState: "unavailable",
+			File:          "video.mp4",
 		},
 		NotePages: []NotePageRecord{
 			{
@@ -46,8 +51,9 @@ func TestManifestConflictFieldsSanitizeMergeAndPortable(t *testing.T) {
 				Image:   "images/01.jpg",
 				Motion:  "images/01_live.mp4",
 				VideoInfo: &DouyinVideoInfo{
-					MediaID: "https://weibocdn.com/signed.mp4?ssig=abc",
-					File:    "images/01_live.mp4",
+					MediaID:       "https://weibocdn.com/signed.mp4?ssig=abc",
+					OriginalState: "https://evil.example/invalid?sig=1",
+					File:          "images/01_live.mp4",
 				},
 			},
 			{
@@ -72,14 +78,23 @@ func TestManifestConflictFieldsSanitizeMergeAndPortable(t *testing.T) {
 	if meta.ArchivedOf != "douyin:dynamic:7300000000000000001" || !meta.IsArchivedSnapshot() {
 		t.Fatalf("ArchivedOf = %q, want canonical douyin:dynamic:7300000000000000001", meta.ArchivedOf)
 	}
-	if meta.DouyinVideo.MediaID != "v0200fg10000abcdefghij" {
-		t.Fatalf("DouyinVideo.MediaID = %q, want clean ID", meta.DouyinVideo.MediaID)
+	if meta.DouyinVideo.MediaID != "v0200fg10000abcdefghij" || meta.DouyinVideo.OriginalState != "unavailable" {
+		t.Fatalf("DouyinVideo = %+v, want clean ID and OriginalState=unavailable", meta.DouyinVideo)
 	}
 	if meta.NotePages[0].MediaID != "005Xabc1gy1clean001" {
 		t.Fatalf("NotePages[0].MediaID = %q, want clean ID", meta.NotePages[0].MediaID)
 	}
-	if meta.NotePages[0].VideoInfo.MediaID != "" {
-		t.Fatalf("NotePages[0].VideoInfo.MediaID = %q, want scrubbed empty", meta.NotePages[0].VideoInfo.MediaID)
+	if meta.NotePages[0].VideoInfo.MediaID != "" || meta.NotePages[0].VideoInfo.OriginalState != "" {
+		t.Fatalf("NotePages[0].VideoInfo = %+v, want MediaID and invalid OriginalState scrubbed empty", meta.NotePages[0].VideoInfo)
+	}
+	if meta.RemotePartCount != 3 || !meta.Parts[0].SubtitleIncludesAI {
+		t.Fatalf("expected RemotePartCount=3 and SubtitleIncludesAI=true, got %d / %v", meta.RemotePartCount, meta.Parts[0].SubtitleIncludesAI)
+	}
+	negCheck := meta
+	negCheck.RemotePartCount = -5
+	SanitizeItemMetadata(&negCheck)
+	if negCheck.RemotePartCount != 0 {
+		t.Fatalf("negative RemotePartCount not clamped to 0: %d", negCheck.RemotePartCount)
 	}
 	if meta.NotePages[1].MediaID != "" {
 		t.Fatalf("NotePages[1].MediaID = %q, want scrubbed empty", meta.NotePages[1].MediaID)
@@ -112,6 +127,9 @@ func TestManifestConflictFieldsSanitizeMergeAndPortable(t *testing.T) {
 		Site:    "douyin",
 		Kind:    "dynamic",
 		Status:  "complete",
+		Parts: []VideoPartRecord{
+			{Page: 1, CID: 1001, File: "P01.mp4", SubtitleState: "saved"},
+		},
 		DouyinVideo: &DouyinVideoInfo{
 			File: "video.mp4",
 		},
@@ -126,16 +144,21 @@ func TestManifestConflictFieldsSanitizeMergeAndPortable(t *testing.T) {
 		},
 	}
 	meta.NotePages[0].VideoInfo.MediaID = "live_clip_01"
+	meta.NotePages[0].VideoInfo.OriginalState = "unavailable"
 	merged, _ := MergeItemMetadata(bare, meta, MergeKeepLocal, nil)
 	if merged.CacheStandardVersion != CurrentCacheStandardVersion ||
 		merged.RecheckedAt != "2026-11-24T12:00:00Z" ||
 		merged.EditTs != 1763850000 ||
 		merged.EditCount != 2 ||
+		merged.RemotePartCount != 3 ||
+		len(merged.Parts) != 1 || !merged.Parts[0].SubtitleIncludesAI ||
 		merged.ArchivedOf != "douyin:dynamic:7300000000000000001" ||
 		!reflect.DeepEqual(merged.AssetIDs, wantAssets) ||
 		merged.DouyinVideo.MediaID != "v0200fg10000abcdefghij" ||
+		merged.DouyinVideo.OriginalState != "unavailable" ||
 		merged.NotePages[0].MediaID != "005Xabc1gy1clean001" ||
-		merged.NotePages[0].VideoInfo.MediaID != "live_clip_01" {
+		merged.NotePages[0].VideoInfo.MediaID != "live_clip_01" ||
+		merged.NotePages[0].VideoInfo.OriginalState != "unavailable" {
 		t.Fatalf("MergeItemMetadata did not supplement conflict/manifest fields: %+v", merged)
 	}
 
@@ -151,11 +174,15 @@ func TestManifestConflictFieldsSanitizeMergeAndPortable(t *testing.T) {
 		reparsed.RecheckedAt != "2026-11-24T12:00:00Z" ||
 		reparsed.EditTs != 1763850000 ||
 		reparsed.EditCount != 2 ||
+		reparsed.RemotePartCount != 3 ||
+		len(reparsed.Parts) != 1 || !reparsed.Parts[0].SubtitleIncludesAI ||
 		reparsed.ArchivedOf != "douyin:dynamic:7300000000000000001" ||
 		!reflect.DeepEqual(reparsed.AssetIDs, wantAssets) ||
 		reparsed.DouyinVideo.MediaID != "v0200fg10000abcdefghij" ||
+		reparsed.DouyinVideo.OriginalState != "unavailable" ||
 		reparsed.NotePages[0].MediaID != "005Xabc1gy1clean001" ||
-		reparsed.NotePages[0].VideoInfo.MediaID != "live_clip_01" {
+		reparsed.NotePages[0].VideoInfo.MediaID != "live_clip_01" ||
+		reparsed.NotePages[0].VideoInfo.OriginalState != "unavailable" {
 		t.Fatalf("PortableManifest round-trip lost fields: %+v", reparsed)
 	}
 }

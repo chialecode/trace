@@ -295,8 +295,15 @@ func stampCacheStandardAndAssets(meta *library.ItemMetadata, editTs int64, editC
 			meta.AssetIDs = cleaned
 		}
 	}
-	if meta.Status == "complete" && len(meta.Missing) == 0 && meta.CacheStandardVersion < library.CurrentCacheStandardVersion {
-		meta.CacheStandardVersion = library.CurrentCacheStandardVersion
+	targetStd := library.SiteCacheStandardVersion(meta.Site, meta.Kind)
+	// Weibo v4 and Bilibili video v3 have conditional stamping rules (handled by
+	// weibo_plan.go after /oslarge/ deferral checks and video.go after saveVideoExtras).
+	if strings.EqualFold(meta.Site, "weibo") ||
+		(strings.EqualFold(meta.Site, "bilibili") && strings.EqualFold(meta.Kind, "video")) {
+		targetStd = library.CurrentCacheStandardVersion
+	}
+	if meta.Status == "complete" && len(meta.Missing) == 0 && meta.CacheStandardVersion < targetStd {
+		meta.CacheStandardVersion = targetStd
 	}
 }
 
@@ -564,8 +571,12 @@ func (m *Manager) commitStagedItemSwap(
 		placedV2 = append(placedV2, vs.liveFull)
 	}
 
-	if v2Meta.Status == "complete" && len(v2Meta.Missing) == 0 && v2Meta.CacheStandardVersion < library.CurrentCacheStandardVersion {
-		v2Meta.CacheStandardVersion = library.CurrentCacheStandardVersion
+	swapTargetStd := library.SiteCacheStandardVersion(v2Meta.Site, v2Meta.Kind)
+	if strings.EqualFold(v2Meta.Site, "weibo") {
+		swapTargetStd = library.CurrentCacheStandardVersion
+	}
+	if v2Meta.Status == "complete" && len(v2Meta.Missing) == 0 && v2Meta.CacheStandardVersion < swapTargetStd {
+		v2Meta.CacheStandardVersion = swapTargetStd
 	}
 	if hook := testSwapHook; hook != nil {
 		if hErr := hook("save_manifest", itemDir, filepath.Join(itemDir, "item.json")); hErr != nil {
@@ -1078,25 +1089,26 @@ func (m *Manager) executeBilibiliVideoConflictReplace(
 		t.Status = "partial"
 	}
 	v2Meta := library.ItemMetadata{
-		Version:       1,
-		ID:            "video:" + detail.BVID,
-		Site:          "bilibili",
-		Kind:          "video",
-		Status:        status,
-		Title:         detail.Title,
-		Desc:          detail.Desc,
-		URL:           detail.CanonicalURL,
-		PubTs:         detail.PubTs,
-		CachedAt:      localMeta.CachedAt,
-		Duration:      detail.Duration,
-		Author:        library.ItemAuthor{Mid: detail.Author.Mid, Name: detail.Author.Name, Face: detail.Author.Face},
-		Media:         v2Media,
-		Parts:         v2Parts,
-		ExpectedPages: expectedPages,
-		Missing:       v2Missing,
-		DirectCached:  localMeta.DirectCached || !t.LinkedVideo,
-		Via:           localMeta.Via,
-		AssetIDs:      bilibiliVideoAssetIDsFromParts(v2Parts),
+		Version:         1,
+		ID:              "video:" + detail.BVID,
+		Site:            "bilibili",
+		Kind:            "video",
+		Status:          status,
+		Title:           detail.Title,
+		Desc:            detail.Desc,
+		URL:             detail.CanonicalURL,
+		PubTs:           detail.PubTs,
+		CachedAt:        localMeta.CachedAt,
+		Duration:        detail.Duration,
+		Author:          library.ItemAuthor{Mid: detail.Author.Mid, Name: detail.Author.Name, Face: detail.Author.Face},
+		Media:           v2Media,
+		Parts:           v2Parts,
+		ExpectedPages:   expectedPages,
+		RemotePartCount: len(detail.Pages),
+		Missing:         v2Missing,
+		DirectCached:    localMeta.DirectCached || !t.LinkedVideo,
+		Via:             localMeta.Via,
+		AssetIDs:        bilibiliVideoAssetIDsFromParts(v2Parts),
 	}
 	for _, p := range v2Parts {
 		if bilibili.QualityRank(p.Available.BestVideo) > bilibili.QualityRank(p.Video.Quality) ||
@@ -1490,6 +1502,15 @@ func (m *Manager) stageSingleBilibiliPart(
 	}
 	if !cfg.SaveSubtitles {
 		part.SubtitleState = "skipped"
+		if len(part.Chapters) == 0 {
+			extras, cErr := m.client.MissingSubtitlesAndChapters(ctx, bvid, page.CID, false, nil, false)
+			if cErr != nil && (isStopError(cErr) || ctx.Err() != nil) {
+				return library.VideoPartRecord{}, nil, cErr
+			}
+			if len(extras.Chapters) > 0 {
+				part.Chapters = convertVideoChapters(extras.Chapters)
+			}
+		}
 	} else {
 		var savedLangs []string
 		if reuseMonotonic {
@@ -1525,7 +1546,7 @@ func (m *Manager) stageSingleBilibiliPart(
 				}
 			}
 		}
-		extras, sErr := m.client.MissingSubtitlesAndChapters(ctx, bvid, page.CID, cfg.IncludeAI, savedLangs)
+		extras, sErr := m.client.MissingSubtitlesAndChapters(ctx, bvid, page.CID, cfg.IncludeAI, savedLangs, true)
 		if len(extras.Chapters) > 0 {
 			part.Chapters = convertVideoChapters(extras.Chapters)
 		}
@@ -1555,6 +1576,7 @@ func (m *Manager) stageSingleBilibiliPart(
 		}
 		if sErr == nil {
 			part.SubtitleState = "saved"
+			part.SubtitleIncludesAI = (reuseMonotonic && localPart.SubtitleIncludesAI) || cfg.IncludeAI
 		} else {
 			part.SubtitleState = "missing"
 		}
@@ -1763,7 +1785,9 @@ func planUpgradesSingleVideo(local library.ItemMetadata, plan WorkDownloadPlan) 
 		return true
 	}
 	dv := local.DouyinVideo
-	if plan.Site == site.Douyin && len(plan.OriginalURLs) > 0 && !strings.EqualFold(dv.Gear, douyinOriginalGear) {
+	if plan.Site == site.Douyin && len(plan.OriginalURLs) > 0 &&
+		!strings.EqualFold(dv.Gear, douyinOriginalGear) &&
+		!strings.EqualFold(dv.OriginalState, "unavailable") {
 		return true
 	}
 	localPixels := dv.Width * dv.Height
@@ -1773,6 +1797,26 @@ func planUpgradesSingleVideo(local library.ItemMetadata, plan WorkDownloadPlan) 
 	}
 	if dv.Bitrate > 0 && plan.Bitrate > dv.Bitrate && (localPixels == 0 || planPixels >= localPixels) {
 		return true
+	}
+	return false
+}
+
+func notePageVideoNeedsUpgrade(local *library.DouyinVideoInfo, remote PlannedNotePage) bool {
+	if local == nil {
+		return false
+	}
+	localPixels := local.Width * local.Height
+	remotePixels := remote.Width * remote.Height
+	if localPixels > 0 && remotePixels > localPixels {
+		return true
+	}
+	if localPixels == 0 || remotePixels >= localPixels {
+		if local.Bitrate > 0 && remote.Bitrate > local.Bitrate {
+			return true
+		}
+		if local.FPS > 0 && remote.FPS > local.FPS {
+			return true
+		}
 	}
 	return false
 }
@@ -1907,11 +1951,12 @@ func classifyWorkPlanVsLocal(local library.ItemMetadata, plan WorkDownloadPlan, 
 
 	planIsSingleVideo := len(plan.Pages) == 0 && (len(plan.VideoURLs) > 0 || len(plan.OriginalURLs) > 0)
 	localIsSingleVideo := len(local.NotePages) == 0 && ((local.DouyinVideo != nil && local.DouyinVideo.File != "") || local.Kind == "video")
+	isXArticleUpgrade := isSafeXArticleUpgrade(local, plan)
 
 	if local.Kind != "" && plan.Kind != "" && local.Kind != plan.Kind {
 		reasonKind = ConflictReasonMedia
 		diffDesc = fmt.Sprintf("作品类型变更（%s -> %s）", local.Kind, plan.Kind)
-	} else if localIsSingleVideo != planIsSingleVideo && (localHasValidMedia(local) || planHasAnyMediaURLs(plan)) {
+	} else if !isXArticleUpgrade && localIsSingleVideo != planIsSingleVideo && (localHasValidMedia(local) || planHasAnyMediaURLs(plan)) && !isSafeXThreadAppend(local, plan) {
 		reasonKind = ConflictReasonMedia
 		diffDesc = "媒体形态变更（视频与图文互换）"
 	} else if planIsSingleVideo {
@@ -1933,9 +1978,9 @@ func classifyWorkPlanVsLocal(local library.ItemMetadata, plan WorkDownloadPlan, 
 			reasonKind = ConflictReasonMedia
 			diffDesc = fmt.Sprintf("视频时长变更（%ds -> %ds）", local.Duration, plan.DurationSec)
 		}
-	} else if len(local.NotePages) > 0 || len(plan.Pages) > 0 {
+	} else if !isXArticleUpgrade && (len(local.NotePages) > 0 || len(plan.Pages) > 0) {
 		if len(local.NotePages) != len(plan.Pages) {
-			// Check X self-thread pure append: if root + existing pages match and extra pages belong to newly appended thread replies, allow safe enrichment!
+			// Check X self-thread pure append/ancestor prepend: if root + existing pages match and extra pages belong to thread replies/ancestors, allow safe enrichment!
 			if !isSafeXThreadAppend(local, plan) {
 				reasonKind = ConflictReasonMedia
 				diffDesc = fmt.Sprintf("媒体数量变更（%d 项 -> %d 项）", len(local.NotePages), len(plan.Pages))
@@ -1979,31 +2024,25 @@ func classifyWorkPlanVsLocal(local library.ItemMetadata, plan WorkDownloadPlan, 
 		}
 	}
 
-	// Check X Thread edits/deletions vs pure append.
+	// Check X Thread edits/deletions vs pure append or ThreadAncestors prepend (DEC-096).
 	if reasonKind == "" && plan.Site == site.X && len(local.Thread) > 0 && len(plan.Thread) > 0 {
 		if len(plan.Thread) < len(local.Thread) {
 			reasonKind = ConflictReasonText
 			diffDesc = "作者自回复串帖已删减"
-		} else {
-			for i := range local.Thread {
-				if local.Thread[i].ID != "" && plan.Thread[i].ID != "" && local.Thread[i].ID != plan.Thread[i].ID {
-					reasonKind = ConflictReasonText
-					diffDesc = "作者自回复串帖结构已变更"
-					break
-				}
-				if normalizeCompareText(local.Thread[i].Text) != normalizeCompareText(plan.Thread[i].Text) {
-					reasonKind = ConflictReasonText
-					diffDesc = "作者自回复串帖正文已编辑"
-					break
-				}
+		} else if _, textErr, ok := findXThreadSubsequenceStart(local.Thread, plan.Thread); !ok {
+			reasonKind = ConflictReasonText
+			if textErr {
+				diffDesc = "作者自回复串帖正文已编辑"
+			} else {
+				diffDesc = "作者自回复串帖结构已变更"
 			}
 		}
 	}
 
-	// Substantive text edit check (respecting Weibo LongText expansion & monotonic truncation guard).
+	// Substantive text edit check (respecting Weibo LongText expansion, X Article upgrade & monotonic truncation guard).
 	// Basic site.DownloadPlan callers leave Desc empty and only supply a display Title; compare body text
 	// only when plan.Desc is present or remote edit metadata advanced.
-	if reasonKind == "" {
+	if reasonKind == "" && !isXArticleUpgrade {
 		editAdvanced := (plan.EditCount > 0 && plan.EditCount > local.EditCount) ||
 			(plan.EditTs > 0 && local.EditTs > 0 && plan.EditTs > local.EditTs)
 		if strings.TrimSpace(plan.Desc) != "" || editAdvanced {
@@ -2057,19 +2096,183 @@ func classifyWorkPlanVsLocal(local library.ItemMetadata, plan WorkDownloadPlan, 
 	}, true, nil
 }
 
-func isSafeXThreadAppend(local library.ItemMetadata, plan WorkDownloadPlan) bool {
-	if plan.Site != site.X || len(plan.Pages) <= len(local.NotePages) || len(plan.Thread) <= len(local.Thread) {
+// isSafeXArticleUpgrade reports whether plan non-destructively upgrades an older
+// X article post cached only as a degraded CardKindArticle / URL stub into a
+// full offline ItemArticle (DEC-093 / DEC-096).
+func isSafeXArticleUpgrade(local library.ItemMetadata, plan WorkDownloadPlan) bool {
+	if plan.Site != site.X || local.Article != nil || plan.Article == nil {
 		return false
 	}
-	for i := range local.Thread {
-		if local.Thread[i].ID != plan.Thread[i].ID ||
-			normalizeCompareText(local.Thread[i].Text) != normalizeCompareText(plan.Thread[i].Text) {
+	if local.Card != nil && strings.EqualFold(strings.TrimSpace(local.Card.Kind), "article") {
+		return true
+	}
+	return isDegradedXArticleStubText(extractLocalRootText(local))
+}
+
+func isDegradedXArticleStubText(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return true
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return true
+	}
+	for _, f := range fields {
+		lower := strings.ToLower(f)
+		if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
 			return false
 		}
 	}
+	return true
+}
+
+// findXThreadSubsequenceStart finds the contiguous slice in planThread that
+// matches localThread (supporting both trailing self-replies and prepended
+// ThreadAncestors, DEC-096).
+func findXThreadSubsequenceStart(localThread []library.ItemThreadPart, planThread []PlannedThreadPart) (startIdx int, textMismatch bool, ok bool) {
+	if len(localThread) == 0 || len(planThread) < len(localThread) {
+		return -1, false, false
+	}
+	firstID := strings.TrimSpace(localThread[0].ID)
+	maxStart := len(planThread) - len(localThread)
+	tryAt := func(offset int) (bool, bool) {
+		for i := range localThread {
+			lID := strings.TrimSpace(localThread[i].ID)
+			pID := strings.TrimSpace(planThread[offset+i].ID)
+			if lID != "" && pID != "" && lID != pID {
+				return false, false
+			}
+			lt := normalizeCompareText(localThread[i].Text)
+			pt := normalizeCompareText(planThread[offset+i].Text)
+			if lt != "" && pt != "" && lt != pt && !looksLikeTruncatedPrefix(lt, pt) && !looksLikeTruncatedPrefix(pt, lt) {
+				return false, true
+			}
+		}
+		return true, false
+	}
+	if firstID != "" {
+		for offset := 0; offset <= maxStart; offset++ {
+			if strings.TrimSpace(planThread[offset].ID) == firstID {
+				matched, txtErr := tryAt(offset)
+				return offset, txtErr, matched
+			}
+		}
+		return -1, false, false
+	}
+	matched, txtErr := tryAt(0)
+	if matched {
+		return 0, false, true
+	}
+	return -1, txtErr, false
+}
+
+func isSafeXThreadAppend(local library.ItemMetadata, plan WorkDownloadPlan) bool {
+	if plan.Site != site.X || len(plan.Thread) <= len(local.Thread) {
+		return false
+	}
+	startIdx := 0
+	if len(local.Thread) > 0 {
+		idx, _, ok := findXThreadSubsequenceStart(local.Thread, plan.Thread)
+		if !ok {
+			return false
+		}
+		startIdx = idx
+	}
+
+	// Case 1: Single-video focal tweet expanding into a multi-page self-reply thread (DEC-096).
+	localIsSingleVideo := len(local.NotePages) == 0 && local.DouyinVideo != nil && local.DouyinVideo.File != ""
+	if localIsSingleVideo {
+		if len(plan.Pages) < 2 {
+			return false
+		}
+		lMediaID := library.SanitizeMediaToken(local.DouyinVideo.MediaID)
+		if lMediaID == "" && len(local.AssetIDs) > 0 {
+			lMediaID = library.SanitizeMediaToken(local.AssetIDs[0])
+		}
+		var candIndexes []int
+		if len(local.Thread) > 0 {
+			for i := 0; i < len(local.Thread); i++ {
+				candIndexes = append(candIndexes, plan.Thread[startIdx+i].MediaIndexes...)
+			}
+		} else {
+			for _, seg := range plan.Thread {
+				if strings.TrimSpace(seg.ID) != "" && strings.TrimSpace(seg.ID) == strings.TrimSpace(local.RawID) {
+					candIndexes = append(candIndexes, seg.MediaIndexes...)
+					break
+				}
+			}
+		}
+		if len(candIndexes) == 0 {
+			for i := range plan.Pages {
+				candIndexes = append(candIndexes, i+1)
+			}
+		}
+		for _, oneBased := range candIndexes {
+			if oneBased < 1 || oneBased > len(plan.Pages) {
+				continue
+			}
+			pp := plan.Pages[oneBased-1]
+			pKind := normalizeComparablePageKind(site.X, pp.Kind, strings.EqualFold(pp.Kind, "gif") || strings.EqualFold(pp.Kind, "animated_gif"))
+			if pKind != "video" && pKind != "video_gif" {
+				continue
+			}
+			pID := library.SanitizeMediaToken(pp.MediaID)
+			if lMediaID != "" && pID != "" {
+				if lMediaID == pID {
+					return true
+				}
+				continue
+			}
+			if !durationChangedSubstantively(local.Duration, pp.DurationSec) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if len(plan.Pages) <= len(local.NotePages) {
+		return false
+	}
+
+	// Case 2: Multi-page or text-only focal tweet gaining thread replies and/or prepended ThreadAncestors.
+	// Align local.NotePages to plan.Pages via MediaIndexes when ThreadAncestors shifted indices.
+	var alignedPlanPages []PlannedNotePage
+	if len(local.NotePages) > 0 {
+		var mappedIdx []int
+		if len(local.Thread) > 0 {
+			for i := 0; i < len(local.Thread); i++ {
+				mappedIdx = append(mappedIdx, plan.Thread[startIdx+i].MediaIndexes...)
+			}
+		} else if rawID := strings.TrimSpace(local.RawID); rawID != "" {
+			for _, seg := range plan.Thread {
+				if strings.TrimSpace(seg.ID) == rawID {
+					mappedIdx = append(mappedIdx, seg.MediaIndexes...)
+					break
+				}
+			}
+		}
+		if len(mappedIdx) == len(local.NotePages) {
+			valid := true
+			for _, oneBased := range mappedIdx {
+				if oneBased < 1 || oneBased > len(plan.Pages) {
+					valid = false
+					break
+				}
+				alignedPlanPages = append(alignedPlanPages, plan.Pages[oneBased-1])
+			}
+			if !valid {
+				alignedPlanPages = nil
+			}
+		}
+		if len(alignedPlanPages) != len(local.NotePages) {
+			alignedPlanPages = plan.Pages[:len(local.NotePages)]
+		}
+	}
+
 	for i := range local.NotePages {
 		lp := local.NotePages[i]
-		pp := plan.Pages[i]
+		pp := alignedPlanPages[i]
 		lID := library.SanitizeMediaToken(lp.MediaID)
 		pID := library.SanitizeMediaToken(pp.MediaID)
 		if lID != "" && pID != "" && lID != pID {
@@ -2077,7 +2280,7 @@ func isSafeXThreadAppend(local library.ItemMetadata, plan WorkDownloadPlan) bool
 		}
 		lKind := normalizeComparablePageKind(site.X, lp.Kind, lp.GIF)
 		pKind := normalizeComparablePageKind(site.X, pp.Kind, strings.EqualFold(pp.Kind, "gif") || strings.EqualFold(pp.Kind, "animated_gif"))
-		if lKind != pKind {
+		if lKind != pKind && !(lKind == "image" && pKind == "motion" && (lID == "" || pID == "" || lID == pID)) && lKind != "unknown" {
 			return false
 		}
 	}

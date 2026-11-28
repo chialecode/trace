@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -768,7 +769,15 @@ func TestBilibiliVideosThreeGateCooldownAndConflictResolution(t *testing.T) {
 				},
 			})
 		case "/x/player/wbi/v2":
-			_, _ = fmt.Fprint(w, `{"code":0,"data":{"subtitle":{"subtitles":[]}}}`)
+			cidVal, _ := strconv.ParseInt(r.URL.Query().Get("cid"), 10, 64)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"bvid":     r.URL.Query().Get("bvid"),
+					"cid":      cidVal,
+					"subtitle": map[string]any{"subtitles": []any{}},
+				},
+			})
 		default:
 			http.NotFound(w, r)
 		}
@@ -813,10 +822,15 @@ func TestBilibiliVideosThreeGateCooldownAndConflictResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	seedBiliVideo := func(bvid, title string, cid int64, qn, stdVer int, recheckedAt string) string {
+	seedBiliVideo := func(bvid, title string, cid int64, qn, stdVer int, recheckedAt string, probed bool) string {
 		dir := filepath.Join(b.lib.CacheDir(), "bilibili", "1001", "videos", bvid)
 		v1Bytes := []byte("BILI_V1_FILE_" + bvid)
 		mf := writeVerifiedLocalFile(t, dir, "P01.mp4", v1Bytes, "video", 1920, 1080, 2)
+		avail := library.PartAvailableInfo{BestAudio: 30280}
+		if probed {
+			avail.BestVideo = qn
+			avail.ProbedAt = nowStart.Add(-10 * 24 * time.Hour).Format(time.RFC3339)
+		}
 		meta := library.ItemMetadata{
 			Version:              1,
 			ID:                   "video:" + bvid,
@@ -841,7 +855,7 @@ func TestBilibiliVideosThreeGateCooldownAndConflictResolution(t *testing.T) {
 				SubtitleState: "none",
 				Video:         library.PartVideoInfo{Quality: qn, QualityName: bilibili.QualityName(qn)},
 				Audio:         library.PartAudioInfo{Quality: 30280, Name: "192K 高音质"},
-				Available:     library.PartAvailableInfo{BestVideo: qn, BestAudio: 30280, ProbedAt: nowStart.Add(-10 * 24 * time.Hour).Format(time.RFC3339)},
+				Available:     avail,
 			}},
 		}
 		if _, sErr := b.lib.SaveItem(dir, meta); sErr != nil {
@@ -850,14 +864,14 @@ func TestBilibiliVideosThreeGateCooldownAndConflictResolution(t *testing.T) {
 		return filepath.Join(dir, "P01.mp4")
 	}
 
-	// 1) Gate B: at CurrentCacheStandardVersion + 4K ceiling (qn=120) -> 0 calls!
-	seedBiliVideo("BV1gateB00001", "GateB上限跳过", 1001, 120, library.CurrentCacheStandardVersion, "")
+	// 1) Gate B: at BilibiliVideoStandardVersion + 4K ceiling (qn=120) -> 0 calls!
+	seedBiliVideo("BV1gateB00001", "GateB上限跳过", 1001, 120, library.BilibiliVideoStandardVersion, "", true)
 	// 2) Gate C: old standard v1, but RecheckedAt 2 days ago (< 7d) -> 0 calls!
-	seedBiliVideo("BV1gateC00002", "GateC冷却跳过", 2001, 80, 1, nowStart.Add(-2*24*time.Hour).Format(time.RFC3339))
-	// 3) Expired Gate C (10 days ago): probes VideoDetail + PlayURL (paced!) and stamps RecheckedAt & CurrentCacheStandardVersion!
-	seedBiliVideo("BV1probe00003", "过冷却探测盖戳", 3001, 80, 1, nowStart.Add(-10*24*time.Hour).Format(time.RFC3339))
+	seedBiliVideo("BV1gateC00002", "GateC冷却跳过", 2001, 80, 1, nowStart.Add(-2*24*time.Hour).Format(time.RFC3339), true)
+	// 3) Expired Gate C (10 days ago, unprobed Available): probes VideoDetail + PlayURL + chapters supplement (paced!) and stamps RecheckedAt & BilibiliVideoStandardVersion!
+	seedBiliVideo("BV1probe00003", "过冷却探测盖戳", 3001, 80, 1, nowStart.Add(-10*24*time.Hour).Format(time.RFC3339), false)
 	// 4) Gate A (list Title changed) + CID replaced (4001 -> 99004): probes VideoDetail and records part_changed conflict!
-	v4File := seedBiliVideo("BV1confl00004", "旧标题V1", 4001, 80, library.CurrentCacheStandardVersion, nowStart.Add(-1*time.Hour).Format(time.RFC3339))
+	v4File := seedBiliVideo("BV1confl00004", "旧标题V1", 4001, 80, library.BilibiliVideoStandardVersion, nowStart.Add(-1*time.Hour).Format(time.RFC3339), true)
 
 	b.queue.Start(ctx)
 	qTask, err := b.EnqueueCacheQueue(ctx, CacheQueueRequest{
@@ -886,9 +900,9 @@ func TestBilibiliVideosThreeGateCooldownAndConflictResolution(t *testing.T) {
 		t.Fatalf("expected viewCalls=2 playURLCalls=1 (Gate B & Gate C skipped #1 & #2), got view=%d playurl=%d", viewCalls.Load(), playURLCalls.Load())
 	}
 
-	// Item #3 was stamped with RecheckedAt and CurrentCacheStandardVersion.
+	// Item #3 was stamped with RecheckedAt and BilibiliVideoStandardVersion.
 	probedMeta, _, err := b.GetLibraryItem("bilibili:video:BV1probe00003")
-	if err != nil || probedMeta.CacheStandardVersion != library.CurrentCacheStandardVersion || probedMeta.RecheckedAt == "" {
+	if err != nil || probedMeta.CacheStandardVersion != library.BilibiliVideoStandardVersion || probedMeta.RecheckedAt == "" {
 		t.Fatalf("item #3 was not stamped after clean probe: %+v (err=%v)", probedMeta, err)
 	}
 

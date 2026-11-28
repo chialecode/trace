@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -907,6 +908,15 @@ func summarizeLocalItem(meta library.ItemMetadata) string {
 
 // 1. Douyin works 0-call list inspection.
 func (b *Backend) inspectDouyinCachedWork(detail douyin.WorkDetail, meta library.ItemMetadata, queueOrigin, forUID, forName string) cachedInspectDecision {
+	dec := b.inspectDouyinCachedWorkDeferred(detail, meta, queueOrigin, forUID, forName)
+	if dec.postInspect != nil {
+		dec.postInspect()
+		dec.postInspect = nil
+	}
+	return dec
+}
+
+func (b *Backend) inspectDouyinCachedWorkDeferred(detail douyin.WorkDetail, meta library.ItemMetadata, queueOrigin, forUID, forName string) cachedInspectDecision {
 	if meta.IsArchivedSnapshot() {
 		return cachedInspectDecision{action: inspectSkipNoOp}
 	}
@@ -975,6 +985,26 @@ func (b *Backend) inspectDouyinCachedWork(detail douyin.WorkDetail, meta library
 		}
 	}
 
+	var postInspectActions []func()
+	appendPostInspect := func(fn func()) {
+		if fn != nil {
+			postInspectActions = append(postInspectActions, fn)
+		}
+	}
+	withPostInspect := func(dec cachedInspectDecision) cachedInspectDecision {
+		if len(postInspectActions) == 1 {
+			dec.postInspect = postInspectActions[0]
+		} else if len(postInspectActions) > 1 {
+			fns := postInspectActions
+			dec.postInspect = func() {
+				for _, fn := range fns {
+					fn()
+				}
+			}
+		}
+		return dec
+	}
+
 	if hasValidLocalCache(meta) {
 		if remoteKind != meta.Kind {
 			remoteLabel := "视频作品"
@@ -1020,50 +1050,69 @@ func (b *Backend) inspectDouyinCachedWork(detail douyin.WorkDetail, meta library
 			}
 		}
 		if b.conflicts != nil && b.conflicts.hasPendingTextConflictForItem(meta.ItemKey) {
-			b.reconcileLiveLegacyTextConflict(meta.ItemKey, extractSafeLinksFromDiffText(detail.Desc, "douyin"))
+			itemKeyCopy := meta.ItemKey
+			remoteLinks := extractSafeLinksFromDiffText(detail.Desc, "douyin")
+			appendPostInspect(func() {
+				b.reconcileLiveLegacyTextConflict(itemKeyCopy, remoteLinks)
+			})
 		}
 	}
 
 	// (c) Degraded / quality-downgraded remote -> keep V1 untouched.
 	if remoteKind == "video" {
 		if detail.Video == nil || len(detail.Video.URLs) == 0 {
-			return cachedInspectDecision{action: inspectSkipNoOp}
+			return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
 		}
 		if meta.DouyinVideo != nil {
 			localShort := shortEdgePixels(meta.DouyinVideo.Width, meta.DouyinVideo.Height)
 			remoteShort := shortEdgePixels(detail.Video.Width, detail.Video.Height)
 			if localShort > 0 && remoteShort > 0 && remoteShort < localShort && len(detail.OriginalURLs) == 0 {
-				return cachedInspectDecision{action: inspectSkipNoOp}
+				return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
 			}
 		}
 	} else {
 		for i := 0; i < len(meta.NotePages) && i < len(detail.Pages); i++ {
 			if meta.NotePages[i].Motion != "" && detail.Pages[i].Kind == douyin.NotePageImage {
-				return cachedInspectDecision{action: inspectSkipNoOp}
+				return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
 			}
 		}
 	}
 
 	// (b) Safe non-destructive upgrade / enrichment / completion.
 	if library.NeedsCompletion(meta) {
-		return cachedInspectDecision{action: inspectEnqueue}
+		if !allMissingAreDouyinPermanent(meta.Missing, detail) {
+			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+		}
+	}
+	var dlCfg settings.DownloadSettings
+	if b != nil && b.settings != nil {
+		dlCfg = b.settings.Get().Download
+	}
+	if dlCfg.SaveCover && len(detail.CoverURLs) > 0 && !hasMediaRole(meta.Media, "cover") {
+		return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 	}
 	if remoteKind == "video" && meta.DouyinVideo != nil {
 		opts := b.currentWorkPlanOptions()
 		prefCodec := resolveDouyinCodecFromOrder(opts.CodecOrder, b.preferredDouyinCodec())
 		isOriginal := strings.EqualFold(meta.DouyinVideo.Gear, "original") || strings.Contains(meta.DouyinVideo.QualityName, "原画")
-		if parseDouyinQualityCap(opts.VideoQuality) <= 0 && len(detail.OriginalURLs) > 0 && !isOriginal {
-			return cachedInspectDecision{action: inspectEnqueue}
+		origUnavailable := strings.EqualFold(meta.DouyinVideo.OriginalState, "unavailable")
+		if parseDouyinQualityCap(opts.VideoQuality) <= 0 && len(detail.OriginalURLs) > 0 && !isOriginal && !origUnavailable {
+			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 		}
 		if !isOriginal {
 			if sel, _ := selectDouyinVODStream(&detail, opts.VideoQuality, prefCodec); sel != nil {
 				localShort := shortEdgePixels(meta.DouyinVideo.Width, meta.DouyinVideo.Height)
 				selShort := shortEdgePixels(sel.Width, sel.Height)
 				if localShort > 0 && selShort > localShort {
-					return cachedInspectDecision{action: inspectEnqueue}
+					return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 				}
-				if localShort > 0 && selShort == localShort && meta.DouyinVideo.FPS > 0 && sel.FPS > meta.DouyinVideo.FPS {
-					return cachedInspectDecision{action: inspectEnqueue}
+				if localShort > 0 && selShort == localShort {
+					if meta.DouyinVideo.FPS > 0 && sel.FPS > meta.DouyinVideo.FPS {
+						return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+					}
+					if meta.DouyinVideo.Bitrate > 0 && sel.BitRate > meta.DouyinVideo.Bitrate {
+						return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+					}
 				}
 			}
 		}
@@ -1071,18 +1120,158 @@ func (b *Backend) inspectDouyinCachedWork(detail douyin.WorkDetail, meta library
 	if remoteKind == "dynamic" {
 		for i := 0; i < len(meta.NotePages) && i < len(detail.Pages); i++ {
 			if detail.Pages[i].Kind == douyin.NotePageLivePhoto && strings.TrimSpace(meta.NotePages[i].Motion) == "" {
-				return cachedInspectDecision{action: inspectEnqueue}
+				return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 			}
 			if meta.NotePages[i].UnknownKind != "" && !detail.Pages[i].UnknownKind {
-				return cachedInspectDecision{action: inspectEnqueue}
+				return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+			}
+			if detail.Pages[i].Kind == douyin.NotePageVideo && detail.Pages[i].VideoStream != nil && meta.NotePages[i].VideoInfo != nil {
+				vs := detail.Pages[i].VideoStream
+				vi := meta.NotePages[i].VideoInfo
+				localShort := shortEdgePixels(vi.Width, vi.Height)
+				remoteShort := shortEdgePixels(vs.Width, vs.Height)
+				if localShort > 0 && remoteShort > localShort {
+					return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+				}
+				if localShort > 0 && remoteShort == localShort {
+					if vi.FPS > 0 && vs.FPS > vi.FPS {
+						return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+					}
+					if vi.Bitrate > 0 && vs.BitRate > vi.Bitrate {
+						return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+					}
+				}
 			}
 		}
 		if detail.Music != nil && len(detail.Music.PlayURLs) > 0 && (meta.Music == nil || strings.TrimSpace(meta.Music.File) == "") {
-			return cachedInspectDecision{action: inspectEnqueue}
+			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 		}
 	}
 
-	return cachedInspectDecision{action: inspectSkipNoOp}
+	// Tier 0 lock-free metadata backfill: AssetIDs, MediaID, and DouyinCacheStandardVersion = 3.
+	needTier0 := false
+	if len(meta.AssetIDs) == 0 && len(remoteAssets) > 0 {
+		needTier0 = true
+	}
+	if remoteKind == "video" && meta.DouyinVideo != nil && meta.DouyinVideo.MediaID == "" && len(remoteAssets) > 0 {
+		needTier0 = true
+	}
+	if remoteKind == "dynamic" {
+		for i := 0; i < len(meta.NotePages) && i < len(detail.Pages); i++ {
+			if meta.NotePages[i].MediaID == "" && douyinPageMediaID(detail.Pages[i]) != "" {
+				needTier0 = true
+				break
+			}
+		}
+	}
+	if meta.Status == "complete" && len(meta.Missing) == 0 && meta.CacheStandardVersion < library.DouyinCacheStandardVersion {
+		needTier0 = true
+	}
+	if needTier0 && b != nil && b.lib != nil && strings.TrimSpace(meta.ItemKey) != "" {
+		itemKeyCopy := meta.ItemKey
+		assetsCopy := append([]string(nil), remoteAssets...)
+		pageMediaIDs := make([]string, len(detail.Pages))
+		for i, pg := range detail.Pages {
+			pageMediaIDs[i] = douyinPageMediaID(pg)
+		}
+		appendPostInspect(func() {
+			fresh, ok, gErr := b.lib.GetItem(itemKeyCopy)
+			if gErr != nil || !ok || strings.TrimSpace(fresh.ItemDir) == "" {
+				return
+			}
+			changed := false
+			if len(fresh.AssetIDs) == 0 && len(assetsCopy) > 0 {
+				fresh.AssetIDs = assetsCopy
+				changed = true
+			}
+			if remoteKind == "video" && fresh.DouyinVideo != nil && fresh.DouyinVideo.MediaID == "" && len(assetsCopy) > 0 {
+				fresh.DouyinVideo.MediaID = assetsCopy[0]
+				changed = true
+			}
+			if remoteKind == "dynamic" {
+				for i := 0; i < len(fresh.NotePages) && i < len(pageMediaIDs); i++ {
+					if fresh.NotePages[i].MediaID == "" && pageMediaIDs[i] != "" {
+						fresh.NotePages[i].MediaID = pageMediaIDs[i]
+						changed = true
+					}
+				}
+			}
+			if fresh.Status == "complete" && len(fresh.Missing) == 0 && fresh.CacheStandardVersion < library.DouyinCacheStandardVersion {
+				fresh.CacheStandardVersion = library.DouyinCacheStandardVersion
+				changed = true
+			}
+			if !changed {
+				return
+			}
+			if _, sErr := b.lib.SaveItemMetadataOnly(fresh.ItemDir, fresh); sErr == nil && b.events != nil {
+				b.events.PublishSite(EventLibraryChanged, string(site.Douyin), itemKeyCopy)
+			}
+		})
+	}
+
+	return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
+}
+
+func allMissingAreDouyinPermanent(missing []library.MissingRecord, detail douyin.WorkDetail) bool {
+	if len(missing) == 0 {
+		return false
+	}
+	for _, m := range missing {
+		itemLower := strings.ToLower(strings.TrimSpace(m.Item))
+		isMusic := itemLower == "music" || strings.HasPrefix(itemLower, "music.") ||
+			strings.Contains(m.Reason, "配乐") || strings.Contains(m.Reason, "版权")
+		if isMusic {
+			if detail.Music == nil || len(detail.Music.PlayURLs) == 0 {
+				continue
+			}
+			return false
+		}
+		isUnknown := (strings.HasPrefix(itemLower, "page_") && strings.HasSuffix(itemLower, ".unknown")) ||
+			strings.Contains(m.Reason, "未知") || strings.Contains(m.Reason, "暂不支持")
+		if isUnknown {
+			stillUnknown := true
+			if idx := parsePageMissingIndex(itemLower); idx >= 1 && idx <= len(detail.Pages) {
+				stillUnknown = detail.Pages[idx-1].UnknownKind
+			} else {
+				for _, pg := range detail.Pages {
+					if !pg.UnknownKind {
+						stillUnknown = false
+						break
+					}
+				}
+			}
+			if stillUnknown {
+				continue
+			}
+			return false
+		}
+		return false
+	}
+	return true
+}
+
+func parsePageMissingIndex(itemLower string) int {
+	if !strings.HasPrefix(itemLower, "page_") {
+		return 0
+	}
+	rest := strings.TrimPrefix(itemLower, "page_")
+	if dot := strings.IndexByte(rest, '.'); dot >= 0 {
+		rest = rest[:dot]
+	}
+	n, err := strconv.Atoi(rest)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+func hasMediaRole(media []library.MediaFile, role string) bool {
+	for _, m := range media {
+		if strings.EqualFold(strings.TrimSpace(m.Role), role) && strings.TrimSpace(m.Path) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // 2. Weibo posts 0-call list inspection.
@@ -1168,41 +1357,59 @@ func (b *Backend) inspectWeiboCachedPostDeferred(post weibo.Post, meta library.I
 		}
 	}
 
-	var postInspectFn func()
+	var postInspectActions []func()
+	appendPostInspect := func(fn func()) {
+		if fn != nil {
+			postInspectActions = append(postInspectActions, fn)
+		}
+	}
 	withPostInspect := func(dec cachedInspectDecision) cachedInspectDecision {
-		dec.postInspect = postInspectFn
+		if len(postInspectActions) == 1 {
+			dec.postInspect = postInspectActions[0]
+		} else if len(postInspectActions) > 1 {
+			fns := postInspectActions
+			dec.postInspect = func() {
+				for _, fn := range fns {
+					fn()
+				}
+			}
+		}
 		return dec
 	}
 
 	localSingleVid := meta.DouyinVideo != nil && len(meta.NotePages) == 0
 	localPages := len(meta.NotePages)
+	mediaAbbreviated := post.MediaIncomplete || post.OriginIncomplete || (post.Retweeted != nil && post.Retweeted.MediaIncomplete)
+	removeWM := b.weiboRemoveWatermarkEnabled()
 
 	if hasValidLocalCache(meta) {
-		if remoteSingleVid != localSingleVid {
-			return makeConflict(ConflictReasonMedia, fmt.Sprintf("源站媒体结构已变更（图片 %d 项，单视频 %v）", len(images), remoteSingleVid))
-		}
-		if len(images) != localPages {
-			return makeConflict(ConflictReasonMedia, fmt.Sprintf("源站媒体数量变更为 %d 项", len(images)))
-		}
-		if remoteSingleVid {
-			remoteOID := library.SanitizeMediaToken(singleVideo.ObjectID)
-			localOID := metaVideoMediaID(meta)
-			if localOID != "" && remoteOID != "" && localOID != remoteOID {
-				return makeConflict(ConflictReasonMedia, "源站微博视频对象已替换")
+		if !mediaAbbreviated {
+			if remoteSingleVid != localSingleVid {
+				return makeConflict(ConflictReasonMedia, fmt.Sprintf("源站媒体结构已变更（图片 %d 项，单视频 %v）", len(images), remoteSingleVid))
 			}
-			if meta.Duration > 0 && singleVideo.DurationSec > 0 && durationDiffExceeds(meta.Duration, singleVideo.DurationSec) {
-				return makeConflict(ConflictReasonMedia, fmt.Sprintf("源站微博视频时长变更为 %d 秒", singleVideo.DurationSec))
+			if len(images) != localPages {
+				return makeConflict(ConflictReasonMedia, fmt.Sprintf("源站媒体数量变更为 %d 项", len(images)))
 			}
-		}
-		for i := 0; i < localPages && i < len(images); i++ {
-			remoteID := weiboImageMediaID(images[i])
-			if meta.NotePages[i].MediaID != "" && remoteID != "" && meta.NotePages[i].MediaID != remoteID {
-				return makeConflict(ConflictReasonMedia, fmt.Sprintf("第 %02d 项微博媒体已替换", i+1))
+			if remoteSingleVid {
+				remoteOID := library.SanitizeMediaToken(singleVideo.ObjectID)
+				localOID := metaVideoMediaID(meta)
+				if localOID != "" && remoteOID != "" && localOID != remoteOID {
+					return makeConflict(ConflictReasonMedia, "源站微博视频对象已替换")
+				}
+				if meta.Duration > 0 && singleVideo.DurationSec > 0 && durationDiffExceeds(meta.Duration, singleVideo.DurationSec) {
+					return makeConflict(ConflictReasonMedia, fmt.Sprintf("源站微博视频时长变更为 %d 秒", singleVideo.DurationSec))
+				}
 			}
-			localIsVid := normalizeStoredNotePageKind(meta.NotePages[i].Kind, meta.NotePages[i].GIF) == "video"
-			remoteIsVid := images[i].Kind == weibo.MediaKindVideo
-			if localIsVid != remoteIsVid {
-				return makeConflict(ConflictReasonMedia, fmt.Sprintf("第 %02d 项微博媒体类型已变更", i+1))
+			for i := 0; i < localPages && i < len(images); i++ {
+				remoteID := weiboImageMediaID(images[i])
+				if meta.NotePages[i].MediaID != "" && remoteID != "" && meta.NotePages[i].MediaID != remoteID {
+					return makeConflict(ConflictReasonMedia, fmt.Sprintf("第 %02d 项微博媒体已替换", i+1))
+				}
+				localIsVid := normalizeStoredNotePageKind(meta.NotePages[i].Kind, meta.NotePages[i].GIF) == "video"
+				remoteIsVid := images[i].Kind == weibo.MediaKindVideo
+				if localIsVid != remoteIsVid {
+					return makeConflict(ConflictReasonMedia, fmt.Sprintf("第 %02d 项微博媒体类型已变更", i+1))
+				}
 			}
 		}
 
@@ -1213,9 +1420,7 @@ func (b *Backend) inspectWeiboCachedPostDeferred(post weibo.Post, meta library.I
 			return makeConflict(ConflictReasonText, fmt.Sprintf("源站微博已重新编辑（第 %d 次编辑）", post.EditCount))
 		}
 		if fullRemoteTextAvailable && substantiveTextChanged(localBody, post.Text) {
-			isLongTextExpansion := post.IsLongText && (strings.HasSuffix(strings.TrimSpace(localBody), "...展开") ||
-				strings.HasSuffix(strings.TrimSpace(localBody), "…展开") ||
-				download.LooksLikeTruncatedTextPrefix(localBody, post.Text))
+			isLongTextExpansion := weiboTextLooksTruncated(localBody, post.Text, true)
 			if !isLongTextExpansion && !download.LooksLikeTruncatedTextPrefix(post.Text, localBody) {
 				if post.EditCount > 0 {
 					return makeConflict(ConflictReasonText, fmt.Sprintf("源站微博正文已编辑（第 %d 次编辑）", post.EditCount))
@@ -1227,14 +1432,10 @@ func (b *Backend) inspectWeiboCachedPostDeferred(post weibo.Post, meta library.I
 			remoteLinks := MapSiteTextLinks(post.Links)
 			hasPendingTextConflict := b.conflicts != nil && b.conflicts.hasPendingTextConflictForItem(meta.ItemKey)
 			if cleanedMeta, hadLegacy := cleanLegacyInlineLinksInItem(meta, remoteLinks); hadLegacy {
-				if b.weiboRemoveWatermarkEnabled() && !library.WeiboNeedsNoWMBackfill(cleanedMeta, true) &&
-					cleanedMeta.CacheStandardVersion < library.WeiboCacheStandardVersion {
-					cleanedMeta.CacheStandardVersion = library.WeiboCacheStandardVersion
-				}
 				itemKeyCopy := meta.ItemKey
 				linksCopy := append([]TextLinkDTO(nil), remoteLinks...)
 				meta = cleanedMeta
-				postInspectFn = func() {
+				appendPostInspect(func() {
 					if hasPendingTextConflict {
 						_, _ = b.reconcileLiveLegacyTextConflict(itemKeyCopy, linksCopy)
 						return
@@ -1250,16 +1451,29 @@ func (b *Backend) inspectWeiboCachedPostDeferred(post weibo.Post, meta library.I
 					if !stillLegacy {
 						return
 					}
-					if b.weiboRemoveWatermarkEnabled() && !library.WeiboNeedsNoWMBackfill(cleaned, true) &&
-						cleaned.CacheStandardVersion < library.WeiboCacheStandardVersion {
+					if weiboCanStampV4Tier0(cleaned, removeWM, post.EditCount) {
 						cleaned.CacheStandardVersion = library.WeiboCacheStandardVersion
 					}
 					if _, sErr := b.lib.SaveItemMetadataOnly(fresh.ItemDir, cleaned); sErr == nil && b.events != nil {
 						b.events.PublishSite(EventLibraryChanged, string(site.Weibo), itemKeyCopy)
 					}
-				}
+				})
 			}
 		}
+	}
+
+	// If list payload is abbreviated (MediaIncomplete / OriginIncomplete), never
+	// raise false ConflictReasonMedia; route to enqueue (which triggers GetPost +
+	// replace.go tripwire) when upgrade/backfill is needed, else skip.
+	if mediaAbbreviated {
+		needCompletion := library.NeedsCompletion(meta) && !allMissingAreWeiboUnavailable(meta.Missing)
+		needNoWM := removeWM && library.WeiboNeedsNoWMBackfill(meta, true)
+		needEditHist := post.EditCount > 0 && len(meta.EditHistory) == 0 && meta.CacheStandardVersion < library.WeiboCacheStandardVersion
+		needLongText := post.IsLongText && weiboTextLooksTruncated(firstNonEmpty(meta.Text, meta.Desc), post.Text, post.LongTextFetched)
+		if needCompletion || needNoWM || needEditHist || needLongText || meta.CacheStandardVersion < library.WeiboCacheStandardVersion {
+			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+		}
+		return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
 	}
 
 	// (c) Degraded / downgraded checks.
@@ -1294,19 +1508,141 @@ func (b *Backend) inspectWeiboCachedPostDeferred(post weibo.Post, meta library.I
 		if images[i].Kind == weibo.MediaKindLivePhoto && strings.TrimSpace(meta.NotePages[i].Motion) == "" {
 			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 		}
+		if images[i].Kind == weibo.MediaKindVideo && images[i].VideoStream != nil && meta.NotePages[i].VideoInfo != nil {
+			sel := images[i].VideoStream
+			vi := meta.NotePages[i].VideoInfo
+			localShort := shortEdgePixels(vi.Width, vi.Height)
+			remoteShort := firstPositiveInt(sel.ShortEdge, shortEdgePixels(sel.Width, sel.Height))
+			if localShort > 0 && remoteShort > localShort {
+				return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+			}
+			if localShort > 0 && remoteShort == localShort && vi.Bitrate > 0 && sel.Bitrate > vi.Bitrate {
+				return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+			}
+		}
 	}
-	if post.IsLongText {
-		localBody := strings.TrimSpace(firstNonEmpty(meta.Text, meta.Desc))
-		if strings.HasSuffix(localBody, "...展开") || strings.HasSuffix(localBody, "…展开") ||
-			(post.LongTextFetched && utf8.RuneCountInString(strings.TrimSpace(post.Text)) > utf8.RuneCountInString(localBody)+10) {
+	if localBody := strings.TrimSpace(firstNonEmpty(meta.Text, meta.Desc)); localBody != "" {
+		if (post.IsLongText && weiboTextLooksTruncated(localBody, post.Text, post.LongTextFetched)) ||
+			(!post.IsLongText && weiboTextLooksTruncated(localBody, post.Text, true)) {
 			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 		}
 	}
-	if b.weiboRemoveWatermarkEnabled() && library.WeiboNeedsNoWMBackfill(meta, true) && weiboImagesHaveWatermarkFreeCandidate(images, meta) {
+	if removeWM && library.WeiboNeedsNoWMBackfill(meta, true) && weiboImagesHaveWatermarkFreeCandidate(images, meta) {
+		return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+	}
+	// DEC-094 / DEC-096: Backfill EditHistory once for edited posts below v4.
+	if post.EditCount > 0 && len(meta.EditHistory) == 0 && meta.CacheStandardVersion < library.WeiboCacheStandardVersion {
 		return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 	}
 
+	// Tier 0 lock-free metadata backfill: structured Links / Origin.Links, EditCount sync,
+	// and uniform WeiboCacheStandardVersion = 4 stamping across text/video/GIF/image posts.
+	remoteItemLinks := siteLinksToLibraryLinks(post.Links)
+	var remoteOrigLinks []library.ItemLink
+	if post.Retweeted != nil && len(post.Retweeted.Links) > 0 {
+		remoteOrigLinks = siteLinksToLibraryLinks(post.Retweeted.Links)
+	}
+	needTier0 := (len(meta.Links) == 0 && len(remoteItemLinks) > 0) ||
+		(meta.Origin != nil && len(meta.Origin.Links) == 0 && len(remoteOrigLinks) > 0) ||
+		(post.EditCount > 0 && meta.EditCount == 0) ||
+		weiboCanStampV4Tier0(meta, removeWM, post.EditCount)
+	if needTier0 && b != nil && b.lib != nil && strings.TrimSpace(meta.ItemKey) != "" {
+		itemKeyCopy := meta.ItemKey
+		editCountCopy := post.EditCount
+		appendPostInspect(func() {
+			fresh, ok, gErr := b.lib.GetItem(itemKeyCopy)
+			if gErr != nil || !ok || strings.TrimSpace(fresh.ItemDir) == "" {
+				return
+			}
+			changed := false
+			if len(fresh.Links) == 0 && len(remoteItemLinks) > 0 {
+				fresh.Links = append([]library.ItemLink(nil), remoteItemLinks...)
+				changed = true
+			}
+			if fresh.Origin != nil && len(fresh.Origin.Links) == 0 && len(remoteOrigLinks) > 0 {
+				fresh.Origin.Links = append([]library.ItemLink(nil), remoteOrigLinks...)
+				changed = true
+			}
+			if editCountCopy > 0 && fresh.EditCount == 0 {
+				fresh.EditCount = editCountCopy
+				changed = true
+			}
+			if weiboCanStampV4Tier0(fresh, removeWM, editCountCopy) {
+				fresh.CacheStandardVersion = library.WeiboCacheStandardVersion
+				changed = true
+			}
+			if !changed {
+				return
+			}
+			if _, sErr := b.lib.SaveItemMetadataOnly(fresh.ItemDir, fresh); sErr == nil && b.events != nil {
+				b.events.PublishSite(EventLibraryChanged, string(site.Weibo), itemKeyCopy)
+			}
+		})
+	}
+
 	return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
+}
+
+func weiboCanStampV4Tier0(meta library.ItemMetadata, removeWM bool, remoteEditCount int) bool {
+	if meta.Status != "complete" || len(meta.Missing) > 0 || meta.CacheStandardVersion >= library.WeiboCacheStandardVersion {
+		return false
+	}
+	if remoteEditCount > 0 && len(meta.EditHistory) == 0 {
+		return false
+	}
+	if meta.EditCount > 0 && len(meta.EditHistory) == 0 {
+		return false
+	}
+	if len(library.WeiboStaticImageSlotsMissingNoWM(meta)) > 0 {
+		if !removeWM {
+			// Watermark removal is off: do not stamp v3/v4 on static-image posts so
+			// enabling watermark removal later still triggers NoWM backfill.
+			return false
+		}
+		if meta.CacheStandardVersion < library.WeiboNoWMStandardVersion {
+			return false
+		}
+	}
+	return true
+}
+
+func weiboTextLooksTruncated(localBody, remoteText string, remoteLongFetched bool) bool {
+	trimmed := strings.TrimSpace(localBody)
+	if trimmed == "" {
+		return false
+	}
+	for _, suf := range []string{
+		"...展开", "…展开",
+		"...全文", "…全文",
+		"展开全文", "查看全文",
+	} {
+		if strings.HasSuffix(trimmed, suf) {
+			return true
+		}
+	}
+	if download.LooksLikeTruncatedTextPrefix(trimmed, remoteText) {
+		return true
+	}
+	if remoteLongFetched && utf8.RuneCountInString(strings.TrimSpace(remoteText)) > utf8.RuneCountInString(trimmed)+10 {
+		if strings.HasSuffix(trimmed, "...") || strings.HasSuffix(trimmed, "…") {
+			return true
+		}
+		if download.LooksLikeTruncatedTextPrefix(trimmed, remoteText) {
+			return true
+		}
+	}
+	return false
+}
+
+func siteLinksToLibraryLinks(in []site.TextLink) []library.ItemLink {
+	if len(in) == 0 {
+		return nil
+	}
+	raw := make([]library.ItemLink, 0, len(in))
+	for _, l := range in {
+		raw = append(raw, library.ItemLink{Label: l.Label, URL: l.URL})
+	}
+	return library.SanitizeItemLinks(raw)
 }
 
 func weiboImagesHaveWatermarkFreeCandidate(images []weibo.ImageAsset, meta library.ItemMetadata) bool {
@@ -1352,6 +1688,15 @@ func allMissingAreWeiboUnavailable(missing []library.MissingRecord) bool {
 
 // 3. X posts 0-call list inspection.
 func (b *Backend) inspectXCachedPost(post x.Post, meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
+	dec := b.inspectXCachedPostDeferred(post, meta, queueOrigin)
+	if dec.postInspect != nil {
+		dec.postInspect()
+		dec.postInspect = nil
+	}
+	return dec
+}
+
+func (b *Backend) inspectXCachedPostDeferred(post x.Post, meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
 	if meta.IsArchivedSnapshot() {
 		return cachedInspectDecision{action: inspectSkipNoOp}
 	}
@@ -1431,6 +1776,37 @@ func (b *Backend) inspectXCachedPost(post x.Post, meta library.ItemMetadata, que
 		}
 	}
 
+	var postInspectActions []func()
+	appendPostInspect := func(fn func()) {
+		if fn != nil {
+			postInspectActions = append(postInspectActions, fn)
+		}
+	}
+	withPostInspect := func(dec cachedInspectDecision) cachedInspectDecision {
+		if len(postInspectActions) == 1 {
+			dec.postInspect = postInspectActions[0]
+		} else if len(postInspectActions) > 1 {
+			fns := postInspectActions
+			dec.postInspect = func() {
+				for _, fn := range fns {
+					fn()
+				}
+			}
+		}
+		return dec
+	}
+
+	// DEC-093 / DEC-096: Detect older X article posts stored only as a degraded
+	// CardKindArticle stub (no ItemArticle) so they upgrade via TweetDetail
+	// without tripping false text/media conflicts.
+	localDegradedArticle := meta.Article == nil &&
+		((post.Card != nil && post.Card.Kind == x.CardKindArticle) ||
+			(meta.Card != nil && strings.EqualFold(strings.TrimSpace(meta.Card.Kind), "article")) ||
+			(post.Article != nil && post.Article.HasFullContent()))
+	if localDegradedArticle && meta.CacheStandardVersion < library.XCacheStandardVersion {
+		return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+	}
+
 	// Handle multi-tweet threads on UserTweets list where only the focal tweet is present in post.
 	unstitchedThreadOnList := strings.TrimSpace(post.SelfThreadID) != "" &&
 		len(post.Thread) == 0 && len(post.ThreadAncestors) == 0 && len(meta.Thread) > 1
@@ -1454,6 +1830,7 @@ func (b *Backend) inspectXCachedPost(post x.Post, meta library.ItemMetadata, que
 
 	remoteSingleVid := (singleVideo != nil || (len(mediaItems) == 1 && mediaItems[0].Kind == x.MediaKindVideo && !mediaItems[0].GIF)) && !unstitchedThreadOnList
 	localSingleVid := (meta.DouyinVideo != nil || hasMissingItem(meta.Missing, "video.mp4")) && len(meta.NotePages) == 0
+	needNoteTweetUpgrade := false
 
 	if hasValidLocalCache(meta) {
 		// Check X edit revision history (edit_tweet_ids).
@@ -1504,11 +1881,21 @@ func (b *Backend) inspectXCachedPost(post x.Post, meta library.ItemMetadata, que
 		}
 
 		if substantiveTextChanged(localFocalText, post.Text) {
-			return makeConflict(ConflictReasonText, "源站帖子正文已编辑")
+			// DEC-096: Exempt note_tweet truncated prefix expansion (and truncated
+			// timeline previews when local already has full note_tweet text).
+			if download.LooksLikeTruncatedTextPrefix(localFocalText, post.Text) {
+				needNoteTweetUpgrade = true
+			} else if !download.LooksLikeTruncatedTextPrefix(post.Text, localFocalText) {
+				return makeConflict(ConflictReasonText, "源站帖子正文已编辑")
+			}
 		}
 		if !unstitchedThreadOnList && !substantiveTextChanged(localFocalText, post.Text) &&
 			b.conflicts != nil && b.conflicts.hasPendingTextConflictForItem(meta.ItemKey) {
-			b.reconcileLiveLegacyTextConflict(meta.ItemKey, MapSiteTextLinks(x.BuildPostLinks(&post)))
+			itemKeyCopy := meta.ItemKey
+			remoteLinks := MapSiteTextLinks(x.BuildPostLinks(&post))
+			appendPostInspect(func() {
+				b.reconcileLiveLegacyTextConflict(itemKeyCopy, remoteLinks)
+			})
 		}
 	}
 
@@ -1521,44 +1908,274 @@ func (b *Backend) inspectXCachedPost(post x.Post, meta library.ItemMetadata, que
 			vidItem = mediaItems[0]
 		}
 		if (vidItem.HLSOnly || strings.TrimSpace(vidItem.VideoURL) == "") && meta.DouyinVideo != nil && meta.DouyinVideo.File != "" {
-			return cachedInspectDecision{action: inspectSkipNoOp}
+			return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
 		}
 		if meta.DouyinVideo != nil && meta.DouyinVideo.File != "" {
 			localShort := shortEdgePixels(meta.DouyinVideo.Width, meta.DouyinVideo.Height)
 			remoteShort := shortEdgePixels(vidItem.Width, vidItem.Height)
 			if localShort > 0 && remoteShort > 0 && remoteShort < localShort {
-				return cachedInspectDecision{action: inspectSkipNoOp}
+				return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
 			}
 			if localShort == remoteShort && meta.DouyinVideo.Bitrate > 0 && vidItem.VideoBitrate > 0 && vidItem.VideoBitrate < meta.DouyinVideo.Bitrate {
-				return cachedInspectDecision{action: inspectSkipNoOp}
+				return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
 			}
 		}
 	}
 
 	// (b) Safe upgrade / completion.
+	if needNoteTweetUpgrade {
+		return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+	}
 	if library.NeedsCompletion(meta) {
 		if !allMissingAreXHLSOnlyWhenStillHLS(meta.Missing, mediaItems) {
-			return cachedInspectDecision{action: inspectEnqueue}
+			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 		}
 	}
 	if remoteSingleVid && singleVideo != nil && !singleVideo.HLSOnly && strings.TrimSpace(singleVideo.VideoURL) != "" {
 		if meta.DouyinVideo == nil || meta.DouyinVideo.File == "" {
-			return cachedInspectDecision{action: inspectEnqueue}
+			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 		}
 		localShort := shortEdgePixels(meta.DouyinVideo.Width, meta.DouyinVideo.Height)
 		remoteShort := shortEdgePixels(singleVideo.Width, singleVideo.Height)
 		if localShort > 0 && remoteShort > localShort {
-			return cachedInspectDecision{action: inspectEnqueue}
+			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 		}
 		if localShort == remoteShort && meta.DouyinVideo.Bitrate > 0 && singleVideo.VideoBitrate > meta.DouyinVideo.Bitrate {
-			return cachedInspectDecision{action: inspectEnqueue}
+			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+		}
+	} else if !remoteSingleVid {
+		for i := 0; i < len(localComparePages) && i < len(mediaItems); i++ {
+			rm := mediaItems[i]
+			if rm.Kind != x.MediaKindVideo || rm.GIF || rm.HLSOnly || strings.TrimSpace(rm.VideoURL) == "" {
+				continue
+			}
+			vi := localComparePages[i].VideoInfo
+			if vi == nil {
+				continue
+			}
+			localShort := shortEdgePixels(vi.Width, vi.Height)
+			remoteShort := shortEdgePixels(rm.Width, rm.Height)
+			if localShort > 0 && remoteShort > localShort {
+				return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+			}
+			if localShort == remoteShort && vi.Bitrate > 0 && rm.VideoBitrate > vi.Bitrate {
+				return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+			}
 		}
 	}
 	if len(post.Thread) > 0 && len(post.Thread)+1 > len(meta.Thread) {
-		return cachedInspectDecision{action: inspectEnqueue}
+		return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+	}
+	// DEC-096: UserTweets only carries SelfThreadID (without stitched Thread);
+	// trigger one TweetDetail lookup when below XCacheStandardVersion so new
+	// self-reply segments & ThreadAncestors are backfilled and stamped v3.
+	if strings.TrimSpace(post.SelfThreadID) != "" && meta.CacheStandardVersion < library.XCacheStandardVersion {
+		return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 	}
 
-	return cachedInspectDecision{action: inspectSkipNoOp}
+	// DEC-091 / DEC-096 Tier 0 lock-free metadata backfill via postInspect.
+	postCopy := post
+	if b != nil && b.lib != nil && strings.TrimSpace(meta.ItemKey) != "" && xNeedsTier0MetadataBackfill(meta, &postCopy) {
+		itemKeyCopy := meta.ItemKey
+		appendPostInspect(func() {
+			fresh, ok, gErr := b.lib.GetItem(itemKeyCopy)
+			if gErr != nil || !ok || strings.TrimSpace(fresh.ItemDir) == "" {
+				return
+			}
+			if !applyXTier0MetadataBackfill(&fresh, &postCopy) {
+				return
+			}
+			if _, sErr := b.lib.SaveItemMetadataOnly(fresh.ItemDir, fresh); sErr == nil && b.events != nil {
+				b.events.PublishSite(EventLibraryChanged, string(site.X), itemKeyCopy)
+			}
+		})
+	}
+
+	return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
+}
+
+func buildLibraryReplyTarget(rt *site.ReplyTarget, siteID string) *library.ItemReplyTarget {
+	if rt == nil {
+		return nil
+	}
+	return library.SanitizeItemReplyTarget(&library.ItemReplyTarget{
+		StatusID:   rt.StatusID,
+		UserID:     rt.UserID,
+		ScreenName: rt.ScreenName,
+	}, siteID)
+}
+
+func buildLibraryOriginFromNested(n *site.NestedOriginSummary) *library.ItemOrigin {
+	if n == nil {
+		return nil
+	}
+	var card *library.ItemRichCard
+	if n.Card != nil {
+		card = &library.ItemRichCard{
+			Kind:  n.Card.Kind,
+			Label: n.Card.Label,
+			Title: n.Card.Title,
+			Desc:  n.Card.Desc,
+			URL:   n.Card.URL,
+		}
+	}
+	return &library.ItemOrigin{
+		Site:         string(n.Site),
+		ID:           n.ID,
+		CanonicalURL: n.CanonicalURL,
+		Author: library.ItemAuthor{
+			Site:     string(n.Site),
+			UID:      n.AuthorUID,
+			UniqueID: n.AuthorUniqueID,
+			Name:     n.AuthorName,
+			Face:     n.AuthorFace,
+		},
+		PubTs:             n.PubTs,
+		Text:              n.Text,
+		Links:             siteLinksToLibraryLinks(n.Links),
+		Card:              card,
+		InReplyTo:         buildLibraryReplyTarget(n.InReplyTo, string(n.Site)),
+		Unavailable:       n.Unavailable,
+		UnavailableReason: n.UnavailableReason,
+	}
+}
+
+func buildLibraryOriginFromXPost(post *x.Post) *library.ItemOrigin {
+	if post == nil {
+		return nil
+	}
+	var orig *x.Post
+	if post.IsRetweet && post.Retweeted != nil {
+		orig = post.Retweeted
+	} else if post.IsQuote && post.Quoted != nil {
+		orig = post.Quoted
+	}
+	if orig == nil {
+		return nil
+	}
+	var card *library.ItemRichCard
+	if orig.Card != nil {
+		card = &library.ItemRichCard{
+			Kind:  orig.Card.Kind,
+			Label: orig.Card.Label,
+			Title: orig.Card.Title,
+			Desc:  orig.Card.Desc,
+			URL:   x.SafePublicWebURL(orig.Card.URL),
+		}
+	}
+	return &library.ItemOrigin{
+		Site:         string(site.X),
+		ID:           strings.TrimSpace(orig.ID),
+		CanonicalURL: x.SafePublicWebURL(orig.CanonicalURL),
+		Author: library.ItemAuthor{
+			Site:     string(site.X),
+			UID:      strings.TrimSpace(orig.Author.RestID),
+			UniqueID: strings.TrimSpace(orig.Author.ScreenName),
+			Name:     firstNonEmpty(strings.TrimSpace(orig.Author.Name), strings.TrimSpace(orig.Author.ScreenName), strings.TrimSpace(orig.Author.RestID)),
+			Face:     x.SafePublicImageURL(orig.Author.AvatarURL),
+		},
+		PubTs:             orig.CreatedAt,
+		Text:              strings.TrimSpace(orig.FullThreadText()),
+		Links:             siteLinksToLibraryLinks(x.BuildPostLinks(orig)),
+		Card:              card,
+		InReplyTo:         buildLibraryReplyTarget(x.BuildPostReplyTarget(orig), string(site.X)),
+		Origin:            buildLibraryOriginFromNested(x.BuildNestedOriginSummary(orig)),
+		Unavailable:       orig.Unavailable || post.OriginUnavailable,
+		UnavailableReason: firstNonEmpty(post.OriginUnavailableReason, orig.UnavailableReason),
+	}
+}
+
+func xNeedsTier0MetadataBackfill(meta library.ItemMetadata, post *x.Post) bool {
+	cp := meta
+	if cp.Origin != nil {
+		o := *cp.Origin
+		cp.Origin = &o
+	}
+	if len(cp.Thread) > 0 {
+		cp.Thread = append([]library.ItemThreadPart(nil), cp.Thread...)
+	}
+	return applyXTier0MetadataBackfill(&cp, post)
+}
+
+func applyXTier0MetadataBackfill(meta *library.ItemMetadata, post *x.Post) bool {
+	if meta == nil || post == nil {
+		return false
+	}
+	changed := false
+	if meta.InReplyTo == nil {
+		if rt := buildLibraryReplyTarget(x.BuildPostReplyTarget(post), string(site.X)); rt != nil {
+			meta.InReplyTo = rt
+			changed = true
+		}
+	}
+	if len(meta.Links) == 0 {
+		if links := siteLinksToLibraryLinks(x.BuildPostLinks(post)); len(links) > 0 {
+			meta.Links = links
+			changed = true
+		}
+	}
+	if remoteOrigin := buildLibraryOriginFromXPost(post); remoteOrigin != nil {
+		if meta.Origin == nil {
+			meta.Origin = remoteOrigin
+			changed = true
+		} else {
+			if meta.Origin.InReplyTo == nil && remoteOrigin.InReplyTo != nil {
+				meta.Origin.InReplyTo = remoteOrigin.InReplyTo
+				changed = true
+			}
+			if meta.Origin.Origin == nil && remoteOrigin.Origin != nil {
+				meta.Origin.Origin = remoteOrigin.Origin
+				changed = true
+			}
+			if len(meta.Origin.Links) == 0 && len(remoteOrigin.Links) > 0 {
+				meta.Origin.Links = remoteOrigin.Links
+				changed = true
+			}
+			if meta.Origin.Author.UniqueID == "" && remoteOrigin.Author.UniqueID != "" {
+				meta.Origin.Author.UniqueID = remoteOrigin.Author.UniqueID
+				changed = true
+			}
+		}
+	}
+	if len(meta.Thread) > 0 {
+		remoteByID := make(map[string]*x.Post, 1+len(post.Thread)+len(post.ThreadAncestors))
+		remoteByID[strings.TrimSpace(post.ID)] = post
+		for i := range post.ThreadAncestors {
+			tp := &post.ThreadAncestors[i]
+			remoteByID[strings.TrimSpace(tp.ID)] = tp
+		}
+		for i := range post.Thread {
+			tp := &post.Thread[i]
+			remoteByID[strings.TrimSpace(tp.ID)] = tp
+		}
+		for i := range meta.Thread {
+			tp, ok := remoteByID[strings.TrimSpace(meta.Thread[i].ID)]
+			if !ok || tp == nil {
+				continue
+			}
+			if len(meta.Thread[i].Links) == 0 {
+				if links := siteLinksToLibraryLinks(x.BuildPostLinks(tp)); len(links) > 0 {
+					meta.Thread[i].Links = links
+					changed = true
+				}
+			}
+			if meta.Thread[i].Origin == nil && strings.TrimSpace(tp.ID) != strings.TrimSpace(post.ID) {
+				if orig := buildLibraryOriginFromXPost(tp); orig != nil {
+					meta.Thread[i].Origin = orig
+					changed = true
+				}
+			}
+		}
+	}
+	if normLabel := meta.NormalizeDisplayTypeLabel(); normLabel != "" && normLabel != strings.TrimSpace(meta.TypeLabel) {
+		meta.TypeLabel = normLabel
+		changed = true
+	}
+	if meta.Status == "complete" && len(meta.Missing) == 0 && meta.CacheStandardVersion < library.XCacheStandardVersion {
+		meta.CacheStandardVersion = library.XCacheStandardVersion
+		changed = true
+	}
+	return changed
 }
 
 func hasMissingItem(missing []library.MissingRecord, item string) bool {
@@ -1616,6 +2233,15 @@ func xPostHasValidDownloadableMedia(post *x.Post) bool {
 
 // 4. Bilibili dynamics 0-call list inspection.
 func (b *Backend) inspectBilibiliCachedDynamic(d bilibili.DynamicItem, meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
+	dec := b.inspectBilibiliCachedDynamicDeferred(d, meta, queueOrigin)
+	if dec.postInspect != nil {
+		dec.postInspect()
+		dec.postInspect = nil
+	}
+	return dec
+}
+
+func (b *Backend) inspectBilibiliCachedDynamicDeferred(d bilibili.DynamicItem, meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
 	if meta.IsArchivedSnapshot() {
 		return cachedInspectDecision{action: inspectSkipNoOp}
 	}
@@ -1628,8 +2254,17 @@ func (b *Backend) inspectBilibiliCachedDynamic(d bilibili.DynamicItem, meta libr
 
 	effImgs, effVids := effectiveBiliDynamicMedia(d)
 	var remoteImgURLs []string
+	var remoteAssets []string
+	for _, v := range effVids {
+		if tok := library.SanitizeMediaToken(v.BVID); tok != "" {
+			remoteAssets = append(remoteAssets, tok)
+		}
+	}
 	for _, img := range effImgs {
 		remoteImgURLs = append(remoteImgURLs, img.URL)
+		if tok := cleanBiliDynamicImgAssetToken(img.URL); tok != "" {
+			remoteAssets = append(remoteAssets, tok)
+		}
 	}
 	var remoteBVIDs []string
 	for _, v := range effVids {
@@ -1641,13 +2276,34 @@ func (b *Backend) inspectBilibiliCachedDynamic(d bilibili.DynamicItem, meta libr
 	fp := download.BilibiliDynamicConflictFingerprint(d.ID, remoteImgURLs, remoteBVIDs, d.Title, d.Text)
 	originTag := firstNonEmpty(queueOrigin, "cache_queue")
 
-	if hasValidLocalCache(meta) {
-		var localImgs []library.MediaFile
-		for _, m := range meta.Media {
-			if m.Role == "image" {
-				localImgs = append(localImgs, m)
+	var postInspectActions []func()
+	appendPostInspect := func(fn func()) {
+		if fn != nil {
+			postInspectActions = append(postInspectActions, fn)
+		}
+	}
+	withPostInspect := func(dec cachedInspectDecision) cachedInspectDecision {
+		if len(postInspectActions) == 1 {
+			dec.postInspect = postInspectActions[0]
+		} else if len(postInspectActions) > 1 {
+			fns := postInspectActions
+			dec.postInspect = func() {
+				for _, fn := range fns {
+					fn()
+				}
 			}
 		}
+		return dec
+	}
+
+	var localImgs []library.MediaFile
+	for _, m := range meta.Media {
+		if m.Role == "image" {
+			localImgs = append(localImgs, m)
+		}
+	}
+
+	if hasValidLocalCache(meta) {
 		makeConflict := func(reasonKind, remoteSummary string) cachedInspectDecision {
 			return cachedInspectDecision{
 				action: inspectConflict,
@@ -1687,21 +2343,189 @@ func (b *Backend) inspectBilibiliCachedDynamic(d bilibili.DynamicItem, meta libr
 			return makeConflict(ConflictReasonText, "源站动态标题或正文已修改")
 		}
 		if b.conflicts != nil && b.conflicts.hasPendingTextConflictForItem(meta.ItemKey) {
-			b.reconcileLiveLegacyTextConflict(meta.ItemKey, extractSafeLinksFromDiffText(d.Text, "bilibili"))
+			itemKeyCopy := meta.ItemKey
+			remoteLinks := extractSafeLinksFromDiffText(d.Text, "bilibili")
+			appendPostInspect(func() {
+				b.reconcileLiveLegacyTextConflict(itemKeyCopy, remoteLinks)
+			})
 		}
 
-		// (b) Newly available LivePhoto motion clip on existing dynamic images.
-		for i := range localImgs {
-			if strings.TrimSpace(effImgs[i].LiveURL) != "" && strings.TrimSpace(localImgs[i].Motion) == "" {
-				return cachedInspectDecision{action: inspectEnqueue}
+		// (b) Missing orig.json snapshot on forward dynamic (DEC-096).
+		if d.Origin != nil && !hasSnapshotMedia(meta, "orig.json") {
+			return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
+		}
+
+		// (b) Path-aligned LivePhoto motion clip check (DEC-096).
+		localByCleanPath := make(map[string]library.MediaFile, len(localImgs))
+		localBySlot := make(map[int]library.MediaFile, len(localImgs))
+		for _, mf := range localImgs {
+			if cp := urlCleanPath(mf.Source); cp != "" {
+				localByCleanPath[cp] = mf
+			}
+			if slot := parseDynamicImageSlotIndex(mf.Path); slot > 0 {
+				localBySlot[slot] = mf
+			}
+		}
+		for i, img := range effImgs {
+			if strings.TrimSpace(img.LiveURL) == "" {
+				continue
+			}
+			var matched library.MediaFile
+			found := false
+			if cp := urlCleanPath(img.URL); cp != "" {
+				matched, found = localByCleanPath[cp]
+			}
+			if !found {
+				matched, found = localBySlot[i+1]
+			}
+			if !found && i < len(localImgs) {
+				matched = localImgs[i]
+				found = true
+			}
+			if found && strings.TrimSpace(matched.Motion) == "" {
+				return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 			}
 		}
 	}
 
 	if library.NeedsCompletion(meta) {
-		return cachedInspectDecision{action: inspectEnqueue}
+		return withPostInspect(cachedInspectDecision{action: inspectEnqueue})
 	}
-	return cachedInspectDecision{action: inspectSkipNoOp}
+
+	// (b) Linked video completeness / BilibiliVideoStandardVersion check (DEC-096).
+	if len(effVids) > 0 && b != nil && b.lib != nil {
+		now := time.Now().UTC()
+		if b.queue != nil && b.queue.clock != nil {
+			now = b.queue.clock.Now().UTC()
+		}
+		needLinkedVideos := false
+		for _, v := range effVids {
+			bvid := strings.TrimSpace(v.BVID)
+			if bvid == "" {
+				continue
+			}
+			vidKey := library.CanonicalItemKey("bilibili", "video", bvid)
+			vidMeta, exists, gErr := b.lib.GetItem(vidKey)
+			if gErr != nil {
+				continue
+			}
+			if !exists {
+				if meta.CacheStandardVersion < library.BilibiliDynamicStandardVersion {
+					needLinkedVideos = true
+					break
+				}
+				continue
+			}
+			if library.NeedsCompletion(vidMeta) {
+				needLinkedVideos = true
+				break
+			}
+			if vidMeta.CacheStandardVersion < library.BilibiliVideoStandardVersion {
+				lastChecked := latestCheckedTime(vidMeta.RecheckedAt, vidMeta.UpgradeCheckedAt)
+				if lastChecked.IsZero() || now.Sub(lastChecked) >= bilibiliRecheckCooldown {
+					needLinkedVideos = true
+					break
+				}
+			}
+		}
+		if needLinkedVideos {
+			dynCopy := d
+			cleanID := strings.TrimSpace(dynCopy.ID)
+			itemKey := library.CanonicalItemKey("bilibili", "dynamic", cleanID)
+			title := trimQueueSummaryTitle(firstNonEmpty(dynCopy.Title, dynCopy.Text, cleanID))
+			return withPostInspect(cachedInspectDecision{
+				action: inspectEnqueue,
+				enqueue: func(ctx context.Context) (queueEnqueued, error) {
+					t, err := b.EnqueueDynamicCache(ctx, download.DynamicEnqueueRequest{
+						DynamicID:         dynCopy.ID,
+						Item:              &dynCopy,
+						CacheLinkedVideos: true,
+						Source:            "queue",
+					})
+					if err != nil {
+						return queueEnqueued{}, err
+					}
+					return queueEnqueued{
+						taskIDs:        []string{t.TaskID},
+						itemKey:        firstNonEmpty(t.ItemKey, itemKey),
+						title:          trimQueueSummaryTitle(firstNonEmpty(t.Title, title, cleanID)),
+						reusedListPlan: true,
+					}, nil
+				},
+			})
+		}
+	}
+
+	// Tier 0 lock-free metadata backfill: legacy inline links, AssetIDs, and
+	// BilibiliDynamicStandardVersion = 3.
+	_, hasLegacyInline := cleanLegacyInlineLinksInItem(meta, nil)
+	needTier0 := hasLegacyInline ||
+		(len(meta.AssetIDs) == 0 && len(remoteAssets) > 0) ||
+		(meta.Status == "complete" && len(meta.Missing) == 0 && meta.CacheStandardVersion < library.BilibiliDynamicStandardVersion)
+	if needTier0 && b != nil && b.lib != nil && strings.TrimSpace(meta.ItemKey) != "" {
+		itemKeyCopy := meta.ItemKey
+		assetsCopy := append([]string(nil), remoteAssets...)
+		remoteLinks := extractSafeLinksFromDiffText(d.Text, "bilibili")
+		appendPostInspect(func() {
+			fresh, ok, gErr := b.lib.GetItem(itemKeyCopy)
+			if gErr != nil || !ok || strings.TrimSpace(fresh.ItemDir) == "" {
+				return
+			}
+			changed := false
+			if cleaned, hadLegacy := cleanLegacyInlineLinksInItem(fresh, remoteLinks); hadLegacy {
+				fresh = cleaned
+				changed = true
+			}
+			if len(fresh.AssetIDs) == 0 && len(assetsCopy) > 0 {
+				fresh.AssetIDs = assetsCopy
+				changed = true
+			}
+			if fresh.Status == "complete" && len(fresh.Missing) == 0 && fresh.CacheStandardVersion < library.BilibiliDynamicStandardVersion {
+				fresh.CacheStandardVersion = library.BilibiliDynamicStandardVersion
+				changed = true
+			}
+			if !changed {
+				return
+			}
+			if _, sErr := b.lib.SaveItemMetadataOnly(fresh.ItemDir, fresh); sErr == nil && b.events != nil {
+				b.events.PublishSite(EventLibraryChanged, string(site.Bilibili), itemKeyCopy)
+			}
+		})
+	}
+
+	return withPostInspect(cachedInspectDecision{action: inspectSkipNoOp})
+}
+
+func cleanBiliDynamicImgAssetToken(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return ""
+	}
+	if u, err := url.Parse(trimmed); err == nil && u.Path != "" {
+		base := path.Base(u.Path)
+		return library.SanitizeMediaToken(strings.TrimSuffix(base, path.Ext(base)))
+	}
+	return ""
+}
+
+func parseDynamicImageSlotIndex(relPath string) int {
+	base := path.Base(strings.ReplaceAll(strings.TrimSpace(relPath), `\`, "/"))
+	stem := strings.TrimSuffix(base, path.Ext(base))
+	if stem == "" {
+		return 0
+	}
+	digits := 0
+	for digits < len(stem) && stem[digits] >= '0' && stem[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(stem[:digits])
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 func effectiveBiliDynamicMedia(d bilibili.DynamicItem) ([]bilibili.DynamicMedia, []bilibili.DynamicVideoRef) {
@@ -1797,7 +2621,7 @@ func (b *Backend) inspectBilibiliCachedVideo(v bilibili.UserVideoItem, meta libr
 		}
 	}
 
-	// Gate B (cacheStandardVersion + quality ceiling check): 0 calls!
+	// Gate B (site cacheStandardVersion + quality ceiling + extras check): 0 calls!
 	var dlCfg settings.DownloadSettings
 	if b != nil && b.settings != nil {
 		dlCfg = b.settings.Get().Download
@@ -1805,12 +2629,13 @@ func (b *Backend) inspectBilibiliCachedVideo(v bilibili.UserVideoItem, meta libr
 	if meta.Status == "complete" &&
 		!library.NeedsCompletion(meta) &&
 		!meta.UpgradeAvailable &&
-		meta.CacheStandardVersion >= library.CurrentCacheStandardVersion &&
+		meta.CacheStandardVersion >= library.BilibiliVideoStandardVersion &&
 		bilibiliVideoAtCeiling(meta, dlCfg, now) {
 		return cachedInspectDecision{action: inspectSkipNoOp}
 	}
 
 	// Gate C (7-day RecheckedAt / UpgradeCheckedAt cooldown + cache-queue pacing):
+	// Also prevents infinite re-probing of deleted, unavailable, or downgraded videos.
 	lastChecked := latestCheckedTime(meta.RecheckedAt, meta.UpgradeCheckedAt)
 	if !lastChecked.IsZero() && now.Sub(lastChecked) < bilibiliRecheckCooldown {
 		return cachedInspectDecision{action: inspectSkipNoOp}
@@ -1823,6 +2648,54 @@ func (b *Backend) inspectBilibiliCachedVideo(v bilibili.UserVideoItem, meta libr
 }
 
 func bilibiliVideoAtCeiling(meta library.ItemMetadata, dlCfg settings.DownloadSettings, now time.Time) bool {
+	return bilibiliVideoStreamsAtCeiling(meta, dlCfg, now) && bilibiliVideoExtrasSatisfied(meta, dlCfg)
+}
+
+func bilibiliPartStreamAtCeiling(part library.VideoPartRecord, dlCfg settings.DownloadSettings) bool {
+	if part.Available.Downgraded {
+		return false
+	}
+	capQn := parseBilibiliQualityCap(dlCfg.VideoQuality)
+	effectiveTarget := capQn
+	if part.Available.BestVideo > 0 && bilibili.QualityRank(part.Available.BestVideo) < bilibili.QualityRank(effectiveTarget) {
+		effectiveTarget = part.Available.BestVideo
+	}
+	if part.Available.BestVideo > 0 && bilibili.QualityRank(part.Video.Quality) < bilibili.QualityRank(effectiveTarget) {
+		return false
+	}
+	// DEC-096: Never treat 116 (1080P60) as an unconditional ceiling when user
+	// configured "best" / 4K / 8K and BestVideo has not been probed.
+	atVideoCeiling := bilibili.QualityRank(part.Video.Quality) >= bilibili.QualityRank(capQn) ||
+		(part.Available.ProbedAt != "" && part.Available.BestVideo > 0 && bilibili.QualityRank(part.Video.Quality) >= bilibili.QualityRank(effectiveTarget))
+	if !atVideoCeiling {
+		return false
+	}
+	// Check audio preferences against probed audio capabilities (Hi-Res 30251 / Dolby 30250).
+	if dlCfg.PreferLosslessAudio && part.Available.HasFlac && part.Audio.Quality != 30251 {
+		return false
+	}
+	if dlCfg.PreferDolbyAudio && !dlCfg.PreferLosslessAudio && part.Available.HasDolby && part.Audio.Quality != 30250 {
+		return false
+	}
+	if part.Available.BestAudio > 0 {
+		desiredAudio := part.Available.BestAudio
+		if desiredAudio == 30251 && !dlCfg.PreferLosslessAudio {
+			if dlCfg.PreferDolbyAudio && part.Available.HasDolby {
+				desiredAudio = 30250
+			} else {
+				desiredAudio = 30280
+			}
+		} else if desiredAudio == 30250 && !dlCfg.PreferDolbyAudio {
+			desiredAudio = 30280
+		}
+		if biliAudioPriority(part.Audio.Quality) < biliAudioPriority(desiredAudio) {
+			return false
+		}
+	}
+	return true
+}
+
+func bilibiliVideoStreamsAtCeiling(meta library.ItemMetadata, dlCfg settings.DownloadSettings, now time.Time) bool {
 	if len(meta.Parts) == 0 {
 		return false
 	}
@@ -1833,22 +2706,35 @@ func bilibiliVideoAtCeiling(meta library.ItemMetadata, dlCfg settings.DownloadSe
 			return false
 		}
 	}
-	capQn := parseBilibiliQualityCap(dlCfg.VideoQuality)
 	for _, part := range meta.Parts {
-		if part.Available.Downgraded {
+		if !bilibiliPartStreamAtCeiling(part, dlCfg) {
 			return false
 		}
-		if part.Available.BestVideo > 0 && bilibili.QualityRank(part.Video.Quality) < bilibili.QualityRank(part.Available.BestVideo) {
+	}
+	return true
+}
+
+func bilibiliVideoExtrasSatisfied(meta library.ItemMetadata, dlCfg settings.DownloadSettings) bool {
+	if len(meta.Parts) == 0 {
+		return false
+	}
+	if dlCfg.SaveCover && !hasMediaRole(meta.Media, "cover") {
+		return false
+	}
+	if dlCfg.MultiPart != "first" && meta.RemotePartCount > 0 && len(meta.Parts) < meta.RemotePartCount {
+		return false
+	}
+	for _, part := range meta.Parts {
+		if dlCfg.SaveDanmaku && (strings.TrimSpace(part.Danmaku) == "" || part.DanmakuState != "saved") {
 			return false
 		}
-		if part.Available.BestAudio > 0 && biliAudioPriority(part.Audio.Quality) < biliAudioPriority(part.Available.BestAudio) {
-			return false
-		}
-		atVideoCeiling := bilibili.QualityRank(part.Video.Quality) >= bilibili.QualityRank(116) ||
-			(capQn < 127 && bilibili.QualityRank(part.Video.Quality) >= bilibili.QualityRank(capQn)) ||
-			(part.Available.ProbedAt != "" && part.Available.BestVideo > 0 && bilibili.QualityRank(part.Video.Quality) >= bilibili.QualityRank(part.Available.BestVideo))
-		if !atVideoCeiling {
-			return false
+		if dlCfg.SaveSubtitles {
+			if part.SubtitleState != "saved" {
+				return false
+			}
+			if dlCfg.IncludeAI && !part.SubtitleIncludesAI {
+				return false
+			}
 		}
 	}
 	return true
@@ -1894,6 +2780,28 @@ func (b *Backend) probeBilibiliCachedVideo(
 	itemKey := firstNonEmpty(meta.ItemKey, library.CanonicalItemKey("bilibili", "video", bvid))
 	probeCtx := site.WithAutomaticRequests(ctx, "cache_queue")
 
+	now := time.Now().UTC()
+	if b.queue != nil && b.queue.clock != nil {
+		now = b.queue.clock.Now().UTC()
+	}
+	nowStr := now.Format(time.RFC3339)
+
+	// Record RecheckedAt (without touching Status, media, or CacheStandardVersion)
+	// when remote is deleted/unavailable/forbidden/downgraded so Gate C 7-day
+	// cooldown prevents infinite re-probing loops (DEC-096).
+	stampRecheckedOnly := func() {
+		if b == nil || b.lib == nil {
+			return
+		}
+		fresh, ok, gErr := b.lib.GetItem(itemKey)
+		if gErr != nil || !ok || strings.TrimSpace(fresh.ItemDir) == "" {
+			return
+		}
+		fresh.RecheckedAt = nowStr
+		fresh.UpgradeCheckedAt = nowStr
+		_, _ = b.lib.SaveItemMetadataOnly(fresh.ItemDir, fresh)
+	}
+
 	vd, err := b.bili.VideoDetail(probeCtx, bvid)
 	if err != nil {
 		if bilibili.IsKind(err, bilibili.ErrKindUnavailable) ||
@@ -1901,12 +2809,14 @@ func (b *Backend) probeBilibiliCachedVideo(
 			site.IsKind(err, site.ErrKindUnavailable) ||
 			site.IsKind(err, site.ErrKindForbidden) ||
 			site.IsKind(err, site.ErrKindBlocked) {
-			// (c) Remote deleted / unavailable -> preserve local V1 untouched!
+			// (c) Remote deleted / unavailable -> preserve local V1 untouched & arm Gate C cooldown!
+			stampRecheckedOnly()
 			return queueEnqueued{itemKey: itemKey, probedNoTask: true}, nil
 		}
 		return queueEnqueued{}, err
 	}
-	if len(vd.Pages) == 0 {
+	if len(vd.Pages) == 0 || vd.IsUpowerLocked() {
+		stampRecheckedOnly()
 		return queueEnqueued{itemKey: itemKey, probedNoTask: true}, nil
 	}
 
@@ -1922,10 +2832,10 @@ func (b *Backend) probeBilibiliCachedVideo(
 	fp := download.BilibiliVideoConflictFingerprint(bvid, vd.Pages, vd.Title, vd.Desc)
 
 	var conflictSummary string
-	maxCachedPage := 0
+	cachedPages := make(map[int]bool, len(meta.Parts))
 	for _, lp := range meta.Parts {
-		if lp.Page > maxCachedPage {
-			maxCachedPage = lp.Page
+		if lp.Page > 0 && strings.TrimSpace(lp.File) != "" {
+			cachedPages[lp.Page] = true
 		}
 		if lp.CID <= 0 {
 			continue
@@ -1979,9 +2889,19 @@ func (b *Backend) probeBilibiliCachedVideo(
 		return queueEnqueued{itemKey: itemKey, probedNoTask: true}, nil
 	}
 
-	// If local item was incomplete or author purely appended P(N+1).. while keeping P1..PN CIDs intact:
+	// Detect missing pages (including missing middle pages and MultiPart: first -> all)
+	// or incomplete items while keeping existing P1..PN CIDs intact (DEC-096).
 	dlCfg := b.GetSettings().Download
-	if library.NeedsCompletion(meta) || (dlCfg.MultiPart != "first" && maxCachedPage > 0 && len(vd.Pages) > maxCachedPage) {
+	var missingPages []int
+	for _, pg := range vd.Pages {
+		if dlCfg.MultiPart == "first" && pg.Page != 1 {
+			continue
+		}
+		if !cachedPages[pg.Page] {
+			missingPages = append(missingPages, pg.Page)
+		}
+	}
+	if library.NeedsCompletion(meta) || len(missingPages) > 0 {
 		var pagesToFetch []int
 		if library.NeedsCompletion(meta) {
 			for _, pg := range vd.Pages {
@@ -1991,11 +2911,7 @@ func (b *Backend) probeBilibiliCachedVideo(
 				pagesToFetch = append(pagesToFetch, pg.Page)
 			}
 		} else {
-			for _, pg := range vd.Pages {
-				if pg.Page > maxCachedPage {
-					pagesToFetch = append(pagesToFetch, pg.Page)
-				}
-			}
+			pagesToFetch = missingPages
 		}
 		if len(pagesToFetch) > 0 {
 			detailCopy := vd
@@ -2029,62 +2945,154 @@ func (b *Backend) probeBilibiliCachedVideo(
 		}
 	}
 
-	// Probe PlayURL on P1 to check quality upgrades vs preview/downgrades.
-	now := time.Now().UTC()
-	if b.queue != nil && b.queue.clock != nil {
-		now = b.queue.clock.Now().UTC()
-	}
-	nowStr := now.Format(time.RFC3339)
-
-	if len(meta.Parts) == 0 || meta.Parts[0].CID <= 0 {
-		return queueEnqueued{itemKey: itemKey, probedNoTask: true}, nil
-	}
-	part0 := meta.Parts[0]
-	playPlan, pErr := b.bili.PlayURL(probeCtx, bvid, part0.CID, b.bilibiliPlaySelectionOpts())
-	if pErr != nil {
-		if bilibili.IsKind(pErr, bilibili.ErrKindUnavailable) ||
-			bilibili.IsKind(pErr, bilibili.ErrKindForbidden) ||
-			site.IsKind(pErr, site.ErrKindUnavailable) ||
-			site.IsKind(pErr, site.ErrKindForbidden) ||
-			site.IsKind(pErr, site.ErrKindBlocked) {
-			// (c) Preview-only / restricted -> preserve V1 untouched!
-			return queueEnqueued{itemKey: itemKey, probedNoTask: true}, nil
-		}
-		return queueEnqueued{}, pErr
-	}
-
-	videoBetter := bilibili.QualityRank(playPlan.Video.Quality) > bilibili.QualityRank(part0.Video.Quality)
-	audioBetter := playPlan.Audio != nil && biliAudioPriority(playPlan.Audio.Quality) > biliAudioPriority(part0.Audio.Quality)
-	videoDowngraded := bilibili.QualityRank(playPlan.Video.Quality) < bilibili.QualityRank(part0.Video.Quality)
-	audioDowngraded := playPlan.Audio != nil && part0.Audio.Quality > 0 && biliAudioPriority(playPlan.Audio.Quality) < biliAudioPriority(part0.Audio.Quality)
-
-	// (c) Remote stream downgraded (e.g. lost VIP) -> never touch local V1!
-	if (videoDowngraded && !audioBetter) || (audioDowngraded && !videoBetter) {
-		return queueEnqueued{itemKey: itemKey, probedNoTask: true}, nil
-	}
-
-	// Refresh local Metadata from latest GetItem before stamping RecheckedAt.
+	// Refresh local metadata from latest GetItem before evaluating streams/extras.
 	freshMeta, exists, gErr := b.lib.GetItem(itemKey)
 	if gErr != nil || !exists {
 		freshMeta = meta
 	}
+	if len(freshMeta.Parts) == 0 {
+		stampRecheckedOnly()
+		return queueEnqueued{itemKey: itemKey, probedNoTask: true}, nil
+	}
+
+	// Evaluate missing extras across ALL cached parts (P1..PN, DEC-096).
+	needChapters := freshMeta.CacheStandardVersion < library.BilibiliVideoStandardVersion
+	needDanmaku := false
+	needSubtitles := false
+	for _, lp := range freshMeta.Parts {
+		if lp.CID <= 0 {
+			continue
+		}
+		if dlCfg.SaveDanmaku && (strings.TrimSpace(lp.Danmaku) == "" || lp.DanmakuState != "saved") {
+			needDanmaku = true
+		}
+		if dlCfg.SaveSubtitles && (lp.SubtitleState != "saved" || (dlCfg.IncludeAI && !lp.SubtitleIncludesAI)) {
+			needSubtitles = true
+		}
+	}
+	needCover := dlCfg.SaveCover && strings.TrimSpace(vd.Cover) != "" && !hasMediaRole(freshMeta.Media, "cover")
+	needExtras := needChapters || needDanmaku || needSubtitles
+
+	// DEC-096 Request-saving optimization: when all cached parts' video/audio
+	// streams are already at ceiling, skip PlayURL completely (0 PlayURL calls)
+	// and pass pre-fetched VideoDetail directly to CacheSupplementWithDetail!
+	if bilibiliVideoStreamsAtCeiling(freshMeta, dlCfg, now) {
+		freshMeta.RemotePartCount = len(vd.Pages)
+		freshMeta.Title = firstNonEmpty(vd.Title, freshMeta.Title)
+		freshMeta.Desc = firstNonEmpty(vd.Desc, freshMeta.Desc)
+		if needExtras {
+			// Persist RemotePartCount/header WITHOUT prematurely stamping CacheStandardVersion!
+			if freshMeta.ItemDir != "" {
+				_, _ = b.lib.SaveItemMetadataOnly(freshMeta.ItemDir, freshMeta)
+			}
+			detailCopy := vd
+			t, sErr := b.dl.CacheSupplementWithDetail(probeCtx, freshMeta.RawID, "queue", &detailCopy)
+			if sErr != nil {
+				return queueEnqueued{}, sErr
+			}
+			b.events.PublishSite(EventTaskUpdated, string(site.Bilibili), "enqueued:supplement:"+freshMeta.RawID)
+			return queueEnqueued{
+				taskIDs: []string{t.TaskID},
+				itemKey: itemKey,
+				title:   trimQueueSummaryTitle(firstNonEmpty(vd.Title, freshMeta.Title, bvid)),
+			}, nil
+		}
+		if needCover {
+			detailCopy := vd
+			tasks, enqErr := b.EnqueueVideoCache(probeCtx, download.VideoEnqueueRequest{
+				BVID:   bvid,
+				Detail: &detailCopy,
+				Pages:  []int{freshMeta.Parts[0].Page},
+				Source: "queue",
+				ForMid: forMid,
+			})
+			if enqErr != nil {
+				return queueEnqueued{}, enqErr
+			}
+			var ids []string
+			for _, t := range tasks {
+				ids = append(ids, t.TaskID)
+			}
+			return queueEnqueued{
+				taskIDs: ids,
+				itemKey: itemKey,
+				title:   trimQueueSummaryTitle(firstNonEmpty(vd.Title, freshMeta.Title, bvid)),
+			}, nil
+		}
+		freshMeta.UpgradeCheckedAt = nowStr
+		freshMeta.RecheckedAt = nowStr
+		freshMeta.UpgradeAvailable = false
+		freshMeta.UpgradeHint = ""
+		if freshMeta.ItemDir != "" {
+			_, _ = b.lib.SaveItemMetadataOnly(freshMeta.ItemDir, freshMeta)
+		}
+		return queueEnqueued{itemKey: itemKey, probedNoTask: true}, nil
+	}
+
+	// Probe PlayURL across all cached parts not yet at stream ceiling (P1..PN).
+	playOpts := b.bilibiliPlaySelectionOpts()
+	anyBetter := false
+	anyDowngraded := false
+	probedAny := false
+	for idx := range freshMeta.Parts {
+		lp := freshMeta.Parts[idx]
+		if lp.CID <= 0 {
+			continue
+		}
+		if idx > 0 && bilibiliPartStreamAtCeiling(lp, dlCfg) {
+			continue
+		}
+		probedAny = true
+		playPlan, pErr := b.bili.PlayURL(probeCtx, bvid, lp.CID, playOpts)
+		if pErr != nil {
+			if bilibili.IsKind(pErr, bilibili.ErrKindUnavailable) ||
+				bilibili.IsKind(pErr, bilibili.ErrKindForbidden) ||
+				site.IsKind(pErr, site.ErrKindUnavailable) ||
+				site.IsKind(pErr, site.ErrKindForbidden) ||
+				site.IsKind(pErr, site.ErrKindBlocked) {
+				// (c) Preview-only / restricted -> preserve V1 untouched & arm Gate C cooldown!
+				stampRecheckedOnly()
+				return queueEnqueued{itemKey: itemKey, probedNoTask: true}, nil
+			}
+			return queueEnqueued{}, pErr
+		}
+		videoBetter := bilibili.QualityRank(playPlan.Video.Quality) > bilibili.QualityRank(lp.Video.Quality)
+		audioBetter := playPlan.Audio != nil && biliAudioPriority(playPlan.Audio.Quality) > biliAudioPriority(lp.Audio.Quality)
+		videoDowngraded := bilibili.QualityRank(playPlan.Video.Quality) < bilibili.QualityRank(lp.Video.Quality)
+		audioDowngraded := playPlan.Audio != nil && lp.Audio.Quality > 0 && biliAudioPriority(playPlan.Audio.Quality) < biliAudioPriority(lp.Audio.Quality)
+
+		if (videoDowngraded && !audioBetter) || (audioDowngraded && !videoBetter) {
+			anyDowngraded = true
+			continue
+		}
+		freshMeta.Parts[idx].Available = library.PartAvailableInfo{
+			AcceptQuality: playPlan.Available.AcceptQuality,
+			Formats:       playPlan.Available.Formats,
+			Returned:      playPlan.Available.Returned,
+			BestVideo:     playPlan.Available.BestVideo,
+			BestAudio:     playPlan.Available.BestAudio,
+			HasDolby:      playPlan.Available.HasDolby,
+			HasFlac:       playPlan.Available.HasFlac,
+			ProbedAt:      nowStr,
+			Downgraded:    playPlan.Available.Downgraded,
+			DowngradeHint: playPlan.Available.DowngradeHint,
+		}
+		if videoBetter || audioBetter {
+			anyBetter = true
+			break
+		}
+	}
+
+	if !probedAny || (anyDowngraded && !anyBetter) {
+		// (c) Remote stream downgraded (e.g. lost VIP) -> preserve V1 untouched & arm Gate C cooldown!
+		stampRecheckedOnly()
+		return queueEnqueued{itemKey: itemKey, probedNoTask: true}, nil
+	}
+
+	freshMeta.RemotePartCount = len(vd.Pages)
 
 	// (b) Same-CID higher quality stream available -> enqueue upgrade!
-	if videoBetter || audioBetter {
-		if len(freshMeta.Parts) > 0 {
-			freshMeta.Parts[0].Available = library.PartAvailableInfo{
-				AcceptQuality: playPlan.Available.AcceptQuality,
-				Formats:       playPlan.Available.Formats,
-				Returned:      playPlan.Available.Returned,
-				BestVideo:     playPlan.Available.BestVideo,
-				BestAudio:     playPlan.Available.BestAudio,
-				HasDolby:      playPlan.Available.HasDolby,
-				HasFlac:       playPlan.Available.HasFlac,
-				ProbedAt:      nowStr,
-				Downgraded:    playPlan.Available.Downgraded,
-				DowngradeHint: playPlan.Available.DowngradeHint,
-			}
-		}
+	if anyBetter {
 		freshMeta.UpgradeCheckedAt = nowStr
 		freshMeta.RecheckedAt = nowStr
 		freshMeta.UpgradeAvailable = true
@@ -2103,18 +3111,19 @@ func (b *Backend) probeBilibiliCachedVideo(
 		}, nil
 	}
 
-	// Check missing danmaku / subtitles when user enabled them and standard was older.
-	needDanmaku := dlCfg.SaveDanmaku && strings.TrimSpace(part0.Danmaku) == "" && part0.DanmakuState != "saved"
-	needSubtitles := dlCfg.SaveSubtitles && len(part0.Subtitles) == 0 && part0.SubtitleState == "" &&
-		freshMeta.CacheStandardVersion < library.CurrentCacheStandardVersion
-	if needDanmaku || needSubtitles {
-		freshMeta.RecheckedAt = nowStr
+	// Check missing chapters / danmaku / subtitles across P1..PN WITHOUT prematurely
+	// stamping CacheStandardVersion before CacheSupplement finishes (DEC-096).
+	if needExtras {
+		freshMeta.Title = firstNonEmpty(vd.Title, freshMeta.Title)
+		freshMeta.Desc = firstNonEmpty(vd.Desc, freshMeta.Desc)
 		freshMeta.UpgradeCheckedAt = nowStr
-		freshMeta.CacheStandardVersion = library.CurrentCacheStandardVersion
+		freshMeta.UpgradeAvailable = false
+		freshMeta.UpgradeHint = ""
 		if freshMeta.ItemDir != "" {
 			_, _ = b.lib.SaveItem(freshMeta.ItemDir, freshMeta)
 		}
-		t, sErr := b.dl.CacheSupplementWithSource(probeCtx, freshMeta.RawID, "queue")
+		detailCopy := vd
+		t, sErr := b.dl.CacheSupplementWithDetail(probeCtx, freshMeta.RawID, "queue", &detailCopy)
 		if sErr != nil {
 			return queueEnqueued{}, sErr
 		}
@@ -2126,28 +3135,39 @@ func (b *Backend) probeBilibiliCachedVideo(
 		}, nil
 	}
 
-	// (a) No-op: stamp RecheckedAt & CurrentCacheStandardVersion so subsequent sweeps skip with 0 calls!
-	if len(freshMeta.Parts) > 0 {
-		freshMeta.Parts[0].Available = library.PartAvailableInfo{
-			AcceptQuality: playPlan.Available.AcceptQuality,
-			Formats:       playPlan.Available.Formats,
-			Returned:      playPlan.Available.Returned,
-			BestVideo:     playPlan.Available.BestVideo,
-			BestAudio:     playPlan.Available.BestAudio,
-			HasDolby:      playPlan.Available.HasDolby,
-			HasFlac:       playPlan.Available.HasFlac,
-			ProbedAt:      nowStr,
-			Downgraded:    playPlan.Available.Downgraded,
-			DowngradeHint: playPlan.Available.DowngradeHint,
+	if needCover {
+		detailCopy := vd
+		tasks, enqErr := b.EnqueueVideoCache(probeCtx, download.VideoEnqueueRequest{
+			BVID:   bvid,
+			Detail: &detailCopy,
+			Pages:  []int{freshMeta.Parts[0].Page},
+			Source: "queue",
+			ForMid: forMid,
+		})
+		if enqErr != nil {
+			return queueEnqueued{}, enqErr
 		}
+		var ids []string
+		for _, t := range tasks {
+			ids = append(ids, t.TaskID)
+		}
+		return queueEnqueued{
+			taskIDs: ids,
+			itemKey: itemKey,
+			title:   trimQueueSummaryTitle(firstNonEmpty(vd.Title, freshMeta.Title, bvid)),
+		}, nil
 	}
+
+	// (a) No-op (already at v3 and streams probed): stamp RecheckedAt so subsequent sweeps skip with 0 calls!
 	freshMeta.Title = firstNonEmpty(vd.Title, freshMeta.Title)
 	freshMeta.Desc = firstNonEmpty(vd.Desc, freshMeta.Desc)
 	freshMeta.UpgradeCheckedAt = nowStr
 	freshMeta.RecheckedAt = nowStr
 	freshMeta.UpgradeAvailable = false
 	freshMeta.UpgradeHint = ""
-	freshMeta.CacheStandardVersion = library.CurrentCacheStandardVersion
+	if freshMeta.CacheStandardVersion < library.BilibiliVideoStandardVersion {
+		freshMeta.CacheStandardVersion = library.BilibiliVideoStandardVersion
+	}
 	if freshMeta.ItemDir != "" {
 		_, _ = b.lib.SaveItem(freshMeta.ItemDir, freshMeta)
 	}

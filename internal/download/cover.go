@@ -32,7 +32,7 @@ func (m *Manager) saveVideoCover(ctx context.Context, task *Task, meta *library.
 	}
 	meta.Media = mergeMediaFiles(meta.Media, []library.MediaFile{*saved})
 	clearMissing(meta, "cover")
-	return m.saveVideoManifest(task, meta)
+	return m.saveVideoManifest(task, meta, false)
 }
 
 // mediaAlreadyCompleted reports whether a registered manifest file is valid on

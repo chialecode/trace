@@ -132,11 +132,18 @@ func (m *Manager) BackfillWeiboNoWMCompanions(
 		}
 	}
 
+	targetWeiboStd := library.WeiboCacheStandardVersion
+	if meta.EditCount > 0 && len(meta.EditHistory) == 0 {
+		// CDN-only backfill did not fetch DEC-094 EditHistory; stamp v3 so NoWM
+		// backfill never repeats while v4 editHistory backfill stays eligible.
+		targetWeiboStd = library.WeiboNoWMStandardVersion
+	}
+
 	slots := library.WeiboStaticImageSlotsMissingNoWM(meta)
 	if len(slots) == 0 {
 		needSave := res.LinksCleaned || assetIDsUpdated
-		if meta.CacheStandardVersion < library.WeiboCacheStandardVersion {
-			meta.CacheStandardVersion = library.WeiboCacheStandardVersion
+		if meta.CacheStandardVersion < targetWeiboStd {
+			meta.CacheStandardVersion = targetWeiboStd
 			res.StampedStandard = true
 			needSave = true
 		}
@@ -269,8 +276,8 @@ func (m *Manager) BackfillWeiboNoWMCompanions(
 		res.AddedCompanions++
 	}
 
-	if allSlotsAttempted && meta.CacheStandardVersion < library.WeiboCacheStandardVersion {
-		meta.CacheStandardVersion = library.WeiboCacheStandardVersion
+	if allSlotsAttempted && meta.CacheStandardVersion < targetWeiboStd {
+		meta.CacheStandardVersion = targetWeiboStd
 		res.StampedStandard = true
 	}
 

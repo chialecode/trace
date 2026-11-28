@@ -117,20 +117,32 @@ func (b *Backend) startDueFullCacheSweeps(ctx context.Context, now time.Time) []
 			busy[site.ID(t.Site)] = true
 		}
 	}
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	var due []fullCacheCandidate
+	biliHasDynRule := map[string]bool{}
+	var dueBiliUIDs []string
 	for _, s := range subs {
 		if !s.Rules.FullCache {
 			continue
 		}
+		dynRule := subscriptionHasBilibiliDynamicAutoCache(s)
 		for _, acc := range s.Accounts {
 			siteID := site.ID(strings.ToLower(strings.TrimSpace(acc.Site)))
 			uid := strings.TrimSpace(acc.UID)
 			key := string(siteID) + ":" + uid
-			if uid == "" || seen[key] || !siteID.Valid() {
+			if uid == "" || !siteID.Valid() {
 				continue
 			}
-			seen[key] = true
+			if siteID == site.Bilibili && dynRule {
+				_, normUID := library.NormalizeAuthorUID("bilibili", uid, 0)
+				if normUID != "" {
+					biliHasDynRule[normUID] = true
+				}
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = len(due)
 			var last time.Time
 			if w, ok := stored[key]; ok && w.FullCacheAt != "" {
 				last, _ = time.Parse(time.RFC3339, w.FullCacheAt)
@@ -138,7 +150,16 @@ func (b *Backend) startDueFullCacheSweeps(ctx context.Context, now time.Time) []
 			if !last.IsZero() && now.Sub(last) < subscription.FullCacheInterval {
 				continue
 			}
+			if siteID == site.Bilibili {
+				dueBiliUIDs = append(dueBiliUIDs, uid)
+			}
 			due = append(due, fullCacheCandidate{siteID: siteID, acc: acc, last: last})
+		}
+	}
+	var cachedBiliDynUIDs map[string]bool
+	if b.lib != nil && len(dueBiliUIDs) > 0 {
+		if m, err := b.lib.CachedBilibiliDynamicUIDs(dueBiliUIDs); err == nil {
+			cachedBiliDynUIDs = m
 		}
 	}
 	sort.SliceStable(due, func(i, j int) bool { return due[i].last.Before(due[j].last) })
@@ -180,8 +201,48 @@ func (b *Backend) startDueFullCacheSweeps(ctx context.Context, now time.Time) []
 			b.logError("MarkFullCacheSweep", err)
 		}
 		started = append(started, task.ID)
+
+		// DEC-096 Scope Decision #1: for Bilibili accounts with any dynamic
+		// auto-cache tag configured OR existing local cached dynamics, also enqueue
+		// a periodic fullCache dynamics sweep behind videos on the same site queue.
+		if c.siteID == site.Bilibili {
+			_, normUID := library.NormalizeAuthorUID("bilibili", c.acc.UID, 0)
+			if normUID != "" && (biliHasDynRule[normUID] || cachedBiliDynUIDs[normUID]) {
+				dynTask, dynErr := b.EnqueueCacheQueue(ctx, CacheQueueRequest{
+					Site:      string(site.Bilibili),
+					List:      "dynamics",
+					User:      c.acc.UID,
+					UserName:  c.acc.Name,
+					AvatarURL: c.acc.Face,
+					Origin:    QueueOriginFullCache,
+				})
+				if dynErr != nil {
+					b.logError("FullCacheSweep.BilibiliDynamics", dynErr)
+				} else {
+					started = append(started, dynTask.ID)
+				}
+			}
+		}
 	}
 	return started
+}
+
+func subscriptionHasBilibiliDynamicAutoCache(s subscription.Subscription) bool {
+	for _, tag := range s.Tags {
+		switch strings.ToLower(strings.TrimSpace(tag)) {
+		case subscription.TagCacheDraw, subscription.TagCacheWord, subscription.TagCacheForward:
+			return true
+		}
+	}
+	if s.Rules.AutoCache.Enabled {
+		for _, typ := range s.Rules.AutoCache.Types {
+			switch strings.ToLower(strings.TrimSpace(typ)) {
+			case "draw", "word", "forward", "dynamic":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // refreshDouyinWorksTotal reads a Douyin account's works total for its sweep

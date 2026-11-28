@@ -151,6 +151,7 @@ type Manager struct {
 
 	planners            map[site.ID]WorkPlanner
 	initialPlans        map[string]WorkDownloadPlan
+	supplementDetails   map[string]bilibili.VideoDetail
 	conflictResolutions map[string]string
 	conflictPages       map[string][]int
 	forceOverwrites     map[string]bool
@@ -864,6 +865,13 @@ func (m *Manager) CacheSupplement(ctx context.Context, bvid string) (Task, error
 // ("manual", "queue", or "auto") so queue-triggered supplements count against
 // Bilibili's automatic hourly request quota.
 func (m *Manager) CacheSupplementWithSource(ctx context.Context, bvid, source string) (Task, error) {
+	return m.CacheSupplementWithDetail(ctx, bvid, source, nil)
+}
+
+// CacheSupplementWithDetail enqueues a supplement task while optionally passing
+// an already-fetched VideoDetail so executeSupplementTask skips a duplicate
+// VideoDetail call and only fetches per-part extras (DEC-096).
+func (m *Manager) CacheSupplementWithDetail(ctx context.Context, bvid, source string, detail *bilibili.VideoDetail) (Task, error) {
 	if err := m.client.RequireAuth("download:supplement"); err != nil {
 		return Task{}, err
 	}
@@ -908,8 +916,37 @@ func (m *Manager) CacheSupplementWithSource(ctx context.Context, bvid, source st
 	if mode != "" {
 		m.storeTaskResolutionAndPages(t.TaskID, mode, nil)
 	}
+	if detail != nil && strings.TrimSpace(detail.BVID) != "" {
+		m.storeSupplementDetail(t.TaskID, *detail)
+	}
 	m.notifyWake()
 	return t, nil
+}
+
+func (m *Manager) storeSupplementDetail(taskID string, detail bilibili.VideoDetail) {
+	if taskID == "" {
+		return
+	}
+	m.mu.Lock()
+	if m.supplementDetails == nil {
+		m.supplementDetails = make(map[string]bilibili.VideoDetail)
+	}
+	m.supplementDetails[taskID] = detail
+	m.mu.Unlock()
+}
+
+func (m *Manager) takeSupplementDetail(taskID string) (bilibili.VideoDetail, bool) {
+	if taskID == "" {
+		return bilibili.VideoDetail{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.supplementDetails == nil {
+		return bilibili.VideoDetail{}, false
+	}
+	d, ok := m.supplementDetails[taskID]
+	delete(m.supplementDetails, taskID)
+	return d, ok
 }
 
 // Upgrade enqueues a manual upgrade task for a cached item.

@@ -186,6 +186,56 @@ func TestMissingSubtitlesAndChaptersZeroExtraRequests(t *testing.T) {
 	}
 }
 
+func TestMissingSubtitlesAndChaptersSkipSubtitleBodiesReturnsChapters(t *testing.T) {
+	var playerV2Calls, subtitleBodyCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/subtitle/zh.json", func(w http.ResponseWriter, r *http.Request) {
+		subtitleBodyCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"body": []map[string]any{{"from": 0.0, "to": 1.5, "content": "不应下载正文"}},
+		})
+	})
+	var srvURL string
+	mux.HandleFunc("/x/player/wbi/v2", func(w http.ResponseWriter, r *http.Request) {
+		playerV2Calls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"bvid": "BV17x411w7KC",
+				"cid":  5002,
+				"subtitle": map[string]any{
+					"subtitles": []map[string]any{
+						{"lan": "zh-CN", "lan_doc": "中文", "subtitle_url": srvURL + "/subtitle/zh.json"},
+					},
+				},
+				"view_points": []map[string]any{
+					{"type": 2, "from": 0, "to": 45, "content": "开场"},
+					{"type": 2, "from": 45, "to": 120, "content": "正片"},
+				},
+			},
+		})
+	})
+
+	client, _, srv := newTestLoggedClient(t, mux, -1)
+	srvURL = srv.URL
+	extras, err := client.MissingSubtitlesAndChapters(context.Background(), "BV17x411w7KC", 5002, true, nil, false)
+	if err != nil {
+		t.Fatalf("MissingSubtitlesAndChapters(fetchSubtitleBodies=false): %v", err)
+	}
+	if playerV2Calls.Load() != 1 {
+		t.Fatalf("expected 1 /x/player/wbi/v2 call, got %d", playerV2Calls.Load())
+	}
+	if subtitleBodyCalls.Load() != 0 {
+		t.Fatalf("expected 0 subtitle body downloads when fetchSubtitleBodies=false, got %d", subtitleBodyCalls.Load())
+	}
+	if len(extras.Subtitles) != 0 {
+		t.Fatalf("expected 0 subtitle tracks returned when fetchSubtitleBodies=false, got %+v", extras.Subtitles)
+	}
+	if len(extras.Chapters) != 2 || extras.Chapters[0].Title != "开场" || extras.Chapters[1].Title != "正片" {
+		t.Fatalf("expected 2 chapters returned, got %+v", extras.Chapters)
+	}
+}
+
 func TestVideoDetailUpowerFlagsAndLockedHelper(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/x/web-interface/wbi/view", func(w http.ResponseWriter, r *http.Request) {

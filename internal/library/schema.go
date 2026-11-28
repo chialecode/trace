@@ -15,16 +15,82 @@ import (
 // CurrentSchemaVersion is the SQLite PRAGMA user_version written to library.db.
 const CurrentSchemaVersion = 2
 
-// CurrentCacheStandardVersion identifies the current cache completeness and
-// media/metadata enrichment baseline recorded on newly cached or re-verified
-// item.json manifests (item.json schema version remains 1).
+// CurrentCacheStandardVersion identifies the legacy cross-site cache completeness
+// baseline (v2). New code should use SiteCacheStandardVersion(site, kind) so each
+// site/kind can advance its backfill baseline independently (DEC-096).
 const CurrentCacheStandardVersion = 2
 
-// WeiboCacheStandardVersion identifies the Weibo-specific cache standard
-// baseline including dual-save watermark-free (/oslarge/) companion images
-// and DEC-073 clean structured links (DEC-078, DEC-079). CurrentCacheStandardVersion
-// stays at 2 so Bilibili Gate B does not trigger unnecessary PlayURL re-probes.
-const WeiboCacheStandardVersion = 3
+// Per-site cache standard baseline versions recorded on item.json manifests
+// without bumping item.json (v1), library.db (v2), or cache-queue.json (v3) (DEC-096).
+const (
+	// BilibiliVideoStandardVersion = 3 covers chapter markers (view_points) even
+	// when subtitle saving is disabled, full P1..PN extras/AI-subtitle tracking,
+	// and RemotePartCount multi-part awareness.
+	BilibiliVideoStandardVersion = 3
+	// BilibiliDynamicStandardVersion = 3 covers forward orig.json snapshots,
+	// path-aligned live motion photos, linked video checks, AssetIDs, and legacy
+	// inline link cleanup.
+	BilibiliDynamicStandardVersion = 3
+	// DouyinCacheStandardVersion = 3 covers OriginalState anti-loop tracking,
+	// same-resolution higher-bitrate & mixed-note video upgrades, cover backfill,
+	// and AssetIDs/MediaID completion.
+	DouyinCacheStandardVersion = 3
+	// WeiboNoWMStandardVersion = 3 is the historical baseline that introduced
+	// dual-save watermark-free (/oslarge/) companion images (DEC-078/DEC-079).
+	WeiboNoWMStandardVersion = 3
+	// WeiboCacheStandardVersion = 4 covers v3 (/oslarge/ companions + legacy link
+	// cleanup) plus DEC-094 editHistory backfill, EditCount sync, structured
+	// Links/Origin.Links, and uniform stamping across text/video/GIF/image posts.
+	WeiboCacheStandardVersion = 4
+	// XCacheStandardVersion = 3 covers DEC-093 CardKindArticle -> ItemArticle
+	// upgrades, DEC-091 metadata backfill (InReplyTo/Origin/Thread/TypeLabel/Links),
+	// note_tweet expansion, and SelfThreadID self-reply thread completion.
+	XCacheStandardVersion = 3
+)
+
+// SiteCacheStandardVersion returns the active cache completeness and metadata
+// enrichment baseline for a given (site, kind) pair (DEC-096).
+func SiteCacheStandardVersion(site, kind string) int {
+	normSite := strings.ToLower(strings.TrimSpace(site))
+	normKind := strings.ToLower(strings.TrimSpace(kind))
+	if normSite == "" {
+		normSite = "bilibili"
+	}
+	switch normSite {
+	case "bilibili":
+		switch normKind {
+		case "video":
+			return BilibiliVideoStandardVersion
+		case "dynamic":
+			return BilibiliDynamicStandardVersion
+		default:
+			return CurrentCacheStandardVersion
+		}
+	case "douyin":
+		switch normKind {
+		case "video", "dynamic", "note":
+			return DouyinCacheStandardVersion
+		default:
+			return CurrentCacheStandardVersion
+		}
+	case "weibo":
+		switch normKind {
+		case "video", "dynamic":
+			return WeiboCacheStandardVersion
+		default:
+			return CurrentCacheStandardVersion
+		}
+	case "x":
+		switch normKind {
+		case "dynamic", "video":
+			return XCacheStandardVersion
+		default:
+			return CurrentCacheStandardVersion
+		}
+	default:
+		return CurrentCacheStandardVersion
+	}
+}
 
 // ItemMetadata is the canonical on-disk schema for item.json (INV-02).
 // It is backward-compatible with earlier TRACE item.json files in trace-data/library/.
@@ -50,6 +116,7 @@ type ItemMetadata struct {
 	NotePages        []NotePageRecord   `json:"notePages,omitempty"`
 	Music            *MusicInfo         `json:"music,omitempty"`
 	ExpectedPages    []int              `json:"expectedPages,omitempty"`
+	RemotePartCount  int                `json:"remotePartCount,omitempty"`
 	PendingParts     []string           `json:"pendingParts,omitempty"`
 	Live             *LiveRecordingInfo `json:"live,omitempty"`
 	Videos           []string           `json:"videos,omitempty"`
@@ -335,6 +402,10 @@ type DouyinVideoInfo struct {
 	FPS            int      `json:"fps,omitempty"`
 	Bitrate        int64    `json:"bitrate,omitempty"`
 	AvailableGears []string `json:"availableGears,omitempty"`
+	// OriginalState records permanent original-stream availability status
+	// (e.g. "unavailable" after HTTP 403/404 or non-video rejection) so full-cache
+	// sweeps stop retrying unfetchable original URLs (DEC-096).
+	OriginalState string `json:"originalState,omitempty"`
 }
 
 // NotePageRecord records one ordered page of a Douyin/Weibo/X image or mixed note (image, motion live-photo, video/GIF, or unknown).
@@ -392,20 +463,21 @@ type VideoChapter struct {
 }
 
 type VideoPartRecord struct {
-	CID            int64              `json:"cid"`
-	Page           int                `json:"page"`
-	Title          string             `json:"title"`
-	Duration       int                `json:"duration"`
-	File           string             `json:"file"`
-	Danmaku        string             `json:"danmaku,omitempty"`
-	Subtitles      []string           `json:"subtitles,omitempty"`
-	DanmakuState   string             `json:"danmakuState,omitempty"`
-	SubtitleState  string             `json:"subtitleState,omitempty"`
-	SubtitleTracks []PartSubtitleInfo `json:"subtitleTracks,omitempty"`
-	Chapters       []VideoChapter     `json:"chapters,omitempty"`
-	Video          PartVideoInfo      `json:"video"`
-	Audio          PartAudioInfo      `json:"audio"`
-	Available      PartAvailableInfo  `json:"available"`
+	CID                int64              `json:"cid"`
+	Page               int                `json:"page"`
+	Title              string             `json:"title"`
+	Duration           int                `json:"duration"`
+	File               string             `json:"file"`
+	Danmaku            string             `json:"danmaku,omitempty"`
+	Subtitles          []string           `json:"subtitles,omitempty"`
+	DanmakuState       string             `json:"danmakuState,omitempty"`
+	SubtitleState      string             `json:"subtitleState,omitempty"`
+	SubtitleIncludesAI bool               `json:"subtitleIncludesAi,omitempty"`
+	SubtitleTracks     []PartSubtitleInfo `json:"subtitleTracks,omitempty"`
+	Chapters           []VideoChapter     `json:"chapters,omitempty"`
+	Video              PartVideoInfo      `json:"video"`
+	Audio              PartAudioInfo      `json:"audio"`
+	Available          PartAvailableInfo  `json:"available"`
 }
 
 type PartSubtitleInfo struct {
@@ -886,6 +958,9 @@ func sanitizeManifestConflictFields(meta *ItemMetadata) {
 	if meta.CacheStandardVersion < 0 {
 		meta.CacheStandardVersion = 0
 	}
+	if meta.RemotePartCount < 0 {
+		meta.RemotePartCount = 0
+	}
 	meta.RecheckedAt = strings.TrimSpace(meta.RecheckedAt)
 	if hasSignedOrQueryMarkers(meta.RecheckedAt) || isRemoteOrSignedURL(meta.RecheckedAt) || containsXForbiddenTextMarkers(meta.RecheckedAt) {
 		meta.RecheckedAt = ""
@@ -926,12 +1001,23 @@ func sanitizeManifestConflictFields(meta *ItemMetadata) {
 	}
 	if meta.DouyinVideo != nil {
 		meta.DouyinVideo.MediaID = SanitizeMediaToken(meta.DouyinVideo.MediaID)
+		meta.DouyinVideo.OriginalState = sanitizeDouyinOriginalState(meta.DouyinVideo.OriginalState)
 	}
 	for i := range meta.NotePages {
 		meta.NotePages[i].MediaID = SanitizeMediaToken(meta.NotePages[i].MediaID)
 		if meta.NotePages[i].VideoInfo != nil {
 			meta.NotePages[i].VideoInfo.MediaID = SanitizeMediaToken(meta.NotePages[i].VideoInfo.MediaID)
+			meta.NotePages[i].VideoInfo.OriginalState = sanitizeDouyinOriginalState(meta.NotePages[i].VideoInfo.OriginalState)
 		}
+	}
+}
+
+func sanitizeDouyinOriginalState(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "unavailable":
+		return "unavailable"
+	default:
+		return ""
 	}
 }
 
@@ -2097,13 +2183,30 @@ func stripFileExt(rel string) string {
 
 // WeiboNeedsNoWMBackfill reports whether a cached Weibo image post should be
 // backfilled for watermark-free (/oslarge/) companion images under DEC-078/DEC-079.
-// Items already stamped with CacheStandardVersion >= WeiboCacheStandardVersion are
-// skipped even if some images had no /oslarge/ variant or matched primary SHA-256.
+// Items already stamped with CacheStandardVersion >= WeiboNoWMStandardVersion (3)
+// already evaluated /oslarge/ for every static slot and are skipped even if some
+// images had no /oslarge/ variant or matched primary SHA-256.
 func WeiboNeedsNoWMBackfill(meta ItemMetadata, removeWatermark bool) bool {
-	if !removeWatermark || meta.CacheStandardVersion >= WeiboCacheStandardVersion {
+	if !removeWatermark || meta.CacheStandardVersion >= WeiboNoWMStandardVersion {
 		return false
 	}
 	return len(WeiboStaticImageSlotsMissingNoWM(meta)) > 0
+}
+
+// WeiboNeedsEditHistoryBackfill reports whether a cached Weibo post records
+// EditCount > 0 without any cached EditHistory and has not yet been verified at
+// WeiboCacheStandardVersion (v4, DEC-094/DEC-096).
+func WeiboNeedsEditHistoryBackfill(meta ItemMetadata) bool {
+	if !strings.EqualFold(strings.TrimSpace(meta.Site), "weibo") {
+		return false
+	}
+	if meta.IsArchivedSnapshot() || meta.Status != "complete" {
+		return false
+	}
+	if meta.CacheStandardVersion >= WeiboCacheStandardVersion {
+		return false
+	}
+	return meta.EditCount > 0 && len(meta.EditHistory) == 0
 }
 
 // WeiboHasAllFastCDNPicIDs reports whether every missing static image slot on a

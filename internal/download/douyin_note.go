@@ -348,7 +348,7 @@ func (m *Manager) executeDouyinNoteTask(ctx context.Context, t *Task, plan WorkD
 			var vidMedia *library.MediaFile
 			var vErr error
 			if hasProtectedLocal && !isConflict && canReuseLocal && reusableLP.Video != "" &&
-				(reusableLP.VideoInfo == nil || page.Width*page.Height <= reusableLP.VideoInfo.Width*reusableLP.VideoInfo.Height) {
+				!notePageVideoNeedsUpgrade(reusableLP.VideoInfo, page) {
 				vidMedia, _ = copyLocalMediaToStageAs(previous, reusableLP.Video, videoRel, "video", workDir)
 			}
 			if vidMedia == nil {
