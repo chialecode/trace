@@ -172,6 +172,9 @@ func (a *App) renderSettingsSidebar(c *ui.Context, compact bool) {
 					a.Remote.CodeInput = ""
 					a.Remote.TokenInput = ""
 				}
+				if a.SettingsCategory == "general" && ct.Key != "general" {
+					a.GeneralAutostartError = ""
+				}
 				a.SettingsCategory = ct.Key
 			}
 		}
@@ -209,8 +212,16 @@ func (a *App) renderSettingsCategoryContent(c *ui.Context) {
 	}
 }
 
+func (a *App) autostartStatusCached() service.AutostartStatus {
+	if a.dispatch == nil || a.cachedAutostartAt.IsZero() || time.Since(a.cachedAutostartAt) >= settingsMetaCacheTTL {
+		a.cachedAutostart = a.backend.AutostartStatus()
+		a.cachedAutostartAt = time.Now()
+	}
+	return a.cachedAutostart
+}
+
 func (a *App) renderGeneralSettings(c *ui.Context) {
-	status := a.backend.AutostartStatus()
+	status := a.autostartStatusCached()
 	ui.Column(c).FillWidth().Gap(12).ClipX().Children(func() {
 		if settingChoiceRow(c, "关闭窗口时", "最小化到托盘时，缓存、定时检查和录制在后台继续，界面占用的内存会释放。", "关闭窗口动作选择", &a.DraftSettings.Window.CloseAction, closeActionChoices) {
 			a.DraftSettings.CloseAction = a.DraftSettings.Window.CloseAction
@@ -243,6 +254,7 @@ func (a *App) toggleAutostart(enable bool) {
 	next := a.DraftSettings
 	next.Window.AutoStart = enable
 	updated, err := a.backend.UpdateSettings(next)
+	a.cachedAutostartAt = time.Time{}
 	if err != nil {
 		a.DraftSettings.Window.AutoStart = prev
 		a.GeneralAutostartError = userErrorText(err)

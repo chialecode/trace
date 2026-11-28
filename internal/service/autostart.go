@@ -275,14 +275,16 @@ func (b *Backend) applyAutostartToggle(enable bool) (func(), error) {
 		}, nil
 	}
 
-	// Disabling: remove this channel's Run entry when a registry adapter is active.
-	// If unsupported (e.g. non-Windows or portable), still allow turning the saved
-	// preference off so settings never get stuck on true.
-	if b.autostartReg == nil || eval.ValueName == "" {
+	// Disabling: only touch the registry when this process is a supported
+	// installed Windows build for its channel. In unsupported environments
+	// (non-Windows, portable, source 0.0.0-dev, remote), still allow turning
+	// the saved preference off so settings never get stuck on true, without
+	// ever touching an installed channel's Windows Run entry.
+	if !eval.Supported || b.autostartReg == nil || eval.ValueName == "" {
 		return nil, nil
 	}
-	prevCmd, prevExists, _ := b.autostartReg.Get(eval.ValueName)
-	if !prevExists {
+	prevCmd, prevExists, getErr := b.autostartReg.Get(eval.ValueName)
+	if getErr == nil && !prevExists {
 		return nil, nil
 	}
 	if err := b.autostartReg.Delete(eval.ValueName); err != nil {
@@ -293,6 +295,9 @@ func (b *Backend) applyAutostartToggle(enable bool) (func(), error) {
 		}
 	}
 	b.logInfo(fmt.Sprintf("autostart disabled: channel=%s value=%s", eval.Channel, eval.ValueName))
+	if getErr != nil || !prevExists {
+		return nil, nil
+	}
 	return func() {
 		_ = b.autostartReg.Set(eval.ValueName, prevCmd)
 	}, nil

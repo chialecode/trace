@@ -128,6 +128,23 @@ func TestSettingsGeneralAutostartToggleErrorAndResponsiveLayout(t *testing.T) {
 	if _, ok := tt.Find("开机自动启动错误"); !ok || !tt.HasText("写入 Windows 开机启动项失败：registry access denied") {
 		t.Fatalf("expected inline autostart error, got %q", app.GeneralAutostartError)
 	}
+
+	// Switching settings category clears transient autostart error.
+	if err := tt.Click("设置分类：网络"); err != nil {
+		t.Fatalf("switch to network category: %v", err)
+	}
+	tt.Frame()
+	if app.GeneralAutostartError != "" {
+		t.Fatalf("expected GeneralAutostartError cleared on category switch, got %q", app.GeneralAutostartError)
+	}
+
+	// Leaving RouteSettings also clears transient autostart error.
+	app.SettingsCategory = "general"
+	app.GeneralAutostartError = "stale error"
+	app.Navigate(RouteHome)
+	if app.GeneralAutostartError != "" {
+		t.Fatalf("expected GeneralAutostartError cleared on leaving settings, got %q", app.GeneralAutostartError)
+	}
 }
 
 func TestSettingsGeneralAutostartUnsupportedFeedback(t *testing.T) {

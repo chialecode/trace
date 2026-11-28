@@ -201,3 +201,23 @@ func TestShellBackgroundLaunchDeliversOfflineLiveNoticeOnceWithZeroRequests(t *t
 		t.Fatalf("expected ZERO outbound requests during startup/gap/shell flow, got %d", calls)
 	}
 }
+
+func TestSelectAutostartRegistryDefenseInDepth(t *testing.T) {
+	installedLoc := appdirs.Locations{Channel: "stable", Mode: "installed"}
+	portableLoc := appdirs.Locations{Channel: "stable", Mode: "portable"}
+
+	if reg := selectAutostartRegistry(installedLoc, "0.1.3", "hidden"); reg == nil {
+		t.Fatal("expected in-memory registry in quiet mode")
+	} else if _, ok := reg.(*service.MemoryAutostartRegistry); !ok {
+		t.Fatalf("expected *service.MemoryAutostartRegistry in quiet mode, got %T", reg)
+	}
+	if reg := selectAutostartRegistry(portableLoc, "0.1.3", ""); reg != nil {
+		t.Fatalf("portable mode must not connect to real system registry, got %T", reg)
+	}
+	if reg := selectAutostartRegistry(installedLoc, appdirs.UnversionedBuild, ""); reg != nil {
+		t.Fatalf("unversioned source build must not connect to real system registry, got %T", reg)
+	}
+	if reg := selectAutostartRegistry(installedLoc, "", ""); reg != nil {
+		t.Fatalf("empty build version must not connect to real system registry, got %T", reg)
+	}
+}

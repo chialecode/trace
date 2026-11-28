@@ -249,12 +249,7 @@ func Run() error {
 
 	// "Follow the system" proxy reads Windows' own settings, not only HTTP(S)_PROXY (DEC-046 ⑤).
 	site.SetSystemProxyFunc(netproxy.Proxy)
-	var autostartReg service.AutostartRegistry
-	if QuietMode(loc.Channel) == "" {
-		autostartReg = service.SystemAutostartRegistry()
-	} else {
-		autostartReg = service.NewMemoryAutostartRegistry()
-	}
+	autostartReg := selectAutostartRegistry(loc, build.Version, QuietMode(loc.Channel))
 	backend, err = service.NewBackend(service.Options{
 		Locations:           loc,
 		InstalledDevVersion: service.ReadSystemInstalledDevVersion,
@@ -362,6 +357,20 @@ func audioSinkForQuiet(quiet string) player.AudioSink {
 		return player.NewNullAudioSink()
 	}
 	return player.NewMyGoAudioSink()
+}
+
+// selectAutostartRegistry enforces defense-in-depth so portable, source
+// (go run / mygo dev with UnversionedBuild), and quiet processes never connect
+// to the host's real HKCU Run registry key.
+func selectAutostartRegistry(loc appdirs.Locations, version, quiet string) service.AutostartRegistry {
+	if quiet != "" {
+		return service.NewMemoryAutostartRegistry()
+	}
+	v := strings.TrimSpace(version)
+	if !strings.EqualFold(strings.TrimSpace(loc.Mode), "installed") || v == "" || v == appdirs.UnversionedBuild {
+		return nil
+	}
+	return service.SystemAutostartRegistry()
 }
 
 func (s *Shell) audioSinkForMode() player.AudioSink {

@@ -259,6 +259,8 @@ type App struct {
 	cachedInstalledDevAt time.Time
 	cachedUpdateHist     update.History
 	cachedUpdateHistAt   time.Time
+	cachedAutostart      service.AutostartStatus
+	cachedAutostartAt    time.Time
 
 	// In-memory bitmap cache for local covers/thumbnails, freed on CloseToTray (DEC-030)
 	images             bitmapCache
@@ -960,6 +962,7 @@ func (a *App) handleBackendEvent(ev service.Event) {
 	case service.EventSettingsChanged:
 		a.cachedDiagAt = time.Time{}
 		a.cachedUpdateHistAt = time.Time{}
+		a.cachedAutostartAt = time.Time{}
 		a.markBackfillSummaryDirty()
 		a.ensureBackfillSummaryFresh()
 	case service.EventAccountChanged:

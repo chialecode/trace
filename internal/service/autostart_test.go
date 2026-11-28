@@ -325,6 +325,70 @@ func TestAutostartUnsupportedEnvironments(t *testing.T) {
 			t.Fatal("expected AutoStart=false after disable")
 		}
 	})
+
+	// Regression (P0): disabling a pre-existing autoStart=true in portable or
+	// unversioned source (0.0.0-dev) mode on Windows — even if a non-nil registry
+	// adapter holding the installed stable Run entry is present — MUST save
+	// settings.json as false without ever deleting the installed channel's Run entry.
+	for _, sub := range []struct {
+		name    string
+		mode    string
+		version string
+	}{
+		{"portable_preserves_host_stable_run", "portable", "0.1.3"},
+		{"source_unversioned_preserves_host_stable_run", "installed", appdirs.UnversionedBuild},
+	} {
+		t.Run(sub.name, func(t *testing.T) {
+			reg := NewMemoryAutostartRegistry()
+			stableVal := appdirs.AutostartValueNameForChannel("stable")
+			const stableCmd = `"C:\Users\demo\AppData\Local\Programs\trace\trace.exe" --background`
+			if err := reg.Set(stableVal, stableCmd); err != nil {
+				t.Fatal(err)
+			}
+
+			loc := installedChannelLocations(t, "stable")
+			loc.Mode = sub.mode
+			if err := appdirs.EnsureDirectories(loc); err != nil {
+				t.Fatal(err)
+			}
+			pre := settings.Default(loc.DefaultCacheDir)
+			pre.Window.AutoStart = true
+			rawPre, err := json.MarshalIndent(pre, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(loc.DataDir, "settings.json"), rawPre, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			b, err := NewBackend(Options{
+				Locations:         loc,
+				Desktop:           NewMockDesktop(),
+				DisableBgWorkers:  true,
+				AutostartRegistry: reg,
+				AutostartExePath:  `C:\Temp\trace.exe`,
+				AutostartVersion:  sub.version,
+				AutostartGOOS:     "windows",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer b.Close()
+
+			next := b.GetSettings()
+			next.Window.AutoStart = false
+			saved, err := b.UpdateSettings(next)
+			if err != nil {
+				t.Fatalf("disable in %s failed: %v", sub.name, err)
+			}
+			if saved.Window.AutoStart {
+				t.Fatal("expected AutoStart=false persisted")
+			}
+			if got, ok, _ := reg.Get(stableVal); !ok || got != stableCmd {
+				t.Fatalf("unsupported %s mode clobbered host stable Run entry: ok=%v got=%q", sub.name, ok, got)
+			}
+		})
+	}
 }
 
 func TestAutostartRegistryFailureAndRollback(t *testing.T) {
@@ -386,6 +450,64 @@ func TestAutostartRegistryFailureAndRollback(t *testing.T) {
 	valName := appdirs.AutostartValueNameForChannel("stable")
 	if cmd, ok, _ := reg.Get(valName); !ok || cmd != `"`+exePath+`" --background` {
 		t.Fatalf("expected registry rollback to restore %q, got ok=%v cmd=%q", valName, ok, cmd)
+	}
+}
+
+func TestAutostartDisableHandlesRegistryGetError(t *testing.T) {
+	reg := NewMemoryAutostartRegistry()
+	loc := installedChannelLocations(t, "stable")
+	exePath := `C:\Users\demo\AppData\Local\Programs\trace\trace.exe`
+	valName := appdirs.AutostartValueNameForChannel("stable")
+
+	b, err := NewBackend(Options{
+		Locations:         loc,
+		Desktop:           NewMockDesktop(),
+		DisableBgWorkers:  true,
+		AutostartRegistry: reg,
+		AutostartExePath:  exePath,
+		AutostartVersion:  "0.1.3",
+		AutostartGOOS:     "windows",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	// Enable cleanly first.
+	next := b.GetSettings()
+	next.Window.AutoStart = true
+	if _, err := b.UpdateSettings(next); err != nil {
+		t.Fatal(err)
+	}
+
+	// Case 1: GetErr != nil AND DelErr != nil (e.g. access denied) -> must NOT
+	// silently skip Delete or mark AutoStart=false.
+	reg.GetErr = errors.New("access denied on read")
+	reg.DelErr = errors.New("access denied on delete")
+	next = b.GetSettings()
+	next.Window.AutoStart = false
+	if _, err := b.UpdateSettings(next); err == nil || !site.IsKind(err, site.ErrKindStorage) {
+		t.Fatalf("expected ErrKindStorage when Get and Delete both fail, got %v", err)
+	}
+	if !b.GetSettings().Window.AutoStart {
+		t.Fatal("AutoStart should stay true when Delete fails after GetErr")
+	}
+	if snap := reg.Snapshot(); snap[valName] == "" {
+		t.Fatal("registry entry unexpectedly missing")
+	}
+
+	// Case 2: GetErr != nil (e.g. ErrUnexpectedType) AND DelErr == nil -> must
+	// still call Delete to clean up the residual value and persist AutoStart=false.
+	reg.DelErr = nil
+	saved, err := b.UpdateSettings(next)
+	if err != nil {
+		t.Fatalf("expected Delete to clean up residual value despite GetErr: %v", err)
+	}
+	if saved.Window.AutoStart {
+		t.Fatal("expected AutoStart=false after Delete succeeded")
+	}
+	if snap := reg.Snapshot(); snap[valName] != "" {
+		t.Fatalf("residual registry entry was not deleted when GetErr occurred: %+v", snap)
 	}
 }
 

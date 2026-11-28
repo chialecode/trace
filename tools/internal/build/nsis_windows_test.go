@@ -79,15 +79,18 @@ func TestCompiledNSISShortcutBehavior(t *testing.T) {
 
 	const devTestID = "io.github.chialecode.trace-nsis-unit-dev"
 	const stableTestID = "io.github.chialecode.trace-nsis-unit-stable"
+	const testChanTestID = "io.github.chialecode.trace-nsis-unit-test"
 	const testRunRegKey = `Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.trace-nsis-unit-run`
 	t.Cleanup(func() {
 		_ = registry.DeleteKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Uninstall\`+devTestID)
 		_ = registry.DeleteKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Uninstall\`+stableTestID)
+		_ = registry.DeleteKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Uninstall\`+testChanTestID)
 		_ = registry.DeleteKey(registry.CURRENT_USER, testRunRegKey)
 	})
 
 	devSetup := compileIsolatedSetup(t, makensis, root, work, ChannelDev, devTestID, fakeSM, fakeDT, testRunRegKey)
 	stableSetup := compileIsolatedSetup(t, makensis, root, work, ChannelStable, stableTestID, fakeSM, fakeDT, testRunRegKey)
+	testSetup := compileIsolatedSetup(t, makensis, root, work, ChannelTest, testChanTestID, fakeSM, fakeDT, testRunRegKey)
 
 	// Pre-place stable shortcut sentinels to prove dev never clobbers TRACE.lnk.
 	stableSM := filepath.Join(fakeSM, "TRACE.lnk")
@@ -229,6 +232,16 @@ func TestCompiledNSISShortcutBehavior(t *testing.T) {
 	}
 	assertTestRegStringAbsent(t, testRunRegKey, stableAutoVal)
 	assertTestRegStringValue(t, testRunRegKey, testAutoVal, `"C:\Apps\trace-test\trace.exe" --background`)
+
+	// 2g. Test channel install & full uninstall: removes only test channel's autostart value.
+	testInstDir := filepath.Join(work, "inst-test")
+	runQuietSetup(t, testSetup, "/S", "/NODESKTOP", "/D="+testInstDir)
+	runQuietSetup(t, filepath.Join(testInstDir, "Uninstall.exe"), "/S")
+	waitUntilRemoved(t, testInstDir)
+	if _, ok, _ := LookupInstall(testChanTestID); ok {
+		t.Fatal("test channel uninstall left registry entry")
+	}
+	assertTestRegStringAbsent(t, testRunRegKey, testAutoVal)
 }
 
 func compileIsolatedSetup(t *testing.T, makensis, root, work, ch, testID, fakeSM, fakeDT, fakeRunRegKey string) string {
