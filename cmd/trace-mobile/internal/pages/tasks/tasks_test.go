@@ -184,11 +184,11 @@ func assertNoHorizontalOverflow(t *testing.T, tt *ui.Tester, width int) {
 
 func assertNoForbiddenEntries(t *testing.T, tt *ui.Tester) {
 	t.Helper()
-	forbidden := []string{"退出登录", "粘贴 Cookie", "删除媒体", "删除记录", "退出电脑", "修改设置", "开始导入", "开始导出", "保留两版", "保留本地", "用新版替换", "批量应用"}
+	forbidden := []string{"退出登录", "粘贴 Cookie", "删除媒体", "删除记录", "退出电脑", "修改设置", "开始导入", "开始导出", "批量应用"}
 	for _, txt := range tt.Texts() {
 		for _, bad := range forbidden {
 			if strings.Contains(txt, bad) {
-				t.Fatalf("FR-MOB-025/read-only violation: forbidden entry %q found in text %q", bad, txt)
+				t.Fatalf("FR-MOB-025 violation: forbidden entry %q found in text %q", bad, txt)
 			}
 		}
 	}
@@ -712,10 +712,10 @@ func TestTasksAllSegmentsActionsReadOnlyAndErrors(t *testing.T) {
 		return len(liveStopHits) == 1 && liveStopHits[0] == "rec-active-1" && pg.busyActionKey == ""
 	})
 
-	// 4. 待处理 segment: read-only content conflicts ("在电脑上处理"), failed downloads, live incidents.
+	// 4. 待处理 segment: actionable content conflicts (keep_both, keep_local, inline-confirmed use_remote), failed downloads, live incidents.
 	pg.activeSeg = segPending
 	tt.Frame()
-	for _, want := range []string{"内容冲突（1）", "在电脑上处理", "分P变更", "年度横评视频", "失败 / 未完成的下载任务（1）", "近期录制异常（1 场）", "HLS 分片过期"} {
+	for _, want := range []string{"内容冲突（1）", "不会自动覆盖", "保留两版（推荐）", "保留本地", "用新版替换", "分P变更", "年度横评视频", "失败 / 未完成的下载任务（1）", "近期录制异常（1 场）", "HLS 分片过期"} {
 		if !tt.HasText(want) {
 			t.Fatalf("待处理 missing %q; got %v", want, tt.Texts())
 		}
@@ -979,4 +979,248 @@ func containsStr(list []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func TestTasksV2ConflictsResolutionPasteLinkAndLivePreview(t *testing.T) {
+	now := time.Now().UTC()
+	var (
+		mu        sync.Mutex
+		conflicts = []companionapi.ConflictDTO{
+			{
+				ID: "cf-both", ItemKey: "bilibili:video:BV1A", Site: "bilibili", Kind: "video",
+				AuthorName: "UP主A", Title: "冲突视频一（保留两版）", DetectedAt: now.Format(time.RFC3339),
+				ReasonKind: "parts_changed", ReasonLabel: "分P变更",
+				LocalSummary: "2 P", RemoteSummary: "3 P",
+			},
+			{
+				ID: "cf-local", ItemKey: "douyin:video:DY2", Site: "douyin", Kind: "video",
+				AuthorName: "作者B", Title: "冲突视频二（保留本地）", DetectedAt: now.Format(time.RFC3339),
+				ReasonKind: "text_changed", ReasonLabel: "文案变更",
+				LocalSummary: "旧文案", RemoteSummary: "新文案",
+			},
+			{
+				ID: "cf-remote", ItemKey: "weibo:dynamic:WB3", Site: "weibo", Kind: "dynamic",
+				AuthorName: "博主C", Title: "冲突微博三（用新版替换）", DetectedAt: now.Format(time.RFC3339),
+				ReasonKind: "media_changed", ReasonLabel: "媒体变更",
+				LocalSummary: "2 图", RemoteSummary: "4 图",
+			},
+		}
+		recordings = []companionapi.LiveRecordingDTO{
+			{
+				RecordingKey: "rec-live-1", AccountKey: "bilibili:1001", Site: "bilibili", UID: "1001",
+				Uname: "直播测试主", Title: "正在录制可实时预览", QualityName: "原画", Codec: "AVC",
+				Recording: true, PreviewAvailable: true, DurationSec: 120, Bytes: 32 << 20,
+			},
+			{
+				RecordingKey: "rec-live-noprev", AccountKey: "bilibili:1002", Site: "bilibili", UID: "1002",
+				Uname: "刚开播主播", Title: "等待首段写入", QualityName: "原画", Codec: "AVC",
+				Recording: true, PreviewAvailable: false, PreviewReason: "正在等待首个分段数据写入",
+			},
+			{
+				RecordingKey: "rec-ended-2", AccountKey: "douyin:2002", Site: "douyin", UID: "2002",
+				Uname: "已结束主播", Title: "已结束不可预览", Recording: false,
+			},
+		}
+		resolvedCalls []string
+		parseInputs   []string
+		previewOpened []string
+	)
+
+	cli, cleanup := startFakeCompanionServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == companionapi.PathTasksDownloads:
+			_ = json.NewEncoder(w).Encode(companionapi.DownloadTasksResponse{})
+		case r.Method == http.MethodGet && r.URL.Path == companionapi.PathTasksQueues:
+			_ = json.NewEncoder(w).Encode(companionapi.CacheQueuesResponse{})
+		case r.Method == http.MethodGet && r.URL.Path == companionapi.PathLiveRecordings:
+			_ = json.NewEncoder(w).Encode(companionapi.LiveRecordingsResponse{Items: recordings})
+		case r.Method == http.MethodGet && r.URL.Path == companionapi.PathLiveIncidents:
+			_ = json.NewEncoder(w).Encode(companionapi.LiveIncidentsResponse{})
+		case r.Method == http.MethodGet && r.URL.Path == companionapi.PathTransfers:
+			_ = json.NewEncoder(w).Encode(companionapi.TransfersResponse{})
+		case r.Method == http.MethodGet && r.URL.Path == companionapi.PathConflicts:
+			mu.Lock()
+			items := append([]companionapi.ConflictDTO(nil), conflicts...)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(companionapi.ConflictsResponse{Items: items})
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, companionapi.PathConflictsPrefix) && strings.HasSuffix(r.URL.Path, "/resolve"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, companionapi.PathConflictsPrefix), "/resolve")
+			var req companionapi.ResolveConflictRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			mu.Lock()
+			resolvedCalls = append(resolvedCalls, id+":"+req.Choice)
+			next := conflicts[:0]
+			for _, c := range conflicts {
+				if c.ID != id {
+					next = append(next, c)
+				}
+			}
+			conflicts = next
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(companionapi.ResolveConflictResponse{OK: true, ID: id, Choice: req.Choice})
+		case r.Method == http.MethodPost && r.URL.Path == companionapi.PathParseAndCache:
+			var body companionapi.ParseAndCacheRequest
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			parseInputs = append(parseInputs, body.Input)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(companionapi.ParseAndCacheResponse{
+				OK: true, TaskID: "dl-from-paste", Site: "bilibili", Title: "手机粘贴缓存测试视频", AuthorName: "测试UP",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	defer cleanup()
+
+	host := newFakeHost(cli)
+	pg := New()
+	pg.openLivePreviewFn = func(_ pagekit.Host, rec companionapi.LiveRecordingDTO) {
+		mu.Lock()
+		previewOpened = append(previewOpened, rec.RecordingKey)
+		mu.Unlock()
+	}
+
+	notify := make(chan struct{}, 64)
+	host.invalidate = func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
+	viewFn := func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		pg.View(c, host)
+	}
+	tt := ui.NewTester(viewFn, 412, 915)
+	pumpUntil := func(cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			host.drainUpdates()
+			tt.Frame()
+			if cond() {
+				host.drainUpdates()
+				tt.Frame()
+				return
+			}
+			select {
+			case <-notify:
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		t.Fatalf("condition timed out; texts=%v", tt.Texts())
+	}
+
+	pg.OnConnected(host)
+	pumpUntil(func() bool { return pg.conflictsLoaded && pg.recordingsLoaded })
+
+	// 1. Live recording real-time preview button appears ONLY on previewable active recording; unsupported shows clear reason.
+	pg.activeSeg = segLive
+	tt.Frame()
+	if _, ok := tt.Find("实时预览直播录制：直播测试主"); !ok {
+		t.Fatalf("expected 实时预览 button on previewable active recording; texts=%v", tt.Texts())
+	}
+	if _, ok := tt.Find("实时预览直播录制：刚开播主播"); ok {
+		t.Fatal("non-previewable active recording must NOT show 实时预览 button")
+	}
+	if !tt.HasText("正在等待首个分段数据写入") {
+		t.Fatalf("expected PreviewReason shown for non-previewable active recording; texts=%v", tt.Texts())
+	}
+	if _, ok := tt.Find("实时预览直播录制：已结束主播"); ok {
+		t.Fatal("ended recording must NOT show 实时预览 button")
+	}
+	if err := tt.Click("实时预览直播录制：直播测试主"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	gotPrev := append([]string(nil), previewOpened...)
+	mu.Unlock()
+	if len(gotPrev) != 1 || gotPrev[0] != "rec-live-1" {
+		t.Fatalf("expected live preview opened for rec-live-1, got %v", gotPrev)
+	}
+
+	// 2. Content conflicts resolution: keep_both, keep_local, inline-confirmed use_remote.
+	pg.activeSeg = segPending
+	tt.Frame()
+	saveShotIfRequested(t, tt, "tasks-pending-conflicts-v2-412x915")
+
+	// 2a. keep_both
+	if err := tt.Click("解决冲突保留两版：cf-both"); err != nil {
+		t.Fatal(err)
+	}
+	pumpUntil(func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return containsStr(resolvedCalls, "cf-both:keep_both") && len(pg.conflicts) == 2 && pg.busyActionKey == ""
+	})
+	if !tt.HasText("已保留本地旧版并缓存源站新版") {
+		t.Fatalf("expected keep_both success banner, texts=%v", tt.Texts())
+	}
+
+	// 2b. keep_local
+	if err := tt.Click("解决冲突保留本地：cf-local"); err != nil {
+		t.Fatal(err)
+	}
+	pumpUntil(func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return containsStr(resolvedCalls, "cf-local:keep_local") && len(pg.conflicts) == 1 && pg.busyActionKey == ""
+	})
+
+	// 2c. use_remote MUST show inline confirmation first and NOT execute before confirming!
+	if err := tt.Click("解决冲突用新版替换：cf-remote"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("确认用源站新版替换本地已缓存内容") {
+		t.Fatalf("expected inline confirmation before use_remote, texts=%v", tt.Texts())
+	}
+	mu.Lock()
+	preConfirm := containsStr(resolvedCalls, "cf-remote:use_remote")
+	mu.Unlock()
+	if preConfirm {
+		t.Fatal("use_remote must NOT execute before inline confirmation")
+	}
+	if err := tt.Click("确认用新版替换：cf-remote"); err != nil {
+		t.Fatal(err)
+	}
+	pumpUntil(func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return containsStr(resolvedCalls, "cf-remote:use_remote") && len(pg.conflicts) == 0 && pg.busyActionKey == ""
+	})
+
+	// 3. In-app "粘贴链接让电脑缓存" sheet + IME composition guard + submit.
+	if err := tt.Click("粘贴链接让电脑缓存"); err != nil {
+		t.Fatal(err)
+	}
+	settleAnim(tt)
+	_ = tt.Click("粘贴链接或分享文案输入框")
+	tt.Compose("bilibili", 8)
+	tt.Key(0, ui.KeyEnter)
+	tt.Frame()
+	mu.Lock()
+	afterIME := len(parseInputs)
+	mu.Unlock()
+	if afterIME != 0 {
+		t.Fatalf("Enter during IME composition must not submit paste-and-cache, got %d", afterIME)
+	}
+	tt.Compose("", 0)
+	pg.pasteSheet.Open("https://www.bilibili.com/video/BV1PASTE")
+	settleAnim(tt)
+	if err := tt.Click("发送到电脑缓存"); err != nil {
+		t.Fatal(err)
+	}
+	pumpUntil(func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(parseInputs) == 1
+	})
+	if !tt.HasText("已加入电脑缓存队列") || !tt.HasText("手机粘贴缓存测试视频") {
+		t.Fatalf("expected parse-and-cache queued feedback, texts=%v", tt.Texts())
+	}
+	assertNoHorizontalOverflow(t, tt, 412)
+	assertNoForbiddenEntries(t, tt)
+	pg.OnDisconnected()
 }

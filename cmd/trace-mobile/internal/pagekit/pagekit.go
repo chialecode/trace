@@ -56,6 +56,8 @@ type DesktopSnapshot struct {
 	DiskFree     uint64
 	DiskTotal    uint64
 	LoggedIn     bool
+	MDNSActive   bool
+	PreventSleep bool
 	Sites        []SiteAuthStatus
 }
 

@@ -79,11 +79,11 @@ func (p *Page) renderDetailView(c *ui.Context, h pagekit.Host, r *ui.Router, tit
 					}
 				})
 
-				// Read-only tracking preset & capability tag pills (FR-MOB-015, ui.md §3.12).
-				preset := firstNonEmpty(sub.PresetLabel, "仅手动")
+				// Tracking preset, capability tag pills & edit button (FR-MOB-015 / FR-MOB-030, ui.md §3.12).
+				preset := firstNonEmpty(sub.PresetLabel, mobilePresetLabelForTags(sub.Tags), "仅手动")
 				tagLabels := sub.TagLabels
 				if len(tagLabels) == 0 && len(sub.Tags) > 0 {
-					tagLabels = sub.Tags
+					tagLabels = mobileTagLabels(sub.Tags)
 				}
 				ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).ClipX().Children(func() {
 					ui.Box(c).Padding(4, 10).Radius(999).Background(theme.ColorAccentBg).Shrink(0).Children(func() {
@@ -96,6 +96,21 @@ func (p *Page) renderDetailView(c *ui.Context, h pagekit.Host, r *ui.Router, tit
 						ui.Box(c.Key(idx)).Padding(4, 10).Radius(999).Background(theme.ColorBgSecondary).Border(1, theme.ColorBorder).Shrink(0).Children(func() {
 							ui.Text(c, lbl).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine()
 						})
+					}
+					editBtn := ui.Button(c, "").
+						Label("编辑订阅缓存标签").
+						Padding(4, 10).
+						MinHeight(32).
+						Radius(999).
+						Background(theme.ColorBgMain).
+						Border(1, theme.ColorAccent).
+						Shrink(0).
+						Center()
+					editBtn.Children(func() {
+						ui.Text(c, "编辑标签").FontSize(12).FontWeight(600).TextColor(theme.ColorAccent).SingleLine()
+					})
+					if editBtn.Clicked() {
+						p.openTagsEditor(sub)
 					}
 				})
 
@@ -155,6 +170,10 @@ func (p *Page) renderDetailView(c *ui.Context, h pagekit.Host, r *ui.Router, tit
 			})
 		}
 		sheetActions = append(sheetActions, mobile.Action{
+			Label: "编辑缓存标签",
+			OnTap: func() { p.openTagsEditor(sub) },
+		})
+		sheetActions = append(sheetActions, mobile.Action{
 			Label: "刷新页面",
 			OnTap: func() { p.loadDetail(h, sub.ID, true) },
 		})
@@ -162,6 +181,8 @@ func (p *Page) renderDetailView(c *ui.Context, h pagekit.Host, r *ui.Router, tit
 			Title:  sub.Name,
 			Cancel: "取消",
 		}, sheetActions...)
+
+		p.renderTagsEditorSheet(c, h, sub)
 	})
 }
 

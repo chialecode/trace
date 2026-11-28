@@ -1,9 +1,11 @@
 package mediaview
 
 import (
+	"errors"
 	"sync"
 	"time"
 
+	"github.com/chialecode/trace/internal/companionclient"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/videoplayer"
 	"github.com/egoist/mygo/ui"
@@ -38,14 +40,41 @@ func (r realPlayer) NativeView() ui.NativeWebView       { return r.p }
 // PlayerFactory constructs a PlaybackHandle for a window, source URL, and options.
 type PlayerFactory func(w *mygo.Window, source string, opts videoplayer.Options) (PlaybackHandle, error)
 
+// LivePreviewTicketIssuer mints a loopback URL + ticket for an active live recording preview.
+type LivePreviewTicketIssuer func(proxy *companionclient.MediaProxy, recordingKey string) (string, string, error)
+
 var (
 	factoryMu         sync.RWMutex
 	customFactory     PlayerFactory
 	customOrientation func(mygo.Orientation)
+	customLivePreview LivePreviewTicketIssuer
 
 	activeMu      sync.Mutex
 	activeClosers = map[any]func(){}
 )
+
+// SetLivePreviewTicketIssuerForTest overrides live preview ticket minting for tests (pass nil to restore).
+func SetLivePreviewTicketIssuerForTest(fn LivePreviewTicketIssuer) {
+	factoryMu.Lock()
+	customLivePreview = fn
+	factoryMu.Unlock()
+}
+
+func issueLivePreviewTicket(proxy *companionclient.MediaProxy, recordingKey string) (string, string, error) {
+	factoryMu.RLock()
+	fn := customLivePreview
+	factoryMu.RUnlock()
+	if fn != nil {
+		return fn(proxy, recordingKey)
+	}
+	if proxy == nil || recordingKey == "" {
+		return "", "", errors.New("当前无法建立直播实时预览通道")
+	}
+	if u, tk, err := proxy.IssueLivePreviewHLSTicket(recordingKey); err == nil {
+		return u, tk, nil
+	}
+	return proxy.IssueLivePreviewTicket(recordingKey)
+}
 
 // SetPlayerFactoryForTest replaces videoplayer.New for unit testing (pass nil to restore).
 func SetPlayerFactoryForTest(fn PlayerFactory) {
@@ -67,6 +96,9 @@ func newPlaybackHandle(w *mygo.Window, source string, opts videoplayer.Options) 
 	factoryMu.RUnlock()
 	if fn != nil {
 		return fn(w, source, opts)
+	}
+	if w == nil {
+		return nil, errors.ErrUnsupported
 	}
 	p, err := videoplayer.New(w, source, opts)
 	if err != nil {
