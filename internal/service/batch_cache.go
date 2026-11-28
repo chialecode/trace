@@ -613,9 +613,14 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 		inspectCached: inspectFn,
 		enqueue: func(ctx context.Context) (queueEnqueued, error) {
 			var planPtr *download.WorkDownloadPlan
+			calledEditHistoryAPI := false
 			if canReuseWeiboPostPlan(&postCopy) {
 				if built, err := b.buildWeiboWorkPlanFromPost(&postCopy); err == nil {
-					b.attachWeiboEditHistoryBestEffort(ctx, &postCopy, &built)
+					calledAPI, stopErr := b.attachWeiboEditHistoryBestEffort(ctx, &postCopy, &built)
+					calledEditHistoryAPI = calledAPI
+					if stopErr != nil {
+						return queueEnqueued{}, stopErr
+					}
 					planPtr = &built
 				}
 			}
@@ -627,7 +632,7 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 				taskIDs:        []string{t.TaskID},
 				itemKey:        firstNonEmpty(t.ItemKey, key),
 				title:          trimQueueSummaryTitle(firstNonEmpty(t.Title, title, mid)),
-				reusedListPlan: reusedPlan,
+				reusedListPlan: reusedPlan && !calledEditHistoryAPI,
 			}, nil
 		},
 	}

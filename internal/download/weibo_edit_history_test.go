@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
 )
 
@@ -219,5 +220,120 @@ func TestWeiboDownload_EditHistoryArchivesUniqueImagesAndDegradesSafely(t *testi
 	}
 	if _, err := os.Stat(filepath.Join(item2.ItemDir, "images", "edit_v02_01.png")); err != nil {
 		t.Fatalf("expected preserved edit_image on disk after staged swap: %v", err)
+	}
+}
+
+func TestWeiboDownload_PartialFailureDeferPreservesPreviousEditHistory(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(418)
+		_, _ = w.Write([]byte("blocked"))
+	})
+
+	mgr, libStore, _, _, _ := setupDouyinDownloadTestEnv(t, http.NotFoundHandler(), 2)
+	mgr.SetMediaTransportWrap(func(_ http.RoundTripper) http.RoundTripper {
+		return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			resp := rec.Result()
+			resp.Request = req
+			return resp, nil
+		})
+	})
+
+	const (
+		mid       = "5008001002003099"
+		authorUID = "1000000001"
+	)
+	itemDir := filepath.Join(libStore.CacheDir(), "weibo", authorUID, "posts", mid)
+	if err := os.MkdirAll(itemDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Seed an existing partial post (no valid local media -> hasProtectedLocal == false)
+	// that already carries cached EditHistory metadata.
+	_, err := libStore.SaveItem(itemDir, library.ItemMetadata{
+		Version:     1,
+		ID:          "dynamic:" + mid,
+		Site:        string(site.Weibo),
+		Kind:        "dynamic",
+		DynamicType: "draw",
+		TypeLabel:   "图文",
+		Status:      "partial",
+		Title:       "修订后正文",
+		Desc:        "修订后正文",
+		Text:        "修订后正文",
+		URL:         "https://weibo.com/" + authorUID + "/" + mid,
+		PubTs:       1764203600,
+		EditCount:   1,
+		Author: library.ItemAuthor{
+			Site: string(site.Weibo),
+			UID:  authorUID,
+			Name: "合成博主",
+		},
+		Missing: []library.MissingRecord{{Item: "page_01", Reason: "上次下载未完成"}},
+		EditHistory: []library.ItemEditRevision{
+			{Version: 2, EditTs: 1764203600, Text: "修订后正文"},
+			{Version: 1, EditTs: 1764200000, Text: "首发原始版本"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveItem seed: %v", err)
+	}
+
+	strictTransport := site.WeiboMediaTransport("TRACE-Test-UA", false)
+	plan := &WorkDownloadPlan{
+		Site:         site.Weibo,
+		ItemKey:      "weibo:dynamic:" + mid,
+		Kind:         "dynamic",
+		TargetID:     mid,
+		Title:        "修订后正文",
+		Desc:         "修订后正文",
+		CanonicalURL: "https://weibo.com/" + authorUID + "/" + mid,
+		PubTs:        1764203600,
+		EditCount:    1,
+		AuthorUID:    authorUID,
+		AuthorName:   "合成博主",
+		Pages: []PlannedNotePage{
+			{
+				Index:     1,
+				Kind:      "image",
+				MediaID:   "picBlocked01",
+				Width:     320,
+				Height:    200,
+				ImageURLs: []string{"https://wx1.sinaimg.cn/large/picBlocked01.png"},
+			},
+		},
+		Transport: strictTransport,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("mgr.Start: %v", err)
+	}
+
+	task, err := mgr.EnqueueWeiboWork(context.Background(), WeiboWorkEnqueueRequest{
+		TargetID: mid,
+		Kind:     "dynamic",
+		Source:   "manual",
+		Plan:     plan,
+	})
+	if err != nil {
+		t.Fatalf("EnqueueWeiboWork: %v", err)
+	}
+	done := waitForTaskTerminal(t, mgr, task.TaskID, 10*time.Second)
+	if done.Status == "completed" {
+		t.Fatalf("expected retry to abort on HTTP 418, got completed")
+	}
+
+	item, ok, err := libStore.GetItem("weibo:dynamic:" + mid)
+	if err != nil || !ok {
+		t.Fatalf("GetItem after partial failure: ok=%v err=%v", ok, err)
+	}
+	if item.Status != "partial" {
+		t.Fatalf("expected partial status, got %q", item.Status)
+	}
+	if len(item.EditHistory) != 2 || item.EditHistory[0].Text != "修订后正文" || item.EditHistory[1].Text != "首发原始版本" {
+		t.Fatalf("expected previous EditHistory preserved by partialMeta defer, got %+v", item.EditHistory)
 	}
 }

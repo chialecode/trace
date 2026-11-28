@@ -204,3 +204,198 @@ func TestServiceWeiboEditHistory_ZeroCallWhenUneditedCacheReuseAndDegrade(t *tes
 		t.Fatalf("expected complete degraded item, got ok=%v status=%q err=%v", ok, itemDegraded.Status, err)
 	}
 }
+
+func TestServiceWeiboEditHistory_QueueStopErrorsProbeAndReusedListPlan(t *testing.T) {
+	var mode atomic.Int32 // 0=200, 404=404, 418=418, 429=429, 401=401, 302=visitor redirect
+	var editHistoryHits atomic.Int32
+
+	var srvURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ajax/setting/getBasicInfo":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"ok":1,"data":{"screen_name":%q,"domain":"synthself"}}`, synthWeiboSelfName)
+		case "/ajax/profile/info":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"ok":1,"data":{"user":{"id":5100000001,"idstr":%q,"screen_name":%q,"statuses_count":5}}}`, synthWeiboSelfUID, synthWeiboSelfName)
+		case "/ajax/statuses/editHistory":
+			editHistoryHits.Add(1)
+			switch mode.Load() {
+			case 404:
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"ok":0,"msg":"not found"}`))
+			case 418:
+				w.WriteHeader(418)
+				_, _ = w.Write([]byte(`blocked`))
+			case 429:
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"ok":0,"msg":"rate limited"}`))
+			case 401:
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"ok":0,"msg":"login required"}`))
+			case 302:
+				w.Header().Set("Location", "https://passport.weibo.com/visitor/visitor?entry=miniblog")
+				w.WriteHeader(http.StatusFound)
+			default:
+				mid := r.URL.Query().Get("mid")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"ok":1,"total":2,"statuses":[{"idstr":%q,"created_at":"Thu Nov 28 12:30:00 +0800 2026","text_raw":"队列修订最新版"},{"idstr":%q,"created_at":"Thu Nov 28 12:00:00 +0800 2026","text_raw":"队列修订首发版"}]}`, mid, mid)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	srvURL = srv.URL
+	_ = srvURL
+
+	b, err := NewBackend(Options{
+		Locations:        testLocations(t),
+		Desktop:          NewMockDesktop(),
+		DisableBgWorkers: true,
+		WeiboOpts: weibo.ClientOptions{
+			Endpoints: weibo.Endpoints{
+				PCBasicInfo:         srv.URL + "/ajax/setting/getBasicInfo",
+				ProfileInfo:         srv.URL + "/ajax/profile/info",
+				StatusesEditHistory: srv.URL + "/ajax/statuses/editHistory",
+			},
+			MinInterval:    -1,
+			JitterMax:      -1,
+			AllowLocalhost: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewBackend: %v", err)
+	}
+	defer b.Close()
+
+	ctx := context.Background()
+	if _, err := b.LoginWithCookie(ctx, string(site.Weibo), synthWeiboCookie(), ""); err != nil {
+		t.Fatalf("LoginWithCookie: %v", err)
+	}
+
+	makePost := func(mid string, editCount int) weibo.Post {
+		return weibo.Post{
+			Mid:       mid,
+			CreatedAt: 1709973600,
+			EditCount: editCount,
+			Text:      "合成队列微博 " + mid,
+			TextRaw:   "合成队列微博 " + mid,
+			Author: weibo.AuthorSummary{
+				UID:        synthWeiboUID,
+				ScreenName: synthWeiboName,
+			},
+			CanonicalURL: "https://weibo.com/" + synthWeiboUID + "/" + mid,
+		}
+	}
+
+	// 1. Unedited post (EditCount == 0): 0 editHistory API calls and reusedListPlan == true.
+	candUnedited := b.weiboPostQueueCandidate(makePost("5099000000000101", 0))
+	enqUnedited, err := candUnedited.enqueue(ctx)
+	if err != nil {
+		t.Fatalf("unedited queue enqueue: %v", err)
+	}
+	if !enqUnedited.reusedListPlan {
+		t.Fatalf("expected reusedListPlan=true for edit_count==0, got false")
+	}
+	if editHistoryHits.Load() != 0 {
+		t.Fatalf("expected 0 editHistory calls for edit_count==0, got %d", editHistoryHits.Load())
+	}
+
+	// 2. Edited post (uncached editHistory): real API call sets reusedListPlan == false.
+	mode.Store(0)
+	candEdited := b.weiboPostQueueCandidate(makePost("5099000000000102", 1))
+	enqEdited, err := candEdited.enqueue(ctx)
+	if err != nil {
+		t.Fatalf("edited queue enqueue: %v", err)
+	}
+	if enqEdited.reusedListPlan {
+		t.Fatalf("expected reusedListPlan=false when editHistory API was called, got true")
+	}
+	if editHistoryHits.Load() != 1 {
+		t.Fatalf("expected 1 editHistory call, got %d", editHistoryHits.Load())
+	}
+
+	// 3. Same edited post queued again while editHistory is in memory cache: 0 API calls and reusedListPlan == true.
+	enqEditedCached, err := candEdited.enqueue(ctx)
+	if err != nil {
+		t.Fatalf("cached edited queue enqueue: %v", err)
+	}
+	if !enqEditedCached.reusedListPlan {
+		t.Fatalf("expected reusedListPlan=true when editHistory hit memory cache, got false")
+	}
+	if editHistoryHits.Load() != 1 {
+		t.Fatalf("expected memory cache reuse (still 1 call), got %d", editHistoryHits.Load())
+	}
+
+	// 4. Ordinary 404 on editHistory degrades safely (no stop error), but still sets reusedListPlan == false.
+	mode.Store(404)
+	cand404 := b.weiboPostQueueCandidate(makePost("5099000000000103", 1))
+	enq404, err := cand404.enqueue(ctx)
+	if err != nil {
+		t.Fatalf("expected 404 editHistory to degrade safely in queue, got err=%v", err)
+	}
+	if enq404.reusedListPlan {
+		t.Fatalf("expected reusedListPlan=false after 404 editHistory API call, got true")
+	}
+
+	// 5. Site-level stop errors (418, 429, 401, visitor 302) must propagate immediately and NOT enqueue tasks.
+	stopCases := []struct {
+		name     string
+		mid      string
+		code     int32
+		wantKind string
+		probe    bool
+	}{
+		{name: "418_risk_control", mid: "5099000000000104", code: 418, wantKind: site.ErrKindRiskControl},
+		{name: "429_rate_limited", mid: "5099000000000105", code: 429, wantKind: site.ErrKindRateLimited},
+		{name: "401_auth_required", mid: "5099000000000106", code: 401, wantKind: site.ErrKindAuthRequired},
+		{name: "302_visitor_redirect", mid: "5099000000000107", code: 302, wantKind: site.ErrKindRiskControl},
+		{name: "dec089_probe_418", mid: "5099000000000108", code: 418, wantKind: site.ErrKindRiskControl, probe: true},
+	}
+	for _, tc := range stopCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mode.Store(tc.code)
+			beforeList, lErr := b.dl.ListTasks()
+			if lErr != nil {
+				t.Fatalf("dl.ListTasks before: %v", lErr)
+			}
+			beforeTasks := len(beforeList)
+			hitsBefore := editHistoryHits.Load()
+			cand := b.weiboPostQueueCandidate(makePost(tc.mid, 2))
+			callCtx := ctx
+			if tc.probe {
+				callCtx = site.WithManualProbe(ctx)
+			}
+			enq, err := cand.enqueue(callCtx)
+			if err == nil {
+				t.Fatalf("expected stop error %s, got nil (enq=%+v)", tc.wantKind, enq)
+			}
+			if gotKind := site.KindOf(err); gotKind != tc.wantKind {
+				t.Fatalf("got error kind %q, want %q (err=%v)", gotKind, tc.wantKind, err)
+			}
+			if editHistoryHits.Load() != hitsBefore+1 {
+				t.Fatalf("expected exactly 1 editHistory request for %s, got %d", tc.name, editHistoryHits.Load()-hitsBefore)
+			}
+			if len(enq.taskIDs) != 0 {
+				t.Fatalf("expected no enqueued taskIDs on stop error, got %+v", enq.taskIDs)
+			}
+			afterList, lErr := b.dl.ListTasks()
+			if lErr != nil {
+				t.Fatalf("dl.ListTasks after: %v", lErr)
+			}
+			if afterTasks := len(afterList); afterTasks != beforeTasks {
+				t.Fatalf("expected download task count unchanged (%d -> %d) on stop error", beforeTasks, afterTasks)
+			}
+			if tc.code == 401 {
+				// 401 intentionally marks the Weibo credential expired; restore login for subsequent subtests.
+				if _, lErr := b.LoginWithCookie(ctx, string(site.Weibo), synthWeiboCookie(), ""); lErr != nil {
+					t.Fatalf("restore LoginWithCookie after 401: %v", lErr)
+				}
+			}
+		})
+	}
+}

@@ -946,6 +946,7 @@ func (m *Manager) executeWeiboPostTask(
 			Origin:       originMeta,
 			Card:         cardMeta,
 			Links:        buildWeiboItemLinks(plan.Links, previous.Links),
+			EditHistory:  library.SanitizeItemEditHistory(previous.EditHistory),
 		}
 		saved, sErr := m.lib.SaveItem(itemDir, partialMeta)
 		if sErr != nil {

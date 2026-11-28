@@ -253,15 +253,20 @@ func (b *Backend) enqueueWeiboPostWithSourceInfo(
 	mode := download.ConflictResolutionFromContext(ctx)
 	force := download.ForceOverwriteFromContext(ctx)
 	plan := explicitPlan
+	calledEditHistoryAPI := false
 	if plan == nil && mode == "" && !force && b.weiboPostCache != nil {
 		if cachedPost, ok := b.weiboPostCache.get(cleanMid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), b.weiboRemoveWatermarkEnabled()); ok {
 			if built, bErr := b.buildWeiboWorkPlanFromPost(cachedPost); bErr == nil {
-				b.attachWeiboEditHistoryBestEffort(ctx, cachedPost, &built)
+				calledAPI, stopErr := b.attachWeiboEditHistoryBestEffort(ctx, cachedPost, &built)
+				calledEditHistoryAPI = calledAPI
+				if stopErr != nil && !isManual {
+					return download.Task{}, false, stopErr
+				}
 				plan = &built
 			}
 		}
 	}
-	reusedPlan := plan != nil
+	reusedPlan := plan != nil && !calledEditHistoryAPI
 	if plan != nil && (mode != "" || force) {
 		cp := *plan
 		if mode != "" {

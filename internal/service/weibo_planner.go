@@ -311,7 +311,9 @@ func (p *weiboWorkPlanner) PlanWorkDownload(ctx context.Context, targetID string
 		if vr.HostPost != nil {
 			plan, err = p.backend.buildWeiboWorkPlanFromPost(vr.HostPost)
 			if err == nil {
-				p.backend.attachWeiboEditHistoryBestEffort(ctx, vr.HostPost, &plan)
+				if _, stopErr := p.backend.attachWeiboEditHistoryBestEffort(ctx, vr.HostPost, &plan); stopErr != nil && site.AutomaticRequestSource(ctx) != "" {
+					return download.WorkDownloadPlan{}, stopErr
+				}
 			}
 		} else {
 			plan, err = p.backend.buildWeiboWorkPlanFromStandaloneVideo(vr)
@@ -331,23 +333,46 @@ func (p *weiboWorkPlanner) PlanWorkDownload(ctx context.Context, targetID string
 	if err != nil {
 		return download.WorkDownloadPlan{}, err
 	}
-	p.backend.attachWeiboEditHistoryBestEffort(ctx, post, &plan)
+	if _, stopErr := p.backend.attachWeiboEditHistoryBestEffort(ctx, post, &plan); stopErr != nil && site.AutomaticRequestSource(ctx) != "" {
+		return download.WorkDownloadPlan{}, stopErr
+	}
 	plan.ConflictResolution = download.ConflictResolutionFromContext(ctx)
 	return plan, nil
+}
+
+func isWeiboEditHistorySiteStopError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return true
+	}
+	if site.IsRoundStop(err) {
+		return true
+	}
+	switch site.KindOf(err) {
+	case site.ErrKindAuthRequired, site.ErrKindQuota, site.ErrKindBackoff, site.ErrKindRiskControl, site.ErrKindRateLimited:
+		return true
+	default:
+		return false
+	}
 }
 
 // attachWeiboEditHistoryBestEffort populates plan.EditHistory for edited Weibo
 // posts (EditCount > 0), reusing the short-lived in-memory edit-history cache
 // when available. When EditCount == 0, it issues zero network requests.
-// Any edit-history API failure is logged and gracefully ignored so main post
-// caching is never blocked (DEC-094).
-func (b *Backend) attachWeiboEditHistoryBestEffort(ctx context.Context, post *weibo.Post, plan *download.WorkDownloadPlan) {
+// It returns calledAPI=true whenever it contacted remote GetEditHistory (i.e.
+// missed the in-memory cache), and stopErr!=nil only for site-level stop errors
+// (risk control, rate limit, auth required, quota, backoff, or context cancel)
+// so background queues and DEC-089 probes can halt immediately while ordinary
+// 404/unavailable/parse errors and manual single-post caching degrade safely (DEC-094).
+func (b *Backend) attachWeiboEditHistoryBestEffort(ctx context.Context, post *weibo.Post, plan *download.WorkDownloadPlan) (calledAPI bool, stopErr error) {
 	if b == nil || b.weibo == nil || post == nil || plan == nil || post.EditCount <= 0 {
-		return
+		return false, nil
 	}
 	mid := strings.TrimSpace(post.Mid)
 	if mid == "" {
-		return
+		return false, nil
 	}
 	var revs []weibo.EditRevision
 	if b.weiboPostCache != nil {
@@ -356,10 +381,14 @@ func (b *Backend) attachWeiboEditHistoryBestEffort(ctx context.Context, post *we
 		}
 	}
 	if len(revs) == 0 {
+		calledAPI = true
 		fetched, err := b.weibo.GetEditHistory(ctx, mid)
 		if err != nil {
 			b.logError("WeiboEditHistory", err)
-			return
+			if isWeiboEditHistorySiteStopError(ctx, err) {
+				return true, err
+			}
+			return true, nil
 		}
 		revs = fetched
 		if b.weiboPostCache != nil && len(revs) > 0 {
@@ -367,7 +396,7 @@ func (b *Backend) attachWeiboEditHistoryBestEffort(ctx context.Context, post *we
 		}
 	}
 	if len(revs) == 0 {
-		return
+		return calledAPI, nil
 	}
 	planned := make([]download.PlannedEditRevision, 0, len(revs))
 	for _, rev := range revs {
@@ -406,6 +435,7 @@ func (b *Backend) attachWeiboEditHistoryBestEffort(ctx context.Context, post *we
 		})
 	}
 	plan.EditHistory = planned
+	return calledAPI, nil
 }
 
 func weiboImageMediaID(img weibo.ImageAsset) string {
