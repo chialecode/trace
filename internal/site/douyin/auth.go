@@ -71,7 +71,7 @@ func (c *Client) LoginWithCookie(ctx context.Context, rawCookie string) (credent
 	if candGuard.HasKeyPair() {
 		candGuardPtr = &candGuard
 	}
-	profile, refreshedCookies, usedMSToken, err := c.verifyCandidateCookies(ctx, cleaned, candGuardPtr)
+	profile, refreshedCookies, usedMSToken, syncedWebID, sentTTWIDHash, err := c.verifyCandidateCookies(ctx, cleaned, candGuardPtr)
 	if err != nil {
 		return credential.Status{}, err
 	}
@@ -83,6 +83,7 @@ func (c *Client) LoginWithCookie(ctx context.Context, rawCookie string) (credent
 			c.ephemeralGuard = &cp
 			c.guardMu.Unlock()
 		}
+		c.applyLoginSyncedWebID(sentTTWIDHash, hashTTWID(refreshedCookies["ttwid"]), syncedWebID)
 		if strings.TrimSpace(refreshedCookies["msToken"]) == "" && usedMSToken != "" {
 			c.setFallbackMSToken(cookieMapSessionFingerprint(refreshedCookies), usedMSToken)
 		} else {
@@ -114,6 +115,7 @@ func (c *Client) LoginWithCookie(ctx context.Context, rawCookie string) (credent
 	if saveErr != nil {
 		return credential.Status{}, saveErr
 	}
+	c.applyLoginSyncedWebID(sentTTWIDHash, hashTTWID(refreshedCookies["ttwid"]), syncedWebID)
 	if strings.TrimSpace(refreshedCookies["msToken"]) == "" && usedMSToken != "" {
 		c.setFallbackMSToken(cookieMapSessionFingerprint(refreshedCookies), usedMSToken)
 	} else {
@@ -157,6 +159,7 @@ func (c *Client) VerifyCredential(ctx context.Context) (credential.Status, error
 // LogoutCredential clears the stored Douyin credential and invalidates cached live room mappings.
 func (c *Client) LogoutCredential() error {
 	c.clearFallbackMSToken()
+	c.clearSyncedWebID()
 	c.clearEphemeralGuard()
 
 	c.liveCacheMu.Lock()
@@ -185,6 +188,7 @@ func (c *Client) GetSelfProfile(ctx context.Context) (*SelfProfile, error) {
 		c.onClassifiedError(ctx, pErr, true)
 		return nil, pErr
 	}
+	c.markWebIDWarmupTried(rawResp.ttwidHash, rawResp.webIDGen)
 	return prof, nil
 }
 
@@ -208,7 +212,7 @@ func (c *Client) CheckProfileSelfGuest(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) verifyCandidateCookies(ctx context.Context, cleaned map[string]string, candidateGuard *guard.State) (*SelfProfile, map[string]string, string, error) {
+func (c *Client) verifyCandidateCookies(ctx context.Context, cleaned map[string]string, candidateGuard *guard.State) (*SelfProfile, map[string]string, string, string, string, error) {
 	rawResp, err := c.doAPIRequest(ctx, apiRequestSpec{
 		endpoint:        c.endpoints.ProfileSelf,
 		referer:         DefaultReferer,
@@ -219,7 +223,7 @@ func (c *Client) verifyCandidateCookies(ctx context.Context, cleaned map[string]
 	})
 	if err != nil {
 		if site.IsKind(err, site.ErrKindRiskControl) || site.IsKind(err, site.ErrKindRateLimited) {
-			return nil, nil, "", &site.Error{
+			return nil, nil, "", "", "", &site.Error{
 				Site:     site.Douyin,
 				Kind:     site.KindOf(err),
 				Endpoint: c.endpoints.ProfileSelf,
@@ -227,19 +231,19 @@ func (c *Client) verifyCandidateCookies(ctx context.Context, cleaned map[string]
 			}
 		}
 		if site.IsKind(err, site.ErrKindAuthRequired) {
-			return nil, nil, "", &site.Error{
+			return nil, nil, "", "", "", &site.Error{
 				Site:     site.Douyin,
 				Kind:     site.ErrKindAuthRequired,
 				Endpoint: c.endpoints.ProfileSelf,
 				Message:  "该 Cookie 未处于已登录状态或已过期，请从已登录抖音网页的浏览器重新复制",
 			}
 		}
-		return nil, nil, "", err
+		return nil, nil, "", "", "", err
 	}
 
 	prof, pErr := parseStrictSelfProfile(rawResp.body, c.endpoints.ProfileSelf, c.allowLocalhost)
 	if pErr != nil {
-		return nil, nil, "", pErr
+		return nil, nil, "", "", "", pErr
 	}
 
 	merged := make(map[string]string, len(cleaned))
@@ -255,7 +259,7 @@ func (c *Client) verifyCandidateCookies(ctx context.Context, cleaned map[string]
 			merged["msToken"] = xms
 		}
 	}
-	return prof, merged, rawResp.sentMSToken, nil
+	return prof, merged, rawResp.sentMSToken, rawResp.syncedWebID, rawResp.ttwidHash, nil
 }
 
 func parseStrictSelfProfile(body []byte, endpoint string, allowLocalhost bool) (*SelfProfile, *site.Error) {

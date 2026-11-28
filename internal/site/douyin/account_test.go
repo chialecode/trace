@@ -2,12 +2,16 @@ package douyin
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,7 +21,10 @@ import (
 	"github.com/chialecode/trace/internal/site/douyin/sign"
 )
 
-const selfSecUID = "MS4wLjABAAAA_EXISTING_SEED_USER_01"
+const (
+	selfSecUID       = "MS4wLjABAAAA_EXISTING_SEED_USER_01"
+	fixtureSyncWebID = "7312345678901234567"
+)
 
 type capturedReq struct {
 	method string
@@ -29,6 +36,7 @@ type capturedReq struct {
 }
 
 // accountFixtureClient serves responses by path from fn and records every request.
+// Cold-start profile/self warmup requests receive a valid self-profile with cookie_ttwidinfo_webid.
 func accountFixtureClient(t *testing.T, fn func(r capturedReq) (int, string)) (*Client, *[]capturedReq) {
 	t.Helper()
 	var seen []capturedReq
@@ -44,6 +52,11 @@ func accountFixtureClient(t *testing.T, fn func(r capturedReq) (int, string)) (*
 				cr.body = string(b)
 			}
 			seen = append(seen, cr)
+			if req.URL.Path == "/aweme/v1/web/user/profile/self/" {
+				return jsonHTTPResponse(200, `{"status_code":0,"user":{"uid":"900000000001","sec_uid":"`+selfSecUID+`","nickname":"已登录种子账号"}}`, map[string]string{
+					"cookie_ttwidinfo_webid": fixtureSyncWebID,
+				}), nil
+			}
 			status, body := fn(cr)
 			return jsonHTTPResponse(status, body, nil), nil
 		}),
@@ -137,14 +150,21 @@ func TestPOSTSignFormBodyFeedsABogusAndGETUnchanged(t *testing.T) {
 		t.Fatalf("second form body = %q", (*seen)[1].body)
 	}
 
-	// A GET account request carries no body, no form content type, no Origin header, and Sec-Fetch-* headers.
+	// A GET account request carries no body, no form content type, no Origin header, Sec-Fetch-* headers,
+	// and uses the server-synced webid warmed up via profile/self on cold start.
 	_, _ = client.Favorites(context.Background(), selfSecUID, "")
-	g := (*seen)[2]
+	if len(*seen) != 4 || (*seen)[2].path != "/aweme/v1/web/user/profile/self/" || (*seen)[3].path != pathFavorite {
+		t.Fatalf("expected cold-start warmup profile/self followed by favorite, got %d requests", len(*seen))
+	}
+	g := (*seen)[3]
 	if g.method != http.MethodGet || g.body != "" || g.header.Get("Content-Type") != "" || g.header.Get("Origin") != "" {
 		t.Fatalf("favorite request = %s body=%q ct=%q origin=%q", g.method, g.body, g.header.Get("Content-Type"), g.header.Get("Origin"))
 	}
 	if g.header.Get("Sec-Fetch-Site") != "same-origin" || g.header.Get("Sec-Fetch-Mode") != "cors" || g.header.Get("Sec-Fetch-Dest") != "empty" {
 		t.Fatalf("favorite Sec-Fetch headers = %v", g.header)
+	}
+	if g.query.Get("webid") != fixtureSyncWebID {
+		t.Fatalf("favorite webid = %q, want synced %q", g.query.Get("webid"), fixtureSyncWebID)
 	}
 }
 
@@ -239,7 +259,10 @@ func TestFavoritesShellVersusEmpty(t *testing.T) {
 	if _, err := client.Favorites(ctx, selfSecUID, ""); !site.IsKind(err, site.ErrKindAuthRequired) {
 		t.Errorf("login lost err=%v", err)
 	}
-	q := (*seen)[0].query
+	if len(*seen) < 2 || (*seen)[0].path != "/aweme/v1/web/user/profile/self/" || (*seen)[1].path != pathFavorite {
+		t.Fatalf("expected profile/self warmup followed by favorite, got %d requests", len(*seen))
+	}
+	q := (*seen)[1].query
 	if q.Get("sec_user_id") != selfSecUID ||
 		q.Get("max_cursor") != "0" ||
 		q.Get("min_cursor") != "0" ||
@@ -249,8 +272,9 @@ func TestFavoritesShellVersusEmpty(t *testing.T) {
 		q.Get("update_version_code") != "170400" ||
 		q.Get("pc_libra_divert") != "Windows" ||
 		q.Get("publish_video_strategy_type") != "2" ||
+		q.Get("webid") != fixtureSyncWebID ||
 		q.Get("a_bogus") == "" {
-		t.Fatalf("favorite query = %s", (*seen)[0].raw)
+		t.Fatalf("favorite query = %s", (*seen)[1].raw)
 	}
 }
 
@@ -686,4 +710,588 @@ func TestTicketGuardHandshakeSigningAndLogoutRotation(t *testing.T) {
 		t.Fatalf("Favorites without ts_sign failed: %v", err)
 	}
 	assertNoGuardHeaders("favorites without ts_sign", seen[3].header)
+}
+
+func TestSyncedWebIDFromLoginWarmupTTWIDBindingAndOrder(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("isValidServerWebID_boundaries", func(t *testing.T) {
+		valid := []string{
+			"1000000000",               // 10 digits
+			"7312345678901234567",      // 19 digits
+			"999999999999999999999999", // 24 digits
+		}
+		for _, v := range valid {
+			if !isValidServerWebID(v) {
+				t.Errorf("isValidServerWebID(%q) = false, want true", v)
+			}
+		}
+		invalid := []string{
+			"",
+			"123456789",                 // 9 digits
+			"1000000000000000000000000", // 25 digits
+			"0000000000000000000",       // all zero
+			"0123456789012345678",       // leading zero
+			"731234567890123456a",       // non-digit
+			"7312345678 1234567",        // embedded space
+			"-731234567890123456",       // negative
+			"٧٣١٢٣٤٥٦٧٨٩٠١٢٣٤٥٦٧",       // non-ASCII digits
+		}
+		for _, v := range invalid {
+			if isValidServerWebID(v) {
+				t.Errorf("isValidServerWebID(%q) = true, want false", v)
+			}
+		}
+	})
+
+	t.Run("login_syncs_webid_preserves_param_order_and_stage2_signature", func(t *testing.T) {
+		store := openTestDouyinCredStore(t, false)
+		const (
+			serverWebID = "7398765432109876543"
+			uifidVal    = "SYNTH_UIFID_SYNC_01"
+			fixedMS     = int64(1763000000000)
+		)
+		var seen []capturedReq
+		client := NewClient(ClientOptions{
+			CredStore:   store,
+			WebID:       "7300000000000000001",
+			MinInterval: -1,
+			Now:         func() time.Time { return time.UnixMilli(fixedMS) },
+			Entropy:     newDeterministicEntropy(0x61),
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				cr := capturedReq{
+					method: req.Method,
+					path:   req.URL.Path,
+					query:  req.URL.Query(),
+					raw:    req.URL.RawQuery,
+					header: req.Header.Clone(),
+				}
+				seen = append(seen, cr)
+				switch req.URL.Path {
+				case "/aweme/v1/web/user/profile/self/":
+					return jsonHTTPResponse(200, `{"status_code":0,"user":{"uid":"880011","sec_uid":"`+selfSecUID+`","nickname":"同步测试号"}}`, map[string]string{
+						"cookie_ttwidinfo_webid": serverWebID,
+					}), nil
+				case pathFavorite:
+					return jsonHTTPResponse(200, `{"status_code":0,"aweme_list":[],"has_more":0,"max_cursor":0}`, nil), nil
+				default:
+					return jsonHTTPResponse(404, `{}`, nil), nil
+				}
+			}),
+		})
+
+		_, err := client.LoginWithCookie(ctx, "sessionid=SYNTH_SESS_SYNC_01; ttwid=SYNTH_TTWID_SYNC_01; UIFID="+uifidVal+"; s_v_web_id=verify_synth_sync_01")
+		if err != nil {
+			t.Fatalf("LoginWithCookie failed: %v", err)
+		}
+		if _, err := client.Favorites(ctx, selfSecUID, ""); err != nil {
+			t.Fatalf("Favorites page 1 failed: %v", err)
+		}
+		if _, err := client.Favorites(ctx, selfSecUID, "1699"); err != nil {
+			t.Fatalf("Favorites page 2 failed: %v", err)
+		}
+		// LoginWithCookie already synced webid -> 0 extra profile/self calls on Favorites page 1 & 2.
+		if len(seen) != 3 {
+			t.Fatalf("total requests = %d, want 3 (1 login + 2 favorites)", len(seen))
+		}
+		for _, idx := range []int{1, 2} {
+			r := seen[idx]
+			if r.path != pathFavorite {
+				t.Fatalf("req[%d] path = %q, want %q", idx, r.path, pathFavorite)
+			}
+			if got := r.query.Get("webid"); got != serverWebID {
+				t.Fatalf("req[%d] webid = %q, want %q", idx, got, serverWebID)
+			}
+			// Parameter order must remain in-place: round_trip_time -> webid -> sec_user_id.
+			wantSlice := "round_trip_time=50&webid=" + serverWebID + "&sec_user_id="
+			if !strings.Contains(r.raw, wantSlice) {
+				t.Fatalf("req[%d] raw query lost in-place webid order: %s", idx, r.raw)
+			}
+			// Verify Stage-2 x-secsdk-web-signature matches exact RawQuery containing the synced webid.
+			stage2Query, sigHex, ok := strings.Cut(r.raw, "&x-secsdk-web-signature=")
+			if !ok || sigHex == "" {
+				t.Fatalf("req[%d] missing stage-2 signature in query: %s", idx, r.raw)
+			}
+			stamp := r.header.Get("x-secsdk-web-expire")
+			sum := md5.Sum([]byte(uifidVal + "_" + stamp + "_A96D855A08C0A9707F8BEF0D9A527E4E_" + stage2Query))
+			wantSig := hex.EncodeToString(sum[:])
+			if sigHex != wantSig || r.header.Get("x-secsdk-web-signature") != wantSig {
+				t.Fatalf("req[%d] stage-2 sig mismatch: query=%q header=%q want=%q", idx, sigHex, r.header.Get("x-secsdk-web-signature"), wantSig)
+			}
+		}
+	})
+
+	t.Run("cold_start_concurrent_warmup_dedup_and_page2_no_rewarm", func(t *testing.T) {
+		store := openTestDouyinCredStore(t, true)
+		const coldWebID = "7355555555555555555"
+
+		var profileHits atomic.Int32
+		var favHits atomic.Int32
+		var favWebIDsMu sync.Mutex
+		var favWebIDs []string
+
+		warmupStarted := make(chan struct{})
+		releaseWarmup := make(chan struct{})
+		var closeOnce sync.Once
+		releaseAll := func() { closeOnce.Do(func() { close(releaseWarmup) }) }
+		t.Cleanup(releaseAll)
+
+		client := NewClient(ClientOptions{
+			CredStore:   store,
+			WebID:       "7300000000000000002",
+			MinInterval: -1,
+			Entropy:     newDeterministicEntropy(0x62),
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch req.URL.Path {
+				case "/aweme/v1/web/user/profile/self/":
+					if profileHits.Add(1) == 1 {
+						close(warmupStarted)
+					}
+					select {
+					case <-req.Context().Done():
+						return nil, req.Context().Err()
+					case <-releaseWarmup:
+					}
+					return jsonHTTPResponse(200, `{"status_code":0,"user":{"uid":"900000000001","sec_uid":"`+selfSecUID+`","nickname":"冷启动用户"}}`, map[string]string{
+						"cookie_ttwidinfo_webid": coldWebID,
+					}), nil
+				case pathFavorite:
+					favHits.Add(1)
+					favWebIDsMu.Lock()
+					favWebIDs = append(favWebIDs, req.URL.Query().Get("webid"))
+					favWebIDsMu.Unlock()
+					return jsonHTTPResponse(200, `{"status_code":0,"aweme_list":[],"has_more":0,"max_cursor":0}`, nil), nil
+				default:
+					return jsonHTTPResponse(404, `{}`, nil), nil
+				}
+			}),
+		})
+
+		errs := make(chan error, 3)
+		go func() {
+			_, err := client.Favorites(ctx, selfSecUID, "")
+			errs <- err
+		}()
+		<-warmupStarted
+		for i := 0; i < 2; i++ {
+			go func() {
+				_, err := client.Favorites(ctx, selfSecUID, "")
+				errs <- err
+			}()
+		}
+		time.Sleep(25 * time.Millisecond)
+		releaseAll()
+
+		for i := 0; i < 3; i++ {
+			if err := <-errs; err != nil {
+				t.Fatalf("concurrent Favorites[%d] failed: %v", i, err)
+			}
+		}
+		if _, err := client.Favorites(ctx, selfSecUID, "1699"); err != nil {
+			t.Fatalf("Favorites page 2 failed: %v", err)
+		}
+		if got := profileHits.Load(); got != 1 {
+			t.Fatalf("profile/self warmup hits = %d, want exactly 1", got)
+		}
+		if got := favHits.Load(); got != 4 {
+			t.Fatalf("favorite hits = %d, want 4", got)
+		}
+		for i, wid := range favWebIDs {
+			if wid != coldWebID {
+				t.Fatalf("favorite[%d] webid = %q, want %q", i, wid, coldWebID)
+			}
+		}
+	})
+
+	t.Run("warmup_without_header_marks_tried_and_falls_back_to_default_webid", func(t *testing.T) {
+		store := openTestDouyinCredStore(t, true)
+		const defaultWID = "7300000000000000099"
+		var profileHits atomic.Int32
+		var favWebIDs []string
+
+		client := NewClient(ClientOptions{
+			CredStore:   store,
+			WebID:       defaultWID,
+			MinInterval: -1,
+			Entropy:     newDeterministicEntropy(0x63),
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch req.URL.Path {
+				case "/aweme/v1/web/user/profile/self/":
+					profileHits.Add(1)
+					return jsonHTTPResponse(200, `{"status_code":0,"user":{"uid":"900000000001","sec_uid":"`+selfSecUID+`","nickname":"无头用户"}}`, map[string]string{
+						"cookie_ttwidinfo_webid": "invalid_not_digits",
+					}), nil
+				case pathFavorite:
+					favWebIDs = append(favWebIDs, req.URL.Query().Get("webid"))
+					return jsonHTTPResponse(200, `{"status_code":0,"aweme_list":[],"has_more":0,"max_cursor":0}`, nil), nil
+				default:
+					return jsonHTTPResponse(404, `{}`, nil), nil
+				}
+			}),
+		})
+
+		if _, err := client.Favorites(ctx, selfSecUID, ""); err != nil {
+			t.Fatalf("Favorites 1 failed: %v", err)
+		}
+		if _, err := client.Favorites(ctx, selfSecUID, "1699"); err != nil {
+			t.Fatalf("Favorites 2 failed: %v", err)
+		}
+		if got := profileHits.Load(); got != 1 {
+			t.Fatalf("profile/self hits = %d, want 1 (must not loop when header absent)", got)
+		}
+		if len(favWebIDs) != 2 || favWebIDs[0] != defaultWID || favWebIDs[1] != defaultWID {
+			t.Fatalf("favWebIDs = %v, want [%s %s]", favWebIDs, defaultWID, defaultWID)
+		}
+	})
+
+	t.Run("warmup_auth_risk_rate_limit_and_cancel_abort_before_favorites", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			status   int
+			body     string
+			cancel   bool
+			wantKind string
+		}{
+			{"auth_required", 200, `{"status_code":2483,"status_msg":"未登录"}`, false, site.ErrKindAuthRequired},
+			{"risk_control", 200, `<html>验证码中间页</html>`, false, site.ErrKindRiskControl},
+			{"rate_limited", 429, `{}`, false, site.ErrKindRateLimited},
+			{"ctx_canceled", 200, `{}`, true, site.ErrKindNetwork},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				store := openTestDouyinCredStore(t, true)
+				var favHits atomic.Int32
+				client := NewClient(ClientOptions{
+					CredStore:   store,
+					MinInterval: -1,
+					Entropy:     newDeterministicEntropy(0x64),
+					Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+						if req.URL.Path == pathFavorite {
+							favHits.Add(1)
+						}
+						return jsonHTTPResponse(tc.status, tc.body, nil), nil
+					}),
+				})
+				callCtx := ctx
+				if tc.cancel {
+					var cancel context.CancelFunc
+					callCtx, cancel = context.WithCancel(ctx)
+					cancel()
+				}
+				_, err := client.Favorites(callCtx, selfSecUID, "")
+				if !site.IsKind(err, tc.wantKind) {
+					t.Fatalf("Favorites(%s) err = %v, want kind %s", tc.name, err, tc.wantKind)
+				}
+				if got := favHits.Load(); got != 0 {
+					t.Fatalf("Favorites(%s) hit aweme/favorite %d times after warmup failure, want 0", tc.name, got)
+				}
+			})
+		}
+	})
+
+	t.Run("logout_ttwid_rotation_and_failed_candidate_isolation", func(t *testing.T) {
+		store := openTestDouyinCredStore(t, false)
+		const (
+			defaultWID = "7300000000000000077"
+			webIDA     = "7311111111111111111"
+			webIDB     = "7322222222222222222"
+			webIDBad   = "7399999999999999999"
+		)
+		var profileMode atomic.Int32 // 0=userA(webIDA), 1=badCandidate(user:null, webIDBad), 2=userB(webIDB)
+		var lastFavWebID, lastFollowWebID string
+
+		client := NewClient(ClientOptions{
+			CredStore:   store,
+			WebID:       defaultWID,
+			MinInterval: -1,
+			Entropy:     newDeterministicEntropy(0x65),
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch req.URL.Path {
+				case "/aweme/v1/web/user/profile/self/":
+					switch profileMode.Load() {
+					case 0:
+						return jsonHTTPResponse(200, `{"status_code":0,"user":{"uid":"1001","sec_uid":"`+selfSecUID+`","nickname":"用户A"}}`, map[string]string{
+							"cookie_ttwidinfo_webid": webIDA,
+						}), nil
+					case 1:
+						return jsonHTTPResponse(200, `{"status_code":0,"user":null}`, map[string]string{
+							"cookie_ttwidinfo_webid": webIDBad,
+						}), nil
+					default:
+						return jsonHTTPResponse(200, `{"status_code":0,"user":{"uid":"1002","sec_uid":"`+selfSecUID+`","nickname":"用户B"}}`, map[string]string{
+							"cookie_ttwidinfo_webid": webIDB,
+						}), nil
+					}
+				case pathFavorite:
+					lastFavWebID = req.URL.Query().Get("webid")
+					return jsonHTTPResponse(200, `{"status_code":0,"aweme_list":[],"has_more":0,"max_cursor":0}`, nil), nil
+				case pathFollowingList:
+					lastFollowWebID = req.URL.Query().Get("webid")
+					return jsonHTTPResponse(200, `{"status_code":0,"followings":[],"has_more":false,"min_time":0}`, nil), nil
+				default:
+					return jsonHTTPResponse(404, `{}`, nil), nil
+				}
+			}),
+		})
+
+		// 1. Login user A -> syncs webIDA.
+		profileMode.Store(0)
+		if _, err := client.LoginWithCookie(ctx, "sessionid=SYNTH_SESS_A; ttwid=SYNTH_TTWID_A"); err != nil {
+			t.Fatal(err)
+		}
+		// 2. Failed candidate LoginWithCookie MUST NOT clobber user A's synced webIDA.
+		profileMode.Store(1)
+		if _, err := client.LoginWithCookie(ctx, "sessionid=SYNTH_SESS_BAD; ttwid=SYNTH_TTWID_BAD"); !site.IsKind(err, site.ErrKindAuthRequired) {
+			t.Fatalf("bad candidate err = %v, want auth_required", err)
+		}
+		if _, err := client.Favorites(ctx, selfSecUID, ""); err != nil {
+			t.Fatal(err)
+		}
+		if lastFavWebID != webIDA {
+			t.Fatalf("user A favorite webid = %q after failed candidate login, want %q", lastFavWebID, webIDA)
+		}
+
+		// 3. ttwid rotation inside store invalidates user A's synced webIDA immediately.
+		if err := store.MergeContextCookies(map[string]string{"ttwid": "SYNTH_TTWID_ROTATED"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Followings(ctx, selfSecUID, ""); err != nil {
+			t.Fatal(err)
+		}
+		if lastFollowWebID != defaultWID {
+			t.Fatalf("after ttwid rotation, Followings leaked old webid %q, want default %q", lastFollowWebID, defaultWID)
+		}
+
+		// 4. Logout clears syncedWebID; re-seeding user B warms up and syncs webIDB.
+		if err := client.LogoutCredential(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SaveVerifiedDouyinManual(map[string]string{
+			"sessionid": "SYNTH_SESS_B",
+			"ttwid":     "SYNTH_TTWID_B",
+		}, credential.DouyinProfile{UID: "1002", SecUID: selfSecUID, Uname: "用户B"}); err != nil {
+			t.Fatal(err)
+		}
+		profileMode.Store(2)
+		if _, err := client.Favorites(ctx, selfSecUID, ""); err != nil {
+			t.Fatal(err)
+		}
+		if lastFavWebID != webIDB {
+			t.Fatalf("user B favorite webid = %q, want %q", lastFavWebID, webIDB)
+		}
+	})
+}
+
+func TestBDTuringParametersAndVerifyDetectionWithoutLeaks(t *testing.T) {
+	ctx := context.Background()
+	const (
+		secretDetail = "SYNTH_SECRET_DETAIL_TOKEN_99"
+		secretFP     = "verify_SYNTH_SECRET_FP_99"
+		secretVerify = "SYNTH_SECRET_VERIFY_HDR_88"
+	)
+
+	t.Run("favorites_0b_distinguishes_bdturing_headers_and_stays_unavailable", func(t *testing.T) {
+		cases := []struct {
+			name        string
+			headers     map[string]string
+			wantSubstr  string
+			forbidMatch string
+			wantParams  bool
+			wantVerify  bool
+			wantGuard   bool
+			wantCode    int
+		}{
+			{
+				name: "x_vc_bdturing_parameters",
+				headers: map[string]string{
+					"x-vc-bdturing-parameters": `{"code":"10000","type":"verify","subtype":"slide","detail":"` + secretDetail + `","fp":"` + secretFP + `"}`,
+					"bd-ticket-guard-result":   "1101",
+				},
+				wantSubstr: "触发抖音动态校验拦截（x-vc-bdturing-parameters）",
+				wantParams: true,
+				wantGuard:  true,
+				wantCode:   1101,
+			},
+			{
+				name: "bdturing_verify",
+				headers: map[string]string{
+					"bdturing-verify":        secretVerify,
+					"bd-ticket-guard-result": "1101",
+				},
+				wantSubstr: "触发抖音动态校验拦截（bdturing-verify）",
+				wantVerify: true,
+				wantGuard:  true,
+				wantCode:   1101,
+			},
+			{
+				name:        "plain_empty_body",
+				headers:     map[string]string{"bd-ticket-guard-result": "1101"},
+				wantSubstr:  "返回空响应",
+				forbidMatch: "动态校验拦截",
+				wantGuard:   true,
+				wantCode:    1101,
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				store := openTestDouyinCredStore(t, true)
+				var breakerHits atomic.Int32
+				client := NewClient(ClientOptions{
+					CredStore:   store,
+					MinInterval: -1,
+					Entropy:     newDeterministicEntropy(0x71),
+					Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+						if req.URL.Path == "/aweme/v1/web/user/profile/self/" {
+							return jsonHTTPResponse(200, `{"status_code":0,"user":{"uid":"900000000001","sec_uid":"`+selfSecUID+`","nickname":"校验用户"}}`, map[string]string{
+								"cookie_ttwidinfo_webid": fixtureSyncWebID,
+							}), nil
+						}
+						return jsonHTTPResponse(200, "", tc.headers), nil
+					}),
+				})
+				client.SetAutomaticRequestHandlers(nil, func(string, error) {
+					breakerHits.Add(1)
+				})
+
+				autoCtx := site.WithAutomaticRequests(ctx, "test")
+				_, err := client.Favorites(autoCtx, selfSecUID, "")
+				if !site.IsKind(err, site.ErrKindUnavailable) {
+					t.Fatalf("Favorites(%s) err = %v, want unavailable", tc.name, err)
+				}
+				if breakerHits.Load() != 0 {
+					t.Fatalf("Favorites(%s) tripped automatic breaker %d times, want 0", tc.name, breakerHits.Load())
+				}
+				msg := err.Error()
+				if !strings.Contains(msg, tc.wantSubstr) || !strings.Contains(msg, "浏览器") {
+					t.Fatalf("Favorites(%s) message = %q, want %q and 浏览器", tc.name, msg, tc.wantSubstr)
+				}
+				if tc.forbidMatch != "" && strings.Contains(msg, tc.forbidMatch) {
+					t.Fatalf("Favorites(%s) message %q should not contain %q", tc.name, msg, tc.forbidMatch)
+				}
+				for _, secret := range []string{secretDetail, secretFP, secretVerify} {
+					if strings.Contains(msg, secret) {
+						t.Fatalf("Favorites(%s) leaked secret %q in error: %q", tc.name, secret, msg)
+					}
+				}
+				diag, ok := ExtractResponseDiagnostics(err)
+				if !ok {
+					t.Fatalf("Favorites(%s) missing ResponseDiagnostics", tc.name)
+				}
+				if diag.HTTPStatus != 200 || diag.BodyBytes != 0 || !diag.EmptyBody ||
+					diag.HasBDTuringParams != tc.wantParams || diag.HasBDTuringVerify != tc.wantVerify ||
+					diag.HasGuardResult != tc.wantGuard || diag.GuardResultCode != tc.wantCode || !diag.WebIDSynced {
+					t.Fatalf("Favorites(%s) diag = %+v", tc.name, diag)
+				}
+			})
+		}
+	})
+
+	t.Run("non_favorites_bdturing_headers_trigger_risk_control_without_leaks", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			header string
+			val    string
+			body   string
+		}{
+			{"params_empty", "x-vc-bdturing-parameters", `{"detail":"` + secretDetail + `"}`, ""},
+			{"params_json", "x-vc-bdturing-parameters", `{"fp":"` + secretFP + `"}`, `{"status_code":0,"aweme_list":[],"has_more":0}`},
+			{"verify_header", "bdturing-verify", secretVerify, ""},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				client := NewClient(ClientOptions{
+					CredStore:   openTestDouyinCredStore(t, true),
+					MinInterval: -1,
+					Entropy:     newDeterministicEntropy(0x72),
+					Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+						return jsonHTTPResponse(200, tc.body, map[string]string{tc.header: tc.val}), nil
+					}),
+				})
+				_, err := client.WatchHistory(ctx, "")
+				if !site.IsKind(err, site.ErrKindRiskControl) {
+					t.Fatalf("WatchHistory(%s) err = %v, want risk_control", tc.name, err)
+				}
+				if !strings.Contains(err.Error(), tc.header) {
+					t.Fatalf("WatchHistory(%s) message = %q, want header name %q", tc.name, err.Error(), tc.header)
+				}
+				for _, secret := range []string{secretDetail, secretFP, secretVerify} {
+					if strings.Contains(err.Error(), secret) {
+						t.Fatalf("WatchHistory(%s) leaked secret %q: %q", tc.name, secret, err.Error())
+					}
+				}
+			})
+		}
+	})
+}
+
+func TestParseAccountWorksItemFaultToleranceAndLastPageNullList(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("skips_single_broken_malformed_and_deleted_items_without_failing_page", func(t *testing.T) {
+		validRaw := awemeNodes(t, "7600000000000000", 2)
+		var validArr []json.RawMessage
+		if err := json.Unmarshal([]byte(validRaw), &validArr); err != nil {
+			t.Fatal(err)
+		}
+		mixed := []json.RawMessage{
+			validArr[0],
+			json.RawMessage(`null`),
+			json.RawMessage(`{"aweme_id":"76000000000000091","status":{"is_delete":true}}`),
+			json.RawMessage(`{"aweme_id":"76000000000000092","aweme_type":68,"images":[{"url_list":[]}]}`), // broken note without watermark-free image URL
+			json.RawMessage(`{"aweme_id":"76000000000000093","is_top":"type_drift_string"}`),               // single item JSON type drift
+			validArr[1],
+		}
+		payload, _ := json.Marshal(mixed)
+		client, _ := accountFixtureClient(t, func(r capturedReq) (int, string) {
+			return 200, `{"status_code":0,"aweme_list":` + string(payload) + `,"has_more":1,"max_cursor":1700}`
+		})
+		page, err := client.Favorites(ctx, selfSecUID, "")
+		if err != nil {
+			t.Fatalf("Favorites with mixed broken items failed: %v", err)
+		}
+		if len(page.Works) != 2 || page.Works[0].ID != "76000000000000000" || page.Works[1].ID != "76000000000000001" || !page.HasMore || page.NextCursor != "1700" {
+			t.Fatalf("unexpected page = %+v", page)
+		}
+	})
+
+	t.Run("all_items_broken_returns_schema_changed", func(t *testing.T) {
+		client, _ := accountFixtureClient(t, func(r capturedReq) (int, string) {
+			return 200, `{"status_code":0,"aweme_list":[{"aweme_id":"76000000000000094","aweme_type":68,"images":[{"url_list":[]}]},{"aweme_id":"76000000000000095","is_top":"bad"}],"has_more":0,"max_cursor":0}`
+		})
+		if _, err := client.Favorites(ctx, selfSecUID, ""); !site.IsKind(err, site.ErrKindSchemaChanged) {
+			t.Fatalf("all broken items err = %v, want schema_changed", err)
+		}
+	})
+
+	t.Run("all_items_explicitly_deleted_succeeds_empty", func(t *testing.T) {
+		client, _ := accountFixtureClient(t, func(r capturedReq) (int, string) {
+			return 200, `{"status_code":0,"aweme_list":[{"aweme_id":"76000000000000096","status":{"is_delete":true}}],"has_more":0,"max_cursor":0}`
+		})
+		page, err := client.Favorites(ctx, selfSecUID, "")
+		if err != nil || len(page.Works) != 0 || page.HasMore {
+			t.Fatalf("all deleted page = %+v err=%v", page, err)
+		}
+	})
+
+	t.Run("last_page_null_list_with_has_more_zero_succeeds_while_page1_or_has_more_1_stays_shell", func(t *testing.T) {
+		var body string
+		client, _ := accountFixtureClient(t, func(r capturedReq) (int, string) {
+			return 200, body
+		})
+		// Subsequent last page: aweme_list:null + has_more:0 -> normal empty last page.
+		body = `{"status_code":0,"aweme_list":null,"has_more":0,"max_cursor":0}`
+		page, err := client.Favorites(ctx, selfSecUID, "1700")
+		if err != nil || len(page.Works) != 0 || page.HasMore {
+			t.Fatalf("last page null list = %+v err=%v, want empty non-error page", page, err)
+		}
+		// Page 1: aweme_list:null + has_more:0 -> still shell (risk_control).
+		if _, err := client.Favorites(ctx, selfSecUID, ""); !site.IsKind(err, site.ErrKindRiskControl) {
+			t.Fatalf("page 1 null list err = %v, want risk_control", err)
+		}
+		// Subsequent page: aweme_list:null + has_more:1 -> still shell (risk_control).
+		body = `{"status_code":0,"aweme_list":null,"has_more":1,"max_cursor":1800}`
+		if _, err := client.Favorites(ctx, selfSecUID, "1700"); !site.IsKind(err, site.ErrKindRiskControl) {
+			t.Fatalf("has_more=1 null list err = %v, want risk_control", err)
+		}
+	})
 }

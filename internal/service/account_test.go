@@ -116,6 +116,13 @@ func newAccountHarness(t *testing.T) *accountHarness {
 				if strings.HasSuffix(r.URL.Path, "/aweme/favorite/") {
 					return // HTTP 200, no body: 喜欢 refuses non-browser requests (2026-11-14 probe)
 				}
+			case "bdturing_empty":
+				if strings.HasSuffix(r.URL.Path, "/aweme/favorite/") {
+					w.Header().Set("Content-Type", "text/plain")
+					w.Header().Set("bd-ticket-guard-result", "1101")
+					w.Header().Set("x-vc-bdturing-parameters", `{"code":"10000","type":"verify","subtype":"slide","detail":"SYNTH_SECRET_DETAIL_42","fp":"verify_SYNTH_SECRET_FP_42"}`)
+					return
+				}
 			case "captcha":
 				w.Header().Set("Content-Type", "text/html")
 				fmt.Fprint(w, `<html>验证码中间页</html>`)
@@ -128,6 +135,7 @@ func newAccountHarness(t *testing.T) *accountHarness {
 		}
 		switch r.URL.Path {
 		case "/aweme/v1/web/user/profile/self/":
+			w.Header().Set("cookie_ttwidinfo_webid", "7312345678901234567")
 			fmt.Fprintf(w, `{"status_code":0,"user":{"uid":"88001122","sec_uid":%q,"unique_id":"self","nickname":"自己"}}`, acctSelfSecUID)
 		case "/aweme/v1/web/user/following/list/":
 			fmt.Fprintf(w, `{"status_code":0,"followings":[{"uid":"3","sec_uid":%q,"nickname":"关注的人","unique_id":"fan3","signature":"签名"}],"has_more":false,"min_time":1}`, acctFollowSecUID)
@@ -448,6 +456,71 @@ func TestDouyinLikesRefusalLeavesTheSiteRunning(t *testing.T) {
 	}
 	if _, err := h.b.AccountPage(ctx, "douyin", AccountCollection, AccountFolderAll, ""); err != nil {
 		t.Fatalf("collection after a likes refusal: %v", err)
+	}
+}
+
+func TestDouyinAccountFailSanitizedDiagnosticLogNotRedacted(t *testing.T) {
+	h := newAccountHarness(t)
+	ctx := context.Background()
+	if st, err := h.b.LoginWithCookie(ctx, "douyin", "sessionid=SYNTH_ACCT_DY_LOG_SESS; ttwid=SYNTH_ACCT_DY_LOG_TTWID", ""); err != nil || !st.LoggedIn {
+		t.Fatalf("login douyin: %+v %v", st, err)
+	}
+	h.dyMode.Store("bdturing_empty")
+	_, err := h.b.AccountPage(ctx, "douyin", AccountLikes, "", "")
+	if !site.IsKind(err, site.ErrKindUnavailable) {
+		t.Fatalf("likes bdturing refusal err = %v, want unavailable", err)
+	}
+	if !strings.Contains(err.Error(), "x-vc-bdturing-parameters") || !strings.Contains(err.Error(), "浏览器") {
+		t.Fatalf("likes bdturing refusal message = %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "SYNTH_SECRET_DETAIL_42") || strings.Contains(err.Error(), "verify_SYNTH_SECRET_FP_42") {
+		t.Fatalf("likes bdturing refusal leaked sensitive header value: %q", err.Error())
+	}
+	if active, _ := h.b.subs.IsSiteInBackoff("douyin"); active {
+		t.Fatal("likes bdturing 0B must not trigger site backoff")
+	}
+
+	h.b.LogUserError(err)
+	logs, lErr := h.b.RecentLogs(200)
+	if lErr != nil {
+		t.Fatalf("RecentLogs: %v", lErr)
+	}
+	foundDiagLine := false
+	foundUILine := false
+	for _, ln := range logs {
+		if strings.Contains(ln, "[REDACTED_LOG_LINE]") {
+			t.Fatalf("diagnostic log line was falsely redacted: %q", ln)
+		}
+		for _, secret := range []string{"SYNTH_SECRET_DETAIL_42", "verify_SYNTH_SECRET_FP_42", "SYNTH_ACCT_DY_LOG_SESS", "SYNTH_ACCT_DY_LOG_TTWID"} {
+			if strings.Contains(ln, secret) {
+				t.Fatalf("sensitive value %q leaked into log line: %q", secret, ln)
+			}
+		}
+		if strings.Contains(ln, "account.douyin.likes error=unavailable") {
+			foundDiagLine = true
+			for _, want := range []string{
+				"http=200",
+				"bytes=0",
+				"empty=true",
+				"bdturing_params=true",
+				"bdturing_verify=false",
+				"guard_code=1101",
+				"webid_synced=true",
+			} {
+				if !strings.Contains(ln, want) {
+					t.Fatalf("accountFail log line %q missing %q", ln, want)
+				}
+			}
+		}
+		if strings.Contains(ln, "ui: douyin [unavailable http=200]:") && strings.Contains(ln, "x-vc-bdturing-parameters") {
+			foundUILine = true
+		}
+	}
+	if !foundDiagLine {
+		t.Fatalf("missing sanitized account.douyin.likes diagnostic line in logs:\n%s", strings.Join(logs, "\n"))
+	}
+	if !foundUILine {
+		t.Fatalf("missing unredacted UI error line in logs:\n%s", strings.Join(logs, "\n"))
 	}
 }
 

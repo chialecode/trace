@@ -83,10 +83,12 @@ func (a *App) mineAccountID(siteID string) string {
 }
 
 // mineOnAccountChanged clears a site's lists after a sign-out, an expiry or
-// a different account; a renewal of the same account keeps them. When siteID
-// is empty (broadcast account change), every site is checked.
+// a different account; a renewal of the same account keeps already-loaded
+// lists while clearing failed first-page entries (and auto-reloading if the
+// user is currently staying on that failed view). When siteID is empty
+// (broadcast account change), every site is checked.
 func (a *App) mineOnAccountChanged(siteID string) {
-	if a.Mine.Lists == nil {
+	if a.Mine.Lists == nil && len(a.Mine.FolderErr) == 0 {
 		return
 	}
 	if siteID == "" {
@@ -98,6 +100,43 @@ func (a *App) mineOnAccountChanged(siteID string) {
 	id := a.mineAccountID(siteID)
 	if id == "" || (a.Mine.owner[siteID] != "" && a.Mine.owner[siteID] != id) {
 		a.mineClearSite(siteID)
+		return
+	}
+	st := a.backend.StatusOf(siteID)
+	if st.State != "" && st.State != "logged_in" && st.State != "active" {
+		return
+	}
+	prefix := siteID + "/"
+	curKey := ""
+	curFK := ""
+	if a.Mine.Site == siteID && a.Mine.Kind != "" {
+		curKey = a.mineListKey()
+		curFK = mineFnKey(siteID, a.Mine.Kind)
+	}
+	clearedCurrentList := false
+	for k, l := range a.Mine.Lists {
+		if strings.HasPrefix(k, prefix) && l != nil && !l.Loaded && l.Err != "" {
+			delete(a.Mine.Lists, k)
+			if k == curKey {
+				clearedCurrentList = true
+			}
+		}
+	}
+	clearedCurrentFolder := false
+	for fk, msg := range a.Mine.FolderErr {
+		if strings.HasPrefix(fk, prefix) && msg != "" {
+			delete(a.Mine.FolderErr, fk)
+			if fk == curFK {
+				clearedCurrentFolder = true
+			}
+		}
+	}
+	if a.CurrentRoute == RouteMine && a.mineShowsList() && a.Mine.Site == siteID {
+		if clearedCurrentFolder && mineHasFolders(siteID, a.Mine.Kind) {
+			a.mineLoadFolders(siteID, a.Mine.Kind)
+		} else if clearedCurrentList {
+			a.mineEnsureList()
+		}
 	}
 }
 
