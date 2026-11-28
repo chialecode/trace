@@ -10,6 +10,9 @@ import (
 // WeiboManualRenewalUnavailableReason explains why pasted Weibo cookies are never renewed automatically.
 const WeiboManualRenewalUnavailableReason = "粘贴的 Cookie 不续期"
 
+// WeiboQRRenewalUnavailableReason explains why QR-obtained Weibo web sessions are not renewed automatically.
+const WeiboQRRenewalUnavailableReason = "微博扫码登录暂不支持自动续期"
+
 // AllowedWeiboCookieKeys defines the explicit case-sensitive whitelist of Weibo
 // identity, companion, and mobile-compat cookie keys retained by TRACE (weibo.md §2.2).
 var AllowedWeiboCookieKeys = []string{
@@ -39,7 +42,8 @@ var exactWeiboKeySet = func() map[string]struct{} {
 
 // Weibo sensitive field redaction patterns per weibo.md §2.2 #4:
 // covers SUB, SUBP, SCF, ALF, ALC, WBPSESS, XSRF-TOKEN, X-XSRF-TOKEN,
-// SSOLoginState, SUHB, PC_TOKEN, _T_WM, plus st, alt, ticket and URL-encoded forms.
+// SSOLoginState, SUHB, PC_TOKEN, _T_WM, plus QR/SSO transient secrets
+// (qrid, st, alt, ticket) and URL-encoded forms.
 var (
 	reWeiboNamedKV = regexp.MustCompile(
 		`(^|[?&;,:=\s"'(\[{])(SUB|SUBP|SCF|ALF|ALC|WBPSESS|XSRF-TOKEN|X-XSRF-TOKEN|SSOLoginState|SUHB|PC_TOKEN|_T_WM)=(\[REDACTED\]|"[^"\r\n]*"|'[^'\r\n]*'|[^&\s;'",)\]}<>]+)`,
@@ -54,13 +58,13 @@ var (
 		`(?i)(^|[\s;:,"'(\[{])(X-XSRF-TOKEN[ \t]*:[ \t]*)(\[REDACTED\]|"[^"\r\n]*"|'[^'\r\n]*'|[^\r\n;\s,"')\]}<>]+)`,
 	)
 	reWeiboShortTokenKV = regexp.MustCompile(
-		`(^|[?&;,:=\s"'(\[{])(st|alt|ticket)=(\[REDACTED\]|[^&\s;'",)\]}<>]+)`,
+		`(^|[?&;,:=\s"'(\[{])(st|alt|ticket|qrid|QRID)=(\[REDACTED\]|"[^"\r\n]*"|'[^'\r\n]*'|[^&\s;'",)\]}<>]+)`,
 	)
 	reWeiboShortTokenEncPrefix = regexp.MustCompile(
-		`(?i)(^|%3f|%26|%3b|%20|%3d|%3a|%22|%27|[?&;,:=\+\s"'(\[{])((?-i:st|alt|ticket))(%3d)`,
+		`(?i)(^|%3f|%26|%3b|%20|%3d|%3a|%22|%27|[?&;,:=\+\s"'(\[{])((?-i:st|alt|ticket|qrid|QRID))(%3d)`,
 	)
 	reWeiboShortTokenJSON = regexp.MustCompile(
-		`("(?:st|alt|ticket)"\s*:\s*")([^"]+)(")`,
+		`("(?:st|alt|ticket|qrid|QRID)"\s*:\s*")([^"]+)(")`,
 	)
 )
 
@@ -253,8 +257,20 @@ func (s *Store) SaveWeiboManual(rawCookie string) (Status, error) {
 	return s.SaveVerifiedWeiboManual(cookies, WeiboProfile{})
 }
 
-// SaveVerifiedWeiboManual persists cleaned Weibo cookies and verified profile metadata.
+// SaveVerifiedWeiboManual persists cleaned Weibo cookies and verified profile metadata
+// obtained from a manually pasted browser Cookie header.
 func (s *Store) SaveVerifiedWeiboManual(cookies map[string]string, profile WeiboProfile) (Status, error) {
+	return s.saveVerifiedWeibo(cookies, profile, "manual")
+}
+
+// SaveVerifiedWeiboQR persists cleaned Weibo cookies and verified profile metadata
+// obtained from PC Web SSO QR code login. Source is recorded as "qr" with an empty
+// RefreshToken because Weibo web sessions are non-renewable (weibo.md §2.3).
+func (s *Store) SaveVerifiedWeiboQR(cookies map[string]string, profile WeiboProfile) (Status, error) {
+	return s.saveVerifiedWeibo(cookies, profile, "qr")
+}
+
+func (s *Store) saveVerifiedWeibo(cookies map[string]string, profile WeiboProfile, source string) (Status, error) {
 	if err := s.requireSite(SiteWeibo); err != nil {
 		return Status{}, err
 	}
@@ -267,7 +283,8 @@ func (s *Store) SaveVerifiedWeiboManual(cookies map[string]string, profile Weibo
 		Version:       1,
 		Site:          SiteWeibo,
 		Cookies:       cleaned,
-		Source:        "manual",
+		RefreshToken:  "",
+		Source:        source,
 		UpdatedAt:     now,
 		ObtainedAt:    now,
 		LastCheckedAt: now,
@@ -445,10 +462,17 @@ func redactWeiboSensitiveFields(in string) string {
 	})
 	out = reWeiboShortTokenKV.ReplaceAllStringFunc(out, func(m string) string {
 		sub := reWeiboShortTokenKV.FindStringSubmatch(m)
-		if len(sub) != 4 || isIgnorableShortTokenValue(sub[3]) {
+		if len(sub) != 4 {
 			return m
 		}
-		return sub[1] + sub[2] + "=[REDACTED]"
+		if isIgnorableShortTokenValue(trimMatchingQuotes(sub[3])) {
+			return m
+		}
+		masked, changed := redactQuotedOrRawValue(sub[3])
+		if !changed {
+			return m
+		}
+		return sub[1] + sub[2] + "=" + masked
 	})
 	out = redactEncodedKVByPrefix(out, reWeiboShortTokenEncPrefix, isIgnorableShortTokenValue)
 	out = reWeiboShortTokenJSON.ReplaceAllStringFunc(out, func(m string) string {

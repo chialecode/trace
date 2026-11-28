@@ -426,12 +426,18 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 					if wbUID != "" {
 						uidLine = "UID " + wbUID
 					}
+					sourceText := "粘贴 Cookie"
+					renewText := "自动续期：不可用，粘贴的 Cookie 不续期；过期后请重新粘贴"
+					if wbAcct.Source == "qr" {
+						sourceText = "扫码登录"
+						renewText = "自动续期：不可用，微博扫码登录暂不支持自动续期；过期后请重新扫码或粘贴 Cookie"
+					}
 					wbVerified := formatAccountVerifiedTime(siteLastVerifiedAt("weibo", wbAcct, uiSt), now)
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).ClipX().Children(func() {
 						a.renderAccountAvatar(c, "weibo", firstNonEmptyStrUI(wbAcct.Uname, "微博用户"), wbUID, 0, 48, false, "", nil, wbAcct.Face)
 						ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 							ui.Text(c, firstNonEmptyStrUI(wbAcct.Uname, "微博用户")).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-							ui.Text(c, uidLine+" · 登录方式：粘贴 Cookie").
+							ui.Text(c, uidLine+" · 登录方式："+sourceText).
 								FontSize(13).TextColor(ColorTextMuted).SingleLine()
 							renderAccountVerifiedLine(c, "weibo", wbVerified)
 						})
@@ -439,10 +445,14 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 
 					renderAccountStateNote(c, "weibo", wbAcct)
 
-					ui.Text(c, "自动续期：不可用，粘贴的 Cookie 不续期；过期后请重新粘贴").
+					ui.Text(c, renewText).
 						FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
 
 					ui.Row(c).Gap(8).Wrap().Children(func() {
+						if OutlinePillButton(c, "扫码重新登录", "扫码重新登录微博").Clicked() {
+							a.clearSettingsPasteState()
+							a.OpenLoginForSiteTab("weibo", "qr")
+						}
 						pasteBtnText := "重新粘贴"
 						if a.SettingsPasteSite == "weibo" {
 							pasteBtnText = "收起粘贴"
@@ -464,11 +474,16 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 						ui.Text(c, firstNonEmptyStrUI(wbAcct.Message, "本地凭证无法解密，已降级为未登录，请重新登录")).
 							FontSize(12).TextColor(ColorError).MaxLines(2)
 					}
-					ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(12).Children(func() {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(12).Wrap().Children(func() {
 						ui.Text(c, "未登录微博账号").FontSize(13).TextColor(ColorTextMuted).SingleLine()
-						if AccentPillButton(c, "登录微博", "登录微博").Clicked() {
-							a.OpenLoginForSite("weibo")
-						}
+						ui.Row(c).Gap(8).Wrap().Children(func() {
+							if AccentPillButton(c, "扫码登录", "登录微博").Clicked() {
+								a.OpenLoginForSiteTab("weibo", "qr")
+							}
+							if OutlinePillButton(c, "粘贴 Cookie", "粘贴Cookie登录微博").Clicked() {
+								a.OpenLoginForSiteTab("weibo", "cookie")
+							}
+						})
 					})
 				}
 			})

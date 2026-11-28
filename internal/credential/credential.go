@@ -453,6 +453,13 @@ func (s *Store) Renewal() RenewalInfo {
 			Reason:    XManualRenewalUnavailableReason,
 		}
 	case SiteWeibo:
+		if s.rec != nil && s.rec.Source == "qr" {
+			return RenewalInfo{
+				Site:      SiteWeibo,
+				Available: false,
+				Reason:    WeiboQRRenewalUnavailableReason,
+			}
+		}
 		return RenewalInfo{
 			Site:      SiteWeibo,
 			Available: false,

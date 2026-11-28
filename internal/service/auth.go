@@ -173,6 +173,13 @@ func (b *Backend) Renewal(siteID string) RenewalStatus {
 			Reason:    "不可用，粘贴的 Cookie 与浏览器共用会话；过期后请重新粘贴",
 		}
 	case site.Weibo:
+		if b.weiboCred != nil && b.weiboCred.Status().Source == "qr" {
+			return RenewalStatus{
+				Site:      string(site.Weibo),
+				Available: false,
+				Reason:    "不可用，微博扫码登录暂不支持自动续期；过期后请重新扫码或粘贴 Cookie",
+			}
+		}
 		return RenewalStatus{
 			Site:      string(site.Weibo),
 			Available: false,
@@ -400,6 +407,79 @@ func (b *Backend) PollQRLogin(ctx context.Context, flowID string) (bilibili.QRPo
 func (b *Backend) CancelQRLogin(flowID string) {
 	b.bili.CancelQR(flowID)
 	b.logInfo("QR login canceled: flow=" + flowID)
+}
+
+// WeiboQRSessionDTO is the UI-safe snapshot returned when starting a Weibo QR code login flow.
+type WeiboQRSessionDTO struct {
+	FlowID    string    `json:"flowId"`
+	PNG       []byte    `json:"png"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// WeiboQRPollResultDTO represents the current state of an active Weibo QR code login flow.
+type WeiboQRPollResultDTO struct {
+	FlowID  string            `json:"flowId"`
+	State   string            `json:"state"` // "waiting", "scanned", "confirmed", "expired", "canceled"
+	Message string            `json:"message"`
+	Account credential.Status `json:"account"`
+}
+
+// StartWeiboQRLogin starts a new Weibo PC Web SSO QR login session and invalidates any previous session.
+func (b *Backend) StartWeiboQRLogin(ctx context.Context) (WeiboQRSessionDTO, error) {
+	if b.weibo == nil {
+		return WeiboQRSessionDTO{}, &site.Error{Site: site.Weibo, Kind: site.ErrKindUnavailable, Message: "微博客户端未初始化"}
+	}
+	sess, err := b.weibo.StartQR(ctx)
+	if err != nil {
+		b.logError("StartWeiboQRLogin", err)
+		return WeiboQRSessionDTO{}, err
+	}
+	b.logInfo("weibo QR login started: flow=" + sess.FlowID)
+	return WeiboQRSessionDTO{
+		FlowID:    sess.FlowID,
+		PNG:       sess.PNG,
+		ExpiresAt: sess.ExpiresAt,
+	}, nil
+}
+
+// PollWeiboQRLogin polls the status of the active Weibo QR login flow.
+func (b *Backend) PollWeiboQRLogin(ctx context.Context, flowID string) (WeiboQRPollResultDTO, error) {
+	if b.weibo == nil {
+		return WeiboQRPollResultDTO{}, &site.Error{Site: site.Weibo, Kind: site.ErrKindUnavailable, Message: "微博客户端未初始化"}
+	}
+	prevAuthPaused := b.snapshotAuthPausedQueueIDs(site.Weibo)
+	var prev credential.Status
+	if b.weiboCred != nil {
+		prev = b.weiboCred.Status()
+	}
+	res, err := b.weibo.PollQR(ctx, flowID)
+	if err != nil {
+		b.logError("PollWeiboQRLogin", err)
+		return WeiboQRPollResultDTO{}, err
+	}
+	if res.State == "confirmed" {
+		switched := prev.LoggedIn && prev.UID != "" && prev.UID != res.Account.UID
+		if switched {
+			b.clearWeiboMemoryCaches()
+			b.pauseSiteActiveWork(site.Weibo, "auth_required", "微博登录账号已变更，任务已暂停")
+		}
+		b.logInfo(fmt.Sprintf("weibo QR login confirmed: uid=%s", res.Account.UID))
+		b.finishSiteLogin(site.Weibo, res.Account.LoggedIn, res.Account.State, switched, prevAuthPaused)
+	}
+	return WeiboQRPollResultDTO{
+		FlowID:  res.FlowID,
+		State:   res.State,
+		Message: res.Message,
+		Account: res.Account,
+	}, nil
+}
+
+// CancelWeiboQRLogin cancels the Weibo QR login flow so late responses never write credentials.
+func (b *Backend) CancelWeiboQRLogin(flowID string) {
+	if b.weibo != nil {
+		b.weibo.CancelQR(flowID)
+	}
+	b.logInfo("weibo QR login canceled: flow=" + flowID)
 }
 
 // ImportCookie validates a manual Bilibili Cookie string against /x/web-interface/nav first,

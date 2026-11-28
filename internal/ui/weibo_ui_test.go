@@ -1,8 +1,12 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,18 +30,24 @@ type weiboStubBackend struct {
 	service.BackendAPI
 	raw *service.Backend
 
-	mu         sync.Mutex
-	dyStatus   credential.Status
-	wbStatus   credential.Status
-	loginGate  chan struct{}
-	loginMode  string // "ok" | "missing_sub" | "unauth" | "risk"
-	biliCalls  atomic.Int32
-	dyCalls    atomic.Int32
-	wbCalls    atomic.Int32
-	liveCalls  atomic.Int32
-	cachedMid  string
-	cachedOID  string
-	queuedReqs []service.CacheQueueRequest
+	mu              sync.Mutex
+	dyStatus        credential.Status
+	wbStatus        credential.Status
+	loginGate       chan struct{}
+	loginMode       string // "ok" | "missing_sub" | "unauth" | "risk"
+	wbQRStartPNG    []byte
+	wbQRStartErr    error
+	wbQRPollResults []service.WeiboQRPollResultDTO
+	wbQRPollErr     error
+	wbQRPollIdx     int
+	wbQRCancelled   atomic.Int32
+	biliCalls       atomic.Int32
+	dyCalls         atomic.Int32
+	wbCalls         atomic.Int32
+	liveCalls       atomic.Int32
+	cachedMid       string
+	cachedOID       string
+	queuedReqs      []service.CacheQueueRequest
 
 	wbUsers        map[string]*service.WeiboUserView
 	wbUserPages    map[string]map[string]weiboPageFixture
@@ -177,6 +187,69 @@ func (s *weiboStubBackend) LogoutSite(siteID string) (credential.Status, error) 
 		return st, nil
 	}
 	return s.BackendAPI.LogoutSite(siteID)
+}
+
+func (s *weiboStubBackend) StartWeiboQRLogin(_ context.Context) (service.WeiboQRSessionDTO, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.wbQRStartErr != nil {
+		return service.WeiboQRSessionDTO{}, s.wbQRStartErr
+	}
+	pngBytes := s.wbQRStartPNG
+	if len(pngBytes) == 0 {
+		img := image.NewRGBA(image.Rect(0, 0, 32, 32))
+		for y := 0; y < 32; y++ {
+			for x := 0; x < 32; x++ {
+				img.Set(x, y, color.Black)
+			}
+		}
+		var buf bytes.Buffer
+		_ = png.Encode(&buf, img)
+		pngBytes = buf.Bytes()
+	}
+	return service.WeiboQRSessionDTO{
+		FlowID:    "wbqr-ui-test-1",
+		PNG:       pngBytes,
+		ExpiresAt: time.Now().Add(180 * time.Second),
+	}, nil
+}
+
+func (s *weiboStubBackend) PollWeiboQRLogin(_ context.Context, flowID string) (service.WeiboQRPollResultDTO, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.wbQRPollErr != nil {
+		return service.WeiboQRPollResultDTO{}, s.wbQRPollErr
+	}
+	if s.wbQRPollIdx < len(s.wbQRPollResults) {
+		res := s.wbQRPollResults[s.wbQRPollIdx]
+		s.wbQRPollIdx++
+		if res.FlowID == "" {
+			res.FlowID = flowID
+		}
+		if res.State == "confirmed" {
+			if !res.Account.LoggedIn {
+				res.Account = credential.Status{
+					Site:     string(site.Weibo),
+					LoggedIn: true,
+					State:    "logged_in",
+					Source:   "qr",
+					UID:      "500000188",
+					Uname:    "微博扫码测试号",
+				}
+			}
+			s.wbStatus = res.Account
+		}
+		return res, nil
+	}
+	return service.WeiboQRPollResultDTO{
+		FlowID:  flowID,
+		State:   "waiting",
+		Message: "请使用微博 App 扫码登录",
+	}, nil
+}
+
+func (s *weiboStubBackend) CancelWeiboQRLogin(_ string) {
+	s.wbQRCancelled.Add(1)
 }
 
 func (s *weiboStubBackend) OpenLink(ctx context.Context, rawInput string) (*service.OpenLinkResult, error) {
@@ -401,6 +474,13 @@ func TestWeiboLoginFormErrorsAndSingleSiteEntry(t *testing.T) {
 	if app.LoginSite != "weibo" {
 		t.Fatalf("LoginSite = %q, want weibo", app.LoginSite)
 	}
+	if _, ok := tt.Find("微博登录标签：扫码"); !ok {
+		t.Fatal("expected Weibo QR login tab")
+	}
+	if err := tt.Click("微博登录标签：粘贴Cookie"); err != nil {
+		t.Fatalf("switch to Weibo Cookie login tab: %v", err)
+	}
+	tt.Frame()
 
 	// Input clears immediately on submit even while validation is still in flight.
 	gate := make(chan struct{})
@@ -512,6 +592,209 @@ func TestWeiboLoginFormErrorsAndSingleSiteEntry(t *testing.T) {
 	}
 	if app.LastParseError != "请先登录微博" {
 		t.Fatalf("LastParseError = %q, want 请先登录微博", app.LastParseError)
+	}
+}
+
+func TestWeiboQRLoginFlowTabsCancelAndSettings(t *testing.T) {
+	app, stub, cleanup := newWeiboUITestHarness(t)
+	defer cleanup()
+
+	tt := ui.NewTester(app.View, 1280, 860)
+	app.LoginSite = "weibo"
+	app.WeiboLoginTab = "qr"
+	app.Navigate(RouteLogin)
+	tt.Frame()
+
+	for _, lbl := range []string{"微博登录标签：扫码", "微博登录标签：粘贴Cookie", "获取微博登录二维码"} {
+		if _, ok := tt.Find(lbl); !ok {
+			t.Fatalf("expected Weibo QR login control %q", lbl)
+		}
+	}
+
+	// 1. Start QR -> renders bitmap -> poll waiting -> scanned -> expired -> refresh -> cancel on tab switch.
+	stub.mu.Lock()
+	stub.wbQRPollResults = []service.WeiboQRPollResultDTO{
+		{State: "waiting", Message: "请使用微博 App 扫码登录"},
+		{State: "scanned", Message: "已扫码，请在微博 App 确认登录"},
+		{State: "expired", Message: "二维码已过期，请刷新二维码"},
+	}
+	stub.mu.Unlock()
+
+	if err := tt.Click("获取微博登录二维码"); err != nil {
+		t.Fatalf("click start Weibo QR: %v", err)
+	}
+	tt.Frame()
+	if app.WeiboQRBitmap == nil || app.WeiboQRSession.FlowID == "" {
+		t.Fatal("expected WeiboQRBitmap and active FlowID")
+	}
+	if _, ok := tt.Find("微博登录二维码"); !ok {
+		t.Fatal("expected rendered 微博登录二维码 widget")
+	}
+
+	if err := tt.Click("检查微博扫码状态"); err != nil {
+		t.Fatalf("poll waiting: %v", err)
+	}
+	tt.Frame()
+	if app.WeiboQRState != "waiting" {
+		t.Fatalf("WeiboQRState = %q, want waiting", app.WeiboQRState)
+	}
+
+	if err := tt.Click("检查微博扫码状态"); err != nil {
+		t.Fatalf("poll scanned: %v", err)
+	}
+	tt.Frame()
+	if app.WeiboQRState != "scanned" || !tt.HasText("已扫码，请在微博 App 确认登录") {
+		t.Fatalf("expected scanned status, got state=%q text=%q", app.WeiboQRState, app.WeiboQRStatusText)
+	}
+
+	if err := tt.Click("检查微博扫码状态"); err != nil {
+		t.Fatalf("poll expired: %v", err)
+	}
+	tt.Frame()
+	if app.WeiboQRState != "expired" || app.WeiboQRSession.FlowID != "" || !tt.HasText("刷新二维码") {
+		t.Fatalf("expected expired state with refresh button, got state=%q flow=%q", app.WeiboQRState, app.WeiboQRSession.FlowID)
+	}
+
+	// 2. Refresh QR and verify switching to Cookie tab cancels the active QR session
+	// and leaves NO stale QR status text when returning to the QR tab.
+	if err := tt.Click("获取微博登录二维码"); err != nil {
+		t.Fatalf("refresh Weibo QR: %v", err)
+	}
+	tt.Frame()
+	beforeCancel := stub.wbQRCancelled.Load()
+	if err := tt.Click("微博登录标签：粘贴Cookie"); err != nil {
+		t.Fatalf("switch to Cookie tab: %v", err)
+	}
+	tt.Frame()
+	if stub.wbQRCancelled.Load() <= beforeCancel || app.WeiboQRSession.FlowID != "" || app.WeiboQRBitmap != nil || app.WeiboQRState != "" || app.WeiboQRStatusText != "" {
+		t.Fatalf("switching from QR tab to Cookie tab must cancel flow and clear QR status, got state=%q text=%q", app.WeiboQRState, app.WeiboQRStatusText)
+	}
+
+	// 3. Returning to QR tab shows clean idle state (no stale status); risk-control and blocked errors both stop polling.
+	if err := tt.Click("微博登录标签：扫码"); err != nil {
+		t.Fatalf("switch back to QR tab: %v", err)
+	}
+	tt.Frame()
+	if tt.HasText("扫码状态：") {
+		t.Fatalf("returning to QR tab after tab-switch cancel must not show stale QR status, got state=%q text=%q", app.WeiboQRState, app.WeiboQRStatusText)
+	}
+	stub.mu.Lock()
+	stub.wbQRPollErr = &site.Error{Site: site.Weibo, Kind: site.ErrKindRiskControl, Message: "微博扫码触发风控"}
+	stub.mu.Unlock()
+	_ = tt.Click("获取微博登录二维码")
+	tt.Frame()
+	_ = tt.Click("检查微博扫码状态")
+	tt.Frame()
+	if app.WeiboQRSession.FlowID != "" || !strings.Contains(app.LoginError, "风控") {
+		t.Fatalf("risk control must cancel active flow and display error: flow=%q err=%q", app.WeiboQRSession.FlowID, app.LoginError)
+	}
+
+	stub.mu.Lock()
+	stub.wbQRPollErr = &site.Error{Site: site.Weibo, Kind: site.ErrKindBlocked, Message: "已拦截微博扫码请求指向内网或回环地址"}
+	stub.mu.Unlock()
+	_ = tt.Click("获取微博登录二维码")
+	tt.Frame()
+	beforeBlockedCancel := stub.wbQRCancelled.Load()
+	_ = tt.Click("检查微博扫码状态")
+	tt.Frame()
+	if app.WeiboQRSession.FlowID != "" || stub.wbQRCancelled.Load() <= beforeBlockedCancel || app.WeiboQRState != "error" || !strings.Contains(app.LoginError, "内网或回环") {
+		t.Fatalf("ErrKindBlocked must stop active QR flow and surface error: flow=%q state=%q err=%q", app.WeiboQRSession.FlowID, app.WeiboQRState, app.LoginError)
+	}
+
+	// 4. Confirmed QR login enters the app and Settings › Account displays QR source + both re-login buttons.
+	stub.mu.Lock()
+	stub.wbQRPollErr = nil
+	stub.wbQRPollIdx = 0
+	stub.wbQRPollResults = []service.WeiboQRPollResultDTO{
+		{
+			State:   "confirmed",
+			Message: "扫码登录成功",
+			Account: credential.Status{
+				Site:     string(site.Weibo),
+				LoggedIn: true,
+				State:    "logged_in",
+				Source:   "qr",
+				UID:      "500000188",
+				Uname:    "微博扫码测试号",
+			},
+		},
+	}
+	stub.mu.Unlock()
+	_ = tt.Click("获取微博登录二维码")
+	tt.Frame()
+	_ = tt.Click("检查微博扫码状态")
+	tt.Frame()
+	if app.CurrentRoute == RouteLogin {
+		t.Fatalf("expected leaving /login after confirmed Weibo QR login, still on %s", app.CurrentRoute)
+	}
+
+	app.SettingsCategory = "account"
+	app.Navigate(RouteSettings)
+	tt.Frame()
+	if !tt.HasText("登录方式：扫码登录") || !tt.HasText("微博扫码登录暂不支持自动续期") {
+		t.Fatal("expected Settings › Account Weibo section to show QR login source and non-renewable notice")
+	}
+	for _, lbl := range []string{"扫码重新登录微博", "重新粘贴微博Cookie", "退出微博登录"} {
+		if _, ok := tt.Find(lbl); !ok {
+			t.Fatalf("expected Settings › Account Weibo action %q", lbl)
+		}
+	}
+
+	// Clicking "扫码重新登录微博" opens /login on weibo QR tab; "重新粘贴微博Cookie" opens cookie tab.
+	if err := tt.Click("扫码重新登录微博"); err != nil {
+		t.Fatalf("click 扫码重新登录微博: %v", err)
+	}
+	tt.Frame()
+	if app.CurrentRoute != RouteLogin || app.LoginSite != "weibo" || app.WeiboLoginTab != "qr" {
+		t.Fatalf("expected /login weibo qr tab, got route=%s site=%s tab=%s", app.CurrentRoute, app.LoginSite, app.WeiboLoginTab)
+	}
+
+	// Navigating away from /login cancels an active Weibo QR flow and clears stale status.
+	_ = tt.Click("获取微博登录二维码")
+	tt.Frame()
+	beforeNavCancel := stub.wbQRCancelled.Load()
+	app.Navigate(RouteSettings)
+	tt.Frame()
+	if stub.wbQRCancelled.Load() <= beforeNavCancel || app.WeiboQRSession.FlowID != "" || app.WeiboQRState != "" || app.WeiboQRStatusText != "" {
+		t.Fatalf("leaving /login did not cancel active Weibo QR session and clear status: flow=%q state=%q text=%q", app.WeiboQRSession.FlowID, app.WeiboQRState, app.WeiboQRStatusText)
+	}
+	// Re-entering /login → weibo QR tab renders no stale status banner.
+	if err := tt.Click("扫码重新登录微博"); err != nil {
+		t.Fatalf("re-open /login weibo qr tab: %v", err)
+	}
+	tt.Frame()
+	if tt.HasText("扫码状态：") {
+		t.Fatalf("returning to /login after route-leave cancel must not show stale status, got state=%q text=%q", app.WeiboQRState, app.WeiboQRStatusText)
+	}
+	app.Navigate(RouteSettings)
+	tt.Frame()
+
+	// Clicking "重新粘贴微博Cookie" opens the inline Cookie paste panel right inside Settings › Account (#195).
+	if err := tt.Click("重新粘贴微博Cookie"); err != nil {
+		t.Fatalf("click 重新粘贴微博Cookie: %v", err)
+	}
+	tt.Frame()
+	if app.CurrentRoute != RouteSettings || app.SettingsPasteSite != "weibo" {
+		t.Fatalf("expected inline paste panel on Settings › Account for weibo, got route=%s pasteSite=%q", app.CurrentRoute, app.SettingsPasteSite)
+	}
+	if _, ok := tt.Find("设置内联粘贴区：weibo"); !ok {
+		t.Fatal("expected 设置内联粘贴区：weibo inside Settings › Account")
+	}
+	if _, ok := tt.Find("Cookie获取步骤：weibo"); !ok {
+		t.Fatal("expected Cookie获取步骤：weibo inside Settings › Account inline paste")
+	}
+
+	// When logged out of Weibo, Settings › Account offers "粘贴Cookie登录微博" -> /login weibo cookie tab.
+	stub.mu.Lock()
+	stub.wbStatus = credential.Status{Site: string(site.Weibo), LoggedIn: false, State: "logged_out"}
+	stub.mu.Unlock()
+	tt.Frame()
+	if err := tt.Click("粘贴Cookie登录微博"); err != nil {
+		t.Fatalf("click 粘贴Cookie登录微博: %v", err)
+	}
+	tt.Frame()
+	if app.CurrentRoute != RouteLogin || app.LoginSite != "weibo" || app.WeiboLoginTab != "cookie" {
+		t.Fatalf("expected /login weibo cookie tab, got route=%s site=%s tab=%s", app.CurrentRoute, app.LoginSite, app.WeiboLoginTab)
 	}
 }
 

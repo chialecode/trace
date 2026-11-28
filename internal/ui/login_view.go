@@ -12,6 +12,11 @@ var loginTabs = []TabOption{
 	{Key: "cookie", Text: "粘贴凭证", AccessLabel: "登录标签：粘贴凭证"},
 }
 
+var weiboLoginTabs = []TabOption{
+	{Key: "qr", Text: "扫码登录", AccessLabel: "微博登录标签：扫码"},
+	{Key: "cookie", Text: "粘贴 Cookie", AccessLabel: "微博登录标签：粘贴Cookie"},
+}
+
 // renderLoginRoute draws /login: centered login card with two-segment site
 // switcher, QR login for Bilibili, and masked paste-cookie for Bilibili/Douyin
 // (docs/ui.md §3.8).
@@ -159,6 +164,91 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 								})
 						}
 
+						weiboTab := a.WeiboLoginTab
+						if weiboTab != "cookie" {
+							weiboTab = "qr"
+						}
+						UnderlineTabs(c, weiboTab, weiboLoginTabs, func(key string) {
+							if key != weiboTab {
+								if key == "cookie" {
+									a.cancelWeiboQRLogin()
+								}
+								a.setLoginError("")
+								a.WeiboLoginTab = key
+							}
+						})
+
+						if weiboTab == "qr" {
+							ui.Column(c).
+								FillWidth().
+								Padding(16).
+								Radius(12).
+								Background(ColorBgMain).
+								Border(1, ColorBorder).
+								Gap(10).
+								ClipX().
+								Children(func() {
+									ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Wrap().Children(func() {
+										ui.Text(c, "方式一：微博 App 扫码登录").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+										ui.Box(c).Padding(2, 8).Radius(999).Background(ColorHover).Children(func() {
+											ui.Text(c, "不自动续期").FontSize(11).FontWeight(600).TextColor(ColorTextMuted).SingleLine()
+										})
+									})
+									ui.Text(c, "打开手机微博 App 扫一扫确认登录；微博会话不支持自动续期，过期后需重新扫码或粘贴 Cookie。").
+										FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
+
+									if a.WeiboQRBitmap != nil {
+										ui.Row(c).FillWidth().Justify(ui.Center).Padding(6, 0).Children(func() {
+											ui.Box(c).Label("微博登录二维码").Padding(8).Radius(12).Background(ColorWhite).Border(1, ColorBorder).Children(func() {
+												ui.Image(c, a.WeiboQRBitmap).Size(168, 168).Fit(ui.Contain)
+											})
+										})
+									}
+									if a.WeiboQRStatusText != "" {
+										statusColor := ColorInfoBlue
+										switch a.WeiboQRState {
+										case "expired", "canceled":
+											statusColor = ColorDotYellow
+										case "error":
+											statusColor = ColorError
+										}
+										ui.Row(c).Label("微博扫码状态").FillWidth().Justify(ui.Center).Children(func() {
+											ui.Text(c, "扫码状态："+a.WeiboQRStatusText).
+												FontSize(13).
+												FontWeight(600).
+												TextColor(statusColor).
+												MaxLines(2)
+										})
+									}
+
+									qrStarting := a.isPending(fmt.Sprintf("weibo-qr-start-%d", a.weiboQRRevision))
+									qrPolling := a.WeiboQRSession.FlowID != "" && a.isPending("weibo-qr-poll-"+a.WeiboQRSession.FlowID)
+									startText := "获取登录二维码"
+									if a.WeiboQRSession.FlowID != "" || a.WeiboQRState == "expired" || a.WeiboQRState == "canceled" || a.WeiboQRState == "error" {
+										startText = "刷新二维码"
+									}
+									ui.Row(c).FillWidth().Justify(ui.Center).Gap(8).Wrap().Children(func() {
+										if AccentPillButton(c, startText, "获取微博登录二维码").Disabled(qrStarting).Clicked() && !qrStarting {
+											a.startWeiboQRLogin()
+										}
+										if a.WeiboQRSession.FlowID != "" {
+											if OutlinePillButton(c, "检查扫码状态", "检查微博扫码状态").Disabled(qrPolling).Clicked() && !qrPolling {
+												a.pollWeiboQRLogin()
+											}
+											if OutlinePillButton(c, "取消扫码", "取消微博扫码").Clicked() {
+												a.cancelWeiboQRLogin()
+												a.WeiboQRState = "canceled"
+												a.WeiboQRStatusText = "已取消"
+											}
+										}
+									})
+
+									ui.Text(c, "凭证只保存在这台电脑上，并按当前 Windows 用户加密").
+										FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
+								})
+							return
+						}
+
 						ui.Column(c).
 							FillWidth().
 							Padding(14).
@@ -168,7 +258,7 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 							Gap(10).
 							ClipX().
 							Children(func() {
-								ui.Text(c, "粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								ui.Text(c, "方式二：粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 								renderCookieCopyGuide(c, "weibo")
 
 								wbBusy := a.isPending("weibo-cookie-login")

@@ -65,8 +65,9 @@ func TestCookieLoginUXPrecheckNonBlockingAndSentinelIsolation(t *testing.T) {
 		t.Fatal("bilibili sentinel leaked into rendered UI")
 	}
 
-	// 2. Weibo precheck warning + guide + sentinel isolation.
+	// 2. Weibo precheck warning + guide + sentinel isolation (under Cookie tab).
 	app.LoginSite = string(site.Weibo)
+	app.WeiboLoginTab = "cookie"
 	app.WeiboCookieInput = "SUB=" + sentinel
 	tt.Frame()
 	if _, ok := tt.Find("Cookie获取步骤：weibo"); !ok {

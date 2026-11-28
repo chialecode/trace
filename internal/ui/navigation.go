@@ -280,7 +280,7 @@ func (a *App) CompleteLogin() {
 	a.RefreshData()
 }
 
-// OpenLoginForSite navigates to /login pre-selecting siteID ("bilibili" or "douyin").
+// OpenLoginForSite navigates to /login pre-selecting siteID ("bilibili", "douyin", "weibo", or "x").
 func (a *App) OpenLoginForSite(siteID string) {
 	a.closeAllModalsAndOverlays()
 	if id, ok := site.ParseID(siteID); ok {
@@ -291,6 +291,21 @@ func (a *App) OpenLoginForSite(siteID string) {
 	}
 	a.setLoginError("")
 	a.Navigate(RouteLogin)
+}
+
+// OpenLoginForSiteTab navigates to /login pre-selecting siteID and its login tab ("qr" or "cookie").
+func (a *App) OpenLoginForSiteTab(siteID, tab string) {
+	if id, ok := site.ParseID(siteID); ok {
+		if tab == "qr" || tab == "cookie" {
+			switch id {
+			case site.Bilibili:
+				a.LoginTab = tab
+			case site.Weibo:
+				a.WeiboLoginTab = tab
+			}
+		}
+	}
+	a.OpenLoginForSite(siteID)
 }
 
 // currentReturnRoute encodes the active route plus sub-page context (such as a
