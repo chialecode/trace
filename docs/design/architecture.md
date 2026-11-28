@@ -261,7 +261,9 @@ tools/internal/build/         打包共用：版本号、通道配置、-ldflags
 - **关闭到托盘**：注册 `App.OnWindowAllClosed` 让进程在没有窗口时继续运行。原生窗口的 `OnClose` 里：设置 `closeAction=tray`（默认）时不阻止窗口关闭，原生窗口销毁，同时释放 `internal/ui` 与 `internal/player` 持有的图片缓存、视频位图纹理和事件订阅，调用 `runtime.GC()` 与 `debug.FreeOSMemory()`（NFR-RES-001）。第一次关到托盘时用 MyGo 的 `Notification` 发一条系统通知（记在 `ui-state.json` 的 `trayNotified`），之后不再重复提示。`closeAction=quit` 时关闭窗口等同托盘“退出”。
 - **重新打开**：按 `ui-state.json` 记下的最后路由和窗口位置大小调用 `mygo.NewWindow` 新建原生窗口；主页各站点筛选回到记下的阅读位置（DEC-053 ①）。界面挂载时从 `internal/service` 重新读取任务、订阅、直播与登录状态（INV-13）。
 - **退出**：托盘“退出”或窗口里的退出：有排队、进行中的任务或进行中的录制时先确认（有窗口时在窗口里弹确认框；没有窗口时托盘菜单的“退出”变成子菜单“退出（会暂停 N 个任务、结束 M 场录制）”，再点一次才退出）。确认后：任务改为“已暂停（应用关闭）”，录制按[直播 §2](live.md#recorder)收尾（限时 30 秒），然后 `App.Quit()`。
-- **后台节律**：没有窗口时，调度器仍是每分钟醒来一次；没有任务、录制和到期的规则时不发请求、不写盘。
+- **后台节律**：没有窗口时，调度器仍是每分钟醒来一次；没有任务、录制和到期的规则时不发请求、不写盘。此外，桌面后端每 15 分钟写一次轻量的本机 `ui-state.json` `lastActiveAt` 心跳（UTC RFC3339），启动与退出（含托盘退出与更新重启）也会更新该时间戳，全程零网络请求。
+- **开机自动启动（FR-RUN-002）**：设置 `window.autoStart`（`settings.json` 可选字段，保持结构版本 1）控制当前通道的按用户 Windows 登录启动项，经可替换接口 `service.AutostartRegistry` 读写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`（测试与安静模式使用纯内存桩，永不触碰真实注册表），命令固定为 `"<当前已安装可执行文件绝对路径>" --background`。按通道严格隔离值名（全部小写，与 `appdirs.IdentifierForChannel` 一致）：正式版 `io.github.chialecode.trace`、开发版 `io.github.chialecode.trace-dev`、测试通道 `io.github.chialecode.trace-test`，互不读写。非 Windows、便携/源码运行或远程模式下禁用开启并给出清晰说明；安装版启动时若 `window.autoStart` 为真会同步修正启动路径（重装或移动目录后自动对齐）；NSIS 卸载钩子 `customUnInstall` 仅删除当前通道对应的 Run 值名。
+- **离线空档可能开播提示（FR-RUN-002）**：启动时读取更新前的 `ui-state.json` `lastActiveAt`（零额外站点请求），若非首次运行、非 5 分钟内更新重启、已登录、离线空档 ≥ 30 分钟且本机存在开启`开播录制`的哔哩哔哩或抖音订阅，则在 `Shell` 排队一次 `OfflineLiveGapNotice`；窗口首次打开时（含 `--background` 托盘启动后首次从托盘打开窗口）通过右下角悬浮通知气泡展示一次，同一次运行内关到托盘再重新打开不重复展示。
 - **启动参数**：`--background` 启动时不开窗口、只在托盘；`--quit-for-update` 交给运行中的 TRACE（第二个实例经单实例通道转发），它不弹确认，按托盘“退出”的同一条路径保存（任务改为“已暂停（应用关闭）”、录制收尾、保存路由与窗口状态），在 `ui-state.json` 记下 `update.restart`（原因、窗口是否打开、时间）后退出；没有运行中的 TRACE 时这个参数什么都不做。下次启动若读到 5 分钟内的这条记录，就按记录决定开窗口还是留在托盘（优先于 `--background`），然后删掉记录。
 
 <a id="updates"></a>

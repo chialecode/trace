@@ -3061,8 +3061,36 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			RequiredLabels: []string{"代理方式选择", "跟随系统代理说明"},
 		},
 		{
+			Name: "settings-general",
+			Setup: func() {
+				app.ConflictDiff.Open = false
+				app.PlayerOverlay.Open = false
+				app.PlayerOverlay.VolumeMenuOpen = false
+				app.BindUpdater(nil)
+				app.UpdateNotesOpen = false
+				app.ClearNotifications()
+				fixtureBackend.autostartStatus = &service.AutostartStatus{
+					Supported:   true,
+					Enabled:     true,
+					Registered:  true,
+					Channel:     "stable",
+					DisplayName: "TRACE",
+					ValueName:   "io.github.chialecode.trace",
+				}
+				app.DraftSettings.Window.AutoStart = true
+				app.GeneralAutostartError = ""
+				app.Navigate(ui.RouteSettings)
+				app.SettingsCategory = "general"
+			},
+			RequiredLabels: []string{"关闭窗口动作选择", "开机自动启动开关"},
+			RequiredTexts:  []string{"关闭窗口时", "开机自动启动（默认最小化到托盘）"},
+		},
+		{
 			Name: "settings-logs",
 			Setup: func() {
+				fixtureBackend.autostartStatus = nil
+				app.DraftSettings.Window.AutoStart = false
+				app.GeneralAutostartError = ""
 				app.Navigate(ui.RouteSettings)
 				app.SettingsCategory = "logs"
 			},
@@ -3431,6 +3459,26 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				app.BannerLoginSite = "douyin"
 			},
 			RequiredLabels: []string{"悬浮通知区", "全局错误提示", "提示去登录", "关闭错误提示", "剩余通知数"},
+		},
+		{
+			// Gentle zero-request offline live gap notice in the DEC-086 bottom-right
+			// floating stack when TRACE was offline while auto-record subscriptions exist (FR-RUN-002).
+			Name: "offline-live-notice",
+			Setup: func() {
+				app.ConflictDiff.Open = false
+				app.PlayerOverlay.Open = false
+				app.PlayerOverlay.VolumeMenuOpen = false
+				app.BindUpdater(nil)
+				app.UpdateNotesOpen = false
+				app.Navigate(ui.RouteHome)
+				app.ClearNotifications()
+				app.ShowOfflineLiveNotice(service.OfflineLiveGapNotice{
+					Message: service.OfflineLiveGapMessage,
+					Gap:     3*time.Hour + 20*time.Minute,
+				})
+			},
+			RequiredLabels: []string{"悬浮通知区", "离线开播提示", "离线提示前往订阅", "离线提示查看直播", "关闭离线开播提示"},
+			RequiredTexts:  []string{service.OfflineLiveGapMessage, "前往订阅", "查看直播"},
 		},
 		{
 			// Preview of the green accent (Q-011); the last scene, so the

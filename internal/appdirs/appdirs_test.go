@@ -164,3 +164,27 @@ func assertRelativeLowercase(t *testing.T, base, target string) {
 		t.Fatalf("TRACE-owned path segment %q contains uppercase characters", rel)
 	}
 }
+
+func TestAutostartValueNameChannelIsolation(t *testing.T) {
+	stable := AutostartValueNameForChannel("stable")
+	dev := AutostartValueNameForChannel("dev")
+	testCh := AutostartValueNameForChannel("test")
+
+	want := map[string]string{
+		"stable": "io.github.chialecode.trace",
+		"dev":    "io.github.chialecode.trace-dev",
+		"test":   "io.github.chialecode.trace-test",
+	}
+	for ch, expected := range want {
+		got := AutostartValueNameForChannel(ch)
+		if got != expected {
+			t.Fatalf("AutostartValueNameForChannel(%q) = %q, want %q", ch, got, expected)
+		}
+		if got != strings.ToLower(got) {
+			t.Fatalf("AutostartValueNameForChannel(%q) = %q is not strictly lowercase", ch, got)
+		}
+	}
+	if stable == dev || stable == testCh || dev == testCh {
+		t.Fatalf("autostart value names must be distinct across channels: stable=%q dev=%q test=%q", stable, dev, testCh)
+	}
+}

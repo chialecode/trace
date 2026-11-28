@@ -99,6 +99,10 @@ func remoteSettings(s settings.Settings, exportDir string) (settings.Settings, b
 		s.ScheduledCheck = true
 		changed = true
 	}
+	if s.Window.AutoStart {
+		s.Window.AutoStart = false
+		changed = true
+	}
 	return s, changed
 }
 

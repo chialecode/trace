@@ -3,7 +3,9 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/chialecode/trace/internal/service"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -21,12 +23,14 @@ const (
 	floatingNoticeInfo floatingNoticeKind = iota
 	floatingNoticeError
 	floatingNoticeUpdate
+	floatingNoticeOfflineLive
 )
 
 type floatingNotice struct {
 	id        uint64
 	kind      floatingNoticeKind
 	text      string
+	detail    string
 	loginSite string
 }
 
@@ -63,10 +67,53 @@ func (a *App) notifyError(msg, loginSite string) {
 	})
 }
 
-// ClearNotifications clears all active floating info and error notifications.
+// ShowOfflineLiveNotice pushes the gentle zero-request offline live gap notice
+// onto the DEC-086 bottom-right floating notification stack (FR-RUN-002).
+func (a *App) ShowOfflineLiveNotice(notice service.OfflineLiveGapNotice) {
+	msg := strings.TrimSpace(notice.Message)
+	if msg == "" {
+		msg = service.OfflineLiveGapMessage
+	}
+	detail := ""
+	if notice.Gap > 0 {
+		detail = "距上次运行约 " + formatOfflineGapDuration(notice.Gap) + " · 仅基于本地记录，未额外请求站点"
+	}
+	a.pushFloatingNotice(floatingNotice{
+		kind:   floatingNoticeOfflineLive,
+		text:   msg,
+		detail: detail,
+	})
+}
+
+func formatOfflineGapDuration(d time.Duration) string {
+	if d < time.Hour {
+		mins := int(d.Round(time.Minute) / time.Minute)
+		if mins < 1 {
+			mins = 1
+		}
+		return fmt.Sprintf("%d 分钟", mins)
+	}
+	if d < 24*time.Hour {
+		hours := int(d / time.Hour)
+		mins := int((d % time.Hour) / time.Minute)
+		if mins >= 10 {
+			return fmt.Sprintf("%d 小时 %d 分钟", hours, mins)
+		}
+		return fmt.Sprintf("%d 小时", hours)
+	}
+	days := int(d / (24 * time.Hour))
+	hours := int((d % (24 * time.Hour)) / time.Hour)
+	if hours > 0 {
+		return fmt.Sprintf("%d 天 %d 小时", days, hours)
+	}
+	return fmt.Sprintf("%d 天", days)
+}
+
+// ClearNotifications clears all active floating info, error, and offline-live notifications.
 func (a *App) ClearNotifications() {
 	a.clearInfoNotifications()
 	a.clearErrorNotifications()
+	a.removeFloatingNoticesByKind(floatingNoticeOfflineLive)
 	a.lastAnnouncedNoticeID = 0
 }
 
@@ -381,6 +428,8 @@ func (a *App) renderFloatingNotifications(c *ui.Context, w, h float32) {
 						a.renderUpdateNotificationBubble(c, top.id, notice, bubbleW, h, behind)
 					case floatingNoticeError:
 						a.renderErrorNotificationBubble(c, top, bubbleW, behind)
+					case floatingNoticeOfflineLive:
+						a.renderOfflineLiveNotificationBubble(c, top, bubbleW, behind)
 					default:
 						a.renderInfoNotificationBubble(c, top, bubbleW, behind)
 					}
@@ -530,6 +579,60 @@ func (a *App) renderErrorNotificationBubble(c *ui.Context, item floatingNotice, 
 				}
 			})
 		}
+	})
+}
+
+func (a *App) renderOfflineLiveNotificationBubble(c *ui.Context, item floatingNotice, bubbleW float32, behind int) {
+	card := ui.Column(c).
+		Key("notify-offline-live").
+		Label("离线开播提示").
+		Role(ui.RoleGroup).
+		Width(bubbleW).
+		Padding(12, 14).
+		Radius(12).
+		Background(ColorBgMain).
+		Border(1, ColorBorderStrong).
+		Shadow(0, 8, 24, 0, ui.RGBA(15, 23, 42, 0.14)).
+		Gap(8).
+		ClipX()
+	_ = card.Hovered()
+	card.Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Start).Gap(10).ClipX().Children(func() {
+			ui.Box(c).Size(24, 24).Radius(999).Background(ColorInfoBlueBg).Center().Shrink(0).Children(func() {
+				DrawIcon(c, "live", 14, ColorInfoBlue, 1.8)
+			})
+			ui.Column(c).Grow(1).Shrink(1).Gap(3).ClipX().Children(func() {
+				ui.Text(c, item.text).FontSize(13).FontWeight(500).LineHeight(LineHeightCompact).TextColor(ColorTextMain).MaxLines(3)
+				if item.detail != "" {
+					ui.Text(c, item.detail).FontSize(11).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(2)
+				}
+			})
+			renderStackedCountBadge(c, behind, ColorBgSecondary, ColorTextMuted)
+			closeBtn := ui.ButtonBase(c).Label("关闭离线开播提示").Tooltip("关闭").Size(26, 26).Radius(999).Shrink(0).Center()
+			if closeBtn.Hovered() {
+				closeBtn.Background(ColorHover)
+			}
+			closeBtn.Children(func() {
+				DrawIcon(c, "close", 14, ColorTextMuted, 1.8)
+			})
+			if closeBtn.Clicked() {
+				a.dismissFloatingNotice(item.id, updateNotice{}, false)
+			}
+		})
+		ui.Row(c).FillWidth().Justify(ui.End).AlignItems(ui.Center).Gap(8).Children(func() {
+			if OutlinePillButton(c, "前往订阅", "离线提示前往订阅").Clicked() {
+				a.dismissFloatingNotice(item.id, updateNotice{}, false)
+				a.closeAllModalsAndOverlays()
+				a.Navigate(RouteSubscriptions)
+			}
+			if AccentOutlinePillButton(c, "查看直播", "离线提示查看直播").Clicked() {
+				a.dismissFloatingNotice(item.id, updateNotice{}, false)
+				a.closeAllModalsAndOverlays()
+				a.TasksSection = TasksSectionLive
+				a.Navigate(RouteTasks)
+				a.TasksSection = TasksSectionLive
+			}
+		})
 	})
 }
 

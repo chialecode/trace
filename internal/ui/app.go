@@ -686,8 +686,9 @@ type App struct {
 	livePreviewOpener         func(ctx context.Context, path string, opts player.LivePreviewOptions) (player.MediaDecoder, error)
 
 	// Settings Page
-	SettingsCategory string // "account" | "download" | "quality" | "rules" | "subscription" | "storage" | "general" | "network" | "remote" | "mobile" | "logs" | "update" | "about"
-	DraftSettings    settings.Settings
+	SettingsCategory      string // "account" | "download" | "quality" | "rules" | "subscription" | "storage" | "general" | "network" | "remote" | "mobile" | "logs" | "update" | "about"
+	DraftSettings         settings.Settings
+	GeneralAutostartError string
 	// Mobile companion (Settings › 移动端, FR-MOB-001..003).
 	companion CompanionAPI
 	Mobile    MobileUIState

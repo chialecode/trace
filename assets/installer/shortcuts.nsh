@@ -1,6 +1,7 @@
 ﻿; TRACE installer hooks (MyGo windows.installerInclude). Each channel's file (stable.nsh, dev.nsh,
 ; test.nsh, chosen by tools/internal/build.ChannelConfig) defines TRACE_SHORTCUT, the shortcuts'
-; file name (the channel's windows.displayName), and the development channel TRACE_DESKTOP_ON_UPDATE.
+; file name (the channel's windows.displayName), TRACE_AUTOSTART_VALUE, the per-channel HKCU Run
+; value name cleaned up on uninstall, and the development channel TRACE_DESKTOP_ON_UPDATE.
 ;
 ; tools/internal/build.MygoBuild patches MyGo's generated installer.nsi (via tools/internal/nsiswrap)
 ; so the Start menu shortcut step delegates to customStartMenuShortcut instead of running
@@ -16,7 +17,9 @@
 ;     or when already present, default No on over-install when previously removed); the finish
 ;     page's checkbox chooses the desktop shortcut.
 ; Release updates replace the app's files without the installer and change no shortcut.
-; Full uninstall removes both shortcuts and the install folder, preserving user data.
+; Full uninstall removes both shortcuts, this channel's per-user Windows login autostart value
+; (HKCU\Software\Microsoft\Windows\CurrentVersion\Run\${TRACE_AUTOSTART_VALUE}), and the install
+; folder, preserving user data and never touching other channels.
 ;
 ; /RELAUNCH (silent installs only) starts TRACE once the install is done, as the other desktop
 ; apps of this author do; TRACE's own "quit for update" record decides window or tray.
@@ -24,6 +27,10 @@
 
 !include LogicLib.nsh
 !include FileFunc.nsh
+
+!ifndef TRACE_RUN_REGKEY
+  !define TRACE_RUN_REGKEY "Software\Microsoft\Windows\CurrentVersion\Run"
+!endif
 
 Var TraceFirstInstall
 Var TraceHadStartMenu
@@ -95,4 +102,12 @@ Var TraceHadStartMenu
     Pop $R1
     Pop $R0
   ${EndIf}
+!macroend
+
+; During uninstall: remove only this channel's per-user Windows login autostart entry.
+!macro customUnInstall
+  !ifdef TRACE_AUTOSTART_VALUE
+    DeleteRegValue HKCU "${TRACE_RUN_REGKEY}" "${TRACE_AUTOSTART_VALUE}"
+    ClearErrors
+  !endif
 !macroend

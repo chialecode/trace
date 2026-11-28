@@ -79,13 +79,15 @@ func TestCompiledNSISShortcutBehavior(t *testing.T) {
 
 	const devTestID = "io.github.chialecode.trace-nsis-unit-dev"
 	const stableTestID = "io.github.chialecode.trace-nsis-unit-stable"
+	const testRunRegKey = `Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.trace-nsis-unit-run`
 	t.Cleanup(func() {
 		_ = registry.DeleteKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Uninstall\`+devTestID)
 		_ = registry.DeleteKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Uninstall\`+stableTestID)
+		_ = registry.DeleteKey(registry.CURRENT_USER, testRunRegKey)
 	})
 
-	devSetup := compileIsolatedSetup(t, makensis, root, work, ChannelDev, devTestID, fakeSM, fakeDT)
-	stableSetup := compileIsolatedSetup(t, makensis, root, work, ChannelStable, stableTestID, fakeSM, fakeDT)
+	devSetup := compileIsolatedSetup(t, makensis, root, work, ChannelDev, devTestID, fakeSM, fakeDT, testRunRegKey)
+	stableSetup := compileIsolatedSetup(t, makensis, root, work, ChannelStable, stableTestID, fakeSM, fakeDT, testRunRegKey)
 
 	// Pre-place stable shortcut sentinels to prove dev never clobbers TRACE.lnk.
 	stableSM := filepath.Join(fakeSM, "TRACE.lnk")
@@ -152,7 +154,29 @@ func TestCompiledNSISShortcutBehavior(t *testing.T) {
 	assertFileExists(t, devDT, false)
 	assertSentinelUnchanged(t, devSM, "keep-dev-start-menu", keepTime)
 
-	// 2e. Dev full uninstall removes both shortcuts, install dir, and registry entry.
+	// 2e. Dev full uninstall removes both shortcuts, install dir, uninstall registry
+	//     entry, and ONLY the dev channel's autostart value in the isolated test Run key.
+	stableAutoVal := appdirs.AutostartValueNameForChannel(ChannelStable)
+	devAutoVal := appdirs.AutostartValueNameForChannel(ChannelDev)
+	testAutoVal := appdirs.AutostartValueNameForChannel(ChannelTest)
+	runKey, _, err := registry.CreateKey(registry.CURRENT_USER, testRunRegKey, registry.SET_VALUE|registry.QUERY_VALUE)
+	if err != nil {
+		t.Fatalf("create isolated test Run key: %v", err)
+	}
+	if err := runKey.SetStringValue(stableAutoVal, `"C:\Apps\trace\trace.exe" --background`); err != nil {
+		runKey.Close()
+		t.Fatal(err)
+	}
+	if err := runKey.SetStringValue(devAutoVal, `"C:\Apps\trace-dev\trace.exe" --background`); err != nil {
+		runKey.Close()
+		t.Fatal(err)
+	}
+	if err := runKey.SetStringValue(testAutoVal, `"C:\Apps\trace-test\trace.exe" --background`); err != nil {
+		runKey.Close()
+		t.Fatal(err)
+	}
+	runKey.Close()
+
 	runQuietSetup(t, devSetup, "/S", "/D="+devInstDir) // restore devDT so uninstall deletes both
 	assertFileExists(t, devDT, true)
 	runQuietSetup(t, filepath.Join(devInstDir, "Uninstall.exe"), "/S")
@@ -162,6 +186,9 @@ func TestCompiledNSISShortcutBehavior(t *testing.T) {
 	if _, ok, _ := LookupInstall(devTestID); ok {
 		t.Fatal("dev uninstall left registry entry")
 	}
+	assertTestRegStringAbsent(t, testRunRegKey, devAutoVal)
+	assertTestRegStringValue(t, testRunRegKey, stableAutoVal, `"C:\Apps\trace\trace.exe" --background`)
+	assertTestRegStringValue(t, testRunRegKey, testAutoVal, `"C:\Apps\trace-test\trace.exe" --background`)
 
 	// 2f. Stable silent first install & silent over-install (neither Start Menu nor Desktop regenerated).
 	_ = os.Remove(stableSM)
@@ -193,16 +220,18 @@ func TestCompiledNSISShortcutBehavior(t *testing.T) {
 	assertSentinelUnchanged(t, stableSM, "keep-stable-sm", keepTime)
 	assertFileExists(t, stableDT, false)
 
-	// Clean uninstall of stable test install.
+	// Clean uninstall of stable test install: removes only stable's autostart value.
 	runQuietSetup(t, filepath.Join(stableInstDir, "Uninstall.exe"), "/S")
 	waitUntilRemoved(t, stableInstDir)
 	assertFileExists(t, stableSM, false)
 	if _, ok, _ := LookupInstall(stableTestID); ok {
 		t.Fatal("stable uninstall left registry entry")
 	}
+	assertTestRegStringAbsent(t, testRunRegKey, stableAutoVal)
+	assertTestRegStringValue(t, testRunRegKey, testAutoVal, `"C:\Apps\trace-test\trace.exe" --background`)
 }
 
-func compileIsolatedSetup(t *testing.T, makensis, root, work, ch, testID, fakeSM, fakeDT string) string {
+func compileIsolatedSetup(t *testing.T, makensis, root, work, ch, testID, fakeSM, fakeDT, fakeRunRegKey string) string {
 	t.Helper()
 	id := IdentityOf(ch)
 	chWork := filepath.Join(work, "build-"+ch)
@@ -215,11 +244,12 @@ func compileIsolatedSetup(t *testing.T, makensis, root, work, ch, testID, fakeSM
 	}
 
 	// Copy the channel .nsh and shortcuts.nsh into chWork, redirecting only
-	// $SMPROGRAMS and $DESKTOP to isolated temp dirs while keeping 100% of the
-	// control flow verbatim.
+	// $SMPROGRAMS, $DESKTOP, and the HKCU Run key to isolated test locations
+	// while keeping 100% of the control flow verbatim.
 	redirect := func(raw []byte) []byte {
 		raw = bytes.ReplaceAll(raw, []byte("$SMPROGRAMS"), []byte(fakeSM))
 		raw = bytes.ReplaceAll(raw, []byte("$DESKTOP"), []byte(fakeDT))
+		raw = bytes.ReplaceAll(raw, []byte(`Software\Microsoft\Windows\CurrentVersion\Run`), []byte(fakeRunRegKey))
 		return raw
 	}
 	shortcutsRaw, err := os.ReadFile(filepath.Join(root, "assets", "installer", "shortcuts.nsh"))
@@ -326,6 +356,9 @@ Section "Uninstall"
   Call un.DeleteShortcut
   Push "$DESKTOP\` + shortcut + `.lnk"
   Call un.DeleteShortcut
+  !ifmacrodef customUnInstall
+    !insertmacro customUnInstall
+  !endif
   DeleteRegKey HKCU "` + uninstallKey + `"
   RMDir /r "$INSTDIR"
 SectionEnd
@@ -380,5 +413,35 @@ func waitUntilRemoved(t *testing.T, dir string) {
 			t.Fatalf("uninstaller left %s behind", dir)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func assertTestRegStringValue(t *testing.T, subkey, name, want string) {
+	t.Helper()
+	k, err := registry.OpenKey(registry.CURRENT_USER, subkey, registry.QUERY_VALUE)
+	if err != nil {
+		t.Fatalf("open %s: %v", subkey, err)
+	}
+	defer k.Close()
+	got, _, err := k.GetStringValue(name)
+	if err != nil {
+		t.Fatalf("read %s\\%s: %v", subkey, name, err)
+	}
+	if got != want {
+		t.Fatalf("%s\\%s = %q, want %q", subkey, name, got, want)
+	}
+}
+
+func assertTestRegStringAbsent(t *testing.T, subkey, name string) {
+	t.Helper()
+	k, err := registry.OpenKey(registry.CURRENT_USER, subkey, registry.QUERY_VALUE)
+	if err != nil {
+		t.Fatalf("open %s: %v", subkey, err)
+	}
+	defer k.Close()
+	if got, _, err := k.GetStringValue(name); err == nil {
+		t.Fatalf("%s\\%s still exists with value %q", subkey, name, got)
+	} else if err != registry.ErrNotExist {
+		t.Fatalf("read %s\\%s: %v", subkey, name, err)
 	}
 }

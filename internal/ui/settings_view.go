@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/service"
@@ -192,12 +193,7 @@ func (a *App) renderSettingsCategoryContent(c *ui.Context) {
 	case "storage":
 		a.renderStorageSettings(c)
 	case "general":
-		ui.Column(c).FillWidth().Gap(12).ClipX().Children(func() {
-			if settingChoiceRow(c, "关闭窗口时", "最小化到托盘时，缓存、定时检查和录制在后台继续，界面占用的内存会释放。", "关闭窗口动作选择", &a.DraftSettings.Window.CloseAction, closeActionChoices) {
-				a.DraftSettings.CloseAction = a.DraftSettings.Window.CloseAction
-				a.saveSettings()
-			}
-		})
+		a.renderGeneralSettings(c)
 	case "network":
 		a.renderNetworkSettings(c)
 	case "remote":
@@ -211,6 +207,51 @@ func (a *App) renderSettingsCategoryContent(c *ui.Context) {
 	case "about":
 		a.renderAboutSettings(c)
 	}
+}
+
+func (a *App) renderGeneralSettings(c *ui.Context) {
+	status := a.backend.AutostartStatus()
+	ui.Column(c).FillWidth().Gap(12).ClipX().Children(func() {
+		if settingChoiceRow(c, "关闭窗口时", "最小化到托盘时，缓存、定时检查和录制在后台继续，界面占用的内存会释放。", "关闭窗口动作选择", &a.DraftSettings.Window.CloseAction, closeActionChoices) {
+			a.DraftSettings.CloseAction = a.DraftSettings.Window.CloseAction
+			a.saveSettings()
+		}
+
+		displayName := firstNonEmptyStrUI(status.DisplayName, "TRACE")
+		desc := "登录 Windows 时在系统托盘静默启动 " + displayName + "，仅作用于当前版本，不影响其他通道。"
+		if !status.Supported && strings.TrimSpace(status.Reason) != "" {
+			desc = status.Reason
+		}
+		disabled := !status.Supported && !a.DraftSettings.Window.AutoStart
+		autoStart := a.DraftSettings.Window.AutoStart
+		if settingSwitchRowDisabled(c, "开机自动启动（默认最小化到托盘）", desc, "开机自动启动开关", &autoStart, disabled) {
+			a.toggleAutostart(autoStart)
+		}
+		if strings.TrimSpace(a.GeneralAutostartError) != "" {
+			ui.Box(c).Label("开机自动启动错误").FillWidth().Children(func() {
+				ui.Text(c, a.GeneralAutostartError).
+					FontSize(12).
+					TextColor(ColorError).
+					MaxLines(2)
+			})
+		}
+	})
+}
+
+func (a *App) toggleAutostart(enable bool) {
+	prev := a.DraftSettings.Window.AutoStart
+	next := a.DraftSettings
+	next.Window.AutoStart = enable
+	updated, err := a.backend.UpdateSettings(next)
+	if err != nil {
+		a.DraftSettings.Window.AutoStart = prev
+		a.GeneralAutostartError = userErrorText(err)
+		a.backend.LogUserError(err)
+		return
+	}
+	a.DraftSettings = updated
+	a.GeneralAutostartError = ""
+	a.checkPlanAt = time.Time{}
 }
 
 func (a *App) renderAccountSettings(c *ui.Context) {

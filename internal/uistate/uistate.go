@@ -50,7 +50,11 @@ type State struct {
 	// entries past that list's 7-day window are dropped.
 	DismissedLiveSessions map[string]string `json:"dismissedLiveSessions,omitempty"`
 	TrayNotified          bool              `json:"trayNotified"`
-	Player                PlayerState       `json:"player"`
+	// LastActiveAt is the UTC RFC3339 timestamp of the last local heartbeat or
+	// clean exit, used on startup to detect offline gaps for auto-record
+	// subscriptions with zero extra site requests (FR-RUN-002). Optional; schema version stays 4.
+	LastActiveAt string      `json:"lastActiveAt,omitempty"`
+	Player       PlayerState `json:"player"`
 	// Update records what the updates of TRACE need across launches.
 	Update UpdateState `json:"update"`
 }
@@ -248,6 +252,15 @@ func Normalize(st State) State {
 	}
 	st.HomePositions = normalizeHomePositions(st.HomePositions)
 	st.DismissedLiveSessions = normalizeDismissedLiveSessions(st.DismissedLiveSessions, time.Now())
+	if raw := strings.TrimSpace(st.LastActiveAt); raw != "" {
+		if t, err := time.Parse(time.RFC3339, raw); err == nil {
+			st.LastActiveAt = t.UTC().Format(time.RFC3339)
+		} else {
+			st.LastActiveAt = ""
+		}
+	} else {
+		st.LastActiveAt = ""
+	}
 	if st.Player.Volume < 0 {
 		st.Player.Volume = 0
 	} else if st.Player.Volume > 1 {

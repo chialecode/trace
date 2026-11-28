@@ -95,6 +95,11 @@ type Backend struct {
 	corruptFiles                []string
 	updateHistory               *update.HistoryStore
 	installedDevVersion         func() string
+	autostartReg                AutostartRegistry
+	autostartExePath            string
+	autostartVersion            string
+	autostartGOOS               string
+	heartbeatInterval           time.Duration
 	profile                     Profile
 	logMirror                   io.Writer
 	recentErrors                []RecentError
@@ -330,6 +335,11 @@ func NewBackend(opts Options) (*Backend, error) {
 		previewDir:                  previewDir,
 		maxPreviewBytes:             maxPreviewMediaBytes,
 		corruptFiles:                corruptBackups,
+		autostartReg:                opts.AutostartRegistry,
+		autostartExePath:            opts.AutostartExePath,
+		autostartVersion:            opts.AutostartVersion,
+		autostartGOOS:               opts.AutostartGOOS,
+		heartbeatInterval:           opts.HeartbeatInterval,
 	}
 	if err := b.initUpdateHistory(opts); err != nil {
 		return nil, err
@@ -687,6 +697,8 @@ func NewBackend(opts Options) (*Backend, error) {
 			go b.runFullCacheLoop(bgCtx)
 			b.bgWg.Add(1)
 			go b.runRemoteCookieRetry(bgCtx)
+			b.bgWg.Add(1)
+			go b.runRuntimeHeartbeat(bgCtx)
 		}
 		b.bgWg.Add(1)
 		go func() { defer b.bgWg.Done(); _, _ = b.BootstrapAuth(bgCtx) }()
@@ -1187,6 +1199,14 @@ func (b *Backend) UpdateSettings(next settings.Settings) (settings.Settings, err
 			return prev, &site.Error{Kind: site.ErrKindBadRequest, Message: err.Error()}
 		}
 	}
+	var rollbackAutostart func()
+	if b.profile != ProfileRemote && preview.Window.AutoStart != prev.Window.AutoStart {
+		rollbackAutostart, err = b.applyAutostartToggle(preview.Window.AutoStart)
+		if err != nil {
+			b.settingsMu.Unlock()
+			return prev, err
+		}
+	}
 	var updated settings.Settings
 	persist := func() error {
 		var err error
@@ -1199,6 +1219,9 @@ func (b *Backend) UpdateSettings(next settings.Settings) (settings.Settings, err
 		err = persist()
 	}
 	if err != nil {
+		if rollbackAutostart != nil {
+			rollbackAutostart()
+		}
 		b.settingsMu.Unlock()
 		return prev, err
 	}
@@ -1260,30 +1283,32 @@ func (b *Backend) PauseForExit() {
 	if b.dl != nil {
 		b.dl.PauseAll("app_closed", "已暂停（应用关闭）")
 	}
-	if b.live == nil {
-		return
-	}
-	var wg sync.WaitGroup
-	for _, r := range b.live.ListRooms() {
-		if !r.Recording {
-			continue
-		}
-		key := strings.TrimSpace(r.RoomKey)
-		if key == "" && r.RoomID > 0 {
-			key = strconv.FormatInt(r.RoomID, 10)
-		}
-		if key == "" {
-			continue
-		}
-		wg.Add(1)
-		go func(recKey string) {
-			defer wg.Done()
-			if _, err := b.live.StopRecordingByKey(recKey); err != nil {
-				b.logError("PauseForExit.StopRecording", err)
+	if b.live != nil {
+		var wg sync.WaitGroup
+		for _, r := range b.live.ListRooms() {
+			if !r.Recording {
+				continue
 			}
-		}(key)
+			key := strings.TrimSpace(r.RoomKey)
+			if key == "" && r.RoomID > 0 {
+				key = strconv.FormatInt(r.RoomID, 10)
+			}
+			if key == "" {
+				continue
+			}
+			wg.Add(1)
+			go func(recKey string) {
+				defer wg.Done()
+				if _, err := b.live.StopRecordingByKey(recKey); err != nil {
+					b.logError("PauseForExit.StopRecording", err)
+				}
+			}(key)
+		}
+		wg.Wait()
 	}
-	wg.Wait()
+	if b.profile != ProfileRemote {
+		_ = b.RecordLastActiveAt(time.Now().UTC())
+	}
 	b.logInfo("work paused for exit")
 }
 

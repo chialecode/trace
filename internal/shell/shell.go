@@ -108,26 +108,27 @@ func newMyGoShellWindow(opts mygo.WindowOptions) shellWindow {
 
 // Shell manages the native desktop lifecycle, single-instance lock, tray icon, and window creation/destruction.
 type Shell struct {
-	mu                 sync.Mutex
-	loc                appdirs.Locations
-	quiet              string
-	lockHandle         *appdirs.Lock
-	backend            *service.Backend
-	uiApp              *ui.App
-	win                shellWindow
-	winClosed          *atomic.Bool
-	tray               *mygo.Tray
-	unsubEvents        func()
-	openingWindow      bool
-	closingToTray      bool
-	quitting           bool
-	quitConfirmOpen    bool
-	lastRoute          string
-	secondInstanceArgs []string
-	stoleFocus         bool
-	stoleFocusDetail   string
-	updates            *update.Controller
-	companion          *companion.Manager
+	mu                       sync.Mutex
+	loc                      appdirs.Locations
+	quiet                    string
+	lockHandle               *appdirs.Lock
+	backend                  *service.Backend
+	uiApp                    *ui.App
+	win                      shellWindow
+	winClosed                *atomic.Bool
+	tray                     *mygo.Tray
+	unsubEvents              func()
+	openingWindow            bool
+	closingToTray            bool
+	quitting                 bool
+	quitConfirmOpen          bool
+	lastRoute                string
+	secondInstanceArgs       []string
+	stoleFocus               bool
+	stoleFocusDetail         string
+	updates                  *update.Controller
+	companion                *companion.Manager
+	pendingOfflineLiveNotice *service.OfflineLiveGapNotice
 
 	// Serialized tray refresh worker state; hooks below are replaceable in tests.
 	trayMu            sync.Mutex
@@ -248,9 +249,16 @@ func Run() error {
 
 	// "Follow the system" proxy reads Windows' own settings, not only HTTP(S)_PROXY (DEC-046 ⑤).
 	site.SetSystemProxyFunc(netproxy.Proxy)
+	var autostartReg service.AutostartRegistry
+	if QuietMode(loc.Channel) == "" {
+		autostartReg = service.SystemAutostartRegistry()
+	} else {
+		autostartReg = service.NewMemoryAutostartRegistry()
+	}
 	backend, err = service.NewBackend(service.Options{
 		Locations:           loc,
 		InstalledDevVersion: service.ReadSystemInstalledDevVersion,
+		AutostartRegistry:   autostartReg,
 	})
 	if err != nil {
 		if storage.IsNewerData(err) {
@@ -266,7 +274,8 @@ func Run() error {
 	sh = NewShell(loc, backend)
 	sh.lockHandle = lockHandle
 
-	decision := recordStartupDecision(backend, loc.Channel, build.Version, launch, time.Now().UTC())
+	startupNow := time.Now().UTC()
+	decision := recordStartupDecision(backend, loc.Channel, build.Version, launch, startupNow)
 	if loc.Mode == "installed" {
 		if wrote, err := syncUninstallVersion(systemUninstallEntry(), loc.Identifier, loc.InstallDir, build.Version); err != nil {
 			backend.Logf("update the uninstall entry: %v", err)
@@ -274,6 +283,12 @@ func Run() error {
 			backend.Logf("uninstall entry now names %s", build.Version)
 		}
 	}
+	if synced, err := backend.ReconcileAutostart(); err != nil {
+		backend.Logf("sync autostart entry: %v", err)
+	} else if synced {
+		backend.Logf("autostart entry synced for %s", loc.Channel)
+	}
+	sh.evaluateStartupOfflineLiveGap(decision, startupNow)
 	var updateCtx context.Context
 	updateCtx, stopUpdates = context.WithCancel(context.Background())
 	defer stopUpdates()
@@ -372,6 +387,28 @@ func (s *Shell) recordRuntimeWindowState(open bool) {
 	_ = appdirs.WriteRuntimeWindowState(s.loc.DataDir, os.Getpid(), open)
 }
 
+func (s *Shell) evaluateStartupOfflineLiveGap(decision StartupDecision, now time.Time) bool {
+	if s == nil || s.backend == nil {
+		return false
+	}
+	notice, ok := service.EvaluateOfflineLiveGap(
+		decision.PreviousLastActiveAt,
+		now,
+		s.backend.HasAutoRecordLiveSubscriptions(),
+		s.backend.HasAnyLogin(),
+		decision.ValidRestart,
+		service.OfflineLiveGapThreshold,
+	)
+	if !ok {
+		return false
+	}
+	s.mu.Lock()
+	s.pendingOfflineLiveNotice = &notice
+	s.mu.Unlock()
+	s.backend.Logf("offline live gap notice queued (gap=%s)", notice.Gap.Round(time.Minute))
+	return true
+}
+
 func (s *Shell) openOrRestoreMainWindow() {
 	s.mu.Lock()
 	if s.quitting || s.openingWindow {
@@ -416,6 +453,7 @@ func (s *Shell) openOrRestoreMainWindow() {
 	backend := s.backend
 	updates := s.updates
 	comp := s.companion
+	offlineNotice := s.pendingOfflineLiveNotice
 	lastRoute := s.lastRoute
 	quiet := s.quiet
 	displayName := s.loc.DisplayName
@@ -443,6 +481,9 @@ func (s *Shell) openOrRestoreMainWindow() {
 	}
 	if lastRoute != "" {
 		uiApp.Navigate(lastRoute)
+	}
+	if offlineNotice != nil {
+		uiApp.ShowOfflineLiveNotice(*offlineNotice)
 	}
 
 	uiSt := backend.GetUIState()
@@ -532,6 +573,9 @@ func (s *Shell) openOrRestoreMainWindow() {
 	s.win = win
 	s.winClosed = winClosed
 	s.closingToTray = false
+	if offlineNotice != nil && s.pendingOfflineLiveNotice == offlineNotice {
+		s.pendingOfflineLiveNotice = nil
+	}
 	s.mu.Unlock()
 
 	if quiet == "" {
@@ -836,8 +880,10 @@ func (s *Shell) teardown() (windowOpen bool, alreadyQuitting bool) {
 		s.lastRoute = route
 		s.mu.Unlock()
 	}
-	if s.backend != nil && (route != "" || saveSize) {
+	if s.backend != nil {
+		stamp := time.Now().UTC().Format(time.RFC3339)
 		_, _ = s.backend.MutateUIState(func(st *uistate.State) {
+			st.LastActiveAt = stamp
 			if route != "" {
 				st.LastRoute = route
 			}
