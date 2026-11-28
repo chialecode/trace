@@ -3,14 +3,65 @@ package ui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/live"
 	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/subscription"
+	"github.com/chialecode/trace/internal/uistate"
 	"github.com/egoist/mygo/ui"
 )
+
+var subSortOptions = []settingChoice{
+	{value: uistate.SubSortDefault, name: "默认顺序"},
+	{value: uistate.SubSortRecent, name: "按最近更新"},
+}
+
+var subSortOptionLabels = []string{"默认顺序", "按最近更新"}
+
+func subSortOptionName(value string) string {
+	norm := uistate.NormalizeSubSort(value)
+	for _, opt := range subSortOptions {
+		if opt.value == norm {
+			return opt.name
+		}
+	}
+	return subSortOptions[0].name
+}
+
+func subSortOptionValue(label string) string {
+	for _, opt := range subSortOptions {
+		if opt.name == label {
+			return opt.value
+		}
+	}
+	return uistate.SubSortDefault
+}
+
+func (a *App) effectiveSubSort() string {
+	return uistate.NormalizeSubSort(a.SubSort)
+}
+
+func (a *App) setSubSort(next string) {
+	norm := uistate.NormalizeSubSort(next)
+	if a.effectiveSubSort() == norm && a.SubSort == norm {
+		return
+	}
+	a.SubSort = norm
+	a.SubListState.ScrollTo(0, ui.Start)
+	a.subListSort = norm
+	if a.backend != nil {
+		if _, err := a.backend.MutateUIState(func(st *uistate.State) {
+			st.SubSort = norm
+		}); err != nil {
+			a.showError(err)
+		}
+	}
+}
 
 func (a *App) subscriptionGridCols(c *ui.Context) int {
 	winW, _ := c.Size()
@@ -22,18 +73,58 @@ func (a *App) subscriptionGridCols(c *ui.Context) int {
 	return max(3, min(5, cols))
 }
 
-func (a *App) filteredSubscriptions(query string) []subscription.Subscription {
+func (a *App) libraryAuthorsLatestFingerprint() uint64 {
+	h := newFNV64a()
+	authors := a.libraryStatistics.Authors
+	for i := range authors {
+		au := &authors[i]
+		if au.LatestPubTs <= 0 {
+			continue
+		}
+		fnvWriteStr(h, au.Site)
+		fnvWriteStr(h, au.UID)
+		fnvWriteInt64(h, au.Mid)
+		fnvWriteInt64(h, au.LatestPubTs)
+	}
+	return h.Sum64()
+}
+
+func (a *App) filteredSubscriptionItems(query, sortMode string) ([]subGridItem, []subscription.Subscription) {
+	sortMode = uistate.NormalizeSubSort(sortMode)
+	authors := a.libraryStatistics.Authors
+	var authorsFirst *library.ItemAuthor
+	if len(authors) > 0 {
+		authorsFirst = &authors[0]
+	}
 	sig := filteredSubsSig{
-		subsRev: a.subsRev,
-		subsN:   len(a.Subscriptions),
-		search:  query,
-		hash:    a.subscriptionsAccountsFingerprint(),
+		subsRev:      a.subsRev,
+		subsN:        len(a.Subscriptions),
+		statsRev:     a.statsRev,
+		authorsN:     len(authors),
+		authorsFirst: authorsFirst,
+		authorsHash:  a.libraryAuthorsLatestFingerprint(),
+		search:       query,
+		sort:         sortMode,
+		hash:         a.subscriptionsAccountsFingerprint(),
 	}
 	st := a.fs()
-	if st.filteredSubs != nil && st.filteredSubsSig == sig {
-		return st.filteredSubs
+	if st.filteredSubItems != nil && st.filteredSubs != nil && st.filteredSubsSig == sig {
+		return st.filteredSubItems, st.filteredSubs
 	}
-	filtered := make([]subscription.Subscription, 0, len(a.Subscriptions))
+
+	latestByAcc := make(map[string]int64, len(authors))
+	for _, au := range authors {
+		normSite, normUID := library.NormalizeAuthorUID(au.Site, au.UID, au.Mid)
+		if normUID == "" || au.LatestPubTs <= 0 {
+			continue
+		}
+		k := normSite + ":" + normUID
+		if au.LatestPubTs > latestByAcc[k] {
+			latestByAcc[k] = au.LatestPubTs
+		}
+	}
+
+	items := make([]subGridItem, 0, len(a.Subscriptions))
 	for _, s := range a.Subscriptions {
 		if query != "" {
 			matched := strings.Contains(strings.ToLower(s.Name), query) ||
@@ -60,11 +151,43 @@ func (a *App) filteredSubscriptions(query string) []subscription.Subscription {
 				continue
 			}
 		}
-		filtered = append(filtered, s)
+		latestTs := s.LatestUpdateTs
+		if latestTs < 0 {
+			latestTs = 0
+		}
+		for _, ref := range subscriptionAuthorRefs(s) {
+			if ts := latestByAcc[ref.Site+":"+ref.UID]; ts > latestTs {
+				latestTs = ts
+			}
+		}
+		items = append(items, subGridItem{
+			sub:      s,
+			latestTs: latestTs,
+		})
+	}
+
+	if sortMode == uistate.SubSortRecent && len(items) > 1 {
+		sort.SliceStable(items, func(i, j int) bool {
+			if items[i].latestTs != items[j].latestTs {
+				return items[i].latestTs > items[j].latestTs
+			}
+			return false
+		})
+	}
+
+	subs := make([]subscription.Subscription, len(items))
+	for i := range items {
+		subs[i] = items[i].sub
 	}
 	st.filteredSubsSig = sig
-	st.filteredSubs = filtered
-	return filtered
+	st.filteredSubItems = items
+	st.filteredSubs = subs
+	return items, subs
+}
+
+func (a *App) filteredSubscriptions(query string) []subscription.Subscription {
+	_, subs := a.filteredSubscriptionItems(query, a.effectiveSubSort())
+	return subs
 }
 
 func (a *App) renderSubscriptionsNarrowSelector(c *ui.Context) {
@@ -156,33 +279,53 @@ func (a *App) renderSubscriptionsRoute(c *ui.Context) {
 		return
 	}
 
+	a.ensureLibraryStatisticsFresh()
+
 	ui.Column(c).Grow(1).FillWidth().Padding(16).Gap(14).ClipX().Children(func() {
 		st := a.fs()
-		// Search filter bar (docs/ui.md §3.9)
+		sortMode := a.effectiveSubSort()
+		// Search filter bar + sort selector (docs/ui.md §3.9)
 		ui.Row(c).
+			Label("订阅搜索与排序栏").
 			FillWidth().
-			Padding(4, 12).
-			Radius(999).
-			Background(ColorBgMain).
-			Border(1, ColorBorder).
 			AlignItems(ui.Center).
-			Gap(8).
+			Gap(10).
+			Shrink(0).
 			ClipX().
 			Children(func() {
-				DrawIcon(c, "search", 16, ColorTextMuted, 1.75)
-				inp := ui.TextInputBase(c, &a.SubSearchQuery).
-					Placeholder("搜索订阅名称、备注或关联账号昵称…").
-					Label("订阅搜索过滤框").
-					Padding(6, 4).
-					Grow(1)
-				if !inp.Composing() {
-					st.subSearchApplied = a.SubSearchQuery
-				}
-				if a.SubSearchQuery != "" {
-					if OutlinePillButton(c, "清除", "清除订阅搜索").Clicked() {
-						a.SubSearchQuery = ""
-						st.subSearchApplied = ""
-					}
+				ui.Row(c).
+					Grow(1).
+					Shrink(1).
+					Padding(4, 12).
+					Radius(999).
+					Background(ColorBgMain).
+					Border(1, ColorBorder).
+					AlignItems(ui.Center).
+					Gap(8).
+					ClipX().
+					Children(func() {
+						DrawIcon(c, "search", 16, ColorTextMuted, 1.75)
+						inp := ui.TextInputBase(c, &a.SubSearchQuery).
+							Placeholder("搜索订阅名称、备注或关联账号昵称…").
+							Label("订阅搜索过滤框").
+							Padding(6, 4).
+							Grow(1).
+							Shrink(1)
+						if !inp.Composing() {
+							st.subSearchApplied = a.SubSearchQuery
+						}
+						if a.SubSearchQuery != "" {
+							if OutlinePillButton(c, "清除", "清除订阅搜索").Clicked() {
+								a.SubSearchQuery = ""
+								st.subSearchApplied = ""
+							}
+						}
+					})
+
+				shown := subSortOptionName(sortMode)
+				if ui.Select(c, &shown, subSortOptionLabels).Label("订阅排序方式").Shrink(0).Changed() {
+					a.setSubSort(subSortOptionValue(shown))
+					sortMode = a.effectiveSubSort()
 				}
 			})
 
@@ -200,13 +343,14 @@ func (a *App) renderSubscriptionsRoute(c *ui.Context) {
 		}
 
 		query := strings.ToLower(strings.TrimSpace(st.subSearchApplied))
-		if query != a.subListQuery {
+		if query != a.subListQuery || sortMode != a.subListSort {
 			a.SubListState.ScrollTo(0, ui.Start)
 			a.subListQuery = query
+			a.subListSort = sortMode
 		}
-		filtered := a.filteredSubscriptions(query)
+		items, filtered := a.filteredSubscriptionItems(query, sortMode)
 
-		if len(filtered) == 0 {
+		if len(items) == 0 {
 			ui.Column(c).FillWidth().Padding(28, 16).Radius(16).Background(ColorBgMain).Border(1, ColorBorder).AlignItems(ui.Center).Gap(6).Children(func() {
 				ui.Text(c, "没有匹配的订阅").FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 				ui.Text(c, "请尝试其他关键词或清除搜索条件。").FontSize(12).TextColor(ColorTextMuted).SingleLine()
@@ -215,17 +359,18 @@ func (a *App) renderSubscriptionsRoute(c *ui.Context) {
 		}
 
 		cols := a.subscriptionGridCols(c)
-		rowCount := (len(filtered) + cols - 1) / cols
+		rowCount := (len(items) + cols - 1) / cols
+		now := time.Now()
 		a.SubListState.Key = func(rowIdx int) any {
 			start := rowIdx * cols
-			if start >= 0 && start < len(filtered) {
-				return "row:" + filtered[start].ID
+			if start >= 0 && start < len(items) {
+				return "row:" + sortMode + ":" + items[start].sub.ID
 			}
 			return rowIdx
 		}
 		ui.List(c, &a.SubListState, rowCount, func(rowIdx int) {
 			start := rowIdx * cols
-			end := min(start+cols, len(filtered))
+			end := min(start+cols, len(items))
 			ui.Row(c).
 				FillWidth().
 				Padding(10, 4).
@@ -235,8 +380,7 @@ func (a *App) renderSubscriptionsRoute(c *ui.Context) {
 				ClipX().
 				Children(func() {
 					for idx := start; idx < end; idx++ {
-						s := filtered[idx]
-						a.renderSubscriptionGridCell(c, s)
+						a.renderSubscriptionGridCell(c, items[idx], now)
 					}
 					for pad := end - start; pad < cols; pad++ {
 						ui.Box(c).Grow(1).Height(1)
@@ -275,20 +419,31 @@ func renderSubGridLiveBadge(c *ui.Context, label string, recording bool, onClick
 	}
 }
 
-func (a *App) renderSubscriptionGridCell(c *ui.Context, s subscription.Subscription) {
+func (a *App) renderSubscriptionGridCell(c *ui.Context, item subGridItem, now time.Time) {
+	s := item.sub
 	liveRoom := a.findSubscriptionLiveRoom(s)
 	liveAcct := a.findSubscriptionLiveAccount(s)
 	roomActive := liveRoom != nil && (liveRoom.LiveStatus == 1 || liveRoom.Recording)
 	acctActive := liveAcct != nil && (liveAcct.LiveStatus == 1 || liveAcct.Recording)
 	isLive := roomActive || acctActive
 
-	// Subscription grid cell: 92px circular avatar + name only; NEVER render a site badge here (docs/ui.md §3.4, §3.9).
+	updatedText := formatSubGridUpdatedAt(item.latestTs, now)
+	updatedColor := ColorTextMuted
+	updatedTip := "暂无本机缓存或更新记录"
+	if item.latestTs > 0 {
+		updatedTip = "本机最近更新：" + FormatTimestamp(item.latestTs)
+	} else {
+		updatedColor = ColorTextFaint
+	}
+
+	// Subscription grid cell: 92px circular avatar + name + subtle offline last-updated caption;
+	// NEVER render a site badge here (docs/ui.md §3.4, §3.9).
 	ui.Column(c).
 		Grow(1).
 		Padding(8, 6).
 		Radius(16).
 		AlignItems(ui.Center).
-		Gap(8).
+		Gap(6).
 		ClipX().
 		Children(func() {
 			ui.Box(c).Size(98, 98).Shrink(0).Children(func() {
@@ -340,7 +495,20 @@ func (a *App) renderSubscriptionGridCell(c *ui.Context, s subscription.Subscript
 				AlignItems(ui.Center).
 				ClipX()
 			nameBtn.Children(func() {
-				ui.Text(c, s.Name).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				ui.Column(c).
+					FillWidth().
+					AlignItems(ui.Center).
+					Gap(2).
+					ClipX().
+					Children(func() {
+						ui.Text(c, s.Name).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+						ui.Box(c).Label("订阅最近更新：" + s.ID).Tooltip(updatedTip).Children(func() {
+							ui.Text(c, updatedText).
+								FontSize(11).
+								TextColor(updatedColor).
+								SingleLine()
+						})
+					})
 			})
 			if nameBtn.Clicked() {
 				a.OpenSubscriptionDetail(s)

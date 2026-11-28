@@ -60,9 +60,15 @@ type featureState struct {
 	subAccRowsSig subAccountRowsSig
 	subAccRows    []subAccountRow
 
-	// Cached filtered subscriptions list.
-	filteredSubsSig filteredSubsSig
-	filteredSubs    []subscription.Subscription
+	// Cached filtered & sorted subscriptions list and per-subscription local latest timestamps.
+	filteredSubsSig  filteredSubsSig
+	filteredSubs     []subscription.Subscription
+	filteredSubItems []subGridItem
+}
+
+type subGridItem struct {
+	sub      subscription.Subscription
+	latestTs int64
 }
 
 type libraryTilesSig struct {
@@ -80,10 +86,15 @@ type subAccountRowsSig struct {
 }
 
 type filteredSubsSig struct {
-	subsRev int
-	subsN   int
-	search  string
-	hash    uint64
+	subsRev      int
+	subsN        int
+	statsRev     int
+	authorsN     int
+	authorsFirst *library.ItemAuthor
+	authorsHash  uint64
+	search       string
+	sort         string
+	hash         uint64
 }
 
 var (

@@ -322,6 +322,7 @@ func TestUIShotsScenesAndStructuredAssertions(t *testing.T) {
 	requiredScenes := []string{
 		"home",
 		"subscriptions",
+		"subscriptions-sort-recent",
 		"subscribe-picker",
 		"move-account-picker",
 		"subscriptions-all-accounts",

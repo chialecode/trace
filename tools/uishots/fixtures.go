@@ -1432,6 +1432,8 @@ func (e *fixtureEnv) seedRecentAndLive(app *ui.App) {
 			app.Subscriptions[i].LatestUpdateTs = time.Now().Add(-15 * time.Minute).Unix()
 		} else if i == 1 {
 			app.Subscriptions[i].LatestUpdateTs = time.Now().Add(-2 * time.Hour).Unix()
+		} else {
+			app.Subscriptions[i].LatestUpdateTs = 0
 		}
 	}
 	app.LiveRooms = []live.RoomState{
