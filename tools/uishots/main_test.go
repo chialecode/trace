@@ -260,6 +260,17 @@ func TestM7K19AssertionGuardsDetectFailures(t *testing.T) {
 	if verifyXAccountRowNoLiveAndNoRecord(ttBadXRow, "1000000000000000006", true) {
 		t.Fatal("expected verifyXAccountRowNoLiveAndNoRecord to reject live status text on X-only subscription row")
 	}
+
+	// 5. Squeezed subscription name in tag batch checklist row must fail verifyTagBatchSubNamesVisible.
+	ttSqueezedSub := mygoui.NewTester(func(c *mygoui.Context) {
+		mygoui.Row(c).Label("勾选规则订阅：技术频道_Alpha").Size(490, 44).Children(func() {
+			mygoui.Text(c, "技术频道_Alpha").Label("规则订阅名称：技术频道_Alpha").Size(16, 20)
+		})
+	}, 720, 860)
+	ttSqueezedSub.Frame()
+	if verifyTagBatchSubNamesVisible(ttSqueezedSub, "勾选规则订阅：", "规则订阅名称：", []string{"技术频道_Alpha"}, 720) {
+		t.Fatal("expected verifyTagBatchSubNamesVisible to reject squeezed subscription name width")
+	}
 }
 
 func TestUIShotsScenesAndStructuredAssertions(t *testing.T) {
