@@ -622,3 +622,49 @@ func TestAuthVerifiedAtOptionalNormalizeCloneAndPersistence(t *testing.T) {
 		t.Fatalf("AuthVerifiedAt did not survive reopen at v4: %+v", got)
 	}
 }
+
+func TestUIStateLastActiveAtOptionalAndNormalized(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ui-state.json")
+
+	// Existing v4 file without lastActiveAt loads cleanly without bumping schema version.
+	if err := os.WriteFile(path, []byte(`{"version":4,"lastRoute":"/home"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, recovered, _, err := Open(path)
+	if err != nil || recovered {
+		t.Fatalf("Open without lastActiveAt: recovered=%v err=%v", recovered, err)
+	}
+	if got := store.Get(); got.Version != 4 || got.LastActiveAt != "" {
+		t.Fatalf("unexpected initial state: version=%d lastActiveAt=%q", got.Version, got.LastActiveAt)
+	}
+
+	// Offset RFC3339 normalizes to UTC RFC3339 and survives reopen.
+	updated, err := store.Mutate(func(st *State) {
+		st.LastActiveAt = "2026-11-28T10:30:00+08:00"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Version != 4 || updated.LastActiveAt != "2026-11-28T02:30:00Z" {
+		t.Fatalf("normalized LastActiveAt = %q (version=%d), want 2026-11-28T02:30:00Z", updated.LastActiveAt, updated.Version)
+	}
+	reopened, _, _, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.Get(); got.Version != 4 || got.LastActiveAt != "2026-11-28T02:30:00Z" {
+		t.Fatalf("reopened LastActiveAt = %q (version=%d)", got.LastActiveAt, got.Version)
+	}
+
+	// Malformed timestamps are cleared rather than corrupting ui-state.json.
+	cleared, err := reopened.Mutate(func(st *State) {
+		st.LastActiveAt = "not-a-timestamp"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.LastActiveAt != "" {
+		t.Fatalf("malformed LastActiveAt not cleared: %q", cleared.LastActiveAt)
+	}
+}

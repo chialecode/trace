@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chialecode/trace/internal/appdirs"
 )
 
 func sampleMyGoNSI(displayName, shortcut, includePath string, renamed bool) []byte {
@@ -66,6 +68,9 @@ Section "Uninstall"
   Call un.DeleteShortcut
   Push "$DESKTOP\` + shortcut + `.lnk"
   Call un.DeleteShortcut
+  !ifmacrodef customUnInstall
+    !insertmacro customUnInstall
+  !endif
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.trace-dev"
   RMDir /r "$INSTDIR"
 SectionEnd
@@ -115,6 +120,7 @@ func TestPatchInstallerScriptDevAndTestChannels(t *testing.T) {
 				`CreateShortCut "$DESKTOP\` + tc.shortcut + `.lnk" "$INSTDIR\trace.exe"`,
 				`Push "$SMPROGRAMS\` + tc.shortcut + `.lnk"`,
 				`Push "$DESKTOP\` + tc.shortcut + `.lnk"`,
+				`!insertmacro customUnInstall`,
 				`RMDir /r "$INSTDIR"`,
 			} {
 				if !strings.Contains(text, keep) {
@@ -275,5 +281,47 @@ func TestEnvVarHelpers(t *testing.T) {
 	env = UnsetEnvVar(env, "FOO")
 	if got := GetEnvVar(env, "FOO"); got != "" {
 		t.Fatalf("FOO not unset: %q", got)
+	}
+}
+
+func TestChannelNSISAutostartCleanupIsolation(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]string{}
+	for _, ch := range []string{ChannelStable, ChannelDev, ChannelTest} {
+		id := IdentityOf(ch)
+		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(id.InstallerInclude)))
+		if err != nil {
+			t.Fatalf("read %s: %v", id.InstallerInclude, err)
+		}
+		wantVal := appdirs.AutostartValueNameForChannel(ch)
+		if wantVal != strings.ToLower(wantVal) {
+			t.Fatalf("autostart value for %s is not lowercase: %q", ch, wantVal)
+		}
+		if prev, dup := seen[wantVal]; dup {
+			t.Fatalf("channels %s and %s share autostart value %q", prev, ch, wantVal)
+		}
+		seen[wantVal] = ch
+		wantLine := `!define TRACE_AUTOSTART_VALUE "` + wantVal + `"`
+		if !strings.Contains(string(raw), wantLine) {
+			t.Fatalf("%s missing %s", id.InstallerInclude, wantLine)
+		}
+	}
+
+	shortcutsRaw, err := os.ReadFile(filepath.Join(root, "assets", "installer", "shortcuts.nsh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortcuts := string(shortcutsRaw)
+	for _, want := range []string{
+		`!define TRACE_RUN_REGKEY "Software\Microsoft\Windows\CurrentVersion\Run"`,
+		`!macro customUnInstall`,
+		`DeleteRegValue HKCU "${TRACE_RUN_REGKEY}" "${TRACE_AUTOSTART_VALUE}"`,
+	} {
+		if !strings.Contains(shortcuts, want) {
+			t.Fatalf("shortcuts.nsh missing %q", want)
+		}
 	}
 }

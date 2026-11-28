@@ -154,3 +154,39 @@ func TestSettingsCloneIsolatesRemoteSlicesAndPollInterval(t *testing.T) {
 		t.Fatal("Open(version=5) succeeded, want NewerDataError")
 	}
 }
+
+func TestSettingsAutoStartOptionalAndKeepsSchemaV1(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	cacheDir := filepath.Join(dir, "cache")
+
+	// Existing settings.json without window.autoStart loads cleanly with AutoStart=false and Version=1.
+	if err := os.WriteFile(path, []byte(`{"version":1,"window":{"closeAction":"tray"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, recovered, _, err := Open(path, cacheDir)
+	if err != nil || recovered {
+		t.Fatalf("Open without autoStart: recovered=%v err=%v", recovered, err)
+	}
+	cur := store.Get()
+	if cur.Version != 1 || cur.Window.AutoStart {
+		t.Fatalf("unexpected initial autostart settings: version=%d autoStart=%v", cur.Version, cur.Window.AutoStart)
+	}
+
+	cur.Window.AutoStart = true
+	updated, err := store.Update(cur)
+	if err != nil {
+		t.Fatalf("Update(AutoStart=true): %v", err)
+	}
+	if updated.Version != 1 || !updated.Window.AutoStart {
+		t.Fatalf("updated settings = %+v, want version=1 autoStart=true", updated)
+	}
+
+	reopened, recovered2, _, err := Open(path, cacheDir)
+	if err != nil || recovered2 {
+		t.Fatalf("reopen settings: recovered=%v err=%v", recovered2, err)
+	}
+	if got := reopened.Get(); got.Version != 1 || !got.Window.AutoStart {
+		t.Fatalf("reopened settings = %+v, want version=1 autoStart=true", got)
+	}
+}

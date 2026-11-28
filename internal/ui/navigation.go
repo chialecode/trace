@@ -359,6 +359,7 @@ func (a *App) navigate(rawRoute string, fromBack bool) {
 		a.clearUnsentLoginInputs()
 	}
 	if a.CurrentRoute == RouteSettings && route != RouteSettings {
+		a.GeneralAutostartError = ""
 		a.clearSettingsPasteState()
 		a.Remote.CodeInput = ""
 		a.Remote.TokenInput = ""

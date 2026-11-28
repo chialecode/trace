@@ -46,6 +46,7 @@ type screenshotBackend struct {
 	conflicts       []service.CacheConflictDTO
 	updateHist      *update.History
 	installedDevVer string
+	autostartStatus *service.AutostartStatus
 	// 我的 fixtures (mine_fixture.go): lists come from memory, never the network.
 	mineDouyinOut  bool
 	mineErr        map[string]error // site/kind
@@ -79,6 +80,13 @@ func (b *screenshotBackend) InstalledDevVersion() string {
 		return b.installedDevVer
 	}
 	return b.BackendAPI.InstalledDevVersion()
+}
+
+func (b *screenshotBackend) AutostartStatus() service.AutostartStatus {
+	if b.autostartStatus != nil {
+		return *b.autostartStatus
+	}
+	return b.BackendAPI.AutostartStatus()
 }
 
 func (b *screenshotBackend) ListCacheQueue() []service.CacheQueueTask {

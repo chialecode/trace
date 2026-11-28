@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/chialecode/trace/internal/appdirs"
 	"github.com/chialecode/trace/internal/credential"
@@ -35,6 +36,15 @@ type Options struct {
 	CacheQueueRand              CacheQueueRand
 	CacheQueuePacing            *CacheQueuePacing
 	InstalledDevVersion         func() string
+	// AutostartRegistry abstracts Windows Run startup entries; nil keeps
+	// autostart isolated from the host registry in tests and non-Windows runs.
+	AutostartRegistry AutostartRegistry
+	// AutostartExePath, AutostartVersion, AutostartGOOS, and HeartbeatInterval
+	// are optional overrides used by deterministic tests.
+	AutostartExePath  string
+	AutostartVersion  string
+	AutostartGOOS     string
+	HeartbeatInterval time.Duration
 	// Profile is ProfileDesktop (the default) or ProfileRemote, the headless
 	// trace-server (docs/design/remote.md §2, §4).
 	Profile Profile
@@ -269,6 +279,7 @@ type SettingsService interface {
 	Locations() appdirs.Locations
 	GetSettings() settings.Settings
 	UpdateSettings(next settings.Settings) (settings.Settings, error)
+	AutostartStatus() AutostartStatus
 	GetUIState() uistate.State
 	UpdateUIState(next uistate.State) (uistate.State, error)
 	// MutateUIState changes ui-state.json under its lock, so a write from

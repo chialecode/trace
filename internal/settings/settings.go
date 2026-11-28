@@ -143,6 +143,9 @@ type LiveSettings struct {
 type WindowSettings struct {
 	CloseAction    string `json:"closeAction"`
 	StartMinimized bool   `json:"startMinimized"`
+	// AutoStart enables per-user Windows login startup minimized to tray (--background, FR-RUN-002).
+	// Optional field; schema version stays 1.
+	AutoStart bool `json:"autoStart,omitempty"`
 }
 
 type DiagnosticsSettings struct {

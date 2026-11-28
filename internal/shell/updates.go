@@ -63,10 +63,12 @@ func ParseLaunchArgs(args []string) LaunchArgs {
 // notice it shows, and which version-change record it appends to
 // update-history.json, from the launch flags and ui-state.json.
 type StartupDecision struct {
-	OpenWindow   bool
-	UpdatedTo    string
-	UpdatedNotes string
-	UpdateRecord *update.UpdateRecord
+	OpenWindow           bool
+	UpdatedTo            string
+	UpdatedNotes         string
+	UpdateRecord         *update.UpdateRecord
+	PreviousLastActiveAt string
+	ValidRestart         bool
 }
 
 // DecideStartup applies the launch rules for the release channel and returns
@@ -85,7 +87,10 @@ func DecideStartup(st uistate.State, args LaunchArgs, version string, now time.T
 // version than the last one says once that TRACE was updated, with the notes
 // of the downloaded release.
 func DecideStartupForChannel(st uistate.State, args LaunchArgs, channel, version string, now time.Time) (StartupDecision, uistate.State) {
-	d := StartupDecision{OpenWindow: !args.Background}
+	d := StartupDecision{
+		OpenWindow:           !args.Background,
+		PreviousLastActiveAt: strings.TrimSpace(st.LastActiveAt),
+	}
 	validRestart := false
 	restartReason := ""
 	if r := st.Update.Restart; r != nil {
@@ -101,6 +106,7 @@ func DecideStartupForChannel(st uistate.State, args LaunchArgs, channel, version
 		}
 		st.Update.Restart = nil
 	}
+	d.ValidRestart = validRestart
 	prev := strings.TrimSpace(st.Update.LastRunVersion)
 	cur := strings.TrimSpace(version)
 	if cur != "" && cur != appdirs.UnversionedBuild && prev != "" && prev != appdirs.UnversionedBuild && cur != prev {
@@ -129,6 +135,7 @@ func DecideStartupForChannel(st uistate.State, args LaunchArgs, channel, version
 	if st.Update.ReadyVersion != "" && update.Compare(version, st.Update.ReadyVersion) >= 0 {
 		st.Update.ReadyVersion, st.Update.ReadyNotes = "", ""
 	}
+	st.LastActiveAt = now.UTC().Format(time.RFC3339)
 	return d, st
 }
 

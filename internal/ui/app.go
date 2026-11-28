@@ -259,6 +259,8 @@ type App struct {
 	cachedInstalledDevAt time.Time
 	cachedUpdateHist     update.History
 	cachedUpdateHistAt   time.Time
+	cachedAutostart      service.AutostartStatus
+	cachedAutostartAt    time.Time
 
 	// In-memory bitmap cache for local covers/thumbnails, freed on CloseToTray (DEC-030)
 	images             bitmapCache
@@ -686,8 +688,9 @@ type App struct {
 	livePreviewOpener         func(ctx context.Context, path string, opts player.LivePreviewOptions) (player.MediaDecoder, error)
 
 	// Settings Page
-	SettingsCategory string // "account" | "download" | "quality" | "rules" | "subscription" | "storage" | "general" | "network" | "remote" | "mobile" | "logs" | "update" | "about"
-	DraftSettings    settings.Settings
+	SettingsCategory      string // "account" | "download" | "quality" | "rules" | "subscription" | "storage" | "general" | "network" | "remote" | "mobile" | "logs" | "update" | "about"
+	DraftSettings         settings.Settings
+	GeneralAutostartError string
 	// Mobile companion (Settings › 移动端, FR-MOB-001..003).
 	companion CompanionAPI
 	Mobile    MobileUIState
@@ -963,6 +966,7 @@ func (a *App) handleBackendEvent(ev service.Event) {
 	case service.EventSettingsChanged:
 		a.cachedDiagAt = time.Time{}
 		a.cachedUpdateHistAt = time.Time{}
+		a.cachedAutostartAt = time.Time{}
 		a.markBackfillSummaryDirty()
 		a.ensureBackfillSummaryFresh()
 	case service.EventAccountChanged:

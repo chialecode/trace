@@ -165,6 +165,13 @@ func IdentifierForChannel(channel string) string {
 	}
 }
 
+// AutostartValueNameForChannel returns the strictly lowercase, channel-isolated
+// Windows Run registry value name (HKCU\Software\Microsoft\Windows\CurrentVersion\Run)
+// for a given channel so stable, dev, and test never interfere with each other.
+func AutostartValueNameForChannel(channel string) string {
+	return IdentifierForChannel(channel)
+}
+
 // Resolve computes Locations using the current process environment.
 func Resolve() (Locations, error) {
 	return ResolveWithOptions(Options{})
