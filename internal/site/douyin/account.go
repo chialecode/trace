@@ -41,9 +41,11 @@ const (
 	pathHistoryRead    = "/aweme/v1/web/history/read/"
 	shellMessage       = "抖音返回了空壳，登录已失效或被拦截"
 	// likesRefusedMessage guides users with legacy/incomplete cookies to copy a complete
-	// Cookie from the Mijn/Likes tab while keeping single-endpoint isolation (no site backoff).
-	likesRefusedMessage  = "抖音“喜欢”列表返回空响应：请在浏览器打开抖音「我的 → 喜欢」页面后重新复制完整 Cookie 更新登录；其他功能不受影响"
-	cursorStalledMessage = "抖音列表的翻页位置没有前进，已停止翻页"
+	// Cookie from the Mine/Likes tab while keeping single-endpoint isolation (no site backoff).
+	likesRefusedMessage        = "抖音“喜欢”列表返回空响应：请在浏览器打开抖音「我的 → 喜欢」页面后重新复制完整 Cookie 更新登录；其他功能不受影响"
+	likesBDTuringParamsMessage = "抖音“喜欢”列表触发抖音动态校验拦截（x-vc-bdturing-parameters）：请在浏览器打开抖音「我的 → 喜欢」页面完成验证后重新复制完整 Cookie 更新登录；其他功能不受影响"
+	likesBDTuringVerifyMessage = "抖音“喜欢”列表触发抖音动态校验拦截（bdturing-verify）：请在浏览器打开抖音「我的 → 喜欢」页面完成验证后重新复制完整 Cookie 更新登录；其他功能不受影响"
+	cursorStalledMessage       = "抖音列表的翻页位置没有前进，已停止翻页"
 )
 
 func (c *Client) accountEndpoint(path string) string {
@@ -147,6 +149,9 @@ func (c *Client) Favorites(ctx context.Context, selfSecUID, cursor string) (*Acc
 	selfSecUID = strings.TrimSpace(selfSecUID)
 	if !reValidSecUID.MatchString(selfSecUID) {
 		return nil, &site.Error{Site: site.Douyin, Kind: site.ErrKindAuthRequired, Message: "缺少登录账号的 sec_uid，请重新登录抖音"}
+	}
+	if err := c.ensureServerWebIDForFavorites(ctx); err != nil {
+		return nil, err
 	}
 	cursor = normCursor(cursor)
 	ep := c.accountEndpoint(pathFavorite)
@@ -335,40 +340,96 @@ func decodeAccountTop(ep string, body []byte) (map[string]json.RawMessage, error
 	return top, nil
 }
 
-// parseAccountWorks applies douyin.md §12: on any page a list without has_more,
-// or aweme_list:null, is a shell (login lost or blocked), never an empty list.
+// parseAccountWorks applies douyin.md §12:
+//   - missing aweme_list or missing has_more is always a shell (login lost or blocked);
+//   - aweme_list:null on a subsequent last page (reqCursor != "0" && has_more == 0) is an empty
+//     last page; on page 1 or with has_more != 0 it remains a shell;
+//   - aweme_list items decode individually so one deleted/private/broken item does not fail the
+//     whole page, while an entirely unparseable non-empty list still reports schema_changed.
 func (c *Client) parseAccountWorks(ctx context.Context, ep string, top map[string]json.RawMessage, reqCursor string) (*AccountWorksPage, error) {
 	rawList, hasList := top["aweme_list"]
 	rawHasMore, hasMoreKey := top["has_more"]
-	if !hasList || !hasMoreKey || isJSONNull(rawList) {
+	if !hasList || !hasMoreKey {
 		return nil, c.shellError(ctx, ep)
 	}
-	var nodes []rawAwemeNode
+	hasMore := parseJSONBoolOrInt(rawHasMore)
+	if isJSONNull(rawList) {
+		if reqCursor != "0" && !hasMore {
+			return &AccountWorksPage{
+				Works:      []WorkDetail{},
+				NextCursor: firstCursor(top),
+				HasMore:    false,
+			}, nil
+		}
+		return nil, c.shellError(ctx, ep)
+	}
+	var rawItems []json.RawMessage
 	dec := json.NewDecoder(bytes.NewReader(rawList))
 	dec.UseNumber()
-	if err := dec.Decode(&nodes); err != nil {
+	if err := dec.Decode(&rawItems); err != nil {
 		return nil, schemaErr(ep, "抖音 aweme_list 数组结构异常", err)
 	}
-	page := &AccountWorksPage{HasMore: parseJSONBoolOrInt(rawHasMore), NextCursor: firstCursor(top), Works: make([]WorkDetail, 0, len(nodes))}
+	page := &AccountWorksPage{HasMore: hasMore, NextCursor: firstCursor(top), Works: make([]WorkDetail, 0, len(rawItems))}
 	if page.HasMore && (page.NextCursor == "0" || page.NextCursor == reqCursor) {
 		return nil, schemaErr(ep, cursorStalledMessage, nil)
 	}
-	seen := make(map[string]bool, len(nodes))
-	for i := range nodes {
-		n := &nodes[i]
+	seen := make(map[string]bool, len(rawItems))
+	var (
+		cleanSkipped int
+		failedItems  int
+		firstItemErr error
+	)
+	for _, rawItem := range rawItems {
+		if isJSONNull(rawItem) {
+			failedItems++
+			if firstItemErr == nil {
+				firstItemErr = schemaErr(ep, "抖音作品条目为空", nil)
+			}
+			continue
+		}
+		var n rawAwemeNode
+		itemDec := json.NewDecoder(bytes.NewReader(rawItem))
+		itemDec.UseNumber()
+		if err := itemDec.Decode(&n); err != nil {
+			failedItems++
+			if firstItemErr == nil {
+				firstItemErr = schemaErr(ep, "抖音作品条目结构异常", err)
+			}
+			continue
+		}
 		id := strings.TrimSpace(n.AwemeID)
-		if id == "" || seen[id] {
+		if id == "" {
+			failedItems++
+			if firstItemErr == nil {
+				firstItemErr = schemaErr(ep, "抖音作品条目缺少 aweme_id", nil)
+			}
+			continue
+		}
+		if seen[id] {
+			cleanSkipped++
+			continue
+		}
+		if n.Status != nil && (n.Status.IsDelete || n.Status.IsProhibited) {
+			seen[id] = true
+			cleanSkipped++
+			continue
+		}
+		work, err := parseAwemeWork(&n, StreamSelectOptions{}, c.allowLocalhost, false)
+		if err != nil {
+			failedItems++
+			if firstItemErr == nil {
+				firstItemErr = err
+			}
 			continue
 		}
 		seen[id] = true
-		if n.Status != nil && (n.Status.IsDelete || n.Status.IsProhibited) {
-			continue
-		}
-		work, err := parseAwemeWork(n, StreamSelectOptions{}, c.allowLocalhost, false)
-		if err != nil {
-			return nil, err
-		}
 		page.Works = append(page.Works, *work)
+	}
+	if len(rawItems) > 0 && len(page.Works) == 0 && cleanSkipped == 0 && failedItems > 0 {
+		if site.IsKind(firstItemErr, site.ErrKindSchemaChanged) {
+			return nil, firstItemErr
+		}
+		return nil, schemaErr(ep, "抖音列表作品条目全部解析失败", firstItemErr)
 	}
 	return page, nil
 }

@@ -66,7 +66,7 @@
 | `cpu_core_num` / `device_memory` | `8` / `8` | 硬件画像常量 |
 | `platform` | `PC` | 终端平台类型 |
 | `downlink` / `effective_type` / `round_trip_time` | `10` / `4g` / `50` | Network Information 画像常量 |
-| `webid` | 19 位数字字符串 | 页面访问标识（见 §2.2）；部分接口缺失时仍可放行，带入更稳妥 |
+| `webid` | 10～24 位非零数字串（常见 19 位） | 与当前 Cookie `ttwid` 绑定的页面访问标识（见 §2.2）；服务端会在 `profile/self` 等正常 API 响应头返回 `cookie_ttwidinfo_webid`，高敏接口（如 `aweme/favorite`）严格校验一致性，客户端须同步并按 `ttwid` 绑定复用 |
 | `uifid` | 来自 Cookie `uifid` / `UIFID_TEMP` / `UIFID` | 触发网关二次签名时在 `a_bogus` 追加后按序补入查询串（若此前已在查询串中则保持原位、绝不重复追加），并与请求头 `uifid` 同步携带（见 §2.2） |
 | `msToken` | 120～128 字符令牌 | 优先取当前 Cookie 中的 `msToken`，使查询串与 Cookie 一致 |
 
@@ -81,7 +81,7 @@
 | `x-secsdk-web-signature` + `uifid` + `x-secsdk-web-expire` | 查询参数（`uifid`、`timestamp`、`x-secsdk-web-signature`）+ 请求头（`uifid`、`x-secsdk-web-signature`、`x-secsdk-web-expire`） | 前端 `secsdk`（`ArgusSecurityPlugin` 两阶段签名）：(1) 先对业务+公共查询串算好 `a_bogus` 并追加 `&a_bogus=<百分号编码>`；(2) 当 Cookie 含 `uifid`（`uifid` / `UIFID_TEMP` / `UIFID`）时，在查询参数对末尾依次追加 `verifyFp` 与 `fp`（仅当存在 `s_v_web_id` 时）、`uifid`（若查询串尚未包含则追加，已包含则保持原位不重复）、`timestamp=<秒级Unix整数>`，按 `URLSearchParams` 规则（`*-._` 不转义）重序列化查询串 `query`，计算 32 位小写十六进制 `sig = md5("{uifid}_{timestamp}_{salt}_{query}")`，在 **URL 查询串末尾**追加 `&x-secsdk-web-signature=<sig>`，并同步设置 **HTTP 请求头** `uifid: <uifid>`、`x-secsdk-web-signature: <sig>`、`x-secsdk-web-expire: <timestamp>`（**注意：`x-secsdk-web-expire` 只写入 HTTP 请求头，绝不写入 URL 查询串**） | 2026 年 9 月起在部分 `/aweme/v1/web/` GET 路径启用的网关层校验；若 Cookie 中有 `uifid` 却未正确配对或受保护路径缺 `uifid`，网关直接返回 HTTP 403 `Blocked by ArgusSecurityPlugin ...` | `aweme/detail`、`aweme/post`、合集/音乐/收藏列表在最新签名实现中列为受保护路径；`user/profile/other`、`user/profile/self` 未列入该 14 条路径表（真实账户粘贴 Cookie 场景下是否强制拦截 `unknown`，列为 [ACT-010](#act-010) 必测项） |
 | `msToken` | Cookie + URL 查询参数 | 字节 `mssdk` 接口返回响应头 `x-ms-token` / `Set-Cookie: msToken=...`（真实下发长度常见 **120 或 128 字符**，字母数字与 `_-=`）；无服务端下发时客户端常回退生成 126 位随机字母数字加 `==`（共 128 字符） | 会话级行为令牌，参与 `a_bogus` 签名前的查询串拼装 | 主站与直播接口均建议携带；优先复用用户粘贴 Cookie 自带的 `msToken` 或响应头刷新的新值，保证 Cookie 与 URL 查询串同名值一致 |
 | `ttwid` | Cookie（`.douyin.com` / `.bytedance.com`） | 访问页面 `Set-Cookie` 下发，或 `POST https://ttwid.bytedance.com/ttwid/union/register/`（JSON 体 `{"region":"cn","aid":1768,"needFid":false,"service":"www.ixigua.com","migrate_info":{"ticket":"","source":"node"},"cbUrlProtocol":"https","union":true}`）由 `Set-Cookie` 返回 | 跨子域设备/访客跟踪标识 | `live.douyin.com/webcast/room/web/enter/` **必需**（缺失常返回空房间或风控）；浏览器粘贴的完整登录 Cookie 通常已含 `ttwid`，TRACE 不主动向 `bytedance.com` 匿名注册，缺 `ttwid` 时提示用户从已打开过抖音网页的浏览器完整复制 Cookie |
-| `webid` | URL 查询参数 | 首屏 HTML `RENDER_DATA` 中的 `user_unique_id` 或 `mssdk` 下发的 19 位数字 ID（部分实现离线生成 `7` 开头的 19 位数字串缓存于会话） | 页面级匿名终端编号 | 主站 `/aweme/v1/web/*` 常规附带；同一会话周期内固定复用即可 |
+| `webid` | URL 查询参数（由响应头 `cookie_ttwidinfo_webid` 同步） | 服务端按当前 `ttwid` 在正常 API 响应头返回 `cookie_ttwidinfo_webid`（10～24 位非零 ASCII 数字）；冷启动尚未同步前可先以随机 19 位数字占位并在高敏接口前经 `profile/self` 预热同步 | 与 `ttwid` 强绑定的页面级终端编号 | 主站 `/aweme/v1/web/*` 常规附带；**`aweme/favorite` 实测强校验与 `ttwid` 绑定值一致**（2026-11-28 `dec077` 双证与 `ACT-031` 核实），客户端签名前须原地替换为同 `ttwid` 同步的 `cookie_ttwidinfo_webid`，登出或 `ttwid` 变更自动失效 |
 | `verifyFp` / `s_v_web_id` | Cookie `s_v_web_id` + 查询参数 `verifyFp`、`fp` | 形如 `verify_<毫秒36进制>_<UUID变体>`，浏览器首次加载验证 SDK 或触发滑块后写入 Cookie | 指纹与验证码通行票据 | **可选但敏感**：用户真实 Cookie 若含有效 `s_v_web_id` 可原样保留；已过期的旧 `verify_...` 票据反而可能在部分路径诱发 403，客户端不应凭空伪造假验证码票据 |
 | `__ac_nonce` + `__ac_signature` | Cookie | 未带完整会话首次直接 GET `www.douyin.com/...` 或 `live.douyin.com/...` HTML 文档时，服务端先返回极短挑战页并 `Set-Cookie: __ac_nonce=<21位字符>`，前端 `acrawler.js` 计算 `__ac_signature` 后二次请求才返回真实 HTML | HTML 文档首屏反爬挑战锁 | 直接调用 JSON API 且携带有效登录 Cookie 时**通常不触发**；仅在无 Cookie 抓 HTML 首屏（如短链落到需要读 HTML 的页面）时可能遇到 |
 
@@ -515,7 +515,7 @@ TRACE 登录确认判定式（缺一不可；精确未登录错误码在 [ACT-01
 | HTTP 状态 / `status_code` / 响应特征 | 含义 | TRACE 错误分类 | 客户端动作 |
 | --- | --- | --- | --- |
 | HTTP 200，`status_code == 0`，业务载荷结构完整 | 正常成功 | — | 正常解析 |
-| HTTP 200，**0 字节空响应体**（`Content-Length: 0`） | 签名不匹配、UA 绑定不一致或反爬静默丢包 | `risk_control` | **立即停止，不自动重试** |
+| HTTP 200，**0 字节空响应体**（`Content-Length: 0`）或携带 `x-vc-bdturing-parameters` / `bdturing-verify` 响应头 | 签名不匹配、`webid` 与 `ttwid` 不一致或 BDTuring 动态校验拦截 | `risk_control`（`aweme/favorite` 0 字节单接口隔离为 `unavailable` 且不打开整站退避，同时在安全诊断中明确区分动态校验拦截与普通空体） | **立即停止，不自动重试**；严禁输出原始头值、`detail`、`fp` 或 token |
 | HTTP 200，非 JSON 文本（如 HTML `<title>验证码中间页</title>` 或含 `verify_page`） | 滑块/图形验证码拦截页 | `risk_control` | **立即停止，绝不尝试解算或绕过验证码** |
 | HTTP 200，JSON 含非空 `verify_center_decision_conf`、`verify_data`、`captcha`，或 `status_code` 为 `10000` / `10001` | 验证码中心挑战信封（注：直播 `web/enter` 正常响应里 `data.shark_decision_conf` 常为空字符串 `""`，**只有非空挑战配置才算风控**！） | `risk_control` | **立即停止，不自动重试**，提示用户稍后再试或在浏览器正常访问确认账号状态 |
 | HTTP 403，响应体含 `Blocked by ArgusSecurityPlugin`（如 `Uifid Not Found` / `Signature Not Found` / `Sign Invalid`） | `uifid` 或 `x-secsdk-web-signature` 网关校验未通过 | `risk_control` | **立即停止，绝不盲目重试**（属确定性签名/Cookie 上下文门禁） |
@@ -631,7 +631,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 | 空响应判定 | 严格按 §9.2 真值表；任何不确定的空结果都不当成“没有作品”或“到底了”，订阅检查记为“本轮结果不完整”，不移动起点 | — |
 
 <a id="account-lists"></a>
-## 12. 登录账号的关注、喜欢、收藏与观看历史（ACT-020 / ACT-026 / ACT-028 / ACT-029 真实检查）
+## 12. 登录账号的关注、喜欢、收藏与观看历史（ACT-020 / ACT-026 / ACT-028 / ACT-029 / ACT-031 真实检查）
 
 用于“我的”（FR-ACCT-005，DEC-047）。查询 2026-11-14。来源：本机参考索引中“用户视频列表解析”和“抖音签名与访问上下文”两个领域的实现（本地副本 2026-11-09 更新；只读协议事实，不复制代码，DEC-044），以及 GitHub REST 读到的公开元数据。全部只读，只看登录账号自己；作品条目与第 6.1 节 `aweme_detail` 同构，复用同一个解析；请求节奏、错误与风控判定沿用第 9 节，签名沿用[附录](#sign-spec)。
 
@@ -650,7 +650,7 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 - **`collects_id` 用字符串**：数字 `collects_id` 是 int64，经过 JavaScript 会丢低位；优先 `collects_id_str`。
 - **全部收藏只认 POST**：`GET` 返回 404 `Unsupported path(Janus)`；POST 不带 `Referer` 也不带 `Origin` 时只返回 7 字节、没有列表（参，2026-10-17 观察），所以按表里的 `Referer` 与 TRACE 公共的 `Origin` 发送。参考实现另发 `x-secsdk-csrf-token: DOWNGRADE`，观察到不必需；TRACE 先不发，真实检查被拒时再加。
 - **游标字段名**：收藏类接口的下一页游标在 `cursor`，少数响应在 `max_cursor`；两个都认，以先出现的非零值为准。游标不前进且 `has_more` 为真时停下并按 `schema_changed` 说明，不死循环。
-- **空响应**：喜欢接口对“别人的私密喜欢列表”返回 HTTP 200 加 0 字节，或 `aweme_list: null` 且没有 `has_more`。TRACE 只查自己，所以第 1 页出现这两种形态时**不当成“还没有喜欢”**：`aweme_list: null` 按第 9.2 节的空壳规则判为“登录已失效或被拦截”并停下；0 字节（例如缺少 `s_v_web_id` 等不完整 Cookie 导致网关静默拒止时）仍判为 `unavailable` 单接口隔离，提示从「我的 → 喜欢」重贴完整 Cookie 且不打开整站退避；`aweme_list: []` 加 `has_more: 0` 才是真正为空。其余四个接口同理：有 `has_more` 字段的空列表才算空。
+- **空响应与单条容错**：喜欢接口对“别人的私密喜欢列表”返回 HTTP 200 加 0 字节，或 `aweme_list: null` 且没有 `has_more`。TRACE 只查自己，所以第 1 页出现 `aweme_list: null`（或任意页缺少 `has_more` / `aweme_list` 或 `aweme_list: null` 且 `has_more != 0`）时**不当成“还没有喜欢”**，按第 9.2 节空壳规则判为 `risk_control` 并停下；**翻页末页（`reqCursor != "0"`）出现 `aweme_list: null` 且显式 `has_more == 0`** 时按正常末页空列表返回；0 字节（例如命中 `x-vc-bdturing-parameters` / `bdturing-verify` 或不完整 Cookie 导致网关静默拒止时）仍判为 `unavailable` 单接口隔离、明确区分动态校验拦截与普通空体且不打开整站退避；`aweme_list: []` 加 `has_more: 0` 才是真正为空。`parseAccountWorks` 按条目逐项反序列化 `aweme_list`，单条已删/私密/残缺作品跳过不打挂整页，仅当非空列表全部条目均解析失败时才返回 `schema_changed`。其余列表接口同理。
 - **观看历史**（核，ACT-026 D-V5）：`GET /aweme/v1/web/history/read/` 使用 `max_cursor`（首页 `0`）与 `count=20`，`Referer: https://www.douyin.com/user/self?showTab=record`，返回 `aweme_list`、`has_more`、`max_cursor`、`aweme_date`、`status_code`、`status_msg`。实测第 1、2 页游标正常推进且跨页 0 重复，已开启 `WatchHistoryEnabled=true` 开放界面入口（[#73](https://github.com/chialecode/trace/issues/73)，部分推进 [#37](https://github.com/chialecode/trace/issues/37)）；`aweme_date` 的值形态未单列实测样本，界面保持 3:4 网格不按日期分组。
 - **稍后再看**：抖音 App 有这个功能，但 2026-11-14 网页检索与两个本机参考里都没有网页接口（未）；用户同日另行网页搜索（看过 CSDN、知乎等结果）也没有找到，TRACE 不做。
 - **收藏的合集与音乐**（`mix/listcollection`、`music/listcollection`）：TRACE 还不能打开合集与音乐页（FR-FEED-002），本阶段不做。
@@ -703,7 +703,22 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 - **Call 1 生产登录（`service.NewBackend` → `LoginWithCookie` → `profile/self`）**：返回 HTTP 200 `application/json`（`18,369 B`），`loggedIn=true`、`bd-ticket-guard-result: 1101`、`sentGuardHandshake=false`、`sentGuardSigned=false`，DPAPI 加密写入 `douyin.bin`（`7,334 B`）。
 - **Step 1b DPAPI 加密落盘重读核对（0 网络请求）**：关闭原后端并独立调用 `credential.OpenDouyin` 重新解密加载 `douyin.bin`，`backupCreated=false`、`activeCredential=true`，全部 `54` 键及 `s_v_web_id`、`sid_ucp_v1`、`UIFID`、`d_ticket`、`sessionid` 100% 无损留存。
 - **Call 2 生产「我的 › 抖音 › 喜欢」（全新 `service.NewBackend` 重载 `douyin.bin` → `Backend.AccountPage(douyin, likes, "", "")`）**：出站报文携带完整两阶段签名（`sentStage2Sig=true`、`sentVerifyFpParam=true`、`sentCookieHasSVWebID=true`、`sentCookieHasUIFID=true`、`sentCookieHasMSToken=true`、`sentGuardHandshake=false`），但服务端返回 HTTP 200 `text/plain` **`0 B`**、`bd-ticket-guard-result: 1101` 并下发 **`x-vc-bdturing-parameters`**（BDTuring 动态风控/滑块挑战头）；客户端按 `ErrKindUnavailable` 单接口隔离且未触发整站退避，Call 3 第 2 页跳过。
-- **工程结论（核）**：1) 确认生产链路 `LoginWithCookie`、DPAPI 加密落盘与重读、`a_bogus` 与 Stage-2 签名传递均无数据丢失或参数回退；2) `aweme/favorite` 在 `a_bogus` 修复后仍会受服务端 `x-vc-bdturing-parameters` 动态风控挑战（或手动截短 Cookie 丢失周边上下文 / 旧 `s_v_web_id` 失效）影响返回 `0 B`；3) 将 `MaxCookieInputBytes` 由 `8 KiB` 放宽至 `64 KiB`（先剥离动态噪声再限出站头 `32 KiB`）以消除用户必须手动截短完整浏览器 Cookie 的障碍，后续需由用户在浏览器打开「我的 → 喜欢」（必要时完成站内验证）后直接粘贴未截短的完整 Cookie 复测。
+- **工程结论（核）**：1) 确认生产链路 `LoginWithCookie`、DPAPI 加密落盘与重读、`a_bogus` 与 Stage-2 签名传递均无数据丢失或参数回退；2) `aweme/favorite` 在 `a_bogus` 修复后仍会受服务端 `x-vc-bdturing-parameters` 动态风控挑战影响返回 `0 B`；3) 将 `MaxCookieInputBytes` 由 `8 KiB` 放宽至 `64 KiB`（先剥离动态噪声再限出站头 `32 KiB`）以消除用户必须手动截短完整浏览器 Cookie 的障碍。
+
+**`cookie_ttwidinfo_webid` 绑定根因双证诊断**（`dec077-douyin-favorite-20261128`，2026-11-28，DEC-077 常设只读授权下 1 次运行，脱敏回执 `artifacts/site-check/dec077-douyin-favorite-20261128.json`，账本 `runs=1/1`、`apiCalls=8/8`：`dy_profile_self=1`、`dy_favorite=7`，媒体请求 `0`，串行间隔 `>= 3.5s`，`stoppedBy=""`，`secretScanClean=true`、`tempDataDeleted=true`，关联 [#186](https://github.com/chialecode/trace/issues/186)）：
+
+- **单变量充分/必要条件双证**：
+  - **Call 1（生产 `profile/self`）**：HTTP 200 `application/json`（`18,339 B`），`bd-ticket-guard-result: 1101`，响应头返回合法数字型 `cookie_ttwidinfo_webid`。
+  - **Call 2（现行生产基线 `Favorites`）**：随机生成 19 位 `webid` 且未同步 `cookie_ttwidinfo_webid`，返回 HTTP 200 `text/plain` `0 B`、`bd-ticket-guard-result: 1101` + `x-vc-bdturing-parameters`（安全枚举 `code=10000, type=verify, subtype=slide`）。
+  - **Call 3（全量卫生含服务端 `webid`）**：HTTP 200 `application/json`（`1,149,940 B`），第 1 页 **`17` 条**（16 视频 + 1 图文），`hasMore=true`，无 `x-vc-bdturing-parameters`。
+  - **Call 4～6（单变量剥离对照，其中 Call 6 保留全部其余卫生改动、仅将服务端 `webid` 换回随机 `webid`）**：全部立刻回落至 HTTP 200 `0 B` + `x-vc-bdturing-parameters`，证明服务端 `cookie_ttwidinfo_webid` 为**严格必要条件**。
+  - **Call 7～8（仅同步服务端 `cookie_ttwidinfo_webid`，其余 100% 保持现行生产参数 `170400/17.4.0`、`min_cursor=0`、原 `Referer`、无 `Origin`、Go 标准库 HTTP/2 与默认代理）**：第 1 页直接返回 HTTP 200 `application/json` **`1,144,775 B`**（**`17` 条**，`parseAccountWorksOK=true`），第 2 页返回 **`522,941 B`**（**`9` 条**，`cursorAdvanced=true`、`hasMore=true`），均无 `x-vc-bdturing-parameters`，证明同步 `cookie_ttwidinfo_webid` 单独即为**充分条件**。
+
+**生产链路冷启动自动同步与既有登录态免重登复验**（ACT-031，2026-11-28，DEC-077 常设只读授权下 1 次运行，脱敏回执 `artifacts/site-check/act031.json`，账本 `runs=1/1`、`apiCalls=6/6`：`dy_profile_self=3`、`dy_favorite=3`，媒体请求 `0`，串行间隔 `>= 3.5s`，`stoppedBy=""`，`passed=true`、`secretScanClean=true`、`tempDataDeleted=true`，关联 [#186](https://github.com/chialecode/trace/issues/186)）：
+
+- **Step 1（生产 `LoginWithCookie` → DPAPI 落盘）**：`service.NewBackend` 调 `LoginWithCookie` 导入测试 Cookie，`profile/self` 返回 HTTP 200 JSON（`18,339 B`），携带合法 `cookie_ttwidinfo_webid`（`bd-ticket-guard-result: 1101`）。
+- **Step 2～3（关闭后端后冷启动 `backend2`，禁用后台 `BootstrapAuth`，完全复现 `ACT-029` 冷启动路径）**：首次调用 `AccountPage(douyin, likes, "", "")` 时客户端自动执行 `1` 次轻量只读 `profile/self` 同步 `cookie_ttwidinfo_webid`（`profileSelfCallsDelta=1`、`favoriteCallsDelta=1`、`sentWebIDMatchedSynced=true`），第 1 页直接返回 HTTP 200 JSON **`1,144,800 B`**（**`17` 条**，`fieldsComplete=17`、`dupesPage1=0`、`hasMore=true`、`hasBDTuringParameters=false`）；续翻第 2 页（`profileSelfCallsDelta=0`、不重复调 `profile/self`）返回 **`522,956 B`**（**`9` 条**，`fieldsComplete=9`、`cursorAdvanced=true`、`dupesAcrossPages=0`、`hasMore=true`）。
+- **Step 4（既有开发版 `douyin.bin` 只读复制到临时目录、冷启动 `backend3` 免重登实测）**：不重新粘贴 Cookie、不调 `BootstrapAuth`，直接调用 `AccountPage(douyin, likes, "", "")` 自动完成 `1` 次 `profile/self` 预热同步（`sentWebIDMatchedSynced=true`），第 1 页返回 HTTP 200 JSON **`1,144,790 B`**（**`17` 条**，`fieldsComplete=17`、`hasMore=true`、`hasBDTuringParameters=false`），证实本机既有登录态升级后免重登即可稳定加载喜欢列表。
 
 <a id="sign-spec"></a>
 ## 附录：签名规格
