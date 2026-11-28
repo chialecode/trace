@@ -60,9 +60,19 @@ type featureState struct {
 	subAccRowsSig subAccountRowsSig
 	subAccRows    []subAccountRow
 
-	// Cached filtered subscriptions list.
+	// Cached filtered subscriptions list (default order, used by picker modals).
 	filteredSubsSig filteredSubsSig
 	filteredSubs    []subscription.Subscription
+
+	// Cached filtered & sorted subscriptions grid items with local latest timestamps.
+	subGridSig   subGridItemsSig
+	subGridItems []subGridItem
+	subGridSubs  []subscription.Subscription
+}
+
+type subGridItem struct {
+	sub      subscription.Subscription
+	latestTs int64
 }
 
 type libraryTilesSig struct {
@@ -84,6 +94,18 @@ type filteredSubsSig struct {
 	subsN   int
 	search  string
 	hash    uint64
+}
+
+type subGridItemsSig struct {
+	subsRev      int
+	subsN        int
+	statsRev     int
+	authorsN     int
+	authorsFirst *library.ItemAuthor
+	authorsHash  uint64
+	search       string
+	sort         string
+	hash         uint64
 }
 
 var (

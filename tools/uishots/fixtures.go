@@ -28,6 +28,7 @@ import (
 	"github.com/chialecode/trace/internal/storage"
 	"github.com/chialecode/trace/internal/subscription"
 	"github.com/chialecode/trace/internal/ui"
+	"github.com/chialecode/trace/internal/uistate"
 	"github.com/chialecode/trace/internal/update"
 )
 
@@ -1427,11 +1428,14 @@ func seedFixtures() (env *fixtureEnv, err error) {
 }
 
 func (e *fixtureEnv) seedRecentAndLive(app *ui.App) {
+	app.SubSort = uistate.SubSortDefault
 	for i := range app.Subscriptions {
 		if i == 0 {
 			app.Subscriptions[i].LatestUpdateTs = time.Now().Add(-15 * time.Minute).Unix()
 		} else if i == 1 {
 			app.Subscriptions[i].LatestUpdateTs = time.Now().Add(-2 * time.Hour).Unix()
+		} else {
+			app.Subscriptions[i].LatestUpdateTs = 0
 		}
 	}
 	app.LiveRooms = []live.RoomState{

@@ -520,6 +520,8 @@ type App struct {
 	SubListState   ui.ListState
 	SubSearchQuery string
 	subListQuery   string
+	SubSort        string // "default" | "recent"
+	subListSort    string
 	CheckDone      int
 	CheckTotal     int
 	SelectedSubID  string
@@ -784,6 +786,8 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 		SelectedPartPages:        make(map[int]bool),
 		UserTab:                  "dynamics",
 		SubDetailTab:             normalizeSubDetailTab(uiSt.SubDetailTab),
+		SubSort:                  uistate.NormalizeSubSort(uiSt.SubSort),
+		subListSort:              uistate.NormalizeSubSort(uiSt.SubSort),
 		ImportSite:               string(site.Bilibili),
 		ImportSelectedMids:       make(map[int64]bool),
 		ImportSelectedKeys:       make(map[string]bool),

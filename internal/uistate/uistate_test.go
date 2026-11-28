@@ -495,3 +495,63 @@ func TestDismissedLiveSessionsExpire(t *testing.T) {
 		t.Fatal("an all-invalid map was kept")
 	}
 }
+
+func TestUIStateSubSortOptionalAndPersistence(t *testing.T) {
+	if CurrentSchemaVersion != 4 {
+		t.Fatalf("CurrentSchemaVersion = %d, want 4 (subSort must not bump schema version)", CurrentSchemaVersion)
+	}
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{"", SubSortDefault},
+		{"default", SubSortDefault},
+		{"DEFAULT", SubSortDefault},
+		{"recent", SubSortRecent},
+		{" RECENT ", SubSortRecent},
+		{"unknown", SubSortDefault},
+	} {
+		if got := NormalizeSubSort(tc.in); got != tc.want {
+			t.Fatalf("NormalizeSubSort(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ui-state.json")
+
+	// Existing v4 ui-state.json without subSort loads cleanly as default and keeps version 4.
+	if err := os.WriteFile(path, []byte(`{"version":4,"lastRoute":"/subscriptions"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, recovered, _, err := Open(path)
+	if err != nil || recovered {
+		t.Fatalf("Open v4 without subSort: recovered=%v err=%v", recovered, err)
+	}
+	if got := store.Get(); got.Version != 4 || got.SubSort != SubSortDefault {
+		t.Fatalf("expected Version=4 SubSort=%q, got %+v", SubSortDefault, got)
+	}
+
+	// Persisting "recent" survives reopen without bumping schema version.
+	if _, err := store.Mutate(func(st *State) { st.SubSort = SubSortRecent }); err != nil {
+		t.Fatal(err)
+	}
+	reopened, recovered, _, err := Open(path)
+	if err != nil || recovered {
+		t.Fatalf("Reopen after SubSort=recent: recovered=%v err=%v", recovered, err)
+	}
+	if got := reopened.Get(); got.Version != 4 || got.SubSort != SubSortRecent {
+		t.Fatalf("expected persisted Version=4 SubSort=%q, got %+v", SubSortRecent, got)
+	}
+
+	// Unknown value in v4 file normalizes safely to default.
+	if err := os.WriteFile(path, []byte(`{"version":4,"lastRoute":"/subscriptions","subSort":"bogus"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storeUnknown, recovered, _, err := Open(path)
+	if err != nil || recovered {
+		t.Fatalf("Open unknown subSort: recovered=%v err=%v", recovered, err)
+	}
+	if got := storeUnknown.Get().SubSort; got != SubSortDefault {
+		t.Fatalf("unknown subSort normalized to %q, want %q", got, SubSortDefault)
+	}
+}

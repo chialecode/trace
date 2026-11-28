@@ -38,6 +38,7 @@ type State struct {
 	Window       WindowState      `json:"window"`
 	LastRoute    string           `json:"lastRoute"`
 	SubDetailTab string           `json:"subDetailTab,omitempty"`
+	SubSort      string           `json:"subSort,omitempty"`
 	FeedFilter   FeedFilter       `json:"feedFilter"`
 	Anchor       FeedAnchor       `json:"anchor"`
 	HomeSeen     map[string]int64 `json:"homeSeen,omitempty"`
@@ -105,6 +106,25 @@ type PlayerState struct {
 // CurrentSchemaVersion is the schema version written to ui-state.json.
 const CurrentSchemaVersion = 4
 
+// SubSortDefault and SubSortRecent are the supported sort modes for the
+// Subscriptions avatar grid (persisted as an optional field in ui-state.json
+// without bumping CurrentSchemaVersion).
+const (
+	SubSortDefault = "default"
+	SubSortRecent  = "recent"
+)
+
+// NormalizeSubSort normalizes subscription grid sort preference values.
+// Empty or unknown values default to SubSortDefault ("default").
+func NormalizeSubSort(sort string) string {
+	switch strings.ToLower(strings.TrimSpace(sort)) {
+	case SubSortRecent:
+		return SubSortRecent
+	default:
+		return SubSortDefault
+	}
+}
+
 // NormalizeSubDetailTab normalizes subscription detail tab values (DEC-051 ⑦).
 // Legacy "live" maps to "accounts"; empty or unknown values default to "content".
 func NormalizeSubDetailTab(tab string) string {
@@ -156,6 +176,7 @@ func Default() State {
 		},
 		LastRoute:    "/home",
 		SubDetailTab: "content",
+		SubSort:      SubSortDefault,
 		FeedFilter: FeedFilter{
 			Kind: "all",
 			Site: "all",
@@ -195,6 +216,7 @@ func Normalize(st State) State {
 		}
 	}
 	st.SubDetailTab = NormalizeSubDetailTab(st.SubDetailTab)
+	st.SubSort = NormalizeSubSort(st.SubSort)
 	switch st.FeedFilter.Kind {
 	case "all", "video", "dynamic":
 	default:
@@ -331,6 +353,7 @@ func openWithSchemaVersion(path string, supportedVersion int) (*Store, bool, str
 	loaded := Default()
 	loaded.Version = 0
 	loaded.SubDetailTab = ""
+	loaded.SubSort = ""
 	loaded.FeedFilter.Site = ""
 	if err := json.Unmarshal(raw, &loaded); err != nil {
 		backup, bErr := storage.BackupCorruptFile(path)
