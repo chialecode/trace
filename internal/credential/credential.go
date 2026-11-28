@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -57,12 +58,17 @@ var (
 )
 
 // AllowedCookieKeys defines the strict whitelist of Bilibili cookie keys stored by TRACE.
+// SESSDATA is mandatory; buvid3, buvid4, and b_nut are optional browser fingerprint/device
+// cookies preserved when pasted alongside SESSDATA.
 var AllowedCookieKeys = []string{
 	"SESSDATA",
 	"bili_jct",
 	"DedeUserID",
 	"DedeUserID__ckMd5",
 	"sid",
+	"buvid3",
+	"buvid4",
+	"b_nut",
 }
 
 var allowedKeyLookup = map[string]string{
@@ -71,7 +77,22 @@ var allowedKeyLookup = map[string]string{
 	"dedeuserid":        "DedeUserID",
 	"dedeuserid__ckmd5": "DedeUserID__ckMd5",
 	"sid":               "sid",
+	"buvid3":            "buvid3",
+	"buvid4":            "buvid4",
+	"b_nut":             "b_nut",
 }
+
+var (
+	reBiliNamedKV = regexp.MustCompile(
+		`(?i)(^|[?&;,:=\s"'(\[{])(SESSDATA|bili_jct|buvid3|buvid4|b_nut)=(\[REDACTED\]|"[^"\r\n]*"|'[^'\r\n]*'|[^&\s;'",)\]}<>]+)`,
+	)
+	reBiliNamedEncPrefix = regexp.MustCompile(
+		`(?i)(^|%3f|%26|%3b|%20|%3d|%3a|%22|%27|[?&;,:=\+\s"'(\[{])(SESSDATA|bili_jct|buvid3|buvid4|b_nut)(%3d)`,
+	)
+	reBiliNamedJSON = regexp.MustCompile(
+		`(?i)("(?:SESSDATA|bili_jct|buvid3|buvid4|b_nut)"\s*:\s*")([^"]+)(")`,
+	)
+)
 
 // Record is the internal encrypted credential structure persisted in <site>.bin.
 // It must NEVER be serialized directly to UI responses or logs.
@@ -96,6 +117,7 @@ type Record struct {
 	State                  string            `json:"state,omitempty"`
 	Message                string            `json:"message,omitempty"`
 	DouyinGuard            *DouyinGuardState `json:"douyin_guard,omitempty"`
+	DouyinWebID            string            `json:"douyinWebId,omitempty"`
 }
 
 // Read older encrypted records, while all new writes use the documented keys.
@@ -148,8 +170,9 @@ type Status struct {
 }
 
 // ParseManualCookieInput parses a manual Bilibili Cookie string and optional refresh_token.
-// It enforces the 64 KiB raw input limit, filters by the 5-key whitelist, requires SESSDATA,
-// enforces the 32 KiB cleaned outbound header limit, and never echoes input values in error messages.
+// It enforces the 64 KiB raw input limit, filters by AllowedCookieKeys (preserving optional
+// buvid3, buvid4, b_nut), requires SESSDATA, enforces the 32 KiB cleaned outbound header limit,
+// and never echoes input values in error messages.
 func ParseManualCookieInput(rawCookie string, rawRefreshToken string) (map[string]string, string, error) {
 	if len(rawCookie) > MaxCookieInputBytes || len(rawRefreshToken) > MaxCookieInputBytes {
 		return nil, "", ErrInputTooLarge
@@ -220,7 +243,7 @@ func isSafeCookieValue(v string) bool {
 	return v != "" && !strings.ContainsAny(v, "\r\n;")
 }
 
-// FilterCookieMap filters a map of cookies down to the 5 whitelisted Bilibili keys,
+// FilterCookieMap filters a map of cookies down to the whitelisted Bilibili keys,
 // rejecting empty values and values containing CR/LF/semicolon header delimiters.
 func FilterCookieMap(in map[string]string) map[string]string {
 	out := make(map[string]string)
@@ -851,16 +874,45 @@ func isNonSecretCookieValue(key, val string) bool {
 }
 
 // RedactString replaces any stored cookie values or refresh tokens present in in with [REDACTED].
-// It also scrubs Weibo sensitive fields (for Weibo stores) and X auth/CSRF/Bearer fields across all sites.
+// It also scrubs Bilibili, Weibo, and X sensitive cookie/auth fields so pasted or transient values never leak.
 func (s *Store) RedactString(in string) string {
 	if in == "" {
 		return ""
 	}
 	out := redactWithSecrets(in, s.collectSecrets())
+	if s == nil || s.site == SiteBilibili {
+		out = redactBilibiliSensitiveFields(out)
+	}
 	if s != nil && s.site == SiteWeibo {
 		out = redactWeiboSensitiveFields(out)
 	}
 	return redactXSensitiveFields(out)
+}
+
+func redactBilibiliSensitiveFields(in string) string {
+	if in == "" {
+		return ""
+	}
+	out := reBiliNamedKV.ReplaceAllStringFunc(in, func(m string) string {
+		sub := reBiliNamedKV.FindStringSubmatch(m)
+		if len(sub) != 4 {
+			return m
+		}
+		masked, changed := redactQuotedOrRawValue(sub[3])
+		if !changed {
+			return m
+		}
+		return sub[1] + sub[2] + "=" + masked
+	})
+	out = redactEncodedKVByPrefix(out, reBiliNamedEncPrefix, nil)
+	out = reBiliNamedJSON.ReplaceAllStringFunc(out, func(m string) string {
+		sub := reBiliNamedJSON.FindStringSubmatch(m)
+		if len(sub) != 4 || sub[2] == "[REDACTED]" {
+			return m
+		}
+		return sub[1] + "[REDACTED]" + sub[3]
+	})
+	return out
 }
 
 func redactWithSecrets(in string, secrets []string) string {

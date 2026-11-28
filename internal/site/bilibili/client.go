@@ -2,6 +2,8 @@ package bilibili
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,12 +21,15 @@ import (
 )
 
 const (
-	DefaultUserAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-	DefaultReferer       = "https://www.bilibili.com/"
-	DefaultAPITimeout    = 15 * time.Second
-	DefaultIdleTimeout   = 30 * time.Second
-	DefaultPacingMinWait = 500 * time.Millisecond
-	MaxAPIResponseBytes  = 4 * 1024 * 1024
+	DefaultUserAgent       = site.DefaultUserAgent
+	DefaultReferer         = "https://www.bilibili.com/"
+	DefaultLiveReferer     = "https://live.bilibili.com/"
+	DefaultOrigin          = "https://www.bilibili.com"
+	DefaultAPITimeout      = 15 * time.Second
+	DefaultIdleTimeout     = 30 * time.Second
+	DefaultPacingMinWait   = 500 * time.Millisecond
+	DefaultPacingJitterMax = 200 * time.Millisecond
+	MaxAPIResponseBytes    = 4 * 1024 * 1024
 )
 
 // Endpoints holds configurable base URLs so unit tests can point everything to 127.0.0.1 httptest servers.
@@ -55,9 +60,12 @@ func DefaultEndpoints() Endpoints {
 type ClientOptions struct {
 	CredStore        *credential.Store
 	Endpoints        Endpoints
+	UserAgent        string
 	APITimeout       time.Duration
 	MediaIdleTimeout time.Duration
 	PacingInterval   time.Duration
+	PacingJitterMax  time.Duration // <0 disables jitter; 0 uses DefaultPacingJitterMax unless PacingInterval < 0
+	PacingJitterFunc func(maxJitter time.Duration) time.Duration
 	AllowLocalhost   bool
 	NowFunc          func() time.Time
 	// WrapTransport, when set, wraps both the API and media transports. Only
@@ -70,11 +78,14 @@ type ClientOptions struct {
 type Client struct {
 	credStore            *credential.Store
 	endpoints            Endpoints
+	profile              site.BrowserProfile
 	apiClient            *http.Client
 	mediaClient          *http.Client
 	liveMediaClient      *http.Client
 	mediaIdleTimeout     time.Duration
 	pacingInterval       time.Duration
+	pacingJitterMax      time.Duration
+	pacingJitterFunc     func(maxJitter time.Duration) time.Duration
 	authExpired          func()
 	wbiFetchedAt         time.Time
 	allowLocalhost       bool
@@ -166,9 +177,24 @@ func NewClient(opts ClientOptions) *Client {
 	if idleTimeout <= 0 {
 		idleTimeout = DefaultIdleTimeout
 	}
+	profile := site.DeriveBrowserProfile(opts.UserAgent)
 	pacing := opts.PacingInterval
 	if pacing == 0 {
 		pacing = DefaultPacingMinWait
+	}
+	var jitterMax time.Duration
+	switch {
+	case opts.PacingInterval < 0 || opts.PacingJitterMax < 0:
+		jitterMax = 0
+	case opts.PacingJitterMax > 0:
+		jitterMax = opts.PacingJitterMax
+	case opts.PacingInterval == 0:
+		jitterMax = DefaultPacingJitterMax
+	default:
+		// Scale default jitter proportionally to custom positive PacingInterval,
+		// capped at DefaultPacingJitterMax, so small custom intervals (e.g. 1ms
+		// in tests) do not unexpectedly sleep up to 200ms.
+		jitterMax = min(DefaultPacingJitterMax, pacing*2/5)
 	}
 	nowFn := opts.NowFunc
 	if nowFn == nil {
@@ -181,6 +207,7 @@ func NewClient(opts ClientOptions) *Client {
 			Timeout:   15 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
+		ForceAttemptHTTP2:     true,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: apiTimeout,
 	}
@@ -193,6 +220,7 @@ func NewClient(opts ClientOptions) *Client {
 	mediaTransport := &http.Transport{
 		Proxy:                 mediaGuard.Proxy,
 		DialContext:           mediaGuard.DialContext,
+		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          64,
 		MaxIdleConnsPerHost:   16,
 		IdleConnTimeout:       60 * time.Second,
@@ -203,8 +231,11 @@ func NewClient(opts ClientOptions) *Client {
 	c := &Client{
 		credStore:            opts.CredStore,
 		endpoints:            ep,
+		profile:              profile,
 		mediaIdleTimeout:     idleTimeout,
 		pacingInterval:       pacing,
+		pacingJitterMax:      jitterMax,
+		pacingJitterFunc:     opts.PacingJitterFunc,
 		allowLocalhost:       opts.AllowLocalhost,
 		cdnFallbackProviders: append([]site.PublicImageCDNProvider(nil), opts.ImageCDNFallbackProviders...),
 		fallbackWrap:         opts.WrapTransport,
@@ -334,7 +365,7 @@ func (c *Client) FetchImageLimited(ctx context.Context, rawURL string, maxBytes 
 	if err != nil {
 		return nil, &SiteError{Kind: ErrKindBadRequest, Message: "图片地址无效"}
 	}
-	req.Header.Set("User-Agent", DefaultUserAgent)
+	req.Header.Set("User-Agent", c.profile.UserAgent)
 	resp, err := c.mediaClient.Do(req)
 	if err != nil {
 		return nil, &SiteError{Kind: ErrKindNetwork, Message: "原图加载失败，请重试", Err: site.UnwrapURLError(err)}
@@ -375,7 +406,7 @@ func (c *Client) tryPublicImageCDNFallback(ctx context.Context, cleanURL string,
 		AllowLocalhost:  c.allowLocalhost,
 		WrapTransport:   c.fallbackWrap,
 		IdleReadTimeout: c.mediaIdleTimeout,
-		UserAgent:       DefaultUserAgent,
+		UserAgent:       c.profile.UserAgent,
 	}
 	raw, _, _, ok := site.FetchPublicImageCDNFallback(ctx, fbCfg, cleanURL, maxBytes, 0, 0, false)
 	return raw, ok
@@ -391,17 +422,51 @@ func (c *Client) WrapMediaReader(rc io.ReadCloser) io.ReadCloser {
 	})
 }
 
+func defaultPacingJitter(maxJitter time.Duration) time.Duration {
+	if maxJitter <= 0 {
+		return 0
+	}
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return 0
+	}
+	return time.Duration(binary.LittleEndian.Uint64(raw[:]) % uint64(maxJitter+1))
+}
+
+func (c *Client) nextPacingJitter() time.Duration {
+	if c.pacingJitterMax <= 0 {
+		return 0
+	}
+	var jitter time.Duration
+	if c.pacingJitterFunc != nil {
+		jitter = c.pacingJitterFunc(c.pacingJitterMax)
+	} else {
+		jitter = defaultPacingJitter(c.pacingJitterMax)
+	}
+	if jitter < 0 {
+		return 0
+	}
+	if jitter > c.pacingJitterMax {
+		return c.pacingJitterMax
+	}
+	return jitter
+}
+
 func (c *Client) waitPacing(ctx context.Context) error {
 	if c.pacingInterval <= 0 {
 		return nil
 	}
 	c.paceMu.Lock()
 	now := time.Now()
-	next := c.lastReq.Add(c.pacingInterval)
 	var wait time.Duration
-	if next.After(now) {
-		wait = next.Sub(now)
-		c.lastReq = next
+	if !c.lastReq.IsZero() {
+		next := c.lastReq.Add(c.pacingInterval + c.nextPacingJitter())
+		if next.After(now) {
+			wait = next.Sub(now)
+			c.lastReq = next
+		} else {
+			c.lastReq = now
+		}
 	} else {
 		c.lastReq = now
 	}
@@ -467,15 +532,79 @@ func (c *Client) beginAPI(ctx context.Context) (func(), error) {
 	}
 }
 
+type apiRequestKind int
+
+const (
+	reqKindJSON apiRequestKind = iota
+	reqKindHTML
+	reqKindBinary
+)
+
+type apiRequestOptions struct {
+	referer        string
+	omitReferer    bool
+	accept         string
+	origin         string
+	kind           apiRequestKind
+	explicitCookie string
+}
+
+func (c *Client) spaceReferer(mid int64) string {
+	if mid > 0 {
+		return fmt.Sprintf("https://space.bilibili.com/%d/", mid)
+	}
+	return DefaultReferer
+}
+
+func (c *Client) videoReferer(bvid string) string {
+	bvid = strings.TrimSpace(bvid)
+	if bvid != "" {
+		return "https://www.bilibili.com/video/" + bvid + "/"
+	}
+	return DefaultReferer
+}
+
+func (c *Client) secFetchSite(referer string, target *url.URL) string {
+	if target == nil {
+		return site.DeriveSecFetchSite(referer, "")
+	}
+	if strings.TrimSpace(referer) == "" {
+		return "none"
+	}
+	targetURL := target.String()
+	if c.allowLocalhost && site.IsLoopbackHost(target.Hostname()) {
+		p := target.Path
+		switch {
+		case strings.HasPrefix(p, "/b23/"):
+			targetURL = "https://b23.tv" + p
+		case strings.HasPrefix(p, "/room/"), strings.HasPrefix(p, "/xlive/"):
+			targetURL = "https://api.live.bilibili.com" + p
+		case strings.HasPrefix(p, "/x/passport-login/"):
+			targetURL = "https://passport.bilibili.com" + p
+		case strings.HasPrefix(p, "/x/"):
+			targetURL = "https://api.bilibili.com" + p
+		case strings.HasPrefix(p, "/correspond/"):
+			targetURL = "https://www.bilibili.com" + p
+		default:
+			targetURL = "https://space.bilibili.com" + p
+		}
+	}
+	return site.DeriveSecFetchSite(referer, targetURL)
+}
+
 func (c *Client) doAPIRequest(ctx context.Context, method, fullURL string, body io.Reader, contentType string, includeCookies bool) (*http.Response, []byte, error) {
-	return c.doAPIRequestWithCookie(ctx, method, fullURL, body, contentType, includeCookies, "")
+	return c.doAPIRequestWithOptions(ctx, method, fullURL, body, contentType, includeCookies, apiRequestOptions{})
 }
 
 func (c *Client) doAPIRequestWithCookie(ctx context.Context, method, fullURL string, body io.Reader, contentType string, includeCookies bool, explicitCookie string) (*http.Response, []byte, error) {
+	return c.doAPIRequestWithOptions(ctx, method, fullURL, body, contentType, includeCookies, apiRequestOptions{explicitCookie: explicitCookie})
+}
+
+func (c *Client) doAPIRequestWithOptions(ctx context.Context, method, fullURL string, body io.Reader, contentType string, includeCookies bool, opts apiRequestOptions) (*http.Response, []byte, error) {
 	ctx, unlock := c.beginSequence(ctx, false)
 	defer unlock()
 	safeEndpoint := site.SanitizeEndpoint(fullURL)
-	if includeCookies && explicitCookie == "" {
+	if includeCookies && opts.explicitCookie == "" {
 		if err := c.RequireAuth(safeEndpoint); err != nil {
 			return nil, nil, err
 		}
@@ -504,14 +633,52 @@ func (c *Client) doAPIRequestWithCookie(ctx context.Context, method, fullURL str
 			Err:      site.UnwrapURLError(err),
 		}
 	}
-	req.Header.Set("User-Agent", DefaultUserAgent)
-	req.Header.Set("Referer", DefaultReferer)
-	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("User-Agent", c.profile.UserAgent)
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	c.profile.ApplyClientHints(req.Header)
+
+	accept := strings.TrimSpace(opts.accept)
+	if accept == "" {
+		switch opts.kind {
+		case reqKindHTML:
+			accept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+		case reqKindBinary:
+			accept = "*/*"
+		default:
+			accept = "application/json, text/plain, */*"
+		}
+	}
+	req.Header.Set("Accept", accept)
+
+	referer := ""
+	if !opts.omitReferer {
+		referer = strings.TrimSpace(opts.referer)
+		if referer == "" {
+			referer = DefaultReferer
+		}
+		req.Header.Set("Referer", referer)
+	}
+	req.Header.Set("Sec-Fetch-Site", c.secFetchSite(referer, req.URL))
+	if opts.kind == reqKindHTML {
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		req.Header.Set("Sec-Fetch-User", "?1")
+	} else {
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		req.Header.Set("Sec-Fetch-Dest", "empty")
+	}
+	origin := strings.TrimSpace(opts.origin)
+	if origin == "" && method == http.MethodPost {
+		origin = DefaultOrigin
+	}
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	if explicitCookie != "" {
-		req.Header.Set("Cookie", explicitCookie)
+	if opts.explicitCookie != "" {
+		req.Header.Set("Cookie", opts.explicitCookie)
 	} else if includeCookies && c.credStore != nil {
 		if ck := c.credStore.CookieHeader(); ck != "" {
 			req.Header.Set("Cookie", ck)
@@ -553,15 +720,19 @@ func (c *Client) doAPIRequestWithCookie(ctx context.Context, method, fullURL str
 }
 
 func (c *Client) doBiliJSON(ctx context.Context, method, fullURL string, body io.Reader, contentType string, includeCookies bool, out any) (*http.Response, error) {
-	return c.doBiliJSONWithReport(ctx, method, fullURL, body, contentType, includeCookies, out, true)
+	return c.doBiliJSONWithOptions(ctx, method, fullURL, body, contentType, includeCookies, out, true, apiRequestOptions{})
 }
 
 func (c *Client) doBiliJSONWithReport(ctx context.Context, method, fullURL string, body io.Reader, contentType string, includeCookies bool, out any, reportAuto bool) (response *http.Response, result error) {
+	return c.doBiliJSONWithOptions(ctx, method, fullURL, body, contentType, includeCookies, out, reportAuto, apiRequestOptions{})
+}
+
+func (c *Client) doBiliJSONWithOptions(ctx context.Context, method, fullURL string, body io.Reader, contentType string, includeCookies bool, out any, reportAuto bool, reqOpts apiRequestOptions) (response *http.Response, result error) {
 	if reportAuto {
 		defer func() { c.ReportAutomaticError(ctx, result) }()
 	}
 	safeEndpoint := site.SanitizeEndpoint(fullURL)
-	resp, raw, err := c.doAPIRequest(ctx, method, fullURL, body, contentType, includeCookies)
+	resp, raw, err := c.doAPIRequestWithOptions(ctx, method, fullURL, body, contentType, includeCookies, reqOpts)
 	if err != nil {
 		return resp, err
 	}
@@ -641,14 +812,19 @@ func emptyArrayForMap(payload json.RawMessage, out any) bool {
 // it refreshes the WBI keys once from /x/web-interface/nav and retries once before reporting
 // an automatic-request circuit break.
 func (c *Client) doWBIGet(ctx context.Context, path string, params url.Values, out any) error {
+	return c.doWBIGetWithReferer(ctx, path, params, out, "")
+}
+
+func (c *Client) doWBIGetWithReferer(ctx context.Context, path string, params url.Values, out any, referer string) error {
 	mixin, err := c.ensureMixinKey(ctx, false)
 	if err != nil {
 		return err
 	}
 	signed := SignWBIParams(params, mixin, c.nowFunc().Unix())
 	fullURL := strings.TrimRight(c.endpoints.APIBase, "/") + path + "?" + EncodeWBIQuery(signed)
+	reqOpts := apiRequestOptions{referer: referer}
 
-	_, err = c.doBiliJSONWithReport(ctx, http.MethodGet, fullURL, nil, "", true, out, false)
+	_, err = c.doBiliJSONWithOptions(ctx, http.MethodGet, fullURL, nil, "", true, out, false, reqOpts)
 	if err == nil {
 		return nil
 	}
@@ -663,7 +839,7 @@ func (c *Client) doWBIGet(ctx context.Context, path string, params url.Values, o
 		}
 		signed2 := SignWBIParams(params, mixin2, c.nowFunc().Unix())
 		retryURL := strings.TrimRight(c.endpoints.APIBase, "/") + path + "?" + EncodeWBIQuery(signed2)
-		_, err2 := c.doBiliJSON(ctx, http.MethodGet, retryURL, nil, "", true, out)
+		_, err2 := c.doBiliJSONWithOptions(ctx, http.MethodGet, retryURL, nil, "", true, out, true, reqOpts)
 		return err2
 	}
 	c.ReportAutomaticError(ctx, err)

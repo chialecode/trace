@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -23,8 +22,8 @@ import (
 )
 
 const (
-	// DefaultUserAgent is the fixed desktop Chrome User-Agent used on PC Ajax and media CDN requests.
-	DefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+	// DefaultUserAgent is the unified desktop Chrome User-Agent used on PC Ajax and media CDN requests.
+	DefaultUserAgent = site.DefaultUserAgent
 
 	// DefaultReferer is the Referer header sent on Weibo PC Ajax API and media CDN requests.
 	DefaultReferer = "https://weibo.com/"
@@ -117,40 +116,6 @@ func (e Endpoints) withDefaults() Endpoints {
 	return e
 }
 
-var reChromeMajor = regexp.MustCompile(`(?i)Chrome/([0-9]+)`)
-
-type browserProfile struct {
-	UserAgent       string
-	SecCHUA         string
-	SecCHUAMobile   string
-	SecCHUAPlatform string
-}
-
-func deriveBrowserProfile(ua string) browserProfile {
-	ua = strings.TrimSpace(ua)
-	if ua == "" {
-		ua = DefaultUserAgent
-	}
-	major := "136"
-	if m := reChromeMajor.FindStringSubmatch(ua); len(m) == 2 {
-		major = m[1]
-	}
-	secPlatform := `"Windows"`
-	lowerUA := strings.ToLower(ua)
-	switch {
-	case strings.Contains(lowerUA, "macintosh") || strings.Contains(lowerUA, "mac os x"):
-		secPlatform = `"macOS"`
-	case strings.Contains(lowerUA, "linux") && !strings.Contains(lowerUA, "android"):
-		secPlatform = `"Linux"`
-	}
-	return browserProfile{
-		UserAgent:       ua,
-		SecCHUA:         fmt.Sprintf(`"Chromium";v="%s", "Google Chrome";v="%s", "Not.A/Brand";v="99"`, major, major),
-		SecCHUAMobile:   "?0",
-		SecCHUAPlatform: secPlatform,
-	}
-}
-
 // ClientOptions configures a Weibo protocol Client.
 type ClientOptions struct {
 	CredStore                 *credential.Store
@@ -181,7 +146,7 @@ type ClientOptions struct {
 type Client struct {
 	cred                 *credential.Store
 	endpoints            Endpoints
-	profile              browserProfile
+	profile              site.BrowserProfile
 	httpClient           *http.Client
 	redirectClient       *http.Client
 	mediaClient          *http.Client
@@ -212,7 +177,7 @@ type Client struct {
 
 // NewClient constructs a configured Weibo protocol Client.
 func NewClient(opts ClientOptions) *Client {
-	profile := deriveBrowserProfile(opts.UserAgent)
+	profile := site.DeriveBrowserProfile(opts.UserAgent)
 	nowFn := opts.Now
 	if nowFn == nil {
 		nowFn = time.Now
@@ -267,6 +232,7 @@ func NewClient(opts ClientOptions) *Client {
 	if apiTransport == nil {
 		apiTransport = &http.Transport{
 			Proxy:                 site.Proxy,
+			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          16,
 			MaxIdleConnsPerHost:   4,
 			IdleConnTimeout:       60 * time.Second,
@@ -282,6 +248,7 @@ func NewClient(opts ClientOptions) *Client {
 		redirectTransport = &http.Transport{
 			Proxy:                 redirGuard.Proxy,
 			DialContext:           redirGuard.DialContext,
+			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          8,
 			MaxIdleConnsPerHost:   2,
 			IdleConnTimeout:       30 * time.Second,
@@ -297,6 +264,7 @@ func NewClient(opts ClientOptions) *Client {
 		mediaTransport = &http.Transport{
 			Proxy:                 mediaGuard.Proxy,
 			DialContext:           mediaGuard.DialContext,
+			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          16,
 			MaxIdleConnsPerHost:   4,
 			IdleConnTimeout:       60 * time.Second,
@@ -794,20 +762,32 @@ func (c *Client) executeAPIRequest(ctx context.Context, spec apiRequestSpec, cla
 	return rawResp, nil
 }
 
+func (c *Client) secFetchSite(referer string, target *url.URL) string {
+	if target == nil {
+		return "same-origin"
+	}
+	logicalTarget := target.String()
+	if c.allowLocalhost && site.IsLoopbackHost(target.Hostname()) {
+		logicalTarget = "https://weibo.com" + target.RequestURI()
+	}
+	return site.DeriveSecFetchSite(referer, logicalTarget)
+}
+
 func (c *Client) applyAPIHeaders(req *http.Request, spec apiRequestSpec, cookieHeader, xsrfToken string) {
 	req.Header.Set("User-Agent", c.profile.UserAgent)
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	req.Header.Set("Sec-Ch-Ua", c.profile.SecCHUA)
-	req.Header.Set("Sec-Ch-Ua-Mobile", c.profile.SecCHUAMobile)
-	req.Header.Set("Sec-Ch-Ua-Platform", c.profile.SecCHUAPlatform)
+	c.profile.ApplyClientHints(req.Header)
 
 	ref := spec.referer
 	if ref == "" {
 		ref = DefaultReferer
 	}
 	req.Header.Set("Referer", ref)
+	req.Header.Set("Sec-Fetch-Site", c.secFetchSite(ref, req.URL))
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
 	if xsrfToken != "" {
 		req.Header.Set("X-XSRF-TOKEN", xsrfToken)
 	}

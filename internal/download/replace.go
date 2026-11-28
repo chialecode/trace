@@ -1486,7 +1486,7 @@ func (m *Manager) stageSingleBilibiliPart(
 			outFiles = append(outFiles, library.MediaFile{Role: "danmaku", Path: dmRel, Bytes: dn, SHA256: dsha})
 		}
 	} else {
-		if raw, dErr := m.client.DanmakuXML(ctx, page.CID, page.Duration); dErr == nil && len(raw) > 0 {
+		if raw, dErr := m.client.DanmakuXML(ctx, page.CID, page.Duration, bvid); dErr == nil && len(raw) > 0 {
 			if dn, dsha, wErr := writeBytesToStage(stageDir, dmRel, raw); wErr == nil {
 				part.Danmaku = dmRel
 				part.DanmakuState = "saved"

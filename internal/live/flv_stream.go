@@ -352,6 +352,7 @@ func newLiveTransportClientWithTransport(spec site.MediaTransportSpec, connectTi
 	guard := site.NewGuardedMediaDialer(spec.Site, spec.AllowLocalhost, dialer, "已拦截内网或回环直播流节点地址")
 	tr := &http.Transport{
 		Proxy:                 guard.Proxy,
+		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          8,
 		IdleConnTimeout:       30 * time.Second,
 		TLSHandshakeTimeout:   connectTimeout,

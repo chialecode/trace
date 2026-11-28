@@ -374,7 +374,10 @@ func (c *Client) resolveShortLink(ctx context.Context, shortURL string) (Resolve
 		targetURL = strings.TrimRight(c.endpoints.APIBase, "/") + "/b23/" + strings.TrimLeft(u.Path, "/")
 	}
 
-	resp, _, err := c.doAPIRequest(ctx, http.MethodGet, targetURL, nil, "", false)
+	resp, _, err := c.doAPIRequestWithOptions(ctx, http.MethodGet, targetURL, nil, "", false, apiRequestOptions{
+		omitReferer: true,
+		kind:        reqKindHTML,
+	})
 	if err != nil {
 		if resp == nil {
 			c.ReportAutomaticError(ctx, err)

@@ -389,6 +389,7 @@ func (c *Client) ReflowRoomInfo(ctx context.Context, roomID, secUID string) (*Li
 		origin:      DefaultLiveOrigin,
 		params:      params,
 		requireSign: false,
+		omitCookie:  true,
 	})
 	if err != nil {
 		return nil, err
@@ -515,6 +516,7 @@ func (c *Client) CheckRoomsAlive(ctx context.Context, roomIDs []string) (map[str
 		origin:      DefaultLiveOrigin,
 		params:      params,
 		requireSign: false,
+		omitCookie:  true,
 	})
 	if err != nil {
 		return nil, err

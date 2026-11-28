@@ -325,6 +325,12 @@ func (s *Store) SaveVerifiedDouyinManualWithGuard(cookies map[string]string, pro
 		return Status{}, ErrMissingDouyinSession
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prevWebID := ""
+	if s.rec != nil {
+		prevWebID = strings.TrimSpace(s.rec.DouyinWebID)
+	}
 	rec := &Record{
 		Version:       1,
 		Site:          SiteDouyin,
@@ -340,11 +346,85 @@ func (s *Store) SaveVerifiedDouyinManualWithGuard(cookies map[string]string, pro
 		Face:          strings.TrimSpace(profile.Face),
 		State:         "logged_in",
 		DouyinGuard:   cloneDouyinGuardState(guardState),
+		DouyinWebID:   prevWebID,
 	}
-	if err := s.saveRecord(rec); err != nil {
+	if err := s.persistRecordLocked(rec); err != nil {
 		return Status{}, err
 	}
-	return s.Status(), nil
+	return s.buildStatus(s.rec), nil
+}
+
+// DouyinWebID returns the persisted Douyin webid for an active Douyin store, or empty string.
+func (s *Store) DouyinWebID() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.site != SiteDouyin || !s.isActiveRecordLocked() {
+		return ""
+	}
+	return strings.TrimSpace(s.rec.DouyinWebID)
+}
+
+// SaveDouyinWebID persists webID on an active Douyin credential store without changing schema version.
+func (s *Store) SaveDouyinWebID(webID string) error {
+	if err := s.requireSite(SiteDouyin); err != nil {
+		return err
+	}
+	webID = strings.TrimSpace(webID)
+	if webID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.isActiveRecordLocked() {
+		return ErrNotLoggedIn
+	}
+	if strings.TrimSpace(s.rec.DouyinWebID) == webID {
+		return nil
+	}
+	next := s.cloneRecord(s.rec)
+	next.DouyinWebID = webID
+	next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	return s.persistRecordLocked(next)
+}
+
+// EnsureDouyinWebID returns the persisted Douyin webid when an active Douyin credential exists,
+// or generates and persists one via generate on first use. Returns ("", nil) when logged out.
+func (s *Store) EnsureDouyinWebID(generate func() (string, error)) (string, error) {
+	if s == nil {
+		return "", nil
+	}
+	if err := s.requireSite(SiteDouyin); err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.isActiveRecordLocked() {
+		return "", nil
+	}
+	if existing := strings.TrimSpace(s.rec.DouyinWebID); existing != "" {
+		return existing, nil
+	}
+	if generate == nil {
+		return "", nil
+	}
+	gen, err := generate()
+	if err != nil {
+		return "", err
+	}
+	gen = strings.TrimSpace(gen)
+	if gen == "" {
+		return "", nil
+	}
+	next := s.cloneRecord(s.rec)
+	next.DouyinWebID = gen
+	next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := s.persistRecordLocked(next); err != nil {
+		return "", err
+	}
+	return gen, nil
 }
 
 // DouyinGuard returns a copy of the stored bd-ticket-guard state for an active Douyin store, or nil.

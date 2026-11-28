@@ -108,7 +108,7 @@ func (c *Client) RoomInit(ctx context.Context, roomOrShortID int64) (LiveRoomIni
 		IsLocked    bool  `json:"is_locked"`
 		LiveTime    int64 `json:"live_time"`
 	}
-	if _, err := c.doBiliJSON(ctx, http.MethodGet, fullURL, nil, "", true, &raw); err != nil {
+	if _, err := c.doBiliJSONWithOptions(ctx, http.MethodGet, fullURL, nil, "", true, &raw, true, apiRequestOptions{referer: DefaultLiveReferer}); err != nil {
 		return LiveRoomInit{}, err
 	}
 	if raw.Encrypted || raw.IsLocked {
@@ -185,7 +185,7 @@ func (c *Client) LiveStatusByUIDs(ctx context.Context, uids []int64) (map[int64]
 			Online     int    `json:"online"`
 		}
 
-		if _, err := c.doBiliJSON(ctx, http.MethodGet, fullURL, nil, "", true, &rawMap); err != nil {
+		if _, err := c.doBiliJSONWithOptions(ctx, http.MethodGet, fullURL, nil, "", true, &rawMap, true, apiRequestOptions{referer: DefaultLiveReferer}); err != nil {
 			return nil, err
 		}
 		for k, v := range rawMap {
@@ -278,7 +278,7 @@ func (c *Client) LiveRoomPlayInfo(ctx context.Context, roomID int64, codecOrder 
 		} `json:"playurl_info"`
 	}
 
-	if _, err := c.doBiliJSON(ctx, http.MethodGet, fullURL, nil, "", true, &raw); err != nil {
+	if _, err := c.doBiliJSONWithOptions(ctx, http.MethodGet, fullURL, nil, "", true, &raw, true, apiRequestOptions{referer: DefaultLiveReferer}); err != nil {
 		return LivePlaySelection{}, err
 	}
 

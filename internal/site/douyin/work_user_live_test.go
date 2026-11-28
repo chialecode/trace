@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/site"
 )
 
@@ -974,4 +975,148 @@ func TestLiveResolutionFallbackCheckAliveAndFLVSelection(t *testing.T) {
 			t.Fatalf("unexpected ReflowRoomInfo(room_id=2) result: gotRoomID=%q detail=%+v", gotReflowRoomID, reflowDetail)
 		}
 	})
+}
+
+func TestAmemvLiveEndpointsNeverLeakDouyinCookiesAndPersistWebID(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, credential.DouyinFileName)
+	store, _, err := credential.OpenDouyin(binPath)
+	if err != nil {
+		t.Fatalf("OpenDouyin: %v", err)
+	}
+	if _, err := store.SaveVerifiedDouyinManual(
+		map[string]string{"sessionid": "SYNTH_SENSITIVE_DOUYIN_SESSION", "ttwid": "SYNTH_TTWID_99"},
+		credential.DouyinProfile{SecUID: "MS4wLjABAAAA_SYNTHETIC_ANCHOR_01", Uname: "合成测试"},
+	); err != nil {
+		t.Fatalf("SaveVerifiedDouyinManual: %v", err)
+	}
+
+	var reflowHeaders http.Header
+	var aliveHeaders http.Header
+	client := NewClient(ClientOptions{
+		CredStore:   store,
+		MinInterval: -1,
+		Entropy:     newDeterministicEntropy(0x71),
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/webcast/room/reflow/info/":
+				reflowHeaders = req.Header.Clone()
+				return jsonHTTPResponse(http.StatusOK, `{"status_code":0,"data":{"room":{"id_str":"7400000000000000401","status":2,"title":"amemv_reflow","owner":{"id_str":"1001","sec_uid":"MS4wLjABAAAA_SYNTHETIC_ANCHOR_01","short_id":10008888,"web_rid":"10008888","nickname":"合成测试"}}}}`, nil), nil
+			case "/webcast/room/check_alive/":
+				aliveHeaders = req.Header.Clone()
+				return jsonHTTPResponse(http.StatusOK, `{"status_code":0,"data":[{"room_id":7400000000000000401,"alive":true}]}`, nil), nil
+			default:
+				return jsonHTTPResponse(http.StatusNotFound, `{}`, nil), nil
+			}
+		}),
+	})
+
+	if _, err := client.ReflowRoomInfo(ctx, "7400000000000000401", "MS4wLjABAAAA_SYNTHETIC_ANCHOR_01"); err != nil {
+		t.Fatalf("ReflowRoomInfo failed: %v", err)
+	}
+	if _, err := client.CheckRoomsAlive(ctx, []string{"7400000000000000401"}); err != nil {
+		t.Fatalf("CheckRoomsAlive failed: %v", err)
+	}
+	for name, hdr := range map[string]http.Header{"ReflowRoomInfo": reflowHeaders, "CheckRoomsAlive": aliveHeaders} {
+		if hdr.Get("Cookie") != "" {
+			t.Fatalf("%s leaked .douyin.com Cookie to webcast.amemv.com: %q", name, hdr.Get("Cookie"))
+		}
+		if hdr.Get("Sec-Fetch-Site") != "cross-site" {
+			t.Fatalf("%s Sec-Fetch-Site = %q, want cross-site", name, hdr.Get("Sec-Fetch-Site"))
+		}
+	}
+
+	// Verify webid persisted across client restarts using the same douyin.bin.
+	webID1 := client.WebID()
+	if webID1 == "" {
+		t.Fatal("expected generated webid on client")
+	}
+	store2, _, err := credential.OpenDouyin(binPath)
+	if err != nil {
+		t.Fatalf("re-open douyin.bin: %v", err)
+	}
+	client2 := NewClient(ClientOptions{
+		CredStore:   store2,
+		MinInterval: -1,
+		Entropy:     newDeterministicEntropy(0x99),
+	})
+	if client2.WebID() != webID1 {
+		t.Fatalf("restarted client WebID = %q, want persisted %q", client2.WebID(), webID1)
+	}
+
+	// Non-Chromium UA must NOT emit Chromium Sec-Ch-Ua* headers.
+	var ffHeaders http.Header
+	ffClient := NewClient(ClientOptions{
+		CredStore:   store2,
+		UserAgent:   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
+		MinInterval: -1,
+		Entropy:     newDeterministicEntropy(0x72),
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			ffHeaders = req.Header.Clone()
+			return jsonHTTPResponse(http.StatusOK, `{"status_code":0,"data":[{"room_id":7400000000000000401,"alive":true}]}`, nil), nil
+		}),
+	})
+	if _, err := ffClient.CheckRoomsAlive(ctx, []string{"7400000000000000401"}); err != nil {
+		t.Fatalf("Firefox UA CheckRoomsAlive failed: %v", err)
+	}
+	for _, h := range []string{"Sec-Ch-Ua", "Sec-Ch-Ua-Mobile", "Sec-Ch-Ua-Platform"} {
+		if got := ffHeaders.Get(h); got != "" {
+			t.Fatalf("Firefox UA unexpectedly emitted %s=%q", h, got)
+		}
+	}
+}
+
+func TestAmemvLiveEndpointsRequireAuthWithZeroRequestsWhenLoggedOutOrExpired(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name    string
+		expired bool
+	}{
+		{name: "logged_out", expired: false},
+		{name: "expired", expired: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, _, err := credential.OpenDouyin(filepath.Join(t.TempDir(), credential.DouyinFileName))
+			if err != nil {
+				t.Fatalf("OpenDouyin: %v", err)
+			}
+			if tc.expired {
+				if _, err := store.SaveVerifiedDouyinManual(
+					map[string]string{"sessionid": "SYNTH_EXPIRED_SESS", "ttwid": "SYNTH_EXPIRED_TTWID"},
+					credential.DouyinProfile{SecUID: "MS4wLjABAAAA_SYNTHETIC_ANCHOR_02", Uname: "过期测试"},
+				); err != nil {
+					t.Fatalf("SaveVerifiedDouyinManual: %v", err)
+				}
+				if _, err := store.MarkState("expired", "synthetic expired"); err != nil {
+					t.Fatalf("MarkState(expired): %v", err)
+				}
+			}
+
+			var httpCalls atomic.Int32
+			client := NewClient(ClientOptions{
+				CredStore:   store,
+				MinInterval: -1,
+				Entropy:     newDeterministicEntropy(0x73),
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					httpCalls.Add(1)
+					return jsonHTTPResponse(http.StatusOK, `{"status_code":0}`, nil), nil
+				}),
+			})
+
+			if _, err := client.ReflowRoomInfo(ctx, "7400000000000000401", "MS4wLjABAAAA_SYNTHETIC_ANCHOR_02"); !site.IsKind(err, site.ErrKindAuthRequired) {
+				t.Fatalf("ReflowRoomInfo err = %v, want auth_required", err)
+			}
+			if _, err := client.CheckRoomsAlive(ctx, []string{"7400000000000000401"}); !site.IsKind(err, site.ErrKindAuthRequired) {
+				t.Fatalf("CheckRoomsAlive err = %v, want auth_required", err)
+			}
+			if _, err := client.SelectLiveStream(ctx, "", "7400000000000000401", nil); !site.IsKind(err, site.ErrKindAuthRequired) {
+				t.Fatalf("SelectLiveStream(roomID) err = %v, want auth_required", err)
+			}
+			if got := httpCalls.Load(); got != 0 {
+				t.Fatalf("expected 0 outbound HTTP calls when %s, got %d", tc.name, got)
+			}
+		})
+	}
 }

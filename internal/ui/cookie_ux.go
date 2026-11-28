@@ -185,8 +185,8 @@ func renderXRiskDisclosureBox(c *ui.Context, label string) {
 			ui.Text(c, "使用前请注意").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 			ui.Text(c, "X 网页端接口不是官方开放 API，X 服务条款与自动化规则限制未经授权的自动化访问。用网页 Cookie 请求 X 存在触发限流、要求验证、临时锁号甚至封号的风险，强烈建议使用专门账号或可承受风控的小号（本工具不会阻止你粘贴自己的账号）。").
 				FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMain).MaxLines(6)
-			ui.Text(c, "TRACE 只读不写，不保存账号密码，也不对粘贴的 Cookie 自动续期；若遇到验证或锁号会立即停止 X 的全部自动请求。").
-				FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(4)
+			ui.Text(c, "TRACE 只读不写，不保存账号密码，也不对粘贴的 Cookie 自动续期；粘贴的 Cookie 与浏览器共用会话，请避免本机与远程 VPS 对同一账号并发高频请求，若遇到验证或锁号会立即停止 X 的全部自动请求。").
+				FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(5)
 		})
 }
 

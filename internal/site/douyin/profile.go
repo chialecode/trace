@@ -2,17 +2,16 @@
 package douyin
 
 import (
-	"fmt"
-	"regexp"
-	"strings"
+	"net/http"
 
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/douyin/sign"
 )
 
 const (
-	// DefaultUserAgent is the fixed desktop Chrome User-Agent shared across API signing,
+	// DefaultUserAgent is the unified desktop Chrome User-Agent shared across API signing,
 	// HTTP headers, and CDN requests so parameters and UA stay consistent.
-	DefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+	DefaultUserAgent = site.DefaultUserAgent
 
 	// DefaultReferer is the Referer header sent on main-site API and VOD/image CDN requests.
 	DefaultReferer = "https://www.douyin.com/"
@@ -27,11 +26,10 @@ const (
 	DefaultLiveOrigin = "https://live.douyin.com"
 )
 
-var reChromeVersion = regexp.MustCompile(`(?i)Chrome/(([0-9]+)(?:\.[0-9]+)*)`)
-
 // BrowserProfile holds coherent browser/platform metadata derived from a single User-Agent string.
 type BrowserProfile struct {
 	UserAgent       string
+	IsChromium      bool
 	BrowserName     string
 	BrowserVersion  string
 	MajorVersion    string
@@ -49,59 +47,40 @@ type BrowserProfile struct {
 	SecCHUAPlatform string
 }
 
-// DeriveBrowserProfile extracts consistent client parameters and Client Hints from ua.
+// DeriveBrowserProfile extracts consistent client parameters and Client Hints from ua
+// via the shared internal/site profile helper (leaving Sec-Ch-Ua* empty for non-Chromium UAs).
 func DeriveBrowserProfile(ua string) BrowserProfile {
-	ua = strings.TrimSpace(ua)
-	if ua == "" {
-		ua = DefaultUserAgent
-	}
-
-	fullVer := "136.0.0.0"
-	majorVer := "136"
-	if m := reChromeVersion.FindStringSubmatch(ua); len(m) == 3 {
-		fullVer = m[1]
-		majorVer = m[2]
-	}
-
-	osName := "Windows"
-	osVer := "10"
-	browserPlatform := "Win32"
-	secPlatform := `"Windows"`
-	lowerUA := strings.ToLower(ua)
-	switch {
-	case strings.Contains(lowerUA, "macintosh") || strings.Contains(lowerUA, "mac os x"):
-		osName = "Mac OS"
-		osVer = "10_15_7"
-		browserPlatform = "MacIntel"
-		secPlatform = `"macOS"`
-	case strings.Contains(lowerUA, "linux") && !strings.Contains(lowerUA, "android"):
-		osName = "Linux"
-		osVer = "x86_64"
-		browserPlatform = "Linux x86_64"
-		secPlatform = `"Linux"`
-	}
-
-	browserInfo := fmt.Sprintf("1920|947|1920|1032|1920|1032|1920|1080|%s", browserPlatform)
-	secCHUA := fmt.Sprintf(`"Chromium";v="%s", "Google Chrome";v="%s", "Not.A/Brand";v="99"`, majorVer, majorVer)
-
+	bp := site.DeriveBrowserProfile(ua)
 	return BrowserProfile{
-		UserAgent:       ua,
-		BrowserName:     "Chrome",
-		BrowserVersion:  fullVer,
-		MajorVersion:    majorVer,
-		EngineName:      "Blink",
-		EngineVersion:   fullVer,
-		OSName:          osName,
-		OSVersion:       osVer,
-		Platform:        "PC",
-		BrowserPlatform: browserPlatform,
-		ScreenWidth:     "1920",
-		ScreenHeight:    "1080",
-		BrowserInfo:     browserInfo,
-		SecCHUA:         secCHUA,
-		SecCHUAMobile:   "?0",
-		SecCHUAPlatform: secPlatform,
+		UserAgent:       bp.UserAgent,
+		IsChromium:      bp.IsChromium,
+		BrowserName:     bp.BrowserName,
+		BrowserVersion:  bp.BrowserVersion,
+		MajorVersion:    bp.MajorVersion,
+		EngineName:      bp.EngineName,
+		EngineVersion:   bp.EngineVersion,
+		OSName:          bp.OSName,
+		OSVersion:       bp.OSVersion,
+		Platform:        bp.Platform,
+		BrowserPlatform: bp.BrowserPlatform,
+		ScreenWidth:     bp.ScreenWidth,
+		ScreenHeight:    bp.ScreenHeight,
+		BrowserInfo:     bp.BrowserInfo,
+		SecCHUA:         bp.SecCHUA,
+		SecCHUAMobile:   bp.SecCHUAMobile,
+		SecCHUAPlatform: bp.SecCHUAPlatform,
 	}
+}
+
+// ApplyClientHints applies Chromium Sec-Ch-Ua* headers on h and strips them for non-Chromium UAs.
+func (p BrowserProfile) ApplyClientHints(h http.Header) {
+	site.BrowserProfile{
+		UserAgent:       p.UserAgent,
+		IsChromium:      p.IsChromium,
+		SecCHUA:         p.SecCHUA,
+		SecCHUAMobile:   p.SecCHUAMobile,
+		SecCHUAPlatform: p.SecCHUAPlatform,
+	}.ApplyClientHints(h)
 }
 
 // CommonWebParams builds ordered common query parameters for www.douyin.com/aweme/v1/web/* endpoints,

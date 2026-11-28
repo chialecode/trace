@@ -46,8 +46,17 @@ func TestManualCookieParserWhitelistAndBounds(t *testing.T) {
 		t.Fatalf("error echoed secret bili_jct: %v", err)
 	}
 
-	// 3. Valid Cookie header with extra non-whitelisted fields filters strictly to the 5 allowed keys.
-	raw := "Cookie: SESSDATA=sess_val_1; bili_jct=csrf_val_2; DedeUserID=12345; DedeUserID__ckMd5=md5_val; sid=sid_val; buvid3=ignore_me; _uuid=ignore_uuid"
+	// 2b. Optional device cookies (buvid3/buvid4/b_nut) alone without SESSDATA must still be rejected.
+	buvidOnly := "buvid3=SYNTH_BUVID3_ONLY; buvid4=SYNTH_BUVID4_ONLY; b_nut=1700000001"
+	if _, _, err := ParseManualCookieInput(buvidOnly, ""); !errors.Is(err, ErrMissingRequiredKeys) {
+		t.Fatalf("expected ErrMissingRequiredKeys for buvid-only input, got %v", err)
+	} else if strings.Contains(err.Error(), "SYNTH_BUVID3_ONLY") {
+		t.Fatalf("error echoed buvid3 secret: %v", err)
+	}
+
+	// 3. Valid Cookie header preserves the 8 allowed keys (including optional buvid3/buvid4/b_nut)
+	// and strips non-whitelisted keys (_uuid, b_lsid, CURRENT_FNVAL).
+	raw := "Cookie: SESSDATA=sess_val_1; bili_jct=csrf_val_2; DedeUserID=12345; DedeUserID__ckMd5=md5_val; sid=sid_val; buvid3=SYNTH_BUVID3_OK; buvid4=SYNTH_BUVID4_OK; b_nut=1700000000; _uuid=ignore_uuid; b_lsid=ignore_lsid; CURRENT_FNVAL=4048"
 	cookies, rt, err := ParseManualCookieInput(raw, "  refresh_tok_abc  ")
 	if err != nil {
 		t.Fatalf("ParseManualCookieInput failed: %v", err)
@@ -55,11 +64,16 @@ func TestManualCookieParserWhitelistAndBounds(t *testing.T) {
 	if rt != "refresh_tok_abc" {
 		t.Fatalf("refreshToken = %q, want refresh_tok_abc", rt)
 	}
-	if len(cookies) != 5 {
-		t.Fatalf("len(cookies) = %d, want 5: %+v", len(cookies), cookies)
+	if len(cookies) != 8 {
+		t.Fatalf("len(cookies) = %d, want 8: %+v", len(cookies), cookies)
 	}
-	if _, exists := cookies["buvid3"]; exists {
-		t.Fatalf("unexpected non-whitelisted key buvid3 in cookies")
+	if cookies["buvid3"] != "SYNTH_BUVID3_OK" || cookies["buvid4"] != "SYNTH_BUVID4_OK" || cookies["b_nut"] != "1700000000" {
+		t.Fatalf("expected buvid3/buvid4/b_nut preserved, got %+v", cookies)
+	}
+	for _, stripped := range []string{"_uuid", "b_lsid", "CURRENT_FNVAL"} {
+		if _, exists := cookies[stripped]; exists {
+			t.Fatalf("unexpected non-whitelisted key %s in cookies", stripped)
+		}
 	}
 }
 
@@ -274,5 +288,120 @@ func TestRedactEncodedSecretsAndCookieInjectionGuard(t *testing.T) {
 	}
 	if _, err := dyStore.SaveVerifiedManual(map[string]string{"SESSDATA": "synth_bili"}, "", 1, "u", ""); err == nil {
 		t.Fatal("expected Douyin store to reject SaveVerifiedManual")
+	}
+}
+
+func TestBilibiliBuvidAndBNutSentinelRedaction(t *testing.T) {
+	dir := t.TempDir()
+	mgr, _, err := OpenManager(dir)
+	if err != nil {
+		t.Fatalf("OpenManager: %v", err)
+	}
+	biliStore := mgr.Store(SiteBilibili)
+
+	buvid3Sentinel := "SYNTH-BUVID3-SENTINEL-8888infoc"
+	buvid4Sentinel := "SYNTH-BUVID4-SENTINEL-9999-token"
+	bnutSentinel := "1799887766"
+	raw := "SESSDATA=SYNTH_SESS_99; bili_jct=SYNTH_CSRF_99; buvid3=" + buvid3Sentinel + "; buvid4=" + buvid4Sentinel + "; b_nut=" + bnutSentinel
+	if _, err := biliStore.SaveManual(raw, ""); err != nil {
+		t.Fatalf("SaveManual: %v", err)
+	}
+
+	// On-disk ciphertext must not contain any buvid3/buvid4/b_nut sentinel.
+	rawBin, err := os.ReadFile(filepath.Join(dir, BilibiliFileName))
+	if err != nil {
+		t.Fatalf("read bilibili.bin: %v", err)
+	}
+	for _, sec := range []string{buvid3Sentinel, buvid4Sentinel, bnutSentinel} {
+		if bytes.Contains(rawBin, []byte(sec)) {
+			t.Fatalf("bilibili.bin leaked plaintext %q", sec)
+		}
+	}
+
+	// Both Store.RedactString and Manager.RedactString must scrub stored and transient buvid3/buvid4/b_nut values.
+	sample := "Cookie: buvid3=" + buvid3Sentinel + "; buvid4=" + buvid4Sentinel + "; b_nut=" + bnutSentinel +
+		" transient buvid3=TRANSIENT_B3_VALUE&buvid4%3DTRANSIENT_B4_ENC%26b_nut%3D1700999888" +
+		` {"buvid3":"JSON_B3_VAL","buvid4":"JSON_B4_VAL","b_nut":"1700111222"}`
+	for label, redacted := range map[string]string{
+		"store":   biliStore.RedactString(sample),
+		"manager": mgr.RedactString(sample),
+	} {
+		for _, leak := range []string{
+			buvid3Sentinel, buvid4Sentinel, bnutSentinel,
+			"TRANSIENT_B3_VALUE", "TRANSIENT_B4_ENC", "1700999888",
+			"JSON_B3_VAL", "JSON_B4_VAL", "1700111222",
+		} {
+			if strings.Contains(redacted, leak) {
+				t.Fatalf("%s RedactString leaked %q in %q", label, leak, redacted)
+			}
+		}
+	}
+}
+
+func TestDouyinWebIDPersistenceAndBackwardsCompat(t *testing.T) {
+	dir := t.TempDir()
+	dyPath := filepath.Join(dir, DouyinFileName)
+
+	// 1. Backwards-compatibility: a legacy encrypted Douyin record without douyinWebId loads cleanly.
+	store, _, err := OpenDouyin(dyPath)
+	if err != nil {
+		t.Fatalf("OpenDouyin: %v", err)
+	}
+	if _, err := store.SaveVerifiedDouyinManual(
+		map[string]string{"sessionid": "SYNTH_DY_WEBID_SESS_1"},
+		DouyinProfile{SecUID: "MS4wLjABAAAA_WEBID_01", Uname: "测试用户"},
+	); err != nil {
+		t.Fatalf("SaveVerifiedDouyinManual: %v", err)
+	}
+	if got := store.DouyinWebID(); got != "" {
+		t.Fatalf("initial DouyinWebID = %q, want empty", got)
+	}
+
+	// 2. EnsureDouyinWebID generates once, persists, and returns the same ID on subsequent calls and restarts.
+	genCalls := 0
+	id1, err := store.EnsureDouyinWebID(func() (string, error) {
+		genCalls++
+		return "7412345678901234567", nil
+	})
+	if err != nil {
+		t.Fatalf("EnsureDouyinWebID: %v", err)
+	}
+	if id1 != "7412345678901234567" || genCalls != 1 {
+		t.Fatalf("id1=%q genCalls=%d", id1, genCalls)
+	}
+	id2, err := store.EnsureDouyinWebID(func() (string, error) {
+		genCalls++
+		return "7499999999999999999", nil
+	})
+	if err != nil || id2 != id1 || genCalls != 1 {
+		t.Fatalf("second EnsureDouyinWebID regenerated: id2=%q genCalls=%d err=%v", id2, genCalls, err)
+	}
+
+	// Re-pasting expired/new cookie preserves persisted DouyinWebID.
+	if _, err := store.SaveVerifiedDouyinManual(
+		map[string]string{"sessionid": "SYNTH_DY_WEBID_SESS_2"},
+		DouyinProfile{SecUID: "MS4wLjABAAAA_WEBID_01", Uname: "测试用户"},
+	); err != nil {
+		t.Fatalf("re-save cookie: %v", err)
+	}
+	if got := store.DouyinWebID(); got != id1 {
+		t.Fatalf("DouyinWebID lost after cookie re-paste: got %q want %q", got, id1)
+	}
+
+	// Re-open from disk (simulated restart) recovers the exact same webid.
+	reopened, _, err := OpenDouyin(dyPath)
+	if err != nil {
+		t.Fatalf("re-open douyin.bin: %v", err)
+	}
+	if got := reopened.DouyinWebID(); got != id1 {
+		t.Fatalf("reopened DouyinWebID = %q, want %q", got, id1)
+	}
+	// Cross-site guard rejects SaveDouyinWebID on Bilibili store.
+	biliStore, _, err := Open(filepath.Join(dir, BilibiliFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := biliStore.SaveDouyinWebID("7412345678901234567"); err == nil {
+		t.Fatal("expected SaveDouyinWebID rejected on Bilibili store")
 	}
 }

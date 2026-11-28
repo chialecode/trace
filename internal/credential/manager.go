@@ -192,6 +192,7 @@ func (m *Manager) RedactString(in string) string {
 		}
 		out = redactWithSecrets(out, allSecrets)
 	}
+	out = redactBilibiliSensitiveFields(out)
 	out = redactWeiboSensitiveFields(out)
 	return redactXSensitiveFields(out)
 }

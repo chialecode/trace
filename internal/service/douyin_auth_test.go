@@ -704,3 +704,69 @@ func TestDouyinWorkPlannerStreamSelectionAndDowngrade(t *testing.T) {
 		t.Fatalf("expected 1080p stream with downgrade hint when requesting 2160p, got height=%d hint=%q", plan4k.Height, plan4k.DowngradeHint)
 	}
 }
+
+func TestNewBackendPersistsDouyinWebIDAcrossRestarts(t *testing.T) {
+	ctx := context.Background()
+	var seenWebIDs []string
+	var dySrv *httptest.Server
+	dySrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id := r.URL.Query().Get("webid"); id != "" {
+			seenWebIDs = append(seenWebIDs, id)
+		}
+		switch r.URL.Path {
+		case "/aweme/v1/web/user/profile/self/":
+			_, _ = fmt.Fprint(w, `{"status_code":0,"user":{"uid":"10001","sec_uid":"MS4wLjABAAAA_WEBID_RESTART_01","unique_id":"synth_webid","nickname":"合成用户"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer dySrv.Close()
+
+	loc := testLocations(t)
+	newBackendAtLoc := func() *Backend {
+		b, err := NewBackend(Options{
+			Locations: loc,
+			Desktop:   NewMockDesktop(),
+			DouyinOpts: douyin.ClientOptions{
+				Endpoints: douyin.Endpoints{
+					ProfileSelf: dySrv.URL + "/aweme/v1/web/user/profile/self/",
+				},
+				MinInterval:    -1,
+				JitterMax:      -1,
+				AllowLocalhost: true,
+			},
+			DisableBgWorkers: true,
+		})
+		if err != nil {
+			t.Fatalf("NewBackend: %v", err)
+		}
+		return b
+	}
+
+	b1 := newBackendAtLoc()
+	if _, err := b1.LoginWithCookie(ctx, "douyin", "sessionid=SYNTH_DY_RESTART_WEBID_1", ""); err != nil {
+		t.Fatalf("LoginWithCookie: %v", err)
+	}
+	webID1 := b1.douyin.WebID()
+	if webID1 == "" {
+		t.Fatal("expected non-empty Douyin WebID after login")
+	}
+	_ = b1.Close()
+
+	b2 := newBackendAtLoc()
+	defer func() { _ = b2.Close() }()
+	if b2.douyin.WebID() != webID1 {
+		t.Fatalf("restarted backend Douyin WebID = %q, want %q", b2.douyin.WebID(), webID1)
+	}
+	if _, err := b2.douyin.VerifyCredential(ctx); err != nil {
+		t.Fatalf("restarted VerifyCredential: %v", err)
+	}
+	if len(seenWebIDs) < 2 {
+		t.Fatalf("expected >= 2 webid query captures, got %v", seenWebIDs)
+	}
+	for i, got := range seenWebIDs {
+		if got != webID1 {
+			t.Fatalf("request %d webid = %q, want consistent %q", i, got, webID1)
+		}
+	}
+}

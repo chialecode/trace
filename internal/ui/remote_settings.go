@@ -310,8 +310,8 @@ func (a *App) renderRemoteSites(c *ui.Context, v service.RemoteView, info servic
 				}
 			})
 		}
-		ui.Text(c, "B 站、抖音、微博本机登录或续期后会自动推送 Cookie 到远程；X 不会自动推送，需要手动点击“同步 Cookie”并确认云服务器网络风险。远程不续期，Cookie 失效时这里显示“需要重新同步”。").
-			FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
+		ui.Text(c, "B 站、抖音、微博本机登录或续期后会自动推送 Cookie 到远程；X 不会自动推送，需要手动点击“同步 Cookie”并确认云服务器网络风险（高风控站点建议使用专门备用账号）。粘贴的 Cookie 与浏览器共用会话，请避免本机与远程 VPS 对同一账号并发高频请求；远程不续期，Cookie 失效时这里显示“需要重新同步”。").
+			FontSize(12).TextColor(ColorTextMuted).MaxLines(4)
 	})
 }
 

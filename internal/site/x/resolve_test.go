@@ -306,3 +306,137 @@ func TestShortLinkTCoExpansionSecurityGuards(t *testing.T) {
 		t.Fatalf("logged-out ResolveLink err = %v, want auth_required", err)
 	}
 }
+
+func TestShortLinkTCoHTTP200MetaRefreshAndJSFallback(t *testing.T) {
+	store := newTestXStore(t, "auth_token=SYNTH_AUTH_TCO200; ct0=SynthCT0Tco2001")
+
+	var sawAuthLeak atomic.Bool
+	var sawBadNavHeaders atomic.Bool
+	var disallowedHits atomic.Int32
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tco/") {
+			if r.Header.Get("Cookie") != "" || r.Header.Get("Authorization") != "" ||
+				r.Header.Get("x-csrf-token") != "" || r.Header.Get("x-twitter-auth-type") != "" {
+				sawAuthLeak.Store(true)
+			}
+			if r.Header.Get("Sec-Fetch-Mode") != "navigate" || r.Header.Get("Sec-Fetch-Dest") != "document" ||
+				!strings.Contains(r.Header.Get("Sec-Ch-Ua"), `"144"`) {
+				sawBadNavHeaders.Store(true)
+			}
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		switch r.URL.Path {
+		case "/tco/meta200":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><head><noscript><META http-equiv="refresh" content="0;URL=https://x.com/example_user/status/1791257321273778509?s=20&amp;t=abc"></noscript></head></html>`))
+		case "/tco/meta200_reversed":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><head><meta content="0; url='https://x.com/example_user/status/1791257321273778510'" http-equiv="REFRESH"></head></html>`))
+		case "/tco/meta200_semicolon_and_spaces":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><head><meta http-equiv="refresh" content='0; URL = "https://x.com/example_user/status/1791257321273778514?a=1;b=2"'></head></html>`))
+		case "/tco/jsreplace200":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><head><script>window.opener=null;location.replace("https:\/\/x.com\/example_user\/status\/1791257321273778511")</script></head></html>`))
+		case "/tco/meta_to_302":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><head><meta http-equiv="refresh" content="0;URL=/tco/meta_final302"></head></html>`))
+		case "/tco/meta_final302":
+			http.Redirect(w, r, "https://x.com/example_user/status/1791257321273778512", http.StatusFound)
+		case "/tco/meta_evil":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><head><meta http-equiv="refresh" content="0;URL=https://evil.example.com/phish"></head></html>`))
+		case "/tco/meta_http":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><head><meta http-equiv="refresh" content="0;URL=http://x.com/example_user/status/1791257321273778513"></head></html>`))
+		case "/tco/nonredirect":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><head><title>Not a redirect</title></head><body>hello</body></html>`))
+		case "/tco/oversized":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html><body>" + strings.Repeat("A", maxTcoHTMLBytes+1024) + "</body></html>"))
+		default:
+			disallowedHits.Add(1)
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	client := NewClient(ClientOptions{
+		CredStore:      store,
+		MinInterval:    -1,
+		AllowLocalhost: true,
+	})
+
+	for _, tc := range []struct {
+		path   string
+		wantID string
+	}{
+		{"/tco/meta200", "1791257321273778509"},
+		{"/tco/meta200_reversed", "1791257321273778510"},
+		{"/tco/meta200_semicolon_and_spaces", "1791257321273778514"},
+		{"/tco/jsreplace200", "1791257321273778511"},
+		{"/tco/meta_to_302", "1791257321273778512"},
+	} {
+		t.Run("ok_"+tc.path, func(t *testing.T) {
+			target, err := client.ResolveLink(context.Background(), ts.URL+tc.path)
+			if err != nil {
+				t.Fatalf("ResolveLink(%s) failed: %v", tc.path, err)
+			}
+			if target.Kind != "dynamic" || target.ID != tc.wantID {
+				t.Fatalf("target = %+v, want dynamic/%s", target, tc.wantID)
+			}
+		})
+	}
+
+	if sawAuthLeak.Load() {
+		t.Fatal("t.co 200 HTML resolution leaked Cookie/Authorization/CSRF headers")
+	}
+	if sawBadNavHeaders.Load() {
+		t.Fatal("t.co 200 HTML resolution missing expected navigation Sec-Fetch/Sec-Ch-Ua headers")
+	}
+
+	for _, path := range []string{"/tco/meta_evil", "/tco/meta_http"} {
+		t.Run("blocked_"+path, func(t *testing.T) {
+			if _, err := client.ResolveLink(context.Background(), ts.URL+path); !site.IsKind(err, site.ErrKindBlocked) {
+				t.Fatalf("ResolveLink(%s) err = %v, want blocked", path, err)
+			}
+		})
+	}
+	for _, path := range []string{"/tco/nonredirect", "/tco/oversized"} {
+		t.Run("unavailable_"+path, func(t *testing.T) {
+			if _, err := client.ResolveLink(context.Background(), ts.URL+path); !site.IsKind(err, site.ErrKindUnavailable) {
+				t.Fatalf("ResolveLink(%s) err = %v, want unavailable", path, err)
+			}
+		})
+	}
+	if disallowedHits.Load() != 0 {
+		t.Fatalf("disallowed target received %d hits, want 0", disallowedHits.Load())
+	}
+}
+
+func TestParseMetaRefreshURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"plain", "0;URL=https://x.com/u/status/1", "https://x.com/u/status/1"},
+		{"semicolon_unquoted", "0;URL=https://x.com/u/status/1?a=1;b=2", "https://x.com/u/status/1?a=1;b=2"},
+		{"semicolon_double_quoted", `0;URL="https://x.com/u/status/1?a=1;b=2"`, "https://x.com/u/status/1?a=1;b=2"},
+		{"semicolon_single_quoted", `0; url='https://x.com/u/status/1?a=1;b=2'`, "https://x.com/u/status/1?a=1;b=2"},
+		{"whitespace_around_equals", "0; URL = https://x.com/u/status/1?a=1;b=2", "https://x.com/u/status/1?a=1;b=2"},
+		{"whitespace_and_quotes", ` 5 ;  UrL  =  "https://x.com/a;b" `, "https://x.com/a;b"},
+		{"invalid_key_prefix", "0; urlx=https://x.com/u/status/1", ""},
+		{"no_semicolon", "URL=https://x.com/u/status/1", ""},
+		{"empty_quoted", `0; URL=""`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseMetaRefreshURL(tc.content); got != tc.want {
+				t.Fatalf("parseMetaRefreshURL(%q) = %q, want %q", tc.content, got, tc.want)
+			}
+		})
+	}
+}

@@ -433,6 +433,7 @@ type FrontendDiscovery struct {
 	fetchHome       HomeHTMLFetcher
 	chargeRequest   RequestChargeFunc
 	acquireRequest  RequestAcquireFunc
+	profile         site.BrowserProfile
 	userAgent       string
 	now             func() time.Time
 	refreshCooldown time.Duration
@@ -458,10 +459,8 @@ func NewFrontendDiscovery(cfg FrontendDiscoveryConfig) *FrontendDiscovery {
 	if homeURL == "" {
 		homeURL = DefaultHomeURL
 	}
-	ua := strings.TrimSpace(cfg.UserAgent)
-	if ua == "" {
-		ua = site.DefaultUserAgent
-	}
+	profile := site.DeriveBrowserProfile(cfg.UserAgent)
+	ua := profile.UserAgent
 	nowFn := cfg.Now
 	if nowFn == nil {
 		nowFn = time.Now
@@ -507,6 +506,7 @@ func NewFrontendDiscovery(cfg FrontendDiscoveryConfig) *FrontendDiscovery {
 		fetchHome:       cfg.FetchHome,
 		chargeRequest:   cfg.ChargeRequest,
 		acquireRequest:  cfg.AcquireRequest,
+		profile:         profile,
 		userAgent:       ua,
 		now:             nowFn,
 		refreshCooldown: cooldown,
@@ -533,7 +533,7 @@ func NewFrontendDiscovery(cfg FrontendDiscoveryConfig) *FrontendDiscovery {
 			if _, err := ValidateStaticAssetURL(req.URL.String(), d.allowLocalhost); err != nil {
 				return err
 			}
-			stripStaticAuthHeaders(req)
+			applyStaticAssetHeaders(req, d.profile)
 			return nil
 		},
 	}
@@ -1149,9 +1149,7 @@ func (d *FrontendDiscovery) fetchStaticAsset(ctx context.Context, rawURL string)
 			Message: "无法构造 X 前端资源请求",
 		}
 	}
-	stripStaticAuthHeaders(req)
-	req.Header.Set("User-Agent", d.userAgent)
-	req.Header.Set("Accept", "*/*")
+	applyStaticAssetHeaders(req, d.profile)
 
 	resp, err := d.assetClient.Do(req)
 	if err != nil {
@@ -1206,6 +1204,28 @@ func (d *FrontendDiscovery) fetchStaticAsset(ctx context.Context, rawURL string)
 	return body, nil
 }
 
+func applyStaticAssetHeaders(req *http.Request, profile site.BrowserProfile) {
+	if req == nil {
+		return
+	}
+	stripStaticAuthHeaders(req)
+	req.Header.Set("User-Agent", profile.UserAgent)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Referer", DefaultReferer)
+	profile.ApplyClientHints(req.Header)
+	target := ""
+	if req.URL != nil {
+		target = req.URL.String()
+	}
+	secSite := site.DeriveSecFetchSite(DefaultReferer, target)
+	if secSite == "" || secSite == "none" {
+		secSite = "cross-site"
+	}
+	req.Header.Set("Sec-Fetch-Site", secSite)
+	req.Header.Set("Sec-Fetch-Mode", "no-cors")
+	req.Header.Set("Sec-Fetch-Dest", "script")
+}
+
 func stripStaticAuthHeaders(req *http.Request) {
 	if req == nil {
 		return
@@ -1213,6 +1233,8 @@ func stripStaticAuthHeaders(req *http.Request) {
 	req.Header.Del("Cookie")
 	req.Header.Del("Authorization")
 	req.Header.Del("X-Csrf-Token")
+	req.Header.Del("X-Twitter-Auth-Type")
+	req.Header.Del("X-Client-Transaction-Id")
 	req.Header.Del("Referer")
 	req.Header.Del("Origin")
 }

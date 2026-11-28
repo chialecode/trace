@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-// DefaultUserAgent is the desktop Chrome User-Agent used when a site spec does not override it.
-const DefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+// DefaultUserAgent is the desktop Chrome User-Agent shared across all site clients when not overridden.
+const DefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
 
 // DefaultMaxImageBytes is the bounded per-image byte ceiling (128 MiB) shared
 // across online image fetches, preview staging, and range downloads so Weibo

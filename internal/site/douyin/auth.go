@@ -116,6 +116,11 @@ func (c *Client) LoginWithCookie(ctx context.Context, rawCookie string) (credent
 		return credential.Status{}, saveErr
 	}
 	c.applyLoginSyncedWebID(sentTTWIDHash, hashTTWID(refreshedCookies["ttwid"]), syncedWebID)
+	if persisted := c.cred.DouyinWebID(); persisted != "" {
+		c.setWebID(persisted)
+	} else {
+		_ = c.cred.SaveDouyinWebID(c.WebID())
+	}
 	if strings.TrimSpace(refreshedCookies["msToken"]) == "" && usedMSToken != "" {
 		c.setFallbackMSToken(cookieMapSessionFingerprint(refreshedCookies), usedMSToken)
 	} else {
@@ -178,7 +183,7 @@ func (c *Client) GetSelfProfile(ctx context.Context) (*SelfProfile, error) {
 	rawResp, err := c.doAPIRequest(ctx, apiRequestSpec{
 		endpoint:    c.endpoints.ProfileSelf,
 		referer:     DefaultReferer,
-		params:      c.profile.CommonWebParams(c.webID, ""),
+		params:      c.profile.CommonWebParams(c.WebID(), ""),
 		requireSign: true,
 	})
 	if err != nil {
@@ -199,7 +204,7 @@ func (c *Client) CheckProfileSelfGuest(ctx context.Context) error {
 	rawResp, err := c.doAPIRequest(ctx, apiRequestSpec{
 		endpoint:      c.endpoints.ProfileSelf,
 		referer:       DefaultReferer,
-		params:        c.profile.CommonWebParams(c.webID, ""),
+		params:        c.profile.CommonWebParams(c.WebID(), ""),
 		requireSign:   true,
 		guestNoCookie: true,
 	})
@@ -217,7 +222,7 @@ func (c *Client) verifyCandidateCookies(ctx context.Context, cleaned map[string]
 	rawResp, err := c.doAPIRequest(ctx, apiRequestSpec{
 		endpoint:        c.endpoints.ProfileSelf,
 		referer:         DefaultReferer,
-		params:          c.profile.CommonWebParams(c.webID, ""),
+		params:          c.profile.CommonWebParams(c.WebID(), ""),
 		requireSign:     true,
 		candidateCookie: cleaned,
 		candidateGuard:  candidateGuard,

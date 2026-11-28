@@ -23,6 +23,10 @@ func TestRuntimeLogsRedactSignedURLsAndCredentialFields(t *testing.T) {
 		"request auth_key%3Dsynthetic-secret",
 		"request %61uth_key%3Dsynthetic-secret progress=50%",
 		`response {\"refresh_token\":\"synthetic-secret\"}`,
+		"header buvid3: synthetic-secret",
+		"header buvid4: synthetic-secret",
+		"header b_nut: synthetic-secret",
+		"cookie buvid3=synthetic-secret; b_nut=synthetic-secret",
 	} {
 		b.logInfo(line)
 	}

@@ -826,3 +826,61 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
+
+func TestWeiboSecFetchAndNonChromiumHeaders(t *testing.T) {
+	var ajaxHeaders http.Header
+	var tvHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/ajax/profile/info":
+			ajaxHeaders = r.Header.Clone()
+			_, _ = w.Write([]byte(`{"ok":1,"data":{"user":{"idstr":"1000000001","screen_name":"合成示例用户"}}}`))
+		case "/tv/api/component":
+			tvHeaders = r.Header.Clone()
+			_, _ = w.Write([]byte(`{"code":"100000","data":{"Component_Play_Playinfo":{"urls":{"高清 720P":"https://f.video.weibocdn.com/synth.mp4"}}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	store := newTestWeiboStore(t, "SUB=SYNTHETIC_SUB_SF_01; XSRF-TOKEN=SYNTHETIC_XSRF_SF_01")
+	client := newFastTestClient(t, srv.URL, store)
+
+	if _, err := client.GetUserProfile(context.Background(), "1000000001"); err != nil {
+		t.Fatalf("GetUserProfile failed: %v", err)
+	}
+	if _, err := client.GetVideo(context.Background(), "1034:5000000000000001", PostOptions{SkipHostPostLookup: true}); err != nil {
+		t.Fatalf("GetVideo failed: %v", err)
+	}
+
+	for label, hdr := range map[string]http.Header{"ajax": ajaxHeaders, "tv_component": tvHeaders} {
+		if hdr.Get("Sec-Fetch-Site") != "same-origin" {
+			t.Errorf("%s Sec-Fetch-Site = %q, want same-origin", label, hdr.Get("Sec-Fetch-Site"))
+		}
+		if hdr.Get("Sec-Fetch-Mode") != "cors" {
+			t.Errorf("%s Sec-Fetch-Mode = %q, want cors", label, hdr.Get("Sec-Fetch-Mode"))
+		}
+		if hdr.Get("Sec-Fetch-Dest") != "empty" {
+			t.Errorf("%s Sec-Fetch-Dest = %q, want empty", label, hdr.Get("Sec-Fetch-Dest"))
+		}
+		if !strings.Contains(hdr.Get("Sec-Ch-Ua"), `"144"`) || hdr.Get("Sec-Ch-Ua-Mobile") != "?0" || hdr.Get("Sec-Ch-Ua-Platform") != `"Windows"` {
+			t.Errorf("%s Sec-Ch-Ua headers = (%q, %q, %q)", label, hdr.Get("Sec-Ch-Ua"), hdr.Get("Sec-Ch-Ua-Mobile"), hdr.Get("Sec-Ch-Ua-Platform"))
+		}
+	}
+
+	// Non-Chromium (Firefox) UA must NOT emit Sec-Ch-Ua* headers.
+	ajaxHeaders = nil
+	ffClient := newFastTestClient(t, srv.URL, store, func(o *ClientOptions) {
+		o.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0"
+	})
+	if _, err := ffClient.GetUserProfile(context.Background(), "1000000001"); err != nil {
+		t.Fatalf("Firefox GetUserProfile failed: %v", err)
+	}
+	for _, k := range []string{"Sec-Ch-Ua", "Sec-Ch-Ua-Mobile", "Sec-Ch-Ua-Platform"} {
+		if got := ajaxHeaders.Get(k); got != "" {
+			t.Fatalf("Firefox UA unexpectedly emitted %s=%q", k, got)
+		}
+	}
+}

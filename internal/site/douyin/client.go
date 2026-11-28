@@ -172,6 +172,11 @@ type Client struct {
 	ephemeralGuard *guard.State
 }
 
+// GenerateWebID generates a new 19-digit Douyin webid string.
+func GenerateWebID() (string, error) {
+	return sign.GenerateWebID(rand.Reader)
+}
+
 type webIDWarmupCall struct {
 	ttwidHash      string
 	done           chan struct{}
@@ -254,6 +259,13 @@ func NewClient(opts ClientOptions) *Client {
 	}
 
 	webID := strings.TrimSpace(opts.WebID)
+	if webID == "" && opts.CredStore != nil && opts.CredStore.Site() == credential.SiteDouyin {
+		if persisted, err := opts.CredStore.EnsureDouyinWebID(func() (string, error) {
+			return sign.GenerateWebID(ent)
+		}); err == nil && persisted != "" {
+			webID = persisted
+		}
+	}
 	if webID == "" {
 		if gen, err := sign.GenerateWebID(ent); err == nil {
 			webID = gen
@@ -310,6 +322,7 @@ func NewClient(opts ClientOptions) *Client {
 	if apiTransport == nil {
 		apiTransport = &http.Transport{
 			Proxy:                 site.Proxy,
+			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          16,
 			MaxIdleConnsPerHost:   4,
 			IdleConnTimeout:       60 * time.Second,
@@ -325,6 +338,7 @@ func NewClient(opts ClientOptions) *Client {
 		mediaTransport = &http.Transport{
 			Proxy:                 mediaGuard.Proxy,
 			DialContext:           mediaGuard.DialContext,
+			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          16,
 			MaxIdleConnsPerHost:   4,
 			IdleConnTimeout:       60 * time.Second,
@@ -412,6 +426,23 @@ func defaultContextSleep(ctx context.Context, d time.Duration) error {
 // Profile returns the client's coherent desktop Chrome browser profile.
 func (c *Client) Profile() BrowserProfile {
 	return c.profile
+}
+
+// WebID returns the client's current persistent Douyin webid.
+func (c *Client) WebID() string {
+	c.webIDMu.Lock()
+	defer c.webIDMu.Unlock()
+	return c.webID
+}
+
+func (c *Client) setWebID(id string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	c.webIDMu.Lock()
+	c.webID = id
+	c.webIDMu.Unlock()
 }
 
 // Endpoints returns the configured endpoint URLs.
@@ -505,7 +536,7 @@ func (c *Client) ResolvePlayRedirect(ctx context.Context, playURL string) (strin
 			Err:      site.UnwrapURLError(err),
 		}
 	}
-	c.applyAPIHeaders(req, DefaultReferer, "", cookieHeader, nil)
+	c.applyPlayRedirectHeaders(req, parsedURL, cookieHeader)
 
 	resp, err := c.redirectClient.Do(req)
 	if err != nil {
@@ -752,6 +783,7 @@ type apiRequestSpec struct {
 	params          []sign.Pair
 	requireSign     bool
 	guestNoCookie   bool
+	omitCookie      bool
 	candidateCookie map[string]string
 	candidateGuard  *guard.State
 	// form, when non-nil, turns the request into a POST with an
@@ -1221,6 +1253,16 @@ func (c *Client) resolveCookieContext(spec apiRequestSpec) (resolvedCookieContex
 		}
 		return resolvedCookieContext{msToken: tok}, nil
 
+	case spec.omitCookie:
+		if authErr := c.RequireAuth(spec.endpoint); authErr != nil {
+			return resolvedCookieContext{}, authErr
+		}
+		tok, gErr := sign.GenerateMSToken(c.entropy)
+		if gErr != nil {
+			tok = "SYNTHETIC_FALLBACK_MSTOKEN=="
+		}
+		return resolvedCookieContext{msToken: tok}, nil
+
 	case spec.candidateCookie != nil:
 		cleaned := credential.CleanDouyinCookieMap(spec.candidateCookie)
 		cookieHdr := credential.FormatDouyinCookieHeader(cleaned)
@@ -1319,7 +1361,7 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 	params := make([]sign.Pair, 0, len(spec.params)+1)
 	params = append(params, spec.params...)
 	webIDSynced := false
-	if !spec.guestNoCookie && reqCtx.ttwidHash != "" {
+	if !spec.guestNoCookie && !spec.omitCookie && reqCtx.ttwidHash != "" {
 		if synced := c.syncedWebIDFor(reqCtx.ttwidHash); synced != "" {
 			webIDSynced = replaceSignPair(params, "webid", synced)
 		}
@@ -1361,7 +1403,7 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 	}
 
 	var activeGuard *guard.State
-	if !spec.guestNoCookie && guard.IsGuardedPath(parsedURL.Path) {
+	if !spec.guestNoCookie && !spec.omitCookie && guard.IsGuardedPath(parsedURL.Path) {
 		var fallbackTicket string
 		if spec.candidateCookie != nil {
 			fallbackTicket = strings.TrimSpace(spec.candidateCookie["d_ticket"])
@@ -1454,7 +1496,7 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 	}
 
 	serverWebID := ""
-	if !spec.guestNoCookie && resp.StatusCode == http.StatusOK {
+	if !spec.guestNoCookie && !spec.omitCookie && resp.StatusCode == http.StatusOK {
 		serverWebID = parseServerWebID(resp.Header)
 	}
 
@@ -1506,7 +1548,7 @@ func deriveSecFetchSite(reqURL *url.URL, referer string) string {
 	}
 	refURL, err := url.Parse(strings.TrimSpace(referer))
 	if err != nil || refURL.Host == "" {
-		return "same-origin"
+		return "none"
 	}
 	reqHost := strings.ToLower(reqURL.Hostname())
 	refHost := strings.ToLower(refURL.Hostname())
@@ -1520,26 +1562,44 @@ func deriveSecFetchSite(reqURL *url.URL, referer string) string {
 		if refHost == "www.douyin.com" && strings.HasPrefix(reqURL.Path, "/webcast/room/web/") {
 			return "same-site"
 		}
-		return "same-origin"
-	}
-	if strings.EqualFold(reqURL.Scheme, refURL.Scheme) && reqHost == refHost && reqURL.Port() == refURL.Port() {
-		return "same-origin"
-	}
-	for _, root := range allowedAPIHosts {
-		if site.MatchDomainSuffix(reqHost, []string{root}) && site.MatchDomainSuffix(refHost, []string{root}) {
-			return "same-site"
+		if (strings.HasPrefix(reqURL.Path, "/webcast/room/reflow/") || strings.HasPrefix(reqURL.Path, "/webcast/room/check_alive/")) &&
+			site.MatchDomainSuffix(refHost, []string{"douyin.com"}) {
+			return "cross-site"
 		}
+		return "same-origin"
 	}
-	return "cross-site"
+	return site.DeriveSecFetchSite(referer, reqURL.String())
+}
+
+func (c *Client) applyPlayRedirectHeaders(req *http.Request, parsedURL *url.URL, cookieHeader string) {
+	req.Header.Set("User-Agent", c.profile.UserAgent)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	c.profile.ApplyClientHints(req.Header)
+	req.Header.Set("Referer", DefaultReferer)
+	req.Header.Set("Sec-Fetch-Site", deriveSecFetchSite(parsedURL, DefaultReferer))
+	req.Header.Set("Sec-Fetch-Mode", "no-cors")
+	req.Header.Set("Sec-Fetch-Dest", "video")
+	req.Header.Del("Origin")
+
+	host := ""
+	if parsedURL != nil {
+		host = strings.ToLower(parsedURL.Hostname())
+	}
+	allowCookie := site.MatchDomainSuffix(host, []string{"douyin.com"}) ||
+		(c.allowLocalhost && site.IsLoopbackHost(host))
+	if allowCookie && cookieHeader != "" {
+		req.Header.Set("Cookie", cookieHeader)
+	} else {
+		req.Header.Del("Cookie")
+	}
 }
 
 func (c *Client) applyAPIHeaders(req *http.Request, referer, origin, cookieHeader string, extra map[string]string) {
 	req.Header.Set("User-Agent", c.profile.UserAgent)
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
-	req.Header.Set("Sec-Ch-Ua", c.profile.SecCHUA)
-	req.Header.Set("Sec-Ch-Ua-Mobile", c.profile.SecCHUAMobile)
-	req.Header.Set("Sec-Ch-Ua-Platform", c.profile.SecCHUAPlatform)
+	c.profile.ApplyClientHints(req.Header)
 	if referer == "" {
 		referer = DefaultReferer
 	}

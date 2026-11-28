@@ -105,7 +105,7 @@ func (c *Client) UserCard(ctx context.Context, mid int64) (UserSpace, error) {
 		Following    bool `json:"following"`
 	}
 
-	if _, err := c.doBiliJSON(ctx, http.MethodGet, fullURL, nil, "", true, &raw); err != nil {
+	if _, err := c.doBiliJSONWithOptions(ctx, http.MethodGet, fullURL, nil, "", true, &raw, true, apiRequestOptions{referer: c.spaceReferer(mid)}); err != nil {
 		return UserSpace{}, err
 	}
 
@@ -215,7 +215,10 @@ func (c *Client) ensureSpaceWebID(ctx context.Context, mid int64) (string, error
 	var webID string
 	if spaceBase != "" && (strings.Contains(spaceBase, "127.0.0.1") || strings.Contains(spaceBase, "localhost") || !c.allowLocalhost) {
 		spaceURL := fmt.Sprintf("%s/%d", spaceBase, mid)
-		_, raw, err := c.doAPIRequest(ctx, http.MethodGet, spaceURL, nil, "", true)
+		_, raw, err := c.doAPIRequestWithOptions(ctx, http.MethodGet, spaceURL, nil, "", true, apiRequestOptions{
+			referer: c.spaceReferer(mid),
+			kind:    reqKindHTML,
+		})
 		if err != nil {
 			if ctx.Err() != nil || site.IsRoundStop(err) || site.IsKind(err, ErrKindQuota) || site.IsKind(err, ErrKindBackoff) {
 				c.ReportAutomaticError(ctx, err)
@@ -452,7 +455,7 @@ func (c *Client) UserVideos(ctx context.Context, mid int64, pn, ps int, order, k
 		} `json:"page"`
 	}
 
-	if err := c.doWBIGet(ctx, "/x/space/wbi/arc/search", params, &raw); err != nil {
+	if err := c.doWBIGetWithReferer(ctx, "/x/space/wbi/arc/search", params, &raw, c.spaceReferer(mid)); err != nil {
 		return UserVideosPage{}, err
 	}
 

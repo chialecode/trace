@@ -52,7 +52,7 @@ func (c *Client) GetUserProfile(ctx context.Context, secUID string) (*UserProfil
 	}
 
 	params := c.profile.CommonWebParams(
-		c.webID,
+		c.WebID(),
 		"",
 		sign.Pair{Key: "sec_user_id", Value: secUID},
 		sign.Pair{Key: "source", Value: "channel_pc_web"},
@@ -192,7 +192,7 @@ func (c *Client) ListUserPosts(ctx context.Context, req UserPostsRequest) (*User
 	}
 
 	params := c.profile.CommonWebParams(
-		c.webID,
+		c.WebID(),
 		"",
 		sign.Pair{Key: "sec_user_id", Value: secUID},
 		sign.Pair{Key: "max_cursor", Value: reqCursor},

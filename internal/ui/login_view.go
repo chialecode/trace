@@ -97,6 +97,8 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 							Children(func() {
 								ui.Text(c, "粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 								renderCookieCopyGuide(c, "douyin")
+								ui.Text(c, "提示：粘贴的 Cookie 与浏览器共用会话且不支持自动续期；如同时使用远程服务，请避免本机与 VPS 对同一账号并发高频请求。").
+									FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
 
 								dyBusy := a.isPending("douyin-cookie-login")
 								inp := ui.TextInput(c, &a.DouyinCookieInput).
@@ -170,6 +172,8 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 							Children(func() {
 								ui.Text(c, "粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 								renderCookieCopyGuide(c, "weibo")
+								ui.Text(c, "提示：粘贴的 Cookie 与浏览器共用会话且不支持自动续期；如同时使用远程服务，请避免本机与 VPS 对同一账号并发高频请求。").
+									FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
 
 								wbBusy := a.isPending("weibo-cookie-login")
 								inp := ui.TextInput(c, &a.WeiboCookieInput).
@@ -357,6 +361,8 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 							Children(func() {
 								ui.Text(c, "方式二：粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 								renderCookieCopyGuide(c, "bilibili")
+								ui.Text(c, "提示：粘贴的 Cookie 与浏览器共用会话，不支持自动续期；建议优先扫码登录，并避免本机与远程 VPS 对同一账号并发高频请求。").
+									FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
 
 								manualBusy := a.isPending("manual-login")
 								cookieInp := ui.TextInput(c, &a.ManualCookieInput).

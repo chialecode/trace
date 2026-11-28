@@ -159,7 +159,7 @@ func (c *Client) VideoDetail(ctx context.Context, bvidOrAid string) (VideoDetail
 		IsUpowerPreview   flexBool `json:"is_upower_preview"`
 	}
 
-	if err := c.doWBIGet(ctx, "/x/web-interface/wbi/view", params, &raw); err != nil {
+	if err := c.doWBIGetWithReferer(ctx, "/x/web-interface/wbi/view", params, &raw, c.videoReferer(params.Get("bvid"))); err != nil {
 		return VideoDetail{}, err
 	}
 	if raw.BVID == "" && raw.AID > 0 {
