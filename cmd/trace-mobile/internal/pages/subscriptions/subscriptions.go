@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chialecode/trace/cmd/trace-mobile/internal/mediaview"
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/pagekit"
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/theme"
 	"github.com/chialecode/trace/internal/companionapi"
@@ -87,6 +88,11 @@ type Page struct {
 	detailErr         string
 	detailTab         int
 	detailMenuOpen    bool
+	tagsSheetOpen     bool
+	tagsDraft         []string
+	tagsShowAdvanced  bool
+	tagsSaving        bool
+	tagsSaveErr       string
 	detailFeed        []companionapi.FeedItem
 	detailFeedNext    *companionapi.FeedCursor
 	detailFeedHasMore bool
@@ -161,6 +167,7 @@ func (p *Page) OnDisconnected() {
 	p.initTriggered = false
 	p.cancelThrottleTimer()
 	p.closeAllChildWindows()
+	mediaview.CloseAllActive()
 
 	p.subs = nil
 	p.subsLoaded = false
@@ -192,6 +199,11 @@ func (p *Page) OnDisconnected() {
 	p.detailLoading = false
 	p.detailErr = ""
 	p.detailMenuOpen = false
+	p.tagsSheetOpen = false
+	p.tagsDraft = nil
+	p.tagsShowAdvanced = false
+	p.tagsSaving = false
+	p.tagsSaveErr = ""
 	p.detailFeed = nil
 	p.detailFeedNext = nil
 	p.detailFeedHasMore = false
@@ -431,6 +443,11 @@ func (p *Page) clearDetailState() {
 	p.detailLoading = false
 	p.detailErr = ""
 	p.detailMenuOpen = false
+	p.tagsSheetOpen = false
+	p.tagsDraft = nil
+	p.tagsShowAdvanced = false
+	p.tagsSaving = false
+	p.tagsSaveErr = ""
 	p.detailFeed = nil
 	p.detailFeedNext = nil
 	p.detailFeedHasMore = false

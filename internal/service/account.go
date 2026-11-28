@@ -733,12 +733,28 @@ func (b *Backend) accountGate(siteID, kind string) (site.ID, error) {
 	return sid, nil
 }
 
-// accountFail logs only the class of err and, on risk control or rate limiting,
-// preserves an active backoff without escalating it (or initiates Level-1 backoff
-// when the site was not previously backing off, DEC-089).
+// accountFail logs only the class and strictly non-sensitive diagnostic flags of err and,
+// on risk control or rate limiting, preserves an active backoff without escalating it
+// (or initiates Level-1 backoff when the site was not previously backing off, DEC-089).
 func (b *Backend) accountFail(sid site.ID, kind string, err error) error {
 	k := site.KindOf(err)
-	b.Logf("account.%s.%s error=%s", sid, kind, k)
+	if sid == site.Douyin {
+		if diag, ok := douyin.ExtractResponseDiagnostics(err); ok {
+			if diag.HasGuardResult {
+				b.Logf("account.%s.%s error=%s http=%d bytes=%d empty=%v bdturing_params=%v bdturing_verify=%v guard_code=%d webid_synced=%v",
+					sid, kind, k, diag.HTTPStatus, diag.BodyBytes, diag.EmptyBody,
+					diag.HasBDTuringParams, diag.HasBDTuringVerify, diag.GuardResultCode, diag.WebIDSynced)
+			} else {
+				b.Logf("account.%s.%s error=%s http=%d bytes=%d empty=%v bdturing_params=%v bdturing_verify=%v webid_synced=%v",
+					sid, kind, k, diag.HTTPStatus, diag.BodyBytes, diag.EmptyBody,
+					diag.HasBDTuringParams, diag.HasBDTuringVerify, diag.WebIDSynced)
+			}
+		} else {
+			b.Logf("account.%s.%s error=%s", sid, kind, k)
+		}
+	} else {
+		b.Logf("account.%s.%s error=%s", sid, kind, k)
+	}
 	if (k == site.ErrKindRiskControl || k == site.ErrKindRateLimited) && b.subs != nil {
 		wasActive, _ := b.subs.IsSiteInBackoff(string(sid))
 		b.recordManualSiteProbeFailure(sid, err)

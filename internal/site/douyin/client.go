@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -124,7 +127,6 @@ type Client struct {
 	cred                 *credential.Store
 	endpoints            Endpoints
 	profile              BrowserProfile
-	webIDMu              sync.RWMutex
 	webID                string
 	signer               sign.Signer
 	httpClient           *http.Client
@@ -159,6 +161,13 @@ type Client struct {
 	fallbackMSToken   string
 	fallbackSessionID string
 
+	webIDMu         sync.Mutex
+	syncedWebID     string
+	syncedTTWIDHash string
+	webIDWarmupHash string
+	webIDWarmupCall *webIDWarmupCall
+	webIDGen        uint64
+
 	guardMu        sync.Mutex
 	ephemeralGuard *guard.State
 }
@@ -166,6 +175,71 @@ type Client struct {
 // GenerateWebID generates a new 19-digit Douyin webid string.
 func GenerateWebID() (string, error) {
 	return sign.GenerateWebID(rand.Reader)
+}
+
+type webIDWarmupCall struct {
+	ttwidHash      string
+	done           chan struct{}
+	err            error
+	callerCanceled bool
+}
+
+// ResponseDiagnostics holds strictly non-sensitive HTTP/protocol flags for runtime logging.
+// It never carries raw header values, Cookies, tokens, fp, detail, IDs, or URLs.
+type ResponseDiagnostics struct {
+	HTTPStatus        int
+	BodyBytes         int
+	EmptyBody         bool
+	HasBDTuringVerify bool
+	HasBDTuringParams bool
+	HasGuardResult    bool
+	GuardResultCode   int
+	WebIDSynced       bool
+}
+
+type responseDiagError struct {
+	diag  ResponseDiagnostics
+	cause error
+}
+
+func (e *responseDiagError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.cause != nil {
+		return e.cause.Error()
+	}
+	return fmt.Sprintf("http=%d bytes=%d", e.diag.HTTPStatus, e.diag.BodyBytes)
+}
+
+func (e *responseDiagError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+// ExtractResponseDiagnostics returns the desensitized Douyin response diagnostics attached to err, if any.
+func ExtractResponseDiagnostics(err error) (ResponseDiagnostics, bool) {
+	var de *responseDiagError
+	if errors.As(err, &de) && de != nil {
+		return de.diag, true
+	}
+	return ResponseDiagnostics{}, false
+}
+
+func attachResponseDiag(se *site.Error, diag ResponseDiagnostics) {
+	if se == nil {
+		return
+	}
+	var existing *responseDiagError
+	if errors.As(se.Err, &existing) {
+		return
+	}
+	se.Err = &responseDiagError{
+		diag:  diag,
+		cause: se.Err,
+	}
 }
 
 // NewClient constructs a configured Douyin Client.
@@ -356,8 +430,8 @@ func (c *Client) Profile() BrowserProfile {
 
 // WebID returns the client's current persistent Douyin webid.
 func (c *Client) WebID() string {
-	c.webIDMu.RLock()
-	defer c.webIDMu.RUnlock()
+	c.webIDMu.Lock()
+	defer c.webIDMu.Unlock()
 	return c.webID
 }
 
@@ -428,11 +502,12 @@ func (c *Client) ResolvePlayRedirect(ctx context.Context, playURL string) (strin
 		}
 	}
 
-	cookieHeader, _, _, _, usingStore, err := c.resolveCookieContext(apiRequestSpec{endpoint: playURL})
+	reqCtx, err := c.resolveCookieContext(apiRequestSpec{endpoint: playURL})
 	if err != nil {
 		c.ReportAutomaticError(ctx, err)
 		return "", err
 	}
+	cookieHeader, usingStore := reqCtx.cookieHeader, reqCtx.usingStore
 	if ctx.Err() != nil {
 		return "", &site.Error{
 			Site:     site.Douyin,
@@ -727,6 +802,254 @@ type apiRawResponse struct {
 	header      http.Header
 	body        []byte
 	sentMSToken string
+	syncedWebID string
+	ttwidHash   string
+	webIDGen    uint64
+	diag        ResponseDiagnostics
+}
+
+type resolvedCookieContext struct {
+	cookieHeader string
+	msToken      string
+	uifid        string
+	verifyFp     string
+	ttwidHash    string
+	usingStore   bool
+}
+
+func hashTTWID(ttwid string) string {
+	ttwid = strings.TrimSpace(ttwid)
+	if ttwid == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(ttwid))
+	return hex.EncodeToString(sum[:])
+}
+
+func headerValueFold(h http.Header, name string) string {
+	if h == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(h.Get(name)); v != "" {
+		return v
+	}
+	for k, vals := range h {
+		if strings.EqualFold(k, name) {
+			for _, v := range vals {
+				if tv := strings.TrimSpace(v); tv != "" {
+					return tv
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// isValidServerWebID checks that raw is a 10..24 digit non-zero ASCII decimal ID
+// as emitted by Douyin's cookie_ttwidinfo_webid response header.
+func isValidServerWebID(raw string) bool {
+	s := strings.TrimSpace(raw)
+	if len(s) < 10 || len(s) > 24 {
+		return false
+	}
+	if s[0] < '1' || s[0] > '9' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func parseServerWebID(h http.Header) string {
+	v := strings.TrimSpace(headerValueFold(h, "cookie_ttwidinfo_webid"))
+	if !isValidServerWebID(v) {
+		return ""
+	}
+	return v
+}
+
+func buildResponseDiagnostics(statusCode int, header http.Header, body []byte, webIDSynced bool) ResponseDiagnostics {
+	diag := ResponseDiagnostics{
+		HTTPStatus:        statusCode,
+		BodyBytes:         len(body),
+		EmptyBody:         len(bytes.TrimSpace(body)) == 0,
+		HasBDTuringVerify: headerValueFold(header, "bdturing-verify") != "",
+		HasBDTuringParams: headerValueFold(header, "x-vc-bdturing-parameters") != "",
+		WebIDSynced:       webIDSynced,
+	}
+	if rawGuard := headerValueFold(header, guard.HeaderResult); rawGuard != "" {
+		if code, err := strconv.Atoi(rawGuard); err == nil {
+			diag.HasGuardResult = true
+			diag.GuardResultCode = code
+		}
+	}
+	return diag
+}
+
+func (c *Client) currentWebIDGen() uint64 {
+	c.webIDMu.Lock()
+	defer c.webIDMu.Unlock()
+	return c.webIDGen
+}
+
+func (c *Client) syncedWebIDFor(ttwidHash string) string {
+	if ttwidHash == "" {
+		return ""
+	}
+	c.webIDMu.Lock()
+	defer c.webIDMu.Unlock()
+	if c.syncedTTWIDHash == ttwidHash && c.syncedWebID != "" {
+		return c.syncedWebID
+	}
+	return ""
+}
+
+func (c *Client) recordSyncedWebID(ttwidHash, webID string, expectedGen uint64) {
+	if ttwidHash == "" || !isValidServerWebID(webID) {
+		return
+	}
+	webID = strings.TrimSpace(webID)
+	c.webIDMu.Lock()
+	if c.webIDGen == expectedGen {
+		c.syncedWebID = webID
+		c.syncedTTWIDHash = ttwidHash
+		c.webIDWarmupHash = ttwidHash
+	}
+	c.webIDMu.Unlock()
+}
+
+func (c *Client) markWebIDWarmupTried(ttwidHash string, expectedGen uint64) {
+	if ttwidHash == "" {
+		return
+	}
+	c.webIDMu.Lock()
+	if c.webIDGen == expectedGen {
+		c.webIDWarmupHash = ttwidHash
+	}
+	c.webIDMu.Unlock()
+}
+
+func (c *Client) clearSyncedWebID() {
+	c.webIDMu.Lock()
+	c.syncedWebID = ""
+	c.syncedTTWIDHash = ""
+	c.webIDWarmupHash = ""
+	c.webIDGen++
+	c.webIDMu.Unlock()
+}
+
+func (c *Client) applyLoginSyncedWebID(sentTTWIDHash, savedTTWIDHash, syncedWebID string) {
+	c.webIDMu.Lock()
+	c.syncedWebID = ""
+	c.syncedTTWIDHash = ""
+	c.webIDWarmupHash = ""
+	c.webIDGen++
+	if savedTTWIDHash != "" && savedTTWIDHash == sentTTWIDHash {
+		c.webIDWarmupHash = savedTTWIDHash
+		if isValidServerWebID(syncedWebID) {
+			c.syncedWebID = strings.TrimSpace(syncedWebID)
+			c.syncedTTWIDHash = savedTTWIDHash
+		}
+	}
+	c.webIDMu.Unlock()
+}
+
+// ensureServerWebIDForFavorites synchronizes cookie_ttwidinfo_webid via a single lightweight
+// read-only profile/self call on cold start when the active Cookie has a ttwid that has not
+// yet synced or attempted warmup. Concurrent callers for the same ttwid share one warmup call.
+func (c *Client) ensureServerWebIDForFavorites(ctx context.Context) error {
+	for {
+		if c.cred == nil || !c.cred.HasActiveCredential() {
+			return nil
+		}
+		ttwidHash := hashTTWID(c.cred.CookieValue("ttwid"))
+		if ttwidHash == "" {
+			return nil
+		}
+		c.webIDMu.Lock()
+		if c.syncedTTWIDHash == ttwidHash && c.syncedWebID != "" {
+			c.webIDMu.Unlock()
+			return nil
+		}
+		if c.webIDWarmupHash == ttwidHash {
+			c.webIDMu.Unlock()
+			return nil
+		}
+		if call := c.webIDWarmupCall; call != nil && call.ttwidHash == ttwidHash {
+			c.webIDMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return &site.Error{
+					Site:     site.Douyin,
+					Kind:     site.ErrKindNetwork,
+					Endpoint: site.SanitizeEndpoint(c.endpoints.ProfileSelf),
+					Message:  "请求已取消",
+					Err:      ctx.Err(),
+				}
+			case <-call.done:
+				if call.err != nil {
+					if call.callerCanceled {
+						if ctx.Err() != nil {
+							return &site.Error{
+								Site:     site.Douyin,
+								Kind:     site.ErrKindNetwork,
+								Endpoint: site.SanitizeEndpoint(c.endpoints.ProfileSelf),
+								Message:  "请求已取消",
+								Err:      ctx.Err(),
+							}
+						}
+						continue
+					}
+					return call.err
+				}
+				return nil
+			}
+		}
+		call := &webIDWarmupCall{
+			ttwidHash: ttwidHash,
+			done:      make(chan struct{}),
+		}
+		c.webIDWarmupCall = call
+		c.webIDMu.Unlock()
+
+		return c.executeWebIDWarmupCall(ctx, call)
+	}
+}
+
+func (c *Client) executeWebIDWarmupCall(ctx context.Context, call *webIDWarmupCall) (err error) {
+	defer func() {
+		canceled := ctx.Err() != nil
+		c.webIDMu.Lock()
+		call.err = err
+		call.callerCanceled = canceled
+		if c.webIDWarmupCall == call {
+			c.webIDWarmupCall = nil
+		}
+		close(call.done)
+		c.webIDMu.Unlock()
+	}()
+	return c.runWebIDWarmup(ctx)
+}
+
+func (c *Client) runWebIDWarmup(ctx context.Context) error {
+	_, err := c.GetSelfProfile(ctx)
+	if err != nil {
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		if site.IsKind(err, site.ErrKindAuthRequired) ||
+			site.IsKind(err, site.ErrKindRiskControl) ||
+			site.IsKind(err, site.ErrKindRateLimited) {
+			return err
+		}
+		// Non-fatal/transient profile/self error: let Favorites proceed with default webid
+		// without permanently suppressing future warmup attempts.
+		return nil
+	}
+	return nil
 }
 
 func cookieMapSessionFingerprint(cookies map[string]string) string {
@@ -920,14 +1243,14 @@ func ensureCookieHasMSToken(cookieHeader, msToken string) string {
 	return cookieHeader + "; msToken=" + msToken
 }
 
-func (c *Client) resolveCookieContext(spec apiRequestSpec) (cookieHeader, msToken, uifid, verifyFp string, usingStore bool, err error) {
+func (c *Client) resolveCookieContext(spec apiRequestSpec) (resolvedCookieContext, error) {
 	switch {
 	case spec.guestNoCookie:
 		tok, gErr := sign.GenerateMSToken(c.entropy)
 		if gErr != nil {
 			tok = "SYNTHETIC_FALLBACK_MSTOKEN=="
 		}
-		return "", tok, "", "", false, nil
+		return resolvedCookieContext{msToken: tok}, nil
 
 	case spec.candidateCookie != nil:
 		cleaned := credential.CleanDouyinCookieMap(spec.candidateCookie)
@@ -939,15 +1262,21 @@ func (c *Client) resolveCookieContext(spec apiRequestSpec) (cookieHeader, msToke
 			}
 		}
 		cookieHdr = ensureCookieHasMSToken(cookieHdr, tok)
-		return cookieHdr, tok, sign.ExtractUIFID(cleaned), sign.ExtractVerifyFp(cleaned), false, nil
+		return resolvedCookieContext{
+			cookieHeader: cookieHdr,
+			msToken:      tok,
+			uifid:        sign.ExtractUIFID(cleaned),
+			verifyFp:     sign.ExtractVerifyFp(cleaned),
+			ttwidHash:    hashTTWID(cleaned["ttwid"]),
+		}, nil
 
 	default:
 		if authErr := c.RequireAuth(spec.endpoint); authErr != nil {
-			return "", "", "", "", false, authErr
+			return resolvedCookieContext{}, authErr
 		}
 		cookieHdr := c.cred.CookieHeader()
 		if cookieHdr == "" {
-			return "", "", "", "", false, &site.Error{
+			return resolvedCookieContext{}, &site.Error{
 				Site:     site.Douyin,
 				Kind:     site.ErrKindAuthRequired,
 				Endpoint: spec.endpoint,
@@ -963,16 +1292,29 @@ func (c *Client) resolveCookieContext(spec apiRequestSpec) (cookieHeader, msToke
 		cookieHdr = ensureCookieHasMSToken(cookieHdr, tok)
 		uifidVal := strings.TrimSpace(c.cred.UIFID())
 		fpVal := strings.TrimSpace(c.cred.CookieValue("s_v_web_id"))
-		return cookieHdr, tok, uifidVal, fpVal, true, nil
+		return resolvedCookieContext{
+			cookieHeader: cookieHdr,
+			msToken:      tok,
+			uifid:        uifidVal,
+			verifyFp:     fpVal,
+			ttwidHash:    hashTTWID(c.cred.CookieValue("ttwid")),
+			usingStore:   true,
+		}, nil
 	}
 }
 
 func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRawResponse, error) {
-	cookieHeader, msToken, uifid, verifyFp, usingStore, err := c.resolveCookieContext(spec)
+	// Sample webIDGen BEFORE reading the credential store so any concurrent logout,
+	// expiry, or account switch (which mutates c.cred first and then advances webIDGen)
+	// strictly linearizes after this generation and prevents stale responses from
+	// overwriting the newer session's syncedWebID.
+	startWebIDGen := c.currentWebIDGen()
+	reqCtx, err := c.resolveCookieContext(spec)
 	if err != nil {
 		c.ReportAutomaticError(ctx, err)
 		return nil, err
 	}
+	cookieHeader, msToken, uifid, verifyFp, usingStore := reqCtx.cookieHeader, reqCtx.msToken, reqCtx.uifid, reqCtx.verifyFp, reqCtx.usingStore
 	if ctx.Err() != nil {
 		return nil, &site.Error{
 			Site:     site.Douyin,
@@ -1007,6 +1349,12 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 
 	params := make([]sign.Pair, 0, len(spec.params)+1)
 	params = append(params, spec.params...)
+	webIDSynced := false
+	if !spec.guestNoCookie && reqCtx.ttwidHash != "" {
+		if synced := c.syncedWebIDFor(reqCtx.ttwidHash); synced != "" {
+			webIDSynced = replaceSignPair(params, "webid", synced)
+		}
+	}
 	if spec.requireSign && msToken != "" && !hasSignPair(params, "msToken") {
 		params = append(params, sign.Pair{Key: "msToken", Value: msToken})
 	}
@@ -1136,21 +1484,49 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 		}
 	}
 
+	serverWebID := ""
+	if !spec.guestNoCookie && resp.StatusCode == http.StatusOK {
+		serverWebID = parseServerWebID(resp.Header)
+	}
+
 	if activeGuard != nil {
 		c.adoptGuardResponse(spec, activeGuard, usingStore, resp.Header, resp.Cookies())
 	}
 
+	diag := buildResponseDiagnostics(resp.StatusCode, resp.Header, body, webIDSynced)
 	rawResp := &apiRawResponse{
 		statusCode:  resp.StatusCode,
 		header:      resp.Header.Clone(),
 		body:        body,
 		sentMSToken: msToken,
+		syncedWebID: serverWebID,
+		ttwidHash:   reqCtx.ttwidHash,
+		webIDGen:    startWebIDGen,
+		diag:        diag,
 	}
 	if spec.emptyMeans != "" && rawResp.statusCode == http.StatusOK && len(bytes.TrimSpace(rawResp.body)) == 0 {
-		return nil, &site.Error{Site: site.Douyin, Kind: site.ErrKindUnavailable, HTTPStatus: http.StatusOK, Endpoint: sanitizeEndpointLabel(parsedURL), Message: spec.emptyMeans}
+		msg := spec.emptyMeans
+		switch {
+		case diag.HasBDTuringParams:
+			msg = likesBDTuringParamsMessage
+		case diag.HasBDTuringVerify:
+			msg = likesBDTuringVerifyMessage
+		}
+		se := &site.Error{
+			Site:       site.Douyin,
+			Kind:       site.ErrKindUnavailable,
+			HTTPStatus: http.StatusOK,
+			Endpoint:   sanitizeEndpointLabel(parsedURL),
+			Message:    msg,
+		}
+		attachResponseDiag(se, diag)
+		return nil, se
 	}
 	if err := c.classifyHTTPAndEnvelopeError(ctx, sanitizeEndpointLabel(parsedURL), rawResp, usingStore); err != nil {
 		return rawResp, err
+	}
+	if usingStore && reqCtx.ttwidHash != "" && serverWebID != "" {
+		c.recordSyncedWebID(reqCtx.ttwidHash, serverWebID, startWebIDGen)
 	}
 	return rawResp, nil
 }
@@ -1302,6 +1678,17 @@ func hasSignPair(pairs []sign.Pair, key string) bool {
 	return false
 }
 
+func replaceSignPair(pairs []sign.Pair, key, value string) bool {
+	replaced := false
+	for i := range pairs {
+		if pairs[i].Key == key {
+			pairs[i].Value = value
+			replaced = true
+		}
+	}
+	return replaced
+}
+
 func sanitizeEndpointLabel(u *url.URL) string {
 	if u == nil {
 		return ""
@@ -1309,10 +1696,14 @@ func sanitizeEndpointLabel(u *url.URL) string {
 	return u.Scheme + "://" + u.Host + u.Path
 }
 
-// classifyHTTPAndEnvelopeError inspects HTTP status, 0-byte bodies, HTML verification pages,
+// classifyHTTPAndEnvelopeError inspects HTTP status, BDTuring headers, 0-byte bodies, HTML verification pages,
 // Argus 403 gateway blocks, verify_center_decision_conf challenges, and status_code per douyin.md §9.1.
 func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint string, resp *apiRawResponse, usingStore bool) error {
 	trimmed := bytes.TrimSpace(resp.body)
+	diag := resp.diag
+	if diag.HTTPStatus == 0 {
+		diag = buildResponseDiagnostics(resp.statusCode, resp.header, resp.body, false)
+	}
 
 	switch {
 	case resp.statusCode == http.StatusUnauthorized:
@@ -1323,12 +1714,13 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 			Endpoint:   endpoint,
 			Message:    "抖音登录状态已失效（HTTP 401），请在设置页重新粘贴 Cookie",
 		}
+		attachResponseDiag(err, diag)
 		c.onClassifiedError(ctx, err, usingStore)
 		return err
 
 	case resp.statusCode == http.StatusForbidden:
 		bodyStr := string(trimmed)
-		if strings.Contains(bodyStr, "ArgusSecurityPlugin") || strings.Contains(strings.ToLower(bodyStr), "verify") {
+		if strings.Contains(bodyStr, "ArgusSecurityPlugin") || strings.Contains(strings.ToLower(bodyStr), "verify") || diag.HasBDTuringParams || diag.HasBDTuringVerify {
 			err := &site.Error{
 				Site:       site.Douyin,
 				Kind:       site.ErrKindRiskControl,
@@ -1336,6 +1728,7 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 				Endpoint:   endpoint,
 				Message:    "抖音安全网关拒绝了当前请求，已停止访问",
 			}
+			attachResponseDiag(err, diag)
 			c.ReportAutomaticError(ctx, err)
 			return err
 		}
@@ -1346,6 +1739,7 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 			Endpoint:   endpoint,
 			Message:    "抖音请求被限制（HTTP 403），已暂停访问",
 		}
+		attachResponseDiag(err, diag)
 		c.ReportAutomaticError(ctx, err)
 		return err
 
@@ -1357,6 +1751,7 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 			Endpoint:   endpoint,
 			Message:    fmt.Sprintf("抖音请求过于频繁（HTTP %d），已暂停自动请求", resp.statusCode),
 		}
+		attachResponseDiag(err, diag)
 		c.ReportAutomaticError(ctx, err)
 		return err
 
@@ -1368,6 +1763,7 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 			Endpoint:   endpoint,
 			Message:    fmt.Sprintf("抖音服务端暂时不可用（HTTP %d）", resp.statusCode),
 		}
+		attachResponseDiag(err, diag)
 		c.ReportAutomaticError(ctx, err)
 		return err
 
@@ -1386,6 +1782,7 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 			Endpoint:   endpoint,
 			Message:    msg,
 		}
+		attachResponseDiag(err, diag)
 		c.onClassifiedError(ctx, err, usingStore)
 		return err
 
@@ -1397,6 +1794,25 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 			Endpoint:   endpoint,
 			Message:    fmt.Sprintf("抖音接口返回异常状态码 HTTP %d", resp.statusCode),
 		}
+		attachResponseDiag(err, diag)
+		c.ReportAutomaticError(ctx, err)
+		return err
+	}
+
+	// BDTuring dynamic verification challenge headers (x-vc-bdturing-parameters / bdturing-verify).
+	if diag.HasBDTuringParams || diag.HasBDTuringVerify {
+		msg := "抖音触发动态校验拦截（bdturing-verify），已立即停止请求"
+		if diag.HasBDTuringParams {
+			msg = "抖音触发动态校验拦截（x-vc-bdturing-parameters），已立即停止请求"
+		}
+		err := &site.Error{
+			Site:       site.Douyin,
+			Kind:       site.ErrKindRiskControl,
+			HTTPStatus: resp.statusCode,
+			Endpoint:   endpoint,
+			Message:    msg,
+		}
+		attachResponseDiag(err, diag)
 		c.ReportAutomaticError(ctx, err)
 		return err
 	}
@@ -1410,6 +1826,7 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 			Endpoint:   endpoint,
 			Message:    "抖音返回空响应，疑似触发签名或风控拦截",
 		}
+		attachResponseDiag(err, diag)
 		c.ReportAutomaticError(ctx, err)
 		return err
 	}
@@ -1423,6 +1840,7 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 			Endpoint:   endpoint,
 			Message:    "抖音返回了非 JSON 验证页面，已立即停止请求",
 		}
+		attachResponseDiag(err, diag)
 		c.ReportAutomaticError(ctx, err)
 		return err
 	}
@@ -1431,7 +1849,7 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 	dec := json.NewDecoder(bytes.NewReader(trimmed))
 	dec.UseNumber()
 	if err := dec.Decode(&top); err != nil {
-		return &site.Error{
+		se := &site.Error{
 			Site:       site.Douyin,
 			Kind:       site.ErrKindSchemaChanged,
 			HTTPStatus: resp.statusCode,
@@ -1439,6 +1857,8 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 			Message:    "抖音返回 JSON 解析失败",
 			Err:        err,
 		}
+		attachResponseDiag(se, diag)
+		return se
 	}
 
 	if hasNonEmptyChallengeField(top) {
@@ -1449,6 +1869,7 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 			Endpoint:   endpoint,
 			Message:    "抖音触发验证码挑战，已立即停止请求",
 		}
+		attachResponseDiag(err, diag)
 		c.ReportAutomaticError(ctx, err)
 		return err
 	}
@@ -1466,6 +1887,7 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 					Endpoint:   endpoint,
 					Message:    "抖音直播间触发验证挑战，已立即停止请求",
 				}
+				attachResponseDiag(err, diag)
 				c.ReportAutomaticError(ctx, err)
 				return err
 			}
@@ -1486,6 +1908,7 @@ func (c *Client) classifyHTTPAndEnvelopeError(ctx context.Context, endpoint stri
 	}
 
 	se := classifyStatusCode(code, statusMsg, endpoint, resp.statusCode)
+	attachResponseDiag(se, diag)
 	c.onClassifiedError(ctx, se, usingStore)
 	return se
 }
@@ -1611,14 +2034,15 @@ func (c *Client) onClassifiedError(ctx context.Context, se *site.Error, usingSto
 }
 
 func (c *Client) markAuthExpired(reason string) {
-	c.clearFallbackMSToken()
-	c.clearEphemeralGuard()
 	if strings.TrimSpace(reason) == "" {
 		reason = "抖音登录状态已失效，请在设置页重新粘贴 Cookie"
 	}
 	if c.cred != nil {
 		_, _ = c.cred.MarkState("expired", reason)
 	}
+	c.clearFallbackMSToken()
+	c.clearSyncedWebID()
+	c.clearEphemeralGuard()
 	c.cbMu.RLock()
 	cb := c.authExpired
 	c.cbMu.RUnlock()

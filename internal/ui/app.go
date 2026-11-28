@@ -520,6 +520,8 @@ type App struct {
 	SubListState   ui.ListState
 	SubSearchQuery string
 	subListQuery   string
+	SubSort        string // "default" | "recent"
+	subListSort    string
 	CheckDone      int
 	CheckTotal     int
 	SelectedSubID  string
@@ -538,6 +540,7 @@ type App struct {
 	SubDetailTab         string // "content" | "accounts"
 	SubAccountMenuKey    string
 	SubFeedSubID         string
+	SubFeedAccountKey    string // "" = all linked accounts, or "<site>:<uid>" for single-account view (DEC-095)
 	SubFeedRefsKey       string
 	SubFeedItems         []library.FeedEntry
 	SubFeedListState     *ui.ListState
@@ -689,16 +692,20 @@ type App struct {
 	companion CompanionAPI
 	Mobile    MobileUIState
 	// Settings → 网络: the custom proxy address being typed and why it was refused.
-	ProxyDraftURL       string
-	ProxyError          string
-	proxyEditing        bool
-	proxyDraftLoaded    bool
-	proxyComposing      bool
-	CacheDirInput       string
-	AddLibraryRootInput string
-	MoveExistingFiles   bool
-	ConfirmLogoutOpen   bool
-	ConfirmLogoutSite   string
+	ProxyDraftURL          string
+	ProxyError             string
+	proxyEditing           bool
+	proxyDraftLoaded       bool
+	proxyComposing         bool
+	CacheDirInput          string
+	AddLibraryRootInput    string
+	MoveExistingFiles      bool
+	ConfirmLogoutOpen      bool
+	ConfirmLogoutSite      string
+	SettingsPasteSite      string // "" | "douyin" | "weibo" | "x"
+	SettingsPasteInput     string
+	SettingsPasteComposing bool
+	SettingsPasteError     string
 
 	// Updates of TRACE (FR-UPD-002).
 	updater            UpdaterAPI
@@ -783,6 +790,8 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 		SelectedPartPages:        make(map[int]bool),
 		UserTab:                  "dynamics",
 		SubDetailTab:             normalizeSubDetailTab(uiSt.SubDetailTab),
+		SubSort:                  uistate.NormalizeSubSort(uiSt.SubSort),
+		subListSort:              uistate.NormalizeSubSort(uiSt.SubSort),
 		ImportSite:               string(site.Bilibili),
 		ImportSelectedMids:       make(map[int64]bool),
 		ImportSelectedKeys:       make(map[string]bool),

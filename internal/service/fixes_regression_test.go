@@ -50,6 +50,8 @@ func TestExternalURLValidationRejectsUnsafeSchemes(t *testing.T) {
 		"https://user:pass@example.com/path",
 		"https://example.com/has space",
 		"https://example.com/line\nbreak",
+		`https://example.com/back\slash`,
+		"http://:8080/path",
 		"http:///missing-host",
 	}
 	for _, raw := range rejected {
@@ -60,6 +62,7 @@ func TestExternalURLValidationRejectsUnsafeSchemes(t *testing.T) {
 	allowed := []string{
 		"https://live.bilibili.com/12345",
 		"https://live.douyin.com/998877",
+		"https://example.com/docs?a=1&copy=2#sec-1",
 		"http://127.0.0.1:8080/ok",
 	}
 	for _, raw := range allowed {

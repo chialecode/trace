@@ -936,3 +936,87 @@ func TestMineDouyinWatchHistoryGridPaginationDetailBackAndSignOut(t *testing.T) 
 		t.Fatalf("douyin watch history stayed selected after sign-out: %q", app.Mine.Kind)
 	}
 }
+
+func TestMineSameAccountReloginClearsFailedListsAndAutoReloadsActiveView(t *testing.T) {
+	app, stub, cleanup := newMineApp(t)
+	defer cleanup()
+	stub.mu.Lock()
+	stub.logged["douyin"] = true
+	stub.pages["douyin/following//"] = service.AccountPage{
+		Items: []service.AccountItem{{Kind: service.AccountItemUser, Site: "douyin", ID: "MS4wLjABAAAA_follow_01", Title: "已关注博主"}},
+	}
+	stub.errs["douyin/likes//"] = &site.Error{Site: site.Douyin, Kind: site.ErrKindUnavailable, Message: "抖音“喜欢”列表返回空响应"}
+	stub.mu.Unlock()
+
+	app.Navigate(RouteMine)
+	// Load following successfully, then switch to likes which fails.
+	app.mineSelect("douyin", service.AccountFollowing)
+	app.mineSelect("douyin", service.AccountLikes)
+	tt := ui.NewTester(app.View, 1280, 860)
+	tt.Frame()
+
+	followingList := app.Mine.Lists["douyin/following/"]
+	likesList := app.Mine.Lists["douyin/likes/"]
+	if followingList == nil || !followingList.Loaded {
+		t.Fatalf("expected loaded douyin/following list, got %+v", followingList)
+	}
+	if likesList == nil || likesList.Loaded || likesList.Err == "" {
+		t.Fatalf("expected failed douyin/likes list, got %+v", likesList)
+	}
+	if stub.calls["douyin/following//"] != 1 || stub.calls["douyin/likes//"] != 1 {
+		t.Fatalf("unexpected initial calls: %v", stub.calls)
+	}
+
+	// Same-account re-login while staying on failed douyin/likes view:
+	// keeps loaded following list, clears failed likes cache, and auto-reloads likes.
+	stub.mu.Lock()
+	delete(stub.errs, "douyin/likes//")
+	stub.pages["douyin/likes//"] = service.AccountPage{Items: mineDouyinWorks("7660000000000001", 3)}
+	stub.mu.Unlock()
+
+	app.handleBackendEvent(service.Event{Type: service.EventAccountChanged, Site: "douyin", Message: "logged_in"})
+	tt.Frame()
+
+	if app.Mine.Lists["douyin/following/"] != followingList || stub.calls["douyin/following//"] != 1 {
+		t.Fatalf("same-account re-login unexpectedly cleared loaded following list: calls=%v", stub.calls)
+	}
+	reloaded := app.Mine.Lists["douyin/likes/"]
+	if reloaded == nil || !reloaded.Loaded || reloaded.Err != "" || len(reloaded.Items) != 3 {
+		t.Fatalf("expected auto-reloaded likes list after same-account re-login, got %+v", reloaded)
+	}
+	if stub.calls["douyin/likes//"] != 2 {
+		t.Fatalf("expected likes call count = 2 after auto-reload, got %d", stub.calls["douyin/likes//"])
+	}
+
+	// When the user is away from RouteMine (e.g. on RouteLogin) while likes is in failed state,
+	// same-account re-login clears the stale failed cache without issuing a premature request,
+	// and returning to RouteMine reloads it automatically.
+	stub.mu.Lock()
+	stub.errs["douyin/likes//"] = &site.Error{Site: site.Douyin, Kind: site.ErrKindUnavailable, Message: "临时失败"}
+	stub.mu.Unlock()
+	app.mineRefresh()
+	if cur := app.Mine.Lists["douyin/likes/"]; cur == nil || cur.Loaded || cur.Err == "" {
+		t.Fatalf("expected failed likes state after refresh, got %+v", cur)
+	}
+	app.Navigate(RouteLogin)
+	stub.mu.Lock()
+	delete(stub.errs, "douyin/likes//")
+	stub.mu.Unlock()
+
+	callsBefore := stub.calls["douyin/likes//"]
+	app.handleBackendEvent(service.Event{Type: service.EventAccountChanged, Site: "douyin", Message: "logged_in"})
+	if _, stillCached := app.Mine.Lists["douyin/likes/"]; stillCached {
+		t.Fatal("stale failed likes cache was not cleared on same-account re-login")
+	}
+	if stub.calls["douyin/likes//"] != callsBefore {
+		t.Fatalf("re-login while off RouteMine should not fetch before returning: %d -> %d", callsBefore, stub.calls["douyin/likes//"])
+	}
+	app.Navigate(RouteMine)
+	tt.Frame()
+	if cur := app.Mine.Lists["douyin/likes/"]; cur == nil || !cur.Loaded || cur.Err != "" || len(cur.Items) != 3 {
+		t.Fatalf("returning to RouteMine did not reload cleared likes list: %+v", cur)
+	}
+	if stub.calls["douyin/likes//"] != callsBefore+1 {
+		t.Fatalf("expected likes reload upon returning to RouteMine: %d -> %d", callsBefore, stub.calls["douyin/likes//"])
+	}
+}

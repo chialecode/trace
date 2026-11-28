@@ -53,6 +53,8 @@ func (a *App) renderConnectionGate(c *ui.Context) {
 						ui.Text(c, computerName).FontSize(20).FontWeight(600).TextColor(theme.ColorTextMain).TextAlign(ui.Center)
 					}
 
+					a.renderPendingShareBanner(c, false)
+
 					if connState == pagekit.ConnConnecting {
 						addr := tryingAddr
 						if addr == "" && len(rec.Addrs) > 0 {
@@ -127,5 +129,42 @@ func (a *App) renderConnectionGate(c *ui.Context) {
 						})
 					}
 				})
+		})
+}
+
+func (a *App) renderPendingShareBanner(c *ui.Context, unpaired bool) {
+	pending := a.pendingShareSnapshot()
+	if pending == "" {
+		return
+	}
+	preview := pending
+	if runes := []rune(preview); len(runes) > 64 {
+		preview = string(runes[:64]) + "…"
+	}
+	title := "已收到分享链接，连接电脑后将自动发送缓存"
+	if unpaired {
+		title = "已收到分享链接，配对并连接电脑后将自动发送缓存"
+	}
+	ui.Column(c).
+		Label("待发送分享链接提示").
+		FillWidth().
+		Padding(10, 12).
+		Radius(10).
+		Background(theme.ColorAccentBg).
+		Border(1, ui.RGBA(26, 115, 232, 0.30)).
+		Gap(6).
+		ClipX().
+		Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
+				ui.Text(c, title).FontSize(12).FontWeight(600).LineHeight(theme.LineHeightCompact).TextColor(theme.ColorAccent).MaxLines(2).Grow(1).Shrink(1)
+				dismissBtn := ui.ButtonBase(c).Label("取消待发送的分享链接").Padding(4, 8).MinHeight(32).Shrink(0).Center()
+				dismissBtn.Children(func() {
+					ui.Text(c, "取消").FontSize(12).TextColor(theme.ColorTextMuted).SingleLine()
+				})
+				if dismissBtn.Clicked() {
+					a.clearPendingShare()
+				}
+			})
+			ui.Text(c, preview).FontSize(12).TextColor(theme.ColorTextMuted).MaxLines(2)
 		})
 }

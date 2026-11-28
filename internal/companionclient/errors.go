@@ -56,6 +56,7 @@ const (
 type Error struct {
 	Kind           ErrorKind
 	Code           string
+	Site           string
 	Message        string
 	ServerVersion  string
 	ServerProtocol string
@@ -104,6 +105,9 @@ func (e *Error) UserMessage() string {
 		}
 		return base + "请更新手机上的 TRACE"
 	case KindRateLimited:
+		if e.Site != "" && e.Message != "" {
+			return e.Message
+		}
 		return "尝试次数过多，请 10 分钟后再试"
 	case KindDesktopLoggedOut:
 		return "请先在电脑上登录一个站点"

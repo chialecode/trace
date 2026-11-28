@@ -42,8 +42,9 @@ type richTextOptions struct {
 }
 
 // ValidateSafeJumpURL validates an external jump URL strictly at the UI boundary:
-// only clean http:// and https:// URLs with a non-empty host and no userinfo,
-// whitespace, backslashes, or control characters are permitted (DEC-073).
+// only clean http:// and https:// URLs with a non-empty host, no userinfo,
+// whitespace, backslashes, or control characters, and no forbidden media CDN hosts
+// or signed/credential query markers are permitted (DEC-073).
 func ValidateSafeJumpURL(rawURL string) (string, bool) {
 	s := strings.TrimSpace(rawURL)
 	if s == "" {
@@ -54,15 +55,102 @@ func ValidateSafeJumpURL(rawURL string) (string, bool) {
 			return "", false
 		}
 	}
-	u, err := url.ParseRequestURI(s)
-	if err != nil || u.Host == "" || strings.TrimSpace(u.Hostname()) == "" || u.User != nil {
+	if hasUnsafeJumpSecretMarker(s) {
+		return "", false
+	}
+	u, err := url.Parse(s)
+	if err != nil || !u.IsAbs() || u.Host == "" || strings.TrimSpace(u.Hostname()) == "" || u.User != nil {
 		return "", false
 	}
 	if !strings.EqualFold(u.Scheme, "https") && !strings.EqualFold(u.Scheme, "http") {
 		return "", false
 	}
+	host := strings.ToLower(u.Hostname())
+	if isForbiddenJumpHost(host) {
+		return "", false
+	}
 	u.Scheme = strings.ToLower(u.Scheme)
 	return u.String(), true
+}
+
+func isForbiddenJumpHost(host string) bool {
+	return host == "video.twimg.com" || strings.HasSuffix(host, ".video.twimg.com") ||
+		host == "video-s.twimg.com" ||
+		host == "pbs.twimg.com" ||
+		host == "ton.x.com" ||
+		host == "ton.twitter.com" ||
+		host == "pscp.tv" || strings.HasSuffix(host, ".pscp.tv") ||
+		host == "periscope.tv" || strings.HasSuffix(host, ".periscope.tv") ||
+		host == "weibocdn.com" || strings.HasSuffix(host, ".weibocdn.com") ||
+		host == "video.weibo.com" ||
+		host == "sinaimg.cn" || strings.HasSuffix(host, ".sinaimg.cn")
+}
+
+func isJumpMarkerBoundaryByte(b byte) bool {
+	switch b {
+	case '?', '&', ';', '#', '/', '%', ':', '=', ' ', '\t':
+		return true
+	default:
+		return false
+	}
+}
+
+func hasUnsafeJumpSecretMarker(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "authorization: bearer") ||
+		strings.Contains(lower, "authorization:bearer") ||
+		strings.Contains(lower, "authorization%3a") {
+		return true
+	}
+	for _, marker := range []string{
+		"x-amz-signature=", "x-amz-signature%3d",
+		"x-amz-credential=", "x-amz-credential%3d",
+		"x-amz-security-token=", "x-amz-security-token%3d",
+		"key-pair-id=", "key-pair-id%3d",
+		"signature=", "signature%3d",
+		"sig=", "sig%3d",
+		"ssig=", "ssig%3d",
+		"expires=", "expires%3d",
+		"x-expires=", "x-expires%3d",
+		"x-signature=", "x-signature%3d",
+		"policy=", "policy%3d",
+		"token=", "token%3d",
+		"access_token=", "access_token%3d",
+		"auth_token=", "auth_token%3d",
+		"ct0=", "ct0%3d",
+		"kdt=", "kdt%3d",
+		"twid=", "twid%3d",
+		"guest_id=", "guest_id%3d",
+		"x-csrf-token=", "x-csrf-token%3d", "x-csrf-token:", "x-csrf-token%3a",
+		"x-client-transaction-id=", "x-client-transaction-id%3d", "x-client-transaction-id:", "x-client-transaction-id%3a",
+		"sessdata=", "sessdata%3d",
+		"bili_jct=", "bili_jct%3d",
+		"ac_time_value=", "ac_time_value%3d",
+		"sessionid=", "sessionid%3d",
+		"a_bogus=", "x-bogus=", "w_rid=", "upsig=",
+		"sub=", "sub%3d",
+		"subp=", "subp%3d",
+		"wbpsess=", "wbpsess%3d",
+		"xsrf-token=", "xsrf-token%3d",
+		"x-xsrf-token=", "x-xsrf-token%3d",
+		"scf=", "alf=", "alc=", "ssologinstate=", "suhb=", "pc_token=", "_t_wm=",
+	} {
+		idx := strings.Index(lower, marker)
+		for idx >= 0 {
+			if idx == 0 || isJumpMarkerBoundaryByte(lower[idx-1]) {
+				return true
+			}
+			next := strings.Index(lower[idx+len(marker):], marker)
+			if next < 0 {
+				break
+			}
+			idx += len(marker) + next
+		}
+	}
+	return false
 }
 
 // openExternalURL opens a validated HTTP(S) hyperlink via the backend Desktop
@@ -149,10 +237,29 @@ func parseRichTextParagraphs(text string, links []service.TextLinkDTO, highlight
 		return nil, false
 	}
 
-	// Sanitize incoming structured links once and build both sequential label list
-	// and exact URL -> preferred display label lookup (for X expanded URLs in text).
+	// Sanitize incoming structured links once and build sequential label list
+	// plus both exact and normalized URL -> preferred display label lookup
+	// (handling scheme/host case, percent-encoding, and cached fragment stripping).
 	validLinks := make([]service.TextLinkDTO, 0, len(links))
-	urlToLabel := make(map[string]string, len(links))
+	urlToLabel := make(map[string]string, len(links)*3)
+	recordURLLabel := func(rawU, lbl string) {
+		if rawU == "" || lbl == "" {
+			return
+		}
+		if _, exists := urlToLabel[rawU]; !exists {
+			urlToLabel[rawU] = lbl
+		}
+		if normFull := canonicalJumpURLKey(rawU, false); normFull != "" {
+			if _, exists := urlToLabel[normFull]; !exists {
+				urlToLabel[normFull] = lbl
+			}
+		}
+		if normBase := canonicalJumpURLKey(rawU, true); normBase != "" {
+			if _, exists := urlToLabel[normBase]; !exists {
+				urlToLabel[normBase] = lbl
+			}
+		}
+	}
 	for _, l := range links {
 		cleanU, ok := ValidateSafeJumpURL(l.URL)
 		if !ok {
@@ -163,8 +270,21 @@ func parseRichTextParagraphs(text string, links []service.TextLinkDTO, highlight
 			lbl = FormatConciseLinkLabel(cleanU)
 		}
 		validLinks = append(validLinks, service.TextLinkDTO{Label: lbl, URL: cleanU})
-		if _, exists := urlToLabel[cleanU]; !exists {
-			urlToLabel[cleanU] = lbl
+		recordURLLabel(cleanU, lbl)
+	}
+
+	// Pre-compute whether each structured link's URL or label appears literally in
+	// trimmed text so legacy cached items containing raw t.co links can safely pair
+	// with unmatched expanded links without stealing links already present elsewhere.
+	lowerTrimmed := strings.ToLower(trimmed)
+	explicitlyPresent := make([]bool, len(validLinks))
+	for i, vl := range validLinks {
+		if strings.Contains(lowerTrimmed, strings.ToLower(vl.URL)) {
+			explicitlyPresent[i] = true
+			continue
+		}
+		if vl.Label != "" && !strings.EqualFold(vl.Label, "网页链接") && strings.Contains(lowerTrimmed, strings.ToLower(vl.Label)) {
+			explicitlyPresent[i] = true
 		}
 	}
 
@@ -179,7 +299,7 @@ func parseRichTextParagraphs(text string, links []service.TextLinkDTO, highlight
 			paragraphs = append(paragraphs, richParagraph{})
 			continue
 		}
-		spans := tokenizeRichLine(line, validLinks, usedLinks, urlToLabel, highlightHashtags)
+		spans := tokenizeRichLine(line, validLinks, usedLinks, explicitlyPresent, urlToLabel, highlightHashtags)
 		for _, sp := range spans {
 			if sp.Kind != richSpanPlain {
 				hasRich = true
@@ -203,6 +323,7 @@ func tokenizeRichLine(
 	line string,
 	validLinks []service.TextLinkDTO,
 	usedLinks []bool,
+	explicitlyPresent []bool,
 	urlToLabel map[string]string,
 	highlightHashtags bool,
 ) []richSpan {
@@ -217,7 +338,13 @@ func tokenizeRichLine(
 			break
 		}
 		urlStart := pos + relIdx
-		rawEnd := scanInlineURLEnd(line, urlStart, isSinaWeibo)
+		var rawEnd int
+		if !isSinaWeibo {
+			rawEnd = matchStructuredURLPrefix(line, urlStart, validLinks)
+		}
+		if rawEnd <= urlStart {
+			rawEnd = scanInlineURLEnd(line, urlStart, isSinaWeibo)
+		}
 		candURL, cleanEnd := trimTrailingURLPunctuation(line, urlStart, rawEnd)
 		resolvedCand := candURL
 		if isSinaWeibo {
@@ -237,26 +364,51 @@ func tokenizeRichLine(
 		matchEnd := cleanEnd
 		label := ""
 
-		// Recognize legacy "标题 (https://...)" / "标题 (sinaweibo://...)" or fullwidth equivalents from older cached items.
-		if legStart, legEnd, legLabel, legOK := matchLegacyParenthesizedLabel(line, urlStart, cleanEnd); legOK {
-			matchStart = legStart
-			matchEnd = legEnd
-			label = legLabel
-		}
-
+		// First try matching against structured validLinks (exact or normalized URL,
+		// including cached items where item.Links stripped #fragment while text kept it).
 		matchedSlot := -1
 		for i, vl := range validLinks {
-			if !usedLinks[i] && vl.URL == cleanURL {
+			if !usedLinks[i] && urlsMatchForRichLink(vl.URL, cleanURL) {
 				matchedSlot = i
-				if label == "" {
-					label = vl.Label
-				}
+				label = vl.Label
 				break
 			}
 		}
+
+		// Legacy cached X item fallback: when text still contains a raw t.co short link
+		// while item.Links holds the expanded destination not literally present in text,
+		// pair in order so clicking opens the expanded safe URL with its display label.
+		if matchedSlot < 0 && !isSinaWeibo && isTCoJumpURL(cleanURL) {
+			for i, vl := range validLinks {
+				if usedLinks[i] || isTCoJumpURL(vl.URL) {
+					continue
+				}
+				if i < len(explicitlyPresent) && explicitlyPresent[i] {
+					continue
+				}
+				matchedSlot = i
+				cleanURL = vl.URL
+				label = vl.Label
+				break
+			}
+		}
+
+		mappedLabel := lookupMappedURLLabel(urlToLabel, cleanURL)
+
+		// Recognize legacy pre-DEC-073 "标题 (https://...)" / "标题 (sinaweibo://...)" wrappers
+		// ONLY for sinaweibo:// or when no structured link matched this URL and the preceding
+		// label looks like a legacy anchor label (never swallowing English prose before "(https://...)").
+		if isSinaWeibo || (matchedSlot < 0 && mappedLabel == "") {
+			if legStart, legEnd, legLabel, legOK := matchLegacyParenthesizedLabel(line, urlStart, cleanEnd, isSinaWeibo, cleanURL); legOK {
+				matchStart = legStart
+				matchEnd = legEnd
+				label = legLabel
+			}
+		}
+
 		if label == "" {
-			if mapped, exists := urlToLabel[cleanURL]; exists && mapped != "" {
-				label = mapped
+			if mappedLabel != "" {
+				label = mappedLabel
 			} else {
 				label = FormatConciseLinkLabel(cleanURL)
 			}
@@ -274,22 +426,22 @@ func tokenizeRichLine(
 		pos = matchEnd
 	}
 
-	// 2. Match remaining structured links (e.g. Weibo "网页链接", article title, "#话题#", "@昵称")
-	// sequentially left-to-right on unclaimed spans of this line.
+	// 2. Match remaining structured links (e.g. Weibo "网页链接", article title, "#话题#", "@昵称",
+	// or X display_url with optional case/www./ellipsis differences) sequentially left-to-right.
 	searchFrom := 0
 	for i, vl := range validLinks {
 		if usedLinks[i] || vl.Label == "" {
 			continue
 		}
-		idx := findUnclaimedLineSpan(line, vl.Label, searchFrom, matches)
+		idx, spanLen := findUnclaimedLineSpan(line, vl.Label, searchFrom, matches)
 		if idx < 0 && searchFrom > 0 {
-			idx = findUnclaimedLineSpan(line, vl.Label, 0, matches)
+			idx, spanLen = findUnclaimedLineSpan(line, vl.Label, 0, matches)
 		}
-		if idx < 0 {
+		if idx < 0 || spanLen <= 0 {
 			continue
 		}
 		usedLinks[i] = true
-		end := idx + len(vl.Label)
+		end := idx + spanLen
 		matches = append(matches, lineLinkMatch{
 			Start:    idx,
 			End:      end,
@@ -299,6 +451,10 @@ func tokenizeRichLine(
 		})
 		searchFrom = end
 	}
+
+	// 3. Detect unambiguous bare web URLs without http(s):// (e.g. historical cached X text
+	// containing "github.com/org/repo" or "www.example.com/docs" when item.Links is empty).
+	matches = appendBareDomainMatches(line, matches)
 
 	if len(matches) == 0 {
 		return buildPlainOrHashtagSpans(line, highlightHashtags)
@@ -338,6 +494,135 @@ func tokenizeRichLine(
 	return out
 }
 
+func canonicalJumpURLKey(rawURL string, stripFragment bool) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		port = ""
+	}
+	hostPart := host
+	if port != "" {
+		hostPart += ":" + port
+	}
+	p := strings.TrimRight(u.EscapedPath(), "/")
+	key := scheme + "://" + hostPart + p
+	if u.RawQuery != "" {
+		key += "?" + u.RawQuery
+	}
+	if !stripFragment && u.Fragment != "" {
+		key += "#" + u.Fragment
+	}
+	return key
+}
+
+func urlsMatchForRichLink(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if ka, kb := canonicalJumpURLKey(a, false), canonicalJumpURLKey(b, false); ka != "" && ka == kb {
+		return true
+	}
+	ua, errA := url.Parse(a)
+	ub, errB := url.Parse(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	// Match when one side dropped #fragment (e.g. item.json SanitizeItemLinks) while the other kept it.
+	if (ua.Fragment == "" && ub.Fragment != "") || (ua.Fragment != "" && ub.Fragment == "") {
+		ka := canonicalJumpURLKey(a, true)
+		kb := canonicalJumpURLKey(b, true)
+		return ka != "" && ka == kb
+	}
+	return false
+}
+
+func lookupMappedURLLabel(urlToLabel map[string]string, cleanURL string) string {
+	if len(urlToLabel) == 0 || cleanURL == "" {
+		return ""
+	}
+	if lbl, ok := urlToLabel[cleanURL]; ok && lbl != "" {
+		return lbl
+	}
+	if k := canonicalJumpURLKey(cleanURL, false); k != "" {
+		if lbl, ok := urlToLabel[k]; ok && lbl != "" {
+			return lbl
+		}
+	}
+	if k := canonicalJumpURLKey(cleanURL, true); k != "" {
+		if lbl, ok := urlToLabel[k]; ok && lbl != "" {
+			return lbl
+		}
+	}
+	return ""
+}
+
+func isTCoJumpURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Hostname(), "t.co")
+}
+
+func matchStructuredURLPrefix(line string, urlStart int, validLinks []service.TextLinkDTO) int {
+	if len(validLinks) == 0 || urlStart >= len(line) {
+		return 0
+	}
+	rest := line[urlStart:]
+	bestEnd := 0
+	checkCandidate := func(cand string) {
+		if cand == "" || len(cand) > len(rest) {
+			return
+		}
+		if !strings.EqualFold(rest[:len(cand)], cand) {
+			return
+		}
+		end := urlStart + len(cand)
+		if end < len(line) && !isStructuredURLMatchEnd(line, end) {
+			return
+		}
+		if end > bestEnd {
+			bestEnd = end
+		}
+	}
+	for _, vl := range validLinks {
+		checkCandidate(vl.URL)
+		if decoded, err := url.PathUnescape(vl.URL); err == nil && decoded != vl.URL && utf8.ValidString(decoded) {
+			checkCandidate(decoded)
+		}
+	}
+	return bestEnd
+}
+
+func isStructuredURLMatchEnd(line string, end int) bool {
+	if end >= len(line) {
+		return true
+	}
+	r, w := utf8.DecodeRuneInString(line[end:])
+	if r <= 0x20 || r == 0x7f || unicode.IsSpace(r) {
+		return true
+	}
+	switch r {
+	case ')', ']', '}', '"', '\'', '<', '>', '`', '\\':
+		return true
+	case '.', ',', ';', ':', '!', '?':
+		nextPos := end + w
+		if nextPos >= len(line) {
+			return true
+		}
+		nr, _ := utf8.DecodeRuneInString(line[nextPos:])
+		return nr <= 0x20 || nr == 0x7f || unicode.IsSpace(nr) ||
+			nr == ')' || nr == ']' || nr == '}' || nr == '"' || nr == '\'' ||
+			isNonASCIIURLDelimiter(nr) || isCJKScriptRune(nr)
+	}
+	return isNonASCIIURLDelimiter(r) || isCJKScriptRune(r)
+}
+
 func buildPlainOrHashtagSpans(segment string, highlightHashtags bool) []richSpan {
 	if segment == "" {
 		return nil
@@ -355,6 +640,53 @@ func buildPlainOrHashtagSpans(segment string, highlightHashtags bool) []richSpan
 		}
 	}
 	return out
+}
+
+// asciiLower lowercases only ASCII bytes 'A'..'Z' -> 'a'..'z', leaving every
+// non-ASCII UTF-8 byte untouched so len(asciiLower(s)) == len(s) always holds
+// and byte offsets computed on the lowered string can safely slice s.
+func asciiLower(s string) string {
+	hasUpper := false
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			hasUpper = true
+			break
+		}
+	}
+	if !hasUpper {
+		return s
+	}
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
+// asciiEqualFold reports whether a and b have identical byte lengths and match
+// when ASCII 'A'..'Z' are folded to 'a'..'z' (all non-ASCII bytes match literally).
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca == cb {
+			continue
+		}
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
 }
 
 func indexInlineLinkPrefix(s string) (idx int, isSinaWeibo bool) {
@@ -376,7 +708,8 @@ func indexInlineLinkPrefix(s string) (idx int, isSinaWeibo bool) {
 		return best, bestSina
 	}
 	// Fallback case-insensitive check only if mixed-case scheme exists.
-	lower := strings.ToLower(s)
+	// Use asciiLower so byte offsets never drift on variable-width Unicode lowercase runes (e.g. İ).
+	lower := asciiLower(s)
 	check(strings.Index(lower, "https://"), false)
 	check(strings.Index(lower, "http://"), false)
 	check(strings.Index(lower, "sinaweibo://"), true)
@@ -418,17 +751,73 @@ func scanInlineURLEnd(line string, start int, isSinaWeibo bool) int {
 	return scanRawURLEnd(line, start)
 }
 
+func isNonASCIIURLDelimiter(r rune) bool {
+	if r <= 0x7e {
+		return false
+	}
+	if r >= 0xFF00 && r <= 0xFFEF {
+		return true
+	}
+	return unicode.IsPunct(r) || unicode.IsSymbol(r) || unicode.IsSpace(r)
+}
+
+func isCJKScriptRune(r rune) bool {
+	return unicode.Is(unicode.Han, r) ||
+		unicode.Is(unicode.Hiragana, r) ||
+		unicode.Is(unicode.Katakana, r) ||
+		unicode.Is(unicode.Hangul, r)
+}
+
+func isURLSegmentDelimiterRune(r rune) bool {
+	switch r {
+	case '/', '?', '&', '=', '#', '_', '-', '%', '+', ':':
+		return true
+	default:
+		return false
+	}
+}
+
 func scanRawURLEnd(s string, start int) int {
 	i := start
+	sep := strings.Index(s[start:], "://")
+	afterAuthority := start
+	if sep >= 0 {
+		afterAuthority = start + sep + 3
+	}
+	inPathOrQuery := false
+	inNonASCIISeg := false
+	var prevRune rune
 	for i < len(s) {
 		r, w := utf8.DecodeRuneInString(s[i:])
 		if r <= 0x20 || r == 0x7f || unicode.IsSpace(r) {
 			break
 		}
-		// Stop before quotes, angle brackets, backslashes, or non-ASCII CJK text/fullwidth punctuation.
-		if r == '"' || r == '\'' || r == '<' || r == '>' || r == '`' || r == '\\' || r > 0x7e {
+		if r == '"' || r == '\'' || r == '<' || r == '>' || r == '`' || r == '\\' {
 			break
 		}
+		if i >= afterAuthority && (r == '/' || r == '?' || r == '#') {
+			inPathOrQuery = true
+		}
+		if r > 0x7e {
+			if isNonASCIIURLDelimiter(r) {
+				break
+			}
+			if isCJKScriptRune(r) {
+				if !inPathOrQuery || (!inNonASCIISeg && !isURLSegmentDelimiterRune(prevRune)) {
+					break
+				}
+				inNonASCIISeg = true
+			} else if inPathOrQuery {
+				inNonASCIISeg = true
+			} else {
+				break
+			}
+		} else {
+			if isURLSegmentDelimiterRune(r) {
+				inNonASCIISeg = false
+			}
+		}
+		prevRune = r
 		i += w
 	}
 	return i
@@ -479,8 +868,9 @@ func trimTrailingURLPunctuation(s string, start, end int) (string, int) {
 }
 
 // matchLegacyParenthesizedLabel detects "标题 (https://...)" or "标题（https://...）"
-// so already-cached Weibo items display clickable "标题" without raw parenthesized URLs.
-func matchLegacyParenthesizedLabel(line string, urlStart, urlEnd int) (start, end int, label string, ok bool) {
+// so already-cached Weibo items display clickable "标题" without raw parenthesized URLs,
+// while leaving normal English X prose such as "See release (https://example.com)" intact.
+func matchLegacyParenthesizedLabel(line string, urlStart, urlEnd int, isSinaWeibo bool, cleanURL string) (start, end int, label string, ok bool) {
 	var closeParen string
 	openPos := -1
 	switch {
@@ -527,7 +917,27 @@ func matchLegacyParenthesizedLabel(line string, urlStart, urlEnd int) (start, en
 	if candLabel == "" || strings.Contains(candLabel, "://") {
 		return 0, 0, "", false
 	}
+	if !isSinaWeibo && !isLikelyLegacyParenthesizedLabel(candLabel, cleanURL) {
+		return 0, 0, "", false
+	}
 	return labelStart, urlEnd + len(closeParen), candLabel, true
+}
+
+func isLikelyLegacyParenthesizedLabel(candLabel, cleanURL string) bool {
+	if u, err := url.Parse(cleanURL); err == nil {
+		host := strings.ToLower(u.Hostname())
+		if host == "weibo.com" || strings.HasSuffix(host, ".weibo.com") ||
+			host == "weibo.cn" || strings.HasSuffix(host, ".weibo.cn") ||
+			host == "t.cn" {
+			return true
+		}
+	}
+	for _, r := range candLabel {
+		if r > 0x7e {
+			return true
+		}
+	}
+	return false
 }
 
 func isLegacyLabelBoundaryRune(r rune) bool {
@@ -539,31 +949,260 @@ func isLegacyLabelBoundaryRune(r rune) bool {
 	}
 }
 
-func findUnclaimedLineSpan(line, label string, from int, claimed []lineLinkMatch) int {
-	if label == "" || from < 0 || from >= len(line) || len(label) > len(line) {
+func findUnclaimedLineSpan(line, label string, from int, claimed []lineLinkMatch) (int, int) {
+	if label == "" || from < 0 || from >= len(line) {
+		return -1, 0
+	}
+	if idx := findExactUnclaimedSpan(line, label, from, claimed); idx >= 0 {
+		return idx, len(label)
+	}
+	// Domain/display_url fallback: match case-insensitively and tolerate "..." vs "…" or optional "www.".
+	if !strings.Contains(label, ".") || strings.ContainsAny(label, " \t\r\n") {
+		return -1, 0
+	}
+	variants := []string{label}
+	if strings.HasSuffix(label, "…") {
+		variants = append(variants, strings.TrimSuffix(label, "…")+"...")
+	} else if strings.HasSuffix(label, "...") {
+		variants = append(variants, strings.TrimSuffix(label, "...")+"…")
+	}
+	lowerLbl := asciiLower(label)
+	if strings.HasPrefix(lowerLbl, "www.") {
+		trimmed := label[4:]
+		variants = append(variants, trimmed)
+		if strings.HasSuffix(trimmed, "…") {
+			variants = append(variants, strings.TrimSuffix(trimmed, "…")+"...")
+		}
+	} else {
+		variants = append(variants, "www."+label)
+		if strings.HasSuffix(label, "…") {
+			variants = append(variants, "www."+strings.TrimSuffix(label, "…")+"...")
+		}
+	}
+	for _, v := range variants {
+		if idx, matchedLen := findCaseInsensitiveUnclaimedSpan(line, v, from, claimed); idx >= 0 {
+			return idx, matchedLen
+		}
+	}
+	return -1, 0
+}
+
+func findExactUnclaimedSpan(line, needle string, from int, claimed []lineLinkMatch) int {
+	if needle == "" || len(needle) > len(line) {
 		return -1
 	}
 	cur := from
-	for cur <= len(line)-len(label) {
-		rel := strings.Index(line[cur:], label)
+	for cur <= len(line)-len(needle) {
+		rel := strings.Index(line[cur:], needle)
 		if rel < 0 {
 			return -1
 		}
 		idx := cur + rel
-		end := idx + len(label)
-		overlaps := false
-		for _, m := range claimed {
-			if idx < m.End && end > m.Start {
-				overlaps = true
-				break
-			}
-		}
-		if !overlaps {
+		if !spanOverlapsClaimed(idx, idx+len(needle), claimed) {
 			return idx
 		}
 		cur = idx + 1
 	}
 	return -1
+}
+
+func findCaseInsensitiveUnclaimedSpan(line, needle string, from int, claimed []lineLinkMatch) (int, int) {
+	if needle == "" {
+		return -1, 0
+	}
+	nLen := len(needle)
+	for cur := from; cur+nLen <= len(line); {
+		if asciiEqualFold(line[cur:cur+nLen], needle) {
+			end := cur + nLen
+			if !spanOverlapsClaimed(cur, end, claimed) && isDomainLabelBoundary(line, cur, end) {
+				return cur, nLen
+			}
+		}
+		_, w := utf8.DecodeRuneInString(line[cur:])
+		if w <= 0 {
+			break
+		}
+		cur += w
+	}
+	return -1, 0
+}
+
+func spanOverlapsClaimed(start, end int, claimed []lineLinkMatch) bool {
+	for _, m := range claimed {
+		if start < m.End && end > m.Start {
+			return true
+		}
+	}
+	return false
+}
+
+func isDomainLabelBoundary(line string, start, end int) bool {
+	if start > 0 {
+		prev, _ := utf8.DecodeLastRuneInString(line[:start])
+		if (prev >= 'A' && prev <= 'Z') || (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') || prev == '@' || prev == '/' || prev == '.' || prev == '_' || prev == '-' {
+			return false
+		}
+	}
+	if end < len(line) {
+		next, _ := utf8.DecodeRuneInString(line[end:])
+		if (next >= 'A' && next <= 'Z') || (next >= 'a' && next <= 'z') || (next >= '0' && next <= '9') || next == '/' || next == '_' || next == '-' {
+			return false
+		}
+	}
+	return true
+}
+
+var knownBareWebTLDs = map[string]bool{
+	"com": true, "org": true, "net": true, "edu": true, "gov": true,
+	"io": true, "dev": true, "app": true, "me": true, "co": true,
+	"cn": true, "jp": true, "uk": true, "de": true, "fr": true,
+	"kr": true, "tw": true, "hk": true, "sg": true, "tv": true,
+	"cc": true, "gg": true, "xyz": true, "info": true, "biz": true,
+	"news": true, "site": true, "tech": true, "blog": true, "wiki": true,
+	"ee": true, "be": true, "ly": true, "to": true, "so": true,
+}
+
+func appendBareDomainMatches(line string, matches []lineLinkMatch) []lineLinkMatch {
+	for i := 0; i < len(line); {
+		r, w := utf8.DecodeRuneInString(line[i:])
+		if w <= 0 {
+			break
+		}
+		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+			i += w
+			continue
+		}
+		if i > 0 {
+			prev, _ := utf8.DecodeLastRuneInString(line[:i])
+			if (prev >= 'A' && prev <= 'Z') || (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') ||
+				prev == '@' || prev == '.' || prev == '/' || prev == ':' || prev == '_' || prev == '-' || prev == '#' {
+				i += w
+				continue
+			}
+		}
+		rawEnd := scanBareDomainCandidateEnd(line, i)
+		if rawEnd <= i {
+			i += w
+			continue
+		}
+		if spanOverlapsClaimed(i, rawEnd, matches) {
+			i = rawEnd
+			continue
+		}
+		// Never synthesize a broken URL from a truncated display_url ending in "…" or "...".
+		if strings.HasPrefix(line[rawEnd:], "…") || strings.HasPrefix(line[rawEnd:], "...") {
+			i = rawEnd
+			continue
+		}
+		cand, cleanEnd := trimTrailingURLPunctuation(line, i, rawEnd)
+		if strings.HasPrefix(line[cleanEnd:], "…") || strings.HasPrefix(line[cleanEnd:], "...") {
+			i = rawEnd
+			continue
+		}
+		if !isUnambiguousBareWebURL(cand) {
+			i = rawEnd
+			continue
+		}
+		cleanURL, ok := ValidateSafeJumpURL("https://" + cand)
+		if !ok {
+			i = rawEnd
+			continue
+		}
+		label := cand
+		if utf8.RuneCountInString(label) > 36 {
+			runes := []rune(label)
+			label = string(runes[:35]) + "…"
+		}
+		matches = append(matches, lineLinkMatch{
+			Start:    i,
+			End:      cleanEnd,
+			Label:    label,
+			URL:      cleanURL,
+			LinkSlot: -1,
+		})
+		i = cleanEnd
+	}
+	return matches
+}
+
+func scanBareDomainCandidateEnd(s string, start int) int {
+	// Reuse scanRawURLEnd semantics by checking host part first, then optional path/query.
+	i := start
+	inPathOrQuery := false
+	inNonASCIISeg := false
+	var prevRune rune
+	for i < len(s) {
+		r, w := utf8.DecodeRuneInString(s[i:])
+		if r <= 0x20 || r == 0x7f || unicode.IsSpace(r) {
+			break
+		}
+		if r == '"' || r == '\'' || r == '<' || r == '>' || r == '`' || r == '\\' || r == '@' {
+			break
+		}
+		if r == '/' || r == '?' || r == '#' {
+			inPathOrQuery = true
+		}
+		if r > 0x7e {
+			if isNonASCIIURLDelimiter(r) {
+				break
+			}
+			if isCJKScriptRune(r) {
+				if !inPathOrQuery || (!inNonASCIISeg && !isURLSegmentDelimiterRune(prevRune)) {
+					break
+				}
+				inNonASCIISeg = true
+			} else if inPathOrQuery {
+				inNonASCIISeg = true
+			} else {
+				break
+			}
+		} else if isURLSegmentDelimiterRune(r) {
+			inNonASCIISeg = false
+		}
+		prevRune = r
+		i += w
+	}
+	return i
+}
+
+func isUnambiguousBareWebURL(cand string) bool {
+	if cand == "" || strings.Contains(cand, "://") || strings.Contains(cand, "@") || strings.Contains(cand, "…") {
+		return false
+	}
+	hostEnd := strings.IndexAny(cand, "/?#")
+	host := cand
+	if hostEnd >= 0 {
+		host = cand[:hostEnd]
+	}
+	if host == "" || strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") || strings.Contains(host, "..") {
+		return false
+	}
+	parts := strings.Split(strings.ToLower(host), ".")
+	if len(parts) < 2 {
+		return false
+	}
+	tld := parts[len(parts)-1]
+	if !knownBareWebTLDs[tld] {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || strings.HasPrefix(p, "-") || strings.HasSuffix(p, "-") {
+			return false
+		}
+		for i := 0; i < len(p); i++ {
+			b := p[i]
+			if !((b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '-') {
+				return false
+			}
+		}
+	}
+	// Reject single-char domains except well-known x.com / t.co.
+	sld := parts[len(parts)-2]
+	if len(sld) == 1 && !(sld == "x" && tld == "com") && !(sld == "t" && tld == "co") {
+		return false
+	}
+	// Require either "www." prefix, an explicit path/query, or a multi-char domain + known TLD.
+	return parts[0] == "www" || hostEnd >= 0 || len(sld) >= 2
 }
 
 // clampRichParagraphs truncates tokenized paragraphs by visible line count and

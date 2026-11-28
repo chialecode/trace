@@ -767,13 +767,13 @@ func TestSubscriptionDetailAccountsTabLiveRecordingAndMoreMenu(t *testing.T) {
 	}
 
 	// Verify row "⋯" menu items: no-room omits "在浏览器中观看", offline/live with room includes it.
-	if got := strings.Join(menuItems(t, tt, "订阅账号更多：bilibili:6001"), ","); got != "打开主页,用作头像,刷新直播状态,更改关联订阅,-,解除关联" {
+	if got := strings.Join(menuItems(t, tt, "订阅账号更多：bilibili:6001"), ","); got != "打开账号主页,用作头像,刷新直播状态,更改关联订阅,-,解除关联" {
 		t.Fatalf("no-room account menu = %q", got)
 	}
-	if got := strings.Join(menuItems(t, tt, "订阅账号更多：bilibili:6002"), ","); got != "打开主页,在浏览器中观看,用作头像,刷新直播状态,更改关联订阅,-,解除关联" {
+	if got := strings.Join(menuItems(t, tt, "订阅账号更多：bilibili:6002"), ","); got != "打开账号主页,在浏览器中观看,用作头像,刷新直播状态,更改关联订阅,-,解除关联" {
 		t.Fatalf("offline-with-room account menu = %q", got)
 	}
-	if got := strings.Join(menuItems(t, tt, "订阅账号更多：douyin:MS4wLjABAAAA_dy_live"), ","); got != "打开主页,在浏览器中观看,用作头像,刷新直播状态,更改关联订阅,-,解除关联" {
+	if got := strings.Join(menuItems(t, tt, "订阅账号更多：douyin:MS4wLjABAAAA_dy_live"), ","); got != "打开账号主页,在浏览器中观看,用作头像,刷新直播状态,更改关联订阅,-,解除关联" {
 		t.Fatalf("douyin live account menu = %q", got)
 	}
 
@@ -883,12 +883,12 @@ func TestSubscriptionDetailAccountsTabLiveRecordingAndMoreMenu(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if err := tt.ChooseMenuItem("打开主页"); err != nil {
+	if err := tt.ChooseMenuItem("打开账号主页"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
 	if app.CurrentRoute != RouteDouyinUser {
-		t.Fatalf("expected 打开主页 to navigate to RouteDouyinUser, got %q", app.CurrentRoute)
+		t.Fatalf("expected 打开账号主页 to navigate to RouteDouyinUser, got %q", app.CurrentRoute)
 	}
 	if len(tracker.openedLinks) != 1 || !strings.Contains(tracker.openedLinks[0], "MS4wLjABAAAA_dy_live") {
 		t.Fatalf("expected synthetic OpenLink for MS4wLjABAAAA_dy_live, got %v", tracker.openedLinks)

@@ -959,6 +959,7 @@ func (m *Manager) executeXPostTask(
 			Card:         cardMeta,
 			Article:      articleMeta,
 			Thread:       threadParts,
+			Links:        buildWeiboItemLinks(plan.Links, previous.Links),
 		}
 		saved, sErr := m.lib.SaveItem(itemDir, partialMeta)
 		if sErr != nil {

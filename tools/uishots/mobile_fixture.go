@@ -18,6 +18,9 @@ type mobileShotCompanion struct {
 
 func (m *mobileShotCompanion) Status() companion.StatusSnapshot { return m.snap }
 func (m *mobileShotCompanion) ApplySettings(bool, int) error    { return nil }
+func (m *mobileShotCompanion) SetPreventSleep(enabled bool) {
+	m.snap.PreventSleep = enabled
+}
 func (m *mobileShotCompanion) StartPairing() (companion.PairingSessionInfo, error) {
 	return companion.PairingSessionInfo{}, nil
 }
@@ -104,6 +107,8 @@ func mobileShotScenes(app *ui.App) []sceneSpec {
 	openMobile := func(snap companion.StatusSnapshot) {
 		app.PlayerOverlay.Open, app.ImageViewer.Open = false, false
 		app.ConflictDiff.Open = false
+		app.SubFile = ui.SubFileUIState{}
+		app.ClearNotifications()
 		app.Mobile = ui.MobileUIState{}
 		app.BindCompanion(&mobileShotCompanion{snap: snap})
 		app.SettingsCategory = "mobile"
@@ -118,6 +123,7 @@ func mobileShotScenes(app *ui.App) []sceneSpec {
 			RequiredLabels: []string{
 				"设置移动端面板",
 				"允许手机连接开关",
+				"手机连接时阻止电脑睡眠开关",
 				"移动端监听端口",
 				"应用移动端端口",
 				"添加手机",
@@ -125,6 +131,7 @@ func mobileShotScenes(app *ui.App) []sceneSpec {
 			},
 			RequiredTexts: []string{
 				"允许手机连接",
+				"手机连接时阻止电脑睡眠",
 				"监听端口",
 			},
 		},
@@ -132,12 +139,16 @@ func mobileShotScenes(app *ui.App) []sceneSpec {
 			Name: "settings-mobile-active",
 			Setup: func() {
 				snap := mobileShotBaseSnapshot(true)
+				snap.PreventSleep = true
+				snap.SleepInhibited = true
+				snap.MDNSActive = true
 				snap.Devices = mobileShotDevices()
 				openMobile(snap)
 			},
 			RequiredLabels: []string{
 				"设置移动端面板",
 				"移动端监听状态",
+				"手机连接时阻止电脑睡眠开关",
 				"添加手机",
 				"已配对手机：主力 Android 手机",
 				"已配对手机：平板（客厅）",
@@ -146,6 +157,7 @@ func mobileShotScenes(app *ui.App) []sceneSpec {
 			},
 			RequiredTexts: []string{
 				"正在监听 192.168.1.24:47381 · 100.64.0.12:47381",
+				"手机连接时阻止电脑睡眠",
 				"在线 · 192.168.1.50",
 				"电脑身份码：A1B2-C3D4-E5F6-0718",
 			},

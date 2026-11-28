@@ -161,6 +161,8 @@ func mediaContentType(relPath string) string {
 		return "image/gif"
 	case ".vtt":
 		return "text/vtt; charset=utf-8"
+	case ".srt":
+		return "text/plain; charset=utf-8"
 	case ".xml":
 		return "application/xml; charset=utf-8"
 	default:

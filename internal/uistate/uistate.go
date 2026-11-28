@@ -38,6 +38,7 @@ type State struct {
 	Window       WindowState      `json:"window"`
 	LastRoute    string           `json:"lastRoute"`
 	SubDetailTab string           `json:"subDetailTab,omitempty"`
+	SubSort      string           `json:"subSort,omitempty"`
 	FeedFilter   FeedFilter       `json:"feedFilter"`
 	Anchor       FeedAnchor       `json:"anchor"`
 	HomeSeen     map[string]int64 `json:"homeSeen,omitempty"`
@@ -48,8 +49,12 @@ type State struct {
 	// 直播录制 "最近结束的录制" (session key → RFC3339 time removed); optional,
 	// entries past that list's 7-day window are dropped.
 	DismissedLiveSessions map[string]string `json:"dismissedLiveSessions,omitempty"`
-	TrayNotified          bool              `json:"trayNotified"`
-	Player                PlayerState       `json:"player"`
+	// AuthVerifiedAt records each site's last verified-valid timestamp
+	// (site ID → UTC RFC3339); optional, kept separate from credential
+	// files so expired/unknown checks never erase the last valid time.
+	AuthVerifiedAt map[string]string `json:"authVerifiedAt,omitempty"`
+	TrayNotified   bool              `json:"trayNotified"`
+	Player         PlayerState       `json:"player"`
 	// Update records what the updates of TRACE need across launches.
 	Update UpdateState `json:"update"`
 }
@@ -105,6 +110,25 @@ type PlayerState struct {
 // CurrentSchemaVersion is the schema version written to ui-state.json.
 const CurrentSchemaVersion = 4
 
+// SubSortDefault and SubSortRecent are the supported sort modes for the
+// Subscriptions avatar grid (persisted as an optional field in ui-state.json
+// without bumping CurrentSchemaVersion).
+const (
+	SubSortDefault = "default"
+	SubSortRecent  = "recent"
+)
+
+// NormalizeSubSort normalizes subscription grid sort preference values.
+// Empty or unknown values default to SubSortDefault ("default").
+func NormalizeSubSort(sort string) string {
+	switch strings.ToLower(strings.TrimSpace(sort)) {
+	case SubSortRecent:
+		return SubSortRecent
+	default:
+		return SubSortDefault
+	}
+}
+
 // NormalizeSubDetailTab normalizes subscription detail tab values (DEC-051 ⑦).
 // Legacy "live" maps to "accounts"; empty or unknown values default to "content".
 func NormalizeSubDetailTab(tab string) string {
@@ -156,6 +180,7 @@ func Default() State {
 		},
 		LastRoute:    "/home",
 		SubDetailTab: "content",
+		SubSort:      SubSortDefault,
 		FeedFilter: FeedFilter{
 			Kind: "all",
 			Site: "all",
@@ -195,6 +220,7 @@ func Normalize(st State) State {
 		}
 	}
 	st.SubDetailTab = NormalizeSubDetailTab(st.SubDetailTab)
+	st.SubSort = NormalizeSubSort(st.SubSort)
 	switch st.FeedFilter.Kind {
 	case "all", "video", "dynamic":
 	default:
@@ -226,6 +252,7 @@ func Normalize(st State) State {
 	}
 	st.HomePositions = normalizeHomePositions(st.HomePositions)
 	st.DismissedLiveSessions = normalizeDismissedLiveSessions(st.DismissedLiveSessions, time.Now())
+	st.AuthVerifiedAt = normalizeAuthVerifiedAt(st.AuthVerifiedAt)
 	if st.Player.Volume < 0 {
 		st.Player.Volume = 0
 	} else if st.Player.Volume > 1 {
@@ -261,6 +288,30 @@ func normalizeDismissedLiveSessions(in map[string]string, now time.Time) map[str
 			continue
 		}
 		out[k] = t.UTC().Format(time.RFC3339)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeAuthVerifiedAt(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		siteID := strings.ToLower(strings.TrimSpace(k))
+		switch siteID {
+		case "bilibili", "douyin", "weibo", "x":
+		default:
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, strings.TrimSpace(v))
+		if err != nil {
+			continue
+		}
+		out[siteID] = t.UTC().Format(time.RFC3339)
 	}
 	if len(out) == 0 {
 		return nil
@@ -331,6 +382,7 @@ func openWithSchemaVersion(path string, supportedVersion int) (*Store, bool, str
 	loaded := Default()
 	loaded.Version = 0
 	loaded.SubDetailTab = ""
+	loaded.SubSort = ""
 	loaded.FeedFilter.Site = ""
 	if err := json.Unmarshal(raw, &loaded); err != nil {
 		backup, bErr := storage.BackupCorruptFile(path)
@@ -408,6 +460,12 @@ func cloneState(st State) State {
 		out.DismissedLiveSessions = make(map[string]string, len(st.DismissedLiveSessions))
 		for k, v := range st.DismissedLiveSessions {
 			out.DismissedLiveSessions[k] = v
+		}
+	}
+	if len(st.AuthVerifiedAt) > 0 {
+		out.AuthVerifiedAt = make(map[string]string, len(st.AuthVerifiedAt))
+		for k, v := range st.AuthVerifiedAt {
+			out.AuthVerifiedAt[k] = v
 		}
 	}
 	if st.Update.Restart != nil {

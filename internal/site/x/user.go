@@ -857,27 +857,34 @@ type rawUserResult struct {
 		ImageURL string `json:"image_url"`
 	} `json:"avatar"`
 	ProfileBio *struct {
-		Description string `json:"description"`
+		Description string           `json:"description"`
+		Entities    *rawUserEntities `json:"entities"`
 	} `json:"profile_bio"`
 	Privacy *struct {
 		Protected bool `json:"protected"`
 	} `json:"privacy"`
 	// Classic legacy path (fallback):
 	Legacy *struct {
-		IDStr                string          `json:"id_str"`
-		Name                 string          `json:"name"`
-		ScreenName           string          `json:"screen_name"`
-		Description          string          `json:"description"`
-		ProfileImageURLHTTPS string          `json:"profile_image_url_https"`
-		ProfileBannerURL     string          `json:"profile_banner_url"`
-		Verified             bool            `json:"verified"`
-		Protected            bool            `json:"protected"`
-		FollowersCount       json.RawMessage `json:"followers_count"`
-		FriendsCount         json.RawMessage `json:"friends_count"`
-		StatusesCount        json.RawMessage `json:"statuses_count"`
-		MediaCount           json.RawMessage `json:"media_count"`
-		PinnedTweetIDsStr    []string        `json:"pinned_tweet_ids_str"`
+		IDStr                string           `json:"id_str"`
+		Name                 string           `json:"name"`
+		ScreenName           string           `json:"screen_name"`
+		Description          string           `json:"description"`
+		Entities             *rawUserEntities `json:"entities"`
+		ProfileImageURLHTTPS string           `json:"profile_image_url_https"`
+		ProfileBannerURL     string           `json:"profile_banner_url"`
+		Verified             bool             `json:"verified"`
+		Protected            bool             `json:"protected"`
+		FollowersCount       json.RawMessage  `json:"followers_count"`
+		FriendsCount         json.RawMessage  `json:"friends_count"`
+		StatusesCount        json.RawMessage  `json:"statuses_count"`
+		MediaCount           json.RawMessage  `json:"media_count"`
+		PinnedTweetIDsStr    []string         `json:"pinned_tweet_ids_str"`
 	} `json:"legacy"`
+}
+
+type rawUserEntities struct {
+	Description *rawEntitiesSet `json:"description"`
+	URL         *rawEntitiesSet `json:"url"`
 }
 
 // parseRawUserResult parses an X user result node supporting BOTH new userResult.core
@@ -972,6 +979,24 @@ func parseRawUserResult(raw json.RawMessage, allowLocalhost bool) (*AuthorSummar
 
 	isBlue := u.IsBlueVerified
 	combinedVerified := verified || isBlue
+	var bioURLEntities []URLEntity
+	var bioProfileSet, bioLegacySet *rawEntitiesSet
+	if u.ProfileBio != nil && u.ProfileBio.Entities != nil {
+		bioProfileSet = u.ProfileBio.Entities.Description
+	}
+	if u.Legacy != nil && u.Legacy.Entities != nil {
+		bioLegacySet = u.Legacy.Entities.Description
+	}
+	if bioProfileSet != nil || bioLegacySet != nil {
+		var tmpLeg *rawTweetLegacy
+		if bioLegacySet != nil {
+			tmpLeg = &rawTweetLegacy{Entities: bioLegacySet}
+		}
+		bioURLEntities = collectURLEntities(bioProfileSet, tmpLeg)
+	}
+	if desc != "" && len(bioURLEntities) > 0 {
+		desc = hydrateTweetText(desc, "", bioURLEntities, nil)
+	}
 	avatarURL := upgradeAvatarURL(avatarRaw, allowLocalhost)
 	bannerURL := normalizeXMediaURL(bannerRaw, allowLocalhost)
 

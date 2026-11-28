@@ -175,6 +175,8 @@ func (a *App) isLibraryStatisticsVisible() bool {
 	switch a.CurrentRoute {
 	case RouteHome, RouteLibrary, RouteLibraryItem:
 		return true
+	case RouteSubscriptions:
+		return !a.SubDetailOpen && !a.SubAccountsOpen && !a.SubChecksOpen
 	case RouteSettings:
 		return a.SettingsCategory == "storage"
 	default:

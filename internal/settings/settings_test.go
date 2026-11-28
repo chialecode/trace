@@ -34,6 +34,9 @@ func TestSettingsCorruptRecoveryAndUnknownFields(t *testing.T) {
 	if got.VideoQuality != "best" || got.AudioQuality != "best" || got.MultiPart != "all" || !got.UpgradeCheckOnOpen || !got.AISubtitles || !got.WeiboRemoveWatermark {
 		t.Fatalf("unexpected media defaults: %+v", got)
 	}
+	if got.Version != 1 || got.Companion.Enabled || got.Companion.PreventSleep {
+		t.Fatalf("expected settings v1 with companion disabled and preventSleep=false by default: %+v", got.Companion)
+	}
 
 	// 2. Unknown fields are tolerated while valid fields are loaded.
 	withUnknown := `{
@@ -88,14 +91,15 @@ func TestSettingsCanToggleRulesAndRestoreDefaults(t *testing.T) {
 	}
 	next := store.Get()
 	next.ScheduledCheck, next.Danmaku, next.Subtitles, next.WeiboRemoveWatermark = true, false, false, false
+	next.Companion.PreventSleep = true
 	next.AudioQuality, next.CloseAction = "192k", "quit"
 	next.LiveCheckIntervalMin, next.Concurrency, next.MaxRecordings = 5, 3, 3
 	if _, err := store.Update(next); err != nil {
 		t.Fatal(err)
 	}
 	reloadedOff, _, _, err := Open(filepath.Join(dir, "settings.json"), filepath.Join(dir, "cache"))
-	if err != nil || reloadedOff.Get().WeiboRemoveWatermark {
-		t.Fatalf("WeiboRemoveWatermark=false did not persist across Open: %+v err=%v", reloadedOff, err)
+	if err != nil || reloadedOff.Get().WeiboRemoveWatermark || !reloadedOff.Get().Companion.PreventSleep || reloadedOff.Get().Version != 1 {
+		t.Fatalf("settings did not persist across Open: %+v err=%v", reloadedOff, err)
 	}
 	next = store.Get()
 	next.ScheduledCheck, next.Danmaku, next.Subtitles, next.WeiboRemoveWatermark = false, true, true, true

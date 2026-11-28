@@ -395,33 +395,34 @@ func (a *Adapter) FetchCreatorPosts(ctx context.Context, uid string, cursor stri
 // postSnapshot is the persisted subset of Post stored in updates.db CreatorPost.Snapshot.
 // Per DEC-040 and NFR-SEC-005, it omits online-only Stats/Poll votes and strips all video/signed URLs.
 type postSnapshot struct {
-	ID                      string        `json:"id"`
-	Author                  AuthorSummary `json:"author"`
-	CreatedAt               int64         `json:"createdAt"`
-	CreatedAtRaw            string        `json:"createdAtRaw,omitempty"`
-	Text                    string        `json:"text"`
-	IsLongText              bool          `json:"isLongText,omitempty"`
-	Pinned                  bool          `json:"pinned,omitempty"`
-	IsPreviewDisplay        bool          `json:"isPreviewDisplay,omitempty"`
-	VisibilityLabel         string        `json:"visibilityLabel,omitempty"`
-	IsEdited                bool          `json:"isEdited,omitempty"`
-	EditTweetIDs            []string      `json:"editTweetIds,omitempty"`
-	IsRetweet               bool          `json:"isRetweet,omitempty"`
-	IsQuote                 bool          `json:"isQuote,omitempty"`
-	InReplyToStatusID       string        `json:"inReplyToStatusId,omitempty"`
-	InReplyToUserID         string        `json:"inReplyToUserId,omitempty"`
-	InReplyToScreenName     string        `json:"inReplyToScreenName,omitempty"`
-	Retweeted               *postSnapshot `json:"retweeted,omitempty"`
-	Quoted                  *postSnapshot `json:"quoted,omitempty"`
-	OriginUnavailable       bool          `json:"originUnavailable,omitempty"`
-	OriginUnavailableReason string        `json:"originUnavailableReason,omitempty"`
-	RuleType                string        `json:"ruleType"`
-	Media                   []MediaItem   `json:"media,omitempty"`
-	HasHLSOnlyVideo         bool          `json:"hasHlsOnlyVideo,omitempty"`
-	Card                    *RichCard     `json:"card,omitempty"`
-	CanonicalURL            string        `json:"canonicalUrl"`
-	Unavailable             bool          `json:"unavailable,omitempty"`
-	UnavailableReason       string        `json:"unavailableReason,omitempty"`
+	ID                      string          `json:"id"`
+	Author                  AuthorSummary   `json:"author"`
+	CreatedAt               int64           `json:"createdAt"`
+	CreatedAtRaw            string          `json:"createdAtRaw,omitempty"`
+	Text                    string          `json:"text"`
+	IsLongText              bool            `json:"isLongText,omitempty"`
+	Pinned                  bool            `json:"pinned,omitempty"`
+	IsPreviewDisplay        bool            `json:"isPreviewDisplay,omitempty"`
+	VisibilityLabel         string          `json:"visibilityLabel,omitempty"`
+	IsEdited                bool            `json:"isEdited,omitempty"`
+	EditTweetIDs            []string        `json:"editTweetIds,omitempty"`
+	IsRetweet               bool            `json:"isRetweet,omitempty"`
+	IsQuote                 bool            `json:"isQuote,omitempty"`
+	InReplyToStatusID       string          `json:"inReplyToStatusId,omitempty"`
+	InReplyToUserID         string          `json:"inReplyToUserId,omitempty"`
+	InReplyToScreenName     string          `json:"inReplyToScreenName,omitempty"`
+	Retweeted               *postSnapshot   `json:"retweeted,omitempty"`
+	Quoted                  *postSnapshot   `json:"quoted,omitempty"`
+	OriginUnavailable       bool            `json:"originUnavailable,omitempty"`
+	OriginUnavailableReason string          `json:"originUnavailableReason,omitempty"`
+	RuleType                string          `json:"ruleType"`
+	Media                   []MediaItem     `json:"media,omitempty"`
+	HasHLSOnlyVideo         bool            `json:"hasHlsOnlyVideo,omitempty"`
+	Card                    *RichCard       `json:"card,omitempty"`
+	Links                   []site.TextLink `json:"links,omitempty"`
+	CanonicalURL            string          `json:"canonicalUrl"`
+	Unavailable             bool            `json:"unavailable,omitempty"`
+	UnavailableReason       string          `json:"unavailableReason,omitempty"`
 }
 
 func buildPostSnapshot(p *Post) *postSnapshot {
@@ -488,6 +489,7 @@ func buildPostSnapshot(p *Post) *postSnapshot {
 		Media:                   media,
 		HasHLSOnlyVideo:         p.HasHLSOnlyVideo,
 		Card:                    card,
+		Links:                   BuildPostLinks(p),
 		CanonicalURL:            SafePublicWebURL(p.CanonicalURL),
 		Unavailable:             p.Unavailable,
 		UnavailableReason:       p.UnavailableReason,
