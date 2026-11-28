@@ -469,11 +469,22 @@ func (a *App) toggleCompanionEnabled(enable bool, snap companion.StatusSnapshot)
 }
 
 func (a *App) toggleCompanionPreventSleep(preventSleep bool) {
-	if a.companion != nil {
-		a.companion.SetPreventSleep(preventSleep)
+	prev := a.DraftSettings.Companion.PreventSleep
+	next := a.DraftSettings
+	next.Companion.PreventSleep = preventSleep
+	updated, err := a.backend.UpdateSettings(next)
+	if err != nil {
+		a.showError(err)
+		if a.companion != nil {
+			a.companion.SetPreventSleep(prev)
+		}
+		return
 	}
-	a.DraftSettings.Companion.PreventSleep = preventSleep
-	a.saveSettings()
+	a.DraftSettings = updated
+	a.checkPlanAt = time.Time{}
+	if a.companion != nil {
+		a.companion.SetPreventSleep(updated.Companion.PreventSleep)
+	}
 }
 
 func (a *App) applyCompanionPort(snap companion.StatusSnapshot) {

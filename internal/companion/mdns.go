@@ -253,21 +253,6 @@ func (a *mdnsAdvertiser) Active() bool {
 	return a.active && !a.stopped
 }
 
-func (a *mdnsAdvertiser) Update(cfg mdnsRecordConfig, candidates []ListenCandidate) {
-	if a == nil {
-		return
-	}
-	a.mu.Lock()
-	if a.stopped {
-		a.mu.Unlock()
-		return
-	}
-	a.cfg = cfg
-	a.addrs = filterMDNSAddrs(candidates)
-	a.mu.Unlock()
-	a.broadcastAll(mdnsDefaultTTL)
-}
-
 // Stop sends TTL=0 goodbye packets per RFC 6762 §10.1 and closes all sockets cleanly.
 func (a *mdnsAdvertiser) Stop() {
 	if a == nil {

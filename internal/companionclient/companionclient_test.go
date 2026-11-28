@@ -658,6 +658,12 @@ func TestMediaProxyLivePreviewTicketsHLSAndRevokeCancelsStream(t *testing.T) {
 	if respM3U.StatusCode != http.StatusOK || !strings.Contains(string(m3u), `URI="preview?part=1&t=`) {
 		t.Fatalf("HLS playlist rewrite failed: status=%d body=%s", respM3U.StatusCode, string(m3u))
 	}
+	if ct := respM3U.Header.Get("Content-Type"); ct != "application/vnd.apple.mpegurl; charset=utf-8" {
+		t.Fatalf("HLS Content-Type = %q, want application/vnd.apple.mpegurl; charset=utf-8", ct)
+	}
+	if nosniff := respM3U.Header.Get("X-Content-Type-Options"); nosniff != "nosniff" {
+		t.Fatalf("HLS X-Content-Type-Options = %q, want nosniff", nosniff)
+	}
 	segURL := strings.Replace(hlsURL, "/preview.m3u8?t=", "/preview?part=1&t=", 1)
 	segReq, _ := http.NewRequest(http.MethodGet, segURL, nil)
 	segReq.Header.Set("Range", "bytes=16-31")

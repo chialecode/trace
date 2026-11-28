@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ const (
 )
 
 type mediaTicket struct {
+	ticket       string
 	kind         string
 	key          string
 	relPath      string
@@ -89,7 +91,7 @@ func (p *MediaProxy) IssueTicket(key, relPath string) (loopbackURL string, ticke
 		p.mu.Unlock()
 		return "", "", errors.New("companionclient: media proxy is closed")
 	}
-	p.tickets[t] = mediaTicket{kind: ticketKindMedia, key: key, relPath: relPath}
+	p.tickets[t] = mediaTicket{ticket: t, kind: ticketKindMedia, key: key, relPath: relPath}
 	addr := p.addr
 	p.mu.Unlock()
 
@@ -113,7 +115,7 @@ func (p *MediaProxy) IssueLivePreviewTicket(recordingKey string) (loopbackURL st
 		p.mu.Unlock()
 		return "", "", errors.New("companionclient: media proxy is closed")
 	}
-	p.tickets[t] = mediaTicket{kind: ticketKindLivePreview, recordingKey: recKey}
+	p.tickets[t] = mediaTicket{ticket: t, kind: ticketKindLivePreview, recordingKey: recKey}
 	addr := p.addr
 	p.mu.Unlock()
 
@@ -137,7 +139,7 @@ func (p *MediaProxy) IssueLivePreviewHLSTicket(recordingKey string) (playlistURL
 		p.mu.Unlock()
 		return "", "", errors.New("companionclient: media proxy is closed")
 	}
-	p.tickets[t] = mediaTicket{kind: ticketKindLivePreviewHLS, recordingKey: recKey}
+	p.tickets[t] = mediaTicket{ticket: t, kind: ticketKindLivePreviewHLS, recordingKey: recKey}
 	addr := p.addr
 	p.mu.Unlock()
 
@@ -308,7 +310,7 @@ func (p *MediaProxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upCtx, _, cleanup, stillValid := p.registerActive(ticket, r.Context())
+	upCtx, _, cleanup, stillValid := p.registerActive(mt.ticket, r.Context())
 	if !stillValid {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -352,12 +354,14 @@ func (p *MediaProxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 			return
 		}
-		rewritten := rewriteHLSPlaylistTicket(string(raw), ticket)
-		for _, hdr := range []string{"Content-Type", companionapi.HeaderLivePart, companionapi.HeaderLiveBytes} {
+		rewritten := rewriteHLSPlaylistTicket(string(raw), mt.ticket)
+		for _, hdr := range []string{companionapi.HeaderLivePart, companionapi.HeaderLiveBytes} {
 			if v := resp.Header.Get(hdr); v != "" {
 				w.Header().Set(hdr, v)
 			}
 		}
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusOK)
 		if r.Method != http.MethodHead {
@@ -380,6 +384,7 @@ func (p *MediaProxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set(hdr, v)
 		}
 	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(resp.StatusCode)
 	if r.Method != http.MethodHead {
@@ -390,10 +395,12 @@ func (p *MediaProxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 func appendLivePreviewQuery(path string, q url.Values) string {
 	out := url.Values{}
 	if part := strings.TrimSpace(q.Get("part")); part != "" {
-		out.Set("part", part)
+		if n, err := strconv.Atoi(part); err == nil && n > 0 {
+			out.Set("part", strconv.Itoa(n))
+		}
 	}
-	if mode := strings.TrimSpace(q.Get("mode")); mode != "" {
-		out.Set("mode", mode)
+	if strings.EqualFold(strings.TrimSpace(q.Get("mode")), "stream") {
+		out.Set("mode", "stream")
 	}
 	if len(out) == 0 {
 		return path

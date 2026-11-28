@@ -96,44 +96,36 @@ func (w *windowsSleepInhibitor) ensureWorkerLocked() {
 
 func (w *windowsSleepInhibitor) SetActive(active bool) error {
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.closed {
-		w.mu.Unlock()
 		return nil
 	}
 	// Do not spawn the OS thread until sleep inhibition is actually requested.
 	if !active && w.cmdCh == nil {
-		w.mu.Unlock()
 		return nil
 	}
 	w.ensureWorkerLocked()
-	ch := w.cmdCh
-	w.mu.Unlock()
-
 	reply := make(chan error, 1)
-	ch <- sleepCmd{active: active, reply: reply}
+	w.cmdCh <- sleepCmd{active: active, reply: reply}
 	return <-reply
 }
 
 func (w *windowsSleepInhibitor) Close() error {
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.closed {
-		w.mu.Unlock()
 		return nil
 	}
 	w.closed = true
-	ch := w.cmdCh
-	done := w.doneCh
-	w.cmdCh = nil
-	w.doneCh = nil
-	w.mu.Unlock()
-
-	if ch == nil {
+	if w.cmdCh == nil {
 		return nil
 	}
 	reply := make(chan error, 1)
-	ch <- sleepCmd{close: true, reply: reply}
+	w.cmdCh <- sleepCmd{close: true, reply: reply}
 	err := <-reply
-	close(ch)
-	<-done
+	close(w.cmdCh)
+	<-w.doneCh
+	w.cmdCh = nil
+	w.doneCh = nil
 	return err
 }

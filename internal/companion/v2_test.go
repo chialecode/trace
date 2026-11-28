@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ import (
 	"github.com/chialecode/trace/internal/companionclient"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/service"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/subscription"
 )
@@ -1101,4 +1103,63 @@ func TestV2LoopbackClientAndProxyEndToEnd(t *testing.T) {
 	logs := logBuf.String()
 	logMu.Unlock()
 	assertNoLeaks(t, logs, sentinelCookie, sentinelSignedURL, token, root)
+}
+
+func TestSanitizePublicErrorAndWriteServiceErrorSentinels(t *testing.T) {
+	const fallback = "操作失败，请重试"
+	if got := sanitizePublicError("请先在电脑上登录抖音", fallback); got != "请先在电脑上登录抖音" {
+		t.Fatalf("safe message altered: %q", got)
+	}
+	if got := sanitizePublicError("   ", fallback); got != fallback {
+		t.Fatalf("empty message = %q, want fallback", got)
+	}
+
+	leakyCases := []struct {
+		name     string
+		raw      string
+		sentinel string
+	}{
+		{"bilibili sessdata", "auth failed SESSDATA=SENTINEL_BILI_999", "SENTINEL_BILI_999"},
+		{"bilibili bili_jct", "csrf bili_jct=SENTINEL_JCT_1", "SENTINEL_JCT_1"},
+		{"douyin sessionid", "douyin err sessionid=SENTINEL_DY_1", "SENTINEL_DY_1"},
+		{"douyin sid_guard", "douyin err sid_guard=SENTINEL_DY_2", "SENTINEL_DY_2"},
+		{"douyin msToken", "douyin err msToken=SENTINEL_DY_3", "SENTINEL_DY_3"},
+		{"douyin a_bogus", "douyin err a_bogus=SENTINEL_DY_4", "SENTINEL_DY_4"},
+		{"weibo sub", "weibo err SUB=SENTINEL_WB_1", "SENTINEL_WB_1"},
+		{"weibo subp", "weibo err SUBP=SENTINEL_WB_2", "SENTINEL_WB_2"},
+		{"weibo wbpsess", "weibo err WBPSESS=SENTINEL_WB_3", "SENTINEL_WB_3"},
+		{"weibo xsrf", "weibo err XSRF-TOKEN=SENTINEL_WB_4", "SENTINEL_WB_4"},
+		{"x auth_token", "x err auth_token=SENTINEL_X_1", "SENTINEL_X_1"},
+		{"x ct0", "x err ct0=SENTINEL_X_2", "SENTINEL_X_2"},
+		{"x kdt", "x err kdt=SENTINEL_X_3", "SENTINEL_X_3"},
+		{"bearer header", "upstream Authorization: Bearer SENTINEL_BEARER_1", "SENTINEL_BEARER_1"},
+		{"generic token", "failed token=SENTINEL_TOK_1", "SENTINEL_TOK_1"},
+		{"generic cookie", "Cookie: foo=SENTINEL_CK_1", "SENTINEL_CK_1"},
+		{"signed url", "get https://cdn.example.com/v.mp4?auth=SENTINEL_URL_1 failed", "SENTINEL_URL_1"},
+		{"windows drive path", `open C:\Users\alice\AppData\Local\trace\secret.json`, `C:\Users\alice`},
+		{"windows unc path", `open \\fileserver\share\trace\cred.dat failed`, `\\fileserver\share`},
+		{"unix home path", "open /home/alice/.config/trace/cred.dat failed", "/home/alice"},
+	}
+
+	for _, tc := range leakyCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizePublicError(tc.raw, fallback); got != fallback {
+				t.Fatalf("sanitizePublicError(%q) = %q, want fallback %q", tc.raw, got, fallback)
+			}
+			// Also verify writeServiceError redacts *site.Error messages before emitting JSON.
+			rec := httptest.NewRecorder()
+			writeServiceError(rec, &site.Error{
+				Site:    site.Douyin,
+				Kind:    site.ErrKindAuthRequired,
+				Message: tc.raw,
+			})
+			body := rec.Body.String()
+			if rec.Code != http.StatusPreconditionFailed {
+				t.Fatalf("status = %d, want 412; body=%s", rec.Code, body)
+			}
+			if strings.Contains(body, tc.sentinel) {
+				t.Fatalf("writeServiceError leaked sentinel %q in %s", tc.sentinel, body)
+			}
+		})
+	}
 }

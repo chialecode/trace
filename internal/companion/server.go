@@ -2836,16 +2836,34 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	}
 }
 
+var publicErrorForbiddenTokens = []string{
+	// Local & network filesystem paths.
+	`:\\`, `:\`, `:/`, `\\`,
+	"/users/", "/home/", "/var/", "/tmp/", "/etc/", "/root/",
+	// Remote / signed URLs.
+	"http://", "https://", "ws://", "wss://",
+	// Generic auth / secret markers.
+	"cookie", "authorization", "bearer ", "token=", "password", "passwd", "secret=", "pairsecret", "pair_secret",
+	// Bilibili credentials.
+	"sessdata", "bili_jct", "dedeuserid", "ac_time_value", "buvid",
+	// Douyin credentials.
+	"sessionid", "sid_guard", "sid_tt", "uid_tt", "mstoken", "a_bogus", "ttwid", "passport_csrf_token", "odin_tt",
+	// Weibo credentials.
+	"sub=", "subp=", "wbpsess", "xsrf-token", "alf=", "sso_login",
+	// X credentials.
+	"auth_token", "ct0=", "kdt=", "twid=", "guest_id",
+}
+
 func sanitizePublicError(raw, fallback string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return fallback
 	}
 	lower := strings.ToLower(s)
-	if strings.Contains(s, ":\\") || strings.Contains(s, ":/") ||
-		strings.Contains(lower, "http://") || strings.Contains(lower, "https://") ||
-		strings.Contains(lower, "sessdata") || strings.Contains(lower, "cookie") {
-		return fallback
+	for _, marker := range publicErrorForbiddenTokens {
+		if strings.Contains(lower, marker) {
+			return fallback
+		}
 	}
 	return s
 }
