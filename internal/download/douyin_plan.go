@@ -17,6 +17,7 @@ import (
 type WorkPlanOptions struct {
 	VideoQuality string
 	CodecOrder   []string
+	Source       string
 }
 
 // PlannedNotePage describes one 1-based page in a Douyin/Weibo/X image or mixed note.

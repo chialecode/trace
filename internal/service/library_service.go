@@ -246,23 +246,37 @@ func (b *Backend) enqueueWeiboPostWithSourceInfo(
 		return download.Task{}, false, err
 	}
 	isManual := strings.TrimSpace(source) == "" || strings.EqualFold(strings.TrimSpace(source), "manual")
+	wasBackedOff := false
+	var ehTracker *weiboEditHistoryPlanTracker
 	if isManual {
+		if b.subs != nil {
+			wasBackedOff, _ = b.subs.IsSiteInBackoff(string(site.Weibo))
+		}
 		ctx = site.WithManualProbe(ctx)
+		ctx, ehTracker = withWeiboEditHistoryPlanTracker(ctx)
+	} else {
+		ctx = withStrictWeiboEditHistoryStop(ctx)
 	}
 	cleanMid := strings.TrimSpace(mid)
 	mode := download.ConflictResolutionFromContext(ctx)
 	force := download.ForceOverwriteFromContext(ctx)
 	plan := explicitPlan
+	usedCachedPostPlan := false
 	calledEditHistoryAPI := false
+	var editHistoryErr error
+	var editHistoryStopErr error
 	if plan == nil && mode == "" && !force && b.weiboPostCache != nil {
 		if cachedPost, ok := b.weiboPostCache.get(cleanMid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), b.weiboRemoveWatermarkEnabled()); ok {
 			if built, bErr := b.buildWeiboWorkPlanFromPost(cachedPost); bErr == nil {
-				calledAPI, stopErr := b.attachWeiboEditHistoryBestEffort(ctx, cachedPost, &built)
+				calledAPI, ehErr, stopErr := b.attachWeiboEditHistoryBestEffort(ctx, cachedPost, &built)
 				calledEditHistoryAPI = calledAPI
+				editHistoryErr = ehErr
+				editHistoryStopErr = stopErr
 				if stopErr != nil && !isManual {
 					return download.Task{}, false, stopErr
 				}
 				plan = &built
+				usedCachedPostPlan = true
 			}
 		}
 	}
@@ -293,8 +307,28 @@ func (b *Backend) enqueueWeiboPostWithSourceInfo(
 		b.logError("CacheWeiboPost", err)
 		return download.Task{}, reusedPlan, err
 	}
-	if isManual && !reusedPlan {
-		b.onManualSiteRequestSuccess(site.Weibo)
+	if isManual {
+		stopErr := editHistoryStopErr
+		if stopErr == nil && ehTracker != nil {
+			stopErr = ehTracker.stopErr
+		}
+		if stopErr != nil {
+			if wasBackedOff {
+				if k := site.KindOf(stopErr); k == site.ErrKindRiskControl || k == site.ErrKindRateLimited {
+					b.recordManualSiteProbeFailure(site.Weibo, stopErr)
+				}
+			}
+		} else {
+			remoteSucceeded := false
+			if explicitPlan == nil && !usedCachedPostPlan {
+				remoteSucceeded = true
+			} else if usedCachedPostPlan && calledEditHistoryAPI && editHistoryErr == nil {
+				remoteSucceeded = true
+			}
+			if remoteSucceeded {
+				b.onManualSiteRequestSuccess(site.Weibo)
+			}
+		}
 	}
 	b.events.PublishSite(EventTaskUpdated, string(site.Weibo), "enqueued:"+t.TargetID)
 	return t, reusedPlan, nil

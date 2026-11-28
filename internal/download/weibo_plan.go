@@ -114,6 +114,7 @@ func (m *Manager) EnqueueWeiboWork(ctx context.Context, req WeiboWorkEnqueueRequ
 		opts := WorkPlanOptions{
 			VideoQuality: m.dlSettings.VideoQuality,
 			CodecOrder:   append([]string(nil), m.dlSettings.CodecOrder...),
+			Source:       source,
 		}
 		m.mu.Unlock()
 		fetched, err := planner.PlanWorkDownload(ctx, rawTarget, opts)
@@ -214,7 +215,7 @@ func (m *Manager) EnqueueWeiboWork(ctx context.Context, req WeiboWorkEnqueueRequ
 	return t, nil
 }
 
-func (m *Manager) consumeInitialOrFetchWeiboPlan(ctx context.Context, taskID, targetID string) (WorkDownloadPlan, WorkPlanner, error) {
+func (m *Manager) consumeInitialOrFetchWeiboPlan(ctx context.Context, taskID, targetID, source string) (WorkDownloadPlan, WorkPlanner, error) {
 	m.mu.Lock()
 	initial, hasInitial := m.initialPlans[taskID]
 	if hasInitial {
@@ -224,6 +225,7 @@ func (m *Manager) consumeInitialOrFetchWeiboPlan(ctx context.Context, taskID, ta
 	opts := WorkPlanOptions{
 		VideoQuality: m.dlSettings.VideoQuality,
 		CodecOrder:   append([]string(nil), m.dlSettings.CodecOrder...),
+		Source:       source,
 	}
 	m.mu.Unlock()
 
@@ -273,7 +275,7 @@ func (m *Manager) executeWeiboTask(ctx context.Context, t *Task) error {
 	storedMode, _ := m.taskResolutionAndPages(t.TaskID)
 	mode := effectiveConflictResolution(ctx, t.ConflictResolution, storedMode)
 
-	plan, planner, err := m.consumeInitialOrFetchWeiboPlan(ctx, t.TaskID, t.TargetID)
+	plan, planner, err := m.consumeInitialOrFetchWeiboPlan(ctx, t.TaskID, t.TargetID, t.Source)
 	if err != nil {
 		return m.wrapDegradedIfLocalProtected(firstNonEmptyStr(t.ItemKey, "weibo:dynamic:"+lockTarget), mode, err)
 	}

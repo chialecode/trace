@@ -399,3 +399,311 @@ func TestServiceWeiboEditHistory_QueueStopErrorsProbeAndReusedListPlan(t *testin
 		})
 	}
 }
+
+func TestServiceWeiboEditHistory_ManualCachedPostFailureDoesNotClearBackoff(t *testing.T) {
+	var mode atomic.Int32 // 0=200, 404=404, 418=418, 429=429, 401=401
+	var editHistoryHits atomic.Int32
+	var postShowHits atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ajax/setting/getBasicInfo":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"ok":1,"data":{"screen_name":%q,"domain":"synthself"}}`, synthWeiboSelfName)
+		case "/ajax/profile/info":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"ok":1,"data":{"user":{"id":5100000001,"idstr":%q,"screen_name":%q,"statuses_count":5}}}`, synthWeiboSelfUID, synthWeiboSelfName)
+		case "/ajax/statuses/show":
+			postShowHits.Add(1)
+			id := r.URL.Query().Get("id")
+			if decoded, err := weibo.MblogIDToMid(id); err == nil {
+				id = decoded
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"ok":1,"idstr":%q,"mid":%q,"created_at":"Thu Nov 28 12:30:00 +0800 2026","text_raw":"退避期手动缓存主帖 %s","edit_count":1,"user":{"idstr":%q,"screen_name":%q}}`,
+				id, id, id, synthWeiboUID, synthWeiboName)
+		case "/ajax/statuses/editHistory":
+			editHistoryHits.Add(1)
+			switch mode.Load() {
+			case 404:
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"ok":0,"msg":"not found"}`))
+			case 418:
+				w.WriteHeader(418)
+				_, _ = w.Write([]byte(`blocked`))
+			case 429:
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"ok":0,"msg":"rate limited"}`))
+			case 401:
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"ok":0,"msg":"login required"}`))
+			default:
+				mid := r.URL.Query().Get("mid")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"ok":1,"total":2,"statuses":[{"idstr":%q,"created_at":"Thu Nov 28 12:30:00 +0800 2026","text_raw":"修订版"},{"idstr":%q,"created_at":"Thu Nov 28 12:00:00 +0800 2026","text_raw":"首发版"}]}`, mid, mid)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	b, err := NewBackend(Options{
+		Locations:        testLocations(t),
+		Desktop:          NewMockDesktop(),
+		DisableBgWorkers: true,
+		WeiboOpts: weibo.ClientOptions{
+			Endpoints: weibo.Endpoints{
+				PCBasicInfo:         srv.URL + "/ajax/setting/getBasicInfo",
+				ProfileInfo:         srv.URL + "/ajax/profile/info",
+				StatusesShow:        srv.URL + "/ajax/statuses/show",
+				StatusesEditHistory: srv.URL + "/ajax/statuses/editHistory",
+			},
+			MinInterval:    -1,
+			JitterMax:      -1,
+			AllowLocalhost: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewBackend: %v", err)
+	}
+	defer b.Close()
+
+	ctx := context.Background()
+	if _, err := b.LoginWithCookie(ctx, string(site.Weibo), synthWeiboCookie(), ""); err != nil {
+		t.Fatalf("LoginWithCookie: %v", err)
+	}
+
+	b.subs.RecordSiteAutomaticStop("weibo", site.ErrKindRiskControl)
+	if inBackoff, _ := b.subs.IsSiteInBackoff("weibo"); !inBackoff {
+		t.Fatal("expected Weibo to be in active backoff")
+	}
+	origLevel := b.subs.GetSiteSchedulerState("weibo").BackoffLevel
+
+	seedCachedPost := func(mid string) {
+		p := weibo.Post{
+			Mid:       mid,
+			CreatedAt: 1709973600,
+			EditCount: 1,
+			Text:      "内存缓存已编辑微博 " + mid,
+			TextRaw:   "内存缓存已编辑微博 " + mid,
+			Author: weibo.AuthorSummary{
+				UID:        synthWeiboUID,
+				ScreenName: synthWeiboName,
+			},
+			CanonicalURL: "https://weibo.com/" + synthWeiboUID + "/" + mid,
+		}
+		b.weiboPostCache.put(&p, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), b.weiboRemoveWatermarkEnabled())
+	}
+
+	failCases := []struct {
+		name string
+		mid  string
+		code int32
+	}{
+		{name: "cached_418", mid: "5099000000000201", code: 418},
+		{name: "cached_429", mid: "5099000000000202", code: 429},
+		{name: "cached_401", mid: "5099000000000203", code: 401},
+		{name: "cached_404", mid: "5099000000000204", code: 404},
+	}
+	for _, tc := range failCases {
+		t.Run(tc.name, func(t *testing.T) {
+			seedCachedPost(tc.mid)
+			mode.Store(tc.code)
+			hitsBefore := editHistoryHits.Load()
+			_, err := b.CacheWeiboPost(ctx, tc.mid, nil)
+			if tc.code == 401 {
+				// 401 marks the Weibo session expired before EnqueueWeiboWork checks RequireAuth.
+				if !site.IsKind(err, site.ErrKindAuthRequired) {
+					t.Fatalf("manual CacheWeiboPost(%s) expected auth_required after 401, got err=%v", tc.name, err)
+				}
+			} else if err != nil {
+				t.Fatalf("manual CacheWeiboPost(%s) should degrade gracefully, got err=%v", tc.name, err)
+			}
+			if editHistoryHits.Load() != hitsBefore+1 {
+				t.Fatalf("expected 1 editHistory request for %s, got %d", tc.name, editHistoryHits.Load()-hitsBefore)
+			}
+			if inBackoff, _ := b.subs.IsSiteInBackoff("weibo"); !inBackoff {
+				t.Fatalf("%s: failed editHistory during manual cached-post enqueue MUST NOT clear Weibo backoff", tc.name)
+			}
+			if got := b.subs.GetSiteSchedulerState("weibo").BackoffLevel; got != origLevel {
+				t.Fatalf("%s: manual probe failure escalated BackoffLevel: got %d, want %d", tc.name, got, origLevel)
+			}
+			if tc.code == 401 {
+				if _, lErr := b.LoginWithCookie(ctx, string(site.Weibo), synthWeiboCookie(), ""); lErr != nil {
+					t.Fatalf("restore LoginWithCookie after 401: %v", lErr)
+				}
+			}
+		})
+	}
+
+	// Also verify uncached manual CacheWeiboPost (PlanWorkDownload: GetPost 200 -> GetEditHistory 418) does NOT clear backoff!
+	mode.Store(418)
+	showBefore := postShowHits.Load()
+	if _, err := b.CacheWeiboPost(ctx, "5099000000000205", nil); err != nil {
+		t.Fatalf("manual uncached CacheWeiboPost should degrade gracefully on editHistory 418, got %v", err)
+	}
+	if postShowHits.Load() != showBefore+1 {
+		t.Fatalf("expected uncached manual CacheWeiboPost to call GetPost")
+	}
+	if inBackoff, _ := b.subs.IsSiteInBackoff("weibo"); !inBackoff {
+		t.Fatal("manual CacheWeiboPost hitting editHistory 418 in PlanWorkDownload MUST NOT clear Weibo backoff")
+	}
+	if got := b.subs.GetSiteSchedulerState("weibo").BackoffLevel; got != origLevel {
+		t.Fatalf("manual PlanWorkDownload editHistory 418 escalated BackoffLevel: got %d, want %d", got, origLevel)
+	}
+
+	// Once remote editHistory succeeds (200 OK) for a cached edited post, manual probe clears Weibo backoff.
+	seedCachedPost("5099000000000206")
+	mode.Store(0)
+	if _, err := b.CacheWeiboPost(ctx, "5099000000000206", nil); err != nil {
+		t.Fatalf("manual CacheWeiboPost recovery: %v", err)
+	}
+	if inBackoff, _ := b.subs.IsSiteInBackoff("weibo"); inBackoff {
+		t.Fatal("expected successful manual CacheWeiboPost editHistory probe to clear Weibo backoff")
+	}
+}
+
+func TestServiceWeiboEditHistory_QueueProbePlanWorkDownloadStopsOnEditHistoryError(t *testing.T) {
+	var mode atomic.Int32
+	var postShowHits atomic.Int32
+	var editHistoryHits atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ajax/setting/getBasicInfo":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"ok":1,"data":{"screen_name":%q,"domain":"synthself"}}`, synthWeiboSelfName)
+		case "/ajax/profile/info":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"ok":1,"data":{"user":{"id":5100000001,"idstr":%q,"screen_name":%q,"statuses_count":5}}}`, synthWeiboSelfUID, synthWeiboSelfName)
+		case "/ajax/statuses/show":
+			postShowHits.Add(1)
+			id := r.URL.Query().Get("id")
+			if decoded, err := weibo.MblogIDToMid(id); err == nil {
+				id = decoded
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"ok":1,"idstr":%q,"mid":%q,"created_at":"Thu Nov 28 12:30:00 +0800 2026","text_raw":"长微博完整正文 %s","isLongText":false,"edit_count":2,"user":{"idstr":%q,"screen_name":%q}}`,
+				id, id, id, synthWeiboUID, synthWeiboName)
+		case "/ajax/statuses/editHistory":
+			editHistoryHits.Add(1)
+			switch mode.Load() {
+			case 418:
+				w.WriteHeader(418)
+				_, _ = w.Write([]byte(`blocked`))
+			case 401:
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"ok":0,"msg":"login required"}`))
+			default:
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	b, err := NewBackend(Options{
+		Locations:        testLocations(t),
+		Desktop:          NewMockDesktop(),
+		DisableBgWorkers: true,
+		WeiboOpts: weibo.ClientOptions{
+			Endpoints: weibo.Endpoints{
+				PCBasicInfo:         srv.URL + "/ajax/setting/getBasicInfo",
+				ProfileInfo:         srv.URL + "/ajax/profile/info",
+				StatusesShow:        srv.URL + "/ajax/statuses/show",
+				StatusesEditHistory: srv.URL + "/ajax/statuses/editHistory",
+			},
+			MinInterval:    -1,
+			JitterMax:      -1,
+			AllowLocalhost: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewBackend: %v", err)
+	}
+	defer b.Close()
+
+	ctx := context.Background()
+	if _, err := b.LoginWithCookie(ctx, string(site.Weibo), synthWeiboCookie(), ""); err != nil {
+		t.Fatalf("LoginWithCookie: %v", err)
+	}
+
+	b.subs.RecordSiteAutomaticStop("weibo", site.ErrKindRiskControl)
+	if inBackoff, _ := b.subs.IsSiteInBackoff("weibo"); !inBackoff {
+		t.Fatal("expected Weibo to be in active backoff")
+	}
+
+	cases := []struct {
+		name     string
+		mid      string
+		code     int32
+		wantKind string
+	}{
+		{name: "probe_planworkdownload_418", mid: "5099000000000301", code: 418, wantKind: site.ErrKindRiskControl},
+		{name: "probe_planworkdownload_401", mid: "5099000000000302", code: 401, wantKind: site.ErrKindAuthRequired},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mode.Store(tc.code)
+			beforeList, lErr := b.dl.ListTasks()
+			if lErr != nil {
+				t.Fatalf("dl.ListTasks before: %v", lErr)
+			}
+			showBefore := postShowHits.Load()
+			ehBefore := editHistoryHits.Load()
+
+			// IsLongText=true && LongTextFetched=false forces canReuseWeiboPostPlan==false,
+			// so weiboPostQueueCandidate routes through EnqueueWeiboWork -> PlanWorkDownload.
+			cand := b.weiboPostQueueCandidate(weibo.Post{
+				Mid:             tc.mid,
+				CreatedAt:       1709973600,
+				IsLongText:      true,
+				LongTextFetched: false,
+				EditCount:       2,
+				Text:            "截断长微博 " + tc.mid,
+				Author: weibo.AuthorSummary{
+					UID:        synthWeiboUID,
+					ScreenName: synthWeiboName,
+				},
+				CanonicalURL: "https://weibo.com/" + synthWeiboUID + "/" + tc.mid,
+			})
+			enq, err := cand.enqueue(site.WithManualProbe(ctx))
+			if err == nil {
+				t.Fatalf("expected stop error %s on isProbe PlanWorkDownload, got nil (enq=%+v)", tc.wantKind, enq)
+			}
+			if gotKind := site.KindOf(err); gotKind != tc.wantKind {
+				t.Fatalf("got error kind %q, want %q (err=%v)", gotKind, tc.wantKind, err)
+			}
+			if postShowHits.Load() != showBefore+1 {
+				t.Fatalf("expected PlanWorkDownload to call GetPost once, got %d", postShowHits.Load()-showBefore)
+			}
+			if editHistoryHits.Load() != ehBefore+1 {
+				t.Fatalf("expected PlanWorkDownload to call GetEditHistory once, got %d", editHistoryHits.Load()-ehBefore)
+			}
+			if len(enq.taskIDs) != 0 {
+				t.Fatalf("expected no enqueued tasks on probe stop error, got %+v", enq.taskIDs)
+			}
+			afterList, lErr := b.dl.ListTasks()
+			if lErr != nil {
+				t.Fatalf("dl.ListTasks after: %v", lErr)
+			}
+			if len(afterList) != len(beforeList) {
+				t.Fatalf("expected download task count unchanged (%d -> %d)", len(beforeList), len(afterList))
+			}
+			if inBackoff, _ := b.subs.IsSiteInBackoff("weibo"); !inBackoff {
+				t.Fatalf("isProbe PlanWorkDownload failure MUST NOT clear Weibo backoff")
+			}
+			if tc.code == 401 {
+				if _, lErr := b.LoginWithCookie(ctx, string(site.Weibo), synthWeiboCookie(), ""); lErr != nil {
+					t.Fatalf("restore LoginWithCookie after 401: %v", lErr)
+				}
+			}
+		})
+	}
+}

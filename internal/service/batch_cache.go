@@ -616,7 +616,7 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 			calledEditHistoryAPI := false
 			if canReuseWeiboPostPlan(&postCopy) {
 				if built, err := b.buildWeiboWorkPlanFromPost(&postCopy); err == nil {
-					calledAPI, stopErr := b.attachWeiboEditHistoryBestEffort(ctx, &postCopy, &built)
+					calledAPI, _, stopErr := b.attachWeiboEditHistoryBestEffort(ctx, &postCopy, &built)
 					calledEditHistoryAPI = calledAPI
 					if stopErr != nil {
 						return queueEnqueued{}, stopErr
