@@ -419,8 +419,8 @@ func (p *Page) renderCacheQueueCard(c *ui.Context, h pagekit.Host, q companionap
 	expanded := p.expandedQueues[q.ID]
 	qCopy := q
 	title := firstNonEmpty(q.UserName, q.User)
-	if q.Kind == "weibo_backfill" || q.List == "weibo_backfill" {
-		title = "历史缓存补全 · 微博"
+	if q.Kind == "weibo_backfill" || q.List == "weibo_backfill" || q.Kind == "site_backfill" || q.List == "site_backfill" {
+		title = "历史缓存补全 · " + siteShortLabel(q.Site)
 	} else if q.ListLabel != "" {
 		title += " · " + q.ListLabel
 	}

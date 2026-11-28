@@ -11,10 +11,33 @@ import (
 
 func TestWeiboCacheStandardVersionAndOfflineHelpers(t *testing.T) {
 	if CurrentCacheStandardVersion != 2 {
-		t.Fatalf("CurrentCacheStandardVersion = %d, want 2 (must not bump to avoid Bilibili Gate B re-probes)", CurrentCacheStandardVersion)
+		t.Fatalf("CurrentCacheStandardVersion = %d, want 2 (legacy compatibility constant)", CurrentCacheStandardVersion)
 	}
-	if WeiboCacheStandardVersion != 3 {
-		t.Fatalf("WeiboCacheStandardVersion = %d, want 3", WeiboCacheStandardVersion)
+	if WeiboNoWMStandardVersion != 3 {
+		t.Fatalf("WeiboNoWMStandardVersion = %d, want 3", WeiboNoWMStandardVersion)
+	}
+	if WeiboCacheStandardVersion != 4 {
+		t.Fatalf("WeiboCacheStandardVersion = %d, want 4", WeiboCacheStandardVersion)
+	}
+	wantSiteStandards := []struct {
+		site string
+		kind string
+		want int
+	}{
+		{"bilibili", "video", BilibiliVideoStandardVersion},
+		{"bilibili", "dynamic", BilibiliDynamicStandardVersion},
+		{"bilibili", "live", CurrentCacheStandardVersion},
+		{"douyin", "video", DouyinCacheStandardVersion},
+		{"douyin", "dynamic", DouyinCacheStandardVersion},
+		{"weibo", "dynamic", WeiboCacheStandardVersion},
+		{"weibo", "video", WeiboCacheStandardVersion},
+		{"x", "dynamic", XCacheStandardVersion},
+		{"x", "video", XCacheStandardVersion},
+	}
+	for _, tc := range wantSiteStandards {
+		if got := SiteCacheStandardVersion(tc.site, tc.kind); got != tc.want {
+			t.Fatalf("SiteCacheStandardVersion(%q, %q) = %d, want %d", tc.site, tc.kind, got, tc.want)
+		}
 	}
 
 	staticMissing := ItemMetadata{
@@ -43,11 +66,34 @@ func TestWeiboCacheStandardVersionAndOfflineHelpers(t *testing.T) {
 		t.Fatal("expected staticMissing with MediaID/AssetIDs to qualify for fast CDN backfill")
 	}
 
-	// Already stamped with WeiboCacheStandardVersion = 3 -> never repeats infinitely.
+	// Already stamped with WeiboNoWMStandardVersion = 3 -> no-watermark CDN backfill does not repeat infinitely,
+	// while EditHistory backfill remains eligible until WeiboCacheStandardVersion = 4.
+	v3NoWM := staticMissing
+	v3NoWM.CacheStandardVersion = WeiboNoWMStandardVersion
+	if WeiboNeedsNoWMBackfill(v3NoWM, true) {
+		t.Fatal("item stamped with WeiboNoWMStandardVersion=3 must not need no-watermark backfill again")
+	}
+	v3Edited := v3NoWM
+	v3Edited.EditCount = 2
+	if !WeiboNeedsEditHistoryBackfill(v3Edited) {
+		t.Fatal("v3 edited Weibo post without EditHistory must qualify for WeiboNeedsEditHistoryBackfill")
+	}
+	v4Edited := v3Edited
+	v4Edited.CacheStandardVersion = WeiboCacheStandardVersion
+	if WeiboNeedsEditHistoryBackfill(v4Edited) {
+		t.Fatal("v4 edited Weibo post must not repeat EditHistory backfill")
+	}
+	v3WithHistory := v3Edited
+	v3WithHistory.EditHistory = []ItemEditRevision{{Version: 1, Text: "旧版正文"}}
+	if WeiboNeedsEditHistoryBackfill(v3WithHistory) {
+		t.Fatal("Weibo post already carrying EditHistory must not trigger missing EditHistory backfill")
+	}
+
+	// Already stamped with WeiboCacheStandardVersion = 4 -> never repeats infinitely.
 	v3Done := staticMissing
 	v3Done.CacheStandardVersion = WeiboCacheStandardVersion
 	if WeiboNeedsNoWMBackfill(v3Done, true) {
-		t.Fatal("item stamped with WeiboCacheStandardVersion=3 must not need backfill again")
+		t.Fatal("item stamped with WeiboCacheStandardVersion=4 must not need backfill again")
 	}
 
 	// Already has verified NoWatermark companion -> does not need backfill.
@@ -189,5 +235,72 @@ func TestListItemsMetaOnlyBySiteNo200Cap(t *testing.T) {
 		if it.Site != "weibo" {
 			t.Fatalf("unexpected non-weibo item %q", it.ItemKey)
 		}
+	}
+}
+
+func TestHasCachedBilibiliDynamicsAndBatchUIDs(t *testing.T) {
+	tmp := t.TempDir()
+	db, _, _, err := storage.OpenSQLite(filepath.Join(tmp, "library.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer db.Close()
+	cacheDir := filepath.Join(tmp, "cache")
+	st, err := OpenWithDataDir(db, cacheDir, tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	save := func(subPath string, meta ItemMetadata) {
+		dir := filepath.Join(cacheDir, filepath.FromSlash(subPath))
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.SaveItem(dir, meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// UID 1001: authored dynamic
+	save("bilibili/1001/dynamics/9001", ItemMetadata{
+		Site: "bilibili", Kind: "dynamic", ID: "dynamic:9001", RawID: "9001", Status: "complete",
+		Author: ItemAuthor{Site: "bilibili", Mid: 1001, UID: "1001", Name: "UP1"},
+	})
+	// UID 1002: only forwarded dynamic via Via.UID
+	save("bilibili/1002/forwards/9002", ItemMetadata{
+		Site: "bilibili", Kind: "dynamic", ID: "dynamic:9002", RawID: "9002", Status: "complete",
+		Author: ItemAuthor{Site: "bilibili", Mid: 9999, UID: "9999", Name: "Orig"},
+		Via:    &ItemVia{Reason: ViaForward, Site: "bilibili", UID: "1002", Name: "UP2"},
+	})
+	// UID 1003: only video (no dynamic)
+	save("bilibili/1003/videos/BV1novid00001", ItemMetadata{
+		Site: "bilibili", Kind: "video", ID: "video:BV1novid00001", RawID: "BV1novid00001", Status: "complete",
+		Author: ItemAuthor{Site: "bilibili", Mid: 1003, UID: "1003", Name: "UP3"},
+	})
+	// UID 1004: only archived snapshot of dynamic -> must be excluded!
+	save("bilibili/1004/dynamics/9004__v1-1700000000", ItemMetadata{
+		Site: "bilibili", Kind: "dynamic", ID: "dynamic:9004__v1-1700000000", RawID: "9004__v1-1700000000", Status: "complete",
+		ArchivedOf: "bilibili:dynamic:9004",
+		Author:     ItemAuthor{Site: "bilibili", Mid: 1004, UID: "1004", Name: "UP4"},
+	})
+
+	if ok, err := st.HasCachedBilibiliDynamics("1001"); err != nil || !ok {
+		t.Fatalf("HasCachedBilibiliDynamics(1001) = %v, %v; want true", ok, err)
+	}
+	if ok, err := st.HasCachedBilibiliDynamics("1002"); err != nil || !ok {
+		t.Fatalf("HasCachedBilibiliDynamics(1002 via forward) = %v, %v; want true", ok, err)
+	}
+	if ok, err := st.HasCachedBilibiliDynamics("1003"); err != nil || ok {
+		t.Fatalf("HasCachedBilibiliDynamics(1003 video-only) = %v, %v; want false", ok, err)
+	}
+	if ok, err := st.HasCachedBilibiliDynamics("1004"); err != nil || ok {
+		t.Fatalf("HasCachedBilibiliDynamics(1004 archived-only) = %v, %v; want false", ok, err)
+	}
+
+	got, err := st.CachedBilibiliDynamicUIDs([]string{"1001", "1002", "1003", "1004"})
+	if err != nil {
+		t.Fatalf("CachedBilibiliDynamicUIDs: %v", err)
+	}
+	if !got["1001"] || !got["1002"] || got["1003"] || got["1004"] {
+		t.Fatalf("CachedBilibiliDynamicUIDs unexpected result: %+v", got)
 	}
 }

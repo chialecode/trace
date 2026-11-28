@@ -24,6 +24,7 @@ type queueEnqueued struct {
 	nextParts      []queuePartEnqueuer
 	pendingPages   []int
 	probedNoTask   bool
+	probeRejected  bool
 	reusedListPlan bool
 }
 
@@ -67,6 +68,9 @@ func normalizeCacheQueueTarget(rawSite, rawList, rawUser string) (site.ID, strin
 		if list == "" {
 			list = "dynamics"
 		}
+		if list == CacheQueueListSiteBackfill {
+			return site.Bilibili, CacheQueueListSiteBackfill, CacheQueueBackfillUser, nil
+		}
 		if list != "dynamics" && list != "videos" {
 			return "", "", "", &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "不支持的哔哩哔哩列表类型"}
 		}
@@ -79,6 +83,9 @@ func normalizeCacheQueueTarget(rawSite, rawList, rawUser string) (site.ID, strin
 	case site.Douyin:
 		if list == "" {
 			list = "works"
+		}
+		if list == CacheQueueListSiteBackfill {
+			return site.Douyin, CacheQueueListSiteBackfill, CacheQueueBackfillUser, nil
 		}
 		if list != "works" {
 			return "", "", "", &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "不支持的抖音列表类型"}
@@ -109,6 +116,9 @@ func normalizeCacheQueueTarget(rawSite, rawList, rawUser string) (site.ID, strin
 		if list == "" {
 			list = "posts"
 		}
+		if list == CacheQueueListSiteBackfill {
+			return site.X, CacheQueueListSiteBackfill, CacheQueueBackfillUser, nil
+		}
 		if list != "posts" {
 			return "", "", "", &site.Error{Site: siteID, Kind: site.ErrKindBadRequest, Message: "不支持的 X 列表类型"}
 		}
@@ -124,30 +134,32 @@ func normalizeCacheQueueTarget(rawSite, rawList, rawUser string) (site.ID, strin
 }
 
 func cacheQueueListLabel(siteID, list string) string {
+	cleanList := strings.ToLower(strings.TrimSpace(list))
+	if cleanList == CacheQueueListWeiboBackfill || cleanList == CacheQueueListSiteBackfill {
+		return "历史缓存补全"
+	}
 	switch strings.ToLower(strings.TrimSpace(siteID)) {
 	case string(site.Douyin):
 		return "作品"
 	case string(site.Weibo):
-		if strings.EqualFold(strings.TrimSpace(list), CacheQueueListWeiboBackfill) {
-			return "历史缓存补全"
-		}
 		return "微博"
 	case string(site.X):
 		return "帖子"
 	default:
-		if list == "videos" {
+		if cleanList == "videos" {
 			return "投稿"
 		}
 		return "动态"
 	}
 }
 
-func (b *Backend) buildQueueLoadedAndPager(siteID site.ID, list, normUser string, req CacheQueueRequest) ([]queueCandidate, queuePager, error) {
+func (b *Backend) buildQueueLoadedAndPager(siteID site.ID, list, normUser string, req CacheQueueRequest) ([]queueCandidate, queuePager, bool, error) {
 	pager, err := b.buildQueuePager(siteID, list, normUser, req.UserName)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	var loaded []queueCandidate
+	fallbackRefetch := false
 	switch {
 	case siteID == site.Bilibili && list == "videos":
 		for _, v := range req.Videos {
@@ -159,18 +171,39 @@ func (b *Backend) buildQueueLoadedAndPager(siteID site.ID, list, normUser string
 		}
 	case siteID == site.Douyin:
 		for _, w := range req.Works {
-			loaded = append(loaded, b.workQueueCandidate(w, normUser, req.UserName))
+			cand, hit := b.workQueueCandidateWithHit(w, normUser, req.UserName)
+			if !hit {
+				fallbackRefetch = true
+				break
+			}
+			loaded = append(loaded, cand)
 		}
 	case siteID == site.Weibo:
 		for _, p := range req.WeiboPosts {
-			loaded = append(loaded, b.weiboPostViewQueueCandidate(p))
+			cand, hit := b.weiboPostViewQueueCandidateWithHit(p)
+			if !hit {
+				fallbackRefetch = true
+				break
+			}
+			loaded = append(loaded, cand)
 		}
 	case siteID == site.X:
 		for _, p := range req.XPosts {
-			loaded = append(loaded, b.xPostDTOQueueCandidate(p))
+			cand, hit := b.xPostDTOQueueCandidateWithHit(p)
+			if !hit {
+				fallbackRefetch = true
+				break
+			}
+			loaded = append(loaded, cand)
 		}
 	}
-	return loaded, pager, nil
+	if fallbackRefetch {
+		// DEC-096: Never degrade first-page loaded items to inspectCached=nil when
+		// any DTO missed the in-memory plan cache (5min TTL, 128 LRU, setting change,
+		// or unstitched article/thread); discard the stale snapshot so page 1 refetches fresh.
+		return nil, pager, true, nil
+	}
+	return loaded, pager, false, nil
 }
 
 // buildQueuePager pages the queue's list; userName is the account's name,
@@ -485,7 +518,7 @@ func (b *Backend) dynamicQueueCandidate(d bilibili.DynamicItem) queueCandidate {
 	var inspectFn func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision
 	if !uncacheable {
 		inspectFn = func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
-			return b.inspectBilibiliCachedDynamic(item, meta, queueOrigin)
+			return b.inspectBilibiliCachedDynamicDeferred(item, meta, queueOrigin)
 		}
 	}
 	return queueCandidate{
@@ -525,7 +558,7 @@ func (b *Backend) douyinDetailQueueCandidate(d douyin.WorkDetail, forUID, forNam
 		title:       title,
 		uncacheable: detailCopy.Uncacheable || detailCopy.Kind == douyin.WorkKindUnsupported,
 		inspectCached: func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
-			return b.inspectDouyinCachedWork(detailCopy, meta, queueOrigin, forUID, forName)
+			return b.inspectDouyinCachedWorkDeferred(detailCopy, meta, queueOrigin, forUID, forName)
 		},
 		enqueue: func(ctx context.Context) (queueEnqueued, error) {
 			var planPtr *download.WorkDownloadPlan
@@ -551,10 +584,15 @@ func (b *Backend) douyinDetailQueueCandidate(d douyin.WorkDetail, forUID, forNam
 // workQueueCandidate enqueues one work from account forUID's works list; a
 // co-creation by someone else is stored under forUID's folder (DEC-063).
 func (b *Backend) workQueueCandidate(w DouyinWorkCardDTO, forUID, forName string) queueCandidate {
+	cand, _ := b.workQueueCandidateWithHit(w, forUID, forName)
+	return cand
+}
+
+func (b *Backend) workQueueCandidateWithHit(w DouyinWorkCardDTO, forUID, forName string) (queueCandidate, bool) {
 	id := strings.TrimSpace(w.ID)
 	if b != nil && b.douyinWorkCache != nil && id != "" {
 		if cached, ok := b.douyinWorkCache.get(id, b.preferredDouyinCodec()); ok {
-			return b.douyinDetailQueueCandidate(*cached, forUID, forName)
+			return b.douyinDetailQueueCandidate(*cached, forUID, forName), true
 		}
 	}
 	key := w.CacheKey
@@ -578,7 +616,7 @@ func (b *Backend) workQueueCandidate(w DouyinWorkCardDTO, forUID, forName string
 				reusedListPlan: reusedPlan,
 			}, nil
 		},
-	}
+	}, false
 }
 
 func isWeiboNonOriginalPost(isRetweet, isFastRetweet bool, hasRetweeted bool, oriMid, ruleType string) bool {
@@ -586,8 +624,9 @@ func isWeiboNonOriginalPost(isRetweet, isFastRetweet bool, hasRetweeted bool, or
 }
 
 // weiboPostQueueCandidate converts a list-fetched Weibo post into a cache queue candidate.
-// Full cache only caches original posts (skipping retweets and fast-retweets) and reuses
-// the in-memory list payload to build a download plan when complete (zero signed URLs on disk).
+// Full cache skips uncached retweets/fast-retweets while still running inspectCached on
+// already-cached forwards encountered in lists (DEC-096), and reuses the in-memory list
+// payload to build a download plan when complete (zero signed URLs on disk).
 func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 	postCopy := p
 	mid := strings.TrimSpace(postCopy.Mid)
@@ -601,7 +640,7 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 	title := trimQueueSummaryTitle(firstNonEmpty(postCopy.Text, postCopy.TextRaw, mid))
 	nonOriginal := isWeiboNonOriginalPost(postCopy.IsRetweet, postCopy.IsFastRetweet, postCopy.Retweeted != nil, postCopy.OriMid, postCopy.RuleType)
 	var inspectFn func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision
-	if !nonOriginal {
+	if !postCopy.Unavailable {
 		inspectFn = func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
 			return b.inspectWeiboCachedPostDeferred(postCopy, meta, queueOrigin)
 		}
@@ -624,7 +663,14 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 					planPtr = &built
 				}
 			}
-			t, reusedPlan, err := b.enqueueWeiboPostWithSourceInfo(ctx, mid, "queue", nil, planPtr)
+			var existingVia *library.ItemVia
+			if b != nil && b.lib != nil && key != "" {
+				if existing, ok, gErr := b.lib.GetItem(key); gErr == nil && ok && existing.Via != nil {
+					cp := *existing.Via
+					existingVia = &cp
+				}
+			}
+			t, reusedPlan, err := b.enqueueWeiboPostWithSourceInfo(ctx, mid, "queue", existingVia, planPtr)
 			if err != nil {
 				return queueEnqueued{}, err
 			}
@@ -639,10 +685,15 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 }
 
 func (b *Backend) weiboPostViewQueueCandidate(p WeiboPostView) queueCandidate {
+	cand, _ := b.weiboPostViewQueueCandidateWithHit(p)
+	return cand
+}
+
+func (b *Backend) weiboPostViewQueueCandidateWithHit(p WeiboPostView) (queueCandidate, bool) {
 	mid := strings.TrimSpace(p.Mid)
 	if b != nil && b.weiboPostCache != nil && mid != "" {
 		if cached, ok := b.weiboPostCache.get(mid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), b.weiboRemoveWatermarkEnabled()); ok {
-			return b.weiboPostQueueCandidate(*cached)
+			return b.weiboPostQueueCandidate(*cached), true
 		}
 	}
 	key := p.CacheKey
@@ -667,7 +718,7 @@ func (b *Backend) weiboPostViewQueueCandidate(p WeiboPostView) queueCandidate {
 				reusedListPlan: reusedPlan,
 			}, nil
 		},
-	}
+	}, false
 }
 
 // isXNonOriginalPost reports whether an X post is a pure retweet that should be
@@ -685,8 +736,9 @@ func isXNonOriginalPost(isRetweet, isQuote, hasRetweeted, hasQuoted bool, ruleTy
 }
 
 // xPostQueueCandidate converts a list-fetched X post into a cache queue candidate.
-// Full cache includes original posts and quote posts (skipping only pure retweets,
-// DEC-091) and reuses the in-memory list payload to build a download plan when complete.
+// Full cache includes original posts and quote posts, skips uncached pure retweets
+// while still inspecting already-cached retweets (DEC-091, DEC-096), and reuses
+// the in-memory list payload to build a download plan when complete.
 func (b *Backend) xPostQueueCandidate(p x.Post) queueCandidate {
 	postCopy := p
 	id := strings.TrimSpace(postCopy.ID)
@@ -700,9 +752,9 @@ func (b *Backend) xPostQueueCandidate(p x.Post) queueCandidate {
 	title := trimQueueSummaryTitle(firstNonEmpty(postCopy.Text, id))
 	nonOriginal := isXNonOriginalPost(postCopy.IsRetweet, postCopy.IsQuote, postCopy.Retweeted != nil, postCopy.Quoted != nil, postCopy.RuleType)
 	var inspectFn func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision
-	if !nonOriginal {
+	if !postCopy.Unavailable {
 		inspectFn = func(meta library.ItemMetadata, queueOrigin string) cachedInspectDecision {
-			return b.inspectXCachedPost(postCopy, meta, queueOrigin)
+			return b.inspectXCachedPostDeferred(postCopy, meta, queueOrigin)
 		}
 	}
 	return queueCandidate{
@@ -717,7 +769,14 @@ func (b *Backend) xPostQueueCandidate(p x.Post) queueCandidate {
 					planPtr = &built
 				}
 			}
-			t, reusedPlan, err := b.enqueueXPostWithSourceInfo(ctx, id, "queue", nil, planPtr)
+			var existingVia *library.ItemVia
+			if b != nil && b.lib != nil && key != "" {
+				if existing, ok, gErr := b.lib.GetItem(key); gErr == nil && ok && existing.Via != nil {
+					cp := *existing.Via
+					existingVia = &cp
+				}
+			}
+			t, reusedPlan, err := b.enqueueXPostWithSourceInfo(ctx, id, "queue", existingVia, planPtr)
 			if err != nil {
 				return queueEnqueued{}, err
 			}
@@ -732,10 +791,15 @@ func (b *Backend) xPostQueueCandidate(p x.Post) queueCandidate {
 }
 
 func (b *Backend) xPostDTOQueueCandidate(p XPostDTO) queueCandidate {
+	cand, _ := b.xPostDTOQueueCandidateWithHit(p)
+	return cand
+}
+
+func (b *Backend) xPostDTOQueueCandidateWithHit(p XPostDTO) (queueCandidate, bool) {
 	id := strings.TrimSpace(p.ID)
 	if b != nil && b.xPostCache != nil && id != "" {
 		if cached, ok := b.xPostCache.get(id); ok {
-			return b.xPostQueueCandidate(*cached)
+			return b.xPostQueueCandidate(*cached), true
 		}
 	}
 	key := p.CacheKey
@@ -760,7 +824,7 @@ func (b *Backend) xPostDTOQueueCandidate(p XPostDTO) queueCandidate {
 				reusedListPlan: reusedPlan,
 			}, nil
 		},
-	}
+	}, false
 }
 
 func trimQueueSummaryTitle(s string) string {

@@ -351,6 +351,10 @@ func TestTasksAllSegmentsActionsReadOnlyAndErrors(t *testing.T) {
 			ID: "q-done", Site: "weibo", User: "wb-7", UserName: "科技评测微博", List: "posts", ListLabel: "微博",
 			Status: "completed", CachedCount: 25, SkippedCount: 5,
 		},
+		{
+			ID: "q-bf-bili", Site: "bilibili", Kind: "site_backfill", User: "all", UserName: "历史缓存补全", List: "site_backfill", ListLabel: "历史缓存补全",
+			Status: "running", CachedCount: 2, SkippedCount: 0,
+		},
 	}
 
 	recordings := []companionapi.LiveRecordingDTO{
@@ -513,10 +517,13 @@ func TestTasksAllSegmentsActionsReadOnlyAndErrors(t *testing.T) {
 	}
 
 	// 2. 进行中 segment: downloads + queues + per-state actions + clear finished.
-	for _, want := range []string{"进行中", "直播", "待处理", "记录", "正在下载的4K视频", "触发微博风控", "科技评测B站 · 投稿", "第 13 期测试视频", "清除已结束（1）"} {
+	for _, want := range []string{"进行中", "直播", "待处理", "记录", "正在下载的4K视频", "触发微博风控", "科技评测B站 · 投稿", "历史缓存补全 · B 站", "第 13 期测试视频", "清除已结束（1）"} {
 		if !tt.HasText(want) {
 			t.Fatalf("进行中 missing %q; got %v", want, tt.Texts())
 		}
+	}
+	if tt.HasText("历史缓存补全 · 历史缓存补全") {
+		t.Fatal("mobile site_backfill card must not duplicate 历史缓存补全 · 历史缓存补全")
 	}
 	assertNoHorizontalOverflow(t, tt, 412)
 	assertNoForbiddenEntries(t, tt)

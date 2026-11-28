@@ -990,10 +990,10 @@ func (a *App) handleBackendEvent(ev service.Event) {
 	case service.EventTransferUpdated:
 		a.onTransferUpdated(ev.Message)
 	case service.EventCacheQueueUpdated:
-		_, prevBackfillActive := a.activeWeiboBackfillQueue()
+		_, prevBackfillActive := a.activeBackfillQueue()
 		a.cacheStateRev++
 		a.CacheQueue = a.backend.ListCacheQueue()
-		_, curBackfillActive := a.activeWeiboBackfillQueue()
+		_, curBackfillActive := a.activeBackfillQueue()
 		if prevBackfillActive && !curBackfillActive {
 			a.markBackfillSummaryDirty()
 			a.ensureBackfillSummaryFresh()

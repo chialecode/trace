@@ -33,6 +33,8 @@ const (
 	maxCacheQueueRecentItems    = 30
 	CacheQueueListWeiboBackfill = "weibo_backfill"
 	CacheQueueKindWeiboBackfill = "weibo_backfill"
+	CacheQueueListSiteBackfill  = "site_backfill"
+	CacheQueueKindSiteBackfill  = "site_backfill"
 	CacheQueueOriginBackfill    = "backfill"
 	CacheQueueBackfillUser      = "all"
 
@@ -40,6 +42,7 @@ const (
 	backfillPhaseFastCDN            = "fast_cdn"
 	backfillPhaseSubscribedTimeline = "subscribed_timeline"
 	backfillPhaseFallbackDetail     = "fallback_detail"
+	backfillPhaseSiteStandard       = "site_standard"
 )
 
 // CacheQueuePacing centralizes all conservative anti-risk-control delays and thresholds (Q-017 / DEC-089).
@@ -489,6 +492,17 @@ func sanitizeQueueRecord(r cacheQueueRecord) cacheQueueRecord {
 		}
 		r.BackfillSubUIDs = cleanUIDs
 		r.BackfillSubCursor = sanitizeQueueCursor(r.BackfillSubCursor)
+	} else if r.List == CacheQueueListSiteBackfill {
+		r.Kind = CacheQueueKindSiteBackfill
+		if r.BackfillPhase != backfillPhaseSiteStandard {
+			r.BackfillPhase = backfillPhaseSiteStandard
+		}
+		if r.BackfillTotal < 0 {
+			r.BackfillTotal = 0
+		}
+		r.BackfillSubUIDs = nil
+		r.BackfillSubIndex = 0
+		r.BackfillSubCursor = ""
 	} else {
 		r.Kind = ""
 		r.BackfillPhase = ""

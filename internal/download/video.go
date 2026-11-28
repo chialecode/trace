@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/settings"
@@ -165,6 +166,7 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 	// before media is verified when local item already has valid cached media!
 	if !hasProtectedLocal {
 		meta.Title, meta.Desc, meta.URL, meta.PubTs, meta.Duration = detail.Title, detail.Desc, detail.CanonicalURL, detail.PubTs, detail.Duration
+		meta.RemotePartCount = len(detail.Pages)
 		meta.Author = library.ItemAuthor{Mid: detail.Author.Mid, Name: detail.Author.Name, Face: detail.Author.Face}
 		meta.DirectCached = meta.DirectCached || !t.LinkedVideo
 		for _, candidate := range detail.Pages {
@@ -176,7 +178,7 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 		}
 		// Persist the expected pages before media requests on fresh caches, so a
 		// paused first page never leaves a green item claiming to contain the whole video.
-		if err := m.saveVideoManifest(t, &meta); err != nil {
+		if err := m.saveVideoManifest(t, &meta, false); err != nil {
 			return err
 		}
 	}
@@ -185,7 +187,7 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 			if !isStopError(result) && !mediaIsValid(meta, fmt.Sprintf("P%02d.mp4", page.Page)) && !mediaIsValid(meta, old.File) {
 				addMissing(&meta, fmt.Sprintf("P%02d.media", page.Page), "分 P 尚未完成 ("+bilibili.KindOf(result)+")")
 			}
-			if saveErr := m.saveVideoManifest(t, &meta); saveErr != nil {
+			if saveErr := m.saveVideoManifest(t, &meta, false); saveErr != nil {
 				result = saveErr
 			}
 		}
@@ -198,6 +200,7 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 		meta.Title = preserveMonotonicText(meta.Title, detail.Title, false)
 		meta.Desc = preserveMonotonicText(meta.Desc, detail.Desc, false)
 		meta.URL, meta.PubTs, meta.Duration = detail.CanonicalURL, detail.PubTs, detail.Duration
+		meta.RemotePartCount = len(detail.Pages)
 		meta.Author = library.ItemAuthor{Mid: detail.Author.Mid, Name: detail.Author.Name, Face: detail.Author.Face}
 		meta.DirectCached = meta.DirectCached || !t.LinkedVideo
 		for _, candidate := range detail.Pages {
@@ -224,12 +227,12 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 				m.setFileProgress(t, media.Role, media.Path, "completed", media.Bytes, media.Bytes, 0)
 			}
 		}
-		extraErr := m.saveVideoExtras(ctx, t, &meta, &old, cfg)
+		chaptersOK, extraErr := m.saveVideoExtras(ctx, t, &meta, &old, cfg)
 		meta.Parts = mergePartRecords(meta.Parts, old)
 		if extraErr != nil {
 			return extraErr
 		}
-		return m.saveVideoManifest(t, &meta)
+		return m.saveVideoManifest(t, &meta, chaptersOK && allPartsExtrasReady(meta, cfg))
 	}
 	opts := bilibili.PlaySelectionOptions{PreferredCodec: cfg.PreferredVideoCodec, CodecOrder: cfg.CodecOrder, PreferLosslessAudio: cfg.PreferLosslessAudio, PreferDolbyAudio: cfg.PreferDolbyAudio, TargetQn: targetQuality(cfg.VideoQuality)}
 	if upgrade && bilibili.QualityRank(old.Video.Quality) > bilibili.QualityRank(opts.TargetQn) {
@@ -249,8 +252,12 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 		if bilibili.QualityRank(plan.Video.Quality) <= bilibili.QualityRank(old.Video.Quality) && (plan.Audio == nil || audioRank(plan.Audio.Quality) <= audioRank(old.Audio.Quality)) {
 			applyVerifiedHeaderUpdates()
 			old.Available = availableRecord(plan)
+			chaptersOK, extraErr := m.saveVideoExtras(ctx, t, &meta, &old, cfg)
 			meta.Parts = mergePartRecords(meta.Parts, old)
-			return m.saveVideoManifest(t, &meta)
+			if extraErr != nil {
+				return extraErr
+			}
+			return m.saveVideoManifest(t, &meta, chaptersOK && allPartsExtrasReady(meta, cfg))
 		}
 	}
 	t.QualityHint = plan.Available.DowngradeHint
@@ -347,6 +354,12 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 		}
 		if len(old.Chapters) > 0 {
 			part.Chapters = append([]library.VideoChapter(nil), old.Chapters...)
+		}
+		if old.ChaptersChecked || len(old.Chapters) > 0 {
+			part.ChaptersChecked = true
+		}
+		if old.SubtitleIncludesAI {
+			part.SubtitleIncludesAI = true
 		}
 	}
 
@@ -500,7 +513,7 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 	// Swap verified MP4 over live path via .trace-prev-* backup & rollback, and
 	// register the validated MP4 before any extra request can fail or expire auth.
 	if err := swapVerifiedFileInPlace(meta.ItemDir, mp4Rel, stagedReadyPath, func() error {
-		return m.saveVideoManifest(t, &meta)
+		return m.saveVideoManifest(t, &meta, false)
 	}); err != nil {
 		meta = prevSnapshot
 		return err
@@ -516,15 +529,46 @@ func (m *Manager) cacheVideoPart(ctx context.Context, t *Task, upgrade bool) (re
 			return err
 		}
 	}
-	if err := m.saveVideoExtras(ctx, t, &meta, &part, cfg); err != nil {
-		meta.Parts = mergePartRecords(meta.Parts, part)
-		return err
-	}
+	chaptersOK, extraErr := m.saveVideoExtras(ctx, t, &meta, &part, cfg)
 	meta.Parts = mergePartRecords(meta.Parts, part)
-	return m.saveVideoManifest(t, &meta)
+	if extraErr != nil {
+		return extraErr
+	}
+	return m.saveVideoManifest(t, &meta, chaptersOK && allPartsExtrasReady(meta, cfg))
 }
 
-func (m *Manager) saveVideoManifest(t *Task, meta *library.ItemMetadata) error {
+func allPartsExtrasReady(meta library.ItemMetadata, cfg settings.DownloadSettings) bool {
+	if len(meta.Parts) == 0 {
+		return false
+	}
+	if cfg.MultiPart != "first" && meta.RemotePartCount > 0 && len(meta.Parts) < meta.RemotePartCount {
+		return false
+	}
+	for _, part := range meta.Parts {
+		if part.File == "" {
+			return false
+		}
+		if !part.ChaptersChecked && len(part.Chapters) == 0 {
+			return false
+		}
+		if cfg.SaveDanmaku && part.DanmakuState != "saved" {
+			return false
+		}
+		if cfg.SaveSubtitles {
+			if part.SubtitleState != "saved" {
+				return false
+			}
+			if cfg.IncludeAI && !part.SubtitleIncludesAI {
+				return false
+			}
+		} else if part.SubtitleState == "" || part.SubtitleState == "pending" {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *Manager) saveVideoManifest(t *Task, meta *library.ItemMetadata, stampBiliStandard bool) error {
 	meta.Status = "complete"
 	meta.UpgradeAvailable, meta.UpgradeHint = false, ""
 	for _, page := range meta.ExpectedPages {
@@ -547,6 +591,9 @@ func (m *Manager) saveVideoManifest(t *Task, meta *library.ItemMetadata) error {
 		}
 	}
 	stampCacheStandardAndAssets(meta, 0, 0, bilibiliVideoAssetIDsFromParts(meta.Parts))
+	if stampBiliStandard && meta.Status == "complete" && len(meta.Missing) == 0 && meta.CacheStandardVersion < library.BilibiliVideoStandardVersion {
+		meta.CacheStandardVersion = library.BilibiliVideoStandardVersion
+	}
 	saved, err := m.lib.SaveItem(meta.ItemDir, *meta)
 	if err != nil {
 		return err
@@ -557,7 +604,7 @@ func (m *Manager) saveVideoManifest(t *Task, meta *library.ItemMetadata) error {
 	return nil
 }
 
-func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.ItemMetadata, part *library.VideoPartRecord, cfg settings.DownloadSettings) error {
+func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.ItemMetadata, part *library.VideoPartRecord, cfg settings.DownloadSettings) (bool, error) {
 	prefix := fmt.Sprintf("P%02d", part.Page)
 	dmRel := prefix + ".danmaku.xml"
 	if !cfg.SaveDanmaku {
@@ -572,11 +619,11 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 			m.setFileProgress(t, "danmaku", dmRel, "failed", 0, 0, 0)
 			addMissing(meta, dmRel, "弹幕保存失败 ("+bilibili.KindOf(err)+")")
 			if isStopError(err) || ctx.Err() != nil {
-				return err
+				return false, err
 			}
 		} else {
 			if err := m.writeExtra(ctx, t, meta, "danmaku", dmRel, raw); err != nil {
-				return err
+				return false, err
 			}
 			part.Danmaku, part.DanmakuState = dmRel, "saved"
 			clearMissing(meta, dmRel)
@@ -585,36 +632,63 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 		part.DanmakuState = "saved"
 		clearMissing(meta, dmRel)
 	}
+
+	// Chapters (view_points) are always fetched on fresh parts or manifests below
+	// BilibiliVideoStandardVersion even when cfg.SaveSubtitles is false (DEC-096).
+	// Parts that already succeeded player/wbi/v2 (ChaptersChecked) skip redundant requests.
+	freshPart := part.SubtitleState == "" || part.SubtitleState == "pending"
+	needChapters := !part.ChaptersChecked && len(part.Chapters) == 0 && (freshPart || meta.CacheStandardVersion < library.BilibiliVideoStandardVersion)
+
+	needsSubtitles := false
 	if !cfg.SaveSubtitles {
 		part.SubtitleState = "skipped"
 		clearSubtitleMissing(meta, prefix)
 		m.setFileProgress(t, "subtitle", prefix+".subtitles", "skipped", 0, 0, 0)
-		return nil
-	}
-	needsSubtitles := part.SubtitleState != "saved"
-	for _, missing := range meta.Missing {
-		if subtitleMissingFor(missing, prefix) {
+	} else {
+		needsSubtitles = part.SubtitleState != "saved"
+		if cfg.IncludeAI && !part.SubtitleIncludesAI {
 			needsSubtitles = true
 		}
-	}
-	for _, rel := range part.Subtitles {
-		if !mediaIsValid(*meta, rel) {
-			needsSubtitles = true
+		for _, missing := range meta.Missing {
+			if subtitleMissingFor(missing, prefix) {
+				needsSubtitles = true
+			}
+		}
+		for _, rel := range part.Subtitles {
+			if !mediaIsValid(*meta, rel) {
+				needsSubtitles = true
+			}
 		}
 	}
-	if !needsSubtitles {
-		return nil
+
+	if !needsSubtitles && !needChapters {
+		return true, nil
 	}
+
 	var savedLanguages []string
-	for _, track := range part.SubtitleTracks {
-		if mediaIsValid(*meta, track.VTT) && mediaIsValid(*meta, track.SRT) {
-			savedLanguages = append(savedLanguages, track.Language)
+	if needsSubtitles {
+		for _, track := range part.SubtitleTracks {
+			if mediaIsValid(*meta, track.VTT) && mediaIsValid(*meta, track.SRT) {
+				savedLanguages = append(savedLanguages, track.Language)
+			}
 		}
 	}
-	extras, err := m.client.MissingSubtitlesAndChapters(ctx, meta.RawID, part.CID, cfg.IncludeAI, savedLanguages)
+	extras, err := m.client.MissingSubtitlesAndChapters(ctx, meta.RawID, part.CID, cfg.IncludeAI, savedLanguages, needsSubtitles)
 	if len(extras.Chapters) > 0 {
 		part.Chapters = convertVideoChapters(extras.Chapters)
 	}
+
+	if !needsSubtitles {
+		if err != nil {
+			if isStopError(err) || ctx.Err() != nil {
+				return false, err
+			}
+			return false, nil
+		}
+		part.ChaptersChecked = true
+		return true, nil
+	}
+
 	tracks := extras.Subtitles
 	clearSubtitleMissing(meta, prefix)
 	for _, track := range tracks {
@@ -633,7 +707,7 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 		}{{vtt, track.VTT}, {srt, track.SRT}} {
 			if err := m.writeExtra(ctx, t, meta, "subtitle", file.rel, file.data); err != nil {
 				addMissing(meta, file.rel, "字幕写入失败")
-				return err
+				return false, err
 			}
 			if !containsString(part.Subtitles, file.rel) {
 				part.Subtitles = append(part.Subtitles, file.rel)
@@ -651,11 +725,15 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 		}
 	}
 	part.SubtitleState = "saved"
+	chaptersOK := err == nil
+	if err == nil {
+		part.ChaptersChecked = true
+	}
 	if err != nil {
 		addMissing(meta, prefix+".subtitles", "字幕列表或下载失败 ("+bilibili.KindOf(err)+")")
 		part.SubtitleState = "missing"
 		if isStopError(err) || ctx.Err() != nil {
-			return err
+			return false, err
 		}
 	}
 	for _, missing := range meta.Missing {
@@ -663,7 +741,12 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 			part.SubtitleState = "missing"
 		}
 	}
-	return nil
+	if part.SubtitleState == "saved" && err == nil {
+		if cfg.IncludeAI {
+			part.SubtitleIncludesAI = true
+		}
+	}
+	return chaptersOK, nil
 }
 
 func convertVideoChapters(in []bilibili.VideoChapter) []library.VideoChapter {
@@ -728,25 +811,33 @@ func (m *Manager) executeSupplementTask(ctx context.Context, t *Task) error {
 	storedMode, selectedPages := m.taskResolutionAndPages(t.TaskID)
 	mode := effectiveConflictResolution(ctx, t.ConflictResolution, storedMode)
 
-	// Guard CacheSupplement with the V1-vs-V2 tripwire if VideoDetail is reachable.
-	if detail, dErr := m.client.VideoDetail(ctx, meta.RawID); dErr != nil {
+	// Reuse pre-fetched VideoDetail passed by queue probe when available so
+	// supplement avoids duplicate VideoDetail requests (DEC-096).
+	if preDetail, hasPre := m.takeSupplementDetail(t.TaskID); hasPre && len(preDetail.Pages) > 0 {
+		meta.RemotePartCount = len(preDetail.Pages)
+	} else if detail, dErr := m.client.VideoDetail(ctx, meta.RawID); dErr != nil {
 		if localHasProtectedContent(meta) && isDegradedSiteError(dErr) {
 			return wrapRemoteDegraded(dErr)
 		}
 		if isStopError(dErr) || ctx.Err() != nil {
 			return dErr
 		}
-	} else if localHasProtectedContent(meta) {
-		if mode == ConflictResolveKeepBoth || mode == ConflictResolveUseRemote {
-			return m.executeBilibiliVideoConflictReplace(ctx, t, detail, meta, mode, selectedPages)
+	} else {
+		if len(detail.Pages) > 0 {
+			meta.RemotePartCount = len(detail.Pages)
 		}
-		notice, isConflict, degErr := classifyBilibiliVideoVsLocal(meta, detail, t)
-		if degErr != nil {
-			return degErr
-		}
-		if isConflict {
-			m.emitConflict(notice)
-			return ErrConflictDetected
+		if localHasProtectedContent(meta) {
+			if mode == ConflictResolveKeepBoth || mode == ConflictResolveUseRemote {
+				return m.executeBilibiliVideoConflictReplace(ctx, t, detail, meta, mode, selectedPages)
+			}
+			notice, isConflict, degErr := classifyBilibiliVideoVsLocal(meta, detail, t)
+			if degErr != nil {
+				return degErr
+			}
+			if isConflict {
+				m.emitConflict(notice)
+				return ErrConflictDetected
+			}
 		}
 	}
 
@@ -758,12 +849,14 @@ func (m *Manager) executeSupplementTask(ctx context.Context, t *Task) error {
 	m.mu.Lock()
 	cfg := m.dlSettings
 	m.mu.Unlock()
+	allChaptersOK := len(meta.Parts) > 0
 	for i := range meta.Parts {
 		if meta.Parts[i].CID <= 0 {
 			continue
 		}
-		err := m.saveVideoExtras(ctx, t, &meta, &meta.Parts[i], cfg)
-		if saveErr := m.saveVideoManifest(t, &meta); saveErr != nil {
+		chaptersOK, err := m.saveVideoExtras(ctx, t, &meta, &meta.Parts[i], cfg)
+		allChaptersOK = allChaptersOK && chaptersOK
+		if saveErr := m.saveVideoManifest(t, &meta, false); saveErr != nil {
 			return saveErr
 		}
 		if err != nil {
@@ -777,7 +870,13 @@ func (m *Manager) executeSupplementTask(ctx context.Context, t *Task) error {
 	if allSaved {
 		clearMissing(&meta, "subtitles")
 	}
-	return m.saveVideoManifest(t, &meta)
+	stampV3 := allChaptersOK && allSaved && len(meta.Missing) == 0 && allPartsExtrasReady(meta, cfg)
+	if stampV3 {
+		nowStr := time.Now().UTC().Format(time.RFC3339)
+		meta.RecheckedAt = nowStr
+		meta.UpgradeCheckedAt = nowStr
+	}
+	return m.saveVideoManifest(t, &meta, stampV3)
 }
 
 func (m *Manager) executeUpgradeTask(ctx context.Context, t *Task) error {

@@ -84,3 +84,72 @@ func (s *Store) CountCachedWorks(refs []AuthorRef) (map[string]int, error) {
 	}
 	return out, nil
 }
+
+// HasCachedBilibiliDynamics reports whether the local library already contains
+// at least one non-archived Bilibili dynamic cached for uid (DEC-096). It reads
+// only the SQLite index with zero disk I/O.
+func (s *Store) HasCachedBilibiliDynamics(uid string) (bool, error) {
+	_, normUID := NormalizeAuthorUID("bilibili", uid, 0)
+	if normUID == "" {
+		return false, nil
+	}
+	m, err := s.CachedBilibiliDynamicUIDs([]string{normUID})
+	if err != nil {
+		return false, err
+	}
+	return m[normUID], nil
+}
+
+// CachedBilibiliDynamicUIDs returns the subset of requested Bilibili UIDs that
+// already have at least one non-archived cached dynamic in library.db (DEC-096).
+func (s *Store) CachedBilibiliDynamicUIDs(uids []string) (map[string]bool, error) {
+	wanted := make(map[string]bool, len(uids))
+	for _, raw := range uids {
+		_, normUID := NormalizeAuthorUID("bilibili", raw, 0)
+		if normUID != "" {
+			wanted[normUID] = true
+		}
+	}
+	out := make(map[string]bool, len(wanted))
+	if len(wanted) == 0 {
+		return out, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`
+		SELECT DISTINCT owner_uid
+		FROM (
+			SELECT author_uid AS owner_uid
+			FROM library_items
+			WHERE site = 'bilibili' AND kind = 'dynamic'
+				AND ` + notArchivedSnapshotSQL + `
+				AND author_uid != ''
+			UNION
+			SELECT ` + viaUIDSQL + ` AS owner_uid
+			FROM library_items
+			WHERE site = 'bilibili' AND kind = 'dynamic'
+				AND ` + notArchivedSnapshotSQL + `
+				AND ` + viaUIDSQL + ` != ''
+		)
+	`)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ownerUID string
+		if err := rows.Scan(&ownerUID); err != nil {
+			return out, err
+		}
+		_, normUID := NormalizeAuthorUID("bilibili", ownerUID, 0)
+		if wanted[normUID] {
+			out[normUID] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	return out, nil
+}

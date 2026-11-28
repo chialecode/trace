@@ -251,8 +251,8 @@ func TestBilibiliConflictTripwireKeepBothAndUseRemoteWithWatchNames(t *testing.T
 	if err != nil || !ok || v1Item.Status != "complete" || len(v1Item.Parts) != 2 {
 		t.Fatalf("expected complete 2P V1, got %+v ok=%v err=%v", v1Item, ok, err)
 	}
-	if v1Item.CacheStandardVersion != library.CurrentCacheStandardVersion {
-		t.Fatalf("expected CacheStandardVersion=%d, got %d", library.CurrentCacheStandardVersion, v1Item.CacheStandardVersion)
+	if v1Item.CacheStandardVersion != library.BilibiliVideoStandardVersion {
+		t.Fatalf("expected CacheStandardVersion=%d, got %d", library.BilibiliVideoStandardVersion, v1Item.CacheStandardVersion)
 	}
 	userNotePath := filepath.Join(v1Item.ItemDir, "my-notes.txt")
 	if err := os.WriteFile(userNotePath, []byte("keep-me"), 0o600); err != nil {

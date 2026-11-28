@@ -182,13 +182,17 @@ type HistoryService interface {
 }
 
 // BackfillSummaryDTO summarizes offline-detectable historical cache items that can
-// be upgraded to the latest cache standard with zero network requests (DEC-079).
+// be upgraded to the latest cache standard with zero network requests (DEC-079, DEC-096).
 type BackfillSummaryDTO struct {
 	WeiboMissingNoWM         int `json:"weiboMissingNoWm"`
 	WeiboLegacyLinks         int `json:"weiboLegacyLinks"`
 	WeiboFastCDNCandidates   int `json:"weiboFastCdnCandidates"`
 	WeiboSubscribedCount     int `json:"weiboSubscribedCount"`
 	WeiboFallbackDetailCount int `json:"weiboFallbackDetailCount"`
+	WeiboMissingEditHistory  int `json:"weiboMissingEditHistory,omitempty"`
+	BilibiliItems            int `json:"bilibiliItems,omitempty"`
+	DouyinItems              int `json:"douyinItems,omitempty"`
+	XItems                   int `json:"xItems,omitempty"`
 	TotalItems               int `json:"totalItems"`
 }
 
@@ -205,6 +209,7 @@ type CacheService interface {
 	CacheXPostsPage(ctx context.Context, req XBatchCachePageRequest) (XBatchCachePageResult, error)
 	ForceRecacheItem(ctx context.Context, itemKey string) (download.Task, error)
 	BackfillSummary() (BackfillSummaryDTO, error)
+	StartBackfill(ctx context.Context) ([]CacheQueueTask, error)
 	StartWeiboBackfill(ctx context.Context) (CacheQueueTask, error)
 	ListCacheQueue() []CacheQueueTask
 	FindCacheQueueTask(siteID, user, list string) (CacheQueueTask, bool)

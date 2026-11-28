@@ -14,6 +14,7 @@ import (
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
+	"github.com/chialecode/trace/internal/site/douyin"
 	"github.com/chialecode/trace/internal/site/weibo"
 )
 
@@ -87,7 +88,11 @@ func (b *Backend) scanWeiboBackfillBuckets(excludeKeys map[string]bool) (weiboBa
 		}
 		missingNoWM := library.WeiboNeedsNoWMBackfill(meta, removeWM)
 		legacyLinks := weiboNeedsLegacyLinkUpgrade(meta)
-		if !missingNoWM && !legacyLinks {
+		missingEditHistory := library.WeiboNeedsEditHistoryBackfill(meta)
+		authorUID, uErr := site.NormalizeUID(site.Weibo, itemAuthorUIDString(meta))
+		isSubscribed := uErr == nil && subUIDs[authorUID]
+		historicalOther := weiboNeedsHistoricalOtherBackfill(meta, isSubscribed, removeWM)
+		if !missingNoWM && !legacyLinks && !missingEditHistory && !historicalOther {
 			continue
 		}
 		out.summary.TotalItems++
@@ -97,18 +102,20 @@ func (b *Backend) scanWeiboBackfillBuckets(excludeKeys map[string]bool) (weiboBa
 		if legacyLinks {
 			out.summary.WeiboLegacyLinks++
 		}
+		if missingEditHistory {
+			out.summary.WeiboMissingEditHistory++
+		}
 
-		if !missingNoWM {
+		if !missingNoWM && !missingEditHistory && !historicalOther {
 			out.offlineLinkOnly = append(out.offlineLinkOnly, meta)
 			continue
 		}
-		if library.WeiboHasAllFastCDNPicIDs(meta) {
+		if missingNoWM && !missingEditHistory && !historicalOther && library.WeiboHasAllFastCDNPicIDs(meta) {
 			out.summary.WeiboFastCDNCandidates++
 			out.fastCDN = append(out.fastCDN, meta)
 			continue
 		}
-		authorUID, uErr := site.NormalizeUID(site.Weibo, itemAuthorUIDString(meta))
-		if !library.WeiboIsForwardItem(meta) && uErr == nil && subUIDs[authorUID] {
+		if missingNoWM && !missingEditHistory && !historicalOther && !library.WeiboIsForwardItem(meta) && isSubscribed {
 			out.summary.WeiboSubscribedCount++
 			out.subscribedByUID[authorUID] = append(out.subscribedByUID[authorUID], meta)
 		} else {
@@ -126,9 +133,85 @@ func (b *Backend) scanWeiboBackfillBuckets(excludeKeys map[string]bool) (weiboBa
 	return out, nil
 }
 
+// weiboNeedsHistoricalOtherBackfill catches historical cached Weibo forwards and
+// unsubscribed creators' posts below WeiboCacheStandardVersion (v4) that need
+// standard backfill beyond NoWM/legacy-links/editHistory (e.g. truncated long
+// text, missing Origin metadata/AssetIDs, or non-placeholder partial completion;
+// DEC-096). Static-image forwards are excluded when removeWM == false so they
+// never loop infinitely while remaining < v4 until watermark removal is enabled.
+func weiboNeedsHistoricalOtherBackfill(meta library.ItemMetadata, isSubscribed bool, removeWM bool) bool {
+	if meta.CacheStandardVersion >= library.WeiboCacheStandardVersion {
+		return false
+	}
+	isForward := library.WeiboIsForwardItem(meta)
+	if !isForward && isSubscribed {
+		return false
+	}
+	if library.NeedsCompletion(meta) && !allMissingAreWeiboUnavailable(meta.Missing) {
+		return true
+	}
+	if weiboTextLooksTruncated(firstNonEmpty(meta.Text, meta.Desc), "", false) {
+		return true
+	}
+	if isForward && meta.Origin != nil {
+		if !removeWM && len(library.WeiboStaticImageSlotsMissingNoWM(meta)) > 0 {
+			return false
+		}
+		if len(meta.Origin.Links) == 0 && strings.Contains(meta.Origin.Text, "http") {
+			return true
+		}
+		if len(meta.AssetIDs) == 0 && (len(meta.NotePages) > 0 || meta.DouyinVideo != nil) {
+			return true
+		}
+		return removeWM || len(library.WeiboStaticImageSlotsMissingNoWM(meta)) == 0
+	}
+	return false
+}
+
+// scanSiteBackfillCandidates scans local library metadata for one non-Weibo site
+// (bilibili, douyin, x) and returns non-archived items whose CacheStandardVersion
+// is below SiteCacheStandardVersion (including historical cached forwards and
+// items belonging to unsubscribed creators; DEC-096).
+func (b *Backend) scanSiteBackfillCandidates(siteID site.ID, excludeKeys map[string]bool) ([]library.ItemMetadata, error) {
+	if b == nil || b.profile == ProfileRemote || b.lib == nil {
+		return nil, nil
+	}
+	items, err := b.lib.ListItemsMetaOnlyBySite(string(siteID))
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if b.queue != nil && b.queue.clock != nil {
+		now = b.queue.clock.Now().UTC()
+	}
+	var out []library.ItemMetadata
+	for _, meta := range items {
+		if meta.IsArchivedSnapshot() || (meta.Status != "complete" && meta.Status != "partial") {
+			continue
+		}
+		if len(excludeKeys) > 0 && excludeKeys[meta.ItemKey] {
+			continue
+		}
+		if strings.EqualFold(meta.Kind, "live") {
+			continue
+		}
+		targetStd := library.SiteCacheStandardVersion(meta.Site, meta.Kind)
+		if meta.CacheStandardVersion >= targetStd && !library.NeedsCompletion(meta) {
+			continue
+		}
+		if siteID == site.Bilibili && strings.EqualFold(meta.Kind, "video") && !library.NeedsCompletion(meta) {
+			lastChecked := latestCheckedTime(meta.RecheckedAt, meta.UpgradeCheckedAt)
+			if !lastChecked.IsZero() && now.Sub(lastChecked) < bilibiliRecheckCooldown {
+				continue
+			}
+		}
+		out = append(out, meta)
+	}
+	return out, nil
+}
+
 // BackfillSummary computes offline statistics of historical cache items eligible
-// for standard upgrades (missing Weibo /oslarge/ companions or pre-DEC-073 inline
-// URLs) with zero network requests (DEC-079).
+// for standard upgrades across all 4 sites with zero network requests (DEC-079, DEC-096).
 func (b *Backend) BackfillSummary() (BackfillSummaryDTO, error) {
 	if b == nil || b.profile == ProfileRemote || b.lib == nil {
 		return BackfillSummaryDTO{}, nil
@@ -137,7 +220,145 @@ func (b *Backend) BackfillSummary() (BackfillSummaryDTO, error) {
 	if err != nil {
 		return BackfillSummaryDTO{}, err
 	}
-	return buckets.summary, nil
+	sum := buckets.summary
+	if bili, bErr := b.scanSiteBackfillCandidates(site.Bilibili, nil); bErr == nil {
+		sum.BilibiliItems = len(bili)
+		sum.TotalItems += len(bili)
+	}
+	if dy, dErr := b.scanSiteBackfillCandidates(site.Douyin, nil); dErr == nil {
+		sum.DouyinItems = len(dy)
+		sum.TotalItems += len(dy)
+	}
+	if xp, xErr := b.scanSiteBackfillCandidates(site.X, nil); xErr == nil {
+		sum.XItems = len(xp)
+		sum.TotalItems += len(xp)
+	}
+	return sum, nil
+}
+
+// StartBackfill scans all 4 sites by library.SiteCacheStandardVersion (covering
+// historical cached forwards and unsubscribed creators' cached items) and enqueues
+// per-site persistent backfill tasks in cache-queue.json v3 (DEC-096).
+func (b *Backend) StartBackfill(ctx context.Context) ([]CacheQueueTask, error) {
+	if err := b.requireDesktop(); err != nil {
+		return nil, err
+	}
+	if b.queue == nil {
+		return nil, fmt.Errorf("service: cache queue not initialized")
+	}
+
+	var started []CacheQueueTask
+	var firstAuthErr error
+	totalCandidates := 0
+
+	wbBuckets, err := b.scanWeiboBackfillBuckets(nil)
+	if err != nil {
+		return nil, err
+	}
+	if wbBuckets.summary.TotalItems > 0 {
+		totalCandidates += wbBuckets.summary.TotalItems
+		if t, wErr := b.StartWeiboBackfill(ctx); wErr == nil {
+			started = append(started, t)
+		} else if site.IsKind(wErr, site.ErrKindAuthRequired) && firstAuthErr == nil {
+			firstAuthErr = wErr
+		} else if !site.IsKind(wErr, site.ErrKindAuthRequired) {
+			return started, wErr
+		}
+	}
+
+	for _, sid := range []site.ID{site.Bilibili, site.Douyin, site.X} {
+		cands, sErr := b.scanSiteBackfillCandidates(sid, nil)
+		if sErr != nil {
+			return started, sErr
+		}
+		if len(cands) == 0 {
+			continue
+		}
+		totalCandidates += len(cands)
+		if authErr := b.requireSiteLogin(sid); authErr != nil {
+			if firstAuthErr == nil {
+				firstAuthErr = authErr
+			}
+			continue
+		}
+		t, eErr := b.startSiteBackfillTask(sid, len(cands))
+		if eErr != nil {
+			return started, eErr
+		}
+		started = append(started, t)
+	}
+
+	if totalCandidates == 0 {
+		return nil, &site.Error{
+			Kind:    site.ErrKindBadRequest,
+			Message: "历史缓存已全部符合最新标准",
+		}
+	}
+	if len(started) == 0 && firstAuthErr != nil {
+		return nil, firstAuthErr
+	}
+	return started, nil
+}
+
+func (b *Backend) startSiteBackfillTask(siteID site.ID, total int) (CacheQueueTask, error) {
+	if existing, ok := b.FindCacheQueueTask(string(siteID), CacheQueueBackfillUser, CacheQueueListSiteBackfill); ok {
+		return existing, nil
+	}
+	m := b.queue
+	m.mu.Lock()
+	now := m.nowRFC3339()
+	for _, e := range m.tasks {
+		if isSiteBackfillRecord(e.rec) && e.rec.Site == string(siteID) && isUnfinishedQueueStatus(e.rec.Status) {
+			dto := m.toDTOLocked(e)
+			m.mu.Unlock()
+			return dto, nil
+		}
+	}
+
+	prevTasks := append([]*cacheQueueEntry(nil), m.tasks...)
+	taskID := makeCacheQueueID(string(siteID), CacheQueueListSiteBackfill, CacheQueueBackfillUser)
+	for i, e := range m.tasks {
+		if isSiteBackfillRecord(e.rec) && e.rec.Site == string(siteID) {
+			taskID = e.rec.ID
+			m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
+			break
+		}
+	}
+	rec := cacheQueueRecord{
+		ID:            taskID,
+		Site:          string(siteID),
+		User:          CacheQueueBackfillUser,
+		UserName:      "历史缓存补全",
+		List:          CacheQueueListSiteBackfill,
+		Kind:          CacheQueueKindSiteBackfill,
+		Origin:        CacheQueueOriginBackfill,
+		BackfillPhase: backfillPhaseSiteStandard,
+		BackfillTotal: total,
+		HasMore:       true,
+		RestThreshold: m.pickRestThresholdForSiteLocked(siteID),
+		Status:        CacheQueueQueued,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	entry := &cacheQueueEntry{
+		rec: rec,
+		rt: cacheQueueRuntime{
+			seenKeys: make(map[string]bool),
+		},
+	}
+	m.tasks = append(m.tasks, entry)
+	if err := m.saveLocked(); err != nil {
+		m.tasks = prevTasks
+		m.mu.Unlock()
+		return CacheQueueTask{}, err
+	}
+	notifyRec := entry.rec
+	dto := m.toDTOLocked(entry)
+	m.mu.Unlock()
+
+	m.notifyState(notifyRec)
+	m.wakeSite(siteID)
+	return dto, nil
 }
 
 // StartWeiboBackfill enqueues or deduplicates the persistent historical Weibo
@@ -239,6 +460,10 @@ func (b *Backend) StartWeiboBackfill(ctx context.Context) (CacheQueueTask, error
 func isWeiboBackfillRecord(r cacheQueueRecord) bool {
 	return strings.EqualFold(strings.TrimSpace(r.Site), string(site.Weibo)) &&
 		strings.EqualFold(strings.TrimSpace(r.List), CacheQueueListWeiboBackfill)
+}
+
+func isSiteBackfillRecord(r cacheQueueRecord) bool {
+	return strings.EqualFold(strings.TrimSpace(r.List), CacheQueueListSiteBackfill)
 }
 
 func (m *cacheQueueManager) siteRiskBackoffOnly(siteID site.ID, now time.Time) (bool, time.Time) {
@@ -964,30 +1189,131 @@ func (m *cacheQueueManager) advanceWeiboBackfillStep(ctx context.Context, entry 
 		},
 	}
 	post, getErr := m.b.weibo.GetPost(stepCtx, item.RawID, postOpt)
-	if getErr == nil && m.b != nil {
-		if isProbe {
-			m.b.onManualSiteRequestSuccess(site.Weibo)
-		} else if m.b.subs != nil {
-			m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
-		}
-	}
 
 	var backfillRes download.WeiboBackfillResult
 	var backfillErr error
 	var didCache bool
+	removeWM := m.b.weiboRemoveWatermarkEnabled()
 	if getErr == nil && post != nil && !post.Unavailable {
-		overrides, remoteLinks := buildWeiboOverridesFromPost(*post)
-		backfillRes, backfillErr = m.b.dl.BackfillWeiboNoWMCompanions(
-			stepCtx,
-			item.ItemKey,
-			m.b.weibo.MediaTransport(),
-			overrides,
-			func(meta library.ItemMetadata) (library.ItemMetadata, bool) {
-				return cleanLegacyInlineLinksInItem(meta, remoteLinks)
-			},
-		)
-		if backfillErr == nil && (backfillRes.AddedCompanions > 0 || backfillRes.LinksCleaned) {
-			didCache = true
+		needEditHist := post.EditCount > 0 && len(item.EditHistory) == 0 && item.CacheStandardVersion < library.WeiboCacheStandardVersion
+		needFullReenqueue := needEditHist ||
+			(library.NeedsCompletion(item) && !allMissingAreWeiboUnavailable(item.Missing)) ||
+			(post.IsLongText && weiboTextLooksTruncated(firstNonEmpty(item.Text, item.Desc), post.Text, post.LongTextFetched))
+		if needFullReenqueue {
+			built, bErr := m.b.buildWeiboWorkPlanFromPost(post)
+			if bErr == nil {
+				_, _, stopErr := m.b.attachWeiboEditHistoryBestEffort(stepCtx, post, &built)
+				if stopErr != nil {
+					getErr = stopErr
+				} else {
+					if m.b != nil {
+						if isProbe {
+							m.b.onManualSiteRequestSuccess(site.Weibo)
+						} else if m.b.subs != nil {
+							m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
+						}
+					}
+					var viaCopy *library.ItemVia
+					if item.Via != nil {
+						cp := *item.Via
+						viaCopy = &cp
+					}
+					dlTask, _, eErr := m.b.enqueueWeiboPostWithSourceInfo(stepCtx, item.RawID, "queue", viaCopy, &built)
+					if eErr != nil {
+						backfillErr = eErr
+					} else {
+						if wErr := m.b.dl.WaitTasks(stepCtx, dlTask.TaskID); wErr != nil {
+							if !errors.Is(wErr, download.ErrConflictDetected) && !errors.Is(wErr, download.ErrRemoteDegradedRefused) {
+								backfillErr = wErr
+							}
+						} else {
+							didCache = true
+						}
+					}
+				}
+			} else {
+				if m.b != nil {
+					if isProbe {
+						m.b.onManualSiteRequestSuccess(site.Weibo)
+					} else if m.b.subs != nil {
+						m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
+					}
+				}
+				backfillErr = bErr
+			}
+		} else {
+			if m.b != nil {
+				if isProbe {
+					m.b.onManualSiteRequestSuccess(site.Weibo)
+				} else if m.b.subs != nil {
+					m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
+				}
+			}
+			overrides, remoteLinks := buildWeiboOverridesFromPost(*post)
+			if removeWM && library.WeiboNeedsNoWMBackfill(item, true) {
+				backfillRes, backfillErr = m.b.dl.BackfillWeiboNoWMCompanions(
+					stepCtx,
+					item.ItemKey,
+					m.b.weibo.MediaTransport(),
+					overrides,
+					func(meta library.ItemMetadata) (library.ItemMetadata, bool) {
+						cleaned, hadLegacy := cleanLegacyInlineLinksInItem(meta, remoteLinks)
+						changed := hadLegacy
+						if len(cleaned.Links) == 0 && len(post.Links) > 0 {
+							cleaned.Links = siteLinksToLibraryLinks(post.Links)
+							changed = true
+						}
+						if cleaned.Origin != nil && post.Retweeted != nil && len(cleaned.Origin.Links) == 0 && len(post.Retweeted.Links) > 0 {
+							cleaned.Origin.Links = siteLinksToLibraryLinks(post.Retweeted.Links)
+							changed = true
+						}
+						if post.EditCount > 0 && cleaned.EditCount == 0 {
+							cleaned.EditCount = post.EditCount
+							changed = true
+						}
+						return cleaned, changed
+					},
+				)
+				if backfillErr == nil && (backfillRes.AddedCompanions > 0 || backfillRes.LinksCleaned || backfillRes.StampedStandard) {
+					didCache = true
+				}
+			} else if m.b != nil && m.b.lib != nil {
+				// Watermark removal is disabled (or item needs no /oslarge/ companions):
+				// update metadata only via SaveItemMetadataOnly without downloading /oslarge/.
+				if fresh, ok, gErr := m.b.lib.GetItem(item.ItemKey); gErr == nil && ok && strings.TrimSpace(fresh.ItemDir) != "" {
+					cleaned, hadLegacy := cleanLegacyInlineLinksInItem(fresh, remoteLinks)
+					changed := hadLegacy
+					if len(cleaned.Links) == 0 && len(post.Links) > 0 {
+						cleaned.Links = siteLinksToLibraryLinks(post.Links)
+						changed = true
+					}
+					if cleaned.Origin != nil && post.Retweeted != nil && len(cleaned.Origin.Links) == 0 && len(post.Retweeted.Links) > 0 {
+						cleaned.Origin.Links = siteLinksToLibraryLinks(post.Retweeted.Links)
+						changed = true
+					}
+					if post.EditCount > 0 && cleaned.EditCount == 0 {
+						cleaned.EditCount = post.EditCount
+						changed = true
+					}
+					if weiboCanStampV4Tier0(cleaned, removeWM, post.EditCount) {
+						cleaned.CacheStandardVersion = library.WeiboCacheStandardVersion
+						changed = true
+					}
+					if changed {
+						if _, sErr := m.b.lib.SaveItemMetadataOnly(fresh.ItemDir, cleaned); sErr != nil {
+							backfillErr = sErr
+						} else {
+							didCache = true
+						}
+					}
+				}
+			}
+		}
+	} else if getErr == nil && m.b != nil {
+		if isProbe {
+			m.b.onManualSiteRequestSuccess(site.Weibo)
+		} else if m.b.subs != nil {
+			m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))
 		}
 	}
 
@@ -1094,4 +1420,329 @@ func (m *cacheQueueManager) publishBackfillBatchLibraryChanged(updatedKeys []str
 		return
 	}
 	m.b.events.PublishSite(EventLibraryChanged, string(site.Weibo), fmt.Sprintf("backfill:offline_links:%d", len(updatedKeys)))
+}
+
+// advanceSiteBackfillStep executes one unit of cross-site historical cache
+// backfill for bilibili, douyin, or x (covering historical cached forwards and
+// unsubscribed creators' items below library.SiteCacheStandardVersion; DEC-096).
+// Caller holds m.mu on entry; this method unlocks m.mu before returning.
+func (m *cacheQueueManager) advanceSiteBackfillStep(ctx context.Context, entry *cacheQueueEntry) {
+	siteID := site.ID(entry.rec.Site)
+	if m.b == nil || m.b.lib == nil || m.b.dl == nil {
+		rec := m.completeBackfillLocked(entry)
+		m.mu.Unlock()
+		m.notifyState(rec)
+		return
+	}
+
+	processed := make(map[string]bool, len(entry.rec.ProcessedKeys))
+	for _, k := range entry.rec.ProcessedKeys {
+		if k != "" {
+			processed[k] = true
+		}
+	}
+	for k := range entry.rt.seenKeys {
+		processed[k] = true
+	}
+
+	m.mu.Unlock()
+	cands, scanErr := m.b.scanSiteBackfillCandidates(siteID, processed)
+	m.mu.Lock()
+	if entry.rec.Status != CacheQueueRunning || ctx.Err() != nil {
+		m.mu.Unlock()
+		return
+	}
+	if scanErr != nil {
+		entry.rec.Status = CacheQueuePaused
+		entry.rec.PauseReason = "storage"
+		entry.rec.StopReason = sanitizeQueueText("读取本地媒体库失败：" + scanErr.Error())
+		entry.rec.UpdatedAt = m.nowRFC3339()
+		m.saveLoggedLocked("site_backfill_scan_err")
+		rec := entry.rec
+		m.mu.Unlock()
+		m.notifyState(rec)
+		return
+	}
+	doneSoFar := entry.rec.CachedCount + entry.rec.SkippedCount
+	if total := doneSoFar + len(cands); total > entry.rec.BackfillTotal {
+		entry.rec.BackfillTotal = total
+	}
+	if len(cands) == 0 {
+		rec := m.completeBackfillLocked(entry)
+		m.mu.Unlock()
+		m.notifyState(rec)
+		if m.b.events != nil {
+			m.b.events.PublishSite(EventLibraryChanged, string(siteID), "backfill:completed")
+		}
+		return
+	}
+
+	isProbe := entry.rt.manualProbeOnce
+	if isProbe {
+		entry.rt.manualProbeOnce = false
+	} else if blocked, _ := m.siteBackoffOrQuotaEnd(siteID, m.clock.Now()); blocked {
+		kind := site.ErrKindBackoff
+		if m.b.subs != nil && !m.b.subs.CanUseSiteQuotaTokens(string(siteID), 1) {
+			kind = site.ErrKindQuota
+		}
+		rec := m.enterWaitingBackoffLocked(entry, siteID, kind)
+		m.mu.Unlock()
+		m.notifyState(rec)
+		return
+	}
+
+	item := cands[0]
+	title := trimQueueSummaryTitle(firstNonEmpty(item.Title, item.Text, item.RawID))
+	entry.rec.BackfillPhase = backfillPhaseSiteStandard
+	entry.rec.ActiveItemKey = sanitizeItemKey(item.ItemKey)
+	entry.rec.ActiveTitle = sanitizeQueueText(title)
+	entry.rec.UpdatedAt = m.nowRFC3339()
+	baseStepCtx := site.WithAutomaticRequests(ctx, "cache_queue")
+	if isProbe {
+		baseStepCtx = site.WithManualProbe(ctx)
+	}
+	stepCtx, stepCancel := context.WithCancel(baseStepCtx)
+	entry.rt.stepCancel = stepCancel
+	m.mu.Unlock()
+
+	enq, postInspect, conflictRec, stepErr := m.b.executeOneSiteBackfillItem(stepCtx, siteID, item)
+	if stepErr == nil && isProbe && !enq.probeRejected && m.b != nil {
+		m.b.onManualSiteRequestSuccess(siteID)
+	}
+	if postInspect != nil {
+		postInspect()
+	}
+
+	m.mu.Lock()
+	stepCancel()
+	entry.rt.stepCancel = nil
+	if entry.rec.Status != CacheQueueRunning || ctx.Err() != nil {
+		m.mu.Unlock()
+		return
+	}
+	if stepErr != nil {
+		kind := site.KindOf(stepErr)
+		if kind == site.ErrKindAuthRequired {
+			m.mu.Unlock()
+			m.pauseForSite(siteID, "auth_required", "登录已失效，重新登录后自动继续")
+			return
+		}
+		if isBackoffOrQuotaKind(kind) {
+			var rec cacheQueueRecord
+			if isProbe {
+				rec = m.enterWaitingBackoffFromProbeLocked(entry, siteID, kind, stepErr)
+			} else {
+				rec = m.enterWaitingBackoffLocked(entry, siteID, kind)
+			}
+			m.mu.Unlock()
+			m.notifyState(rec)
+			return
+		}
+		if isBackfillStorageError(stepErr) {
+			entry.rec.Status = CacheQueuePaused
+			entry.rec.PauseReason = "storage"
+			entry.rec.StopReason = "存储空间不足或写入失败，已暂停补全"
+			entry.rec.NextRunAt = ""
+			entry.rec.UpdatedAt = m.nowRFC3339()
+			m.saveLoggedLocked("site_backfill_storage_pause")
+			rec := entry.rec
+			m.mu.Unlock()
+			m.notifyState(rec)
+			return
+		}
+		m.markBackfillProcessedLocked(entry, item.ItemKey)
+		entry.rec.ActiveTitle = ""
+		rec := m.finishItemOutcomeLocked(entry, false)
+		m.mu.Unlock()
+		m.notifyState(rec)
+		return
+	}
+
+	var notifyConflict *cacheConflictRecord
+	if conflictRec != nil && m.b.conflicts != nil {
+		if saved, changed, cErr := m.b.conflicts.recordOrUpdate(*conflictRec); cErr == nil && changed {
+			notifyConflict = &saved
+		}
+	}
+
+	m.markBackfillProcessedLocked(entry, item.ItemKey)
+	if len(enq.taskIDs) > 0 {
+		entry.rec.ActiveDownloadIDs = append([]string(nil), enq.taskIDs...)
+		entry.rec.ActivePendingPages = append([]int(nil), enq.pendingPages...)
+		entry.rt.nextPartEnqueuers = enq.nextParts
+		entry.rt.lastItemZeroAPI = false
+		entry.rec.ActiveItemKey = sanitizeItemKey(firstNonEmpty(enq.itemKey, item.ItemKey))
+		entry.rec.ActiveTitle = sanitizeQueueText(firstNonEmpty(enq.title, title))
+		entry.rec.UpdatedAt = m.nowRFC3339()
+		m.saveLoggedLocked("site_backfill_enqueued")
+		rec := entry.rec
+		m.mu.Unlock()
+		if notifyConflict != nil && m.b.events != nil {
+			m.b.events.PublishSite(EventCacheConflictsChanged, notifyConflict.Site, notifyConflict.ItemKey)
+		}
+		m.notifyState(rec)
+		return
+	}
+
+	didUpgrade := !enq.probedNoTask && postInspect != nil && conflictRec == nil
+	entry.rec.ActiveTitle = ""
+	if didUpgrade {
+		m.appendBackfillRecentLocked(entry, item.ItemKey, title, m.nowRFC3339())
+	}
+	var rec cacheQueueRecord
+	if len(cands) <= 1 {
+		if didUpgrade {
+			entry.rec.CachedCount++
+		} else {
+			entry.rec.SkippedCount++
+		}
+		rec = m.completeBackfillLocked(entry)
+	} else {
+		rec = m.finishItemOutcomeLocked(entry, didUpgrade)
+	}
+	m.mu.Unlock()
+	if notifyConflict != nil && m.b.events != nil {
+		m.b.events.PublishSite(EventCacheConflictsChanged, notifyConflict.Site, notifyConflict.ItemKey)
+	}
+	m.notifyState(rec)
+}
+
+func (b *Backend) executeOneSiteBackfillItem(
+	ctx context.Context,
+	siteID site.ID,
+	meta library.ItemMetadata,
+) (queueEnqueued, func(), *cacheConflictRecord, error) {
+	fresh, ok, err := b.lib.GetItem(meta.ItemKey)
+	if err == nil && ok {
+		meta = fresh
+	}
+	switch siteID {
+	case site.Bilibili:
+		if strings.EqualFold(meta.Kind, "video") {
+			enq, pErr := b.probeBilibiliCachedVideo(ctx, bilibili.UserVideoItem{
+				BVID:  meta.RawID,
+				Title: meta.Title,
+			}, meta, CacheQueueOriginBackfill, meta.Author.Mid)
+			return enq, nil, nil, pErr
+		}
+		dyn, dErr := b.bili.DynamicDetail(ctx, meta.RawID)
+		if dErr != nil {
+			isBlockedOrForbidden := bilibili.IsKind(dErr, bilibili.ErrKindForbidden) ||
+				site.IsKind(dErr, site.ErrKindForbidden) ||
+				site.IsKind(dErr, site.ErrKindBlocked)
+			if bilibili.IsKind(dErr, bilibili.ErrKindUnavailable) ||
+				site.IsKind(dErr, site.ErrKindUnavailable) ||
+				isBlockedOrForbidden {
+				return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: true, probeRejected: isBlockedOrForbidden}, nil, nil, nil
+			}
+			return queueEnqueued{}, nil, nil, dErr
+		}
+		dec := b.inspectBilibiliCachedDynamicDeferred(dyn, meta, CacheQueueOriginBackfill)
+		switch dec.action {
+		case inspectConflict:
+			c := dec.conflict
+			return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: true}, dec.postInspect, &c, nil
+		case inspectEnqueue, inspectProbePaced:
+			if dec.enqueue != nil {
+				enq, eErr := dec.enqueue(ctx)
+				return enq, dec.postInspect, nil, eErr
+			}
+			dynCopy := dyn
+			t, eErr := b.EnqueueDynamicCache(ctx, download.DynamicEnqueueRequest{
+				DynamicID: dynCopy.ID,
+				Item:      &dynCopy,
+				Source:    "queue",
+			})
+			if eErr != nil {
+				return queueEnqueued{}, dec.postInspect, nil, eErr
+			}
+			return queueEnqueued{
+				taskIDs: []string{t.TaskID},
+				itemKey: firstNonEmpty(t.ItemKey, meta.ItemKey),
+				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, dynCopy.Title, meta.Title)),
+			}, dec.postInspect, nil, nil
+		default:
+			return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: dec.postInspect == nil}, dec.postInspect, nil, nil
+		}
+
+	case site.Douyin:
+		detail, dErr := b.douyin.GetWorkDetail(ctx, meta.RawID, douyin.StreamSelectOptions{
+			PreferredCodec: b.preferredDouyinCodec(),
+		})
+		if dErr != nil {
+			isBlockedOrForbidden := site.IsKind(dErr, site.ErrKindForbidden) ||
+				site.IsKind(dErr, site.ErrKindBlocked)
+			if site.IsKind(dErr, site.ErrKindUnavailable) || isBlockedOrForbidden {
+				return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: true, probeRejected: isBlockedOrForbidden}, nil, nil, nil
+			}
+			return queueEnqueued{}, nil, nil, dErr
+		}
+		forUID := itemAuthorUIDString(meta)
+		forName := meta.Author.Name
+		if meta.Via != nil && meta.Via.UID != "" {
+			forUID = meta.Via.UID
+			forName = firstNonEmpty(meta.Via.Name, forName)
+		}
+		dec := b.inspectDouyinCachedWorkDeferred(*detail, meta, CacheQueueOriginBackfill, forUID, forName)
+		switch dec.action {
+		case inspectConflict:
+			c := dec.conflict
+			return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: true}, dec.postInspect, &c, nil
+		case inspectEnqueue, inspectProbePaced:
+			var planPtr *download.WorkDownloadPlan
+			if built, bErr := b.buildDouyinWorkPlanFromDetail(ctx, detail, b.currentWorkPlanOptions()); bErr == nil {
+				planPtr = &built
+			}
+			t, _, eErr := b.enqueueDouyinWorkWithPlanInfo(ctx, meta.RawID, "queue", forUID, forName, planPtr)
+			if eErr != nil {
+				return queueEnqueued{}, dec.postInspect, nil, eErr
+			}
+			return queueEnqueued{
+				taskIDs: []string{t.TaskID},
+				itemKey: firstNonEmpty(t.ItemKey, meta.ItemKey),
+				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, detail.Title, meta.Title)),
+			}, dec.postInspect, nil, nil
+		default:
+			return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: dec.postInspect == nil}, dec.postInspect, nil, nil
+		}
+
+	case site.X:
+		post, gErr := b.x.GetPost(ctx, meta.RawID)
+		if gErr != nil {
+			isBlockedOrForbidden := site.IsKind(gErr, site.ErrKindForbidden) ||
+				site.IsKind(gErr, site.ErrKindBlocked)
+			if site.IsKind(gErr, site.ErrKindUnavailable) || isBlockedOrForbidden {
+				return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: true, probeRejected: isBlockedOrForbidden}, nil, nil, nil
+			}
+			return queueEnqueued{}, nil, nil, gErr
+		}
+		dec := b.inspectXCachedPostDeferred(*post, meta, CacheQueueOriginBackfill)
+		switch dec.action {
+		case inspectConflict:
+			c := dec.conflict
+			return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: true}, dec.postInspect, &c, nil
+		case inspectEnqueue, inspectProbePaced:
+			var planPtr *download.WorkDownloadPlan
+			if built, bErr := b.buildXWorkPlanFromPost(post); bErr == nil {
+				planPtr = &built
+			}
+			var viaCopy *library.ItemVia
+			if meta.Via != nil {
+				cp := *meta.Via
+				viaCopy = &cp
+			}
+			t, _, eErr := b.enqueueXPostWithSourceInfo(ctx, meta.RawID, "queue", viaCopy, planPtr)
+			if eErr != nil {
+				return queueEnqueued{}, dec.postInspect, nil, eErr
+			}
+			return queueEnqueued{
+				taskIDs: []string{t.TaskID},
+				itemKey: firstNonEmpty(t.ItemKey, meta.ItemKey),
+				title:   trimQueueSummaryTitle(firstNonEmpty(t.Title, post.Text, meta.Title)),
+			}, dec.postInspect, nil, nil
+		default:
+			return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: dec.postInspect == nil}, dec.postInspect, nil, nil
+		}
+	}
+	return queueEnqueued{itemKey: meta.ItemKey, probedNoTask: true}, nil, nil, nil
 }

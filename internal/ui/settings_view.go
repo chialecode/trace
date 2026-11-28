@@ -896,16 +896,27 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 					}
 				})
 			})
-			// Historical cache standard backfill row (DEC-079)
-			activeBackfill, hasActiveBackfill := a.activeWeiboBackfillQueue()
-			startingBackfill := a.isPending("start-weibo-backfill")
+			// Historical cache standard backfill row (DEC-079, DEC-096)
+			activeBackfills := a.activeBackfillQueues()
+			activeBackfill, hasActiveBackfill := a.activeBackfillQueue()
+			startingBackfill := a.isPending("start-backfill")
 			ui.Row(c).Label("存储历史缓存标准行").FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
 				ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 					ui.Text(c, "历史缓存标准").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 					if hasActiveBackfill {
-						progressText := fmt.Sprintf("正在补全微博历史缓存 · 已补全 %d 条 · 跳过 %d 条", activeBackfill.CachedCount, activeBackfill.SkippedCount)
-						if activeBackfill.BackfillTotal > 0 {
-							progressText = fmt.Sprintf("正在补全微博历史缓存 · 已补全 %d / %d 条 · 跳过 %d 条", activeBackfill.CachedCount, activeBackfill.BackfillTotal, activeBackfill.SkippedCount)
+						totalCached, totalSkipped, totalItems := 0, 0, 0
+						for _, bf := range activeBackfills {
+							totalCached += bf.CachedCount
+							totalSkipped += bf.SkippedCount
+							totalItems += bf.BackfillTotal
+						}
+						scopeLabel := backfillQueueSiteLabel(activeBackfill.Site)
+						if len(activeBackfills) > 1 {
+							scopeLabel = fmt.Sprintf("%d 个站点", len(activeBackfills))
+						}
+						progressText := fmt.Sprintf("正在补全%s历史缓存 · 已补全 %d 条 · 跳过 %d 条", scopeLabel, totalCached, totalSkipped)
+						if totalItems > 0 {
+							progressText = fmt.Sprintf("正在补全%s历史缓存 · 已补全 %d / %d 条 · 跳过 %d 条", scopeLabel, totalCached, totalItems, totalSkipped)
 						}
 						ui.Text(c, progressText).FontSize(12).TextColor(ColorAccent).SingleLine()
 					} else if a.BackfillSummary.TotalItems > 0 {
@@ -924,7 +935,7 @@ func (a *App) renderStorageSettings(c *ui.Context) {
 						btnLabel = "正在启动…"
 					}
 					if AccentPillButton(c, btnLabel, "补全历史缓存").Disabled(startingBackfill).Clicked() && !startingBackfill {
-						a.startWeiboBackfill()
+						a.startBackfill()
 					}
 				}
 			})

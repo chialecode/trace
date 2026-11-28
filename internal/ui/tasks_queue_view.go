@@ -241,9 +241,9 @@ func (a *App) renderTasksQueueView(c *ui.Context) {
 			if a.TaskActionError != "" {
 				renderErrorBanner(c, "", a.TaskActionError, nil)
 			}
-			_, hasActiveBackfill := a.activeWeiboBackfillQueue()
+			_, hasActiveBackfill := a.activeBackfillQueue()
 			if !hasActiveBackfill && a.BackfillSummary.TotalItems > 0 {
-				startingBackfill := a.isPending("start-weibo-backfill")
+				startingBackfill := a.isPending("start-backfill")
 				ui.Row(c).
 					Label("历史缓存补全提示条").
 					FillWidth().
@@ -257,7 +257,7 @@ func (a *App) renderTasksQueueView(c *ui.Context) {
 					ClipX().
 					Children(func() {
 						ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
-							ui.Text(c, fmt.Sprintf("发现 %d 条历史微博可补全", a.BackfillSummary.TotalItems)).
+							ui.Text(c, formatBackfillSummaryHeadline(a.BackfillSummary)).
 								FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 							if detail := formatBackfillSummaryBreakdown(a.BackfillSummary); detail != "" {
 								ui.Text(c, detail).
@@ -268,8 +268,8 @@ func (a *App) renderTasksQueueView(c *ui.Context) {
 						if startingBackfill {
 							btnText = "正在启动…"
 						}
-						if AccentPillButton(c, btnText, "一键补全历史微博缓存").Disabled(startingBackfill).Clicked() && !startingBackfill {
-							a.startWeiboBackfill()
+						if AccentPillButton(c, btnText, "一键补全历史缓存").Disabled(startingBackfill).Clicked() && !startingBackfill {
+							a.startBackfill()
 						}
 					})
 			}
@@ -444,7 +444,7 @@ func (a *App) finishCacheQueueAction(err error) {
 
 func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, expanded bool, orderIdx, siteUnfinishedCount int, siteHasRunning bool) {
 	qSite := normalizeSiteIDUI(cur.Site)
-	isBackfill := cur.Kind == service.CacheQueueKindWeiboBackfill || cur.List == service.CacheQueueListWeiboBackfill
+	isBackfill := isBackfillQueueTask(cur)
 	unfinished := isUnfinishedCacheQueueStatus(cur.Status)
 	borderCol := ColorBorder
 	if expanded {
@@ -482,7 +482,7 @@ func (a *App) renderCacheQueueCard(c *ui.Context, cur service.CacheQueueTask, ex
 						ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
 							title := firstNonEmptyStrUI(cur.UserName, cur.User)
 							if isBackfill {
-								title = "历史缓存补全 · 微博"
+								title = backfillQueueCardTitle(qSite)
 							} else if cur.ListLabel != "" {
 								title += " · " + cur.ListLabel
 							}

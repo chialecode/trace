@@ -597,6 +597,9 @@ func (m *Manager) executeWeiboSingleVideoTask(
 			EditHistory:  editHistory,
 		}
 		stampCacheStandardAndAssets(&v2Meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
+		if v2Meta.Status == "complete" && len(v2Meta.Missing) == 0 && weiboQualifiesForStandardV4(plan, false) {
+			v2Meta.CacheStandardVersion = library.WeiboCacheStandardVersion
+		}
 		saved, err := m.commitStagedItemSwap(itemDir, previous, true, v2Meta, stageDir, mode)
 		if err != nil {
 			return err
@@ -799,7 +802,7 @@ func (m *Manager) executeWeiboSingleVideoTask(
 		t.ErrorMessage = summarizeMissingReasons(meta.Missing)
 	}
 	stampCacheStandardAndAssets(&meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
-	if meta.Status == "complete" && len(meta.Missing) == 0 && weiboPlanRanNoWMStandard(plan) {
+	if meta.Status == "complete" && len(meta.Missing) == 0 && weiboQualifiesForStandardV4(plan, false) {
 		meta.CacheStandardVersion = library.WeiboCacheStandardVersion
 	}
 	saved, err := m.lib.SaveItem(itemDir, meta)
@@ -1314,7 +1317,7 @@ func (m *Manager) executeWeiboPostTask(
 			var vidMedia *library.MediaFile
 			var vErr error
 			if hasProtectedLocal && !isConflict && canReuseLocal && reusableLP.Video != "" &&
-				(reusableLP.VideoInfo == nil || page.Width*page.Height <= reusableLP.VideoInfo.Width*reusableLP.VideoInfo.Height) {
+				!notePageVideoNeedsUpgrade(reusableLP.VideoInfo, page) {
 				vidMedia, _ = copyLocalMediaToStageAs(previous, reusableLP.Video, videoRel, "video", workDir)
 			}
 			if vidMedia == nil {
@@ -1463,7 +1466,7 @@ func (m *Manager) executeWeiboPostTask(
 		EditHistory:  editHistory,
 	}
 	stampCacheStandardAndAssets(&meta, plan.EditTs, plan.EditCount, buildPlanAssetIDs(plan))
-	if meta.Status == "complete" && len(meta.Missing) == 0 && weiboPlanRanNoWMStandard(plan) && !anyNoWMDeferred {
+	if meta.Status == "complete" && len(meta.Missing) == 0 && weiboQualifiesForStandardV4(plan, anyNoWMDeferred) {
 		meta.CacheStandardVersion = library.WeiboCacheStandardVersion
 	}
 
@@ -2208,6 +2211,21 @@ func (m *Manager) materializeWeiboEditHistory(
 	return library.SanitizeItemEditHistory(out), nil
 }
 
+// weiboPlanHasStaticImagePages reports whether this Weibo plan contains at least
+// one static (non-GIF, non-video) image page that could carry a watermark.
+func weiboPlanHasStaticImagePages(plan WorkDownloadPlan) bool {
+	for _, p := range plan.Pages {
+		k := strings.ToLower(strings.TrimSpace(p.Kind))
+		if k == "gif" || k == "video" {
+			continue
+		}
+		if len(p.ImageURLs) > 0 || strings.TrimSpace(p.WatermarkFreeURL) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // weiboPlanRanNoWMStandard reports whether this Weibo post plan includes at least
 // one static (non-GIF, non-video) page whose /oslarge/ watermark-free companion
 // URL was evaluated during this cache run (DEC-079).
@@ -2222,6 +2240,20 @@ func weiboPlanRanNoWMStandard(plan WorkDownloadPlan) bool {
 		}
 	}
 	return false
+}
+
+// weiboQualifiesForStandardV4 reports whether a completed Weibo item qualifies
+// for WeiboCacheStandardVersion (v4, DEC-096): pure text, single video, and pure
+// GIF posts qualify directly; static-image posts qualify once /oslarge/ was
+// evaluated without any 418/429 deferral.
+func weiboQualifiesForStandardV4(plan WorkDownloadPlan, anyNoWMDeferred bool) bool {
+	if anyNoWMDeferred {
+		return false
+	}
+	if weiboPlanHasStaticImagePages(plan) && !weiboPlanRanNoWMStandard(plan) {
+		return false
+	}
+	return true
 }
 
 func (m *Manager) cacheWeiboLivePhotoClip(

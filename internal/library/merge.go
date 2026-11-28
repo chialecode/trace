@@ -419,6 +419,12 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 			if len(cur.Chapters) == 0 && len(p.Chapters) > 0 {
 				cur.Chapters = append([]VideoChapter(nil), p.Chapters...)
 			}
+			if !cur.ChaptersChecked && (p.ChaptersChecked || len(cur.Chapters) > 0) {
+				cur.ChaptersChecked = true
+			}
+			if !cur.SubtitleIncludesAI && p.SubtitleIncludesAI {
+				cur.SubtitleIncludesAI = true
+			}
 			if len(p.Subtitles) > 0 {
 				subSeen := map[string]bool{}
 				for _, s := range cur.Subtitles {
@@ -473,8 +479,13 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 		if dst.VideoInfo == nil && src.VideoInfo != nil {
 			vi := *src.VideoInfo
 			dst.VideoInfo = &vi
-		} else if dst.VideoInfo != nil && src.VideoInfo != nil && dst.VideoInfo.MediaID == "" {
-			dst.VideoInfo.MediaID = src.VideoInfo.MediaID
+		} else if dst.VideoInfo != nil && src.VideoInfo != nil {
+			if dst.VideoInfo.MediaID == "" {
+				dst.VideoInfo.MediaID = src.VideoInfo.MediaID
+			}
+			if dst.VideoInfo.OriginalState == "" && src.VideoInfo.OriginalState != "" {
+				dst.VideoInfo.OriginalState = src.VideoInfo.OriginalState
+			}
 		}
 	}
 	if len(out.NotePages) < len(imported.NotePages) {
@@ -490,8 +501,16 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 	if out.DouyinVideo == nil && imported.DouyinVideo != nil {
 		dv := *imported.DouyinVideo
 		out.DouyinVideo = &dv
-	} else if out.DouyinVideo != nil && imported.DouyinVideo != nil && out.DouyinVideo.MediaID == "" {
-		out.DouyinVideo.MediaID = imported.DouyinVideo.MediaID
+	} else if out.DouyinVideo != nil && imported.DouyinVideo != nil {
+		if out.DouyinVideo.MediaID == "" {
+			out.DouyinVideo.MediaID = imported.DouyinVideo.MediaID
+		}
+		if out.DouyinVideo.OriginalState == "" && imported.DouyinVideo.OriginalState != "" {
+			out.DouyinVideo.OriginalState = imported.DouyinVideo.OriginalState
+		}
+	}
+	if imported.RemotePartCount > out.RemotePartCount {
+		out.RemotePartCount = imported.RemotePartCount
 	}
 	if imported.CacheStandardVersion > out.CacheStandardVersion {
 		out.CacheStandardVersion = imported.CacheStandardVersion

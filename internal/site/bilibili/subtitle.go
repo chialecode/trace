@@ -56,13 +56,15 @@ func (c *Client) Subtitles(ctx context.Context, bvid string, cid int64, includeA
 
 // MissingSubtitles skips complete language pairs before issuing body requests.
 func (c *Client) MissingSubtitles(ctx context.Context, bvid string, cid int64, includeAI bool, savedLanguages []string) ([]SubtitleTrack, error) {
-	extras, err := c.MissingSubtitlesAndChapters(ctx, bvid, cid, includeAI, savedLanguages)
+	extras, err := c.MissingSubtitlesAndChapters(ctx, bvid, cid, includeAI, savedLanguages, true)
 	return extras.Subtitles, err
 }
 
 // MissingSubtitlesAndChapters fetches subtitles and zero-extra-request chapter markers (view_points)
 // from a single /x/player/wbi/v2 call, skipping subtitle body downloads for already saved languages.
-func (c *Client) MissingSubtitlesAndChapters(ctx context.Context, bvid string, cid int64, includeAI bool, savedLanguages []string) (PlayerPartExtras, error) {
+// When fetchSubtitleBodies is explicitly false, only chapter markers (view_points) are parsed and
+// zero subtitle body requests are issued (DEC-096).
+func (c *Client) MissingSubtitlesAndChapters(ctx context.Context, bvid string, cid int64, includeAI bool, savedLanguages []string, fetchSubtitleBodies ...bool) (PlayerPartExtras, error) {
 	if err := c.RequireAuth("/x/player/wbi/v2"); err != nil {
 		return PlayerPartExtras{}, err
 	}
@@ -133,6 +135,11 @@ func (c *Client) MissingSubtitlesAndChapters(ctx context.Context, bvid string, c
 		}
 		return chapters[i].ToSec < chapters[j].ToSec
 	})
+
+	shouldFetchBodies := len(fetchSubtitleBodies) == 0 || fetchSubtitleBodies[0]
+	if !shouldFetchBodies {
+		return PlayerPartExtras{Chapters: chapters}, nil
+	}
 
 	tracks := make([]SubtitleTrack, 0, len(raw.Subtitle.Subtitles))
 	for _, sub := range raw.Subtitle.Subtitles {

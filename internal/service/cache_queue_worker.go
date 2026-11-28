@@ -939,6 +939,10 @@ func (m *cacheQueueManager) finishItemOutcomeLocked(entry *cacheQueueEntry, cach
 
 func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID site.ID, entry *cacheQueueEntry) {
 	// Caller holds m.mu on entry; this method unlocks m.mu before returning!
+	if isSiteBackfillRecord(entry.rec) {
+		m.advanceSiteBackfillStep(ctx, entry)
+		return
+	}
 	if entry.rt.pager == nil && m.b != nil {
 		pager, err := m.b.buildQueuePager(siteID, entry.rec.List, entry.rec.User, entry.rec.UserName)
 		if err != nil {
@@ -1270,7 +1274,7 @@ func (m *cacheQueueManager) advanceCandidateStep(ctx context.Context, siteID sit
 
 		enq, err := runEnqueue(stepCtx)
 		if err == nil && m.b != nil {
-			if isProbe && (!enq.reusedListPlan || len(enq.taskIDs) == 0) {
+			if isProbe && !enq.probeRejected && (!enq.reusedListPlan || len(enq.taskIDs) == 0) {
 				m.b.onManualSiteRequestSuccess(siteID)
 			} else if !isProbe && siteID == site.Weibo && !enq.reusedListPlan && m.b.subs != nil {
 				m.b.subs.RecordSiteAutomaticSuccess(string(site.Weibo))

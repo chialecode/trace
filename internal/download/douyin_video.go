@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net/url"
 	"os"
@@ -172,6 +173,7 @@ func (m *Manager) executeDouyinVideoTask(ctx context.Context, t *Task, plan Work
 		})
 		var summary MuxTrackSummary
 		original := false
+		originalUnavailable := false
 		if len(plan.OriginalURLs) > 0 {
 			origSummary, oErr := m.cacheDouyinOriginal(ctx, t, plan, refreshOncePlan, videoRel, videoPath)
 			switch {
@@ -184,6 +186,10 @@ func (m *Manager) executeDouyinVideoTask(ctx context.Context, t *Task, plan Work
 			case ctx.Err() != nil || site.IsRoundStop(oErr) || isStorageError(oErr):
 				m.setFileProgress(t, "video", videoRel, "failed", t.BytesDownloaded, t.TotalBytes, 0)
 				return oErr
+			default:
+				if isPermanentDouyinOriginalError(oErr) {
+					originalUnavailable = true
+				}
 			}
 			// Any other failure (including networkPauseError on OriginalURLs) falls back to VideoURLs below.
 		}
@@ -262,6 +268,9 @@ func (m *Manager) executeDouyinVideoTask(ctx context.Context, t *Task, plan Work
 				info.Bitrate = int64(float64(summary.FileBytes*8) / summary.DurationSec)
 			}
 			info.AvailableGears = append([]string{douyinOriginalQuality}, plan.AvailableGears...)
+			info.OriginalState = ""
+		} else if originalUnavailable {
+			meta.DouyinVideo.OriginalState = "unavailable"
 		}
 	}
 
@@ -548,6 +557,7 @@ func (m *Manager) executeDouyinVideoStaged(
 		var summary MuxTrackSummary
 		var dlErr error
 		original := false
+		originalUnavailable := false
 		if len(plan.OriginalURLs) > 0 {
 			origSummary, oErr := m.cacheDouyinOriginal(ctx, &subTask, plan, refreshOncePlan, stagedRelPath(videoRel), stagedVideoFull)
 			if oErr == nil {
@@ -556,13 +566,23 @@ func (m *Manager) executeDouyinVideoStaged(
 				return oErr
 			} else {
 				dlErr = oErr
+				if isPermanentDouyinOriginalError(oErr) {
+					originalUnavailable = true
+				}
 			}
 		}
 		if !original {
 			// On safe upgrade where local already had the transcoded tier and only OriginalURLs was new,
 			// reuse verified local video if OriginalURLs failed instead of re-downloading the same tier (never on ForceOverwrite).
-			if !isConflict && !forceOverwrite && mediaIsValid(previous, videoRel) && previous.DouyinVideo != nil &&
-				plan.Width*plan.Height <= previous.DouyinVideo.Width*previous.DouyinVideo.Height {
+			localPixels := 0
+			if previous.DouyinVideo != nil {
+				localPixels = previous.DouyinVideo.Width * previous.DouyinVideo.Height
+			}
+			planPixels := plan.Width * plan.Height
+			sameOrLowerTranscode := previous.DouyinVideo != nil &&
+				planPixels <= localPixels &&
+				!(planPixels == localPixels && previous.DouyinVideo.Bitrate > 0 && plan.Bitrate > previous.DouyinVideo.Bitrate)
+			if !isConflict && !forceOverwrite && mediaIsValid(previous, videoRel) && sameOrLowerTranscode {
 				copied, cErr := copyLocalMediaToStageAs(previous, videoRel, videoRel, "video", stageDir)
 				if cErr == nil {
 					v2Media = append(v2Media, *copied)
@@ -570,6 +590,9 @@ func (m *Manager) executeDouyinVideoStaged(
 					cp := *previous.DouyinVideo
 					if cp.MediaID == "" {
 						cp.MediaID = library.SanitizeMediaToken(plan.MediaID)
+					}
+					if originalUnavailable {
+						cp.OriginalState = "unavailable"
 					}
 					dvInfo = &cp
 					if previous.Duration > 0 {
@@ -588,6 +611,9 @@ func (m *Manager) executeDouyinVideoStaged(
 						v2Media = append(v2Media, *copied)
 						if previous.DouyinVideo != nil {
 							cp := *previous.DouyinVideo
+							if originalUnavailable {
+								cp.OriginalState = "unavailable"
+							}
 							dvInfo = &cp
 						}
 						goto commitVideoSwap
@@ -603,6 +629,12 @@ func (m *Manager) executeDouyinVideoStaged(
 			}
 			v2Media = append(v2Media, *vidMedia)
 			durSec = vidMedia.Duration
+			origState := ""
+			if originalUnavailable {
+				origState = "unavailable"
+			} else if previous.DouyinVideo != nil && len(plan.OriginalURLs) == 0 {
+				origState = previous.DouyinVideo.OriginalState
+			}
 			dvInfo = &library.DouyinVideoInfo{
 				MediaID:        library.SanitizeMediaToken(plan.MediaID),
 				File:           videoRel,
@@ -614,6 +646,7 @@ func (m *Manager) executeDouyinVideoStaged(
 				FPS:            plan.FPS,
 				Bitrate:        plan.Bitrate,
 				AvailableGears: append([]string(nil), plan.AvailableGears...),
+				OriginalState:  origState,
 			}
 			goto commitVideoSwap
 		}
@@ -906,4 +939,29 @@ func (m *Manager) downloadDouyinMP4WithFallback(
 	}
 
 	return m.downloadWithTransportRefresh(ctx, transport, urls, stagingPath, role, t, refreshURLs)
+}
+
+// isPermanentDouyinOriginalError reports whether a Douyin OriginalURLs download
+// failed permanently (HTTP 403/404/410 or invalid/non-video payload) rather than
+// due to a transient network/rate-limit/risk-control error (DEC-096).
+func isPermanentDouyinOriginalError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var netPause *networkPauseError
+	if errors.As(err, &netPause) {
+		return false
+	}
+	if site.IsRoundStop(err) || isStorageError(err) {
+		return false
+	}
+	if site.IsKind(err, site.ErrKindUnavailable) ||
+		site.IsKind(err, site.ErrKindForbidden) ||
+		site.IsKind(err, site.ErrKindSchemaChanged) {
+		return true
+	}
+	return false
 }

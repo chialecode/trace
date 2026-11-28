@@ -62,9 +62,15 @@ func (b *Backend) EnqueueCacheQueue(ctx context.Context, req CacheQueueRequest) 
 	if err := b.requireSiteLogin(normSite); err != nil {
 		return CacheQueueTask{}, err
 	}
-	loaded, pager, err := b.buildQueueLoadedAndPager(normSite, normList, normUser, req)
+	loaded, pager, fallbackRefetch, err := b.buildQueueLoadedAndPager(normSite, normList, normUser, req)
 	if err != nil {
 		return CacheQueueTask{}, err
+	}
+	if fallbackRefetch {
+		req.Cursor = ""
+		req.HasMore = true
+		req.CompletionNote = ""
+		loaded = nil
 	}
 	if strings.TrimSpace(req.AvatarURL) != "" {
 		b.rememberQueueAvatar(string(normSite), normUser, req.AvatarURL)
@@ -74,7 +80,7 @@ func (b *Backend) EnqueueCacheQueue(ctx context.Context, req CacheQueueRequest) 
 
 // queueListLabel names the list; a run a full-cache rule started says so.
 func queueListLabel(rec cacheQueueRecord) string {
-	if rec.List == CacheQueueListWeiboBackfill {
+	if rec.List == CacheQueueListWeiboBackfill || rec.List == CacheQueueListSiteBackfill {
 		return "历史缓存补全"
 	}
 	label := cacheQueueListLabel(rec.Site, rec.List)
