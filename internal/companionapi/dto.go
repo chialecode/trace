@@ -16,6 +16,9 @@ type StatusResponse struct {
 	DownloadBadge    int              `json:"downloadBadge"`
 	ActiveRecordings int              `json:"activeRecordings"`
 	PendingCount     int              `json:"pendingCount"`
+	Capabilities     []string         `json:"capabilities,omitempty"`
+	MDNSActive       bool             `json:"mdnsActive,omitempty"`
+	PreventSleep     bool             `json:"preventSleep,omitempty"`
 }
 
 // SiteAuthStatus summarizes one site's desktop login status (read-only).
@@ -251,18 +254,40 @@ type VideoInfoDTO struct {
 	Bitrate     int64  `json:"bitrate,omitempty"`
 }
 
+// SubtitleTrackDTO describes one cached subtitle track on a video part.
+// RelPath points to the preferred readable file (WebVTT preferred, else SRT),
+// served via GET /api/v1/media/{itemKey}/{relPath} with Cache-Control: no-store.
+type SubtitleTrackDTO struct {
+	Lang    string `json:"lang"`
+	Label   string `json:"label"`
+	AI      bool   `json:"ai,omitempty"`
+	RelPath string `json:"relPath"`
+	VTT     string `json:"vtt,omitempty"`
+	SRT     string `json:"srt,omitempty"`
+}
+
+// ChapterDTO describes one video chapter marker (看点/章节).
+type ChapterDTO struct {
+	FromSec int    `json:"fromSec"`
+	ToSec   int    `json:"toSec"`
+	Title   string `json:"title"`
+}
+
 // VideoPartDTO describes one video part (分 P).
 type VideoPartDTO struct {
-	Page        int    `json:"page"`
-	Title       string `json:"title"`
-	Duration    int    `json:"duration"`
-	File        string `json:"file"`
-	QualityName string `json:"qualityName,omitempty"`
-	Codecs      string `json:"codecs,omitempty"`
-	Width       int    `json:"width,omitempty"`
-	Height      int    `json:"height,omitempty"`
-	AudioName   string `json:"audioName,omitempty"`
-	AudioFile   string `json:"audioFile,omitempty"`
+	Page           int                `json:"page"`
+	Title          string             `json:"title"`
+	Duration       int                `json:"duration"`
+	File           string             `json:"file"`
+	QualityName    string             `json:"qualityName,omitempty"`
+	Codecs         string             `json:"codecs,omitempty"`
+	Width          int                `json:"width,omitempty"`
+	Height         int                `json:"height,omitempty"`
+	AudioName      string             `json:"audioName,omitempty"`
+	AudioFile      string             `json:"audioFile,omitempty"`
+	DanmakuRelPath string             `json:"danmakuRelPath,omitempty"`
+	Subtitles      []SubtitleTrackDTO `json:"subtitles,omitempty"`
+	Chapters       []ChapterDTO       `json:"chapters,omitempty"`
 }
 
 // NotePageDTO describes one ordered page in a Douyin/Weibo/X note/post.
@@ -425,18 +450,20 @@ type CustomLinkDTO struct {
 
 // SubscriptionDTO summarizes one subscription and its linked accounts.
 type SubscriptionDTO struct {
-	ID          string                   `json:"id"`
-	Name        string                   `json:"name"`
-	Note        string                   `json:"note,omitempty"`
-	AvatarPath  string                   `json:"avatarPath,omitempty"`
-	PresetLabel string                   `json:"presetLabel,omitempty"`
-	Tags        []string                 `json:"tags,omitempty"`
-	TagLabels   []string                 `json:"tagLabels,omitempty"`
-	Links       []CustomLinkDTO          `json:"links,omitempty"`
-	Accounts    []SubscriptionAccountDTO `json:"accounts,omitempty"`
-	Live        bool                     `json:"live"`
-	Recording   bool                     `json:"recording"`
-	CreatedAt   string                   `json:"createdAt,omitempty"`
+	ID                                string                   `json:"id"`
+	Name                              string                   `json:"name"`
+	Note                              string                   `json:"note,omitempty"`
+	AvatarPath                        string                   `json:"avatarPath,omitempty"`
+	PresetID                          string                   `json:"presetId,omitempty"`
+	PresetLabel                       string                   `json:"presetLabel,omitempty"`
+	Tags                              []string                 `json:"tags,omitempty"`
+	TagLabels                         []string                 `json:"tagLabels,omitempty"`
+	HasAutoCacheWithoutScheduledCheck bool                     `json:"hasAutoCacheWithoutScheduledCheck,omitempty"`
+	Links                             []CustomLinkDTO          `json:"links,omitempty"`
+	Accounts                          []SubscriptionAccountDTO `json:"accounts,omitempty"`
+	Live                              bool                     `json:"live"`
+	Recording                         bool                     `json:"recording"`
+	CreatedAt                         string                   `json:"createdAt,omitempty"`
 }
 
 // SubscriptionAccountDTO describes one linked account with its cached live status.
@@ -565,29 +592,33 @@ type LiveRecordingsResponse struct {
 
 // LiveRecordingDTO describes one active or recently finished live recording (no local paths).
 type LiveRecordingDTO struct {
-	RecordingKey string         `json:"recordingKey"`
-	AccountKey   string         `json:"accountKey"`
-	Site         string         `json:"site"`
-	UID          string         `json:"uid"`
-	RoomID       string         `json:"roomId,omitempty"`
-	Uname        string         `json:"uname"`
-	AvatarPath   string         `json:"avatarPath,omitempty"`
-	Title        string         `json:"title,omitempty"`
-	StatusText   string         `json:"statusText,omitempty"`
-	QualityName  string         `json:"qualityName,omitempty"`
-	Codec        string         `json:"codec,omitempty"`
-	Recording    bool           `json:"recording"`
-	DurationSec  float64        `json:"durationSec,omitempty"`
-	SpeedBps     int64          `json:"speedBps,omitempty"`
-	Bytes        int64          `json:"bytes,omitempty"`
-	Segments     int            `json:"segments,omitempty"`
-	ItemKey      string         `json:"itemKey,omitempty"`
-	Incidents    []LiveIncident `json:"incidents,omitempty"`
-	StopReason   string         `json:"stopReason,omitempty"`
-	LastError    string         `json:"lastError,omitempty"`
-	StartedAt    string         `json:"startedAt,omitempty"`
-	EndedAt      string         `json:"endedAt,omitempty"`
-	UpdatedAt    string         `json:"updatedAt,omitempty"`
+	RecordingKey     string         `json:"recordingKey"`
+	AccountKey       string         `json:"accountKey"`
+	Site             string         `json:"site"`
+	UID              string         `json:"uid"`
+	RoomID           string         `json:"roomId,omitempty"`
+	Uname            string         `json:"uname"`
+	AvatarPath       string         `json:"avatarPath,omitempty"`
+	Title            string         `json:"title,omitempty"`
+	StatusText       string         `json:"statusText,omitempty"`
+	QualityName      string         `json:"qualityName,omitempty"`
+	Codec            string         `json:"codec,omitempty"`
+	Recording        bool           `json:"recording"`
+	PreviewAvailable bool           `json:"previewAvailable,omitempty"`
+	PreviewReason    string         `json:"previewReason,omitempty"`
+	PartIndex        int            `json:"partIndex,omitempty"`
+	PartBytes        int64          `json:"partBytes,omitempty"`
+	DurationSec      float64        `json:"durationSec,omitempty"`
+	SpeedBps         int64          `json:"speedBps,omitempty"`
+	Bytes            int64          `json:"bytes,omitempty"`
+	Segments         int            `json:"segments,omitempty"`
+	ItemKey          string         `json:"itemKey,omitempty"`
+	Incidents        []LiveIncident `json:"incidents,omitempty"`
+	StopReason       string         `json:"stopReason,omitempty"`
+	LastError        string         `json:"lastError,omitempty"`
+	StartedAt        string         `json:"startedAt,omitempty"`
+	EndedAt          string         `json:"endedAt,omitempty"`
+	UpdatedAt        string         `json:"updatedAt,omitempty"`
 }
 
 // LiveIncident describes one recording anomaly (no stream URLs or paths).
@@ -713,4 +744,47 @@ type ActionResponse struct {
 	OK      bool   `json:"ok"`
 	Message string `json:"message,omitempty"`
 	Count   int    `json:"count,omitempty"`
+}
+
+// ParseAndCacheRequest is POST /api/v1/parse-and-cache (FR-MOB-030).
+type ParseAndCacheRequest struct {
+	Input string `json:"input"`
+}
+
+// ParseAndCacheResponse summarizes the desktop parse + cache enqueue result.
+// Strictly excludes online detail preview, remote stream/image URLs, cookies, and local paths.
+type ParseAndCacheResponse struct {
+	OK            bool              `json:"ok"`
+	TaskID        string            `json:"taskId,omitempty"`
+	Tasks         []DownloadTaskDTO `json:"tasks,omitempty"`
+	Site          string            `json:"site,omitempty"`
+	Kind          string            `json:"kind,omitempty"`
+	TargetID      string            `json:"targetId,omitempty"`
+	ItemKey       string            `json:"itemKey,omitempty"`
+	Title         string            `json:"title,omitempty"`
+	AuthorName    string            `json:"authorName,omitempty"`
+	AlreadyCached bool              `json:"alreadyCached,omitempty"`
+	Message       string            `json:"message,omitempty"`
+}
+
+// UpdateSubscriptionTagsRequest is PUT /api/v1/subscriptions/{id}/tags (FR-MOB-030).
+// Provide either Tags (non-nil, including empty []string{} for manual) or Preset
+// (with optional AutoRecord overlay) when Tags is nil.
+type UpdateSubscriptionTagsRequest struct {
+	Tags       []string `json:"tags"`
+	Preset     string   `json:"preset,omitempty"`
+	AutoRecord *bool    `json:"autoRecord,omitempty"`
+}
+
+// ResolveConflictRequest is POST /api/v1/conflicts/{id}/resolve (FR-MOB-030).
+type ResolveConflictRequest struct {
+	Choice string `json:"choice"` // ConflictKeepBoth, ConflictKeepLocal, or ConflictUseRemote
+}
+
+// ResolveConflictResponse is returned by POST /api/v1/conflicts/{id}/resolve.
+type ResolveConflictResponse struct {
+	OK      bool   `json:"ok"`
+	ID      string `json:"id"`
+	Choice  string `json:"choice"`
+	Message string `json:"message,omitempty"`
 }

@@ -37,41 +37,45 @@ func requestArrivedOnVirtual(r *http.Request) bool {
 
 // Server serves the companion HTTPS JSON & WebSocket API on top of service.BackendAPI.
 type Server struct {
-	backend     service.BackendAPI
-	store       *Store
-	pairing     *pairingManager
-	hub         *eventHub
-	thumbs      *thumbCache
-	limiter     *failureLimiter
-	channel     string
-	nodeName    string
-	version     string
-	startedAt   time.Time
-	now         func() time.Time
-	addrsFunc   func() []string
-	diskFunc    func(string) (uint64, uint64, error)
-	logf        func(format string, args ...any)
-	onFeedSeen  func()
-	pollMaxWait time.Duration
+	backend          service.BackendAPI
+	store            *Store
+	pairing          *pairingManager
+	hub              *eventHub
+	thumbs           *thumbCache
+	limiter          *failureLimiter
+	channel          string
+	nodeName         string
+	version          string
+	startedAt        time.Time
+	now              func() time.Time
+	addrsFunc        func() []string
+	diskFunc         func(string) (uint64, uint64, error)
+	mdnsActiveFunc   func() bool
+	preventSleepFunc func() bool
+	logf             func(format string, args ...any)
+	onFeedSeen       func()
+	pollMaxWait      time.Duration
 }
 
 // ServerOptions configures a companion HTTP API server.
 type ServerOptions struct {
-	Backend     service.BackendAPI
-	Store       *Store
-	Pairing     *pairingManager
-	Hub         *eventHub
-	Thumbs      *thumbCache
-	Channel     string
-	NodeName    string
-	Version     string
-	StartedAt   time.Time
-	Now         func() time.Time
-	AddrsFunc   func() []string
-	DiskFunc    func(string) (uint64, uint64, error)
-	Logf        func(format string, args ...any)
-	OnFeedSeen  func()
-	PollMaxWait time.Duration
+	Backend          service.BackendAPI
+	Store            *Store
+	Pairing          *pairingManager
+	Hub              *eventHub
+	Thumbs           *thumbCache
+	Channel          string
+	NodeName         string
+	Version          string
+	StartedAt        time.Time
+	Now              func() time.Time
+	AddrsFunc        func() []string
+	DiskFunc         func(string) (uint64, uint64, error)
+	MDNSActiveFunc   func() bool
+	PreventSleepFunc func() bool
+	Logf             func(format string, args ...any)
+	OnFeedSeen       func()
+	PollMaxWait      time.Duration
 }
 
 // NewServer constructs the companion HTTP handler.
@@ -108,22 +112,24 @@ func NewServer(opt ServerOptions) *Server {
 		opt.Hub = newEventHub(opt.Now, nil)
 	}
 	return &Server{
-		backend:     opt.Backend,
-		store:       opt.Store,
-		pairing:     opt.Pairing,
-		hub:         opt.Hub,
-		thumbs:      opt.Thumbs,
-		limiter:     newFailureLimiter(),
-		channel:     opt.Channel,
-		nodeName:    opt.NodeName,
-		version:     opt.Version,
-		startedAt:   opt.StartedAt,
-		now:         opt.Now,
-		addrsFunc:   opt.AddrsFunc,
-		diskFunc:    opt.DiskFunc,
-		logf:        opt.Logf,
-		onFeedSeen:  opt.OnFeedSeen,
-		pollMaxWait: opt.PollMaxWait,
+		backend:          opt.Backend,
+		store:            opt.Store,
+		pairing:          opt.Pairing,
+		hub:              opt.Hub,
+		thumbs:           opt.Thumbs,
+		limiter:          newFailureLimiter(),
+		channel:          opt.Channel,
+		nodeName:         opt.NodeName,
+		version:          opt.Version,
+		startedAt:        opt.StartedAt,
+		now:              opt.Now,
+		addrsFunc:        opt.AddrsFunc,
+		diskFunc:         opt.DiskFunc,
+		mdnsActiveFunc:   opt.MDNSActiveFunc,
+		preventSleepFunc: opt.PreventSleepFunc,
+		logf:             opt.Logf,
+		onFeedSeen:       opt.OnFeedSeen,
+		pollMaxWait:      opt.PollMaxWait,
 	}
 }
 
@@ -211,7 +217,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Media & Avatar endpoints (streaming/Range, no request body).
+	// 7. Media, Avatar & Live Recording Preview endpoints (streaming/Range, no request body).
 	if strings.HasPrefix(rel, "media/") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		s.handleMedia(w, r, strings.TrimPrefix(rel, "media/"))
 		return
@@ -219,6 +225,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(rel, "avatars/") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		s.handleAvatar(w, r, strings.TrimPrefix(rel, "avatars/"))
 		return
+	}
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && strings.HasPrefix(rel, "live/recordings/") {
+		if recKey, isHLS, matched := matchLiveRecordingPreviewRoute(rel); matched {
+			if recKey == "" {
+				writeError(w, http.StatusBadRequest, companionapi.CodeBadRequest, "录制编号不正确", nil)
+				return
+			}
+			if isHLS {
+				s.handleLiveRecordingPreviewHLS(w, r, recKey)
+			} else {
+				s.handleLiveRecordingPreview(w, r, recKey)
+			}
+			return
+		}
 	}
 
 	// 8. Bound request body to 64 KiB (design §5.1).
@@ -406,6 +426,14 @@ func (s *Server) routeAuthed(w http.ResponseWriter, r *http.Request, rel string,
 		s.handleSubscriptions(w)
 	case rel == "subscriptions/accounts" && r.Method == http.MethodGet:
 		s.handleSubscriptionsAccounts(w)
+	case strings.HasPrefix(rel, "subscriptions/") && strings.HasSuffix(rel, "/tags") && r.Method == http.MethodPut:
+		rawID := strings.TrimSuffix(strings.TrimPrefix(rel, "subscriptions/"), "/tags")
+		id, err := url.PathUnescape(rawID)
+		if err != nil || strings.TrimSpace(id) == "" {
+			writeError(w, http.StatusBadRequest, companionapi.CodeBadRequest, "订阅编号不正确", nil)
+			return
+		}
+		s.handleUpdateSubscriptionTags(w, strings.TrimSpace(id), body)
 	case strings.HasPrefix(rel, "subscriptions/") && r.Method == http.MethodGet:
 		id, err := url.PathUnescape(strings.TrimPrefix(rel, "subscriptions/"))
 		if err != nil || strings.TrimSpace(id) == "" {
@@ -453,8 +481,18 @@ func (s *Server) routeAuthed(w http.ResponseWriter, r *http.Request, rel string,
 	case rel == "checks/cancel" && r.Method == http.MethodPost:
 		s.backend.CancelSubscriptionCheck()
 		writeJSON(w, http.StatusOK, companionapi.ActionResponse{OK: true, Message: "已取消检查更新"})
+	case rel == "parse-and-cache" && r.Method == http.MethodPost:
+		s.handleParseAndCache(w, r, body)
 	case rel == "conflicts" && r.Method == http.MethodGet:
 		s.handleConflicts(w)
+	case strings.HasPrefix(rel, "conflicts/") && strings.HasSuffix(rel, "/resolve") && r.Method == http.MethodPost:
+		rawID := strings.TrimSuffix(strings.TrimPrefix(rel, "conflicts/"), "/resolve")
+		id, err := url.PathUnescape(rawID)
+		if err != nil || strings.TrimSpace(id) == "" {
+			writeError(w, http.StatusBadRequest, companionapi.CodeBadRequest, "冲突编号不正确", nil)
+			return
+		}
+		s.handleResolveConflict(w, r, strings.TrimSpace(id), body)
 	case rel == "transfers" && r.Method == http.MethodGet:
 		s.handleTransfers(w)
 	case rel == "devices/self" && r.Method == http.MethodDelete:
@@ -531,6 +569,15 @@ func (s *Server) handleStatus(w http.ResponseWriter) {
 		uptime = 0
 	}
 
+	mdnsActive := false
+	if s.mdnsActiveFunc != nil {
+		mdnsActive = s.mdnsActiveFunc()
+	}
+	preventSleep := false
+	if s.preventSleepFunc != nil {
+		preventSleep = s.preventSleepFunc()
+	}
+
 	writeJSON(w, http.StatusOK, companionapi.StatusResponse{
 		Node:             s.store.NodeID(),
 		Name:             s.nodeName,
@@ -546,6 +593,9 @@ func (s *Server) handleStatus(w http.ResponseWriter) {
 		DownloadBadge:    downloadBadge,
 		ActiveRecordings: activeRecordings,
 		PendingCount:     pendingConflicts + failedDownloads,
+		Capabilities:     companionapi.V2Capabilities(),
+		MDNSActive:       mdnsActive,
+		PreventSleep:     preventSleep,
 	})
 }
 
@@ -1165,6 +1215,67 @@ func (s *Server) handleSubscriptionDetail(w http.ResponseWriter, id string) {
 	writeError(w, http.StatusNotFound, companionapi.CodeNotFound, "找不到这个订阅", nil)
 }
 
+func (s *Server) handleUpdateSubscriptionTags(w http.ResponseWriter, id string, body []byte) {
+	if !s.requireAnyLogin(w) {
+		return
+	}
+	var req companionapi.UpdateSubscriptionTagsRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, companionapi.CodeBadRequest, "标签请求格式不正确", nil)
+		return
+	}
+
+	subs, err := s.backend.ListSubscriptions()
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	var existing *subscription.Subscription
+	for i := range subs {
+		if subs[i].ID == id {
+			existing = &subs[i]
+			break
+		}
+	}
+	if existing == nil {
+		writeError(w, http.StatusNotFound, companionapi.CodeNotFound, "找不到这个订阅", nil)
+		return
+	}
+
+	var nextTags []string
+	switch {
+	case req.Tags != nil:
+		valid, vErr := subscription.ValidateTags(req.Tags)
+		if vErr != nil {
+			writeError(w, http.StatusBadRequest, companionapi.CodeBadRequest, "包含不支持的能力标签", nil)
+			return
+		}
+		nextTags = valid
+	case strings.TrimSpace(req.Preset) != "":
+		autoRec := subscription.HasTag(existing.Tags, subscription.TagAutoRecord)
+		if req.AutoRecord != nil {
+			autoRec = *req.AutoRecord
+		}
+		presetTags, pErr := subscription.PresetTags(strings.TrimSpace(req.Preset), autoRec)
+		if pErr != nil {
+			writeError(w, http.StatusBadRequest, companionapi.CodeBadRequest, "不支持的追踪模式预设", nil)
+			return
+		}
+		nextTags = presetTags
+	default:
+		writeError(w, http.StatusBadRequest, companionapi.CodeBadRequest, "请提供 tags 或 preset", nil)
+		return
+	}
+
+	updated, err := s.backend.SetSubscriptionTags(id, nextTags)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	mapped := s.mapSubscriptions([]subscription.Subscription{updated})
+	writeJSON(w, http.StatusOK, companionapi.SubscriptionDetailResponse{Subscription: mapped[0]})
+}
+
 func (s *Server) handleSubscriptionsAccounts(w http.ResponseWriter) {
 	if !s.requireAnyLogin(w) {
 		return
@@ -1214,7 +1325,14 @@ func (s *Server) mapSubscriptions(subs []subscription.Subscription) []companiona
 				dto.TagLabels = append(dto.TagLabels, tid)
 			}
 		}
-		dto.PresetLabel = trackingPresetLabel(sub.Tags)
+		presetID, _ := subscription.MatchTrackingPreset(sub.Tags)
+		dto.PresetID = presetID
+		dto.PresetLabel = subscription.TrackingPresetName(presetID)
+		hasAutoCache := subscription.HasTag(sub.Tags, subscription.TagCacheVideo) ||
+			subscription.HasTag(sub.Tags, subscription.TagCacheDraw) ||
+			subscription.HasTag(sub.Tags, subscription.TagCacheWord) ||
+			subscription.HasTag(sub.Tags, subscription.TagCacheForward)
+		dto.HasAutoCacheWithoutScheduledCheck = hasAutoCache && !subscription.HasTag(sub.Tags, subscription.TagScheduledCheck)
 		for _, l := range sub.Links {
 			dto.Links = append(dto.Links, companionapi.CustomLinkDTO{Label: l.Label, URL: l.URL})
 		}
@@ -1835,6 +1953,80 @@ func (s *Server) handleConflicts(w http.ResponseWriter) {
 	writeJSON(w, http.StatusOK, companionapi.ConflictsResponse{Items: items})
 }
 
+func (s *Server) handleParseAndCache(w http.ResponseWriter, r *http.Request, body []byte) {
+	if !s.requireAnyLogin(w) {
+		return
+	}
+	var req companionapi.ParseAndCacheRequest
+	if err := json.Unmarshal(body, &req); err != nil || strings.TrimSpace(req.Input) == "" {
+		writeError(w, http.StatusBadRequest, companionapi.CodeBadRequest, "请输入要缓存的链接或分享文案", nil)
+		return
+	}
+	res, err := s.backend.ParseAndCache(r.Context(), req.Input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	tasks := make([]companionapi.DownloadTaskDTO, 0, len(res.Tasks))
+	for _, t := range res.Tasks {
+		tasks = append(tasks, s.mapDownloadTask(t))
+	}
+	taskID := ""
+	if len(tasks) > 0 {
+		taskID = tasks[0].TaskID
+	}
+	writeJSON(w, http.StatusOK, companionapi.ParseAndCacheResponse{
+		OK:            true,
+		TaskID:        taskID,
+		Tasks:         tasks,
+		Site:          res.Site,
+		Kind:          res.Kind,
+		TargetID:      res.TargetID,
+		ItemKey:       res.ItemKey,
+		Title:         res.Title,
+		AuthorName:    res.AuthorName,
+		AlreadyCached: res.AlreadyCached,
+		Message:       res.Message,
+	})
+}
+
+func (s *Server) handleResolveConflict(w http.ResponseWriter, r *http.Request, id string, body []byte) {
+	if !s.requireAnyLogin(w) {
+		return
+	}
+	var req companionapi.ResolveConflictRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, companionapi.CodeBadRequest, "冲突处理请求格式不正确", nil)
+		return
+	}
+	choice := strings.TrimSpace(req.Choice)
+	switch choice {
+	case companionapi.ConflictKeepBoth, companionapi.ConflictKeepLocal, companionapi.ConflictUseRemote:
+	default:
+		writeError(w, http.StatusBadRequest, companionapi.CodeBadRequest, "不支持的冲突处理方式，请选择 keep_both、keep_local 或 use_remote", nil)
+		return
+	}
+	if err := s.backend.ResolveCacheConflict(r.Context(), id, choice); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	msg := "已处理内容冲突"
+	switch choice {
+	case companionapi.ConflictKeepBoth:
+		msg = "已保留本地旧版并缓存源站新版"
+	case companionapi.ConflictKeepLocal:
+		msg = "已保留本地版本，当前源站修订不再重复提示"
+	case companionapi.ConflictUseRemote:
+		msg = "已用源站新版更新本地缓存"
+	}
+	writeJSON(w, http.StatusOK, companionapi.ResolveConflictResponse{
+		OK:      true,
+		ID:      id,
+		Choice:  choice,
+		Message: msg,
+	})
+}
+
 func (s *Server) handleTransfers(w http.ResponseWriter) {
 	if !s.requireAnyLogin(w) {
 		return
@@ -1972,7 +2164,7 @@ func (s *Server) mapLiveRecording(r service.LiveAccountState) companionapi.LiveR
 	if s.backend.AccountAvatarPath(r.Site, r.UID) != "" {
 		avatar = companionapi.AvatarPath(r.Site, r.UID)
 	}
-	return companionapi.LiveRecordingDTO{
+	dto := companionapi.LiveRecordingDTO{
 		RecordingKey: r.RecordingKey,
 		AccountKey:   r.AccountKey,
 		Site:         r.Site,
@@ -1994,6 +2186,24 @@ func (s *Server) mapLiveRecording(r service.LiveAccountState) companionapi.LiveR
 		LastError:    r.LastError,
 		UpdatedAt:    r.UpdatedAt,
 	}
+	if r.Recording && r.RecordingKey != "" {
+		if p, ok := s.backend.LiveRecordingPreview(r.RecordingKey); ok && p.Recording {
+			dto.PartIndex = p.PartIndex
+			dto.PartBytes = p.PartBytes
+			if p.PreviewSupported && !p.AudioOnly {
+				if p.PartReady && p.PartPath != "" {
+					dto.PreviewAvailable = true
+				} else {
+					dto.PreviewAvailable = false
+					dto.PreviewReason = firstNonEmpty(p.PreviewReason, "等待首个直播分片写入")
+				}
+			} else {
+				dto.PreviewAvailable = false
+				dto.PreviewReason = firstNonEmpty(p.PreviewReason, "这场录制暂不支持实时预览")
+			}
+		}
+	}
+	return dto
 }
 
 // ---- Sanitized mapping helpers (never expose ItemDir, cookies, or signed URLs) ----
@@ -2175,17 +2385,124 @@ func mapVideoParts(in []library.VideoPartRecord) []companionapi.VideoPartDTO {
 	}
 	out := make([]companionapi.VideoPartDTO, 0, len(in))
 	for _, p := range in {
-		out = append(out, companionapi.VideoPartDTO{
-			Page:        p.Page,
-			Title:       p.Title,
-			Duration:    p.Duration,
-			File:        p.File,
-			QualityName: p.Video.QualityName,
-			Codecs:      p.Video.Codecs,
-			Width:       p.Video.Width,
-			Height:      p.Video.Height,
-			AudioName:   p.Audio.Name,
-			AudioFile:   p.Audio.SavedAs,
+		dto := companionapi.VideoPartDTO{
+			Page:           p.Page,
+			Title:          p.Title,
+			Duration:       p.Duration,
+			File:           p.File,
+			QualityName:    p.Video.QualityName,
+			Codecs:         p.Video.Codecs,
+			Width:          p.Video.Width,
+			Height:         p.Video.Height,
+			AudioName:      p.Audio.Name,
+			AudioFile:      p.Audio.SavedAs,
+			DanmakuRelPath: p.Danmaku,
+			Subtitles:      mapPartSubtitles(p),
+			Chapters:       mapVideoChapters(p.Chapters),
+		}
+		out = append(out, dto)
+	}
+	return out
+}
+
+func mapPartSubtitles(p library.VideoPartRecord) []companionapi.SubtitleTrackDTO {
+	if len(p.SubtitleTracks) > 0 {
+		out := make([]companionapi.SubtitleTrackDTO, 0, len(p.SubtitleTracks))
+		for _, st := range p.SubtitleTracks {
+			rel := firstNonEmpty(st.VTT, st.SRT)
+			if rel == "" {
+				continue
+			}
+			label := firstNonEmpty(st.Name, st.Language, "字幕")
+			out = append(out, companionapi.SubtitleTrackDTO{
+				Lang:    st.Language,
+				Label:   label,
+				AI:      st.AI,
+				RelPath: rel,
+				VTT:     st.VTT,
+				SRT:     st.SRT,
+			})
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if len(p.Subtitles) == 0 {
+		return nil
+	}
+	// Legacy fallback: pair .vtt/.srt files that share a stem into SubtitleTrackDTO entries.
+	type subAcc struct {
+		lang string
+		vtt  string
+		srt  string
+	}
+	var order []string
+	byKey := make(map[string]*subAcc, len(p.Subtitles))
+	for _, rel := range p.Subtitles {
+		clean := strings.TrimSpace(rel)
+		if clean == "" {
+			continue
+		}
+		lower := strings.ToLower(clean)
+		ext := ""
+		stem := clean
+		switch {
+		case strings.HasSuffix(lower, ".vtt"):
+			ext = ".vtt"
+			stem = clean[:len(clean)-4]
+		case strings.HasSuffix(lower, ".srt"):
+			ext = ".srt"
+			stem = clean[:len(clean)-4]
+		default:
+			continue
+		}
+		acc, ok := byKey[stem]
+		if !ok {
+			lang := stem
+			if slash := strings.LastIndexByte(lang, '/'); slash >= 0 {
+				lang = lang[slash+1:]
+			}
+			if dot := strings.LastIndexByte(lang, '.'); dot >= 0 && dot+1 < len(lang) {
+				lang = lang[dot+1:]
+			}
+			acc = &subAcc{lang: lang}
+			byKey[stem] = acc
+			order = append(order, stem)
+		}
+		if ext == ".vtt" && acc.vtt == "" {
+			acc.vtt = clean
+		} else if ext == ".srt" && acc.srt == "" {
+			acc.srt = clean
+		}
+	}
+	out := make([]companionapi.SubtitleTrackDTO, 0, len(order))
+	for _, stem := range order {
+		acc := byKey[stem]
+		rel := firstNonEmpty(acc.vtt, acc.srt)
+		if rel == "" {
+			continue
+		}
+		out = append(out, companionapi.SubtitleTrackDTO{
+			Lang:    acc.lang,
+			Label:   firstNonEmpty(acc.lang, "字幕"),
+			RelPath: rel,
+			VTT:     acc.vtt,
+			SRT:     acc.srt,
+		})
+	}
+	return out
+}
+
+func mapVideoChapters(in []library.VideoChapter) []companionapi.ChapterDTO {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]companionapi.ChapterDTO, 0, len(in))
+	for _, ch := range in {
+		out = append(out, companionapi.ChapterDTO{
+			FromSec: ch.FromSec,
+			ToSec:   ch.ToSec,
+			Title:   ch.Title,
 		})
 	}
 	return out
@@ -2451,27 +2768,6 @@ func mapOriginDepth(in *library.ItemOrigin, depth int) *companionapi.ItemOriginD
 	}
 }
 
-func trackingPresetLabel(tags []string) string {
-	has := make(map[string]bool, len(tags))
-	for _, t := range tags {
-		if t != "auto_record" {
-			has[t] = true
-		}
-	}
-	switch {
-	case len(has) == 0:
-		return "仅手动"
-	case len(has) == 1 && has["scheduled_check"]:
-		return "只看新动态"
-	case len(has) == 3 && has["scheduled_check"] && has["cache_video"] && has["cache_draw"]:
-		return "追更并保存"
-	case len(has) == 6 && has["scheduled_check"] && has["cache_video"] && has["cache_draw"] && has["cache_word"] && has["cache_forward"] && has["full_cache"]:
-		return "完整存档"
-	default:
-		return "自定义"
-	}
-}
-
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -2493,6 +2789,10 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	if err == nil {
 		return
 	}
+	if errors.Is(err, service.ErrRemoteDegradedRefused) {
+		writeError(w, http.StatusConflict, companionapi.CodeConflict, sanitizePublicError(err.Error(), "源站内容已降级或不可用（本地原文件未改动）"), nil)
+		return
+	}
 	var se *site.Error
 	siteID := ""
 	msg := err.Error()
@@ -2503,40 +2803,88 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		}
 	}
 	if site.IsUnsupported(err) {
-		writeError(w, http.StatusBadRequest, companionapi.CodeUnsupported, msg, func(b *companionapi.ErrorBody) {
+		writeError(w, http.StatusBadRequest, companionapi.CodeUnsupported, sanitizePublicError(msg, "暂不支持该操作"), func(b *companionapi.ErrorBody) {
 			b.Error.Site = siteID
 		})
 		return
 	}
 	switch site.KindOf(err) {
 	case site.ErrKindAuthRequired:
-		writeError(w, http.StatusPreconditionFailed, companionapi.CodeAuthRequired, msg, func(b *companionapi.ErrorBody) {
+		writeError(w, http.StatusPreconditionFailed, companionapi.CodeAuthRequired, sanitizePublicError(msg, "请先在电脑上登录对应站点"), func(b *companionapi.ErrorBody) {
 			b.Error.Site = siteID
 		})
 	case site.ErrKindRiskControl:
-		writeError(w, http.StatusServiceUnavailable, companionapi.CodeRiskControl, msg, func(b *companionapi.ErrorBody) {
+		writeError(w, http.StatusServiceUnavailable, companionapi.CodeRiskControl, sanitizePublicError(msg, "触发站点风控，请稍后再试"), func(b *companionapi.ErrorBody) {
 			b.Error.Site = siteID
 		})
 	case site.ErrKindRateLimited:
-		writeError(w, http.StatusTooManyRequests, companionapi.CodeRateLimited, msg, func(b *companionapi.ErrorBody) {
+		writeError(w, http.StatusTooManyRequests, companionapi.CodeRateLimited, sanitizePublicError(msg, "站点限流中，请稍后再试"), func(b *companionapi.ErrorBody) {
 			b.Error.Site = siteID
 		})
 	case site.ErrKindConflict:
-		writeError(w, http.StatusConflict, companionapi.CodeConflict, msg, func(b *companionapi.ErrorBody) {
+		writeError(w, http.StatusConflict, companionapi.CodeConflict, sanitizePublicError(msg, "存在操作冲突，请稍后再试"), func(b *companionapi.ErrorBody) {
 			b.Error.Site = siteID
 		})
-	case site.ErrKindUnsupportedLink, site.ErrKindInvalidInput, site.ErrKindBadRequest:
-		writeError(w, http.StatusBadRequest, companionapi.CodeUnsupported, msg, func(b *companionapi.ErrorBody) {
+	case site.ErrKindForbidden:
+		writeError(w, http.StatusForbidden, companionapi.CodeUnavailable, sanitizePublicError(msg, "当前账号无权访问该内容"), func(b *companionapi.ErrorBody) {
+			b.Error.Site = siteID
+		})
+	case site.ErrKindUnsupportedLink, site.ErrKindInvalidInput:
+		writeError(w, http.StatusBadRequest, companionapi.CodeUnsupported, sanitizePublicError(msg, "暂不支持该链接"), func(b *companionapi.ErrorBody) {
+			b.Error.Site = siteID
+		})
+	case site.ErrKindBadRequest:
+		writeError(w, http.StatusBadRequest, companionapi.CodeBadRequest, sanitizePublicError(msg, "请求参数不正确"), func(b *companionapi.ErrorBody) {
 			b.Error.Site = siteID
 		})
 	case site.ErrKindUnavailable:
-		writeError(w, http.StatusNotFound, companionapi.CodeUnavailable, msg, func(b *companionapi.ErrorBody) {
+		writeError(w, http.StatusNotFound, companionapi.CodeUnavailable, sanitizePublicError(msg, "内容不可访问或已删除"), func(b *companionapi.ErrorBody) {
 			b.Error.Site = siteID
 		})
 	default:
+		if strings.Contains(msg, "正在处理中") {
+			writeError(w, http.StatusConflict, companionapi.CodeConflict, "该内容冲突正在处理中", nil)
+			return
+		}
+		if strings.Contains(msg, "（本地原文件未改动）") {
+			writeError(w, http.StatusConflict, companionapi.CodeConflict, sanitizePublicError(msg, "处理未完成（本地原文件未改动）"), nil)
+			return
+		}
 		// Never leak raw local paths or unexpected internal details.
 		writeError(w, http.StatusInternalServerError, companionapi.CodeInternal, "操作失败，请在电脑端查看日志", nil)
 	}
+}
+
+var publicErrorForbiddenTokens = []string{
+	// Local & network filesystem paths.
+	`:\\`, `:\`, `:/`, `\\`,
+	"/users/", "/home/", "/var/", "/tmp/", "/etc/", "/root/",
+	// Remote / signed URLs.
+	"http://", "https://", "ws://", "wss://",
+	// Generic auth / secret markers.
+	"cookie", "authorization", "bearer ", "token=", "password", "passwd", "secret=", "pairsecret", "pair_secret",
+	// Bilibili credentials.
+	"sessdata", "bili_jct", "dedeuserid", "ac_time_value", "buvid",
+	// Douyin credentials.
+	"sessionid", "sid_guard", "sid_tt", "uid_tt", "mstoken", "a_bogus", "ttwid", "passport_csrf_token", "odin_tt",
+	// Weibo credentials.
+	"sub=", "subp=", "wbpsess", "xsrf-token", "alf=", "sso_login",
+	// X credentials.
+	"auth_token", "ct0=", "kdt=", "twid=", "guest_id",
+}
+
+func sanitizePublicError(raw, fallback string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return fallback
+	}
+	lower := strings.ToLower(s)
+	for _, marker := range publicErrorForbiddenTokens {
+		if strings.Contains(lower, marker) {
+			return fallback
+		}
+	}
+	return s
 }
 
 func firstNonEmpty(vals ...string) string {

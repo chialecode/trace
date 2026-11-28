@@ -229,34 +229,8 @@ func (a *App) renderRuleBatchDialogBody(c *ui.Context) {
 				key := ruleBatchSubKey(sub)
 				subName := firstNonEmptyStrUI(sub.Name, sub.Uname, key)
 				checked := key != "" && a.RuleBatch.Selected[key]
-				curTags := effectiveSubTags(sub)
 
-				row := ui.CheckboxBase(c, &checked).
-					Label("勾选规则订阅："+subName).
-					FillWidth().
-					Padding(9, 12).
-					Gap(10).
-					AlignItems(ui.Center).
-					BorderWidth(0, 0, 1, 0).
-					BorderColor(ColorBorder).
-					ClipX()
-				if row.Hovered() {
-					row.Background(ColorHover)
-				}
-				row.Children(func() {
-					renderRuleBatchCheckIndicator(c, checked, false)
-					pSite, pUID := subscriptionPrimarySiteAndUID(sub)
-					a.renderAccountAvatar(c, pSite, subName, pUID, sub.Mid, 32, false, "", nil, sub.Face)
-					ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
-						ui.Text(c, subName).FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
-						if note := strings.TrimSpace(sub.Note); note != "" {
-							ui.Text(c, note).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-						}
-					})
-					ui.Text(c, subscription.TagsSummary(curTags)).
-						FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
-				})
-				if row.Changed() && key != "" {
+				if a.renderRuleBatchSubRow(c, sub, subName, "勾选规则订阅："+subName, "规则订阅名称："+subName, &checked) && key != "" {
 					a.RuleBatch.Selected[key] = checked
 					a.RuleBatch.Error = ""
 				}
@@ -515,34 +489,8 @@ func (a *App) renderMultiTagBatchDialogBody(c *ui.Context) {
 				key := ruleBatchSubKey(sub)
 				subName := firstNonEmptyStrUI(sub.Name, sub.Uname, key)
 				checked := key != "" && a.MultiTagBatch.SelectedSubs[key]
-				curTags := effectiveSubTags(sub)
 
-				row := ui.CheckboxBase(c, &checked).
-					Label("勾选批量订阅："+subName).
-					FillWidth().
-					Padding(9, 12).
-					Gap(10).
-					AlignItems(ui.Center).
-					BorderWidth(0, 0, 1, 0).
-					BorderColor(ColorBorder).
-					ClipX()
-				if row.Hovered() {
-					row.Background(ColorHover)
-				}
-				row.Children(func() {
-					renderRuleBatchCheckIndicator(c, checked, false)
-					pSite, pUID := subscriptionPrimarySiteAndUID(sub)
-					a.renderAccountAvatar(c, pSite, subName, pUID, sub.Mid, 32, false, "", nil, sub.Face)
-					ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
-						ui.Text(c, subName).FontSize(14).FontWeight(500).TextColor(ColorTextMain).SingleLine()
-						if note := strings.TrimSpace(sub.Note); note != "" {
-							ui.Text(c, note).FontSize(12).TextColor(ColorTextMuted).SingleLine()
-						}
-					})
-					ui.Text(c, subscription.TagsSummary(curTags)).
-						FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
-				})
-				if row.Changed() && key != "" {
+				if a.renderRuleBatchSubRow(c, sub, subName, "勾选批量订阅："+subName, "批量订阅名称："+subName, &checked) && key != "" {
 					a.MultiTagBatch.SelectedSubs[key] = checked
 					a.MultiTagBatch.Error = ""
 				}
@@ -577,6 +525,66 @@ func (a *App) renderMultiTagBatchDialogBody(c *ui.Context) {
 			a.applyMultiTagBatchSelection()
 		}
 	})
+}
+
+func ruleBatchSubTooltip(sub subscription.Subscription, subName string) string {
+	parts := make([]string, 0, 3)
+	if subName != "" {
+		parts = append(parts, subName)
+	}
+	if note := strings.TrimSpace(sub.Note); note != "" {
+		parts = append(parts, "备注："+note)
+	}
+	var acctNames []string
+	seen := make(map[string]bool, len(sub.Accounts)+1)
+	for _, acct := range sub.Accounts {
+		name := strings.TrimSpace(acct.Name)
+		if name == "" || name == subName || seen[name] {
+			continue
+		}
+		seen[name] = true
+		acctNames = append(acctNames, name)
+	}
+	if len(acctNames) == 0 {
+		if uname := strings.TrimSpace(sub.Uname); uname != "" && uname != subName {
+			acctNames = append(acctNames, uname)
+		}
+	}
+	if len(acctNames) > 0 {
+		parts = append(parts, "关联账号："+strings.Join(acctNames, "、"))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (a *App) renderRuleBatchSubRow(c *ui.Context, sub subscription.Subscription, subName, rowLabel, nameLabel string, checked *bool) bool {
+	row := ui.CheckboxBase(c, checked).
+		Label(rowLabel).
+		Tooltip(ruleBatchSubTooltip(sub, subName)).
+		FillWidth().
+		Padding(9, 12).
+		Gap(10).
+		AlignItems(ui.Center).
+		BorderWidth(0, 0, 1, 0).
+		BorderColor(ColorBorder).
+		ClipX()
+	if row.Hovered() {
+		row.Background(ColorHover)
+	}
+	row.Children(func() {
+		renderRuleBatchCheckIndicator(c, *checked, false)
+		pSite, pUID := subscriptionPrimarySiteAndUID(sub)
+		a.renderAccountAvatar(c, pSite, subName, pUID, sub.Mid, 32, false, "", nil, sub.Face)
+		ui.Text(c, subName).
+			Label(nameLabel).
+			FontSize(14).
+			FontWeight(500).
+			TextColor(ColorTextMain).
+			SingleLine().
+			Grow(1).
+			Shrink(1).
+			ClipX()
+	})
+	return row.Changed()
 }
 
 func renderRuleBatchCheckIndicator(c *ui.Context, checked, locked bool) {

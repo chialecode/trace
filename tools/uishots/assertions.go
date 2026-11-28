@@ -147,6 +147,32 @@ func verifyXAccountRowNoLiveAndNoRecord(tt *mygoui.Tester, xUID string, xOnly bo
 	return true
 }
 
+// verifyTagBatchSubNamesVisible confirms subscription names inside tag batch
+// checklist rows are visible, stay within row/viewport bounds, and retain
+// ample width instead of being squeezed out by tag summaries.
+func verifyTagBatchSubNamesVisible(tt *mygoui.Tester, rowPrefix, namePrefix string, subNames []string, width int) bool {
+	for _, name := range subNames {
+		if !tt.HasText(name) {
+			return false
+		}
+		rowRect, okRow := tt.Find(rowPrefix + name)
+		nameRect, okName := tt.Find(namePrefix + name)
+		if !okRow || !okName || rowRect.W <= 0 || rowRect.H <= 0 || nameRect.H <= 0 {
+			return false
+		}
+		if rowRect.X < -0.5 || rowRect.X+rowRect.W > float32(width)+0.5 {
+			return false
+		}
+		if nameRect.X < rowRect.X-0.5 || nameRect.X+nameRect.W > rowRect.X+rowRect.W+0.5 {
+			return false
+		}
+		if nameRect.W < 160 || nameRect.W < rowRect.W*0.60 {
+			return false
+		}
+	}
+	return true
+}
+
 // verifyComposeGuard ensures IME composition does not prematurely submit parse
 // input when Enter is pressed.
 func verifyComposeGuard(app *ui.App) bool {
@@ -352,6 +378,14 @@ func runScenesAndWriteReport(outDir string, env *fixtureEnv, app *ui.App, scenes
 						a.Passed = false
 					} else {
 						loginXRiskChecked++
+					}
+				case "settings-rules-batch":
+					if !verifyTagBatchSubNamesVisible(tt, "勾选规则订阅：", "规则订阅名称：", []string{"技术频道_Alpha", "独立游戏工坊", "数字影像志"}, w) {
+						a.Passed = false
+					}
+				case "settings-tags-multi-batch":
+					if !verifyTagBatchSubNamesVisible(tt, "勾选批量订阅：", "批量订阅名称：", []string{"技术频道_Alpha", "独立游戏工坊", "数字影像志"}, w) {
+						a.Passed = false
 					}
 				}
 			}

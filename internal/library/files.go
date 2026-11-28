@@ -56,6 +56,14 @@ func visitManifestFiles(meta ItemMetadata, fn func(ManifestFile)) {
 				fn(ManifestFile{Path: sub, Role: "subtitle"})
 			}
 		}
+		for _, st := range p.SubtitleTracks {
+			if st.VTT != "" {
+				fn(ManifestFile{Path: st.VTT, Role: "subtitle"})
+			}
+			if st.SRT != "" {
+				fn(ManifestFile{Path: st.SRT, Role: "subtitle"})
+			}
+		}
 	}
 	if meta.DouyinVideo != nil && meta.DouyinVideo.File != "" {
 		fn(ManifestFile{Path: meta.DouyinVideo.File, Role: "video"})

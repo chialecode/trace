@@ -70,8 +70,21 @@ func (f *fakeCompanionAPI) ApplySettings(enabled bool, port int) error {
 		f.snap.ListenAddrs = nil
 		f.snap.ActivePairing = nil
 		f.snap.PendingPairs = nil
+		f.snap.SleepInhibited = false
 	}
 	return nil
+}
+
+func (f *fakeCompanionAPI) SetPreventSleep(enabled bool) {
+	f.snap.PreventSleep = enabled
+	hasOnline := false
+	for _, d := range f.snap.Devices {
+		if d.Online {
+			hasOnline = true
+			break
+		}
+	}
+	f.snap.SleepInhibited = f.snap.Running && enabled && hasOnline
 }
 
 func (f *fakeCompanionAPI) StartPairing() (companion.PairingSessionInfo, error) {
@@ -181,6 +194,25 @@ func TestMobileSettingsTogglePortPairingAndDevices(t *testing.T) {
 	}
 	if !tt.HasText("正在监听 192.168.1.24:47381") {
 		t.Fatalf("expected listening status text after enabling; texts=%v", tt.Texts())
+	}
+
+	// Toggle prevent-sleep switch on and verify persistence + active hint when phone online.
+	if fake.snap.PreventSleep || app.DraftSettings.Companion.PreventSleep {
+		t.Fatalf("expected preventSleep off by default")
+	}
+	if err := tt.Click("手机连接时阻止电脑睡眠开关"); err != nil {
+		t.Fatalf("click prevent sleep switch: %v", err)
+	}
+	settle(tt, 2)
+	if !fake.snap.PreventSleep || !app.DraftSettings.Companion.PreventSleep {
+		t.Fatalf("expected preventSleep enabled in manager and draft settings")
+	}
+	if err := tt.Click("手机连接时阻止电脑睡眠开关"); err != nil {
+		t.Fatalf("toggle prevent sleep switch off: %v", err)
+	}
+	settle(tt, 2)
+	if fake.snap.PreventSleep || app.DraftSettings.Companion.PreventSleep {
+		t.Fatalf("expected preventSleep disabled again")
 	}
 
 	// Port busy failure keeps companion disabled.

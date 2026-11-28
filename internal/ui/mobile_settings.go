@@ -18,6 +18,7 @@ import (
 type CompanionAPI interface {
 	Status() companion.StatusSnapshot
 	ApplySettings(enabled bool, port int) error
+	SetPreventSleep(enabled bool)
 	StartPairing() (companion.PairingSessionInfo, error)
 	CancelPairing()
 	ApprovePairing(pairID string) (companion.DeviceSummary, error)
@@ -127,6 +128,17 @@ func (a *App) renderMobileSettings(c *ui.Context) {
 		}
 		if a.Mobile.Info != "" {
 			ui.Text(c, a.Mobile.Info).Label("移动端提示").FontSize(12).TextColor(ColorInfoBlue).MaxLines(2)
+		}
+
+		// 2b. Prevent computer sleep while a mobile client is online (FR-MOB-030)
+		preventSleepVal := snap.PreventSleep
+		sleepDesc := "仅在有手机在线连接期间阻止系统自动睡眠，断开后立即恢复。"
+		if snap.SleepInhibited {
+			sleepDesc = "仅在有手机在线连接期间阻止系统自动睡眠，断开后立即恢复（当前已生效）。"
+		}
+		if settingSwitchRowDisabled(c, "手机连接时阻止电脑睡眠", sleepDesc, "手机连接时阻止电脑睡眠开关", &preventSleepVal, false) {
+			a.toggleCompanionPreventSleep(preventSleepVal)
+			snap, _ = a.companionStatus()
 		}
 
 		// 3. Port configuration row
@@ -453,6 +465,25 @@ func (a *App) toggleCompanionEnabled(enable bool, snap companion.StatusSnapshot)
 		a.Mobile.PairDialogOpen = false
 		a.Mobile.PairQRPayload = ""
 		a.Mobile.PairQRBitmap = nil
+	}
+}
+
+func (a *App) toggleCompanionPreventSleep(preventSleep bool) {
+	prev := a.DraftSettings.Companion.PreventSleep
+	next := a.DraftSettings
+	next.Companion.PreventSleep = preventSleep
+	updated, err := a.backend.UpdateSettings(next)
+	if err != nil {
+		a.showError(err)
+		if a.companion != nil {
+			a.companion.SetPreventSleep(prev)
+		}
+		return
+	}
+	a.DraftSettings = updated
+	a.checkPlanAt = time.Time{}
+	if a.companion != nil {
+		a.companion.SetPreventSleep(updated.Companion.PreventSleep)
 	}
 }
 

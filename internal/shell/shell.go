@@ -293,6 +293,7 @@ func Run() error {
 	} else {
 		sh.companion = compMgr
 		curSet := backend.GetSettings()
+		compMgr.SetPreventSleep(curSet.Companion.PreventSleep)
 		if curSet.Companion.Enabled {
 			if err := compMgr.ApplySettings(true, curSet.Companion.Port); err != nil {
 				backend.Logf("companion auto-start failed: %v", err)

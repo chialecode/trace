@@ -22,37 +22,42 @@ import (
 
 // StatusSnapshot is the desktop UI's view of the companion service ("设置 › 移动端").
 type StatusSnapshot struct {
-	Supported     bool                `json:"supported"`
-	Enabled       bool                `json:"enabled"`
-	Running       bool                `json:"running"`
-	Port          int                 `json:"port"`
-	DefaultPort   int                 `json:"defaultPort"`
-	Channel       string              `json:"channel"`
-	NodeID        string              `json:"nodeId"`
-	NodeName      string              `json:"nodeName"`
-	Fingerprint   string              `json:"fingerprint,omitempty"`
-	IdentityCode  string              `json:"identityCode,omitempty"`
-	ListenAddrs   []string            `json:"listenAddrs,omitempty"`
-	LastError     string              `json:"lastError,omitempty"`
-	Devices       []DeviceSummary     `json:"devices"`
-	ActivePairing *PairingSessionInfo `json:"activePairing,omitempty"`
-	PendingPairs  []PendingPairInfo   `json:"pendingPairs,omitempty"`
-	CloseAction   string              `json:"closeAction,omitempty"`
+	Supported      bool                `json:"supported"`
+	Enabled        bool                `json:"enabled"`
+	Running        bool                `json:"running"`
+	PreventSleep   bool                `json:"preventSleep"`
+	SleepInhibited bool                `json:"sleepInhibited"`
+	MDNSActive     bool                `json:"mdnsActive"`
+	Port           int                 `json:"port"`
+	DefaultPort    int                 `json:"defaultPort"`
+	Channel        string              `json:"channel"`
+	NodeID         string              `json:"nodeId"`
+	NodeName       string              `json:"nodeName"`
+	Fingerprint    string              `json:"fingerprint,omitempty"`
+	IdentityCode   string              `json:"identityCode,omitempty"`
+	ListenAddrs    []string            `json:"listenAddrs,omitempty"`
+	LastError      string              `json:"lastError,omitempty"`
+	Devices        []DeviceSummary     `json:"devices"`
+	ActivePairing  *PairingSessionInfo `json:"activePairing,omitempty"`
+	PendingPairs   []PendingPairInfo   `json:"pendingPairs,omitempty"`
+	CloseAction    string              `json:"closeAction,omitempty"`
 }
 
 // ManagerOptions configures a desktop companion Manager.
 type ManagerOptions struct {
-	DataDir     string
-	Channel     string
-	NodeName    string
-	Version     string
-	Backend     service.BackendAPI
-	Now         func() time.Time
-	Logf        func(format string, args ...any)
-	EnumIfaces  func() ([]NetworkInterface, error)
-	RebindEvery time.Duration
-	PollMaxWait time.Duration
-	OnChange    func()
+	DataDir        string
+	Channel        string
+	NodeName       string
+	Version        string
+	Backend        service.BackendAPI
+	Now            func() time.Time
+	Logf           func(format string, args ...any)
+	EnumIfaces     func() ([]NetworkInterface, error)
+	RebindEvery    time.Duration
+	PollMaxWait    time.Duration
+	OnChange       func()
+	SleepInhibitor SleepInhibitor
+	MDNSFactory    MDNSFactory
 	// ListenOverrides bypasses LAN interface enumeration for loopback integration tests
 	// and tools/companiondev (e.g. ["127.0.0.1"] or ["0.0.0.0"]).
 	ListenOverrides []string
@@ -85,6 +90,8 @@ type Manager struct {
 	onChange           func()
 	listenOverrides    []string
 	advertiseOverrides []string
+	sleepInhibitor     SleepInhibitor
+	mdnsFactory        MDNSFactory
 
 	store   *Store
 	pairing *pairingManager
@@ -92,9 +99,13 @@ type Manager struct {
 	thumbs  *thumbCache
 	server  *Server
 
+	sleepMu     sync.Mutex
+	sleepActive bool
+
 	mu            sync.Mutex
 	enabled       bool
 	running       bool
+	preventSleep  bool
 	port          int
 	identity      TLSIdentity
 	listeners     []*activeListener
@@ -103,6 +114,7 @@ type Manager struct {
 	unsubBackend  func()
 	monitorCancel context.CancelFunc
 	monitorWg     sync.WaitGroup
+	mdns          *mdnsAdvertiser
 }
 
 // NewManager initializes companion.json and prepares the manager without starting any listener.
@@ -144,6 +156,11 @@ func NewManager(opt ManagerOptions) (*Manager, error) {
 		return nil, err
 	}
 
+	inhibitor := opt.SleepInhibitor
+	if inhibitor == nil {
+		inhibitor = newPlatformSleepInhibitor()
+	}
+
 	m := &Manager{
 		dataDir:            opt.DataDir,
 		channel:            ch,
@@ -159,6 +176,8 @@ func NewManager(opt ManagerOptions) (*Manager, error) {
 		onChange:           opt.OnChange,
 		listenOverrides:    append([]string(nil), opt.ListenOverrides...),
 		advertiseOverrides: append([]string(nil), opt.AdvertiseOverrides...),
+		sleepInhibitor:     inhibitor,
+		mdnsFactory:        opt.MDNSFactory,
 		store:              store,
 		thumbs:             newThumbCache(opt.DataDir),
 		port:               companionapi.DefaultPortForChannel(ch),
@@ -169,23 +188,29 @@ func NewManager(opt ManagerOptions) (*Manager, error) {
 			m.onChange()
 		}
 	}
+	onHubDiff := func() {
+		m.reconcileSleepInhibitor()
+		notify()
+	}
 	m.pairing = newPairingManager(opt.Now, notify)
-	m.hub = newEventHub(opt.Now, notify)
+	m.hub = newEventHub(opt.Now, onHubDiff)
 	m.server = NewServer(ServerOptions{
-		Backend:     opt.Backend,
-		Store:       store,
-		Pairing:     m.pairing,
-		Hub:         m.hub,
-		Thumbs:      m.thumbs,
-		Channel:     ch,
-		NodeName:    opt.NodeName,
-		Version:     opt.Version,
-		StartedAt:   opt.Now(),
-		Now:         opt.Now,
-		AddrsFunc:   m.advertisedAddrs,
-		Logf:        opt.Logf,
-		OnFeedSeen:  notify,
-		PollMaxWait: opt.PollMaxWait,
+		Backend:          opt.Backend,
+		Store:            store,
+		Pairing:          m.pairing,
+		Hub:              m.hub,
+		Thumbs:           m.thumbs,
+		Channel:          ch,
+		NodeName:         opt.NodeName,
+		Version:          opt.Version,
+		StartedAt:        opt.Now(),
+		Now:              opt.Now,
+		AddrsFunc:        m.advertisedAddrs,
+		MDNSActiveFunc:   m.mdnsActive,
+		PreventSleepFunc: m.preventSleepEnabled,
+		Logf:             opt.Logf,
+		OnFeedSeen:       notify,
+		PollMaxWait:      opt.PollMaxWait,
 	})
 	return m, nil
 }
@@ -274,6 +299,12 @@ func (m *Manager) ApplySettings(enabled bool, port int) error {
 
 	monCtx, monCancel := context.WithCancel(context.Background())
 
+	var adv *mdnsAdvertiser
+	if len(m.listenOverrides) == 0 || m.mdnsFactory != nil {
+		cfg := newMDNSRecordConfig(m.store.NodeID(), m.nodeName, m.channel, m.version, boundPort)
+		adv = startMDNSAdvertiser(cfg, candidates, m.mdnsFactory, m.logf)
+	}
+
 	m.mu.Lock()
 	m.enabled = true
 	m.running = true
@@ -284,6 +315,7 @@ func (m *Manager) ApplySettings(enabled bool, port int) error {
 	m.lastError = ""
 	m.unsubBackend = unsub
 	m.monitorCancel = monCancel
+	m.mdns = adv
 	m.mu.Unlock()
 
 	if len(m.listenOverrides) == 0 && m.rebindEvery > 0 {
@@ -291,17 +323,74 @@ func (m *Manager) ApplySettings(enabled bool, port int) error {
 		go m.watchInterfaces(monCtx)
 	}
 
+	m.reconcileSleepInhibitor()
 	m.logf("companion listening on %s (port %d)", strings.Join(boundAddrs, ", "), boundPort)
 	m.notifyChange()
 	return nil
 }
 
-// Shutdown broadcasts bye{reason} ("exit" or "update") with a <= 1s cap and stops all listeners.
+// SetPreventSleep toggles whether the system stays awake while at least one
+// mobile client is connected. Takes effect immediately without restarting listeners.
+func (m *Manager) SetPreventSleep(enabled bool) {
+	m.mu.Lock()
+	m.preventSleep = enabled
+	m.mu.Unlock()
+	m.reconcileSleepInhibitor()
+	m.notifyChange()
+}
+
+func (m *Manager) preventSleepEnabled() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.preventSleep
+}
+
+func (m *Manager) mdnsActive() bool {
+	m.mu.Lock()
+	adv := m.mdns
+	m.mu.Unlock()
+	return adv.Active()
+}
+
+func (m *Manager) reconcileSleepInhibitor() {
+	if m.sleepInhibitor == nil {
+		return
+	}
+	m.sleepMu.Lock()
+	defer m.sleepMu.Unlock()
+
+	m.mu.Lock()
+	want := m.running && m.enabled && m.preventSleep
+	m.mu.Unlock()
+	if want {
+		want = m.hub != nil && m.hub.ClientCount() > 0
+	}
+	if want == m.sleepActive {
+		return
+	}
+	if err := m.sleepInhibitor.SetActive(want); err != nil {
+		m.logf("companion prevent-sleep(%v) failed: %v", want, err)
+		return
+	}
+	m.sleepActive = want
+}
+
+// Shutdown broadcasts bye{reason} ("exit" or "update") with a <= 1s cap, stops mDNS
+// with a goodbye packet, clears sleep inhibition, and stops all listeners.
 func (m *Manager) Shutdown(reason string) {
 	if reason == "" {
 		reason = companionapi.ByeReasonExit
 	}
 	m.stop(reason)
+	if m.sleepInhibitor != nil {
+		m.sleepMu.Lock()
+		if m.sleepActive {
+			_ = m.sleepInhibitor.SetActive(false)
+			m.sleepActive = false
+		}
+		_ = m.sleepInhibitor.Close()
+		m.sleepMu.Unlock()
+	}
 }
 
 func (m *Manager) stop(byeReason string) {
@@ -310,16 +399,21 @@ func (m *Manager) stop(byeReason string) {
 	listeners := m.listeners
 	unsub := m.unsubBackend
 	monCancel := m.monitorCancel
+	adv := m.mdns
 	m.running = false
 	m.listeners = nil
 	m.listenAddrs = nil
 	m.unsubBackend = nil
 	m.monitorCancel = nil
+	m.mdns = nil
 	m.mu.Unlock()
 
 	if monCancel != nil {
 		monCancel()
 		m.monitorWg.Wait()
+	}
+	if adv != nil {
+		adv.Stop()
 	}
 	if unsub != nil {
 		unsub()
@@ -329,6 +423,7 @@ func (m *Manager) stop(byeReason string) {
 		// Broadcast bye{reason} with max 1s wait (design §3).
 		m.hub.BroadcastBye(byeReason, time.Second)
 	}
+	m.reconcileSleepInhibitor()
 	for _, al := range listeners {
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		_ = al.srv.Shutdown(ctx)
@@ -509,9 +604,12 @@ func (m *Manager) reconcileInterfaces() {
 		}
 		m.mu.Lock()
 		stillRunning := m.running
+		var oldAdv *mdnsAdvertiser
 		if stillRunning {
 			m.listeners = kept
 			m.listenAddrs = addrs
+			oldAdv = m.mdns
+			m.mdns = nil
 		}
 		m.mu.Unlock()
 		if !stillRunning {
@@ -522,6 +620,22 @@ func (m *Manager) reconcileInterfaces() {
 				_ = al.srv.Close()
 			}
 			return
+		}
+		if oldAdv != nil {
+			oldAdv.Stop()
+		}
+		if len(m.listenOverrides) == 0 || m.mdnsFactory != nil {
+			cfg := newMDNSRecordConfig(m.store.NodeID(), m.nodeName, m.channel, m.version, port)
+			newAdv := startMDNSAdvertiser(cfg, candidates, m.mdnsFactory, m.logf)
+			m.mu.Lock()
+			if m.running {
+				m.mdns = newAdv
+			} else if newAdv != nil {
+				m.mu.Unlock()
+				newAdv.Stop()
+				return
+			}
+			m.mu.Unlock()
 		}
 		m.logf("companion interfaces updated: %s", strings.Join(addrs, ", "))
 		m.notifyChange()
@@ -652,22 +766,30 @@ func (m *Manager) InvalidateItemThumbs(itemKey string) {
 
 // Status returns a complete, sanitized snapshot for the desktop "设置 › 移动端" UI.
 func (m *Manager) Status() StatusSnapshot {
+	m.sleepMu.Lock()
+	sleepInhibited := m.sleepActive
+	m.sleepMu.Unlock()
+
 	m.mu.Lock()
+	adv := m.mdns
 	snap := StatusSnapshot{
-		Supported:    m.supported,
-		Enabled:      m.enabled,
-		Running:      m.running,
-		Port:         m.port,
-		DefaultPort:  companionapi.DefaultPortForChannel(m.channel),
-		Channel:      m.channel,
-		NodeID:       m.store.NodeID(),
-		NodeName:     m.nodeName,
-		Fingerprint:  m.identity.Fingerprint,
-		IdentityCode: m.identity.IdentityCode,
-		ListenAddrs:  append([]string(nil), m.listenAddrs...),
-		LastError:    m.lastError,
+		Supported:      m.supported,
+		Enabled:        m.enabled,
+		Running:        m.running,
+		PreventSleep:   m.preventSleep,
+		SleepInhibited: sleepInhibited,
+		Port:           m.port,
+		DefaultPort:    companionapi.DefaultPortForChannel(m.channel),
+		Channel:        m.channel,
+		NodeID:         m.store.NodeID(),
+		NodeName:       m.nodeName,
+		Fingerprint:    m.identity.Fingerprint,
+		IdentityCode:   m.identity.IdentityCode,
+		ListenAddrs:    append([]string(nil), m.listenAddrs...),
+		LastError:      m.lastError,
 	}
 	m.mu.Unlock()
+	snap.MDNSActive = adv.Active()
 
 	if m.backend != nil {
 		snap.CloseAction = m.backend.GetSettings().Window.CloseAction

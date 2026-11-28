@@ -852,7 +852,13 @@ func (a *App) resolvePostCardNavigation(post PostCardData, homeSub subscription.
 				}
 				return
 			}
-			a.OpenUser(post.Mid, post.AuthorName)
+			mid := post.Mid
+			if mid <= 0 {
+				mid = parseBilibiliMidUI(post.Site, post.AuthorUID)
+			}
+			if mid > 0 {
+				a.OpenUser(mid, post.AuthorName)
+			}
 		}
 	}
 	openAvatar := openCreator

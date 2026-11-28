@@ -134,8 +134,16 @@ func TestCapabilityTagBatchManageSubscriptions(t *testing.T) {
 	if !tt.HasText("已选 2 个") || !tt.HasText("应用到 2 个订阅") {
 		t.Fatalf("expected 2 pre-selected subscriptions, texts=%v", tt.Texts())
 	}
-	if !tt.HasText("无缓存标签") || !tt.HasText("定时检查 · 开播录制") {
-		t.Fatalf("expected current tag summaries in checklist rows, texts=%v", tt.Texts())
+	if tt.HasText("无缓存标签") || tt.HasText("定时检查 · 开播录制") || tt.HasText("定时检查 · 自动缓存视频") {
+		t.Fatalf("tag summaries should not render inside per-tag checklist rows, texts=%v", tt.Texts())
+	}
+	for _, name := range []string{"阿尔法", "贝塔", "伽马", "德尔塔", "艾普西隆"} {
+		if !tt.HasText(name) {
+			t.Fatalf("expected subscription name %q to be visible, texts=%v", name, tt.Texts())
+		}
+		if _, ok := tt.Find("规则订阅名称：" + name); !ok {
+			t.Fatalf("expected labeled subscription name element for %q", name)
+		}
 	}
 
 	// Search box: IME preedit must not prematurely filter out Chinese rows,
@@ -536,6 +544,161 @@ func TestSettingsCacheTagsOmitsExplanatorySubtitles(t *testing.T) {
 			t.Fatalf("width=%d: expected per-tag dialog for cache_video to open", width)
 		}
 		app.closeRuleBatchDialog()
+		tt.Frame()
+	}
+}
+
+// Regression test: both "管理「<标签>」的订阅" and "批量设置缓存标签" subscription
+// checklists render only [checkbox] [avatar] subscription name without inline
+// configured tag summary strings, giving subscription names ample width across
+// 1280 / 1000 / 720 widths while keeping note/account search and hover tooltips.
+func TestTagBatchDialogsShowSubscriptionNamesWithoutTagSummaryAcrossWidths(t *testing.T) {
+	app, _, cleanup := newTestUIApp(t)
+	defer cleanup()
+
+	if _, err := app.backend.ImportCookie(context.Background(), "SESSDATA=fixture; DedeUserID=12345", ""); err != nil {
+		t.Fatal(err)
+	}
+	app.CompleteLogin()
+
+	allSevenTags := []string{
+		subscription.TagScheduledCheck,
+		subscription.TagCacheVideo,
+		subscription.TagCacheDraw,
+		subscription.TagCacheWord,
+		subscription.TagCacheForward,
+		subscription.TagFullCache,
+		subscription.TagAutoRecord,
+	}
+
+	fullSub, err := app.backend.CreateSubscription(
+		"全标签创作者_长名称验证",
+		"备注多标签防挤占",
+		[]subscription.AccountRef{
+			{Site: "bilibili", UID: "6001", Name: "FullTagBili"},
+			{Site: "x", UID: "6002", Name: "FullTagX"},
+		},
+		subscription.EmptySubRules(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.backend.SetSubscriptionTags(fullSub.ID, allSevenTags); err != nil {
+		t.Fatal(err)
+	}
+	emptySub, err := app.backend.CreateSubscription(
+		"无标签订阅示例",
+		"",
+		[]subscription.AccountRef{{Site: "bilibili", UID: "6003", Name: "无标签订阅示例"}},
+		subscription.EmptySubRules(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.RefreshData()
+
+	// Tooltip helper keeps note & distinct account names discoverable without cluttering rows.
+	fullSubWithTags := fullSub
+	fullSubWithTags.Note = "备注多标签防挤占"
+	wantTip := "全标签创作者_长名称验证 · 备注：备注多标签防挤占 · 关联账号：FullTagBili、FullTagX"
+	if got := ruleBatchSubTooltip(fullSubWithTags, fullSubWithTags.Name); got != wantTip {
+		t.Fatalf("ruleBatchSubTooltip(fullSub) = %q, want %q", got, wantTip)
+	}
+	if got := ruleBatchSubTooltip(emptySub, emptySub.Name); got != "无标签订阅示例" {
+		t.Fatalf("ruleBatchSubTooltip(emptySub) = %q, want %q", got, "无标签订阅示例")
+	}
+
+	forbiddenSummaries := []string{
+		"无缓存标签",
+		"定时检查 · 自动缓存视频",
+		"自动缓存视频 · 自动缓存图文",
+		"自动缓存图文 · 自动缓存文字",
+		"自动缓存文字 · 自动缓存转发",
+		"全部缓存 · 开播录制",
+		"备注多标签防挤占",
+	}
+
+	assertChecklistRows := func(tt *ui.Tester, width int, dialogName, rowPrefix, namePrefix string, names []string) {
+		t.Helper()
+		for _, forbidden := range forbiddenSummaries {
+			if tt.HasText(forbidden) {
+				t.Fatalf("width=%d %s: unexpected inline summary/note text %q in texts=%v", width, dialogName, forbidden, tt.Texts())
+			}
+		}
+		for _, subName := range names {
+			if !tt.HasText(subName) {
+				t.Fatalf("width=%d %s: missing subscription name %q in texts=%v", width, dialogName, subName, tt.Texts())
+			}
+			rowRect, okRow := tt.Find(rowPrefix + subName)
+			nameRect, okName := tt.Find(namePrefix + subName)
+			if !okRow || !okName {
+				t.Fatalf("width=%d %s: missing row/name rect for %q (okRow=%v okName=%v)", width, dialogName, subName, okRow, okName)
+			}
+			if rowRect.X < -0.5 || rowRect.X+rowRect.W > float32(width)+0.5 {
+				t.Fatalf("width=%d %s: row for %q overflows viewport: rect=%+v", width, dialogName, subName, rowRect)
+			}
+			if nameRect.W < 200 || nameRect.W < rowRect.W*0.60 || nameRect.H <= 0 {
+				t.Fatalf("width=%d %s: subscription name %q squeezed or collapsed: nameRect=%+v rowRect=%+v", width, dialogName, subName, nameRect, rowRect)
+			}
+			if nameRect.X < rowRect.X-0.5 || nameRect.X+nameRect.W > rowRect.X+rowRect.W+0.5 {
+				t.Fatalf("width=%d %s: subscription name %q outside row bounds: nameRect=%+v rowRect=%+v", width, dialogName, subName, nameRect, rowRect)
+			}
+		}
+	}
+
+	app.SettingsCategory = "rules"
+	app.Navigate(RouteSettings)
+
+	subNames := []string{"全标签创作者_长名称验证", "无标签订阅示例"}
+	for _, width := range []int{1280, 1000, 720} {
+		tt := ui.NewTester(app.View, width, 860)
+		tt.Frame()
+
+		// 1. Per-tag dialog ("管理「定时检查」的订阅")
+		if err := tt.Click("管理标签订阅：" + subscription.TagScheduledCheck); err != nil {
+			t.Fatalf("width=%d: click manage scheduled_check: %v", width, err)
+		}
+		tt.Frame()
+		assertChecklistRows(tt, width, "RuleBatch", "勾选规则订阅：", "规则订阅名称：", subNames)
+		app.closeRuleBatchDialog()
+		tt.Frame()
+
+		// 2. Cross-subscription multi-tag batch dialog ("批量设置缓存标签")
+		if err := tt.Click("打开批量设置订阅标签"); err != nil {
+			t.Fatalf("width=%d: click open multi-tag batch: %v", width, err)
+		}
+		tt.Frame()
+		assertChecklistRows(tt, width, "MultiTagBatch", "勾选批量订阅：", "批量订阅名称：", subNames)
+
+		// Search by note & linked account nickname still works in MultiTagBatch even when note isn't shown inline.
+		if width == 1280 {
+			if err := tt.Click("批量订阅搜索框"); err != nil {
+				t.Fatal(err)
+			}
+			tt.Type("备注多标签防挤占")
+			tt.Frame()
+			if !tt.HasText("全标签创作者_长名称验证") || tt.HasText("无标签订阅示例") {
+				t.Fatalf("expected note search in MultiTagBatch to match fullSub, texts=%v", tt.Texts())
+			}
+			if err := tt.Click("清空批量订阅搜索"); err != nil {
+				t.Fatal(err)
+			}
+			tt.Frame()
+			if err := tt.Click("批量订阅搜索框"); err != nil {
+				t.Fatal(err)
+			}
+			tt.Type("FullTagX")
+			tt.Frame()
+			if !tt.HasText("全标签创作者_长名称验证") || tt.HasText("无标签订阅示例") {
+				t.Fatalf("expected account nickname search in MultiTagBatch to match fullSub, texts=%v", tt.Texts())
+			}
+			if err := tt.Click("清空批量订阅搜索"); err != nil {
+				t.Fatal(err)
+			}
+			tt.Frame()
+		}
+
+		app.closeMultiTagBatchDialog()
 		tt.Frame()
 	}
 }

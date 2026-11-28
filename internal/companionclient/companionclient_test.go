@@ -532,3 +532,167 @@ func TestPinnedHTTPClientLongPollAnd401InvalidCodeAndRescanPortNormalization(t *
 		t.Fatalf("normalized rescan addrs = %v, want %v", gotAddrs, wantAddrs)
 	}
 }
+
+func TestMediaProxyLivePreviewTicketsHLSAndRevokeCancelsStream(t *testing.T) {
+	cert, fp := generateTestCert(t)
+	payload := []byte("LIVE-FMP4-BYTES-0123456789ABCDEF")
+	const wantToken = "live-preview-tok-123"
+
+	streamCanceled := make(chan struct{}, 1)
+	streamStarted := make(chan struct{}, 1)
+
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+wantToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v1/live/recordings/bilibili:1:2/preview", "/api/v1/live/recordings/bilibili%3A1%3A2/preview":
+			if r.URL.Query().Get("mode") == "stream" {
+				w.Header().Set("Content-Type", "video/mp4")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(payload[:8])
+				if fl, ok := w.(http.Flusher); ok {
+					fl.Flush()
+				}
+				select {
+				case streamStarted <- struct{}{}:
+				default:
+				}
+				<-r.Context().Done()
+				select {
+				case streamCanceled <- struct{}{}:
+				default:
+				}
+				return
+			}
+			w.Header().Set("Content-Type", "video/mp4")
+			w.Header().Set(companionapi.HeaderLivePart, "1")
+			http.ServeContent(w, r, "live.mp4", time.Time{}, bytes.NewReader(payload))
+		case "/api/v1/live/recordings/bilibili:1:2/preview.m3u8", "/api/v1/live/recordings/bilibili%3A1%3A2/preview.m3u8":
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8")
+			_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MAP:URI=\"preview?part=1\",BYTERANGE=\"16@0\"\n#EXTINF:2.000,\n#EXT-X-BYTERANGE:16@16\npreview?part=1\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	srv.TLS = &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{cert},
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	pinned, err := PinnedHTTPClient(fp, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := NewMediaProxy(pinned, func() (string, string, string, string, bool) {
+		return srv.URL, wantToken, "0.2.0-dev", "dev", true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	// 1. Live preview ticket + Range + cross-recording rejection.
+	playURL, ticket, err := proxy.IssueLivePreviewTicket("bilibili:1:2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, playURL, nil)
+	req.Header.Set("Range", "bytes=0-15")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPartialContent || string(body) != string(payload[:16]) {
+		t.Fatalf("live preview range = (%d, %q)", resp.StatusCode, string(body))
+	}
+	badURL := strings.Replace(playURL, "bilibili:1:2", "bilibili:9:9", 1)
+	if badURL == playURL {
+		t.Fatalf("test setup bug: playURL did not contain recordingKey: %q", playURL)
+	}
+	respBad, err := http.Get(badURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	respBad.Body.Close()
+	if respBad.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-recording ticket status = %d, want 403", respBad.StatusCode)
+	}
+
+	// 2. RevokeTicket immediately cancels in-flight upstream preview stream!
+	go func() {
+		r, err := http.Get(playURL + "&mode=stream")
+		if err == nil {
+			_, _ = io.ReadAll(r.Body)
+			r.Body.Close()
+		}
+	}()
+	select {
+	case <-streamStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for upstream preview stream to start")
+	}
+	proxy.RevokeTicket(ticket)
+	select {
+	case <-streamCanceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RevokeTicket did not cancel in-flight upstream stream")
+	}
+
+	// 3. HLS preview ticket rewrites URI and authorizes byte-range segment under same ticket.
+	hlsURL, hlsTicket, err := proxy.IssueLivePreviewHLSTicket("bilibili:1:2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	respM3U, err := http.Get(hlsURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m3u, _ := io.ReadAll(respM3U.Body)
+	respM3U.Body.Close()
+	if respM3U.StatusCode != http.StatusOK || !strings.Contains(string(m3u), `URI="preview?part=1&t=`) {
+		t.Fatalf("HLS playlist rewrite failed: status=%d body=%s", respM3U.StatusCode, string(m3u))
+	}
+	if ct := respM3U.Header.Get("Content-Type"); ct != "application/vnd.apple.mpegurl; charset=utf-8" {
+		t.Fatalf("HLS Content-Type = %q, want application/vnd.apple.mpegurl; charset=utf-8", ct)
+	}
+	if nosniff := respM3U.Header.Get("X-Content-Type-Options"); nosniff != "nosniff" {
+		t.Fatalf("HLS X-Content-Type-Options = %q, want nosniff", nosniff)
+	}
+	segURL := strings.Replace(hlsURL, "/preview.m3u8?t=", "/preview?part=1&t=", 1)
+	segReq, _ := http.NewRequest(http.MethodGet, segURL, nil)
+	segReq.Header.Set("Range", "bytes=16-31")
+	respSeg, err := http.DefaultClient.Do(segReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	segBody, _ := io.ReadAll(respSeg.Body)
+	respSeg.Body.Close()
+	if respSeg.StatusCode != http.StatusPartialContent || string(segBody) != string(payload[16:32]) {
+		t.Fatalf("HLS segment fetch = (%d, %q)", respSeg.StatusCode, string(segBody))
+	}
+	proxy.RevokeTicket(hlsTicket)
+
+	// 4. Client.UpdateAddrs prepends discovered LAN address and preserves pinned FP.
+	cli, err := NewClient(PairingRecord{
+		Node:     "n1",
+		FP:       fp,
+		Channel:  "dev",
+		Addrs:    []string{"192.168.1.10:47382"},
+		LastAddr: "192.168.1.10:47382",
+	}, wantToken, "0.2.0-dev", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	cli.UpdateAddrs([]string{"192.168.1.99:47382", "192.168.1.10:47382"})
+	rec := cli.Record()
+	if rec.FP != fp || len(rec.Addrs) != 2 || rec.Addrs[0] != "192.168.1.99:47382" {
+		t.Fatalf("UpdateAddrs unexpected record: %+v", rec)
+	}
+}
