@@ -11,7 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chialecode/trace/cmd/trace-mobile/internal/mediaview"
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/pagekit"
+	"github.com/chialecode/trace/cmd/trace-mobile/internal/pastecache"
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/theme"
 	"github.com/chialecode/trace/internal/companionapi"
 	"github.com/chialecode/trace/internal/companionclient"
@@ -78,6 +80,7 @@ type Page struct {
 	expandedQueues    map[string]bool
 	expandedLiveIncs  map[string]bool
 	removeConfirmID   string
+	conflictConfirmID string
 	actionErr         string
 	actionInfo        string
 	busyActionKey     string
@@ -86,6 +89,10 @@ type Page struct {
 	downloadSheetTask *companionapi.DownloadTaskDTO
 	queueSheetOpen    bool
 	queueSheetItem    *companionapi.CacheQueueDTO
+	pasteSheet        pastecache.Sheet
+
+	// Optional test hook for live recording real-time preview.
+	openLivePreviewFn func(h pagekit.Host, rec companionapi.LiveRecordingDTO)
 
 	// Download detail route state (/download/{id}).
 	detailTaskID  string
@@ -132,6 +139,7 @@ func (p *Page) OnConnected(h pagekit.Host) {
 	p.actionErr = ""
 	p.actionInfo = ""
 	p.removeConfirmID = ""
+	p.conflictConfirmID = ""
 	p.downloadSheetOpen = false
 	p.queueSheetOpen = false
 	p.lastBadgePosted = -1
@@ -146,6 +154,8 @@ func (p *Page) OnDisconnected() {
 	p.sessionGen++
 	p.initTriggered = false
 	p.cancelThrottleTimer()
+	mediaview.CloseAllActive()
+	p.pasteSheet.Reset()
 
 	p.downloads = nil
 	p.downloadsLoaded = false
@@ -186,6 +196,7 @@ func (p *Page) OnDisconnected() {
 	clear(p.expandedLiveIncs)
 	clear(p.swipeStates)
 	p.removeConfirmID = ""
+	p.conflictConfirmID = ""
 	p.actionErr = ""
 	p.actionInfo = ""
 	p.busyActionKey = ""
@@ -373,6 +384,7 @@ func (p *Page) renderMainView(c *ui.Context, h pagekit.Host, r *ui.Router) {
 				p.actionErr = ""
 				p.actionInfo = ""
 				p.removeConfirmID = ""
+				p.conflictConfirmID = ""
 				switch p.activeSeg {
 				case segActive:
 					if !p.downloadsLoaded && !p.downloadsLoading {
@@ -402,6 +414,29 @@ func (p *Page) renderMainView(c *ui.Context, h pagekit.Host, r *ui.Router) {
 				}
 			}
 
+			// Compact in-app "粘贴链接缓存" entry (FR-MOB-030, always visible including under Android SystemStack).
+			pasteTrigger := ui.Button(c, "").
+				Label("粘贴链接让电脑缓存").
+				FillWidth().
+				MinHeight(40).
+				Padding(8, 12).
+				Radius(10).
+				Background(theme.ColorAccentBg).
+				Border(1, ui.RGBA(26, 115, 232, 0.25)).
+				Justify(ui.SpaceBetween).
+				AlignItems(ui.Center)
+			pasteTrigger.Children(func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(6).Grow(1).Shrink(1).ClipX().Children(func() {
+					ui.Text(c, "＋ 粘贴链接缓存").FontSize(13).FontWeight(600).TextColor(theme.ColorAccent).SingleLine()
+					ui.Text(c, "发送链接让电脑解析并加入队列").FontSize(11).TextColor(theme.ColorTextMuted).SingleLine().Shrink(1)
+				})
+				mediaview.DrawIcon(c, "chevron-right", 14, theme.ColorAccent, 1.8)
+			})
+			if pasteTrigger.Clicked() {
+				p.pasteSheet.SetOnQueued(func() { p.loadDownloads(h) })
+				p.pasteSheet.Open("")
+			}
+
 			p.renderFeedbackBanners(c)
 		})
 
@@ -418,6 +453,7 @@ func (p *Page) renderMainView(c *ui.Context, h pagekit.Host, r *ui.Router) {
 
 		p.renderDownloadActionSheet(c, h)
 		p.renderQueueActionSheet(c, h)
+		p.pasteSheet.View(c, h)
 	})
 }
 
@@ -869,6 +905,77 @@ func (p *Page) stopLiveRecording(h pagekit.Host, rec companionapi.LiveRecordingD
 			p.loadLiveRecordings(h)
 		})
 	}()
+}
+
+func (p *Page) resolveConflict(h pagekit.Host, cf companionapi.ConflictDTO, choice string) {
+	cli := h.Client()
+	if cli == nil || p.busyActionKey != "" || strings.TrimSpace(cf.ID) == "" {
+		return
+	}
+	gen := p.sessionGen
+	p.busyActionKey = "conflict:" + cf.ID
+	p.conflictConfirmID = ""
+	p.actionErr = ""
+	p.actionInfo = ""
+	go func() {
+		// Match companionclient.Client.longClient (180s) because desktop ResolveCacheConflict
+		// waits synchronously for re-download tasks to finish.
+		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+		defer cancel()
+		resp, err := cli.ResolveConflict(ctx, cf.ID, choice)
+		h.Update(func() {
+			if p.sessionGen != gen {
+				return
+			}
+			p.busyActionKey = ""
+			if err != nil {
+				p.actionErr = "冲突处理未完成：" + formatActionError(err, cf.Site)
+				return
+			}
+			msg := strings.TrimSpace(resp.Message)
+			if msg == "" {
+				switch choice {
+				case companionapi.ConflictKeepBoth:
+					msg = "已保留本地旧版并缓存源站新版"
+				case companionapi.ConflictKeepLocal:
+					msg = "已保留本地版本，本次不再提示"
+				case companionapi.ConflictUseRemote:
+					msg = "已用源站新版更新本地缓存"
+				default:
+					msg = "已处理内容冲突"
+				}
+			}
+			p.actionInfo = msg
+			p.loadConflicts(h)
+			p.loadDownloads(h)
+		})
+	}()
+}
+
+func (p *Page) openLivePreview(h pagekit.Host, rec companionapi.LiveRecordingDTO) {
+	if !rec.Recording || h == nil {
+		return
+	}
+	if p.openLivePreviewFn != nil {
+		p.openLivePreviewFn(h, rec)
+		return
+	}
+	recKey := firstNonEmpty(rec.RecordingKey, rec.AccountKey)
+	if recKey == "" {
+		return
+	}
+	title := firstNonEmpty(rec.Title, rec.Uname, "直播实时预览")
+	qual := strings.TrimSpace(strings.Join(nonEmpty(rec.QualityName, rec.Codec), " · "))
+	mediaview.OpenVideoPlayer(h, mediaview.VideoRequest{
+		Title:            title,
+		IsLivePreview:    true,
+		LiveRecordingKey: recKey,
+		Tracks: []mediaview.VideoTrack{{
+			Label:          title,
+			CodecHint:      rec.Codec,
+			QualitySummary: qual,
+		}},
+	})
 }
 
 func (p *Page) swipeStateFor(key string) *mobile.SwipeState {

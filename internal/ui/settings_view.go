@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/library"
 	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/site"
@@ -131,6 +133,7 @@ func (a *App) renderSettingsRoute(c *ui.Context) {
 // a way back, then one entry per category, each an icon and a name only, as
 // the main navigation's entries.
 func (a *App) renderSettingsSidebar(c *ui.Context, compact bool) {
+	expiredSites := a.expiredAccountSites()
 	ui.Column(c).Fill().Padding(max(10, a.titleBar.Height+2), 8, 10, 8).Gap(2).ClipX().Children(func() {
 		back := ui.ButtonBase(c).Label("返回").Tooltip("返回").FillWidth().Radius(8).Padding(8, 10).Gap(10).AlignItems(ui.Center)
 		if compact {
@@ -154,6 +157,7 @@ func (a *App) renderSettingsSidebar(c *ui.Context, compact bool) {
 		for _, cat := range settingsCategories {
 			ct := cat
 			active := a.SettingsCategory == ct.Key
+			hasExpiredDot := ct.Key == "account" && len(expiredSites) > 0
 			var clicked bool
 			if compact {
 				clicked = panelItem(c, "设置分类："+ct.Label, active, func() {
@@ -161,12 +165,30 @@ func (a *App) renderSettingsSidebar(c *ui.Context, compact bool) {
 					if active {
 						col = ColorAccent
 					}
-					ui.Row(c).Grow(1).Justify(ui.Center).Children(func() { DrawIcon(c, ct.Icon, 18, col, 1.6) })
+					ui.Row(c).Grow(1).Justify(ui.Center).AlignItems(ui.Center).Gap(4).Children(func() {
+						DrawIcon(c, ct.Icon, 18, col, 1.6)
+						if hasExpiredDot {
+							ui.Box(c).Label("设置账号失效红点").Tooltip(accountExpiryTooltip(expiredSites)).Size(7, 7).Radius(3.5).Background(ColorDotRed).Shrink(0)
+						}
+					})
+				})
+			} else if hasExpiredDot {
+				clicked = panelItem(c, "设置分类："+ct.Label, active, func() {
+					col := ColorTextMuted
+					if active {
+						col = ColorAccent
+					}
+					DrawIcon(c, ct.Icon, 18, col, 1.6)
+					panelItemText(c, ct.Label, active)
+					ui.Box(c).Label("设置账号失效红点").Tooltip(accountExpiryTooltip(expiredSites)).Size(8, 8).Radius(4).Background(ColorDotRed).Shrink(0)
 				})
 			} else {
 				clicked = panelIconItem(c, ct.Icon, ct.Label, "设置分类："+ct.Label, active)
 			}
 			if clicked {
+				if a.SettingsCategory == "account" && ct.Key != "account" {
+					a.clearSettingsPasteState()
+				}
 				if a.SettingsCategory == "remote" && ct.Key != "remote" {
 					a.Remote.CodeInput = ""
 					a.Remote.TokenInput = ""
@@ -213,30 +235,56 @@ func (a *App) renderSettingsCategoryContent(c *ui.Context) {
 	}
 }
 
+func renderAccountStateNote(c *ui.Context, siteID string, st credential.Status) {
+	switch st.State {
+	case "expired":
+		ui.Box(c).Label("账号失效说明：" + normalizeSiteIDUI(siteID)).FillWidth().ClipX().Children(func() {
+			ui.Text(c, siteDisplayNameUI(siteID)+"登录态已失效，该站点任务与录制已暂停，请重新登录或重新粘贴 Cookie").
+				FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorError).MaxLines(2)
+		})
+	case "unknown":
+		ui.Text(c, "上次状态确认遇到网络或站点波动，凭证仍保留；可稍后再试").
+			FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorWarnText).MaxLines(2)
+	}
+}
+
+func renderAccountVerifiedLine(c *ui.Context, siteID, formatted string) {
+	ui.Box(c).Label("账号验证时间：" + normalizeSiteIDUI(siteID)).FillWidth().ClipX().Children(func() {
+		ui.Text(c, "上次验证有效："+formatted).
+			FontSize(12).TextColor(ColorTextMuted).SingleLine()
+	})
+}
+
 func (a *App) renderAccountSettings(c *ui.Context) {
 	biliAcct := a.backend.StatusOf("bilibili")
 	biliRenew := a.backend.Renewal("bilibili")
 	dyAcct := a.backend.StatusOf("douyin")
 	wbAcct := a.backend.StatusOf("weibo")
 	xAcct := a.backend.StatusOf("x")
+	uiSt := a.backend.GetUIState()
+	now := time.Now()
 
 	ui.Column(c).FillWidth().Gap(0).ClipX().Children(func() {
 		// Group 1: 哔哩哔哩 (docs/ui.md §3.7)
 		ui.Column(c).
 			Label("账号分组：哔哩哔哩").
 			FillWidth().
-			Padding(0, 0, 18, 0).
+			Padding(0, 0, 14, 0).
 			BorderWidth(0, 0, 1, 0).
 			BorderColor(ColorBorder).
-			Gap(12).
+			Gap(8).
 			ClipX().
 			Children(func() {
-				ui.Text(c, "哔哩哔哩").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
+					ui.Text(c, "哔哩哔哩").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+					renderAccountStatusBadge(c, "bilibili", biliAcct)
+				})
 
-				if biliAcct.LoggedIn || biliAcct.State == "expired" {
+				if biliAcct.LoggedIn || biliAcct.State == "expired" || biliAcct.State == "unknown" {
+					biliVerified := formatAccountVerifiedTime(siteLastVerifiedAt("bilibili", biliAcct, uiSt), now)
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).ClipX().Children(func() {
 						a.renderAccountAvatar(c, "bilibili", firstNonEmptyStrUI(biliAcct.Uname, "未登录"), biliAcct.UID, biliAcct.Mid, 48, false, "", nil, biliAcct.Face)
-						ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
+						ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 							name := firstNonEmptyStrUI(biliAcct.Uname, fmt.Sprintf("UID %d", biliAcct.Mid))
 							ui.Text(c, name).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 							sourceText := "手动凭证（粘贴 Cookie）"
@@ -245,8 +293,11 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 							}
 							ui.Text(c, fmt.Sprintf("UID %d · 登录方式：%s", biliAcct.Mid, sourceText)).
 								FontSize(13).TextColor(ColorTextMuted).SingleLine()
+							renderAccountVerifiedLine(c, "bilibili", biliVerified)
 						})
 					})
+
+					renderAccountStateNote(c, "bilibili", biliAcct)
 
 					if biliAcct.LoggedIn && biliAcct.Source == "qr" {
 						lastChk := firstNonEmptyStrUI(biliRenew.LastRenewedAt, biliAcct.LastCheckedAt, "刚刚")
@@ -270,11 +321,16 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 							}
 						}
 						if DangerOutlinePillButton(c, "退出登录", "退出登录").Clicked() {
+							a.clearSettingsPasteState()
 							a.ConfirmLogoutSite = "bilibili"
 							a.ConfirmLogoutOpen = true
 						}
 					})
 				} else {
+					if biliAcct.State == "decrypt_failed" {
+						ui.Text(c, firstNonEmptyStrUI(biliAcct.Message, "本地凭证无法解密，已降级为未登录，请重新登录")).
+							FontSize(12).TextColor(ColorError).MaxLines(2)
+					}
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(12).Children(func() {
 						ui.Text(c, "未登录哔哩哔哩账号").FontSize(13).TextColor(ColorTextMuted).SingleLine()
 						if AccentPillButton(c, "登录哔哩哔哩", "登录哔哩哔哩").Clicked() {
@@ -288,39 +344,58 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 		ui.Column(c).
 			Label("账号分组：抖音").
 			FillWidth().
-			Padding(18, 0, 18, 0).
+			Padding(14, 0, 14, 0).
 			BorderWidth(0, 0, 1, 0).
 			BorderColor(ColorBorder).
-			Gap(12).
+			Gap(8).
 			ClipX().
 			Children(func() {
-				ui.Text(c, "抖音").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
+					ui.Text(c, "抖音").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+					renderAccountStatusBadge(c, "douyin", dyAcct)
+				})
 
-				if dyAcct.LoggedIn || dyAcct.State == "expired" {
+				if dyAcct.LoggedIn || dyAcct.State == "expired" || dyAcct.State == "unknown" {
 					handleLine := firstNonEmptyStrUI(formatDouyinHandle(dyAcct.UniqueID, "", dyAcct.UID), "抖音号：—")
 					dyUID := firstNonEmptyStrUI(dyAcct.SecUID, dyAcct.UID)
+					dyVerified := formatAccountVerifiedTime(siteLastVerifiedAt("douyin", dyAcct, uiSt), now)
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).ClipX().Children(func() {
 						a.renderAccountAvatar(c, "douyin", firstNonEmptyStrUI(dyAcct.Uname, "抖音用户"), dyUID, 0, 48, false, "", nil, dyAcct.Face)
-						ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
+						ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 							ui.Text(c, firstNonEmptyStrUI(dyAcct.Uname, "抖音用户")).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 							ui.Text(c, handleLine+" · 登录方式：粘贴 Cookie").
 								FontSize(13).TextColor(ColorTextMuted).SingleLine()
+							renderAccountVerifiedLine(c, "douyin", dyVerified)
 						})
 					})
+
+					renderAccountStateNote(c, "douyin", dyAcct)
 
 					ui.Text(c, "自动续期：不可用，粘贴的 Cookie 与浏览器共用会话；过期后请重新粘贴").
 						FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
 
 					ui.Row(c).Gap(8).Wrap().Children(func() {
-						if OutlinePillButton(c, "重新粘贴", "重新粘贴抖音Cookie").Clicked() {
-							a.OpenLoginForSite("douyin")
+						pasteBtnText := "重新粘贴"
+						if a.SettingsPasteSite == "douyin" {
+							pasteBtnText = "收起粘贴"
+						}
+						if OutlinePillButton(c, pasteBtnText, "重新粘贴抖音Cookie").Clicked() {
+							a.toggleSettingsInlinePaste("douyin")
 						}
 						if DangerOutlinePillButton(c, "退出登录", "退出抖音登录").Clicked() {
+							a.clearSettingsPasteState()
 							a.ConfirmLogoutSite = "douyin"
 							a.ConfirmLogoutOpen = true
 						}
 					})
+					if a.SettingsPasteSite == "douyin" {
+						a.renderSettingsInlinePaste(c, "douyin")
+					}
 				} else {
+					if dyAcct.State == "decrypt_failed" {
+						ui.Text(c, firstNonEmptyStrUI(dyAcct.Message, "本地凭证无法解密，已降级为未登录，请重新登录")).
+							FontSize(12).TextColor(ColorError).MaxLines(2)
+					}
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(12).Children(func() {
 						ui.Text(c, "未登录抖音账号").FontSize(13).TextColor(ColorTextMuted).SingleLine()
 						if AccentPillButton(c, "登录抖音", "登录抖音").Clicked() {
@@ -334,15 +409,18 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 		ui.Column(c).
 			Label("账号分组：微博").
 			FillWidth().
-			Padding(18, 0, 18, 0).
+			Padding(14, 0, 14, 0).
 			BorderWidth(0, 0, 1, 0).
 			BorderColor(ColorBorder).
-			Gap(12).
+			Gap(8).
 			ClipX().
 			Children(func() {
-				ui.Text(c, "微博").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
+					ui.Text(c, "微博").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+					renderAccountStatusBadge(c, "weibo", wbAcct)
+				})
 
-				if wbAcct.LoggedIn || wbAcct.State == "expired" {
+				if wbAcct.LoggedIn || wbAcct.State == "expired" || wbAcct.State == "unknown" {
 					wbUID := strings.TrimSpace(wbAcct.UID)
 					uidLine := "UID：—"
 					if wbUID != "" {
@@ -354,31 +432,48 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 						sourceText = "扫码登录"
 						renewText = "自动续期：不可用，微博扫码登录暂不支持自动续期；过期后请重新扫码或粘贴 Cookie"
 					}
+					wbVerified := formatAccountVerifiedTime(siteLastVerifiedAt("weibo", wbAcct, uiSt), now)
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).ClipX().Children(func() {
 						a.renderAccountAvatar(c, "weibo", firstNonEmptyStrUI(wbAcct.Uname, "微博用户"), wbUID, 0, 48, false, "", nil, wbAcct.Face)
-						ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
+						ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 							ui.Text(c, firstNonEmptyStrUI(wbAcct.Uname, "微博用户")).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 							ui.Text(c, uidLine+" · 登录方式："+sourceText).
 								FontSize(13).TextColor(ColorTextMuted).SingleLine()
+							renderAccountVerifiedLine(c, "weibo", wbVerified)
 						})
 					})
+
+					renderAccountStateNote(c, "weibo", wbAcct)
 
 					ui.Text(c, renewText).
 						FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
 
 					ui.Row(c).Gap(8).Wrap().Children(func() {
 						if OutlinePillButton(c, "扫码重新登录", "扫码重新登录微博").Clicked() {
+							a.clearSettingsPasteState()
 							a.OpenLoginForSiteTab("weibo", "qr")
 						}
-						if OutlinePillButton(c, "重新粘贴", "重新粘贴微博Cookie").Clicked() {
-							a.OpenLoginForSiteTab("weibo", "cookie")
+						pasteBtnText := "重新粘贴"
+						if a.SettingsPasteSite == "weibo" {
+							pasteBtnText = "收起粘贴"
+						}
+						if OutlinePillButton(c, pasteBtnText, "重新粘贴微博Cookie").Clicked() {
+							a.toggleSettingsInlinePaste("weibo")
 						}
 						if DangerOutlinePillButton(c, "退出登录", "退出微博登录").Clicked() {
+							a.clearSettingsPasteState()
 							a.ConfirmLogoutSite = "weibo"
 							a.ConfirmLogoutOpen = true
 						}
 					})
+					if a.SettingsPasteSite == "weibo" {
+						a.renderSettingsInlinePaste(c, "weibo")
+					}
 				} else {
+					if wbAcct.State == "decrypt_failed" {
+						ui.Text(c, firstNonEmptyStrUI(wbAcct.Message, "本地凭证无法解密，已降级为未登录，请重新登录")).
+							FontSize(12).TextColor(ColorError).MaxLines(2)
+					}
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(12).Wrap().Children(func() {
 						ui.Text(c, "未登录微博账号").FontSize(13).TextColor(ColorTextMuted).SingleLine()
 						ui.Row(c).Gap(8).Wrap().Children(func() {
@@ -397,13 +492,16 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 		ui.Column(c).
 			Label("账号分组：X").
 			FillWidth().
-			Padding(18, 0, 0, 0).
-			Gap(12).
+			Padding(14, 0, 0, 0).
+			Gap(8).
 			ClipX().
 			Children(func() {
-				ui.Text(c, "X（原 Twitter）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
+					ui.Text(c, "X（原 Twitter）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+					renderAccountStatusBadge(c, "x", xAcct)
+				})
 
-				if xAcct.LoggedIn || xAcct.State == "expired" {
+				if xAcct.LoggedIn || xAcct.State == "expired" || xAcct.State == "unknown" {
 					xHandle := strings.TrimPrefix(strings.TrimSpace(xAcct.UniqueID), "@")
 					xUID := strings.TrimSpace(xAcct.UID)
 					identLine := "ID：—"
@@ -418,14 +516,18 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 					if xAcct.State == "expired" {
 						statusTag = " · 已过期"
 					}
+					xVerified := formatAccountVerifiedTime(siteLastVerifiedAt("x", xAcct, uiSt), now)
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).ClipX().Children(func() {
 						a.renderAccountAvatar(c, "x", firstNonEmptyStrUI(xAcct.Uname, xHandle, "X 用户"), xUID, 0, 48, false, "", nil, xAcct.Face)
-						ui.Column(c).Grow(1).Gap(3).ClipX().Children(func() {
+						ui.Column(c).Grow(1).Gap(2).ClipX().Children(func() {
 							ui.Text(c, firstNonEmptyStrUI(xAcct.Uname, xHandle, "X 用户")).FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 							ui.Text(c, identLine+" · 登录方式：粘贴 Cookie"+statusTag).
 								FontSize(13).TextColor(ColorTextMuted).SingleLine()
+							renderAccountVerifiedLine(c, "x", xVerified)
 						})
 					})
+
+					renderAccountStateNote(c, "x", xAcct)
 
 					ui.Text(c, "自动续期：不可用，粘贴的 Cookie 不续期；过期后请重新粘贴").
 						FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
@@ -433,15 +535,27 @@ func (a *App) renderAccountSettings(c *ui.Context) {
 						FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
 
 					ui.Row(c).Gap(8).Wrap().Children(func() {
-						if OutlinePillButton(c, "重新粘贴", "重新粘贴XCookie").Clicked() {
-							a.OpenLoginForSite("x")
+						pasteBtnText := "重新粘贴"
+						if a.SettingsPasteSite == "x" {
+							pasteBtnText = "收起粘贴"
+						}
+						if OutlinePillButton(c, pasteBtnText, "重新粘贴XCookie").Clicked() {
+							a.toggleSettingsInlinePaste("x")
 						}
 						if DangerOutlinePillButton(c, "退出登录", "退出X登录").Clicked() {
+							a.clearSettingsPasteState()
 							a.ConfirmLogoutSite = "x"
 							a.ConfirmLogoutOpen = true
 						}
 					})
+					if a.SettingsPasteSite == "x" {
+						a.renderSettingsInlinePaste(c, "x")
+					}
 				} else {
+					if xAcct.State == "decrypt_failed" {
+						ui.Text(c, firstNonEmptyStrUI(xAcct.Message, "本地凭证无法解密，已降级为未登录，请重新登录")).
+							FontSize(12).TextColor(ColorError).MaxLines(2)
+					}
 					ui.Text(c, "风险说明：X 网页接口非官方 API，存在限流、验证、临时锁号或封号风险；TRACE 只读不写，建议使用专门账号。").
 						FontSize(12).TextColor(ColorTextMuted).MaxLines(3)
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(12).Children(func() {

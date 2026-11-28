@@ -11,13 +11,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chialecode/trace/cmd/trace-mobile/internal/mdns"
+	"github.com/chialecode/trace/cmd/trace-mobile/internal/mediaview"
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/pagekit"
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/pages/computer"
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/pages/home"
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/pages/library"
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/pages/subscriptions"
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/pages/tasks"
+	"github.com/chialecode/trace/cmd/trace-mobile/internal/pastecache"
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/qrscanner"
+	"github.com/chialecode/trace/cmd/trace-mobile/internal/shareintent"
 	"github.com/chialecode/trace/cmd/trace-mobile/internal/theme"
 	"github.com/chialecode/trace/internal/companionapi"
 	"github.com/chialecode/trace/internal/companionclient"
@@ -53,8 +57,9 @@ type App struct {
 	onlineFn    func() bool
 	openURLFn   func(string) error
 
-	probeFn func(ctx context.Context, addr string) (string, string, error)
-	pairFn  func(ctx context.Context, addrs []string, fp string, req companionapi.PairRequest, onWaiting func(string)) (string, string, companionapi.PairPollResponse, error)
+	probeFn        func(ctx context.Context, addr string) (string, string, error)
+	pairFn         func(ctx context.Context, addrs []string, fp string, req companionapi.PairRequest, onWaiting func(string)) (string, string, companionapi.PairPollResponse, error)
+	mdnsDiscoverFn func(ctx context.Context, nodeID, channel string) ([]string, error)
 
 	mu         sync.Mutex
 	foreground bool
@@ -69,6 +74,11 @@ type App struct {
 	connCancel context.CancelFunc
 	retryTimer *time.Timer
 	tasksBadge int
+
+	// Android ACTION_SEND share intent state (RAM only).
+	pendingShareText string
+	shareSheet       pastecache.Sheet
+	shareRecv        shareintent.Receiver
 
 	// Navigation & UI
 	activeTab  int
@@ -117,18 +127,19 @@ func New(opts Options) *App {
 	}
 
 	a := &App{
-		store:       opts.Store,
-		channel:     ch,
-		appVersion:  ver,
-		deviceName:  devName,
-		deviceModel: devModel,
-		onlineFn:    opts.OnlineFn,
-		openURLFn:   opts.OpenURLFn,
-		probeFn:     companionclient.ProbeIdentity,
-		pairFn:      companionclient.PairWithAddrs,
-		foreground:  true,
-		imgCache:    companionclient.NewMemoryImageCache(companionclient.DefaultImageCacheBytes),
-		backoff:     companionclient.NewReconnectSchedule(),
+		store:          opts.Store,
+		channel:        ch,
+		appVersion:     ver,
+		deviceName:     devName,
+		deviceModel:    devModel,
+		onlineFn:       opts.OnlineFn,
+		openURLFn:      opts.OpenURLFn,
+		probeFn:        companionclient.ProbeIdentity,
+		pairFn:         companionclient.PairWithAddrs,
+		mdnsDiscoverFn: mdns.DiscoverMatchingAddrs,
+		foreground:     true,
+		imgCache:       companionclient.NewMemoryImageCache(companionclient.DefaultImageCacheBytes),
+		backoff:        companionclient.NewReconnectSchedule(),
 	}
 	a.pages = [5]pagekit.TabPage{
 		home.New(),
@@ -188,9 +199,27 @@ func (a *App) Run() error {
 			}
 		}
 		a.setupWindows()
+		if recv, err := shareintent.Open(func(text string) {
+			a.HandleSharedText(text)
+		}); err == nil {
+			a.mu.Lock()
+			a.shareRecv = recv
+			a.mu.Unlock()
+		}
 		a.StartForegroundConnect()
 	})
+	defer a.closeShareReceiver()
 	return mygo.App.Run()
+}
+
+func (a *App) closeShareReceiver() {
+	a.mu.Lock()
+	recv := a.shareRecv
+	a.shareRecv = nil
+	a.mu.Unlock()
+	if recv != nil {
+		_ = recv.Close()
+	}
 }
 
 func (a *App) setupWindows() {
@@ -204,7 +233,9 @@ func (a *App) setupWindows() {
 			Hidden: true,
 			Content: ui.View(func(c *ui.Context) {
 				c.SetTheme(theme.TraceTheme())
-				a.pages[idx].View(c, a.tabHost(idx))
+				host := a.tabHost(idx)
+				a.pages[idx].View(c, host)
+				a.shareSheet.View(c, host)
 			}),
 		})
 		a.tabWindows[idx] = win
@@ -270,7 +301,9 @@ func (a *App) View(c *ui.Context) {
 			idx = 0
 		}
 		ui.Box(c.Key(idx)).Grow(1).Basis(0).FillWidth().Children(func() {
-			a.pages[idx].View(c, a.tabHost(idx))
+			host := a.tabHost(idx)
+			a.pages[idx].View(c, host)
+			a.shareSheet.View(c, host)
 		})
 		badgeStr := ""
 		if badgeCount > 0 {
@@ -469,9 +502,29 @@ func (a *App) runConnectionSession(ctx context.Context, rec companionclient.Pair
 	}
 	st, activeAddr, err := cli.ConnectStatus(ctx)
 	if err != nil {
-		cli.Close()
-		a.handleDisconnect(ctx, asCompanionError(err))
-		return
+		ce := asCompanionError(err)
+		if shouldTryMDNS(ce) && ctx.Err() == nil && rec.Node != "" {
+			if discCli, discSt, discAddr, discAddrs, discErr := a.tryMDNSReconnect(ctx, rec, tok); discErr == nil {
+				cli.Close()
+				cli = discCli
+				st = discSt
+				activeAddr = discAddr
+				err = nil
+				rec.Addrs = mergeUniqueAddrs(discAddrs, rec.Addrs)
+				rec.LastAddr = activeAddr
+				_ = a.store.SavePairing(rec)
+			} else if discErr != nil {
+				// If a discovered host failed TLS certificate pinning, surface KindCertChanged immediately!
+				if dce := asCompanionError(discErr); dce != nil && dce.Kind == companionclient.KindCertChanged {
+					ce = dce
+				}
+			}
+		}
+		if err != nil {
+			cli.Close()
+			a.handleDisconnect(ctx, ce)
+			return
+		}
 	}
 	if activeAddr != "" && activeAddr != rec.LastAddr {
 		rec.LastAddr = activeAddr
@@ -530,6 +583,14 @@ func (a *App) runConnectionSession(ctx context.Context, rec companionclient.Pair
 		a.syncGateVisibility()
 		for i, pg := range a.pages {
 			pg.OnConnected(a.tabHost(i))
+		}
+		a.mu.Lock()
+		pendingShare := a.pendingShareText
+		a.pendingShareText = ""
+		activeIdx := a.activeTab
+		a.mu.Unlock()
+		if pendingShare != "" {
+			a.shareSheet.SubmitShared(a.tabHost(activeIdx), pendingShare)
 		}
 	})
 
@@ -604,6 +665,8 @@ func (a *App) stopConnectionLocked(ce *companionclient.Error) {
 	}
 	a.mu.Unlock()
 
+	mediaview.CloseAllActive()
+	a.shareSheet.Reset()
 	if proxy != nil {
 		_ = proxy.Close()
 	}
@@ -715,6 +778,8 @@ func snapshotFromStatus(rec companionclient.PairingRecord, addr string, st compa
 		DiskFree:     st.Disk.FreeBytes,
 		DiskTotal:    st.Disk.TotalBytes,
 		LoggedIn:     st.LoggedIn,
+		MDNSActive:   st.MDNSActive,
+		PreventSleep: st.PreventSleep,
 		Sites:        sites,
 	}
 }
@@ -832,11 +897,123 @@ func (a *App) Unpair() {
 	_ = a.store.ClearAll()
 	a.Update(func() {
 		a.stopQRScanner()
+		a.shareSheet.Reset()
 		a.mu.Lock()
+		a.pendingShareText = ""
 		a.pair = pairingState{step: pairStepGuide}
 		a.mu.Unlock()
 	})
 	a.stopConnectionLocked(nil)
+}
+
+// HandleSharedText handles plain text / URLs received from Android ACTION_SEND
+// ("分享到 TRACE"). When connected, it immediately submits to the desktop's
+// parse-and-cache endpoint; when disconnected/unpaired, it holds the text in
+// RAM only and shows a clear prompt on the connection/pairing gate (FR-MOB-030).
+func (a *App) HandleSharedText(raw string) {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return
+	}
+	a.mu.Lock()
+	connected := a.connState == pagekit.ConnConnected && a.client != nil && !a.pair.rescanning
+	activeIdx := a.activeTab
+	if !connected {
+		a.pendingShareText = text
+	} else {
+		a.pendingShareText = ""
+	}
+	a.mu.Unlock()
+
+	if connected {
+		a.Update(func() {
+			a.shareSheet.SubmitShared(a.tabHost(activeIdx), text)
+		})
+		return
+	}
+	a.Update(nil)
+}
+
+func (a *App) clearPendingShare() {
+	a.mu.Lock()
+	a.pendingShareText = ""
+	a.mu.Unlock()
+	a.Update(nil)
+}
+
+func (a *App) pendingShareSnapshot() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.pendingShareText
+}
+
+func shouldTryMDNS(ce *companionclient.Error) bool {
+	if ce == nil {
+		return true
+	}
+	switch ce.Kind {
+	case companionclient.KindUnreachable, companionclient.KindConnRefused, "":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *App) tryMDNSReconnect(
+	ctx context.Context,
+	rec companionclient.PairingRecord,
+	tok string,
+) (*companionclient.Client, companionapi.StatusResponse, string, []string, error) {
+	discoverFn := a.mdnsDiscoverFn
+	if discoverFn == nil {
+		discoverFn = mdns.DiscoverMatchingAddrs
+	}
+	a.Update(func() {
+		a.mu.Lock()
+		if a.connState == pagekit.ConnConnecting {
+			a.tryingAddr = "正在局域网自动发现电脑新地址"
+		}
+		a.mu.Unlock()
+	})
+	discCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	found, err := discoverFn(discCtx, rec.Node, rec.Channel)
+	if err != nil || len(found) == 0 {
+		return nil, companionapi.StatusResponse{}, "", nil, err
+	}
+	// Build a temporary PairingRecord with ONLY the newly discovered addresses
+	// (clearing stale LastAddr so OrderedAddrs dials discovered addresses directly
+	// without re-dialing the dead old IP), while strictly keeping the original
+	// pinned TLS 1.3 fingerprint rec.FP and node/channel identity unchanged!
+	discRec := rec
+	discRec.LastAddr = ""
+	discRec.Addrs = append([]string(nil), found...)
+	cli, err := companionclient.NewClient(discRec, tok, a.appVersion, a.channel)
+	if err != nil {
+		return nil, companionapi.StatusResponse{}, "", nil, err
+	}
+	st, activeAddr, err := cli.ConnectStatus(ctx)
+	if err != nil {
+		cli.Close()
+		return nil, companionapi.StatusResponse{}, "", nil, err
+	}
+	return cli, st, activeAddr, found, nil
+}
+
+func mergeUniqueAddrs(primary, secondary []string) []string {
+	seen := make(map[string]bool, len(primary)+len(secondary))
+	out := make([]string, 0, len(primary)+len(secondary))
+	for _, list := range [][]string{primary, secondary} {
+		for _, a := range list {
+			a = strings.TrimSpace(a)
+			if a == "" || seen[a] {
+				continue
+			}
+			seen[a] = true
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 func (a *App) tabHost(tabIdx int) pagekit.Host {

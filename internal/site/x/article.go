@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"html"
 	"math"
+	"sort"
 	"strings"
 	"unicode/utf16"
 )
@@ -606,11 +607,24 @@ func extractDraftTextEntities(
 	if len(ranges) == 0 || len(entityByKey) == 0 {
 		return nil, ""
 	}
+	orderedRanges := append([]rawDraftEntityRange(nil), ranges...)
+	sort.SliceStable(orderedRanges, func(i, j int) bool {
+		if orderedRanges[i].Offset != orderedRanges[j].Offset {
+			return orderedRanges[i].Offset < orderedRanges[j].Offset
+		}
+		return orderedRanges[i].Length < orderedRanges[j].Length
+	})
+
+	type linkSpanKey struct {
+		offset int
+		length int
+		url    string
+	}
 	var links []ArticleLink
-	seenURL := make(map[string]bool)
+	seenSpan := make(map[linkSpanKey]bool)
 	var tweetID string
 
-	for _, er := range ranges {
+	for _, er := range orderedRanges {
 		k := parseJSONScalarString(er.Key)
 		if k == "" {
 			continue
@@ -634,10 +648,14 @@ func extractDraftTextEntities(
 		switch entType {
 		case "LINK":
 			safeU := SafePublicWebURL(firstNonEmpty(data.URL, data.Href))
-			if safeU == "" || seenURL[safeU] {
+			if safeU == "" {
 				continue
 			}
-			seenURL[safeU] = true
+			sk := linkSpanKey{offset: er.Offset, length: er.Length, url: safeU}
+			if seenSpan[sk] {
+				continue
+			}
+			seenSpan[sk] = true
 			label := strings.TrimSpace(sliceUTF16Range(rawText, er.Offset, er.Length))
 			if label == "" {
 				label = strings.TrimSpace(data.Title)

@@ -19,6 +19,7 @@ func classifyHTTPStatus(status int, hdr http.Header, raw []byte, clientVersion s
 
 	e := &Error{
 		Code:           code,
+		Site:           strings.TrimSpace(env.Error.Site),
 		Message:        msg,
 		ServerVersion:  sv,
 		ServerProtocol: sp,
@@ -35,10 +36,13 @@ func classifyHTTPStatus(status int, hdr http.Header, raw []byte, clientVersion s
 			e.Kind = KindUnauthorized
 		}
 	case http.StatusForbidden:
-		if code == companionapi.CodeInvalidCode {
+		switch code {
+		case companionapi.CodeInvalidCode:
 			e.Kind = KindBadPairingCode
-		} else {
+		case "", companionapi.CodeForbiddenSource:
 			e.Kind = KindForbiddenSource
+		default:
+			e.Kind = KindServerError
 		}
 	case http.StatusTooManyRequests:
 		e.Kind = KindRateLimited

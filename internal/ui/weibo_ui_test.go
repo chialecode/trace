@@ -769,8 +769,28 @@ func TestWeiboQRLoginFlowTabsCancelAndSettings(t *testing.T) {
 	app.Navigate(RouteSettings)
 	tt.Frame()
 
+	// Clicking "重新粘贴微博Cookie" opens the inline Cookie paste panel right inside Settings › Account (#195).
 	if err := tt.Click("重新粘贴微博Cookie"); err != nil {
 		t.Fatalf("click 重新粘贴微博Cookie: %v", err)
+	}
+	tt.Frame()
+	if app.CurrentRoute != RouteSettings || app.SettingsPasteSite != "weibo" {
+		t.Fatalf("expected inline paste panel on Settings › Account for weibo, got route=%s pasteSite=%q", app.CurrentRoute, app.SettingsPasteSite)
+	}
+	if _, ok := tt.Find("设置内联粘贴区：weibo"); !ok {
+		t.Fatal("expected 设置内联粘贴区：weibo inside Settings › Account")
+	}
+	if _, ok := tt.Find("Cookie获取步骤：weibo"); !ok {
+		t.Fatal("expected Cookie获取步骤：weibo inside Settings › Account inline paste")
+	}
+
+	// When logged out of Weibo, Settings › Account offers "粘贴Cookie登录微博" -> /login weibo cookie tab.
+	stub.mu.Lock()
+	stub.wbStatus = credential.Status{Site: string(site.Weibo), LoggedIn: false, State: "logged_out"}
+	stub.mu.Unlock()
+	tt.Frame()
+	if err := tt.Click("粘贴Cookie登录微博"); err != nil {
+		t.Fatalf("click 粘贴Cookie登录微博: %v", err)
 	}
 	tt.Frame()
 	if app.CurrentRoute != RouteLogin || app.LoginSite != "weibo" || app.WeiboLoginTab != "cookie" {

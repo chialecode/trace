@@ -723,9 +723,11 @@ func (a *App) renderPostCard(c *ui.Context, post PostCardData) {
 				renderReplyContextHintLine(c, hint, "回复提示："+post.Key, 12)
 			}
 			bodyText := post.Text
-			if titleText != "" && titleText == bodyText && post.Kind == "dynamic" {
-				if _, titleHasRich := parseRichTextParagraphs(titleText, post.Links, isDouyinSite); titleHasRich {
-					titleText = ""
+			if titleText != "" && bodyText != "" && post.Kind == "dynamic" {
+				if titleText == bodyText || textStartsWithTitleSummary(bodyText, titleText) {
+					if _, titleHasRich := parseRichTextParagraphs(bodyText, post.Links, isDouyinSite); titleHasRich {
+						titleText = ""
+					}
 				}
 			}
 			if titleText != "" && (post.Video == nil || titleText != post.Video.Title) {
@@ -852,7 +854,13 @@ func (a *App) resolvePostCardNavigation(post PostCardData, homeSub subscription.
 				}
 				return
 			}
-			a.OpenUser(post.Mid, post.AuthorName)
+			mid := post.Mid
+			if mid <= 0 {
+				mid = parseBilibiliMidUI(post.Site, post.AuthorUID)
+			}
+			if mid > 0 {
+				a.OpenUser(mid, post.AuthorName)
+			}
 		}
 	}
 	openAvatar := openCreator
@@ -1369,7 +1377,13 @@ func (a *App) renderPostOriginBoxDepth(c *ui.Context, post PostCardData, depth i
 			}
 			if orig.Text != "" && orig.Text != orig.Title {
 				if depth > 0 {
-					ui.Text(c, orig.Text).FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMain).MaxLines(4)
+					a.renderRichText(c, orig.Text, orig.Links, richTextOptions{
+						MaxLines:          4,
+						FontSize:          13,
+						LineHeight:        LineHeightCompact,
+						TextColor:         ColorTextMain,
+						HighlightHashtags: origSite == "douyin",
+					})
 				} else {
 					a.renderExpandableTextWithLinks(c, post.Key+":orig", orig.Text, orig.Links, 14, ColorTextMain, origSite == "douyin")
 				}
@@ -1616,9 +1630,7 @@ func (a *App) postMenuItems(c *ui.Context, m *ui.Menu, post PostCardData) {
 		return
 	}
 	if m.Item("在浏览器中打开").Chosen() {
-		if err := a.backend.Desktop().OpenExternalURL(targetURL); err != nil {
-			a.showError(err)
-		}
+		a.openExternalURL(targetURL)
 	}
 	if m.Item("复制链接").Chosen() {
 		c.WriteClipboard(targetURL)

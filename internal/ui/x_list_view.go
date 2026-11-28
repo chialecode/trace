@@ -386,9 +386,7 @@ func (a *App) renderXListHeader(c *ui.Context, ls *service.XListDTO, activeTab s
 				})
 				ui.Row(c).Shrink(0).AlignItems(ui.Center).Gap(6).Children(func() {
 					if OutlinePillButton(c, "在浏览器中打开", "X列表浏览器打开").Clicked() {
-						if err := a.backend.Desktop().OpenExternalURL(canonURL); err != nil {
-							a.showError(err)
-						}
+						a.openExternalURL(canonURL)
 					}
 					open := a.XList.HeaderMenuOpen
 					MoreMenuButton(c, "X列表更多", 32, &open, func(m *ui.Menu) {
@@ -413,7 +411,12 @@ func (a *App) renderXListHeader(c *ui.Context, ls *service.XListDTO, activeTab s
 			})
 
 			if desc := strings.TrimSpace(ls.Description); desc != "" {
-				ui.Text(c, desc).FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(3)
+				a.renderRichText(c, desc, nil, richTextOptions{
+					MaxLines:   3,
+					FontSize:   13,
+					LineHeight: LineHeightCompact,
+					TextColor:  ColorTextMuted,
+				})
 			}
 
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Wrap().ClipX().Children(func() {

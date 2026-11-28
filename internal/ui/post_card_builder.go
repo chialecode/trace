@@ -317,9 +317,11 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		}
 	}
 
+	if (normSite == "weibo" || normSite == "x") && entry.Kind == "dynamic" && libPtr != nil {
+		text = firstNonEmptyStrUI(libPtr.Text, text)
+	}
 	if (normSite == "weibo" || normSite == "x") && entry.Kind == "dynamic" && text != "" && title != "" {
-		cleanTitle := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(title), "…"), "..."))
-		if cleanTitle != "" && strings.HasPrefix(strings.TrimSpace(text), cleanTitle) {
+		if textStartsWithTitleSummary(text, title) {
 			title = ""
 		}
 	}
@@ -327,8 +329,7 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		orig := libPtr.Origin
 		if normSite == "weibo" || normSite == "x" {
 			text = firstNonEmptyStrUI(libPtr.Text, entry.Summary)
-			cleanTitle := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(title), "…"), "..."))
-			if title == text || (cleanTitle != "" && strings.HasPrefix(strings.TrimSpace(text), cleanTitle)) || (orig.Title != "" && title == orig.Title) {
+			if title == text || textStartsWithTitleSummary(text, title) || (orig.Title != "" && title == orig.Title) {
 				title = ""
 			}
 		}
@@ -415,6 +416,22 @@ func (a *App) buildFeedPostCard(entry library.FeedEntry) PostCardData {
 		LibItem:           libPtr,
 		InHomeFeed:        true,
 	}
+}
+
+// textStartsWithTitleSummary reports whether bodyText begins with title after
+// normalizing whitespace (newline/tab/multi-space) and stripping summary ellipsis,
+// preventing multiline cached X/Weibo posts from duplicating a plain raw-URL title.
+func textStartsWithTitleSummary(bodyText, title string) bool {
+	cleanTitle := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(title), "…"), "..."))
+	if cleanTitle == "" {
+		return false
+	}
+	normBody := strings.Join(strings.Fields(bodyText), " ")
+	normTitle := strings.Join(strings.Fields(cleanTitle), " ")
+	if normBody == "" || normTitle == "" {
+		return false
+	}
+	return strings.HasPrefix(normBody, normTitle)
 }
 
 func buildCachedOriginCard(

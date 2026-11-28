@@ -253,7 +253,7 @@ func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.
 
 			// Rich card summary (read-only; skip redundant degraded article card when full Article is cached).
 			if det.Card != nil && !(hasArticle && det.Card.Kind == "article") {
-				p.renderDetailRichCard(c, det.Card)
+				p.renderDetailRichCard(c, h, det.Card)
 			}
 
 			// Missing parts note (honest partial status).
@@ -425,7 +425,7 @@ func (p *Page) renderDetailThreadBody(
 										p.renderDetailOriginBox(c, h, det.Origin, origImages)
 									}
 									if det.Card != nil {
-										p.renderDetailRichCard(c, det.Card)
+										p.renderDetailRichCard(c, h, det.Card)
 									}
 									if len(det.Missing) > 0 {
 										p.renderDetailMissingBox(c, det.Missing)
@@ -802,9 +802,15 @@ func (p *Page) renderDetailOriginBoxDepth(c *ui.Context, h pagekit.Host, orig *c
 					el.MaxLines(4)
 				}
 			}
+			if origLinks := mediaview.ExtractLinks(orig.Text, orig.Links); len(origLinks) > 0 {
+				p.renderDetailLinks(c, h, origLinks)
+			}
 			if depth == 0 {
 				if len(origImages) > 0 {
 					p.renderDetailImageGrid(c, h, origImages)
+				}
+				if orig.Card != nil {
+					p.renderDetailRichCard(c, h, orig.Card)
 				}
 				if orig.Origin != nil {
 					p.renderDetailOriginBoxDepth(c, h, orig.Origin, nil, depth+1)
@@ -814,7 +820,7 @@ func (p *Page) renderDetailOriginBoxDepth(c *ui.Context, h pagekit.Host, orig *c
 	})
 }
 
-func (p *Page) renderDetailRichCard(c *ui.Context, card *companionapi.ItemRichCardDTO) {
+func (p *Page) renderDetailRichCard(c *ui.Context, h pagekit.Host, card *companionapi.ItemRichCardDTO) {
 	ui.Column(c).FillWidth().Padding(10, 12).Radius(10).Background(theme.ColorBgPanel).Border(1, theme.ColorBorder).Gap(4).ClipX().Children(func() {
 		if card.Label != "" {
 			ui.Text(c, card.Label).FontSize(11).FontWeight(600).TextColor(theme.ColorTextMuted)
@@ -824,6 +830,9 @@ func (p *Page) renderDetailRichCard(c *ui.Context, card *companionapi.ItemRichCa
 		}
 		if card.Desc != "" {
 			ui.Text(c, card.Desc).FontSize(12).TextColor(theme.ColorTextMuted)
+		}
+		if cardURL := strings.TrimSpace(card.URL); mediaview.IsSafeExternalURL(cardURL) {
+			p.renderDetailLinks(c, h, []companionapi.TextLink{{Label: "在浏览器中打开", URL: cardURL}})
 		}
 	})
 }
@@ -1450,6 +1459,9 @@ func buildDetailVideoRequest(det companionapi.LibraryItemDetail) (mediaview.Vide
 				Width:          part.Width,
 				Height:         part.Height,
 				QualitySummary: spec,
+				DanmakuRelPath: part.DanmakuRelPath,
+				Subtitles:      mediaview.SubtitlesFromDTO(part.Subtitles),
+				Chapters:       mediaview.ChaptersFromDTO(part.Chapters),
 			})
 		}
 		if len(tracks) > 0 {

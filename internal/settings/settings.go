@@ -58,11 +58,13 @@ type Settings struct {
 	Companion CompanionSettings `json:"companion"`
 }
 
-// CompanionSettings configures the desktop mobile companion service (FR-MOB-001).
+// CompanionSettings configures the desktop mobile companion service (FR-MOB-001, FR-MOB-030).
 // Port == 0 uses the channel default (47381 stable, 47382 dev).
+// PreventSleep defaults to false and only inhibits idle sleep while at least one mobile client is connected.
 type CompanionSettings struct {
-	Enabled bool `json:"enabled"`
-	Port    int  `json:"port,omitempty"`
+	Enabled      bool `json:"enabled"`
+	Port         int  `json:"port,omitempty"`
+	PreventSleep bool `json:"preventSleep,omitempty"`
 }
 
 // RemoteSettings holds the remote connections (one for now; a list so a

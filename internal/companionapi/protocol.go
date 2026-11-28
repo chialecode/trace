@@ -17,6 +17,8 @@ const (
 	HeaderVersion    = "X-Trace-Version"
 	HeaderChannel    = "X-Trace-Channel"
 	HeaderPairSecret = "X-Trace-Pair-Secret"
+	HeaderLivePart   = "X-Trace-Live-Part"
+	HeaderLiveBytes  = "X-Trace-Live-Bytes"
 
 	DefaultStablePort = 47381
 	DefaultDevPort    = 47382
@@ -107,10 +109,75 @@ const (
 	PathChecksCancel  = APIPrefix + "checks/cancel"
 	PathChecksPlan    = APIPrefix + "checks/plan"
 
-	PathConflicts   = APIPrefix + "conflicts"
-	PathTransfers   = APIPrefix + "transfers"
-	PathDevicesSelf = APIPrefix + "devices/self"
-	PathEvents      = APIPrefix + "events"
+	PathConflicts       = APIPrefix + "conflicts"
+	PathConflictsPrefix = APIPrefix + "conflicts/"
+	PathParseAndCache   = APIPrefix + "parse-and-cache"
+	PathTransfers       = APIPrefix + "transfers"
+	PathDevicesSelf     = APIPrefix + "devices/self"
+	PathEvents          = APIPrefix + "events"
+)
+
+// Additive v2 capability identifiers advertised in StatusResponse.Capabilities (FR-MOB-030).
+// ProtocolVersion remains "1" for full backward compatibility with v1 clients.
+const (
+	CapParseAndCache    = "parse_and_cache"
+	CapSubscriptionTags = "subscription_tags"
+	CapConflictResolve  = "conflict_resolve"
+	CapPlaybackExtras   = "playback_extras"
+	CapLivePreview      = "live_preview"
+	CapMDNS             = "mdns"
+	CapPreventSleep     = "prevent_sleep"
+)
+
+// V2Capabilities returns the full list of additive v2 capabilities in stable order.
+func V2Capabilities() []string {
+	return []string{
+		CapParseAndCache,
+		CapSubscriptionTags,
+		CapConflictResolve,
+		CapPlaybackExtras,
+		CapLivePreview,
+		CapMDNS,
+		CapPreventSleep,
+	}
+}
+
+// LAN mDNS / DNS-SD auto-discovery constants (FR-MOB-030).
+// TXT records carry strictly non-sensitive ASCII metadata (zero tokens, secrets, cookies, or paths).
+const (
+	MDNSServiceType = "_trace-companion._tcp"
+	MDNSServiceFull = "_trace-companion._tcp.local."
+	MDNSTXTNode     = "node"
+	MDNSTXTChannel  = "channel"
+	MDNSTXTProto    = "proto"
+	MDNSTXTVersion  = "v"
+)
+
+// Subscription atomic capability tag IDs (mirrors internal/subscription DEC-070).
+const (
+	TagScheduledCheck = "scheduled_check"
+	TagCacheVideo     = "cache_video"
+	TagCacheDraw      = "cache_draw"
+	TagCacheWord      = "cache_word"
+	TagCacheForward   = "cache_forward"
+	TagFullCache      = "full_cache"
+	TagAutoRecord     = "auto_record"
+)
+
+// Subscription intent-based tracking preset IDs (mirrors internal/subscription DEC-080).
+const (
+	PresetFullArchive = "full_archive"
+	PresetFollowCache = "follow_cache"
+	PresetCheckOnly   = "check_only"
+	PresetManual      = "manual"
+	PresetCustom      = "custom"
+)
+
+// Content conflict resolution choices (mirrors internal/service).
+const (
+	ConflictKeepBoth  = "keep_both"
+	ConflictKeepLocal = "keep_local"
+	ConflictUseRemote = "use_remote"
 )
 
 // Path builder helpers escape path segments consistently across server and client.
@@ -144,6 +211,14 @@ func SubscriptionPath(id string) string {
 	return PathSubscriptionsPrefix + url.PathEscape(id)
 }
 
+func SubscriptionTagsPath(id string) string {
+	return PathSubscriptionsPrefix + url.PathEscape(id) + "/tags"
+}
+
+func ConflictResolvePath(id string) string {
+	return PathConflictsPrefix + url.PathEscape(id) + "/resolve"
+}
+
 func DownloadTaskPath(id string) string {
 	return PathTasksDownloadsPrefix + url.PathEscape(id)
 }
@@ -158,6 +233,14 @@ func CacheQueueActionPath(id, action string) string {
 
 func LiveRecordingStopPath(id string) string {
 	return PathLiveRecordingsPrefix + url.PathEscape(id) + "/stop"
+}
+
+func LiveRecordingPreviewPath(id string) string {
+	return PathLiveRecordingsPrefix + url.PathEscape(id) + "/preview"
+}
+
+func LiveRecordingPreviewHLSPath(id string) string {
+	return PathLiveRecordingsPrefix + url.PathEscape(id) + "/preview.m3u8"
 }
 
 // Machine-readable error codes returned in ErrorBody.Error.Code.

@@ -25,7 +25,7 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 	siteStatus := a.backend.StatusOf(loginSite)
 
 	ui.Scroll(c).Grow(1).FillWidth().ClipX().Children(func() {
-		ui.Column(c).FillWidth().Padding(20, 18).AlignItems(ui.Center).Gap(14).ClipX().Children(func() {
+		ui.Column(c).FillWidth().Padding(16, 18).AlignItems(ui.Center).Gap(12).ClipX().Children(func() {
 			if siteStatus.State == "expired" {
 				ui.Row(c).FillWidth().Padding(10, 14).Radius(12).Background(ColorWarnBg).Border(1, ColorDotYellow).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
 					DrawIcon(c, "alert-circle", 16, ColorDotYellow, 1.8)
@@ -46,11 +46,11 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 			// Centered Main Login Card (docs/ui.md §3.8)
 			ui.Column(c).
 				FillWidth().
-				Padding(20).
+				Padding(18).
 				Radius(16).
 				Background(ColorBgMain).
 				Border(1, ColorBorder).
-				Gap(16).
+				Gap(12).
 				ClipX().
 				Children(func() {
 					renderTwoSegmentLoginSiteSwitcher(c, loginSite, func(siteID string) {
@@ -74,7 +74,7 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 							ui.Row(c).
 								Label("抖音已登录摘要").
 								FillWidth().
-								Padding(12, 14).
+								Padding(10, 14).
 								Radius(12).
 								Background(ColorBgMain).
 								Border(1, ColorBorder).
@@ -93,7 +93,7 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 						// Douyin has Paste-Cookie ONLY (docs/ui.md §3.8)
 						ui.Column(c).
 							FillWidth().
-							Padding(16).
+							Padding(14).
 							Radius(12).
 							Background(ColorBgMain).
 							Border(1, ColorBorder).
@@ -101,13 +101,12 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 							ClipX().
 							Children(func() {
 								ui.Text(c, "粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-								ui.Text(c, "1. 在桌面浏览器打开 douyin.com 登录，进入「我的 → 喜欢」页面\n2. 按 F12 打开开发者工具 → 网络 (Network)，刷新页面并点开任意请求\n3. 复制请求头 (Request Headers) 中的整段完整 Cookie 粘贴到下方").
-									FontSize(12).TextColor(ColorTextMuted).MaxLines(5)
+								renderCookieCopyGuide(c, "douyin")
 
 								dyBusy := a.isPending("douyin-cookie-login")
 								inp := ui.TextInput(c, &a.DouyinCookieInput).
 									Password().
-									Placeholder("粘贴 Cookie（至少包含 sessionid）").
+									Placeholder(cookieInputPlaceholder("douyin")).
 									Label("抖音Cookie输入框").
 									FillWidth()
 								wasComposing := a.DouyinCookieComposing
@@ -116,9 +115,9 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 									a.importDouyinCookie()
 								}
 
-								ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
+								ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
 									ui.Text(c, "凭证只保存在这台电脑上，并按当前 Windows 用户加密").
-										FontSize(12).TextColor(ColorTextMuted).SingleLine()
+										FontSize(12).TextColor(ColorTextMuted).SingleLine().Grow(1).Shrink(1)
 									label := "验证并登录"
 									if dyBusy {
 										label = "正在验证…"
@@ -127,6 +126,8 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 										a.importDouyinCookie()
 									}
 								})
+
+								renderCookiePrecheckBanner(c, "douyin", a.DouyinCookieInput)
 							})
 						return
 					}
@@ -147,7 +148,7 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 							ui.Row(c).
 								Label("微博已登录摘要").
 								FillWidth().
-								Padding(12, 14).
+								Padding(10, 14).
 								Radius(12).
 								Background(ColorBgMain).
 								Border(1, ColorBorder).
@@ -250,21 +251,20 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 
 						ui.Column(c).
 							FillWidth().
-							Padding(16).
+							Padding(14).
 							Radius(12).
 							Background(ColorBgMain).
 							Border(1, ColorBorder).
 							Gap(10).
 							ClipX().
 							Children(func() {
-								ui.Text(c, "方式二：粘贴 Cookie（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-								ui.Text(c, "1. 在桌面浏览器打开 weibo.com 并登录账号\n2. 按 F12 打开开发者工具 → 网络 (Network)，刷新页面并点开任意请求\n3. 复制请求头 (Request Headers) 中的整段 Cookie 粘贴到下方（至少包含 SUB）").
-									FontSize(12).TextColor(ColorTextMuted).MaxLines(5)
+								ui.Text(c, "方式二：粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+								renderCookieCopyGuide(c, "weibo")
 
 								wbBusy := a.isPending("weibo-cookie-login")
 								inp := ui.TextInput(c, &a.WeiboCookieInput).
 									Password().
-									Placeholder("粘贴 Cookie（至少包含 SUB）").
+									Placeholder(cookieInputPlaceholder("weibo")).
 									Label("微博Cookie输入框").
 									FillWidth()
 								wasComposing := a.WeiboCookieComposing
@@ -273,9 +273,9 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 									a.importWeiboCookie()
 								}
 
-								ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
+								ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
 									ui.Text(c, "凭证只保存在这台电脑上，并按当前 Windows 用户加密").
-										FontSize(12).TextColor(ColorTextMuted).SingleLine()
+										FontSize(12).TextColor(ColorTextMuted).SingleLine().Grow(1).Shrink(1)
 									label := "验证并登录"
 									if wbBusy {
 										label = "正在验证…"
@@ -284,6 +284,8 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 										a.importWeiboCookie()
 									}
 								})
+
+								renderCookiePrecheckBanner(c, "weibo", a.WeiboCookieInput)
 							})
 						return
 					}
@@ -309,7 +311,7 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 							ui.Row(c).
 								Label("X已登录摘要").
 								FillWidth().
-								Padding(12, 14).
+								Padding(10, 14).
 								Radius(12).
 								Background(ColorBgMain).
 								Border(1, ColorBorder).
@@ -327,21 +329,20 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 
 						ui.Column(c).
 							FillWidth().
-							Padding(16).
+							Padding(14).
 							Radius(12).
 							Background(ColorBgMain).
 							Border(1, ColorBorder).
-							Gap(10).
+							Gap(8).
 							ClipX().
 							Children(func() {
 								ui.Text(c, "粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-								ui.Text(c, "1. 在桌面浏览器打开 x.com 并登录账号\n2. 按 F12 打开开发者工具 → 网络 (Network)，刷新页面并点开发往 x.com 的任意请求\n3. 复制请求头 (Request Headers) 中的整段 Cookie 粘贴到下方（至少包含 auth_token 与 ct0）").
-									FontSize(12).TextColor(ColorTextMuted).MaxLines(5)
+								renderCookieCopyGuide(c, "x")
 
 								xBusy := a.isPending("x-cookie-login")
 								inp := ui.TextInput(c, &a.XCookieInput).
 									Password().
-									Placeholder("粘贴 Cookie（至少包含 auth_token 与 ct0）").
+									Placeholder(cookieInputPlaceholder("x")).
 									Label("XCookie输入框").
 									FillWidth()
 								wasComposing := a.XCookieComposing
@@ -351,26 +352,11 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 								}
 
 								// Mandatory neutral factual risk disclosure ABOVE the submit button (x.md §12.3 #1 & §15.1 #19).
-								ui.Column(c).
-									Label("X登录风险提示").
-									FillWidth().
-									Padding(10, 12).
-									Radius(10).
-									Background(ColorWarnBg).
-									Border(1, ColorDotYellow).
-									Gap(4).
-									ClipX().
-									Children(func() {
-										ui.Text(c, "使用前请注意").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-										ui.Text(c, "X 网页端接口不是官方开放 API，X 服务条款与自动化规则限制未经授权的自动化访问。用网页 Cookie 请求 X 存在触发限流、要求验证、临时锁号甚至封号的风险，强烈建议使用专门账号或可承受风控的小号（本工具不会阻止你粘贴自己的账号）。").
-											FontSize(12).TextColor(ColorTextMain).MaxLines(6)
-										ui.Text(c, "TRACE 只读不写，不保存账号密码，也不对粘贴的 Cookie 自动续期；若遇到验证或锁号会立即停止 X 的全部自动请求。").
-											FontSize(12).TextColor(ColorTextMuted).MaxLines(4)
-									})
+								renderXRiskDisclosureBox(c, "X登录风险提示")
 
-								ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
+								ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
 									ui.Text(c, "凭证只保存在这台电脑上，并按当前 Windows 用户加密").
-										FontSize(12).TextColor(ColorTextMuted).SingleLine()
+										FontSize(12).TextColor(ColorTextMuted).SingleLine().Grow(1).Shrink(1)
 									label := "验证并登录"
 									if xBusy {
 										label = "正在验证…"
@@ -379,6 +365,8 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 										a.importXCookie()
 									}
 								})
+
+								renderCookiePrecheckBanner(c, "x", a.XCookieInput)
 							})
 						return
 					}
@@ -450,7 +438,7 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 					if a.LoginTab == "cookie" {
 						ui.Column(c).
 							FillWidth().
-							Padding(16).
+							Padding(14).
 							Radius(12).
 							Background(ColorBgMain).
 							Border(1, ColorBorder).
@@ -458,13 +446,12 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 							ClipX().
 							Children(func() {
 								ui.Text(c, "方式二：粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-								ui.Text(c, "在浏览器打开 bilibili.com 并登录 → 按 F12 打开开发者工具 → 网络 (Network) → 复制请求头中的 Cookie（至少包含 SESSDATA）。").
-									FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
+								renderCookieCopyGuide(c, "bilibili")
 
 								manualBusy := a.isPending("manual-login")
 								cookieInp := ui.TextInput(c, &a.ManualCookieInput).
 									Password().
-									Placeholder("粘贴 Cookie（至少包含 SESSDATA）").
+									Placeholder(cookieInputPlaceholder("bilibili")).
 									Label("手动Cookie输入框").
 									FillWidth()
 
@@ -480,9 +467,9 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 									a.importManualCookie()
 								}
 
-								ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
+								ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
 									ui.Text(c, "凭证只保存在这台电脑上，并按当前 Windows 用户加密").
-										FontSize(12).TextColor(ColorTextMuted).SingleLine()
+										FontSize(12).TextColor(ColorTextMuted).SingleLine().Grow(1).Shrink(1)
 									label := "验证并登录"
 									if manualBusy {
 										label = "正在验证…"
@@ -491,6 +478,8 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 										a.importManualCookie()
 									}
 								})
+
+								renderCookiePrecheckBanner(c, "bilibili", a.ManualCookieInput)
 							})
 					}
 				})

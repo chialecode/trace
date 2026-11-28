@@ -217,6 +217,7 @@ func (a *App) clearUnsentLoginInputs() {
 	a.DouyinCookieInput = ""
 	a.WeiboCookieInput = ""
 	a.XCookieInput = ""
+	a.clearSettingsPasteState()
 }
 
 func (a *App) importManualCookie() {

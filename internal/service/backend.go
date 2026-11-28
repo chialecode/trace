@@ -965,6 +965,7 @@ func (b *Backend) ProbeSiteBackoff(ctx context.Context, siteID string) (SiteSche
 	if b.subs != nil {
 		b.subs.ClearSiteBackoff(string(sid))
 	}
+	b.recordSiteVerifiedAt(sid, "")
 	b.Logf("manual_probe.%s recovered=true", sid)
 	return b.SchedulerStatuses()[string(sid)], nil
 }

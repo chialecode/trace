@@ -26,6 +26,7 @@ type Client struct {
 	activeAddr string
 	httpClient *http.Client
 	pollClient *http.Client
+	longClient *http.Client
 }
 
 // NewClient creates a pinned-TLS companion client for an existing pairing record and token.
@@ -38,6 +39,10 @@ func NewClient(rec PairingRecord, token, appVersion, channel string) (*Client, e
 	if err != nil {
 		return nil, err
 	}
+	longCli, err := PinnedHTTPClient(rec.FP, 180*time.Second)
+	if err != nil {
+		return nil, err
+	}
 	rec.Channel = NormalizeChannel(rec.Channel)
 	return &Client{
 		record:     rec,
@@ -47,6 +52,7 @@ func NewClient(rec PairingRecord, token, appVersion, channel string) (*Client, e
 		activeAddr: rec.LastAddr,
 		httpClient: httpCli,
 		pollClient: pollCli,
+		longClient: longCli,
 	}, nil
 }
 
@@ -96,6 +102,47 @@ func (c *Client) Close() {
 	}
 	if c.pollClient != nil {
 		c.pollClient.CloseIdleConnections()
+	}
+	if c.longClient != nil {
+		c.longClient.CloseIdleConnections()
+	}
+}
+
+// Record returns a copy of the pairing record currently held by this client.
+func (c *Client) Record() PairingRecord {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	cp := c.record
+	cp.Addrs = append([]string(nil), c.record.Addrs...)
+	return cp
+}
+
+// UpdateAddrs merges newly discovered LAN/VPN "host:port" addresses (e.g. from mDNS)
+// ahead of existing addresses without altering the pinned certificate fingerprint.
+func (c *Client) UpdateAddrs(addrs []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	seen := make(map[string]bool, len(addrs)+len(c.record.Addrs))
+	merged := make([]string, 0, len(addrs)+len(c.record.Addrs))
+	add := func(raw string) {
+		a := strings.TrimSpace(raw)
+		if a == "" || seen[a] {
+			return
+		}
+		seen[a] = true
+		merged = append(merged, a)
+	}
+	for _, a := range addrs {
+		add(a)
+	}
+	for _, a := range c.record.Addrs {
+		add(a)
+	}
+	if len(merged) > 0 {
+		c.record.Addrs = merged
+		if c.activeAddr == "" {
+			c.activeAddr = merged[0]
+		}
 	}
 }
 
@@ -169,6 +216,26 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, reqBody any, r
 
 // FetchBytes downloads raw bytes (e.g. thumbnail or image) over pinned TLS with Bearer auth.
 func (c *Client) FetchBytes(ctx context.Context, path string) ([]byte, error) {
+	return c.fetchBytesWithLimit(ctx, path, 32<<20)
+}
+
+// FetchDanmaku downloads a cached danmaku XML file via the desktop MediaPath whitelist.
+func (c *Client) FetchDanmaku(ctx context.Context, itemKey, relPath string) ([]byte, error) {
+	if strings.TrimSpace(itemKey) == "" || strings.TrimSpace(relPath) == "" {
+		return nil, &Error{Kind: KindServerError, Message: "缺少弹幕路径"}
+	}
+	return c.fetchBytesWithLimit(ctx, companionapi.MediaPath(itemKey, relPath), 16<<20)
+}
+
+// FetchSubtitle downloads a cached subtitle track (WebVTT/SRT) via the desktop MediaPath whitelist.
+func (c *Client) FetchSubtitle(ctx context.Context, itemKey, relPath string) ([]byte, error) {
+	if strings.TrimSpace(itemKey) == "" || strings.TrimSpace(relPath) == "" {
+		return nil, &Error{Kind: KindServerError, Message: "缺少字幕路径"}
+	}
+	return c.fetchBytesWithLimit(ctx, companionapi.MediaPath(itemKey, relPath), 4<<20)
+}
+
+func (c *Client) fetchBytesWithLimit(ctx context.Context, path string, maxBytes int64) ([]byte, error) {
 	addr := c.ActiveAddr()
 	if addr == "" {
 		return nil, &Error{Kind: KindUnreachable}
@@ -186,7 +253,7 @@ func (c *Client) FetchBytes(ctx context.Context, path string) ([]byte, error) {
 		return nil, ClassifyTransportError(err)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 	if err != nil {
 		return nil, ClassifyTransportError(err)
 	}
@@ -194,6 +261,60 @@ func (c *Client) FetchBytes(ctx context.Context, path string) ([]byte, error) {
 		return nil, classifyHTTPStatus(resp.StatusCode, resp.Header, raw, c.appVersion)
 	}
 	return raw, nil
+}
+
+// ParseAndCache asks the desktop to recognize a shared link/text and enqueue its cache task (FR-MOB-030).
+func (c *Client) ParseAndCache(ctx context.Context, input string) (companionapi.ParseAndCacheResponse, error) {
+	addr := c.ActiveAddr()
+	if addr == "" {
+		return companionapi.ParseAndCacheResponse{}, &Error{Kind: KindUnreachable}
+	}
+	raw, err := json.Marshal(companionapi.ParseAndCacheRequest{Input: input})
+	if err != nil {
+		return companionapi.ParseAndCacheResponse{}, err
+	}
+	var out companionapi.ParseAndCacheResponse
+	httpCli := c.pollClient
+	if httpCli == nil {
+		httpCli = c.httpClient
+	}
+	if err := c.doOneAddr(ctx, httpCli, addr, http.MethodPost, companionapi.PathParseAndCache, nil, raw, &out, true); err != nil {
+		return companionapi.ParseAndCacheResponse{}, err
+	}
+	return out, nil
+}
+
+// UpdateSubscriptionTags updates capability tags or tracking preset on subscription id (FR-MOB-030).
+func (c *Client) UpdateSubscriptionTags(ctx context.Context, id string, req companionapi.UpdateSubscriptionTagsRequest) (companionapi.SubscriptionDetailResponse, error) {
+	var out companionapi.SubscriptionDetailResponse
+	if err := c.DoJSON(ctx, http.MethodPut, companionapi.SubscriptionTagsPath(id), req, &out); err != nil {
+		return companionapi.SubscriptionDetailResponse{}, err
+	}
+	return out, nil
+}
+
+// ResolveConflict resolves a desktop cache conflict with choice ("keep_both", "keep_local", or "use_remote").
+func (c *Client) ResolveConflict(ctx context.Context, id, choice string) (companionapi.ResolveConflictResponse, error) {
+	addr := c.ActiveAddr()
+	if addr == "" {
+		return companionapi.ResolveConflictResponse{}, &Error{Kind: KindUnreachable}
+	}
+	raw, err := json.Marshal(companionapi.ResolveConflictRequest{Choice: choice})
+	if err != nil {
+		return companionapi.ResolveConflictResponse{}, err
+	}
+	var out companionapi.ResolveConflictResponse
+	httpCli := c.longClient
+	if httpCli == nil {
+		httpCli = c.pollClient
+	}
+	if httpCli == nil {
+		httpCli = c.httpClient
+	}
+	if err := c.doOneAddr(ctx, httpCli, addr, http.MethodPost, companionapi.ConflictResolvePath(id), nil, raw, &out, true); err != nil {
+		return companionapi.ResolveConflictResponse{}, err
+	}
+	return out, nil
 }
 
 // DialEvents opens the WebSocket event stream on the currently active address.

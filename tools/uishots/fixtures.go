@@ -28,6 +28,7 @@ import (
 	"github.com/chialecode/trace/internal/storage"
 	"github.com/chialecode/trace/internal/subscription"
 	"github.com/chialecode/trace/internal/ui"
+	"github.com/chialecode/trace/internal/uistate"
 	"github.com/chialecode/trace/internal/update"
 )
 
@@ -1350,31 +1351,34 @@ func seedFixtures() (env *fixtureEnv, err error) {
 			"x:dynamic:1000000000000000022::images/01.png":  filepath.Join(xRetweetDir, "images", "01.png"),
 		},
 		dyStatus: credential.Status{
-			Site:     "douyin",
-			LoggedIn: true,
-			State:    "logged_in",
-			Source:   "cookie",
-			UID:      "900086",
-			SecUID:   "MS4wLjABAAAA_uishots_self_demo",
-			UniqueID: "trace_douyin_demo",
-			Uname:    "TRACE抖音演示账号",
+			Site:          "douyin",
+			LoggedIn:      true,
+			State:         "logged_in",
+			Source:        "cookie",
+			UID:           "900086",
+			SecUID:        "MS4wLjABAAAA_uishots_self_demo",
+			UniqueID:      "trace_douyin_demo",
+			Uname:         "TRACE抖音演示账号",
+			LastCheckedAt: time.Now().UTC().Add(-25 * time.Minute).Format(time.RFC3339),
 		},
 		wbStatus: credential.Status{
-			Site:     "weibo",
-			LoggedIn: true,
-			State:    "logged_in",
-			Source:   "manual",
-			UID:      "100000001",
-			Uname:    "TRACE微博演示账号",
+			Site:          "weibo",
+			LoggedIn:      true,
+			State:         "logged_in",
+			Source:        "manual",
+			UID:           "100000001",
+			Uname:         "TRACE微博演示账号",
+			LastCheckedAt: time.Now().UTC().Add(-40 * time.Minute).Format(time.RFC3339),
 		},
 		xStatus: credential.Status{
-			Site:     "x",
-			LoggedIn: true,
-			State:    "logged_in",
-			Source:   "manual",
-			UID:      "1000000000000000000",
-			UniqueID: "trace_x_demo",
-			Uname:    "TRACE X 演示账号",
+			Site:          "x",
+			LoggedIn:      true,
+			State:         "logged_in",
+			Source:        "manual",
+			UID:           "1000000000000000000",
+			UniqueID:      "trace_x_demo",
+			Uname:         "TRACE X 演示账号",
+			LastCheckedAt: time.Now().UTC().Add(-55 * time.Minute).Format(time.RFC3339),
 		},
 		schedulers: map[string]service.SiteSchedulerStatus{
 			"bilibili": {
@@ -1427,11 +1431,14 @@ func seedFixtures() (env *fixtureEnv, err error) {
 }
 
 func (e *fixtureEnv) seedRecentAndLive(app *ui.App) {
+	app.SubSort = uistate.SubSortDefault
 	for i := range app.Subscriptions {
 		if i == 0 {
 			app.Subscriptions[i].LatestUpdateTs = time.Now().Add(-15 * time.Minute).Unix()
 		} else if i == 1 {
 			app.Subscriptions[i].LatestUpdateTs = time.Now().Add(-2 * time.Hour).Unix()
+		} else {
+			app.Subscriptions[i].LatestUpdateTs = 0
 		}
 	}
 	app.LiveRooms = []live.RoomState{

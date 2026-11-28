@@ -31,6 +31,7 @@ func (a *App) subscriptionsAccountsFingerprint() uint64 {
 		fnvWriteStr(h, sub.Avatar.Site)
 		fnvWriteStr(h, sub.Avatar.UID)
 		fnvWriteInt64(h, sub.Mid)
+		fnvWriteInt64(h, sub.LatestUpdateTs)
 		fnvWriteInt64(h, int64(len(sub.Accounts)))
 		for j := range sub.Accounts {
 			acc := &sub.Accounts[j]
@@ -233,8 +234,8 @@ func (a *App) renderSubscriptionAccountRow(c *ui.Context, r subAccountRow) {
 				if m.Item("打开订阅").Chosen() {
 					a.OpenSubscriptionDetail(r.Sub)
 				}
-				if m.Item("打开主页").Chosen() {
-					a.openAccountUserPage(r.Site, r.UID, r.Name)
+				if m.Item("打开账号主页").Chosen() {
+					a.openAccountUserPage(r.Site, firstNonEmptyStrUI(r.UID, r.UniqueID), r.Name)
 				}
 			})
 			keyedMenuOpen(&a.SubAccountMenuKey, menuKey, open)

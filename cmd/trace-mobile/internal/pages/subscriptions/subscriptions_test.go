@@ -993,3 +993,161 @@ func indexContaining(items []string, sub string) int {
 	}
 	return -1
 }
+
+func TestSubscriptionTagsEditorPresetsDependencyWarningAndSave(t *testing.T) {
+	subs, plan, feed := sampleSubscriptionsFixture()
+	var (
+		mu         sync.Mutex
+		savedSubID string
+		savedTags  []string
+		putCalls   int
+	)
+	cli, proxy, cleanup := startFakeCompanionServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == companionapi.PathSubscriptions:
+			_ = json.NewEncoder(w).Encode(companionapi.SubscriptionsResponse{Items: subs})
+		case r.Method == http.MethodGet && r.URL.Path == companionapi.PathSubscriptionsAccounts:
+			_ = json.NewEncoder(w).Encode(companionapi.AllAccountsResponse{})
+		case r.Method == http.MethodGet && r.URL.Path == companionapi.PathChecksPlan:
+			_ = json.NewEncoder(w).Encode(companionapi.CheckPlanResponse{Items: plan})
+		case r.Method == http.MethodGet && r.URL.Path == companionapi.SubscriptionPath("sub-1"):
+			_ = json.NewEncoder(w).Encode(companionapi.SubscriptionDetailResponse{Subscription: subs[0]})
+		case r.Method == http.MethodGet && r.URL.Path == companionapi.PathFeed:
+			_ = json.NewEncoder(w).Encode(companionapi.FeedPageResponse{Items: feed})
+		case r.Method == http.MethodPut && r.URL.Path == companionapi.SubscriptionTagsPath("sub-1"):
+			var req companionapi.UpdateSubscriptionTagsRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			mu.Lock()
+			putCalls++
+			savedSubID = "sub-1"
+			savedTags = append([]string(nil), req.Tags...)
+			updated := subs[0]
+			updated.Tags = savedTags
+			updated.PresetLabel = mobilePresetLabelForTags(savedTags)
+			updated.TagLabels = mobileTagLabels(savedTags)
+			subs[0] = updated
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(companionapi.SubscriptionDetailResponse{Subscription: updated})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	defer cleanup()
+
+	host := newFakeHost(cli, proxy)
+	pg := New()
+	notify := make(chan struct{}, 32)
+	host.invalidate = func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
+	viewFn := func(c *ui.Context) {
+		c.SetTheme(theme.TraceTheme())
+		pg.View(c, host)
+	}
+	tt := ui.NewTester(viewFn, 412, 915)
+	pumpUntil := func(cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			host.drainUpdates()
+			tt.Frame()
+			if cond() {
+				host.drainUpdates()
+				tt.Frame()
+				return
+			}
+			select {
+			case <-notify:
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		t.Fatalf("condition timed out; texts=%v", tt.Texts())
+	}
+
+	pg.OnConnected(host)
+	pumpUntil(func() bool { return pg.subsLoaded })
+	if err := tt.Click("打开订阅：科技评测组"); err != nil {
+		t.Fatal(err)
+	}
+	pumpUntil(func() bool { return pg.detailSub != nil })
+	settleAnim(tt)
+
+	// Open tags editor sheet.
+	if err := tt.Click("编辑订阅缓存标签"); err != nil {
+		t.Fatalf("click edit tags: %v", err)
+	}
+	settleAnim(tt)
+	for _, want := range []string{"编辑缓存标签", "完整存档", "追更并保存", "只看新动态", "仅手动", "开播录制"} {
+		if !tt.HasText(want) {
+			t.Fatalf("tags sheet missing %q; texts=%v", want, tt.Texts())
+		}
+	}
+	assertNoHorizontalOverflow(t, tt, 412)
+	assertNoForbiddenEntries(t, tt)
+
+	// Switch preset to 追更并保存 (preserving auto_record) then toggle auto_record off.
+	if err := tt.Click("选择追踪预设：追更并保存"); err != nil {
+		t.Fatalf("click follow_cache preset: %v", err)
+	}
+	tt.Frame()
+	if !hasMobileTag(pg.tagsDraft, tagAutoRecord) {
+		t.Fatalf("switching preset must preserve auto_record, got %v", pg.tagsDraft)
+	}
+	if err := tt.Click("开关开播录制"); err != nil {
+		t.Fatalf("toggle auto_record: %v", err)
+	}
+	tt.Frame()
+	if hasMobileTag(pg.tagsDraft, tagAutoRecord) {
+		t.Fatalf("expected auto_record disabled, got %v", pg.tagsDraft)
+	}
+
+	// Simulate turning off scheduled_check while auto-cache is on -> gentle dependency warning + 1-tap fix!
+	pg.tagsDraft = setMobileTag(pg.tagsDraft, tagScheduledCheck, false)
+	tt.Frame()
+	if !tt.HasText("仅在手动检查更新时才会自动缓存") {
+		t.Fatalf("expected gentle dependency warning, texts=%v", tt.Texts())
+	}
+	saveShotIfRequested(t, tt, "subs-tags-editor-412x915")
+
+	// Tap 1-tap fix "开启定时检查".
+	if err := tt.Click("开启定时检查"); err != nil {
+		t.Fatalf("click fix scheduled_check: %v", err)
+	}
+	tt.Frame()
+	if hasAutoCacheWithoutScheduledCheck(pg.tagsDraft) {
+		t.Fatalf("expected scheduled_check restored, got %v", pg.tagsDraft)
+	}
+
+	// Responsive check at 360x800 and 800x1280 while sheet open.
+	for _, sz := range [][2]int{{360, 800}, {800, 1280}} {
+		tt.SetSize(sz[0], sz[1])
+		settleAnim(tt)
+		assertNoHorizontalOverflow(t, tt, sz[0])
+		assertNoForbiddenEntries(t, tt)
+	}
+	tt.SetSize(412, 915)
+	settleAnim(tt)
+
+	// Save changes -> PUT /api/v1/subscriptions/sub-1/tags.
+	if err := tt.Click("保存订阅缓存标签"); err != nil {
+		t.Fatalf("click save tags: %v", err)
+	}
+	pumpUntil(func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return putCalls == 1 && !pg.tagsSheetOpen
+	})
+	mu.Lock()
+	gotID, gotTags := savedSubID, append([]string(nil), savedTags...)
+	mu.Unlock()
+	if gotID != "sub-1" || strings.Join(gotTags, ",") != "scheduled_check,cache_video,cache_draw" {
+		t.Fatalf("unexpected PUT tags payload: id=%q tags=%v", gotID, gotTags)
+	}
+	if !tt.HasText("追踪：追更并保存") {
+		t.Fatalf("expected detail header updated to 追更并保存, texts=%v", tt.Texts())
+	}
+	pg.OnDisconnected()
+}
