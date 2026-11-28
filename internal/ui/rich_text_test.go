@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/chialecode/trace/internal/credential"
@@ -713,5 +714,169 @@ func TestXHyperlinksEndToEndEdgeCasesAndSecurity(t *testing.T) {
 		if !slices.Contains(actions, service.RecordedAction{Kind: "url", Target: wantURL}) {
 			t.Fatalf("expected MockDesktop url %q, got %+v", wantURL, actions)
 		}
+	}
+}
+
+func TestXHyperlinkUnicodeLowercaseAndSelfStatusFilterRegression(t *testing.T) {
+	// P1a: indexInlineLinkPrefix mixed-case scheme fallback after variable-width Unicode 'İ' (U+0130).
+	paras1, ok1 := parseRichTextParagraphs("İstanbul Http://Example.com/istanbul-ok 结束", nil, false)
+	if !ok1 || len(paras1) != 1 {
+		t.Fatalf("parseRichTextParagraphs(İstanbul mixed-case Http://) failed: ok=%v paras=%+v", ok1, paras1)
+	}
+	var links1 []richSpan
+	for _, sp := range paras1[0].Spans {
+		if sp.Kind == richSpanLink {
+			links1 = append(links1, sp)
+		}
+	}
+	if len(links1) != 1 || links1[0].URL != "http://Example.com/istanbul-ok" {
+		t.Fatalf("mixed-case Http:// after İ parsed wrong: %+v", links1)
+	}
+
+	paras2, ok2 := parseRichTextParagraphs("İİİİİİİİİİİİİİİHttp://a.co", nil, false)
+	if !ok2 || len(paras2) != 1 {
+		t.Fatalf("parseRichTextParagraphs(repeated İ + Http://a.co) failed: ok=%v paras=%+v", ok2, paras2)
+	}
+	var links2 []richSpan
+	for _, sp := range paras2[0].Spans {
+		if sp.Kind == richSpanLink {
+			links2 = append(links2, sp)
+		}
+	}
+	if len(links2) != 1 || links2[0].URL != "http://a.co" {
+		t.Fatalf("repeated İ + Http://a.co parsed wrong: %+v", links2)
+	}
+
+	// P1b: replaceShortURLVariantsUI / xPostTextAndLinksUI with 'İ' before t.co at end of string.
+	postIst := &service.XPostDTO{
+		ID:   "1900000000000099701",
+		Text: "İstanbul https://t.co/ab",
+		URLs: []service.XURLEntityDTO{{
+			ShortURL:    "https://t.co/ab",
+			ExpandedURL: "https://example.com/istanbul-ok",
+			DisplayURL:  "example.com/istanbul-ok",
+		}},
+	}
+	gotIstText, gotIstLinks := xPostTextAndLinksUI(postIst, nil, false)
+	if gotIstText != "İstanbul https://example.com/istanbul-ok" {
+		t.Fatalf("xPostTextAndLinksUI(İstanbul + t.co) text = %q", gotIstText)
+	}
+	if len(gotIstLinks) != 1 || gotIstLinks[0].URL != "https://example.com/istanbul-ok" {
+		t.Fatalf("xPostTextAndLinksUI(İstanbul + t.co) links = %+v", gotIstLinks)
+	}
+
+	postRepIst := &service.XPostDTO{
+		ID:   "1900000000000099702",
+		Text: "İİİİİİİİİİİİİİİHTTP://T.CO/ab",
+		URLs: []service.XURLEntityDTO{{
+			ShortURL:    "https://t.co/ab",
+			ExpandedURL: "https://example.com/istanbul-ok",
+			DisplayURL:  "example.com/istanbul-ok",
+		}},
+	}
+	gotRepText, _ := xPostTextAndLinksUI(postRepIst, nil, false)
+	if gotRepText != "İİİİİİİİİİİİİİİhttps://example.com/istanbul-ok" {
+		t.Fatalf("xPostTextAndLinksUI(repeated İ + HTTP://T.CO/ab) text = %q", gotRepText)
+	}
+
+	// P1c: case-insensitive display_url matching after 'İ' via asciiEqualFold.
+	parasDisp, okDisp := parseRichTextParagraphs("İstanbul Example.COM/docs… 结束", []service.TextLinkDTO{
+		{Label: "example.com/docs…", URL: "https://example.com/docs/full"},
+	}, false)
+	if !okDisp || len(parasDisp) != 1 {
+		t.Fatalf("display_url after İ failed: ok=%v paras=%+v", okDisp, parasDisp)
+	}
+	var dispLinks []richSpan
+	for _, sp := range parasDisp[0].Spans {
+		if sp.Kind == richSpanLink {
+			dispLinks = append(dispLinks, sp)
+		}
+	}
+	if len(dispLinks) != 1 || dispLinks[0].URL != "https://example.com/docs/full" {
+		t.Fatalf("display_url after İ parsed wrong: %+v", dispLinks)
+	}
+
+	// P2a: When p.Links is already populated (self-truncation link stripped by BuildPostLinks),
+	// xPostLinksUI must NOT re-add the self-status link from p.URLs or mis-pair an unrelated t.co.
+	postWithLinks := &service.XPostDTO{
+		ID:   "1900000000000099777",
+		Text: "正文 https://docs.example.dev/a 以及未知短链 https://t.co/Unmapped99",
+		Links: []service.TextLinkDTO{
+			{Label: "docs.example.dev/a", URL: "https://docs.example.dev/a"},
+		},
+		URLs: []service.XURLEntityDTO{
+			{
+				ShortURL:    "https://t.co/self777",
+				ExpandedURL: "https://x.com/synth_writer/status/1900000000000099777",
+				DisplayURL:  "x.com/i/web/status/1…",
+			},
+			{
+				ShortURL:    "https://t.co/docsA",
+				ExpandedURL: "https://docs.example.dev/a",
+				DisplayURL:  "docs.example.dev/a",
+			},
+		},
+	}
+	gotTextA, gotLinksA := xPostTextAndLinksUI(postWithLinks, nil, false)
+	if len(gotLinksA) != 1 || gotLinksA[0].URL != "https://docs.example.dev/a" {
+		t.Fatalf("xPostLinksUI re-added self-status link when p.Links populated: %+v", gotLinksA)
+	}
+	parasA, okA := parseRichTextParagraphs(gotTextA, gotLinksA, false)
+	if !okA || len(parasA) != 1 {
+		t.Fatalf("parseRichTextParagraphs P2a failed: ok=%v paras=%+v", okA, parasA)
+	}
+	var spanURLsA []string
+	for _, sp := range parasA[0].Spans {
+		if sp.Kind == richSpanLink {
+			spanURLsA = append(spanURLsA, sp.URL)
+		}
+	}
+	wantURLsA := []string{"https://docs.example.dev/a", "https://t.co/Unmapped99"}
+	if !slices.Equal(spanURLsA, wantURLsA) {
+		t.Fatalf("P2a span URLs = %v, want %v (must not mis-pair unmapped t.co to self-status)", spanURLsA, wantURLsA)
+	}
+
+	// P2b: When p.Links is empty, xPostLinksUI falls back to p.URLs while STILL filtering
+	// self-status links for p.ID (preserving other-tweet status links), and xPostTextAndLinksUI
+	// strips unexpanded self-status t.co instead of expanding it.
+	postOnlyURLs := &service.XPostDTO{
+		ID:   "1900000000000099777",
+		Text: "摘要 https://t.co/self777 另见 https://t.co/other888 和 https://t.co/Unmapped99",
+		URLs: []service.XURLEntityDTO{
+			{
+				ShortURL:    "https://t.co/self777",
+				ExpandedURL: "https://x.com/synth_writer/status/1900000000000099777/photo/1",
+				DisplayURL:  "pic.x.com/self777",
+			},
+			{
+				ShortURL:    "https://t.co/other888",
+				ExpandedURL: "https://x.com/other_user/status/1900000000000099888",
+				DisplayURL:  "x.com/other_user/sta…",
+			},
+		},
+	}
+	gotTextB, gotLinksB := xPostTextAndLinksUI(postOnlyURLs, nil, false)
+	if strings.Contains(gotTextB, "self777") || strings.Contains(gotTextB, "1900000000000099777") {
+		t.Fatalf("xPostTextAndLinksUI failed to strip self-status t.co: %q", gotTextB)
+	}
+	if !strings.Contains(gotTextB, "https://x.com/other_user/status/1900000000000099888") {
+		t.Fatalf("xPostTextAndLinksUI failed to expand other-tweet status URL: %q", gotTextB)
+	}
+	if len(gotLinksB) != 1 || gotLinksB[0].URL != "https://x.com/other_user/status/1900000000000099888" {
+		t.Fatalf("xPostLinksUI fallback from p.URLs did not filter self-status properly: %+v", gotLinksB)
+	}
+	parasB, okB := parseRichTextParagraphs(gotTextB, gotLinksB, false)
+	if !okB || len(parasB) != 1 {
+		t.Fatalf("parseRichTextParagraphs P2b failed: ok=%v paras=%+v", okB, parasB)
+	}
+	var spanURLsB []string
+	for _, sp := range parasB[0].Spans {
+		if sp.Kind == richSpanLink {
+			spanURLsB = append(spanURLsB, sp.URL)
+		}
+	}
+	wantURLsB := []string{"https://x.com/other_user/status/1900000000000099888", "https://t.co/Unmapped99"}
+	if !slices.Equal(spanURLsB, wantURLsB) {
+		t.Fatalf("P2b span URLs = %v, want %v", spanURLsB, wantURLsB)
 	}
 }

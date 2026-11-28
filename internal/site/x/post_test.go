@@ -983,3 +983,64 @@ func TestXHyperlinkHydrationEntitiesBioAndArticleLinks(t *testing.T) {
 		t.Fatalf("article multi-anchor same-URL links = %+v", artLinks)
 	}
 }
+
+func TestHydrateTweetTextVariableWidthLowercaseUnicodeNoPanic(t *testing.T) {
+	// Turkish 'İ' (U+0130, 2 UTF-8 bytes) expands to 3 bytes under strings.ToLower;
+	// short-URL replacement must use equal-byte-length ASCII lowercasing so offsets
+	// never drift or panic with slice bounds out of range.
+	urls := []URLEntity{
+		{
+			ShortURL:    "https://t.co/ab",
+			ExpandedURL: "https://example.com/istanbul-ok",
+			DisplayURL:  "example.com/istanbul-ok",
+		},
+		{
+			ShortURL:    "https://t.co/Ab",
+			ExpandedURL: "https://example.com/upper-ab",
+			DisplayURL:  "example.com/upper-ab",
+		},
+	}
+
+	got1 := hydrateTweetText("İstanbul https://t.co/ab", "1791257321273799501", urls, nil)
+	if got1 != "İstanbul https://example.com/istanbul-ok" {
+		t.Fatalf("hydrateTweetText(İstanbul + t.co) = %q", got1)
+	}
+
+	got2 := hydrateTweetText("İİİİİİİİİİİİİİİhttps://t.co/ab", "1791257321273799502", urls, nil)
+	if got2 != "İİİİİİİİİİİİİİİhttps://example.com/istanbul-ok" {
+		t.Fatalf("hydrateTweetText(repeated İ + t.co at end) = %q", got2)
+	}
+
+	got3 := hydrateTweetText("İstanbul HTTP://T.CO/ab 与 https://t.co/Ab 结束", "1791257321273799503", urls, nil)
+	want3 := "İstanbul https://example.com/istanbul-ok 与 https://example.com/upper-ab 结束"
+	if got3 != want3 {
+		t.Fatalf("hydrateTweetText(mixed case scheme + case-sensitive t.co after İ) = %q, want %q", got3, want3)
+	}
+
+	// End-to-end parseTweetResult check with Turkish 'İ' preceding trailing t.co.
+	c := NewClient(ClientOptions{})
+	raw := []byte(`{
+		"__typename": "Tweet",
+		"rest_id": "1791257321273799504",
+		"core": {"user_results": {"result": ` + makeUserCoreJSON("1000000000000000089", "ist_author", "İstanbul Author", "") + `}},
+		"legacy": {
+			"id_str": "1791257321273799504",
+			"full_text": "İstanbul &amp; Ankara https://t.co/ab",
+			"entities": {
+				"urls": [{
+					"url": "https://t.co/ab",
+					"expanded_url": "https://example.com/istanbul-ok?a=1&copy=2",
+					"display_url": "example.com/istanbul-ok"
+				}]
+			}
+		}
+	}`)
+	post := c.parseTweetResult(raw, 0)
+	if post == nil || post.Text != "İstanbul & Ankara https://example.com/istanbul-ok?a=1&copy=2" {
+		t.Fatalf("parseTweetResult(İstanbul) text = %+v", post)
+	}
+	links := BuildPostLinks(post)
+	if len(links) != 1 || links[0].URL != "https://example.com/istanbul-ok?a=1&copy=2" {
+		t.Fatalf("BuildPostLinks(İstanbul) = %+v", links)
+	}
+}

@@ -1596,11 +1596,36 @@ func isShortURLBoundaryByte(b byte) bool {
 	return !((b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' || b == '-')
 }
 
-func findNextShortURLMatch(s string, from int, reps []shortURLReplacement) (start, end int, replacement string, ok bool) {
+// asciiLower lowercases only ASCII bytes 'A'..'Z' -> 'a'..'z', leaving every
+// non-ASCII UTF-8 byte untouched so len(asciiLower(s)) == len(s) always holds
+// and byte offsets computed on the lowered string can safely slice s.
+func asciiLower(s string) string {
+	hasUpper := false
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			hasUpper = true
+			break
+		}
+	}
+	if !hasUpper {
+		return s
+	}
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
+func findNextShortURLMatch(s, lower string, from int, reps []shortURLReplacement) (start, end int, replacement string, ok bool) {
 	bestStart := -1
 	bestEnd := -1
 	bestRep := ""
-	lower := strings.ToLower(s)
+	if len(lower) != len(s) {
+		lower = asciiLower(s)
+	}
 	for _, rep := range reps {
 		var variants []string
 		if rep.tcoKey != "" {
@@ -1612,7 +1637,7 @@ func findNextShortURLMatch(s string, from int, reps []shortURLReplacement) (star
 			if v == "" {
 				continue
 			}
-			lv := strings.ToLower(v)
+			lv := asciiLower(v)
 			search := from
 			for search <= len(s)-len(v) {
 				rel := strings.Index(lower[search:], lv)
@@ -1697,9 +1722,10 @@ func hydrateTweetText(rawText, selfID string, urls []URLEntity, mediaShortURLs [
 		sb.WriteString(html.UnescapeString(rawText))
 	} else {
 		sb.Grow(len(rawText) + 32)
+		lowerRaw := asciiLower(rawText)
 		pos := 0
 		for pos < len(rawText) {
-			start, end, rep, ok := findNextShortURLMatch(rawText, pos, reps)
+			start, end, rep, ok := findNextShortURLMatch(rawText, lowerRaw, pos, reps)
 			if !ok {
 				sb.WriteString(html.UnescapeString(rawText[pos:]))
 				break

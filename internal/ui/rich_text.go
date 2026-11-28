@@ -642,6 +642,53 @@ func buildPlainOrHashtagSpans(segment string, highlightHashtags bool) []richSpan
 	return out
 }
 
+// asciiLower lowercases only ASCII bytes 'A'..'Z' -> 'a'..'z', leaving every
+// non-ASCII UTF-8 byte untouched so len(asciiLower(s)) == len(s) always holds
+// and byte offsets computed on the lowered string can safely slice s.
+func asciiLower(s string) string {
+	hasUpper := false
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			hasUpper = true
+			break
+		}
+	}
+	if !hasUpper {
+		return s
+	}
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
+// asciiEqualFold reports whether a and b have identical byte lengths and match
+// when ASCII 'A'..'Z' are folded to 'a'..'z' (all non-ASCII bytes match literally).
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca == cb {
+			continue
+		}
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}
+
 func indexInlineLinkPrefix(s string) (idx int, isSinaWeibo bool) {
 	best := -1
 	bestSina := false
@@ -661,7 +708,8 @@ func indexInlineLinkPrefix(s string) (idx int, isSinaWeibo bool) {
 		return best, bestSina
 	}
 	// Fallback case-insensitive check only if mixed-case scheme exists.
-	lower := strings.ToLower(s)
+	// Use asciiLower so byte offsets never drift on variable-width Unicode lowercase runes (e.g. İ).
+	lower := asciiLower(s)
 	check(strings.Index(lower, "https://"), false)
 	check(strings.Index(lower, "http://"), false)
 	check(strings.Index(lower, "sinaweibo://"), true)
@@ -918,7 +966,7 @@ func findUnclaimedLineSpan(line, label string, from int, claimed []lineLinkMatch
 	} else if strings.HasSuffix(label, "...") {
 		variants = append(variants, strings.TrimSuffix(label, "...")+"…")
 	}
-	lowerLbl := strings.ToLower(label)
+	lowerLbl := asciiLower(label)
 	if strings.HasPrefix(lowerLbl, "www.") {
 		trimmed := label[4:]
 		variants = append(variants, trimmed)
@@ -962,19 +1010,9 @@ func findCaseInsensitiveUnclaimedSpan(line, needle string, from int, claimed []l
 	if needle == "" {
 		return -1, 0
 	}
-	// Restrict to ASCII-safe byte-length-preserving case-insensitive matching so byte offsets remain exact.
-	if !isPureASCIIStr(needle) {
-		// Handle trailing Unicode "…" cleanly by comparing ASCII prefix + exact "…".
-		if strings.HasSuffix(needle, "…") && isPureASCIIStr(strings.TrimSuffix(needle, "…")) {
-			// Safe: "…" is unchanged by strings.ToLower, byte lengths match when line prefix is ASCII.
-		} else {
-			return -1, 0
-		}
-	}
-	needleLower := strings.ToLower(needle)
-	nLen := len(needleLower)
+	nLen := len(needle)
 	for cur := from; cur+nLen <= len(line); {
-		if strings.EqualFold(line[cur:cur+nLen], needleLower) {
+		if asciiEqualFold(line[cur:cur+nLen], needle) {
 			end := cur + nLen
 			if !spanOverlapsClaimed(cur, end, claimed) && isDomainLabelBoundary(line, cur, end) {
 				return cur, nLen
@@ -987,15 +1025,6 @@ func findCaseInsensitiveUnclaimedSpan(line, needle string, from int, claimed []l
 		cur += w
 	}
 	return -1, 0
-}
-
-func isPureASCIIStr(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
-			return false
-		}
-	}
-	return true
 }
 
 func spanOverlapsClaimed(start, end int, claimed []lineLinkMatch) bool {

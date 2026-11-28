@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/chialecode/trace/internal/library"
@@ -2333,21 +2335,61 @@ func (a *App) renderXOfflineVideoCard(c *ui.Context, item library.ItemMetadata, 
 	}
 }
 
+var reXSelfStatusPathUI = regexp.MustCompile(`(?i)/status(?:es)?/([0-9]+)(?:/(?:photo|video)/[0-9]+)?/?$`)
+
+func isXSelfStatusURLUI(rawURL, selfID string) bool {
+	normID := strings.TrimLeft(strings.TrimSpace(selfID), "0")
+	if normID == "" || strings.TrimSpace(rawURL) == "" {
+		return false
+	}
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "x.com", "www.x.com", "mobile.x.com", "m.x.com",
+		"twitter.com", "www.twitter.com", "mobile.twitter.com", "m.twitter.com":
+	default:
+		return false
+	}
+	m := reXSelfStatusPathUI.FindStringSubmatch(u.Path)
+	return len(m) == 2 && strings.TrimLeft(m[1], "0") == normID
+}
+
+func stripShortURLVariantUI(text, shortU string) string {
+	replaced := replaceShortURLVariantsUI(text, shortU, "")
+	if replaced == text {
+		return text
+	}
+	lines := strings.Split(replaced, "\n")
+	for i, line := range lines {
+		for strings.Contains(line, "  ") {
+			line = strings.ReplaceAll(line, "  ", " ")
+		}
+		lines[i] = strings.TrimRight(line, " \t")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 func xPostTextAndLinksUI(p *service.XPostDTO, cached *library.ItemMetadata, fromOrigin bool) (string, []service.TextLinkDTO) {
 	if p == nil {
 		return "", xPostLinksUI(nil, cached, fromOrigin)
 	}
 	text := p.Text
 	links := xPostLinksUI(p, cached, fromOrigin)
-	if len(p.URLs) == 0 || !strings.Contains(strings.ToLower(text), "t.co/") {
+	if len(p.URLs) == 0 || !strings.Contains(asciiLower(text), "t.co/") {
 		return text, links
 	}
 	// If an online/legacy XPostDTO still holds unexpanded t.co short URLs in Text
-	// alongside URLs entities, expand them safely so rich_text clicks jump directly
-	// to the expanded URL with its DisplayURL label.
+	// alongside URLs entities, expand them safely (or strip self-truncation links)
+	// so rich_text clicks jump directly to the expanded URL with its DisplayURL label.
 	for _, u := range p.URLs {
 		shortU := strings.TrimSpace(u.ShortURL)
 		if shortU == "" || !isTCoJumpURL(shortU) {
+			continue
+		}
+		if isXSelfStatusURLUI(u.ExpandedURL, p.ID) {
+			text = stripShortURLVariantUI(text, shortU)
 			continue
 		}
 		exp, ok := ValidateSafeJumpURL(u.ExpandedURL)
@@ -2360,7 +2402,7 @@ func xPostTextAndLinksUI(p *service.XPostDTO, cached *library.ItemMetadata, from
 }
 
 func replaceShortURLVariantsUI(text, shortU, expanded string) string {
-	lowerShort := strings.ToLower(shortU)
+	lowerShort := asciiLower(shortU)
 	var suffix string
 	switch {
 	case strings.HasPrefix(lowerShort, "https://t.co/"):
@@ -2376,12 +2418,13 @@ func replaceShortURLVariantsUI(text, shortU, expanded string) string {
 	}
 	for _, pfx := range []string{"https://t.co/", "http://t.co/"} {
 		needle := pfx + suffix
-		lowerNeedle := strings.ToLower(needle)
+		lowerNeedle := asciiLower(needle)
+		lowerText := asciiLower(text)
 		var sb strings.Builder
 		pos := 0
 		changed := false
 		for pos < len(text) {
-			rel := strings.Index(strings.ToLower(text[pos:]), lowerNeedle)
+			rel := strings.Index(lowerText[pos:], lowerNeedle)
 			if rel < 0 {
 				break
 			}
@@ -2417,7 +2460,14 @@ func replaceShortURLVariantsUI(text, shortU, expanded string) string {
 func xPostLinksUI(p *service.XPostDTO, cached *library.ItemMetadata, fromOrigin bool) []service.TextLinkDTO {
 	var out []service.TextLinkDTO
 	seen := make(map[string]bool)
+	selfID := ""
+	if p != nil {
+		selfID = p.ID
+	}
 	addLink := func(label, rawURL string) {
+		if selfID != "" && isXSelfStatusURLUI(rawURL, selfID) {
+			return
+		}
 		cleanU, ok := ValidateSafeJumpURL(rawURL)
 		if !ok {
 			return
@@ -2435,12 +2485,17 @@ func xPostLinksUI(p *service.XPostDTO, cached *library.ItemMetadata, fromOrigin 
 		out = append(out, service.TextLinkDTO{Label: lbl, URL: cleanU})
 	}
 	if p != nil {
-		for _, l := range p.Links {
-			addLink(l.Label, l.URL)
-		}
-		for _, u := range p.URLs {
-			exp := firstNonEmptyStrUI(u.ExpandedURL, u.ShortURL)
-			addLink(u.DisplayURL, exp)
+		if len(p.Links) > 0 {
+			// Trust pre-filtered p.Links (already stripped of self-truncation status links)
+			// instead of unconditionally re-importing p.URLs.
+			for _, l := range p.Links {
+				addLink(l.Label, l.URL)
+			}
+		} else {
+			for _, u := range p.URLs {
+				exp := firstNonEmptyStrUI(u.ExpandedURL, u.ShortURL)
+				addLink(u.DisplayURL, exp)
+			}
 		}
 		if len(out) > 0 {
 			return out

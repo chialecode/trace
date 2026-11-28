@@ -308,6 +308,25 @@ func TestFormatHelpersAndSafeLinks(t *testing.T) {
 	}
 }
 
+func TestExtractLinksVariableWidthLowercaseUnicodeNoPanic(t *testing.T) {
+	// Turkish 'İ' (U+0130) expands from 2 bytes to 3 bytes under strings.ToLower;
+	// scanMobileInlineURLs must use equal-byte-length ASCII lowercasing.
+	links1 := ExtractLinks("İstanbul https://example.com/istanbul-ok 结束", nil)
+	if len(links1) != 1 || links1[0].URL != "https://example.com/istanbul-ok" {
+		t.Fatalf("ExtractLinks(İstanbul + https://) = %+v", links1)
+	}
+
+	links2 := ExtractLinks("İİİİİİİİİİİİİİİhttps://a.co", nil)
+	if len(links2) != 1 || links2[0].URL != "https://a.co" {
+		t.Fatalf("ExtractLinks(repeated İ + https://a.co) = %+v", links2)
+	}
+
+	links3 := ExtractLinks("İstanbul HTTP://Example.com/MixedCase 和 İİİ https://example.org/second", nil)
+	if len(links3) != 2 || links3[0].URL != "http://Example.com/MixedCase" || links3[1].URL != "https://example.org/second" {
+		t.Fatalf("ExtractLinks(mixed case + multiple İ) = %+v", links3)
+	}
+}
+
 func TestImageViewerWeiboNoWatermarkOriginalAndLivePhoto(t *testing.T) {
 	fh, cleanup := newFakeHost(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

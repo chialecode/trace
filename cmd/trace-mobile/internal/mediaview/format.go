@@ -272,9 +272,32 @@ func canonicalMobileURLKey(rawURL string, stripFragment bool) string {
 	return key
 }
 
+// asciiLower lowercases only ASCII bytes 'A'..'Z' -> 'a'..'z', leaving every
+// non-ASCII UTF-8 byte untouched so len(asciiLower(s)) == len(s) always holds
+// and byte offsets computed on the lowered string can safely slice s.
+func asciiLower(s string) string {
+	hasUpper := false
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			hasUpper = true
+			break
+		}
+	}
+	if !hasUpper {
+		return s
+	}
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
 func scanMobileInlineURLs(text string) []string {
 	var out []string
-	lower := strings.ToLower(text)
+	lower := asciiLower(text)
 	pos := 0
 	for pos < len(text) {
 		pHTTPS := strings.Index(lower[pos:], "https://")
