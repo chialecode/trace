@@ -35,6 +35,7 @@ func (a *App) cancelWeiboQRLogin() {
 		a.backend.CancelWeiboQRLogin(a.WeiboQRSession.FlowID)
 	}
 	a.WeiboQRSession, a.WeiboQRBitmap = service.WeiboQRSessionDTO{}, nil
+	a.WeiboQRState, a.WeiboQRStatusText = "", ""
 }
 
 func (a *App) cancelQRLogin() {
@@ -48,8 +49,8 @@ func (a *App) startWeiboQRLogin() {
 	a.setLoginError("")
 	a.WeiboQRState = "waiting"
 	a.WeiboQRStatusText = "正在获取二维码…"
-	requestGuarded(a, fmt.Sprintf("weibo-qr-start-%d", revision), func() bool {
-		return a.weiboQRRevision == revision && a.CurrentRoute == RouteLogin && normalizeSiteIDUI(a.LoginSite) == "weibo"
+	requestGuardedCleanup(a, fmt.Sprintf("weibo-qr-start-%d", revision), func() bool {
+		return a.weiboQRRevision == revision && a.CurrentRoute == RouteLogin && normalizeSiteIDUI(a.LoginSite) == "weibo" && a.WeiboLoginTab != "cookie"
 	}, a.backend.StartWeiboQRLogin, func(session service.WeiboQRSessionDTO) {
 		bmp := decodeImageBytesToBitmap(session.PNG)
 		if bmp == nil {
@@ -95,6 +96,10 @@ func (a *App) startWeiboQRLogin() {
 		a.WeiboQRState = "error"
 		a.setLoginError(userErrorText(err))
 		a.WeiboQRStatusText = "获取失败，请刷新重试"
+	}, func(session service.WeiboQRSessionDTO) {
+		if session.FlowID != "" {
+			a.backend.CancelWeiboQRLogin(session.FlowID)
+		}
 	})
 }
 
@@ -113,8 +118,6 @@ func (a *App) pollWeiboQRLogin() {
 		switch result.State {
 		case "confirmed":
 			a.cancelQRLogin()
-			a.WeiboQRState = ""
-			a.WeiboQRStatusText = ""
 			uid := strings.TrimSpace(result.Account.UID)
 			if result.Account.Uname != "" && uid != "" {
 				a.notifyInfo(fmt.Sprintf("已登录微博：%s · UID %s", result.Account.Uname, uid))
@@ -136,7 +139,7 @@ func (a *App) pollWeiboQRLogin() {
 	}, func(err error) {
 		a.setLoginError(userErrorText(err))
 		kind := site.KindOf(err)
-		if kind == site.ErrKindRiskControl || kind == site.ErrKindRateLimited || kind == site.ErrKindAuthRequired || kind == site.ErrKindSchemaChanged {
+		if kind == site.ErrKindRiskControl || kind == site.ErrKindRateLimited || kind == site.ErrKindAuthRequired || kind == site.ErrKindSchemaChanged || kind == site.ErrKindBlocked {
 			a.cancelWeiboQRLogin()
 			a.WeiboQRState = "error"
 			a.WeiboQRStatusText = "扫码验证失败，请刷新重试"

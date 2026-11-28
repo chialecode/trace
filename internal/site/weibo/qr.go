@@ -25,6 +25,7 @@ import (
 	"time"
 
 	qrcode "github.com/yeqown/go-qrcode/v2"
+	_ "golang.org/x/image/webp"
 
 	"github.com/chialecode/trace/internal/credential"
 	"github.com/chialecode/trace/internal/site"
@@ -768,12 +769,16 @@ func (c *Client) doSSOGetAllowRedirect(ctx context.Context, rawEndpoint string, 
 
 	resp, err := c.qrClient.Do(req)
 	if err != nil {
+		unwrapped := site.UnwrapURLError(err)
+		if site.IsKind(unwrapped, site.ErrKindBlocked) {
+			return nil, unwrapped
+		}
 		return nil, &site.Error{
 			Site:     site.Weibo,
 			Kind:     site.ErrKindNetwork,
 			Endpoint: endpointLabel,
 			Message:  "请求微博扫码服务失败，请检查网络连接",
-			Err:      site.UnwrapURLError(err),
+			Err:      unwrapped,
 		}
 	}
 	defer resp.Body.Close()
@@ -905,12 +910,16 @@ func (c *Client) fetchQRImagePNG(ctx context.Context, rawURL string) ([]byte, er
 
 	resp, err := c.qrClient.Do(req)
 	if err != nil {
+		unwrapped := site.UnwrapURLError(err)
+		if site.IsKind(unwrapped, site.ErrKindBlocked) {
+			return nil, unwrapped
+		}
 		return nil, &site.Error{
 			Site:     site.Weibo,
 			Kind:     site.ErrKindNetwork,
 			Endpoint: endpointLabel,
 			Message:  "拉取微博二维码图片失败，请检查网络连接",
-			Err:      site.UnwrapURLError(err),
+			Err:      unwrapped,
 		}
 	}
 	defer resp.Body.Close()

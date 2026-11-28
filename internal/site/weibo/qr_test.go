@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -787,4 +788,108 @@ func TestUnwrapJSONPStrictValidation(t *testing.T) {
 	if lbl := sanitizeEndpointLabel(u); strings.Contains(lbl, "SECRET_QRID_XYZ") {
 		t.Fatalf("sanitizeEndpointLabel leaked query secret: %q", lbl)
 	}
+}
+
+func TestWeiboQRWebPImageTranscodingAndGuardBlockedErrorPreservation(t *testing.T) {
+	t.Run("webp_qr_image_transcoded_to_png", func(t *testing.T) {
+		// Minimal valid 1x1 lossless VP8L WebP image.
+		webp1x1 := []byte{
+			'R', 'I', 'F', 'F', 0x14, 0x00, 0x00, 0x00,
+			'W', 'E', 'B', 'P',
+			'V', 'P', '8', 'L', 0x08, 0x00, 0x00, 0x00,
+			0x2f, 0x00, 0x00, 0x00, 0x00, 0x88, 0x88, 0x08,
+		}
+		var srv *httptest.Server
+		srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/sso/v2/qrcode/image":
+				cb := r.URL.Query().Get("callback")
+				_, _ = fmt.Fprintf(w, `%s({"retcode":20000000,"data":{"qrid":"qr_webp_1","image":%q}})`, cb, srv.URL+"/qr.webp")
+			case "/qr.webp":
+				w.Header().Set("Content-Type", "image/webp")
+				_, _ = w.Write(webp1x1)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer srv.Close()
+
+		c := newFastQRTestClient(t, srv.URL, nil, time.Now)
+		sess, err := c.StartQR(context.Background())
+		if err != nil {
+			t.Fatalf("StartQR with WebP image failed: %v", err)
+		}
+		if ext, ok := site.SniffImageMagicBytes(sess.PNG); !ok || ext != ".png" {
+			t.Fatalf("expected PNG output after WebP transcoding, got ext=%q ok=%v", ext, ok)
+		}
+		cfg, format, err := image.DecodeConfig(bytes.NewReader(sess.PNG))
+		if err != nil || format != "png" || cfg.Width != 1 || cfg.Height != 1 {
+			t.Fatalf("transcoded PNG config = (%+v, %q, %v), want 1x1 png", cfg, format, err)
+		}
+	})
+
+	t.Run("guarded_dialer_blocked_preserved_without_query_leak", func(t *testing.T) {
+		guardErr := &site.Error{
+			Site:    site.Weibo,
+			Kind:    site.ErrKindBlocked,
+			Message: "已拦截微博扫码请求指向内网或回环地址",
+		}
+		cSSO := NewClient(ClientOptions{
+			Endpoints: Endpoints{
+				QRImage: "https://passport.weibo.com/sso/v2/qrcode/image",
+				QRCheck: "https://passport.weibo.com/sso/v2/qrcode/check",
+			},
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return nil, &url.Error{
+					Op:  "Get",
+					URL: req.URL.String(),
+					Err: guardErr,
+				}
+			}),
+		})
+		// Seed an active flow with a secret qrid and verify PollQR preserves ErrKindBlocked without leaking qrid.
+		cSSO.qr.active = &qrFlowState{FlowID: "wbqr-block-1", QRID: "SECRET_QRID_DIAL_BLOCK", ExpiresAt: time.Now().Add(time.Minute)}
+		cSSO.qr.history = map[string]string{"wbqr-block-1": "active"}
+
+		_, err := cSSO.PollQR(context.Background(), "wbqr-block-1")
+		if !site.IsKind(err, site.ErrKindBlocked) {
+			t.Fatalf("PollQR blocked dialer err = %v, want ErrKindBlocked", err)
+		}
+		if !strings.Contains(err.Error(), "已拦截微博扫码请求指向内网或回环地址") {
+			t.Fatalf("PollQR blocked dialer message lost guard text: %v", err)
+		}
+		if strings.Contains(err.Error(), "SECRET_QRID_DIAL_BLOCK") {
+			t.Fatalf("PollQR blocked dialer error leaked qrid query param: %v", err)
+		}
+
+		// Verify fetchQRImagePNG also preserves ErrKindBlocked without leaking query secrets.
+		cImg := NewClient(ClientOptions{
+			Endpoints: Endpoints{
+				QRImage: "https://passport.weibo.com/sso/v2/qrcode/image",
+			},
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path == "/sso/v2/qrcode/image" {
+					cb := req.URL.Query().Get("callback")
+					body := fmt.Sprintf(`%s({"retcode":20000000,"data":{"qrid":"qr_img_block","image":"https://v2.qr.weibo.cn/inf/gen?qrid=SECRET_IMG_TOKEN"}})`, cb)
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{"Content-Type": []string{"application/javascript"}},
+						Body:       io.NopCloser(strings.NewReader(body)),
+					}, nil
+				}
+				return nil, &url.Error{
+					Op:  "Get",
+					URL: req.URL.String(),
+					Err: guardErr,
+				}
+			}),
+		})
+		_, err = cImg.StartQR(context.Background())
+		if !site.IsKind(err, site.ErrKindBlocked) {
+			t.Fatalf("StartQR image fetch blocked dialer err = %v, want ErrKindBlocked", err)
+		}
+		if strings.Contains(err.Error(), "SECRET_IMG_TOKEN") {
+			t.Fatalf("StartQR image fetch blocked error leaked query secret: %v", err)
+		}
+	})
 }

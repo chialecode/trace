@@ -655,7 +655,8 @@ func TestWeiboQRLoginFlowTabsCancelAndSettings(t *testing.T) {
 		t.Fatalf("expected expired state with refresh button, got state=%q flow=%q", app.WeiboQRState, app.WeiboQRSession.FlowID)
 	}
 
-	// 2. Refresh QR and verify switching to Cookie tab cancels the active QR session.
+	// 2. Refresh QR and verify switching to Cookie tab cancels the active QR session
+	// and leaves NO stale QR status text when returning to the QR tab.
 	if err := tt.Click("获取微博登录二维码"); err != nil {
 		t.Fatalf("refresh Weibo QR: %v", err)
 	}
@@ -665,15 +666,18 @@ func TestWeiboQRLoginFlowTabsCancelAndSettings(t *testing.T) {
 		t.Fatalf("switch to Cookie tab: %v", err)
 	}
 	tt.Frame()
-	if stub.wbQRCancelled.Load() <= beforeCancel || app.WeiboQRSession.FlowID != "" || app.WeiboQRBitmap != nil {
-		t.Fatal("switching from QR tab to Cookie tab must cancel active Weibo QR flow")
+	if stub.wbQRCancelled.Load() <= beforeCancel || app.WeiboQRSession.FlowID != "" || app.WeiboQRBitmap != nil || app.WeiboQRState != "" || app.WeiboQRStatusText != "" {
+		t.Fatalf("switching from QR tab to Cookie tab must cancel flow and clear QR status, got state=%q text=%q", app.WeiboQRState, app.WeiboQRStatusText)
 	}
 
-	// 3. Risk-control error during poll stops session and surfaces error.
+	// 3. Returning to QR tab shows clean idle state (no stale status); risk-control and blocked errors both stop polling.
 	if err := tt.Click("微博登录标签：扫码"); err != nil {
 		t.Fatalf("switch back to QR tab: %v", err)
 	}
 	tt.Frame()
+	if tt.HasText("扫码状态：") {
+		t.Fatalf("returning to QR tab after tab-switch cancel must not show stale QR status, got state=%q text=%q", app.WeiboQRState, app.WeiboQRStatusText)
+	}
 	stub.mu.Lock()
 	stub.wbQRPollErr = &site.Error{Site: site.Weibo, Kind: site.ErrKindRiskControl, Message: "微博扫码触发风控"}
 	stub.mu.Unlock()
@@ -683,6 +687,18 @@ func TestWeiboQRLoginFlowTabsCancelAndSettings(t *testing.T) {
 	tt.Frame()
 	if app.WeiboQRSession.FlowID != "" || !strings.Contains(app.LoginError, "风控") {
 		t.Fatalf("risk control must cancel active flow and display error: flow=%q err=%q", app.WeiboQRSession.FlowID, app.LoginError)
+	}
+
+	stub.mu.Lock()
+	stub.wbQRPollErr = &site.Error{Site: site.Weibo, Kind: site.ErrKindBlocked, Message: "已拦截微博扫码请求指向内网或回环地址"}
+	stub.mu.Unlock()
+	_ = tt.Click("获取微博登录二维码")
+	tt.Frame()
+	beforeBlockedCancel := stub.wbQRCancelled.Load()
+	_ = tt.Click("检查微博扫码状态")
+	tt.Frame()
+	if app.WeiboQRSession.FlowID != "" || stub.wbQRCancelled.Load() <= beforeBlockedCancel || app.WeiboQRState != "error" || !strings.Contains(app.LoginError, "内网或回环") {
+		t.Fatalf("ErrKindBlocked must stop active QR flow and surface error: flow=%q state=%q err=%q", app.WeiboQRSession.FlowID, app.WeiboQRState, app.LoginError)
 	}
 
 	// 4. Confirmed QR login enters the app and Settings › Account displays QR source + both re-login buttons.
@@ -733,15 +749,25 @@ func TestWeiboQRLoginFlowTabsCancelAndSettings(t *testing.T) {
 		t.Fatalf("expected /login weibo qr tab, got route=%s site=%s tab=%s", app.CurrentRoute, app.LoginSite, app.WeiboLoginTab)
 	}
 
-	// Navigating away from /login cancels an active Weibo QR flow.
+	// Navigating away from /login cancels an active Weibo QR flow and clears stale status.
 	_ = tt.Click("获取微博登录二维码")
 	tt.Frame()
 	beforeNavCancel := stub.wbQRCancelled.Load()
 	app.Navigate(RouteSettings)
 	tt.Frame()
-	if stub.wbQRCancelled.Load() <= beforeNavCancel || app.WeiboQRSession.FlowID != "" {
-		t.Fatal("leaving /login did not cancel active Weibo QR session")
+	if stub.wbQRCancelled.Load() <= beforeNavCancel || app.WeiboQRSession.FlowID != "" || app.WeiboQRState != "" || app.WeiboQRStatusText != "" {
+		t.Fatalf("leaving /login did not cancel active Weibo QR session and clear status: flow=%q state=%q text=%q", app.WeiboQRSession.FlowID, app.WeiboQRState, app.WeiboQRStatusText)
 	}
+	// Re-entering /login → weibo QR tab renders no stale status banner.
+	if err := tt.Click("扫码重新登录微博"); err != nil {
+		t.Fatalf("re-open /login weibo qr tab: %v", err)
+	}
+	tt.Frame()
+	if tt.HasText("扫码状态：") {
+		t.Fatalf("returning to /login after route-leave cancel must not show stale status, got state=%q text=%q", app.WeiboQRState, app.WeiboQRStatusText)
+	}
+	app.Navigate(RouteSettings)
+	tt.Frame()
 
 	if err := tt.Click("重新粘贴微博Cookie"); err != nil {
 		t.Fatalf("click 重新粘贴微博Cookie: %v", err)
