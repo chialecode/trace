@@ -409,8 +409,8 @@ func (c *Client) parseAccountWorks(ctx context.Context, ep string, top map[strin
 			cleanSkipped++
 			continue
 		}
-		seen[id] = true
 		if n.Status != nil && (n.Status.IsDelete || n.Status.IsProhibited) {
+			seen[id] = true
 			cleanSkipped++
 			continue
 		}
@@ -422,6 +422,7 @@ func (c *Client) parseAccountWorks(ctx context.Context, ep string, top map[strin
 			}
 			continue
 		}
+		seen[id] = true
 		page.Works = append(page.Works, *work)
 	}
 	if len(rawItems) > 0 && len(page.Works) == 0 && cleanSkipped == 0 && failedItems > 0 {

@@ -158,6 +158,10 @@ func (c *Client) VerifyCredential(ctx context.Context) (credential.Status, error
 
 // LogoutCredential clears the stored Douyin credential and invalidates cached live room mappings.
 func (c *Client) LogoutCredential() error {
+	var clearErr error
+	if c.cred != nil {
+		clearErr = c.cred.Clear()
+	}
 	c.clearFallbackMSToken()
 	c.clearSyncedWebID()
 	c.clearEphemeralGuard()
@@ -166,10 +170,7 @@ func (c *Client) LogoutCredential() error {
 	c.webRIDByUser = make(map[string]liveWebRIDEntry)
 	c.liveCacheMu.Unlock()
 
-	if c.cred == nil {
-		return nil
-	}
-	return c.cred.Clear()
+	return clearErr
 }
 
 // GetSelfProfile fetches and strictly validates the currently logged-in user's profile via profile/self.

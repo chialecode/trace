@@ -1080,6 +1080,408 @@ func TestSyncedWebIDFromLoginWarmupTTWIDBindingAndOrder(t *testing.T) {
 			t.Fatalf("user B favorite webid = %q, want %q", lastFavWebID, webIDB)
 		}
 	})
+
+	t.Run("stale_queued_request_cannot_overwrite_new_account_or_logged_out_webid", func(t *testing.T) {
+		const (
+			defaultWID = "7300000000000000088"
+			webIDA     = "7311111111111111118"
+			webIDB     = "7322222222222222228"
+			webIDC     = "7333333333333333338"
+		)
+
+		// Sub-scenario 1: Account A request resolves cookie & queues behind LoginWithCookie(B) on serialGate.
+		store := openTestDouyinCredStore(t, false)
+		if _, err := store.SaveVerifiedDouyinManual(map[string]string{
+			"sessionid": "SYNTH_SESS_A",
+			"ttwid":     "SYNTH_TTWID_A",
+		}, credential.DouyinProfile{UID: "1001", SecUID: selfSecUID, Uname: "用户A"}); err != nil {
+			t.Fatal(err)
+		}
+
+		loginBInTransport := make(chan struct{})
+		releaseLoginB := make(chan struct{})
+		loginBDone := make(chan struct{})
+		reqAPastResolve := make(chan struct{})
+		var reqAPastOnce sync.Once
+		var profileHits atomic.Int32
+		var favWebIDB string
+
+		client := NewClient(ClientOptions{
+			CredStore:   store,
+			WebID:       defaultWID,
+			MinInterval: -1,
+			Entropy:     newDeterministicEntropy(0x66),
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch req.URL.Path {
+				case "/aweme/v1/web/user/profile/self/":
+					if profileHits.Add(1) == 1 {
+						close(loginBInTransport)
+						<-releaseLoginB
+					}
+					return jsonHTTPResponse(200, `{"status_code":0,"user":{"uid":"1002","sec_uid":"`+selfSecUID+`","nickname":"用户B"}}`, map[string]string{
+						"cookie_ttwidinfo_webid": webIDB,
+					}), nil
+				case pathFollowingList:
+					// Hold Account A's response until LoginWithCookie(B) has persisted and applied webIDB.
+					<-loginBDone
+					if !strings.Contains(req.Header.Get("Cookie"), "SYNTH_TTWID_A") {
+						t.Errorf("stale request cookie = %q, want SYNTH_TTWID_A", req.Header.Get("Cookie"))
+					}
+					return jsonHTTPResponse(200, `{"status_code":0,"followings":[],"has_more":false,"min_time":0}`, map[string]string{
+						"cookie_ttwidinfo_webid": webIDA,
+					}), nil
+				case pathFavorite:
+					favWebIDB = req.URL.Query().Get("webid")
+					return jsonHTTPResponse(200, `{"status_code":0,"aweme_list":[],"has_more":0,"max_cursor":0}`, nil), nil
+				default:
+					return jsonHTTPResponse(404, `{}`, nil), nil
+				}
+			}),
+		})
+		client.SetAutomaticRequestHandlers(func(context.Context, string, string) error {
+			reqAPastOnce.Do(func() { close(reqAPastResolve) })
+			return nil
+		}, nil)
+
+		loginBErrCh := make(chan error, 1)
+		go func() {
+			_, err := client.LoginWithCookie(ctx, "sessionid=SYNTH_SESS_B; ttwid=SYNTH_TTWID_B")
+			close(loginBDone)
+			loginBErrCh <- err
+		}()
+		<-loginBInTransport
+
+		reqAErrCh := make(chan error, 1)
+		go func() {
+			_, err := client.Followings(site.WithAutomaticRequests(ctx, "test-stale-a"), selfSecUID, "")
+			reqAErrCh <- err
+		}()
+		<-reqAPastResolve
+		// Release LoginWithCookie(B); Request A already resolved Account A's Cookie before B saved.
+		close(releaseLoginB)
+
+		if err := <-loginBErrCh; err != nil {
+			t.Fatalf("LoginWithCookie(B) failed: %v", err)
+		}
+		if err := <-reqAErrCh; err != nil {
+			t.Fatalf("in-flight Account A Followings failed: %v", err)
+		}
+		if got := client.syncedWebIDFor(hashTTWID("SYNTH_TTWID_B")); got != webIDB {
+			t.Fatalf("Account B syncedWebID = %q after stale Account A response, want %q", got, webIDB)
+		}
+		if got := client.syncedWebIDFor(hashTTWID("SYNTH_TTWID_A")); got != "" {
+			t.Fatalf("stale Account A syncedWebID = %q leaked into client, want empty", got)
+		}
+		if _, err := client.Favorites(ctx, selfSecUID, ""); err != nil {
+			t.Fatalf("Account B Favorites failed: %v", err)
+		}
+		if favWebIDB != webIDB {
+			t.Fatalf("Account B Favorites webid = %q, want %q", favWebIDB, webIDB)
+		}
+		if got := profileHits.Load(); got != 1 {
+			t.Fatalf("Account B triggered extra warmup profile/self: hits = %d, want 1", got)
+		}
+
+		// Sub-scenario 2: Logout while Account B request is in-flight must not resurrect syncedWebID.
+		logoutReqInFlight := make(chan struct{})
+		releaseLogoutReq := make(chan struct{})
+		logoutClient := NewClient(ClientOptions{
+			CredStore:   store,
+			WebID:       defaultWID,
+			MinInterval: -1,
+			Entropy:     newDeterministicEntropy(0x67),
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				close(logoutReqInFlight)
+				<-releaseLogoutReq
+				return jsonHTTPResponse(200, `{"status_code":0,"followings":[],"has_more":false,"min_time":0}`, map[string]string{
+					"cookie_ttwidinfo_webid": webIDB,
+				}), nil
+			}),
+		})
+		logoutReqDone := make(chan error, 1)
+		go func() {
+			_, err := logoutClient.Followings(ctx, selfSecUID, "")
+			logoutReqDone <- err
+		}()
+		<-logoutReqInFlight
+		if err := logoutClient.LogoutCredential(); err != nil {
+			t.Fatalf("LogoutCredential failed: %v", err)
+		}
+		close(releaseLogoutReq)
+		if err := <-logoutReqDone; err != nil {
+			t.Fatalf("in-flight Followings before logout failed: %v", err)
+		}
+		logoutClient.webIDMu.Lock()
+		gotSynced, gotHash, gotWarmup := logoutClient.syncedWebID, logoutClient.syncedTTWIDHash, logoutClient.webIDWarmupHash
+		logoutClient.webIDMu.Unlock()
+		if gotSynced != "" || gotHash != "" || gotWarmup != "" {
+			t.Fatalf("logged-out client retained stale webID state: synced=%q hash=%q warmup=%q", gotSynced, gotHash, gotWarmup)
+		}
+
+		// Sub-scenario 3: markAuthExpired while in-flight must linearize cred expiry before webIDGen++.
+		if _, err := store.SaveVerifiedDouyinManual(map[string]string{
+			"sessionid": "SYNTH_SESS_C",
+			"ttwid":     "SYNTH_TTWID_C",
+		}, credential.DouyinProfile{UID: "1003", SecUID: selfSecUID, Uname: "用户C"}); err != nil {
+			t.Fatal(err)
+		}
+		expReqInFlight := make(chan struct{})
+		releaseExpReq := make(chan struct{})
+		expClient := NewClient(ClientOptions{
+			CredStore:   store,
+			WebID:       defaultWID,
+			MinInterval: -1,
+			Entropy:     newDeterministicEntropy(0x68),
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				close(expReqInFlight)
+				<-releaseExpReq
+				return jsonHTTPResponse(200, `{"status_code":0,"followings":[],"has_more":false,"min_time":0}`, map[string]string{
+					"cookie_ttwidinfo_webid": webIDC,
+				}), nil
+			}),
+		})
+		expReqDone := make(chan error, 1)
+		go func() {
+			_, err := expClient.Followings(ctx, selfSecUID, "")
+			expReqDone <- err
+		}()
+		<-expReqInFlight
+		expClient.markAuthExpired("expired")
+		close(releaseExpReq)
+		if err := <-expReqDone; err != nil {
+			t.Fatalf("in-flight Followings before markAuthExpired failed: %v", err)
+		}
+		if st := store.Status(); st.State != "expired" {
+			t.Fatalf("store state = %q, want expired", st.State)
+		}
+		expClient.webIDMu.Lock()
+		gotSynced, gotHash, gotWarmup = expClient.syncedWebID, expClient.syncedTTWIDHash, expClient.webIDWarmupHash
+		expClient.webIDMu.Unlock()
+		if gotSynced != "" || gotHash != "" || gotWarmup != "" {
+			t.Fatalf("expired client retained stale webID state: synced=%q hash=%q warmup=%q", gotSynced, gotHash, gotWarmup)
+		}
+	})
+
+	t.Run("abnormal_or_blocked_responses_do_not_record_synced_webid", func(t *testing.T) {
+		const (
+			defaultWID = "7300000000000000066"
+			dirtyWID   = "7388888888888888888"
+		)
+		cases := []struct {
+			name     string
+			callFav  bool
+			headers  map[string]string
+			body     string
+			wantKind string
+		}{
+			{
+				name:     "favorites_empty_with_bdturing_params",
+				callFav:  true,
+				headers:  map[string]string{"cookie_ttwidinfo_webid": dirtyWID, "x-vc-bdturing-parameters": `{"code":"10000"}`},
+				body:     "",
+				wantKind: site.ErrKindUnavailable,
+			},
+			{
+				name:     "watch_history_empty_with_bdturing_params",
+				headers:  map[string]string{"cookie_ttwidinfo_webid": dirtyWID, "x-vc-bdturing-parameters": `{"code":"10000"}`},
+				body:     "",
+				wantKind: site.ErrKindRiskControl,
+			},
+			{
+				name:     "watch_history_json_with_bdturing_verify",
+				headers:  map[string]string{"cookie_ttwidinfo_webid": dirtyWID, "bdturing-verify": "verify_1"},
+				body:     `{"status_code":0,"aweme_list":[],"has_more":0}`,
+				wantKind: site.ErrKindRiskControl,
+			},
+			{
+				name:     "watch_history_html_captcha",
+				headers:  map[string]string{"cookie_ttwidinfo_webid": dirtyWID},
+				body:     `<html><title>验证码中间页</title></html>`,
+				wantKind: site.ErrKindRiskControl,
+			},
+			{
+				name:     "watch_history_malformed_json",
+				headers:  map[string]string{"cookie_ttwidinfo_webid": dirtyWID},
+				body:     `{"status_code":0,`,
+				wantKind: site.ErrKindSchemaChanged,
+			},
+			{
+				name:     "watch_history_nonzero_status_code",
+				headers:  map[string]string{"cookie_ttwidinfo_webid": dirtyWID},
+				body:     `{"status_code":10000,"status_msg":"verify"}`,
+				wantKind: site.ErrKindRiskControl,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				store := openTestDouyinCredStore(t, true)
+				var followWebID string
+				client := NewClient(ClientOptions{
+					CredStore:   store,
+					WebID:       defaultWID,
+					MinInterval: -1,
+					Entropy:     newDeterministicEntropy(0x69),
+					Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+						switch req.URL.Path {
+						case "/aweme/v1/web/user/profile/self/":
+							// No cookie_ttwidinfo_webid header so Favorites tests abnormal response directly.
+							return jsonHTTPResponse(200, `{"status_code":0,"user":{"uid":"900000000001","sec_uid":"`+selfSecUID+`","nickname":"异常拦截用户"}}`, nil), nil
+						case pathFavorite, pathHistoryRead:
+							return jsonHTTPResponse(200, tc.body, tc.headers), nil
+						case pathFollowingList:
+							followWebID = req.URL.Query().Get("webid")
+							return jsonHTTPResponse(200, `{"status_code":0,"followings":[],"has_more":false,"min_time":0}`, nil), nil
+						default:
+							return jsonHTTPResponse(404, `{}`, nil), nil
+						}
+					}),
+				})
+				var err error
+				if tc.callFav {
+					_, err = client.Favorites(ctx, selfSecUID, "")
+				} else {
+					_, err = client.WatchHistory(ctx, "")
+				}
+				if !site.IsKind(err, tc.wantKind) {
+					t.Fatalf("call(%s) err = %v, want kind %s", tc.name, err, tc.wantKind)
+				}
+				if got := client.syncedWebIDFor(hashTTWID("SYNTH_TTWID")); got != "" {
+					t.Fatalf("call(%s) polluted syncedWebID = %q, want empty", tc.name, got)
+				}
+				if _, err := client.Followings(ctx, selfSecUID, ""); err != nil {
+					t.Fatalf("Followings after %s failed: %v", tc.name, err)
+				}
+				if followWebID != defaultWID {
+					t.Fatalf("Followings after %s sent webid = %q, want default %q", tc.name, followWebID, defaultWID)
+				}
+			})
+		}
+	})
+
+	t.Run("warmup_ttwid_rotation_and_leader_cancel_vs_remote_timeout", func(t *testing.T) {
+		t.Run("leader_cancel_and_ttwid_rotation_marks_actual_outbound_ttwid", func(t *testing.T) {
+			store := openTestDouyinCredStore(t, false)
+			if _, err := store.SaveVerifiedDouyinManual(map[string]string{
+				"sessionid": "SYNTH_SESS_ROT",
+				"ttwid":     "SYNTH_TTWID_OLD",
+			}, credential.DouyinProfile{UID: "1004", SecUID: selfSecUID, Uname: "轮换用户"}); err != nil {
+				t.Fatal(err)
+			}
+
+			leaderStarted := make(chan struct{})
+			var profileHits atomic.Int32
+			client := NewClient(ClientOptions{
+				CredStore:   store,
+				WebID:       "7300000000000000055",
+				MinInterval: -1,
+				Entropy:     newDeterministicEntropy(0x6a),
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					switch req.URL.Path {
+					case "/aweme/v1/web/user/profile/self/":
+						if profileHits.Add(1) == 1 {
+							close(leaderStarted)
+							<-req.Context().Done()
+							return nil, req.Context().Err()
+						}
+						// Second warmup succeeds for rotated ttwid WITHOUT cookie_ttwidinfo_webid header.
+						return jsonHTTPResponse(200, `{"status_code":0,"user":{"uid":"1004","sec_uid":"`+selfSecUID+`","nickname":"轮换用户"}}`, nil), nil
+					case pathFavorite:
+						return jsonHTTPResponse(200, `{"status_code":0,"aweme_list":[],"has_more":0,"max_cursor":0}`, nil), nil
+					default:
+						return jsonHTTPResponse(404, `{}`, nil), nil
+					}
+				}),
+			})
+
+			leaderCtx, cancelLeader := context.WithCancel(ctx)
+			leaderErrCh := make(chan error, 1)
+			go func() {
+				_, err := client.Favorites(leaderCtx, selfSecUID, "")
+				leaderErrCh <- err
+			}()
+			<-leaderStarted
+
+			waiterErrCh := make(chan error, 1)
+			go func() {
+				_, err := client.Favorites(ctx, selfSecUID, "")
+				waiterErrCh <- err
+			}()
+			time.Sleep(20 * time.Millisecond)
+
+			// Rotate ttwid before canceling leader so waiter retries with SYNTH_TTWID_NEW.
+			if err := store.MergeContextCookies(map[string]string{"ttwid": "SYNTH_TTWID_NEW"}); err != nil {
+				t.Fatal(err)
+			}
+			cancelLeader()
+
+			if err := <-leaderErrCh; !site.IsKind(err, site.ErrKindNetwork) {
+				t.Fatalf("canceled leader err = %v, want network cancel", err)
+			}
+			if err := <-waiterErrCh; err != nil {
+				t.Fatalf("waiter after leader cancel failed: %v", err)
+			}
+			if got := profileHits.Load(); got != 2 {
+				t.Fatalf("profile/self hits = %d, want 2 (1 canceled leader + 1 waiter retry)", got)
+			}
+			client.webIDMu.Lock()
+			gotWarmup := client.webIDWarmupHash
+			client.webIDMu.Unlock()
+			if gotWarmup != hashTTWID("SYNTH_TTWID_NEW") {
+				t.Fatalf("webIDWarmupHash = %q, want hash of SYNTH_TTWID_NEW", gotWarmup)
+			}
+			// Subsequent Favorites for SYNTH_TTWID_NEW must not re-warm.
+			if _, err := client.Favorites(ctx, selfSecUID, "1699"); err != nil {
+				t.Fatalf("second Favorites failed: %v", err)
+			}
+			if got := profileHits.Load(); got != 2 {
+				t.Fatalf("profile/self hits after second Favorites = %d, want 2", got)
+			}
+		})
+
+		t.Run("remote_http_timeout_does_not_retrigger_waiters", func(t *testing.T) {
+			store := openTestDouyinCredStore(t, true)
+			started := make(chan struct{})
+			release := make(chan struct{})
+			var profileHits atomic.Int32
+			client := NewClient(ClientOptions{
+				CredStore:   store,
+				MinInterval: -1,
+				Entropy:     newDeterministicEntropy(0x6b),
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					if profileHits.Add(1) == 1 {
+						close(started)
+						<-release
+					}
+					// Simulate remote httpClient.Timeout while caller ctx is NOT canceled.
+					return nil, context.DeadlineExceeded
+				}),
+			})
+
+			errCh := make(chan error, 3)
+			go func() {
+				_, err := client.Favorites(ctx, selfSecUID, "")
+				errCh <- err
+			}()
+			<-started
+			for i := 0; i < 2; i++ {
+				go func() {
+					_, err := client.Favorites(ctx, selfSecUID, "")
+					errCh <- err
+				}()
+			}
+			time.Sleep(20 * time.Millisecond)
+			close(release)
+
+			for i := 0; i < 3; i++ {
+				if err := <-errCh; !site.IsKind(err, site.ErrKindNetwork) {
+					t.Fatalf("caller[%d] err = %v, want network timeout error", i, err)
+				}
+			}
+			if got := profileHits.Load(); got != 1 {
+				t.Fatalf("profile/self hits on remote timeout = %d, want 1 (waiters must not sequentially retry)", got)
+			}
+		})
+	})
 }
 
 func TestBDTuringParametersAndVerifyDetectionWithoutLeaks(t *testing.T) {
@@ -1260,6 +1662,15 @@ func TestParseAccountWorksItemFaultToleranceAndLastPageNullList(t *testing.T) {
 		})
 		if _, err := client.Favorites(ctx, selfSecUID, ""); !site.IsKind(err, site.ErrKindSchemaChanged) {
 			t.Fatalf("all broken items err = %v, want schema_changed", err)
+		}
+	})
+
+	t.Run("duplicate_broken_items_still_return_schema_changed", func(t *testing.T) {
+		client, _ := accountFixtureClient(t, func(r capturedReq) (int, string) {
+			return 200, `{"status_code":0,"aweme_list":[{"aweme_id":"76000000000000099","aweme_type":68,"images":[{"url_list":[]}]},{"aweme_id":"76000000000000099","aweme_type":68,"images":[{"url_list":[]}]}],"has_more":0,"max_cursor":0}`
+		})
+		if _, err := client.Favorites(ctx, selfSecUID, ""); !site.IsKind(err, site.ErrKindSchemaChanged) {
+			t.Fatalf("duplicate broken items err = %v, want schema_changed", err)
 		}
 	})
 

@@ -173,9 +173,10 @@ type Client struct {
 }
 
 type webIDWarmupCall struct {
-	ttwidHash string
-	done      chan struct{}
-	err       error
+	ttwidHash      string
+	done           chan struct{}
+	err            error
+	callerCanceled bool
 }
 
 // ResponseDiagnostics holds strictly non-sensitive HTTP/protocol flags for runtime logging.
@@ -929,14 +930,14 @@ func (c *Client) applyLoginSyncedWebID(sentTTWIDHash, savedTTWIDHash, syncedWebI
 // read-only profile/self call on cold start when the active Cookie has a ttwid that has not
 // yet synced or attempted warmup. Concurrent callers for the same ttwid share one warmup call.
 func (c *Client) ensureServerWebIDForFavorites(ctx context.Context) error {
-	if c.cred == nil || !c.cred.HasActiveCredential() {
-		return nil
-	}
-	ttwidHash := hashTTWID(c.cred.CookieValue("ttwid"))
-	if ttwidHash == "" {
-		return nil
-	}
 	for {
+		if c.cred == nil || !c.cred.HasActiveCredential() {
+			return nil
+		}
+		ttwidHash := hashTTWID(c.cred.CookieValue("ttwid"))
+		if ttwidHash == "" {
+			return nil
+		}
 		c.webIDMu.Lock()
 		if c.syncedTTWIDHash == ttwidHash && c.syncedWebID != "" {
 			c.webIDMu.Unlock()
@@ -959,7 +960,7 @@ func (c *Client) ensureServerWebIDForFavorites(ctx context.Context) error {
 				}
 			case <-call.done:
 				if call.err != nil {
-					if errors.Is(call.err, context.Canceled) || errors.Is(call.err, context.DeadlineExceeded) {
+					if call.callerCanceled {
 						if ctx.Err() != nil {
 							return &site.Error{
 								Site:     site.Douyin,
@@ -980,24 +981,29 @@ func (c *Client) ensureServerWebIDForFavorites(ctx context.Context) error {
 			ttwidHash: ttwidHash,
 			done:      make(chan struct{}),
 		}
-		startGen := c.webIDGen
 		c.webIDWarmupCall = call
 		c.webIDMu.Unlock()
 
-		err := c.runWebIDWarmup(ctx, ttwidHash, startGen)
+		return c.executeWebIDWarmupCall(ctx, call)
+	}
+}
 
+func (c *Client) executeWebIDWarmupCall(ctx context.Context, call *webIDWarmupCall) (err error) {
+	defer func() {
+		canceled := ctx.Err() != nil
 		c.webIDMu.Lock()
 		call.err = err
+		call.callerCanceled = canceled
 		if c.webIDWarmupCall == call {
 			c.webIDWarmupCall = nil
 		}
 		close(call.done)
 		c.webIDMu.Unlock()
-		return err
-	}
+	}()
+	return c.runWebIDWarmup(ctx)
 }
 
-func (c *Client) runWebIDWarmup(ctx context.Context, ttwidHash string, startGen uint64) error {
+func (c *Client) runWebIDWarmup(ctx context.Context) error {
 	_, err := c.GetSelfProfile(ctx)
 	if err != nil {
 		if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -1012,7 +1018,6 @@ func (c *Client) runWebIDWarmup(ctx context.Context, ttwidHash string, startGen 
 		// without permanently suppressing future warmup attempts.
 		return nil
 	}
-	c.markWebIDWarmupTried(ttwidHash, startGen)
 	return nil
 }
 
@@ -1268,6 +1273,11 @@ func (c *Client) resolveCookieContext(spec apiRequestSpec) (resolvedCookieContex
 }
 
 func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRawResponse, error) {
+	// Sample webIDGen BEFORE reading the credential store so any concurrent logout,
+	// expiry, or account switch (which mutates c.cred first and then advances webIDGen)
+	// strictly linearizes after this generation and prevents stale responses from
+	// overwriting the newer session's syncedWebID.
+	startWebIDGen := c.currentWebIDGen()
 	reqCtx, err := c.resolveCookieContext(spec)
 	if err != nil {
 		c.ReportAutomaticError(ctx, err)
@@ -1306,7 +1316,6 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 		return nil, err
 	}
 
-	startWebIDGen := c.currentWebIDGen()
 	params := make([]sign.Pair, 0, len(spec.params)+1)
 	params = append(params, spec.params...)
 	webIDSynced := false
@@ -1447,9 +1456,6 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 	serverWebID := ""
 	if !spec.guestNoCookie && resp.StatusCode == http.StatusOK {
 		serverWebID = parseServerWebID(resp.Header)
-		if usingStore && reqCtx.ttwidHash != "" && serverWebID != "" {
-			c.recordSyncedWebID(reqCtx.ttwidHash, serverWebID, startWebIDGen)
-		}
 	}
 
 	if activeGuard != nil {
@@ -1487,6 +1493,9 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 	}
 	if err := c.classifyHTTPAndEnvelopeError(ctx, sanitizeEndpointLabel(parsedURL), rawResp, usingStore); err != nil {
 		return rawResp, err
+	}
+	if usingStore && reqCtx.ttwidHash != "" && serverWebID != "" {
+		c.recordSyncedWebID(reqCtx.ttwidHash, serverWebID, startWebIDGen)
 	}
 	return rawResp, nil
 }
@@ -1976,15 +1985,15 @@ func (c *Client) onClassifiedError(ctx context.Context, se *site.Error, usingSto
 }
 
 func (c *Client) markAuthExpired(reason string) {
-	c.clearFallbackMSToken()
-	c.clearSyncedWebID()
-	c.clearEphemeralGuard()
 	if strings.TrimSpace(reason) == "" {
 		reason = "抖音登录状态已失效，请在设置页重新粘贴 Cookie"
 	}
 	if c.cred != nil {
 		_, _ = c.cred.MarkState("expired", reason)
 	}
+	c.clearFallbackMSToken()
+	c.clearSyncedWebID()
+	c.clearEphemeralGuard()
 	c.cbMu.RLock()
 	cb := c.authExpired
 	c.cbMu.RUnlock()
