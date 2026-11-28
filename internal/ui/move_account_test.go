@@ -97,7 +97,6 @@ func newMoveTestEnv(t *testing.T) (*App, *service.Backend, *atomic.Int32, func()
 	}
 
 	app := NewApp(raw, player.NewNullAudioSink())
-	app.dispatch = func(fn func()) { fn() }
 	cleanup := func() {
 		app.Close()
 		_ = raw.Close()

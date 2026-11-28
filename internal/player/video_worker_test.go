@@ -96,6 +96,18 @@ func TestStaleFramesAreDroppedAndShownBufferIsNotReused(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := c.worker
+	w.mu.Lock()
+	initialShown := w.shown
+	w.mu.Unlock()
+	if initialShown == nil {
+		t.Fatal("initial frame from LoadDecoder was not recorded as shown")
+	}
+	for i := 0; i < maxFreeFrames+2; i++ {
+		if got := w.takeFree(); got == initialShown {
+			t.Fatal("initial shown buffer from LoadDecoder was handed out for decoding")
+		}
+	}
+
 	stale := image.NewRGBA(image.Rect(0, 0, 64, 36))
 	w.publish(stale, c.seekGen)
 	_ = c.Seek(5) // a newer position: the pending frame is stale now
@@ -113,7 +125,7 @@ func TestStaleFramesAreDroppedAndShownBufferIsNotReused(t *testing.T) {
 		c.Advance(0)
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		return w.shown != nil
+		return w.shown != nil && w.shown != initialShown
 	})
 	w.mu.Lock()
 	shown := w.shown

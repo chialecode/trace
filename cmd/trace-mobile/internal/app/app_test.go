@@ -121,22 +121,35 @@ func TestPairingGuideManualIdentityConfirmAndIMEGuard(t *testing.T) {
 	store := NewMemoryStore()
 	a := newTestApp(store)
 	tt := ui.NewTester(a.View, 412, 915)
-	notify := make(chan struct{}, 32)
-	a.invalidate = func() {
-		select {
-		case notify <- struct{}{}:
-		default:
+	posted := make(chan func(), 32)
+	a.postUpdate = func(fn func()) {
+		posted <- fn
+	}
+	drainPosted := func() {
+		for {
+			select {
+			case fn := <-posted:
+				if fn != nil {
+					fn()
+				}
+			default:
+				return
+			}
 		}
 	}
 	pumpUntil := func(cond func() bool) {
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
+			drainPosted()
 			tt.Frame()
 			if cond() {
 				return
 			}
 			select {
-			case <-notify:
+			case fn := <-posted:
+				if fn != nil {
+					fn()
+				}
 			case <-time.After(10 * time.Millisecond):
 			}
 		}
@@ -714,28 +727,42 @@ func TestShareIntentDisconnectedBannerAndConnectedAutoSubmit(t *testing.T) {
 	a.client = cli
 	a.connState = pagekit.ConnConnected
 
-	notify := make(chan struct{}, 16)
-	a.invalidate = func() {
-		select {
-		case notify <- struct{}{}:
-		default:
+	posted := make(chan func(), 32)
+	a.postUpdate = func(fn func()) {
+		posted <- fn
+	}
+	drainPosted := func() {
+		for {
+			select {
+			case fn := <-posted:
+				if fn != nil {
+					fn()
+				}
+			default:
+				return
+			}
 		}
 	}
 	a.HandleSharedText("https://www.bilibili.com/video/BV1LIVE")
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
+		drainPosted()
 		tt.Frame()
 		mu.Lock()
 		n := len(parsedTexts)
 		mu.Unlock()
-		if n == 1 {
+		if n == 1 && tt.HasText("已加入电脑缓存队列") {
 			break
 		}
 		select {
-		case <-notify:
+		case fn := <-posted:
+			if fn != nil {
+				fn()
+			}
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+	drainPosted()
 	for range 12 {
 		tt.Advance(100 * time.Millisecond)
 	}

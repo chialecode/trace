@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,15 +15,19 @@ import (
 )
 
 type stubNotificationUpdater struct {
+	mu             sync.Mutex
 	st             update.State
 	dismissed      bool
 	dismissUpdated bool
 	downloadCalls  int
+	downloadCh     chan struct{}
 	restartCalls   int
 	restartPrompt  string
 }
 
 func (u *stubNotificationUpdater) State() update.State {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	st := u.st
 	if u.dismissed {
 		st.BannerDismissed = true
@@ -34,12 +39,39 @@ func (u *stubNotificationUpdater) State() update.State {
 	return st
 }
 func (u *stubNotificationUpdater) CheckNow(context.Context) {}
-func (u *stubNotificationUpdater) Download(context.Context) { u.downloadCalls++ }
-func (u *stubNotificationUpdater) DismissBanner()           { u.dismissed = true }
-func (u *stubNotificationUpdater) DismissUpdatedNotice()    { u.dismissUpdated = true }
-func (u *stubNotificationUpdater) RestartPrompt() string    { return u.restartPrompt }
-func (u *stubNotificationUpdater) Restart()                 { u.restartCalls++ }
-func (u *stubNotificationUpdater) PrefsChanged()            {}
+func (u *stubNotificationUpdater) Download(context.Context) {
+	u.mu.Lock()
+	u.downloadCalls++
+	ch := u.downloadCh
+	u.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+func (u *stubNotificationUpdater) DismissBanner() {
+	u.mu.Lock()
+	u.dismissed = true
+	u.mu.Unlock()
+}
+func (u *stubNotificationUpdater) DismissUpdatedNotice() {
+	u.mu.Lock()
+	u.dismissUpdated = true
+	u.mu.Unlock()
+}
+func (u *stubNotificationUpdater) RestartPrompt() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.restartPrompt
+}
+func (u *stubNotificationUpdater) Restart() {
+	u.mu.Lock()
+	u.restartCalls++
+	u.mu.Unlock()
+}
+func (u *stubNotificationUpdater) PrefsChanged() {}
 
 func TestFloatingNotificationsDoNotShiftPageLayout(t *testing.T) {
 	app, _, cleanup := newTestUIApp(t)
@@ -52,6 +84,7 @@ func TestFloatingNotificationsDoNotShiftPageLayout(t *testing.T) {
 	app.Navigate(RouteHome)
 
 	upd := &stubNotificationUpdater{
+		downloadCh: make(chan struct{}, 2),
 		st: update.State{
 			Enabled:        true,
 			Channel:        "stable",
@@ -154,6 +187,7 @@ func TestFloatingNotificationsOverlayStackDismissOneByOneAndPassThrough(t *testi
 	app.Navigate(RouteHome)
 
 	upd := &stubNotificationUpdater{
+		downloadCh: make(chan struct{}, 2),
 		st: update.State{
 			Enabled:        true,
 			Channel:        "stable",
@@ -252,24 +286,38 @@ func TestFloatingNotificationsOverlayStackDismissOneByOneAndPassThrough(t *testi
 	if err := tt.Click("下载并安装新版本"); err != nil {
 		t.Fatalf("click 下载并安装新版本: %v", err)
 	}
-	tt.Frame()
-	if upd.downloadCalls != 1 {
-		t.Fatalf("expected Download invoked once, got %d", upd.downloadCalls)
+	select {
+	case <-upd.downloadCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Download invocation")
 	}
+	tt.Frame()
+	upd.mu.Lock()
+	dlCalls := upd.downloadCalls
 	upd.st.Phase = update.PhaseReady
+	upd.mu.Unlock()
+	if dlCalls != 1 {
+		t.Fatalf("expected Download invoked once, got %d", dlCalls)
+	}
 	tt.Frame()
 	if err := tt.Click("重启以更新到新版本"); err != nil {
 		t.Fatalf("click 重启以更新到新版本: %v", err)
 	}
 	tt.Frame()
-	if upd.restartCalls != 1 {
-		t.Fatalf("expected Restart invoked once, got %d", upd.restartCalls)
+	upd.mu.Lock()
+	rstCalls := upd.restartCalls
+	upd.mu.Unlock()
+	if rstCalls != 1 {
+		t.Fatalf("expected Restart invoked once, got %d", rstCalls)
 	}
 	if err := tt.Click("关闭更新提示"); err != nil {
 		t.Fatalf("click 关闭更新提示: %v", err)
 	}
 	tt.Frame()
-	if !upd.dismissed {
+	upd.mu.Lock()
+	dismissed := upd.dismissed
+	upd.mu.Unlock()
+	if !dismissed {
 		t.Fatal("expected DismissBanner invoked")
 	}
 	if _, ok := tt.Find("悬浮通知区"); ok {
@@ -363,6 +411,7 @@ func TestFloatingNotificationsRestartConfirmAboveMediaOverlay(t *testing.T) {
 	app.Navigate(RouteHome)
 
 	upd := &stubNotificationUpdater{
+		downloadCh: make(chan struct{}, 2),
 		st: update.State{
 			Enabled:        true,
 			Channel:        "stable",

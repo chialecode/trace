@@ -259,8 +259,14 @@ func TestHomeRestoresPositionQuicklyWith5000Posts(t *testing.T) {
 	if got := homeTop(t, next, view); got.key != target.FeedKey || abs(got.off-15) > 1 {
 		t.Fatalf("%+v, want %s at 15", got, target.FeedKey)
 	}
-	if elapsed > time.Second {
-		t.Fatalf("restoring the position took %v (NFR-PERF-001: 1 s)", elapsed)
+	budget := time.Second
+	if raceDetectorEnabled {
+		// Go's race detector adds 5-10x overhead to pure-Go SQLite + software rasterization;
+		// the strict 1 s NFR-PERF-001 SLO is enforced by the non-race quality gate run.
+		budget = 15 * time.Second
+	}
+	if elapsed > budget {
+		t.Fatalf("restoring the position took %v (NFR-PERF-001 budget: %v)", elapsed, budget)
 	}
 }
 

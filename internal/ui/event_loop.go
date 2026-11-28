@@ -113,6 +113,11 @@ func (a *App) clearPendingEventLoopState() {
 // event is appended to the tail so arrival order across interleaved keys is preserved.
 func (a *App) enqueueBackendEvent(ev service.Event, updateFn func(func())) {
 	if updateFn == nil {
+		a.mu.Lock()
+		updateFn = a.dispatch
+		a.mu.Unlock()
+	}
+	if updateFn == nil {
 		a.handleBackendEvent(ev)
 		return
 	}

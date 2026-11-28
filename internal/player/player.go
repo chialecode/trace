@@ -268,13 +268,15 @@ func (c *Controller) loadDecoderInternal(label string, dec MediaDecoder, forceLi
 		c.closeLocked()
 		return err
 	}
+	w := newVideoWorker(dec)
 	if rgba != nil {
-		c.bitmap = ui.NewBitmap(rgba) // copies: rgba is free again
+		// ui.NewBitmap aliases packed *image.RGBA pixels without copying, so
+		// rgba remains owned as shown until a newer frame replaces it on screen.
+		c.bitmap = ui.NewBitmap(rgba)
 		c.bmpW = rgba.Bounds().Dx()
 		c.bmpH = rgba.Bounds().Dy()
+		w.showing(rgba)
 	}
-	w := newVideoWorker(dec)
-	w.putFree(rgba)
 	c.worker = w
 	go c.runVideoWorker(w, c.seekGen)
 	return nil

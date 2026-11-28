@@ -229,7 +229,7 @@ func TestSubscriptionDetailAccountNavigationBackPreservesSubAndTab(t *testing.T)
 
 	app.CompleteLogin()
 	posted := make(chan func(), 32)
-	app.dispatch = func(fn func()) { posted <- fn }
+	app.BindEventLoop(func(fn func()) { posted <- fn })
 	tt := ui.NewTester(app.View, 1280, 860)
 
 	// 1. From "账号" tab -> open Bilibili, Douyin, Weibo user pages -> click Back returns to THAT sub detail & "accounts" tab!
@@ -357,7 +357,7 @@ func TestHomeHeaderRefreshIconSyncsDiskOffline(t *testing.T) {
 
 	app.CompleteLogin()
 	posted := make(chan func(), 32)
-	app.dispatch = func(fn func()) { posted <- fn }
+	app.BindEventLoop(func(fn func()) { posted <- fn })
 
 	app.Navigate(RouteHome)
 	app.setFeedSiteFilter("weibo")

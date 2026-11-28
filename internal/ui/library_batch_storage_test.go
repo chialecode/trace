@@ -352,15 +352,19 @@ func TestLibraryMultiSelectTileSyncBatchDeleteAndBatchExport(t *testing.T) {
 	}
 
 	// Re-open batch export and run real export.
+	posted := make(chan func(), 64)
+	app.BindEventLoop(func(fn func()) { posted <- fn })
 	if err := tt.Click("媒体库批量导出"); err != nil {
 		t.Fatal(err)
 	}
+	drainPosted(posted)
 	tt.Frame()
 	exportDir := filepath.Join(t.TempDir(), "ui-batch-export")
 	app.Transfer.ExportPath = exportDir
 	if err := tt.Click("开始导出"); err != nil {
 		t.Fatalf("click start export: %v", err)
 	}
+	drainPosted(posted)
 	tt.Frame()
 	if app.CurrentRoute != RouteTasks || app.effectiveTasksSection() != TasksSectionRecords {
 		t.Fatalf("expected navigation to Tasks records, got route=%s section=%s", app.CurrentRoute, app.TasksSection)
@@ -371,6 +375,7 @@ func TestLibraryMultiSelectTileSyncBatchDeleteAndBatchExport(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	var finishedJob *service.TransferJob
 	for time.Now().Before(deadline) {
+		drainPosted(posted)
 		for _, j := range realBackend.TransferJobs() {
 			if j.Kind == "export" && !j.Active() {
 				cp := j
@@ -383,6 +388,7 @@ func TestLibraryMultiSelectTileSyncBatchDeleteAndBatchExport(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	drainPosted(posted)
 	if finishedJob == nil || finishedJob.Status != service.TransferDone || finishedJob.Export == nil || finishedJob.Export.Items != 2 {
 		t.Fatalf("batch export job did not export exactly 2 items: %+v", finishedJob)
 	}

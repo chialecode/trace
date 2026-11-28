@@ -541,6 +541,7 @@ func TestPlayerOverlayPreviewResetOfflineLibraryAndResponsiveWidths(t *testing.T
 		app.PlayerOverlay.PreviewOnCache = func(context.Context) error { return nil }
 		app.PlayerOverlay.PreviewCacheQueued = false
 		app.PlayerOverlay.ControlsHidden = false
+		app.PlayerOverlay.LastActiveAt = time.Time{}
 		tester.Frame()
 		for _, lbl := range []string{"临时预览标记", "临时预览缓存到媒体库", "播放器更多菜单", "关闭播放", "临时预览错误说明", "预览失败缓存到媒体库"} {
 			r, ok := tester.Find(lbl)
