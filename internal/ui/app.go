@@ -538,6 +538,7 @@ type App struct {
 	SubDetailTab         string // "content" | "accounts"
 	SubAccountMenuKey    string
 	SubFeedSubID         string
+	SubFeedAccountKey    string // "" = all linked accounts, or "<site>:<uid>" for single-account view (DEC-095)
 	SubFeedRefsKey       string
 	SubFeedItems         []library.FeedEntry
 	SubFeedListState     *ui.ListState

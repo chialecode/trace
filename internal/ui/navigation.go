@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -293,11 +294,16 @@ func (a *App) OpenLoginForSite(siteID string) {
 }
 
 // currentReturnRoute encodes the active route plus sub-page context (such as a
-// specific subscription detail view and its tab) so NavigateBack restores it.
+// specific subscription detail view, its tab, and active single-account filter)
+// so NavigateBack restores it.
 func (a *App) currentReturnRoute() string {
 	if a.CurrentRoute == RouteSubscriptions {
 		if a.SubDetailOpen && a.SelectedSubID != "" {
-			return fmt.Sprintf("%s/%s?tab=%s", RouteSubscriptions, a.SelectedSubID, normalizeSubDetailTab(a.SubDetailTab))
+			route := fmt.Sprintf("%s/%s?tab=%s", RouteSubscriptions, a.SelectedSubID, normalizeSubDetailTab(a.SubDetailTab))
+			if acct := strings.TrimSpace(a.SubFeedAccountKey); acct != "" {
+				route += "&account=" + url.QueryEscape(acct)
+			}
+			return route
 		}
 		if a.SubAccountsOpen {
 			return RouteSubscriptions + "/accounts"
@@ -376,6 +382,7 @@ func (a *App) navigate(rawRoute string, fromBack bool) {
 		a.SubMoreMenuOpen = false
 		a.SubManageMenuOpen = false
 		a.SubManageModalMode = ""
+		a.SubFeedAccountKey = ""
 		a.applySubscriptionRouteNavigate(rawRoute)
 	}
 	if a.CurrentRoute == RouteHome && route != RouteHome {
@@ -431,6 +438,7 @@ func (a *App) OpenSubscriptionDetail(sub subscription.Subscription) {
 	a.SubManageMenuOpen = false
 	a.SubAccountMenuKey = ""
 	a.SubManageModalMode = ""
+	a.SubFeedAccountKey = ""
 	a.closeSubLinksModal()
 	a.SubDetailTab = normalizeSubDetailTab(a.SubDetailTab)
 	a.refreshAccountWorks()

@@ -176,7 +176,7 @@ func TestMoveAccountFromSubscriptionDetailAllThreeSitesZeroNetwork(t *testing.T)
 	siteHTTP.Store(0)
 
 	// --- 1. Weibo account: open "⋯ -> 更改关联订阅", verify exclusion + search, move to subTargetB ---
-	if got := strings.Join(menuItems(t, tt, "订阅账号更多：weibo:"+wbUID), ","); got != "打开主页,用作头像,更改关联订阅,-,解除关联" {
+	if got := strings.Join(menuItems(t, tt, "订阅账号更多：weibo:"+wbUID), ","); got != "打开账号主页,用作头像,更改关联订阅,-,解除关联" {
 		t.Fatalf("weibo account menu = %q", got)
 	}
 	chooseMenuItem(t, tt, "订阅账号更多：weibo:"+wbUID, "更改关联订阅")
@@ -332,7 +332,7 @@ func TestMoveAccountFromAllAccountsAndEmptyOtherSubsAndErrorHandling(t *testing.
 	siteHTTP.Store(0)
 
 	// Verify "全部账号更多" menu items and empty-other-subscriptions state.
-	if got := strings.Join(menuItems(t, tt, "全部账号更多：weibo:5000008102"), ","); got != "更改关联订阅,打开订阅,打开主页" {
+	if got := strings.Join(menuItems(t, tt, "全部账号更多：weibo:5000008102"), ","); got != "更改关联订阅,打开订阅,打开账号主页" {
 		t.Fatalf("all-accounts more menu = %q", got)
 	}
 	chooseMenuItem(t, tt, "全部账号更多：weibo:5000008102", "更改关联订阅")

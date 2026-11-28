@@ -98,6 +98,7 @@ func (a *App) renderCenterColumn(c *ui.Context, width float32) {
 								a.SubDetailOpen = false
 								a.SubManageMenuOpen = false
 								a.SubManageModalMode = ""
+								a.SubFeedAccountKey = ""
 							} else {
 								a.NavigateBack()
 							}
