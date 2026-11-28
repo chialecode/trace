@@ -2,10 +2,12 @@ package ui
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/chialecode/trace/internal/library"
+	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/chialecode/trace/internal/subscription"
 	"github.com/chialecode/trace/internal/uistate"
@@ -28,17 +30,27 @@ func (a *App) setSubDetailTab(tab string) {
 	}
 }
 
-func parseSubscriptionRouteParams(rawRoute string) (subID string, tab string, hasTab bool) {
+func parseSubscriptionRouteParams(rawRoute string) (subID string, tab string, hasTab bool, accountKey string) {
 	r := strings.TrimSpace(rawRoute)
 	if !strings.HasPrefix(r, RouteSubscriptions) {
-		return "", "", false
+		return "", "", false, ""
 	}
 	if qIdx := strings.IndexByte(r, '?'); qIdx >= 0 {
 		query := r[qIdx+1:]
 		for _, part := range strings.Split(query, "&") {
-			if k, v, ok := strings.Cut(part, "="); ok && strings.EqualFold(strings.TrimSpace(k), "tab") {
-				tab = strings.TrimSpace(v)
-				hasTab = true
+			if k, v, ok := strings.Cut(part, "="); ok {
+				switch strings.ToLower(strings.TrimSpace(k)) {
+				case "tab":
+					tab = strings.TrimSpace(v)
+					hasTab = true
+				case "account":
+					rawVal := strings.TrimSpace(v)
+					if unesc, err := url.QueryUnescape(rawVal); err == nil {
+						accountKey = strings.TrimSpace(unesc)
+					} else {
+						accountKey = rawVal
+					}
+				}
 			}
 		}
 		r = r[:qIdx]
@@ -57,11 +69,11 @@ func parseSubscriptionRouteParams(rawRoute string) (subID string, tab string, ha
 			}
 		}
 	}
-	return subID, tab, hasTab
+	return subID, tab, hasTab, accountKey
 }
 
 func (a *App) applySubscriptionRouteNavigate(rawRoute string) {
-	subID, tab, hasTab := parseSubscriptionRouteParams(rawRoute)
+	subID, tab, hasTab, accountKey := parseSubscriptionRouteParams(rawRoute)
 	if hasTab {
 		a.setSubDetailTab(tab)
 	}
@@ -88,6 +100,12 @@ func (a *App) applySubscriptionRouteNavigate(rawRoute string) {
 			a.SubAccountsOpen = false
 			a.SubChecksOpen = false
 			a.SubDetailTab = normalizeSubDetailTab(a.SubDetailTab)
+			a.SubFeedAccountKey = ""
+			if accountKey != "" {
+				if acc, ok := resolveSubFeedSelectedAccount(sub, accountKey); ok {
+					a.SubFeedAccountKey = subscriptionAccountKey(acc)
+				}
+			}
 			a.refreshAccountWorks()
 			a.syncSelectedSubRules(sub)
 			a.ensureSubscriptionFeedLoaded(&sub)
@@ -124,11 +142,92 @@ func subscriptionAuthorRefsKey(refs []library.AuthorRef) string {
 	return strings.Join(parts, "|")
 }
 
+func subscriptionAccountKey(acc subscription.AccountRef) string {
+	accSite := normalizeSiteIDUI(acc.Site)
+	uid := strings.TrimSpace(acc.UID)
+	if uid == "" && accSite == "x" {
+		uid = strings.TrimSpace(acc.UniqueID)
+	}
+	if uid == "" {
+		return ""
+	}
+	return accSite + ":" + uid
+}
+
+func resolveSubFeedSelectedAccount(sub subscription.Subscription, key string) (subscription.AccountRef, bool) {
+	want := strings.TrimSpace(key)
+	if want == "" {
+		return subscription.AccountRef{}, false
+	}
+	for _, acc := range subscriptionEffectiveAccounts(sub) {
+		if strings.EqualFold(subscriptionAccountKey(acc), want) {
+			return acc, true
+		}
+	}
+	return subscription.AccountRef{}, false
+}
+
+func subscriptionActiveFeedRefs(sub subscription.Subscription, accountKey string) []library.AuthorRef {
+	if acc, ok := resolveSubFeedSelectedAccount(sub, accountKey); ok {
+		accSite := normalizeSiteIDUI(acc.Site)
+		uid := strings.TrimSpace(acc.UID)
+		if uid == "" && accSite == "x" {
+			uid = strings.TrimSpace(acc.UniqueID)
+		}
+		normSite, normUID := library.NormalizeAuthorUID(accSite, uid, parseBilibiliMidUI(accSite, uid))
+		if normUID != "" {
+			return []library.AuthorRef{{Site: normSite, UID: normUID}}
+		}
+	}
+	return subscriptionAuthorRefs(sub)
+}
+
+// SelectSubFeedAccount switches the active single-account filter on the current
+// subscription detail's "内容" tab (empty string selects "全部") (DEC-095).
+func (a *App) SelectSubFeedAccount(accountKey string) {
+	if a.SelectedSubID == "" {
+		a.SubFeedAccountKey = ""
+		return
+	}
+	for i := range a.Subscriptions {
+		if a.Subscriptions[i].ID == a.SelectedSubID {
+			sub := a.Subscriptions[i]
+			a.selectSubFeedAccount(&sub, accountKey)
+			return
+		}
+	}
+	a.SubFeedAccountKey = ""
+}
+
+func (a *App) selectSubFeedAccount(sub *subscription.Subscription, accountKey string) {
+	if sub == nil {
+		return
+	}
+	next := ""
+	if strings.TrimSpace(accountKey) != "" {
+		if acc, ok := resolveSubFeedSelectedAccount(*sub, accountKey); ok {
+			next = subscriptionAccountKey(acc)
+		}
+	}
+	if a.SubFeedAccountKey == next && a.SubFeedSubID == sub.ID && !a.subFeedDirty {
+		return
+	}
+	a.SubFeedAccountKey = next
+	a.ensureSubscriptionFeedLoaded(sub)
+}
+
 func (a *App) ensureSubscriptionFeedLoaded(sub *subscription.Subscription) {
 	if sub == nil || a.backend == nil {
 		return
 	}
-	refs := subscriptionAuthorRefs(*sub)
+	if a.SubFeedAccountKey != "" {
+		if acc, ok := resolveSubFeedSelectedAccount(*sub, a.SubFeedAccountKey); ok {
+			a.SubFeedAccountKey = subscriptionAccountKey(acc)
+		} else {
+			a.SubFeedAccountKey = ""
+		}
+	}
+	refs := subscriptionActiveFeedRefs(*sub, a.SubFeedAccountKey)
 	refsKey := subscriptionAuthorRefsKey(refs)
 	if !a.subFeedDirty && a.SubFeedSubID == sub.ID && a.SubFeedRefsKey == refsKey {
 		return
@@ -179,7 +278,7 @@ func (a *App) loadMoreSubscriptionFeed(sub *subscription.Subscription) {
 	if sub == nil || a.backend == nil || len(a.SubFeedItems) == 0 {
 		return
 	}
-	refs := subscriptionAuthorRefs(*sub)
+	refs := subscriptionActiveFeedRefs(*sub, a.SubFeedAccountKey)
 	if len(refs) == 0 {
 		return
 	}
@@ -489,7 +588,244 @@ func (a *App) renderSubscriptionCustomLinksRow(c *ui.Context, sub *subscription.
 		})
 }
 
+// renderAccountAvatarCircle draws a non-interactive circular avatar box so it
+// can sit inside a clickable row or filter capsule without nesting buttons.
+// When allowRemote is false, it strictly uses local avatar bitmaps or colored
+// initials with zero remote requests.
+func (a *App) renderAccountAvatarCircle(c *ui.Context, siteID, name, uid string, mid int64, size float32, liveRing bool, allowRemote bool, faces ...string) {
+	if size <= 0 {
+		size = 24
+	}
+	normSite := normalizeSiteIDUI(siteID)
+	seed := mid
+	if seed <= 0 {
+		seed = accountSeedHash(normSite, firstNonEmptyStrUI(uid, name))
+	}
+	lookupUID := strings.TrimSpace(uid)
+	if lookupUID == "" && normSite == "bilibili" && mid > 0 {
+		lookupUID = strconv.FormatInt(mid, 10)
+	}
+	bmp := a.lookupAccountAvatarBitmap(normSite, lookupUID)
+	skipRemote := a.pendingLocalAvatar
+	a.pendingLocalAvatar = false
+	if bmp == nil && allowRemote && !skipRemote {
+		face := firstImageURL(faces)
+		if face == "" {
+			if normSite == "bilibili" && mid > 0 {
+				face = a.faceURL(mid)
+			} else {
+				face = a.faceURLForAccount(normSite, uid)
+			}
+		}
+		bmp = a.lookupRemoteBitmap(face)
+	}
+
+	bg := AvatarColor(name, seed)
+	glyph := FirstGlyph(name)
+	fontSz := max(10, size*0.44)
+	outerSize := size
+	if liveRing {
+		outerSize = size + 6
+	}
+	box := ui.Box(c).
+		Size(outerSize, outerSize).
+		Radius(outerSize / 2).
+		Clip().
+		Shrink(0).
+		Justify(ui.Center).
+		AlignItems(ui.Center)
+	box.Draw(func(p *ui.Painter, r ui.Rect) {
+		if liveRing {
+			p.Stroke(r, ColorLive, r.W/2, 2.0)
+			inner := ui.Rect{X: r.X + 3, Y: r.Y + 3, W: r.W - 6, H: r.H - 6}
+			p.Fill(inner, bg, inner.W/2)
+		} else {
+			p.Fill(r, bg, r.W/2)
+		}
+	})
+	box.Children(func() {
+		if bmp != nil {
+			ui.Image(c, bmp).Size(size, size).Fit(ui.Cover).Radius(size / 2)
+		} else {
+			ui.Text(c, glyph).FontSize(fontSz).FontWeight(600).TextColor(ColorWhite).SingleLine()
+		}
+	})
+}
+
+func accountOpenTarget(acc subscription.AccountRef) (string, string, string) {
+	accSite := normalizeSiteIDUI(acc.Site)
+	targetID := strings.TrimSpace(acc.UID)
+	if accSite == "x" {
+		targetID = firstNonEmptyStrUI(acc.UID, acc.UniqueID)
+	}
+	return accSite, targetID, firstNonEmptyStrUI(acc.Name, acc.UniqueID, acc.UID)
+}
+
+func (a *App) renderOpenAccountHomeButton(c *ui.Context, acc subscription.AccountRef, text, label string) {
+	accSite, targetID, displayName := accountOpenTarget(acc)
+	btn := ui.ButtonBase(c).
+		Label(label).
+		Tooltip("联网打开该账号的站点主页").
+		Padding(3, 10).
+		Radius(999).
+		Background(ColorBgMain).
+		Border(1, ColorAccent).
+		Gap(4).
+		AlignItems(ui.Center).
+		Shrink(0)
+	if btn.Hovered() {
+		btn.Background(ColorAccentBg)
+	}
+	btn.Children(func() {
+		DrawIcon(c, "external-link", 12, ColorAccent, 1.75)
+		ui.Text(c, text).FontSize(12).FontWeight(600).TextColor(ColorAccent).SingleLine()
+	})
+	if btn.Clicked() {
+		a.openAccountUserPage(accSite, targetID, displayName)
+	}
+}
+
+// renderSubscriptionContentAccountBar draws the compact single-account filter
+// and direct online profile entry at the top of Subscription Detail › 内容 (DEC-095).
+func (a *App) renderSubscriptionContentAccountBar(c *ui.Context, sub *subscription.Subscription) {
+	accounts := subscriptionEffectiveAccounts(*sub)
+	if len(accounts) == 0 {
+		return
+	}
+
+	if len(accounts) == 1 {
+		acc := accounts[0]
+		accSite := normalizeSiteIDUI(acc.Site)
+		accKey := subscriptionAccountKey(acc)
+		displayName := firstNonEmptyStrUI(acc.Name, acc.UniqueID, acc.UID)
+		siteShort := firstNonEmptyStrUI(site.DisplayName(accSite), "B 站")
+
+		ui.Row(c).
+			Label("订阅内容账号切换栏").
+			FillWidth().
+			Padding(6, 16).
+			BorderWidth(0, 0, 1, 0).
+			BorderColor(ColorBorder).
+			Background(ColorBgMain).
+			AlignItems(ui.Center).
+			Justify(ui.SpaceBetween).
+			Gap(8).
+			Wrap().
+			Shrink(0).
+			ClipX().
+			Children(func() {
+				ui.Row(c).
+					Label("订阅内容单账号：" + accKey).
+					AlignItems(ui.Center).
+					Gap(6).
+					Shrink(1).
+					ClipX().
+					Children(func() {
+						a.renderAccountAvatarCircle(c, accSite, displayName, acc.UID, parseBilibiliMidUI(accSite, acc.UID), 20, false, false)
+						ui.Text(c, displayName).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
+						ui.Text(c, "· "+siteShort).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(0)
+					})
+				a.renderOpenAccountHomeButton(c, acc, "打开账号主页", "打开账号主页")
+			})
+		return
+	}
+
+	selectedAcc, hasSelected := resolveSubFeedSelectedAccount(*sub, a.SubFeedAccountKey)
+	ui.Row(c).
+		Label("订阅内容账号切换栏").
+		FillWidth().
+		Padding(6, 16).
+		BorderWidth(0, 0, 1, 0).
+		BorderColor(ColorBorder).
+		Background(ColorBgMain).
+		AlignItems(ui.Center).
+		Gap(5).
+		Wrap().
+		Shrink(0).
+		ClipX().
+		Children(func() {
+			allActive := !hasSelected
+			allBtn := ui.ButtonBase(c).
+				Label("订阅内容账号筛选：全部").
+				Tooltip("查看该订阅全部关联账号的已缓存内容").
+				Padding(3, 10).
+				Radius(999).
+				AlignItems(ui.Center).
+				Shrink(0)
+			if allActive {
+				allBtn.Background(ColorAccentBg).Border(1, ColorAccent)
+			} else {
+				allBtn.Background(ColorBgMain).Border(1, ColorBorderStrong)
+				if allBtn.Hovered() {
+					allBtn.Background(ColorHover)
+				}
+			}
+			allBtn.Children(func() {
+				col := ColorTextMain
+				weight := 500
+				if allActive {
+					col = ColorAccent
+					weight = 600
+				}
+				ui.Text(c, "全部").FontSize(12).FontWeight(weight).TextColor(col).SingleLine()
+			})
+			if allBtn.Clicked() && !allActive {
+				a.selectSubFeedAccount(sub, "")
+			}
+
+			for _, accItem := range accounts {
+				acc := accItem
+				accKey := subscriptionAccountKey(acc)
+				accSite := normalizeSiteIDUI(acc.Site)
+				displayName := firstNonEmptyStrUI(acc.Name, acc.UniqueID, acc.UID)
+				siteShort := firstNonEmptyStrUI(site.DisplayName(accSite), "B 站")
+				active := hasSelected && strings.EqualFold(subscriptionAccountKey(selectedAcc), accKey)
+
+				chip := ui.ButtonBase(c).
+					Label("订阅内容账号筛选："+accKey).
+					Tooltip(fmt.Sprintf("只看 %s（%s）的已缓存内容", displayName, siteShort)).
+					Padding(3, 8, 3, 4).
+					Radius(999).
+					Gap(4).
+					AlignItems(ui.Center).
+					MaxWidth(210).
+					Shrink(0).
+					ClipX()
+				if active {
+					chip.Background(ColorAccentBg).Border(1, ColorAccent)
+				} else {
+					chip.Background(ColorBgMain).Border(1, ColorBorderStrong)
+					if chip.Hovered() {
+						chip.Background(ColorHover)
+					}
+				}
+				chip.Children(func() {
+					a.renderAccountAvatarCircle(c, accSite, displayName, acc.UID, parseBilibiliMidUI(accSite, acc.UID), 18, false, false)
+					nameCol := ColorTextMain
+					siteCol := ColorTextMuted
+					weight := 500
+					if active {
+						nameCol = ColorAccent
+						siteCol = ColorAccent
+						weight = 600
+					}
+					ui.Text(c, displayName).FontSize(12).FontWeight(weight).TextColor(nameCol).SingleLine().Shrink(1)
+					ui.Text(c, "· "+siteShort).FontSize(11).TextColor(siteCol).SingleLine().Shrink(0)
+				})
+				if chip.Clicked() && !active {
+					a.selectSubFeedAccount(sub, accKey)
+				}
+			}
+
+			if hasSelected {
+				a.renderOpenAccountHomeButton(c, selectedAcc, "打开账号主页", "打开账号主页")
+			}
+		})
+}
+
 func (a *App) renderSubscriptionContentTab(c *ui.Context, sub *subscription.Subscription) {
+	a.renderSubscriptionContentAccountBar(c, sub)
+
 	if a.SubFeedError != "" {
 		ui.Box(c).FillWidth().Padding(8, 16).Children(func() {
 			renderErrorBanner(c, "", a.SubFeedError, func() {
@@ -511,9 +847,18 @@ func (a *App) renderSubscriptionContentTab(c *ui.Context, sub *subscription.Subs
 	}
 
 	if len(a.SubFeedItems) == 0 {
+		accounts := subscriptionEffectiveAccounts(*sub)
+		selectedAcc, hasSelected := resolveSubFeedSelectedAccount(*sub, a.SubFeedAccountKey)
+		emptyTitle := "还没有缓存这个订阅的内容"
+		emptyHint := subscriptionEmptyStateHint(*sub)
+		if hasSelected && len(accounts) >= 2 {
+			accName := firstNonEmptyStrUI(selectedAcc.Name, selectedAcc.UniqueID, selectedAcc.UID)
+			emptyTitle = fmt.Sprintf("还没有缓存「%s」的内容", accName)
+			emptyHint = "可以点击上方「打开账号主页」联网浏览并手动缓存，或切回「全部」查看该订阅其他关联账号的内容。"
+		}
 		ui.Column(c).Label("订阅内容空状态说明").Grow(1).FillWidth().Padding(48, 24).AlignItems(ui.Center).Gap(10).ClipX().Children(func() {
-			ui.Text(c, "还没有缓存这个订阅的内容").FontSize(17).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-			ui.Text(c, subscriptionEmptyStateHint(*sub)).
+			ui.Text(c, emptyTitle).FontSize(17).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+			ui.Text(c, emptyHint).
 				FontSize(14).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(3)
 		})
 		return
@@ -764,30 +1109,39 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 				liveText, liveColor, liveWeight := formatSubAccountLiveStatus(lv)
 				menuKey := "acct:" + accSite + ":" + acc.UID
 				openAccountPage := func() {
-					a.openAccountUserPage(accSite, acc.UID, acc.Name)
+					targetSite, targetID, targetName := accountOpenTarget(acc)
+					a.openAccountUserPage(targetSite, targetID, targetName)
 				}
 
 				ui.Row(c).
 					FillWidth().
-					Padding(12, 14).
+					Padding(8, 10).
 					Radius(12).
 					Background(ColorBgMain).
 					Border(1, ColorBorder).
 					AlignItems(ui.Center).
 					Justify(ui.SpaceBetween).
-					Gap(10).
+					Gap(8).
 					ClipX().
 					Children(func() {
-						ui.Row(c).AlignItems(ui.Center).Gap(10).Grow(1).ClipX().Children(func() {
-							a.renderAccountAvatar(c, accSite, acc.Name, acc.UID, uidNum, 40, !isNoLive && (lv.isLive || lv.isRecording), "打开关联账号主页："+accSite+":"+acc.UID, openAccountPage, acc.Face)
+						bodyBtn := ui.ButtonBase(c).
+							Label("订阅账号主页："+accSite+":"+acc.UID).
+							Tooltip("联网打开该账号的站点主页").
+							Grow(1).
+							Padding(4, 6).
+							Radius(8).
+							AlignItems(ui.Center).
+							Justify(ui.Start).
+							Gap(10).
+							ClipX()
+						if bodyBtn.Hovered() {
+							bodyBtn.Background(ColorHover)
+						}
+						bodyBtn.Children(func() {
+							a.renderAccountAvatarCircle(c, accSite, acc.Name, acc.UID, uidNum, 40, !isNoLive && (lv.isLive || lv.isRecording), true, acc.Face)
 							ui.Column(c).Grow(1).Gap(4).ClipX().Children(func() {
 								ui.Row(c).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
-									nameBtn := ui.ButtonBase(c).Label("订阅账号主页：" + accSite + ":" + acc.UID).Padding(0).Shrink(1).Children(func() {
-										ui.Text(c, firstNonEmptyStrUI(acc.Name, acc.UniqueID, acc.UID)).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine()
-									})
-									if nameBtn.Clicked() {
-										openAccountPage()
-									}
+									ui.Text(c, firstNonEmptyStrUI(acc.Name, acc.UniqueID, acc.UID)).FontSize(14).FontWeight(600).TextColor(ColorTextMain).SingleLine().Shrink(1)
 									renderSiteSmallBadgeWithDot(c, accSite, "订阅详情账号站点："+accSite+":"+acc.UID)
 									ui.Text(c, "· "+formatSubscriptionAccountIdent(acc)).FontSize(12).TextColor(ColorTextMuted).SingleLine().Shrink(1)
 								})
@@ -799,8 +1153,36 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 								}
 							})
 						})
+						if bodyBtn.Clicked() {
+							openAccountPage()
+						}
 
-						ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
+						ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
+							openHomeBtn := ui.ButtonBase(c).
+								Label("打开关联账号主页："+accSite+":"+acc.UID).
+								Tooltip("联网打开该账号的站点主页").
+								Padding(4, 10).
+								Radius(999).
+								Background(ColorBgMain).
+								Border(1, ColorBorder).
+								Gap(4).
+								AlignItems(ui.Center).
+								Shrink(0)
+							if openHomeBtn.Hovered() {
+								openHomeBtn.Background(ColorAccentBg).BorderColor(ColorAccent)
+							}
+							openHomeBtn.Children(func() {
+								col := ColorTextMuted
+								if openHomeBtn.Hovered() {
+									col = ColorAccent
+								}
+								DrawIcon(c, "external-link", 12, col, 1.7)
+								ui.Text(c, "打开主页").FontSize(12).FontWeight(500).TextColor(col).SingleLine()
+							})
+							if openHomeBtn.Clicked() {
+								openAccountPage()
+							}
+
 							if !isNoLive {
 								if lv.isRecording {
 									if DangerOutlinePillButton(c, "停止录制", lv.stopLabel).Clicked() {
@@ -823,7 +1205,7 @@ func (a *App) renderSubscriptionAccountsTab(c *ui.Context, sub *subscription.Sub
 
 							open := a.SubAccountMenuKey == menuKey
 							MoreMenuButton(c, "订阅账号更多："+accSite+":"+acc.UID, 30, &open, func(m *ui.Menu) {
-								if m.Item("打开主页").Chosen() {
+								if m.Item("打开账号主页").Chosen() {
 									openAccountPage()
 								}
 								if !isNoLive && lv.hasRoom {

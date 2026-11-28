@@ -344,11 +344,49 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"打开订阅链接：link3.cc/alpha_tech",
 				"打开订阅链接：创作手记",
 				"管理订阅自定义链接",
+				"订阅内容账号切换栏",
+				"订阅内容账号筛选：全部",
+				"订阅内容账号筛选：bilibili:20001",
+				"订阅内容账号筛选：douyin:" + douyinSecUID,
+				"订阅内容账号筛选：weibo:" + weiboUID,
+				"订阅内容账号筛选：x:" + xUID,
 				"订阅内容信息流列表",
-				"主页作者站点：" + savedDynamicItem.ItemKey,
+				"主页作者站点：" + savedWeiboPost.ItemKey,
 				"主页作者站点：" + savedDouyinVideo.ItemKey,
 			},
 			ForbiddenLabels: []string{
+				"打开账号主页",
+				"关联账号输入",
+				"开始录制 9001",
+			},
+		},
+		{
+			Name: "subscription-detail-account-view",
+			Setup: func() {
+				seedRecentAndLive()
+				if primarySub.ID != "" {
+					app.SubDetailTab = "content"
+					app.OpenSubscriptionDetail(primarySub)
+					app.SubDetailTab = "content"
+					app.SelectSubFeedAccount("x:" + xUID)
+				}
+			},
+			RequiredLabels: []string{
+				"订阅标签：内容",
+				"订阅标签：账号",
+				"订阅内容账号切换栏",
+				"订阅内容账号筛选：全部",
+				"订阅内容账号筛选：x:" + xUID,
+				"打开账号主页",
+				"订阅内容信息流列表",
+				"主页作者站点：" + savedXRetweet.ItemKey,
+			},
+			RequiredTexts: []string{
+				"打开账号主页",
+			},
+			ForbiddenLabels: []string{
+				"主页作者站点：" + savedWeiboPost.ItemKey,
+				"主页作者站点：" + savedDouyinVideo.ItemKey,
 				"关联账号输入",
 				"开始录制 9001",
 			},
@@ -390,6 +428,9 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅标签：内容",
 				"订阅标签：账号",
 				"订阅管理菜单",
+				"订阅内容账号切换栏",
+				"订阅内容单账号：douyin:MS4wLjABAAAA_uishots_creator_02",
+				"打开账号主页",
 				"订阅内容空状态说明",
 			},
 			ForbiddenLabels: []string{
@@ -459,6 +500,8 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅账号更多：douyin:" + douyinSecUID,
 				"订阅账号更多：weibo:" + weiboUID,
 				"订阅账号更多：x:" + xUID,
+				"打开关联账号主页：bilibili:20001",
+				"打开关联账号主页：x:" + xUID,
 				"关联账号输入",
 				"预览关联账号",
 			},
@@ -483,6 +526,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"订阅标签：内容",
 				"订阅标签：账号",
 				"订阅详情账号站点：x:" + xOnlyUID,
+				"打开关联账号主页：x:" + xOnlyUID,
 				"订阅账号更多：x:" + xOnlyUID,
 			},
 			RequiredTexts: []string{

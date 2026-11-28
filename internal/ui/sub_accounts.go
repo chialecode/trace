@@ -233,8 +233,8 @@ func (a *App) renderSubscriptionAccountRow(c *ui.Context, r subAccountRow) {
 				if m.Item("打开订阅").Chosen() {
 					a.OpenSubscriptionDetail(r.Sub)
 				}
-				if m.Item("打开主页").Chosen() {
-					a.openAccountUserPage(r.Site, r.UID, r.Name)
+				if m.Item("打开账号主页").Chosen() {
+					a.openAccountUserPage(r.Site, firstNonEmptyStrUI(r.UID, r.UniqueID), r.Name)
 				}
 			})
 			keyedMenuOpen(&a.SubAccountMenuKey, menuKey, open)
