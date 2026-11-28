@@ -17,6 +17,7 @@ func (p *Page) renderDetailRoute(c *ui.Context, h pagekit.Host, r *ui.Router, ro
 	if itemKey != "" && p.detailKey != itemKey {
 		p.detailKey = itemKey
 		p.detail = nil
+		p.detailEditHistoryCollapsed = false
 		gen := p.gen
 		p.mu.Unlock()
 		p.fetchDetail(h, itemKey, gen)
@@ -120,6 +121,9 @@ func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.
 					}
 					if t := mediaview.FormatPubTime(det.PubTs, p.nowFn()); t != "" {
 						meta = append(meta, t)
+					}
+					if det.EditCount > 0 {
+						meta = append(meta, fmt.Sprintf("已编辑 %d 次", det.EditCount))
 					}
 					if sz := mediaview.FormatBytes(det.TotalBytes); sz != "" {
 						meta = append(meta, sz)
@@ -254,6 +258,11 @@ func (p *Page) renderDetailBody(c *ui.Context, h pagekit.Host, det companionapi.
 			// Rich card summary (read-only; skip redundant degraded article card when full Article is cached).
 			if det.Card != nil && !(hasArticle && det.Card.Kind == "article") {
 				p.renderDetailRichCard(c, h, det.Card)
+			}
+
+			// Cached edit history revisions (zero external network requests, DEC-094).
+			if len(det.EditHistory) > 0 {
+				p.renderDetailEditHistorySection(c, h, det)
 			}
 
 			// Missing parts note (honest partial status).
@@ -816,6 +825,130 @@ func (p *Page) renderDetailOriginBoxDepth(c *ui.Context, h pagekit.Host, orig *c
 					p.renderDetailOriginBoxDepth(c, h, orig.Origin, nil, depth+1)
 				}
 			}
+		}
+	})
+}
+
+func (p *Page) renderDetailEditHistorySection(c *ui.Context, h pagekit.Host, det companionapi.LibraryItemDetail) {
+	if len(det.EditHistory) == 0 {
+		return
+	}
+	p.mu.Lock()
+	collapsed := p.detailEditHistoryCollapsed
+	p.mu.Unlock()
+
+	mediaDims := make(map[string][2]int, len(det.Media))
+	for _, m := range det.Media {
+		if m.Path != "" && m.Width > 0 && m.Height > 0 {
+			mediaDims[strings.ToLower(strings.TrimSpace(m.Path))] = [2]int{m.Width, m.Height}
+		}
+	}
+
+	title := fmt.Sprintf("编辑历史（%d 个版本）", len(det.EditHistory))
+	if det.EditCount > 0 {
+		title = fmt.Sprintf("已编辑 %d 次 · %d 个版本", det.EditCount, len(det.EditHistory))
+	}
+
+	ui.Column(c).Label("移动端离线编辑历史").FillWidth().Gap(8).ClipX().Children(func() {
+		toggleBtn := ui.Button(c.Key("eh-toggle"), "").
+			Label("切换编辑历史").
+			FillWidth().MinHeight(40).Padding(8, 12).Radius(10).
+			Background(theme.ColorBgPanel).Border(1, theme.ColorBorder).
+			Justify(ui.SpaceBetween).AlignItems(ui.Center)
+		toggleBtn.Children(func() {
+			ui.Text(c, title).FontSize(13).FontWeight(600).TextColor(theme.ColorTextMain).SingleLine().Grow(1)
+			stateTxt := "收起"
+			if collapsed {
+				stateTxt = "展开"
+			}
+			ui.Text(c, stateTxt).FontSize(12).TextColor(theme.ColorTextMuted).SingleLine().Shrink(0)
+		})
+		if toggleBtn.Clicked() {
+			p.mu.Lock()
+			p.detailEditHistoryCollapsed = !p.detailEditHistoryCollapsed
+			p.mu.Unlock()
+		}
+
+		if collapsed {
+			return
+		}
+
+		now := p.nowFn()
+		for idx, rev := range det.EditHistory {
+			badge := fmt.Sprintf("第 %d 版", rev.Version)
+			if idx == 0 && len(det.EditHistory) > 1 {
+				badge = fmt.Sprintf("最新版本 · 第 %d 版", max(rev.Version, 1))
+			} else if rev.Version <= 1 {
+				badge = "原始版本 · 第 1 版"
+			}
+			ui.Column(c.Key(fmt.Sprintf("eh-rev-%d-%d", rev.Version, idx))).
+				Label(fmt.Sprintf("编辑历史版本 %d", rev.Version)).
+				FillWidth().Padding(10, 12).Radius(10).
+				Background(theme.ColorBgPanel).Border(1, theme.ColorBorder).
+				Gap(6).ClipX().
+				Children(func() {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(6).ClipX().Children(func() {
+						ui.Box(c).Padding(2, 6).Radius(4).Background(theme.ColorAccentBg).Shrink(0).Children(func() {
+							ui.Text(c, badge).FontSize(11).FontWeight(600).TextColor(theme.ColorAccent).SingleLine()
+						})
+						if ts := mediaview.FormatPubTime(rev.EditTs, now); ts != "" {
+							ui.Text(c, ts).FontSize(11).TextColor(theme.ColorTextMuted).SingleLine()
+						}
+					})
+					if txt := strings.TrimSpace(rev.Text); txt != "" {
+						ui.Text(c, txt).FontSize(13).LineHeight(theme.LineHeightBody).TextColor(theme.ColorTextMain)
+					}
+					if links := mediaview.ExtractLinks(rev.Text, rev.Links); len(links) > 0 {
+						p.renderDetailLinks(c, h, links)
+					}
+					if len(rev.MediaPaths) > 0 {
+						revImgs := make([]mediaview.ImageItem, 0, len(rev.MediaPaths))
+						for _, rel := range rev.MediaPaths {
+							rel = strings.TrimSpace(rel)
+							if rel == "" {
+								continue
+							}
+							d := mediaDims[strings.ToLower(rel)]
+							revImgs = append(revImgs, mediaview.ImageItem{
+								ItemKey: det.ItemKey,
+								RelPath: rel,
+								GIF:     strings.HasSuffix(strings.ToLower(rel), ".gif"),
+								Width:   d[0],
+								Height:  d[1],
+							})
+						}
+						if len(revImgs) > 0 {
+							ui.Row(c).FillWidth().Wrap().Gap(6).ClipX().Children(func() {
+								for imgIdx, im := range revImgs {
+									ii := imgIdx
+									itemImg := im
+									src, _, _ := p.loader.GetOrLoad(h, mediaview.MediaThumbPath(itemImg.ItemKey, itemImg.RelPath))
+									tile := ui.Box(c.Key(fmt.Sprintf("eh-img-%d-%d", rev.Version, ii))).
+										Size(64, 64).
+										Radius(8).
+										Clip().
+										Background(theme.ColorBgSecondary).
+										Border(1, theme.ColorBorder).
+										Shrink(0).
+										Label(fmt.Sprintf("查看编辑历史第 %d 版图片 %d", rev.Version, ii+1))
+									tile.Children(func() {
+										if src != nil {
+											ui.Image(c, src).Fit(ui.Cover).Fill()
+										}
+										if itemImg.GIF {
+											ui.Box(c).Absolute().Top(4).Left(4).Padding(1, 4).Radius(3).Background(ui.RGBA(0, 0, 0, 0.62)).Children(func() {
+												ui.Text(c, "GIF").FontSize(9).FontWeight(600).TextColor(theme.ColorWhite).SingleLine()
+											})
+										}
+									})
+									if tile.Clicked() {
+										p.triggerOpenImages(h, revImgs, ii)
+									}
+								}
+							})
+						}
+					}
+				})
 		}
 	})
 }
