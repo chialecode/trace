@@ -384,12 +384,12 @@ func (c *Client) ReflowRoomInfo(ctx context.Context, roomID, secUID string) (*Li
 	}
 
 	rawResp, err := c.doAPIRequest(ctx, apiRequestSpec{
-		endpoint:      c.endpoints.LiveReflowInfo,
-		referer:       DefaultLiveReferer,
-		origin:        DefaultLiveOrigin,
-		params:        params,
-		requireSign:   false,
-		guestNoCookie: true,
+		endpoint:    c.endpoints.LiveReflowInfo,
+		referer:     DefaultLiveReferer,
+		origin:      DefaultLiveOrigin,
+		params:      params,
+		requireSign: false,
+		omitCookie:  true,
 	})
 	if err != nil {
 		return nil, err
@@ -511,12 +511,12 @@ func (c *Client) CheckRoomsAlive(ctx context.Context, roomIDs []string) (map[str
 	}
 
 	rawResp, err := c.doAPIRequest(ctx, apiRequestSpec{
-		endpoint:      c.endpoints.LiveCheckAlive,
-		referer:       DefaultLiveReferer,
-		origin:        DefaultLiveOrigin,
-		params:        params,
-		requireSign:   false,
-		guestNoCookie: true,
+		endpoint:    c.endpoints.LiveCheckAlive,
+		referer:     DefaultLiveReferer,
+		origin:      DefaultLiveOrigin,
+		params:      params,
+		requireSign: false,
+		omitCookie:  true,
 	})
 	if err != nil {
 		return nil, err

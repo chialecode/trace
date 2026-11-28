@@ -336,3 +336,35 @@ func TestBilibiliPacingJitterInjectable(t *testing.T) {
 		t.Fatalf("elapsed = %v, want >= 30ms (15ms base + 20ms injected jitter)", elapsed)
 	}
 }
+
+func TestBilibiliPacingJitterDefaultsScaleWithCustomInterval(t *testing.T) {
+	cases := []struct {
+		name       string
+		pacing     time.Duration
+		jitter     time.Duration
+		wantPacing time.Duration
+		wantJitter time.Duration
+	}{
+		{"production_default", 0, 0, DefaultPacingMinWait, DefaultPacingJitterMax},
+		{"custom_small_1ms", time.Millisecond, 0, time.Millisecond, 400 * time.Microsecond},
+		{"custom_medium_100ms", 100 * time.Millisecond, 0, 100 * time.Millisecond, 40 * time.Millisecond},
+		{"custom_large_1s_capped", time.Second, 0, time.Second, DefaultPacingJitterMax},
+		{"disabled_pacing", -1, 0, -1, 0},
+		{"disabled_jitter", 500 * time.Millisecond, -1, 500 * time.Millisecond, 0},
+		{"explicit_jitter_honored", 15 * time.Millisecond, 25 * time.Millisecond, 15 * time.Millisecond, 25 * time.Millisecond},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewClient(ClientOptions{
+				PacingInterval:  tc.pacing,
+				PacingJitterMax: tc.jitter,
+			})
+			if c.pacingInterval != tc.wantPacing {
+				t.Errorf("pacingInterval = %v, want %v", c.pacingInterval, tc.wantPacing)
+			}
+			if c.pacingJitterMax != tc.wantJitter {
+				t.Errorf("pacingJitterMax = %v, want %v", c.pacingJitterMax, tc.wantJitter)
+			}
+		})
+	}
+}

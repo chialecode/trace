@@ -1182,20 +1182,26 @@ func extractTcoHTMLRedirectURL(body []byte) string {
 }
 
 func parseMetaRefreshURL(content string) string {
-	// Format: "<delay>; URL=<target>" (case-insensitive URL=, optional quotes around target).
-	for _, part := range strings.Split(content, ";") {
-		p := strings.TrimSpace(part)
-		if len(p) >= 4 && strings.EqualFold(p[:4], "url=") {
-			target := strings.TrimSpace(p[4:])
-			if len(target) >= 2 && ((target[0] == '"' && target[len(target)-1] == '"') || (target[0] == '\'' && target[len(target)-1] == '\'')) {
-				target = strings.TrimSpace(target[1 : len(target)-1])
-			}
-			if target != "" {
-				return target
-			}
-		}
+	// Format: "<delay>; URL=<target>" (case-insensitive URL with optional
+	// whitespace around '=', optional matching quotes around the full target).
+	// Split only once after the delay so semicolons inside target URLs survive.
+	_, rest, ok := strings.Cut(content, ";")
+	if !ok {
+		return ""
 	}
-	return ""
+	rest = strings.TrimSpace(rest)
+	if len(rest) < 4 || !strings.EqualFold(rest[:3], "url") {
+		return ""
+	}
+	afterURL := strings.TrimSpace(rest[3:])
+	if len(afterURL) == 0 || afterURL[0] != '=' {
+		return ""
+	}
+	target := strings.TrimSpace(afterURL[1:])
+	if len(target) >= 2 && ((target[0] == '"' && target[len(target)-1] == '"') || (target[0] == '\'' && target[len(target)-1] == '\'')) {
+		target = strings.TrimSpace(target[1 : len(target)-1])
+	}
+	return target
 }
 
 func (c *Client) materializeRouteMatch(ctx context.Context, match localRouteMatch) (site.ResolveTarget, error) {

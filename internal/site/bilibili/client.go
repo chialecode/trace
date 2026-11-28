@@ -182,11 +182,19 @@ func NewClient(opts ClientOptions) *Client {
 	if pacing == 0 {
 		pacing = DefaultPacingMinWait
 	}
-	jitterMax := DefaultPacingJitterMax
-	if opts.PacingInterval < 0 || opts.PacingJitterMax < 0 {
+	var jitterMax time.Duration
+	switch {
+	case opts.PacingInterval < 0 || opts.PacingJitterMax < 0:
 		jitterMax = 0
-	} else if opts.PacingJitterMax > 0 {
+	case opts.PacingJitterMax > 0:
 		jitterMax = opts.PacingJitterMax
+	case opts.PacingInterval == 0:
+		jitterMax = DefaultPacingJitterMax
+	default:
+		// Scale default jitter proportionally to custom positive PacingInterval,
+		// capped at DefaultPacingJitterMax, so small custom intervals (e.g. 1ms
+		// in tests) do not unexpectedly sleep up to 200ms.
+		jitterMax = min(DefaultPacingJitterMax, pacing*2/5)
 	}
 	nowFn := opts.NowFunc
 	if nowFn == nil {

@@ -1066,3 +1066,57 @@ func TestAmemvLiveEndpointsNeverLeakDouyinCookiesAndPersistWebID(t *testing.T) {
 		}
 	}
 }
+
+func TestAmemvLiveEndpointsRequireAuthWithZeroRequestsWhenLoggedOutOrExpired(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name    string
+		expired bool
+	}{
+		{name: "logged_out", expired: false},
+		{name: "expired", expired: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, _, err := credential.OpenDouyin(filepath.Join(t.TempDir(), credential.DouyinFileName))
+			if err != nil {
+				t.Fatalf("OpenDouyin: %v", err)
+			}
+			if tc.expired {
+				if _, err := store.SaveVerifiedDouyinManual(
+					map[string]string{"sessionid": "SYNTH_EXPIRED_SESS", "ttwid": "SYNTH_EXPIRED_TTWID"},
+					credential.DouyinProfile{SecUID: "MS4wLjABAAAA_SYNTHETIC_ANCHOR_02", Uname: "过期测试"},
+				); err != nil {
+					t.Fatalf("SaveVerifiedDouyinManual: %v", err)
+				}
+				if _, err := store.MarkState("expired", "synthetic expired"); err != nil {
+					t.Fatalf("MarkState(expired): %v", err)
+				}
+			}
+
+			var httpCalls atomic.Int32
+			client := NewClient(ClientOptions{
+				CredStore:   store,
+				MinInterval: -1,
+				Entropy:     newDeterministicEntropy(0x73),
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					httpCalls.Add(1)
+					return jsonHTTPResponse(http.StatusOK, `{"status_code":0}`, nil), nil
+				}),
+			})
+
+			if _, err := client.ReflowRoomInfo(ctx, "7400000000000000401", "MS4wLjABAAAA_SYNTHETIC_ANCHOR_02"); !site.IsKind(err, site.ErrKindAuthRequired) {
+				t.Fatalf("ReflowRoomInfo err = %v, want auth_required", err)
+			}
+			if _, err := client.CheckRoomsAlive(ctx, []string{"7400000000000000401"}); !site.IsKind(err, site.ErrKindAuthRequired) {
+				t.Fatalf("CheckRoomsAlive err = %v, want auth_required", err)
+			}
+			if _, err := client.SelectLiveStream(ctx, "", "7400000000000000401", nil); !site.IsKind(err, site.ErrKindAuthRequired) {
+				t.Fatalf("SelectLiveStream(roomID) err = %v, want auth_required", err)
+			}
+			if got := httpCalls.Load(); got != 0 {
+				t.Fatalf("expected 0 outbound HTTP calls when %s, got %d", tc.name, got)
+			}
+		})
+	}
+}

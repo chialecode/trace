@@ -333,6 +333,9 @@ func TestShortLinkTCoHTTP200MetaRefreshAndJSFallback(t *testing.T) {
 		case "/tco/meta200_reversed":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html><head><meta content="0; url='https://x.com/example_user/status/1791257321273778510'" http-equiv="REFRESH"></head></html>`))
+		case "/tco/meta200_semicolon_and_spaces":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><head><meta http-equiv="refresh" content='0; URL = "https://x.com/example_user/status/1791257321273778514?a=1;b=2"'></head></html>`))
 		case "/tco/jsreplace200":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html><head><script>window.opener=null;location.replace("https:\/\/x.com\/example_user\/status\/1791257321273778511")</script></head></html>`))
@@ -372,6 +375,7 @@ func TestShortLinkTCoHTTP200MetaRefreshAndJSFallback(t *testing.T) {
 	}{
 		{"/tco/meta200", "1791257321273778509"},
 		{"/tco/meta200_reversed", "1791257321273778510"},
+		{"/tco/meta200_semicolon_and_spaces", "1791257321273778514"},
 		{"/tco/jsreplace200", "1791257321273778511"},
 		{"/tco/meta_to_302", "1791257321273778512"},
 	} {
@@ -409,5 +413,30 @@ func TestShortLinkTCoHTTP200MetaRefreshAndJSFallback(t *testing.T) {
 	}
 	if disallowedHits.Load() != 0 {
 		t.Fatalf("disallowed target received %d hits, want 0", disallowedHits.Load())
+	}
+}
+
+func TestParseMetaRefreshURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"plain", "0;URL=https://x.com/u/status/1", "https://x.com/u/status/1"},
+		{"semicolon_unquoted", "0;URL=https://x.com/u/status/1?a=1;b=2", "https://x.com/u/status/1?a=1;b=2"},
+		{"semicolon_double_quoted", `0;URL="https://x.com/u/status/1?a=1;b=2"`, "https://x.com/u/status/1?a=1;b=2"},
+		{"semicolon_single_quoted", `0; url='https://x.com/u/status/1?a=1;b=2'`, "https://x.com/u/status/1?a=1;b=2"},
+		{"whitespace_around_equals", "0; URL = https://x.com/u/status/1?a=1;b=2", "https://x.com/u/status/1?a=1;b=2"},
+		{"whitespace_and_quotes", ` 5 ;  UrL  =  "https://x.com/a;b" `, "https://x.com/a;b"},
+		{"invalid_key_prefix", "0; urlx=https://x.com/u/status/1", ""},
+		{"no_semicolon", "URL=https://x.com/u/status/1", ""},
+		{"empty_quoted", `0; URL=""`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseMetaRefreshURL(tc.content); got != tc.want {
+				t.Fatalf("parseMetaRefreshURL(%q) = %q, want %q", tc.content, got, tc.want)
+			}
+		})
 	}
 }

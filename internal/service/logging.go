@@ -171,7 +171,7 @@ func (b *Backend) RecentLogs(maxLines int) ([]string, error) {
 
 // secretKeyNamesPattern is the single source of truth for secret parameter and
 // cookie field names redacted across runtime logs and persisted queue text.
-const secretKeyNamesPattern = `cookie|authorization|sessdata|bili_jct|dedeuserid|dedeuserid__ckmd5|sid|ac_time_value|refresh_token|pending_old_refresh_token|access_key|auth_key|csrf|qrcode_key|token|sign|x-expires|w_rid|upsig|wssecret|wstime|deadline|bwsv|sessionid|sessionid_ss|sid_tt|uid_tt|uid_tt_ss|sid_guard|odin_tt|passport_csrf_token|passport_csrf_token_default|ttwid|uifid|uifid_temp|mstoken|s_v_web_id|__ac_nonce|__ac_signature|a_bogus|x-bogus|x-signature|x-secsdk-web-signature|x-secsdk-csrf-token|sub|subp|xsrf-token|x-xsrf-token|wbpsess|scf|alf|alc|ssologinstate|suhb|pc_token|_t_wm|ssig|kid|expires|auth_token|ct0|twid|guest_id|kdt|x-csrf-token|x-client-transaction-id|bearer`
+const secretKeyNamesPattern = `cookie|authorization|sessdata|bili_jct|dedeuserid|dedeuserid__ckmd5|sid|buvid3|buvid4|b_nut|ac_time_value|refresh_token|pending_old_refresh_token|access_key|auth_key|csrf|qrcode_key|token|sign|x-expires|w_rid|upsig|wssecret|wstime|deadline|bwsv|sessionid|sessionid_ss|sid_tt|uid_tt|uid_tt_ss|sid_guard|odin_tt|passport_csrf_token|passport_csrf_token_default|ttwid|uifid|uifid_temp|mstoken|s_v_web_id|__ac_nonce|__ac_signature|a_bogus|x-bogus|x-signature|x-secsdk-web-signature|x-secsdk-csrf-token|sub|subp|xsrf-token|x-xsrf-token|wbpsess|scf|alf|alc|ssologinstate|suhb|pc_token|_t_wm|ssig|kid|expires|auth_token|ct0|twid|guest_id|kdt|x-csrf-token|x-client-transaction-id|bearer`
 
 var (
 	runtimeLogSecretField   = regexp.MustCompile(`(?i)\b(?:` + secretKeyNamesPattern + `)["'\\]*\s*[=:]|[?&]e=|\btrace-remote:\S+|\bbearer\s+\S+`)

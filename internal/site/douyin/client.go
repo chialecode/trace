@@ -783,6 +783,7 @@ type apiRequestSpec struct {
 	params          []sign.Pair
 	requireSign     bool
 	guestNoCookie   bool
+	omitCookie      bool
 	candidateCookie map[string]string
 	candidateGuard  *guard.State
 	// form, when non-nil, turns the request into a POST with an
@@ -1252,6 +1253,16 @@ func (c *Client) resolveCookieContext(spec apiRequestSpec) (resolvedCookieContex
 		}
 		return resolvedCookieContext{msToken: tok}, nil
 
+	case spec.omitCookie:
+		if authErr := c.RequireAuth(spec.endpoint); authErr != nil {
+			return resolvedCookieContext{}, authErr
+		}
+		tok, gErr := sign.GenerateMSToken(c.entropy)
+		if gErr != nil {
+			tok = "SYNTHETIC_FALLBACK_MSTOKEN=="
+		}
+		return resolvedCookieContext{msToken: tok}, nil
+
 	case spec.candidateCookie != nil:
 		cleaned := credential.CleanDouyinCookieMap(spec.candidateCookie)
 		cookieHdr := credential.FormatDouyinCookieHeader(cleaned)
@@ -1350,7 +1361,7 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 	params := make([]sign.Pair, 0, len(spec.params)+1)
 	params = append(params, spec.params...)
 	webIDSynced := false
-	if !spec.guestNoCookie && reqCtx.ttwidHash != "" {
+	if !spec.guestNoCookie && !spec.omitCookie && reqCtx.ttwidHash != "" {
 		if synced := c.syncedWebIDFor(reqCtx.ttwidHash); synced != "" {
 			webIDSynced = replaceSignPair(params, "webid", synced)
 		}
@@ -1392,7 +1403,7 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 	}
 
 	var activeGuard *guard.State
-	if !spec.guestNoCookie && guard.IsGuardedPath(parsedURL.Path) {
+	if !spec.guestNoCookie && !spec.omitCookie && guard.IsGuardedPath(parsedURL.Path) {
 		var fallbackTicket string
 		if spec.candidateCookie != nil {
 			fallbackTicket = strings.TrimSpace(spec.candidateCookie["d_ticket"])
@@ -1485,7 +1496,7 @@ func (c *Client) doAPIRequest(ctx context.Context, spec apiRequestSpec) (*apiRaw
 	}
 
 	serverWebID := ""
-	if !spec.guestNoCookie && resp.StatusCode == http.StatusOK {
+	if !spec.guestNoCookie && !spec.omitCookie && resp.StatusCode == http.StatusOK {
 		serverWebID = parseServerWebID(resp.Header)
 	}
 
