@@ -98,6 +98,8 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 								ui.Text(c, "粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 								ui.Text(c, "1. 在桌面浏览器打开 douyin.com 登录，进入「我的 → 喜欢」页面\n2. 按 F12 打开开发者工具 → 网络 (Network)，刷新页面并点开任意请求\n3. 复制请求头 (Request Headers) 中的整段完整 Cookie 粘贴到下方").
 									FontSize(12).TextColor(ColorTextMuted).MaxLines(5)
+								ui.Text(c, "提示：粘贴的 Cookie 与浏览器共用会话且不支持自动续期；如同时使用远程服务，请避免本机与 VPS 对同一账号并发高频请求。").
+									FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
 
 								dyBusy := a.isPending("douyin-cookie-login")
 								inp := ui.TextInput(c, &a.DouyinCookieInput).
@@ -170,6 +172,8 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 								ui.Text(c, "粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 								ui.Text(c, "1. 在桌面浏览器打开 weibo.com 并登录账号\n2. 按 F12 打开开发者工具 → 网络 (Network)，刷新页面并点开任意请求\n3. 复制请求头 (Request Headers) 中的整段 Cookie 粘贴到下方（至少包含 SUB）").
 									FontSize(12).TextColor(ColorTextMuted).MaxLines(5)
+								ui.Text(c, "提示：粘贴的 Cookie 与浏览器共用会话且不支持自动续期；如同时使用远程服务，请避免本机与 VPS 对同一账号并发高频请求。").
+									FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
 
 								wbBusy := a.isPending("weibo-cookie-login")
 								inp := ui.TextInput(c, &a.WeiboCookieInput).
@@ -274,8 +278,8 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 										ui.Text(c, "使用前请注意").FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 										ui.Text(c, "X 网页端接口不是官方开放 API，X 服务条款与自动化规则限制未经授权的自动化访问。用网页 Cookie 请求 X 存在触发限流、要求验证、临时锁号甚至封号的风险，强烈建议使用专门账号或可承受风控的小号（本工具不会阻止你粘贴自己的账号）。").
 											FontSize(12).TextColor(ColorTextMain).MaxLines(6)
-										ui.Text(c, "TRACE 只读不写，不保存账号密码，也不对粘贴的 Cookie 自动续期；若遇到验证或锁号会立即停止 X 的全部自动请求。").
-											FontSize(12).TextColor(ColorTextMuted).MaxLines(4)
+										ui.Text(c, "TRACE 只读不写，不保存账号密码，也不对粘贴的 Cookie 自动续期；粘贴的 Cookie 与浏览器共用会话，请避免本机与远程 VPS 对同一账号并发高频请求，若遇到验证或锁号会立即停止 X 的全部自动请求。").
+											FontSize(12).TextColor(ColorTextMuted).MaxLines(5)
 									})
 
 								ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
@@ -369,6 +373,8 @@ func (a *App) renderLoginRoute(c *ui.Context) {
 							Children(func() {
 								ui.Text(c, "方式二：粘贴凭证（浏览器 Cookie）").FontSize(15).FontWeight(600).TextColor(ColorTextMain).SingleLine()
 								ui.Text(c, "在浏览器打开 bilibili.com 并登录 → 按 F12 打开开发者工具 → 网络 (Network) → 复制请求头中的 Cookie（至少包含 SESSDATA）。").
+									FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
+								ui.Text(c, "提示：粘贴的 Cookie 与浏览器共用会话，不支持自动续期；建议优先扫码登录，并避免本机与远程 VPS 对同一账号并发高频请求。").
 									FontSize(12).TextColor(ColorTextMuted).MaxLines(2)
 
 								manualBusy := a.isPending("manual-login")

@@ -767,6 +767,7 @@ func newGuardedMediaTransport(siteID site.ID, allowLocalhost bool) *http.Transpo
 	guard := site.NewGuardedMediaDialer(siteID, allowLocalhost, dialer, "已拦截内网或回环媒体节点地址")
 	return &http.Transport{
 		Proxy:                 guard.Proxy,
+		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          16,
 		IdleConnTimeout:       60 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,

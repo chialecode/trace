@@ -93,7 +93,7 @@ func (c *Client) Followings(ctx context.Context, selfSecUID, maxTime string) (*F
 		business = append(business, sign.Pair{Key: "max_time", Value: maxTime})
 	}
 	ep := c.accountEndpoint(pathFollowingList)
-	top, err := c.accountGet(ctx, ep, "https://www.douyin.com/user/self?showTab=following", c.profile.CommonWebParams(c.webID, "", business...), nil)
+	top, err := c.accountGet(ctx, ep, "https://www.douyin.com/user/self?showTab=following", c.profile.CommonWebParams(c.WebID(), "", business...), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func (c *Client) Favorites(ctx context.Context, selfSecUID, cursor string) (*Acc
 		sign.Pair{Key: "pc_libra_divert", Value: "Windows"},
 		sign.Pair{Key: "update_version_code", Value: collectVersionCode},
 	)
-	params := collectVersion(c.profile.CommonWebParams(c.webID, "", business...))
+	params := collectVersion(c.profile.CommonWebParams(c.WebID(), "", business...))
 	raw, err := c.doAPIRequest(ctx, apiRequestSpec{
 		endpoint:    ep,
 		referer:     "https://www.douyin.com/user/self?showTab=like",
@@ -185,7 +185,7 @@ func (c *Client) Favorites(ctx context.Context, selfSecUID, cursor string) (*Acc
 func (c *Client) Collection(ctx context.Context, cursor string) (*AccountWorksPage, error) {
 	cursor = normCursor(cursor)
 	ep := c.accountEndpoint(pathListCollection)
-	params := collectVersion(c.profile.CommonWebParams(c.webID, "",
+	params := collectVersion(c.profile.CommonWebParams(c.WebID(), "",
 		sign.Pair{Key: "publish_video_strategy_type", Value: "2"},
 	))
 	form := []sign.Pair{
@@ -218,7 +218,7 @@ type CollectFoldersPage struct {
 func (c *Client) CollectFolders(ctx context.Context, cursor string) (*CollectFoldersPage, error) {
 	cursor = normCursor(cursor)
 	ep := c.accountEndpoint(pathCollectsList)
-	params := collectVersion(c.profile.CommonWebParams(c.webID, "",
+	params := collectVersion(c.profile.CommonWebParams(c.WebID(), "",
 		sign.Pair{Key: "cursor", Value: cursor},
 		sign.Pair{Key: "count", Value: strconv.Itoa(collectFolderPage)},
 	))
@@ -277,7 +277,7 @@ func (c *Client) CollectFolderWorks(ctx context.Context, folderID, cursor string
 	}
 	cursor = normCursor(cursor)
 	ep := c.accountEndpoint(pathCollectsVideos)
-	params := collectVersion(c.profile.CommonWebParams(c.webID, "",
+	params := collectVersion(c.profile.CommonWebParams(c.WebID(), "",
 		sign.Pair{Key: "collects_id", Value: folderID},
 		sign.Pair{Key: "cursor", Value: cursor},
 		sign.Pair{Key: "count", Value: strconv.Itoa(collectFolderWorkPage)},
@@ -294,7 +294,7 @@ func (c *Client) CollectFolderWorks(ctx context.Context, folderID, cursor string
 func (c *Client) WatchHistory(ctx context.Context, cursor string) (*AccountWorksPage, error) {
 	cursor = normCursor(cursor)
 	ep := c.accountEndpoint(pathHistoryRead)
-	params := c.profile.CommonWebParams(c.webID, "",
+	params := c.profile.CommonWebParams(c.WebID(), "",
 		sign.Pair{Key: "max_cursor", Value: cursor},
 		sign.Pair{Key: "count", Value: strconv.Itoa(watchHistoryPageSize)},
 	)

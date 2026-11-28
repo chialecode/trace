@@ -1034,6 +1034,11 @@ func (c *Client) expandShortLinkWithCount(ctx context.Context, startURL *url.URL
 		req.Header.Set("User-Agent", c.profile.UserAgent)
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+		c.profile.ApplyClientHints(req.Header)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+		req.Header.Set("Sec-Fetch-Site", "none")
+		req.Header.Set("Sec-Fetch-User", "?1")
 		// Strictly never send Cookie to t.cn or redirect hops (weibo.md §3.1 #2).
 		req.Header.Del("Cookie")
 

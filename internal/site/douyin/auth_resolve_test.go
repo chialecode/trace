@@ -401,7 +401,7 @@ func TestLoginWithCookieFailureModesAndSuccess(t *testing.T) {
 		if len(capturedMSToken) != 128 {
 			t.Fatalf("generated fallback msToken length = %d, want 128", len(capturedMSToken))
 		}
-		if capturedUA != DefaultUserAgent || !strings.Contains(capturedCHUA, `"136"`) {
+		if capturedUA != DefaultUserAgent || !strings.Contains(capturedCHUA, `"144"`) {
 			t.Fatalf("unexpected UA/Sec-Ch-Ua headers: UA=%q CHUA=%q", capturedUA, capturedCHUA)
 		}
 		if got := store.TTWID(); got != "SYNTH_REFRESHED_TTWID_02" {

@@ -566,7 +566,7 @@ func (m *Manager) saveVideoExtras(ctx context.Context, t *Task, meta *library.It
 		m.setFileProgress(t, "danmaku", dmRel, "skipped", 0, 0, 0)
 	} else if !mediaIsValid(*meta, part.Danmaku) {
 		m.setFileProgress(t, "danmaku", dmRel, "downloading", 0, 0, 0)
-		raw, err := m.client.DanmakuXML(ctx, part.CID, part.Duration)
+		raw, err := m.client.DanmakuXML(ctx, part.CID, part.Duration, meta.RawID)
 		if err != nil {
 			part.DanmakuState = "missing"
 			m.setFileProgress(t, "danmaku", dmRel, "failed", 0, 0, 0)

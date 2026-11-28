@@ -342,6 +342,11 @@ func NewBackend(opts Options) (*Backend, error) {
 
 	dyOpts := opts.DouyinOpts
 	dyOpts.CredStore = douyinCredStore
+	if strings.TrimSpace(dyOpts.WebID) == "" && douyinCredStore != nil {
+		if persistedWebID, wErr := douyinCredStore.EnsureDouyinWebID(douyin.GenerateWebID); wErr == nil && persistedWebID != "" {
+			dyOpts.WebID = persistedWebID
+		}
+	}
 	if dyOpts.PreferredCodec == nil {
 		dyOpts.PreferredCodec = b.preferredDouyinCodec
 	}

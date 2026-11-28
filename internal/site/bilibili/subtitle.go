@@ -95,7 +95,7 @@ func (c *Client) MissingSubtitlesAndChapters(ctx context.Context, bvid string, c
 			Content string `json:"content"`
 		} `json:"view_points"`
 	}
-	if err := c.doWBIGet(ctx, "/x/player/wbi/v2", params, &raw); err != nil {
+	if err := c.doWBIGetWithReferer(ctx, "/x/player/wbi/v2", params, &raw, c.videoReferer(bvid)); err != nil {
 		return PlayerPartExtras{}, err
 	}
 	if raw.BVID != bvid || raw.CID != cid {
@@ -252,7 +252,10 @@ func (c *Client) subtitleBytes(ctx context.Context, rawURL string) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", DefaultUserAgent)
+	req.Header.Set("User-Agent", c.profile.UserAgent)
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	c.profile.ApplyClientHints(req.Header)
 	resp, err := c.apiClient.Do(req)
 	if err != nil {
 		return nil, &SiteError{Kind: ErrKindNetwork, Message: "字幕下载失败", Err: site.UnwrapURLError(err)}

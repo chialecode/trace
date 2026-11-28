@@ -640,24 +640,31 @@ func TestFrontendStaticAssetSecurityGuards(t *testing.T) {
 		})
 	}
 
-	// Valid redirect within https://abs.twimg.com/responsive-web/ succeeds and stays unauthenticated
-	// with Referer and Origin stripped across every redirect hop (x.md §15.1 #4).
+	// Valid redirect within https://abs.twimg.com/responsive-web/ succeeds, stays unauthenticated
+	// (Cookie/Authorization/X-Csrf-Token/Origin stripped on every hop), and sends browser-aligned
+	// cross-site script headers (Referer: https://x.com/, Sec-Fetch-*, Sec-Ch-Ua*).
 	t.Run("allowed redirect within abs.twimg.com responsive-web", func(t *testing.T) {
 		mainBytes := mustReadTestdata(t, "webpack_main.js")
 		ondemandBytes := mustReadTestdata(t, "webpack_ondemand.js")
 		var sawAuthHeader atomic.Bool
-		var sawReferer atomic.Bool
 		var sawOrigin atomic.Bool
+		var sawBadScriptHeaders atomic.Bool
 		var hopCount atomic.Int32
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Cookie") != "" || r.Header.Get("Authorization") != "" || r.Header.Get("X-Csrf-Token") != "" {
 				sawAuthHeader.Store(true)
 			}
-			if r.Header.Get("Referer") != "" {
-				sawReferer.Store(true)
-			}
 			if r.Header.Get("Origin") != "" {
 				sawOrigin.Store(true)
+			}
+			if r.Header.Get("Referer") != DefaultReferer ||
+				r.Header.Get("Sec-Fetch-Site") != "cross-site" ||
+				r.Header.Get("Sec-Fetch-Mode") != "no-cors" ||
+				r.Header.Get("Sec-Fetch-Dest") != "script" ||
+				!strings.Contains(r.Header.Get("Sec-Ch-Ua"), `"144"`) ||
+				r.Header.Get("Sec-Ch-Ua-Mobile") != "?0" ||
+				r.Header.Get("Sec-Ch-Ua-Platform") != `"Windows"` {
+				sawBadScriptHeaders.Store(true)
 			}
 			switch r.URL.Path {
 			case "/responsive-web/client-web/main.synth01a.js":
@@ -688,8 +695,43 @@ func TestFrontendStaticAssetSecurityGuards(t *testing.T) {
 		if sawAuthHeader.Load() {
 			t.Fatalf("redirected static request carried auth/cookie header")
 		}
-		if sawReferer.Load() || sawOrigin.Load() {
-			t.Fatalf("redirected static request leaked Referer (%v) or Origin (%v)", sawReferer.Load(), sawOrigin.Load())
+		if sawOrigin.Load() {
+			t.Fatalf("redirected static request leaked Origin header")
+		}
+		if sawBadScriptHeaders.Load() {
+			t.Fatalf("redirected static request missing expected script Referer/Sec-Fetch/Sec-Ch-Ua headers")
+		}
+	})
+
+	t.Run("static asset with Firefox UA omits Sec-Ch-Ua hints", func(t *testing.T) {
+		mainBytes := mustReadTestdata(t, "webpack_main.js")
+		ondemandBytes := mustReadTestdata(t, "webpack_ondemand.js")
+		var sawCHUA atomic.Bool
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Sec-Ch-Ua") != "" || r.Header.Get("Sec-Ch-Ua-Mobile") != "" || r.Header.Get("Sec-Ch-Ua-Platform") != "" {
+				sawCHUA.Store(true)
+			}
+			switch r.URL.Path {
+			case "/responsive-web/client-web/main.synth01a.js":
+				_, _ = w.Write(mainBytes)
+			case "/responsive-web/client-web/ondemand.s.synth02a.js":
+				_, _ = w.Write(ondemandBytes)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer ts.Close()
+
+		disc := NewFrontendDiscovery(FrontendDiscoveryConfig{
+			UserAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
+			FetchHome:      func(ctx context.Context, homeURL string) ([]byte, error) { return []byte(baseHTML), nil },
+			AssetTransport: newAbsRewriteTransport(t, ts),
+		})
+		if _, err := disc.Ensure(context.Background()); err != nil {
+			t.Fatalf("Ensure with Firefox UA failed: %v", err)
+		}
+		if sawCHUA.Load() {
+			t.Fatal("Firefox UA unexpectedly emitted Sec-Ch-Ua* headers on abs.twimg.com")
 		}
 	})
 
@@ -1374,7 +1416,7 @@ func TestFrontendDiscoverySplitLazyChunksWebpackAndVite(t *testing.T) {
 
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Cookie") != "" || r.Header.Get("Authorization") != "" || r.Header.Get("X-Csrf-Token") != "" ||
-				r.Header.Get("Referer") != "" || r.Header.Get("Origin") != "" {
+				r.Header.Get("Referer") != DefaultReferer || r.Header.Get("Origin") != "" {
 				sawAuthHeader.Store(true)
 			}
 			switch r.URL.Path {
@@ -2016,7 +2058,7 @@ func TestFrontendDiscoveryWebpackRealisticSplitBookmarksAndLikes(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(r.URL.Path, "/responsive-web/") {
 				if r.Header.Get("Cookie") != "" || r.Header.Get("Authorization") != "" ||
-					r.Header.Get("X-Csrf-Token") != "" || r.Header.Get("Referer") != "" || r.Header.Get("Origin") != "" {
+					r.Header.Get("X-Csrf-Token") != "" || r.Header.Get("Referer") != DefaultReferer || r.Header.Get("Origin") != "" {
 					sawAssetLeak.Store(true)
 				}
 			}

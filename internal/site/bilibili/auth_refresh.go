@@ -113,7 +113,10 @@ func (c *Client) CheckAndRefreshCookie(ctx context.Context) (credential.Status, 
 
 	// Step 3: Fetch refresh_csrf from /correspond/1/<correspondPath>
 	corrURL := strings.TrimRight(c.endpoints.WWWBase, "/") + "/correspond/1/" + correspondPath
-	_, corrRaw, err := c.doAPIRequest(ctx, http.MethodGet, corrURL, nil, "", true)
+	_, corrRaw, err := c.doAPIRequestWithOptions(ctx, http.MethodGet, corrURL, nil, "", true, apiRequestOptions{
+		referer: DefaultReferer,
+		kind:    reqKindHTML,
+	})
 	if err != nil {
 		var se *SiteError
 		if errors.As(err, &se) {
@@ -145,7 +148,7 @@ func (c *Client) CheckAndRefreshCookie(ctx context.Context) (credential.Status, 
 		Message      string `json:"message"`
 		RefreshToken string `json:"refresh_token"`
 	}
-	resp, err := c.doBiliJSON(
+	resp, err := c.doBiliJSONWithOptions(
 		ctx,
 		http.MethodPost,
 		refreshURL,
@@ -153,6 +156,8 @@ func (c *Client) CheckAndRefreshCookie(ctx context.Context) (credential.Status, 
 		"application/x-www-form-urlencoded",
 		true,
 		&refreshData,
+		true,
+		apiRequestOptions{referer: DefaultReferer, origin: DefaultOrigin},
 	)
 	if err != nil {
 		var se *SiteError
@@ -231,7 +236,7 @@ func (c *Client) postConfirmRefresh(ctx context.Context, newCSRF, oldRefreshToke
 	form.Set("refresh_token", oldRefreshToken)
 
 	confirmURL := strings.TrimRight(c.endpoints.PassportBase, "/") + "/x/passport-login/web/confirm/refresh"
-	_, err := c.doBiliJSON(
+	_, err := c.doBiliJSONWithOptions(
 		ctx,
 		http.MethodPost,
 		confirmURL,
@@ -239,6 +244,8 @@ func (c *Client) postConfirmRefresh(ctx context.Context, newCSRF, oldRefreshToke
 		"application/x-www-form-urlencoded",
 		true,
 		nil,
+		true,
+		apiRequestOptions{referer: DefaultReferer, origin: DefaultOrigin},
 	)
 	return err
 }

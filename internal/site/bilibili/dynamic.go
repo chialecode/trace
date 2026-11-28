@@ -84,7 +84,7 @@ func (c *Client) UserDynamics(ctx context.Context, hostMid int64, offset string)
 		Offset  string            `json:"offset"`
 		Items   []rawDynamicEntry `json:"items"`
 	}
-	if err := c.doWBIGet(ctx, "/x/polymer/web-dynamic/v1/feed/space", params, &raw); err != nil {
+	if err := c.doWBIGetWithReferer(ctx, "/x/polymer/web-dynamic/v1/feed/space", params, &raw, c.spaceReferer(hostMid)); err != nil {
 		return UserDynamicsPage{}, err
 	}
 
@@ -124,7 +124,7 @@ func (c *Client) DynamicDetail(ctx context.Context, dynID string) (DynamicItem, 
 	var raw struct {
 		Item rawDynamicEntry `json:"item"`
 	}
-	if _, err := c.doBiliJSON(ctx, http.MethodGet, fullURL, nil, "", true, &raw); err != nil {
+	if _, err := c.doBiliJSONWithOptions(ctx, http.MethodGet, fullURL, nil, "", true, &raw, true, apiRequestOptions{referer: "https://t.bilibili.com/" + dynID}); err != nil {
 		return DynamicItem{}, err
 	}
 	item := parseDynamicEntry(raw.Item)

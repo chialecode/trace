@@ -3,6 +3,7 @@ package x
 import (
 	"context"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -15,18 +16,22 @@ import (
 
 const (
 	maxShortLinkHops = 5
+	maxTcoHTMLBytes  = 64 * 1024
 
 	// LiveUnsupportedText is the exact user-facing notice for X Broadcasts and Spaces (x.md §15.1 #17).
 	LiveUnsupportedText = "X 直播与 Spaces 暂不支持录制，可以在浏览器中打开"
 )
 
 var (
-	reShortCode     = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-	reBroadcastID   = regexp.MustCompile(`^[A-Za-z0-9_-]{3,64}$`)
-	reArticleID     = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-	rePhotoIndex    = regexp.MustCompile(`^[1-4]$`)
-	reVideoIndex    = regexp.MustCompile(`^[1-4]$`)
-	reMirrorExtTail = regexp.MustCompile(`(?i)\.(?:mp4|jpe?g|png|webp|gif)$`)
+	reShortCode       = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	reBroadcastID     = regexp.MustCompile(`^[A-Za-z0-9_-]{3,64}$`)
+	reArticleID       = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	rePhotoIndex      = regexp.MustCompile(`^[1-4]$`)
+	reVideoIndex      = regexp.MustCompile(`^[1-4]$`)
+	reMirrorExtTail   = regexp.MustCompile(`(?i)\.(?:mp4|jpe?g|png|webp|gif)$`)
+	reHTMLMetaTag     = regexp.MustCompile(`(?is)<meta\b[^>]*>`)
+	reTcoHTMLAttr     = regexp.MustCompile(`(?is)([a-zA-Z0-9_-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>` + "`" + `]+))`)
+	reLocationReplace = regexp.MustCompile(`(?i)(?:window\.)?location\.replace\(\s*(?:"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)')\s*\)`)
 )
 
 // allowedXMainHosts lists the canonical X / Twitter web hosts permitted as final resolution targets.
@@ -857,12 +862,19 @@ func (c *Client) expandShortLinkWithCount(ctx context.Context, startURL *url.URL
 		req.Header.Set("User-Agent", c.profile.UserAgent)
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		c.profile.ApplyClientHints(req.Header)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+		req.Header.Set("Sec-Fetch-Site", "none")
+		req.Header.Set("Sec-Fetch-User", "?1")
 		// Strictly NEVER send Cookie, Authorization, x-csrf-token, or x-twitter-auth-type on t.co hops!
 		req.Header.Del("Cookie")
 		req.Header.Del("Authorization")
 		req.Header.Del("X-Csrf-Token")
 		req.Header.Del("X-Twitter-Auth-Type")
 		req.Header.Del("X-Client-Transaction-Id")
+		req.Header.Del("Origin")
+		req.Header.Del("Referer")
 
 		resp, doErr := c.redirectClient.Do(req)
 		hops++
@@ -881,11 +893,80 @@ func (c *Client) expandShortLinkWithCount(ctx context.Context, startURL *url.URL
 			c.ReportAutomaticError(ctx, netErr)
 			return nil, localRouteMatch{}, hops, netErr
 		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		resp.Body.Close()
-		release()
 
-		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+		var rawLoc string
+		switch {
+		case resp.StatusCode >= 300 && resp.StatusCode < 400:
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			release()
+			rawLoc = strings.TrimSpace(resp.Header.Get("Location"))
+			if rawLoc == "" {
+				return nil, localRouteMatch{}, hops, &site.Error{
+					Site:       SiteID,
+					Kind:       site.ErrKindUnavailable,
+					HTTPStatus: resp.StatusCode,
+					Endpoint:   sanitizeEndpointLabel(cur),
+					Message:    "t.co 短链响应缺少跳转地址",
+				}
+			}
+
+		case resp.StatusCode == http.StatusOK:
+			ct := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxTcoHTMLBytes+1))
+			resp.Body.Close()
+			release()
+			if readErr != nil {
+				netErr := &site.Error{
+					Site:       SiteID,
+					Kind:       site.ErrKindNetwork,
+					HTTPStatus: resp.StatusCode,
+					Endpoint:   sanitizeEndpointLabel(cur),
+					Message:    "读取 t.co 短链页面失败",
+					Err:        readErr,
+				}
+				c.ReportAutomaticError(ctx, netErr)
+				return nil, localRouteMatch{}, hops, netErr
+			}
+			if int64(len(body)) > maxTcoHTMLBytes {
+				se := &site.Error{
+					Site:       SiteID,
+					Kind:       site.ErrKindUnavailable,
+					HTTPStatus: resp.StatusCode,
+					Endpoint:   sanitizeEndpointLabel(cur),
+					Message:    "t.co 短链页面体积超过 64 KiB 安全上限",
+				}
+				c.ReportAutomaticError(ctx, se)
+				return nil, localRouteMatch{}, hops, se
+			}
+			if ct != "" && !strings.Contains(ct, "text/html") && !strings.Contains(ct, "application/xhtml+xml") && !strings.Contains(ct, "text/plain") {
+				se := &site.Error{
+					Site:       SiteID,
+					Kind:       site.ErrKindUnavailable,
+					HTTPStatus: resp.StatusCode,
+					Endpoint:   sanitizeEndpointLabel(cur),
+					Message:    "t.co 短链未返回有效跳转（HTTP 200）",
+				}
+				c.ReportAutomaticError(ctx, se)
+				return nil, localRouteMatch{}, hops, se
+			}
+			rawLoc = extractTcoHTMLRedirectURL(body)
+			if rawLoc == "" {
+				se := &site.Error{
+					Site:       SiteID,
+					Kind:       site.ErrKindUnavailable,
+					HTTPStatus: resp.StatusCode,
+					Endpoint:   sanitizeEndpointLabel(cur),
+					Message:    "t.co 短链未返回有效跳转（HTTP 200）",
+				}
+				c.ReportAutomaticError(ctx, se)
+				return nil, localRouteMatch{}, hops, se
+			}
+
+		default:
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			release()
 			var kind, msg string
 			switch resp.StatusCode {
 			case http.StatusTooManyRequests:
@@ -910,17 +991,6 @@ func (c *Client) expandShortLinkWithCount(ctx context.Context, startURL *url.URL
 			}
 			c.ReportAutomaticError(ctx, se)
 			return nil, localRouteMatch{}, hops, se
-		}
-
-		rawLoc := strings.TrimSpace(resp.Header.Get("Location"))
-		if rawLoc == "" {
-			return nil, localRouteMatch{}, hops, &site.Error{
-				Site:       SiteID,
-				Kind:       site.ErrKindUnavailable,
-				HTTPStatus: resp.StatusCode,
-				Endpoint:   sanitizeEndpointLabel(cur),
-				Message:    "t.co 短链响应缺少跳转地址",
-			}
 		}
 
 		nextURL, pErr := cur.Parse(rawLoc)
@@ -1051,6 +1121,81 @@ func canonicalHopKey(u *url.URL) string {
 		return ""
 	}
 	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + strings.TrimRight(u.Path, "/") + "?" + u.RawQuery
+}
+
+// extractTcoHTMLRedirectURL extracts a redirect target from a bounded HTTP 200 t.co HTML page.
+// It checks <meta http-equiv="refresh" content="...;URL=..."> first, then falls back to
+// JS location.replace("...") (handling \/ JSON/JS slash escapes used by t.co).
+func extractTcoHTMLRedirectURL(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	text := string(body)
+
+	// 1. <meta http-equiv="refresh" content="0;URL=...">
+	for _, tag := range reHTMLMetaTag.FindAllString(text, 16) {
+		attrs := reTcoHTMLAttr.FindAllStringSubmatch(tag, -1)
+		var isRefresh bool
+		var contentVal string
+		for _, a := range attrs {
+			name := strings.ToLower(strings.TrimSpace(a[1]))
+			val := a[2]
+			if val == "" {
+				val = a[3]
+			}
+			if val == "" {
+				val = a[4]
+			}
+			val = strings.TrimSpace(html.UnescapeString(val))
+			switch name {
+			case "http-equiv":
+				if strings.EqualFold(val, "refresh") {
+					isRefresh = true
+				}
+			case "content":
+				contentVal = val
+			}
+		}
+		if isRefresh && contentVal != "" {
+			if target := parseMetaRefreshURL(contentVal); target != "" {
+				return target
+			}
+		}
+	}
+
+	// 2. Fallback: JS location.replace("https:\/\/x.com\/...")
+	if m := reLocationReplace.FindStringSubmatch(text); len(m) == 3 {
+		raw := m[1]
+		if raw == "" {
+			raw = m[2]
+		}
+		raw = strings.ReplaceAll(raw, `\/`, `/`)
+		raw = strings.ReplaceAll(raw, `\u0026`, `&`)
+		raw = strings.ReplaceAll(raw, `\u003d`, `=`)
+		raw = strings.ReplaceAll(raw, `\u003D`, `=`)
+		raw = strings.TrimSpace(html.UnescapeString(raw))
+		if raw != "" {
+			return raw
+		}
+	}
+	return ""
+}
+
+func parseMetaRefreshURL(content string) string {
+	// Format: "<delay>; URL=<target>" (case-insensitive URL=, optional quotes around target).
+	for _, part := range strings.Split(content, ";") {
+		p := strings.TrimSpace(part)
+		if len(p) >= 4 && strings.EqualFold(p[:4], "url=") {
+			target := strings.TrimSpace(p[4:])
+			if len(target) >= 2 && ((target[0] == '"' && target[len(target)-1] == '"') || (target[0] == '\'' && target[len(target)-1] == '\'')) {
+				target = strings.TrimSpace(target[1 : len(target)-1])
+			}
+			if target != "" {
+				return target
+			}
+		}
+	}
+	return ""
 }
 
 func (c *Client) materializeRouteMatch(ctx context.Context, match localRouteMatch) (site.ResolveTarget, error) {

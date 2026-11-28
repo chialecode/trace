@@ -36,8 +36,12 @@ func (c *Client) RelationTags(ctx context.Context) ([]RelationTag, error) {
 		return nil, err
 	}
 	fullURL := strings.TrimRight(c.endpoints.APIBase, "/") + "/x/relation/tags"
+	var selfMid int64
+	if c.credStore != nil {
+		selfMid = c.credStore.Status().Mid
+	}
 	var raw []RelationTag
-	if _, err := c.doBiliJSON(ctx, http.MethodGet, fullURL, nil, "", true, &raw); err != nil {
+	if _, err := c.doBiliJSONWithOptions(ctx, http.MethodGet, fullURL, nil, "", true, &raw, true, apiRequestOptions{referer: c.spaceReferer(selfMid)}); err != nil {
 		return nil, err
 	}
 	return raw, nil
@@ -63,8 +67,12 @@ func (c *Client) RelationTagUsers(ctx context.Context, mid int64, tagID int64, p
 	q.Set("ps", strconv.Itoa(ps))
 	fullURL := strings.TrimRight(c.endpoints.APIBase, "/") + "/x/relation/tag?" + q.Encode()
 
+	refMid := mid
+	if refMid <= 0 && c.credStore != nil {
+		refMid = c.credStore.Status().Mid
+	}
 	var raw []FollowingUser
-	if _, err := c.doBiliJSON(ctx, http.MethodGet, fullURL, nil, "", true, &raw); err != nil {
+	if _, err := c.doBiliJSONWithOptions(ctx, http.MethodGet, fullURL, nil, "", true, &raw, true, apiRequestOptions{referer: c.spaceReferer(refMid)}); err != nil {
 		return nil, err
 	}
 	for i := range raw {
@@ -107,7 +115,7 @@ func (c *Client) RelationFollowings(ctx context.Context, vmid int64, pn, ps int)
 		List  []FollowingUser `json:"list"`
 		Total int             `json:"total"`
 	}
-	if _, err := c.doBiliJSON(ctx, http.MethodGet, fullURL, nil, "", true, &raw); err != nil {
+	if _, err := c.doBiliJSONWithOptions(ctx, http.MethodGet, fullURL, nil, "", true, &raw, true, apiRequestOptions{referer: c.spaceReferer(vmid)}); err != nil {
 		return FollowingsPage{}, err
 	}
 	for i := range raw.List {

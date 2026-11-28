@@ -189,7 +189,7 @@ func (c *Client) PlayURL(ctx context.Context, bvid string, cid int64, opts PlayS
 		} `json:"durl"`
 	}
 
-	if err := c.doWBIGet(ctx, "/x/player/wbi/playurl", params, &raw); err != nil {
+	if err := c.doWBIGetWithReferer(ctx, "/x/player/wbi/playurl", params, &raw, c.videoReferer(bvid)); err != nil {
 		return PlayPlan{}, err
 	}
 	if raw.IsPreview {

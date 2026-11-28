@@ -561,3 +561,139 @@ func TestDefaultAccountSettingsEndpointUsesAPIHost(t *testing.T) {
 		t.Fatalf("api.x.com settings endpoint rejected by host allowlist: %v", err)
 	}
 }
+
+func TestXDynamicSecFetchSiteAndNonChromiumClientHints(t *testing.T) {
+	store := newTestXStore(t, "auth_token=SYNTH_AUTH_SF; ct0=SynthCT0Sf0001")
+	var apiXHeaders http.Header
+	var xComHeaders http.Header
+
+	// Use custom transport to inspect real production hostnames (api.x.com vs x.com) with 0 live network.
+	homeBytes := mustReadTestdata(t, "webpack_home.html")
+	mainBytes := mustReadTestdata(t, "webpack_main.js")
+	ondemandBytes := mustReadTestdata(t, "webpack_ondemand.js")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/responsive-web/client-web/main.synth01a.js":
+			_, _ = w.Write(mainBytes)
+		case "/responsive-web/client-web/ondemand.s.synth02a.js":
+			_, _ = w.Write(ondemandBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	// Serve webpack_home.html from Transport for /home with real production hostnames (0 live network).
+	fixedNow := time.Unix(1795327200, 0).UTC()
+	var homeHeaders http.Header
+	chromeClient := NewClient(ClientOptions{
+		CredStore:          store,
+		MinInterval:        -1,
+		RateLimitJitterMax: -1,
+		AssetTransport:     newAbsRewriteTransport(t, ts),
+		Now:                func() time.Time { return fixedNow },
+		Sleep:              func(context.Context, time.Duration) error { return nil },
+		TxIDOptions: []TxIDOption{
+			WithTxIDClock(func() time.Time { return fixedNow }),
+			WithTxIDRandByte(func() (byte, error) { return 0x42, nil }),
+		},
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch {
+			case req.URL.Hostname() == "x.com" && req.URL.Path == "/home":
+				homeHeaders = req.Header.Clone()
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+					Body:       ioNopCloserString(string(homeBytes)),
+					Request:    req,
+				}, nil
+			case req.URL.Hostname() == "api.x.com" && req.URL.Path == "/1.1/account/settings.json":
+				apiXHeaders = req.Header.Clone()
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       ioNopCloserString(`{"screen_name":"example_user"}`),
+					Request:    req,
+				}, nil
+			case req.URL.Hostname() == "x.com" && strings.Contains(req.URL.Path, "/i/api/graphql/"):
+				xComHeaders = req.Header.Clone()
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       ioNopCloserString(synthUserByScreenNamePayload("1000000000000000042", "example_user", "Example", "")),
+					Request:    req,
+				}, nil
+			default:
+				return &http.Response{StatusCode: http.StatusNotFound, Header: http.Header{}, Body: http.NoBody, Request: req}, nil
+			}
+		}),
+	})
+
+	if _, err := chromeClient.VerifyCredential(context.Background()); err != nil {
+		t.Fatalf("VerifyCredential failed: %v", err)
+	}
+	if apiXHeaders.Get("Sec-Fetch-Site") != "same-site" {
+		t.Fatalf("api.x.com/1.1/account/settings.json Sec-Fetch-Site = %q, want same-site", apiXHeaders.Get("Sec-Fetch-Site"))
+	}
+	if xComHeaders.Get("Sec-Fetch-Site") != "same-origin" {
+		t.Fatalf("x.com/i/api/graphql Sec-Fetch-Site = %q, want same-origin", xComHeaders.Get("Sec-Fetch-Site"))
+	}
+	if !strings.Contains(apiXHeaders.Get("Sec-Ch-Ua"), `"144"`) || !strings.Contains(homeHeaders.Get("Sec-Ch-Ua"), `"144"`) {
+		t.Fatalf("expected Chrome 144 Sec-Ch-Ua, got api=%q home=%q", apiXHeaders.Get("Sec-Ch-Ua"), homeHeaders.Get("Sec-Ch-Ua"))
+	}
+
+	// Non-Chromium (Firefox) UA must NOT emit Sec-Ch-Ua* headers on /home or API requests.
+	var ffHome, ffAPI http.Header
+	ffClient := NewClient(ClientOptions{
+		CredStore:          store,
+		UserAgent:          "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
+		MinInterval:        -1,
+		RateLimitJitterMax: -1,
+		AssetTransport:     newAbsRewriteTransport(t, ts),
+		Now:                func() time.Time { return fixedNow },
+		Sleep:              func(context.Context, time.Duration) error { return nil },
+		TxIDOptions: []TxIDOption{
+			WithTxIDClock(func() time.Time { return fixedNow }),
+			WithTxIDRandByte(func() (byte, error) { return 0x42, nil }),
+		},
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch {
+			case req.URL.Hostname() == "x.com" && req.URL.Path == "/home":
+				ffHome = req.Header.Clone()
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+					Body:       ioNopCloserString(string(homeBytes)),
+					Request:    req,
+				}, nil
+			case req.URL.Hostname() == "api.x.com" && req.URL.Path == "/1.1/account/settings.json":
+				ffAPI = req.Header.Clone()
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       ioNopCloserString(`{"screen_name":"example_user"}`),
+					Request:    req,
+				}, nil
+			case req.URL.Hostname() == "x.com" && strings.Contains(req.URL.Path, "/i/api/graphql/"):
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       ioNopCloserString(synthUserByScreenNamePayload("1000000000000000042", "example_user", "Example", "")),
+					Request:    req,
+				}, nil
+			default:
+				return &http.Response{StatusCode: http.StatusNotFound, Header: http.Header{}, Body: http.NoBody, Request: req}, nil
+			}
+		}),
+	})
+	if _, err := ffClient.VerifyCredential(context.Background()); err != nil {
+		t.Fatalf("Firefox VerifyCredential failed: %v", err)
+	}
+	for label, hdr := range map[string]http.Header{"home": ffHome, "api": ffAPI} {
+		for _, k := range []string{"Sec-Ch-Ua", "Sec-Ch-Ua-Mobile", "Sec-Ch-Ua-Platform"} {
+			if got := hdr.Get(k); got != "" {
+				t.Fatalf("Firefox %s unexpectedly sent %s=%q", label, k, got)
+			}
+		}
+	}
+}

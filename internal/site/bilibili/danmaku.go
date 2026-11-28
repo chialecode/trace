@@ -34,7 +34,7 @@ type DanmakuElem struct {
 
 // DanmakuXML fetches all 6-minute protobuf danmaku segments for cid, deduplicates by idStr,
 // sorts by progress ascending, and returns standard Bilibili XML bytes.
-func (c *Client) DanmakuXML(ctx context.Context, cid int64, durationSec int) ([]byte, error) {
+func (c *Client) DanmakuXML(ctx context.Context, cid int64, durationSec int, bvid ...string) ([]byte, error) {
 	if err := c.RequireAuth("/x/v2/dm/web/seg.so"); err != nil {
 		return nil, err
 	}
@@ -45,6 +45,10 @@ func (c *Client) DanmakuXML(ctx context.Context, cid int64, durationSec int) ([]
 		}
 	}
 
+	var videoID string
+	if len(bvid) > 0 {
+		videoID = strings.TrimSpace(bvid[0])
+	}
 	segCount := 1
 	if durationSec > 0 {
 		segCount = (durationSec + 359) / 360
@@ -62,7 +66,10 @@ func (c *Client) DanmakuXML(ctx context.Context, cid int64, durationSec int) ([]
 		fullURL := strings.TrimRight(c.endpoints.APIBase, "/") + "/x/v2/dm/web/seg.so?" + q.Encode()
 		safeEndpoint := site.SanitizeEndpoint(fullURL)
 
-		resp, raw, err := c.doAPIRequest(ctx, http.MethodGet, fullURL, nil, "", true)
+		resp, raw, err := c.doAPIRequestWithOptions(ctx, http.MethodGet, fullURL, nil, "", true, apiRequestOptions{
+			referer: c.videoReferer(videoID),
+			kind:    reqKindBinary,
+		})
 		if err != nil {
 			if segIdx > 1 && resp != nil && resp.StatusCode == http.StatusNotFound {
 				break

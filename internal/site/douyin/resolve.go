@@ -442,6 +442,12 @@ func (c *Client) expandShortLink(ctx context.Context, startURL *url.URL) (*url.U
 		req.Header.Set("User-Agent", c.profile.UserAgent)
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+		c.profile.ApplyClientHints(req.Header)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+		req.Header.Set("Sec-Fetch-Site", "none")
+		req.Header.Set("Sec-Fetch-User", "?1")
+		req.Header.Del("Cookie")
 
 		resp, doErr := c.redirectClient.Do(req)
 		if doErr != nil {

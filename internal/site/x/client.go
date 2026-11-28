@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -23,8 +22,8 @@ import (
 )
 
 const (
-	// DefaultUserAgent is the fixed desktop Chrome User-Agent used on X web API and CDN requests.
-	DefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+	// DefaultUserAgent is the unified desktop Chrome User-Agent used on X web API and CDN requests.
+	DefaultUserAgent = site.DefaultUserAgent
 
 	// DefaultReferer is the Referer header sent on X web REST and GraphQL requests.
 	DefaultReferer = "https://x.com/"
@@ -93,40 +92,6 @@ func (e Endpoints) withDefaults() Endpoints {
 	return e
 }
 
-var reChromeMajor = regexp.MustCompile(`(?i)Chrome/([0-9]+)`)
-
-type browserProfile struct {
-	UserAgent       string
-	SecCHUA         string
-	SecCHUAMobile   string
-	SecCHUAPlatform string
-}
-
-func deriveBrowserProfile(ua string) browserProfile {
-	ua = strings.TrimSpace(ua)
-	if ua == "" {
-		ua = DefaultUserAgent
-	}
-	major := "136"
-	if m := reChromeMajor.FindStringSubmatch(ua); len(m) == 2 {
-		major = m[1]
-	}
-	secPlatform := `"Windows"`
-	lowerUA := strings.ToLower(ua)
-	switch {
-	case strings.Contains(lowerUA, "macintosh") || strings.Contains(lowerUA, "mac os x"):
-		secPlatform = `"macOS"`
-	case strings.Contains(lowerUA, "linux") && !strings.Contains(lowerUA, "android"):
-		secPlatform = `"Linux"`
-	}
-	return browserProfile{
-		UserAgent:       ua,
-		SecCHUA:         fmt.Sprintf(`"Chromium";v="%s", "Google Chrome";v="%s", "Not.A/Brand";v="99"`, major, major),
-		SecCHUAMobile:   "?0",
-		SecCHUAPlatform: secPlatform,
-	}
-}
-
 // RateLimitState tracks the latest observed x-rate-limit-* headers and proactive brake
 // window for a single X operation name in memory.
 type RateLimitState struct {
@@ -176,7 +141,7 @@ type ClientOptions struct {
 type Client struct {
 	cred                 *credential.Store
 	endpoints            Endpoints
-	profile              browserProfile
+	profile              site.BrowserProfile
 	clientLanguage       string
 	httpClient           *http.Client
 	redirectClient       *http.Client
@@ -213,7 +178,7 @@ type Client struct {
 
 // NewClient constructs a configured X web protocol Client.
 func NewClient(opts ClientOptions) *Client {
-	profile := deriveBrowserProfile(opts.UserAgent)
+	profile := site.DeriveBrowserProfile(opts.UserAgent)
 	clientLang := strings.TrimSpace(opts.ClientLanguage)
 	if clientLang == "" {
 		clientLang = DefaultClientLanguage
@@ -295,6 +260,7 @@ func NewClient(opts ClientOptions) *Client {
 		redirectTransport = &http.Transport{
 			Proxy:                 redirGuard.Proxy,
 			DialContext:           redirGuard.DialContext,
+			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          8,
 			MaxIdleConnsPerHost:   2,
 			IdleConnTimeout:       30 * time.Second,
@@ -310,6 +276,7 @@ func NewClient(opts ClientOptions) *Client {
 		mediaTransport = &http.Transport{
 			Proxy:                 mediaGuard.Proxy,
 			DialContext:           mediaGuard.DialContext,
+			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          16,
 			MaxIdleConnsPerHost:   4,
 			IdleConnTimeout:       60 * time.Second,
@@ -842,9 +809,7 @@ func (c *Client) fetchHomeHTML(ctx context.Context, homeURL string) ([]byte, err
 	req.Header.Set("User-Agent", c.profile.UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("Sec-Ch-Ua", c.profile.SecCHUA)
-	req.Header.Set("Sec-Ch-Ua-Mobile", c.profile.SecCHUAMobile)
-	req.Header.Set("Sec-Ch-Ua-Platform", c.profile.SecCHUAPlatform)
+	c.profile.ApplyClientHints(req.Header)
 	req.Header.Set("Sec-Fetch-Dest", "document")
 	req.Header.Set("Sec-Fetch-Mode", "navigate")
 	req.Header.Set("Sec-Fetch-Site", "none")
@@ -1258,24 +1223,38 @@ func (c *Client) executeRawAPIRequest(ctx context.Context, spec apiRequestSpec) 
 	}
 }
 
+func (c *Client) secFetchSite(referer string, target *url.URL) string {
+	if target == nil {
+		return "same-origin"
+	}
+	logicalTarget := target.String()
+	if c.allowLocalhost && site.IsLoopbackHost(target.Hostname()) {
+		switch {
+		case strings.HasPrefix(target.Path, "/1.1/"):
+			logicalTarget = "https://api.x.com" + target.RequestURI()
+		case strings.HasPrefix(target.Path, "/i/api/"):
+			logicalTarget = "https://x.com" + target.RequestURI()
+		}
+	}
+	return site.DeriveSecFetchSite(referer, logicalTarget)
+}
+
 func (c *Client) applyAPIHeaders(req *http.Request, spec apiRequestSpec, cookieHeader, ct0 string, isAuthSession bool) {
 	req.Header.Set("User-Agent", c.profile.UserAgent)
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("Sec-Ch-Ua", c.profile.SecCHUA)
-	req.Header.Set("Sec-Ch-Ua-Mobile", c.profile.SecCHUAMobile)
-	req.Header.Set("Sec-Ch-Ua-Platform", c.profile.SecCHUAPlatform)
-	req.Header.Set("Sec-Fetch-Dest", "empty")
-	req.Header.Set("Sec-Fetch-Mode", "cors")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("x-twitter-active-user", "yes")
-	req.Header.Set("x-twitter-client-language", c.clientLanguage)
+	c.profile.ApplyClientHints(req.Header)
 
 	ref := spec.referer
 	if ref == "" {
 		ref = DefaultReferer
 	}
 	req.Header.Set("Referer", ref)
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", c.secFetchSite(ref, req.URL))
+	req.Header.Set("x-twitter-active-user", "yes")
+	req.Header.Set("x-twitter-client-language", c.clientLanguage)
 	orig := spec.origin
 	if orig == "" {
 		orig = DefaultOrigin

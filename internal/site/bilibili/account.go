@@ -91,7 +91,7 @@ func (c *Client) FavFolders(ctx context.Context, mid int64) ([]FavFolder, error)
 			MediaCount int    `json:"media_count"`
 		} `json:"list"`
 	}
-	if _, err := c.doBiliJSON(ctx, http.MethodGet, c.apiURL(ep, q), nil, "", true, nullableData{&raw}); err != nil {
+	if _, err := c.doBiliJSONWithOptions(ctx, http.MethodGet, c.apiURL(ep, q), nil, "", true, nullableData{&raw}, true, apiRequestOptions{referer: c.spaceReferer(mid)}); err != nil {
 		return nil, err
 	}
 	out := make([]FavFolder, 0, len(raw.List))
@@ -189,7 +189,11 @@ func (c *Client) FavResources(ctx context.Context, mediaID string, pn int) (FavP
 		} `json:"medias"`
 		HasMore bool `json:"has_more"`
 	}
-	if _, err := c.doBiliJSON(ctx, http.MethodGet, c.apiURL(ep, q), nil, "", true, &raw); err != nil {
+	var selfMid int64
+	if c.credStore != nil {
+		selfMid = c.credStore.Status().Mid
+	}
+	if _, err := c.doBiliJSONWithOptions(ctx, http.MethodGet, c.apiURL(ep, q), nil, "", true, &raw, true, apiRequestOptions{referer: c.spaceReferer(selfMid)}); err != nil {
 		return FavPage{}, err
 	}
 	if raw.HasMore && len(raw.Medias) == 0 {

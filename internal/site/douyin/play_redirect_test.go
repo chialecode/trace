@@ -134,6 +134,7 @@ func TestResolvePlayRedirectSecurityAndBehavior(t *testing.T) {
 		var reqCount atomic.Int32
 		var sawCookie string
 		var sawHost string
+		var sawHeaders http.Header
 
 		client := NewClient(ClientOptions{
 			CredStore:   store,
@@ -143,6 +144,7 @@ func TestResolvePlayRedirectSecurityAndBehavior(t *testing.T) {
 				reqCount.Add(1)
 				sawHost = req.URL.Hostname()
 				sawCookie = req.Header.Get("Cookie")
+				sawHeaders = req.Header.Clone()
 				return jsonHTTPResponse(http.StatusFound, "", map[string]string{
 					"Location": "https://v5-gz-a.douyinvod.com/synthetic/clip.mp4?expires=1999999999",
 				}), nil
@@ -161,6 +163,27 @@ func TestResolvePlayRedirectSecurityAndBehavior(t *testing.T) {
 		}
 		if sawHost != "www.douyin.com" || !strings.Contains(sawCookie, "sessionid=SYNTH_ACTIVE_SESSION_SEED") {
 			t.Fatalf("unexpected request host=%q cookie=%q", sawHost, sawCookie)
+		}
+		if sawHeaders.Get("Accept") != "*/*" {
+			t.Fatalf("Accept = %q, want */*", sawHeaders.Get("Accept"))
+		}
+		if sawHeaders.Get("Accept-Language") != "zh-CN,zh;q=0.9" {
+			t.Fatalf("Accept-Language = %q, want zh-CN,zh;q=0.9", sawHeaders.Get("Accept-Language"))
+		}
+		if sawHeaders.Get("Referer") != DefaultReferer {
+			t.Fatalf("Referer = %q, want %q", sawHeaders.Get("Referer"), DefaultReferer)
+		}
+		if sawHeaders.Get("Sec-Fetch-Mode") != "no-cors" || sawHeaders.Get("Sec-Fetch-Dest") != "video" {
+			t.Fatalf("Sec-Fetch-Mode=%q Sec-Fetch-Dest=%q, want no-cors / video", sawHeaders.Get("Sec-Fetch-Mode"), sawHeaders.Get("Sec-Fetch-Dest"))
+		}
+		if sawHeaders.Get("Sec-Fetch-Site") != "same-origin" {
+			t.Fatalf("Sec-Fetch-Site = %q, want same-origin", sawHeaders.Get("Sec-Fetch-Site"))
+		}
+		if sawHeaders.Get("Origin") != "" {
+			t.Fatalf("Origin must be empty on ResolvePlayRedirect, got %q", sawHeaders.Get("Origin"))
+		}
+		if !strings.Contains(sawHeaders.Get("Sec-Ch-Ua"), `"144"`) {
+			t.Fatalf("Sec-Ch-Ua = %q, want Chrome 144", sawHeaders.Get("Sec-Ch-Ua"))
 		}
 	})
 

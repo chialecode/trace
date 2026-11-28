@@ -305,7 +305,7 @@ func (c *Client) GetWorkDetail(ctx context.Context, awemeID string, opts StreamS
 		}
 	}
 
-	params := c.profile.CommonWebParams(c.webID, "", sign.Pair{Key: "aweme_id", Value: awemeID})
+	params := c.profile.CommonWebParams(c.WebID(), "", sign.Pair{Key: "aweme_id", Value: awemeID})
 	rawResp, err := c.doAPIRequest(ctx, apiRequestSpec{
 		endpoint:    c.endpoints.AwemeDetail,
 		referer:     DefaultReferer,
