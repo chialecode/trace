@@ -129,8 +129,9 @@ func (c *Client) VerifyCredential(ctx context.Context) (credential.Status, error
 	return st, nil
 }
 
-// LogoutCredential clears the stored Weibo credential.
+// LogoutCredential cancels any active Weibo QR login flow and clears the stored Weibo credential.
 func (c *Client) LogoutCredential() error {
+	c.CancelQR("")
 	if c.cred == nil {
 		return nil
 	}

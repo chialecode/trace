@@ -582,3 +582,95 @@ func TestManagerRedactStringCoversAllThreeSitesAndWeiboSensitiveFields(t *testin
 		})
 	}
 }
+
+func TestWeiboQRStoreSaveRenewalAndQRIDRedaction(t *testing.T) {
+	credDir := filepath.Join(t.TempDir(), "credentials")
+	mgr, _, err := OpenManager(credDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wbSub := "_2A25synthWeiboQRSub=="
+	wbSubp := "0033synthWeiboQRSubp"
+	wbXsrf := "synthWeiboQRXsrf"
+	st, err := mgr.Weibo().SaveVerifiedWeiboQR(map[string]string{
+		"SUB":        wbSub,
+		"SUBP":       wbSubp,
+		"XSRF-TOKEN": wbXsrf,
+		"SINAGLOBAL": "strip_qr_stat",
+	}, WeiboProfile{
+		UID:   "1000000088",
+		Uname: "微博扫码合成号",
+		Face:  "https://tvax1.sinaimg.cn/synth_qr.jpg",
+	})
+	if err != nil {
+		t.Fatalf("SaveVerifiedWeiboQR failed: %v", err)
+	}
+	if !st.LoggedIn || st.Site != SiteWeibo || st.State != "logged_in" || st.Source != "qr" || st.HasRefreshToken {
+		t.Fatalf("unexpected QR Weibo status: %+v", st)
+	}
+	if st.UID != "1000000088" || st.Uname != "微博扫码合成号" {
+		t.Fatalf("unexpected QR Weibo profile: %+v", st)
+	}
+
+	// QR Weibo sessions are non-renewable with distinct reason.
+	ren := mgr.Weibo().Renewal()
+	if ren.Available || ren.Site != SiteWeibo || ren.Reason != WeiboQRRenewalUnavailableReason {
+		t.Fatalf("Weibo QR Renewal() = %+v, want unavailable with reason %q", ren, WeiboQRRenewalUnavailableReason)
+	}
+
+	// Re-open from disk preserves Source="qr" and isolates ciphertext.
+	rawCipher, err := os.ReadFile(filepath.Join(credDir, WeiboFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(rawCipher, []byte(wbSub)) {
+		t.Fatal("weibo.bin leaked plaintext QR SUB")
+	}
+	reopened, _, err := OpenWeibo(filepath.Join(credDir, WeiboFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.Status(); got.Source != "qr" || got.HasRefreshToken || got.UID != "1000000088" {
+		t.Fatalf("reopened QR Weibo status = %+v", got)
+	}
+	if _, leakedStat := reopened.Cookies()["SINAGLOBAL"]; leakedStat {
+		t.Fatal("SINAGLOBAL persisted in SaveVerifiedWeiboQR")
+	}
+
+	// Cross-site write must fail.
+	if _, err := mgr.Bilibili().SaveVerifiedWeiboQR(map[string]string{"SUB": wbSub}, WeiboProfile{}); err == nil {
+		t.Fatal("bilibili store accepted SaveVerifiedWeiboQR")
+	}
+
+	// RedactString must scrub qrid/QRID/alt/ticket/st (plain, quoted, JSON, URL-encoded)
+	// while keeping benign short literal tokens (false/null/json) intact.
+	qrSecrets := []string{
+		"synth_qrid_901",
+		"synth_qrid_quoted_902",
+		"synth_qrid_json_903",
+		"synth_qrid_enc_904",
+		"synth_QRID_upper_905",
+		"synth_alt_quoted_906",
+	}
+	sample := strings.Join([]string{
+		`url=https://passport.weibo.com/sso/v2/qrcode/check?entry=miniblog&qrid=synth_qrid_901&alt="synth_alt_quoted_906"`,
+		`quoted qrid="synth_qrid_quoted_902" QRID=synth_QRID_upper_905`,
+		`json={"qrid":"synth_qrid_json_903"}`,
+		`enc=` + url.QueryEscape("qrid=synth_qrid_enc_904&alt=synth_alt_quoted_906"),
+	}, "\n")
+	redacted := mgr.RedactString(sample)
+	for _, sec := range qrSecrets {
+		if strings.Contains(redacted, sec) {
+			t.Fatalf("Manager.RedactString leaked %q in:\n%s", sec, redacted)
+		}
+	}
+	if again := mgr.RedactString(redacted); again != redacted {
+		t.Fatalf("Manager.RedactString not idempotent:\nfirst:  %q\nsecond: %q", redacted, again)
+	}
+
+	benign := `ok=false qrid=false qrid=null alt=json ticket=null st=true`
+	if got := mgr.RedactString(benign); got != benign {
+		t.Fatalf("Manager.RedactString altered benign literals:\ngot:  %q\nwant: %q", got, benign)
+	}
+}

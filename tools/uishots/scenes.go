@@ -715,6 +715,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"账号分组：X",
 				"重新粘贴抖音Cookie",
 				"退出抖音登录",
+				"扫码重新登录微博",
 				"重新粘贴微博Cookie",
 				"退出微博登录",
 				"重新粘贴XCookie",
@@ -2984,8 +2985,78 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 		{
 			Name: "login-weibo",
 			Setup: func() {
+				app.ConflictDiff.Open = false
 				app.LoginSite = "weibo"
+				app.WeiboLoginTab = "qr"
 				app.WeiboCookieInput = ""
+				app.LoginError = ""
+				app.SavedRoute = ""
+				app.Navigate(ui.RouteLogin)
+				app.WeiboQRSession = service.WeiboQRSessionDTO{FlowID: "wbqr-demo-1"}
+				app.WeiboQRBitmap = mygoui.NewBitmap(bilibili.RenderQRRGBA("https://passport.weibo.cn/signin/qrcode/scan?qrid=demo", 6))
+				app.WeiboQRState = "scanned"
+				app.WeiboQRStatusText = "已扫码，请在微博 App 确认登录"
+			},
+			RequiredLabels: []string{
+				"登录站点：哔哩哔哩",
+				"登录站点：抖音",
+				"登录站点：微博",
+				"登录站点：X",
+				"微博已登录摘要",
+				"微博登录标签：扫码",
+				"微博登录标签：粘贴Cookie",
+				"微博登录二维码",
+				"微博扫码状态",
+				"获取微博登录二维码",
+				"检查微博扫码状态",
+				"取消微博扫码",
+			},
+			RequiredTexts: []string{
+				"登录微博",
+				"不自动续期",
+				"已扫码，请在微博 App 确认登录",
+			},
+		},
+		{
+			Name: "login-weibo-qr-expired",
+			Setup: func() {
+				app.ConflictDiff.Open = false
+				app.LoginSite = "weibo"
+				app.WeiboLoginTab = "qr"
+				app.WeiboCookieInput = ""
+				app.LoginError = ""
+				app.SavedRoute = ""
+				app.Navigate(ui.RouteLogin)
+				app.WeiboQRSession = service.WeiboQRSessionDTO{}
+				app.WeiboQRBitmap = nil
+				app.WeiboQRState = "expired"
+				app.WeiboQRStatusText = "二维码已过期，请刷新二维码"
+			},
+			RequiredLabels: []string{
+				"登录站点：微博",
+				"微博登录标签：扫码",
+				"微博登录标签：粘贴Cookie",
+				"微博扫码状态",
+				"获取微博登录二维码",
+			},
+			RequiredTexts: []string{
+				"二维码已过期，请刷新二维码",
+				"刷新二维码",
+			},
+			ForbiddenLabels: []string{
+				"检查微博扫码状态",
+				"取消微博扫码",
+			},
+		},
+		{
+			Name: "login-weibo-cookie",
+			Setup: func() {
+				app.ConflictDiff.Open = false
+				app.LoginSite = "weibo"
+				app.WeiboLoginTab = "cookie"
+				app.WeiboCookieInput = ""
+				app.LoginError = ""
+				app.SavedRoute = ""
 				app.Navigate(ui.RouteLogin)
 			},
 			RequiredLabels: []string{
@@ -2994,10 +3065,12 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 				"登录站点：微博",
 				"登录站点：X",
 				"微博已登录摘要",
+				"微博登录标签：扫码",
+				"微博登录标签：粘贴Cookie",
 				"微博Cookie输入框",
 				"验证并登录微博",
 			},
-			ForbiddenLabels: []string{"刷新登录二维码"},
+			ForbiddenLabels: []string{"微博登录二维码"},
 		},
 		{
 			Name: "login-x",

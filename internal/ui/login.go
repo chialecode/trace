@@ -7,12 +7,13 @@ import (
 	"time"
 
 	"github.com/chialecode/trace/internal/credential"
+	"github.com/chialecode/trace/internal/service"
 	"github.com/chialecode/trace/internal/site"
 	"github.com/chialecode/trace/internal/site/bilibili"
 	"github.com/egoist/mygo/ui"
 )
 
-func (a *App) cancelQRLogin() {
+func (a *App) cancelBiliQRLogin() {
 	a.qrRevision++
 	if a.qrCancel != nil {
 		a.qrCancel()
@@ -22,6 +23,125 @@ func (a *App) cancelQRLogin() {
 		a.backend.CancelQRLogin(a.QRSession.FlowID)
 	}
 	a.QRSession, a.QRBitmap = bilibili.QRSession{}, nil
+}
+
+func (a *App) cancelWeiboQRLogin() {
+	a.weiboQRRevision++
+	if a.weiboQRCancel != nil {
+		a.weiboQRCancel()
+		a.weiboQRCancel = nil
+	}
+	if a.WeiboQRSession.FlowID != "" {
+		a.backend.CancelWeiboQRLogin(a.WeiboQRSession.FlowID)
+	}
+	a.WeiboQRSession, a.WeiboQRBitmap = service.WeiboQRSessionDTO{}, nil
+}
+
+func (a *App) cancelQRLogin() {
+	a.cancelBiliQRLogin()
+	a.cancelWeiboQRLogin()
+}
+
+func (a *App) startWeiboQRLogin() {
+	a.cancelWeiboQRLogin()
+	revision := a.weiboQRRevision
+	a.setLoginError("")
+	a.WeiboQRState = "waiting"
+	a.WeiboQRStatusText = "正在获取二维码…"
+	requestGuarded(a, fmt.Sprintf("weibo-qr-start-%d", revision), func() bool {
+		return a.weiboQRRevision == revision && a.CurrentRoute == RouteLogin && normalizeSiteIDUI(a.LoginSite) == "weibo"
+	}, a.backend.StartWeiboQRLogin, func(session service.WeiboQRSessionDTO) {
+		bmp := decodeImageBytesToBitmap(session.PNG)
+		if bmp == nil {
+			a.backend.CancelWeiboQRLogin(session.FlowID)
+			a.WeiboQRState = "error"
+			a.WeiboQRStatusText = "二维码图像无效，请刷新重试"
+			a.setLoginError("微博二维码图像解码失败，请重新获取")
+			return
+		}
+		a.WeiboQRSession = session
+		a.WeiboQRBitmap = bmp
+		a.WeiboQRState = "waiting"
+		a.WeiboQRStatusText = "请使用微博 App 扫码登录"
+		// Testers without an event loop remain deterministic and use manual polls.
+		a.mu.Lock()
+		dispatch := a.dispatch
+		a.mu.Unlock()
+		if dispatch == nil {
+			return
+		}
+		ctx, cancel := context.WithCancel(a.ctx)
+		a.weiboQRCancel = cancel
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if a.isClosed() {
+						return
+					}
+					dispatch(func() {
+						if !a.isClosed() && a.CurrentRoute == RouteLogin && normalizeSiteIDUI(a.LoginSite) == "weibo" && a.weiboQRRevision == revision {
+							a.pollWeiboQRLogin()
+						}
+					})
+				}
+			}
+		}()
+	}, func(err error) {
+		a.WeiboQRState = "error"
+		a.setLoginError(userErrorText(err))
+		a.WeiboQRStatusText = "获取失败，请刷新重试"
+	})
+}
+
+func (a *App) pollWeiboQRLogin() {
+	flow, revision := a.WeiboQRSession.FlowID, a.weiboQRRevision
+	if flow == "" {
+		return
+	}
+	requestGuarded(a, "weibo-qr-poll-"+flow, func() bool {
+		return a.weiboQRRevision == revision && a.WeiboQRSession.FlowID == flow && a.CurrentRoute == RouteLogin && normalizeSiteIDUI(a.LoginSite) == "weibo"
+	}, func(ctx context.Context) (service.WeiboQRPollResultDTO, error) {
+		return a.backend.PollWeiboQRLogin(ctx, flow)
+	}, func(result service.WeiboQRPollResultDTO) {
+		a.WeiboQRState = result.State
+		a.WeiboQRStatusText = result.Message
+		switch result.State {
+		case "confirmed":
+			a.cancelQRLogin()
+			a.WeiboQRState = ""
+			a.WeiboQRStatusText = ""
+			uid := strings.TrimSpace(result.Account.UID)
+			if result.Account.Uname != "" && uid != "" {
+				a.notifyInfo(fmt.Sprintf("已登录微博：%s · UID %s", result.Account.Uname, uid))
+			} else if result.Account.Uname != "" {
+				a.notifyInfo(fmt.Sprintf("已登录微博：%s", result.Account.Uname))
+			} else if uid != "" {
+				a.notifyInfo(fmt.Sprintf("已登录微博：UID %s", uid))
+			}
+			a.CompleteLogin()
+		case "expired":
+			a.cancelWeiboQRLogin()
+			a.WeiboQRState = "expired"
+			a.WeiboQRStatusText = "二维码已过期，请刷新二维码"
+		case "canceled":
+			a.cancelWeiboQRLogin()
+			a.WeiboQRState = "canceled"
+			a.WeiboQRStatusText = firstNonEmptyStrUI(result.Message, "扫码已取消，请重新获取")
+		}
+	}, func(err error) {
+		a.setLoginError(userErrorText(err))
+		kind := site.KindOf(err)
+		if kind == site.ErrKindRiskControl || kind == site.ErrKindRateLimited || kind == site.ErrKindAuthRequired || kind == site.ErrKindSchemaChanged {
+			a.cancelWeiboQRLogin()
+			a.WeiboQRState = "error"
+			a.WeiboQRStatusText = "扫码验证失败，请刷新重试"
+		}
+	})
 }
 
 func (a *App) startQRLogin() {

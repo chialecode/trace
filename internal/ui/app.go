@@ -359,9 +359,14 @@ type App struct {
 	// Login Page
 	LoginSite             string // "bilibili" | "douyin" | "weibo" | "x"
 	LoginTab              string // "qr" | "cookie"
+	WeiboLoginTab         string // "qr" | "cookie"
 	QRSession             bilibili.QRSession
 	QRBitmap              *ui.Bitmap
 	QRStatusText          string
+	WeiboQRSession        service.WeiboQRSessionDTO
+	WeiboQRBitmap         *ui.Bitmap
+	WeiboQRStatusText     string
+	WeiboQRState          string // "" | "waiting" | "scanned" | "expired" | "canceled" | "error"
 	ManualCookieInput     string
 	ManualCookieComposing bool
 	ManualRefreshInput    string
@@ -374,6 +379,8 @@ type App struct {
 	LoginError            string
 	qrRevision            uint64
 	qrCancel              context.CancelFunc
+	weiboQRRevision       uint64
+	weiboQRCancel         context.CancelFunc
 
 	// Home Feed (DEC-037, DEC-040)
 	FeedItems            []library.FeedEntry
@@ -778,6 +785,7 @@ func NewApp(backend service.BackendAPI, audioSink player.AudioSink) *App {
 		CurrentRoute:             initialRoute,
 		LoginSite:                loginSite,
 		LoginTab:                 "qr",
+		WeiboLoginTab:            "qr",
 		FeedSortOrder:            "newest",
 		FeedSiteFilter:           normalizeSiteFilter(uiSt.FeedFilter.Site),
 		SelectedPartPages:        make(map[int]bool),
@@ -864,8 +872,14 @@ func (a *App) Close() {
 		a.qrCancel()
 		a.qrCancel = nil
 	}
+	if a.weiboQRCancel != nil {
+		a.weiboQRCancel()
+		a.weiboQRCancel = nil
+	}
 	qrFlowID := a.QRSession.FlowID
 	a.QRSession = bilibili.QRSession{}
+	weiboQRFlowID := a.WeiboQRSession.FlowID
+	a.WeiboQRSession = service.WeiboQRSessionDTO{}
 	unsub := a.unsub
 	a.unsub = nil
 	a.ReleaseBitmapsLocked()
@@ -875,6 +889,9 @@ func (a *App) Close() {
 
 	if qrFlowID != "" {
 		a.backend.CancelQRLogin(qrFlowID)
+	}
+	if weiboQRFlowID != "" {
+		a.backend.CancelWeiboQRLogin(weiboQRFlowID)
 	}
 	if unsub != nil {
 		unsub()
@@ -890,6 +907,7 @@ func (a *App) Close() {
 // ReleaseBitmapsLocked frees any allocated UI bitmaps when closing to tray (DEC-030).
 func (a *App) ReleaseBitmapsLocked() {
 	a.QRBitmap = nil
+	a.WeiboQRBitmap = nil
 	a.ImageViewer.Bitmaps = nil
 	a.images.reset()
 	a.postCards = nil

@@ -59,7 +59,7 @@
      - `https://login.sina.com.cn/sso/crossdomain?...` → 在 `.sina.com.cn` 下写通行证 Cookie（`社区资料（2026-11-21）`）。
      - `https://passport.weibo.cn/sso/crossdomain?...`（若列表包含）→ 在 `.weibo.cn` 下写移动 H5 域 Cookie（当前线上 `crossDomainUrlList` 是否必然包含 `.weibo.cn` 记为 `unknown`）（`社区资料（2026-11-21）`）。
    - 跳转链完成后，调用[§2.4](#login-verify)的严格登录校验接口确认 `uid` 一致并同步拿到当前 `XSRF-TOKEN`（`推测（2026-11-21）`）。
-   - **MVP 取舍提示**：鉴于扫码登录涉及两代 SSO 端点与多域跳转链，对照抖音先例（[DEC-043](../decisions.md#dec-043)），推荐微博 MVP 先采用**粘贴 Cookie 登录**，扫码登录放进后续 loop（见[§12.3](#q-drafts) `Q-WB-1`）。
+   - **静态实现与实机验证状态（2026-11-28，#184）**：TRACE 已按新版 SSO v2 流程在 `internal/site/weibo/qr.go`、`internal/credential/weibo.go`、`internal/service/auth.go` 与原生界面实现微博网页扫码登录（`passport.weibo.com/sso/v2/qrcode/image`、`check`、`login`，严格 JSONP 回调前缀校验 + `UseNumber()`、受保护 `GuardedMediaDialer` 二维码图片拉取 `<= 256 KiB` 或 `go-qrcode/v2` 本地渲染、`crossDomainUrlList` / `arrURL` 严格 HTTPS:443 + 官方通行证域白名单校验、只收 `.weibo.com` 域 Cookie、`getBasicInfo` + `profile/info` 两步严格登录核对、`Source: "qr"` 落盘且不自动续期、`qrid`/`alt`/`ticket`/`st` 全量脱敏），全程零真实网络请求，已由单元测试、回环 `httptest` 协议测试与 `ui.NewTester` 截图断言覆盖；**真实微博 App 扫码链路（V-15）为 `not-run`，待用户在本机开发版（`TRACE Dev`）实机扫码验证**。
 
 <a id="cookie-clean"></a>
 ### 2.2 粘贴 Cookie 字段分类、清洗与脱敏规则
@@ -852,5 +852,5 @@ A 按[站点规则](../dev-rules/sources-and-safety.md#site-rules)审阅了第 1
 | V-13 | 通过（2026-11-25，ACT-023） | **关注**（`friendships/friends`）：第 1 页 20 人、第 2 页 20 人、`total=174`、`next_cursor` 推进正常；**收藏**（`favorites/all_fav`）：`data.status` 键名确认，第 1 页 17 条、第 2 页 10 条、`total=188`；**关注分组**（`feed/allGroups` 与分组成员）：`followGroupsAvailable=true`（68 组）、`groupMembersAvailable=true`（首组第 1 页 20 人）。**开关结论**：关注分组与按分组拉成员已实测通过，具备在后续功能 PR 中开放 `FollowGroupsEnabled` 的条件 |
 | V-14 | 接口可达但返回空列表（2026-11-25，ACT-023） | `/ajax/statuses/likelist` 返回 HTTP 200 `ok=1`、无风控/拦截，但测试账号返回 `items=0, total=0`，未能核对非空赞过条目的精确字段与翻页。**开关结论**：建议 `LikesEnabled` 暂保持默认关闭，待有非空公开赞过样本确认后再开放 |
 | Step 9 | 视频完整通过；混排触及测试 CDN 额度呈 `partial`（2026-11-25，ACT-023） | 在默认开启 `weiboRemoveWatermark=true` 的生产 `Backend` + `DownloadManager` 链路下运行：① **视频微博**完整缓存入库（`taskStatus="completed", itemStatus="complete", missingCount=0, 1440×2560, 20.27s, 20,494,774 B, moovBeforeMdat=true`）；② **混排图集**（7 图 + 3 实况）缓存 7/7 图片与 2/3 实况动态片段（均经 `mp4ff` 校验），第 3 条实况因触及本次 `cacheCDN=20/20` 请求预算上限优雅降级为 `partial`（`missingCount=1`）；临时目录密文扫描与删除均通过（`tempCacheSecretScanClean=true, tempDataDeleted=true`） |
-| V-15 | 不在本阶段 | 扫码登录按 Q-023 第 1 条延后 |
+| V-15 | 待用户实机扫码验证（`not-run`，2026-11-28） | 已完成 SSO v2 扫码登录静态实现与全套回环/界面测试（#184，0 次真实请求）；真实微博 App 扫码、跨域写域与线上 `retcode` 细节须由用户本人在本机 `TRACE Dev` 实机验证 |
 | V-16～V-19 | 不在本阶段 | 直播按 Q-023 第 2 条延后 |

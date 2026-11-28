@@ -368,6 +368,8 @@ func TestUIShotsScenesAndStructuredAssertions(t *testing.T) {
 		"mine-weibo-following",
 		"mine-weibo-favorites",
 		"login-weibo",
+		"login-weibo-qr-expired",
+		"login-weibo-cookie",
 		"x-user",
 		"x-user-protected",
 		"x-user-empty-shell",

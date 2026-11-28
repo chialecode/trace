@@ -55,6 +55,9 @@ type Endpoints struct {
 	AllGroups       string
 	AllFavorites    string
 	LikeList        string
+	QRImage         string
+	QRCheck         string
+	QRSsoLogin      string
 }
 
 // DefaultEndpoints returns the official Weibo PC HTTPS API endpoints.
@@ -71,6 +74,9 @@ func DefaultEndpoints() Endpoints {
 		AllGroups:       "https://weibo.com/ajax/feed/allGroups",
 		AllFavorites:    "https://weibo.com/ajax/favorites/all_fav",
 		LikeList:        "https://weibo.com/ajax/statuses/likelist",
+		QRImage:         "https://passport.weibo.com/sso/v2/qrcode/image",
+		QRCheck:         "https://passport.weibo.com/sso/v2/qrcode/check",
+		QRSsoLogin:      "https://passport.weibo.com/sso/v2/login",
 	}
 }
 
@@ -108,6 +114,15 @@ func (e Endpoints) withDefaults() Endpoints {
 	}
 	if e.LikeList == "" {
 		e.LikeList = d.LikeList
+	}
+	if e.QRImage == "" {
+		e.QRImage = d.QRImage
+	}
+	if e.QRCheck == "" {
+		e.QRCheck = d.QRCheck
+	}
+	if e.QRSsoLogin == "" {
+		e.QRSsoLogin = d.QRSsoLogin
 	}
 	return e
 }
@@ -180,6 +195,8 @@ type Client struct {
 	httpClient           *http.Client
 	redirectClient       *http.Client
 	mediaClient          *http.Client
+	qrClient             *http.Client
+	qr                   qrController
 	mediaIdleTimeout     time.Duration
 	maxBodyBytes         int64
 	maxImageBytes        int64
@@ -360,6 +377,7 @@ func NewClient(opts ClientOptions) *Client {
 		Timeout:       0, // Enforced per-read via ResponseHeaderTimeout + WrapIdleReadCloser so large originals/GIFs do not hit the 15s API wall clock
 		CheckRedirect: noRedirect,
 	}
+	c.qrClient = newQRHTTPClient(opts, apiTimeout, noRedirect)
 	return c
 }
 
