@@ -25,13 +25,19 @@ type cachedWeiboPostEntry struct {
 	capturedAt      time.Time
 }
 
-// weiboPostPlanCache keeps recently fetched Weibo posts strictly in memory so
-// CacheWeiboPost and full-cache queue runs can reuse list/detail payloads without
-// issuing duplicate statuses/show requests or persisting signed URLs to disk.
+type cachedWeiboEditHistoryEntry struct {
+	revisions  []weibo.EditRevision
+	capturedAt time.Time
+}
+
+// weiboPostPlanCache keeps recently fetched Weibo posts and edit histories strictly
+// in memory so CacheWeiboPost and full-cache queue runs can reuse list/detail
+// payloads without issuing duplicate requests or persisting signed URLs to disk.
 type weiboPostPlanCache struct {
-	mu      sync.Mutex
-	entries map[string]cachedWeiboPostEntry
-	now     func() time.Time
+	mu          sync.Mutex
+	entries     map[string]cachedWeiboPostEntry
+	editHistory map[string]cachedWeiboEditHistoryEntry
+	now         func() time.Time
 }
 
 func newWeiboPostPlanCache(nowFn func() time.Time) *weiboPostPlanCache {
@@ -39,8 +45,9 @@ func newWeiboPostPlanCache(nowFn func() time.Time) *weiboPostPlanCache {
 		nowFn = time.Now
 	}
 	return &weiboPostPlanCache{
-		entries: make(map[string]cachedWeiboPostEntry),
-		now:     nowFn,
+		entries:     make(map[string]cachedWeiboPostEntry),
+		editHistory: make(map[string]cachedWeiboEditHistoryEntry),
+		now:         nowFn,
 	}
 }
 
@@ -106,12 +113,92 @@ func (c *weiboPostPlanCache) get(mid, codec string, maxRes int, removeWatermark 
 	return &cp, true
 }
 
+func (c *weiboPostPlanCache) putEditHistory(mid string, revs []weibo.EditRevision) {
+	if c == nil || len(revs) == 0 {
+		return
+	}
+	mid = strings.TrimSpace(mid)
+	if mid == "" {
+		return
+	}
+	now := c.now()
+	copied := cloneWeiboEditRevisions(revs)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.editHistory == nil {
+		c.editHistory = make(map[string]cachedWeiboEditHistoryEntry)
+	}
+	if len(c.editHistory) >= weiboPostCacheMaxEntries {
+		c.evictExpiredLocked(now)
+		for len(c.editHistory) >= weiboPostCacheMaxEntries {
+			var oldestKey string
+			var oldestAt time.Time
+			for k, v := range c.editHistory {
+				if oldestKey == "" || v.capturedAt.Before(oldestAt) {
+					oldestKey, oldestAt = k, v.capturedAt
+				}
+			}
+			if oldestKey == "" {
+				break
+			}
+			delete(c.editHistory, oldestKey)
+		}
+	}
+	c.editHistory[mid] = cachedWeiboEditHistoryEntry{
+		revisions:  copied,
+		capturedAt: now,
+	}
+}
+
+func (c *weiboPostPlanCache) getEditHistory(mid string) ([]weibo.EditRevision, bool) {
+	if c == nil {
+		return nil, false
+	}
+	mid = strings.TrimSpace(mid)
+	if mid == "" {
+		return nil, false
+	}
+	now := c.now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ent, ok := c.editHistory[mid]
+	if !ok {
+		return nil, false
+	}
+	if now.Sub(ent.capturedAt) > weiboPostCacheTTL {
+		delete(c.editHistory, mid)
+		return nil, false
+	}
+	return cloneWeiboEditRevisions(ent.revisions), true
+}
+
+func cloneWeiboEditRevisions(src []weibo.EditRevision) []weibo.EditRevision {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]weibo.EditRevision, len(src))
+	for i, rev := range src {
+		rev.Links = append([]site.TextLink(nil), rev.Links...)
+		if len(rev.Images) > 0 {
+			imgs := make([]weibo.ImageAsset, len(rev.Images))
+			for j, img := range rev.Images {
+				img.FallbackURLs = append([]string(nil), img.FallbackURLs...)
+				imgs[j] = img
+			}
+			rev.Images = imgs
+		}
+		out[i] = rev
+	}
+	return out
+}
+
 func (c *weiboPostPlanCache) clear() {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	clear(c.entries)
+	clear(c.editHistory)
 	c.mu.Unlock()
 }
 
@@ -119,6 +206,11 @@ func (c *weiboPostPlanCache) evictExpiredLocked(now time.Time) {
 	for k, v := range c.entries {
 		if now.Sub(v.capturedAt) > weiboPostCacheTTL {
 			delete(c.entries, k)
+		}
+	}
+	for k, v := range c.editHistory {
+		if now.Sub(v.capturedAt) > weiboPostCacheTTL {
+			delete(c.editHistory, k)
 		}
 	}
 }
@@ -218,6 +310,9 @@ func (p *weiboWorkPlanner) PlanWorkDownload(ctx context.Context, targetID string
 		var plan download.WorkDownloadPlan
 		if vr.HostPost != nil {
 			plan, err = p.backend.buildWeiboWorkPlanFromPost(vr.HostPost)
+			if err == nil {
+				p.backend.attachWeiboEditHistoryBestEffort(ctx, vr.HostPost, &plan)
+			}
 		} else {
 			plan, err = p.backend.buildWeiboWorkPlanFromStandaloneVideo(vr)
 		}
@@ -236,8 +331,81 @@ func (p *weiboWorkPlanner) PlanWorkDownload(ctx context.Context, targetID string
 	if err != nil {
 		return download.WorkDownloadPlan{}, err
 	}
+	p.backend.attachWeiboEditHistoryBestEffort(ctx, post, &plan)
 	plan.ConflictResolution = download.ConflictResolutionFromContext(ctx)
 	return plan, nil
+}
+
+// attachWeiboEditHistoryBestEffort populates plan.EditHistory for edited Weibo
+// posts (EditCount > 0), reusing the short-lived in-memory edit-history cache
+// when available. When EditCount == 0, it issues zero network requests.
+// Any edit-history API failure is logged and gracefully ignored so main post
+// caching is never blocked (DEC-094).
+func (b *Backend) attachWeiboEditHistoryBestEffort(ctx context.Context, post *weibo.Post, plan *download.WorkDownloadPlan) {
+	if b == nil || b.weibo == nil || post == nil || plan == nil || post.EditCount <= 0 {
+		return
+	}
+	mid := strings.TrimSpace(post.Mid)
+	if mid == "" {
+		return
+	}
+	var revs []weibo.EditRevision
+	if b.weiboPostCache != nil {
+		if cached, ok := b.weiboPostCache.getEditHistory(mid); ok {
+			revs = cached
+		}
+	}
+	if len(revs) == 0 {
+		fetched, err := b.weibo.GetEditHistory(ctx, mid)
+		if err != nil {
+			b.logError("WeiboEditHistory", err)
+			return
+		}
+		revs = fetched
+		if b.weiboPostCache != nil && len(revs) > 0 {
+			b.weiboPostCache.putEditHistory(mid, revs)
+		}
+	}
+	if len(revs) == 0 {
+		return
+	}
+	planned := make([]download.PlannedEditRevision, 0, len(revs))
+	for _, rev := range revs {
+		var imgs []download.PlannedEditImage
+		for _, img := range rev.Images {
+			var urls []string
+			seen := make(map[string]bool)
+			addU := func(raw string) {
+				if u := weibo.SafePublicImageURL(raw); u != "" && !seen[u] {
+					seen[u] = true
+					urls = append(urls, u)
+				}
+			}
+			addU(img.URL)
+			addU(img.PublicPreviewURL)
+			for _, fb := range img.FallbackURLs {
+				addU(fb)
+			}
+			if len(urls) == 0 {
+				continue
+			}
+			imgs = append(imgs, download.PlannedEditImage{
+				PicID:     strings.TrimSpace(img.PicID),
+				Kind:      strings.TrimSpace(img.Kind),
+				Width:     img.Width,
+				Height:    img.Height,
+				ImageURLs: urls,
+			})
+		}
+		planned = append(planned, download.PlannedEditRevision{
+			Version: rev.Version,
+			EditTs:  rev.EditTs,
+			Text:    rev.Text,
+			Links:   append([]site.TextLink(nil), rev.Links...),
+			Images:  imgs,
+		})
+	}
+	plan.EditHistory = planned
 }
 
 func weiboImageMediaID(img weibo.ImageAsset) string {

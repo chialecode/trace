@@ -615,6 +615,7 @@ func (b *Backend) weiboPostQueueCandidate(p weibo.Post) queueCandidate {
 			var planPtr *download.WorkDownloadPlan
 			if canReuseWeiboPostPlan(&postCopy) {
 				if built, err := b.buildWeiboWorkPlanFromPost(&postCopy); err == nil {
+					b.attachWeiboEditHistoryBestEffort(ctx, &postCopy, &built)
 					planPtr = &built
 				}
 			}

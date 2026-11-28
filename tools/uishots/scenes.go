@@ -73,6 +73,7 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 	savedDouyinNote := env.savedDouyinNote
 	savedWeiboPost := env.savedWeiboPost
 	savedWeiboRetweet := env.savedWeiboRetweet
+	savedWeiboEdited := env.savedWeiboEdited
 	savedXPost := env.savedXPost
 	savedXRetweet := env.savedXRetweet
 	savedXThread := env.savedXThread
@@ -1443,6 +1444,95 @@ func buildCoreScenes(env *fixtureEnv, app *ui.App) []sceneSpec {
 			ForbiddenLabels: []string{
 				"缓存当前微博",
 				"打开原微博",
+				"微博在线统计",
+			},
+		},
+		{
+			Name: "weibo-post-edit-history",
+			Setup: func() {
+				app.Opening = nil
+				app.CurrentLibraryDetail = nil
+				app.CurrentWeiboVideo = nil
+				app.CurrentWeiboPost = &service.WeiboPostView{
+					Mid:       "5000000000000018",
+					Author:    service.WeiboAuthorDTO{UID: weiboUID, ScreenName: "技术频道_微博", VerifiedReason: "数码科技领域创作者"},
+					CreatedAt: 1709973600,
+					EditCount: 2,
+					Text:      "已修订版本：补齐纯 Go 离线归档基准数据与实拍配图，完整文档见 项目说明。",
+					Links: []service.TextLinkDTO{
+						{Label: "项目说明", URL: "https://example.org/weibo-edit-v3"},
+					},
+					Source:       "微博网页版",
+					RegionName:   "发布于 上海",
+					Images:       []service.WeiboMediaItemDTO{{Index: 1, PicID: "synthCurPic01", Kind: "image", Width: 480, Height: 150}},
+					Stats:        service.WeiboStatsDTO{RepostsCount: 92, CommentsCount: 31, AttitudesCount: 640},
+					CanonicalURL: "https://weibo.com/" + weiboUID + "/5000000000000018",
+					CacheKey:     savedWeiboEdited.ItemKey,
+					CachedItem:   &savedWeiboEdited,
+				}
+				app.WeiboEditHistoryExpanded = true
+				app.WeiboEditHistoryMid = "5000000000000018"
+				app.WeiboEditHistoryError = ""
+				app.WeiboEditHistoryItems = []service.WeiboEditRevisionDTO{
+					{
+						Version: 3,
+						EditTs:  1709973600,
+						Text:    "已修订版本：补齐纯 Go 离线归档基准数据与实拍配图，完整文档见 项目说明。",
+						Links:   []service.TextLinkDTO{{Label: "项目说明", URL: "https://example.org/weibo-edit-v3"}},
+					},
+					{
+						Version: 2,
+						EditTs:  1709971800,
+						Text:    "第二次修订：修正测试数据表格中的单位笔误。",
+					},
+					{
+						Version: 1,
+						EditTs:  1709970000,
+						Text:    "原始首发版本：先发一版初稿与旧版示意图（后续编辑替换为新版配图）。",
+					},
+				}
+				app.CurrentRoute = ui.RouteWeiboPost
+			},
+			RequiredLabels: []string{
+				"微博详情站点标记",
+				"缓存当前微博",
+				"微博正文",
+				"微博编辑历史区",
+				"切换微博编辑历史",
+				"编辑历史版本 3",
+				"编辑历史版本 2",
+				"编辑历史版本 1",
+				"微博在线统计",
+			},
+			RequiredTexts: []string{
+				"已编辑 2 次",
+				"最新版本 · 第 3 版",
+				"原始版本 · 第 1 版",
+			},
+		},
+		{
+			Name: "weibo-post-edit-history-offline",
+			Setup: func() {
+				app.Opening = nil
+				app.WeiboOfflineEditHistoryKey = ""
+				app.OpenLibraryItemDetail(savedWeiboEdited)
+			},
+			RequiredLabels: []string{
+				"本机微博详情站点标记",
+				"微博正文",
+				"本机微博编辑历史区",
+				"切换本机微博编辑历史",
+				"本机编辑历史版本 3",
+				"本机编辑历史版本 2",
+				"本机编辑历史版本 1",
+			},
+			RequiredTexts: []string{
+				"已编辑 2 次",
+				"最新版本 · 第 3 版",
+				"原始版本 · 第 1 版",
+			},
+			ForbiddenLabels: []string{
+				"缓存当前微博",
 				"微博在线统计",
 			},
 		},

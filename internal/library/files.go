@@ -105,6 +105,13 @@ func visitManifestFiles(meta ItemMetadata, fn func(ManifestFile)) {
 			}
 		}
 	}
+	for _, rev := range meta.EditHistory {
+		for _, rel := range rev.MediaPaths {
+			if rel != "" {
+				fn(ManifestFile{Path: rel, Role: "edit_image"})
+			}
+		}
+	}
 }
 
 // RegisteredFiles lists every finished file meta registers (media, parts,

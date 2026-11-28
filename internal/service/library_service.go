@@ -256,6 +256,7 @@ func (b *Backend) enqueueWeiboPostWithSourceInfo(
 	if plan == nil && mode == "" && !force && b.weiboPostCache != nil {
 		if cachedPost, ok := b.weiboPostCache.get(cleanMid, b.preferredWeiboCodec(), b.currentWeiboMaxResolution(), b.weiboRemoveWatermarkEnabled()); ok {
 			if built, bErr := b.buildWeiboWorkPlanFromPost(cachedPost); bErr == nil {
+				b.attachWeiboEditHistoryBestEffort(ctx, cachedPost, &built)
 				plan = &built
 			}
 		}

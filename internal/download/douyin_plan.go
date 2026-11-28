@@ -106,6 +106,26 @@ type PlannedArticle struct {
 	Blocks      []PlannedArticleBlock
 }
 
+// PlannedEditImage describes one public unsigned image snapshot attached to a
+// historical edit revision (e.g. Weibo /ajax/statuses/editHistory, DEC-094).
+type PlannedEditImage struct {
+	PicID     string
+	Kind      string // "image", "gif", "live_photo"
+	Width     int
+	Height    int
+	ImageURLs []string
+}
+
+// PlannedEditRevision describes one historical revision of an edited post
+// scheduled for offline archival alongside the current version (DEC-094).
+type PlannedEditRevision struct {
+	Version int
+	EditTs  int64
+	Text    string
+	Links   []site.TextLink
+	Images  []PlannedEditImage
+}
+
 // WorkDownloadPlan holds rich metadata and ephemeral CDN URLs for caching a Douyin, Weibo, or X work.
 type WorkDownloadPlan struct {
 	Site                    site.ID
@@ -164,12 +184,13 @@ type WorkDownloadPlan struct {
 	Thread                  []PlannedThreadPart
 	Article                 *PlannedArticle
 	Music                   *PlannedMusic
-	MediaID                 string   // clean platform media ID for single-video works
-	EditTs                  int64    // sanitized remote edit timestamp
-	EditCount               int      // sanitized remote edit counter
-	AssetIDs                []string // sanitized ordered platform asset IDs
-	ConflictResolution      string   // explicit "keep_both" or "use_remote" when resolving a conflict
-	ForceOverwrite          bool     `json:"-"` // explicit manual-only force redownload & atomic overwrite (DEC-079)
+	MediaID                 string                // clean platform media ID for single-video works
+	EditTs                  int64                 // sanitized remote edit timestamp
+	EditCount               int                   // sanitized remote edit counter
+	EditHistory             []PlannedEditRevision // optional historical revisions (DEC-094)
+	AssetIDs                []string              // sanitized ordered platform asset IDs
+	ConflictResolution      string                // explicit "keep_both" or "use_remote" when resolving a conflict
+	ForceOverwrite          bool                  `json:"-"` // explicit manual-only force redownload & atomic overwrite (DEC-079)
 	Transport               site.MediaTransportSpec
 }
 

@@ -116,10 +116,11 @@ type Page struct {
 	refreshState ui.RefreshState
 
 	// Read-only detail route state (/library/item/{key}).
-	detailKey     string
-	detail        *companionapi.LibraryItemDetail
-	detailLoading bool
-	detailErr     string
+	detailKey                  string
+	detail                     *companionapi.LibraryItemDetail
+	detailEditHistoryCollapsed bool
+	detailLoading              bool
+	detailErr                  string
 
 	// Optional test hooks.
 	openImageFn func(h pagekit.Host, items []mediaview.ImageItem, startIdx int)

@@ -176,6 +176,7 @@ X（DEC-066）的作者目录用稳定的纯数字 `rest_id`（不随 `@handle` 
 | 纯文字 | 完整正文（含长微博全文） |
 | 转发 / 快转 | 转发正文 + 原微博快照与媒体，统一存在转发者的 `weibo/<转发者 uid>/forwards/<mid>/` 并记 `via`（DEC-056）；原微博已删除或不可见时完整保留转发正文并说明原因 |
 | 头条文章、投票、音乐、外链、直播卡片 | 正文与卡片摘要（不把外链或直播卡片当成视频下载），可在浏览器中打开 |
+| 已编辑微博的编辑历史（`edit_count > 0`，[DEC-094](../decisions.md#dec-094)） | `item.json` 保持 **v1** 零结构升级，新增可选字段 `editHistory[]`（每版含 `version`、`editTs`、脱敏 `text`、可读 `links` 与本地相对路径 `mediaPaths`，绝不存远程签名 URL 或 Cookie）；`edit_count == 0` 零额外请求。缓存时尽力拉取 `/ajax/statuses/editHistory`（最多 5 页，并复用短时内存缓存），历史版本中与当前帖相同的 `pic_id` 直接复用当前帖本地图，历史独有公开无签名 `sinaimg.cn` 图片尽力下载到 `images/edit_vNN_MM.<扩展名>` 并以 `role: "edit_image"` 登记进 `media[]`（同步纳入校验、清理、删除、合并与便携导入导出，不污染主帖图集与媒体库卡片）；接口或单张历史图下载失败安全降级跳过，不阻塞主微博完成也不将主条目降级为 `partial` |
 | VIP 受限、加密、已删除、无权查看 | 不缓存，说明原因 |
 
 X 内容（FR-X-005、FR-X-006，[X 协议 §5～§6、§15.1](../research/x.md#a-review-choices)）：
