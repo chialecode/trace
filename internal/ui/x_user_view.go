@@ -289,9 +289,7 @@ func (a *App) renderXUserHeader(c *ui.Context, u *service.XUserDTO, activeTab st
 							a.OpenXUserListsModal(u.RestID, name)
 						}
 						if m.Item("在浏览器中打开").Chosen() {
-							if err := a.backend.Desktop().OpenExternalURL(targetURL); err != nil {
-								a.showError(err)
-							}
+							a.openExternalURL(targetURL)
 						}
 					})
 					a.XUserSubMenuOpen = open
@@ -299,7 +297,12 @@ func (a *App) renderXUserHeader(c *ui.Context, u *service.XUserDTO, activeTab st
 			})
 
 			if strings.TrimSpace(u.Description) != "" {
-				ui.Text(c, u.Description).FontSize(13).LineHeight(LineHeightCompact).TextColor(ColorTextMuted).MaxLines(3)
+				a.renderRichText(c, u.Description, nil, richTextOptions{
+					MaxLines:   3,
+					FontSize:   13,
+					LineHeight: LineHeightCompact,
+					TextColor:  ColorTextMuted,
+				})
 			}
 			if u.Protected {
 				ui.Row(c).Label("X受保护账号提示").FillWidth().Padding(8, 12).Radius(8).Background(ColorWarnBg).Border(1, ColorDotYellow).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {

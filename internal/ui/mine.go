@@ -1398,7 +1398,7 @@ func (a *App) renderMineXPostRow(c *ui.Context, it service.AccountItem) {
 									a.notifyInfo("已复制链接")
 								}
 								if m.Item("在浏览器中打开").Chosen() {
-									a.showError(a.backend.Desktop().OpenExternalURL(post.CanonicalURL))
+									a.openExternalURL(post.CanonicalURL)
 								}
 							}
 						})
@@ -1409,7 +1409,7 @@ func (a *App) renderMineXPostRow(c *ui.Context, it service.AccountItem) {
 				bodyBtn := ui.ButtonBase(c).Label("我的X帖子：" + post.ID).FillWidth().Padding(0).Justify(ui.Start).AlignItems(ui.Start).ClipX()
 				bodyLinkClicked := false
 				bodyBtn.Children(func() {
-					text := firstNonEmptyStrUI(post.Text, it.Title, "帖子 "+post.ID)
+					text := firstNonEmptyStrUI(card.Text, post.Text, it.Title, "帖子 "+post.ID)
 					bodyLinkClicked = a.renderRichText(c, text, card.Links, richTextOptions{
 						MaxLines:   4,
 						FontSize:   14,
