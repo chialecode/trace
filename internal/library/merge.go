@@ -90,6 +90,77 @@ func mergeItemArticle(dst, src *ItemArticle) *ItemArticle {
 	return dst
 }
 
+func cloneItemEditHistory(src []ItemEditRevision) []ItemEditRevision {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]ItemEditRevision, len(src))
+	for i, rev := range src {
+		rev.Links = append([]ItemLink(nil), rev.Links...)
+		rev.MediaPaths = append([]string(nil), rev.MediaPaths...)
+		out[i] = rev
+	}
+	return out
+}
+
+func mergeItemEditHistory(dst, src []ItemEditRevision) []ItemEditRevision {
+	if len(src) == 0 {
+		return dst
+	}
+	if len(dst) == 0 {
+		return cloneItemEditHistory(src)
+	}
+	out := cloneItemEditHistory(dst)
+	byVer := make(map[int]int, len(out))
+	for i, rev := range out {
+		if rev.Version > 0 {
+			byVer[rev.Version] = i
+		}
+	}
+	for _, imp := range src {
+		if idx, exists := byVer[imp.Version]; exists && imp.Version > 0 {
+			cur := &out[idx]
+			if cur.EditTs == 0 && imp.EditTs > 0 {
+				cur.EditTs = imp.EditTs
+			}
+			if cur.Text == "" && imp.Text != "" {
+				cur.Text = imp.Text
+			}
+			if len(cur.Links) == 0 && len(imp.Links) > 0 {
+				cur.Links = append([]ItemLink(nil), imp.Links...)
+			}
+			if len(imp.MediaPaths) > 0 {
+				seen := make(map[string]bool, len(cur.MediaPaths))
+				for _, p := range cur.MediaPaths {
+					seen[strings.ToLower(cleanManifestRel(p))] = true
+				}
+				for _, p := range imp.MediaPaths {
+					k := strings.ToLower(cleanManifestRel(p))
+					if k != "" && !seen[k] {
+						seen[k] = true
+						cur.MediaPaths = append(cur.MediaPaths, p)
+					}
+				}
+			}
+			continue
+		}
+		copied := imp
+		copied.Links = append([]ItemLink(nil), imp.Links...)
+		copied.MediaPaths = append([]string(nil), imp.MediaPaths...)
+		if copied.Version > 0 {
+			byVer[copied.Version] = len(out)
+		}
+		out = append(out, copied)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Version != out[j].Version {
+			return out[i].Version > out[j].Version
+		}
+		return out[i].EditTs > out[j].EditTs
+	})
+	return sanitizeItemEditHistory(out)
+}
+
 func cloneItemOrigin(src *ItemOrigin) *ItemOrigin {
 	return cloneItemOriginDepth(src, 0)
 }
@@ -237,6 +308,7 @@ func cloneItemMetadataSlices(meta ItemMetadata) ItemMetadata {
 		meta.Card = &c
 	}
 	meta.Article = cloneItemArticle(meta.Article)
+	meta.EditHistory = cloneItemEditHistory(meta.EditHistory)
 	meta.Links = append([]ItemLink(nil), meta.Links...)
 	meta.InReplyTo = cloneItemReplyTarget(meta.InReplyTo)
 	meta.Origin = cloneItemOrigin(meta.Origin)
@@ -469,6 +541,7 @@ func MergeItemMetadata(local, imported ItemMetadata, mode string, sameContent fu
 		out.Card = &c
 	}
 	out.Article = mergeItemArticle(out.Article, imported.Article)
+	out.EditHistory = mergeItemEditHistory(out.EditHistory, imported.EditHistory)
 	if len(out.Links) == 0 && len(imported.Links) > 0 {
 		out.Links = append([]ItemLink(nil), imported.Links...)
 	}
@@ -666,6 +739,7 @@ func PortableManifest(meta ItemMetadata) ([]byte, error) {
 	meta = cloneItemMetadataSlices(meta)
 	meta.InReplyTo = sanitizeItemReplyTarget(meta.InReplyTo, meta.Site)
 	meta.Article = sanitizeItemArticle(meta.Article, meta.Site)
+	meta.EditHistory = sanitizeItemEditHistory(meta.EditHistory)
 	if meta.Origin != nil {
 		sanitizeItemOriginDepth(meta.Origin, meta.Site, 0)
 	}
@@ -809,6 +883,18 @@ func KeepListedFiles(meta ItemMetadata, keep func(rel string) bool) (ItemMetadat
 				meta.Article.Blocks[i].MediaRel = ""
 			}
 		}
+	}
+	for i := range meta.EditHistory {
+		if len(meta.EditHistory[i].MediaPaths) == 0 {
+			continue
+		}
+		var kept []string
+		for _, p := range meta.EditHistory[i].MediaPaths {
+			if ok(p) {
+				kept = append(kept, p)
+			}
+		}
+		meta.EditHistory[i].MediaPaths = kept
 	}
 	seen := map[string]bool{}
 	for _, d := range dropped {

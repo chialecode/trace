@@ -1376,6 +1376,31 @@ func (b *Backend) WeiboPost(ctx context.Context, mid string) (*WeiboPostView, er
 	return mapWeiboPostView(post, cached, st), nil
 }
 
+// WeiboPostEditHistory fetches historical edit revisions for an edited Weibo
+// post via GET /ajax/statuses/editHistory?mid=<mid>&page=<p>, honoring DEC-089
+// manual probe recovery and populating the short-lived in-memory edit-history
+// cache so subsequent caching reuses it with zero duplicate requests (DEC-094).
+func (b *Backend) WeiboPostEditHistory(ctx context.Context, mid string) ([]WeiboEditRevisionDTO, error) {
+	if err := b.requireSiteLogin(site.Weibo); err != nil {
+		return nil, err
+	}
+	cleanMid := strings.TrimSpace(mid)
+	revs, err := b.weibo.GetEditHistory(b.manualProbeContext(ctx), cleanMid)
+	if err != nil {
+		err = b.finishManualSiteRequest(ctx, site.Weibo, err)
+		b.logError("WeiboPostEditHistory", err)
+		return nil, err
+	}
+	_ = b.finishManualSiteRequest(ctx, site.Weibo, nil)
+	if b.weiboPostCache != nil && len(revs) > 0 {
+		b.weiboPostCache.putEditHistory(cleanMid, revs)
+		if numMid, mErr := weibo.MblogIDToMid(cleanMid); mErr == nil && numMid != "" && numMid != cleanMid {
+			b.weiboPostCache.putEditHistory(numMid, revs)
+		}
+	}
+	return mapWeiboEditRevisions(revs), nil
+}
+
 // WeiboVideo fetches a standalone 1034:<id> Weibo video page.
 // If the video resolves to a host Weibo post, HostPost is populated and CacheKey normalizes to weibo:dynamic:<mid>;
 // otherwise CacheKey is weibo:video:<oid_underscored>.

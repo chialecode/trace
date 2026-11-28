@@ -44,39 +44,41 @@ const (
 // Endpoints holds configurable Weibo PC Ajax API URLs for production and httptest fixtures.
 // Per weibo.md §13.1 #2, TRACE uses PC weibo.com endpoints only.
 type Endpoints struct {
-	PCBasicInfo     string
-	ProfileInfo     string
-	StatusesShow    string
-	StatusesLong    string
-	StatusesMyMblog string
-	TVComponent     string
-	Friends         string
-	FollowContent   string
-	AllGroups       string
-	AllFavorites    string
-	LikeList        string
-	QRImage         string
-	QRCheck         string
-	QRSsoLogin      string
+	PCBasicInfo         string
+	ProfileInfo         string
+	StatusesShow        string
+	StatusesLong        string
+	StatusesEditHistory string
+	StatusesMyMblog     string
+	TVComponent         string
+	Friends             string
+	FollowContent       string
+	AllGroups           string
+	AllFavorites        string
+	LikeList            string
+	QRImage             string
+	QRCheck             string
+	QRSsoLogin          string
 }
 
 // DefaultEndpoints returns the official Weibo PC HTTPS API endpoints.
 func DefaultEndpoints() Endpoints {
 	return Endpoints{
-		PCBasicInfo:     "https://weibo.com/ajax/setting/getBasicInfo",
-		ProfileInfo:     "https://weibo.com/ajax/profile/info",
-		StatusesShow:    "https://weibo.com/ajax/statuses/show",
-		StatusesLong:    "https://weibo.com/ajax/statuses/longtext",
-		StatusesMyMblog: "https://weibo.com/ajax/statuses/mymblog",
-		TVComponent:     "https://weibo.com/tv/api/component",
-		Friends:         "https://weibo.com/ajax/friendships/friends",
-		FollowContent:   "https://weibo.com/ajax/profile/followContent",
-		AllGroups:       "https://weibo.com/ajax/feed/allGroups",
-		AllFavorites:    "https://weibo.com/ajax/favorites/all_fav",
-		LikeList:        "https://weibo.com/ajax/statuses/likelist",
-		QRImage:         "https://passport.weibo.com/sso/v2/qrcode/image",
-		QRCheck:         "https://passport.weibo.com/sso/v2/qrcode/check",
-		QRSsoLogin:      "https://passport.weibo.com/sso/v2/login",
+		PCBasicInfo:         "https://weibo.com/ajax/setting/getBasicInfo",
+		ProfileInfo:         "https://weibo.com/ajax/profile/info",
+		StatusesShow:        "https://weibo.com/ajax/statuses/show",
+		StatusesLong:        "https://weibo.com/ajax/statuses/longtext",
+		StatusesEditHistory: "https://weibo.com/ajax/statuses/editHistory",
+		StatusesMyMblog:     "https://weibo.com/ajax/statuses/mymblog",
+		TVComponent:         "https://weibo.com/tv/api/component",
+		Friends:             "https://weibo.com/ajax/friendships/friends",
+		FollowContent:       "https://weibo.com/ajax/profile/followContent",
+		AllGroups:           "https://weibo.com/ajax/feed/allGroups",
+		AllFavorites:        "https://weibo.com/ajax/favorites/all_fav",
+		LikeList:            "https://weibo.com/ajax/statuses/likelist",
+		QRImage:             "https://passport.weibo.com/sso/v2/qrcode/image",
+		QRCheck:             "https://passport.weibo.com/sso/v2/qrcode/check",
+		QRSsoLogin:          "https://passport.weibo.com/sso/v2/login",
 	}
 }
 
@@ -93,6 +95,9 @@ func (e Endpoints) withDefaults() Endpoints {
 	}
 	if e.StatusesLong == "" {
 		e.StatusesLong = d.StatusesLong
+	}
+	if e.StatusesEditHistory == "" {
+		e.StatusesEditHistory = d.StatusesEditHistory
 	}
 	if e.StatusesMyMblog == "" {
 		e.StatusesMyMblog = d.StatusesMyMblog

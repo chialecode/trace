@@ -356,6 +356,7 @@ type fixtureEnv struct {
 	savedDouyinNote   library.ItemMetadata
 	savedWeiboPost    library.ItemMetadata
 	savedWeiboRetweet library.ItemMetadata
+	savedWeiboEdited  library.ItemMetadata
 	savedXPost        library.ItemMetadata
 	savedXRetweet     library.ItemMetadata
 	savedXThread      library.ItemMetadata
@@ -929,6 +930,67 @@ func seedFixtures() (env *fixtureEnv, err error) {
 			{Role: "motion", Path: "images/02_live.mp4", FromOrigin: true, Duration: 3},
 			{Role: "cover", Path: "cover.png", FromOrigin: true, Width: 480, Height: 200},
 			{Role: "video", Path: "video.mp4", FromOrigin: true, Duration: 118},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	wbEditedDir := filepath.Join(loc.DefaultCacheDir, "weibo", "500000001_技术频道_微博", "posts", "5000000000000018")
+	if err := os.MkdirAll(filepath.Join(wbEditedDir, "images"), 0o700); err != nil {
+		return nil, err
+	}
+	_ = os.WriteFile(filepath.Join(wbEditedDir, "images", "01.png"), coverBuf.Bytes(), 0o600)
+	_ = os.WriteFile(filepath.Join(wbEditedDir, "images", "edit_v01_01.png"), portraitBuf.Bytes(), 0o600)
+	env.savedWeiboEdited, err = b.LibraryStore().SaveItem(wbEditedDir, library.ItemMetadata{
+		Version:     1,
+		ID:          "dynamic:5000000000000018",
+		RawID:       "5000000000000018",
+		Site:        "weibo",
+		Kind:        "dynamic",
+		DynamicType: "draw",
+		TypeLabel:   "图文",
+		Status:      "complete",
+		Title:       "已修订版本：补齐纯 Go 离线归档基准数据与实拍配图",
+		Text:        "已修订版本：补齐纯 Go 离线归档基准数据与实拍配图，完整文档见 项目说明。",
+		Links: []library.ItemLink{
+			{Label: "项目说明", URL: "https://example.org/weibo-edit-v3"},
+		},
+		URL:       "https://weibo.com/500000001/5000000000000018",
+		PubTs:     1709970000,
+		CachedAt:  "2026-03-02T12:20:00Z",
+		EditCount: 2,
+		Author: library.ItemAuthor{
+			Site: "weibo",
+			UID:  env.weiboUID,
+			Name: "技术频道_微博",
+		},
+		NotePages: []library.NotePageRecord{
+			{Index: 1, Kind: "image", MediaID: "synthCurPic01", Image: "images/01.png", Width: 480, Height: 150},
+		},
+		Media: []library.MediaFile{
+			{Role: "image", Path: "images/01.png", Width: 480, Height: 150},
+			{Role: "edit_image", Path: "images/edit_v01_01.png", Width: 240, Height: 320},
+		},
+		EditHistory: []library.ItemEditRevision{
+			{
+				Version:    3,
+				EditTs:     1709973600,
+				Text:       "已修订版本：补齐纯 Go 离线归档基准数据与实拍配图，完整文档见 项目说明。",
+				Links:      []library.ItemLink{{Label: "项目说明", URL: "https://example.org/weibo-edit-v3"}},
+				MediaPaths: []string{"images/01.png"},
+			},
+			{
+				Version: 2,
+				EditTs:  1709971800,
+				Text:    "第二次修订：修正测试数据表格中的单位笔误。",
+			},
+			{
+				Version:    1,
+				EditTs:     1709970000,
+				Text:       "原始首发版本：先发一版初稿与旧版示意图（后续编辑替换为新版配图）。",
+				MediaPaths: []string{"images/edit_v01_01.png"},
+			},
 		},
 	})
 	if err != nil {

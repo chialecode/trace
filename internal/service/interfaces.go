@@ -155,6 +155,7 @@ type ParseService interface {
 	DouyinUserWorks(ctx context.Context, secUID, cursor string) (*DouyinUserWorksPage, error)
 	DouyinLive(ctx context.Context, webRID string) (*DouyinLiveView, error)
 	WeiboPost(ctx context.Context, mid string) (*WeiboPostView, error)
+	WeiboPostEditHistory(ctx context.Context, mid string) ([]WeiboEditRevisionDTO, error)
 	WeiboVideo(ctx context.Context, oid string) (*WeiboVideoView, error)
 	WeiboUser(ctx context.Context, uid string) (*WeiboUserView, error)
 	WeiboUserPosts(ctx context.Context, uid, cursor string) (*WeiboUserPostsPage, error)

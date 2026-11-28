@@ -798,6 +798,9 @@ func (a *App) renderWeiboOnlinePostDetail(c *ui.Context, post *service.WeiboPost
 						if post.CreatedAt > 0 {
 							metaParts = append(metaParts, FormatTimestamp(post.CreatedAt))
 						}
+						if post.EditCount > 0 {
+							metaParts = append(metaParts, fmt.Sprintf("已编辑 %d 次", post.EditCount))
+						}
 						if s := strings.TrimSpace(post.RegionName); s != "" {
 							metaParts = append(metaParts, s)
 						}
@@ -937,6 +940,11 @@ func (a *App) renderWeiboOnlinePostDetail(c *ui.Context, post *service.WeiboPost
 			// 7. Retweet Origin Card (or degraded prompt when deleted/unavailable)
 			if post.Retweeted != nil {
 				a.renderWeiboRetweetCard(c, post.Retweeted, itemKey, cachedItem, len(post.Images), post.Video != nil, false, weiboCache)
+			}
+
+			// 7b. Collapsible Edit History Section (DEC-094, on-demand load when EditCount > 0)
+			if post.EditCount > 0 || (cachedItem != nil && len(cachedItem.EditHistory) > 0) {
+				a.renderWeiboOnlineEditHistory(c, post, itemKey, cachedItem)
 			}
 
 			// 8. Online-Only Stats Row (never shown in offline /library/item mode)
@@ -1267,8 +1275,15 @@ func (a *App) renderWeiboOfflineDetail(c *ui.Context, item library.ItemMetadata)
 								})
 							}
 						})
+						var offlineMeta []string
 						if item.PubTs > 0 {
-							ui.Text(c, FormatTimestamp(item.PubTs)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+							offlineMeta = append(offlineMeta, FormatTimestamp(item.PubTs))
+						}
+						if item.EditCount > 0 {
+							offlineMeta = append(offlineMeta, fmt.Sprintf("已编辑 %d 次", item.EditCount))
+						}
+						if len(offlineMeta) > 0 {
+							ui.Text(c, strings.Join(offlineMeta, " · ")).FontSize(12).TextColor(ColorTextMuted).SingleLine()
 						}
 					})
 				})
@@ -1326,7 +1341,362 @@ func (a *App) renderWeiboOfflineDetail(c *ui.Context, item library.ItemMetadata)
 				}
 				a.renderWeiboRetweetCard(c, rtView, item.ItemKey, &item, 0, false, true, previewCacheAction{})
 			}
+			if len(item.EditHistory) > 0 || item.EditCount > 0 {
+				a.renderWeiboOfflineEditHistory(c, item)
+			}
 		})
+	})
+}
+
+func (a *App) loadWeiboEditHistory(mid string) {
+	mid = strings.TrimSpace(mid)
+	if mid == "" || a.backend == nil {
+		return
+	}
+	a.WeiboEditHistoryError = ""
+	backend := a.backend
+	requestGuarded(a, "weibo-edit-history:"+mid, func() bool {
+		return a.CurrentWeiboPost != nil && strings.TrimSpace(a.CurrentWeiboPost.Mid) == mid
+	}, func(ctx context.Context) ([]service.WeiboEditRevisionDTO, error) {
+		return backend.WeiboPostEditHistory(ctx, mid)
+	}, func(revs []service.WeiboEditRevisionDTO) {
+		a.WeiboEditHistoryMid = mid
+		a.WeiboEditHistoryItems = revs
+		a.WeiboEditHistoryError = ""
+	}, func(err error) {
+		a.WeiboEditHistoryMid = mid
+		a.WeiboEditHistoryError = userErrorText(err)
+	})
+}
+
+func weiboEditRevisionVersionBadge(version, idx, total int) string {
+	if idx == 0 && total > 1 {
+		return fmt.Sprintf("最新版本 · 第 %d 版", max(version, 1))
+	}
+	if version <= 1 {
+		return "原始版本 · 第 1 版"
+	}
+	return fmt.Sprintf("第 %d 版", version)
+}
+
+func (a *App) renderWeiboOnlineEditHistory(c *ui.Context, post *service.WeiboPostView, itemKey string, cachedItem *library.ItemMetadata) {
+	if post == nil {
+		return
+	}
+	mid := strings.TrimSpace(post.Mid)
+	pending := mid != "" && a.isPending("weibo-edit-history:"+mid)
+	loadedForMid := mid != "" && a.WeiboEditHistoryMid == mid
+	hasCachedRevs := cachedItem != nil && len(cachedItem.EditHistory) > 0
+
+	editCount := post.EditCount
+	if editCount <= 0 && hasCachedRevs && len(cachedItem.EditHistory) > 1 {
+		editCount = len(cachedItem.EditHistory) - 1
+	}
+
+	headerTitle := "编辑历史"
+	if editCount > 0 {
+		headerTitle = fmt.Sprintf("已编辑 %d 次 · 编辑历史", editCount)
+	}
+	if loadedForMid && len(a.WeiboEditHistoryItems) > 0 {
+		headerTitle = fmt.Sprintf("已编辑 %d 次（共 %d 个版本）", max(editCount, len(a.WeiboEditHistoryItems)-1), len(a.WeiboEditHistoryItems))
+	} else if !a.WeiboEditHistoryExpanded && editCount > 0 {
+		headerTitle = fmt.Sprintf("已编辑 %d 次 · 查看编辑历史", editCount)
+	}
+
+	ui.Column(c).
+		Label("微博编辑历史区").
+		FillWidth().
+		Padding(10, 12).
+		Radius(12).
+		Background(ColorBgSecondary).
+		Border(1, ColorBorder).
+		Gap(10).
+		ClipX().
+		Children(func() {
+			toggleBtn := ui.ButtonBase(c).
+				Label("切换微博编辑历史").
+				FillWidth().
+				Padding(4, 2).
+				Radius(8).
+				AlignItems(ui.Center).
+				Justify(ui.SpaceBetween)
+			if toggleBtn.Hovered() {
+				toggleBtn.Background(ColorHover)
+			}
+			toggleBtn.Children(func() {
+				ui.Row(c).Grow(1).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
+					DrawIcon(c, "history", 15, ColorAccent, 1.75)
+					ui.Text(c, headerTitle).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				})
+				ui.Row(c).Shrink(0).AlignItems(ui.Center).Gap(4).Children(func() {
+					stateTxt := "展开"
+					iconName := "chevron-down"
+					if a.WeiboEditHistoryExpanded {
+						stateTxt = "收起"
+						iconName = "chevron-up"
+					}
+					ui.Text(c, stateTxt).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					DrawIcon(c, iconName, 14, ColorTextMuted, 1.8)
+				})
+			})
+			if toggleBtn.Clicked() {
+				a.WeiboEditHistoryExpanded = !a.WeiboEditHistoryExpanded
+				if a.WeiboEditHistoryExpanded && post.EditCount > 0 && mid != "" && (!loadedForMid || (len(a.WeiboEditHistoryItems) == 0 && a.WeiboEditHistoryError != "")) && !pending {
+					a.loadWeiboEditHistory(mid)
+				}
+			}
+
+			if !a.WeiboEditHistoryExpanded {
+				return
+			}
+
+			if pending {
+				ui.Text(c, "正在加载编辑历史…").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+				return
+			}
+
+			if loadedForMid && a.WeiboEditHistoryError != "" {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
+					ui.Text(c, "加载编辑历史失败："+a.WeiboEditHistoryError).FontSize(12).LineHeight(LineHeightCompact).TextColor(ColorWarnText).MaxLines(2).Grow(1)
+					if OutlinePillButton(c, "重试", "重试加载微博编辑历史").Clicked() && mid != "" {
+						a.loadWeiboEditHistory(mid)
+					}
+				})
+				if hasCachedRevs {
+					ui.Text(c, "以下为本机已缓存的编辑历史：").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					a.renderWeiboOfflineEditRevisionCards(c, *cachedItem)
+				}
+				return
+			}
+
+			if loadedForMid && len(a.WeiboEditHistoryItems) > 0 {
+				revs := a.WeiboEditHistoryItems
+				for idx, rev := range revs {
+					badge := weiboEditRevisionVersionBadge(rev.Version, idx, len(revs))
+					ui.Column(c.Key(fmt.Sprintf("wb-eh-%d-%d", rev.Version, idx))).
+						Label(fmt.Sprintf("编辑历史版本 %d", rev.Version)).
+						FillWidth().
+						Padding(10, 12).
+						Radius(10).
+						Background(ColorBgMain).
+						Border(1, ColorBorder).
+						Gap(6).
+						ClipX().
+						Children(func() {
+							ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
+								ui.Box(c).Padding(2, 7).Radius(4).Background(ColorAccentBg).Shrink(0).Children(func() {
+									ui.Text(c, badge).FontSize(11).FontWeight(600).TextColor(ColorAccent).SingleLine()
+								})
+								if rev.EditTs > 0 {
+									ui.Text(c, FormatTimestamp(rev.EditTs)).FontSize(11).TextColor(ColorTextMuted).SingleLine()
+								}
+							})
+							if txt := strings.TrimSpace(rev.Text); txt != "" {
+								a.renderRichText(c, txt, rev.Links, richTextOptions{
+									Label:      fmt.Sprintf("编辑历史第 %d 版正文", rev.Version),
+									FontSize:   13.5,
+									LineHeight: LineHeightBody,
+									TextColor:  ColorTextMain,
+								})
+							}
+							if len(rev.Images) > 0 {
+								pages := weiboMediaItemsToRenderPages(rev.Images, false)
+								if len(pages) > 0 {
+									a.renderWeiboEditRevisionThumbs(c, itemKey, rev.Version, pages)
+								}
+							}
+						})
+				}
+				return
+			}
+
+			if hasCachedRevs {
+				ui.Text(c, "以下为本机已缓存的编辑历史：").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+				a.renderWeiboOfflineEditRevisionCards(c, *cachedItem)
+				return
+			}
+
+			if loadedForMid {
+				ui.Text(c, "源站未返回更早的编辑记录").FontSize(12).TextColor(ColorTextMuted).SingleLine()
+			}
+		})
+}
+
+func (a *App) renderWeiboOfflineEditHistory(c *ui.Context, item library.ItemMetadata) {
+	if len(item.EditHistory) == 0 {
+		if item.EditCount > 0 {
+			ui.Row(c).
+				Label("本机微博编辑历史提示").
+				FillWidth().
+				Padding(8, 12).
+				Radius(8).
+				Background(ColorBgSecondary).
+				AlignItems(ui.Center).
+				Gap(6).
+				ClipX().
+				Children(func() {
+					DrawIcon(c, "history", 14, ColorTextMuted, 1.75)
+					ui.Text(c, fmt.Sprintf("已编辑 %d 次（本机未缓存历史版本）", item.EditCount)).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+				})
+		}
+		return
+	}
+
+	if a.WeiboOfflineEditHistoryKey != item.ItemKey {
+		a.WeiboOfflineEditHistoryKey = item.ItemKey
+		a.WeiboOfflineEditHistoryExpanded = true
+	}
+
+	headerTitle := fmt.Sprintf("编辑历史（共 %d 个已缓存版本）", len(item.EditHistory))
+	if item.EditCount > 0 {
+		headerTitle = fmt.Sprintf("已编辑 %d 次 · 编辑历史（共 %d 个版本）", item.EditCount, len(item.EditHistory))
+	}
+
+	ui.Column(c).
+		Label("本机微博编辑历史区").
+		FillWidth().
+		Padding(10, 12).
+		Radius(12).
+		Background(ColorBgSecondary).
+		Border(1, ColorBorder).
+		Gap(10).
+		ClipX().
+		Children(func() {
+			toggleBtn := ui.ButtonBase(c).
+				Label("切换本机微博编辑历史").
+				FillWidth().
+				Padding(4, 2).
+				Radius(8).
+				AlignItems(ui.Center).
+				Justify(ui.SpaceBetween)
+			if toggleBtn.Hovered() {
+				toggleBtn.Background(ColorHover)
+			}
+			toggleBtn.Children(func() {
+				ui.Row(c).Grow(1).AlignItems(ui.Center).Gap(6).ClipX().Children(func() {
+					DrawIcon(c, "history", 15, ColorAccent, 1.75)
+					ui.Text(c, headerTitle).FontSize(13).FontWeight(600).TextColor(ColorTextMain).SingleLine()
+				})
+				ui.Row(c).Shrink(0).AlignItems(ui.Center).Gap(4).Children(func() {
+					stateTxt := "展开"
+					iconName := "chevron-down"
+					if a.WeiboOfflineEditHistoryExpanded {
+						stateTxt = "收起"
+						iconName = "chevron-up"
+					}
+					ui.Text(c, stateTxt).FontSize(12).TextColor(ColorTextMuted).SingleLine()
+					DrawIcon(c, iconName, 14, ColorTextMuted, 1.8)
+				})
+			})
+			if toggleBtn.Clicked() {
+				a.WeiboOfflineEditHistoryExpanded = !a.WeiboOfflineEditHistoryExpanded
+			}
+
+			if !a.WeiboOfflineEditHistoryExpanded {
+				return
+			}
+			a.renderWeiboOfflineEditRevisionCards(c, item)
+		})
+}
+
+func (a *App) renderWeiboOfflineEditRevisionCards(c *ui.Context, item library.ItemMetadata) {
+	mediaDims := make(map[string][2]int, len(item.Media))
+	for _, mf := range item.Media {
+		if mf.Path != "" && mf.Width > 0 && mf.Height > 0 {
+			mediaDims[strings.ToLower(strings.TrimSpace(mf.Path))] = [2]int{mf.Width, mf.Height}
+		}
+	}
+	revs := item.EditHistory
+	for idx, rev := range revs {
+		badge := weiboEditRevisionVersionBadge(rev.Version, idx, len(revs))
+		ui.Column(c.Key(fmt.Sprintf("wb-off-eh-%d-%d", rev.Version, idx))).
+			Label(fmt.Sprintf("本机编辑历史版本 %d", rev.Version)).
+			FillWidth().
+			Padding(10, 12).
+			Radius(10).
+			Background(ColorBgMain).
+			Border(1, ColorBorder).
+			Gap(6).
+			ClipX().
+			Children(func() {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).ClipX().Children(func() {
+					ui.Box(c).Padding(2, 7).Radius(4).Background(ColorAccentBg).Shrink(0).Children(func() {
+						ui.Text(c, badge).FontSize(11).FontWeight(600).TextColor(ColorAccent).SingleLine()
+					})
+					if rev.EditTs > 0 {
+						ui.Text(c, FormatTimestamp(rev.EditTs)).FontSize(11).TextColor(ColorTextMuted).SingleLine()
+					}
+				})
+				if txt := strings.TrimSpace(rev.Text); txt != "" {
+					a.renderRichText(c, txt, service.MapItemLinksToDTO(rev.Links), richTextOptions{
+						Label:      fmt.Sprintf("本机编辑历史第 %d 版正文", rev.Version),
+						FontSize:   13.5,
+						LineHeight: LineHeightBody,
+						TextColor:  ColorTextMain,
+					})
+				}
+				if len(rev.MediaPaths) > 0 {
+					pages := make([]douyinNoteRenderPage, 0, len(rev.MediaPaths))
+					for pi, rel := range rev.MediaPaths {
+						rel = strings.TrimSpace(rel)
+						if rel == "" {
+							continue
+						}
+						dims := mediaDims[strings.ToLower(rel)]
+						pages = append(pages, douyinNoteRenderPage{
+							Index:    pi + 1,
+							Kind:     "image",
+							IsGIF:    isWeiboGIFURL(rel),
+							ImageRel: rel,
+							Width:    dims[0],
+							Height:   dims[1],
+						})
+					}
+					if len(pages) > 0 {
+						a.renderWeiboEditRevisionThumbs(c, item.ItemKey, rev.Version, pages)
+					}
+				}
+			})
+	}
+}
+
+func (a *App) renderWeiboEditRevisionThumbs(c *ui.Context, itemKey string, version int, pages []douyinNoteRenderPage) {
+	if len(pages) == 0 {
+		return
+	}
+	ui.Row(c).FillWidth().Wrap().Gap(6).ClipX().Children(func() {
+		for idx, pg := range pages {
+			pageIdx := idx
+			item := pg
+			var bmp *ui.Bitmap
+			if item.ImageRel != "" {
+				bmp = a.lookupLocalBitmap(itemKey, item.ImageRel)
+			}
+			if bmp == nil && item.ImageURL != "" {
+				bmp = a.lookupRemoteBitmapWithFallbacks(item.ImageURL, item.FallbackImageURLs)
+			}
+			tile := ui.ButtonBase(c.Key(fmt.Sprintf("eh-img-%d-%d", version, pageIdx))).
+				Label(fmt.Sprintf("查看编辑历史第 %d 版图片 %d", version, pageIdx+1)).
+				Size(56, 56).
+				Radius(8).
+				Clip().
+				Background(ColorBgSecondary).
+				Border(1, ColorBorder).
+				Shrink(0)
+			tile.Children(func() {
+				if bmp != nil {
+					ui.Image(c, bmp).Absolute().Left(0).Top(0).Right(0).Bottom(0).Fit(ui.Cover)
+				}
+				if item.IsGIF {
+					ui.Box(c).Absolute().Left(4).Top(4).Padding(1, 4).Radius(3).Background(ui.RGBA(0, 0, 0, 0.62)).Children(func() {
+						ui.Text(c, "GIF").FontSize(9).FontWeight(600).TextColor(ColorWhite).SingleLine()
+					})
+				}
+			})
+			if tile.Clicked() {
+				a.openNotePagesViewer(itemKey, "weibo", pages, pageIdx)
+			}
+		}
 	})
 }
 

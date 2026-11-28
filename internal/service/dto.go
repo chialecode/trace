@@ -256,6 +256,16 @@ type WeiboRichCardDTO struct {
 	Unsupported bool   `json:"unsupported"`
 }
 
+// WeiboEditRevisionDTO holds one normalized historical revision of a Weibo post
+// returned by GET /ajax/statuses/editHistory for online viewing (DEC-094).
+type WeiboEditRevisionDTO struct {
+	Version int                 `json:"version"`
+	EditTs  int64               `json:"editTs,omitempty"`
+	Text    string              `json:"text,omitempty"`
+	Links   []TextLinkDTO       `json:"links,omitempty"`
+	Images  []WeiboMediaItemDTO `json:"images,omitempty"`
+}
+
 // WeiboPostView holds the normalized UI-facing view of a single Weibo post.
 // TextLinkDTO holds a human-readable hyperlink label paired with a safe HTTP(S) target URL (DEC-073).
 type TextLinkDTO struct {
@@ -1073,6 +1083,23 @@ func MapItemLinksToDTO(links []library.ItemLink) []TextLinkDTO {
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+func mapWeiboEditRevisions(revs []weibo.EditRevision) []WeiboEditRevisionDTO {
+	if len(revs) == 0 {
+		return nil
+	}
+	out := make([]WeiboEditRevisionDTO, 0, len(revs))
+	for _, rev := range revs {
+		out = append(out, WeiboEditRevisionDTO{
+			Version: rev.Version,
+			EditTs:  rev.EditTs,
+			Text:    rev.Text,
+			Links:   MapSiteTextLinks(rev.Links),
+			Images:  mapWeiboMediaItems(rev.Images),
+		})
 	}
 	return out
 }

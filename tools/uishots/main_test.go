@@ -365,6 +365,8 @@ func TestUIShotsScenesAndStructuredAssertions(t *testing.T) {
 		"weibo-post-cards",
 		"weibo-post-retweet",
 		"weibo-post-retweet-offline",
+		"weibo-post-edit-history",
+		"weibo-post-edit-history-offline",
 		"home-weibo-retweet",
 		"parse-weibo-live",
 		"import-followings-weibo",
